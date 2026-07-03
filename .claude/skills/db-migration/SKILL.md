@@ -12,4 +12,4 @@ description: Use when creating or reviewing Alembic migrations, changing master 
 - マイグレーション適用は専用ジョブで単独実行し、並行実行しない。
 - 破壊的DDL変更は必ずexpand/contractで分割する。
 
-詳細な設計根拠とコード例は `references/schema-version-sync.md` を参照。
+詳細な設計根拠とコード例は `docs/adr/0004-schema-version-sync.md` を参照。
