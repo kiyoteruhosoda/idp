@@ -141,6 +141,14 @@ presentation/web/
 
 ---
 
+## schema-version
+
+- DBスキーマ・マスタデータのバージョン整合性は、Alembicのrevision idをSSOTとしたfail-fast方式で管理する。
+  設計根拠: docs/adr/0004-schema-version-sync.md
+  マイグレーション作成時のルール: .claude/skills/db-migration/ を参照(自動適用)
+  
+---
+
 ## 設定管理（Settings）
 
 設定値の取得は **必ず `settings` オブジェクトの `@property` 経由**。直接アクセス禁止。
