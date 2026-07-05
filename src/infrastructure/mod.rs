@@ -1,6 +1,9 @@
 //! インフラ層（ドメイン層トレイトの実装）。
 //!
-//! sqlx による MariaDB リポジトリ実装、JWT 署名、パスワードハッシュ、暗号ユーティリティ、
-//! Clock 実装などを収める。現時点では DB 接続とスキーマ照合のみ（T0）。
+//! sqlx による MariaDB リポジトリ実装、JWT 署名、暗号ユーティリティ、Clock 実装などを収める。
 
+pub mod clock;
+pub mod crypto;
 pub mod db;
+pub mod jwt;
+pub mod repositories;

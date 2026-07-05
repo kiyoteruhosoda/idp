@@ -8,8 +8,13 @@
 //! 現時点では未使用でも保持する。
 #![allow(dead_code)]
 
+use base64::{engine::general_purpose::STANDARD, Engine};
 use std::env;
 use std::time::Duration;
+
+/// 秘密鍵暗号化キーの開発用デフォルト（ちょうど 32 バイト）。本番では必ず `KEY_ENCRYPTION_KEY`
+/// を設定する。運用では DB 外の鍵管理（KMS 等）へ移行する。
+const DEV_KEY_ENCRYPTION_KEY: &[u8; 32] = b"idp-dev-insecure-key-0123456789!";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogFormat {
@@ -31,10 +36,14 @@ pub struct Config {
     access_token_ttl: Duration,
     id_token_ttl: Duration,
     clock_skew: Duration,
+    key_encryption_key: [u8; 32],
+    key_encryption_key_is_dev: bool,
 }
 
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
+        let (key_encryption_key, key_encryption_key_is_dev) = load_key_encryption_key()?;
+
         Ok(Self {
             issuer: normalize_issuer(env_or("ISSUER", "http://localhost:8080")),
             bind_addr: env_or("BIND_ADDR", "0.0.0.0:8080"),
@@ -51,6 +60,8 @@ impl Config {
             access_token_ttl: secs(env_parse("ACCESS_TOKEN_TTL_SECS", 900)?),
             id_token_ttl: secs(env_parse("ID_TOKEN_TTL_SECS", 3_600)?),
             clock_skew: secs(env_parse("CLOCK_SKEW_SECS", 60)?),
+            key_encryption_key,
+            key_encryption_key_is_dev,
         })
     }
 
@@ -91,10 +102,37 @@ impl Config {
     pub fn clock_skew(&self) -> Duration {
         self.clock_skew
     }
+    /// 秘密鍵（SigningKeys.private_key_encrypted）の暗号化に使う 32 バイト鍵。
+    pub fn key_encryption_key(&self) -> &[u8; 32] {
+        &self.key_encryption_key
+    }
+    /// 開発用デフォルトの暗号化鍵を使っているか（本番では警告対象）。
+    pub fn key_encryption_key_is_dev(&self) -> bool {
+        self.key_encryption_key_is_dev
+    }
 }
 
 fn normalize_issuer(raw: String) -> String {
     raw.trim_end_matches('/').to_string()
+}
+
+/// `KEY_ENCRYPTION_KEY`（base64、32 バイト）を読み込む。未設定なら開発用デフォルトを使う。
+fn load_key_encryption_key() -> anyhow::Result<([u8; 32], bool)> {
+    match env::var("KEY_ENCRYPTION_KEY") {
+        Ok(v) => {
+            let bytes = STANDARD
+                .decode(v.trim())
+                .map_err(|e| anyhow::anyhow!("KEY_ENCRYPTION_KEY must be base64: {e}"))?;
+            let arr: [u8; 32] = bytes.try_into().map_err(|b: Vec<u8>| {
+                anyhow::anyhow!(
+                    "KEY_ENCRYPTION_KEY must decode to 32 bytes, got {}",
+                    b.len()
+                )
+            })?;
+            Ok((arr, false))
+        }
+        Err(_) => Ok((*DEV_KEY_ENCRYPTION_KEY, true)),
+    }
 }
 
 fn secs(v: u64) -> Duration {

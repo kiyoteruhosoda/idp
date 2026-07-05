@@ -8,18 +8,18 @@ OIDC IdP MVP（**Rust + MariaDB**）の実装計画。設計仕様は `docs/OIDC
 
 | 優先 | # | 概要 | 状態 | 影響度 | 工数 |
 |---|---|---|---|---|---|
-| 1 | T2 | 署名鍵 & JWT基盤（RSA鍵生成・暗号化保存・kid・RS256署名/検証・JWKS構築）（10,11） | ⬜未着手 | 大 | 中 |
-| 2 | T3 | ユーザー登録 `POST /auth/register`（argon2・sub採番）（1） | ⬜未着手 | 中 | 小 |
-| 3 | T4 | 認可フロー中核 `/authorize`・`/login`・SSO・code発行共通モジュール・ロック（2,3,4,5,6,7,9） | ⬜未着手 | 大 | 大 |
-| 4 | T5 | トークン発行 `POST /token`（client認証・PKCE S256・code原子的one-time消費・ID/Access Token）（8,9,10） | ⬜未着手 | 大 | 大 |
-| 5 | T6 | Discovery / JWKS / UserInfo エンドポイント（11,12） | ⬜未着手 | 中 | 中 |
-| 6 | T7 | 監査ログ横断結線（login/code/token/client認証/sso_session の全イベント）（13） | ⬜未着手 | 中 | 小 |
-| 7 | T8 | テスト & MVP完了条件 E2E 検証（unit＋integration、条件1〜13通し） | ⬜未着手 | 大 | 中 |
+| 1 | T3 | ユーザー登録 `POST /auth/register`（argon2・sub採番）（1） | ⬜未着手 | 中 | 小 |
+| 2 | T4 | 認可フロー中核 `/authorize`・`/login`・SSO・code発行共通モジュール・ロック（2,3,4,5,6,7,9） | ⬜未着手 | 大 | 大 |
+| 3 | T5 | トークン発行 `POST /token`（client認証・PKCE S256・code原子的one-time消費・ID/Access Token）（8,9,10） | ⬜未着手 | 大 | 大 |
+| 4 | T6 | Discovery / JWKS / UserInfo エンドポイント（11,12） | ⬜未着手 | 中 | 中 |
+| 5 | T7 | 監査ログ横断結線（login/code/token/client認証/sso_session の全イベント）（13） | ⬜未着手 | 中 | 小 |
+| 6 | T8 | テスト & MVP完了条件 E2E 検証（unit＋integration、条件1〜13通し） | ⬜未着手 | 大 | 中 |
 | — | D1 | 付随ドキュメント整備（ARCHITECTURE.md・OPERATIONS.md・各README、実装と並行） | ⬜未着手 | 小 | 小 |
 
-> T0（プロジェクト基盤）・T1（データモデル & マイグレーション）は完了（`docs/CHANGELOG.md` 参照）。
-> リポジトリトレイト（`src/domain/repositories.rs`）はメソッドを最小限で定義済み。各フェーズで
-> 実装追加時に必要に応じて拡張する。
+> T0（基盤）・T1（データモデル）・T2（署名鍵 & JWT 基盤）は完了（`docs/CHANGELOG.md` 参照）。
+> クレートは lib+bin 構成（`src/lib.rs` の `run()`）。リポジトリトレイト（`src/domain/repositories.rs`）は
+> 各フェーズで実装追加時に必要に応じて拡張する。
+> DB キーに使う識別子（`auth_sessions.id` 等）は ci 照合下で厳密一致となるよう**小文字 16 進**で生成する。
 
 ## 詳細
 

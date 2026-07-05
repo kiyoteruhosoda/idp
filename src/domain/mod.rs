@@ -7,6 +7,7 @@ pub mod audit;
 pub mod auth_session;
 pub mod authorization_code;
 pub mod client;
+pub mod clock;
 pub mod error;
 pub mod repositories;
 pub mod signing_key;
