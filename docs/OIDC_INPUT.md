@@ -64,6 +64,11 @@ Cookie属性：`HttpOnly` / `Secure` / `SameSite=Lax` / `Path=/`
 
 ## 3. データモデル
 
+> **実装上の注記**: 本節のデータ型は PostgreSQL 表記だが、本プロジェクトの実装 DB は **MariaDB** である
+> （`docs/adr/0005-rust-mariadb-stack.md`）。`UUID`→`CHAR(36)`、`CITEXT`→`VARCHAR`+大小無視照合、
+> `timestamptz`→`DATETIME(6)`(UTC)、`inet`→`VARCHAR(45)`、`text[]`→`JSON`、`enum`→`VARCHAR`+`CHECK`、
+> 部分 UNIQUE 索引→通常の UNIQUE 索引（MariaDB は複数 NULL を許容）と読み替える。詳細は `CLAUDE.md`「DB モデリング」。
+
 ### 3.1 Users
 
 ```text

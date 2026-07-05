@@ -1,5 +1,12 @@
 # DBスキーマ・マスタデータとアプリのバージョン整合性を保証する仕組み
 
+> **注記（ADR-0005 による読み替え）**: 本 ADR は当初 Python/Alembic 前提で書かれているが、
+> 本プロジェクトの実装スタックは **Rust + sqlx（MariaDB）** である（`docs/adr/0005-rust-mariadb-stack.md`）。
+> 以下の記述は次のように読み替える: **Alembic の revision id → sqlx マイグレーションの version**、
+> **`alembic_version` テーブル → `_sqlx_migrations` テーブル**、**`alembic check` → sqlx マイグレーションの
+> up/down 往復検証**。判定方針（「DB が期待 version 以上なら OK」の fail-fast）とマスタデータも
+> マイグレーションで管理する思想は、スタックに関わらずそのまま維持する。
+
 結論から言うと、**「Alembicのrevision idを単一情報源(SSOT)とし、DDLとマスタデータの両方を同じrevisionレールに乗せて、起動時・readiness時に照合する」** のが一番確実です。以下、具体的な構成を説明します。
 
 ## 1. 全体設計の考え方
