@@ -97,6 +97,16 @@ impl UserRepository for SqlxUserRepository {
         row.as_ref().map(map_row).transpose()
     }
 
+    async fn find_by_sub(&self, sub: Uuid) -> Result<Option<User>> {
+        let sql = format!("SELECT {SELECT_COLUMNS} FROM users WHERE sub = ?");
+        let row = sqlx::query(&sql)
+            .bind(sub.to_string())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        row.as_ref().map(map_row).transpose()
+    }
+
     async fn find_by_email(&self, email: &str) -> Result<Option<User>> {
         let sql = format!("SELECT {SELECT_COLUMNS} FROM users WHERE email = ?");
         let row = sqlx::query(&sql)

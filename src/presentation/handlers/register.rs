@@ -8,6 +8,17 @@ use axum::http::StatusCode;
 use axum::Json;
 use std::sync::Arc;
 
+#[utoipa::path(
+    post,
+    path = "/auth/register",
+    tag = "auth",
+    request_body = RegisterRequest,
+    responses(
+        (status = 201, description = "登録成功", body = RegisterResponse),
+        (status = 400, description = "バリデーションエラー"),
+        (status = 409, description = "email / preferred_username の重複"),
+    )
+)]
 pub async fn register(
     State(service): State<Arc<RegisterService>>,
     Json(body): Json<RegisterRequest>,

@@ -1,0 +1,648 @@
+//! OIDC 認可コードフローの E2E 統合テスト（MVP 完了条件 1〜13、設計仕様 §10）。
+//!
+//! `TEST_DATABASE_URL` 設定時のみ実行:
+//!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test oidc_flow
+//!
+//! テストデータ（client / user）は実行ごとにランダムな識別子で作成し、既存データと干渉しない。
+
+use axum::body::Body;
+use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, COOKIE, LOCATION, SET_COOKIE};
+use axum::http::{Request, StatusCode};
+use idp::config::Config;
+use idp::domain::clock::Clock;
+use idp::domain::password::PasswordHasher as _;
+use idp::infrastructure::password::Argon2PasswordHasher;
+use idp::presentation::router;
+use idp::presentation::state::AppState;
+use serde_json::{json, Value};
+use sqlx::mysql::MySqlPoolOptions;
+use sqlx::{MySqlPool, Row};
+use std::sync::Arc;
+use tower::ServiceExt;
+
+static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+
+// RFC 7636 Appendix B のテストベクタ（S256）。
+const CODE_VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+const CODE_CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+const REDIRECT_URI: &str = "http://localhost:3000/callback";
+
+struct SystemClock;
+impl Clock for SystemClock {
+    fn now(&self) -> chrono::DateTime<chrono::Utc> {
+        chrono::Utc::now()
+    }
+}
+
+struct TestEnv {
+    app: axum::Router,
+    pool: MySqlPool,
+    issuer: String,
+}
+
+async fn setup() -> Option<TestEnv> {
+    let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
+        eprintln!("TEST_DATABASE_URL not set; skipping OIDC flow integration test");
+        return None;
+    };
+    let pool = MySqlPoolOptions::new()
+        .connect(&url)
+        .await
+        .expect("connect to test database");
+    MIGRATOR.run(&pool).await.expect("run migrations");
+
+    let config = Arc::new(Config::from_env().expect("load config"));
+    let issuer = config.issuer().to_string();
+    let state = AppState::build(pool.clone(), config, Arc::new(SystemClock));
+    state
+        .keys
+        .ensure_active_key()
+        .await
+        .expect("bootstrap signing key");
+    Some(TestEnv {
+        app: router::build(state),
+        pool,
+        issuer,
+    })
+}
+
+/// 一意な public client を登録して client_id を返す。
+async fn insert_public_client(pool: &MySqlPool) -> String {
+    let client_id = format!(
+        "e2e-public-{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..12]
+    );
+    sqlx::query(
+        "INSERT INTO clients (id, client_id, client_secret_hash, client_type, client_status, \
+         app_name, redirect_uris, grant_types, response_types, scopes, \
+         token_endpoint_auth_method, require_pkce) \
+         VALUES (?, ?, NULL, 'public', 'ACTIVE', 'E2E Test App', ?, \
+         '[\"authorization_code\"]', '[\"code\"]', '[\"openid\",\"profile\",\"email\"]', 'none', 1)",
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(&client_id)
+    .bind(json!([REDIRECT_URI]).to_string())
+    .execute(pool)
+    .await
+    .expect("insert public client");
+    client_id
+}
+
+/// 一意な confidential client を登録して `(client_id, client_secret)` を返す。
+async fn insert_confidential_client(pool: &MySqlPool) -> (String, String) {
+    let client_id = format!(
+        "e2e-conf-{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..12]
+    );
+    let secret = "e2e-super-secret-value";
+    let secret_hash = Argon2PasswordHasher::new()
+        .hash(secret)
+        .expect("hash secret");
+    sqlx::query(
+        "INSERT INTO clients (id, client_id, client_secret_hash, client_type, client_status, \
+         app_name, redirect_uris, grant_types, response_types, scopes, \
+         token_endpoint_auth_method, require_pkce) \
+         VALUES (?, ?, ?, 'confidential', 'ACTIVE', 'E2E Confidential App', ?, \
+         '[\"authorization_code\"]', '[\"code\"]', '[\"openid\"]', 'client_secret_basic', 1)",
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(&client_id)
+    .bind(secret_hash)
+    .bind(json!([REDIRECT_URI]).to_string())
+    .execute(pool)
+    .await
+    .expect("insert confidential client");
+    (client_id, secret.to_string())
+}
+
+async fn send(app: &axum::Router, request: Request<Body>) -> axum::response::Response {
+    app.clone().oneshot(request).await.expect("send request")
+}
+
+async fn body_json(response: axum::response::Response) -> Value {
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read body");
+    serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+}
+
+async fn body_string(response: axum::response::Response) -> String {
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read body");
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// `Set-Cookie` ヘッダ群から `name` の値を取り出す。
+fn cookie_value(response: &axum::response::Response, name: &str) -> Option<String> {
+    response.headers().get_all(SET_COOKIE).iter().find_map(|v| {
+        let raw = v.to_str().ok()?;
+        let (k, rest) = raw.split_once('=')?;
+        (k == name).then(|| rest.split(';').next().unwrap_or("").to_string())
+    })
+}
+
+fn location(response: &axum::response::Response) -> String {
+    response
+        .headers()
+        .get(LOCATION)
+        .expect("Location header")
+        .to_str()
+        .unwrap()
+        .to_string()
+}
+
+fn query_param(url: &str, name: &str) -> Option<String> {
+    url::Url::parse(url)
+        .expect("parse redirect URL")
+        .query_pairs()
+        .find(|(k, _)| k == name)
+        .map(|(_, v)| v.into_owned())
+}
+
+/// 条件 1: ユーザー登録。sub を返す。
+async fn register_user(app: &axum::Router, username: &str, password: &str) -> String {
+    let payload = json!({
+        "email": format!("{username}@example.com"),
+        "preferred_username": username,
+        "password": password,
+        "name": "E2E Tester",
+    });
+    let response = send(
+        app,
+        Request::builder()
+            .method("POST")
+            .uri("/auth/register")
+            .header(CONTENT_TYPE, "application/json")
+            .body(Body::from(payload.to_string()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED, "user registration");
+    body_json(response).await["sub"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+fn authorize_uri(client_id: &str, state: &str, nonce: &str) -> String {
+    format!(
+        "/authorize?response_type=code&client_id={client_id}&redirect_uri={}&scope=openid%20profile%20email&state={state}&nonce={nonce}&code_challenge={CODE_CHALLENGE}&code_challenge_method=S256",
+        "http%3A%2F%2Flocalhost%3A3000%2Fcallback"
+    )
+}
+
+/// ログインフォーム HTML から CSRF トークンを取り出す。
+fn extract_csrf(html: &str) -> String {
+    let marker = "name=\"csrf_token\" value=\"";
+    let start = html.find(marker).expect("csrf field in form") + marker.len();
+    html[start..start + 64].to_string()
+}
+
+async fn audit_count(pool: &MySqlPool, client_id: &str, event_type: &str) -> i64 {
+    sqlx::query("SELECT COUNT(*) AS c FROM audit_log WHERE client_id = ? AND event_type = ?")
+        .bind(client_id)
+        .bind(event_type)
+        .fetch_one(pool)
+        .await
+        .expect("query audit_log")
+        .get("c")
+}
+
+#[tokio::test]
+async fn full_authorization_code_flow_with_sso_and_audit() {
+    let Some(env) = setup().await else { return };
+    let TestEnv { app, pool, issuer } = env;
+
+    let client_id = insert_public_client(&pool).await;
+    let username = format!("e2e{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
+    let password = "correct-horse-battery";
+    let sub = register_user(&app, &username, password).await; // 条件 1
+
+    // 条件 2, 3: /authorize 開始 → 未ログインなので /login へ。
+    let response = send(
+        &app,
+        Request::builder()
+            .uri(authorize_uri(&client_id, "state-abc", "nonce-xyz"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FOUND, "redirect to /login");
+    assert_eq!(location(&response), "/login");
+    let auth_session = cookie_value(&response, "auth_session_id").expect("auth_session_id cookie");
+
+    // ログインフォーム表示（CSRF トークン取得）。
+    let response = send(
+        &app,
+        Request::builder()
+            .uri("/login")
+            .header(COOKIE, format!("auth_session_id={auth_session}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let csrf = extract_csrf(&body_string(response).await);
+
+    // CSRF トークン不一致は拒否される。
+    let response = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/login")
+            .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(COOKIE, format!("auth_session_id={auth_session}"))
+            .body(Body::from(format!(
+                "username={username}&password={password}&csrf_token={}",
+                "0".repeat(64)
+            )))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST, "csrf mismatch");
+
+    // 条件 4, 5, 7: ログイン成功 → SSO Cookie 発行、code と state を返す。
+    let response = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/login")
+            .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(COOKIE, format!("auth_session_id={auth_session}"))
+            .body(Body::from(format!(
+                "username={username}&password={password}&csrf_token={csrf}"
+            )))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FOUND, "login success");
+    let sso_cookie = cookie_value(&response, "sso_session_id").expect("sso_session_id cookie");
+    let callback = location(&response);
+    assert!(callback.starts_with(REDIRECT_URI));
+    assert_eq!(
+        query_param(&callback, "state").as_deref(),
+        Some("state-abc")
+    );
+    let code = query_param(&callback, "code").expect("authorization code");
+
+    // 条件 8, 10: /token で PKCE S256 検証、RS256 署名のトークン発行。
+    let response = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/token")
+            .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from(format!(
+                "grant_type=authorization_code&code={code}&redirect_uri={}&code_verifier={CODE_VERIFIER}&client_id={client_id}",
+                "http%3A%2F%2Flocalhost%3A3000%2Fcallback"
+            )))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK, "token endpoint");
+    assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
+    assert_eq!(response.headers().get("pragma").unwrap(), "no-cache");
+    let tokens = body_json(response).await;
+    assert_eq!(tokens["token_type"], "Bearer");
+    assert_eq!(tokens["scope"], "openid profile email");
+    let id_token = tokens["id_token"].as_str().unwrap().to_string();
+    let access_token = tokens["access_token"].as_str().unwrap().to_string();
+
+    // 条件 11: Discovery / JWKS。
+    let response = send(
+        &app,
+        Request::builder()
+            .uri("/.well-known/openid-configuration")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let discovery = body_json(response).await;
+    assert_eq!(discovery["issuer"], issuer.as_str());
+
+    let response = send(
+        &app,
+        Request::builder()
+            .uri("/.well-known/jwks.json")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let jwks = body_json(response).await;
+
+    // 条件 10 検証: ID Token を JWKS の公開鍵で検証し、クレームを確認する。
+    let header = jsonwebtoken::decode_header(&id_token).expect("id token header");
+    assert_eq!(header.alg, jsonwebtoken::Algorithm::RS256);
+    assert_eq!(header.typ.as_deref(), Some("JWT"));
+    let kid = header.kid.expect("kid");
+    let jwk = jwks["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["kid"] == kid.as_str())
+        .expect("signing key in JWKS");
+    let decoding_key = jsonwebtoken::DecodingKey::from_rsa_components(
+        jwk["n"].as_str().unwrap(),
+        jwk["e"].as_str().unwrap(),
+    )
+    .unwrap();
+    let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
+    validation.set_audience(&[client_id.as_str()]);
+    let id_claims = jsonwebtoken::decode::<Value>(&id_token, &decoding_key, &validation)
+        .expect("verify id token");
+    assert_eq!(id_claims.claims["iss"], issuer.as_str());
+    assert_eq!(id_claims.claims["sub"], sub.as_str());
+    assert_eq!(id_claims.claims["nonce"], "nonce-xyz");
+    assert!(id_claims.claims["auth_time"].is_i64());
+    assert_eq!(id_claims.claims["preferred_username"], username.as_str());
+
+    // Access Token は typ=at+jwt。
+    let at_header = jsonwebtoken::decode_header(&access_token).expect("access token header");
+    assert_eq!(at_header.typ.as_deref(), Some("at+jwt"));
+
+    // 条件 9: authorization code は一度しか使えない（再利用は invalid_grant）。
+    let response = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/token")
+            .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from(format!(
+                "grant_type=authorization_code&code={code}&redirect_uri={}&code_verifier={CODE_VERIFIER}&client_id={client_id}",
+                "http%3A%2F%2Flocalhost%3A3000%2Fcallback"
+            )))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST, "code reuse");
+    assert_eq!(body_json(response).await["error"], "invalid_grant");
+
+    // 条件 12: /userinfo は scope（openid profile email）に応じたクレームを返す。
+    let response = send(
+        &app,
+        Request::builder()
+            .uri("/userinfo")
+            .header(AUTHORIZATION, format!("Bearer {access_token}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK, "userinfo");
+    let claims = body_json(response).await;
+    assert_eq!(claims["sub"], sub.as_str());
+    assert_eq!(claims["email"], format!("{username}@example.com"));
+    assert_eq!(claims["email_verified"], false);
+    assert_eq!(claims["preferred_username"], username.as_str());
+    assert_eq!(claims["name"], "E2E Tester");
+
+    // 不正なトークンは 401。
+    let response = send(
+        &app,
+        Request::builder()
+            .uri("/userinfo")
+            .header(AUTHORIZATION, "Bearer not-a-jwt")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // 条件 6: 2 回目の /authorize は SSO により再ログインなしで code が返る。
+    let response = send(
+        &app,
+        Request::builder()
+            .uri(authorize_uri(&client_id, "state-2nd", "nonce-2nd"))
+            .header(COOKIE, format!("sso_session_id={sso_cookie}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FOUND, "SSO resume");
+    let callback = location(&response);
+    assert!(
+        callback.starts_with(REDIRECT_URI),
+        "expected direct redirect to client, got {callback}"
+    );
+    assert_eq!(
+        query_param(&callback, "state").as_deref(),
+        Some("state-2nd")
+    );
+    let second_code = query_param(&callback, "code").expect("code via SSO");
+
+    // SSO 経由の code も /token で交換でき、auth_time は初回ログイン時刻を維持する。
+    let response = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/token")
+            .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from(format!(
+                "grant_type=authorization_code&code={second_code}&redirect_uri={}&code_verifier={CODE_VERIFIER}&client_id={client_id}",
+                "http%3A%2F%2Flocalhost%3A3000%2Fcallback"
+            )))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK, "token via SSO code");
+    let second_tokens = body_json(response).await;
+    let second_id_token = second_tokens["id_token"].as_str().unwrap();
+    let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
+    validation.set_audience(&[client_id.as_str()]);
+    let second_claims =
+        jsonwebtoken::decode::<Value>(second_id_token, &decoding_key, &validation).unwrap();
+    assert_eq!(second_claims.claims["nonce"], "nonce-2nd");
+    assert_eq!(
+        second_claims.claims["auth_time"], id_claims.claims["auth_time"],
+        "auth_time keeps the first login time on SSO resume"
+    );
+
+    // 条件 13: 監査ログ（login / code 発行・使用 / token 発行 / SSO）。
+    assert!(audit_count(&pool, &client_id, "login.succeeded").await >= 1);
+    assert!(audit_count(&pool, &client_id, "sso_session.created").await >= 1);
+    assert!(audit_count(&pool, &client_id, "authorization_code.issued").await >= 2);
+    assert!(audit_count(&pool, &client_id, "authorization_code.used").await >= 2);
+    assert!(audit_count(&pool, &client_id, "authorization_code.reuse_detected").await >= 1);
+    assert!(audit_count(&pool, &client_id, "token.issued").await >= 2);
+
+    // correlation_id が付与されている。
+    let correlation: Option<String> =
+        sqlx::query("SELECT correlation_id FROM audit_log WHERE client_id = ? LIMIT 1")
+            .bind(&client_id)
+            .fetch_optional(&pool)
+            .await
+            .unwrap()
+            .map(|r| r.get("correlation_id"));
+    assert!(correlation.map(|c| !c.is_empty()).unwrap_or(false));
+}
+
+#[tokio::test]
+async fn invalid_authorize_and_client_auth_failures() {
+    let Some(env) = setup().await else { return };
+    let TestEnv { app, pool, .. } = env;
+
+    let client_id = insert_public_client(&pool).await;
+
+    // 未登録 client はリダイレクトせず 400。
+    let response = send(
+        &app,
+        Request::builder()
+            .uri(authorize_uri("no-such-client", "s", "n"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(response).await["error"], "invalid_client");
+
+    // 未登録 redirect_uri もリダイレクトしない。
+    let response = send(
+        &app,
+        Request::builder()
+            .uri(format!(
+                "/authorize?response_type=code&client_id={client_id}&redirect_uri=https%3A%2F%2Fevil.example.com%2Fcb&scope=openid&state=s&nonce=n&code_challenge={CODE_CHALLENGE}&code_challenge_method=S256"
+            ))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    // scope 超過は redirect_uri へ invalid_scope を返す（openid のみ登録の client を使用）。
+    let (conf_client_id, secret) = insert_confidential_client(&pool).await;
+    let response = send(
+        &app,
+        Request::builder()
+            .uri(authorize_uri(&conf_client_id, "s", "n")) // scope=openid profile email
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FOUND);
+    let callback = location(&response);
+    assert_eq!(
+        query_param(&callback, "error").as_deref(),
+        Some("invalid_scope")
+    );
+    assert_eq!(query_param(&callback, "state").as_deref(), Some("s"));
+
+    // 条件 13: confidential client の認証失敗（Basic の secret 不一致 → 401 + 監査ログ）。
+    use base64::Engine as _;
+    let bad_basic =
+        base64::engine::general_purpose::STANDARD.encode(format!("{conf_client_id}:wrong-secret"));
+    let response = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/token")
+            .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(AUTHORIZATION, format!("Basic {bad_basic}"))
+            .body(Body::from(format!(
+                "grant_type=authorization_code&code=whatever&redirect_uri={}&code_verifier={CODE_VERIFIER}",
+                "http%3A%2F%2Flocalhost%3A3000%2Fcallback"
+            )))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(response.headers().contains_key("www-authenticate"));
+    assert_eq!(body_json(response).await["error"], "invalid_client");
+    assert!(audit_count(&pool, &conf_client_id, "client.authentication_failed").await >= 1);
+
+    // 正しい secret なら client 認証は通る（code が偽物なので invalid_grant まで進む）。
+    let good_basic =
+        base64::engine::general_purpose::STANDARD.encode(format!("{conf_client_id}:{secret}"));
+    let response = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/token")
+            .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(AUTHORIZATION, format!("Basic {good_basic}"))
+            .body(Body::from(format!(
+                "grant_type=authorization_code&code=whatever&redirect_uri={}&code_verifier={CODE_VERIFIER}",
+                "http%3A%2F%2Flocalhost%3A3000%2Fcallback"
+            )))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(response).await["error"], "invalid_grant");
+}
+
+#[tokio::test]
+async fn login_lockout_after_repeated_failures() {
+    let Some(env) = setup().await else { return };
+    let TestEnv { app, pool, .. } = env;
+
+    let client_id = insert_public_client(&pool).await;
+    let username = format!("lock{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
+    let password = "correct-horse-battery";
+    register_user(&app, &username, password).await;
+
+    // AuthSession を作ってログイン画面へ。
+    let response = send(
+        &app,
+        Request::builder()
+            .uri(authorize_uri(&client_id, "st", "no"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    let auth_session = cookie_value(&response, "auth_session_id").expect("auth_session cookie");
+    let response = send(
+        &app,
+        Request::builder()
+            .uri("/login")
+            .header(COOKIE, format!("auth_session_id={auth_session}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    let csrf = extract_csrf(&body_string(response).await);
+
+    // 9 回失敗 → 401（資格情報エラー）、10 回目でロック（403）。
+    for attempt in 1..=10 {
+        let response = send(
+            &app,
+            Request::builder()
+                .method("POST")
+                .uri("/login")
+                .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(COOKIE, format!("auth_session_id={auth_session}"))
+                .body(Body::from(format!(
+                    "username={username}&password=wrong-password&csrf_token={csrf}"
+                )))
+                .unwrap(),
+        )
+        .await;
+        let expected = if attempt < 10 {
+            StatusCode::UNAUTHORIZED
+        } else {
+            StatusCode::FORBIDDEN
+        };
+        assert_eq!(response.status(), expected, "attempt {attempt}");
+    }
+
+    // ロック中は正しいパスワードでも拒否される。
+    let response = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/login")
+            .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(COOKIE, format!("auth_session_id={auth_session}"))
+            .body(Body::from(format!(
+                "username={username}&password={password}&csrf_token={csrf}"
+            )))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN, "locked account");
+
+    // 監査ログ: login.failed が 10 件以上、login.locked が 2 件以上（ロック時 + ロック中の試行）。
+    assert!(audit_count(&pool, &client_id, "login.failed").await >= 10);
+    assert!(audit_count(&pool, &client_id, "login.locked").await >= 2);
+}

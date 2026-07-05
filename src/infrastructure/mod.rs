@@ -7,4 +7,5 @@ pub mod crypto;
 pub mod db;
 pub mod jwt;
 pub mod password;
+pub mod rate_limit;
 pub mod repositories;

@@ -36,6 +36,7 @@ pub struct Config {
     access_token_ttl: Duration,
     id_token_ttl: Duration,
     clock_skew: Duration,
+    cookie_secure: bool,
     key_encryption_key: [u8; 32],
     key_encryption_key_is_dev: bool,
 }
@@ -43,9 +44,12 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         let (key_encryption_key, key_encryption_key_is_dev) = load_key_encryption_key()?;
+        let issuer = normalize_issuer(env_or("ISSUER", "http://localhost:8080"));
+        // Cookie の Secure 属性。既定は issuer のスキームに従う（https なら有効）。
+        let cookie_secure = env_parse("COOKIE_SECURE", issuer.starts_with("https://"))?;
 
         Ok(Self {
-            issuer: normalize_issuer(env_or("ISSUER", "http://localhost:8080")),
+            issuer,
             bind_addr: env_or("BIND_ADDR", "0.0.0.0:8080"),
             database_url: env_or("DATABASE_URL", "mysql://idp:idp@127.0.0.1:3306/idp"),
             db_max_connections: env_parse("DB_MAX_CONNECTIONS", 10)?,
@@ -60,6 +64,7 @@ impl Config {
             access_token_ttl: secs(env_parse("ACCESS_TOKEN_TTL_SECS", 900)?),
             id_token_ttl: secs(env_parse("ID_TOKEN_TTL_SECS", 3_600)?),
             clock_skew: secs(env_parse("CLOCK_SKEW_SECS", 60)?),
+            cookie_secure,
             key_encryption_key,
             key_encryption_key_is_dev,
         })
@@ -101,6 +106,10 @@ impl Config {
     }
     pub fn clock_skew(&self) -> Duration {
         self.clock_skew
+    }
+    /// Cookie に `Secure` 属性を付けるか（設計仕様 §2.4。開発時の http issuer では無効化できる）。
+    pub fn cookie_secure(&self) -> bool {
+        self.cookie_secure
     }
     /// 秘密鍵（SigningKeys.private_key_encrypted）の暗号化に使う 32 バイト鍵。
     pub fn key_encryption_key(&self) -> &[u8; 32] {

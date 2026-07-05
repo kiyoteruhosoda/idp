@@ -86,6 +86,12 @@ pub fn decoding_key_from_jwk(jwk: &Jwk) -> anyhow::Result<DecodingKey> {
         .map_err(|e| anyhow::anyhow!("build decoding key: {e}"))
 }
 
+/// 公開鍵 PEM（SPKI）から検証用の `DecodingKey` を作る（`/userinfo` で使用）。
+pub fn decoding_key_from_public_pem(public_pem: &str) -> anyhow::Result<DecodingKey> {
+    DecodingKey::from_rsa_pem(public_pem.as_bytes())
+        .map_err(|e| anyhow::anyhow!("build decoding key from PEM: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

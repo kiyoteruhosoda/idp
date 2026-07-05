@@ -7,7 +7,7 @@ license = "MIT"
 
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net"] }
-axum = "0.8"
+axum = { version = "0.8", features = ["macros"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace"] }
 sqlx = { version = "0.8", default-features = false, features = [
@@ -37,6 +37,12 @@ hex = "0.4"
 base64 = "0.22"
 rand = "0.8"
 argon2 = "0.5"
+url = "2"
+percent-encoding = "2"
+utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
+utoipa-swagger-ui = { version = "9", features = ["axum", "vendored"] }
+fluent = "0.17"
+unic-langid = { version = "0.9", features = ["macros"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

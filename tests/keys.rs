@@ -44,7 +44,12 @@ async fn ensure_key_is_idempotent_and_token_verifies_against_jwks() {
 
     let repo = Arc::new(SqlxSigningKeyRepository::new(pool.clone()));
     let clock = Arc::new(FixedClock(Utc::now()));
-    let service = KeyService::new(repo, clock, [9u8; 32]);
+    // 暗号化キーはアプリ既定値と揃える。共有テスト DB 上で別の鍵と混在すると
+    // 他テスト（サーバ組み立て経由）が ACTIVE 鍵を復号できなくなるため。
+    let kek = *idp::config::Config::from_env()
+        .expect("config")
+        .key_encryption_key();
+    let service = KeyService::new(repo, clock, kek);
 
     // 冪等性: 2 回呼んでも ACTIVE 鍵は増えない。
     service.ensure_active_key().await.expect("ensure #1");

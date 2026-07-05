@@ -39,35 +39,16 @@ pub async fn run() -> anyhow::Result<()> {
 
     let clock: Arc<dyn domain::clock::Clock> = Arc::new(infrastructure::clock::SystemClock);
 
+    // ユースケースの組み立て（依存注入は AppState::build に集約）。
+    let state = presentation::state::AppState::build(pool.clone(), Arc::new(config.clone()), clock);
+
     // 署名鍵ブートストラップ: ACTIVE 鍵が無ければ生成して永続化する。
-    let signing_keys = Arc::new(
-        infrastructure::repositories::signing_key::SqlxSigningKeyRepository::new(pool.clone()),
-    );
-    let key_service = application::key_service::KeyService::new(
-        signing_keys,
-        clock.clone(),
-        *config.key_encryption_key(),
-    );
-    key_service
+    state
+        .keys
         .ensure_active_key()
         .await
         .context("failed to ensure an active signing key")?;
 
-    // ユースケースの組み立てと共有状態。
-    let users = Arc::new(infrastructure::repositories::user::SqlxUserRepository::new(
-        pool.clone(),
-    ));
-    let password_hasher = Arc::new(infrastructure::password::Argon2PasswordHasher::new());
-    let register = Arc::new(application::register::RegisterService::new(
-        users,
-        password_hasher,
-        clock.clone(),
-    ));
-
-    let state = presentation::state::AppState {
-        pool: pool.clone(),
-        register,
-    };
     let app = presentation::router::build(state);
 
     let addr: SocketAddr = config

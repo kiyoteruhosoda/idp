@@ -6,10 +6,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use chrono::{DateTime, Utc};
-use idp::application::register::RegisterService;
 use idp::domain::clock::Clock;
-use idp::infrastructure::password::Argon2PasswordHasher;
-use idp::infrastructure::repositories::user::SqlxUserRepository;
 use idp::presentation::router;
 use idp::presentation::state::AppState;
 use serde_json::Value;
@@ -61,14 +58,8 @@ async fn register_creates_user_and_rejects_duplicates_and_invalid_input() {
         .expect("connect");
     MIGRATOR.run(&pool).await.expect("migrate");
 
-    let users = Arc::new(SqlxUserRepository::new(pool.clone()));
-    let hasher = Arc::new(Argon2PasswordHasher::new());
-    let clock = Arc::new(SystemClock);
-    let register = Arc::new(RegisterService::new(users, hasher, clock));
-    let app = router::build(AppState {
-        pool: pool.clone(),
-        register,
-    });
+    let config = Arc::new(idp::config::Config::from_env().expect("load config"));
+    let app = router::build(AppState::build(pool.clone(), config, Arc::new(SystemClock)));
 
     // 一意なメールで登録 → 201。
     let email = format!("user-{}@example.com", uuid::Uuid::new_v4());

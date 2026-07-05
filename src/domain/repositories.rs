@@ -21,6 +21,8 @@ use uuid::Uuid;
 pub trait UserRepository: Send + Sync {
     async fn create(&self, user: &User) -> Result<()>;
     async fn find_by_id(&self, id: Uuid) -> Result<Option<User>>;
+    /// 外部公開識別子 `sub` で検索する（`/userinfo` で使用）。
+    async fn find_by_sub(&self, sub: Uuid) -> Result<Option<User>>;
     async fn find_by_email(&self, email: &str) -> Result<Option<User>>;
     async fn find_by_username(&self, username: &str) -> Result<Option<User>>;
     /// ログイン失敗回数・ロック期限を更新する（ロックポリシー、設計仕様 §4.3）。

@@ -17,6 +17,15 @@ pub fn random_token(n_bytes: usize) -> String {
     URL_SAFE_NO_PAD.encode(buf)
 }
 
+/// 暗号学的乱数から `n_bytes` バイトを生成し、小文字 16 進で返す。
+/// DB キーに使う識別子（`auth_sessions.id`・SSO session_id 等）は ci 照合下でも
+/// 厳密一致となるよう小文字 16 進で生成する。
+pub fn random_hex(n_bytes: usize) -> String {
+    let mut buf = vec![0u8; n_bytes];
+    rand::thread_rng().fill_bytes(&mut buf);
+    hex::encode(buf)
+}
+
 /// SHA-256 の 16 進小文字表現（64 文字）。code_hash / session_hash に使う。
 pub fn sha256_hex(input: &str) -> String {
     let digest = Sha256::digest(input.as_bytes());
