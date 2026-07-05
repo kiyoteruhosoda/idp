@@ -1,0 +1,28 @@
+services:
+  mariadb:
+    image: mariadb:10.11
+    environment:
+      MARIADB_DATABASE: idp
+      MARIADB_USER: idp
+      MARIADB_PASSWORD: idp
+      MARIADB_ROOT_PASSWORD: root
+    ports:
+      - "3306:3306"
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # セッションストアは MVP では MariaDB 単独で完結させる。Redis はスケール時に有効化する。
+  redis:
+    image: redis:7
+    command: ["redis-server", "--requirepass", "redis"]
+    ports:
+      - "6379:6379"
+    profiles: ["optional"]
+
+volumes:
+  mariadb_data:

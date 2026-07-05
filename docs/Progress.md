@@ -8,16 +8,17 @@ OIDC IdP MVP（**Rust + MariaDB**）の実装計画。設計仕様は `docs/OIDC
 
 | 優先 | # | 概要 | 状態 | 影響度 | 工数 |
 |---|---|---|---|---|---|
-| 1 | T0 | プロジェクト基盤（Cargo・axum起動・config・JSON構造化ログ・sqlxプール・起動時スキーマ照合・docker-compose） | ⬜未着手 | 大 | 中 |
-| 2 | T1 | データモデル & マイグレーション（6テーブル＋audit_log、domain trait 定義） | ⬜未着手 | 大 | 中 |
-| 3 | T2 | 署名鍵 & JWT基盤（RSA鍵生成・暗号化保存・kid・RS256署名/検証・JWKS構築）（10,11） | ⬜未着手 | 大 | 中 |
-| 4 | T3 | ユーザー登録 `POST /auth/register`（argon2・sub採番）（1） | ⬜未着手 | 中 | 小 |
-| 5 | T4 | 認可フロー中核 `/authorize`・`/login`・SSO・code発行共通モジュール・ロック（2,3,4,5,6,7,9） | ⬜未着手 | 大 | 大 |
-| 6 | T5 | トークン発行 `POST /token`（client認証・PKCE S256・code原子的one-time消費・ID/Access Token）（8,9,10） | ⬜未着手 | 大 | 大 |
-| 7 | T6 | Discovery / JWKS / UserInfo エンドポイント（11,12） | ⬜未着手 | 中 | 中 |
-| 8 | T7 | 監査ログ横断結線（login/code/token/client認証/sso_session の全イベント）（13） | ⬜未着手 | 中 | 小 |
-| 9 | T8 | テスト & MVP完了条件 E2E 検証（unit＋integration、条件1〜13通し） | ⬜未着手 | 大 | 中 |
+| 1 | T1 | データモデル & マイグレーション（6テーブル＋audit_log、domain trait 定義） | ⬜未着手 | 大 | 中 |
+| 2 | T2 | 署名鍵 & JWT基盤（RSA鍵生成・暗号化保存・kid・RS256署名/検証・JWKS構築）（10,11） | ⬜未着手 | 大 | 中 |
+| 3 | T3 | ユーザー登録 `POST /auth/register`（argon2・sub採番）（1） | ⬜未着手 | 中 | 小 |
+| 4 | T4 | 認可フロー中核 `/authorize`・`/login`・SSO・code発行共通モジュール・ロック（2,3,4,5,6,7,9） | ⬜未着手 | 大 | 大 |
+| 5 | T5 | トークン発行 `POST /token`（client認証・PKCE S256・code原子的one-time消費・ID/Access Token）（8,9,10） | ⬜未着手 | 大 | 大 |
+| 6 | T6 | Discovery / JWKS / UserInfo エンドポイント（11,12） | ⬜未着手 | 中 | 中 |
+| 7 | T7 | 監査ログ横断結線（login/code/token/client認証/sso_session の全イベント）（13） | ⬜未着手 | 中 | 小 |
+| 8 | T8 | テスト & MVP完了条件 E2E 検証（unit＋integration、条件1〜13通し） | ⬜未着手 | 大 | 中 |
 | — | D1 | 付随ドキュメント整備（ARCHITECTURE.md・OPERATIONS.md・各README、実装と並行） | ⬜未着手 | 小 | 小 |
+
+> T0（プロジェクト基盤）は完了（`docs/CHANGELOG.md` 参照）。
 
 ## 詳細
 
