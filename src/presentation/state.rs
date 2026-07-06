@@ -5,6 +5,7 @@
 
 use crate::application::admin_access::AdminAccessService;
 use crate::application::audit::AuditService;
+use crate::application::audit_query::AuditQueryService;
 use crate::application::authorize::AuthorizeService;
 use crate::application::client_management::ClientManagementService;
 use crate::application::code_issuance::CodeIssuanceService;
@@ -18,7 +19,7 @@ use crate::domain::clock::Clock;
 use crate::infrastructure::db::Db;
 use crate::infrastructure::password::Argon2PasswordHasher;
 use crate::infrastructure::rate_limit::InMemoryLoginRateLimiter;
-use crate::infrastructure::repositories::audit_log::SqlxAuditLogSink;
+use crate::infrastructure::repositories::audit_log::{SqlxAuditLogQuery, SqlxAuditLogSink};
 use crate::infrastructure::repositories::auth_session::SqlxAuthSessionRepository;
 use crate::infrastructure::repositories::authorization_code::SqlxAuthorizationCodeRepository;
 use crate::infrastructure::repositories::client::SqlxClientRepository;
@@ -45,6 +46,7 @@ pub struct AppState {
     pub keys: Arc<KeyService>,
     pub admin_access: Arc<AdminAccessService>,
     pub clients_admin: Arc<ClientManagementService>,
+    pub audit_query: Arc<AuditQueryService>,
 }
 
 impl AppState {
@@ -58,6 +60,7 @@ impl AppState {
         let signing_keys = Arc::new(SqlxSigningKeyRepository::new(pool.clone()));
         let user_permissions = Arc::new(SqlxUserPermissionRepository::new(pool.clone()));
         let audit_sink = Arc::new(SqlxAuditLogSink::new(pool.clone()));
+        let audit_logs = Arc::new(SqlxAuditLogQuery::new(pool.clone()));
         let hasher = Arc::new(Argon2PasswordHasher::new());
         let rate_limiter = Arc::new(InMemoryLoginRateLimiter::new(
             LOGIN_RATE_LIMIT_MAX_ATTEMPTS,
@@ -111,6 +114,7 @@ impl AppState {
             audit.clone(),
             clock.clone(),
         ));
+        let audit_query = Arc::new(AuditQueryService::new(audit_logs));
         let token = Arc::new(TokenService::new(
             clients,
             users.clone(),
@@ -148,6 +152,7 @@ impl AppState {
             keys,
             admin_access,
             clients_admin,
+            audit_query,
         }
     }
 }

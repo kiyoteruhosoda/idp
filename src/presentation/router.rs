@@ -2,7 +2,8 @@
 
 use crate::presentation::correlation;
 use crate::presentation::handlers::{
-    admin, admin_clients, authorize, discovery, health, login, register, token, userinfo,
+    admin, admin_audit, admin_clients, authorize, discovery, health, login, register, token,
+    userinfo,
 };
 use crate::presentation::openapi::ApiDoc;
 use crate::presentation::state::AppState;
@@ -36,6 +37,8 @@ pub fn build(state: AppState) -> Router {
             "/admin/clients/{client_id}/secret",
             post(admin_clients::rotate_client_secret),
         )
+        // 監査ログ参照（A3、設計仕様 §7）。idp.admin 必須。
+        .route("/admin/audit-logs", get(admin_audit::list_audit_logs))
         .route(
             "/.well-known/openid-configuration",
             get(discovery::openid_configuration),

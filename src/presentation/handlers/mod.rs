@@ -1,6 +1,7 @@
 //! 各エンドポイントのハンドラ。
 
 pub mod admin;
+pub mod admin_audit;
 pub mod admin_clients;
 pub mod authorize;
 pub mod discovery;

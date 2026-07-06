@@ -5,9 +5,9 @@
 //! DTO の `ToSchema` から組み立てられる。
 
 use crate::presentation::dto::{
-    ClientCreatedResponse, ClientRegisterRequest, ClientResponse, ClientSecretResponse,
-    ClientUpdateRequest, OAuthErrorResponse, RegisterRequest, RegisterResponse, TokenRequest,
-    TokenResponse, UserInfoResponse,
+    AuditLogEntryResponse, ClientCreatedResponse, ClientRegisterRequest, ClientResponse,
+    ClientSecretResponse, ClientUpdateRequest, OAuthErrorResponse, RegisterRequest,
+    RegisterResponse, TokenRequest, TokenResponse, UserInfoResponse,
 };
 use crate::presentation::handlers;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
@@ -31,6 +31,7 @@ use utoipa::{Modify, OpenApi};
         handlers::admin_clients::get_client,
         handlers::admin_clients::update_client,
         handlers::admin_clients::rotate_client_secret,
+        handlers::admin_audit::list_audit_logs,
     ),
     components(schemas(
         RegisterRequest,
@@ -44,6 +45,7 @@ use utoipa::{Modify, OpenApi};
         ClientResponse,
         ClientCreatedResponse,
         ClientSecretResponse,
+        AuditLogEntryResponse,
     )),
     modifiers(&BearerToken),
     tags(

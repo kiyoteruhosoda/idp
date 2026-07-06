@@ -24,7 +24,7 @@ code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出
 |---|---|---|---|---|---|
 | 1 | A1 | クライアント（RP）登録 API・画面（管理者用）: CRUD・資格情報発行・redirect URI 管理 | 🚧進行中 | 大 | 大 |
 | 2 | A2 | 管理コンソール基盤: 管理者認証・画面レイアウト・権限（scope ベース）・操作監査 | 🚧進行中 | 大 | 中 |
-| 3 | A3 | 状況確認画面: ログイン/監査ログ一覧（エラー絞り込み）、クライアント状況一覧（最終利用時刻等） | ⬜未着手 | 中 | 中 |
+| 3 | A3 | 状況確認画面: ログイン/監査ログ一覧（エラー絞り込み）、クライアント状況一覧（最終利用時刻等） | 🚧進行中 | 中 | 中 |
 | 4 | K1 | 署名鍵管理: 複数鍵での署名（世代重複）・JWKS 公開・管理画面（一覧/生成/退役）・EC(ES256) 対応 | ⬜未着手 | 大 | 中 |
 | 5 | K2 | 署名鍵の自動ローテーション: `not_after` ベースのスケジュール実行・ACTIVE/RETIRED 自動管理 | ⬜未着手 | 中 | 中 |
 | 6 | S1 | SSL アクセラレーター対応: `X-Forwarded-Proto`/`-For` 信頼設定・HSTS・セキュリティヘッダ（アプリは HTTP 直受け） | ⬜未着手 | 中 | 小〜中 |
@@ -65,12 +65,15 @@ code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出
     未ログイン時のログイン誘導（現状 extractor は 401 を返す）も画面実装時に整える。
 
 - **A3 — 状況確認画面**:
-  - **ログイン/監査ログ一覧**: `audit_log` を `event_type` / `result` / 期間 / `client_id` で絞り込み表示
-    （**エラー（`result=failure` や `login.failed`/`*.reuse_detected`）での絞り込み**を主眼）。
-    `correlation_id` でリクエスト〜監査イベントを追跡。
-  - **クライアント状況一覧**: 各 client の状態（ACTIVE/DISABLED）・scope・**最終利用時刻**を一覧。
+  - **ログイン/監査ログ一覧 API は実装済み**（2026-07-06、`CHANGELOG.md`）: `GET /admin/audit-logs`
+    （`RequirePerms<IdpAdmin>`）。`event_type` / `result`（`failure` 等の**エラー絞り込み**が主眼）/
+    期間（`from`/`to`、RFC3339）/ `client_id` / `correlation_id` で AND 絞り込みし、新しい順に返す
+    （`limit`≤200・`offset`）。`correlation_id` でリクエスト〜監査イベントを追跡。読み取りは
+    `AuditLogQuery`（DIP 境界。書き込みの `AuditLogSink` と分離）。
+  - **残作業（クライアント状況一覧）**: 各 client の状態（ACTIVE/DISABLED）・scope・**最終利用時刻**の一覧。
     最終利用時刻は `audit_log`（`token.issued` 等の最新 `occurred_at`）から導出、または
     `clients.last_used_at` を発行時に更新（マイグレーション）。負荷を見て方式決定。
+  - **残作業（画面）**: 上記 API を表示する状況確認**画面**（A2 の管理コンソール基盤の上に実装）。
 
 ### 鍵管理（K1・K2）
 

@@ -81,3 +81,37 @@ pub struct AuditEvent {
     pub reason: Option<String>,
     pub correlation_id: String,
 }
+
+/// `audit_log` から読み出した 1 行（状況確認画面 A3 の読み取りモデル）。
+///
+/// `event_type` / `result` は保存時の文字列そのままを保持する（過去に廃止された種別も欠落なく表示するため、
+/// enum へは restrict しない）。
+#[derive(Debug, Clone)]
+pub struct AuditLogEntry {
+    pub id: i64,
+    pub event_type: String,
+    pub occurred_at: DateTime<Utc>,
+    pub user_id: Option<Uuid>,
+    pub client_id: Option<String>,
+    pub ip_address: Option<String>,
+    pub user_agent: Option<String>,
+    pub result: String,
+    pub reason: Option<String>,
+    pub correlation_id: String,
+}
+
+/// 監査ログ検索条件（A3。エラー絞り込みを主眼に、`event_type` / `result` / 期間 / `client_id` /
+/// `correlation_id` で絞る）。指定した項目のみ AND で適用する。
+#[derive(Debug, Clone, Default)]
+pub struct AuditLogFilter {
+    pub event_type: Option<String>,
+    pub result: Option<String>,
+    pub client_id: Option<String>,
+    pub correlation_id: Option<String>,
+    /// 期間の下限・上限（`occurred_at`、含む）。
+    pub from: Option<DateTime<Utc>>,
+    pub to: Option<DateTime<Utc>>,
+    /// ページング（新しい順）。
+    pub limit: i64,
+    pub offset: i64,
+}

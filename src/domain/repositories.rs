@@ -5,7 +5,7 @@
 //! メソッドは各フェーズで実装する際に必要に応じて拡張する。
 #![allow(dead_code)]
 
-use crate::domain::audit::AuditEvent;
+use crate::domain::audit::{AuditEvent, AuditLogEntry, AuditLogFilter};
 use crate::domain::auth_session::AuthSession;
 use crate::domain::authorization_code::AuthorizationCode;
 use crate::domain::client::Client;
@@ -94,6 +94,13 @@ pub trait SigningKeyRepository: Send + Sync {
 #[async_trait]
 pub trait AuditLogSink: Send + Sync {
     async fn record(&self, event: &AuditEvent) -> Result<()>;
+}
+
+/// `audit_log` の読み取り（状況確認画面 A3）。書き込み（`AuditLogSink`）とは関心を分ける。
+#[async_trait]
+pub trait AuditLogQuery: Send + Sync {
+    /// 条件に一致する監査ログを新しい順（`occurred_at` 降順、同時刻は `id` 降順）に返す。
+    async fn search(&self, filter: &AuditLogFilter) -> Result<Vec<AuditLogEntry>>;
 }
 
 /// 利用者が保有する権限コード（ADR-0006）の参照・付与・剥奪（DIP 境界）。

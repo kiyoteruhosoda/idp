@@ -96,6 +96,49 @@ pub struct ClientUpdateRequest {
     pub client_status: Option<String>,
 }
 
+/// 監査ログ検索のクエリパラメータ（管理 API、A3・設計仕様 §7）。
+/// `from` / `to` は RFC3339（例 `2026-07-06T00:00:00Z`）。未指定の項目は絞り込まない。
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct AuditLogQueryParams {
+    #[serde(default)]
+    pub event_type: Option<String>,
+    /// `success` または `failure`。
+    #[serde(default)]
+    pub result: Option<String>,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub correlation_id: Option<String>,
+    #[serde(default)]
+    pub from: Option<String>,
+    #[serde(default)]
+    pub to: Option<String>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub offset: Option<i64>,
+}
+
+/// 監査ログ 1 行のレスポンス（設計仕様 §7 のログ項目）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AuditLogEntryResponse {
+    pub id: i64,
+    pub event_type: String,
+    pub occurred_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ip_address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_agent: Option<String>,
+    pub result: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub correlation_id: String,
+}
+
 /// クライアントの公開表現（`client_secret_hash` は返さない）。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ClientResponse {
