@@ -187,6 +187,9 @@ mod tests {
     }
     #[async_trait]
     impl UserPermissionRepository for FakePermissions {
+        async fn list_available_codes(&self) -> DomainResult<Vec<String>> {
+            Ok(vec!["idp.admin".to_string()])
+        }
         async fn list_codes_for_user(&self, user_id: Uuid) -> DomainResult<Vec<String>> {
             Ok(self
                 .granted

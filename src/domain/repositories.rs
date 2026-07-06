@@ -101,6 +101,10 @@ pub trait AuditLogSink: Send + Sync {
 pub trait AuditLogQuery: Send + Sync {
     /// 条件に一致する監査ログを新しい順（`occurred_at` 降順、同時刻は `id` 降順）に返す。
     async fn search(&self, filter: &AuditLogFilter) -> Result<Vec<AuditLogEntry>>;
+
+    /// クライアント別の**最終利用時刻**（成功したトークン発行・認可コード発行の最新 `occurred_at`）を返す。
+    /// クライアント状況一覧（A3）が利用する。利用実績の無いクライアントは含まれない。
+    async fn last_used_per_client(&self) -> Result<Vec<(String, DateTime<Utc>)>>;
 }
 
 /// 利用者が保有する権限コード（ADR-0006）の参照・付与・剥奪（DIP 境界）。
@@ -109,6 +113,9 @@ pub trait AuditLogQuery: Send + Sync {
 /// 「利用者が必要権限を保有するか」を判定する。付与/剥奪は管理コンソール（A2）が用いる。
 #[async_trait]
 pub trait UserPermissionRepository: Send + Sync {
+    /// 付与可能な権限コードの一覧（`permissions` マスタ）を昇順で返す。
+    /// 管理コンソール（A2）の付与フォームで選択肢を提示するために使う。
+    async fn list_available_codes(&self) -> Result<Vec<String>>;
     /// 利用者が保有する権限コード一覧を返す（順序は不定）。
     async fn list_codes_for_user(&self, user_id: Uuid) -> Result<Vec<String>>;
     /// 利用者が指定の権限コードを保有するか。

@@ -24,6 +24,16 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
 
 #[async_trait]
 impl UserPermissionRepository for SqlxUserPermissionRepository {
+    async fn list_available_codes(&self) -> Result<Vec<String>> {
+        let rows = sqlx::query("SELECT code FROM permissions ORDER BY code")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        rows.iter()
+            .map(|row| row.try_get::<String, _>("code").map_err(repo_err))
+            .collect()
+    }
+
     async fn list_codes_for_user(&self, user_id: Uuid) -> Result<Vec<String>> {
         let rows = sqlx::query("SELECT permission_code FROM user_permissions WHERE user_id = ?")
             .bind(user_id.to_string())

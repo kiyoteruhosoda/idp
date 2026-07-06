@@ -13,6 +13,7 @@ use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
 use crate::domain::permission::PermissionCode;
 use crate::domain::repositories::{UserPermissionRepository, UserRepository};
+use crate::domain::user::User;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -46,6 +47,42 @@ impl PermissionManagementService {
             audit,
             clock,
         }
+    }
+
+    /// 付与可能な権限コードの一覧（`permissions` マスタ）を返す。管理コンソール（A2）の
+    /// 付与フォームで選択肢を提示するために使う。
+    pub async fn available_codes(&self) -> Result<Vec<String>, PermissionManagementError> {
+        self.permissions
+            .list_available_codes()
+            .await
+            .map_err(|e| PermissionManagementError::Internal(e.to_string()))
+    }
+
+    /// 対象利用者を内部 ID で取得する（管理コンソールの表示用）。不存在は 404 相当。
+    pub async fn get_user(&self, target: Uuid) -> Result<User, PermissionManagementError> {
+        match self.users.find_by_id(target).await {
+            Ok(Some(user)) => Ok(user),
+            Ok(None) => Err(PermissionManagementError::NotFound),
+            Err(e) => Err(PermissionManagementError::Internal(e.to_string())),
+        }
+    }
+
+    /// 識別子（メールアドレスまたはユーザー名）で利用者を探す（管理コンソールの検索用）。
+    /// `@` を含めばメール、そうでなければユーザー名として解決する。空文字列は None を返す。
+    pub async fn find_user_by_identifier(
+        &self,
+        identifier: &str,
+    ) -> Result<Option<User>, PermissionManagementError> {
+        let identifier = identifier.trim();
+        if identifier.is_empty() {
+            return Ok(None);
+        }
+        let result = if identifier.contains('@') {
+            self.users.find_by_email(identifier).await
+        } else {
+            self.users.find_by_username(identifier).await
+        };
+        result.map_err(|e| PermissionManagementError::Internal(e.to_string()))
     }
 
     /// 対象利用者が保有する権限コード一覧を返す（順序は不定）。
@@ -192,11 +229,14 @@ mod tests {
         async fn find_by_sub(&self, _s: Uuid) -> DomainResult<Option<User>> {
             unreachable!()
         }
-        async fn find_by_email(&self, _e: &str) -> DomainResult<Option<User>> {
-            unreachable!()
+        async fn find_by_email(&self, email: &str) -> DomainResult<Option<User>> {
+            Ok(self.user.clone().filter(|u| u.email == email))
         }
-        async fn find_by_username(&self, _u: &str) -> DomainResult<Option<User>> {
-            unreachable!()
+        async fn find_by_username(&self, username: &str) -> DomainResult<Option<User>> {
+            Ok(self
+                .user
+                .clone()
+                .filter(|u| u.preferred_username.as_deref() == Some(username)))
         }
         async fn update_login_state(
             &self,
@@ -216,6 +256,9 @@ mod tests {
     }
     #[async_trait]
     impl UserPermissionRepository for FakePermissions {
+        async fn list_available_codes(&self) -> DomainResult<Vec<String>> {
+            Ok(vec!["idp.admin".to_string()])
+        }
         async fn list_codes_for_user(&self, user_id: Uuid) -> DomainResult<Vec<String>> {
             Ok(self
                 .granted
@@ -365,6 +408,64 @@ mod tests {
         ));
         // 失敗時は監査イベントを出さない。
         assert!(sink.events.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn find_user_by_identifier_resolves_email_and_username() {
+        let target = Uuid::new_v4();
+        let svc = service(
+            Some(test_user(target)),
+            Arc::new(FakePermissions::default()),
+            Arc::new(CapturingSink::default()),
+        );
+        // `@` を含めばメール、含まなければユーザー名で解決する。
+        let by_email = svc
+            .find_user_by_identifier("target@example.com")
+            .await
+            .expect("lookup ok");
+        assert_eq!(by_email.map(|u| u.id), Some(target));
+        let by_username = svc
+            .find_user_by_identifier("  target  ")
+            .await
+            .expect("lookup ok");
+        assert_eq!(by_username.map(|u| u.id), Some(target));
+        // 未知の識別子・空文字列は None。
+        assert!(svc
+            .find_user_by_identifier("nobody@example.com")
+            .await
+            .expect("lookup ok")
+            .is_none());
+        assert!(svc
+            .find_user_by_identifier("   ")
+            .await
+            .expect("lookup ok")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn available_codes_come_from_master() {
+        let svc = service(
+            None,
+            Arc::new(FakePermissions::default()),
+            Arc::new(CapturingSink::default()),
+        );
+        assert_eq!(
+            svc.available_codes().await.expect("ok"),
+            vec!["idp.admin".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn get_user_returns_not_found_when_absent() {
+        let svc = service(
+            None,
+            Arc::new(FakePermissions::default()),
+            Arc::new(CapturingSink::default()),
+        );
+        assert!(matches!(
+            svc.get_user(Uuid::new_v4()).await,
+            Err(PermissionManagementError::NotFound)
+        ));
     }
 
     #[tokio::test]

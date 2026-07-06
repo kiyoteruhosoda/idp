@@ -9,6 +9,7 @@ use crate::application::audit::AuditService;
 use crate::application::audit_query::AuditQueryService;
 use crate::application::authorize::AuthorizeService;
 use crate::application::client_management::ClientManagementService;
+use crate::application::client_status::ClientStatusService;
 use crate::application::code_issuance::CodeIssuanceService;
 use crate::application::key_service::KeyService;
 use crate::application::login::LoginService;
@@ -49,6 +50,7 @@ pub struct AppState {
     pub admin_access: Arc<AdminAccessService>,
     pub admin_login: Arc<AdminLoginService>,
     pub clients_admin: Arc<ClientManagementService>,
+    pub clients_status: Arc<ClientStatusService>,
     pub permissions_admin: Arc<PermissionManagementService>,
     pub audit_query: Arc<AuditQueryService>,
 }
@@ -130,6 +132,11 @@ impl AppState {
             audit.clone(),
             clock.clone(),
         ));
+        // クライアント状況一覧（A3）: 登録クライアント × 監査ログ由来の最終利用時刻。
+        let clients_status = Arc::new(ClientStatusService::new(
+            clients.clone(),
+            audit_logs.clone(),
+        ));
         let audit_query = Arc::new(AuditQueryService::new(audit_logs));
         let token = Arc::new(TokenService::new(
             clients,
@@ -175,6 +182,7 @@ impl AppState {
             admin_access,
             admin_login,
             clients_admin,
+            clients_status,
             permissions_admin,
             audit_query,
         }

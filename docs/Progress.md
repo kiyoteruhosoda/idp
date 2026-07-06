@@ -22,57 +22,31 @@ code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出
 
 | 優先 | # | 概要 | 状態 | 影響度 | 工数 |
 |---|---|---|---|---|---|
-| 1 | A2 | 管理コンソール基盤: 管理者認証・画面レイアウト・権限（scope ベース）・操作監査 | 🚧進行中 | 大 | 中 |
-| 2 | A3 | 状況確認画面: ログイン/監査ログ一覧（エラー絞り込み）、クライアント状況一覧（最終利用時刻等） | 🚧進行中 | 中 | 中 |
-| 3 | K1 | 署名鍵管理: 複数鍵での署名（世代重複）・JWKS 公開・管理画面（一覧/生成/退役）・EC(ES256) 対応 | ⬜未着手 | 大 | 中 |
-| 4 | K2 | 署名鍵の自動ローテーション: `not_after` ベースのスケジュール実行・ACTIVE/RETIRED 自動管理 | ⬜未着手 | 中 | 中 |
-| 5 | S1 | SSL アクセラレーター対応: `X-Forwarded-Proto`/`-For` 信頼設定・HSTS・セキュリティヘッダ（アプリは HTTP 直受け） | ⬜未着手 | 中 | 小〜中 |
-| 6 | F2 | Refresh Token（rotation・reuse detection、`offline_access` scope） | ⬜未着手 | 大 | 大 |
-| 7 | F3 | Consent（同意画面・同意済み scope 記録・取り消し、`prompt`/`max_age` 正式対応） | ⬜未着手 | 中 | 中 |
-| 8 | F4 | Logout（RP-initiated / front-channel / back-channel、`sso_session.terminated` 有効化） | ⬜未着手 | 中 | 中 |
-| 9 | F5 | Token 管理（revocation / introspection endpoint、ユーザー単位の全セッション無効化） | ⬜未着手 | 中 | 中 |
+| 1 | K1 | 署名鍵管理: 複数鍵での署名（世代重複）・JWKS 公開・管理画面（一覧/生成/退役）・EC(ES256) 対応 | ⬜未着手 | 大 | 中 |
+| 2 | K2 | 署名鍵の自動ローテーション: `not_after` ベースのスケジュール実行・ACTIVE/RETIRED 自動管理 | ⬜未着手 | 中 | 中 |
+| 3 | S1 | SSL アクセラレーター対応: `X-Forwarded-Proto`/`-For` 信頼設定・HSTS・セキュリティヘッダ（アプリは HTTP 直受け） | ⬜未着手 | 中 | 小〜中 |
+| 4 | C1 | コンテナ分離（API/Web を別サービスに分割・理想形）: workspace 分割・Web→API HTTP 化・内部認証 API・Compose 分離 | ⬜未着手 | 大 | 大 |
+| 5 | F2 | Refresh Token（rotation・reuse detection、`offline_access` scope） | ⬜未着手 | 大 | 大 |
+| 6 | F3 | Consent（同意画面・同意済み scope 記録・取り消し、`prompt`/`max_age` 正式対応） | ⬜未着手 | 中 | 中 |
+| 7 | F4 | Logout（RP-initiated / front-channel / back-channel、`sso_session.terminated` 有効化） | ⬜未着手 | 中 | 中 |
+| 8 | F5 | Token 管理（revocation / introspection endpoint、ユーザー単位の全セッション無効化） | ⬜未着手 | 中 | 中 |
 
 > **A1（クライアント登録 API・画面）は完了**（2026-07-06、`CHANGELOG.md`）。JSON 管理 API に加え、
 > `/admin/console/clients*` のサーバレンダリング画面（一覧・登録・詳細・編集・secret 再発行・無効化導線）を実装。
 > 動的クライアント登録（RFC 7591）・`private_key_jwt` は対象外（将来）。
 
+> **A2（管理コンソール基盤）は完了**（2026-07-06、`CHANGELOG.md`）。権限モデル基盤・付与/剥奪 API・
+> 管理コンソール基盤 UI（ログイン／ホーム／ログアウト＋画面用 extractor `AdminHtmlSession`＋共通レイアウト
+> `render_layout`）に加え、**権限付与/剥奪 UI**（`/admin/console/users*` の利用者検索・保有権限一覧・
+> 付与フォーム・剥奪ボタン）を実装。K1 の管理画面は `AdminHtmlSession` で保護し、`render_layout`
+> の上に実装する。
+
+> **A3（状況確認画面）は完了**（2026-07-06、`CHANGELOG.md`）。監査/ログインログ一覧 API に加え、
+> 状況確認画面（`/admin/console/audit-logs` の絞り込み＋一覧・前後ページ、`/admin/console/status` の
+> クライアント状態・scope・**最終利用時刻**一覧）を実装。最終利用時刻は `audit_log`（成功した
+> `token.issued`／`authorization_code.issued` の最新 `occurred_at`）から導出する（マイグレーション不要）。
+
 ## 詳細
-
-### 管理機能（A2〜A3）
-
-- **A2 — 管理コンソール基盤**（権限モデルは **`docs/adr/0006-admin-permission-model.md`** で確定）:
-  - アクセスは **ロールではなく権限コード**（例 `idp.admin`）で制御（CLAUDE.md「権限管理」）。
-    OIDC scope（openid/profile/email）とは別軸の「利用者権限」を新設する（ADR-0006）。
-  - **権限モデル基盤は実装済み**（2026-07-06、`CHANGELOG.md`）: `permissions` / `user_permissions`
-    マイグレーション（0003）+ seed（0004。`admin@example.com` へ `idp.admin` 付与）+ 値オブジェクト
-    `PermissionCode` + `UserPermissionRepository`（DIP 境界。参照/付与/剥奪）+ Application の
-    `AdminAccessService`（SSO→利用者→権限突合）+ `RequirePerms<IdpAdmin>` extractor +
-    内部疎通用 `GET /admin/whoami`。監査種別 `user_permission.granted`/`.revoked` を §7 に追記済み。
-  - **権限付与/剥奪 API は実装済み**（2026-07-06、`CHANGELOG.md`）: `/admin/users/{user_id}/permissions`
-    の付与（`POST`）・剥奪（`DELETE`）・参照（`GET`）（`RequirePerms<IdpAdmin>`）。SRP に従い参照
-    （保護判定）の `AdminAccessService` とは別に管理（変更）用の `PermissionManagementService` を新設し、
-    付与/剥奪を `AuditEventType::UserPermission*`（`user_permission.granted`/`.revoked`）として
-    `audit_log` へ記録する。付与は冪等・未知コードは 400・対象利用者不存在は 404。
-  - **管理コンソール基盤 UI は実装済み**（2026-07-06、`CHANGELOG.md`）: `/admin/console` 配下に
-    サーバレンダリングの管理ログイン（`GET/POST /admin/console/login`）・ホーム（`GET /admin/console`）・
-    ログアウト（`POST /admin/console/logout`）を追加（既存ログイン画面と同じ axum + fluent i18n）。
-    JSON 管理 API（`/admin/<resource>`）とは経路を分離。ログインはクライアント不要で SSO セッションを
-    直接発行し（ADR-0006 §6。初回デプロイの鶏卵問題を回避）、資格情報検証・ロックアウト・IP レート制限は
-    通常ログインと共有。CSRF は同期トークン（`admin_csrf_id` Cookie）。画面用の認可 extractor
-    `AdminHtmlSession`（未認証→ログイン画面へ 302／権限不足→403 HTML）と共通レイアウト
-    `render_layout`（A1 の画面が利用中。A3 の画面もこの上に差し込む）を用意。
-  - **残作業**: 上記付与/剥奪 API を叩く**権限付与/剥奪 UI**（A2 の共通レイアウト上に実装）。
-
-- **A3 — 状況確認画面**:
-  - **ログイン/監査ログ一覧 API は実装済み**（2026-07-06、`CHANGELOG.md`）: `GET /admin/audit-logs`
-    （`RequirePerms<IdpAdmin>`）。`event_type` / `result`（`failure` 等の**エラー絞り込み**が主眼）/
-    期間（`from`/`to`、RFC3339）/ `client_id` / `correlation_id` で AND 絞り込みし、新しい順に返す
-    （`limit`≤200・`offset`）。`correlation_id` でリクエスト〜監査イベントを追跡。読み取りは
-    `AuditLogQuery`（DIP 境界。書き込みの `AuditLogSink` と分離）。
-  - **残作業（クライアント状況一覧）**: 各 client の状態（ACTIVE/DISABLED）・scope・**最終利用時刻**の一覧。
-    最終利用時刻は `audit_log`（`token.issued` 等の最新 `occurred_at`）から導出、または
-    `clients.last_used_at` を発行時に更新（マイグレーション）。負荷を見て方式決定。
-  - **残作業（画面）**: 上記 API を表示する状況確認**画面**（A2 の管理コンソール基盤の上に実装）。
 
 ### 鍵管理（K1・K2）
 
@@ -102,6 +76,49 @@ code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出
     転送ヘッダ経由の実 IP を使うよう結線する（現状は接続元 IP）。
   - Cookie の `Secure` は issuer スキーム/`COOKIE_SECURE` で対応済み（HTTP 直受けでも https issuer なら有効）。
 
+### インフラ / コンテナ分離（C1）
+
+- **C1 — コンテナ分離（API と Web を別サービスに分割・理想形）**。現状は単一バイナリ `idp`＋単一 `web`
+  コンテナが全経路（OIDC protocol・JSON 管理 API・ログイン画面・管理コンソール）を提供している。
+  独立スケール／独立デプロイ／ネットワーク公開範囲の分離を目的に、**真のサービス分割**で API と Web を分ける。
+
+  **決定（2026-07-06、ユーザー確認済み。工数は大きくとも理想形を採る）**:
+  1. **境界**: **Web=全 HTML 画面**（ログイン画面 `/login` ＋管理コンソール `/admin/console/*`）。
+     **API=JSON/protocol のみ**（`/authorize`・`/token`・`/userinfo`・`/.well-known`・JSON 管理 API
+     `/admin/*`・health）。
+  2. **分離の深さ**: **真のサービス分割**。Web は薄いフロントで、データ操作は API を **HTTP 経由**で呼ぶ。
+     **DB へ直結するのは API のみ**（Web は DB 非依存）。
+  3. **コード構成**: **cargo workspace 分割**（`core`＝domain/application/infrastructure、`api`、`web`。
+     必要に応じて契約用 `contracts`/`dto` crate を切り出す）。CLAUDE.md「将来 workspace 分割可」を今実施する。
+
+  フェーズ分割（着手は P0 から。理想形ゆえの新規論点があるため設計を先行させる）:
+  - **P0 設計（ADR）— 完了**: `docs/adr/0007-api-web-service-split.md`（Accepted）で責務境界と
+    サービス間相互作用を確定。要点: 単一オリジン・パスルーティング／authorize↔login は api の内部認証
+    エンドポイント（`POST /internal/authenticate`）へ集約／管理コンソール→API は SSO Cookie 転送で
+    `RequirePerms<IdpAdmin>` 再利用／DTO 契約は `contracts` crate／workspace 構成 `core`・`contracts`・
+    `api`・`web`（web は sqlx 非依存）／DB・署名鍵ブートストラップは api のみ。**次は P1（要 ADR レビュー）**。
+  - **P1 workspace 化**: 単一 crate を `core`（domain/application/infrastructure）へ集約し、`api` crate
+    （現行 presentation の protocol＋JSON 管理＋P2 の内部認証 API）を分離。まず all-in-one を保ったまま
+    crate 境界だけ作り、ビルド/テストを通す。
+  - **P2 内部認証 API**: P0 で設計した `POST /internal/authenticate`（および必要な内部 I/F）を API に実装。
+    既存の login ユースケース（資格情報検証・ロックアウト・SSO/code 発行）を内部エンドポイント越しに呼べる形へ整理。
+  - **P3 web crate**: HTML レンダリング（既存 `login` 画面・`admin_*_console`）と i18n を `web` crate へ移設。
+    データ取得/操作は **API クライアント（reqwest 等）経由**に置換（application 層の直接呼び出しを撤去）。
+    Web は DB・infrastructure に依存しない。
+  - **P4 コンテナ/Compose**: `api`・`web` を別イメージ・別サービスに（Dockerfile を crate 別ビルドへ）。
+    `web` は DB 非依存（`api` のみ DB 直結・署名鍵ブートストラップ `ensure_active_key` も API 側）。
+    ネットワーク公開範囲（例: `api`=外部公開／`web`=管理は内部・制限、または逆）を確定し `OPERATIONS.md` に明記。
+    `migrate` ジョブは現状維持。
+  - **P5 テスト/運用**: `api` 単体の統合テスト＋`web`→`api` の E2E 疎通。現在の全部入り統合テスト
+    （`tests/*` は `router::build` を利用）は `api` 単体／`web`→`api` E2E へ再編する。
+
+  留意（理想形ゆえの新規論点）:
+  - ログイン画面の分離により、API 側に **OIDC 標準外の内部認証エンドポイント**を新設する必要がある。
+  - Web が DB を持たないため、現在 presentation が application 層を直接呼ぶ全箇所が **API クライアント越し**に変わる
+    （管理コンソールの各画面・状況確認画面・権限付与/剥奪の POST 等。工数の大半はここ）。
+  - **ローカル開発／全部入りモード（旧 d）**: 理想形では常駐の全部入りバイナリは持たない方針。ローカルは
+    compose で `api`・`web` を同時起動する。統合テストは上記 P5 のとおり再編する。
+
 ### OIDC 拡張（F2〜F5、設計仕様 §9）
 
 - **F2（§9.1）**: `RefreshTokens` テーブル（ハッシュ保存）。rotation / reuse detection は
@@ -114,10 +131,12 @@ code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出
 - **F5（§9.4）**: RFC 7009 revocation・RFC 7662 introspection。introspection は confidential client 認証必須。
 
 > 依存関係:
-> - A2（管理コンソール基盤＋権限モデル）は A1・A3・K1 の画面が前提とする。権限モデルは
->   `docs/adr/0006-admin-permission-model.md`（Accepted）で確定。**権限モデルと管理コンソール基盤 UI
->   （ログイン／ホーム／ログアウト＋画面用 extractor `AdminHtmlSession`＋共通レイアウト）は実装済み**。
->   A1・A3・K1 の管理画面は `AdminHtmlSession` で保護し、`render_layout` の上に実装する。
+> - A1・A2・A3（管理コンソール基盤＋権限モデル＋各管理/状況画面）は**完了済み**（`CHANGELOG.md`）。
+>   権限モデルは `docs/adr/0006-admin-permission-model.md`（Accepted）で確定。残る K1 の管理画面は
+>   画面用 extractor `AdminHtmlSession` で保護し、共通レイアウト `render_layout` の上に実装する。
 > - F2 は A1（client の grant_types 管理）と親和。F4・F5 はセッション/トークン失効基盤を共有。
 > - S1 は他タスクと独立に着手可能（早期着手も可）。
+> - C1（コンテナ分離）は方針・設計を確定済み（真のサービス分割・workspace 分割・Web→API HTTP 化。
+>   `docs/adr/0007-api-web-service-split.md`）。P0（ADR）完了。次は P1（workspace 化）＝要 ADR レビュー。
+>   大規模のため他機能タスク（K1・F2 等）との実施順はリソースを見て決める。
 > 各タスクは着手時に `docs/history/` への記録要否（規模が大きく背景まで追う場合のみ）を判断する。
