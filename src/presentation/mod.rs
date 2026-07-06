@@ -9,6 +9,7 @@ pub mod correlation;
 pub mod dto;
 pub mod error;
 pub mod handlers;
+pub mod html;
 pub mod i18n;
 pub mod openapi;
 pub mod router;

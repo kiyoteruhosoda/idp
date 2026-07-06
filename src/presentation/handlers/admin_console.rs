@@ -4,17 +4,24 @@
 //! `idp.admin` 権限で保護する（画面は [`AdminHtmlSession`]、API は `RequirePerms<IdpAdmin>`）。
 //! 文言は `fluent`（`Accept-Language` で en / ja を切替、ログイン画面と同じ仕組み）。
 //!
-//! - `GET /admin/login` / `POST /admin/login`: 管理ログイン（クライアント不要。鶏卵問題の回避）。
-//! - `GET /admin`: 管理コンソールのホーム（各管理機能への入口。A1/A3 の画面はこのレイアウト上に追加する）。
-//! - `POST /admin/logout`: ログアウト（SSO セッション失効）。
+//! ブラウザ向けコンソールは JSON 管理 API（`/admin/<resource>`）と分離して `/admin/console` 配下に置く。
 //!
-//! CSRF: ログインフォームは同期トークン方式。GET で推測不能な乱数を HttpOnly Cookie（`admin_csrf_id`）に
-//! 発行し、その一方向ハッシュをフォームへ埋め込む。POST で Cookie から再計算して照合する
-//! （`application::admin_login::admin_csrf_token`）。
+//! - `GET/POST /admin/console/login`: 管理ログイン（クライアント不要。鶏卵問題の回避）。
+//! - `GET /admin/console`: 管理コンソールのホーム（各管理機能への入口。A1/A3 の画面はこのレイアウト上に追加）。
+//! - `POST /admin/console/logout`: ログアウト（SSO セッション失効）。
+//!
+//! CSRF:
+//! - ログインフォーム（未認証）は同期トークン方式。GET で推測不能な乱数を HttpOnly Cookie（`admin_csrf_id`）に
+//!   発行し、その一方向ハッシュをフォームへ埋め込む（`application::admin_login::admin_csrf_token`）。
+//! - ログイン後の状態変更フォームは、SSO セッション id（HttpOnly Cookie）由来の同期トークンで保護する
+//!   （[`console_csrf_token`]）。
 
 use crate::application::admin_access::AuthorizedAdmin;
 use crate::application::admin_login::{admin_csrf_token, AdminLoginCommand, AdminLoginOutcome};
-use crate::presentation::admin::{redirect_to_login, AdminHtmlSession};
+use crate::infrastructure::crypto;
+use crate::presentation::admin::{
+    redirect_to_login, AdminHtmlSession, ADMIN_LOGIN_PATH, CONSOLE_HOME_PATH, CONSOLE_LOGOUT_PATH,
+};
 use crate::presentation::cookies;
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::LoginForm;
@@ -26,13 +33,14 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{AppendHeaders, Html, IntoResponse, Response};
 use axum::Form;
 
-/// 管理コンソールのホーム（`GET /admin`）。抽出成功＝有効な SSO ＋ `idp.admin` 保有。
+/// 管理コンソールのホーム（`GET /admin/console`）。抽出成功＝有効な SSO ＋ `idp.admin` 保有。
 pub async fn home(AdminHtmlSession(admin): AdminHtmlSession, headers: HeaderMap) -> Response {
     let messages = Messages::new(locale(&headers));
+    // 実装済みの画面はリンク、未実装の画面はテキストで示す（リンク切れを作らない）。
     let content = format!(
         "<p>{intro}</p>\n\
          <ul class=\"admin-sections\">\n\
-         <li>{clients}</li>\n\
+         <li><a href=\"/admin/console/clients\">{clients}</a></li>\n\
          <li>{audit}</li>\n\
          <li>{permissions}</li>\n\
          </ul>",
@@ -44,7 +52,7 @@ pub async fn home(AdminHtmlSession(admin): AdminHtmlSession, headers: HeaderMap)
     Html(render_layout(&messages, Some(&admin), &content)).into_response()
 }
 
-/// 管理ログインフォーム（`GET /admin/login`）。既にログイン済みならホームへ 302 する。
+/// 管理ログインフォーム（`GET /admin/console/login`）。既にログイン済みならホームへ 302 する。
 pub async fn login_page(State(state): State<AppState>, headers: HeaderMap) -> Response {
     // 既に有効な SSO ＋ 権限を持つならホームへ。
     let sso = cookies::get(&headers, cookies::SSO_SESSION_COOKIE);
@@ -53,12 +61,12 @@ pub async fn login_page(State(state): State<AppState>, headers: HeaderMap) -> Re
         .authorize(sso.as_deref(), "idp.admin")
         .await
     {
-        return found("/admin");
+        return found(CONSOLE_HOME_PATH);
     }
 
     let messages = Messages::new(locale(&headers));
     // CSRF の種（推測不能な乱数）を新規発行し、Cookie とフォーム双方へ渡す。
-    let csrf_id = crate::infrastructure::crypto::random_hex(32);
+    let csrf_id = crypto::random_hex(32);
     let csrf = admin_csrf_token(&csrf_id);
     let csrf_cookie = cookies::build(
         cookies::ADMIN_CSRF_COOKIE,
@@ -127,7 +135,7 @@ pub async fn login(
                     (header::SET_COOKIE, sso_cookie),
                     (header::SET_COOKIE, expire_csrf),
                 ]),
-                found("/admin"),
+                found(CONSOLE_HOME_PATH),
             )
                 .into_response()
         }
@@ -211,11 +219,12 @@ pub fn render_layout(
             "<header class=\"admin-header\">\n\
              <span class=\"admin-title\">{title}</span>\n\
              <span class=\"admin-user\">{signed_in}: {uid}</span>\n\
-             <form method=\"post\" action=\"/admin/logout\" class=\"admin-logout\">\
+             <form method=\"post\" action=\"{logout_path}\" class=\"admin-logout\">\
              <button type=\"submit\">{logout}</button></form>\n\
              </header>",
             signed_in = messages.get("admin-signed-in-as"),
             uid = a.user_id,
+            logout_path = CONSOLE_LOGOUT_PATH,
             logout = messages.get("admin-logout"),
         ),
         None => format!(
@@ -250,14 +259,24 @@ fn render_login_form(messages: &Messages, csrf: &str, error_key: Option<&str>) -
          <body>\n\
          <h1>{title}</h1>\n\
          {error_html}\n\
-         <form method=\"post\" action=\"/admin/login\">\n\
+         <form method=\"post\" action=\"{action}\">\n\
          <input type=\"hidden\" name=\"csrf_token\" value=\"{csrf}\">\n\
          <label>{username} <input type=\"text\" name=\"username\" autocomplete=\"username\" required></label>\n\
          <label>{password} <input type=\"password\" name=\"password\" autocomplete=\"current-password\" required></label>\n\
          <button type=\"submit\">{submit}</button>\n\
          </form>\n\
-         </body></html>"
+         </body></html>",
+        action = ADMIN_LOGIN_PATH,
     )
+}
+
+/// ログイン後の管理コンソール（状態変更フォーム）用の CSRF トークンを SSO セッション id から導出する。
+///
+/// SSO セッション id は HttpOnly Cookie（`sso_session_id`）にのみ存在する推測不能な乱数であり、その
+/// 一方向ハッシュをフォームへ埋め込む。攻撃者は Cookie を読めないためトークンを再現できない
+/// （同期トークン方式。`admin_csrf_token` とは名前空間で分離）。
+pub fn console_csrf_token(sso_session_id: &str) -> String {
+    crypto::sha256_hex(&format!("console-csrf:{sso_session_id}"))
 }
 
 #[cfg(test)]
@@ -269,7 +288,7 @@ mod tests {
     fn login_form_has_csrf_and_credential_fields() {
         let messages = Messages::new(Locale::En);
         let html = render_login_form(&messages, "deadbeef", None);
-        assert!(html.contains("action=\"/admin/login\""));
+        assert!(html.contains("action=\"/admin/console/login\""));
         assert!(html.contains("name=\"csrf_token\" value=\"deadbeef\""));
         assert!(html.contains("name=\"username\""));
         assert!(html.contains("name=\"password\""));
@@ -290,12 +309,23 @@ mod tests {
         let html = render_layout(&messages, Some(&admin), "<p>body</p>");
         assert!(html.contains("Admin console"));
         assert!(html.contains(&uid.to_string()));
-        assert!(html.contains("action=\"/admin/logout\""));
+        assert!(html.contains("action=\"/admin/console/logout\""));
         assert!(html.contains("<p>body</p>"));
 
         // 未ログイン（ログイン画面のレイアウト流用など）ではログアウトを出さない。
         let anon = render_layout(&messages, None, "x");
-        assert!(!anon.contains("/admin/logout"));
+        assert!(!anon.contains("/admin/console/logout"));
+    }
+
+    #[test]
+    fn console_csrf_token_is_deterministic_and_namespaced() {
+        let a = console_csrf_token("sso-a");
+        assert_eq!(a, console_csrf_token("sso-a"));
+        assert_ne!(a, console_csrf_token("sso-b"));
+        assert_eq!(a.len(), 64);
+        assert!(a.bytes().all(|b| b.is_ascii_hexdigit()));
+        // ログイン前 CSRF（admin_csrf_token）とは種が同じでも一致しない。
+        assert_ne!(console_csrf_token("x"), admin_csrf_token("x"));
     }
 
     #[test]

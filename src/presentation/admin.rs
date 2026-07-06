@@ -24,8 +24,16 @@ use axum::Json;
 use serde_json::json;
 use std::marker::PhantomData;
 
+/// ブラウザ向け管理コンソールのベースパス。JSON 管理 API（`/admin/<resource>`、OpenAPI の正典）とは
+/// 経路を分離し、`/admin/console/<画面>` 配下に置く（認可も HTML 用 [`AdminHtmlSession`] と API 用
+/// [`RequirePerms`] で使い分ける）。
+pub const CONSOLE_BASE_PATH: &str = "/admin/console";
+/// 管理コンソールのホーム。
+pub const CONSOLE_HOME_PATH: &str = CONSOLE_BASE_PATH;
 /// 管理コンソールのログイン画面パス（未認証時の誘導先）。
-pub const ADMIN_LOGIN_PATH: &str = "/admin/login";
+pub const ADMIN_LOGIN_PATH: &str = "/admin/console/login";
+/// 管理コンソールのログアウトパス。
+pub const CONSOLE_LOGOUT_PATH: &str = "/admin/console/logout";
 
 /// 保護対象が要求する権限コードを型として表すマーカ。
 ///

@@ -2,10 +2,26 @@
 
 完了した重要な変更の要約（詳しい経緯は `history/`、設計判断は `adr/`）。
 
+## 2026-07-06（A1: クライアント（RP）管理画面、A2 コンソール基盤の上に実装）
+
+- **クライアント（RP）管理のサーバレンダリング画面を実装**（A1 完了、設計仕様 §9.3）。一覧・新規登録・
+  詳細・編集・secret 再発行・無効化（状態 DISABLED）を `/admin/console/clients*` で提供。画面用 extractor
+  `AdminHtmlSession` で保護し、共通レイアウト `render_layout`（A2）の上に描画する。データ操作は JSON API と
+  同じ `ClientManagementService` を通し、検証・監査記録・secret 発行のロジックを二重化しない。
+- **経路分離**: ブラウザ向けコンソールは `/admin/console/*`、JSON 管理 API（OpenAPI の正典）は
+  `/admin/*` に整理。これに伴い前コミットの A2 コンソール（ログイン/ホーム/ログアウト）も `/admin/console/*`
+  へ移設（`/admin/console/login`・`/admin/console`・`/admin/console/logout`）。
+- **セキュリティ**: 利用者入力を HTML へ差し込む箇所は新設の `presentation::html::escape` を通し格納型 XSS を防止。
+  ログイン後の状態変更フォームは SSO セッション id 由来の同期トークン `console_csrf_token` で CSRF 対策。
+  `client_secret` は confidential の作成・再発行時に**その画面でのみ**平文表示（DB はハッシュのみ）。
+- 単体テスト（入力パース・HTML エスケープ・一覧のエスケープ・CSRF 導出）と統合テスト
+  `tests/admin_clients_console.rs`（未認証→ログイン画面へ 302、CSRF 不一致・不正 scope→400、
+  confidential 作成で secret 一度表示、詳細・編集で DISABLED 反映、secret 再発行、不存在→404、非管理者→403）を追加。
+
 ## 2026-07-06（A2: 管理コンソール基盤 UI・管理ログイン、ADR-0006 §6）
 
 - **管理コンソールのサーバレンダリング基盤 UI を実装**（A2、ADR-0006 §6）。管理ログイン
-  （`GET/POST /admin/login`）・ホーム（`GET /admin`）・ログアウト（`POST /admin/logout`）を追加。
+  （`GET/POST /admin/console/login`）・ホーム（`GET /admin/console`）・ログアウト（`POST /admin/console/logout`）を追加。
   文言は既存ログイン画面と同じ `fluent`（en/ja）。
 - 管理ログインは OIDC クライアント不要で **SSO セッションを直接発行**する（`/authorize` 由来の
   `auth_session_id`・code 発行・redirect を伴わない）。初回デプロイ時にクライアントが存在しなくても

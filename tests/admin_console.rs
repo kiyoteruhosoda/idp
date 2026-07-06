@@ -116,7 +116,7 @@ async fn admin_can_sign_in_and_view_console() {
         &env.app,
         Request::builder()
             .method("GET")
-            .uri("/admin/login")
+            .uri("/admin/console/login")
             .body(Body::empty())
             .unwrap(),
     )
@@ -132,20 +132,20 @@ async fn admin_can_sign_in_and_view_console() {
         &env.app,
         Request::builder()
             .method("GET")
-            .uri("/admin")
+            .uri("/admin/console")
             .body(Body::empty())
             .unwrap(),
     )
     .await;
     assert_eq!(res.status(), StatusCode::FOUND);
-    assert_eq!(res.headers().get(LOCATION).unwrap(), "/admin/login");
+    assert_eq!(res.headers().get(LOCATION).unwrap(), "/admin/console/login");
 
     // 3. CSRF 不一致 → 400。
     let res = send(
         &env.app,
         Request::builder()
             .method("POST")
-            .uri("/admin/login")
+            .uri("/admin/console/login")
             .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
             .header(COOKIE, format!("admin_csrf_id={csrf_id}"))
             .body(Body::from(format!(
@@ -166,7 +166,7 @@ async fn admin_can_sign_in_and_view_console() {
         &env.app,
         Request::builder()
             .method("POST")
-            .uri("/admin/login")
+            .uri("/admin/console/login")
             .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
             .header(COOKIE, format!("admin_csrf_id={csrf_id}"))
             .body(Body::from(format!(
@@ -176,7 +176,7 @@ async fn admin_can_sign_in_and_view_console() {
     )
     .await;
     assert_eq!(res.status(), StatusCode::FOUND, "valid login -> 302");
-    assert_eq!(res.headers().get(LOCATION).unwrap(), "/admin");
+    assert_eq!(res.headers().get(LOCATION).unwrap(), "/admin/console");
     let sso = cookie_value(&res, "sso_session_id").expect("sso cookie set");
     assert!(!sso.is_empty());
 
@@ -185,7 +185,7 @@ async fn admin_can_sign_in_and_view_console() {
         &env.app,
         Request::builder()
             .method("GET")
-            .uri("/admin")
+            .uri("/admin/console")
             .header(COOKIE, format!("sso_session_id={sso}"))
             .body(Body::empty())
             .unwrap(),
@@ -194,27 +194,27 @@ async fn admin_can_sign_in_and_view_console() {
     assert_eq!(res.status(), StatusCode::OK, "authenticated home -> 200");
     let home = body_text(res).await;
     assert!(home.contains("Admin console"));
-    assert!(home.contains("/admin/logout"));
+    assert!(home.contains("/admin/console/logout"));
 
     // 6. ログアウト → 302 ログイン画面・SSO Cookie 失効。以降ホームは 302。
     let res = send(
         &env.app,
         Request::builder()
             .method("POST")
-            .uri("/admin/logout")
+            .uri("/admin/console/logout")
             .header(COOKIE, format!("sso_session_id={sso}"))
             .body(Body::empty())
             .unwrap(),
     )
     .await;
     assert_eq!(res.status(), StatusCode::FOUND);
-    assert_eq!(res.headers().get(LOCATION).unwrap(), "/admin/login");
+    assert_eq!(res.headers().get(LOCATION).unwrap(), "/admin/console/login");
 
     let res = send(
         &env.app,
         Request::builder()
             .method("GET")
-            .uri("/admin")
+            .uri("/admin/console")
             .header(COOKIE, format!("sso_session_id={sso}"))
             .body(Body::empty())
             .unwrap(),
@@ -255,7 +255,7 @@ async fn non_admin_is_forbidden_on_login_and_console() {
         &env.app,
         Request::builder()
             .method("GET")
-            .uri("/admin/login")
+            .uri("/admin/console/login")
             .body(Body::empty())
             .unwrap(),
     )
@@ -268,7 +268,7 @@ async fn non_admin_is_forbidden_on_login_and_console() {
         &env.app,
         Request::builder()
             .method("POST")
-            .uri("/admin/login")
+            .uri("/admin/console/login")
             .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
             .header(COOKIE, format!("admin_csrf_id={csrf_id}"))
             .body(Body::from(format!(

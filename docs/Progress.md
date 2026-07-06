@@ -22,34 +22,23 @@ code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出
 
 | 優先 | # | 概要 | 状態 | 影響度 | 工数 |
 |---|---|---|---|---|---|
-| 1 | A1 | クライアント（RP）登録 API・画面（管理者用）: CRUD・資格情報発行・redirect URI 管理 | 🚧進行中 | 大 | 大 |
-| 2 | A2 | 管理コンソール基盤: 管理者認証・画面レイアウト・権限（scope ベース）・操作監査 | 🚧進行中 | 大 | 中 |
-| 3 | A3 | 状況確認画面: ログイン/監査ログ一覧（エラー絞り込み）、クライアント状況一覧（最終利用時刻等） | 🚧進行中 | 中 | 中 |
-| 4 | K1 | 署名鍵管理: 複数鍵での署名（世代重複）・JWKS 公開・管理画面（一覧/生成/退役）・EC(ES256) 対応 | ⬜未着手 | 大 | 中 |
-| 5 | K2 | 署名鍵の自動ローテーション: `not_after` ベースのスケジュール実行・ACTIVE/RETIRED 自動管理 | ⬜未着手 | 中 | 中 |
-| 6 | S1 | SSL アクセラレーター対応: `X-Forwarded-Proto`/`-For` 信頼設定・HSTS・セキュリティヘッダ（アプリは HTTP 直受け） | ⬜未着手 | 中 | 小〜中 |
-| 7 | F2 | Refresh Token（rotation・reuse detection、`offline_access` scope） | ⬜未着手 | 大 | 大 |
-| 8 | F3 | Consent（同意画面・同意済み scope 記録・取り消し、`prompt`/`max_age` 正式対応） | ⬜未着手 | 中 | 中 |
-| 9 | F4 | Logout（RP-initiated / front-channel / back-channel、`sso_session.terminated` 有効化） | ⬜未着手 | 中 | 中 |
-| 10 | F5 | Token 管理（revocation / introspection endpoint、ユーザー単位の全セッション無効化） | ⬜未着手 | 中 | 中 |
+| 1 | A2 | 管理コンソール基盤: 管理者認証・画面レイアウト・権限（scope ベース）・操作監査 | 🚧進行中 | 大 | 中 |
+| 2 | A3 | 状況確認画面: ログイン/監査ログ一覧（エラー絞り込み）、クライアント状況一覧（最終利用時刻等） | 🚧進行中 | 中 | 中 |
+| 3 | K1 | 署名鍵管理: 複数鍵での署名（世代重複）・JWKS 公開・管理画面（一覧/生成/退役）・EC(ES256) 対応 | ⬜未着手 | 大 | 中 |
+| 4 | K2 | 署名鍵の自動ローテーション: `not_after` ベースのスケジュール実行・ACTIVE/RETIRED 自動管理 | ⬜未着手 | 中 | 中 |
+| 5 | S1 | SSL アクセラレーター対応: `X-Forwarded-Proto`/`-For` 信頼設定・HSTS・セキュリティヘッダ（アプリは HTTP 直受け） | ⬜未着手 | 中 | 小〜中 |
+| 6 | F2 | Refresh Token（rotation・reuse detection、`offline_access` scope） | ⬜未着手 | 大 | 大 |
+| 7 | F3 | Consent（同意画面・同意済み scope 記録・取り消し、`prompt`/`max_age` 正式対応） | ⬜未着手 | 中 | 中 |
+| 8 | F4 | Logout（RP-initiated / front-channel / back-channel、`sso_session.terminated` 有効化） | ⬜未着手 | 中 | 中 |
+| 9 | F5 | Token 管理（revocation / introspection endpoint、ユーザー単位の全セッション無効化） | ⬜未着手 | 中 | 中 |
+
+> **A1（クライアント登録 API・画面）は完了**（2026-07-06、`CHANGELOG.md`）。JSON 管理 API に加え、
+> `/admin/console/clients*` のサーバレンダリング画面（一覧・登録・詳細・編集・secret 再発行・無効化導線）を実装。
+> 動的クライアント登録（RFC 7591）・`private_key_jwt` は対象外（将来）。
 
 ## 詳細
 
-### 管理機能（A1〜A3）
-
-- **A1 — クライアント（RP）登録**（設計仕様 §9.3）:
-  - **登録 API は実装済み**（2026-07-06、`CHANGELOG.md`）: `/admin/clients` の CRUD＋secret 再発行
-    （`RequirePerms<IdpAdmin>` で保護）。`client_id` 自動採番、`client_secret` は confidential の
-    登録・再発行時に**その応答でのみ**平文表示し DB は argon2 ハッシュのみ（`Argon2PasswordHasher` 流用）。
-    `client_type` に応じ `token_endpoint_auth_method` を設定（public=`none`、confidential=
-    `client_secret_basic`）。redirect URI は完全一致・複数登録・フラグメント/ワイルドカード禁止を
-    アプリ層で検証。scope は `openid` を含む OIDC scope に限定。全変更操作を `audit_log` へ記録
-    （`client.registered`/`.updated`/`.secret_rotated`）。utoipa で OpenAPI 自動生成（tag=admin）。
-    統合テスト `tests/admin_clients.rs`（401/403/400/CRUD/secret 再発行）を追加。
-  - **残作業**: 管理者用の登録/一覧/編集**画面**（A2 の管理コンソール基盤の上にサーバレンダリングで実装）、
-    クライアントの無効化（`PATCH` の `client_status=DISABLED` で対応済みだが画面導線が未整備）。
-  - **動的クライアント登録（RFC 7591）は対象外**（将来検討。`docs/OIDC_INPUT.md` §8）。
-  - **将来**: `token_endpoint_auth_method` の `private_key_jwt` 対応。
+### 管理機能（A2〜A3）
 
 - **A2 — 管理コンソール基盤**（権限モデルは **`docs/adr/0006-admin-permission-model.md`** で確定）:
   - アクセスは **ロールではなく権限コード**（例 `idp.admin`）で制御（CLAUDE.md「権限管理」）。
@@ -64,13 +53,14 @@ code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出
     （保護判定）の `AdminAccessService` とは別に管理（変更）用の `PermissionManagementService` を新設し、
     付与/剥奪を `AuditEventType::UserPermission*`（`user_permission.granted`/`.revoked`）として
     `audit_log` へ記録する。付与は冪等・未知コードは 400・対象利用者不存在は 404。
-  - **管理コンソール基盤 UI は実装済み**（2026-07-06、`CHANGELOG.md`）: サーバレンダリングの
-    管理ログイン（`GET/POST /admin/login`）・ホーム（`GET /admin`）・ログアウト（`POST /admin/logout`）を
-    追加（既存ログイン画面と同じ axum + fluent i18n）。ログインはクライアント不要で SSO セッションを
+  - **管理コンソール基盤 UI は実装済み**（2026-07-06、`CHANGELOG.md`）: `/admin/console` 配下に
+    サーバレンダリングの管理ログイン（`GET/POST /admin/console/login`）・ホーム（`GET /admin/console`）・
+    ログアウト（`POST /admin/console/logout`）を追加（既存ログイン画面と同じ axum + fluent i18n）。
+    JSON 管理 API（`/admin/<resource>`）とは経路を分離。ログインはクライアント不要で SSO セッションを
     直接発行し（ADR-0006 §6。初回デプロイの鶏卵問題を回避）、資格情報検証・ロックアウト・IP レート制限は
     通常ログインと共有。CSRF は同期トークン（`admin_csrf_id` Cookie）。画面用の認可 extractor
     `AdminHtmlSession`（未認証→ログイン画面へ 302／権限不足→403 HTML）と共通レイアウト
-    `render_layout`（A1/A3 の画面はこの上に差し込む）を用意。
+    `render_layout`（A1 の画面が利用中。A3 の画面もこの上に差し込む）を用意。
   - **残作業**: 上記付与/剥奪 API を叩く**権限付与/剥奪 UI**（A2 の共通レイアウト上に実装）。
 
 - **A3 — 状況確認画面**:
