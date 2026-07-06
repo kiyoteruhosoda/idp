@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 idp-core = { path = "../core" }
+idp-contracts = { path = "../contracts" }
 tokio = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }

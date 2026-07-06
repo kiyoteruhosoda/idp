@@ -19,11 +19,11 @@ use crate::application::admin_login::{AdminLoginCommand, AdminLoginOutcome};
 use crate::application::audit::RequestContext;
 use crate::application::login::{LoginCommand, LoginOutcome};
 use crate::presentation::correlation::CorrelationId;
-use crate::presentation::dto::{
+use crate::presentation::state::AppState;
+use idp_contracts::auth::{
     InternalAdminAuthenticateRequest, InternalAdminAuthenticateResponse, InternalAuthenticateRequest,
     InternalAuthenticateResponse,
 };
-use crate::presentation::state::AppState;
 use axum::extract::{Extension, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;

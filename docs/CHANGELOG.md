@@ -2,6 +2,20 @@
 
 完了した重要な変更の要約（詳しい経緯は `history/`、設計判断は `adr/`）。
 
+## 2026-07-06（C1 P3-1 完了: contracts crate ＋ web crate 土台）
+
+- **`contracts` crate（`idp-contracts`）を新設**（ADR-0007 §6）。内部認証 API（`/internal/authenticate*`）の
+  DTO を api の presentation から移設し、**api サーバと web クライアントで同一の serde 型を共有**する
+  （コンパイル時に契約整合を保証）。DB/axum/sqlx へは依存しない。
+- **`web` crate（`idp-web` / bin=`idp-web`）を新設**。web 固有設定（`API_BASE_URL`・共有サービストークン・
+  `WEB_BIND_ADDR` 等）、JSON ログ初期化、**reqwest ベースの API クライアント**（api への唯一の出入口。
+  内部認証呼び出しにサービストークンと correlation_id を付与）、ヘルスチェック（`/healthz` liveness、
+  `/readyz` は api への到達性で判断）を実装。
+- **web は sqlx / idp-core に依存しない**ことを `cargo tree` で確認（crate 境界で分離を強制。ADR の肝）。
+  api は無変更で全テスト緑。web バイナリの起動と `/healthz`=200・`/readyz`=503（api 停止時）を実機確認。
+- P3 は規模が大きいためステージ分割で進める（本コミットは土台）。ログイン画面・管理コンソール・i18n の
+  web 移設と、api からの HTML 撤去は後続ステージ。テスト再編は P5。
+
 ## 2026-07-06（C1 P2 完了: 内部認証 API）
 
 - **内部認証エンドポイントを api に新設**（ADR-0007 §3・§5、C1 の P2）。OIDC 標準外の

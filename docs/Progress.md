@@ -25,7 +25,7 @@ code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出
 | 1 | K1 | 署名鍵管理: 複数鍵での署名（世代重複）・JWKS 公開・管理画面（一覧/生成/退役）・EC(ES256) 対応 | ⬜未着手 | 大 | 中 |
 | 2 | K2 | 署名鍵の自動ローテーション: `not_after` ベースのスケジュール実行・ACTIVE/RETIRED 自動管理 | ⬜未着手 | 中 | 中 |
 | 3 | S1 | SSL アクセラレーター対応: `X-Forwarded-Proto`/`-For` 信頼設定・HSTS・セキュリティヘッダ（アプリは HTTP 直受け） | ⬜未着手 | 中 | 小〜中 |
-| 4 | C1 | コンテナ分離（API/Web を別サービスに分割・理想形）: workspace 分割・Web→API HTTP 化・内部認証 API・Compose 分離 | 🚧進行中（P0-P2 完了、次 P3） | 大 | 大 |
+| 4 | C1 | コンテナ分離（API/Web を別サービスに分割・理想形）: workspace 分割・Web→API HTTP 化・内部認証 API・Compose 分離 | 🚧進行中（P0-P2＋P3-1 完了、次 P3-2） | 大 | 大 |
 | 5 | F2 | Refresh Token（rotation・reuse detection、`offline_access` scope） | ⬜未着手 | 大 | 大 |
 | 6 | F3 | Consent（同意画面・同意済み scope 記録・取り消し、`prompt`/`max_age` 正式対応） | ⬜未着手 | 中 | 中 |
 | 7 | F4 | Logout（RP-initiated / front-channel / back-channel、`sso_session.terminated` 有効化） | ⬜未着手 | 中 | 中 |
@@ -111,9 +111,20 @@ code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出
     保護し `route_layer` で遮断。DTO は presentation に定義（`contracts` crate 化は P3）。既存 HTML `/login`・
     `/admin/console/login` は同一プロセスのため引き続きサービスを直接呼ぶ（P3 で API クライアント化）。
     **次は P3（web crate 化）**。
-  - **P3 web crate**: HTML レンダリング（既存 `login` 画面・`admin_*_console`）と i18n を `web` crate へ移設。
-    データ取得/操作は **API クライアント（reqwest 等）経由**に置換（application 層の直接呼び出しを撤去）。
-    Web は DB・infrastructure に依存しない。
+  - **P3 web crate — 進行中（土台完了）**。規模が大きいためステージ分割で進める。
+    - **P3-1 土台 — 完了**（2026-07-06、`CHANGELOG.md`）: `contracts` crate（`idp-contracts`。内部認証 DTO を
+      api から移設し api ↔ web で共有）と `web` crate（`idp-web` / bin=`idp-web`。web 固有設定・ログ・
+      reqwest API クライアント・ヘルスチェック `/healthz`・`/readyz`）を新設。**web は sqlx/idp-core に
+      依存しない**ことを `cargo tree` で確認済み（crate 境界で分離を強制）。api は無変更で全テスト緑。
+    - **P3-2 ログイン画面移設（次）**: `/login`（GET/POST）と i18n を web へ移し、POST は API クライアント
+      経由で `POST /internal/authenticate` を呼ぶ。web が Cookie（SSO 発行・auth_session 失効）を組み立てる。
+    - **P3-3 管理コンソール移設**: `/admin/console/*`（login/home/clients/users/status/audit-logs）を web へ。
+      データ取得/操作は api の JSON `/admin/*` を SSO Cookie 転送で呼ぶ（`RequirePerms<IdpAdmin>` 再利用）。
+      不足する JSON エンドポイント（client 状況・利用者検索等）は api に追加。CSRF は web 側で維持。
+    - **P3-4 api の HTML 撤去**: 移設完了後、api から presentation の HTML（login・admin console）と i18n を
+      削除し、api を JSON/protocol のみにする。
+    - 留意: HTML を api から外すと現在の全部入り E2E（`tests/oidc_flow` 等）が成立しなくなるため、テスト
+      再編は **P5** で扱う（P3-4 の撤去タイミングと連動）。
   - **P4 コンテナ/Compose**: `api`・`web` を別イメージ・別サービスに（Dockerfile を crate 別ビルドへ）。
     `web` は DB 非依存（`api` のみ DB 直結・署名鍵ブートストラップ `ensure_active_key` も API 側）。
     ネットワーク公開範囲（例: `api`=外部公開／`web`=管理は内部・制限、または逆）を確定し `OPERATIONS.md` に明記。
@@ -146,6 +157,7 @@ code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出
 > - F2 は A1（client の grant_types 管理）と親和。F4・F5 はセッション/トークン失効基盤を共有。
 > - S1 は他タスクと独立に着手可能（早期着手も可）。
 > - C1（コンテナ分離）は方針・設計を確定済み（真のサービス分割・workspace 分割・Web→API HTTP 化。
->   `docs/adr/0007-api-web-service-split.md`）。P0（ADR）・P1（workspace 化）・P2（内部認証 API）完了。次は P3（web crate 化）。
+>   `docs/adr/0007-api-web-service-split.md`）。P0（ADR）・P1（workspace 化）・P2（内部認証 API）・
+>   P3-1（contracts＋web crate 土台）完了。次は P3-2（ログイン画面移設）。
 >   大規模のため他機能タスク（K1・F2 等）との実施順はリソースを見て決める。
 > 各タスクは着手時に `docs/history/` への記録要否（規模が大きく背景まで追う場合のみ）を判断する。

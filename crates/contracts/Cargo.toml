@@ -1,0 +1,13 @@
+[package]
+name = "idp-contracts"
+version = "0.1.0"
+edition = "2021"
+description = "OIDC IdP サービス間 DTO 契約（api サーバ ↔ web クライアントで共有）。DB 非依存。"
+license = "MIT"
+
+[lib]
+name = "idp_contracts"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }

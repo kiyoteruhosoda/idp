@@ -1,0 +1,30 @@
+[package]
+name = "idp-web"
+version = "0.1.0"
+edition = "2021"
+description = "OIDC IdP Web: HTML 描画（ログイン画面・管理コンソール）+ i18n + API クライアント"
+license = "MIT"
+
+[lib]
+name = "idp_web"
+path = "src/lib.rs"
+
+[[bin]]
+name = "idp-web"
+path = "src/main.rs"
+
+# ADR-0007 の肝: web は DB（sqlx）/ infrastructure に依存しない。データ操作は api へ HTTP 越しに行う。
+# 依存に idp-core を含めない（sqlx を間接依存させない）ことを crate 境界で強制する。
+[dependencies]
+idp-contracts = { path = "../contracts" }
+tokio = { workspace = true }
+axum = { workspace = true }
+tower-http = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+dotenvy = { workspace = true }
+uuid = { workspace = true }

@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/api"]
+members = ["crates/core", "crates/contracts", "crates/api", "crates/web"]
 
 # ワークスペース共通の依存バージョン（各 crate は `workspace = true` で参照する）。
-# ADR-0007（API/Web サービス分割）の P1: 単一 crate を core（domain/application/infrastructure）と
-# api（presentation + バイナリ）へ分割した。web / contracts crate は P3 で追加する。
+# ADR-0007（API/Web サービス分割）: P1 で core（domain/application/infrastructure）と api（presentation +
+# バイナリ）へ分割。P3 で contracts（serde DTO 契約）と web（HTML 描画 + API クライアント）を追加した。
 [workspace.dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net"] }
 axum = { version = "0.8", features = ["macros"] }
@@ -43,3 +43,5 @@ utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
 utoipa-swagger-ui = { version = "9", features = ["axum", "vendored"] }
 fluent = "0.17"
 unic-langid = { version = "0.9", features = ["macros"] }
+# web crate の API クライアント（core/sqlx へ依存させないための HTTP 越しアクセス）。TLS は rustls。
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
