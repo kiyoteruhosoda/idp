@@ -1,6 +1,6 @@
 # ADR-0006: 管理機能のための利用者権限モデル（user ↔ permission）
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-06
 - 関連: `CLAUDE.md`「権限管理」、`docs/OIDC_INPUT.md`（設計仕様）、`docs/Progress.md`（A1〜A3・K1）、
   `docs/adr/0005-rust-mariadb-stack.md`

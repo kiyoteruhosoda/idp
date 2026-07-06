@@ -104,7 +104,7 @@ code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出
 
 > 依存関係:
 > - A2（管理コンソール基盤＋権限モデル）は A1・A3・K1 の画面が前提とする。権限モデルは
->   `docs/adr/0006-admin-permission-model.md`（Proposed）で設計済み。着手前に Accepted へ確定させる。
+>   `docs/adr/0006-admin-permission-model.md`（Accepted）で確定済み（未着手）。
 > - F2 は A1（client の grant_types 管理）と親和。F4・F5 はセッション/トークン失効基盤を共有。
 > - S1 は他タスクと独立に着手可能（早期着手も可）。
 > 各タスクは着手時に `docs/history/` への記録要否（規模が大きく背景まで追う場合のみ）を判断する。
