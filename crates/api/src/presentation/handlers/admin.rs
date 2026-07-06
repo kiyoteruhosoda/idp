@@ -7,10 +7,14 @@
 use crate::presentation::admin::{IdpAdmin, RequirePerms};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use serde_json::json;
+use idp_contracts::admin::WhoamiResponse;
 
 /// 認可済み管理利用者の身元を返す（管理コンソール基盤の疎通確認用）。
 /// アクセスできること自体が「有効な SSO セッション ＋ `idp.admin` 保有」を意味する。
+/// web の管理コンソールはこれを SSO Cookie 転送で呼び、認証状態と身元を得る（ADR-0007 §4）。
 pub async fn whoami(RequirePerms(admin, _): RequirePerms<IdpAdmin>) -> Response {
-    Json(json!({ "user_id": admin.user_id.to_string() })).into_response()
+    Json(WhoamiResponse {
+        user_id: admin.user_id.to_string(),
+    })
+    .into_response()
 }

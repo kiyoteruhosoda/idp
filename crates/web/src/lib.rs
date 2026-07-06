@@ -11,6 +11,7 @@ pub mod api_client;
 pub mod config;
 pub mod cookies;
 pub mod correlation;
+pub mod csrf;
 pub mod dto;
 pub mod handlers;
 pub mod i18n;

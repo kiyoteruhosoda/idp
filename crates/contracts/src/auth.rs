@@ -63,6 +63,19 @@ pub struct InternalAdminAuthenticateRequest {
     pub user_agent: Option<String>,
 }
 
+/// 内部ログアウト API（`POST /internal/logout`、ADR-0007）のリクエスト。
+///
+/// web が管理コンソールのログアウトで、失効させたい SSO セッション id（Cookie 値）と接続元情報を転送する。
+/// Cookie の失効は web が行い、api は DB のセッション削除と監査記録を担う。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalLogoutRequest {
+    pub sso_session_id: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
 /// 管理コンソール内部認証 API のレスポンス。成功時は SSO セッション id を返す（code/redirect は無い）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]

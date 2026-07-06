@@ -1,5 +1,6 @@
 //! web のハンドラ。管理コンソールは後続ステージで追加する。
 
+pub mod admin_console;
 pub mod health;
 pub mod login;
 

@@ -4,15 +4,30 @@
 //! その唯一の出入口。内部認証（`/internal/authenticate*`）はサービス認証トークン（`X-Internal-Auth-Token`）
 //! を付与して呼ぶ。DTO は `idp-contracts` で api と共有し、コンパイル時に契約整合を保証する。
 
+use idp_contracts::admin::WhoamiResponse;
 use idp_contracts::auth::{
     InternalAdminAuthenticateRequest, InternalAdminAuthenticateResponse, InternalAuthenticateRequest,
-    InternalAuthenticateResponse,
+    InternalAuthenticateResponse, InternalLogoutRequest,
 };
 
 /// サービス認証トークンのヘッダ名（api 側 `require_service_token` と一致させる）。
 const SERVICE_TOKEN_HEADER: &str = "x-internal-auth-token";
 /// correlation_id（requestId）の伝播ヘッダ名（api 側 correlation ミドルウェアと一致させる）。
 const REQUEST_ID_HEADER: &str = "x-request-id";
+/// SSO セッション Cookie 名（api の `cookies::SSO_SESSION_COOKIE` と一致させる）。
+const SSO_SESSION_COOKIE: &str = "sso_session_id";
+
+/// 管理者の SSO Cookie を api の `/admin/*`（`RequirePerms<IdpAdmin>`）へ転送した結果（ADR-0007 §4）。
+pub enum AdminSession {
+    /// 有効な SSO ＋ `idp.admin` 保有。管理利用者の内部 ID を返す。
+    Authenticated(String),
+    /// 未認証・SSO 期限切れ（ログイン画面へ誘導する）。
+    Unauthenticated,
+    /// 認証済みだが `idp.admin` 権限なし（403 画面）。
+    Forbidden,
+    /// api 呼び出し失敗（構成/障害）。
+    Error,
+}
 
 /// api への HTTP クライアント。`reqwest::Client` は接続プールを内包するため clone は安価。
 #[derive(Clone)]
@@ -49,6 +64,63 @@ impl ApiClient {
     ) -> anyhow::Result<InternalAdminAuthenticateResponse> {
         self.post_internal("/internal/authenticate/admin", correlation_id, req)
             .await
+    }
+
+    /// ログアウト（`POST /internal/logout`）。api 側で SSO セッションを失効させる（Cookie 失効は web）。
+    pub async fn logout(
+        &self,
+        correlation_id: &str,
+        req: &InternalLogoutRequest,
+    ) -> anyhow::Result<()> {
+        let response = self
+            .http
+            .post(format!("{}/internal/logout", self.base_url))
+            .header(SERVICE_TOKEN_HEADER, &self.service_token)
+            .header(REQUEST_ID_HEADER, correlation_id)
+            .json(req)
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("request to api /internal/logout failed: {e}"))?;
+        if !response.status().is_success() {
+            anyhow::bail!("api /internal/logout returned status {}", response.status());
+        }
+        Ok(())
+    }
+
+    /// 管理者の SSO Cookie を api の `GET /admin/whoami` へ転送し、認証状態と身元を得る（ADR-0007 §4）。
+    pub async fn admin_whoami(&self, correlation_id: &str, sso_session_id: &str) -> AdminSession {
+        let response = match self
+            .http
+            .get(format!("{}/admin/whoami", self.base_url))
+            .header(REQUEST_ID_HEADER, correlation_id)
+            .header(
+                reqwest::header::COOKIE,
+                format!("{SSO_SESSION_COOKIE}={sso_session_id}"),
+            )
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!(error = %e, "admin whoami call to api failed");
+                return AdminSession::Error;
+            }
+        };
+        match response.status() {
+            reqwest::StatusCode::OK => match response.json::<WhoamiResponse>().await {
+                Ok(w) => AdminSession::Authenticated(w.user_id),
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to decode whoami response");
+                    AdminSession::Error
+                }
+            },
+            reqwest::StatusCode::UNAUTHORIZED => AdminSession::Unauthenticated,
+            reqwest::StatusCode::FORBIDDEN => AdminSession::Forbidden,
+            other => {
+                tracing::error!(status = %other, "unexpected whoami status from api");
+                AdminSession::Error
+            }
+        }
     }
 
     /// api への到達性を確認する（`GET /healthz`）。web の readiness で使う。

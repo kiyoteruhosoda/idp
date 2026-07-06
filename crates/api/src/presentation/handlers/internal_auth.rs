@@ -22,7 +22,7 @@ use crate::presentation::correlation::CorrelationId;
 use crate::presentation::state::AppState;
 use idp_contracts::auth::{
     InternalAdminAuthenticateRequest, InternalAdminAuthenticateResponse, InternalAuthenticateRequest,
-    InternalAuthenticateResponse,
+    InternalAuthenticateResponse, InternalLogoutRequest,
 };
 use axum::extract::{Extension, Request, State};
 use axum::http::StatusCode;
@@ -141,6 +141,22 @@ pub async fn authenticate_admin(
             InternalAdminAuthenticateResponse::Internal
         }
     })
+}
+
+/// ログアウト（`POST /internal/logout`）。web が管理コンソールのログアウトで呼ぶ。SSO セッションを
+/// DB から失効させ監査へ記録する（Cookie 失効は web が行う）。不明・不正なセッションは冪等に無視する。
+pub async fn logout(
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Json(req): Json<InternalLogoutRequest>,
+) -> StatusCode {
+    let ctx = RequestContext {
+        correlation_id: correlation.0,
+        ip_address: req.ip_address,
+        user_agent: req.user_agent,
+    };
+    state.admin_login.logout(&req.sso_session_id, &ctx).await;
+    StatusCode::NO_CONTENT
 }
 
 /// 定数時間比較（サービストークン照合のタイミング差を避ける）。長さが異なれば即 false。

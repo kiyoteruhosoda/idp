@@ -24,6 +24,7 @@ pub fn build(state: AppState) -> Router {
             "/internal/authenticate/admin",
             post(internal_auth::authenticate_admin),
         )
+        .route("/internal/logout", post(internal_auth::logout))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             internal_auth::require_service_token,
