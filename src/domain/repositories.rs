@@ -101,6 +101,10 @@ pub trait AuditLogSink: Send + Sync {
 pub trait AuditLogQuery: Send + Sync {
     /// 条件に一致する監査ログを新しい順（`occurred_at` 降順、同時刻は `id` 降順）に返す。
     async fn search(&self, filter: &AuditLogFilter) -> Result<Vec<AuditLogEntry>>;
+
+    /// クライアント別の**最終利用時刻**（成功したトークン発行・認可コード発行の最新 `occurred_at`）を返す。
+    /// クライアント状況一覧（A3）が利用する。利用実績の無いクライアントは含まれない。
+    async fn last_used_per_client(&self) -> Result<Vec<(String, DateTime<Utc>)>>;
 }
 
 /// 利用者が保有する権限コード（ADR-0006）の参照・付与・剥奪（DIP 境界）。

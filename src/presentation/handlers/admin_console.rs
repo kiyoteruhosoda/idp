@@ -36,16 +36,17 @@ use axum::Form;
 /// 管理コンソールのホーム（`GET /admin/console`）。抽出成功＝有効な SSO ＋ `idp.admin` 保有。
 pub async fn home(AdminHtmlSession(admin): AdminHtmlSession, headers: HeaderMap) -> Response {
     let messages = Messages::new(locale(&headers));
-    // 実装済みの画面はリンク、未実装の画面はテキストで示す（リンク切れを作らない）。
     let content = format!(
         "<p>{intro}</p>\n\
          <ul class=\"admin-sections\">\n\
          <li><a href=\"/admin/console/clients\">{clients}</a></li>\n\
-         <li>{audit}</li>\n\
+         <li><a href=\"/admin/console/status\">{status}</a></li>\n\
+         <li><a href=\"/admin/console/audit-logs\">{audit}</a></li>\n\
          <li><a href=\"/admin/console/users\">{permissions}</a></li>\n\
          </ul>",
         intro = messages.get("admin-home-intro"),
         clients = messages.get("admin-nav-clients"),
+        status = messages.get("admin-nav-status"),
         audit = messages.get("admin-nav-audit"),
         permissions = messages.get("admin-nav-permissions"),
     );

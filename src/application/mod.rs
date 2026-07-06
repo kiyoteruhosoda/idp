@@ -8,6 +8,7 @@ pub mod audit;
 pub mod audit_query;
 pub mod authorize;
 pub mod client_management;
+pub mod client_status;
 pub mod code_issuance;
 pub mod key_service;
 pub mod login;

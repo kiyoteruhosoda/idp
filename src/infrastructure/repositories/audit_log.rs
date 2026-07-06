@@ -119,4 +119,24 @@ impl AuditLogQuery for SqlxAuditLogQuery {
         let rows = qb.build().fetch_all(&self.pool).await.map_err(repo_err)?;
         rows.iter().map(map_row).collect()
     }
+
+    async fn last_used_per_client(&self) -> Result<Vec<(String, DateTime<Utc>)>> {
+        // 「利用」= 成功したトークン発行・認可コード発行。client_id ごとの最新時刻を 1 回の集計で取る。
+        let rows = sqlx::query(
+            "SELECT client_id, MAX(occurred_at) AS last_used_at FROM audit_log \
+             WHERE client_id IS NOT NULL AND result = 'success' \
+             AND event_type IN ('token.issued', 'authorization_code.issued') \
+             GROUP BY client_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        rows.iter()
+            .map(|row| {
+                let client_id: String = row.try_get("client_id").map_err(repo_err)?;
+                let last_used: NaiveDateTime = row.try_get("last_used_at").map_err(repo_err)?;
+                Ok((client_id, to_utc(last_used)))
+            })
+            .collect()
+    }
 }

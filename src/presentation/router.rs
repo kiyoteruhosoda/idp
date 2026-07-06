@@ -3,7 +3,8 @@
 use crate::presentation::correlation;
 use crate::presentation::handlers::{
     admin, admin_audit, admin_clients, admin_clients_console, admin_console, admin_permissions,
-    admin_users_console, authorize, discovery, health, login, register, token, userinfo,
+    admin_status_console, admin_users_console, authorize, discovery, health, login, register,
+    token, userinfo,
 };
 use crate::presentation::openapi::ApiDoc;
 use crate::presentation::state::AppState;
@@ -62,6 +63,15 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/admin/console/users/{user_id}/permissions/revoke",
             post(admin_users_console::revoke),
+        )
+        // 状況確認画面（A3）。監査／ログインログ一覧・クライアント状況一覧。
+        .route(
+            "/admin/console/audit-logs",
+            get(admin_status_console::audit_logs),
+        )
+        .route(
+            "/admin/console/status",
+            get(admin_status_console::client_status),
         )
         // 疎通確認用の内部 API（idp.admin 必須。RequirePerms<IdpAdmin>）。
         .route("/admin/whoami", get(admin::whoami))

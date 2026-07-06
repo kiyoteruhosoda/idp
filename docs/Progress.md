@@ -22,14 +22,13 @@ code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出
 
 | 優先 | # | 概要 | 状態 | 影響度 | 工数 |
 |---|---|---|---|---|---|
-| 1 | A3 | 状況確認画面: ログイン/監査ログ一覧（エラー絞り込み）、クライアント状況一覧（最終利用時刻等） | 🚧進行中 | 中 | 中 |
-| 2 | K1 | 署名鍵管理: 複数鍵での署名（世代重複）・JWKS 公開・管理画面（一覧/生成/退役）・EC(ES256) 対応 | ⬜未着手 | 大 | 中 |
-| 3 | K2 | 署名鍵の自動ローテーション: `not_after` ベースのスケジュール実行・ACTIVE/RETIRED 自動管理 | ⬜未着手 | 中 | 中 |
-| 4 | S1 | SSL アクセラレーター対応: `X-Forwarded-Proto`/`-For` 信頼設定・HSTS・セキュリティヘッダ（アプリは HTTP 直受け） | ⬜未着手 | 中 | 小〜中 |
-| 5 | F2 | Refresh Token（rotation・reuse detection、`offline_access` scope） | ⬜未着手 | 大 | 大 |
-| 6 | F3 | Consent（同意画面・同意済み scope 記録・取り消し、`prompt`/`max_age` 正式対応） | ⬜未着手 | 中 | 中 |
-| 7 | F4 | Logout（RP-initiated / front-channel / back-channel、`sso_session.terminated` 有効化） | ⬜未着手 | 中 | 中 |
-| 8 | F5 | Token 管理（revocation / introspection endpoint、ユーザー単位の全セッション無効化） | ⬜未着手 | 中 | 中 |
+| 1 | K1 | 署名鍵管理: 複数鍵での署名（世代重複）・JWKS 公開・管理画面（一覧/生成/退役）・EC(ES256) 対応 | ⬜未着手 | 大 | 中 |
+| 2 | K2 | 署名鍵の自動ローテーション: `not_after` ベースのスケジュール実行・ACTIVE/RETIRED 自動管理 | ⬜未着手 | 中 | 中 |
+| 3 | S1 | SSL アクセラレーター対応: `X-Forwarded-Proto`/`-For` 信頼設定・HSTS・セキュリティヘッダ（アプリは HTTP 直受け） | ⬜未着手 | 中 | 小〜中 |
+| 4 | F2 | Refresh Token（rotation・reuse detection、`offline_access` scope） | ⬜未着手 | 大 | 大 |
+| 5 | F3 | Consent（同意画面・同意済み scope 記録・取り消し、`prompt`/`max_age` 正式対応） | ⬜未着手 | 中 | 中 |
+| 6 | F4 | Logout（RP-initiated / front-channel / back-channel、`sso_session.terminated` 有効化） | ⬜未着手 | 中 | 中 |
+| 7 | F5 | Token 管理（revocation / introspection endpoint、ユーザー単位の全セッション無効化） | ⬜未着手 | 中 | 中 |
 
 > **A1（クライアント登録 API・画面）は完了**（2026-07-06、`CHANGELOG.md`）。JSON 管理 API に加え、
 > `/admin/console/clients*` のサーバレンダリング画面（一覧・登録・詳細・編集・secret 再発行・無効化導線）を実装。
@@ -38,23 +37,15 @@ code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出
 > **A2（管理コンソール基盤）は完了**（2026-07-06、`CHANGELOG.md`）。権限モデル基盤・付与/剥奪 API・
 > 管理コンソール基盤 UI（ログイン／ホーム／ログアウト＋画面用 extractor `AdminHtmlSession`＋共通レイアウト
 > `render_layout`）に加え、**権限付与/剥奪 UI**（`/admin/console/users*` の利用者検索・保有権限一覧・
-> 付与フォーム・剥奪ボタン）を実装。A1・A3・K1 の管理画面は `AdminHtmlSession` で保護し、`render_layout`
+> 付与フォーム・剥奪ボタン）を実装。K1 の管理画面は `AdminHtmlSession` で保護し、`render_layout`
 > の上に実装する。
 
+> **A3（状況確認画面）は完了**（2026-07-06、`CHANGELOG.md`）。監査/ログインログ一覧 API に加え、
+> 状況確認画面（`/admin/console/audit-logs` の絞り込み＋一覧・前後ページ、`/admin/console/status` の
+> クライアント状態・scope・**最終利用時刻**一覧）を実装。最終利用時刻は `audit_log`（成功した
+> `token.issued`／`authorization_code.issued` の最新 `occurred_at`）から導出する（マイグレーション不要）。
+
 ## 詳細
-
-### 管理機能（A3）
-
-- **A3 — 状況確認画面**:
-  - **ログイン/監査ログ一覧 API は実装済み**（2026-07-06、`CHANGELOG.md`）: `GET /admin/audit-logs`
-    （`RequirePerms<IdpAdmin>`）。`event_type` / `result`（`failure` 等の**エラー絞り込み**が主眼）/
-    期間（`from`/`to`、RFC3339）/ `client_id` / `correlation_id` で AND 絞り込みし、新しい順に返す
-    （`limit`≤200・`offset`）。`correlation_id` でリクエスト〜監査イベントを追跡。読み取りは
-    `AuditLogQuery`（DIP 境界。書き込みの `AuditLogSink` と分離）。
-  - **残作業（クライアント状況一覧）**: 各 client の状態（ACTIVE/DISABLED）・scope・**最終利用時刻**の一覧。
-    最終利用時刻は `audit_log`（`token.issued` 等の最新 `occurred_at`）から導出、または
-    `clients.last_used_at` を発行時に更新（マイグレーション）。負荷を見て方式決定。
-  - **残作業（画面）**: 上記 API を表示する状況確認**画面**（A2 の管理コンソール基盤の上に実装）。
 
 ### 鍵管理（K1・K2）
 
@@ -96,8 +87,8 @@ code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出
 - **F5（§9.4）**: RFC 7009 revocation・RFC 7662 introspection。introspection は confidential client 認証必須。
 
 > 依存関係:
-> - A2（管理コンソール基盤＋権限モデル）は**完了済み**（`CHANGELOG.md`）。権限モデルは
->   `docs/adr/0006-admin-permission-model.md`（Accepted）で確定。残る A3・K1 の管理画面は
+> - A1・A2・A3（管理コンソール基盤＋権限モデル＋各管理/状況画面）は**完了済み**（`CHANGELOG.md`）。
+>   権限モデルは `docs/adr/0006-admin-permission-model.md`（Accepted）で確定。残る K1 の管理画面は
 >   画面用 extractor `AdminHtmlSession` で保護し、共通レイアウト `render_layout` の上に実装する。
 > - F2 は A1（client の grant_types 管理）と親和。F4・F5 はセッション/トークン失効基盤を共有。
 > - S1 は他タスクと独立に着手可能（早期着手も可）。
