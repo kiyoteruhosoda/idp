@@ -2,8 +2,8 @@
 
 use crate::presentation::correlation;
 use crate::presentation::handlers::{
-    admin, admin_audit, admin_clients, admin_permissions, authorize, discovery, health, login,
-    register, token, userinfo,
+    admin, admin_audit, admin_clients, admin_console, admin_permissions, authorize, discovery,
+    health, login, register, token, userinfo,
 };
 use crate::presentation::openapi::ApiDoc;
 use crate::presentation::state::AppState;
@@ -22,7 +22,15 @@ pub fn build(state: AppState) -> Router {
         .route("/login", get(login::login_page).post(login::login))
         .route("/token", post(token::token))
         .route("/userinfo", get(userinfo::userinfo))
-        // 管理コンソール（A2 基盤）。idp.admin 権限が必要（RequirePerms<IdpAdmin>）。内部用。
+        // 管理コンソール（A2 基盤）。サーバレンダリング画面（ADR-0006 §6）。
+        // ログインはクライアント不要（鶏卵問題の回避）。ホーム/ログアウトは idp.admin で保護。
+        .route(
+            "/admin/login",
+            get(admin_console::login_page).post(admin_console::login),
+        )
+        .route("/admin/logout", post(admin_console::logout))
+        .route("/admin", get(admin_console::home))
+        // 疎通確認用の内部 API（idp.admin 必須。RequirePerms<IdpAdmin>）。
         .route("/admin/whoami", get(admin::whoami))
         // クライアント（RP）登録・管理 API（A1、設計仕様 §9.3）。idp.admin 必須。
         .route(

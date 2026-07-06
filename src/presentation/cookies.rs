@@ -10,6 +10,8 @@ use axum::http::HeaderMap;
 pub const AUTH_SESSION_COOKIE: &str = "auth_session_id";
 /// SSO セッション Cookie（値は session_id 平文。DB にはハッシュのみ保存）。
 pub const SSO_SESSION_COOKIE: &str = "sso_session_id";
+/// 管理ログインフォームの CSRF 用 Cookie（GET で発行する推測不能な乱数。同期トークンの種）。
+pub const ADMIN_CSRF_COOKIE: &str = "admin_csrf_id";
 
 /// リクエストの `Cookie` ヘッダから `name` の値を取り出す。
 pub fn get(headers: &HeaderMap, name: &str) -> Option<String> {

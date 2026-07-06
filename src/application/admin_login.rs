@@ -1,0 +1,361 @@
+//! 管理コンソール（A2）へのログインのユースケース（ADR-0006 §6）。
+//!
+//! 通常の OIDC ログイン（[`crate::application::login`]）は `/authorize` が発行する `auth_session_id` に
+//! 結合し、成功後は authorization code を発行して RP の `redirect_uri` へ戻す。管理コンソールは
+//! OIDC の RP ではなく IdP 自身の画面であり、初回デプロイ時はクライアントが 1 件も存在しないため、
+//! その導線は使えない（クライアント登録のためにコンソールへ入りたいのにログインにクライアントが要る、
+//! という鶏卵問題）。
+//!
+//! そこで本ユースケースは資格情報を検証し、`idp.admin` 権限の保有を確認したうえで **SSO セッションを
+//! 直接発行する**（code 発行・redirect は行わない）。ロックアウト（設計仕様 §4.3）と IP レート制限は
+//! 通常ログインと同じ方針で適用する。発行された SSO セッションは通常ログインのものと同一機構
+//! （`sso_session_id` Cookie ＝ 平文、DB は SHA-256）であり、`RequirePerms<IdpAdmin>` がそのまま検証する。
+
+use crate::application::audit::{AuditService, RequestContext};
+use crate::domain::audit::{AuditEventType, AuditResult};
+use crate::domain::clock::Clock;
+use crate::domain::password::PasswordHasher;
+use crate::domain::rate_limit::LoginRateLimiter;
+use crate::domain::repositories::{SsoSessionRepository, UserPermissionRepository, UserRepository};
+use crate::domain::sso_session::SsoSession;
+use crate::domain::user::User;
+use crate::infrastructure::crypto;
+use chrono::Duration;
+use std::sync::Arc;
+
+/// username 単位のロック閾値（連続失敗回数）。通常ログイン（`login.rs`）と揃える。
+const MAX_FAILED_LOGINS: i32 = 10;
+/// ロック時間（分）。
+const LOCK_DURATION_MINUTES: i64 = 15;
+/// 管理コンソールへのアクセスに要求する権限コード（ADR-0006）。
+const REQUIRED_PERMISSION: &str = "idp.admin";
+
+/// 管理ログインフォームの CSRF トークンを Cookie 値から導出する（`login::csrf_token` と同方式）。
+///
+/// GET 時に発行する推測不能な乱数（HttpOnly Cookie `admin_csrf_id`）の一方向ハッシュをフォームへ
+/// 埋め込み、POST 時に Cookie から再計算して照合する（同期トークン方式。サーバ側の追加保存は不要）。
+pub fn admin_csrf_token(csrf_id: &str) -> String {
+    crypto::sha256_hex(&format!("admin-csrf:{csrf_id}"))
+}
+
+#[derive(Debug)]
+pub struct AdminLoginCommand {
+    pub username: String,
+    pub password: String,
+}
+
+/// 管理ログインの結果。Presentation は画面（HTML）に写す。
+pub enum AdminLoginOutcome {
+    /// 認証成功かつ `idp.admin` 保有。SSO Cookie を発行して管理コンソールへ 302 する。
+    Success {
+        sso_session_id: String,
+    },
+    /// IP 単位のレート制限超過。
+    RateLimited,
+    /// 資格情報不正（ユーザー不存在・パスワード不一致・無効アカウントを区別しない）。
+    InvalidCredentials,
+    /// アカウントロック中。
+    Locked,
+    /// 資格情報は正しいが `idp.admin` 権限を保有しない。
+    Forbidden,
+    Internal(String),
+}
+
+pub struct AdminLoginService {
+    users: Arc<dyn UserRepository>,
+    sso_sessions: Arc<dyn SsoSessionRepository>,
+    permissions: Arc<dyn UserPermissionRepository>,
+    hasher: Arc<dyn PasswordHasher>,
+    rate_limiter: Arc<dyn LoginRateLimiter>,
+    audit: Arc<AuditService>,
+    clock: Arc<dyn Clock>,
+    sso_idle_ttl: Duration,
+    sso_absolute_ttl: Duration,
+}
+
+impl AdminLoginService {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        users: Arc<dyn UserRepository>,
+        sso_sessions: Arc<dyn SsoSessionRepository>,
+        permissions: Arc<dyn UserPermissionRepository>,
+        hasher: Arc<dyn PasswordHasher>,
+        rate_limiter: Arc<dyn LoginRateLimiter>,
+        audit: Arc<AuditService>,
+        clock: Arc<dyn Clock>,
+        sso_idle_ttl: std::time::Duration,
+        sso_absolute_ttl: std::time::Duration,
+    ) -> Self {
+        Self {
+            users,
+            sso_sessions,
+            permissions,
+            hasher,
+            rate_limiter,
+            audit,
+            clock,
+            sso_idle_ttl: Duration::from_std(sso_idle_ttl).expect("SSO idle TTL out of range"),
+            sso_absolute_ttl: Duration::from_std(sso_absolute_ttl)
+                .expect("SSO absolute TTL out of range"),
+        }
+    }
+
+    pub async fn login(&self, cmd: AdminLoginCommand, ctx: &RequestContext) -> AdminLoginOutcome {
+        let now = self.clock.now();
+
+        // 1. IP 単位のレート制限（CSRF 検証後・資格情報検証前。通常ログインと同順）。
+        if let Some(ip) = &ctx.ip_address {
+            if !self.rate_limiter.check_and_record(ip, now) {
+                self.audit
+                    .record(
+                        AuditEventType::LoginFailed,
+                        AuditResult::Failure,
+                        None,
+                        None,
+                        Some("ip_rate_limited"),
+                        ctx,
+                    )
+                    .await;
+                return AdminLoginOutcome::RateLimited;
+            }
+        }
+
+        // 2. ユーザー検索（username → 見つからなければ email として検索）。
+        let user = match self.find_user(&cmd.username).await {
+            Ok(Some(u)) => u,
+            Ok(None) => {
+                self.audit
+                    .record(
+                        AuditEventType::LoginFailed,
+                        AuditResult::Failure,
+                        None,
+                        None,
+                        Some("unknown_user"),
+                        ctx,
+                    )
+                    .await;
+                return AdminLoginOutcome::InvalidCredentials;
+            }
+            Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
+        };
+
+        // 3. ロック状態の確認。
+        if user.is_locked_at(now) {
+            self.audit
+                .record(
+                    AuditEventType::LoginLocked,
+                    AuditResult::Failure,
+                    Some(user.id),
+                    None,
+                    Some("account_locked"),
+                    ctx,
+                )
+                .await;
+            return AdminLoginOutcome::Locked;
+        }
+
+        // 4. アカウント状態の確認（存在の露呈を避けるため資格情報エラーと同じ応答にする）。
+        if !user.is_active() {
+            self.audit
+                .record(
+                    AuditEventType::LoginFailed,
+                    AuditResult::Failure,
+                    Some(user.id),
+                    None,
+                    Some("account_not_active"),
+                    ctx,
+                )
+                .await;
+            return AdminLoginOutcome::InvalidCredentials;
+        }
+
+        // 5. パスワード検証。
+        let verified = match self.hasher.verify(&cmd.password, &user.password_hash) {
+            Ok(v) => v,
+            Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
+        };
+        if !verified {
+            return self.handle_password_failure(&user, ctx).await;
+        }
+
+        // 6. 権限確認（資格情報は正しいが管理権限を持たない利用者を締め出す）。
+        //    パスワードは正しいので失敗カウンタは増やさない（ロックの対象にしない）。
+        match self
+            .permissions
+            .has_permission(user.id, REQUIRED_PERMISSION)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                self.audit
+                    .record(
+                        AuditEventType::LoginFailed,
+                        AuditResult::Failure,
+                        Some(user.id),
+                        None,
+                        Some("missing_admin_permission"),
+                        ctx,
+                    )
+                    .await;
+                return AdminLoginOutcome::Forbidden;
+            }
+            Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
+        }
+
+        // 7. 成功: 失敗カウンタとロックをリセットする。
+        if user.failed_login_count > 0 || user.locked_until.is_some() {
+            if let Err(e) = self.users.update_login_state(user.id, 0, None).await {
+                return AdminLoginOutcome::Internal(e.to_string());
+            }
+        }
+
+        // 8. SSO セッション発行（Cookie には session_id、DB には SHA-256 ハッシュ。login.rs と同一機構）。
+        let sso_session_id = crypto::random_hex(32);
+        let sso = SsoSession {
+            session_hash: crypto::sha256_hex(&sso_session_id),
+            user_id: user.id,
+            auth_time: now,
+            idle_expires_at: now + self.sso_idle_ttl,
+            absolute_expires_at: now + self.sso_absolute_ttl,
+            user_agent: ctx.user_agent.clone(),
+            ip_address: ctx.ip_address.clone(),
+            created_at: now,
+            updated_at: now,
+        };
+        if let Err(e) = self.sso_sessions.create(&sso).await {
+            return AdminLoginOutcome::Internal(e.to_string());
+        }
+        self.audit
+            .record(
+                AuditEventType::SsoSessionCreated,
+                AuditResult::Success,
+                Some(user.id),
+                None,
+                None,
+                ctx,
+            )
+            .await;
+        self.audit
+            .record(
+                AuditEventType::LoginSucceeded,
+                AuditResult::Success,
+                Some(user.id),
+                None,
+                None,
+                ctx,
+            )
+            .await;
+
+        AdminLoginOutcome::Success { sso_session_id }
+    }
+
+    /// 管理コンソールからのログアウト。SSO セッションを DB から削除して監査へ記録する。
+    /// Cookie の失効は Presentation（ハンドラ）が行う。不明・不正なセッションは何もしない（冪等）。
+    pub async fn logout(&self, sso_session_id: &str, ctx: &RequestContext) {
+        if sso_session_id.is_empty() {
+            return;
+        }
+        let session_hash = crypto::sha256_hex(sso_session_id);
+        // 監査に user_id を残すため、削除前にセッションを引く（best-effort）。
+        let user_id = match self.sso_sessions.find_by_hash(&session_hash).await {
+            Ok(Some(session)) => Some(session.user_id),
+            _ => None,
+        };
+        if let Err(e) = self.sso_sessions.delete(&session_hash).await {
+            tracing::warn!(error = %e, "failed to delete sso session on admin logout");
+            return;
+        }
+        self.audit
+            .record(
+                AuditEventType::SsoSessionTerminated,
+                AuditResult::Success,
+                user_id,
+                None,
+                Some("admin_logout"),
+                ctx,
+            )
+            .await;
+    }
+
+    async fn find_user(
+        &self,
+        username: &str,
+    ) -> Result<Option<User>, crate::domain::error::DomainError> {
+        if let Some(user) = self.users.find_by_username(username).await? {
+            return Ok(Some(user));
+        }
+        if username.contains('@') {
+            return self.users.find_by_email(username).await;
+        }
+        Ok(None)
+    }
+
+    /// パスワード不一致時の失敗カウント更新とロック判定（login.rs と同ポリシー）。
+    async fn handle_password_failure(
+        &self,
+        user: &User,
+        ctx: &RequestContext,
+    ) -> AdminLoginOutcome {
+        let now = self.clock.now();
+        let failed = user.failed_login_count + 1;
+        let locked_until = if failed >= MAX_FAILED_LOGINS {
+            Some(now + Duration::minutes(LOCK_DURATION_MINUTES))
+        } else {
+            None
+        };
+
+        if let Err(e) = self
+            .users
+            .update_login_state(user.id, failed, locked_until)
+            .await
+        {
+            return AdminLoginOutcome::Internal(e.to_string());
+        }
+
+        self.audit
+            .record(
+                AuditEventType::LoginFailed,
+                AuditResult::Failure,
+                Some(user.id),
+                None,
+                Some("invalid_password"),
+                ctx,
+            )
+            .await;
+
+        if locked_until.is_some() {
+            self.audit
+                .record(
+                    AuditEventType::LoginLocked,
+                    AuditResult::Failure,
+                    Some(user.id),
+                    None,
+                    Some("too_many_failures"),
+                    ctx,
+                )
+                .await;
+            return AdminLoginOutcome::Locked;
+        }
+        AdminLoginOutcome::InvalidCredentials
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn admin_csrf_token_is_deterministic_and_seed_bound() {
+        let a = admin_csrf_token("seed-a");
+        assert_eq!(a, admin_csrf_token("seed-a"));
+        assert_ne!(a, admin_csrf_token("seed-b"));
+        // SHA-256 hex（64 文字）でフォームに埋め込める安全な文字のみ。
+        assert_eq!(a.len(), 64);
+        assert!(a.bytes().all(|b| b.is_ascii_hexdigit()));
+        // 通常ログインの CSRF とは名前空間で分離される（種が同じでも一致しない）。
+        assert_ne!(
+            admin_csrf_token("x"),
+            crate::application::login::csrf_token("x")
+        );
+    }
+}

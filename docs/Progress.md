@@ -64,9 +64,14 @@ code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出
     （保護判定）の `AdminAccessService` とは別に管理（変更）用の `PermissionManagementService` を新設し、
     付与/剥奪を `AuditEventType::UserPermission*`（`user_permission.granted`/`.revoked`）として
     `audit_log` へ記録する。付与は冪等・未知コードは 400・対象利用者不存在は 404。
-  - **残作業**: サーバレンダリングの管理コンソール画面（既存ログイン画面と同じ axum + fluent i18n）と
-    画面レイアウト、上記付与/剥奪 API を叩く**権限付与/剥奪 UI**。
-    未ログイン時のログイン誘導（現状 extractor は 401 を返す）も画面実装時に整える。
+  - **管理コンソール基盤 UI は実装済み**（2026-07-06、`CHANGELOG.md`）: サーバレンダリングの
+    管理ログイン（`GET/POST /admin/login`）・ホーム（`GET /admin`）・ログアウト（`POST /admin/logout`）を
+    追加（既存ログイン画面と同じ axum + fluent i18n）。ログインはクライアント不要で SSO セッションを
+    直接発行し（ADR-0006 §6。初回デプロイの鶏卵問題を回避）、資格情報検証・ロックアウト・IP レート制限は
+    通常ログインと共有。CSRF は同期トークン（`admin_csrf_id` Cookie）。画面用の認可 extractor
+    `AdminHtmlSession`（未認証→ログイン画面へ 302／権限不足→403 HTML）と共通レイアウト
+    `render_layout`（A1/A3 の画面はこの上に差し込む）を用意。
+  - **残作業**: 上記付与/剥奪 API を叩く**権限付与/剥奪 UI**（A2 の共通レイアウト上に実装）。
 
 - **A3 — 状況確認画面**:
   - **ログイン/監査ログ一覧 API は実装済み**（2026-07-06、`CHANGELOG.md`）: `GET /admin/audit-logs`
@@ -120,9 +125,9 @@ code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出
 
 > 依存関係:
 > - A2（管理コンソール基盤＋権限モデル）は A1・A3・K1 の画面が前提とする。権限モデルは
->   `docs/adr/0006-admin-permission-model.md`（Accepted）で確定し、**基盤は実装済み**
->   （`RequirePerms<IdpAdmin>` extractor まで。残りは管理画面 UI）。A1・A3・K1 の管理画面は
->   この extractor で保護して実装する。
+>   `docs/adr/0006-admin-permission-model.md`（Accepted）で確定。**権限モデルと管理コンソール基盤 UI
+>   （ログイン／ホーム／ログアウト＋画面用 extractor `AdminHtmlSession`＋共通レイアウト）は実装済み**。
+>   A1・A3・K1 の管理画面は `AdminHtmlSession` で保護し、`render_layout` の上に実装する。
 > - F2 は A1（client の grant_types 管理）と親和。F4・F5 はセッション/トークン失効基盤を共有。
 > - S1 は他タスクと独立に着手可能（早期着手も可）。
 > 各タスクは着手時に `docs/history/` への記録要否（規模が大きく背景まで追う場合のみ）を判断する。

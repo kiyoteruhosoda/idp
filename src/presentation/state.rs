@@ -4,6 +4,7 @@
 //! バイナリ（`lib.rs::run`）と統合テストの双方から同じ組み立てを使う。
 
 use crate::application::admin_access::AdminAccessService;
+use crate::application::admin_login::AdminLoginService;
 use crate::application::audit::AuditService;
 use crate::application::audit_query::AuditQueryService;
 use crate::application::authorize::AuthorizeService;
@@ -46,6 +47,7 @@ pub struct AppState {
     pub userinfo: Arc<UserInfoService>,
     pub keys: Arc<KeyService>,
     pub admin_access: Arc<AdminAccessService>,
+    pub admin_login: Arc<AdminLoginService>,
     pub clients_admin: Arc<ClientManagementService>,
     pub permissions_admin: Arc<PermissionManagementService>,
     pub audit_query: Arc<AuditQueryService>,
@@ -104,6 +106,18 @@ impl AppState {
             sso_sessions.clone(),
             code_issuance,
             hasher.clone(),
+            rate_limiter.clone(),
+            audit.clone(),
+            clock.clone(),
+            config.sso_idle_ttl(),
+            config.sso_absolute_ttl(),
+        ));
+        // 管理コンソールのログイン（ADR-0006 §6）。IP レート制限は通常ログインと同一の制限器を共有する。
+        let admin_login = Arc::new(AdminLoginService::new(
+            users.clone(),
+            sso_sessions.clone(),
+            user_permissions.clone(),
+            hasher.clone(),
             rate_limiter,
             audit.clone(),
             clock.clone(),
@@ -159,6 +173,7 @@ impl AppState {
             userinfo,
             keys,
             admin_access,
+            admin_login,
             clients_admin,
             permissions_admin,
             audit_query,

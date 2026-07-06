@@ -13,14 +13,19 @@
 
 use crate::application::admin_access::{AdminAccess, AuthorizedAdmin};
 use crate::presentation::cookies;
+use crate::presentation::i18n::{Locale, Messages};
 use crate::presentation::state::AppState;
 use axum::extract::FromRequestParts;
+use axum::http::header::LOCATION;
 use axum::http::request::Parts;
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
 use std::marker::PhantomData;
+
+/// 管理コンソールのログイン画面パス（未認証時の誘導先）。
+pub const ADMIN_LOGIN_PATH: &str = "/admin/login";
 
 /// 保護対象が要求する権限コードを型として表すマーカ。
 ///
@@ -76,4 +81,53 @@ where
 
 fn error_response(status: StatusCode, code: &str, message: &str) -> Response {
     (status, Json(json!({ "error": code, "message": message }))).into_response()
+}
+
+/// 管理コンソール**画面**（HTML）向けの `idp.admin` 認可 extractor。
+///
+/// 判定は [`RequirePerms`] と同じ [`AdminAccessService`] で行うが、拒否時の写し方が異なる。
+/// API 用の [`RequirePerms`] は JSON の 401/403 を返すのに対し、本 extractor は
+/// **未認証ならログイン画面へ 302**（ブラウザの導線）、**権限不足なら 403 の HTML** を返す。
+pub struct AdminHtmlSession(pub AuthorizedAdmin);
+
+impl FromRequestParts<AppState> for AdminHtmlSession {
+    type Rejection = Response;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let sso_session_id = cookies::get(&parts.headers, cookies::SSO_SESSION_COOKIE);
+        match state
+            .admin_access
+            .authorize(sso_session_id.as_deref(), IdpAdmin::CODE)
+            .await
+        {
+            AdminAccess::Granted(admin) => Ok(AdminHtmlSession(admin)),
+            // 未ログイン・期限切れ等 → ログイン画面へ誘導する。
+            AdminAccess::Unauthenticated => Err(redirect_to_login()),
+            AdminAccess::Forbidden => Err(forbidden_page(&parts.headers)),
+        }
+    }
+}
+
+/// ログイン画面（`/admin/login`）への 302 リダイレクト。
+pub fn redirect_to_login() -> Response {
+    (StatusCode::FOUND, [(LOCATION, ADMIN_LOGIN_PATH)]).into_response()
+}
+
+/// 権限不足を伝える最小限の HTML ページ（403）。
+fn forbidden_page(headers: &HeaderMap) -> Response {
+    let messages = Messages::new(Locale::from_accept_language(
+        headers
+            .get(axum::http::header::ACCEPT_LANGUAGE)
+            .and_then(|v| v.to_str().ok()),
+    ));
+    let title = messages.get("admin-forbidden-title");
+    let message = messages.get("admin-forbidden-message");
+    let body = format!(
+        "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"><title>{title}</title></head>\
+         <body><h1>{title}</h1><p>{message}</p></body></html>"
+    );
+    (StatusCode::FORBIDDEN, Html(body)).into_response()
 }

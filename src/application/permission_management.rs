@@ -49,10 +49,7 @@ impl PermissionManagementService {
     }
 
     /// 対象利用者が保有する権限コード一覧を返す（順序は不定）。
-    pub async fn list(
-        &self,
-        target: Uuid,
-    ) -> Result<Vec<String>, PermissionManagementError> {
+    pub async fn list(&self, target: Uuid) -> Result<Vec<String>, PermissionManagementError> {
         self.ensure_user_exists(target).await?;
         self.permissions
             .list_codes_for_user(target)
