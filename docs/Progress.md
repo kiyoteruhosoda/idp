@@ -92,14 +92,11 @@ code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出
      必要に応じて契約用 `contracts`/`dto` crate を切り出す）。CLAUDE.md「将来 workspace 分割可」を今実施する。
 
   フェーズ分割（着手は P0 から。理想形ゆえの新規論点があるため設計を先行させる）:
-  - **P0 設計（ADR）**: サービス間の責務境界と認証を確定する。特にリスクの高い次の 2 点を先に固める。
-    - **authorize↔login の分割フロー**: `/authorize`（API）が Web の `/login` へリダイレクト → Web が
-      フォーム表示 → 資格情報を API の**内部認証エンドポイント**（例 `POST /internal/authenticate`）へ送信 →
-      API が認証・ロックアウト（§4.3）・SSO 発行・code 発行・RP への redirect を返す。SSO/auth_session
-      Cookie のドメイン共有方式を設計（「認証 UI と認可サーバの分離」パターン）。
-    - **管理コンソール（Web）→ JSON 管理 API（API）の認可**: 管理者の SSO Cookie を Web が API へ**転送**し、
-      API 側の既存 `RequirePerms<IdpAdmin>` を再利用する（サービス間トークンは将来）。CSRF は Web 側で維持。
-    - 契約（リクエスト/レスポンス DTO）の共有方式（`contracts` crate か、OpenAPI からの型生成か）を決める。
+  - **P0 設計（ADR）— 完了**: `docs/adr/0007-api-web-service-split.md`（Accepted）で責務境界と
+    サービス間相互作用を確定。要点: 単一オリジン・パスルーティング／authorize↔login は api の内部認証
+    エンドポイント（`POST /internal/authenticate`）へ集約／管理コンソール→API は SSO Cookie 転送で
+    `RequirePerms<IdpAdmin>` 再利用／DTO 契約は `contracts` crate／workspace 構成 `core`・`contracts`・
+    `api`・`web`（web は sqlx 非依存）／DB・署名鍵ブートストラップは api のみ。**次は P1（要 ADR レビュー）**。
   - **P1 workspace 化**: 単一 crate を `core`（domain/application/infrastructure）へ集約し、`api` crate
     （現行 presentation の protocol＋JSON 管理＋P2 の内部認証 API）を分離。まず all-in-one を保ったまま
     crate 境界だけ作り、ビルド/テストを通す。
@@ -139,7 +136,7 @@ code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出
 >   画面用 extractor `AdminHtmlSession` で保護し、共通レイアウト `render_layout` の上に実装する。
 > - F2 は A1（client の grant_types 管理）と親和。F4・F5 はセッション/トークン失効基盤を共有。
 > - S1 は他タスクと独立に着手可能（早期着手も可）。
-> - C1（コンテナ分離）は方針を確定済み（真のサービス分割・workspace 分割・Web→API HTTP 化）。着手は
->   P0（ADR。authorize↔login の分割フローと管理コンソール→API の認可を設計）から。設計確定前にコード移設に
->   入らない。大規模のため他機能タスク（K1・F2 等）との実施順はリソースを見て決める。
+> - C1（コンテナ分離）は方針・設計を確定済み（真のサービス分割・workspace 分割・Web→API HTTP 化。
+>   `docs/adr/0007-api-web-service-split.md`）。P0（ADR）完了。次は P1（workspace 化）＝要 ADR レビュー。
+>   大規模のため他機能タスク（K1・F2 等）との実施順はリソースを見て決める。
 > 各タスクは着手時に `docs/history/` への記録要否（規模が大きく背景まで追う場合のみ）を判断する。
