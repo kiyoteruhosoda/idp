@@ -3,48 +3,20 @@
 進行中・未着手タスクのみを管理する（完了したら本ファイルから削除し、必要なら `CHANGELOG.md` / `history/` へ）。
 
 OIDC IdP MVP（**Rust + MariaDB**）の実装計画。設計仕様は `docs/OIDC_INPUT.md`、
-スタック採用理由は `docs/adr/0005-rust-mariadb-stack.md`。
+スタック採用理由は `docs/adr/0005-rust-mariadb-stack.md`。MVP 完了条件（§10）は充足済み（詳細は `CHANGELOG.md`）。
 
-## MVP 充足状況
-
-設計仕様 `docs/OIDC_INPUT.md` の **MVP 完了条件 §10（1〜13）はすべて充足**し、`tests/oidc_flow.rs`
-の E2E テストで検証済み（ロックアウト §4.3・IP レート制限・scope 部分集合検証・redirect_uri 完全一致・
-code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出力を含む）。API §4・トークン仕様 §5・
-監査ログ §7 も実装済み。§8 の MVP 対象外項目は意図どおり未実装。
-
-> 既知の軽微な差分（本番運用向け・下表 S1 で対応予定）: HSTS / セキュリティヘッダはアプリ層では未実装。
-> `prompt` / `max_age` は §4.2 のとおり MVP では無視（下表 F3 と併せて対応）。
-
-## MVP 以降のバックログ（未着手）
-
-管理機能（RP 登録・管理画面）と鍵管理・プロキシ対応を優先し、その後 OIDC 拡張（§9）を進める。
-着手時に本表の状態を更新し、完了したら削除して `CHANGELOG.md` へ移す。
+## バックログ
 
 | 優先 | # | 概要 | 状態 | 影響度 | 工数 |
 |---|---|---|---|---|---|
 | 1 | K1 | 署名鍵管理: 複数鍵での署名（世代重複）・JWKS 公開・管理画面（一覧/生成/退役）・EC(ES256) 対応 | ⬜未着手 | 大 | 中 |
 | 2 | K2 | 署名鍵の自動ローテーション: `not_after` ベースのスケジュール実行・ACTIVE/RETIRED 自動管理 | ⬜未着手 | 中 | 中 |
 | 3 | S1 | SSL アクセラレーター対応: `X-Forwarded-Proto`/`-For` 信頼設定・HSTS・セキュリティヘッダ（アプリは HTTP 直受け） | ⬜未着手 | 中 | 小〜中 |
-| 4 | C1 | コンテナ分離（API/Web を別サービスに分割・理想形）: workspace 分割・Web→API HTTP 化・内部認証 API・Compose 分離 | 🚧進行中（P0-P2＋P3-1 完了、次 P3-2） | 大 | 大 |
+| 4 | C1 | コンテナ分離（API/Web を別サービスに分割・理想形）: workspace 分割・Web→API HTTP 化・内部認証 API・Compose 分離 | 🚧進行中（残 P3-2〜P5） | 大 | 大 |
 | 5 | F2 | Refresh Token（rotation・reuse detection、`offline_access` scope） | ⬜未着手 | 大 | 大 |
 | 6 | F3 | Consent（同意画面・同意済み scope 記録・取り消し、`prompt`/`max_age` 正式対応） | ⬜未着手 | 中 | 中 |
 | 7 | F4 | Logout（RP-initiated / front-channel / back-channel、`sso_session.terminated` 有効化） | ⬜未着手 | 中 | 中 |
 | 8 | F5 | Token 管理（revocation / introspection endpoint、ユーザー単位の全セッション無効化） | ⬜未着手 | 中 | 中 |
-
-> **A1（クライアント登録 API・画面）は完了**（2026-07-06、`CHANGELOG.md`）。JSON 管理 API に加え、
-> `/admin/console/clients*` のサーバレンダリング画面（一覧・登録・詳細・編集・secret 再発行・無効化導線）を実装。
-> 動的クライアント登録（RFC 7591）・`private_key_jwt` は対象外（将来）。
-
-> **A2（管理コンソール基盤）は完了**（2026-07-06、`CHANGELOG.md`）。権限モデル基盤・付与/剥奪 API・
-> 管理コンソール基盤 UI（ログイン／ホーム／ログアウト＋画面用 extractor `AdminHtmlSession`＋共通レイアウト
-> `render_layout`）に加え、**権限付与/剥奪 UI**（`/admin/console/users*` の利用者検索・保有権限一覧・
-> 付与フォーム・剥奪ボタン）を実装。K1 の管理画面は `AdminHtmlSession` で保護し、`render_layout`
-> の上に実装する。
-
-> **A3（状況確認画面）は完了**（2026-07-06、`CHANGELOG.md`）。監査/ログインログ一覧 API に加え、
-> 状況確認画面（`/admin/console/audit-logs` の絞り込み＋一覧・前後ページ、`/admin/console/status` の
-> クライアント状態・scope・**最終利用時刻**一覧）を実装。最終利用時刻は `audit_log`（成功した
-> `token.issued`／`authorization_code.issued` の最新 `occurred_at`）から導出する（マイグレーション不要）。
 
 ## 詳細
 
@@ -74,70 +46,24 @@ code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出
   - **セキュリティヘッダ**: `X-Content-Type-Options: nosniff`・`Referrer-Policy` 等をログイン/管理画面へ付与。
   - **client IP の一貫化**: 監査ログ（§7 `ip_address`）と IP レート制限（§4.3）が
     転送ヘッダ経由の実 IP を使うよう結線する（現状は接続元 IP）。
-  - Cookie の `Secure` は issuer スキーム/`COOKIE_SECURE` で対応済み（HTTP 直受けでも https issuer なら有効）。
 
 ### インフラ / コンテナ分離（C1）
 
-- **C1 — コンテナ分離（API と Web を別サービスに分割・理想形）**。現状は単一バイナリ `idp`＋単一 `web`
-  コンテナが全経路（OIDC protocol・JSON 管理 API・ログイン画面・管理コンソール）を提供している。
-  独立スケール／独立デプロイ／ネットワーク公開範囲の分離を目的に、**真のサービス分割**で API と Web を分ける。
+設計は `docs/adr/0007-api-web-service-split.md`（Accepted）で確定。P0（ADR）・P1（workspace 化）・
+P2（内部認証 API）・P3-1（`contracts`＋`web` crate 土台）は完了（`CHANGELOG.md`）。残りの作業:
 
-  **決定（2026-07-06、ユーザー確認済み。工数は大きくとも理想形を採る）**:
-  1. **境界**: **Web=全 HTML 画面**（ログイン画面 `/login` ＋管理コンソール `/admin/console/*`）。
-     **API=JSON/protocol のみ**（`/authorize`・`/token`・`/userinfo`・`/.well-known`・JSON 管理 API
-     `/admin/*`・health）。
-  2. **分離の深さ**: **真のサービス分割**。Web は薄いフロントで、データ操作は API を **HTTP 経由**で呼ぶ。
-     **DB へ直結するのは API のみ**（Web は DB 非依存）。
-  3. **コード構成**: **cargo workspace 分割**（`core`＝domain/application/infrastructure、`api`、`web`。
-     必要に応じて契約用 `contracts`/`dto` crate を切り出す）。CLAUDE.md「将来 workspace 分割可」を今実施する。
-
-  フェーズ分割（着手は P0 から。理想形ゆえの新規論点があるため設計を先行させる）:
-  - **P0 設計（ADR）— 完了**: `docs/adr/0007-api-web-service-split.md`（Accepted）で責務境界と
-    サービス間相互作用を確定。要点: 単一オリジン・パスルーティング／authorize↔login は api の内部認証
-    エンドポイント（`POST /internal/authenticate`）へ集約／管理コンソール→API は SSO Cookie 転送で
-    `RequirePerms<IdpAdmin>` 再利用／DTO 契約は `contracts` crate／workspace 構成 `core`・`contracts`・
-    `api`・`web`（web は sqlx 非依存）／DB・署名鍵ブートストラップは api のみ。
-  - **P1 workspace 化 — 完了**（2026-07-06、`CHANGELOG.md`）: 単一 crate を **cargo workspace** へ分割。
-    `crates/core`（lib=`idp_core`：domain/application/infrastructure＋config/telemetry。sqlx 依存を集約）と
-    `crates/api`（lib=`idp_api` / bin=`idp`：presentation＋`run()`。core を再エクスポート）。統合テストは
-    `crates/api/tests/`。`migrations/`・`i18n/` はルート据え置きで crate から `../../` 相対参照。all-in-one を
-    保ったまま crate 境界のみ作成し `cargo build`/`clippy`/lib テスト（45件）を通した。
-  - **P2 内部認証 API — 完了**（2026-07-06、`CHANGELOG.md`）: OIDC 標準外の内部エンドポイント
-    `POST /internal/authenticate`（OIDC ログイン）・`POST /internal/authenticate/admin`（管理コンソール）を
-    api に新設。web（将来）が資格情報・`auth_session_id` 参照・接続元情報（IP/UA）を転送し、api が既存の
-    `LoginService`/`AdminLoginService`（資格情報検証・ロックアウト・IP レート制限・SSO/code 発行・監査）を
-    実行して `result` タグ付き JSON を返す。Cookie 組み立て・文言ローカライズは呼び出し側の責務。`/internal/*`
-    はサービス認証トークン（`X-Internal-Auth-Token`＝設定 `INTERNAL_SERVICE_TOKEN`、既定は開発用で警告）で
-    保護し `route_layer` で遮断。DTO は presentation に定義（`contracts` crate 化は P3）。既存 HTML `/login`・
-    `/admin/console/login` は同一プロセスのため引き続きサービスを直接呼ぶ（P3 で API クライアント化）。
-    **次は P3（web crate 化）**。
-  - **P3 web crate — 進行中（土台完了）**。規模が大きいためステージ分割で進める。
-    - **P3-1 土台 — 完了**（2026-07-06、`CHANGELOG.md`）: `contracts` crate（`idp-contracts`。内部認証 DTO を
-      api から移設し api ↔ web で共有）と `web` crate（`idp-web` / bin=`idp-web`。web 固有設定・ログ・
-      reqwest API クライアント・ヘルスチェック `/healthz`・`/readyz`）を新設。**web は sqlx/idp-core に
-      依存しない**ことを `cargo tree` で確認済み（crate 境界で分離を強制）。api は無変更で全テスト緑。
-    - **P3-2 ログイン画面移設（次）**: `/login`（GET/POST）と i18n を web へ移し、POST は API クライアント
-      経由で `POST /internal/authenticate` を呼ぶ。web が Cookie（SSO 発行・auth_session 失効）を組み立てる。
-    - **P3-3 管理コンソール移設**: `/admin/console/*`（login/home/clients/users/status/audit-logs）を web へ。
-      データ取得/操作は api の JSON `/admin/*` を SSO Cookie 転送で呼ぶ（`RequirePerms<IdpAdmin>` 再利用）。
-      不足する JSON エンドポイント（client 状況・利用者検索等）は api に追加。CSRF は web 側で維持。
-    - **P3-4 api の HTML 撤去**: 移設完了後、api から presentation の HTML（login・admin console）と i18n を
-      削除し、api を JSON/protocol のみにする。
-    - 留意: HTML を api から外すと現在の全部入り E2E（`tests/oidc_flow` 等）が成立しなくなるため、テスト
-      再編は **P5** で扱う（P3-4 の撤去タイミングと連動）。
-  - **P4 コンテナ/Compose**: `api`・`web` を別イメージ・別サービスに（Dockerfile を crate 別ビルドへ）。
-    `web` は DB 非依存（`api` のみ DB 直結・署名鍵ブートストラップ `ensure_active_key` も API 側）。
-    ネットワーク公開範囲（例: `api`=外部公開／`web`=管理は内部・制限、または逆）を確定し `OPERATIONS.md` に明記。
-    `migrate` ジョブは現状維持。
-  - **P5 テスト/運用**: `api` 単体の統合テスト＋`web`→`api` の E2E 疎通。現在の全部入り統合テスト
-    （`tests/*` は `router::build` を利用）は `api` 単体／`web`→`api` E2E へ再編する。
-
-  留意（理想形ゆえの新規論点）:
-  - ログイン画面の分離により、API 側に **OIDC 標準外の内部認証エンドポイント**を新設する必要がある。
-  - Web が DB を持たないため、現在 presentation が application 層を直接呼ぶ全箇所が **API クライアント越し**に変わる
-    （管理コンソールの各画面・状況確認画面・権限付与/剥奪の POST 等。工数の大半はここ）。
-  - **ローカル開発／全部入りモード（旧 d）**: 理想形では常駐の全部入りバイナリは持たない方針。ローカルは
-    compose で `api`・`web` を同時起動する。統合テストは上記 P5 のとおり再編する。
+- **P3-2 ログイン画面移設**: `/login`（GET/POST）と i18n を `web` へ移し、POST は API クライアント経由で
+  `POST /internal/authenticate` を呼ぶ。web が Cookie（SSO 発行・auth_session 失効）を組み立てる。
+- **P3-3 管理コンソール移設**: `/admin/console/*`（login/home/clients/users/status/audit-logs）を `web` へ。
+  データ取得/操作は api の JSON `/admin/*` を SSO Cookie 転送で呼ぶ（`RequirePerms<IdpAdmin>` 再利用）。
+  不足する JSON エンドポイント（client 状況・利用者検索等）は api に追加。CSRF は web 側で維持。
+- **P3-4 api の HTML 撤去**: 移設完了後、api から presentation の HTML（login・admin console）と i18n を
+  削除し、api を JSON/protocol のみにする。
+- **P4 コンテナ/Compose**: `api`・`web` を別イメージ・別サービスに（Dockerfile を crate 別ビルドへ）。
+  リバースプロキシのパスルーティング（`/login`・`/admin/console/*`→web、それ以外→api、`/internal/*` は遮断）と
+  ネットワーク公開範囲を確定し `OPERATIONS.md` に明記。`migrate` ジョブは現状維持。
+- **P5 テスト/運用**: 現在の全部入り統合テスト（`tests/*` は api の `router::build` を利用）を、api 単体の
+  統合テストと `web`→`api` の E2E 疎通へ再編する（P3-4 で HTML を api から外すと全部入り E2E が成立しないため）。
 
 ### OIDC 拡張（F2〜F5、設計仕様 §9）
 
@@ -151,13 +77,8 @@ code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出
 - **F5（§9.4）**: RFC 7009 revocation・RFC 7662 introspection。introspection は confidential client 認証必須。
 
 > 依存関係:
-> - A1・A2・A3（管理コンソール基盤＋権限モデル＋各管理/状況画面）は**完了済み**（`CHANGELOG.md`）。
->   権限モデルは `docs/adr/0006-admin-permission-model.md`（Accepted）で確定。残る K1 の管理画面は
->   画面用 extractor `AdminHtmlSession` で保護し、共通レイアウト `render_layout` の上に実装する。
-> - F2 は A1（client の grant_types 管理）と親和。F4・F5 はセッション/トークン失効基盤を共有。
-> - S1 は他タスクと独立に着手可能（早期着手も可）。
-> - C1（コンテナ分離）は方針・設計を確定済み（真のサービス分割・workspace 分割・Web→API HTTP 化。
->   `docs/adr/0007-api-web-service-split.md`）。P0（ADR）・P1（workspace 化）・P2（内部認証 API）・
->   P3-1（contracts＋web crate 土台）完了。次は P3-2（ログイン画面移設）。
->   大規模のため他機能タスク（K1・F2 等）との実施順はリソースを見て決める。
-> 各タスクは着手時に `docs/history/` への記録要否（規模が大きく背景まで追う場合のみ）を判断する。
+> - K1 の管理画面は管理コンソール（C1 で web へ移設）の上に実装する。権限モデルは
+>   `docs/adr/0006-admin-permission-model.md`（Accepted）で確定済み。
+> - F2 は client の grant_types 管理と親和。F4・F5 はセッション/トークン失効基盤を共有。
+> - S1 は他タスクと独立に着手可能。C1 のプロキシ（P4）とヘッダ層を共有できる。
+> - 各タスクは着手時に `docs/history/` への記録要否（規模が大きく背景まで追う場合のみ）を判断する。
