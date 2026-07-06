@@ -42,6 +42,29 @@ pub struct ClientSecretView {
     pub client_secret: String,
 }
 
+/// 監査ログ 1 行（`GET /admin/audit-logs` の応答要素。設計仕様 §7）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct AuditLogView {
+    #[allow(dead_code)]
+    pub id: i64,
+    pub event_type: String,
+    pub occurred_at: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub user_id: Option<String>,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub user_agent: Option<String>,
+    pub result: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+    pub correlation_id: String,
+}
+
 /// api のエラー応答本文（`{ "error": code, "message": msg }`）。
 #[derive(Debug, Clone, Deserialize)]
 pub struct ApiErrorBody {

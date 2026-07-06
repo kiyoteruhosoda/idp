@@ -95,6 +95,11 @@ pub fn build(state: AppState) -> Router {
             "/admin/clients",
             post(admin_clients::create_client).get(admin_clients::list_clients),
         )
+        // 状況一覧（静的 status は動的 {client_id} より優先）。
+        .route(
+            "/admin/clients/status",
+            get(admin_clients::list_client_status),
+        )
         .route(
             "/admin/clients/{client_id}",
             get(admin_clients::get_client).patch(admin_clients::update_client),

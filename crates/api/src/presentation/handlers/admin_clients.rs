@@ -190,6 +190,31 @@ pub async fn rotate_client_secret(
     }))
 }
 
+/// クライアント状況一覧（`GET /admin/clients/status`）。状態・scope・最終利用時刻。管理コンソール
+/// （web）の状況画面が用いる支援 API（`idp.admin` 必須）。
+pub async fn list_client_status(
+    RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<idp_contracts::admin::ClientStatusResponse>>, ApiError> {
+    let views = state
+        .clients_status
+        .list()
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(Json(
+        views
+            .iter()
+            .map(|v| idp_contracts::admin::ClientStatusResponse {
+                client_id: v.client_id.clone(),
+                app_name: v.app_name.clone(),
+                status: v.status.as_str().to_string(),
+                scopes: v.scopes.clone(),
+                last_used_at: v.last_used_at.map(|t| t.to_rfc3339()),
+            })
+            .collect(),
+    ))
+}
+
 fn client_response(c: &Client) -> ClientResponse {
     ClientResponse {
         id: c.id.to_string(),

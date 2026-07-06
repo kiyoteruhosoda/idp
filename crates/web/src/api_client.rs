@@ -4,9 +4,12 @@
 //! その唯一の出入口。内部認証（`/internal/authenticate*`）はサービス認証トークン（`X-Internal-Auth-Token`）
 //! を付与して呼ぶ。DTO は `idp-contracts` で api と共有し、コンパイル時に契約整合を保証する。
 
-use crate::admin_dto::{ApiErrorBody, ClientCreatedView, ClientSecretView, ClientView};
+use crate::admin_dto::{
+    ApiErrorBody, AuditLogView, ClientCreatedView, ClientSecretView, ClientView,
+};
 use idp_contracts::admin::{
-    AvailablePermissionsResponse, UserPermissionsResponse, UserSummaryResponse, WhoamiResponse,
+    AvailablePermissionsResponse, ClientStatusResponse, UserPermissionsResponse,
+    UserSummaryResponse, WhoamiResponse,
 };
 use idp_contracts::auth::{
     InternalAdminAuthenticateRequest, InternalAdminAuthenticateResponse, InternalAuthenticateRequest,
@@ -322,6 +325,47 @@ impl ApiClient {
         self.admin_send(
             Method::DELETE,
             &format!("/admin/users/{user_id}/permissions/{code}"),
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
+    // ── 状況確認（監査ログ・クライアント状況）─────────────────────────────────
+
+    /// 監査ログ検索（`GET /admin/audit-logs`）。フィルタは `(key, value)` の並びで渡す。
+    pub async fn search_audit_logs(
+        &self,
+        correlation_id: &str,
+        sso: &str,
+        query: &[(&str, String)],
+    ) -> Result<Vec<AuditLogView>, AdminApiError> {
+        let req = self
+            .http
+            .get(format!("{}/admin/audit-logs", self.base_url))
+            .query(query)
+            .header(REQUEST_ID_HEADER, correlation_id)
+            .header(
+                reqwest::header::COOKIE,
+                format!("{SSO_SESSION_COOKIE}={sso}"),
+            );
+        let response = req
+            .send()
+            .await
+            .map_err(|e| AdminApiError::Transport(e.to_string()))?;
+        Self::handle_admin_response(response, "/admin/audit-logs").await
+    }
+
+    /// クライアント状況一覧（`GET /admin/clients/status`）。
+    pub async fn list_client_status(
+        &self,
+        correlation_id: &str,
+        sso: &str,
+    ) -> Result<Vec<ClientStatusResponse>, AdminApiError> {
+        self.admin_send(
+            Method::GET,
+            "/admin/clients/status",
             correlation_id,
             sso,
             None,

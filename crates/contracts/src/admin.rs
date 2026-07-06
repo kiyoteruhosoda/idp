@@ -29,6 +29,20 @@ pub struct UserSummaryResponse {
     pub status: String,
 }
 
+/// クライアント状況（`GET /admin/clients/status`）。状態・scope・最終利用時刻。
+/// 最終利用時刻は監査ログ由来（成功した token/code 発行の最新時刻）。未使用は `None`。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientStatusResponse {
+    pub client_id: String,
+    pub app_name: String,
+    /// `ACTIVE` / `DISABLED`。
+    pub status: String,
+    pub scopes: Vec<String>,
+    /// RFC3339 文字列。未使用なら `None`。
+    #[serde(default)]
+    pub last_used_at: Option<String>,
+}
+
 /// 付与可能な権限コード（`GET /admin/permissions`。`permissions` マスタ由来）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AvailablePermissionsResponse {

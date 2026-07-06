@@ -2,7 +2,7 @@
 
 use crate::correlation;
 use crate::handlers::{
-    admin_clients_console, admin_console, admin_users_console, health, login,
+    admin_clients_console, admin_console, admin_status_console, admin_users_console, health, login,
 };
 use crate::state::WebState;
 use axum::routing::{get, post};
@@ -52,6 +52,15 @@ pub fn build(state: WebState) -> Router {
         .route(
             "/admin/console/users/{user_id}/permissions/revoke",
             post(admin_users_console::revoke),
+        )
+        // 状況確認画面（監査ログ・クライアント状況）。読み取り専用。
+        .route(
+            "/admin/console/audit-logs",
+            get(admin_status_console::audit_logs),
+        )
+        .route(
+            "/admin/console/status",
+            get(admin_status_console::client_status),
         )
         .layer(axum::middleware::from_fn(correlation::propagate))
         .layer(TraceLayer::new_for_http())
