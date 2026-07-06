@@ -139,6 +139,22 @@ pub struct AuditLogEntryResponse {
     pub correlation_id: String,
 }
 
+/// 利用者への権限付与リクエスト（管理 API、A2・ADR-0006）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct GrantPermissionRequest {
+    /// 付与する権限コード（例 `idp.admin`）。`permissions` マスタに存在すること。
+    pub permission_code: String,
+}
+
+/// 利用者が保有する権限コードの一覧レスポンス（A2・ADR-0006）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct UserPermissionsResponse {
+    /// 対象利用者の内部 ID（UUID）。
+    pub user_id: String,
+    /// 保有する権限コード（順序は不定）。
+    pub permission_codes: Vec<String>,
+}
+
 /// クライアントの公開表現（`client_secret_hash` は返さない）。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ClientResponse {

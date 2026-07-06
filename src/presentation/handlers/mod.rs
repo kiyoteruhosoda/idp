@@ -3,6 +3,7 @@
 pub mod admin;
 pub mod admin_audit;
 pub mod admin_clients;
+pub mod admin_permissions;
 pub mod authorize;
 pub mod discovery;
 pub mod health;

@@ -2,6 +2,20 @@
 
 完了した重要な変更の要約（詳しい経緯は `history/`、設計判断は `adr/`）。
 
+## 2026-07-06（A2: 利用者権限の付与・剥奪 API）
+
+- **利用者権限の付与・剥奪 API を実装**（管理コンソール基盤 A2、ADR-0006、設計仕様 §7）。
+  `/admin/users/{user_id}/permissions` の付与（`POST`）・剥奪（`DELETE {permission_code}`）・参照（`GET`）
+  （`RequirePerms<IdpAdmin>`）。付与は冪等、未知の権限コードは 400、対象利用者不存在は 404、
+  `user_id` が UUID でなければ 400。応答は操作後の保有権限コード一覧。
+- 参照（保護判定）の `AdminAccessService` と責務を分離（SRP）し、管理（変更）用の
+  `PermissionManagementService`（Application）を新設。付与・剥奪を `AuditEventType::UserPermission*`
+  （`user_permission.granted` / `.revoked`、actor を `user_id`・対象と権限コードを `reason` に記録）
+  として `audit_log` へ出力する結線を追加。DTO（`GrantPermissionRequest` / `UserPermissionsResponse`）と
+  `admin_permissions` ハンドラを追加し OpenAPI（tag `admin`）へ掲載。単体テスト（付与/剥奪の監査記録・
+  空/未知コード・対象不存在）と統合テスト `tests/admin_permissions.rs`（401/403/400/404・付与/剥奪・
+  冪等・監査記録）を追加。
+
 ## 2026-07-06（A3: 監査/ログイン ログ参照 API）
 
 - **監査ログ参照 API を実装**（状況確認画面 A3、設計仕様 §7）。`GET /admin/audit-logs`

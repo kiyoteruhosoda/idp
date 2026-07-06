@@ -6,8 +6,9 @@
 
 use crate::presentation::dto::{
     AuditLogEntryResponse, ClientCreatedResponse, ClientRegisterRequest, ClientResponse,
-    ClientSecretResponse, ClientUpdateRequest, OAuthErrorResponse, RegisterRequest,
-    RegisterResponse, TokenRequest, TokenResponse, UserInfoResponse,
+    ClientSecretResponse, ClientUpdateRequest, GrantPermissionRequest, OAuthErrorResponse,
+    RegisterRequest, RegisterResponse, TokenRequest, TokenResponse, UserInfoResponse,
+    UserPermissionsResponse,
 };
 use crate::presentation::handlers;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
@@ -31,6 +32,9 @@ use utoipa::{Modify, OpenApi};
         handlers::admin_clients::get_client,
         handlers::admin_clients::update_client,
         handlers::admin_clients::rotate_client_secret,
+        handlers::admin_permissions::list_permissions,
+        handlers::admin_permissions::grant_permission,
+        handlers::admin_permissions::revoke_permission,
         handlers::admin_audit::list_audit_logs,
     ),
     components(schemas(
@@ -45,6 +49,8 @@ use utoipa::{Modify, OpenApi};
         ClientResponse,
         ClientCreatedResponse,
         ClientSecretResponse,
+        GrantPermissionRequest,
+        UserPermissionsResponse,
         AuditLogEntryResponse,
     )),
     modifiers(&BearerToken),

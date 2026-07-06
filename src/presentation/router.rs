@@ -2,8 +2,8 @@
 
 use crate::presentation::correlation;
 use crate::presentation::handlers::{
-    admin, admin_audit, admin_clients, authorize, discovery, health, login, register, token,
-    userinfo,
+    admin, admin_audit, admin_clients, admin_permissions, authorize, discovery, health, login,
+    register, token, userinfo,
 };
 use crate::presentation::openapi::ApiDoc;
 use crate::presentation::state::AppState;
@@ -36,6 +36,15 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/admin/clients/{client_id}/secret",
             post(admin_clients::rotate_client_secret),
+        )
+        // 利用者権限の付与・剥奪・参照（A2、ADR-0006）。idp.admin 必須。
+        .route(
+            "/admin/users/{user_id}/permissions",
+            get(admin_permissions::list_permissions).post(admin_permissions::grant_permission),
+        )
+        .route(
+            "/admin/users/{user_id}/permissions/{permission_code}",
+            axum::routing::delete(admin_permissions::revoke_permission),
         )
         // 監査ログ参照（A3、設計仕様 §7）。idp.admin 必須。
         .route("/admin/audit-logs", get(admin_audit::list_audit_logs))

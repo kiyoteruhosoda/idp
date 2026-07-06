@@ -11,6 +11,7 @@ use crate::application::client_management::ClientManagementService;
 use crate::application::code_issuance::CodeIssuanceService;
 use crate::application::key_service::KeyService;
 use crate::application::login::LoginService;
+use crate::application::permission_management::PermissionManagementService;
 use crate::application::register::RegisterService;
 use crate::application::token::TokenService;
 use crate::application::userinfo::UserInfoService;
@@ -46,6 +47,7 @@ pub struct AppState {
     pub keys: Arc<KeyService>,
     pub admin_access: Arc<AdminAccessService>,
     pub clients_admin: Arc<ClientManagementService>,
+    pub permissions_admin: Arc<PermissionManagementService>,
     pub audit_query: Arc<AuditQueryService>,
 }
 
@@ -121,7 +123,7 @@ impl AppState {
             codes,
             keys.clone(),
             hasher,
-            audit,
+            audit.clone(),
             clock.clone(),
             config.issuer().to_string(),
             config.access_token_ttl(),
@@ -133,6 +135,12 @@ impl AppState {
             clock.clone(),
             config.issuer().to_string(),
             config.clock_skew(),
+        ));
+        let permissions_admin = Arc::new(PermissionManagementService::new(
+            users.clone(),
+            user_permissions.clone(),
+            audit.clone(),
+            clock.clone(),
         ));
         let admin_access = Arc::new(AdminAccessService::new(
             sso_sessions,
@@ -152,6 +160,7 @@ impl AppState {
             keys,
             admin_access,
             clients_admin,
+            permissions_admin,
             audit_query,
         }
     }

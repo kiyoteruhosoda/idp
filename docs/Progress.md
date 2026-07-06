@@ -59,9 +59,13 @@ code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出
     `PermissionCode` + `UserPermissionRepository`（DIP 境界。参照/付与/剥奪）+ Application の
     `AdminAccessService`（SSO→利用者→権限突合）+ `RequirePerms<IdpAdmin>` extractor +
     内部疎通用 `GET /admin/whoami`。監査種別 `user_permission.granted`/`.revoked` を §7 に追記済み。
+  - **権限付与/剥奪 API は実装済み**（2026-07-06、`CHANGELOG.md`）: `/admin/users/{user_id}/permissions`
+    の付与（`POST`）・剥奪（`DELETE`）・参照（`GET`）（`RequirePerms<IdpAdmin>`）。SRP に従い参照
+    （保護判定）の `AdminAccessService` とは別に管理（変更）用の `PermissionManagementService` を新設し、
+    付与/剥奪を `AuditEventType::UserPermission*`（`user_permission.granted`/`.revoked`）として
+    `audit_log` へ記録する。付与は冪等・未知コードは 400・対象利用者不存在は 404。
   - **残作業**: サーバレンダリングの管理コンソール画面（既存ログイン画面と同じ axum + fluent i18n）と
-    画面レイアウト、権限付与/剥奪 UI、および付与/剥奪操作の `audit_log` 記録（`AdminAccessService` に
-    grant/revoke ユースケースを足して `AuditEventType::UserPermission*` を出力する結線）。
+    画面レイアウト、上記付与/剥奪 API を叩く**権限付与/剥奪 UI**。
     未ログイン時のログイン誘導（現状 extractor は 401 を返す）も画面実装時に整える。
 
 - **A3 — 状況確認画面**:
