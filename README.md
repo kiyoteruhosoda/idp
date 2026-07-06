@@ -16,6 +16,69 @@ IdP ドメインの Cookie セッションによる **SSO** を含む。
 | SSO | IdP ドメインの Cookie セッション（idle 8h / absolute 24h） |
 | スタック | Rust（axum / tokio / sqlx）+ MariaDB 10.11 |
 
+## システム構成
+
+同一ホストの Docker Compose 上で `web`（IdP 本体）と `mariadb` が動作し、DDL・マスタデータの適用は
+常駐させない `migrate` ワンショットジョブが担う。`web` は内部で DDD 4層に分かれる。
+
+```mermaid
+graph TB
+  subgraph client["クライアント側"]
+    B["ブラウザ（ユーザー）"]
+    RP["Client アプリ（RP）"]
+  end
+
+  subgraph host["Docker Compose ホスト"]
+    subgraph web["web サービス : axum / Rust"]
+      direction TB
+      P["Presentation<br/>router・handlers・DTO・cookies"]
+      A["Application<br/>authorize・login・token・userinfo<br/>code_issuance・audit・key_service"]
+      D["Domain<br/>エンティティ・値オブジェクト<br/>リポジトリ trait（DIP 境界）"]
+      I["Infrastructure<br/>sqlx リポジトリ・jwt RS256<br/>argon2・AES-256-GCM・clock"]
+      P --> A
+      A --> D
+      I -. implements .-> D
+    end
+    DB[("MariaDB 10.11<br/>users・clients・auth/sso sessions<br/>authorization_codes・signing_keys・audit_log")]
+    MIG["migrate ジョブ<br/>sqlx migrate run（DDL + seed）"]
+    web -->|"sqlx / mysql"| DB
+    MIG -->|"適用時のみ"| DB
+  end
+
+  B -->|"/authorize・/login フォーム"| P
+  RP -->|"/token・/userinfo・/jwks・/discovery"| P
+  B -.->|"302 redirect + code"| RP
+```
+
+### 認可コードフロー（PKCE S256 + SSO）
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant U as ブラウザ
+  participant C as Client RP
+  participant IdP as IdP axum
+  participant DB as MariaDB
+
+  C->>U: 認可要求へ誘導 [code_challenge]
+  U->>IdP: GET /authorize
+  alt SSO Cookie が有効
+    IdP->>DB: SSO セッション確認・code 発行
+    IdP-->>U: 302 redirect_uri?code+state
+  else 未ログイン
+    IdP-->>U: 302 /login [auth_session_id Cookie]
+    U->>IdP: POST /login [username, password, csrf]
+    IdP->>DB: 認証・SSO 発行・code 発行
+    IdP-->>U: 302 redirect_uri?code+state
+  end
+  U->>C: code を受け渡し
+  C->>IdP: POST /token [code, code_verifier]
+  IdP->>DB: code を one-time 消費・PKCE 検証
+  IdP-->>C: ID Token + Access Token [RS256]
+  C->>IdP: GET /userinfo [Bearer access_token]
+  IdP-->>C: scope に応じた claim
+```
+
 ## 機能一覧
 
 ### OIDC コア
@@ -74,6 +137,19 @@ IdP ドメインの Cookie セッションによる **SSO** を含む。
 | [`docs/adr/`](docs/adr/) | 設計判断（ADR） |
 
 ## クイックスタート
+
+### コンテナ一括（推奨）
+
+`scripts/init.sh` が秘密情報の生成（`.env`）・DB 起動・マイグレーション適用・`web` の起動までを冪等に行う。
+
+```sh
+./scripts/init.sh              # db + web を初期化（既存 .env は上書きしない）
+```
+
+初期管理ユーザー `admin@example.com`（既定パスワードは初回ログイン後に変更）が seed される。
+デプロイは `./scripts/deploy.sh`。
+
+### ローカル開発（web はホストで実行）
 
 ```sh
 docker compose up -d mariadb   # MariaDB 10.11 を起動
