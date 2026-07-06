@@ -3,8 +3,8 @@
 use crate::presentation::correlation;
 use crate::presentation::handlers::{
     admin, admin_audit, admin_clients, admin_clients_console, admin_console, admin_permissions,
-    admin_status_console, admin_users_console, authorize, discovery, health, login, register,
-    token, userinfo,
+    admin_status_console, admin_users_console, authorize, discovery, health, internal_auth, login,
+    register, token, userinfo,
 };
 use crate::presentation::openapi::ApiDoc;
 use crate::presentation::state::AppState;
@@ -15,6 +15,20 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 pub fn build(state: AppState) -> Router {
+    // 内部認証 API（ADR-0007 §3・§5）。web（将来）→api のサービス間 I/F。外部公開しない
+    // （リバースプロキシで /internal/* を遮断する前提）。多層防御としてサービス認証トークン
+    // （X-Internal-Auth-Token）を必須にする route_layer をこのサブルータにのみ付ける。
+    let internal = Router::new()
+        .route("/internal/authenticate", post(internal_auth::authenticate))
+        .route(
+            "/internal/authenticate/admin",
+            post(internal_auth::authenticate_admin),
+        )
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            internal_auth::require_service_token,
+        ));
+
     Router::new()
         .route("/healthz", get(health::liveness))
         .route("/readyz", get(health::readiness))
@@ -104,6 +118,7 @@ pub fn build(state: AppState) -> Router {
             get(discovery::openid_configuration),
         )
         .route("/.well-known/jwks.json", get(discovery::jwks))
+        .merge(internal)
         .merge(SwaggerUi::new("/api/docs").url("/api/openapi.json", ApiDoc::openapi()))
         .layer(axum::middleware::from_fn(correlation::propagate))
         .layer(TraceLayer::new_for_http())

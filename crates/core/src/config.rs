@@ -16,6 +16,10 @@ use std::time::Duration;
 /// を設定する。運用では DB 外の鍵管理（KMS 等）へ移行する。
 const DEV_KEY_ENCRYPTION_KEY: &[u8; 32] = b"idp-dev-insecure-key-0123456789!";
 
+/// サービス間内部認証トークンの開発用デフォルト（ADR-0007 §5）。本番では必ず
+/// `INTERNAL_SERVICE_TOKEN` を設定する。web→api の `/internal/*` 呼び出しを保護する共有シークレット。
+const DEV_INTERNAL_SERVICE_TOKEN: &str = "idp-dev-insecure-internal-service-token";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogFormat {
     Json,
@@ -39,6 +43,8 @@ pub struct Config {
     cookie_secure: bool,
     key_encryption_key: [u8; 32],
     key_encryption_key_is_dev: bool,
+    internal_service_token: String,
+    internal_service_token_is_dev: bool,
 }
 
 impl Config {
@@ -47,6 +53,12 @@ impl Config {
         let issuer = normalize_issuer(env_or("ISSUER", "http://localhost:8080"));
         // Cookie の Secure 属性。既定は issuer のスキームに従う（https なら有効）。
         let cookie_secure = env_parse("COOKIE_SECURE", issuer.starts_with("https://"))?;
+        // web→api の /internal/* 呼び出しを保護する共有シークレット（ADR-0007 §5）。
+        let (internal_service_token, internal_service_token_is_dev) =
+            match env_lookup("INTERNAL_SERVICE_TOKEN") {
+                Some(v) => (v, false),
+                None => (DEV_INTERNAL_SERVICE_TOKEN.to_string(), true),
+            };
 
         Ok(Self {
             issuer,
@@ -67,6 +79,8 @@ impl Config {
             cookie_secure,
             key_encryption_key,
             key_encryption_key_is_dev,
+            internal_service_token,
+            internal_service_token_is_dev,
         })
     }
 
@@ -118,6 +132,14 @@ impl Config {
     /// 開発用デフォルトの暗号化鍵を使っているか（本番では警告対象）。
     pub fn key_encryption_key_is_dev(&self) -> bool {
         self.key_encryption_key_is_dev
+    }
+    /// web→api の `/internal/*` 呼び出しを保護するサービス認証トークン（ADR-0007 §5）。
+    pub fn internal_service_token(&self) -> &str {
+        &self.internal_service_token
+    }
+    /// 開発用デフォルトの内部サービストークンを使っているか（本番では警告対象）。
+    pub fn internal_service_token_is_dev(&self) -> bool {
+        self.internal_service_token_is_dev
     }
 }
 

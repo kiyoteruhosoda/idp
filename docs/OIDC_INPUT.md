@@ -366,6 +366,12 @@ csrf_token
 
 `auth_session_id` は短命Cookieから取得する。
 
+> **実装メモ（ADR-0007）**: 将来的にログイン画面（web）と認可サーバ（api）は別サービスへ分割される。
+> その場合も**外部から見た契約は本節のまま不変**（RP は `/authorize`→`/login`→code 付き redirect を観測する）。
+> 分割後は web が `/login` フォームを描画し、資格情報・`auth_session_id` 参照・接続元情報を api の
+> 内部エンドポイント `POST /internal/authenticate`（OIDC 標準外）へ転送する。資格情報検証・ロックアウト・
+> SSO/code 発行は api（唯一の DB 所有者）が行い、Cookie 組み立てとエラー文言のローカライズは web が担う。
+
 #### 動作
 
 1. Cookieの `auth_session_id` から AuthSession を取得

@@ -25,7 +25,7 @@ code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出
 | 1 | K1 | 署名鍵管理: 複数鍵での署名（世代重複）・JWKS 公開・管理画面（一覧/生成/退役）・EC(ES256) 対応 | ⬜未着手 | 大 | 中 |
 | 2 | K2 | 署名鍵の自動ローテーション: `not_after` ベースのスケジュール実行・ACTIVE/RETIRED 自動管理 | ⬜未着手 | 中 | 中 |
 | 3 | S1 | SSL アクセラレーター対応: `X-Forwarded-Proto`/`-For` 信頼設定・HSTS・セキュリティヘッダ（アプリは HTTP 直受け） | ⬜未着手 | 中 | 小〜中 |
-| 4 | C1 | コンテナ分離（API/Web を別サービスに分割・理想形）: workspace 分割・Web→API HTTP 化・内部認証 API・Compose 分離 | 🚧進行中（P0-P1 完了、次 P2） | 大 | 大 |
+| 4 | C1 | コンテナ分離（API/Web を別サービスに分割・理想形）: workspace 分割・Web→API HTTP 化・内部認証 API・Compose 分離 | 🚧進行中（P0-P2 完了、次 P3） | 大 | 大 |
 | 5 | F2 | Refresh Token（rotation・reuse detection、`offline_access` scope） | ⬜未着手 | 大 | 大 |
 | 6 | F3 | Consent（同意画面・同意済み scope 記録・取り消し、`prompt`/`max_age` 正式対応） | ⬜未着手 | 中 | 中 |
 | 7 | F4 | Logout（RP-initiated / front-channel / back-channel、`sso_session.terminated` 有効化） | ⬜未着手 | 中 | 中 |
@@ -101,9 +101,16 @@ code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出
     `crates/core`（lib=`idp_core`：domain/application/infrastructure＋config/telemetry。sqlx 依存を集約）と
     `crates/api`（lib=`idp_api` / bin=`idp`：presentation＋`run()`。core を再エクスポート）。統合テストは
     `crates/api/tests/`。`migrations/`・`i18n/` はルート据え置きで crate から `../../` 相対参照。all-in-one を
-    保ったまま crate 境界のみ作成し `cargo build`/`clippy`/lib テスト（45件）を通した。**次は P2（内部認証 API）**。
-  - **P2 内部認証 API**: P0 で設計した `POST /internal/authenticate`（および必要な内部 I/F）を API に実装。
-    既存の login ユースケース（資格情報検証・ロックアウト・SSO/code 発行）を内部エンドポイント越しに呼べる形へ整理。
+    保ったまま crate 境界のみ作成し `cargo build`/`clippy`/lib テスト（45件）を通した。
+  - **P2 内部認証 API — 完了**（2026-07-06、`CHANGELOG.md`）: OIDC 標準外の内部エンドポイント
+    `POST /internal/authenticate`（OIDC ログイン）・`POST /internal/authenticate/admin`（管理コンソール）を
+    api に新設。web（将来）が資格情報・`auth_session_id` 参照・接続元情報（IP/UA）を転送し、api が既存の
+    `LoginService`/`AdminLoginService`（資格情報検証・ロックアウト・IP レート制限・SSO/code 発行・監査）を
+    実行して `result` タグ付き JSON を返す。Cookie 組み立て・文言ローカライズは呼び出し側の責務。`/internal/*`
+    はサービス認証トークン（`X-Internal-Auth-Token`＝設定 `INTERNAL_SERVICE_TOKEN`、既定は開発用で警告）で
+    保護し `route_layer` で遮断。DTO は presentation に定義（`contracts` crate 化は P3）。既存 HTML `/login`・
+    `/admin/console/login` は同一プロセスのため引き続きサービスを直接呼ぶ（P3 で API クライアント化）。
+    **次は P3（web crate 化）**。
   - **P3 web crate**: HTML レンダリング（既存 `login` 画面・`admin_*_console`）と i18n を `web` crate へ移設。
     データ取得/操作は **API クライアント（reqwest 等）経由**に置換（application 層の直接呼び出しを撤去）。
     Web は DB・infrastructure に依存しない。
@@ -139,6 +146,6 @@ code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出
 > - F2 は A1（client の grant_types 管理）と親和。F4・F5 はセッション/トークン失効基盤を共有。
 > - S1 は他タスクと独立に着手可能（早期着手も可）。
 > - C1（コンテナ分離）は方針・設計を確定済み（真のサービス分割・workspace 分割・Web→API HTTP 化。
->   `docs/adr/0007-api-web-service-split.md`）。P0（ADR）・P1（workspace 化）完了。次は P2（内部認証 API）。
+>   `docs/adr/0007-api-web-service-split.md`）。P0（ADR）・P1（workspace 化）・P2（内部認証 API）完了。次は P3（web crate 化）。
 >   大規模のため他機能タスク（K1・F2 等）との実施順はリソースを見て決める。
 > 各タスクは着手時に `docs/history/` への記録要否（規模が大きく背景まで追う場合のみ）を判断する。

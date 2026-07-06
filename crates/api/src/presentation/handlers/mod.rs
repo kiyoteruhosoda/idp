@@ -11,6 +11,7 @@ pub mod admin_users_console;
 pub mod authorize;
 pub mod discovery;
 pub mod health;
+pub mod internal_auth;
 pub mod login;
 pub mod register;
 pub mod token;

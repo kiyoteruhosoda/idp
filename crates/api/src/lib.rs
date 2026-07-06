@@ -28,6 +28,11 @@ pub async fn run() -> anyhow::Result<()> {
             "using the built-in development KEY_ENCRYPTION_KEY; set KEY_ENCRYPTION_KEY in production"
         );
     }
+    if config.internal_service_token_is_dev() {
+        tracing::warn!(
+            "using the built-in development INTERNAL_SERVICE_TOKEN; set INTERNAL_SERVICE_TOKEN in production"
+        );
+    }
 
     let pool = infrastructure::db::connect(&config)
         .await
