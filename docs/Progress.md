@@ -47,12 +47,13 @@ code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出
   - scope 管理（`Clients.scopes`。要求 scope はこの部分集合）。API は utoipa で OpenAPI 自動生成。
   - **動的クライアント登録（RFC 7591）は対象外**（将来検討。`docs/OIDC_INPUT.md` §8）。
 
-- **A2 — 管理コンソール基盤**:
-  - 管理画面自体は IdP のファーストパーティ機能。アクセスは **ロールではなく scope**（例 `idp.admin`）で
-    制御する（CLAUDE.md「権限管理」）。ユーザーへ scope を付与する仕組みが未整備のため、
-    **ユーザー権限モデル（user↔scope/grant）を設計する必要がある → ADR 起票候補**。
-    seed 管理ユーザー（`admin@example.com`）に `idp.admin` を付与する。
-  - サーバレンダリング（既存ログイン画面と同じ axum + fluent i18n）。全操作を `audit_log` に記録。
+- **A2 — 管理コンソール基盤**（権限モデルは **`docs/adr/0006-admin-permission-model.md`** で確定）:
+  - アクセスは **ロールではなく権限コード**（例 `idp.admin`）で制御（CLAUDE.md「権限管理」）。
+    OIDC scope（openid/profile/email）とは別軸の「利用者権限」を新設する（ADR-0006）。
+  - 実装項目: `permissions` / `user_permissions` マイグレーション + seed（`admin@example.com` へ `idp.admin`
+    付与）+ `UserPermissionRepository`（DIP 境界）+ `RequirePerms("idp.admin")` extractor。
+  - サーバレンダリング（既存ログイン画面と同じ axum + fluent i18n）。権限付与/剥奪を含む全操作を
+    `audit_log` に記録（`user_permission.granted`/`.revoked` を §7 へ追記）。
 
 - **A3 — 状況確認画面**:
   - **ログイン/監査ログ一覧**: `audit_log` を `event_type` / `result` / 期間 / `client_id` で絞り込み表示
@@ -102,7 +103,8 @@ code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出
 - **F5（§9.4）**: RFC 7009 revocation・RFC 7662 introspection。introspection は confidential client 認証必須。
 
 > 依存関係:
-> - A2（管理コンソール基盤＋権限モデル）は A1・A3・K1 の画面が前提とする。まず A2 の権限モデル ADR を確定させる。
+> - A2（管理コンソール基盤＋権限モデル）は A1・A3・K1 の画面が前提とする。権限モデルは
+>   `docs/adr/0006-admin-permission-model.md`（Proposed）で設計済み。着手前に Accepted へ確定させる。
 > - F2 は A1（client の grant_types 管理）と親和。F4・F5 はセッション/トークン失効基盤を共有。
 > - S1 は他タスクと独立に着手可能（早期着手も可）。
 > 各タスクは着手時に `docs/history/` への記録要否（規模が大きく背景まで追う場合のみ）を判断する。
