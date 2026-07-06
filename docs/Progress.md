@@ -25,7 +25,7 @@ code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出
 | 1 | K1 | 署名鍵管理: 複数鍵での署名（世代重複）・JWKS 公開・管理画面（一覧/生成/退役）・EC(ES256) 対応 | ⬜未着手 | 大 | 中 |
 | 2 | K2 | 署名鍵の自動ローテーション: `not_after` ベースのスケジュール実行・ACTIVE/RETIRED 自動管理 | ⬜未着手 | 中 | 中 |
 | 3 | S1 | SSL アクセラレーター対応: `X-Forwarded-Proto`/`-For` 信頼設定・HSTS・セキュリティヘッダ（アプリは HTTP 直受け） | ⬜未着手 | 中 | 小〜中 |
-| 4 | C1 | コンテナ分離（API/Web を別コンテナに分割）: ルータ分割・バイナリ分離・Compose/Dockerfile 分離 | 🟡要判断 | 中 | 中 |
+| 4 | C1 | コンテナ分離（API/Web を別サービスに分割・理想形）: workspace 分割・Web→API HTTP 化・内部認証 API・Compose 分離 | ⬜未着手 | 大 | 大 |
 | 5 | F2 | Refresh Token（rotation・reuse detection、`offline_access` scope） | ⬜未着手 | 大 | 大 |
 | 6 | F3 | Consent（同意画面・同意済み scope 記録・取り消し、`prompt`/`max_age` 正式対応） | ⬜未着手 | 中 | 中 |
 | 7 | F4 | Logout（RP-initiated / front-channel / back-channel、`sso_session.terminated` 有効化） | ⬜未着手 | 中 | 中 |
@@ -78,40 +78,49 @@ code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出
 
 ### インフラ / コンテナ分離（C1）
 
-- **C1 — コンテナ分離（API と Web を別コンテナに分割）**。現状は単一バイナリ `idp`＋単一 `web`
+- **C1 — コンテナ分離（API と Web を別サービスに分割・理想形）**。現状は単一バイナリ `idp`＋単一 `web`
   コンテナが全経路（OIDC protocol・JSON 管理 API・ログイン画面・管理コンソール）を提供している。
-  独立スケール／独立デプロイ／ネットワーク公開範囲の分離を目的に、API と Web を分ける。
+  独立スケール／独立デプロイ／ネットワーク公開範囲の分離を目的に、**真のサービス分割**で API と Web を分ける。
 
-  **状態: 🟡要判断**（着手前のスコープ分割相談。下記は提案。着手前に判断を確定させる）。
+  **決定（2026-07-06、ユーザー確認済み。工数は大きくとも理想形を採る）**:
+  1. **境界**: **Web=全 HTML 画面**（ログイン画面 `/login` ＋管理コンソール `/admin/console/*`）。
+     **API=JSON/protocol のみ**（`/authorize`・`/token`・`/userinfo`・`/.well-known`・JSON 管理 API
+     `/admin/*`・health）。
+  2. **分離の深さ**: **真のサービス分割**。Web は薄いフロントで、データ操作は API を **HTTP 経由**で呼ぶ。
+     **DB へ直結するのは API のみ**（Web は DB 非依存）。
+  3. **コード構成**: **cargo workspace 分割**（`core`＝domain/application/infrastructure、`api`、`web`。
+     必要に応じて契約用 `contracts`/`dto` crate を切り出す）。CLAUDE.md「将来 workspace 分割可」を今実施する。
 
-  想定スコープ（提案。方式は下記「要確認の判断」の結論で確定する）:
-  - **P1 ルータ分割**: `presentation::router::build` を `build_api` / `build_web` に分割し、
-    経路を API/Web に振り分ける（既存の統合テストが使う全部入り `build` は両者の merge として残す）。
-  - **P2 バイナリ分離**: `src/bin/api.rs`・`src/bin/web.rs` を追加。共通ブートストラップ
-    （設定 `config`・ログ `telemetry`・DB 接続・スキーマ version 照合）は lib 側の共通関数へ切り出し、
-    各 bin が自分のルータで起動する。`BIND_ADDR` は bin ごとに個別設定。
-  - **P3 コンテナ/Compose 分離**: Dockerfile を bin 別成果物に（`cargo build --bin api` / `--bin web`）、
-    `docker-compose.yml` に `api`・`web` サービスを分離（health は各自の liveness）。`migrate` ジョブは現状維持。
-  - **P4 運用境界の明文化**: 署名鍵ブートストラップ（`ensure_active_key`）は **API 側のみ**が担う
-    （Web はトークン発行をしない）。ネットワーク公開範囲（API=外部公開・Web=管理は内部/制限）を
-    `OPERATIONS.md` に明記し、分割の設計判断を ADR 化。
-  - **テスト**: 各 bin のルータが期待経路のみを持ち、他方の経路が 404 になることを統合テストで検証。
+  フェーズ分割（着手は P0 から。理想形ゆえの新規論点があるため設計を先行させる）:
+  - **P0 設計（ADR）**: サービス間の責務境界と認証を確定する。特にリスクの高い次の 2 点を先に固める。
+    - **authorize↔login の分割フロー**: `/authorize`（API）が Web の `/login` へリダイレクト → Web が
+      フォーム表示 → 資格情報を API の**内部認証エンドポイント**（例 `POST /internal/authenticate`）へ送信 →
+      API が認証・ロックアウト（§4.3）・SSO 発行・code 発行・RP への redirect を返す。SSO/auth_session
+      Cookie のドメイン共有方式を設計（「認証 UI と認可サーバの分離」パターン）。
+    - **管理コンソール（Web）→ JSON 管理 API（API）の認可**: 管理者の SSO Cookie を Web が API へ**転送**し、
+      API 側の既存 `RequirePerms<IdpAdmin>` を再利用する（サービス間トークンは将来）。CSRF は Web 側で維持。
+    - 契約（リクエスト/レスポンス DTO）の共有方式（`contracts` crate か、OpenAPI からの型生成か）を決める。
+  - **P1 workspace 化**: 単一 crate を `core`（domain/application/infrastructure）へ集約し、`api` crate
+    （現行 presentation の protocol＋JSON 管理＋P2 の内部認証 API）を分離。まず all-in-one を保ったまま
+    crate 境界だけ作り、ビルド/テストを通す。
+  - **P2 内部認証 API**: P0 で設計した `POST /internal/authenticate`（および必要な内部 I/F）を API に実装。
+    既存の login ユースケース（資格情報検証・ロックアウト・SSO/code 発行）を内部エンドポイント越しに呼べる形へ整理。
+  - **P3 web crate**: HTML レンダリング（既存 `login` 画面・`admin_*_console`）と i18n を `web` crate へ移設。
+    データ取得/操作は **API クライアント（reqwest 等）経由**に置換（application 層の直接呼び出しを撤去）。
+    Web は DB・infrastructure に依存しない。
+  - **P4 コンテナ/Compose**: `api`・`web` を別イメージ・別サービスに（Dockerfile を crate 別ビルドへ）。
+    `web` は DB 非依存（`api` のみ DB 直結・署名鍵ブートストラップ `ensure_active_key` も API 側）。
+    ネットワーク公開範囲（例: `api`=外部公開／`web`=管理は内部・制限、または逆）を確定し `OPERATIONS.md` に明記。
+    `migrate` ジョブは現状維持。
+  - **P5 テスト/運用**: `api` 単体の統合テスト＋`web`→`api` の E2E 疎通。現在の全部入り統合テスト
+    （`tests/*` は `router::build` を利用）は `api` 単体／`web`→`api` E2E へ再編する。
 
-  提案する既定方針（低リスク・現行 DDD 単一クレートに最も素直な選択）:
-  1. **境界**: Web=管理コンソール `/admin/console/*` のみ。API=それ以外（OIDC protocol＋JSON 管理 API＋
-     health）。**ログイン画面 `/login` は `/authorize` と `auth_session`/`sso_session`/code 発行を共有する
-     ため API 側**に残す（プロトコルフローを 1 プロセスに収める）。
-  2. **データアクセス**: Web・API とも同一 lib を共有し、各自 **DB へ直結**（HTTP 経由のサービス分割は
-     サービス間認証・API クライアント・DTO 再定義が必要で MVP には過剰）。
-  3. **コード構成**: 単一 crate＋2 bin ターゲット（`src/bin/api.rs`・`src/bin/web.rs`）。lib は共有のまま
-     （CLAUDE.md「単一バイナリクレート（将来 workspace 分割可）」を維持。workspace 化は将来の別タスク）。
-
-  **要確認の判断**（着手前に確定。ユーザー確認待ち）:
-  - a. 境界: 上記 1（Web=管理コンソールのみ／login は API 側）で良いか。
-  - b. 分離の深さ: 上記 2（共有 lib・2 バイナリ・各自 DB 直結）で良いか。真のサービス分割（Web→API を
-       HTTP 呼び出し）にするか。
-  - c. コード構成: 上記 3（単一 crate・2 bin）で良いか。cargo workspace 分割まで踏み込むか。
-  - d. ローカル開発用に全部入りの単一バイナリ／モードを残すか（統合テストは全部入り `build` を利用）。
+  留意（理想形ゆえの新規論点）:
+  - ログイン画面の分離により、API 側に **OIDC 標準外の内部認証エンドポイント**を新設する必要がある。
+  - Web が DB を持たないため、現在 presentation が application 層を直接呼ぶ全箇所が **API クライアント越し**に変わる
+    （管理コンソールの各画面・状況確認画面・権限付与/剥奪の POST 等。工数の大半はここ）。
+  - **ローカル開発／全部入りモード（旧 d）**: 理想形では常駐の全部入りバイナリは持たない方針。ローカルは
+    compose で `api`・`web` を同時起動する。統合テストは上記 P5 のとおり再編する。
 
 ### OIDC 拡張（F2〜F5、設計仕様 §9）
 
@@ -130,6 +139,7 @@ code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出
 >   画面用 extractor `AdminHtmlSession` で保護し、共通レイアウト `render_layout` の上に実装する。
 > - F2 は A1（client の grant_types 管理）と親和。F4・F5 はセッション/トークン失効基盤を共有。
 > - S1 は他タスクと独立に着手可能（早期着手も可）。
-> - C1（コンテナ分離）は他機能タスクと独立だが、着手前に上記「要確認の判断（a〜d）」を確定させる
->   （🟡要判断）。境界・分離の深さで工数が大きく変わるため、確定後に本節を更新して着手する。
+> - C1（コンテナ分離）は方針を確定済み（真のサービス分割・workspace 分割・Web→API HTTP 化）。着手は
+>   P0（ADR。authorize↔login の分割フローと管理コンソール→API の認可を設計）から。設計確定前にコード移設に
+>   入らない。大規模のため他機能タスク（K1・F2 等）との実施順はリソースを見て決める。
 > 各タスクは着手時に `docs/history/` への記録要否（規模が大きく背景まで追う場合のみ）を判断する。
