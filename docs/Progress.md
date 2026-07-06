@@ -12,40 +12,97 @@ OIDC IdP MVP（**Rust + MariaDB**）の実装計画。設計仕様は `docs/OIDC
 code 再利用検知・SSO 復元時の auth_time 継承・監査ログ二重出力を含む）。API §4・トークン仕様 §5・
 監査ログ §7 も実装済み。§8 の MVP 対象外項目は意図どおり未実装。
 
-> 既知の軽微な差分（本番運用向け・下表 H1 で対応予定）: HSTS / HTTPS 強制はアプリ層では未実装
-> （リバースプロキシ層前提。Cookie の `Secure` は `COOKIE_SECURE` で対応済み）。`prompt` / `max_age` は
-> §4.2 のとおり MVP では無視。
+> 既知の軽微な差分（本番運用向け・下表 S1 で対応予定）: HSTS / セキュリティヘッダはアプリ層では未実装。
+> `prompt` / `max_age` は §4.2 のとおり MVP では無視（下表 F3 と併せて対応）。
 
 ## MVP 以降のバックログ（未着手）
 
-設計仕様 §9「今後拡張」に沿った計画。着手時に本表の状態を更新し、完了したら削除して `CHANGELOG.md` へ移す。
+管理機能（RP 登録・管理画面）と鍵管理・プロキシ対応を優先し、その後 OIDC 拡張（§9）を進める。
+着手時に本表の状態を更新し、完了したら削除して `CHANGELOG.md` へ移す。
 
 | 優先 | # | 概要 | 状態 | 影響度 | 工数 |
 |---|---|---|---|---|---|
-| 1 | F1 | Client 管理 API（登録 / secret 再発行 / 無効化 / redirect・scope 変更、`private_key_jwt`） | ⬜未着手 | 大 | 大 |
-| 2 | F2 | Refresh Token（rotation・reuse detection、`offline_access` scope） | ⬜未着手 | 大 | 大 |
-| 3 | F3 | Consent（同意画面・client ごとの同意済み scope 記録・取り消し） | ⬜未着手 | 中 | 中 |
-| 4 | F4 | Logout（RP-initiated / front-channel / back-channel、`sso_session.terminated` 有効化） | ⬜未着手 | 中 | 中 |
-| 5 | F5 | Token 管理（revocation / introspection endpoint、ユーザー単位の全セッション無効化） | ⬜未着手 | 中 | 中 |
-| 6 | H1 | 本番セキュリティ強化（HSTS・HTTPS 強制・セキュリティヘッダ、`prompt` / `max_age` 正式対応） | ⬜未着手 | 中 | 小〜中 |
-| 7 | H2 | 署名鍵ローテーションの自動化（スケジュール実行・ACTIVE/RETIRED 重複期間の自動管理） | ⬜未着手 | 中 | 中 |
+| 1 | A1 | クライアント（RP）登録 API・画面（管理者用）: CRUD・資格情報発行・redirect URI 管理 | ⬜未着手 | 大 | 大 |
+| 2 | A2 | 管理コンソール基盤: 管理者認証・画面レイアウト・権限（scope ベース）・操作監査 | ⬜未着手 | 大 | 中 |
+| 3 | A3 | 状況確認画面: ログイン/監査ログ一覧（エラー絞り込み）、クライアント状況一覧（最終利用時刻等） | ⬜未着手 | 中 | 中 |
+| 4 | K1 | 署名鍵管理: 複数鍵での署名（世代重複）・JWKS 公開・管理画面（一覧/生成/退役）・EC(ES256) 対応 | ⬜未着手 | 大 | 中 |
+| 5 | K2 | 署名鍵の自動ローテーション: `not_after` ベースのスケジュール実行・ACTIVE/RETIRED 自動管理 | ⬜未着手 | 中 | 中 |
+| 6 | S1 | SSL アクセラレーター対応: `X-Forwarded-Proto`/`-For` 信頼設定・HSTS・セキュリティヘッダ（アプリは HTTP 直受け） | ⬜未着手 | 中 | 小〜中 |
+| 7 | F2 | Refresh Token（rotation・reuse detection、`offline_access` scope） | ⬜未着手 | 大 | 大 |
+| 8 | F3 | Consent（同意画面・同意済み scope 記録・取り消し、`prompt`/`max_age` 正式対応） | ⬜未着手 | 中 | 中 |
+| 9 | F4 | Logout（RP-initiated / front-channel / back-channel、`sso_session.terminated` 有効化） | ⬜未着手 | 中 | 中 |
+| 10 | F5 | Token 管理（revocation / introspection endpoint、ユーザー単位の全セッション無効化） | ⬜未着手 | 中 | 中 |
 
 ## 詳細
 
-- **F1（§9.3）**: 現状 client 登録は SQL 手動（`docs/OPERATIONS.md`）。運用性向上のため管理 API を最優先とする。
-  scope 検証・監査は既存の Application 層パターンを踏襲。`private_key_jwt` 対応で
-  `token_endpoint_auth_method` の許可値・CHECK 制約を拡張（マイグレーション）。
-- **F2（§9.1）**: `RefreshTokens` テーブル（ハッシュ保存）を追加。rotation と reuse detection は
-  authorization_code の one-time 消費ロジック（`code_issuance`）を参考に原子的更新で実装。
-  `offline_access` 要求時のみ発行。Discovery の `grant_types_supported` に `refresh_token` を追加。
-- **F3（§9.2）**: 同意済み scope を永続化し、`/authorize` で未同意 scope のみ同意画面へ。
-  i18n はログイン画面と同じ `fluent` を流用。
+### 管理機能（A1〜A3）
+
+- **A1 — クライアント（RP）登録**（設計仕様 §9.3。現状は SQL 手動＝`docs/OPERATIONS.md`）:
+  - アプリ登録 API/画面（管理者用）。`client_id` は自動採番、`client_secret` は **初回のみ平文表示**し
+    DB には argon2 ハッシュのみ保存（既存 `Argon2PasswordHasher` を流用）。secret 再発行・無効化に対応。
+  - `client_type`（public/confidential）に応じて `token_endpoint_auth_method` を設定
+    （public=`none`、confidential=`client_secret_basic`。将来 `private_key_jwt`）。
+  - **redirect URI 管理**: 完全一致・複数登録（データモデルは `redirect_uris` JSON 配列で対応済み。
+    §2.3 の検証はアプリ層で実装済み）。フラグメント/ワイルドカード禁止のバリデーションを画面/APIに付与。
+  - scope 管理（`Clients.scopes`。要求 scope はこの部分集合）。API は utoipa で OpenAPI 自動生成。
+  - **動的クライアント登録（RFC 7591）は対象外**（将来検討。`docs/OIDC_INPUT.md` §8）。
+
+- **A2 — 管理コンソール基盤**:
+  - 管理画面自体は IdP のファーストパーティ機能。アクセスは **ロールではなく scope**（例 `idp.admin`）で
+    制御する（CLAUDE.md「権限管理」）。ユーザーへ scope を付与する仕組みが未整備のため、
+    **ユーザー権限モデル（user↔scope/grant）を設計する必要がある → ADR 起票候補**。
+    seed 管理ユーザー（`admin@example.com`）に `idp.admin` を付与する。
+  - サーバレンダリング（既存ログイン画面と同じ axum + fluent i18n）。全操作を `audit_log` に記録。
+
+- **A3 — 状況確認画面**:
+  - **ログイン/監査ログ一覧**: `audit_log` を `event_type` / `result` / 期間 / `client_id` で絞り込み表示
+    （**エラー（`result=failure` や `login.failed`/`*.reuse_detected`）での絞り込み**を主眼）。
+    `correlation_id` でリクエスト〜監査イベントを追跡。
+  - **クライアント状況一覧**: 各 client の状態（ACTIVE/DISABLED）・scope・**最終利用時刻**を一覧。
+    最終利用時刻は `audit_log`（`token.issued` 等の最新 `occurred_at`）から導出、または
+    `clients.last_used_at` を発行時に更新（マイグレーション）。負荷を見て方式決定。
+
+### 鍵管理（K1・K2）
+
+- **K1 — 署名鍵管理**:
+  - **複数鍵での署名**: 現行の ACTIVE 単一運用から、有効期間が重複する複数鍵（現行＋次期）を許容する
+    運用へ拡張。新規署名は「現行 ACTIVE」、検証は JWKS 掲載の全有効鍵で可能にする（無停止ローテの前提）。
+  - **JWK 提供 API**: `GET /.well-known/jwks.json` は実装済み（ACTIVE+RETIRED を公開）。K1 では
+    複数世代の掲載・`not_after` 経過鍵の非公開化を整備する。
+  - **管理画面**: 鍵一覧（`kid`/status/有効期間）・手動生成・退役（ACTIVE→RETIRED）・削除。
+  - **EC(ES256) 対応**: `signing_keys.algorithm` の許可値・CHECK 制約に `ES256` を追加し、
+    jsonwebtoken の EC 署名/検証・JWKS（`kty=EC`,`crv`,`x`,`y`）を実装（設計仕様 §5 は現状 RS256）。
+
+- **K2 — 自動ローテーション**: `signing_keys.not_after` に基づき、期限接近で次期鍵を自動生成して
+  重複期間を設け、旧鍵を「最大トークン有効期限＋クロックスキュー」経過後に RETIRED→非公開化（§3.6）。
+  スケジューラ（tokio タスク or 外部 cron ジョブ）方式は着手時に決定。MVP は起動時ブートストラップのみ。
+
+### インフラ / プロキシ対応（S1）
+
+- **S1 — SSL アクセラレーター/リバースプロキシ対応**（アプリは TLS 終端の**後ろで HTTP を直受け**）:
+  - **信頼プロキシ設定**（例 `TRUSTED_PROXIES` / `TRUST_FORWARDED_HEADERS`）を追加し、有効時のみ
+    `X-Forwarded-Proto`（https 判定）・`X-Forwarded-For`（client IP）を解釈する。未設定時は
+    ヘッダを無視して直結スキーム/接続元 IP を用いる（ヘッダ偽装対策）。
+  - **HSTS**: 外部が HTTPS（`X-Forwarded-Proto=https` もしくは issuer が https）のときに
+    `Strict-Transport-Security` を付与（`HSTS_MAX_AGE` 設定可）。`tower-http` のヘッダ層で実装。
+  - **セキュリティヘッダ**: `X-Content-Type-Options: nosniff`・`Referrer-Policy` 等をログイン/管理画面へ付与。
+  - **client IP の一貫化**: 監査ログ（§7 `ip_address`）と IP レート制限（§4.3）が
+    転送ヘッダ経由の実 IP を使うよう結線する（現状は接続元 IP）。
+  - Cookie の `Secure` は issuer スキーム/`COOKIE_SECURE` で対応済み（HTTP 直受けでも https issuer なら有効）。
+
+### OIDC 拡張（F2〜F5、設計仕様 §9）
+
+- **F2（§9.1）**: `RefreshTokens` テーブル（ハッシュ保存）。rotation / reuse detection は
+  authorization_code の原子的 one-time 消費（`code_issuance`）を参考に実装。`offline_access` 要求時のみ発行。
+  Discovery の `grant_types_supported` に `refresh_token` を追加。
+- **F3（§9.2）**: client ごとの同意済み scope を永続化し、`/authorize` で未同意 scope のみ同意画面へ。
+  併せて `prompt=login`（再認証）・`max_age`（auth_time 超過時の再認証）を正式対応（§4.2 MVP 無視分）。
 - **F4**: `sso_session.terminated`（§7 で予約済み）を有効化。SSO セッション・関連 code の失効を実装。
   back-channel logout は client 側 logout endpoint への通知が必要。
 - **F5（§9.4）**: RFC 7009 revocation・RFC 7662 introspection。introspection は confidential client 認証必須。
-- **H1**: `tower-http` の `SetResponseHeader` 等で HSTS・`X-Content-Type-Options` 等を付与。
-  HTTPS 前提の運用注記を `docs/OPERATIONS.md` に統合。`prompt=login` / `max_age` による再認証を実装。
-- **H2**: `signing_keys` の `not_after` に基づく自動生成・RETIRED 化。MVP は起動時ブートストラップのみ。
 
-> 依存関係: F2 は F1（client の grant_types 管理）と親和。F4・F5 はセッション/トークン失効基盤を共有。
+> 依存関係:
+> - A2（管理コンソール基盤＋権限モデル）は A1・A3・K1 の画面が前提とする。まず A2 の権限モデル ADR を確定させる。
+> - F2 は A1（client の grant_types 管理）と親和。F4・F5 はセッション/トークン失効基盤を共有。
+> - S1 は他タスクと独立に着手可能（早期着手も可）。
 > 各タスクは着手時に `docs/history/` への記録要否（規模が大きく背景まで追う場合のみ）を判断する。
