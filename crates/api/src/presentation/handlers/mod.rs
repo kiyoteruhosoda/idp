@@ -3,17 +3,12 @@
 pub mod admin;
 pub mod admin_audit;
 pub mod admin_clients;
-pub mod admin_clients_console;
-pub mod admin_console;
 pub mod admin_permissions;
-pub mod admin_status_console;
 pub mod admin_users;
-pub mod admin_users_console;
 pub mod authorize;
 pub mod discovery;
 pub mod health;
 pub mod internal_auth;
-pub mod login;
 pub mod register;
 pub mod token;
 pub mod userinfo;

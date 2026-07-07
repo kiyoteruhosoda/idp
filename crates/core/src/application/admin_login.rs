@@ -30,13 +30,8 @@ const LOCK_DURATION_MINUTES: i64 = 15;
 /// 管理コンソールへのアクセスに要求する権限コード（ADR-0006）。
 const REQUIRED_PERMISSION: &str = "idp.admin";
 
-/// 管理ログインフォームの CSRF トークンを Cookie 値から導出する（`login::csrf_token` と同方式）。
-///
-/// GET 時に発行する推測不能な乱数（HttpOnly Cookie `admin_csrf_id`）の一方向ハッシュをフォームへ
-/// 埋め込み、POST 時に Cookie から再計算して照合する（同期トークン方式。サーバ側の追加保存は不要）。
-pub fn admin_csrf_token(csrf_id: &str) -> String {
-    crypto::sha256_hex(&format!("admin-csrf:{csrf_id}"))
-}
+// 管理ログインフォームの CSRF 同期トークン導出（`admin_csrf_token`）は、ADR-0007 で管理コンソールを
+// web crate へ移設したのに伴い web 側（`idp-web` の `csrf` モジュール）へ移った。api（core）は保持しない。
 
 #[derive(Debug)]
 pub struct AdminLoginCommand {
@@ -340,22 +335,3 @@ impl AdminLoginService {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn admin_csrf_token_is_deterministic_and_seed_bound() {
-        let a = admin_csrf_token("seed-a");
-        assert_eq!(a, admin_csrf_token("seed-a"));
-        assert_ne!(a, admin_csrf_token("seed-b"));
-        // SHA-256 hex（64 文字）でフォームに埋め込める安全な文字のみ。
-        assert_eq!(a.len(), 64);
-        assert!(a.bytes().all(|b| b.is_ascii_hexdigit()));
-        // 通常ログインの CSRF とは名前空間で分離される（種が同じでも一致しない）。
-        assert_ne!(
-            admin_csrf_token("x"),
-            crate::application::login::csrf_token("x")
-        );
-    }
-}

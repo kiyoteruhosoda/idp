@@ -26,6 +26,10 @@ static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
 const CODE_VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
 const CODE_CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 const REDIRECT_URI: &str = "http://localhost:3000/callback";
+// 内部認証エンドポイントのサービストークン（ADR-0007。ログイン画面は web crate へ移設したため、
+// api 単体テストでは資格情報検証を POST /internal/authenticate で駆動する）。
+const SERVICE_TOKEN: &str = "test-internal-service-token";
+const SERVICE_TOKEN_HEADER: &str = "x-internal-auth-token";
 
 struct SystemClock;
 impl Clock for SystemClock {
@@ -45,6 +49,8 @@ async fn setup() -> Option<TestEnv> {
         eprintln!("TEST_DATABASE_URL not set; skipping OIDC flow integration test");
         return None;
     };
+    // 内部認証エンドポイントのサービストークンを既知値に固定する（ログイン駆動に使う）。
+    std::env::set_var("INTERNAL_SERVICE_TOKEN", SERVICE_TOKEN);
     let pool = MySqlPoolOptions::new()
         .connect(&url)
         .await
@@ -126,13 +132,6 @@ async fn body_json(response: axum::response::Response) -> Value {
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
 }
 
-async fn body_string(response: axum::response::Response) -> String {
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read body");
-    String::from_utf8_lossy(&bytes).into_owned()
-}
-
 /// `Set-Cookie` ヘッダ群から `name` の値を取り出す。
 fn cookie_value(response: &axum::response::Response, name: &str) -> Option<String> {
     response.headers().get_all(SET_COOKIE).iter().find_map(|v| {
@@ -192,11 +191,39 @@ fn authorize_uri(client_id: &str, state: &str, nonce: &str) -> String {
     )
 }
 
-/// ログインフォーム HTML から CSRF トークンを取り出す。
-fn extract_csrf(html: &str) -> String {
-    let marker = "name=\"csrf_token\" value=\"";
-    let start = html.find(marker).expect("csrf field in form") + marker.len();
-    html[start..start + 64].to_string()
+/// `auth_session_id` 由来のログイン CSRF トークン（web が描画し api の LoginService が検証する契約）。
+fn login_csrf(auth_session: &str) -> String {
+    idp_api::application::login::csrf_token(auth_session)
+}
+
+/// api の内部認証（`POST /internal/authenticate`）で資格情報検証を駆動する（ログイン画面は web crate）。
+/// `X-Forwarded-For` を渡すと監査・レート制限に反映される。結果は `result` タグ付き JSON。
+async fn internal_authenticate(
+    app: &axum::Router,
+    auth_session: &str,
+    username: &str,
+    password: &str,
+    csrf: &str,
+) -> (StatusCode, Value) {
+    let body = json!({
+        "auth_session_id": auth_session,
+        "username": username,
+        "password": password,
+        "csrf_token": csrf,
+    });
+    let response = send(
+        app,
+        Request::builder()
+            .method("POST")
+            .uri("/internal/authenticate")
+            .header(CONTENT_TYPE, "application/json")
+            .header(SERVICE_TOKEN_HEADER, SERVICE_TOKEN)
+            .body(Body::from(body.to_string()))
+            .unwrap(),
+    )
+    .await;
+    let status = response.status();
+    (status, body_json(response).await)
 }
 
 async fn audit_count(pool: &MySqlPool, client_id: &str, event_type: &str) -> i64 {
@@ -229,56 +256,28 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::FOUND, "redirect to /login");
+    // api は未ログイン時に /login（web が描画）へ 302 する。契約は不変。
     assert_eq!(location(&response), "/login");
     let auth_session = cookie_value(&response, "auth_session_id").expect("auth_session_id cookie");
 
-    // ログインフォーム表示（CSRF トークン取得）。
-    let response = send(
-        &app,
-        Request::builder()
-            .uri("/login")
-            .header(COOKIE, format!("auth_session_id={auth_session}"))
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let csrf = extract_csrf(&body_string(response).await);
+    // CSRF は auth_session 由来（web が描画・api の LoginService が検証）。
+    let csrf = login_csrf(&auth_session);
 
-    // CSRF トークン不一致は拒否される。
-    let response = send(
-        &app,
-        Request::builder()
-            .method("POST")
-            .uri("/login")
-            .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .header(COOKIE, format!("auth_session_id={auth_session}"))
-            .body(Body::from(format!(
-                "username={username}&password={password}&csrf_token={}",
-                "0".repeat(64)
-            )))
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST, "csrf mismatch");
+    // CSRF トークン不一致は拒否される（result=csrf_mismatch）。
+    let (status, body) =
+        internal_authenticate(&app, &auth_session, &username, password, &"0".repeat(64)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["result"], "csrf_mismatch", "csrf mismatch");
 
-    // 条件 4, 5, 7: ログイン成功 → SSO Cookie 発行、code と state を返す。
-    let response = send(
-        &app,
-        Request::builder()
-            .method("POST")
-            .uri("/login")
-            .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .header(COOKIE, format!("auth_session_id={auth_session}"))
-            .body(Body::from(format!(
-                "username={username}&password={password}&csrf_token={csrf}"
-            )))
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::FOUND, "login success");
-    let sso_cookie = cookie_value(&response, "sso_session_id").expect("sso_session_id cookie");
-    let callback = location(&response);
+    // 条件 4, 5, 7: ログイン成功 → SSO セッションと code を返す（web が Cookie 化して redirect）。
+    let (status, body) = internal_authenticate(&app, &auth_session, &username, password, &csrf).await;
+    assert_eq!(status, StatusCode::OK, "login success");
+    assert_eq!(body["result"], "success");
+    let sso_cookie = body["sso_session_id"]
+        .as_str()
+        .expect("sso_session_id")
+        .to_string();
+    let callback = body["redirect_to"].as_str().expect("redirect_to").to_string();
     assert!(callback.starts_with(REDIRECT_URI));
     assert_eq!(
         query_param(&callback, "state").as_deref(),
@@ -592,55 +591,24 @@ async fn login_lockout_after_repeated_failures() {
     )
     .await;
     let auth_session = cookie_value(&response, "auth_session_id").expect("auth_session cookie");
-    let response = send(
-        &app,
-        Request::builder()
-            .uri("/login")
-            .header(COOKIE, format!("auth_session_id={auth_session}"))
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await;
-    let csrf = extract_csrf(&body_string(response).await);
+    let csrf = login_csrf(&auth_session);
 
-    // 9 回失敗 → 401（資格情報エラー）、10 回目でロック（403）。
+    // 9 回失敗 → invalid_credentials、10 回目でロック（locked）。
     for attempt in 1..=10 {
-        let response = send(
-            &app,
-            Request::builder()
-                .method("POST")
-                .uri("/login")
-                .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(COOKIE, format!("auth_session_id={auth_session}"))
-                .body(Body::from(format!(
-                    "username={username}&password=wrong-password&csrf_token={csrf}"
-                )))
-                .unwrap(),
-        )
-        .await;
+        let (status, body) =
+            internal_authenticate(&app, &auth_session, &username, "wrong-password", &csrf).await;
+        assert_eq!(status, StatusCode::OK, "attempt {attempt}");
         let expected = if attempt < 10 {
-            StatusCode::UNAUTHORIZED
+            "invalid_credentials"
         } else {
-            StatusCode::FORBIDDEN
+            "locked"
         };
-        assert_eq!(response.status(), expected, "attempt {attempt}");
+        assert_eq!(body["result"], expected, "attempt {attempt}");
     }
 
     // ロック中は正しいパスワードでも拒否される。
-    let response = send(
-        &app,
-        Request::builder()
-            .method("POST")
-            .uri("/login")
-            .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .header(COOKIE, format!("auth_session_id={auth_session}"))
-            .body(Body::from(format!(
-                "username={username}&password={password}&csrf_token={csrf}"
-            )))
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::FORBIDDEN, "locked account");
+    let (_, body) = internal_authenticate(&app, &auth_session, &username, password, &csrf).await;
+    assert_eq!(body["result"], "locked", "locked account");
 
     // 監査ログ: login.failed が 10 件以上、login.locked が 2 件以上（ロック時 + ロック中の試行）。
     assert!(audit_count(&pool, &client_id, "login.failed").await >= 10);
