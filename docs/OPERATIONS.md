@@ -5,11 +5,19 @@ API 仕様は自動生成の OpenAPI（起動後 `/api/openapi.json`・Swagger U
 
 ## 開発環境を起動したいとき
 
+api（DB 直結。既定 :8080）と web（HTML 画面。既定 :8081）を別プロセスで起動する（ADR-0007）。
+
 ```sh
 docker compose up -d mariadb          # MariaDB 10.11 を起動
 sqlx migrate run                       # マイグレーション適用（要 DATABASE_URL）
-cargo run                              # IdP サーバ起動（既定: 0.0.0.0:8080）
+# 別々のシェルで（web は api を API_BASE_URL で呼ぶ）
+cargo run -p idp-api                   # api 起動（既定 0.0.0.0:8080）
+API_BASE_URL=http://localhost:8080 cargo run -p idp-web   # web 起動（既定 0.0.0.0:8081）
 ```
+
+ブラウザは通常はリバースプロキシ（単一オリジン）経由で使う。ローカルで直に触る場合、ログイン画面・
+管理コンソールは web（:8081）、OIDC protocol・JSON 管理 API は api（:8080）。両者は同一の
+`INTERNAL_SERVICE_TOKEN` を共有する（web→api の `/internal/*` 呼び出しに必要）。
 
 ## マイグレーションを適用したいとき
 
@@ -132,10 +140,24 @@ openssl rand -base64 32   # これを KEY_ENCRYPTION_KEY に設定する
 
 ## 死活・準備状態を確認したいとき
 
-- Liveness: `GET /healthz`
-- Readiness: `GET /readyz`（DB 到達と組み合わせてスキーマ version も起動時に照合済み）
+api・web の各サービスが持つ（ADR-0007）。外部からはリバースプロキシ経由で到達する。
 
-## 初めて環境を初期化したいとき（db + web）
+- api: `GET /healthz`（liveness）／`GET /readyz`（DB 到達＋スキーマ version 照合）。
+- web: `GET /healthz`（liveness）／`GET /readyz`（api への到達性を確認）。
+
+## リバースプロキシと公開範囲（ADR-0007 §2）
+
+ブラウザは**単一オリジン**（リバースプロキシ、既定 `WEB_PORT`）に来て、プロキシがパスで振り分ける。
+
+- `/login`・`/admin/console/*` → **web**（HTML 画面）
+- `/internal/*` → **遮断**（外部公開しない。web→api の内部呼び出しは Compose ネットワーク内で直結）
+- それ以外（`/authorize`・`/token`・`/userinfo`・`/.well-known`・`/admin/*`・`/healthz`・OpenAPI）→ **api**
+
+ルーティング定義は `docker/nginx.conf`。api・web は既定で**ホストへ直接公開しない**（プロキシ経由のみ）。
+web→api の `/internal/*` は共有シークレット `INTERNAL_SERVICE_TOKEN`（api・web で同値）で保護する。
+デバッグで api/web を直に叩きたい場合は `docker-compose.yml` の該当 `ports:` を一時的に有効化する。
+
+## 初めて環境を初期化したいとき（db + api + web + proxy）
 
 `scripts/init.sh` を実行する。冪等（既存 `.env` は上書きしない）。
 
@@ -143,8 +165,9 @@ openssl rand -base64 32   # これを KEY_ENCRYPTION_KEY に設定する
 ./scripts/init.sh
 ```
 
-内容: 秘密情報（DB パスワード・`KEY_ENCRYPTION_KEY`）を乱数生成して `.env` を作成 → MariaDB 起動 →
-マイグレーション（DDL + マスタデータ）適用 → web をビルド・起動 → `/healthz` 待機。
+内容: 秘密情報（DB パスワード・`KEY_ENCRYPTION_KEY`・`INTERNAL_SERVICE_TOKEN`）を乱数生成して `.env`
+を作成 → MariaDB 起動 → マイグレーション（DDL + マスタデータ）適用 → api・web・proxy をビルド・起動 →
+`/healthz` 待機。
 
 前提: `docker`（Compose v2）と `openssl`。マイグレーションはコンテナ側の sqlx-cli で適用するため
 ホストへの sqlx-cli 導入は不要。
@@ -157,8 +180,8 @@ openssl rand -base64 32   # これを KEY_ENCRYPTION_KEY に設定する
 ./scripts/deploy.sh
 ```
 
-内容: イメージビルド（web / migrate）→ DDL + マスタデータ適用（専用ジョブで単独実行）→
-`docker compose up -d web` → `/readyz` で起動確認。
+内容: イメージビルド（api / web / migrate）→ DDL + マスタデータ適用（専用ジョブで単独実行）→
+`docker compose up -d`（api・web・proxy を依存順に起動）→ `/readyz` で起動確認。
 
 ## マイグレーションだけを適用したいとき（Compose）
 
@@ -172,7 +195,7 @@ docker compose run --rm migrate            # sqlx migrate run（DATABASE_URL は
 
 ## ロールバックしたいとき
 
-- アプリ: 直前のイメージへ戻す（タグ運用なら該当タグで `docker compose up -d web`、
+- アプリ: 直前のイメージへ戻す（タグ運用なら該当タグで `docker compose up -d api web`、
   未タグ運用なら 1 つ前のコミットを checkout して `./scripts/deploy.sh`）。
 - スキーマ: migration は expand/contract 前提のため、直前バージョンのアプリは新スキーマ上でも動く。
   DDL 自体を戻す必要がある場合のみ次を実行する（`.down.sql` を適用）。
@@ -212,10 +235,10 @@ UPDATE signing_keys SET status = 'RETIRED' WHERE status = 'ACTIVE';
 ```
 
 ```sh
-# 2. .env の KEY_ENCRYPTION_KEY を新しい値へ更新して web を再起動する。
+# 2. .env の KEY_ENCRYPTION_KEY を新しい値へ更新して api を再起動する（署名鍵は api が所有）。
 #    ACTIVE 鍵が無いため起動時ブートストラップが新鍵を新キーで暗号化して生成する。
 openssl rand -base64 32     # 新しい KEY_ENCRYPTION_KEY
-docker compose up -d web
+docker compose up -d api
 ```
 
 RETIRED 鍵は新キーでは復号できないが、公開鍵（`public_key`）は平文のため JWKS 掲載・検証は継続できる。

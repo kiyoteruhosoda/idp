@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # scripts/deploy.sh — 同一ホストの Docker Compose へデプロイする。
 #
-#   1. イメージビルド（web / migrate）
+#   1. イメージビルド（api / web / migrate）
 #   2. DDL + マスタデータ適用（専用ジョブ = sqlx migrate run を単独実行）
-#   3. web を再起動（docker compose up -d）
-#   4. /readyz で起動確認
+#   3. api・web・proxy を再起動（docker compose up -d）
+#   4. /readyz で起動確認（プロキシ経由 = api の readiness）
 #
 # 前提: 事前に scripts/init.sh を実行済み（.env が存在する）こと。
 #
@@ -27,8 +27,8 @@ env_file="$repo_root/.env"
 compose="$(compose_cmd)"
 
 # --- 1. イメージビルド ---------------------------------------------------------
-log "イメージをビルドします（web / migrate）..."
-$compose build web migrate
+log "イメージをビルドします（api / web / migrate）..."
+$compose build api web migrate
 
 # --- 2. DDL + マスタデータ適用（専用ジョブ） -----------------------------------
 log "MariaDB を起動します..."
@@ -37,12 +37,13 @@ wait_healthy "$compose" mariadb
 log "マイグレーションを適用します..."
 $compose run --rm migrate
 
-# --- 3. web 再起動 -------------------------------------------------------------
-log "web を再起動します..."
-$compose up -d web
+# --- 3. api・web・proxy 再起動 --------------------------------------------------
+log "api・web・proxy を再起動します..."
+$compose up -d api web proxy
+wait_healthy "$compose" api
 wait_healthy "$compose" web
 
-# --- 4. /readyz で起動確認 -----------------------------------------------------
+# --- 4. /readyz で起動確認（プロキシ経由 = api の readiness） -------------------
 web_port="$(get_env_var WEB_PORT "$env_file")"
 web_port="${web_port:-8080}"
 ready_url="http://127.0.0.1:${web_port}/readyz"
@@ -54,4 +55,4 @@ for i in $(seq 1 30); do
   fi
   sleep 2
 done
-die "readyz が OK になりませんでした。ログ: $compose logs web"
+die "readyz が OK になりませんでした。ログ: $compose logs api web proxy"

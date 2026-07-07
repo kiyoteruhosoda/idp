@@ -17,12 +17,13 @@ services:
       timeout: 5s
       retries: 20
 
-  # IdP 本体（axum）。マイグレーション適用は行わず、起動時に version 照合のみ（fail-fast）。
-  # DDL 適用は scripts/deploy.sh の専用ジョブ（sqlx migrate run）で単独実行する。
-  web:
+  # api サービス（ADR-0007）。OIDC protocol・JSON 管理 API・内部 API。DB へ直結する唯一のサービス。
+  # マイグレーション適用は行わず、起動時に version 照合のみ（fail-fast）。DDL 適用は migrate ジョブ。
+  api:
     build:
       context: .
       dockerfile: Dockerfile
+      target: runtime-api
     environment:
       ISSUER: ${ISSUER:-http://localhost:8080}
       BIND_ADDR: 0.0.0.0:8080
@@ -32,10 +33,13 @@ services:
       LOG_FORMAT: ${LOG_FORMAT:-json}
       RUST_LOG: ${RUST_LOG:-info,idp=info}
       KEY_ENCRYPTION_KEY: ${KEY_ENCRYPTION_KEY:?set KEY_ENCRYPTION_KEY in .env}
-      # 未指定（空）なら issuer のスキームから自動判定（https で有効）。空は app 側で未設定扱い。
+      # web→api の /internal/* を保護する共有シークレット（ADR-0007 §5。web と同値）。
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?set INTERNAL_SERVICE_TOKEN in .env}
+      # 未指定（空）なら issuer のスキームから自動判定（https で有効）。
       COOKIE_SECURE: ${COOKIE_SECURE:-}
-    ports:
-      - "${WEB_PORT:-8080}:8080"
+    # 既定では外部公開しない（プロキシ経由でのみ到達）。デバッグ時は下記を有効化する。
+    # ports:
+    #   - "8080:8080"
     depends_on:
       mariadb:
         condition: service_healthy
@@ -45,6 +49,46 @@ services:
       timeout: 3s
       retries: 5
       start_period: 20s
+
+  # web サービス（ADR-0007）。HTML 画面（ログイン・管理コンソール）と API クライアント。DB 非依存。
+  # データ操作は api へ HTTP 越しに行う（sqlx を持たない）。
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime-web
+    environment:
+      WEB_BIND_ADDR: 0.0.0.0:8081
+      # サーバ側から api へ直結する（Compose ネットワーク内。プロキシは通さない）。
+      API_BASE_URL: http://api:8080
+      ISSUER: ${ISSUER:-http://localhost:8080}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      RUST_LOG: ${RUST_LOG:-info,idp_web=info}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?set INTERNAL_SERVICE_TOKEN in .env}
+      COOKIE_SECURE: ${COOKIE_SECURE:-}
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  # リバースプロキシ（ADR-0007 §2）。単一オリジンでブラウザのトラフィックをパスで web/api へ振り分ける。
+  # /login・/admin/console/* → web、/internal/* は遮断、それ以外 → api。
+  proxy:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
 
   # DDL・マスタデータ適用の専用ワンショットジョブ。常駐させないため profiles で通常起動から除外し、
   # `docker compose run --rm migrate` で単独実行する（scripts/init.sh・deploy.sh が使用）。

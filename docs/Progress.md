@@ -12,7 +12,7 @@ OIDC IdP MVP（**Rust + MariaDB**）の実装計画。設計仕様は `docs/OIDC
 | 1 | K1 | 署名鍵管理: 複数鍵での署名（世代重複）・JWKS 公開・管理画面（一覧/生成/退役）・EC(ES256) 対応 | ⬜未着手 | 大 | 中 |
 | 2 | K2 | 署名鍵の自動ローテーション: `not_after` ベースのスケジュール実行・ACTIVE/RETIRED 自動管理 | ⬜未着手 | 中 | 中 |
 | 3 | S1 | SSL アクセラレーター対応: `X-Forwarded-Proto`/`-For` 信頼設定・HSTS・セキュリティヘッダ（アプリは HTTP 直受け） | ⬜未着手 | 中 | 小〜中 |
-| 4 | C1 | コンテナ分離（API/Web を別サービスに分割・理想形）: workspace 分割・Web→API HTTP 化・内部認証 API・Compose 分離 | 🚧進行中（残 P3-4・P4・P5） | 大 | 大 |
+| 4 | C1 | コンテナ分離（API/Web を別サービスに分割・理想形）: workspace 分割・Web→API HTTP 化・内部認証 API・Compose 分離 | 🚧ほぼ完了（残 P5: web→api 自動 E2E） | 大 | 大 |
 | 5 | F2 | Refresh Token（rotation・reuse detection、`offline_access` scope） | ⬜未着手 | 大 | 大 |
 | 6 | F3 | Consent（同意画面・同意済み scope 記録・取り消し、`prompt`/`max_age` 正式対応） | ⬜未着手 | 中 | 中 |
 | 7 | F4 | Logout（RP-initiated / front-channel / back-channel、`sso_session.terminated` 有効化） | ⬜未着手 | 中 | 中 |
@@ -51,18 +51,14 @@ OIDC IdP MVP（**Rust + MariaDB**）の実装計画。設計仕様は `docs/OIDC
 
 設計は `docs/adr/0007-api-web-service-split.md`（Accepted）で確定。P0（ADR）・P1（workspace 化）・
 P2（内部認証 API）・P3-1（`contracts`＋`web` crate 土台）・P3-2（ログイン画面移設）・
-P3-3（管理コンソール全画面 `/admin/console/*` を web へ移設。login/home/clients/users/status/audit-logs。
-不足 JSON エンドポイント〔whoami/内部ログアウト/利用者検索・取得/付与可能権限/クライアント状況〕を api に追加）
-は完了（`CHANGELOG.md`）。残りの作業:
+P3-3（管理コンソール全画面を web へ移設）・P3-4（api から HTML を撤去し JSON/protocol 専用化）・
+P4（api/web/proxy の Compose 分離・Dockerfile 二バイナリ化・リバースプロキシのパスルーティング）は
+完了（`CHANGELOG.md`）。残りの作業:
 
-- **P3-4 api の HTML 撤去**（進行中）: api から presentation の HTML（login・admin console）・i18n・html を
-  削除し、api を JSON/protocol のみにする。`RequirePerms<IdpAdmin>` は残す（画面誘導は web）。撤去で成立
-  しなくなる api 統合テスト（`/login`・`/admin/console/*` 依存）は P5 で api 単体向けに組み替える。
-- **P4 コンテナ/Compose**: `api`・`web` を別イメージ・別サービスに（Dockerfile を crate 別ビルドへ）。
-  リバースプロキシのパスルーティング（`/login`・`/admin/console/*`→web、それ以外→api、`/internal/*` は遮断）と
-  ネットワーク公開範囲を確定し `OPERATIONS.md` に明記。`migrate` ジョブは現状維持。
-- **P5 テスト/運用**: 現在の全部入り統合テスト（`tests/*` は api の `router::build` を利用）を、api 単体の
-  統合テストと `web`→`api` の E2E 疎通へ再編する（P3-4 で HTML を api から外すと全部入り E2E が成立しないため）。
+- **P5 テスト/運用**（残）: 大半は完了。`oidc_flow` を `/internal/authenticate` 駆動へ組み替え済み、
+  HTML 画面の統合テスト 4 本は web 側ユニットへ移動済み、api の JSON 管理 API テストは継続。web の
+  各画面は開発中に api と同時起動して手動 E2E 済み。**残**: web→api の**自動化**された E2E 疎通テスト
+  （2 サービスを起動して driving する test ハーネス）は未整備。ローカル/CI での起動方法は `OPERATIONS.md`。
 
 ### OIDC 拡張（F2〜F5、設計仕様 §9）
 

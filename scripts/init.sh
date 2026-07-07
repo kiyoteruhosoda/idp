@@ -28,11 +28,13 @@ else
   db_password="$(openssl rand -hex 24)"
   root_password="$(openssl rand -hex 24)"
   key_encryption_key="$(openssl rand -base64 32)"
+  internal_service_token="$(openssl rand -hex 32)"
 
   cp "$example_file" "$env_file"
   set_env_var MARIADB_PASSWORD      "$db_password"                                      "$env_file"
   set_env_var MARIADB_ROOT_PASSWORD "$root_password"                                    "$env_file"
   set_env_var KEY_ENCRYPTION_KEY    "$key_encryption_key"                               "$env_file"
+  set_env_var INTERNAL_SERVICE_TOKEN "$internal_service_token"                          "$env_file"
   set_env_var DATABASE_URL          "mysql://idp:${db_password}@127.0.0.1:3306/idp"     "$env_file"
   set_env_var TEST_DATABASE_URL     "mysql://idp:${db_password}@127.0.0.1:3306/idp"     "$env_file"
   chmod 600 "$env_file"
@@ -51,12 +53,14 @@ log "マイグレーションを適用します（専用ジョブ）..."
 $compose build migrate
 $compose run --rm migrate
 
-# --- 4. web 起動 ---------------------------------------------------------------
-log "web をビルド・起動します..."
-$compose up -d --build web
+# --- 4. api・web・proxy 起動 ----------------------------------------------------
+log "api・web・proxy をビルド・起動します..."
+$compose up -d --build api web proxy
+wait_healthy "$compose" api
 wait_healthy "$compose" web
 
 log "初期化が完了しました。"
-log "  - IdP:        ${ISSUER:-http://localhost:8080}"
-log "  - Swagger UI: ${ISSUER:-http://localhost:8080}/api/docs"
+log "  - IdP（プロキシ経由）: ${ISSUER:-http://localhost:8080}"
+log "  - Swagger UI:          ${ISSUER:-http://localhost:8080}/api/docs"
+log "  - ログイン/管理コンソール: ${ISSUER:-http://localhost:8080}/admin/console"
 log "  - 初期管理ユーザー: admin@example.com（既定パスワードは初回ログイン後に変更すること）"
