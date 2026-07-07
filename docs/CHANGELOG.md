@@ -2,7 +2,7 @@
 
 完了した重要な変更の要約（詳しい経緯は `history/`、設計判断は `adr/`）。
 
-## 2026-07-07（web 画面をテンプレート化 + build.sh 追加）
+## 2026-07-07（web 画面をテンプレート化 + ビルド/デプロイのホスト分離）
 
 - **web の HTML をコード生成から Askama テンプレートへ移行**。web crate の全画面（利用者ログイン・
   管理コンソール: ホーム/ログイン/クライアント一覧・登録/編集・詳細・secret 表示/利用者検索・権限/
@@ -12,9 +12,14 @@
   （`escape`）を削除。Askama のコンパイル時型検証で描画の型安全を担保（sqlx のコンパイル時クエリ検証と
   同じ思想）。外形（フォーム項目・CSRF 埋め込み・エスケープ）は不変で、web の全テスト・E2E 経路は維持。
   （エスケープは名前付き実体参照 `&lt;` から数値文字参照 `&#60;` へ変わるが XSS 安全性は同等。）
-- **`scripts/build.sh` を追加**。ネイティブ release binary（既定）／Docker イメージ（`--docker`）の
-  ビルドと、ビルド前検証（`--check` = fmt/clippy/test）をワンコマンド化。`scripts/README.md` に
-  全スクリプトの用途・使い方をまとめた。
+- **ビルド／デプロイのホスト分離**。ソースがある「ビルド側」と稼働する「デプロイ先」を別ホストとして扱う
+  構成に整理した。`scripts/build.sh`（ビルド側）はネイティブ binary／Docker イメージのビルドと
+  検証（`--check` = fmt/clippy/test）を行い、**コンテナは起動しない**。イメージ受け渡しはレジストリ
+  （`--push`）と tar（`--save`）の両対応。デプロイ先用に `docker-compose.deploy.yml`（`build:` を持たず
+  `image:` 参照のみ）を追加し、`init.sh`（初回・DB コンテナ新規作成）／`deploy.sh`（更新）は
+  **ソースを持たずビルドせず**、`pull`／`docker load` 済みイメージで起動する。イメージ名は
+  `${IMAGE_PREFIX:-idp}/{api,web,migrate}:${IMAGE_TAG:-latest}`（`.env` で設定）。`scripts/README.md`・
+  `docs/OPERATIONS.md` を分離構成へ更新。
 
 ## 2026-07-06（C1 完了: API/Web サービス分割 — P5 テスト再編・E2E）
 

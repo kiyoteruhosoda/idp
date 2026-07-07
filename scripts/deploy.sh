@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
-# scripts/deploy.sh — 同一ホストの Docker Compose へデプロイする。
+# scripts/deploy.sh — デプロイ先（ソースを持たない別ホスト）で更新デプロイする。
 #
-#   1. イメージビルド（api / web / migrate）
+#   1. ビルド済みイメージの取得（レジストリ pull もしくは tar 読み込み済みを確認。ここではビルドしない）
 #   2. DDL + マスタデータ適用（専用ジョブ = sqlx migrate run を単独実行）
 #   3. api・web・proxy を再起動（docker compose up -d）
 #   4. /readyz で起動確認（プロキシ経由 = api の readiness）
 #
-# 前提: 事前に scripts/init.sh を実行済み（.env が存在する）こと。
+# 前提:
+#   - 事前に scripts/init.sh を実行済み（.env が存在する）こと。
+#   - ソース側（別ホスト）で ./scripts/build.sh --docker --push（レジストリ）または --save→転送→docker load
+#     によりイメージ（${IMAGE_PREFIX:-idp}/{api,web,migrate}:${IMAGE_TAG:-latest}）が用意済みであること。
+#   - デプロイ先にはソースは不要。docker-compose.deploy.yml・docker/nginx.conf・scripts・.env があればよい。
 #
 # ロールバック方針:
-#   - アプリ: 直前イメージへ戻す（イメージにタグ運用しているなら該当タグで up -d、
-#     未タグ運用なら 1 つ前のコミットを checkout して再ビルド）。
+#   - アプリ: 直前のイメージタグへ戻す（IMAGE_TAG を前のバージョンにして再実行）。
 #   - スキーマ: migration は expand/contract 前提のため、直前バージョンのアプリは新スキーマ上でも
 #     動作する（破壊的変更は contract フェーズを分離）。DDL の巻き戻しが必要な場合のみ
-#     `docker compose run --rm --entrypoint sqlx migrate migrate revert --source /migrate/migrations`。
+#     `docker compose -f docker-compose.deploy.yml run --rm --entrypoint sqlx migrate migrate revert --source /migrate/migrations`。
 #   詳細な手順は docs/OPERATIONS.md「ロールバックしたいとき」を参照。
 set -euo pipefail
 
@@ -23,12 +26,15 @@ source "$repo_root/scripts/lib.sh"
 
 env_file="$repo_root/.env"
 [[ -f "$env_file" ]] || die ".env がありません。先に scripts/init.sh を実行してください。"
+[[ -f "$repo_root/$DEPLOY_COMPOSE_FILE" ]] || die "$DEPLOY_COMPOSE_FILE がありません（デプロイ用 compose）。"
 
-compose="$(compose_cmd)"
+# デプロイ先ではソースを持たない image 参照専用の compose を使う（build: を持たない）。
+compose="$(compose_cmd) -f $DEPLOY_COMPOSE_FILE"
 
-# --- 1. イメージビルド ---------------------------------------------------------
-log "イメージをビルドします（api / web / migrate）..."
-$compose build api web migrate
+# --- 1. イメージ取得（ビルドはしない） -----------------------------------------
+command -v docker >/dev/null 2>&1 || die "docker が見つかりません。"
+log "ビルド済みイメージを確認します（無ければ pull）..."
+ensure_images
 
 # --- 2. DDL + マスタデータ適用（専用ジョブ） -----------------------------------
 log "MariaDB を起動します..."

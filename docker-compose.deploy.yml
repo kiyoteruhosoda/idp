@@ -1,0 +1,89 @@
+# デプロイ先（ソースを持たない別ホスト）用の Compose。build: を持たず、ビルド済みイメージを image: 参照で
+# 起動する。イメージは別ホストの scripts/build.sh で作成し、レジストリ push か tar 転送で受け渡す。
+# 開発・ビルド用（build: を持つ）は docker-compose.yml。デプロイ先では本ファイルを使う。
+#   イメージ名: ${IMAGE_PREFIX:-idp}/{api,web,migrate}:${IMAGE_TAG:-latest}
+#   scripts/init.sh（初回）・scripts/deploy.sh（更新）が `-f docker-compose.deploy.yml` で使う。
+services:
+  mariadb:
+    image: mariadb:10.11
+    environment:
+      MARIADB_DATABASE: ${MARIADB_DATABASE:-idp}
+      MARIADB_USER: ${MARIADB_USER:-idp}
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD:?set MARIADB_PASSWORD in .env}
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:?set MARIADB_ROOT_PASSWORD in .env}
+    ports:
+      - "${MARIADB_PORT:-3306}:3306"
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    image: ${IMAGE_PREFIX:-idp}/api:${IMAGE_TAG:-latest}
+    environment:
+      ISSUER: ${ISSUER:-http://localhost:8080}
+      BIND_ADDR: 0.0.0.0:8080
+      DATABASE_URL: mysql://${MARIADB_USER:-idp}:${MARIADB_PASSWORD:?set MARIADB_PASSWORD in .env}@mariadb:3306/${MARIADB_DATABASE:-idp}
+      DB_MAX_CONNECTIONS: ${DB_MAX_CONNECTIONS:-10}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      RUST_LOG: ${RUST_LOG:-info,idp=info}
+      KEY_ENCRYPTION_KEY: ${KEY_ENCRYPTION_KEY:?set KEY_ENCRYPTION_KEY in .env}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?set INTERNAL_SERVICE_TOKEN in .env}
+      COOKIE_SECURE: ${COOKIE_SECURE:-}
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  web:
+    image: ${IMAGE_PREFIX:-idp}/web:${IMAGE_TAG:-latest}
+    environment:
+      WEB_BIND_ADDR: 0.0.0.0:8081
+      API_BASE_URL: http://api:8080
+      ISSUER: ${ISSUER:-http://localhost:8080}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      RUST_LOG: ${RUST_LOG:-info,idp_web=info}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?set INTERNAL_SERVICE_TOKEN in .env}
+      COOKIE_SECURE: ${COOKIE_SECURE:-}
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  proxy:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+
+  # DDL・マスタデータ適用の専用ワンショットジョブ（ビルド済みイメージ）。常駐させない。
+  migrate:
+    image: ${IMAGE_PREFIX:-idp}/migrate:${IMAGE_TAG:-latest}
+    environment:
+      DATABASE_URL: mysql://${MARIADB_USER:-idp}:${MARIADB_PASSWORD:?set MARIADB_PASSWORD in .env}@mariadb:3306/${MARIADB_DATABASE:-idp}
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    profiles: ["tools"]
+
+volumes:
+  mariadb_data:
