@@ -92,6 +92,15 @@ pub struct ClientRegisterRequest {
     /// 省略時は既定（true）。public は常に PKCE 必須。
     #[serde(default)]
     pub require_pkce: Option<bool>,
+    /// RP-initiated logout のリダイレクト先（登録済みのもののみ許可）。
+    #[serde(default)]
+    pub post_logout_redirect_uris: Option<Vec<String>>,
+    /// front-channel logout URI（OIDC front-channel logout 1.0）。
+    #[serde(default)]
+    pub frontchannel_logout_uri: Option<String>,
+    /// back-channel logout URI（OIDC back-channel logout 1.0）。
+    #[serde(default)]
+    pub backchannel_logout_uri: Option<String>,
 }
 
 /// クライアント部分更新リクエスト。指定した項目のみ更新する。
@@ -106,6 +115,12 @@ pub struct ClientUpdateRequest {
     /// `ACTIVE` または `DISABLED`。
     #[serde(default)]
     pub client_status: Option<String>,
+    #[serde(default)]
+    pub post_logout_redirect_uris: Option<Vec<String>>,
+    #[serde(default)]
+    pub frontchannel_logout_uri: Option<String>,
+    #[serde(default)]
+    pub backchannel_logout_uri: Option<String>,
 }
 
 /// 監査ログ検索のクエリパラメータ（管理 API、A3・設計仕様 §7）。
@@ -181,6 +196,12 @@ pub struct ClientResponse {
     pub scopes: Vec<String>,
     pub token_endpoint_auth_method: String,
     pub require_pkce: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub post_logout_redirect_uris: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frontchannel_logout_uri: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backchannel_logout_uri: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }

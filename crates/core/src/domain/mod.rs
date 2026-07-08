@@ -16,6 +16,7 @@ pub mod pkce;
 pub mod rate_limit;
 pub mod refresh_token;
 pub mod repositories;
+pub mod revoked_access_token;
 pub mod signing_key;
 pub mod sso_session;
 pub mod user;

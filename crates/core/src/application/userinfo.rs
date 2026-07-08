@@ -5,7 +5,9 @@
 
 use crate::application::token::{userinfo_audience, AccessTokenClaims};
 use crate::domain::clock::Clock;
-use crate::domain::repositories::{SigningKeyRepository, UserRepository};
+use crate::domain::repositories::{
+    RevokedAccessTokenRepository, SigningKeyRepository, UserRepository,
+};
 use crate::domain::values::Scope;
 use crate::infrastructure::jwt;
 use jsonwebtoken::{Algorithm, Validation};
@@ -38,6 +40,7 @@ pub enum UserInfoError {
 pub struct UserInfoService {
     keys: Arc<dyn SigningKeyRepository>,
     users: Arc<dyn UserRepository>,
+    revoked_access_tokens: Arc<dyn RevokedAccessTokenRepository>,
     clock: Arc<dyn Clock>,
     issuer: String,
     clock_skew: chrono::Duration,
@@ -47,6 +50,7 @@ impl UserInfoService {
     pub fn new(
         keys: Arc<dyn SigningKeyRepository>,
         users: Arc<dyn UserRepository>,
+        revoked_access_tokens: Arc<dyn RevokedAccessTokenRepository>,
         clock: Arc<dyn Clock>,
         issuer: String,
         clock_skew: std::time::Duration,
@@ -54,6 +58,7 @@ impl UserInfoService {
         Self {
             keys,
             users,
+            revoked_access_tokens,
             clock,
             issuer,
             clock_skew: chrono::Duration::from_std(clock_skew).expect("clock skew out of range"),
@@ -137,6 +142,15 @@ impl UserInfoService {
         let now = self.clock.now().timestamp();
         if claims.exp + self.clock_skew.num_seconds() <= now {
             return Err(UserInfoError::InvalidToken("token expired"));
+        }
+
+        // jti 失効リスト確認（F5: token revocation）。
+        if !claims.jti.is_empty() {
+            match self.revoked_access_tokens.is_revoked(&claims.jti).await {
+                Ok(true) => return Err(UserInfoError::InvalidToken("token has been revoked")),
+                Ok(false) => {}
+                Err(e) => return Err(UserInfoError::Internal(e.to_string())),
+            }
         }
 
         Ok(claims)

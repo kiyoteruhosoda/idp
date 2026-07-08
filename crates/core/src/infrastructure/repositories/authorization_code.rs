@@ -116,4 +116,22 @@ impl AuthorizationCodeRepository for SqlxAuthorizationCodeRepository {
             .map_err(repo_err)?;
         row.as_ref().map(map_row).transpose()
     }
+
+    async fn revoke_all_active_for_user(
+        &self,
+        user_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE authorization_codes SET used_at = ? \
+             WHERE user_id = ? AND used_at IS NULL AND expires_at > ?",
+        )
+        .bind(now.naive_utc())
+        .bind(user_id.to_string())
+        .bind(now.naive_utc())
+        .execute(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        Ok(())
+    }
 }

@@ -20,6 +20,12 @@ pub struct Client {
     pub scopes: Vec<String>,
     pub token_endpoint_auth_method: TokenEndpointAuthMethod,
     pub require_pkce: bool,
+    /// RP-initiated logout 後のリダイレクト先として登録済みの URI 群（F4）。
+    pub post_logout_redirect_uris: Vec<String>,
+    /// front-channel logout 用 iframe URI（F4）。
+    pub frontchannel_logout_uri: Option<String>,
+    /// back-channel logout 用 HTTP POST 先 URI（F4）。
+    pub backchannel_logout_uri: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -32,6 +38,11 @@ impl Client {
     /// `redirect_uri` が登録値と完全一致するか（設計仕様 §2.3・§4.2）。
     pub fn allows_redirect_uri(&self, redirect_uri: &str) -> bool {
         self.redirect_uris.iter().any(|u| u == redirect_uri)
+    }
+
+    /// `post_logout_redirect_uri` が登録値と完全一致するか（F4 RP-initiated logout）。
+    pub fn allows_post_logout_redirect_uri(&self, uri: &str) -> bool {
+        self.post_logout_redirect_uris.iter().any(|u| u == uri)
     }
 
     /// 要求 scope がすべて登録 scope の部分集合か（設計仕様 §4.2）。

@@ -12,6 +12,7 @@ use crate::domain::client::Client;
 use crate::domain::consent::ClientConsent;
 use crate::domain::error::Result;
 use crate::domain::refresh_token::RefreshToken;
+use crate::domain::revoked_access_token::RevokedAccessToken;
 use crate::domain::signing_key::SigningKey;
 use crate::domain::sso_session::SsoSession;
 use crate::domain::user::User;
@@ -70,6 +71,8 @@ pub trait SsoSessionRepository: Send + Sync {
     /// SSO 復元時に idle 期限を延長する（absolute は変更しない、設計仕様 §3.4）。
     async fn extend_idle(&self, session_hash: &str, idle_expires_at: DateTime<Utc>) -> Result<()>;
     async fn delete(&self, session_hash: &str) -> Result<()>;
+    /// 指定ユーザーの全 SSO セッションを削除する（ユーザー単位の全セッション無効化、F5）。
+    async fn delete_all_for_user(&self, user_id: Uuid) -> Result<()>;
 }
 
 #[async_trait]
@@ -82,6 +85,8 @@ pub trait AuthorizationCodeRepository: Send + Sync {
         code_hash: &str,
         used_at: DateTime<Utc>,
     ) -> Result<Option<AuthorizationCode>>;
+    /// ログアウト時にユーザーの未消費・期限内の全 code を即時失効させる（`used_at` を設定）。
+    async fn revoke_all_active_for_user(&self, user_id: Uuid, now: DateTime<Utc>) -> Result<()>;
 }
 
 #[async_trait]
@@ -148,6 +153,8 @@ pub trait RefreshTokenRepository: Send + Sync {
     /// `parent_hash` でチェーンを検索し、存在する（未失効・失効問わず）場合は `true`。
     /// reuse detection で同一 parent から二重発行が起きていないかを確認するために使う。
     async fn exists_by_parent_hash(&self, parent_hash: &str) -> Result<bool>;
+    /// 指定ユーザーの全 Refresh Token を失効させる（ユーザー単位の全セッション無効化、F5）。
+    async fn revoke_all_for_user(&self, user_id: Uuid, revoked_at: DateTime<Utc>) -> Result<()>;
 }
 
 /// ユーザーがクライアントに付与した同意済み scope の永続化（F3: Consent）。
@@ -161,4 +168,17 @@ pub trait ClientConsentRepository: Send + Sync {
     async fn revoke(&self, user_id: Uuid, client_id: &str) -> Result<()>;
     /// ユーザーの全同意レコードを返す（同意取り消し画面・管理用）。
     async fn list_for_user(&self, user_id: Uuid) -> Result<Vec<ClientConsent>>;
+}
+
+/// Access Token の jti 失効リスト（F5: Token 管理）。
+/// JWT は自己完結型のため、jti を本テーブルで管理することで即時失効を実現する。
+#[async_trait]
+pub trait RevokedAccessTokenRepository: Send + Sync {
+    /// jti を失効リストに追加する（冪等）。
+    async fn revoke(
+        &self,
+        token: &RevokedAccessToken,
+    ) -> Result<()>;
+    /// 指定 jti が失効リストに存在するか。
+    async fn is_revoked(&self, jti: &str) -> Result<bool>;
 }

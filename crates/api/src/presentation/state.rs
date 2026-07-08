@@ -12,10 +12,13 @@ use crate::application::client_management::ClientManagementService;
 use crate::application::client_status::ClientStatusService;
 use crate::application::code_issuance::CodeIssuanceService;
 use crate::application::consent::ConsentService;
+use crate::application::introspection::IntrospectionService;
 use crate::application::key_service::KeyService;
 use crate::application::login::LoginService;
+use crate::application::logout::LogoutService;
 use crate::application::permission_management::PermissionManagementService;
 use crate::application::register::RegisterService;
+use crate::application::revocation::RevocationService;
 use crate::application::token::TokenService;
 use crate::application::userinfo::UserInfoService;
 use crate::config::Config;
@@ -29,6 +32,7 @@ use crate::infrastructure::repositories::authorization_code::SqlxAuthorizationCo
 use crate::infrastructure::repositories::client::SqlxClientRepository;
 use crate::infrastructure::repositories::consent::SqlxClientConsentRepository;
 use crate::infrastructure::repositories::refresh_token::SqlxRefreshTokenRepository;
+use crate::infrastructure::repositories::revoked_access_token::SqlxRevokedAccessTokenRepository;
 use crate::infrastructure::repositories::signing_key::SqlxSigningKeyRepository;
 use crate::infrastructure::repositories::sso_session::SqlxSsoSessionRepository;
 use crate::infrastructure::repositories::user::SqlxUserRepository;
@@ -57,6 +61,9 @@ pub struct AppState {
     pub clients_status: Arc<ClientStatusService>,
     pub permissions_admin: Arc<PermissionManagementService>,
     pub audit_query: Arc<AuditQueryService>,
+    pub logout: Arc<LogoutService>,
+    pub revocation: Arc<RevocationService>,
+    pub introspection: Arc<IntrospectionService>,
 }
 
 impl AppState {
@@ -68,6 +75,7 @@ impl AppState {
         let sso_sessions = Arc::new(SqlxSsoSessionRepository::new(pool.clone()));
         let codes = Arc::new(SqlxAuthorizationCodeRepository::new(pool.clone()));
         let refresh_tokens = Arc::new(SqlxRefreshTokenRepository::new(pool.clone()));
+        let revoked_access_tokens = Arc::new(SqlxRevokedAccessTokenRepository::new(pool.clone()));
         let signing_keys = Arc::new(SqlxSigningKeyRepository::new(pool.clone()));
         let user_permissions = Arc::new(SqlxUserPermissionRepository::new(pool.clone()));
         let client_consents = Arc::new(SqlxClientConsentRepository::new(pool.clone()));
@@ -155,12 +163,12 @@ impl AppState {
         ));
         let audit_query = Arc::new(AuditQueryService::new(audit_logs));
         let token = Arc::new(TokenService::new(
-            clients,
+            clients.clone(),
             users.clone(),
-            codes,
-            refresh_tokens,
+            codes.clone(),
+            refresh_tokens.clone(),
             keys.clone(),
-            hasher,
+            hasher.clone(),
             audit.clone(),
             clock.clone(),
             config.issuer().to_string(),
@@ -169,8 +177,9 @@ impl AppState {
             config.refresh_token_ttl(),
         ));
         let userinfo = Arc::new(UserInfoService::new(
-            signing_keys,
+            signing_keys.clone(),
             users.clone(),
+            revoked_access_tokens.clone(),
             clock.clone(),
             config.issuer().to_string(),
             config.clock_skew(),
@@ -182,10 +191,41 @@ impl AppState {
             clock.clone(),
         ));
         let admin_access = Arc::new(AdminAccessService::new(
-            sso_sessions,
-            users,
+            sso_sessions.clone(),
+            users.clone(),
             user_permissions,
+            clock.clone(),
+        ));
+
+        // F4: Logout（RP-initiated / front-channel / back-channel）。
+        let logout = Arc::new(LogoutService::new(
+            sso_sessions.clone(),
+            users.clone(),
+            clients.clone(),
+            codes,
+            audit.clone(),
+            clock.clone(),
+            config.issuer().to_string(),
+        ));
+
+        // F5: Token 管理（revocation / introspection）。
+        let revocation = Arc::new(RevocationService::new(
+            clients.clone(),
+            refresh_tokens.clone(),
+            revoked_access_tokens.clone(),
+            hasher.clone(),
+            audit.clone(),
+            clock.clone(),
+        ));
+        let introspection = Arc::new(IntrospectionService::new(
+            clients,
+            signing_keys.clone(),
+            refresh_tokens,
+            revoked_access_tokens,
+            hasher,
             clock,
+            config.issuer().to_string(),
+            config.clock_skew(),
         ));
 
         Self {
@@ -204,6 +244,9 @@ impl AppState {
             clients_status,
             permissions_admin,
             audit_query,
+            logout,
+            revocation,
+            introspection,
         }
     }
 }

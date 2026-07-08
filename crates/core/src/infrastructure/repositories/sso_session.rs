@@ -97,4 +97,13 @@ impl SsoSessionRepository for SqlxSsoSessionRepository {
             .map_err(repo_err)?;
         Ok(())
     }
+
+    async fn delete_all_for_user(&self, user_id: Uuid) -> Result<()> {
+        sqlx::query("DELETE FROM sso_sessions WHERE user_id = ?")
+            .bind(user_id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        Ok(())
+    }
 }

@@ -3,7 +3,8 @@
 use crate::presentation::correlation;
 use crate::presentation::handlers::{
     admin, admin_audit, admin_clients, admin_permissions, admin_signing_keys, admin_users,
-    authorize, consent, discovery, health, internal_auth, register, token, userinfo,
+    authorize, consent, discovery, health, internal_auth, introspect, logout, register, revoke,
+    token, userinfo,
 };
 use crate::presentation::openapi::ApiDoc;
 use crate::presentation::security_headers::add_security_headers;
@@ -52,6 +53,9 @@ pub fn build(state: AppState) -> Router {
         .route("/authorize", get(authorize::authorize))
         .route("/token", post(token::token))
         .route("/userinfo", get(userinfo::userinfo))
+        .route("/logout", get(logout::logout))
+        .route("/revoke", post(revoke::revoke))
+        .route("/introspect", post(introspect::introspect))
         // 管理者身元確認（idp.admin 必須。RequirePerms<IdpAdmin>）。web の管理コンソールが SSO Cookie
         // 転送で認証状態・身元を得るのに使う（ADR-0007 §4）。HTML 画面は web crate 側にある。
         .route("/admin/whoami", get(admin::whoami))

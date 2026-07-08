@@ -43,6 +43,9 @@ fn discovery_document(issuer: &str) -> Value {
         "authorization_endpoint": format!("{issuer}/authorize"),
         "token_endpoint": format!("{issuer}/token"),
         "userinfo_endpoint": format!("{issuer}/userinfo"),
+        "end_session_endpoint": format!("{issuer}/logout"),
+        "revocation_endpoint": format!("{issuer}/revoke"),
+        "introspection_endpoint": format!("{issuer}/introspect"),
         "jwks_uri": format!("{issuer}/.well-known/jwks.json"),
         "scopes_supported": ["openid", "profile", "email", "offline_access"],
         "response_types_supported": ["code"],
@@ -51,6 +54,8 @@ fn discovery_document(issuer: &str) -> Value {
         "id_token_signing_alg_values_supported": ["RS256"],
         "token_endpoint_auth_methods_supported": ["client_secret_basic", "none"],
         "code_challenge_methods_supported": ["S256"],
+        "frontchannel_logout_supported": true,
+        "backchannel_logout_supported": true,
         "claims_supported": [
             "sub", "iss", "aud", "exp", "iat", "auth_time", "nonce",
             "email", "email_verified", "preferred_username", "name"
@@ -75,5 +80,19 @@ mod tests {
             "https://idp.example.com/.well-known/jwks.json"
         );
         assert_eq!(doc["code_challenge_methods_supported"], json!(["S256"]));
+        assert_eq!(
+            doc["end_session_endpoint"],
+            "https://idp.example.com/logout"
+        );
+        assert_eq!(
+            doc["revocation_endpoint"],
+            "https://idp.example.com/revoke"
+        );
+        assert_eq!(
+            doc["introspection_endpoint"],
+            "https://idp.example.com/introspect"
+        );
+        assert_eq!(doc["frontchannel_logout_supported"], true);
+        assert_eq!(doc["backchannel_logout_supported"], true);
     }
 }

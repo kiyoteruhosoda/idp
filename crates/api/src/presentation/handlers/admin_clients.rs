@@ -50,6 +50,9 @@ pub async fn create_client(
         redirect_uris: body.redirect_uris,
         scopes: body.scopes,
         require_pkce: body.require_pkce,
+        post_logout_redirect_uris: body.post_logout_redirect_uris.unwrap_or_default(),
+        frontchannel_logout_uri: body.frontchannel_logout_uri,
+        backchannel_logout_uri: body.backchannel_logout_uri,
     };
 
     let registered = state
@@ -147,6 +150,9 @@ pub async fn update_client(
         redirect_uris: body.redirect_uris,
         scopes: body.scopes,
         status,
+        post_logout_redirect_uris: body.post_logout_redirect_uris,
+        frontchannel_logout_uri: body.frontchannel_logout_uri,
+        backchannel_logout_uri: body.backchannel_logout_uri,
     };
 
     let client = state
@@ -228,6 +234,9 @@ fn client_response(c: &Client) -> ClientResponse {
         scopes: c.scopes.clone(),
         token_endpoint_auth_method: c.token_endpoint_auth_method.as_str().to_string(),
         require_pkce: c.require_pkce,
+        post_logout_redirect_uris: c.post_logout_redirect_uris.clone(),
+        frontchannel_logout_uri: c.frontchannel_logout_uri.clone(),
+        backchannel_logout_uri: c.backchannel_logout_uri.clone(),
         created_at: c.created_at.to_rfc3339(),
         updated_at: c.updated_at.to_rfc3339(),
     }

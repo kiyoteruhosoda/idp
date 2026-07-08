@@ -31,6 +31,12 @@ pub struct RegisterClientCommand {
     pub scopes: Vec<String>,
     /// 省略時は既定（true）。public は PKCE 必須のため false を指定しても true に矯正する。
     pub require_pkce: Option<bool>,
+    /// RP-initiated logout 後のリダイレクト先（任意）。F4。
+    pub post_logout_redirect_uris: Vec<String>,
+    /// front-channel logout URI（任意）。F4。
+    pub frontchannel_logout_uri: Option<String>,
+    /// back-channel logout URI（任意）。F4。
+    pub backchannel_logout_uri: Option<String>,
 }
 
 /// 部分更新コマンド。`None` のフィールドは変更しない。
@@ -40,6 +46,12 @@ pub struct UpdateClientCommand {
     pub redirect_uris: Option<Vec<String>>,
     pub scopes: Option<Vec<String>>,
     pub status: Option<ClientStatus>,
+    /// RP-initiated logout 後のリダイレクト先（`Some(vec![])` で削除）。F4。
+    pub post_logout_redirect_uris: Option<Vec<String>>,
+    /// front-channel logout URI（`Some(None)` で削除）。F4。
+    pub frontchannel_logout_uri: Option<Option<String>>,
+    /// back-channel logout URI（`Some(None)` で削除）。F4。
+    pub backchannel_logout_uri: Option<Option<String>>,
 }
 
 /// 登録結果。`client_secret` は confidential のときのみ平文で返る（保存はハッシュのみ）。
@@ -126,6 +138,9 @@ impl ClientManagementService {
             scopes,
             token_endpoint_auth_method: auth_method,
             require_pkce,
+            post_logout_redirect_uris: cmd.post_logout_redirect_uris,
+            frontchannel_logout_uri: cmd.frontchannel_logout_uri,
+            backchannel_logout_uri: cmd.backchannel_logout_uri,
             created_at: now,
             updated_at: now,
         };
@@ -183,6 +198,15 @@ impl ClientManagementService {
         }
         if let Some(status) = cmd.status {
             client.client_status = status;
+        }
+        if let Some(uris) = cmd.post_logout_redirect_uris {
+            client.post_logout_redirect_uris = uris;
+        }
+        if let Some(uri) = cmd.frontchannel_logout_uri {
+            client.frontchannel_logout_uri = uri;
+        }
+        if let Some(uri) = cmd.backchannel_logout_uri {
+            client.backchannel_logout_uri = uri;
         }
 
         self.clients

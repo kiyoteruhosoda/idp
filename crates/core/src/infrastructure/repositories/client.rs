@@ -22,7 +22,8 @@ impl SqlxClientRepository {
 }
 
 const SELECT_COLUMNS: &str = "id, client_id, client_secret_hash, client_type, client_status, \
-     app_name, redirect_uris, grant_types, response_types, scopes, \
+     app_name, redirect_uris, post_logout_redirect_uris, frontchannel_logout_uri, \
+     backchannel_logout_uri, grant_types, response_types, scopes, \
      token_endpoint_auth_method, require_pkce, created_at, updated_at";
 
 fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
@@ -47,6 +48,8 @@ fn map_row(row: &MySqlRow) -> Result<Client> {
         .try_get("token_endpoint_auth_method")
         .map_err(repo_err)?;
     let redirect_uris: Vec<u8> = row.try_get("redirect_uris").map_err(repo_err)?;
+    let post_logout_redirect_uris: Option<Vec<u8>> =
+        row.try_get("post_logout_redirect_uris").map_err(repo_err)?;
     let grant_types: Vec<u8> = row.try_get("grant_types").map_err(repo_err)?;
     let response_types: Vec<u8> = row.try_get("response_types").map_err(repo_err)?;
     let scopes: Vec<u8> = row.try_get("scopes").map_err(repo_err)?;
@@ -59,6 +62,12 @@ fn map_row(row: &MySqlRow) -> Result<Client> {
         client_status: ClientStatus::parse(&client_status)?,
         app_name: row.try_get("app_name").map_err(repo_err)?,
         redirect_uris: parse_json_strings(&redirect_uris, "redirect_uris")?,
+        post_logout_redirect_uris: match post_logout_redirect_uris {
+            Some(raw) => parse_json_strings(&raw, "post_logout_redirect_uris")?,
+            None => vec![],
+        },
+        frontchannel_logout_uri: row.try_get("frontchannel_logout_uri").map_err(repo_err)?,
+        backchannel_logout_uri: row.try_get("backchannel_logout_uri").map_err(repo_err)?,
         grant_types: parse_json_strings(&grant_types, "grant_types")?,
         response_types: parse_json_strings(&response_types, "response_types")?,
         scopes: parse_json_strings(&scopes, "scopes")?,
@@ -91,9 +100,10 @@ impl ClientRepository for SqlxClientRepository {
         sqlx::query(
             "INSERT INTO clients \
              (id, client_id, client_secret_hash, client_type, client_status, app_name, \
-              redirect_uris, grant_types, response_types, scopes, \
+              redirect_uris, post_logout_redirect_uris, frontchannel_logout_uri, \
+              backchannel_logout_uri, grant_types, response_types, scopes, \
               token_endpoint_auth_method, require_pkce) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(client.id.to_string())
         .bind(&client.client_id)
@@ -102,6 +112,13 @@ impl ClientRepository for SqlxClientRepository {
         .bind(client.client_status.as_str())
         .bind(&client.app_name)
         .bind(to_json(&client.redirect_uris, "redirect_uris")?)
+        .bind(if client.post_logout_redirect_uris.is_empty() {
+            None
+        } else {
+            Some(to_json(&client.post_logout_redirect_uris, "post_logout_redirect_uris")?)
+        })
+        .bind(&client.frontchannel_logout_uri)
+        .bind(&client.backchannel_logout_uri)
         .bind(to_json(&client.grant_types, "grant_types")?)
         .bind(to_json(&client.response_types, "response_types")?)
         .bind(to_json(&client.scopes, "scopes")?)
@@ -134,7 +151,8 @@ impl ClientRepository for SqlxClientRepository {
         sqlx::query(
             "UPDATE clients SET \
              client_secret_hash = ?, client_type = ?, client_status = ?, app_name = ?, \
-             redirect_uris = ?, grant_types = ?, response_types = ?, scopes = ?, \
+             redirect_uris = ?, post_logout_redirect_uris = ?, frontchannel_logout_uri = ?, \
+             backchannel_logout_uri = ?, grant_types = ?, response_types = ?, scopes = ?, \
              token_endpoint_auth_method = ?, require_pkce = ? \
              WHERE id = ?",
         )
@@ -143,6 +161,13 @@ impl ClientRepository for SqlxClientRepository {
         .bind(client.client_status.as_str())
         .bind(&client.app_name)
         .bind(to_json(&client.redirect_uris, "redirect_uris")?)
+        .bind(if client.post_logout_redirect_uris.is_empty() {
+            None
+        } else {
+            Some(to_json(&client.post_logout_redirect_uris, "post_logout_redirect_uris")?)
+        })
+        .bind(&client.frontchannel_logout_uri)
+        .bind(&client.backchannel_logout_uri)
         .bind(to_json(&client.grant_types, "grant_types")?)
         .bind(to_json(&client.response_types, "response_types")?)
         .bind(to_json(&client.scopes, "scopes")?)
