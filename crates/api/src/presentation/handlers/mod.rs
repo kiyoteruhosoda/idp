@@ -4,6 +4,7 @@ pub mod admin;
 pub mod admin_audit;
 pub mod admin_clients;
 pub mod admin_permissions;
+pub mod admin_signing_keys;
 pub mod admin_users;
 pub mod authorize;
 pub mod discovery;

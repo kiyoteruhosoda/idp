@@ -1,0 +1,65 @@
+{% extends "console/layout.html" %}
+{% block content %}
+<h1>{{ messages.get("admin-signing-keys-title") }}</h1>
+{% if let Some(err) = error %}
+<p role="alert" class="error-banner">{{ messages.get(err) }}</p>
+{% endif %}
+<table>
+<thead>
+<tr>
+<th>{{ messages.get("admin-signing-keys-col-kid") }}</th>
+<th>{{ messages.get("admin-signing-keys-col-alg") }}</th>
+<th>{{ messages.get("admin-signing-keys-col-status") }}</th>
+<th>{{ messages.get("admin-signing-keys-col-not-before") }}</th>
+<th>{{ messages.get("admin-signing-keys-col-not-after") }}</th>
+<th>{{ messages.get("admin-signing-keys-col-created") }}</th>
+<th>{{ messages.get("admin-signing-keys-col-actions") }}</th>
+</tr>
+</thead>
+<tbody>
+{% if keys.is_empty() %}
+<tr><td colspan="7">{{ messages.get("admin-signing-keys-none") }}</td></tr>
+{% else %}
+{% for key in keys %}
+<tr>
+<td><code>{{ key.kid }}</code></td>
+<td>{{ key.algorithm }}</td>
+<td>{{ key.status }}</td>
+<td>{{ key.not_before }}</td>
+<td>{{ key.not_after }}</td>
+<td>{{ key.created_at }}</td>
+<td>
+{% if key.status == "ACTIVE" %}
+<form method="post" action="/admin/console/signing-keys/retire" style="display:inline">
+<input type="hidden" name="kid" value="{{ key.kid }}">
+<input type="hidden" name="csrf_token" value="{{ csrf }}">
+<button type="submit">{{ messages.get("admin-signing-keys-retire") }}</button>
+</form>
+{% else %}
+<form method="post" action="/admin/console/signing-keys/delete" style="display:inline">
+<input type="hidden" name="kid" value="{{ key.kid }}">
+<input type="hidden" name="csrf_token" value="{{ csrf }}">
+<button type="submit">{{ messages.get("admin-signing-keys-delete") }}</button>
+</form>
+{% endif %}
+</td>
+</tr>
+{% endfor %}
+{% endif %}
+</tbody>
+</table>
+
+<h2>{{ messages.get("admin-signing-keys-generate-heading") }}</h2>
+<form method="post" action="/admin/console/signing-keys/generate">
+<input type="hidden" name="csrf_token" value="{{ csrf }}">
+<label>{{ messages.get("admin-signing-keys-alg-label") }}
+<select name="algorithm">
+<option value="RS256">RS256 (RSA-2048)</option>
+<option value="ES256">ES256 (NIST P-256)</option>
+</select>
+</label>
+<button type="submit">{{ messages.get("admin-signing-keys-generate-button") }}</button>
+</form>
+
+<p><a href="/admin/console">{{ messages.get("admin-nav-home") }}</a></p>
+{% endblock %}

@@ -2,7 +2,8 @@
 
 use crate::correlation;
 use crate::handlers::{
-    admin_clients_console, admin_console, admin_status_console, admin_users_console, health, login,
+    admin_clients_console, admin_console, admin_signing_keys_console, admin_status_console,
+    admin_users_console, health, login,
 };
 use crate::state::WebState;
 use axum::routing::{get, post};
@@ -61,6 +62,23 @@ pub fn build(state: WebState) -> Router {
         .route(
             "/admin/console/status",
             get(admin_status_console::client_status),
+        )
+        // 署名鍵管理画面（K1）。
+        .route(
+            "/admin/console/signing-keys",
+            get(admin_signing_keys_console::list),
+        )
+        .route(
+            "/admin/console/signing-keys/generate",
+            post(admin_signing_keys_console::generate),
+        )
+        .route(
+            "/admin/console/signing-keys/retire",
+            post(admin_signing_keys_console::retire),
+        )
+        .route(
+            "/admin/console/signing-keys/delete",
+            post(admin_signing_keys_console::delete),
         )
         .layer(axum::middleware::from_fn(correlation::propagate))
         .layer(TraceLayer::new_for_http())

@@ -7,7 +7,7 @@
 //! 各テンプレート構造体は対応する `.html` を `#[template(path = ...)]` で束ね、コンパイル時に
 //! 型検証される（sqlx のコンパイル時クエリ検証と同じ思想）。
 
-use crate::admin_dto::{AuditLogView, ClientView};
+use crate::admin_dto::{AuditLogView, ClientView, SigningKeyView};
 use crate::i18n::Messages;
 use askama::Template;
 use idp_contracts::admin::{ClientStatusResponse, UserSummaryResponse};
@@ -205,4 +205,15 @@ pub struct ClientSecret<'a> {
     pub heading: &'a str,
     pub client_id: &'a str,
     pub secret: Option<&'a str>,
+}
+
+/// 署名鍵一覧・管理画面（`GET /admin/console/signing-keys`、K1）。
+#[derive(Template)]
+#[template(path = "console/signing_keys.html")]
+pub struct SigningKeysList<'a> {
+    pub messages: &'a Messages,
+    pub admin: Admin<'a>,
+    pub keys: &'a [SigningKeyView],
+    pub csrf: &'a str,
+    pub error: Option<&'a str>,
 }

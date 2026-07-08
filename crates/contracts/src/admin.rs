@@ -55,3 +55,27 @@ pub struct UserPermissionsResponse {
     pub user_id: String,
     pub permission_codes: Vec<String>,
 }
+
+/// 署名鍵の公開表現（`GET /admin/signing-keys`・`POST /admin/signing-keys` 等のレスポンス要素）。
+/// 秘密鍵は含めない。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SigningKeyResponse {
+    pub kid: String,
+    /// `RS256` または `ES256`。
+    pub algorithm: String,
+    /// `ACTIVE` または `RETIRED`。
+    pub status: String,
+    /// RFC3339 文字列。
+    pub not_before: String,
+    /// RFC3339 文字列。
+    pub not_after: String,
+    /// RFC3339 文字列。
+    pub created_at: String,
+}
+
+/// 新規署名鍵の生成リクエスト（`POST /admin/signing-keys`）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenerateSigningKeyRequest {
+    /// `RS256` または `ES256`。
+    pub algorithm: String,
+}

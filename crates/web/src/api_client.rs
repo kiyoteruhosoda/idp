@@ -373,6 +373,107 @@ impl ApiClient {
         .await
     }
 
+    // ── 署名鍵管理（K1）─────────────────────────────────────────────────────
+
+    /// 署名鍵一覧（`GET /admin/signing-keys`）。
+    pub async fn list_signing_keys(
+        &self,
+        correlation_id: &str,
+        sso: &str,
+    ) -> Result<Vec<crate::admin_dto::SigningKeyView>, AdminApiError> {
+        self.admin_send(Method::GET, "/admin/signing-keys", correlation_id, sso, None)
+            .await
+    }
+
+    /// 新規署名鍵を生成する（`POST /admin/signing-keys`）。`algorithm` は `RS256` または `ES256`。
+    pub async fn generate_signing_key(
+        &self,
+        correlation_id: &str,
+        sso: &str,
+        algorithm: &str,
+    ) -> Result<crate::admin_dto::SigningKeyView, AdminApiError> {
+        self.admin_send(
+            Method::POST,
+            "/admin/signing-keys",
+            correlation_id,
+            sso,
+            Some(serde_json::json!({ "algorithm": algorithm })),
+        )
+        .await
+    }
+
+    /// 署名鍵を退役させる（`POST /admin/signing-keys/{kid}/retire`）。
+    pub async fn retire_signing_key(
+        &self,
+        correlation_id: &str,
+        sso: &str,
+        kid: &str,
+    ) -> Result<(), AdminApiError> {
+        let response = self
+            .http
+            .post(format!("{}/admin/signing-keys/{kid}/retire", self.base_url))
+            .header(REQUEST_ID_HEADER, correlation_id)
+            .header(
+                reqwest::header::COOKIE,
+                format!("{SSO_SESSION_COOKIE}={sso}"),
+            )
+            .send()
+            .await
+            .map_err(|e| AdminApiError::Transport(e.to_string()))?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let message = response
+            .json::<ApiErrorBody>()
+            .await
+            .map(|b| b.message)
+            .unwrap_or_default();
+        Err(match status {
+            reqwest::StatusCode::UNAUTHORIZED => AdminApiError::Unauthorized,
+            reqwest::StatusCode::FORBIDDEN => AdminApiError::Forbidden,
+            reqwest::StatusCode::NOT_FOUND => AdminApiError::NotFound,
+            reqwest::StatusCode::BAD_REQUEST => AdminApiError::Validation(message),
+            other => AdminApiError::Transport(format!("unexpected status {other}")),
+        })
+    }
+
+    /// 署名鍵を削除する（`DELETE /admin/signing-keys/{kid}`）。RETIRED のみ可。
+    pub async fn delete_signing_key(
+        &self,
+        correlation_id: &str,
+        sso: &str,
+        kid: &str,
+    ) -> Result<(), AdminApiError> {
+        let response = self
+            .http
+            .delete(format!("{}/admin/signing-keys/{kid}", self.base_url))
+            .header(REQUEST_ID_HEADER, correlation_id)
+            .header(
+                reqwest::header::COOKIE,
+                format!("{SSO_SESSION_COOKIE}={sso}"),
+            )
+            .send()
+            .await
+            .map_err(|e| AdminApiError::Transport(e.to_string()))?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let message = response
+            .json::<ApiErrorBody>()
+            .await
+            .map(|b| b.message)
+            .unwrap_or_default();
+        Err(match status {
+            reqwest::StatusCode::UNAUTHORIZED => AdminApiError::Unauthorized,
+            reqwest::StatusCode::FORBIDDEN => AdminApiError::Forbidden,
+            reqwest::StatusCode::NOT_FOUND => AdminApiError::NotFound,
+            reqwest::StatusCode::BAD_REQUEST => AdminApiError::Validation(message),
+            other => AdminApiError::Transport(format!("unexpected status {other}")),
+        })
+    }
+
     /// `/admin/*`（`RequirePerms<IdpAdmin>`）への共通呼び出し。管理者の SSO Cookie と correlation_id を
     /// 転送し、api のステータスを web の [`AdminApiError`] へ写す。成功時は本文を `T` へデコードする。
     async fn admin_send<T>(

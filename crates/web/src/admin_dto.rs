@@ -72,3 +72,14 @@ pub struct ApiErrorBody {
     pub error: String,
     pub message: String,
 }
+
+/// 署名鍵の公開表現（`GET /admin/signing-keys` の応答要素）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct SigningKeyView {
+    pub kid: String,
+    pub algorithm: String,
+    pub status: String,
+    pub not_before: String,
+    pub not_after: String,
+    pub created_at: String,
+}

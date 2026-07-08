@@ -13,6 +13,7 @@ use crate::domain::error::Result;
 use crate::domain::signing_key::SigningKey;
 use crate::domain::sso_session::SsoSession;
 use crate::domain::user::User;
+use crate::domain::values::SigningKeyStatus;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -86,9 +87,15 @@ pub trait SigningKeyRepository: Send + Sync {
     async fn insert(&self, key: &SigningKey) -> Result<()>;
     /// 新規署名に使う ACTIVE 鍵を返す。
     async fn find_active(&self) -> Result<Option<SigningKey>>;
-    /// JWKS 公開対象（ACTIVE + RETIRED）を返す。
+    /// JWKS 公開対象（ACTIVE + RETIRED で not_after が未来のもの）を返す。
     async fn list_published(&self) -> Result<Vec<SigningKey>>;
     async fn find_by_kid(&self, kid: &str) -> Result<Option<SigningKey>>;
+    /// 全鍵を作成日時の降順で返す（管理画面用）。
+    async fn list_all(&self) -> Result<Vec<SigningKey>>;
+    /// ステータスを更新する（ACTIVE → RETIRED 等）。対象が無い場合は `NotFound`。
+    async fn update_status(&self, kid: &str, status: SigningKeyStatus) -> Result<()>;
+    /// 鍵を削除する。ACTIVE 鍵の削除は呼び出し側で禁止すること。
+    async fn delete(&self, kid: &str) -> Result<()>;
 }
 
 #[async_trait]

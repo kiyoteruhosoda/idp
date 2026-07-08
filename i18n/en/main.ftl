@@ -21,6 +21,7 @@ admin-nav-clients = Clients (relying parties)
 admin-nav-status = Client status
 admin-nav-audit = Login and audit logs
 admin-nav-permissions = User permissions
+admin-nav-signing-keys = Signing keys
 admin-forbidden-title = Access denied
 admin-forbidden-message = Your account does not have permission to view this page.
 
@@ -119,3 +120,21 @@ admin-status-col-id = Client ID
 admin-status-col-status = Status
 admin-status-col-scopes = Scopes
 admin-status-col-last-used = Last used (UTC)
+
+# Signing key management screens (K1).
+admin-signing-keys-title = Signing keys
+admin-signing-keys-none = No signing keys found.
+admin-signing-keys-col-kid = Key ID (kid)
+admin-signing-keys-col-alg = Algorithm
+admin-signing-keys-col-status = Status
+admin-signing-keys-col-not-before = Valid from (UTC)
+admin-signing-keys-col-not-after = Valid until (UTC)
+admin-signing-keys-col-created = Created (UTC)
+admin-signing-keys-col-actions = Actions
+admin-signing-keys-retire = Retire
+admin-signing-keys-delete = Delete
+admin-signing-keys-generate-heading = Generate a new signing key
+admin-signing-keys-alg-label = Algorithm
+admin-signing-keys-generate-button = Generate
+admin-signing-keys-not-found-title = Signing key not found
+admin-signing-keys-not-found-message = The signing key you requested does not exist.

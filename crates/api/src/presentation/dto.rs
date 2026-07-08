@@ -205,3 +205,26 @@ pub struct UserInfoResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
+
+/// 署名鍵の公開表現（秘密鍵・暗号化鍵は含めない）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SigningKeyResponse {
+    pub kid: String,
+    /// `RS256` または `ES256`。
+    pub algorithm: String,
+    /// `ACTIVE` または `RETIRED`。
+    pub status: String,
+    /// RFC3339 文字列。
+    pub not_before: String,
+    /// RFC3339 文字列。
+    pub not_after: String,
+    /// RFC3339 文字列。
+    pub created_at: String,
+}
+
+/// 新規署名鍵の生成リクエスト（`POST /admin/signing-keys`）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct GenerateSigningKeyRequest {
+    /// `RS256` または `ES256`。
+    pub algorithm: String,
+}

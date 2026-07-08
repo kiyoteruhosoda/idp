@@ -81,9 +81,11 @@ impl SigningKeyRepository for SqlxSigningKeyRepository {
     }
 
     async fn list_published(&self) -> Result<Vec<SigningKey>> {
+        // ACTIVE + RETIRED のうち not_after が未来のものだけを公開する（期限切れ RETIRED は非公開）。
         let sql = format!(
             "SELECT {SELECT_COLUMNS} FROM signing_keys \
-             WHERE status IN ('ACTIVE', 'RETIRED') ORDER BY created_at DESC"
+             WHERE status IN ('ACTIVE', 'RETIRED') AND not_after > UTC_TIMESTAMP(6) \
+             ORDER BY created_at DESC"
         );
         let rows = sqlx::query(&sql)
             .fetch_all(&self.pool)
@@ -100,5 +102,41 @@ impl SigningKeyRepository for SqlxSigningKeyRepository {
             .await
             .map_err(repo_err)?;
         row.as_ref().map(map_row).transpose()
+    }
+
+    async fn list_all(&self) -> Result<Vec<SigningKey>> {
+        let sql = format!(
+            "SELECT {SELECT_COLUMNS} FROM signing_keys ORDER BY created_at DESC"
+        );
+        let rows = sqlx::query(&sql)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        rows.iter().map(map_row).collect()
+    }
+
+    async fn update_status(&self, kid: &str, status: SigningKeyStatus) -> Result<()> {
+        let result = sqlx::query(
+            "UPDATE signing_keys SET status = ?, updated_at = UTC_TIMESTAMP(6) WHERE kid = ?",
+        )
+        .bind(status.as_str())
+        .bind(kid)
+        .execute(&self.pool)
+        .await
+        .map_err(repo_err)?;
+
+        if result.rows_affected() == 0 {
+            return Err(DomainError::NotFound);
+        }
+        Ok(())
+    }
+
+    async fn delete(&self, kid: &str) -> Result<()> {
+        sqlx::query("DELETE FROM signing_keys WHERE kid = ?")
+            .bind(kid)
+            .execute(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        Ok(())
     }
 }

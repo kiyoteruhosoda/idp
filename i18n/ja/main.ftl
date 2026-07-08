@@ -119,3 +119,22 @@ admin-status-col-id = クライアント ID
 admin-status-col-status = 状態
 admin-status-col-scopes = スコープ
 admin-status-col-last-used = 最終利用時刻（UTC）
+admin-nav-signing-keys = 署名鍵管理
+
+# 署名鍵管理画面（K1）。
+admin-signing-keys-title = 署名鍵管理
+admin-signing-keys-none = 署名鍵が登録されていません。
+admin-signing-keys-col-kid = 鍵 ID（kid）
+admin-signing-keys-col-alg = アルゴリズム
+admin-signing-keys-col-status = 状態
+admin-signing-keys-col-not-before = 有効開始（UTC）
+admin-signing-keys-col-not-after = 有効終了（UTC）
+admin-signing-keys-col-created = 作成日時（UTC）
+admin-signing-keys-col-actions = 操作
+admin-signing-keys-retire = 退役
+admin-signing-keys-delete = 削除
+admin-signing-keys-generate-heading = 新規署名鍵の生成
+admin-signing-keys-alg-label = アルゴリズム
+admin-signing-keys-generate-button = 生成
+admin-signing-keys-not-found-title = 署名鍵が見つかりません
+admin-signing-keys-not-found-message = 指定された署名鍵は存在しません。

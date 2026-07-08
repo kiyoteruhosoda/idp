@@ -70,7 +70,7 @@ async fn ensure_key_is_idempotent_and_token_verifies_against_jwks() {
         iss: "https://idp.example.com".to_string(),
         exp: 9_999_999_999,
     };
-    let token = jwt::sign(&active.private_pem, &active.kid, "at+jwt", &claims).expect("sign");
+    let token = jwt::sign(&active.private_pem, &active.kid, "at+jwt", &active.algorithm, &claims).expect("sign");
 
     let jwks = service.jwks().await.expect("jwks");
     let jwk = jwks
@@ -80,7 +80,11 @@ async fn ensure_key_is_idempotent_and_token_verifies_against_jwks() {
         .expect("jwk for active kid present in JWKS");
 
     let decoding_key = jwt::decoding_key_from_jwk(jwk).expect("decoding key");
-    let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
+    let alg = match active.algorithm.as_str() {
+        "ES256" => jsonwebtoken::Algorithm::ES256,
+        _ => jsonwebtoken::Algorithm::RS256,
+    };
+    let mut validation = jsonwebtoken::Validation::new(alg);
     validation.validate_aud = false;
     validation.set_required_spec_claims(&["exp"]);
 

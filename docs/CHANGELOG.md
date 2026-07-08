@@ -2,7 +2,22 @@
 
 完了した重要な変更の要約（詳しい経緯は `history/`、設計判断は `adr/`）。
 
-## 2026-07-07（web 画面をテンプレート化 + ビルド/デプロイのホスト分離）
+## 2026-07-08（K1: 署名鍵管理 — ES256 対応・管理 API・管理コンソール）
+
+- **EC(ES256) 対応**: `signing_keys.algorithm` の CHECK 制約に `ES256` を追加（migration 0005）。
+  `p256` クレートを追加し、`infrastructure/jwt.rs` を RS256/ES256 両対応に書き換え（`Jwk` の `n`/`e` を
+  `Option` 化、EC 用の `crv`/`x`/`y` フィールドを追加、`generate_ec_keypair()`・`ec_public_jwk()` 新設）。
+- **複数鍵署名 / JWKS `not_after` フィルタ**: `list_published` を `not_after > UTC_TIMESTAMP(6)` 条件に修正。
+  `Domain` 層の `SigningAlgorithm` enum を新設（`Rs256`/`Es256`）。`ActiveSigningKey` に `algorithm` フィールドを追加。
+- **管理 API（`/admin/signing-keys`）**: `list_keys`・`generate_key`・`retire_key`・`delete_key` ハンドラを追加。
+  `SigningKeyRepository` トレイトを `list_all`・`update_status`・`delete` で拡張し、sqlx 実装を追加。
+  `KeyManagementError` を定義し `key_service.rs` に admin ユースケースを追加。
+- **管理コンソール画面**: `crates/web` に `/admin/console/signing-keys` 画面を追加（一覧/生成/退役/削除）。
+  Askama テンプレート `signing_keys.html`、`admin_dto.rs` の `SigningKeyView`、`api_client.rs` の
+  4 メソッド、ハンドラ `admin_signing_keys_console.rs`（`list`・`generate`・`retire`・`delete`）を実装。
+  ホーム画面ナビに署名鍵管理リンクを追加。i18n（`en`/`ja` `.ftl`）を追加。
+
+
 
 - **web の HTML をコード生成から Askama テンプレートへ移行**。web crate の全画面（利用者ログイン・
   管理コンソール: ホーム/ログイン/クライアント一覧・登録/編集・詳細・secret 表示/利用者検索・権限/

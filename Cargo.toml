@@ -31,6 +31,7 @@ dotenvy = "0.15"
 async-trait = "0.1"
 jsonwebtoken = "9"
 rsa = { version = "0.9", features = ["pem"] }
+p256 = { version = "0.13", features = ["pkcs8", "pem"] }
 aes-gcm = "0.10"
 sha2 = "0.10"
 hex = "0.4"

@@ -2,6 +2,7 @@
 
 pub mod admin_clients_console;
 pub mod admin_console;
+pub mod admin_signing_keys_console;
 pub mod admin_status_console;
 pub mod admin_users_console;
 pub mod health;

@@ -83,6 +83,14 @@ string_enum!(
 );
 
 string_enum!(
+    /// 署名アルゴリズム（DB algorithm カラムの許可値）。
+    SigningAlgorithm {
+        Rs256 => "RS256",
+        Es256 => "ES256",
+    }
+);
+
+string_enum!(
     /// PKCE の code_challenge_method。本 IdP は S256 のみ。
     CodeChallengeMethod {
         S256 => "S256",

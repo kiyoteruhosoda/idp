@@ -322,6 +322,7 @@ impl TokenService {
             &signing_key.private_pem,
             &signing_key.kid,
             "JWT",
+            &signing_key.algorithm,
             &id_claims,
         )
         .map_err(|e| internal(&e))?;
@@ -329,6 +330,7 @@ impl TokenService {
             &signing_key.private_pem,
             &signing_key.kid,
             "at+jwt",
+            &signing_key.algorithm,
             &access_claims,
         )
         .map_err(|e| internal(&e))?;
