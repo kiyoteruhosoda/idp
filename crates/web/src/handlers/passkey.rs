@@ -31,8 +31,9 @@ pub async fn list_page(
     Extension(correlation): Extension<CorrelationId>,
     headers: HeaderMap,
 ) -> Response {
-    let messages = Messages::new(locale(&headers));
     let Some(sso_session_id) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
+        // FluentBundle は !Send なので await の前に作成・消費する。
+        let messages = Messages::new(locale(&headers));
         return error_page(&messages, StatusCode::UNAUTHORIZED, "passkey-error-not-signed-in");
     };
     let req = InternalPasskeyListRequest { sso_session_id };
@@ -43,6 +44,7 @@ pub async fn list_page(
             return StatusCode::BAD_GATEWAY.into_response();
         }
     };
+    // FluentBundle は !Send なので await の後に作成する。
     let messages = Messages::new(locale(&headers));
     match result {
         InternalPasskeyListResponse::Ok { credentials } => Html(render(&PasskeyListTemplate {
@@ -168,8 +170,9 @@ pub async fn delete(
     headers: HeaderMap,
     Form(form): Form<DeleteForm>,
 ) -> Response {
-    let messages = Messages::new(locale(&headers));
     let Some(sso_session_id) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
+        // FluentBundle は !Send なので await の前に作成・消費する。
+        let messages = Messages::new(locale(&headers));
         return error_page(&messages, StatusCode::UNAUTHORIZED, "passkey-error-not-signed-in");
     };
     let req = InternalPasskeyDeleteRequest {
@@ -183,6 +186,7 @@ pub async fn delete(
             return StatusCode::BAD_GATEWAY.into_response();
         }
     };
+    // FluentBundle は !Send なので await の後に作成する。
     let messages = Messages::new(locale(&headers));
     match result {
         InternalPasskeyDeleteResponse::Ok => Html(render(&MessagePage {

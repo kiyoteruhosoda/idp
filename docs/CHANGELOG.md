@@ -415,3 +415,21 @@
   セットアップ画面は QR コード SVG（サーバサイド生成、`qrcode 0.14`）と生 base32 シークレットの両方を表示
   （QR が使えないユーザーも手動入力できる）。
 - **i18n**: MFA 関連文言を en/ja に追加。
+
+## T4: Passkey（WebAuthn）登録・認証（2026-07-08）
+
+- **Migration 0012**: `user_webauthn_credentials`（クレデンシャル保存）・`passkey_challenges`（チャレンジ
+  一時保存。TTL 5 分）テーブルを追加。クレデンシャル ID は base64url VARCHAR(512)で保存。
+- **Domain**: `WebAuthnCredential`・`PasskeyChallenge` エンティティ、
+  `WebAuthnCredentialRepository`・`PasskeyChallengeRepository` トレイト追加。
+- **Infrastructure**: `WebAuthnService`（`webauthn-rs 0.5`ラッパー。RP ID/Origin は `config.issuer()` から自動導出）、
+  `SqlxWebAuthnCredentialRepository`・`SqlxPasskeyChallengeRepository` 追加。
+- **Application**: `PasskeyRegistrationService`（begin/complete/delete/list）、
+  `PasskeyAuthenticationService`（begin/complete、Discoverable Credentials flow）追加。
+  認証成功後は通常の OIDC フロー（consent → code 発行）と同一パスを通る。
+- **API**: `/internal/passkey/register/begin|complete`・`/internal/passkey/delete|list`・
+  `/internal/passkey/login/begin|complete` 6 エンドポイント追加。
+- **Web**: `/account/passkey`（一覧）・`/account/passkey/register`（登録）・
+  `/passkey/register/begin|complete`・`/passkey/login/begin|complete` を追加。
+  ログイン画面に「パスキーでサインイン」ボタンを追加（WebAuthn JS API 経由）。
+- **i18n**: Passkey 関連文言を en/ja に追加。

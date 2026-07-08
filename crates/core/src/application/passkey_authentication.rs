@@ -9,7 +9,6 @@ use crate::application::authorize::code_redirect;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
-use crate::domain::error::DomainError;
 use crate::domain::passkey_challenge::{PasskeyChallenge, PasskeyChallengeType};
 use crate::domain::repositories::{
     AuthSessionRepository, ClientConsentRepository, PasskeyChallengeRepository,

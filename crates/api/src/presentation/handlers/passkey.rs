@@ -4,8 +4,8 @@
 //! ログインフロー認証（login/begin, login/complete）を提供する。
 //! すべて `/internal/*` ルータに属し、サービス認証トークンで保護される。
 
-use crate::application::passkey_authentication::{PasskeyAuthOutcome, PasskeyAuthenticationService};
-use crate::application::passkey_registration::{PasskeyRegistrationError, PasskeyRegistrationService};
+use crate::application::passkey_authentication::PasskeyAuthOutcome;
+use crate::application::passkey_registration::PasskeyRegistrationError;
 use crate::application::audit::RequestContext;
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::state::AppState;
