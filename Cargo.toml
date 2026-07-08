@@ -48,3 +48,7 @@ unic-langid = { version = "0.9", features = ["macros"] }
 askama = "0.16"
 # web crate の API クライアント（core/sqlx へ依存させないための HTTP 越しアクセス）。TLS は rustls。
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# TOTP（RFC 6238）の生成・検証（MFA 自己登録）。
+totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
+# QR コードを SVG として生成（TOTP セットアップ画面で埋め込む）。
+qrcode = "0.14"

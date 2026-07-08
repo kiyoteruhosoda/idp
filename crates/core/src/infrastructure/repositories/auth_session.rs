@@ -23,7 +23,7 @@ impl SqlxAuthSessionRepository {
 
 const SELECT_COLUMNS: &str = "id, client_id, redirect_uri, scope, state, nonce, \
      code_challenge, code_challenge_method, authenticated_user_id, auth_time, \
-     expires_at, created_at, updated_at";
+     password_verified_at, expires_at, created_at, updated_at";
 
 fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
@@ -39,6 +39,8 @@ fn map_row(row: &MySqlRow) -> Result<AuthSession> {
     let ccm: String = row.try_get("code_challenge_method").map_err(repo_err)?;
     let user_id: Option<String> = row.try_get("authenticated_user_id").map_err(repo_err)?;
     let auth_time: Option<NaiveDateTime> = row.try_get("auth_time").map_err(repo_err)?;
+    let password_verified_at: Option<NaiveDateTime> =
+        row.try_get("password_verified_at").map_err(repo_err)?;
     Ok(AuthSession {
         id: row.try_get("id").map_err(repo_err)?,
         client_id: row.try_get("client_id").map_err(repo_err)?,
@@ -56,6 +58,7 @@ fn map_row(row: &MySqlRow) -> Result<AuthSession> {
             })
             .transpose()?,
         auth_time: auth_time.map(to_utc),
+        password_verified_at: password_verified_at.map(to_utc),
         expires_at: to_utc(row.try_get("expires_at").map_err(repo_err)?),
         created_at: to_utc(row.try_get("created_at").map_err(repo_err)?),
         updated_at: to_utc(row.try_get("updated_at").map_err(repo_err)?),
@@ -109,6 +112,26 @@ impl AuthSessionRepository for SqlxAuthSessionRepository {
         )
         .bind(user_id.to_string())
         .bind(auth_time.naive_utc())
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        Ok(())
+    }
+
+    async fn set_password_verified(
+        &self,
+        id: &str,
+        user_id: Uuid,
+        verified_at: DateTime<Utc>,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE auth_sessions \
+             SET authenticated_user_id = ?, password_verified_at = ? \
+             WHERE id = ?",
+        )
+        .bind(user_id.to_string())
+        .bind(verified_at.naive_utc())
         .bind(id)
         .execute(&self.pool)
         .await

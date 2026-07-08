@@ -10,12 +10,14 @@
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authorize::code_redirect;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
+use crate::application::mfa_login::user_has_confirmed_totp;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::password::PasswordHasher;
 use crate::domain::rate_limit::LoginRateLimiter;
 use crate::domain::repositories::{
-    AuthSessionRepository, ClientConsentRepository, SsoSessionRepository, UserRepository,
+    AuthSessionRepository, ClientConsentRepository, SsoSessionRepository, TotpSecretRepository,
+    UserRepository,
 };
 use crate::domain::sso_session::SsoSession;
 use crate::domain::user::User;
@@ -57,6 +59,11 @@ pub enum LoginOutcome {
         auth_session_id: String,
         sso_session_id: String,
     },
+    /// パスワード認証成功だが MFA（TOTP）が設定済み。TOTP 入力画面へ誘導する。
+    /// `auth_session_id` Cookie はそのまま維持し、SSO Cookie はまだ発行しない。
+    MfaRequired {
+        auth_session_id: String,
+    },
     /// AuthSession が無い・期限切れ（`/authorize` からやり直し）。
     SessionExpired,
     /// CSRF トークン不一致。
@@ -75,6 +82,7 @@ pub struct LoginService {
     auth_sessions: Arc<dyn AuthSessionRepository>,
     sso_sessions: Arc<dyn SsoSessionRepository>,
     client_consents: Arc<dyn ClientConsentRepository>,
+    totp_secrets: Arc<dyn TotpSecretRepository>,
     code_issuance: Arc<CodeIssuanceService>,
     hasher: Arc<dyn PasswordHasher>,
     rate_limiter: Arc<dyn LoginRateLimiter>,
@@ -91,6 +99,7 @@ impl LoginService {
         auth_sessions: Arc<dyn AuthSessionRepository>,
         sso_sessions: Arc<dyn SsoSessionRepository>,
         client_consents: Arc<dyn ClientConsentRepository>,
+        totp_secrets: Arc<dyn TotpSecretRepository>,
         code_issuance: Arc<CodeIssuanceService>,
         hasher: Arc<dyn PasswordHasher>,
         rate_limiter: Arc<dyn LoginRateLimiter>,
@@ -104,6 +113,7 @@ impl LoginService {
             auth_sessions,
             sso_sessions,
             client_consents,
+            totp_secrets,
             code_issuance,
             hasher,
             rate_limiter,
@@ -221,7 +231,26 @@ impl LoginService {
             }
         }
 
-        // 9. SSO セッション発行（Cookie には session_id、DB には SHA-256 ハッシュ）。
+        // 9. MFA（TOTP）が設定済みか確認する。設定済みなら TOTP 入力ステップへ誘導する。
+        let has_totp = match user_has_confirmed_totp(self.totp_secrets.as_ref(), user.id).await {
+            Ok(v) => v,
+            Err(e) => return LoginOutcome::Internal(e.to_string()),
+        };
+        if has_totp {
+            // パスワード検証成功を AuthSession に記録（MFA pending 状態）。
+            if let Err(e) = self
+                .auth_sessions
+                .set_password_verified(&session.id, user.id, now)
+                .await
+            {
+                return LoginOutcome::Internal(e.to_string());
+            }
+            return LoginOutcome::MfaRequired {
+                auth_session_id: session.id,
+            };
+        }
+
+        // 10. SSO セッション発行（Cookie には session_id、DB には SHA-256 ハッシュ）。
         let sso_session_id = crypto::random_hex(32);
         let sso = SsoSession {
             session_hash: crypto::sha256_hex(&sso_session_id),

@@ -97,6 +97,9 @@ pub async fn authenticate(
             sso_session_id,
             sso_absolute_ttl_secs: ttl,
         },
+        LoginOutcome::MfaRequired { auth_session_id } => {
+            InternalAuthenticateResponse::MfaRequired { auth_session_id }
+        }
         LoginOutcome::SessionExpired => InternalAuthenticateResponse::SessionExpired,
         LoginOutcome::CsrfMismatch => InternalAuthenticateResponse::CsrfMismatch,
         LoginOutcome::RateLimited => InternalAuthenticateResponse::RateLimited,

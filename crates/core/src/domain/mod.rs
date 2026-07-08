@@ -19,5 +19,6 @@ pub mod repositories;
 pub mod revoked_access_token;
 pub mod signing_key;
 pub mod sso_session;
+pub mod totp_secret;
 pub mod user;
 pub mod values;

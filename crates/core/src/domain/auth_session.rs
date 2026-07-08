@@ -19,6 +19,8 @@ pub struct AuthSession {
     pub code_challenge_method: CodeChallengeMethod,
     pub authenticated_user_id: Option<Uuid>,
     pub auth_time: Option<DateTime<Utc>>,
+    /// パスワード検証成功時刻。非 NULL = パスワード検証済みで TOTP 入力待ち（MFA pending）。
+    pub password_verified_at: Option<DateTime<Utc>>,
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

@@ -14,7 +14,11 @@ use idp_contracts::admin::{
 use idp_contracts::auth::{
     InternalAdminAuthenticateRequest, InternalAdminAuthenticateResponse,
     InternalAuthenticateRequest, InternalAuthenticateResponse, InternalConsentApproveRequest,
-    InternalConsentApproveResponse, InternalConsentDenyRequest, InternalConsentDenyResponse, InternalConsentInfoResponse, InternalLogoutRequest,
+    InternalConsentApproveResponse, InternalConsentDenyRequest, InternalConsentDenyResponse,
+    InternalConsentInfoResponse, InternalLogoutRequest, InternalTotpConfirmRequest,
+    InternalTotpConfirmResponse, InternalTotpDeleteRequest, InternalTotpDeleteResponse,
+    InternalTotpSetupRequest, InternalTotpSetupResponse, InternalVerifyTotpRequest,
+    InternalVerifyTotpResponse,
 };
 use reqwest::Method;
 
@@ -149,6 +153,46 @@ impl ApiClient {
         req: &InternalConsentDenyRequest,
     ) -> anyhow::Result<InternalConsentDenyResponse> {
         self.post_internal("/internal/consent/deny", correlation_id, req)
+            .await
+    }
+
+    /// TOTP セットアップ開始（`POST /internal/mfa/totp/setup`）。QR URI と生シークレットを返す。
+    pub async fn totp_setup(
+        &self,
+        correlation_id: &str,
+        req: &InternalTotpSetupRequest,
+    ) -> anyhow::Result<InternalTotpSetupResponse> {
+        self.post_internal("/internal/mfa/totp/setup", correlation_id, req)
+            .await
+    }
+
+    /// TOTP 確認（`POST /internal/mfa/totp/confirm`）。6 桁コードで有効化する。
+    pub async fn totp_confirm(
+        &self,
+        correlation_id: &str,
+        req: &InternalTotpConfirmRequest,
+    ) -> anyhow::Result<InternalTotpConfirmResponse> {
+        self.post_internal("/internal/mfa/totp/confirm", correlation_id, req)
+            .await
+    }
+
+    /// TOTP 削除（`POST /internal/mfa/totp/delete`）。MFA を無効化する。
+    pub async fn totp_delete(
+        &self,
+        correlation_id: &str,
+        req: &InternalTotpDeleteRequest,
+    ) -> anyhow::Result<InternalTotpDeleteResponse> {
+        self.post_internal("/internal/mfa/totp/delete", correlation_id, req)
+            .await
+    }
+
+    /// ログインフロー TOTP 検証（`POST /internal/mfa/totp/verify`）。
+    pub async fn verify_totp(
+        &self,
+        correlation_id: &str,
+        req: &InternalVerifyTotpRequest,
+    ) -> anyhow::Result<InternalVerifyTotpResponse> {
+        self.post_internal("/internal/mfa/totp/verify", correlation_id, req)
             .await
     }
 

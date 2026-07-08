@@ -8,6 +8,7 @@ pub mod admin_users_console;
 pub mod consent;
 pub mod health;
 pub mod login;
+pub mod mfa_totp;
 
 use crate::correlation::CorrelationId;
 use axum::http::header::USER_AGENT;

@@ -149,3 +149,27 @@ consent-error-csrf = The form has expired. Please reload the page and try again.
 consent-scope-profile = Profile information (name, picture)
 consent-scope-email = Email address
 consent-scope-offline_access = Keep you signed in (refresh tokens)
+
+# MFA / TOTP screens.
+mfa-title = Two-factor authentication
+mfa-setup-title = Set up two-factor authentication
+mfa-setup-intro = Scan the QR code below with your authenticator app (e.g. Google Authenticator, Authy).
+mfa-setup-qr-alt = QR code for authenticator app setup
+mfa-setup-manual-label = Can't scan the QR code?
+mfa-setup-manual-hint = Enter this code manually in your authenticator app:
+mfa-setup-code-label = Enter the 6-digit code from your app
+mfa-setup-confirm-button = Verify and activate
+mfa-setup-confirmed-title = Two-factor authentication enabled
+mfa-setup-confirmed-message = Your account is now protected with two-factor authentication.
+mfa-deleted-title = Two-factor authentication removed
+mfa-deleted-message = Two-factor authentication has been removed from your account.
+mfa-verify-title = Two-factor authentication
+mfa-verify-intro = Enter the 6-digit code from your authenticator app.
+mfa-verify-code-label = Authentication code
+mfa-verify-submit = Continue
+mfa-error-invalid-code = The code is incorrect or has expired. Please try again.
+mfa-error-session-expired = Your session has expired. Please start over.
+mfa-error-not-signed-in = You must be signed in to perform this action.
+mfa-error-already-configured = Two-factor authentication is already configured. Remove it before setting up again.
+mfa-error-not-configured = Two-factor authentication is not configured.
+mfa-error-mfa-not-pending = This page is not available in the current state. Please sign in again.

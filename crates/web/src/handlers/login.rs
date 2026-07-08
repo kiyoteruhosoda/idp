@@ -103,6 +103,20 @@ pub async fn login(
             )
                 .into_response()
         }
+        InternalAuthenticateResponse::MfaRequired { auth_session_id } => {
+            // パスワード認証成功・MFA 必要: auth_session_id Cookie を維持して TOTP 入力画面へ。
+            let auth_cookie = cookies::build(
+                cookies::AUTH_SESSION_COOKIE,
+                &auth_session_id,
+                state.config.auth_session_ttl_secs(),
+                secure,
+            );
+            (
+                AppendHeaders([(header::SET_COOKIE, auth_cookie)]),
+                found("/mfa/totp"),
+            )
+                .into_response()
+        }
         InternalAuthenticateResponse::SessionExpired => error_page(
             &messages,
             StatusCode::BAD_REQUEST,

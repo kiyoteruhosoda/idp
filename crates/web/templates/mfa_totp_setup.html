@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ messages.get("mfa-setup-title") }}</title>
+  <style>
+    body { font-family: sans-serif; max-width: 480px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.4rem; }
+    .error { color: #c00; padding: .5rem; background: #fee; border-radius: 4px; margin-bottom: 1rem; }
+    .qr-block { text-align: center; margin: 1.5rem 0; }
+    .secret-block { background: #f5f5f5; border: 1px solid #ddd; border-radius: 4px;
+                    padding: 1rem; margin: 1rem 0; }
+    .secret-block code { font-size: 1.1rem; letter-spacing: .15em; word-break: break-all;
+                         display: block; margin-top: .4rem; }
+    label { display: block; margin-bottom: .4rem; font-weight: bold; }
+    input[type=text] { width: 100%; box-sizing: border-box; padding: .5rem;
+                       font-size: 1.2rem; letter-spacing: .2em; text-align: center;
+                       border: 1px solid #ccc; border-radius: 4px; }
+    button[type=submit] { width: 100%; margin-top: 1rem; padding: .7rem;
+                          background: #0066cc; color: #fff; border: none;
+                          border-radius: 4px; font-size: 1rem; cursor: pointer; }
+    button[type=submit]:hover { background: #0052a3; }
+    details { margin-top: 1rem; }
+    summary { cursor: pointer; color: #555; }
+  </style>
+</head>
+<body>
+  <h1>{{ messages.get("mfa-setup-title") }}</h1>
+
+  {% if let Some(key) = error_key %}
+  <p class="error" role="alert">{{ messages.get(key) }}</p>
+  {% endif %}
+
+  <p>{{ messages.get("mfa-setup-intro") }}</p>
+
+  {% if !qr_svg.is_empty() %}
+  <div class="qr-block" aria-label="{{ messages.get("mfa-setup-qr-alt") }}">
+    {{- qr_svg|safe -}}
+  </div>
+  {% endif %}
+
+  <div class="secret-block">
+    <p><strong>{{ messages.get("mfa-setup-manual-label") }}</strong></p>
+    <p>{{ messages.get("mfa-setup-manual-hint") }}</p>
+    <code>{{ secret_base32 }}</code>
+  </div>
+
+  <form method="post" action="/account/mfa/totp/setup">
+    <label for="code">{{ messages.get("mfa-setup-code-label") }}</label>
+    <input id="code" type="text" name="code" inputmode="numeric" pattern="[0-9]{6}"
+           maxlength="6" autocomplete="one-time-code" required placeholder="000000">
+    <button type="submit">{{ messages.get("mfa-setup-confirm-button") }}</button>
+  </form>
+</body>
+</html>

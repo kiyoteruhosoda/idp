@@ -15,6 +15,7 @@ use crate::domain::refresh_token::RefreshToken;
 use crate::domain::revoked_access_token::RevokedAccessToken;
 use crate::domain::signing_key::SigningKey;
 use crate::domain::sso_session::SsoSession;
+use crate::domain::totp_secret::TotpSecret;
 use crate::domain::user::User;
 use crate::domain::values::SigningKeyStatus;
 use async_trait::async_trait;
@@ -60,6 +61,13 @@ pub trait AuthSessionRepository: Send + Sync {
         id: &str,
         user_id: Uuid,
         auth_time: DateTime<Utc>,
+    ) -> Result<()>;
+    /// パスワード検証成功後に MFA pending 状態を記録する（`password_verified_at` を設定）。
+    async fn set_password_verified(
+        &self,
+        id: &str,
+        user_id: Uuid,
+        verified_at: DateTime<Utc>,
     ) -> Result<()>;
     async fn delete(&self, id: &str) -> Result<()>;
 }
@@ -181,4 +189,20 @@ pub trait RevokedAccessTokenRepository: Send + Sync {
     ) -> Result<()>;
     /// 指定 jti が失効リストに存在するか。
     async fn is_revoked(&self, jti: &str) -> Result<bool>;
+}
+
+/// ユーザーの TOTP シークレット（MFA 自己登録）。
+///
+/// `confirmed_at IS NULL` = 仮登録中（QR 確認未完了）。
+/// `confirmed_at IS NOT NULL` = 有効化済み（ログイン時に TOTP 検証が必要）。
+#[async_trait]
+pub trait TotpSecretRepository: Send + Sync {
+    /// TOTP シークレットを保存する。既存の場合は上書き（UPSERT）する。
+    async fn upsert(&self, secret: &TotpSecret) -> Result<()>;
+    /// ユーザーの TOTP シークレットを返す（仮登録中・有効化済みを問わない）。
+    async fn find_by_user_id(&self, user_id: Uuid) -> Result<Option<TotpSecret>>;
+    /// 確認コードを検証後、`confirmed_at` を設定して有効化する。
+    async fn confirm(&self, user_id: Uuid, confirmed_at: DateTime<Utc>) -> Result<()>;
+    /// ユーザーの TOTP シークレットを削除する（冪等: 不存在でもエラーにしない）。
+    async fn delete(&self, user_id: Uuid) -> Result<()>;
 }

@@ -10,6 +10,13 @@ pub struct LoginForm {
     pub csrf_token: String,
 }
 
+/// TOTP 確認フォーム（`POST /account/mfa/totp/setup`）。
+#[derive(Debug, Deserialize)]
+pub struct TotpConfirmForm {
+    /// 認証アプリから入力した 6 桁コード。
+    pub code: String,
+}
+
 /// 同意フォーム（`POST /consent`、F3）。
 #[derive(Debug, Deserialize)]
 pub struct ConsentForm {

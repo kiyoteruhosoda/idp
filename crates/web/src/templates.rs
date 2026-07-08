@@ -21,7 +21,27 @@ pub fn render<T: Template>(template: &T) -> String {
     })
 }
 
-/// 利用者ログイン画面（`GET /login`）。
+/// TOTP セットアップ画面（`GET /account/mfa/totp/setup`）。
+/// QR コード SVG と生シークレット（base32）を両方表示する（QR が使えないユーザー向け）。
+#[derive(Template)]
+#[template(path = "mfa_totp_setup.html")]
+pub struct TotpSetupTemplate<'a> {
+    pub messages: &'a Messages,
+    /// QR コードの SVG 文字列（インライン埋め込み）。
+    pub qr_svg: &'a str,
+    /// base32 エンコードされた生シークレット（QR が使えないユーザー向けに直接表示）。
+    pub secret_base32: &'a str,
+    pub error_key: Option<&'a str>,
+}
+
+/// ログインフロー TOTP 入力ページ（`GET /mfa/totp`）。
+#[derive(Template)]
+#[template(path = "mfa_totp_verify.html")]
+pub struct TotpVerifyTemplate<'a> {
+    pub messages: &'a Messages,
+    pub csrf: &'a str,
+    pub error_key: Option<&'a str>,
+}
 #[derive(Template)]
 #[template(path = "login.html")]
 pub struct LoginTemplate<'a> {

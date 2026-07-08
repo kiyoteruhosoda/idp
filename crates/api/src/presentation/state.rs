@@ -16,10 +16,12 @@ use crate::application::introspection::IntrospectionService;
 use crate::application::key_service::KeyService;
 use crate::application::login::LoginService;
 use crate::application::logout::LogoutService;
+use crate::application::mfa_login::MfaLoginService;
 use crate::application::permission_management::PermissionManagementService;
 use crate::application::register::RegisterService;
 use crate::application::revocation::RevocationService;
 use crate::application::token::TokenService;
+use crate::application::totp_registration::TotpRegistrationService;
 use crate::application::userinfo::UserInfoService;
 use crate::config::Config;
 use crate::domain::clock::Clock;
@@ -35,6 +37,7 @@ use crate::infrastructure::repositories::refresh_token::SqlxRefreshTokenReposito
 use crate::infrastructure::repositories::revoked_access_token::SqlxRevokedAccessTokenRepository;
 use crate::infrastructure::repositories::signing_key::SqlxSigningKeyRepository;
 use crate::infrastructure::repositories::sso_session::SqlxSsoSessionRepository;
+use crate::infrastructure::repositories::totp_secret::SqlxTotpSecretRepository;
 use crate::infrastructure::repositories::user::SqlxUserRepository;
 use crate::infrastructure::repositories::user_permission::SqlxUserPermissionRepository;
 use axum::extract::FromRef;
@@ -64,6 +67,8 @@ pub struct AppState {
     pub logout: Arc<LogoutService>,
     pub revocation: Arc<RevocationService>,
     pub introspection: Arc<IntrospectionService>,
+    pub totp_registration: Arc<TotpRegistrationService>,
+    pub mfa_login: Arc<MfaLoginService>,
 }
 
 impl AppState {
@@ -79,6 +84,7 @@ impl AppState {
         let signing_keys = Arc::new(SqlxSigningKeyRepository::new(pool.clone()));
         let user_permissions = Arc::new(SqlxUserPermissionRepository::new(pool.clone()));
         let client_consents = Arc::new(SqlxClientConsentRepository::new(pool.clone()));
+        let totp_secrets = Arc::new(SqlxTotpSecretRepository::new(pool.clone()));
         let audit_sink = Arc::new(SqlxAuditLogSink::new(pool.clone()));
         let audit_logs = Arc::new(SqlxAuditLogQuery::new(pool.clone()));
         let hasher = Arc::new(Argon2PasswordHasher::new());
@@ -122,6 +128,7 @@ impl AppState {
             auth_sessions.clone(),
             sso_sessions.clone(),
             client_consents.clone(),
+            totp_secrets.clone(),
             code_issuance.clone(),
             hasher.clone(),
             rate_limiter.clone(),
@@ -131,10 +138,10 @@ impl AppState {
             config.sso_absolute_ttl(),
         ));
         let consent = Arc::new(ConsentService::new(
-            auth_sessions,
-            client_consents,
+            auth_sessions.clone(),
+            client_consents.clone(),
             clients.clone(),
-            code_issuance,
+            code_issuance.clone(),
             audit.clone(),
             clock.clone(),
         ));
@@ -223,9 +230,30 @@ impl AppState {
             refresh_tokens,
             revoked_access_tokens,
             hasher,
-            clock,
+            clock.clone(),
             config.issuer().to_string(),
             config.clock_skew(),
+        ));
+
+        let totp_registration = Arc::new(TotpRegistrationService::new(
+            totp_secrets.clone(),
+            sso_sessions.clone(),
+            *config.key_encryption_key(),
+            config.issuer().to_string(),
+            clock.clone(),
+        ));
+        let mfa_login = Arc::new(MfaLoginService::new(
+            auth_sessions.clone(),
+            totp_secrets,
+            users.clone(),
+            sso_sessions.clone(),
+            client_consents,
+            code_issuance,
+            audit.clone(),
+            clock.clone(),
+            *config.key_encryption_key(),
+            config.sso_idle_ttl(),
+            config.sso_absolute_ttl(),
         ));
 
         Self {
@@ -247,6 +275,8 @@ impl AppState {
             logout,
             revocation,
             introspection,
+            totp_registration,
+            mfa_login,
         }
     }
 }

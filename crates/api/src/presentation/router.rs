@@ -3,8 +3,8 @@
 use crate::presentation::correlation;
 use crate::presentation::handlers::{
     admin, admin_audit, admin_clients, admin_permissions, admin_signing_keys, admin_users,
-    authorize, consent, discovery, health, internal_auth, introspect, logout, register, revoke,
-    token, userinfo,
+    authorize, consent, discovery, health, internal_auth, introspect, logout, mfa, register,
+    revoke, token, userinfo,
 };
 use crate::presentation::openapi::ApiDoc;
 use crate::presentation::security_headers::add_security_headers;
@@ -41,6 +41,11 @@ pub fn build(state: AppState) -> Router {
             "/internal/consent/deny",
             post(consent::consent_deny),
         )
+        // MFA（TOTP）自己登録・ログイン検証 API。
+        .route("/internal/mfa/totp/setup", post(mfa::setup_totp))
+        .route("/internal/mfa/totp/confirm", post(mfa::confirm_totp))
+        .route("/internal/mfa/totp/delete", post(mfa::delete_totp))
+        .route("/internal/mfa/totp/verify", post(mfa::verify_totp))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             internal_auth::require_service_token,

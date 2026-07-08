@@ -3,7 +3,7 @@
 use crate::correlation;
 use crate::handlers::{
     admin_clients_console, admin_console, admin_signing_keys_console, admin_status_console,
-    admin_users_console, consent, health, login,
+    admin_users_console, consent, health, login, mfa_totp,
 };
 use crate::state::WebState;
 use axum::routing::{get, post};
@@ -17,6 +17,14 @@ pub fn build(state: WebState) -> Router {
         .route("/login", get(login::login_page).post(login::login))
         // 同意画面（F3: Consent）。
         .route("/consent", get(consent::consent_page).post(consent::consent))
+        // MFA: ログインフロー TOTP 入力（パスワード認証後）。
+        .route("/mfa/totp", get(mfa_totp::verify_page).post(mfa_totp::verify))
+        // MFA: ユーザー自己登録（TOTP セットアップ・削除）。SSO 認証が必要。
+        .route(
+            "/account/mfa/totp/setup",
+            get(mfa_totp::setup_page).post(mfa_totp::setup_confirm),
+        )
+        .route("/account/mfa/totp/delete", post(mfa_totp::setup_delete))
         // 管理コンソール（ADR-0006 §6・ADR-0007 §4）。ログインはクライアント不要。
         .route(
             "/admin/console/login",
