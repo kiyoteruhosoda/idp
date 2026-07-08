@@ -6,7 +6,9 @@ use crate::presentation::handlers::{
     authorize, discovery, health, internal_auth, register, token, userinfo,
 };
 use crate::presentation::openapi::ApiDoc;
+use crate::presentation::security_headers::add_security_headers;
 use crate::presentation::state::AppState;
+use axum::middleware;
 use axum::routing::{get, post};
 use axum::Router;
 use tower_http::trace::TraceLayer;
@@ -14,6 +16,7 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 pub fn build(state: AppState) -> Router {
+    let hsts_max_age = state.config.hsts_max_age();
     // 内部認証 API（ADR-0007 §3・§5）。web（将来）→api のサービス間 I/F。外部公開しない
     // （リバースプロキシで /internal/* を遮断する前提）。多層防御としてサービス認証トークン
     // （X-Internal-Auth-Token）を必須にする route_layer をこのサブルータにのみ付ける。
@@ -97,5 +100,8 @@ pub fn build(state: AppState) -> Router {
         .merge(SwaggerUi::new("/api/docs").url("/api/openapi.json", ApiDoc::openapi()))
         .layer(axum::middleware::from_fn(correlation::propagate))
         .layer(TraceLayer::new_for_http())
+        .layer(middleware::from_fn(move |req, next| {
+            add_security_headers(req, next, hsts_max_age)
+        }))
         .with_state(state)
 }

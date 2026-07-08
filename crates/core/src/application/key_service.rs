@@ -89,6 +89,50 @@ impl KeyService {
         Ok(jwt::Jwks { keys: jwk_list })
     }
 
+    // ── 自動ローテーション（K2）─────────────────────────────────────────────────
+
+    /// 現行 ACTIVE 鍵の `not_after` まで `lead_days` 日を切っていれば新鍵を生成して旧鍵を退役させる。
+    ///
+    /// バックグラウンドタスクから定期的に呼び出す。冪等。
+    /// - ACTIVE 鍵が無い場合は `ensure_active_key()` を呼んで鍵を補充する。
+    /// - ACTIVE 鍵の残余期間が `lead_days` 以上あれば何もしない。
+    /// - `lead_days` 日を切っていれば新鍵（ACTIVE）を生成し、旧鍵を RETIRED に変更する。
+    pub async fn rotate_if_needed(&self, lead_days: u32) -> anyhow::Result<()> {
+        let now = self.clock.now();
+        let Some(active) = self.find_active_key().await? else {
+            tracing::warn!("no active signing key found during rotation check; bootstrapping");
+            self.generate_key_internal(SigningAlgorithm::Rs256).await?;
+            return Ok(());
+        };
+
+        let remaining = active.not_after - now;
+        let lead = chrono::Duration::days(lead_days as i64);
+        if remaining > lead {
+            return Ok(());
+        }
+
+        tracing::info!(
+            kid = %active.kid,
+            not_after = %active.not_after,
+            remaining_hours = remaining.num_hours(),
+            "signing key approaching expiry; rotating"
+        );
+
+        // 同じアルゴリズムで新鍵を生成する。
+        let algorithm = SigningAlgorithm::parse(&active.algorithm)
+            .map_err(|e| anyhow::anyhow!("unknown algorithm on active key: {e}"))?;
+        self.generate_key_internal(algorithm).await?;
+
+        // 旧鍵を RETIRED に変更する（新鍵生成後に行うことで signing 空白期間を排除）。
+        self.repo
+            .update_status(&active.kid, SigningKeyStatus::Retired)
+            .await
+            .map_err(|e| anyhow::anyhow!("retire old key {}: {e}", active.kid))?;
+        tracing::info!(kid = %active.kid, "retired old signing key after rotation");
+
+        Ok(())
+    }
+
     // ── 管理操作 ──────────────────────────────────────────────────────────────
 
     /// 全署名鍵を作成日時の降順で返す（管理画面用）。

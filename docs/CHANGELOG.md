@@ -2,6 +2,22 @@
 
 完了した重要な変更の要約（詳しい経緯は `history/`、設計判断は `adr/`）。
 
+## 2026-07-08（K2: 署名鍵自動ローテーション / S1: SSL アクセラレーター対応）
+
+- **K2 — 署名鍵自動ローテーション**: `KeyService::rotate_if_needed(lead_days)` を追加。
+  ACTIVE 鍵の `not_after` まで `KEY_ROTATION_LEAD_DAYS`（既定 30 日）を切った際に新鍵（同アルゴリズム）を
+  自動生成し旧鍵を RETIRED に変更する。`lib.rs` で tokio バックグラウンドタスクを起動時に spawn し、
+  1 時間ごとに実行する。RETIRED 鍵は `not_after` 経過後に自動的に JWKS 非公開となる（既存挙動）。
+  設定: `KEY_ROTATION_LEAD_DAYS`（日数、既定 30）。
+- **S1 — SSL アクセラレーター/リバースプロキシ対応**:
+  - `TRUST_FORWARDED_HEADERS`（bool、既定 `false`）を追加。有効時のみ `X-Forwarded-For` を信頼して
+    実 IP を監査ログ・IP レート制限に使う。未設定時はヘッダを無視（ヘッダ偽装対策）。
+  - `HSTS_MAX_AGE`（秒、既定 `0` = 無効）を追加。正値のとき `Strict-Transport-Security: max-age=N`
+    をすべてのレスポンスに付与する。
+  - セキュリティヘッダミドルウェア（`security_headers.rs`）を新設。全レスポンスに
+    `X-Content-Type-Options: nosniff`・`Referrer-Policy: strict-origin-when-cross-origin`・
+    `X-Frame-Options: DENY` を付与する。
+
 ## 2026-07-08（K1: 署名鍵管理 — ES256 対応・管理 API・管理コンソール）
 
 - **EC(ES256) 対応**: `signing_keys.algorithm` の CHECK 制約に `ES256` を追加（migration 0005）。

@@ -11,4 +11,5 @@ pub mod error;
 pub mod handlers;
 pub mod openapi;
 pub mod router;
+pub mod security_headers;
 pub mod state;

@@ -43,6 +43,12 @@ pub struct Config {
     cookie_secure: bool,
     key_encryption_key: [u8; 32],
     key_encryption_key_is_dev: bool,
+    /// 署名鍵ローテーション: `not_after` のこの日数前に新鍵を生成して旧鍵を退役させる（K2）。
+    key_rotation_lead_days: u32,
+    /// リバースプロキシが付与する `X-Forwarded-For` / `X-Forwarded-Proto` を信頼するか（S1）。
+    trust_forwarded_headers: bool,
+    /// HSTS `max-age`（秒）。0 = HSTS ヘッダを付与しない（S1）。
+    hsts_max_age: u64,
     internal_service_token: String,
     internal_service_token_is_dev: bool,
 }
@@ -79,6 +85,9 @@ impl Config {
             cookie_secure,
             key_encryption_key,
             key_encryption_key_is_dev,
+            key_rotation_lead_days: env_parse("KEY_ROTATION_LEAD_DAYS", 30)?,
+            trust_forwarded_headers: env_parse("TRUST_FORWARDED_HEADERS", false)?,
+            hsts_max_age: env_parse("HSTS_MAX_AGE", 0u64)?,
             internal_service_token,
             internal_service_token_is_dev,
         })
@@ -132,6 +141,18 @@ impl Config {
     /// 開発用デフォルトの暗号化鍵を使っているか（本番では警告対象）。
     pub fn key_encryption_key_is_dev(&self) -> bool {
         self.key_encryption_key_is_dev
+    }
+    /// 署名鍵ローテーション: `not_after` のこの日数前に次期鍵を生成して旧鍵を退役させる（K2）。
+    pub fn key_rotation_lead_days(&self) -> u32 {
+        self.key_rotation_lead_days
+    }
+    /// リバースプロキシが付与する `X-Forwarded-For` / `X-Forwarded-Proto` を信頼するか（S1）。
+    pub fn trust_forwarded_headers(&self) -> bool {
+        self.trust_forwarded_headers
+    }
+    /// HSTS `max-age`（秒）。0 = HSTS ヘッダを付与しない（S1）。
+    pub fn hsts_max_age(&self) -> u64 {
+        self.hsts_max_age
     }
     /// web→api の `/internal/*` 呼び出しを保護するサービス認証トークン（ADR-0007 §5）。
     pub fn internal_service_token(&self) -> &str {

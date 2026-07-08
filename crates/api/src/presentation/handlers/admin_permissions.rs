@@ -88,7 +88,7 @@ pub async fn grant_permission(
     Json(body): Json<GrantPermissionRequest>,
 ) -> Result<Json<UserPermissionsResponse>, ApiError> {
     let target = parse_user_id(&user_id)?;
-    let ctx = request_context(&headers, &correlation);
+    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
     let codes = state
         .permissions_admin
         .grant(target, &body.permission_code, admin.user_id, &ctx)
@@ -125,7 +125,7 @@ pub async fn revoke_permission(
     Path((user_id, permission_code)): Path<(String, String)>,
 ) -> Result<Json<UserPermissionsResponse>, ApiError> {
     let target = parse_user_id(&user_id)?;
-    let ctx = request_context(&headers, &correlation);
+    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
     let codes = state
         .permissions_admin
         .revoke(target, &permission_code, admin.user_id, &ctx)

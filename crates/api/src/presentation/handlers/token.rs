@@ -32,7 +32,7 @@ pub async fn token(
     headers: HeaderMap,
     Form(body): Form<TokenRequest>,
 ) -> Response {
-    let ctx = request_context(&headers, &correlation);
+    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
 
     let basic_credentials = match parse_basic_credentials(&headers) {
         Ok(v) => v,

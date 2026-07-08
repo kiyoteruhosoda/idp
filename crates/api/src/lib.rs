@@ -54,6 +54,22 @@ pub async fn run() -> anyhow::Result<()> {
         .await
         .context("failed to ensure an active signing key")?;
 
+    // 署名鍵自動ローテーション（K2）: バックグラウンドタスクで定期チェック。
+    {
+        let keys = state.keys.clone();
+        let lead_days = config.key_rotation_lead_days();
+        tokio::spawn(async move {
+            // 起動直後は 1 分待ってから最初のチェック（DB 起動完了を待つ余裕を持たせる）。
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            loop {
+                if let Err(e) = keys.rotate_if_needed(lead_days).await {
+                    tracing::error!(error = %e, "signing key rotation check failed");
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(3_600)).await;
+            }
+        });
+    }
+
     let app = presentation::router::build(state);
 
     let addr: SocketAddr = config

@@ -41,7 +41,7 @@ pub async fn create_client(
     headers: HeaderMap,
     Json(body): Json<ClientRegisterRequest>,
 ) -> Result<(StatusCode, Json<ClientCreatedResponse>), ApiError> {
-    let ctx = request_context(&headers, &correlation);
+    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
     let client_type = ClientType::parse(&body.client_type)
         .map_err(|_| ApiError::BadRequest(format!("invalid client_type: {}", body.client_type)))?;
     let cmd = RegisterClientCommand {
@@ -135,7 +135,7 @@ pub async fn update_client(
     Path(client_id): Path<String>,
     Json(body): Json<ClientUpdateRequest>,
 ) -> Result<Json<ClientResponse>, ApiError> {
-    let ctx = request_context(&headers, &correlation);
+    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
     let status = body
         .client_status
         .as_deref()
@@ -178,7 +178,7 @@ pub async fn rotate_client_secret(
     headers: HeaderMap,
     Path(client_id): Path<String>,
 ) -> Result<Json<ClientSecretResponse>, ApiError> {
-    let ctx = request_context(&headers, &correlation);
+    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
     let (client, secret) = state
         .clients_admin
         .rotate_secret(&client_id, admin.user_id, &ctx)
