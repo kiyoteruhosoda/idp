@@ -173,3 +173,26 @@ mfa-error-not-signed-in = この操作を行うにはサインインが必要で
 mfa-error-already-configured = 二段階認証はすでに設定されています。再設定するには先に削除してください。
 mfa-error-not-configured = 二段階認証が設定されていません。
 mfa-error-mfa-not-pending = 現在の状態ではこのページは利用できません。再度サインインしてください。
+
+# ── Passkey（WebAuthn） ──────────────────────────────────────────────────────
+passkey-title = パスキー
+passkey-list-title = 登録済みパスキー
+passkey-list-empty = パスキーはまだ登録されていません。
+passkey-register-title = パスキーを登録する
+passkey-register-intro = デバイスの生体認証またはセキュリティキーを使って、パスワードなしでサインインできます。
+passkey-register-name-label = パスキーの名前
+passkey-register-name-placeholder = 例: MacBook Touch ID
+passkey-register-button = パスキーを追加
+passkey-register-success = パスキーを登録しました！
+passkey-back-to-list = パスキー一覧に戻る
+passkey-retry = 再試行
+passkey-delete-button = 削除
+passkey-delete-confirm = このパスキーを削除してもよいですか？
+passkey-deleted-title = 削除完了
+passkey-deleted-message = パスキーを削除しました。
+passkey-last-used = 最終使用
+login-passkey-or = または
+login-passkey-button = パスキーでサインイン
+passkey-error-not-signed-in = パスキーを管理するにはサインインが必要です。
+passkey-error-session-expired = セッションの有効期限が切れました。再度サインインしてください。
+passkey-error-not-found = パスキーが見つかりません。

@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>{{ messages.get("passkey-list-title") }}</title>
+</head>
+<body>
+<h1>{{ messages.get("passkey-list-title") }}</h1>
+{% if credentials.is_empty() %}
+  <p>{{ messages.get("passkey-list-empty") }}</p>
+{% else %}
+  <ul>
+  {% for cred in credentials %}
+    <li>
+      <strong>{{ cred.name }}</strong> — {{ cred.created_at }}
+      {% if let Some(last) = cred.last_used_at %}({{ messages.get("passkey-last-used") }}: {{ last }}){% endif %}
+      <form method="post" action="/account/passkey/delete" style="display:inline">
+        <input type="hidden" name="credential_id" value="{{ cred.id }}">
+        <button type="submit" onclick="return confirm('{{ messages.get("passkey-delete-confirm") }}')">{{ messages.get("passkey-delete-button") }}</button>
+      </form>
+    </li>
+  {% endfor %}
+  </ul>
+{% endif %}
+<p><a href="/account/passkey/register">{{ messages.get("passkey-register-button") }}</a></p>
+</body>
+</html>

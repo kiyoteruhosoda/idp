@@ -173,3 +173,26 @@ mfa-error-not-signed-in = You must be signed in to perform this action.
 mfa-error-already-configured = Two-factor authentication is already configured. Remove it before setting up again.
 mfa-error-not-configured = Two-factor authentication is not configured.
 mfa-error-mfa-not-pending = This page is not available in the current state. Please sign in again.
+
+# ── Passkey（WebAuthn） ──────────────────────────────────────────────────────
+passkey-title = Passkeys
+passkey-list-title = Your Passkeys
+passkey-list-empty = You have no passkeys registered yet.
+passkey-register-title = Register a Passkey
+passkey-register-intro = Use a passkey to sign in without a password using your device's biometrics or security key.
+passkey-register-name-label = Passkey name
+passkey-register-name-placeholder = e.g. MacBook Touch ID
+passkey-register-button = Add passkey
+passkey-register-success = Passkey registered successfully!
+passkey-back-to-list = Back to passkey list
+passkey-retry = Try again
+passkey-delete-button = Delete
+passkey-delete-confirm = Are you sure you want to delete this passkey?
+passkey-deleted-title = Passkey deleted
+passkey-deleted-message = Your passkey has been deleted.
+passkey-last-used = Last used
+login-passkey-or = Or
+login-passkey-button = Sign in with Passkey
+passkey-error-not-signed-in = You must be signed in to manage passkeys.
+passkey-error-session-expired = Your session has expired. Please sign in again.
+passkey-error-not-found = Passkey not found.

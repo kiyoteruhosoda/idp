@@ -3,7 +3,7 @@
 use crate::correlation;
 use crate::handlers::{
     admin_clients_console, admin_console, admin_signing_keys_console, admin_status_console,
-    admin_users_console, consent, health, login, mfa_totp,
+    admin_users_console, consent, health, login, mfa_totp, passkey,
 };
 use crate::state::WebState;
 use axum::routing::{get, post};
@@ -25,6 +25,19 @@ pub fn build(state: WebState) -> Router {
             get(mfa_totp::setup_page).post(mfa_totp::setup_confirm),
         )
         .route("/account/mfa/totp/delete", post(mfa_totp::setup_delete))
+        // Passkey（WebAuthn）自己登録。SSO 認証が必要。
+        .route("/account/passkey", get(passkey::list_page))
+        .route("/account/passkey/register", get(passkey::register_page))
+        .route("/account/passkey/delete", post(passkey::delete))
+        // Passkey 登録 JSON API（ブラウザ JS から呼ぶ）。
+        .route("/passkey/register/begin", post(passkey::register_begin_api))
+        .route(
+            "/passkey/register/complete",
+            post(passkey::register_complete_api),
+        )
+        // Passkey 認証 JSON API（ログイン画面 JS から呼ぶ）。
+        .route("/passkey/login/begin", post(passkey::login_begin_api))
+        .route("/passkey/login/complete", post(passkey::login_complete_api))
         // 管理コンソール（ADR-0006 §6・ADR-0007 §4）。ログインはクライアント不要。
         .route(
             "/admin/console/login",

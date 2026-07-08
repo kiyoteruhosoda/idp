@@ -11,6 +11,7 @@ use crate::admin_dto::{AuditLogView, ClientView, SigningKeyView};
 use crate::i18n::Messages;
 use askama::Template;
 use idp_contracts::admin::{ClientStatusResponse, UserSummaryResponse};
+use idp_contracts::auth::PasskeyCredentialInfo;
 
 /// テンプレートを描画して HTML 文字列を返す。描画エラー（実質 fmt エラーのみ）は握りつぶさず
 /// ログに残し、最小限のエラーページへフォールバックする（フェイルソフト）。
@@ -247,4 +248,20 @@ pub struct SigningKeysList<'a> {
     pub keys: &'a [SigningKeyView],
     pub csrf: &'a str,
     pub error: Option<&'a str>,
+}
+
+/// Passkey 一覧画面（`GET /account/passkey`）。登録済みクレデンシャルの一覧と削除ボタン。
+#[derive(Template)]
+#[template(path = "passkey_list.html")]
+pub struct PasskeyListTemplate<'a> {
+    pub messages: &'a Messages,
+    pub credentials: &'a [PasskeyCredentialInfo],
+}
+
+/// Passkey 登録画面（`GET /account/passkey/register`）。WebAuthn JS フローを起動する。
+#[derive(Template)]
+#[template(path = "passkey_register.html")]
+pub struct PasskeyRegisterTemplate<'a> {
+    pub messages: &'a Messages,
+    pub error_key: Option<&'a str>,
 }

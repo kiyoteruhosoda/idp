@@ -10,5 +10,75 @@
 <label>{{ messages.get("login-password") }} <input type="password" name="password" autocomplete="current-password" required></label>
 <button type="submit">{{ messages.get("login-submit") }}</button>
 </form>
+<hr>
+<p>{{ messages.get("login-passkey-or") }}</p>
+<button type="button" id="btn-passkey-login">{{ messages.get("login-passkey-button") }}</button>
+<div id="passkey-error" style="display:none">
+  <p class="error" role="alert" id="passkey-error-msg"></p>
+</div>
+<script>
+(function() {
+  const btn = document.getElementById('btn-passkey-login');
+  if (!window.PublicKeyCredential) {
+    btn.disabled = true;
+    btn.title = 'WebAuthn is not supported in this browser';
+    return;
+  }
+  btn.addEventListener('click', async function() {
+    document.getElementById('passkey-error').style.display = 'none';
+    try {
+      // 1. begin
+      const beginRes = await fetch('/passkey/login/begin', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({})
+      });
+      if (!beginRes.ok) throw new Error('Server error (begin)');
+      const { challenge_id, options } = await beginRes.json();
+
+      // 2. Browser authenticator
+      const fromB64 = s => Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')), c => c.charCodeAt(0));
+      options.publicKey.challenge = fromB64(options.publicKey.challenge);
+      if (options.publicKey.allowCredentials) {
+        options.publicKey.allowCredentials = options.publicKey.allowCredentials.map(c => ({...c, id: fromB64(c.id)}));
+      }
+      const credential = await navigator.credentials.get(options);
+
+      // 3. complete
+      const toB64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+      const credJson = {
+        id: credential.id,
+        rawId: toB64(credential.rawId),
+        type: credential.type,
+        response: {
+          authenticatorData: toB64(credential.response.authenticatorData),
+          clientDataJSON: toB64(credential.response.clientDataJSON),
+          signature: toB64(credential.response.signature),
+        }
+      };
+      if (credential.response.userHandle) {
+        credJson.response.userHandle = toB64(credential.response.userHandle);
+      }
+
+      const completeRes = await fetch('/passkey/login/complete', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ challenge_id, credential: credJson })
+      });
+      if (!completeRes.ok) throw new Error('Server error (complete)');
+      const result = await completeRes.json();
+      if (result.redirect_to) {
+        window.location.href = result.redirect_to;
+      } else {
+        throw new Error(result.error || 'Authentication failed');
+      }
+    } catch (e) {
+      document.getElementById('passkey-error-msg').textContent = e.message;
+      document.getElementById('passkey-error').style.display = '';
+    }
+  });
+})();
+</script>
 </body>
 </html>
+

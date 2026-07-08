@@ -15,10 +15,15 @@ use idp_contracts::auth::{
     InternalAdminAuthenticateRequest, InternalAdminAuthenticateResponse,
     InternalAuthenticateRequest, InternalAuthenticateResponse, InternalConsentApproveRequest,
     InternalConsentApproveResponse, InternalConsentDenyRequest, InternalConsentDenyResponse,
-    InternalConsentInfoResponse, InternalLogoutRequest, InternalTotpConfirmRequest,
-    InternalTotpConfirmResponse, InternalTotpDeleteRequest, InternalTotpDeleteResponse,
-    InternalTotpSetupRequest, InternalTotpSetupResponse, InternalVerifyTotpRequest,
-    InternalVerifyTotpResponse,
+    InternalConsentInfoResponse, InternalLogoutRequest, InternalPasskeyDeleteRequest,
+    InternalPasskeyDeleteResponse, InternalPasskeyListRequest, InternalPasskeyListResponse,
+    InternalPasskeyLoginBeginRequest, InternalPasskeyLoginBeginResponse,
+    InternalPasskeyLoginCompleteRequest, InternalPasskeyLoginCompleteResponse,
+    InternalPasskeyRegisterBeginRequest, InternalPasskeyRegisterBeginResponse,
+    InternalPasskeyRegisterCompleteRequest, InternalPasskeyRegisterCompleteResponse,
+    InternalTotpConfirmRequest, InternalTotpConfirmResponse, InternalTotpDeleteRequest,
+    InternalTotpDeleteResponse, InternalTotpSetupRequest, InternalTotpSetupResponse,
+    InternalVerifyTotpRequest, InternalVerifyTotpResponse,
 };
 use reqwest::Method;
 
@@ -193,6 +198,68 @@ impl ApiClient {
         req: &InternalVerifyTotpRequest,
     ) -> anyhow::Result<InternalVerifyTotpResponse> {
         self.post_internal("/internal/mfa/totp/verify", correlation_id, req)
+            .await
+    }
+
+    // ─── Passkey（WebAuthn）API ───────────────────────────────────────────
+
+    /// Passkey 登録開始（`POST /internal/passkey/register/begin`）。
+    pub async fn passkey_register_begin(
+        &self,
+        correlation_id: &str,
+        req: &InternalPasskeyRegisterBeginRequest,
+    ) -> anyhow::Result<InternalPasskeyRegisterBeginResponse> {
+        self.post_internal("/internal/passkey/register/begin", correlation_id, req)
+            .await
+    }
+
+    /// Passkey 登録完了（`POST /internal/passkey/register/complete`）。
+    pub async fn passkey_register_complete(
+        &self,
+        correlation_id: &str,
+        req: &InternalPasskeyRegisterCompleteRequest,
+    ) -> anyhow::Result<InternalPasskeyRegisterCompleteResponse> {
+        self.post_internal("/internal/passkey/register/complete", correlation_id, req)
+            .await
+    }
+
+    /// Passkey 削除（`POST /internal/passkey/delete`）。
+    pub async fn passkey_delete(
+        &self,
+        correlation_id: &str,
+        req: &InternalPasskeyDeleteRequest,
+    ) -> anyhow::Result<InternalPasskeyDeleteResponse> {
+        self.post_internal("/internal/passkey/delete", correlation_id, req)
+            .await
+    }
+
+    /// 登録済み Passkey 一覧（`POST /internal/passkey/list`）。
+    pub async fn passkey_list(
+        &self,
+        correlation_id: &str,
+        req: &InternalPasskeyListRequest,
+    ) -> anyhow::Result<InternalPasskeyListResponse> {
+        self.post_internal("/internal/passkey/list", correlation_id, req)
+            .await
+    }
+
+    /// Passkey 認証開始（`POST /internal/passkey/login/begin`）。
+    pub async fn passkey_login_begin(
+        &self,
+        correlation_id: &str,
+        req: &InternalPasskeyLoginBeginRequest,
+    ) -> anyhow::Result<InternalPasskeyLoginBeginResponse> {
+        self.post_internal("/internal/passkey/login/begin", correlation_id, req)
+            .await
+    }
+
+    /// Passkey 認証完了（`POST /internal/passkey/login/complete`）。
+    pub async fn passkey_login_complete(
+        &self,
+        correlation_id: &str,
+        req: &InternalPasskeyLoginCompleteRequest,
+    ) -> anyhow::Result<InternalPasskeyLoginCompleteResponse> {
+        self.post_internal("/internal/passkey/login/complete", correlation_id, req)
             .await
     }
 

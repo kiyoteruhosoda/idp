@@ -17,6 +17,8 @@ use crate::application::key_service::KeyService;
 use crate::application::login::LoginService;
 use crate::application::logout::LogoutService;
 use crate::application::mfa_login::MfaLoginService;
+use crate::application::passkey_authentication::PasskeyAuthenticationService;
+use crate::application::passkey_registration::PasskeyRegistrationService;
 use crate::application::permission_management::PermissionManagementService;
 use crate::application::register::RegisterService;
 use crate::application::revocation::RevocationService;
@@ -33,6 +35,7 @@ use crate::infrastructure::repositories::auth_session::SqlxAuthSessionRepository
 use crate::infrastructure::repositories::authorization_code::SqlxAuthorizationCodeRepository;
 use crate::infrastructure::repositories::client::SqlxClientRepository;
 use crate::infrastructure::repositories::consent::SqlxClientConsentRepository;
+use crate::infrastructure::repositories::passkey_challenge::SqlxPasskeyChallengeRepository;
 use crate::infrastructure::repositories::refresh_token::SqlxRefreshTokenRepository;
 use crate::infrastructure::repositories::revoked_access_token::SqlxRevokedAccessTokenRepository;
 use crate::infrastructure::repositories::signing_key::SqlxSigningKeyRepository;
@@ -40,6 +43,8 @@ use crate::infrastructure::repositories::sso_session::SqlxSsoSessionRepository;
 use crate::infrastructure::repositories::totp_secret::SqlxTotpSecretRepository;
 use crate::infrastructure::repositories::user::SqlxUserRepository;
 use crate::infrastructure::repositories::user_permission::SqlxUserPermissionRepository;
+use crate::infrastructure::repositories::webauthn_credential::SqlxWebAuthnCredentialRepository;
+use crate::infrastructure::webauthn::WebAuthnService;
 use axum::extract::FromRef;
 use std::sync::Arc;
 
@@ -69,6 +74,8 @@ pub struct AppState {
     pub introspection: Arc<IntrospectionService>,
     pub totp_registration: Arc<TotpRegistrationService>,
     pub mfa_login: Arc<MfaLoginService>,
+    pub passkey_registration: Arc<PasskeyRegistrationService>,
+    pub passkey_authentication: Arc<PasskeyAuthenticationService>,
 }
 
 impl AppState {
@@ -85,6 +92,8 @@ impl AppState {
         let user_permissions = Arc::new(SqlxUserPermissionRepository::new(pool.clone()));
         let client_consents = Arc::new(SqlxClientConsentRepository::new(pool.clone()));
         let totp_secrets = Arc::new(SqlxTotpSecretRepository::new(pool.clone()));
+        let webauthn_credentials = Arc::new(SqlxWebAuthnCredentialRepository::new(pool.clone()));
+        let passkey_challenges = Arc::new(SqlxPasskeyChallengeRepository::new(pool.clone()));
         let audit_sink = Arc::new(SqlxAuditLogSink::new(pool.clone()));
         let audit_logs = Arc::new(SqlxAuditLogQuery::new(pool.clone()));
         let hasher = Arc::new(Argon2PasswordHasher::new());
@@ -247,11 +256,34 @@ impl AppState {
             totp_secrets,
             users.clone(),
             sso_sessions.clone(),
-            client_consents,
-            code_issuance,
+            client_consents.clone(),
+            code_issuance.clone(),
             audit.clone(),
             clock.clone(),
             *config.key_encryption_key(),
+            config.sso_idle_ttl(),
+            config.sso_absolute_ttl(),
+        ));
+
+        let webauthn = Arc::new(WebAuthnService::new(config.issuer()));
+        let passkey_registration = Arc::new(PasskeyRegistrationService::new(
+            webauthn_credentials.clone(),
+            passkey_challenges.clone(),
+            sso_sessions.clone(),
+            webauthn.clone(),
+            clock.clone(),
+        ));
+        let passkey_authentication = Arc::new(PasskeyAuthenticationService::new(
+            webauthn_credentials,
+            passkey_challenges,
+            auth_sessions.clone(),
+            users.clone(),
+            sso_sessions.clone(),
+            client_consents,
+            code_issuance,
+            webauthn,
+            audit.clone(),
+            clock.clone(),
             config.sso_idle_ttl(),
             config.sso_absolute_ttl(),
         ));
@@ -277,6 +309,8 @@ impl AppState {
             introspection,
             totp_registration,
             mfa_login,
+            passkey_registration,
+            passkey_authentication,
         }
     }
 }

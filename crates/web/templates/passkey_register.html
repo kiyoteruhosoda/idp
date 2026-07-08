@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>{{ messages.get("passkey-register-title") }}</title>
+</head>
+<body>
+<h1>{{ messages.get("passkey-register-title") }}</h1>
+<p>{{ messages.get("passkey-register-intro") }}</p>
+{% if let Some(key) = error_key %}<p class="error" role="alert">{{ messages.get(key) }}</p>{% endif %}
+
+<div id="step-begin">
+  <label>{{ messages.get("passkey-register-name-label") }}
+    <input type="text" id="passkey-name" value="" placeholder="{{ messages.get("passkey-register-name-placeholder") }}" autocomplete="off">
+  </label>
+  <button type="button" id="btn-register">{{ messages.get("passkey-register-button") }}</button>
+</div>
+<div id="step-success" style="display:none">
+  <p>{{ messages.get("passkey-register-success") }}</p>
+  <a href="/account/passkey">{{ messages.get("passkey-back-to-list") }}</a>
+</div>
+<div id="step-error" style="display:none">
+  <p class="error" role="alert" id="js-error-msg"></p>
+  <button type="button" id="btn-retry">{{ messages.get("passkey-retry") }}</button>
+</div>
+
+<script>
+(function() {
+  const btnRegister = document.getElementById('btn-register');
+  const btnRetry = document.getElementById('btn-retry');
+  const nameInput = document.getElementById('passkey-name');
+
+  async function doRegister() {
+    document.getElementById('step-begin').style.display = '';
+    document.getElementById('step-success').style.display = 'none';
+    document.getElementById('step-error').style.display = 'none';
+
+    const name = nameInput.value.trim() || 'My Passkey';
+
+    // 1. begin
+    const beginRes = await fetch('/passkey/register/begin', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ name })
+    });
+    if (!beginRes.ok) { return showError('Server error (begin)'); }
+    const { challenge_id, options } = await beginRes.json();
+
+    // 2. Browser authenticator
+    let credential;
+    try {
+      // base64url decode helper
+      const fromB64 = s => Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')), c => c.charCodeAt(0));
+      options.publicKey.challenge = fromB64(options.publicKey.challenge);
+      options.publicKey.user.id = fromB64(options.publicKey.user.id);
+      if (options.publicKey.excludeCredentials) {
+        options.publicKey.excludeCredentials = options.publicKey.excludeCredentials.map(c => ({...c, id: fromB64(c.id)}));
+      }
+      credential = await navigator.credentials.create(options);
+    } catch (e) { return showError(e.message || 'Authenticator error'); }
+
+    // 3. complete
+    const toB64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+    const credJson = {
+      id: credential.id,
+      rawId: toB64(credential.rawId),
+      type: credential.type,
+      response: {
+        attestationObject: toB64(credential.response.attestationObject),
+        clientDataJSON: toB64(credential.response.clientDataJSON),
+      }
+    };
+    if (credential.response.getTransports) {
+      credJson.response.transports = credential.response.getTransports();
+    }
+
+    const completeRes = await fetch('/passkey/register/complete', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ challenge_id, name, credential: credJson })
+    });
+    if (!completeRes.ok) { return showError('Server error (complete)'); }
+    const result = await completeRes.json();
+    if (result.result === 'ok') {
+      document.getElementById('step-begin').style.display = 'none';
+      document.getElementById('step-success').style.display = '';
+    } else {
+      showError(result.result || 'Registration failed');
+    }
+  }
+
+  function showError(msg) {
+    document.getElementById('js-error-msg').textContent = msg;
+    document.getElementById('step-error').style.display = '';
+  }
+
+  btnRegister.addEventListener('click', doRegister);
+  btnRetry.addEventListener('click', () => {
+    document.getElementById('step-error').style.display = 'none';
+    doRegister();
+  });
+})();
+</script>
+</body>
+</html>

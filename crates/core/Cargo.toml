@@ -34,3 +34,4 @@ argon2 = { workspace = true }
 url = { workspace = true }
 percent-encoding = { workspace = true }
 totp-rs = { workspace = true }
+webauthn-rs = { workspace = true }

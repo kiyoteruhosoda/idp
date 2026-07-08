@@ -14,6 +14,7 @@ pub mod internal_auth;
 pub mod introspect;
 pub mod logout;
 pub mod mfa;
+pub mod passkey;
 pub mod register;
 pub mod revoke;
 pub mod token;

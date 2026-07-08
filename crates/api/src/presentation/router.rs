@@ -3,8 +3,8 @@
 use crate::presentation::correlation;
 use crate::presentation::handlers::{
     admin, admin_audit, admin_clients, admin_permissions, admin_signing_keys, admin_users,
-    authorize, consent, discovery, health, internal_auth, introspect, logout, mfa, register,
-    revoke, token, userinfo,
+    authorize, consent, discovery, health, internal_auth, introspect, logout, mfa, passkey,
+    register, revoke, token, userinfo,
 };
 use crate::presentation::openapi::ApiDoc;
 use crate::presentation::security_headers::add_security_headers;
@@ -46,6 +46,14 @@ pub fn build(state: AppState) -> Router {
         .route("/internal/mfa/totp/confirm", post(mfa::confirm_totp))
         .route("/internal/mfa/totp/delete", post(mfa::delete_totp))
         .route("/internal/mfa/totp/verify", post(mfa::verify_totp))
+        // Passkey（WebAuthn）セルフ登録 API。
+        .route("/internal/passkey/register/begin", post(passkey::register_begin))
+        .route("/internal/passkey/register/complete", post(passkey::register_complete))
+        .route("/internal/passkey/delete", post(passkey::passkey_delete))
+        .route("/internal/passkey/list", post(passkey::passkey_list))
+        // Passkey ログインフロー API。
+        .route("/internal/passkey/login/begin", post(passkey::login_begin))
+        .route("/internal/passkey/login/complete", post(passkey::login_complete))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             internal_auth::require_service_token,

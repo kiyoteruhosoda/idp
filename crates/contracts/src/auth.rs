@@ -269,3 +269,158 @@ pub enum InternalConsentDenyResponse {
     /// api 内部エラー。
     Internal,
 }
+
+// ─── Passkey（WebAuthn）登録 API ─────────────────────────────────────────────
+
+/// Passkey 登録開始 API（`POST /internal/passkey/register/begin`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalPasskeyRegisterBeginRequest {
+    /// SSO セッション Cookie の生値。
+    pub sso_session_id: String,
+    /// 認証器に表示するユーザー名（通常は email）。
+    pub user_name: String,
+}
+
+/// Passkey 登録開始 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalPasskeyRegisterBeginResponse {
+    /// 開始成功。`challenge_id` を complete で使う。`options` を JS WebAuthn API に渡す。
+    Ok {
+        challenge_id: String,
+        options: serde_json::Value,
+    },
+    /// SSO セッションが無い・期限切れ。
+    SessionExpired,
+    /// api 内部エラー。
+    Internal,
+}
+
+/// Passkey 登録完了 API（`POST /internal/passkey/register/complete`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalPasskeyRegisterCompleteRequest {
+    pub sso_session_id: String,
+    pub challenge_id: String,
+    /// ユーザーが付けたデバイス名（例: "MacBook Touch ID"）。
+    pub name: String,
+    /// ブラウザの `navigator.credentials.create()` が返したオブジェクト（JSON）。
+    pub credential: serde_json::Value,
+}
+
+/// Passkey 登録完了 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalPasskeyRegisterCompleteResponse {
+    /// 登録成功。`credential_id` は管理画面表示用。
+    Ok { credential_id: String },
+    /// チャレンジが見つからない・期限切れ。
+    ChallengeNotFound,
+    /// クレデンシャルが無効。
+    InvalidCredential,
+    /// 同一デバイスが既に登録済み。
+    DuplicateCredential,
+    /// SSO セッションが無い・期限切れ。
+    SessionExpired,
+    /// api 内部エラー。
+    Internal,
+}
+
+/// Passkey 削除 API（`POST /internal/passkey/delete`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalPasskeyDeleteRequest {
+    pub sso_session_id: String,
+    /// 削除対象の内部 UUID（`InternalPasskeyRegisterCompleteResponse::Ok.credential_id`）。
+    pub credential_id: String,
+}
+
+/// Passkey 削除 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalPasskeyDeleteResponse {
+    Ok,
+    SessionExpired,
+    Internal,
+}
+
+/// Passkey 一覧 API（`POST /internal/passkey/list`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalPasskeyListRequest {
+    pub sso_session_id: String,
+}
+
+/// 登録済みクレデンシャルの概要。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PasskeyCredentialInfo {
+    pub id: String,
+    pub name: String,
+    pub created_at: String,
+    pub last_used_at: Option<String>,
+}
+
+/// Passkey 一覧 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalPasskeyListResponse {
+    Ok { credentials: Vec<PasskeyCredentialInfo> },
+    SessionExpired,
+    Internal,
+}
+
+// ─── Passkey（WebAuthn）認証 API ─────────────────────────────────────────────
+
+/// Passkey 認証開始 API（`POST /internal/passkey/login/begin`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalPasskeyLoginBeginRequest {
+    /// OIDC フローの auth_session_id（Cookie 値）。complete で OIDC フローを継続するために必要。
+    pub auth_session_id: Option<String>,
+}
+
+/// Passkey 認証開始 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalPasskeyLoginBeginResponse {
+    /// 開始成功。`challenge_id` を complete で使う。`options` を JS WebAuthn API に渡す。
+    Ok {
+        challenge_id: String,
+        options: serde_json::Value,
+    },
+    /// api 内部エラー。
+    Internal,
+}
+
+/// Passkey 認証完了 API（`POST /internal/passkey/login/complete`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalPasskeyLoginCompleteRequest {
+    pub challenge_id: String,
+    /// ブラウザの `navigator.credentials.get()` が返したオブジェクト（JSON）。
+    pub credential: serde_json::Value,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// Passkey 認証完了 API のレスポンス。成功系は `InternalAuthenticateResponse` と同等。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalPasskeyLoginCompleteResponse {
+    Success {
+        redirect_to: String,
+        sso_session_id: String,
+        sso_absolute_ttl_secs: u64,
+    },
+    ConsentRequired {
+        auth_session_id: String,
+        sso_session_id: String,
+        sso_absolute_ttl_secs: u64,
+    },
+    /// チャレンジが見つからない・期限切れ。
+    ChallengeNotFound,
+    /// AuthSession が無い・期限切れ。
+    SessionExpired,
+    /// クレデンシャルが無効。
+    InvalidCredential,
+    /// api 内部エラー。
+    Internal,
+}
+
