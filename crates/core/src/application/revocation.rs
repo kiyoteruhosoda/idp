@@ -15,7 +15,7 @@ use crate::domain::repositories::{
     ClientRepository, RefreshTokenRepository, RevokedAccessTokenRepository,
 };
 use crate::domain::revoked_access_token::RevokedAccessToken;
-use crate::domain::values::{ClientType, TokenEndpointAuthMethod};
+use crate::domain::values::TokenEndpointAuthMethod;
 use crate::infrastructure::crypto;
 use std::sync::Arc;
 

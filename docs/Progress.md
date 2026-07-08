@@ -7,15 +7,4 @@ OIDC IdP MVP（**Rust + MariaDB**）の実装計画。設計仕様は `docs/OIDC
 
 ## バックログ
 
-| 優先 | # | 概要 | 状態 | 影響度 | 工数 |
-|---|---|---|---|---|---|
-| 1 | F4 | Logout（RP-initiated / front-channel / back-channel、`sso_session.terminated` 有効化） | ⬜未着手 | 中 | 中 |
-| 2 | F5 | Token 管理（revocation / introspection endpoint、ユーザー単位の全セッション無効化） | ⬜未着手 | 中 | 中 |
-
-## 詳細
-
-### OIDC 拡張（F4〜F5、設計仕様 §9）
-
-- **F4**: `sso_session.terminated`（§7 で予約済み）を有効化。SSO セッション・関連 code の失効を実装。
-  back-channel logout は client 側 logout endpoint への通知が必要。
-- **F5（§9.4）**: RFC 7009 revocation・RFC 7662 introspection。introspection は confidential client 認証必須。
+現在未着手のタスクはありません。

@@ -2,6 +2,27 @@
 
 完了した重要な変更の要約（詳しい経緯は `history/`、設計判断は `adr/`）。
 
+## 2026-07-08（F4: Logout / F5: Token 管理）
+
+- **F4 — RP-initiated Logout（設計仕様 §9.3 / OIDC RP-initiated Logout 1.0）**:
+  - `clients` テーブルに `post_logout_redirect_uris`（JSON）、`frontchannel_logout_uri`、
+    `backchannel_logout_uri`（VARCHAR）を追加（migration 0008）。
+  - `LogoutService`: SSO セッション・関連 auth session・有効な authorization code を失効させ、
+    back-channel 通知対象（`backchannel_logout_uri` を持つ client）と front-channel URI 一覧を返す。
+  - `GET /logout`: SSO Cookie を失効させ、back-channel logout token（`logout+jwt`）を非同期 POST、
+    front-channel logout 用 iframe HTML を返す（または `post_logout_redirect_uri` へ 302）。
+  - Discovery に `end_session_endpoint`、`frontchannel_logout_supported`、`backchannel_logout_supported` を追加。
+
+- **F5 — Token Revocation / Introspection（RFC 7009 / RFC 7662）**:
+  - `revoked_access_tokens` テーブルを追加（migration 0009）。`jti` を PK として JTI ブロックリストを実現。
+  - `RevocationService`: Refresh Token（DB の `revoked_at`）と Access Token（JTI ブロックリスト）の両方を
+    失効させる。RFC 7009 §2.2 準拠: 失効済み・不存在でも 200 を返す。
+  - `IntrospectionService`: confidential client 専用。Access Token（署名検証 + JTI ブロックリスト）と
+    Refresh Token（DB 有効性確認）をイントロスペクトし `{ "active": true/false }` を返す。
+  - `POST /revoke`（RFC 7009）、`POST /introspect`（RFC 7662）エンドポイントを追加。
+  - `UserInfoService` も JTI ブロックリストを確認するよう更新。
+  - Discovery に `revocation_endpoint`、`introspection_endpoint` を追加。
+
 ## 2026-07-08（F2: Refresh Token）
 
 - **F2 — Refresh Token（設計仕様 §9.1）**:

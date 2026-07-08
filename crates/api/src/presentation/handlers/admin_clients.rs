@@ -151,8 +151,8 @@ pub async fn update_client(
         scopes: body.scopes,
         status,
         post_logout_redirect_uris: body.post_logout_redirect_uris,
-        frontchannel_logout_uri: body.frontchannel_logout_uri,
-        backchannel_logout_uri: body.backchannel_logout_uri,
+        frontchannel_logout_uri: body.frontchannel_logout_uri.map(Some),
+        backchannel_logout_uri: body.backchannel_logout_uri.map(Some),
     };
 
     let client = state

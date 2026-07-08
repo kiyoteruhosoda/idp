@@ -514,6 +514,9 @@ mod tests {
             scopes: vec!["openid".to_string(), "email".to_string()],
             token_endpoint_auth_method: TokenEndpointAuthMethod::None,
             require_pkce: true,
+            post_logout_redirect_uris: vec![],
+            frontchannel_logout_uri: None,
+            backchannel_logout_uri: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

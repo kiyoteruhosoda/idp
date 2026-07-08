@@ -10,7 +10,7 @@ use crate::infrastructure::crypto::base64url;
 use jsonwebtoken::{encode, Algorithm, DecodingKey, EncodingKey, Header};
 use p256::pkcs8::{DecodePublicKey as EcDecodePublicKey, EncodePrivateKey, LineEnding};
 use rsa::pkcs1::EncodeRsaPrivateKey;
-use rsa::pkcs8::{DecodePublicKey as _, EncodePublicKey as RsaEncodePublicKey};
+use rsa::pkcs8::{EncodePublicKey as RsaEncodePublicKey};
 use rsa::traits::PublicKeyParts;
 use rsa::{RsaPrivateKey, RsaPublicKey};
 use serde::{Deserialize, Serialize};

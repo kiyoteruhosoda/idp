@@ -32,3 +32,4 @@ base64 = { workspace = true }
 rand = { workspace = true }
 argon2 = { workspace = true }
 url = { workspace = true }
+percent-encoding = { workspace = true }

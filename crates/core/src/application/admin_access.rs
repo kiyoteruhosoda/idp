@@ -150,6 +150,9 @@ mod tests {
         async fn delete(&self, _h: &str) -> DomainResult<()> {
             unreachable!()
         }
+        async fn delete_all_for_user(&self, _user_id: Uuid) -> DomainResult<()> {
+            unreachable!()
+        }
     }
 
     struct FakeUsers {
