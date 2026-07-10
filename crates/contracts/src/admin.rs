@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// `GET /admin/whoami` のレスポンス。アクセスできること自体が「有効な SSO ＋ `idp.admin` 保有」を意味する。
+/// `GET /admin/whoami` のレスポンス。アクセスできること自体が「有効な SSO ＋ `idp.tenant.admin` 保有」を意味する。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WhoamiResponse {
     /// 認可済み管理利用者の内部 ID（UUID 文字列）。

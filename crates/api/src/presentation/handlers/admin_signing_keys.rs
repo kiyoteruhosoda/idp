@@ -1,6 +1,6 @@
 //! 署名鍵管理エンドポイント（`/admin/signing-keys`、K1）。
 //!
-//! すべて `idp.admin` 権限が必要（`RequirePerms<IdpAdmin>`）。秘密鍵・暗号化鍵は返さない。
+//! すべて `idp.tenant.admin` 権限が必要（`RequirePerms<IdpAdmin>`）。秘密鍵・暗号化鍵は返さない。
 //! 生成アルゴリズムは `RS256`（RSA-2048）または `ES256`（NIST P-256）。
 
 use crate::application::key_service::KeyManagementError;
@@ -22,7 +22,7 @@ use axum::Json;
     responses(
         (status = 200, description = "署名鍵一覧", body = [SigningKeyResponse]),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.admin 必須）"),
+        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
     )
 )]
 pub async fn list_keys(
@@ -43,7 +43,7 @@ pub async fn list_keys(
         (status = 201, description = "生成した署名鍵", body = SigningKeyResponse),
         (status = 400, description = "不正なアルゴリズム"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.admin 必須）"),
+        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
     )
 )]
 pub async fn generate_key(
@@ -68,7 +68,7 @@ pub async fn generate_key(
         (status = 204, description = "退役完了"),
         (status = 400, description = "既に RETIRED"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.admin 必須）"),
+        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
         (status = 404, description = "不存在"),
     )
 )]
@@ -91,7 +91,7 @@ pub async fn retire_key(
         (status = 204, description = "削除完了"),
         (status = 400, description = "ACTIVE 鍵は削除不可（先に退役）"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.admin 必須）"),
+        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
         (status = 404, description = "不存在"),
     )
 )]

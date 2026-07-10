@@ -15,6 +15,7 @@ use crate::domain::repositories::{
     ClientRepository, RefreshTokenRepository, RevokedAccessTokenRepository,
 };
 use crate::domain::revoked_access_token::RevokedAccessToken;
+use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::TokenEndpointAuthMethod;
 use crate::infrastructure::crypto;
 use std::sync::Arc;
@@ -64,8 +65,10 @@ impl RevocationService {
     }
 
     /// トークンを失効させる。RFC 7009 §2.2: 常に 200 を返す想定（エラーは client 認証失敗のみ）。
+    #[allow(clippy::too_many_arguments)]
     pub async fn revoke(
         &self,
+        tenant: TenantContext,
         token: &str,
         token_type_hint: Option<&str>,
         client_id: &str,
@@ -76,8 +79,11 @@ impl RevocationService {
             return Ok(());
         }
 
-        // Client 認証。
-        let client = match self.load_client(client_id, basic_credentials, ctx).await {
+        // Client 認証（フローのテナントに属する client のみ解決する）。
+        let client = match self
+            .load_client(tenant, client_id, basic_credentials, ctx)
+            .await
+        {
             Ok(c) => c,
             Err(e) => return Err(e),
         };
@@ -103,6 +109,7 @@ impl RevocationService {
             .record(
                 AuditEventType::RefreshTokenUsed,
                 AuditResult::Success,
+                Some(tenant.tenant_id()),
                 None,
                 Some(&client.client_id),
                 Some("revocation"),
@@ -173,13 +180,14 @@ impl RevocationService {
     /// Client を検索し、confidential client の場合は secret を検証する。
     async fn load_client(
         &self,
+        tenant: TenantContext,
         client_id: &str,
         basic_credentials: Option<(&str, &str)>,
         ctx: &RequestContext,
     ) -> Result<Client, RevocationError> {
         let client = self
             .clients
-            .find_by_client_id(client_id)
+            .find_by_client_id(tenant.tenant_id(), client_id)
             .await
             .map_err(|e| RevocationError::new(OAuthErrorCode::ServerError, &e.to_string()))?
             .ok_or_else(|| RevocationError::new(OAuthErrorCode::InvalidClient, "unknown client"))?;
@@ -195,7 +203,7 @@ impl RevocationService {
             let (cid, secret) = match basic_credentials {
                 Some(creds) => creds,
                 None => {
-                    self.record_auth_failure(&client.client_id, ctx).await;
+                    self.record_auth_failure(tenant, &client.client_id, ctx).await;
                     return Err(RevocationError::new(
                         OAuthErrorCode::InvalidClient,
                         "client_secret_basic authentication required",
@@ -203,7 +211,7 @@ impl RevocationService {
                 }
             };
             if cid != client_id {
-                self.record_auth_failure(&client.client_id, ctx).await;
+                self.record_auth_failure(tenant, &client.client_id, ctx).await;
                 return Err(RevocationError::new(
                     OAuthErrorCode::InvalidClient,
                     "client_id mismatch",
@@ -223,7 +231,7 @@ impl RevocationService {
                 .verify(secret, hash)
                 .map_err(|e| RevocationError::new(OAuthErrorCode::ServerError, &e.to_string()))?;
             if !ok {
-                self.record_auth_failure(&client.client_id, ctx).await;
+                self.record_auth_failure(tenant, &client.client_id, ctx).await;
                 return Err(RevocationError::new(
                     OAuthErrorCode::InvalidClient,
                     "client authentication failed",
@@ -234,11 +242,17 @@ impl RevocationService {
         Ok(client)
     }
 
-    async fn record_auth_failure(&self, client_id: &str, ctx: &RequestContext) {
+    async fn record_auth_failure(
+        &self,
+        tenant: TenantContext,
+        client_id: &str,
+        ctx: &RequestContext,
+    ) {
         self.audit
             .record(
                 AuditEventType::ClientAuthenticationFailed,
                 AuditResult::Failure,
+                Some(tenant.tenant_id()),
                 None,
                 Some(client_id),
                 Some("revocation"),

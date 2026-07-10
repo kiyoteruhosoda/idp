@@ -3,6 +3,20 @@
 //! Application 層はこれらのトレイトにのみ依存し、Infrastructure 層（sqlx）が実装する。
 //! トレイトオブジェクト（`Arc<dyn ...>`）として注入できるよう `#[async_trait]` を用いる。
 //! メソッドは各フェーズで実装する際に必要に応じて拡張する。
+//!
+//! # テナント分離（ADR-0009 §8）
+//!
+//! MariaDB に RLS はなく、アプリ層が唯一の分離防御線となる。テナントスコープのテーブルを
+//! 参照・検索するメソッドは `tenant_id: TenantId` を受け取り、実装は必ず WHERE 句へ含める。
+//! 次のものは意図的に tenant_id を取らない:
+//!
+//! - **グローバル一意キーによる本人解決**（`users.id` / `users.sub`）: ゲスト参加（§3）では
+//!   フローのテナント ≠ 所属元テナントのため、テナント境界はメンバーシップ判定・所属元照合で
+//!   強制する（ユースケース側の責務）。
+//! - **SSO セッション**: ホスト単位で共有する設計（§8）。境界はメンバーシップ検証で強制する。
+//! - **ユーザー単位のセキュリティ操作**（全セッション失効・全 code/refresh token 失効）:
+//!   本人のユーザー状態への操作であり、テナントを跨いで全失効させる方が安全側。
+//! - **テナント列を持たないテーブル**（署名鍵・jti 失効リスト・TOTP・WebAuthn・チャレンジ）。
 #![allow(dead_code)]
 
 use crate::domain::audit::{AuditEvent, AuditLogEntry, AuditLogFilter};
@@ -67,12 +81,20 @@ pub trait TenantMembershipRepository: Send + Sync {
 
 #[async_trait]
 pub trait UserRepository: Send + Sync {
+    /// ユーザーを作成する（`user.tenant_id` = 所属元テナント）。HOME メンバーシップの同時作成は
+    /// ユースケース側の責務（ADR-0009 §3）。
     async fn create(&self, user: &User) -> Result<()>;
+    /// グローバル一意の内部 ID で解決する（テナント境界は呼び出し側が所属元照合・メンバーシップ
+    /// 判定で強制する。モジュールコメント参照）。
     async fn find_by_id(&self, id: Uuid) -> Result<Option<User>>;
-    /// 外部公開識別子 `sub` で検索する（`/userinfo` で使用）。
+    /// 外部公開識別子 `sub` で検索する（`/userinfo` で使用。グローバル一意）。
     async fn find_by_sub(&self, sub: Uuid) -> Result<Option<User>>;
-    async fn find_by_email(&self, email: &str) -> Result<Option<User>>;
-    async fn find_by_username(&self, username: &str) -> Result<Option<User>>;
+    /// 所属元が `tenant_id` のユーザーを email で検索する（一意キーは `(tenant_id, email)`。
+    /// 認証は所属元テナント限定 = ログイン画面のユーザー検索はこれを使う。ADR-0009 §8）。
+    async fn find_by_email(&self, tenant_id: TenantId, email: &str) -> Result<Option<User>>;
+    /// 所属元が `tenant_id` のユーザーを preferred_username で検索する。
+    async fn find_by_username(&self, tenant_id: TenantId, username: &str)
+        -> Result<Option<User>>;
     /// ログイン失敗回数・ロック期限を更新する（ロックポリシー、設計仕様 §4.3）。
     async fn update_login_state(
         &self,
@@ -84,20 +106,28 @@ pub trait UserRepository: Send + Sync {
 
 #[async_trait]
 pub trait ClientRepository: Send + Sync {
-    async fn find_by_client_id(&self, client_id: &str) -> Result<Option<Client>>;
-    /// クライアント（RP）を新規登録する（管理 API、設計仕様 §9.3）。`client_id` 重複は `Conflict`。
+    /// `client_id` はテナント内一意のため `(tenant_id, client_id)` で検索する（ADR-0009 §2）。
+    async fn find_by_client_id(
+        &self,
+        tenant_id: TenantId,
+        client_id: &str,
+    ) -> Result<Option<Client>>;
+    /// クライアント（RP）を新規登録する（管理 API、設計仕様 §9.3）。`client.tenant_id` の
+    /// テナントへ登録し、テナント内の `client_id` 重複は `Conflict`。
     async fn create(&self, client: &Client) -> Result<()>;
-    /// 登録済みクライアントを新しい順に一覧する（管理画面 A3・A1）。
-    async fn list(&self) -> Result<Vec<Client>>;
+    /// 指定テナントの登録済みクライアントを新しい順に一覧する（管理画面 A3・A1）。
+    async fn list(&self, tenant_id: TenantId) -> Result<Vec<Client>>;
     /// 可変項目（app_name / redirect_uris / scopes / status / secret_hash 等）を更新する。
-    /// 主キー `id` で対象を特定する。対象が無い場合は `NotFound`。
+    /// `(id, tenant_id)` で対象を特定する（他テナントの行は更新できない）。対象が無い場合は `NotFound`。
     async fn update(&self, client: &Client) -> Result<()>;
 }
 
 #[async_trait]
 pub trait AuthSessionRepository: Send + Sync {
     async fn create(&self, session: &AuthSession) -> Result<()>;
-    async fn find_by_id(&self, id: &str) -> Result<Option<AuthSession>>;
+    /// フローを開始したテナントの auth session のみ返す（他テナントの session id を
+    /// 持ち込んでも解決させない）。
+    async fn find_by_id(&self, tenant_id: TenantId, id: &str) -> Result<Option<AuthSession>>;
     /// 認証済みユーザーと `auth_time` を設定する（`/login` 成功時）。
     async fn set_authenticated_user(
         &self,
@@ -129,10 +159,12 @@ pub trait SsoSessionRepository: Send + Sync {
 #[async_trait]
 pub trait AuthorizationCodeRepository: Send + Sync {
     async fn create(&self, code: &AuthorizationCode) -> Result<()>;
-    /// 原子的に one-time 消費する。未使用かつ期限内なら `used_at` を設定して当該 code を返す。
-    /// すでに使用済み・期限切れ・不存在なら `None`（呼び出し側で再利用検知として扱う）。
+    /// 原子的に one-time 消費する。発行テナントが一致し、未使用かつ期限内なら `used_at` を
+    /// 設定して当該 code を返す。すでに使用済み・期限切れ・不存在・他テナント発行なら `None`
+    /// （呼び出し側で再利用検知として扱う）。
     async fn consume(
         &self,
+        tenant_id: TenantId,
         code_hash: &str,
         used_at: DateTime<Utc>,
     ) -> Result<Option<AuthorizationCode>>;
@@ -165,11 +197,16 @@ pub trait AuditLogSink: Send + Sync {
 #[async_trait]
 pub trait AuditLogQuery: Send + Sync {
     /// 条件に一致する監査ログを新しい順（`occurred_at` 降順、同時刻は `id` 降順）に返す。
+    /// テナント越しの閲覧を防ぐため、参照系の呼び出しは `filter.tenant_id` を必ず設定する。
     async fn search(&self, filter: &AuditLogFilter) -> Result<Vec<AuditLogEntry>>;
 
-    /// クライアント別の**最終利用時刻**（成功したトークン発行・認可コード発行の最新 `occurred_at`）を返す。
-    /// クライアント状況一覧（A3）が利用する。利用実績の無いクライアントは含まれない。
-    async fn last_used_per_client(&self) -> Result<Vec<(String, DateTime<Utc>)>>;
+    /// 指定テナントのクライアント別の**最終利用時刻**（成功したトークン発行・認可コード発行の
+    /// 最新 `occurred_at`）を返す。クライアント状況一覧（A3）が利用する。利用実績の無い
+    /// クライアントは含まれない。
+    async fn last_used_per_client(
+        &self,
+        tenant_id: TenantId,
+    ) -> Result<Vec<(String, DateTime<Utc>)>>;
 }
 
 /// 利用者が保有する権限コード（ADR-0006）の参照・付与・剥奪（DIP 境界）。
@@ -181,23 +218,37 @@ pub trait UserPermissionRepository: Send + Sync {
     /// 付与可能な権限コードの一覧（`permissions` マスタ）を昇順で返す。
     /// 管理コンソール（A2）の付与フォームで選択肢を提示するために使う。
     async fn list_available_codes(&self) -> Result<Vec<String>>;
-    /// 利用者が保有する権限コード一覧を返す（順序は不定）。
-    async fn list_codes_for_user(&self, user_id: Uuid) -> Result<Vec<String>>;
-    /// 利用者が指定の権限コードを保有するか。
-    async fn has_permission(&self, user_id: Uuid, code: &str) -> Result<bool>;
-    /// 権限を付与する（冪等: 既存付与は何もしない）。`code` は `permissions` マスタに存在すること。
-    async fn grant(&self, user_id: Uuid, code: &str, granted_at: DateTime<Utc>) -> Result<()>;
-    /// 権限を剥奪する（不存在でもエラーにしない）。
-    async fn revoke(&self, user_id: Uuid, code: &str) -> Result<()>;
+    /// 利用者が `tenant_id` を scope として保有する権限コード一覧を返す（順序は不定）。
+    async fn list_codes_for_user(&self, tenant_id: TenantId, user_id: Uuid)
+        -> Result<Vec<String>>;
+    /// 利用者が指定の権限コードを `tenant_id` を scope として保有するか（完全一致判定。ADR-0009 §4）。
+    async fn has_permission(&self, tenant_id: TenantId, user_id: Uuid, code: &str)
+        -> Result<bool>;
+    /// `tenant_id` を scope として権限を付与する（冪等: 既存付与は何もしない）。
+    /// `code` は `permissions` マスタに存在すること。
+    async fn grant(
+        &self,
+        tenant_id: TenantId,
+        user_id: Uuid,
+        code: &str,
+        granted_at: DateTime<Utc>,
+    ) -> Result<()>;
+    /// `tenant_id` を scope とする権限を剥奪する（不存在でもエラーにしない）。
+    async fn revoke(&self, tenant_id: TenantId, user_id: Uuid, code: &str) -> Result<()>;
 }
 
 /// Refresh Token の永続化（設計仕様 §9.1）。DB には SHA-256 hash を保存する。
 #[async_trait]
 pub trait RefreshTokenRepository: Send + Sync {
-    /// 新規 Refresh Token を保存する。
+    /// 新規 Refresh Token を保存する（`token.tenant_id` = 発行テナント）。
     async fn create(&self, token: &RefreshToken) -> Result<()>;
-    /// hash で検索する。不存在は `None`。
-    async fn find_by_hash(&self, token_hash: &str) -> Result<Option<RefreshToken>>;
+    /// 発行テナントが一致する行を hash で検索する。不存在・他テナント発行は `None`
+    /// （A テナント発行トークンの B テナントへの流用を防ぐ。ADR-0009 §6）。
+    async fn find_by_hash(
+        &self,
+        tenant_id: TenantId,
+        token_hash: &str,
+    ) -> Result<Option<RefreshToken>>;
     /// 指定 hash のトークンを失効させる（`revoked_at` を設定）。
     /// 不存在・既失効でもエラーにしない（冪等）。
     async fn revoke(&self, token_hash: &str, revoked_at: DateTime<Utc>) -> Result<()>;
@@ -211,14 +262,20 @@ pub trait RefreshTokenRepository: Send + Sync {
 /// ユーザーがクライアントに付与した同意済み scope の永続化（F3: Consent）。
 #[async_trait]
 pub trait ClientConsentRepository: Send + Sync {
-    /// `(user_id, client_id)` の同意レコードを返す。存在しなければ `None`。
-    async fn find(&self, user_id: Uuid, client_id: &str) -> Result<Option<ClientConsent>>;
+    /// `(user_id, tenant_id, client_id)` の同意レコードを返す。存在しなければ `None`。
+    async fn find(
+        &self,
+        tenant_id: TenantId,
+        user_id: Uuid,
+        client_id: &str,
+    ) -> Result<Option<ClientConsent>>;
     /// 同意レコードを UPSERT する（scope が変わった場合は上書き）。
     async fn upsert(&self, consent: &ClientConsent) -> Result<()>;
     /// 同意を取り消す（存在しなければ冪等に何もしない）。
-    async fn revoke(&self, user_id: Uuid, client_id: &str) -> Result<()>;
-    /// ユーザーの全同意レコードを返す（同意取り消し画面・管理用）。
-    async fn list_for_user(&self, user_id: Uuid) -> Result<Vec<ClientConsent>>;
+    async fn revoke(&self, tenant_id: TenantId, user_id: Uuid, client_id: &str) -> Result<()>;
+    /// 指定テナントにおけるユーザーの全同意レコードを返す（同意取り消し画面・管理用）。
+    async fn list_for_user(&self, tenant_id: TenantId, user_id: Uuid)
+        -> Result<Vec<ClientConsent>>;
 }
 
 /// Access Token の jti 失効リスト（F5: Token 管理）。

@@ -13,6 +13,7 @@ use crate::domain::password::PasswordHasher;
 use crate::domain::repositories::{
     ClientRepository, RefreshTokenRepository, RevokedAccessTokenRepository, SigningKeyRepository,
 };
+use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::TokenEndpointAuthMethod;
 use crate::infrastructure::crypto;
 use crate::infrastructure::jwt;
@@ -114,6 +115,7 @@ impl IntrospectionService {
 
     pub async fn introspect(
         &self,
+        tenant: TenantContext,
         token: &str,
         token_type_hint: Option<&str>,
         client_id: &str,
@@ -123,15 +125,15 @@ impl IntrospectionService {
             return Ok(IntrospectionResponse::inactive());
         }
 
-        // confidential client 認証（必須）。
+        // confidential client 認証（必須。フローのテナントに属する client のみ解決する）。
         let client = self
-            .authenticate_confidential_client(client_id, basic_credentials)
+            .authenticate_confidential_client(tenant, client_id, basic_credentials)
             .await?;
 
         // token_type_hint に従って access_token / refresh_token を試みる。
         match token_type_hint {
             Some("refresh_token") => {
-                let resp = self.introspect_refresh_token(token, &client).await;
+                let resp = self.introspect_refresh_token(tenant, token, &client).await;
                 if resp.active {
                     return Ok(resp);
                 }
@@ -142,7 +144,7 @@ impl IntrospectionService {
                 if resp.active {
                     return Ok(resp);
                 }
-                Ok(self.introspect_refresh_token(token, &client).await)
+                Ok(self.introspect_refresh_token(tenant, token, &client).await)
             }
         }
     }
@@ -218,14 +220,19 @@ impl IntrospectionService {
         }
     }
 
-    /// Refresh Token のイントロスペクション。
+    /// Refresh Token のイントロスペクション（発行テナントの一致を含む）。
     async fn introspect_refresh_token(
         &self,
+        tenant: TenantContext,
         token: &str,
         _requesting_client: &Client,
     ) -> IntrospectionResponse {
         let hash = crypto::sha256_hex(token);
-        let rt = match self.refresh_tokens.find_by_hash(&hash).await {
+        let rt = match self
+            .refresh_tokens
+            .find_by_hash(tenant.tenant_id(), &hash)
+            .await
+        {
             Ok(Some(rt)) => rt,
             _ => return IntrospectionResponse::inactive(),
         };
@@ -252,12 +259,13 @@ impl IntrospectionService {
     /// confidential client のみ認証を許可する（RFC 7662 §2.1）。
     async fn authenticate_confidential_client(
         &self,
+        tenant: TenantContext,
         client_id: &str,
         basic_credentials: Option<(&str, &str)>,
     ) -> Result<Client, IntrospectionError> {
         let client = self
             .clients
-            .find_by_client_id(client_id)
+            .find_by_client_id(tenant.tenant_id(), client_id)
             .await
             .map_err(|e| IntrospectionError::new(OAuthErrorCode::InvalidClient, &e.to_string()))?
             .ok_or_else(|| {

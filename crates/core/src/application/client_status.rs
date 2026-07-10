@@ -7,6 +7,7 @@
 use crate::domain::client::Client;
 use crate::domain::error::DomainError;
 use crate::domain::repositories::{AuditLogQuery, ClientRepository};
+use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::ClientStatus;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -36,12 +37,12 @@ impl ClientStatusService {
         }
     }
 
-    /// 全クライアントの状況を、登録の新しい順（`ClientRepository::list` の順）で返す。
-    pub async fn list(&self) -> Result<Vec<ClientStatusView>, DomainError> {
-        let clients = self.clients.list().await?;
+    /// 指定テナントの全クライアントの状況を、登録の新しい順（`ClientRepository::list` の順）で返す。
+    pub async fn list(&self, tenant: TenantContext) -> Result<Vec<ClientStatusView>, DomainError> {
+        let clients = self.clients.list(tenant.tenant_id()).await?;
         let last_used: HashMap<String, DateTime<Utc>> = self
             .audit_logs
-            .last_used_per_client()
+            .last_used_per_client(tenant.tenant_id())
             .await?
             .into_iter()
             .collect();
@@ -67,6 +68,7 @@ mod tests {
     use super::*;
     use crate::domain::audit::{AuditLogEntry, AuditLogFilter};
     use crate::domain::error::Result as DomainResult;
+    use crate::domain::tenant::TenantId;
     use crate::domain::values::{ClientType, TokenEndpointAuthMethod};
     use async_trait::async_trait;
     use chrono::TimeZone;
@@ -75,6 +77,7 @@ mod tests {
     fn client(client_id: &str, app_name: &str) -> Client {
         Client {
             id: Uuid::new_v4(),
+            tenant_id: Uuid::now_v7().into(),
             client_id: client_id.to_string(),
             client_secret_hash: None,
             client_type: ClientType::Public,
@@ -97,13 +100,17 @@ mod tests {
     struct FakeClients(Vec<Client>);
     #[async_trait]
     impl ClientRepository for FakeClients {
-        async fn find_by_client_id(&self, _id: &str) -> DomainResult<Option<Client>> {
+        async fn find_by_client_id(
+            &self,
+            _t: TenantId,
+            _id: &str,
+        ) -> DomainResult<Option<Client>> {
             unreachable!()
         }
         async fn create(&self, _c: &Client) -> DomainResult<()> {
             unreachable!()
         }
-        async fn list(&self) -> DomainResult<Vec<Client>> {
+        async fn list(&self, _t: TenantId) -> DomainResult<Vec<Client>> {
             Ok(self.0.clone())
         }
         async fn update(&self, _c: &Client) -> DomainResult<()> {
@@ -117,7 +124,10 @@ mod tests {
         async fn search(&self, _f: &AuditLogFilter) -> DomainResult<Vec<AuditLogEntry>> {
             unreachable!()
         }
-        async fn last_used_per_client(&self) -> DomainResult<Vec<(String, DateTime<Utc>)>> {
+        async fn last_used_per_client(
+            &self,
+            _t: TenantId,
+        ) -> DomainResult<Vec<(String, DateTime<Utc>)>> {
             Ok(self.0.clone())
         }
     }
@@ -132,7 +142,10 @@ mod tests {
             ])),
             Arc::new(FakeAuditLogs(vec![("used".to_string(), used_at)])),
         );
-        let views = svc.list().await.expect("list ok");
+        let views = svc
+            .list(TenantContext::new(Uuid::now_v7().into()))
+            .await
+            .expect("list ok");
         assert_eq!(views.len(), 2);
         // 順序は clients.list の順を保つ。
         assert_eq!(views[0].client_id, "used");

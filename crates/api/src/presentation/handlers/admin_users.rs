@@ -1,6 +1,6 @@
 //! 利用者検索・取得の管理 API（`/admin/users`）。管理コンソール（web）の権限画面が用いる支援 API。
 //!
-//! すべて `idp.admin` 権限が必要（`RequirePerms<IdpAdmin>`）。パスワードハッシュ等の機微情報は返さない。
+//! すべて `idp.tenant.admin` 権限が必要（`RequirePerms<IdpAdmin>`）。パスワードハッシュ等の機微情報は返さない。
 //! 権限の一覧・付与・剥奪は `admin_permissions` にある。
 
 use crate::application::permission_management::PermissionManagementError;
@@ -32,7 +32,7 @@ pub async fn search_user(
     }
     match state
         .permissions_admin
-        .find_user_by_identifier(&term)
+        .find_user_by_identifier(state.default_tenant, &term)
         .await
         .map_err(map_error)?
     {
@@ -51,7 +51,7 @@ pub async fn get_user(
         Uuid::parse_str(&user_id).map_err(|_| ApiError::NotFound("user not found".to_string()))?;
     let user = state
         .permissions_admin
-        .get_user(target)
+        .get_user(state.default_tenant, target)
         .await
         .map_err(map_error)?;
     Ok(Json(summary(&user)))
@@ -73,6 +73,7 @@ fn map_error(e: PermissionManagementError) -> ApiError {
     match e {
         PermissionManagementError::Validation(m) => ApiError::BadRequest(m),
         PermissionManagementError::NotFound => ApiError::NotFound("user not found".to_string()),
+        PermissionManagementError::Forbidden(m) => ApiError::Forbidden(m),
         PermissionManagementError::Internal(m) => ApiError::Internal(m),
     }
 }

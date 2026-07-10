@@ -1,6 +1,6 @@
 //! 監査ログ参照エンドポイント（`GET /admin/audit-logs`、状況確認画面 A3、設計仕様 §7）。
 //!
-//! `idp.admin` 権限が必要（`RequirePerms<IdpAdmin>`）。`result=failure` などで**エラー絞り込み**でき、
+//! `idp.tenant.admin` 権限が必要（`RequirePerms<IdpAdmin>`）。`result=failure` などで**エラー絞り込み**でき、
 //! `correlation_id` でリクエスト〜監査イベントを追跡できる。
 
 use crate::application::audit_query::AuditQueryParams;
@@ -23,7 +23,7 @@ use chrono::{DateTime, Utc};
         (status = 200, description = "監査ログ一覧（新しい順）", body = [AuditLogEntryResponse]),
         (status = 400, description = "from / to の日時形式が不正"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.admin 必須）"),
+        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
     )
 )]
 pub async fn list_audit_logs(
@@ -44,7 +44,7 @@ pub async fn list_audit_logs(
 
     let entries = state
         .audit_query
-        .search(query)
+        .search(state.default_tenant, query)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(entries.iter().map(entry_response).collect()))

@@ -1,6 +1,7 @@
 //! 監査イベント（設計仕様 §7）。構造化ログと `audit_log` テーブルの双方へ出力する。
 #![allow(dead_code)]
 
+use crate::domain::tenant::TenantId;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
@@ -85,6 +86,9 @@ impl AuditResult {
 pub struct AuditEvent {
     pub event_type: AuditEventType,
     pub occurred_at: DateTime<Utc>,
+    /// イベントが属するテナント（テナント単位の追跡。ADR-0009 §8）。テナント文脈の無い
+    /// イベント（起動時処理等）のみ `None`。
+    pub tenant_id: Option<TenantId>,
     pub user_id: Option<Uuid>,
     pub client_id: Option<String>,
     pub ip_address: Option<String>,
@@ -103,6 +107,7 @@ pub struct AuditLogEntry {
     pub id: i64,
     pub event_type: String,
     pub occurred_at: DateTime<Utc>,
+    pub tenant_id: Option<Uuid>,
     pub user_id: Option<Uuid>,
     pub client_id: Option<String>,
     pub ip_address: Option<String>,
@@ -116,6 +121,8 @@ pub struct AuditLogEntry {
 /// `correlation_id` で絞る）。指定した項目のみ AND で適用する。
 #[derive(Debug, Clone, Default)]
 pub struct AuditLogFilter {
+    /// 監査ログを参照するテナント（テナント越しの閲覧を防ぐため、参照系は常に設定する）。
+    pub tenant_id: Option<Uuid>,
     pub event_type: Option<String>,
     pub result: Option<String>,
     pub client_id: Option<String>,

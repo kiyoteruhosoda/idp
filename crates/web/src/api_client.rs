@@ -52,11 +52,11 @@ pub enum AdminApiError {
 
 /// 管理者の SSO Cookie を api の `/admin/*`（`RequirePerms<IdpAdmin>`）へ転送した結果（ADR-0007 §4）。
 pub enum AdminSession {
-    /// 有効な SSO ＋ `idp.admin` 保有。管理利用者の内部 ID を返す。
+    /// 有効な SSO ＋ テナント admin 権限（`idp.tenant.admin`／`idp.system.admin`）保有。管理利用者の内部 ID を返す。
     Authenticated(String),
     /// 未認証・SSO 期限切れ（ログイン画面へ誘導する）。
     Unauthenticated,
-    /// 認証済みだが `idp.admin` 権限なし（403 画面）。
+    /// 認証済みだがテナント admin 権限なし（403 画面）。
     Forbidden,
     /// api 呼び出し失敗（構成/障害）。
     Error,

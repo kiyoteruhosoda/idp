@@ -42,6 +42,8 @@ struct TestEnv {
     app: axum::Router,
     pool: MySqlPool,
     issuer: String,
+    /// 過渡期（MT9 まで）の既定テナント = seed 済み root テナントの UUID。
+    root_tenant_id: String,
 }
 
 async fn setup() -> Option<TestEnv> {
@@ -57,9 +59,19 @@ async fn setup() -> Option<TestEnv> {
         .expect("connect to test database");
     MIGRATOR.run(&pool).await.expect("run migrations");
 
+    // 過渡期（MT9 まで）: seed 済み root テナントを既定テナントとして注入する。
+    let root_tenant_id: String =
+        sqlx::query_scalar("SELECT id FROM tenants WHERE parent_tenant_id IS NULL")
+            .fetch_one(&pool)
+            .await
+            .expect("root tenant seeded");
+    let root = idp_api::domain::tenant::TenantId::from(
+        uuid::Uuid::parse_str(&root_tenant_id).expect("root UUID"),
+    );
+
     let config = Arc::new(Config::from_env().expect("load config"));
     let issuer = config.issuer().to_string();
-    let state = AppState::build(pool.clone(), config, Arc::new(SystemClock));
+    let state = AppState::build(pool.clone(), config, Arc::new(SystemClock), root);
     state
         .keys
         .ensure_active_key()
@@ -69,23 +81,25 @@ async fn setup() -> Option<TestEnv> {
         app: router::build(state),
         pool,
         issuer,
+        root_tenant_id,
     })
 }
 
-/// 一意な public client を登録して client_id を返す。
-async fn insert_public_client(pool: &MySqlPool) -> String {
+/// 一意な public client を root テナントへ登録して client_id を返す。
+async fn insert_public_client(pool: &MySqlPool, tenant_id: &str) -> String {
     let client_id = format!(
         "e2e-public-{}",
         &uuid::Uuid::new_v4().simple().to_string()[..12]
     );
     sqlx::query(
-        "INSERT INTO clients (id, client_id, client_secret_hash, client_type, client_status, \
-         app_name, redirect_uris, grant_types, response_types, scopes, \
+        "INSERT INTO clients (id, tenant_id, client_id, client_secret_hash, client_type, \
+         client_status, app_name, redirect_uris, grant_types, response_types, scopes, \
          token_endpoint_auth_method, require_pkce) \
-         VALUES (?, ?, NULL, 'public', 'ACTIVE', 'E2E Test App', ?, \
+         VALUES (?, ?, ?, NULL, 'public', 'ACTIVE', 'E2E Test App', ?, \
          '[\"authorization_code\"]', '[\"code\"]', '[\"openid\",\"profile\",\"email\"]', 'none', 1)",
     )
-    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(uuid::Uuid::now_v7().to_string())
+    .bind(tenant_id)
     .bind(&client_id)
     .bind(json!([REDIRECT_URI]).to_string())
     .execute(pool)
@@ -94,8 +108,8 @@ async fn insert_public_client(pool: &MySqlPool) -> String {
     client_id
 }
 
-/// 一意な confidential client を登録して `(client_id, client_secret)` を返す。
-async fn insert_confidential_client(pool: &MySqlPool) -> (String, String) {
+/// 一意な confidential client を root テナントへ登録して `(client_id, client_secret)` を返す。
+async fn insert_confidential_client(pool: &MySqlPool, tenant_id: &str) -> (String, String) {
     let client_id = format!(
         "e2e-conf-{}",
         &uuid::Uuid::new_v4().simple().to_string()[..12]
@@ -105,13 +119,14 @@ async fn insert_confidential_client(pool: &MySqlPool) -> (String, String) {
         .hash(secret)
         .expect("hash secret");
     sqlx::query(
-        "INSERT INTO clients (id, client_id, client_secret_hash, client_type, client_status, \
-         app_name, redirect_uris, grant_types, response_types, scopes, \
+        "INSERT INTO clients (id, tenant_id, client_id, client_secret_hash, client_type, \
+         client_status, app_name, redirect_uris, grant_types, response_types, scopes, \
          token_endpoint_auth_method, require_pkce) \
-         VALUES (?, ?, ?, 'confidential', 'ACTIVE', 'E2E Confidential App', ?, \
+         VALUES (?, ?, ?, ?, 'confidential', 'ACTIVE', 'E2E Confidential App', ?, \
          '[\"authorization_code\"]', '[\"code\"]', '[\"openid\"]', 'client_secret_basic', 1)",
     )
-    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(uuid::Uuid::now_v7().to_string())
+    .bind(tenant_id)
     .bind(&client_id)
     .bind(secret_hash)
     .bind(json!([REDIRECT_URI]).to_string())
@@ -239,9 +254,14 @@ async fn audit_count(pool: &MySqlPool, client_id: &str, event_type: &str) -> i64
 #[tokio::test]
 async fn full_authorization_code_flow_with_sso_and_audit() {
     let Some(env) = setup().await else { return };
-    let TestEnv { app, pool, issuer } = env;
+    let TestEnv {
+        app,
+        pool,
+        issuer,
+        root_tenant_id,
+    } = env;
 
-    let client_id = insert_public_client(&pool).await;
+    let client_id = insert_public_client(&pool, &root_tenant_id).await;
     let username = format!("e2e{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
     let password = "correct-horse-battery";
     let sub = register_user(&app, &username, password).await; // 条件 1
@@ -269,15 +289,37 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["result"], "csrf_mismatch", "csrf mismatch");
 
-    // 条件 4, 5, 7: ログイン成功 → SSO セッションと code を返す（web が Cookie 化して redirect）。
+    // 条件 4, 5, 7: ログイン成功。初回は profile/email が未同意のため同意ステップへ（F3）。
     let (status, body) =
         internal_authenticate(&app, &auth_session, &username, password, &csrf).await;
     assert_eq!(status, StatusCode::OK, "login success");
-    assert_eq!(body["result"], "success");
+    assert_eq!(body["result"], "consent_required", "first login needs consent");
     let sso_cookie = body["sso_session_id"]
         .as_str()
         .expect("sso_session_id")
         .to_string();
+    let consent_session = body["auth_session_id"]
+        .as_str()
+        .expect("auth_session_id")
+        .to_string();
+
+    // 同意を承諾すると code 付きで RP へリダイレクトされる。
+    let response = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/internal/consent/approve")
+            .header(CONTENT_TYPE, "application/json")
+            .header(SERVICE_TOKEN_HEADER, SERVICE_TOKEN)
+            .body(Body::from(
+                json!({ "auth_session_id": consent_session }).to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK, "consent approve");
+    let body = body_json(response).await;
+    assert_eq!(body["result"], "success", "consent approved");
     let callback = body["redirect_to"]
         .as_str()
         .expect("redirect_to")
@@ -484,9 +526,14 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
 #[tokio::test]
 async fn invalid_authorize_and_client_auth_failures() {
     let Some(env) = setup().await else { return };
-    let TestEnv { app, pool, .. } = env;
+    let TestEnv {
+        app,
+        pool,
+        root_tenant_id,
+        ..
+    } = env;
 
-    let client_id = insert_public_client(&pool).await;
+    let client_id = insert_public_client(&pool, &root_tenant_id).await;
 
     // 未登録 client はリダイレクトせず 400。
     let response = send(
@@ -514,7 +561,7 @@ async fn invalid_authorize_and_client_auth_failures() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
     // scope 超過は redirect_uri へ invalid_scope を返す（openid のみ登録の client を使用）。
-    let (conf_client_id, secret) = insert_confidential_client(&pool).await;
+    let (conf_client_id, secret) = insert_confidential_client(&pool, &root_tenant_id).await;
     let response = send(
         &app,
         Request::builder()
@@ -578,9 +625,14 @@ async fn invalid_authorize_and_client_auth_failures() {
 #[tokio::test]
 async fn login_lockout_after_repeated_failures() {
     let Some(env) = setup().await else { return };
-    let TestEnv { app, pool, .. } = env;
+    let TestEnv {
+        app,
+        pool,
+        root_tenant_id,
+        ..
+    } = env;
 
-    let client_id = insert_public_client(&pool).await;
+    let client_id = insert_public_client(&pool, &root_tenant_id).await;
     let username = format!("lock{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
     let password = "correct-horse-battery";
     register_user(&app, &username, password).await;

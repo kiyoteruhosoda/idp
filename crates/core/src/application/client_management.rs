@@ -1,6 +1,6 @@
 //! クライアント（RP）登録・管理のユースケース（設計仕様 §9.3、Progress A1）。
 //!
-//! 管理者（`idp.admin`）のみが実行する。`client_id` は自動採番、`client_secret` は confidential
+//! テナント管理者（`idp.tenant.admin`。`idp.system.admin` は代替として許可）のみが実行する。`client_id` は自動採番、`client_secret` は confidential
 //! クライアントに対して発行し**初回（および再発行時）のみ平文を返す**。DB には argon2 ハッシュのみ
 //! 保存する（既存 `PasswordHasher` を流用）。全ての変更操作は `audit_log` に記録する。
 //!
@@ -15,6 +15,7 @@ use crate::domain::error::DomainError;
 use crate::domain::id_generator::IdGenerator;
 use crate::domain::password::PasswordHasher;
 use crate::domain::repositories::ClientRepository;
+use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::{ClientStatus, ClientType, Scope, TokenEndpointAuthMethod};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -100,6 +101,7 @@ impl ClientManagementService {
 
     pub async fn register(
         &self,
+        tenant: TenantContext,
         cmd: RegisterClientCommand,
         actor: Uuid,
         ctx: &RequestContext,
@@ -130,6 +132,7 @@ impl ClientManagementService {
         let now = self.clock.now();
         let client = Client {
             id: self.ids.new_id(),
+            tenant_id: tenant.tenant_id(),
             client_id: crate::infrastructure::crypto::random_hex(CLIENT_ID_BYTES),
             client_secret_hash: secret_hash,
             client_type: cmd.client_type,
@@ -158,6 +161,7 @@ impl ClientManagementService {
             .record(
                 AuditEventType::ClientRegistered,
                 AuditResult::Success,
+                Some(tenant.tenant_id()),
                 Some(actor),
                 Some(&client.client_id),
                 None,
@@ -171,25 +175,30 @@ impl ClientManagementService {
         })
     }
 
-    pub async fn list(&self) -> Result<Vec<Client>, ClientManagementError> {
+    pub async fn list(&self, tenant: TenantContext) -> Result<Vec<Client>, ClientManagementError> {
         self.clients
-            .list()
+            .list(tenant.tenant_id())
             .await
             .map_err(|e| ClientManagementError::Internal(e.to_string()))
     }
 
-    pub async fn get(&self, client_id: &str) -> Result<Client, ClientManagementError> {
-        self.load(client_id).await
+    pub async fn get(
+        &self,
+        tenant: TenantContext,
+        client_id: &str,
+    ) -> Result<Client, ClientManagementError> {
+        self.load(tenant, client_id).await
     }
 
     pub async fn update(
         &self,
+        tenant: TenantContext,
         client_id: &str,
         cmd: UpdateClientCommand,
         actor: Uuid,
         ctx: &RequestContext,
     ) -> Result<Client, ClientManagementError> {
-        let mut client = self.load(client_id).await?;
+        let mut client = self.load(tenant, client_id).await?;
 
         if let Some(app_name) = cmd.app_name {
             client.app_name = validate_app_name(app_name)?;
@@ -222,6 +231,7 @@ impl ClientManagementService {
             .record(
                 AuditEventType::ClientUpdated,
                 AuditResult::Success,
+                Some(tenant.tenant_id()),
                 Some(actor),
                 Some(&client.client_id),
                 None,
@@ -235,11 +245,12 @@ impl ClientManagementService {
     /// client_secret を再発行する（confidential のみ）。新しい平文を返し、DB はハッシュのみ更新する。
     pub async fn rotate_secret(
         &self,
+        tenant: TenantContext,
         client_id: &str,
         actor: Uuid,
         ctx: &RequestContext,
     ) -> Result<(Client, String), ClientManagementError> {
-        let mut client = self.load(client_id).await?;
+        let mut client = self.load(tenant, client_id).await?;
         if client.client_type != ClientType::Confidential {
             return Err(ClientManagementError::Validation(
                 "only confidential clients have a secret".to_string(),
@@ -262,6 +273,7 @@ impl ClientManagementService {
             .record(
                 AuditEventType::ClientSecretRotated,
                 AuditResult::Success,
+                Some(tenant.tenant_id()),
                 Some(actor),
                 Some(&client.client_id),
                 None,
@@ -272,9 +284,13 @@ impl ClientManagementService {
         Ok((client, plain))
     }
 
-    async fn load(&self, client_id: &str) -> Result<Client, ClientManagementError> {
+    async fn load(
+        &self,
+        tenant: TenantContext,
+        client_id: &str,
+    ) -> Result<Client, ClientManagementError> {
         self.clients
-            .find_by_client_id(client_id)
+            .find_by_client_id(tenant.tenant_id(), client_id)
             .await
             .map_err(|e| ClientManagementError::Internal(e.to_string()))?
             .ok_or(ClientManagementError::NotFound)

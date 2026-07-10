@@ -3,6 +3,7 @@
 use crate::domain::error::{DomainError, Result};
 use crate::domain::refresh_token::RefreshToken;
 use crate::domain::repositories::RefreshTokenRepository;
+use crate::domain::tenant::TenantId;
 use crate::infrastructure::db::Db;
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
@@ -29,12 +30,16 @@ fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
 }
 
 fn map_row(row: &MySqlRow) -> Result<RefreshToken> {
+    let tenant_id: String = row.try_get("tenant_id").map_err(repo_err)?;
     let user_id: String = row.try_get("user_id").map_err(repo_err)?;
     let scope: Vec<u8> = row.try_get("scope").map_err(repo_err)?;
     let revoked_at: Option<NaiveDateTime> = row.try_get("revoked_at").map_err(repo_err)?;
     Ok(RefreshToken {
         token_hash: row.try_get("token_hash").map_err(repo_err)?,
         parent_hash: row.try_get("parent_hash").map_err(repo_err)?,
+        tenant_id: Uuid::parse_str(&tenant_id)
+            .map_err(|e| DomainError::Repository(format!("invalid UUID `{tenant_id}`: {e}")))?
+            .into(),
         user_id: Uuid::parse_str(&user_id)
             .map_err(|e| DomainError::Repository(format!("invalid UUID `{user_id}`: {e}")))?,
         client_id: row.try_get("client_id").map_err(repo_err)?,
@@ -51,11 +56,12 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
     async fn create(&self, token: &RefreshToken) -> Result<()> {
         sqlx::query(
             "INSERT INTO refresh_tokens \
-             (token_hash, parent_hash, user_id, client_id, scope, expires_at, revoked_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+             (token_hash, parent_hash, tenant_id, user_id, client_id, scope, expires_at, revoked_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&token.token_hash)
         .bind(&token.parent_hash)
+        .bind(token.tenant_id.to_string())
         .bind(token.user_id.to_string())
         .bind(&token.client_id)
         .bind(serde_json::to_string(&token.scope).map_err(repo_err)?)
@@ -67,13 +73,18 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
         Ok(())
     }
 
-    async fn find_by_hash(&self, token_hash: &str) -> Result<Option<RefreshToken>> {
+    async fn find_by_hash(
+        &self,
+        tenant_id: TenantId,
+        token_hash: &str,
+    ) -> Result<Option<RefreshToken>> {
         let row = sqlx::query(
-            "SELECT token_hash, parent_hash, user_id, client_id, scope, \
+            "SELECT token_hash, parent_hash, tenant_id, user_id, client_id, scope, \
              expires_at, revoked_at, created_at \
-             FROM refresh_tokens WHERE token_hash = ?",
+             FROM refresh_tokens WHERE token_hash = ? AND tenant_id = ?",
         )
         .bind(token_hash)
+        .bind(tenant_id.to_string())
         .fetch_optional(&self.pool)
         .await
         .map_err(repo_err)?;

@@ -15,6 +15,7 @@ use crate::domain::repositories::{
     SsoSessionRepository, UserRepository, WebAuthnCredentialRepository,
 };
 use crate::domain::sso_session::SsoSession;
+use crate::domain::tenant_context::TenantContext;
 use crate::infrastructure::crypto;
 use crate::infrastructure::webauthn::WebAuthnService;
 use chrono::Duration;
@@ -138,11 +139,13 @@ impl PasskeyAuthenticationService {
     /// 認証完了。
     pub async fn complete(
         &self,
+        tenant: TenantContext,
         challenge_id: Uuid,
         credential_value: serde_json::Value,
         ctx: &RequestContext,
     ) -> PasskeyAuthOutcome {
         let now = self.clock.now();
+        let tenant_id = tenant.tenant_id();
 
         // 1. チャレンジを取得して消費する。
         let challenge = match self.passkey_challenges.find_by_id(challenge_id).await {
@@ -204,6 +207,7 @@ impl PasskeyAuthenticationService {
                     .record(
                         AuditEventType::LoginFailed,
                         AuditResult::Failure,
+                        Some(tenant_id),
                         Some(user_id),
                         None,
                         Some("invalid_passkey"),
@@ -244,7 +248,11 @@ impl PasskeyAuthenticationService {
         let Some(auth_session_id) = &challenge.auth_session_id else {
             return PasskeyAuthOutcome::Internal("no auth_session_id in challenge".to_string());
         };
-        let session = match self.auth_sessions.find_by_id(auth_session_id).await {
+        let session = match self
+            .auth_sessions
+            .find_by_id(tenant_id, auth_session_id)
+            .await
+        {
             Ok(Some(s)) => s,
             Ok(None) => return PasskeyAuthOutcome::SessionExpired,
             Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
@@ -285,6 +293,7 @@ impl PasskeyAuthenticationService {
             .record(
                 AuditEventType::SsoSessionCreated,
                 AuditResult::Success,
+                Some(tenant_id),
                 Some(user_id),
                 Some(&client_id),
                 None,
@@ -295,6 +304,7 @@ impl PasskeyAuthenticationService {
             .record(
                 AuditEventType::LoginSucceeded,
                 AuditResult::Success,
+                Some(tenant_id),
                 Some(user_id),
                 Some(&client_id),
                 None,
@@ -312,7 +322,11 @@ impl PasskeyAuthenticationService {
         let consented = if scopes_needing_consent.is_empty() {
             true
         } else {
-            match self.client_consents.find(user_id, &client_id).await {
+            match self
+                .client_consents
+                .find(tenant_id, user_id, &client_id)
+                .await
+            {
                 Ok(Some(consent)) => consent.covers(&scopes_needing_consent),
                 Ok(None) => false,
                 Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
@@ -331,6 +345,7 @@ impl PasskeyAuthenticationService {
             .code_issuance
             .issue(
                 IssueCodeCommand {
+                    tenant,
                     user_id,
                     client_id: client_id.clone(),
                     redirect_uri: session.redirect_uri.clone(),

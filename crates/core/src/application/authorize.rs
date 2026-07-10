@@ -18,6 +18,7 @@ use crate::domain::repositories::{
     AuthSessionRepository, ClientConsentRepository, ClientRepository, SsoSessionRepository,
     UserRepository,
 };
+use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::{CodeChallengeMethod, Scope};
 use crate::infrastructure::crypto;
 use chrono::Duration;
@@ -101,12 +102,22 @@ impl AuthorizeService {
         }
     }
 
-    pub async fn authorize(&self, req: AuthorizeRequest, ctx: &RequestContext) -> AuthorizeOutcome {
-        // 1. client_id / redirect_uri の検証（無効ならリダイレクトしない）。
+    pub async fn authorize(
+        &self,
+        tenant: TenantContext,
+        req: AuthorizeRequest,
+        ctx: &RequestContext,
+    ) -> AuthorizeOutcome {
+        // 1. client_id / redirect_uri の検証（無効ならリダイレクトしない）。client はフローの
+        // テナントに属するものだけを解決する（テナント分離。ADR-0009 §8）。
         let Some(client_id) = non_empty(req.client_id.as_deref()) else {
             return fatal(OAuthErrorCode::InvalidRequest, "client_id is required");
         };
-        let client = match self.clients.find_by_client_id(client_id).await {
+        let client = match self
+            .clients
+            .find_by_client_id(tenant.tenant_id(), client_id)
+            .await
+        {
             Ok(Some(c)) => c,
             Ok(None) => return fatal(OAuthErrorCode::InvalidClient, "unknown client_id"),
             Err(e) => {
@@ -155,7 +166,7 @@ impl AuthorizeService {
         // 3. SSO Cookie 確認。有効かつ `prompt=login` でなければ SSO 復元を試みる。
         if !force_login {
             if let Some(session_id) = non_empty(req.sso_session_id.as_deref()) {
-                match self.try_resume_sso(session_id, ctx).await {
+                match self.try_resume_sso(tenant, session_id, ctx).await {
                     Ok(Some((user_id, auth_time))) => {
                         // `max_age` チェック: auth_time から max_age 秒超過していれば再認証。
                         let max_age_exceeded = req.max_age.map_or(false, |max_age| {
@@ -180,11 +191,12 @@ impl AuthorizeService {
                             // 同意チェック（force_consent の場合は既存同意を無視）。
                             if !force_consent {
                                 let consented = self
-                                    .check_consent(user_id, &client.client_id, &scope)
+                                    .check_consent(tenant, user_id, &client.client_id, &scope)
                                     .await;
                                 if consented {
                                     // 同意済み → code を発行する。
                                     let cmd = IssueCodeCommand {
+                                        tenant,
                                         user_id,
                                         client_id: client.client_id.clone(),
                                         redirect_uri: redirect_uri.to_string(),
@@ -233,6 +245,7 @@ impl AuthorizeService {
                             let now = self.clock.now();
                             let session = AuthSession {
                                 id: crypto::random_hex(32),
+                                tenant_id: tenant.tenant_id(),
                                 client_id: client.client_id.clone(),
                                 redirect_uri: redirect_uri.to_string(),
                                 scope,
@@ -288,6 +301,7 @@ impl AuthorizeService {
         let now = self.clock.now();
         let session = AuthSession {
             id: crypto::random_hex(32),
+            tenant_id: tenant.tenant_id(),
             client_id: client.client_id.clone(),
             redirect_uri: redirect_uri.to_string(),
             scope,
@@ -322,6 +336,7 @@ impl AuthorizeService {
     /// 同意チェック: ユーザーがクライアントに対してすべての scope に同意済みか確認する。
     async fn check_consent(
         &self,
+        tenant: TenantContext,
         user_id: uuid::Uuid,
         client_id: &str,
         scope: &[String],
@@ -335,7 +350,11 @@ impl AuthorizeService {
         if scopes_without_openid.is_empty() {
             return true;
         }
-        match self.client_consents.find(user_id, client_id).await {
+        match self
+            .client_consents
+            .find(tenant.tenant_id(), user_id, client_id)
+            .await
+        {
             Ok(Some(consent)) => consent.covers(&scopes_without_openid),
             Ok(None) => false,
             Err(e) => {
@@ -349,6 +368,7 @@ impl AuthorizeService {
     /// 期限切れは削除して `sso_session.expired` を監査ログへ記録する。
     async fn try_resume_sso(
         &self,
+        tenant: TenantContext,
         session_id: &str,
         ctx: &RequestContext,
     ) -> Result<
@@ -367,6 +387,7 @@ impl AuthorizeService {
                 .record(
                     AuditEventType::SsoSessionExpired,
                     AuditResult::Failure,
+                    Some(tenant.tenant_id()),
                     Some(session.user_id),
                     None,
                     Some("idle or absolute timeout"),
@@ -390,6 +411,7 @@ impl AuthorizeService {
             .record(
                 AuditEventType::SsoSessionResumed,
                 AuditResult::Success,
+                Some(tenant.tenant_id()),
                 Some(session.user_id),
                 None,
                 None,
@@ -505,6 +527,7 @@ mod tests {
     fn test_client() -> Client {
         Client {
             id: uuid::Uuid::new_v4(),
+            tenant_id: uuid::Uuid::now_v7().into(),
             client_id: "app".to_string(),
             client_secret_hash: None,
             client_type: ClientType::Public,

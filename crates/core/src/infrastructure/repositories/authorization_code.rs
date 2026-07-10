@@ -7,6 +7,7 @@
 use crate::domain::authorization_code::AuthorizationCode;
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::AuthorizationCodeRepository;
+use crate::domain::tenant::TenantId;
 use crate::domain::values::CodeChallengeMethod;
 use crate::infrastructure::db::Db;
 use async_trait::async_trait;
@@ -25,7 +26,7 @@ impl SqlxAuthorizationCodeRepository {
     }
 }
 
-const SELECT_COLUMNS: &str = "code_hash, user_id, client_id, redirect_uri, scope, nonce, \
+const SELECT_COLUMNS: &str = "code_hash, tenant_id, user_id, client_id, redirect_uri, scope, nonce, \
      auth_time, code_challenge, code_challenge_method, expires_at, used_at, \
      created_at, updated_at";
 
@@ -38,6 +39,7 @@ fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
 }
 
 fn map_row(row: &MySqlRow) -> Result<AuthorizationCode> {
+    let tenant_id: String = row.try_get("tenant_id").map_err(repo_err)?;
     let user_id: String = row.try_get("user_id").map_err(repo_err)?;
     // MariaDB の JSON カラムは sqlx では BLOB として返るため、バイト列で受けて parse する。
     let scope: Vec<u8> = row.try_get("scope").map_err(repo_err)?;
@@ -45,6 +47,9 @@ fn map_row(row: &MySqlRow) -> Result<AuthorizationCode> {
     let used_at: Option<NaiveDateTime> = row.try_get("used_at").map_err(repo_err)?;
     Ok(AuthorizationCode {
         code_hash: row.try_get("code_hash").map_err(repo_err)?,
+        tenant_id: Uuid::parse_str(&tenant_id)
+            .map_err(|e| DomainError::Repository(format!("invalid UUID `{tenant_id}`: {e}")))?
+            .into(),
         user_id: Uuid::parse_str(&user_id)
             .map_err(|e| DomainError::Repository(format!("invalid UUID `{user_id}`: {e}")))?,
         client_id: row.try_get("client_id").map_err(repo_err)?,
@@ -67,11 +72,12 @@ impl AuthorizationCodeRepository for SqlxAuthorizationCodeRepository {
     async fn create(&self, code: &AuthorizationCode) -> Result<()> {
         sqlx::query(
             "INSERT INTO authorization_codes \
-             (code_hash, user_id, client_id, redirect_uri, scope, nonce, auth_time, \
+             (code_hash, tenant_id, user_id, client_id, redirect_uri, scope, nonce, auth_time, \
               code_challenge, code_challenge_method, expires_at, used_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&code.code_hash)
+        .bind(code.tenant_id.to_string())
         .bind(code.user_id.to_string())
         .bind(&code.client_id)
         .bind(&code.redirect_uri)
@@ -90,15 +96,17 @@ impl AuthorizationCodeRepository for SqlxAuthorizationCodeRepository {
 
     async fn consume(
         &self,
+        tenant_id: TenantId,
         code_hash: &str,
         used_at: DateTime<Utc>,
     ) -> Result<Option<AuthorizationCode>> {
         let result = sqlx::query(
             "UPDATE authorization_codes SET used_at = ? \
-             WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?",
+             WHERE code_hash = ? AND tenant_id = ? AND used_at IS NULL AND expires_at > ?",
         )
         .bind(used_at.naive_utc())
         .bind(code_hash)
+        .bind(tenant_id.to_string())
         .bind(used_at.naive_utc())
         .execute(&self.pool)
         .await

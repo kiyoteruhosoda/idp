@@ -3,6 +3,7 @@
 use crate::domain::auth_session::AuthSession;
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::AuthSessionRepository;
+use crate::domain::tenant::TenantId;
 use crate::domain::values::CodeChallengeMethod;
 use crate::infrastructure::db::Db;
 use async_trait::async_trait;
@@ -21,7 +22,7 @@ impl SqlxAuthSessionRepository {
     }
 }
 
-const SELECT_COLUMNS: &str = "id, client_id, redirect_uri, scope, state, nonce, \
+const SELECT_COLUMNS: &str = "id, tenant_id, client_id, redirect_uri, scope, state, nonce, \
      code_challenge, code_challenge_method, authenticated_user_id, auth_time, \
      password_verified_at, expires_at, created_at, updated_at";
 
@@ -35,6 +36,7 @@ fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
 
 fn map_row(row: &MySqlRow) -> Result<AuthSession> {
     // MariaDB の JSON カラムは sqlx では BLOB として返るため、バイト列で受けて parse する。
+    let tenant_id: String = row.try_get("tenant_id").map_err(repo_err)?;
     let scope: Vec<u8> = row.try_get("scope").map_err(repo_err)?;
     let ccm: String = row.try_get("code_challenge_method").map_err(repo_err)?;
     let user_id: Option<String> = row.try_get("authenticated_user_id").map_err(repo_err)?;
@@ -43,6 +45,9 @@ fn map_row(row: &MySqlRow) -> Result<AuthSession> {
         row.try_get("password_verified_at").map_err(repo_err)?;
     Ok(AuthSession {
         id: row.try_get("id").map_err(repo_err)?,
+        tenant_id: Uuid::parse_str(&tenant_id)
+            .map_err(|e| DomainError::Repository(format!("invalid UUID `{tenant_id}`: {e}")))?
+            .into(),
         client_id: row.try_get("client_id").map_err(repo_err)?,
         redirect_uri: row.try_get("redirect_uri").map_err(repo_err)?,
         scope: serde_json::from_slice(&scope)
@@ -70,11 +75,12 @@ impl AuthSessionRepository for SqlxAuthSessionRepository {
     async fn create(&self, session: &AuthSession) -> Result<()> {
         sqlx::query(
             "INSERT INTO auth_sessions \
-             (id, client_id, redirect_uri, scope, state, nonce, code_challenge, \
+             (id, tenant_id, client_id, redirect_uri, scope, state, nonce, code_challenge, \
               code_challenge_method, authenticated_user_id, auth_time, expires_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&session.id)
+        .bind(session.tenant_id.to_string())
         .bind(&session.client_id)
         .bind(&session.redirect_uri)
         .bind(serde_json::to_string(&session.scope).map_err(repo_err)?)
@@ -91,10 +97,11 @@ impl AuthSessionRepository for SqlxAuthSessionRepository {
         Ok(())
     }
 
-    async fn find_by_id(&self, id: &str) -> Result<Option<AuthSession>> {
-        let sql = format!("SELECT {SELECT_COLUMNS} FROM auth_sessions WHERE id = ?");
+    async fn find_by_id(&self, tenant_id: TenantId, id: &str) -> Result<Option<AuthSession>> {
+        let sql = format!("SELECT {SELECT_COLUMNS} FROM auth_sessions WHERE id = ? AND tenant_id = ?");
         let row = sqlx::query(&sql)
             .bind(id)
+            .bind(tenant_id.to_string())
             .fetch_optional(&self.pool)
             .await
             .map_err(repo_err)?;

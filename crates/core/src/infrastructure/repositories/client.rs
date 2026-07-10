@@ -3,6 +3,7 @@
 use crate::domain::client::Client;
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::ClientRepository;
+use crate::domain::tenant::TenantId;
 use crate::domain::values::{ClientStatus, ClientType, TokenEndpointAuthMethod};
 use crate::infrastructure::db::Db;
 use async_trait::async_trait;
@@ -21,7 +22,7 @@ impl SqlxClientRepository {
     }
 }
 
-const SELECT_COLUMNS: &str = "id, client_id, client_secret_hash, client_type, client_status, \
+const SELECT_COLUMNS: &str = "id, tenant_id, client_id, client_secret_hash, client_type, client_status, \
      app_name, redirect_uris, post_logout_redirect_uris, frontchannel_logout_uri, \
      backchannel_logout_uri, grant_types, response_types, scopes, \
      token_endpoint_auth_method, require_pkce, created_at, updated_at";
@@ -42,6 +43,7 @@ fn parse_json_strings(raw: &[u8], column: &str) -> Result<Vec<String>> {
 
 fn map_row(row: &MySqlRow) -> Result<Client> {
     let id: String = row.try_get("id").map_err(repo_err)?;
+    let tenant_id: String = row.try_get("tenant_id").map_err(repo_err)?;
     let client_type: String = row.try_get("client_type").map_err(repo_err)?;
     let client_status: String = row.try_get("client_status").map_err(repo_err)?;
     let auth_method: String = row
@@ -56,6 +58,9 @@ fn map_row(row: &MySqlRow) -> Result<Client> {
     Ok(Client {
         id: Uuid::parse_str(&id)
             .map_err(|e| DomainError::Repository(format!("invalid UUID `{id}`: {e}")))?,
+        tenant_id: Uuid::parse_str(&tenant_id)
+            .map_err(|e| DomainError::Repository(format!("invalid UUID `{tenant_id}`: {e}")))?
+            .into(),
         client_id: row.try_get("client_id").map_err(repo_err)?,
         client_secret_hash: row.try_get("client_secret_hash").map_err(repo_err)?,
         client_type: ClientType::parse(&client_type)?,
@@ -86,9 +91,15 @@ fn to_json(values: &[String], column: &str) -> Result<String> {
 
 #[async_trait]
 impl ClientRepository for SqlxClientRepository {
-    async fn find_by_client_id(&self, client_id: &str) -> Result<Option<Client>> {
-        let sql = format!("SELECT {SELECT_COLUMNS} FROM clients WHERE client_id = ?");
+    async fn find_by_client_id(
+        &self,
+        tenant_id: TenantId,
+        client_id: &str,
+    ) -> Result<Option<Client>> {
+        let sql =
+            format!("SELECT {SELECT_COLUMNS} FROM clients WHERE tenant_id = ? AND client_id = ?");
         let row = sqlx::query(&sql)
+            .bind(tenant_id.to_string())
             .bind(client_id)
             .fetch_optional(&self.pool)
             .await
@@ -99,13 +110,14 @@ impl ClientRepository for SqlxClientRepository {
     async fn create(&self, client: &Client) -> Result<()> {
         sqlx::query(
             "INSERT INTO clients \
-             (id, client_id, client_secret_hash, client_type, client_status, app_name, \
+             (id, tenant_id, client_id, client_secret_hash, client_type, client_status, app_name, \
               redirect_uris, post_logout_redirect_uris, frontchannel_logout_uri, \
               backchannel_logout_uri, grant_types, response_types, scopes, \
               token_endpoint_auth_method, require_pkce) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(client.id.to_string())
+        .bind(client.tenant_id.to_string())
         .bind(&client.client_id)
         .bind(&client.client_secret_hash)
         .bind(client.client_type.as_str())
@@ -128,16 +140,19 @@ impl ClientRepository for SqlxClientRepository {
         .await
         .map_err(|e| match &e {
             sqlx::Error::Database(db) if db.is_unique_violation() => {
-                DomainError::Conflict("client_id already exists".to_string())
+                DomainError::Conflict("client_id already exists in this tenant".to_string())
             }
             _ => DomainError::Repository(e.to_string()),
         })?;
         Ok(())
     }
 
-    async fn list(&self) -> Result<Vec<Client>> {
-        let sql = format!("SELECT {SELECT_COLUMNS} FROM clients ORDER BY created_at DESC");
+    async fn list(&self, tenant_id: TenantId) -> Result<Vec<Client>> {
+        let sql = format!(
+            "SELECT {SELECT_COLUMNS} FROM clients WHERE tenant_id = ? ORDER BY created_at DESC"
+        );
         let rows = sqlx::query(&sql)
+            .bind(tenant_id.to_string())
             .fetch_all(&self.pool)
             .await
             .map_err(repo_err)?;
@@ -154,7 +169,7 @@ impl ClientRepository for SqlxClientRepository {
              redirect_uris = ?, post_logout_redirect_uris = ?, frontchannel_logout_uri = ?, \
              backchannel_logout_uri = ?, grant_types = ?, response_types = ?, scopes = ?, \
              token_endpoint_auth_method = ?, require_pkce = ? \
-             WHERE id = ?",
+             WHERE id = ? AND tenant_id = ?",
         )
         .bind(&client.client_secret_hash)
         .bind(client.client_type.as_str())
@@ -174,6 +189,7 @@ impl ClientRepository for SqlxClientRepository {
         .bind(client.token_endpoint_auth_method.as_str())
         .bind(client.require_pkce)
         .bind(client.id.to_string())
+        .bind(client.tenant_id.to_string())
         .execute(&self.pool)
         .await
         .map_err(repo_err)?;

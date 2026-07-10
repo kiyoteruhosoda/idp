@@ -6,7 +6,7 @@
 //! その導線は使えない（クライアント登録のためにコンソールへ入りたいのにログインにクライアントが要る、
 //! という鶏卵問題）。
 //!
-//! そこで本ユースケースは資格情報を検証し、`idp.admin` 権限の保有を確認したうえで **SSO セッションを
+//! そこで本ユースケースは資格情報を検証し、テナント admin 権限（`idp.tenant.admin`／`idp.system.admin`）の保有を確認したうえで **SSO セッションを
 //! 直接発行する**（code 発行・redirect は行わない）。ロックアウト（設計仕様 §4.3）と IP レート制限は
 //! 通常ログインと同じ方針で適用する。発行された SSO セッションは通常ログインのものと同一機構
 //! （`sso_session_id` Cookie ＝ 平文、DB は SHA-256）であり、`RequirePerms<IdpAdmin>` がそのまま検証する。
@@ -18,6 +18,8 @@ use crate::domain::password::PasswordHasher;
 use crate::domain::rate_limit::LoginRateLimiter;
 use crate::domain::repositories::{SsoSessionRepository, UserPermissionRepository, UserRepository};
 use crate::domain::sso_session::SsoSession;
+use crate::domain::tenant::TenantId;
+use crate::domain::tenant_context::TenantContext;
 use crate::domain::user::User;
 use crate::infrastructure::crypto;
 use chrono::Duration;
@@ -27,8 +29,11 @@ use std::sync::Arc;
 const MAX_FAILED_LOGINS: i32 = 10;
 /// ロック時間（分）。
 const LOCK_DURATION_MINUTES: i64 = 15;
-/// 管理コンソールへのアクセスに要求する権限コード（ADR-0006）。
-const REQUIRED_PERMISSION: &str = "idp.admin";
+/// 管理コンソールへのアクセスに要求する権限コード（ADR-0006 → ADR-0009 §4）。
+/// ログインしたテナントを scope に持つこと（完全一致）を要求する。
+const REQUIRED_PERMISSION: &str = "idp.tenant.admin";
+/// システム管理権限（scope = root のみ）。root テナント自身の管理を含むため代替として許可する。
+const SYSTEM_ADMIN_PERMISSION: &str = "idp.system.admin";
 
 // 管理ログインフォームの CSRF 同期トークン導出（`admin_csrf_token`）は、ADR-0007 で管理コンソールを
 // web crate へ移設したのに伴い web 側（`idp-web` の `csrf` モジュール）へ移った。api（core）は保持しない。
@@ -41,7 +46,7 @@ pub struct AdminLoginCommand {
 
 /// 管理ログインの結果。Presentation は画面（HTML）に写す。
 pub enum AdminLoginOutcome {
-    /// 認証成功かつ `idp.admin` 保有。SSO Cookie を発行して管理コンソールへ 302 する。
+    /// 認証成功かつ `idp.tenant.admin` 保有。SSO Cookie を発行して管理コンソールへ 302 する。
     Success {
         sso_session_id: String,
     },
@@ -51,7 +56,7 @@ pub enum AdminLoginOutcome {
     InvalidCredentials,
     /// アカウントロック中。
     Locked,
-    /// 資格情報は正しいが `idp.admin` 権限を保有しない。
+    /// 資格情報は正しいが テナント admin 権限を保有しない。
     Forbidden,
     Internal(String),
 }
@@ -95,8 +100,14 @@ impl AdminLoginService {
         }
     }
 
-    pub async fn login(&self, cmd: AdminLoginCommand, ctx: &RequestContext) -> AdminLoginOutcome {
+    pub async fn login(
+        &self,
+        tenant: TenantContext,
+        cmd: AdminLoginCommand,
+        ctx: &RequestContext,
+    ) -> AdminLoginOutcome {
         let now = self.clock.now();
+        let tenant_id = tenant.tenant_id();
 
         // 1. IP 単位のレート制限（CSRF 検証後・資格情報検証前。通常ログインと同順）。
         if let Some(ip) = &ctx.ip_address {
@@ -105,6 +116,7 @@ impl AdminLoginService {
                     .record(
                         AuditEventType::LoginFailed,
                         AuditResult::Failure,
+                        Some(tenant_id),
                         None,
                         None,
                         Some("ip_rate_limited"),
@@ -116,13 +128,15 @@ impl AdminLoginService {
         }
 
         // 2. ユーザー検索（username → 見つからなければ email として検索）。
-        let user = match self.find_user(&cmd.username).await {
+        //    認証は所属元テナント限定（ADR-0009 §8）。
+        let user = match self.find_user(tenant_id, &cmd.username).await {
             Ok(Some(u)) => u,
             Ok(None) => {
                 self.audit
                     .record(
                         AuditEventType::LoginFailed,
                         AuditResult::Failure,
+                        Some(tenant_id),
                         None,
                         None,
                         Some("unknown_user"),
@@ -140,6 +154,7 @@ impl AdminLoginService {
                 .record(
                     AuditEventType::LoginLocked,
                     AuditResult::Failure,
+                    Some(tenant_id),
                     Some(user.id),
                     None,
                     Some("account_locked"),
@@ -155,6 +170,7 @@ impl AdminLoginService {
                 .record(
                     AuditEventType::LoginFailed,
                     AuditResult::Failure,
+                    Some(tenant_id),
                     Some(user.id),
                     None,
                     Some("account_not_active"),
@@ -170,31 +186,42 @@ impl AdminLoginService {
             Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
         };
         if !verified {
-            return self.handle_password_failure(&user, ctx).await;
+            return self.handle_password_failure(tenant_id, &user, ctx).await;
         }
 
         // 6. 権限確認（資格情報は正しいが管理権限を持たない利用者を締め出す）。
+        //    ログインしたテナントを scope に持つ admin 権限の完全一致で判定する（ADR-0009 §4。
+        //    idp.system.admin は root scope のみ存在し root 自身の管理を含むため代替として許可）。
         //    パスワードは正しいので失敗カウンタは増やさない（ロックの対象にしない）。
-        match self
+        let has_admin = match self
             .permissions
-            .has_permission(user.id, REQUIRED_PERMISSION)
+            .has_permission(tenant_id, user.id, REQUIRED_PERMISSION)
             .await
         {
-            Ok(true) => {}
-            Ok(false) => {
-                self.audit
-                    .record(
-                        AuditEventType::LoginFailed,
-                        AuditResult::Failure,
-                        Some(user.id),
-                        None,
-                        Some("missing_admin_permission"),
-                        ctx,
-                    )
-                    .await;
-                return AdminLoginOutcome::Forbidden;
-            }
+            Ok(true) => true,
+            Ok(false) => match self
+                .permissions
+                .has_permission(tenant_id, user.id, SYSTEM_ADMIN_PERMISSION)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
+            },
             Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
+        };
+        if !has_admin {
+            self.audit
+                .record(
+                    AuditEventType::LoginFailed,
+                    AuditResult::Failure,
+                    Some(tenant_id),
+                    Some(user.id),
+                    None,
+                    Some("missing_admin_permission"),
+                    ctx,
+                )
+                .await;
+            return AdminLoginOutcome::Forbidden;
         }
 
         // 7. 成功: 失敗カウンタとロックをリセットする。
@@ -224,6 +251,7 @@ impl AdminLoginService {
             .record(
                 AuditEventType::SsoSessionCreated,
                 AuditResult::Success,
+                Some(tenant_id),
                 Some(user.id),
                 None,
                 None,
@@ -234,6 +262,7 @@ impl AdminLoginService {
             .record(
                 AuditEventType::LoginSucceeded,
                 AuditResult::Success,
+                Some(tenant_id),
                 Some(user.id),
                 None,
                 None,
@@ -246,7 +275,12 @@ impl AdminLoginService {
 
     /// 管理コンソールからのログアウト。SSO セッションを DB から削除して監査へ記録する。
     /// Cookie の失効は Presentation（ハンドラ）が行う。不明・不正なセッションは何もしない（冪等）。
-    pub async fn logout(&self, sso_session_id: &str, ctx: &RequestContext) {
+    pub async fn logout(
+        &self,
+        tenant: TenantContext,
+        sso_session_id: &str,
+        ctx: &RequestContext,
+    ) {
         if sso_session_id.is_empty() {
             return;
         }
@@ -264,6 +298,7 @@ impl AdminLoginService {
             .record(
                 AuditEventType::SsoSessionTerminated,
                 AuditResult::Success,
+                Some(tenant.tenant_id()),
                 user_id,
                 None,
                 Some("admin_logout"),
@@ -274,13 +309,14 @@ impl AdminLoginService {
 
     async fn find_user(
         &self,
+        tenant_id: TenantId,
         username: &str,
     ) -> Result<Option<User>, crate::domain::error::DomainError> {
-        if let Some(user) = self.users.find_by_username(username).await? {
+        if let Some(user) = self.users.find_by_username(tenant_id, username).await? {
             return Ok(Some(user));
         }
         if username.contains('@') {
-            return self.users.find_by_email(username).await;
+            return self.users.find_by_email(tenant_id, username).await;
         }
         Ok(None)
     }
@@ -288,6 +324,7 @@ impl AdminLoginService {
     /// パスワード不一致時の失敗カウント更新とロック判定（login.rs と同ポリシー）。
     async fn handle_password_failure(
         &self,
+        tenant_id: TenantId,
         user: &User,
         ctx: &RequestContext,
     ) -> AdminLoginOutcome {
@@ -311,6 +348,7 @@ impl AdminLoginService {
             .record(
                 AuditEventType::LoginFailed,
                 AuditResult::Failure,
+                Some(tenant_id),
                 Some(user.id),
                 None,
                 Some("invalid_password"),
@@ -323,6 +361,7 @@ impl AdminLoginService {
                 .record(
                     AuditEventType::LoginLocked,
                     AuditResult::Failure,
+                    Some(tenant_id),
                     Some(user.id),
                     None,
                     Some("too_many_failures"),

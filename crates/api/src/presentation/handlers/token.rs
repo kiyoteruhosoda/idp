@@ -49,7 +49,10 @@ pub async fn token(
         refresh_token: body.refresh_token,
     };
 
-    match state.token.exchange(command, &ctx).await {
+    match state
+        .token
+        .exchange(state.default_tenant, command, &ctx)
+        .await {
         Ok(tokens) => (
             // トークンレスポンスはキャッシュ禁止（設計仕様 §4.4）。
             [

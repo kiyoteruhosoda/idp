@@ -15,6 +15,7 @@ use crate::domain::repositories::{
     UserRepository,
 };
 use crate::domain::sso_session::SsoSession;
+use crate::domain::tenant_context::TenantContext;
 use crate::infrastructure::crypto;
 use chrono::Duration;
 use std::sync::Arc;
@@ -94,16 +95,18 @@ impl MfaLoginService {
 
     pub async fn verify(
         &self,
+        tenant: TenantContext,
         cmd: MfaLoginCommand,
         ctx: &RequestContext,
     ) -> MfaLoginOutcome {
         let now = self.clock.now();
+        let tenant_id = tenant.tenant_id();
 
-        // 1. auth_session_id から AuthSession を取得する。
+        // 1. auth_session_id から AuthSession を取得する（フローのテナントに限る）。
         let Some(session_id) = cmd.auth_session_id.as_deref().filter(|s| !s.is_empty()) else {
             return MfaLoginOutcome::SessionExpired;
         };
-        let session = match self.auth_sessions.find_by_id(session_id).await {
+        let session = match self.auth_sessions.find_by_id(tenant_id, session_id).await {
             Ok(Some(s)) => s,
             Ok(None) => return MfaLoginOutcome::SessionExpired,
             Err(e) => return MfaLoginOutcome::Internal(e.to_string()),
@@ -158,6 +161,7 @@ impl MfaLoginService {
                 .record(
                     AuditEventType::LoginFailed,
                     AuditResult::Failure,
+                    Some(tenant_id),
                     Some(user_id),
                     Some(&client_id),
                     Some("invalid_totp"),
@@ -196,6 +200,7 @@ impl MfaLoginService {
             .record(
                 AuditEventType::SsoSessionCreated,
                 AuditResult::Success,
+                Some(tenant_id),
                 Some(user_id),
                 Some(&client_id),
                 None,
@@ -206,6 +211,7 @@ impl MfaLoginService {
             .record(
                 AuditEventType::LoginSucceeded,
                 AuditResult::Success,
+                Some(tenant_id),
                 Some(user_id),
                 Some(&client_id),
                 None,
@@ -223,7 +229,11 @@ impl MfaLoginService {
         let consented = if scopes_needing_consent.is_empty() {
             true
         } else {
-            match self.client_consents.find(user_id, &client_id).await {
+            match self
+                .client_consents
+                .find(tenant_id, user_id, &client_id)
+                .await
+            {
                 Ok(Some(consent)) => consent.covers(&scopes_needing_consent),
                 Ok(None) => false,
                 Err(e) => return MfaLoginOutcome::Internal(e.to_string()),
@@ -242,6 +252,7 @@ impl MfaLoginService {
             .code_issuance
             .issue(
                 IssueCodeCommand {
+                    tenant,
                     user_id,
                     client_id: client_id.clone(),
                     redirect_uri: session.redirect_uri.clone(),
@@ -272,8 +283,12 @@ impl MfaLoginService {
 
     /// 認証不要なユーザー（TOTP 未設定）が MFA エンドポイントへ来た場合の user_id 取得補助。
     /// `auth_session_id` が MFA pending 状態かを確認するだけ。
-    pub async fn has_mfa_pending(&self, auth_session_id: &str) -> bool {
-        let Ok(Some(session)) = self.auth_sessions.find_by_id(auth_session_id).await else {
+    pub async fn has_mfa_pending(&self, tenant: TenantContext, auth_session_id: &str) -> bool {
+        let Ok(Some(session)) = self
+            .auth_sessions
+            .find_by_id(tenant.tenant_id(), auth_session_id)
+            .await
+        else {
             return false;
         };
         session.password_verified_at.is_some() && session.authenticated_user_id.is_some()

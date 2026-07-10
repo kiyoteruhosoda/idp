@@ -1,6 +1,7 @@
 //! Clients エンティティ（設計仕様 §3.2）。
 #![allow(dead_code)]
 
+use crate::domain::tenant::TenantId;
 use crate::domain::values::{ClientStatus, ClientType, TokenEndpointAuthMethod};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -8,6 +9,8 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct Client {
     pub id: Uuid,
+    /// クライアントが属するテナント（ADR-0009 §2。`client_id` はテナント内一意）。
+    pub tenant_id: TenantId,
     pub client_id: String,
     /// confidential クライアントのみ。ハッシュ化して保存する。
     pub client_secret_hash: Option<String>,

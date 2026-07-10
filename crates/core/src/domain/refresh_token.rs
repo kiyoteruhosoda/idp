@@ -3,6 +3,7 @@
 //! `parent_hash` は rotation / reuse detection に使う。
 #![allow(dead_code)]
 
+use crate::domain::tenant::TenantId;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
@@ -11,6 +12,8 @@ pub struct RefreshToken {
     pub token_hash: String,
     /// rotation で発行する際に設定する（チェーンの前トークンの hash）。
     pub parent_hash: Option<String>,
+    /// トークンを発行したテナント（ADR-0009 §8。使用・失効は同一テナントに限る）。
+    pub tenant_id: TenantId,
     pub user_id: Uuid,
     pub client_id: String,
     pub scope: Vec<String>,

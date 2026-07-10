@@ -44,7 +44,10 @@ pub async fn authorize(
         max_age: params.max_age,
     };
 
-    match state.authorize.authorize(request, &ctx).await {
+    match state
+        .authorize
+        .authorize(state.default_tenant, request, &ctx)
+        .await {
         AuthorizeOutcome::Redirect { location } | AuthorizeOutcome::ErrorRedirect { location } => {
             found(&location)
         }

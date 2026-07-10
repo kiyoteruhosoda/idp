@@ -105,6 +105,7 @@ pub async fn verify_totp(
     let outcome = state
         .mfa_login
         .verify(
+            state.default_tenant,
             MfaLoginCommand {
                 auth_session_id: req.auth_session_id,
                 totp_code: req.totp_code,
