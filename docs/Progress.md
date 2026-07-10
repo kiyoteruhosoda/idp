@@ -20,22 +20,20 @@ Phase 計画に沿う。
 
 | 優先 | # | 概要 | 状態 | 影響度 | 工数 | 推奨モデル |
 |---|---|---|---|---|---|---|
-| 1 | MT3 | UUIDv7 導入（`uuid` crate に `v7`、生成を `IdGenerator` 相当へ集約。揮発トークンは v4 維持） | ⬜未着手 | 中 | 小 | Sonnet 5 |
-| 2 | MT4 | `Tenant`/`TenantMembership` ドメインモデル + Repository trait + `TenantContext`/`TenantScope` 値オブジェクト | ⬜未着手 | 中 | 中 | Sonnet 5 |
-| 3 | MT5 | 全 Repository trait／ユースケースへ `tenant_id` 引数追加（テナント分離強制・広範囲波及） | ⬜未着手 | 大 | 大 | Opus 4.8 |
-| 4 | MT6 | 汎用 TTL キャッシュ抽象（テナント解決／scope→権限解決で共用）+ `TenantResolver` middleware + `RequirePerms` 完全一致 scope 判定 | ⬜未着手 | 大 | 中 | Opus 4.8 |
-| 5 | MT7 | per-tenant issuer 合成（基底 issuer + tenant_id）+ WebAuthn RP ID の基底ホスト分離 | ⬜未着手 | 大 | 中 | Opus 4.8 |
-| 6 | MT8 | 招待ユースケース（招待作成・トークン一度限り返却・承諾・解除）+ OIDC フローのメンバーシップ判定（認証は所属元テナント限定） | ⬜未着手 | 大 | 中 | Opus 4.8 |
-| 7 | MT9 | `/{tenant_id}/...` ルーティング（静的パス優先 + UUID 検証、静的アセットはテナント外） | ⬜未着手 | 中 | 中 | Sonnet 5 |
-| 8 | MT10 | `crates/contracts` DTO へ `tenant_id` 追加 + web `api_client.rs` のテナント対応 | ⬜未着手 | 中 | 中 | Sonnet 5 |
-| 9 | MT11 | 管理 API（`tenants`/`users`/`clients`/`members`/`invitations`）+ テナント作成時の管理者自動生成・パスワード自動生成・`must_change_password` 付与 | ⬜未着手 | 大 | 大 | Opus 4.8 |
-| 10 | MT12 | パスワード変更（リセット）画面 + 初回ログイン時の強制変更誘導 | ⬜未着手 | 中 | 中 | Sonnet 5 |
-| 11 | MT13 | テナント管理コンソール（`/{tenant_id}/admin/`）— ユーザー・クライアント・メンバー・招待管理 | ⬜未着手 | 中 | 大 | Sonnet 5 |
-| 12 | MT14 | 設定画面（`/{tenant_id}/admin/settings`）— テナント設定 + root のみシステム設定区画（SMTP 等） | ⬜未着手 | 中 | 中 | Sonnet 5 |
-| 13 | MT15 | ユーザー設定画面（`/{tenant_id}/settings`）— パスワード変更・MFA・言語設定 | ⬜未着手 | 小 | 中 | Sonnet 5 |
-| 14 | MT16 | 統合テスト（テナント間分離・権限境界の完全一致・ゲスト保護・「root は作成できるが内部を操作できない」の検証） | ⬜未着手 | 大 | 中 | Opus 4.8 |
-| 15 | MT17 | 招待のメール配送（MT14 の SMTP 設定完了後。手動トークン伝達 → メールリンク） | ⬜未着手 | 中 | 中 | Sonnet 5 |
-| 16 | MT18 | セルフサービス・パスワードリセット（忘失時。外部 SMTP 連携。MT14 完了後） | ⬜未着手 | 中 | 中 | Sonnet 5 |
+| 1 | MT5 | 全 Repository trait／ユースケースへ `tenant_id` 引数追加（テナント分離強制・広範囲波及） | ⬜未着手 | 大 | 大 | Opus 4.8 |
+| 2 | MT6 | 汎用 TTL キャッシュ抽象（テナント解決／scope→権限解決で共用）+ `TenantResolver` middleware + `RequirePerms` 完全一致 scope 判定 | ⬜未着手 | 大 | 中 | Opus 4.8 |
+| 3 | MT7 | per-tenant issuer 合成（基底 issuer + tenant_id）+ WebAuthn RP ID の基底ホスト分離 | ⬜未着手 | 大 | 中 | Opus 4.8 |
+| 4 | MT8 | 招待ユースケース（招待作成・トークン一度限り返却・承諾・解除）+ OIDC フローのメンバーシップ判定（認証は所属元テナント限定） | ⬜未着手 | 大 | 中 | Opus 4.8 |
+| 5 | MT9 | `/{tenant_id}/...` ルーティング（静的パス優先 + UUID 検証、静的アセットはテナント外） | ⬜未着手 | 中 | 中 | Sonnet 5 |
+| 6 | MT10 | `crates/contracts` DTO へ `tenant_id` 追加 + web `api_client.rs` のテナント対応 | ⬜未着手 | 中 | 中 | Sonnet 5 |
+| 7 | MT11 | 管理 API（`tenants`/`users`/`clients`/`members`/`invitations`）+ テナント作成時の管理者自動生成・パスワード自動生成・`must_change_password` 付与 | ⬜未着手 | 大 | 大 | Opus 4.8 |
+| 8 | MT12 | パスワード変更（リセット）画面 + 初回ログイン時の強制変更誘導 | ⬜未着手 | 中 | 中 | Sonnet 5 |
+| 9 | MT13 | テナント管理コンソール（`/{tenant_id}/admin/`）— ユーザー・クライアント・メンバー・招待管理 | ⬜未着手 | 中 | 大 | Sonnet 5 |
+| 10 | MT14 | 設定画面（`/{tenant_id}/admin/settings`）— テナント設定 + root のみシステム設定区画（SMTP 等） | ⬜未着手 | 中 | 中 | Sonnet 5 |
+| 11 | MT15 | ユーザー設定画面（`/{tenant_id}/settings`）— パスワード変更・MFA・言語設定 | ⬜未着手 | 小 | 中 | Sonnet 5 |
+| 12 | MT16 | 統合テスト（テナント間分離・権限境界の完全一致・ゲスト保護・「root は作成できるが内部を操作できない」の検証） | ⬜未着手 | 大 | 中 | Opus 4.8 |
+| 13 | MT17 | 招待のメール配送（MT14 の SMTP 設定完了後。手動トークン伝達 → メールリンク） | ⬜未着手 | 中 | 中 | Sonnet 5 |
+| 14 | MT18 | セルフサービス・パスワードリセット（忘失時。外部 SMTP 連携。MT14 完了後） | ⬜未着手 | 中 | 中 | Sonnet 5 |
 
 ### 詳細
 
@@ -53,10 +51,11 @@ Phase 計画に沿う。
 Askama テンプレート・`api_client` 等の確立パターンに沿う機能実装。ただし MT15（MFA）・MT12
 （パスワード）はセキュリティ機微を含むため、実装後に §テスト・`/security-review` を併用する。
 
-**依存関係**: MT3（Phase 1 残）→ MT4〜MT8（Phase 2）→ MT9〜MT16（Phase 3）。MT17・MT18 は
+**依存関係**: MT5〜MT8（Phase 2 残）→ MT9〜MT16（Phase 3）。MT17・MT18 は
 MT14 のシステム設定（SMTP）完了が前提。
 
-**過渡期の既知の状態（MT1・MT2 完了 → MT5 まで）**: DDL・seed は刷新済みだが Rust 側の
-リポジトリ／ユースケースは `tenant_id` 未対応のため、`schema.rs` 以外の DB 統合テスト
-（`register` / `oidc_flow` / `admin_*` ほか）と `scripts/e2e.sh` は新スキーマに対して失敗する。
-MT5（Repository への `tenant_id` 追加）で解消する。
+**過渡期の既知の状態（MT1〜MT4 完了 → MT5 まで）**: DDL・seed・`Tenant`/`TenantMembership` の
+ドメインモデルと Repository trait は整備済みだが、既存の Repository trait／ユースケースは
+`tenant_id` を引数に取らない（新設の `TenantRepository`／`TenantMembershipRepository` を除く）ため、
+`schema.rs` 以外の DB 統合テスト（`register` / `oidc_flow` / `admin_*` ほか）と `scripts/e2e.sh` は
+新スキーマに対して失敗する。MT5（既存 Repository への `tenant_id` 追加）で解消する。

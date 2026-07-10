@@ -8,6 +8,7 @@
 
 use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
+use crate::domain::id_generator::IdGenerator;
 use crate::domain::passkey_challenge::{PasskeyChallenge, PasskeyChallengeType};
 use crate::domain::repositories::{
     PasskeyChallengeRepository, SsoSessionRepository, WebAuthnCredentialRepository,
@@ -60,6 +61,7 @@ pub struct PasskeyRegistrationService {
     sso_sessions: Arc<dyn SsoSessionRepository>,
     webauthn: Arc<WebAuthnService>,
     clock: Arc<dyn Clock>,
+    ids: Arc<dyn IdGenerator>,
 }
 
 impl PasskeyRegistrationService {
@@ -69,6 +71,7 @@ impl PasskeyRegistrationService {
         sso_sessions: Arc<dyn SsoSessionRepository>,
         webauthn: Arc<WebAuthnService>,
         clock: Arc<dyn Clock>,
+        ids: Arc<dyn IdGenerator>,
     ) -> Self {
         Self {
             webauthn_credentials,
@@ -76,6 +79,7 @@ impl PasskeyRegistrationService {
             sso_sessions,
             webauthn,
             clock,
+            ids,
         }
     }
 
@@ -168,7 +172,7 @@ impl PasskeyRegistrationService {
         let passkey_json = serde_json::to_string(&passkey)
             .map_err(|e| PasskeyRegistrationError::Internal(e.to_string()))?;
 
-        let cred_id = Uuid::new_v4();
+        let cred_id = self.ids.new_id();
         let cred = WebAuthnCredential {
             id: cred_id,
             user_id,

@@ -16,6 +16,8 @@ use crate::domain::refresh_token::RefreshToken;
 use crate::domain::revoked_access_token::RevokedAccessToken;
 use crate::domain::signing_key::SigningKey;
 use crate::domain::sso_session::SsoSession;
+use crate::domain::tenant::{Tenant, TenantId};
+use crate::domain::tenant_membership::TenantMembership;
 use crate::domain::totp_secret::TotpSecret;
 use crate::domain::user::User;
 use crate::domain::values::SigningKeyStatus;
@@ -23,6 +25,45 @@ use crate::domain::webauthn_credential::WebAuthnCredential;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
+
+/// テナント（ADR-0009 §1）の永続化。テナントは互いに独立した管理境界であり、`parent_tenant_id`
+/// は系譜であって権限境界ではない。
+#[async_trait]
+pub trait TenantRepository: Send + Sync {
+    async fn create(&self, tenant: &Tenant) -> Result<()>;
+    async fn find_by_id(&self, id: TenantId) -> Result<Option<Tenant>>;
+    /// `parent_tenant_id IS NULL` の唯一の行（root）を返す。
+    async fn find_root(&self) -> Result<Option<Tenant>>;
+    /// 指定テナントの直下の子テナントを一覧する（`/{tenant_id}/admin/tenants`。ADR-0009 §6）。
+    async fn list_children(&self, parent_id: TenantId) -> Result<Vec<Tenant>>;
+    /// 表示名・状態を更新する（`parent_tenant_id` の付け替えは禁止。呼び出し側が保証する）。
+    async fn update(&self, tenant: &Tenant) -> Result<()>;
+    /// テナントを削除する。「配下に子テナントが無く、当該テナント自身にユーザー/クライアントが
+    /// 存在しない」ことは呼び出し側が事前検証する（DB も `ON DELETE RESTRICT` で保護する）。
+    async fn delete(&self, id: TenantId) -> Result<()>;
+}
+
+/// テナントメンバーシップ（招待・ゲスト参加。ADR-0009 §3）の永続化。
+#[async_trait]
+pub trait TenantMembershipRepository: Send + Sync {
+    /// メンバーシップを作成する（HOME はユーザー作成時、GUEST は招待作成時）。
+    async fn create(&self, membership: &TenantMembership) -> Result<()>;
+    async fn find(&self, tenant_id: TenantId, user_id: Uuid) -> Result<Option<TenantMembership>>;
+    /// 指定テナントのメンバー一覧（HOME / GUEST）を返す（`/{tenant_id}/admin/members`）。
+    async fn list_for_tenant(&self, tenant_id: TenantId) -> Result<Vec<TenantMembership>>;
+    /// ユーザーが指定テナントで `ACTIVE` なメンバーシップ（HOME または GUEST）を持つか
+    /// （OIDC フローのメンバーシップ判定。ADR-0009 §8）。
+    async fn is_active_member(&self, tenant_id: TenantId, user_id: Uuid) -> Result<bool>;
+    /// 招待トークンのハッシュで `INVITED` 中の行を検索する（承諾エンドポイント用）。
+    async fn find_by_invitation_token_hash(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<TenantMembership>>;
+    /// 招待を承諾し、`ACTIVE` へ遷移させる（トークン関連カラムは呼び出し側でクリアする）。
+    async fn activate(&self, tenant_id: TenantId, user_id: Uuid) -> Result<()>;
+    /// ゲストメンバーシップを解除する（HOME の解除は呼び出し側が禁止する）。
+    async fn delete(&self, tenant_id: TenantId, user_id: Uuid) -> Result<()>;
+}
 
 #[async_trait]
 pub trait UserRepository: Send + Sync {

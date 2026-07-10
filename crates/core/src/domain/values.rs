@@ -51,6 +51,30 @@ string_enum!(
 );
 
 string_enum!(
+    /// テナントの状態（ADR-0009 §1）。各テナント独立で、親の DISABLED は子へ伝播しない。
+    TenantStatus {
+        Active => "ACTIVE",
+        Disabled => "DISABLED",
+    }
+);
+
+string_enum!(
+    /// テナントメンバーシップの種別（ADR-0009 §3）。HOME は所属元（解除不可）、GUEST は招待による参加。
+    MembershipType {
+        Home => "HOME",
+        Guest => "GUEST",
+    }
+);
+
+string_enum!(
+    /// テナントメンバーシップの状態（ADR-0009 §3）。INVITED は招待中（未承諾）。
+    MembershipStatus {
+        Invited => "INVITED",
+        Active => "ACTIVE",
+    }
+);
+
+string_enum!(
     /// クライアント種別。
     ClientType {
         Public => "public",

@@ -4,6 +4,7 @@
 
 use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
+use crate::domain::id_generator::IdGenerator;
 use crate::domain::password::PasswordHasher;
 use crate::domain::repositories::UserRepository;
 use crate::domain::user::User;
@@ -41,6 +42,7 @@ pub struct RegisterService {
     users: Arc<dyn UserRepository>,
     hasher: Arc<dyn PasswordHasher>,
     clock: Arc<dyn Clock>,
+    ids: Arc<dyn IdGenerator>,
 }
 
 impl RegisterService {
@@ -48,11 +50,13 @@ impl RegisterService {
         users: Arc<dyn UserRepository>,
         hasher: Arc<dyn PasswordHasher>,
         clock: Arc<dyn Clock>,
+        ids: Arc<dyn IdGenerator>,
     ) -> Self {
         Self {
             users,
             hasher,
             clock,
+            ids,
         }
     }
 
@@ -93,8 +97,8 @@ impl RegisterService {
         let password_hash = self.hasher.hash(&cmd.password).map_err(internal)?;
         let now = self.clock.now();
         let user = User {
-            id: Uuid::new_v4(),
-            sub: Uuid::new_v4(),
+            id: self.ids.new_id(),
+            sub: self.ids.new_id(),
             email,
             email_verified: false,
             preferred_username,
