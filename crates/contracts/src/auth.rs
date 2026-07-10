@@ -187,7 +187,7 @@ pub struct InternalLogoutRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAdminAuthenticateResponse {
-    /// 認証成功かつ `idp.admin` 保有。`sso_session_id` を Cookie 化して管理コンソールへ 302 する。
+    /// 認証成功かつ `idp.tenant.admin` 保有。`sso_session_id` を Cookie 化して管理コンソールへ 302 する。
     Success {
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
@@ -198,7 +198,7 @@ pub enum InternalAdminAuthenticateResponse {
     InvalidCredentials,
     /// アカウントロック中。
     Locked,
-    /// 資格情報は正しいが `idp.admin` 権限を保有しない。
+    /// 資格情報は正しいが テナント admin 権限を保有しない。
     Forbidden,
     /// api 内部エラー。
     Internal,

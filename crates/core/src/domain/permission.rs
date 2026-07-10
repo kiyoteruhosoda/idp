@@ -7,7 +7,7 @@
 
 use crate::domain::error::DomainError;
 
-/// 名前空間付き権限コード（例: `idp.admin`, 将来 `idp.clients:read`）。
+/// 名前空間付き権限コード（例: `idp.tenant.admin`, 将来 `idp.clients:read`）。
 ///
 /// 許可値の単一出所は `permissions` マスタテーブル（seed マイグレーション）であり、
 /// この型は「空でない文字列」という最小限の不変条件のみを保証する。存在検証は
@@ -44,9 +44,9 @@ mod tests {
 
     #[test]
     fn parses_non_empty_code() {
-        let code = PermissionCode::parse("idp.admin").unwrap();
-        assert_eq!(code.as_str(), "idp.admin");
-        assert_eq!(code.to_string(), "idp.admin");
+        let code = PermissionCode::parse("idp.tenant.admin").unwrap();
+        assert_eq!(code.as_str(), "idp.tenant.admin");
+        assert_eq!(code.to_string(), "idp.tenant.admin");
     }
 
     #[test]

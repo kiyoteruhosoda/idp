@@ -77,6 +77,7 @@ pub async fn logout(
     let result = state
         .logout
         .logout(
+            state.default_tenant,
             sso_session_id.as_deref(),
             params.client_id.as_deref(),
             params.post_logout_redirect_uri.as_deref(),

@@ -18,6 +18,7 @@ use crate::domain::refresh_token::RefreshToken;
 use crate::domain::repositories::{
     AuthorizationCodeRepository, ClientRepository, RefreshTokenRepository, UserRepository,
 };
+use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::{ClientType, Scope, TokenEndpointAuthMethod};
 use crate::infrastructure::crypto;
 use crate::infrastructure::jwt;
@@ -153,12 +154,13 @@ impl TokenService {
 
     pub async fn exchange(
         &self,
+        tenant: TenantContext,
         cmd: TokenCommand,
         ctx: &RequestContext,
     ) -> Result<IssuedTokens, TokenError> {
         match cmd.grant_type.as_deref() {
-            Some("authorization_code") => self.exchange_code(cmd, ctx).await,
-            Some("refresh_token") => self.exchange_refresh_token(cmd, ctx).await,
+            Some("authorization_code") => self.exchange_code(tenant, cmd, ctx).await,
+            Some("refresh_token") => self.exchange_refresh_token(tenant, cmd, ctx).await,
             _ => Err(TokenError::new(
                 OAuthErrorCode::UnsupportedGrantType,
                 "grant_type must be `authorization_code` or `refresh_token`",
@@ -169,15 +171,17 @@ impl TokenService {
     /// `authorization_code` grant の処理。
     async fn exchange_code(
         &self,
+        tenant: TenantContext,
         cmd: TokenCommand,
         ctx: &RequestContext,
     ) -> Result<IssuedTokens, TokenError> {
+        let tenant_id = tenant.tenant_id();
         // 1. client_id の決定（Basic ヘッダ優先）。
         let client_id = resolve_client_id(&cmd)?;
 
-        // 2. client の存在・状態・認証。
-        let client = self.load_active_client(&client_id, ctx).await?;
-        self.authenticate_client(&client, &cmd, ctx).await?;
+        // 2. client の存在・状態・認証（フローのテナントに属する client のみ解決する）。
+        let client = self.load_active_client(tenant, &client_id, ctx).await?;
+        self.authenticate_client(tenant, &client, &cmd, ctx).await?;
 
         // 3. code_verifier の形式検証（RFC 7636 §4.1）。
         let Some(code_verifier) = cmd.code_verifier.as_deref().filter(|v| !v.is_empty()) else {
@@ -201,7 +205,11 @@ impl TokenService {
             ));
         };
         let now = self.clock.now();
-        let consumed = match self.codes.consume(&crypto::sha256_hex(code), now).await {
+        let consumed = match self
+            .codes
+            .consume(tenant_id, &crypto::sha256_hex(code), now)
+            .await
+        {
             Ok(c) => c,
             Err(e) => return Err(internal(&e)),
         };
@@ -210,6 +218,7 @@ impl TokenService {
                 .record(
                     AuditEventType::AuthorizationCodeReuseDetected,
                     AuditResult::Failure,
+                    Some(tenant_id),
                     None,
                     Some(&client_id),
                     Some("code not found, expired, or already used"),
@@ -225,6 +234,7 @@ impl TokenService {
             .record(
                 AuditEventType::AuthorizationCodeUsed,
                 AuditResult::Success,
+                Some(tenant_id),
                 Some(auth_code.user_id),
                 Some(&client_id),
                 None,
@@ -296,6 +306,7 @@ impl TokenService {
             let rt = RefreshToken {
                 token_hash: crypto::sha256_hex(&plain),
                 parent_hash: None,
+                tenant_id,
                 user_id: auth_code.user_id,
                 client_id: client_id.clone(),
                 scope: auth_code.scope.clone(),
@@ -310,6 +321,7 @@ impl TokenService {
                 .record(
                     AuditEventType::RefreshTokenIssued,
                     AuditResult::Success,
+                    Some(tenant_id),
                     Some(auth_code.user_id),
                     Some(&client_id),
                     None,
@@ -325,6 +337,7 @@ impl TokenService {
             .record(
                 AuditEventType::TokenIssued,
                 AuditResult::Success,
+                Some(tenant_id),
                 Some(auth_code.user_id),
                 Some(&client_id),
                 None,
@@ -344,13 +357,15 @@ impl TokenService {
     /// `refresh_token` grant の処理（rotation + reuse detection）。
     async fn exchange_refresh_token(
         &self,
+        tenant: TenantContext,
         cmd: TokenCommand,
         ctx: &RequestContext,
     ) -> Result<IssuedTokens, TokenError> {
+        let tenant_id = tenant.tenant_id();
         // 1. client_id の決定・認証。
         let client_id = resolve_client_id(&cmd)?;
-        let client = self.load_active_client(&client_id, ctx).await?;
-        self.authenticate_client(&client, &cmd, ctx).await?;
+        let client = self.load_active_client(tenant, &client_id, ctx).await?;
+        self.authenticate_client(tenant, &client, &cmd, ctx).await?;
 
         // 2. refresh_token パラメータの取り出し。
         let Some(rt_plain) = cmd.refresh_token.as_deref().filter(|v| !v.is_empty()) else {
@@ -362,8 +377,8 @@ impl TokenService {
         let rt_hash = crypto::sha256_hex(rt_plain);
         let now = self.clock.now();
 
-        // 3. トークン検索。
-        let stored = match self.refresh_tokens.find_by_hash(&rt_hash).await {
+        // 3. トークン検索（発行テナントの一致を含む。他テナント発行のトークンは解決しない）。
+        let stored = match self.refresh_tokens.find_by_hash(tenant_id, &rt_hash).await {
             Ok(Some(t)) => t,
             Ok(None) => {
                 return Err(TokenError::new(
@@ -395,6 +410,7 @@ impl TokenService {
                 .record(
                     AuditEventType::RefreshTokenReuseDetected,
                     AuditResult::Failure,
+                    Some(tenant_id),
                     Some(stored.user_id),
                     Some(&client_id),
                     Some("refresh token already rotated"),
@@ -460,6 +476,7 @@ impl TokenService {
         let new_rt = RefreshToken {
             token_hash: crypto::sha256_hex(&new_rt_plain),
             parent_hash: Some(rt_hash.clone()),
+            tenant_id,
             user_id: stored.user_id,
             client_id: client_id.clone(),
             scope: stored.scope.clone(),
@@ -475,6 +492,7 @@ impl TokenService {
             .record(
                 AuditEventType::RefreshTokenUsed,
                 AuditResult::Success,
+                Some(tenant_id),
                 Some(stored.user_id),
                 Some(&client_id),
                 None,
@@ -485,6 +503,7 @@ impl TokenService {
             .record(
                 AuditEventType::RefreshTokenIssued,
                 AuditResult::Success,
+                Some(tenant_id),
                 Some(stored.user_id),
                 Some(&client_id),
                 None,
@@ -495,6 +514,7 @@ impl TokenService {
             .record(
                 AuditEventType::TokenIssued,
                 AuditResult::Success,
+                Some(tenant_id),
                 Some(stored.user_id),
                 Some(&client_id),
                 None,
@@ -534,6 +554,7 @@ impl TokenService {
     /// クライアント認証（設計仕様 §4.4）。
     async fn authenticate_client(
         &self,
+        tenant: TenantContext,
         client: &Client,
         cmd: &TokenCommand,
         ctx: &RequestContext,
@@ -542,17 +563,27 @@ impl TokenService {
             ClientType::Confidential => {
                 let Some((_, secret)) = &cmd.basic_credentials else {
                     return Err(self
-                        .client_auth_failed(&client.client_id, "missing_basic_credentials", ctx)
+                        .client_auth_failed(
+                            tenant,
+                            &client.client_id,
+                            "missing_basic_credentials",
+                            ctx,
+                        )
                         .await);
                 };
                 if client.token_endpoint_auth_method != TokenEndpointAuthMethod::ClientSecretBasic {
                     return Err(self
-                        .client_auth_failed(&client.client_id, "unsupported_auth_method", ctx)
+                        .client_auth_failed(
+                            tenant,
+                            &client.client_id,
+                            "unsupported_auth_method",
+                            ctx,
+                        )
                         .await);
                 }
                 let Some(secret_hash) = &client.client_secret_hash else {
                     return Err(self
-                        .client_auth_failed(&client.client_id, "client_has_no_secret", ctx)
+                        .client_auth_failed(tenant, &client.client_id, "client_has_no_secret", ctx)
                         .await);
                 };
                 let ok = self
@@ -561,7 +592,7 @@ impl TokenService {
                     .map_err(|e| internal(&e))?;
                 if !ok {
                     return Err(self
-                        .client_auth_failed(&client.client_id, "invalid_client_secret", ctx)
+                        .client_auth_failed(tenant, &client.client_id, "invalid_client_secret", ctx)
                         .await);
                 }
                 Ok(())
@@ -572,16 +603,21 @@ impl TokenService {
 
     async fn load_active_client(
         &self,
+        tenant: TenantContext,
         client_id: &str,
         ctx: &RequestContext,
     ) -> Result<Client, TokenError> {
-        match self.clients.find_by_client_id(client_id).await {
+        match self
+            .clients
+            .find_by_client_id(tenant.tenant_id(), client_id)
+            .await
+        {
             Ok(Some(c)) if c.is_active() => Ok(c),
             Ok(Some(_)) => Err(self
-                .client_auth_failed(client_id, "client_not_active", ctx)
+                .client_auth_failed(tenant, client_id, "client_not_active", ctx)
                 .await),
             Ok(None) => Err(self
-                .client_auth_failed(client_id, "unknown_client", ctx)
+                .client_auth_failed(tenant, client_id, "unknown_client", ctx)
                 .await),
             Err(e) => Err(internal(&e)),
         }
@@ -608,6 +644,7 @@ impl TokenService {
 
     async fn client_auth_failed(
         &self,
+        tenant: TenantContext,
         client_id: &str,
         reason: &str,
         ctx: &RequestContext,
@@ -616,6 +653,7 @@ impl TokenService {
             .record(
                 AuditEventType::ClientAuthenticationFailed,
                 AuditResult::Failure,
+                Some(tenant.tenant_id()),
                 None,
                 Some(client_id),
                 Some(reason),

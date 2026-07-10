@@ -2,6 +2,14 @@
 //!
 //! [`AppState::build`] がユースケースの組み立て（依存注入）を一手に担う。
 //! バイナリ（`lib.rs::run`）と統合テストの双方から同じ組み立てを使う。
+//!
+//! # 過渡期のテナント解決（MT5 → MT9）
+//!
+//! ユースケースは `TenantContext` を必須で受け取る（ADR-0009 §8）が、`/{tenant_id}/...`
+//! ルーティングと `TenantResolver` middleware は後続タスク（MT6・MT9）で導入する。それまでは
+//! 起動時に解決した **root テナントを既定のテナント** として全リクエストに適用する
+//! （`default_tenant`）。MT9 で「リクエストパスから解決した `Extension<ResolvedTenant>`」へ
+//! 置き換える。
 
 use crate::application::admin_access::AdminAccessService;
 use crate::application::admin_login::AdminLoginService;
@@ -28,6 +36,8 @@ use crate::application::userinfo::UserInfoService;
 use crate::config::Config;
 use crate::domain::clock::Clock;
 use crate::domain::id_generator::IdGenerator;
+use crate::domain::tenant::TenantId;
+use crate::domain::tenant_context::TenantContext;
 use crate::infrastructure::db::Db;
 use crate::infrastructure::id_generator::UuidV7Generator;
 use crate::infrastructure::password::Argon2PasswordHasher;
@@ -42,6 +52,7 @@ use crate::infrastructure::repositories::refresh_token::SqlxRefreshTokenReposito
 use crate::infrastructure::repositories::revoked_access_token::SqlxRevokedAccessTokenRepository;
 use crate::infrastructure::repositories::signing_key::SqlxSigningKeyRepository;
 use crate::infrastructure::repositories::sso_session::SqlxSsoSessionRepository;
+use crate::infrastructure::repositories::tenant_membership::SqlxTenantMembershipRepository;
 use crate::infrastructure::repositories::totp_secret::SqlxTotpSecretRepository;
 use crate::infrastructure::repositories::user::SqlxUserRepository;
 use crate::infrastructure::repositories::user_permission::SqlxUserPermissionRepository;
@@ -58,6 +69,8 @@ const LOGIN_RATE_LIMIT_WINDOW_MINUTES: i64 = 5;
 pub struct AppState {
     pub pool: Db,
     pub config: Arc<Config>,
+    /// 過渡期（MT9 まで）の既定テナント（root）。全リクエストをこのテナントの文脈で処理する。
+    pub default_tenant: TenantContext,
     pub register: Arc<RegisterService>,
     pub authorize: Arc<AuthorizeService>,
     pub login: Arc<LoginService>,
@@ -82,8 +95,15 @@ pub struct AppState {
 
 impl AppState {
     /// すべてのユースケースを組み立てる（トレイト越しのコンストラクタ注入）。
-    pub fn build(pool: Db, config: Arc<Config>, clock: Arc<dyn Clock>) -> Self {
+    /// `default_tenant` は起動時に解決した root テナント ID（上記モジュールコメント参照）。
+    pub fn build(
+        pool: Db,
+        config: Arc<Config>,
+        clock: Arc<dyn Clock>,
+        default_tenant: TenantId,
+    ) -> Self {
         let users = Arc::new(SqlxUserRepository::new(pool.clone()));
+        let tenant_memberships = Arc::new(SqlxTenantMembershipRepository::new(pool.clone()));
         let clients = Arc::new(SqlxClientRepository::new(pool.clone()));
         let auth_sessions = Arc::new(SqlxAuthSessionRepository::new(pool.clone()));
         let sso_sessions = Arc::new(SqlxSsoSessionRepository::new(pool.clone()));
@@ -120,6 +140,7 @@ impl AppState {
 
         let register = Arc::new(RegisterService::new(
             users.clone(),
+            tenant_memberships.clone(),
             hasher.clone(),
             clock.clone(),
             ids.clone(),
@@ -297,6 +318,7 @@ impl AppState {
         Self {
             pool,
             config,
+            default_tenant: TenantContext::new(default_tenant),
             register,
             authorize,
             login,

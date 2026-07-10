@@ -175,7 +175,7 @@ pub async fn login_complete(
     let ttl = state.config.sso_absolute_ttl().as_secs();
     let outcome = state
         .passkey_authentication
-        .complete(challenge_id, req.credential, &ctx)
+        .complete(state.default_tenant, challenge_id, req.credential, &ctx)
         .await;
     Json(match outcome {
         PasskeyAuthOutcome::Success {

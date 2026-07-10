@@ -33,11 +33,15 @@ pub trait RequiredPermission {
     const CODE: &'static str;
 }
 
-/// 管理 API 全体（MVP-admin）を保護する権限コード `idp.admin`。
+/// 管理 API 全体（MVP-admin）を保護する権限コード `idp.tenant.admin`（ADR-0009 §4）。
+///
+/// 判定は「要求テナントを scope に持つか」の完全一致で行う（`AdminAccessService`）。
+/// `idp.system.admin`（scope = root のみ）は root テナント自身の管理を含むため、
+/// 判定側で常に代替として許可される。
 pub struct IdpAdmin;
 
 impl RequiredPermission for IdpAdmin {
-    const CODE: &'static str = "idp.admin";
+    const CODE: &'static str = "idp.tenant.admin";
 }
 
 /// 権限 `P` を保有する認可済み管理利用者を表す extractor。
@@ -57,9 +61,11 @@ where
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let sso_session_id = cookies::get(&parts.headers, cookies::SSO_SESSION_COOKIE);
+        // 過渡期（MT9 まで）: 要求テナント = 既定テナント（root）。MT9 で
+        // `Extension<ResolvedTenant>`（リクエストパス由来）へ置き換える。
         match state
             .admin_access
-            .authorize(sso_session_id.as_deref(), P::CODE)
+            .authorize(state.default_tenant, sso_session_id.as_deref(), P::CODE)
             .await
         {
             AdminAccess::Granted(admin) => Ok(RequirePerms(admin, PhantomData)),

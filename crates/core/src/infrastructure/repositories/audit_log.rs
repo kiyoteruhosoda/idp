@@ -3,6 +3,7 @@
 use crate::domain::audit::{AuditEvent, AuditLogEntry, AuditLogFilter};
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::{AuditLogQuery, AuditLogSink};
+use crate::domain::tenant::TenantId;
 use crate::infrastructure::db::Db;
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
@@ -25,12 +26,13 @@ impl AuditLogSink for SqlxAuditLogSink {
     async fn record(&self, event: &AuditEvent) -> Result<()> {
         sqlx::query(
             "INSERT INTO audit_log \
-             (event_type, occurred_at, user_id, client_id, ip_address, user_agent, \
+             (event_type, occurred_at, tenant_id, user_id, client_id, ip_address, user_agent, \
               result, reason, correlation_id) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(event.event_type.as_str())
         .bind(event.occurred_at.naive_utc())
+        .bind(event.tenant_id.map(|t| t.to_string()))
         .bind(event.user_id.map(|u| u.to_string()))
         .bind(&event.client_id)
         .bind(&event.ip_address)
@@ -64,6 +66,13 @@ fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
 }
 
 fn map_row(row: &MySqlRow) -> Result<AuditLogEntry> {
+    let tenant_id: Option<String> = row.try_get("tenant_id").map_err(repo_err)?;
+    let tenant_id = tenant_id
+        .map(|s| {
+            Uuid::parse_str(&s)
+                .map_err(|e| DomainError::Repository(format!("invalid UUID `{s}`: {e}")))
+        })
+        .transpose()?;
     let user_id: Option<String> = row.try_get("user_id").map_err(repo_err)?;
     let user_id = user_id
         .map(|s| {
@@ -75,6 +84,7 @@ fn map_row(row: &MySqlRow) -> Result<AuditLogEntry> {
         id: row.try_get("id").map_err(repo_err)?,
         event_type: row.try_get("event_type").map_err(repo_err)?,
         occurred_at: to_utc(row.try_get("occurred_at").map_err(repo_err)?),
+        tenant_id,
         user_id,
         client_id: row.try_get("client_id").map_err(repo_err)?,
         ip_address: row.try_get("ip_address").map_err(repo_err)?,
@@ -90,9 +100,12 @@ impl AuditLogQuery for SqlxAuditLogQuery {
     async fn search(&self, filter: &AuditLogFilter) -> Result<Vec<AuditLogEntry>> {
         // 条件は指定された項目のみ AND で積む。値はすべてバインドする（SQL インジェクション対策）。
         let mut qb: QueryBuilder<MySql> = QueryBuilder::new(
-            "SELECT id, event_type, occurred_at, user_id, client_id, ip_address, user_agent, \
-             result, reason, correlation_id FROM audit_log WHERE 1 = 1",
+            "SELECT id, event_type, occurred_at, tenant_id, user_id, client_id, ip_address, \
+             user_agent, result, reason, correlation_id FROM audit_log WHERE 1 = 1",
         );
+        if let Some(tenant_id) = filter.tenant_id {
+            qb.push(" AND tenant_id = ").push_bind(tenant_id.to_string());
+        }
         if let Some(event_type) = &filter.event_type {
             qb.push(" AND event_type = ").push_bind(event_type);
         }
@@ -120,14 +133,18 @@ impl AuditLogQuery for SqlxAuditLogQuery {
         rows.iter().map(map_row).collect()
     }
 
-    async fn last_used_per_client(&self) -> Result<Vec<(String, DateTime<Utc>)>> {
+    async fn last_used_per_client(
+        &self,
+        tenant_id: TenantId,
+    ) -> Result<Vec<(String, DateTime<Utc>)>> {
         // 「利用」= 成功したトークン発行・認可コード発行。client_id ごとの最新時刻を 1 回の集計で取る。
         let rows = sqlx::query(
             "SELECT client_id, MAX(occurred_at) AS last_used_at FROM audit_log \
-             WHERE client_id IS NOT NULL AND result = 'success' \
+             WHERE tenant_id = ? AND client_id IS NOT NULL AND result = 'success' \
              AND event_type IN ('token.issued', 'authorization_code.issued') \
              GROUP BY client_id",
         )
+        .bind(tenant_id.to_string())
         .fetch_all(&self.pool)
         .await
         .map_err(repo_err)?;

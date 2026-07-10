@@ -35,7 +35,7 @@ impl Clock for SystemClock {
     }
 }
 
-async fn setup() -> Option<(axum::Router, MySqlPool)> {
+async fn setup() -> Option<(axum::Router, MySqlPool, String)> {
     let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
         eprintln!("TEST_DATABASE_URL not set; skipping internal_auth integration test");
         return None;
@@ -49,29 +49,40 @@ async fn setup() -> Option<(axum::Router, MySqlPool)> {
         .expect("connect to test database");
     MIGRATOR.run(&pool).await.expect("run migrations");
 
+    // 過渡期（MT9 まで）: seed 済み root テナントを既定テナントとして注入する。
+    let root_tenant_id: String =
+        sqlx::query_scalar("SELECT id FROM tenants WHERE parent_tenant_id IS NULL")
+            .fetch_one(&pool)
+            .await
+            .expect("root tenant seeded");
+    let root = idp_api::domain::tenant::TenantId::from(
+        uuid::Uuid::parse_str(&root_tenant_id).expect("root UUID"),
+    );
+
     let config = Arc::new(Config::from_env().expect("load config"));
-    let state = AppState::build(pool.clone(), config, Arc::new(SystemClock));
+    let state = AppState::build(pool.clone(), config, Arc::new(SystemClock), root);
     state
         .keys
         .ensure_active_key()
         .await
         .expect("bootstrap signing key");
-    Some((router::build(state), pool))
+    Some((router::build(state), pool, root_tenant_id))
 }
 
-async fn insert_public_client(pool: &MySqlPool) -> String {
+async fn insert_public_client(pool: &MySqlPool, tenant_id: &str) -> String {
     let client_id = format!(
         "int-public-{}",
         &uuid::Uuid::new_v4().simple().to_string()[..12]
     );
     sqlx::query(
-        "INSERT INTO clients (id, client_id, client_secret_hash, client_type, client_status, \
-         app_name, redirect_uris, grant_types, response_types, scopes, \
+        "INSERT INTO clients (id, tenant_id, client_id, client_secret_hash, client_type, \
+         client_status, app_name, redirect_uris, grant_types, response_types, scopes, \
          token_endpoint_auth_method, require_pkce) \
-         VALUES (?, ?, NULL, 'public', 'ACTIVE', 'Internal Auth Test App', ?, \
+         VALUES (?, ?, ?, NULL, 'public', 'ACTIVE', 'Internal Auth Test App', ?, \
          '[\"authorization_code\"]', '[\"code\"]', '[\"openid\",\"profile\",\"email\"]', 'none', 1)",
     )
-    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(uuid::Uuid::now_v7().to_string())
+    .bind(tenant_id)
     .bind(&client_id)
     .bind(json!([REDIRECT_URI]).to_string())
     .execute(pool)
@@ -151,11 +162,11 @@ fn post_internal(uri: &str, token: Option<&str>, payload: Value) -> Request<Body
 
 #[tokio::test]
 async fn authenticate_requires_service_token_and_issues_sso_and_code() {
-    let Some((app, pool)) = setup().await else {
+    let Some((app, pool, root_tenant_id)) = setup().await else {
         return;
     };
 
-    let client_id = insert_public_client(&pool).await;
+    let client_id = insert_public_client(&pool, &root_tenant_id).await;
     let username = format!("int{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
     let password = "correct-horse-battery";
     register_user(&app, &username, password).await;
@@ -213,7 +224,8 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(body_json(response).await["result"], "csrf_mismatch");
 
-    // 正常系: 認証成功 → SSO セッション id と code 付き redirect を返す。
+    // 正常系: 認証成功。初回は profile/email が未同意のため同意ステップへ（F3）。
+    // SSO セッション id はこの時点で発行される。
     let response = send(
         &app,
         post_internal(
@@ -232,6 +244,26 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
     .await;
     assert_eq!(response.status(), StatusCode::OK, "authenticate success");
     let body = body_json(response).await;
+    assert_eq!(body["result"], "consent_required");
+    let consent_session = body["auth_session_id"]
+        .as_str()
+        .expect("auth_session_id")
+        .to_string();
+    assert!(!body["sso_session_id"].as_str().unwrap().is_empty());
+    assert!(body["sso_absolute_ttl_secs"].as_u64().unwrap() > 0);
+
+    // 同意を承諾すると code 付き redirect を返す。
+    let response = send(
+        &app,
+        post_internal(
+            "/internal/consent/approve",
+            Some(SERVICE_TOKEN),
+            json!({ "auth_session_id": consent_session }),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK, "consent approve");
+    let body = body_json(response).await;
     assert_eq!(body["result"], "success");
     assert!(
         body["redirect_to"]
@@ -240,8 +272,6 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
             .starts_with(REDIRECT_URI),
         "redirect_to should point at the RP: {body}"
     );
-    assert!(!body["sso_session_id"].as_str().unwrap().is_empty());
-    assert!(body["sso_absolute_ttl_secs"].as_u64().unwrap() > 0);
 
     // SSO セッションが DB に作成され、web から転送された接続元 IP が記録されている
     // （並行する他テストと干渉しないよう、この試行に固有の IP で絞り込む）。
@@ -255,7 +285,7 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
 
 #[tokio::test]
 async fn admin_authenticate_rejects_unknown_user() {
-    let Some((app, _pool)) = setup().await else {
+    let Some((app, _pool, _root_tenant_id)) = setup().await else {
         return;
     };
 

@@ -20,8 +20,9 @@ cd "$repo_root"
 DB_URL="${TEST_DATABASE_URL:-mysql://idp:idp@127.0.0.1:3306/idp}"
 API_ADDR="127.0.0.1:8080"
 WEB_ADDR="127.0.0.1:8081"
-API="http://${API_ADDR}"
-WEB="http://${WEB_ADDR}"
+# ISSUER には IP でなくホスト名を使う（WebAuthn の RP ID はドメイン必須。localhost は 127.0.0.1 を指す）。
+API="http://localhost:8080"
+WEB="http://localhost:8081"
 TOKEN="e2e-internal-service-token"
 CODE_CHALLENGE="E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
 CODE_VERIFIER="dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
@@ -65,13 +66,19 @@ pass "利用者登録"
 CJAR="$(mktemp)"
 authz="${API}/authorize?response_type=code&client_id=CLIENT&redirect_uri=$(python3 -c 'import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=""))' "$REDIRECT_URI")&scope=openid%20profile%20email&state=st&nonce=no&code_challenge=${CODE_CHALLENGE}&code_challenge_method=S256"
 # クライアントは DB へ直接投入（管理コンソール経由の作成は 4) で検証）。
+# docker(idp-test-db) があればコンテナ内、無ければローカルの mariadb/mysql クライアントで実行する。
 CID="e2e-cli-$(date +%s)"
-mariadb_exec() { docker exec idp-test-db mariadb -uidp -pidp idp -N -e "$1" 2>/dev/null; }
 if command -v docker >/dev/null 2>&1 && docker exec idp-test-db true 2>/dev/null; then
-  mariadb_exec "INSERT INTO clients (id,client_id,client_secret_hash,client_type,client_status,app_name,redirect_uris,grant_types,response_types,scopes,token_endpoint_auth_method,require_pkce) VALUES (UUID(),'${CID}',NULL,'public','ACTIVE','E2E',JSON_ARRAY('${REDIRECT_URI}'),JSON_ARRAY('authorization_code'),JSON_ARRAY('code'),JSON_ARRAY('openid','profile','email'),'none',1);"
+  mariadb_exec() { docker exec idp-test-db mariadb -uidp -pidp idp -N -e "$1" 2>/dev/null; }
+elif command -v mariadb >/dev/null 2>&1; then
+  mariadb_exec() { mariadb -h127.0.0.1 -uidp -pidp idp -N -e "$1" 2>/dev/null; }
+elif command -v mysql >/dev/null 2>&1; then
+  mariadb_exec() { mysql -h127.0.0.1 -uidp -pidp idp -N -e "$1" 2>/dev/null; }
 else
-  fail "テスト用クライアントの投入に docker(idp-test-db) が必要です"
+  fail "テスト用クライアントの投入に docker(idp-test-db) またはローカルの mariadb/mysql クライアントが必要です"
 fi
+# クライアントは root テナントへ帰属させる（ADR-0009 §2。root は parent_tenant_id IS NULL の唯一の行）。
+mariadb_exec "SET @root := (SELECT id FROM tenants WHERE parent_tenant_id IS NULL); INSERT INTO clients (id,tenant_id,client_id,client_secret_hash,client_type,client_status,app_name,redirect_uris,grant_types,response_types,scopes,token_endpoint_auth_method,require_pkce) VALUES (UUID(),@root,'${CID}',NULL,'public','ACTIVE','E2E',JSON_ARRAY('${REDIRECT_URI}'),JSON_ARRAY('authorization_code'),JSON_ARRAY('code'),JSON_ARRAY('openid','profile','email'),'none',1);"
 authz="${authz/CLIENT/$CID}"
 loc="$(curl -fsS -c "$CJAR" -o /dev/null -w '%{redirect_url}' "$authz")"
 [[ "$loc" == *"/login"* ]] || fail "/authorize が /login へ誘導しません（$loc）"
@@ -82,10 +89,22 @@ csrf="$(curl -fsS -b "$CJAR" "${WEB}/login" | grep -oE '[a-f0-9]{64}' | head -1)
 loc="$(curl -fsS -b "$CJAR" -c "$CJAR" -o /dev/null -w '%{redirect_url}' -X POST "${WEB}/login" \
   -H 'content-type: application/x-www-form-urlencoded' -H 'X-Forwarded-For: 203.0.113.5' \
   --data-urlencode "username=${U}" --data-urlencode "password=${P}" --data-urlencode "csrf_token=${csrf}")"
-[[ "$loc" == "${REDIRECT_URI}"* ]] || fail "web ログインが RP へ code リダイレクトしません（$loc）"
+# 初回ログインは profile/email が未同意のため同意画面（F3）へ誘導される。
+[[ "$loc" == *"/consent"* ]] || fail "web ログインが同意画面へ誘導しません（$loc）"
+pass "web /login → api /internal/authenticate → SSO Cookie + /consent 誘導（初回は要同意）"
+
+consent_html="$(curl -fsS -b "$CJAR" "${WEB}/consent")"
+ccsrf2="$(printf '%s' "$consent_html" | grep -oE 'name="csrf_token" value="[a-f0-9]{64}"' | grep -oE '[a-f0-9]{64}' | head -1)"
+csess="$(printf '%s' "$consent_html" | grep -oE 'name="auth_session_id" value="[a-f0-9]+"' | grep -oE 'value="[a-f0-9]+"' | grep -oE '[a-f0-9]+' | tail -1)"
+[[ -n "$ccsrf2" && -n "$csess" ]] || fail "同意画面がフォーム（CSRF・auth_session_id）を返しません"
+loc="$(curl -fsS -b "$CJAR" -c "$CJAR" -o /dev/null -w '%{redirect_url}' -X POST "${WEB}/consent" \
+  -H 'content-type: application/x-www-form-urlencoded' \
+  --data-urlencode "auth_session_id=${csess}" --data-urlencode "csrf_token=${ccsrf2}" \
+  --data-urlencode "action=approve")"
+[[ "$loc" == "${REDIRECT_URI}"* ]] || fail "同意承諾が RP へ code リダイレクトしません（$loc）"
 code="$(printf '%s' "$loc" | sed -n 's/.*[?&]code=\([^&]*\).*/\1/p')"
 [[ -n "$code" ]] || fail "code が取得できません"
-pass "web /login → api /internal/authenticate → SSO Cookie + code リダイレクト"
+pass "web /consent 承諾 → api /internal/consent/approve → code リダイレクト"
 
 tok="$(curl -fsS -X POST "${API}/token" -H 'content-type: application/x-www-form-urlencoded' \
   --data "grant_type=authorization_code&code=${code}&redirect_uri=$(python3 -c 'import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=""))' "$REDIRECT_URI")&code_verifier=${CODE_VERIFIER}&client_id=${CID}")"
@@ -122,9 +141,9 @@ tid="$(printf '%s' "$sr" | grep -oE '<code>[0-9a-f-]{36}</code>' | head -1 | sed
 pcsrf="$(curl -fsS -b "$AJAR" "${WEB}/admin/console/users/${tid}/permissions" | grep -oE 'name="csrf_token" value="[a-f0-9]{64}"' | grep -oE '[a-f0-9]{64}' | head -1)"
 curl -fsS -b "$AJAR" -o /dev/null -X POST "${WEB}/admin/console/users/${tid}/permissions/grant" \
   -H 'content-type: application/x-www-form-urlencoded' \
-  --data-urlencode "permission_code=idp.admin" --data-urlencode "csrf_token=${pcsrf}"
-[[ "$(mariadb_exec "SELECT COUNT(*) FROM user_permissions WHERE user_id='${tid}' AND permission_code='idp.admin';")" == "1" ]] \
+  --data-urlencode "permission_code=idp.tenant.admin" --data-urlencode "csrf_token=${pcsrf}"
+[[ "$(mariadb_exec "SELECT COUNT(*) FROM user_permissions WHERE user_id='${tid}' AND permission_code='idp.tenant.admin';")" == "1" ]] \
   || fail "権限付与が DB に反映されません"
-pass "利用者検索 → idp.admin 付与（web→api、DB 反映を確認）"
+pass "利用者検索 → idp.tenant.admin 付与（web→api、DB 反映を確認）"
 
 printf '\n\033[32mE2E OK\033[0m — web→api の疎通が全て通りました。\n'

@@ -22,7 +22,10 @@ pub async fn consent_info(
     State(state): State<AppState>,
     Query(req): Query<InternalConsentInfoRequest>,
 ) -> Json<InternalConsentInfoResponse> {
-    match state.consent.info(&req.auth_session_id).await {
+    match state
+        .consent
+        .info(state.default_tenant, &req.auth_session_id)
+        .await {
         Ok(Some(info)) => Json(InternalConsentInfoResponse::Ok {
             auth_session_id: info.auth_session_id,
             client_name: info.client_name,
@@ -48,7 +51,10 @@ pub async fn consent_approve(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let outcome = state.consent.approve(&req.auth_session_id, &ctx).await;
+    let outcome = state
+        .consent
+        .approve(state.default_tenant, &req.auth_session_id, &ctx)
+        .await;
     Json(match outcome {
         ConsentOutcome::Approved { location } => {
             InternalConsentApproveResponse::Success { redirect_to: location }
@@ -76,7 +82,10 @@ pub async fn consent_deny(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let outcome = state.consent.deny(&req.auth_session_id, &ctx).await;
+    let outcome = state
+        .consent
+        .deny(state.default_tenant, &req.auth_session_id, &ctx)
+        .await;
     (
         StatusCode::OK,
         Json(match outcome {

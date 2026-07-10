@@ -2,6 +2,34 @@
 
 完了した重要な変更の要約（詳しい経緯は `history/`、設計判断は `adr/`）。
 
+## 2026-07-10（MT5: 全 Repository trait／ユースケースへ tenant_id 追加 — テナント分離の強制）
+
+- **Repository trait のテナントスコープ化**（ADR-0009 §8。MariaDB に RLS がないため、アプリ層が
+  唯一の分離防御線）: テナントスコープのテーブルを参照・検索するメソッドへ `tenant_id: TenantId`
+  を追加し、sqlx 実装は必ず WHERE 句へ含める（`users` の `(tenant_id, email)` 検索、
+  `clients` の `(tenant_id, client_id)` 解決・一覧・更新、auth session／authorization code／
+  refresh token／consent／user_permissions／監査ログ参照）。グローバル一意キーによる本人解決
+  （`users.id`/`sub`）・SSO セッション（ホスト単位共有）・ユーザー単位の全失効・テナント列を
+  持たないテーブルは意図的に除外（根拠は `domain/repositories.rs` のモジュールコメント）。
+- **ユースケースの `TenantContext` 対応**: 全サービスの公開メソッドが `TenantContext` を受け取り、
+  リポジトリ呼び出しへ必ず伝搬。認証（ログイン・管理ログイン）のユーザー検索は所属元テナント限定、
+  認可コード・refresh token の消費／検索は発行テナント一致必須。ドメインモデル
+  （`User`（+`must_change_password`）・`Client`・`AuthSession`・`AuthorizationCode`・`RefreshToken`・
+  `ClientConsent`・監査イベント）へ `tenant_id` を追加し、監査ログはテナント単位で追跡可能にした。
+- **登録時の HOME メンバーシップ自動生成**（ADR-0009 §3）: `RegisterService` がユーザー作成と同時に
+  `tenant_memberships` へ HOME/ACTIVE 行を投影する。
+- **管理権限を ADR-0009 §4 の完全一致判定へ移行**: `idp.admin` を廃し、`RequirePerms<IdpAdmin>` は
+  「要求テナントを scope に持つ `idp.tenant.admin`」の完全一致で判定（`idp.system.admin` は root
+  scope のみ存在し root 自身の管理を含むため代替として許可）。`idp.system.admin` の付与・剥奪は
+  保有者のみ実行可能（アプリ層で強制。DB の CHECK 制約と二重防御）。
+- **過渡期（MT9 まで）の既定テナント**: api は起動時に root テナントを解決（fail-fast）し、
+  `AppState::default_tenant` として全リクエストへ適用する。MT9 で `TenantResolver`／パス由来の
+  解決へ置き換える。
+- DB 統合テスト（`register`／`oidc_flow`／`internal_auth`／`admin_*`）と `scripts/e2e.sh` を
+  新スキーマへ追随（root UUID・初期管理者 UUID は動的採番のため DB から解決）。初回ログインは
+  F3 の設計どおり同意画面を経由する検証に修正した。e2e.sh はローカル mariadb/mysql クライアントへの
+  フォールバックと、WebAuthn RP ID 制約（IP 不可）に伴う `ISSUER=http://localhost:8080` 化を含む。
+
 ## 2026-07-10（MT3・MT4: UUIDv7 生成の集約 + Tenant/TenantMembership ドメイン基盤）
 
 - **MT3 — UUIDv7 導入**: `uuid` crate に `v7` feature を追加。エンティティ主キーの生成を

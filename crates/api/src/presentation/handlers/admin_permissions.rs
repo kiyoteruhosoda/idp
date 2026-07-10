@@ -1,7 +1,7 @@
 //! 利用者権限の付与・剥奪・参照エンドポイント（`/admin/users/{user_id}/permissions`、
 //! A2・ADR-0006・設計仕様 §7）。
 //!
-//! すべて `idp.admin` 権限が必要（`RequirePerms<IdpAdmin>`）。付与・剥奪は `audit_log` に記録する
+//! すべて `idp.tenant.admin` 権限が必要（`RequirePerms<IdpAdmin>`）。付与・剥奪は `audit_log` に記録する
 //! （`user_permission.granted` / `.revoked`）。判定は Application 層（`PermissionManagementService`）
 //! が行い、本ハンドラは HTTP への写像のみを担う。
 
@@ -43,7 +43,7 @@ pub async fn list_available_permissions(
         (status = 200, description = "保有する権限コード一覧", body = UserPermissionsResponse),
         (status = 400, description = "user_id が UUID でない"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.admin 必須）"),
+        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
         (status = 404, description = "対象利用者が不存在"),
     )
 )]
@@ -55,7 +55,7 @@ pub async fn list_permissions(
     let target = parse_user_id(&user_id)?;
     let codes = state
         .permissions_admin
-        .list(target)
+        .list(state.default_tenant, target)
         .await
         .map_err(map_error)?;
     Ok(Json(UserPermissionsResponse {
@@ -75,7 +75,7 @@ pub async fn list_permissions(
         (status = 200, description = "付与後の権限コード一覧", body = UserPermissionsResponse),
         (status = 400, description = "バリデーションエラー（未知の権限コード等）"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.admin 必須）"),
+        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
         (status = 404, description = "対象利用者が不存在"),
     )
 )]
@@ -91,7 +91,13 @@ pub async fn grant_permission(
     let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
     let codes = state
         .permissions_admin
-        .grant(target, &body.permission_code, admin.user_id, &ctx)
+        .grant(
+            state.default_tenant,
+            target,
+            &body.permission_code,
+            admin.user_id,
+            &ctx,
+        )
         .await
         .map_err(map_error)?;
     Ok(Json(UserPermissionsResponse {
@@ -113,7 +119,7 @@ pub async fn grant_permission(
         (status = 200, description = "剥奪後の権限コード一覧", body = UserPermissionsResponse),
         (status = 400, description = "user_id が UUID でない・権限コードが空"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.admin 必須）"),
+        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
         (status = 404, description = "対象利用者が不存在"),
     )
 )]
@@ -128,7 +134,13 @@ pub async fn revoke_permission(
     let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
     let codes = state
         .permissions_admin
-        .revoke(target, &permission_code, admin.user_id, &ctx)
+        .revoke(
+            state.default_tenant,
+            target,
+            &permission_code,
+            admin.user_id,
+            &ctx,
+        )
         .await
         .map_err(map_error)?;
     Ok(Json(UserPermissionsResponse {
@@ -145,6 +157,7 @@ fn map_error(e: PermissionManagementError) -> ApiError {
     match e {
         PermissionManagementError::Validation(m) => ApiError::BadRequest(m),
         PermissionManagementError::NotFound => ApiError::NotFound("user not found".to_string()),
+        PermissionManagementError::Forbidden(m) => ApiError::Forbidden(m),
         PermissionManagementError::Internal(m) => ApiError::Internal(m),
     }
 }

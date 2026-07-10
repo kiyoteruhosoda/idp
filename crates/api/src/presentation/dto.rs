@@ -169,7 +169,7 @@ pub struct AuditLogEntryResponse {
 /// 利用者への権限付与リクエスト（管理 API、A2・ADR-0006）。
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct GrantPermissionRequest {
-    /// 付与する権限コード（例 `idp.admin`）。`permissions` マスタに存在すること。
+    /// 付与する権限コード（例 `idp.tenant.admin`）。`permissions` マスタに存在すること。
     pub permission_code: String,
 }
 

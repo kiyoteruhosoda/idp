@@ -94,6 +94,7 @@ pub async fn revoke(
     match state
         .revocation
         .revoke(
+            state.default_tenant,
             &token,
             body.token_type_hint.as_deref(),
             &client_id,

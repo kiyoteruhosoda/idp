@@ -4,13 +4,21 @@
 //! CLAUDE.md「権限管理」に従い、検証は本 Application 層で行い、Presentation には**結果（可否）のみ**
 //! 渡す（Presentation は `RequirePerms` extractor で本サービスを呼ぶ）。
 //!
+//! 権限は「要求テナントを scope に持つか」の**完全一致**で判定する（ADR-0009 §4）。
+//! `idp.system.admin` は root scope でしか存在できず（DB CHECK ＋アプリ層の二重防御）、
+//! root テナント自身のテナント管理を含むため、要求権限に加えて常に代替として許可する。
+//!
 //! OIDC scope（claim 制御）とは別軸の判定であり、Discovery の `scopes_supported` には出さない。
 
 use crate::domain::clock::Clock;
 use crate::domain::repositories::{SsoSessionRepository, UserPermissionRepository, UserRepository};
+use crate::domain::tenant_context::TenantContext;
 use crate::infrastructure::crypto;
 use std::sync::Arc;
 use uuid::Uuid;
+
+/// システム管理権限（scope = root のみ。ADR-0009 §4）。root テナント自身の管理を含む。
+const SYSTEM_ADMIN_PERMISSION: &str = "idp.system.admin";
 
 /// 管理機能へのアクセス判定結果。Presentation へは可否のみを渡す（内部理由は漏らさない）。
 #[derive(Debug, PartialEq, Eq)]
@@ -53,10 +61,12 @@ impl AdminAccessService {
 
     /// SSO セッション Cookie の値（平文 session_id）と必要権限コードから可否を判定する。
     ///
+    /// 権限は「要求テナント（`tenant`）を scope に持つか」の完全一致で判定する（ADR-0009 §4）。
     /// リポジトリ障害時は `Unauthenticated` に倒す（fail-closed）。認証・認可の失敗理由は
     /// 呼び出し側へ細分化して返さない（列挙は 401/403 の 2 値のみ）。
     pub async fn authorize(
         &self,
+        tenant: TenantContext,
         sso_session_id: Option<&str>,
         required_permission: &str,
     ) -> AdminAccess {
@@ -89,20 +99,43 @@ impl AdminAccessService {
             }
         }
 
+        // 要求権限、または idp.system.admin（root scope のみ存在。root 自身の管理を含む）の
+        // いずれかを、要求テナントを scope として保有するか（完全一致）。
+        let tenant_id = tenant.tenant_id();
         match self
             .permissions
-            .has_permission(session.user_id, required_permission)
+            .has_permission(tenant_id, session.user_id, required_permission)
             .await
         {
-            Ok(true) => AdminAccess::Granted(AuthorizedAdmin {
-                user_id: session.user_id,
-            }),
-            Ok(false) => AdminAccess::Forbidden,
+            Ok(true) => {
+                return AdminAccess::Granted(AuthorizedAdmin {
+                    user_id: session.user_id,
+                })
+            }
+            Ok(false) => {}
             Err(e) => {
                 tracing::error!(error = %e, "failed to check permission for admin access");
-                AdminAccess::Forbidden
+                return AdminAccess::Forbidden;
             }
         }
+        if required_permission != SYSTEM_ADMIN_PERMISSION {
+            match self
+                .permissions
+                .has_permission(tenant_id, session.user_id, SYSTEM_ADMIN_PERMISSION)
+                .await
+            {
+                Ok(true) => {
+                    return AdminAccess::Granted(AuthorizedAdmin {
+                        user_id: session.user_id,
+                    })
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to check permission for admin access");
+                }
+            }
+        }
+        AdminAccess::Forbidden
     }
 }
 
@@ -111,12 +144,13 @@ mod tests {
     use super::*;
     use crate::domain::error::Result as DomainResult;
     use crate::domain::sso_session::SsoSession;
+    use crate::domain::tenant::TenantId;
     use crate::domain::user::User;
     use crate::domain::values::UserStatus;
     use async_trait::async_trait;
     use chrono::{DateTime, Duration, TimeZone, Utc};
 
-    const ADMIN_PERM: &str = "idp.admin";
+    const ADMIN_PERM: &str = "idp.tenant.admin";
 
     fn fixed_now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 7, 6, 12, 0, 0).unwrap()
@@ -169,10 +203,10 @@ mod tests {
         async fn find_by_sub(&self, _s: Uuid) -> DomainResult<Option<User>> {
             unreachable!()
         }
-        async fn find_by_email(&self, _e: &str) -> DomainResult<Option<User>> {
+        async fn find_by_email(&self, _t: TenantId, _e: &str) -> DomainResult<Option<User>> {
             unreachable!()
         }
-        async fn find_by_username(&self, _u: &str) -> DomainResult<Option<User>> {
+        async fn find_by_username(&self, _t: TenantId, _u: &str) -> DomainResult<Option<User>> {
             unreachable!()
         }
         async fn update_login_state(
@@ -186,41 +220,61 @@ mod tests {
     }
 
     struct FakePermissions {
-        granted: Vec<(Uuid, String)>,
+        granted: Vec<(TenantId, Uuid, String)>,
     }
     #[async_trait]
     impl UserPermissionRepository for FakePermissions {
         async fn list_available_codes(&self) -> DomainResult<Vec<String>> {
-            Ok(vec!["idp.admin".to_string()])
+            Ok(vec![ADMIN_PERM.to_string()])
         }
-        async fn list_codes_for_user(&self, user_id: Uuid) -> DomainResult<Vec<String>> {
+        async fn list_codes_for_user(
+            &self,
+            tenant_id: TenantId,
+            user_id: Uuid,
+        ) -> DomainResult<Vec<String>> {
             Ok(self
                 .granted
                 .iter()
-                .filter(|(u, _)| *u == user_id)
-                .map(|(_, c)| c.clone())
+                .filter(|(t, u, _)| *t == tenant_id && *u == user_id)
+                .map(|(_, _, c)| c.clone())
                 .collect())
         }
-        async fn has_permission(&self, user_id: Uuid, code: &str) -> DomainResult<bool> {
-            Ok(self.granted.iter().any(|(u, c)| *u == user_id && c == code))
+        async fn has_permission(
+            &self,
+            tenant_id: TenantId,
+            user_id: Uuid,
+            code: &str,
+        ) -> DomainResult<bool> {
+            Ok(self
+                .granted
+                .iter()
+                .any(|(t, u, c)| *t == tenant_id && *u == user_id && c == code))
         }
-        async fn grant(&self, _u: Uuid, _c: &str, _g: DateTime<Utc>) -> DomainResult<()> {
+        async fn grant(
+            &self,
+            _t: TenantId,
+            _u: Uuid,
+            _c: &str,
+            _g: DateTime<Utc>,
+        ) -> DomainResult<()> {
             unreachable!()
         }
-        async fn revoke(&self, _u: Uuid, _c: &str) -> DomainResult<()> {
+        async fn revoke(&self, _t: TenantId, _u: Uuid, _c: &str) -> DomainResult<()> {
             unreachable!()
         }
     }
 
-    fn test_user(id: Uuid, status: UserStatus) -> User {
+    fn test_user(id: Uuid, tenant_id: TenantId, status: UserStatus) -> User {
         User {
             id,
+            tenant_id,
             sub: Uuid::new_v4(),
             email: "admin@example.com".to_string(),
             email_verified: true,
             preferred_username: Some("admin".to_string()),
             name: Some("Administrator".to_string()),
             password_hash: "x".to_string(),
+            must_change_password: false,
             status,
             failed_login_count: 0,
             locked_until: None,
@@ -252,7 +306,7 @@ mod tests {
     fn service(
         session: Option<SsoSession>,
         user: Option<User>,
-        granted: Vec<(Uuid, String)>,
+        granted: Vec<(TenantId, Uuid, String)>,
     ) -> AdminAccessService {
         AdminAccessService::new(
             Arc::new(FakeSsoSessions { session }),
@@ -265,26 +319,48 @@ mod tests {
     #[tokio::test]
     async fn grants_when_session_valid_and_permission_held() {
         let uid = Uuid::new_v4();
+        let tenant: TenantId = Uuid::now_v7().into();
         let svc = service(
             Some(test_session("sid", uid, true)),
-            Some(test_user(uid, UserStatus::Active)),
-            vec![(uid, ADMIN_PERM.to_string())],
+            Some(test_user(uid, tenant, UserStatus::Active)),
+            vec![(tenant, uid, ADMIN_PERM.to_string())],
         );
         assert_eq!(
-            svc.authorize(Some("sid"), ADMIN_PERM).await,
+            svc.authorize(TenantContext::new(tenant), Some("sid"), ADMIN_PERM)
+                .await,
+            AdminAccess::Granted(AuthorizedAdmin { user_id: uid })
+        );
+    }
+
+    #[tokio::test]
+    async fn grants_when_system_admin_held_for_the_tenant() {
+        // idp.system.admin（scope = root）は root テナント自身の管理を含む（ADR-0009 §4）。
+        let uid = Uuid::new_v4();
+        let root: TenantId = Uuid::now_v7().into();
+        let svc = service(
+            Some(test_session("sid", uid, true)),
+            Some(test_user(uid, root, UserStatus::Active)),
+            vec![(root, uid, SYSTEM_ADMIN_PERMISSION.to_string())],
+        );
+        assert_eq!(
+            svc.authorize(TenantContext::new(root), Some("sid"), ADMIN_PERM)
+                .await,
             AdminAccess::Granted(AuthorizedAdmin { user_id: uid })
         );
     }
 
     #[tokio::test]
     async fn unauthenticated_when_no_cookie() {
+        let tenant: TenantId = Uuid::now_v7().into();
         let svc = service(None, None, vec![]);
         assert_eq!(
-            svc.authorize(None, ADMIN_PERM).await,
+            svc.authorize(TenantContext::new(tenant), None, ADMIN_PERM)
+                .await,
             AdminAccess::Unauthenticated
         );
         assert_eq!(
-            svc.authorize(Some(""), ADMIN_PERM).await,
+            svc.authorize(TenantContext::new(tenant), Some(""), ADMIN_PERM)
+                .await,
             AdminAccess::Unauthenticated
         );
     }
@@ -292,25 +368,28 @@ mod tests {
     #[tokio::test]
     async fn unauthenticated_when_session_unknown_or_expired() {
         let uid = Uuid::new_v4();
+        let tenant: TenantId = Uuid::now_v7().into();
         // 別セッション ID（ハッシュ不一致）。
         let svc = service(
             Some(test_session("other", uid, true)),
-            Some(test_user(uid, UserStatus::Active)),
-            vec![(uid, ADMIN_PERM.to_string())],
+            Some(test_user(uid, tenant, UserStatus::Active)),
+            vec![(tenant, uid, ADMIN_PERM.to_string())],
         );
         assert_eq!(
-            svc.authorize(Some("sid"), ADMIN_PERM).await,
+            svc.authorize(TenantContext::new(tenant), Some("sid"), ADMIN_PERM)
+                .await,
             AdminAccess::Unauthenticated
         );
 
         // 期限切れセッション。
         let svc = service(
             Some(test_session("sid", uid, false)),
-            Some(test_user(uid, UserStatus::Active)),
-            vec![(uid, ADMIN_PERM.to_string())],
+            Some(test_user(uid, tenant, UserStatus::Active)),
+            vec![(tenant, uid, ADMIN_PERM.to_string())],
         );
         assert_eq!(
-            svc.authorize(Some("sid"), ADMIN_PERM).await,
+            svc.authorize(TenantContext::new(tenant), Some("sid"), ADMIN_PERM)
+                .await,
             AdminAccess::Unauthenticated
         );
     }
@@ -318,27 +397,44 @@ mod tests {
     #[tokio::test]
     async fn unauthenticated_when_user_disabled() {
         let uid = Uuid::new_v4();
+        let tenant: TenantId = Uuid::now_v7().into();
         let svc = service(
             Some(test_session("sid", uid, true)),
-            Some(test_user(uid, UserStatus::Disabled)),
-            vec![(uid, ADMIN_PERM.to_string())],
+            Some(test_user(uid, tenant, UserStatus::Disabled)),
+            vec![(tenant, uid, ADMIN_PERM.to_string())],
         );
         assert_eq!(
-            svc.authorize(Some("sid"), ADMIN_PERM).await,
+            svc.authorize(TenantContext::new(tenant), Some("sid"), ADMIN_PERM)
+                .await,
             AdminAccess::Unauthenticated
         );
     }
 
     #[tokio::test]
-    async fn forbidden_when_permission_missing() {
+    async fn forbidden_when_permission_missing_or_scoped_to_another_tenant() {
         let uid = Uuid::new_v4();
+        let tenant: TenantId = Uuid::now_v7().into();
         let svc = service(
             Some(test_session("sid", uid, true)),
-            Some(test_user(uid, UserStatus::Active)),
+            Some(test_user(uid, tenant, UserStatus::Active)),
             vec![], // 権限なし
         );
         assert_eq!(
-            svc.authorize(Some("sid"), ADMIN_PERM).await,
+            svc.authorize(TenantContext::new(tenant), Some("sid"), ADMIN_PERM)
+                .await,
+            AdminAccess::Forbidden
+        );
+
+        // 他テナント scope の権限では完全一致せず 403（ADR-0009 §4）。
+        let other: TenantId = Uuid::now_v7().into();
+        let svc = service(
+            Some(test_session("sid", uid, true)),
+            Some(test_user(uid, other, UserStatus::Active)),
+            vec![(other, uid, ADMIN_PERM.to_string())],
+        );
+        assert_eq!(
+            svc.authorize(TenantContext::new(tenant), Some("sid"), ADMIN_PERM)
+                .await,
             AdminAccess::Forbidden
         );
     }

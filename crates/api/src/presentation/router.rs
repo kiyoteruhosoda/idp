@@ -69,10 +69,10 @@ pub fn build(state: AppState) -> Router {
         .route("/logout", get(logout::logout))
         .route("/revoke", post(revoke::revoke))
         .route("/introspect", post(introspect::introspect))
-        // 管理者身元確認（idp.admin 必須。RequirePerms<IdpAdmin>）。web の管理コンソールが SSO Cookie
+        // 管理者身元確認（idp.tenant.admin 必須。RequirePerms<IdpAdmin>）。web の管理コンソールが SSO Cookie
         // 転送で認証状態・身元を得るのに使う（ADR-0007 §4）。HTML 画面は web crate 側にある。
         .route("/admin/whoami", get(admin::whoami))
-        // クライアント（RP）登録・管理 API（A1、設計仕様 §9.3）。idp.admin 必須。
+        // クライアント（RP）登録・管理 API（A1、設計仕様 §9.3）。idp.tenant.admin 必須。
         .route(
             "/admin/clients",
             post(admin_clients::create_client).get(admin_clients::list_clients),
@@ -90,14 +90,14 @@ pub fn build(state: AppState) -> Router {
             "/admin/clients/{client_id}/secret",
             post(admin_clients::rotate_client_secret),
         )
-        // 付与可能な権限コード（マスタ）と利用者検索・取得（管理コンソール支援 API）。idp.admin 必須。
+        // 付与可能な権限コード（マスタ）と利用者検索・取得（管理コンソール支援 API）。idp.tenant.admin 必須。
         .route(
             "/admin/permissions",
             get(admin_permissions::list_available_permissions),
         )
         .route("/admin/users", get(admin_users::search_user))
         .route("/admin/users/{user_id}", get(admin_users::get_user))
-        // 利用者権限の付与・剥奪・参照（A2、ADR-0006）。idp.admin 必須。
+        // 利用者権限の付与・剥奪・参照（A2、ADR-0006）。idp.tenant.admin 必須。
         .route(
             "/admin/users/{user_id}/permissions",
             get(admin_permissions::list_permissions).post(admin_permissions::grant_permission),
@@ -106,9 +106,9 @@ pub fn build(state: AppState) -> Router {
             "/admin/users/{user_id}/permissions/{permission_code}",
             axum::routing::delete(admin_permissions::revoke_permission),
         )
-        // 監査ログ参照（A3、設計仕様 §7）。idp.admin 必須。
+        // 監査ログ参照（A3、設計仕様 §7）。idp.tenant.admin 必須。
         .route("/admin/audit-logs", get(admin_audit::list_audit_logs))
-        // 署名鍵管理 API（K1）。idp.admin 必須。
+        // 署名鍵管理 API（K1）。idp.tenant.admin 必須。
         .route(
             "/admin/signing-keys",
             get(admin_signing_keys::list_keys).post(admin_signing_keys::generate_key),

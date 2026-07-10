@@ -22,7 +22,6 @@ use tower::ServiceExt;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
 
-const ADMIN_ID: &str = "00000000-0000-0000-0000-000000000001";
 const REDIRECT_URI: &str = "https://app.example.com/callback";
 
 struct SystemClock;
@@ -32,7 +31,7 @@ impl Clock for SystemClock {
     }
 }
 
-async fn setup() -> Option<(axum::Router, MySqlPool)> {
+async fn setup() -> Option<(axum::Router, MySqlPool, String, String)> {
     let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
         eprintln!("TEST_DATABASE_URL not set; skipping admin audit integration test");
         return None;
@@ -42,9 +41,27 @@ async fn setup() -> Option<(axum::Router, MySqlPool)> {
         .await
         .expect("connect to test database");
     MIGRATOR.run(&pool).await.expect("run migrations");
+
+    // 過渡期（MT9 まで）: seed 済み root テナントを既定テナントとして注入する。
+    // 初期管理者の UUID は動的採番のため DB から引く。
+    let root_tenant_id: String =
+        sqlx::query_scalar("SELECT id FROM tenants WHERE parent_tenant_id IS NULL")
+            .fetch_one(&pool)
+            .await
+            .expect("root tenant seeded");
+    let admin_id: String =
+        sqlx::query_scalar("SELECT id FROM users WHERE tenant_id = ? AND email = 'admin@example.com'")
+            .bind(&root_tenant_id)
+            .fetch_one(&pool)
+            .await
+            .expect("initial admin seeded");
+    let root = idp_api::domain::tenant::TenantId::from(
+        uuid::Uuid::parse_str(&root_tenant_id).expect("root UUID"),
+    );
+
     let config = Arc::new(Config::from_env().expect("load config"));
-    let state = AppState::build(pool.clone(), config, Arc::new(SystemClock));
-    Some((router::build(state), pool))
+    let state = AppState::build(pool.clone(), config, Arc::new(SystemClock), root);
+    Some((router::build(state), pool, root_tenant_id, admin_id))
 }
 
 async fn create_sso_session(pool: &MySqlPool, user_id: &str) -> String {
@@ -87,10 +104,10 @@ fn get_with_cookie(uri: &str, cookie: &str) -> Request<Body> {
 
 #[tokio::test]
 async fn admin_can_query_audit_logs_with_filters() {
-    let Some((app, pool)) = setup().await else {
+    let Some((app, pool, root_tenant_id, admin_id)) = setup().await else {
         return;
     };
-    let admin_cookie = create_sso_session(&pool, ADMIN_ID).await;
+    let admin_cookie = create_sso_session(&pool, &admin_id).await;
 
     // 監査イベントを発生させる: クライアント登録（client.registered / result=success）。
     let res = send(
@@ -140,6 +157,16 @@ async fn admin_can_query_audit_logs_with_filters() {
             .any(|e| e["client_id"] == created_client_id.as_str()),
         "logs should include the newly registered client_id"
     );
+    // 監査行には処理テナント（root）が記録される（ADR-0009 §8）。
+    let recorded_tenant: Option<String> = sqlx::query_scalar(
+        "SELECT tenant_id FROM audit_log WHERE client_id = ? AND event_type = 'client.registered' \
+         ORDER BY id DESC LIMIT 1",
+    )
+    .bind(&created_client_id)
+    .fetch_one(&pool)
+    .await
+    .expect("query audit tenant_id");
+    assert_eq!(recorded_tenant.as_deref(), Some(root_tenant_id.as_str()));
     // occurred_at 降順（新しい順）で返る。
     let times: Vec<&str> = arr
         .iter()
@@ -182,14 +209,18 @@ async fn admin_can_query_audit_logs_with_filters() {
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 
     // 権限の無い利用者 → 403。
-    let plain_user_id = uuid::Uuid::new_v4().to_string();
+    let plain_user_id = uuid::Uuid::now_v7().to_string();
     sqlx::query(
-        "INSERT INTO users (id, sub, email, email_verified, password_hash, status) \
-         VALUES (?, ?, ?, 1, 'x', 'ACTIVE')",
+        "INSERT INTO users (id, tenant_id, sub, email, email_verified, password_hash, status) \
+         VALUES (?, ?, ?, ?, 1, 'x', 'ACTIVE')",
     )
     .bind(&plain_user_id)
-    .bind(uuid::Uuid::new_v4().to_string())
-    .bind(format!("audit-plain-{}@example.com", &plain_user_id[..8]))
+    .bind(&root_tenant_id)
+    .bind(uuid::Uuid::now_v7().to_string())
+    .bind(format!(
+        "audit-plain-{}@example.com",
+        &uuid::Uuid::new_v4().simple().to_string()[..12]
+    ))
     .execute(&pool)
     .await
     .expect("insert plain user");

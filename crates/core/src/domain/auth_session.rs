@@ -2,6 +2,7 @@
 //! `/authorize` から `/login` 完了までの一時的な認可リクエスト状態。
 #![allow(dead_code)]
 
+use crate::domain::tenant::TenantId;
 use crate::domain::values::CodeChallengeMethod;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -10,6 +11,8 @@ use uuid::Uuid;
 pub struct AuthSession {
     /// 128bit 以上の推測不能なランダム値（`auth_session_id` Cookie の値そのもの）。
     pub id: String,
+    /// フローを開始したテナント（`/{tenant_id}/authorize`。ADR-0009 §8）。
+    pub tenant_id: TenantId,
     pub client_id: String,
     pub redirect_uri: String,
     pub scope: Vec<String>,

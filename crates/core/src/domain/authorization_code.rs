@@ -2,6 +2,7 @@
 //! DB には平文ではなく `code_hash = SHA-256(authorization_code)` を保存する。
 #![allow(dead_code)]
 
+use crate::domain::tenant::TenantId;
 use crate::domain::values::CodeChallengeMethod;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -9,6 +10,8 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct AuthorizationCode {
     pub code_hash: String,
+    /// code を発行したテナント（ADR-0009 §8。トークン交換は同一テナントに限る）。
+    pub tenant_id: TenantId,
     pub user_id: Uuid,
     pub client_id: String,
     pub redirect_uri: String,

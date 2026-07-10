@@ -84,6 +84,7 @@ pub async fn introspect(
     match state
         .introspection
         .introspect(
+            state.default_tenant,
             &token,
             body.token_type_hint.as_deref(),
             &client_id,

@@ -70,6 +70,7 @@ pub async fn authenticate(
     let outcome = state
         .login
         .login(
+            state.default_tenant,
             LoginCommand {
                 auth_session_id: req.auth_session_id,
                 username: req.username,
@@ -126,6 +127,7 @@ pub async fn authenticate_admin(
     let outcome = state
         .admin_login
         .login(
+            state.default_tenant,
             AdminLoginCommand {
                 username: req.username,
                 password: req.password,
@@ -166,7 +168,10 @@ pub async fn logout(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    state.admin_login.logout(&req.sso_session_id, &ctx).await;
+    state
+        .admin_login
+        .logout(state.default_tenant, &req.sso_session_id, &ctx)
+        .await;
     StatusCode::NO_CONTENT
 }
 

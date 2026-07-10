@@ -1,6 +1,7 @@
-//! Users エンティティ（設計仕様 §3.1）。
+//! Users エンティティ（設計仕様 §3.1 + ADR-0009 §2・§5）。
 #![allow(dead_code)]
 
+use crate::domain::tenant::TenantId;
 use crate::domain::values::UserStatus;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -9,6 +10,8 @@ use uuid::Uuid;
 pub struct User {
     /// 内部識別子。
     pub id: Uuid,
+    /// 所属元（ホーム）テナント。常に 1 つ・変更不可（ADR-0009 §2）。
+    pub tenant_id: TenantId,
     /// 外部公開用のサブジェクト識別子（ID Token の `sub` 元）。
     pub sub: Uuid,
     pub email: String,
@@ -17,6 +20,8 @@ pub struct User {
     pub name: Option<String>,
     /// argon2 のパスワードハッシュ（PHC 文字列）。
     pub password_hash: String,
+    /// 自動生成パスワードで作成されたユーザーは初回ログイン時に変更を強制する（ADR-0009 §5）。
+    pub must_change_password: bool,
     pub status: UserStatus,
     pub failed_login_count: i32,
     pub locked_until: Option<DateTime<Utc>>,

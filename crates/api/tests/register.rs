@@ -58,8 +58,23 @@ async fn register_creates_user_and_rejects_duplicates_and_invalid_input() {
         .expect("connect");
     MIGRATOR.run(&pool).await.expect("migrate");
 
+    // 過渡期（MT9 まで）: seed 済み root テナントを既定テナントとして注入する。
+    let root_id: String =
+        sqlx::query_scalar("SELECT id FROM tenants WHERE parent_tenant_id IS NULL")
+            .fetch_one(&pool)
+            .await
+            .expect("root tenant seeded");
+    let root = idp_api::domain::tenant::TenantId::from(
+        uuid::Uuid::parse_str(&root_id).expect("root UUID"),
+    );
+
     let config = Arc::new(idp_api::config::Config::from_env().expect("load config"));
-    let app = router::build(AppState::build(pool.clone(), config, Arc::new(SystemClock)));
+    let app = router::build(AppState::build(
+        pool.clone(),
+        config,
+        Arc::new(SystemClock),
+        root,
+    ));
 
     // 一意なメールで登録 → 201。
     let email = format!("user-{}@example.com", uuid::Uuid::new_v4());
@@ -77,13 +92,29 @@ async fn register_creates_user_and_rejects_duplicates_and_invalid_input() {
     assert_eq!(body["status"], "ACTIVE");
     assert!(!body["sub"].as_str().unwrap().is_empty());
 
-    // 実際に DB へ保存されている。
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE email = ?")
-        .bind(&email)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    // 実際に DB へ保存されている（所属元 = root テナント）。
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE email = ? AND tenant_id = ?")
+            .bind(&email)
+            .bind(&root_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(count, 1);
+
+    // HOME メンバーシップも同時に作成される（ADR-0009 §3）。
+    let memberships: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM tenant_memberships tm \
+         JOIN users u ON u.id = tm.user_id \
+         WHERE u.email = ? AND tm.tenant_id = ? \
+         AND tm.membership_type = 'HOME' AND tm.status = 'ACTIVE'",
+    )
+    .bind(&email)
+    .bind(&root_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(memberships, 1, "HOME membership must be auto-created");
 
     // 同一メールの再登録 → 409。
     let (status, _) = post_register(

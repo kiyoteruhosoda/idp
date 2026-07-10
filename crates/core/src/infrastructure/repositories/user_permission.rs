@@ -2,6 +2,7 @@
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::UserPermissionRepository;
+use crate::domain::tenant::TenantId;
 use crate::infrastructure::db::Db;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -34,9 +35,16 @@ impl UserPermissionRepository for SqlxUserPermissionRepository {
             .collect()
     }
 
-    async fn list_codes_for_user(&self, user_id: Uuid) -> Result<Vec<String>> {
-        let rows = sqlx::query("SELECT permission_code FROM user_permissions WHERE user_id = ?")
+    async fn list_codes_for_user(
+        &self,
+        tenant_id: TenantId,
+        user_id: Uuid,
+    ) -> Result<Vec<String>> {
+        let rows = sqlx::query(
+            "SELECT permission_code FROM user_permissions WHERE user_id = ? AND tenant_id = ?",
+        )
             .bind(user_id.to_string())
+            .bind(tenant_id.to_string())
             .fetch_all(&self.pool)
             .await
             .map_err(repo_err)?;
@@ -48,25 +56,40 @@ impl UserPermissionRepository for SqlxUserPermissionRepository {
             .collect()
     }
 
-    async fn has_permission(&self, user_id: Uuid, code: &str) -> Result<bool> {
-        let row =
-            sqlx::query("SELECT 1 FROM user_permissions WHERE user_id = ? AND permission_code = ?")
+    async fn has_permission(
+        &self,
+        tenant_id: TenantId,
+        user_id: Uuid,
+        code: &str,
+    ) -> Result<bool> {
+        let row = sqlx::query(
+            "SELECT 1 FROM user_permissions \
+             WHERE user_id = ? AND permission_code = ? AND tenant_id = ?",
+        )
                 .bind(user_id.to_string())
                 .bind(code)
+                .bind(tenant_id.to_string())
                 .fetch_optional(&self.pool)
                 .await
                 .map_err(repo_err)?;
         Ok(row.is_some())
     }
 
-    async fn grant(&self, user_id: Uuid, code: &str, granted_at: DateTime<Utc>) -> Result<()> {
+    async fn grant(
+        &self,
+        tenant_id: TenantId,
+        user_id: Uuid,
+        code: &str,
+        granted_at: DateTime<Utc>,
+    ) -> Result<()> {
         // 冪等: 既存付与は granted_at を保持する（ON DUPLICATE KEY UPDATE user_id = user_id）。
         sqlx::query(
-            "INSERT INTO user_permissions (user_id, permission_code, granted_at) \
-             VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE user_id = user_id",
+            "INSERT INTO user_permissions (user_id, permission_code, tenant_id, granted_at) \
+             VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE user_id = user_id",
         )
         .bind(user_id.to_string())
         .bind(code)
+        .bind(tenant_id.to_string())
         .bind(granted_at.naive_utc())
         .execute(&self.pool)
         .await
@@ -80,10 +103,14 @@ impl UserPermissionRepository for SqlxUserPermissionRepository {
         Ok(())
     }
 
-    async fn revoke(&self, user_id: Uuid, code: &str) -> Result<()> {
-        sqlx::query("DELETE FROM user_permissions WHERE user_id = ? AND permission_code = ?")
+    async fn revoke(&self, tenant_id: TenantId, user_id: Uuid, code: &str) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM user_permissions \
+             WHERE user_id = ? AND permission_code = ? AND tenant_id = ?",
+        )
             .bind(user_id.to_string())
             .bind(code)
+            .bind(tenant_id.to_string())
             .execute(&self.pool)
             .await
             .map_err(repo_err)?;

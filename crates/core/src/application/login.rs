@@ -20,6 +20,8 @@ use crate::domain::repositories::{
     UserRepository,
 };
 use crate::domain::sso_session::SsoSession;
+use crate::domain::tenant::TenantId;
+use crate::domain::tenant_context::TenantContext;
 use crate::domain::user::User;
 use crate::infrastructure::crypto;
 use chrono::Duration;
@@ -125,14 +127,20 @@ impl LoginService {
         }
     }
 
-    pub async fn login(&self, cmd: LoginCommand, ctx: &RequestContext) -> LoginOutcome {
+    pub async fn login(
+        &self,
+        tenant: TenantContext,
+        cmd: LoginCommand,
+        ctx: &RequestContext,
+    ) -> LoginOutcome {
         let now = self.clock.now();
+        let tenant_id = tenant.tenant_id();
 
-        // 1. Cookie の auth_session_id から AuthSession を取得する。
+        // 1. Cookie の auth_session_id から AuthSession を取得する（フローのテナントに限る）。
         let Some(session_id) = cmd.auth_session_id.as_deref().filter(|s| !s.is_empty()) else {
             return LoginOutcome::SessionExpired;
         };
-        let session = match self.auth_sessions.find_by_id(session_id).await {
+        let session = match self.auth_sessions.find_by_id(tenant_id, session_id).await {
             Ok(Some(s)) => s,
             Ok(None) => return LoginOutcome::SessionExpired,
             Err(e) => return LoginOutcome::Internal(e.to_string()),
@@ -156,6 +164,7 @@ impl LoginService {
                     .record(
                         AuditEventType::LoginFailed,
                         AuditResult::Failure,
+                        Some(tenant_id),
                         None,
                         Some(&client_id),
                         Some("ip_rate_limited"),
@@ -167,13 +176,15 @@ impl LoginService {
         }
 
         // 4. ユーザー検索（username → 見つからなければ email として検索）。
-        let user = match self.find_user(&cmd.username).await {
+        //    認証は所属元テナント限定 = このテナントを所属元とするユーザーのみが対象（ADR-0009 §8）。
+        let user = match self.find_user(tenant_id, &cmd.username).await {
             Ok(Some(u)) => u,
             Ok(None) => {
                 self.audit
                     .record(
                         AuditEventType::LoginFailed,
                         AuditResult::Failure,
+                        Some(tenant_id),
                         None,
                         Some(&client_id),
                         Some("unknown_user"),
@@ -191,6 +202,7 @@ impl LoginService {
                 .record(
                     AuditEventType::LoginLocked,
                     AuditResult::Failure,
+                    Some(tenant_id),
                     Some(user.id),
                     Some(&client_id),
                     Some("account_locked"),
@@ -206,6 +218,7 @@ impl LoginService {
                 .record(
                     AuditEventType::LoginFailed,
                     AuditResult::Failure,
+                    Some(tenant_id),
                     Some(user.id),
                     Some(&client_id),
                     Some("account_not_active"),
@@ -221,7 +234,9 @@ impl LoginService {
             Err(e) => return LoginOutcome::Internal(e.to_string()),
         };
         if !verified {
-            return self.handle_password_failure(&user, &client_id, ctx).await;
+            return self
+                .handle_password_failure(tenant_id, &user, &client_id, ctx)
+                .await;
         }
 
         // 8. 成功: 失敗カウンタとロックをリセットする。
@@ -270,6 +285,7 @@ impl LoginService {
             .record(
                 AuditEventType::SsoSessionCreated,
                 AuditResult::Success,
+                Some(tenant_id),
                 Some(user.id),
                 Some(&client_id),
                 None,
@@ -280,6 +296,7 @@ impl LoginService {
             .record(
                 AuditEventType::LoginSucceeded,
                 AuditResult::Success,
+                Some(tenant_id),
                 Some(user.id),
                 Some(&client_id),
                 None,
@@ -308,7 +325,7 @@ impl LoginService {
         } else {
             match self
                 .client_consents
-                .find(user.id, &client_id)
+                .find(tenant_id, user.id, &client_id)
                 .await
             {
                 Ok(Some(consent)) => consent.covers(&scopes_needing_consent),
@@ -330,6 +347,7 @@ impl LoginService {
             .code_issuance
             .issue(
                 IssueCodeCommand {
+                    tenant,
                     user_id: user.id,
                     client_id: client_id.clone(),
                     redirect_uri: session.redirect_uri.clone(),
@@ -360,13 +378,14 @@ impl LoginService {
 
     async fn find_user(
         &self,
+        tenant_id: TenantId,
         username: &str,
     ) -> Result<Option<User>, crate::domain::error::DomainError> {
-        if let Some(user) = self.users.find_by_username(username).await? {
+        if let Some(user) = self.users.find_by_username(tenant_id, username).await? {
             return Ok(Some(user));
         }
         if username.contains('@') {
-            return self.users.find_by_email(username).await;
+            return self.users.find_by_email(tenant_id, username).await;
         }
         Ok(None)
     }
@@ -374,6 +393,7 @@ impl LoginService {
     /// パスワード不一致時の失敗カウント更新とロック判定。
     async fn handle_password_failure(
         &self,
+        tenant_id: TenantId,
         user: &User,
         client_id: &str,
         ctx: &RequestContext,
@@ -398,6 +418,7 @@ impl LoginService {
             .record(
                 AuditEventType::LoginFailed,
                 AuditResult::Failure,
+                Some(tenant_id),
                 Some(user.id),
                 Some(client_id),
                 Some("invalid_password"),
@@ -410,6 +431,7 @@ impl LoginService {
                 .record(
                     AuditEventType::LoginLocked,
                     AuditResult::Failure,
+                    Some(tenant_id),
                     Some(user.id),
                     Some(client_id),
                     Some("too_many_failures"),

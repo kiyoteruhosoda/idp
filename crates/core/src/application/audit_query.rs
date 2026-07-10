@@ -7,6 +7,7 @@
 use crate::domain::audit::{AuditLogEntry, AuditLogFilter};
 use crate::domain::error::DomainError;
 use crate::domain::repositories::AuditLogQuery;
+use crate::domain::tenant_context::TenantContext;
 use chrono::{DateTime, Utc};
 use std::sync::Arc;
 
@@ -39,9 +40,12 @@ impl AuditQueryService {
 
     pub async fn search(
         &self,
+        tenant: TenantContext,
         params: AuditQueryParams,
     ) -> Result<Vec<AuditLogEntry>, DomainError> {
         let filter = AuditLogFilter {
+            // テナント越しの閲覧を防ぐため常に検索条件へ含める（ADR-0009 §8）。
+            tenant_id: Some(tenant.tenant_id().as_uuid()),
             event_type: normalize(params.event_type),
             result: normalize(params.result),
             client_id: normalize(params.client_id),

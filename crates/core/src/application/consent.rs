@@ -17,6 +17,7 @@ use crate::domain::error::OAuthErrorCode;
 use crate::domain::repositories::{
     AuthSessionRepository, ClientConsentRepository, ClientRepository,
 };
+use crate::domain::tenant_context::TenantContext;
 use std::sync::Arc;
 
 /// 同意画面への遷移前に必要な表示情報。
@@ -73,10 +74,15 @@ impl ConsentService {
     /// `auth_session_id` の AuthSession が存在し、認証済みユーザーが設定されていることを確認する。
     pub async fn info(
         &self,
+        tenant: TenantContext,
         auth_session_id: &str,
     ) -> Result<Option<ConsentInfo>, crate::domain::error::DomainError> {
         let now = self.clock.now();
-        let Some(session) = self.auth_sessions.find_by_id(auth_session_id).await? else {
+        let Some(session) = self
+            .auth_sessions
+            .find_by_id(tenant.tenant_id(), auth_session_id)
+            .await?
+        else {
             return Ok(None);
         };
         if session.is_expired_at(now) {
@@ -88,7 +94,11 @@ impl ConsentService {
         }
 
         // クライアント情報を取得する（表示名が必要）。
-        let client_name = match self.clients.find_by_client_id(&session.client_id).await? {
+        let client_name = match self
+            .clients
+            .find_by_client_id(tenant.tenant_id(), &session.client_id)
+            .await?
+        {
             Some(c) => c.app_name.clone(),
             None => session.client_id.clone(),
         };
@@ -112,12 +122,17 @@ impl ConsentService {
     /// 同意を付与して authorization code を発行する。
     pub async fn approve(
         &self,
+        tenant: TenantContext,
         auth_session_id: &str,
         ctx: &RequestContext,
     ) -> ConsentOutcome {
         let now = self.clock.now();
 
-        let session = match self.auth_sessions.find_by_id(auth_session_id).await {
+        let session = match self
+            .auth_sessions
+            .find_by_id(tenant.tenant_id(), auth_session_id)
+            .await
+        {
             Ok(Some(s)) => s,
             Ok(None) => return ConsentOutcome::SessionExpired,
             Err(e) => return ConsentOutcome::Internal(e.to_string()),
@@ -136,6 +151,7 @@ impl ConsentService {
         // 同意レコードを UPSERT する。
         let consent = ClientConsent {
             user_id,
+            tenant_id: tenant.tenant_id(),
             client_id: session.client_id.clone(),
             scopes: session.scope.clone(),
             granted_at: now,
@@ -149,6 +165,7 @@ impl ConsentService {
             .record(
                 AuditEventType::ConsentGranted,
                 AuditResult::Success,
+                Some(tenant.tenant_id()),
                 Some(user_id),
                 Some(&session.client_id),
                 None,
@@ -161,6 +178,7 @@ impl ConsentService {
             .code_issuance
             .issue(
                 IssueCodeCommand {
+                    tenant,
                     user_id,
                     client_id: session.client_id.clone(),
                     redirect_uri: session.redirect_uri.clone(),
@@ -191,12 +209,17 @@ impl ConsentService {
     /// 同意を拒否して RP にエラーリダイレクトする。
     pub async fn deny(
         &self,
+        tenant: TenantContext,
         auth_session_id: &str,
         ctx: &RequestContext,
     ) -> ConsentOutcome {
         let now = self.clock.now();
 
-        let session = match self.auth_sessions.find_by_id(auth_session_id).await {
+        let session = match self
+            .auth_sessions
+            .find_by_id(tenant.tenant_id(), auth_session_id)
+            .await
+        {
             Ok(Some(s)) => s,
             Ok(None) => return ConsentOutcome::SessionExpired,
             Err(e) => return ConsentOutcome::Internal(e.to_string()),
@@ -211,6 +234,7 @@ impl ConsentService {
             .record(
                 AuditEventType::ConsentDenied,
                 AuditResult::Failure,
+                Some(tenant.tenant_id()),
                 user_id,
                 Some(&session.client_id),
                 Some("user_denied"),

@@ -6,6 +6,7 @@
 use crate::domain::audit::{AuditEvent, AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::repositories::AuditLogSink;
+use crate::domain::tenant::TenantId;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -28,10 +29,13 @@ impl AuditService {
     }
 
     /// 監査イベントを 1 件記録する。PII は渡さない（ユーザー識別は内部 UUID のみ）。
+    /// `tenant_id` はイベントが属するテナント（テナント単位の追跡。ADR-0009 §8）。
+    #[allow(clippy::too_many_arguments)]
     pub async fn record(
         &self,
         event_type: AuditEventType,
         result: AuditResult,
+        tenant_id: Option<TenantId>,
         user_id: Option<Uuid>,
         client_id: Option<&str>,
         reason: Option<&str>,
@@ -40,6 +44,7 @@ impl AuditService {
         let event = AuditEvent {
             event_type,
             occurred_at: self.clock.now(),
+            tenant_id,
             user_id,
             client_id: client_id.map(str::to_string),
             ip_address: ctx.ip_address.clone(),
@@ -53,6 +58,7 @@ impl AuditService {
             target: "audit",
             event_type = event.event_type.as_str(),
             result = event.result.as_str(),
+            tenant_id = event.tenant_id.map(|t| t.to_string()),
             user_id = event.user_id.map(|u| u.to_string()),
             client_id = event.client_id.as_deref(),
             reason = event.reason.as_deref(),

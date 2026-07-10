@@ -26,6 +26,21 @@ pub struct TenantMembership {
 }
 
 impl TenantMembership {
+    /// HOME メンバーシップ（ユーザー作成時に自動生成する投影。ADR-0009 §3）。
+    pub fn new_home(tenant_id: TenantId, user_id: Uuid, now: DateTime<Utc>) -> Self {
+        Self {
+            tenant_id,
+            user_id,
+            membership_type: MembershipType::Home,
+            status: MembershipStatus::Active,
+            invited_by: None,
+            invitation_token_hash: None,
+            invitation_expires_at: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
     pub fn is_home(&self) -> bool {
         self.membership_type == MembershipType::Home
     }

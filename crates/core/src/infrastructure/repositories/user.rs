@@ -2,6 +2,7 @@
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::UserRepository;
+use crate::domain::tenant::TenantId;
 use crate::domain::user::User;
 use crate::domain::values::UserStatus;
 use crate::infrastructure::db::Db;
@@ -21,8 +22,9 @@ impl SqlxUserRepository {
     }
 }
 
-const SELECT_COLUMNS: &str = "id, sub, email, email_verified, preferred_username, name, \
-     password_hash, status, failed_login_count, locked_until, created_at, updated_at";
+const SELECT_COLUMNS: &str = "id, tenant_id, sub, email, email_verified, preferred_username, \
+     name, password_hash, must_change_password, status, failed_login_count, locked_until, \
+     created_at, updated_at";
 
 fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
@@ -38,17 +40,20 @@ fn parse_uuid(s: &str) -> Result<Uuid> {
 
 fn map_row(row: &MySqlRow) -> Result<User> {
     let id: String = row.try_get("id").map_err(repo_err)?;
+    let tenant_id: String = row.try_get("tenant_id").map_err(repo_err)?;
     let sub: String = row.try_get("sub").map_err(repo_err)?;
     let status: String = row.try_get("status").map_err(repo_err)?;
     let locked_until: Option<NaiveDateTime> = row.try_get("locked_until").map_err(repo_err)?;
     Ok(User {
         id: parse_uuid(&id)?,
+        tenant_id: parse_uuid(&tenant_id)?.into(),
         sub: parse_uuid(&sub)?,
         email: row.try_get("email").map_err(repo_err)?,
         email_verified: row.try_get("email_verified").map_err(repo_err)?,
         preferred_username: row.try_get("preferred_username").map_err(repo_err)?,
         name: row.try_get("name").map_err(repo_err)?,
         password_hash: row.try_get("password_hash").map_err(repo_err)?,
+        must_change_password: row.try_get("must_change_password").map_err(repo_err)?,
         status: UserStatus::parse(&status)?,
         failed_login_count: row.try_get("failed_login_count").map_err(repo_err)?,
         locked_until: locked_until.map(to_utc),
@@ -62,17 +67,19 @@ impl UserRepository for SqlxUserRepository {
     async fn create(&self, user: &User) -> Result<()> {
         sqlx::query(
             "INSERT INTO users \
-             (id, sub, email, email_verified, preferred_username, name, password_hash, \
-              status, failed_login_count, locked_until) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             (id, tenant_id, sub, email, email_verified, preferred_username, name, \
+              password_hash, must_change_password, status, failed_login_count, locked_until) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(user.id.to_string())
+        .bind(user.tenant_id.to_string())
         .bind(user.sub.to_string())
         .bind(&user.email)
         .bind(user.email_verified)
         .bind(&user.preferred_username)
         .bind(&user.name)
         .bind(&user.password_hash)
+        .bind(user.must_change_password)
         .bind(user.status.as_str())
         .bind(user.failed_login_count)
         .bind(user.locked_until.map(|d| d.naive_utc()))
@@ -107,9 +114,10 @@ impl UserRepository for SqlxUserRepository {
         row.as_ref().map(map_row).transpose()
     }
 
-    async fn find_by_email(&self, email: &str) -> Result<Option<User>> {
-        let sql = format!("SELECT {SELECT_COLUMNS} FROM users WHERE email = ?");
+    async fn find_by_email(&self, tenant_id: TenantId, email: &str) -> Result<Option<User>> {
+        let sql = format!("SELECT {SELECT_COLUMNS} FROM users WHERE tenant_id = ? AND email = ?");
         let row = sqlx::query(&sql)
+            .bind(tenant_id.to_string())
             .bind(email)
             .fetch_optional(&self.pool)
             .await
@@ -117,9 +125,16 @@ impl UserRepository for SqlxUserRepository {
         row.as_ref().map(map_row).transpose()
     }
 
-    async fn find_by_username(&self, username: &str) -> Result<Option<User>> {
-        let sql = format!("SELECT {SELECT_COLUMNS} FROM users WHERE preferred_username = ?");
+    async fn find_by_username(
+        &self,
+        tenant_id: TenantId,
+        username: &str,
+    ) -> Result<Option<User>> {
+        let sql = format!(
+            "SELECT {SELECT_COLUMNS} FROM users WHERE tenant_id = ? AND preferred_username = ?"
+        );
         let row = sqlx::query(&sql)
+            .bind(tenant_id.to_string())
             .bind(username)
             .fetch_optional(&self.pool)
             .await

@@ -66,7 +66,7 @@ use utoipa::{Modify, OpenApi};
     tags(
         (name = "oidc", description = "OIDC コアエンドポイント"),
         (name = "auth", description = "ユーザー登録・認証"),
-        (name = "admin", description = "管理 API（idp.admin 権限が必要。内部用）"),
+        (name = "admin", description = "管理 API（idp.tenant.admin 権限が必要。内部用）"),
     )
 )]
 pub struct ApiDoc;

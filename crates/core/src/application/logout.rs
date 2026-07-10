@@ -11,6 +11,7 @@ use crate::domain::clock::Clock;
 use crate::domain::repositories::{
     AuthorizationCodeRepository, ClientRepository, SsoSessionRepository, UserRepository,
 };
+use crate::domain::tenant_context::TenantContext;
 use crate::infrastructure::crypto;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -72,8 +73,10 @@ impl LogoutService {
     /// - `sso_session_id`: SSO Cookie の値（平文）。`None` なら既にログアウト済み扱い。
     /// - `client_id_hint`: `client_id` パラメータ（post_logout_redirect_uri の検証に使う）。
     /// - `post_logout_redirect_uri`: RP が指定したリダイレクト先。登録済みのもののみ許可。
+    #[allow(clippy::too_many_arguments)]
     pub async fn logout(
         &self,
+        tenant: TenantContext,
         sso_session_id: Option<&str>,
         client_id_hint: Option<&str>,
         post_logout_redirect_uri: Option<&str>,
@@ -119,6 +122,7 @@ impl LogoutService {
                 .record(
                     AuditEventType::SsoSessionTerminated,
                     AuditResult::Success,
+                    Some(tenant.tenant_id()),
                     Some(uid),
                     None,
                     Some("rp_initiated_logout"),
@@ -131,8 +135,9 @@ impl LogoutService {
             (None, None)
         };
 
-        // 2. 全クライアントを取得して logout endpoint を持つものを収集。
-        let clients = match self.clients.list().await {
+        // 2. テナントの全クライアントを取得して logout endpoint を持つものを収集
+        //    （logout 通知・redirect 検証はフローのテナント内に限る）。
+        let clients = match self.clients.list(tenant.tenant_id()).await {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(error = %e, "failed to list clients for logout notification");

@@ -9,6 +9,7 @@ use crate::domain::authorization_code::AuthorizationCode;
 use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
 use crate::domain::repositories::AuthorizationCodeRepository;
+use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::CodeChallengeMethod;
 use crate::infrastructure::crypto;
 use chrono::{DateTime, Duration, Utc};
@@ -17,6 +18,8 @@ use uuid::Uuid;
 
 /// code 発行に必要な認可情報（AuthSession または SSO 復元から引き継ぐ）。
 pub struct IssueCodeCommand {
+    /// code を発行するテナント（フローのテナント）。
+    pub tenant: TenantContext,
     pub user_id: Uuid,
     pub client_id: String,
     pub redirect_uri: String,
@@ -60,6 +63,7 @@ impl CodeIssuanceService {
 
         let record = AuthorizationCode {
             code_hash: crypto::sha256_hex(&code),
+            tenant_id: cmd.tenant.tenant_id(),
             user_id: cmd.user_id,
             client_id: cmd.client_id.clone(),
             redirect_uri: cmd.redirect_uri,
@@ -80,6 +84,7 @@ impl CodeIssuanceService {
             .record(
                 AuditEventType::AuthorizationCodeIssued,
                 AuditResult::Success,
+                Some(cmd.tenant.tenant_id()),
                 Some(cmd.user_id),
                 Some(&cmd.client_id),
                 None,

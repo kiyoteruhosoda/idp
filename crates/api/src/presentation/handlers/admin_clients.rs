@@ -1,6 +1,6 @@
 //! クライアント（RP）登録・管理エンドポイント（`/admin/clients`、設計仕様 §9.3、Progress A1）。
 //!
-//! すべて `idp.admin` 権限が必要（`RequirePerms<IdpAdmin>`）。`client_secret` は confidential
+//! すべて `idp.tenant.admin` 権限が必要（`RequirePerms<IdpAdmin>`）。`client_secret` は confidential
 //! クライアントの登録・再発行時に**その応答でのみ**平文で返す（DB はハッシュのみ保存）。
 
 use crate::application::client_management::{
@@ -31,7 +31,7 @@ use axum::Json;
         (status = 201, description = "登録成功（confidential は client_secret を含む）", body = ClientCreatedResponse),
         (status = 400, description = "バリデーションエラー"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.admin 必須）"),
+        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
     )
 )]
 pub async fn create_client(
@@ -57,7 +57,7 @@ pub async fn create_client(
 
     let registered = state
         .clients_admin
-        .register(cmd, admin.user_id, &ctx)
+        .register(state.default_tenant, cmd, admin.user_id, &ctx)
         .await
         .map_err(map_error)?;
 
@@ -78,14 +78,17 @@ pub async fn create_client(
     responses(
         (status = 200, description = "クライアント一覧", body = [ClientResponse]),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.admin 必須）"),
+        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
     )
 )]
 pub async fn list_clients(
     RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<ClientResponse>>, ApiError> {
-    let clients = state.clients_admin.list().await.map_err(map_error)?;
+    let clients = state
+        .clients_admin
+        .list(state.default_tenant)
+        .await.map_err(map_error)?;
     Ok(Json(clients.iter().map(client_response).collect()))
 }
 
@@ -98,7 +101,7 @@ pub async fn list_clients(
     responses(
         (status = 200, description = "クライアント", body = ClientResponse),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.admin 必須）"),
+        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
         (status = 404, description = "不存在"),
     )
 )]
@@ -109,7 +112,7 @@ pub async fn get_client(
 ) -> Result<Json<ClientResponse>, ApiError> {
     let client = state
         .clients_admin
-        .get(&client_id)
+        .get(state.default_tenant, &client_id)
         .await
         .map_err(map_error)?;
     Ok(Json(client_response(&client)))
@@ -126,7 +129,7 @@ pub async fn get_client(
         (status = 200, description = "更新後のクライアント", body = ClientResponse),
         (status = 400, description = "バリデーションエラー"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.admin 必須）"),
+        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
         (status = 404, description = "不存在"),
     )
 )]
@@ -157,7 +160,7 @@ pub async fn update_client(
 
     let client = state
         .clients_admin
-        .update(&client_id, cmd, admin.user_id, &ctx)
+        .update(state.default_tenant, &client_id, cmd, admin.user_id, &ctx)
         .await
         .map_err(map_error)?;
     Ok(Json(client_response(&client)))
@@ -173,7 +176,7 @@ pub async fn update_client(
         (status = 200, description = "新しい client_secret", body = ClientSecretResponse),
         (status = 400, description = "public クライアントには secret が無い"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.admin 必須）"),
+        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
         (status = 404, description = "不存在"),
     )
 )]
@@ -187,7 +190,7 @@ pub async fn rotate_client_secret(
     let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
     let (client, secret) = state
         .clients_admin
-        .rotate_secret(&client_id, admin.user_id, &ctx)
+        .rotate_secret(state.default_tenant, &client_id, admin.user_id, &ctx)
         .await
         .map_err(map_error)?;
     Ok(Json(ClientSecretResponse {
@@ -197,14 +200,14 @@ pub async fn rotate_client_secret(
 }
 
 /// クライアント状況一覧（`GET /admin/clients/status`）。状態・scope・最終利用時刻。管理コンソール
-/// （web）の状況画面が用いる支援 API（`idp.admin` 必須）。
+/// （web）の状況画面が用いる支援 API（`idp.tenant.admin` 必須）。
 pub async fn list_client_status(
     RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<idp_contracts::admin::ClientStatusResponse>>, ApiError> {
     let views = state
         .clients_status
-        .list()
+        .list(state.default_tenant)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(
