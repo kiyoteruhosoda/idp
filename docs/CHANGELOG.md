@@ -2,6 +2,17 @@
 
 完了した重要な変更の要約（詳しい経緯は `history/`、設計判断は `adr/`）。
 
+## 2026-07-10（ADR-0009 改訂: マルチテナントアーキテクチャ）
+
+- **ADR-0009 をレビューに基づき改訂**。`/root` エイリアスと `/admin` 横断名前空間を廃止し、
+  root 含め URL を `/{tenant_id}/...` に完全一律化。権限判定を「要求テナントが権限 scope の
+  サブツリー（祖先包含）に含まれるか」の一律判定へ一本化。
+- レビュー指摘の反映: SSO セッションのテナント境界（認証は帰属テナント・認可は scope 判定、
+  OIDC フローでは帰属テナント一致を検証）、api/web 分割（ADR-0007）との整合（contracts DTO へ
+  `tenant_id` 追加）、WebAuthn RP ID はホスト単位でパスを含められない制約、`idp.system.admin` の
+  scope = root 強制（CHECK 制約）、DISABLED の階層伝播、追加マイグレーション方式
+  （ベースライン書き換え禁止・expand/contract）、テナント削除条件の文言修正 ほか。
+
 ## 2026-07-08（F4: Logout / F5: Token 管理）
 
 - **F4 — RP-initiated Logout（設計仕様 §9.3 / OIDC RP-initiated Logout 1.0）**:
