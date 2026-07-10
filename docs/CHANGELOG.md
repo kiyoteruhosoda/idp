@@ -2,6 +2,22 @@
 
 完了した重要な変更の要約（詳しい経緯は `history/`、設計判断は `adr/`）。
 
+## 2026-07-10（MT3・MT4: UUIDv7 生成の集約 + Tenant/TenantMembership ドメイン基盤）
+
+- **MT3 — UUIDv7 導入**: `uuid` crate に `v7` feature を追加。エンティティ主キーの生成を
+  `domain::id_generator::IdGenerator` トレイト（`infrastructure::id_generator::UuidV7Generator` が
+  `Uuid::now_v7()` で実装）へ集約し、`RegisterService`（`User.id`/`sub`）・`ClientManagementService`
+  （`Client.id`）・`PasskeyRegistrationService`（`WebAuthnCredential.id`）へ Clock と同様に注入した。
+  `jti`／`correlation_id`／`csrf_id`／`PasskeyChallenge.id` 等の揮発トークンは時刻順序性が不要かつ
+  生成時刻を露出させたくないため v4 のまま維持する（ADR-0009 §12）。
+- **MT4 — テナントのドメイン基盤**: `domain::tenant::{Tenant, TenantId}`・
+  `domain::tenant_membership::TenantMembership` エンティティと、`domain::tenant_context::{TenantContext,
+  TenantScope}` 値オブジェクト（`TenantScope::matches` で「要求テナント ID と scope の完全一致」判定。
+  祖先・配下は考慮しない。ADR-0009 §4）を追加。`domain::repositories::{TenantRepository,
+  TenantMembershipRepository}` トレイトと sqlx 実装（`SqlxTenantRepository`／
+  `SqlxTenantMembershipRepository`）を追加した。既存の Repository trait／ユースケースへの
+  `tenant_id` 波及（MT5）はまだ行っていない。
+
 ## 2026-07-10（MT1・MT2: マルチテナントのデータ基盤 — 初期 DDL・seed の刷新）
 
 - **初期マイグレーションを ADR-0009 の定義で全面刷新**（既存 0001〜0012 を廃棄し

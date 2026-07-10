@@ -12,6 +12,7 @@ use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::client::Client;
 use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
+use crate::domain::id_generator::IdGenerator;
 use crate::domain::password::PasswordHasher;
 use crate::domain::repositories::ClientRepository;
 use crate::domain::values::{ClientStatus, ClientType, Scope, TokenEndpointAuthMethod};
@@ -77,6 +78,7 @@ pub struct ClientManagementService {
     hasher: Arc<dyn PasswordHasher>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
+    ids: Arc<dyn IdGenerator>,
 }
 
 impl ClientManagementService {
@@ -85,12 +87,14 @@ impl ClientManagementService {
         hasher: Arc<dyn PasswordHasher>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
+        ids: Arc<dyn IdGenerator>,
     ) -> Self {
         Self {
             clients,
             hasher,
             audit,
             clock,
+            ids,
         }
     }
 
@@ -125,7 +129,7 @@ impl ClientManagementService {
 
         let now = self.clock.now();
         let client = Client {
-            id: Uuid::new_v4(),
+            id: self.ids.new_id(),
             client_id: crate::infrastructure::crypto::random_hex(CLIENT_ID_BYTES),
             client_secret_hash: secret_hash,
             client_type: cmd.client_type,

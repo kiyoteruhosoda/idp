@@ -27,7 +27,9 @@ use crate::application::totp_registration::TotpRegistrationService;
 use crate::application::userinfo::UserInfoService;
 use crate::config::Config;
 use crate::domain::clock::Clock;
+use crate::domain::id_generator::IdGenerator;
 use crate::infrastructure::db::Db;
+use crate::infrastructure::id_generator::UuidV7Generator;
 use crate::infrastructure::password::Argon2PasswordHasher;
 use crate::infrastructure::rate_limit::InMemoryLoginRateLimiter;
 use crate::infrastructure::repositories::audit_log::{SqlxAuditLogQuery, SqlxAuditLogSink};
@@ -97,6 +99,7 @@ impl AppState {
         let audit_sink = Arc::new(SqlxAuditLogSink::new(pool.clone()));
         let audit_logs = Arc::new(SqlxAuditLogQuery::new(pool.clone()));
         let hasher = Arc::new(Argon2PasswordHasher::new());
+        let ids: Arc<dyn IdGenerator> = Arc::new(UuidV7Generator);
         let rate_limiter = Arc::new(InMemoryLoginRateLimiter::new(
             LOGIN_RATE_LIMIT_MAX_ATTEMPTS,
             chrono::Duration::minutes(LOGIN_RATE_LIMIT_WINDOW_MINUTES),
@@ -119,6 +122,7 @@ impl AppState {
             users.clone(),
             hasher.clone(),
             clock.clone(),
+            ids.clone(),
         ));
         let authorize = Arc::new(AuthorizeService::new(
             clients.clone(),
@@ -171,6 +175,7 @@ impl AppState {
             hasher.clone(),
             audit.clone(),
             clock.clone(),
+            ids.clone(),
         ));
         // クライアント状況一覧（A3）: 登録クライアント × 監査ログ由来の最終利用時刻。
         let clients_status = Arc::new(ClientStatusService::new(
@@ -272,6 +277,7 @@ impl AppState {
             sso_sessions.clone(),
             webauthn.clone(),
             clock.clone(),
+            ids,
         ));
         let passkey_authentication = Arc::new(PasskeyAuthenticationService::new(
             webauthn_credentials,

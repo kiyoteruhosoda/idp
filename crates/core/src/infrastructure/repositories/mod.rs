@@ -10,6 +10,8 @@ pub mod refresh_token;
 pub mod revoked_access_token;
 pub mod signing_key;
 pub mod sso_session;
+pub mod tenant;
+pub mod tenant_membership;
 pub mod totp_secret;
 pub mod user;
 pub mod user_permission;
