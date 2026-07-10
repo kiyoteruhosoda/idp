@@ -21,6 +21,7 @@ use crate::application::client_status::ClientStatusService;
 use crate::application::code_issuance::CodeIssuanceService;
 use crate::application::consent::ConsentService;
 use crate::application::introspection::IntrospectionService;
+use crate::application::invitation::InvitationService;
 use crate::application::key_service::KeyService;
 use crate::application::login::LoginService;
 use crate::application::logout::LogoutService;
@@ -93,6 +94,8 @@ pub struct AppState {
     pub clients_admin: Arc<ClientManagementService>,
     pub clients_status: Arc<ClientStatusService>,
     pub permissions_admin: Arc<PermissionManagementService>,
+    /// ゲスト招待・メンバーシップ（ADR-0009 §3）。HTTP エンドポイントは MT11 で追加する。
+    pub invitations: Arc<InvitationService>,
     pub audit_query: Arc<AuditQueryService>,
     pub logout: Arc<LogoutService>,
     pub revocation: Arc<RevocationService>,
@@ -171,6 +174,7 @@ impl AppState {
             users.clone(),
             auth_sessions.clone(),
             sso_sessions.clone(),
+            tenant_memberships.clone(),
             client_consents.clone(),
             code_issuance.clone(),
             audit.clone(),
@@ -253,6 +257,16 @@ impl AppState {
             audit.clone(),
             clock.clone(),
         ));
+        // ゲスト招待・メンバーシップ（ADR-0009 §3）。権限は同一キャッシュ付きリポジトリを共有するため、
+        // メンバーシップ解除に伴う権限剥奪も判定キャッシュへ即時反映される。
+        let invitations = Arc::new(InvitationService::new(
+            users.clone(),
+            tenant_memberships.clone(),
+            user_permissions.clone(),
+            audit.clone(),
+            clock.clone(),
+            config.invitation_ttl(),
+        ));
         let admin_access = Arc::new(AdminAccessService::new(
             sso_sessions.clone(),
             users.clone(),
@@ -320,6 +334,10 @@ impl AppState {
             config.sso_absolute_ttl(),
         ));
 
+        // WebAuthn の RP ID・origin は**基底 issuer のホスト**から導出する（ADR-0009 §6）。
+        // per-tenant issuer（`<基底>/<tenant_id>`）は渡さない — WebAuthn はプロトコル上ホスト単位であり、
+        // パスを含められないため。テナント分離は「クレデンシャル ⇔ ユーザー ⇔ 所属元テナント」の
+        // アプリ層の紐付けで実現する。`config.issuer()` は基底（ホスト）issuer。
         let webauthn = Arc::new(WebAuthnService::new(config.issuer()));
         let passkey_registration = Arc::new(PasskeyRegistrationService::new(
             webauthn_credentials.clone(),
@@ -361,6 +379,7 @@ impl AppState {
             clients_admin,
             clients_status,
             permissions_admin,
+            invitations,
             audit_query,
             logout,
             revocation,

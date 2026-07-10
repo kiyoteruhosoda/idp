@@ -365,7 +365,13 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     let discovery = body_json(response).await;
-    assert_eq!(discovery["issuer"], issuer.as_str());
+    // per-tenant issuer（ADR-0009 §6）: 過渡期は root テナントで `<基底>/<root_uuid>` を合成する。
+    let tenant_issuer = format!("{issuer}/{root_tenant_id}");
+    assert_eq!(discovery["issuer"], tenant_issuer.as_str());
+    assert_eq!(
+        discovery["authorization_endpoint"],
+        format!("{tenant_issuer}/authorize").as_str()
+    );
 
     let response = send(
         &app,
@@ -398,7 +404,7 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     validation.set_audience(&[client_id.as_str()]);
     let id_claims = jsonwebtoken::decode::<Value>(&id_token, &decoding_key, &validation)
         .expect("verify id token");
-    assert_eq!(id_claims.claims["iss"], issuer.as_str());
+    assert_eq!(id_claims.claims["iss"], tenant_issuer.as_str());
     assert_eq!(id_claims.claims["sub"], sub.as_str());
     assert_eq!(id_claims.claims["nonce"], "nonce-xyz");
     assert!(id_claims.claims["auth_time"].is_i64());

@@ -12,6 +12,7 @@ pub mod client_status;
 pub mod code_issuance;
 pub mod consent;
 pub mod introspection;
+pub mod invitation;
 pub mod key_service;
 pub mod login;
 pub mod logout;

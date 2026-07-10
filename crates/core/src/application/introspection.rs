@@ -9,6 +9,7 @@ use crate::application::token::{userinfo_audience, AccessTokenClaims};
 use crate::domain::client::Client;
 use crate::domain::clock::Clock;
 use crate::domain::error::OAuthErrorCode;
+use crate::domain::issuer::tenant_issuer;
 use crate::domain::password::PasswordHasher;
 use crate::domain::repositories::{
     ClientRepository, RefreshTokenRepository, RevokedAccessTokenRepository, SigningKeyRepository,
@@ -85,7 +86,8 @@ pub struct IntrospectionService {
     revoked_access_tokens: Arc<dyn RevokedAccessTokenRepository>,
     hasher: Arc<dyn PasswordHasher>,
     clock: Arc<dyn Clock>,
-    issuer: String,
+    /// 基底 issuer。検証・応答の `iss` はテナント毎に `<基底>/<tenant_id>` を合成する（ADR-0009 §6）。
+    base_issuer: String,
     clock_skew: chrono::Duration,
 }
 
@@ -98,7 +100,7 @@ impl IntrospectionService {
         revoked_access_tokens: Arc<dyn RevokedAccessTokenRepository>,
         hasher: Arc<dyn PasswordHasher>,
         clock: Arc<dyn Clock>,
-        issuer: String,
+        base_issuer: String,
         clock_skew: std::time::Duration,
     ) -> Self {
         Self {
@@ -108,7 +110,7 @@ impl IntrospectionService {
             revoked_access_tokens,
             hasher,
             clock,
-            issuer,
+            base_issuer,
             clock_skew: chrono::Duration::from_std(clock_skew).expect("clock skew out of range"),
         }
     }
@@ -130,27 +132,30 @@ impl IntrospectionService {
             .authenticate_confidential_client(tenant, client_id, basic_credentials)
             .await?;
 
+        // `iss` はテナント毎に合成する（発行テナントに束縛。ADR-0009 §6）。
+        let issuer = tenant_issuer(&self.base_issuer, tenant.tenant_id());
+
         // token_type_hint に従って access_token / refresh_token を試みる。
         match token_type_hint {
             Some("refresh_token") => {
-                let resp = self.introspect_refresh_token(tenant, token, &client).await;
+                let resp = self.introspect_refresh_token(tenant, token, &client, &issuer).await;
                 if resp.active {
                     return Ok(resp);
                 }
-                Ok(self.introspect_access_token(token).await)
+                Ok(self.introspect_access_token(token, &issuer).await)
             }
             _ => {
-                let resp = self.introspect_access_token(token).await;
+                let resp = self.introspect_access_token(token, &issuer).await;
                 if resp.active {
                     return Ok(resp);
                 }
-                Ok(self.introspect_refresh_token(tenant, token, &client).await)
+                Ok(self.introspect_refresh_token(tenant, token, &client, &issuer).await)
             }
         }
     }
 
-    /// Access Token（JWT）のイントロスペクション。
-    async fn introspect_access_token(&self, token: &str) -> IntrospectionResponse {
+    /// Access Token（JWT）のイントロスペクション。`issuer` は要求テナントの合成 issuer。
+    async fn introspect_access_token(&self, token: &str, issuer: &str) -> IntrospectionResponse {
         // JWT ヘッダから kid を取得。
         let header = match jsonwebtoken::decode_header(token) {
             Ok(h) => h,
@@ -183,8 +188,8 @@ impl IntrospectionService {
             Err(_) => return IntrospectionResponse::inactive(),
         };
 
-        // iss / aud 検証。
-        if claims.iss != self.issuer || claims.aud != userinfo_audience(&self.issuer) {
+        // iss / aud 検証（要求テナントの合成 issuer と厳密一致）。
+        if claims.iss != issuer || claims.aud != userinfo_audience(issuer) {
             return IntrospectionResponse::inactive();
         }
 
@@ -226,6 +231,7 @@ impl IntrospectionService {
         tenant: TenantContext,
         token: &str,
         _requesting_client: &Client,
+        issuer: &str,
     ) -> IntrospectionResponse {
         let hash = crypto::sha256_hex(token);
         let rt = match self
@@ -251,7 +257,7 @@ impl IntrospectionService {
             exp: Some(rt.expires_at.timestamp()),
             iat: None,
             sub: Some(rt.user_id.to_string()),
-            iss: Some(self.issuer.clone()),
+            iss: Some(issuer.to_string()),
             jti: Some(rt.token_hash.clone()),
         }
     }

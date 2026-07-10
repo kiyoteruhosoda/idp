@@ -12,6 +12,7 @@ use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::client::Client;
 use crate::domain::clock::Clock;
 use crate::domain::error::OAuthErrorCode;
+use crate::domain::issuer::tenant_issuer;
 use crate::domain::password::PasswordHasher;
 use crate::domain::pkce;
 use crate::domain::refresh_token::RefreshToken;
@@ -114,7 +115,9 @@ pub struct TokenService {
     hasher: Arc<dyn PasswordHasher>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
-    issuer: String,
+    /// 基底 issuer（`https://<host>`）。`iss` はテナント毎に `<基底>/<tenant_id>` を合成する
+    /// （ADR-0009 §6。`domain::issuer::tenant_issuer`）。
+    base_issuer: String,
     access_token_ttl: std::time::Duration,
     id_token_ttl: std::time::Duration,
     refresh_token_ttl: std::time::Duration,
@@ -131,7 +134,7 @@ impl TokenService {
         hasher: Arc<dyn PasswordHasher>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
-        issuer: String,
+        base_issuer: String,
         access_token_ttl: std::time::Duration,
         id_token_ttl: std::time::Duration,
         refresh_token_ttl: std::time::Duration,
@@ -145,7 +148,7 @@ impl TokenService {
             hasher,
             audit,
             clock,
-            issuer,
+            base_issuer,
             access_token_ttl,
             id_token_ttl,
             refresh_token_ttl,
@@ -272,9 +275,11 @@ impl TokenService {
         let has = |s: Scope| auth_code.scope.iter().any(|v| v == s.as_str());
         let scope_str = auth_code.scope.join(" ");
         let iat = now.timestamp();
+        // `iss` はテナント毎に合成する（ADR-0009 §6）。発行テナント（= フローのテナント）に束縛する。
+        let issuer = tenant_issuer(&self.base_issuer, tenant_id);
 
         let id_claims = IdTokenClaims {
-            iss: self.issuer.clone(),
+            iss: issuer.clone(),
             sub: user.sub.to_string(),
             aud: client_id.clone(),
             exp: iat + self.id_token_ttl.as_secs() as i64,
@@ -288,9 +293,9 @@ impl TokenService {
             name: has(Scope::Profile).then(|| user.name.clone()).flatten(),
         };
         let access_claims = AccessTokenClaims {
-            iss: self.issuer.clone(),
+            iss: issuer.clone(),
             sub: user.sub.to_string(),
-            aud: userinfo_audience(&self.issuer),
+            aud: userinfo_audience(&issuer),
             client_id: client_id.clone(),
             scope: scope_str.clone(),
             exp: iat + self.access_token_ttl.as_secs() as i64,
@@ -443,9 +448,10 @@ impl TokenService {
         let has = |s: Scope| stored.scope.iter().any(|v| v == s.as_str());
         let scope_str = stored.scope.join(" ");
         let iat = now.timestamp();
+        let issuer = tenant_issuer(&self.base_issuer, tenant_id);
 
         let id_claims = IdTokenClaims {
-            iss: self.issuer.clone(),
+            iss: issuer.clone(),
             sub: user.sub.to_string(),
             aud: client_id.clone(),
             exp: iat + self.id_token_ttl.as_secs() as i64,
@@ -459,9 +465,9 @@ impl TokenService {
             name: has(Scope::Profile).then(|| user.name.clone()).flatten(),
         };
         let access_claims = AccessTokenClaims {
-            iss: self.issuer.clone(),
+            iss: issuer.clone(),
             sub: user.sub.to_string(),
-            aud: userinfo_audience(&self.issuer),
+            aud: userinfo_audience(&issuer),
             client_id: client_id.clone(),
             scope: scope_str.clone(),
             exp: iat + self.access_token_ttl.as_secs() as i64,

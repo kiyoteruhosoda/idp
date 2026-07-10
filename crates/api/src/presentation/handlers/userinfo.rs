@@ -29,7 +29,8 @@ pub async fn userinfo(State(state): State<AppState>, headers: HeaderMap) -> Resp
         return unauthorized("missing bearer token");
     };
 
-    match state.userinfo.userinfo(token).await {
+    // 過渡期（MT9 まで）は既定テナント（root）で検証する。MT9 でパス由来の ResolvedTenant へ置換。
+    match state.userinfo.userinfo(state.default_tenant, token).await {
         Ok(claims) => Json(UserInfoResponse {
             sub: claims.sub,
             email: claims.email,

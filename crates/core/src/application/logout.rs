@@ -8,6 +8,7 @@
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
+use crate::domain::issuer::tenant_issuer;
 use crate::domain::repositories::{
     AuthorizationCodeRepository, ClientRepository, SsoSessionRepository, UserRepository,
 };
@@ -44,7 +45,8 @@ pub struct LogoutService {
     codes: Arc<dyn AuthorizationCodeRepository>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
-    issuer: String,
+    /// 基底 issuer。front-channel logout の `iss` はテナント毎に合成する（ADR-0009 §6）。
+    base_issuer: String,
 }
 
 impl LogoutService {
@@ -55,7 +57,7 @@ impl LogoutService {
         codes: Arc<dyn AuthorizationCodeRepository>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
-        issuer: String,
+        base_issuer: String,
     ) -> Self {
         Self {
             sso_sessions,
@@ -64,7 +66,7 @@ impl LogoutService {
             codes,
             audit,
             clock,
-            issuer,
+            base_issuer,
         }
     }
 
@@ -155,7 +157,7 @@ impl LogoutService {
             })
             .collect();
 
-        let issuer = self.issuer.clone();
+        let issuer = tenant_issuer(&self.base_issuer, tenant.tenant_id());
         let frontchannel_uris: Vec<String> = clients
             .iter()
             .filter_map(|c| {

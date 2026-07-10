@@ -5,9 +5,11 @@
 
 use crate::application::token::{userinfo_audience, AccessTokenClaims};
 use crate::domain::clock::Clock;
+use crate::domain::issuer::tenant_issuer;
 use crate::domain::repositories::{
     RevokedAccessTokenRepository, SigningKeyRepository, UserRepository,
 };
+use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::Scope;
 use crate::infrastructure::jwt;
 use jsonwebtoken::{Algorithm, Validation};
@@ -42,7 +44,9 @@ pub struct UserInfoService {
     users: Arc<dyn UserRepository>,
     revoked_access_tokens: Arc<dyn RevokedAccessTokenRepository>,
     clock: Arc<dyn Clock>,
-    issuer: String,
+    /// 基底 issuer。検証時はテナント毎に `<基底>/<tenant_id>` を合成して `iss`/`aud` を厳密照合する
+    /// （ADR-0009 §6。他テナント発行トークンの流用を防ぐ）。
+    base_issuer: String,
     clock_skew: chrono::Duration,
 }
 
@@ -52,7 +56,7 @@ impl UserInfoService {
         users: Arc<dyn UserRepository>,
         revoked_access_tokens: Arc<dyn RevokedAccessTokenRepository>,
         clock: Arc<dyn Clock>,
-        issuer: String,
+        base_issuer: String,
         clock_skew: std::time::Duration,
     ) -> Self {
         Self {
@@ -60,13 +64,17 @@ impl UserInfoService {
             users,
             revoked_access_tokens,
             clock,
-            issuer,
+            base_issuer,
             clock_skew: chrono::Duration::from_std(clock_skew).expect("clock skew out of range"),
         }
     }
 
-    pub async fn userinfo(&self, bearer_token: &str) -> Result<UserInfoClaims, UserInfoError> {
-        let claims = self.verify_access_token(bearer_token).await?;
+    pub async fn userinfo(
+        &self,
+        tenant: TenantContext,
+        bearer_token: &str,
+    ) -> Result<UserInfoClaims, UserInfoError> {
+        let claims = self.verify_access_token(tenant, bearer_token).await?;
 
         let scopes: Vec<&str> = claims.scope.split_whitespace().collect();
         if !scopes.contains(&Scope::OpenId.as_str()) {
@@ -104,7 +112,12 @@ impl UserInfoService {
     }
 
     /// Access Token（JWT）を検証してクレームを返す（署名・typ・iss・aud・exp）。
-    async fn verify_access_token(&self, token: &str) -> Result<AccessTokenClaims, UserInfoError> {
+    /// `iss`/`aud` は要求テナントの合成 issuer と厳密一致すること（他テナント発行トークンを弾く）。
+    async fn verify_access_token(
+        &self,
+        tenant: TenantContext,
+        token: &str,
+    ) -> Result<AccessTokenClaims, UserInfoError> {
         let header = jsonwebtoken::decode_header(token)
             .map_err(|_| UserInfoError::InvalidToken("malformed token"))?;
         if header.typ.as_deref() != Some("at+jwt") {
@@ -133,10 +146,11 @@ impl UserInfoService {
             .map_err(|_| UserInfoError::InvalidToken("signature verification failed"))?;
         let claims = data.claims;
 
-        if claims.iss != self.issuer {
+        let expected_issuer = tenant_issuer(&self.base_issuer, tenant.tenant_id());
+        if claims.iss != expected_issuer {
             return Err(UserInfoError::InvalidToken("issuer mismatch"));
         }
-        if claims.aud != userinfo_audience(&self.issuer) {
+        if claims.aud != userinfo_audience(&expected_issuer) {
             return Err(UserInfoError::InvalidToken("audience mismatch"));
         }
         let now = self.clock.now().timestamp();

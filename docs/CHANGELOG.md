@@ -2,6 +2,40 @@
 
 完了した重要な変更の要約（詳しい経緯は `history/`、設計判断は `adr/`）。
 
+## 2026-07-10（MT8: 招待ユースケース + OIDC フローのメンバーシップ判定）
+
+- **招待ユースケース**（ADR-0009 §3。`application::invitation::InvitationService`）:
+  - **招待作成**: 参加先テナントの管理者が既存ユーザーをゲスト招待する。GUEST/INVITED メンバーシップを
+    作成し、一度限りの平文トークンを返す（保存はハッシュのみ。ログ・監査には出さない）。既メンバー
+    （HOME/GUEST/INVITED）は `AlreadyMember`、不存在ユーザーは `NotFound`。
+  - **承諾**: 被招待ユーザー本人がログイン済みセッション + トークン提示で `ACTIVE` 化する。トークンが
+    当該テナントの招待でない・期限切れ・不存在は一律 `InvalidOrExpired`、本人でなければ `Forbidden`。
+  - **メンバーシップ解除**: ゲストを追放する。HOME は解除不可（`Forbidden`）。解除時に当該テナントを
+    scope とする権限行も剥奪する（列挙 → 個別 revoke。権限キャッシュも invalidate）。
+  - 監査イベント `tenant_invitation.created` / `.accepted` / `tenant_membership.revoked` を追加。
+    HTTP エンドポイント（`/{tenant_id}/admin/invitations` 等）は MT11 で追加する。`AppState.invitations`
+    に配線済み。招待 TTL は `INVITATION_TTL_SECS`（既定 7 日）。
+- **OIDC フローのメンバーシップ判定**（ADR-0009 §8）: `AuthorizeService` の SSO 復元経路に、要求
+  テナントの **ACTIVE メンバーシップ（HOME または GUEST）検証**を追加。メンバーシップのない SSO
+  セッションは当該テナントのフローでは未認証として扱う（= ログインへ）。ゲストは所属元テナントで
+  ログインしてホスト共有 SSO を確立し、参加先テナントのフローではこの判定で許可される。認証（ログイン）
+  自体の所属元テナント限定は MT5 で導入済み。
+
+## 2026-07-10（MT7: per-tenant issuer 合成 + WebAuthn RP ID の基底ホスト分離）
+
+- **per-tenant issuer**（ADR-0009 §6。`domain::issuer::tenant_issuer`）: 発行トークン（ID/Access）・
+  discovery・introspection・front-channel logout の `iss` を `<基底 issuer>/<tenant_id>` の canonical
+  形式へ移行。基底 issuer は設定値（`config.issuer()`）由来で Host ヘッダから導出しない
+  （host header injection 対策）。`TokenService`/`UserInfoService`/`IntrospectionService`/`LogoutService`
+  は起動時固定 issuer を保持する構造から、リクエストの `TenantContext` を用いた**毎リクエスト合成**へ
+  変更。リソースサーバ（userinfo/introspection）は要求テナントの合成 issuer と `iss`/`aud` を厳密照合し、
+  他テナント発行トークンの流用を弾く。
+- **WebAuthn RP ID の基底ホスト分離**: WebAuthn はプロトコル上ホスト単位でパスを含められないため、
+  RP ID・origin は**基底 issuer のホスト**から導出する（per-tenant issuer は渡さない）。テナント分離は
+  「クレデンシャル ⇔ ユーザー ⇔ 所属元テナント」のアプリ層の紐付けで実現する（`state.rs` に明示）。
+- **過渡期（MT9 まで）**: ルーティングは未導入のため、各エンドポイントは既定テナント（root）で issuer を
+  合成する（`iss` = `<基底>/<root_uuid>`）。MT9 でパス由来 `ResolvedTenant` へ置き換える。
+
 ## 2026-07-10（MT6: 汎用 TTL キャッシュ抽象 + TenantResolver + 権限解決のキャッシュ化）
 
 - **汎用 TTL キャッシュ抽象**（ADR-0009 §7）: `domain::cache::Cache<K, V>` trait（`get`/`insert`/

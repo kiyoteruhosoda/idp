@@ -16,7 +16,7 @@ use crate::domain::clock::Clock;
 use crate::domain::error::OAuthErrorCode;
 use crate::domain::repositories::{
     AuthSessionRepository, ClientConsentRepository, ClientRepository, SsoSessionRepository,
-    UserRepository,
+    TenantMembershipRepository, UserRepository,
 };
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::{CodeChallengeMethod, Scope};
@@ -65,6 +65,7 @@ pub struct AuthorizeService {
     users: Arc<dyn UserRepository>,
     auth_sessions: Arc<dyn AuthSessionRepository>,
     sso_sessions: Arc<dyn SsoSessionRepository>,
+    memberships: Arc<dyn TenantMembershipRepository>,
     client_consents: Arc<dyn ClientConsentRepository>,
     code_issuance: Arc<CodeIssuanceService>,
     audit: Arc<AuditService>,
@@ -80,6 +81,7 @@ impl AuthorizeService {
         users: Arc<dyn UserRepository>,
         auth_sessions: Arc<dyn AuthSessionRepository>,
         sso_sessions: Arc<dyn SsoSessionRepository>,
+        memberships: Arc<dyn TenantMembershipRepository>,
         client_consents: Arc<dyn ClientConsentRepository>,
         code_issuance: Arc<CodeIssuanceService>,
         audit: Arc<AuditService>,
@@ -92,6 +94,7 @@ impl AuthorizeService {
             users,
             auth_sessions,
             sso_sessions,
+            memberships,
             client_consents,
             code_issuance,
             audit,
@@ -401,6 +404,18 @@ impl AuthorizeService {
         match self.users.find_by_id(session.user_id).await? {
             Some(user) if user.is_active() && !user.is_locked_at(now) => {}
             _ => return Ok(None),
+        }
+
+        // OIDC フローのメンバーシップ判定（ADR-0009 §8）: SSO セッションはホスト単位で共有されるため、
+        // ユーザーが**要求テナントの ACTIVE メンバーシップ（HOME または GUEST）を持つこと**を検証する。
+        // メンバーシップのない SSO セッションは当該テナントのフローでは未認証として扱う（= ログインへ）。
+        // ゲストは所属元テナントでログインしてこの SSO を確立し、参加先テナントではこの判定で許可される。
+        if !self
+            .memberships
+            .is_active_member(tenant.tenant_id(), session.user_id)
+            .await?
+        {
+            return Ok(None);
         }
 
         // idle 期限を +8h 更新（absolute は変更しない）。auth_time は初回ログイン時刻を維持する。

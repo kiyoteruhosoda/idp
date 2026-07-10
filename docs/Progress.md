@@ -20,40 +20,39 @@ Phase 計画に沿う。
 
 | 優先 | # | 概要 | 状態 | 影響度 | 工数 | 推奨モデル |
 |---|---|---|---|---|---|---|
-| 1 | MT7 | per-tenant issuer 合成（基底 issuer + tenant_id）+ WebAuthn RP ID の基底ホスト分離 | ⬜未着手 | 大 | 中 | Opus 4.8 |
-| 2 | MT8 | 招待ユースケース（招待作成・トークン一度限り返却・承諾・解除）+ OIDC フローのメンバーシップ判定（認証は所属元テナント限定） | ⬜未着手 | 大 | 中 | Opus 4.8 |
-| 3 | MT9 | `/{tenant_id}/...` ルーティング（静的パス優先 + UUID 検証、静的アセットはテナント外）+ MT6 の `TenantResolver` middleware を mount し `RequirePerms` の要求テナントをパス由来へ | ⬜未着手 | 中 | 中 | Sonnet 5 |
-| 4 | MT10 | `crates/contracts` DTO へ `tenant_id` 追加 + web `api_client.rs` のテナント対応 | ⬜未着手 | 中 | 中 | Sonnet 5 |
-| 5 | MT11 | 管理 API（`tenants`/`users`/`clients`/`members`/`invitations`）+ テナント作成時の管理者自動生成・パスワード自動生成・`must_change_password` 付与 | ⬜未着手 | 大 | 大 | Opus 4.8 |
-| 6 | MT12 | パスワード変更（リセット）画面 + 初回ログイン時の強制変更誘導 | ⬜未着手 | 中 | 中 | Sonnet 5 |
-| 7 | MT13 | テナント管理コンソール（`/{tenant_id}/admin/`）— ユーザー・クライアント・メンバー・招待管理 | ⬜未着手 | 中 | 大 | Sonnet 5 |
-| 8 | MT14 | 設定画面（`/{tenant_id}/admin/settings`）— テナント設定 + root のみシステム設定区画（SMTP 等） | ⬜未着手 | 中 | 中 | Sonnet 5 |
-| 9 | MT15 | ユーザー設定画面（`/{tenant_id}/settings`）— パスワード変更・MFA・言語設定 | ⬜未着手 | 小 | 中 | Sonnet 5 |
-| 10 | MT16 | 統合テスト（テナント間分離・権限境界の完全一致・ゲスト保護・「root は作成できるが内部を操作できない」の検証） | ⬜未着手 | 大 | 中 | Opus 4.8 |
-| 11 | MT17 | 招待のメール配送（MT14 の SMTP 設定完了後。手動トークン伝達 → メールリンク） | ⬜未着手 | 中 | 中 | Sonnet 5 |
-| 12 | MT18 | セルフサービス・パスワードリセット（忘失時。外部 SMTP 連携。MT14 完了後） | ⬜未着手 | 中 | 中 | Sonnet 5 |
+| 1 | MT9 | `/{tenant_id}/...` ルーティング（静的パス優先 + UUID 検証、静的アセットはテナント外）+ MT6 の `TenantResolver` middleware を mount し `RequirePerms`・OIDC 各ハンドラの要求テナントをパス由来へ | ⬜未着手 | 中 | 中 | Sonnet 5 |
+| 2 | MT10 | `crates/contracts` DTO へ `tenant_id` 追加 + web `api_client.rs` のテナント対応 | ⬜未着手 | 中 | 中 | Sonnet 5 |
+| 3 | MT11 | 管理 API（`tenants`/`users`/`clients`/`members`/`invitations`）+ テナント作成時の管理者自動生成・パスワード自動生成・`must_change_password` 付与 | ⬜未着手 | 大 | 大 | Opus 4.8 |
+| 4 | MT12 | パスワード変更（リセット）画面 + 初回ログイン時の強制変更誘導 | ⬜未着手 | 中 | 中 | Sonnet 5 |
+| 5 | MT13 | テナント管理コンソール（`/{tenant_id}/admin/`）— ユーザー・クライアント・メンバー・招待管理 | ⬜未着手 | 中 | 大 | Sonnet 5 |
+| 6 | MT14 | 設定画面（`/{tenant_id}/admin/settings`）— テナント設定 + root のみシステム設定区画（SMTP 等） | ⬜未着手 | 中 | 中 | Sonnet 5 |
+| 7 | MT15 | ユーザー設定画面（`/{tenant_id}/settings`）— パスワード変更・MFA・言語設定 | ⬜未着手 | 小 | 中 | Sonnet 5 |
+| 8 | MT16 | 統合テスト（テナント間分離・権限境界の完全一致・ゲスト保護・「root は作成できるが内部を操作できない」の検証） | ⬜未着手 | 大 | 中 | Opus 4.8 |
+| 9 | MT17 | 招待のメール配送（MT14 の SMTP 設定完了後。手動トークン伝達 → メールリンク） | ⬜未着手 | 中 | 中 | Sonnet 5 |
+| 10 | MT18 | セルフサービス・パスワードリセット（忘失時。外部 SMTP 連携。MT14 完了後） | ⬜未着手 | 中 | 中 | Sonnet 5 |
 
 ### 詳細
 
 **推奨モデルの根拠（高リスク＝Opus 4.8）**:
-- **MT7**: トークン検証（per-tenant `iss`・WebAuthn RP ID）。issuer 合成の誤りはトークン流用に
-  直結。ADR-0009 §6・§7。（MT6 の認可境界キャッシュ／解決基盤は完了。）
-- **MT8**: クロステナント参加の境界。ゲストのユーザー状態保護・認証を所属元に限定する要。ADR-0009 §3・§8。
 - **MT11**: 権限操作 API と自動生成パスワード/招待トークンの一度限り返却（ログ・監査へ出さない）。
-  ADR-0009 §4・§5。
+  ADR-0009 §4・§5。（Phase 2 の MT6〜MT8＝キャッシュ／解決基盤・per-tenant issuer・招待
+  ユースケース／メンバーシップ判定は完了。）
 - **MT16**: これらの保証を検証するテスト自体が保証の一部（negative test 必須）。ADR-0009 §8。
 
-**中リスク／定型（Sonnet 5）**: MT3・MT4・MT9・MT10・MT12〜MT15・MT17・MT18。仕様が ADR で明確で、
+**中リスク／定型（Sonnet 5）**: MT9・MT10・MT12〜MT15・MT17・MT18。仕様が ADR で明確で、
 Askama テンプレート・`api_client` 等の確立パターンに沿う機能実装。ただし MT15（MFA）・MT12
 （パスワード）はセキュリティ機微を含むため、実装後に §テスト・`/security-review` を併用する。
 
-**依存関係**: MT7〜MT8（Phase 2 残）→ MT9〜MT16（Phase 3）。MT17・MT18 は
+**依存関係**: Phase 2（MT6〜MT8）完了 → MT9〜MT16（Phase 3）。MT17・MT18 は
 MT14 のシステム設定（SMTP）完了が前提。
 
-**過渡期の既知の状態（MT6 完了 → MT9 まで）**: Repository trait・ユースケースは `tenant_id`／
-`TenantContext` を必須で受け取る。MT6 で汎用 TTL キャッシュ・`TenantResolver` middleware・権限解決の
-キャッシュ化を実装し `AppState`（`tenant_resolution`）へ配線済みだが、`/{tenant_id}/...` ルーティング
-（MT9）が未導入のため middleware はまだルーターへ mount していない。api は引き続き起動時に解決した
-**root テナントを既定テナント**（`AppState::default_tenant`）として全リクエストへ適用している。
-MT9 で middleware をテナントルート群へ付与し、`RequirePerms` の要求テナントをリクエストパス由来の
-`Extension<ResolvedTenant>` に置き換える。
+**過渡期の既知の状態（Phase 2 完了 → MT9 まで）**: Repository trait・ユースケースは `tenant_id`／
+`TenantContext` を必須で受け取る。MT6（汎用 TTL キャッシュ・`TenantResolver` middleware・権限解決の
+キャッシュ化）・MT7（per-tenant issuer 合成・WebAuthn RP ID の基底ホスト分離）・MT8（招待
+ユースケース・OIDC フローのメンバーシップ判定）を実装済みで、いずれも `AppState`（`tenant_resolution`／
+`invitations`）へ配線済み。ただし `/{tenant_id}/...` ルーティング（MT9）が未導入のため、
+`TenantResolver` middleware はまだルーターへ mount しておらず、招待の HTTP エンドポイントも未追加
+（MT11）。api は引き続き起動時に解決した **root テナントを既定テナント**（`AppState::default_tenant`）
+として全リクエストへ適用し、issuer もそのテナントで合成する（`iss` = `<基底>/<root_uuid>`）。
+MT9 で middleware をテナントルート群へ付与し、`RequirePerms`・OIDC 各ハンドラの要求テナントを
+リクエストパス由来の `Extension<ResolvedTenant>` に置き換える。
