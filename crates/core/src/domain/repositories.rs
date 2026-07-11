@@ -102,6 +102,8 @@ pub trait UserRepository: Send + Sync {
         failed_login_count: i32,
         locked_until: Option<DateTime<Utc>>,
     ) -> Result<()>;
+    /// パスワードハッシュを更新し、`must_change_password` を解除する（パスワード変更、ADR-0009 §5）。
+    async fn update_password(&self, id: Uuid, password_hash: &str) -> Result<()>;
 }
 
 #[async_trait]

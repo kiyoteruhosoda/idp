@@ -46,7 +46,7 @@
     <code>{{ secret_base32 }}</code>
   </div>
 
-  <form method="post" action="/account/mfa/totp/setup">
+  <form method="post" action="">
     <label for="code">{{ messages.get("mfa-setup-code-label") }}</label>
     <input id="code" type="text" name="code" inputmode="numeric" pattern="[0-9]{6}"
            maxlength="6" autocomplete="one-time-code" required placeholder="000000">

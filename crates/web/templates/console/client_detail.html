@@ -13,8 +13,8 @@
 <dt>{{ messages.get("admin-client-field-created") }}</dt><dd>{{ client.created_at }}</dd>
 <dt>{{ messages.get("admin-client-field-updated") }}</dt><dd>{{ client.updated_at }}</dd>
 </dl>
-<p><a href="/admin/console/clients/{{ client.client_id }}/edit">{{ messages.get("admin-client-edit") }}</a> | <a href="/admin/console/clients">{{ messages.get("admin-client-back") }}</a></p>
+<p><a href="{{ tenant }}/admin/clients/{{ client.client_id }}/edit">{{ messages.get("admin-client-edit") }}</a> | <a href="{{ tenant }}/admin/clients">{{ messages.get("admin-client-back") }}</a></p>
 {% if client.client_type == "confidential" %}
-<form method="post" action="/admin/console/clients/{{ client.client_id }}/rotate-secret"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit">{{ messages.get("admin-client-rotate-secret") }}</button></form>
+<form method="post" action="{{ tenant }}/admin/clients/{{ client.client_id }}/rotate-secret"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit">{{ messages.get("admin-client-rotate-secret") }}</button></form>
 {% endif %}
 {% endblock %}

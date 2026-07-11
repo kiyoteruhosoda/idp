@@ -9,6 +9,17 @@ login-error-session-expired = Your sign-in session has expired. Please start ove
 login-error-csrf = The form has expired. Please reload the page and try again.
 login-error-rate-limited = Too many attempts. Please wait a moment and try again.
 
+# Forced password change (ADR-0009 §5). Shown after signing in with an auto-generated password.
+password-change-title = Change your password
+password-change-forced-intro = Your password was generated automatically. Please set a new password before continuing.
+password-change-current-label = Current password
+password-change-new-label = New password
+password-change-confirm-label = Confirm new password
+password-change-submit = Change password
+password-change-error-mismatch = The new password and confirmation do not match.
+password-change-error-invalid-current = The current password is incorrect.
+password-change-error-weak = The new password must be at least 8 characters.
+
 # Admin console (A2). Server-rendered pages protected by the idp.admin permission.
 admin-console-title = Admin console
 admin-login-title = Admin sign in
@@ -22,6 +33,9 @@ admin-nav-status = Client status
 admin-nav-audit = Login and audit logs
 admin-nav-permissions = User permissions
 admin-nav-signing-keys = Signing keys
+admin-nav-users-new = Create user
+admin-nav-members = Members
+admin-nav-invitations = Invite a guest
 admin-forbidden-title = Access denied
 admin-forbidden-message = Your account does not have permission to view this page.
 
@@ -88,6 +102,32 @@ admin-permissions-grant-label = Permission code
 admin-permissions-grant-button = Grant
 admin-permissions-revoke-button = Revoke
 admin-permission-error-unknown = Unknown permission code. Choose one of the available codes.
+
+# User creation (ADR-0009 §5). Password is auto-generated and shown once.
+admin-users-new-title = Create a user
+admin-users-field-name = Display name
+admin-users-created-title = User created
+admin-users-created-warning = This password is shown only once. Record it and share it with the user through a secure channel.
+admin-users-generated-password-label = Generated password
+
+# Members (HOME/GUEST) and guest invitations (ADR-0009 §3).
+admin-members-title = Members
+admin-members-none = No members yet.
+admin-members-col-type = Type
+admin-members-col-status = Status
+admin-members-revoke-confirm = Remove this guest from the tenant?
+admin-members-revoke-button = Remove
+admin-members-error-home = The home member of this tenant cannot be removed.
+admin-members-error-notfound = That membership no longer exists.
+admin-invitations-title = Invite a guest
+admin-invitations-intro = Enter the internal user ID (UUID) of an existing user from another tenant. A one-time invitation token will be issued.
+admin-invitations-field-user-id = User ID (UUID)
+admin-invitations-submit = Send invitation
+admin-invitations-created-title = Invitation created
+admin-invitations-created-warning = This token is shown only once. Record it and share it with the invited user through a secure channel.
+admin-invitations-token-label = Invitation token
+admin-invitations-expires-label = Expires at
+admin-invitations-error-notfound = No such user was found.
 
 # Status screens (A3): audit/login log list and client status list.
 admin-audit-title = Login and audit logs

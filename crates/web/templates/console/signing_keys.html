@@ -30,13 +30,13 @@
 <td>{{ key.created_at }}</td>
 <td>
 {% if key.status == "ACTIVE" %}
-<form method="post" action="/admin/console/signing-keys/retire" style="display:inline">
+<form method="post" action="{{ tenant }}/admin/signing-keys/retire" style="display:inline">
 <input type="hidden" name="kid" value="{{ key.kid }}">
 <input type="hidden" name="csrf_token" value="{{ csrf }}">
 <button type="submit">{{ messages.get("admin-signing-keys-retire") }}</button>
 </form>
 {% else %}
-<form method="post" action="/admin/console/signing-keys/delete" style="display:inline">
+<form method="post" action="{{ tenant }}/admin/signing-keys/delete" style="display:inline">
 <input type="hidden" name="kid" value="{{ key.kid }}">
 <input type="hidden" name="csrf_token" value="{{ csrf }}">
 <button type="submit">{{ messages.get("admin-signing-keys-delete") }}</button>
@@ -50,7 +50,7 @@
 </table>
 
 <h2>{{ messages.get("admin-signing-keys-generate-heading") }}</h2>
-<form method="post" action="/admin/console/signing-keys/generate">
+<form method="post" action="{{ tenant }}/admin/signing-keys/generate">
 <input type="hidden" name="csrf_token" value="{{ csrf }}">
 <label>{{ messages.get("admin-signing-keys-alg-label") }}
 <select name="algorithm">
@@ -61,5 +61,5 @@
 <button type="submit">{{ messages.get("admin-signing-keys-generate-button") }}</button>
 </form>
 
-<p><a href="/admin/console">{{ messages.get("admin-nav-home") }}</a></p>
+<p><a href="{{ tenant }}/admin">{{ messages.get("admin-nav-home") }}</a></p>
 {% endblock %}

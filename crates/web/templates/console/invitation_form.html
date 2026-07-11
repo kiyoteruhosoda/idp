@@ -1,0 +1,12 @@
+{% extends "console/layout.html" %}
+{% block content %}
+<h2>{{ messages.get("admin-invitations-title") }}</h2>
+<p>{{ messages.get("admin-invitations-intro") }}</p>
+{% if let Some(err) = error %}<p class="error" role="alert">{{ err }}</p>{% endif %}
+<form method="post" action="{{ tenant }}/admin/invitations">
+<input type="hidden" name="csrf_token" value="{{ csrf }}">
+<p><label>{{ messages.get("admin-invitations-field-user-id") }}<br>
+<input type="text" name="user_id" value="{{ user_id }}" required></label></p>
+<p><button type="submit">{{ messages.get("admin-invitations-submit") }}</button> <a href="{{ tenant }}/admin/members">{{ messages.get("admin-form-cancel") }}</a></p>
+</form>
+{% endblock %}

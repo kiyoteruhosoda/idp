@@ -15,17 +15,17 @@
 <table>
 <tbody>
 {% for code in codes %}
-<tr><td><code>{{ code }}</code></td><td><form method="post" action="/admin/console/users/{{ user.id }}/permissions/revoke"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="permission_code" value="{{ code }}"><button type="submit">{{ messages.get("admin-permissions-revoke-button") }}</button></form></td></tr>
+<tr><td><code>{{ code }}</code></td><td><form method="post" action="{{ tenant }}/admin/users/{{ user.id }}/permissions/revoke"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="permission_code" value="{{ code }}"><button type="submit">{{ messages.get("admin-permissions-revoke-button") }}</button></form></td></tr>
 {% endfor %}
 </tbody></table>
 {% endif %}
 <h3>{{ messages.get("admin-permissions-grant-title") }}</h3>
-<form method="post" action="/admin/console/users/{{ user.id }}/permissions/grant">
+<form method="post" action="{{ tenant }}/admin/users/{{ user.id }}/permissions/grant">
 <input type="hidden" name="csrf_token" value="{{ csrf }}">
 <p><label>{{ messages.get("admin-permissions-grant-label") }}<br>
 <input type="text" name="permission_code" list="admin-permission-codes" required></label></p>
 <datalist id="admin-permission-codes">{% for code in available %}<option value="{{ code }}"></option>{% endfor %}</datalist>
 <p><button type="submit">{{ messages.get("admin-permissions-grant-button") }}</button></p>
 </form>
-<p><a href="/admin/console/users">{{ messages.get("admin-users-back") }}</a></p>
+<p><a href="{{ tenant }}/admin/users">{{ messages.get("admin-users-back") }}</a></p>
 {% endblock %}

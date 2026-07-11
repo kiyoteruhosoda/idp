@@ -17,7 +17,7 @@
 </div>
 <div id="step-success" style="display:none">
   <p>{{ messages.get("passkey-register-success") }}</p>
-  <a href="/account/passkey">{{ messages.get("passkey-back-to-list") }}</a>
+  <a href="{{ tenant_prefix }}/account/passkey">{{ messages.get("passkey-back-to-list") }}</a>
 </div>
 <div id="step-error" style="display:none">
   <p class="error" role="alert" id="js-error-msg"></p>
@@ -38,7 +38,7 @@
     const name = nameInput.value.trim() || 'My Passkey';
 
     // 1. begin
-    const beginRes = await fetch('/passkey/register/begin', {
+    const beginRes = await fetch('{{ tenant_prefix }}/passkey/register/begin', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ name })
@@ -74,7 +74,7 @@
       credJson.response.transports = credential.response.getTransports();
     }
 
-    const completeRes = await fetch('/passkey/register/complete', {
+    const completeRes = await fetch('{{ tenant_prefix }}/passkey/register/complete', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ challenge_id, name, credential: credJson })

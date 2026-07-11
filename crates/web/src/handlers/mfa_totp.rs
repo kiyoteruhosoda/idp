@@ -12,6 +12,7 @@ use crate::handlers::{forwarded_context, found};
 use crate::i18n::{Locale, Messages};
 use crate::state::WebState;
 use crate::templates::{render, MessagePage, TotpSetupTemplate, TotpVerifyTemplate};
+use crate::tenant::WebTenant;
 use axum::extract::{Extension, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{AppendHeaders, Html, IntoResponse, Response};
@@ -221,6 +222,7 @@ pub async fn verify_page(headers: HeaderMap) -> Response {
 pub async fn verify(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Form(form): Form<TotpLoginForm>,
 ) -> Response {
@@ -228,7 +230,7 @@ pub async fn verify(
     let auth_session_id = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE);
 
     let req = InternalVerifyTotpRequest {
-        tenant_id: None,
+        tenant_id: Some(tenant.0.clone()),
         auth_session_id: auth_session_id.clone(),
         totp_code: form.totp_code,
         csrf_token: form.csrf_token,
@@ -291,7 +293,7 @@ pub async fn verify(
                     (header::SET_COOKIE, sso_cookie),
                     (header::SET_COOKIE, auth_cookie),
                 ]),
-                found("/consent"),
+                found(&format!("{}/consent", tenant.prefix())),
             )
                 .into_response()
         }

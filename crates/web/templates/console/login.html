@@ -4,7 +4,7 @@
 <body>
 <h1>{{ messages.get("admin-login-title") }}</h1>
 {% if let Some(key) = error_key %}<p class="error" role="alert">{{ messages.get(key) }}</p>{% endif %}
-<form method="post" action="/admin/console/login">
+<form method="post" action="">
 <input type="hidden" name="csrf_token" value="{{ csrf }}">
 <label>{{ messages.get("login-username") }} <input type="text" name="username" autocomplete="username" required></label>
 <label>{{ messages.get("login-password") }} <input type="password" name="password" autocomplete="current-password" required></label>

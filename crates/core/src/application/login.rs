@@ -66,6 +66,12 @@ pub enum LoginOutcome {
     MfaRequired {
         auth_session_id: String,
     },
+    /// パスワード認証成功だが `must_change_password`（ADR-0009 §5）。パスワード変更画面へ誘導する。
+    /// `auth_session_id` Cookie はそのまま維持し、SSO Cookie はまだ発行しない。認可フローは
+    /// 変更完了まで完了させない（[`crate::application::change_password::ChangePasswordService`]）。
+    PasswordChangeRequired {
+        auth_session_id: String,
+    },
     /// AuthSession が無い・期限切れ（`/authorize` からやり直し）。
     SessionExpired,
     /// CSRF トークン不一致。
@@ -244,6 +250,22 @@ impl LoginService {
             if let Err(e) = self.users.update_login_state(user.id, 0, None).await {
                 return LoginOutcome::Internal(e.to_string());
             }
+        }
+
+        // 8.5. 強制パスワード変更（ADR-0009 §5）。自動生成パスワードで作成された利用者は、MFA・同意より
+        //      先にパスワード変更画面へ誘導する（変更完了までは他の操作を許可しない）。この状態のユーザーは
+        //      自己登録 MFA を設定できないため（SSO が必要）、変更後に改めて MFA 判定へ進む必要はない。
+        if user.must_change_password {
+            if let Err(e) = self
+                .auth_sessions
+                .set_password_verified(&session.id, user.id, now)
+                .await
+            {
+                return LoginOutcome::Internal(e.to_string());
+            }
+            return LoginOutcome::PasswordChangeRequired {
+                auth_session_id: session.id,
+            };
         }
 
         // 9. MFA（TOTP）が設定済みか確認する。設定済みなら TOTP 入力ステップへ誘導する。

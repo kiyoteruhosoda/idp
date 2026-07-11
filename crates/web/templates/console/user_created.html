@@ -1,0 +1,8 @@
+{% extends "console/layout.html" %}
+{% block content %}
+<h2>{{ messages.get("admin-users-created-title") }}</h2>
+<p>{{ messages.get("admin-user-col-email") }}: <code>{{ email }}</code></p>
+<p class="secret-warning">{{ messages.get("admin-users-created-warning") }}</p>
+<p>{{ messages.get("admin-users-generated-password-label") }}: <code>{{ generated_password }}</code></p>
+<p><a href="{{ tenant }}/admin/users">{{ messages.get("admin-users-back") }}</a></p>
+{% endblock %}

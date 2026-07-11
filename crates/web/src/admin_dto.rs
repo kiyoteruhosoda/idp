@@ -83,3 +83,34 @@ pub struct SigningKeyView {
     pub not_after: String,
     pub created_at: String,
 }
+
+/// 利用者作成応答（`POST /admin/users`）。`generated_password` は一度限り平文で返る（ADR-0009 §5）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct UserCreatedView {
+    #[allow(dead_code)]
+    pub user_id: String,
+    #[allow(dead_code)]
+    pub sub: String,
+    pub generated_password: String,
+}
+
+/// メンバー一覧の 1 件（`GET /admin/members`。HOME / GUEST を問わない。ADR-0009 §3）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct MemberView {
+    pub user_id: String,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    /// `HOME` または `GUEST`。
+    pub membership_type: String,
+    /// `INVITED` または `ACTIVE`。
+    pub status: String,
+}
+
+/// 招待作成応答（`POST /admin/invitations`）。`token` は一度限り平文で返る（ADR-0009 §3）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct InvitationCreatedView {
+    pub token: String,
+    pub expires_at: String,
+}

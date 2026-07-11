@@ -47,6 +47,8 @@ pub struct TotpVerifyTemplate<'a> {
 #[template(path = "login.html")]
 pub struct LoginTemplate<'a> {
     pub messages: &'a Messages,
+    /// `/{tenant_id}` プレフィクス（Passkey JSON API の絶対パス組み立てに使う。ADR-0009 §6）。
+    pub tenant_prefix: &'a str,
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
 }
@@ -70,19 +72,44 @@ pub struct MessagePage {
     pub message: String,
 }
 
+/// 強制パスワード変更画面（`GET /{tenant_id}/password-change`、ADR-0009 §5）。ログインフロー中
+/// （パスワード検証済み・SSO 未発行）に表示する。共通レイアウトには載せない。
+#[derive(Template)]
+#[template(path = "password_change.html")]
+pub struct PasswordChangeTemplate<'a> {
+    pub messages: &'a Messages,
+    pub csrf: &'a str,
+    pub error_key: Option<&'a str>,
+}
+
+/// 管理コンソールの強制パスワード変更画面（`GET/POST /{tenant_id}/admin/password-change`、
+/// ADR-0009 §5）。管理ログインは一時状態を持たないため `username` を隠しフィールドで維持する。
+#[derive(Template)]
+#[template(path = "console/password_change.html")]
+pub struct AdminPasswordChange<'a> {
+    pub messages: &'a Messages,
+    /// `/{tenant_id}` プレフィクス（フォーム送信先の組み立てに使う。ADR-0009 §6）。
+    pub tenant_prefix: &'a str,
+    pub csrf: &'a str,
+    pub username: &'a str,
+    pub error_key: Option<&'a str>,
+}
+
 /// 管理コンソール共通レイアウトのヘッダに載せる管理者識別子（未認証時は `None`）。
 /// 各コンソール画面テンプレートが持ち、`console/layout.html` から参照される。
 pub type Admin<'a> = Option<&'a str>;
 
-/// 管理コンソールのホーム（`GET /admin/console`）。
+/// 管理コンソールのホーム（`GET /{tenant_id}/admin`）。
 #[derive(Template)]
 #[template(path = "console/home.html")]
 pub struct ConsoleHome<'a> {
     pub messages: &'a Messages,
+    /// `/{tenant_id}` プレフィクス（ADR-0009 §6）。
+    pub tenant: &'a str,
     pub admin: Admin<'a>,
 }
 
-/// 管理コンソールのログイン画面（`GET /admin/console/login`）。共通レイアウトには載せない。
+/// 管理コンソールのログイン画面（`GET /{tenant_id}/admin/login`）。共通レイアウトには載せない。
 #[derive(Template)]
 #[template(path = "console/login.html")]
 pub struct ConsoleLogin<'a> {
@@ -97,6 +124,7 @@ pub struct ConsoleLogin<'a> {
 #[template(path = "console/notice.html")]
 pub struct ConsoleNotice<'a> {
     pub messages: &'a Messages,
+    pub tenant: &'a str,
     pub admin: Admin<'a>,
     pub heading: Option<&'a str>,
     pub message: &'a str,
@@ -105,12 +133,13 @@ pub struct ConsoleNotice<'a> {
     pub back_label: &'a str,
 }
 
-/// 監査ログ一覧（`GET /admin/console/audit-logs`）。フィルタ値は再入力用に展開済み文字列で渡す。
+/// 監査ログ一覧（`GET /{tenant_id}/admin/audit-logs`）。フィルタ値は再入力用に展開済み文字列で渡す。
 /// ページャの前後リンク（クエリ文字列を組み立て済み）は該当がなければ `None`。
 #[derive(Template)]
 #[template(path = "console/audit_logs.html")]
 pub struct AuditLogs<'a> {
     pub messages: &'a Messages,
+    pub tenant: &'a str,
     pub admin: Admin<'a>,
     pub date_error: bool,
     pub event_type: &'a str,
@@ -124,38 +153,101 @@ pub struct AuditLogs<'a> {
     pub next_href: Option<String>,
 }
 
-/// クライアント状況一覧（`GET /admin/console/status`）。
+/// クライアント状況一覧（`GET /{tenant_id}/admin/status`）。
 #[derive(Template)]
 #[template(path = "console/client_status.html")]
 pub struct ClientStatus<'a> {
     pub messages: &'a Messages,
+    pub tenant: &'a str,
     pub admin: Admin<'a>,
     pub views: &'a [ClientStatusResponse],
 }
 
-/// 利用者検索画面（`GET /admin/console/users`）。`user` が該当利用者、`not_found` は検索したが
+/// 利用者検索画面（`GET /{tenant_id}/admin/users`）。`user` が該当利用者、`not_found` は検索したが
 /// 見つからなかったことを表す（未検索時は両方 `None`/`false`）。
 #[derive(Template)]
 #[template(path = "console/users_search.html")]
 pub struct UsersSearch<'a> {
     pub messages: &'a Messages,
+    pub tenant: &'a str,
     pub admin: Admin<'a>,
     pub term: &'a str,
     pub user: Option<&'a UserSummaryResponse>,
     pub not_found: bool,
 }
 
-/// 利用者の権限画面（`GET /admin/console/users/{id}/permissions`）。
+/// 利用者の権限画面（`GET /{tenant_id}/admin/users/{id}/permissions`）。
 #[derive(Template)]
 #[template(path = "console/users_permissions.html")]
 pub struct UsersPermissions<'a> {
     pub messages: &'a Messages,
+    pub tenant: &'a str,
     pub admin: Admin<'a>,
     pub user: &'a UserSummaryResponse,
     pub codes: &'a [String],
     pub available: &'a [String],
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
+}
+
+/// 利用者作成フォーム（`GET/POST /{tenant_id}/admin/users/new`、ADR-0009 §5・§6）。
+#[derive(Template)]
+#[template(path = "console/user_form.html")]
+pub struct UserForm<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub admin: Admin<'a>,
+    pub csrf: &'a str,
+    pub error: Option<&'a str>,
+    pub email: &'a str,
+    pub preferred_username: &'a str,
+    pub name: &'a str,
+}
+
+/// 利用者作成結果（`POST /{tenant_id}/admin/users/new` 成功時）。`generated_password` を一度だけ表示する。
+#[derive(Template)]
+#[template(path = "console/user_created.html")]
+pub struct UserCreated<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub admin: Admin<'a>,
+    pub email: &'a str,
+    pub generated_password: &'a str,
+}
+
+/// メンバー一覧（`GET /{tenant_id}/admin/members`。HOME / GUEST を問わない。ADR-0009 §3）。
+#[derive(Template)]
+#[template(path = "console/members_list.html")]
+pub struct MembersList<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub admin: Admin<'a>,
+    pub members: &'a [crate::admin_dto::MemberView],
+    pub csrf: &'a str,
+    pub error_key: Option<&'a str>,
+}
+
+/// ゲスト招待フォーム（`GET/POST /{tenant_id}/admin/invitations`、ADR-0009 §3）。
+#[derive(Template)]
+#[template(path = "console/invitation_form.html")]
+pub struct InvitationForm<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub admin: Admin<'a>,
+    pub csrf: &'a str,
+    pub error: Option<&'a str>,
+    pub user_id: &'a str,
+}
+
+/// ゲスト招待作成結果（`POST /{tenant_id}/admin/invitations` 成功時）。招待トークンを一度だけ表示する。
+#[derive(Template)]
+#[template(path = "console/invitation_created.html")]
+pub struct InvitationCreated<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub admin: Admin<'a>,
+    pub token: &'a str,
+    pub expires_at: &'a str,
 }
 
 /// クライアント登録・編集フォームの入力値（新規/再表示の両方で使う）。テンプレートの再入力欄へ
@@ -195,11 +287,12 @@ impl ClientFormValues {
     }
 }
 
-/// クライアント一覧（`GET /admin/console/clients`）。
+/// クライアント一覧（`GET /{tenant_id}/admin/clients`）。
 #[derive(Template)]
 #[template(path = "console/clients_list.html")]
 pub struct ClientsList<'a> {
     pub messages: &'a Messages,
+    pub tenant: &'a str,
     pub admin: Admin<'a>,
     pub clients: &'a [ClientView],
 }
@@ -209,6 +302,7 @@ pub struct ClientsList<'a> {
 #[template(path = "console/client_form.html")]
 pub struct ClientForm<'a> {
     pub messages: &'a Messages,
+    pub tenant: &'a str,
     pub admin: Admin<'a>,
     pub csrf: &'a str,
     pub error: Option<&'a str>,
@@ -218,11 +312,12 @@ pub struct ClientForm<'a> {
     pub values: &'a ClientFormValues,
 }
 
-/// クライアント詳細（`GET /admin/console/clients/{id}`）。
+/// クライアント詳細（`GET /{tenant_id}/admin/clients/{id}`）。
 #[derive(Template)]
 #[template(path = "console/client_detail.html")]
 pub struct ClientDetail<'a> {
     pub messages: &'a Messages,
+    pub tenant: &'a str,
     pub admin: Admin<'a>,
     pub client: &'a ClientView,
     pub csrf: &'a str,
@@ -233,17 +328,19 @@ pub struct ClientDetail<'a> {
 #[template(path = "console/client_secret.html")]
 pub struct ClientSecret<'a> {
     pub messages: &'a Messages,
+    pub tenant: &'a str,
     pub admin: Admin<'a>,
     pub heading: &'a str,
     pub client_id: &'a str,
     pub secret: Option<&'a str>,
 }
 
-/// 署名鍵一覧・管理画面（`GET /admin/console/signing-keys`、K1）。
+/// 署名鍵一覧・管理画面（`GET /{tenant_id}/admin/signing-keys`、K1）。
 #[derive(Template)]
 #[template(path = "console/signing_keys.html")]
 pub struct SigningKeysList<'a> {
     pub messages: &'a Messages,
+    pub tenant: &'a str,
     pub admin: Admin<'a>,
     pub keys: &'a [SigningKeyView],
     pub csrf: &'a str,
@@ -255,6 +352,8 @@ pub struct SigningKeysList<'a> {
 #[template(path = "passkey_list.html")]
 pub struct PasskeyListTemplate<'a> {
     pub messages: &'a Messages,
+    /// `/{tenant_id}` プレフィクス（ADR-0009 §6）。
+    pub tenant_prefix: &'a str,
     pub credentials: &'a [PasskeyCredentialInfo],
 }
 
@@ -263,5 +362,7 @@ pub struct PasskeyListTemplate<'a> {
 #[template(path = "passkey_register.html")]
 pub struct PasskeyRegisterTemplate<'a> {
     pub messages: &'a Messages,
+    /// `/{tenant_id}` プレフィクス（ADR-0009 §6）。
+    pub tenant_prefix: &'a str,
     pub error_key: Option<&'a str>,
 }

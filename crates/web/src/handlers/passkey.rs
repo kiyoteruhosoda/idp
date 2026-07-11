@@ -10,6 +10,7 @@ use crate::handlers::forwarded_context;
 use crate::i18n::{Locale, Messages};
 use crate::state::WebState;
 use crate::templates::{render, MessagePage, PasskeyListTemplate, PasskeyRegisterTemplate};
+use crate::tenant::WebTenant;
 use axum::extract::{Extension, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{AppendHeaders, Html, IntoResponse, Json, Response};
@@ -29,6 +30,7 @@ use serde::{Deserialize, Serialize};
 pub async fn list_page(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
 ) -> Response {
     let Some(sso_session_id) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
@@ -49,6 +51,7 @@ pub async fn list_page(
     match result {
         InternalPasskeyListResponse::Ok { credentials } => Html(render(&PasskeyListTemplate {
             messages: &messages,
+            tenant_prefix: &tenant.prefix(),
             credentials: &credentials,
         }))
         .into_response(),
@@ -62,13 +65,14 @@ pub async fn list_page(
 }
 
 /// Passkey 登録ページ（`GET /account/passkey/register`）。SSO Cookie が必要。
-pub async fn register_page(headers: HeaderMap) -> Response {
+pub async fn register_page(Extension(tenant): Extension<WebTenant>, headers: HeaderMap) -> Response {
     let messages = Messages::new(locale(&headers));
     if cookies::get(&headers, cookies::SSO_SESSION_COOKIE).is_none() {
         return error_page(&messages, StatusCode::UNAUTHORIZED, "passkey-error-not-signed-in");
     }
     Html(render(&PasskeyRegisterTemplate {
         messages: &messages,
+        tenant_prefix: &tenant.prefix(),
         error_key: None,
     }))
     .into_response()
@@ -244,12 +248,13 @@ pub struct LoginCompleteJsonResponse {
 pub async fn login_complete_api(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Json(body): Json<LoginCompleteBody>,
 ) -> Response {
     let ctx = forwarded_context(&headers, &correlation);
     let req = InternalPasskeyLoginCompleteRequest {
-        tenant_id: None,
+        tenant_id: Some(tenant.0.clone()),
         challenge_id: body.challenge_id,
         credential: body.credential,
         ip_address: ctx.ip_address,
@@ -313,7 +318,7 @@ pub async fn login_complete_api(
                     (header::SET_COOKIE, auth_cookie),
                 ]),
                 Json(LoginCompleteJsonResponse {
-                    redirect_to: Some("/consent".to_string()),
+                    redirect_to: Some(format!("{}/consent", tenant.prefix())),
                     error: None,
                 }),
             )

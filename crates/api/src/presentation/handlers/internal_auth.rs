@@ -15,8 +15,11 @@
 //! 呼び出しにサービス認証トークン（共有シークレット。`X-Internal-Auth-Token` ヘッダ）を必須とする。
 //! トークンは設定（`config` 経由）で注入する。
 
-use crate::application::admin_login::{AdminLoginCommand, AdminLoginOutcome};
+use crate::application::admin_login::{
+    AdminChangePasswordCommand, AdminLoginCommand, AdminLoginOutcome,
+};
 use crate::application::audit::RequestContext;
+use crate::application::change_password::{ChangePasswordCommand, ChangePasswordOutcome};
 use crate::application::login::{LoginCommand, LoginOutcome};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::state::AppState;
@@ -26,10 +29,11 @@ use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use idp_contracts::admin::RootTenantResponse;
 use idp_contracts::auth::{
     InternalAdminAuthenticateRequest, InternalAdminAuthenticateResponse,
-    InternalAuthenticateRequest, InternalAuthenticateResponse, InternalLogoutRequest,
+    InternalAdminChangePasswordRequest, InternalAdminChangePasswordResponse,
+    InternalAuthenticateRequest, InternalAuthenticateResponse, InternalChangePasswordRequest,
+    InternalChangePasswordResponse, InternalLogoutRequest,
 };
 
 /// 内部サービス認証トークンを載せるヘッダ名（小文字。`HeaderMap` は大小無視で引ける）。
@@ -104,6 +108,9 @@ pub async fn authenticate(
         LoginOutcome::MfaRequired { auth_session_id } => {
             InternalAuthenticateResponse::MfaRequired { auth_session_id }
         }
+        LoginOutcome::PasswordChangeRequired { auth_session_id } => {
+            InternalAuthenticateResponse::PasswordChangeRequired { auth_session_id }
+        }
         LoginOutcome::SessionExpired => InternalAuthenticateResponse::SessionExpired,
         LoginOutcome::CsrfMismatch => InternalAuthenticateResponse::CsrfMismatch,
         LoginOutcome::RateLimited => InternalAuthenticateResponse::RateLimited,
@@ -112,6 +119,63 @@ pub async fn authenticate(
         LoginOutcome::Internal(e) => {
             tracing::error!(error = %e, "internal authenticate failed with internal error");
             InternalAuthenticateResponse::Internal
+        }
+    })
+}
+
+/// パスワード変更（`POST /internal/change-password`、ADR-0009 §5）。`LoginService` が検出した
+/// `must_change_password` を受けて、パスワード検証済みの `auth_session_id` で新パスワードを設定する。
+pub async fn change_password(
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Json(req): Json<InternalChangePasswordRequest>,
+) -> Json<InternalChangePasswordResponse> {
+    let ctx = RequestContext {
+        correlation_id: correlation.0,
+        ip_address: req.ip_address,
+        user_agent: req.user_agent,
+    };
+    let tenant = internal_tenant(&state, req.tenant_id.as_deref());
+    let outcome = state
+        .change_password
+        .change(
+            tenant,
+            ChangePasswordCommand {
+                auth_session_id: req.auth_session_id,
+                current_password: req.current_password,
+                new_password: req.new_password,
+                csrf_token: req.csrf_token,
+            },
+            &ctx,
+        )
+        .await;
+    let ttl = state.config.sso_absolute_ttl().as_secs();
+    Json(match outcome {
+        ChangePasswordOutcome::Success {
+            location,
+            sso_session_id,
+        } => InternalChangePasswordResponse::Success {
+            redirect_to: location,
+            sso_session_id,
+            sso_absolute_ttl_secs: ttl,
+        },
+        ChangePasswordOutcome::ConsentRequired {
+            auth_session_id,
+            sso_session_id,
+        } => InternalChangePasswordResponse::ConsentRequired {
+            auth_session_id,
+            sso_session_id,
+            sso_absolute_ttl_secs: ttl,
+        },
+        ChangePasswordOutcome::SessionExpired => InternalChangePasswordResponse::SessionExpired,
+        ChangePasswordOutcome::CsrfMismatch => InternalChangePasswordResponse::CsrfMismatch,
+        ChangePasswordOutcome::InvalidCurrentPassword => {
+            InternalChangePasswordResponse::InvalidCurrentPassword
+        }
+        ChangePasswordOutcome::WeakPassword => InternalChangePasswordResponse::WeakPassword,
+        ChangePasswordOutcome::Internal(e) => {
+            tracing::error!(error = %e, "internal change-password failed with internal error");
+            InternalChangePasswordResponse::Internal
         }
     })
 }
@@ -153,9 +217,65 @@ pub async fn authenticate_admin(
         }
         AdminLoginOutcome::Locked => InternalAdminAuthenticateResponse::Locked,
         AdminLoginOutcome::Forbidden => InternalAdminAuthenticateResponse::Forbidden,
+        AdminLoginOutcome::PasswordChangeRequired { username } => {
+            InternalAdminAuthenticateResponse::PasswordChangeRequired { username }
+        }
+        AdminLoginOutcome::WeakPassword => {
+            tracing::error!("unexpected WeakPassword outcome from admin authenticate");
+            InternalAdminAuthenticateResponse::Internal
+        }
         AdminLoginOutcome::Internal(e) => {
             tracing::error!(error = %e, "internal admin authenticate failed with internal error");
             InternalAdminAuthenticateResponse::Internal
+        }
+    })
+}
+
+/// 管理コンソールの強制パスワード変更（`POST /internal/authenticate/admin/change-password`、
+/// ADR-0009 §5）。管理ログインは一時状態を持たないため、現行パスワードを含めフルに再検証する。
+pub async fn admin_change_password(
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Json(req): Json<InternalAdminChangePasswordRequest>,
+) -> Json<InternalAdminChangePasswordResponse> {
+    let ctx = RequestContext {
+        correlation_id: correlation.0,
+        ip_address: req.ip_address,
+        user_agent: req.user_agent,
+    };
+    let tenant = internal_tenant(&state, req.tenant_id.as_deref());
+    let outcome = state
+        .admin_login
+        .change_password(
+            tenant,
+            AdminChangePasswordCommand {
+                username: req.username,
+                current_password: req.current_password,
+                new_password: req.new_password,
+            },
+            &ctx,
+        )
+        .await;
+    let ttl = state.config.sso_absolute_ttl().as_secs();
+    Json(match outcome {
+        AdminLoginOutcome::Success { sso_session_id } => InternalAdminChangePasswordResponse::Success {
+            sso_session_id,
+            sso_absolute_ttl_secs: ttl,
+        },
+        AdminLoginOutcome::RateLimited => InternalAdminChangePasswordResponse::RateLimited,
+        AdminLoginOutcome::InvalidCredentials => {
+            InternalAdminChangePasswordResponse::InvalidCredentials
+        }
+        AdminLoginOutcome::Locked => InternalAdminChangePasswordResponse::Locked,
+        AdminLoginOutcome::Forbidden => InternalAdminChangePasswordResponse::Forbidden,
+        AdminLoginOutcome::WeakPassword => InternalAdminChangePasswordResponse::WeakPassword,
+        AdminLoginOutcome::PasswordChangeRequired { .. } => {
+            tracing::error!("unexpected PasswordChangeRequired outcome from admin change-password");
+            InternalAdminChangePasswordResponse::Internal
+        }
+        AdminLoginOutcome::Internal(e) => {
+            tracing::error!(error = %e, "internal admin change-password failed with internal error");
+            InternalAdminChangePasswordResponse::Internal
         }
     })
 }
@@ -178,15 +298,6 @@ pub async fn logout(
         .logout(tenant, &req.sso_session_id, &ctx)
         .await;
     StatusCode::NO_CONTENT
-}
-
-/// root テナント UUID を返す（`GET /internal/root-tenant`、ADR-0009 §7）。web が起動時／初回に解決し、
-/// `/{tenant_id}/admin/*` パスの前置に使う（過渡期。root UUID は環境毎に動的採番のため設定に埋めない）。
-/// api は起動時に root を `default_tenant` として解決済みのため、それをそのまま返す。
-pub async fn root_tenant(State(state): State<AppState>) -> Json<RootTenantResponse> {
-    Json(RootTenantResponse {
-        tenant_id: state.default_tenant.tenant_id().to_string(),
-    })
 }
 
 /// 定数時間比較（サービストークン照合のタイミング差を避ける）。長さが異なれば即 false。

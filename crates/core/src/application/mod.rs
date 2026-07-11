@@ -7,6 +7,7 @@ pub mod admin_login;
 pub mod audit;
 pub mod audit_query;
 pub mod authorize;
+pub mod change_password;
 pub mod client_management;
 pub mod client_status;
 pub mod code_issuance;

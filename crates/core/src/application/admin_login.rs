@@ -14,7 +14,7 @@
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
-use crate::domain::password::PasswordHasher;
+use crate::domain::password::{validate_password_strength, PasswordHasher};
 use crate::domain::rate_limit::LoginRateLimiter;
 use crate::domain::repositories::{SsoSessionRepository, UserPermissionRepository, UserRepository};
 use crate::domain::sso_session::SsoSession;
@@ -44,11 +44,25 @@ pub struct AdminLoginCommand {
     pub password: String,
 }
 
+/// 強制パスワード変更を伴う管理ログイン（ADR-0009 §5）のコマンド。管理コンソールのログインは
+/// `auth_session_id` のような一時状態を持たないため、現行パスワードを含め毎回フルに再検証する。
+#[derive(Debug)]
+pub struct AdminChangePasswordCommand {
+    pub username: String,
+    pub current_password: String,
+    pub new_password: String,
+}
+
 /// 管理ログインの結果。Presentation は画面（HTML）に写す。
 pub enum AdminLoginOutcome {
     /// 認証成功かつ `idp.tenant.admin` 保有。SSO Cookie を発行して管理コンソールへ 302 する。
     Success {
         sso_session_id: String,
+    },
+    /// 認証成功・管理権限保有だが `must_change_password`（ADR-0009 §5）。パスワード変更画面へ誘導する。
+    /// SSO はまだ発行しない（変更完了までは他の操作を許可しない）。
+    PasswordChangeRequired {
+        username: String,
     },
     /// IP 単位のレート制限超過。
     RateLimited,
@@ -58,6 +72,8 @@ pub enum AdminLoginOutcome {
     Locked,
     /// 資格情報は正しいが テナント admin 権限を保有しない。
     Forbidden,
+    /// 新パスワードが強度要件を満たさない（`change_password` のみ）。
+    WeakPassword,
     Internal(String),
 }
 
@@ -224,6 +240,13 @@ impl AdminLoginService {
             return AdminLoginOutcome::Forbidden;
         }
 
+        // 6.5. 強制パスワード変更（ADR-0009 §5）。SSO はまだ発行せず変更画面へ誘導する。
+        if user.must_change_password {
+            return AdminLoginOutcome::PasswordChangeRequired {
+                username: cmd.username,
+            };
+        }
+
         // 7. 成功: 失敗カウンタとロックをリセットする。
         if user.failed_login_count > 0 || user.locked_until.is_some() {
             if let Err(e) = self.users.update_login_state(user.id, 0, None).await {
@@ -232,6 +255,138 @@ impl AdminLoginService {
         }
 
         // 8. SSO セッション発行（Cookie には session_id、DB には SHA-256 ハッシュ。login.rs と同一機構）。
+        let sso_session_id = crypto::random_hex(32);
+        let sso = SsoSession {
+            session_hash: crypto::sha256_hex(&sso_session_id),
+            user_id: user.id,
+            auth_time: now,
+            idle_expires_at: now + self.sso_idle_ttl,
+            absolute_expires_at: now + self.sso_absolute_ttl,
+            user_agent: ctx.user_agent.clone(),
+            ip_address: ctx.ip_address.clone(),
+            created_at: now,
+            updated_at: now,
+        };
+        if let Err(e) = self.sso_sessions.create(&sso).await {
+            return AdminLoginOutcome::Internal(e.to_string());
+        }
+        self.audit
+            .record(
+                AuditEventType::SsoSessionCreated,
+                AuditResult::Success,
+                Some(tenant_id),
+                Some(user.id),
+                None,
+                None,
+                ctx,
+            )
+            .await;
+        self.audit
+            .record(
+                AuditEventType::LoginSucceeded,
+                AuditResult::Success,
+                Some(tenant_id),
+                Some(user.id),
+                None,
+                None,
+                ctx,
+            )
+            .await;
+
+        AdminLoginOutcome::Success { sso_session_id }
+    }
+
+    /// 強制パスワード変更（ADR-0009 §5）。管理ログインを現行パスワードを含めフルに再検証し、成功時に
+    /// 新パスワードを保存して SSO セッションを発行する（`login` と同じ検証を毎回やり直す。管理ログインは
+    /// `auth_session_id` のような一時状態を持たないため）。
+    pub async fn change_password(
+        &self,
+        tenant: TenantContext,
+        cmd: AdminChangePasswordCommand,
+        ctx: &RequestContext,
+    ) -> AdminLoginOutcome {
+        let now = self.clock.now();
+        let tenant_id = tenant.tenant_id();
+
+        if let Some(ip) = &ctx.ip_address {
+            if !self.rate_limiter.check_and_record(ip, now) {
+                return AdminLoginOutcome::RateLimited;
+            }
+        }
+
+        let user = match self.find_user(tenant_id, &cmd.username).await {
+            Ok(Some(u)) => u,
+            Ok(None) => return AdminLoginOutcome::InvalidCredentials,
+            Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
+        };
+
+        if user.is_locked_at(now) {
+            return AdminLoginOutcome::Locked;
+        }
+        if !user.is_active() {
+            return AdminLoginOutcome::InvalidCredentials;
+        }
+        if !user.must_change_password {
+            // 変更不要な状態でこのエンドポイントに来るのは想定外（多重送信等）。fail-closed。
+            return AdminLoginOutcome::InvalidCredentials;
+        }
+
+        let verified = match self.hasher.verify(&cmd.current_password, &user.password_hash) {
+            Ok(v) => v,
+            Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
+        };
+        if !verified {
+            return self.handle_password_failure(tenant_id, &user, ctx).await;
+        }
+
+        let has_admin = match self
+            .permissions
+            .has_permission(tenant_id, user.id, REQUIRED_PERMISSION)
+            .await
+        {
+            Ok(true) => true,
+            Ok(false) => match self
+                .permissions
+                .has_permission(tenant_id, user.id, SYSTEM_ADMIN_PERMISSION)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
+            },
+            Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
+        };
+        if !has_admin {
+            return AdminLoginOutcome::Forbidden;
+        }
+
+        if validate_password_strength(&cmd.new_password).is_err() {
+            return AdminLoginOutcome::WeakPassword;
+        }
+        let new_hash = match self.hasher.hash(&cmd.new_password) {
+            Ok(h) => h,
+            Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
+        };
+        if let Err(e) = self.users.update_password(user.id, &new_hash).await {
+            return AdminLoginOutcome::Internal(e.to_string());
+        }
+        self.audit
+            .record(
+                AuditEventType::PasswordChanged,
+                AuditResult::Success,
+                Some(tenant_id),
+                Some(user.id),
+                None,
+                None,
+                ctx,
+            )
+            .await;
+
+        if user.failed_login_count > 0 || user.locked_until.is_some() {
+            if let Err(e) = self.users.update_login_state(user.id, 0, None).await {
+                return AdminLoginOutcome::Internal(e.to_string());
+            }
+        }
+
         let sso_session_id = crypto::random_hex(32);
         let sso = SsoSession {
             session_hash: crypto::sha256_hex(&sso_session_id),

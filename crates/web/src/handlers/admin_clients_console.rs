@@ -19,6 +19,7 @@ use crate::state::WebState;
 use crate::templates::{
     render, ClientDetail, ClientForm, ClientFormValues, ClientSecret, ClientsList, ConsoleNotice,
 };
+use crate::tenant::WebTenant;
 use axum::extract::{Extension, Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
@@ -26,12 +27,12 @@ use axum::Form;
 use serde::Deserialize;
 use serde_json::json;
 
-const CLIENTS_PATH: &str = "/admin/console/clients";
+const CLIENTS_SEGMENT: &str = "/admin/clients";
 
 /// 各ハンドラ冒頭の共通前処理: 管理者を解決し、user_id を返すか誘導 Response を返す。
 macro_rules! admin_or_return {
-    ($state:expr, $correlation:expr, $headers:expr) => {
-        match resolve_admin($state, $correlation, $headers).await {
+    ($state:expr, $correlation:expr, $tenant:expr, $headers:expr) => {
+        match resolve_admin($state, $correlation, $tenant, $headers).await {
             AdminResolution::Ok(uid) => uid,
             AdminResolution::Reject(resp) => return resp,
         }
@@ -43,14 +44,18 @@ macro_rules! admin_or_return {
 pub async fn list(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
 ) -> Response {
-    let admin = admin_or_return!(&state, &correlation, &headers);
-    let result = state.api.list_clients(&correlation.0, &sso(&headers)).await;
+    let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
+    let result = state
+        .api
+        .list_clients(&correlation.0, &tenant.0, &sso(&headers))
+        .await;
     let messages = Messages::new(locale(&headers));
     match result {
-        Ok(clients) => Html(render_list(&messages, &admin, &clients)).into_response(),
-        Err(e) => map_data_error(&messages, &admin, &headers, e),
+        Ok(clients) => Html(render_list(&messages, &tenant, &admin, &clients)).into_response(),
+        Err(e) => map_data_error(&messages, &tenant, &admin, &headers, e),
     }
 }
 
@@ -59,13 +64,15 @@ pub async fn list(
 pub async fn new_form(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
 ) -> Response {
-    let admin = admin_or_return!(&state, &correlation, &headers);
+    let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
     let messages = Messages::new(locale(&headers));
     let csrf = csrf_from(&headers);
     Html(render_new_form(
         &messages,
+        &tenant,
         &admin,
         &csrf,
         &ClientFormValues::default_new(),
@@ -90,10 +97,11 @@ pub struct NewClientForm {
 pub async fn create(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Form(form): Form<NewClientForm>,
 ) -> Response {
-    let admin = admin_or_return!(&state, &correlation, &headers);
+    let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
     let values = ClientFormValues {
         app_name: form.app_name.clone(),
         client_type: form.client_type.clone(),
@@ -109,6 +117,7 @@ pub async fn create(
         let csrf = csrf_from(&headers);
         return bad_request_form(render_new_form(
             &messages,
+            &tenant,
             &admin,
             &csrf,
             &values,
@@ -125,18 +134,18 @@ pub async fn create(
     });
     let result = state
         .api
-        .create_client(&correlation.0, &sso(&headers), body)
+        .create_client(&correlation.0, &tenant.0, &sso(&headers), body)
         .await;
     let messages = Messages::new(locale(&headers));
     let csrf = csrf_from(&headers);
     match result {
         Ok(created) => {
-            Html(render_secret_result(&messages, &admin, &created, true)).into_response()
+            Html(render_secret_result(&messages, &tenant, &admin, &created, true)).into_response()
         }
         Err(AdminApiError::Validation(m)) | Err(AdminApiError::Conflict(m)) => bad_request_form(
-            render_new_form_with_message(&messages, &admin, &csrf, &values, &m),
+            render_new_form_with_message(&messages, &tenant, &admin, &csrf, &values, &m),
         ),
-        Err(e) => map_data_error(&messages, &admin, &headers, e),
+        Err(e) => map_data_error(&messages, &tenant, &admin, &headers, e),
     }
 }
 
@@ -145,20 +154,21 @@ pub async fn create(
 pub async fn detail(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Path(client_id): Path<String>,
 ) -> Response {
-    let admin = admin_or_return!(&state, &correlation, &headers);
+    let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
     let result = state
         .api
-        .get_client(&correlation.0, &sso(&headers), &client_id)
+        .get_client(&correlation.0, &tenant.0, &sso(&headers), &client_id)
         .await;
     let messages = Messages::new(locale(&headers));
     let csrf = csrf_from(&headers);
     match result {
-        Ok(client) => Html(render_detail(&messages, &admin, &client, &csrf)).into_response(),
-        Err(AdminApiError::NotFound) => not_found(&messages, &admin),
-        Err(e) => map_data_error(&messages, &admin, &headers, e),
+        Ok(client) => Html(render_detail(&messages, &tenant, &admin, &client, &csrf)).into_response(),
+        Err(AdminApiError::NotFound) => not_found(&messages, &tenant, &admin),
+        Err(e) => map_data_error(&messages, &tenant, &admin, &headers, e),
     }
 }
 
@@ -167,13 +177,14 @@ pub async fn detail(
 pub async fn edit_form(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Path(client_id): Path<String>,
 ) -> Response {
-    let admin = admin_or_return!(&state, &correlation, &headers);
+    let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
     let result = state
         .api
-        .get_client(&correlation.0, &sso(&headers), &client_id)
+        .get_client(&correlation.0, &tenant.0, &sso(&headers), &client_id)
         .await;
     let messages = Messages::new(locale(&headers));
     let csrf = csrf_from(&headers);
@@ -181,12 +192,12 @@ pub async fn edit_form(
         Ok(client) => {
             let values = ClientFormValues::from_client(&client);
             Html(render_edit_form(
-                &messages, &admin, &client, &csrf, &values, None,
+                &messages, &tenant, &admin, &client, &csrf, &values, None,
             ))
             .into_response()
         }
-        Err(AdminApiError::NotFound) => not_found(&messages, &admin),
-        Err(e) => map_data_error(&messages, &admin, &headers, e),
+        Err(AdminApiError::NotFound) => not_found(&messages, &tenant, &admin),
+        Err(e) => map_data_error(&messages, &tenant, &admin, &headers, e),
     }
 }
 
@@ -204,26 +215,27 @@ pub struct EditClientForm {
 pub async fn update(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Path(client_id): Path<String>,
     Form(form): Form<EditClientForm>,
 ) -> Response {
-    let admin = admin_or_return!(&state, &correlation, &headers);
+    let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
 
     // 再表示に備え、現行 client を取得する（種別など読み取り専用表示のため）。ClientView は Send。
     let client = match state
         .api
-        .get_client(&correlation.0, &sso(&headers), &client_id)
+        .get_client(&correlation.0, &tenant.0, &sso(&headers), &client_id)
         .await
     {
         Ok(c) => c,
         Err(AdminApiError::NotFound) => {
             let messages = Messages::new(locale(&headers));
-            return not_found(&messages, &admin);
+            return not_found(&messages, &tenant, &admin);
         }
         Err(e) => {
             let messages = Messages::new(locale(&headers));
-            return map_data_error(&messages, &admin, &headers, e);
+            return map_data_error(&messages, &tenant, &admin, &headers, e);
         }
     };
     let mut values = ClientFormValues::from_client(&client);
@@ -238,6 +250,7 @@ pub async fn update(
         let err = messages.get("admin-error-csrf");
         return bad_request_form(render_edit_form(
             &messages,
+            &tenant,
             &admin,
             &client,
             &csrf,
@@ -254,17 +267,17 @@ pub async fn update(
     });
     let result = state
         .api
-        .update_client(&correlation.0, &sso(&headers), &client_id, body)
+        .update_client(&correlation.0, &tenant.0, &sso(&headers), &client_id, body)
         .await;
     let messages = Messages::new(locale(&headers));
     let csrf = csrf_from(&headers);
     match result {
-        Ok(_) => found(&format!("{CLIENTS_PATH}/{client_id}")),
-        Err(AdminApiError::NotFound) => not_found(&messages, &admin),
+        Ok(_) => found(&format!("{}{CLIENTS_SEGMENT}/{client_id}", tenant.prefix())),
+        Err(AdminApiError::NotFound) => not_found(&messages, &tenant, &admin),
         Err(AdminApiError::Validation(m)) | Err(AdminApiError::Conflict(m)) => bad_request_form(
-            render_edit_form(&messages, &admin, &client, &csrf, &values, Some(m)),
+            render_edit_form(&messages, &tenant, &admin, &client, &csrf, &values, Some(m)),
         ),
-        Err(e) => map_data_error(&messages, &admin, &headers, e),
+        Err(e) => map_data_error(&messages, &tenant, &admin, &headers, e),
     }
 }
 
@@ -278,50 +291,52 @@ pub struct CsrfForm {
 pub async fn rotate_secret(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Path(client_id): Path<String>,
     Form(form): Form<CsrfForm>,
 ) -> Response {
-    let admin = admin_or_return!(&state, &correlation, &headers);
+    let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
 
     if !csrf_valid(&headers, &form.csrf_token) {
         let messages = Messages::new(locale(&headers));
-        return bad_request_page(&messages, &admin, "admin-error-csrf");
+        return bad_request_page(&messages, &tenant, &admin, "admin-error-csrf");
     }
     let rotated = state
         .api
-        .rotate_client_secret(&correlation.0, &sso(&headers), &client_id)
+        .rotate_client_secret(&correlation.0, &tenant.0, &sso(&headers), &client_id)
         .await;
     match rotated {
         Ok(secret) => {
             // 再発行結果は詳細を取り直して表示する（ClientView は Send）。
             let client = state
                 .api
-                .get_client(&correlation.0, &sso(&headers), &client_id)
+                .get_client(&correlation.0, &tenant.0, &sso(&headers), &client_id)
                 .await;
             let messages = Messages::new(locale(&headers));
             match client {
                 Ok(client) => Html(render_rotated_result(
                     &messages,
+                    &tenant,
                     &admin,
                     &client,
                     &secret.client_secret,
                 ))
                 .into_response(),
-                Err(e) => map_data_error(&messages, &admin, &headers, e),
+                Err(e) => map_data_error(&messages, &tenant, &admin, &headers, e),
             }
         }
         Err(AdminApiError::Validation(m)) => {
             let messages = Messages::new(locale(&headers));
-            bad_request_page_msg(&messages, &admin, &m)
+            bad_request_page_msg(&messages, &tenant, &admin, &m)
         }
         Err(AdminApiError::NotFound) => {
             let messages = Messages::new(locale(&headers));
-            not_found(&messages, &admin)
+            not_found(&messages, &tenant, &admin)
         }
         Err(e) => {
             let messages = Messages::new(locale(&headers));
-            map_data_error(&messages, &admin, &headers, e)
+            map_data_error(&messages, &tenant, &admin, &headers, e)
         }
     }
 }
@@ -359,9 +374,10 @@ fn csrf_valid(headers: &HeaderMap, submitted: &str) -> bool {
 
 // ── レンダリング ──────────────────────────────────────────────────────────────
 
-fn render_list(messages: &Messages, admin: &str, clients: &[ClientView]) -> String {
+fn render_list(messages: &Messages, tenant: &WebTenant, admin: &str, clients: &[ClientView]) -> String {
     render(&ClientsList {
         messages,
+        tenant: &tenant.prefix(),
         admin: Some(admin),
         clients,
     })
@@ -369,6 +385,7 @@ fn render_list(messages: &Messages, admin: &str, clients: &[ClientView]) -> Stri
 
 fn render_new_form(
     messages: &Messages,
+    tenant: &WebTenant,
     admin: &str,
     csrf: &str,
     values: &ClientFormValues,
@@ -377,11 +394,12 @@ fn render_new_form(
     let error = error_key.map(|k| messages.get(k));
     render(&ClientForm {
         messages,
+        tenant: &tenant.prefix(),
         admin: Some(admin),
         csrf,
         error: error.as_deref(),
         heading: &messages.get("admin-clients-new"),
-        action: &format!("{CLIENTS_PATH}/new"),
+        action: &format!("{}{CLIENTS_SEGMENT}/new", tenant.prefix()),
         is_new: true,
         values,
     })
@@ -389,6 +407,7 @@ fn render_new_form(
 
 fn render_new_form_with_message(
     messages: &Messages,
+    tenant: &WebTenant,
     admin: &str,
     csrf: &str,
     values: &ClientFormValues,
@@ -396,11 +415,12 @@ fn render_new_form_with_message(
 ) -> String {
     render(&ClientForm {
         messages,
+        tenant: &tenant.prefix(),
         admin: Some(admin),
         csrf,
         error: Some(error),
         heading: &messages.get("admin-clients-new"),
-        action: &format!("{CLIENTS_PATH}/new"),
+        action: &format!("{}{CLIENTS_SEGMENT}/new", tenant.prefix()),
         is_new: true,
         values,
     })
@@ -408,6 +428,7 @@ fn render_new_form_with_message(
 
 fn render_edit_form(
     messages: &Messages,
+    tenant: &WebTenant,
     admin: &str,
     client: &ClientView,
     csrf: &str,
@@ -416,19 +437,21 @@ fn render_edit_form(
 ) -> String {
     render(&ClientForm {
         messages,
+        tenant: &tenant.prefix(),
         admin: Some(admin),
         csrf,
         error: error.as_deref(),
         heading: &format!("{}: {}", messages.get("admin-client-edit"), client.app_name),
-        action: &format!("{CLIENTS_PATH}/{}/edit", client.client_id),
+        action: &format!("{}{CLIENTS_SEGMENT}/{}/edit", tenant.prefix(), client.client_id),
         is_new: false,
         values,
     })
 }
 
-fn render_detail(messages: &Messages, admin: &str, client: &ClientView, csrf: &str) -> String {
+fn render_detail(messages: &Messages, tenant: &WebTenant, admin: &str, client: &ClientView, csrf: &str) -> String {
     render(&ClientDetail {
         messages,
+        tenant: &tenant.prefix(),
         admin: Some(admin),
         client,
         csrf,
@@ -437,12 +460,14 @@ fn render_detail(messages: &Messages, admin: &str, client: &ClientView, csrf: &s
 
 fn render_secret_result(
     messages: &Messages,
+    tenant: &WebTenant,
     admin: &str,
     created: &ClientCreatedView,
     is_new: bool,
 ) -> String {
     render_secret_page(
         messages,
+        tenant,
         admin,
         &created.client.client_id,
         created.client_secret.as_deref(),
@@ -452,15 +477,17 @@ fn render_secret_result(
 
 fn render_rotated_result(
     messages: &Messages,
+    tenant: &WebTenant,
     admin: &str,
     client: &ClientView,
     secret: &str,
 ) -> String {
-    render_secret_page(messages, admin, &client.client_id, Some(secret), false)
+    render_secret_page(messages, tenant, admin, &client.client_id, Some(secret), false)
 }
 
 fn render_secret_page(
     messages: &Messages,
+    tenant: &WebTenant,
     admin: &str,
     client_id: &str,
     secret: Option<&str>,
@@ -473,6 +500,7 @@ fn render_secret_page(
     };
     render(&ClientSecret {
         messages,
+        tenant: &tenant.prefix(),
         admin: Some(admin),
         heading: &heading,
         client_id,
@@ -493,18 +521,20 @@ fn locale(headers: &HeaderMap) -> Locale {
 /// api の 401/403 を web の画面挙動へ写す（ログイン誘導 / 403 画面）。それ以外は 500。
 fn map_data_error(
     messages: &Messages,
+    tenant: &WebTenant,
     admin: &str,
     headers: &HeaderMap,
     e: AdminApiError,
 ) -> Response {
     match e {
-        AdminApiError::Unauthorized => redirect_to_login(),
+        AdminApiError::Unauthorized => redirect_to_login(tenant),
         AdminApiError::Forbidden => forbidden_response(headers),
-        AdminApiError::NotFound => not_found(messages, admin),
+        AdminApiError::NotFound => not_found(messages, tenant, admin),
         other => {
             tracing::error!(error = ?debug_error(&other), "admin client console data error");
             let body = render(&ConsoleNotice {
                 messages,
+                tenant: &tenant.prefix(),
                 admin: Some(admin),
                 heading: None,
                 message: &messages.get("admin-error-internal"),
@@ -532,31 +562,33 @@ fn bad_request_form(html: String) -> Response {
     (StatusCode::BAD_REQUEST, Html(html)).into_response()
 }
 
-fn bad_request_page(messages: &Messages, admin: &str, error_key: &str) -> Response {
-    bad_request_page_msg(messages, admin, &messages.get(error_key))
+fn bad_request_page(messages: &Messages, tenant: &WebTenant, admin: &str, error_key: &str) -> Response {
+    bad_request_page_msg(messages, tenant, admin, &messages.get(error_key))
 }
 
-fn bad_request_page_msg(messages: &Messages, admin: &str, message: &str) -> Response {
+fn bad_request_page_msg(messages: &Messages, tenant: &WebTenant, admin: &str, message: &str) -> Response {
     let body = render(&ConsoleNotice {
         messages,
+        tenant: &tenant.prefix(),
         admin: Some(admin),
         heading: None,
         message,
         is_error: true,
-        back_href: Some(CLIENTS_PATH),
+        back_href: Some(&format!("{}{CLIENTS_SEGMENT}", tenant.prefix())),
         back_label: &messages.get("admin-client-back"),
     });
     (StatusCode::BAD_REQUEST, Html(body)).into_response()
 }
 
-fn not_found(messages: &Messages, admin: &str) -> Response {
+fn not_found(messages: &Messages, tenant: &WebTenant, admin: &str) -> Response {
     let body = render(&ConsoleNotice {
         messages,
+        tenant: &tenant.prefix(),
         admin: Some(admin),
         heading: Some(&messages.get("admin-client-not-found-title")),
         message: &messages.get("admin-client-not-found-message"),
         is_error: false,
-        back_href: Some(CLIENTS_PATH),
+        back_href: Some(&format!("{}{CLIENTS_SEGMENT}", tenant.prefix())),
         back_label: &messages.get("admin-client-back"),
     });
     (StatusCode::NOT_FOUND, Html(body)).into_response()
@@ -609,7 +641,8 @@ mod tests {
             created_at: "2026-07-06T00:00:00Z".into(),
             updated_at: "2026-07-06T00:00:00Z".into(),
         };
-        let html = render_list(&messages, "admin-1", &[client]);
+        let tenant = WebTenant("00000000-0000-7000-8000-000000000000".to_string());
+        let html = render_list(&messages, &tenant, "admin-1", &[client]);
         // Askama は HTML を数値文字参照でエスケープする（`<` → `&#60;`）。生タグが残らないことを確認する。
         assert!(html.contains("&#60;script&#62;Evil&#60;/script&#62;"));
         assert!(!html.contains("<script>Evil"));

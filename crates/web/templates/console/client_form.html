@@ -29,6 +29,6 @@
 {% if is_new %}
 <p><label><input type="checkbox" name="require_pkce"{% if values.require_pkce %} checked{% endif %}> {{ messages.get("admin-client-field-pkce") }}</label><small>{{ messages.get("admin-client-field-pkce-hint") }}</small></p>
 {% endif %}
-<p><button type="submit">{{ messages.get("admin-form-save") }}</button> <a href="/admin/console/clients">{{ messages.get("admin-form-cancel") }}</a></p>
+<p><button type="submit">{{ messages.get("admin-form-save") }}</button> <a href="{{ tenant }}/admin/clients">{{ messages.get("admin-form-cancel") }}</a></p>
 </form>
 {% endblock %}

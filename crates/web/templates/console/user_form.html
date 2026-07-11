@@ -1,0 +1,15 @@
+{% extends "console/layout.html" %}
+{% block content %}
+<h2>{{ messages.get("admin-users-new-title") }}</h2>
+{% if let Some(err) = error %}<p class="error" role="alert">{{ err }}</p>{% endif %}
+<form method="post" action="{{ tenant }}/admin/users/new">
+<input type="hidden" name="csrf_token" value="{{ csrf }}">
+<p><label>{{ messages.get("admin-user-col-email") }}<br>
+<input type="email" name="email" value="{{ email }}" required></label></p>
+<p><label>{{ messages.get("admin-user-col-username") }}<br>
+<input type="text" name="preferred_username" value="{{ preferred_username }}"></label></p>
+<p><label>{{ messages.get("admin-users-field-name") }}<br>
+<input type="text" name="name" value="{{ name }}"></label></p>
+<p><button type="submit">{{ messages.get("admin-form-save") }}</button> <a href="{{ tenant }}/admin/users">{{ messages.get("admin-form-cancel") }}</a></p>
+</form>
+{% endblock %}

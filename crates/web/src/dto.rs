@@ -25,3 +25,24 @@ pub struct ConsentForm {
     /// `approve` または `deny`。
     pub action: String,
 }
+
+/// 強制パスワード変更フォーム（`POST /password-change`、ADR-0009 §5）。ログインフロー中
+/// （パスワード検証済み・SSO 未発行）の `auth_session_id` を前提とする。
+#[derive(Debug, Deserialize)]
+pub struct PasswordChangeForm {
+    pub current_password: String,
+    pub new_password: String,
+    pub new_password_confirm: String,
+    pub csrf_token: String,
+}
+
+/// 管理コンソールの強制パスワード変更フォーム（`POST /admin/password-change`、ADR-0009 §5）。
+/// 管理ログインは一時状態を持たないため `username` を含めフルに再送する。
+#[derive(Debug, Deserialize)]
+pub struct AdminPasswordChangeForm {
+    pub username: String,
+    pub current_password: String,
+    pub new_password: String,
+    pub new_password_confirm: String,
+    pub csrf_token: String,
+}

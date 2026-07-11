@@ -27,7 +27,7 @@
 
   <p>{{ messages.get("mfa-verify-intro") }}</p>
 
-  <form method="post" action="/mfa/totp">
+  <form method="post" action="">
     <input type="hidden" name="csrf_token" value="{{ csrf }}">
     <label for="totp_code">{{ messages.get("mfa-verify-code-label") }}</label>
     <input id="totp_code" type="text" name="totp_code" inputmode="numeric" pattern="[0-9]{6}"

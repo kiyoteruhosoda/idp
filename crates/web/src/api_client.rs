@@ -3,9 +3,13 @@
 //! web は DB を持たず、データ取得/操作はすべて api の HTTP エンドポイント越しに行う。本モジュールは
 //! その唯一の出入口。内部認証（`/internal/authenticate*`）はサービス認証トークン（`X-Internal-Auth-Token`）
 //! を付与して呼ぶ。DTO は `idp-contracts` で api と共有し、コンパイル時に契約整合を保証する。
+//!
+//! `/admin/*`（JSON 管理 API）はテナント経路（`/{tenant_id}/admin/*`。ADR-0009 §6）で呼ぶ。
+//! テナント id は web の経路（`crate::tenant::WebTenant`）から呼び出し側が明示的に渡す（MT13）。
 
 use crate::admin_dto::{
     ApiErrorBody, AuditLogView, ClientCreatedView, ClientSecretView, ClientView,
+    InvitationCreatedView, MemberView, UserCreatedView,
 };
 use idp_contracts::admin::{
     AvailablePermissionsResponse, ClientStatusResponse, UserPermissionsResponse,
@@ -13,7 +17,9 @@ use idp_contracts::admin::{
 };
 use idp_contracts::auth::{
     InternalAdminAuthenticateRequest, InternalAdminAuthenticateResponse,
-    InternalAuthenticateRequest, InternalAuthenticateResponse, InternalConsentApproveRequest,
+    InternalAdminChangePasswordRequest, InternalAdminChangePasswordResponse,
+    InternalAuthenticateRequest, InternalAuthenticateResponse, InternalChangePasswordRequest,
+    InternalChangePasswordResponse, InternalConsentApproveRequest,
     InternalConsentApproveResponse, InternalConsentDenyRequest, InternalConsentDenyResponse,
     InternalConsentInfoResponse, InternalLogoutRequest, InternalPasskeyDeleteRequest,
     InternalPasskeyDeleteResponse, InternalPasskeyListRequest, InternalPasskeyListResponse,
@@ -68,10 +74,6 @@ pub struct ApiClient {
     http: reqwest::Client,
     base_url: String,
     service_token: String,
-    /// admin パス前置に使う root テナント UUID のキャッシュ（ADR-0009 §7・§9）。初回の admin 呼び出し時に
-    /// `/internal/root-tenant` から遅延解決する。過渡期は root 単一だが、web がテナント経路化される
-    /// （MT13）まで管理コンソールは root テナントを対象とする。
-    root_tenant: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl ApiClient {
@@ -80,35 +82,7 @@ impl ApiClient {
             http: reqwest::Client::new(),
             base_url: base_url.into(),
             service_token: service_token.into(),
-            root_tenant: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
-    }
-
-    /// admin パスに前置する root テナント UUID を解決する（キャッシュ付き）。api の
-    /// `GET /internal/root-tenant`（サービストークン保護）から取得する。ロックは await をまたがない。
-    async fn tenant_prefix(&self) -> Result<String, AdminApiError> {
-        if let Some(t) = self.root_tenant.lock().expect("root_tenant lock").clone() {
-            return Ok(t);
-        }
-        let response = self
-            .http
-            .get(format!("{}/internal/root-tenant", self.base_url))
-            .header(SERVICE_TOKEN_HEADER, &self.service_token)
-            .send()
-            .await
-            .map_err(|e| AdminApiError::Transport(e.to_string()))?;
-        if !response.status().is_success() {
-            return Err(AdminApiError::Transport(format!(
-                "api /internal/root-tenant returned {}",
-                response.status()
-            )));
-        }
-        let body = response
-            .json::<idp_contracts::admin::RootTenantResponse>()
-            .await
-            .map_err(|e| AdminApiError::Transport(format!("decode root-tenant: {e}")))?;
-        *self.root_tenant.lock().expect("root_tenant lock") = Some(body.tenant_id.clone());
-        Ok(body.tenant_id)
     }
 
     /// OIDC ログイン認証（`POST /internal/authenticate`）。
@@ -121,6 +95,16 @@ impl ApiClient {
             .await
     }
 
+    /// 強制パスワード変更（`POST /internal/change-password`、ADR-0009 §5）。
+    pub async fn change_password(
+        &self,
+        correlation_id: &str,
+        req: &InternalChangePasswordRequest,
+    ) -> anyhow::Result<InternalChangePasswordResponse> {
+        self.post_internal("/internal/change-password", correlation_id, req)
+            .await
+    }
+
     /// 管理コンソール認証（`POST /internal/authenticate/admin`）。
     pub async fn authenticate_admin(
         &self,
@@ -129,6 +113,20 @@ impl ApiClient {
     ) -> anyhow::Result<InternalAdminAuthenticateResponse> {
         self.post_internal("/internal/authenticate/admin", correlation_id, req)
             .await
+    }
+
+    /// 管理コンソールの強制パスワード変更（`POST /internal/authenticate/admin/change-password`）。
+    pub async fn admin_change_password(
+        &self,
+        correlation_id: &str,
+        req: &InternalAdminChangePasswordRequest,
+    ) -> anyhow::Result<InternalAdminChangePasswordResponse> {
+        self.post_internal(
+            "/internal/authenticate/admin/change-password",
+            correlation_id,
+            req,
+        )
+        .await
     }
 
     /// ログアウト（`POST /internal/logout`）。api 側で SSO セッションを失効させる（Cookie 失効は web）。
@@ -295,15 +293,17 @@ impl ApiClient {
             .await
     }
 
-    /// 管理者の SSO Cookie を api の `GET /admin/whoami` へ転送し、認証状態と身元を得る（ADR-0007 §4）。
-    pub async fn admin_whoami(&self, correlation_id: &str, sso_session_id: &str) -> AdminSession {
-        let Ok(tenant) = self.tenant_prefix().await else {
-            tracing::error!("failed to resolve root tenant for whoami");
-            return AdminSession::Error;
-        };
+    /// 管理者の SSO Cookie を api の `GET /{tenant_id}/admin/whoami` へ転送し、認証状態と身元を得る
+    /// （ADR-0007 §4・ADR-0009 §6）。
+    pub async fn admin_whoami(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso_session_id: &str,
+    ) -> AdminSession {
         let response = match self
             .http
-            .get(format!("{}/{}/admin/whoami", self.base_url, tenant))
+            .get(format!("{}/{}/admin/whoami", self.base_url, tenant_id))
             .header(REQUEST_ID_HEADER, correlation_id)
             .header(
                 reqwest::header::COOKIE,
@@ -335,15 +335,16 @@ impl ApiClient {
         }
     }
 
-    // ── 管理コンソール → JSON 管理 API（`/admin/*`、SSO Cookie 転送）───────────────
+    // ── 管理コンソール → JSON 管理 API（`/{tenant_id}/admin/*`、SSO Cookie 転送）───────────────
 
     /// クライアント一覧（`GET /admin/clients`）。
     pub async fn list_clients(
         &self,
         correlation_id: &str,
+        tenant_id: &str,
         sso: &str,
     ) -> Result<Vec<ClientView>, AdminApiError> {
-        self.admin_send(Method::GET, "/admin/clients", correlation_id, sso, None)
+        self.admin_send(Method::GET, tenant_id, "/admin/clients", correlation_id, sso, None)
             .await
     }
 
@@ -351,11 +352,13 @@ impl ApiClient {
     pub async fn get_client(
         &self,
         correlation_id: &str,
+        tenant_id: &str,
         sso: &str,
         client_id: &str,
     ) -> Result<ClientView, AdminApiError> {
         self.admin_send(
             Method::GET,
+            tenant_id,
             &format!("/admin/clients/{client_id}"),
             correlation_id,
             sso,
@@ -368,11 +371,13 @@ impl ApiClient {
     pub async fn create_client(
         &self,
         correlation_id: &str,
+        tenant_id: &str,
         sso: &str,
         body: serde_json::Value,
     ) -> Result<ClientCreatedView, AdminApiError> {
         self.admin_send(
             Method::POST,
+            tenant_id,
             "/admin/clients",
             correlation_id,
             sso,
@@ -385,12 +390,14 @@ impl ApiClient {
     pub async fn update_client(
         &self,
         correlation_id: &str,
+        tenant_id: &str,
         sso: &str,
         client_id: &str,
         body: serde_json::Value,
     ) -> Result<ClientView, AdminApiError> {
         self.admin_send(
             Method::PATCH,
+            tenant_id,
             &format!("/admin/clients/{client_id}"),
             correlation_id,
             sso,
@@ -403,11 +410,13 @@ impl ApiClient {
     pub async fn rotate_client_secret(
         &self,
         correlation_id: &str,
+        tenant_id: &str,
         sso: &str,
         client_id: &str,
     ) -> Result<ClientSecretView, AdminApiError> {
         self.admin_send(
             Method::POST,
+            tenant_id,
             &format!("/admin/clients/{client_id}/secret"),
             correlation_id,
             sso,
@@ -422,20 +431,19 @@ impl ApiClient {
     pub async fn search_user(
         &self,
         correlation_id: &str,
+        tenant_id: &str,
         sso: &str,
         q: &str,
     ) -> Result<UserSummaryResponse, AdminApiError> {
-        let tenant = self.tenant_prefix().await?;
-        let req = self
+        let response = self
             .http
-            .get(format!("{}/{}/admin/users", self.base_url, tenant))
+            .get(format!("{}/{}/admin/users", self.base_url, tenant_id))
             .query(&[("q", q)])
             .header(REQUEST_ID_HEADER, correlation_id)
             .header(
                 reqwest::header::COOKIE,
                 format!("{SSO_SESSION_COOKIE}={sso}"),
-            );
-        let response = req
+            )
             .send()
             .await
             .map_err(|e| AdminApiError::Transport(e.to_string()))?;
@@ -446,11 +454,13 @@ impl ApiClient {
     pub async fn get_user(
         &self,
         correlation_id: &str,
+        tenant_id: &str,
         sso: &str,
         user_id: &str,
     ) -> Result<UserSummaryResponse, AdminApiError> {
         self.admin_send(
             Method::GET,
+            tenant_id,
             &format!("/admin/users/{user_id}"),
             correlation_id,
             sso,
@@ -459,25 +469,54 @@ impl ApiClient {
         .await
     }
 
+    /// 利用者作成（`POST /admin/users`）。パスワードは自動生成され `generated_password` を一度だけ返す。
+    pub async fn create_user(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        body: serde_json::Value,
+    ) -> Result<UserCreatedView, AdminApiError> {
+        self.admin_send(
+            Method::POST,
+            tenant_id,
+            "/admin/users",
+            correlation_id,
+            sso,
+            Some(body),
+        )
+        .await
+    }
+
     /// 付与可能な権限コード（`GET /admin/permissions`）。
     pub async fn available_permissions(
         &self,
         correlation_id: &str,
+        tenant_id: &str,
         sso: &str,
     ) -> Result<AvailablePermissionsResponse, AdminApiError> {
-        self.admin_send(Method::GET, "/admin/permissions", correlation_id, sso, None)
-            .await
+        self.admin_send(
+            Method::GET,
+            tenant_id,
+            "/admin/permissions",
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
     }
 
     /// 保有権限一覧（`GET /admin/users/{id}/permissions`）。
     pub async fn list_user_permissions(
         &self,
         correlation_id: &str,
+        tenant_id: &str,
         sso: &str,
         user_id: &str,
     ) -> Result<UserPermissionsResponse, AdminApiError> {
         self.admin_send(
             Method::GET,
+            tenant_id,
             &format!("/admin/users/{user_id}/permissions"),
             correlation_id,
             sso,
@@ -490,12 +529,14 @@ impl ApiClient {
     pub async fn grant_permission(
         &self,
         correlation_id: &str,
+        tenant_id: &str,
         sso: &str,
         user_id: &str,
         code: &str,
     ) -> Result<UserPermissionsResponse, AdminApiError> {
         self.admin_send(
             Method::POST,
+            tenant_id,
             &format!("/admin/users/{user_id}/permissions"),
             correlation_id,
             sso,
@@ -508,16 +549,68 @@ impl ApiClient {
     pub async fn revoke_permission(
         &self,
         correlation_id: &str,
+        tenant_id: &str,
         sso: &str,
         user_id: &str,
         code: &str,
     ) -> Result<UserPermissionsResponse, AdminApiError> {
         self.admin_send(
             Method::DELETE,
+            tenant_id,
             &format!("/admin/users/{user_id}/permissions/{code}"),
             correlation_id,
             sso,
             None,
+        )
+        .await
+    }
+
+    // ── メンバー・招待（ADR-0009 §3）─────────────────────────────────────────
+
+    /// メンバー一覧（`GET /admin/members`。HOME / GUEST を問わない）。
+    pub async fn list_members(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+    ) -> Result<Vec<MemberView>, AdminApiError> {
+        self.admin_send(Method::GET, tenant_id, "/admin/members", correlation_id, sso, None)
+            .await
+    }
+
+    /// ゲストメンバーシップの解除（`DELETE /admin/members/{user_id}`。HOME は不可）。
+    pub async fn revoke_member(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        user_id: &str,
+    ) -> Result<(), AdminApiError> {
+        self.admin_send_no_content(
+            Method::DELETE,
+            tenant_id,
+            &format!("/admin/members/{user_id}"),
+            correlation_id,
+            sso,
+        )
+        .await
+    }
+
+    /// ゲスト招待の作成（`POST /admin/invitations`）。招待トークンを一度だけ返す。
+    pub async fn create_invitation(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        user_id: &str,
+    ) -> Result<InvitationCreatedView, AdminApiError> {
+        self.admin_send(
+            Method::POST,
+            tenant_id,
+            "/admin/invitations",
+            correlation_id,
+            sso,
+            Some(serde_json::json!({ "user_id": user_id })),
         )
         .await
     }
@@ -528,20 +621,19 @@ impl ApiClient {
     pub async fn search_audit_logs(
         &self,
         correlation_id: &str,
+        tenant_id: &str,
         sso: &str,
         query: &[(&str, String)],
     ) -> Result<Vec<AuditLogView>, AdminApiError> {
-        let tenant = self.tenant_prefix().await?;
-        let req = self
+        let response = self
             .http
-            .get(format!("{}/{}/admin/audit-logs", self.base_url, tenant))
+            .get(format!("{}/{}/admin/audit-logs", self.base_url, tenant_id))
             .query(query)
             .header(REQUEST_ID_HEADER, correlation_id)
             .header(
                 reqwest::header::COOKIE,
                 format!("{SSO_SESSION_COOKIE}={sso}"),
-            );
-        let response = req
+            )
             .send()
             .await
             .map_err(|e| AdminApiError::Transport(e.to_string()))?;
@@ -552,10 +644,12 @@ impl ApiClient {
     pub async fn list_client_status(
         &self,
         correlation_id: &str,
+        tenant_id: &str,
         sso: &str,
     ) -> Result<Vec<ClientStatusResponse>, AdminApiError> {
         self.admin_send(
             Method::GET,
+            tenant_id,
             "/admin/clients/status",
             correlation_id,
             sso,
@@ -570,21 +664,31 @@ impl ApiClient {
     pub async fn list_signing_keys(
         &self,
         correlation_id: &str,
+        tenant_id: &str,
         sso: &str,
     ) -> Result<Vec<crate::admin_dto::SigningKeyView>, AdminApiError> {
-        self.admin_send(Method::GET, "/admin/signing-keys", correlation_id, sso, None)
-            .await
+        self.admin_send(
+            Method::GET,
+            tenant_id,
+            "/admin/signing-keys",
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
     }
 
     /// 新規署名鍵を生成する（`POST /admin/signing-keys`）。`algorithm` は `RS256` または `ES256`。
     pub async fn generate_signing_key(
         &self,
         correlation_id: &str,
+        tenant_id: &str,
         sso: &str,
         algorithm: &str,
     ) -> Result<crate::admin_dto::SigningKeyView, AdminApiError> {
         self.admin_send(
             Method::POST,
+            tenant_id,
             "/admin/signing-keys",
             correlation_id,
             sso,
@@ -597,87 +701,45 @@ impl ApiClient {
     pub async fn retire_signing_key(
         &self,
         correlation_id: &str,
+        tenant_id: &str,
         sso: &str,
         kid: &str,
     ) -> Result<(), AdminApiError> {
-        let tenant = self.tenant_prefix().await?;
-        let response = self
-            .http
-            .post(format!(
-                "{}/{}/admin/signing-keys/{kid}/retire",
-                self.base_url, tenant
-            ))
-            .header(REQUEST_ID_HEADER, correlation_id)
-            .header(
-                reqwest::header::COOKIE,
-                format!("{SSO_SESSION_COOKIE}={sso}"),
-            )
-            .send()
-            .await
-            .map_err(|e| AdminApiError::Transport(e.to_string()))?;
-        let status = response.status();
-        if status.is_success() {
-            return Ok(());
-        }
-        let message = response
-            .json::<ApiErrorBody>()
-            .await
-            .map(|b| b.message)
-            .unwrap_or_default();
-        Err(match status {
-            reqwest::StatusCode::UNAUTHORIZED => AdminApiError::Unauthorized,
-            reqwest::StatusCode::FORBIDDEN => AdminApiError::Forbidden,
-            reqwest::StatusCode::NOT_FOUND => AdminApiError::NotFound,
-            reqwest::StatusCode::BAD_REQUEST => AdminApiError::Validation(message),
-            other => AdminApiError::Transport(format!("unexpected status {other}")),
-        })
+        self.admin_send_no_content(
+            Method::POST,
+            tenant_id,
+            &format!("/admin/signing-keys/{kid}/retire"),
+            correlation_id,
+            sso,
+        )
+        .await
     }
 
     /// 署名鍵を削除する（`DELETE /admin/signing-keys/{kid}`）。RETIRED のみ可。
     pub async fn delete_signing_key(
         &self,
         correlation_id: &str,
+        tenant_id: &str,
         sso: &str,
         kid: &str,
     ) -> Result<(), AdminApiError> {
-        let tenant = self.tenant_prefix().await?;
-        let response = self
-            .http
-            .delete(format!(
-                "{}/{}/admin/signing-keys/{kid}",
-                self.base_url, tenant
-            ))
-            .header(REQUEST_ID_HEADER, correlation_id)
-            .header(
-                reqwest::header::COOKIE,
-                format!("{SSO_SESSION_COOKIE}={sso}"),
-            )
-            .send()
-            .await
-            .map_err(|e| AdminApiError::Transport(e.to_string()))?;
-        let status = response.status();
-        if status.is_success() {
-            return Ok(());
-        }
-        let message = response
-            .json::<ApiErrorBody>()
-            .await
-            .map(|b| b.message)
-            .unwrap_or_default();
-        Err(match status {
-            reqwest::StatusCode::UNAUTHORIZED => AdminApiError::Unauthorized,
-            reqwest::StatusCode::FORBIDDEN => AdminApiError::Forbidden,
-            reqwest::StatusCode::NOT_FOUND => AdminApiError::NotFound,
-            reqwest::StatusCode::BAD_REQUEST => AdminApiError::Validation(message),
-            other => AdminApiError::Transport(format!("unexpected status {other}")),
-        })
+        self.admin_send_no_content(
+            Method::DELETE,
+            tenant_id,
+            &format!("/admin/signing-keys/{kid}"),
+            correlation_id,
+            sso,
+        )
+        .await
     }
 
-    /// `/admin/*`（`RequirePerms<IdpAdmin>`）への共通呼び出し。管理者の SSO Cookie と correlation_id を
-    /// 転送し、api のステータスを web の [`AdminApiError`] へ写す。成功時は本文を `T` へデコードする。
+    /// `/{tenant_id}/admin/*`（`RequirePerms<IdpAdmin>`）への共通呼び出し。管理者の SSO Cookie と
+    /// correlation_id を転送し、api のステータスを web の [`AdminApiError`] へ写す。成功時は本文を
+    /// `T` へデコードする。
     async fn admin_send<T>(
         &self,
         method: Method,
+        tenant_id: &str,
         path: &str,
         correlation_id: &str,
         sso: &str,
@@ -686,10 +748,9 @@ impl ApiClient {
     where
         T: serde::de::DeserializeOwned,
     {
-        let tenant = self.tenant_prefix().await?;
         let mut req = self
             .http
-            .request(method, format!("{}/{}{}", self.base_url, tenant, path))
+            .request(method, format!("{}/{}{}", self.base_url, tenant_id, path))
             .header(REQUEST_ID_HEADER, correlation_id)
             .header(
                 reqwest::header::COOKIE,
@@ -703,6 +764,45 @@ impl ApiClient {
             .await
             .map_err(|e| AdminApiError::Transport(e.to_string()))?;
         Self::handle_admin_response(response, path).await
+    }
+
+    /// 本文の無い成功応答（204 等）を期待する `admin_send` の亜種。
+    async fn admin_send_no_content(
+        &self,
+        method: Method,
+        tenant_id: &str,
+        path: &str,
+        correlation_id: &str,
+        sso: &str,
+    ) -> Result<(), AdminApiError> {
+        let response = self
+            .http
+            .request(method, format!("{}/{}{}", self.base_url, tenant_id, path))
+            .header(REQUEST_ID_HEADER, correlation_id)
+            .header(
+                reqwest::header::COOKIE,
+                format!("{SSO_SESSION_COOKIE}={sso}"),
+            )
+            .send()
+            .await
+            .map_err(|e| AdminApiError::Transport(e.to_string()))?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let message = response
+            .json::<ApiErrorBody>()
+            .await
+            .map(|b| b.message)
+            .unwrap_or_default();
+        Err(match status {
+            reqwest::StatusCode::UNAUTHORIZED => AdminApiError::Unauthorized,
+            reqwest::StatusCode::FORBIDDEN => AdminApiError::Forbidden,
+            reqwest::StatusCode::NOT_FOUND => AdminApiError::NotFound,
+            reqwest::StatusCode::BAD_REQUEST => AdminApiError::Validation(message),
+            reqwest::StatusCode::CONFLICT => AdminApiError::Conflict(message),
+            other => AdminApiError::Transport(format!("unexpected status {other}")),
+        })
     }
 
     /// api の `/admin/*` 応答を `T` かエラーへ写す共通処理。

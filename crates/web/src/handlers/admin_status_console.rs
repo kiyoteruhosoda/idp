@@ -13,13 +13,14 @@ use crate::handlers::admin_console::{
 use crate::i18n::{Locale, Messages};
 use crate::state::WebState;
 use crate::templates::{render, AuditLogs, ClientStatus, ConsoleNotice};
+use crate::tenant::WebTenant;
 use axum::extract::{Extension, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use idp_contracts::admin::ClientStatusResponse;
 use serde::Deserialize;
 
-const AUDIT_PATH: &str = "/admin/console/audit-logs";
+const AUDIT_SEGMENT: &str = "/admin/audit-logs";
 /// api の既定ページサイズ（`audit_query::DEFAULT_LIMIT` と一致させる。ページャの「次あり」判定に使う）。
 const DEFAULT_LIMIT: i64 = 50;
 
@@ -46,10 +47,11 @@ pub struct AuditForm {
 pub async fn audit_logs(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Query(form): Query<AuditForm>,
 ) -> Response {
-    let admin = match resolve_admin(&state, &correlation, &headers).await {
+    let admin = match resolve_admin(&state, &correlation, &tenant, &headers).await {
         AdminResolution::Ok(uid) => uid,
         AdminResolution::Reject(resp) => return resp,
     };
@@ -72,21 +74,21 @@ pub async fn audit_logs(
 
     let result = state
         .api
-        .search_audit_logs(&correlation.0, &sso(&headers), &query)
+        .search_audit_logs(&correlation.0, &tenant.0, &sso(&headers), &query)
         .await;
     let messages = Messages::new(locale(&headers));
     match result {
         Ok(entries) => Html(render_audit(
-            &messages, &admin, &form, offset, false, &entries,
+            &messages, &tenant, &admin, &form, offset, false, &entries,
         ))
         .into_response(),
         // from/to の形式不正（api が 400）→ 日時エラー表示・空一覧。
         Err(AdminApiError::Validation(_)) => {
-            Html(render_audit(&messages, &admin, &form, offset, true, &[])).into_response()
+            Html(render_audit(&messages, &tenant, &admin, &form, offset, true, &[])).into_response()
         }
-        Err(AdminApiError::Unauthorized) => redirect_to_login(),
+        Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
         Err(AdminApiError::Forbidden) => forbidden_response(&headers),
-        Err(_) => internal_error(&messages, &admin),
+        Err(_) => internal_error(&messages, &tenant, &admin),
     }
 }
 
@@ -95,22 +97,23 @@ pub async fn audit_logs(
 pub async fn client_status(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
 ) -> Response {
-    let admin = match resolve_admin(&state, &correlation, &headers).await {
+    let admin = match resolve_admin(&state, &correlation, &tenant, &headers).await {
         AdminResolution::Ok(uid) => uid,
         AdminResolution::Reject(resp) => return resp,
     };
     let result = state
         .api
-        .list_client_status(&correlation.0, &sso(&headers))
+        .list_client_status(&correlation.0, &tenant.0, &sso(&headers))
         .await;
     let messages = Messages::new(locale(&headers));
     match result {
-        Ok(views) => Html(render_status(&messages, &admin, &views)).into_response(),
-        Err(AdminApiError::Unauthorized) => redirect_to_login(),
+        Ok(views) => Html(render_status(&messages, &tenant, &admin, &views)).into_response(),
+        Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
         Err(AdminApiError::Forbidden) => forbidden_response(&headers),
-        Err(_) => internal_error(&messages, &admin),
+        Err(_) => internal_error(&messages, &tenant, &admin),
     }
 }
 
@@ -122,15 +125,17 @@ fn sso(headers: &HeaderMap) -> String {
 
 fn render_audit(
     messages: &Messages,
+    tenant: &WebTenant,
     admin: &str,
     form: &AuditForm,
     offset: i64,
     date_error: bool,
     entries: &[AuditLogView],
 ) -> String {
-    let (prev_href, next_href) = pager_links(form, offset, entries.len());
+    let (prev_href, next_href) = pager_links(tenant, form, offset, entries.len());
     render(&AuditLogs {
         messages,
+        tenant: &tenant.prefix(),
         admin: Some(admin),
         date_error,
         event_type: form.event_type.as_deref().unwrap_or(""),
@@ -146,14 +151,20 @@ fn render_audit(
 }
 
 /// ページャの前後リンク（クエリ文字列付き URL）。該当がなければ `None`。
-fn pager_links(form: &AuditForm, offset: i64, page_len: usize) -> (Option<String>, Option<String>) {
-    let prev = (offset > 0).then(|| audit_query_string(form, (offset - DEFAULT_LIMIT).max(0)));
+fn pager_links(
+    tenant: &WebTenant,
+    form: &AuditForm,
+    offset: i64,
+    page_len: usize,
+) -> (Option<String>, Option<String>) {
+    let prev = (offset > 0)
+        .then(|| audit_query_string(tenant, form, (offset - DEFAULT_LIMIT).max(0)));
     let next = (page_len as i64 == DEFAULT_LIMIT)
-        .then(|| audit_query_string(form, offset + DEFAULT_LIMIT));
+        .then(|| audit_query_string(tenant, form, offset + DEFAULT_LIMIT));
     (prev, next)
 }
 
-fn audit_query_string(form: &AuditForm, offset: i64) -> String {
+fn audit_query_string(tenant: &WebTenant, form: &AuditForm, offset: i64) -> String {
     let mut params: Vec<(String, String)> = Vec::new();
     let mut push = |k: &str, v: &Option<String>| {
         if let Some(v) = v.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
@@ -172,12 +183,18 @@ fn audit_query_string(form: &AuditForm, offset: i64) -> String {
         .map(|(k, v)| format!("{}={}", k, urlencode(v)))
         .collect::<Vec<_>>()
         .join("&");
-    format!("{AUDIT_PATH}?{query}")
+    format!("{}{AUDIT_SEGMENT}?{query}", tenant.prefix())
 }
 
-fn render_status(messages: &Messages, admin: &str, views: &[ClientStatusResponse]) -> String {
+fn render_status(
+    messages: &Messages,
+    tenant: &WebTenant,
+    admin: &str,
+    views: &[ClientStatusResponse],
+) -> String {
     render(&ClientStatus {
         messages,
+        tenant: &tenant.prefix(),
         admin: Some(admin),
         views,
     })
@@ -206,9 +223,10 @@ fn locale(headers: &HeaderMap) -> Locale {
     )
 }
 
-fn internal_error(messages: &Messages, admin: &str) -> Response {
+fn internal_error(messages: &Messages, tenant: &WebTenant, admin: &str) -> Response {
     let body = render(&ConsoleNotice {
         messages,
+        tenant: &tenant.prefix(),
         admin: Some(admin),
         heading: None,
         message: &messages.get("admin-error-internal"),
@@ -222,6 +240,10 @@ fn internal_error(messages: &Messages, admin: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tenant() -> WebTenant {
+        WebTenant("00000000-0000-7000-8000-000000000000".to_string())
+    }
 
     fn entry(event: &str, result: &str, reason: Option<&str>) -> AuditLogView {
         AuditLogView {
@@ -243,6 +265,7 @@ mod tests {
         let messages = Messages::new(Locale::En);
         let html = render_audit(
             &messages,
+            &tenant(),
             "admin-1",
             &AuditForm::default(),
             0,
@@ -259,7 +282,7 @@ mod tests {
     #[test]
     fn audit_shows_datetime_error_banner() {
         let messages = Messages::new(Locale::En);
-        let html = render_audit(&messages, "admin-1", &AuditForm::default(), 0, true, &[]);
+        let html = render_audit(&messages, &tenant(), "admin-1", &AuditForm::default(), 0, true, &[]);
         assert!(html.contains("role=\"alert\""));
     }
 
@@ -270,7 +293,7 @@ mod tests {
             client_id: Some("a b".into()),
             ..AuditForm::default()
         };
-        let url = audit_query_string(&form, 50);
+        let url = audit_query_string(&tenant(), &form, 50);
         assert!(url.contains("result=failure"));
         assert!(url.contains("client_id=a%20b"));
         assert!(url.ends_with("offset=50"));
@@ -295,7 +318,7 @@ mod tests {
                 last_used_at: None,
             },
         ];
-        let html = render_status(&messages, "admin-1", &views);
+        let html = render_status(&messages, &tenant(), "admin-1", &views);
         // Askama は HTML を数値文字参照でエスケープする（`<` → `&#60;`）。
         assert!(html.contains("&#60;Used&#62;"));
         assert!(html.contains("DISABLED"));

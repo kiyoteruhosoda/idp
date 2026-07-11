@@ -10,6 +10,7 @@ use crate::handlers::{forwarded_context, found};
 use crate::i18n::{Locale, Messages};
 use crate::state::WebState;
 use crate::templates::{render, ConsentTemplate, MessagePage};
+use crate::tenant::WebTenant;
 use axum::extract::{Extension, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
@@ -66,6 +67,7 @@ pub async fn consent_page(
 pub async fn consent(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Form(form): Form<ConsentForm>,
 ) -> Response {
@@ -81,7 +83,7 @@ pub async fn consent(
 
     if form.action == "approve" {
         let req = InternalConsentApproveRequest {
-            tenant_id: None,
+            tenant_id: Some(tenant.0.clone()),
             auth_session_id: form.auth_session_id.clone(),
             ip_address: ctx.ip_address,
             user_agent: ctx.user_agent,
@@ -107,7 +109,7 @@ pub async fn consent(
     } else {
         // deny
         let req = InternalConsentDenyRequest {
-            tenant_id: None,
+            tenant_id: Some(tenant.0.clone()),
             auth_session_id: form.auth_session_id.clone(),
             ip_address: ctx.ip_address,
             user_agent: ctx.user_agent,

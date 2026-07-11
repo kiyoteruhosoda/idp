@@ -281,8 +281,8 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::FOUND, "redirect to /login");
-    // api は未ログイン時に /login（web が描画）へ 302 する。契約は不変。
-    assert_eq!(location(&response), "/login");
+    // api は未ログイン時に /{tenant_id}/login（web が描画）へ 302 する（ADR-0009 §6、MT13）。
+    assert_eq!(location(&response), format!("/{root_tenant_id}/login"));
     let auth_session = cookie_value(&response, "auth_session_id").expect("auth_session_id cookie");
 
     // CSRF は auth_session 由来（web が描画・api の LoginService が検証）。

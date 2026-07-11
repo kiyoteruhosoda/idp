@@ -2,10 +2,13 @@
 {% block content %}
 <p>{{ messages.get("admin-home-intro") }}</p>
 <ul class="admin-sections">
-<li><a href="/admin/console/clients">{{ messages.get("admin-nav-clients") }}</a></li>
-<li><a href="/admin/console/status">{{ messages.get("admin-nav-status") }}</a></li>
-<li><a href="/admin/console/audit-logs">{{ messages.get("admin-nav-audit") }}</a></li>
-<li><a href="/admin/console/users">{{ messages.get("admin-nav-permissions") }}</a></li>
-<li><a href="/admin/console/signing-keys">{{ messages.get("admin-nav-signing-keys") }}</a></li>
+<li><a href="{{ tenant }}/admin/clients">{{ messages.get("admin-nav-clients") }}</a></li>
+<li><a href="{{ tenant }}/admin/status">{{ messages.get("admin-nav-status") }}</a></li>
+<li><a href="{{ tenant }}/admin/audit-logs">{{ messages.get("admin-nav-audit") }}</a></li>
+<li><a href="{{ tenant }}/admin/users">{{ messages.get("admin-nav-permissions") }}</a></li>
+<li><a href="{{ tenant }}/admin/users/new">{{ messages.get("admin-nav-users-new") }}</a></li>
+<li><a href="{{ tenant }}/admin/members">{{ messages.get("admin-nav-members") }}</a></li>
+<li><a href="{{ tenant }}/admin/invitations">{{ messages.get("admin-nav-invitations") }}</a></li>
+<li><a href="{{ tenant }}/admin/signing-keys">{{ messages.get("admin-nav-signing-keys") }}</a></li>
 </ul>
 {% endblock %}

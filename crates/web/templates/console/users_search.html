@@ -1,7 +1,7 @@
 {% extends "console/layout.html" %}
 {% block content %}
 <h2>{{ messages.get("admin-users-title") }}</h2>
-<form method="get" action="/admin/console/users">
+<form method="get" action="{{ tenant }}/admin/users">
 <p><label>{{ messages.get("admin-users-search-label") }}<br>
 <input type="text" name="q" value="{{ term }}" required></label><br><small>{{ messages.get("admin-users-search-hint") }}</small></p>
 <p><button type="submit">{{ messages.get("admin-users-search-button") }}</button></p>
@@ -14,7 +14,7 @@
 <tr><th>{{ messages.get("admin-user-col-id") }}</th><td><code>{{ user.id }}</code></td></tr>
 <tr><th>{{ messages.get("admin-user-col-status") }}</th><td>{{ user.status }}</td></tr>
 </tbody></table>
-<p><a href="/admin/console/users/{{ user.id }}/permissions">{{ messages.get("admin-user-manage-permissions") }}</a></p>
+<p><a href="{{ tenant }}/admin/users/{{ user.id }}/permissions">{{ messages.get("admin-user-manage-permissions") }}</a></p>
 {% else if not_found %}
 <p>{{ messages.get("admin-users-search-none") }}</p>
 {% endif %}

@@ -52,6 +52,11 @@ pub enum InternalAuthenticateResponse {
     MfaRequired {
         auth_session_id: String,
     },
+    /// パスワード認証成功だが `must_change_password`（ADR-0009 §5）。パスワード変更画面へ誘導する。
+    /// `auth_session_id` Cookie はそのまま維持する（変更処理で使う）。
+    PasswordChangeRequired {
+        auth_session_id: String,
+    },
     /// AuthSession が無い・期限切れ（`/authorize` からやり直し）。
     SessionExpired,
     /// CSRF トークン不一致。
@@ -164,6 +169,50 @@ pub enum InternalVerifyTotpResponse {
     Internal,
 }
 
+/// パスワード変更 API（`POST /internal/change-password`、ADR-0009 §5）のリクエスト。
+///
+/// `LoginService` が検出した `must_change_password` を受けて、ログイン中の `auth_session_id`
+/// （パスワード検証済み状態）で新パスワードを設定する。「ログイン済みユーザーが現行パスワードで
+/// 認証したうえで新パスワードを設定する」フローのため、現行パスワードを含める。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalChangePasswordRequest {
+    /// フローのテナント（ADR-0009 §8）。未指定は既定テナント（root）へフォールバックする。
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    #[serde(default)]
+    pub auth_session_id: Option<String>,
+    pub current_password: String,
+    pub new_password: String,
+    pub csrf_token: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// パスワード変更 API のレスポンス。成功系は `InternalAuthenticateResponse` と同等。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalChangePasswordResponse {
+    Success {
+        redirect_to: String,
+        sso_session_id: String,
+        sso_absolute_ttl_secs: u64,
+    },
+    ConsentRequired {
+        auth_session_id: String,
+        sso_session_id: String,
+        sso_absolute_ttl_secs: u64,
+    },
+    SessionExpired,
+    CsrfMismatch,
+    /// 現行パスワードが不一致。
+    InvalidCurrentPassword,
+    /// 新パスワードが強度要件（最低文字数等）を満たさない。
+    WeakPassword,
+    Internal,
+}
+
 /// 管理コンソール内部認証 API（`POST /internal/authenticate/admin`、ADR-0007 §3・§4）のリクエスト。
 ///
 /// 管理ログインの CSRF は web 側で検証済み（ADR-0007 §4）のため本 API には含めない。
@@ -213,7 +262,45 @@ pub enum InternalAdminAuthenticateResponse {
     Locked,
     /// 資格情報は正しいが テナント admin 権限を保有しない。
     Forbidden,
+    /// 認証成功・管理権限保有だが `must_change_password`（ADR-0009 §5）。パスワード変更画面へ誘導する。
+    /// `username` はフォーム再表示用に入力値をそのまま返す。SSO はまだ発行しない。
+    PasswordChangeRequired {
+        username: String,
+    },
     /// api 内部エラー。
+    Internal,
+}
+
+/// 管理コンソールの強制パスワード変更 API（`POST /internal/authenticate/admin/change-password`、
+/// ADR-0009 §5）のリクエスト。管理ログインは `auth_session_id` のような一時状態を持たないため、
+/// 現行パスワードを含めフルに再検証する。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAdminChangePasswordRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub username: String,
+    pub current_password: String,
+    pub new_password: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// 管理コンソールの強制パスワード変更 API のレスポンス。成功時は `InternalAdminAuthenticateResponse`
+/// と同等（SSO セッション id を返す）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAdminChangePasswordResponse {
+    Success {
+        sso_session_id: String,
+        sso_absolute_ttl_secs: u64,
+    },
+    RateLimited,
+    InvalidCredentials,
+    Locked,
+    Forbidden,
+    WeakPassword,
     Internal,
 }
 

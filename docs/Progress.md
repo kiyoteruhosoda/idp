@@ -20,29 +20,27 @@ Phase 計画に沿う。
 
 | 優先 | # | 概要 | 状態 | 影響度 | 工数 | 推奨モデル |
 |---|---|---|---|---|---|---|
-| 1 | MT12 | パスワード変更（リセット）画面 + 初回ログイン時の強制変更誘導 | ⬜未着手 | 中 | 中 | Sonnet 5 |
-| 2 | MT13 | テナント管理コンソール（`/{tenant_id}/admin/`）— ユーザー・クライアント・メンバー・招待管理。web の画面 URL・テンプレートをテナント経路化し、`api_client` の内部認証 DTO へパス由来 `tenant_id` を設定 | ⬜未着手 | 中 | 大 | Sonnet 5 |
-| 3 | MT14 | 設定画面（`/{tenant_id}/admin/settings`）— テナント設定 + root のみシステム設定区画（SMTP 等） | ⬜未着手 | 中 | 中 | Sonnet 5 |
-| 4 | MT15 | ユーザー設定画面（`/{tenant_id}/settings`）— パスワード変更・MFA・言語設定 | ⬜未着手 | 小 | 中 | Sonnet 5 |
-| 5 | MT16 | 統合テスト（テナント間分離・権限境界の完全一致・ゲスト保護・「root は作成できるが内部を操作できない」の検証） | ⬜未着手 | 大 | 中 | Opus 4.8 |
-| 6 | MT17 | 招待のメール配送（MT14 の SMTP 設定完了後。手動トークン伝達 → メールリンク） | ⬜未着手 | 中 | 中 | Sonnet 5 |
-| 7 | MT18 | セルフサービス・パスワードリセット（忘失時。外部 SMTP 連携。MT14 完了後） | ⬜未着手 | 中 | 中 | Sonnet 5 |
-| 8 | MT19 | API の `Accept-Language` ベース多言語化（i18n 仕様書 §5・§6）— API は `Accept-Language` のみ参照（Cookie/Session/クエリ/DB を見ない）。地域コード無視（`en-US`→`en`）、非対応言語・未指定はシステム既定 `ja`。エラー／バリデーション／業務メッセージをキー管理で多言語化（コードは言語不変）。運用ログ・監査ログ・スタックトレースは対象外（英語統一） | ⬜未着手 | 中 | 大 | Sonnet 5 |
-| 9 | MT20 | Web の表示言語決定チェーン（i18n 仕様書 §3・§4・§9）— 優先順位 `?lang=` → ユーザー設定 → Cookie（`lang`）→ ブラウザ `Accept-Language` → 既定 `ja`。不正値は次順位へフォールバック。言語変更時／初回に Cookie 保存、ログイン時はユーザー設定優先。決定言語を API へ `Accept-Language` で伝搬（Cookie・`lang` クエリは送らない）。ユーザー設定 `language` 列（ja/en）を追加。将来言語追加（zh/ko/fr 等）を考慮 | ⬜未着手 | 中 | 大 | Sonnet 5 |
+| 1 | MT14 | 設定画面（`/{tenant_id}/admin/settings`）— テナント設定 + root のみシステム設定区画（SMTP 等） | ⬜未着手 | 中 | 中 | Sonnet 5 |
+| 2 | MT15 | ユーザー設定画面（`/{tenant_id}/settings`）— パスワード変更・MFA・言語設定 | ⬜未着手 | 小 | 中 | Sonnet 5 |
+| 3 | MT16 | 統合テスト（テナント間分離・権限境界の完全一致・ゲスト保護・「root は作成できるが内部を操作できない」の検証） | ⬜未着手 | 大 | 中 | Opus 4.8 |
+| 4 | MT17 | 招待のメール配送（MT14 の SMTP 設定完了後。手動トークン伝達 → メールリンク） | ⬜未着手 | 中 | 中 | Sonnet 5 |
+| 5 | MT18 | セルフサービス・パスワードリセット（忘失時。外部 SMTP 連携。MT14 完了後） | ⬜未着手 | 中 | 中 | Sonnet 5 |
+| 6 | MT19 | API の `Accept-Language` ベース多言語化（i18n 仕様書 §5・§6）— API は `Accept-Language` のみ参照（Cookie/Session/クエリ/DB を見ない）。地域コード無視（`en-US`→`en`）、非対応言語・未指定はシステム既定 `ja`。エラー／バリデーション／業務メッセージをキー管理で多言語化（コードは言語不変）。運用ログ・監査ログ・スタックトレースは対象外（英語統一） | ⬜未着手 | 中 | 大 | Sonnet 5 |
+| 7 | MT20 | Web の表示言語決定チェーン（i18n 仕様書 §3・§4・§9）— 優先順位 `?lang=` → ユーザー設定 → Cookie（`lang`）→ ブラウザ `Accept-Language` → 既定 `ja`。不正値は次順位へフォールバック。言語変更時／初回に Cookie 保存、ログイン時はユーザー設定優先。決定言語を API へ `Accept-Language` で伝搬（Cookie・`lang` クエリは送らない）。ユーザー設定 `language` 列（ja/en）を追加。将来言語追加（zh/ko/fr 等）を考慮 | ⬜未着手 | 中 | 大 | Sonnet 5 |
 
 ### 詳細
 
 **推奨モデルの根拠（高リスク＝Opus 4.8）**:
 - **MT16**: テナント間分離・権限境界・自動生成シークレットの保証を検証するテスト自体が保証の一部
-  （negative test 必須）。ADR-0009 §8。（Phase 2 の MT6〜MT8 と Phase 3 の MT9〜MT11＝管理 API・
-  テナント作成フローは完了。）
+  （negative test 必須）。ADR-0009 §8。（Phase 2 の MT6〜MT8、Phase 3 の MT9〜MT13＝管理 API・
+  テナント作成フロー・強制パスワード変更・テナント管理コンソールは完了。）
 
-**中リスク／定型（Sonnet 5）**: MT12〜MT15・MT17・MT18。仕様が ADR で明確で、
-Askama テンプレート・`api_client` 等の確立パターンに沿う機能実装。ただし MT15（MFA）・MT12
-（パスワード）はセキュリティ機微を含むため、実装後に §テスト・`/security-review` を併用する。
+**中リスク／定型（Sonnet 5）**: MT14・MT15・MT17・MT18。仕様が ADR で明確で、
+Askama テンプレート・`api_client` 等の確立パターンに沿う機能実装。ただし MT15（MFA）は
+セキュリティ機微を含むため、実装後に §テスト・`/security-review` を併用する。
 
-**依存関係**: Phase 2（MT6〜MT8）・MT9（ルーティング）・MT10（contracts/api_client）・MT11（管理 API）
-完了 → MT12〜MT16（Phase 3 残）。MT17・MT18 は MT14 のシステム設定（SMTP）完了が前提。
+**依存関係**: Phase 2（MT6〜MT8）・MT9〜MT13（Phase 3）完了 → MT14〜MT16（Phase 3 残）。
+MT17・MT18 は MT14 のシステム設定（SMTP）完了が前提。
 
 **i18n 仕様書（MT19・MT20）の現状ギャップと注意点**:
 - **現状**: i18n は **web crate のみ**（`fluent`、`crates/web/src/i18n.rs`、`i18n/<lang>/main.ftl`）。言語決定は
@@ -57,14 +55,3 @@ Askama テンプレート・`api_client` 等の確立パターンに沿う機能
   （データ層は MT20、設定 UI は MT15）。`language` 列追加は sqlx マイグレーション（`.claude/skills/db-migration/`）で行う。
 - 製品情報のような多言語**データ**が必要になった場合は翻訳テーブル（例: `ProductTranslation`）で対応する
   想定だが、現行スコープ（ユーザー向けメッセージの多言語化）には含めない。
-
-**過渡期の既知の状態（MT10 完了 → MT13 まで）**: api は `/{tenant_id}/...` ルーティング（MT9）と
-`TenantResolver` middleware を導入済みで、OIDC・admin 各ハンドラと `RequirePerms` は**パス由来の
-`Extension<ResolvedTenant>`** で要求テナントを解決する。issuer も要求テナントで合成する（MT7）。
-contracts の内部認証 DTO には `tenant_id`（MT10）があり、web `api_client` は root テナントを
-`/internal/root-tenant` で解決して `/{tenant_id}/admin/*` パスへ前置する。**ただし web の画面 URL・
-テンプレートは未だフラット**（`/login`・`/admin/console/*`）で、管理コンソールと OIDC ログイン画面は
-root テナントを対象とする（内部認証 DTO の `tenant_id` は `None` = api 側で root へフォールバック）。
-MT13 で web の画面をテナント経路化し、パス由来 `tenant_id` を内部認証 DTO に設定して非 root テナントの
-ログイン・管理を完成させる。管理 API（テナント作成・利用者作成・メンバー・招待の HTTP エンドポイント）は
-MT11 で api 側に実装済み。web の管理コンソール（画面）からこれらを呼ぶ導線は MT13 で追加する。

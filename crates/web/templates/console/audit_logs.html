@@ -2,14 +2,14 @@
 {% block content %}
 <h2>{{ messages.get("admin-audit-title") }}</h2>
 {% if date_error %}<p class="error" role="alert">{{ messages.get("admin-audit-error-datetime") }}</p>{% endif %}
-<form method="get" action="/admin/console/audit-logs">
+<form method="get" action="{{ tenant }}/admin/audit-logs">
 <p><label>{{ messages.get("admin-audit-filter-event") }} <input type="text" name="event_type" value="{{ event_type }}"></label>
 <label>{{ messages.get("admin-audit-filter-result") }} <select name="result"><option value=""{% if result.is_empty() %} selected{% endif %}>{{ messages.get("admin-audit-filter-result-all") }}</option><option value="success"{% if result == "success" %} selected{% endif %}>success</option><option value="failure"{% if result == "failure" %} selected{% endif %}>failure</option></select></label></p>
 <p><label>{{ messages.get("admin-audit-filter-client") }} <input type="text" name="client_id" value="{{ client_id }}"></label>
 <label>{{ messages.get("admin-audit-filter-correlation") }} <input type="text" name="correlation_id" value="{{ correlation_id }}"></label></p>
 <p><label>{{ messages.get("admin-audit-filter-from") }} <input type="text" name="from" value="{{ from }}" placeholder="2026-07-06T00:00:00Z"></label>
 <label>{{ messages.get("admin-audit-filter-to") }} <input type="text" name="to" value="{{ to }}" placeholder="2026-07-06T23:59:59Z"></label><small>{{ messages.get("admin-audit-filter-datetime-hint") }}</small></p>
-<p><button type="submit">{{ messages.get("admin-audit-search") }}</button> <a href="/admin/console/audit-logs">{{ messages.get("admin-audit-reset") }}</a></p>
+<p><button type="submit">{{ messages.get("admin-audit-search") }}</button> <a href="{{ tenant }}/admin/audit-logs">{{ messages.get("admin-audit-reset") }}</a></p>
 </form>
 {% if entries.is_empty() %}
 <p>{{ messages.get("admin-audit-none") }}</p>
@@ -25,5 +25,5 @@
 {% if prev_href.is_some() || next_href.is_some() %}
 <p class="pager">{% if let Some(href) = prev_href %}<a href="{{ href }}">{{ messages.get("admin-audit-prev") }}</a>{% endif %}{% if prev_href.is_some() && next_href.is_some() %} | {% endif %}{% if let Some(href) = next_href %}<a href="{{ href }}">{{ messages.get("admin-audit-next") }}</a>{% endif %}</p>
 {% endif %}
-<p><a href="/admin/console">{{ messages.get("admin-nav-home") }}</a></p>
+<p><a href="{{ tenant }}/admin">{{ messages.get("admin-nav-home") }}</a></p>
 {% endblock %}

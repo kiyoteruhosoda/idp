@@ -2,6 +2,35 @@
 
 完了した重要な変更の要約（詳しい経緯は `history/`、設計判断は `adr/`）。
 
+## 2026-07-11（MT12・MT13: 強制パスワード変更 + web テナント経路化・管理コンソール拡張）
+
+- **強制パスワード変更**（ADR-0009 §5。`application::change_password::ChangePasswordService`）:
+  `LoginService::login()` はパスワード検証成功後に `must_change_password` を確認し、真なら SSO を
+  発行せず `LoginOutcome::PasswordChangeRequired`（`auth_session_id` 維持）を返す。
+  `ChangePasswordService` は現行パスワードを再検証したうえで新パスワードを保存し、`MfaLoginService` と
+  同じ SSO 発行 → 同意チェック → code 発行のテールを実行する。管理コンソールログイン
+  （`AdminLoginService`）は一時セッションを持たないため、`change_password()` で
+  username・現行パスワード・admin 権限をフルに再検証してから SSO を発行する専用フローとした。
+  `UserRepository::update_password`（トレイト新設）・共有パスワード強度検証
+  （`domain::password::validate_password_strength`）・監査イベント `PasswordChanged` を追加。
+  web 側は `/{tenant_id}/password-change`（OIDC フロー）・`/{tenant_id}/admin/password-change`
+  （管理コンソール）の 2 画面を新設。DB マイグレーションは不要（`must_change_password` は
+  MT9 以前の初期 DDL に既存）。
+- **web のテナント経路化**（ADR-0009 §6・§10。MT13）: `idp-web` の全画面 URL を `/{tenant_id}/...`
+  へ再構成した（`/healthz`・`/readyz` のみ据え置き）。新設の `capture_tenant` middleware
+  （`crates/web/src/tenant.rs`）がパスの `tenant_id`（UUID 形式のみ検証。実在確認は api 側に委ねる）を
+  `Extension<WebTenant>` として注入する。管理コンソールは `/admin/console/*` から `/{tenant_id}/admin/*`
+  へ改称。`api_client.rs` の `/admin/*` 呼び出しはすべて明示的な `tenant_id` 引数を取るよう書き換え、
+  過渡期の root テナント自動解決（`/internal/root-tenant`・`ApiClient::tenant_prefix()`）は削除した
+  （api 側の対応エンドポイント・DTO も削除）。`contracts::auth` の内部認証 DTO は全箇所でパス由来
+  `tenant_id` を送るようになった。api の `/authorize` も `/login`・`/consent` へのリダイレクトを
+  `/{tenant_id}/...` へ修正。
+- **管理コンソールの新規画面**（ADR-0009 §3・§5・§6。MT13）: 利用者作成
+  （`/{tenant_id}/admin/users/new`。自動生成パスワードを一度だけ表示）・メンバー一覧とゲスト解除
+  （`/{tenant_id}/admin/members`）・ゲスト招待作成（`/{tenant_id}/admin/invitations`。招待トークンを
+  一度だけ表示）を追加し、web `api_client.rs` に対応するメソッドを配線した。テナント作成・削除の画面は
+  MT14（設定画面）で追加する。
+
 ## 2026-07-11（MT11: 管理 API（tenants/users/members/invitations）+ テナント作成フロー）
 
 - **テナント管理 API**（ADR-0009 §5・§6。`application::tenant_management::TenantManagementService`・

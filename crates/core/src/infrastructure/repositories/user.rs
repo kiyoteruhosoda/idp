@@ -157,4 +157,16 @@ impl UserRepository for SqlxUserRepository {
             .map_err(repo_err)?;
         Ok(())
     }
+
+    async fn update_password(&self, id: Uuid, password_hash: &str) -> Result<()> {
+        sqlx::query(
+            "UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?",
+        )
+        .bind(password_hash)
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        Ok(())
+    }
 }

@@ -324,6 +324,9 @@ mod tests {
         ) -> DomainResult<()> {
             unreachable!()
         }
+        async fn update_password(&self, _id: Uuid, _password_hash: &str) -> DomainResult<()> {
+            unreachable!()
+        }
     }
 
     /// 付与/剥奪の呼び出しを記録し、保有状態を保持するフェイク。

@@ -16,6 +16,7 @@ use crate::application::admin_login::AdminLoginService;
 use crate::application::audit::AuditService;
 use crate::application::audit_query::AuditQueryService;
 use crate::application::authorize::AuthorizeService;
+use crate::application::change_password::ChangePasswordService;
 use crate::application::client_management::ClientManagementService;
 use crate::application::client_status::ClientStatusService;
 use crate::application::code_issuance::CodeIssuanceService;
@@ -87,6 +88,9 @@ pub struct AppState {
     pub register: Arc<RegisterService>,
     pub authorize: Arc<AuthorizeService>,
     pub login: Arc<LoginService>,
+    /// 強制パスワード変更（ADR-0009 §5）。`LoginService` の `must_change_password` 検出を受けて
+    /// `auth_session_id` ベースでパスワードを設定する。
+    pub change_password: Arc<ChangePasswordService>,
     pub consent: Arc<ConsentService>,
     pub token: Arc<TokenService>,
     pub userinfo: Arc<UserInfoService>,
@@ -197,6 +201,18 @@ impl AppState {
             code_issuance.clone(),
             hasher.clone(),
             rate_limiter.clone(),
+            audit.clone(),
+            clock.clone(),
+            config.sso_idle_ttl(),
+            config.sso_absolute_ttl(),
+        ));
+        let change_password = Arc::new(ChangePasswordService::new(
+            auth_sessions.clone(),
+            users.clone(),
+            sso_sessions.clone(),
+            client_consents.clone(),
+            code_issuance.clone(),
+            hasher.clone(),
             audit.clone(),
             clock.clone(),
             config.sso_idle_ttl(),
@@ -396,6 +412,7 @@ impl AppState {
             register,
             authorize,
             login,
+            change_password,
             consent,
             token,
             userinfo,

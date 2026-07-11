@@ -20,6 +20,7 @@ pub mod router;
 pub mod state;
 pub mod telemetry;
 pub mod templates;
+pub mod tenant;
 
 use anyhow::Context;
 use std::net::SocketAddr;

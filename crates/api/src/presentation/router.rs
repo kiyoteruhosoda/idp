@@ -29,9 +29,12 @@ pub fn build(state: AppState) -> Router {
             "/internal/authenticate/admin",
             post(internal_auth::authenticate_admin),
         )
+        .route(
+            "/internal/authenticate/admin/change-password",
+            post(internal_auth::admin_change_password),
+        )
+        .route("/internal/change-password", post(internal_auth::change_password))
         .route("/internal/logout", post(internal_auth::logout))
-        // root テナント解決（web が admin パス前置に使う。ADR-0009 §7）。
-        .route("/internal/root-tenant", get(internal_auth::root_tenant))
         // 同意 API（F3: Consent）。
         .route(
             "/internal/consent-info",

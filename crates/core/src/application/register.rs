@@ -7,7 +7,7 @@
 use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
 use crate::domain::id_generator::IdGenerator;
-use crate::domain::password::PasswordHasher;
+use crate::domain::password::{validate_password_strength, PasswordHasher};
 use crate::domain::repositories::{TenantMembershipRepository, UserRepository};
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::tenant_membership::TenantMembership;
@@ -15,9 +15,6 @@ use crate::domain::user::User;
 use crate::domain::values::UserStatus;
 use std::sync::Arc;
 use uuid::Uuid;
-
-/// パスワードの最小長。
-const MIN_PASSWORD_LEN: usize = 8;
 
 #[derive(Debug, Clone)]
 pub struct RegisterCommand {
@@ -158,12 +155,7 @@ fn validate_email(email: &str) -> Result<(), RegisterError> {
 }
 
 fn validate_password(password: &str) -> Result<(), RegisterError> {
-    if password.len() < MIN_PASSWORD_LEN {
-        return Err(RegisterError::Validation(format!(
-            "password must be at least {MIN_PASSWORD_LEN} characters"
-        )));
-    }
-    Ok(())
+    validate_password_strength(password).map_err(RegisterError::Validation)
 }
 
 fn normalize_optional(value: Option<String>) -> Option<String> {

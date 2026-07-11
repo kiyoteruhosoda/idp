@@ -6,15 +6,6 @@
 
 use serde::{Deserialize, Serialize};
 
-/// `GET /internal/root-tenant` のレスポンス（ADR-0009 §7）。web が起動時／初回に root テナント UUID を
-/// 解決し、`/{tenant_id}/admin/*` パスの前置に使う（過渡期。root UUID は環境毎に動的採番のため
-/// 設定に埋め込まない）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RootTenantResponse {
-    /// root テナントの UUID（`parent_tenant_id IS NULL` の唯一の行）。
-    pub tenant_id: String,
-}
-
 /// `GET /admin/whoami` のレスポンス。アクセスできること自体が「有効な SSO ＋ `idp.tenant.admin` 保有」を意味する。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WhoamiResponse {

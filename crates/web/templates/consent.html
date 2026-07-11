@@ -11,7 +11,7 @@
 {% endfor %}
 </ul>
 {% endif %}
-<form method="post" action="/consent">
+<form method="post" action="">
 <input type="hidden" name="csrf_token" value="{{ csrf }}">
 <input type="hidden" name="auth_session_id" value="{{ auth_session_id }}">
 <button type="submit" name="action" value="approve">{{ messages.get("consent-approve") }}</button>

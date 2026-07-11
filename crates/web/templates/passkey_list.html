@@ -14,7 +14,7 @@
     <li>
       <strong>{{ cred.name }}</strong> — {{ cred.created_at }}
       {% if let Some(last) = cred.last_used_at %}({{ messages.get("passkey-last-used") }}: {{ last }}){% endif %}
-      <form method="post" action="/account/passkey/delete" style="display:inline">
+      <form method="post" action="{{ tenant_prefix }}/account/passkey/delete" style="display:inline">
         <input type="hidden" name="credential_id" value="{{ cred.id }}">
         <button type="submit" onclick="return confirm('{{ messages.get("passkey-delete-confirm") }}')">{{ messages.get("passkey-delete-button") }}</button>
       </form>
@@ -22,6 +22,6 @@
   {% endfor %}
   </ul>
 {% endif %}
-<p><a href="/account/passkey/register">{{ messages.get("passkey-register-button") }}</a></p>
+<p><a href="{{ tenant_prefix }}/account/passkey/register">{{ messages.get("passkey-register-button") }}</a></p>
 </body>
 </html>

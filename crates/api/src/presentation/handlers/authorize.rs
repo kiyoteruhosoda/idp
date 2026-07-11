@@ -60,7 +60,11 @@ pub async fn authorize(
                 state.config.auth_session_ttl().as_secs(),
                 state.config.cookie_secure(),
             );
-            ([(header::SET_COOKIE, cookie)], found("/login")).into_response()
+            (
+                [(header::SET_COOKIE, cookie)],
+                found(&format!("/{}/login", tenant.id())),
+            )
+                .into_response()
         }
         AuthorizeOutcome::ConsentRequired { auth_session_id } => {
             let cookie = cookies::build(
@@ -69,7 +73,11 @@ pub async fn authorize(
                 state.config.auth_session_ttl().as_secs(),
                 state.config.cookie_secure(),
             );
-            ([(header::SET_COOKIE, cookie)], found("/consent")).into_response()
+            (
+                [(header::SET_COOKIE, cookie)],
+                found(&format!("/{}/consent", tenant.id())),
+            )
+                .into_response()
         }
         AuthorizeOutcome::FatalError { error, description } => (
             StatusCode::BAD_REQUEST,

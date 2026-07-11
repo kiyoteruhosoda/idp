@@ -15,6 +15,7 @@ use crate::handlers::{forwarded_context, found};
 use crate::i18n::{Locale, Messages};
 use crate::state::WebState;
 use crate::templates::{render, LoginTemplate, MessagePage};
+use crate::tenant::WebTenant;
 use axum::extract::{Extension, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{AppendHeaders, Html, IntoResponse, Response};
@@ -23,7 +24,7 @@ use idp_contracts::auth::{InternalAuthenticateRequest, InternalAuthenticateRespo
 use idp_contracts::csrf::login_csrf_token;
 
 /// ログインフォームを表示する。`auth_session_id` Cookie（api の `/authorize` が発行）が必要。
-pub async fn login_page(headers: HeaderMap) -> Response {
+pub async fn login_page(Extension(tenant): Extension<WebTenant>, headers: HeaderMap) -> Response {
     let messages = Messages::new(locale(&headers));
     let Some(auth_session_id) = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE) else {
         return error_page(
@@ -34,6 +35,7 @@ pub async fn login_page(headers: HeaderMap) -> Response {
     };
     Html(render_form(
         &messages,
+        &tenant.prefix(),
         &login_csrf_token(&auth_session_id),
         None,
     ))
@@ -42,9 +44,10 @@ pub async fn login_page(headers: HeaderMap) -> Response {
 
 /// ログインフォームの HTML をテンプレートから描画する。埋め込む値（翻訳文言・CSRF トークン）は
 /// テンプレート側で自動 HTML エスケープされる。
-fn render_form(messages: &Messages, csrf: &str, error_key: Option<&str>) -> String {
+fn render_form(messages: &Messages, tenant_prefix: &str, csrf: &str, error_key: Option<&str>) -> String {
     render(&LoginTemplate {
         messages,
+        tenant_prefix,
         csrf,
         error_key,
     })
@@ -54,6 +57,7 @@ fn render_form(messages: &Messages, csrf: &str, error_key: Option<&str>) -> Stri
 pub async fn login(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> Response {
@@ -61,9 +65,7 @@ pub async fn login(
     let auth_session_id = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE);
 
     let request = InternalAuthenticateRequest {
-        // 過渡期は web がフラット経路のため未指定（api が既定テナント root へフォールバック）。
-        // web のテナント経路化（MT13）でパス由来 tenant_id を設定する。
-        tenant_id: None,
+        tenant_id: Some(tenant.0.clone()),
         auth_session_id: auth_session_id.clone(),
         username: form.username,
         password: form.password,
@@ -116,7 +118,22 @@ pub async fn login(
             );
             (
                 AppendHeaders([(header::SET_COOKIE, auth_cookie)]),
-                found("/mfa/totp"),
+                found(&format!("{}/mfa/totp", tenant.prefix())),
+            )
+                .into_response()
+        }
+        InternalAuthenticateResponse::PasswordChangeRequired { auth_session_id } => {
+            // パスワード認証成功・強制変更必要（ADR-0009 §5）: auth_session_id Cookie を維持して
+            // パスワード変更画面へ。
+            let auth_cookie = cookies::build(
+                cookies::AUTH_SESSION_COOKIE,
+                &auth_session_id,
+                state.config.auth_session_ttl_secs(),
+                secure,
+            );
+            (
+                AppendHeaders([(header::SET_COOKIE, auth_cookie)]),
+                found(&format!("{}/password-change", tenant.prefix())),
             )
                 .into_response()
         }
@@ -135,12 +152,14 @@ pub async fn login(
         ),
         InternalAuthenticateResponse::InvalidCredentials => reshow_form(
             &messages,
+            &tenant.prefix(),
             StatusCode::UNAUTHORIZED,
             auth_session_id.as_deref(),
             "login-error-invalid-credentials",
         ),
         InternalAuthenticateResponse::Locked => reshow_form(
             &messages,
+            &tenant.prefix(),
             StatusCode::FORBIDDEN,
             auth_session_id.as_deref(),
             "login-error-locked",
@@ -170,7 +189,7 @@ pub async fn login(
                     (header::SET_COOKIE, sso_cookie),
                     (header::SET_COOKIE, auth_cookie),
                 ]),
-                found("/consent"),
+                found(&format!("{}/consent", tenant.prefix())),
             )
                 .into_response()
         }
@@ -191,6 +210,7 @@ fn locale(headers: &HeaderMap) -> Locale {
 /// エラー付きでフォームを再表示する（AuthSession はまだ有効なため再入力できる）。
 fn reshow_form(
     messages: &Messages,
+    tenant_prefix: &str,
     status: StatusCode,
     auth_session_id: Option<&str>,
     error_key: &str,
@@ -200,6 +220,7 @@ fn reshow_form(
             status,
             Html(render_form(
                 messages,
+                tenant_prefix,
                 &login_csrf_token(id),
                 Some(error_key),
             )),

@@ -4,7 +4,7 @@
 <body>
 <h1>{{ messages.get("login-title") }}</h1>
 {% if let Some(key) = error_key %}<p class="error" role="alert">{{ messages.get(key) }}</p>{% endif %}
-<form method="post" action="/login">
+<form method="post" action="">
 <input type="hidden" name="csrf_token" value="{{ csrf }}">
 <label>{{ messages.get("login-username") }} <input type="text" name="username" autocomplete="username" required></label>
 <label>{{ messages.get("login-password") }} <input type="password" name="password" autocomplete="current-password" required></label>
@@ -28,7 +28,7 @@
     document.getElementById('passkey-error').style.display = 'none';
     try {
       // 1. begin
-      const beginRes = await fetch('/passkey/login/begin', {
+      const beginRes = await fetch('{{ tenant_prefix }}/passkey/login/begin', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({})
@@ -60,7 +60,7 @@
         credJson.response.userHandle = toB64(credential.response.userHandle);
       }
 
-      const completeRes = await fetch('/passkey/login/complete', {
+      const completeRes = await fetch('{{ tenant_prefix }}/passkey/login/complete', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ challenge_id, credential: credJson })

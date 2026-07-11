@@ -1,7 +1,7 @@
 {% extends "console/layout.html" %}
 {% block content %}
 <h2>{{ messages.get("admin-clients-title") }}</h2>
-<p><a href="/admin/console/clients/new">{{ messages.get("admin-clients-new") }}</a></p>
+<p><a href="{{ tenant }}/admin/clients/new">{{ messages.get("admin-clients-new") }}</a></p>
 {% if clients.is_empty() %}
 <p>{{ messages.get("admin-clients-none") }}</p>
 {% else %}
@@ -9,7 +9,7 @@
 <thead><tr><th>{{ messages.get("admin-client-col-name") }}</th><th>{{ messages.get("admin-client-col-id") }}</th><th>{{ messages.get("admin-client-col-type") }}</th><th>{{ messages.get("admin-client-col-status") }}</th><th>{{ messages.get("admin-client-col-scopes") }}</th></tr></thead>
 <tbody>
 {% for c in clients %}
-<tr><td><a href="/admin/console/clients/{{ c.client_id }}">{{ c.app_name }}</a></td><td><code>{{ c.client_id }}</code></td><td>{{ c.client_type }}</td><td>{{ c.client_status }}</td><td>{{ c.scopes.join(" ") }}</td></tr>
+<tr><td><a href="{{ tenant }}/admin/clients/{{ c.client_id }}">{{ c.app_name }}</a></td><td><code>{{ c.client_id }}</code></td><td>{{ c.client_type }}</td><td>{{ c.client_status }}</td><td>{{ c.scopes.join(" ") }}</td></tr>
 {% endfor %}
 </tbody></table>
 {% endif %}

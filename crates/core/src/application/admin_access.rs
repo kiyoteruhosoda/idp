@@ -247,6 +247,9 @@ mod tests {
         ) -> DomainResult<()> {
             unreachable!()
         }
+        async fn update_password(&self, _id: Uuid, _password_hash: &str) -> DomainResult<()> {
+            unreachable!()
+        }
     }
 
     struct FakePermissions {

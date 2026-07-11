@@ -6,7 +6,7 @@
 <header class="admin-header">
 <span class="admin-title">{{ messages.get("admin-console-title") }}</span>
 <span class="admin-user">{{ messages.get("admin-signed-in-as") }}: {{ uid }}</span>
-<form method="post" action="/admin/console/logout" class="admin-logout"><button type="submit">{{ messages.get("admin-logout") }}</button></form>
+<form method="post" action="{{ tenant }}/admin/logout" class="admin-logout"><button type="submit">{{ messages.get("admin-logout") }}</button></form>
 </header>
 {% else %}
 <header class="admin-header"><span class="admin-title">{{ messages.get("admin-console-title") }}</span></header>

@@ -1,0 +1,8 @@
+{% extends "console/layout.html" %}
+{% block content %}
+<h2>{{ messages.get("admin-invitations-created-title") }}</h2>
+<p class="secret-warning">{{ messages.get("admin-invitations-created-warning") }}</p>
+<p>{{ messages.get("admin-invitations-token-label") }}: <code>{{ token }}</code></p>
+<p>{{ messages.get("admin-invitations-expires-label") }}: {{ expires_at }}</p>
+<p><a href="{{ tenant }}/admin/members">{{ messages.get("admin-nav-members") }}</a></p>
+{% endblock %}
