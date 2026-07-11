@@ -9,14 +9,15 @@ use crate::presentation::admin::{IdpAdmin, RequirePerms};
 use crate::presentation::dto::{AuditLogEntryResponse, AuditLogQueryParams};
 use crate::presentation::error::ApiError;
 use crate::presentation::state::AppState;
-use axum::extract::{Query, State};
+use crate::presentation::tenant::ResolvedTenant;
+use axum::extract::{Extension, Query, State};
 use axum::Json;
 use chrono::{DateTime, Utc};
 
 /// 監査ログを条件で絞り込み、新しい順に返す。
 #[utoipa::path(
     get,
-    path = "/admin/audit-logs",
+    path = "/{tenant_id}/admin/audit-logs",
     tag = "admin",
     params(AuditLogQueryParams),
     responses(
@@ -29,6 +30,7 @@ use chrono::{DateTime, Utc};
 pub async fn list_audit_logs(
     RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,
+    Extension(tenant): Extension<ResolvedTenant>,
     Query(params): Query<AuditLogQueryParams>,
 ) -> Result<Json<Vec<AuditLogEntryResponse>>, ApiError> {
     let query = AuditQueryParams {
@@ -44,7 +46,7 @@ pub async fn list_audit_logs(
 
     let entries = state
         .audit_query
-        .search(state.default_tenant, query)
+        .search(tenant.context(), query)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(entries.iter().map(entry_response).collect()))

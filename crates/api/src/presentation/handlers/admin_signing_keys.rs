@@ -17,7 +17,7 @@ use axum::Json;
 /// 全署名鍵を作成日時の降順で返す。
 #[utoipa::path(
     get,
-    path = "/admin/signing-keys",
+    path = "/{tenant_id}/admin/signing-keys",
     tag = "admin",
     responses(
         (status = 200, description = "署名鍵一覧", body = [SigningKeyResponse]),
@@ -36,7 +36,7 @@ pub async fn list_keys(
 /// 指定アルゴリズムの新規署名鍵を生成して ACTIVE で登録する。
 #[utoipa::path(
     post,
-    path = "/admin/signing-keys",
+    path = "/{tenant_id}/admin/signing-keys",
     tag = "admin",
     request_body = GenerateSigningKeyRequest,
     responses(
@@ -61,7 +61,7 @@ pub async fn generate_key(
 /// 指定 kid の署名鍵を RETIRED に変更する（ACTIVE → RETIRED）。
 #[utoipa::path(
     post,
-    path = "/admin/signing-keys/{kid}/retire",
+    path = "/{tenant_id}/admin/signing-keys/{kid}/retire",
     tag = "admin",
     params(("kid" = String, Path, description = "署名鍵 ID（kid）")),
     responses(
@@ -75,7 +75,9 @@ pub async fn generate_key(
 pub async fn retire_key(
     RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,
-    Path(kid): Path<String>,
+    // 先頭のパスセグメントは `{tenant_id}`。署名鍵はテナント横断（グローバル）だが、管理ルートは
+    // 全テナント一律 `/{tenant_id}/admin/...` に配置し RequirePerms でテナント権限を検証する。
+    Path((_tenant_id, kid)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     state.keys.retire_key(&kid).await.map_err(map_error)?;
     Ok(StatusCode::NO_CONTENT)
@@ -84,7 +86,7 @@ pub async fn retire_key(
 /// 指定 kid の署名鍵を削除する（RETIRED のみ可）。
 #[utoipa::path(
     delete,
-    path = "/admin/signing-keys/{kid}",
+    path = "/{tenant_id}/admin/signing-keys/{kid}",
     tag = "admin",
     params(("kid" = String, Path, description = "署名鍵 ID（kid）")),
     responses(
@@ -98,7 +100,7 @@ pub async fn retire_key(
 pub async fn delete_key(
     RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,
-    Path(kid): Path<String>,
+    Path((_tenant_id, kid)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     state.keys.delete_key(&kid).await.map_err(map_error)?;
     Ok(StatusCode::NO_CONTENT)

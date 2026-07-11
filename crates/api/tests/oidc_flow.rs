@@ -175,7 +175,12 @@ fn query_param(url: &str, name: &str) -> Option<String> {
 }
 
 /// 条件 1: ユーザー登録。sub を返す。
-async fn register_user(app: &axum::Router, username: &str, password: &str) -> String {
+async fn register_user(
+    app: &axum::Router,
+    tenant: &str,
+    username: &str,
+    password: &str,
+) -> String {
     let payload = json!({
         "email": format!("{username}@example.com"),
         "preferred_username": username,
@@ -186,7 +191,7 @@ async fn register_user(app: &axum::Router, username: &str, password: &str) -> St
         app,
         Request::builder()
             .method("POST")
-            .uri("/auth/register")
+            .uri(format!("/{tenant}/auth/register"))
             .header(CONTENT_TYPE, "application/json")
             .body(Body::from(payload.to_string()))
             .unwrap(),
@@ -199,9 +204,9 @@ async fn register_user(app: &axum::Router, username: &str, password: &str) -> St
         .to_string()
 }
 
-fn authorize_uri(client_id: &str, state: &str, nonce: &str) -> String {
+fn authorize_uri(tenant: &str, client_id: &str, state: &str, nonce: &str) -> String {
     format!(
-        "/authorize?response_type=code&client_id={client_id}&redirect_uri={}&scope=openid%20profile%20email&state={state}&nonce={nonce}&code_challenge={CODE_CHALLENGE}&code_challenge_method=S256",
+        "/{tenant}/authorize?response_type=code&client_id={client_id}&redirect_uri={}&scope=openid%20profile%20email&state={state}&nonce={nonce}&code_challenge={CODE_CHALLENGE}&code_challenge_method=S256",
         "http%3A%2F%2Flocalhost%3A3000%2Fcallback"
     )
 }
@@ -264,13 +269,13 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     let client_id = insert_public_client(&pool, &root_tenant_id).await;
     let username = format!("e2e{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
     let password = "correct-horse-battery";
-    let sub = register_user(&app, &username, password).await; // 条件 1
+    let sub = register_user(&app, &root_tenant_id, &username, password).await; // 条件 1
 
     // 条件 2, 3: /authorize 開始 → 未ログインなので /login へ。
     let response = send(
         &app,
         Request::builder()
-            .uri(authorize_uri(&client_id, "state-abc", "nonce-xyz"))
+            .uri(authorize_uri(&root_tenant_id, &client_id, "state-abc", "nonce-xyz"))
             .body(Body::empty())
             .unwrap(),
     )
@@ -336,7 +341,7 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
         &app,
         Request::builder()
             .method("POST")
-            .uri("/token")
+            .uri(format!("/{root_tenant_id}/token"))
             .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
             .body(Body::from(format!(
                 "grant_type=authorization_code&code={code}&redirect_uri={}&code_verifier={CODE_VERIFIER}&client_id={client_id}",
@@ -358,19 +363,25 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     let response = send(
         &app,
         Request::builder()
-            .uri("/.well-known/openid-configuration")
+            .uri(format!("/{root_tenant_id}/.well-known/openid-configuration"))
             .body(Body::empty())
             .unwrap(),
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     let discovery = body_json(response).await;
-    assert_eq!(discovery["issuer"], issuer.as_str());
+    // per-tenant issuer（ADR-0009 §6）: 過渡期は root テナントで `<基底>/<root_uuid>` を合成する。
+    let tenant_issuer = format!("{issuer}/{root_tenant_id}");
+    assert_eq!(discovery["issuer"], tenant_issuer.as_str());
+    assert_eq!(
+        discovery["authorization_endpoint"],
+        format!("{tenant_issuer}/authorize").as_str()
+    );
 
     let response = send(
         &app,
         Request::builder()
-            .uri("/.well-known/jwks.json")
+            .uri(format!("/{root_tenant_id}/.well-known/jwks.json"))
             .body(Body::empty())
             .unwrap(),
     )
@@ -398,7 +409,7 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     validation.set_audience(&[client_id.as_str()]);
     let id_claims = jsonwebtoken::decode::<Value>(&id_token, &decoding_key, &validation)
         .expect("verify id token");
-    assert_eq!(id_claims.claims["iss"], issuer.as_str());
+    assert_eq!(id_claims.claims["iss"], tenant_issuer.as_str());
     assert_eq!(id_claims.claims["sub"], sub.as_str());
     assert_eq!(id_claims.claims["nonce"], "nonce-xyz");
     assert!(id_claims.claims["auth_time"].is_i64());
@@ -413,7 +424,7 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
         &app,
         Request::builder()
             .method("POST")
-            .uri("/token")
+            .uri(format!("/{root_tenant_id}/token"))
             .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
             .body(Body::from(format!(
                 "grant_type=authorization_code&code={code}&redirect_uri={}&code_verifier={CODE_VERIFIER}&client_id={client_id}",
@@ -429,7 +440,7 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     let response = send(
         &app,
         Request::builder()
-            .uri("/userinfo")
+            .uri(format!("/{root_tenant_id}/userinfo"))
             .header(AUTHORIZATION, format!("Bearer {access_token}"))
             .body(Body::empty())
             .unwrap(),
@@ -447,7 +458,7 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     let response = send(
         &app,
         Request::builder()
-            .uri("/userinfo")
+            .uri(format!("/{root_tenant_id}/userinfo"))
             .header(AUTHORIZATION, "Bearer not-a-jwt")
             .body(Body::empty())
             .unwrap(),
@@ -459,7 +470,7 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     let response = send(
         &app,
         Request::builder()
-            .uri(authorize_uri(&client_id, "state-2nd", "nonce-2nd"))
+            .uri(authorize_uri(&root_tenant_id, &client_id, "state-2nd", "nonce-2nd"))
             .header(COOKIE, format!("sso_session_id={sso_cookie}"))
             .body(Body::empty())
             .unwrap(),
@@ -482,7 +493,7 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
         &app,
         Request::builder()
             .method("POST")
-            .uri("/token")
+            .uri(format!("/{root_tenant_id}/token"))
             .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
             .body(Body::from(format!(
                 "grant_type=authorization_code&code={second_code}&redirect_uri={}&code_verifier={CODE_VERIFIER}&client_id={client_id}",
@@ -539,7 +550,7 @@ async fn invalid_authorize_and_client_auth_failures() {
     let response = send(
         &app,
         Request::builder()
-            .uri(authorize_uri("no-such-client", "s", "n"))
+            .uri(authorize_uri(&root_tenant_id, "no-such-client", "s", "n"))
             .body(Body::empty())
             .unwrap(),
     )
@@ -565,7 +576,7 @@ async fn invalid_authorize_and_client_auth_failures() {
     let response = send(
         &app,
         Request::builder()
-            .uri(authorize_uri(&conf_client_id, "s", "n")) // scope=openid profile email
+            .uri(authorize_uri(&root_tenant_id, &conf_client_id, "s", "n")) // scope=openid profile email
             .body(Body::empty())
             .unwrap(),
     )
@@ -586,7 +597,7 @@ async fn invalid_authorize_and_client_auth_failures() {
         &app,
         Request::builder()
             .method("POST")
-            .uri("/token")
+            .uri(format!("/{root_tenant_id}/token"))
             .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
             .header(AUTHORIZATION, format!("Basic {bad_basic}"))
             .body(Body::from(format!(
@@ -608,7 +619,7 @@ async fn invalid_authorize_and_client_auth_failures() {
         &app,
         Request::builder()
             .method("POST")
-            .uri("/token")
+            .uri(format!("/{root_tenant_id}/token"))
             .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
             .header(AUTHORIZATION, format!("Basic {good_basic}"))
             .body(Body::from(format!(
@@ -635,13 +646,13 @@ async fn login_lockout_after_repeated_failures() {
     let client_id = insert_public_client(&pool, &root_tenant_id).await;
     let username = format!("lock{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
     let password = "correct-horse-battery";
-    register_user(&app, &username, password).await;
+    register_user(&app, &root_tenant_id, &username, password).await;
 
     // AuthSession を作ってログイン画面へ。
     let response = send(
         &app,
         Request::builder()
-            .uri(authorize_uri(&client_id, "st", "no"))
+            .uri(authorize_uri(&root_tenant_id, &client_id, "st", "no"))
             .body(Body::empty())
             .unwrap(),
     )

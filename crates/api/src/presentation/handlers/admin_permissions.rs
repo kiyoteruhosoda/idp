@@ -12,6 +12,7 @@ use crate::presentation::dto::{GrantPermissionRequest, UserPermissionsResponse};
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
 use crate::presentation::state::AppState;
+use crate::presentation::tenant::ResolvedTenant;
 use axum::extract::{Extension, Path, State};
 use axum::http::HeaderMap;
 use axum::Json;
@@ -36,7 +37,7 @@ pub async fn list_available_permissions(
 /// 対象利用者が保有する権限コードを一覧する。
 #[utoipa::path(
     get,
-    path = "/admin/users/{user_id}/permissions",
+    path = "/{tenant_id}/admin/users/{user_id}/permissions",
     tag = "admin",
     params(("user_id" = String, Path, description = "対象利用者の内部 ID（UUID）")),
     responses(
@@ -50,12 +51,14 @@ pub async fn list_available_permissions(
 pub async fn list_permissions(
     RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,
-    Path(user_id): Path<String>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    // 先頭のパスセグメントは `{tenant_id}`（`ResolvedTenant` から取得済みのため破棄する）。
+    Path((_tenant_id, user_id)): Path<(String, String)>,
 ) -> Result<Json<UserPermissionsResponse>, ApiError> {
     let target = parse_user_id(&user_id)?;
     let codes = state
         .permissions_admin
-        .list(state.default_tenant, target)
+        .list(tenant.context(), target)
         .await
         .map_err(map_error)?;
     Ok(Json(UserPermissionsResponse {
@@ -67,7 +70,7 @@ pub async fn list_permissions(
 /// 対象利用者へ権限コードを付与する（冪等）。付与後の保有コード一覧を返す。
 #[utoipa::path(
     post,
-    path = "/admin/users/{user_id}/permissions",
+    path = "/{tenant_id}/admin/users/{user_id}/permissions",
     tag = "admin",
     params(("user_id" = String, Path, description = "対象利用者の内部 ID（UUID）")),
     request_body = GrantPermissionRequest,
@@ -83,8 +86,9 @@ pub async fn grant_permission(
     RequirePerms(admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<ResolvedTenant>,
     headers: HeaderMap,
-    Path(user_id): Path<String>,
+    Path((_tenant_id, user_id)): Path<(String, String)>,
     Json(body): Json<GrantPermissionRequest>,
 ) -> Result<Json<UserPermissionsResponse>, ApiError> {
     let target = parse_user_id(&user_id)?;
@@ -92,7 +96,7 @@ pub async fn grant_permission(
     let codes = state
         .permissions_admin
         .grant(
-            state.default_tenant,
+            tenant.context(),
             target,
             &body.permission_code,
             admin.user_id,
@@ -109,7 +113,7 @@ pub async fn grant_permission(
 /// 対象利用者から権限コードを剥奪する（未保有でもエラーにしない）。剥奪後の保有コード一覧を返す。
 #[utoipa::path(
     delete,
-    path = "/admin/users/{user_id}/permissions/{permission_code}",
+    path = "/{tenant_id}/admin/users/{user_id}/permissions/{permission_code}",
     tag = "admin",
     params(
         ("user_id" = String, Path, description = "対象利用者の内部 ID（UUID）"),
@@ -127,15 +131,16 @@ pub async fn revoke_permission(
     RequirePerms(admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<ResolvedTenant>,
     headers: HeaderMap,
-    Path((user_id, permission_code)): Path<(String, String)>,
+    Path((_tenant_id, user_id, permission_code)): Path<(String, String, String)>,
 ) -> Result<Json<UserPermissionsResponse>, ApiError> {
     let target = parse_user_id(&user_id)?;
     let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
     let codes = state
         .permissions_admin
         .revoke(
-            state.default_tenant,
+            tenant.context(),
             target,
             &permission_code,
             admin.user_id,

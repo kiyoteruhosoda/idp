@@ -6,6 +6,7 @@ use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{AuthorizeParams, OAuthErrorResponse};
 use crate::presentation::handlers::{found, request_context};
 use crate::presentation::state::AppState;
+use crate::presentation::tenant::ResolvedTenant;
 use axum::extract::{Extension, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -15,7 +16,7 @@ use axum::Json;
 /// `prompt` / `max_age` に正式対応（F3）。`login_hint` / `acr_values` は引き続き無視する。
 #[utoipa::path(
     get,
-    path = "/authorize",
+    path = "/{tenant_id}/authorize",
     tag = "oidc",
     params(AuthorizeParams),
     responses(
@@ -26,6 +27,7 @@ use axum::Json;
 pub async fn authorize(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<ResolvedTenant>,
     headers: HeaderMap,
     Query(params): Query<AuthorizeParams>,
 ) -> Response {
@@ -46,7 +48,7 @@ pub async fn authorize(
 
     match state
         .authorize
-        .authorize(state.default_tenant, request, &ctx)
+        .authorize(tenant.context(), request, &ctx)
         .await {
         AuthorizeOutcome::Redirect { location } | AuthorizeOutcome::ErrorRedirect { location } => {
             found(&location)

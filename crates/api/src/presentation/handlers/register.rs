@@ -4,13 +4,14 @@ use crate::application::register::{RegisterCommand, RegisterError};
 use crate::presentation::dto::{RegisterRequest, RegisterResponse};
 use crate::presentation::error::ApiError;
 use crate::presentation::state::AppState;
-use axum::extract::State;
+use crate::presentation::tenant::ResolvedTenant;
+use axum::extract::{Extension, State};
 use axum::http::StatusCode;
 use axum::Json;
 
 #[utoipa::path(
     post,
-    path = "/auth/register",
+    path = "/{tenant_id}/auth/register",
     tag = "auth",
     request_body = RegisterRequest,
     responses(
@@ -21,6 +22,7 @@ use axum::Json;
 )]
 pub async fn register(
     State(state): State<AppState>,
+    Extension(tenant): Extension<ResolvedTenant>,
     Json(body): Json<RegisterRequest>,
 ) -> Result<(StatusCode, Json<RegisterResponse>), ApiError> {
     let command = RegisterCommand {
@@ -32,7 +34,7 @@ pub async fn register(
 
     let registered = state
         .register
-        .register(state.default_tenant, command)
+        .register(tenant.context(), command)
         .await
         .map_err(map_error)?;
 

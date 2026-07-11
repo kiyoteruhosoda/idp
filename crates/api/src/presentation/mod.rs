@@ -13,3 +13,4 @@ pub mod openapi;
 pub mod router;
 pub mod security_headers;
 pub mod state;
+pub mod tenant;

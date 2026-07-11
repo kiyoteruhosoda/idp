@@ -9,7 +9,8 @@ use crate::application::introspection::{IntrospectionError, IntrospectionRespons
 use crate::domain::error::OAuthErrorCode;
 use crate::presentation::dto::OAuthErrorResponse;
 use crate::presentation::state::AppState;
-use axum::extract::State;
+use crate::presentation::tenant::ResolvedTenant;
+use axum::extract::{Extension, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Form, Json};
@@ -29,7 +30,7 @@ pub struct IntrospectionRequest {
 /// Token イントロスペクションエンドポイント（RFC 7662）。
 #[utoipa::path(
     post,
-    path = "/introspect",
+    path = "/{tenant_id}/introspect",
     tag = "oidc",
     request_body(content = IntrospectionRequest, content_type = "application/x-www-form-urlencoded"),
     responses(
@@ -39,6 +40,7 @@ pub struct IntrospectionRequest {
 )]
 pub async fn introspect(
     State(state): State<AppState>,
+    Extension(tenant): Extension<ResolvedTenant>,
     headers: HeaderMap,
     Form(body): Form<IntrospectionRequest>,
 ) -> Response {
@@ -84,7 +86,7 @@ pub async fn introspect(
     match state
         .introspection
         .introspect(
-            state.default_tenant,
+            tenant.context(),
             &token,
             body.token_type_hint.as_deref(),
             &client_id,

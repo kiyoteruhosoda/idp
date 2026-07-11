@@ -56,18 +56,9 @@ curl -fsS "${API}/healthz" >/dev/null 2>&1 || fail "api が起動しません"
 curl -fsS "${WEB}/readyz"  >/dev/null 2>&1 || fail "web が api へ到達できません（/readyz）"
 pass "api /healthz=200・web /readyz=200（web→api 到達）"
 
-# ── OIDC 認可コードフロー（web ログイン経由）──────────────────────────────────
-info "3) OIDC フロー: /authorize(api) → /login(web) → /token(api)"
-U="e2e$(date +%s)"; P="correct-horse-battery"
-curl -fsS -X POST "${API}/auth/register" -H 'content-type: application/json' \
-  -d "{\"email\":\"${U}@example.com\",\"preferred_username\":\"${U}\",\"password\":\"${P}\"}" >/dev/null
-pass "利用者登録"
-
-CJAR="$(mktemp)"
-authz="${API}/authorize?response_type=code&client_id=CLIENT&redirect_uri=$(python3 -c 'import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=""))' "$REDIRECT_URI")&scope=openid%20profile%20email&state=st&nonce=no&code_challenge=${CODE_CHALLENGE}&code_challenge_method=S256"
-# クライアントは DB へ直接投入（管理コンソール経由の作成は 4) で検証）。
-# docker(idp-test-db) があればコンテナ内、無ければローカルの mariadb/mysql クライアントで実行する。
-CID="e2e-cli-$(date +%s)"
+# DB クライアント（docker(idp-test-db) 優先、無ければローカル mariadb/mysql）と root テナント UUID を
+# 先に解決する。api の OIDC/管理エンドポイントは /{tenant_id}/... 配下（ADR-0009 §6・MT9）のため、
+# ダイレクト呼び出しの URL に root テナント UUID を前置する（root は parent_tenant_id IS NULL の唯一の行）。
 if command -v docker >/dev/null 2>&1 && docker exec idp-test-db true 2>/dev/null; then
   mariadb_exec() { docker exec idp-test-db mariadb -uidp -pidp idp -N -e "$1" 2>/dev/null; }
 elif command -v mariadb >/dev/null 2>&1; then
@@ -77,6 +68,20 @@ elif command -v mysql >/dev/null 2>&1; then
 else
   fail "テスト用クライアントの投入に docker(idp-test-db) またはローカルの mariadb/mysql クライアントが必要です"
 fi
+ROOT="$(mariadb_exec "SELECT id FROM tenants WHERE parent_tenant_id IS NULL")"
+[[ -n "$ROOT" ]] || fail "root テナントが解決できません（seed 未実行？）"
+
+# ── OIDC 認可コードフロー（web ログイン経由）──────────────────────────────────
+info "3) OIDC フロー: /authorize(api) → /login(web) → /token(api)"
+U="e2e$(date +%s)"; P="correct-horse-battery"
+curl -fsS -X POST "${API}/${ROOT}/auth/register" -H 'content-type: application/json' \
+  -d "{\"email\":\"${U}@example.com\",\"preferred_username\":\"${U}\",\"password\":\"${P}\"}" >/dev/null
+pass "利用者登録"
+
+CJAR="$(mktemp)"
+authz="${API}/${ROOT}/authorize?response_type=code&client_id=CLIENT&redirect_uri=$(python3 -c 'import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=""))' "$REDIRECT_URI")&scope=openid%20profile%20email&state=st&nonce=no&code_challenge=${CODE_CHALLENGE}&code_challenge_method=S256"
+# クライアントは DB へ直接投入（管理コンソール経由の作成は 4) で検証）。
+CID="e2e-cli-$(date +%s)"
 # クライアントは root テナントへ帰属させる（ADR-0009 §2。root は parent_tenant_id IS NULL の唯一の行）。
 mariadb_exec "SET @root := (SELECT id FROM tenants WHERE parent_tenant_id IS NULL); INSERT INTO clients (id,tenant_id,client_id,client_secret_hash,client_type,client_status,app_name,redirect_uris,grant_types,response_types,scopes,token_endpoint_auth_method,require_pkce) VALUES (UUID(),@root,'${CID}',NULL,'public','ACTIVE','E2E',JSON_ARRAY('${REDIRECT_URI}'),JSON_ARRAY('authorization_code'),JSON_ARRAY('code'),JSON_ARRAY('openid','profile','email'),'none',1);"
 authz="${authz/CLIENT/$CID}"
@@ -106,7 +111,7 @@ code="$(printf '%s' "$loc" | sed -n 's/.*[?&]code=\([^&]*\).*/\1/p')"
 [[ -n "$code" ]] || fail "code が取得できません"
 pass "web /consent 承諾 → api /internal/consent/approve → code リダイレクト"
 
-tok="$(curl -fsS -X POST "${API}/token" -H 'content-type: application/x-www-form-urlencoded' \
+tok="$(curl -fsS -X POST "${API}/${ROOT}/token" -H 'content-type: application/x-www-form-urlencoded' \
   --data "grant_type=authorization_code&code=${code}&redirect_uri=$(python3 -c 'import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=""))' "$REDIRECT_URI")&code_verifier=${CODE_VERIFIER}&client_id=${CID}")"
 printf '%s' "$tok" | grep -q '"id_token"' || fail "/token が id_token を返しません"
 pass "api /token → id_token 発行（web ログインの code は有効）"

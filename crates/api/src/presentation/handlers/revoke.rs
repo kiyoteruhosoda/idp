@@ -11,6 +11,7 @@ use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::OAuthErrorResponse;
 use crate::presentation::handlers::request_context;
 use crate::presentation::state::AppState;
+use crate::presentation::tenant::ResolvedTenant;
 use axum::extract::{Extension, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -31,7 +32,7 @@ pub struct RevocationRequest {
 /// Token 失効エンドポイント（RFC 7009）。
 #[utoipa::path(
     post,
-    path = "/revoke",
+    path = "/{tenant_id}/revoke",
     tag = "oidc",
     request_body(content = RevocationRequest, content_type = "application/x-www-form-urlencoded"),
     responses(
@@ -43,6 +44,7 @@ pub struct RevocationRequest {
 pub async fn revoke(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<ResolvedTenant>,
     headers: HeaderMap,
     Form(body): Form<RevocationRequest>,
 ) -> Response {
@@ -94,7 +96,7 @@ pub async fn revoke(
     match state
         .revocation
         .revoke(
-            state.default_tenant,
+            tenant.context(),
             &token,
             body.token_type_hint.as_deref(),
             &client_id,

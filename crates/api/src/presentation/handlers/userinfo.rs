@@ -3,7 +3,8 @@
 use crate::application::userinfo::UserInfoError;
 use crate::presentation::dto::{OAuthErrorResponse, UserInfoResponse};
 use crate::presentation::state::AppState;
-use axum::extract::State;
+use crate::presentation::tenant::ResolvedTenant;
+use axum::extract::{Extension, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -11,7 +12,7 @@ use axum::Json;
 /// Bearer の Access Token（`typ=at+jwt`）を検証し、scope に応じたクレームを返す。
 #[utoipa::path(
     get,
-    path = "/userinfo",
+    path = "/{tenant_id}/userinfo",
     tag = "oidc",
     security(("bearer_token" = [])),
     responses(
@@ -20,7 +21,11 @@ use axum::Json;
         (status = 403, description = "openid scope なし", body = OAuthErrorResponse),
     )
 )]
-pub async fn userinfo(State(state): State<AppState>, headers: HeaderMap) -> Response {
+pub async fn userinfo(
+    State(state): State<AppState>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    headers: HeaderMap,
+) -> Response {
     let bearer = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -29,7 +34,9 @@ pub async fn userinfo(State(state): State<AppState>, headers: HeaderMap) -> Resp
         return unauthorized("missing bearer token");
     };
 
-    match state.userinfo.userinfo(token).await {
+    // 要求テナントはパス由来（`resolve_tenant`）。トークンの `iss`/`aud` を当該テナントの合成 issuer と
+    // 厳密照合し、他テナント発行トークンの流用を弾く（ADR-0009 §6）。
+    match state.userinfo.userinfo(tenant.context(), token).await {
         Ok(claims) => Json(UserInfoResponse {
             sub: claims.sub,
             email: claims.email,

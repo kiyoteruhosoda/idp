@@ -2,6 +2,82 @@
 
 完了した重要な変更の要約（詳しい経緯は `history/`、設計判断は `adr/`）。
 
+## 2026-07-10（MT9・MT10: `/{tenant_id}/...` ルーティング + TenantResolver mount + web テナント伝搬）
+
+- **MT9 — api テナントルーティング**（ADR-0009 §6・§7）: テナントスコープの api エンドポイント
+  （`authorize`/`token`/`userinfo`/`introspect`/`revoke`/`logout`/`.well-known/*`/`auth/register`/`admin/*`）を
+  `/{tenant_id}/...` 配下へ再構成し、`resolve_tenant` middleware を `route_layer` で mount した。テナント外パス
+  （`healthz`/`readyz`/`internal/*`/`api/docs`）はプレフィクス無しで据え置き。各ハンドラと `RequirePerms`
+  extractor は `state.default_tenant` から**パス由来の `Extension<ResolvedTenant>`** へ移行し、要求テナントは
+  URL から解決する。ネスト経路では `tenant_id` が先頭パスパラメータになるため、ドメインパラメータを取る
+  ハンドラの `Path` 抽出子を `(tenant_id, ...)` タプルへ更新した。UUID 不正・未知・DISABLED は一律 404。
+- **MT10 — contracts DTO + web api_client テナント対応**（ADR-0009 §8）: 内部認証 API の DTO
+  （`InternalAuthenticate*`/`InternalConsent*`/`InternalVerifyTotp`/`InternalPasskeyLoginComplete`/
+  `InternalLogout`）へ `tenant_id: Option<String>` を追加。api 内部ハンドラは DTO 由来テナントを使い、未指定は
+  既定テナント（root）へフォールバックする（過渡期。`(tenant_id, email)` 一意化）。web `api_client.rs` は
+  `/internal/root-tenant`（新設・サービストークン保護）で root テナント UUID を遅延解決・キャッシュし、
+  `/{tenant_id}/admin/*` パスに前置する。
+- **過渡期（web の画面テナント経路化＝MT13 まで）**: web の画面 URL・テンプレートは従来どおりフラット
+  （`/login`・`/admin/console/*`）のままで、管理コンソールは root テナントを対象とする。api の
+  `/{tenant_id}/authorize` は引き続き `/login`（web・フラット）へ 302 する。統合テスト・`scripts/e2e.sh` の
+  ダイレクト api 呼び出しは `/{root_uuid}/...` へ追随した。
+
+## 2026-07-10（MT8: 招待ユースケース + OIDC フローのメンバーシップ判定）
+
+- **招待ユースケース**（ADR-0009 §3。`application::invitation::InvitationService`）:
+  - **招待作成**: 参加先テナントの管理者が既存ユーザーをゲスト招待する。GUEST/INVITED メンバーシップを
+    作成し、一度限りの平文トークンを返す（保存はハッシュのみ。ログ・監査には出さない）。既メンバー
+    （HOME/GUEST/INVITED）は `AlreadyMember`、不存在ユーザーは `NotFound`。
+  - **承諾**: 被招待ユーザー本人がログイン済みセッション + トークン提示で `ACTIVE` 化する。トークンが
+    当該テナントの招待でない・期限切れ・不存在は一律 `InvalidOrExpired`、本人でなければ `Forbidden`。
+  - **メンバーシップ解除**: ゲストを追放する。HOME は解除不可（`Forbidden`）。解除時に当該テナントを
+    scope とする権限行も剥奪する（列挙 → 個別 revoke。権限キャッシュも invalidate）。
+  - 監査イベント `tenant_invitation.created` / `.accepted` / `tenant_membership.revoked` を追加。
+    HTTP エンドポイント（`/{tenant_id}/admin/invitations` 等）は MT11 で追加する。`AppState.invitations`
+    に配線済み。招待 TTL は `INVITATION_TTL_SECS`（既定 7 日）。
+- **OIDC フローのメンバーシップ判定**（ADR-0009 §8）: `AuthorizeService` の SSO 復元経路に、要求
+  テナントの **ACTIVE メンバーシップ（HOME または GUEST）検証**を追加。メンバーシップのない SSO
+  セッションは当該テナントのフローでは未認証として扱う（= ログインへ）。ゲストは所属元テナントで
+  ログインしてホスト共有 SSO を確立し、参加先テナントのフローではこの判定で許可される。認証（ログイン）
+  自体の所属元テナント限定は MT5 で導入済み。
+
+## 2026-07-10（MT7: per-tenant issuer 合成 + WebAuthn RP ID の基底ホスト分離）
+
+- **per-tenant issuer**（ADR-0009 §6。`domain::issuer::tenant_issuer`）: 発行トークン（ID/Access）・
+  discovery・introspection・front-channel logout の `iss` を `<基底 issuer>/<tenant_id>` の canonical
+  形式へ移行。基底 issuer は設定値（`config.issuer()`）由来で Host ヘッダから導出しない
+  （host header injection 対策）。`TokenService`/`UserInfoService`/`IntrospectionService`/`LogoutService`
+  は起動時固定 issuer を保持する構造から、リクエストの `TenantContext` を用いた**毎リクエスト合成**へ
+  変更。リソースサーバ（userinfo/introspection）は要求テナントの合成 issuer と `iss`/`aud` を厳密照合し、
+  他テナント発行トークンの流用を弾く。
+- **WebAuthn RP ID の基底ホスト分離**: WebAuthn はプロトコル上ホスト単位でパスを含められないため、
+  RP ID・origin は**基底 issuer のホスト**から導出する（per-tenant issuer は渡さない）。テナント分離は
+  「クレデンシャル ⇔ ユーザー ⇔ 所属元テナント」のアプリ層の紐付けで実現する（`state.rs` に明示）。
+- **過渡期（MT9 まで）**: ルーティングは未導入のため、各エンドポイントは既定テナント（root）で issuer を
+  合成する（`iss` = `<基底>/<root_uuid>`）。MT9 でパス由来 `ResolvedTenant` へ置き換える。
+
+## 2026-07-10（MT6: 汎用 TTL キャッシュ抽象 + TenantResolver + 権限解決のキャッシュ化）
+
+- **汎用 TTL キャッシュ抽象**（ADR-0009 §7）: `domain::cache::Cache<K, V>` trait（`get`/`insert`/
+  `invalidate`）と `infrastructure::cache::InMemoryTtlCache`（TTL 判定・`get` 時の期限切れ遅延削除、
+  `Clock` 注入でテスト可能）を新設。`InMemoryLoginRateLimiter` と同様に trait 越しに注入し単体
+  インスタンス前提、スケールアウト時は共有ストア実装へ差し替える。用途ごとに別インスタンス（別キー
+  空間）を注入する。TTL は `TENANT_CACHE_TTL_SECS`／`PERMISSION_CACHE_TTL_SECS`（既定 60 秒）。
+- **scope→権限解決のキャッシュ化**: `CachedUserPermissionRepository` デコレータが `has_permission`
+  の判定結果を TTL キャッシュし、`grant`/`revoke` 時に該当キー（`(tenant_id, user_id, code)`）を
+  即時 invalidate する。`AppState::build` で `SqlxUserPermissionRepository` をラップし、判定
+  （`AdminAccessService`）と変更（`PermissionManagementService`）が同一インスタンスを共有するため
+  付与直後の反映漏れ（stale allow/deny）が起きない。
+- **TenantResolver middleware**（ADR-0009 §7）: `application::tenant_resolution::TenantResolutionService`
+  が id → tenant を TTL キャッシュ（テナント実体を格納し、有効性は取り出し後に判定）付きで解決し、
+  `presentation::tenant` に `ResolvedTenant` 型と axum middleware `resolve_tenant` を追加。パスの
+  `:tenant_id` を UUID として解決し、UUID 不正・未知・`DISABLED` は一律 404、`ACTIVE` は
+  `Extension<ResolvedTenant>` を注入する。root も同一経路で解決し特別分岐なし。
+- **過渡期（MT9 まで）**: `/{tenant_id}/...` ルーティングは未導入のため本 middleware はまだルーターへ
+  mount せず、api は引き続き `AppState::default_tenant`（root）を全リクエストへ適用する。`Cache` 基盤と
+  解決サービスは `AppState`（`tenant_resolution`）へ配線済みで、MT9 が middleware をテナントルート群へ
+  付与し、`RequirePerms` の要求テナントを `default_tenant` からパス由来 `ResolvedTenant` へ置き換える。
+
 ## 2026-07-10（MT5: 全 Repository trait／ユースケースへ tenant_id 追加 — テナント分離の強制）
 
 - **Repository trait のテナントスコープ化**（ADR-0009 §8。MariaDB に RLS がないため、アプリ層が

@@ -9,6 +9,7 @@ use crate::application::passkey_registration::PasskeyRegistrationError;
 use crate::application::audit::RequestContext;
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::state::AppState;
+use crate::presentation::tenant::internal_tenant;
 use axum::extract::{Extension, State};
 use axum::Json;
 use idp_contracts::auth::{
@@ -173,9 +174,10 @@ pub async fn login_complete(
         user_agent: req.user_agent,
     };
     let ttl = state.config.sso_absolute_ttl().as_secs();
+    let tenant = internal_tenant(&state, req.tenant_id.as_deref());
     let outcome = state
         .passkey_authentication
-        .complete(state.default_tenant, challenge_id, req.credential, &ctx)
+        .complete(tenant, challenge_id, req.credential, &ctx)
         .await;
     Json(match outcome {
         PasskeyAuthOutcome::Success {

@@ -20,11 +20,13 @@ use crate::application::audit::RequestContext;
 use crate::application::login::{LoginCommand, LoginOutcome};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::state::AppState;
+use crate::presentation::tenant::internal_tenant;
 use axum::extract::{Extension, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use idp_contracts::admin::RootTenantResponse;
 use idp_contracts::auth::{
     InternalAdminAuthenticateRequest, InternalAdminAuthenticateResponse,
     InternalAuthenticateRequest, InternalAuthenticateResponse, InternalLogoutRequest,
@@ -67,10 +69,11 @@ pub async fn authenticate(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
+    let tenant = internal_tenant(&state, req.tenant_id.as_deref());
     let outcome = state
         .login
         .login(
-            state.default_tenant,
+            tenant,
             LoginCommand {
                 auth_session_id: req.auth_session_id,
                 username: req.username,
@@ -124,10 +127,11 @@ pub async fn authenticate_admin(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
+    let tenant = internal_tenant(&state, req.tenant_id.as_deref());
     let outcome = state
         .admin_login
         .login(
-            state.default_tenant,
+            tenant,
             AdminLoginCommand {
                 username: req.username,
                 password: req.password,
@@ -168,11 +172,21 @@ pub async fn logout(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
+    let tenant = internal_tenant(&state, req.tenant_id.as_deref());
     state
         .admin_login
-        .logout(state.default_tenant, &req.sso_session_id, &ctx)
+        .logout(tenant, &req.sso_session_id, &ctx)
         .await;
     StatusCode::NO_CONTENT
+}
+
+/// root テナント UUID を返す（`GET /internal/root-tenant`、ADR-0009 §7）。web が起動時／初回に解決し、
+/// `/{tenant_id}/admin/*` パスの前置に使う（過渡期。root UUID は環境毎に動的採番のため設定に埋めない）。
+/// api は起動時に root を `default_tenant` として解決済みのため、それをそのまま返す。
+pub async fn root_tenant(State(state): State<AppState>) -> Json<RootTenantResponse> {
+    Json(RootTenantResponse {
+        tenant_id: state.default_tenant.tenant_id().to_string(),
+    })
 }
 
 /// 定数時間比較（サービストークン照合のタイミング差を避ける）。長さが異なれば即 false。

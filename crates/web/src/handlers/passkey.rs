@@ -249,6 +249,7 @@ pub async fn login_complete_api(
 ) -> Response {
     let ctx = forwarded_context(&headers, &correlation);
     let req = InternalPasskeyLoginCompleteRequest {
+        tenant_id: None,
         challenge_id: body.challenge_id,
         credential: body.credential,
         ip_address: ctx.ip_address,

@@ -178,7 +178,7 @@ async fn admin_can_grant_and_revoke_permissions() {
     };
     let admin_cookie = create_sso_session(&env.pool, &env.admin_id).await;
     let target = create_plain_user(&env.pool, &env.root_tenant_id).await;
-    let perms_uri = format!("/admin/users/{target}/permissions");
+    let perms_uri = format!("/{}/admin/users/{target}/permissions", env.root_tenant_id);
 
     // 未認証（Cookie 無し）→ 401。
     let res = send(
@@ -200,7 +200,7 @@ async fn admin_can_grant_and_revoke_permissions() {
     // user_id が UUID でない → 400。
     let res = send(
         &env.app,
-        admin_get(&admin_cookie, "/admin/users/not-a-uuid/permissions"),
+        admin_get(&admin_cookie, &format!("/{}/admin/users/not-a-uuid/permissions", env.root_tenant_id)),
     )
     .await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST, "bad user_id -> 400");
@@ -211,7 +211,7 @@ async fn admin_can_grant_and_revoke_permissions() {
         &env.app,
         admin_post(
             &admin_cookie,
-            &format!("/admin/users/{ghost}/permissions"),
+            &format!("/{}/admin/users/{ghost}/permissions", env.root_tenant_id),
             json!({ "permission_code": ADMIN_PERM }),
         ),
     )

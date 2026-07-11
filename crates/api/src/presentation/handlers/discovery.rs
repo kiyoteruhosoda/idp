@@ -1,29 +1,37 @@
 //! OIDC Discovery（`GET /.well-known/openid-configuration`）と
 //! JWKS（`GET /.well-known/jwks.json`）（設計仕様 §4.5 / §4.6）。
 
+use crate::domain::issuer::tenant_issuer;
 use crate::presentation::state::AppState;
-use axum::extract::State;
+use crate::presentation::tenant::ResolvedTenant;
+use axum::extract::{Extension, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::{json, Value};
 
 /// Discovery ドキュメント。`issuer` は末尾スラッシュ無しで ID Token の `iss` と完全一致する。
+///
+/// `issuer` はテナント毎に `<基底 issuer>/<tenant_id>` を合成する（ADR-0009 §6）。要求テナントは
+/// パス由来（`resolve_tenant` が注入）。全エンドポイントもこの issuer から導出する。
 #[utoipa::path(
     get,
-    path = "/.well-known/openid-configuration",
+    path = "/{tenant_id}/.well-known/openid-configuration",
     tag = "oidc",
     responses((status = 200, description = "OIDC Discovery ドキュメント"))
 )]
-pub async fn openid_configuration(State(state): State<AppState>) -> Json<Value> {
-    let issuer = state.config.issuer();
-    Json(discovery_document(issuer))
+pub async fn openid_configuration(
+    State(state): State<AppState>,
+    Extension(tenant): Extension<ResolvedTenant>,
+) -> Json<Value> {
+    let issuer = tenant_issuer(state.config.issuer(), tenant.id());
+    Json(discovery_document(&issuer))
 }
 
 /// JWKS（ACTIVE + RETIRED の公開鍵）。
 #[utoipa::path(
     get,
-    path = "/.well-known/jwks.json",
+    path = "/{tenant_id}/.well-known/jwks.json",
     tag = "oidc",
     responses((status = 200, description = "JWK Set"))
 )]

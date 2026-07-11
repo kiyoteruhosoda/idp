@@ -68,6 +68,10 @@ pub struct ApiClient {
     http: reqwest::Client,
     base_url: String,
     service_token: String,
+    /// admin パス前置に使う root テナント UUID のキャッシュ（ADR-0009 §7・§9）。初回の admin 呼び出し時に
+    /// `/internal/root-tenant` から遅延解決する。過渡期は root 単一だが、web がテナント経路化される
+    /// （MT13）まで管理コンソールは root テナントを対象とする。
+    root_tenant: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl ApiClient {
@@ -76,7 +80,35 @@ impl ApiClient {
             http: reqwest::Client::new(),
             base_url: base_url.into(),
             service_token: service_token.into(),
+            root_tenant: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
+    }
+
+    /// admin パスに前置する root テナント UUID を解決する（キャッシュ付き）。api の
+    /// `GET /internal/root-tenant`（サービストークン保護）から取得する。ロックは await をまたがない。
+    async fn tenant_prefix(&self) -> Result<String, AdminApiError> {
+        if let Some(t) = self.root_tenant.lock().expect("root_tenant lock").clone() {
+            return Ok(t);
+        }
+        let response = self
+            .http
+            .get(format!("{}/internal/root-tenant", self.base_url))
+            .header(SERVICE_TOKEN_HEADER, &self.service_token)
+            .send()
+            .await
+            .map_err(|e| AdminApiError::Transport(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(AdminApiError::Transport(format!(
+                "api /internal/root-tenant returned {}",
+                response.status()
+            )));
+        }
+        let body = response
+            .json::<idp_contracts::admin::RootTenantResponse>()
+            .await
+            .map_err(|e| AdminApiError::Transport(format!("decode root-tenant: {e}")))?;
+        *self.root_tenant.lock().expect("root_tenant lock") = Some(body.tenant_id.clone());
+        Ok(body.tenant_id)
     }
 
     /// OIDC ログイン認証（`POST /internal/authenticate`）。
@@ -265,9 +297,13 @@ impl ApiClient {
 
     /// 管理者の SSO Cookie を api の `GET /admin/whoami` へ転送し、認証状態と身元を得る（ADR-0007 §4）。
     pub async fn admin_whoami(&self, correlation_id: &str, sso_session_id: &str) -> AdminSession {
+        let Ok(tenant) = self.tenant_prefix().await else {
+            tracing::error!("failed to resolve root tenant for whoami");
+            return AdminSession::Error;
+        };
         let response = match self
             .http
-            .get(format!("{}/admin/whoami", self.base_url))
+            .get(format!("{}/{}/admin/whoami", self.base_url, tenant))
             .header(REQUEST_ID_HEADER, correlation_id)
             .header(
                 reqwest::header::COOKIE,
@@ -389,9 +425,10 @@ impl ApiClient {
         sso: &str,
         q: &str,
     ) -> Result<UserSummaryResponse, AdminApiError> {
+        let tenant = self.tenant_prefix().await?;
         let req = self
             .http
-            .get(format!("{}/admin/users", self.base_url))
+            .get(format!("{}/{}/admin/users", self.base_url, tenant))
             .query(&[("q", q)])
             .header(REQUEST_ID_HEADER, correlation_id)
             .header(
@@ -494,9 +531,10 @@ impl ApiClient {
         sso: &str,
         query: &[(&str, String)],
     ) -> Result<Vec<AuditLogView>, AdminApiError> {
+        let tenant = self.tenant_prefix().await?;
         let req = self
             .http
-            .get(format!("{}/admin/audit-logs", self.base_url))
+            .get(format!("{}/{}/admin/audit-logs", self.base_url, tenant))
             .query(query)
             .header(REQUEST_ID_HEADER, correlation_id)
             .header(
@@ -562,9 +600,13 @@ impl ApiClient {
         sso: &str,
         kid: &str,
     ) -> Result<(), AdminApiError> {
+        let tenant = self.tenant_prefix().await?;
         let response = self
             .http
-            .post(format!("{}/admin/signing-keys/{kid}/retire", self.base_url))
+            .post(format!(
+                "{}/{}/admin/signing-keys/{kid}/retire",
+                self.base_url, tenant
+            ))
             .header(REQUEST_ID_HEADER, correlation_id)
             .header(
                 reqwest::header::COOKIE,
@@ -598,9 +640,13 @@ impl ApiClient {
         sso: &str,
         kid: &str,
     ) -> Result<(), AdminApiError> {
+        let tenant = self.tenant_prefix().await?;
         let response = self
             .http
-            .delete(format!("{}/admin/signing-keys/{kid}", self.base_url))
+            .delete(format!(
+                "{}/{}/admin/signing-keys/{kid}",
+                self.base_url, tenant
+            ))
             .header(REQUEST_ID_HEADER, correlation_id)
             .header(
                 reqwest::header::COOKIE,
@@ -640,9 +686,10 @@ impl ApiClient {
     where
         T: serde::de::DeserializeOwned,
     {
+        let tenant = self.tenant_prefix().await?;
         let mut req = self
             .http
-            .request(method, format!("{}{}", self.base_url, path))
+            .request(method, format!("{}/{}{}", self.base_url, tenant, path))
             .header(REQUEST_ID_HEADER, correlation_id)
             .header(
                 reqwest::header::COOKIE,

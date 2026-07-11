@@ -228,6 +228,7 @@ pub async fn verify(
     let auth_session_id = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE);
 
     let req = InternalVerifyTotpRequest {
+        tenant_id: None,
         auth_session_id: auth_session_id.clone(),
         totp_code: form.totp_code,
         csrf_token: form.csrf_token,

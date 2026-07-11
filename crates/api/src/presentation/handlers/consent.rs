@@ -7,6 +7,7 @@ use crate::application::audit::RequestContext;
 use crate::application::consent::ConsentOutcome;
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::state::AppState;
+use crate::presentation::tenant::internal_tenant;
 use axum::extract::{Extension, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -22,9 +23,10 @@ pub async fn consent_info(
     State(state): State<AppState>,
     Query(req): Query<InternalConsentInfoRequest>,
 ) -> Json<InternalConsentInfoResponse> {
+    let tenant = internal_tenant(&state, req.tenant_id.as_deref());
     match state
         .consent
-        .info(state.default_tenant, &req.auth_session_id)
+        .info(tenant, &req.auth_session_id)
         .await {
         Ok(Some(info)) => Json(InternalConsentInfoResponse::Ok {
             auth_session_id: info.auth_session_id,
@@ -51,9 +53,10 @@ pub async fn consent_approve(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
+    let tenant = internal_tenant(&state, req.tenant_id.as_deref());
     let outcome = state
         .consent
-        .approve(state.default_tenant, &req.auth_session_id, &ctx)
+        .approve(tenant, &req.auth_session_id, &ctx)
         .await;
     Json(match outcome {
         ConsentOutcome::Approved { location } => {
@@ -82,9 +85,10 @@ pub async fn consent_deny(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
+    let tenant = internal_tenant(&state, req.tenant_id.as_deref());
     let outcome = state
         .consent
-        .deny(state.default_tenant, &req.auth_session_id, &ctx)
+        .deny(tenant, &req.auth_session_id, &ctx)
         .await;
     (
         StatusCode::OK,

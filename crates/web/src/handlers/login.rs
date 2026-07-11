@@ -61,6 +61,9 @@ pub async fn login(
     let auth_session_id = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE);
 
     let request = InternalAuthenticateRequest {
+        // 過渡期は web がフラット経路のため未指定（api が既定テナント root へフォールバック）。
+        // web のテナント経路化（MT13）でパス由来 tenant_id を設定する。
+        tenant_id: None,
         auth_session_id: auth_session_id.clone(),
         username: form.username,
         password: form.password,

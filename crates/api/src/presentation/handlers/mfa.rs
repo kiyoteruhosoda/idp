@@ -8,6 +8,7 @@ use crate::application::audit::RequestContext;
 use crate::application::totp_registration::TotpRegistrationError;
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::state::AppState;
+use crate::presentation::tenant::internal_tenant;
 use axum::extract::{Extension, State};
 use axum::Json;
 use idp_contracts::auth::{
@@ -102,10 +103,11 @@ pub async fn verify_totp(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
+    let tenant = internal_tenant(&state, req.tenant_id.as_deref());
     let outcome = state
         .mfa_login
         .verify(
-            state.default_tenant,
+            tenant,
             MfaLoginCommand {
                 auth_session_id: req.auth_session_id,
                 totp_code: req.totp_code,

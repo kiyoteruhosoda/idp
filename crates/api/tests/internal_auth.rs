@@ -114,7 +114,7 @@ fn cookie_value(response: &axum::response::Response, name: &str) -> Option<Strin
         })
 }
 
-async fn register_user(app: &axum::Router, username: &str, password: &str) {
+async fn register_user(app: &axum::Router, tenant: &str, username: &str, password: &str) {
     let payload = json!({
         "email": format!("{username}@example.com"),
         "preferred_username": username,
@@ -125,7 +125,7 @@ async fn register_user(app: &axum::Router, username: &str, password: &str) {
         app,
         Request::builder()
             .method("POST")
-            .uri("/auth/register")
+            .uri(format!("/{tenant}/auth/register"))
             .header(CONTENT_TYPE, "application/json")
             .body(Body::from(payload.to_string()))
             .unwrap(),
@@ -135,9 +135,9 @@ async fn register_user(app: &axum::Router, username: &str, password: &str) {
 }
 
 /// `/authorize` を開始して `auth_session_id` Cookie を得る（未ログインなので /login へ 302）。
-async fn start_authorize(app: &axum::Router, client_id: &str) -> String {
+async fn start_authorize(app: &axum::Router, tenant: &str, client_id: &str) -> String {
     let uri = format!(
-        "/authorize?response_type=code&client_id={client_id}&redirect_uri={}&scope=openid%20profile%20email&state=st&nonce=no&code_challenge={CODE_CHALLENGE}&code_challenge_method=S256",
+        "/{tenant}/authorize?response_type=code&client_id={client_id}&redirect_uri={}&scope=openid%20profile%20email&state=st&nonce=no&code_challenge={CODE_CHALLENGE}&code_challenge_method=S256",
         "http%3A%2F%2Flocalhost%3A3000%2Fcallback"
     );
     let response = send(
@@ -169,10 +169,10 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
     let client_id = insert_public_client(&pool, &root_tenant_id).await;
     let username = format!("int{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
     let password = "correct-horse-battery";
-    register_user(&app, &username, password).await;
+    register_user(&app, &root_tenant_id, &username, password).await;
 
     // サービストークンが無ければ 401（本文まで到達しない）。
-    let auth_session = start_authorize(&app, &client_id).await;
+    let auth_session = start_authorize(&app, &root_tenant_id, &client_id).await;
     let response = send(
         &app,
         post_internal(

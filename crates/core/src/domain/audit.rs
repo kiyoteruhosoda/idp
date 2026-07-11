@@ -34,6 +34,10 @@ pub enum AuditEventType {
     /// 同意の付与・取り消し（F3: Consent）。
     ConsentGranted,
     ConsentDenied,
+    /// ゲスト招待の作成・承諾・メンバーシップ解除（ADR-0009 §3）。招待トークンは記録しない。
+    TenantInvitationCreated,
+    TenantInvitationAccepted,
+    TenantMembershipRevoked,
 }
 
 impl AuditEventType {
@@ -61,6 +65,9 @@ impl AuditEventType {
             Self::RefreshTokenReuseDetected => "refresh_token.reuse_detected",
             Self::ConsentGranted => "consent.granted",
             Self::ConsentDenied => "consent.denied",
+            Self::TenantInvitationCreated => "tenant_invitation.created",
+            Self::TenantInvitationAccepted => "tenant_invitation.accepted",
+            Self::TenantMembershipRevoked => "tenant_membership.revoked",
         }
     }
 }

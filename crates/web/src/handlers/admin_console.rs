@@ -103,6 +103,8 @@ pub async fn login(
 
     let ctx = forwarded_context(&headers, &correlation);
     let request = InternalAdminAuthenticateRequest {
+        // 過渡期は未指定（api が既定テナント root へフォールバック）。MT13 でパス由来へ。
+        tenant_id: None,
         username: form.username,
         password: form.password,
         ip_address: ctx.ip_address,
@@ -186,6 +188,7 @@ pub async fn logout(
             .logout(
                 &ctx.correlation_id,
                 &InternalLogoutRequest {
+                    tenant_id: None,
                     sso_session_id: sso,
                     ip_address: ctx.ip_address,
                     user_agent: ctx.user_agent,

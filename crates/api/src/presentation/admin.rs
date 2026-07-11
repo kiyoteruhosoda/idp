@@ -17,6 +17,7 @@
 use crate::application::admin_access::{AdminAccess, AuthorizedAdmin};
 use crate::presentation::cookies;
 use crate::presentation::state::AppState;
+use crate::presentation::tenant::ResolvedTenant;
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::http::StatusCode;
@@ -61,11 +62,19 @@ where
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let sso_session_id = cookies::get(&parts.headers, cookies::SSO_SESSION_COOKIE);
-        // 過渡期（MT9 まで）: 要求テナント = 既定テナント（root）。MT9 で
-        // `Extension<ResolvedTenant>`（リクエストパス由来）へ置き換える。
+        // 要求テナントはパス由来の `ResolvedTenant`（`resolve_tenant` middleware が注入。ADR-0009 §7）。
+        // 権限判定は「要求テナントを scope に持つか」の完全一致（§4）。middleware 未通過は配線ミス。
+        let Some(resolved) = parts.extensions.get::<ResolvedTenant>() else {
+            tracing::error!("RequirePerms used on a route without the tenant resolver middleware");
+            return Err(error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
+                "tenant context missing",
+            ));
+        };
         match state
             .admin_access
-            .authorize(state.default_tenant, sso_session_id.as_deref(), P::CODE)
+            .authorize(resolved.context(), sso_session_id.as_deref(), P::CODE)
             .await
         {
             AdminAccess::Granted(admin) => Ok(RequirePerms(admin, PhantomData)),

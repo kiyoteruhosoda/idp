@@ -81,6 +81,7 @@ pub async fn consent(
 
     if form.action == "approve" {
         let req = InternalConsentApproveRequest {
+            tenant_id: None,
             auth_session_id: form.auth_session_id.clone(),
             ip_address: ctx.ip_address,
             user_agent: ctx.user_agent,
@@ -106,6 +107,7 @@ pub async fn consent(
     } else {
         // deny
         let req = InternalConsentDenyRequest {
+            tenant_id: None,
             auth_session_id: form.auth_session_id.clone(),
             ip_address: ctx.ip_address,
             user_agent: ctx.user_agent,

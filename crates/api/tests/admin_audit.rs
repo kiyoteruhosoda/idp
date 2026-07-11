@@ -114,7 +114,7 @@ async fn admin_can_query_audit_logs_with_filters() {
         &app,
         Request::builder()
             .method("POST")
-            .uri("/admin/clients")
+            .uri(format!("/{root_tenant_id}/admin/clients"))
             .header(CONTENT_TYPE, "application/json")
             .header(COOKIE, format!("sso_session_id={admin_cookie}"))
             .body(Body::from(
@@ -139,7 +139,7 @@ async fn admin_can_query_audit_logs_with_filters() {
     let res = send(
         &app,
         get_with_cookie(
-            "/admin/audit-logs?event_type=client.registered",
+            &format!("/{root_tenant_id}/admin/audit-logs?event_type=client.registered"),
             &admin_cookie,
         ),
     )
@@ -180,7 +180,7 @@ async fn admin_can_query_audit_logs_with_filters() {
     let res = send(
         &app,
         get_with_cookie(
-            "/admin/audit-logs?event_type=client.registered&result=failure",
+            &format!("/{root_tenant_id}/admin/audit-logs?event_type=client.registered&result=failure"),
             &admin_cookie,
         ),
     )
@@ -191,7 +191,7 @@ async fn admin_can_query_audit_logs_with_filters() {
     // from の形式不正 → 400。
     let res = send(
         &app,
-        get_with_cookie("/admin/audit-logs?from=not-a-date", &admin_cookie),
+        get_with_cookie(&format!("/{root_tenant_id}/admin/audit-logs?from=not-a-date"), &admin_cookie),
     )
     .await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
@@ -201,7 +201,7 @@ async fn admin_can_query_audit_logs_with_filters() {
         &app,
         Request::builder()
             .method("GET")
-            .uri("/admin/audit-logs")
+            .uri(format!("/{root_tenant_id}/admin/audit-logs"))
             .body(Body::empty())
             .unwrap(),
     )
@@ -225,6 +225,6 @@ async fn admin_can_query_audit_logs_with_filters() {
     .await
     .expect("insert plain user");
     let plain_cookie = create_sso_session(&pool, &plain_user_id).await;
-    let res = send(&app, get_with_cookie("/admin/audit-logs", &plain_cookie)).await;
+    let res = send(&app, get_with_cookie(&format!("/{root_tenant_id}/admin/audit-logs"), &plain_cookie)).await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
 }

@@ -17,6 +17,7 @@ use crate::presentation::dto::{
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
 use crate::presentation::state::AppState;
+use crate::presentation::tenant::ResolvedTenant;
 use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
@@ -24,7 +25,7 @@ use axum::Json;
 /// クライアントを登録する。`client_id` は自動採番。confidential のとき `client_secret` を平文で返す。
 #[utoipa::path(
     post,
-    path = "/admin/clients",
+    path = "/{tenant_id}/admin/clients",
     tag = "admin",
     request_body = ClientRegisterRequest,
     responses(
@@ -38,6 +39,7 @@ pub async fn create_client(
     RequirePerms(admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<ResolvedTenant>,
     headers: HeaderMap,
     Json(body): Json<ClientRegisterRequest>,
 ) -> Result<(StatusCode, Json<ClientCreatedResponse>), ApiError> {
@@ -57,7 +59,7 @@ pub async fn create_client(
 
     let registered = state
         .clients_admin
-        .register(state.default_tenant, cmd, admin.user_id, &ctx)
+        .register(tenant.context(), cmd, admin.user_id, &ctx)
         .await
         .map_err(map_error)?;
 
@@ -73,7 +75,7 @@ pub async fn create_client(
 /// 登録済みクライアントを新しい順に一覧する。
 #[utoipa::path(
     get,
-    path = "/admin/clients",
+    path = "/{tenant_id}/admin/clients",
     tag = "admin",
     responses(
         (status = 200, description = "クライアント一覧", body = [ClientResponse]),
@@ -84,10 +86,11 @@ pub async fn create_client(
 pub async fn list_clients(
     RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,
+    Extension(tenant): Extension<ResolvedTenant>,
 ) -> Result<Json<Vec<ClientResponse>>, ApiError> {
     let clients = state
         .clients_admin
-        .list(state.default_tenant)
+        .list(tenant.context())
         .await.map_err(map_error)?;
     Ok(Json(clients.iter().map(client_response).collect()))
 }
@@ -95,7 +98,7 @@ pub async fn list_clients(
 /// 単一クライアントを取得する。
 #[utoipa::path(
     get,
-    path = "/admin/clients/{client_id}",
+    path = "/{tenant_id}/admin/clients/{client_id}",
     tag = "admin",
     params(("client_id" = String, Path, description = "クライアント識別子")),
     responses(
@@ -108,11 +111,13 @@ pub async fn list_clients(
 pub async fn get_client(
     RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,
-    Path(client_id): Path<String>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    // 先頭のパスセグメントは `{tenant_id}`（`ResolvedTenant` から取得済みのため破棄する）。
+    Path((_tenant_id, client_id)): Path<(String, String)>,
 ) -> Result<Json<ClientResponse>, ApiError> {
     let client = state
         .clients_admin
-        .get(state.default_tenant, &client_id)
+        .get(tenant.context(), &client_id)
         .await
         .map_err(map_error)?;
     Ok(Json(client_response(&client)))
@@ -121,7 +126,7 @@ pub async fn get_client(
 /// クライアントを部分更新する（app_name / redirect_uris / scopes / status）。
 #[utoipa::path(
     patch,
-    path = "/admin/clients/{client_id}",
+    path = "/{tenant_id}/admin/clients/{client_id}",
     tag = "admin",
     params(("client_id" = String, Path, description = "クライアント識別子")),
     request_body = ClientUpdateRequest,
@@ -137,8 +142,9 @@ pub async fn update_client(
     RequirePerms(admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<ResolvedTenant>,
     headers: HeaderMap,
-    Path(client_id): Path<String>,
+    Path((_tenant_id, client_id)): Path<(String, String)>,
     Json(body): Json<ClientUpdateRequest>,
 ) -> Result<Json<ClientResponse>, ApiError> {
     let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
@@ -160,7 +166,7 @@ pub async fn update_client(
 
     let client = state
         .clients_admin
-        .update(state.default_tenant, &client_id, cmd, admin.user_id, &ctx)
+        .update(tenant.context(), &client_id, cmd, admin.user_id, &ctx)
         .await
         .map_err(map_error)?;
     Ok(Json(client_response(&client)))
@@ -169,7 +175,7 @@ pub async fn update_client(
 /// confidential クライアントの `client_secret` を再発行する。新しい平文をこの応答でのみ返す。
 #[utoipa::path(
     post,
-    path = "/admin/clients/{client_id}/secret",
+    path = "/{tenant_id}/admin/clients/{client_id}/secret",
     tag = "admin",
     params(("client_id" = String, Path, description = "クライアント識別子")),
     responses(
@@ -184,13 +190,14 @@ pub async fn rotate_client_secret(
     RequirePerms(admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<ResolvedTenant>,
     headers: HeaderMap,
-    Path(client_id): Path<String>,
+    Path((_tenant_id, client_id)): Path<(String, String)>,
 ) -> Result<Json<ClientSecretResponse>, ApiError> {
     let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
     let (client, secret) = state
         .clients_admin
-        .rotate_secret(state.default_tenant, &client_id, admin.user_id, &ctx)
+        .rotate_secret(tenant.context(), &client_id, admin.user_id, &ctx)
         .await
         .map_err(map_error)?;
     Ok(Json(ClientSecretResponse {
@@ -204,10 +211,11 @@ pub async fn rotate_client_secret(
 pub async fn list_client_status(
     RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,
+    Extension(tenant): Extension<ResolvedTenant>,
 ) -> Result<Json<Vec<idp_contracts::admin::ClientStatusResponse>>, ApiError> {
     let views = state
         .clients_status
-        .list(state.default_tenant)
+        .list(tenant.context())
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(

@@ -6,6 +6,7 @@ use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{OAuthErrorResponse, TokenRequest, TokenResponse};
 use crate::presentation::handlers::request_context;
 use crate::presentation::state::AppState;
+use crate::presentation::tenant::ResolvedTenant;
 use axum::extract::{Extension, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -17,7 +18,7 @@ use percent_encoding::percent_decode_str;
 /// トークン発行。confidential client は `client_secret_basic`、public client は認証なし。
 #[utoipa::path(
     post,
-    path = "/token",
+    path = "/{tenant_id}/token",
     tag = "oidc",
     request_body(content = TokenRequest, content_type = "application/x-www-form-urlencoded"),
     responses(
@@ -29,6 +30,7 @@ use percent_encoding::percent_decode_str;
 pub async fn token(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<ResolvedTenant>,
     headers: HeaderMap,
     Form(body): Form<TokenRequest>,
 ) -> Response {
@@ -51,7 +53,7 @@ pub async fn token(
 
     match state
         .token
-        .exchange(state.default_tenant, command, &ctx)
+        .exchange(tenant.context(), command, &ctx)
         .await {
         Ok(tokens) => (
             // トークンレスポンスはキャッシュ禁止（設計仕様 §4.4）。

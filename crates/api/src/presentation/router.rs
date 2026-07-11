@@ -9,6 +9,7 @@ use crate::presentation::handlers::{
 use crate::presentation::openapi::ApiDoc;
 use crate::presentation::security_headers::add_security_headers;
 use crate::presentation::state::AppState;
+use crate::presentation::tenant::resolve_tenant;
 use axum::middleware;
 use axum::routing::{get, post};
 use axum::Router;
@@ -28,6 +29,8 @@ pub fn build(state: AppState) -> Router {
             post(internal_auth::authenticate_admin),
         )
         .route("/internal/logout", post(internal_auth::logout))
+        // root テナント解決（web が admin パス前置に使う。ADR-0009 §7）。
+        .route("/internal/root-tenant", get(internal_auth::root_tenant))
         // 同意 API（F3: Consent）。
         .route(
             "/internal/consent-info",
@@ -59,9 +62,9 @@ pub fn build(state: AppState) -> Router {
             internal_auth::require_service_token,
         ));
 
-    Router::new()
-        .route("/healthz", get(health::liveness))
-        .route("/readyz", get(health::readiness))
+    // テナントスコープのルート（ADR-0009 §6）。パスに `/{tenant_id}` は書かず、`.nest()` で前置する。
+    // `resolve_tenant` を `route_layer` で付与し、各ハンドラは `Extension<ResolvedTenant>` を受け取る。
+    let tenant_scoped = Router::new()
         .route("/auth/register", post(register::register))
         .route("/authorize", get(authorize::authorize))
         .route("/token", post(token::token))
@@ -126,6 +129,17 @@ pub fn build(state: AppState) -> Router {
             get(discovery::openid_configuration),
         )
         .route("/.well-known/jwks.json", get(discovery::jwks))
+        // テナント解決（UUID 検証・存在/ACTIVE 確認）を全テナントルートへ付与する（ADR-0009 §7）。
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            resolve_tenant,
+        ));
+
+    // テナント外パス（プレフィクスなし。ADR-0009 §6）: ヘルスチェック・内部 API・API ドキュメント。
+    Router::new()
+        .route("/healthz", get(health::liveness))
+        .route("/readyz", get(health::readiness))
+        .nest("/{tenant_id}", tenant_scoped)
         .merge(internal)
         .merge(SwaggerUi::new("/api/docs").url("/api/openapi.json", ApiDoc::openapi()))
         .layer(axum::middleware::from_fn(correlation::propagate))

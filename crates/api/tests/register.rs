@@ -23,13 +23,13 @@ impl Clock for SystemClock {
     }
 }
 
-async fn post_register(app: &axum::Router, payload: Value) -> (StatusCode, Value) {
+async fn post_register(app: &axum::Router, tenant: &str, payload: Value) -> (StatusCode, Value) {
     let response = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/auth/register")
+                .uri(format!("/{tenant}/auth/register"))
                 .header("content-type", "application/json")
                 .body(Body::from(payload.to_string()))
                 .unwrap(),
@@ -80,6 +80,7 @@ async fn register_creates_user_and_rejects_duplicates_and_invalid_input() {
     let email = format!("user-{}@example.com", uuid::Uuid::new_v4());
     let (status, body) = post_register(
         &app,
+        &root_id,
         serde_json::json!({
             "email": email,
             "preferred_username": null,
@@ -119,6 +120,7 @@ async fn register_creates_user_and_rejects_duplicates_and_invalid_input() {
     // 同一メールの再登録 → 409。
     let (status, _) = post_register(
         &app,
+        &root_id,
         serde_json::json!({ "email": email, "password": "password123" }),
     )
     .await;
@@ -127,6 +129,7 @@ async fn register_creates_user_and_rejects_duplicates_and_invalid_input() {
     // 短いパスワード → 400。
     let (status, _) = post_register(
         &app,
+        &root_id,
         serde_json::json!({
             "email": format!("x-{}@example.com", uuid::Uuid::new_v4()),
             "password": "short"

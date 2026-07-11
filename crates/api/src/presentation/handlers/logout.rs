@@ -20,6 +20,7 @@ use crate::presentation::cookies;
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::handlers::{found, request_context};
 use crate::presentation::state::AppState;
+use crate::presentation::tenant::ResolvedTenant;
 use axum::extract::{Extension, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
@@ -50,7 +51,7 @@ struct LogoutTokenClaims {
 /// RP-initiated logout エンドポイント。
 #[utoipa::path(
     get,
-    path = "/logout",
+    path = "/{tenant_id}/logout",
     tag = "oidc",
     params(
         ("id_token_hint" = Option<String>, Query, description = "失効対象の ID Token（任意）"),
@@ -66,6 +67,7 @@ struct LogoutTokenClaims {
 pub async fn logout(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<ResolvedTenant>,
     headers: HeaderMap,
     Query(params): Query<LogoutParams>,
 ) -> Response {
@@ -77,7 +79,7 @@ pub async fn logout(
     let result = state
         .logout
         .logout(
-            state.default_tenant,
+            tenant.context(),
             sso_session_id.as_deref(),
             params.client_id.as_deref(),
             params.post_logout_redirect_uri.as_deref(),

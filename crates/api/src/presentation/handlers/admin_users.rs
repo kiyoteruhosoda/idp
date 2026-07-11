@@ -8,7 +8,8 @@ use crate::domain::user::User;
 use crate::presentation::admin::{IdpAdmin, RequirePerms};
 use crate::presentation::error::ApiError;
 use crate::presentation::state::AppState;
-use axum::extract::{Path, Query, State};
+use crate::presentation::tenant::ResolvedTenant;
+use axum::extract::{Extension, Path, Query, State};
 use axum::Json;
 use idp_contracts::admin::UserSummaryResponse;
 use serde::Deserialize;
@@ -24,6 +25,7 @@ pub struct UserSearchQuery {
 pub async fn search_user(
     RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,
+    Extension(tenant): Extension<ResolvedTenant>,
     Query(query): Query<UserSearchQuery>,
 ) -> Result<Json<UserSummaryResponse>, ApiError> {
     let term = query.q.unwrap_or_default();
@@ -32,7 +34,7 @@ pub async fn search_user(
     }
     match state
         .permissions_admin
-        .find_user_by_identifier(state.default_tenant, &term)
+        .find_user_by_identifier(tenant.context(), &term)
         .await
         .map_err(map_error)?
     {
@@ -45,13 +47,14 @@ pub async fn search_user(
 pub async fn get_user(
     RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,
-    Path(user_id): Path<String>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    Path((_tenant_id, user_id)): Path<(String, String)>,
 ) -> Result<Json<UserSummaryResponse>, ApiError> {
     let target =
         Uuid::parse_str(&user_id).map_err(|_| ApiError::NotFound("user not found".to_string()))?;
     let user = state
         .permissions_admin
-        .get_user(state.default_tenant, target)
+        .get_user(tenant.context(), target)
         .await
         .map_err(map_error)?;
     Ok(Json(summary(&user)))

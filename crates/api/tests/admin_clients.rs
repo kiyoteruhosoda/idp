@@ -129,7 +129,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
         &env.app,
         Request::builder()
             .method("POST")
-            .uri("/admin/clients")
+            .uri(format!("/{}/admin/clients", env.root_tenant_id))
             .header(CONTENT_TYPE, "application/json")
             .body(Body::from(json!({}).to_string()))
             .unwrap(),
@@ -158,7 +158,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
         &env.app,
         admin_post(
             &plain_cookie,
-            "/admin/clients",
+            &format!("/{}/admin/clients", env.root_tenant_id),
             json!({
                 "app_name": "X",
                 "client_type": "public",
@@ -175,7 +175,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
         &env.app,
         admin_post(
             &admin_cookie,
-            "/admin/clients",
+            &format!("/{}/admin/clients", env.root_tenant_id),
             json!({
                 "app_name": "Bad",
                 "client_type": "public",
@@ -192,7 +192,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
         &env.app,
         admin_post(
             &admin_cookie,
-            "/admin/clients",
+            &format!("/{}/admin/clients", env.root_tenant_id),
             json!({
                 "app_name": "Public App",
                 "client_type": "public",
@@ -216,7 +216,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
         &env.app,
         Request::builder()
             .method("POST")
-            .uri(format!("/admin/clients/{public_client_id}/secret"))
+            .uri(format!("/{}/admin/clients/{public_client_id}/secret", env.root_tenant_id))
             .header(COOKIE, format!("sso_session_id={admin_cookie}"))
             .body(Body::empty())
             .unwrap(),
@@ -233,7 +233,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
         &env.app,
         admin_post(
             &admin_cookie,
-            "/admin/clients",
+            &format!("/{}/admin/clients", env.root_tenant_id),
             json!({
                 "app_name": "Confidential App",
                 "client_type": "confidential",
@@ -262,7 +262,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
         &env.app,
         Request::builder()
             .method("GET")
-            .uri("/admin/clients")
+            .uri(format!("/{}/admin/clients", env.root_tenant_id))
             .header(COOKIE, format!("sso_session_id={admin_cookie}"))
             .body(Body::empty())
             .unwrap(),
@@ -284,7 +284,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
         &env.app,
         Request::builder()
             .method("PATCH")
-            .uri(format!("/admin/clients/{public_client_id}"))
+            .uri(format!("/{}/admin/clients/{public_client_id}", env.root_tenant_id))
             .header(CONTENT_TYPE, "application/json")
             .header(COOKIE, format!("sso_session_id={admin_cookie}"))
             .body(Body::from(
@@ -301,7 +301,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
         &env.app,
         Request::builder()
             .method("POST")
-            .uri(format!("/admin/clients/{conf_client_id}/secret"))
+            .uri(format!("/{}/admin/clients/{conf_client_id}/secret", env.root_tenant_id))
             .header(COOKIE, format!("sso_session_id={admin_cookie}"))
             .body(Body::empty())
             .unwrap(),
@@ -320,7 +320,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
         &env.app,
         Request::builder()
             .method("GET")
-            .uri("/admin/clients/does-not-exist")
+            .uri(format!("/{}/admin/clients/does-not-exist", env.root_tenant_id))
             .header(COOKIE, format!("sso_session_id={admin_cookie}"))
             .body(Body::empty())
             .unwrap(),
