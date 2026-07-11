@@ -1,0 +1,49 @@
+{% extends "console/layout.html" %}
+{% block content %}
+<h2>{{ messages.get("admin-settings-title") }}</h2>
+
+{% if saved %}<p class="notice" role="status">{{ messages.get("admin-settings-saved") }}</p>{% endif %}
+{% if let Some(key) = error_key %}<p class="error" role="alert">{{ messages.get(key) }}</p>{% endif %}
+
+<section class="admin-settings-tenant">
+<h3>{{ messages.get("admin-settings-tenant-heading") }}</h3>
+<p>{{ messages.get("admin-settings-tenant-id") }}: <code>{{ tenant_id }}</code></p>
+<p>{{ messages.get("admin-settings-tenant-status") }}: {{ tenant_status }}</p>
+<form method="post" action="{{ tenant }}/admin/settings/tenant">
+<input type="hidden" name="csrf_token" value="{{ csrf }}">
+<label for="tenant_name">{{ messages.get("admin-settings-tenant-name") }}</label>
+<input type="text" id="tenant_name" name="name" value="{{ tenant_name }}" required maxlength="255">
+<button type="submit">{{ messages.get("admin-settings-save") }}</button>
+</form>
+</section>
+
+{% if let Some(sys) = system %}
+<section class="admin-settings-system">
+<h3>{{ messages.get("admin-settings-system-heading") }}</h3>
+<p>{{ messages.get("admin-settings-system-note") }}</p>
+<form method="post" action="{{ tenant }}/admin/system-settings">
+<input type="hidden" name="csrf_token" value="{{ csrf }}">
+<label for="smtp_host">{{ messages.get("admin-settings-smtp-host") }}</label>
+<input type="text" id="smtp_host" name="smtp_host" value="{{ sys.smtp_host }}">
+<label for="smtp_port">{{ messages.get("admin-settings-smtp-port") }}</label>
+<input type="number" id="smtp_port" name="smtp_port" min="1" max="65535"
+  value="{% if let Some(p) = sys.smtp_port %}{{ p }}{% endif %}">
+<label for="smtp_username">{{ messages.get("admin-settings-smtp-username") }}</label>
+<input type="text" id="smtp_username" name="smtp_username" value="{{ sys.smtp_username }}">
+<label for="smtp_password">{{ messages.get("admin-settings-smtp-password") }}</label>
+<p class="hint">{% if sys.smtp_password_set %}{{ messages.get("admin-settings-smtp-password-set") }}{% else %}{{ messages.get("admin-settings-smtp-password-unset") }}{% endif %}</p>
+<input type="password" id="smtp_password" name="smtp_password" autocomplete="new-password">
+<p class="hint">{{ messages.get("admin-settings-smtp-password-hint") }}</p>
+<label for="smtp_from_address">{{ messages.get("admin-settings-smtp-from") }}</label>
+<input type="text" id="smtp_from_address" name="smtp_from_address" value="{{ sys.smtp_from_address }}">
+<label>
+<input type="checkbox" name="smtp_use_tls" value="true" {% if sys.smtp_use_tls %}checked{% endif %}>
+{{ messages.get("admin-settings-smtp-tls") }}
+</label>
+<button type="submit">{{ messages.get("admin-settings-save") }}</button>
+</form>
+</section>
+{% endif %}
+
+<p><a href="{{ tenant }}/admin">{{ messages.get("admin-settings-back") }}</a></p>
+{% endblock %}

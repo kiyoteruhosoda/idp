@@ -836,6 +836,93 @@ impl ApiClient {
         })
     }
 
+    // ── 設定画面（MT14）─────────────────────────────────────────────────────
+
+    /// 自テナント取得（`GET /admin/settings/tenant`。idp.tenant.admin 必須）。
+    pub async fn get_current_tenant(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+    ) -> Result<crate::admin_dto::TenantView, AdminApiError> {
+        self.admin_send(
+            Method::GET,
+            tenant_id,
+            "/admin/settings/tenant",
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
+    /// 自テナント表示名の更新（`PATCH /admin/settings/tenant`。idp.tenant.admin 必須）。
+    pub async fn update_current_tenant(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        name: &str,
+    ) -> Result<crate::admin_dto::TenantView, AdminApiError> {
+        self.admin_send(
+            Method::PATCH,
+            tenant_id,
+            "/admin/settings/tenant",
+            correlation_id,
+            sso,
+            Some(serde_json::json!({ "name": name })),
+        )
+        .await
+    }
+
+    /// システム設定取得（`GET /admin/system-settings`。idp.system.admin 必須 = 実質 root のみ）。
+    /// root でないと `Forbidden` が返る（web はその区画を非表示にする）。
+    pub async fn get_system_settings(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+    ) -> Result<crate::admin_dto::SystemSettingsView, AdminApiError> {
+        self.admin_send(
+            Method::GET,
+            tenant_id,
+            "/admin/system-settings",
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
+    /// システム設定更新（`PUT /admin/system-settings`。idp.system.admin 必須）。
+    pub async fn update_system_settings(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        body: serde_json::Value,
+    ) -> Result<crate::admin_dto::SystemSettingsView, AdminApiError> {
+        self.admin_send(
+            Method::PUT,
+            tenant_id,
+            "/admin/system-settings",
+            correlation_id,
+            sso,
+            Some(body),
+        )
+        .await
+    }
+
+    /// セルフサービスのパスワード変更（`POST /internal/account/change-password`。MT15）。
+    pub async fn account_change_password(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalAccountChangePasswordRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalAccountChangePasswordResponse> {
+        self.post_internal("/internal/account/change-password", correlation_id, req)
+            .await
+    }
+
     /// api への到達性を確認する（`GET /healthz`）。web の readiness で使う。
     pub async fn is_api_reachable(&self) -> bool {
         match self

@@ -47,6 +47,42 @@ impl Locale {
         Locale::En
     }
 
+    /// 言語タグ（`ja` / `en`）からロケールを引く。非対応・不正値は `None`。
+    pub fn from_tag(tag: &str) -> Option<Locale> {
+        match tag.trim().to_ascii_lowercase().as_str() {
+            "ja" => Some(Locale::Ja),
+            "en" => Some(Locale::En),
+            _ => None,
+        }
+    }
+
+    /// 言語タグ（`ja` / `en`）を返す（Cookie 保存・セレクタ初期選択に使う）。
+    pub fn as_tag(&self) -> &'static str {
+        match self {
+            Locale::En => "en",
+            Locale::Ja => "ja",
+        }
+    }
+
+    /// 表示言語の決定チェーン（MT15 の cookie 段まで）: `?lang=` > Cookie(`lang`) > `Accept-Language`
+    /// > 既定。不正・非対応値は無視して次順位へフォールバックする。
+    ///
+    /// ログインユーザーの設定列（優先度2）は MT20 で追加する。終端フォールバックは現状の実装既定（`En`）に
+    /// 合わせる（システム既定 `ja` への統一は i18n 仕様書のとおり MT19/MT20 の範囲）。
+    pub fn resolve(
+        query_lang: Option<&str>,
+        cookie_lang: Option<&str>,
+        accept_language: Option<&str>,
+    ) -> Locale {
+        if let Some(locale) = query_lang.and_then(Locale::from_tag) {
+            return locale;
+        }
+        if let Some(locale) = cookie_lang.and_then(Locale::from_tag) {
+            return locale;
+        }
+        Locale::from_accept_language(accept_language)
+    }
+
     fn ftl(&self) -> &'static str {
         match self {
             Locale::En => EN_FTL,
@@ -117,6 +153,36 @@ mod tests {
             Locale::En
         );
         assert_eq!(Locale::from_accept_language(Some("fr-FR")), Locale::En);
+    }
+
+    #[test]
+    fn resolve_prefers_query_then_cookie_then_accept_language() {
+        // ?lang= が最優先。
+        assert_eq!(
+            Locale::resolve(Some("ja"), Some("en"), Some("en-US")),
+            Locale::Ja
+        );
+        // ?lang= が無効なら Cookie。
+        assert_eq!(
+            Locale::resolve(Some("fr"), Some("ja"), Some("en-US")),
+            Locale::Ja
+        );
+        // ?lang=・Cookie が無ければ Accept-Language。
+        assert_eq!(
+            Locale::resolve(None, None, Some("ja,en;q=0.8")),
+            Locale::Ja
+        );
+        // いずれも無効なら既定（En。システム既定 ja への統一は MT19/MT20）。
+        assert_eq!(Locale::resolve(Some("fr"), Some("zz"), Some("fr")), Locale::En);
+    }
+
+    #[test]
+    fn from_tag_and_as_tag_roundtrip() {
+        assert_eq!(Locale::from_tag("JA"), Some(Locale::Ja));
+        assert_eq!(Locale::from_tag(" en "), Some(Locale::En));
+        assert_eq!(Locale::from_tag("fr"), None);
+        assert_eq!(Locale::Ja.as_tag(), "ja");
+        assert_eq!(Locale::En.as_tag(), "en");
     }
 
     #[test]

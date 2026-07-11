@@ -307,6 +307,47 @@ pub struct TenantCreatedResponse {
     pub generated_password: String,
 }
 
+/// 設定画面の自テナント表示名更新リクエスト（`PATCH /{tenant_id}/admin/settings/tenant`。MT14）。
+/// `idp.tenant.admin` が自テナントの表示名だけを変更する（`status`・`parent_tenant_id` は不変）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateTenantSettingsRequest {
+    pub name: String,
+}
+
+// --- システム設定（SMTP 等。root/idp.system.admin のみ。MT14） -----------------------------
+
+/// システム設定の公開表現（`GET/PUT /{tenant_id}/admin/system-settings`）。SMTP パスワードは
+/// 平文を返さず、設定済みか否か（`smtp_password_set`）のみを返す。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SystemSettingsResponse {
+    pub smtp_host: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub smtp_port: Option<u16>,
+    pub smtp_username: String,
+    /// SMTP パスワードが設定済みか（平文は返さない）。
+    pub smtp_password_set: bool,
+    pub smtp_from_address: String,
+    pub smtp_use_tls: bool,
+}
+
+/// システム設定の更新リクエスト（`PUT /{tenant_id}/admin/system-settings`）。`smtp_password` は
+/// `None`（未指定）= 現行維持、`Some("")` = 消去、`Some(x)` = 設定（暗号化して保存する）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateSystemSettingsRequest {
+    #[serde(default)]
+    pub smtp_host: String,
+    #[serde(default)]
+    pub smtp_port: Option<u16>,
+    #[serde(default)]
+    pub smtp_username: String,
+    #[serde(default)]
+    pub smtp_password: Option<String>,
+    #[serde(default)]
+    pub smtp_from_address: String,
+    #[serde(default)]
+    pub smtp_use_tls: bool,
+}
+
 // --- 利用者作成（ADR-0009 §5・§6。`idp.tenant.admin` 必須） -----------------------------------
 
 /// 管理者による利用者作成リクエスト（`POST /{tenant_id}/admin/users`）。パスワードは自動生成する。

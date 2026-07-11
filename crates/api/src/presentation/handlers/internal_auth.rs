@@ -18,6 +18,7 @@
 use crate::application::admin_login::{
     AdminChangePasswordCommand, AdminLoginCommand, AdminLoginOutcome,
 };
+use crate::application::account_password::{AccountPasswordCommand, AccountPasswordOutcome};
 use crate::application::audit::RequestContext;
 use crate::application::change_password::{ChangePasswordCommand, ChangePasswordOutcome};
 use crate::application::login::{LoginCommand, LoginOutcome};
@@ -30,6 +31,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use idp_contracts::auth::{
+    InternalAccountChangePasswordRequest, InternalAccountChangePasswordResponse,
     InternalAdminAuthenticateRequest, InternalAdminAuthenticateResponse,
     InternalAdminChangePasswordRequest, InternalAdminChangePasswordResponse,
     InternalAuthenticateRequest, InternalAuthenticateResponse, InternalChangePasswordRequest,
@@ -125,6 +127,45 @@ pub async fn authenticate(
 
 /// パスワード変更（`POST /internal/change-password`、ADR-0009 §5）。`LoginService` が検出した
 /// `must_change_password` を受けて、パスワード検証済みの `auth_session_id` で新パスワードを設定する。
+/// セルフサービスのパスワード変更（`POST /internal/account/change-password`。MT15）。ログイン済み
+/// ユーザーが SSO セッションで本人確認のうえ、現行パスワードを再検証して新パスワードを設定する。
+pub async fn account_change_password(
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Json(req): Json<InternalAccountChangePasswordRequest>,
+) -> Json<InternalAccountChangePasswordResponse> {
+    let ctx = RequestContext {
+        correlation_id: correlation.0,
+        ip_address: req.ip_address,
+        user_agent: req.user_agent,
+    };
+    let outcome = state
+        .account_password
+        .change(
+            AccountPasswordCommand {
+                sso_session_id: req.sso_session_id,
+                current_password: req.current_password,
+                new_password: req.new_password,
+            },
+            &ctx,
+        )
+        .await;
+    Json(match outcome {
+        AccountPasswordOutcome::Ok => InternalAccountChangePasswordResponse::Ok,
+        AccountPasswordOutcome::SessionExpired => {
+            InternalAccountChangePasswordResponse::SessionExpired
+        }
+        AccountPasswordOutcome::InvalidCurrentPassword => {
+            InternalAccountChangePasswordResponse::InvalidCurrentPassword
+        }
+        AccountPasswordOutcome::WeakPassword => InternalAccountChangePasswordResponse::WeakPassword,
+        AccountPasswordOutcome::Internal(e) => {
+            tracing::error!(error = %e, "account change-password failed with internal error");
+            InternalAccountChangePasswordResponse::Internal
+        }
+    })
+}
+
 pub async fn change_password(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,

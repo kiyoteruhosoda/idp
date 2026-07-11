@@ -2,6 +2,7 @@
 //!
 //! ドメイン層のトレイトを介して Infrastructure に依存する（具象に直接依存しない）。
 
+pub mod account_password;
 pub mod admin_access;
 pub mod admin_login;
 pub mod audit;
@@ -23,6 +24,7 @@ pub mod passkey_registration;
 pub mod permission_management;
 pub mod register;
 pub mod revocation;
+pub mod system_settings;
 pub mod tenant_management;
 pub mod tenant_resolution;
 pub mod totp_registration;

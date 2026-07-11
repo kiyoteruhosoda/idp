@@ -10,10 +10,11 @@ use crate::application::tenant_management::{
 };
 use crate::domain::tenant::{Tenant, TenantId};
 use crate::domain::values::TenantStatus;
-use crate::presentation::admin::{IdpSystemAdmin, RequirePerms};
+use crate::presentation::admin::{IdpAdmin, IdpSystemAdmin, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
     CreateTenantRequest, TenantCreatedResponse, TenantResponse, UpdateTenantRequest,
+    UpdateTenantSettingsRequest,
 };
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
@@ -201,6 +202,60 @@ pub async fn delete_tenant(
         .await
         .map_err(map_error)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// 設定画面のテナント設定区画: 自テナント（要求テナント自身）を取得する（`idp.tenant.admin` 必須。MT14）。
+#[utoipa::path(
+    get,
+    path = "/{tenant_id}/admin/settings/tenant",
+    tag = "admin",
+    responses(
+        (status = 200, description = "自テナント", body = TenantResponse),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
+    )
+)]
+pub async fn get_current_tenant(
+    RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
+    State(state): State<AppState>,
+    Extension(tenant): Extension<ResolvedTenant>,
+) -> Result<Json<TenantResponse>, ApiError> {
+    let current = state
+        .tenants_admin
+        .get_current(tenant.context())
+        .await
+        .map_err(map_error)?;
+    Ok(Json(tenant_response(&current)))
+}
+
+/// 設定画面のテナント設定区画: 自テナントの表示名を更新する（`idp.tenant.admin` 必須。MT14）。
+#[utoipa::path(
+    patch,
+    path = "/{tenant_id}/admin/settings/tenant",
+    tag = "admin",
+    request_body = UpdateTenantSettingsRequest,
+    responses(
+        (status = 200, description = "更新後の自テナント", body = TenantResponse),
+        (status = 400, description = "バリデーションエラー"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
+    )
+)]
+pub async fn update_current_tenant(
+    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    headers: HeaderMap,
+    Json(body): Json<UpdateTenantSettingsRequest>,
+) -> Result<Json<TenantResponse>, ApiError> {
+    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
+    let updated = state
+        .tenants_admin
+        .update_current_name(tenant.context(), body.name, admin.user_id, &ctx)
+        .await
+        .map_err(map_error)?;
+    Ok(Json(tenant_response(&updated)))
 }
 
 fn tenant_response(t: &Tenant) -> TenantResponse {

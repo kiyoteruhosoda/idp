@@ -7,6 +7,7 @@ pub mod admin_invitations;
 pub mod admin_members;
 pub mod admin_permissions;
 pub mod admin_signing_keys;
+pub mod admin_system_settings;
 pub mod admin_tenants;
 pub mod admin_users;
 pub mod authorize;

@@ -46,3 +46,49 @@ pub struct AdminPasswordChangeForm {
     pub new_password_confirm: String,
     pub csrf_token: String,
 }
+
+/// 設定画面のテナント表示名フォーム（`POST /{tenant_id}/admin/settings/tenant`。MT14）。
+#[derive(Debug, Deserialize)]
+pub struct AdminTenantSettingsForm {
+    pub name: String,
+    pub csrf_token: String,
+}
+
+/// 設定画面のシステム設定（SMTP）フォーム（`POST /{tenant_id}/admin/system-settings`。MT14）。
+/// `smtp_port` は文字列で受け、`smtp_use_tls` はチェックボックス（チェック時のみ送られる）。
+/// `smtp_password` が空文字なら現行のパスワードを維持する（変更しない）。
+#[derive(Debug, Deserialize)]
+pub struct AdminSystemSettingsForm {
+    #[serde(default)]
+    pub smtp_host: String,
+    #[serde(default)]
+    pub smtp_port: String,
+    #[serde(default)]
+    pub smtp_username: String,
+    #[serde(default)]
+    pub smtp_password: String,
+    #[serde(default)]
+    pub smtp_from_address: String,
+    #[serde(default)]
+    pub smtp_use_tls: Option<String>,
+    pub csrf_token: String,
+}
+
+/// セルフサービスのパスワード変更フォーム（`POST /{tenant_id}/settings/password`。MT15）。
+#[derive(Debug, Deserialize)]
+pub struct AccountPasswordForm {
+    pub current_password: String,
+    pub new_password: String,
+    pub new_password_confirm: String,
+}
+
+/// 設定画面の GET クエリ（言語一時切替・保存/エラーバナー表示）。
+#[derive(Debug, Default, Deserialize)]
+pub struct SettingsQuery {
+    #[serde(default)]
+    pub lang: Option<String>,
+    #[serde(default)]
+    pub saved: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+}

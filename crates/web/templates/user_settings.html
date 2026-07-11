@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>{{ messages.get("user-settings-title") }}</title></head>
+<body>
+<h1>{{ messages.get("user-settings-title") }}</h1>
+
+{% if let Some(key) = saved_key %}<p class="notice" role="status">{{ messages.get(key) }}</p>{% endif %}
+{% if let Some(key) = error_key %}<p class="error" role="alert">{{ messages.get(key) }}</p>{% endif %}
+
+<section class="user-settings-password">
+<h2>{{ messages.get("user-settings-password-heading") }}</h2>
+<form method="post" action="{{ tenant }}/settings/password">
+<label for="current_password">{{ messages.get("user-settings-current-password") }}</label>
+<input type="password" id="current_password" name="current_password" autocomplete="current-password" required>
+<label for="new_password">{{ messages.get("user-settings-new-password") }}</label>
+<input type="password" id="new_password" name="new_password" autocomplete="new-password" required>
+<label for="new_password_confirm">{{ messages.get("user-settings-new-password-confirm") }}</label>
+<input type="password" id="new_password_confirm" name="new_password_confirm" autocomplete="new-password" required>
+<button type="submit">{{ messages.get("user-settings-password-submit") }}</button>
+</form>
+</section>
+
+<section class="user-settings-language">
+<h2>{{ messages.get("user-settings-language-heading") }}</h2>
+<p>{{ messages.get("user-settings-language-current") }}:
+{% if current_lang == "ja" %}日本語{% else %}English{% endif %}</p>
+<ul class="lang-switch">
+<li><a href="{{ tenant }}/settings?lang=ja">日本語</a></li>
+<li><a href="{{ tenant }}/settings?lang=en">English</a></li>
+</ul>
+</section>
+
+<section class="user-settings-mfa">
+<h2>{{ messages.get("user-settings-mfa-heading") }}</h2>
+<ul class="mfa-links">
+<li><a href="{{ tenant }}/account/mfa/totp/setup">{{ messages.get("user-settings-mfa-totp") }}</a></li>
+<li><a href="{{ tenant }}/account/passkey">{{ messages.get("user-settings-mfa-passkey") }}</a></li>
+</ul>
+</section>
+</body>
+</html>

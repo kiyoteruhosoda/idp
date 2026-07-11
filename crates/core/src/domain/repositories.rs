@@ -30,6 +30,7 @@ use crate::domain::refresh_token::RefreshToken;
 use crate::domain::revoked_access_token::RevokedAccessToken;
 use crate::domain::signing_key::SigningKey;
 use crate::domain::sso_session::SsoSession;
+use crate::domain::system_setting::SystemSetting;
 use crate::domain::tenant::{Tenant, TenantId};
 use crate::domain::tenant_membership::TenantMembership;
 use crate::domain::totp_secret::TotpSecret;
@@ -332,6 +333,19 @@ pub trait WebAuthnCredentialRepository: Send + Sync {
     ) -> Result<()>;
     /// クレデンシャルを削除する。所有者チェック（`user_id` 照合）も行う。不存在は冪等に無視する。
     async fn delete(&self, id: Uuid, user_id: Uuid) -> Result<()>;
+}
+
+/// システム設定（root/idp.system.admin が管理する IdP 全体設定。ADR-0009 §5、MT14）の永続化。
+///
+/// テナント列を持たず IdP 全体に一律適用する（root のみ管理可能。判定は Presentation の
+/// `RequirePerms<IdpSystemAdmin>` が担う）。秘匿値の暗号化・復号は Application 層の責務で、本トレイトは
+/// 保存形式（暗号文を含む）の文字列を素通しする。
+#[async_trait]
+pub trait SystemSettingsRepository: Send + Sync {
+    /// 全システム設定を返す（値は保存形式のまま。`is_secret` のものは暗号文）。
+    async fn load_all(&self) -> Result<Vec<SystemSetting>>;
+    /// 設定を UPSERT する（キー単位。`is_secret` も保存する）。
+    async fn upsert(&self, setting: &SystemSetting) -> Result<()>;
 }
 
 /// Passkey チャレンジ一時テーブル（WebAuthn の begin → complete 中間状態）。

@@ -114,3 +114,30 @@ pub struct InvitationCreatedView {
     pub token: String,
     pub expires_at: String,
 }
+
+/// テナントの公開表現（`GET/PATCH /admin/settings/tenant` の応答。MT14）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct TenantView {
+    pub id: String,
+    pub name: String,
+    /// `ACTIVE` または `DISABLED`。
+    pub status: String,
+}
+
+/// システム設定の公開表現（`GET/PUT /admin/system-settings` の応答。MT14）。
+/// SMTP パスワードは平文を含まず、設定済みか否か（`smtp_password_set`）のみ。
+#[derive(Debug, Clone, Deserialize)]
+pub struct SystemSettingsView {
+    #[serde(default)]
+    pub smtp_host: String,
+    #[serde(default)]
+    pub smtp_port: Option<u16>,
+    #[serde(default)]
+    pub smtp_username: String,
+    #[serde(default)]
+    pub smtp_password_set: bool,
+    #[serde(default)]
+    pub smtp_from_address: String,
+    #[serde(default)]
+    pub smtp_use_tls: bool,
+}

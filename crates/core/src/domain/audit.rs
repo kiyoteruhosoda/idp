@@ -46,6 +46,8 @@ pub enum AuditEventType {
     TenantCreated,
     TenantUpdated,
     TenantDeleted,
+    /// root（idp.system.admin）によるシステム設定の更新（SMTP 等。MT14）。値そのものは記録しない。
+    SystemSettingsUpdated,
 }
 
 impl AuditEventType {
@@ -81,6 +83,7 @@ impl AuditEventType {
             Self::TenantCreated => "tenant.created",
             Self::TenantUpdated => "tenant.updated",
             Self::TenantDeleted => "tenant.deleted",
+            Self::SystemSettingsUpdated => "system_settings.updated",
         }
     }
 }
