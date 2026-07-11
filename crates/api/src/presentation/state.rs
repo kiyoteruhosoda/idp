@@ -31,9 +31,11 @@ use crate::application::passkey_registration::PasskeyRegistrationService;
 use crate::application::permission_management::PermissionManagementService;
 use crate::application::register::RegisterService;
 use crate::application::revocation::RevocationService;
+use crate::application::tenant_management::TenantManagementService;
 use crate::application::tenant_resolution::TenantResolutionService;
 use crate::application::token::TokenService;
 use crate::application::totp_registration::TotpRegistrationService;
+use crate::application::user_management::UserManagementService;
 use crate::application::userinfo::UserInfoService;
 use crate::config::Config;
 use crate::domain::cache::Cache;
@@ -94,7 +96,11 @@ pub struct AppState {
     pub clients_admin: Arc<ClientManagementService>,
     pub clients_status: Arc<ClientStatusService>,
     pub permissions_admin: Arc<PermissionManagementService>,
-    /// ゲスト招待・メンバーシップ（ADR-0009 §3）。HTTP エンドポイントは MT11 で追加する。
+    /// 管理者による利用者作成（自動生成パスワード・must_change_password。ADR-0009 §5）。
+    pub users_admin: Arc<UserManagementService>,
+    /// テナント作成・管理（idp.system.admin 必須。ADR-0009 §5・§6）。
+    pub tenants_admin: Arc<TenantManagementService>,
+    /// ゲスト招待・メンバーシップ（ADR-0009 §3）。
     pub invitations: Arc<InvitationService>,
     pub audit_query: Arc<AuditQueryService>,
     pub logout: Arc<LogoutService>,
@@ -257,6 +263,26 @@ impl AppState {
             audit.clone(),
             clock.clone(),
         ));
+        // 管理者による利用者作成（ADR-0009 §5）。テナント作成フロー（tenants_admin）が生成する初期
+        // 管理者ユーザーもこのサービスを通す（作成ロジックの単一の出所）。
+        let users_admin = Arc::new(UserManagementService::new(
+            users.clone(),
+            tenant_memberships.clone(),
+            hasher.clone(),
+            audit.clone(),
+            clock.clone(),
+            ids.clone(),
+        ));
+        // テナント作成・管理（ADR-0009 §5・§6）。初期管理者の生成は users_admin へ委譲し、新テナント
+        // scope の idp.tenant.admin 付与は同一キャッシュ付きリポジトリを共有するため判定へ即時反映される。
+        let tenants_admin = Arc::new(TenantManagementService::new(
+            tenants.clone(),
+            users_admin.clone(),
+            user_permissions.clone(),
+            audit.clone(),
+            clock.clone(),
+            ids.clone(),
+        ));
         // ゲスト招待・メンバーシップ（ADR-0009 §3）。権限は同一キャッシュ付きリポジトリを共有するため、
         // メンバーシップ解除に伴う権限剥奪も判定キャッシュへ即時反映される。
         let invitations = Arc::new(InvitationService::new(
@@ -379,6 +405,8 @@ impl AppState {
             clients_admin,
             clients_status,
             permissions_admin,
+            users_admin,
+            tenants_admin,
             invitations,
             audit_query,
             logout,

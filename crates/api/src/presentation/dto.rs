@@ -258,3 +258,111 @@ pub struct GenerateSigningKeyRequest {
     /// `RS256` または `ES256`。
     pub algorithm: String,
 }
+
+// --- テナント管理（ADR-0009 §5・§6。`idp.system.admin` 必須） --------------------------------
+
+/// 子テナント作成リクエスト（`POST /{tenant_id}/admin/tenants`）。`id`（UUID）はシステムが自動採番する。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateTenantRequest {
+    /// テナント表示名。一意制約なし・URL には使わない。
+    pub name: String,
+    /// 初期管理者のメールアドレス。新テナントを所属元とし新テナント scope の `idp.tenant.admin` を
+    /// 付与した管理者ユーザーを生成する。パスワードは自動生成し `generated_password` で一度だけ返す。
+    pub admin_email: String,
+}
+
+/// 子テナント部分更新リクエスト（`PATCH /{tenant_id}/admin/tenants/{child_id}`）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateTenantRequest {
+    #[serde(default)]
+    pub name: Option<String>,
+    /// `ACTIVE` または `DISABLED`。
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+/// テナントの公開表現。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TenantResponse {
+    pub id: String,
+    /// 作成元テナント。root のみ `None`。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_tenant_id: Option<String>,
+    pub name: String,
+    /// `ACTIVE` または `DISABLED`。
+    pub status: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// テナント作成レスポンス。`generated_password` は初期管理者の自動生成パスワードで、**この応答でのみ**
+/// 平文で返る（ログ・監査には出さない。ADR-0009 §5）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TenantCreatedResponse {
+    #[serde(flatten)]
+    pub tenant: TenantResponse,
+    /// 生成された初期管理者ユーザーの内部 ID（UUID）。
+    pub admin_user_id: String,
+    /// 初期管理者の自動生成パスワード（平文。一度限り）。
+    pub generated_password: String,
+}
+
+// --- 利用者作成（ADR-0009 §5・§6。`idp.tenant.admin` 必須） -----------------------------------
+
+/// 管理者による利用者作成リクエスト（`POST /{tenant_id}/admin/users`）。パスワードは自動生成する。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateUserRequest {
+    pub email: String,
+    #[serde(default)]
+    pub preferred_username: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// 利用者作成レスポンス。`generated_password` は**この応答でのみ**平文で返る（ログ・監査には出さない）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct UserCreatedResponse {
+    pub user_id: String,
+    pub sub: String,
+    /// 自動生成パスワード（平文。一度限り）。
+    pub generated_password: String,
+}
+
+// --- メンバー・招待（ADR-0009 §3・§6） --------------------------------------------------------
+
+/// メンバー一覧の 1 件（`GET /{tenant_id}/admin/members`）。HOME / GUEST を問わない。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MemberResponse {
+    pub user_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// `HOME` または `GUEST`。
+    pub membership_type: String,
+    /// `INVITED` または `ACTIVE`。
+    pub status: String,
+}
+
+/// ゲスト招待作成リクエスト（`POST /{tenant_id}/admin/invitations`）。被招待者は所属元が他テナントの
+/// 既存利用者で、内部 ID で指定する。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateInvitationRequest {
+    /// 被招待利用者の内部 ID（UUID）。
+    pub user_id: String,
+}
+
+/// 招待作成レスポンス。`token` は平文の招待トークンで、**この応答でのみ**返る（管理者が被招待者へ別途
+/// 通知する。ログ・監査には出さない。ADR-0009 §3）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct InvitationCreatedResponse {
+    pub token: String,
+    /// 招待の失効時刻（RFC3339）。
+    pub expires_at: String,
+}
+
+/// 招待承諾リクエスト（`POST /{tenant_id}/invitations/accept`）。ログイン済み利用者がトークンを提示する。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct AcceptInvitationRequest {
+    pub token: String,
+}

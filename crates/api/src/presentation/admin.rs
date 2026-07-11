@@ -8,7 +8,8 @@
 //! 文字列で権限を渡して実行時解決する方式を避け、コンパイル時に確定させる。
 //!
 //! ADR-0007 で HTML 画面は web crate へ移設したため、api の管理 API は JSON の 401/403 を返す
-//! [`RequirePerms`] のみを持つ（画面向けの誘導は web が行う）。
+//! [`RequirePerms`] を持つ（画面向けの誘導は web が行う）。権限を要求せず「ログイン済みであること」
+//! だけを要求するフロー（招待の承諾。ADR-0009 §3）には [`AuthenticatedUser`] extractor を用いる。
 //!
 //! ```ignore
 //! async fn admin_api(RequirePerms(admin, _): RequirePerms<IdpAdmin>) -> impl IntoResponse { ... }
@@ -43,6 +44,17 @@ pub struct IdpAdmin;
 
 impl RequiredPermission for IdpAdmin {
     const CODE: &'static str = "idp.tenant.admin";
+}
+
+/// テナントの作成・削除・更新を保護する権限コード `idp.system.admin`（ADR-0009 §4）。
+///
+/// `idp.system.admin` は root scope でしか存在できない（DB CHECK ＋アプリ層の二重防御）ため、
+/// 要求テナントを scope として保有できるのは root テナントの system 管理者だけになる。判定は
+/// `AdminAccessService::authorize` が完全一致で行い、`idp.system.admin` 要求時は代替フォールバックしない。
+pub struct IdpSystemAdmin;
+
+impl RequiredPermission for IdpSystemAdmin {
+    const CODE: &'static str = "idp.system.admin";
 }
 
 /// 権限 `P` を保有する認可済み管理利用者を表す extractor。
@@ -87,6 +99,35 @@ where
                 StatusCode::FORBIDDEN,
                 "forbidden",
                 "insufficient permission",
+            )),
+        }
+    }
+}
+
+/// ログイン済み利用者（権限は問わない）を表す extractor。
+///
+/// SSO セッション Cookie から利用者を解決できた時点で「有効な SSO セッションを持つ・アカウントが有効」が
+/// 保証される。テナント権限を要求しないフロー（招待の承諾。ADR-0009 §3）で使う。抽出できなければ 401。
+pub struct AuthenticatedUser(pub uuid::Uuid);
+
+impl FromRequestParts<AppState> for AuthenticatedUser {
+    type Rejection = Response;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let sso_session_id = cookies::get(&parts.headers, cookies::SSO_SESSION_COOKIE);
+        match state
+            .admin_access
+            .authenticated_user(sso_session_id.as_deref())
+            .await
+        {
+            Some(user_id) => Ok(AuthenticatedUser(user_id)),
+            None => Err(error_response(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "authentication required",
             )),
         }
     }

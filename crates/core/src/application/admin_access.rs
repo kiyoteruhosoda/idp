@@ -137,6 +137,36 @@ impl AdminAccessService {
         }
         AdminAccess::Forbidden
     }
+
+    /// SSO セッション Cookie から認証済み利用者の内部 ID を解決する（権限は問わない）。
+    ///
+    /// 招待の承諾（`POST /{tenant_id}/invitations/accept`。ADR-0009 §3）のように「ログイン済みである
+    /// こと」だけを要求し、テナント権限を要求しないフローで使う。セッションが無効・利用者が無効・
+    /// リポジトリ障害はいずれも `None`（未認証）に倒す（fail-closed）。本人性の最終確認（被招待者本人か）は
+    /// 呼び出し側のユースケースがトークン照合で行う。
+    pub async fn authenticated_user(&self, sso_session_id: Option<&str>) -> Option<Uuid> {
+        let session_id = sso_session_id.filter(|s| !s.is_empty())?;
+        let session_hash = crypto::sha256_hex(session_id);
+        let session = match self.sso_sessions.find_by_hash(&session_hash).await {
+            Ok(Some(session)) => session,
+            Ok(None) => return None,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to load sso session for authenticated user");
+                return None;
+            }
+        };
+        if !session.is_valid_at(self.clock.now()) {
+            return None;
+        }
+        match self.users.find_by_id(session.user_id).await {
+            Ok(Some(user)) if user.is_active() => Some(session.user_id),
+            Ok(_) => None,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to load user for authenticated user");
+                None
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -2,6 +2,30 @@
 
 完了した重要な変更の要約（詳しい経緯は `history/`、設計判断は `adr/`）。
 
+## 2026-07-11（MT11: 管理 API（tenants/users/members/invitations）+ テナント作成フロー）
+
+- **テナント管理 API**（ADR-0009 §5・§6。`application::tenant_management::TenantManagementService`・
+  `presentation::handlers::admin_tenants`）: `/{tenant_id}/admin/tenants`（GET/POST）・
+  `/{tenant_id}/admin/tenants/{child_id}`（GET/PATCH/DELETE）を新設。`RequirePerms<IdpSystemAdmin>`
+  （`idp.system.admin`）で保護し、実質 root テナントの system 管理者のみ作成・削除できる。取得・更新・
+  削除は**直下の子テナントのみ**を対象とし、他テナントの子・不存在は 404。root は削除不可。配下に
+  子テナント・ユーザー・クライアントが残る場合は 409（アプリ層検証 + FK `ON DELETE RESTRICT`）。
+- **テナント作成フロー**（ADR-0009 §5）: 作成時に新テナントを所属元とする初期管理者ユーザーを自動生成し
+  （自動生成パスワード・`must_change_password = true`）、新テナント scope の `idp.tenant.admin` を付与する。
+  `generated_password` はレスポンスに一度だけ平文で返し、ログ・監査には出さない。作成者（root の
+  system.admin）はテナント内部を操作できない（テナント独立）。
+- **管理者による利用者作成**（ADR-0009 §5。`application::user_management::UserManagementService`）:
+  `POST /{tenant_id}/admin/users`（`idp.tenant.admin` 必須）。パスワードを自動生成し `must_change_password`
+  を付与、HOME メンバーシップを同時作成、`generated_password` を一度だけ返す。テナント作成フローの
+  初期管理者生成もこのサービスを単一の出所とする。
+- **メンバー・招待の HTTP エンドポイント**（ADR-0009 §3・§6。ユースケースは MT8 で実装済み）:
+  `GET /{tenant_id}/admin/members`（HOME/GUEST 一覧）・`DELETE /{tenant_id}/admin/members/{user_id}`
+  （ゲスト解除。HOME 不可）・`POST /{tenant_id}/admin/invitations`（招待作成。招待トークンを一度だけ返す）・
+  `POST /{tenant_id}/invitations/accept`（承諾。`RequirePerms` ではなく `AuthenticatedUser` extractor で
+  ログイン済み本人を解決）。招待トークン・生成パスワードは監査ログに出さない。
+- **監査イベント追加**: `user.created`・`tenant.created`・`tenant.updated`・`tenant.deleted`（生成
+  パスワード・招待トークンは reason に含めない）。
+
 ## 2026-07-10（MT9・MT10: `/{tenant_id}/...` ルーティング + TenantResolver mount + web テナント伝搬）
 
 - **MT9 — api テナントルーティング**（ADR-0009 §6・§7）: テナントスコープの api エンドポイント
