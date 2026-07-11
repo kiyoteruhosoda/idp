@@ -20,13 +20,15 @@ Phase 計画に沿う。
 
 | 優先 | # | 概要 | 状態 | 影響度 | 工数 | 推奨モデル |
 |---|---|---|---|---|---|---|
-| 1 | MT14 | 設定画面（`/{tenant_id}/admin/settings`）— テナント設定 + root のみシステム設定区画（SMTP 等） | ⬜未着手 | 中 | 中 | Sonnet 5 |
-| 2 | MT15 | ユーザー設定画面（`/{tenant_id}/settings`）— パスワード変更・MFA・言語設定 | ⬜未着手 | 小 | 中 | Sonnet 5 |
-| 3 | MT16 | 統合テスト（テナント間分離・権限境界の完全一致・ゲスト保護・「root は作成できるが内部を操作できない」の検証） | ⬜未着手 | 大 | 中 | Opus 4.8 |
-| 4 | MT17 | 招待のメール配送（MT14 の SMTP 設定完了後。手動トークン伝達 → メールリンク） | ⬜未着手 | 中 | 中 | Sonnet 5 |
-| 5 | MT18 | セルフサービス・パスワードリセット（忘失時。外部 SMTP 連携。MT14 完了後） | ⬜未着手 | 中 | 中 | Sonnet 5 |
-| 6 | MT19 | API の `Accept-Language` ベース多言語化（i18n 仕様書 §5・§6）— API は `Accept-Language` のみ参照（Cookie/Session/クエリ/DB を見ない）。地域コード無視（`en-US`→`en`）、非対応言語・未指定はシステム既定 `ja`。エラー／バリデーション／業務メッセージをキー管理で多言語化（コードは言語不変）。運用ログ・監査ログ・スタックトレースは対象外（英語統一） | ⬜未着手 | 中 | 大 | Sonnet 5 |
-| 7 | MT20 | Web の表示言語決定チェーン（i18n 仕様書 §3・§4・§9）— 優先順位 `?lang=` → ユーザー設定 → Cookie（`lang`）→ ブラウザ `Accept-Language` → 既定 `ja`。不正値は次順位へフォールバック。言語変更時／初回に Cookie 保存、ログイン時はユーザー設定優先。決定言語を API へ `Accept-Language` で伝搬（Cookie・`lang` クエリは送らない）。ユーザー設定 `language` 列（ja/en）を追加。将来言語追加（zh/ko/fr 等）を考慮 | ⬜未着手 | 中 | 大 | Sonnet 5 |
+| 1 | MT16 | 統合テスト（テナント間分離・権限境界の完全一致・ゲスト保護・「root は作成できるが内部を操作できない」の検証） | ⬜未着手 | 大 | 中 | Opus 4.8 |
+| 2 | MT17 | 招待のメール配送（MT14 の SMTP 設定完了済み。手動トークン伝達 → メールリンク） | ⬜未着手 | 中 | 中 | Sonnet 5 |
+| 3 | MT18 | セルフサービス・パスワードリセット（忘失時。外部 SMTP 連携。MT14 完了済み） | ⬜未着手 | 中 | 中 | Sonnet 5 |
+| 4 | MT19 | API の `Accept-Language` ベース多言語化（i18n 仕様書 §5・§6）— API は `Accept-Language` のみ参照（Cookie/Session/クエリ/DB を見ない）。地域コード無視（`en-US`→`en`）、非対応言語・未指定はシステム既定 `ja`。エラー／バリデーション／業務メッセージをキー管理で多言語化（コードは言語不変）。運用ログ・監査ログ・スタックトレースは対象外（英語統一） | ⬜未着手 | 中 | 大 | Sonnet 5 |
+| 5 | MT20 | Web の表示言語決定チェーン（i18n 仕様書 §3・§4・§9）— 優先順位 `?lang=` → ユーザー設定 → Cookie（`lang`）→ ブラウザ `Accept-Language` → 既定 `ja`。不正値は次順位へフォールバック。言語変更時／初回に Cookie 保存、ログイン時はユーザー設定優先。決定言語を API へ `Accept-Language` で伝搬（Cookie・`lang` クエリは送らない）。ユーザー設定 `language` 列（ja/en）を追加。将来言語追加（zh/ko/fr 等）を考慮 | ⬜未着手 | 中 | 大 | Sonnet 5 |
+
+> MT14・MT15 は完了（`docs/CHANGELOG.md` 参照）。MT15 の言語設定は現状 **`lang` Cookie 保存 + `/settings`
+> 画面での `?lang=`／Cookie 反映**まで（決定チェーンの優先度1・3）。全画面への決定チェーン統一・
+> ユーザー設定 `language` 列（優先度2）・システム既定 `ja` への統一は MT20 の範囲として残る。
 
 ### 詳細
 
@@ -35,12 +37,14 @@ Phase 計画に沿う。
   （negative test 必須）。ADR-0009 §8。（Phase 2 の MT6〜MT8、Phase 3 の MT9〜MT13＝管理 API・
   テナント作成フロー・強制パスワード変更・テナント管理コンソールは完了。）
 
-**中リスク／定型（Sonnet 5）**: MT14・MT15・MT17・MT18。仕様が ADR で明確で、
-Askama テンプレート・`api_client` 等の確立パターンに沿う機能実装。ただし MT15（MFA）は
-セキュリティ機微を含むため、実装後に §テスト・`/security-review` を併用する。
+**中リスク／定型（Sonnet 5）**: MT17・MT18。仕様が ADR で明確で、
+Askama テンプレート・`api_client` 等の確立パターンに沿う機能実装。MT15（セルフサービスの
+パスワード変更）はセキュリティ機微を含むため、実装後に §テスト・`/security-review` を併用する
+（今回は SSO 解決 → 現行パスワード再検証 → 強度検証の経路を追加。他セッション失効は行っていない）。
 
-**依存関係**: Phase 2（MT6〜MT8）・MT9〜MT13（Phase 3）完了 → MT14〜MT16（Phase 3 残）。
-MT17・MT18 は MT14 のシステム設定（SMTP）完了が前提。
+**依存関係**: Phase 2（MT6〜MT8）・MT9〜MT15（Phase 3）完了 → MT16（Phase 3 残）。
+MT17・MT18 の前提だった MT14 のシステム設定（SMTP）は完了済み（`SystemSettingsService::get_smtp`
+が消費側の入口）。
 
 **i18n 仕様書（MT19・MT20）の現状ギャップと注意点**:
 - **現状**: i18n は **web crate のみ**（`fluent`、`crates/web/src/i18n.rs`、`i18n/<lang>/main.ftl`）。言語決定は
@@ -51,7 +55,8 @@ MT17・MT18 は MT14 のシステム設定（SMTP）完了が前提。
 - **責務分離**: Web（MT20）が優先順位チェーンで表示言語を**決定**し、決定結果のみを `Accept-Language` で
   API へ渡す。API（MT19）は `Accept-Language` だけを見てレスポンスを生成し、クライアント種別
   （Web/モバイル/CLI）に依存しない。両者は常に同一言語で動作する。
-- **関連**: MT15（ユーザー設定画面の言語設定 UI）は MT20 で追加する**ユーザー設定 `language` 列**に乗る
-  （データ層は MT20、設定 UI は MT15）。`language` 列追加は sqlx マイグレーション（`.claude/skills/db-migration/`）で行う。
+- **関連**: MT15（ユーザー設定画面の言語設定 UI）は完了。現状は `lang` Cookie 保存 + `/settings` 画面での
+  `?lang=`／Cookie 反映まで（`Locale::resolve`）。MT20 で**ユーザー設定 `language` 列**（優先度2）を追加し、
+  全画面へ決定チェーンを適用する。`language` 列追加は sqlx マイグレーション（`.claude/skills/db-migration/`）で行う。
 - 製品情報のような多言語**データ**が必要になった場合は翻訳テーブル（例: `ProductTranslation`）で対応する
   想定だが、現行スコープ（ユーザー向けメッセージの多言語化）には含めない。

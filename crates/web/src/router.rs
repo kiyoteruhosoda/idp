@@ -6,8 +6,8 @@
 use crate::correlation;
 use crate::handlers::{
     admin_clients_console, admin_console, admin_invitations_console, admin_members_console,
-    admin_signing_keys_console, admin_status_console, admin_users_console, consent, health,
-    login, mfa_totp, passkey, password_change,
+    admin_settings, admin_signing_keys_console, admin_status_console, admin_users_console, consent,
+    health, login, mfa_totp, passkey, password_change, user_settings,
 };
 use crate::state::WebState;
 use crate::tenant::capture_tenant;
@@ -23,6 +23,9 @@ pub fn build(state: WebState) -> Router {
             "/password-change",
             get(password_change::page).post(password_change::submit),
         )
+        // 利用者のセルフサービス設定画面（MT15）。パスワード変更・言語・MFA 導線。SSO 認証が必要。
+        .route("/settings", get(user_settings::page))
+        .route("/settings/password", post(user_settings::change_password))
         // 同意画面（F3: Consent）。
         .route("/consent", get(consent::consent_page).post(consent::consent))
         // MFA: ログインフロー TOTP 入力（パスワード認証後）。
@@ -57,6 +60,16 @@ pub fn build(state: WebState) -> Router {
         )
         .route("/admin/logout", post(admin_console::logout))
         .route("/admin", get(admin_console::home))
+        // 設定画面（MT14）。テナント設定（idp.tenant.admin）＋ root のみのシステム設定区画（SMTP）。
+        .route("/admin/settings", get(admin_settings::page))
+        .route(
+            "/admin/settings/tenant",
+            post(admin_settings::update_tenant),
+        )
+        .route(
+            "/admin/system-settings",
+            post(admin_settings::update_system),
+        )
         // クライアント（RP）管理画面。静的セグメント（new）は動的 {client_id} より優先。
         .route("/admin/clients", get(admin_clients_console::list))
         .route(

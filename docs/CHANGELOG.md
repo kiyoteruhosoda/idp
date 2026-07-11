@@ -2,6 +2,23 @@
 
 完了した重要な変更の要約（詳しい経緯は `history/`、設計判断は `adr/`）。
 
+## 2026-07-11（MT14・MT15: 設定画面 + セルフサービス設定）
+
+- **システム設定基盤（MT14）**: `system_settings` テーブル（`0003_system_settings`。key-value + `is_secret`。
+  テナント列を持たず IdP 全体に適用）と `SystemSettingsRepository`／`SystemSettingsService` を新設。SMTP 設定
+  （host/port/username/password/from/tls）を保持し、秘匿値（パスワード）は `crypto::encrypt`（AES-256-GCM）で
+  暗号化保存・参照時は平文非返却（設定済みか否かのみ）。消費側（MT17/MT18）の入口は `get_smtp`。監査イベント
+  `SystemSettingsUpdated` を追加。認可は `RequirePerms<IdpSystemAdmin>`（root のみ）。
+- **管理設定画面（MT14）**: `GET /{tenant_id}/admin/settings`（web）。テナント設定区画（自テナント表示名の
+  更新。`idp.tenant.admin`。api `GET/PATCH /admin/settings/tenant`、`TenantManagementService::get_current`／
+  `update_current_name` を追加）と、root のみ表示のシステム設定区画（SMTP。api `GET/PUT /admin/system-settings`）。
+  root 判定は web が別途持たず「api への GET が 403 か否か」で区画表示を切り替える（認可の単一の出所を api に集約）。
+- **ユーザー設定画面（MT15）**: `GET /{tenant_id}/settings`（web）。セルフサービスのパスワード変更
+  （api `POST /internal/account/change-password`。`AccountPasswordService` が SSO セッションで本人解決 → 現行
+  パスワード再検証 → 強度検証 → 更新。OIDC フロー外のため code/redirect なし）、MFA（TOTP/Passkey）画面への導線、
+  言語設定（`?lang=` を `lang` Cookie に保存。`Locale::resolve` = `?lang=` > Cookie > `Accept-Language`）。
+  全画面への言語決定チェーン統一・ユーザー設定 `language` 列・システム既定 `ja` への統一は MT20 に残す。
+
 ## 2026-07-11（MT12・MT13: 強制パスワード変更 + web テナント経路化・管理コンソール拡張）
 
 - **強制パスワード変更**（ADR-0009 §5。`application::change_password::ChangePasswordService`）:

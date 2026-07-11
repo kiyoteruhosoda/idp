@@ -12,6 +12,10 @@ pub const AUTH_SESSION_COOKIE: &str = "auth_session_id";
 pub const SSO_SESSION_COOKIE: &str = "sso_session_id";
 /// 管理ログインフォームの CSRF 用 Cookie（GET で発行する推測不能な乱数。同期トークンの種）。
 pub const ADMIN_CSRF_COOKIE: &str = "admin_csrf_id";
+/// 表示言語の選択を保持する Cookie（`ja` / `en`。MT15。決定チェーンの優先度3）。
+pub const LANG_COOKIE: &str = "lang";
+/// 言語 Cookie の保持期間（既定 1 年）。UI 設定のため長命にする。
+pub const LANG_COOKIE_MAX_AGE_SECS: u64 = 31_536_000;
 
 /// リクエストの `Cookie` ヘッダから `name` の値を取り出す。
 pub fn get(headers: &HeaderMap, name: &str) -> Option<String> {

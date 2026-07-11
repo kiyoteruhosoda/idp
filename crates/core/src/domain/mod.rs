@@ -23,6 +23,7 @@ pub mod repositories;
 pub mod revoked_access_token;
 pub mod signing_key;
 pub mod sso_session;
+pub mod system_setting;
 pub mod tenant;
 pub mod tenant_context;
 pub mod tenant_membership;

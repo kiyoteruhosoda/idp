@@ -347,6 +347,41 @@ pub struct SigningKeysList<'a> {
     pub error: Option<&'a str>,
 }
 
+/// 管理コンソールの設定画面（`GET /{tenant_id}/admin/settings`。MT14）。テナント設定区画（自テナント
+/// 表示名）と、root（idp.system.admin）のみ表示するシステム設定区画（SMTP）。`system` が `None` の
+/// ときはシステム設定区画を描画しない。
+#[derive(Template)]
+#[template(path = "console/admin_settings.html")]
+pub struct AdminSettings<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub admin: Admin<'a>,
+    pub tenant_id: &'a str,
+    pub tenant_name: &'a str,
+    pub tenant_status: &'a str,
+    pub csrf: &'a str,
+    /// 保存成功のバナー表示。
+    pub saved: bool,
+    pub error_key: Option<&'a str>,
+    /// root のみ `Some`。SMTP 設定区画を描画する。
+    pub system: Option<&'a crate::admin_dto::SystemSettingsView>,
+}
+
+/// 利用者のセルフサービス設定画面（`GET /{tenant_id}/settings`。MT15）。パスワード変更・言語設定・
+/// MFA への導線。管理コンソールとは別の利用者向け画面のため共通レイアウトには載せない。
+#[derive(Template)]
+#[template(path = "user_settings.html")]
+pub struct UserSettings<'a> {
+    pub messages: &'a Messages,
+    /// `/{tenant_id}` プレフィクス（フォーム送信先・MFA リンクの組み立てに使う。ADR-0009 §6）。
+    pub tenant: &'a str,
+    /// 現在の表示言語（`ja` / `en`）。言語セレクタの初期選択に使う。
+    pub current_lang: &'a str,
+    /// 保存成功メッセージのキー（`None` なら非表示）。
+    pub saved_key: Option<&'a str>,
+    pub error_key: Option<&'a str>,
+}
+
 /// Passkey 一覧画面（`GET /account/passkey`）。登録済みクレデンシャルの一覧と削除ボタン。
 #[derive(Template)]
 #[template(path = "passkey_list.html")]

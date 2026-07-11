@@ -11,6 +11,7 @@
 //! （`default_tenant`）。MT9 で「リクエストパスから解決した `Extension<ResolvedTenant>`」へ
 //! 置き換える。
 
+use crate::application::account_password::AccountPasswordService;
 use crate::application::admin_access::AdminAccessService;
 use crate::application::admin_login::AdminLoginService;
 use crate::application::audit::AuditService;
@@ -32,6 +33,7 @@ use crate::application::passkey_registration::PasskeyRegistrationService;
 use crate::application::permission_management::PermissionManagementService;
 use crate::application::register::RegisterService;
 use crate::application::revocation::RevocationService;
+use crate::application::system_settings::SystemSettingsService;
 use crate::application::tenant_management::TenantManagementService;
 use crate::application::tenant_resolution::TenantResolutionService;
 use crate::application::token::TokenService;
@@ -63,6 +65,7 @@ use crate::infrastructure::repositories::refresh_token::SqlxRefreshTokenReposito
 use crate::infrastructure::repositories::revoked_access_token::SqlxRevokedAccessTokenRepository;
 use crate::infrastructure::repositories::signing_key::SqlxSigningKeyRepository;
 use crate::infrastructure::repositories::sso_session::SqlxSsoSessionRepository;
+use crate::infrastructure::repositories::system_setting::SqlxSystemSettingsRepository;
 use crate::infrastructure::repositories::tenant::SqlxTenantRepository;
 use crate::infrastructure::repositories::tenant_membership::SqlxTenantMembershipRepository;
 use crate::infrastructure::repositories::totp_secret::SqlxTotpSecretRepository;
@@ -102,8 +105,13 @@ pub struct AppState {
     pub permissions_admin: Arc<PermissionManagementService>,
     /// 管理者による利用者作成（自動生成パスワード・must_change_password。ADR-0009 §5）。
     pub users_admin: Arc<UserManagementService>,
-    /// テナント作成・管理（idp.system.admin 必須。ADR-0009 §5・§6）。
+    /// テナント作成・管理（idp.system.admin 必須。ADR-0009 §5・§6）。設定画面のテナント設定区画
+    /// （自テナント参照・表示名更新。MT14）も本サービスを通す。
     pub tenants_admin: Arc<TenantManagementService>,
+    /// システム設定（SMTP 等。root/idp.system.admin のみ。MT14）。
+    pub system_settings: Arc<SystemSettingsService>,
+    /// セルフサービスのパスワード変更（ログイン済みユーザーの設定画面。MT15）。
+    pub account_password: Arc<AccountPasswordService>,
     /// ゲスト招待・メンバーシップ（ADR-0009 §3）。
     pub invitations: Arc<InvitationService>,
     pub audit_query: Arc<AuditQueryService>,
@@ -160,6 +168,21 @@ impl AppState {
         ));
 
         let audit = Arc::new(AuditService::new(audit_sink, clock.clone()));
+        // システム設定（SMTP 等。root のみ。MT14）。秘匿値は key_encryption_key で暗号化して保存する。
+        let system_settings = Arc::new(SystemSettingsService::new(
+            Arc::new(SqlxSystemSettingsRepository::new(pool.clone())),
+            *config.key_encryption_key(),
+            audit.clone(),
+            clock.clone(),
+        ));
+        // セルフサービスのパスワード変更（ログイン済みユーザー。MT15）。
+        let account_password = Arc::new(AccountPasswordService::new(
+            sso_sessions.clone(),
+            users.clone(),
+            hasher.clone(),
+            audit.clone(),
+            clock.clone(),
+        ));
         let keys = Arc::new(KeyService::new(
             signing_keys.clone(),
             clock.clone(),
@@ -424,6 +447,8 @@ impl AppState {
             permissions_admin,
             users_admin,
             tenants_admin,
+            system_settings,
+            account_password,
             invitations,
             audit_query,
             logout,

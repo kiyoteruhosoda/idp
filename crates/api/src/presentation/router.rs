@@ -3,9 +3,9 @@
 use crate::presentation::correlation;
 use crate::presentation::handlers::{
     admin, admin_audit, admin_clients, admin_invitations, admin_members, admin_permissions,
-    admin_signing_keys, admin_tenants, admin_users, authorize, consent, discovery, health,
-    internal_auth, introspect, invitations, logout, mfa, passkey, register, revoke, token,
-    userinfo,
+    admin_signing_keys, admin_system_settings, admin_tenants, admin_users, authorize, consent,
+    discovery, health, internal_auth, introspect, invitations, logout, mfa, passkey, register,
+    revoke, token, userinfo,
 };
 use crate::presentation::openapi::ApiDoc;
 use crate::presentation::security_headers::add_security_headers;
@@ -34,6 +34,11 @@ pub fn build(state: AppState) -> Router {
             post(internal_auth::admin_change_password),
         )
         .route("/internal/change-password", post(internal_auth::change_password))
+        // セルフサービスのパスワード変更（ログイン済みユーザーの設定画面。MT15）。
+        .route(
+            "/internal/account/change-password",
+            post(internal_auth::account_change_password),
+        )
         .route("/internal/logout", post(internal_auth::logout))
         // 同意 API（F3: Consent）。
         .route(
@@ -89,6 +94,17 @@ pub fn build(state: AppState) -> Router {
             get(admin_tenants::get_tenant)
                 .patch(admin_tenants::update_tenant)
                 .delete(admin_tenants::delete_tenant),
+        )
+        // 設定画面（MT14）。テナント設定区画（自テナント表示名。idp.tenant.admin 必須）と
+        // システム設定区画（SMTP 等。idp.system.admin 必須 = 実質 root のみ）。
+        .route(
+            "/admin/settings/tenant",
+            get(admin_tenants::get_current_tenant).patch(admin_tenants::update_current_tenant),
+        )
+        .route(
+            "/admin/system-settings",
+            get(admin_system_settings::get_system_settings)
+                .put(admin_system_settings::update_system_settings),
         )
         // メンバー・招待（ADR-0009 §3・§6）。idp.tenant.admin 必須。
         .route("/admin/members", get(admin_members::list_members))

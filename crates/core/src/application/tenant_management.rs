@@ -234,6 +234,49 @@ impl TenantManagementService {
         Ok(tenant)
     }
 
+    /// 現在（要求）テナント自身を取得する（設定画面のテナント設定区画。MT14）。子テナント限定の
+    /// `update_tenant` とは異なり、テナント管理者（`idp.tenant.admin`）が自テナントを参照するために使う。
+    pub async fn get_current(
+        &self,
+        current: TenantContext,
+    ) -> Result<Tenant, TenantManagementError> {
+        self.tenants
+            .find_by_id(current.tenant_id())
+            .await
+            .map_err(|e| TenantManagementError::Internal(e.to_string()))?
+            .ok_or(TenantManagementError::NotFound)
+    }
+
+    /// 現在（要求）テナント自身の表示名を更新する（設定画面のテナント設定区画。MT14）。認可は
+    /// Presentation の `RequirePerms<IdpAdmin>`（`idp.tenant.admin`）が担う。`parent_tenant_id`・
+    /// `status` は変更しない。
+    pub async fn update_current_name(
+        &self,
+        current: TenantContext,
+        name: String,
+        actor: Uuid,
+        ctx: &RequestContext,
+    ) -> Result<Tenant, TenantManagementError> {
+        let mut tenant = self.get_current(current).await?;
+        tenant.name = validate_name(name)?;
+        self.tenants
+            .update(&tenant)
+            .await
+            .map_err(|e| TenantManagementError::Internal(e.to_string()))?;
+        self.audit
+            .record(
+                AuditEventType::TenantUpdated,
+                AuditResult::Success,
+                Some(tenant.id),
+                Some(actor),
+                None,
+                Some(&format!("tenant={} (self settings)", tenant.id)),
+                ctx,
+            )
+            .await;
+        Ok(tenant)
+    }
+
     /// 子テナントを削除する。root は削除不可（§1）。配下に子が居る場合は `Conflict`。当該テナント自身に
     /// ユーザー/クライアントが存在する場合は DB の `ON DELETE RESTRICT` により `Conflict`（§1）。
     pub async fn delete_tenant(

@@ -213,6 +213,37 @@ pub enum InternalChangePasswordResponse {
     Internal,
 }
 
+/// セルフサービスのパスワード変更 API（`POST /internal/account/change-password`、MT15）のリクエスト。
+///
+/// ログインフロー中の強制変更（[`InternalChangePasswordRequest`]、`auth_session` ベース）とは別に、
+/// **SSO セッションを持つログイン済みユーザー**が設定画面から自分のパスワードを変更する経路。
+/// web が SSO Cookie の生値を転送し、api が本人を解決して現行パスワードを再検証する。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAccountChangePasswordRequest {
+    /// SSO セッション Cookie の生値。
+    pub sso_session_id: String,
+    pub current_password: String,
+    pub new_password: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// セルフサービスのパスワード変更 API のレスポンス。OIDC フローではないため redirect/code は返さない。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAccountChangePasswordResponse {
+    Ok,
+    /// SSO セッションが無い・期限切れ（未ログイン扱い）。
+    SessionExpired,
+    /// 現行パスワードが不一致。
+    InvalidCurrentPassword,
+    /// 新パスワードが強度要件を満たさない。
+    WeakPassword,
+    Internal,
+}
+
 /// 管理コンソール内部認証 API（`POST /internal/authenticate/admin`、ADR-0007 §3・§4）のリクエスト。
 ///
 /// 管理ログインの CSRF は web 側で検証済み（ADR-0007 §4）のため本 API には含めない。
