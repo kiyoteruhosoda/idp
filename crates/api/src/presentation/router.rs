@@ -2,9 +2,10 @@
 
 use crate::presentation::correlation;
 use crate::presentation::handlers::{
-    admin, admin_audit, admin_clients, admin_permissions, admin_signing_keys, admin_users,
-    authorize, consent, discovery, health, internal_auth, introspect, logout, mfa, passkey,
-    register, revoke, token, userinfo,
+    admin, admin_audit, admin_clients, admin_invitations, admin_members, admin_permissions,
+    admin_signing_keys, admin_tenants, admin_users, authorize, consent, discovery, health,
+    internal_auth, introspect, invitations, logout, mfa, passkey, register, revoke, token,
+    userinfo,
 };
 use crate::presentation::openapi::ApiDoc;
 use crate::presentation::security_headers::add_security_headers;
@@ -75,6 +76,29 @@ pub fn build(state: AppState) -> Router {
         // 管理者身元確認（idp.tenant.admin 必須。RequirePerms<IdpAdmin>）。web の管理コンソールが SSO Cookie
         // 転送で認証状態・身元を得るのに使う（ADR-0007 §4）。HTML 画面は web crate 側にある。
         .route("/admin/whoami", get(admin::whoami))
+        // テナント作成・管理（ADR-0009 §5・§6）。idp.system.admin 必須（実質 root のみ）。
+        .route(
+            "/admin/tenants",
+            get(admin_tenants::list_tenants).post(admin_tenants::create_tenant),
+        )
+        .route(
+            "/admin/tenants/{child_id}",
+            get(admin_tenants::get_tenant)
+                .patch(admin_tenants::update_tenant)
+                .delete(admin_tenants::delete_tenant),
+        )
+        // メンバー・招待（ADR-0009 §3・§6）。idp.tenant.admin 必須。
+        .route("/admin/members", get(admin_members::list_members))
+        .route(
+            "/admin/members/{user_id}",
+            axum::routing::delete(admin_members::revoke_member),
+        )
+        .route(
+            "/admin/invitations",
+            post(admin_invitations::create_invitation),
+        )
+        // 招待の承諾（管理 API ではない。ログイン済み利用者本人が用いる。ADR-0009 §3）。
+        .route("/invitations/accept", post(invitations::accept_invitation))
         // クライアント（RP）登録・管理 API（A1、設計仕様 §9.3）。idp.tenant.admin 必須。
         .route(
             "/admin/clients",
@@ -98,7 +122,10 @@ pub fn build(state: AppState) -> Router {
             "/admin/permissions",
             get(admin_permissions::list_available_permissions),
         )
-        .route("/admin/users", get(admin_users::search_user))
+        .route(
+            "/admin/users",
+            post(admin_users::create_user).get(admin_users::search_user),
+        )
         .route("/admin/users/{user_id}", get(admin_users::get_user))
         // 利用者権限の付与・剥奪・参照（A2、ADR-0006）。idp.tenant.admin 必須。
         .route(

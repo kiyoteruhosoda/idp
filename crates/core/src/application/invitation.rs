@@ -52,6 +52,17 @@ pub struct CreatedInvitation {
     pub expires_at: DateTime<Utc>,
 }
 
+/// メンバー一覧の 1 件（`GET /{tenant_id}/admin/members`）。HOME / GUEST を問わず、当該テナントに
+/// 参加している利用者を表す。email / name は表示用に所属元照合なしで解決する（招待作成は内部 ID で
+/// 行うため、参加先管理者が被招待者を識別できるよう最小限の情報のみ返す）。
+pub struct TenantMember {
+    pub user_id: Uuid,
+    pub email: Option<String>,
+    pub name: Option<String>,
+    pub membership_type: MembershipType,
+    pub status: MembershipStatus,
+}
+
 /// 招待トークンのバイト長（base64url で 43 文字程度）。
 const INVITATION_TOKEN_BYTES: usize = 32;
 
@@ -144,6 +155,35 @@ impl InvitationService {
             .await;
 
         Ok(CreatedInvitation { token, expires_at })
+    }
+
+    /// 当該テナントのメンバー（HOME / GUEST）を一覧する（§3・§6）。各メンバーの email / name は
+    /// 表示用に解決する（不存在ユーザーは email / name を `None` とする）。
+    pub async fn list_members(
+        &self,
+        host: TenantContext,
+    ) -> Result<Vec<TenantMember>, InvitationError> {
+        let memberships = self
+            .memberships
+            .list_for_tenant(host.tenant_id())
+            .await
+            .map_err(|e| InvitationError::Internal(e.to_string()))?;
+        let mut members = Vec::with_capacity(memberships.len());
+        for m in memberships {
+            let user = self
+                .users
+                .find_by_id(m.user_id)
+                .await
+                .map_err(|e| InvitationError::Internal(e.to_string()))?;
+            members.push(TenantMember {
+                user_id: m.user_id,
+                email: user.as_ref().map(|u| u.email.clone()),
+                name: user.as_ref().and_then(|u| u.name.clone()),
+                membership_type: m.membership_type,
+                status: m.status,
+            });
+        }
+        Ok(members)
     }
 
     /// 招待を承諾する。承諾者は**所属元テナントでログイン済み**のユーザー（`session_user_id`）で、

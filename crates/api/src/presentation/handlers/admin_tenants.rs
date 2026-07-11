@@ -1,0 +1,231 @@
+//! テナント作成・管理エンドポイント（`/{tenant_id}/admin/tenants`。ADR-0009 §5・§6）。
+//!
+//! すべて `idp.system.admin` 権限が必要（`RequirePerms<IdpSystemAdmin>`）。`idp.system.admin` は root
+//! scope でしか存在できないため、実質的にテナントを作成・削除できるのは root テナントの system 管理者
+//! だけになる（§4）。作成時は初期管理者ユーザーを自動生成し、`generated_password` を**その応答でのみ**
+//! 平文で返す（ログ・監査には出さない）。判定は Application 層（`TenantManagementService`）が行う。
+
+use crate::application::tenant_management::{
+    CreateTenantCommand, TenantManagementError, UpdateTenantCommand,
+};
+use crate::domain::tenant::{Tenant, TenantId};
+use crate::domain::values::TenantStatus;
+use crate::presentation::admin::{IdpSystemAdmin, RequirePerms};
+use crate::presentation::correlation::CorrelationId;
+use crate::presentation::dto::{
+    CreateTenantRequest, TenantCreatedResponse, TenantResponse, UpdateTenantRequest,
+};
+use crate::presentation::error::ApiError;
+use crate::presentation::handlers::request_context;
+use crate::presentation::state::AppState;
+use crate::presentation::tenant::ResolvedTenant;
+use axum::extract::{Extension, Path, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::Json;
+use uuid::Uuid;
+
+/// 直下の子テナントを一覧する。
+#[utoipa::path(
+    get,
+    path = "/{tenant_id}/admin/tenants",
+    tag = "admin",
+    responses(
+        (status = 200, description = "子テナント一覧", body = [TenantResponse]),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.system.admin 必須）"),
+    )
+)]
+pub async fn list_tenants(
+    RequirePerms(_admin, _): RequirePerms<IdpSystemAdmin>,
+    State(state): State<AppState>,
+    Extension(tenant): Extension<ResolvedTenant>,
+) -> Result<Json<Vec<TenantResponse>>, ApiError> {
+    let children = state
+        .tenants_admin
+        .list_children(tenant.context())
+        .await
+        .map_err(map_error)?;
+    Ok(Json(children.iter().map(tenant_response).collect()))
+}
+
+/// 子テナントを作成する。初期管理者ユーザーを自動生成し、`generated_password` を平文で一度だけ返す。
+#[utoipa::path(
+    post,
+    path = "/{tenant_id}/admin/tenants",
+    tag = "admin",
+    request_body = CreateTenantRequest,
+    responses(
+        (status = 201, description = "作成成功（generated_password を含む）", body = TenantCreatedResponse),
+        (status = 400, description = "バリデーションエラー"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.system.admin 必須）"),
+        (status = 409, description = "初期管理者メールの重複等"),
+    )
+)]
+pub async fn create_tenant(
+    RequirePerms(admin, _): RequirePerms<IdpSystemAdmin>,
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    headers: HeaderMap,
+    Json(body): Json<CreateTenantRequest>,
+) -> Result<(StatusCode, Json<TenantCreatedResponse>), ApiError> {
+    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
+    let created = state
+        .tenants_admin
+        .create_tenant(
+            tenant.context(),
+            CreateTenantCommand {
+                name: body.name,
+                admin_email: body.admin_email,
+            },
+            admin.user_id,
+            &ctx,
+        )
+        .await
+        .map_err(map_error)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(TenantCreatedResponse {
+            tenant: tenant_response(&created.tenant),
+            admin_user_id: created.admin_user_id.to_string(),
+            generated_password: created.generated_password,
+        }),
+    ))
+}
+
+/// 直下の子テナント 1 件を取得する。
+#[utoipa::path(
+    get,
+    path = "/{tenant_id}/admin/tenants/{child_id}",
+    tag = "admin",
+    params(("child_id" = String, Path, description = "子テナントの UUID")),
+    responses(
+        (status = 200, description = "テナント", body = TenantResponse),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.system.admin 必須）"),
+        (status = 404, description = "不存在（直下の子でない場合を含む）"),
+    )
+)]
+pub async fn get_tenant(
+    RequirePerms(_admin, _): RequirePerms<IdpSystemAdmin>,
+    State(state): State<AppState>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    Path((_tenant_id, child_id)): Path<(String, String)>,
+) -> Result<Json<TenantResponse>, ApiError> {
+    let child = parse_tenant_id(&child_id)?;
+    let found = state
+        .tenants_admin
+        .get_child(tenant.context(), child)
+        .await
+        .map_err(map_error)?;
+    Ok(Json(tenant_response(&found)))
+}
+
+/// 子テナントの表示名・状態を部分更新する。
+#[utoipa::path(
+    patch,
+    path = "/{tenant_id}/admin/tenants/{child_id}",
+    tag = "admin",
+    params(("child_id" = String, Path, description = "子テナントの UUID")),
+    request_body = UpdateTenantRequest,
+    responses(
+        (status = 200, description = "更新後のテナント", body = TenantResponse),
+        (status = 400, description = "バリデーションエラー"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.system.admin 必須）"),
+        (status = 404, description = "不存在"),
+    )
+)]
+pub async fn update_tenant(
+    RequirePerms(admin, _): RequirePerms<IdpSystemAdmin>,
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    headers: HeaderMap,
+    Path((_tenant_id, child_id)): Path<(String, String)>,
+    Json(body): Json<UpdateTenantRequest>,
+) -> Result<Json<TenantResponse>, ApiError> {
+    let child = parse_tenant_id(&child_id)?;
+    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
+    let status = body
+        .status
+        .as_deref()
+        .map(TenantStatus::parse)
+        .transpose()
+        .map_err(|_| ApiError::BadRequest("invalid status".to_string()))?;
+    let updated = state
+        .tenants_admin
+        .update_tenant(
+            tenant.context(),
+            child,
+            UpdateTenantCommand {
+                name: body.name,
+                status,
+            },
+            admin.user_id,
+            &ctx,
+        )
+        .await
+        .map_err(map_error)?;
+    Ok(Json(tenant_response(&updated)))
+}
+
+/// 子テナントを削除する。配下に子テナント・ユーザー・クライアントが存在する場合は 409。
+#[utoipa::path(
+    delete,
+    path = "/{tenant_id}/admin/tenants/{child_id}",
+    tag = "admin",
+    params(("child_id" = String, Path, description = "子テナントの UUID")),
+    responses(
+        (status = 204, description = "削除成功"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.system.admin 必須）・root は削除不可"),
+        (status = 404, description = "不存在"),
+        (status = 409, description = "配下に子テナント・ユーザー・クライアントが存在する"),
+    )
+)]
+pub async fn delete_tenant(
+    RequirePerms(admin, _): RequirePerms<IdpSystemAdmin>,
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    headers: HeaderMap,
+    Path((_tenant_id, child_id)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let child = parse_tenant_id(&child_id)?;
+    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
+    state
+        .tenants_admin
+        .delete_tenant(tenant.context(), child, admin.user_id, &ctx)
+        .await
+        .map_err(map_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn tenant_response(t: &Tenant) -> TenantResponse {
+    TenantResponse {
+        id: t.id.to_string(),
+        parent_tenant_id: t.parent_tenant_id.map(|p| p.to_string()),
+        name: t.name.clone(),
+        status: t.status.as_str().to_string(),
+        created_at: t.created_at.to_rfc3339(),
+        updated_at: t.updated_at.to_rfc3339(),
+    }
+}
+
+fn parse_tenant_id(raw: &str) -> Result<TenantId, ApiError> {
+    Uuid::parse_str(raw)
+        .map(TenantId::from)
+        .map_err(|_| ApiError::NotFound("tenant not found".to_string()))
+}
+
+fn map_error(e: TenantManagementError) -> ApiError {
+    match e {
+        TenantManagementError::Validation(m) => ApiError::BadRequest(m),
+        TenantManagementError::NotFound => ApiError::NotFound("tenant not found".to_string()),
+        TenantManagementError::Forbidden(m) => ApiError::Forbidden(m),
+        TenantManagementError::Conflict(m) => ApiError::Conflict(m),
+        TenantManagementError::Internal(m) => ApiError::Internal(m),
+    }
+}
