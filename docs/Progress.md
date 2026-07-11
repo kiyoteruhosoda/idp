@@ -27,6 +27,8 @@ Phase 計画に沿う。
 | 5 | MT16 | 統合テスト（テナント間分離・権限境界の完全一致・ゲスト保護・「root は作成できるが内部を操作できない」の検証） | ⬜未着手 | 大 | 中 | Opus 4.8 |
 | 6 | MT17 | 招待のメール配送（MT14 の SMTP 設定完了後。手動トークン伝達 → メールリンク） | ⬜未着手 | 中 | 中 | Sonnet 5 |
 | 7 | MT18 | セルフサービス・パスワードリセット（忘失時。外部 SMTP 連携。MT14 完了後） | ⬜未着手 | 中 | 中 | Sonnet 5 |
+| 8 | MT19 | API の `Accept-Language` ベース多言語化（i18n 仕様書 §5・§6）— API は `Accept-Language` のみ参照（Cookie/Session/クエリ/DB を見ない）。地域コード無視（`en-US`→`en`）、非対応言語・未指定はシステム既定 `ja`。エラー／バリデーション／業務メッセージをキー管理で多言語化（コードは言語不変）。運用ログ・監査ログ・スタックトレースは対象外（英語統一） | ⬜未着手 | 中 | 大 | Sonnet 5 |
+| 9 | MT20 | Web の表示言語決定チェーン（i18n 仕様書 §3・§4・§9）— 優先順位 `?lang=` → ユーザー設定 → Cookie（`lang`）→ ブラウザ `Accept-Language` → 既定 `ja`。不正値は次順位へフォールバック。言語変更時／初回に Cookie 保存、ログイン時はユーザー設定優先。決定言語を API へ `Accept-Language` で伝搬（Cookie・`lang` クエリは送らない）。ユーザー設定 `language` 列（ja/en）を追加。将来言語追加（zh/ko/fr 等）を考慮 | ⬜未着手 | 中 | 大 | Sonnet 5 |
 
 ### 詳細
 
@@ -41,6 +43,20 @@ Askama テンプレート・`api_client` 等の確立パターンに沿う機能
 
 **依存関係**: Phase 2（MT6〜MT8）・MT9（ルーティング）・MT10（contracts/api_client）・MT11（管理 API）
 完了 → MT12〜MT16（Phase 3 残）。MT17・MT18 は MT14 のシステム設定（SMTP）完了が前提。
+
+**i18n 仕様書（MT19・MT20）の現状ギャップと注意点**:
+- **現状**: i18n は **web crate のみ**（`fluent`、`crates/web/src/i18n.rs`、`i18n/<lang>/main.ftl`）。言語決定は
+  **`Accept-Language` のみ**・**既定 `En`**・対象は**ログイン画面等の画面文言のみ**。API 側は i18n 未導入で、
+  エラーメッセージは多言語化されていない。
+- **既定言語の変更**: 仕様書はシステム既定を **`ja`** と定める（現状の実装既定 `En` から変更）。MT19・MT20 で
+  フォールバック終端を `ja` に統一する。
+- **責務分離**: Web（MT20）が優先順位チェーンで表示言語を**決定**し、決定結果のみを `Accept-Language` で
+  API へ渡す。API（MT19）は `Accept-Language` だけを見てレスポンスを生成し、クライアント種別
+  （Web/モバイル/CLI）に依存しない。両者は常に同一言語で動作する。
+- **関連**: MT15（ユーザー設定画面の言語設定 UI）は MT20 で追加する**ユーザー設定 `language` 列**に乗る
+  （データ層は MT20、設定 UI は MT15）。`language` 列追加は sqlx マイグレーション（`.claude/skills/db-migration/`）で行う。
+- 製品情報のような多言語**データ**が必要になった場合は翻訳テーブル（例: `ProductTranslation`）で対応する
+  想定だが、現行スコープ（ユーザー向けメッセージの多言語化）には含めない。
 
 **過渡期の既知の状態（MT10 完了 → MT13 まで）**: api は `/{tenant_id}/...` ルーティング（MT9）と
 `TenantResolver` middleware を導入済みで、OIDC・admin 各ハンドラと `RequirePerms` は**パス由来の
