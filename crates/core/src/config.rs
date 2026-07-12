@@ -45,6 +45,8 @@ pub struct Config {
     invitation_ttl: Duration,
     /// パスワードリセットトークンの有効期限（MT18）。
     password_reset_ttl: Duration,
+    /// メール検証トークンの有効期限（SEC6b）。
+    email_verification_ttl: Duration,
     /// テナント解決キャッシュの TTL（ADR-0009 §7。id → tenant のホットパス）。
     tenant_cache_ttl: Duration,
     /// scope→権限解決キャッシュの TTL（ADR-0009 §7。付与・剥奪時は即時 invalidate される）。
@@ -111,6 +113,8 @@ impl Config {
             invitation_ttl: secs(env_parse("INVITATION_TTL_SECS", 604_800)?),
             // パスワードリセットトークンの有効期限（既定 1 時間）。
             password_reset_ttl: secs(env_parse("PASSWORD_RESET_TTL_SECS", 3_600)?),
+            // メール検証トークンの有効期限（既定 24 時間。自己登録の確認は後追い許容のため長め）。
+            email_verification_ttl: secs(env_parse("EMAIL_VERIFICATION_TTL_SECS", 86_400)?),
             // 解決キャッシュの TTL（既定 60 秒）。付与・剥奪・テナント更新時は明示 invalidate するため、
             // TTL は「invalidate 経路の無い変更（DB 直接操作等）に対する最大許容ラグ」を表す。
             tenant_cache_ttl: secs(env_parse("TENANT_CACHE_TTL_SECS", 60)?),
@@ -174,6 +178,10 @@ impl Config {
     /// パスワードリセットトークンの有効期限（MT18）。
     pub fn password_reset_ttl(&self) -> Duration {
         self.password_reset_ttl
+    }
+
+    pub fn email_verification_ttl(&self) -> Duration {
+        self.email_verification_ttl
     }
     /// テナント解決キャッシュ（id → tenant）の TTL（ADR-0009 §7）。
     pub fn tenant_cache_ttl(&self) -> Duration {

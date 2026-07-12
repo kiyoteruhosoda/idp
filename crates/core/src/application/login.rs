@@ -72,6 +72,10 @@ pub enum LoginOutcome {
     PasswordChangeRequired {
         auth_session_id: String,
     },
+    /// パスワード認証成功だが自己登録アカウントのメール未検証（SEC6b）。確認リンクを踏むまでは
+    /// ログインを許可しない。SSO Cookie は発行しない。パスワード検証後に判定するため、資格情報を
+    /// 知らない攻撃者からはメール検証状態を観測できない（列挙防止）。
+    EmailVerificationRequired,
     /// AuthSession が無い・期限切れ（`/authorize` からやり直し）。
     SessionExpired,
     /// CSRF トークン不一致。
@@ -250,6 +254,24 @@ impl LoginService {
             if let Err(e) = self.users.update_login_state(user.id, 0, None).await {
                 return LoginOutcome::Internal(e.to_string());
             }
+        }
+
+        // 8.1. メール検証ゲート（SEC6b）。自己登録アカウントは `email_verified` が立つまでログイン不可。
+        //      管理者作成・招待ユーザーは検証済みで作られるため掛からない。パスワード検証成功後に判定する
+        //      ことで、資格情報を知らない攻撃者からは検証状態を観測できない（列挙防止）。
+        if !user.email_verified {
+            self.audit
+                .record(
+                    AuditEventType::LoginFailed,
+                    AuditResult::Failure,
+                    Some(tenant_id),
+                    Some(user.id),
+                    Some(&client_id),
+                    Some("email_not_verified"),
+                    ctx,
+                )
+                .await;
+            return LoginOutcome::EmailVerificationRequired;
         }
 
         // 8.5. 強制パスワード変更（ADR-0009 §5）。自動生成パスワードで作成された利用者は、MFA・同意より

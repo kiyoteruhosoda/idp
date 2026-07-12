@@ -375,6 +375,9 @@ mod tests {
             }
             Ok(())
         }
+        async fn mark_email_verified(&self, _id: Uuid) -> DomainResult<()> {
+            unreachable!()
+        }
     }
 
     #[derive(Default)]

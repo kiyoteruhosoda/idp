@@ -177,4 +177,13 @@ impl UserRepository for SqlxUserRepository {
         .map_err(repo_err)?;
         Ok(())
     }
+
+    async fn mark_email_verified(&self, id: Uuid) -> Result<()> {
+        sqlx::query("UPDATE users SET email_verified = 1 WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        Ok(())
+    }
 }

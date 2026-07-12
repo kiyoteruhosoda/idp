@@ -84,6 +84,7 @@ pub fn build(state: AppState) -> Router {
     // `resolve_tenant` を `route_layer` で付与し、各ハンドラは `Extension<ResolvedTenant>` を受け取る。
     let tenant_scoped = Router::new()
         .route("/auth/register", post(register::register))
+        .route("/auth/verify-email", post(register::verify_email))
         .route("/authorize", get(authorize::authorize))
         .route("/token", post(token::token))
         .route("/userinfo", get(userinfo::userinfo))

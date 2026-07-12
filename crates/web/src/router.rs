@@ -8,7 +8,7 @@ use crate::handlers::{
     admin_clients_console, admin_console, admin_invitations_console, admin_members_console,
     admin_settings, admin_signing_keys_console, admin_status_console, admin_users_console, consent,
     health, invitation_accept, login, mfa_totp, passkey, password_change, password_reset,
-    user_settings,
+    user_settings, verify_email,
 };
 use crate::security_headers::add_security_headers;
 use crate::state::WebState;
@@ -34,6 +34,11 @@ pub fn build(state: WebState) -> Router {
         .route(
             "/password-reset",
             get(password_reset::reset_page).post(password_reset::reset_submit),
+        )
+        // メール検証画面（SEC6b）。自己登録の確認メールのリンクから開く。未ログイン経路（SSO 不要）。
+        .route(
+            "/verify-email",
+            get(verify_email::page).post(verify_email::submit),
         )
         // 利用者のセルフサービス設定画面（MT15）。パスワード変更・言語・MFA 導線。SSO 認証が必要。
         .route("/settings", get(user_settings::page))

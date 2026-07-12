@@ -18,6 +18,15 @@ pub struct RegisterRequest {
 pub struct RegisterResponse {
     pub sub: String,
     pub status: String,
+    /// 検証メールを送出したか（SEC6b）。`true` の場合、確認リンクを踏むまでログインできない。
+    /// SMTP 未設定時は `false`（アカウントは作成済みだが検証は後追い）。
+    pub email_verification_required: bool,
+}
+
+/// メール検証リンクの消費（SEC6b）。平文トークンを受け取り `email_verified` を立てる。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct VerifyEmailRequest {
+    pub token: String,
 }
 
 /// `GET /authorize` のクエリパラメータ（設計仕様 §4.2）。

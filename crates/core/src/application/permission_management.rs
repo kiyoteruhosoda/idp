@@ -12,7 +12,9 @@ use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
 use crate::domain::permission::PermissionCode;
-use crate::domain::repositories::{UserPermissionRepository, UserRepository};
+use crate::domain::repositories::{
+    TenantMembershipRepository, UserPermissionRepository, UserRepository,
+};
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::user::User;
 use std::sync::Arc;
@@ -35,6 +37,7 @@ const SYSTEM_ADMIN_PERMISSION: &str = "idp.system.admin";
 
 pub struct PermissionManagementService {
     users: Arc<dyn UserRepository>,
+    memberships: Arc<dyn TenantMembershipRepository>,
     permissions: Arc<dyn UserPermissionRepository>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
@@ -43,12 +46,14 @@ pub struct PermissionManagementService {
 impl PermissionManagementService {
     pub fn new(
         users: Arc<dyn UserRepository>,
+        memberships: Arc<dyn TenantMembershipRepository>,
         permissions: Arc<dyn UserPermissionRepository>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
             users,
+            memberships,
             permissions,
             audit,
             clock,
@@ -184,17 +189,33 @@ impl PermissionManagementService {
         self.list(tenant, target).await
     }
 
-    /// 対象利用者が現存し、所属元が要求テナントであることを確かめる（テナント越しの操作は
-    /// 不存在と同じ 404 に倒す）。GUEST メンバーへの付与は招待ユースケース（MT8）以降で扱う。
+    /// 対象利用者が現存し、要求テナントで **ACTIVE なメンバーシップ**（HOME / GUEST）を持つことを
+    /// 確かめる（ADR-0009 §4）。付与対象はアカウントの出自（HOME か GUEST か）では区別しない。
+    /// `INVITED`（未承諾）ゲスト・テナント外ユーザーはメンバーシップが ACTIVE でないため、テナント越しの
+    /// 存在推測を防ぐべく不存在と同じ 404 に倒す。
     async fn ensure_user_in_tenant(
         &self,
         tenant: TenantContext,
         target: Uuid,
     ) -> Result<(), PermissionManagementError> {
-        match self.users.find_by_id(target).await {
-            Ok(Some(user)) if user.tenant_id == tenant.tenant_id() => Ok(()),
-            Ok(_) => Err(PermissionManagementError::NotFound),
-            Err(e) => Err(PermissionManagementError::Internal(e.to_string())),
+        // ユーザーが現存すること（メンバーシップ行は FK でユーザーを含意するが、明示して意図を残す）。
+        let exists = self
+            .users
+            .find_by_id(target)
+            .await
+            .map_err(|e| PermissionManagementError::Internal(e.to_string()))?
+            .is_some();
+        // 要求テナントで ACTIVE なメンバーシップ（HOME / GUEST）を持つこと。
+        let active_member = exists
+            && self
+                .memberships
+                .is_active_member(tenant.tenant_id(), target)
+                .await
+                .map_err(|e| PermissionManagementError::Internal(e.to_string()))?;
+        if active_member {
+            Ok(())
+        } else {
+            Err(PermissionManagementError::NotFound)
         }
     }
 
@@ -242,6 +263,7 @@ mod tests {
     use crate::domain::error::Result as DomainResult;
     use crate::domain::repositories::AuditLogSink;
     use crate::domain::tenant::TenantId;
+    use crate::domain::tenant_membership::TenantMembership;
     use crate::domain::user::User;
     use crate::domain::values::UserStatus;
     use async_trait::async_trait;
@@ -325,6 +347,54 @@ mod tests {
             unreachable!()
         }
         async fn update_password(&self, _id: Uuid, _password_hash: &str) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn mark_email_verified(&self, _id: Uuid) -> DomainResult<()> {
+            unreachable!()
+        }
+    }
+
+    /// 指定した (tenant, user) の組を ACTIVE メンバーとして扱うフェイク（他は非メンバー）。
+    #[derive(Default)]
+    struct FakeMemberships {
+        active: Mutex<Vec<(TenantId, Uuid)>>,
+    }
+    impl FakeMemberships {
+        fn with_active(pairs: Vec<(TenantId, Uuid)>) -> Self {
+            Self {
+                active: Mutex::new(pairs),
+            }
+        }
+    }
+    #[async_trait]
+    impl TenantMembershipRepository for FakeMemberships {
+        async fn create(&self, _m: &TenantMembership) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn find(&self, _t: TenantId, _u: Uuid) -> DomainResult<Option<TenantMembership>> {
+            unreachable!()
+        }
+        async fn list_for_tenant(&self, _t: TenantId) -> DomainResult<Vec<TenantMembership>> {
+            unreachable!()
+        }
+        async fn is_active_member(&self, tenant_id: TenantId, user_id: Uuid) -> DomainResult<bool> {
+            Ok(self
+                .active
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(t, u)| *t == tenant_id && *u == user_id))
+        }
+        async fn find_by_invitation_token_hash(
+            &self,
+            _h: &str,
+        ) -> DomainResult<Option<TenantMembership>> {
+            unreachable!()
+        }
+        async fn activate(&self, _t: TenantId, _u: Uuid) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn delete(&self, _t: TenantId, _u: Uuid) -> DomainResult<()> {
             unreachable!()
         }
     }
@@ -431,18 +501,33 @@ mod tests {
         }
     }
 
-    fn service(
+    fn service_with(
         user: Option<User>,
+        memberships: Arc<FakeMemberships>,
         perms: Arc<FakePermissions>,
         sink: Arc<CapturingSink>,
     ) -> PermissionManagementService {
         let audit = Arc::new(AuditService::new(sink, Arc::new(FixedClock(fixed_now()))));
         PermissionManagementService::new(
             Arc::new(FakeUsers { user }),
+            memberships,
             perms,
             audit,
             Arc::new(FixedClock(fixed_now())),
         )
+    }
+
+    /// 既定では対象ユーザーを所属元テナントの ACTIVE メンバーとして登録する（正常系の HOME 相当）。
+    fn service(
+        user: Option<User>,
+        perms: Arc<FakePermissions>,
+        sink: Arc<CapturingSink>,
+    ) -> PermissionManagementService {
+        let active = user
+            .as_ref()
+            .map(|u| vec![(u.tenant_id, u.id)])
+            .unwrap_or_default();
+        service_with(user, Arc::new(FakeMemberships::with_active(active)), perms, sink)
     }
 
     #[tokio::test]
@@ -645,5 +730,96 @@ mod tests {
             .await
             .expect("grant ok");
         assert_eq!(codes, vec!["idp.system.admin".to_string()]);
+    }
+
+    /// INVITED（未承諾）ゲスト等、当該テナントで ACTIVE なメンバーシップを持たない対象への付与は
+    /// 不存在（404）に倒す（ADR-0009 §4。テナント越しの存在推測を防ぐ）。
+    #[tokio::test]
+    async fn grant_rejects_non_active_member() {
+        let target = Uuid::new_v4();
+        let actor = Uuid::new_v4();
+        let perms = Arc::new(FakePermissions::default());
+        let sink = Arc::new(CapturingSink::default());
+        // ユーザーは現存するが、要求テナントの ACTIVE メンバー登録は無い（INVITED 相当）。
+        let svc = service_with(
+            Some(test_user(target)),
+            Arc::new(FakeMemberships::default()),
+            perms.clone(),
+            sink.clone(),
+        );
+
+        assert!(matches!(
+            svc.grant(tenant_ctx(), target, "idp.tenant.admin", actor, &ctx())
+                .await,
+            Err(PermissionManagementError::NotFound)
+        ));
+        // 失敗時は付与も監査記録も行わない。
+        assert!(perms.granted.lock().unwrap().is_empty());
+        assert!(sink.events.lock().unwrap().is_empty());
+        // list/revoke も同じく 404。
+        assert!(matches!(
+            svc.list(tenant_ctx(), target).await,
+            Err(PermissionManagementError::NotFound)
+        ));
+        assert!(matches!(
+            svc.revoke(tenant_ctx(), target, "idp.tenant.admin", actor, &ctx())
+                .await,
+            Err(PermissionManagementError::NotFound)
+        ));
+    }
+
+    /// 他テナント所属のユーザーが要求テナントの ACTIVE メンバーでなければ 404 を維持する
+    /// （テナント外の識別子推測を防ぐ）。
+    #[tokio::test]
+    async fn grant_rejects_user_from_other_tenant_without_membership() {
+        let target = Uuid::new_v4();
+        // 所属元（HOME）は別テナント。
+        let other_tenant = TenantId::from(Uuid::from_u128(0x0197_0000_0000_7000_8000_0000_0000_00FF));
+        let mut guest = test_user(target);
+        guest.tenant_id = other_tenant;
+        let svc = service_with(
+            Some(guest),
+            // 要求テナント（test_tenant）でのメンバーシップは無い。
+            Arc::new(FakeMemberships::default()),
+            Arc::new(FakePermissions::default()),
+            Arc::new(CapturingSink::default()),
+        );
+
+        assert!(matches!(
+            svc.grant(tenant_ctx(), target, "idp.tenant.admin", Uuid::new_v4(), &ctx())
+                .await,
+            Err(PermissionManagementError::NotFound)
+        ));
+    }
+
+    /// 所属元が別テナントの GUEST でも、要求テナントで ACTIVE なメンバーであれば付与できる
+    /// （出自で区別しない。ADR-0009 §4）。付与 scope は要求テナント。
+    #[tokio::test]
+    async fn grant_succeeds_for_active_guest_from_other_tenant() {
+        let target = Uuid::new_v4();
+        let actor = Uuid::new_v4();
+        let other_tenant = TenantId::from(Uuid::from_u128(0x0197_0000_0000_7000_8000_0000_0000_00FF));
+        let mut guest = test_user(target);
+        guest.tenant_id = other_tenant;
+        let perms = Arc::new(FakePermissions::default());
+        let sink = Arc::new(CapturingSink::default());
+        // 要求テナント（test_tenant）で ACTIVE な GUEST メンバーとして登録する。
+        let svc = service_with(
+            Some(guest),
+            Arc::new(FakeMemberships::with_active(vec![(test_tenant(), target)])),
+            perms.clone(),
+            sink.clone(),
+        );
+
+        let codes = svc
+            .grant(tenant_ctx(), target, "idp.tenant.admin", actor, &ctx())
+            .await
+            .expect("grant ok");
+        assert_eq!(codes, vec!["idp.tenant.admin".to_string()]);
+        // 付与 scope は要求テナント（所属元テナントではない）。
+        assert_eq!(
+            perms.granted.lock().unwrap().clone(),
+            vec![(test_tenant(), target, "idp.tenant.admin".to_string())]
+        );
     }
 }

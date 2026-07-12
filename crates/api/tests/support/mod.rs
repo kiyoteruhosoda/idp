@@ -168,6 +168,17 @@ pub async fn create_plain_user(pool: &MySqlPool, tenant_id: &str) -> String {
     .execute(pool)
     .await
     .expect("insert plain user");
+    // 実運用のユーザー作成と同様に HOME メンバーシップ（ACTIVE）も投影する。権限の付与・剥奪は
+    // 当該テナントの ACTIVE メンバーであることを要求する（ADR-0009 §4）ため、これが無いと 404 になる。
+    sqlx::query(
+        "INSERT INTO tenant_memberships (tenant_id, user_id, membership_type, status) \
+         VALUES (?, ?, 'HOME', 'ACTIVE')",
+    )
+    .bind(tenant_id)
+    .bind(&id)
+    .execute(pool)
+    .await
+    .expect("insert home membership");
     id
 }
 

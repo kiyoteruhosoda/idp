@@ -469,6 +469,9 @@ mod tests {
         async fn update_password(&self, _id: Uuid, _password_hash: &str) -> DomainResult<()> {
             unreachable!()
         }
+        async fn mark_email_verified(&self, _id: Uuid) -> DomainResult<()> {
+            unreachable!()
+        }
     }
 
     #[derive(Default)]

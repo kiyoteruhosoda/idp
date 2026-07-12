@@ -164,6 +164,12 @@ pub async fn login(
             auth_session_id.as_deref(),
             "login-error-locked",
         ),
+        // 自己登録アカウントのメール未検証（SEC6b）。確認リンクを踏むよう案内する。
+        InternalAuthenticateResponse::EmailVerificationRequired => error_page(
+            &messages,
+            StatusCode::FORBIDDEN,
+            "login-error-email-not-verified",
+        ),
         InternalAuthenticateResponse::ConsentRequired {
             auth_session_id: new_auth_session_id,
             sso_session_id,

@@ -23,6 +23,7 @@ use crate::application::introspection::IntrospectionService;
 use crate::application::invitation::InvitationService;
 use crate::application::key_service::KeyService;
 use crate::application::login::LoginService;
+use crate::application::email_verification::EmailVerificationService;
 use crate::application::logout::LogoutService;
 use crate::application::mfa_login::MfaLoginService;
 use crate::application::passkey_authentication::PasskeyAuthenticationService;
@@ -58,6 +59,7 @@ use crate::infrastructure::repositories::auth_session::SqlxAuthSessionRepository
 use crate::infrastructure::repositories::authorization_code::SqlxAuthorizationCodeRepository;
 use crate::infrastructure::repositories::client::SqlxClientRepository;
 use crate::infrastructure::repositories::consent::SqlxClientConsentRepository;
+use crate::infrastructure::repositories::email_verification_token::SqlxEmailVerificationTokenRepository;
 use crate::infrastructure::repositories::passkey_challenge::SqlxPasskeyChallengeRepository;
 use crate::infrastructure::repositories::password_reset_token::SqlxPasswordResetTokenRepository;
 use crate::infrastructure::repositories::refresh_token::SqlxRefreshTokenRepository;
@@ -95,6 +97,8 @@ pub struct AppState {
     /// テナント解決（id → tenant）。`TenantResolver` middleware が使う（MT9 でルーターへ mount）。
     pub tenant_resolution: Arc<TenantResolutionService>,
     pub register: Arc<RegisterService>,
+    /// 自己登録アカウントのメール検証（確認リンク送出・消費。SEC6b）。
+    pub email_verification: Arc<EmailVerificationService>,
     pub authorize: Arc<AuthorizeService>,
     pub login: Arc<LoginService>,
     /// 強制パスワード変更（ADR-0009 §5）。`LoginService` の `must_change_password` 検出を受けて
@@ -232,6 +236,18 @@ impl AppState {
             clock.clone(),
             ids.clone(),
         ));
+        // メール検証（SEC6b）: 自己登録で確認リンクを送り、消費で email_verified を立てる。SMTP は
+        // システム設定（MT14）、配送は MT17 の Mailer を再利用する。
+        let email_verification = Arc::new(EmailVerificationService::new(
+            users.clone(),
+            Arc::new(SqlxEmailVerificationTokenRepository::new(pool.clone())),
+            system_settings.clone(),
+            Arc::new(LettreSmtpMailer::new()),
+            audit.clone(),
+            clock.clone(),
+            config.email_verification_ttl(),
+            config.public_web_base_url().to_string(),
+        ));
         let authorize = Arc::new(AuthorizeService::new(
             clients.clone(),
             users.clone(),
@@ -328,6 +344,7 @@ impl AppState {
         ));
         let permissions_admin = Arc::new(PermissionManagementService::new(
             users.clone(),
+            tenant_memberships.clone(),
             user_permissions.clone(),
             audit.clone(),
             clock.clone(),
@@ -467,6 +484,7 @@ impl AppState {
             config,
             tenant_resolution,
             register,
+            email_verification,
             authorize,
             login,
             change_password,

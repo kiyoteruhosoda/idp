@@ -51,6 +51,9 @@ pub enum AuditEventType {
     /// パスワードリセットの要求・完了（MT18）。トークン・メールアドレスは記録しない。
     PasswordResetRequested,
     PasswordResetCompleted,
+    /// 自己登録アカウントのメール検証の要求・完了（SEC6b）。トークン・メールアドレスは記録しない。
+    EmailVerificationRequested,
+    EmailVerified,
 }
 
 impl AuditEventType {
@@ -89,6 +92,8 @@ impl AuditEventType {
             Self::SystemSettingsUpdated => "system_settings.updated",
             Self::PasswordResetRequested => "password_reset.requested",
             Self::PasswordResetCompleted => "password_reset.completed",
+            Self::EmailVerificationRequested => "email_verification.requested",
+            Self::EmailVerified => "email_verification.verified",
         }
     }
 }

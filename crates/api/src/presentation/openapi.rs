@@ -12,6 +12,7 @@ use crate::presentation::dto::{
     RegisterResponse, SigningKeyResponse, SystemSettingsResponse, TenantCreatedResponse,
     TenantResponse, TokenRequest, TokenResponse, UpdateSystemSettingsRequest, UpdateTenantRequest,
     UpdateTenantSettingsRequest, UserCreatedResponse, UserInfoResponse, UserPermissionsResponse,
+    VerifyEmailRequest,
 };
 use crate::presentation::handlers;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
@@ -25,6 +26,7 @@ use utoipa::{Modify, OpenApi};
     ),
     paths(
         handlers::register::register,
+        handlers::register::verify_email,
         handlers::authorize::authorize,
         handlers::token::token,
         handlers::userinfo::userinfo,
@@ -64,6 +66,7 @@ use utoipa::{Modify, OpenApi};
     components(schemas(
         RegisterRequest,
         RegisterResponse,
+        VerifyEmailRequest,
         TokenRequest,
         TokenResponse,
         UserInfoResponse,
