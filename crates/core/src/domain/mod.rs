@@ -13,6 +13,7 @@ pub mod consent;
 pub mod error;
 pub mod id_generator;
 pub mod issuer;
+pub mod mailer;
 pub mod passkey_challenge;
 pub mod password;
 pub mod permission;

@@ -46,6 +46,7 @@ use crate::domain::tenant::{Tenant, TenantId};
 use crate::infrastructure::cache::InMemoryTtlCache;
 use crate::infrastructure::db::Db;
 use crate::infrastructure::id_generator::UuidV7Generator;
+use crate::infrastructure::mailer::LettreSmtpMailer;
 use crate::infrastructure::password::Argon2PasswordHasher;
 use crate::infrastructure::rate_limit::InMemoryLoginRateLimiter;
 use crate::infrastructure::repositories::audit_log::{SqlxAuditLogQuery, SqlxAuditLogSink};
@@ -313,14 +314,18 @@ impl AppState {
             ids.clone(),
         ));
         // ゲスト招待・メンバーシップ（ADR-0009 §3）。権限は同一キャッシュ付きリポジトリを共有するため、
-        // メンバーシップ解除に伴う権限剥奪も判定キャッシュへ即時反映される。
+        // メンバーシップ解除に伴う権限剥奪も判定キャッシュへ即時反映される。招待メール（MT17）は
+        // システム設定の SMTP（MT14）で best-effort 送信し、未設定・失敗時はトークンの手動伝達に戻る。
         let invitations = Arc::new(InvitationService::new(
             users.clone(),
             tenant_memberships.clone(),
             user_permissions.clone(),
+            system_settings.clone(),
+            Arc::new(LettreSmtpMailer::new()),
             audit.clone(),
             clock.clone(),
             config.invitation_ttl(),
+            config.public_web_base_url().to_string(),
         ));
         let admin_access = Arc::new(AdminAccessService::new(
             sso_sessions.clone(),

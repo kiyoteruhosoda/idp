@@ -58,6 +58,8 @@ pub struct Config {
     hsts_max_age: u64,
     internal_service_token: String,
     internal_service_token_is_dev: bool,
+    /// 利用者がブラウザで開く web 画面の公開ベース URL（招待メールの承諾リンク等。MT17）。
+    public_web_base_url: String,
 }
 
 impl Config {
@@ -78,6 +80,12 @@ impl Config {
             key_encryption_key_is_dev,
             internal_service_token_is_dev,
         )?;
+        // 招待メール等の承諾リンクの土台。単一オリジン構成（ADR-0007）では issuer と同一オリジンに
+        // web 画面が同居するため既定は issuer。web を別オリジンへ置く構成でのみ明示設定する。
+        let public_web_base_url = match env_lookup("PUBLIC_WEB_BASE_URL") {
+            Some(v) => normalize_issuer(v),
+            None => issuer.clone(),
+        };
 
         Ok(Self {
             issuer,
@@ -111,6 +119,7 @@ impl Config {
             hsts_max_age: env_parse("HSTS_MAX_AGE", 0u64)?,
             internal_service_token,
             internal_service_token_is_dev,
+            public_web_base_url,
         })
     }
 
@@ -197,6 +206,11 @@ impl Config {
     /// 開発用デフォルトの内部サービストークンを使っているか（本番では警告対象）。
     pub fn internal_service_token_is_dev(&self) -> bool {
         self.internal_service_token_is_dev
+    }
+    /// 利用者がブラウザで開く web 画面の公開ベース URL（末尾スラッシュ無し。招待メールの
+    /// 承諾リンク等に使う。既定は issuer と同一オリジン。MT17）。
+    pub fn public_web_base_url(&self) -> &str {
+        &self.public_web_base_url
     }
 }
 

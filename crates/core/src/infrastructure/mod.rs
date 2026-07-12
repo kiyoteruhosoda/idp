@@ -8,6 +8,7 @@ pub mod crypto;
 pub mod db;
 pub mod id_generator;
 pub mod jwt;
+pub mod mailer;
 pub mod password;
 pub mod rate_limit;
 pub mod repositories;

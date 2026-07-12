@@ -159,6 +159,15 @@ DELETE up FROM user_permissions up
 権限を保有する利用者は、有効な SSO セッション（一度ログイン済み）で `GET /admin/whoami` に
 アクセスでき、自身の `user_id` が返る（保護の疎通確認用）。
 
+## ゲスト招待をメールで届けたいとき
+
+1. root 管理者で `/{root_tenant_id}/admin/settings` を開き、システム設定区画に SMTP（ホスト・ポート・
+   認証・差出人アドレス・TLS）を保存する。
+2. 参加先テナントの管理者が `/{tenant_id}/admin/invitations` から招待を作成すると、被招待者のメール
+   アドレスへ承諾リンク付きの招待メールが自動送信される（結果画面に送信の成否が表示される）。
+3. SMTP 未設定・送信失敗のときは、結果画面に表示される招待トークンを安全な方法で本人へ伝える
+   （被招待者は所属元テナントでログイン後、`/{tenant_id}/invitations/accept` にトークンを提示する）。
+
 ## 環境変数を設定したいとき
 
 | 変数 | 既定値 | 用途 |
@@ -178,6 +187,7 @@ DELETE up FROM user_permissions up
 | `ACCESS_TOKEN_TTL_SECS` | `900` | Access Token 有効期間 |
 | `ID_TOKEN_TTL_SECS` | `3600` | ID Token 有効期間 |
 | `CLOCK_SKEW_SECS` | `60` | JWT 検証時のクロックスキュー許容 |
+| `PUBLIC_WEB_BASE_URL` | `ISSUER` と同値 | 招待メール等の承諾リンクの土台（web 画面の公開 URL）。web を別オリジンへ置く構成でのみ設定 |
 | `RUST_LOG` | `info,idp=debug` | ログフィルタ |
 
 ## 本番用の鍵暗号化キーを作りたいとき

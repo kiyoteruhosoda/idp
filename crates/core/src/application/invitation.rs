@@ -15,11 +15,14 @@
 //! `/{tenant_id}/admin/members/{user_id}`）は MT11 で presentation に追加する。
 
 use crate::application::audit::{AuditService, RequestContext};
+use crate::application::system_settings::SystemSettingsService;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
+use crate::domain::mailer::{Mailer, OutgoingEmail};
 use crate::domain::repositories::{
     TenantMembershipRepository, UserPermissionRepository, UserRepository,
 };
+use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::tenant_membership::TenantMembership;
 use crate::domain::values::{MembershipStatus, MembershipType};
@@ -47,9 +50,14 @@ pub enum InvitationError {
 
 /// 招待作成の結果。`token` は平文の招待トークンで、**この一度だけ**返す（保存はハッシュのみ）。
 pub struct CreatedInvitation {
-    /// 平文の招待トークン。管理者が被招待者へ別途通知する（ログ・監査には出さない）。
+    /// 平文の招待トークン。メール未達時に管理者が被招待者へ別途通知する（ログ・監査には出さない）。
     pub token: String,
     pub expires_at: DateTime<Utc>,
+    /// 招待メール（承諾リンク）を被招待者へ送信できたか（MT17）。SMTP 未設定・送信失敗は `false`
+    /// （招待自体は成立しており、管理者がトークンを手動で伝達する）。
+    pub email_sent: bool,
+    /// 被招待者のメールアドレス（画面表示用。送信先の確認）。
+    pub invitee_email: String,
 }
 
 /// メンバー一覧の 1 件（`GET /{tenant_id}/admin/members`）。HOME / GUEST を問わず、当該テナントに
@@ -70,28 +78,40 @@ pub struct InvitationService {
     users: Arc<dyn UserRepository>,
     memberships: Arc<dyn TenantMembershipRepository>,
     permissions: Arc<dyn UserPermissionRepository>,
+    /// SMTP 接続情報の出所（MT14 のシステム設定。実行時に変更されるため送信ごとに引く）。
+    system_settings: Arc<SystemSettingsService>,
+    mailer: Arc<dyn Mailer>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
     invitation_ttl: chrono::Duration,
+    /// 承諾リンクの土台となる公開ベース URL（web 画面。末尾スラッシュ無し）。
+    console_base_url: String,
 }
 
 impl InvitationService {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         users: Arc<dyn UserRepository>,
         memberships: Arc<dyn TenantMembershipRepository>,
         permissions: Arc<dyn UserPermissionRepository>,
+        system_settings: Arc<SystemSettingsService>,
+        mailer: Arc<dyn Mailer>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
         invitation_ttl: std::time::Duration,
+        console_base_url: String,
     ) -> Self {
         Self {
             users,
             memberships,
             permissions,
+            system_settings,
+            mailer,
             audit,
             clock,
             invitation_ttl: chrono::Duration::from_std(invitation_ttl)
                 .expect("invitation TTL out of range"),
+            console_base_url: console_base_url.trim_end_matches('/').to_string(),
         }
     }
 
@@ -109,11 +129,11 @@ impl InvitationService {
 
         // 被招待ユーザーが実在すること（グローバル一意 ID で解決）。所属元が host のユーザーは既に
         // HOME メンバーであり、下の membership 存在チェックで `AlreadyMember` に倒れる。
-        match self.users.find_by_id(target_user_id).await {
-            Ok(Some(_)) => {}
+        let invitee = match self.users.find_by_id(target_user_id).await {
+            Ok(Some(user)) => user,
             Ok(None) => return Err(InvitationError::NotFound),
             Err(e) => return Err(InvitationError::Internal(e.to_string())),
-        }
+        };
 
         // 既存メンバーシップ（HOME/GUEST/INVITED）があれば二重招待しない。
         match self.memberships.find(host_id, target_user_id).await {
@@ -154,7 +174,66 @@ impl InvitationService {
             )
             .await;
 
-        Ok(CreatedInvitation { token, expires_at })
+        // 承諾リンクをメールで配送する（MT17）。SMTP 未設定・送信失敗でも招待は成立しており、
+        // best-effort（`email_sent` で結果を返し、管理者が手動伝達へフォールバックできる）。
+        let email_sent = self
+            .deliver_invitation_email(&invitee.email, host_id, &token, expires_at)
+            .await;
+
+        Ok(CreatedInvitation {
+            token,
+            expires_at,
+            email_sent,
+            invitee_email: invitee.email,
+        })
+    }
+
+    /// 招待メール（承諾リンク）を配送する。成功なら `true`。SMTP 未設定は静かに `false`、
+    /// 送信失敗は warning ログ（PII を含めないため宛先は出さず、被招待者の内部情報も出さない）。
+    /// 文言は MT19（API の多言語化）まで日英併記の固定文とする。
+    async fn deliver_invitation_email(
+        &self,
+        to: &str,
+        host_id: TenantId,
+        token: &str,
+        expires_at: DateTime<Utc>,
+    ) -> bool {
+        let server = match self.system_settings.smtp_server().await {
+            Ok(Some(server)) => server,
+            Ok(None) => return false,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load SMTP settings; invitation falls back to manual token delivery");
+                return false;
+            }
+        };
+        // トークンは base64url（URL 安全）なのでそのまま連結できる。
+        let accept_url = format!(
+            "{}/{}/invitations/accept?token={}",
+            self.console_base_url, host_id, token
+        );
+        let mail = OutgoingEmail {
+            to: to.to_string(),
+            subject: "ゲスト招待のお知らせ / You are invited as a guest".to_string(),
+            body_text: format!(
+                "テナントへのゲストとして招待されました。\n\
+                 所属元テナントでログインした状態で、次のリンクを開いて招待を承諾してください。\n\
+                 \n\
+                 You have been invited to join a tenant as a guest.\n\
+                 While signed in at your home tenant, open the link below to accept the invitation.\n\
+                 \n\
+                 {accept_url}\n\
+                 \n\
+                 有効期限 / Expires at: {}\n",
+                expires_at.to_rfc3339()
+            ),
+        };
+        match self.mailer.send(&server, &mail).await {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!(error = %e, "invitation email delivery failed; falling back to manual token delivery");
+                false
+            }
+        }
     }
 
     /// 当該テナントのメンバー（HOME / GUEST）を一覧する（§3・§6）。各メンバーの email / name は
@@ -306,13 +385,18 @@ mod tests {
     use super::*;
     use crate::domain::audit::AuditEvent;
     use crate::domain::error::Result as DomainResult;
-    use crate::domain::repositories::AuditLogSink;
+    use crate::domain::mailer::SmtpServerConfig;
+    use crate::domain::repositories::{AuditLogSink, SystemSettingsRepository};
+    use crate::domain::system_setting::SystemSetting;
     use crate::domain::tenant::TenantId;
     use crate::domain::user::User;
     use crate::domain::values::UserStatus;
     use async_trait::async_trait;
     use chrono::TimeZone;
     use std::sync::Mutex;
+
+    /// テスト用の秘匿値暗号化キー（SMTP パスワードの復号検証に使う）。
+    const TEST_KEY: [u8; 32] = *b"unit-test-key-0123456789abcdef!!";
 
     fn now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 7, 10, 12, 0, 0).unwrap()
@@ -532,20 +616,119 @@ mod tests {
         }
     }
 
+    /// システム設定のインメモリフェイク（SMTP 設定の有無を切り替える）。
+    #[derive(Default)]
+    struct FakeSettingsRepo {
+        rows: Mutex<Vec<SystemSetting>>,
+    }
+    #[async_trait]
+    impl SystemSettingsRepository for FakeSettingsRepo {
+        async fn load_all(&self) -> DomainResult<Vec<SystemSetting>> {
+            Ok(self.rows.lock().unwrap().clone())
+        }
+        async fn upsert(&self, setting: &SystemSetting) -> DomainResult<()> {
+            let mut rows = self.rows.lock().unwrap();
+            match rows.iter_mut().find(|s| s.key == setting.key) {
+                Some(row) => *row = setting.clone(),
+                None => rows.push(setting.clone()),
+            }
+            Ok(())
+        }
+    }
+
+    /// 送信内容（接続情報＋メール）を記録するメーラのフェイク。
+    #[derive(Default)]
+    struct FakeMailer {
+        sent: Mutex<Vec<(SmtpServerConfig, OutgoingEmail)>>,
+        fail: bool,
+    }
+    #[async_trait]
+    impl Mailer for FakeMailer {
+        async fn send(
+            &self,
+            server: &SmtpServerConfig,
+            mail: &OutgoingEmail,
+        ) -> DomainResult<()> {
+            if self.fail {
+                return Err(crate::domain::error::DomainError::Repository(
+                    "simulated smtp failure".to_string(),
+                ));
+            }
+            self.sent
+                .lock()
+                .unwrap()
+                .push((server.clone(), mail.clone()));
+            Ok(())
+        }
+    }
+
+    /// SMTP を設定済みにするフェイク設定（パスワードは TEST_KEY で暗号化して保存する）。
+    fn smtp_configured_settings() -> Arc<FakeSettingsRepo> {
+        let repo = Arc::new(FakeSettingsRepo::default());
+        let mut rows = vec![
+            ("smtp.host", "smtp.example.com".to_string(), false),
+            ("smtp.port", "587".to_string(), false),
+            ("smtp.username", "mailer".to_string(), false),
+            ("smtp.from_address", "noreply@example.com".to_string(), false),
+            ("smtp.use_tls", "true".to_string(), false),
+        ];
+        rows.push((
+            "smtp.password",
+            crypto::encrypt(b"mail-secret", &TEST_KEY).unwrap(),
+            true,
+        ));
+        *repo.rows.lock().unwrap() = rows
+            .into_iter()
+            .map(|(k, v, secret)| SystemSetting {
+                key: k.to_string(),
+                value: v,
+                is_secret: secret,
+            })
+            .collect();
+        repo
+    }
+
+    fn service_with_mail(
+        user: Option<User>,
+        memberships: Arc<FakeMemberships>,
+        permissions: Arc<FakePermissions>,
+        sink: Arc<CapturingSink>,
+        settings: Arc<FakeSettingsRepo>,
+        mailer: Arc<FakeMailer>,
+    ) -> InvitationService {
+        let audit = Arc::new(AuditService::new(sink, Arc::new(FixedClock(now()))));
+        let system_settings = Arc::new(SystemSettingsService::new(
+            settings,
+            TEST_KEY,
+            audit.clone(),
+            Arc::new(FixedClock(now())),
+        ));
+        InvitationService::new(
+            Arc::new(FakeUsers { user }),
+            memberships,
+            permissions,
+            system_settings,
+            mailer,
+            audit,
+            Arc::new(FixedClock(now())),
+            std::time::Duration::from_secs(3600),
+            "https://idp.example.com".to_string(),
+        )
+    }
+
     fn service(
         user: Option<User>,
         memberships: Arc<FakeMemberships>,
         permissions: Arc<FakePermissions>,
         sink: Arc<CapturingSink>,
     ) -> InvitationService {
-        let audit = Arc::new(AuditService::new(sink, Arc::new(FixedClock(now()))));
-        InvitationService::new(
-            Arc::new(FakeUsers { user }),
+        service_with_mail(
+            user,
             memberships,
             permissions,
-            audit,
-            Arc::new(FixedClock(now())),
-            std::time::Duration::from_secs(3600),
+            sink,
+            Arc::new(FakeSettingsRepo::default()),
+            Arc::new(FakeMailer::default()),
         )
     }
 
@@ -606,6 +789,106 @@ mod tests {
                 .map(|r| !r.contains(&created.token))
                 .unwrap_or(true)
         }));
+    }
+
+    #[tokio::test]
+    async fn create_sends_invitation_email_when_smtp_configured() {
+        let host: TenantId = Uuid::now_v7().into();
+        let home: TenantId = Uuid::now_v7().into();
+        let guest = Uuid::new_v4();
+        let mailer = Arc::new(FakeMailer::default());
+        let sink = Arc::new(CapturingSink::default());
+        let svc = service_with_mail(
+            Some(test_user(guest, home)),
+            Arc::new(FakeMemberships::default()),
+            Arc::new(FakePermissions::default()),
+            sink.clone(),
+            smtp_configured_settings(),
+            mailer.clone(),
+        );
+
+        let created = svc
+            .create_invitation(TenantContext::new(host), guest, Uuid::new_v4(), &ctx())
+            .await
+            .expect("created");
+        assert!(created.email_sent);
+        assert_eq!(created.invitee_email, "guest@other.example.com");
+
+        let sent = mailer.sent.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        let (server, mail) = &sent[0];
+        // 接続情報はシステム設定から解決され、パスワードは復号済みで渡る。
+        assert_eq!(server.host, "smtp.example.com");
+        assert_eq!(server.port, Some(587));
+        assert_eq!(server.password, "mail-secret");
+        assert_eq!(server.from_address, "noreply@example.com");
+        assert!(server.use_tls);
+        // 宛先は被招待者のメール。本文に承諾リンク（host テナント + トークン）を含む。
+        assert_eq!(mail.to, "guest@other.example.com");
+        let expected_url = format!(
+            "https://idp.example.com/{}/invitations/accept?token={}",
+            host, created.token
+        );
+        assert!(mail.body_text.contains(&expected_url));
+        // 監査ログにはトークンを出さない（本文はメールのみ）。
+        assert!(sink.events.lock().unwrap().iter().all(|e| {
+            e.reason
+                .as_deref()
+                .map(|r| !r.contains(&created.token))
+                .unwrap_or(true)
+        }));
+    }
+
+    #[tokio::test]
+    async fn create_falls_back_to_manual_delivery_when_smtp_unconfigured() {
+        let host: TenantId = Uuid::now_v7().into();
+        let home: TenantId = Uuid::now_v7().into();
+        let guest = Uuid::new_v4();
+        let mailer = Arc::new(FakeMailer::default());
+        let svc = service_with_mail(
+            Some(test_user(guest, home)),
+            Arc::new(FakeMemberships::default()),
+            Arc::new(FakePermissions::default()),
+            Arc::new(CapturingSink::default()),
+            Arc::new(FakeSettingsRepo::default()), // SMTP 未設定
+            mailer.clone(),
+        );
+
+        let created = svc
+            .create_invitation(TenantContext::new(host), guest, Uuid::new_v4(), &ctx())
+            .await
+            .expect("created");
+        // 招待は成立し、メールは送られない（トークンの手動伝達）。
+        assert!(!created.email_sent);
+        assert!(!created.token.is_empty());
+        assert!(mailer.sent.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn create_succeeds_even_when_email_delivery_fails() {
+        let host: TenantId = Uuid::now_v7().into();
+        let home: TenantId = Uuid::now_v7().into();
+        let guest = Uuid::new_v4();
+        let memberships = Arc::new(FakeMemberships::default());
+        let svc = service_with_mail(
+            Some(test_user(guest, home)),
+            memberships.clone(),
+            Arc::new(FakePermissions::default()),
+            Arc::new(CapturingSink::default()),
+            smtp_configured_settings(),
+            Arc::new(FakeMailer {
+                fail: true,
+                ..Default::default()
+            }),
+        );
+
+        let created = svc
+            .create_invitation(TenantContext::new(host), guest, Uuid::new_v4(), &ctx())
+            .await
+            .expect("created despite mail failure");
+        // best-effort: 送信失敗でも招待（INVITED 行）は残り、email_sent = false で報告する。
+        assert!(!created.email_sent);
+        assert_eq!(memberships.rows.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -691,15 +974,24 @@ mod tests {
             Arc::new(CapturingSink::default()),
             Arc::new(FixedClock(now())),
         ));
+        let system_settings = Arc::new(SystemSettingsService::new(
+            Arc::new(FakeSettingsRepo::default()),
+            TEST_KEY,
+            audit.clone(),
+            Arc::new(FixedClock(now())),
+        ));
         let svc = InvitationService::new(
             Arc::new(FakeUsers {
                 user: Some(test_user(guest, home)),
             }),
             memberships.clone(),
             Arc::new(FakePermissions::default()),
+            system_settings,
+            Arc::new(FakeMailer::default()),
             audit,
             Arc::new(FixedClock(now())),
             std::time::Duration::from_secs(0),
+            "https://idp.example.com".to_string(),
         );
         let created = svc
             .create_invitation(TenantContext::new(host), guest, Uuid::new_v4(), &ctx())

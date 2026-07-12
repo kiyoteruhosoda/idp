@@ -11,6 +11,7 @@ use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::error::{DomainError, Result};
+use crate::domain::mailer::SmtpServerConfig;
 use crate::domain::repositories::SystemSettingsRepository;
 use crate::domain::system_setting::{
     SmtpSettingsView, SystemSetting, UpdateSmtpCommand, SMTP_FROM_ADDRESS, SMTP_HOST, SMTP_PASSWORD,
@@ -48,6 +49,35 @@ impl SystemSettingsService {
     async fn load_map(&self) -> Result<HashMap<String, String>> {
         let all = self.repo.load_all().await?;
         Ok(all.into_iter().map(|s| (s.key, s.value)).collect())
+    }
+
+    /// メール配送用に SMTP 接続情報（復号済みパスワード込み）を返す。**画面表示には使わない**
+    /// （表示用は `get_smtp`）。`host` または `from_address` が未設定なら `None`（配送は無効。
+    /// 呼び出し側は手動伝達へフォールバックする）。返り値の秘匿値をログ・監査に出さないこと。
+    pub async fn smtp_server(&self) -> Result<Option<SmtpServerConfig>> {
+        let map = self.load_map().await?;
+        let host = map.get(SMTP_HOST).cloned().unwrap_or_default();
+        let from_address = map.get(SMTP_FROM_ADDRESS).cloned().unwrap_or_default();
+        if host.is_empty() || from_address.is_empty() {
+            return Ok(None);
+        }
+        let password = match map.get(SMTP_PASSWORD).filter(|v| !v.is_empty()) {
+            Some(stored) => {
+                let bytes = crypto::decrypt(stored, &self.key_encryption_key)
+                    .map_err(|e| DomainError::Repository(format!("smtp password decrypt: {e}")))?;
+                String::from_utf8(bytes)
+                    .map_err(|_| DomainError::Repository("smtp password is not UTF-8".into()))?
+            }
+            None => String::new(),
+        };
+        Ok(Some(SmtpServerConfig {
+            host,
+            port: map.get(SMTP_PORT).and_then(|v| v.parse().ok()),
+            username: map.get(SMTP_USERNAME).cloned().unwrap_or_default(),
+            password,
+            from_address,
+            use_tls: map.get(SMTP_USE_TLS).map(|v| v == "true").unwrap_or(false),
+        }))
     }
 
     /// SMTP 設定を取得する。パスワードは平文を返さず「設定済みか否か」（`password_set`）のみ返す。

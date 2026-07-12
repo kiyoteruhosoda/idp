@@ -393,13 +393,18 @@ pub struct CreateInvitationRequest {
     pub user_id: String,
 }
 
-/// 招待作成レスポンス。`token` は平文の招待トークンで、**この応答でのみ**返る（管理者が被招待者へ別途
-/// 通知する。ログ・監査には出さない。ADR-0009 §3）。
+/// 招待作成レスポンス。`token` は平文の招待トークンで、**この応答でのみ**返る（メール未達時に管理者が
+/// 被招待者へ別途通知する。ログ・監査には出さない。ADR-0009 §3）。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct InvitationCreatedResponse {
     pub token: String,
     /// 招待の失効時刻（RFC3339）。
     pub expires_at: String,
+    /// 招待メール（承諾リンク）を被招待者へ送信できたか（MT17）。SMTP 未設定・送信失敗は false
+    /// （招待は成立しており、管理者が token を手動で伝達する）。
+    pub email_sent: bool,
+    /// 被招待者のメールアドレス（送信先の確認表示用）。
+    pub invitee_email: String,
 }
 
 /// 招待承諾リクエスト（`POST /{tenant_id}/invitations/accept`）。ログイン済み利用者がトークンを提示する。

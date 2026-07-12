@@ -10,6 +10,7 @@ pub mod admin_status_console;
 pub mod admin_users_console;
 pub mod consent;
 pub mod health;
+pub mod invitation_accept;
 pub mod login;
 pub mod mfa_totp;
 pub mod passkey;

@@ -594,6 +594,7 @@ impl ApiClient {
             &format!("/admin/members/{user_id}"),
             correlation_id,
             sso,
+            None,
         )
         .await
     }
@@ -613,6 +614,26 @@ impl ApiClient {
             correlation_id,
             sso,
             Some(serde_json::json!({ "user_id": user_id })),
+        )
+        .await
+    }
+
+    /// 招待の承諾（`POST /{tenant_id}/invitations/accept`）。被招待者本人の SSO Cookie を転送する
+    /// （管理 API ではないが、Cookie 転送・エラー写像は同じ共通処理を使う）。
+    pub async fn accept_invitation(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        token: &str,
+    ) -> Result<(), AdminApiError> {
+        self.admin_send_no_content(
+            Method::POST,
+            tenant_id,
+            "/invitations/accept",
+            correlation_id,
+            sso,
+            Some(serde_json::json!({ "token": token })),
         )
         .await
     }
@@ -713,6 +734,7 @@ impl ApiClient {
             &format!("/admin/signing-keys/{kid}/retire"),
             correlation_id,
             sso,
+            None,
         )
         .await
     }
@@ -731,6 +753,7 @@ impl ApiClient {
             &format!("/admin/signing-keys/{kid}"),
             correlation_id,
             sso,
+            None,
         )
         .await
     }
@@ -776,15 +799,20 @@ impl ApiClient {
         path: &str,
         correlation_id: &str,
         sso: &str,
+        body: Option<serde_json::Value>,
     ) -> Result<(), AdminApiError> {
-        let response = self
+        let mut req = self
             .http
             .request(method, format!("{}/{}{}", self.base_url, tenant_id, path))
             .header(REQUEST_ID_HEADER, correlation_id)
             .header(
                 reqwest::header::COOKIE,
                 format!("{SSO_SESSION_COOKIE}={sso}"),
-            )
+            );
+        if let Some(json) = body {
+            req = req.json(&json);
+        }
+        let response = req
             .send()
             .await
             .map_err(|e| AdminApiError::Transport(e.to_string()))?;

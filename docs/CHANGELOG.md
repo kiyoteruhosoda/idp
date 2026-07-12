@@ -2,6 +2,20 @@
 
 完了した重要な変更の要約（詳しい経緯は `history/`、設計判断は `adr/`）。
 
+## 2026-07-12（MT17: 招待のメール配送）
+
+- **MT17 — ゲスト招待の承諾リンクをメールで配送**: 招待作成（`POST /{tenant_id}/admin/invitations`）
+  時に、システム設定の SMTP（MT14）で被招待者へ承諾リンク付きメールを自動送信する。SMTP 未設定・
+  送信失敗時は従来どおりトークンの手動伝達（best-effort。応答・結果画面の `email_sent` で成否を報告）。
+  - ドメインポート `Mailer`（送信ごとに SMTP 接続情報を受け取る）＋ lettre（rustls）実装を新設。
+    `use_tls` は 465 = implicit TLS／それ以外 = STARTTLS 必須。インプロセス SMTP サーバとの実対話
+    テストで検証。
+  - `SystemSettingsService::smtp_server()`（復号済み接続情報。表示用 `get_smtp` とは別）を追加。
+  - web に承諾画面 `GET/POST /{tenant_id}/invitations/accept` を新設（メールリンクの着地点。
+    未ログイン時は所属元テナントでのログインを案内）。招待結果画面にメール送信の成否を表示。
+  - 承諾リンクの土台 URL は `PUBLIC_WEB_BASE_URL`（既定 = `ISSUER`。単一オリジン構成 ADR-0007）。
+  - メール文言は MT19（API 多言語化）まで日英併記の固定文。
+
 ## 2026-07-12（REF2: テナント開通のトランザクション境界）
 
 - **REF2 — テナント作成の unit of work 導入**: `create_tenant` が「tenant INSERT → 管理者作成 →

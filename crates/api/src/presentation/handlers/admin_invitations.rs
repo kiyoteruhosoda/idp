@@ -54,6 +54,8 @@ pub async fn create_invitation(
         Json(InvitationCreatedResponse {
             token: created.token,
             expires_at: created.expires_at.to_rfc3339(),
+            email_sent: created.email_sent,
+            invitee_email: created.invitee_email,
         }),
     ))
 }

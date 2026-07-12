@@ -81,6 +81,8 @@ pub async fn create(
             admin: Some(&admin),
             token: &created.token,
             expires_at: &created.expires_at,
+            email_sent: created.email_sent,
+            invitee_email: &created.invitee_email,
         }))
         .into_response(),
         Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),

@@ -52,6 +52,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
 # QR コードを SVG として生成（TOTP セットアップ画面で埋め込む）。
 qrcode = "0.14"
+# SMTP メール配送（招待メール MT17・パスワードリセット MT18）。TLS は rustls。
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "hostname", "tokio1", "tokio1-rustls-tls"] }
 # WebAuthn（FIDO2 Passkey）認証ライブラリ。
 # danger-allow-state-serialisation: チャレンジ状態の DB 保存に必要（サーバサイドで管理するため安全）。
 # conditional-ui: discoverable credentials（ユーザー名不要のパスキーログイン）のサポート。

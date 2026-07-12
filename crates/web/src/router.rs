@@ -7,7 +7,7 @@ use crate::correlation;
 use crate::handlers::{
     admin_clients_console, admin_console, admin_invitations_console, admin_members_console,
     admin_settings, admin_signing_keys_console, admin_status_console, admin_users_console, consent,
-    health, login, mfa_totp, passkey, password_change, user_settings,
+    health, invitation_accept, login, mfa_totp, passkey, password_change, user_settings,
 };
 use crate::security_headers::add_security_headers;
 use crate::state::WebState;
@@ -28,6 +28,11 @@ pub fn build(state: WebState) -> Router {
         // 利用者のセルフサービス設定画面（MT15）。パスワード変更・言語・MFA 導線。SSO 認証が必要。
         .route("/settings", get(user_settings::page))
         .route("/settings/password", post(user_settings::change_password))
+        // 招待承諾画面（ADR-0009 §3・MT17）。招待メールのリンクから開く。SSO 認証が必要。
+        .route(
+            "/invitations/accept",
+            get(invitation_accept::page).post(invitation_accept::submit),
+        )
         // 同意画面（F3: Consent）。
         .route("/consent", get(consent::consent_page).post(consent::consent))
         // MFA: ログインフロー TOTP 入力（パスワード認証後）。

@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>{{ messages.get("invitation-accept-title") }}</title></head>
+<body>
+<h1>{{ messages.get("invitation-accept-title") }}</h1>
+{% if success %}
+<p>{{ messages.get("invitation-accept-success") }}</p>
+{% else %}
+<p>{{ messages.get("invitation-accept-intro") }}</p>
+{% if let Some(key) = error_key %}<p class="error" role="alert">{{ messages.get(key) }}</p>{% endif %}
+{% if show_form %}
+<form method="post" action="">
+<input type="hidden" name="csrf_token" value="{{ csrf }}">
+<input type="hidden" name="token" value="{{ token }}">
+<button type="submit">{{ messages.get("invitation-accept-submit") }}</button>
+</form>
+{% else %}
+<p>{{ messages.get("invitation-accept-login-required") }}</p>
+{% endif %}
+{% endif %}
+</body>
+</html>

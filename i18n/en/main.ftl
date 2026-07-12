@@ -128,6 +128,17 @@ admin-invitations-created-warning = This token is shown only once. Record it and
 admin-invitations-token-label = Invitation token
 admin-invitations-expires-label = Expires at
 admin-invitations-error-notfound = No such user was found.
+admin-invitations-email-sent = An invitation email with the acceptance link was sent to
+admin-invitations-email-not-sent = No invitation email was sent (SMTP is not configured or delivery failed). Share the token with the invited user through a secure channel.
+
+# Guest invitation acceptance page (opened from the invitation email link).
+invitation-accept-title = Accept guest invitation
+invitation-accept-intro = You are about to join this tenant as a guest.
+invitation-accept-login-required = Sign in at your home tenant first, then open the invitation link again. If the link is incomplete, check the invitation email.
+invitation-accept-submit = Accept invitation
+invitation-accept-success = You have joined the tenant as a guest.
+invitation-accept-error-invalid = The invitation is invalid or has expired. Ask the administrator to issue a new invitation.
+invitation-accept-error-forbidden = This invitation was issued to a different user. Sign in as the invited user and try again.
 
 # Status screens (A3): audit/login log list and client status list.
 admin-audit-title = Login and audit logs
