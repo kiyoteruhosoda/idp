@@ -6,6 +6,7 @@ pub mod authorization_code;
 pub mod cached_user_permission;
 pub mod client;
 pub mod consent;
+pub mod email_verification_token;
 pub mod passkey_challenge;
 pub mod password_reset_token;
 pub mod refresh_token;

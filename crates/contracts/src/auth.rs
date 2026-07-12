@@ -57,6 +57,9 @@ pub enum InternalAuthenticateResponse {
     PasswordChangeRequired {
         auth_session_id: String,
     },
+    /// パスワード認証成功だが自己登録アカウントのメール未検証（SEC6b）。確認リンクを踏むまで
+    /// ログインを許可しない。web は「メールを確認して」の案内を表示する。
+    EmailVerificationRequired,
     /// AuthSession が無い・期限切れ（`/authorize` からやり直し）。
     SessionExpired,
     /// CSRF トークン不一致。

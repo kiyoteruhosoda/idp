@@ -349,6 +349,9 @@ mod tests {
         async fn update_password(&self, _id: Uuid, _password_hash: &str) -> DomainResult<()> {
             unreachable!()
         }
+        async fn mark_email_verified(&self, _id: Uuid) -> DomainResult<()> {
+            unreachable!()
+        }
     }
 
     /// 指定した (tenant, user) の組を ACTIVE メンバーとして扱うフェイク（他は非メンバー）。

@@ -138,7 +138,10 @@ impl UserManagementService {
             tenant_id,
             sub: self.ids.new_id(),
             email,
-            email_verified: false,
+            // 管理者が作成するユーザーは管理者がメール所有を保証する扱いとし、検証済みで作る（SEC6b）。
+            // これにより自己登録（未検証）のみがログイン時のメール検証ゲートに掛かる。テナント作成時の
+            // 初期管理者（本サービス経由）もログイン可能なまま。
+            email_verified: true,
             preferred_username,
             name,
             password_hash,
@@ -322,6 +325,9 @@ mod tests {
             unreachable!()
         }
         async fn update_password(&self, _id: Uuid, _password_hash: &str) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn mark_email_verified(&self, _id: Uuid) -> DomainResult<()> {
             unreachable!()
         }
     }

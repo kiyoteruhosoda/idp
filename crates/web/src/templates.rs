@@ -292,6 +292,21 @@ pub struct InvitationAccept<'a> {
     pub error_key: Option<&'a str>,
 }
 
+/// メール検証画面（`GET/POST /{tenant_id}/verify-email?token=...`。SEC6b）。自己登録の確認メールの
+/// リンクから開く。GET は確認ボタン（POST でトークンを消費）を表示し、リンクのプリフェッチで
+/// トークンを消費しないようにする。未ログイン経路（SSO 不要）。
+#[derive(Template)]
+#[template(path = "verify_email.html")]
+pub struct VerifyEmail<'a> {
+    pub messages: &'a Messages,
+    /// 確認フォーム（POST ボタン）を表示するか（トークンがあるとき true）。
+    pub show_form: bool,
+    pub token: &'a str,
+    /// 検証に成功したか（成功画面表示）。
+    pub success: bool,
+    pub error_key: Option<&'a str>,
+}
+
 /// クライアント登録・編集フォームの入力値（新規/再表示の両方で使う）。テンプレートの再入力欄へ
 /// そのまま流し込む。`redirect_uris` は 1 行 1 URI、`scopes` は空白区切りの生文字列。
 pub struct ClientFormValues {

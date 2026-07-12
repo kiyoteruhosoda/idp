@@ -42,6 +42,14 @@ const REQUEST_ID_HEADER: &str = "x-request-id";
 /// SSO セッション Cookie 名（api の `cookies::SSO_SESSION_COOKIE` と一致させる）。
 const SSO_SESSION_COOKIE: &str = "sso_session_id";
 
+/// メール検証リンク消費（SEC6b）の結果。
+pub enum VerifyEmailResult {
+    /// `email_verified` を立てた。
+    Verified,
+    /// トークンが無効・期限切れ・使用済み・別テナント。
+    InvalidOrExpired,
+}
+
 /// `/admin/*` 呼び出しの失敗を web の画面挙動へ写すためのエラー（ADR-0007 §4）。
 pub enum AdminApiError {
     /// 未認証・SSO 期限切れ（401）→ ログイン画面へ誘導。
@@ -149,6 +157,29 @@ impl ApiClient {
     ) -> anyhow::Result<InternalPasswordResetCompleteResponse> {
         self.post_internal("/internal/password-reset/complete", correlation_id, req)
             .await
+    }
+
+    /// メール検証リンクの消費（`POST /{tenant_id}/auth/verify-email`。SEC6b）。公開エンドポイントの
+    /// ため service token・SSO は不要（平文トークン自体が capability）。
+    pub async fn verify_email(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        token: &str,
+    ) -> anyhow::Result<VerifyEmailResult> {
+        let response = self
+            .http
+            .post(format!("{}/{}/auth/verify-email", self.base_url, tenant_id))
+            .header(REQUEST_ID_HEADER, correlation_id)
+            .json(&serde_json::json!({ "token": token }))
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("request to api /auth/verify-email failed: {e}"))?;
+        match response.status() {
+            s if s.is_success() => Ok(VerifyEmailResult::Verified),
+            reqwest::StatusCode::BAD_REQUEST => Ok(VerifyEmailResult::InvalidOrExpired),
+            other => anyhow::bail!("api /auth/verify-email returned status {other}"),
+        }
     }
 
     /// ログアウト（`POST /internal/logout`）。api 側で SSO セッションを失効させる（Cookie 失効は web）。

@@ -26,6 +26,7 @@ use crate::domain::client::Client;
 use crate::domain::consent::ClientConsent;
 use crate::domain::error::Result;
 use crate::domain::passkey_challenge::PasskeyChallenge;
+use crate::domain::email_verification::EmailVerificationToken;
 use crate::domain::password_reset::PasswordResetToken;
 use crate::domain::refresh_token::RefreshToken;
 use crate::domain::revoked_access_token::RevokedAccessToken;
@@ -127,6 +128,8 @@ pub trait UserRepository: Send + Sync {
     ) -> Result<()>;
     /// パスワードハッシュを更新し、`must_change_password` を解除する（パスワード変更、ADR-0009 §5）。
     async fn update_password(&self, id: Uuid, password_hash: &str) -> Result<()>;
+    /// メール検証済みフラグを立てる（自己登録アカウントの確認リンク消費時。SEC6b）。
+    async fn mark_email_verified(&self, id: Uuid) -> Result<()>;
 }
 
 #[async_trait]
@@ -211,6 +214,23 @@ pub trait PasswordResetTokenRepository: Send + Sync {
         used_at: DateTime<Utc>,
     ) -> Result<Option<PasswordResetToken>>;
     /// 当該ユーザーの未使用トークンをすべて失効させる（`used_at` を設定。再発行時の置き換えに使う）。
+    async fn invalidate_all_for_user(&self, user_id: Uuid, now: DateTime<Utc>) -> Result<()>;
+}
+
+/// メール検証トークン（SEC6b）の永続化。DB には SHA-256 hash のみ保存する。
+/// `PasswordResetTokenRepository` と同じ one-time パターン（tenant_id は取らない。テナント境界は
+/// ユースケース側が `users.tenant_id` 照合で強制する）。
+#[async_trait]
+pub trait EmailVerificationTokenRepository: Send + Sync {
+    async fn create(&self, token: &EmailVerificationToken) -> Result<()>;
+    /// 原子的に one-time 消費する。未使用かつ期限内なら `used_at` を設定して当該行を返す。
+    /// 使用済み・期限切れ・不存在は `None`。
+    async fn consume(
+        &self,
+        token_hash: &str,
+        used_at: DateTime<Utc>,
+    ) -> Result<Option<EmailVerificationToken>>;
+    /// 当該ユーザーの未使用トークンをすべて失効させる（再送時の置き換えに使う）。
     async fn invalidate_all_for_user(&self, user_id: Uuid, now: DateTime<Utc>) -> Result<()>;
 }
 

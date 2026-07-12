@@ -10,6 +10,7 @@ pub mod cache;
 pub mod client;
 pub mod clock;
 pub mod consent;
+pub mod email_verification;
 pub mod error;
 pub mod id_generator;
 pub mod issuer;

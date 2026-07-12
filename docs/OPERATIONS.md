@@ -202,6 +202,7 @@ DELETE up FROM user_permissions up
 | `CLOCK_SKEW_SECS` | `60` | JWT 検証時のクロックスキュー許容 |
 | `PUBLIC_WEB_BASE_URL` | `ISSUER` と同値 | 招待メール・パスワードリセット等のリンクの土台（web 画面の公開 URL）。web を別オリジンへ置く構成でのみ設定 |
 | `PASSWORD_RESET_TTL_SECS` | `3600` | パスワードリセットトークンの有効期間 |
+| `EMAIL_VERIFICATION_TTL_SECS` | `86400` | 自己登録アカウントのメール検証トークンの有効期間（SEC6b） |
 | `RUST_LOG` | `info,idp=debug` | ログフィルタ |
 
 ## 本番用の鍵暗号化キーを作りたいとき

@@ -31,8 +31,13 @@ pub struct RegisterCommand {
 }
 
 pub struct RegisteredUser {
+    /// 外部公開識別子。
     pub sub: Uuid,
+    /// 内部 ID（検証メール送信で使う。外部へは返さない）。
+    pub user_id: Uuid,
     pub status: UserStatus,
+    /// メール（検証メール送信で使う。呼び出し側が既に保持しているが利便のため返す）。
+    pub email: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -180,7 +185,9 @@ impl RegisterService {
 
         Ok(RegisteredUser {
             sub: user.sub,
+            user_id: user.id,
             status: user.status,
+            email: user.email,
         })
     }
 }
@@ -290,6 +297,9 @@ mod tests {
             unreachable!()
         }
         async fn update_password(&self, _id: Uuid, _h: &str) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn mark_email_verified(&self, _id: Uuid) -> DomainResult<()> {
             unreachable!()
         }
     }

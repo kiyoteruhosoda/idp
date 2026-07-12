@@ -1,8 +1,9 @@
 //! ユーザー登録エンドポイント（`POST /auth/register`、設計仕様 §4.1）。
 
+use crate::application::email_verification::VerifyEmailOutcome;
 use crate::application::register::{RegisterCommand, RegisterError};
 use crate::presentation::correlation::CorrelationId;
-use crate::presentation::dto::{RegisterRequest, RegisterResponse};
+use crate::presentation::dto::{RegisterRequest, RegisterResponse, VerifyEmailRequest};
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
 use crate::presentation::state::AppState;
@@ -45,13 +46,57 @@ pub async fn register(
         .await
         .map_err(map_error)?;
 
+    // 検証メールを送る（best-effort。SMTP 未設定・送信失敗でも登録自体は成立する。SEC6b）。
+    // 自己登録アカウントは `email_verified = false` で作られ、確認リンクを踏むまでログインできない。
+    let email_verification_required = state
+        .email_verification
+        .send_verification(
+            tenant.context().tenant_id(),
+            registered.user_id,
+            &registered.email,
+            &ctx,
+        )
+        .await;
+
     Ok((
         StatusCode::CREATED,
         Json(RegisterResponse {
             sub: registered.sub.to_string(),
             status: registered.status.as_str().to_string(),
+            email_verification_required,
         }),
     ))
+}
+
+#[utoipa::path(
+    post,
+    path = "/{tenant_id}/auth/verify-email",
+    tag = "auth",
+    request_body = VerifyEmailRequest,
+    responses(
+        (status = 204, description = "検証成功（email_verified を立てた）"),
+        (status = 400, description = "トークンが無効・期限切れ・使用済み・別テナント"),
+    )
+)]
+pub async fn verify_email(
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    headers: HeaderMap,
+    Json(body): Json<VerifyEmailRequest>,
+) -> Result<StatusCode, ApiError> {
+    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
+    match state
+        .email_verification
+        .verify(tenant.context(), &body.token, &ctx)
+        .await
+    {
+        VerifyEmailOutcome::Ok => Ok(StatusCode::NO_CONTENT),
+        VerifyEmailOutcome::InvalidOrExpired => Err(ApiError::BadRequest(
+            "invalid or expired verification token".to_string(),
+        )),
+        VerifyEmailOutcome::Internal(m) => Err(ApiError::Internal(m)),
+    }
 }
 
 fn map_error(e: RegisterError) -> ApiError {

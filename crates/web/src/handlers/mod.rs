@@ -17,6 +17,7 @@ pub mod passkey;
 pub mod password_change;
 pub mod password_reset;
 pub mod user_settings;
+pub mod verify_email;
 
 use crate::correlation::CorrelationId;
 use axum::http::header::USER_AGENT;

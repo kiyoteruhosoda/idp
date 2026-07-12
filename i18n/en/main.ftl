@@ -6,6 +6,7 @@ login-forgot-password = Forgot your password?
 login-submit = Sign in
 login-error-invalid-credentials = The username or password is incorrect.
 login-error-locked = This account is temporarily locked. Please try again later.
+login-error-email-not-verified = Please verify your email address before signing in. Check your inbox for the verification link.
 login-error-session-expired = Your sign-in session has expired. Please start over from the application.
 login-error-csrf = The form has expired. Please reload the page and try again.
 login-error-rate-limited = Too many attempts. Please wait a moment and try again.
@@ -142,6 +143,14 @@ invitation-accept-submit = Accept invitation
 invitation-accept-success = You have joined the tenant as a guest.
 invitation-accept-error-invalid = The invitation is invalid or has expired. Ask the administrator to issue a new invitation.
 invitation-accept-error-forbidden = This invitation was issued to a different user. Sign in as the invited user and try again.
+
+# Email verification page (opened from the sign-up verification email link). SEC6b.
+verify-email-title = Verify your email
+verify-email-intro = Click the button below to verify your email address and activate sign-in.
+verify-email-submit = Verify email
+verify-email-success = Your email address has been verified. You can now sign in.
+verify-email-missing-token = The verification link is incomplete. Please open the link from the email again.
+verify-email-error-invalid = This verification link is invalid or has expired. Please register again or request a new link.
 
 # Status screens (A3): audit/login log list and client status list.
 admin-audit-title = Login and audit logs

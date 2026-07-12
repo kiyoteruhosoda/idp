@@ -116,6 +116,9 @@ pub async fn authenticate(
         LoginOutcome::PasswordChangeRequired { auth_session_id } => {
             InternalAuthenticateResponse::PasswordChangeRequired { auth_session_id }
         }
+        LoginOutcome::EmailVerificationRequired => {
+            InternalAuthenticateResponse::EmailVerificationRequired
+        }
         LoginOutcome::SessionExpired => InternalAuthenticateResponse::SessionExpired,
         LoginOutcome::CsrfMismatch => InternalAuthenticateResponse::CsrfMismatch,
         LoginOutcome::RateLimited => InternalAuthenticateResponse::RateLimited,

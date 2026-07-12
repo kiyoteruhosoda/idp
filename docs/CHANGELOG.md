@@ -2,6 +2,22 @@
 
 完了した重要な変更の要約（詳しい経緯は `history/`、設計判断は `adr/`）。
 
+## 2026-07-12（SEC6b: 自己登録・招待のメール検証）
+
+- **SEC6b — 自己登録アカウントのメール検証**: 自己登録（SEC6）で作られる `email_verified = false` の
+  アカウントに、確認リンクによるメール検証フローを導入した（配送は MT17 の `Mailer`＋MT14 の SMTP を再利用）。
+  - 登録時に検証メールを送出（best-effort。SMTP 未設定・送信失敗でも登録自体は成立）。`RegisterResponse`
+    に `email_verification_required` を追加。トークンは 32 バイト・SHA-256 hash のみ保存
+    （`email_verification_tokens`。migration 0006）・TTL 既定 24 時間（`EMAIL_VERIFICATION_TTL_SECS`）・
+    単回消費・再送で旧トークン失効。
+  - **ログインゲート**: `email_verified = false` のアカウントはログイン不可（`LoginService` がパスワード
+    検証成功後に判定 → `EmailVerificationRequired`。資格情報を知らない攻撃者からは検証状態を観測できない）。
+    確認リンク（web `/{tenant_id}/verify-email` → api `POST /{tenant_id}/auth/verify-email`）で
+    `email_verified` を立てるとログイン可能になる。
+  - **検証済みで作る経路**: 管理者作成ユーザー（`UserManagementService`。管理者がメール所有を保証）と
+    招待ゲスト（招待リンクで所有確認済み）は `email_verified = true` で作られ、ゲートに掛からない。
+  - トークン・メールアドレスはログ・監査に出さない（監査は `email_verification.requested/verified`）。
+
 ## 2026-07-12（GAP1: ゲスト権限付与の ADR 乖離解消）
 
 - **GAP1 — 権限付与対象を「所属元照合」から「ACTIVE メンバーシップ判定」へ**（ADR-0009 §4）:

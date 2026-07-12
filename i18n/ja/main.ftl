@@ -6,6 +6,7 @@ login-forgot-password = パスワードをお忘れですか？
 login-submit = サインイン
 login-error-invalid-credentials = ユーザー名またはパスワードが正しくありません。
 login-error-locked = このアカウントは一時的にロックされています。しばらくしてからお試しください。
+login-error-email-not-verified = ログインの前にメールアドレスの確認を完了してください。確認メールのリンクをご確認ください。
 login-error-session-expired = サインインのセッションが期限切れです。アプリケーションからやり直してください。
 login-error-csrf = フォームの有効期限が切れました。ページを再読み込みしてやり直してください。
 login-error-rate-limited = 試行回数が多すぎます。しばらく待ってからお試しください。
@@ -142,6 +143,14 @@ invitation-accept-submit = 招待を承諾する
 invitation-accept-success = テナントにゲストとして参加しました。
 invitation-accept-error-invalid = 招待が無効か、有効期限が切れています。管理者に再発行を依頼してください。
 invitation-accept-error-forbidden = この招待は別の利用者宛です。被招待者本人でログインし直してください。
+
+# メール検証画面（自己登録の確認メールのリンクから開く）。SEC6b。
+verify-email-title = メールアドレスの確認
+verify-email-intro = 下のボタンを押してメールアドレスを確認し、ログインを有効化してください。
+verify-email-submit = メールアドレスを確認する
+verify-email-success = メールアドレスの確認が完了しました。ログインできます。
+verify-email-missing-token = 確認リンクが不完全です。メールのリンクを開き直してください。
+verify-email-error-invalid = この確認リンクは無効か、有効期限が切れています。再登録するか、リンクの再送を依頼してください。
 
 # 状況確認画面（A3）: 監査／ログインログ一覧・クライアント状況一覧。
 admin-audit-title = ログイン・監査ログ
