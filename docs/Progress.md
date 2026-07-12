@@ -30,7 +30,7 @@ SEC = MT16 完了時のセキュリティレビュー指摘、REF = 同リファ
 | 10 | SEC6 | 自己登録（`/{tenant_id}/auth/register`）の制御 — 全テナントで無条件開放・レート制限なし・メール検証なしで ACTIVE アカウントを作成でき、409 応答でテナント内のメール存在が列挙可能。テナント設定で有効/無効を切替（既定 OFF 推奨）＋レート制限。メール検証は MT17 の SMTP 基盤に乗せる | ⬜未着手 | 中 | 中 | Sonnet 5 |
 | 11 | MT19 | API の `Accept-Language` ベース多言語化（i18n 仕様書 §5・§6）— API は `Accept-Language` のみ参照（Cookie/Session/クエリ/DB を見ない）。地域コード無視（`en-US`→`en`）、非対応言語・未指定はシステム既定 `ja`。エラー／バリデーション／業務メッセージをキー管理で多言語化（コードは言語不変）。運用ログ・監査ログ・スタックトレースは対象外（英語統一） | ⬜未着手 | 中 | 大 | Sonnet 5 |
 | 12 | MT20 | Web の表示言語決定チェーン（i18n 仕様書 §3・§4・§9）— 優先順位 `?lang=` → ユーザー設定 → Cookie（`lang`）→ ブラウザ `Accept-Language` → 既定 `ja`。不正値は次順位へフォールバック。言語変更時／初回に Cookie 保存、ログイン時はユーザー設定優先。決定言語を API へ `Accept-Language` で伝搬（Cookie・`lang` クエリは送らない）。ユーザー設定 `language` 列（ja/en）を追加。将来言語追加（zh/ko/fr 等）を考慮 | ⬜未着手 | 中 | 大 | Sonnet 5 |
-| 13 | GAP1 | ゲストへの権限付与の ADR 乖離解消 — ADR-0009 §4 は「付与対象は当該テナントのメンバー（HOME/GUEST）」だが、`ensure_user_in_tenant` が所属元限定のため GUEST へ付与できない。付与対象を「HOME または ACTIVE な GUEST」に広げるか、ADR を現状に合わせるかの設計判断 | 🟡要判断 | 中 | 小 | Opus 4.8 |
+| 13 | GAP1 | ゲストへの権限付与の ADR 乖離解消 — **設計確定済み（2026-07-12。詳細参照）**: ADR-0009 §4 を正とし実装を修正する。付与対象は「当該テナントで ACTIVE なメンバーシップ（HOME/GUEST）を持つユーザー」で出自を区別しない。`ensure_user_in_tenant` を所属元照合から ACTIVE メンバーシップ判定へ変更 | ⬜未着手 | 中 | 小 | Opus 4.8 |
 | 14 | REF3 | 認可ホットパスの整理 — SSO セッション解決（hash→取得→有効性→ユーザー有効）が `AdminAccessService::authorize`／`authenticated_user`／`try_resume_sso` に三重実装。共通のセッション解決サービスへ抽出し、`has_permission` 2 回問い合わせも `IN (?, ?)` の `has_any_permission` 1 回に統合。権限コード定数（`idp.system.admin` 等）の散在も `domain::permission` へ集約 | ⬜未着手 | 中 | 中 | Sonnet 5 |
 | 15 | SEC7 | ログイン/同意 CSRF トークンの HMAC 化 — 現状 `sha256("csrf:" + auth_session_id)` でサーバシークレット不使用（保護対象と同じ秘密からの導出）。サーバ側キーの HMAC へ（web/api 共有のため `idp-contracts` の導出を差し替え） | ⬜未着手 | 小 | 小 | Sonnet 5 |
 | 16 | REF4 | 小粒の重複解消 — ①`InvitationError`/`PermissionManagementError`→`ApiError` マッピングのハンドラ間コピー（`impl From` へ集約）②`validate_email` の三重定義（`EmailAddress` 値オブジェクトへ）③`list_members` の N+1（JOIN 一括取得）④`ensure_user_in_tenant` と `get_user` の同文重複 | ⬜未着手 | 小 | 小 | Haiku 4.5 |
@@ -45,6 +45,24 @@ SEC = MT16 完了時のセキュリティレビュー指摘、REF = 同リファ
 「権限保有はメンバーシップを含意する」という保証）とデータ整合の要に触れるため Opus を割り当てる。
 SEC1 と REF2 は同じトランザクション境界の話であり、まとめて 1 ブランチで実装してよい
 （先に SEC1 の一括 revoke + 順序修正、その足場で REF2 の unit of work を導入）。
+
+**GAP1 の設計確定（2026-07-12）**: ADR-0009 §4 を正とし、実装を合わせる（Entra ID の B2B ゲストと
+同型。ADR 側は付与対象の定義を明文化する改訂のみで、設計変更ではない）。
+
+- **付与対象**: 当該テナントで **ACTIVE なメンバーシップ**（HOME / GUEST）を持つユーザー。
+  **アカウントの出自（HOME か GUEST か）では区別しない**。`INVITED`（未承諾）は対象外で、
+  対象外への操作は従来どおり 404 に倒す（テナント越しの存在推測を防ぐ）。
+- **付与主体**: 当該テナントを scope とする admin 権限の保有者のみ。所属元（ホーム）テナントの
+  管理者であっても、ゲスト参加先テナントの権限は付与できない（scope 完全一致）。テナント間に
+  権限の優劣・移譲・継承は存在しない。
+- **削除の意味論**（現行 ADR どおり・変更なし）: GUEST はメンバーシップ解除（当該テナント scope の
+  権限行も削除）、HOME はアカウント削除（メンバーシップ・権限行は FK `ON DELETE CASCADE` で消滅）。
+- **実装範囲**: ① `ensure_user_in_tenant`（`crates/core/src/application/permission_management.rs`）を
+  「ユーザー現存 + `TenantMembershipRepository::is_active_member`」の判定へ変更（list/grant/revoke の
+  3 経路すべてに効く）。② `find_user_by_identifier` は所属元限定検索のまま維持する — ゲストの
+  メール/ユーザー名は所属元テナントの名前空間にあり、参加先での識別子検索はホームユーザーと衝突し
+  得るため。GUEST への付与はメンバー一覧（`/{tenant_id}/admin/members`、`user_id` 指定）からの導線と
+  する。③ negative test（INVITED への付与不可・テナント外 404 維持・GUEST への付与成功）を追加。
 
 **SEC/REF の出所**: MT16 完了時（2026-07-12）の全体セキュリティレビュー・リファクタ棚卸し。
 検証済みの前提（良い点）は `docs/CHANGELOG.md` の MT16 項を参照。SEC 系の再検証には
