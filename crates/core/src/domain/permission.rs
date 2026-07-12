@@ -7,6 +7,12 @@
 
 use crate::domain::error::DomainError;
 
+/// テナント管理権限コード（scope = 当該テナント）。管理コンソールへのログインと管理操作に必要。
+pub const TENANT_ADMIN: &str = "idp.tenant.admin";
+/// システム管理権限コード（scope = root テナントのみ）。root テナント自身の管理を含み、
+/// `TENANT_ADMIN` の代替として常に許可される（ADR-0009 §4）。
+pub const SYSTEM_ADMIN: &str = "idp.system.admin";
+
 /// 名前空間付き権限コード（例: `idp.tenant.admin`, 将来 `idp.clients:read`）。
 ///
 /// 許可値の単一出所は `permissions` マスタテーブル（seed マイグレーション）であり、

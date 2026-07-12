@@ -11,7 +11,7 @@ use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
-use crate::domain::permission::PermissionCode;
+use crate::domain::permission::{self, PermissionCode};
 use crate::domain::repositories::{
     TenantMembershipRepository, UserPermissionRepository, UserRepository,
 };
@@ -33,7 +33,6 @@ pub enum PermissionManagementError {
 }
 
 /// `idp.system.admin` の付与・剥奪は保有者のみが行える（ADR-0009 §4）。
-const SYSTEM_ADMIN_PERMISSION: &str = "idp.system.admin";
 
 pub struct PermissionManagementService {
     users: Arc<dyn UserRepository>,
@@ -226,12 +225,12 @@ impl PermissionManagementService {
         code: &PermissionCode,
         actor: Uuid,
     ) -> Result<(), PermissionManagementError> {
-        if code.as_str() != SYSTEM_ADMIN_PERMISSION {
+        if code.as_str() != permission::SYSTEM_ADMIN {
             return Ok(());
         }
         match self
             .permissions
-            .has_permission(tenant.tenant_id(), actor, SYSTEM_ADMIN_PERMISSION)
+            .has_permission(tenant.tenant_id(), actor, permission::SYSTEM_ADMIN)
             .await
         {
             Ok(true) => Ok(()),

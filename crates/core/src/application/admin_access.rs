@@ -11,14 +11,12 @@
 //! OIDC scope（claim 制御）とは別軸の判定であり、Discovery の `scopes_supported` には出さない。
 
 use crate::domain::clock::Clock;
+use crate::domain::permission;
 use crate::domain::repositories::{SsoSessionRepository, UserPermissionRepository, UserRepository};
 use crate::domain::tenant_context::TenantContext;
 use crate::infrastructure::crypto;
 use std::sync::Arc;
 use uuid::Uuid;
-
-/// システム管理権限（scope = root のみ。ADR-0009 §4）。root テナント自身の管理を含む。
-const SYSTEM_ADMIN_PERMISSION: &str = "idp.system.admin";
 
 /// 管理機能へのアクセス判定結果。Presentation へは可否のみを渡す（内部理由は漏らさない）。
 #[derive(Debug, PartialEq, Eq)]
@@ -70,72 +68,31 @@ impl AdminAccessService {
         sso_session_id: Option<&str>,
         required_permission: &str,
     ) -> AdminAccess {
-        let Some(session_id) = sso_session_id.filter(|s| !s.is_empty()) else {
-            return AdminAccess::Unauthenticated;
+        let user_id = match self.resolve_session_user(sso_session_id).await {
+            Some(id) => id,
+            None => return AdminAccess::Unauthenticated,
         };
-
-        // Cookie は平文 session_id、DB にはその SHA-256 のみ（sso_session.rs と同じ導出）。
-        let session_hash = crypto::sha256_hex(session_id);
-        let session = match self.sso_sessions.find_by_hash(&session_hash).await {
-            Ok(Some(session)) => session,
-            Ok(None) => return AdminAccess::Unauthenticated,
-            Err(e) => {
-                tracing::error!(error = %e, "failed to load sso session for admin access");
-                return AdminAccess::Unauthenticated;
-            }
-        };
-
-        if !session.is_valid_at(self.clock.now()) {
-            return AdminAccess::Unauthenticated;
-        }
-
-        // 利用者が現存し有効であること（無効化された管理者を締め出す）。
-        match self.users.find_by_id(session.user_id).await {
-            Ok(Some(user)) if user.is_active() => {}
-            Ok(_) => return AdminAccess::Unauthenticated,
-            Err(e) => {
-                tracing::error!(error = %e, "failed to load user for admin access");
-                return AdminAccess::Unauthenticated;
-            }
-        }
 
         // 要求権限、または idp.system.admin（root scope のみ存在。root 自身の管理を含む）の
         // いずれかを、要求テナントを scope として保有するか（完全一致）。
         let tenant_id = tenant.tenant_id();
+        let codes: &[&str] = if required_permission == permission::SYSTEM_ADMIN {
+            &[permission::SYSTEM_ADMIN]
+        } else {
+            &[required_permission, permission::SYSTEM_ADMIN]
+        };
         match self
             .permissions
-            .has_permission(tenant_id, session.user_id, required_permission)
+            .has_any_permission(tenant_id, user_id, codes)
             .await
         {
-            Ok(true) => {
-                return AdminAccess::Granted(AuthorizedAdmin {
-                    user_id: session.user_id,
-                })
-            }
-            Ok(false) => {}
+            Ok(true) => AdminAccess::Granted(AuthorizedAdmin { user_id }),
+            Ok(false) => AdminAccess::Forbidden,
             Err(e) => {
                 tracing::error!(error = %e, "failed to check permission for admin access");
-                return AdminAccess::Forbidden;
+                AdminAccess::Forbidden
             }
         }
-        if required_permission != SYSTEM_ADMIN_PERMISSION {
-            match self
-                .permissions
-                .has_permission(tenant_id, session.user_id, SYSTEM_ADMIN_PERMISSION)
-                .await
-            {
-                Ok(true) => {
-                    return AdminAccess::Granted(AuthorizedAdmin {
-                        user_id: session.user_id,
-                    })
-                }
-                Ok(false) => {}
-                Err(e) => {
-                    tracing::error!(error = %e, "failed to check permission for admin access");
-                }
-            }
-        }
-        AdminAccess::Forbidden
     }
 
     /// SSO セッション Cookie から認証済み利用者の内部 ID を解決する（権限は問わない）。
@@ -145,24 +102,35 @@ impl AdminAccessService {
     /// リポジトリ障害はいずれも `None`（未認証）に倒す（fail-closed）。本人性の最終確認（被招待者本人か）は
     /// 呼び出し側のユースケースがトークン照合で行う。
     pub async fn authenticated_user(&self, sso_session_id: Option<&str>) -> Option<Uuid> {
+        self.resolve_session_user(sso_session_id).await
+    }
+
+    /// Cookie 平文 session_id → SSO セッション取得 → 有効性検証 → ユーザー有効性確認 の
+    /// 共通フロー（REF3）。いずれかの段階で失敗したら `None`（fail-closed）。
+    async fn resolve_session_user(&self, sso_session_id: Option<&str>) -> Option<Uuid> {
         let session_id = sso_session_id.filter(|s| !s.is_empty())?;
+
+        // Cookie は平文 session_id、DB にはその SHA-256 のみ（sso_session.rs と同じ導出）。
         let session_hash = crypto::sha256_hex(session_id);
         let session = match self.sso_sessions.find_by_hash(&session_hash).await {
             Ok(Some(session)) => session,
             Ok(None) => return None,
             Err(e) => {
-                tracing::error!(error = %e, "failed to load sso session for authenticated user");
+                tracing::error!(error = %e, "failed to load sso session");
                 return None;
             }
         };
+
         if !session.is_valid_at(self.clock.now()) {
             return None;
         }
+
+        // 利用者が現存し有効であること（無効化された管理者を締め出す）。
         match self.users.find_by_id(session.user_id).await {
             Ok(Some(user)) if user.is_active() => Some(session.user_id),
             Ok(_) => None,
             Err(e) => {
-                tracing::error!(error = %e, "failed to load user for authenticated user");
+                tracing::error!(error = %e, "failed to load user for sso session");
                 None
             }
         }
@@ -387,7 +355,7 @@ mod tests {
         let svc = service(
             Some(test_session("sid", uid, true)),
             Some(test_user(uid, root, UserStatus::Active)),
-            vec![(root, uid, SYSTEM_ADMIN_PERMISSION.to_string())],
+            vec![(root, uid, permission::SYSTEM_ADMIN.to_string())],
         );
         assert_eq!(
             svc.authorize(TenantContext::new(root), Some("sid"), ADMIN_PERM)
