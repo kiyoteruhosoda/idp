@@ -147,7 +147,7 @@ fn locale(headers: &HeaderMap) -> Locale {
     let accept = headers
         .get(header::ACCEPT_LANGUAGE)
         .and_then(|v| v.to_str().ok());
-    Locale::resolve(None, cookie_lang.as_deref(), accept)
+    Locale::resolve(None, None, cookie_lang.as_deref(), accept)
 }
 
 fn bad_request(html: String) -> Response {

@@ -162,6 +162,7 @@ impl RegisterService {
             email_verified: false,
             preferred_username,
             name,
+            language: None,
             password_hash,
             must_change_password: false,
             status: UserStatus::Active,

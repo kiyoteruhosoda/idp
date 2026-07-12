@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn login_form_has_csrf_and_credential_fields() {
-        let messages = Messages::new(Locale::En);
+        let messages = Messages::new(Locale::Ja);
         let html = render_login_form(&messages, "deadbeef", None);
         assert!(html.contains("name=\"csrf_token\" value=\"deadbeef\""));
         assert!(html.contains("name=\"username\""));
@@ -491,7 +491,7 @@ mod tests {
 
     #[test]
     fn home_lists_sections_and_logout_for_signed_in_admin() {
-        let messages = Messages::new(Locale::En);
+        let messages = Messages::new(Locale::Ja);
         let html = render(&ConsoleHome {
             messages: &messages,
             tenant: "/00000000-0000-7000-8000-000000000000",

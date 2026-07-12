@@ -316,6 +316,7 @@ mod tests {
             email_verified: true,
             preferred_username: Some("admin".to_string()),
             name: Some("Administrator".to_string()),
+            language: None,
             password_hash: "x".to_string(),
             must_change_password: false,
             status,

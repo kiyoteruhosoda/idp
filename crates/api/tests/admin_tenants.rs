@@ -165,6 +165,7 @@ async fn provisioning_rolls_back_all_rows_when_a_step_fails() {
         email_verified: false,
         preferred_username: None,
         name: None,
+        language: None,
         password_hash: "unused-hash".to_string(),
         must_change_password: true,
         status: UserStatus::Active,

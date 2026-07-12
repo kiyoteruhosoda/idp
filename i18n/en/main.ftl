@@ -320,3 +320,24 @@ password-reset-error-missing-token = The reset link is incomplete. Check the lin
 password-reset-error-invalid = The reset link is invalid or has expired. Request a new one from the sign-in page.
 password-reset-error-weak = The new password does not meet the strength requirements.
 password-reset-error-mismatch = The passwords do not match.
+
+# API error messages (MT19). Used by admin API endpoints; translated based on Accept-Language.
+# Error codes are language-invariant; only the message field is translated.
+api-user-not-found = User not found.
+api-user-email-conflict = This email address is already registered.
+api-user-username-conflict = This username is already taken.
+api-permission-unknown = Unknown permission code. Choose one of the available codes.
+api-permission-forbidden = You do not have permission to perform this action.
+api-member-home-cannot-remove = The home member of this tenant cannot be removed.
+api-member-not-found = That membership no longer exists.
+api-client-not-found = Client not found.
+api-client-type-invalid = Invalid client type. Choose public or confidential.
+api-client-status-invalid = Invalid status. Choose ACTIVE or DISABLED.
+api-invitation-user-not-found = No such user was found.
+api-signing-key-not-found = Signing key not found.
+api-signing-key-retire-failed = Only ACTIVE keys can be retired.
+api-signing-key-delete-failed = Only RETIRED keys can be deleted.
+api-tenant-not-found = Tenant not found.
+api-audit-invalid-datetime = Invalid date-time. Use RFC 3339, e.g. 2026-07-06T00:00:00Z.
+api-invalid-request = Invalid request.
+api-internal-error = An internal error occurred.

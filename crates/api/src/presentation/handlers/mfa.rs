@@ -122,10 +122,12 @@ pub async fn verify_totp(
         MfaLoginOutcome::Success {
             location,
             sso_session_id,
+            user_language,
         } => InternalVerifyTotpResponse::Success {
             redirect_to: location,
             sso_session_id,
             sso_absolute_ttl_secs: ttl,
+            user_language,
         },
         MfaLoginOutcome::ConsentRequired {
             auth_session_id,

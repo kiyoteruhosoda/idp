@@ -11,6 +11,7 @@ use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{CreateInvitationRequest, InvitationCreatedResponse};
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
+use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
 use axum::extract::{Extension, State};
@@ -38,17 +39,19 @@ pub async fn create_invitation(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
     headers: HeaderMap,
     Json(body): Json<CreateInvitationRequest>,
 ) -> Result<(StatusCode, Json<InvitationCreatedResponse>), ApiError> {
+    let msgs = ApiMessages::new(locale);
     let target = Uuid::parse_str(&body.user_id)
-        .map_err(|_| ApiError::BadRequest(format!("invalid user_id: {}", body.user_id)))?;
+        .map_err(|_| ApiError::BadRequest(msgs.get("api-invalid-request")))?;
     let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
     let created = state
         .invitations
         .create_invitation(tenant.context(), target, admin.user_id, &ctx)
         .await
-        .map_err(map_error)?;
+        .map_err(|e| map_error(e, &msgs))?;
     Ok((
         StatusCode::CREATED,
         Json(InvitationCreatedResponse {
@@ -60,13 +63,13 @@ pub async fn create_invitation(
     ))
 }
 
-fn map_error(e: InvitationError) -> ApiError {
+fn map_error(e: InvitationError, msgs: &ApiMessages) -> ApiError {
     match e {
-        InvitationError::NotFound => ApiError::NotFound("user not found".to_string()),
+        InvitationError::NotFound => ApiError::NotFound(msgs.get("api-invitation-user-not-found")),
         InvitationError::AlreadyMember => ApiError::Conflict("already a member".to_string()),
         InvitationError::Forbidden(m) => ApiError::Forbidden(m),
         InvitationError::InvalidOrExpired => {
-            ApiError::BadRequest("invalid or expired invitation".to_string())
+            ApiError::BadRequest(msgs.get("api-invalid-request"))
         }
         InvitationError::Internal(m) => ApiError::Internal(m),
     }

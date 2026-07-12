@@ -18,6 +18,7 @@
 use crate::application::admin_login::{
     AdminChangePasswordCommand, AdminLoginCommand, AdminLoginOutcome,
 };
+use crate::application::account_language::{AccountLanguageService, UpdateLanguageCommand, UpdateLanguageOutcome};
 use crate::application::account_password::{AccountPasswordCommand, AccountPasswordOutcome};
 use crate::application::audit::RequestContext;
 use crate::application::change_password::{ChangePasswordCommand, ChangePasswordOutcome};
@@ -33,6 +34,7 @@ use axum::Json;
 use crate::application::password_reset::{RequestResetOutcome, ResetPasswordOutcome};
 use idp_contracts::auth::{
     InternalAccountChangePasswordRequest, InternalAccountChangePasswordResponse,
+    InternalAccountUpdateLanguageRequest, InternalAccountUpdateLanguageResponse,
     InternalPasswordResetCompleteRequest, InternalPasswordResetCompleteResponse,
     InternalPasswordResetRequestRequest, InternalPasswordResetRequestResponse,
     InternalAdminAuthenticateRequest, InternalAdminAuthenticateResponse,
@@ -97,10 +99,12 @@ pub async fn authenticate(
         LoginOutcome::Success {
             location,
             sso_session_id,
+            user_language,
         } => InternalAuthenticateResponse::Success {
             redirect_to: location,
             sso_session_id,
             sso_absolute_ttl_secs: ttl,
+            user_language,
         },
         LoginOutcome::ConsentRequired {
             auth_session_id,
@@ -407,6 +411,30 @@ pub async fn password_reset_complete(
             InternalPasswordResetCompleteResponse::Internal
         }
     }))
+}
+
+/// セルフサービスの表示言語変更（`POST /internal/account/update-language`。MT20）。
+/// ログイン済みユーザーが SSO セッション経由で自分の言語設定を更新する。
+pub async fn account_update_language(
+    State(state): State<AppState>,
+    Json(req): Json<InternalAccountUpdateLanguageRequest>,
+) -> Json<InternalAccountUpdateLanguageResponse> {
+    let outcome = state
+        .account_language
+        .update(UpdateLanguageCommand {
+            sso_session_id: req.sso_session_id,
+            language: req.language,
+        })
+        .await;
+    Json(match outcome {
+        UpdateLanguageOutcome::Ok => InternalAccountUpdateLanguageResponse::Ok,
+        UpdateLanguageOutcome::SessionExpired => InternalAccountUpdateLanguageResponse::SessionExpired,
+        UpdateLanguageOutcome::InvalidLanguage => InternalAccountUpdateLanguageResponse::InvalidLanguage,
+        UpdateLanguageOutcome::Internal(e) => {
+            tracing::error!(error = %e, "account update-language failed with internal error");
+            InternalAccountUpdateLanguageResponse::Internal
+        }
+    })
 }
 
 #[cfg(test)]

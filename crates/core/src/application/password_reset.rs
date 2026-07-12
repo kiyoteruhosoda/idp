@@ -560,6 +560,7 @@ mod tests {
             email_verified: true,
             preferred_username: None,
             name: None,
+            language: None,
             password_hash: "hash:old-password".to_string(),
             must_change_password: false,
             status: UserStatus::Active,

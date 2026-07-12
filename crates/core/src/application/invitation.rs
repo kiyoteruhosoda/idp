@@ -601,6 +601,7 @@ mod tests {
             email_verified: true,
             preferred_username: Some("guest".to_string()),
             name: None,
+            language: None,
             password_hash: "x".to_string(),
             must_change_password: false,
             status: UserStatus::Active,

@@ -26,6 +26,8 @@ pub enum MfaLoginOutcome {
     Success {
         location: String,
         sso_session_id: String,
+        /// ユーザーの表示言語設定（MT20）。web は `lang` Cookie をこの値で上書きする。
+        user_language: Option<String>,
     },
     /// TOTP 検証成功だが同意が必要。同意画面へ誘導する。
     ConsentRequired {
@@ -278,6 +280,7 @@ impl MfaLoginService {
         MfaLoginOutcome::Success {
             location: code_redirect(&session.redirect_uri, &code, &session.state),
             sso_session_id,
+            user_language: user.language.clone(),
         }
     }
 

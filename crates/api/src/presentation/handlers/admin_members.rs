@@ -10,6 +10,7 @@ use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::MemberResponse;
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
+use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
 use axum::extract::{Extension, Path, State};
@@ -32,12 +33,14 @@ pub async fn list_members(
     RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
 ) -> Result<Json<Vec<MemberResponse>>, ApiError> {
+    let msgs = ApiMessages::new(locale);
     let members = state
         .invitations
         .list_members(tenant.context())
         .await
-        .map_err(map_error)?;
+        .map_err(|e| map_error(e, &msgs))?;
     Ok(Json(
         members
             .into_iter()
@@ -72,29 +75,31 @@ pub async fn revoke_member(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
     headers: HeaderMap,
     Path((_tenant_id, user_id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
+    let msgs = ApiMessages::new(locale);
     let target = Uuid::parse_str(&user_id)
-        .map_err(|_| ApiError::BadRequest(format!("invalid user_id: {user_id}")))?;
+        .map_err(|_| ApiError::BadRequest(msgs.get("api-invalid-request")))?;
     let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
     state
         .invitations
         .revoke_membership(tenant.context(), target, admin.user_id, &ctx)
         .await
-        .map_err(map_error)?;
+        .map_err(|e| map_error(e, &msgs))?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn map_error(e: InvitationError) -> ApiError {
+fn map_error(e: InvitationError, msgs: &ApiMessages) -> ApiError {
     match e {
-        InvitationError::NotFound => ApiError::NotFound("membership not found".to_string()),
+        InvitationError::NotFound => ApiError::NotFound(msgs.get("api-member-not-found")),
         InvitationError::AlreadyMember => {
             ApiError::Conflict("already a member".to_string())
         }
         InvitationError::Forbidden(m) => ApiError::Forbidden(m),
         InvitationError::InvalidOrExpired => {
-            ApiError::BadRequest("invalid or expired invitation".to_string())
+            ApiError::BadRequest(msgs.get("api-invalid-request"))
         }
         InvitationError::Internal(m) => ApiError::Internal(m),
     }

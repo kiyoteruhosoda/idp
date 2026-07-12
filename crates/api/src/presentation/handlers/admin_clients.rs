@@ -16,6 +16,7 @@ use crate::presentation::dto::{
 };
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
+use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
 use axum::extract::{Extension, Path, State};
@@ -40,12 +41,14 @@ pub async fn create_client(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
     headers: HeaderMap,
     Json(body): Json<ClientRegisterRequest>,
 ) -> Result<(StatusCode, Json<ClientCreatedResponse>), ApiError> {
+    let msgs = ApiMessages::new(locale);
     let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
     let client_type = ClientType::parse(&body.client_type)
-        .map_err(|_| ApiError::BadRequest(format!("invalid client_type: {}", body.client_type)))?;
+        .map_err(|_| ApiError::BadRequest(msgs.get("api-client-type-invalid")))?;
     let cmd = RegisterClientCommand {
         app_name: body.app_name,
         client_type,
@@ -61,7 +64,7 @@ pub async fn create_client(
         .clients_admin
         .register(tenant.context(), cmd, admin.user_id, &ctx)
         .await
-        .map_err(map_error)?;
+        .map_err(|e| map_error(e, &msgs))?;
 
     Ok((
         StatusCode::CREATED,
@@ -87,11 +90,13 @@ pub async fn list_clients(
     RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
 ) -> Result<Json<Vec<ClientResponse>>, ApiError> {
+    let msgs = ApiMessages::new(locale);
     let clients = state
         .clients_admin
         .list(tenant.context())
-        .await.map_err(map_error)?;
+        .await.map_err(|e| map_error(e, &msgs))?;
     Ok(Json(clients.iter().map(client_response).collect()))
 }
 
@@ -112,14 +117,16 @@ pub async fn get_client(
     RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
     // 先頭のパスセグメントは `{tenant_id}`（`ResolvedTenant` から取得済みのため破棄する）。
     Path((_tenant_id, client_id)): Path<(String, String)>,
 ) -> Result<Json<ClientResponse>, ApiError> {
+    let msgs = ApiMessages::new(locale);
     let client = state
         .clients_admin
         .get(tenant.context(), &client_id)
         .await
-        .map_err(map_error)?;
+        .map_err(|e| map_error(e, &msgs))?;
     Ok(Json(client_response(&client)))
 }
 
@@ -143,17 +150,19 @@ pub async fn update_client(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
     headers: HeaderMap,
     Path((_tenant_id, client_id)): Path<(String, String)>,
     Json(body): Json<ClientUpdateRequest>,
 ) -> Result<Json<ClientResponse>, ApiError> {
+    let msgs = ApiMessages::new(locale);
     let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
     let status = body
         .client_status
         .as_deref()
         .map(ClientStatus::parse)
         .transpose()
-        .map_err(|_| ApiError::BadRequest("invalid client_status".to_string()))?;
+        .map_err(|_| ApiError::BadRequest(msgs.get("api-client-status-invalid")))?;
     let cmd = UpdateClientCommand {
         app_name: body.app_name,
         redirect_uris: body.redirect_uris,
@@ -168,7 +177,7 @@ pub async fn update_client(
         .clients_admin
         .update(tenant.context(), &client_id, cmd, admin.user_id, &ctx)
         .await
-        .map_err(map_error)?;
+        .map_err(|e| map_error(e, &msgs))?;
     Ok(Json(client_response(&client)))
 }
 
@@ -191,15 +200,17 @@ pub async fn rotate_client_secret(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
     headers: HeaderMap,
     Path((_tenant_id, client_id)): Path<(String, String)>,
 ) -> Result<Json<ClientSecretResponse>, ApiError> {
+    let msgs = ApiMessages::new(locale);
     let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
     let (client, secret) = state
         .clients_admin
         .rotate_secret(tenant.context(), &client_id, admin.user_id, &ctx)
         .await
-        .map_err(map_error)?;
+        .map_err(|e| map_error(e, &msgs))?;
     Ok(Json(ClientSecretResponse {
         client_id: client.client_id,
         client_secret: secret,
@@ -253,10 +264,10 @@ fn client_response(c: &Client) -> ClientResponse {
     }
 }
 
-fn map_error(e: ClientManagementError) -> ApiError {
+fn map_error(e: ClientManagementError, msgs: &ApiMessages) -> ApiError {
     match e {
         ClientManagementError::Validation(m) => ApiError::BadRequest(m),
-        ClientManagementError::NotFound => ApiError::NotFound("client not found".to_string()),
+        ClientManagementError::NotFound => ApiError::NotFound(msgs.get("api-client-not-found")),
         ClientManagementError::Conflict(m) => ApiError::Conflict(m),
         ClientManagementError::Internal(m) => ApiError::Internal(m),
     }

@@ -9,6 +9,7 @@ use crate::domain::values::SigningAlgorithm;
 use crate::presentation::admin::{IdpAdmin, RequirePerms};
 use crate::presentation::dto::{GenerateSigningKeyRequest, SigningKeyResponse};
 use crate::presentation::error::ApiError;
+use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -28,8 +29,10 @@ use axum::Json;
 pub async fn list_keys(
     RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,
+    locale: ApiLocale,
 ) -> Result<Json<Vec<SigningKeyResponse>>, ApiError> {
-    let keys = state.keys.list_keys().await.map_err(map_error)?;
+    let msgs = ApiMessages::new(locale);
+    let keys = state.keys.list_keys().await.map_err(|e| map_error(e, &msgs))?;
     Ok(Json(keys.iter().map(key_response).collect()))
 }
 
@@ -49,12 +52,14 @@ pub async fn list_keys(
 pub async fn generate_key(
     RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,
+    locale: ApiLocale,
     Json(body): Json<GenerateSigningKeyRequest>,
 ) -> Result<(StatusCode, Json<SigningKeyResponse>), ApiError> {
+    let msgs = ApiMessages::new(locale);
     let algorithm = SigningAlgorithm::parse(&body.algorithm)
-        .map_err(|_| ApiError::BadRequest(format!("invalid algorithm: {}", body.algorithm)))?;
+        .map_err(|_| ApiError::BadRequest(msgs.get("api-invalid-request")))?;
 
-    let key = state.keys.generate_key(algorithm).await.map_err(map_error)?;
+    let key = state.keys.generate_key(algorithm).await.map_err(|e| map_error(e, &msgs))?;
     Ok((StatusCode::CREATED, Json(key_response(&key))))
 }
 
@@ -75,11 +80,13 @@ pub async fn generate_key(
 pub async fn retire_key(
     RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,
+    locale: ApiLocale,
     // 先頭のパスセグメントは `{tenant_id}`。署名鍵はテナント横断（グローバル）だが、管理ルートは
     // 全テナント一律 `/{tenant_id}/admin/...` に配置し RequirePerms でテナント権限を検証する。
     Path((_tenant_id, kid)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    state.keys.retire_key(&kid).await.map_err(map_error)?;
+    let msgs = ApiMessages::new(locale);
+    state.keys.retire_key(&kid).await.map_err(|e| map_error(e, &msgs))?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -100,9 +107,11 @@ pub async fn retire_key(
 pub async fn delete_key(
     RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,
+    locale: ApiLocale,
     Path((_tenant_id, kid)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    state.keys.delete_key(&kid).await.map_err(map_error)?;
+    let msgs = ApiMessages::new(locale);
+    state.keys.delete_key(&kid).await.map_err(|e| map_error(e, &msgs))?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -117,10 +126,10 @@ fn key_response(k: &SigningKey) -> SigningKeyResponse {
     }
 }
 
-fn map_error(e: KeyManagementError) -> ApiError {
+fn map_error(e: KeyManagementError, msgs: &ApiMessages) -> ApiError {
     match e {
-        KeyManagementError::NotFound(m) => ApiError::NotFound(m),
-        KeyManagementError::Validation(m) => ApiError::BadRequest(m),
+        KeyManagementError::NotFound(_) => ApiError::NotFound(msgs.get("api-signing-key-not-found")),
+        KeyManagementError::Validation(_) => ApiError::BadRequest(msgs.get("api-invalid-request")),
         KeyManagementError::Internal(m) => ApiError::Internal(m),
     }
 }

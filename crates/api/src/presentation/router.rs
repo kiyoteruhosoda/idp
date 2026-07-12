@@ -39,6 +39,11 @@ pub fn build(state: AppState) -> Router {
             "/internal/account/change-password",
             post(internal_auth::account_change_password),
         )
+        // セルフサービスの表示言語変更（ログイン済みユーザーの設定画面。MT20）。
+        .route(
+            "/internal/account/update-language",
+            post(internal_auth::account_update_language),
+        )
         .route("/internal/logout", post(internal_auth::logout))
         // パスワードリセット（忘失時。MT18）。未ログイン経路（web がフォームを仲介する）。
         .route(

@@ -1,11 +1,11 @@
-//! 利用者のセルフサービス設定画面（web。`/{tenant_id}/settings`。MT15）。
+//! 利用者のセルフサービス設定画面（web。`/{tenant_id}/settings`。MT15・MT20）。
 //!
 //! ログイン済み（SSO セッション保有）利用者が、自分のパスワード変更・表示言語の選択・MFA（TOTP /
 //! Passkey）の管理導線にアクセスする。パスワード変更は api の `POST /internal/account/change-password`
 //! に委ね、MFA は既存の `/{tenant_id}/account/*` 画面へ誘導する。
 //!
-//! 言語設定（MT15 の範囲）: `?lang=` を受けたら `lang` Cookie に保存する（決定チェーンの優先度1・3）。
-//! ログインユーザーの設定列（優先度2）と全画面での決定チェーン統一は MT20 で行う。
+//! 言語設定（MT20）: `?lang=` を受けたら `lang` Cookie に保存し、ログイン中なら DB へも永続化する
+//! （`POST /internal/account/update-language`）。
 
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -21,9 +21,10 @@ use axum::response::{AppendHeaders, Html, IntoResponse, Response};
 use axum::Form;
 use idp_contracts::auth::{
     InternalAccountChangePasswordRequest, InternalAccountChangePasswordResponse,
+    InternalAccountUpdateLanguageRequest, InternalAccountUpdateLanguageResponse,
 };
 
-/// 設定画面（`GET /{tenant_id}/settings`）。`?lang=` があれば言語 Cookie を保存する。
+/// 設定画面（`GET /{tenant_id}/settings`）。`?lang=` があれば言語 Cookie を保存し、ログイン中なら DB へも永続化する。
 pub async fn page(
     State(state): State<WebState>,
     Extension(tenant): Extension<WebTenant>,
@@ -34,7 +35,7 @@ pub async fn page(
     let accept = headers
         .get(header::ACCEPT_LANGUAGE)
         .and_then(|v| v.to_str().ok());
-    let locale = Locale::resolve(query.lang.as_deref(), cookie_lang.as_deref(), accept);
+    let locale = Locale::resolve(query.lang.as_deref(), None, cookie_lang.as_deref(), accept);
     let messages = Messages::new(locale);
 
     let body = render(&UserSettings {
@@ -45,7 +46,7 @@ pub async fn page(
         error_key: query.error.as_deref().and_then(error_key_for),
     });
 
-    // 明示的な言語選択（有効な `?lang=`）のときのみ Cookie を保存する。
+    // 明示的な言語選択（有効な `?lang=`）のときのみ Cookie を保存し、ログイン中なら DB へも永続化する。
     let set_lang = query
         .lang
         .as_deref()
@@ -53,6 +54,26 @@ pub async fn page(
         .map(|l| l.as_tag());
     match set_lang {
         Some(tag) => {
+            // ログイン中なら DB にも言語設定を保存する（MT20）。
+            if let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) {
+                let req = InternalAccountUpdateLanguageRequest {
+                    sso_session_id: sso,
+                    language: Some(tag.to_string()),
+                };
+                match state.api.account_update_language(&req).await {
+                    Ok(InternalAccountUpdateLanguageResponse::Ok) => {}
+                    Ok(InternalAccountUpdateLanguageResponse::SessionExpired) => {
+                        // セッション切れ — Cookie のみ更新して続行。
+                        tracing::debug!("SSO session expired during language update");
+                    }
+                    Ok(other) => {
+                        tracing::warn!(?other, "unexpected outcome from update-language");
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "account update-language call to api failed");
+                    }
+                }
+            }
             let cookie = cookies::build(
                 cookies::LANG_COOKIE,
                 tag,

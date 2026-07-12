@@ -509,7 +509,7 @@ mod tests {
 
     #[test]
     fn search_result_escapes_user_fields() {
-        let messages = Messages::new(Locale::En);
+        let messages = Messages::new(Locale::Ja);
         let html = render_search(&messages, &tenant(), "admin-1", "alice", SearchResult::Found(&user()));
         // Askama は HTML を数値文字参照でエスケープする（`<` → `&#60;`）。生タグが残らないことを確認する。
         assert!(html.contains("&#60;b&#62;alice&#60;/b&#62;"));
@@ -519,7 +519,7 @@ mod tests {
 
     #[test]
     fn permissions_lists_codes_and_grant_form() {
-        let messages = Messages::new(Locale::En);
+        let messages = Messages::new(Locale::Ja);
         let html = render_permissions(
             &messages,
             &tenant(),
@@ -538,7 +538,7 @@ mod tests {
 
     #[test]
     fn new_form_renders_fields() {
-        let messages = Messages::new(Locale::En);
+        let messages = Messages::new(Locale::Ja);
         let html = render_new_form(&messages, &tenant(), "admin-1", "csrf1", "", "", "", None);
         assert!(html.contains("name=\"email\""));
         assert!(html.contains("name=\"preferred_username\""));

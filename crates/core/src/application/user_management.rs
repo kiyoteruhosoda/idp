@@ -144,16 +144,9 @@ impl UserManagementService {
             email_verified: true,
             preferred_username,
             name,
+            language: None,
             password_hash,
             must_change_password: true,
-            status: UserStatus::Active,
-            failed_login_count: 0,
-            locked_until: None,
-            created_at: now,
-            updated_at: now,
-        };
-
-        Ok(PreparedUser {
             user,
             generated_password,
         })
