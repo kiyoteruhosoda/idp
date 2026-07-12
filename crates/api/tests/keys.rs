@@ -29,7 +29,9 @@ struct Claims {
     exp: usize,
 }
 
-#[tokio::test]
+// RSA 鍵生成は同期 CPU 処理のため、並走ブートストラップの検証にはマルチスレッドランタイムを使う
+// （current_thread だと keygen がリアクタをブロックし、他タスクの DB I/O が進まない）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ensure_key_is_idempotent_and_token_verifies_against_jwks() {
     let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
         eprintln!("TEST_DATABASE_URL not set; skipping key service integration test");
@@ -49,11 +51,28 @@ async fn ensure_key_is_idempotent_and_token_verifies_against_jwks() {
     let kek = *idp_api::config::Config::from_env()
         .expect("config")
         .key_encryption_key();
-    let service = KeyService::new(repo, clock, kek);
+    let service = Arc::new(KeyService::new(repo, clock, kek));
 
-    // 冪等性: 2 回呼んでも ACTIVE 鍵は増えない。
-    service.ensure_active_key().await.expect("ensure #1");
-    service.ensure_active_key().await.expect("ensure #2");
+    // 並走レースを実際に起こすため、鍵テーブルを空にしてから同時ブートストラップする
+    // （本テストバイナリは単独でこのテーブルを扱い、cargo はバイナリを逐次実行する）。
+    sqlx::query("DELETE FROM signing_keys")
+        .execute(&pool)
+        .await
+        .expect("clear signing keys");
+
+    // 並走安全性（SEC5）: 複数インスタンスの同時ブートストラップでも ACTIVE 鍵は 1 本
+    // （`insert_if_no_active` の advisory lock による排他区間）。
+    let mut tasks = Vec::new();
+    for _ in 0..8 {
+        let svc = service.clone();
+        tasks.push(tokio::spawn(async move { svc.ensure_active_key().await }));
+    }
+    for task in tasks {
+        task.await.expect("join").expect("concurrent ensure");
+    }
+
+    // 冪等性: さらに呼んでも ACTIVE 鍵は増えない。
+    service.ensure_active_key().await.expect("ensure again");
 
     let active_count: i64 =
         sqlx::query("SELECT COUNT(*) AS c FROM signing_keys WHERE status = 'ACTIVE'")

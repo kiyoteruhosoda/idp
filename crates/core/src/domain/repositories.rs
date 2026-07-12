@@ -178,6 +178,11 @@ pub trait AuthorizationCodeRepository: Send + Sync {
 #[async_trait]
 pub trait SigningKeyRepository: Send + Sync {
     async fn insert(&self, key: &SigningKey) -> Result<()>;
+    /// **ACTIVE 鍵が 1 本も無い場合に限り** `key` を挿入する（ブートストラップ専用の排他挿入）。
+    /// 挿入したら `true`、既に ACTIVE 鍵が存在して何もしなかったら `false` を返す。
+    /// 「存在確認 → 挿入」を排他区間で行い、複数インスタンスの同時起動でも ACTIVE 鍵が
+    /// 重複生成されないことを実装が保証する（SEC5）。
+    async fn insert_if_no_active(&self, key: &SigningKey) -> Result<bool>;
     /// 新規署名に使う ACTIVE 鍵を返す。
     async fn find_active(&self) -> Result<Option<SigningKey>>;
     /// JWKS 公開対象（ACTIVE + RETIRED で not_after が未来のもの）を返す。

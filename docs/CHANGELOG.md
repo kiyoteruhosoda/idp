@@ -9,6 +9,11 @@
   現行テンプレートのインライン script/style は許容、nonce 化は後続改善）・`nosniff`・
   `Referrer-Policy` を付与（`crates/web/src/security_headers.rs`）。`HSTS_MAX_AGE` も api と同キーで
   web に追加。
+- **SEC5 — 署名鍵ブートストラップの排他制御**: `ensure_active_key` の「存在確認 → 生成」TOCTOU を、
+  `SigningKeyRepository::insert_if_no_active`（MariaDB `GET_LOCK` の排他区間で再確認＋挿入。同一接続で
+  取得〜解放）で解消。複数インスタンスの同時起動でも ACTIVE 鍵は 1 本のまま。8 並走のブートストラップ
+  レースを keys 統合テストで検証（DB 側で ACTIVE 複数を禁止しない理由: 手動 generate・ローテーション
+  遷移では ACTIVE 並存が正当なため、排他はブートストラップ経路に限定する）。
 - **SEC4 — `/internal/*` のテナント解決を fail-closed 化**: `tenant_id` 未指定・不正時に root へ
   フォールバックする過渡措置（`internal_tenant`）を撤去し、`require_internal_tenant` が 400 を返す。
   web は全内部呼び出しで `tenant_id` を必須送信（`consent_info` の送信漏れも修正）。あわせて

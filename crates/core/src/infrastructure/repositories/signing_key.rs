@@ -67,6 +67,57 @@ impl SigningKeyRepository for SqlxSigningKeyRepository {
         Ok(())
     }
 
+    async fn insert_if_no_active(&self, key: &SigningKey) -> Result<bool> {
+        // MariaDB の advisory lock（GET_LOCK）で「存在確認 → 挿入」を直列化する（SEC5）。
+        // GET_LOCK は接続スコープのため、確認・挿入・解放まで同一接続で行う。
+        // 接続が切れた場合はサーバ側でロックが自動解放される。
+        let mut conn = self.pool.acquire().await.map_err(repo_err)?;
+        let locked: i64 = sqlx::query_scalar("SELECT GET_LOCK('idp.signing_key_bootstrap', 10)")
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(repo_err)?;
+        if locked != 1 {
+            return Err(DomainError::Repository(
+                "failed to acquire signing key bootstrap lock".to_string(),
+            ));
+        }
+        // ロック保持中に再確認 → 無ければ挿入。エラーでも必ず RELEASE_LOCK を試みる。
+        let result: Result<bool> = async {
+            let active: Option<i64> =
+                sqlx::query_scalar("SELECT 1 FROM signing_keys WHERE status = 'ACTIVE' LIMIT 1")
+                    .fetch_optional(&mut *conn)
+                    .await
+                    .map_err(repo_err)?;
+            if active.is_some() {
+                return Ok(false);
+            }
+            sqlx::query(
+                "INSERT INTO signing_keys \
+                 (kid, algorithm, public_key, private_key_encrypted, status, not_before, not_after) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&key.kid)
+            .bind(&key.algorithm)
+            .bind(&key.public_key)
+            .bind(&key.private_key_encrypted)
+            .bind(key.status.as_str())
+            .bind(key.not_before.naive_utc())
+            .bind(key.not_after.naive_utc())
+            .execute(&mut *conn)
+            .await
+            .map_err(repo_err)?;
+            Ok(true)
+        }
+        .await;
+        let release = sqlx::query("SELECT RELEASE_LOCK('idp.signing_key_bootstrap')")
+            .execute(&mut *conn)
+            .await;
+        if let Err(e) = release {
+            tracing::warn!(error = %e, "failed to release signing key bootstrap lock (released on disconnect)");
+        }
+        result
+    }
+
     async fn find_active(&self) -> Result<Option<SigningKey>> {
         let sql = format!(
             "SELECT {SELECT_COLUMNS} FROM signing_keys \

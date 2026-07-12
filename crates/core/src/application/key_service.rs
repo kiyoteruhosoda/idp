@@ -51,11 +51,25 @@ impl KeyService {
     }
 
     /// ACTIVE 鍵が無ければ RSA 鍵ペアを生成し、秘密鍵を暗号化して永続化する（冪等）。
+    ///
+    /// 挿入は `insert_if_no_active`（repository の排他区間）で行い、複数インスタンスの同時起動
+    /// （ローリングデプロイ・並列テスト）でも ACTIVE 鍵が重複生成されない（SEC5）。
+    /// 排他区間で負けた側は生成済みの鍵材料を破棄して成功扱いにする。
     pub async fn ensure_active_key(&self) -> anyhow::Result<()> {
         if self.find_active_key().await?.is_some() {
             return Ok(());
         }
-        self.generate_key_internal(SigningAlgorithm::Rs256).await?;
+        let key = self.new_key_material(SigningAlgorithm::Rs256)?;
+        let inserted = self
+            .repo
+            .insert_if_no_active(&key)
+            .await
+            .map_err(|e| anyhow::anyhow!("bootstrap signing key: {e}"))?;
+        if inserted {
+            tracing::info!(kid = %key.kid, "bootstrapped the active signing key");
+        } else {
+            tracing::info!("active signing key already bootstrapped by another instance");
+        }
         Ok(())
     }
 
@@ -212,6 +226,17 @@ impl KeyService {
         &self,
         algorithm: SigningAlgorithm,
     ) -> anyhow::Result<SigningKey> {
+        let key = self.new_key_material(algorithm)?;
+        self.repo
+            .insert(&key)
+            .await
+            .map_err(|e| anyhow::anyhow!("insert signing key: {e}"))?;
+        tracing::info!(kid = %key.kid, algorithm = %algorithm.as_str(), "generated new signing key");
+        Ok(key)
+    }
+
+    /// 新しい ACTIVE 鍵の材料（鍵ペア生成・秘密鍵暗号化・kid 採番）を組み立てる（永続化しない）。
+    fn new_key_material(&self, algorithm: SigningAlgorithm) -> anyhow::Result<SigningKey> {
         let (private_pem, public_pem) = match algorithm {
             SigningAlgorithm::Rs256 => jwt::generate_rsa_keypair()?,
             SigningAlgorithm::Es256 => jwt::generate_ec_keypair()?,
@@ -227,8 +252,8 @@ impl KeyService {
         let private_key_encrypted =
             crypto::encrypt(private_pem.as_bytes(), &self.key_encryption_key)?;
 
-        let key = SigningKey {
-            kid: kid.clone(),
+        Ok(SigningKey {
+            kid,
             algorithm: algorithm.as_str().to_string(),
             public_key: public_pem,
             private_key_encrypted,
@@ -237,13 +262,6 @@ impl KeyService {
             not_after: now + Duration::days(KEY_VALIDITY_DAYS),
             created_at: now,
             updated_at: now,
-        };
-
-        self.repo
-            .insert(&key)
-            .await
-            .map_err(|e| anyhow::anyhow!("insert signing key: {e}"))?;
-        tracing::info!(kid = %kid, algorithm = %algorithm.as_str(), "generated new signing key");
-        Ok(key)
+        })
     }
 }
