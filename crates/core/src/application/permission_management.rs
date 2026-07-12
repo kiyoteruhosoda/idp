@@ -75,10 +75,9 @@ impl PermissionManagementService {
         tenant: TenantContext,
         target: Uuid,
     ) -> Result<User, PermissionManagementError> {
-        match self.users.find_by_id(target).await {
-            Ok(Some(user)) if user.tenant_id == tenant.tenant_id() => Ok(user),
-            Ok(_) => Err(PermissionManagementError::NotFound),
-            Err(e) => Err(PermissionManagementError::Internal(e.to_string())),
+        match self.find_user_by_id(target).await? {
+            Some(user) if user.tenant_id == tenant.tenant_id() => Ok(user),
+            _ => Err(PermissionManagementError::NotFound),
         }
     }
 
@@ -198,12 +197,7 @@ impl PermissionManagementService {
         target: Uuid,
     ) -> Result<(), PermissionManagementError> {
         // ユーザーが現存すること（メンバーシップ行は FK でユーザーを含意するが、明示して意図を残す）。
-        let exists = self
-            .users
-            .find_by_id(target)
-            .await
-            .map_err(|e| PermissionManagementError::Internal(e.to_string()))?
-            .is_some();
+        let exists = self.find_user_by_id(target).await?.is_some();
         // 要求テナントで ACTIVE なメンバーシップ（HOME / GUEST）を持つこと。
         let active_member = exists
             && self
@@ -216,6 +210,17 @@ impl PermissionManagementService {
         } else {
             Err(PermissionManagementError::NotFound)
         }
+    }
+
+    /// ユーザー ID で検索し、内部エラーを `PermissionManagementError::Internal` に変換する。
+    async fn find_user_by_id(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<crate::domain::user::User>, PermissionManagementError> {
+        self.users
+            .find_by_id(id)
+            .await
+            .map_err(|e| PermissionManagementError::Internal(e.to_string()))
     }
 
     /// `idp.system.admin` の付与・剥奪は `idp.system.admin` 保有者のみが実行できる（ADR-0009 §4）。

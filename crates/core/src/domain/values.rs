@@ -132,6 +132,19 @@ string_enum!(
     }
 );
 
+/// メールアドレスの簡易バリデーション（MVP）。
+///
+/// 空でなく、`@` を挟んで両側に文字があることを検証する。
+/// `register` と `user_management` で共通の基準として使う。
+pub fn validate_email(email: &str) -> Result<(), DomainError> {
+    let parts: Vec<&str> = email.split('@').collect();
+    if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+        Ok(())
+    } else {
+        Err(DomainError::InvalidValue("invalid email format".to_string()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,5 +164,15 @@ mod tests {
     fn rejects_unknown_values() {
         assert!(UserStatus::parse("BANNED").is_err());
         assert!(CodeChallengeMethod::parse("plain").is_err());
+    }
+
+    #[test]
+    fn email_validation_accepts_valid_and_rejects_invalid() {
+        assert!(validate_email("a@b").is_ok());
+        assert!(validate_email("user@example.com").is_ok());
+        assert!(validate_email("not-an-email").is_err());
+        assert!(validate_email("@b").is_err());
+        assert!(validate_email("a@").is_err());
+        assert!(validate_email("").is_err());
     }
 }

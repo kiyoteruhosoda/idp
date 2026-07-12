@@ -119,6 +119,17 @@ pub trait UserRepository: Send + Sync {
     /// 所属元が `tenant_id` のユーザーを preferred_username で検索する。
     async fn find_by_username(&self, tenant_id: TenantId, username: &str)
         -> Result<Option<User>>;
+    /// 複数の内部 ID で一括取得する（N+1 回避。`list_members` 等で使用）。
+    /// 見つかったものだけを返す（欠落は無視）。順序は保証しない。
+    async fn find_by_ids(&self, ids: &[Uuid]) -> Result<Vec<User>> {
+        let mut result = Vec::with_capacity(ids.len());
+        for &id in ids {
+            if let Some(u) = self.find_by_id(id).await? {
+                result.push(u);
+            }
+        }
+        Ok(result)
+    }
     /// ログイン失敗回数・ロック期限を更新する（ロックポリシー、設計仕様 §4.3）。
     async fn update_login_state(
         &self,

@@ -2,7 +2,26 @@
 
 完了した重要な変更の要約（詳しい経緯は `history/`、設計判断は `adr/`）。
 
-## 2026-07-12（MT19/MT20: i18n 全面対応）
+## 2026-07-12（REF3・SEC7・REF4: リファクタ・セキュリティ強化）
+
+- **REF3 — 認可ホットパスの整理**:
+  - 権限コード定数（`idp.tenant.admin`・`idp.system.admin`）を `domain::permission` に集約（各所のローカル `const` を削除）。
+  - `UserPermissionRepository` トレイトに `has_any_permission` デフォルト実装を追加。`SqlxUserPermissionRepository` は `IN (?, ?)` の単一クエリでオーバーライド。
+  - `AdminAccessService` の SSO セッション解決ロジックを `resolve_session_user` ヘルパーに抽出（`authorize`・`authenticated_user` の重複を排除）。
+  - `AdminLoginService::login`・`change_password` の `has_permission` 2 回呼び出しを `has_any_permission` 1 回に統合。
+
+- **SEC7 — CSRF トークンの HMAC 化**:
+  - `idp-contracts::csrf` の `login_csrf_token` / `consent_csrf_token` を SHA-256 から HMAC-SHA256 へ変更。関数が `key: &[u8]` を受け取る（破壊的変更）。
+  - `web::csrf` の `admin_csrf_token` / `console_csrf_token` も同様に HMAC-SHA256 へ変更。
+  - `CSRF_SECRET` 環境変数（base64, 32 バイト）を api・web の両方で読み込む。未設定時は開発用デフォルト（`DEV_CSRF_SECRET`、32 バイト）を使用し、https issuer では fail-fast。
+  - `LoginService`・`ChangePasswordService`・`MfaLoginService` の構造体に `csrf_secret: [u8; 32]` フィールドを追加し、コンストラクタ・`AppState::build()` を更新。
+
+- **REF4 — 小粒の重複解消**:
+  - `PermissionManagementError→ApiError` マッピング関数 `map_permission_management_error` を `handlers/mod.rs` に集約（`admin_permissions.rs` と `admin_users.rs` の重複を削除）。
+  - `validate_email` を `domain::values` に統合。`register.rs`・`user_management.rs` のローカル実装を削除し、`domain_validate_email` を再利用。
+  - `InvitationService::list_members` の N+1 を解消: `UserRepository::find_by_ids` トレイトメソッドを追加（デフォルト実装は逐次、`SqlxUserRepository` は `IN` クエリでオーバーライド）。
+  - `PermissionManagementService` に `find_user_by_id` プライベートヘルパーを抽出（`get_user` と `ensure_user_in_tenant` の重複 `find_by_id` + エラー変換を統合）。
+
 
 - **MT19 — API の `Accept-Language` ベース多言語化**: `ApiLocale` extractor（`FromRequestParts`、既定 `ja`）と
   `ApiMessages`（`fluent` ラッパー）を `crates/api/src/presentation/i18n.rs` に追加。全管理系ハンドラ

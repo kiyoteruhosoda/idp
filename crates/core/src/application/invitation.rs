@@ -247,21 +247,24 @@ impl InvitationService {
             .list_for_tenant(host.tenant_id())
             .await
             .map_err(|e| InvitationError::Internal(e.to_string()))?;
-        let mut members = Vec::with_capacity(memberships.len());
-        for m in memberships {
-            let user = self
-                .users
-                .find_by_id(m.user_id)
-                .await
-                .map_err(|e| InvitationError::Internal(e.to_string()))?;
-            members.push(TenantMember {
+        let user_ids: Vec<Uuid> = memberships.iter().map(|m| m.user_id).collect();
+        let users = self
+            .users
+            .find_by_ids(&user_ids)
+            .await
+            .map_err(|e| InvitationError::Internal(e.to_string()))?;
+        let user_map: std::collections::HashMap<Uuid, &crate::domain::user::User> =
+            users.iter().map(|u| (u.id, u)).collect();
+        let members = memberships
+            .into_iter()
+            .map(|m| TenantMember {
                 user_id: m.user_id,
-                email: user.as_ref().map(|u| u.email.clone()),
-                name: user.as_ref().and_then(|u| u.name.clone()),
+                email: user_map.get(&m.user_id).map(|u| u.email.clone()),
+                name: user_map.get(&m.user_id).and_then(|u| u.name.clone()),
                 membership_type: m.membership_type,
                 status: m.status,
-            });
-        }
+            })
+            .collect();
         Ok(members)
     }
 
