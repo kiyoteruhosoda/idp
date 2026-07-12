@@ -64,12 +64,9 @@ async fn setup() -> Option<TestEnv> {
     .fetch_one(&pool)
     .await
     .expect("initial admin seeded");
-    let root = idp_api::domain::tenant::TenantId::from(
-        uuid::Uuid::parse_str(&root_tenant_id).expect("root UUID"),
-    );
 
     let config = Arc::new(Config::from_env().expect("load config"));
-    let state = AppState::build(pool.clone(), config, Arc::new(SystemClock), root);
+    let state = AppState::build(pool.clone(), config, Arc::new(SystemClock));
     Some(TestEnv {
         app: router::build(state),
         pool,

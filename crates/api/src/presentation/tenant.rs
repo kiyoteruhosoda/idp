@@ -109,20 +109,33 @@ async fn resolve(
 }
 
 /// 内部 API（`/internal/*`。テナントプレフィクス無し。ADR-0009 §8）のテナントを、web が DTO で送る
-/// `tenant_id` から解決する。過渡期（web がテナント経路化されるまで）は未指定・不正を許容し、
-/// 既定テナント（root）へフォールバックする。`(tenant_id, email)` 一意化により、正しい tenant_id が
-/// 送られれば所属元テナント限定の認証が成立する。
-pub fn internal_tenant(state: &AppState, raw_tenant_id: Option<&str>) -> TenantContext {
+/// `tenant_id` から解決する。**未指定・UUID 不正は 400 で拒否する（fail-closed）**。
+///
+/// かつては過渡措置として既定テナント（root）へフォールバックしていたが、web のテナント経路化
+/// （MT13）完了に伴い撤去した（SEC4）。フォールバックを残すと、web が `tenant_id` を落とした場合に
+/// 別テナントのログイン画面から root テナントに対する認証が成立してしまう（テナント混同）。
+pub fn require_internal_tenant(raw_tenant_id: Option<&str>) -> Result<TenantContext, Response> {
     match raw_tenant_id.filter(|s| !s.is_empty()) {
         Some(raw) => match uuid::Uuid::parse_str(raw) {
-            Ok(id) => TenantContext::new(id.into()),
+            Ok(id) => Ok(TenantContext::new(id.into())),
             Err(_) => {
-                tracing::warn!(tenant_id = raw, "invalid tenant_id in internal request; using default tenant");
-                state.default_tenant
+                tracing::warn!(tenant_id = raw, "invalid tenant_id in internal request");
+                Err(invalid_tenant())
             }
         },
-        None => state.default_tenant,
+        None => {
+            tracing::warn!("missing tenant_id in internal request");
+            Err(invalid_tenant())
+        }
     }
+}
+
+fn invalid_tenant() -> Response {
+    error_response(
+        StatusCode::BAD_REQUEST,
+        "invalid_request",
+        "missing or invalid tenant_id",
+    )
 }
 
 fn not_found() -> Response {

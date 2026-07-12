@@ -3,13 +3,10 @@
 //! [`AppState::build`] がユースケースの組み立て（依存注入）を一手に担う。
 //! バイナリ（`lib.rs::run`）と統合テストの双方から同じ組み立てを使う。
 //!
-//! # 過渡期のテナント解決（MT5 → MT9）
-//!
-//! ユースケースは `TenantContext` を必須で受け取る（ADR-0009 §8）が、`/{tenant_id}/...`
-//! ルーティングと `TenantResolver` middleware は後続タスク（MT6・MT9）で導入する。それまでは
-//! 起動時に解決した **root テナントを既定のテナント** として全リクエストに適用する
-//! （`default_tenant`）。MT9 で「リクエストパスから解決した `Extension<ResolvedTenant>`」へ
-//! 置き換える。
+//! テナントは `/{tenant_id}/...` ルートでは `TenantResolver` middleware が、`/internal/*` では
+//! web が DTO で送る `tenant_id`（`require_internal_tenant`。未指定・不正は 400）が解決する。
+//! かつての「起動時に解決した root を既定テナントとして全リクエストへ適用する」過渡運用
+//! （`default_tenant`）は SEC4 で撤去した。
 
 use crate::application::account_password::AccountPasswordService;
 use crate::application::admin_access::AdminAccessService;
@@ -46,7 +43,6 @@ use crate::domain::clock::Clock;
 use crate::domain::id_generator::IdGenerator;
 use crate::domain::repositories::UserPermissionRepository;
 use crate::domain::tenant::{Tenant, TenantId};
-use crate::domain::tenant_context::TenantContext;
 use crate::infrastructure::cache::InMemoryTtlCache;
 use crate::infrastructure::db::Db;
 use crate::infrastructure::id_generator::UuidV7Generator;
@@ -84,8 +80,6 @@ const LOGIN_RATE_LIMIT_WINDOW_MINUTES: i64 = 5;
 pub struct AppState {
     pub pool: Db,
     pub config: Arc<Config>,
-    /// 過渡期（MT9 まで）の既定テナント（root）。全リクエストをこのテナントの文脈で処理する。
-    pub default_tenant: TenantContext,
     /// テナント解決（id → tenant）。`TenantResolver` middleware が使う（MT9 でルーターへ mount）。
     pub tenant_resolution: Arc<TenantResolutionService>,
     pub register: Arc<RegisterService>,
@@ -126,13 +120,7 @@ pub struct AppState {
 
 impl AppState {
     /// すべてのユースケースを組み立てる（トレイト越しのコンストラクタ注入）。
-    /// `default_tenant` は起動時に解決した root テナント ID（上記モジュールコメント参照）。
-    pub fn build(
-        pool: Db,
-        config: Arc<Config>,
-        clock: Arc<dyn Clock>,
-        default_tenant: TenantId,
-    ) -> Self {
+    pub fn build(pool: Db, config: Arc<Config>, clock: Arc<dyn Clock>) -> Self {
         let users = Arc::new(SqlxUserRepository::new(pool.clone()));
         let tenant_memberships = Arc::new(SqlxTenantMembershipRepository::new(pool.clone()));
         let clients = Arc::new(SqlxClientRepository::new(pool.clone()));
@@ -430,7 +418,6 @@ impl AppState {
         Self {
             pool,
             config,
-            default_tenant: TenantContext::new(default_tenant),
             tenant_resolution,
             register,
             authorize,

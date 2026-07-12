@@ -72,13 +72,10 @@ async fn setup() -> Option<TestEnv> {
             .fetch_one(&pool)
             .await
             .expect("root tenant seeded");
-    let root = idp_api::domain::tenant::TenantId::from(
-        uuid::Uuid::parse_str(&root_tenant_id).expect("root UUID"),
-    );
 
     let config = Arc::new(Config::from_env().expect("load config"));
     let issuer = config.issuer().to_string();
-    let state = AppState::build(pool.clone(), config, Arc::new(SystemClock), root);
+    let state = AppState::build(pool.clone(), config, Arc::new(SystemClock));
     // `ensure_active_key` は「存在確認 → 生成」の 2 手で並走に安全でない（TOCTOU）ため、
     // プロセス内で一度だけ実行する（ACTIVE 鍵の複数本化を防ぐ）。
     static KEY_BOOTSTRAP: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
@@ -234,12 +231,14 @@ fn login_csrf(auth_session: &str) -> String {
 /// `X-Forwarded-For` を渡すと監査・レート制限に反映される。結果は `result` タグ付き JSON。
 async fn internal_authenticate(
     app: &axum::Router,
+    tenant: &str,
     auth_session: &str,
     username: &str,
     password: &str,
     csrf: &str,
 ) -> (StatusCode, Value) {
     let body = json!({
+        "tenant_id": tenant,
         "auth_session_id": auth_session,
         "username": username,
         "password": password,
@@ -304,13 +303,13 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
 
     // CSRF トークン不一致は拒否される（result=csrf_mismatch）。
     let (status, body) =
-        internal_authenticate(&app, &auth_session, &username, password, &"0".repeat(64)).await;
+        internal_authenticate(&app, &root_tenant_id, &auth_session, &username, password, &"0".repeat(64)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["result"], "csrf_mismatch", "csrf mismatch");
 
     // 条件 4, 5, 7: ログイン成功。初回は profile/email が未同意のため同意ステップへ（F3）。
     let (status, body) =
-        internal_authenticate(&app, &auth_session, &username, password, &csrf).await;
+        internal_authenticate(&app, &root_tenant_id, &auth_session, &username, password, &csrf).await;
     assert_eq!(status, StatusCode::OK, "login success");
     assert_eq!(body["result"], "consent_required", "first login needs consent");
     let sso_cookie = body["sso_session_id"]
@@ -331,7 +330,8 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
             .header(CONTENT_TYPE, "application/json")
             .header(SERVICE_TOKEN_HEADER, SERVICE_TOKEN)
             .body(Body::from(
-                json!({ "auth_session_id": consent_session }).to_string(),
+                json!({ "tenant_id": root_tenant_id, "auth_session_id": consent_session })
+                    .to_string(),
             ))
             .unwrap(),
     )
@@ -677,7 +677,7 @@ async fn login_lockout_after_repeated_failures() {
     // 9 回失敗 → invalid_credentials、10 回目でロック（locked）。
     for attempt in 1..=10 {
         let (status, body) =
-            internal_authenticate(&app, &auth_session, &username, "wrong-password", &csrf).await;
+            internal_authenticate(&app, &root_tenant_id, &auth_session, &username, "wrong-password", &csrf).await;
         assert_eq!(status, StatusCode::OK, "attempt {attempt}");
         let expected = if attempt < 10 {
             "invalid_credentials"
@@ -688,7 +688,7 @@ async fn login_lockout_after_repeated_failures() {
     }
 
     // ロック中は正しいパスワードでも拒否される。
-    let (_, body) = internal_authenticate(&app, &auth_session, &username, password, &csrf).await;
+    let (_, body) = internal_authenticate(&app, &root_tenant_id, &auth_session, &username, password, &csrf).await;
     assert_eq!(body["result"], "locked", "locked account");
 
     // 監査ログ: login.failed が 10 件以上、login.locked が 2 件以上（ロック時 + ロック中の試行）。

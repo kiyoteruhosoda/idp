@@ -8,8 +8,9 @@ use crate::application::audit::RequestContext;
 use crate::application::totp_registration::TotpRegistrationError;
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::state::AppState;
-use crate::presentation::tenant::internal_tenant;
+use crate::presentation::tenant::require_internal_tenant;
 use axum::extract::{Extension, State};
+use axum::response::Response;
 use axum::Json;
 use idp_contracts::auth::{
     InternalTotpConfirmRequest, InternalTotpConfirmResponse, InternalTotpDeleteRequest,
@@ -97,13 +98,13 @@ pub async fn verify_totp(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Json(req): Json<InternalVerifyTotpRequest>,
-) -> Json<InternalVerifyTotpResponse> {
+) -> Result<Json<InternalVerifyTotpResponse>, Response> {
     let ctx = RequestContext {
         correlation_id: correlation.0,
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = internal_tenant(&state, req.tenant_id.as_deref());
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
     let outcome = state
         .mfa_login
         .verify(
@@ -117,7 +118,7 @@ pub async fn verify_totp(
         )
         .await;
     let ttl = state.config.sso_absolute_ttl().as_secs();
-    Json(match outcome {
+    Ok(Json(match outcome {
         MfaLoginOutcome::Success {
             location,
             sso_session_id,
@@ -141,5 +142,5 @@ pub async fn verify_totp(
             tracing::error!(error = %e, "mfa verify internal error");
             InternalVerifyTotpResponse::Internal
         }
-    })
+    }))
 }

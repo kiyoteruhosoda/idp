@@ -24,7 +24,7 @@ use crate::application::change_password::{ChangePasswordCommand, ChangePasswordO
 use crate::application::login::{LoginCommand, LoginOutcome};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::state::AppState;
-use crate::presentation::tenant::internal_tenant;
+use crate::presentation::tenant::require_internal_tenant;
 use axum::extract::{Extension, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
@@ -68,14 +68,14 @@ pub async fn authenticate(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Json(req): Json<InternalAuthenticateRequest>,
-) -> Json<InternalAuthenticateResponse> {
+) -> Result<Json<InternalAuthenticateResponse>, Response> {
     // 接続元情報は web が転送する（api はプロキシ直下ではないため自前で X-Forwarded-For を見ない）。
     let ctx = RequestContext {
         correlation_id: correlation.0,
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = internal_tenant(&state, req.tenant_id.as_deref());
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
     let outcome = state
         .login
         .login(
@@ -90,7 +90,7 @@ pub async fn authenticate(
         )
         .await;
     let ttl = state.config.sso_absolute_ttl().as_secs();
-    Json(match outcome {
+    Ok(Json(match outcome {
         LoginOutcome::Success {
             location,
             sso_session_id,
@@ -122,7 +122,7 @@ pub async fn authenticate(
             tracing::error!(error = %e, "internal authenticate failed with internal error");
             InternalAuthenticateResponse::Internal
         }
-    })
+    }))
 }
 
 /// パスワード変更（`POST /internal/change-password`、ADR-0009 §5）。`LoginService` が検出した
@@ -170,13 +170,13 @@ pub async fn change_password(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Json(req): Json<InternalChangePasswordRequest>,
-) -> Json<InternalChangePasswordResponse> {
+) -> Result<Json<InternalChangePasswordResponse>, Response> {
     let ctx = RequestContext {
         correlation_id: correlation.0,
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = internal_tenant(&state, req.tenant_id.as_deref());
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
     let outcome = state
         .change_password
         .change(
@@ -191,7 +191,7 @@ pub async fn change_password(
         )
         .await;
     let ttl = state.config.sso_absolute_ttl().as_secs();
-    Json(match outcome {
+    Ok(Json(match outcome {
         ChangePasswordOutcome::Success {
             location,
             sso_session_id,
@@ -218,7 +218,7 @@ pub async fn change_password(
             tracing::error!(error = %e, "internal change-password failed with internal error");
             InternalChangePasswordResponse::Internal
         }
-    })
+    }))
 }
 
 /// 管理コンソール認証。CSRF は web 側で検証済み（ADR-0007 §4）。成功時は SSO セッション id を返す。
@@ -226,13 +226,13 @@ pub async fn authenticate_admin(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Json(req): Json<InternalAdminAuthenticateRequest>,
-) -> Json<InternalAdminAuthenticateResponse> {
+) -> Result<Json<InternalAdminAuthenticateResponse>, Response> {
     let ctx = RequestContext {
         correlation_id: correlation.0,
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = internal_tenant(&state, req.tenant_id.as_deref());
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
     let outcome = state
         .admin_login
         .login(
@@ -245,7 +245,7 @@ pub async fn authenticate_admin(
         )
         .await;
     let ttl = state.config.sso_absolute_ttl().as_secs();
-    Json(match outcome {
+    Ok(Json(match outcome {
         AdminLoginOutcome::Success { sso_session_id } => {
             InternalAdminAuthenticateResponse::Success {
                 sso_session_id,
@@ -269,7 +269,7 @@ pub async fn authenticate_admin(
             tracing::error!(error = %e, "internal admin authenticate failed with internal error");
             InternalAdminAuthenticateResponse::Internal
         }
-    })
+    }))
 }
 
 /// 管理コンソールの強制パスワード変更（`POST /internal/authenticate/admin/change-password`、
@@ -278,13 +278,13 @@ pub async fn admin_change_password(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Json(req): Json<InternalAdminChangePasswordRequest>,
-) -> Json<InternalAdminChangePasswordResponse> {
+) -> Result<Json<InternalAdminChangePasswordResponse>, Response> {
     let ctx = RequestContext {
         correlation_id: correlation.0,
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = internal_tenant(&state, req.tenant_id.as_deref());
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
     let outcome = state
         .admin_login
         .change_password(
@@ -298,7 +298,7 @@ pub async fn admin_change_password(
         )
         .await;
     let ttl = state.config.sso_absolute_ttl().as_secs();
-    Json(match outcome {
+    Ok(Json(match outcome {
         AdminLoginOutcome::Success { sso_session_id } => InternalAdminChangePasswordResponse::Success {
             sso_session_id,
             sso_absolute_ttl_secs: ttl,
@@ -318,7 +318,7 @@ pub async fn admin_change_password(
             tracing::error!(error = %e, "internal admin change-password failed with internal error");
             InternalAdminChangePasswordResponse::Internal
         }
-    })
+    }))
 }
 
 /// ログアウト（`POST /internal/logout`）。web が管理コンソールのログアウトで呼ぶ。SSO セッションを
@@ -327,18 +327,18 @@ pub async fn logout(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Json(req): Json<InternalLogoutRequest>,
-) -> StatusCode {
+) -> Result<StatusCode, Response> {
     let ctx = RequestContext {
         correlation_id: correlation.0,
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = internal_tenant(&state, req.tenant_id.as_deref());
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
     state
         .admin_login
         .logout(tenant, &req.sso_session_id, &ctx)
         .await;
-    StatusCode::NO_CONTENT
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// 定数時間比較（サービストークン照合のタイミング差を避ける）。長さが異なれば即 false。

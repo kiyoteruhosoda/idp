@@ -7,10 +7,10 @@ use crate::application::audit::RequestContext;
 use crate::application::consent::ConsentOutcome;
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::state::AppState;
-use crate::presentation::tenant::internal_tenant;
+use crate::presentation::tenant::require_internal_tenant;
 use axum::extract::{Extension, Query, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use idp_contracts::auth::{
     InternalConsentApproveRequest, InternalConsentApproveResponse, InternalConsentDenyRequest,
@@ -22,9 +22,9 @@ use idp_contracts::auth::{
 pub async fn consent_info(
     State(state): State<AppState>,
     Query(req): Query<InternalConsentInfoRequest>,
-) -> Json<InternalConsentInfoResponse> {
-    let tenant = internal_tenant(&state, req.tenant_id.as_deref());
-    match state
+) -> Result<Json<InternalConsentInfoResponse>, Response> {
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    Ok(match state
         .consent
         .info(tenant, &req.auth_session_id)
         .await {
@@ -39,7 +39,7 @@ pub async fn consent_info(
             tracing::error!(error = %e, "consent_info: failed to get consent info");
             Json(InternalConsentInfoResponse::SessionExpired)
         }
-    }
+    })
 }
 
 /// 同意承認（`POST /internal/consent/approve`）。同意を記録し code を発行する。
@@ -47,18 +47,18 @@ pub async fn consent_approve(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Json(req): Json<InternalConsentApproveRequest>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, Response> {
     let ctx = RequestContext {
         correlation_id: correlation.0,
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = internal_tenant(&state, req.tenant_id.as_deref());
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
     let outcome = state
         .consent
         .approve(tenant, &req.auth_session_id, &ctx)
         .await;
-    Json(match outcome {
+    Ok(Json(match outcome {
         ConsentOutcome::Approved { location } => {
             InternalConsentApproveResponse::Success { redirect_to: location }
         }
@@ -71,7 +71,7 @@ pub async fn consent_approve(
             // approve エンドポイントで Denied は起きないが念のため。
             InternalConsentApproveResponse::Internal
         }
-    })
+    }))
 }
 
 /// 同意拒否（`POST /internal/consent/deny`）。`access_denied` エラーを RP へリダイレクトする。
@@ -79,18 +79,18 @@ pub async fn consent_deny(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Json(req): Json<InternalConsentDenyRequest>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, Response> {
     let ctx = RequestContext {
         correlation_id: correlation.0,
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = internal_tenant(&state, req.tenant_id.as_deref());
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
     let outcome = state
         .consent
         .deny(tenant, &req.auth_session_id, &ctx)
         .await;
-    (
+    Ok((
         StatusCode::OK,
         Json(match outcome {
             ConsentOutcome::Denied { location } => {
@@ -106,5 +106,5 @@ pub async fn consent_deny(
                 InternalConsentDenyResponse::Internal
             }
         }),
-    )
+    ))
 }

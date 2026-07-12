@@ -9,6 +9,10 @@
   現行テンプレートのインライン script/style は許容、nonce 化は後続改善）・`nosniff`・
   `Referrer-Policy` を付与（`crates/web/src/security_headers.rs`）。`HSTS_MAX_AGE` も api と同キーで
   web に追加。
+- **SEC4 — `/internal/*` のテナント解決を fail-closed 化**: `tenant_id` 未指定・不正時に root へ
+  フォールバックする過渡措置（`internal_tenant`）を撤去し、`require_internal_tenant` が 400 を返す。
+  web は全内部呼び出しで `tenant_id` を必須送信（`consent_info` の送信漏れも修正）。あわせて
+  過渡運用の `AppState::default_tenant` を撤去（起動時の root 存在確認・ログは維持）。
 - **SEC2 — 本番での開発用シークレット使用を fail-fast 化**: `ISSUER` が `https://` のとき、
   `KEY_ENCRYPTION_KEY`／`INTERNAL_SERVICE_TOKEN` が未設定（＝ソース埋め込みの開発用既知値）なら
   api・web とも起動を構成エラーで失敗させる。http（ローカル開発）は従来どおり warning のみ。

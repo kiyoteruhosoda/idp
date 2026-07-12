@@ -55,12 +55,9 @@ async fn setup() -> Option<(axum::Router, MySqlPool, String, String)> {
             .fetch_one(&pool)
             .await
             .expect("initial admin seeded");
-    let root = idp_api::domain::tenant::TenantId::from(
-        uuid::Uuid::parse_str(&root_tenant_id).expect("root UUID"),
-    );
 
     let config = Arc::new(Config::from_env().expect("load config"));
-    let state = AppState::build(pool.clone(), config, Arc::new(SystemClock), root);
+    let state = AppState::build(pool.clone(), config, Arc::new(SystemClock));
     Some((router::build(state), pool, root_tenant_id, admin_id))
 }
 

@@ -9,8 +9,9 @@ use crate::application::passkey_registration::PasskeyRegistrationError;
 use crate::application::audit::RequestContext;
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::state::AppState;
-use crate::presentation::tenant::internal_tenant;
+use crate::presentation::tenant::require_internal_tenant;
 use axum::extract::{Extension, State};
+use axum::response::Response;
 use axum::Json;
 use idp_contracts::auth::{
     InternalPasskeyDeleteRequest, InternalPasskeyDeleteResponse,
@@ -163,10 +164,10 @@ pub async fn login_complete(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Json(req): Json<InternalPasskeyLoginCompleteRequest>,
-) -> Json<InternalPasskeyLoginCompleteResponse> {
+) -> Result<Json<InternalPasskeyLoginCompleteResponse>, Response> {
     let challenge_id = match req.challenge_id.parse::<Uuid>() {
         Ok(id) => id,
-        Err(_) => return Json(InternalPasskeyLoginCompleteResponse::ChallengeNotFound),
+        Err(_) => return Ok(Json(InternalPasskeyLoginCompleteResponse::ChallengeNotFound)),
     };
     let ctx = RequestContext {
         correlation_id: correlation.0,
@@ -174,12 +175,12 @@ pub async fn login_complete(
         user_agent: req.user_agent,
     };
     let ttl = state.config.sso_absolute_ttl().as_secs();
-    let tenant = internal_tenant(&state, req.tenant_id.as_deref());
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
     let outcome = state
         .passkey_authentication
         .complete(tenant, challenge_id, req.credential, &ctx)
         .await;
-    Json(match outcome {
+    Ok(Json(match outcome {
         PasskeyAuthOutcome::Success {
             location,
             sso_session_id,
@@ -207,5 +208,5 @@ pub async fn login_complete(
             tracing::error!(error = %e, "passkey login complete error");
             InternalPasskeyLoginCompleteResponse::Internal
         }
-    })
+    }))
 }

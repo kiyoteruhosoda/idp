@@ -44,28 +44,23 @@ pub async fn run() -> anyhow::Result<()> {
 
     let clock: Arc<dyn domain::clock::Clock> = Arc::new(infrastructure::clock::SystemClock);
 
-    // 過渡期（MT9 まで）の既定テナント: seed 済み root テナントを起動時に解決する（fail-fast）。
-    // root UUID は環境ごとに動的採番のため、DB から構造的に引く（ADR-0009 §1）。
-    let default_tenant = {
+    // seed 済み root テナントの存在確認（fail-fast。マイグレーション/seed 漏れの検出）。
+    // root UUID は環境ごとに動的採番のため、DB から構造的に引いてログへ記録する（ADR-0009 §1）。
+    {
         use domain::repositories::TenantRepository as _;
         let tenants =
             infrastructure::repositories::tenant::SqlxTenantRepository::new(pool.clone());
-        tenants
+        let root = tenants
             .find_root()
             .await
             .context("failed to resolve the root tenant")?
-            .context("root tenant not found; run migrations/seed first")?
-            .id
-    };
-    tracing::info!(root_tenant_id = %default_tenant, "resolved root tenant as the default tenant");
+            .context("root tenant not found; run migrations/seed first")?;
+        tracing::info!(root_tenant_id = %root.id, "root tenant resolved");
+    }
 
     // ユースケースの組み立て（依存注入は AppState::build に集約）。
-    let state = presentation::state::AppState::build(
-        pool.clone(),
-        Arc::new(config.clone()),
-        clock,
-        default_tenant,
-    );
+    let state =
+        presentation::state::AppState::build(pool.clone(), Arc::new(config.clone()), clock);
 
     // 署名鍵ブートストラップ: ACTIVE 鍵が無ければ生成して永続化する。
     state

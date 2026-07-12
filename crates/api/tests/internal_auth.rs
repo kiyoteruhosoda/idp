@@ -62,12 +62,9 @@ async fn setup() -> Option<(axum::Router, MySqlPool, String)> {
             .fetch_one(&pool)
             .await
             .expect("root tenant seeded");
-    let root = idp_api::domain::tenant::TenantId::from(
-        uuid::Uuid::parse_str(&root_tenant_id).expect("root UUID"),
-    );
 
     let config = Arc::new(Config::from_env().expect("load config"));
-    let state = AppState::build(pool.clone(), config, Arc::new(SystemClock), root);
+    let state = AppState::build(pool.clone(), config, Arc::new(SystemClock));
     // `ensure_active_key` は「存在確認 → 生成」の 2 手で並走に安全でない（TOCTOU）ため、
     // プロセス内で一度だけ実行する（ACTIVE 鍵の複数本化を防ぐ）。
     static KEY_BOOTSTRAP: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
@@ -227,6 +224,7 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
             "/internal/authenticate",
             Some(SERVICE_TOKEN),
             json!({
+                "tenant_id": root_tenant_id,
                 "auth_session_id": auth_session,
                 "username": username,
                 "password": password,
@@ -246,6 +244,7 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
             "/internal/authenticate",
             Some(SERVICE_TOKEN),
             json!({
+                "tenant_id": root_tenant_id,
                 "auth_session_id": auth_session,
                 "username": username,
                 "password": password,
@@ -272,7 +271,7 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
         post_internal(
             "/internal/consent/approve",
             Some(SERVICE_TOKEN),
-            json!({ "auth_session_id": consent_session }),
+            json!({ "tenant_id": root_tenant_id, "auth_session_id": consent_session }),
         ),
     )
     .await;
@@ -299,7 +298,7 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
 
 #[tokio::test]
 async fn admin_authenticate_rejects_unknown_user() {
-    let Some((app, _pool, _root_tenant_id)) = setup().await else {
+    let Some((app, _pool, root_tenant_id)) = setup().await else {
         return;
     };
 
@@ -310,6 +309,7 @@ async fn admin_authenticate_rejects_unknown_user() {
             "/internal/authenticate/admin",
             Some(SERVICE_TOKEN),
             json!({
+                "tenant_id": root_tenant_id,
                 "username": format!("nobody-{}", uuid::Uuid::new_v4()),
                 "password": "whatever",
                 "ip_address": "203.0.113.9",
@@ -331,4 +331,19 @@ async fn admin_authenticate_rejects_unknown_user() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // tenant_id が無い・不正な内部リクエストは 400（fail-closed。SEC4）。
+    for bad in [json!({ "username": "x", "password": "y" }),
+                json!({ "tenant_id": "not-a-uuid", "username": "x", "password": "y" })] {
+        let response = send(
+            &app,
+            post_internal("/internal/authenticate/admin", Some(SERVICE_TOKEN), bad),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "missing/invalid tenant_id -> 400"
+        );
+    }
 }

@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAuthenticateRequest {
     /// フローのテナント（ADR-0009 §8）。`(tenant_id, email)` 一意化により、認証は所属元テナント限定。
-    /// 過渡期（web がテナント経路化されるまで）は未指定を許容し、api は既定テナント（root）へフォールバックする。
+    /// **必須**。api は未指定・不正な UUID を 400 で拒否する（fail-closed。SEC4）。
     #[serde(default)]
     pub tenant_id: Option<String>,
     #[serde(default)]
@@ -137,7 +137,7 @@ pub enum InternalTotpDeleteResponse {
 /// ログイン TOTP 検証 API（`POST /internal/mfa/totp/verify`）のリクエスト。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalVerifyTotpRequest {
-    /// フローのテナント（ADR-0009 §8）。未指定は既定テナント（root）へフォールバックする。
+    /// フローのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する（fail-closed。SEC4）。
     #[serde(default)]
     pub tenant_id: Option<String>,
     pub auth_session_id: Option<String>,
@@ -176,7 +176,7 @@ pub enum InternalVerifyTotpResponse {
 /// 認証したうえで新パスワードを設定する」フローのため、現行パスワードを含める。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalChangePasswordRequest {
-    /// フローのテナント（ADR-0009 §8）。未指定は既定テナント（root）へフォールバックする。
+    /// フローのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する（fail-closed。SEC4）。
     #[serde(default)]
     pub tenant_id: Option<String>,
     #[serde(default)]
@@ -249,7 +249,7 @@ pub enum InternalAccountChangePasswordResponse {
 /// 管理ログインの CSRF は web 側で検証済み（ADR-0007 §4）のため本 API には含めない。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAdminAuthenticateRequest {
-    /// 管理ログインのテナント（ADR-0009 §8）。未指定は既定テナント（root）へフォールバックする。
+    /// 管理ログインのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する（fail-closed。SEC4）。
     #[serde(default)]
     pub tenant_id: Option<String>,
     pub username: String,
@@ -266,7 +266,7 @@ pub struct InternalAdminAuthenticateRequest {
 /// Cookie の失効は web が行い、api は DB のセッション削除と監査記録を担う。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalLogoutRequest {
-    /// ログアウト対象フローのテナント（ADR-0009 §8）。未指定は既定テナント（root）へフォールバックする。
+    /// ログアウト対象フローのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する（fail-closed。SEC4）。
     #[serde(default)]
     pub tenant_id: Option<String>,
     pub sso_session_id: String,
@@ -338,7 +338,7 @@ pub enum InternalAdminChangePasswordResponse {
 /// 同意画面情報 API（`GET /internal/consent-info`）のリクエスト。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalConsentInfoRequest {
-    /// フローのテナント（ADR-0009 §8）。未指定は既定テナント（root）へフォールバックする。
+    /// フローのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する（fail-closed。SEC4）。
     #[serde(default)]
     pub tenant_id: Option<String>,
     pub auth_session_id: String,
@@ -363,7 +363,7 @@ pub enum InternalConsentInfoResponse {
 /// 同意承認 API（`POST /internal/consent/approve`）のリクエスト。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalConsentApproveRequest {
-    /// フローのテナント（ADR-0009 §8）。未指定は既定テナント（root）へフォールバックする。
+    /// フローのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する（fail-closed。SEC4）。
     #[serde(default)]
     pub tenant_id: Option<String>,
     pub auth_session_id: String,
@@ -388,7 +388,7 @@ pub enum InternalConsentApproveResponse {
 /// 同意拒否 API（`POST /internal/consent/deny`）のリクエスト。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalConsentDenyRequest {
-    /// フローのテナント（ADR-0009 §8）。未指定は既定テナント（root）へフォールバックする。
+    /// フローのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する（fail-closed。SEC4）。
     #[serde(default)]
     pub tenant_id: Option<String>,
     pub auth_session_id: String,
@@ -531,7 +531,7 @@ pub enum InternalPasskeyLoginBeginResponse {
 /// Passkey 認証完了 API（`POST /internal/passkey/login/complete`）のリクエスト。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalPasskeyLoginCompleteRequest {
-    /// フローのテナント（ADR-0009 §8）。未指定は既定テナント（root）へフォールバックする。
+    /// フローのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する（fail-closed。SEC4）。
     #[serde(default)]
     pub tenant_id: Option<String>,
     pub challenge_id: String,

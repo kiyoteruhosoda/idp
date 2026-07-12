@@ -58,23 +58,15 @@ async fn register_creates_user_and_rejects_duplicates_and_invalid_input() {
         .expect("connect");
     MIGRATOR.run(&pool).await.expect("migrate");
 
-    // 過渡期（MT9 まで）: seed 済み root テナントを既定テナントとして注入する。
+    // seed 済み root テナントの UUID をテスト経路に使う（ADR-0009 §1）。
     let root_id: String =
         sqlx::query_scalar("SELECT id FROM tenants WHERE parent_tenant_id IS NULL")
             .fetch_one(&pool)
             .await
             .expect("root tenant seeded");
-    let root = idp_api::domain::tenant::TenantId::from(
-        uuid::Uuid::parse_str(&root_id).expect("root UUID"),
-    );
 
     let config = Arc::new(idp_api::config::Config::from_env().expect("load config"));
-    let app = router::build(AppState::build(
-        pool.clone(),
-        config,
-        Arc::new(SystemClock),
-        root,
-    ));
+    let app = router::build(AppState::build(pool.clone(), config, Arc::new(SystemClock)));
 
     // 一意なメールで登録 → 201。
     let email = format!("user-{}@example.com", uuid::Uuid::new_v4());

@@ -25,6 +25,7 @@ use idp_contracts::csrf::consent_csrf_token;
 pub async fn consent_page(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
 ) -> Response {
     let Some(auth_session_id) = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE) else {
@@ -33,7 +34,10 @@ pub async fn consent_page(
     };
 
     // FluentBundle は Send でないため、await をまたがないようここで生成する。
-    let result = state.api.consent_info(&correlation.0, &auth_session_id).await;
+    let result = state
+        .api
+        .consent_info(&correlation.0, &tenant.0, &auth_session_id)
+        .await;
     let messages = Messages::new(locale(&headers));
 
     match result {

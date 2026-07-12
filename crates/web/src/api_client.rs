@@ -150,10 +150,12 @@ impl ApiClient {
         Ok(())
     }
 
-    /// 同意画面情報取得（`GET /internal/consent-info`）。
+    /// 同意画面情報取得（`GET /internal/consent-info`）。`tenant_id` はフローのテナント（必須。
+    /// api は未指定・不正を 400 で拒否する）。
     pub async fn consent_info(
         &self,
         correlation_id: &str,
+        tenant_id: &str,
         auth_session_id: &str,
     ) -> anyhow::Result<InternalConsentInfoResponse> {
         let response = self
@@ -161,7 +163,7 @@ impl ApiClient {
             .get(format!("{}/internal/consent-info", self.base_url))
             .header(SERVICE_TOKEN_HEADER, &self.service_token)
             .header(REQUEST_ID_HEADER, correlation_id)
-            .query(&[("auth_session_id", auth_session_id)])
+            .query(&[("tenant_id", tenant_id), ("auth_session_id", auth_session_id)])
             .send()
             .await
             .map_err(|e| anyhow::anyhow!("request to api /internal/consent-info failed: {e}"))?;
