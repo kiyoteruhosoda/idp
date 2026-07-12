@@ -6,124 +6,36 @@
 //! 初期管理者の SSO セッションを直接作成し、クライアント登録で監査イベント（client.registered）を
 //! 発生させてから、`/admin/audit-logs` の絞り込みで取得できること・権限制御を検証する。
 
-use axum::body::Body;
-use axum::http::header::{CONTENT_TYPE, COOKIE};
-use axum::http::{Request, StatusCode};
-use idp_api::config::Config;
-use idp_api::domain::clock::Clock;
-use idp_api::infrastructure::crypto;
-use idp_api::presentation::router;
-use idp_api::presentation::state::AppState;
-use serde_json::{json, Value};
-use sqlx::mysql::MySqlPoolOptions;
-use sqlx::MySqlPool;
-use std::sync::Arc;
-use tower::ServiceExt;
+mod support;
 
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use serde_json::json;
+use support::{body_json, create_plain_user, create_sso_session, get, post, send};
 
 const REDIRECT_URI: &str = "https://app.example.com/callback";
 
-struct SystemClock;
-impl Clock for SystemClock {
-    fn now(&self) -> chrono::DateTime<chrono::Utc> {
-        chrono::Utc::now()
-    }
-}
-
-async fn setup() -> Option<(axum::Router, MySqlPool, String, String)> {
-    let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
-        eprintln!("TEST_DATABASE_URL not set; skipping admin audit integration test");
-        return None;
-    };
-    let pool = MySqlPoolOptions::new()
-        .connect(&url)
-        .await
-        .expect("connect to test database");
-    MIGRATOR.run(&pool).await.expect("run migrations");
-
-    // 過渡期（MT9 まで）: seed 済み root テナントを既定テナントとして注入する。
-    // 初期管理者の UUID は動的採番のため DB から引く。
-    let root_tenant_id: String =
-        sqlx::query_scalar("SELECT id FROM tenants WHERE parent_tenant_id IS NULL")
-            .fetch_one(&pool)
-            .await
-            .expect("root tenant seeded");
-    let admin_id: String =
-        sqlx::query_scalar("SELECT id FROM users WHERE tenant_id = ? AND email = 'admin@example.com'")
-            .bind(&root_tenant_id)
-            .fetch_one(&pool)
-            .await
-            .expect("initial admin seeded");
-
-    let config = Arc::new(Config::from_env().expect("load config"));
-    let state = AppState::build(pool.clone(), config, Arc::new(SystemClock));
-    Some((router::build(state), pool, root_tenant_id, admin_id))
-}
-
-async fn create_sso_session(pool: &MySqlPool, user_id: &str) -> String {
-    let session_id = crypto::random_hex(32);
-    let session_hash = crypto::sha256_hex(&session_id);
-    sqlx::query(
-        "INSERT INTO sso_sessions \
-         (session_hash, user_id, auth_time, idle_expires_at, absolute_expires_at) \
-         VALUES (?, ?, UTC_TIMESTAMP(6), \
-                 DATE_ADD(UTC_TIMESTAMP(6), INTERVAL 1 HOUR), \
-                 DATE_ADD(UTC_TIMESTAMP(6), INTERVAL 8 HOUR))",
-    )
-    .bind(&session_hash)
-    .bind(user_id)
-    .execute(pool)
-    .await
-    .expect("insert sso session");
-    session_id
-}
-
-async fn send(app: &axum::Router, request: Request<Body>) -> axum::response::Response {
-    app.clone().oneshot(request).await.expect("send request")
-}
-
-async fn body_json(response: axum::response::Response) -> Value {
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read body");
-    serde_json::from_slice(&bytes).unwrap_or(Value::Null)
-}
-
-fn get_with_cookie(uri: &str, cookie: &str) -> Request<Body> {
-    Request::builder()
-        .method("GET")
-        .uri(uri)
-        .header(COOKIE, format!("sso_session_id={cookie}"))
-        .body(Body::empty())
-        .unwrap()
-}
-
 #[tokio::test]
 async fn admin_can_query_audit_logs_with_filters() {
-    let Some((app, pool, root_tenant_id, admin_id)) = setup().await else {
+    let Some(env) = support::setup("admin audit").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&pool, &admin_id).await;
+    let (app, pool, root_tenant_id) = (&env.app, &env.pool, &env.root_tenant_id);
+    let admin_cookie = create_sso_session(pool, &env.root_admin_id).await;
 
     // 監査イベントを発生させる: クライアント登録（client.registered / result=success）。
     let res = send(
-        &app,
-        Request::builder()
-            .method("POST")
-            .uri(format!("/{root_tenant_id}/admin/clients"))
-            .header(CONTENT_TYPE, "application/json")
-            .header(COOKIE, format!("sso_session_id={admin_cookie}"))
-            .body(Body::from(
-                json!({
-                    "app_name": "Audit Probe",
-                    "client_type": "public",
-                    "redirect_uris": [REDIRECT_URI],
-                    "scopes": ["openid"],
-                })
-                .to_string(),
-            ))
-            .unwrap(),
+        app,
+        post(
+            &admin_cookie,
+            &format!("/{root_tenant_id}/admin/clients"),
+            json!({
+                "app_name": "Audit Probe",
+                "client_type": "public",
+                "redirect_uris": [REDIRECT_URI],
+                "scopes": ["openid"],
+            }),
+        ),
     )
     .await;
     assert_eq!(res.status(), StatusCode::CREATED);
@@ -134,10 +46,10 @@ async fn admin_can_query_audit_logs_with_filters() {
 
     // event_type で絞り込み → 少なくとも 1 件、登録した client_id を含む。
     let res = send(
-        &app,
-        get_with_cookie(
-            &format!("/{root_tenant_id}/admin/audit-logs?event_type=client.registered"),
+        app,
+        get(
             &admin_cookie,
+            &format!("/{root_tenant_id}/admin/audit-logs?event_type=client.registered"),
         ),
     )
     .await;
@@ -160,7 +72,7 @@ async fn admin_can_query_audit_logs_with_filters() {
          ORDER BY id DESC LIMIT 1",
     )
     .bind(&created_client_id)
-    .fetch_one(&pool)
+    .fetch_one(pool)
     .await
     .expect("query audit tenant_id");
     assert_eq!(recorded_tenant.as_deref(), Some(root_tenant_id.as_str()));
@@ -175,10 +87,12 @@ async fn admin_can_query_audit_logs_with_filters() {
 
     // result=failure の絞り込みは client.registered を含まない。
     let res = send(
-        &app,
-        get_with_cookie(
-            &format!("/{root_tenant_id}/admin/audit-logs?event_type=client.registered&result=failure"),
+        app,
+        get(
             &admin_cookie,
+            &format!(
+                "/{root_tenant_id}/admin/audit-logs?event_type=client.registered&result=failure"
+            ),
         ),
     )
     .await;
@@ -187,15 +101,18 @@ async fn admin_can_query_audit_logs_with_filters() {
 
     // from の形式不正 → 400。
     let res = send(
-        &app,
-        get_with_cookie(&format!("/{root_tenant_id}/admin/audit-logs?from=not-a-date"), &admin_cookie),
+        app,
+        get(
+            &admin_cookie,
+            &format!("/{root_tenant_id}/admin/audit-logs?from=not-a-date"),
+        ),
     )
     .await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 
     // 未認証 → 401。
     let res = send(
-        &app,
+        app,
         Request::builder()
             .method("GET")
             .uri(format!("/{root_tenant_id}/admin/audit-logs"))
@@ -206,22 +123,15 @@ async fn admin_can_query_audit_logs_with_filters() {
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 
     // 権限の無い利用者 → 403。
-    let plain_user_id = uuid::Uuid::now_v7().to_string();
-    sqlx::query(
-        "INSERT INTO users (id, tenant_id, sub, email, email_verified, password_hash, status) \
-         VALUES (?, ?, ?, ?, 1, 'x', 'ACTIVE')",
+    let plain_user_id = create_plain_user(pool, root_tenant_id).await;
+    let plain_cookie = create_sso_session(pool, &plain_user_id).await;
+    let res = send(
+        app,
+        get(
+            &plain_cookie,
+            &format!("/{root_tenant_id}/admin/audit-logs"),
+        ),
     )
-    .bind(&plain_user_id)
-    .bind(&root_tenant_id)
-    .bind(uuid::Uuid::now_v7().to_string())
-    .bind(format!(
-        "audit-plain-{}@example.com",
-        &uuid::Uuid::new_v4().simple().to_string()[..12]
-    ))
-    .execute(&pool)
-    .await
-    .expect("insert plain user");
-    let plain_cookie = create_sso_session(&pool, &plain_user_id).await;
-    let res = send(&app, get_with_cookie(&format!("/{root_tenant_id}/admin/audit-logs"), &plain_cookie)).await;
+    .await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
 }

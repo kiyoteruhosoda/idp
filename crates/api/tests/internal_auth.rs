@@ -3,127 +3,20 @@
 //! `TEST_DATABASE_URL` 設定時のみ実行:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test internal_auth
 //!
-//! web（将来）→api のサービス間 I/F を検証する。web は資格情報・auth_session 参照・接続元情報を
+//! web →api のサービス間 I/F を検証する。web は資格情報・auth_session 参照・接続元情報を
 //! JSON で転送し、api は SSO/code を発行して `result` タグ付き JSON を返す。サービス認証トークン
 //! （`X-Internal-Auth-Token`）が無ければ 401 で遮断される。
+
+mod support;
 
 use axum::body::Body;
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{Request, StatusCode};
 use idp_api::application::login::csrf_token;
-use idp_api::config::Config;
-use idp_api::domain::clock::Clock;
-use idp_api::presentation::router;
-use idp_api::presentation::state::AppState;
-use serde_json::{json, Value};
-use sqlx::mysql::MySqlPoolOptions;
-use sqlx::MySqlPool;
-use std::sync::Arc;
-use tower::ServiceExt;
-
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
-
-const CODE_CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
-const REDIRECT_URI: &str = "http://localhost:3000/callback";
-const SERVICE_TOKEN: &str = "test-internal-service-token";
-const SERVICE_TOKEN_HEADER: &str = "x-internal-auth-token";
-
-struct SystemClock;
-impl Clock for SystemClock {
-    fn now(&self) -> chrono::DateTime<chrono::Utc> {
-        chrono::Utc::now()
-    }
-}
-
-async fn setup() -> Option<(axum::Router, MySqlPool, String)> {
-    let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
-        eprintln!("TEST_DATABASE_URL not set; skipping internal_auth integration test");
-        return None;
-    };
-    // 内部サービストークンを既知値に固定する（このテストが唯一 /internal/* を使う）。
-    std::env::set_var("INTERNAL_SERVICE_TOKEN", SERVICE_TOKEN);
-
-    let pool = MySqlPoolOptions::new()
-        .connect(&url)
-        .await
-        .expect("connect to test database");
-    // 新規 DB へ複数テストの setup が並走すると、マイグレーション seed の INSERT が
-    // 一意制約で競合するため、プロセス内で一度だけ実行する。
-    static MIGRATIONS: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
-    MIGRATIONS
-        .get_or_init(|| async {
-            MIGRATOR.run(&pool).await.expect("run migrations");
-        })
-        .await;
-
-    // 過渡期（MT9 まで）: seed 済み root テナントを既定テナントとして注入する。
-    let root_tenant_id: String =
-        sqlx::query_scalar("SELECT id FROM tenants WHERE parent_tenant_id IS NULL")
-            .fetch_one(&pool)
-            .await
-            .expect("root tenant seeded");
-
-    let config = Arc::new(Config::from_env().expect("load config"));
-    let state = AppState::build(pool.clone(), config, Arc::new(SystemClock));
-    // `ensure_active_key` は「存在確認 → 生成」の 2 手で並走に安全でない（TOCTOU）ため、
-    // プロセス内で一度だけ実行する（ACTIVE 鍵の複数本化を防ぐ）。
-    static KEY_BOOTSTRAP: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
-    KEY_BOOTSTRAP
-        .get_or_init(|| async {
-            state
-                .keys
-                .ensure_active_key()
-                .await
-                .expect("bootstrap signing key");
-        })
-        .await;
-    Some((router::build(state), pool, root_tenant_id))
-}
-
-async fn insert_public_client(pool: &MySqlPool, tenant_id: &str) -> String {
-    let client_id = format!(
-        "int-public-{}",
-        &uuid::Uuid::new_v4().simple().to_string()[..12]
-    );
-    sqlx::query(
-        "INSERT INTO clients (id, tenant_id, client_id, client_secret_hash, client_type, \
-         client_status, app_name, redirect_uris, grant_types, response_types, scopes, \
-         token_endpoint_auth_method, require_pkce) \
-         VALUES (?, ?, ?, NULL, 'public', 'ACTIVE', 'Internal Auth Test App', ?, \
-         '[\"authorization_code\"]', '[\"code\"]', '[\"openid\",\"profile\",\"email\"]', 'none', 1)",
-    )
-    .bind(uuid::Uuid::now_v7().to_string())
-    .bind(tenant_id)
-    .bind(&client_id)
-    .bind(json!([REDIRECT_URI]).to_string())
-    .execute(pool)
-    .await
-    .expect("insert public client");
-    client_id
-}
-
-async fn send(app: &axum::Router, request: Request<Body>) -> axum::response::Response {
-    app.clone().oneshot(request).await.expect("send request")
-}
-
-async fn body_json(response: axum::response::Response) -> Value {
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read body");
-    serde_json::from_slice(&bytes).unwrap_or(Value::Null)
-}
-
-fn cookie_value(response: &axum::response::Response, name: &str) -> Option<String> {
-    response
-        .headers()
-        .get_all(axum::http::header::SET_COOKIE)
-        .iter()
-        .find_map(|v| {
-            let raw = v.to_str().ok()?;
-            let (k, rest) = raw.split_once('=')?;
-            (k == name).then(|| rest.split(';').next().unwrap_or("").to_string())
-        })
-}
+use serde_json::json;
+use support::{
+    body_json, cookie_value, post_internal, send, CODE_CHALLENGE, REDIRECT_URI, SERVICE_TOKEN,
+};
 
 async fn register_user(app: &axum::Router, tenant: &str, username: &str, password: &str) {
     let payload = json!({
@@ -160,24 +53,14 @@ async fn start_authorize(app: &axum::Router, tenant: &str, client_id: &str) -> S
     cookie_value(&response, "auth_session_id").expect("auth_session_id cookie")
 }
 
-fn post_internal(uri: &str, token: Option<&str>, payload: Value) -> Request<Body> {
-    let mut builder = Request::builder()
-        .method("POST")
-        .uri(uri)
-        .header(CONTENT_TYPE, "application/json");
-    if let Some(t) = token {
-        builder = builder.header(SERVICE_TOKEN_HEADER, t);
-    }
-    builder.body(Body::from(payload.to_string())).unwrap()
-}
-
 #[tokio::test]
 async fn authenticate_requires_service_token_and_issues_sso_and_code() {
-    let Some((app, pool, root_tenant_id)) = setup().await else {
+    let Some(env) = support::setup("internal auth").await else {
         return;
     };
+    let (app, pool, root_tenant_id) = (env.app, env.pool, env.root_tenant_id);
 
-    let client_id = insert_public_client(&pool, &root_tenant_id).await;
+    let client_id = support::insert_public_client(&pool, &root_tenant_id, &["openid", "profile", "email"]).await;
     let username = format!("int{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
     let password = "correct-horse-battery";
     register_user(&app, &root_tenant_id, &username, password).await;
@@ -298,9 +181,10 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
 
 #[tokio::test]
 async fn admin_authenticate_rejects_unknown_user() {
-    let Some((app, _pool, root_tenant_id)) = setup().await else {
+    let Some(env) = support::setup("internal auth").await else {
         return;
     };
+    let (app, root_tenant_id) = (env.app, env.root_tenant_id);
 
     // 認証情報が誤り（未登録ユーザー）→ result=invalid_credentials。
     let response = send(

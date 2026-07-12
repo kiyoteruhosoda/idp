@@ -22,50 +22,21 @@
 //!    テナント B の `/userinfo` で拒否される（`iss` 完全一致）。ゲストはメンバーシップ承諾後に
 //!    参加先テナントのフローへ SSO で参加できる。
 
+mod support;
+
 use axum::body::Body;
-use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, COOKIE, LOCATION};
-use axum::http::{Method, Request, StatusCode};
-use idp_api::config::Config;
-use idp_api::domain::clock::Clock;
-use idp_api::infrastructure::crypto;
-use idp_api::presentation::router;
-use idp_api::presentation::state::AppState;
-use serde_json::{json, Value};
-use sqlx::mysql::MySqlPoolOptions;
-use sqlx::{MySqlPool, Row};
-use std::sync::Arc;
-use tower::ServiceExt;
+use axum::http::header::{AUTHORIZATION, COOKIE};
+use axum::http::{Request, StatusCode};
+use serde_json::json;
+use sqlx::Row;
+use support::{
+    authorize_uri_openid_only as authorize_uri, body_json, create_sso_session, delete,
+    exchange_code, get, location, post, query_param, send, setup as support_setup, unique,
+    TestEnv, REDIRECT_URI,
+};
 
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
-
-/// マイグレーションはプロセス内で一度だけ実行する。新規 DB に対して複数テストの
-/// `MIGRATOR.run` が並走すると seed の INSERT が一意制約で競合するため直列化する。
-static MIGRATIONS: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
-
-/// 署名鍵のブートストラップもプロセス内で一度だけ行う。`ensure_active_key` は
-/// 「ACTIVE 鍵の存在確認 → 生成」の 2 手で並走に安全でないため（TOCTOU）、並列テストから
-/// 同時に呼ぶと ACTIVE 鍵が複数本できてしまう。
-static KEY_BOOTSTRAP: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
-
-// RFC 7636 Appendix B のテストベクタ（S256）。
-const CODE_VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
-const CODE_CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
-const REDIRECT_URI: &str = "http://localhost:3000/callback";
-const REDIRECT_URI_ENC: &str = "http%3A%2F%2Flocalhost%3A3000%2Fcallback";
-
-struct SystemClock;
-impl Clock for SystemClock {
-    fn now(&self) -> chrono::DateTime<chrono::Utc> {
-        chrono::Utc::now()
-    }
-}
-
-struct TestEnv {
-    app: axum::Router,
-    pool: MySqlPool,
-    root_tenant_id: String,
-    /// seed の初期管理者（root 所属・idp.system.admin 保有）。
-    root_admin_id: String,
+async fn setup() -> Option<TestEnv> {
+    support_setup("tenant isolation").await
 }
 
 /// API 経由で作成したテナントとその初期管理者。
@@ -73,113 +44,6 @@ struct CreatedTenant {
     id: String,
     admin_id: String,
     admin_cookie: String,
-}
-
-async fn setup() -> Option<TestEnv> {
-    let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
-        eprintln!("TEST_DATABASE_URL not set; skipping tenant isolation integration test");
-        return None;
-    };
-    let pool = MySqlPoolOptions::new()
-        .connect(&url)
-        .await
-        .expect("connect to test database");
-    MIGRATIONS
-        .get_or_init(|| async {
-            MIGRATOR.run(&pool).await.expect("run migrations");
-        })
-        .await;
-
-    let root_tenant_id: String =
-        sqlx::query_scalar("SELECT id FROM tenants WHERE parent_tenant_id IS NULL")
-            .fetch_one(&pool)
-            .await
-            .expect("root tenant seeded");
-    let root_admin_id: String = sqlx::query_scalar(
-        "SELECT id FROM users WHERE tenant_id = ? AND email = 'admin@example.com'",
-    )
-    .bind(&root_tenant_id)
-    .fetch_one(&pool)
-    .await
-    .expect("initial admin seeded");
-
-    let config = Arc::new(Config::from_env().expect("load config"));
-    let state = AppState::build(pool.clone(), config, Arc::new(SystemClock));
-    KEY_BOOTSTRAP
-        .get_or_init(|| async {
-            state
-                .keys
-                .ensure_active_key()
-                .await
-                .expect("bootstrap signing key");
-        })
-        .await;
-    Some(TestEnv {
-        app: router::build(state),
-        pool,
-        root_tenant_id,
-        root_admin_id,
-    })
-}
-
-/// 指定ユーザーの有効な SSO セッションを作成し、Cookie 用の平文 session_id を返す。
-async fn create_sso_session(pool: &MySqlPool, user_id: &str) -> String {
-    let session_id = crypto::random_hex(32);
-    let session_hash = crypto::sha256_hex(&session_id);
-    sqlx::query(
-        "INSERT INTO sso_sessions \
-         (session_hash, user_id, auth_time, idle_expires_at, absolute_expires_at) \
-         VALUES (?, ?, UTC_TIMESTAMP(6), \
-                 DATE_ADD(UTC_TIMESTAMP(6), INTERVAL 1 HOUR), \
-                 DATE_ADD(UTC_TIMESTAMP(6), INTERVAL 8 HOUR))",
-    )
-    .bind(&session_hash)
-    .bind(user_id)
-    .execute(pool)
-    .await
-    .expect("insert sso session");
-    session_id
-}
-
-async fn send(app: &axum::Router, request: Request<Body>) -> axum::response::Response {
-    app.clone().oneshot(request).await.expect("send request")
-}
-
-async fn body_json(response: axum::response::Response) -> Value {
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read body");
-    serde_json::from_slice(&bytes).unwrap_or(Value::Null)
-}
-
-fn request(method: Method, cookie: &str, uri: &str, body: Option<Value>) -> Request<Body> {
-    let mut builder = Request::builder()
-        .method(method)
-        .uri(uri)
-        .header(COOKIE, format!("sso_session_id={cookie}"));
-    if body.is_some() {
-        builder = builder.header(CONTENT_TYPE, "application/json");
-    }
-    builder
-        .body(body.map_or(Body::empty(), |b| Body::from(b.to_string())))
-        .unwrap()
-}
-
-fn get(cookie: &str, uri: &str) -> Request<Body> {
-    request(Method::GET, cookie, uri, None)
-}
-
-fn post(cookie: &str, uri: &str, body: Value) -> Request<Body> {
-    request(Method::POST, cookie, uri, Some(body))
-}
-
-fn delete(cookie: &str, uri: &str) -> Request<Body> {
-    request(Method::DELETE, cookie, uri, None)
-}
-
-/// ランダムなドメイン片（メール・名前の一意化に使う）。
-fn unique() -> String {
-    uuid::Uuid::new_v4().simple().to_string()[..12].to_string()
 }
 
 /// root の system 管理者としてテナントを作成し、初期管理者の SSO セッションまで用意する。
@@ -212,11 +76,7 @@ async fn create_tenant(env: &TestEnv, root_cookie: &str, name: &str) -> CreatedT
 }
 
 /// テナント管理者として利用者を作成し `(user_id, email)` を返す。
-async fn create_user(
-    env: &TestEnv,
-    admin_cookie: &str,
-    tenant_id: &str,
-) -> (String, String) {
+async fn create_user(env: &TestEnv, admin_cookie: &str, tenant_id: &str) -> (String, String) {
     let email = format!("user-{}@example.com", unique());
     let res = send(
         &env.app,
@@ -235,70 +95,9 @@ async fn create_user(
     )
 }
 
-fn location(response: &axum::response::Response) -> String {
-    response
-        .headers()
-        .get(LOCATION)
-        .expect("Location header")
-        .to_str()
-        .unwrap()
-        .to_string()
-}
-
-fn query_param(url: &str, name: &str) -> Option<String> {
-    url::Url::parse(url)
-        .expect("parse redirect URL")
-        .query_pairs()
-        .find(|(k, _)| k == name)
-        .map(|(_, v)| v.into_owned())
-}
-
-/// `openid` のみの scope（同意ステップ不要）で認可リクエスト URI を組み立てる。
-fn authorize_uri(tenant: &str, client_id: &str) -> String {
-    format!(
-        "/{tenant}/authorize?response_type=code&client_id={client_id}&redirect_uri={REDIRECT_URI_ENC}&scope=openid&state=st&nonce=no&code_challenge={CODE_CHALLENGE}&code_challenge_method=S256"
-    )
-}
-
-/// 一意な public client（scope = openid のみ）を指定テナントへ登録して client_id を返す。
-async fn insert_public_client(pool: &MySqlPool, tenant_id: &str) -> String {
-    let client_id = format!("iso-public-{}", unique());
-    sqlx::query(
-        "INSERT INTO clients (id, tenant_id, client_id, client_secret_hash, client_type, \
-         client_status, app_name, redirect_uris, grant_types, response_types, scopes, \
-         token_endpoint_auth_method, require_pkce) \
-         VALUES (?, ?, ?, NULL, 'public', 'ACTIVE', 'Isolation Test App', ?, \
-         '[\"authorization_code\"]', '[\"code\"]', '[\"openid\"]', 'none', 1)",
-    )
-    .bind(uuid::Uuid::now_v7().to_string())
-    .bind(tenant_id)
-    .bind(&client_id)
-    .bind(json!([REDIRECT_URI]).to_string())
-    .execute(pool)
-    .await
-    .expect("insert public client");
-    client_id
-}
-
-/// 認可コードをトークンへ交換する（public client・PKCE）。
-async fn exchange_code(
-    app: &axum::Router,
-    tenant: &str,
-    client_id: &str,
-    code: &str,
-) -> axum::response::Response {
-    send(
-        app,
-        Request::builder()
-            .method("POST")
-            .uri(format!("/{tenant}/token"))
-            .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .body(Body::from(format!(
-                "grant_type=authorization_code&code={code}&redirect_uri={REDIRECT_URI_ENC}&code_verifier={CODE_VERIFIER}&client_id={client_id}"
-            )))
-            .unwrap(),
-    )
-    .await
+/// `openid` のみの scope の public client を登録する（同意ステップ不要）。
+async fn insert_public_client(pool: &sqlx::MySqlPool, tenant_id: &str) -> String {
+    support::insert_public_client(pool, tenant_id, &["openid"]).await
 }
 
 /// 保証 1: root（idp.system.admin）はテナントを作成できるが、作成したテナントの内部

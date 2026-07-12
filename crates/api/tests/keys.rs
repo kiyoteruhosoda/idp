@@ -3,17 +3,16 @@
 //! `TEST_DATABASE_URL` 設定時のみ実行:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test keys
 
+mod support;
+
 use chrono::{DateTime, Utc};
 use idp_api::application::key_service::KeyService;
 use idp_api::domain::clock::Clock;
 use idp_api::infrastructure::jwt;
 use idp_api::infrastructure::repositories::signing_key::SqlxSigningKeyRepository;
 use serde::{Deserialize, Serialize};
-use sqlx::mysql::MySqlPoolOptions;
 use sqlx::Row;
 use std::sync::Arc;
-
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
 
 struct FixedClock(DateTime<Utc>);
 impl Clock for FixedClock {
@@ -33,16 +32,9 @@ struct Claims {
 // （current_thread だと keygen がリアクタをブロックし、他タスクの DB I/O が進まない）。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ensure_key_is_idempotent_and_token_verifies_against_jwks() {
-    let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
-        eprintln!("TEST_DATABASE_URL not set; skipping key service integration test");
+    let Some(pool) = support::connect_pool("key service").await else {
         return;
     };
-
-    let pool = MySqlPoolOptions::new()
-        .connect(&url)
-        .await
-        .expect("connect to test database");
-    MIGRATOR.run(&pool).await.expect("run migrations");
 
     let repo = Arc::new(SqlxSigningKeyRepository::new(pool.clone()));
     let clock = Arc::new(FixedClock(Utc::now()));

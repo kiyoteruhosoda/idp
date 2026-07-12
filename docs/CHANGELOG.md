@@ -9,6 +9,11 @@
   現行テンプレートのインライン script/style は許容、nonce 化は後続改善）・`nosniff`・
   `Referrer-Policy` を付与（`crates/web/src/security_headers.rs`）。`HSTS_MAX_AGE` も api と同キーで
   web に追加。
+- **REF1 — 統合テスト支援モジュールの共通化**: 9 テストファイルに重複していた
+  `setup`（DB 接続・マイグレーション・AppState/ルータ組み立て・署名鍵ブートストラップ）・SSO
+  セッション/利用者/クライアント生成・リクエストビルダ・レスポンス読み取りを
+  `crates/api/tests/support/mod.rs` へ抽出（テストコード約 1,100 行削減）。マイグレーションと
+  鍵ブートストラップの「プロセス内一度だけ」ガード（OnceCell）も一元化。
 - **SEC5 — 署名鍵ブートストラップの排他制御**: `ensure_active_key` の「存在確認 → 生成」TOCTOU を、
   `SigningKeyRepository::insert_if_no_active`（MariaDB `GET_LOCK` の排他区間で再確認＋挿入。同一接続で
   取得〜解放）で解消。複数インスタンスの同時起動でも ACTIVE 鍵は 1 本のまま。8 並走のブートストラップ

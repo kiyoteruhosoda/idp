@@ -11,115 +11,21 @@
 //! - 作成された子テナントの管理者（`idp.tenant.admin`）はテナントを作成できない（§4。system.admin は
 //!   root scope でしか存在できないため）。
 
+mod support;
+
 use axum::body::Body;
-use axum::http::header::{CONTENT_TYPE, COOKIE};
+use axum::http::header::CONTENT_TYPE;
 use axum::http::{Request, StatusCode};
-use idp_api::config::Config;
-use idp_api::domain::clock::Clock;
-use idp_api::infrastructure::crypto;
-use idp_api::presentation::router;
-use idp_api::presentation::state::AppState;
-use serde_json::{json, Value};
-use sqlx::mysql::MySqlPoolOptions;
-use sqlx::{MySqlPool, Row};
-use std::sync::Arc;
-use tower::ServiceExt;
-
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
-
-struct SystemClock;
-impl Clock for SystemClock {
-    fn now(&self) -> chrono::DateTime<chrono::Utc> {
-        chrono::Utc::now()
-    }
-}
-
-struct TestEnv {
-    app: axum::Router,
-    pool: MySqlPool,
-    root_tenant_id: String,
-    admin_id: String,
-}
-
-async fn setup() -> Option<TestEnv> {
-    let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
-        eprintln!("TEST_DATABASE_URL not set; skipping admin tenants integration test");
-        return None;
-    };
-    let pool = MySqlPoolOptions::new()
-        .connect(&url)
-        .await
-        .expect("connect to test database");
-    MIGRATOR.run(&pool).await.expect("run migrations");
-
-    let root_tenant_id: String =
-        sqlx::query_scalar("SELECT id FROM tenants WHERE parent_tenant_id IS NULL")
-            .fetch_one(&pool)
-            .await
-            .expect("root tenant seeded");
-    let admin_id: String = sqlx::query_scalar(
-        "SELECT id FROM users WHERE tenant_id = ? AND email = 'admin@example.com'",
-    )
-    .bind(&root_tenant_id)
-    .fetch_one(&pool)
-    .await
-    .expect("initial admin seeded");
-
-    let config = Arc::new(Config::from_env().expect("load config"));
-    let state = AppState::build(pool.clone(), config, Arc::new(SystemClock));
-    Some(TestEnv {
-        app: router::build(state),
-        pool,
-        root_tenant_id,
-        admin_id,
-    })
-}
-
-async fn create_sso_session(pool: &MySqlPool, user_id: &str) -> String {
-    let session_id = crypto::random_hex(32);
-    let session_hash = crypto::sha256_hex(&session_id);
-    sqlx::query(
-        "INSERT INTO sso_sessions \
-         (session_hash, user_id, auth_time, idle_expires_at, absolute_expires_at) \
-         VALUES (?, ?, UTC_TIMESTAMP(6), \
-                 DATE_ADD(UTC_TIMESTAMP(6), INTERVAL 1 HOUR), \
-                 DATE_ADD(UTC_TIMESTAMP(6), INTERVAL 8 HOUR))",
-    )
-    .bind(&session_hash)
-    .bind(user_id)
-    .execute(pool)
-    .await
-    .expect("insert sso session");
-    session_id
-}
-
-async fn send(app: &axum::Router, request: Request<Body>) -> axum::response::Response {
-    app.clone().oneshot(request).await.expect("send request")
-}
-
-async fn body_json(response: axum::response::Response) -> Value {
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read body");
-    serde_json::from_slice(&bytes).unwrap_or(Value::Null)
-}
-
-fn admin_post(cookie: &str, uri: &str, body: Value) -> Request<Body> {
-    Request::builder()
-        .method("POST")
-        .uri(uri)
-        .header(CONTENT_TYPE, "application/json")
-        .header(COOKIE, format!("sso_session_id={cookie}"))
-        .body(Body::from(body.to_string()))
-        .unwrap()
-}
+use serde_json::json;
+use sqlx::Row;
+use support::{body_json, create_sso_session, post as admin_post, send};
 
 #[tokio::test]
 async fn root_system_admin_can_create_tenant_with_generated_admin() {
-    let Some(env) = setup().await else {
+    let Some(env) = support::setup("admin tenants").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.admin_id).await;
+    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
     let tenants_uri = format!("/{}/admin/tenants", env.root_tenant_id);
 
     // 未認証（Cookie 無し）→ 401。

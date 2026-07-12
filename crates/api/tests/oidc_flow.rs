@@ -5,187 +5,28 @@
 //!
 //! テストデータ（client / user）は実行ごとにランダムな識別子で作成し、既存データと干渉しない。
 
+mod support;
+
 use axum::body::Body;
-use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, COOKIE, LOCATION, SET_COOKIE};
+use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, COOKIE};
 use axum::http::{Request, StatusCode};
-use idp_api::config::Config;
-use idp_api::domain::clock::Clock;
-use idp_api::domain::password::PasswordHasher as _;
-use idp_api::infrastructure::password::Argon2PasswordHasher;
-use idp_api::presentation::router;
-use idp_api::presentation::state::AppState;
 use serde_json::{json, Value};
-use sqlx::mysql::MySqlPoolOptions;
 use sqlx::{MySqlPool, Row};
-use std::sync::Arc;
-use tower::ServiceExt;
+use support::{
+    body_json, cookie_value, location, query_param, send, CODE_CHALLENGE, CODE_VERIFIER,
+    REDIRECT_URI, SERVICE_TOKEN, SERVICE_TOKEN_HEADER,
+};
 
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
-
-// RFC 7636 Appendix B のテストベクタ（S256）。
-const CODE_VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
-const CODE_CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
-const REDIRECT_URI: &str = "http://localhost:3000/callback";
-// 内部認証エンドポイントのサービストークン（ADR-0007。ログイン画面は web crate へ移設したため、
-// api 単体テストでは資格情報検証を POST /internal/authenticate で駆動する）。
-const SERVICE_TOKEN: &str = "test-internal-service-token";
-const SERVICE_TOKEN_HEADER: &str = "x-internal-auth-token";
-
-struct SystemClock;
-impl Clock for SystemClock {
-    fn now(&self) -> chrono::DateTime<chrono::Utc> {
-        chrono::Utc::now()
-    }
-}
-
-struct TestEnv {
-    app: axum::Router,
-    pool: MySqlPool,
-    issuer: String,
-    /// 過渡期（MT9 まで）の既定テナント = seed 済み root テナントの UUID。
-    root_tenant_id: String,
-}
-
-async fn setup() -> Option<TestEnv> {
-    let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
-        eprintln!("TEST_DATABASE_URL not set; skipping OIDC flow integration test");
-        return None;
-    };
-    // 内部認証エンドポイントのサービストークンを既知値に固定する（ログイン駆動に使う）。
-    std::env::set_var("INTERNAL_SERVICE_TOKEN", SERVICE_TOKEN);
-    let pool = MySqlPoolOptions::new()
-        .connect(&url)
-        .await
-        .expect("connect to test database");
-    // 新規 DB へ複数テストの setup が並走すると、マイグレーション seed の INSERT が
-    // 一意制約で競合するため、プロセス内で一度だけ実行する。
-    static MIGRATIONS: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
-    MIGRATIONS
-        .get_or_init(|| async {
-            MIGRATOR.run(&pool).await.expect("run migrations");
-        })
-        .await;
-
-    // 過渡期（MT9 まで）: seed 済み root テナントを既定テナントとして注入する。
-    let root_tenant_id: String =
-        sqlx::query_scalar("SELECT id FROM tenants WHERE parent_tenant_id IS NULL")
-            .fetch_one(&pool)
-            .await
-            .expect("root tenant seeded");
-
-    let config = Arc::new(Config::from_env().expect("load config"));
-    let issuer = config.issuer().to_string();
-    let state = AppState::build(pool.clone(), config, Arc::new(SystemClock));
-    // `ensure_active_key` は「存在確認 → 生成」の 2 手で並走に安全でない（TOCTOU）ため、
-    // プロセス内で一度だけ実行する（ACTIVE 鍵の複数本化を防ぐ）。
-    static KEY_BOOTSTRAP: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
-    KEY_BOOTSTRAP
-        .get_or_init(|| async {
-            state
-                .keys
-                .ensure_active_key()
-                .await
-                .expect("bootstrap signing key");
-        })
-        .await;
-    Some(TestEnv {
-        app: router::build(state),
-        pool,
-        issuer,
-        root_tenant_id,
-    })
-}
-
-/// 一意な public client を root テナントへ登録して client_id を返す。
+/// 一意な public client（openid/profile/email）を登録して client_id を返す。
 async fn insert_public_client(pool: &MySqlPool, tenant_id: &str) -> String {
-    let client_id = format!(
-        "e2e-public-{}",
-        &uuid::Uuid::new_v4().simple().to_string()[..12]
-    );
-    sqlx::query(
-        "INSERT INTO clients (id, tenant_id, client_id, client_secret_hash, client_type, \
-         client_status, app_name, redirect_uris, grant_types, response_types, scopes, \
-         token_endpoint_auth_method, require_pkce) \
-         VALUES (?, ?, ?, NULL, 'public', 'ACTIVE', 'E2E Test App', ?, \
-         '[\"authorization_code\"]', '[\"code\"]', '[\"openid\",\"profile\",\"email\"]', 'none', 1)",
-    )
-    .bind(uuid::Uuid::now_v7().to_string())
-    .bind(tenant_id)
-    .bind(&client_id)
-    .bind(json!([REDIRECT_URI]).to_string())
-    .execute(pool)
-    .await
-    .expect("insert public client");
-    client_id
+    support::insert_public_client(pool, tenant_id, &["openid", "profile", "email"]).await
 }
 
-/// 一意な confidential client を root テナントへ登録して `(client_id, client_secret)` を返す。
+/// 一意な confidential client（openid のみ）を登録して `(client_id, client_secret)` を返す。
 async fn insert_confidential_client(pool: &MySqlPool, tenant_id: &str) -> (String, String) {
-    let client_id = format!(
-        "e2e-conf-{}",
-        &uuid::Uuid::new_v4().simple().to_string()[..12]
-    );
-    let secret = "e2e-super-secret-value";
-    let secret_hash = Argon2PasswordHasher::new()
-        .hash(secret)
-        .expect("hash secret");
-    sqlx::query(
-        "INSERT INTO clients (id, tenant_id, client_id, client_secret_hash, client_type, \
-         client_status, app_name, redirect_uris, grant_types, response_types, scopes, \
-         token_endpoint_auth_method, require_pkce) \
-         VALUES (?, ?, ?, ?, 'confidential', 'ACTIVE', 'E2E Confidential App', ?, \
-         '[\"authorization_code\"]', '[\"code\"]', '[\"openid\"]', 'client_secret_basic', 1)",
-    )
-    .bind(uuid::Uuid::now_v7().to_string())
-    .bind(tenant_id)
-    .bind(&client_id)
-    .bind(secret_hash)
-    .bind(json!([REDIRECT_URI]).to_string())
-    .execute(pool)
-    .await
-    .expect("insert confidential client");
-    (client_id, secret.to_string())
+    support::insert_confidential_client(pool, tenant_id, &["openid"]).await
 }
 
-async fn send(app: &axum::Router, request: Request<Body>) -> axum::response::Response {
-    app.clone().oneshot(request).await.expect("send request")
-}
-
-async fn body_json(response: axum::response::Response) -> Value {
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read body");
-    serde_json::from_slice(&bytes).unwrap_or(Value::Null)
-}
-
-/// `Set-Cookie` ヘッダ群から `name` の値を取り出す。
-fn cookie_value(response: &axum::response::Response, name: &str) -> Option<String> {
-    response.headers().get_all(SET_COOKIE).iter().find_map(|v| {
-        let raw = v.to_str().ok()?;
-        let (k, rest) = raw.split_once('=')?;
-        (k == name).then(|| rest.split(';').next().unwrap_or("").to_string())
-    })
-}
-
-fn location(response: &axum::response::Response) -> String {
-    response
-        .headers()
-        .get(LOCATION)
-        .expect("Location header")
-        .to_str()
-        .unwrap()
-        .to_string()
-}
-
-fn query_param(url: &str, name: &str) -> Option<String> {
-    url::Url::parse(url)
-        .expect("parse redirect URL")
-        .query_pairs()
-        .find(|(k, _)| k == name)
-        .map(|(_, v)| v.into_owned())
-}
-
-/// 条件 1: ユーザー登録。sub を返す。
 async fn register_user(
     app: &axum::Router,
     tenant: &str,
@@ -271,12 +112,13 @@ async fn audit_count(pool: &MySqlPool, client_id: &str, event_type: &str) -> i64
 
 #[tokio::test]
 async fn full_authorization_code_flow_with_sso_and_audit() {
-    let Some(env) = setup().await else { return };
-    let TestEnv {
+    let Some(env) = support::setup("OIDC flow").await else { return };
+    let support::TestEnv {
         app,
         pool,
         issuer,
         root_tenant_id,
+        ..
     } = env;
 
     let client_id = insert_public_client(&pool, &root_tenant_id).await;
@@ -550,8 +392,8 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
 
 #[tokio::test]
 async fn invalid_authorize_and_client_auth_failures() {
-    let Some(env) = setup().await else { return };
-    let TestEnv {
+    let Some(env) = support::setup("OIDC flow").await else { return };
+    let support::TestEnv {
         app,
         pool,
         root_tenant_id,
@@ -649,8 +491,8 @@ async fn invalid_authorize_and_client_auth_failures() {
 
 #[tokio::test]
 async fn login_lockout_after_repeated_failures() {
-    let Some(env) = setup().await else { return };
-    let TestEnv {
+    let Some(env) = support::setup("OIDC flow").await else { return };
+    let support::TestEnv {
         app,
         pool,
         root_tenant_id,
