@@ -18,18 +18,43 @@ Phase 計画に沿う。
 
 ## バックログ
 
+SEC = MT16 完了時のセキュリティレビュー指摘、REF = 同リファクタ候補（いずれも 2026-07-12）。
+認可境界に実害があるもの・本番事故を防ぐもの・後続タスク全部に効くもの（テスト基盤・トランザクション境界）を
+機能追加（MT17 以降）より先に置く。
+
 | 優先 | # | 概要 | 状態 | 影響度 | 工数 | 推奨モデル |
 |---|---|---|---|---|---|---|
-| 1 | MT17 | 招待のメール配送（MT14 の SMTP 設定完了済み。手動トークン伝達 → メールリンク） | ⬜未着手 | 中 | 中 | Sonnet 5 |
-| 2 | MT18 | セルフサービス・パスワードリセット（忘失時。外部 SMTP 連携。MT14 完了済み） | ⬜未着手 | 中 | 中 | Sonnet 5 |
-| 3 | MT19 | API の `Accept-Language` ベース多言語化（i18n 仕様書 §5・§6）— API は `Accept-Language` のみ参照（Cookie/Session/クエリ/DB を見ない）。地域コード無視（`en-US`→`en`）、非対応言語・未指定はシステム既定 `ja`。エラー／バリデーション／業務メッセージをキー管理で多言語化（コードは言語不変）。運用ログ・監査ログ・スタックトレースは対象外（英語統一） | ⬜未着手 | 中 | 大 | Sonnet 5 |
-| 4 | MT20 | Web の表示言語決定チェーン（i18n 仕様書 §3・§4・§9）— 優先順位 `?lang=` → ユーザー設定 → Cookie（`lang`）→ ブラウザ `Accept-Language` → 既定 `ja`。不正値は次順位へフォールバック。言語変更時／初回に Cookie 保存、ログイン時はユーザー設定優先。決定言語を API へ `Accept-Language` で伝搬（Cookie・`lang` クエリは送らない）。ユーザー設定 `language` 列（ja/en）を追加。将来言語追加（zh/ko/fr 等）を考慮 | ⬜未着手 | 中 | 大 | Sonnet 5 |
+| 1 | SEC1 | ゲスト追放時の権限後始末をトランザクション化 — `revoke_membership` はメンバーシップ削除**後**に scope 権限を best-effort 剥奪し、失敗しても成功を返す。`RequirePerms` は権限行のみを見るため、後始末が失敗すると**追放済みゲストが管理権限を保持し続ける**。権限削除を先行（一括 `revoke_all_for_user_in_tenant` 新設）し、失敗時は操作全体を失敗させる | ⬜未着手 | 大 | 小 | Opus 4.8 |
+| 2 | SEC2 | 本番での開発用シークレット使用を fail-fast に — `KEY_ENCRYPTION_KEY`・`INTERNAL_SERVICE_TOKEN` が未設定でも既知の開発値で起動する（warning のみ）。issuer が `https` の場合は起動失敗にする | ⬜未着手 | 大 | 小 | Sonnet 5 |
+| 3 | SEC3 | web（HTML 側）へセキュリティヘッダ付与 — ログイン画面・管理コンソールに `X-Frame-Options`/`CSP`/`nosniff` が無い（クリックジャッキング）。api の `add_security_headers` 相当を web の router へ追加 | ⬜未着手 | 中 | 小 | Haiku 4.5 |
+| 4 | SEC4 | `internal_tenant` の fail-open フォールバック撤去 — `/internal/*` で `tenant_id` 不正・未指定時に root テナントへフォールバックする過渡措置（MT13 で web のテナント経路化は完了済み）。400 に倒す | ⬜未着手 | 中 | 小 | Sonnet 5 |
+| 5 | SEC5 | `ensure_active_key` の排他制御 — 複数インスタンス同時起動（ローリングデプロイ）で ACTIVE 署名鍵が複数本できる TOCTOU（MT16 のテスト並走で実際に再現）。`tenants.is_root` と同じ番兵列 + UNIQUE（要マイグレーション）または `GET_LOCK` で直列化 | ⬜未着手 | 中 | 中 | Sonnet 5 |
+| 6 | REF1 | 統合テスト支援モジュールの共通化 — `setup`/`create_sso_session`/`send`/`body_json`/リクエストビルダが 7 ファイルにコピーされ、マイグレーション・鍵ブートストラップの OnceCell ガードも 3 ファイルに重複。`crates/api/tests/support/` へ抽出（以後のテスト追加すべてに効くため機能追加より先） | ⬜未着手 | 中 | 中 | Sonnet 5 |
+| 7 | REF2 | ユースケースのトランザクション境界導入 — `create_tenant` は tenant INSERT → 管理者作成 → 権限付与を個別実行し、途中失敗で管理者のいないテナントが残り得る。unit of work を導入し、SEC1 の後始末とあわせて整合を保証する | ⬜未着手 | 中 | 中 | Opus 4.8 |
+| 8 | MT17 | 招待のメール配送（MT14 の SMTP 設定完了済み。手動トークン伝達 → メールリンク） | ⬜未着手 | 中 | 中 | Sonnet 5 |
+| 9 | MT18 | セルフサービス・パスワードリセット（忘失時。外部 SMTP 連携。MT14 完了済み） | ⬜未着手 | 中 | 中 | Sonnet 5 |
+| 10 | SEC6 | 自己登録（`/{tenant_id}/auth/register`）の制御 — 全テナントで無条件開放・レート制限なし・メール検証なしで ACTIVE アカウントを作成でき、409 応答でテナント内のメール存在が列挙可能。テナント設定で有効/無効を切替（既定 OFF 推奨）＋レート制限。メール検証は MT17 の SMTP 基盤に乗せる | ⬜未着手 | 中 | 中 | Sonnet 5 |
+| 11 | MT19 | API の `Accept-Language` ベース多言語化（i18n 仕様書 §5・§6）— API は `Accept-Language` のみ参照（Cookie/Session/クエリ/DB を見ない）。地域コード無視（`en-US`→`en`）、非対応言語・未指定はシステム既定 `ja`。エラー／バリデーション／業務メッセージをキー管理で多言語化（コードは言語不変）。運用ログ・監査ログ・スタックトレースは対象外（英語統一） | ⬜未着手 | 中 | 大 | Sonnet 5 |
+| 12 | MT20 | Web の表示言語決定チェーン（i18n 仕様書 §3・§4・§9）— 優先順位 `?lang=` → ユーザー設定 → Cookie（`lang`）→ ブラウザ `Accept-Language` → 既定 `ja`。不正値は次順位へフォールバック。言語変更時／初回に Cookie 保存、ログイン時はユーザー設定優先。決定言語を API へ `Accept-Language` で伝搬（Cookie・`lang` クエリは送らない）。ユーザー設定 `language` 列（ja/en）を追加。将来言語追加（zh/ko/fr 等）を考慮 | ⬜未着手 | 中 | 大 | Sonnet 5 |
+| 13 | GAP1 | ゲストへの権限付与の ADR 乖離解消 — ADR-0009 §4 は「付与対象は当該テナントのメンバー（HOME/GUEST）」だが、`ensure_user_in_tenant` が所属元限定のため GUEST へ付与できない。付与対象を「HOME または ACTIVE な GUEST」に広げるか、ADR を現状に合わせるかの設計判断 | 🟡要判断 | 中 | 小 | Opus 4.8 |
+| 14 | REF3 | 認可ホットパスの整理 — SSO セッション解決（hash→取得→有効性→ユーザー有効）が `AdminAccessService::authorize`／`authenticated_user`／`try_resume_sso` に三重実装。共通のセッション解決サービスへ抽出し、`has_permission` 2 回問い合わせも `IN (?, ?)` の `has_any_permission` 1 回に統合。権限コード定数（`idp.system.admin` 等）の散在も `domain::permission` へ集約 | ⬜未着手 | 中 | 中 | Sonnet 5 |
+| 15 | SEC7 | ログイン/同意 CSRF トークンの HMAC 化 — 現状 `sha256("csrf:" + auth_session_id)` でサーバシークレット不使用（保護対象と同じ秘密からの導出）。サーバ側キーの HMAC へ（web/api 共有のため `idp-contracts` の導出を差し替え） | ⬜未着手 | 小 | 小 | Sonnet 5 |
+| 16 | REF4 | 小粒の重複解消 — ①`InvitationError`/`PermissionManagementError`→`ApiError` マッピングのハンドラ間コピー（`impl From` へ集約）②`validate_email` の三重定義（`EmailAddress` 値オブジェクトへ）③`list_members` の N+1（JOIN 一括取得）④`ensure_user_in_tenant` と `get_user` の同文重複 | ⬜未着手 | 小 | 小 | Haiku 4.5 |
 
 > MT14・MT15 は完了（`docs/CHANGELOG.md` 参照）。MT15 の言語設定は現状 **`lang` Cookie 保存 + `/settings`
 > 画面での `?lang=`／Cookie 反映**まで（決定チェーンの優先度1・3）。全画面への決定チェーン統一・
 > ユーザー設定 `language` 列（優先度2）・システム既定 `ja` への統一は MT20 の範囲として残る。
 
 ### 詳細
+
+**推奨モデルの根拠（高リスク＝Opus 4.8）**: SEC1・REF2・GAP1 は認可境界（ADR-0009 §3・§4 の
+「権限保有はメンバーシップを含意する」という保証）とデータ整合の要に触れるため Opus を割り当てる。
+SEC1 と REF2 は同じトランザクション境界の話であり、まとめて 1 ブランチで実装してよい
+（先に SEC1 の一括 revoke + 順序修正、その足場で REF2 の unit of work を導入）。
+
+**SEC/REF の出所**: MT16 完了時（2026-07-12）の全体セキュリティレビュー・リファクタ棚卸し。
+検証済みの前提（良い点）は `docs/CHANGELOG.md` の MT16 項を参照。SEC 系の再検証には
+`crates/api/tests/tenant_isolation.rs` の negative test 群と `/security-review` を使う。
 
 **中リスク／定型（Sonnet 5）**: MT17・MT18。仕様が ADR で明確で、
 Askama テンプレート・`api_client` 等の確立パターンに沿う機能実装。MT15（セルフサービスの
