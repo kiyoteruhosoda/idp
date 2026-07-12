@@ -128,6 +128,8 @@ impl TenantManagementService {
             parent_tenant_id: Some(requesting.tenant_id()),
             name,
             status: TenantStatus::Active,
+            // 自己登録は既定で無効（fail-closed。SEC6。有効化はテナント管理者が設定画面から行う）。
+            self_registration_enabled: false,
             created_at: now,
             updated_at: now,
         };
@@ -258,18 +260,23 @@ impl TenantManagementService {
             .ok_or(TenantManagementError::NotFound)
     }
 
-    /// 現在（要求）テナント自身の表示名を更新する（設定画面のテナント設定区画。MT14）。認可は
+    /// 現在（要求）テナント自身の設定を更新する（設定画面のテナント設定区画。MT14・SEC6）。
+    /// 表示名と自己登録トグル（`self_registration_enabled`。`None` は現状維持）を対象とし、認可は
     /// Presentation の `RequirePerms<IdpAdmin>`（`idp.tenant.admin`）が担う。`parent_tenant_id`・
     /// `status` は変更しない。
-    pub async fn update_current_name(
+    pub async fn update_current_settings(
         &self,
         current: TenantContext,
         name: String,
+        self_registration_enabled: Option<bool>,
         actor: Uuid,
         ctx: &RequestContext,
     ) -> Result<Tenant, TenantManagementError> {
         let mut tenant = self.get_current(current).await?;
         tenant.name = validate_name(name)?;
+        if let Some(enabled) = self_registration_enabled {
+            tenant.self_registration_enabled = enabled;
+        }
         self.tenants
             .update(&tenant)
             .await

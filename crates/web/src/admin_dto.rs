@@ -124,6 +124,9 @@ pub struct InvitationCreatedView {
 pub struct TenantView {
     pub id: String,
     pub name: String,
+    /// 自己登録（`/auth/register`）を許可するか（SEC6。既定は無効）。
+    #[serde(default)]
+    pub self_registration_enabled: bool,
     /// `ACTIVE` または `DISABLED`。
     pub status: String,
 }

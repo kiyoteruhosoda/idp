@@ -100,4 +100,39 @@ async fn register_creates_user_and_rejects_duplicates_and_invalid_input() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // 自己登録トグルを無効へ戻すと 403（既定値の挙動。SEC6）。存在するメールでも同じ 403 になり、
+    // 無効テナントでは 409 によるメール存在の列挙ができない。
+    sqlx::query("UPDATE tenants SET self_registration_enabled = 0 WHERE id = ?")
+        .bind(&root_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (status_new, _) = post_register(
+        &app,
+        &root_id,
+        serde_json::json!({
+            "email": format!("y-{}@example.com", uuid::Uuid::new_v4()),
+            "password": "password123"
+        }),
+    )
+    .await;
+    let (status_existing, _) = post_register(
+        &app,
+        &root_id,
+        serde_json::json!({ "email": email, "password": "password123" }),
+    )
+    .await;
+    assert_eq!(status_new, StatusCode::FORBIDDEN, "disabled -> 403");
+    assert_eq!(
+        status_existing,
+        StatusCode::FORBIDDEN,
+        "existing email is indistinguishable while disabled"
+    );
+    // 後続テスト（oidc_flow / internal_auth の登録ヘルパ）のため有効へ戻す。
+    sqlx::query("UPDATE tenants SET self_registration_enabled = 1 WHERE id = ?")
+        .bind(&root_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 }

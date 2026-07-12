@@ -44,6 +44,8 @@ pub struct Tenant {
     /// 表示名。一意制約なし・URL には使わない。
     pub name: String,
     pub status: TenantStatus,
+    /// 自己登録（`/auth/register`）を許可するか。既定は無効（fail-closed。SEC6）。
+    pub self_registration_enabled: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -70,6 +72,7 @@ mod tests {
             parent_tenant_id: parent,
             name: "Acme".to_string(),
             status: TenantStatus::Active,
+            self_registration_enabled: false,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

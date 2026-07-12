@@ -51,6 +51,9 @@ pub struct AdminPasswordChangeForm {
 #[derive(Debug, Deserialize)]
 pub struct AdminTenantSettingsForm {
     pub name: String,
+    /// 自己登録トグル（SEC6）。チェックボックスはチェック時のみ送られる（`Some(_)` = 有効）。
+    #[serde(default)]
+    pub self_registration_enabled: Option<String>,
     pub csrf_token: String,
 }
 

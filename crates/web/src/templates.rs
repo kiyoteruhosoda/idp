@@ -253,6 +253,30 @@ pub struct InvitationCreated<'a> {
     pub invitee_email: &'a str,
 }
 
+/// パスワードリセット要求画面（`GET/POST /{tenant_id}/forgot-password`。MT18）。未ログイン経路。
+/// 要求受理後はアカウントの有無を問わず同じ完了文言を表示する（列挙防止）。
+#[derive(Template)]
+#[template(path = "forgot_password.html")]
+pub struct ForgotPassword<'a> {
+    pub messages: &'a Messages,
+    /// 要求を受理した後の完了表示。
+    pub accepted: bool,
+    pub error_key: Option<&'a str>,
+}
+
+/// パスワード再設定画面（`GET/POST /{tenant_id}/password-reset?token=...`。MT18）。
+/// リセットメールのリンクから開く。
+#[derive(Template)]
+#[template(path = "password_reset.html")]
+pub struct PasswordReset<'a> {
+    pub messages: &'a Messages,
+    pub tenant_prefix: &'a str,
+    pub show_form: bool,
+    pub token: &'a str,
+    pub success: bool,
+    pub error_key: Option<&'a str>,
+}
+
 /// 招待承諾画面（`GET/POST /{tenant_id}/invitations/accept`。MT17）。被招待者本人が招待メールの
 /// リンクから開く。共通レイアウト（管理コンソール）には載せない。
 #[derive(Template)]
@@ -377,6 +401,8 @@ pub struct AdminSettings<'a> {
     pub tenant_id: &'a str,
     pub tenant_name: &'a str,
     pub tenant_status: &'a str,
+    /// 自己登録（/auth/register）の許可トグル（SEC6）。
+    pub tenant_self_registration: bool,
     pub csrf: &'a str,
     /// 保存成功のバナー表示。
     pub saved: bool,

@@ -2,6 +2,7 @@
 login-title = Sign in
 login-username = Username or email
 login-password = Password
+login-forgot-password = Forgot your password?
 login-submit = Sign in
 login-error-invalid-credentials = The username or password is incorrect.
 login-error-locked = This account is temporarily locked. Please try again later.
@@ -128,6 +129,8 @@ admin-invitations-created-warning = This token is shown only once. Record it and
 admin-invitations-token-label = Invitation token
 admin-invitations-expires-label = Expires at
 admin-invitations-error-notfound = No such user was found.
+admin-settings-self-registration = Allow self-registration (/auth/register)
+admin-settings-self-registration-hint = When disabled (default), new accounts can only be created by an administrator or through an invitation.
 admin-invitations-email-sent = An invitation email with the acceptance link was sent to
 admin-invitations-email-not-sent = No invitation email was sent (SMTP is not configured or delivery failed). Share the token with the invited user through a secure channel.
 
@@ -288,3 +291,23 @@ user-settings-error-invalid-current = The current password is incorrect.
 user-settings-error-weak = The new password does not meet the strength requirements.
 user-settings-error-session = Your session has expired. Please sign in again.
 user-settings-error-internal = Something went wrong. Please try again.
+
+# Self-service password reset (MT18).
+forgot-password-title = Reset your password
+forgot-password-intro = Enter the email address of your account. If the account exists, a password reset link will be sent to it.
+forgot-password-email = Email address
+forgot-password-submit = Send reset link
+forgot-password-accepted = If the account exists, a password reset link has been sent. Check your inbox.
+forgot-password-error-unavailable = Password reset by email is not available. Contact your administrator.
+forgot-password-error-rate-limited = Too many requests. Wait a while and try again.
+password-reset-title = Set a new password
+password-reset-intro = Enter a new password for your account.
+password-reset-new-label = New password
+password-reset-confirm-label = New password (confirm)
+password-reset-submit = Set password
+password-reset-success = Your password has been updated. All existing sessions have been signed out.
+password-reset-to-login = Go to sign-in
+password-reset-error-missing-token = The reset link is incomplete. Check the link in the email.
+password-reset-error-invalid = The reset link is invalid or has expired. Request a new one from the sign-in page.
+password-reset-error-weak = The new password does not meet the strength requirements.
+password-reset-error-mismatch = The passwords do not match.

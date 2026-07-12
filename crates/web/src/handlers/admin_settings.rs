@@ -77,6 +77,7 @@ pub async fn page(
         tenant_id: &tenant_view.id,
         tenant_name: &tenant_view.name,
         tenant_status: &tenant_view.status,
+        tenant_self_registration: tenant_view.self_registration_enabled,
         csrf: &console_csrf_token(&sso),
         saved: query.saved.is_some(),
         error_key: query.error.as_deref().and_then(error_key_for),
@@ -104,7 +105,13 @@ pub async fn update_tenant(
     }
     match state
         .api
-        .update_current_tenant(&correlation.0, &tenant.0, &sso, form.name.trim())
+        .update_current_tenant(
+            &correlation.0,
+            &tenant.0,
+            &sso,
+            form.name.trim(),
+            form.self_registration_enabled.is_some(),
+        )
         .await
     {
         Ok(_) => found(&format!("{base}?saved=1")),

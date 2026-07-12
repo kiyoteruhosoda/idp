@@ -15,6 +15,7 @@ pub mod login;
 pub mod mfa_totp;
 pub mod passkey;
 pub mod password_change;
+pub mod password_reset;
 pub mod user_settings;
 
 use crate::correlation::CorrelationId;

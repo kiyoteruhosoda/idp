@@ -252,7 +252,13 @@ pub async fn update_current_tenant(
     let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
     let updated = state
         .tenants_admin
-        .update_current_name(tenant.context(), body.name, admin.user_id, &ctx)
+        .update_current_settings(
+            tenant.context(),
+            body.name,
+            body.self_registration_enabled,
+            admin.user_id,
+            &ctx,
+        )
         .await
         .map_err(map_error)?;
     Ok(Json(tenant_response(&updated)))
@@ -264,6 +270,7 @@ fn tenant_response(t: &Tenant) -> TenantResponse {
         parent_tenant_id: t.parent_tenant_id.map(|p| p.to_string()),
         name: t.name.clone(),
         status: t.status.as_str().to_string(),
+        self_registration_enabled: t.self_registration_enabled,
         created_at: t.created_at.to_rfc3339(),
         updated_at: t.updated_at.to_rfc3339(),
     }

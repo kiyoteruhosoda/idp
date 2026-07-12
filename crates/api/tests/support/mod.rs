@@ -104,6 +104,14 @@ pub async fn setup(test_name: &str) -> Option<TestEnv> {
     .await
     .expect("initial admin seeded");
 
+    // 自己登録は既定 OFF（SEC6）。register を使うテストフローが動くよう root テナントでは有効化する
+    // （無効時の挙動は register テストが明示的に OFF へ切り替えて検証する）。
+    sqlx::query("UPDATE tenants SET self_registration_enabled = 1 WHERE id = ?")
+        .bind(&root_tenant_id)
+        .execute(&pool)
+        .await
+        .expect("enable self-registration for root tenant");
+
     let config = Arc::new(Config::from_env().expect("load config"));
     let issuer = config.issuer().to_string();
     let state = AppState::build(pool.clone(), config, Arc::new(SystemClock));

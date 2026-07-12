@@ -10,6 +10,7 @@
 <label>{{ messages.get("login-password") }} <input type="password" name="password" autocomplete="current-password" required></label>
 <button type="submit">{{ messages.get("login-submit") }}</button>
 </form>
+<p><a href="{{ tenant_prefix }}/forgot-password">{{ messages.get("login-forgot-password") }}</a></p>
 <hr>
 <p>{{ messages.get("login-passkey-or") }}</p>
 <button type="button" id="btn-passkey-login">{{ messages.get("login-passkey-button") }}</button>

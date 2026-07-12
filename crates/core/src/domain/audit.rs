@@ -48,6 +48,9 @@ pub enum AuditEventType {
     TenantDeleted,
     /// root（idp.system.admin）によるシステム設定の更新（SMTP 等。MT14）。値そのものは記録しない。
     SystemSettingsUpdated,
+    /// パスワードリセットの要求・完了（MT18）。トークン・メールアドレスは記録しない。
+    PasswordResetRequested,
+    PasswordResetCompleted,
 }
 
 impl AuditEventType {
@@ -84,6 +87,8 @@ impl AuditEventType {
             Self::TenantUpdated => "tenant.updated",
             Self::TenantDeleted => "tenant.deleted",
             Self::SystemSettingsUpdated => "system_settings.updated",
+            Self::PasswordResetRequested => "password_reset.requested",
+            Self::PasswordResetCompleted => "password_reset.completed",
         }
     }
 }

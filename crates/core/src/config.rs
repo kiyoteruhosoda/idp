@@ -43,6 +43,8 @@ pub struct Config {
     clock_skew: Duration,
     /// ゲスト招待トークンの有効期限（ADR-0009 §3）。
     invitation_ttl: Duration,
+    /// パスワードリセットトークンの有効期限（MT18）。
+    password_reset_ttl: Duration,
     /// テナント解決キャッシュの TTL（ADR-0009 §7。id → tenant のホットパス）。
     tenant_cache_ttl: Duration,
     /// scope→権限解決キャッシュの TTL（ADR-0009 §7。付与・剥奪時は即時 invalidate される）。
@@ -107,6 +109,8 @@ impl Config {
             clock_skew: secs(env_parse("CLOCK_SKEW_SECS", 60)?),
             // ゲスト招待トークンの有効期限（既定 7 日）。
             invitation_ttl: secs(env_parse("INVITATION_TTL_SECS", 604_800)?),
+            // パスワードリセットトークンの有効期限（既定 1 時間）。
+            password_reset_ttl: secs(env_parse("PASSWORD_RESET_TTL_SECS", 3_600)?),
             // 解決キャッシュの TTL（既定 60 秒）。付与・剥奪・テナント更新時は明示 invalidate するため、
             // TTL は「invalidate 経路の無い変更（DB 直接操作等）に対する最大許容ラグ」を表す。
             tenant_cache_ttl: secs(env_parse("TENANT_CACHE_TTL_SECS", 60)?),
@@ -166,6 +170,10 @@ impl Config {
     /// ゲスト招待トークンの有効期限（ADR-0009 §3）。
     pub fn invitation_ttl(&self) -> Duration {
         self.invitation_ttl
+    }
+    /// パスワードリセットトークンの有効期限（MT18）。
+    pub fn password_reset_ttl(&self) -> Duration {
+        self.password_reset_ttl
     }
     /// テナント解決キャッシュ（id → tenant）の TTL（ADR-0009 §7）。
     pub fn tenant_cache_ttl(&self) -> Duration {

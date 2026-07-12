@@ -24,8 +24,7 @@ SEC = MT16 完了時のセキュリティレビュー指摘、REF = 同リファ
 
 | 優先 | # | 概要 | 状態 | 影響度 | 工数 | 推奨モデル |
 |---|---|---|---|---|---|---|
-| 9 | MT18 | セルフサービス・パスワードリセット（忘失時。外部 SMTP 連携。MT14・MT17 完了済み — `Mailer` ポート／`SystemSettingsService::smtp_server` を再利用する） | ⬜未着手 | 中 | 中 | Sonnet 5 |
-| 10 | SEC6 | 自己登録（`/{tenant_id}/auth/register`）の制御 — 全テナントで無条件開放・レート制限なし・メール検証なしで ACTIVE アカウントを作成でき、409 応答でテナント内のメール存在が列挙可能。テナント設定で有効/無効を切替（既定 OFF 推奨）＋レート制限。メール検証は MT17 の SMTP 基盤に乗せる | ⬜未着手 | 中 | 中 | Sonnet 5 |
+| 10 | SEC6b | 自己登録・招待のメール検証 — SEC6 で自己登録は既定 OFF＋レート制限になったが、有効化したテナントでは依然 `email_verified = false` の ACTIVE アカウントが作られる。MT17/MT18 のメール配送基盤（`Mailer`）に乗せた検証フロー（確認リンクで `email_verified` を立てるまで制限）を導入する | ⬜未着手 | 小 | 中 | Sonnet 5 |
 | 11 | MT19 | API の `Accept-Language` ベース多言語化（i18n 仕様書 §5・§6）— API は `Accept-Language` のみ参照（Cookie/Session/クエリ/DB を見ない）。地域コード無視（`en-US`→`en`）、非対応言語・未指定はシステム既定 `ja`。エラー／バリデーション／業務メッセージをキー管理で多言語化（コードは言語不変）。運用ログ・監査ログ・スタックトレースは対象外（英語統一） | ⬜未着手 | 中 | 大 | Sonnet 5 |
 | 12 | MT20 | Web の表示言語決定チェーン（i18n 仕様書 §3・§4・§9）— 優先順位 `?lang=` → ユーザー設定 → Cookie（`lang`）→ ブラウザ `Accept-Language` → 既定 `ja`。不正値は次順位へフォールバック。言語変更時／初回に Cookie 保存、ログイン時はユーザー設定優先。決定言語を API へ `Accept-Language` で伝搬（Cookie・`lang` クエリは送らない）。ユーザー設定 `language` 列（ja/en）を追加。将来言語追加（zh/ko/fr 等）を考慮 | ⬜未着手 | 中 | 大 | Sonnet 5 |
 | 13 | GAP1 | ゲストへの権限付与の ADR 乖離解消 — **設計確定済み（2026-07-12。詳細参照）**: ADR-0009 §4 を正とし実装を修正する。付与対象は「当該テナントで ACTIVE なメンバーシップ（HOME/GUEST）を持つユーザー」で出自を区別しない。`ensure_user_in_tenant` を所属元照合から ACTIVE メンバーシップ判定へ変更 | ⬜未着手 | 中 | 小 | Opus 4.8 |
@@ -65,14 +64,14 @@ SEC = MT16 完了時のセキュリティレビュー指摘、REF = 同リファ
 検証済みの前提（良い点）は `docs/CHANGELOG.md` の MT16 項を参照。SEC 系の再検証には
 `crates/api/tests/tenant_isolation.rs` の negative test 群と `/security-review` を使う。
 
-**中リスク／定型（Sonnet 5）**: MT18。仕様が ADR で明確で、
+**中リスク／定型（Sonnet 5）**: SEC6b・REF3 等。仕様が ADR・既存基盤で明確で、
 Askama テンプレート・`api_client` 等の確立パターンに沿う機能実装。MT15（セルフサービスの
 パスワード変更）はセキュリティ機微を含むため、実装後に §テスト・`/security-review` を併用する
 （今回は SSO 解決 → 現行パスワード再検証 → 強度検証の経路を追加。他セッション失効は行っていない）。
 
-**依存関係**: Phase 2（MT6〜MT8）・MT9〜MT16（Phase 3）は完了（`docs/CHANGELOG.md` 参照）。
-MT18 の前提だった MT14（SMTP 設定）・MT17（メール配送基盤 `Mailer` ＋
-`SystemSettingsService::smtp_server`）は完了済み。
+**依存関係**: Phase 2（MT6〜MT8）・MT9〜MT18・SEC6（Phase 3）は完了（`docs/CHANGELOG.md` 参照）。
+メール配送基盤（`Mailer`・`SystemSettingsService::smtp_server`）は MT17/MT18 で確立済みで、
+SEC6b（メール検証）はこれに乗せる。
 
 **i18n 仕様書（MT19・MT20）の現状ギャップと注意点**:
 - **現状**: i18n は **web crate のみ**（`fluent`、`crates/web/src/i18n.rs`、`i18n/<lang>/main.ftl`）。言語決定は

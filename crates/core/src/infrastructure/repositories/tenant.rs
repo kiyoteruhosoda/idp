@@ -20,7 +20,8 @@ impl SqlxTenantRepository {
     }
 }
 
-const SELECT_COLUMNS: &str = "id, parent_tenant_id, name, status, created_at, updated_at";
+const SELECT_COLUMNS: &str =
+    "id, parent_tenant_id, name, status, self_registration_enabled, created_at, updated_at";
 
 fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
@@ -45,6 +46,9 @@ fn map_row(row: &MySqlRow) -> Result<Tenant> {
         parent_tenant_id: parent.map(|p| parse_id(&p)).transpose()?,
         name: row.try_get("name").map_err(repo_err)?,
         status: TenantStatus::parse(&status)?,
+        self_registration_enabled: row
+            .try_get("self_registration_enabled")
+            .map_err(repo_err)?,
         created_at: to_utc(row.try_get("created_at").map_err(repo_err)?),
         updated_at: to_utc(row.try_get("updated_at").map_err(repo_err)?),
     })
@@ -55,11 +59,15 @@ pub(crate) async fn insert_tenant<'e>(
     executor: impl sqlx::Executor<'e, Database = sqlx::MySql>,
     tenant: &Tenant,
 ) -> Result<()> {
-    sqlx::query("INSERT INTO tenants (id, parent_tenant_id, name, status) VALUES (?, ?, ?, ?)")
+    sqlx::query(
+        "INSERT INTO tenants (id, parent_tenant_id, name, status, self_registration_enabled) \
+         VALUES (?, ?, ?, ?, ?)",
+    )
         .bind(tenant.id.as_uuid().to_string())
         .bind(tenant.parent_tenant_id.map(|p| p.as_uuid().to_string()))
         .bind(&tenant.name)
         .bind(tenant.status.as_str())
+        .bind(tenant.self_registration_enabled)
         .execute(executor)
         .await
         .map_err(|e| match &e {
@@ -109,9 +117,12 @@ impl TenantRepository for SqlxTenantRepository {
     }
 
     async fn update(&self, tenant: &Tenant) -> Result<()> {
-        sqlx::query("UPDATE tenants SET name = ?, status = ? WHERE id = ?")
+        sqlx::query(
+            "UPDATE tenants SET name = ?, status = ?, self_registration_enabled = ? WHERE id = ?",
+        )
             .bind(&tenant.name)
             .bind(tenant.status.as_str())
+            .bind(tenant.self_registration_enabled)
             .bind(tenant.id.as_uuid().to_string())
             .execute(&self.pool)
             .await

@@ -168,6 +168,19 @@ DELETE up FROM user_permissions up
 3. SMTP 未設定・送信失敗のときは、結果画面に表示される招待トークンを安全な方法で本人へ伝える
    （被招待者は所属元テナントでログイン後、`/{tenant_id}/invitations/accept` にトークンを提示する）。
 
+## パスワードを忘れた利用者を復旧させたいとき
+
+- SMTP が設定済みなら、利用者自身がログイン画面の「パスワードをお忘れですか？」
+  （`/{tenant_id}/forgot-password`）からリセットメールを受け取り再設定できる（リンクの有効期限は
+  既定 1 時間・1 回限り。成功時は既存セッションが全て失効する）。
+- SMTP 未設定の場合はこの機能は使えない。管理者が利用者管理画面から再作成するか、SMTP を設定する。
+
+## 自己登録（/auth/register）を開放したいとき
+
+1. 対象テナントの管理者で `/{tenant_id}/admin/settings` を開く。
+2. テナント設定区画の「自己登録を許可する」にチェックを入れて保存する（既定は無効）。
+3. 無効へ戻すにはチェックを外して保存する。
+
 ## 環境変数を設定したいとき
 
 | 変数 | 既定値 | 用途 |
@@ -187,7 +200,8 @@ DELETE up FROM user_permissions up
 | `ACCESS_TOKEN_TTL_SECS` | `900` | Access Token 有効期間 |
 | `ID_TOKEN_TTL_SECS` | `3600` | ID Token 有効期間 |
 | `CLOCK_SKEW_SECS` | `60` | JWT 検証時のクロックスキュー許容 |
-| `PUBLIC_WEB_BASE_URL` | `ISSUER` と同値 | 招待メール等の承諾リンクの土台（web 画面の公開 URL）。web を別オリジンへ置く構成でのみ設定 |
+| `PUBLIC_WEB_BASE_URL` | `ISSUER` と同値 | 招待メール・パスワードリセット等のリンクの土台（web 画面の公開 URL）。web を別オリジンへ置く構成でのみ設定 |
+| `PASSWORD_RESET_TTL_SECS` | `3600` | パスワードリセットトークンの有効期間 |
 | `RUST_LOG` | `info,idp=debug` | ログフィルタ |
 
 ## 本番用の鍵暗号化キーを作りたいとき

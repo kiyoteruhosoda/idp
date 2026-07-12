@@ -12,6 +12,8 @@ pub enum ApiError {
     Forbidden(String),
     NotFound(String),
     Conflict(String),
+    /// レート制限超過（429。SEC6）。
+    TooManyRequests(String),
     Internal(String),
 }
 
@@ -23,6 +25,7 @@ impl ApiError {
             Self::Forbidden(m) => (StatusCode::FORBIDDEN, "forbidden", m),
             Self::NotFound(m) => (StatusCode::NOT_FOUND, "not_found", m),
             Self::Conflict(m) => (StatusCode::CONFLICT, "conflict", m),
+            Self::TooManyRequests(m) => (StatusCode::TOO_MANY_REQUESTS, "rate_limited", m),
             Self::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, "server_error", m),
         }
     }

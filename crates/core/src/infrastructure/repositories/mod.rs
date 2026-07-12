@@ -7,6 +7,7 @@ pub mod cached_user_permission;
 pub mod client;
 pub mod consent;
 pub mod passkey_challenge;
+pub mod password_reset_token;
 pub mod refresh_token;
 pub mod revoked_access_token;
 pub mod signing_key;

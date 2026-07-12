@@ -153,6 +153,7 @@ async fn provisioning_rolls_back_all_rows_when_a_step_fails() {
         parent_tenant_id: Some(parent),
         name: "Rollback Probe".to_string(),
         status: TenantStatus::Active,
+        self_registration_enabled: false,
         created_at: now,
         updated_at: now,
     };

@@ -30,8 +30,11 @@ use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use crate::application::password_reset::{RequestResetOutcome, ResetPasswordOutcome};
 use idp_contracts::auth::{
     InternalAccountChangePasswordRequest, InternalAccountChangePasswordResponse,
+    InternalPasswordResetCompleteRequest, InternalPasswordResetCompleteResponse,
+    InternalPasswordResetRequestRequest, InternalPasswordResetRequestResponse,
     InternalAdminAuthenticateRequest, InternalAdminAuthenticateResponse,
     InternalAdminChangePasswordRequest, InternalAdminChangePasswordResponse,
     InternalAuthenticateRequest, InternalAuthenticateResponse, InternalChangePasswordRequest,
@@ -351,6 +354,56 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         diff |= x ^ y;
     }
     diff == 0
+}
+
+/// パスワードリセット要求（`POST /internal/password-reset/request`。MT18）。アカウントの有無では
+/// 応答を分岐しない（列挙防止はユースケース側の責務）。
+pub async fn password_reset_request(
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Json(req): Json<InternalPasswordResetRequestRequest>,
+) -> Result<Json<InternalPasswordResetRequestResponse>, Response> {
+    let ctx = RequestContext {
+        correlation_id: correlation.0,
+        ip_address: req.ip_address,
+        user_agent: req.user_agent,
+    };
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let outcome = state.password_reset.request_reset(tenant, &req.email, &ctx).await;
+    Ok(Json(match outcome {
+        RequestResetOutcome::Accepted => InternalPasswordResetRequestResponse::Accepted,
+        RequestResetOutcome::Unavailable => InternalPasswordResetRequestResponse::Unavailable,
+        RequestResetOutcome::RateLimited => InternalPasswordResetRequestResponse::RateLimited,
+    }))
+}
+
+/// パスワードリセット実行（`POST /internal/password-reset/complete`。MT18）。
+pub async fn password_reset_complete(
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Json(req): Json<InternalPasswordResetCompleteRequest>,
+) -> Result<Json<InternalPasswordResetCompleteResponse>, Response> {
+    let ctx = RequestContext {
+        correlation_id: correlation.0,
+        ip_address: req.ip_address,
+        user_agent: req.user_agent,
+    };
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let outcome = state
+        .password_reset
+        .reset_password(tenant, &req.token, &req.new_password, &ctx)
+        .await;
+    Ok(Json(match outcome {
+        ResetPasswordOutcome::Ok => InternalPasswordResetCompleteResponse::Ok,
+        ResetPasswordOutcome::InvalidOrExpired => {
+            InternalPasswordResetCompleteResponse::InvalidOrExpired
+        }
+        ResetPasswordOutcome::WeakPassword => InternalPasswordResetCompleteResponse::WeakPassword,
+        ResetPasswordOutcome::Internal(e) => {
+            tracing::error!(error = %e, "password reset failed with internal error");
+            InternalPasswordResetCompleteResponse::Internal
+        }
+    }))
 }
 
 #[cfg(test)]

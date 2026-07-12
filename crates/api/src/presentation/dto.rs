@@ -291,6 +291,8 @@ pub struct TenantResponse {
     pub name: String,
     /// `ACTIVE` または `DISABLED`。
     pub status: String,
+    /// 自己登録（`/auth/register`）を許可するか（SEC6。既定は無効）。
+    pub self_registration_enabled: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -312,6 +314,9 @@ pub struct TenantCreatedResponse {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateTenantSettingsRequest {
     pub name: String,
+    /// 自己登録トグル（SEC6）。省略時は現状維持。
+    #[serde(default)]
+    pub self_registration_enabled: Option<bool>,
 }
 
 // --- システム設定（SMTP 等。root/idp.system.admin のみ。MT14） -----------------------------

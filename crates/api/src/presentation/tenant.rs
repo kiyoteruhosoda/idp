@@ -200,6 +200,7 @@ mod tests {
             parent_tenant_id: None,
             name: "root".to_string(),
             status,
+            self_registration_enabled: false,
             created_at: t,
             updated_at: t,
         }

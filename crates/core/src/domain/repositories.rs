@@ -26,6 +26,7 @@ use crate::domain::client::Client;
 use crate::domain::consent::ClientConsent;
 use crate::domain::error::Result;
 use crate::domain::passkey_challenge::PasskeyChallenge;
+use crate::domain::password_reset::PasswordResetToken;
 use crate::domain::refresh_token::RefreshToken;
 use crate::domain::revoked_access_token::RevokedAccessToken;
 use crate::domain::signing_key::SigningKey;
@@ -194,6 +195,23 @@ pub trait AuthorizationCodeRepository: Send + Sync {
     ) -> Result<Option<AuthorizationCode>>;
     /// ログアウト時にユーザーの未消費・期限内の全 code を即時失効させる（`used_at` を設定）。
     async fn revoke_all_active_for_user(&self, user_id: Uuid, now: DateTime<Utc>) -> Result<()>;
+}
+
+/// パスワードリセットトークン（MT18）の永続化。DB には SHA-256 hash のみ保存する。
+/// ユーザー単位のセキュリティ操作のため tenant_id は取らない（モジュールコメント参照。
+/// テナント境界はユースケース側が `users.tenant_id` 照合で強制する）。
+#[async_trait]
+pub trait PasswordResetTokenRepository: Send + Sync {
+    async fn create(&self, token: &PasswordResetToken) -> Result<()>;
+    /// 原子的に one-time 消費する。未使用かつ期限内なら `used_at` を設定して当該行を返す。
+    /// 使用済み・期限切れ・不存在は `None`。
+    async fn consume(
+        &self,
+        token_hash: &str,
+        used_at: DateTime<Utc>,
+    ) -> Result<Option<PasswordResetToken>>;
+    /// 当該ユーザーの未使用トークンをすべて失効させる（`used_at` を設定。再発行時の置き換えに使う）。
+    async fn invalidate_all_for_user(&self, user_id: Uuid, now: DateTime<Utc>) -> Result<()>;
 }
 
 #[async_trait]

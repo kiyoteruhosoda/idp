@@ -40,6 +40,15 @@ pub fn build(state: AppState) -> Router {
             post(internal_auth::account_change_password),
         )
         .route("/internal/logout", post(internal_auth::logout))
+        // パスワードリセット（忘失時。MT18）。未ログイン経路（web がフォームを仲介する）。
+        .route(
+            "/internal/password-reset/request",
+            post(internal_auth::password_reset_request),
+        )
+        .route(
+            "/internal/password-reset/complete",
+            post(internal_auth::password_reset_complete),
+        )
         // 同意 API（F3: Consent）。
         .route(
             "/internal/consent-info",

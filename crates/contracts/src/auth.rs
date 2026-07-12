@@ -244,6 +244,57 @@ pub enum InternalAccountChangePasswordResponse {
     Internal,
 }
 
+/// パスワードリセット要求 API（`POST /internal/password-reset/request`。MT18）のリクエスト。
+/// 未ログイン経路のため SSO は不要。web の CSRF はフォームセッション非依存のため api では検証しない。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalPasswordResetRequestRequest {
+    /// ログイン画面のテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する。
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub email: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// パスワードリセット要求 API のレスポンス。アカウントの有無では分岐しない（列挙防止。MT18）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalPasswordResetRequestResponse {
+    /// 受理（アカウントが存在すればメールを送った）。
+    Accepted,
+    /// SMTP 未設定で機能自体が利用できない（アカウント非依存）。
+    Unavailable,
+    RateLimited,
+}
+
+/// パスワードリセット実行 API（`POST /internal/password-reset/complete`。MT18）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalPasswordResetCompleteRequest {
+    /// リセット画面のテナント。**必須**（トークン所有者の所属元と一致しないと失敗する）。
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    /// メールのリンクで受け取った平文トークン。
+    pub token: String,
+    pub new_password: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// パスワードリセット実行 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalPasswordResetCompleteResponse {
+    Ok,
+    /// トークンが無効・期限切れ・使用済み・別テナント。
+    InvalidOrExpired,
+    WeakPassword,
+    Internal,
+}
+
 /// 管理コンソール内部認証 API（`POST /internal/authenticate/admin`、ADR-0007 §3・§4）のリクエスト。
 ///
 /// 管理ログインの CSRF は web 側で検証済み（ADR-0007 §4）のため本 API には含めない。

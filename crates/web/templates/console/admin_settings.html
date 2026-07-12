@@ -13,6 +13,8 @@
 <input type="hidden" name="csrf_token" value="{{ csrf }}">
 <label for="tenant_name">{{ messages.get("admin-settings-tenant-name") }}</label>
 <input type="text" id="tenant_name" name="name" value="{{ tenant_name }}" required maxlength="255">
+<label><input type="checkbox" name="self_registration_enabled" {% if tenant_self_registration %}checked{% endif %}> {{ messages.get("admin-settings-self-registration") }}</label>
+<p class="hint">{{ messages.get("admin-settings-self-registration-hint") }}</p>
 <button type="submit">{{ messages.get("admin-settings-save") }}</button>
 </form>
 </section>
