@@ -57,7 +57,14 @@ async fn setup() -> Option<TestEnv> {
         .connect(&url)
         .await
         .expect("connect to test database");
-    MIGRATOR.run(&pool).await.expect("run migrations");
+    // 新規 DB へ複数テストの setup が並走すると、マイグレーション seed の INSERT が
+    // 一意制約で競合するため、プロセス内で一度だけ実行する。
+    static MIGRATIONS: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+    MIGRATIONS
+        .get_or_init(|| async {
+            MIGRATOR.run(&pool).await.expect("run migrations");
+        })
+        .await;
 
     // 過渡期（MT9 まで）: seed 済み root テナントを既定テナントとして注入する。
     let root_tenant_id: String =
@@ -72,11 +79,18 @@ async fn setup() -> Option<TestEnv> {
     let config = Arc::new(Config::from_env().expect("load config"));
     let issuer = config.issuer().to_string();
     let state = AppState::build(pool.clone(), config, Arc::new(SystemClock), root);
-    state
-        .keys
-        .ensure_active_key()
-        .await
-        .expect("bootstrap signing key");
+    // `ensure_active_key` は「存在確認 → 生成」の 2 手で並走に安全でない（TOCTOU）ため、
+    // プロセス内で一度だけ実行する（ACTIVE 鍵の複数本化を防ぐ）。
+    static KEY_BOOTSTRAP: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+    KEY_BOOTSTRAP
+        .get_or_init(|| async {
+            state
+                .keys
+                .ensure_active_key()
+                .await
+                .expect("bootstrap signing key");
+        })
+        .await;
     Some(TestEnv {
         app: router::build(state),
         pool,
@@ -563,7 +577,7 @@ async fn invalid_authorize_and_client_auth_failures() {
         &app,
         Request::builder()
             .uri(format!(
-                "/authorize?response_type=code&client_id={client_id}&redirect_uri=https%3A%2F%2Fevil.example.com%2Fcb&scope=openid&state=s&nonce=n&code_challenge={CODE_CHALLENGE}&code_challenge_method=S256"
+                "/{root_tenant_id}/authorize?response_type=code&client_id={client_id}&redirect_uri=https%3A%2F%2Fevil.example.com%2Fcb&scope=openid&state=s&nonce=n&code_challenge={CODE_CHALLENGE}&code_challenge_method=S256"
             ))
             .body(Body::empty())
             .unwrap(),

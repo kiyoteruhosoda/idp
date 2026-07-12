@@ -2,6 +2,29 @@
 
 完了した重要な変更の要約（詳しい経緯は `history/`、設計判断は `adr/`）。
 
+## 2026-07-12（MT16: テナント分離・権限境界の統合テスト）
+
+- **統合テスト新設**（ADR-0009 §8 の negative test 必須方針。`crates/api/tests/tenant_isolation.rs`）:
+  1. root（`idp.system.admin`）はテナントを作成できるが、作成したテナントの管理 API には一律 403
+     （「器は作れるが中身に触れない」）。システム設定は root scope のみ 200。
+  2. `idp.tenant.admin` の権限境界は scope テナントとの完全一致（他テナント・root へは 403）。
+     `idp.system.admin` の scope = root は DB CHECK 制約でも拒否されることを直接 INSERT で検証。
+  3. テナント間データ分離（利用者・クライアントは他テナントの一覧・検索・取得に現れない = 404）。
+     利用者・クライアントが残るテナントは root でも削除できない（409）。
+  4. ゲスト保護: 招待トークンは「本人 + 当該テナント経路」でのみ承諾可・リプレイ不可・監査ログ非出力。
+     参加先管理者はゲストの `users` レコードへ到達できず（404）、解除時は host scope の権限行のみ
+     後始末される（本体・他 scope は残る）。HOME メンバーシップは解除不可（403）。
+  5. OIDC フロー分離: メンバーシップのない SSO セッションは当該テナントで未認証扱い、テナント A の
+     アクセストークン／クライアントはテナント B の `/userinfo`・`/token` で拒否（per-tenant issuer の
+     完全一致）。ゲストは承諾後に参加先テナントのフローへ SSO で参加できる。
+- **テスト基盤の並走競合を修正**: 新規 DB へ複数テストの setup が並走すると、マイグレーション seed の
+  INSERT と `ensure_active_key`（存在確認→生成の TOCTOU）が競合し、seed 重複エラー・ACTIVE 署名鍵の
+  複数本化が起きていた。`tokio::sync::OnceCell` でプロセス内一度だけ実行するよう
+  `internal_auth.rs`・`oidc_flow.rs`・`tenant_isolation.rs` を直列化。
+- **既存テストの更新漏れ修正**: `oidc_flow.rs` の「未登録 redirect_uri」ケースがテナント経路化（MT9）
+  以前の `/authorize`（プレフィクスなし）のままで 404/400 不一致になっていたのを
+  `/{tenant_id}/authorize` へ修正。
+
 ## 2026-07-11（MT14・MT15: 設定画面 + セルフサービス設定）
 
 - **システム設定基盤（MT14）**: `system_settings` テーブル（`0003_system_settings`。key-value + `is_secret`。
