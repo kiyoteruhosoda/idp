@@ -278,6 +278,9 @@ mod tests {
             }
             Ok(())
         }
+        async fn update_language(&self, _id: Uuid, _language: Option<&str>) -> DomainResult<()> {
+            unreachable!()
+        }
     }
 
     #[derive(Default)]
@@ -370,6 +373,7 @@ mod tests {
             email_verified: false,
             preferred_username: None,
             name: None,
+            language: None,
             password_hash: "x".to_string(),
             must_change_password: false,
             status: UserStatus::Active,

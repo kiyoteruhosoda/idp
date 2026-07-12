@@ -11,6 +11,7 @@ use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{GrantPermissionRequest, UserPermissionsResponse};
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
+use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
 use axum::extract::{Extension, Path, State};
@@ -23,12 +24,13 @@ use uuid::Uuid;
 pub async fn list_available_permissions(
     RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,
+    locale: ApiLocale,
 ) -> Result<Json<idp_contracts::admin::AvailablePermissionsResponse>, ApiError> {
     let codes = state
         .permissions_admin
         .available_codes()
         .await
-        .map_err(map_error)?;
+        .map_err(|e| map_error(e, locale))?;
     Ok(Json(idp_contracts::admin::AvailablePermissionsResponse {
         codes,
     }))
@@ -52,15 +54,16 @@ pub async fn list_permissions(
     RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
     // 先頭のパスセグメントは `{tenant_id}`（`ResolvedTenant` から取得済みのため破棄する）。
     Path((_tenant_id, user_id)): Path<(String, String)>,
 ) -> Result<Json<UserPermissionsResponse>, ApiError> {
-    let target = parse_user_id(&user_id)?;
+    let target = parse_user_id(&user_id, locale)?;
     let codes = state
         .permissions_admin
         .list(tenant.context(), target)
         .await
-        .map_err(map_error)?;
+        .map_err(|e| map_error(e, locale))?;
     Ok(Json(UserPermissionsResponse {
         user_id: target.to_string(),
         permission_codes: codes,
@@ -87,11 +90,12 @@ pub async fn grant_permission(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
     headers: HeaderMap,
     Path((_tenant_id, user_id)): Path<(String, String)>,
     Json(body): Json<GrantPermissionRequest>,
 ) -> Result<Json<UserPermissionsResponse>, ApiError> {
-    let target = parse_user_id(&user_id)?;
+    let target = parse_user_id(&user_id, locale)?;
     let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
     let codes = state
         .permissions_admin
@@ -103,7 +107,7 @@ pub async fn grant_permission(
             &ctx,
         )
         .await
-        .map_err(map_error)?;
+        .map_err(|e| map_error(e, locale))?;
     Ok(Json(UserPermissionsResponse {
         user_id: target.to_string(),
         permission_codes: codes,
@@ -132,10 +136,11 @@ pub async fn revoke_permission(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
     headers: HeaderMap,
     Path((_tenant_id, user_id, permission_code)): Path<(String, String, String)>,
 ) -> Result<Json<UserPermissionsResponse>, ApiError> {
-    let target = parse_user_id(&user_id)?;
+    let target = parse_user_id(&user_id, locale)?;
     let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
     let codes = state
         .permissions_admin
@@ -147,21 +152,22 @@ pub async fn revoke_permission(
             &ctx,
         )
         .await
-        .map_err(map_error)?;
+        .map_err(|e| map_error(e, locale))?;
     Ok(Json(UserPermissionsResponse {
         user_id: target.to_string(),
         permission_codes: codes,
     }))
 }
 
-fn parse_user_id(raw: &str) -> Result<Uuid, ApiError> {
-    Uuid::parse_str(raw).map_err(|_| ApiError::BadRequest(format!("invalid user_id: {raw}")))
+fn parse_user_id(raw: &str, locale: ApiLocale) -> Result<Uuid, ApiError> {
+    Uuid::parse_str(raw).map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get("api-invalid-request")))
 }
 
-fn map_error(e: PermissionManagementError) -> ApiError {
+fn map_error(e: PermissionManagementError, locale: ApiLocale) -> ApiError {
+    let msgs = ApiMessages::new(locale);
     match e {
         PermissionManagementError::Validation(m) => ApiError::BadRequest(m),
-        PermissionManagementError::NotFound => ApiError::NotFound("user not found".to_string()),
+        PermissionManagementError::NotFound => ApiError::NotFound(msgs.get("api-user-not-found")),
         PermissionManagementError::Forbidden(m) => ApiError::Forbidden(m),
         PermissionManagementError::Internal(m) => ApiError::Internal(m),
     }

@@ -8,6 +8,7 @@
 //! かつての「起動時に解決した root を既定テナントとして全リクエストへ適用する」過渡運用
 //! （`default_tenant`）は SEC4 で撤去した。
 
+use crate::application::account_language::AccountLanguageService;
 use crate::application::account_password::AccountPasswordService;
 use crate::application::admin_access::AdminAccessService;
 use crate::application::admin_login::AdminLoginService;
@@ -122,6 +123,8 @@ pub struct AppState {
     pub system_settings: Arc<SystemSettingsService>,
     /// セルフサービスのパスワード変更（ログイン済みユーザーの設定画面。MT15）。
     pub account_password: Arc<AccountPasswordService>,
+    /// セルフサービスの表示言語変更（ログイン済みユーザーの設定画面。MT20）。
+    pub account_language: Arc<AccountLanguageService>,
     /// セルフサービス・パスワードリセット（忘失時。メールリンク経由。MT18）。
     pub password_reset: Arc<PasswordResetService>,
     /// ゲスト招待・メンバーシップ（ADR-0009 §3）。
@@ -187,6 +190,12 @@ impl AppState {
             users.clone(),
             hasher.clone(),
             audit.clone(),
+            clock.clone(),
+        ));
+        // セルフサービスの表示言語変更（ログイン済みユーザー。MT20）。
+        let account_language = Arc::new(AccountLanguageService::new(
+            sso_sessions.clone(),
+            users.clone(),
             clock.clone(),
         ));
         // パスワードリセット（忘失時。MT18）。SMTP はシステム設定（MT14）、配送は MT17 の Mailer を
@@ -501,6 +510,7 @@ impl AppState {
             tenants_admin,
             system_settings,
             account_password,
+            account_language,
             password_reset,
             invitations,
             audit_query,

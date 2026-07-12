@@ -25,9 +25,10 @@ pub enum Locale {
 
 impl Locale {
     /// `Accept-Language` ヘッダから表示ロケールを決める（MVP は en / ja の 2 択）。
+    /// 非対応・未指定は既定 `Ja` にフォールバックする（MT19: システム既定 `ja` 統一）。
     pub fn from_accept_language(header: Option<&str>) -> Self {
         let Some(header) = header else {
-            return Locale::En;
+            return Locale::Ja;
         };
         // 品質値は見ず、先に現れた対応言語を選ぶ簡易実装。
         for part in header.split(',') {
@@ -44,7 +45,7 @@ impl Locale {
                 return Locale::En;
             }
         }
-        Locale::En
+        Locale::Ja
     }
 
     /// 言語タグ（`ja` / `en`）からロケールを引く。非対応・不正値は `None`。
@@ -64,17 +65,19 @@ impl Locale {
         }
     }
 
-    /// 表示言語の決定チェーン（MT15 の cookie 段まで）: `?lang=` > Cookie(`lang`) > `Accept-Language`
-    /// > 既定。不正・非対応値は無視して次順位へフォールバックする。
-    ///
-    /// ログインユーザーの設定列（優先度2）は MT20 で追加する。終端フォールバックは現状の実装既定（`En`）に
-    /// 合わせる（システム既定 `ja` への統一は i18n 仕様書のとおり MT19/MT20 の範囲）。
+    /// 表示言語の決定チェーン（MT20）:
+    /// `?lang=` > ユーザー設定（DB）> Cookie(`lang`) > `Accept-Language` > 既定 `Ja`。
+    /// 不正・非対応値は無視して次順位へフォールバックする。
     pub fn resolve(
         query_lang: Option<&str>,
+        user_language: Option<&str>,
         cookie_lang: Option<&str>,
         accept_language: Option<&str>,
     ) -> Locale {
         if let Some(locale) = query_lang.and_then(Locale::from_tag) {
+            return locale;
+        }
+        if let Some(locale) = user_language.and_then(Locale::from_tag) {
             return locale;
         }
         if let Some(locale) = cookie_lang.and_then(Locale::from_tag) {
@@ -143,7 +146,7 @@ mod tests {
 
     #[test]
     fn selects_locale_from_accept_language() {
-        assert_eq!(Locale::from_accept_language(None), Locale::En);
+        assert_eq!(Locale::from_accept_language(None), Locale::Ja);
         assert_eq!(
             Locale::from_accept_language(Some("ja,en-US;q=0.9")),
             Locale::Ja
@@ -152,28 +155,33 @@ mod tests {
             Locale::from_accept_language(Some("en-US,ja;q=0.8")),
             Locale::En
         );
-        assert_eq!(Locale::from_accept_language(Some("fr-FR")), Locale::En);
+        assert_eq!(Locale::from_accept_language(Some("fr-FR")), Locale::Ja);
     }
 
     #[test]
-    fn resolve_prefers_query_then_cookie_then_accept_language() {
+    fn resolve_prefers_query_then_user_language_then_cookie_then_accept_language() {
         // ?lang= が最優先。
         assert_eq!(
-            Locale::resolve(Some("ja"), Some("en"), Some("en-US")),
+            Locale::resolve(Some("ja"), Some("en"), Some("en"), Some("en-US")),
             Locale::Ja
         );
-        // ?lang= が無効なら Cookie。
+        // ?lang= が無効ならユーザー設定（DB）。
         assert_eq!(
-            Locale::resolve(Some("fr"), Some("ja"), Some("en-US")),
+            Locale::resolve(Some("fr"), Some("ja"), Some("en"), Some("en-US")),
             Locale::Ja
         );
-        // ?lang=・Cookie が無ければ Accept-Language。
+        // ?lang= ・ユーザー設定が無効なら Cookie。
         assert_eq!(
-            Locale::resolve(None, None, Some("ja,en;q=0.8")),
+            Locale::resolve(Some("fr"), Some("zz"), Some("ja"), Some("en-US")),
             Locale::Ja
         );
-        // いずれも無効なら既定（En。システム既定 ja への統一は MT19/MT20）。
-        assert_eq!(Locale::resolve(Some("fr"), Some("zz"), Some("fr")), Locale::En);
+        // いずれも無い場合は Accept-Language。
+        assert_eq!(
+            Locale::resolve(None, None, None, Some("ja,en;q=0.8")),
+            Locale::Ja
+        );
+        // すべて無効・未指定なら既定 Ja（MT19: システム既定 ja 統一）。
+        assert_eq!(Locale::resolve(Some("fr"), Some("zz"), Some("zz"), Some("fr")), Locale::Ja);
     }
 
     #[test]

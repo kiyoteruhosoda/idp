@@ -472,6 +472,9 @@ mod tests {
         async fn mark_email_verified(&self, _id: Uuid) -> DomainResult<()> {
             unreachable!()
         }
+        async fn update_language(&self, _id: Uuid, _language: Option<&str>) -> DomainResult<()> {
+            unreachable!()
+        }
     }
 
     #[derive(Default)]

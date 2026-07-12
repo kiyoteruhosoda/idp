@@ -2,7 +2,23 @@
 
 完了した重要な変更の要約（詳しい経緯は `history/`、設計判断は `adr/`）。
 
-## 2026-07-12（SEC6b: 自己登録・招待のメール検証）
+## 2026-07-12（MT19/MT20: i18n 全面対応）
+
+- **MT19 — API の `Accept-Language` ベース多言語化**: `ApiLocale` extractor（`FromRequestParts`、既定 `ja`）と
+  `ApiMessages`（`fluent` ラッパー）を `crates/api/src/presentation/i18n.rs` に追加。全管理系ハンドラ
+  （`admin_users`・`admin_permissions`・`admin_clients`・`admin_members`・`admin_invitations`・`admin_signing_keys`）
+  が `Accept-Language` を参照して日本語／英語のエラーメッセージを返すように更新した。
+  `FluentBundle` が `!Send` のため、エラーマッピング関数で `ApiLocale`（`Copy`）を受け取り、関数内で
+  `ApiMessages` を生成するパターンで `Send` 境界を満たした。翻訳キーは `i18n/{en,ja}/main.ftl` に
+  `api-*` プレフィックスで追加（18 キー）。
+
+- **MT20 — Web の表示言語決定チェーン全面実装**:
+  - **DB 対応**: `migrations/0007_user_language.up/down.sql` で `users.language VARCHAR(5) NULL CHECK (language IN ('ja', 'en'))` を追加。`UserRepository::update_language` トレイトメソッドと sqlx 実装を追加。
+  - **AccountLanguageService**: `crates/core/src/application/account_language.rs` に新設。`/internal/account/update-language` エンドポイント（`POST`）をコントラクト・ルータ・ハンドラに追加。
+  - **言語決定チェーン**: `Locale::resolve(query, user_language, cookie, accept_language)` を 4 引数に拡張（優先順: `?lang=` → ユーザー DB 設定 → Cookie → `Accept-Language` → 既定 `ja`）。全ハンドラに適用、デフォルトを `En` → `Ja` に統一。
+  - **ログイン時 Cookie 設定**: ログイン／MFA 成功時に `LoginOutcome`／`MfaLoginOutcome` が `user_language` を返し、web ハンドラが `lang` Cookie をユーザー設定値で上書き。
+  - **設定画面言語変更の DB 保存**: `/settings?lang=` による言語変更時、SSO セッションが存在する場合は `account_update_language` API を呼び出して DB に永続化。
+
 
 - **SEC6b — 自己登録アカウントのメール検証**: 自己登録（SEC6）で作られる `email_verified = false` の
   アカウントに、確認リンクによるメール検証フローを導入した（配送は MT17 の `Mailer`＋MT14 の SMTP を再利用）。

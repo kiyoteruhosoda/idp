@@ -18,6 +18,8 @@ pub struct User {
     pub email_verified: bool,
     pub preferred_username: Option<String>,
     pub name: Option<String>,
+    /// 表示言語設定（`ja` / `en`。NULL = 未設定。i18n 仕様書 §4 の優先度2。MT20）。
+    pub language: Option<String>,
     /// argon2 のパスワードハッシュ（PHC 文字列）。
     pub password_hash: String,
     /// 自動生成パスワードで作成されたユーザーは初回ログイン時に変更を強制する（ADR-0009 §5）。

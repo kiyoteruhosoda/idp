@@ -262,7 +262,7 @@ mod tests {
 
     #[test]
     fn audit_row_escapes_and_marks_failures() {
-        let messages = Messages::new(Locale::En);
+        let messages = Messages::new(Locale::Ja);
         let html = render_audit(
             &messages,
             &tenant(),
@@ -281,7 +281,7 @@ mod tests {
 
     #[test]
     fn audit_shows_datetime_error_banner() {
-        let messages = Messages::new(Locale::En);
+        let messages = Messages::new(Locale::Ja);
         let html = render_audit(&messages, &tenant(), "admin-1", &AuditForm::default(), 0, true, &[]);
         assert!(html.contains("role=\"alert\""));
     }
@@ -301,7 +301,7 @@ mod tests {
 
     #[test]
     fn status_table_renders_last_used_and_dash() {
-        let messages = Messages::new(Locale::En);
+        let messages = Messages::new(Locale::Ja);
         let views = vec![
             ClientStatusResponse {
                 client_id: "used".into(),

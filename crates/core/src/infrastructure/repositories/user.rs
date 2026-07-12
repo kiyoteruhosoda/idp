@@ -23,7 +23,7 @@ impl SqlxUserRepository {
 }
 
 const SELECT_COLUMNS: &str = "id, tenant_id, sub, email, email_verified, preferred_username, \
-     name, password_hash, must_change_password, status, failed_login_count, locked_until, \
+     name, language, password_hash, must_change_password, status, failed_login_count, locked_until, \
      created_at, updated_at";
 
 fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
@@ -52,6 +52,7 @@ fn map_row(row: &MySqlRow) -> Result<User> {
         email_verified: row.try_get("email_verified").map_err(repo_err)?,
         preferred_username: row.try_get("preferred_username").map_err(repo_err)?,
         name: row.try_get("name").map_err(repo_err)?,
+        language: row.try_get("language").map_err(repo_err)?,
         password_hash: row.try_get("password_hash").map_err(repo_err)?,
         must_change_password: row.try_get("must_change_password").map_err(repo_err)?,
         status: UserStatus::parse(&status)?,
@@ -69,9 +70,9 @@ pub(crate) async fn insert_user<'e>(
 ) -> Result<()> {
     sqlx::query(
         "INSERT INTO users \
-         (id, tenant_id, sub, email, email_verified, preferred_username, name, \
+         (id, tenant_id, sub, email, email_verified, preferred_username, name, language, \
           password_hash, must_change_password, status, failed_login_count, locked_until) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(user.id.to_string())
     .bind(user.tenant_id.to_string())
@@ -80,6 +81,7 @@ pub(crate) async fn insert_user<'e>(
     .bind(user.email_verified)
     .bind(&user.preferred_username)
     .bind(&user.name)
+    .bind(&user.language)
     .bind(&user.password_hash)
     .bind(user.must_change_password)
     .bind(user.status.as_str())
@@ -180,6 +182,16 @@ impl UserRepository for SqlxUserRepository {
 
     async fn mark_email_verified(&self, id: Uuid) -> Result<()> {
         sqlx::query("UPDATE users SET email_verified = 1 WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        Ok(())
+    }
+
+    async fn update_language(&self, id: Uuid, language: Option<&str>) -> Result<()> {
+        sqlx::query("UPDATE users SET language = ? WHERE id = ?")
+            .bind(language)
             .bind(id.to_string())
             .execute(&self.pool)
             .await

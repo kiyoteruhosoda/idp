@@ -39,6 +39,10 @@ pub enum InternalAuthenticateResponse {
         redirect_to: String,
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
+        /// ユーザーの表示言語設定（`ja` / `en`。MT20）。None = 未設定。
+        /// web は `lang` Cookie をこの値で上書きし、優先度2（ユーザー設定）を実現する。
+        #[serde(default)]
+        user_language: Option<String>,
     },
     /// 認証成功だが同意が必要。`auth_session_id` Cookie を発行して `/consent` へ 302 する。
     /// `sso_session_id` も発行する（SSO Cookie をセットするため）。
@@ -160,6 +164,9 @@ pub enum InternalVerifyTotpResponse {
         redirect_to: String,
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
+        /// ユーザーの表示言語設定（MT20）。web は `lang` Cookie をこの値で上書きする。
+        #[serde(default)]
+        user_language: Option<String>,
     },
     ConsentRequired {
         auth_session_id: String,
@@ -617,6 +624,30 @@ pub enum InternalPasskeyLoginCompleteResponse {
     SessionExpired,
     /// クレデンシャルが無効。
     InvalidCredential,
+    /// api 内部エラー。
+    Internal,
+}
+
+/// セルフサービスの表示言語更新 API（`POST /internal/account/update-language`。MT20）のリクエスト。
+///
+/// web の設定画面で言語を変更した際、DB の `users.language` を更新する。Cookie の更新は web が行う。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAccountUpdateLanguageRequest {
+    /// SSO セッション Cookie の生値（web が転送）。
+    pub sso_session_id: String,
+    /// 設定する言語コード（`ja` または `en`）。
+    pub language: String,
+}
+
+/// セルフサービスの表示言語更新 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAccountUpdateLanguageResponse {
+    Ok,
+    /// SSO セッションが無い・期限切れ。
+    SessionExpired,
+    /// 指定した言語コードが非対応（`ja`・`en` 以外）。
+    InvalidLanguage,
     /// api 内部エラー。
     Internal,
 }

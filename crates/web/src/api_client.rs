@@ -1010,6 +1010,16 @@ impl ApiClient {
             .await
     }
 
+    /// ログイン済みユーザーの表示言語を DB へ永続化する（MT20）。
+    pub async fn account_update_language(
+        &self,
+        req: &idp_contracts::auth::InternalAccountUpdateLanguageRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalAccountUpdateLanguageResponse> {
+        // correlation_id は不要（監査対象外）のため空文字を渡す。
+        self.post_internal("/internal/account/update-language", "", req)
+            .await
+    }
+
     /// api への到達性を確認する（`GET /healthz`）。web の readiness で使う。
     pub async fn is_api_reachable(&self) -> bool {
         match self

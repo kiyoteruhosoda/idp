@@ -378,6 +378,9 @@ mod tests {
         async fn mark_email_verified(&self, _id: Uuid) -> DomainResult<()> {
             unreachable!()
         }
+        async fn update_language(&self, _id: Uuid, _language: Option<&str>) -> DomainResult<()> {
+            unreachable!()
+        }
     }
 
     #[derive(Default)]
@@ -560,6 +563,7 @@ mod tests {
             email_verified: true,
             preferred_username: None,
             name: None,
+            language: None,
             password_hash: "hash:old-password".to_string(),
             must_change_password: false,
             status: UserStatus::Active,

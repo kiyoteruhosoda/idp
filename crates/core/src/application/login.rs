@@ -54,6 +54,8 @@ pub enum LoginOutcome {
     Success {
         location: String,
         sso_session_id: String,
+        /// ユーザーの表示言語設定（MT20）。web は `lang` Cookie をこの値で上書きする。
+        user_language: Option<String>,
     },
     /// 認証成功だが未同意 scope あり。同意画面へリダイレクトする。
     /// SSO Cookie は発行済み（`sso_session_id`）。AuthSession は認証済み状態で残す。
@@ -417,6 +419,7 @@ impl LoginService {
         LoginOutcome::Success {
             location: code_redirect(&session.redirect_uri, &code, &session.state),
             sso_session_id,
+            user_language: user.language.clone(),
         }
     }
 

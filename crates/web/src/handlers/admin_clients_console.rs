@@ -625,7 +625,7 @@ mod tests {
 
     #[test]
     fn list_escapes_client_fields() {
-        let messages = Messages::new(Locale::En);
+        let messages = Messages::new(Locale::Ja);
         let client = ClientView {
             id: "id".into(),
             client_id: "abc123".into(),

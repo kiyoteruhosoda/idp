@@ -24,15 +24,11 @@ SEC = MT16 完了時のセキュリティレビュー指摘、REF = 同リファ
 
 | 優先 | # | 概要 | 状態 | 影響度 | 工数 | 推奨モデル |
 |---|---|---|---|---|---|---|
-| 11 | MT19 | API の `Accept-Language` ベース多言語化（i18n 仕様書 §5・§6）— API は `Accept-Language` のみ参照（Cookie/Session/クエリ/DB を見ない）。地域コード無視（`en-US`→`en`）、非対応言語・未指定はシステム既定 `ja`。エラー／バリデーション／業務メッセージをキー管理で多言語化（コードは言語不変）。運用ログ・監査ログ・スタックトレースは対象外（英語統一） | ⬜未着手 | 中 | 大 | Sonnet 5 |
-| 12 | MT20 | Web の表示言語決定チェーン（i18n 仕様書 §3・§4・§9）— 優先順位 `?lang=` → ユーザー設定 → Cookie（`lang`）→ ブラウザ `Accept-Language` → 既定 `ja`。不正値は次順位へフォールバック。言語変更時／初回に Cookie 保存、ログイン時はユーザー設定優先。決定言語を API へ `Accept-Language` で伝搬（Cookie・`lang` クエリは送らない）。ユーザー設定 `language` 列（ja/en）を追加。将来言語追加（zh/ko/fr 等）を考慮 | ⬜未着手 | 中 | 大 | Sonnet 5 |
 | 14 | REF3 | 認可ホットパスの整理 — SSO セッション解決（hash→取得→有効性→ユーザー有効）が `AdminAccessService::authorize`／`authenticated_user`／`try_resume_sso` に三重実装。共通のセッション解決サービスへ抽出し、`has_permission` 2 回問い合わせも `IN (?, ?)` の `has_any_permission` 1 回に統合。権限コード定数（`idp.system.admin` 等）の散在も `domain::permission` へ集約 | ⬜未着手 | 中 | 中 | Sonnet 5 |
 | 15 | SEC7 | ログイン/同意 CSRF トークンの HMAC 化 — 現状 `sha256("csrf:" + auth_session_id)` でサーバシークレット不使用（保護対象と同じ秘密からの導出）。サーバ側キーの HMAC へ（web/api 共有のため `idp-contracts` の導出を差し替え） | ⬜未着手 | 小 | 小 | Sonnet 5 |
 | 16 | REF4 | 小粒の重複解消 — ①`InvitationError`/`PermissionManagementError`→`ApiError` マッピングのハンドラ間コピー（`impl From` へ集約）②`validate_email` の三重定義（`EmailAddress` 値オブジェクトへ）③`list_members` の N+1（JOIN 一括取得）④`ensure_user_in_tenant` と `get_user` の同文重複 | ⬜未着手 | 小 | 小 | Haiku 4.5 |
 
-> MT14・MT15 は完了（`docs/CHANGELOG.md` 参照）。MT15 の言語設定は現状 **`lang` Cookie 保存 + `/settings`
-> 画面での `?lang=`／Cookie 反映**まで（決定チェーンの優先度1・3）。全画面への決定チェーン統一・
-> ユーザー設定 `language` 列（優先度2）・システム既定 `ja` への統一は MT20 の範囲として残る。
+> MT14・MT15・MT19・MT20 は完了（`docs/CHANGELOG.md` 参照）。
 
 ### 詳細
 
@@ -49,20 +45,5 @@ Askama テンプレート・`api_client` 等の確立パターンに沿う機能
 パスワード変更）はセキュリティ機微を含むため、実装後に §テスト・`/security-review` を併用する
 （今回は SSO 解決 → 現行パスワード再検証 → 強度検証の経路を追加。他セッション失効は行っていない）。
 
-**依存関係**: Phase 2（MT6〜MT8）・MT9〜MT18・SEC6・SEC6b（Phase 3）は完了（`docs/CHANGELOG.md` 参照）。
+**依存関係**: Phase 2（MT6〜MT8）・MT9〜MT20・SEC6・SEC6b（Phase 3）は完了（`docs/CHANGELOG.md` 参照）。
 メール配送基盤（`Mailer`・`SystemSettingsService::smtp_server`）は MT17/MT18/SEC6b で確立済み。
-
-**i18n 仕様書（MT19・MT20）の現状ギャップと注意点**:
-- **現状**: i18n は **web crate のみ**（`fluent`、`crates/web/src/i18n.rs`、`i18n/<lang>/main.ftl`）。言語決定は
-  **`Accept-Language` のみ**・**既定 `En`**・対象は**ログイン画面等の画面文言のみ**。API 側は i18n 未導入で、
-  エラーメッセージは多言語化されていない。
-- **既定言語の変更**: 仕様書はシステム既定を **`ja`** と定める（現状の実装既定 `En` から変更）。MT19・MT20 で
-  フォールバック終端を `ja` に統一する。
-- **責務分離**: Web（MT20）が優先順位チェーンで表示言語を**決定**し、決定結果のみを `Accept-Language` で
-  API へ渡す。API（MT19）は `Accept-Language` だけを見てレスポンスを生成し、クライアント種別
-  （Web/モバイル/CLI）に依存しない。両者は常に同一言語で動作する。
-- **関連**: MT15（ユーザー設定画面の言語設定 UI）は完了。現状は `lang` Cookie 保存 + `/settings` 画面での
-  `?lang=`／Cookie 反映まで（`Locale::resolve`）。MT20 で**ユーザー設定 `language` 列**（優先度2）を追加し、
-  全画面へ決定チェーンを適用する。`language` 列追加は sqlx マイグレーション（`.claude/skills/db-migration/`）で行う。
-- 製品情報のような多言語**データ**が必要になった場合は翻訳テーブル（例: `ProductTranslation`）で対応する
-  想定だが、現行スコープ（ユーザー向けメッセージの多言語化）には含めない。

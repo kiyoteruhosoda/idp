@@ -130,6 +130,8 @@ pub trait UserRepository: Send + Sync {
     async fn update_password(&self, id: Uuid, password_hash: &str) -> Result<()>;
     /// メール検証済みフラグを立てる（自己登録アカウントの確認リンク消費時。SEC6b）。
     async fn mark_email_verified(&self, id: Uuid) -> Result<()>;
+    /// 表示言語設定を更新する（MT20。`None` で設定解除）。
+    async fn update_language(&self, id: Uuid, language: Option<&str>) -> Result<()>;
 }
 
 #[async_trait]

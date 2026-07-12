@@ -144,6 +144,7 @@ impl UserManagementService {
             email_verified: true,
             preferred_username,
             name,
+            language: None,
             password_hash,
             must_change_password: true,
             status: UserStatus::Active,
@@ -328,6 +329,9 @@ mod tests {
             unreachable!()
         }
         async fn mark_email_verified(&self, _id: Uuid) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn update_language(&self, _id: Uuid, _language: Option<&str>) -> DomainResult<()> {
             unreachable!()
         }
     }
