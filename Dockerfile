@@ -4,6 +4,7 @@
 #   - idp     … api サービス（OIDC protocol・JSON 管理 API・内部 API。DB 直結）→ runtime-api
 #   - idp-web … web サービス（HTML 画面・API クライアント。DB 非依存）        → runtime-web
 # ビルド依存: ring（rustls）が C/アセンブラを要するため C ツールチェイン＋perl。TLS は rustls。
+#   webauthn-rs が openssl-sys（ネイティブ OpenSSL）へ依存するため libssl-dev も要する。
 # 翻訳リソース（i18n/*.ftl）は include_str! で idp-web へ埋め込むため実行イメージには同梱不要。
 
 # ---- builder ----
@@ -11,7 +12,7 @@ FROM rust:slim AS builder
 WORKDIR /build
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential perl pkg-config \
+    && apt-get install -y --no-install-recommends build-essential perl pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # 依存解決を層キャッシュに乗せるため、マニフェスト類を先にコピーしてダミービルドする。

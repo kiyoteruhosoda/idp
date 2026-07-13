@@ -529,6 +529,24 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    /// プロセス共有の環境変数を触るテストを直列化するためのロック。
+    ///
+    /// `cargo test` は 1 プロセス内の複数スレッドでテストを並列実行し、`std::env` は
+    /// プロセス全体で共有される。環境変数を設定/削除しつつ `Config` を組み立てるテストが
+    /// 並行すると、あるテストが設定した値を別テストが読んでしまい非決定的に失敗する
+    /// （例: `KEY_ROTATION_LEAD_DAYS` の 14 と 7 の取り違え）。該当テストはこのロックを
+    /// 取得して直列化する。
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// `ENV_LOCK` を取得する。ロック保持中に別テストが panic して poison しても、
+    /// 排他自体は保たれているため内側の値を取り出して継続する。
+    fn env_guard() -> MutexGuard<'static, ()> {
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     #[test]
     fn issuer_is_normalized_without_trailing_slash() {
@@ -556,6 +574,7 @@ mod tests {
 
     #[test]
     fn db_managed_settings_override_builtin_defaults() {
+        let _env = env_guard();
         std::env::remove_var("KEY_ROTATION_LEAD_DAYS");
         let db = HashMap::from([("KEY_ROTATION_LEAD_DAYS".to_string(), "7".to_string())]);
         let config = Config::from_env_and_db_settings(&db).unwrap();
@@ -571,6 +590,7 @@ mod tests {
 
     #[test]
     fn env_overrides_db_managed_settings() {
+        let _env = env_guard();
         std::env::set_var("KEY_ROTATION_LEAD_DAYS", "14");
         let db = HashMap::from([("KEY_ROTATION_LEAD_DAYS".to_string(), "7".to_string())]);
         let config = Config::from_env_and_db_settings(&db).unwrap();
@@ -586,6 +606,7 @@ mod tests {
 
     #[test]
     fn shared_web_runtime_settings_ignore_db_until_materialized() {
+        let _env = env_guard();
         std::env::remove_var("AUTH_SESSION_TTL_SECS");
         let db = HashMap::from([("AUTH_SESSION_TTL_SECS".to_string(), "1200".to_string())]);
         let config = Config::from_env_and_db_settings(&db).unwrap();
@@ -601,6 +622,7 @@ mod tests {
 
     #[test]
     fn env_locked_settings_ignore_db_values() {
+        let _env = env_guard();
         std::env::remove_var("DB_MAX_CONNECTIONS");
         let db = HashMap::from([("DB_MAX_CONNECTIONS".to_string(), "99".to_string())]);
         let config = Config::from_env_and_db_settings(&db).unwrap();
@@ -616,6 +638,7 @@ mod tests {
 
     #[test]
     fn resolved_settings_flag_dangerous_bootstrap_defaults_without_exposing_values() {
+        let _env = env_guard();
         std::env::remove_var("KEY_ENCRYPTION_KEY");
         std::env::remove_var("INTERNAL_SERVICE_TOKEN");
         std::env::remove_var("CSRF_SECRET");
@@ -639,6 +662,7 @@ mod tests {
 
     #[test]
     fn explicit_secure_cookie_and_hsts_are_marked_safe() {
+        let _env = env_guard();
         std::env::set_var("COOKIE_SECURE", "true");
         std::env::set_var("HSTS_MAX_AGE", "31536000");
 
