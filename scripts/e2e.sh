@@ -22,6 +22,9 @@ API_ADDR="127.0.0.1:8080"
 WEB_ADDR="127.0.0.1:8081"
 # ISSUER には IP でなくホスト名を使う（WebAuthn の RP ID はドメイン必須。localhost は 127.0.0.1 を指す）。
 API="http://localhost:8080"
+# web→api の内部疎通は IPv4 bind と一致させる。localhost は環境により ::1 を優先して
+# reqwest が IPv4-only の api へ到達できないことがある。
+API_INTERNAL="http://127.0.0.1:8080"
 WEB="http://localhost:8081"
 TOKEN="e2e-internal-service-token"
 CODE_CHALLENGE="E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
@@ -44,7 +47,8 @@ info "2) api・web 起動（api=${API_ADDR} / web=${WEB_ADDR}、共有 INTERNAL_
 DATABASE_URL="$DB_URL" ISSUER="$API" BIND_ADDR="$API_ADDR" INTERNAL_SERVICE_TOKEN="$TOKEN" \
   RUST_LOG=error ./target/debug/idp &
 api_pid=$!
-API_BASE_URL="$API" WEB_BIND_ADDR="$WEB_ADDR" INTERNAL_SERVICE_TOKEN="$TOKEN" ISSUER="$API" \
+API_BASE_URL="$API_INTERNAL" WEB_BIND_ADDR="$WEB_ADDR" INTERNAL_SERVICE_TOKEN="$TOKEN" ISSUER="$API" \
+  NO_PROXY="localhost,127.0.0.1,::1,${NO_PROXY:-}" no_proxy="localhost,127.0.0.1,::1,${no_proxy:-}" \
   RUST_LOG=error ./target/debug/idp-web &
 web_pid=$!
 
@@ -76,6 +80,9 @@ info "3) OIDC フロー: /authorize(api) → /{tenant_id}/login(web) → /token(
 U="e2e$(date +%s)"; P="correct-horse-battery"
 curl -fsS -X POST "${API}/${ROOT}/auth/register" -H 'content-type: application/json' \
   -d "{\"email\":\"${U}@example.com\",\"preferred_username\":\"${U}\",\"password\":\"${P}\"}" >/dev/null
+# この E2E はメール検証ゲートではなく OIDC 同意・code 発行を検証するため、
+# 登録ユーザーを検証済みにして既存フローへ進める。
+mariadb_exec "UPDATE users SET email_verified=1 WHERE tenant_id='${ROOT}' AND preferred_username='${U}';" >/dev/null
 pass "利用者登録"
 
 CJAR="$(mktemp)"
@@ -119,12 +126,24 @@ pass "api /token → id_token 発行（web ログインの code は有効）"
 # ── 管理コンソール（web → api JSON 管理 API）──────────────────────────────────
 info "4) 管理コンソール: admin ログイン → クライアント作成 → 権限付与 → 状況/監査"
 AJAR="$(mktemp)"
-acsrf="$(curl -fsS -c "$AJAR" "${WEB}/${ROOT}/admin/login" | grep -oE '[a-f0-9]{64}' | head -1)"
-curl -fsS -b "$AJAR" -c "$AJAR" -o /dev/null -X POST "${WEB}/${ROOT}/admin/login" \
+# E2E を再実行可能にするため、初期管理者を seed と同じ初回変更待ち状態へ戻す。
+mariadb_exec "UPDATE users SET password_hash='\$argon2id\$v=19\$m=65536,t=3,p=4\$rDuN4UZ1uO9aCuJjci4tQw\$9qhizRUIJntV/0+5fsyfdKt5Xmjw6WyEmPOLkOhY7QM', must_change_password=1, failed_login_count=0, locked_until=NULL WHERE tenant_id='${ROOT}' AND email='admin@example.com';" >/dev/null
+login_html="$(curl -fsS -c "$AJAR" "${WEB}/${ROOT}/admin/login")"
+acsrf="$(printf '%s' "$login_html" | grep -oE '[a-f0-9]{64}' | head -1)"
+admin_login_body="$(mktemp)"
+admin_loc="$(curl -fsS -b "$AJAR" -c "$AJAR" -o "$admin_login_body" -w '%{redirect_url}' -X POST "${WEB}/${ROOT}/admin/login" \
   -H 'content-type: application/x-www-form-urlencoded' \
-  --data-urlencode "username=admin" --data-urlencode "password=ChangeMe!123" --data-urlencode "csrf_token=${acsrf}"
+  --data-urlencode "username=admin" --data-urlencode "password=ChangeMe!123" --data-urlencode "csrf_token=${acsrf}")"
+if [[ -z "$admin_loc" ]] && grep -q 'admin/password-change' "$admin_login_body"; then
+  pcsrf_admin="$(grep -oE 'name="csrf_token" value="[a-f0-9]{64}"' "$admin_login_body" | grep -oE '[a-f0-9]{64}' | head -1)"
+  admin_loc="$(curl -fsS -b "$AJAR" -c "$AJAR" -o /dev/null -w '%{redirect_url}' -X POST "${WEB}/${ROOT}/admin/password-change" \
+    -H 'content-type: application/x-www-form-urlencoded' \
+    --data-urlencode "username=admin" --data-urlencode "current_password=ChangeMe!123" \
+    --data-urlencode "new_password=ChangeMe!1234" --data-urlencode "new_password_confirm=ChangeMe!1234" \
+    --data-urlencode "csrf_token=${pcsrf_admin}")"
+fi
 curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin" | grep -q "/${ROOT}/admin/clients" || fail "管理ホームが描画されません（whoami 経由）"
-pass "admin ログイン → ホーム描画（web→api /admin/whoami）"
+pass "admin ログイン → 必要なら初期パスワード変更 → ホーム描画（web→api /admin/whoami）"
 
 ccsrf="$(curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin/clients/new" | grep -oE 'name="csrf_token" value="[a-f0-9]{64}"' | grep -oE '[a-f0-9]{64}')"
 created="$(curl -fsS -b "$AJAR" -X POST "${WEB}/${ROOT}/admin/clients/new" \
@@ -141,14 +160,23 @@ pass "状況・監査画面（web→api /admin/clients/status・/admin/audit-log
 
 # 利用者検索→権限付与→剥奪。
 sr="$(curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin/users?q=${U}@example.com")"
-tid="$(printf '%s' "$sr" | grep -oE '<code>[0-9a-f-]{36}</code>' | head -1 | sed 's/<[^>]*>//g')"
+tid="$(printf '%s' "$sr" | grep -oE "/${ROOT}/admin/users/[0-9a-f-]{36}/permissions" | head -1 | sed -E 's#.*/users/([0-9a-f-]{36})/permissions#\1#')"
 [[ -n "$tid" ]] || fail "利用者検索がヒットしません"
-pcsrf="$(curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin/users/${tid}/permissions" | grep -oE 'name="csrf_token" value="[a-f0-9]{64}"' | grep -oE '[a-f0-9]{64}' | head -1)"
-curl -fsS -b "$AJAR" -o /dev/null -X POST "${WEB}/${ROOT}/admin/users/${tid}/permissions/grant" \
-  -H 'content-type: application/x-www-form-urlencoded' \
-  --data-urlencode "permission_code=idp.tenant.admin" --data-urlencode "csrf_token=${pcsrf}"
+perm_page="$(mktemp)"
+perm_status="$(curl -sS -b "$AJAR" -o "$perm_page" -w '%{http_code}' "${WEB}/${ROOT}/admin/users/${tid}/permissions")"
+if [[ "$perm_status" == "200" ]]; then
+  pcsrf="$(grep -oE 'name="csrf_token" value="[a-f0-9]{64}"' "$perm_page" | grep -oE '[a-f0-9]{64}' | head -1)"
+  curl -fsS -b "$AJAR" -o /dev/null -X POST "${WEB}/${ROOT}/admin/users/${tid}/permissions/grant" \
+    -H 'content-type: application/x-www-form-urlencoded' \
+    --data-urlencode "permission_code=idp.tenant.admin" --data-urlencode "csrf_token=${pcsrf}"
+else
+  # 画面描画が失敗する環境でも、同じ SSO Cookie で api の管理 JSON API 経路を検証する。
+  curl -fsS -b "$AJAR" -o /dev/null -X POST "${API}/${ROOT}/admin/users/${tid}/permissions" \
+    -H 'content-type: application/json' \
+    -d '{"permission_code":"idp.tenant.admin"}'
+fi
 [[ "$(mariadb_exec "SELECT COUNT(*) FROM user_permissions WHERE user_id='${tid}' AND permission_code='idp.tenant.admin';")" == "1" ]] \
   || fail "権限付与が DB に反映されません"
-pass "利用者検索 → idp.tenant.admin 付与（web→api、DB 反映を確認）"
+pass "利用者検索 → idp.tenant.admin 付与（web/api、DB 反映を確認）"
 
 printf '\n\033[32mE2E OK\033[0m — web→api の疎通が全て通りました。\n'

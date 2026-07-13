@@ -48,7 +48,14 @@ if [[ "${1:-}" == "compose" ]]; then
   esac
 fi
 case "${1:-}" in
-  image) exit 0 ;;
+  image)
+    if [[ "${2:-}" == "inspect" ]]; then
+      if [[ "$*" == *"org.opencontainers.image.revision"* ]]; then printf 'stub-revision\n';
+      elif [[ "$*" == *".Id"* ]]; then printf 'sha256:stub-image-id\n';
+      elif [[ "$*" == *"RepoDigests"* ]]; then printf 'idp/stub@sha256:stub-digest\n';
+      fi
+    fi
+    exit 0 ;;
   pull) exit 0 ;;
   inspect) printf 'healthy\n'; exit 0 ;;
   *) exit 0 ;;
@@ -58,6 +65,9 @@ chmod +x "$TMP/bin/docker"
 
 export PATH="$TMP/bin:$PATH"
 export DOCKER_STUB_LOG="$TMP/docker.log"
+# deploy 側は REL1 により registry 配布の latest を拒否するため、
+# スタブテストでも immutable tag 相当を明示する。
+export IMAGE_TAG="ci-test"
 cd "$TMP/repo"
 
 if ./scripts/deploy.sh >/tmp/deploy-usage.out 2>&1; then
