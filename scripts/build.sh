@@ -71,12 +71,17 @@ case "$target" in
       [[ -n "${IMAGE_PREFIX:-}" && "${IMAGE_PREFIX}" != "idp" ]] ||
         die "--push には IMAGE_PREFIX にレジストリ/名前空間を指定してください（例: registry.example.com/idp）。既定の idp のままでは push できません。"
     fi
+    git_commit="$(git rev-parse HEAD 2>/dev/null || printf unknown)"
+    version="${IMAGE_TAG:-latest}"
     # サービス名 → Dockerfile ステージ の対応。イメージ名は image_ref で共通化する。
     declare -A stages=([api]=runtime-api [web]=runtime-web [migrate]=migrate)
     for svc in api web migrate; do
       ref="$(image_ref "$svc")"
       log "イメージをビルドします: $ref（stage=${stages[$svc]}）..."
-      docker build --target "${stages[$svc]}" -t "$ref" -f Dockerfile .
+      docker build --target "${stages[$svc]}" \
+        --label "org.opencontainers.image.revision=${git_commit}" \
+        --label "org.opencontainers.image.version=${version}" \
+        -t "$ref" -f Dockerfile .
     done
 
     if [[ $do_push -eq 1 ]]; then
@@ -88,13 +93,22 @@ case "$target" in
       log "完了。デプロイ先で ./scripts/init.sh（初回）または ./scripts/deploy.sh（更新）を実行してください。"
     elif [[ -n "$save_dir" ]]; then
       mkdir -p "$save_dir"
+      manifest="$save_dir/manifest.sha256"
+      : >"$manifest"
+      printf 'commit=%s\nversion=%s\nimage_prefix=%s\nimage_tag=%s\n' \
+        "$git_commit" "$version" "${IMAGE_PREFIX:-idp}" "${IMAGE_TAG:-latest}" >"$save_dir/manifest.env"
       for svc in api web migrate; do
         ref="$(image_ref "$svc")"
         out="$save_dir/idp-${svc}.tar"
+        image_id="$(docker image inspect -f '{{.Id}}' "$ref")"
+        revision="$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$ref")"
+        [[ "$revision" == "$git_commit" ]] || die "$ref の revision label が期待値と不一致です: $revision != $git_commit"
         log "保存します: $ref → $out ..."
         docker save "$ref" -o "$out"
+        sha256sum "$out" >>"$manifest"
+        printf '%s_ref=%s\n%s_image_id=%s\n%s_revision=%s\n' "$svc" "$ref" "$svc" "$image_id" "$svc" "$revision" >>"$save_dir/manifest.env"
       done
-      log "完了。$save_dir/*.tar をデプロイ先へ転送し、docker load -i で読み込んでください。"
+      log "完了。$save_dir/*.tar と manifest.env/manifest.sha256 をデプロイ先へ転送し、deploy 前に照合してください。"
     else
       log "完了。イメージをビルドしました（受け渡しは --push または --save を使用）。"
     fi

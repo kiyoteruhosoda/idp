@@ -115,7 +115,7 @@ impl ClientManagementService {
         let (auth_method, require_pkce, secret_plain, secret_hash) = match cmd.client_type {
             ClientType::Public => (TokenEndpointAuthMethod::None, true, None, None),
             ClientType::Confidential => {
-                let plain = crate::infrastructure::crypto::random_token(CLIENT_SECRET_BYTES);
+                let plain = crate::domain::crypto::random_token(CLIENT_SECRET_BYTES);
                 let hash = self
                     .hasher
                     .hash(&plain)
@@ -133,7 +133,7 @@ impl ClientManagementService {
         let client = Client {
             id: self.ids.new_id(),
             tenant_id: tenant.tenant_id(),
-            client_id: crate::infrastructure::crypto::random_hex(CLIENT_ID_BYTES),
+            client_id: crate::domain::crypto::random_hex(CLIENT_ID_BYTES),
             client_secret_hash: secret_hash,
             client_type: cmd.client_type,
             client_status: ClientStatus::Active,
@@ -257,7 +257,7 @@ impl ClientManagementService {
             ));
         }
 
-        let plain = crate::infrastructure::crypto::random_token(CLIENT_SECRET_BYTES);
+        let plain = crate::domain::crypto::random_token(CLIENT_SECRET_BYTES);
         client.client_secret_hash = Some(
             self.hasher
                 .hash(&plain)

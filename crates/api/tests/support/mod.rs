@@ -64,6 +64,8 @@ pub struct TestEnv {
     pub root_tenant_id: String,
     /// seed の初期管理者（root 所属・idp.system.admin 保有）の内部 ID。
     pub root_admin_id: String,
+    /// LoginService が検証に使う CSRF HMAC 鍵（CI の `CSRF_SECRET` 上書きに追従）。
+    pub csrf_secret: [u8; 32],
 }
 
 /// `TEST_DATABASE_URL` の DB へ接続し、マイグレーションをプロセス内で一度だけ適用する。
@@ -120,6 +122,7 @@ pub async fn setup(test_name: &str) -> Option<TestEnv> {
 
     let config = Arc::new(Config::from_env().expect("load config"));
     let issuer = config.issuer().to_string();
+    let csrf_secret = *config.csrf_secret();
     let state = AppState::build(pool.clone(), config, Arc::new(SystemClock));
     KEY_BOOTSTRAP
         .get_or_init(|| async {
@@ -136,7 +139,27 @@ pub async fn setup(test_name: &str) -> Option<TestEnv> {
         issuer,
         root_tenant_id,
         root_admin_id,
+        csrf_secret,
     })
+}
+
+/// 登録 API で作った利用者をメール検証済みにする。
+/// OIDC / internal auth の既存フロー検証ではメール検証ゲートではなく同意・CSRF・token 発行を検証したいため、
+/// テストデータだけ明示的に検証済みに寄せる。
+pub async fn mark_email_verified(pool: &MySqlPool, tenant_id: &str, username: &str) {
+    let result = sqlx::query(
+        "UPDATE users SET email_verified = 1 WHERE tenant_id = ? AND preferred_username = ?",
+    )
+    .bind(tenant_id)
+    .bind(username)
+    .execute(pool)
+    .await
+    .expect("mark email verified");
+    assert_eq!(
+        result.rows_affected(),
+        1,
+        "mark one registered user verified"
+    );
 }
 
 // ── テストデータ生成 ─────────────────────────────────────────────────────────

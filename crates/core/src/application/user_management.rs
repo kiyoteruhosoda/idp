@@ -13,6 +13,7 @@
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
+use crate::domain::crypto;
 use crate::domain::error::DomainError;
 use crate::domain::id_generator::IdGenerator;
 use crate::domain::password::PasswordHasher;
@@ -21,7 +22,6 @@ use crate::domain::tenant_context::TenantContext;
 use crate::domain::tenant_membership::TenantMembership;
 use crate::domain::user::User;
 use crate::domain::values::{validate_email as domain_validate_email, UserStatus};
-use crate::infrastructure::crypto;
 use std::sync::Arc;
 use uuid::Uuid;
 

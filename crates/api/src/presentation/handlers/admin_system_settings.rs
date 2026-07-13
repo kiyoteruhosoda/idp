@@ -5,7 +5,7 @@
 //! 管理者だけになる（ADR-0009 §4）。SMTP パスワードは暗号化して保存し、参照時は平文を返さない
 //! （設定済みか否かのみ）。
 
-use crate::config::{ResolvedSetting, SettingSource};
+use crate::config::{ResolvedSetting, SettingSafetyStatus, SettingSource};
 use crate::domain::system_setting::{
     DefaultRisk, SettingOwner, SmtpSettingsView, UpdateSmtpCommand,
 };
@@ -125,5 +125,11 @@ fn to_runtime_response(setting: &ResolvedSetting) -> RuntimeSettingResponse {
             DefaultRisk::Dangerous => "DANGEROUS",
         }
         .to_string(),
+        status: match setting.status {
+            SettingSafetyStatus::Safe => "SAFE",
+            SettingSafetyStatus::NeedsAction => "NEEDS_ACTION",
+        }
+        .to_string(),
+        reason: setting.reason.clone(),
     }
 }

@@ -7,6 +7,7 @@
 //! 4. `list()` — 登録済みクレデンシャル一覧を返す（管理画面用）。
 
 use crate::domain::clock::Clock;
+use crate::domain::crypto;
 use crate::domain::error::DomainError;
 use crate::domain::id_generator::IdGenerator;
 use crate::domain::passkey_challenge::{PasskeyChallenge, PasskeyChallengeType};
@@ -14,8 +15,7 @@ use crate::domain::repositories::{
     PasskeyChallengeRepository, SsoSessionRepository, WebAuthnCredentialRepository,
 };
 use crate::domain::webauthn_credential::WebAuthnCredential;
-use crate::infrastructure::crypto;
-use crate::infrastructure::webauthn::WebAuthnService;
+use crate::domain::webauthn_port::WebAuthnPort;
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
@@ -59,7 +59,7 @@ pub struct PasskeyRegistrationService {
     webauthn_credentials: Arc<dyn WebAuthnCredentialRepository>,
     passkey_challenges: Arc<dyn PasskeyChallengeRepository>,
     sso_sessions: Arc<dyn SsoSessionRepository>,
-    webauthn: Arc<WebAuthnService>,
+    webauthn: Arc<dyn WebAuthnPort>,
     clock: Arc<dyn Clock>,
     ids: Arc<dyn IdGenerator>,
 }
@@ -69,7 +69,7 @@ impl PasskeyRegistrationService {
         webauthn_credentials: Arc<dyn WebAuthnCredentialRepository>,
         passkey_challenges: Arc<dyn PasskeyChallengeRepository>,
         sso_sessions: Arc<dyn SsoSessionRepository>,
-        webauthn: Arc<WebAuthnService>,
+        webauthn: Arc<dyn WebAuthnPort>,
         clock: Arc<dyn Clock>,
         ids: Arc<dyn IdGenerator>,
     ) -> Self {

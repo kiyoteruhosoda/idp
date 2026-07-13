@@ -59,8 +59,8 @@ fn authorize_uri(tenant: &str, client_id: &str, state: &str, nonce: &str) -> Str
 }
 
 /// `auth_session_id` 由来のログイン CSRF トークン（web が描画し api の LoginService が検証する契約）。
-fn login_csrf(auth_session: &str) -> String {
-    idp_api::application::login::csrf_token(auth_session, idp_api::config::DEV_CSRF_SECRET)
+fn login_csrf(auth_session: &str, csrf_secret: &[u8; 32]) -> String {
+    idp_api::application::login::csrf_token(auth_session, csrf_secret)
 }
 
 /// api の内部認証（`POST /internal/authenticate`）で資格情報検証を駆動する（ログイン画面は web crate）。
@@ -122,6 +122,7 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     let username = format!("e2e{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
     let password = "correct-horse-battery";
     let sub = register_user(&app, &root_tenant_id, &username, password).await; // 条件 1
+    support::mark_email_verified(&pool, &root_tenant_id, &username).await;
 
     // 条件 2, 3: /authorize 開始 → 未ログインなので /login へ。
     let response = send(
@@ -143,7 +144,7 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     let auth_session = cookie_value(&response, "auth_session_id").expect("auth_session_id cookie");
 
     // CSRF は auth_session 由来（web が描画・api の LoginService が検証）。
-    let csrf = login_csrf(&auth_session);
+    let csrf = login_csrf(&auth_session, &env.csrf_secret);
 
     // CSRF トークン不一致は拒否される（result=csrf_mismatch）。
     let (status, body) = internal_authenticate(
@@ -327,7 +328,7 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     let claims = body_json(response).await;
     assert_eq!(claims["sub"], sub.as_str());
     assert_eq!(claims["email"], format!("{username}@example.com"));
-    assert_eq!(claims["email_verified"], false);
+    assert_eq!(claims["email_verified"], true);
     assert_eq!(claims["preferred_username"], username.as_str());
     assert_eq!(claims["name"], "E2E Tester");
 
@@ -533,6 +534,7 @@ async fn login_lockout_after_repeated_failures() {
     let username = format!("lock{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
     let password = "correct-horse-battery";
     register_user(&app, &root_tenant_id, &username, password).await;
+    support::mark_email_verified(&pool, &root_tenant_id, &username).await;
 
     // AuthSession を作ってログイン画面へ。
     let response = send(
@@ -544,7 +546,7 @@ async fn login_lockout_after_repeated_failures() {
     )
     .await;
     let auth_session = cookie_value(&response, "auth_session_id").expect("auth_session cookie");
-    let csrf = login_csrf(&auth_session);
+    let csrf = login_csrf(&auth_session, &env.csrf_secret);
 
     // 9 回失敗 → invalid_credentials、10 回目でロック（locked）。
     for attempt in 1..=10 {

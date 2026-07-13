@@ -9,6 +9,7 @@ use crate::application::authorize::code_redirect;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
+use crate::domain::crypto;
 use crate::domain::passkey_challenge::{PasskeyChallenge, PasskeyChallengeType};
 use crate::domain::repositories::{
     AuthSessionRepository, ClientConsentRepository, PasskeyChallengeRepository,
@@ -16,8 +17,7 @@ use crate::domain::repositories::{
 };
 use crate::domain::sso_session::SsoSession;
 use crate::domain::tenant_context::TenantContext;
-use crate::infrastructure::crypto;
-use crate::infrastructure::webauthn::WebAuthnService;
+use crate::domain::webauthn_port::WebAuthnPort;
 use chrono::Duration;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
@@ -59,7 +59,7 @@ pub struct PasskeyAuthenticationService {
     sso_sessions: Arc<dyn SsoSessionRepository>,
     client_consents: Arc<dyn ClientConsentRepository>,
     code_issuance: Arc<CodeIssuanceService>,
-    webauthn: Arc<WebAuthnService>,
+    webauthn: Arc<dyn WebAuthnPort>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
     sso_idle_ttl: Duration,
@@ -76,7 +76,7 @@ impl PasskeyAuthenticationService {
         sso_sessions: Arc<dyn SsoSessionRepository>,
         client_consents: Arc<dyn ClientConsentRepository>,
         code_issuance: Arc<CodeIssuanceService>,
-        webauthn: Arc<WebAuthnService>,
+        webauthn: Arc<dyn WebAuthnPort>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
         sso_idle_ttl: StdDuration,

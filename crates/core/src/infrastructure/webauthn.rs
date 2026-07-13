@@ -5,6 +5,7 @@
 //!
 //! エラー型は `webauthn_rs::WebauthnError` を文字列にしてアプリエラーとして返す。
 
+use crate::domain::webauthn_port::WebAuthnPort;
 use url::Url;
 use uuid::Uuid;
 use webauthn_rs::prelude::{
@@ -43,14 +44,16 @@ impl WebAuthnService {
             .unwrap_or_else(|e| panic!("failed to build Webauthn: {e}"));
         Self { inner }
     }
+}
 
+impl WebAuthnPort for WebAuthnService {
     // ─── 登録 ─────────────────────────────────────────────────────────────
 
     /// 登録開始: チャレンジと `PasskeyRegistration` 中間状態を返す。
     ///
     /// `exclude_credentials` には既存登録済みの `Passkey` スライスを渡すことで
     /// 同一デバイスの二重登録を防ぐ。
-    pub fn begin_registration(
+    fn begin_registration(
         &self,
         user_id: Uuid,
         user_name: &str,
@@ -77,7 +80,7 @@ impl WebAuthnService {
     }
 
     /// 登録完了: レスポンスを検証して `Passkey` を返す。
-    pub fn finish_registration(
+    fn finish_registration(
         &self,
         credential: &RegisterPublicKeyCredential,
         state: &PasskeyRegistration,
@@ -92,7 +95,7 @@ impl WebAuthnService {
     /// 認証開始（discoverable credentials）: チャレンジと `DiscoverableAuthentication` を返す。
     ///
     /// 認証器がユーザーハンドルを送ってくるため、ユーザーを事前に特定する必要がない。
-    pub fn begin_authentication(
+    fn begin_authentication(
         &self,
     ) -> Result<(RequestChallengeResponse, DiscoverableAuthentication), String> {
         self.inner
@@ -104,7 +107,7 @@ impl WebAuthnService {
     ///
     /// `creds` は `&[DiscoverableKey]`。認証レスポンスに含まれる credential ID から
     /// 対象クレデンシャルを引いた 1 件だけ `Passkey::from` で変換して渡す。
-    pub fn finish_authentication(
+    fn finish_authentication(
         &self,
         credential: &PublicKeyCredential,
         state: DiscoverableAuthentication,

@@ -11,10 +11,10 @@
 //! OIDC scope（claim 制御）とは別軸の判定であり、Discovery の `scopes_supported` には出さない。
 
 use crate::domain::clock::Clock;
+use crate::domain::crypto;
 use crate::domain::permission;
 use crate::domain::repositories::{SsoSessionRepository, UserPermissionRepository, UserRepository};
 use crate::domain::tenant_context::TenantContext;
-use crate::infrastructure::crypto;
 use std::sync::Arc;
 use uuid::Uuid;
 

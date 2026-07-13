@@ -103,15 +103,6 @@ async fn full_reset_flow_via_email_link() {
         return;
     };
 
-    // インプロセス SMTP サーバへ配送先を向ける（テスト終了時に設定を空へ戻す）。
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind smtp");
-    let smtp_port = listener.local_addr().unwrap().port();
-    let smtp_server = tokio::spawn(run_minimal_smtp_server(listener));
-    upsert_setting(&env.pool, "smtp.host", "127.0.0.1").await;
-    upsert_setting(&env.pool, "smtp.port", &smtp_port.to_string()).await;
-    upsert_setting(&env.pool, "smtp.from_address", "noreply@example.test").await;
-    upsert_setting(&env.pool, "smtp.use_tls", "false").await;
-
     // 対象ユーザーを自己登録で作成し、SSO セッションを 1 本持たせておく（失効の検証用）。
     let email = format!("reset-{}@example.com", uuid::Uuid::new_v4().simple());
     let res = send(
@@ -133,6 +124,16 @@ async fn full_reset_flow_via_email_link() {
         .await
         .unwrap();
     let _sso_cookie = create_sso_session(&env.pool, &user_id).await;
+
+    // インプロセス SMTP サーバへ配送先を向ける。登録時のメール検証通知を拾わないよう、
+    // 対象ユーザー作成後に設定する（テスト終了時に設定を空へ戻す）。
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind smtp");
+    let smtp_port = listener.local_addr().unwrap().port();
+    let smtp_server = tokio::spawn(run_minimal_smtp_server(listener));
+    upsert_setting(&env.pool, "smtp.host", "127.0.0.1").await;
+    upsert_setting(&env.pool, "smtp.port", &smtp_port.to_string()).await;
+    upsert_setting(&env.pool, "smtp.from_address", "noreply@example.test").await;
+    upsert_setting(&env.pool, "smtp.use_tls", "false").await;
 
     // 1. リセット要求 → accepted・メールが実際に配送される。
     let res = send(

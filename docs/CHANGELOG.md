@@ -2,6 +2,15 @@
 
 完了した重要な変更の要約（詳しい経緯は `history/`、設計判断は `adr/`）。
 
+## 2026-07-13（DDD1: Application 層の Infrastructure 具象依存除去）
+
+- **DDD1 — Application 層の DIP 境界整理**: Application ユースケースから `infrastructure::crypto` / `infrastructure::jwt` / `WebAuthnService` の直接 import を除去し、暗号・JWT のドメインサービスと `WebAuthnPort` 経由のポリモーフィックな依存へ切り替えた。Infrastructure の WebAuthn 実装は composition root で選択し、Application は port のみに依存する。
+
+## 2026-07-13（UI1・REL1: 設定安全性表示と成果物検証）
+
+- **UI1 — root 設定画面の安全性表示**: ランタイム設定の出所に加え、安全／要対応の状態、判定理由、再起動要否、secret 非露出表示を返すようにした。開発用既知 secret、`COOKIE_SECURE=false`、`HSTS_MAX_AGE=0` などを要対応として表示する。
+- **REL1 — stale イメージ再利用防止**: レジストリ配布では `latest` を拒否し、deploy 時に明示 pull する。`build.sh --save` は tar の SHA-256、Git commit、version、image ID を manifest に出力し、deploy は manifest とローカル image ID / revision label を照合する。api/web/migrate が同一 commit 由来であることも検証する。
+
 ## 2026-07-12（REF3・SEC7・REF4: リファクタ・セキュリティ強化）
 
 - **REF3 — 認可ホットパスの整理**:
@@ -53,6 +62,11 @@
     招待ゲスト（招待リンクで所有確認済み）は `email_verified = true` で作られ、ゲートに掛からない。
   - トークン・メールアドレスはログ・監査に出さない（監査は `email_verification.requested/verified`）。
 
+
+
+- **UI1 — root 設定画面の安全性表示**: ランタイム設定の出所に加え、安全／要対応の状態、判定理由、再起動要否、secret 非露出表示を返すようにした。開発用既知 secret、`COOKIE_SECURE=false`、`HSTS_MAX_AGE=0` などを要対応として表示する。
+- **REL1 — stale イメージ再利用防止**: レジストリ配布では `latest` を拒否し、deploy 時に明示 pull する。`build.sh --save` は tar の SHA-256、Git commit、version、image ID を manifest に出力し、deploy は manifest とローカル image ID / revision label を照合する。api/web/migrate が同一 commit 由来であることも検証する。
+
 ## 2026-07-12（GAP1: ゲスト権限付与の ADR 乖離解消）
 
 - **GAP1 — 権限付与対象を「所属元照合」から「ACTIVE メンバーシップ判定」へ**（ADR-0009 §4）:
@@ -67,6 +81,7 @@
   - negative/positive テストを追加（INVITED への付与不可・テナント外 404 維持・別テナント所属の ACTIVE
     ゲストへの付与成功）。統合テストのユーザー生成ヘルパ（`create_plain_user`）も実運用同様に HOME
     メンバーシップを投影するよう修正。
+
 
 ## 2026-07-12（MT18: パスワードリセット / SEC6: 自己登録の制御）
 
@@ -86,6 +101,7 @@
   存在の列挙は「有効化したテナントで、レート制限の範囲内」でのみ可能に縮小（完全な秘匿はメール検証
   = SEC6b で対応）。トグルは設定画面のテナント設定区画（`idp.tenant.admin`）から変更する。
 
+
 ## 2026-07-12（MT17: 招待のメール配送）
 
 - **MT17 — ゲスト招待の承諾リンクをメールで配送**: 招待作成（`POST /{tenant_id}/admin/invitations`）
@@ -100,6 +116,7 @@
   - 承諾リンクの土台 URL は `PUBLIC_WEB_BASE_URL`（既定 = `ISSUER`。単一オリジン構成 ADR-0007）。
   - メール文言は MT19（API 多言語化）まで日英併記の固定文。
 
+
 ## 2026-07-12（REF2: テナント開通のトランザクション境界）
 
 - **REF2 — テナント作成の unit of work 導入**: `create_tenant` が「tenant INSERT → 管理者作成 →
@@ -111,6 +128,7 @@
   構築ロジックを通る（単一の出所は維持）。権限付与が判定キャッシュを迂回する点は、新規生成 ID の
   ためキャッシュに該当キーが存在し得ず安全。実 DB のロールバック検証を `admin_tenants` 統合テストに
   追加。
+
 
 ## 2026-07-12（セキュリティ改修: MT16 レビュー指摘の解消）
 
@@ -143,6 +161,7 @@
   ゲストが管理権限を保持し続けた。`UserPermissionRepository::revoke_all_for_user_in_tenant`
   （単一トランザクションの SELECT FOR UPDATE + DELETE、剥奪コード返却）を新設し、キャッシュ
   デコレータは返却コードを invalidate する。
+
 
 ## 2026-07-12（MT16: テナント分離・権限境界の統合テスト）
 

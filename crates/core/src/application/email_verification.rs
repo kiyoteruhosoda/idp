@@ -15,12 +15,12 @@ use crate::application::audit::{AuditService, RequestContext};
 use crate::application::system_settings::SystemSettingsService;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
+use crate::domain::crypto;
 use crate::domain::email_verification::EmailVerificationToken;
 use crate::domain::mailer::{Mailer, OutgoingEmail};
 use crate::domain::repositories::{EmailVerificationTokenRepository, UserRepository};
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
-use crate::infrastructure::crypto;
 use std::sync::Arc;
 use uuid::Uuid;
 

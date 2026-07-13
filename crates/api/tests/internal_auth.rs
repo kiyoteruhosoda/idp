@@ -58,7 +58,8 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
     let Some(env) = support::setup("internal auth").await else {
         return;
     };
-    let (app, pool, root_tenant_id) = (env.app, env.pool, env.root_tenant_id);
+    let (app, pool, root_tenant_id, csrf_secret) =
+        (env.app, env.pool, env.root_tenant_id, env.csrf_secret);
 
     let client_id =
         support::insert_public_client(&pool, &root_tenant_id, &["openid", "profile", "email"])
@@ -66,6 +67,7 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
     let username = format!("int{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
     let password = "correct-horse-battery";
     register_user(&app, &root_tenant_id, &username, password).await;
+    support::mark_email_verified(&pool, &root_tenant_id, &username).await;
 
     // サービストークンが無ければ 401（本文まで到達しない）。
     let auth_session = start_authorize(&app, &root_tenant_id, &client_id).await;
@@ -78,7 +80,7 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
                 "auth_session_id": auth_session,
                 "username": username,
                 "password": password,
-                "csrf_token": csrf_token(&auth_session, idp_api::config::DEV_CSRF_SECRET),
+                "csrf_token": csrf_token(&auth_session, &csrf_secret),
             }),
         ),
     )
@@ -95,7 +97,7 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
                 "auth_session_id": auth_session,
                 "username": username,
                 "password": password,
-                "csrf_token": csrf_token(&auth_session, idp_api::config::DEV_CSRF_SECRET),
+                "csrf_token": csrf_token(&auth_session, &csrf_secret),
             }),
         ),
     )
@@ -133,7 +135,7 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
                 "auth_session_id": auth_session,
                 "username": username,
                 "password": password,
-                "csrf_token": csrf_token(&auth_session, idp_api::config::DEV_CSRF_SECRET),
+                "csrf_token": csrf_token(&auth_session, &csrf_secret),
                 "ip_address": "203.0.113.7",
                 "user_agent": "integration-test",
             }),

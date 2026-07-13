@@ -9,10 +9,10 @@
 //! 検証時にのみ復号する（signing_keys と同方式）。
 
 use crate::domain::clock::Clock;
+use crate::domain::crypto;
 use crate::domain::error::DomainError;
 use crate::domain::repositories::{SsoSessionRepository, TotpSecretRepository};
 use crate::domain::totp_secret::TotpSecret;
-use crate::infrastructure::crypto;
 use std::sync::Arc;
 use totp_rs::{Algorithm, Secret, TOTP};
 use uuid::Uuid;

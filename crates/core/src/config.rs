@@ -48,6 +48,16 @@ pub struct ResolvedSetting {
     pub secret: bool,
     pub restart_required: bool,
     pub default_risk: DefaultRisk,
+    /// 画面表示用の安全判定（値や fingerprint は含めない）。
+    pub status: SettingSafetyStatus,
+    /// 危険/安全判定の根拠。secret の平文・fingerprint は含めない。
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingSafetyStatus {
+    Safe,
+    NeedsAction,
 }
 
 #[derive(Debug, Clone)]
@@ -339,6 +349,54 @@ impl<'a> ConfigResolver<'a> {
         }
     }
 
+    fn safety_status(&self, key: &str, default_risk: DefaultRisk) -> SettingSafetyStatus {
+        match key {
+            "KEY_ENCRYPTION_KEY" if env_lookup(key).is_none() => SettingSafetyStatus::NeedsAction,
+            "INTERNAL_SERVICE_TOKEN" if env_lookup(key).is_none() => {
+                SettingSafetyStatus::NeedsAction
+            }
+            "CSRF_SECRET" if env_lookup(key).is_none() => SettingSafetyStatus::NeedsAction,
+            "COOKIE_SECURE" => match self.optional_string(key) {
+                Some(v) if v.eq_ignore_ascii_case("false") => SettingSafetyStatus::NeedsAction,
+                None => SettingSafetyStatus::NeedsAction,
+                _ => SettingSafetyStatus::Safe,
+            },
+            "HSTS_MAX_AGE" => match self.optional_string(key) {
+                Some(v) if v != "0" => SettingSafetyStatus::Safe,
+                _ => SettingSafetyStatus::NeedsAction,
+            },
+            _ if default_risk == DefaultRisk::Dangerous
+                && self.source(key) == SettingSource::Builtin =>
+            {
+                SettingSafetyStatus::NeedsAction
+            }
+            _ => SettingSafetyStatus::Safe,
+        }
+    }
+
+    fn safety_reason(&self, key: &str, default_risk: DefaultRisk) -> String {
+        match key {
+            "KEY_ENCRYPTION_KEY" | "INTERNAL_SERVICE_TOKEN" | "CSRF_SECRET"
+                if env_lookup(key).is_none() =>
+            {
+                "開発用の既知 secret が使われています。環境変数でランダム値を設定してください。".to_string()
+            }
+            "COOKIE_SECURE" if self.safety_status(key, default_risk) == SettingSafetyStatus::NeedsAction => {
+                "Cookie Secure が無効または組み込み既定です。HTTPS 配置では true にしてください。".to_string()
+            }
+            "HSTS_MAX_AGE" if self.safety_status(key, default_risk) == SettingSafetyStatus::NeedsAction => {
+                "HSTS が無効です。HTTPS 配置では正の max-age を設定してください。".to_string()
+            }
+            _ if self.source(key) == SettingSource::Builtin && default_risk == DefaultRisk::Dangerous => {
+                "危険な組み込み既定値が使われています。環境変数または DB 管理値で上書きしてください。".to_string()
+            }
+            _ if self.source(key) == SettingSource::Builtin && default_risk == DefaultRisk::Review => {
+                "組み込み既定値です。配置環境に適しているか確認してください。".to_string()
+            }
+            _ => "現在の出所では要対応項目は検出されていません。".to_string(),
+        }
+    }
+
     fn resolved_settings(&self) -> Vec<ResolvedSetting> {
         RUNTIME_SETTING_DEFINITIONS
             .iter()
@@ -352,6 +410,8 @@ impl<'a> ConfigResolver<'a> {
                 secret: def.secret,
                 restart_required: def.restart_required,
                 default_risk: def.default_risk,
+                status: self.safety_status(def.key, def.default_risk),
+                reason: self.safety_reason(def.key, def.default_risk),
             })
             .collect()
     }
@@ -552,6 +612,51 @@ mod tests {
             .unwrap();
         assert_eq!(db_max.owner, SettingOwner::EnvLocked);
         assert_eq!(db_max.source, SettingSource::Builtin);
+    }
+
+    #[test]
+    fn resolved_settings_flag_dangerous_bootstrap_defaults_without_exposing_values() {
+        std::env::remove_var("KEY_ENCRYPTION_KEY");
+        std::env::remove_var("INTERNAL_SERVICE_TOKEN");
+        std::env::remove_var("CSRF_SECRET");
+        std::env::remove_var("COOKIE_SECURE");
+        std::env::remove_var("HSTS_MAX_AGE");
+
+        let config = Config::from_env_and_db_settings(&HashMap::new()).unwrap();
+        let settings = config.resolved_settings();
+        for key in [
+            "KEY_ENCRYPTION_KEY",
+            "INTERNAL_SERVICE_TOKEN",
+            "CSRF_SECRET",
+            "COOKIE_SECURE",
+            "HSTS_MAX_AGE",
+        ] {
+            let setting = settings.iter().find(|setting| setting.key == key).unwrap();
+            assert_eq!(setting.status, SettingSafetyStatus::NeedsAction);
+            assert!(!setting.reason.contains("idp-dev-insecure"));
+        }
+    }
+
+    #[test]
+    fn explicit_secure_cookie_and_hsts_are_marked_safe() {
+        std::env::set_var("COOKIE_SECURE", "true");
+        std::env::set_var("HSTS_MAX_AGE", "31536000");
+
+        let config = Config::from_env_and_db_settings(&HashMap::new()).unwrap();
+        let settings = config.resolved_settings();
+        let cookie = settings
+            .iter()
+            .find(|setting| setting.key == "COOKIE_SECURE")
+            .unwrap();
+        let hsts = settings
+            .iter()
+            .find(|setting| setting.key == "HSTS_MAX_AGE")
+            .unwrap();
+        assert_eq!(cookie.status, SettingSafetyStatus::Safe);
+        assert_eq!(hsts.status, SettingSafetyStatus::Safe);
+
+        std::env::remove_var("COOKIE_SECURE");
+        std::env::remove_var("HSTS_MAX_AGE");
     }
 
     #[test]

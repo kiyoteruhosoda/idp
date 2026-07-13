@@ -10,13 +10,13 @@ use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::application::totp_registration::verify_totp_code;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
+use crate::domain::crypto;
 use crate::domain::repositories::{
     AuthSessionRepository, ClientConsentRepository, SsoSessionRepository, TotpSecretRepository,
     UserRepository,
 };
 use crate::domain::sso_session::SsoSession;
 use crate::domain::tenant_context::TenantContext;
-use crate::infrastructure::crypto;
 use chrono::Duration;
 use std::sync::Arc;
 use uuid::Uuid;
