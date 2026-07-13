@@ -9,6 +9,7 @@ use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::client::Client;
 use crate::domain::clock::Clock;
+use crate::domain::crypto;
 use crate::domain::error::OAuthErrorCode;
 use crate::domain::password::PasswordHasher;
 use crate::domain::repositories::{
@@ -17,7 +18,6 @@ use crate::domain::repositories::{
 use crate::domain::revoked_access_token::RevokedAccessToken;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::TokenEndpointAuthMethod;
-use crate::infrastructure::crypto;
 use std::sync::Arc;
 
 /// `/revoke` のエラー（RFC 7009 §2.2.1 に準じる）。

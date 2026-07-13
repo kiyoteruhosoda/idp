@@ -18,6 +18,7 @@ use crate::application::audit::{AuditService, RequestContext};
 use crate::application::system_settings::SystemSettingsService;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
+use crate::domain::crypto;
 use crate::domain::mailer::{Mailer, OutgoingEmail};
 use crate::domain::repositories::{
     TenantMembershipRepository, UserPermissionRepository, UserRepository,
@@ -26,7 +27,6 @@ use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::tenant_membership::TenantMembership;
 use crate::domain::values::{MembershipStatus, MembershipType};
-use crate::infrastructure::crypto;
 use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use uuid::Uuid;

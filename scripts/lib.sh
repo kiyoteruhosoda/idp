@@ -78,22 +78,62 @@ DEPLOY_COMPOSE_FILE="docker-compose.deploy.yml"
 # デプロイに必要なイメージ（api/web/migrate）がローカルに揃っていることを保証する。
 # 無ければ pull を試み（レジストリ配布）、それでも無ければ die（tar 配布なら事前に docker load 済みが前提）。
 # デプロイ先はソースを持たないため、ここでビルドはしない。
-ensure_image() {
-  local svc="$1" ref
+image_manifest_file() { printf '%s' "${IMAGE_MANIFEST_FILE:-${ARTIFACT_MANIFEST_FILE:-dist/manifest.env}}"; }
+
+ensure_registry_image() {
+  local svc="$1" ref tag digest actual_digest revision expected_commit
   ref="$(image_ref "$svc")"
-  if docker image inspect "$ref" >/dev/null 2>&1; then
-    return 0
+  tag="${IMAGE_TAG:-latest}"
+  [[ "$tag" != "latest" ]] || die "レジストリ配布で IMAGE_TAG=latest は使用できません。immutable tag または digest を指定してください。"
+  log "$ref を明示 pull します..."
+  docker pull "$ref" >/dev/null 2> >(mask_secrets >&2) || die "pull に失敗しました: $ref"
+  digest="${IMAGE_DIGEST:-}"
+  if [[ -n "$digest" ]]; then
+    actual_digest="$(docker image inspect -f '{{index .RepoDigests 0}}' "$ref" 2>/dev/null | sed 's/^.*@//')"
+    [[ "$actual_digest" == "$digest" ]] || die "$ref の digest が期待値と不一致です: ${actual_digest:-unknown} != $digest"
   fi
-  log "ローカルに $ref がありません。pull を試みます..."
-  if ! docker pull "$ref" >/dev/null 2> >(mask_secrets >&2); then
-    die "必要なイメージが揃っていません: $ref。ソース側で ./scripts/build.sh --docker --push、または --save して転送し docker load -i してください。"
+  expected_commit="${IMAGE_COMMIT:-}"
+  if [[ -n "$expected_commit" ]]; then
+    revision="$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$ref" 2>/dev/null || true)"
+    [[ "$revision" == "$expected_commit" ]] || die "$ref の commit label が期待値と不一致です: ${revision:-unknown} != $expected_commit"
+  fi
+}
+
+ensure_tar_image() {
+  local svc="$1" manifest ref_key id_key revision_key ref expected_id actual_id expected_revision actual_revision
+  manifest="$(image_manifest_file)"
+  [[ -f "$manifest" ]] || die "tar 配布 manifest が見つかりません: $manifest"
+  # shellcheck disable=SC1090
+  source "$manifest"
+  ref_key="${svc}_ref"; id_key="${svc}_image_id"; revision_key="${svc}_revision"
+  ref="${!ref_key:-$(image_ref "$svc")}"
+  expected_id="${!id_key:-}"
+  expected_revision="${!revision_key:-}"
+  docker image inspect "$ref" >/dev/null 2>&1 || die "必要なイメージがありません: $ref。manifest に対応する tar を docker load してください。"
+  actual_id="$(docker image inspect -f '{{.Id}}' "$ref")"
+  [[ -z "$expected_id" || "$actual_id" == "$expected_id" ]] || die "$ref の image ID が manifest と不一致です: $actual_id != $expected_id"
+  actual_revision="$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$ref" 2>/dev/null || true)"
+  [[ -z "$expected_revision" || "$actual_revision" == "$expected_revision" ]] || die "$ref の commit label が manifest と不一致です: ${actual_revision:-unknown} != $expected_revision"
+}
+
+ensure_image() {
+  local svc="$1"
+  if [[ -f "$(image_manifest_file)" ]]; then
+    ensure_tar_image "$svc"
+  else
+    ensure_registry_image "$svc"
   fi
 }
 
 ensure_images() {
-  local svc
+  local svc first_revision revision ref
   for svc in api web migrate; do
     ensure_image "$svc"
+    ref="$(image_ref "$svc")"
+    revision="$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$ref" 2>/dev/null || true)"
+    [[ -n "$revision" ]] || die "$ref に org.opencontainers.image.revision label がありません。build.sh で再ビルドしてください。"
+    if [[ -z "${first_revision:-}" ]]; then first_revision="$revision"; else [[ "$revision" == "$first_revision" ]] || die "api/web/migrate の commit label が一致しません。"; fi
+    log "配置対象 image: service=$svc ref=$ref id=$(docker image inspect -f '{{.Id}}' "$ref") revision=$revision"
   done
 }
 

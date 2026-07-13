@@ -46,18 +46,18 @@
 </form>
 
 <h4>ランタイム設定の出所</h4>
-<p class="hint">値は表示せず、設定キーごとの管理区分・現在の出所・再起動要否・既定値リスクのみを表示します。</p>
+<p class="hint">値は表示せず、設定キーごとの管理区分・現在の出所・状態・理由・再起動要否を表示します。secret の値や fingerprint は表示しません。</p>
 <table>
-<thead><tr><th>設定名</th><th>管理区分</th><th>現在の出所</th><th>秘密値</th><th>再起動</th><th>既定値リスク</th></tr></thead>
+<thead><tr><th>設定名</th><th>現在の出所</th><th>状態</th><th>理由</th><th>再起動</th><th>秘密値</th></tr></thead>
 <tbody>
 {% for item in sys.runtime_settings %}
 <tr>
 <td><code>{{ item.key }}</code></td>
-<td>{{ item.owner }}</td>
-<td>{{ item.source }}</td>
-<td>{% if item.secret %}secret{% else %}-{% endif %}</td>
-<td>{% if item.restart_required %}required{% else %}-{% endif %}</td>
-<td>{{ item.default_risk }}</td>
+<td>{{ item.source }} / {{ item.owner }}</td>
+<td>{% if item.status == "NEEDS_ACTION" %}要対応{% else %}安全{% endif %}</td>
+<td>{{ item.reason }}</td>
+<td>{% if item.restart_required %}必要{% else %}-{% endif %}</td>
+<td>{% if item.secret %}secret（値非表示）{% else %}-{% endif %}</td>
 </tr>
 {% endfor %}
 </tbody>

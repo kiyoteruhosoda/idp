@@ -3,8 +3,8 @@
 //! ログイン済みユーザーが SSO セッション経由で自分の `language` 列（`ja` / `en` / `NULL`）を
 //! 更新する。DB への書き込みのみで、i18n の適用はリクエストごとに `Accept-Language` で行う。
 
+use crate::domain::crypto;
 use crate::domain::repositories::{SsoSessionRepository, UserRepository};
-use crate::infrastructure::crypto;
 use std::sync::Arc;
 
 pub struct UpdateLanguageCommand {

@@ -13,6 +13,7 @@ use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session::AuthSession;
 use crate::domain::client::Client;
 use crate::domain::clock::Clock;
+use crate::domain::crypto;
 use crate::domain::error::OAuthErrorCode;
 use crate::domain::repositories::{
     AuthSessionRepository, ClientConsentRepository, ClientRepository, SsoSessionRepository,
@@ -20,7 +21,6 @@ use crate::domain::repositories::{
 };
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::{CodeChallengeMethod, Scope};
-use crate::infrastructure::crypto;
 use chrono::Duration;
 use std::sync::Arc;
 

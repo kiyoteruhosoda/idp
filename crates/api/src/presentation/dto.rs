@@ -339,6 +339,10 @@ pub struct RuntimeSettingResponse {
     pub secret: bool,
     pub restart_required: bool,
     pub default_risk: String,
+    /// `SAFE` または `NEEDS_ACTION`。secret の平文・fingerprint は含まない。
+    pub status: String,
+    /// 判定理由。secret の平文・fingerprint は含まない。
+    pub reason: String,
 }
 
 /// システム設定の公開表現（`GET/PUT /{tenant_id}/admin/system-settings`）。SMTP パスワードは

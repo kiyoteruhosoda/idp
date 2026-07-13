@@ -6,12 +6,12 @@
 use crate::application::token::{userinfo_audience, AccessTokenClaims};
 use crate::domain::clock::Clock;
 use crate::domain::issuer::tenant_issuer;
+use crate::domain::jwt;
 use crate::domain::repositories::{
     RevokedAccessTokenRepository, SigningKeyRepository, UserRepository,
 };
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::Scope;
-use crate::infrastructure::jwt;
 use jsonwebtoken::{Algorithm, Validation};
 use std::sync::Arc;
 use uuid::Uuid;

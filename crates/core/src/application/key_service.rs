@@ -6,7 +6,7 @@ use crate::domain::error::DomainError;
 use crate::domain::repositories::SigningKeyRepository;
 use crate::domain::signing_key::SigningKey;
 use crate::domain::values::{SigningAlgorithm, SigningKeyStatus};
-use crate::infrastructure::{crypto, jwt};
+use crate::domain::{crypto, jwt};
 use chrono::Duration;
 use std::sync::Arc;
 

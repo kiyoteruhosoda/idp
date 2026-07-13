@@ -8,16 +8,16 @@
 use crate::application::token::{userinfo_audience, AccessTokenClaims};
 use crate::domain::client::Client;
 use crate::domain::clock::Clock;
+use crate::domain::crypto;
 use crate::domain::error::OAuthErrorCode;
 use crate::domain::issuer::tenant_issuer;
+use crate::domain::jwt;
 use crate::domain::password::PasswordHasher;
 use crate::domain::repositories::{
     ClientRepository, RefreshTokenRepository, RevokedAccessTokenRepository, SigningKeyRepository,
 };
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::TokenEndpointAuthMethod;
-use crate::infrastructure::crypto;
-use crate::infrastructure::jwt;
 use jsonwebtoken::{Algorithm, Validation};
 use serde::Serialize;
 use std::sync::Arc;

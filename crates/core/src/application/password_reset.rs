@@ -18,6 +18,7 @@ use crate::application::audit::{AuditService, RequestContext};
 use crate::application::system_settings::SystemSettingsService;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
+use crate::domain::crypto;
 use crate::domain::mailer::{Mailer, OutgoingEmail};
 use crate::domain::password::{validate_password_strength, PasswordHasher};
 use crate::domain::password_reset::PasswordResetToken;
@@ -27,7 +28,6 @@ use crate::domain::repositories::{
     SsoSessionRepository, UserRepository,
 };
 use crate::domain::tenant_context::TenantContext;
-use crate::infrastructure::crypto;
 use std::sync::Arc;
 
 /// リセットトークンのバイト長（base64url で 43 文字程度）。

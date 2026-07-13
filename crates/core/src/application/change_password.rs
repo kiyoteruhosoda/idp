@@ -15,13 +15,13 @@ use crate::application::authorize::code_redirect;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
+use crate::domain::crypto;
 use crate::domain::password::{validate_password_strength, PasswordHasher};
 use crate::domain::repositories::{
     AuthSessionRepository, ClientConsentRepository, SsoSessionRepository, UserRepository,
 };
 use crate::domain::sso_session::SsoSession;
 use crate::domain::tenant_context::TenantContext;
-use crate::infrastructure::crypto;
 use chrono::Duration;
 use std::sync::Arc;
 

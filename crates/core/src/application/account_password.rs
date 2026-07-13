@@ -8,9 +8,9 @@
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
+use crate::domain::crypto;
 use crate::domain::password::{validate_password_strength, PasswordHasher};
 use crate::domain::repositories::{SsoSessionRepository, UserRepository};
-use crate::infrastructure::crypto;
 use std::sync::Arc;
 
 pub struct AccountPasswordCommand {

@@ -147,6 +147,10 @@ pub struct RuntimeSettingView {
     pub restart_required: bool,
     #[serde(default)]
     pub default_risk: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
