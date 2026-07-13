@@ -78,7 +78,7 @@ pub async fn page(
         tenant_name: &tenant_view.name,
         tenant_status: &tenant_view.status,
         tenant_self_registration: tenant_view.self_registration_enabled,
-        csrf: &console_csrf_token(&sso),
+        csrf: &console_csrf_token(&sso, state.config.csrf_secret()),
         saved: query.saved.is_some(),
         error_key: query.error.as_deref().and_then(error_key_for),
         system: system.as_ref(),
@@ -100,7 +100,7 @@ pub async fn update_tenant(
     }
     let base = format!("{}{SETTINGS_SEGMENT}", tenant.prefix());
     let sso = sso(&headers);
-    if console_csrf_token(&sso) != form.csrf_token {
+    if console_csrf_token(&sso, state.config.csrf_secret()) != form.csrf_token {
         return found(&format!("{base}?error=csrf"));
     }
     match state
@@ -136,7 +136,7 @@ pub async fn update_system(
     }
     let base = format!("{}{SETTINGS_SEGMENT}", tenant.prefix());
     let sso = sso(&headers);
-    if console_csrf_token(&sso) != form.csrf_token {
+    if console_csrf_token(&sso, state.config.csrf_secret()) != form.csrf_token {
         return found(&format!("{base}?error=csrf"));
     }
     let port: Option<u16> = {

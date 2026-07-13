@@ -62,6 +62,7 @@ pub struct MfaLoginService {
     key_encryption_key: [u8; 32],
     sso_idle_ttl: Duration,
     sso_absolute_ttl: Duration,
+    csrf_secret: [u8; 32],
 }
 
 impl MfaLoginService {
@@ -78,6 +79,7 @@ impl MfaLoginService {
         key_encryption_key: [u8; 32],
         sso_idle_ttl: std::time::Duration,
         sso_absolute_ttl: std::time::Duration,
+        csrf_secret: [u8; 32],
     ) -> Self {
         Self {
             auth_sessions,
@@ -92,6 +94,7 @@ impl MfaLoginService {
             sso_idle_ttl: Duration::from_std(sso_idle_ttl).expect("SSO idle TTL out of range"),
             sso_absolute_ttl: Duration::from_std(sso_absolute_ttl)
                 .expect("SSO absolute TTL out of range"),
+            csrf_secret,
         }
     }
 
@@ -127,7 +130,7 @@ impl MfaLoginService {
         }
 
         // 3. CSRF トークン検証（login_csrf_token と同じ導出を使う）。
-        if idp_contracts::csrf::login_csrf_token(session_id) != cmd.csrf_token {
+        if idp_contracts::csrf::login_csrf_token(session_id, &self.csrf_secret) != cmd.csrf_token {
             return MfaLoginOutcome::CsrfMismatch;
         }
 

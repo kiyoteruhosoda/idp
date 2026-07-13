@@ -15,6 +15,7 @@ use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::password::{validate_password_strength, PasswordHasher};
+use crate::domain::permission;
 use crate::domain::rate_limit::LoginRateLimiter;
 use crate::domain::repositories::{SsoSessionRepository, UserPermissionRepository, UserRepository};
 use crate::domain::sso_session::SsoSession;
@@ -29,11 +30,6 @@ use std::sync::Arc;
 const MAX_FAILED_LOGINS: i32 = 10;
 /// ロック時間（分）。
 const LOCK_DURATION_MINUTES: i64 = 15;
-/// 管理コンソールへのアクセスに要求する権限コード（ADR-0006 → ADR-0009 §4）。
-/// ログインしたテナントを scope に持つこと（完全一致）を要求する。
-const REQUIRED_PERMISSION: &str = "idp.tenant.admin";
-/// システム管理権限（scope = root のみ）。root テナント自身の管理を含むため代替として許可する。
-const SYSTEM_ADMIN_PERMISSION: &str = "idp.system.admin";
 
 // 管理ログインフォームの CSRF 同期トークン導出（`admin_csrf_token`）は、ADR-0007 で管理コンソールを
 // web crate へ移設したのに伴い web 側（`idp-web` の `csrf` モジュール）へ移った。api（core）は保持しない。
@@ -211,18 +207,14 @@ impl AdminLoginService {
         //    パスワードは正しいので失敗カウンタは増やさない（ロックの対象にしない）。
         let has_admin = match self
             .permissions
-            .has_permission(tenant_id, user.id, REQUIRED_PERMISSION)
+            .has_any_permission(
+                tenant_id,
+                user.id,
+                &[permission::TENANT_ADMIN, permission::SYSTEM_ADMIN],
+            )
             .await
         {
-            Ok(true) => true,
-            Ok(false) => match self
-                .permissions
-                .has_permission(tenant_id, user.id, SYSTEM_ADMIN_PERMISSION)
-                .await
-            {
-                Ok(v) => v,
-                Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
-            },
+            Ok(v) => v,
             Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
         };
         if !has_admin {
@@ -341,18 +333,14 @@ impl AdminLoginService {
 
         let has_admin = match self
             .permissions
-            .has_permission(tenant_id, user.id, REQUIRED_PERMISSION)
+            .has_any_permission(
+                tenant_id,
+                user.id,
+                &[permission::TENANT_ADMIN, permission::SYSTEM_ADMIN],
+            )
             .await
         {
-            Ok(true) => true,
-            Ok(false) => match self
-                .permissions
-                .has_permission(tenant_id, user.id, SYSTEM_ADMIN_PERMISSION)
-                .await
-            {
-                Ok(v) => v,
-                Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
-            },
+            Ok(v) => v,
             Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
         };
         if !has_admin {

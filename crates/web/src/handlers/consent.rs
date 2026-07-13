@@ -47,7 +47,7 @@ pub async fn consent_page(
             client_id: _,
             requested_scopes,
         }) => {
-            let csrf = consent_csrf_token(&session_id);
+            let csrf = consent_csrf_token(&session_id, state.config.csrf_secret());
             Html(render(&ConsentTemplate {
                 messages: &messages,
                 csrf: &csrf,
@@ -79,7 +79,7 @@ pub async fn consent(
     let secure = state.config.cookie_secure();
 
     // CSRF チェック（FluentBundle を await 前に使わないよう先に行う）。
-    let expected_csrf = consent_csrf_token(&form.auth_session_id);
+    let expected_csrf = consent_csrf_token(&form.auth_session_id, state.config.csrf_secret());
     if form.csrf_token != expected_csrf {
         let messages = Messages::new(locale(&headers));
         return error_page(&messages, StatusCode::BAD_REQUEST, "consent-error-csrf");

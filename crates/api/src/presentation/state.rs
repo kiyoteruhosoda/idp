@@ -283,6 +283,7 @@ impl AppState {
             clock.clone(),
             config.sso_idle_ttl(),
             config.sso_absolute_ttl(),
+            *config.csrf_secret(),
         ));
         let change_password = Arc::new(ChangePasswordService::new(
             auth_sessions.clone(),
@@ -295,6 +296,7 @@ impl AppState {
             clock.clone(),
             config.sso_idle_ttl(),
             config.sso_absolute_ttl(),
+            *config.csrf_secret(),
         ));
         let consent = Arc::new(ConsentService::new(
             auth_sessions.clone(),
@@ -458,6 +460,7 @@ impl AppState {
             *config.key_encryption_key(),
             config.sso_idle_ttl(),
             config.sso_absolute_ttl(),
+            *config.csrf_secret(),
         ));
 
         // WebAuthn の RP ID・origin は**基底 issuer のホスト**から導出する（ADR-0009 §6）。

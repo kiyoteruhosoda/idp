@@ -5,13 +5,12 @@
 //! （`user_permission.granted` / `.revoked`）。判定は Application 層（`PermissionManagementService`）
 //! が行い、本ハンドラは HTTP への写像のみを担う。
 
-use crate::application::permission_management::PermissionManagementError;
 use crate::presentation::admin::{IdpAdmin, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{GrantPermissionRequest, UserPermissionsResponse};
 use crate::presentation::error::ApiError;
-use crate::presentation::handlers::request_context;
-use crate::presentation::i18n::{ApiLocale, ApiMessages};
+use crate::presentation::handlers::{map_permission_management_error, request_context};
+use crate::presentation::i18n::ApiLocale;
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
 use axum::extract::{Extension, Path, State};
@@ -30,7 +29,7 @@ pub async fn list_available_permissions(
         .permissions_admin
         .available_codes()
         .await
-        .map_err(|e| map_error(e, locale))?;
+        .map_err(|e| map_permission_management_error(e, locale))?;
     Ok(Json(idp_contracts::admin::AvailablePermissionsResponse {
         codes,
     }))
@@ -63,7 +62,7 @@ pub async fn list_permissions(
         .permissions_admin
         .list(tenant.context(), target)
         .await
-        .map_err(|e| map_error(e, locale))?;
+        .map_err(|e| map_permission_management_error(e, locale))?;
     Ok(Json(UserPermissionsResponse {
         user_id: target.to_string(),
         permission_codes: codes,
@@ -107,7 +106,7 @@ pub async fn grant_permission(
             &ctx,
         )
         .await
-        .map_err(|e| map_error(e, locale))?;
+        .map_err(|e| map_permission_management_error(e, locale))?;
     Ok(Json(UserPermissionsResponse {
         user_id: target.to_string(),
         permission_codes: codes,
@@ -152,7 +151,7 @@ pub async fn revoke_permission(
             &ctx,
         )
         .await
-        .map_err(|e| map_error(e, locale))?;
+        .map_err(|e| map_permission_management_error(e, locale))?;
     Ok(Json(UserPermissionsResponse {
         user_id: target.to_string(),
         permission_codes: codes,
@@ -160,15 +159,6 @@ pub async fn revoke_permission(
 }
 
 fn parse_user_id(raw: &str, locale: ApiLocale) -> Result<Uuid, ApiError> {
+    use crate::presentation::i18n::ApiMessages;
     Uuid::parse_str(raw).map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get("api-invalid-request")))
-}
-
-fn map_error(e: PermissionManagementError, locale: ApiLocale) -> ApiError {
-    let msgs = ApiMessages::new(locale);
-    match e {
-        PermissionManagementError::Validation(m) => ApiError::BadRequest(m),
-        PermissionManagementError::NotFound => ApiError::NotFound(msgs.get("api-user-not-found")),
-        PermissionManagementError::Forbidden(m) => ApiError::Forbidden(m),
-        PermissionManagementError::Internal(m) => ApiError::Internal(m),
-    }
 }

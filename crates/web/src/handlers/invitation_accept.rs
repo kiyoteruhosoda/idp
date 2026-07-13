@@ -34,7 +34,7 @@ pub struct AcceptForm {
 /// 承諾ページ（`GET /{tenant_id}/invitations/accept?token=...`）。ログイン済みなら確認フォーム、
 /// 未ログインなら案内のみ表示する。
 pub async fn page(
-    State(_state): State<WebState>,
+    State(state): State<WebState>,
     Extension(_tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Query(query): Query<AcceptQuery>,
@@ -46,7 +46,7 @@ pub async fn page(
     }
     match cookies::get(&headers, cookies::SSO_SESSION_COOKIE) {
         Some(sso) => {
-            let csrf = console_csrf_token(&sso);
+            let csrf = console_csrf_token(&sso, state.config.csrf_secret());
             Html(render_page(&messages, true, &token, &csrf, None)).into_response()
         }
         None => Html(render_page(&messages, false, &token, "", None)).into_response(),
@@ -66,7 +66,7 @@ pub async fn submit(
         let messages = Messages::new(locale(&headers));
         return Html(render_page(&messages, false, &form.token, "", None)).into_response();
     };
-    let csrf = console_csrf_token(&sso);
+    let csrf = console_csrf_token(&sso, state.config.csrf_secret());
     if csrf != form.csrf_token {
         let messages = Messages::new(locale(&headers));
         return bad_request(render_page(

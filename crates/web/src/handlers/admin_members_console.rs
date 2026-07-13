@@ -46,7 +46,7 @@ pub async fn list(
         .list_members(&correlation.0, &tenant.0, &sso(&headers))
         .await;
     let messages = Messages::new(locale(&headers));
-    let csrf = csrf_from(&headers);
+    let csrf = csrf_from(&headers, state.config.csrf_secret());
     let error_key = query.error.as_deref().and_then(error_key_for);
     match result {
         Ok(members) => Html(render(&MembersList {
@@ -83,7 +83,7 @@ pub async fn revoke(
         AdminResolution::Reject(resp) => return resp,
     }
     let base = format!("{}{MEMBERS_SEGMENT}", tenant.prefix());
-    if !csrf_valid(&headers, &form.csrf_token) {
+    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}?error=csrf"));
     }
     let result = state
@@ -113,15 +113,15 @@ fn sso(headers: &HeaderMap) -> String {
     cookies::get(headers, cookies::SSO_SESSION_COOKIE).unwrap_or_default()
 }
 
-fn csrf_from(headers: &HeaderMap) -> String {
+fn csrf_from(headers: &HeaderMap, key: &[u8]) -> String {
     cookies::get(headers, cookies::SSO_SESSION_COOKIE)
-        .map(|s| console_csrf_token(&s))
+        .map(|s| console_csrf_token(&s, key))
         .unwrap_or_default()
 }
 
-fn csrf_valid(headers: &HeaderMap, submitted: &str) -> bool {
+fn csrf_valid(headers: &HeaderMap, submitted: &str, key: &[u8]) -> bool {
     cookies::get(headers, cookies::SSO_SESSION_COOKIE)
-        .map(|s| console_csrf_token(&s) == submitted)
+        .map(|s| console_csrf_token(&s, key) == submitted)
         .unwrap_or(false)
 }
 

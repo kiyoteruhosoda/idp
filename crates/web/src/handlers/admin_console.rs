@@ -72,7 +72,7 @@ pub async fn login_page(
     let messages = Messages::new(locale(&headers));
     // CSRF の種（推測不能な乱数）を新規発行し、Cookie とフォーム双方へ渡す。
     let csrf_id = Uuid::new_v4().simple().to_string();
-    let csrf = admin_csrf_token(&csrf_id);
+    let csrf = admin_csrf_token(&csrf_id, state.config.csrf_secret());
     let csrf_cookie = cookies::build(
         cookies::ADMIN_CSRF_COOKIE,
         &csrf_id,
@@ -99,7 +99,7 @@ pub async fn login(
     let csrf_ok = csrf_id
         .as_deref()
         .filter(|s| !s.is_empty())
-        .map(|id| admin_csrf_token(id) == form.csrf_token)
+        .map(|id| admin_csrf_token(id, state.config.csrf_secret()) == form.csrf_token)
         .unwrap_or(false);
     if !csrf_ok {
         let messages = Messages::new(locale(&headers));
@@ -109,7 +109,7 @@ pub async fn login(
         )
             .into_response();
     }
-    let csrf = admin_csrf_token(&csrf_id.unwrap_or_default());
+    let csrf = admin_csrf_token(&csrf_id.unwrap_or_default(), state.config.csrf_secret());
 
     let ctx = forwarded_context(&headers, &correlation);
     let request = InternalAdminAuthenticateRequest {
@@ -215,7 +215,7 @@ pub async fn password_change(
     let csrf_ok = csrf_id
         .as_deref()
         .filter(|s| !s.is_empty())
-        .map(|id| admin_csrf_token(id) == form.csrf_token)
+        .map(|id| admin_csrf_token(id, state.config.csrf_secret()) == form.csrf_token)
         .unwrap_or(false);
     if !csrf_ok {
         let messages = Messages::new(locale(&headers));
@@ -231,7 +231,7 @@ pub async fn password_change(
         )
             .into_response();
     }
-    let csrf = admin_csrf_token(&csrf_id.unwrap_or_default());
+    let csrf = admin_csrf_token(&csrf_id.unwrap_or_default(), state.config.csrf_secret());
 
     if form.new_password != form.new_password_confirm {
         let messages = Messages::new(locale(&headers));

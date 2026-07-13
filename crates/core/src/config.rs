@@ -20,6 +20,10 @@ const DEV_KEY_ENCRYPTION_KEY: &[u8; 32] = b"idp-dev-insecure-key-0123456789!";
 /// `INTERNAL_SERVICE_TOKEN` を設定する。web→api の `/internal/*` 呼び出しを保護する共有シークレット。
 const DEV_INTERNAL_SERVICE_TOKEN: &str = "idp-dev-insecure-internal-service-token";
 
+/// CSRF トークン HMAC 鍵の開発用デフォルト（ちょうど 32 バイト）。本番では必ず
+/// `CSRF_SECRET` を web と api で同じ値に設定する（SEC7）。
+pub const DEV_CSRF_SECRET: &[u8; 32] = b"idp-dev-insecure-csrf-secret-xxx";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogFormat {
     Json,
@@ -62,6 +66,9 @@ pub struct Config {
     hsts_max_age: u64,
     internal_service_token: String,
     internal_service_token_is_dev: bool,
+    /// CSRF トークン HMAC 鍵（`CSRF_SECRET`）。web と api で同じ値を設定する（SEC7）。
+    csrf_secret: [u8; 32],
+    csrf_secret_is_dev: bool,
     /// 利用者がブラウザで開く web 画面の公開ベース URL（招待メールの承諾リンク等。MT17）。
     public_web_base_url: String,
 }
@@ -78,11 +85,14 @@ impl Config {
                 Some(v) => (v, false),
                 None => (DEV_INTERNAL_SERVICE_TOKEN.to_string(), true),
             };
+        // CSRF トークン HMAC 鍵（SEC7）。web と api で同じ値を設定する。
+        let (csrf_secret, csrf_secret_is_dev) = load_csrf_secret()?;
         // 本番（https issuer）では開発用デフォルトのシークレットで起動しない（fail-fast）。
         ensure_production_secrets(
             &issuer,
             key_encryption_key_is_dev,
             internal_service_token_is_dev,
+            csrf_secret_is_dev,
         )?;
         // 招待メール等の承諾リンクの土台。単一オリジン構成（ADR-0007）では issuer と同一オリジンに
         // web 画面が同居するため既定は issuer。web を別オリジンへ置く構成でのみ明示設定する。
@@ -127,6 +137,8 @@ impl Config {
             hsts_max_age: env_parse("HSTS_MAX_AGE", 0u64)?,
             internal_service_token,
             internal_service_token_is_dev,
+            csrf_secret,
+            csrf_secret_is_dev,
             public_web_base_url,
         })
     }
@@ -223,6 +235,15 @@ impl Config {
     pub fn internal_service_token_is_dev(&self) -> bool {
         self.internal_service_token_is_dev
     }
+    /// CSRF トークン HMAC 鍵（SEC7）。ログイン・同意フォームの CSRF トークン導出に使う。
+    /// web と api で同じ値（`CSRF_SECRET` 環境変数）を設定する。
+    pub fn csrf_secret(&self) -> &[u8; 32] {
+        &self.csrf_secret
+    }
+    /// 開発用デフォルトの CSRF シークレットを使っているか（本番では起動を拒否する）。
+    pub fn csrf_secret_is_dev(&self) -> bool {
+        self.csrf_secret_is_dev
+    }
     /// 利用者がブラウザで開く web 画面の公開ベース URL（末尾スラッシュ無し。招待メールの
     /// 承諾リンク等に使う。既定は issuer と同一オリジン。MT17）。
     pub fn public_web_base_url(&self) -> &str {
@@ -236,13 +257,14 @@ fn normalize_issuer(raw: String) -> String {
 
 /// 本番相当（issuer が `https://`）で開発用デフォルトのシークレットが使われていたら起動を失敗させる。
 ///
-/// 開発用デフォルト（`DEV_KEY_ENCRYPTION_KEY`・`DEV_INTERNAL_SERVICE_TOKEN`）はソースに埋め込まれた
-/// 既知値であり、本番で使うと署名鍵の暗号化と `/internal/*` の保護が実質無効になる。warning での
-/// 見逃しを防ぐため、http（ローカル開発）以外では設定漏れを構成エラーとして扱う。
+/// 開発用デフォルト（`DEV_KEY_ENCRYPTION_KEY`・`DEV_INTERNAL_SERVICE_TOKEN`・`DEV_CSRF_SECRET`）は
+/// ソースに埋め込まれた既知値であり、本番で使うと署名鍵の暗号化・`/internal/*` の保護・CSRF 防御が
+/// 実質無効になる。warning での見逃しを防ぐため、http（ローカル開発）以外では設定漏れを構成エラーとする。
 fn ensure_production_secrets(
     issuer: &str,
     key_encryption_key_is_dev: bool,
     internal_service_token_is_dev: bool,
+    csrf_secret_is_dev: bool,
 ) -> anyhow::Result<()> {
     if !issuer.starts_with("https://") {
         return Ok(());
@@ -259,6 +281,13 @@ fn ensure_production_secrets(
             "ISSUER is https ({issuer}) but INTERNAL_SERVICE_TOKEN is not set; \
              refusing to start with the built-in development token. \
              Set INTERNAL_SERVICE_TOKEN (shared with web) in production."
+        );
+    }
+    if csrf_secret_is_dev {
+        anyhow::bail!(
+            "ISSUER is https ({issuer}) but CSRF_SECRET is not set; \
+             refusing to start with the built-in development key. \
+             Set CSRF_SECRET (base64, 32 bytes, shared with web) in production."
         );
     }
     Ok(())
@@ -280,6 +309,25 @@ fn load_key_encryption_key() -> anyhow::Result<([u8; 32], bool)> {
             Ok((arr, false))
         }
         None => Ok((*DEV_KEY_ENCRYPTION_KEY, true)),
+    }
+}
+
+/// `CSRF_SECRET`（base64、32 バイト）を読み込む。未設定なら開発用デフォルトを使う。
+fn load_csrf_secret() -> anyhow::Result<([u8; 32], bool)> {
+    match env_lookup("CSRF_SECRET") {
+        Some(v) => {
+            let bytes = STANDARD
+                .decode(v.trim())
+                .map_err(|e| anyhow::anyhow!("CSRF_SECRET must be base64: {e}"))?;
+            let arr: [u8; 32] = bytes.try_into().map_err(|b: Vec<u8>| {
+                anyhow::anyhow!(
+                    "CSRF_SECRET must decode to 32 bytes, got {}",
+                    b.len()
+                )
+            })?;
+            Ok((arr, false))
+        }
+        None => Ok((*DEV_CSRF_SECRET, true)),
     }
 }
 
@@ -334,12 +382,13 @@ mod tests {
     #[test]
     fn production_secrets_are_required_when_issuer_is_https() {
         // https issuer + 開発用デフォルト → 構成エラー（fail-fast）。
-        assert!(ensure_production_secrets("https://idp.example.com", true, false).is_err());
-        assert!(ensure_production_secrets("https://idp.example.com", false, true).is_err());
-        // 両方明示設定されていれば https でも起動できる。
-        assert!(ensure_production_secrets("https://idp.example.com", false, false).is_ok());
+        assert!(ensure_production_secrets("https://idp.example.com", true, false, false).is_err());
+        assert!(ensure_production_secrets("https://idp.example.com", false, true, false).is_err());
+        assert!(ensure_production_secrets("https://idp.example.com", false, false, true).is_err());
+        // 全部明示設定されていれば https でも起動できる。
+        assert!(ensure_production_secrets("https://idp.example.com", false, false, false).is_ok());
         // http（ローカル開発）は開発用デフォルトを許容する（起動時 warning のみ）。
-        assert!(ensure_production_secrets("http://localhost:8080", true, true).is_ok());
+        assert!(ensure_production_secrets("http://localhost:8080", true, true, true).is_ok());
     }
 
     #[test]

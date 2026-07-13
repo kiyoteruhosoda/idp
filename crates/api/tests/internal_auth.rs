@@ -76,7 +76,7 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
                 "auth_session_id": auth_session,
                 "username": username,
                 "password": password,
-                "csrf_token": csrf_token(&auth_session),
+                "csrf_token": csrf_token(&auth_session, idp_api::config::DEV_CSRF_SECRET),
             }),
         ),
     )
@@ -93,7 +93,7 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
                 "auth_session_id": auth_session,
                 "username": username,
                 "password": password,
-                "csrf_token": csrf_token(&auth_session),
+                "csrf_token": csrf_token(&auth_session, idp_api::config::DEV_CSRF_SECRET),
             }),
         ),
     )
@@ -131,7 +131,7 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
                 "auth_session_id": auth_session,
                 "username": username,
                 "password": password,
-                "csrf_token": csrf_token(&auth_session),
+                "csrf_token": csrf_token(&auth_session, idp_api::config::DEV_CSRF_SECRET),
                 "ip_address": "203.0.113.7",
                 "user_agent": "integration-test",
             }),

@@ -20,7 +20,7 @@ use crate::domain::repositories::{TenantMembershipRepository, UserRepository};
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::tenant_membership::TenantMembership;
 use crate::domain::user::User;
-use crate::domain::values::UserStatus;
+use crate::domain::values::{validate_email as domain_validate_email, UserStatus};
 use crate::infrastructure::crypto;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -210,15 +210,7 @@ impl UserManagementService {
 }
 
 fn validate_email(email: &str) -> Result<(), UserManagementError> {
-    // 簡易チェック（MVP。register.rs と同一基準）: 空でなく、`@` を挟んで両側に文字がある。
-    let parts: Vec<&str> = email.split('@').collect();
-    if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
-        Ok(())
-    } else {
-        Err(UserManagementError::Validation(
-            "invalid email format".to_string(),
-        ))
-    }
+    domain_validate_email(email).map_err(|e| UserManagementError::Validation(e.to_string()))
 }
 
 fn normalize_optional(value: Option<String>) -> Option<String> {

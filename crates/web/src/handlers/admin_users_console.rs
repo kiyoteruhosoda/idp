@@ -46,7 +46,7 @@ pub async fn new_form(
 ) -> Response {
     let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
     let messages = Messages::new(locale(&headers));
-    let csrf = csrf_from(&headers);
+    let csrf = csrf_from(&headers, state.config.csrf_secret());
     Html(render_new_form(
         &messages, &tenant, &admin, &csrf, "", "", "", None,
     ))
@@ -95,9 +95,9 @@ pub async fn create(
 ) -> Response {
     let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
 
-    if !csrf_valid(&headers, &form.csrf_token) {
+    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
         let messages = Messages::new(locale(&headers));
-        let csrf = csrf_from(&headers);
+        let csrf = csrf_from(&headers, state.config.csrf_secret());
         return bad_request_form(render_new_form(
             &messages,
             &tenant,
@@ -130,7 +130,7 @@ pub async fn create(
         }))
         .into_response(),
         Err(AdminApiError::Validation(m)) | Err(AdminApiError::Conflict(m)) => {
-            let csrf = csrf_from(&headers);
+            let csrf = csrf_from(&headers, state.config.csrf_secret());
             bad_request_form(render_new_form_with_message(
                 &messages,
                 &tenant,
@@ -249,7 +249,7 @@ pub async fn view(
         .unwrap_or_default();
 
     let messages = Messages::new(locale(&headers));
-    let csrf = csrf_from(&headers);
+    let csrf = csrf_from(&headers, state.config.csrf_secret());
     let error_key = query.error.as_deref().and_then(error_key_for);
     Html(render_permissions(
         &messages, &tenant, &admin, &user, &codes, &available, &csrf, error_key,
@@ -302,7 +302,7 @@ async fn apply_change(
         AdminResolution::Reject(resp) => return resp,
     }
     let base = format!("{}{USERS_SEGMENT}/{user_id}/permissions", tenant.prefix());
-    if !csrf_valid(headers, &form.csrf_token) {
+    if !csrf_valid(headers, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}?error=csrf"));
     }
     let sso = sso(headers);
@@ -343,15 +343,15 @@ fn sso(headers: &HeaderMap) -> String {
     cookies::get(headers, cookies::SSO_SESSION_COOKIE).unwrap_or_default()
 }
 
-fn csrf_from(headers: &HeaderMap) -> String {
+fn csrf_from(headers: &HeaderMap, key: &[u8]) -> String {
     cookies::get(headers, cookies::SSO_SESSION_COOKIE)
-        .map(|s| console_csrf_token(&s))
+        .map(|s| console_csrf_token(&s, key))
         .unwrap_or_default()
 }
 
-fn csrf_valid(headers: &HeaderMap, submitted: &str) -> bool {
+fn csrf_valid(headers: &HeaderMap, submitted: &str, key: &[u8]) -> bool {
     cookies::get(headers, cookies::SSO_SESSION_COOKIE)
-        .map(|s| console_csrf_token(&s) == submitted)
+        .map(|s| console_csrf_token(&s, key) == submitted)
         .unwrap_or(false)
 }
 

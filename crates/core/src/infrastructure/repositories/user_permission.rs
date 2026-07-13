@@ -104,6 +104,30 @@ impl UserPermissionRepository for SqlxUserPermissionRepository {
         Ok(row.is_some())
     }
 
+    async fn has_any_permission(
+        &self,
+        tenant_id: TenantId,
+        user_id: Uuid,
+        codes: &[&str],
+    ) -> Result<bool> {
+        if codes.is_empty() {
+            return Ok(false);
+        }
+        let placeholders = codes.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        let sql = format!(
+            "SELECT 1 FROM user_permissions \
+             WHERE user_id = ? AND tenant_id = ? AND permission_code IN ({placeholders})"
+        );
+        let mut q = sqlx::query(&sql)
+            .bind(user_id.to_string())
+            .bind(tenant_id.to_string());
+        for code in codes {
+            q = q.bind(*code);
+        }
+        let row = q.fetch_optional(&self.pool).await.map_err(repo_err)?;
+        Ok(row.is_some())
+    }
+
     async fn grant(
         &self,
         tenant_id: TenantId,

@@ -5,11 +5,15 @@
 //! （空文字列は「未設定」として扱う。Compose の `${VAR:-}` 対策は api の config と同じ方針。）
 #![allow(dead_code)]
 
+use base64::{engine::general_purpose::STANDARD, Engine};
 use std::env;
 
 /// 内部サービス認証トークンの開発用デフォルト（api 側と同値。ADR-0007 §5）。
 /// 本番では必ず `INTERNAL_SERVICE_TOKEN` を api と共有の値で設定する。
 const DEV_INTERNAL_SERVICE_TOKEN: &str = "idp-dev-insecure-internal-service-token";
+/// CSRF シークレットの開発用デフォルト（api 側 `DEV_CSRF_SECRET` と同値。32 バイト）。
+/// 本番では必ず `CSRF_SECRET` を api と共有の base64 値で設定する。
+const DEV_CSRF_SECRET: &[u8; 32] = b"idp-dev-insecure-csrf-secret-xxx";
 /// `auth_session_id` Cookie のデフォルト TTL（秒）。api 側と合わせる（600 秒 = 10 分）。
 const DEFAULT_AUTH_SESSION_TTL_SECS: u64 = 600;
 
@@ -25,6 +29,8 @@ pub struct Config {
     api_base_url: String,
     internal_service_token: String,
     internal_service_token_is_dev: bool,
+    csrf_secret: [u8; 32],
+    csrf_secret_is_dev: bool,
     cookie_secure: bool,
     auth_session_ttl_secs: u64,
     /// HSTS `max-age`（秒）。0 = HSTS ヘッダを付与しない（api 側と同キー `HSTS_MAX_AGE`）。
@@ -42,14 +48,17 @@ impl Config {
                 Some(v) => (v, false),
                 None => (DEV_INTERNAL_SERVICE_TOKEN.to_string(), true),
             };
+        let (csrf_secret, csrf_secret_is_dev) = load_csrf_secret()?;
         // 本番（https issuer）では開発用デフォルトのトークンで起動しない（fail-fast。api 側と同方針）。
-        ensure_production_secrets(&issuer, internal_service_token_is_dev)?;
+        ensure_production_secrets(&issuer, internal_service_token_is_dev, csrf_secret_is_dev)?;
         Ok(Self {
             bind_addr: env_or("WEB_BIND_ADDR", "0.0.0.0:8081"),
             // api への到達先。単一オリジン構成ではプロキシ内部アドレス、ローカルでは api の直アドレス。
             api_base_url: normalize_base_url(env_or("API_BASE_URL", "http://localhost:8080")),
             internal_service_token,
             internal_service_token_is_dev,
+            csrf_secret,
+            csrf_secret_is_dev,
             cookie_secure,
             auth_session_ttl_secs: env_parse("AUTH_SESSION_TTL_SECS", DEFAULT_AUTH_SESSION_TTL_SECS)?,
             hsts_max_age: env_parse("HSTS_MAX_AGE", 0u64)?,
@@ -74,6 +83,13 @@ impl Config {
     pub fn internal_service_token_is_dev(&self) -> bool {
         self.internal_service_token_is_dev
     }
+    /// CSRF トークン署名鍵（HMAC-SHA256 用）。api と同じ `CSRF_SECRET` を共有する。
+    pub fn csrf_secret(&self) -> &[u8; 32] {
+        &self.csrf_secret
+    }
+    pub fn csrf_secret_is_dev(&self) -> bool {
+        self.csrf_secret_is_dev
+    }
     /// web が組み立てる Cookie に `Secure` を付けるか（api の応答値を Cookie 化する際に使う）。
     pub fn cookie_secure(&self) -> bool {
         self.cookie_secure
@@ -95,11 +111,11 @@ fn normalize_issuer(raw: String) -> String {
     raw.trim_end_matches('/').to_string()
 }
 
-/// 本番相当（issuer が `https://`）で開発用デフォルトのトークンが使われていたら起動を失敗させる。
-/// 開発用デフォルトはソースに埋め込まれた既知値であり、本番では `/internal/*` の保護が実質無効になる。
+/// 本番相当（issuer が `https://`）で開発用デフォルトのシークレットが使われていたら起動を失敗させる。
 fn ensure_production_secrets(
     issuer: &str,
     internal_service_token_is_dev: bool,
+    csrf_secret_is_dev: bool,
 ) -> anyhow::Result<()> {
     if issuer.starts_with("https://") && internal_service_token_is_dev {
         anyhow::bail!(
@@ -108,7 +124,30 @@ fn ensure_production_secrets(
              Set INTERNAL_SERVICE_TOKEN (shared with api) in production."
         );
     }
+    if issuer.starts_with("https://") && csrf_secret_is_dev {
+        anyhow::bail!(
+            "ISSUER is https ({issuer}) but CSRF_SECRET is not set; \
+             refusing to start with the built-in development secret. \
+             Set CSRF_SECRET (base64, 32 bytes, shared with api) in production."
+        );
+    }
     Ok(())
+}
+
+/// `CSRF_SECRET`（base64、32 バイト）を読み込む。未設定なら開発用デフォルトを使う。
+fn load_csrf_secret() -> anyhow::Result<([u8; 32], bool)> {
+    match env_lookup("CSRF_SECRET") {
+        Some(v) => {
+            let bytes = STANDARD
+                .decode(&v)
+                .map_err(|e| anyhow::anyhow!("CSRF_SECRET must be base64: {e}"))?;
+            let arr: [u8; 32] = bytes
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("CSRF_SECRET must decode to exactly 32 bytes"))?;
+            Ok((arr, false))
+        }
+        None => Ok((*DEV_CSRF_SECRET, true)),
+    }
 }
 
 fn normalize_base_url(raw: String) -> String {
@@ -153,9 +192,10 @@ mod tests {
 
     #[test]
     fn production_secrets_are_required_when_issuer_is_https() {
-        assert!(ensure_production_secrets("https://idp.example.com", true).is_err());
-        assert!(ensure_production_secrets("https://idp.example.com", false).is_ok());
-        assert!(ensure_production_secrets("http://localhost:8080", true).is_ok());
+        assert!(ensure_production_secrets("https://idp.example.com", true, false).is_err());
+        assert!(ensure_production_secrets("https://idp.example.com", false, true).is_err());
+        assert!(ensure_production_secrets("https://idp.example.com", false, false).is_ok());
+        assert!(ensure_production_secrets("http://localhost:8080", true, true).is_ok());
     }
 
     #[test]
@@ -166,3 +206,5 @@ mod tests {
         std::env::remove_var(key);
     }
 }
+
+

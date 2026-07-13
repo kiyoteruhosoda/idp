@@ -20,7 +20,7 @@ use idp_contracts::auth::{InternalChangePasswordRequest, InternalChangePasswordR
 use idp_contracts::csrf::login_csrf_token;
 
 /// パスワード変更フォームを表示する。`auth_session_id` Cookie（パスワード検証済み状態）が必要。
-pub async fn page(headers: HeaderMap) -> Response {
+pub async fn page(State(state): State<WebState>, headers: HeaderMap) -> Response {
     let messages = Messages::new(locale(&headers));
     let Some(auth_session_id) = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE) else {
         return error_page(
@@ -31,7 +31,7 @@ pub async fn page(headers: HeaderMap) -> Response {
     };
     Html(render_form(
         &messages,
-        &login_csrf_token(&auth_session_id),
+        &login_csrf_token(&auth_session_id, state.config.csrf_secret()),
         None,
     ))
     .into_response()
@@ -55,6 +55,7 @@ pub async fn submit(
             StatusCode::UNPROCESSABLE_ENTITY,
             auth_session_id.as_deref(),
             "password-change-error-mismatch",
+            state.config.csrf_secret(),
         );
     }
 
@@ -139,12 +140,14 @@ pub async fn submit(
             StatusCode::UNAUTHORIZED,
             auth_session_id.as_deref(),
             "password-change-error-invalid-current",
+            state.config.csrf_secret(),
         ),
         InternalChangePasswordResponse::WeakPassword => reshow_form(
             &messages,
             StatusCode::UNPROCESSABLE_ENTITY,
             auth_session_id.as_deref(),
             "password-change-error-weak",
+            state.config.csrf_secret(),
         ),
         InternalChangePasswordResponse::Internal => {
             (StatusCode::INTERNAL_SERVER_ERROR, Html(String::new())).into_response()
@@ -174,11 +177,12 @@ fn reshow_form(
     status: StatusCode,
     auth_session_id: Option<&str>,
     error_key: &str,
+    csrf_secret: &[u8],
 ) -> Response {
     match auth_session_id {
         Some(id) => (
             status,
-            Html(render_form(messages, &login_csrf_token(id), Some(error_key))),
+            Html(render_form(messages, &login_csrf_token(id, csrf_secret), Some(error_key))),
         )
             .into_response(),
         None => error_page(

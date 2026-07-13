@@ -11,7 +11,7 @@ use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
-use crate::domain::permission::PermissionCode;
+use crate::domain::permission::{self, PermissionCode};
 use crate::domain::repositories::{
     TenantMembershipRepository, UserPermissionRepository, UserRepository,
 };
@@ -33,7 +33,6 @@ pub enum PermissionManagementError {
 }
 
 /// `idp.system.admin` の付与・剥奪は保有者のみが行える（ADR-0009 §4）。
-const SYSTEM_ADMIN_PERMISSION: &str = "idp.system.admin";
 
 pub struct PermissionManagementService {
     users: Arc<dyn UserRepository>,
@@ -76,10 +75,9 @@ impl PermissionManagementService {
         tenant: TenantContext,
         target: Uuid,
     ) -> Result<User, PermissionManagementError> {
-        match self.users.find_by_id(target).await {
-            Ok(Some(user)) if user.tenant_id == tenant.tenant_id() => Ok(user),
-            Ok(_) => Err(PermissionManagementError::NotFound),
-            Err(e) => Err(PermissionManagementError::Internal(e.to_string())),
+        match self.find_user_by_id(target).await? {
+            Some(user) if user.tenant_id == tenant.tenant_id() => Ok(user),
+            _ => Err(PermissionManagementError::NotFound),
         }
     }
 
@@ -199,12 +197,7 @@ impl PermissionManagementService {
         target: Uuid,
     ) -> Result<(), PermissionManagementError> {
         // ユーザーが現存すること（メンバーシップ行は FK でユーザーを含意するが、明示して意図を残す）。
-        let exists = self
-            .users
-            .find_by_id(target)
-            .await
-            .map_err(|e| PermissionManagementError::Internal(e.to_string()))?
-            .is_some();
+        let exists = self.find_user_by_id(target).await?.is_some();
         // 要求テナントで ACTIVE なメンバーシップ（HOME / GUEST）を持つこと。
         let active_member = exists
             && self
@@ -219,6 +212,17 @@ impl PermissionManagementService {
         }
     }
 
+    /// ユーザー ID で検索し、内部エラーを `PermissionManagementError::Internal` に変換する。
+    async fn find_user_by_id(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<crate::domain::user::User>, PermissionManagementError> {
+        self.users
+            .find_by_id(id)
+            .await
+            .map_err(|e| PermissionManagementError::Internal(e.to_string()))
+    }
+
     /// `idp.system.admin` の付与・剥奪は `idp.system.admin` 保有者のみが実行できる（ADR-0009 §4）。
     async fn ensure_system_admin_change_allowed(
         &self,
@@ -226,12 +230,12 @@ impl PermissionManagementService {
         code: &PermissionCode,
         actor: Uuid,
     ) -> Result<(), PermissionManagementError> {
-        if code.as_str() != SYSTEM_ADMIN_PERMISSION {
+        if code.as_str() != permission::SYSTEM_ADMIN {
             return Ok(());
         }
         match self
             .permissions
-            .has_permission(tenant.tenant_id(), actor, SYSTEM_ADMIN_PERMISSION)
+            .has_permission(tenant.tenant_id(), actor, permission::SYSTEM_ADMIN)
             .await
         {
             Ok(true) => Ok(()),

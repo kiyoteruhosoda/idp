@@ -1,6 +1,6 @@
-# IDPMVP
+# IDP
 
-Rust 製の OpenID Connect Identity Provider（IdP）の MVP。
+Rust 製の OpenID Connect Identity Provider（IdP）。
 **OpenID Connect Core 1.0** に準拠し、OAuth 2.1 draft / RFC 9700 の推奨事項を取り込んでいる。
 IdP ドメインの Cookie セッションによる **SSO** を含む。
 
@@ -12,7 +12,7 @@ IdP ドメインの Cookie セッションによる **SSO** を含む。
 | PKCE | 必須（public / confidential とも）。`code_challenge_method` は `S256` のみ |
 | 対応 scope | `openid`（必須）、拡張として `profile` / `email` |
 | トークン | ID Token / Access Token とも JWT（RS256 署名、`kid` で鍵識別） |
-| Refresh Token | MVP 対象外 |
+| Refresh Token | 対応 |
 | SSO | IdP ドメインの Cookie セッション（idle 8h / absolute 24h） |
 | スタック | Rust（axum / tokio / sqlx）+ MariaDB 10.11 |
 
@@ -159,8 +159,3 @@ cargo run                      # IdP サーバ起動（既定: 0.0.0.0:8080）
 
 詳細な手順・環境変数は [`docs/OPERATIONS.md`](docs/OPERATIONS.md) を参照。
 
-## MVP 対象外（将来拡張）
-
-Refresh Token / MFA / Consent 画面 / Dynamic Client Registration / Revocation・Introspection /
-Logout（Front-channel・Back-channel）/ JAR・PAR・DPoP・mTLS / 管理コンソール。
-詳細は設計仕様 §8・§9 を参照。

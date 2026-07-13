@@ -152,6 +152,20 @@ impl UserRepository for SqlxUserRepository {
         row.as_ref().map(map_row).transpose()
     }
 
+    async fn find_by_ids(&self, ids: &[Uuid]) -> Result<Vec<User>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        let sql = format!("SELECT {SELECT_COLUMNS} FROM users WHERE id IN ({placeholders})");
+        let mut query = sqlx::query(&sql);
+        for id in ids {
+            query = query.bind(id.to_string());
+        }
+        let rows = query.fetch_all(&self.pool).await.map_err(repo_err)?;
+        rows.iter().map(map_row).collect()
+    }
+
     async fn update_login_state(
         &self,
         id: Uuid,

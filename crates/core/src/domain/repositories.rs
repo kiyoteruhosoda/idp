@@ -119,6 +119,17 @@ pub trait UserRepository: Send + Sync {
     /// 所属元が `tenant_id` のユーザーを preferred_username で検索する。
     async fn find_by_username(&self, tenant_id: TenantId, username: &str)
         -> Result<Option<User>>;
+    /// 複数の内部 ID で一括取得する（N+1 回避。`list_members` 等で使用）。
+    /// 見つかったものだけを返す（欠落は無視）。順序は保証しない。
+    async fn find_by_ids(&self, ids: &[Uuid]) -> Result<Vec<User>> {
+        let mut result = Vec::with_capacity(ids.len());
+        for &id in ids {
+            if let Some(u) = self.find_by_id(id).await? {
+                result.push(u);
+            }
+        }
+        Ok(result)
+    }
     /// ログイン失敗回数・ロック期限を更新する（ロックポリシー、設計仕様 §4.3）。
     async fn update_login_state(
         &self,
@@ -293,6 +304,23 @@ pub trait UserPermissionRepository: Send + Sync {
     /// 利用者が指定の権限コードを `tenant_id` を scope として保有するか（完全一致判定。ADR-0009 §4）。
     async fn has_permission(&self, tenant_id: TenantId, user_id: Uuid, code: &str)
         -> Result<bool>;
+    /// 指定コードのうち**いずれか 1 つ**を保有するか（OR 判定）。
+    ///
+    /// 認可ホットパスで「要求権限 or idp.system.admin」の判定を 1 往復に束ねるために使う（REF3）。
+    /// デフォルト実装は `has_permission` を順に呼ぶ。DB 実装は単一 `IN` クエリで上書きする。
+    async fn has_any_permission(
+        &self,
+        tenant_id: TenantId,
+        user_id: Uuid,
+        codes: &[&str],
+    ) -> Result<bool> {
+        for &code in codes {
+            if self.has_permission(tenant_id, user_id, code).await? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
     /// `tenant_id` を scope として権限を付与する（冪等: 既存付与は何もしない）。
     /// `code` は `permissions` マスタに存在すること。
     async fn grant(

@@ -18,7 +18,7 @@ use crate::domain::repositories::{TenantMembershipRepository, TenantRepository, 
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::tenant_membership::TenantMembership;
 use crate::domain::user::User;
-use crate::domain::values::UserStatus;
+use crate::domain::values::{validate_email as domain_validate_email, UserStatus};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -194,15 +194,7 @@ impl RegisterService {
 }
 
 fn validate_email(email: &str) -> Result<(), RegisterError> {
-    // 簡易チェック（MVP）: 空でなく、`@` を挟んで両側に文字がある。
-    let parts: Vec<&str> = email.split('@').collect();
-    if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
-        Ok(())
-    } else {
-        Err(RegisterError::Validation(
-            "invalid email format".to_string(),
-        ))
-    }
+    domain_validate_email(email).map_err(|e| RegisterError::Validation(e.to_string()))
 }
 
 fn validate_password(password: &str) -> Result<(), RegisterError> {

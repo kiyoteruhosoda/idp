@@ -24,7 +24,11 @@ use idp_contracts::auth::{InternalAuthenticateRequest, InternalAuthenticateRespo
 use idp_contracts::csrf::login_csrf_token;
 
 /// ログインフォームを表示する。`auth_session_id` Cookie（api の `/authorize` が発行）が必要。
-pub async fn login_page(Extension(tenant): Extension<WebTenant>, headers: HeaderMap) -> Response {
+pub async fn login_page(
+    State(state): State<WebState>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+) -> Response {
     let messages = Messages::new(locale(&headers));
     let Some(auth_session_id) = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE) else {
         return error_page(
@@ -36,7 +40,7 @@ pub async fn login_page(Extension(tenant): Extension<WebTenant>, headers: Header
     Html(render_form(
         &messages,
         &tenant.prefix(),
-        &login_csrf_token(&auth_session_id),
+        &login_csrf_token(&auth_session_id, state.config.csrf_secret()),
         None,
     ))
     .into_response()
@@ -177,6 +181,7 @@ pub async fn login(
             StatusCode::UNAUTHORIZED,
             auth_session_id.as_deref(),
             "login-error-invalid-credentials",
+            state.config.csrf_secret(),
         ),
         InternalAuthenticateResponse::Locked => reshow_form(
             &messages,
@@ -184,6 +189,7 @@ pub async fn login(
             StatusCode::FORBIDDEN,
             auth_session_id.as_deref(),
             "login-error-locked",
+            state.config.csrf_secret(),
         ),
         // 自己登録アカウントのメール未検証（SEC6b）。確認リンクを踏むよう案内する。
         InternalAuthenticateResponse::EmailVerificationRequired => error_page(
@@ -241,6 +247,7 @@ fn reshow_form(
     status: StatusCode,
     auth_session_id: Option<&str>,
     error_key: &str,
+    csrf_secret: &[u8],
 ) -> Response {
     match auth_session_id {
         Some(id) => (
@@ -248,7 +255,7 @@ fn reshow_form(
             Html(render_form(
                 messages,
                 tenant_prefix,
-                &login_csrf_token(id),
+                &login_csrf_token(id, csrf_secret),
                 Some(error_key),
             )),
         )

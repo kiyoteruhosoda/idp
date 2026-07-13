@@ -65,7 +65,7 @@ fn authorize_uri(tenant: &str, client_id: &str, state: &str, nonce: &str) -> Str
 
 /// `auth_session_id` 由来のログイン CSRF トークン（web が描画し api の LoginService が検証する契約）。
 fn login_csrf(auth_session: &str) -> String {
-    idp_api::application::login::csrf_token(auth_session)
+    idp_api::application::login::csrf_token(auth_session, idp_api::config::DEV_CSRF_SECRET)
 }
 
 /// api の内部認証（`POST /internal/authenticate`）で資格情報検証を駆動する（ログイン画面は web crate）。

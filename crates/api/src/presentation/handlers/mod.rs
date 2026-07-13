@@ -26,7 +26,10 @@ pub mod token;
 pub mod userinfo;
 
 use crate::application::audit::RequestContext;
+use crate::application::permission_management::PermissionManagementError;
 use crate::presentation::correlation::CorrelationId;
+use crate::presentation::error::ApiError;
+use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use axum::http::header::{HeaderValue, LOCATION, USER_AGENT};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -71,5 +74,16 @@ pub(crate) fn request_context(
         correlation_id: correlation.0.clone(),
         ip_address,
         user_agent,
+    }
+}
+
+/// `PermissionManagementError` を `ApiError` に変換する（`admin_permissions` と `admin_users` で共有）。
+pub(crate) fn map_permission_management_error(e: PermissionManagementError, locale: ApiLocale) -> ApiError {
+    let msgs = ApiMessages::new(locale);
+    match e {
+        PermissionManagementError::Validation(m) => ApiError::BadRequest(m),
+        PermissionManagementError::NotFound => ApiError::NotFound(msgs.get("api-user-not-found")),
+        PermissionManagementError::Forbidden(m) => ApiError::Forbidden(m),
+        PermissionManagementError::Internal(m) => ApiError::Internal(m),
     }
 }

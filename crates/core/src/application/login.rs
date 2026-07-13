@@ -36,8 +36,8 @@ const LOCK_DURATION_MINUTES: i64 = 15;
 ///
 /// 導出は web（フォーム描画）と api（検証）で一致させる必要があるため `idp-contracts` に一元化する
 /// （ADR-0007 §6。同期トークン方式。サーバ側の追加保存は不要）。
-pub fn csrf_token(auth_session_id: &str) -> String {
-    idp_contracts::csrf::login_csrf_token(auth_session_id)
+pub fn csrf_token(auth_session_id: &str, key: &[u8]) -> String {
+    idp_contracts::csrf::login_csrf_token(auth_session_id, key)
 }
 
 #[derive(Debug)]
@@ -104,6 +104,7 @@ pub struct LoginService {
     clock: Arc<dyn Clock>,
     sso_idle_ttl: Duration,
     sso_absolute_ttl: Duration,
+    csrf_secret: [u8; 32],
 }
 
 impl LoginService {
@@ -121,6 +122,7 @@ impl LoginService {
         clock: Arc<dyn Clock>,
         sso_idle_ttl: std::time::Duration,
         sso_absolute_ttl: std::time::Duration,
+        csrf_secret: [u8; 32],
     ) -> Self {
         Self {
             users,
@@ -136,6 +138,7 @@ impl LoginService {
             sso_idle_ttl: Duration::from_std(sso_idle_ttl).expect("SSO idle TTL out of range"),
             sso_absolute_ttl: Duration::from_std(sso_absolute_ttl)
                 .expect("SSO absolute TTL out of range"),
+            csrf_secret,
         }
     }
 
@@ -163,7 +166,7 @@ impl LoginService {
         }
 
         // 2. CSRF トークン検証。
-        if csrf_token(&session.id) != cmd.csrf_token {
+        if csrf_token(&session.id, &self.csrf_secret) != cmd.csrf_token {
             return LoginOutcome::CsrfMismatch;
         }
 
@@ -497,10 +500,11 @@ mod tests {
 
     #[test]
     fn csrf_token_is_deterministic_and_session_bound() {
-        let a = csrf_token("session-a");
-        assert_eq!(a, csrf_token("session-a"));
-        assert_ne!(a, csrf_token("session-b"));
-        // SHA-256 hex（64 文字）でフォームに埋め込める安全な文字のみ。
+        let key = *b"test-key-for-csrf-32-bytes-xxxxx";
+        let a = csrf_token("session-a", &key);
+        assert_eq!(a, csrf_token("session-a", &key));
+        assert_ne!(a, csrf_token("session-b", &key));
+        // HMAC-SHA256 hex（64 文字）でフォームに埋め込める安全な文字のみ。
         assert_eq!(a.len(), 64);
         assert!(a.bytes().all(|b| b.is_ascii_hexdigit()));
     }

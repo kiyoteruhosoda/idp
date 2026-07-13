@@ -205,14 +205,14 @@ pub async fn setup_delete(
 // ── ログインフロー TOTP 入力 ─────────────────────────────────────────────────
 
 /// TOTP 入力ページ（`GET /mfa/totp`）。ログインフロー中（パスワード認証後）に表示する。
-pub async fn verify_page(headers: HeaderMap) -> Response {
+pub async fn verify_page(State(state): State<WebState>, headers: HeaderMap) -> Response {
     let messages = Messages::new(locale(&headers));
     let Some(auth_session_id) = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE) else {
         return error_page(&messages, StatusCode::BAD_REQUEST, "mfa-error-session-expired");
     };
     Html(render_verify_form(
         &messages,
-        &login_csrf_token(&auth_session_id),
+        &login_csrf_token(&auth_session_id, state.config.csrf_secret()),
         None,
     ))
     .into_response()
@@ -323,6 +323,7 @@ pub async fn verify(
             StatusCode::UNAUTHORIZED,
             auth_session_id.as_deref(),
             "mfa-error-invalid-code",
+            state.config.csrf_secret(),
         ),
         InternalVerifyTotpResponse::CsrfMismatch => {
             error_page(&messages, StatusCode::BAD_REQUEST, "login-error-csrf")
@@ -379,13 +380,14 @@ fn reshow_verify_form(
     status: StatusCode,
     auth_session_id: Option<&str>,
     error_key: &str,
+    csrf_secret: &[u8],
 ) -> Response {
     match auth_session_id {
         Some(id) => (
             status,
             Html(render_verify_form(
                 messages,
-                &login_csrf_token(id),
+                &login_csrf_token(id, csrf_secret),
                 Some(error_key),
             )),
         )
