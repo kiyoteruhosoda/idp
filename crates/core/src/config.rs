@@ -496,32 +496,47 @@ mod tests {
 
     #[test]
     fn db_managed_settings_override_builtin_defaults() {
-        std::env::remove_var("HSTS_MAX_AGE");
-        let db = HashMap::from([("HSTS_MAX_AGE".to_string(), "31536000".to_string())]);
+        std::env::remove_var("KEY_ROTATION_LEAD_DAYS");
+        let db = HashMap::from([("KEY_ROTATION_LEAD_DAYS".to_string(), "7".to_string())]);
         let config = Config::from_env_and_db_settings(&db).unwrap();
-        assert_eq!(config.hsts_max_age(), 31_536_000);
-        let hsts = config
+        assert_eq!(config.key_rotation_lead_days(), 7);
+        let rotation = config
             .resolved_settings()
             .iter()
-            .find(|setting| setting.key == "HSTS_MAX_AGE")
+            .find(|setting| setting.key == "KEY_ROTATION_LEAD_DAYS")
             .unwrap();
-        assert_eq!(hsts.source, SettingSource::Db);
-        assert_eq!(hsts.owner, SettingOwner::DbManaged);
+        assert_eq!(rotation.source, SettingSource::Db);
+        assert_eq!(rotation.owner, SettingOwner::DbManaged);
     }
 
     #[test]
     fn env_overrides_db_managed_settings() {
-        std::env::set_var("HSTS_MAX_AGE", "123");
-        let db = HashMap::from([("HSTS_MAX_AGE".to_string(), "31536000".to_string())]);
+        std::env::set_var("KEY_ROTATION_LEAD_DAYS", "14");
+        let db = HashMap::from([("KEY_ROTATION_LEAD_DAYS".to_string(), "7".to_string())]);
         let config = Config::from_env_and_db_settings(&db).unwrap();
-        assert_eq!(config.hsts_max_age(), 123);
-        let hsts = config
+        assert_eq!(config.key_rotation_lead_days(), 14);
+        let rotation = config
             .resolved_settings()
             .iter()
-            .find(|setting| setting.key == "HSTS_MAX_AGE")
+            .find(|setting| setting.key == "KEY_ROTATION_LEAD_DAYS")
             .unwrap();
-        assert_eq!(hsts.source, SettingSource::Env);
-        std::env::remove_var("HSTS_MAX_AGE");
+        assert_eq!(rotation.source, SettingSource::Env);
+        std::env::remove_var("KEY_ROTATION_LEAD_DAYS");
+    }
+
+    #[test]
+    fn shared_web_runtime_settings_ignore_db_until_materialized() {
+        std::env::remove_var("AUTH_SESSION_TTL_SECS");
+        let db = HashMap::from([("AUTH_SESSION_TTL_SECS".to_string(), "1200".to_string())]);
+        let config = Config::from_env_and_db_settings(&db).unwrap();
+        assert_eq!(config.auth_session_ttl(), Duration::from_secs(600));
+        let ttl = config
+            .resolved_settings()
+            .iter()
+            .find(|setting| setting.key == "AUTH_SESSION_TTL_SECS")
+            .unwrap();
+        assert_eq!(ttl.owner, SettingOwner::EnvLocked);
+        assert_eq!(ttl.source, SettingSource::Builtin);
     }
 
     #[test]

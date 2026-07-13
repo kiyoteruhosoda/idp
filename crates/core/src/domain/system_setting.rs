@@ -93,9 +93,10 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         default_risk: DefaultRisk::Safe,
         default_value: Some("json"),
     },
+    // api と web の両方が消費する値。web が DB 設定を解決/materialize するまでは env locked。
     SettingDefinition {
         key: "AUTH_SESSION_TTL_SECS",
-        owner: SettingOwner::DbManaged,
+        owner: SettingOwner::EnvLocked,
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Safe,
@@ -197,9 +198,10 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         default_risk: DefaultRisk::Safe,
         default_value: Some("60"),
     },
+    // api と web の Cookie 属性を一致させる必要があるため、DB materialize までは env locked。
     SettingDefinition {
         key: "COOKIE_SECURE",
-        owner: SettingOwner::DbManaged,
+        owner: SettingOwner::EnvLocked,
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Dangerous,
@@ -229,9 +231,10 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         default_risk: DefaultRisk::Review,
         default_value: Some("false"),
     },
+    // api/web の security header を一致させる必要があるため、DB materialize までは env locked。
     SettingDefinition {
         key: "HSTS_MAX_AGE",
-        owner: SettingOwner::DbManaged,
+        owner: SettingOwner::EnvLocked,
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Dangerous,
