@@ -1,13 +1,13 @@
 # 開発・ビルド用の Compose（ソースがあるホスト向け。api/web/migrate は build: でソースからビルドする）。
 # ソースを持たないデプロイ先では、代わりにビルド済みイメージを image: 参照する docker-compose.deploy.yml を
-# 使う（scripts/init.sh・deploy.sh がそちらを使用）。イメージの受け渡しは scripts/README.md「ホストの分離」参照。
+# 使う（scripts/deploy.sh がそちらを使用）。イメージの受け渡しは scripts/README.md「ホストの分離」参照。
 services:
   mariadb:
     image: mariadb:10.11
     environment:
       MARIADB_DATABASE: ${MARIADB_DATABASE:-idp}
       MARIADB_USER: ${MARIADB_USER:-idp}
-      # 秘密情報は .env で一元管理する（.env.example を参照。scripts/init.sh が生成）。
+      # 秘密情報は .env で一元管理する（.env.example を参照。scripts/deploy.sh が生成）。
       MARIADB_PASSWORD: ${MARIADB_PASSWORD:?set MARIADB_PASSWORD in .env}
       MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:?set MARIADB_ROOT_PASSWORD in .env}
     ports:
@@ -155,7 +155,7 @@ services:
         condition: service_healthy
 
   # DDL・マスタデータ適用の専用ワンショットジョブ。常駐させないため profiles で通常起動から除外し、
-  # `docker compose run --rm migrate` で単独実行する（scripts/init.sh・deploy.sh が使用）。
+  # `docker compose run --rm migrate` で単独実行する（scripts/deploy.sh が使用）。
   migrate:
     build:
       context: .

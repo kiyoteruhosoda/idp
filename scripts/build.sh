@@ -1,116 +1,78 @@
 #!/usr/bin/env bash
 # scripts/build.sh — ソース側でビルドする（デプロイ先とは別ホスト。ここでは起動しない）。
 #
-# ソースがあるのはこのホストだけ。デプロイ先はソースを持たないため、ここでイメージを作って
-# レジストリ push か tar 保存で受け渡す。本スクリプトはコンテナを起動しない（配置は init/deploy が担う）。
+# Docker イメージ（api / web / migrate）をビルドし、tar ＋デプロイに必要な一式を
+# 出力ディレクトリ（既定 dist/）へ書き出す。デプロイ先へは dist/ をディレクトリごと転送し、
+# 中の deploy.sh を実行するだけでよい（レジストリ不要）。
 #
-# モード:
-#   （既定）      cargo でワークスペースの release binary（idp / idp-web）をビルドする。
-#   --docker      Docker イメージ（api / web / migrate）をビルドしてタグ付けする（起動しない）。
-#   --push        --docker で作ったイメージをレジストリへ push する（IMAGE_PREFIX にホストを含めること）。
-#   --save DIR    --docker で作ったイメージを DIR/*.tar へ保存する（レジストリ不要の受け渡し用）。
-#   --check       ビルド前に fmt チェック・clippy（警告をエラー扱い）・test を実行する。
-#   --help        使い方を表示する。
+# 使い方:
+#   ./scripts/build.sh [出力DIR]        # 既定 dist/
+#   IMAGE_TAG=1.0.0 ./scripts/build.sh  # イメージタグ指定（既定 latest）
 #
-# イメージ名: ${IMAGE_PREFIX:-idp}/{api,web,migrate}:${IMAGE_TAG:-latest}
-#   例）レジストリ配布: IMAGE_PREFIX=registry.example.com/idp IMAGE_TAG=1.2.3 ./scripts/build.sh --docker --push
-#   例）tar 配布:       ./scripts/build.sh --docker --save ./dist   → dist/*.tar を scp してデプロイ先で docker load
+# 出力（＝デプロイバンドル）:
+#   idp-api.tar idp-web.tar idp-migrate.tar   ビルド済みイメージ
+#   docker-compose.yml                        デプロイ用 Compose（image: 参照のみ）
+#   docker/nginx.conf                         リバースプロキシ設定
+#   .env.example                              設定テンプレート（deploy.sh が .env を生成）
+#   deploy.sh                                 デプロイ入口（初回・更新・reset すべてこれ 1 本）
+#   manifest.env manifest.sha256              照合用メタデータ
 #
-# 前提: ネイティブビルドは rustup（cargo）。Docker ビルドは docker。
+# 前提: docker。
 set -euo pipefail
+
+log() { printf '[idp] %s\n' "$*" >&2; }
+die() { printf '[idp][error] %s\n' "$*" >&2; exit 1; }
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
-source "$repo_root/scripts/lib.sh"
 
-target="native"
-run_check=0
-do_push=0
-save_dir=""
+out_dir="dist"
+case "${1:-}" in
+  -h | --help) sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  "") ;;
+  *) out_dir="$1" ;;
+esac
 
-usage() {
-  sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
-}
+command -v docker >/dev/null 2>&1 || die "docker が見つかりません。"
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --docker) target="docker" ;;
-    --push)   target="docker"; do_push=1 ;;
-    --save)   target="docker"; save_dir="${2:?--save にはディレクトリを指定してください}"; shift ;;
-    --check)  run_check=1 ;;
-    -h | --help) usage; exit 0 ;;
-    *) die "不明な引数: $1（--help で使い方を表示）" ;;
-  esac
-  shift
+git_commit="$(git rev-parse HEAD 2>/dev/null || printf unknown)"
+version="${IMAGE_TAG:-latest}"
+# IMAGE_PREFIX/IMAGE_TAG は Compose（docker-compose.deploy.yml）と共通の名前解決。通常は既定のままでよい。
+image_ref() { printf '%s/%s:%s' "${IMAGE_PREFIX:-idp}" "$1" "$version"; }
+
+# --- イメージビルド --------------------------------------------------------------
+# サービス名 → Dockerfile ステージ の対応。
+declare -A stages=([api]=runtime-api [web]=runtime-web [migrate]=migrate)
+for svc in api web migrate; do
+  ref="$(image_ref "$svc")"
+  log "イメージをビルドします: $ref（stage=${stages[$svc]}）..."
+  docker build --target "${stages[$svc]}" \
+    --label "org.opencontainers.image.revision=${git_commit}" \
+    --label "org.opencontainers.image.version=${version}" \
+    -t "$ref" -f Dockerfile .
 done
 
-# --- 事前検証（任意） ----------------------------------------------------------
-if [[ $run_check -eq 1 ]]; then
-  command -v cargo >/dev/null 2>&1 || die "cargo が見つかりません（rustup を導入してください）。"
-  log "fmt チェック（cargo fmt --check）..."
-  cargo fmt --all -- --check
-  log "clippy（警告をエラー扱い）..."
-  cargo clippy --workspace --all-targets -- -D warnings
-  [[ -n "${TEST_DATABASE_URL:-}" ]] || die "--check では TEST_DATABASE_URL が必須です（DB 統合テストをスキップしません）。DB なしで単体テストだけ実行する場合は cargo test -p idp-core -p idp-contracts -p idp-web 等を明示してください。"
-  log "テスト（cargo test。DB 統合込み）..."
-  cargo test --workspace --locked
-fi
+# --- デプロイバンドル出力 --------------------------------------------------------
+mkdir -p "$out_dir/docker"
+manifest="$out_dir/manifest.sha256"
+: >"$manifest"
+printf 'commit=%s\nversion=%s\nimage_tag=%s\n' \
+  "$git_commit" "$version" "$version" >"$out_dir/manifest.env"
 
-# --- ビルド --------------------------------------------------------------------
-case "$target" in
-  native)
-    command -v cargo >/dev/null 2>&1 || die "cargo が見つかりません（rustup を導入してください）。"
-    log "release binary をビルドします（idp / idp-web）..."
-    cargo build --release --locked --bin idp --bin idp-web
-    log "完了。成果物: target/release/idp・target/release/idp-web"
-    ;;
-  docker)
-    command -v docker >/dev/null 2>&1 || die "docker が見つかりません。"
-    # push は長いビルドの前に前提を検証する（既定 idp のままでは push させない）。
-    if [[ $do_push -eq 1 ]]; then
-      [[ -n "${IMAGE_PREFIX:-}" && "${IMAGE_PREFIX}" != "idp" ]] ||
-        die "--push には IMAGE_PREFIX にレジストリ/名前空間を指定してください（例: registry.example.com/idp）。既定の idp のままでは push できません。"
-    fi
-    git_commit="$(git rev-parse HEAD 2>/dev/null || printf unknown)"
-    version="${IMAGE_TAG:-latest}"
-    # サービス名 → Dockerfile ステージ の対応。イメージ名は image_ref で共通化する。
-    declare -A stages=([api]=runtime-api [web]=runtime-web [migrate]=migrate)
-    for svc in api web migrate; do
-      ref="$(image_ref "$svc")"
-      log "イメージをビルドします: $ref（stage=${stages[$svc]}）..."
-      docker build --target "${stages[$svc]}" \
-        --label "org.opencontainers.image.revision=${git_commit}" \
-        --label "org.opencontainers.image.version=${version}" \
-        -t "$ref" -f Dockerfile .
-    done
+for svc in api web migrate; do
+  ref="$(image_ref "$svc")"
+  out="$out_dir/idp-${svc}.tar"
+  image_id="$(docker image inspect -f '{{.Id}}' "$ref")"
+  log "保存します: $ref → $out ..."
+  docker save "$ref" -o "$out"
+  sha256sum "$out" >>"$manifest"
+  printf '%s_ref=%s\n%s_image_id=%s\n' "$svc" "$ref" "$svc" "$image_id" >>"$out_dir/manifest.env"
+done
 
-    if [[ $do_push -eq 1 ]]; then
-      for svc in api web migrate; do
-        ref="$(image_ref "$svc")"
-        log "push します: $ref ..."
-        docker push "$ref"
-      done
-      log "完了。デプロイ先で ./scripts/init.sh（初回）または ./scripts/deploy.sh（更新）を実行してください。"
-    elif [[ -n "$save_dir" ]]; then
-      mkdir -p "$save_dir"
-      manifest="$save_dir/manifest.sha256"
-      : >"$manifest"
-      printf 'commit=%s\nversion=%s\nimage_prefix=%s\nimage_tag=%s\n' \
-        "$git_commit" "$version" "${IMAGE_PREFIX:-idp}" "${IMAGE_TAG:-latest}" >"$save_dir/manifest.env"
-      for svc in api web migrate; do
-        ref="$(image_ref "$svc")"
-        out="$save_dir/idp-${svc}.tar"
-        image_id="$(docker image inspect -f '{{.Id}}' "$ref")"
-        revision="$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$ref")"
-        [[ "$revision" == "$git_commit" ]] || die "$ref の revision label が期待値と不一致です: $revision != $git_commit"
-        log "保存します: $ref → $out ..."
-        docker save "$ref" -o "$out"
-        sha256sum "$out" >>"$manifest"
-        printf '%s_ref=%s\n%s_image_id=%s\n%s_revision=%s\n' "$svc" "$ref" "$svc" "$image_id" "$svc" "$revision" >>"$save_dir/manifest.env"
-      done
-      log "完了。$save_dir/*.tar と manifest.env/manifest.sha256 をデプロイ先へ転送し、deploy 前に照合してください。"
-    else
-      log "完了。イメージをビルドしました（受け渡しは --push または --save を使用）。"
-    fi
-    ;;
-esac
+cp "$repo_root/docker-compose.deploy.yml" "$out_dir/docker-compose.yml"
+cp "$repo_root/docker/nginx.conf" "$out_dir/docker/nginx.conf"
+cp "$repo_root/.env.example" "$out_dir/.env.example"
+cp "$repo_root/scripts/deploy.sh" "$out_dir/deploy.sh"
+chmod +x "$out_dir/deploy.sh"
+
+log "完了。$out_dir/ をデプロイ先へ転送し、デプロイ先で ./deploy.sh を実行してください。"

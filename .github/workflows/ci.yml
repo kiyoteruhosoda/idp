@@ -44,8 +44,8 @@ jobs:
         run: ./scripts/test_deploy.sh
       - name: E2E
         run: ./scripts/e2e.sh
-      - name: Docker build
-        run: ./scripts/build.sh --docker
+      - name: Docker build and deploy bundle
+        run: ./scripts/build.sh
       - name: Compose config
         run: |
           docker compose -f docker-compose.yml config >/tmp/compose.yml

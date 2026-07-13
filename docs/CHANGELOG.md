@@ -2,6 +2,18 @@
 
 完了した重要な変更の要約（詳しい経緯は `history/`、設計判断は `adr/`）。
 
+## 2026-07-13（build/deploy スクリプトの簡素化）
+
+- **build.sh — tar バンドル出力を既定化**: 引数なしで Docker イメージ（api/web/migrate）をビルドし、
+  tar・デプロイ用 `docker-compose.yml`・`docker/nginx.conf`・`.env.example`・`deploy.sh`・manifest を
+  `dist/` へ出力する。ネイティブビルド／`--check`／レジストリ push モードは削除
+  （`cargo build --release` や CI の fmt/clippy/test で代替。レジストリ配布は不使用のため廃止）。
+- **deploy.sh — 単一入口・3 モードに簡素化**: 引数なし（初回・更新デプロイ）／`migration`（DB 更新のみ）／
+  `reset --yes`（DB 初期化）のみ。同梱 tar を自動 `docker load` し manifest（image ID・revision label）と
+  照合する。使用する Compose はバンドル同梱の `docker-compose.yml` に固定され、手で `-f` 指定する必要は
+  ない。初回は `.env` を自動生成し、確認すべき項目（`ISSUER`・`WEB_PORT`）を出力する。
+- `init.sh`（互換ラッパー）と `lib.sh` を削除（deploy.sh に統合・自己完結化）。
+
 ## 2026-07-13（DDD1: Application 層の Infrastructure 具象依存除去）
 
 - **DDD1 — Application 層の DIP 境界整理**: Application ユースケースから `infrastructure::crypto` / `infrastructure::jwt` / `WebAuthnService` の直接 import を除去し、暗号・JWT のドメインサービスと `WebAuthnPort` 経由のポリモーフィックな依存へ切り替えた。Infrastructure の WebAuthn 実装は composition root で選択し、Application は port のみに依存する。

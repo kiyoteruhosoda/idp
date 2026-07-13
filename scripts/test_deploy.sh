@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
+# scripts/test_deploy.sh — deploy.sh の CLI/エラー処理をスタブ docker で検証する（CI 用）。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+
+# --- リポジトリ配置（scripts/deploy.sh ＋ ルートの docker-compose.deploy.yml） ---
 mkdir -p "$TMP/repo/scripts" "$TMP/repo/docker" "$TMP/bin"
-cp "$ROOT/scripts/deploy.sh" "$ROOT/scripts/init.sh" "$ROOT/scripts/lib.sh" "$TMP/repo/scripts/"
+cp "$ROOT/scripts/deploy.sh" "$TMP/repo/scripts/"
 cp "$ROOT/.env.example" "$ROOT/docker-compose.deploy.yml" "$TMP/repo/"
 cp "$ROOT/docker/nginx.conf" "$TMP/repo/docker/"
 
@@ -41,9 +44,6 @@ if [[ "${1:-}" == "compose" ]]; then
     exec)
       if [[ "$*" == *"SELECT id FROM tenants"* ]]; then printf '01970000-0000-7000-8000-000000000001\n'; fi
       exit 0 ;;
-    config)
-      if [[ "${2:-}" == "--format" ]]; then printf '{"name":"idp-test"}\n'; else printf 'services: {}\n'; fi
-      exit 0 ;;
     logs) exit 0 ;;
   esac
 fi
@@ -52,11 +52,10 @@ case "${1:-}" in
     if [[ "${2:-}" == "inspect" ]]; then
       if [[ "$*" == *"org.opencontainers.image.revision"* ]]; then printf 'stub-revision\n';
       elif [[ "$*" == *".Id"* ]]; then printf 'sha256:stub-image-id\n';
-      elif [[ "$*" == *"RepoDigests"* ]]; then printf 'idp/stub@sha256:stub-digest\n';
       fi
     fi
     exit 0 ;;
-  pull) exit 0 ;;
+  load) exit 0 ;;
   inspect) printf 'healthy\n'; exit 0 ;;
   *) exit 0 ;;
 esac
@@ -65,15 +64,8 @@ chmod +x "$TMP/bin/docker"
 
 export PATH="$TMP/bin:$PATH"
 export DOCKER_STUB_LOG="$TMP/docker.log"
-# deploy 側は REL1 により registry 配布の latest を拒否するため、
-# スタブテストでも immutable tag 相当を明示する。
-export IMAGE_TAG="ci-test"
 cd "$TMP/repo"
 
-if ./scripts/deploy.sh >/tmp/deploy-usage.out 2>&1; then
-  echo "deploy.sh without args must fail" >&2
-  exit 1
-fi
 if ./scripts/deploy.sh unknown >/tmp/deploy-unknown.out 2>&1; then
   echo "deploy.sh unknown mode must fail" >&2
   exit 1
@@ -87,23 +79,50 @@ fi
 [[ -f .env ]] || { echo ".env was not generated" >&2; exit 1; }
 grep -q '^CSRF_SECRET=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=$' .env
 before="$(grep '^MARIADB_PASSWORD=' .env)"
-./scripts/deploy.sh app >/tmp/deploy-app.out 2>&1
+./scripts/deploy.sh >/tmp/deploy-default.out 2>&1
 after="$(grep '^MARIADB_PASSWORD=' .env)"
 [[ "$before" == "$after" ]] || { echo "existing .env was overwritten" >&2; exit 1; }
-grep -q 'ログイン URL:' /tmp/deploy-app.out
+grep -q 'ログイン URL:' /tmp/deploy-default.out
+grep -q '\-f docker-compose.deploy.yml' "$DOCKER_STUB_LOG"
 ./scripts/deploy.sh reset --yes >/tmp/deploy-reset.out 2>&1
 grep -q 'down -v --remove-orphans' "$DOCKER_STUB_LOG"
 
 set +e
-DOCKER_STUB_FAIL_UP=1 ./scripts/deploy.sh app >/tmp/deploy-fail.out 2>&1
+DOCKER_STUB_FAIL_UP=1 ./scripts/deploy.sh >/tmp/deploy-fail.out 2>&1
 status=$?
 set -e
 [[ $status -eq 42 ]] || { echo "deploy failure should preserve failing exit code" >&2; cat /tmp/deploy-fail.out >&2; exit 1; }
 grep -q '\[idp\]\[diagnostic\] compose ps' /tmp/deploy-fail.out
-grep -q 'logs tail: api' /tmp/deploy-fail.out
 if grep -q "$(grep '^MARIADB_PASSWORD=' .env | cut -d= -f2-)" /tmp/deploy-fail.out; then
   echo "secret was not masked in diagnostics" >&2
   exit 1
 fi
+
+# --- バンドル配置（build.sh が出力する dist/ 相当。deploy.sh の隣に compose と tar） ---
+mkdir -p "$TMP/bundle/docker"
+cp "$ROOT/scripts/deploy.sh" "$TMP/bundle/"
+cp "$ROOT/docker-compose.deploy.yml" "$TMP/bundle/docker-compose.yml"
+cp "$ROOT/.env.example" "$TMP/bundle/"
+cp "$ROOT/docker/nginx.conf" "$TMP/bundle/docker/"
+for svc in api web migrate; do
+  touch "$TMP/bundle/idp-${svc}.tar"
+  printf '%s_ref=idp/%s:latest\n%s_image_id=sha256:stub-image-id\n' "$svc" "$svc" "$svc"
+done >"$TMP/bundle/manifest.env"
+cd "$TMP/bundle"
+
+: >"$DOCKER_STUB_LOG"
+./deploy.sh >/tmp/deploy-bundle.out 2>&1
+grep -q 'ログイン URL:' /tmp/deploy-bundle.out
+grep -q '\-f docker-compose.yml' "$DOCKER_STUB_LOG"
+
+# manifest と image ID が食い違う場合は tar を読み込み、なお不一致なら失敗する。
+sed -i 's/^api_image_id=.*/api_image_id=sha256:expected-other-id/' manifest.env
+: >"$DOCKER_STUB_LOG"
+if ./deploy.sh >/tmp/deploy-bundle-mismatch.out 2>&1; then
+  echo "deploy.sh must fail when image ID mismatches manifest" >&2
+  exit 1
+fi
+grep -q 'load -i' "$DOCKER_STUB_LOG"
+grep -q 'image ID が manifest と不一致' /tmp/deploy-bundle-mismatch.out
 
 echo "deploy script tests passed"

@@ -32,7 +32,7 @@ DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' sqlx migrate run
 
 root テナントの UUID は seed が**動的採番**するため環境ごとに異なる（固定値はない。ADR-0009 §1）。
 システム管理者のログイン URL（`/{root_uuid}/...` 系）の確定に必要になる。
-`scripts/init.sh` は初期化時に標準出力へ記録するが、後から確認するには DB を参照する。
+`deploy.sh` はデプロイ完了時にログイン URL として標準出力へ記録するが、後から確認するには DB を参照する。
 
 ```sql
 SELECT id FROM tenants WHERE parent_tenant_id IS NULL;
@@ -263,59 +263,57 @@ docker compose -f docker-compose.deploy.yml -f docker-compose.db-debug.yml \
 
 ## イメージをビルドしたいとき（ビルド側。ソースがあるホスト）
 
-ソースとデプロイ先は別ホスト。**ソース側ではビルドのみ行い、起動はしない**（配置は init/deploy）。
+ソースとデプロイ先は別ホスト。**ソース側ではビルドのみ行い、起動はしない**（配置は deploy.sh）。
 
 ```sh
-# レジストリ配布（IMAGE_PREFIX にレジストリホストを含める）
-IMAGE_PREFIX=registry.example.com/idp IMAGE_TAG=1.0.0 ./scripts/build.sh --check --docker --push
-# tar 配布（レジストリ不要）
-./scripts/build.sh --check --docker --save ./dist   # dist/*.tar を転送し、デプロイ先で docker load -i
+./scripts/build.sh                  # イメージビルド → dist/ に tar ＋ デプロイ一式を出力
+IMAGE_TAG=1.0.0 ./scripts/build.sh  # イメージタグを指定（既定 latest）
 ```
 
-イメージ名は `${IMAGE_PREFIX:-idp}/{api,web,migrate}:${IMAGE_TAG:-latest}`。詳細は `scripts/README.md`。
+`dist/` にはイメージ tar（api/web/migrate）・デプロイ用 `docker-compose.yml`・`docker/nginx.conf`・
+`.env.example`・`deploy.sh`・照合用 manifest が入る。この `dist/` をディレクトリごとデプロイ先へ
+転送する。詳細は `scripts/README.md`。
 
-## 初めて環境を初期化したいとき（デプロイ先。db + api + web + proxy）
+## デプロイしたいとき（デプロイ先。初回・更新とも）
 
-デプロイ先で `scripts/init.sh` を実行する。冪等（既存 `.env` は上書きしない）。**ソース不要・ビルドしない**。
+転送した `dist/` の中で `deploy.sh` を実行する。冪等（既存 `.env` は上書きしない）。
+**ソース不要・ビルドしない**。
 
 ```sh
-./scripts/init.sh
+cd /opt/idp/dist   # 転送先（例）
+./deploy.sh
 ```
 
-内容: 秘密情報（DB パスワード・`KEY_ENCRYPTION_KEY`・`INTERNAL_SERVICE_TOKEN`）を乱数生成して `.env`
-を作成 → ビルド済みイメージを確認（無ければ `pull`。tar 配布時は事前に `docker load` 済み）→ MariaDB
-**コンテナを新規作成**して起動 → マイグレーション（DDL + マスタデータ）適用 → api・web・proxy を起動 →
-`/healthz` 待機。デプロイ先で使う compose は `docker-compose.deploy.yml`（`build:` を持たず `image:` 参照）。
+内容: 初回は秘密情報（DB パスワード・`KEY_ENCRYPTION_KEY`・`INTERNAL_SERVICE_TOKEN`・`CSRF_SECRET`）を
+乱数生成して `.env` を作成（確認する項目は `ISSUER` と `WEB_PORT`）→ 同梱 tar からイメージを
+`docker load`（manifest と照合。読込済みならスキップ）→ MariaDB 起動 → マイグレーション
+（DDL + マスタデータ）適用 → api・web・proxy を起動 → `/readyz` で起動確認。
 
-前提: `docker`（Compose v2）と `openssl`、および配置バンドル（`docker-compose.deploy.yml`・
-`docker/nginx.conf`・`scripts/`）。Rust ソースは不要。マイグレーションはイメージ内の sqlx-cli で適用する。
+使う compose は同梱の `docker-compose.yml`（`build:` を持たず `image:` 参照。リポジトリ内から実行した
+場合はルートの `docker-compose.deploy.yml`）。前提: `docker`（Compose v2）と `openssl`。
 
-## デプロイしたいとき（デプロイ先。更新デプロイ）
-
-デプロイ先で `scripts/deploy.sh` を実行する（事前に `init.sh` 実行済み ＝ `.env` がある前提）。
+## マイグレーションだけを適用したいとき（デプロイ先）
 
 ```sh
-./scripts/deploy.sh
+./deploy.sh migration
 ```
 
-内容: ビルド済みイメージの取得（`pull`。tar 配布時は `docker load` 済みを確認。**ビルドはしない**）→
-DDL + マスタデータ適用（専用ジョブで単独実行）→ `docker compose -f docker-compose.deploy.yml up -d`
-（api・web・proxy を依存順に起動）→ `/readyz` で起動確認。
-
-## マイグレーションだけを適用したいとき（Compose）
-
-DDL・マスタデータの適用は常駐させない専用ジョブ（`migrate` サービス）で単独実行する。
-
-```sh
-# デプロイ先（ビルド済みイメージ）
-docker compose -f docker-compose.deploy.yml run --rm migrate
-```
-
+DDL・マスタデータの適用は常駐させない専用ジョブ（`migrate` サービス）で単独実行される。
 ホストに sqlx-cli がある場合は従来どおり `DATABASE_URL=... sqlx migrate run` でもよい。
+
+## DB を初期化してやり直したいとき（デプロイ先）
+
+```sh
+./deploy.sh reset --yes
+```
+
+DB volume を削除してからマイグレーション・起動をやり直す。破壊的操作のため `--yes` が必須。
+`.env`（秘密情報・サイト固定値）は保持される。
 
 ## ロールバックしたいとき
 
-- アプリ: 直前のイメージタグへ戻す（`.env` の `IMAGE_TAG` を前のバージョンにして `./scripts/deploy.sh`）。
+- アプリ: 前のバージョンの `dist/` を残しておき、そこで `./deploy.sh` を実行する
+  （tar から前のイメージが読み込まれる）。
 - スキーマ: migration は expand/contract 前提のため、直前バージョンのアプリは新スキーマ上でも動く。
   DDL 自体を戻す必要がある場合のみ次を実行する（`.down.sql` を適用）。
 

@@ -1,8 +1,8 @@
 # デプロイ先（ソースを持たない別ホスト）用の Compose。build: を持たず、ビルド済みイメージを image: 参照で
-# 起動する。イメージは別ホストの scripts/build.sh で作成し、レジストリ push か tar 転送で受け渡す。
-# 開発・ビルド用（build: を持つ）は docker-compose.yml。デプロイ先では本ファイルを使う。
+# 起動する。イメージは別ホストの scripts/build.sh が tar（dist/ バンドル）で出力し、バンドル内では本ファイルが
+# docker-compose.yml として同梱される。開発・ビルド用（build: を持つ）はリポジトリの docker-compose.yml。
 #   イメージ名: ${IMAGE_PREFIX:-idp}/{api,web,migrate}:${IMAGE_TAG:-latest}
-#   scripts/init.sh（初回）・scripts/deploy.sh（更新）が `-f docker-compose.deploy.yml` で使う。
+#   deploy.sh（初回・更新・reset の単一入口）が使う。手で -f 指定する必要はない。
 services:
   mariadb:
     image: mariadb:10.11

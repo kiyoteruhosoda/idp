@@ -140,14 +140,16 @@ sequenceDiagram
 
 ### コンテナ一括（推奨）
 
-`scripts/init.sh` が秘密情報の生成（`.env`）・DB 起動・マイグレーション適用・`web` の起動までを冪等に行う。
+`scripts/build.sh` がイメージと配布用バンドル（`dist/`）を作り、`scripts/deploy.sh` が
+秘密情報の生成（`.env`）・DB 起動・マイグレーション適用・起動までを冪等に行う。
 
 ```sh
-./scripts/init.sh              # db + web を初期化（既存 .env は上書きしない）
+./scripts/build.sh             # イメージビルド → dist/ にデプロイバンドルを出力
+./scripts/deploy.sh            # 初回も更新もこれ 1 本（既存 .env は上書きしない）
 ```
 
 初期管理ユーザー `admin@example.com`（既定パスワードは初回ログイン後に変更）が seed される。
-デプロイは `./scripts/deploy.sh`。
+別ホストへのデプロイは `dist/` を転送して中の `./deploy.sh` を実行する（`scripts/README.md` 参照）。
 
 ### ローカル開発（web はホストで実行）
 
