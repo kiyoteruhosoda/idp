@@ -35,7 +35,8 @@ if [[ "${1:-}" == "compose" ]]; then
   if [[ "${1:-}" == "version" ]]; then exit 0; fi
   while [[ "${1:-}" == "-f" ]]; do shift 2; done
   case "${1:-}" in
-    up|run|down) exit 0 ;;
+    up) if [[ "${DOCKER_STUB_FAIL_UP:-0}" == "1" ]]; then echo "up failed with ${MARIADB_PASSWORD:-secret}" >&2; exit 42; fi; exit 0 ;;
+    run|down) exit 0 ;;
     ps) printf 'cid-%s\n' "${3:-svc}"; exit 0 ;;
     exec)
       if [[ "$*" == *"SELECT id FROM tenants"* ]]; then printf '01970000-0000-7000-8000-000000000001\n'; fi
@@ -82,5 +83,17 @@ after="$(grep '^MARIADB_PASSWORD=' .env)"
 grep -q 'ログイン URL:' /tmp/deploy-app.out
 ./scripts/deploy.sh reset --yes >/tmp/deploy-reset.out 2>&1
 grep -q 'down -v --remove-orphans' "$DOCKER_STUB_LOG"
+
+set +e
+DOCKER_STUB_FAIL_UP=1 ./scripts/deploy.sh app >/tmp/deploy-fail.out 2>&1
+status=$?
+set -e
+[[ $status -eq 42 ]] || { echo "deploy failure should preserve failing exit code" >&2; cat /tmp/deploy-fail.out >&2; exit 1; }
+grep -q '\[idp\]\[diagnostic\] compose ps' /tmp/deploy-fail.out
+grep -q 'logs tail: api' /tmp/deploy-fail.out
+if grep -q "$(grep '^MARIADB_PASSWORD=' .env | cut -d= -f2-)" /tmp/deploy-fail.out; then
+  echo "secret was not masked in diagnostics" >&2
+  exit 1
+fi
 
 echo "deploy script tests passed"

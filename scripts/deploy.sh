@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/deploy.sh — デプロイ先の単一入口（app / migration / reset）。
-set -euo pipefail
+set -Eeuo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
@@ -9,6 +9,8 @@ source "$repo_root/scripts/lib.sh"
 env_file="$repo_root/.env"
 example_file="$repo_root/.env.example"
 compose="$(compose_cmd) -f $DEPLOY_COMPOSE_FILE"
+DEPLOY_COMPOSE="$compose"
+trap 'on_deploy_error $? $LINENO "$BASH_COMMAND"' ERR
 
 usage() {
   cat >&2 <<USAGE
@@ -41,14 +43,18 @@ done
 [[ -f "$repo_root/$DEPLOY_COMPOSE_FILE" ]] || die "$DEPLOY_COMPOSE_FILE がありません（デプロイ用 compose）。"
 command -v docker >/dev/null 2>&1 || die "docker が見つかりません。"
 
+phase_begin "env"
 ensure_env_file "$env_file" "$example_file"
+phase_end
 
 run_migration() {
+  phase_begin "migration"
   log "MariaDB を起動します..."
   $compose up -d mariadb
   wait_healthy "$compose" mariadb
   log "マイグレーションを適用します..."
   $compose run --rm migrate
+  phase_end
 }
 
 root_tenant_id() {
@@ -62,9 +68,12 @@ root_tenant_id() {
 
 run_app() {
   local web_port issuer root login_url ready_url
+  phase_begin "image-check"
   log "ビルド済みイメージを確認します（無ければ pull）..."
   ensure_images
+  phase_end
   run_migration
+  phase_begin "app"
   log "api・web・proxy を起動します..."
   $compose up -d api web proxy
   wait_healthy "$compose" api
@@ -81,17 +90,21 @@ run_app() {
       login_url="${issuer%/}/${root:-<root-tenant-id>}/login"
       log "readyz OK。デプロイが完了しました。"
       log "ログイン URL: $login_url"
+      phase_end
       return 0
     fi
     sleep 2
   done
-  die "readyz が OK になりませんでした。ログ: $compose logs api web proxy"
+  compose_diagnostics
+  die "readyz が OK になりませんでした。"
 }
 
 case "$mode" in
   migration)
+    phase_begin "image-check"
     log "ビルド済み migrate イメージを確認します（無ければ pull）..."
     ensure_image migrate
+    phase_end
     run_migration
     ;;
   app)
@@ -100,9 +113,11 @@ case "$mode" in
   reset)
     [[ $yes -eq 1 ]] || die "reset は破壊的操作です。実行するには --yes を付けてください。"
     project="$($compose config --format json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("name", "idp"))' 2>/dev/null || basename "$repo_root")"
+    phase_begin "reset"
     log "reset 対象 Compose project: $project"
     log "DB volume と DB 管理設定を削除します（.env のオペレーター固定領域は保持します）。"
     $compose down -v --remove-orphans
+    phase_end
     run_app
     ;;
 esac

@@ -4,6 +4,67 @@
 log() { printf '[idp] %s\n' "$*" >&2; }
 die() { printf '[idp][error] %s\n' "$*" >&2; exit 1; }
 
+CURRENT_PHASE="${CURRENT_PHASE:-startup}"
+PHASE_STARTED_AT=0
+
+mask_secrets() {
+  local sed_expr=() key value file="${env_file:-.env}"
+  if [[ -f "$file" ]]; then
+    for key in MARIADB_PASSWORD MARIADB_ROOT_PASSWORD KEY_ENCRYPTION_KEY INTERNAL_SERVICE_TOKEN CSRF_SECRET; do
+      value="$(get_env_var "$key" "$file" 2>/dev/null || true)"
+      [[ -n "$value" ]] && sed_expr+=(-e "s|${value//|/\|}|***MASKED***|g")
+    done
+  fi
+  if [[ ${#sed_expr[@]} -gt 0 ]]; then
+    sed "${sed_expr[@]}"
+  else
+    cat
+  fi
+}
+
+phase_begin() {
+  CURRENT_PHASE="$1"
+  PHASE_STARTED_AT="$(date +%s)"
+  log "▶ $CURRENT_PHASE を開始します"
+}
+
+phase_end() {
+  local now elapsed
+  now="$(date +%s)"
+  elapsed=$((now - PHASE_STARTED_AT))
+  log "✓ $CURRENT_PHASE が完了しました (${elapsed}s)"
+}
+
+compose_diagnostics() {
+  local compose="${DEPLOY_COMPOSE:-}" service cid image status
+  [[ -n "$compose" ]] || return 0
+  {
+    echo "[idp][diagnostic] phase=${CURRENT_PHASE:-unknown}"
+    echo "[idp][diagnostic] compose ps"
+    $compose ps || true
+    for service in mariadb migrate api web proxy; do
+      cid="$($compose ps -q "$service" 2>/dev/null || true)"
+      [[ -n "$cid" ]] || continue
+      status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid" 2>/dev/null || true)"
+      image="$(docker inspect -f '{{.Image}}' "$cid" 2>/dev/null || true)"
+      echo "[idp][diagnostic] service=$service status=${status:-unknown} image=${image:-unknown}"
+      echo "[idp][diagnostic] logs tail: $service"
+      $compose logs --tail=80 "$service" || true
+    done
+  } 2>&1 | mask_secrets >&2
+}
+
+on_deploy_error() {
+  local exit_code="$1" line="$2" command="$3"
+  trap - ERR
+  {
+    echo "[idp][error] phase=${CURRENT_PHASE:-unknown} line=$line exit=$exit_code command=$command"
+  } | mask_secrets >&2
+  compose_diagnostics
+  exit "$exit_code"
+}
+
+
 # ビルド済みイメージの参照名。ソース側（build.sh）とデプロイ側（compose）で同じ規則を使い、
 # レジストリ配布・tar 配布のどちらでも同名で解決できるようにする。
 #   IMAGE_PREFIX 既定 idp（レジストリ配布時は registry.example.com/idp のようにホストを含める）
@@ -24,8 +85,9 @@ ensure_image() {
     return 0
   fi
   log "ローカルに $ref がありません。pull を試みます..."
-  docker pull "$ref" >/dev/null 2>&1 ||
+  if ! docker pull "$ref" >/dev/null 2> >(mask_secrets >&2); then
     die "必要なイメージが揃っていません: $ref。ソース側で ./scripts/build.sh --docker --push、または --save して転送し docker load -i してください。"
+  fi
 }
 
 ensure_images() {
@@ -108,10 +170,11 @@ wait_healthy() {
       status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid" 2>/dev/null || true)"
       case "$status" in
         healthy | running) log "$service: $status"; return 0 ;;
-        exited | dead) die "$service が異常終了しました（status=$status）。ログ: $compose logs $service" ;;
+        exited | dead) compose_diagnostics; die "$service が異常終了しました（status=$status）。" ;;
       esac
     fi
     sleep 2
   done
-  die "$service が healthy になりませんでした（タイムアウト）。ログ: $compose logs $service"
+  compose_diagnostics
+  die "$service が healthy になりませんでした（タイムアウト）。"
 }
