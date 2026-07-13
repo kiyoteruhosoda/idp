@@ -172,7 +172,7 @@ impl AuthorizeService {
                 match self.try_resume_sso(tenant, session_id, ctx).await {
                     Ok(Some((user_id, auth_time))) => {
                         // `max_age` チェック: auth_time から max_age 秒超過していれば再認証。
-                        let max_age_exceeded = req.max_age.map_or(false, |max_age| {
+                        let max_age_exceeded = req.max_age.is_some_and(|max_age| {
                             let now = self.clock.now();
                             let elapsed = now - auth_time;
                             elapsed.num_seconds() > max_age as i64

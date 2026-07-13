@@ -34,7 +34,11 @@ pub async fn token(
     headers: HeaderMap,
     Form(body): Form<TokenRequest>,
 ) -> Response {
-    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
 
     let basic_credentials = match parse_basic_credentials(&headers) {
         Ok(v) => v,
@@ -51,10 +55,7 @@ pub async fn token(
         refresh_token: body.refresh_token,
     };
 
-    match state
-        .token
-        .exchange(tenant.context(), command, &ctx)
-        .await {
+    match state.token.exchange(tenant.context(), command, &ctx).await {
         Ok(tokens) => (
             // トークンレスポンスはキャッシュ禁止（設計仕様 §4.4）。
             [

@@ -42,14 +42,31 @@ pub async fn run() -> anyhow::Result<()> {
         .await
         .context("database schema version check failed")?;
 
+    let settings_repo =
+        infrastructure::repositories::system_setting::SqlxSystemSettingsRepository::new(
+            pool.clone(),
+        );
+    let db_settings = {
+        use domain::repositories::SystemSettingsRepository as _;
+        settings_repo
+            .load_all()
+            .await
+            .context("failed to load DB-managed settings")?
+            .into_iter()
+            .filter(|setting| !setting.is_secret)
+            .map(|setting| (setting.key, setting.value))
+            .collect::<std::collections::HashMap<_, _>>()
+    };
+    let config = config::Config::from_env_and_db_settings(&db_settings)
+        .context("failed to resolve configuration from env/DB/defaults")?;
+
     let clock: Arc<dyn domain::clock::Clock> = Arc::new(infrastructure::clock::SystemClock);
 
     // seed 済み root テナントの存在確認（fail-fast。マイグレーション/seed 漏れの検出）。
     // root UUID は環境ごとに動的採番のため、DB から構造的に引いてログへ記録する（ADR-0009 §1）。
     {
         use domain::repositories::TenantRepository as _;
-        let tenants =
-            infrastructure::repositories::tenant::SqlxTenantRepository::new(pool.clone());
+        let tenants = infrastructure::repositories::tenant::SqlxTenantRepository::new(pool.clone());
         let root = tenants
             .find_root()
             .await
@@ -59,8 +76,7 @@ pub async fn run() -> anyhow::Result<()> {
     }
 
     // ユースケースの組み立て（依存注入は AppState::build に集約）。
-    let state =
-        presentation::state::AppState::build(pool.clone(), Arc::new(config.clone()), clock);
+    let state = presentation::state::AppState::build(pool.clone(), Arc::new(config.clone()), clock);
 
     // 署名鍵ブートストラップ: ACTIVE 鍵が無ければ生成して永続化する。
     state

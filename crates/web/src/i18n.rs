@@ -181,7 +181,10 @@ mod tests {
             Locale::Ja
         );
         // すべて無効・未指定なら既定 Ja（MT19: システム既定 ja 統一）。
-        assert_eq!(Locale::resolve(Some("fr"), Some("zz"), Some("zz"), Some("fr")), Locale::Ja);
+        assert_eq!(
+            Locale::resolve(Some("fr"), Some("zz"), Some("zz"), Some("fr")),
+            Locale::Ja
+        );
     }
 
     #[test]

@@ -31,7 +31,11 @@ pub async fn authorize(
     headers: HeaderMap,
     Query(params): Query<AuthorizeParams>,
 ) -> Response {
-    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
     let request = AuthorizeRequest {
         response_type: params.response_type,
         client_id: params.client_id,
@@ -49,7 +53,8 @@ pub async fn authorize(
     match state
         .authorize
         .authorize(tenant.context(), request, &ctx)
-        .await {
+        .await
+    {
         AuthorizeOutcome::Redirect { location } | AuthorizeOutcome::ErrorRedirect { location } => {
             found(&location)
         }

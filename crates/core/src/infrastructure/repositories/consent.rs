@@ -94,12 +94,12 @@ impl ClientConsentRepository for SqlxClientConsentRepository {
         sqlx::query(
             "DELETE FROM client_consents WHERE user_id = ? AND tenant_id = ? AND client_id = ?",
         )
-            .bind(user_id.to_string())
-            .bind(tenant_id.to_string())
-            .bind(client_id)
-            .execute(&self.pool)
-            .await
-            .map_err(repo_err)?;
+        .bind(user_id.to_string())
+        .bind(tenant_id.to_string())
+        .bind(client_id)
+        .execute(&self.pool)
+        .await
+        .map_err(repo_err)?;
         Ok(())
     }
 

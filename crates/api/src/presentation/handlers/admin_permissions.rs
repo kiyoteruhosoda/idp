@@ -84,6 +84,7 @@ pub async fn list_permissions(
         (status = 404, description = "対象利用者が不存在"),
     )
 )]
+#[allow(clippy::too_many_arguments)]
 pub async fn grant_permission(
     RequirePerms(admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,
@@ -95,7 +96,11 @@ pub async fn grant_permission(
     Json(body): Json<GrantPermissionRequest>,
 ) -> Result<Json<UserPermissionsResponse>, ApiError> {
     let target = parse_user_id(&user_id, locale)?;
-    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
     let codes = state
         .permissions_admin
         .grant(
@@ -140,7 +145,11 @@ pub async fn revoke_permission(
     Path((_tenant_id, user_id, permission_code)): Path<(String, String, String)>,
 ) -> Result<Json<UserPermissionsResponse>, ApiError> {
     let target = parse_user_id(&user_id, locale)?;
-    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
     let codes = state
         .permissions_admin
         .revoke(
@@ -160,5 +169,6 @@ pub async fn revoke_permission(
 
 fn parse_user_id(raw: &str, locale: ApiLocale) -> Result<Uuid, ApiError> {
     use crate::presentation::i18n::ApiMessages;
-    Uuid::parse_str(raw).map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get("api-invalid-request")))
+    Uuid::parse_str(raw)
+        .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get("api-invalid-request")))
 }

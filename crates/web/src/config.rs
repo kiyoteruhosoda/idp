@@ -60,7 +60,10 @@ impl Config {
             csrf_secret,
             csrf_secret_is_dev,
             cookie_secure,
-            auth_session_ttl_secs: env_parse("AUTH_SESSION_TTL_SECS", DEFAULT_AUTH_SESSION_TTL_SECS)?,
+            auth_session_ttl_secs: env_parse(
+                "AUTH_SESSION_TTL_SECS",
+                DEFAULT_AUTH_SESSION_TTL_SECS,
+            )?,
             hsts_max_age: env_parse("HSTS_MAX_AGE", 0u64)?,
             log_format: match env_or("LOG_FORMAT", "json").to_ascii_lowercase().as_str() {
                 "pretty" => LogFormat::Pretty,
@@ -206,5 +209,3 @@ mod tests {
         std::env::remove_var(key);
     }
 }
-
-

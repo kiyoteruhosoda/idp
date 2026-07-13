@@ -51,7 +51,8 @@ if [[ $run_check -eq 1 ]]; then
   cargo fmt --all -- --check
   log "clippy（警告をエラー扱い）..."
   cargo clippy --workspace --all-targets -- -D warnings
-  log "テスト（cargo test）..."
+  [[ -n "${TEST_DATABASE_URL:-}" ]] || die "--check では TEST_DATABASE_URL が必須です（DB 統合テストをスキップしません）。DB なしで単体テストだけ実行する場合は cargo test -p idp-core -p idp-contracts -p idp-web 等を明示してください。"
+  log "テスト（cargo test。DB 統合込み）..."
   cargo test --workspace --locked
 fi
 

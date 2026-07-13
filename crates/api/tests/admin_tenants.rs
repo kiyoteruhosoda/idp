@@ -44,7 +44,10 @@ async fn root_system_admin_can_create_tenant_with_generated_admin() {
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "no cookie -> 401");
 
     // system.admin による作成 → 201・generated_password を返す。
-    let admin_email = format!("owner-{}@acme.example.com", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let admin_email = format!(
+        "owner-{}@acme.example.com",
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    );
     let res = send(
         &env.app,
         admin_post(
@@ -57,10 +60,19 @@ async fn root_system_admin_can_create_tenant_with_generated_admin() {
     assert_eq!(res.status(), StatusCode::CREATED, "create -> 201");
     let created = body_json(res).await;
     let new_tenant_id = created["id"].as_str().expect("tenant id").to_string();
-    let new_admin_id = created["admin_user_id"].as_str().expect("admin id").to_string();
-    let generated = created["generated_password"].as_str().expect("password").to_string();
+    let new_admin_id = created["admin_user_id"]
+        .as_str()
+        .expect("admin id")
+        .to_string();
+    let generated = created["generated_password"]
+        .as_str()
+        .expect("password")
+        .to_string();
     assert!(generated.len() >= 32, "generated password >= 32 chars");
-    assert_eq!(created["parent_tenant_id"].as_str(), Some(env.root_tenant_id.as_str()));
+    assert_eq!(
+        created["parent_tenant_id"].as_str(),
+        Some(env.root_tenant_id.as_str())
+    );
 
     // 新テナントは root の子として実在し ACTIVE。
     let (parent, status): (Option<String>, String) =
@@ -93,7 +105,10 @@ async fn root_system_admin_can_create_tenant_with_generated_admin() {
     .await
     .expect("perm count")
     .get::<i64, _>("c");
-    assert_eq!(perm_count, 1, "new admin holds idp.tenant.admin for the new tenant");
+    assert_eq!(
+        perm_count, 1,
+        "new admin holds idp.tenant.admin for the new tenant"
+    );
 
     // 監査に tenant.created が記録され、生成パスワードは reason に含まれない（§5）。
     let leaked: i64 = sqlx::query("SELECT COUNT(*) AS c FROM audit_log WHERE reason LIKE ?")

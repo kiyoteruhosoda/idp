@@ -20,16 +20,16 @@ use crate::application::client_management::ClientManagementService;
 use crate::application::client_status::ClientStatusService;
 use crate::application::code_issuance::CodeIssuanceService;
 use crate::application::consent::ConsentService;
+use crate::application::email_verification::EmailVerificationService;
 use crate::application::introspection::IntrospectionService;
 use crate::application::invitation::InvitationService;
 use crate::application::key_service::KeyService;
 use crate::application::login::LoginService;
-use crate::application::email_verification::EmailVerificationService;
 use crate::application::logout::LogoutService;
 use crate::application::mfa_login::MfaLoginService;
 use crate::application::passkey_authentication::PasskeyAuthenticationService;
-use crate::application::password_reset::PasswordResetService;
 use crate::application::passkey_registration::PasskeyRegistrationService;
+use crate::application::password_reset::PasswordResetService;
 use crate::application::permission_management::PermissionManagementService;
 use crate::application::register::RegisterService;
 use crate::application::revocation::RevocationService;
@@ -53,11 +53,11 @@ use crate::infrastructure::mailer::LettreSmtpMailer;
 use crate::infrastructure::password::Argon2PasswordHasher;
 use crate::infrastructure::rate_limit::InMemoryLoginRateLimiter;
 use crate::infrastructure::repositories::audit_log::{SqlxAuditLogQuery, SqlxAuditLogSink};
+use crate::infrastructure::repositories::auth_session::SqlxAuthSessionRepository;
+use crate::infrastructure::repositories::authorization_code::SqlxAuthorizationCodeRepository;
 use crate::infrastructure::repositories::cached_user_permission::{
     CachedUserPermissionRepository, PermissionKey,
 };
-use crate::infrastructure::repositories::auth_session::SqlxAuthSessionRepository;
-use crate::infrastructure::repositories::authorization_code::SqlxAuthorizationCodeRepository;
 use crate::infrastructure::repositories::client::SqlxClientRepository;
 use crate::infrastructure::repositories::consent::SqlxClientConsentRepository;
 use crate::infrastructure::repositories::email_verification_token::SqlxEmailVerificationTokenRepository;
@@ -155,9 +155,11 @@ impl AppState {
         // scope→権限解決（ADR-0009 §7）: `has_permission` の判定結果を TTL キャッシュし、付与・剥奪時に
         // invalidate する。判定（admin_access）と変更（permissions_admin）が同一インスタンスを共有する
         // ため、付与直後の反映漏れ（stale allow/deny）を避けられる。
-        let permission_cache: Arc<dyn Cache<PermissionKey, bool>> = Arc::new(
-            InMemoryTtlCache::new(chrono_from_std(config.permission_cache_ttl()), clock.clone()),
-        );
+        let permission_cache: Arc<dyn Cache<PermissionKey, bool>> =
+            Arc::new(InMemoryTtlCache::new(
+                chrono_from_std(config.permission_cache_ttl()),
+                clock.clone(),
+            ));
         let user_permissions: Arc<dyn UserPermissionRepository> =
             Arc::new(CachedUserPermissionRepository::new(
                 Arc::new(SqlxUserPermissionRepository::new(pool.clone())),

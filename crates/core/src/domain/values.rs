@@ -141,7 +141,9 @@ pub fn validate_email(email: &str) -> Result<(), DomainError> {
     if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
         Ok(())
     } else {
-        Err(DomainError::InvalidValue("invalid email format".to_string()))
+        Err(DomainError::InvalidValue(
+            "invalid email format".to_string(),
+        ))
     }
 }
 

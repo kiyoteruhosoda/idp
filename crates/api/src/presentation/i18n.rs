@@ -135,10 +135,7 @@ mod tests {
 
     #[test]
     fn selects_ja_for_ja_tags() {
-        assert_eq!(
-            ApiLocale::from_accept_language(Some("ja")),
-            ApiLocale::Ja
-        );
+        assert_eq!(ApiLocale::from_accept_language(Some("ja")), ApiLocale::Ja);
         assert_eq!(
             ApiLocale::from_accept_language(Some("ja-JP")),
             ApiLocale::Ja
@@ -147,10 +144,7 @@ mod tests {
 
     #[test]
     fn selects_en_for_en_tags() {
-        assert_eq!(
-            ApiLocale::from_accept_language(Some("en")),
-            ApiLocale::En
-        );
+        assert_eq!(ApiLocale::from_accept_language(Some("en")), ApiLocale::En);
         assert_eq!(
             ApiLocale::from_accept_language(Some("en-US,ja;q=0.8")),
             ApiLocale::En

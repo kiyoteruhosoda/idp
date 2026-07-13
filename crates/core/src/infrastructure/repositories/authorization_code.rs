@@ -26,7 +26,8 @@ impl SqlxAuthorizationCodeRepository {
     }
 }
 
-const SELECT_COLUMNS: &str = "code_hash, tenant_id, user_id, client_id, redirect_uri, scope, nonce, \
+const SELECT_COLUMNS: &str =
+    "code_hash, tenant_id, user_id, client_id, redirect_uri, scope, nonce, \
      auth_time, code_challenge, code_challenge_method, expires_at, used_at, \
      created_at, updated_at";
 
@@ -125,11 +126,7 @@ impl AuthorizationCodeRepository for SqlxAuthorizationCodeRepository {
         row.as_ref().map(map_row).transpose()
     }
 
-    async fn revoke_all_active_for_user(
-        &self,
-        user_id: Uuid,
-        now: DateTime<Utc>,
-    ) -> Result<()> {
+    async fn revoke_all_active_for_user(&self, user_id: Uuid, now: DateTime<Utc>) -> Result<()> {
         sqlx::query(
             "UPDATE authorization_codes SET used_at = ? \
              WHERE user_id = ? AND used_at IS NULL AND expires_at > ?",

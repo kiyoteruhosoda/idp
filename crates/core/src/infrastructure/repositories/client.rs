@@ -22,7 +22,8 @@ impl SqlxClientRepository {
     }
 }
 
-const SELECT_COLUMNS: &str = "id, tenant_id, client_id, client_secret_hash, client_type, client_status, \
+const SELECT_COLUMNS: &str =
+    "id, tenant_id, client_id, client_secret_hash, client_type, client_status, \
      app_name, redirect_uris, post_logout_redirect_uris, frontchannel_logout_uri, \
      backchannel_logout_uri, grant_types, response_types, scopes, \
      token_endpoint_auth_method, require_pkce, created_at, updated_at";
@@ -127,7 +128,10 @@ impl ClientRepository for SqlxClientRepository {
         .bind(if client.post_logout_redirect_uris.is_empty() {
             None
         } else {
-            Some(to_json(&client.post_logout_redirect_uris, "post_logout_redirect_uris")?)
+            Some(to_json(
+                &client.post_logout_redirect_uris,
+                "post_logout_redirect_uris",
+            )?)
         })
         .bind(&client.frontchannel_logout_uri)
         .bind(&client.backchannel_logout_uri)
@@ -179,7 +183,10 @@ impl ClientRepository for SqlxClientRepository {
         .bind(if client.post_logout_redirect_uris.is_empty() {
             None
         } else {
-            Some(to_json(&client.post_logout_redirect_uris, "post_logout_redirect_uris")?)
+            Some(to_json(
+                &client.post_logout_redirect_uris,
+                "post_logout_redirect_uris",
+            )?)
         })
         .bind(&client.frontchannel_logout_uri)
         .bind(&client.backchannel_logout_uri)

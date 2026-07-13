@@ -271,7 +271,10 @@ impl TokenService {
         let user = self.load_active_user(auth_code.user_id, ctx).await?;
 
         // 8. トークン発行（scope は AuthorizationCodes.scope を引き継ぐ）。
-        let has_offline = auth_code.scope.iter().any(|v| v == Scope::OfflineAccess.as_str());
+        let has_offline = auth_code
+            .scope
+            .iter()
+            .any(|v| v == Scope::OfflineAccess.as_str());
         let has = |s: Scope| auth_code.scope.iter().any(|v| v == s.as_str());
         let scope_str = auth_code.scope.join(" ");
         let iat = now.timestamp();
@@ -289,7 +292,9 @@ impl TokenService {
             jti: Uuid::new_v4().to_string(),
             email: has(Scope::Email).then(|| user.email.clone()),
             email_verified: has(Scope::Email).then_some(user.email_verified),
-            preferred_username: has(Scope::Profile).then(|| user.preferred_username.clone()).flatten(),
+            preferred_username: has(Scope::Profile)
+                .then(|| user.preferred_username.clone())
+                .flatten(),
             name: has(Scope::Profile).then(|| user.name.clone()).flatten(),
         };
         let access_claims = AccessTokenClaims {
@@ -456,12 +461,14 @@ impl TokenService {
             aud: client_id.clone(),
             exp: iat + self.id_token_ttl.as_secs() as i64,
             iat,
-            auth_time: iat, // refresh 時は現在時刻（再認証なし）
+            auth_time: iat,       // refresh 時は現在時刻（再認証なし）
             nonce: String::new(), // refresh grant では nonce は不要
             jti: Uuid::new_v4().to_string(),
             email: has(Scope::Email).then(|| user.email.clone()),
             email_verified: has(Scope::Email).then_some(user.email_verified),
-            preferred_username: has(Scope::Profile).then(|| user.preferred_username.clone()).flatten(),
+            preferred_username: has(Scope::Profile)
+                .then(|| user.preferred_username.clone())
+                .flatten(),
             name: has(Scope::Profile).then(|| user.name.clone()).flatten(),
         };
         let access_claims = AccessTokenClaims {

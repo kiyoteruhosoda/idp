@@ -83,9 +83,16 @@ pub async fn audit_logs(
         ))
         .into_response(),
         // from/to の形式不正（api が 400）→ 日時エラー表示・空一覧。
-        Err(AdminApiError::Validation(_)) => {
-            Html(render_audit(&messages, &tenant, &admin, &form, offset, true, &[])).into_response()
-        }
+        Err(AdminApiError::Validation(_)) => Html(render_audit(
+            &messages,
+            &tenant,
+            &admin,
+            &form,
+            offset,
+            true,
+            &[],
+        ))
+        .into_response(),
         Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
         Err(AdminApiError::Forbidden) => forbidden_response(&headers),
         Err(_) => internal_error(&messages, &tenant, &admin),
@@ -157,8 +164,8 @@ fn pager_links(
     offset: i64,
     page_len: usize,
 ) -> (Option<String>, Option<String>) {
-    let prev = (offset > 0)
-        .then(|| audit_query_string(tenant, form, (offset - DEFAULT_LIMIT).max(0)));
+    let prev =
+        (offset > 0).then(|| audit_query_string(tenant, form, (offset - DEFAULT_LIMIT).max(0)));
     let next = (page_len as i64 == DEFAULT_LIMIT)
         .then(|| audit_query_string(tenant, form, offset + DEFAULT_LIMIT));
     (prev, next)
@@ -282,7 +289,15 @@ mod tests {
     #[test]
     fn audit_shows_datetime_error_banner() {
         let messages = Messages::new(Locale::Ja);
-        let html = render_audit(&messages, &tenant(), "admin-1", &AuditForm::default(), 0, true, &[]);
+        let html = render_audit(
+            &messages,
+            &tenant(),
+            "admin-1",
+            &AuditForm::default(),
+            0,
+            true,
+            &[],
+        );
         assert!(html.contains("role=\"alert\""));
     }
 

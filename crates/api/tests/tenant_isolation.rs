@@ -31,8 +31,8 @@ use serde_json::json;
 use sqlx::Row;
 use support::{
     authorize_uri_openid_only as authorize_uri, body_json, create_sso_session, delete,
-    exchange_code, get, location, post, query_param, send, setup as support_setup, unique,
-    TestEnv, REDIRECT_URI,
+    exchange_code, get, location, post, query_param, send, setup as support_setup, unique, TestEnv,
+    REDIRECT_URI,
 };
 
 async fn setup() -> Option<TestEnv> {
@@ -114,7 +114,10 @@ async fn root_can_create_but_cannot_operate_inside_created_tenant() {
         get(&root_cookie, &format!("/{}/admin/members", tenant.id)),
         get(&root_cookie, &format!("/{}/admin/clients", tenant.id)),
         get(&root_cookie, &format!("/{}/admin/audit-logs", tenant.id)),
-        get(&root_cookie, &format!("/{}/admin/settings/tenant", tenant.id)),
+        get(
+            &root_cookie,
+            &format!("/{}/admin/settings/tenant", tenant.id),
+        ),
         get(&root_cookie, &format!("/{}/admin/signing-keys", tenant.id)),
         post(
             &root_cookie,
@@ -160,7 +163,10 @@ async fn root_can_create_but_cannot_operate_inside_created_tenant() {
     // 当該テナントの管理者（idp.tenant.admin）は内部を操作できる。
     let res = send(
         &env.app,
-        get(&tenant.admin_cookie, &format!("/{}/admin/whoami", tenant.id)),
+        get(
+            &tenant.admin_cookie,
+            &format!("/{}/admin/whoami", tenant.id),
+        ),
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK, "tenant admin whoami");
@@ -209,7 +215,10 @@ async fn tenant_admin_boundary_is_exact_match_and_data_is_isolated() {
         get(&a.admin_cookie, &format!("/{}/admin/whoami", b.id)),
         get(&a.admin_cookie, &format!("/{}/admin/members", b.id)),
         get(&a.admin_cookie, &format!("/{}/admin/clients", b.id)),
-        get(&a.admin_cookie, &format!("/{}/admin/whoami", env.root_tenant_id)),
+        get(
+            &a.admin_cookie,
+            &format!("/{}/admin/whoami", env.root_tenant_id),
+        ),
         get(
             &a.admin_cookie,
             &format!("/{}/admin/tenants", env.root_tenant_id),
@@ -282,7 +291,11 @@ async fn tenant_admin_boundary_is_exact_match_and_data_is_isolated() {
         ),
     )
     .await;
-    assert_eq!(res.status(), StatusCode::NOT_FOUND, "cross-tenant client -> 404");
+    assert_eq!(
+        res.status(),
+        StatusCode::NOT_FOUND,
+        "cross-tenant client -> 404"
+    );
 
     // データ分離: A の利用者は B から検索・取得できない（不存在と同じ 404。§8）。
     let (a_user_id, a_user_email) = create_user(&env, &a.admin_cookie, &a.id).await;
@@ -294,13 +307,24 @@ async fn tenant_admin_boundary_is_exact_match_and_data_is_isolated() {
         ),
     )
     .await;
-    assert_eq!(res.status(), StatusCode::NOT_FOUND, "cross-tenant search -> 404");
+    assert_eq!(
+        res.status(),
+        StatusCode::NOT_FOUND,
+        "cross-tenant search -> 404"
+    );
     let res = send(
         &env.app,
-        get(&b.admin_cookie, &format!("/{}/admin/users/{a_user_id}", b.id)),
+        get(
+            &b.admin_cookie,
+            &format!("/{}/admin/users/{a_user_id}", b.id),
+        ),
     )
     .await;
-    assert_eq!(res.status(), StatusCode::NOT_FOUND, "cross-tenant get -> 404");
+    assert_eq!(
+        res.status(),
+        StatusCode::NOT_FOUND,
+        "cross-tenant get -> 404"
+    );
     // 権限の付与・参照もテナント越しには不可（対象は所属元テナント限定）。
     let res = send(
         &env.app,
@@ -469,7 +493,11 @@ async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions()
         ),
     )
     .await;
-    assert_eq!(res.status(), StatusCode::NOT_FOUND, "guest user record -> 404");
+    assert_eq!(
+        res.status(),
+        StatusCode::NOT_FOUND,
+        "guest user record -> 404"
+    );
     let res = send(
         &env.app,
         get(
@@ -478,7 +506,11 @@ async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions()
         ),
     )
     .await;
-    assert_eq!(res.status(), StatusCode::NOT_FOUND, "guest user search -> 404");
+    assert_eq!(
+        res.status(),
+        StatusCode::NOT_FOUND,
+        "guest user search -> 404"
+    );
 
     // メンバーシップだけでは管理 API に触れない（権限なし → 403）。
     let res = send(
@@ -486,7 +518,11 @@ async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions()
         get(&guest_cookie, &format!("/{}/admin/whoami", host.id)),
     )
     .await;
-    assert_eq!(res.status(), StatusCode::FORBIDDEN, "guest without perms -> 403");
+    assert_eq!(
+        res.status(),
+        StatusCode::FORBIDDEN,
+        "guest without perms -> 403"
+    );
 
     // HOME メンバーシップは解除できない（§3）。
     let res = send(
@@ -547,7 +583,10 @@ async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions()
             .fetch_one(&env.pool)
             .await
             .expect("guest user still exists");
-    assert_eq!(still_home, home.id, "guest user record remains in home tenant");
+    assert_eq!(
+        still_home, home.id,
+        "guest user record remains in home tenant"
+    );
     assert_eq!(status, "ACTIVE", "guest user state untouched by host admin");
 }
 
@@ -666,7 +705,11 @@ async fn oidc_flow_enforces_membership_and_per_tenant_issuer() {
         ),
     )
     .await;
-    assert_eq!(res.status(), StatusCode::NO_CONTENT, "guest accepts invitation");
+    assert_eq!(
+        res.status(),
+        StatusCode::NO_CONTENT,
+        "guest accepts invitation"
+    );
 
     let res = send(
         &env.app,

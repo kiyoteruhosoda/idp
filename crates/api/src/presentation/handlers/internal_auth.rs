@@ -15,14 +15,15 @@
 //! 呼び出しにサービス認証トークン（共有シークレット。`X-Internal-Auth-Token` ヘッダ）を必須とする。
 //! トークンは設定（`config` 経由）で注入する。
 
+use crate::application::account_language::{UpdateLanguageCommand, UpdateLanguageOutcome};
+use crate::application::account_password::{AccountPasswordCommand, AccountPasswordOutcome};
 use crate::application::admin_login::{
     AdminChangePasswordCommand, AdminLoginCommand, AdminLoginOutcome,
 };
-use crate::application::account_language::{AccountLanguageService, UpdateLanguageCommand, UpdateLanguageOutcome};
-use crate::application::account_password::{AccountPasswordCommand, AccountPasswordOutcome};
 use crate::application::audit::RequestContext;
 use crate::application::change_password::{ChangePasswordCommand, ChangePasswordOutcome};
 use crate::application::login::{LoginCommand, LoginOutcome};
+use crate::application::password_reset::{RequestResetOutcome, ResetPasswordOutcome};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::require_internal_tenant;
@@ -31,16 +32,15 @@ use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use crate::application::password_reset::{RequestResetOutcome, ResetPasswordOutcome};
 use idp_contracts::auth::{
     InternalAccountChangePasswordRequest, InternalAccountChangePasswordResponse,
     InternalAccountUpdateLanguageRequest, InternalAccountUpdateLanguageResponse,
-    InternalPasswordResetCompleteRequest, InternalPasswordResetCompleteResponse,
-    InternalPasswordResetRequestRequest, InternalPasswordResetRequestResponse,
     InternalAdminAuthenticateRequest, InternalAdminAuthenticateResponse,
     InternalAdminChangePasswordRequest, InternalAdminChangePasswordResponse,
     InternalAuthenticateRequest, InternalAuthenticateResponse, InternalChangePasswordRequest,
-    InternalChangePasswordResponse, InternalLogoutRequest,
+    InternalChangePasswordResponse, InternalLogoutRequest, InternalPasswordResetCompleteRequest,
+    InternalPasswordResetCompleteResponse, InternalPasswordResetRequestRequest,
+    InternalPasswordResetRequestResponse,
 };
 
 /// 内部サービス認証トークンを載せるヘッダ名（小文字。`HeaderMap` は大小無視で引ける）。
@@ -309,10 +309,12 @@ pub async fn admin_change_password(
         .await;
     let ttl = state.config.sso_absolute_ttl().as_secs();
     Ok(Json(match outcome {
-        AdminLoginOutcome::Success { sso_session_id } => InternalAdminChangePasswordResponse::Success {
-            sso_session_id,
-            sso_absolute_ttl_secs: ttl,
-        },
+        AdminLoginOutcome::Success { sso_session_id } => {
+            InternalAdminChangePasswordResponse::Success {
+                sso_session_id,
+                sso_absolute_ttl_secs: ttl,
+            }
+        }
         AdminLoginOutcome::RateLimited => InternalAdminChangePasswordResponse::RateLimited,
         AdminLoginOutcome::InvalidCredentials => {
             InternalAdminChangePasswordResponse::InvalidCredentials
@@ -376,7 +378,10 @@ pub async fn password_reset_request(
         user_agent: req.user_agent,
     };
     let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
-    let outcome = state.password_reset.request_reset(tenant, &req.email, &ctx).await;
+    let outcome = state
+        .password_reset
+        .request_reset(tenant, &req.email, &ctx)
+        .await;
     Ok(Json(match outcome {
         RequestResetOutcome::Accepted => InternalPasswordResetRequestResponse::Accepted,
         RequestResetOutcome::Unavailable => InternalPasswordResetRequestResponse::Unavailable,
@@ -428,8 +433,12 @@ pub async fn account_update_language(
         .await;
     Json(match outcome {
         UpdateLanguageOutcome::Ok => InternalAccountUpdateLanguageResponse::Ok,
-        UpdateLanguageOutcome::SessionExpired => InternalAccountUpdateLanguageResponse::SessionExpired,
-        UpdateLanguageOutcome::InvalidLanguage => InternalAccountUpdateLanguageResponse::InvalidLanguage,
+        UpdateLanguageOutcome::SessionExpired => {
+            InternalAccountUpdateLanguageResponse::SessionExpired
+        }
+        UpdateLanguageOutcome::InvalidLanguage => {
+            InternalAccountUpdateLanguageResponse::InvalidLanguage
+        }
         UpdateLanguageOutcome::Internal(e) => {
             tracing::error!(error = %e, "account update-language failed with internal error");
             InternalAccountUpdateLanguageResponse::Internal

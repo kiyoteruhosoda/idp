@@ -135,11 +135,7 @@ impl UserRepository for SqlxUserRepository {
         row.as_ref().map(map_row).transpose()
     }
 
-    async fn find_by_username(
-        &self,
-        tenant_id: TenantId,
-        username: &str,
-    ) -> Result<Option<User>> {
+    async fn find_by_username(&self, tenant_id: TenantId, username: &str) -> Result<Option<User>> {
         let sql = format!(
             "SELECT {SELECT_COLUMNS} FROM users WHERE tenant_id = ? AND preferred_username = ?"
         );
@@ -183,14 +179,12 @@ impl UserRepository for SqlxUserRepository {
     }
 
     async fn update_password(&self, id: Uuid, password_hash: &str) -> Result<()> {
-        sqlx::query(
-            "UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?",
-        )
-        .bind(password_hash)
-        .bind(id.to_string())
-        .execute(&self.pool)
-        .await
-        .map_err(repo_err)?;
+        sqlx::query("UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?")
+            .bind(password_hash)
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(repo_err)?;
         Ok(())
     }
 

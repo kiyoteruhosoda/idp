@@ -33,7 +33,10 @@ pub fn build(state: AppState) -> Router {
             "/internal/authenticate/admin/change-password",
             post(internal_auth::admin_change_password),
         )
-        .route("/internal/change-password", post(internal_auth::change_password))
+        .route(
+            "/internal/change-password",
+            post(internal_auth::change_password),
+        )
         // セルフサービスのパスワード変更（ログイン済みユーザーの設定画面。MT15）。
         .route(
             "/internal/account/change-password",
@@ -55,31 +58,31 @@ pub fn build(state: AppState) -> Router {
             post(internal_auth::password_reset_complete),
         )
         // 同意 API（F3: Consent）。
-        .route(
-            "/internal/consent-info",
-            get(consent::consent_info),
-        )
-        .route(
-            "/internal/consent/approve",
-            post(consent::consent_approve),
-        )
-        .route(
-            "/internal/consent/deny",
-            post(consent::consent_deny),
-        )
+        .route("/internal/consent-info", get(consent::consent_info))
+        .route("/internal/consent/approve", post(consent::consent_approve))
+        .route("/internal/consent/deny", post(consent::consent_deny))
         // MFA（TOTP）自己登録・ログイン検証 API。
         .route("/internal/mfa/totp/setup", post(mfa::setup_totp))
         .route("/internal/mfa/totp/confirm", post(mfa::confirm_totp))
         .route("/internal/mfa/totp/delete", post(mfa::delete_totp))
         .route("/internal/mfa/totp/verify", post(mfa::verify_totp))
         // Passkey（WebAuthn）セルフ登録 API。
-        .route("/internal/passkey/register/begin", post(passkey::register_begin))
-        .route("/internal/passkey/register/complete", post(passkey::register_complete))
+        .route(
+            "/internal/passkey/register/begin",
+            post(passkey::register_begin),
+        )
+        .route(
+            "/internal/passkey/register/complete",
+            post(passkey::register_complete),
+        )
         .route("/internal/passkey/delete", post(passkey::passkey_delete))
         .route("/internal/passkey/list", post(passkey::passkey_list))
         // Passkey ログインフロー API。
         .route("/internal/passkey/login/begin", post(passkey::login_begin))
-        .route("/internal/passkey/login/complete", post(passkey::login_complete))
+        .route(
+            "/internal/passkey/login/complete",
+            post(passkey::login_complete),
+        )
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             internal_auth::require_service_token,

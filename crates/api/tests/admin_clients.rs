@@ -108,7 +108,11 @@ async fn admin_can_manage_clients_but_others_cannot() {
         ),
     )
     .await;
-    assert_eq!(res.status(), StatusCode::BAD_REQUEST, "public secret -> 400");
+    assert_eq!(
+        res.status(),
+        StatusCode::BAD_REQUEST,
+        "public secret -> 400"
+    );
 
     // confidential クライアント登録 → 201・secret 平文あり。
     let res = send(

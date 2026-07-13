@@ -5,10 +5,15 @@
 //! 管理者だけになる（ADR-0009 §4）。SMTP パスワードは暗号化して保存し、参照時は平文を返さない
 //! （設定済みか否かのみ）。
 
-use crate::domain::system_setting::{SmtpSettingsView, UpdateSmtpCommand};
+use crate::config::{ResolvedSetting, SettingSource};
+use crate::domain::system_setting::{
+    DefaultRisk, SettingOwner, SmtpSettingsView, UpdateSmtpCommand,
+};
 use crate::presentation::admin::{IdpSystemAdmin, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
-use crate::presentation::dto::{SystemSettingsResponse, UpdateSystemSettingsRequest};
+use crate::presentation::dto::{
+    RuntimeSettingResponse, SystemSettingsResponse, UpdateSystemSettingsRequest,
+};
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
 use crate::presentation::state::AppState;
@@ -37,7 +42,7 @@ pub async fn get_system_settings(
         .get_smtp()
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    Ok(Json(to_response(smtp)))
+    Ok(Json(to_response(smtp, state.config.resolved_settings())))
 }
 
 /// システム設定（SMTP 等）を更新する。`smtp_password` が指定されたときのみパスワードを上書きする。
@@ -60,7 +65,11 @@ pub async fn update_system_settings(
     headers: HeaderMap,
     Json(body): Json<UpdateSystemSettingsRequest>,
 ) -> Result<Json<SystemSettingsResponse>, ApiError> {
-    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
     let updated = state
         .system_settings
         .update_smtp(
@@ -78,10 +87,10 @@ pub async fn update_system_settings(
         )
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    Ok(Json(to_response(updated)))
+    Ok(Json(to_response(updated, state.config.resolved_settings())))
 }
 
-fn to_response(smtp: SmtpSettingsView) -> SystemSettingsResponse {
+fn to_response(smtp: SmtpSettingsView, runtime: &[ResolvedSetting]) -> SystemSettingsResponse {
     SystemSettingsResponse {
         smtp_host: smtp.host,
         smtp_port: smtp.port,
@@ -89,5 +98,32 @@ fn to_response(smtp: SmtpSettingsView) -> SystemSettingsResponse {
         smtp_password_set: smtp.password_set,
         smtp_from_address: smtp.from_address,
         smtp_use_tls: smtp.use_tls,
+        runtime_settings: runtime.iter().map(to_runtime_response).collect(),
+    }
+}
+
+fn to_runtime_response(setting: &ResolvedSetting) -> RuntimeSettingResponse {
+    RuntimeSettingResponse {
+        key: setting.key.clone(),
+        owner: match setting.owner {
+            SettingOwner::Builtin => "BUILTIN",
+            SettingOwner::EnvLocked => "ENV_LOCKED",
+            SettingOwner::DbManaged => "DB_MANAGED",
+        }
+        .to_string(),
+        source: match setting.source {
+            SettingSource::Builtin => "BUILTIN",
+            SettingSource::Env => "ENV",
+            SettingSource::Db => "DB",
+        }
+        .to_string(),
+        secret: setting.secret,
+        restart_required: setting.restart_required,
+        default_risk: match setting.default_risk {
+            DefaultRisk::Safe => "SAFE",
+            DefaultRisk::Review => "REVIEW",
+            DefaultRisk::Dangerous => "DANGEROUS",
+        }
+        .to_string(),
     }
 }

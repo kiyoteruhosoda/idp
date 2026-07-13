@@ -67,11 +67,17 @@ pub struct TestEnv {
 }
 
 /// `TEST_DATABASE_URL` の DB へ接続し、マイグレーションをプロセス内で一度だけ適用する。
-/// 未設定なら `None`（テストはスキップ）。
+/// 既定では未設定を失敗にする（CI/--check で DB テストをスキップ不能にする）。
+/// ローカルで意図的に DB 統合テストだけを省略する場合のみ `IDP_ALLOW_DB_TEST_SKIP=1` を指定する。
 pub async fn connect_pool(test_name: &str) -> Option<MySqlPool> {
     let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
-        eprintln!("TEST_DATABASE_URL not set; skipping {test_name} integration test");
-        return None;
+        if std::env::var("IDP_ALLOW_DB_TEST_SKIP").ok().as_deref() == Some("1") {
+            eprintln!(
+                "TEST_DATABASE_URL not set; intentionally skipping {test_name} integration test"
+            );
+            return None;
+        }
+        panic!("TEST_DATABASE_URL is required for {test_name} integration test; set IDP_ALLOW_DB_TEST_SKIP=1 only for local unit-only runs");
     };
     let pool = MySqlPoolOptions::new()
         .connect(&url)

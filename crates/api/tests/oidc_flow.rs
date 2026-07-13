@@ -27,12 +27,7 @@ async fn insert_confidential_client(pool: &MySqlPool, tenant_id: &str) -> (Strin
     support::insert_confidential_client(pool, tenant_id, &["openid"]).await
 }
 
-async fn register_user(
-    app: &axum::Router,
-    tenant: &str,
-    username: &str,
-    password: &str,
-) -> String {
+async fn register_user(app: &axum::Router, tenant: &str, username: &str, password: &str) -> String {
     let payload = json!({
         "email": format!("{username}@example.com"),
         "preferred_username": username,
@@ -112,7 +107,9 @@ async fn audit_count(pool: &MySqlPool, client_id: &str, event_type: &str) -> i64
 
 #[tokio::test]
 async fn full_authorization_code_flow_with_sso_and_audit() {
-    let Some(env) = support::setup("OIDC flow").await else { return };
+    let Some(env) = support::setup("OIDC flow").await else {
+        return;
+    };
     let support::TestEnv {
         app,
         pool,
@@ -130,7 +127,12 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     let response = send(
         &app,
         Request::builder()
-            .uri(authorize_uri(&root_tenant_id, &client_id, "state-abc", "nonce-xyz"))
+            .uri(authorize_uri(
+                &root_tenant_id,
+                &client_id,
+                "state-abc",
+                "nonce-xyz",
+            ))
             .body(Body::empty())
             .unwrap(),
     )
@@ -144,16 +146,33 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     let csrf = login_csrf(&auth_session);
 
     // CSRF トークン不一致は拒否される（result=csrf_mismatch）。
-    let (status, body) =
-        internal_authenticate(&app, &root_tenant_id, &auth_session, &username, password, &"0".repeat(64)).await;
+    let (status, body) = internal_authenticate(
+        &app,
+        &root_tenant_id,
+        &auth_session,
+        &username,
+        password,
+        &"0".repeat(64),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["result"], "csrf_mismatch", "csrf mismatch");
 
     // 条件 4, 5, 7: ログイン成功。初回は profile/email が未同意のため同意ステップへ（F3）。
-    let (status, body) =
-        internal_authenticate(&app, &root_tenant_id, &auth_session, &username, password, &csrf).await;
+    let (status, body) = internal_authenticate(
+        &app,
+        &root_tenant_id,
+        &auth_session,
+        &username,
+        password,
+        &csrf,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "login success");
-    assert_eq!(body["result"], "consent_required", "first login needs consent");
+    assert_eq!(
+        body["result"], "consent_required",
+        "first login needs consent"
+    );
     let sso_cookie = body["sso_session_id"]
         .as_str()
         .expect("sso_session_id")
@@ -219,7 +238,9 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     let response = send(
         &app,
         Request::builder()
-            .uri(format!("/{root_tenant_id}/.well-known/openid-configuration"))
+            .uri(format!(
+                "/{root_tenant_id}/.well-known/openid-configuration"
+            ))
             .body(Body::empty())
             .unwrap(),
     )
@@ -326,7 +347,12 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     let response = send(
         &app,
         Request::builder()
-            .uri(authorize_uri(&root_tenant_id, &client_id, "state-2nd", "nonce-2nd"))
+            .uri(authorize_uri(
+                &root_tenant_id,
+                &client_id,
+                "state-2nd",
+                "nonce-2nd",
+            ))
             .header(COOKIE, format!("sso_session_id={sso_cookie}"))
             .body(Body::empty())
             .unwrap(),
@@ -392,7 +418,9 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
 
 #[tokio::test]
 async fn invalid_authorize_and_client_auth_failures() {
-    let Some(env) = support::setup("OIDC flow").await else { return };
+    let Some(env) = support::setup("OIDC flow").await else {
+        return;
+    };
     let support::TestEnv {
         app,
         pool,
@@ -491,7 +519,9 @@ async fn invalid_authorize_and_client_auth_failures() {
 
 #[tokio::test]
 async fn login_lockout_after_repeated_failures() {
-    let Some(env) = support::setup("OIDC flow").await else { return };
+    let Some(env) = support::setup("OIDC flow").await else {
+        return;
+    };
     let support::TestEnv {
         app,
         pool,
@@ -518,8 +548,15 @@ async fn login_lockout_after_repeated_failures() {
 
     // 9 回失敗 → invalid_credentials、10 回目でロック（locked）。
     for attempt in 1..=10 {
-        let (status, body) =
-            internal_authenticate(&app, &root_tenant_id, &auth_session, &username, "wrong-password", &csrf).await;
+        let (status, body) = internal_authenticate(
+            &app,
+            &root_tenant_id,
+            &auth_session,
+            &username,
+            "wrong-password",
+            &csrf,
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "attempt {attempt}");
         let expected = if attempt < 10 {
             "invalid_credentials"
@@ -530,7 +567,15 @@ async fn login_lockout_after_repeated_failures() {
     }
 
     // ロック中は正しいパスワードでも拒否される。
-    let (_, body) = internal_authenticate(&app, &root_tenant_id, &auth_session, &username, password, &csrf).await;
+    let (_, body) = internal_authenticate(
+        &app,
+        &root_tenant_id,
+        &auth_session,
+        &username,
+        password,
+        &csrf,
+    )
+    .await;
     assert_eq!(body["result"], "locked", "locked account");
 
     // 監査ログ: login.failed が 10 件以上、login.locked が 2 件以上（ロック時 + ロック中の試行）。

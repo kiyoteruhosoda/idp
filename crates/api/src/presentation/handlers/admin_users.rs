@@ -50,7 +50,11 @@ pub async fn create_user(
     headers: HeaderMap,
     Json(body): Json<CreateUserRequest>,
 ) -> Result<(StatusCode, Json<UserCreatedResponse>), ApiError> {
-    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
     let created = state
         .users_admin
         .create_user(
@@ -85,7 +89,9 @@ pub async fn search_user(
 ) -> Result<Json<UserSummaryResponse>, ApiError> {
     let term = query.q.unwrap_or_default();
     if term.trim().is_empty() {
-        return Err(ApiError::NotFound(ApiMessages::new(locale).get("api-user-not-found")));
+        return Err(ApiError::NotFound(
+            ApiMessages::new(locale).get("api-user-not-found"),
+        ));
     }
     match state
         .permissions_admin
@@ -94,7 +100,9 @@ pub async fn search_user(
         .map_err(|e| map_permission_management_error(e, locale))?
     {
         Some(user) => Ok(Json(summary(&user))),
-        None => Err(ApiError::NotFound(ApiMessages::new(locale).get("api-user-not-found"))),
+        None => Err(ApiError::NotFound(
+            ApiMessages::new(locale).get("api-user-not-found"),
+        )),
     }
 }
 

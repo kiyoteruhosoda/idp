@@ -100,11 +100,7 @@ mod tests {
     struct FakeClients(Vec<Client>);
     #[async_trait]
     impl ClientRepository for FakeClients {
-        async fn find_by_client_id(
-            &self,
-            _t: TenantId,
-            _id: &str,
-        ) -> DomainResult<Option<Client>> {
+        async fn find_by_client_id(&self, _t: TenantId, _id: &str) -> DomainResult<Option<Client>> {
             unreachable!()
         }
         async fn create(&self, _c: &Client) -> DomainResult<()> {

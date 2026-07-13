@@ -49,9 +49,15 @@ pub fn build(state: WebState) -> Router {
             get(invitation_accept::page).post(invitation_accept::submit),
         )
         // 同意画面（F3: Consent）。
-        .route("/consent", get(consent::consent_page).post(consent::consent))
+        .route(
+            "/consent",
+            get(consent::consent_page).post(consent::consent),
+        )
         // MFA: ログインフロー TOTP 入力（パスワード認証後）。
-        .route("/mfa/totp", get(mfa_totp::verify_page).post(mfa_totp::verify))
+        .route(
+            "/mfa/totp",
+            get(mfa_totp::verify_page).post(mfa_totp::verify),
+        )
         // MFA: ユーザー自己登録（TOTP セットアップ・削除）。SSO 認証が必要。
         .route(
             "/account/mfa/totp/setup",
@@ -140,19 +146,10 @@ pub fn build(state: WebState) -> Router {
             get(admin_invitations_console::new_form).post(admin_invitations_console::create),
         )
         // 状況確認画面（監査ログ・クライアント状況）。読み取り専用。
-        .route(
-            "/admin/audit-logs",
-            get(admin_status_console::audit_logs),
-        )
-        .route(
-            "/admin/status",
-            get(admin_status_console::client_status),
-        )
+        .route("/admin/audit-logs", get(admin_status_console::audit_logs))
+        .route("/admin/status", get(admin_status_console::client_status))
         // 署名鍵管理画面（K1）。
-        .route(
-            "/admin/signing-keys",
-            get(admin_signing_keys_console::list),
-        )
+        .route("/admin/signing-keys", get(admin_signing_keys_console::list))
         .route(
             "/admin/signing-keys/generate",
             post(admin_signing_keys_console::generate),

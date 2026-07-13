@@ -330,6 +330,17 @@ pub struct UpdateTenantSettingsRequest {
 
 // --- システム設定（SMTP 等。root/idp.system.admin のみ。MT14） -----------------------------
 
+/// ランタイム設定の解決結果（値は返さず、出所と安全属性のみ返す）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RuntimeSettingResponse {
+    pub key: String,
+    pub owner: String,
+    pub source: String,
+    pub secret: bool,
+    pub restart_required: bool,
+    pub default_risk: String,
+}
+
 /// システム設定の公開表現（`GET/PUT /{tenant_id}/admin/system-settings`）。SMTP パスワードは
 /// 平文を返さず、設定済みか否か（`smtp_password_set`）のみを返す。
 #[derive(Debug, Serialize, ToSchema)]
@@ -342,6 +353,8 @@ pub struct SystemSettingsResponse {
     pub smtp_password_set: bool,
     pub smtp_from_address: String,
     pub smtp_use_tls: bool,
+    #[serde(default)]
+    pub runtime_settings: Vec<RuntimeSettingResponse>,
 }
 
 /// システム設定の更新リクエスト（`PUT /{tenant_id}/admin/system-settings`）。`smtp_password` は

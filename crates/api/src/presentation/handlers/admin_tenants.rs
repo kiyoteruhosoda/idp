@@ -71,7 +71,11 @@ pub async fn create_tenant(
     headers: HeaderMap,
     Json(body): Json<CreateTenantRequest>,
 ) -> Result<(StatusCode, Json<TenantCreatedResponse>), ApiError> {
-    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
     let created = state
         .tenants_admin
         .create_tenant(
@@ -148,7 +152,11 @@ pub async fn update_tenant(
     Json(body): Json<UpdateTenantRequest>,
 ) -> Result<Json<TenantResponse>, ApiError> {
     let child = parse_tenant_id(&child_id)?;
-    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
     let status = body
         .status
         .as_deref()
@@ -195,7 +203,11 @@ pub async fn delete_tenant(
     Path((_tenant_id, child_id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     let child = parse_tenant_id(&child_id)?;
-    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
     state
         .tenants_admin
         .delete_tenant(tenant.context(), child, admin.user_id, &ctx)
@@ -249,7 +261,11 @@ pub async fn update_current_tenant(
     headers: HeaderMap,
     Json(body): Json<UpdateTenantSettingsRequest>,
 ) -> Result<Json<TenantResponse>, ApiError> {
-    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
     let updated = state
         .tenants_admin
         .update_current_settings(

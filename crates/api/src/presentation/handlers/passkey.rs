@@ -4,9 +4,9 @@
 //! ログインフロー認証（login/begin, login/complete）を提供する。
 //! すべて `/internal/*` ルータに属し、サービス認証トークンで保護される。
 
+use crate::application::audit::RequestContext;
 use crate::application::passkey_authentication::PasskeyAuthOutcome;
 use crate::application::passkey_registration::PasskeyRegistrationError;
-use crate::application::audit::RequestContext;
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::require_internal_tenant;
@@ -14,13 +14,12 @@ use axum::extract::{Extension, State};
 use axum::response::Response;
 use axum::Json;
 use idp_contracts::auth::{
-    InternalPasskeyDeleteRequest, InternalPasskeyDeleteResponse,
-    InternalPasskeyListRequest, InternalPasskeyListResponse,
-    InternalPasskeyLoginBeginRequest, InternalPasskeyLoginBeginResponse,
-    InternalPasskeyLoginCompleteRequest, InternalPasskeyLoginCompleteResponse,
-    InternalPasskeyRegisterBeginRequest, InternalPasskeyRegisterBeginResponse,
-    InternalPasskeyRegisterCompleteRequest, InternalPasskeyRegisterCompleteResponse,
-    PasskeyCredentialInfo,
+    InternalPasskeyDeleteRequest, InternalPasskeyDeleteResponse, InternalPasskeyListRequest,
+    InternalPasskeyListResponse, InternalPasskeyLoginBeginRequest,
+    InternalPasskeyLoginBeginResponse, InternalPasskeyLoginCompleteRequest,
+    InternalPasskeyLoginCompleteResponse, InternalPasskeyRegisterBeginRequest,
+    InternalPasskeyRegisterBeginResponse, InternalPasskeyRegisterCompleteRequest,
+    InternalPasskeyRegisterCompleteResponse, PasskeyCredentialInfo,
 };
 use uuid::Uuid;
 
@@ -167,7 +166,11 @@ pub async fn login_complete(
 ) -> Result<Json<InternalPasskeyLoginCompleteResponse>, Response> {
     let challenge_id = match req.challenge_id.parse::<Uuid>() {
         Ok(id) => id,
-        Err(_) => return Ok(Json(InternalPasskeyLoginCompleteResponse::ChallengeNotFound)),
+        Err(_) => {
+            return Ok(Json(
+                InternalPasskeyLoginCompleteResponse::ChallengeNotFound,
+            ))
+        }
     };
     let ctx = RequestContext {
         correlation_id: correlation.0,

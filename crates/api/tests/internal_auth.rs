@@ -60,7 +60,9 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
     };
     let (app, pool, root_tenant_id) = (env.app, env.pool, env.root_tenant_id);
 
-    let client_id = support::insert_public_client(&pool, &root_tenant_id, &["openid", "profile", "email"]).await;
+    let client_id =
+        support::insert_public_client(&pool, &root_tenant_id, &["openid", "profile", "email"])
+            .await;
     let username = format!("int{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
     let password = "correct-horse-battery";
     register_user(&app, &root_tenant_id, &username, password).await;
@@ -217,8 +219,10 @@ async fn admin_authenticate_rejects_unknown_user() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
     // tenant_id が無い・不正な内部リクエストは 400（fail-closed。SEC4）。
-    for bad in [json!({ "username": "x", "password": "y" }),
-                json!({ "tenant_id": "not-a-uuid", "username": "x", "password": "y" })] {
+    for bad in [
+        json!({ "username": "x", "password": "y" }),
+        json!({ "tenant_id": "not-a-uuid", "username": "x", "password": "y" }),
+    ] {
         let response = send(
             &app,
             post_internal("/internal/authenticate/admin", Some(SERVICE_TOKEN), bad),

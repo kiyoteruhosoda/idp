@@ -383,7 +383,11 @@ pub(crate) async fn resolve_admin(
     headers: &HeaderMap,
 ) -> AdminResolution {
     let sso = cookies::get(headers, cookies::SSO_SESSION_COOKIE).unwrap_or_default();
-    match state.api.admin_whoami(&correlation.0, &tenant.0, &sso).await {
+    match state
+        .api
+        .admin_whoami(&correlation.0, &tenant.0, &sso)
+        .await
+    {
         AdminSession::Authenticated(user_id) => AdminResolution::Ok(user_id),
         AdminSession::Unauthenticated => AdminResolution::Reject(redirect_to_login(tenant)),
         AdminSession::Forbidden => AdminResolution::Reject(forbidden_response(headers)),

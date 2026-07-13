@@ -64,19 +64,15 @@ impl UserPermissionRepository for SqlxUserPermissionRepository {
             .collect()
     }
 
-    async fn list_codes_for_user(
-        &self,
-        tenant_id: TenantId,
-        user_id: Uuid,
-    ) -> Result<Vec<String>> {
+    async fn list_codes_for_user(&self, tenant_id: TenantId, user_id: Uuid) -> Result<Vec<String>> {
         let rows = sqlx::query(
             "SELECT permission_code FROM user_permissions WHERE user_id = ? AND tenant_id = ?",
         )
-            .bind(user_id.to_string())
-            .bind(tenant_id.to_string())
-            .fetch_all(&self.pool)
-            .await
-            .map_err(repo_err)?;
+        .bind(user_id.to_string())
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(repo_err)?;
         rows.iter()
             .map(|row| {
                 row.try_get::<String, _>("permission_code")
@@ -85,22 +81,17 @@ impl UserPermissionRepository for SqlxUserPermissionRepository {
             .collect()
     }
 
-    async fn has_permission(
-        &self,
-        tenant_id: TenantId,
-        user_id: Uuid,
-        code: &str,
-    ) -> Result<bool> {
+    async fn has_permission(&self, tenant_id: TenantId, user_id: Uuid, code: &str) -> Result<bool> {
         let row = sqlx::query(
             "SELECT 1 FROM user_permissions \
              WHERE user_id = ? AND permission_code = ? AND tenant_id = ?",
         )
-                .bind(user_id.to_string())
-                .bind(code)
-                .bind(tenant_id.to_string())
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(repo_err)?;
+        .bind(user_id.to_string())
+        .bind(code)
+        .bind(tenant_id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(repo_err)?;
         Ok(row.is_some())
     }
 
@@ -143,12 +134,12 @@ impl UserPermissionRepository for SqlxUserPermissionRepository {
             "DELETE FROM user_permissions \
              WHERE user_id = ? AND permission_code = ? AND tenant_id = ?",
         )
-            .bind(user_id.to_string())
-            .bind(code)
-            .bind(tenant_id.to_string())
-            .execute(&self.pool)
-            .await
-            .map_err(repo_err)?;
+        .bind(user_id.to_string())
+        .bind(code)
+        .bind(tenant_id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(repo_err)?;
         Ok(())
     }
 
@@ -170,7 +161,10 @@ impl UserPermissionRepository for SqlxUserPermissionRepository {
         .map_err(repo_err)?;
         let codes: Vec<String> = rows
             .iter()
-            .map(|row| row.try_get::<String, _>("permission_code").map_err(repo_err))
+            .map(|row| {
+                row.try_get::<String, _>("permission_code")
+                    .map_err(repo_err)
+            })
             .collect::<Result<_>>()?;
         if !codes.is_empty() {
             sqlx::query("DELETE FROM user_permissions WHERE user_id = ? AND tenant_id = ?")

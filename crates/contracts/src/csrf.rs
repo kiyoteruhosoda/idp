@@ -12,8 +12,7 @@ use sha2::Sha256;
 type HmacSha256 = Hmac<Sha256>;
 
 fn hmac_sha256_hex(key: &[u8], message: &str) -> String {
-    let mut mac =
-        HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
     mac.update(message.as_bytes());
     hex::encode(mac.finalize().into_bytes())
 }

@@ -214,7 +214,9 @@ fn validate_email(email: &str) -> Result<(), UserManagementError> {
 }
 
 fn normalize_optional(value: Option<String>) -> Option<String> {
-    value.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+    value
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
 }
 
 fn internal(e: DomainError) -> UserManagementError {
@@ -286,7 +288,13 @@ mod tests {
             Ok(())
         }
         async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<User>> {
-            Ok(self.rows.lock().unwrap().iter().find(|u| u.id == id).cloned())
+            Ok(self
+                .rows
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|u| u.id == id)
+                .cloned())
         }
         async fn find_by_sub(&self, _s: Uuid) -> DomainResult<Option<User>> {
             unreachable!()
@@ -411,7 +419,10 @@ mod tests {
         assert!(created.generated_password.len() >= 32);
         let stored = users.rows.lock().unwrap()[0].clone();
         // 保存されるのはハッシュのみ（平文は保持しない）。
-        assert_eq!(stored.password_hash, format!("hash:{}", created.generated_password));
+        assert_eq!(
+            stored.password_hash,
+            format!("hash:{}", created.generated_password)
+        );
         assert_ne!(stored.password_hash, created.generated_password);
         assert!(stored.must_change_password);
         assert_eq!(stored.email, "new@example.com");

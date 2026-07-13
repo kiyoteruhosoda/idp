@@ -33,7 +33,6 @@ pub enum PermissionManagementError {
 }
 
 /// `idp.system.admin` の付与・剥奪は保有者のみが行える（ADR-0009 §4）。
-
 pub struct PermissionManagementService {
     users: Arc<dyn UserRepository>,
     memberships: Arc<dyn TenantMembershipRepository>,
@@ -535,7 +534,12 @@ mod tests {
             .as_ref()
             .map(|u| vec![(u.tenant_id, u.id)])
             .unwrap_or_default();
-        service_with(user, Arc::new(FakeMemberships::with_active(active)), perms, sink)
+        service_with(
+            user,
+            Arc::new(FakeMemberships::with_active(active)),
+            perms,
+            sink,
+        )
     }
 
     #[tokio::test]
@@ -782,7 +786,8 @@ mod tests {
     async fn grant_rejects_user_from_other_tenant_without_membership() {
         let target = Uuid::new_v4();
         // 所属元（HOME）は別テナント。
-        let other_tenant = TenantId::from(Uuid::from_u128(0x0197_0000_0000_7000_8000_0000_0000_00FF));
+        let other_tenant =
+            TenantId::from(Uuid::from_u128(0x0197_0000_0000_7000_8000_0000_0000_00FF));
         let mut guest = test_user(target);
         guest.tenant_id = other_tenant;
         let svc = service_with(
@@ -794,8 +799,14 @@ mod tests {
         );
 
         assert!(matches!(
-            svc.grant(tenant_ctx(), target, "idp.tenant.admin", Uuid::new_v4(), &ctx())
-                .await,
+            svc.grant(
+                tenant_ctx(),
+                target,
+                "idp.tenant.admin",
+                Uuid::new_v4(),
+                &ctx()
+            )
+            .await,
             Err(PermissionManagementError::NotFound)
         ));
     }
@@ -806,7 +817,8 @@ mod tests {
     async fn grant_succeeds_for_active_guest_from_other_tenant() {
         let target = Uuid::new_v4();
         let actor = Uuid::new_v4();
-        let other_tenant = TenantId::from(Uuid::from_u128(0x0197_0000_0000_7000_8000_0000_0000_00FF));
+        let other_tenant =
+            TenantId::from(Uuid::from_u128(0x0197_0000_0000_7000_8000_0000_0000_00FF));
         let mut guest = test_user(target);
         guest.tenant_id = other_tenant;
         let perms = Arc::new(FakePermissions::default());

@@ -53,14 +53,10 @@ pub enum InternalAuthenticateResponse {
     },
     /// パスワード認証成功だが MFA（TOTP）が設定済み。TOTP 入力画面 `/mfa/totp` へ誘導する。
     /// `auth_session_id` Cookie はそのまま維持する（MFA 検証で使う）。
-    MfaRequired {
-        auth_session_id: String,
-    },
+    MfaRequired { auth_session_id: String },
     /// パスワード認証成功だが `must_change_password`（ADR-0009 §5）。パスワード変更画面へ誘導する。
     /// `auth_session_id` Cookie はそのまま維持する（変更処理で使う）。
-    PasswordChangeRequired {
-        auth_session_id: String,
-    },
+    PasswordChangeRequired { auth_session_id: String },
     /// パスワード認証成功だが自己登録アカウントのメール未検証（SEC6b）。確認リンクを踏むまで
     /// ログインを許可しない。web は「メールを確認して」の案内を表示する。
     EmailVerificationRequired,
@@ -356,9 +352,7 @@ pub enum InternalAdminAuthenticateResponse {
     Forbidden,
     /// 認証成功・管理権限保有だが `must_change_password`（ADR-0009 §5）。パスワード変更画面へ誘導する。
     /// `username` はフォーム再表示用に入力値をそのまま返す。SSO はまだ発行しない。
-    PasswordChangeRequired {
-        username: String,
-    },
+    PasswordChangeRequired { username: String },
     /// api 内部エラー。
     Internal,
 }
@@ -562,7 +556,9 @@ pub struct PasskeyCredentialInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalPasskeyListResponse {
-    Ok { credentials: Vec<PasskeyCredentialInfo> },
+    Ok {
+        credentials: Vec<PasskeyCredentialInfo>,
+    },
     SessionExpired,
     Internal,
 }
@@ -651,4 +647,3 @@ pub enum InternalAccountUpdateLanguageResponse {
     /// api 内部エラー。
     Internal,
 }
-

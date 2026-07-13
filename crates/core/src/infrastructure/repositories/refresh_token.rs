@@ -105,13 +105,12 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
     }
 
     async fn exists_by_parent_hash(&self, parent_hash: &str) -> Result<bool> {
-        let row: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM refresh_tokens WHERE parent_hash = ? LIMIT 1",
-        )
-        .bind(parent_hash)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(repo_err)?;
+        let row: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM refresh_tokens WHERE parent_hash = ? LIMIT 1")
+                .bind(parent_hash)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(repo_err)?;
         Ok(row.0 > 0)
     }
 

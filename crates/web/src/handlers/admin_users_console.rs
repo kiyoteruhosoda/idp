@@ -16,7 +16,9 @@ use crate::handlers::admin_console::{
 use crate::handlers::found;
 use crate::i18n::{Locale, Messages};
 use crate::state::WebState;
-use crate::templates::{render, ConsoleNotice, UserCreated, UserForm, UsersPermissions, UsersSearch};
+use crate::templates::{
+    render, ConsoleNotice, UserCreated, UserForm, UsersPermissions, UsersSearch,
+};
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -171,8 +173,14 @@ pub async fn search(
 
     if term.trim().is_empty() {
         let messages = Messages::new(locale(&headers));
-        return Html(render_search(&messages, &tenant, &admin, &term, SearchResult::Empty))
-            .into_response();
+        return Html(render_search(
+            &messages,
+            &tenant,
+            &admin,
+            &term,
+            SearchResult::Empty,
+        ))
+        .into_response();
     }
     let result = state
         .api
@@ -219,7 +227,11 @@ pub async fn view(
     let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
     let sso = sso(&headers);
 
-    let user = match state.api.get_user(&correlation.0, &tenant.0, &sso, &user_id).await {
+    let user = match state
+        .api
+        .get_user(&correlation.0, &tenant.0, &sso, &user_id)
+        .await
+    {
         Ok(u) => u,
         Err(AdminApiError::NotFound) => {
             let messages = Messages::new(locale(&headers));
@@ -273,7 +285,16 @@ pub async fn grant(
     Path(user_id): Path<String>,
     Form(form): Form<PermissionForm>,
 ) -> Response {
-    apply_change(&state, &correlation, &tenant, &headers, &user_id, &form, true).await
+    apply_change(
+        &state,
+        &correlation,
+        &tenant,
+        &headers,
+        &user_id,
+        &form,
+        true,
+    )
+    .await
 }
 
 pub async fn revoke(
@@ -284,7 +305,16 @@ pub async fn revoke(
     Path(user_id): Path<String>,
     Form(form): Form<PermissionForm>,
 ) -> Response {
-    apply_change(&state, &correlation, &tenant, &headers, &user_id, &form, false).await
+    apply_change(
+        &state,
+        &correlation,
+        &tenant,
+        &headers,
+        &user_id,
+        &form,
+        false,
+    )
+    .await
 }
 
 async fn apply_change(
@@ -309,12 +339,24 @@ async fn apply_change(
     let result = if grant {
         state
             .api
-            .grant_permission(&correlation.0, &tenant.0, &sso, user_id, &form.permission_code)
+            .grant_permission(
+                &correlation.0,
+                &tenant.0,
+                &sso,
+                user_id,
+                &form.permission_code,
+            )
             .await
     } else {
         state
             .api
-            .revoke_permission(&correlation.0, &tenant.0, &sso, user_id, &form.permission_code)
+            .revoke_permission(
+                &correlation.0,
+                &tenant.0,
+                &sso,
+                user_id,
+                &form.permission_code,
+            )
             .await
     };
     match result {
@@ -510,7 +552,13 @@ mod tests {
     #[test]
     fn search_result_escapes_user_fields() {
         let messages = Messages::new(Locale::Ja);
-        let html = render_search(&messages, &tenant(), "admin-1", "alice", SearchResult::Found(&user()));
+        let html = render_search(
+            &messages,
+            &tenant(),
+            "admin-1",
+            "alice",
+            SearchResult::Found(&user()),
+        );
         // Askama は HTML を数値文字参照でエスケープする（`<` → `&#60;`）。生タグが残らないことを確認する。
         assert!(html.contains("&#60;b&#62;alice&#60;/b&#62;"));
         assert!(!html.contains("<b>alice"));

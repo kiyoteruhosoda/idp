@@ -138,7 +138,9 @@ impl IntrospectionService {
         // token_type_hint に従って access_token / refresh_token を試みる。
         match token_type_hint {
             Some("refresh_token") => {
-                let resp = self.introspect_refresh_token(tenant, token, &client, &issuer).await;
+                let resp = self
+                    .introspect_refresh_token(tenant, token, &client, &issuer)
+                    .await;
                 if resp.active {
                     return Ok(resp);
                 }
@@ -149,7 +151,9 @@ impl IntrospectionService {
                 if resp.active {
                     return Ok(resp);
                 }
-                Ok(self.introspect_refresh_token(tenant, token, &client, &issuer).await)
+                Ok(self
+                    .introspect_refresh_token(tenant, token, &client, &issuer)
+                    .await)
             }
         }
     }
@@ -183,10 +187,11 @@ impl IntrospectionService {
         validation.validate_aud = false;
         validation.required_spec_claims.clear();
 
-        let claims = match jsonwebtoken::decode::<AccessTokenClaims>(token, &decoding_key, &validation) {
-            Ok(d) => d.claims,
-            Err(_) => return IntrospectionResponse::inactive(),
-        };
+        let claims =
+            match jsonwebtoken::decode::<AccessTokenClaims>(token, &decoding_key, &validation) {
+                Ok(d) => d.claims,
+                Err(_) => return IntrospectionResponse::inactive(),
+            };
 
         // iss / aud 検証（要求テナントの合成 issuer と厳密一致）。
         if claims.iss != issuer || claims.aud != userinfo_audience(issuer) {

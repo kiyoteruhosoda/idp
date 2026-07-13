@@ -22,7 +22,9 @@ use chrono::Duration;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 use uuid::Uuid;
-use webauthn_rs::prelude::{DiscoverableAuthentication, DiscoverableKey, Passkey, PublicKeyCredential};
+use webauthn_rs::prelude::{
+    DiscoverableAuthentication, DiscoverableKey, Passkey, PublicKeyCredential,
+};
 
 /// チャレンジの有効期限（5 分）。
 const CHALLENGE_TTL: StdDuration = StdDuration::from_secs(300);
@@ -111,8 +113,8 @@ impl PasskeyAuthenticationService {
             .begin_authentication()
             .map_err(|e| format!("begin_authentication failed: {e}"))?;
 
-        let state_json = serde_json::to_string(&state)
-            .map_err(|e| format!("serialize state: {e}"))?;
+        let state_json =
+            serde_json::to_string(&state).map_err(|e| format!("serialize state: {e}"))?;
 
         let challenge_id = Uuid::new_v4();
         let challenge = PasskeyChallenge {
@@ -121,8 +123,7 @@ impl PasskeyAuthenticationService {
             challenge_type: PasskeyChallengeType::Authenticate,
             state_json,
             auth_session_id: auth_session_id.map(|s| s.to_string()),
-            expires_at: now
-                + Duration::from_std(CHALLENGE_TTL).unwrap(),
+            expires_at: now + Duration::from_std(CHALLENGE_TTL).unwrap(),
             created_at: now,
         };
         self.passkey_challenges
@@ -197,30 +198,34 @@ impl PasskeyAuthenticationService {
 
         // 5. WebAuthn 検証。
         let dk = DiscoverableKey::from(&passkey);
-        let auth_result = match self
-            .webauthn
-            .finish_authentication(&public_key_credential, auth_state, &[dk])
-        {
-            Ok(r) => r,
-            Err(_) => {
-                self.audit
-                    .record(
-                        AuditEventType::LoginFailed,
-                        AuditResult::Failure,
-                        Some(tenant_id),
-                        Some(user_id),
-                        None,
-                        Some("invalid_passkey"),
-                        ctx,
-                    )
-                    .await;
-                return PasskeyAuthOutcome::InvalidCredential;
-            }
-        };
+        let auth_result =
+            match self
+                .webauthn
+                .finish_authentication(&public_key_credential, auth_state, &[dk])
+            {
+                Ok(r) => r,
+                Err(_) => {
+                    self.audit
+                        .record(
+                            AuditEventType::LoginFailed,
+                            AuditResult::Failure,
+                            Some(tenant_id),
+                            Some(user_id),
+                            None,
+                            Some("invalid_passkey"),
+                            ctx,
+                        )
+                        .await;
+                    return PasskeyAuthOutcome::InvalidCredential;
+                }
+            };
 
         // 6. sign_count を更新して passkey_json を保存する（更新があれば DB に反映する）。
         let mut updated_passkey = passkey;
-        if updated_passkey.update_credential(&auth_result).unwrap_or(false) {
+        if updated_passkey
+            .update_credential(&auth_result)
+            .unwrap_or(false)
+        {
             let new_json = match serde_json::to_string(&updated_passkey) {
                 Ok(j) => j,
                 Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),

@@ -3,8 +3,8 @@
 //! TOTP の自己登録（setup/confirm/delete）と、ログインフローの TOTP 検証（verify）を扱う。
 //! すべて `/internal/*` ルータに属し、サービス認証トークンで保護される。
 
-use crate::application::mfa_login::{MfaLoginCommand, MfaLoginOutcome};
 use crate::application::audit::RequestContext;
+use crate::application::mfa_login::{MfaLoginCommand, MfaLoginOutcome};
 use crate::application::totp_registration::TotpRegistrationError;
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::state::AppState;

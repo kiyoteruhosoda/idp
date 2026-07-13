@@ -1,0 +1,7 @@
+# MariaDB をホストから保守接続したい場合だけ重ねる override。
+# 例: docker compose -f docker-compose.deploy.yml -f docker-compose.db-debug.yml --profile db-debug up -d mariadb
+services:
+  mariadb:
+    profiles: ["db-debug"]
+    ports:
+      - "${MARIADB_BIND_HOST:-127.0.0.1}:${MARIADB_PORT:-3306}:3306"

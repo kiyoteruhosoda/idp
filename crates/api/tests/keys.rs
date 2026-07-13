@@ -81,7 +81,14 @@ async fn ensure_key_is_idempotent_and_token_verifies_against_jwks() {
         iss: "https://idp.example.com".to_string(),
         exp: 9_999_999_999,
     };
-    let token = jwt::sign(&active.private_pem, &active.kid, "at+jwt", &active.algorithm, &claims).expect("sign");
+    let token = jwt::sign(
+        &active.private_pem,
+        &active.kid,
+        "at+jwt",
+        &active.algorithm,
+        &claims,
+    )
+    .expect("sign");
 
     let jwks = service.jwks().await.expect("jwks");
     let jwk = jwks

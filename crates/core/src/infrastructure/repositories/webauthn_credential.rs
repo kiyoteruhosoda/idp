@@ -78,7 +78,10 @@ impl WebAuthnCredentialRepository for SqlxWebAuthnCredentialRepository {
         row.as_ref().map(map_row).transpose()
     }
 
-    async fn find_by_credential_id(&self, credential_id: &str) -> Result<Option<WebAuthnCredential>> {
+    async fn find_by_credential_id(
+        &self,
+        credential_id: &str,
+    ) -> Result<Option<WebAuthnCredential>> {
         let row = sqlx::query(
             "SELECT id, user_id, credential_id, passkey_json, name, created_at, last_used_at \
              FROM user_webauthn_credentials WHERE credential_id = ?",
@@ -122,14 +125,12 @@ impl WebAuthnCredentialRepository for SqlxWebAuthnCredentialRepository {
     }
 
     async fn delete(&self, id: Uuid, user_id: Uuid) -> Result<()> {
-        sqlx::query(
-            "DELETE FROM user_webauthn_credentials WHERE id = ? AND user_id = ?",
-        )
-        .bind(id.to_string())
-        .bind(user_id.to_string())
-        .execute(&self.pool)
-        .await
-        .map_err(repo_err)?;
+        sqlx::query("DELETE FROM user_webauthn_credentials WHERE id = ? AND user_id = ?")
+            .bind(id.to_string())
+            .bind(user_id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(repo_err)?;
         Ok(())
     }
 }

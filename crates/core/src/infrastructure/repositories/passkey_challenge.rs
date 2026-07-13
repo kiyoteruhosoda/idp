@@ -34,11 +34,10 @@ fn map_row(row: &MySqlRow) -> Result<PasskeyChallenge> {
     let challenge_type_str: String = row.try_get("challenge_type").map_err(repo_err)?;
     let challenge_type = challenge_type_str
         .parse::<PasskeyChallengeType>()
-        .map_err(|e| DomainError::Repository(e))?;
+        .map_err(DomainError::Repository)?;
     let user_id = user_id_str
         .map(|s| {
-            Uuid::parse_str(&s)
-                .map_err(|e| DomainError::Repository(format!("invalid UUID: {e}")))
+            Uuid::parse_str(&s).map_err(|e| DomainError::Repository(format!("invalid UUID: {e}")))
         })
         .transpose()?;
     Ok(PasskeyChallenge {

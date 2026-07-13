@@ -104,7 +104,8 @@ impl AuditLogQuery for SqlxAuditLogQuery {
              user_agent, result, reason, correlation_id FROM audit_log WHERE 1 = 1",
         );
         if let Some(tenant_id) = filter.tenant_id {
-            qb.push(" AND tenant_id = ").push_bind(tenant_id.to_string());
+            qb.push(" AND tenant_id = ")
+                .push_bind(tenant_id.to_string());
         }
         if let Some(event_type) = &filter.event_type {
             qb.push(" AND event_type = ").push_bind(event_type);

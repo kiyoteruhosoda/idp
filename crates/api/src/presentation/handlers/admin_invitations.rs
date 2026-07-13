@@ -45,7 +45,11 @@ pub async fn create_invitation(
 ) -> Result<(StatusCode, Json<InvitationCreatedResponse>), ApiError> {
     let target = Uuid::parse_str(&body.user_id)
         .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get("api-invalid-request")))?;
-    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
     let created = state
         .invitations
         .create_invitation(tenant.context(), target, admin.user_id, &ctx)
@@ -68,9 +72,7 @@ fn map_error(e: InvitationError, locale: ApiLocale) -> ApiError {
         InvitationError::NotFound => ApiError::NotFound(msgs.get("api-invitation-user-not-found")),
         InvitationError::AlreadyMember => ApiError::Conflict("already a member".to_string()),
         InvitationError::Forbidden(m) => ApiError::Forbidden(m),
-        InvitationError::InvalidOrExpired => {
-            ApiError::BadRequest(msgs.get("api-invalid-request"))
-        }
+        InvitationError::InvalidOrExpired => ApiError::BadRequest(msgs.get("api-invalid-request")),
         InvitationError::Internal(m) => ApiError::Internal(m),
     }
 }

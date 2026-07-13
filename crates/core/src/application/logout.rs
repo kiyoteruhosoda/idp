@@ -150,10 +150,12 @@ impl LogoutService {
         let backchannel_targets: Vec<BackchannelTarget> = clients
             .iter()
             .filter_map(|c| {
-                c.backchannel_logout_uri.as_ref().map(|uri| BackchannelTarget {
-                    client_id: c.client_id.clone(),
-                    backchannel_logout_uri: uri.clone(),
-                })
+                c.backchannel_logout_uri
+                    .as_ref()
+                    .map(|uri| BackchannelTarget {
+                        client_id: c.client_id.clone(),
+                        backchannel_logout_uri: uri.clone(),
+                    })
             })
             .collect();
 
@@ -164,9 +166,11 @@ impl LogoutService {
                 c.frontchannel_logout_uri.as_ref().map(|uri| {
                     // OpenID Connect Front-Channel Logout spec: iss を query param に付与。
                     let sep = if uri.contains('?') { '&' } else { '?' };
-                    let encoded_iss =
-                        percent_encoding::utf8_percent_encode(&issuer, percent_encoding::NON_ALPHANUMERIC)
-                            .to_string();
+                    let encoded_iss = percent_encoding::utf8_percent_encode(
+                        &issuer,
+                        percent_encoding::NON_ALPHANUMERIC,
+                    )
+                    .to_string();
                     format!("{uri}{sep}iss={encoded_iss}")
                 })
             })
@@ -191,8 +195,14 @@ impl LogoutService {
                 None
             } else {
                 // client_id_hint 無し → いずれかのクライアントに登録されていれば許可。
-                let ok = clients.iter().any(|c| c.allows_post_logout_redirect_uri(uri));
-                if ok { Some(uri.to_string()) } else { None }
+                let ok = clients
+                    .iter()
+                    .any(|c| c.allows_post_logout_redirect_uri(uri));
+                if ok {
+                    Some(uri.to_string())
+                } else {
+                    None
+                }
             }
         });
 

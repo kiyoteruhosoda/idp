@@ -78,7 +78,10 @@ pub(crate) fn request_context(
 }
 
 /// `PermissionManagementError` を `ApiError` に変換する（`admin_permissions` と `admin_users` で共有）。
-pub(crate) fn map_permission_management_error(e: PermissionManagementError, locale: ApiLocale) -> ApiError {
+pub(crate) fn map_permission_management_error(
+    e: PermissionManagementError,
+    locale: ApiLocale,
+) -> ApiError {
     let msgs = ApiMessages::new(locale);
     match e {
         PermissionManagementError::Validation(m) => ApiError::BadRequest(m),

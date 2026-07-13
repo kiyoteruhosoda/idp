@@ -98,7 +98,8 @@ impl AuthSessionRepository for SqlxAuthSessionRepository {
     }
 
     async fn find_by_id(&self, tenant_id: TenantId, id: &str) -> Result<Option<AuthSession>> {
-        let sql = format!("SELECT {SELECT_COLUMNS} FROM auth_sessions WHERE id = ? AND tenant_id = ?");
+        let sql =
+            format!("SELECT {SELECT_COLUMNS} FROM auth_sessions WHERE id = ? AND tenant_id = ?");
         let row = sqlx::query(&sql)
             .bind(id)
             .bind(tenant_id.to_string())

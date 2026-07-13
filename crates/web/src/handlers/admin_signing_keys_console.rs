@@ -48,7 +48,9 @@ pub async fn list(
     let messages = Messages::new(locale(&headers));
     let csrf = csrf_from(&headers, state.config.csrf_secret());
     match result {
-        Ok(keys) => Html(render_list(&messages, &tenant, &admin, &keys, &csrf, None)).into_response(),
+        Ok(keys) => {
+            Html(render_list(&messages, &tenant, &admin, &keys, &csrf, None)).into_response()
+        }
         Err(e) => map_error(&messages, &tenant, &admin, &headers, e),
     }
 }
@@ -94,8 +96,10 @@ pub async fn generate(
         .generate_signing_key(&correlation.0, &tenant.0, &sso, &form.algorithm)
         .await;
     match result {
-        Ok(_) => axum::response::Redirect::to(&format!("{}{SIGNING_KEYS_SEGMENT}", tenant.prefix()))
-            .into_response(),
+        Ok(_) => {
+            axum::response::Redirect::to(&format!("{}{SIGNING_KEYS_SEGMENT}", tenant.prefix()))
+                .into_response()
+        }
         Err(AdminApiError::Validation(m)) => {
             let keys = state
                 .api
@@ -104,7 +108,14 @@ pub async fn generate(
                 .unwrap_or_default();
             let messages = Messages::new(locale(&headers));
             let csrf = csrf_from(&headers, state.config.csrf_secret());
-            bad_request(render_list(&messages, &tenant, &admin, &keys, &csrf, Some(&m)))
+            bad_request(render_list(
+                &messages,
+                &tenant,
+                &admin,
+                &keys,
+                &csrf,
+                Some(&m),
+            ))
         }
         Err(e) => {
             let messages = Messages::new(locale(&headers));
@@ -153,8 +164,10 @@ pub async fn retire(
         .retire_signing_key(&correlation.0, &tenant.0, &sso, &form.kid)
         .await;
     match result {
-        Ok(_) => axum::response::Redirect::to(&format!("{}{SIGNING_KEYS_SEGMENT}", tenant.prefix()))
-            .into_response(),
+        Ok(_) => {
+            axum::response::Redirect::to(&format!("{}{SIGNING_KEYS_SEGMENT}", tenant.prefix()))
+                .into_response()
+        }
         Err(AdminApiError::NotFound) => {
             let messages = Messages::new(locale(&headers));
             not_found(&messages, &tenant, &admin)
@@ -167,7 +180,14 @@ pub async fn retire(
                 .unwrap_or_default();
             let messages = Messages::new(locale(&headers));
             let csrf = csrf_from(&headers, state.config.csrf_secret());
-            bad_request(render_list(&messages, &tenant, &admin, &keys, &csrf, Some(&m)))
+            bad_request(render_list(
+                &messages,
+                &tenant,
+                &admin,
+                &keys,
+                &csrf,
+                Some(&m),
+            ))
         }
         Err(e) => {
             let messages = Messages::new(locale(&headers));
@@ -210,8 +230,10 @@ pub async fn delete(
         .delete_signing_key(&correlation.0, &tenant.0, &sso, &form.kid)
         .await;
     match result {
-        Ok(_) => axum::response::Redirect::to(&format!("{}{SIGNING_KEYS_SEGMENT}", tenant.prefix()))
-            .into_response(),
+        Ok(_) => {
+            axum::response::Redirect::to(&format!("{}{SIGNING_KEYS_SEGMENT}", tenant.prefix()))
+                .into_response()
+        }
         Err(AdminApiError::NotFound) => {
             let messages = Messages::new(locale(&headers));
             not_found(&messages, &tenant, &admin)
@@ -224,7 +246,14 @@ pub async fn delete(
                 .unwrap_or_default();
             let messages = Messages::new(locale(&headers));
             let csrf = csrf_from(&headers, state.config.csrf_secret());
-            bad_request(render_list(&messages, &tenant, &admin, &keys, &csrf, Some(&m)))
+            bad_request(render_list(
+                &messages,
+                &tenant,
+                &admin,
+                &keys,
+                &csrf,
+                Some(&m),
+            ))
         }
         Err(e) => {
             let messages = Messages::new(locale(&headers));

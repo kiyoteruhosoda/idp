@@ -30,7 +30,11 @@ pub async fn consent_page(
 ) -> Response {
     let Some(auth_session_id) = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE) else {
         let messages = Messages::new(locale(&headers));
-        return error_page(&messages, StatusCode::BAD_REQUEST, "consent-error-session-expired");
+        return error_page(
+            &messages,
+            StatusCode::BAD_REQUEST,
+            "consent-error-session-expired",
+        );
     };
 
     // FluentBundle は Send でないため、await をまたがないようここで生成する。
@@ -57,9 +61,11 @@ pub async fn consent_page(
             }))
             .into_response()
         }
-        Ok(InternalConsentInfoResponse::SessionExpired) => {
-            error_page(&messages, StatusCode::BAD_REQUEST, "consent-error-session-expired")
-        }
+        Ok(InternalConsentInfoResponse::SessionExpired) => error_page(
+            &messages,
+            StatusCode::BAD_REQUEST,
+            "consent-error-session-expired",
+        ),
         Err(e) => {
             tracing::error!(error = %e, "consent_page: api call failed");
             StatusCode::BAD_GATEWAY.into_response()
@@ -97,15 +103,13 @@ pub async fn consent(
         match result {
             Ok(InternalConsentApproveResponse::Success { redirect_to }) => {
                 let expire_auth = cookies::expire(cookies::AUTH_SESSION_COOKIE, secure);
-                (
-                    [(header::SET_COOKIE, expire_auth)],
-                    found(&redirect_to),
-                )
-                    .into_response()
+                ([(header::SET_COOKIE, expire_auth)], found(&redirect_to)).into_response()
             }
-            Ok(InternalConsentApproveResponse::SessionExpired) => {
-                error_page(&messages, StatusCode::BAD_REQUEST, "consent-error-session-expired")
-            }
+            Ok(InternalConsentApproveResponse::SessionExpired) => error_page(
+                &messages,
+                StatusCode::BAD_REQUEST,
+                "consent-error-session-expired",
+            ),
             Ok(InternalConsentApproveResponse::Internal) | Err(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
@@ -123,15 +127,13 @@ pub async fn consent(
         match result {
             Ok(InternalConsentDenyResponse::Ok { redirect_to }) => {
                 let expire_auth = cookies::expire(cookies::AUTH_SESSION_COOKIE, secure);
-                (
-                    [(header::SET_COOKIE, expire_auth)],
-                    found(&redirect_to),
-                )
-                    .into_response()
+                ([(header::SET_COOKIE, expire_auth)], found(&redirect_to)).into_response()
             }
-            Ok(InternalConsentDenyResponse::SessionExpired) => {
-                error_page(&messages, StatusCode::BAD_REQUEST, "consent-error-session-expired")
-            }
+            Ok(InternalConsentDenyResponse::SessionExpired) => error_page(
+                &messages,
+                StatusCode::BAD_REQUEST,
+                "consent-error-session-expired",
+            ),
             Ok(InternalConsentDenyResponse::Internal) | Err(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }

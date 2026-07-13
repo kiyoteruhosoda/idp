@@ -149,7 +149,10 @@ impl ChangePasswordService {
         }
 
         // 5. 現行パスワードを検証する。
-        let verified = match self.hasher.verify(&cmd.current_password, &user.password_hash) {
+        let verified = match self
+            .hasher
+            .verify(&cmd.current_password, &user.password_hash)
+        {
             Ok(v) => v,
             Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
         };

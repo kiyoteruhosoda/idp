@@ -379,9 +379,7 @@ mod tests {
     use crate::domain::audit::AuditEvent;
     use crate::domain::error::Result as DomainResult;
     use crate::domain::password::PasswordHasher;
-    use crate::domain::repositories::{
-        AuditLogSink, TenantMembershipRepository, UserRepository,
-    };
+    use crate::domain::repositories::{AuditLogSink, TenantMembershipRepository, UserRepository};
     use crate::domain::tenant_membership::TenantMembership;
     use crate::domain::user::User;
     use async_trait::async_trait;
@@ -441,7 +439,13 @@ mod tests {
             Ok(())
         }
         async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<User>> {
-            Ok(self.rows.lock().unwrap().iter().find(|u| u.id == id).cloned())
+            Ok(self
+                .rows
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|u| u.id == id)
+                .cloned())
         }
         async fn find_by_sub(&self, _s: Uuid) -> DomainResult<Option<User>> {
             unreachable!()
@@ -521,10 +525,22 @@ mod tests {
             Ok(())
         }
         async fn find_by_id(&self, id: TenantId) -> DomainResult<Option<Tenant>> {
-            Ok(self.rows.lock().unwrap().iter().find(|t| t.id == id).cloned())
+            Ok(self
+                .rows
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|t| t.id == id)
+                .cloned())
         }
         async fn find_root(&self) -> DomainResult<Option<Tenant>> {
-            Ok(self.rows.lock().unwrap().iter().find(|t| t.is_root()).cloned())
+            Ok(self
+                .rows
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|t| t.is_root())
+                .cloned())
         }
         async fn list_children(&self, parent: TenantId) -> DomainResult<Vec<Tenant>> {
             Ok(self
@@ -785,7 +801,10 @@ mod tests {
         ));
 
         // 直下の子は取得できる。
-        assert_eq!(h.svc.get_child(root(), child_id).await.unwrap().id, child_id);
+        assert_eq!(
+            h.svc.get_child(root(), child_id).await.unwrap().id,
+            child_id
+        );
 
         // 更新（表示名・状態）。
         let updated = h
@@ -810,7 +829,13 @@ mod tests {
             .delete_tenant(root(), child_id, Uuid::new_v4(), &ctx())
             .await
             .expect("deleted");
-        assert!(h.tenants.rows.lock().unwrap().iter().all(|t| t.id != child_id));
+        assert!(h
+            .tenants
+            .rows
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|t| t.id != child_id));
     }
 
     #[tokio::test]

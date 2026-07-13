@@ -37,7 +37,11 @@ pub async fn setup_page(
     let Some(sso_session_id) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         // FluentBundle は !Send なので await の前に作成・消費する。
         let messages = Messages::new(locale(&headers));
-        return error_page(&messages, StatusCode::UNAUTHORIZED, "mfa-error-not-signed-in");
+        return error_page(
+            &messages,
+            StatusCode::UNAUTHORIZED,
+            "mfa-error-not-signed-in",
+        );
     };
 
     // ユーザー名は SSO から特定できないため、メールは取得が複雑になる。
@@ -71,15 +75,17 @@ pub async fn setup_page(
             }))
             .into_response()
         }
-        InternalTotpSetupResponse::AlreadyConfigured => {
-            error_page(&messages, StatusCode::CONFLICT, "mfa-error-already-configured")
-        }
-        InternalTotpSetupResponse::SessionExpired => {
-            error_page(&messages, StatusCode::UNAUTHORIZED, "mfa-error-session-expired")
-        }
-        InternalTotpSetupResponse::Internal => {
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        }
+        InternalTotpSetupResponse::AlreadyConfigured => error_page(
+            &messages,
+            StatusCode::CONFLICT,
+            "mfa-error-already-configured",
+        ),
+        InternalTotpSetupResponse::SessionExpired => error_page(
+            &messages,
+            StatusCode::UNAUTHORIZED,
+            "mfa-error-session-expired",
+        ),
+        InternalTotpSetupResponse::Internal => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 
@@ -92,7 +98,11 @@ pub async fn setup_confirm(
 ) -> Response {
     let Some(sso_session_id) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         let messages = Messages::new(locale(&headers));
-        return error_page(&messages, StatusCode::UNAUTHORIZED, "mfa-error-not-signed-in");
+        return error_page(
+            &messages,
+            StatusCode::UNAUTHORIZED,
+            "mfa-error-not-signed-in",
+        );
     };
 
     let req = InternalTotpConfirmRequest {
@@ -149,18 +159,25 @@ pub async fn setup_confirm(
                 )
                     .into_response();
             }
-            error_page(&messages, StatusCode::UNPROCESSABLE_ENTITY, "mfa-error-invalid-code")
+            error_page(
+                &messages,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "mfa-error-invalid-code",
+            )
         }
-        InternalTotpConfirmResponse::NotFound
-        | InternalTotpConfirmResponse::SessionExpired => {
-            error_page(&messages, StatusCode::UNAUTHORIZED, "mfa-error-session-expired")
+        InternalTotpConfirmResponse::NotFound | InternalTotpConfirmResponse::SessionExpired => {
+            error_page(
+                &messages,
+                StatusCode::UNAUTHORIZED,
+                "mfa-error-session-expired",
+            )
         }
-        InternalTotpConfirmResponse::AlreadyConfigured => {
-            error_page(&messages, StatusCode::CONFLICT, "mfa-error-already-configured")
-        }
-        InternalTotpConfirmResponse::Internal => {
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        }
+        InternalTotpConfirmResponse::AlreadyConfigured => error_page(
+            &messages,
+            StatusCode::CONFLICT,
+            "mfa-error-already-configured",
+        ),
+        InternalTotpConfirmResponse::Internal => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 
@@ -172,7 +189,11 @@ pub async fn setup_delete(
 ) -> Response {
     let Some(sso_session_id) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         let messages = Messages::new(locale(&headers));
-        return error_page(&messages, StatusCode::UNAUTHORIZED, "mfa-error-not-signed-in");
+        return error_page(
+            &messages,
+            StatusCode::UNAUTHORIZED,
+            "mfa-error-not-signed-in",
+        );
     };
 
     let req = InternalTotpDeleteRequest { sso_session_id };
@@ -195,9 +216,11 @@ pub async fn setup_delete(
             });
             Html(body).into_response()
         }
-        InternalTotpDeleteResponse::SessionExpired => {
-            error_page(&messages, StatusCode::UNAUTHORIZED, "mfa-error-session-expired")
-        }
+        InternalTotpDeleteResponse::SessionExpired => error_page(
+            &messages,
+            StatusCode::UNAUTHORIZED,
+            "mfa-error-session-expired",
+        ),
         InternalTotpDeleteResponse::Internal => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
@@ -208,7 +231,11 @@ pub async fn setup_delete(
 pub async fn verify_page(State(state): State<WebState>, headers: HeaderMap) -> Response {
     let messages = Messages::new(locale(&headers));
     let Some(auth_session_id) = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE) else {
-        return error_page(&messages, StatusCode::BAD_REQUEST, "mfa-error-session-expired");
+        return error_page(
+            &messages,
+            StatusCode::BAD_REQUEST,
+            "mfa-error-session-expired",
+        );
     };
     Html(render_verify_form(
         &messages,
@@ -265,7 +292,10 @@ pub async fn verify(
             let expire_auth = cookies::expire(cookies::AUTH_SESSION_COOKIE, secure);
             // ユーザーの DB 言語設定があれば lang Cookie に同期する（MT20: DB > Cookie の優先順）。
             let redirect = found(&redirect_to);
-            if let Some(lang) = user_language.as_deref().and_then(crate::i18n::Locale::from_tag) {
+            if let Some(lang) = user_language
+                .as_deref()
+                .and_then(crate::i18n::Locale::from_tag)
+            {
                 let lang_cookie = cookies::build(
                     cookies::LANG_COOKIE,
                     lang.as_tag(),
@@ -328,9 +358,11 @@ pub async fn verify(
         InternalVerifyTotpResponse::CsrfMismatch => {
             error_page(&messages, StatusCode::BAD_REQUEST, "login-error-csrf")
         }
-        InternalVerifyTotpResponse::SessionExpired => {
-            error_page(&messages, StatusCode::BAD_REQUEST, "mfa-error-session-expired")
-        }
+        InternalVerifyTotpResponse::SessionExpired => error_page(
+            &messages,
+            StatusCode::BAD_REQUEST,
+            "mfa-error-session-expired",
+        ),
         InternalVerifyTotpResponse::Internal => {
             (StatusCode::INTERNAL_SERVER_ERROR, Html(String::new())).into_response()
         }
@@ -342,8 +374,8 @@ pub async fn verify(
 /// `otpauth://` URI から QR コードを SVG 文字列として生成する。
 /// テンプレートへ直接埋め込む（`|safe` で rawに出力する）。
 pub fn generate_qr_svg(uri: &str) -> String {
-    use qrcode::{EcLevel, QrCode};
     use qrcode::render::svg;
+    use qrcode::{EcLevel, QrCode};
 
     let code = match QrCode::with_error_correction_level(uri.as_bytes(), EcLevel::M) {
         Ok(c) => c,
@@ -392,7 +424,11 @@ fn reshow_verify_form(
             )),
         )
             .into_response(),
-        None => error_page(messages, StatusCode::BAD_REQUEST, "mfa-error-session-expired"),
+        None => error_page(
+            messages,
+            StatusCode::BAD_REQUEST,
+            "mfa-error-session-expired",
+        ),
     }
 }
 

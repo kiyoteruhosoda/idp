@@ -19,19 +19,18 @@ use idp_contracts::auth::{
     InternalAdminAuthenticateRequest, InternalAdminAuthenticateResponse,
     InternalAdminChangePasswordRequest, InternalAdminChangePasswordResponse,
     InternalAuthenticateRequest, InternalAuthenticateResponse, InternalChangePasswordRequest,
-    InternalChangePasswordResponse, InternalConsentApproveRequest,
-    InternalConsentApproveResponse, InternalConsentDenyRequest, InternalConsentDenyResponse,
-    InternalConsentInfoResponse, InternalLogoutRequest, InternalPasskeyDeleteRequest,
-    InternalPasskeyDeleteResponse, InternalPasskeyListRequest, InternalPasskeyListResponse,
-    InternalPasskeyLoginBeginRequest, InternalPasskeyLoginBeginResponse,
-    InternalPasskeyLoginCompleteRequest, InternalPasskeyLoginCompleteResponse,
-    InternalPasskeyRegisterBeginRequest, InternalPasskeyRegisterBeginResponse,
-    InternalPasswordResetCompleteRequest, InternalPasswordResetCompleteResponse,
-    InternalPasswordResetRequestRequest, InternalPasswordResetRequestResponse,
-    InternalPasskeyRegisterCompleteRequest, InternalPasskeyRegisterCompleteResponse,
-    InternalTotpConfirmRequest, InternalTotpConfirmResponse, InternalTotpDeleteRequest,
-    InternalTotpDeleteResponse, InternalTotpSetupRequest, InternalTotpSetupResponse,
-    InternalVerifyTotpRequest, InternalVerifyTotpResponse,
+    InternalChangePasswordResponse, InternalConsentApproveRequest, InternalConsentApproveResponse,
+    InternalConsentDenyRequest, InternalConsentDenyResponse, InternalConsentInfoResponse,
+    InternalLogoutRequest, InternalPasskeyDeleteRequest, InternalPasskeyDeleteResponse,
+    InternalPasskeyListRequest, InternalPasskeyListResponse, InternalPasskeyLoginBeginRequest,
+    InternalPasskeyLoginBeginResponse, InternalPasskeyLoginCompleteRequest,
+    InternalPasskeyLoginCompleteResponse, InternalPasskeyRegisterBeginRequest,
+    InternalPasskeyRegisterBeginResponse, InternalPasskeyRegisterCompleteRequest,
+    InternalPasskeyRegisterCompleteResponse, InternalPasswordResetCompleteRequest,
+    InternalPasswordResetCompleteResponse, InternalPasswordResetRequestRequest,
+    InternalPasswordResetRequestResponse, InternalTotpConfirmRequest, InternalTotpConfirmResponse,
+    InternalTotpDeleteRequest, InternalTotpDeleteResponse, InternalTotpSetupRequest,
+    InternalTotpSetupResponse, InternalVerifyTotpRequest, InternalVerifyTotpResponse,
 };
 use reqwest::Method;
 
@@ -216,7 +215,10 @@ impl ApiClient {
             .get(format!("{}/internal/consent-info", self.base_url))
             .header(SERVICE_TOKEN_HEADER, &self.service_token)
             .header(REQUEST_ID_HEADER, correlation_id)
-            .query(&[("tenant_id", tenant_id), ("auth_session_id", auth_session_id)])
+            .query(&[
+                ("tenant_id", tenant_id),
+                ("auth_session_id", auth_session_id),
+            ])
             .send()
             .await
             .map_err(|e| anyhow::anyhow!("request to api /internal/consent-info failed: {e}"))?;
@@ -399,8 +401,15 @@ impl ApiClient {
         tenant_id: &str,
         sso: &str,
     ) -> Result<Vec<ClientView>, AdminApiError> {
-        self.admin_send(Method::GET, tenant_id, "/admin/clients", correlation_id, sso, None)
-            .await
+        self.admin_send(
+            Method::GET,
+            tenant_id,
+            "/admin/clients",
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
     }
 
     /// 単一クライアント（`GET /admin/clients/{id}`）。
@@ -629,8 +638,15 @@ impl ApiClient {
         tenant_id: &str,
         sso: &str,
     ) -> Result<Vec<MemberView>, AdminApiError> {
-        self.admin_send(Method::GET, tenant_id, "/admin/members", correlation_id, sso, None)
-            .await
+        self.admin_send(
+            Method::GET,
+            tenant_id,
+            "/admin/members",
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
     }
 
     /// ゲストメンバーシップの解除（`DELETE /admin/members/{user_id}`。HOME は不可）。

@@ -189,12 +189,11 @@ async fn full_reset_flow_via_email_link() {
     assert_eq!(used, 1, "token consumed");
 
     // 既存 SSO セッションは全失効している。
-    let sessions: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM sso_sessions WHERE user_id = ?")
-            .bind(&user_id)
-            .fetch_one(&env.pool)
-            .await
-            .unwrap();
+    let sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sso_sessions WHERE user_id = ?")
+        .bind(&user_id)
+        .fetch_one(&env.pool)
+        .await
+        .unwrap();
     assert_eq!(sessions, 0, "all SSO sessions revoked after reset");
 
     // 3. 同じトークンの再利用は拒否される。

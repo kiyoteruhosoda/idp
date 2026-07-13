@@ -249,7 +249,13 @@ mod tests {
             unreachable!()
         }
         async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<User>> {
-            Ok(self.rows.lock().unwrap().iter().find(|u| u.id == id).cloned())
+            Ok(self
+                .rows
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|u| u.id == id)
+                .cloned())
         }
         async fn find_by_sub(&self, _s: Uuid) -> DomainResult<Option<User>> {
             unreachable!()
@@ -345,7 +351,10 @@ mod tests {
     #[async_trait]
     impl Mailer for FakeMailer {
         async fn send(&self, server: &SmtpServerConfig, mail: &OutgoingEmail) -> DomainResult<()> {
-            self.sent.lock().unwrap().push((server.clone(), mail.clone()));
+            self.sent
+                .lock()
+                .unwrap()
+                .push((server.clone(), mail.clone()));
             Ok(())
         }
     }
@@ -458,10 +467,9 @@ mod tests {
         let mails = h.mailer.sent.lock().unwrap();
         assert_eq!(mails.len(), 1);
         assert_eq!(mails[0].1.to, "u@example.com");
-        assert!(mails[0]
-            .1
-            .body_text
-            .contains(&format!("https://idp.example.com/{tenant}/verify-email?token=")));
+        assert!(mails[0].1.body_text.contains(&format!(
+            "https://idp.example.com/{tenant}/verify-email?token="
+        )));
         let token = token_from_mail(&mails[0].1);
         let rows = h.tokens.rows.lock().unwrap();
         assert_eq!(rows.len(), 1);
@@ -498,7 +506,9 @@ mod tests {
         let token = token_from_mail(&h.mailer.sent.lock().unwrap()[0].1);
 
         assert!(matches!(
-            h.svc.verify(TenantContext::new(tenant), &token, &ctx()).await,
+            h.svc
+                .verify(TenantContext::new(tenant), &token, &ctx())
+                .await,
             VerifyEmailOutcome::Ok
         ));
         assert!(h.users.rows.lock().unwrap()[0].email_verified);
@@ -519,7 +529,9 @@ mod tests {
         }
         // 再利用は拒否（単回消費）。
         assert!(matches!(
-            h.svc.verify(TenantContext::new(tenant), &token, &ctx()).await,
+            h.svc
+                .verify(TenantContext::new(tenant), &token, &ctx())
+                .await,
             VerifyEmailOutcome::InvalidOrExpired
         ));
     }
@@ -541,7 +553,9 @@ mod tests {
 
         let other: TenantId = Uuid::now_v7().into();
         assert!(matches!(
-            h.svc.verify(TenantContext::new(other), &token, &ctx()).await,
+            h.svc
+                .verify(TenantContext::new(other), &token, &ctx())
+                .await,
             VerifyEmailOutcome::InvalidOrExpired
         ));
         assert!(!h.users.rows.lock().unwrap()[0].email_verified);
@@ -567,11 +581,15 @@ mod tests {
         let second = token_from_mail(&h.mailer.sent.lock().unwrap()[1].1);
 
         assert!(matches!(
-            h.svc.verify(TenantContext::new(tenant), &first, &ctx()).await,
+            h.svc
+                .verify(TenantContext::new(tenant), &first, &ctx())
+                .await,
             VerifyEmailOutcome::InvalidOrExpired
         ));
         assert!(matches!(
-            h.svc.verify(TenantContext::new(tenant), &second, &ctx()).await,
+            h.svc
+                .verify(TenantContext::new(tenant), &second, &ctx())
+                .await,
             VerifyEmailOutcome::Ok
         ));
     }

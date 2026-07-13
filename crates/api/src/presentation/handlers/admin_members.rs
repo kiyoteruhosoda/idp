@@ -80,7 +80,11 @@ pub async fn revoke_member(
 ) -> Result<StatusCode, ApiError> {
     let target = Uuid::parse_str(&user_id)
         .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get("api-invalid-request")))?;
-    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
     state
         .invitations
         .revoke_membership(tenant.context(), target, admin.user_id, &ctx)
@@ -93,13 +97,9 @@ fn map_error(e: InvitationError, locale: ApiLocale) -> ApiError {
     let msgs = ApiMessages::new(locale);
     match e {
         InvitationError::NotFound => ApiError::NotFound(msgs.get("api-member-not-found")),
-        InvitationError::AlreadyMember => {
-            ApiError::Conflict("already a member".to_string())
-        }
+        InvitationError::AlreadyMember => ApiError::Conflict("already a member".to_string()),
         InvitationError::Forbidden(m) => ApiError::Forbidden(m),
-        InvitationError::InvalidOrExpired => {
-            ApiError::BadRequest(msgs.get("api-invalid-request"))
-        }
+        InvitationError::InvalidOrExpired => ApiError::BadRequest(msgs.get("api-invalid-request")),
         InvitationError::Internal(m) => ApiError::Internal(m),
     }
 }

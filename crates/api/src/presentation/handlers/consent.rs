@@ -24,22 +24,21 @@ pub async fn consent_info(
     Query(req): Query<InternalConsentInfoRequest>,
 ) -> Result<Json<InternalConsentInfoResponse>, Response> {
     let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
-    Ok(match state
-        .consent
-        .info(tenant, &req.auth_session_id)
-        .await {
-        Ok(Some(info)) => Json(InternalConsentInfoResponse::Ok {
-            auth_session_id: info.auth_session_id,
-            client_name: info.client_name,
-            client_id: info.client_id,
-            requested_scopes: info.requested_scopes,
-        }),
-        Ok(None) => Json(InternalConsentInfoResponse::SessionExpired),
-        Err(e) => {
-            tracing::error!(error = %e, "consent_info: failed to get consent info");
-            Json(InternalConsentInfoResponse::SessionExpired)
-        }
-    })
+    Ok(
+        match state.consent.info(tenant, &req.auth_session_id).await {
+            Ok(Some(info)) => Json(InternalConsentInfoResponse::Ok {
+                auth_session_id: info.auth_session_id,
+                client_name: info.client_name,
+                client_id: info.client_id,
+                requested_scopes: info.requested_scopes,
+            }),
+            Ok(None) => Json(InternalConsentInfoResponse::SessionExpired),
+            Err(e) => {
+                tracing::error!(error = %e, "consent_info: failed to get consent info");
+                Json(InternalConsentInfoResponse::SessionExpired)
+            }
+        },
+    )
 }
 
 /// 同意承認（`POST /internal/consent/approve`）。同意を記録し code を発行する。
@@ -59,9 +58,9 @@ pub async fn consent_approve(
         .approve(tenant, &req.auth_session_id, &ctx)
         .await;
     Ok(Json(match outcome {
-        ConsentOutcome::Approved { location } => {
-            InternalConsentApproveResponse::Success { redirect_to: location }
-        }
+        ConsentOutcome::Approved { location } => InternalConsentApproveResponse::Success {
+            redirect_to: location,
+        },
         ConsentOutcome::SessionExpired => InternalConsentApproveResponse::SessionExpired,
         ConsentOutcome::Internal(e) => {
             tracing::error!(error = %e, "consent_approve: internal error");
@@ -86,16 +85,13 @@ pub async fn consent_deny(
         user_agent: req.user_agent,
     };
     let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
-    let outcome = state
-        .consent
-        .deny(tenant, &req.auth_session_id, &ctx)
-        .await;
+    let outcome = state.consent.deny(tenant, &req.auth_session_id, &ctx).await;
     Ok((
         StatusCode::OK,
         Json(match outcome {
-            ConsentOutcome::Denied { location } => {
-                InternalConsentDenyResponse::Ok { redirect_to: location }
-            }
+            ConsentOutcome::Denied { location } => InternalConsentDenyResponse::Ok {
+                redirect_to: location,
+            },
             ConsentOutcome::SessionExpired => InternalConsentDenyResponse::SessionExpired,
             ConsentOutcome::Internal(e) => {
                 tracing::error!(error = %e, "consent_deny: internal error");

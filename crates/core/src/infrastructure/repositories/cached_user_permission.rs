@@ -54,20 +54,11 @@ impl UserPermissionRepository for CachedUserPermissionRepository {
         self.inner.list_available_codes().await
     }
 
-    async fn list_codes_for_user(
-        &self,
-        tenant_id: TenantId,
-        user_id: Uuid,
-    ) -> Result<Vec<String>> {
+    async fn list_codes_for_user(&self, tenant_id: TenantId, user_id: Uuid) -> Result<Vec<String>> {
         self.inner.list_codes_for_user(tenant_id, user_id).await
     }
 
-    async fn has_permission(
-        &self,
-        tenant_id: TenantId,
-        user_id: Uuid,
-        code: &str,
-    ) -> Result<bool> {
+    async fn has_permission(&self, tenant_id: TenantId, user_id: Uuid, code: &str) -> Result<bool> {
         let key = Self::key(tenant_id, user_id, code);
         if let Some(hit) = self.cache.get(&key) {
             return Ok(hit);
@@ -203,9 +194,7 @@ mod tests {
         Utc.with_ymd_and_hms(2026, 7, 10, 0, 0, 0).unwrap()
     }
 
-    fn setup(
-        inner: Arc<CountingPermissions>,
-    ) -> CachedUserPermissionRepository {
+    fn setup(inner: Arc<CountingPermissions>) -> CachedUserPermissionRepository {
         let cache = Arc::new(InMemoryTtlCache::<PermissionKey, bool>::new(
             Duration::seconds(60),
             Arc::new(FixedClock(now())),
@@ -225,8 +214,14 @@ mod tests {
             .push((tenant, user, "idp.tenant.admin".to_string()));
         let repo = setup(inner.clone());
 
-        assert!(repo.has_permission(tenant, user, "idp.tenant.admin").await.unwrap());
-        assert!(repo.has_permission(tenant, user, "idp.tenant.admin").await.unwrap());
+        assert!(repo
+            .has_permission(tenant, user, "idp.tenant.admin")
+            .await
+            .unwrap());
+        assert!(repo
+            .has_permission(tenant, user, "idp.tenant.admin")
+            .await
+            .unwrap());
         // 2 回目はキャッシュヒットで内側を叩かない。
         assert_eq!(inner.has_calls.load(Ordering::SeqCst), 1);
     }
@@ -239,10 +234,18 @@ mod tests {
         let repo = setup(inner.clone());
 
         // まず未保有（false）をキャッシュ。
-        assert!(!repo.has_permission(tenant, user, "idp.tenant.admin").await.unwrap());
+        assert!(!repo
+            .has_permission(tenant, user, "idp.tenant.admin")
+            .await
+            .unwrap());
         // 付与すると該当エントリが invalidate され、次の判定は再計算されて true。
-        repo.grant(tenant, user, "idp.tenant.admin", now()).await.unwrap();
-        assert!(repo.has_permission(tenant, user, "idp.tenant.admin").await.unwrap());
+        repo.grant(tenant, user, "idp.tenant.admin", now())
+            .await
+            .unwrap();
+        assert!(repo
+            .has_permission(tenant, user, "idp.tenant.admin")
+            .await
+            .unwrap());
     }
 
     #[tokio::test]
@@ -257,9 +260,15 @@ mod tests {
             .push((tenant, user, "idp.tenant.admin".to_string()));
         let repo = setup(inner.clone());
 
-        assert!(repo.has_permission(tenant, user, "idp.tenant.admin").await.unwrap());
+        assert!(repo
+            .has_permission(tenant, user, "idp.tenant.admin")
+            .await
+            .unwrap());
         repo.revoke(tenant, user, "idp.tenant.admin").await.unwrap();
-        assert!(!repo.has_permission(tenant, user, "idp.tenant.admin").await.unwrap());
+        assert!(!repo
+            .has_permission(tenant, user, "idp.tenant.admin")
+            .await
+            .unwrap());
     }
 
     #[tokio::test]
@@ -275,15 +284,33 @@ mod tests {
         let repo = setup(inner.clone());
 
         // 両コードの許可をキャッシュに載せる。
-        assert!(repo.has_permission(tenant, user, "idp.tenant.admin").await.unwrap());
-        assert!(repo.has_permission(tenant, user, "idp.other").await.unwrap());
+        assert!(repo
+            .has_permission(tenant, user, "idp.tenant.admin")
+            .await
+            .unwrap());
+        assert!(repo
+            .has_permission(tenant, user, "idp.other")
+            .await
+            .unwrap());
 
         // 一括剥奪 → 剥奪コード一覧が返り、両コードとも stale allow が残らない。
-        let mut revoked = repo.revoke_all_for_user_in_tenant(tenant, user).await.unwrap();
+        let mut revoked = repo
+            .revoke_all_for_user_in_tenant(tenant, user)
+            .await
+            .unwrap();
         revoked.sort();
-        assert_eq!(revoked, vec!["idp.other".to_string(), "idp.tenant.admin".to_string()]);
-        assert!(!repo.has_permission(tenant, user, "idp.tenant.admin").await.unwrap());
-        assert!(!repo.has_permission(tenant, user, "idp.other").await.unwrap());
+        assert_eq!(
+            revoked,
+            vec!["idp.other".to_string(), "idp.tenant.admin".to_string()]
+        );
+        assert!(!repo
+            .has_permission(tenant, user, "idp.tenant.admin")
+            .await
+            .unwrap());
+        assert!(!repo
+            .has_permission(tenant, user, "idp.other")
+            .await
+            .unwrap());
     }
 
     #[tokio::test]
@@ -299,12 +326,21 @@ mod tests {
         let repo = setup(inner.clone());
 
         // 別コードを 1 件キャッシュしておく。
-        assert!(!repo.has_permission(tenant, user, "idp.other").await.unwrap());
-        assert!(repo.has_permission(tenant, user, "idp.tenant.admin").await.unwrap());
+        assert!(!repo
+            .has_permission(tenant, user, "idp.other")
+            .await
+            .unwrap());
+        assert!(repo
+            .has_permission(tenant, user, "idp.tenant.admin")
+            .await
+            .unwrap());
         // idp.tenant.admin を剥奪しても idp.other のキャッシュは残る。
         repo.revoke(tenant, user, "idp.tenant.admin").await.unwrap();
         let before = inner.has_calls.load(Ordering::SeqCst);
-        assert!(!repo.has_permission(tenant, user, "idp.other").await.unwrap());
+        assert!(!repo
+            .has_permission(tenant, user, "idp.other")
+            .await
+            .unwrap());
         assert_eq!(inner.has_calls.load(Ordering::SeqCst), before);
     }
 }

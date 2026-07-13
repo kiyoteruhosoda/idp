@@ -51,14 +51,13 @@ impl Mailer for LettreSmtpMailer {
             .body(mail.body_text.clone())
             .map_err(mail_err("build message"))?;
 
-        let mut builder =
-            AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&server.host);
+        let mut builder = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&server.host);
         if let Some(port) = server.port {
             builder = builder.port(port);
         }
         if server.use_tls {
-            let params = TlsParameters::new(server.host.clone())
-                .map_err(mail_err("tls parameters"))?;
+            let params =
+                TlsParameters::new(server.host.clone()).map_err(mail_err("tls parameters"))?;
             let implicit_tls = server.port.unwrap_or(SMTPS_PORT) == SMTPS_PORT;
             builder = builder.tls(if implicit_tls {
                 Tls::Wrapper(params)
@@ -110,7 +109,11 @@ mod tests {
                 }
                 continue;
             }
-            let verb = line.split_whitespace().next().unwrap_or("").to_ascii_uppercase();
+            let verb = line
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_ascii_uppercase();
             match verb.as_str() {
                 "EHLO" | "HELO" => {
                     write_half.write_all(b"250 test\r\n").await.unwrap();

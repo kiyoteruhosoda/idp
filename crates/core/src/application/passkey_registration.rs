@@ -152,14 +152,12 @@ impl PasskeyRegistrationService {
         }
 
         // チャレンジ状態を復元する。
-        let reg_state: PasskeyRegistration =
-            serde_json::from_str(&challenge.state_json)
-                .map_err(|e| PasskeyRegistrationError::Internal(e.to_string()))?;
+        let reg_state: PasskeyRegistration = serde_json::from_str(&challenge.state_json)
+            .map_err(|e| PasskeyRegistrationError::Internal(e.to_string()))?;
 
         // ブラウザからのクレデンシャルをデシリアライズして検証する。
-        let reg_credential: RegisterPublicKeyCredential =
-            serde_json::from_value(credential_value)
-                .map_err(|e| PasskeyRegistrationError::InvalidCredential(e.to_string()))?;
+        let reg_credential: RegisterPublicKeyCredential = serde_json::from_value(credential_value)
+            .map_err(|e| PasskeyRegistrationError::InvalidCredential(e.to_string()))?;
 
         let passkey = self
             .webauthn
@@ -167,8 +165,10 @@ impl PasskeyRegistrationService {
             .map_err(PasskeyRegistrationError::InvalidCredential)?;
 
         // credential_id は base64url エンコードして保存する。
-        let credential_id =
-            base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, passkey.cred_id());
+        let credential_id = base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            passkey.cred_id(),
+        );
         let passkey_json = serde_json::to_string(&passkey)
             .map_err(|e| PasskeyRegistrationError::Internal(e.to_string()))?;
 
@@ -186,16 +186,13 @@ impl PasskeyRegistrationService {
         // チャレンジを先に削除してから登録（失敗してもチャレンジは使えなくなる）。
         let _ = self.passkey_challenges.delete(challenge_id).await;
 
-        self.webauthn_credentials
-            .create(&cred)
-            .await
-            .map_err(|e| {
-                if matches!(e, DomainError::Conflict(_)) {
-                    PasskeyRegistrationError::DuplicateCredential
-                } else {
-                    PasskeyRegistrationError::Internal(e.to_string())
-                }
-            })?;
+        self.webauthn_credentials.create(&cred).await.map_err(|e| {
+            if matches!(e, DomainError::Conflict(_)) {
+                PasskeyRegistrationError::DuplicateCredential
+            } else {
+                PasskeyRegistrationError::Internal(e.to_string())
+            }
+        })?;
 
         Ok(cred_id)
     }

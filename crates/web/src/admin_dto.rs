@@ -133,6 +133,22 @@ pub struct TenantView {
 
 /// システム設定の公開表現（`GET/PUT /admin/system-settings` の応答。MT14）。
 /// SMTP パスワードは平文を含まず、設定済みか否か（`smtp_password_set`）のみ。
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct RuntimeSettingView {
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub owner: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub secret: bool,
+    #[serde(default)]
+    pub restart_required: bool,
+    #[serde(default)]
+    pub default_risk: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct SystemSettingsView {
     #[serde(default)]
@@ -147,4 +163,6 @@ pub struct SystemSettingsView {
     pub smtp_from_address: String,
     #[serde(default)]
     pub smtp_use_tls: bool,
+    #[serde(default)]
+    pub runtime_settings: Vec<RuntimeSettingView>,
 }

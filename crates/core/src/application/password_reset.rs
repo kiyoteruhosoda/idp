@@ -129,7 +129,11 @@ impl PasswordResetService {
         };
 
         // ここから先はアカウントの有無・状態・送信結果に関わらず Accepted（列挙防止）。
-        let user = match self.users.find_by_email(tenant.tenant_id(), email.trim()).await {
+        let user = match self
+            .users
+            .find_by_email(tenant.tenant_id(), email.trim())
+            .await
+        {
             Ok(Some(user)) if user.is_active() => user,
             Ok(_) => return RequestResetOutcome::Accepted,
             Err(e) => {
@@ -140,7 +144,11 @@ impl PasswordResetService {
 
         let now = self.clock.now();
         // 再要求時は旧トークンを失効させ、有効なリセットリンクを常に最新の 1 本にする。
-        if let Err(e) = self.reset_tokens.invalidate_all_for_user(user.id, now).await {
+        if let Err(e) = self
+            .reset_tokens
+            .invalidate_all_for_user(user.id, now)
+            .await
+        {
             tracing::warn!(error = %e, "failed to invalidate previous reset tokens");
             return RequestResetOutcome::Accepted;
         }
@@ -342,7 +350,13 @@ mod tests {
             unreachable!()
         }
         async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<User>> {
-            Ok(self.rows.lock().unwrap().iter().find(|u| u.id == id).cloned())
+            Ok(self
+                .rows
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|u| u.id == id)
+                .cloned())
         }
         async fn find_by_sub(&self, _s: Uuid) -> DomainResult<Option<User>> {
             unreachable!()
@@ -456,11 +470,7 @@ mod tests {
         async fn create(&self, _t: &RefreshToken) -> DomainResult<()> {
             unreachable!()
         }
-        async fn find_by_hash(
-            &self,
-            _t: TenantId,
-            _h: &str,
-        ) -> DomainResult<Option<RefreshToken>> {
+        async fn find_by_hash(&self, _t: TenantId, _h: &str) -> DomainResult<Option<RefreshToken>> {
             unreachable!()
         }
         async fn revoke(&self, _h: &str, _t: DateTime<Utc>) -> DomainResult<()> {
@@ -524,7 +534,10 @@ mod tests {
     #[async_trait]
     impl Mailer for FakeMailer {
         async fn send(&self, server: &SmtpServerConfig, mail: &OutgoingEmail) -> DomainResult<()> {
-            self.sent.lock().unwrap().push((server.clone(), mail.clone()));
+            self.sent
+                .lock()
+                .unwrap()
+                .push((server.clone(), mail.clone()));
             Ok(())
         }
     }
@@ -666,21 +679,24 @@ mod tests {
 
         // 実在アカウント・不存在アカウントとも Accepted（列挙防止）。
         assert!(matches!(
-            h.svc.request_reset(TenantContext::new(tenant), "known@example.com", &ctx()).await,
+            h.svc
+                .request_reset(TenantContext::new(tenant), "known@example.com", &ctx())
+                .await,
             RequestResetOutcome::Accepted
         ));
         assert!(matches!(
-            h.svc.request_reset(TenantContext::new(tenant), "unknown@example.com", &ctx()).await,
+            h.svc
+                .request_reset(TenantContext::new(tenant), "unknown@example.com", &ctx())
+                .await,
             RequestResetOutcome::Accepted
         ));
         // メールは実在アカウントの 1 通だけ送られ、本文にリセットリンクを含む。
         let sent = h.mailer.sent.lock().unwrap();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].1.to, "known@example.com");
-        assert!(sent[0]
-            .1
-            .body_text
-            .contains(&format!("https://idp.example.com/{tenant}/password-reset?token=")));
+        assert!(sent[0].1.body_text.contains(&format!(
+            "https://idp.example.com/{tenant}/password-reset?token="
+        )));
         // 保存されるのはハッシュのみ。
         let token = token_from_mail(&sent[0].1);
         let rows = h.tokens.rows.lock().unwrap();
@@ -694,7 +710,9 @@ mod tests {
         let tenant: TenantId = Uuid::now_v7().into();
         let h = harness(false, 100);
         assert!(matches!(
-            h.svc.request_reset(TenantContext::new(tenant), "a@example.com", &ctx()).await,
+            h.svc
+                .request_reset(TenantContext::new(tenant), "a@example.com", &ctx())
+                .await,
             RequestResetOutcome::Unavailable
         ));
 
@@ -703,7 +721,9 @@ mod tests {
             .request_reset(TenantContext::new(tenant), "a@example.com", &ctx())
             .await;
         assert!(matches!(
-            h.svc.request_reset(TenantContext::new(tenant), "a@example.com", &ctx()).await,
+            h.svc
+                .request_reset(TenantContext::new(tenant), "a@example.com", &ctx())
+                .await,
             RequestResetOutcome::RateLimited
         ));
     }
@@ -725,7 +745,12 @@ mod tests {
 
         assert!(matches!(
             h.svc
-                .reset_password(TenantContext::new(tenant), &token, "new-password-123", &ctx())
+                .reset_password(
+                    TenantContext::new(tenant),
+                    &token,
+                    "new-password-123",
+                    &ctx()
+                )
                 .await,
             ResetPasswordOutcome::Ok
         ));
@@ -757,7 +782,12 @@ mod tests {
         // 同じトークンの再利用は拒否される（単回消費）。
         assert!(matches!(
             h.svc
-                .reset_password(TenantContext::new(tenant), &token, "another-password-1", &ctx())
+                .reset_password(
+                    TenantContext::new(tenant),
+                    &token,
+                    "another-password-1",
+                    &ctx()
+                )
                 .await,
             ResetPasswordOutcome::InvalidOrExpired
         ));
@@ -791,7 +821,12 @@ mod tests {
         let other: TenantId = Uuid::now_v7().into();
         assert!(matches!(
             h.svc
-                .reset_password(TenantContext::new(other), &token, "new-password-123", &ctx())
+                .reset_password(
+                    TenantContext::new(other),
+                    &token,
+                    "new-password-123",
+                    &ctx()
+                )
                 .await,
             ResetPasswordOutcome::InvalidOrExpired
         ));
@@ -825,13 +860,23 @@ mod tests {
         // 旧トークンは失効し、新トークンだけが使える。
         assert!(matches!(
             h.svc
-                .reset_password(TenantContext::new(tenant), &first, "new-password-123", &ctx())
+                .reset_password(
+                    TenantContext::new(tenant),
+                    &first,
+                    "new-password-123",
+                    &ctx()
+                )
                 .await,
             ResetPasswordOutcome::InvalidOrExpired
         ));
         assert!(matches!(
             h.svc
-                .reset_password(TenantContext::new(tenant), &second, "new-password-123", &ctx())
+                .reset_password(
+                    TenantContext::new(tenant),
+                    &second,
+                    "new-password-123",
+                    &ctx()
+                )
                 .await,
             ResetPasswordOutcome::Ok
         ));

@@ -83,11 +83,7 @@ pub async fn page(
                 cookies::LANG_COOKIE_MAX_AGE_SECS,
                 state.config.cookie_secure(),
             );
-            (
-                AppendHeaders([(header::SET_COOKIE, cookie)]),
-                Html(body),
-            )
-                .into_response()
+            (AppendHeaders([(header::SET_COOKIE, cookie)]), Html(body)).into_response()
         }
         None => Html(body).into_response(),
     }
@@ -135,12 +131,8 @@ pub async fn change_password(
         InternalAccountChangePasswordResponse::InvalidCurrentPassword => {
             found(&format!("{base}?error=invalid-current"))
         }
-        InternalAccountChangePasswordResponse::WeakPassword => {
-            found(&format!("{base}?error=weak"))
-        }
-        InternalAccountChangePasswordResponse::Internal => {
-            found(&format!("{base}?error=internal"))
-        }
+        InternalAccountChangePasswordResponse::WeakPassword => found(&format!("{base}?error=weak")),
+        InternalAccountChangePasswordResponse::Internal => found(&format!("{base}?error=internal")),
     }
 }
 

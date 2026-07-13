@@ -92,10 +92,7 @@ mod tests {
             doc["end_session_endpoint"],
             "https://idp.example.com/logout"
         );
-        assert_eq!(
-            doc["revocation_endpoint"],
-            "https://idp.example.com/revoke"
-        );
+        assert_eq!(doc["revocation_endpoint"], "https://idp.example.com/revoke");
         assert_eq!(
             doc["introspection_endpoint"],
             "https://idp.example.com/introspect"

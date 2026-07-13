@@ -77,7 +77,10 @@ impl AccountPasswordService {
         };
 
         // 2. 現行パスワードを再検証する。
-        let verified = match self.hasher.verify(&cmd.current_password, &user.password_hash) {
+        let verified = match self
+            .hasher
+            .verify(&cmd.current_password, &user.password_hash)
+        {
             Ok(v) => v,
             Err(e) => return AccountPasswordOutcome::Internal(e.to_string()),
         };

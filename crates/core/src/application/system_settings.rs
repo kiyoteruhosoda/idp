@@ -14,8 +14,8 @@ use crate::domain::error::{DomainError, Result};
 use crate::domain::mailer::SmtpServerConfig;
 use crate::domain::repositories::SystemSettingsRepository;
 use crate::domain::system_setting::{
-    SmtpSettingsView, SystemSetting, UpdateSmtpCommand, SMTP_FROM_ADDRESS, SMTP_HOST, SMTP_PASSWORD,
-    SMTP_PORT, SMTP_USERNAME, SMTP_USE_TLS,
+    SmtpSettingsView, SystemSetting, UpdateSmtpCommand, SMTP_FROM_ADDRESS, SMTP_HOST,
+    SMTP_PASSWORD, SMTP_PORT, SMTP_USERNAME, SMTP_USE_TLS,
 };
 use crate::domain::tenant_context::TenantContext;
 use crate::infrastructure::crypto;
@@ -87,7 +87,10 @@ impl SystemSettingsService {
             host: map.get(SMTP_HOST).cloned().unwrap_or_default(),
             port: map.get(SMTP_PORT).and_then(|v| v.parse().ok()),
             username: map.get(SMTP_USERNAME).cloned().unwrap_or_default(),
-            password_set: map.get(SMTP_PASSWORD).map(|v| !v.is_empty()).unwrap_or(false),
+            password_set: map
+                .get(SMTP_PASSWORD)
+                .map(|v| !v.is_empty())
+                .unwrap_or(false),
             from_address: map.get(SMTP_FROM_ADDRESS).cloned().unwrap_or_default(),
             use_tls: map.get(SMTP_USE_TLS).map(|v| v == "true").unwrap_or(false),
         })
@@ -109,7 +112,8 @@ impl SystemSettingsService {
         )
         .await?;
         self.upsert_plain(SMTP_USERNAME, &cmd.username).await?;
-        self.upsert_plain(SMTP_FROM_ADDRESS, &cmd.from_address).await?;
+        self.upsert_plain(SMTP_FROM_ADDRESS, &cmd.from_address)
+            .await?;
         self.upsert_plain(SMTP_USE_TLS, if cmd.use_tls { "true" } else { "false" })
             .await?;
 

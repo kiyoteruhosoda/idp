@@ -71,7 +71,11 @@ pub async fn logout(
     headers: HeaderMap,
     Query(params): Query<LogoutParams>,
 ) -> Response {
-    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
 
     // SSO Cookie を読む。
     let sso_session_id = cookies::get(&headers, cookies::SSO_SESSION_COOKIE);
@@ -134,13 +138,17 @@ pub async fn logout(
         let mut resp = found(&uri).into_response();
         resp.headers_mut().insert(
             header::SET_COOKIE,
-            expire_cookie.parse().unwrap_or_else(|_| {
-                axum::http::HeaderValue::from_static("")
-            }),
+            expire_cookie
+                .parse()
+                .unwrap_or_else(|_| axum::http::HeaderValue::from_static("")),
         );
         resp
     } else {
-        (StatusCode::NO_CONTENT, [(header::SET_COOKIE, expire_cookie)]).into_response()
+        (
+            StatusCode::NO_CONTENT,
+            [(header::SET_COOKIE, expire_cookie)],
+        )
+            .into_response()
     }
 }
 

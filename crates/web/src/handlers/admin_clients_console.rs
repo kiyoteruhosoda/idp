@@ -139,9 +139,10 @@ pub async fn create(
     let messages = Messages::new(locale(&headers));
     let csrf = csrf_from(&headers, state.config.csrf_secret());
     match result {
-        Ok(created) => {
-            Html(render_secret_result(&messages, &tenant, &admin, &created, true)).into_response()
-        }
+        Ok(created) => Html(render_secret_result(
+            &messages, &tenant, &admin, &created, true,
+        ))
+        .into_response(),
         Err(AdminApiError::Validation(m)) | Err(AdminApiError::Conflict(m)) => bad_request_form(
             render_new_form_with_message(&messages, &tenant, &admin, &csrf, &values, &m),
         ),
@@ -166,7 +167,9 @@ pub async fn detail(
     let messages = Messages::new(locale(&headers));
     let csrf = csrf_from(&headers, state.config.csrf_secret());
     match result {
-        Ok(client) => Html(render_detail(&messages, &tenant, &admin, &client, &csrf)).into_response(),
+        Ok(client) => {
+            Html(render_detail(&messages, &tenant, &admin, &client, &csrf)).into_response()
+        }
         Err(AdminApiError::NotFound) => not_found(&messages, &tenant, &admin),
         Err(e) => map_data_error(&messages, &tenant, &admin, &headers, e),
     }
@@ -374,7 +377,12 @@ fn csrf_valid(headers: &HeaderMap, submitted: &str, key: &[u8]) -> bool {
 
 // ── レンダリング ──────────────────────────────────────────────────────────────
 
-fn render_list(messages: &Messages, tenant: &WebTenant, admin: &str, clients: &[ClientView]) -> String {
+fn render_list(
+    messages: &Messages,
+    tenant: &WebTenant,
+    admin: &str,
+    clients: &[ClientView],
+) -> String {
     render(&ClientsList {
         messages,
         tenant: &tenant.prefix(),
@@ -442,13 +450,23 @@ fn render_edit_form(
         csrf,
         error: error.as_deref(),
         heading: &format!("{}: {}", messages.get("admin-client-edit"), client.app_name),
-        action: &format!("{}{CLIENTS_SEGMENT}/{}/edit", tenant.prefix(), client.client_id),
+        action: &format!(
+            "{}{CLIENTS_SEGMENT}/{}/edit",
+            tenant.prefix(),
+            client.client_id
+        ),
         is_new: false,
         values,
     })
 }
 
-fn render_detail(messages: &Messages, tenant: &WebTenant, admin: &str, client: &ClientView, csrf: &str) -> String {
+fn render_detail(
+    messages: &Messages,
+    tenant: &WebTenant,
+    admin: &str,
+    client: &ClientView,
+    csrf: &str,
+) -> String {
     render(&ClientDetail {
         messages,
         tenant: &tenant.prefix(),
@@ -482,7 +500,14 @@ fn render_rotated_result(
     client: &ClientView,
     secret: &str,
 ) -> String {
-    render_secret_page(messages, tenant, admin, &client.client_id, Some(secret), false)
+    render_secret_page(
+        messages,
+        tenant,
+        admin,
+        &client.client_id,
+        Some(secret),
+        false,
+    )
 }
 
 fn render_secret_page(
@@ -562,11 +587,21 @@ fn bad_request_form(html: String) -> Response {
     (StatusCode::BAD_REQUEST, Html(html)).into_response()
 }
 
-fn bad_request_page(messages: &Messages, tenant: &WebTenant, admin: &str, error_key: &str) -> Response {
+fn bad_request_page(
+    messages: &Messages,
+    tenant: &WebTenant,
+    admin: &str,
+    error_key: &str,
+) -> Response {
     bad_request_page_msg(messages, tenant, admin, &messages.get(error_key))
 }
 
-fn bad_request_page_msg(messages: &Messages, tenant: &WebTenant, admin: &str, message: &str) -> Response {
+fn bad_request_page_msg(
+    messages: &Messages,
+    tenant: &WebTenant,
+    admin: &str,
+    message: &str,
+) -> Response {
     let body = render(&ConsoleNotice {
         messages,
         tenant: &tenant.prefix(),

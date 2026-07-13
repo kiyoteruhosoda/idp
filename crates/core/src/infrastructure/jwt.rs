@@ -10,7 +10,7 @@ use crate::infrastructure::crypto::base64url;
 use jsonwebtoken::{encode, Algorithm, DecodingKey, EncodingKey, Header};
 use p256::pkcs8::{DecodePublicKey as EcDecodePublicKey, EncodePrivateKey, LineEnding};
 use rsa::pkcs1::EncodeRsaPrivateKey;
-use rsa::pkcs8::{EncodePublicKey as RsaEncodePublicKey};
+use rsa::pkcs8::EncodePublicKey as RsaEncodePublicKey;
 use rsa::traits::PublicKeyParts;
 use rsa::{RsaPrivateKey, RsaPublicKey};
 use serde::{Deserialize, Serialize};
@@ -164,14 +164,26 @@ pub fn public_jwk(kid: &str, algorithm: &str, public_pem: &str) -> anyhow::Resul
 pub fn decoding_key_from_jwk(jwk: &Jwk) -> anyhow::Result<DecodingKey> {
     match jwk.kty.as_str() {
         "RSA" => {
-            let n = jwk.n.as_deref().ok_or_else(|| anyhow::anyhow!("RSA JWK missing n"))?;
-            let e = jwk.e.as_deref().ok_or_else(|| anyhow::anyhow!("RSA JWK missing e"))?;
+            let n = jwk
+                .n
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("RSA JWK missing n"))?;
+            let e = jwk
+                .e
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("RSA JWK missing e"))?;
             DecodingKey::from_rsa_components(n, e)
                 .map_err(|e| anyhow::anyhow!("build RSA decoding key: {e}"))
         }
         "EC" => {
-            let x = jwk.x.as_deref().ok_or_else(|| anyhow::anyhow!("EC JWK missing x"))?;
-            let y = jwk.y.as_deref().ok_or_else(|| anyhow::anyhow!("EC JWK missing y"))?;
+            let x = jwk
+                .x
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("EC JWK missing x"))?;
+            let y = jwk
+                .y
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("EC JWK missing y"))?;
             DecodingKey::from_ec_components(x, y)
                 .map_err(|e| anyhow::anyhow!("build EC decoding key: {e}"))
         }

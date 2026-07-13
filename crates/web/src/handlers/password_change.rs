@@ -69,7 +69,11 @@ pub async fn submit(
         user_agent: ctx.user_agent,
     };
 
-    let outcome = match state.api.change_password(&ctx.correlation_id, &request).await {
+    let outcome = match state
+        .api
+        .change_password(&ctx.correlation_id, &request)
+        .await
+    {
         Ok(outcome) => outcome,
         Err(e) => {
             tracing::error!(error = %e, "internal change-password call to api failed");
@@ -182,7 +186,11 @@ fn reshow_form(
     match auth_session_id {
         Some(id) => (
             status,
-            Html(render_form(messages, &login_csrf_token(id, csrf_secret), Some(error_key))),
+            Html(render_form(
+                messages,
+                &login_csrf_token(id, csrf_secret),
+                Some(error_key),
+            )),
         )
             .into_response(),
         None => error_page(

@@ -26,6 +26,252 @@ pub const SMTP_PASSWORD: &str = "smtp.password";
 pub const SMTP_FROM_ADDRESS: &str = "smtp.from_address";
 pub const SMTP_USE_TLS: &str = "smtp.use_tls";
 
+// ── ランタイム設定メタデータ（ADR-0010 / CFG1）───────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingOwner {
+    Builtin,
+    EnvLocked,
+    DbManaged,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefaultRisk {
+    Safe,
+    Review,
+    Dangerous,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SettingDefinition {
+    pub key: &'static str,
+    pub owner: SettingOwner,
+    pub secret: bool,
+    pub restart_required: bool,
+    pub default_risk: DefaultRisk,
+    pub default_value: Option<&'static str>,
+}
+
+pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
+    SettingDefinition {
+        key: "ISSUER",
+        owner: SettingOwner::EnvLocked,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Review,
+        default_value: Some("http://localhost:8080"),
+    },
+    SettingDefinition {
+        key: "BIND_ADDR",
+        owner: SettingOwner::EnvLocked,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        default_value: Some("0.0.0.0:8080"),
+    },
+    SettingDefinition {
+        key: "DATABASE_URL",
+        owner: SettingOwner::EnvLocked,
+        secret: true,
+        restart_required: true,
+        default_risk: DefaultRisk::Dangerous,
+        default_value: Some("mysql://idp:idp@127.0.0.1:3306/idp"),
+    },
+    SettingDefinition {
+        key: "DB_MAX_CONNECTIONS",
+        owner: SettingOwner::EnvLocked,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        default_value: Some("10"),
+    },
+    SettingDefinition {
+        key: "LOG_FORMAT",
+        owner: SettingOwner::EnvLocked,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        default_value: Some("json"),
+    },
+    // api と web の両方が消費する値。web が DB 設定を解決/materialize するまでは env locked。
+    SettingDefinition {
+        key: "AUTH_SESSION_TTL_SECS",
+        owner: SettingOwner::EnvLocked,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        default_value: Some("600"),
+    },
+    SettingDefinition {
+        key: "AUTHORIZATION_CODE_TTL_SECS",
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        default_value: Some("60"),
+    },
+    SettingDefinition {
+        key: "SSO_IDLE_TTL_SECS",
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        default_value: Some("28800"),
+    },
+    SettingDefinition {
+        key: "SSO_ABSOLUTE_TTL_SECS",
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        default_value: Some("86400"),
+    },
+    SettingDefinition {
+        key: "ACCESS_TOKEN_TTL_SECS",
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        default_value: Some("900"),
+    },
+    SettingDefinition {
+        key: "ID_TOKEN_TTL_SECS",
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        default_value: Some("3600"),
+    },
+    SettingDefinition {
+        key: "REFRESH_TOKEN_TTL_SECS",
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        default_value: Some("2592000"),
+    },
+    SettingDefinition {
+        key: "CLOCK_SKEW_SECS",
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        default_value: Some("60"),
+    },
+    SettingDefinition {
+        key: "INVITATION_TTL_SECS",
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        default_value: Some("604800"),
+    },
+    SettingDefinition {
+        key: "PASSWORD_RESET_TTL_SECS",
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        default_value: Some("3600"),
+    },
+    SettingDefinition {
+        key: "EMAIL_VERIFICATION_TTL_SECS",
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        default_value: Some("86400"),
+    },
+    SettingDefinition {
+        key: "TENANT_CACHE_TTL_SECS",
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        default_value: Some("60"),
+    },
+    SettingDefinition {
+        key: "PERMISSION_CACHE_TTL_SECS",
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        default_value: Some("60"),
+    },
+    // api と web の Cookie 属性を一致させる必要があるため、DB materialize までは env locked。
+    SettingDefinition {
+        key: "COOKIE_SECURE",
+        owner: SettingOwner::EnvLocked,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Dangerous,
+        default_value: None,
+    },
+    SettingDefinition {
+        key: "KEY_ENCRYPTION_KEY",
+        owner: SettingOwner::EnvLocked,
+        secret: true,
+        restart_required: true,
+        default_risk: DefaultRisk::Dangerous,
+        default_value: None,
+    },
+    SettingDefinition {
+        key: "KEY_ROTATION_LEAD_DAYS",
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        default_value: Some("30"),
+    },
+    SettingDefinition {
+        key: "TRUST_FORWARDED_HEADERS",
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Review,
+        default_value: Some("false"),
+    },
+    // api/web の security header を一致させる必要があるため、DB materialize までは env locked。
+    SettingDefinition {
+        key: "HSTS_MAX_AGE",
+        owner: SettingOwner::EnvLocked,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Dangerous,
+        default_value: Some("0"),
+    },
+    SettingDefinition {
+        key: "INTERNAL_SERVICE_TOKEN",
+        owner: SettingOwner::EnvLocked,
+        secret: true,
+        restart_required: true,
+        default_risk: DefaultRisk::Dangerous,
+        default_value: None,
+    },
+    SettingDefinition {
+        key: "CSRF_SECRET",
+        owner: SettingOwner::EnvLocked,
+        secret: true,
+        restart_required: true,
+        default_risk: DefaultRisk::Dangerous,
+        default_value: None,
+    },
+    SettingDefinition {
+        key: "PUBLIC_WEB_BASE_URL",
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Review,
+        default_value: None,
+    },
+];
+
+pub fn runtime_setting_definition(key: &str) -> Option<&'static SettingDefinition> {
+    RUNTIME_SETTING_DEFINITIONS
+        .iter()
+        .find(|def| def.key == key)
+}
+
 /// SMTP（メール配送）設定。参照時は平文パスワードを含めず「設定済みか否か」のみを外へ渡す
 /// （[`SmtpSettingsView`]）。更新時は [`UpdateSmtpCommand`] を用いる。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

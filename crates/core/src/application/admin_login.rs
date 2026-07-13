@@ -323,7 +323,10 @@ impl AdminLoginService {
             return AdminLoginOutcome::InvalidCredentials;
         }
 
-        let verified = match self.hasher.verify(&cmd.current_password, &user.password_hash) {
+        let verified = match self
+            .hasher
+            .verify(&cmd.current_password, &user.password_hash)
+        {
             Ok(v) => v,
             Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
         };
@@ -418,12 +421,7 @@ impl AdminLoginService {
 
     /// 管理コンソールからのログアウト。SSO セッションを DB から削除して監査へ記録する。
     /// Cookie の失効は Presentation（ハンドラ）が行う。不明・不正なセッションは何もしない（冪等）。
-    pub async fn logout(
-        &self,
-        tenant: TenantContext,
-        sso_session_id: &str,
-        ctx: &RequestContext,
-    ) {
+    pub async fn logout(&self, tenant: TenantContext, sso_session_id: &str, ctx: &RequestContext) {
         if sso_session_id.is_empty() {
             return;
         }

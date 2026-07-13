@@ -48,7 +48,12 @@ pub async fn login_page(
 
 /// ログインフォームの HTML をテンプレートから描画する。埋め込む値（翻訳文言・CSRF トークン）は
 /// テンプレート側で自動 HTML エスケープされる。
-fn render_form(messages: &Messages, tenant_prefix: &str, csrf: &str, error_key: Option<&str>) -> String {
+fn render_form(
+    messages: &Messages,
+    tenant_prefix: &str,
+    csrf: &str,
+    error_key: Option<&str>,
+) -> String {
     render(&LoginTemplate {
         messages,
         tenant_prefix,
@@ -106,7 +111,10 @@ pub async fn login(
             let expire_auth = cookies::expire(cookies::AUTH_SESSION_COOKIE, secure);
             // ユーザーの DB 言語設定があれば lang Cookie に同期する（MT20: DB > Cookie の優先順）。
             let redirect = found(&redirect_to);
-            if let Some(lang) = user_language.as_deref().and_then(crate::i18n::Locale::from_tag) {
+            if let Some(lang) = user_language
+                .as_deref()
+                .and_then(crate::i18n::Locale::from_tag)
+            {
                 let lang_cookie = cookies::build(
                     cookies::LANG_COOKIE,
                     lang.as_tag(),

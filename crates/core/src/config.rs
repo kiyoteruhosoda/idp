@@ -2,13 +2,16 @@
 //!
 //! 設定値の取得は **必ず本モジュール経由**で行う。生の環境変数・DSN を各所で直接参照しない。
 //! 優先順位: 環境変数 > DB（system_settings テーブル）> 既定値。
-//! MVP では DB 上書きは未実装のため、実質「環境変数 > 既定値」で解決する。
 //!
 //! 一部の getter（各種 TTL・クロックスキュー）は後続フェーズ（T2〜）で使用するため、
 //! 現時点では未使用でも保持する。
 #![allow(dead_code)]
 
+use crate::domain::system_setting::{
+    runtime_setting_definition, DefaultRisk, SettingOwner, RUNTIME_SETTING_DEFINITIONS,
+};
 use base64::{engine::general_purpose::STANDARD, Engine};
+use std::collections::HashMap;
 use std::env;
 use std::time::Duration;
 
@@ -28,6 +31,23 @@ pub const DEV_CSRF_SECRET: &[u8; 32] = b"idp-dev-insecure-csrf-secret-xxx";
 pub enum LogFormat {
     Json,
     Pretty,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingSource {
+    Builtin,
+    Env,
+    Db,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedSetting {
+    pub key: String,
+    pub owner: SettingOwner,
+    pub source: SettingSource,
+    pub secret: bool,
+    pub restart_required: bool,
+    pub default_risk: DefaultRisk,
 }
 
 #[derive(Debug, Clone)]
@@ -71,14 +91,20 @@ pub struct Config {
     csrf_secret_is_dev: bool,
     /// 利用者がブラウザで開く web 画面の公開ベース URL（招待メールの承諾リンク等。MT17）。
     public_web_base_url: String,
+    resolved_settings: Vec<ResolvedSetting>,
 }
 
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
+        Self::from_env_and_db_settings(&HashMap::new())
+    }
+
+    pub fn from_env_and_db_settings(db_settings: &HashMap<String, String>) -> anyhow::Result<Self> {
+        let resolver = ConfigResolver::new(db_settings);
         let (key_encryption_key, key_encryption_key_is_dev) = load_key_encryption_key()?;
-        let issuer = normalize_issuer(env_or("ISSUER", "http://localhost:8080"));
+        let issuer = normalize_issuer(resolver.string("ISSUER", "http://localhost:8080"));
         // Cookie の Secure 属性。既定は issuer のスキームに従う（https なら有効）。
-        let cookie_secure = env_parse("COOKIE_SECURE", issuer.starts_with("https://"))?;
+        let cookie_secure = resolver.parse("COOKIE_SECURE", issuer.starts_with("https://"))?;
         // web→api の /internal/* 呼び出しを保護する共有シークレット（ADR-0007 §5）。
         let (internal_service_token, internal_service_token_is_dev) =
             match env_lookup("INTERNAL_SERVICE_TOKEN") {
@@ -96,50 +122,50 @@ impl Config {
         )?;
         // 招待メール等の承諾リンクの土台。単一オリジン構成（ADR-0007）では issuer と同一オリジンに
         // web 画面が同居するため既定は issuer。web を別オリジンへ置く構成でのみ明示設定する。
-        let public_web_base_url = match env_lookup("PUBLIC_WEB_BASE_URL") {
+        let public_web_base_url = match resolver.optional_string("PUBLIC_WEB_BASE_URL") {
             Some(v) => normalize_issuer(v),
             None => issuer.clone(),
         };
 
         Ok(Self {
             issuer,
-            bind_addr: env_or("BIND_ADDR", "0.0.0.0:8080"),
-            database_url: env_or("DATABASE_URL", "mysql://idp:idp@127.0.0.1:3306/idp"),
-            db_max_connections: env_parse("DB_MAX_CONNECTIONS", 10)?,
-            log_format: match env_or("LOG_FORMAT", "json").to_ascii_lowercase().as_str() {
+            bind_addr: resolver.string("BIND_ADDR", "0.0.0.0:8080"),
+            database_url: resolver.string("DATABASE_URL", "mysql://idp:idp@127.0.0.1:3306/idp"),
+            db_max_connections: resolver.parse("DB_MAX_CONNECTIONS", 10)?,
+            log_format: match resolver
+                .string("LOG_FORMAT", "json")
+                .to_ascii_lowercase()
+                .as_str()
+            {
                 "pretty" => LogFormat::Pretty,
                 _ => LogFormat::Json,
             },
-            auth_session_ttl: secs(env_parse("AUTH_SESSION_TTL_SECS", 600)?),
-            authorization_code_ttl: secs(env_parse("AUTHORIZATION_CODE_TTL_SECS", 60)?),
-            sso_idle_ttl: secs(env_parse("SSO_IDLE_TTL_SECS", 28_800)?),
-            sso_absolute_ttl: secs(env_parse("SSO_ABSOLUTE_TTL_SECS", 86_400)?),
-            access_token_ttl: secs(env_parse("ACCESS_TOKEN_TTL_SECS", 900)?),
-            id_token_ttl: secs(env_parse("ID_TOKEN_TTL_SECS", 3_600)?),
+            auth_session_ttl: secs(resolver.parse("AUTH_SESSION_TTL_SECS", 600)?),
+            authorization_code_ttl: secs(resolver.parse("AUTHORIZATION_CODE_TTL_SECS", 60)?),
+            sso_idle_ttl: secs(resolver.parse("SSO_IDLE_TTL_SECS", 28_800)?),
+            sso_absolute_ttl: secs(resolver.parse("SSO_ABSOLUTE_TTL_SECS", 86_400)?),
+            access_token_ttl: secs(resolver.parse("ACCESS_TOKEN_TTL_SECS", 900)?),
+            id_token_ttl: secs(resolver.parse("ID_TOKEN_TTL_SECS", 3_600)?),
             // Refresh Token は既定 30 日（offline_access scope で発行。rotation あり）。
-            refresh_token_ttl: secs(env_parse("REFRESH_TOKEN_TTL_SECS", 2_592_000)?),
-            clock_skew: secs(env_parse("CLOCK_SKEW_SECS", 60)?),
-            // ゲスト招待トークンの有効期限（既定 7 日）。
-            invitation_ttl: secs(env_parse("INVITATION_TTL_SECS", 604_800)?),
-            // パスワードリセットトークンの有効期限（既定 1 時間）。
-            password_reset_ttl: secs(env_parse("PASSWORD_RESET_TTL_SECS", 3_600)?),
-            // メール検証トークンの有効期限（既定 24 時間。自己登録の確認は後追い許容のため長め）。
-            email_verification_ttl: secs(env_parse("EMAIL_VERIFICATION_TTL_SECS", 86_400)?),
-            // 解決キャッシュの TTL（既定 60 秒）。付与・剥奪・テナント更新時は明示 invalidate するため、
-            // TTL は「invalidate 経路の無い変更（DB 直接操作等）に対する最大許容ラグ」を表す。
-            tenant_cache_ttl: secs(env_parse("TENANT_CACHE_TTL_SECS", 60)?),
-            permission_cache_ttl: secs(env_parse("PERMISSION_CACHE_TTL_SECS", 60)?),
+            refresh_token_ttl: secs(resolver.parse("REFRESH_TOKEN_TTL_SECS", 2_592_000)?),
+            clock_skew: secs(resolver.parse("CLOCK_SKEW_SECS", 60)?),
+            invitation_ttl: secs(resolver.parse("INVITATION_TTL_SECS", 604_800)?),
+            password_reset_ttl: secs(resolver.parse("PASSWORD_RESET_TTL_SECS", 3_600)?),
+            email_verification_ttl: secs(resolver.parse("EMAIL_VERIFICATION_TTL_SECS", 86_400)?),
+            tenant_cache_ttl: secs(resolver.parse("TENANT_CACHE_TTL_SECS", 60)?),
+            permission_cache_ttl: secs(resolver.parse("PERMISSION_CACHE_TTL_SECS", 60)?),
             cookie_secure,
             key_encryption_key,
             key_encryption_key_is_dev,
-            key_rotation_lead_days: env_parse("KEY_ROTATION_LEAD_DAYS", 30)?,
-            trust_forwarded_headers: env_parse("TRUST_FORWARDED_HEADERS", false)?,
-            hsts_max_age: env_parse("HSTS_MAX_AGE", 0u64)?,
+            key_rotation_lead_days: resolver.parse("KEY_ROTATION_LEAD_DAYS", 30)?,
+            trust_forwarded_headers: resolver.parse("TRUST_FORWARDED_HEADERS", false)?,
+            hsts_max_age: resolver.parse("HSTS_MAX_AGE", 0u64)?,
             internal_service_token,
             internal_service_token_is_dev,
             csrf_secret,
             csrf_secret_is_dev,
             public_web_base_url,
+            resolved_settings: resolver.resolved_settings(),
         })
     }
 
@@ -249,6 +275,86 @@ impl Config {
     pub fn public_web_base_url(&self) -> &str {
         &self.public_web_base_url
     }
+
+    pub fn resolved_settings(&self) -> &[ResolvedSetting] {
+        &self.resolved_settings
+    }
+}
+
+struct ConfigResolver<'a> {
+    db_settings: &'a HashMap<String, String>,
+}
+
+impl<'a> ConfigResolver<'a> {
+    fn new(db_settings: &'a HashMap<String, String>) -> Self {
+        Self { db_settings }
+    }
+
+    fn optional_string(&self, key: &str) -> Option<String> {
+        env_lookup(key).or_else(|| {
+            let db_allowed = runtime_setting_definition(key)
+                .map(|def| def.owner == SettingOwner::DbManaged)
+                .unwrap_or(false);
+            db_allowed
+                .then(|| self.db_settings.get(key).filter(|v| !v.is_empty()).cloned())
+                .flatten()
+        })
+    }
+
+    fn string(&self, key: &str, default: &str) -> String {
+        self.optional_string(key)
+            .unwrap_or_else(|| default.to_string())
+    }
+
+    fn parse<T>(&self, key: &str, default: T) -> anyhow::Result<T>
+    where
+        T: std::str::FromStr,
+        T::Err: std::fmt::Display,
+    {
+        match self.optional_string(key) {
+            Some(v) => v
+                .parse::<T>()
+                .map_err(|e| anyhow::anyhow!("invalid value for {key}: {e}")),
+            None => Ok(default),
+        }
+    }
+
+    fn source(&self, key: &str) -> SettingSource {
+        if env_lookup(key).is_some() {
+            return SettingSource::Env;
+        }
+        let db_allowed = runtime_setting_definition(key)
+            .map(|def| def.owner == SettingOwner::DbManaged)
+            .unwrap_or(false);
+        if db_allowed
+            && self
+                .db_settings
+                .get(key)
+                .filter(|v| !v.is_empty())
+                .is_some()
+        {
+            SettingSource::Db
+        } else {
+            SettingSource::Builtin
+        }
+    }
+
+    fn resolved_settings(&self) -> Vec<ResolvedSetting> {
+        RUNTIME_SETTING_DEFINITIONS
+            .iter()
+            .map(|def| ResolvedSetting {
+                key: def.key.to_string(),
+                owner: def.owner,
+                source: match def.owner {
+                    SettingOwner::Builtin => SettingSource::Builtin,
+                    SettingOwner::EnvLocked | SettingOwner::DbManaged => self.source(def.key),
+                },
+                secret: def.secret,
+                restart_required: def.restart_required,
+                default_risk: def.default_risk,
+            })
+            .collect()
+    }
 }
 
 fn normalize_issuer(raw: String) -> String {
@@ -320,10 +426,7 @@ fn load_csrf_secret() -> anyhow::Result<([u8; 32], bool)> {
                 .decode(v.trim())
                 .map_err(|e| anyhow::anyhow!("CSRF_SECRET must be base64: {e}"))?;
             let arr: [u8; 32] = bytes.try_into().map_err(|b: Vec<u8>| {
-                anyhow::anyhow!(
-                    "CSRF_SECRET must decode to 32 bytes, got {}",
-                    b.len()
-                )
+                anyhow::anyhow!("CSRF_SECRET must decode to 32 bytes, got {}", b.len())
             })?;
             Ok((arr, false))
         }
@@ -389,6 +492,66 @@ mod tests {
         assert!(ensure_production_secrets("https://idp.example.com", false, false, false).is_ok());
         // http（ローカル開発）は開発用デフォルトを許容する（起動時 warning のみ）。
         assert!(ensure_production_secrets("http://localhost:8080", true, true, true).is_ok());
+    }
+
+    #[test]
+    fn db_managed_settings_override_builtin_defaults() {
+        std::env::remove_var("KEY_ROTATION_LEAD_DAYS");
+        let db = HashMap::from([("KEY_ROTATION_LEAD_DAYS".to_string(), "7".to_string())]);
+        let config = Config::from_env_and_db_settings(&db).unwrap();
+        assert_eq!(config.key_rotation_lead_days(), 7);
+        let rotation = config
+            .resolved_settings()
+            .iter()
+            .find(|setting| setting.key == "KEY_ROTATION_LEAD_DAYS")
+            .unwrap();
+        assert_eq!(rotation.source, SettingSource::Db);
+        assert_eq!(rotation.owner, SettingOwner::DbManaged);
+    }
+
+    #[test]
+    fn env_overrides_db_managed_settings() {
+        std::env::set_var("KEY_ROTATION_LEAD_DAYS", "14");
+        let db = HashMap::from([("KEY_ROTATION_LEAD_DAYS".to_string(), "7".to_string())]);
+        let config = Config::from_env_and_db_settings(&db).unwrap();
+        assert_eq!(config.key_rotation_lead_days(), 14);
+        let rotation = config
+            .resolved_settings()
+            .iter()
+            .find(|setting| setting.key == "KEY_ROTATION_LEAD_DAYS")
+            .unwrap();
+        assert_eq!(rotation.source, SettingSource::Env);
+        std::env::remove_var("KEY_ROTATION_LEAD_DAYS");
+    }
+
+    #[test]
+    fn shared_web_runtime_settings_ignore_db_until_materialized() {
+        std::env::remove_var("AUTH_SESSION_TTL_SECS");
+        let db = HashMap::from([("AUTH_SESSION_TTL_SECS".to_string(), "1200".to_string())]);
+        let config = Config::from_env_and_db_settings(&db).unwrap();
+        assert_eq!(config.auth_session_ttl(), Duration::from_secs(600));
+        let ttl = config
+            .resolved_settings()
+            .iter()
+            .find(|setting| setting.key == "AUTH_SESSION_TTL_SECS")
+            .unwrap();
+        assert_eq!(ttl.owner, SettingOwner::EnvLocked);
+        assert_eq!(ttl.source, SettingSource::Builtin);
+    }
+
+    #[test]
+    fn env_locked_settings_ignore_db_values() {
+        std::env::remove_var("DB_MAX_CONNECTIONS");
+        let db = HashMap::from([("DB_MAX_CONNECTIONS".to_string(), "99".to_string())]);
+        let config = Config::from_env_and_db_settings(&db).unwrap();
+        assert_eq!(config.db_max_connections(), 10);
+        let db_max = config
+            .resolved_settings()
+            .iter()
+            .find(|setting| setting.key == "DB_MAX_CONNECTIONS")
+            .unwrap();
+        assert_eq!(db_max.owner, SettingOwner::EnvLocked);
+        assert_eq!(db_max.source, SettingSource::Builtin);
     }
 
     #[test]

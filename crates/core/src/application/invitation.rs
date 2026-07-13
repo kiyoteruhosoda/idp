@@ -553,12 +553,7 @@ mod tests {
                 .map(|(_, _, c)| c.clone())
                 .collect())
         }
-        async fn has_permission(
-            &self,
-            _t: TenantId,
-            _u: Uuid,
-            _c: &str,
-        ) -> DomainResult<bool> {
+        async fn has_permission(&self, _t: TenantId, _u: Uuid, _c: &str) -> DomainResult<bool> {
             unreachable!()
         }
         async fn grant(
@@ -654,11 +649,7 @@ mod tests {
     }
     #[async_trait]
     impl Mailer for FakeMailer {
-        async fn send(
-            &self,
-            server: &SmtpServerConfig,
-            mail: &OutgoingEmail,
-        ) -> DomainResult<()> {
+        async fn send(&self, server: &SmtpServerConfig, mail: &OutgoingEmail) -> DomainResult<()> {
             if self.fail {
                 return Err(crate::domain::error::DomainError::Repository(
                     "simulated smtp failure".to_string(),
@@ -679,7 +670,11 @@ mod tests {
             ("smtp.host", "smtp.example.com".to_string(), false),
             ("smtp.port", "587".to_string(), false),
             ("smtp.username", "mailer".to_string(), false),
-            ("smtp.from_address", "noreply@example.com".to_string(), false),
+            (
+                "smtp.from_address",
+                "noreply@example.com".to_string(),
+                false,
+            ),
             ("smtp.use_tls", "true".to_string(), false),
         ];
         rows.push((
@@ -935,8 +930,13 @@ mod tests {
             Arc::new(CapturingSink::default()),
         );
         assert!(matches!(
-            svc.create_invitation(TenantContext::new(host), Uuid::new_v4(), Uuid::new_v4(), &ctx())
-                .await,
+            svc.create_invitation(
+                TenantContext::new(host),
+                Uuid::new_v4(),
+                Uuid::new_v4(),
+                &ctx()
+            )
+            .await,
             Err(InvitationError::NotFound)
         ));
     }
@@ -960,8 +960,13 @@ mod tests {
 
         // 別ユーザーのセッションでは承諾できない。
         assert!(matches!(
-            svc.accept_invitation(TenantContext::new(host), Uuid::new_v4(), &created.token, &ctx())
-                .await,
+            svc.accept_invitation(
+                TenantContext::new(host),
+                Uuid::new_v4(),
+                &created.token,
+                &ctx()
+            )
+            .await,
             Err(InvitationError::Forbidden(_))
         ));
         // トークンが別テナントの承諾経路で提示された場合も拒否。
@@ -1058,7 +1063,10 @@ mod tests {
         assert!(memberships.rows.lock().unwrap().is_empty());
         // host scope の権限は消え、other scope は残る。
         let remaining = permissions.granted.lock().unwrap().clone();
-        assert_eq!(remaining, vec![(other, guest, "idp.tenant.admin".to_string())]);
+        assert_eq!(
+            remaining,
+            vec![(other, guest, "idp.tenant.admin".to_string())]
+        );
     }
 
     #[tokio::test]

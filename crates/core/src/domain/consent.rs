@@ -23,8 +23,6 @@ pub struct ClientConsent {
 impl ClientConsent {
     /// `required_scopes` がすべて同意済みか（`prompt=consent` の場合は強制的に `false`）。
     pub fn covers(&self, required_scopes: &[String]) -> bool {
-        required_scopes
-            .iter()
-            .all(|s| self.scopes.contains(s))
+        required_scopes.iter().all(|s| self.scopes.contains(s))
     }
 }

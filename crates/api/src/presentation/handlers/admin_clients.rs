@@ -45,9 +45,14 @@ pub async fn create_client(
     headers: HeaderMap,
     Json(body): Json<ClientRegisterRequest>,
 ) -> Result<(StatusCode, Json<ClientCreatedResponse>), ApiError> {
-    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
-    let client_type = ClientType::parse(&body.client_type)
-        .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get("api-client-type-invalid")))?;
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
+    let client_type = ClientType::parse(&body.client_type).map_err(|_| {
+        ApiError::BadRequest(ApiMessages::new(locale).get("api-client-type-invalid"))
+    })?;
     let cmd = RegisterClientCommand {
         app_name: body.app_name,
         client_type,
@@ -94,7 +99,8 @@ pub async fn list_clients(
     let clients = state
         .clients_admin
         .list(tenant.context())
-        .await.map_err(|e| map_error(e, locale))?;
+        .await
+        .map_err(|e| map_error(e, locale))?;
     Ok(Json(clients.iter().map(client_response).collect()))
 }
 
@@ -142,6 +148,7 @@ pub async fn get_client(
         (status = 404, description = "不存在"),
     )
 )]
+#[allow(clippy::too_many_arguments)]
 pub async fn update_client(
     RequirePerms(admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,
@@ -152,13 +159,19 @@ pub async fn update_client(
     Path((_tenant_id, client_id)): Path<(String, String)>,
     Json(body): Json<ClientUpdateRequest>,
 ) -> Result<Json<ClientResponse>, ApiError> {
-    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
     let status = body
         .client_status
         .as_deref()
         .map(ClientStatus::parse)
         .transpose()
-        .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get("api-client-status-invalid")))?;
+        .map_err(|_| {
+            ApiError::BadRequest(ApiMessages::new(locale).get("api-client-status-invalid"))
+        })?;
     let cmd = UpdateClientCommand {
         app_name: body.app_name,
         redirect_uris: body.redirect_uris,
@@ -200,7 +213,11 @@ pub async fn rotate_client_secret(
     headers: HeaderMap,
     Path((_tenant_id, client_id)): Path<(String, String)>,
 ) -> Result<Json<ClientSecretResponse>, ApiError> {
-    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
     let (client, secret) = state
         .clients_admin
         .rotate_secret(tenant.context(), &client_id, admin.user_id, &ctx)

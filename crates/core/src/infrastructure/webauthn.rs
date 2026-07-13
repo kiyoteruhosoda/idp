@@ -8,9 +8,9 @@
 use url::Url;
 use uuid::Uuid;
 use webauthn_rs::prelude::{
-    AuthenticationResult, CreationChallengeResponse, DiscoverableAuthentication,
-    DiscoverableKey, Passkey, PasskeyRegistration, PublicKeyCredential,
-    RegisterPublicKeyCredential, RequestChallengeResponse, Webauthn, WebauthnBuilder,
+    AuthenticationResult, CreationChallengeResponse, DiscoverableAuthentication, DiscoverableKey,
+    Passkey, PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential,
+    RequestChallengeResponse, Webauthn, WebauthnBuilder,
 };
 
 #[derive(Clone)]
@@ -65,7 +65,12 @@ impl WebAuthnService {
                 if exclude_credentials.is_empty() {
                     None
                 } else {
-                    Some(exclude_credentials.iter().map(|p| p.cred_id().clone()).collect())
+                    Some(
+                        exclude_credentials
+                            .iter()
+                            .map(|p| p.cred_id().clone())
+                            .collect(),
+                    )
                 },
             )
             .map_err(|e| e.to_string())

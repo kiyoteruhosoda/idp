@@ -39,7 +39,11 @@ pub async fn register(
         name: body.name,
     };
 
-    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
     let registered = state
         .register
         .register(tenant.context(), command, ctx.ip_address.as_deref())
@@ -85,7 +89,11 @@ pub async fn verify_email(
     headers: HeaderMap,
     Json(body): Json<VerifyEmailRequest>,
 ) -> Result<StatusCode, ApiError> {
-    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
     match state
         .email_verification
         .verify(tenant.context(), &body.token, &ctx)

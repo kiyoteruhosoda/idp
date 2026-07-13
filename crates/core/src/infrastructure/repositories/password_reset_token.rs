@@ -83,7 +83,8 @@ impl PasswordResetTokenRepository for SqlxPasswordResetTokenRepository {
             return Ok(None);
         }
 
-        let sql = format!("SELECT {SELECT_COLUMNS} FROM password_reset_tokens WHERE token_hash = ?");
+        let sql =
+            format!("SELECT {SELECT_COLUMNS} FROM password_reset_tokens WHERE token_hash = ?");
         let row = sqlx::query(&sql)
             .bind(token_hash)
             .fetch_optional(&self.pool)

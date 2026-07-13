@@ -39,7 +39,11 @@ pub async fn accept_invitation(
     headers: HeaderMap,
     Json(body): Json<AcceptInvitationRequest>,
 ) -> Result<StatusCode, ApiError> {
-    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
     state
         .invitations
         .accept_invitation(tenant.context(), user_id, &body.token, &ctx)

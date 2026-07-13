@@ -44,6 +44,24 @@
 </label>
 <button type="submit">{{ messages.get("admin-settings-save") }}</button>
 </form>
+
+<h4>ランタイム設定の出所</h4>
+<p class="hint">値は表示せず、設定キーごとの管理区分・現在の出所・再起動要否・既定値リスクのみを表示します。</p>
+<table>
+<thead><tr><th>設定名</th><th>管理区分</th><th>現在の出所</th><th>秘密値</th><th>再起動</th><th>既定値リスク</th></tr></thead>
+<tbody>
+{% for item in sys.runtime_settings %}
+<tr>
+<td><code>{{ item.key }}</code></td>
+<td>{{ item.owner }}</td>
+<td>{{ item.source }}</td>
+<td>{% if item.secret %}secret{% else %}-{% endif %}</td>
+<td>{% if item.restart_required %}required{% else %}-{% endif %}</td>
+<td>{{ item.default_risk }}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
 </section>
 {% endif %}
 

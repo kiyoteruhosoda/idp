@@ -156,9 +156,7 @@ impl SigningKeyRepository for SqlxSigningKeyRepository {
     }
 
     async fn list_all(&self) -> Result<Vec<SigningKey>> {
-        let sql = format!(
-            "SELECT {SELECT_COLUMNS} FROM signing_keys ORDER BY created_at DESC"
-        );
+        let sql = format!("SELECT {SELECT_COLUMNS} FROM signing_keys ORDER BY created_at DESC");
         let rows = sqlx::query(&sql)
             .fetch_all(&self.pool)
             .await

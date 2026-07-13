@@ -414,7 +414,8 @@ mod tests {
         // 既定（無効）テナントでは登録できず、ユーザーも作られない（fail-closed。SEC6）。
         let (svc, users) = service(tenant(t, false), 100);
         assert!(matches!(
-            svc.register(TenantContext::new(t), cmd(), Some("203.0.113.1")).await,
+            svc.register(TenantContext::new(t), cmd(), Some("203.0.113.1"))
+                .await,
             Err(RegisterError::Forbidden(_))
         ));
         assert!(users.rows.lock().unwrap().is_empty());
@@ -441,7 +442,8 @@ mod tests {
             .await
             .expect("first attempt allowed");
         assert!(matches!(
-            svc.register(TenantContext::new(t), cmd(), Some("203.0.113.1")).await,
+            svc.register(TenantContext::new(t), cmd(), Some("203.0.113.1"))
+                .await,
             Err(RegisterError::RateLimited)
         ));
     }

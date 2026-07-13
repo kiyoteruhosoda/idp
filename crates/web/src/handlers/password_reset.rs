@@ -10,8 +10,8 @@
 //! 付けない（要求はメール送信のみ・実行はトークン所持が本人性の根拠であり、第三者が強制しても
 //! 得られる状態変化がない）。実体は api の `/internal/password-reset/*` に委ねる。
 
-use crate::correlation::CorrelationId;
 use crate::cookies;
+use crate::correlation::CorrelationId;
 use crate::handlers::forwarded_context;
 use crate::i18n::{Locale, Messages};
 use crate::state::WebState;
@@ -118,7 +118,15 @@ pub async fn reset_page(
             StatusCode::BAD_REQUEST,
         );
     }
-    reset_view(&messages, &tenant, true, &token, false, None, StatusCode::OK)
+    reset_view(
+        &messages,
+        &tenant,
+        true,
+        &token,
+        false,
+        None,
+        StatusCode::OK,
+    )
 }
 
 /// 再設定の実行（`POST /{tenant_id}/password-reset`）。

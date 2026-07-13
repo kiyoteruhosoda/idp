@@ -48,7 +48,11 @@ pub async fn revoke(
     headers: HeaderMap,
     Form(body): Form<RevocationRequest>,
 ) -> Response {
-    let ctx = request_context(&headers, &correlation, state.config.trust_forwarded_headers());
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
 
     let token = match body.token.as_deref().filter(|t| !t.is_empty()) {
         Some(t) => t.to_string(),
@@ -91,7 +95,9 @@ pub async fn revoke(
         }
     };
 
-    let creds = basic_credentials.as_ref().map(|(id, s)| (id.as_str(), s.as_str()));
+    let creds = basic_credentials
+        .as_ref()
+        .map(|(id, s)| (id.as_str(), s.as_str()));
 
     match state
         .revocation
@@ -128,9 +134,7 @@ pub async fn revoke(
 }
 
 /// `Authorization: Basic` から `(client_id, client_secret)` を取り出す。
-fn parse_basic_credentials(
-    headers: &HeaderMap,
-) -> Result<Option<(String, String)>, ()> {
+fn parse_basic_credentials(headers: &HeaderMap) -> Result<Option<(String, String)>, ()> {
     let Some(value) = headers.get(header::AUTHORIZATION) else {
         return Ok(None);
     };

@@ -24,9 +24,9 @@ use crate::domain::auth_session::AuthSession;
 use crate::domain::authorization_code::AuthorizationCode;
 use crate::domain::client::Client;
 use crate::domain::consent::ClientConsent;
+use crate::domain::email_verification::EmailVerificationToken;
 use crate::domain::error::Result;
 use crate::domain::passkey_challenge::PasskeyChallenge;
-use crate::domain::email_verification::EmailVerificationToken;
 use crate::domain::password_reset::PasswordResetToken;
 use crate::domain::refresh_token::RefreshToken;
 use crate::domain::revoked_access_token::RevokedAccessToken;
@@ -117,8 +117,7 @@ pub trait UserRepository: Send + Sync {
     /// 認証は所属元テナント限定 = ログイン画面のユーザー検索はこれを使う。ADR-0009 §8）。
     async fn find_by_email(&self, tenant_id: TenantId, email: &str) -> Result<Option<User>>;
     /// 所属元が `tenant_id` のユーザーを preferred_username で検索する。
-    async fn find_by_username(&self, tenant_id: TenantId, username: &str)
-        -> Result<Option<User>>;
+    async fn find_by_username(&self, tenant_id: TenantId, username: &str) -> Result<Option<User>>;
     /// 複数の内部 ID で一括取得する（N+1 回避。`list_members` 等で使用）。
     /// 見つかったものだけを返す（欠落は無視）。順序は保証しない。
     async fn find_by_ids(&self, ids: &[Uuid]) -> Result<Vec<User>> {
@@ -299,11 +298,9 @@ pub trait UserPermissionRepository: Send + Sync {
     /// 管理コンソール（A2）の付与フォームで選択肢を提示するために使う。
     async fn list_available_codes(&self) -> Result<Vec<String>>;
     /// 利用者が `tenant_id` を scope として保有する権限コード一覧を返す（順序は不定）。
-    async fn list_codes_for_user(&self, tenant_id: TenantId, user_id: Uuid)
-        -> Result<Vec<String>>;
+    async fn list_codes_for_user(&self, tenant_id: TenantId, user_id: Uuid) -> Result<Vec<String>>;
     /// 利用者が指定の権限コードを `tenant_id` を scope として保有するか（完全一致判定。ADR-0009 §4）。
-    async fn has_permission(&self, tenant_id: TenantId, user_id: Uuid, code: &str)
-        -> Result<bool>;
+    async fn has_permission(&self, tenant_id: TenantId, user_id: Uuid, code: &str) -> Result<bool>;
     /// 指定コードのうち**いずれか 1 つ**を保有するか（OR 判定）。
     ///
     /// 認可ホットパスで「要求権限 or idp.system.admin」の判定を 1 往復に束ねるために使う（REF3）。
@@ -387,10 +384,7 @@ pub trait ClientConsentRepository: Send + Sync {
 #[async_trait]
 pub trait RevokedAccessTokenRepository: Send + Sync {
     /// jti を失効リストに追加する（冪等）。
-    async fn revoke(
-        &self,
-        token: &RevokedAccessToken,
-    ) -> Result<()>;
+    async fn revoke(&self, token: &RevokedAccessToken) -> Result<()>;
     /// 指定 jti が失効リストに存在するか。
     async fn is_revoked(&self, jti: &str) -> Result<bool>;
 }
@@ -422,7 +416,10 @@ pub trait WebAuthnCredentialRepository: Send + Sync {
     /// 内部 UUID で検索する。
     async fn find_by_id(&self, id: Uuid) -> Result<Option<WebAuthnCredential>>;
     /// WebAuthn credential ID（base64url）で検索する（認証レスポンスからの逆引き用）。
-    async fn find_by_credential_id(&self, credential_id: &str) -> Result<Option<WebAuthnCredential>>;
+    async fn find_by_credential_id(
+        &self,
+        credential_id: &str,
+    ) -> Result<Option<WebAuthnCredential>>;
     /// ユーザーの全クレデンシャルを作成日時昇順で返す。
     async fn list_by_user_id(&self, user_id: Uuid) -> Result<Vec<WebAuthnCredential>>;
     /// sign_count と last_used_at を更新し、passkey_json（webauthn-rs による更新後の全体）も保存する。

@@ -36,7 +36,11 @@ pub async fn list_page(
     let Some(sso_session_id) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         // FluentBundle は !Send なので await の前に作成・消費する。
         let messages = Messages::new(locale(&headers));
-        return error_page(&messages, StatusCode::UNAUTHORIZED, "passkey-error-not-signed-in");
+        return error_page(
+            &messages,
+            StatusCode::UNAUTHORIZED,
+            "passkey-error-not-signed-in",
+        );
     };
     let req = InternalPasskeyListRequest { sso_session_id };
     let result = match state.api.passkey_list(&correlation.0, &req).await {
@@ -55,20 +59,27 @@ pub async fn list_page(
             credentials: &credentials,
         }))
         .into_response(),
-        InternalPasskeyListResponse::SessionExpired => {
-            error_page(&messages, StatusCode::UNAUTHORIZED, "passkey-error-session-expired")
-        }
-        InternalPasskeyListResponse::Internal => {
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        }
+        InternalPasskeyListResponse::SessionExpired => error_page(
+            &messages,
+            StatusCode::UNAUTHORIZED,
+            "passkey-error-session-expired",
+        ),
+        InternalPasskeyListResponse::Internal => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 
 /// Passkey 登録ページ（`GET /account/passkey/register`）。SSO Cookie が必要。
-pub async fn register_page(Extension(tenant): Extension<WebTenant>, headers: HeaderMap) -> Response {
+pub async fn register_page(
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+) -> Response {
     let messages = Messages::new(locale(&headers));
     if cookies::get(&headers, cookies::SSO_SESSION_COOKIE).is_none() {
-        return error_page(&messages, StatusCode::UNAUTHORIZED, "passkey-error-not-signed-in");
+        return error_page(
+            &messages,
+            StatusCode::UNAUTHORIZED,
+            "passkey-error-not-signed-in",
+        );
     }
     Html(render(&PasskeyRegisterTemplate {
         messages: &messages,
@@ -143,7 +154,11 @@ pub async fn register_complete_api(
         name: body.name,
         credential: body.credential,
     };
-    let result = match state.api.passkey_register_complete(&correlation.0, &req).await {
+    let result = match state
+        .api
+        .passkey_register_complete(&correlation.0, &req)
+        .await
+    {
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "passkey register complete failed");
@@ -177,7 +192,11 @@ pub async fn delete(
     let Some(sso_session_id) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         // FluentBundle は !Send なので await の前に作成・消費する。
         let messages = Messages::new(locale(&headers));
-        return error_page(&messages, StatusCode::UNAUTHORIZED, "passkey-error-not-signed-in");
+        return error_page(
+            &messages,
+            StatusCode::UNAUTHORIZED,
+            "passkey-error-not-signed-in",
+        );
     };
     let req = InternalPasskeyDeleteRequest {
         sso_session_id,
@@ -198,9 +217,11 @@ pub async fn delete(
             message: messages.get("passkey-deleted-message"),
         }))
         .into_response(),
-        InternalPasskeyDeleteResponse::SessionExpired => {
-            error_page(&messages, StatusCode::UNAUTHORIZED, "passkey-error-session-expired")
-        }
+        InternalPasskeyDeleteResponse::SessionExpired => error_page(
+            &messages,
+            StatusCode::UNAUTHORIZED,
+            "passkey-error-session-expired",
+        ),
         InternalPasskeyDeleteResponse::Internal => {
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
@@ -260,7 +281,11 @@ pub async fn login_complete_api(
         ip_address: ctx.ip_address,
         user_agent: ctx.user_agent,
     };
-    let outcome = match state.api.passkey_login_complete(&ctx.correlation_id, &req).await {
+    let outcome = match state
+        .api
+        .passkey_login_complete(&ctx.correlation_id, &req)
+        .await
+    {
         Ok(o) => o,
         Err(e) => {
             tracing::error!(error = %e, "passkey login complete call failed");
@@ -331,13 +356,11 @@ pub async fn login_complete_api(
             })
             .into_response()
         }
-        InternalPasskeyLoginCompleteResponse::SessionExpired => {
-            Json(LoginCompleteJsonResponse {
-                redirect_to: None,
-                error: Some("session_expired".to_string()),
-            })
-            .into_response()
-        }
+        InternalPasskeyLoginCompleteResponse::SessionExpired => Json(LoginCompleteJsonResponse {
+            redirect_to: None,
+            error: Some("session_expired".to_string()),
+        })
+        .into_response(),
         InternalPasskeyLoginCompleteResponse::InvalidCredential => {
             Json(LoginCompleteJsonResponse {
                 redirect_to: None,

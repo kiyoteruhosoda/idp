@@ -211,10 +211,7 @@ fn build_totp_uri(
 }
 
 /// TOTP コードを検証する。`true` なら有効。
-pub fn verify_totp_code(
-    secret_bytes: &[u8],
-    code: &str,
-) -> Result<bool, TotpRegistrationError> {
+pub fn verify_totp_code(secret_bytes: &[u8], code: &str) -> Result<bool, TotpRegistrationError> {
     // アカウント名は検証に不要（issuer も同様）。空文字で構わない。
     let totp = TOTP::new(
         Algorithm::SHA1,

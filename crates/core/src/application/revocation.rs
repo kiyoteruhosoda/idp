@@ -203,7 +203,8 @@ impl RevocationService {
             let (cid, secret) = match basic_credentials {
                 Some(creds) => creds,
                 None => {
-                    self.record_auth_failure(tenant, &client.client_id, ctx).await;
+                    self.record_auth_failure(tenant, &client.client_id, ctx)
+                        .await;
                     return Err(RevocationError::new(
                         OAuthErrorCode::InvalidClient,
                         "client_secret_basic authentication required",
@@ -211,7 +212,8 @@ impl RevocationService {
                 }
             };
             if cid != client_id {
-                self.record_auth_failure(tenant, &client.client_id, ctx).await;
+                self.record_auth_failure(tenant, &client.client_id, ctx)
+                    .await;
                 return Err(RevocationError::new(
                     OAuthErrorCode::InvalidClient,
                     "client_id mismatch",
@@ -231,7 +233,8 @@ impl RevocationService {
                 .verify(secret, hash)
                 .map_err(|e| RevocationError::new(OAuthErrorCode::ServerError, &e.to_string()))?;
             if !ok {
-                self.record_auth_failure(tenant, &client.client_id, ctx).await;
+                self.record_auth_failure(tenant, &client.client_id, ctx)
+                    .await;
                 return Err(RevocationError::new(
                     OAuthErrorCode::InvalidClient,
                     "client authentication failed",

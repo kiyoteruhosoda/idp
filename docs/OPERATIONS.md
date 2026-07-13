@@ -242,6 +242,25 @@ api の JSON 管理 API と同じ `/{tenant_id}/admin/...` 名前空間を共有
 web→api の `/internal/*` は共有シークレット `INTERNAL_SERVICE_TOKEN`（api・web で同値）で保護する。
 デバッグで api/web を直に叩きたい場合は `docker-compose.yml` の該当 `ports:` を一時的に有効化する。
 
+### MariaDB の公開範囲と保守接続
+
+デプロイ用 Compose（`docker-compose.deploy.yml`）では、MariaDB を既定でホストへ publish しない。
+通常の保守作業は Compose ネットワーク内の `mariadb` コンテナへ `exec` して実行する。
+
+```sh
+docker compose -f docker-compose.deploy.yml exec -T mariadb sh -c \
+  'exec mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE"'
+```
+
+ホスト上の DB クライアントから一時的に接続する必要がある場合だけ、loopback bind の
+`docker-compose.db-debug.yml` を明示的に重ねる。外部インターフェースへ公開しないため、
+`MARIADB_BIND_HOST` は原則 `127.0.0.1` のままにする。
+
+```sh
+docker compose -f docker-compose.deploy.yml -f docker-compose.db-debug.yml \
+  --profile db-debug up -d mariadb
+```
+
 ## イメージをビルドしたいとき（ビルド側。ソースがあるホスト）
 
 ソースとデプロイ先は別ホスト。**ソース側ではビルドのみ行い、起動はしない**（配置は init/deploy）。

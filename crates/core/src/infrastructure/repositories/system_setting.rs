@@ -34,11 +34,10 @@ fn map_row(row: &MySqlRow) -> Result<SystemSetting> {
 #[async_trait]
 impl SystemSettingsRepository for SqlxSystemSettingsRepository {
     async fn load_all(&self) -> Result<Vec<SystemSetting>> {
-        let rows =
-            sqlx::query("SELECT setting_key, setting_value, is_secret FROM system_settings")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(repo_err)?;
+        let rows = sqlx::query("SELECT setting_key, setting_value, is_secret FROM system_settings")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(repo_err)?;
         rows.iter().map(map_row).collect()
     }
 
