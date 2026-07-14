@@ -74,11 +74,13 @@ fi
 [[ -f .env ]] || { echo ".env was not generated" >&2; exit 1; }
 grep -q '^CSRF_SECRET=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=$' .env
 before="$(grep '^MARIADB_PASSWORD=' .env)"
+: >"$DOCKER_STUB_LOG"
 ./scripts/deploy.sh app >/tmp/deploy-app.out 2>&1
 after="$(grep '^MARIADB_PASSWORD=' .env)"
 [[ "$before" == "$after" ]] || { echo "existing .env was overwritten" >&2; exit 1; }
 grep -q 'ログイン URL:' /tmp/deploy-app.out
 grep -q '\-f docker-compose.deploy.yml' "$DOCKER_STUB_LOG"
+grep -q 'run --rm migrate' "$DOCKER_STUB_LOG"
 ./scripts/deploy.sh reset >/tmp/deploy-reset.out 2>&1
 grep -q 'down -v --remove-orphans' "$DOCKER_STUB_LOG"
 
