@@ -141,11 +141,11 @@ sequenceDiagram
 ### コンテナ一括（推奨）
 
 `scripts/build.sh` がイメージと配布用バンドル（`dist/`）を作り、`scripts/deploy.sh` が
-秘密情報の生成（`.env`）・DB 起動・マイグレーション適用・起動までを冪等に行う。
+秘密情報の生成（`.env`）・DB 起動・マイグレーション適用・起動までを冪等に行う。stg/prod を同一ホストに置く場合は `.env.staging.example` / `.env.production.example` で外部公開ポートとイメージタグを分ける。
 
 ```sh
 ./scripts/build.sh             # イメージビルド → dist/ にデプロイバンドルを出力
-./scripts/deploy.sh            # 初回も更新もこれ 1 本（既存 .env は上書きしない）
+./scripts/deploy.sh app        # 初回も更新も app モードで実行（既存 .env は上書きしない）
 ```
 
 初期管理ユーザー `admin@example.com`（既定パスワードは初回ログイン後に変更）が seed される。

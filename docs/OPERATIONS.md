@@ -271,7 +271,7 @@ IMAGE_TAG=1.0.0 ./scripts/build.sh  # イメージタグを指定（既定 lates
 ```
 
 `dist/` にはイメージ tar（api/web/migrate）・デプロイ用 `docker-compose.yml`・`docker/nginx.conf`・
-`.env.example`・`deploy.sh`・照合用 manifest が入る。この `dist/` をディレクトリごとデプロイ先へ
+`.env.example`・`.env.staging.example`・`.env.production.example`・`deploy.sh`・照合用 manifest が入る。この `dist/` をディレクトリごとデプロイ先へ
 転送する。詳細は `scripts/README.md`。
 
 ## デプロイしたいとき（デプロイ先。初回・更新とも）
@@ -281,11 +281,11 @@ IMAGE_TAG=1.0.0 ./scripts/build.sh  # イメージタグを指定（既定 lates
 
 ```sh
 cd /opt/idp/dist   # 転送先（例）
-./deploy.sh
+./deploy.sh app
 ```
 
 内容: 初回は秘密情報（DB パスワード・`KEY_ENCRYPTION_KEY`・`INTERNAL_SERVICE_TOKEN`・`CSRF_SECRET`）を
-乱数生成して `.env` を作成（確認する項目は `ISSUER` と `WEB_PORT`）→ 同梱 tar からイメージを
+乱数生成して `.env` を作成（確認する項目は `ISSUER` と `WEB_PORT`。同一ホストの stg/prod は sample env で `WEB_PORT` / `IMAGE_TAG` を分ける）→ 同梱 tar からイメージを
 `docker load`（manifest と照合。読込済みならスキップ）→ MariaDB 起動 → マイグレーション
 （DDL + マスタデータ）適用 → api・web・proxy を起動 → `/readyz` で起動確認。
 
@@ -310,9 +310,34 @@ DDL・マスタデータの適用は常駐させない専用ジョブ（`migrate
 DB volume を削除してからマイグレーション・起動をやり直す。破壊的操作（確認なしで即実行される）。
 `.env`（秘密情報・サイト固定値）は保持される。
 
+## 同一ホストに stg / prod を置く場合
+
+`docker-compose.deploy.yml` はコンテナ内の proxy を常に `8080` で待ち受けさせ、ホスト側の外部公開ポートだけを `.env` の `WEB_PORT` で変える。
+同じホストに 2 環境を置く場合、同じ `WEB_PORT` は同時に bind できないため、例として以下のように分ける。
+
+| 環境 | 配置例 | `.env` テンプレート | 外部 URL 例 | `WEB_PORT` | `IMAGE_TAG` |
+| --- | --- | --- | --- | --- | --- |
+| stg | `/opt/idp/stg` | `.env.staging.example` | `http://<host>:8081` | `8081` | `stg` |
+| prod | `/opt/idp/prod` | `.env.production.example` | `http://<host>:8080` | `8080` | `prod` |
+
+`ISSUER` と `PUBLIC_WEB_BASE_URL` は、ブラウザが外から到達する URL（例: `http://192.0.2.10:8081`）に合わせる。
+同一ホストでは `IMAGE_TAG` も `stg` / `prod` のように分け、`latest` を両環境で共有しない。
+
+```sh
+# stg 用 bundle 例
+IMAGE_TAG=stg ./scripts/build.sh dist-stg
+cp dist-stg/.env.staging.example dist-stg/.env
+# dist-stg/.env の ISSUER / PUBLIC_WEB_BASE_URL と CHANGE-ME を実値へ変更
+
+# prod 用 bundle 例
+IMAGE_TAG=prod ./scripts/build.sh dist-prod
+cp dist-prod/.env.production.example dist-prod/.env
+# dist-prod/.env の ISSUER / PUBLIC_WEB_BASE_URL と CHANGE-ME を実値へ変更
+```
+
 ## ロールバックしたいとき
 
-- アプリ: 前のバージョンの `dist/` を残しておき、そこで `./deploy.sh` を実行する
+- アプリ: 前のバージョンの `dist/` を残しておき、そこで `./deploy.sh app` を実行する
   （tar から前のイメージが読み込まれる）。
 - スキーマ: migration は expand/contract 前提のため、直前バージョンのアプリは新スキーマ上でも動く。
   DDL 自体を戻す必要がある場合のみ次を実行する（`.down.sql` を適用）。

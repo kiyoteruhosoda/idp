@@ -43,15 +43,17 @@ dist/
 ## deploy.sh — デプロイ（デプロイ先・単一入口）
 
 ```bash
-./deploy.sh          # デプロイ（初回は .env 自動生成 → イメージ読込 → migrate → 起動 → readiness 確認）
-./deploy.sh migrate  # DB 起動と migrate（あれば DB 更新）のみ
+./deploy.sh app      # デプロイ（初回は .env 自動生成 → イメージ読込 → migrate → 起動 → readiness 確認）
+./deploy.sh migrate  # DB 起動と migrate（あれば DB 更新）後、アプリコンテナも入れ替える
 ./deploy.sh reset    # DB を初期化（volume 削除）してからデプロイし直す（破壊的操作）
 ```
 
 - 初回実行時に `.env` を `.env.example` から自動生成し、秘密情報（DB パスワード・
   `KEY_ENCRYPTION_KEY`・`INTERNAL_SERVICE_TOKEN`・`CSRF_SECRET`）を乱数生成する。
   **既存の `.env` は上書きしない**（冪等）。環境に合わせて確認する項目は `ISSUER`（公開 URL）と
-  `WEB_PORT`（公開ポート）の 2 つ。詳細は `.env` 内コメント参照。
+  `WEB_PORT`（公開ポート）の 2 つ。stg/prod を同一ホストに置く場合は、
+  `.env.staging.example` / `.env.production.example` を `.env` にコピーし、`WEB_PORT` と `IMAGE_TAG` を
+  環境ごとに分ける。
 - イメージは隣の `idp-*.tar` から自動で `docker load` する（読込済みで manifest と一致すればスキップ）。
 - 使う Compose ファイルは固定: バンドル内では同梱の `docker-compose.yml`、リポジトリ内から実行した
   場合はルートの `docker-compose.deploy.yml`。選択の余地はない。
@@ -68,11 +70,11 @@ scp -r dist/ deploy-host:/opt/idp/            # 転送（例）
 
 # === デプロイ先（別ホスト。ソース不要） ===
 cd /opt/idp/dist
-./deploy.sh          # 初回も更新もこれだけ
+./deploy.sh app      # 初回も更新もこれだけ
 ```
 
-更新は新しい `dist/` を上書き転送して `./deploy.sh` を再実行する。ロールバックは前のバージョンの
-`dist/` を残しておき、そこで `./deploy.sh` を実行する。
+更新は新しい `dist/` を上書き転送して `./deploy.sh app` を再実行する。ロールバックは前のバージョンの
+`dist/` を残しておき、そこで `./deploy.sh app` を実行する。
 
 ## e2e.sh — 疎通 E2E
 

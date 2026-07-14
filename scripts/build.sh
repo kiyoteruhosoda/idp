@@ -13,7 +13,8 @@
 #   idp-api.tar idp-web.tar idp-migrate.tar   ビルド済みイメージ
 #   docker-compose.yml                        デプロイ用 Compose（image: 参照のみ）
 #   docker/nginx.conf                         リバースプロキシ設定
-#   .env.example                              設定テンプレート（deploy.sh が .env を生成）
+#   .env.example .env.staging.example .env.production.example
+#                                               設定テンプレート（deploy.sh が .env を生成）
 #   deploy.sh                                 デプロイ入口（初回・更新・reset すべてこれ 1 本）
 #   manifest.env manifest.sha256              照合用メタデータ
 #
@@ -72,6 +73,8 @@ done
 cp "$repo_root/docker-compose.deploy.yml" "$out_dir/docker-compose.yml"
 cp "$repo_root/docker/nginx.conf" "$out_dir/docker/nginx.conf"
 cp "$repo_root/.env.example" "$out_dir/.env.example"
+cp "$repo_root/.env.staging.example" "$out_dir/.env.staging.example"
+cp "$repo_root/.env.production.example" "$out_dir/.env.production.example"
 cp "$repo_root/scripts/deploy.sh" "$out_dir/deploy.sh"
 chmod +x "$out_dir/deploy.sh"
 

@@ -74,16 +74,18 @@ fi
 [[ -f .env ]] || { echo ".env was not generated" >&2; exit 1; }
 grep -q '^CSRF_SECRET=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=$' .env
 before="$(grep '^MARIADB_PASSWORD=' .env)"
-./scripts/deploy.sh >/tmp/deploy-default.out 2>&1
+: >"$DOCKER_STUB_LOG"
+./scripts/deploy.sh app >/tmp/deploy-app.out 2>&1
 after="$(grep '^MARIADB_PASSWORD=' .env)"
 [[ "$before" == "$after" ]] || { echo "existing .env was overwritten" >&2; exit 1; }
-grep -q 'ログイン URL:' /tmp/deploy-default.out
+grep -q 'ログイン URL:' /tmp/deploy-app.out
 grep -q '\-f docker-compose.deploy.yml' "$DOCKER_STUB_LOG"
+grep -q 'run --rm migrate' "$DOCKER_STUB_LOG"
 ./scripts/deploy.sh reset >/tmp/deploy-reset.out 2>&1
 grep -q 'down -v --remove-orphans' "$DOCKER_STUB_LOG"
 
 set +e
-DOCKER_STUB_FAIL_UP=1 ./scripts/deploy.sh >/tmp/deploy-fail.out 2>&1
+DOCKER_STUB_FAIL_UP=1 ./scripts/deploy.sh app >/tmp/deploy-fail.out 2>&1
 status=$?
 set -e
 [[ $status -eq 42 ]] || { echo "deploy failure should preserve failing exit code" >&2; cat /tmp/deploy-fail.out >&2; exit 1; }
@@ -106,14 +108,14 @@ done >"$TMP/bundle/manifest.env"
 cd "$TMP/bundle"
 
 : >"$DOCKER_STUB_LOG"
-./deploy.sh >/tmp/deploy-bundle.out 2>&1
+./deploy.sh app >/tmp/deploy-bundle.out 2>&1
 grep -q 'ログイン URL:' /tmp/deploy-bundle.out
 grep -q '\-f docker-compose.yml' "$DOCKER_STUB_LOG"
 
 # manifest と image ID が食い違う場合は tar を読み込み、なお不一致なら失敗する。
 sed -i 's/^api_image_id=.*/api_image_id=sha256:expected-other-id/' manifest.env
 : >"$DOCKER_STUB_LOG"
-if ./deploy.sh >/tmp/deploy-bundle-mismatch.out 2>&1; then
+if ./deploy.sh app >/tmp/deploy-bundle-mismatch.out 2>&1; then
   echo "deploy.sh must fail when image ID mismatches manifest" >&2
   exit 1
 fi
