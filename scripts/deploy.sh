@@ -137,6 +137,32 @@ wait_healthy() {
   die "$service が healthy になりませんでした（タイムアウト）。"
 }
 
+# migrate は DB のみを更新する（アプリコンテナは置き換えない）。だが ensure_images で新イメージを
+# load 済みのため、旧イメージのまま稼働／restart ループしている api・web が居座ると「新イメージは
+# 来ているのに反映されていない」半端な状態になる。それを検知して、完全デプロイが要る旨を明示する。
+warn_stale_app_containers() {
+  local svc cid running_img current_img status prefix tag stale=0
+  prefix="$(get_env_var IMAGE_PREFIX)"
+  tag="$(get_env_var IMAGE_TAG)"
+  for svc in api web; do
+    cid="$($compose ps -q "$svc" 2>/dev/null || true)"
+    [[ -n "$cid" ]] || continue # 未起動（初回）なら警告不要。full deploy で作られる。
+    running_img="$(docker inspect -f '{{.Image}}' "$cid" 2>/dev/null || true)"
+    current_img="$(docker image inspect -f '{{.Id}}' "${prefix:-idp}/${svc}:${tag:-latest}" 2>/dev/null || true)"
+    status="$(docker inspect -f '{{.State.Status}}' "$cid" 2>/dev/null || true)"
+    if [[ -n "$current_img" && -n "$running_img" && "$running_img" != "$current_img" ]]; then
+      log "⚠ $svc は旧イメージのまま稼働しています（新イメージは load 済み・未反映）。"
+      stale=1
+    elif [[ "$status" == "restarting" || "$status" == "exited" || "$status" == "dead" ]]; then
+      log "⚠ $svc が異常状態です（status=$status）。"
+      stale=1
+    fi
+  done
+  if [[ $stale -eq 1 ]]; then
+    log "→ 新イメージをアプリへ反映するには、引数なしの完全デプロイを実行してください: ./deploy.sh"
+  fi
+}
+
 # --- .env -------------------------------------------------------------------------
 # .env の KEY 行を VALUE で置換する（無ければ追記）。VALUE は sed を通さず printf で
 # リテラル書き込みするため、base64 の / + = や @ : を含んでも安全。
@@ -289,6 +315,7 @@ case "$mode" in
     ensure_images
     phase_end
     run_migrate
+    warn_stale_app_containers
     ;;
   reset)
     phase_begin "reset"
