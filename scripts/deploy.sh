@@ -246,8 +246,12 @@ run_deploy() {
   phase_end
   run_migrate
   phase_begin "app"
-  log "api・web・proxy を起動します..."
-  $compose up -d api web proxy
+  # --force-recreate で必ずコンテナを作り直す。旧イメージのまま restart ループしている
+  # コンテナが居座ると、新イメージを load（タグを付け替え）しても `up -d` が「変更なし」と
+  # 判断してコンテナを置き換えず、古い（壊れた）バイナリが動き続けることがあるため
+  # （mariadb は対象に含めないので DB は落とさない）。
+  log "api・web・proxy を起動します（--force-recreate で旧コンテナを確実に置き換え）..."
+  $compose up -d --force-recreate api web proxy
   wait_healthy api
   wait_healthy web
   web_port="$(get_env_var WEB_PORT)"
