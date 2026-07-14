@@ -36,7 +36,12 @@ RUN mkdir -p crates/core/src crates/contracts/src crates/api/src crates/web/src 
 COPY crates ./crates
 COPY i18n ./i18n
 COPY migrations ./migrations
-RUN cargo build --release --locked --bin idp --bin idp-web
+# COPY は元ファイルの mtime を保持するため、上のダミービルドで生成した成果物より本体ソースが
+# 古い mtime になり得る。その場合 cargo の鮮度判定（mtime ベース）が「未変更」とみなして再ビルドを
+# スキップし、ダミーの `fn main() {}`（即 exit 0・無出力）バイナリがそのまま出荷される。それを防ぐため、
+# ワークスペース各 crate のソース mtime を更新してから再ビルドする（依存クレートのキャッシュには触れない）。
+RUN find crates -name '*.rs' -exec touch {} + \
+    && cargo build --release --locked --bin idp --bin idp-web
 
 # ---- migrate ----
 # DDL / マスタデータ適用の専用ジョブ（sqlx migrate run）。CLAUDE.md schema-version 方針に従い、
