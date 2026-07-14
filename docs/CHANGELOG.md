@@ -2,6 +2,17 @@
 
 完了した重要な変更の要約（詳しい経緯は `history/`、設計判断は `adr/`）。
 
+## 2026-07-14（Dockerfile — 空スタブバイナリ出荷の修正）
+
+- **Dockerfile — 依存キャッシュ層のスタブが本体として出荷される不具合を修正**: 依存だけ先にコンパイル
+  するため `fn main() {}` のダミーソースでビルドした後、本体ソースを `COPY` して再ビルドしていたが、
+  `COPY` が元ファイルの mtime を保持するため本体ソースがダミー成果物より古い mtime になり、cargo の
+  鮮度判定（mtime ベース）が再ビルドをスキップしてダミーの空バイナリ（即 exit 0・ログ無し）を出荷して
+  いた。これにより stg で `api` コンテナが起動直後に exit 0 で終了し続け（`restart: unless-stopped` で
+  再起動ループ）、healthcheck が通らず `unhealthy` になっていた。再ビルド直前に
+  `find crates -name '*.rs' -exec touch {} +` でソース mtime を更新して確実に再コンパイルさせる
+  （依存クレートのキャッシュには触れないため、キャッシュ高速化は維持）。`api`・`web` 両バイナリに影響。
+
 ## 2026-07-14（deploy.sh の CLI 整理・CPU 制限の撤去）
 
 - **deploy.sh — `migration` を `migrate` に改名**: サブコマンド名を compose の `migrate` サービス名と
