@@ -179,6 +179,7 @@ pub fn build(state: WebState) -> Router {
         )
         .route("/healthz", get(health::liveness))
         .route("/readyz", get(health::readiness))
+        .route("/version", get(health::version))
         .route("/assets/react/app.js", get(react_assets::app_js))
         .route("/assets/react/app.js.map", get(react_assets::app_js_map))
         .nest("/{tenant_id}", tenant_scoped)

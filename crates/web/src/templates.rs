@@ -12,6 +12,7 @@ use crate::i18n::Messages;
 use askama::Template;
 use idp_contracts::admin::{ClientStatusResponse, UserSummaryResponse};
 use idp_contracts::auth::PasskeyCredentialInfo;
+use idp_contracts::version::VersionInfo;
 
 /// テンプレートを描画して HTML 文字列を返す。描画エラー（実質 fmt エラーのみ）は握りつぶさず
 /// ログに残し、最小限のエラーページへフォールバックする（フェイルソフト）。
@@ -70,6 +71,13 @@ pub struct ConsentTemplate<'a> {
 pub struct MessagePage {
     pub title: String,
     pub message: String,
+}
+
+/// バージョン情報ページ（`GET /version`）。
+#[derive(Template)]
+#[template(path = "version.html")]
+pub struct VersionTemplate {
+    pub info: VersionInfo,
 }
 
 /// 強制パスワード変更画面（`GET /{tenant_id}/password-change`、ADR-0009 §5）。ログインフロー中

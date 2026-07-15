@@ -5,6 +5,7 @@
 
 use crate::infrastructure::db::Db;
 use axum::{extract::State, http::StatusCode, Json};
+use idp_contracts::version::{BuildTimeVersionInfoProvider, VersionInfo, VersionInfoProvider};
 use serde_json::{json, Value};
 
 pub async fn liveness() -> (StatusCode, Json<Value>) {
@@ -22,4 +23,10 @@ pub async fn readiness(State(pool): State<Db>) -> (StatusCode, Json<Value>) {
             )
         }
     }
+}
+
+/// version: ビルド時に埋め込まれた Cargo / Git バージョン情報を返す。
+pub async fn version() -> Json<VersionInfo> {
+    let provider = BuildTimeVersionInfoProvider::new(env!("CARGO_PKG_VERSION"));
+    Json(provider.version_info())
 }
