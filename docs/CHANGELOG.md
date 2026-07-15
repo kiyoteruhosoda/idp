@@ -8,9 +8,9 @@
 
 ## 2026-07-15（Compose project 名の明示化）
 
-- **deploy.sh — `COMPOSE_PROJECT_NAME` を .env から明示適用**: デプロイ先ディレクトリ名が `stg` / `prod` の場合でも、
-  Docker Compose の container / network / volume 名が `stg-api-1` のような汎用名にならないよう、
-  既存 `.env` に未設定なら `idp-<ディレクトリ名>` を追記し、Compose 実行時に `--project-name` として渡す。
+- **deploy.sh — `COMPOSE_PROJECT_NAME` を .env から明示適用**: 新規 `.env` では Docker Compose の
+  container / network / volume 名が `stg-api-1` のような汎用名にならないよう `idp-<ディレクトリ名>` を使う。
+  一方、既存 `.env` に未設定の場合は既存 volume を保護するため従来のディレクトリ名 project を維持する。
 - **env サンプル — stg/prod の project 名を分離**: `.env.staging.example` は `COMPOSE_PROJECT_NAME=idp-stg`、
   `.env.production.example` は `COMPOSE_PROJECT_NAME=idp-prod` を持つ。
 

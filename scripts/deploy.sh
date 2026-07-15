@@ -68,6 +68,7 @@ CURRENT_PHASE="startup"
 PHASE_STARTED_AT=0
 APP_SERVICES=(api web proxy)
 compose=()
+LEGACY_COMPOSE_PROJECT_NAME=""
 DIAGNOSTIC_SERVICES=(mariadb migrate api web proxy)
 
 get_env_var() {
@@ -130,9 +131,13 @@ on_deploy_error() {
 }
 trap 'on_deploy_error $? $LINENO "$BASH_COMMAND"' ERR
 
+legacy_compose_project_name() {
+  basename "$base"
+}
+
 default_compose_project_name() {
   local dir
-  dir="$(basename "$base")"
+  dir="$(legacy_compose_project_name)"
   case "$dir" in
     idp|idp-*) printf '%s\n' "$dir" ;;
     *) printf 'idp-%s\n' "$dir" ;;
@@ -142,7 +147,7 @@ default_compose_project_name() {
 init_compose_command() {
   local project_name
   project_name="$(get_env_var COMPOSE_PROJECT_NAME)"
-  project_name="${project_name:-$(default_compose_project_name)}"
+  project_name="${project_name:-${LEGACY_COMPOSE_PROJECT_NAME:-$(default_compose_project_name)}}"
   if docker compose version >/dev/null 2>&1; then
     compose=(docker compose --project-name "$project_name" -f "$compose_file")
   elif command -v docker-compose >/dev/null 2>&1; then
@@ -168,8 +173,8 @@ ensure_env_file() {
   if [[ -f "$env_file" ]]; then
     log "既存の .env を使用します（上書きしません）。"
     if [[ -z "$(get_env_var COMPOSE_PROJECT_NAME)" ]]; then
-      set_env_var COMPOSE_PROJECT_NAME "$(default_compose_project_name)"
-      log "COMPOSE_PROJECT_NAME を .env に追記しました（既存値なし）。"
+      LEGACY_COMPOSE_PROJECT_NAME="$(legacy_compose_project_name)"
+      warn "既存 .env に COMPOSE_PROJECT_NAME が無いため、既存 volume を保護するため従来の Compose project name ($LEGACY_COMPOSE_PROJECT_NAME) を使用します。変更する場合は volume 移行または reset 後に .env へ明示してください。"
     fi
     return 0
   fi

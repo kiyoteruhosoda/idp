@@ -92,6 +92,16 @@ grep -q 'ログイン URL:' /tmp/deploy-app.out
 grep -q -- '--project-name idp-repo -f docker-compose.deploy.yml' "$DOCKER_STUB_LOG"
 grep -q 'run --rm migrate' "$DOCKER_STUB_LOG"
 
+sed -i '/^COMPOSE_PROJECT_NAME=/d' .env
+: >"$DOCKER_STUB_LOG"
+./scripts/deploy.sh app >/tmp/deploy-legacy-project.out 2>&1
+grep -q '既存 volume を保護するため従来の Compose project name (repo) を使用します' /tmp/deploy-legacy-project.out
+grep -q -- '--project-name repo -f docker-compose.deploy.yml' "$DOCKER_STUB_LOG"
+if grep -q '^COMPOSE_PROJECT_NAME=' .env; then
+  echo "existing legacy .env should not be backfilled automatically" >&2
+  exit 1
+fi
+
 set +e
 DOCKER_STUB_FAIL_MIGRATE=1 ./scripts/deploy.sh migrate >/tmp/deploy-migrate-fail.out 2>&1
 status=$?
