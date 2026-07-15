@@ -80,22 +80,31 @@ mask_secrets() {
 phase_begin() { CURRENT_PHASE="$1"; PHASE_STARTED_AT="$(date +%s)"; log "▶ $CURRENT_PHASE を開始します"; }
 phase_end() { log "✓ $CURRENT_PHASE が完了しました ($(($(date +%s) - PHASE_STARTED_AT))s)"; }
 
-compose_diagnostics() {
-  local service cid image status
+diagnostic_service_block() {
+  local service="$1" cid image status
+  cid="$("${compose[@]}" ps -q "$service" 2>/dev/null || true)"
+  [[ -n "$cid" ]] || { echo "[idp][diagnostic] service=$service container=not-found"; return 0; }
+  status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid" 2>/dev/null || true)"
+  image="$(docker inspect -f '{{.Image}}' "$cid" 2>/dev/null || true)"
+  echo "[idp][diagnostic] service=$service status=${status:-unknown} image=${image:-unknown}"
+  echo "[idp][diagnostic] logs tail: $service"
+  "${compose[@]}" logs --tail=100 --timestamps "$service" || true
+}
+
+compose_diagnostics_for() {
+  local service
   {
     echo "[idp][diagnostic] phase=${CURRENT_PHASE:-unknown}"
     echo "[idp][diagnostic] compose ps"
     "${compose[@]}" ps -a || true
-    for service in "${DIAGNOSTIC_SERVICES[@]}"; do
-      cid="$("${compose[@]}" ps -q "$service" 2>/dev/null || true)"
-      [[ -n "$cid" ]] || continue
-      status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid" 2>/dev/null || true)"
-      image="$(docker inspect -f '{{.Image}}' "$cid" 2>/dev/null || true)"
-      echo "[idp][diagnostic] service=$service status=${status:-unknown} image=${image:-unknown}"
-      echo "[idp][diagnostic] logs tail: $service"
-      "${compose[@]}" logs --tail=100 --timestamps "$service" || true
+    for service in "$@"; do
+      diagnostic_service_block "$service"
     done
   } 2>&1 | mask_secrets >&2
+}
+
+compose_diagnostics() {
+  compose_diagnostics_for "${DIAGNOSTIC_SERVICES[@]}"
 }
 
 on_deploy_error() {
@@ -223,12 +232,18 @@ wait_healthy() {
 }
 
 run_migrations_with_retry() {
-  local attempt
+  local attempt status
   for attempt in 1 2 3; do
     if "${compose[@]}" run --rm migrate; then return 0; fi
-    warn "DB migration failed (attempt $attempt/3); retrying in 5s"
-    sleep 5
+    status=$?
+    warn "DB migration failed (attempt $attempt/3, exit=$status); Docker logs を出力します"
+    compose_diagnostics_for migrate mariadb
+    if [[ $attempt -lt 3 ]]; then
+      warn "DB migration failed (attempt $attempt/3); retrying in 5s"
+      sleep 5
+    fi
   done
+  compose_diagnostics_for migrate mariadb
   die "DB migration failed after 3 attempts"
 }
 

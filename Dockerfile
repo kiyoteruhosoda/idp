@@ -8,7 +8,10 @@
 # 翻訳リソース（i18n/*.ftl）は include_str! で idp-web へ埋め込むため実行イメージには同梱不要。
 
 # ---- builder ----
-FROM rust:slim AS builder
+# 実行ステージ（debian:bookworm-slim）と glibc ABI を揃えるため、Rust ビルダーも
+# bookworm に固定する。rust:slim はタグ更新で trixie 等へ進み得るため、NAS 等の
+# デプロイ先で `GLIBC_2.39 not found` が発生しないようにする。
+FROM rust:slim-bookworm AS builder
 WORKDIR /build
 
 RUN apt-get update \
@@ -47,7 +50,7 @@ RUN find crates -name '*.rs' -exec touch {} + \
 # sqlx-cli のビルドには Rust ツールチェインと C ビルド依存が必要だが、それらを migrate 実行イメージへ
 # 持ち込むと idp-migrate.tar が肥大化する。ビルド専用ステージへ閉じ込め、実行ステージには sqlx binary と
 # migrations だけを渡す。
-FROM rust:slim AS migrate-tool-builder
+FROM rust:slim-bookworm AS migrate-tool-builder
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential perl pkg-config \
     && rm -rf /var/lib/apt/lists/* \

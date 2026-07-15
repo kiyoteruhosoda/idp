@@ -1,5 +1,14 @@
 ## 2026-07-15（migrate tar の軽量化）
 
+- **deploy.sh — migrate 失敗時に Docker 診断ログを即時出力**: `docker compose run --rm migrate` が失敗した各 retry で、
+  `migrate` / `mariadb` の `compose ps`・container status・image・`docker compose logs --tail=100 --timestamps` を出す。
+  これによりスクリプトの実行結果だけで、migration ジョブ自体のエラーと DB 側ログを確認できる。
+
+- **Dockerfile — Rust ビルドステージを bookworm に固定**: `runtime-*` / `migrate` が `debian:bookworm-slim` である一方、
+  `rust:slim` が新しい Debian へ追従すると、コピーした `sqlx` やアプリバイナリが `GLIBC_2.39` などを要求して
+  NAS 側の bookworm 実行イメージで起動できない。`builder` / `migrate-tool-builder` を `rust:slim-bookworm` に固定し、
+  ビルド時と実行時の glibc ABI を揃えた。
+
 - **Dockerfile — migrate 実行イメージから Rust ツールチェインとビルド依存を除外**: `sqlx-cli` の
   `cargo install` を `migrate-tool-builder` ステージへ分離し、最終 `migrate` ステージは `debian:bookworm-slim` に
   `sqlx` バイナリ・証明書・`migrations/` のみを含める構成にした。これにより `idp-migrate.tar` が

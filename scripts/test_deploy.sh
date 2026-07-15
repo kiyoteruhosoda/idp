@@ -39,12 +39,18 @@ if [[ "${1:-}" == "compose" ]]; then
   while [[ "${1:-}" == "-f" ]]; do shift 2; done
   case "${1:-}" in
     up) if [[ "${DOCKER_STUB_FAIL_UP:-0}" == "1" ]]; then echo "up failed with ${MARIADB_PASSWORD:-secret}" >&2; exit 42; fi; exit 0 ;;
-    run|down) exit 0 ;;
+    run)
+      if [[ "${DOCKER_STUB_FAIL_MIGRATE:-0}" == "1" && "$*" == *"migrate"* ]]; then
+        echo "migrate failed with ${MARIADB_PASSWORD:-secret}" >&2
+        exit 17
+      fi
+      exit 0 ;;
+    down) exit 0 ;;
     ps) printf 'cid-%s\n' "${3:-svc}"; exit 0 ;;
     exec)
       if [[ "$*" == *"SELECT id FROM tenants"* ]]; then printf '01970000-0000-7000-8000-000000000001\n'; fi
       exit 0 ;;
-    logs) exit 0 ;;
+    logs) echo "stub docker logs for ${*: -1}: ${MARIADB_PASSWORD:-secret}"; exit 0 ;;
   esac
 fi
 case "${1:-}" in
@@ -81,6 +87,20 @@ after="$(grep '^MARIADB_PASSWORD=' .env)"
 grep -q 'ログイン URL:' /tmp/deploy-app.out
 grep -q '\-f docker-compose.deploy.yml' "$DOCKER_STUB_LOG"
 grep -q 'run --rm migrate' "$DOCKER_STUB_LOG"
+
+set +e
+DOCKER_STUB_FAIL_MIGRATE=1 ./scripts/deploy.sh migrate >/tmp/deploy-migrate-fail.out 2>&1
+status=$?
+set -e
+[[ $status -eq 1 ]] || { echo "deploy migrate failure should exit with diagnostics" >&2; cat /tmp/deploy-migrate-fail.out >&2; exit 1; }
+grep -q 'Docker logs を出力します' /tmp/deploy-migrate-fail.out
+grep -q '\[idp\]\[diagnostic\] logs tail: migrate' /tmp/deploy-migrate-fail.out
+grep -q '\[idp\]\[diagnostic\] logs tail: mariadb' /tmp/deploy-migrate-fail.out
+if grep -q "$(grep '^MARIADB_PASSWORD=' .env | cut -d= -f2-)" /tmp/deploy-migrate-fail.out; then
+  echo "secret was not masked in migration diagnostics" >&2
+  exit 1
+fi
+
 ./scripts/deploy.sh reset >/tmp/deploy-reset.out 2>&1
 grep -q 'down -v --remove-orphans' "$DOCKER_STUB_LOG"
 
