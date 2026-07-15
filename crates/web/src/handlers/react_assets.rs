@@ -9,22 +9,48 @@ use axum::response::IntoResponse;
 const APP_JS: &str = include_str!("../../assets/react/app.js");
 const APP_JS_MAP: &str = include_str!("../../assets/react/app.js.map");
 
+#[derive(Clone, Copy)]
+enum ReactAssetKind {
+    JavaScript,
+    SourceMap,
+}
+
+impl ReactAssetKind {
+    fn content_type(self) -> &'static str {
+        match self {
+            Self::JavaScript => "text/javascript; charset=utf-8",
+            Self::SourceMap => "application/json; charset=utf-8",
+        }
+    }
+
+    fn cache_control(self) -> &'static str {
+        // `react_bootstrap.html` references these stable URLs directly. Keep them
+        // revalidating so browsers can pick up newly embedded bundles after a deploy.
+        "public, max-age=0, must-revalidate"
+    }
+
+    fn body(self) -> &'static str {
+        match self {
+            Self::JavaScript => APP_JS,
+            Self::SourceMap => APP_JS_MAP,
+        }
+    }
+
+    fn response(self) -> impl IntoResponse {
+        (
+            [
+                (CONTENT_TYPE, self.content_type()),
+                (CACHE_CONTROL, self.cache_control()),
+            ],
+            self.body(),
+        )
+    }
+}
+
 pub async fn app_js() -> impl IntoResponse {
-    (
-        [
-            (CONTENT_TYPE, "text/javascript; charset=utf-8"),
-            (CACHE_CONTROL, "public, max-age=31536000, immutable"),
-        ],
-        APP_JS,
-    )
+    ReactAssetKind::JavaScript.response()
 }
 
 pub async fn app_js_map() -> impl IntoResponse {
-    (
-        [
-            (CONTENT_TYPE, "application/json; charset=utf-8"),
-            (CACHE_CONTROL, "public, max-age=31536000, immutable"),
-        ],
-        APP_JS_MAP,
-    )
+    ReactAssetKind::SourceMap.response()
 }
