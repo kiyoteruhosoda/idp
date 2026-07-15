@@ -237,7 +237,7 @@ health_timeout_secs() {
   local service="$1"
   case "$service" in
     mariadb) printf '%s\n' "${DEPLOY_MARIADB_HEALTH_TIMEOUT_SECS:-600}" ;;
-    api|web) printf '%s\n' "${DEPLOY_APP_HEALTH_TIMEOUT_SECS:-120}" ;;
+    api|web|proxy) printf '%s\n' "${DEPLOY_APP_HEALTH_TIMEOUT_SECS:-120}" ;;
     *) printf '%s\n' "${DEPLOY_HEALTH_TIMEOUT_SECS:-120}" ;;
   esac
 }
@@ -311,6 +311,7 @@ replace_app_containers() {
   "${compose[@]}" up -d --force-recreate --remove-orphans "${APP_SERVICES[@]}"
   wait_healthy api
   wait_healthy web
+  wait_healthy proxy
   web_port="$(get_env_var WEB_PORT)"; web_port="${web_port:-8080}"
   issuer="$(get_env_var ISSUER)"; issuer="${issuer:-http://localhost:${web_port}}"
   ready_url="http://127.0.0.1:${web_port}/readyz"

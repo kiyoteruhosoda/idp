@@ -150,11 +150,19 @@ services:
       - ALL
     cap_add:
       - CHOWN
+      - SETGID
+      - SETUID
     depends_on:
       api:
         condition: service_healthy
       web:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
 
   # DDL・マスタデータ適用の専用ワンショットジョブ。常駐させないため profiles で通常起動から除外し、
   # `docker compose run --rm migrate` で単独実行する（scripts/deploy.sh が使用）。

@@ -1,3 +1,11 @@
+## 2026-07-15（proxy readiness の異常検知強化）
+
+- **docker-compose*.yml — nginx proxy に SETGID/SETUID と healthcheck を追加**: Synology NAS 等で
+  `cap_drop: ALL` のまま nginx worker が `setgid(101)` / `setuid(101)` できず、proxy master だけが
+  Up に見える状態を避けるため、必要 capability を明示的に戻し、`/readyz` healthcheck で検知する。
+- **deploy.sh — proxy の healthy 待機を追加**: api / web の起動後、外部 `readyz` 確認前に proxy 自身の
+  healthcheck を待つことで、proxy 起動不良時はタイムアウト後に compose diagnostics / logs を出力する。
+
 ## 2026-07-15（Compose project 名の明示化）
 
 - **deploy.sh — `COMPOSE_PROJECT_NAME` を .env から明示適用**: デプロイ先ディレクトリ名が `stg` / `prod` の場合でも、
