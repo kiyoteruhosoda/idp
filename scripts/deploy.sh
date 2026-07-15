@@ -179,19 +179,47 @@ ensure_images() {
   done
 }
 
+health_timeout_secs() {
+  local service="$1"
+  case "$service" in
+    mariadb) printf '%s\n' "${DEPLOY_MARIADB_HEALTH_TIMEOUT_SECS:-600}" ;;
+    api|web) printf '%s\n' "${DEPLOY_APP_HEALTH_TIMEOUT_SECS:-120}" ;;
+    *) printf '%s\n' "${DEPLOY_HEALTH_TIMEOUT_SECS:-120}" ;;
+  esac
+}
+
+health_poll_interval_secs() {
+  printf '%s\n' "${DEPLOY_HEALTH_POLL_INTERVAL_SECS:-2}"
+}
+
 wait_healthy() {
-  local service="$1" tries="${2:-60}" cid status i
-  log "$service の起動を待機します..."
-  for ((i = 0; i < tries; i++)); do
+  local service="$1" timeout interval cid status now deadline next_log
+  timeout="${2:-$(health_timeout_secs "$service")}"
+  interval="$(health_poll_interval_secs)"
+  now="$(date +%s)"
+  deadline=$((now + timeout))
+  next_log=$((now + 30))
+  log "$service の起動を待機します... (timeout=${timeout}s)"
+  while (( $(date +%s) < deadline )); do
     cid="$("${compose[@]}" ps -q "$service" 2>/dev/null || true)"
     if [[ -n "$cid" ]]; then
       status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid" 2>/dev/null || true)"
-      case "$status" in healthy|running) log "$service: $status"; return 0 ;; exited|dead) compose_diagnostics; die "$service が異常終了しました（status=$status）。" ;; esac
+      case "$status" in
+        healthy|running) log "$service: $status"; return 0 ;;
+        exited|dead) compose_diagnostics; die "$service が異常終了しました（status=$status）。" ;;
+        unhealthy|starting|created|restarting|*)
+          now="$(date +%s)"
+          if (( now >= next_log )); then
+            log "$service: ${status:-unknown} のため待機を継続します (remaining=$((deadline - now))s)"
+            next_log=$((now + 30))
+          fi
+          ;;
+      esac
     fi
-    sleep 2
+    sleep "$interval"
   done
   compose_diagnostics
-  die "$service が healthy になりませんでした（タイムアウト）。"
+  die "$service が healthy になりませんでした（${timeout}s タイムアウト）。"
 }
 
 run_migrations_with_retry() {

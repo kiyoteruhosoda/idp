@@ -1,3 +1,12 @@
+## 2026-07-15（MariaDB 初期化待機の堅牢化）
+
+- **deploy.sh — MariaDB の health 待機を低速 NAS 向けに延長**: reset 直後の fresh volume 初期化が
+  120 秒を超えて `unhealthy` 表示のまま進む環境に備え、MariaDB の待機既定値を 600 秒へ延長した。
+  `DEPLOY_MARIADB_HEALTH_TIMEOUT_SECS` / `DEPLOY_APP_HEALTH_TIMEOUT_SECS` / `DEPLOY_HEALTH_TIMEOUT_SECS` /
+  `DEPLOY_HEALTH_POLL_INTERVAL_SECS` でサービス種別ごとに上書きできる。待機中は 30 秒ごとに状態と残り時間を出す。
+- **docker-compose.deploy.yml — MariaDB healthcheck の猶予を拡大**: 初期化中に早期 `unhealthy` へ落ちにくいよう
+  `start_period: 120s` と `retries: 120` を設定した。
+
 # CHANGELOG
 
 完了した重要な変更の要約（詳しい経緯は `history/`、設計判断は `adr/`）。

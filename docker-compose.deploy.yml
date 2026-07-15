@@ -22,7 +22,8 @@ services:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 5s
       timeout: 5s
-      retries: 20
+      retries: 120
+      start_period: 120s
 
   api:
     image: ${IMAGE_PREFIX:-idp}/api:${IMAGE_TAG:-latest}
