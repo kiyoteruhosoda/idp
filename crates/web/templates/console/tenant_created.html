@@ -1,0 +1,12 @@
+{% extends "console/layout.html" %}
+{% block content %}
+<h1>{{ messages.get("admin-tenants-created-title") }}</h1>
+<p>{{ messages.get("admin-tenants-created-intro") }}</p>
+<dl>
+<dt>ID</dt><dd><code>{{ created.id }}</code></dd>
+<dt>{{ messages.get("admin-tenants-name") }}</dt><dd>{{ created.name }}</dd>
+<dt>{{ messages.get("admin-tenants-admin-user-id") }}</dt><dd><code>{{ created.admin_user_id }}</code></dd>
+<dt>{{ messages.get("admin-tenants-generated-password") }}</dt><dd><code>{{ created.generated_password }}</code></dd>
+</dl>
+<p><a href="{{ tenant }}/admin/tenants">{{ messages.get("admin-tenants-back") }}</a></p>
+{% endblock %}

@@ -131,6 +131,24 @@ pub struct TenantView {
     pub status: String,
 }
 
+/// テナント作成応答（`POST /admin/tenants`）。初期管理者パスワードは一度だけ表示する。
+#[derive(Debug, Clone, Deserialize)]
+pub struct TenantCreatedView {
+    pub id: String,
+    #[serde(default)]
+    pub parent_tenant_id: Option<String>,
+    pub name: String,
+    #[serde(default)]
+    pub self_registration_enabled: bool,
+    pub status: String,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub updated_at: String,
+    pub admin_user_id: String,
+    pub generated_password: String,
+}
+
 /// システム設定の公開表現（`GET/PUT /admin/system-settings` の応答。MT14）。
 /// SMTP パスワードは平文を含まず、設定済みか否か（`smtp_password_set`）のみ。
 #[derive(Debug, Clone, Deserialize, Default)]

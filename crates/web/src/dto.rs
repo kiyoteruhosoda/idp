@@ -95,3 +95,18 @@ pub struct SettingsQuery {
     #[serde(default)]
     pub error: Option<String>,
 }
+
+/// テナント登録フォーム（`POST /{tenant_id}/admin/tenants`。root / `idp.system.admin` 専用）。
+#[derive(Debug, Deserialize)]
+pub struct AdminTenantCreateForm {
+    pub name: String,
+    pub admin_email: String,
+    pub csrf_token: String,
+}
+
+/// テナント管理画面の GET クエリ。
+#[derive(Debug, Default, Deserialize)]
+pub struct TenantsQuery {
+    #[serde(default)]
+    pub error: Option<String>,
+}

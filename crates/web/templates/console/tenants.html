@@ -1,0 +1,30 @@
+{% extends "console/layout.html" %}
+{% block content %}
+<section id="tenant-admin-root" data-react-surface="TenantRegistrationConsole">
+<h1>{{ messages.get("admin-tenants-title") }}</h1>
+<p>{{ messages.get("admin-tenants-intro") }}</p>
+{% if let Some(key) = error_key %}<p role="alert">{{ messages.get(key) }}</p>{% endif %}
+<div class="tenant-console-grid">
+<section class="tenant-card" data-component="TenantCreateForm">
+<h2>{{ messages.get("admin-tenants-create-title") }}</h2>
+<form method="post" action="{{ tenant }}/admin/tenants">
+<input type="hidden" name="csrf_token" value="{{ csrf }}">
+<label>{{ messages.get("admin-tenants-name") }} <input name="name" required></label>
+<label>{{ messages.get("admin-tenants-admin-email") }} <input type="email" name="admin_email" required></label>
+<button type="submit">{{ messages.get("admin-tenants-create") }}</button>
+</form>
+</section>
+<section class="tenant-card" data-component="TenantList">
+<h2>{{ messages.get("admin-tenants-list-title") }}</h2>
+<table>
+<thead><tr><th>ID</th><th>{{ messages.get("admin-tenants-name") }}</th><th>Status</th><th>{{ messages.get("admin-tenants-self-registration") }}</th></tr></thead>
+<tbody>
+{% for t in tenants %}
+<tr><td><code>{{ t.id }}</code></td><td>{{ t.name }}</td><td>{{ t.status }}</td><td>{% if t.self_registration_enabled %}ON{% else %}OFF{% endif %}</td></tr>
+{% endfor %}
+</tbody>
+</table>
+</section>
+</div>
+</section>
+{% endblock %}

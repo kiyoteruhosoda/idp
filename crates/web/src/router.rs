@@ -6,9 +6,9 @@
 use crate::correlation;
 use crate::handlers::{
     admin_clients_console, admin_console, admin_invitations_console, admin_members_console,
-    admin_settings, admin_signing_keys_console, admin_status_console, admin_users_console, consent,
-    health, invitation_accept, login, mfa_totp, passkey, password_change, password_reset,
-    user_settings, verify_email,
+    admin_settings, admin_signing_keys_console, admin_status_console, admin_tenants_console,
+    admin_users_console, consent, health, invitation_accept, login, mfa_totp, passkey,
+    password_change, password_reset, react_assets, user_settings, verify_email,
 };
 use crate::security_headers::add_security_headers;
 use crate::state::WebState;
@@ -99,6 +99,10 @@ pub fn build(state: WebState) -> Router {
             "/admin/system-settings",
             post(admin_settings::update_system),
         )
+        .route(
+            "/admin/tenants",
+            get(admin_tenants_console::list).post(admin_tenants_console::create),
+        )
         // クライアント（RP）管理画面。静的セグメント（new）は動的 {client_id} より優先。
         .route("/admin/clients", get(admin_clients_console::list))
         .route(
@@ -175,6 +179,8 @@ pub fn build(state: WebState) -> Router {
         )
         .route("/healthz", get(health::liveness))
         .route("/readyz", get(health::readiness))
+        .route("/assets/react/app.js", get(react_assets::app_js))
+        .route("/assets/react/app.js.map", get(react_assets::app_js_map))
         .nest("/{tenant_id}", tenant_scoped)
         .layer(axum::middleware::from_fn(correlation::propagate))
         .layer(TraceLayer::new_for_http())

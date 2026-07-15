@@ -937,6 +937,44 @@ impl ApiClient {
 
     // ── 設定画面（MT14）─────────────────────────────────────────────────────
 
+    /// 子テナント一覧（`GET /admin/tenants`。idp.system.admin 必須）。
+    pub async fn list_tenants(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso_session_id: &str,
+    ) -> Result<Vec<crate::admin_dto::TenantView>, AdminApiError> {
+        self.admin_send(
+            Method::GET,
+            tenant_id,
+            "/admin/tenants",
+            correlation_id,
+            sso_session_id,
+            None,
+        )
+        .await
+    }
+
+    /// 子テナント作成（`POST /admin/tenants`。idp.system.admin 必須）。
+    pub async fn create_tenant(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso_session_id: &str,
+        name: &str,
+        admin_email: &str,
+    ) -> Result<crate::admin_dto::TenantCreatedView, AdminApiError> {
+        self.admin_send(
+            Method::POST,
+            tenant_id,
+            "/admin/tenants",
+            correlation_id,
+            sso_session_id,
+            Some(serde_json::json!({ "name": name, "admin_email": admin_email })),
+        )
+        .await
+    }
+
     /// 自テナント取得（`GET /admin/settings/tenant`。idp.tenant.admin 必須）。
     pub async fn get_current_tenant(
         &self,

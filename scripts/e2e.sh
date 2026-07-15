@@ -74,6 +74,8 @@ else
 fi
 ROOT="$(mariadb_exec "SELECT id FROM tenants WHERE parent_tenant_id IS NULL")"
 [[ -n "$ROOT" ]] || fail "root テナントが解決できません（seed 未実行？）"
+# E2E は利用者自己登録から OIDC フローを開始するため、root テナントの自己登録を明示的に有効化する。
+mariadb_exec "UPDATE tenants SET self_registration_enabled=1 WHERE id='${ROOT}';" >/dev/null
 
 # ── OIDC 認可コードフロー（web ログイン経由）──────────────────────────────────
 info "3) OIDC フロー: /authorize(api) → /{tenant_id}/login(web) → /token(api)"
@@ -144,6 +146,28 @@ if [[ -z "$admin_loc" ]] && grep -q 'admin/password-change' "$admin_login_body";
 fi
 curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin" | grep -q "/${ROOT}/admin/clients" || fail "管理ホームが描画されません（whoami 経由）"
 pass "admin ログイン → 必要なら初期パスワード変更 → ホーム描画（web→api /admin/whoami）"
+
+react_asset="$(curl -fsS "${WEB}/assets/react/app.js")"
+printf '%s' "$react_asset" | grep -q "TenantRegistrationConsole" || fail "React bundle がテナント登録 surface を含んでいません"
+pass "React bundle 配信（/assets/react/app.js）"
+
+tenants_html="$(curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin/tenants")"
+printf '%s' "$tenants_html" | grep -q 'data-react-surface="TenantRegistrationConsole"' || fail "テナント登録画面が React surface を返しません"
+tcsrf="$(printf '%s' "$tenants_html" | grep -oE 'name="csrf_token" value="[a-f0-9]{64}"' | grep -oE '[a-f0-9]{64}' | head -1)"
+[[ -n "$tcsrf" ]] || fail "テナント登録画面が CSRF を返しません"
+TENANT_SUFFIX="$(date +%s)"
+TENANT_NAME="E2E Tenant ${TENANT_SUFFIX}"
+TENANT_ADMIN="tenant-admin-${TENANT_SUFFIX}@example.com"
+tenant_created="$(curl -fsS -b "$AJAR" -X POST "${WEB}/${ROOT}/admin/tenants" \
+  -H 'content-type: application/x-www-form-urlencoded' \
+  --data-urlencode "name=${TENANT_NAME}" --data-urlencode "admin_email=${TENANT_ADMIN}" \
+  --data-urlencode "csrf_token=${tcsrf}")"
+printf '%s' "$tenant_created" | grep -q "admin-tenants-generated-password\|初期パスワード\|Initial password" || fail "テナント作成結果が初期パスワード表示を含みません"
+[[ "$(mariadb_exec "SELECT COUNT(*) FROM tenants WHERE parent_tenant_id='${ROOT}' AND name='${TENANT_NAME}';")" == "1" ]] \
+  || fail "テナント作成が DB に反映されません"
+[[ "$(mariadb_exec "SELECT COUNT(*) FROM users WHERE email='${TENANT_ADMIN}';")" == "1" ]] \
+  || fail "作成テナントの初期管理者が DB に反映されません"
+pass "テナント登録画面（React surface）→ web→api POST /admin/tenants → DB 反映"
 
 ccsrf="$(curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin/clients/new" | grep -oE 'name="csrf_token" value="[a-f0-9]{64}"' | grep -oE '[a-f0-9]{64}')"
 created="$(curl -fsS -b "$AJAR" -X POST "${WEB}/${ROOT}/admin/clients/new" \

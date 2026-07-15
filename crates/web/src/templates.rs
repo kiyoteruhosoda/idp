@@ -7,7 +7,7 @@
 //! 各テンプレート構造体は対応する `.html` を `#[template(path = ...)]` で束ね、コンパイル時に
 //! 型検証される（sqlx のコンパイル時クエリ検証と同じ思想）。
 
-use crate::admin_dto::{AuditLogView, ClientView, SigningKeyView};
+use crate::admin_dto::{AuditLogView, ClientView, SigningKeyView, TenantCreatedView, TenantView};
 use crate::i18n::Messages;
 use askama::Template;
 use idp_contracts::admin::{ClientStatusResponse, UserSummaryResponse};
@@ -402,6 +402,28 @@ pub struct SigningKeysList<'a> {
     pub keys: &'a [SigningKeyView],
     pub csrf: &'a str,
     pub error: Option<&'a str>,
+}
+
+/// root 管理者向けのテナント一覧・登録画面（`GET /{tenant_id}/admin/tenants`）。
+#[derive(Template)]
+#[template(path = "console/tenants.html")]
+pub struct TenantsConsole<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub admin: Admin<'a>,
+    pub tenants: &'a [TenantView],
+    pub csrf: &'a str,
+    pub error_key: Option<&'a str>,
+}
+
+/// テナント作成結果（`POST /{tenant_id}/admin/tenants` 成功時）。
+#[derive(Template)]
+#[template(path = "console/tenant_created.html")]
+pub struct TenantCreated<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub admin: Admin<'a>,
+    pub created: &'a TenantCreatedView,
 }
 
 /// 管理コンソールの設定画面（`GET /{tenant_id}/admin/settings`。MT14）。テナント設定区画（自テナント

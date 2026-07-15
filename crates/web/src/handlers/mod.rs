@@ -7,6 +7,7 @@ pub mod admin_members_console;
 pub mod admin_settings;
 pub mod admin_signing_keys_console;
 pub mod admin_status_console;
+pub mod admin_tenants_console;
 pub mod admin_users_console;
 pub mod consent;
 pub mod health;
@@ -16,6 +17,7 @@ pub mod mfa_totp;
 pub mod passkey;
 pub mod password_change;
 pub mod password_reset;
+pub mod react_assets;
 pub mod user_settings;
 pub mod verify_email;
 
