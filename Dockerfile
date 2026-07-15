@@ -43,16 +43,28 @@ COPY migrations ./migrations
 RUN find crates -name '*.rs' -exec touch {} + \
     && cargo build --release --locked --bin idp --bin idp-web
 
-# ---- migrate ----
-# DDL / マスタデータ適用の専用ジョブ（sqlx migrate run）。CLAUDE.md schema-version 方針に従い、
-# アプリ起動時には適用せず、この単独ジョブで適用する。Compose の migrate サービスから使う。
-FROM rust:slim AS migrate
-WORKDIR /migrate
+# ---- migrate tool builder ----
+# sqlx-cli のビルドには Rust ツールチェインと C ビルド依存が必要だが、それらを migrate 実行イメージへ
+# 持ち込むと idp-migrate.tar が肥大化する。ビルド専用ステージへ閉じ込め、実行ステージには sqlx binary と
+# migrations だけを渡す。
+FROM rust:slim AS migrate-tool-builder
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential perl pkg-config \
     && rm -rf /var/lib/apt/lists/* \
-    && cargo install sqlx-cli --version ^0.8 --no-default-features --features mysql,rustls --locked
+    && cargo install sqlx-cli --version ^0.8 --no-default-features --features mysql,rustls --locked --root /opt/sqlx
+
+# ---- migrate ----
+# DDL / マスタデータ適用の専用ジョブ（sqlx migrate run）。CLAUDE.md schema-version 方針に従い、
+# アプリ起動時には適用せず、この単独ジョブで適用する。Compose の migrate サービスから使う。
+FROM debian:bookworm-slim AS migrate
+WORKDIR /migrate
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --no-create-home idp
+COPY --from=migrate-tool-builder /opt/sqlx/bin/sqlx /usr/local/bin/sqlx
 COPY migrations ./migrations
+USER idp
 # DATABASE_URL は実行時に注入する。
 ENTRYPOINT ["sqlx", "migrate", "run", "--source", "/migrate/migrations"]
 

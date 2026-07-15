@@ -1,3 +1,10 @@
+## 2026-07-15（migrate tar の軽量化）
+
+- **Dockerfile — migrate 実行イメージから Rust ツールチェインとビルド依存を除外**: `sqlx-cli` の
+  `cargo install` を `migrate-tool-builder` ステージへ分離し、最終 `migrate` ステージは `debian:bookworm-slim` に
+  `sqlx` バイナリ・証明書・`migrations/` のみを含める構成にした。これにより `idp-migrate.tar` が
+  自身のビルド用コンテナ相当（Rust/Cargo/ビルドツール）を内包して肥大化する状態を避ける。
+
 ## 2026-07-15（MariaDB 初期化待機の堅牢化）
 
 - **deploy.sh — MariaDB の health 待機を低速 NAS 向けに延長**: reset 直後の fresh volume 初期化が
