@@ -18,6 +18,7 @@ pub mod passkey;
 pub mod password_change;
 pub mod password_reset;
 pub mod react_assets;
+pub mod stylesheet;
 pub mod user_settings;
 pub mod verify_email;
 

@@ -1,3 +1,12 @@
+## 2026-07-15（web 共通スタイルシートの導入）
+
+- **crates/web — 全画面へ共通 CSS を適用**: これまで web の各テンプレートは CSS を一切読み込まず
+  （`console/layout.html` の `<head>` にスタイルシート指定が無く、`admin-header` 等のクラスに対応する
+  ルールも存在しなかった）、ブラウザ既定の素の HTML 表示になっていた。`assets/app.css` を追加し
+  `/assets/app.css` として自オリジン配信（CSP `style-src 'self'` 準拠、`react_assets` と同方式）、
+  各テンプレートの `<head>` から読み込むことで、ログイン・管理コンソール・セルフサービス各画面へ
+  デザイン（DADS パレット）を適用した。
+
 ## 2026-07-15（proxy readiness の異常検知強化）
 
 - **docker-compose*.yml — nginx proxy に SETGID/SETUID と healthcheck を追加**: Synology NAS 等で
