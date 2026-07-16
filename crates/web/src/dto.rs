@@ -110,3 +110,15 @@ pub struct TenantsQuery {
     #[serde(default)]
     pub error: Option<String>,
 }
+
+/// SAML 連携登録フォーム（`POST /{tenant_id}/admin/saml`）。
+#[derive(Debug, Deserialize)]
+pub struct AdminSamlProviderForm {
+    pub display_name: String,
+    pub entity_id: String,
+    pub sso_url: String,
+    pub x509_certificate: String,
+    #[serde(default)]
+    pub enabled: Option<String>,
+    pub csrf_token: String,
+}

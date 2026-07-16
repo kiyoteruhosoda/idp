@@ -6,9 +6,10 @@
 use crate::correlation;
 use crate::handlers::{
     admin_clients_console, admin_console, admin_invitations_console, admin_members_console,
-    admin_settings, admin_signing_keys_console, admin_status_console, admin_tenants_console,
-    admin_users_console, consent, health, invitation_accept, login, mfa_totp, passkey,
-    password_change, password_reset, react_assets, stylesheet, user_settings, verify_email,
+    admin_saml_console, admin_settings, admin_signing_keys_console, admin_status_console,
+    admin_tenants_console, admin_users_console, consent, health, invitation_accept, login,
+    mfa_totp, passkey, password_change, password_reset, react_assets, stylesheet, user_settings,
+    verify_email,
 };
 use crate::security_headers::add_security_headers;
 use crate::state::WebState;
@@ -120,6 +121,11 @@ pub fn build(state: WebState) -> Router {
         .route(
             "/admin/clients/{client_id}/rotate-secret",
             post(admin_clients_console::rotate_secret),
+        )
+        // SAML 連携登録画面。
+        .route(
+            "/admin/saml",
+            get(admin_saml_console::new_form).post(admin_saml_console::create),
         )
         // 利用者の作成・検索・権限付与/剥奪画面。
         .route("/admin/users", get(admin_users_console::search))

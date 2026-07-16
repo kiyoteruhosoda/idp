@@ -495,3 +495,26 @@ pub struct PasskeyRegisterTemplate<'a> {
     pub tenant_prefix: &'a str,
     pub error_key: Option<&'a str>,
 }
+
+/// SAML 連携登録フォーム（`GET /{tenant_id}/admin/saml`）。
+#[derive(Template)]
+#[template(path = "console/saml_provider_form.html")]
+pub struct SamlProviderForm<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub admin: Admin<'a>,
+    pub csrf: &'a str,
+    pub saved: bool,
+    pub error_key: Option<&'a str>,
+    pub values: &'a SamlProviderFormValues,
+}
+
+/// SAML 連携登録フォームの入力値。
+#[derive(Default)]
+pub struct SamlProviderFormValues {
+    pub display_name: String,
+    pub entity_id: String,
+    pub sso_url: String,
+    pub x509_certificate: String,
+    pub enabled: bool,
+}

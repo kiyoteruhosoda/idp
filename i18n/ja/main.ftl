@@ -390,3 +390,19 @@ user-settings-language-help = 表示言語を選ぶと Cookie とログイン中
 user-settings-language-submit = 言語を保存
 user-settings-password-help = 現在のパスワードを確認して新しいパスワードへ変更します。
 user-settings-mfa-help = 認証アプリやパスキーを追加・管理します。
+
+# SAML 連携登録（管理コンソール）。
+admin-nav-saml = SAML 連携登録
+admin-nav-saml-desc = 外部 SAML IdP の Entity ID、SSO URL、証明書を登録します。
+admin-saml-title = SAML 連携登録
+admin-saml-lead = 外部 ID プロバイダーのメタデータを登録し、テナントの SAML サインイン連携を準備します。
+admin-saml-saved = SAML 連携設定を受け付けました。
+admin-saml-field-display-name = 表示名
+admin-saml-field-entity-id = IdP Entity ID
+admin-saml-field-sso-url = SSO URL
+admin-saml-field-certificate = X.509 証明書
+admin-saml-certificate-hint = PEM 形式の証明書を貼り付けてください。
+admin-saml-field-enabled = 有効にする
+admin-saml-submit = SAML 連携を登録
+admin-saml-error-validation = 必須項目を入力してください。
+admin-saml-error-sso-url = SSO URL は HTTPS または localhost を指定してください。

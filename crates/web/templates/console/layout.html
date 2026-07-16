@@ -4,12 +4,12 @@
 <body>
 {% if let Some(uid) = admin %}
 <header class="admin-header">
-<span class="admin-title">{{ messages.get("admin-console-title") }}</span>
+<a class="admin-title" href="{{ tenant }}/admin">{{ messages.get("admin-console-title") }}</a>
 <span class="admin-user">{{ messages.get("admin-signed-in-as") }}: {{ uid }}</span>
 <form method="post" action="{{ tenant }}/admin/logout" class="admin-logout"><button type="submit">{{ messages.get("admin-logout") }}</button></form>
 </header>
 {% else %}
-<header class="admin-header"><span class="admin-title">{{ messages.get("admin-console-title") }}</span></header>
+<header class="admin-header"><a class="admin-title" href="{{ tenant }}/admin">{{ messages.get("admin-console-title") }}</a></header>
 {% endif %}
 <main>
 {% block content %}{% endblock %}

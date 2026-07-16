@@ -390,3 +390,19 @@ user-settings-language-help = Your selection is saved to a cookie and, when sign
 user-settings-language-submit = Save language
 user-settings-password-help = Confirm your current password before changing it.
 user-settings-mfa-help = Add or manage authenticator apps and passkeys.
+
+# SAML federation registration (admin console).
+admin-nav-saml = SAML federation
+admin-nav-saml-desc = Register the external SAML IdP entity ID, SSO URL, and certificate.
+admin-saml-title = Register SAML federation
+admin-saml-lead = Register external identity provider metadata and prepare SAML sign-in federation for this tenant.
+admin-saml-saved = SAML federation settings were accepted.
+admin-saml-field-display-name = Display name
+admin-saml-field-entity-id = IdP Entity ID
+admin-saml-field-sso-url = SSO URL
+admin-saml-field-certificate = X.509 certificate
+admin-saml-certificate-hint = Paste a PEM encoded certificate.
+admin-saml-field-enabled = Enable this provider
+admin-saml-submit = Register SAML federation
+admin-saml-error-validation = Fill in all required fields.
+admin-saml-error-sso-url = SSO URL must use HTTPS or localhost.

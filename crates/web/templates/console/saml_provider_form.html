@@ -1,0 +1,23 @@
+{% extends "console/layout.html" %}
+{% block content %}
+<section class="settings-hero"><p class="eyebrow">{{ messages.get("admin-nav-saml") }}</p><h1>{{ messages.get("admin-saml-title") }}</h1><p>{{ messages.get("admin-saml-lead") }}</p></section>
+{% if saved %}<p class="notice" role="status">{{ messages.get("admin-saml-saved") }}</p>{% endif %}
+{% if let Some(key) = error_key %}<p class="error" role="alert">{{ messages.get(key) }}</p>{% endif %}
+<section class="settings-card admin-saml-provider">
+<form method="post" action="{{ tenant }}/admin/saml">
+<input type="hidden" name="csrf_token" value="{{ csrf }}">
+<label for="display_name">{{ messages.get("admin-saml-field-display-name") }}</label>
+<input type="text" id="display_name" name="display_name" value="{{ values.display_name }}" required maxlength="255">
+<label for="entity_id">{{ messages.get("admin-saml-field-entity-id") }}</label>
+<input type="text" id="entity_id" name="entity_id" value="{{ values.entity_id }}" required>
+<label for="sso_url">{{ messages.get("admin-saml-field-sso-url") }}</label>
+<input type="url" id="sso_url" name="sso_url" value="{{ values.sso_url }}" required>
+<label for="x509_certificate">{{ messages.get("admin-saml-field-certificate") }}</label>
+<textarea id="x509_certificate" name="x509_certificate" rows="8" required>{{ values.x509_certificate }}</textarea>
+<p class="hint">{{ messages.get("admin-saml-certificate-hint") }}</p>
+<label><input type="checkbox" name="enabled" value="true" {% if values.enabled %}checked{% endif %}> {{ messages.get("admin-saml-field-enabled") }}</label>
+<button type="submit">{{ messages.get("admin-saml-submit") }}</button>
+</form>
+</section>
+<p><a href="{{ tenant }}/admin">{{ messages.get("admin-nav-home") }}</a></p>
+{% endblock %}
