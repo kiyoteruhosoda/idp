@@ -42,6 +42,12 @@ version="${IMAGE_TAG:-latest}"
 # IMAGE_PREFIX/IMAGE_TAG は Compose（docker-compose.deploy.yml）と共通の名前解決。通常は既定のままでよい。
 image_ref() { printf '%s/%s:%s' "${IMAGE_PREFIX:-idp}" "$1" "$version"; }
 
+write_manifest_kv() {
+  local key="$1" value="$2" quoted
+  printf -v quoted '%q' "$value"
+  printf '%s=%s\n' "$key" "$quoted"
+}
+
 # --- イメージビルド --------------------------------------------------------------
 # サービス名 → Dockerfile ステージ の対応。
 declare -A stages=([api]=runtime-api [web]=runtime-web [migrate]=migrate)
@@ -59,8 +65,12 @@ done
 mkdir -p "$out_dir/docker"
 manifest="$out_dir/manifest.sha256"
 : >"$manifest"
-printf 'commit=%s\ngit_version=%s\nversion=%s\nimage_tag=%s\n' \
-  "$git_commit" "$git_version" "$version" "$version" >"$out_dir/manifest.env"
+{
+  write_manifest_kv commit "$git_commit"
+  write_manifest_kv git_version "$git_version"
+  write_manifest_kv version "$version"
+  write_manifest_kv image_tag "$version"
+} >"$out_dir/manifest.env"
 
 for svc in api web migrate; do
   ref="$(image_ref "$svc")"
@@ -69,7 +79,10 @@ for svc in api web migrate; do
   log "保存します: $ref → $out ..."
   docker save "$ref" -o "$out"
   sha256sum "$out" >>"$manifest"
-  printf '%s_ref=%s\n%s_image_id=%s\n' "$svc" "$ref" "$svc" "$image_id" >>"$out_dir/manifest.env"
+  {
+    write_manifest_kv "${svc}_ref" "$ref"
+    write_manifest_kv "${svc}_image_id" "$image_id"
+  } >>"$out_dir/manifest.env"
 done
 
 cp "$repo_root/docker-compose.deploy.yml" "$out_dir/docker-compose.yml"
