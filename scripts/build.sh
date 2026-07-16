@@ -37,6 +37,7 @@ esac
 command -v docker >/dev/null 2>&1 || die "docker が見つかりません。"
 
 git_commit="$(git rev-parse HEAD 2>/dev/null || printf unknown)"
+git_version="$(git describe --always --dirty --tags 2>/dev/null || printf unknown)"
 version="${IMAGE_TAG:-latest}"
 # IMAGE_PREFIX/IMAGE_TAG は Compose（docker-compose.deploy.yml）と共通の名前解決。通常は既定のままでよい。
 image_ref() { printf '%s/%s:%s' "${IMAGE_PREFIX:-idp}" "$1" "$version"; }
@@ -48,6 +49,7 @@ for svc in api web migrate; do
   ref="$(image_ref "$svc")"
   log "イメージをビルドします: $ref（stage=${stages[$svc]}）..."
   docker build --target "${stages[$svc]}" \
+    --build-arg "IDP_GIT_VERSION=${git_version}" \
     --label "org.opencontainers.image.revision=${git_commit}" \
     --label "org.opencontainers.image.version=${version}" \
     -t "$ref" -f Dockerfile .
@@ -57,8 +59,8 @@ done
 mkdir -p "$out_dir/docker"
 manifest="$out_dir/manifest.sha256"
 : >"$manifest"
-printf 'commit=%s\nversion=%s\nimage_tag=%s\n' \
-  "$git_commit" "$version" "$version" >"$out_dir/manifest.env"
+printf 'commit=%s\ngit_version=%s\nversion=%s\nimage_tag=%s\n' \
+  "$git_commit" "$git_version" "$version" "$version" >"$out_dir/manifest.env"
 
 for svc in api web migrate; do
   ref="$(image_ref "$svc")"

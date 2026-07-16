@@ -33,6 +33,8 @@ services:
       context: .
       dockerfile: Dockerfile
       target: runtime-api
+      args:
+        IDP_GIT_VERSION: ${IDP_GIT_VERSION:-unknown}
     environment:
       ISSUER: ${ISSUER:-http://localhost:8080}
       BIND_ADDR: 0.0.0.0:8080
@@ -95,6 +97,8 @@ services:
       context: .
       dockerfile: Dockerfile
       target: runtime-web
+      args:
+        IDP_GIT_VERSION: ${IDP_GIT_VERSION:-unknown}
     environment:
       WEB_BIND_ADDR: 0.0.0.0:8081
       # サーバ側から api へ直結する（Compose ネットワーク内。プロキシは通さない）。

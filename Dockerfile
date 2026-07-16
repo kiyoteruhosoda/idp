@@ -12,6 +12,8 @@
 # bookworm に固定する。rust:slim はタグ更新で trixie 等へ進み得るため、NAS 等の
 # デプロイ先で `GLIBC_2.39 not found` が発生しないようにする。
 FROM rust:slim-bookworm AS builder
+ARG IDP_GIT_VERSION=unknown
+ENV IDP_GIT_VERSION=${IDP_GIT_VERSION}
 WORKDIR /build
 
 RUN apt-get update \
