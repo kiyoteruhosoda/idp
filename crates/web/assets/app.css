@@ -286,3 +286,49 @@ code { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", m
   .settings-inline-form { grid-template-columns: 1fr; }
   .app-footer { text-align: left; }
 }
+
+/* ---- パスワード表示切替 ---- */
+.password-toggle {
+  margin-top: 8px;
+  padding: 6px 12px;
+  border-color: var(--dads-gray-500);
+  background: var(--dads-white);
+  color: var(--dads-blue-700);
+  font-size: .875rem;
+}
+.password-toggle:hover {
+  background: var(--dads-blue-100);
+  border-color: var(--dads-blue-700);
+  color: var(--dads-blue-900);
+}
+
+/* ---- 右上プロフィール導線 ---- */
+.admin-profile {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--dads-gray-300);
+  border-radius: var(--dads-radius-chip);
+  background: var(--dads-white);
+  color: var(--dads-gray-900);
+  text-decoration: none;
+}
+.admin-profile:hover {
+  border-color: var(--dads-blue-700);
+  background: var(--dads-blue-100);
+}
+.admin-profile__icon {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--dads-blue-100);
+}
+.admin-profile__body { display: grid; min-width: 0; line-height: 1.25; }
+.admin-profile__label { color: var(--dads-gray-700); font-size: .75rem; }
+.admin-profile__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 18rem; font-weight: 700; }
+.admin-header .admin-logout { margin-left: 0; }

@@ -406,3 +406,10 @@ admin-saml-field-enabled = 有効にする
 admin-saml-submit = SAML 連携を登録
 admin-saml-error-validation = 必須項目を入力してください。
 admin-saml-error-sso-url = SSO URL は HTTPS または localhost を指定してください。
+
+# パスワード表示切替。
+password-visibility-show = パスワードを表示
+password-visibility-hide = パスワードを隠す
+
+# プロフィール導線。
+admin-profile-settings = プロフィール設定を開く

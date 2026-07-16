@@ -406,3 +406,10 @@ admin-saml-field-enabled = Enable this provider
 admin-saml-submit = Register SAML federation
 admin-saml-error-validation = Fill in all required fields.
 admin-saml-error-sso-url = SSO URL must use HTTPS or localhost.
+
+# Password visibility toggle.
+password-visibility-show = Show password
+password-visibility-hide = Hide password
+
+# Profile navigation.
+admin-profile-settings = Open profile settings

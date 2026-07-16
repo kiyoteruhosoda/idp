@@ -5,7 +5,10 @@
 {% if let Some(uid) = admin %}
 <header class="admin-header">
 <a class="admin-title" href="{{ tenant }}/admin">{{ messages.get("admin-console-title") }}</a>
-<span class="admin-user">{{ messages.get("admin-signed-in-as") }}: {{ uid }}</span>
+<a class="admin-profile" href="{{ tenant }}/settings" aria-label="{{ messages.get("admin-profile-settings") }}">
+<span class="admin-profile__icon" aria-hidden="true">👤</span>
+<span class="admin-profile__body"><span class="admin-profile__label">{{ messages.get("admin-signed-in-as") }}</span><span class="admin-profile__name">{{ uid }}</span></span>
+</a>
 <form method="post" action="{{ tenant }}/admin/logout" class="admin-logout"><button type="submit">{{ messages.get("admin-logout") }}</button></form>
 </header>
 {% else %}

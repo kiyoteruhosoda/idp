@@ -10,6 +10,7 @@
 <label>{{ messages.get("login-password") }} <input type="password" name="password" autocomplete="current-password" required></label>
 <button type="submit">{{ messages.get("login-submit") }}</button>
 </form>
+{% include "password_visibility.html" %}
 {% include "react_bootstrap.html" %}
 </body>
 </html>
