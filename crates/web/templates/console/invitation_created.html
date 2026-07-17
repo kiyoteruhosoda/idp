@@ -1,11 +1,11 @@
 {% extends "console/layout.html" %}
 {% block content %}
 <h2 class="h4 mb-3">{{ messages.get("admin-invitations-created-title") }}</h2>
-<div class="alert alert-warning" role="alert"><i class="fa-solid fa-triangle-exclamation me-2" aria-hidden="true"></i>{{ messages.get("admin-invitations-created-warning") }}</div>
+<div class="alert alert-warning secret-warning" role="alert"><i class="fa-solid fa-triangle-exclamation me-2" aria-hidden="true"></i>{{ messages.get("admin-invitations-created-warning") }}</div>
 {% if email_sent %}
 <div class="alert alert-success" role="status">{{ messages.get("admin-invitations-email-sent") }}: {{ invitee_email }}</div>
 {% else %}
-<div class="alert alert-warning" role="alert">{{ messages.get("admin-invitations-email-not-sent") }}</div>
+<div class="alert alert-warning secret-warning" role="alert">{{ messages.get("admin-invitations-email-not-sent") }}</div>
 {% endif %}
 <div class="card mb-3">
   <div class="card-body">
