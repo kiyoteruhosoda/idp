@@ -263,7 +263,9 @@ impl IntrospectionService {
             iat: None,
             sub: Some(rt.user_id.to_string()),
             iss: Some(issuer.to_string()),
-            jti: Some(rt.token_hash.clone()),
+            // refresh token は不透明トークンで JWT の `jti` を持たない。保存している SHA-256 ハッシュを
+            // `jti` として返すと内部保存値が client へ漏れるため付与しない（RFC 7662 で jti は任意）。
+            jti: None,
         }
     }
 

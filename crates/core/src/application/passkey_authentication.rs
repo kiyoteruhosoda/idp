@@ -13,9 +13,10 @@ use crate::domain::crypto;
 use crate::domain::passkey_challenge::{PasskeyChallenge, PasskeyChallengeType};
 use crate::domain::repositories::{
     AuthSessionRepository, ClientConsentRepository, PasskeyChallengeRepository,
-    SsoSessionRepository, UserRepository, WebAuthnCredentialRepository,
+    SsoSessionRepository, TenantMembershipRepository, UserRepository, WebAuthnCredentialRepository,
 };
 use crate::domain::sso_session::SsoSession;
+use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::webauthn_port::WebAuthnPort;
 use chrono::Duration;
@@ -56,6 +57,7 @@ pub struct PasskeyAuthenticationService {
     passkey_challenges: Arc<dyn PasskeyChallengeRepository>,
     auth_sessions: Arc<dyn AuthSessionRepository>,
     users: Arc<dyn UserRepository>,
+    memberships: Arc<dyn TenantMembershipRepository>,
     sso_sessions: Arc<dyn SsoSessionRepository>,
     client_consents: Arc<dyn ClientConsentRepository>,
     code_issuance: Arc<CodeIssuanceService>,
@@ -73,6 +75,7 @@ impl PasskeyAuthenticationService {
         passkey_challenges: Arc<dyn PasskeyChallengeRepository>,
         auth_sessions: Arc<dyn AuthSessionRepository>,
         users: Arc<dyn UserRepository>,
+        memberships: Arc<dyn TenantMembershipRepository>,
         sso_sessions: Arc<dyn SsoSessionRepository>,
         client_consents: Arc<dyn ClientConsentRepository>,
         code_issuance: Arc<CodeIssuanceService>,
@@ -87,6 +90,7 @@ impl PasskeyAuthenticationService {
             passkey_challenges,
             auth_sessions,
             users,
+            memberships,
             sso_sessions,
             client_consents,
             code_issuance,
@@ -239,14 +243,19 @@ impl PasskeyAuthenticationService {
             }
         }
 
-        // 7. ユーザーを取得して有効確認する。
-        let user = match self.users.find_by_id(user_id).await {
-            Ok(Some(u)) => u,
-            Ok(None) => return PasskeyAuthOutcome::InvalidCredential,
-            Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
-        };
-        if !user.is_active() {
-            return PasskeyAuthOutcome::Internal("user not active".to_string());
+        // 7. ユーザーの有効性と、フローのテナントへの ACTIVE メンバーシップ（HOME または GUEST）を
+        //    確認する。WebAuthn クレデンシャルはテナント列を持たずホスト単位で解決されるため、テナント
+        //    境界はこのアプリ層の紐付けで強制する（ADR-0009 §8。`authorize` の SSO 復元と同じ判定）。
+        //    非メンバー・無効・不明はいずれも `InvalidCredential` に倒す（列挙防止のため理由を分けない）。
+        if let Err(outcome) = ensure_active_member(
+            self.users.as_ref(),
+            self.memberships.as_ref(),
+            tenant_id,
+            user_id,
+        )
+        .await
+        {
+            return outcome;
         }
 
         // 8. AuthSession を取得して OIDC フローを継続する。
@@ -377,5 +386,215 @@ impl PasskeyAuthenticationService {
             location: code_redirect(&session.redirect_uri, &code, &session.state),
             sso_session_id,
         }
+    }
+}
+
+/// クレデンシャルの所有者がフローのテナントの ACTIVE メンバー（HOME または GUEST）で、かつ有効な
+/// アカウントであることを検証する。所属外・無効・不明・障害はいずれも `InvalidCredential`／`Internal`
+/// に倒す（テナント境界の強制。ADR-0009 §8）。サービス本体から切り出してユニットテスト可能にする。
+async fn ensure_active_member(
+    users: &dyn UserRepository,
+    memberships: &dyn TenantMembershipRepository,
+    tenant_id: TenantId,
+    user_id: Uuid,
+) -> Result<(), PasskeyAuthOutcome> {
+    match users.find_by_id(user_id).await {
+        Ok(Some(u)) if u.is_active() => {}
+        Ok(_) => return Err(PasskeyAuthOutcome::InvalidCredential),
+        Err(e) => return Err(PasskeyAuthOutcome::Internal(e.to_string())),
+    }
+    match memberships.is_active_member(tenant_id, user_id).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(PasskeyAuthOutcome::InvalidCredential),
+        Err(e) => Err(PasskeyAuthOutcome::Internal(e.to_string())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::error::{DomainError, Result as DomainResult};
+    use crate::domain::tenant_membership::TenantMembership;
+    use crate::domain::user::User;
+    use crate::domain::values::UserStatus;
+    use async_trait::async_trait;
+    use chrono::{TimeZone, Utc};
+
+    fn active_user(id: Uuid, tenant_id: TenantId) -> User {
+        let t = Utc.with_ymd_and_hms(2026, 7, 17, 0, 0, 0).unwrap();
+        User {
+            id,
+            tenant_id,
+            sub: Uuid::new_v4(),
+            email: "u@example.com".to_string(),
+            email_verified: true,
+            preferred_username: None,
+            name: None,
+            language: None,
+            password_hash: "x".to_string(),
+            must_change_password: false,
+            status: UserStatus::Active,
+            failed_login_count: 0,
+            locked_until: None,
+            created_at: t,
+            updated_at: t,
+        }
+    }
+
+    /// 単一ユーザーを返すフェイク（`None` で不存在を表す）。
+    struct FakeUsers(Option<User>);
+    #[async_trait]
+    impl UserRepository for FakeUsers {
+        async fn create(&self, _u: &User) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<User>> {
+            Ok(self.0.clone().filter(|u| u.id == id))
+        }
+        async fn find_by_sub(&self, _s: Uuid) -> DomainResult<Option<User>> {
+            unreachable!()
+        }
+        async fn find_by_email(&self, _t: TenantId, _e: &str) -> DomainResult<Option<User>> {
+            unreachable!()
+        }
+        async fn find_by_username(&self, _t: TenantId, _n: &str) -> DomainResult<Option<User>> {
+            unreachable!()
+        }
+        async fn update_login_state(
+            &self,
+            _id: Uuid,
+            _c: i32,
+            _l: Option<chrono::DateTime<Utc>>,
+        ) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn update_password(&self, _id: Uuid, _h: &str) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn mark_email_verified(&self, _id: Uuid) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn update_language(&self, _id: Uuid, _l: Option<&str>) -> DomainResult<()> {
+            unreachable!()
+        }
+    }
+
+    /// 指定テナントに対する `is_active_member` の戻り値を固定するフェイク。
+    struct FakeMemberships {
+        tenant_id: TenantId,
+        is_member: DomainResult<bool>,
+    }
+    #[async_trait]
+    impl TenantMembershipRepository for FakeMemberships {
+        async fn create(&self, _m: &TenantMembership) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn find(&self, _t: TenantId, _u: Uuid) -> DomainResult<Option<TenantMembership>> {
+            unreachable!()
+        }
+        async fn list_for_tenant(&self, _t: TenantId) -> DomainResult<Vec<TenantMembership>> {
+            unreachable!()
+        }
+        async fn is_active_member(&self, t: TenantId, _u: Uuid) -> DomainResult<bool> {
+            assert_eq!(
+                t, self.tenant_id,
+                "membership check must use the flow tenant"
+            );
+            match &self.is_member {
+                Ok(v) => Ok(*v),
+                Err(e) => Err(DomainError::Repository(e.to_string())),
+            }
+        }
+        async fn find_by_invitation_token_hash(
+            &self,
+            _h: &str,
+        ) -> DomainResult<Option<TenantMembership>> {
+            unreachable!()
+        }
+        async fn activate(&self, _t: TenantId, _u: Uuid) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn delete(&self, _t: TenantId, _u: Uuid) -> DomainResult<()> {
+            unreachable!()
+        }
+    }
+
+    fn ids() -> (Uuid, TenantId) {
+        (Uuid::new_v4(), Uuid::now_v7().into())
+    }
+
+    #[tokio::test]
+    async fn active_member_is_authorized() {
+        let (uid, tid) = ids();
+        let users = FakeUsers(Some(active_user(uid, tid)));
+        let memberships = FakeMemberships {
+            tenant_id: tid,
+            is_member: Ok(true),
+        };
+        assert!(ensure_active_member(&users, &memberships, tid, uid)
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn non_member_is_rejected_as_invalid_credential() {
+        // 別テナントのフローでパスキーを提示しても、当該テナントの ACTIVE メンバーでなければ拒否する
+        // （テナント分離。ADR-0009 §8）。
+        let (uid, home) = ids();
+        let other_tenant: TenantId = Uuid::now_v7().into();
+        let users = FakeUsers(Some(active_user(uid, home)));
+        let memberships = FakeMemberships {
+            tenant_id: other_tenant,
+            is_member: Ok(false),
+        };
+        let outcome = ensure_active_member(&users, &memberships, other_tenant, uid)
+            .await
+            .expect_err("non-member must be rejected");
+        assert!(matches!(outcome, PasskeyAuthOutcome::InvalidCredential));
+    }
+
+    #[tokio::test]
+    async fn inactive_user_is_rejected_without_touching_membership() {
+        let (uid, tid) = ids();
+        let mut user = active_user(uid, tid);
+        user.status = UserStatus::Disabled;
+        let users = FakeUsers(Some(user));
+        // メンバーシップ判定に到達したら panic する（無効ユーザーは先に弾く）。
+        let memberships = FakeMemberships {
+            tenant_id: tid,
+            is_member: Err(DomainError::Repository("must not be called".to_string())),
+        };
+        let outcome = ensure_active_member(&users, &memberships, tid, uid)
+            .await
+            .expect_err("inactive user must be rejected");
+        assert!(matches!(outcome, PasskeyAuthOutcome::InvalidCredential));
+    }
+
+    #[tokio::test]
+    async fn unknown_user_is_rejected() {
+        let (uid, tid) = ids();
+        let users = FakeUsers(None);
+        let memberships = FakeMemberships {
+            tenant_id: tid,
+            is_member: Ok(true),
+        };
+        let outcome = ensure_active_member(&users, &memberships, tid, uid)
+            .await
+            .expect_err("unknown user must be rejected");
+        assert!(matches!(outcome, PasskeyAuthOutcome::InvalidCredential));
+    }
+
+    #[tokio::test]
+    async fn membership_repository_error_maps_to_internal() {
+        let (uid, tid) = ids();
+        let users = FakeUsers(Some(active_user(uid, tid)));
+        let memberships = FakeMemberships {
+            tenant_id: tid,
+            is_member: Err(DomainError::Repository("db down".to_string())),
+        };
+        let outcome = ensure_active_member(&users, &memberships, tid, uid)
+            .await
+            .expect_err("repository failure must not authorize");
+        assert!(matches!(outcome, PasskeyAuthOutcome::Internal(_)));
     }
 }

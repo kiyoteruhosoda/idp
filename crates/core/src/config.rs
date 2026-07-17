@@ -509,10 +509,15 @@ fn env_lookup(key: &str) -> Option<String> {
     }
 }
 
+/// 環境変数を文字列で引く（未設定・空は既定値）。設定解決は [`ConfigResolver`] へ移行済みで、
+/// 現在はフォールバック挙動を検証するテストからのみ使う。
+#[cfg(test)]
 fn env_or(key: &str, default: &str) -> String {
     env_lookup(key).unwrap_or_else(|| default.to_string())
 }
 
+/// 環境変数をパースして引く（未設定・空は既定値）。[`env_or`] と同じくテスト専用の補助。
+#[cfg(test)]
 fn env_parse<T>(key: &str, default: T) -> anyhow::Result<T>
 where
     T: std::str::FromStr,

@@ -493,6 +493,7 @@ impl AppState {
             passkey_challenges,
             auth_sessions.clone(),
             users.clone(),
+            tenant_memberships.clone(),
             sso_sessions.clone(),
             client_consents,
             code_issuance,
