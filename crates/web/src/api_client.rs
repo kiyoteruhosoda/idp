@@ -30,9 +30,9 @@ use idp_contracts::auth::{
     InternalPasswordResetCompleteResponse, InternalPasswordResetRequestRequest,
     InternalPasswordResetRequestResponse, InternalPortalAuthenticateRequest,
     InternalPortalAuthenticateResponse, InternalPortalMfaRequest, InternalPortalMfaResponse,
-    InternalTotpConfirmRequest, InternalTotpConfirmResponse,
-    InternalTotpDeleteRequest, InternalTotpDeleteResponse, InternalTotpSetupRequest,
-    InternalTotpSetupResponse, InternalVerifyTotpRequest, InternalVerifyTotpResponse,
+    InternalTotpConfirmRequest, InternalTotpConfirmResponse, InternalTotpDeleteRequest,
+    InternalTotpDeleteResponse, InternalTotpSetupRequest, InternalTotpSetupResponse,
+    InternalVerifyTotpRequest, InternalVerifyTotpResponse,
 };
 use reqwest::Method;
 

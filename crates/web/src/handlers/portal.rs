@@ -22,8 +22,8 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{AppendHeaders, Html, IntoResponse, Response};
 use axum::Form;
 use idp_contracts::auth::{
-    InternalPortalAuthenticateRequest, InternalPortalAuthenticateResponse, InternalPortalMfaRequest,
-    InternalPortalMfaResponse,
+    InternalPortalAuthenticateRequest, InternalPortalAuthenticateResponse,
+    InternalPortalMfaRequest, InternalPortalMfaResponse,
 };
 
 /// ポータル CSRF 種 Cookie の寿命（秒）。ログイン〜TOTP 入力までを覆う。
@@ -32,11 +32,7 @@ const PORTAL_CSRF_TTL_SECS: u64 = 900;
 const PORTAL_MFA_TTL_SECS: u64 = 300;
 
 /// ポータルのログインフォーム（`GET /{tenant_id}/login`、`auth_session_id` 無し）。
-pub async fn login_page(
-    state: &WebState,
-    tenant: &WebTenant,
-    headers: &HeaderMap,
-) -> Response {
+pub async fn login_page(state: &WebState, tenant: &WebTenant, headers: &HeaderMap) -> Response {
     let messages = Messages::new(locale(headers));
     // CSRF の種（推測不能な乱数）を新規発行し、Cookie とフォーム双方へ渡す（admin ログインと同方式）。
     let csrf_id = uuid::Uuid::new_v4().simple().to_string();
@@ -78,7 +74,12 @@ pub async fn login(
         let messages = Messages::new(locale(headers));
         return (
             StatusCode::BAD_REQUEST,
-            Html(render_login_form(&messages, &tenant.prefix(), "", Some("login-error-csrf"))),
+            Html(render_login_form(
+                &messages,
+                &tenant.prefix(),
+                "",
+                Some("login-error-csrf"),
+            )),
         )
             .into_response();
     }
@@ -133,12 +134,16 @@ pub async fn login(
             )
                 .into_response()
         }
-        InternalPortalAuthenticateResponse::EmailVerificationRequired => {
-            message_page(&messages, "login-error-email-not-verified", StatusCode::FORBIDDEN)
-        }
-        InternalPortalAuthenticateResponse::PasswordChangeRequired => {
-            message_page(&messages, "portal-login-password-change-required", StatusCode::FORBIDDEN)
-        }
+        InternalPortalAuthenticateResponse::EmailVerificationRequired => message_page(
+            &messages,
+            "login-error-email-not-verified",
+            StatusCode::FORBIDDEN,
+        ),
+        InternalPortalAuthenticateResponse::PasswordChangeRequired => message_page(
+            &messages,
+            "portal-login-password-change-required",
+            StatusCode::FORBIDDEN,
+        ),
         InternalPortalAuthenticateResponse::RateLimited => reshow_login(
             &messages,
             &tenant.prefix(),
@@ -375,7 +380,12 @@ fn reshow_login(
 ) -> Response {
     (
         status,
-        Html(render_login_form(messages, tenant_prefix, csrf, Some(error_key))),
+        Html(render_login_form(
+            messages,
+            tenant_prefix,
+            csrf,
+            Some(error_key),
+        )),
     )
         .into_response()
 }

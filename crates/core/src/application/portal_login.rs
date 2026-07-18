@@ -63,7 +63,9 @@ pub enum PortalLoginOutcome {
         user_language: Option<String>,
     },
     /// パスワード認証成功だが TOTP が必要。`mfa_ticket` を Cookie 化して TOTP 入力画面へ誘導する。
-    MfaRequired { mfa_ticket: String },
+    MfaRequired {
+        mfa_ticket: String,
+    },
     /// 自己登録アカウントのメール未検証（SEC6b）。
     EmailVerificationRequired,
     /// 強制パスワード変更が必要（ADR-0009 §5）。ポータルからは変更できないため案内のみ。
@@ -159,7 +161,8 @@ impl PortalLoginService {
         let user = match self.find_user(tenant_id, &cmd.username).await {
             Ok(Some(u)) => u,
             Ok(None) => {
-                self.record_failure(tenant_id, None, "unknown_user", ctx).await;
+                self.record_failure(tenant_id, None, "unknown_user", ctx)
+                    .await;
                 return PortalLoginOutcome::InvalidCredentials;
             }
             Err(e) => return PortalLoginOutcome::Internal(e.to_string()),
@@ -356,12 +359,7 @@ impl PortalLoginService {
     }
 
     /// `mfa_ticket` を検証し、有効なら `user_id` を返す（テナント一致・署名一致・未期限）。
-    fn verify_ticket(
-        &self,
-        tenant_id: TenantId,
-        ticket: &str,
-        now: DateTime<Utc>,
-    ) -> Option<Uuid> {
+    fn verify_ticket(&self, tenant_id: TenantId, ticket: &str, now: DateTime<Utc>) -> Option<Uuid> {
         verify_ticket(
             &self.ticket_secret,
             tenant_id.as_uuid(),
