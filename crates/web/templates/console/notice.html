@@ -1,6 +1,6 @@
 {% extends "console/layout.html" %}
 {% block content %}
-{% if let Some(h) = heading %}<h2>{{ h }}</h2>{% endif %}
-{% if is_error %}<p class="error" role="alert">{{ message }}</p>{% else %}<p>{{ message }}</p>{% endif %}
-{% if let Some(href) = back_href %}<p><a href="{{ href }}">{{ back_label }}</a></p>{% endif %}
+{% if let Some(h) = heading %}<h2 class="h4 mb-3">{{ h }}</h2>{% endif %}
+{% if is_error %}<div class="alert alert-danger" role="alert">{{ message }}</div>{% else %}<div class="alert alert-info" role="status">{{ message }}</div>{% endif %}
+{% if let Some(href) = back_href %}<a class="btn btn-outline-secondary" href="{{ href }}">{{ back_label }}</a>{% endif %}
 {% endblock %}

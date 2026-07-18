@@ -1,41 +1,22 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ messages.get("mfa-verify-title") }}</title>
-  <link rel="stylesheet" href="/assets/app.css">
-  <style>
-    body { font-family: sans-serif; max-width: 400px; margin: 2rem auto; padding: 0 1rem; }
-    h1 { font-size: 1.4rem; }
-    .error { color: #c00; padding: .5rem; background: #fee; border-radius: 4px; margin-bottom: 1rem; }
-    label { display: block; margin-bottom: .4rem; font-weight: bold; }
-    input[type=text] { width: 100%; box-sizing: border-box; padding: .5rem;
-                       font-size: 1.5rem; letter-spacing: .3em; text-align: center;
-                       border: 1px solid #ccc; border-radius: 4px; }
-    button[type=submit] { width: 100%; margin-top: 1rem; padding: .7rem;
-                          background: #0066cc; color: #fff; border: none;
-                          border-radius: 4px; font-size: 1rem; cursor: pointer; }
-    button[type=submit]:hover { background: #0052a3; }
-  </style>
-</head>
-<body>
-  <h1>{{ messages.get("mfa-verify-title") }}</h1>
-
-  {% if let Some(key) = error_key %}
-  <p class="error" role="alert">{{ messages.get(key) }}</p>
-  {% endif %}
-
-  <p>{{ messages.get("mfa-verify-intro") }}</p>
-
-  <form method="post" action="">
-    <input type="hidden" name="csrf_token" value="{{ csrf }}">
-    <label for="totp_code">{{ messages.get("mfa-verify-code-label") }}</label>
-    <input id="totp_code" type="text" name="totp_code" inputmode="numeric" pattern="[0-9]{6}"
-           maxlength="6" autocomplete="one-time-code" required placeholder="000000"
-           autofocus>
-    <button type="submit">{{ messages.get("mfa-verify-submit") }}</button>
-  </form>
-{% include "react_bootstrap.html" %}
-</body>
-</html>
+{% extends "page.html" %}
+{% block title %}{{ messages.get("mfa-verify-title") }}{% endblock %}
+{% block content %}
+<div class="card border-0 bg-transparent">
+  <div class="card-header text-center py-3 border-0 bg-transparent">
+    <h1 class="h4 mb-0">{{ messages.get("mfa-verify-title") }}</h1>
+  </div>
+  <div class="card-body p-4">
+    {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
+    <div class="alert alert-info" role="status">{{ messages.get("mfa-verify-intro") }}</div>
+    <form method="post" action="">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <div class="mb-3">
+        <label class="form-label" for="totp_code">{{ messages.get("mfa-verify-code-label") }}</label>
+        <input id="totp_code" type="text" class="form-control form-control-lg text-center" name="totp_code" inputmode="numeric" pattern="[0-9]{6}"
+               maxlength="6" autocomplete="one-time-code" required placeholder="000000" autofocus>
+      </div>
+      <button type="submit" class="btn btn-primary w-100">{{ messages.get("mfa-verify-submit") }}</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

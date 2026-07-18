@@ -1,21 +1,36 @@
-<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/assets/app.css"><title>{{ messages.get("login-title") }}</title></head>
-<body>
-<h1>{{ messages.get("login-title") }}</h1>
-{% if let Some(key) = error_key %}<p class="error" role="alert">{{ messages.get(key) }}</p>{% endif %}
-<form method="post" action="">
-<input type="hidden" name="csrf_token" value="{{ csrf }}">
-<label>{{ messages.get("login-username") }} <input type="text" name="username" autocomplete="username" required></label>
-<label>{{ messages.get("login-password") }} <input type="password" name="password" autocomplete="current-password" required></label>
-<button type="submit">{{ messages.get("login-submit") }}</button>
-</form>
-<p><a href="{{ tenant_prefix }}/forgot-password">{{ messages.get("login-forgot-password") }}</a></p>
-<hr>
-<p>{{ messages.get("login-passkey-or") }}</p>
-<button type="button" id="btn-passkey-login">{{ messages.get("login-passkey-button") }}</button>
-<div id="passkey-error" style="display:none">
-  <p class="error" role="alert" id="passkey-error-msg"></p>
+{% extends "page.html" %}
+{% block title %}{{ messages.get("login-title") }}{% endblock %}
+{% block content %}
+<div class="card border-0 bg-transparent">
+  <div class="card-header text-center py-3 border-0 bg-transparent">
+    <h1 class="h4 mb-0">{{ messages.get("login-title") }}</h1>
+  </div>
+  <div class="card-body p-4">
+    {% if let Some(key) = error_key %}<div class="alert alert-warning" role="alert">{{ messages.get(key) }}</div>{% endif %}
+    <form method="post" action="">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <div class="mb-3">
+        <label class="form-label" for="login-username">{{ messages.get("login-username") }}</label>
+        <input type="text" class="form-control" id="login-username" name="username" autocomplete="username" required autofocus>
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="login-password">{{ messages.get("login-password") }}</label>
+        <input type="password" class="form-control" id="login-password" name="password" autocomplete="current-password" required>
+      </div>
+      <button type="submit" class="btn btn-primary w-100 mb-3">{{ messages.get("login-submit") }}</button>
+      <div class="text-center">
+        <a class="text-decoration-none" href="{{ tenant_prefix }}/forgot-password">{{ messages.get("login-forgot-password") }}</a>
+      </div>
+    </form>
+    <hr>
+    <p class="text-muted small text-center mb-3">{{ messages.get("login-passkey-or") }}</p>
+    <div class="d-grid mb-3">
+      <button type="button" class="btn btn-outline-secondary" id="btn-passkey-login"><i class="fa-solid fa-key me-2" aria-hidden="true"></i>{{ messages.get("login-passkey-button") }}</button>
+    </div>
+    <div id="passkey-error" style="display:none">
+      <p class="text-danger small text-center mb-0" role="alert" id="passkey-error-msg"></p>
+    </div>
+  </div>
 </div>
 <script>
 (function() {
@@ -81,7 +96,4 @@
 })();
 </script>
 {% include "password_visibility.html" %}
-{% include "react_bootstrap.html" %}
-</body>
-</html>
-
+{% endblock %}

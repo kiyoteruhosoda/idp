@@ -1,12 +1,16 @@
 {% extends "console/layout.html" %}
 {% block content %}
-<h1>{{ messages.get("admin-tenants-created-title") }}</h1>
-<p>{{ messages.get("admin-tenants-created-intro") }}</p>
-<dl>
-<dt>ID</dt><dd><code>{{ created.id }}</code></dd>
-<dt>{{ messages.get("admin-tenants-name") }}</dt><dd>{{ created.name }}</dd>
-<dt>{{ messages.get("admin-tenants-admin-user-id") }}</dt><dd><code>{{ created.admin_user_id }}</code></dd>
-<dt>{{ messages.get("admin-tenants-generated-password") }}</dt><dd><code>{{ created.generated_password }}</code></dd>
-</dl>
-<p><a href="{{ tenant }}/admin/tenants">{{ messages.get("admin-tenants-back") }}</a></p>
+<h2 class="h4 mb-1">{{ messages.get("admin-tenants-created-title") }}</h2>
+<p class="text-muted">{{ messages.get("admin-tenants-created-intro") }}</p>
+<div class="card mb-3">
+  <div class="card-body">
+    <dl class="row mb-0">
+      <dt class="col-sm-3">ID</dt><dd class="col-sm-9"><code>{{ created.id }}</code></dd>
+      <dt class="col-sm-3">{{ messages.get("admin-tenants-name") }}</dt><dd class="col-sm-9">{{ created.name }}</dd>
+      <dt class="col-sm-3">{{ messages.get("admin-tenants-admin-user-id") }}</dt><dd class="col-sm-9"><code>{{ created.admin_user_id }}</code></dd>
+      <dt class="col-sm-3">{{ messages.get("admin-tenants-generated-password") }}</dt><dd class="col-sm-9"><code>{{ created.generated_password }}</code></dd>
+    </dl>
+  </div>
+</div>
+<a class="btn btn-outline-secondary" href="{{ tenant }}/admin/tenants">{{ messages.get("admin-tenants-back") }}</a>
 {% endblock %}

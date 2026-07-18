@@ -1,8 +1,12 @@
 {% extends "console/layout.html" %}
 {% block content %}
-<h2>{{ messages.get("admin-users-created-title") }}</h2>
+<h2 class="h4 mb-3">{{ messages.get("admin-users-created-title") }}</h2>
 <p>{{ messages.get("admin-user-col-email") }}: <code>{{ email }}</code></p>
-<p class="secret-warning">{{ messages.get("admin-users-created-warning") }}</p>
-<p>{{ messages.get("admin-users-generated-password-label") }}: <code>{{ generated_password }}</code></p>
-<p><a href="{{ tenant }}/admin/users">{{ messages.get("admin-users-back") }}</a></p>
+<div class="alert alert-warning secret-warning" role="alert"><i class="fa-solid fa-triangle-exclamation me-2" aria-hidden="true"></i>{{ messages.get("admin-users-created-warning") }}</div>
+<div class="card mb-3">
+  <div class="card-body">
+    <p class="mb-0">{{ messages.get("admin-users-generated-password-label") }}: <code>{{ generated_password }}</code></p>
+  </div>
+</div>
+<a class="btn btn-outline-secondary" href="{{ tenant }}/admin/users">{{ messages.get("admin-users-back") }}</a>
 {% endblock %}

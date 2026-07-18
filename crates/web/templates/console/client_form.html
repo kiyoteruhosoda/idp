@@ -1,34 +1,57 @@
 {% extends "console/layout.html" %}
 {% block content %}
-<h2>{{ heading }}</h2>
-{% if let Some(err) = error %}<p class="error" role="alert">{{ err }}</p>{% endif %}
-<form method="post" action="{{ action }}">
-<input type="hidden" name="csrf_token" value="{{ csrf }}">
-<p><label>{{ messages.get("admin-client-field-name") }}<br>
-<input type="text" name="app_name" value="{{ values.app_name }}" required></label></p>
-{% if is_new %}
-<p><label>{{ messages.get("admin-client-field-type") }}<br>
-<select name="client_type">
-<option value="confidential"{% if values.client_type == "confidential" %} selected{% endif %}>confidential</option>
-<option value="public"{% if values.client_type == "public" %} selected{% endif %}>public</option>
-</select></label></p>
-{% else %}
-<p>{{ messages.get("admin-client-field-type") }}: <code>{{ values.client_type }}</code></p>
-{% endif %}
-<p><label>{{ messages.get("admin-client-field-uris") }}<br>
-<textarea name="redirect_uris" rows="4" cols="60">{{ values.redirect_uris }}</textarea></label><br><small>{{ messages.get("admin-client-field-uris-hint") }}</small></p>
-<p><label>{{ messages.get("admin-client-field-scopes") }}<br>
-<input type="text" name="scopes" value="{{ values.scopes }}"></label><br><small>{{ messages.get("admin-client-field-scopes-hint") }}</small></p>
-{% if !is_new %}
-<p><label>{{ messages.get("admin-client-field-status") }}<br>
-<select name="client_status">
-<option value="ACTIVE"{% if values.client_status == "ACTIVE" %} selected{% endif %}>ACTIVE</option>
-<option value="DISABLED"{% if values.client_status == "DISABLED" %} selected{% endif %}>DISABLED</option>
-</select></label></p>
-{% endif %}
-{% if is_new %}
-<p><label><input type="checkbox" name="require_pkce"{% if values.require_pkce %} checked{% endif %}> {{ messages.get("admin-client-field-pkce") }}</label><small>{{ messages.get("admin-client-field-pkce-hint") }}</small></p>
-{% endif %}
-<p><button type="submit">{{ messages.get("admin-form-save") }}</button> <a href="{{ tenant }}/admin/clients">{{ messages.get("admin-form-cancel") }}</a></p>
-</form>
+<h2 class="h4 mb-3">{{ heading }}</h2>
+{% if let Some(err) = error %}<div class="alert alert-danger" role="alert">{{ err }}</div>{% endif %}
+<div class="card">
+  <div class="card-body">
+    <form method="post" action="{{ action }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <div class="mb-3">
+        <label class="form-label" for="client-app-name">{{ messages.get("admin-client-field-name") }}</label>
+        <input type="text" class="form-control" id="client-app-name" name="app_name" value="{{ values.app_name }}" required>
+      </div>
+      {% if is_new %}
+      <div class="mb-3">
+        <label class="form-label" for="client-type">{{ messages.get("admin-client-field-type") }}</label>
+        <select class="form-select" id="client-type" name="client_type">
+          <option value="confidential"{% if values.client_type == "confidential" %} selected{% endif %}>confidential</option>
+          <option value="public"{% if values.client_type == "public" %} selected{% endif %}>public</option>
+        </select>
+      </div>
+      {% else %}
+      <p>{{ messages.get("admin-client-field-type") }}: <code>{{ values.client_type }}</code></p>
+      {% endif %}
+      <div class="mb-3">
+        <label class="form-label" for="client-redirect-uris">{{ messages.get("admin-client-field-uris") }}</label>
+        <textarea class="form-control" id="client-redirect-uris" name="redirect_uris" rows="4">{{ values.redirect_uris }}</textarea>
+        <div class="form-text">{{ messages.get("admin-client-field-uris-hint") }}</div>
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="client-scopes">{{ messages.get("admin-client-field-scopes") }}</label>
+        <input type="text" class="form-control" id="client-scopes" name="scopes" value="{{ values.scopes }}">
+        <div class="form-text">{{ messages.get("admin-client-field-scopes-hint") }}</div>
+      </div>
+      {% if !is_new %}
+      <div class="mb-3">
+        <label class="form-label" for="client-status">{{ messages.get("admin-client-field-status") }}</label>
+        <select class="form-select" id="client-status" name="client_status">
+          <option value="ACTIVE"{% if values.client_status == "ACTIVE" %} selected{% endif %}>ACTIVE</option>
+          <option value="DISABLED"{% if values.client_status == "DISABLED" %} selected{% endif %}>DISABLED</option>
+        </select>
+      </div>
+      {% endif %}
+      {% if is_new %}
+      <div class="form-check mb-3">
+        <input type="checkbox" class="form-check-input" id="client-require-pkce" name="require_pkce"{% if values.require_pkce %} checked{% endif %}>
+        <label class="form-check-label" for="client-require-pkce">{{ messages.get("admin-client-field-pkce") }}</label>
+        <div class="form-text">{{ messages.get("admin-client-field-pkce-hint") }}</div>
+      </div>
+      {% endif %}
+      <div class="d-flex align-items-center gap-2">
+        <button type="submit" class="btn btn-primary">{{ messages.get("admin-form-save") }}</button>
+        <a class="btn btn-outline-secondary" href="{{ tenant }}/admin/clients">{{ messages.get("admin-form-cancel") }}</a>
+      </div>
+    </form>
+  </div>
+</div>
 {% endblock %}

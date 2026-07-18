@@ -1,72 +1,102 @@
 {% extends "console/layout.html" %}
 {% block content %}
-<section class="settings-hero"><p class="eyebrow">{{ messages.get("admin-nav-settings") }}</p><h1>{{ messages.get("admin-settings-title") }}</h1><p>{{ messages.get("admin-settings-lead") }}</p></section>
+<div class="mb-4">
+  <p class="text-muted text-uppercase fw-bold small mb-1">{{ messages.get("admin-nav-settings") }}</p>
+  <h2 class="h3 mb-1">{{ messages.get("admin-settings-title") }}</h2>
+  <p class="text-muted mb-0">{{ messages.get("admin-settings-lead") }}</p>
+</div>
 
-{% if saved %}<p class="notice" role="status">{{ messages.get("admin-settings-saved") }}</p>{% endif %}
-{% if let Some(key) = error_key %}<p class="error" role="alert">{{ messages.get(key) }}</p>{% endif %}
+{% if saved %}<div class="alert alert-success" role="status">{{ messages.get("admin-settings-saved") }}</div>{% endif %}
+{% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
 
-<div class="settings-layout"><nav class="settings-nav" aria-label="{{ messages.get("admin-settings-nav-label") }}"><a href="#tenant-settings">{{ messages.get("admin-settings-tenant-heading") }}</a>{% if let Some(_) = system %}<a href="#system-settings">{{ messages.get("admin-settings-system-heading") }}</a><a href="#runtime-settings">{{ messages.get("admin-settings-runtime-heading") }}</a>{% endif %}</nav><div class="settings-panels"><section id="tenant-settings" class="settings-card admin-settings-tenant">
-<h3>{{ messages.get("admin-settings-tenant-heading") }}</h3>
-<p>{{ messages.get("admin-settings-tenant-id") }}: <code>{{ tenant_id }}</code></p>
-<p>{{ messages.get("admin-settings-tenant-status") }}: {{ tenant_status }}</p>
-<form method="post" action="{{ tenant }}/admin/settings/tenant">
-<input type="hidden" name="csrf_token" value="{{ csrf }}">
-<label for="tenant_name">{{ messages.get("admin-settings-tenant-name") }}</label>
-<input type="text" id="tenant_name" name="name" value="{{ tenant_name }}" required maxlength="255">
-<label><input type="checkbox" name="self_registration_enabled" {% if tenant_self_registration %}checked{% endif %}> {{ messages.get("admin-settings-self-registration") }}</label>
-<p class="hint">{{ messages.get("admin-settings-self-registration-hint") }}</p>
-<button type="submit">{{ messages.get("admin-settings-save") }}</button>
-</form>
-</section>
+<div class="card mb-4 admin-settings-tenant" id="tenant-settings">
+  <div class="card-header d-flex align-items-center"><i class="fa-solid fa-building me-2" aria-hidden="true"></i>{{ messages.get("admin-settings-tenant-heading") }}</div>
+  <div class="card-body">
+    <dl class="row">
+      <dt class="col-sm-3">{{ messages.get("admin-settings-tenant-id") }}</dt><dd class="col-sm-9"><code>{{ tenant_id }}</code></dd>
+      <dt class="col-sm-3">{{ messages.get("admin-settings-tenant-status") }}</dt><dd class="col-sm-9">{{ tenant_status }}</dd>
+    </dl>
+    <form method="post" action="{{ tenant }}/admin/settings/tenant">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <div class="mb-3">
+        <label class="form-label" for="tenant_name">{{ messages.get("admin-settings-tenant-name") }}</label>
+        <input type="text" class="form-control" id="tenant_name" name="name" value="{{ tenant_name }}" required maxlength="255">
+      </div>
+      <div class="form-check mb-3">
+        <input type="checkbox" class="form-check-input" id="self_registration_enabled" name="self_registration_enabled" {% if tenant_self_registration %}checked{% endif %}>
+        <label class="form-check-label" for="self_registration_enabled">{{ messages.get("admin-settings-self-registration") }}</label>
+        <div class="form-text">{{ messages.get("admin-settings-self-registration-hint") }}</div>
+      </div>
+      <button type="submit" class="btn btn-primary">{{ messages.get("admin-settings-save") }}</button>
+    </form>
+  </div>
+</div>
 
 {% if let Some(sys) = system %}
-<section id="system-settings" class="settings-card admin-settings-system">
-<h3>{{ messages.get("admin-settings-system-heading") }}</h3>
-<p>{{ messages.get("admin-settings-system-note") }}</p>
-<form method="post" action="{{ tenant }}/admin/system-settings">
-<input type="hidden" name="csrf_token" value="{{ csrf }}">
-<label for="smtp_host">{{ messages.get("admin-settings-smtp-host") }}</label>
-<input type="text" id="smtp_host" name="smtp_host" value="{{ sys.smtp_host }}">
-<label for="smtp_port">{{ messages.get("admin-settings-smtp-port") }}</label>
-<input type="number" id="smtp_port" name="smtp_port" min="1" max="65535"
-  value="{% if let Some(p) = sys.smtp_port %}{{ p }}{% endif %}">
-<label for="smtp_username">{{ messages.get("admin-settings-smtp-username") }}</label>
-<input type="text" id="smtp_username" name="smtp_username" value="{{ sys.smtp_username }}">
-<label for="smtp_password">{{ messages.get("admin-settings-smtp-password") }}</label>
-<p class="hint">{% if sys.smtp_password_set %}{{ messages.get("admin-settings-smtp-password-set") }}{% else %}{{ messages.get("admin-settings-smtp-password-unset") }}{% endif %}</p>
-<input type="password" id="smtp_password" name="smtp_password" autocomplete="new-password">
-<p class="hint">{{ messages.get("admin-settings-smtp-password-hint") }}</p>
-<label for="smtp_from_address">{{ messages.get("admin-settings-smtp-from") }}</label>
-<input type="text" id="smtp_from_address" name="smtp_from_address" value="{{ sys.smtp_from_address }}">
-<label>
-<input type="checkbox" name="smtp_use_tls" value="true" {% if sys.smtp_use_tls %}checked{% endif %}>
-{{ messages.get("admin-settings-smtp-tls") }}
-</label>
-<button type="submit">{{ messages.get("admin-settings-save") }}</button>
-</form>
+<div class="card mb-4 admin-settings-system" id="system-settings">
+  <div class="card-header d-flex align-items-center"><i class="fa-solid fa-envelope me-2" aria-hidden="true"></i>{{ messages.get("admin-settings-system-heading") }}</div>
+  <div class="card-body">
+    <p class="text-muted small">{{ messages.get("admin-settings-system-note") }}</p>
+    <form method="post" action="{{ tenant }}/admin/system-settings">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <div class="row g-3 mb-3">
+        <div class="col-md-8">
+          <label class="form-label" for="smtp_host">{{ messages.get("admin-settings-smtp-host") }}</label>
+          <input type="text" class="form-control" id="smtp_host" name="smtp_host" value="{{ sys.smtp_host }}">
+        </div>
+        <div class="col-md-4">
+          <label class="form-label" for="smtp_port">{{ messages.get("admin-settings-smtp-port") }}</label>
+          <input type="number" class="form-control" id="smtp_port" name="smtp_port" min="1" max="65535"
+                 value="{% if let Some(p) = sys.smtp_port %}{{ p }}{% endif %}">
+        </div>
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="smtp_username">{{ messages.get("admin-settings-smtp-username") }}</label>
+        <input type="text" class="form-control" id="smtp_username" name="smtp_username" value="{{ sys.smtp_username }}">
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="smtp_password">{{ messages.get("admin-settings-smtp-password") }}</label>
+        <div class="form-text">{% if sys.smtp_password_set %}{{ messages.get("admin-settings-smtp-password-set") }}{% else %}{{ messages.get("admin-settings-smtp-password-unset") }}{% endif %}</div>
+        <input type="password" class="form-control" id="smtp_password" name="smtp_password" autocomplete="new-password">
+        <div class="form-text">{{ messages.get("admin-settings-smtp-password-hint") }}</div>
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="smtp_from_address">{{ messages.get("admin-settings-smtp-from") }}</label>
+        <input type="text" class="form-control" id="smtp_from_address" name="smtp_from_address" value="{{ sys.smtp_from_address }}">
+      </div>
+      <div class="form-check mb-3">
+        <input type="checkbox" class="form-check-input" id="smtp_use_tls" name="smtp_use_tls" value="true" {% if sys.smtp_use_tls %}checked{% endif %}>
+        <label class="form-check-label" for="smtp_use_tls">{{ messages.get("admin-settings-smtp-tls") }}</label>
+      </div>
+      <button type="submit" class="btn btn-primary">{{ messages.get("admin-settings-save") }}</button>
+    </form>
+  </div>
+</div>
 
-</section>
-<section id="runtime-settings" class="settings-card admin-settings-runtime">
-<h3>{{ messages.get("admin-settings-runtime-heading") }}</h3>
-<p class="hint">{{ messages.get("admin-settings-runtime-note") }}</p>
-<table>
-<thead><tr><th>設定名</th><th>現在の出所</th><th>状態</th><th>理由</th><th>再起動</th><th>秘密値</th></tr></thead>
-<tbody>
-{% for item in sys.runtime_settings %}
-<tr>
-<td><code>{{ item.key }}</code></td>
-<td>{{ item.source }} / {{ item.owner }}</td>
-<td>{% if item.status == "NEEDS_ACTION" %}要対応{% else %}安全{% endif %}</td>
-<td>{{ item.reason }}</td>
-<td>{% if item.restart_required %}必要{% else %}-{% endif %}</td>
-<td>{% if item.secret %}secret（値非表示）{% else %}-{% endif %}</td>
-</tr>
-{% endfor %}
-</tbody>
-</table>
-</section>
+<div class="card mb-4 admin-settings-runtime" id="runtime-settings">
+  <div class="card-header d-flex align-items-center"><i class="fa-solid fa-sliders me-2" aria-hidden="true"></i>{{ messages.get("admin-settings-runtime-heading") }}</div>
+  <div class="card-body">
+    <p class="text-muted small">{{ messages.get("admin-settings-runtime-note") }}</p>
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0">
+        <thead><tr><th>設定名</th><th>現在の出所</th><th>状態</th><th>理由</th><th>再起動</th><th>秘密値</th></tr></thead>
+        <tbody>
+          {% for item in sys.runtime_settings %}
+          <tr>
+            <td><code>{{ item.key }}</code></td>
+            <td>{{ item.source }} / {{ item.owner }}</td>
+            <td>{% if item.status == "NEEDS_ACTION" %}<span class="badge text-bg-warning">要対応</span>{% else %}<span class="badge text-bg-success">安全</span>{% endif %}</td>
+            <td>{{ item.reason }}</td>
+            <td>{% if item.restart_required %}必要{% else %}-{% endif %}</td>
+            <td>{% if item.secret %}secret（値非表示）{% else %}-{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
 {% endif %}
-</div></div>
 
-<p><a href="{{ tenant }}/admin">{{ messages.get("admin-settings-back") }}</a></p>
+<a class="btn btn-outline-secondary" href="{{ tenant }}/admin">{{ messages.get("admin-settings-back") }}</a>
 {% endblock %}

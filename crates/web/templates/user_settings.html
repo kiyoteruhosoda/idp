@@ -1,61 +1,66 @@
-<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/assets/app.css"><title>{{ messages.get("user-settings-title") }}</title></head>
-<body>
-<main class="settings-shell">
-<section class="settings-hero">
-<p class="eyebrow">{{ messages.get("user-settings-kicker") }}</p>
-<h1>{{ messages.get("user-settings-title") }}</h1>
-<p>{{ messages.get("user-settings-lead") }}</p>
-</section>
-
-{% if let Some(key) = saved_key %}<p class="notice" role="status">{{ messages.get(key) }}</p>{% endif %}
-{% if let Some(key) = error_key %}<p class="error" role="alert">{{ messages.get(key) }}</p>{% endif %}
-
-<div class="settings-layout">
-<nav class="settings-nav" aria-label="{{ messages.get("user-settings-nav-label") }}">
-<a href="#language">{{ messages.get("user-settings-language-heading") }}</a>
-<a href="#security">{{ messages.get("user-settings-security-heading") }}</a>
-<a href="#mfa">{{ messages.get("user-settings-mfa-heading") }}</a>
-</nav>
-<div class="settings-panels">
-<section id="language" class="settings-card user-settings-language">
-<div class="settings-card__header"><h2>{{ messages.get("user-settings-language-heading") }}</h2><p>{{ messages.get("user-settings-language-help") }}</p></div>
-<form method="get" action="{{ tenant }}/settings" class="settings-inline-form">
-<label for="lang">{{ messages.get("user-settings-language-current") }}</label>
-<select id="lang" name="lang">
-<option value="ja" {% if current_lang == "ja" %}selected{% endif %}>日本語</option>
-<option value="en" {% if current_lang == "en" %}selected{% endif %}>English</option>
-</select>
-<button type="submit">{{ messages.get("user-settings-language-submit") }}</button>
-</form>
-</section>
-
-<section id="security" class="settings-card user-settings-password">
-<div class="settings-card__header"><h2>{{ messages.get("user-settings-security-heading") }}</h2><p>{{ messages.get("user-settings-password-help") }}</p></div>
-<form method="post" action="{{ tenant }}/settings/password">
-<label for="current_password">{{ messages.get("user-settings-current-password") }}</label>
-<input type="password" id="current_password" name="current_password" autocomplete="current-password" required>
-<label for="new_password">{{ messages.get("user-settings-new-password") }}</label>
-<input type="password" id="new_password" name="new_password" autocomplete="new-password" required>
-<label for="new_password_confirm">{{ messages.get("user-settings-new-password-confirm") }}</label>
-<input type="password" id="new_password_confirm" name="new_password_confirm" autocomplete="new-password" required>
-<button type="submit">{{ messages.get("user-settings-password-submit") }}</button>
-</form>
-</section>
-
-<section id="mfa" class="settings-card user-settings-mfa">
-<div class="settings-card__header"><h2>{{ messages.get("user-settings-mfa-heading") }}</h2><p>{{ messages.get("user-settings-mfa-help") }}</p></div>
-<div class="settings-actions">
-<a class="settings-action" href="{{ tenant }}/account/mfa/totp/setup">{{ messages.get("user-settings-mfa-totp") }}</a>
-<a class="settings-action" href="{{ tenant }}/account/passkey">{{ messages.get("user-settings-mfa-passkey") }}</a>
+{% extends "page.html" %}
+{% block title %}{{ messages.get("user-settings-title") }}{% endblock %}
+{% block column %}col-lg-8 mx-auto{% endblock %}
+{% block content %}
+<div class="mb-4">
+  <p class="text-muted text-uppercase fw-bold small mb-1">{{ messages.get("user-settings-kicker") }}</p>
+  <h1 class="h3 mb-1">{{ messages.get("user-settings-title") }}</h1>
+  <p class="text-muted mb-0">{{ messages.get("user-settings-lead") }}</p>
 </div>
-</section>
+
+{% if let Some(key) = saved_key %}<div class="alert alert-success" role="status">{{ messages.get(key) }}</div>{% endif %}
+{% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
+
+<div class="card mb-4 user-settings-language" id="language">
+  <div class="card-header d-flex align-items-center"><i class="fa-solid fa-language me-2" aria-hidden="true"></i>{{ messages.get("user-settings-language-heading") }}</div>
+  <div class="card-body">
+    <p class="text-muted small">{{ messages.get("user-settings-language-help") }}</p>
+    <form method="get" action="{{ tenant }}/settings" class="row g-2 align-items-end">
+      <div class="col-auto">
+        <label class="form-label" for="lang">{{ messages.get("user-settings-language-current") }}</label>
+        <select class="form-select" id="lang" name="lang">
+          <option value="ja" {% if current_lang == "ja" %}selected{% endif %}>日本語</option>
+          <option value="en" {% if current_lang == "en" %}selected{% endif %}>English</option>
+        </select>
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-primary">{{ messages.get("user-settings-language-submit") }}</button>
+      </div>
+    </form>
+  </div>
 </div>
+
+<div class="card mb-4 user-settings-password" id="security">
+  <div class="card-header d-flex align-items-center"><i class="fa-solid fa-lock me-2" aria-hidden="true"></i>{{ messages.get("user-settings-security-heading") }}</div>
+  <div class="card-body">
+    <p class="text-muted small">{{ messages.get("user-settings-password-help") }}</p>
+    <form method="post" action="{{ tenant }}/settings/password">
+      <div class="mb-3">
+        <label class="form-label" for="current_password">{{ messages.get("user-settings-current-password") }}</label>
+        <input type="password" class="form-control" id="current_password" name="current_password" autocomplete="current-password" required>
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="new_password">{{ messages.get("user-settings-new-password") }}</label>
+        <input type="password" class="form-control" id="new_password" name="new_password" autocomplete="new-password" required>
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="new_password_confirm">{{ messages.get("user-settings-new-password-confirm") }}</label>
+        <input type="password" class="form-control" id="new_password_confirm" name="new_password_confirm" autocomplete="new-password" required>
+      </div>
+      <button type="submit" class="btn btn-primary">{{ messages.get("user-settings-password-submit") }}</button>
+    </form>
+  </div>
 </div>
-</main>
-{% include "footer.html" %}
+
+<div class="card mb-4 user-settings-mfa" id="mfa">
+  <div class="card-header d-flex align-items-center"><i class="fa-solid fa-shield-halved me-2" aria-hidden="true"></i>{{ messages.get("user-settings-mfa-heading") }}</div>
+  <div class="card-body">
+    <p class="text-muted small">{{ messages.get("user-settings-mfa-help") }}</p>
+    <div class="d-flex flex-wrap gap-2">
+      <a class="btn btn-outline-secondary" href="{{ tenant }}/account/mfa/totp/setup"><i class="fa-solid fa-mobile-screen me-2" aria-hidden="true"></i>{{ messages.get("user-settings-mfa-totp") }}</a>
+      <a class="btn btn-outline-secondary" href="{{ tenant }}/account/passkey"><i class="fa-solid fa-key me-2" aria-hidden="true"></i>{{ messages.get("user-settings-mfa-passkey") }}</a>
+    </div>
+  </div>
+</div>
 {% include "password_visibility.html" %}
-{% include "react_bootstrap.html" %}
-</body>
-</html>
+{% endblock %}

@@ -1,65 +1,72 @@
 {% extends "console/layout.html" %}
 {% block content %}
-<h1>{{ messages.get("admin-signing-keys-title") }}</h1>
+<h2 class="h4 mb-3">{{ messages.get("admin-signing-keys-title") }}</h2>
 {% if let Some(err) = error %}
-<p role="alert" class="error-banner">{{ messages.get(err) }}</p>
+<div class="alert alert-danger" role="alert">{{ messages.get(err) }}</div>
 {% endif %}
-<table>
-<thead>
-<tr>
-<th>{{ messages.get("admin-signing-keys-col-kid") }}</th>
-<th>{{ messages.get("admin-signing-keys-col-alg") }}</th>
-<th>{{ messages.get("admin-signing-keys-col-status") }}</th>
-<th>{{ messages.get("admin-signing-keys-col-not-before") }}</th>
-<th>{{ messages.get("admin-signing-keys-col-not-after") }}</th>
-<th>{{ messages.get("admin-signing-keys-col-created") }}</th>
-<th>{{ messages.get("admin-signing-keys-col-actions") }}</th>
-</tr>
-</thead>
-<tbody>
-{% if keys.is_empty() %}
-<tr><td colspan="7">{{ messages.get("admin-signing-keys-none") }}</td></tr>
-{% else %}
-{% for key in keys %}
-<tr>
-<td><code>{{ key.kid }}</code></td>
-<td>{{ key.algorithm }}</td>
-<td>{{ key.status }}</td>
-<td>{{ key.not_before }}</td>
-<td>{{ key.not_after }}</td>
-<td>{{ key.created_at }}</td>
-<td>
-{% if key.status == "ACTIVE" %}
-<form method="post" action="{{ tenant }}/admin/signing-keys/retire" style="display:inline">
-<input type="hidden" name="kid" value="{{ key.kid }}">
-<input type="hidden" name="csrf_token" value="{{ csrf }}">
-<button type="submit">{{ messages.get("admin-signing-keys-retire") }}</button>
-</form>
-{% else %}
-<form method="post" action="{{ tenant }}/admin/signing-keys/delete" style="display:inline">
-<input type="hidden" name="kid" value="{{ key.kid }}">
-<input type="hidden" name="csrf_token" value="{{ csrf }}">
-<button type="submit">{{ messages.get("admin-signing-keys-delete") }}</button>
-</form>
-{% endif %}
-</td>
-</tr>
-{% endfor %}
-{% endif %}
-</tbody>
-</table>
+<div class="table-responsive mb-4">
+  <table class="table table-hover align-middle">
+    <thead>
+      <tr>
+        <th>{{ messages.get("admin-signing-keys-col-kid") }}</th>
+        <th>{{ messages.get("admin-signing-keys-col-alg") }}</th>
+        <th>{{ messages.get("admin-signing-keys-col-status") }}</th>
+        <th>{{ messages.get("admin-signing-keys-col-not-before") }}</th>
+        <th>{{ messages.get("admin-signing-keys-col-not-after") }}</th>
+        <th>{{ messages.get("admin-signing-keys-col-created") }}</th>
+        <th>{{ messages.get("admin-signing-keys-col-actions") }}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% if keys.is_empty() %}
+      <tr><td colspan="7" class="text-muted">{{ messages.get("admin-signing-keys-none") }}</td></tr>
+      {% else %}
+      {% for key in keys %}
+      <tr>
+        <td><code>{{ key.kid }}</code></td>
+        <td>{{ key.algorithm }}</td>
+        <td>{% if key.status == "ACTIVE" %}<span class="badge text-bg-success">{{ key.status }}</span>{% else %}<span class="badge text-bg-secondary">{{ key.status }}</span>{% endif %}</td>
+        <td>{{ key.not_before }}</td>
+        <td>{{ key.not_after }}</td>
+        <td>{{ key.created_at }}</td>
+        <td>
+          {% if key.status == "ACTIVE" %}
+          <form method="post" action="{{ tenant }}/admin/signing-keys/retire" class="d-inline">
+            <input type="hidden" name="kid" value="{{ key.kid }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}">
+            <button type="submit" class="btn btn-outline-warning btn-sm">{{ messages.get("admin-signing-keys-retire") }}</button>
+          </form>
+          {% else %}
+          <form method="post" action="{{ tenant }}/admin/signing-keys/delete" class="d-inline">
+            <input type="hidden" name="kid" value="{{ key.kid }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}">
+            <button type="submit" class="btn btn-outline-danger btn-sm">{{ messages.get("admin-signing-keys-delete") }}</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      {% endif %}
+    </tbody>
+  </table>
+</div>
 
-<h2>{{ messages.get("admin-signing-keys-generate-heading") }}</h2>
-<form method="post" action="{{ tenant }}/admin/signing-keys/generate">
-<input type="hidden" name="csrf_token" value="{{ csrf }}">
-<label>{{ messages.get("admin-signing-keys-alg-label") }}
-<select name="algorithm">
-<option value="RS256">RS256 (RSA-2048)</option>
-<option value="ES256">ES256 (NIST P-256)</option>
-</select>
-</label>
-<button type="submit">{{ messages.get("admin-signing-keys-generate-button") }}</button>
-</form>
-
-<p><a href="{{ tenant }}/admin">{{ messages.get("admin-nav-home") }}</a></p>
+<h3 class="h5 mb-3">{{ messages.get("admin-signing-keys-generate-heading") }}</h3>
+<div class="card">
+  <div class="card-body">
+    <form method="post" action="{{ tenant }}/admin/signing-keys/generate" class="row g-2 align-items-end">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <div class="col-auto">
+        <label class="form-label" for="signing-key-algorithm">{{ messages.get("admin-signing-keys-alg-label") }}</label>
+        <select class="form-select" id="signing-key-algorithm" name="algorithm">
+          <option value="RS256">RS256 (RSA-2048)</option>
+          <option value="ES256">ES256 (NIST P-256)</option>
+        </select>
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-primary"><i class="fa-solid fa-key me-2" aria-hidden="true"></i>{{ messages.get("admin-signing-keys-generate-button") }}</button>
+      </div>
+    </form>
+  </div>
+</div>
 {% endblock %}

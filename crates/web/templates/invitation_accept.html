@@ -1,23 +1,26 @@
-<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/assets/app.css"><title>{{ messages.get("invitation-accept-title") }}</title></head>
-<body>
-<h1>{{ messages.get("invitation-accept-title") }}</h1>
-{% if success %}
-<p>{{ messages.get("invitation-accept-success") }}</p>
-{% else %}
-<p>{{ messages.get("invitation-accept-intro") }}</p>
-{% if let Some(key) = error_key %}<p class="error" role="alert">{{ messages.get(key) }}</p>{% endif %}
-{% if show_form %}
-<form method="post" action="">
-<input type="hidden" name="csrf_token" value="{{ csrf }}">
-<input type="hidden" name="token" value="{{ token }}">
-<button type="submit">{{ messages.get("invitation-accept-submit") }}</button>
-</form>
-{% else %}
-<p>{{ messages.get("invitation-accept-login-required") }}</p>
-{% endif %}
-{% endif %}
-{% include "react_bootstrap.html" %}
-</body>
-</html>
+{% extends "page.html" %}
+{% block title %}{{ messages.get("invitation-accept-title") }}{% endblock %}
+{% block content %}
+<div class="card border-0 bg-transparent">
+  <div class="card-header text-center py-3 border-0 bg-transparent">
+    <h1 class="h4 mb-0">{{ messages.get("invitation-accept-title") }}</h1>
+  </div>
+  <div class="card-body p-4">
+    {% if success %}
+    <div class="alert alert-success" role="status">{{ messages.get("invitation-accept-success") }}</div>
+    {% else %}
+    <p class="text-muted">{{ messages.get("invitation-accept-intro") }}</p>
+    {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
+    {% if show_form %}
+    <form method="post" action="">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <input type="hidden" name="token" value="{{ token }}">
+      <button type="submit" class="btn btn-primary w-100">{{ messages.get("invitation-accept-submit") }}</button>
+    </form>
+    {% else %}
+    <div class="alert alert-info" role="status">{{ messages.get("invitation-accept-login-required") }}</div>
+    {% endif %}
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

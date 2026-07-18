@@ -1,3 +1,25 @@
+## 2026-07-17（マイグレーション 0008 の外部キー不成立を修正）
+
+- **migrations/0008 — `saml_identity_providers` がテーブルオプション未指定で作成不能だった問題を修正**:
+  サーバ既定照合（`mariadb:10.11` は `utf8mb4_general_ci`）と `tenants`（`utf8mb4_unicode_ci`）の照合不一致で
+  外部キーが errno 150 となり、新規 DB への適用（CI 含む）が必ず失敗していた。他テーブルと同じ
+  `ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci` を明示し、時刻列を規約どおり
+  `DATETIME(6)` へ変更した（`(tenant_id, entity_id)` の一意制約は索引キー上限を超えるため、
+  MariaDB が長キー一意制約 `USING HASH` として作成する）。
+
+## 2026-07-17（web UI を photonest と同じ Bootstrap フォーマットへ全面刷新）
+
+- **crates/web — 全画面を Bootstrap 5 + Font Awesome の photonest フォーマットで書き換え**: 認証系
+  画面（ログイン・同意・パスワード関連・MFA・Passkey 等）は中央寄せカード型の共通ベース
+  `templates/page.html` を新設して継承、管理コンソールは `console/layout.html` をナビバー＋
+  常設サイドバー（<768px はオフキャンバスドロワー）＋フッタ構成へ刷新した。表は `table-hover`、
+  通知は `alert`、状態表示は `badge` に統一。フォーム名・hidden 値・JS フック（Passkey/WebAuthn、
+  `data-react-surface`）は従来どおり維持。
+- **crates/web — Bootstrap 5.3.3 / Font Awesome Free 7.3.0 をベンダリング**: `assets/vendor/` 配下に
+  同梱し `handlers/vendor_assets.rs` から `/assets/vendor/...` として自オリジン配信
+  （CSP `default-src 'self'` 準拠。外部 CDN 非依存）。`assets/app.css` は DADS パレット一式を廃し、
+  サイドバー幅等の最小限の Bootstrap 補完のみに縮小した。
+
 ## 2026-07-15（web 共通スタイルシートの導入）
 
 - **crates/web — 全画面へ共通 CSS を適用**: これまで web の各テンプレートは CSS を一切読み込まず

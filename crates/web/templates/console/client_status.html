@@ -1,17 +1,21 @@
 {% extends "console/layout.html" %}
 {% block content %}
-<h2>{{ messages.get("admin-status-title") }}</h2>
-<p>{{ messages.get("admin-status-intro") }}</p>
+<h2 class="h4 mb-1">{{ messages.get("admin-status-title") }}</h2>
+<p class="text-muted">{{ messages.get("admin-status-intro") }}</p>
 {% if views.is_empty() %}
-<p>{{ messages.get("admin-status-none") }}</p>
+<p class="text-muted">{{ messages.get("admin-status-none") }}</p>
 {% else %}
-<table>
-<thead><tr><th>{{ messages.get("admin-status-col-name") }}</th><th>{{ messages.get("admin-status-col-id") }}</th><th>{{ messages.get("admin-status-col-status") }}</th><th>{{ messages.get("admin-status-col-scopes") }}</th><th>{{ messages.get("admin-status-col-last-used") }}</th></tr></thead>
-<tbody>
-{% for v in views %}
-<tr><td>{{ v.app_name }}</td><td><code>{{ v.client_id }}</code></td><td>{{ v.status }}</td><td>{{ v.scopes.join(" ") }}</td><td>{{ v.last_used_at.as_deref().unwrap_or("-") }}</td></tr>
-{% endfor %}
-</tbody></table>
+<div class="table-responsive">
+  <table class="table table-hover align-middle">
+    <thead>
+      <tr><th>{{ messages.get("admin-status-col-name") }}</th><th>{{ messages.get("admin-status-col-id") }}</th><th>{{ messages.get("admin-status-col-status") }}</th><th>{{ messages.get("admin-status-col-scopes") }}</th><th>{{ messages.get("admin-status-col-last-used") }}</th></tr>
+    </thead>
+    <tbody>
+      {% for v in views %}
+      <tr><td>{{ v.app_name }}</td><td><code>{{ v.client_id }}</code></td><td>{% if v.status == "ACTIVE" %}<span class="badge text-bg-success">{{ v.status }}</span>{% else %}<span class="badge text-bg-secondary">{{ v.status }}</span>{% endif %}</td><td>{{ v.scopes.join(" ") }}</td><td>{{ v.last_used_at.as_deref().unwrap_or("-") }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
 {% endif %}
-<p><a href="{{ tenant }}/admin">{{ messages.get("admin-nav-home") }}</a></p>
 {% endblock %}

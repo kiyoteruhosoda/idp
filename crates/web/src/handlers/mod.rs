@@ -21,6 +21,7 @@ pub mod password_reset;
 pub mod react_assets;
 pub mod stylesheet;
 pub mod user_settings;
+pub mod vendor_assets;
 pub mod verify_email;
 
 use crate::correlation::CorrelationId;

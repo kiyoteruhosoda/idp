@@ -1,21 +1,31 @@
 {% extends "console/layout.html" %}
 {% block content %}
-<h2>{{ messages.get("admin-users-title") }}</h2>
-<form method="get" action="{{ tenant }}/admin/users">
-<p><label>{{ messages.get("admin-users-search-label") }}<br>
-<input type="text" name="q" value="{{ term }}" required></label><br><small>{{ messages.get("admin-users-search-hint") }}</small></p>
-<p><button type="submit">{{ messages.get("admin-users-search-button") }}</button></p>
-</form>
+<h2 class="h4 mb-3">{{ messages.get("admin-users-title") }}</h2>
+<div class="card mb-4">
+  <div class="card-body">
+    <form method="get" action="{{ tenant }}/admin/users">
+      <div class="mb-3">
+        <label class="form-label" for="users-search-term">{{ messages.get("admin-users-search-label") }}</label>
+        <input type="text" class="form-control" id="users-search-term" name="q" value="{{ term }}" required>
+        <div class="form-text">{{ messages.get("admin-users-search-hint") }}</div>
+      </div>
+      <button type="submit" class="btn btn-primary"><i class="fa-solid fa-magnifying-glass me-2" aria-hidden="true"></i>{{ messages.get("admin-users-search-button") }}</button>
+    </form>
+  </div>
+</div>
 {% if let Some(user) = user %}
-<table>
-<tbody>
-<tr><th>{{ messages.get("admin-user-col-email") }}</th><td>{{ user.email }}</td></tr>
-<tr><th>{{ messages.get("admin-user-col-username") }}</th><td>{{ user.preferred_username.as_deref().unwrap_or("-") }}</td></tr>
-<tr><th>{{ messages.get("admin-user-col-id") }}</th><td><code>{{ user.id }}</code></td></tr>
-<tr><th>{{ messages.get("admin-user-col-status") }}</th><td>{{ user.status }}</td></tr>
-</tbody></table>
-<p><a href="{{ tenant }}/admin/users/{{ user.id }}/permissions">{{ messages.get("admin-user-manage-permissions") }}</a></p>
+<div class="card mb-3">
+  <div class="card-body">
+    <dl class="row mb-0">
+      <dt class="col-sm-3">{{ messages.get("admin-user-col-email") }}</dt><dd class="col-sm-9">{{ user.email }}</dd>
+      <dt class="col-sm-3">{{ messages.get("admin-user-col-username") }}</dt><dd class="col-sm-9">{{ user.preferred_username.as_deref().unwrap_or("-") }}</dd>
+      <dt class="col-sm-3">{{ messages.get("admin-user-col-id") }}</dt><dd class="col-sm-9"><code>{{ user.id }}</code></dd>
+      <dt class="col-sm-3">{{ messages.get("admin-user-col-status") }}</dt><dd class="col-sm-9">{{ user.status }}</dd>
+    </dl>
+  </div>
+</div>
+<a class="btn btn-outline-primary" href="{{ tenant }}/admin/users/{{ user.id }}/permissions"><i class="fa-solid fa-key me-2" aria-hidden="true"></i>{{ messages.get("admin-user-manage-permissions") }}</a>
 {% else if not_found %}
-<p>{{ messages.get("admin-users-search-none") }}</p>
+<p class="text-muted">{{ messages.get("admin-users-search-none") }}</p>
 {% endif %}
 {% endblock %}

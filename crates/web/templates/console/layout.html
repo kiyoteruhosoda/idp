@@ -1,23 +1,80 @@
 <!DOCTYPE html>
 <html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/assets/app.css"><title>{{ messages.get("admin-console-title") }}</title></head>
-<body>
-{% if let Some(uid) = admin %}
-<header class="admin-header">
-<a class="admin-title" href="{{ tenant }}/admin">{{ messages.get("admin-console-title") }}</a>
-<a class="admin-profile" href="{{ tenant }}/settings" aria-label="{{ messages.get("admin-profile-settings") }}">
-<span class="admin-profile__icon" aria-hidden="true">👤</span>
-<span class="admin-profile__body"><span class="admin-profile__label">{{ messages.get("admin-signed-in-as") }}</span><span class="admin-profile__name">{{ uid }}</span></span>
-</a>
-<form method="post" action="{{ tenant }}/admin/logout" class="admin-logout"><button type="submit">{{ messages.get("admin-logout") }}</button></form>
-</header>
-{% else %}
-<header class="admin-header"><a class="admin-title" href="{{ tenant }}/admin">{{ messages.get("admin-console-title") }}</a></header>
-{% endif %}
-<main>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/assets/vendor/bootstrap.min.css">
+<link rel="stylesheet" href="/assets/vendor/fontawesome/css/all.min.css">
+<link rel="stylesheet" href="/assets/app.css">
+<title>{{ messages.get("admin-console-title") }}</title>
+</head>
+<body class="d-flex flex-column min-vh-100">
+<nav class="navbar bg-light border-bottom">
+  <div class="container-fluid">
+    <div class="d-flex align-items-center">
+      {% if admin.is_some() %}
+      <button type="button" class="btn btn-outline-secondary btn-sm me-2 d-md-none" data-bs-toggle="offcanvas" data-bs-target="#console-sidebar" aria-controls="console-sidebar" aria-label="Toggle navigation"><i class="fa-solid fa-bars" aria-hidden="true"></i></button>
+      {% endif %}
+      <a class="navbar-brand" href="{{ tenant }}/admin">{{ messages.get("admin-console-title") }}</a>
+    </div>
+    {% if let Some(uid) = admin %}
+    <div class="d-flex align-items-center">
+      <div class="dropdown">
+        <button type="button" class="btn btn-link nav-link dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false"><i class="fa-solid fa-user me-1" aria-hidden="true"></i>{{ uid }}</button>
+        <ul class="dropdown-menu dropdown-menu-end">
+          <li><span class="dropdown-header">{{ messages.get("admin-signed-in-as") }} {{ uid }}</span></li>
+          <li><a class="dropdown-item" href="{{ tenant }}/settings">{{ messages.get("admin-profile-settings") }}</a></li>
+          <li><hr class="dropdown-divider"></li>
+          <li>
+            <form method="post" action="{{ tenant }}/admin/logout">
+              <button type="submit" class="dropdown-item">{{ messages.get("admin-logout") }}</button>
+            </form>
+          </li>
+        </ul>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</nav>
+<div class="d-flex flex-grow-1">
+  {% if admin.is_some() %}
+  <div class="offcanvas-md offcanvas-start bg-light border-end app-sidebar" tabindex="-1" id="console-sidebar" aria-labelledby="console-sidebar-title">
+    <div class="offcanvas-header d-md-none">
+      <h5 class="offcanvas-title" id="console-sidebar-title">{{ messages.get("admin-console-title") }}</h5>
+      <button type="button" class="btn-close" data-bs-dismiss="offcanvas" data-bs-target="#console-sidebar" aria-label="Close"></button>
+    </div>
+    <div class="offcanvas-body p-3 d-md-flex flex-column">
+      <nav class="nav flex-column">
+        <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin"><i class="fa-solid fa-house me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-home") }}</span></a>
+
+        <span class="text-muted text-uppercase fw-bold px-2 mt-3 mb-1 small sidebar-category-header">{{ messages.get("admin-home-group-operations") }}</span>
+        <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/status"><i class="fa-solid fa-heart-pulse me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-status") }}</span></a>
+        <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/audit-logs"><i class="fa-solid fa-file-lines me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-audit") }}</span></a>
+
+        <span class="text-muted text-uppercase fw-bold px-2 mt-3 mb-1 small sidebar-category-header">{{ messages.get("admin-home-group-access") }}</span>
+        <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/users"><i class="fa-solid fa-users me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-permissions") }}</span></a>
+        <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/users/new"><i class="fa-solid fa-user-plus me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-users-new") }}</span></a>
+        <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/members"><i class="fa-solid fa-address-book me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-members") }}</span></a>
+        <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/invitations"><i class="fa-solid fa-envelope me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-invitations") }}</span></a>
+
+        <span class="text-muted text-uppercase fw-bold px-2 mt-3 mb-1 small sidebar-category-header">{{ messages.get("admin-home-group-integration") }}</span>
+        <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/clients"><i class="fa-solid fa-cubes me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-clients") }}</span></a>
+        <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/signing-keys"><i class="fa-solid fa-key me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-signing-keys") }}</span></a>
+        <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/saml"><i class="fa-solid fa-right-left me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-saml") }}</span></a>
+
+        <span class="text-muted text-uppercase fw-bold px-2 mt-3 mb-1 small sidebar-category-header">{{ messages.get("admin-home-group-settings") }}</span>
+        <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/settings"><i class="fa-solid fa-gear me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-settings") }}</span></a>
+        <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/tenants"><i class="fa-solid fa-building me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-tenants") }}</span></a>
+      </nav>
+    </div>
+  </div>
+  {% endif %}
+  <main class="flex-grow-1 overflow-auto p-4">
 {% block content %}{% endblock %}
-</main>
+  </main>
+</div>
 {% include "footer.html" %}
+<script src="/assets/vendor/bootstrap.bundle.min.js"></script>
 {% include "react_bootstrap.html" %}
 </body>
 </html>

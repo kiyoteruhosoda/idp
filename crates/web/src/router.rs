@@ -9,7 +9,7 @@ use crate::handlers::{
     admin_saml_console, admin_settings, admin_signing_keys_console, admin_status_console,
     admin_tenants_console, admin_users_console, consent, health, invitation_accept, login,
     mfa_totp, passkey, password_change, password_reset, react_assets, stylesheet, user_settings,
-    verify_email,
+    vendor_assets, verify_email,
 };
 use crate::security_headers::add_security_headers;
 use crate::state::WebState;
@@ -187,6 +187,34 @@ pub fn build(state: WebState) -> Router {
         .route("/readyz", get(health::readiness))
         .route("/version", get(health::version))
         .route("/assets/app.css", get(stylesheet::app_css))
+        .route(
+            "/assets/vendor/bootstrap.min.css",
+            get(vendor_assets::bootstrap_css),
+        )
+        .route(
+            "/assets/vendor/bootstrap.bundle.min.js",
+            get(vendor_assets::bootstrap_js),
+        )
+        .route(
+            "/assets/vendor/fontawesome/css/all.min.css",
+            get(vendor_assets::fontawesome_css),
+        )
+        .route(
+            "/assets/vendor/fontawesome/webfonts/fa-solid-900.woff2",
+            get(vendor_assets::fa_solid_woff2),
+        )
+        .route(
+            "/assets/vendor/fontawesome/webfonts/fa-regular-400.woff2",
+            get(vendor_assets::fa_regular_woff2),
+        )
+        .route(
+            "/assets/vendor/fontawesome/webfonts/fa-brands-400.woff2",
+            get(vendor_assets::fa_brands_woff2),
+        )
+        .route(
+            "/assets/vendor/fontawesome/webfonts/fa-v4compatibility.woff2",
+            get(vendor_assets::fa_v4compatibility_woff2),
+        )
         .route("/assets/react/app.js", get(react_assets::app_js))
         .route("/assets/react/app.js.map", get(react_assets::app_js_map))
         .nest("/{tenant_id}", tenant_scoped)

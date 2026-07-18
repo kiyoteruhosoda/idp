@@ -1,13 +1,19 @@
 {% extends "console/layout.html" %}
 {% block content %}
-<h2>{{ messages.get("admin-invitations-created-title") }}</h2>
-<p class="secret-warning">{{ messages.get("admin-invitations-created-warning") }}</p>
+<h2 class="h4 mb-3">{{ messages.get("admin-invitations-created-title") }}</h2>
+<div class="alert alert-warning secret-warning" role="alert"><i class="fa-solid fa-triangle-exclamation me-2" aria-hidden="true"></i>{{ messages.get("admin-invitations-created-warning") }}</div>
 {% if email_sent %}
-<p>{{ messages.get("admin-invitations-email-sent") }}: {{ invitee_email }}</p>
+<div class="alert alert-success" role="status">{{ messages.get("admin-invitations-email-sent") }}: {{ invitee_email }}</div>
 {% else %}
-<p class="secret-warning">{{ messages.get("admin-invitations-email-not-sent") }}</p>
+<div class="alert alert-warning secret-warning" role="alert">{{ messages.get("admin-invitations-email-not-sent") }}</div>
 {% endif %}
-<p>{{ messages.get("admin-invitations-token-label") }}: <code>{{ token }}</code></p>
-<p>{{ messages.get("admin-invitations-expires-label") }}: {{ expires_at }}</p>
-<p><a href="{{ tenant }}/admin/members">{{ messages.get("admin-nav-members") }}</a></p>
+<div class="card mb-3">
+  <div class="card-body">
+    <dl class="row mb-0">
+      <dt class="col-sm-3">{{ messages.get("admin-invitations-token-label") }}</dt><dd class="col-sm-9"><code>{{ token }}</code></dd>
+      <dt class="col-sm-3">{{ messages.get("admin-invitations-expires-label") }}</dt><dd class="col-sm-9">{{ expires_at }}</dd>
+    </dl>
+  </div>
+</div>
+<a class="btn btn-outline-secondary" href="{{ tenant }}/admin/members">{{ messages.get("admin-nav-members") }}</a>
 {% endblock %}

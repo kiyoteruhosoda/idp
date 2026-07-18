@@ -1,16 +1,23 @@
 {% extends "console/layout.html" %}
 {% block content %}
-<h2>{{ messages.get("admin-clients-title") }}</h2>
-<p><a href="{{ tenant }}/admin/clients/new">{{ messages.get("admin-clients-new") }}</a></p>
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h2 class="h4 mb-0">{{ messages.get("admin-clients-title") }}</h2>
+  <a class="btn btn-primary" href="{{ tenant }}/admin/clients/new"><i class="fa-solid fa-plus me-2" aria-hidden="true"></i>{{ messages.get("admin-clients-new") }}</a>
+</div>
 {% if clients.is_empty() %}
-<p>{{ messages.get("admin-clients-none") }}</p>
+<p class="text-muted">{{ messages.get("admin-clients-none") }}</p>
 {% else %}
-<table>
-<thead><tr><th>{{ messages.get("admin-client-col-name") }}</th><th>{{ messages.get("admin-client-col-id") }}</th><th>{{ messages.get("admin-client-col-type") }}</th><th>{{ messages.get("admin-client-col-status") }}</th><th>{{ messages.get("admin-client-col-scopes") }}</th></tr></thead>
-<tbody>
-{% for c in clients %}
-<tr><td><a href="{{ tenant }}/admin/clients/{{ c.client_id }}">{{ c.app_name }}</a></td><td><code>{{ c.client_id }}</code></td><td>{{ c.client_type }}</td><td>{{ c.client_status }}</td><td>{{ c.scopes.join(" ") }}</td></tr>
-{% endfor %}
-</tbody></table>
+<div class="table-responsive">
+  <table class="table table-hover align-middle">
+    <thead>
+      <tr><th>{{ messages.get("admin-client-col-name") }}</th><th>{{ messages.get("admin-client-col-id") }}</th><th>{{ messages.get("admin-client-col-type") }}</th><th>{{ messages.get("admin-client-col-status") }}</th><th>{{ messages.get("admin-client-col-scopes") }}</th></tr>
+    </thead>
+    <tbody>
+      {% for c in clients %}
+      <tr><td><a class="text-decoration-none" href="{{ tenant }}/admin/clients/{{ c.client_id }}">{{ c.app_name }}</a></td><td><code>{{ c.client_id }}</code></td><td>{{ c.client_type }}</td><td>{% if c.client_status == "ACTIVE" %}<span class="badge text-bg-success">{{ c.client_status }}</span>{% else %}<span class="badge text-bg-secondary">{{ c.client_status }}</span>{% endif %}</td><td>{{ c.scopes.join(" ") }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
 {% endif %}
 {% endblock %}

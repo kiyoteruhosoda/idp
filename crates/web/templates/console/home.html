@@ -1,49 +1,57 @@
 {% extends "console/layout.html" %}
 {% block content %}
-<section class="console-hero">
-  <p class="eyebrow">{{ messages.get("admin-console-title") }}</p>
-  <h1>{{ messages.get("admin-home-heading") }}</h1>
-  <p>{{ messages.get("admin-home-intro") }}</p>
-</section>
+<div class="mb-4">
+  <p class="text-muted text-uppercase fw-bold small mb-1">{{ messages.get("admin-console-title") }}</p>
+  <h1 class="h3 mb-1">{{ messages.get("admin-home-heading") }}</h1>
+  <p class="text-muted mb-0">{{ messages.get("admin-home-intro") }}</p>
+</div>
 
-<div class="admin-section-groups" aria-label="{{ messages.get("admin-home-groups-label") }}">
-  <section class="admin-section-group">
-    <h2>{{ messages.get("admin-home-group-operations") }}</h2>
-    <p>{{ messages.get("admin-home-group-operations-desc") }}</p>
-    <ul class="admin-sections">
-      <li><a href="{{ tenant }}/admin/status"><span>{{ messages.get("admin-nav-status") }}</span><small>{{ messages.get("admin-nav-status-desc") }}</small></a></li>
-      <li><a href="{{ tenant }}/admin/audit-logs"><span>{{ messages.get("admin-nav-audit") }}</span><small>{{ messages.get("admin-nav-audit-desc") }}</small></a></li>
-    </ul>
-  </section>
+<div class="row g-3" aria-label="{{ messages.get("admin-home-groups-label") }}">
+  <div class="col-md-6">
+    <div class="card h-100">
+      <div class="card-header d-flex align-items-center"><i class="fa-solid fa-heart-pulse me-2" aria-hidden="true"></i>{{ messages.get("admin-home-group-operations") }}</div>
+      <div class="card-body pb-0"><p class="text-muted small">{{ messages.get("admin-home-group-operations-desc") }}</p></div>
+      <div class="list-group list-group-flush">
+        <a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/status"><div class="fw-semibold">{{ messages.get("admin-nav-status") }}</div><small class="text-muted">{{ messages.get("admin-nav-status-desc") }}</small></a>
+        <a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/audit-logs"><div class="fw-semibold">{{ messages.get("admin-nav-audit") }}</div><small class="text-muted">{{ messages.get("admin-nav-audit-desc") }}</small></a>
+      </div>
+    </div>
+  </div>
 
-  <section class="admin-section-group">
-    <h2>{{ messages.get("admin-home-group-access") }}</h2>
-    <p>{{ messages.get("admin-home-group-access-desc") }}</p>
-    <ul class="admin-sections">
-      <li><a href="{{ tenant }}/admin/users"><span>{{ messages.get("admin-nav-permissions") }}</span><small>{{ messages.get("admin-nav-permissions-desc") }}</small></a></li>
-      <li><a href="{{ tenant }}/admin/users/new"><span>{{ messages.get("admin-nav-users-new") }}</span><small>{{ messages.get("admin-nav-users-new-desc") }}</small></a></li>
-      <li><a href="{{ tenant }}/admin/members"><span>{{ messages.get("admin-nav-members") }}</span><small>{{ messages.get("admin-nav-members-desc") }}</small></a></li>
-      <li><a href="{{ tenant }}/admin/invitations"><span>{{ messages.get("admin-nav-invitations") }}</span><small>{{ messages.get("admin-nav-invitations-desc") }}</small></a></li>
-    </ul>
-  </section>
+  <div class="col-md-6">
+    <div class="card h-100">
+      <div class="card-header d-flex align-items-center"><i class="fa-solid fa-users me-2" aria-hidden="true"></i>{{ messages.get("admin-home-group-access") }}</div>
+      <div class="card-body pb-0"><p class="text-muted small">{{ messages.get("admin-home-group-access-desc") }}</p></div>
+      <div class="list-group list-group-flush">
+        <a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/users"><div class="fw-semibold">{{ messages.get("admin-nav-permissions") }}</div><small class="text-muted">{{ messages.get("admin-nav-permissions-desc") }}</small></a>
+        <a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/users/new"><div class="fw-semibold">{{ messages.get("admin-nav-users-new") }}</div><small class="text-muted">{{ messages.get("admin-nav-users-new-desc") }}</small></a>
+        <a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/members"><div class="fw-semibold">{{ messages.get("admin-nav-members") }}</div><small class="text-muted">{{ messages.get("admin-nav-members-desc") }}</small></a>
+        <a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/invitations"><div class="fw-semibold">{{ messages.get("admin-nav-invitations") }}</div><small class="text-muted">{{ messages.get("admin-nav-invitations-desc") }}</small></a>
+      </div>
+    </div>
+  </div>
 
-  <section class="admin-section-group">
-    <h2>{{ messages.get("admin-home-group-integration") }}</h2>
-    <p>{{ messages.get("admin-home-group-integration-desc") }}</p>
-    <ul class="admin-sections">
-      <li><a href="{{ tenant }}/admin/clients"><span>{{ messages.get("admin-nav-clients") }}</span><small>{{ messages.get("admin-nav-clients-desc") }}</small></a></li>
-      <li><a href="{{ tenant }}/admin/signing-keys"><span>{{ messages.get("admin-nav-signing-keys") }}</span><small>{{ messages.get("admin-nav-signing-keys-desc") }}</small></a></li>
-      <li><a href="{{ tenant }}/admin/saml"><span>{{ messages.get("admin-nav-saml") }}</span><small>{{ messages.get("admin-nav-saml-desc") }}</small></a></li>
-    </ul>
-  </section>
+  <div class="col-md-6">
+    <div class="card h-100">
+      <div class="card-header d-flex align-items-center"><i class="fa-solid fa-cubes me-2" aria-hidden="true"></i>{{ messages.get("admin-home-group-integration") }}</div>
+      <div class="card-body pb-0"><p class="text-muted small">{{ messages.get("admin-home-group-integration-desc") }}</p></div>
+      <div class="list-group list-group-flush">
+        <a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/clients"><div class="fw-semibold">{{ messages.get("admin-nav-clients") }}</div><small class="text-muted">{{ messages.get("admin-nav-clients-desc") }}</small></a>
+        <a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/signing-keys"><div class="fw-semibold">{{ messages.get("admin-nav-signing-keys") }}</div><small class="text-muted">{{ messages.get("admin-nav-signing-keys-desc") }}</small></a>
+        <a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/saml"><div class="fw-semibold">{{ messages.get("admin-nav-saml") }}</div><small class="text-muted">{{ messages.get("admin-nav-saml-desc") }}</small></a>
+      </div>
+    </div>
+  </div>
 
-  <section class="admin-section-group">
-    <h2>{{ messages.get("admin-home-group-settings") }}</h2>
-    <p>{{ messages.get("admin-home-group-settings-desc") }}</p>
-    <ul class="admin-sections">
-      <li><a href="{{ tenant }}/admin/settings"><span>{{ messages.get("admin-nav-settings") }}</span><small>{{ messages.get("admin-nav-settings-desc") }}</small></a></li>
-      <li><a href="{{ tenant }}/admin/tenants"><span>{{ messages.get("admin-nav-tenants") }}</span><small>{{ messages.get("admin-nav-tenants-desc") }}</small></a></li>
-    </ul>
-  </section>
+  <div class="col-md-6">
+    <div class="card h-100">
+      <div class="card-header d-flex align-items-center"><i class="fa-solid fa-gear me-2" aria-hidden="true"></i>{{ messages.get("admin-home-group-settings") }}</div>
+      <div class="card-body pb-0"><p class="text-muted small">{{ messages.get("admin-home-group-settings-desc") }}</p></div>
+      <div class="list-group list-group-flush">
+        <a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/settings"><div class="fw-semibold">{{ messages.get("admin-nav-settings") }}</div><small class="text-muted">{{ messages.get("admin-nav-settings-desc") }}</small></a>
+        <a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/tenants"><div class="fw-semibold">{{ messages.get("admin-nav-tenants") }}</div><small class="text-muted">{{ messages.get("admin-nav-tenants-desc") }}</small></a>
+      </div>
+    </div>
+  </div>
 </div>
 {% endblock %}

@@ -1,31 +1,53 @@
 {% extends "console/layout.html" %}
 {% block content %}
-<h2>{{ messages.get("admin-users-title") }}</h2>
-{% if let Some(key) = error_key %}<p class="error" role="alert">{{ messages.get(key) }}</p>{% endif %}
-<dl>
-<dt>{{ messages.get("admin-user-col-email") }}</dt><dd>{{ user.email }}</dd>
-<dt>{{ messages.get("admin-user-col-username") }}</dt><dd>{{ user.preferred_username.as_deref().unwrap_or("-") }}</dd>
-<dt>{{ messages.get("admin-user-col-id") }}</dt><dd><code>{{ user.id }}</code></dd>
-<dt>{{ messages.get("admin-user-col-status") }}</dt><dd>{{ user.status }}</dd>
-</dl>
-<h3>{{ messages.get("admin-permissions-current") }}</h3>
+<h2 class="h4 mb-3">{{ messages.get("admin-users-title") }}</h2>
+{% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
+<div class="card mb-4">
+  <div class="card-body">
+    <dl class="row mb-0">
+      <dt class="col-sm-3">{{ messages.get("admin-user-col-email") }}</dt><dd class="col-sm-9">{{ user.email }}</dd>
+      <dt class="col-sm-3">{{ messages.get("admin-user-col-username") }}</dt><dd class="col-sm-9">{{ user.preferred_username.as_deref().unwrap_or("-") }}</dd>
+      <dt class="col-sm-3">{{ messages.get("admin-user-col-id") }}</dt><dd class="col-sm-9"><code>{{ user.id }}</code></dd>
+      <dt class="col-sm-3">{{ messages.get("admin-user-col-status") }}</dt><dd class="col-sm-9">{{ user.status }}</dd>
+    </dl>
+  </div>
+</div>
+<h3 class="h5 mb-3">{{ messages.get("admin-permissions-current") }}</h3>
 {% if codes.is_empty() %}
-<p>{{ messages.get("admin-permissions-none") }}</p>
+<p class="text-muted">{{ messages.get("admin-permissions-none") }}</p>
 {% else %}
-<table>
-<tbody>
-{% for code in codes %}
-<tr><td><code>{{ code }}</code></td><td><form method="post" action="{{ tenant }}/admin/users/{{ user.id }}/permissions/revoke"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="permission_code" value="{{ code }}"><button type="submit">{{ messages.get("admin-permissions-revoke-button") }}</button></form></td></tr>
-{% endfor %}
-</tbody></table>
+<div class="table-responsive mb-4">
+  <table class="table table-hover align-middle">
+    <tbody>
+      {% for code in codes %}
+      <tr>
+        <td><code>{{ code }}</code></td>
+        <td class="text-end">
+          <form method="post" action="{{ tenant }}/admin/users/{{ user.id }}/permissions/revoke" class="d-inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}">
+            <input type="hidden" name="permission_code" value="{{ code }}">
+            <button type="submit" class="btn btn-outline-danger btn-sm">{{ messages.get("admin-permissions-revoke-button") }}</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
 {% endif %}
-<h3>{{ messages.get("admin-permissions-grant-title") }}</h3>
-<form method="post" action="{{ tenant }}/admin/users/{{ user.id }}/permissions/grant">
-<input type="hidden" name="csrf_token" value="{{ csrf }}">
-<p><label>{{ messages.get("admin-permissions-grant-label") }}<br>
-<input type="text" name="permission_code" list="admin-permission-codes" required></label></p>
-<datalist id="admin-permission-codes">{% for code in available %}<option value="{{ code }}"></option>{% endfor %}</datalist>
-<p><button type="submit">{{ messages.get("admin-permissions-grant-button") }}</button></p>
-</form>
-<p><a href="{{ tenant }}/admin/users">{{ messages.get("admin-users-back") }}</a></p>
+<h3 class="h5 mb-3">{{ messages.get("admin-permissions-grant-title") }}</h3>
+<div class="card mb-4">
+  <div class="card-body">
+    <form method="post" action="{{ tenant }}/admin/users/{{ user.id }}/permissions/grant">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <div class="mb-3">
+        <label class="form-label" for="permission-code">{{ messages.get("admin-permissions-grant-label") }}</label>
+        <input type="text" class="form-control" id="permission-code" name="permission_code" list="admin-permission-codes" required>
+      </div>
+      <datalist id="admin-permission-codes">{% for code in available %}<option value="{{ code }}"></option>{% endfor %}</datalist>
+      <button type="submit" class="btn btn-primary">{{ messages.get("admin-permissions-grant-button") }}</button>
+    </form>
+  </div>
+</div>
+<a class="btn btn-outline-secondary" href="{{ tenant }}/admin/users">{{ messages.get("admin-users-back") }}</a>
 {% endblock %}

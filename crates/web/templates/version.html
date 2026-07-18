@@ -1,160 +1,26 @@
-<!DOCTYPE html>
-<html lang="ja">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>バージョン情報 | IdP Web</title>
-<style>
-:root {
-  color-scheme: light;
-  --dads-blue-900: #0017c1;
-  --dads-blue-700: #0031d8;
-  --dads-blue-100: #e8f1fe;
-  --dads-gray-900: #1a1a1c;
-  --dads-gray-700: #414143;
-  --dads-gray-500: #949497;
-  --dads-gray-100: #f1f1f4;
-  --dads-white: #ffffff;
-  --dads-focus: #ffdc00;
-  --dads-radius-card: 16px;
-  --dads-radius-chip: 999px;
-  --dads-shadow-card: 0 1px 2px rgb(0 0 0 / 8%), 0 8px 24px rgb(0 0 0 / 8%);
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-}
-* { box-sizing: border-box; }
-body {
-  margin: 0;
-  min-height: 100vh;
-  color: var(--dads-gray-900);
-  background: linear-gradient(180deg, var(--dads-blue-100) 0%, var(--dads-white) 52%);
-  line-height: 1.7;
-}
-a { color: var(--dads-blue-700); text-underline-offset: .18em; }
-a:focus-visible, button:focus-visible { outline: 4px solid var(--dads-focus); outline-offset: 3px; }
-.version-shell {
-  width: min(100% - 32px, 960px);
-  margin: 0 auto;
-  padding: 48px 0;
-}
-.version-breadcrumb {
-  margin: 0 0 24px;
-  color: var(--dads-gray-700);
-  font-size: .875rem;
-}
-.version-hero {
-  display: grid;
-  gap: 16px;
-  margin-bottom: 24px;
-}
-.version-chip {
-  display: inline-flex;
-  width: fit-content;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 12px;
-  border: 1px solid var(--dads-blue-700);
-  border-radius: var(--dads-radius-chip);
-  color: var(--dads-blue-900);
-  background: var(--dads-white);
-  font-weight: 700;
-  font-size: .875rem;
-}
-h1 {
-  margin: 0;
-  font-size: clamp(2rem, 4vw, 3rem);
-  line-height: 1.25;
-  letter-spacing: .02em;
-}
-.version-lead {
-  max-width: 44rem;
-  margin: 0;
-  color: var(--dads-gray-700);
-  font-size: 1.125rem;
-}
-.version-card {
-  border: 1px solid var(--dads-gray-500);
-  border-radius: var(--dads-radius-card);
-  background: var(--dads-white);
-  box-shadow: var(--dads-shadow-card);
-  overflow: hidden;
-}
-.version-card__header {
-  padding: 24px 24px 16px;
-  border-bottom: 1px solid var(--dads-gray-100);
-}
-.version-card__title {
-  margin: 0;
-  font-size: 1.5rem;
-  line-height: 1.4;
-}
-.version-data {
-  display: grid;
-  margin: 0;
-}
-.version-row {
-  display: grid;
-  grid-template-columns: minmax(12rem, 28%) 1fr;
-  gap: 16px;
-  padding: 20px 24px;
-  border-top: 1px solid var(--dads-gray-100);
-}
-.version-row:first-child { border-top: 0; }
-.version-row dt {
-  color: var(--dads-gray-700);
-  font-weight: 700;
-}
-.version-row dd { margin: 0; min-width: 0; }
-.version-code {
-  display: inline-block;
-  max-width: 100%;
-  padding: 4px 8px;
-  border-radius: 8px;
-  background: var(--dads-gray-100);
-  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
-  overflow-wrap: anywhere;
-}
-.version-note {
-  margin: 24px 0 0;
-  padding: 16px 20px;
-  border-left: 6px solid var(--dads-blue-700);
-  background: var(--dads-blue-100);
-}
-.version-note p { margin: 0; }
-@media (max-width: 640px) {
-  .version-shell { width: min(100% - 24px, 960px); padding: 32px 0; }
-  .version-row { grid-template-columns: 1fr; gap: 4px; padding: 16px; }
-  .version-card__header { padding: 20px 16px 12px; }
-}
-</style>
-</head>
-<body>
-<main class="version-shell">
-  <p class="version-breadcrumb"><a href="/">ホーム</a> / バージョン情報</p>
-  <section class="version-hero" aria-labelledby="version-title">
-    <span class="version-chip">稼働中のビルド</span>
-    <h1 id="version-title">バージョン情報</h1>
-    <p class="version-lead">デプロイ済みアーティファクトを識別できるよう、ビルド時に埋め込まれたパッケージ版と Git 版を表示します。</p>
-  </section>
+{% extends "page.html" %}
+{% block title %}バージョン情報 | IdP Web{% endblock %}
+{% block column %}col-lg-8 mx-auto{% endblock %}
+{% block content %}
+<div class="mb-4">
+  <span class="badge rounded-pill text-bg-primary mb-2">稼働中のビルド</span>
+  <h1 class="h3 mb-1" id="version-title">バージョン情報</h1>
+  <p class="text-muted mb-0">デプロイ済みアーティファクトを識別できるよう、ビルド時に埋め込まれたパッケージ版と Git 版を表示します。</p>
+</div>
 
-  <section class="version-card" aria-labelledby="version-card-title">
-    <div class="version-card__header">
-      <h2 class="version-card__title" id="version-card-title">IdP Web</h2>
-    </div>
-    <dl class="version-data">
-      <div class="version-row">
-        <dt>Package version</dt>
-        <dd><code class="version-code">{{ info.package_version }}</code></dd>
-      </div>
-      <div class="version-row">
-        <dt>Git version</dt>
-        <dd><code class="version-code">{{ info.git_version }}</code></dd>
-      </div>
+<div class="card mb-4" aria-labelledby="version-card-title">
+  <div class="card-header" id="version-card-title">IdP Web</div>
+  <div class="card-body p-0">
+    <dl class="row mb-0 py-2">
+      <dt class="col-sm-4 px-4 py-2">Package version</dt>
+      <dd class="col-sm-8 px-4 py-2 mb-0"><code>{{ info.package_version }}</code></dd>
+      <dt class="col-sm-4 px-4 py-2 border-top">Git version</dt>
+      <dd class="col-sm-8 px-4 py-2 mb-0 border-top"><code>{{ info.git_version }}</code></dd>
     </dl>
-  </section>
+  </div>
+</div>
 
-  <aside class="version-note" aria-label="補足">
-    <p>Git version はビルド時の `git describe --always --dirty --tags` に基づきます。</p>
-  </aside>
-</main>
-</body>
-</html>
+<div class="alert alert-light border" aria-label="補足">
+  <p class="mb-0 small text-muted">Git version はビルド時の `git describe --always --dirty --tags` に基づきます。</p>
+</div>
+{% endblock %}

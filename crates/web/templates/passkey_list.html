@@ -1,30 +1,33 @@
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="/assets/app.css">
-<title>{{ messages.get("passkey-list-title") }}</title>
-</head>
-<body>
-<h1>{{ messages.get("passkey-list-title") }}</h1>
-{% if credentials.is_empty() %}
-  <p>{{ messages.get("passkey-list-empty") }}</p>
-{% else %}
-  <ul>
-  {% for cred in credentials %}
-    <li>
-      <strong>{{ cred.name }}</strong> — {{ cred.created_at }}
-      {% if let Some(last) = cred.last_used_at %}({{ messages.get("passkey-last-used") }}: {{ last }}){% endif %}
-      <form method="post" action="{{ tenant_prefix }}/account/passkey/delete" style="display:inline">
-        <input type="hidden" name="credential_id" value="{{ cred.id }}">
-        <button type="submit" onclick="return confirm('{{ messages.get("passkey-delete-confirm") }}')">{{ messages.get("passkey-delete-button") }}</button>
-      </form>
-    </li>
-  {% endfor %}
-  </ul>
-{% endif %}
-<p><a href="{{ tenant_prefix }}/account/passkey/register">{{ messages.get("passkey-register-button") }}</a></p>
-{% include "react_bootstrap.html" %}
-</body>
-</html>
+{% extends "page.html" %}
+{% block title %}{{ messages.get("passkey-list-title") }}{% endblock %}
+{% block column %}col-md-8 col-lg-6 mx-auto{% endblock %}
+{% block content %}
+<div class="card border-0 bg-transparent">
+  <div class="card-header text-center py-3 border-0 bg-transparent">
+    <h1 class="h4 mb-0">{{ messages.get("passkey-list-title") }}</h1>
+  </div>
+  <div class="card-body p-4">
+    {% if credentials.is_empty() %}
+    <p class="text-muted text-center">{{ messages.get("passkey-list-empty") }}</p>
+    {% else %}
+    <ul class="list-group mb-3">
+      {% for cred in credentials %}
+      <li class="list-group-item d-flex justify-content-between align-items-center">
+        <div>
+          <i class="fa-solid fa-key me-2 text-muted" aria-hidden="true"></i><strong>{{ cred.name }}</strong>
+          <div class="text-muted small">{{ cred.created_at }}{% if let Some(last) = cred.last_used_at %}（{{ messages.get("passkey-last-used") }}: {{ last }}）{% endif %}</div>
+        </div>
+        <form method="post" action="{{ tenant_prefix }}/account/passkey/delete" class="d-inline">
+          <input type="hidden" name="credential_id" value="{{ cred.id }}">
+          <button type="submit" class="btn btn-outline-danger btn-sm" onclick="return confirm('{{ messages.get("passkey-delete-confirm") }}')">{{ messages.get("passkey-delete-button") }}</button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    <div class="d-grid">
+      <a class="btn btn-primary" href="{{ tenant_prefix }}/account/passkey/register"><i class="fa-solid fa-plus me-2" aria-hidden="true"></i>{{ messages.get("passkey-register-button") }}</a>
+    </div>
+  </div>
+</div>
+{% endblock %}

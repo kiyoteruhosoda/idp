@@ -1,30 +1,37 @@
 {% extends "console/layout.html" %}
 {% block content %}
-<h2>{{ messages.get("admin-members-title") }}</h2>
-{% if let Some(key) = error_key %}<p class="error" role="alert">{{ messages.get(key) }}</p>{% endif %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h2 class="h4 mb-0">{{ messages.get("admin-members-title") }}</h2>
+  <a class="btn btn-primary" href="{{ tenant }}/admin/invitations"><i class="fa-solid fa-envelope me-2" aria-hidden="true"></i>{{ messages.get("admin-nav-invitations") }}</a>
+</div>
+{% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
 {% if members.is_empty() %}
-<p>{{ messages.get("admin-members-none") }}</p>
+<p class="text-muted">{{ messages.get("admin-members-none") }}</p>
 {% else %}
-<table>
-<thead><tr><th>{{ messages.get("admin-user-col-email") }}</th><th>{{ messages.get("admin-users-field-name") }}</th><th>{{ messages.get("admin-members-col-type") }}</th><th>{{ messages.get("admin-members-col-status") }}</th><th>{{ messages.get("admin-signing-keys-col-actions") }}</th></tr></thead>
-<tbody>
-{% for m in members %}
-<tr>
-<td>{{ m.email.as_deref().unwrap_or("-") }}</td>
-<td>{{ m.name.as_deref().unwrap_or("-") }}</td>
-<td>{{ m.membership_type }}</td>
-<td>{{ m.status }}</td>
-<td>
-{% if m.membership_type == "GUEST" %}
-<form method="post" action="{{ tenant }}/admin/members/{{ m.user_id }}/revoke" style="display:inline" onsubmit="return confirm('{{ messages.get("admin-members-revoke-confirm") }}')">
-<input type="hidden" name="csrf_token" value="{{ csrf }}">
-<button type="submit">{{ messages.get("admin-members-revoke-button") }}</button>
-</form>
+<div class="table-responsive">
+  <table class="table table-hover align-middle">
+    <thead>
+      <tr><th>{{ messages.get("admin-user-col-email") }}</th><th>{{ messages.get("admin-users-field-name") }}</th><th>{{ messages.get("admin-members-col-type") }}</th><th>{{ messages.get("admin-members-col-status") }}</th><th>{{ messages.get("admin-signing-keys-col-actions") }}</th></tr>
+    </thead>
+    <tbody>
+      {% for m in members %}
+      <tr>
+        <td>{{ m.email.as_deref().unwrap_or("-") }}</td>
+        <td>{{ m.name.as_deref().unwrap_or("-") }}</td>
+        <td>{% if m.membership_type == "GUEST" %}<span class="badge text-bg-info">{{ m.membership_type }}</span>{% else %}<span class="badge text-bg-secondary">{{ m.membership_type }}</span>{% endif %}</td>
+        <td>{{ m.status }}</td>
+        <td>
+          {% if m.membership_type == "GUEST" %}
+          <form method="post" action="{{ tenant }}/admin/members/{{ m.user_id }}/revoke" class="d-inline" onsubmit="return confirm('{{ messages.get("admin-members-revoke-confirm") }}')">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}">
+            <button type="submit" class="btn btn-outline-danger btn-sm">{{ messages.get("admin-members-revoke-button") }}</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
 {% endif %}
-</td>
-</tr>
-{% endfor %}
-</tbody></table>
-{% endif %}
-<p><a href="{{ tenant }}/admin/invitations">{{ messages.get("admin-nav-invitations") }}</a></p>
 {% endblock %}

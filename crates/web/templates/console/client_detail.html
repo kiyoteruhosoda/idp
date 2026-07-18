@@ -1,20 +1,30 @@
 {% extends "console/layout.html" %}
 {% block content %}
-<h2>{{ client.app_name }}</h2>
-<dl>
-<dt>{{ messages.get("admin-client-col-id") }}</dt><dd><code>{{ client.client_id }}</code></dd>
-<dt>{{ messages.get("admin-client-col-type") }}</dt><dd>{{ client.client_type }}</dd>
-<dt>{{ messages.get("admin-client-col-status") }}</dt><dd>{{ client.client_status }}</dd>
-<dt>{{ messages.get("admin-client-field-auth-method") }}</dt><dd>{{ client.token_endpoint_auth_method }}</dd>
-<dt>{{ messages.get("admin-client-field-pkce") }}</dt><dd>{% if client.require_pkce %}true{% else %}false{% endif %}</dd>
-<dt>{{ messages.get("admin-client-field-uris") }}</dt><dd>{% if client.redirect_uris.is_empty() %}-{% else %}<ul>{% for u in client.redirect_uris %}<li><code>{{ u }}</code></li>{% endfor %}</ul>{% endif %}</dd>
-<dt>{{ messages.get("admin-client-col-scopes") }}</dt><dd>{{ client.scopes.join(" ") }}</dd>
-<dt>{{ messages.get("admin-client-field-grants") }}</dt><dd>{{ client.grant_types.join(" ") }}</dd>
-<dt>{{ messages.get("admin-client-field-created") }}</dt><dd>{{ client.created_at }}</dd>
-<dt>{{ messages.get("admin-client-field-updated") }}</dt><dd>{{ client.updated_at }}</dd>
-</dl>
-<p><a href="{{ tenant }}/admin/clients/{{ client.client_id }}/edit">{{ messages.get("admin-client-edit") }}</a> | <a href="{{ tenant }}/admin/clients">{{ messages.get("admin-client-back") }}</a></p>
-{% if client.client_type == "confidential" %}
-<form method="post" action="{{ tenant }}/admin/clients/{{ client.client_id }}/rotate-secret"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit">{{ messages.get("admin-client-rotate-secret") }}</button></form>
-{% endif %}
+<h2 class="h4 mb-3">{{ client.app_name }}</h2>
+<div class="card mb-3">
+  <div class="card-body">
+    <dl class="row mb-0">
+      <dt class="col-sm-3">{{ messages.get("admin-client-col-id") }}</dt><dd class="col-sm-9"><code>{{ client.client_id }}</code></dd>
+      <dt class="col-sm-3">{{ messages.get("admin-client-col-type") }}</dt><dd class="col-sm-9">{{ client.client_type }}</dd>
+      <dt class="col-sm-3">{{ messages.get("admin-client-col-status") }}</dt><dd class="col-sm-9">{% if client.client_status == "ACTIVE" %}<span class="badge text-bg-success">{{ client.client_status }}</span>{% else %}<span class="badge text-bg-secondary">{{ client.client_status }}</span>{% endif %}</dd>
+      <dt class="col-sm-3">{{ messages.get("admin-client-field-auth-method") }}</dt><dd class="col-sm-9">{{ client.token_endpoint_auth_method }}</dd>
+      <dt class="col-sm-3">{{ messages.get("admin-client-field-pkce") }}</dt><dd class="col-sm-9">{% if client.require_pkce %}true{% else %}false{% endif %}</dd>
+      <dt class="col-sm-3">{{ messages.get("admin-client-field-uris") }}</dt><dd class="col-sm-9">{% if client.redirect_uris.is_empty() %}-{% else %}<ul class="list-unstyled mb-0">{% for u in client.redirect_uris %}<li><code>{{ u }}</code></li>{% endfor %}</ul>{% endif %}</dd>
+      <dt class="col-sm-3">{{ messages.get("admin-client-col-scopes") }}</dt><dd class="col-sm-9">{{ client.scopes.join(" ") }}</dd>
+      <dt class="col-sm-3">{{ messages.get("admin-client-field-grants") }}</dt><dd class="col-sm-9">{{ client.grant_types.join(" ") }}</dd>
+      <dt class="col-sm-3">{{ messages.get("admin-client-field-created") }}</dt><dd class="col-sm-9">{{ client.created_at }}</dd>
+      <dt class="col-sm-3">{{ messages.get("admin-client-field-updated") }}</dt><dd class="col-sm-9">{{ client.updated_at }}</dd>
+    </dl>
+  </div>
+</div>
+<div class="d-flex flex-wrap align-items-center gap-2">
+  <a class="btn btn-outline-primary" href="{{ tenant }}/admin/clients/{{ client.client_id }}/edit"><i class="fa-solid fa-pen me-2" aria-hidden="true"></i>{{ messages.get("admin-client-edit") }}</a>
+  {% if client.client_type == "confidential" %}
+  <form method="post" action="{{ tenant }}/admin/clients/{{ client.client_id }}/rotate-secret" class="d-inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <button type="submit" class="btn btn-outline-warning"><i class="fa-solid fa-rotate me-2" aria-hidden="true"></i>{{ messages.get("admin-client-rotate-secret") }}</button>
+  </form>
+  {% endif %}
+  <a class="btn btn-outline-secondary" href="{{ tenant }}/admin/clients">{{ messages.get("admin-client-back") }}</a>
+</div>
 {% endblock %}

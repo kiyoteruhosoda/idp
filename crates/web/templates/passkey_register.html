@@ -1,29 +1,37 @@
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="/assets/app.css">
-<title>{{ messages.get("passkey-register-title") }}</title>
-</head>
-<body>
-<h1>{{ messages.get("passkey-register-title") }}</h1>
-<p>{{ messages.get("passkey-register-intro") }}</p>
-{% if let Some(key) = error_key %}<p class="error" role="alert">{{ messages.get(key) }}</p>{% endif %}
+{% extends "page.html" %}
+{% block title %}{{ messages.get("passkey-register-title") }}{% endblock %}
+{% block column %}col-md-8 col-lg-6 mx-auto{% endblock %}
+{% block content %}
+<div class="card border-0 bg-transparent">
+  <div class="card-header text-center py-3 border-0 bg-transparent">
+    <h1 class="h4 mb-0">{{ messages.get("passkey-register-title") }}</h1>
+  </div>
+  <div class="card-body p-4">
+    <p class="text-muted">{{ messages.get("passkey-register-intro") }}</p>
+    {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
 
-<div id="step-begin">
-  <label>{{ messages.get("passkey-register-name-label") }}
-    <input type="text" id="passkey-name" value="" placeholder="{{ messages.get("passkey-register-name-placeholder") }}" autocomplete="off">
-  </label>
-  <button type="button" id="btn-register">{{ messages.get("passkey-register-button") }}</button>
-</div>
-<div id="step-success" style="display:none">
-  <p>{{ messages.get("passkey-register-success") }}</p>
-  <a href="{{ tenant_prefix }}/account/passkey">{{ messages.get("passkey-back-to-list") }}</a>
-</div>
-<div id="step-error" style="display:none">
-  <p class="error" role="alert" id="js-error-msg"></p>
-  <button type="button" id="btn-retry">{{ messages.get("passkey-retry") }}</button>
+    <div id="step-begin">
+      <div class="mb-3">
+        <label class="form-label" for="passkey-name">{{ messages.get("passkey-register-name-label") }}</label>
+        <input type="text" class="form-control" id="passkey-name" value="" placeholder="{{ messages.get("passkey-register-name-placeholder") }}" autocomplete="off">
+      </div>
+      <div class="d-grid">
+        <button type="button" class="btn btn-primary" id="btn-register"><i class="fa-solid fa-key me-2" aria-hidden="true"></i>{{ messages.get("passkey-register-button") }}</button>
+      </div>
+    </div>
+    <div id="step-success" style="display:none">
+      <div class="alert alert-success" role="status">{{ messages.get("passkey-register-success") }}</div>
+      <div class="text-center">
+        <a class="text-decoration-none" href="{{ tenant_prefix }}/account/passkey">{{ messages.get("passkey-back-to-list") }}</a>
+      </div>
+    </div>
+    <div id="step-error" style="display:none">
+      <div class="alert alert-danger" role="alert" id="js-error-msg"></div>
+      <div class="d-grid">
+        <button type="button" class="btn btn-outline-secondary" id="btn-retry">{{ messages.get("passkey-retry") }}</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -103,6 +111,4 @@
   });
 })();
 </script>
-{% include "react_bootstrap.html" %}
-</body>
-</html>
+{% endblock %}
