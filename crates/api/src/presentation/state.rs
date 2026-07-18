@@ -479,6 +479,7 @@ impl AppState {
             signing_keys.clone(),
             refresh_tokens,
             revoked_access_tokens,
+            users.clone(),
             hasher,
             clock.clone(),
             config.issuer().to_string(),

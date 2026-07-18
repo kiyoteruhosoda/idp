@@ -187,9 +187,13 @@ impl SystemSettingsService {
         if !value.is_empty() {
             match def.kind {
                 SettingKind::UnsignedInteger => {
-                    value.parse::<u64>().map_err(|_| {
+                    // `Config` 側の最小の消費型（`KEY_ROTATION_LEAD_DAYS` 等の u32）でも起動時に
+                    // 必ずパースできるよう、u32 の範囲で検証する（範囲外を保存すると再起動が
+                    // 構成エラーで失敗するため）。
+                    value.parse::<u32>().map_err(|_| {
                         DomainError::InvalidValue(format!(
-                            "setting {key} must be a non-negative integer"
+                            "setting {key} must be a non-negative integer (max {})",
+                            u32::MAX
                         ))
                     })?;
                 }

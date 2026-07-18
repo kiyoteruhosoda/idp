@@ -23,6 +23,12 @@
   → web、GET（OIDC RP-Initiated Logout）→ api にメソッドで振り分け。
 - **crates/web — フッタのバージョン表記に Git バージョンを併記**: `IdP Web v0.1.0 (git describe)`
   形式にした（ビルド時埋め込みが無い場合はパッケージ版のみ）。
+- **crates/core — `/introspect` が無効化・削除済み利用者のトークンを active と返す穴を塞いだ**:
+  access_token（JWT）・refresh_token の両経路で利用者の現在状態を確認し、非 ACTIVE・不存在は
+  `active: false` を返す（`/userinfo` と同じ判定。無効化・削除・パスワード再発行の即時反映）。
+- **crates/core — ランタイム設定の整数検証を u32 範囲に強化**: `KEY_ROTATION_LEAD_DAYS` 等の
+  u32 消費キーに範囲外の値（u32::MAX 超）を保存すると次回起動が構成エラーで失敗するため、
+  保存前に u32 でパース検証する。
 
 ## 2026-07-18（エンドユーザー・ポータルのログイン新設とテナント登録 UI 改善）
 
