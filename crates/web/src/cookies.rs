@@ -12,6 +12,10 @@ pub const AUTH_SESSION_COOKIE: &str = "auth_session_id";
 pub const SSO_SESSION_COOKIE: &str = "sso_session_id";
 /// 管理ログインフォームの CSRF 用 Cookie（GET で発行する推測不能な乱数。同期トークンの種）。
 pub const ADMIN_CSRF_COOKIE: &str = "admin_csrf_id";
+/// エンドユーザー・ポータルのログインフォーム CSRF 用 Cookie（`admin_csrf_id` と同じ仕組み・別名前空間）。
+pub const PORTAL_CSRF_COOKIE: &str = "portal_csrf_id";
+/// ポータルの TOTP 入力ステップで `mfa_ticket`（署名付き短命チケット）を保持する Cookie。
+pub const PORTAL_MFA_COOKIE: &str = "portal_mfa_ticket";
 /// 表示言語の選択を保持する Cookie（`ja` / `en`。MT15。決定チェーンの優先度3）。
 pub const LANG_COOKIE: &str = "lang";
 /// 言語 Cookie の保持期間（既定 1 年）。UI 設定のため長命にする。

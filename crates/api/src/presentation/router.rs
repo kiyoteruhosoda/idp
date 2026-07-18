@@ -33,6 +33,15 @@ pub fn build(state: AppState) -> Router {
             "/internal/authenticate/admin/change-password",
             post(internal_auth::admin_change_password),
         )
+        // エンドユーザー・ポータルの直接ログイン（クライアント非依存。TOTP 尊重）。
+        .route(
+            "/internal/authenticate/portal",
+            post(internal_auth::authenticate_portal),
+        )
+        .route(
+            "/internal/authenticate/portal/mfa",
+            post(internal_auth::authenticate_portal_mfa),
+        )
         .route(
             "/internal/change-password",
             post(internal_auth::change_password),

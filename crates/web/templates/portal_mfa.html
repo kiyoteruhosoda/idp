@@ -1,0 +1,22 @@
+{% extends "page.html" %}
+{% block title %}{{ messages.get("mfa-verify-title") }}{% endblock %}
+{% block content %}
+<div class="card border-0 bg-transparent">
+  <div class="card-header text-center py-3 border-0 bg-transparent">
+    <h1 class="h4 mb-0">{{ messages.get("mfa-verify-title") }}</h1>
+  </div>
+  <div class="card-body p-4">
+    {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
+    <div class="alert alert-info" role="status">{{ messages.get("mfa-verify-intro") }}</div>
+    <form method="post" action="{{ tenant_prefix }}/login/mfa">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <div class="mb-3">
+        <label class="form-label" for="totp_code">{{ messages.get("mfa-verify-code-label") }}</label>
+        <input id="totp_code" type="text" class="form-control form-control-lg text-center" name="totp_code" inputmode="numeric" pattern="[0-9]{6}"
+               maxlength="6" autocomplete="one-time-code" required placeholder="000000" autofocus>
+      </div>
+      <button type="submit" class="btn btn-primary w-100">{{ messages.get("mfa-verify-submit") }}</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

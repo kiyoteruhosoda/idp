@@ -1,46 +1,85 @@
 {% extends "console/layout.html" %}
 {% block content %}
 <section id="tenant-admin-root" data-react-surface="TenantRegistrationConsole">
-  <h2 class="h4 mb-1">{{ messages.get("admin-tenants-title") }}</h2>
-  <p class="text-muted">{{ messages.get("admin-tenants-intro") }}</p>
+  <div class="d-flex flex-wrap align-items-start justify-content-between gap-2 mb-3">
+    <div>
+      <h2 class="h4 mb-1">{{ messages.get("admin-tenants-title") }}</h2>
+      <p class="text-muted mb-0">{{ messages.get("admin-tenants-intro") }}</p>
+    </div>
+    <button class="btn btn-primary" type="button" data-bs-toggle="collapse" data-bs-target="#tenant-create-panel"
+            aria-expanded="{% if error_key.is_some() %}true{% else %}false{% endif %}" aria-controls="tenant-create-panel">
+      <i class="fa-solid fa-plus me-2" aria-hidden="true"></i>{{ messages.get("admin-tenants-add") }}
+    </button>
+  </div>
+
   {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
-  <div class="row g-3">
-    <div class="col-lg-4" data-component="TenantCreateForm">
-      <div class="card h-100">
-        <div class="card-header">{{ messages.get("admin-tenants-create-title") }}</div>
-        <div class="card-body">
-          <form method="post" action="{{ tenant }}/admin/tenants">
-            <input type="hidden" name="csrf_token" value="{{ csrf }}">
-            <div class="mb-3">
-              <label class="form-label" for="tenant-create-name">{{ messages.get("admin-tenants-name") }}</label>
-              <input class="form-control" id="tenant-create-name" name="name" required>
-            </div>
-            <div class="mb-3">
-              <label class="form-label" for="tenant-create-admin-email">{{ messages.get("admin-tenants-admin-email") }}</label>
-              <input type="email" class="form-control" id="tenant-create-admin-email" name="admin_email" required>
-            </div>
-            <button type="submit" class="btn btn-primary"><i class="fa-solid fa-plus me-2" aria-hidden="true"></i>{{ messages.get("admin-tenants-create") }}</button>
-          </form>
-        </div>
+
+  <div class="collapse {% if error_key.is_some() %}show{% endif %}" id="tenant-create-panel" data-component="TenantCreateForm">
+    <div class="card mb-4">
+      <div class="card-header d-flex align-items-center">
+        <i class="fa-solid fa-building-circle-arrow-right me-2" aria-hidden="true"></i>{{ messages.get("admin-tenants-create-title") }}
+      </div>
+      <div class="card-body">
+        <form method="post" action="{{ tenant }}/admin/tenants" class="row g-3">
+          <input type="hidden" name="csrf_token" value="{{ csrf }}">
+          <div class="col-md-6">
+            <label class="form-label" for="tenant-create-name">{{ messages.get("admin-tenants-name") }}</label>
+            <input class="form-control form-control-lg" id="tenant-create-name" name="name" autocomplete="off" required autofocus>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label" for="tenant-create-admin-email">{{ messages.get("admin-tenants-admin-email") }}</label>
+            <input type="email" class="form-control form-control-lg" id="tenant-create-admin-email" name="admin_email" autocomplete="off" required>
+          </div>
+          <div class="col-12 d-flex gap-2">
+            <button type="submit" class="btn btn-primary btn-lg"><i class="fa-solid fa-plus me-2" aria-hidden="true"></i>{{ messages.get("admin-tenants-create") }}</button>
+            <button type="button" class="btn btn-outline-secondary btn-lg" data-bs-toggle="collapse" data-bs-target="#tenant-create-panel">{{ messages.get("admin-tenants-add-close") }}</button>
+          </div>
+        </form>
       </div>
     </div>
-    <div class="col-lg-8" data-component="TenantList">
-      <div class="card h-100">
-        <div class="card-header">{{ messages.get("admin-tenants-list-title") }}</div>
-        <div class="card-body p-0">
-          <div class="table-responsive">
-            <table class="table table-hover align-middle mb-0">
-              <thead>
-                <tr><th>ID</th><th>{{ messages.get("admin-tenants-name") }}</th><th>Status</th><th>{{ messages.get("admin-tenants-self-registration") }}</th></tr>
-              </thead>
-              <tbody>
-                {% for t in tenants %}
-                <tr><td><code>{{ t.id }}</code></td><td>{{ t.name }}</td><td>{{ t.status }}</td><td>{% if t.self_registration_enabled %}<span class="badge text-bg-success">ON</span>{% else %}<span class="badge text-bg-secondary">OFF</span>{% endif %}</td></tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          </div>
-        </div>
+  </div>
+
+  <div class="card" data-component="TenantList">
+    <div class="card-header d-flex align-items-center justify-content-between">
+      <span>{{ messages.get("admin-tenants-list-title") }}</span>
+    </div>
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>{{ messages.get("admin-tenants-name") }}</th>
+              <th>Status</th>
+              <th>
+                {{ messages.get("admin-tenants-self-registration") }}
+                <i class="fa-solid fa-circle-question text-muted ms-1" aria-hidden="true" title="{{ messages.get("admin-tenants-self-registration-hint") }}"></i>
+              </th>
+              <th>{{ messages.get("admin-tenants-login") }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for t in tenants %}
+            <tr>
+              <td><code>{{ t.id }}</code></td>
+              <td>{{ t.name }}</td>
+              <td>{{ t.status }}</td>
+              <td>
+                {% if t.self_registration_enabled %}<span class="badge text-bg-success">{{ messages.get("admin-tenants-self-registration-on") }}</span>{% else %}<span class="badge text-bg-secondary">{{ messages.get("admin-tenants-self-registration-off") }}</span>{% endif %}
+              </td>
+              <td>
+                <div class="d-flex flex-wrap gap-2">
+                  <a class="btn btn-sm btn-outline-primary" href="/{{ t.id }}/login"><i class="fa-solid fa-right-to-bracket me-1" aria-hidden="true"></i>{{ messages.get("admin-tenants-login-user") }}</a>
+                  <a class="btn btn-sm btn-outline-secondary" href="/{{ t.id }}/admin/login"><i class="fa-solid fa-user-shield me-1" aria-hidden="true"></i>{{ messages.get("admin-tenants-login-admin") }}</a>
+                </div>
+              </td>
+            </tr>
+            {% endfor %}
+            {% if tenants.is_empty() %}
+            <tr><td colspan="5" class="text-center text-muted py-4">{{ messages.get("admin-tenants-list-empty") }}</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
       </div>
     </div>
   </div>

@@ -9,6 +9,13 @@
       <dt class="col-sm-3">{{ messages.get("admin-tenants-name") }}</dt><dd class="col-sm-9">{{ created.name }}</dd>
       <dt class="col-sm-3">{{ messages.get("admin-tenants-admin-user-id") }}</dt><dd class="col-sm-9"><code>{{ created.admin_user_id }}</code></dd>
       <dt class="col-sm-3">{{ messages.get("admin-tenants-generated-password") }}</dt><dd class="col-sm-9"><code>{{ created.generated_password }}</code></dd>
+      <dt class="col-sm-3">{{ messages.get("admin-tenants-login") }}</dt>
+      <dd class="col-sm-9">
+        <div class="d-flex flex-wrap gap-2">
+          <a class="btn btn-sm btn-outline-primary" href="/{{ created.id }}/login"><i class="fa-solid fa-right-to-bracket me-1" aria-hidden="true"></i>{{ messages.get("admin-tenants-login-user") }}</a>
+          <a class="btn btn-sm btn-outline-secondary" href="/{{ created.id }}/admin/login"><i class="fa-solid fa-user-shield me-1" aria-hidden="true"></i>{{ messages.get("admin-tenants-login-admin") }}</a>
+        </div>
+      </dd>
     </dl>
   </div>
 </div>

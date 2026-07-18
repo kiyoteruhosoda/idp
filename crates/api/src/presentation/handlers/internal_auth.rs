@@ -24,6 +24,9 @@ use crate::application::audit::RequestContext;
 use crate::application::change_password::{ChangePasswordCommand, ChangePasswordOutcome};
 use crate::application::login::{LoginCommand, LoginOutcome};
 use crate::application::password_reset::{RequestResetOutcome, ResetPasswordOutcome};
+use crate::application::portal_login::{
+    PortalLoginCommand, PortalLoginOutcome, PortalMfaCommand, PortalMfaOutcome,
+};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::require_internal_tenant;
@@ -40,7 +43,8 @@ use idp_contracts::auth::{
     InternalAuthenticateRequest, InternalAuthenticateResponse, InternalChangePasswordRequest,
     InternalChangePasswordResponse, InternalLogoutRequest, InternalPasswordResetCompleteRequest,
     InternalPasswordResetCompleteResponse, InternalPasswordResetRequestRequest,
-    InternalPasswordResetRequestResponse,
+    InternalPasswordResetRequestResponse, InternalPortalAuthenticateRequest,
+    InternalPortalAuthenticateResponse, InternalPortalMfaRequest, InternalPortalMfaResponse,
 };
 
 /// 内部サービス認証トークンを載せるヘッダ名（小文字。`HeaderMap` は大小無視で引ける）。
@@ -278,6 +282,105 @@ pub async fn authenticate_admin(
         AdminLoginOutcome::Internal(e) => {
             tracing::error!(error = %e, "internal admin authenticate failed with internal error");
             InternalAdminAuthenticateResponse::Internal
+        }
+    }))
+}
+
+/// エンドユーザー・ポータル認証（`POST /internal/authenticate/portal`）。CSRF は web 側で検証済み。
+/// 成功時は SSO セッション id を返す（code/redirect は無い）。TOTP 設定済みなら `mfa_ticket` を返す。
+pub async fn authenticate_portal(
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Json(req): Json<InternalPortalAuthenticateRequest>,
+) -> Result<Json<InternalPortalAuthenticateResponse>, Response> {
+    let ctx = RequestContext {
+        correlation_id: correlation.0,
+        ip_address: req.ip_address,
+        user_agent: req.user_agent,
+    };
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let outcome = state
+        .portal_login
+        .login(
+            tenant,
+            PortalLoginCommand {
+                username: req.username,
+                password: req.password,
+            },
+            &ctx,
+        )
+        .await;
+    let ttl = state.config.sso_absolute_ttl().as_secs();
+    Ok(Json(match outcome {
+        PortalLoginOutcome::Success {
+            sso_session_id,
+            user_language,
+        } => InternalPortalAuthenticateResponse::Success {
+            sso_session_id,
+            sso_absolute_ttl_secs: ttl,
+            user_language,
+        },
+        PortalLoginOutcome::MfaRequired { mfa_ticket } => {
+            InternalPortalAuthenticateResponse::MfaRequired { mfa_ticket }
+        }
+        PortalLoginOutcome::EmailVerificationRequired => {
+            InternalPortalAuthenticateResponse::EmailVerificationRequired
+        }
+        PortalLoginOutcome::PasswordChangeRequired => {
+            InternalPortalAuthenticateResponse::PasswordChangeRequired
+        }
+        PortalLoginOutcome::RateLimited => InternalPortalAuthenticateResponse::RateLimited,
+        PortalLoginOutcome::InvalidCredentials => {
+            InternalPortalAuthenticateResponse::InvalidCredentials
+        }
+        PortalLoginOutcome::Locked => InternalPortalAuthenticateResponse::Locked,
+        PortalLoginOutcome::Internal(e) => {
+            tracing::error!(error = %e, "internal portal authenticate failed with internal error");
+            InternalPortalAuthenticateResponse::Internal
+        }
+    }))
+}
+
+/// ポータルの TOTP 検証（`POST /internal/authenticate/portal/mfa`）。`mfa_ticket` ＋ TOTP コードを
+/// 検証し、成功時に SSO セッション id を返す。
+pub async fn authenticate_portal_mfa(
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Json(req): Json<InternalPortalMfaRequest>,
+) -> Result<Json<InternalPortalMfaResponse>, Response> {
+    let ctx = RequestContext {
+        correlation_id: correlation.0,
+        ip_address: req.ip_address,
+        user_agent: req.user_agent,
+    };
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let outcome = state
+        .portal_login
+        .verify_mfa(
+            tenant,
+            PortalMfaCommand {
+                mfa_ticket: req.mfa_ticket,
+                totp_code: req.totp_code,
+            },
+            &ctx,
+        )
+        .await;
+    let ttl = state.config.sso_absolute_ttl().as_secs();
+    Ok(Json(match outcome {
+        PortalMfaOutcome::Success {
+            sso_session_id,
+            user_language,
+        } => InternalPortalMfaResponse::Success {
+            sso_session_id,
+            sso_absolute_ttl_secs: ttl,
+            user_language,
+        },
+        PortalMfaOutcome::InvalidCode => InternalPortalMfaResponse::InvalidCode,
+        PortalMfaOutcome::TicketExpired => InternalPortalMfaResponse::TicketExpired,
+        PortalMfaOutcome::RateLimited => InternalPortalMfaResponse::RateLimited,
+        PortalMfaOutcome::Internal(e) => {
+            tracing::error!(error = %e, "internal portal mfa failed with internal error");
+            InternalPortalMfaResponse::Internal
         }
     }))
 }

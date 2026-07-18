@@ -18,6 +18,7 @@ pub mod mfa_totp;
 pub mod passkey;
 pub mod password_change;
 pub mod password_reset;
+pub mod portal;
 pub mod react_assets;
 pub mod stylesheet;
 pub mod user_settings;

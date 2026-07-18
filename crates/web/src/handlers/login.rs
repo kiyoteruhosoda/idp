@@ -11,7 +11,7 @@
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::dto::LoginForm;
-use crate::handlers::{forwarded_context, found};
+use crate::handlers::{forwarded_context, found, portal};
 use crate::i18n::{Locale, Messages};
 use crate::state::WebState;
 use crate::templates::{render, LoginTemplate, MessagePage};
@@ -29,14 +29,13 @@ pub async fn login_page(
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
 ) -> Response {
-    let messages = Messages::new(locale(&headers));
     let Some(auth_session_id) = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE) else {
-        return error_page(
-            &messages,
-            StatusCode::BAD_REQUEST,
-            "login-error-session-expired",
-        );
+        // OIDC の `auth_session_id` が無い直接アクセスは、IdP 自身のアカウント画面へ入るための
+        // ポータルログインとして扱う（`/{tenant_id}/login` を単独で開けるようにする）。
+        // 注: `Messages`（FluentBundle）は !Send のため、await をまたぐ前に生成してはならない。
+        return portal::login_page(&state, &tenant, &headers).await;
     };
+    let messages = Messages::new(locale(&headers));
     Html(render_form(
         &messages,
         &tenant.prefix(),
@@ -72,6 +71,11 @@ pub async fn login(
 ) -> Response {
     let ctx = forwarded_context(&headers, &correlation);
     let auth_session_id = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE);
+
+    // OIDC の `auth_session_id` を持たない POST はポータルログイン（クライアント非依存）として処理する。
+    if auth_session_id.is_none() {
+        return portal::login(&state, &correlation, &tenant, &headers, form).await;
+    }
 
     let request = InternalAuthenticateRequest {
         tenant_id: Some(tenant.0.clone()),

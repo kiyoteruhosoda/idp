@@ -29,6 +29,7 @@ use crate::application::logout::LogoutService;
 use crate::application::mfa_login::MfaLoginService;
 use crate::application::passkey_authentication::PasskeyAuthenticationService;
 use crate::application::passkey_registration::PasskeyRegistrationService;
+use crate::application::portal_login::PortalLoginService;
 use crate::application::password_reset::PasswordResetService;
 use crate::application::permission_management::PermissionManagementService;
 use crate::application::register::RegisterService;
@@ -113,6 +114,8 @@ pub struct AppState {
     pub keys: Arc<KeyService>,
     pub admin_access: Arc<AdminAccessService>,
     pub admin_login: Arc<AdminLoginService>,
+    /// エンドユーザー・ポータルの直接ログイン（クライアント非依存。TOTP を尊重して SSO を直接発行する）。
+    pub portal_login: Arc<PortalLoginService>,
     pub clients_admin: Arc<ClientManagementService>,
     pub clients_status: Arc<ClientStatusService>,
     pub permissions_admin: Arc<PermissionManagementService>,
@@ -324,9 +327,24 @@ impl AppState {
             sso_sessions.clone(),
             user_permissions.clone(),
             hasher.clone(),
+            rate_limiter.clone(),
+            audit.clone(),
+            clock.clone(),
+            config.sso_idle_ttl(),
+            config.sso_absolute_ttl(),
+        ));
+        // エンドユーザー・ポータルの直接ログイン。admin_login と同機構（クライアント非依存の SSO 直接発行）
+        // だが admin 権限を要求せず、TOTP（MFA）を尊重する。`mfa_ticket` の署名鍵は CSRF 秘密鍵を流用する。
+        let portal_login = Arc::new(PortalLoginService::new(
+            users.clone(),
+            sso_sessions.clone(),
+            totp_secrets.clone(),
+            hasher.clone(),
             rate_limiter,
             audit.clone(),
             clock.clone(),
+            *config.key_encryption_key(),
+            *config.csrf_secret(),
             config.sso_idle_ttl(),
             config.sso_absolute_ttl(),
         ));
@@ -519,6 +537,7 @@ impl AppState {
             keys,
             admin_access,
             admin_login,
+            portal_login,
             clients_admin,
             clients_status,
             permissions_admin,

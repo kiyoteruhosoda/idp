@@ -28,7 +28,9 @@ use idp_contracts::auth::{
     InternalPasskeyRegisterBeginResponse, InternalPasskeyRegisterCompleteRequest,
     InternalPasskeyRegisterCompleteResponse, InternalPasswordResetCompleteRequest,
     InternalPasswordResetCompleteResponse, InternalPasswordResetRequestRequest,
-    InternalPasswordResetRequestResponse, InternalTotpConfirmRequest, InternalTotpConfirmResponse,
+    InternalPasswordResetRequestResponse, InternalPortalAuthenticateRequest,
+    InternalPortalAuthenticateResponse, InternalPortalMfaRequest, InternalPortalMfaResponse,
+    InternalTotpConfirmRequest, InternalTotpConfirmResponse,
     InternalTotpDeleteRequest, InternalTotpDeleteResponse, InternalTotpSetupRequest,
     InternalTotpSetupResponse, InternalVerifyTotpRequest, InternalVerifyTotpResponse,
 };
@@ -121,6 +123,26 @@ impl ApiClient {
         req: &InternalAdminAuthenticateRequest,
     ) -> anyhow::Result<InternalAdminAuthenticateResponse> {
         self.post_internal("/internal/authenticate/admin", correlation_id, req)
+            .await
+    }
+
+    /// エンドユーザー・ポータル認証（`POST /internal/authenticate/portal`）。
+    pub async fn authenticate_portal(
+        &self,
+        correlation_id: &str,
+        req: &InternalPortalAuthenticateRequest,
+    ) -> anyhow::Result<InternalPortalAuthenticateResponse> {
+        self.post_internal("/internal/authenticate/portal", correlation_id, req)
+            .await
+    }
+
+    /// ポータルの TOTP 検証（`POST /internal/authenticate/portal/mfa`）。
+    pub async fn authenticate_portal_mfa(
+        &self,
+        correlation_id: &str,
+        req: &InternalPortalMfaRequest,
+    ) -> anyhow::Result<InternalPortalMfaResponse> {
+        self.post_internal("/internal/authenticate/portal/mfa", correlation_id, req)
             .await
     }
 

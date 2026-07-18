@@ -2,10 +2,15 @@
 {% block title %}{{ messages.get("user-settings-title") }}{% endblock %}
 {% block column %}col-lg-8 mx-auto{% endblock %}
 {% block content %}
-<div class="mb-4">
-  <p class="text-muted text-uppercase fw-bold small mb-1">{{ messages.get("user-settings-kicker") }}</p>
-  <h1 class="h3 mb-1">{{ messages.get("user-settings-title") }}</h1>
-  <p class="text-muted mb-0">{{ messages.get("user-settings-lead") }}</p>
+<div class="d-flex align-items-start justify-content-between gap-2 mb-4">
+  <div>
+    <p class="text-muted text-uppercase fw-bold small mb-1">{{ messages.get("user-settings-kicker") }}</p>
+    <h1 class="h3 mb-1">{{ messages.get("user-settings-title") }}</h1>
+    <p class="text-muted mb-0">{{ messages.get("user-settings-lead") }}</p>
+  </div>
+  <form method="post" action="{{ tenant }}/logout" class="flex-shrink-0">
+    <button type="submit" class="btn btn-outline-secondary"><i class="fa-solid fa-right-from-bracket me-2" aria-hidden="true"></i>{{ messages.get("user-settings-logout") }}</button>
+  </form>
 </div>
 
 {% if let Some(key) = saved_key %}<div class="alert alert-success" role="status">{{ messages.get(key) }}</div>{% endif %}

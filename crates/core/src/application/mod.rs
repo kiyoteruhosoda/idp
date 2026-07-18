@@ -25,6 +25,7 @@ pub mod passkey_authentication;
 pub mod passkey_registration;
 pub mod password_reset;
 pub mod permission_management;
+pub mod portal_login;
 pub mod register;
 pub mod revocation;
 pub mod saml_provider_management;

@@ -17,6 +17,13 @@ pub struct TotpConfirmForm {
     pub code: String,
 }
 
+/// ポータル TOTP 入力フォーム（`POST /{tenant_id}/login/mfa`）。
+#[derive(Debug, Deserialize)]
+pub struct PortalTotpForm {
+    pub totp_code: String,
+    pub csrf_token: String,
+}
+
 /// 同意フォーム（`POST /consent`、F3）。
 #[derive(Debug, Deserialize)]
 pub struct ConsentForm {

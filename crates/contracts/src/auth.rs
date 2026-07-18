@@ -390,6 +390,86 @@ pub enum InternalAdminChangePasswordResponse {
     Internal,
 }
 
+/// エンドユーザー・ポータル内部認証 API（`POST /internal/authenticate/portal`）のリクエスト。
+///
+/// 管理コンソールの [`InternalAdminAuthenticateRequest`] と同形。ポータルは OIDC クライアント（RP）を
+/// 介さず IdP 自身のアカウント画面（`/{tenant_id}/settings`）へ入るための直接ログインで、成功時は
+/// authorization code を発行せず SSO セッションを直接発行する。CSRF は web 側で検証済み。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalPortalAuthenticateRequest {
+    /// ログインのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する。
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub username: String,
+    pub password: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// ポータル内部認証 API のレスポンス。成功時は SSO セッション id を返す（code/redirect は無い）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalPortalAuthenticateResponse {
+    /// 認証成功（TOTP 未設定）。`sso_session_id` を Cookie 化してアカウント画面へ 302 する。
+    Success {
+        sso_session_id: String,
+        sso_absolute_ttl_secs: u64,
+        #[serde(default)]
+        user_language: Option<String>,
+    },
+    /// パスワード認証成功だが TOTP が必要。`mfa_ticket` は署名付きの短命チケット（user_id ＋ 期限）で、
+    /// web はこれを Cookie 化して TOTP 入力画面へ誘導する。SSO はまだ発行しない。
+    MfaRequired { mfa_ticket: String },
+    /// 自己登録アカウントのメール未検証（SEC6b）。確認リンクを踏むよう案内する。
+    EmailVerificationRequired,
+    /// 強制パスワード変更が必要（ADR-0009 §5）。ポータルからは変更できないため案内のみ。
+    PasswordChangeRequired,
+    /// IP 単位のレート制限超過。
+    RateLimited,
+    /// 資格情報不正。
+    InvalidCredentials,
+    /// アカウントロック中。
+    Locked,
+    /// api 内部エラー。
+    Internal,
+}
+
+/// ポータルの TOTP 検証 API（`POST /internal/authenticate/portal/mfa`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalPortalMfaRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    /// [`InternalPortalAuthenticateResponse::MfaRequired`] で返した署名付きチケット。
+    pub mfa_ticket: String,
+    pub totp_code: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// ポータルの TOTP 検証 API のレスポンス。成功時は SSO セッション id を返す。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalPortalMfaResponse {
+    Success {
+        sso_session_id: String,
+        sso_absolute_ttl_secs: u64,
+        #[serde(default)]
+        user_language: Option<String>,
+    },
+    /// TOTP コード不正（チケットが有効なら再試行できる）。
+    InvalidCode,
+    /// チケットが無効・期限切れ（ログインからやり直し）。
+    TicketExpired,
+    /// IP 単位のレート制限超過。
+    RateLimited,
+    /// api 内部エラー。
+    Internal,
+}
+
 /// 同意画面情報 API（`GET /internal/consent-info`）のリクエスト。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalConsentInfoRequest {

@@ -27,6 +27,12 @@ pub fn console_csrf_token(sso_session_id: &str, key: &[u8]) -> String {
     hmac_hex(key, &format!("console-csrf:{sso_session_id}"))
 }
 
+/// エンドユーザー・ポータルのログイン／TOTP フォーム用の CSRF トークンを Cookie の種から導出する
+/// （`admin_csrf_token` と同じ仕組み・別名前空間）。
+pub fn portal_csrf_token(csrf_id: &str, key: &[u8]) -> String {
+    hmac_hex(key, &format!("portal-csrf:{csrf_id}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

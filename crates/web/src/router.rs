@@ -8,8 +8,8 @@ use crate::handlers::{
     admin_clients_console, admin_console, admin_invitations_console, admin_members_console,
     admin_saml_console, admin_settings, admin_signing_keys_console, admin_status_console,
     admin_tenants_console, admin_users_console, consent, health, invitation_accept, login,
-    mfa_totp, passkey, password_change, password_reset, react_assets, stylesheet, user_settings,
-    vendor_assets, verify_email,
+    mfa_totp, passkey, password_change, password_reset, portal, react_assets, stylesheet,
+    user_settings, vendor_assets, verify_email,
 };
 use crate::security_headers::add_security_headers;
 use crate::state::WebState;
@@ -23,6 +23,10 @@ pub fn build(state: WebState) -> Router {
     let hsts_max_age = state.config.hsts_max_age();
     let tenant_scoped = Router::new()
         .route("/login", get(login::login_page).post(login::login))
+        // エンドユーザー・ポータルの TOTP 入力（`/login` 直接ログイン経路の 2 段階目）。
+        .route("/login/mfa", get(portal::mfa_page).post(portal::mfa_submit))
+        // エンドユーザーのログアウト（アカウント画面から。SSO 失効）。
+        .route("/logout", post(portal::logout))
         // 強制パスワード変更（ADR-0009 §5、MT12）。パスワード認証成功後・SSO 発行前の pending 状態で使う。
         .route(
             "/password-change",

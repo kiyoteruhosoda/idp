@@ -59,6 +59,28 @@ pub struct LoginTemplate<'a> {
     pub error_key: Option<&'a str>,
 }
 
+/// エンドユーザー・ポータルのログイン画面（`GET /{tenant_id}/login`。OIDC の `auth_session` を持たない
+/// 直接ログイン）。IdP 自身のアカウント画面へ入るための画面で、共通レイアウトには載せない。
+#[derive(Template)]
+#[template(path = "portal_login.html")]
+pub struct PortalLogin<'a> {
+    pub messages: &'a Messages,
+    /// `/{tenant_id}` プレフィクス（フォーム送信先・リンクの組み立てに使う。ADR-0009 §6）。
+    pub tenant_prefix: &'a str,
+    pub csrf: &'a str,
+    pub error_key: Option<&'a str>,
+}
+
+/// ポータルの TOTP 入力画面（`GET /{tenant_id}/login/mfa`）。`mfa_ticket` Cookie を保持した状態で表示する。
+#[derive(Template)]
+#[template(path = "portal_mfa.html")]
+pub struct PortalMfa<'a> {
+    pub messages: &'a Messages,
+    pub tenant_prefix: &'a str,
+    pub csrf: &'a str,
+    pub error_key: Option<&'a str>,
+}
+
 /// 同意画面（`GET /consent`、F3）。
 #[derive(Template)]
 #[template(path = "consent.html")]

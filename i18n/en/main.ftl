@@ -11,6 +11,11 @@ login-error-session-expired = Your sign-in session has expired. Please start ove
 login-error-csrf = The form has expired. Please reload the page and try again.
 login-error-rate-limited = Too many attempts. Please wait a moment and try again.
 
+# End-user portal login (standalone sign-in to the IdP account page, without an OIDC app).
+portal-login-title = Sign in to your account
+portal-login-lead = Sign in to manage your account settings.
+portal-login-password-change-required = Your password must be changed before you can sign in here. Please use the "Forgot your password?" link to reset it, or contact your administrator.
+
 # Forced password change (ADR-0009 §5). Shown after signing in with an auto-generated password.
 password-change-title = Change your password
 password-change-forced-intro = Your password was generated automatically. Please set a new password before continuing.
@@ -130,8 +135,8 @@ admin-invitations-created-warning = This token is shown only once. Record it and
 admin-invitations-token-label = Invitation token
 admin-invitations-expires-label = Expires at
 admin-invitations-error-notfound = No such user was found.
-admin-settings-self-registration = Allow self-registration (/auth/register)
-admin-settings-self-registration-hint = When disabled (default), new accounts can only be created by an administrator or through an invitation.
+admin-settings-self-registration = Allow user self sign-up
+admin-settings-self-registration-hint = When enabled, users can create their own accounts at the sign-up page. When disabled (default), accounts can only be created by an administrator or through an invitation.
 admin-invitations-email-sent = An invitation email with the acceptance link was sent to
 admin-invitations-email-not-sent = No invitation email was sent (SMTP is not configured or delivery failed). Share the token with the invited user through a secure channel.
 
@@ -345,11 +350,20 @@ admin-nav-tenants = Tenant registration
 admin-tenants-title = Tenant registration
 admin-tenants-intro = Only root administrators can register child tenants. An initial administrator and temporary password are generated on creation.
 admin-tenants-create-title = New tenant
+admin-tenants-add = Add a tenant
+admin-tenants-add-close = Close
 admin-tenants-name = Tenant name
 admin-tenants-admin-email = Initial administrator email
 admin-tenants-create = Register
 admin-tenants-list-title = Registered tenants
-admin-tenants-self-registration = Self registration
+admin-tenants-list-empty = No tenants have been registered yet. Use "Add a tenant" to create the first one.
+admin-tenants-self-registration = User self sign-up
+admin-tenants-self-registration-hint = Whether users can create their own accounts. When "Allowed", anyone can sign up at the sign-up page; when "Invite only", accounts are created only by an administrator or via invitation.
+admin-tenants-self-registration-on = Allowed
+admin-tenants-self-registration-off = Invite only
+admin-tenants-login = Login page
+admin-tenants-login-user = User login
+admin-tenants-login-admin = Admin login
 admin-tenants-created-title = Tenant registered
 admin-tenants-created-intro = The initial administrator password is shown only once on this screen. Share it through a secure channel.
 admin-tenants-admin-user-id = Initial administrator ID
@@ -384,6 +398,7 @@ admin-settings-runtime-heading = Runtime setting sources
 admin-settings-runtime-note = Values are not displayed; the table shows owner, current source, status, reason, and restart requirement per key. Secret values and fingerprints are hidden.
 user-settings-kicker = Self service
 user-settings-lead = Manage language, password, and multi-factor authentication from one place.
+user-settings-logout = Sign out
 user-settings-nav-label = Account setting categories
 user-settings-security-heading = Security
 user-settings-language-help = Your selection is saved to a cookie and, when signed in, to your user profile.

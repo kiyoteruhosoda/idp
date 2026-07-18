@@ -1,0 +1,29 @@
+{% extends "page.html" %}
+{% block title %}{{ messages.get("portal-login-title") }}{% endblock %}
+{% block content %}
+<div class="card border-0 bg-transparent">
+  <div class="card-header text-center py-3 border-0 bg-transparent">
+    <h1 class="h4 mb-1">{{ messages.get("portal-login-title") }}</h1>
+    <p class="text-muted small mb-0">{{ messages.get("portal-login-lead") }}</p>
+  </div>
+  <div class="card-body p-4">
+    {% if let Some(key) = error_key %}<div class="alert alert-warning" role="alert">{{ messages.get(key) }}</div>{% endif %}
+    <form method="post" action="{{ tenant_prefix }}/login">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <div class="mb-3">
+        <label class="form-label" for="login-username">{{ messages.get("login-username") }}</label>
+        <input type="text" class="form-control form-control-lg" id="login-username" name="username" autocomplete="username" required autofocus>
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="login-password">{{ messages.get("login-password") }}</label>
+        <input type="password" class="form-control form-control-lg" id="login-password" name="password" autocomplete="current-password" required>
+      </div>
+      <button type="submit" class="btn btn-primary btn-lg w-100 mb-3">{{ messages.get("login-submit") }}</button>
+      <div class="text-center">
+        <a class="text-decoration-none" href="{{ tenant_prefix }}/forgot-password">{{ messages.get("login-forgot-password") }}</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% include "password_visibility.html" %}
+{% endblock %}
