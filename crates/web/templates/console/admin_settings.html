@@ -79,21 +79,55 @@
     <p class="text-muted small">{{ messages.get("admin-settings-runtime-note") }}</p>
     <div class="table-responsive">
       <table class="table table-hover align-middle mb-0">
-        <thead><tr><th>設定名</th><th>現在の出所</th><th>状態</th><th>理由</th><th>再起動</th><th>秘密値</th></tr></thead>
+        <thead><tr>
+          <th>{{ messages.get("admin-settings-runtime-col-key") }}</th>
+          <th>{{ messages.get("admin-settings-runtime-col-value") }}</th>
+          <th>{{ messages.get("admin-settings-runtime-col-default") }}</th>
+          <th>{{ messages.get("admin-settings-runtime-col-db") }}</th>
+          <th>{{ messages.get("admin-settings-runtime-col-status") }}</th>
+        </tr></thead>
         <tbody>
           {% for item in sys.runtime_settings %}
           <tr>
-            <td><code>{{ item.key }}</code></td>
-            <td>{{ item.source }} / {{ item.owner }}</td>
-            <td>{% if item.status == "NEEDS_ACTION" %}<span class="badge text-bg-warning">要対応</span>{% else %}<span class="badge text-bg-success">安全</span>{% endif %}</td>
-            <td>{{ item.reason }}</td>
-            <td>{% if item.restart_required %}必要{% else %}-{% endif %}</td>
-            <td>{% if item.secret %}secret（値非表示）{% else %}-{% endif %}</td>
+            <td>
+              <code>{{ item.key }}</code>
+              {% if item.restart_required %}<div class="form-text">{{ messages.get("admin-settings-runtime-restart-required") }}</div>{% endif %}
+            </td>
+            <td>
+              {% if item.secret %}
+                <span class="text-muted">{{ messages.get("admin-settings-runtime-secret") }}</span>
+              {% else %}
+                <code>{{ item.value.as_deref().unwrap_or("-") }}</code>
+              {% endif %}
+              {% if item.source == "ENV" %}<span class="badge text-bg-danger ms-1">ENV</span>
+              {% else if item.source == "DB" %}<span class="badge text-bg-primary ms-1">DB</span>
+              {% else %}<span class="badge text-bg-secondary ms-1">{{ messages.get("admin-settings-runtime-source-default") }}</span>{% endif %}
+            </td>
+            <td>{% if item.secret %}-{% else %}<code>{{ item.default_value.as_deref().unwrap_or("-") }}</code>{% endif %}</td>
+            <td>
+              {% if item.editable %}
+                {% if item.source == "ENV" %}
+                  <span class="text-muted small">{{ messages.get("admin-settings-runtime-env-locked-note") }}</span>
+                {% endif %}
+                <form method="post" action="{{ tenant }}/admin/system-settings/runtime" class="d-flex flex-wrap gap-2 align-items-center">
+                  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                  <input type="hidden" name="key" value="{{ item.key }}">
+                  <input class="form-control form-control-sm w-auto" name="value" value="{{ item.db_value.as_deref().unwrap_or("") }}" placeholder="{{ item.default_value.as_deref().unwrap_or("") }}">
+                  <button type="submit" class="btn btn-sm btn-secondary">{{ messages.get("admin-settings-runtime-save") }}</button>
+                </form>
+              {% else %}
+                <span class="text-muted small">{{ messages.get("admin-settings-runtime-not-editable") }}</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if item.status == "NEEDS_ACTION" %}<span class="badge text-bg-warning" title="{{ item.reason }}">{{ messages.get("admin-settings-runtime-needs-action") }}</span>{% else %}<span class="badge text-bg-success" title="{{ item.reason }}">{{ messages.get("admin-settings-runtime-safe") }}</span>{% endif %}
+            </td>
           </tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
+    <p class="text-muted small mt-2 mb-0">{{ messages.get("admin-settings-runtime-edit-note") }}</p>
   </div>
 </div>
 {% endif %}

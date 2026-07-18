@@ -1,9 +1,13 @@
 {% extends "console/layout.html" %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
   <h2 class="h4 mb-0">{{ messages.get("admin-members-title") }}</h2>
-  <a class="btn btn-primary" href="{{ tenant }}/admin/invitations"><i class="fa-solid fa-envelope me-2" aria-hidden="true"></i>{{ messages.get("admin-nav-invitations") }}</a>
+  <div class="d-flex flex-wrap gap-2">
+    <a class="btn btn-primary" href="{{ tenant }}/admin/users/new"><i class="fa-solid fa-user-plus me-2" aria-hidden="true"></i>{{ messages.get("admin-nav-users-new") }}</a>
+    <a class="btn btn-outline-primary" href="{{ tenant }}/admin/invitations"><i class="fa-solid fa-envelope me-2" aria-hidden="true"></i>{{ messages.get("admin-members-invite-guest") }}</a>
+  </div>
 </div>
+<p class="text-muted">{{ messages.get("admin-members-intro") }}</p>
 {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
 {% if members.is_empty() %}
 <p class="text-muted">{{ messages.get("admin-members-none") }}</p>
@@ -11,22 +15,54 @@
 <div class="table-responsive">
   <table class="table table-hover align-middle">
     <thead>
-      <tr><th>{{ messages.get("admin-user-col-email") }}</th><th>{{ messages.get("admin-users-field-name") }}</th><th>{{ messages.get("admin-members-col-type") }}</th><th>{{ messages.get("admin-members-col-status") }}</th><th>{{ messages.get("admin-signing-keys-col-actions") }}</th></tr>
+      <tr><th>{{ messages.get("admin-user-col-email") }}</th><th>{{ messages.get("admin-users-field-name") }}</th><th>{{ messages.get("admin-members-col-type") }}</th><th>{{ messages.get("admin-members-col-status") }}</th><th>{{ messages.get("admin-members-col-user-status") }}</th><th>{{ messages.get("admin-signing-keys-col-actions") }}</th></tr>
     </thead>
     <tbody>
       {% for m in members %}
       <tr>
-        <td>{{ m.email.as_deref().unwrap_or("-") }}</td>
+        <td>{% if m.membership_type == "HOME" %}<a href="{{ tenant }}/admin/users/{{ m.user_id }}/permissions">{{ m.email.as_deref().unwrap_or("-") }}</a>{% else %}{{ m.email.as_deref().unwrap_or("-") }}{% endif %}</td>
         <td>{{ m.name.as_deref().unwrap_or("-") }}</td>
         <td>{% if m.membership_type == "GUEST" %}<span class="badge text-bg-info">{{ m.membership_type }}</span>{% else %}<span class="badge text-bg-secondary">{{ m.membership_type }}</span>{% endif %}</td>
         <td>{{ m.status }}</td>
         <td>
-          {% if m.membership_type == "GUEST" %}
-          <form method="post" action="{{ tenant }}/admin/members/{{ m.user_id }}/revoke" class="d-inline" onsubmit="return confirm('{{ messages.get("admin-members-revoke-confirm") }}')">
-            <input type="hidden" name="csrf_token" value="{{ csrf }}">
-            <button type="submit" class="btn btn-outline-danger btn-sm">{{ messages.get("admin-members-revoke-button") }}</button>
-          </form>
-          {% endif %}
+          {% if m.user_status.as_deref() == Some("ACTIVE") %}<span class="badge text-bg-success">{{ messages.get("admin-members-user-status-active") }}</span>
+          {% else if m.user_status.as_deref() == Some("DISABLED") %}<span class="badge text-bg-danger">{{ messages.get("admin-members-user-status-disabled") }}</span>
+          {% else if m.user_status.is_some() %}<span class="badge text-bg-warning">{{ messages.get("admin-members-user-status-locked") }}</span>
+          {% else %}-{% endif %}
+        </td>
+        <td>
+          <div class="d-flex flex-wrap gap-2">
+            {% if m.membership_type == "HOME" %}
+              <a class="btn btn-outline-secondary btn-sm" href="{{ tenant }}/admin/users/{{ m.user_id }}/permissions"><i class="fa-solid fa-user-shield me-1" aria-hidden="true"></i>{{ messages.get("admin-members-permissions-button") }}</a>
+              {% if m.user_status.as_deref() == Some("DISABLED") %}
+              <form method="post" action="{{ tenant }}/admin/members/{{ m.user_id }}/status" class="d-inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                <input type="hidden" name="status" value="ACTIVE">
+                <button type="submit" class="btn btn-outline-success btn-sm"><i class="fa-solid fa-user-check me-1" aria-hidden="true"></i>{{ messages.get("admin-members-enable-button") }}</button>
+              </form>
+              {% else %}
+              <form method="post" action="{{ tenant }}/admin/members/{{ m.user_id }}/status" class="d-inline" onsubmit="return confirm('{{ messages.get("admin-members-disable-confirm") }}')">
+                <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                <input type="hidden" name="status" value="DISABLED">
+                <button type="submit" class="btn btn-outline-warning btn-sm"><i class="fa-solid fa-user-slash me-1" aria-hidden="true"></i>{{ messages.get("admin-members-disable-button") }}</button>
+              </form>
+              {% endif %}
+              <form method="post" action="{{ tenant }}/admin/members/{{ m.user_id }}/reset-password" class="d-inline" onsubmit="return confirm('{{ messages.get("admin-members-reset-password-confirm") }}')">
+                <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                <input type="hidden" name="email" value="{{ m.email.as_deref().unwrap_or("") }}">
+                <button type="submit" class="btn btn-outline-secondary btn-sm"><i class="fa-solid fa-key me-1" aria-hidden="true"></i>{{ messages.get("admin-members-reset-password-button") }}</button>
+              </form>
+              <form method="post" action="{{ tenant }}/admin/members/{{ m.user_id }}/delete" class="d-inline" onsubmit="return confirm('{{ messages.get("admin-members-delete-confirm") }}')">
+                <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                <button type="submit" class="btn btn-outline-danger btn-sm"><i class="fa-solid fa-trash me-1" aria-hidden="true"></i>{{ messages.get("admin-members-delete-button") }}</button>
+              </form>
+            {% else %}
+              <form method="post" action="{{ tenant }}/admin/members/{{ m.user_id }}/revoke" class="d-inline" onsubmit="return confirm('{{ messages.get("admin-members-revoke-confirm") }}')">
+                <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                <button type="submit" class="btn btn-outline-danger btn-sm">{{ messages.get("admin-members-revoke-button") }}</button>
+              </form>
+            {% endif %}
+          </div>
         </td>
       </tr>
       {% endfor %}

@@ -651,6 +651,65 @@ impl ApiClient {
         .await
     }
 
+    /// 利用者の状態変更（`PATCH /admin/users/{user_id}`。ACTIVE / DISABLED）。
+    pub async fn update_user_status(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        user_id: &str,
+        status: &str,
+    ) -> Result<UserSummaryResponse, AdminApiError> {
+        self.admin_send(
+            Method::PATCH,
+            tenant_id,
+            &format!("/admin/users/{user_id}"),
+            correlation_id,
+            sso,
+            Some(serde_json::json!({ "status": status })),
+        )
+        .await
+    }
+
+    /// 利用者の削除（`DELETE /admin/users/{user_id}`。所属元が当該テナントの利用者のみ）。
+    pub async fn delete_user(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        user_id: &str,
+    ) -> Result<(), AdminApiError> {
+        self.admin_send_no_content(
+            Method::DELETE,
+            tenant_id,
+            &format!("/admin/users/{user_id}"),
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
+    /// 利用者のパスワード再発行（`POST /admin/users/{user_id}/password-reset`）。
+    /// `generated_password` を一度だけ返す。
+    pub async fn reset_user_password(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        user_id: &str,
+    ) -> Result<crate::admin_dto::UserPasswordResetView, AdminApiError> {
+        self.admin_send(
+            Method::POST,
+            tenant_id,
+            &format!("/admin/users/{user_id}/password-reset"),
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
     // ── メンバー・招待（ADR-0009 §3）─────────────────────────────────────────
 
     /// メンバー一覧（`GET /admin/members`。HOME / GUEST を問わない）。
@@ -1016,6 +1075,48 @@ impl ApiClient {
         .await
     }
 
+    /// 子テナント削除（`DELETE /admin/tenants/{child_id}`。idp.system.admin 必須。
+    /// 配下に子テナント・ユーザー・クライアントが残っていると 409）。
+    pub async fn delete_tenant(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso_session_id: &str,
+        child_id: &str,
+    ) -> Result<(), AdminApiError> {
+        self.admin_send_no_content(
+            Method::DELETE,
+            tenant_id,
+            &format!("/admin/tenants/{child_id}"),
+            correlation_id,
+            sso_session_id,
+            None,
+        )
+        .await
+    }
+
+    /// 子テナント管理者のパスワード再発行
+    /// （`POST /admin/tenants/{child_id}/admin-password-reset`。idp.system.admin 必須）。
+    /// `generated_password` を一度だけ返す。
+    pub async fn reset_tenant_admin_password(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso_session_id: &str,
+        child_id: &str,
+        email: &str,
+    ) -> Result<crate::admin_dto::UserPasswordResetView, AdminApiError> {
+        self.admin_send(
+            Method::POST,
+            tenant_id,
+            &format!("/admin/tenants/{child_id}/admin-password-reset"),
+            correlation_id,
+            sso_session_id,
+            Some(serde_json::json!({ "email": email })),
+        )
+        .await
+    }
+
     /// 自テナント取得（`GET /admin/settings/tenant`。idp.tenant.admin 必須）。
     pub async fn get_current_tenant(
         &self,
@@ -1091,6 +1192,27 @@ impl ApiClient {
             correlation_id,
             sso,
             Some(body),
+        )
+        .await
+    }
+
+    /// ランタイム設定の DB 上書き更新（`PUT /admin/system-settings/runtime`。idp.system.admin 必須）。
+    /// `value` が `None` または空のときは上書きを解除する。
+    pub async fn update_runtime_setting(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        key: &str,
+        value: Option<&str>,
+    ) -> Result<crate::admin_dto::SystemSettingsView, AdminApiError> {
+        self.admin_send(
+            Method::PUT,
+            tenant_id,
+            "/admin/system-settings/runtime",
+            correlation_id,
+            sso,
+            Some(serde_json::json!({ "key": key, "value": value })),
         )
         .await
     }

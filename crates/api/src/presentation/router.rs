@@ -122,6 +122,11 @@ pub fn build(state: AppState) -> Router {
                 .patch(admin_tenants::update_tenant)
                 .delete(admin_tenants::delete_tenant),
         )
+        // 子テナント管理者のパスワード再発行（idp.system.admin 必須）。
+        .route(
+            "/admin/tenants/{child_id}/admin-password-reset",
+            post(admin_tenants::reset_tenant_admin_password),
+        )
         // 設定画面（MT14）。テナント設定区画（自テナント表示名。idp.tenant.admin 必須）と
         // システム設定区画（SMTP 等。idp.system.admin 必須 = 実質 root のみ）。
         .route(
@@ -132,6 +137,11 @@ pub fn build(state: AppState) -> Router {
             "/admin/system-settings",
             get(admin_system_settings::get_system_settings)
                 .put(admin_system_settings::update_system_settings),
+        )
+        // ランタイム設定の DB 上書き（DB_MANAGED キーのみ。idp.system.admin 必須）。
+        .route(
+            "/admin/system-settings/runtime",
+            axum::routing::put(admin_system_settings::update_runtime_setting),
         )
         // メンバー・招待（ADR-0009 §3・§6）。idp.tenant.admin 必須。
         .route("/admin/members", get(admin_members::list_members))
@@ -172,7 +182,18 @@ pub fn build(state: AppState) -> Router {
             "/admin/users",
             post(admin_users::create_user).get(admin_users::search_user),
         )
-        .route("/admin/users/{user_id}", get(admin_users::get_user))
+        // 利用者の取得・状態変更（有効化・無効化）・削除。idp.tenant.admin 必須。
+        .route(
+            "/admin/users/{user_id}",
+            get(admin_users::get_user)
+                .patch(admin_users::update_user_status)
+                .delete(admin_users::delete_user),
+        )
+        // 利用者のパスワード再発行（must_change_password 付き自動生成）。idp.tenant.admin 必須。
+        .route(
+            "/admin/users/{user_id}/password-reset",
+            post(admin_users::reset_user_password),
+        )
         // 利用者権限の付与・剥奪・参照（A2、ADR-0006）。idp.tenant.admin 必須。
         .route(
             "/admin/users/{user_id}/permissions",

@@ -15,6 +15,7 @@ use crate::domain::jwt;
 use crate::domain::password::PasswordHasher;
 use crate::domain::repositories::{
     ClientRepository, RefreshTokenRepository, RevokedAccessTokenRepository, SigningKeyRepository,
+    UserRepository,
 };
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::TokenEndpointAuthMethod;
@@ -84,6 +85,7 @@ pub struct IntrospectionService {
     signing_keys: Arc<dyn SigningKeyRepository>,
     refresh_tokens: Arc<dyn RefreshTokenRepository>,
     revoked_access_tokens: Arc<dyn RevokedAccessTokenRepository>,
+    users: Arc<dyn UserRepository>,
     hasher: Arc<dyn PasswordHasher>,
     clock: Arc<dyn Clock>,
     /// 基底 issuer。検証・応答の `iss` はテナント毎に `<基底>/<tenant_id>` を合成する（ADR-0009 §6）。
@@ -98,6 +100,7 @@ impl IntrospectionService {
         signing_keys: Arc<dyn SigningKeyRepository>,
         refresh_tokens: Arc<dyn RefreshTokenRepository>,
         revoked_access_tokens: Arc<dyn RevokedAccessTokenRepository>,
+        users: Arc<dyn UserRepository>,
         hasher: Arc<dyn PasswordHasher>,
         clock: Arc<dyn Clock>,
         base_issuer: String,
@@ -108,6 +111,7 @@ impl IntrospectionService {
             signing_keys,
             refresh_tokens,
             revoked_access_tokens,
+            users,
             hasher,
             clock,
             base_issuer,
@@ -216,6 +220,12 @@ impl IntrospectionService {
             }
         }
 
+        // 利用者の現在の状態確認。無効化・削除済み利用者のトークンは exp 前でも inactive にする
+        // （管理者による無効化・削除を即時反映する。/userinfo と同じ判定）。
+        if !self.subject_is_active(&claims.sub).await {
+            return IntrospectionResponse::inactive();
+        }
+
         IntrospectionResponse {
             active: true,
             scope: Some(claims.scope),
@@ -253,6 +263,12 @@ impl IntrospectionService {
             return IntrospectionResponse::inactive();
         }
 
+        // 利用者の現在の状態確認（無効化・削除済みは inactive。access_token 経路と同じ）。
+        match self.users.find_by_id(rt.user_id).await {
+            Ok(Some(user)) if user.is_active() => {}
+            _ => return IntrospectionResponse::inactive(),
+        }
+
         IntrospectionResponse {
             active: true,
             scope: Some(rt.scope.join(" ")),
@@ -266,6 +282,21 @@ impl IntrospectionService {
             // refresh token は不透明トークンで JWT の `jti` を持たない。保存している SHA-256 ハッシュを
             // `jti` として返すと内部保存値が client へ漏れるため付与しない（RFC 7662 で jti は任意）。
             jti: None,
+        }
+    }
+
+    /// `sub` クレームの利用者が現存し ACTIVE であるかを返す（不正な `sub`・照会失敗は非活性扱い）。
+    async fn subject_is_active(&self, sub: &str) -> bool {
+        let Ok(sub) = uuid::Uuid::parse_str(sub) else {
+            return false;
+        };
+        match self.users.find_by_sub(sub).await {
+            Ok(Some(user)) => user.is_active(),
+            Ok(None) => false,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load user during introspection");
+                false
+            }
         }
     }
 

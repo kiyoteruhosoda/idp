@@ -330,7 +330,9 @@ pub struct UpdateTenantSettingsRequest {
 
 // --- システム設定（SMTP 等。root/idp.system.admin のみ。MT14） -----------------------------
 
-/// ランタイム設定の解決結果（値は返さず、出所と安全属性のみ返す）。
+/// ランタイム設定の解決結果。出所・安全属性に加え、非 secret キーは表示用に**起動時に解決された
+/// 有効値**（`value`）・組み込み既定値（`default_value`）・DB 上書き値（`db_value`）を返す。
+/// secret キーはいずれも `None`（平文を外へ出さない）。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RuntimeSettingResponse {
     pub key: String,
@@ -343,6 +345,17 @@ pub struct RuntimeSettingResponse {
     pub status: String,
     /// 判定理由。secret の平文・fingerprint は含まない。
     pub reason: String,
+    /// 起動時に解決された有効値（非 secret のみ）。DB 更新後も再起動までは変わらない。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    /// 組み込み既定値（非 secret のみ）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_value: Option<String>,
+    /// 現在 DB に保存されている上書き値（非 secret のみ。未設定は `None`）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub db_value: Option<String>,
+    /// この画面（DB）から上書きできるか（`owner == DB_MANAGED` かつ非 secret）。
+    pub editable: bool,
 }
 
 /// システム設定の公開表現（`GET/PUT /{tenant_id}/admin/system-settings`）。SMTP パスワードは
@@ -379,6 +392,15 @@ pub struct UpdateSystemSettingsRequest {
     pub smtp_use_tls: bool,
 }
 
+/// ランタイム設定の DB 上書き更新リクエスト（`PUT /{tenant_id}/admin/system-settings/runtime`）。
+/// `value` が `None` または空文字列のときは上書きを解除する（既定値・環境変数へ戻る）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateRuntimeSettingRequest {
+    pub key: String,
+    #[serde(default)]
+    pub value: Option<String>,
+}
+
 // --- 利用者作成（ADR-0009 §5・§6。`idp.tenant.admin` 必須） -----------------------------------
 
 /// 管理者による利用者作成リクエスト（`POST /{tenant_id}/admin/users`）。パスワードは自動生成する。
@@ -400,6 +422,30 @@ pub struct UserCreatedResponse {
     pub generated_password: String,
 }
 
+/// 利用者の状態更新リクエスト（`PATCH /{tenant_id}/admin/users/{user_id}`）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateUserStatusRequest {
+    /// `ACTIVE` または `DISABLED`（`LOCKED` は管理操作では設定できない）。
+    pub status: String,
+}
+
+/// 管理者によるパスワード再発行レスポンス。`generated_password` は**この応答でのみ**平文で返る
+/// （`must_change_password` が設定され、本人が次回ログインで変更する。ログ・監査には出さない）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct UserPasswordResetResponse {
+    pub user_id: String,
+    /// 自動生成パスワード（平文。一度限り）。
+    pub generated_password: String,
+}
+
+/// 子テナント管理者のパスワード再発行リクエスト
+/// （`POST /{tenant_id}/admin/tenants/{child_id}/admin-password-reset`）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct TenantAdminPasswordResetRequest {
+    /// 対象利用者（子テナント所属）のメールアドレス。
+    pub email: String,
+}
+
 // --- メンバー・招待（ADR-0009 §3・§6） --------------------------------------------------------
 
 /// メンバー一覧の 1 件（`GET /{tenant_id}/admin/members`）。HOME / GUEST を問わない。
@@ -414,6 +460,9 @@ pub struct MemberResponse {
     pub membership_type: String,
     /// `INVITED` または `ACTIVE`。
     pub status: String,
+    /// 利用者アカウント自体の状態（`ACTIVE` / `DISABLED` / `LOCKED`）。不存在ユーザーは `None`。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_status: Option<String>,
 }
 
 /// ゲスト招待作成リクエスト（`POST /{tenant_id}/admin/invitations`）。被招待者は所属元が他テナントの

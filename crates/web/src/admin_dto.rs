@@ -106,6 +106,18 @@ pub struct MemberView {
     pub membership_type: String,
     /// `INVITED` または `ACTIVE`。
     pub status: String,
+    /// 利用者アカウント自体の状態（`ACTIVE` / `DISABLED` / `LOCKED`）。不存在ユーザーは `None`。
+    #[serde(default)]
+    pub user_status: Option<String>,
+}
+
+/// 管理者によるパスワード再発行応答（`POST /admin/users/{id}/password-reset` ほか）。
+/// `generated_password` は一度限り平文で返る（ADR-0009 §5）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct UserPasswordResetView {
+    #[allow(dead_code)]
+    pub user_id: String,
+    pub generated_password: String,
 }
 
 /// 招待作成応答（`POST /admin/invitations`）。`token` は一度限り平文で返る（ADR-0009 §3）。
@@ -169,6 +181,18 @@ pub struct RuntimeSettingView {
     pub status: String,
     #[serde(default)]
     pub reason: String,
+    /// 起動時に解決された有効値（非 secret のみ）。DB 更新後も再起動までは変わらない。
+    #[serde(default)]
+    pub value: Option<String>,
+    /// 組み込み既定値（非 secret のみ）。
+    #[serde(default)]
+    pub default_value: Option<String>,
+    /// 現在 DB に保存されている上書き値（非 secret のみ）。
+    #[serde(default)]
+    pub db_value: Option<String>,
+    /// この画面（DB）から上書きできるか（`DB_MANAGED` かつ非 secret）。
+    #[serde(default)]
+    pub editable: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

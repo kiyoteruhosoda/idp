@@ -382,6 +382,7 @@ mod tests {
     use crate::domain::repositories::{AuditLogSink, TenantMembershipRepository, UserRepository};
     use crate::domain::tenant_membership::TenantMembership;
     use crate::domain::user::User;
+    use crate::domain::values::UserStatus;
     use async_trait::async_trait;
     use chrono::{DateTime, TimeZone, Utc};
     use std::sync::Mutex;
@@ -471,6 +472,15 @@ mod tests {
             unreachable!()
         }
         async fn update_password(&self, _id: Uuid, _password_hash: &str) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn reset_password_forced(&self, _id: Uuid, _password_hash: &str) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn update_status(&self, _id: Uuid, _status: UserStatus) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn delete(&self, _id: Uuid) -> DomainResult<()> {
             unreachable!()
         }
         async fn mark_email_verified(&self, _id: Uuid) -> DomainResult<()> {

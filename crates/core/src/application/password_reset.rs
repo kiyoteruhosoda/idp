@@ -389,6 +389,15 @@ mod tests {
             }
             Ok(())
         }
+        async fn reset_password_forced(&self, _id: Uuid, _password_hash: &str) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn update_status(&self, _id: Uuid, _status: UserStatus) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn delete(&self, _id: Uuid) -> DomainResult<()> {
+            unreachable!()
+        }
         async fn mark_email_verified(&self, _id: Uuid) -> DomainResult<()> {
             unreachable!()
         }

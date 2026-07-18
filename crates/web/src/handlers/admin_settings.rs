@@ -10,7 +10,9 @@ use crate::api_client::AdminApiError;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::csrf::console_csrf_token;
-use crate::dto::{AdminSystemSettingsForm, AdminTenantSettingsForm, SettingsQuery};
+use crate::dto::{
+    AdminRuntimeSettingForm, AdminSystemSettingsForm, AdminTenantSettingsForm, SettingsQuery,
+};
 use crate::handlers::admin_console::{
     forbidden_response, redirect_to_login, resolve_admin, AdminResolution,
 };
@@ -177,11 +179,47 @@ pub async fn update_system(
     }
 }
 
+/// ランタイム設定の DB 上書き（`POST /{tenant_id}/admin/system-settings/runtime`）。
+/// `value` が空欄なら上書きを解除する（既定値・環境変数へ戻る）。反映には再起動が必要。
+pub async fn update_runtime(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Form(form): Form<AdminRuntimeSettingForm>,
+) -> Response {
+    match resolve_admin(&state, &correlation, &tenant, &headers).await {
+        AdminResolution::Ok(_) => {}
+        AdminResolution::Reject(resp) => return resp,
+    }
+    let base = format!("{}{SETTINGS_SEGMENT}", tenant.prefix());
+    let sso = sso(&headers);
+    if console_csrf_token(&sso, state.config.csrf_secret()) != form.csrf_token {
+        return found(&format!("{base}?error=csrf"));
+    }
+    let value = form.value.trim();
+    let value = (!value.is_empty()).then_some(value);
+    match state
+        .api
+        .update_runtime_setting(&correlation.0, &tenant.0, &sso, form.key.trim(), value)
+        .await
+    {
+        Ok(_) => found(&format!("{base}?saved=1#runtime-settings")),
+        Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
+        Err(AdminApiError::Forbidden) => found(&format!("{base}?error=forbidden")),
+        Err(AdminApiError::Validation(_)) => {
+            found(&format!("{base}?error=runtime-validation#runtime-settings"))
+        }
+        Err(_) => found(&format!("{base}?error=internal")),
+    }
+}
+
 fn error_key_for(error: &str) -> Option<&'static str> {
     match error {
         "csrf" => Some("admin-error-csrf"),
         "forbidden" => Some("admin-settings-error-forbidden"),
         "validation" => Some("admin-settings-error-validation"),
+        "runtime-validation" => Some("admin-settings-error-runtime-validation"),
         "internal" => Some("admin-error-internal"),
         _ => None,
     }

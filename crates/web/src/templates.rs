@@ -12,11 +12,24 @@ use crate::i18n::Messages;
 use askama::Template;
 use idp_contracts::admin::{ClientStatusResponse, UserSummaryResponse};
 use idp_contracts::auth::PasskeyCredentialInfo;
-use idp_contracts::version::VersionInfo;
+use idp_contracts::version::{BuildTimeVersionInfoProvider, VersionInfo, VersionInfoProvider};
 
 /// フッタなどの共通 UI に表示する Cargo パッケージバージョン。
 pub fn app_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
+}
+
+/// フッタに表示するバージョン表記。Git バージョン（`git describe`。ビルド時に埋め込み）が
+/// 取得できていれば `v{package} ({git})`、なければパッケージ版のみ（`v{package}`）。
+pub fn footer_version() -> String {
+    let git = BuildTimeVersionInfoProvider::new(app_version())
+        .version_info()
+        .git_version;
+    if git.is_empty() || git == "unknown" {
+        format!("v{}", app_version())
+    } else {
+        format!("v{} ({git})", app_version())
+    }
 }
 
 /// テンプレートを描画して HTML 文字列を返す。描画エラー（実質 fmt エラーのみ）は握りつぶさず
@@ -260,6 +273,23 @@ pub struct MembersList<'a> {
     pub members: &'a [crate::admin_dto::MemberView],
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
+}
+
+/// 管理者によるパスワード再発行の結果画面（一度限りの生成パスワード表示。ADR-0009 §5）。
+/// メンバー一覧（HOME 利用者）とテナント管理（子テナント管理者）の双方から使う。
+#[derive(Template)]
+#[template(path = "console/password_reset_result.html")]
+pub struct PasswordResetResult<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub admin: Admin<'a>,
+    /// 対象の表示（メールアドレス等）。
+    pub subject: &'a str,
+    /// 生成パスワード（平文。一度限り表示）。
+    pub generated_password: &'a str,
+    pub back_href: &'a str,
+    /// 戻りリンクの文言キー。
+    pub back_label_key: &'a str,
 }
 
 /// ゲスト招待フォーム（`GET/POST /{tenant_id}/admin/invitations`、ADR-0009 §3）。

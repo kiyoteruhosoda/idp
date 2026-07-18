@@ -26,7 +26,7 @@ use crate::domain::repositories::{
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::tenant_membership::TenantMembership;
-use crate::domain::values::{MembershipStatus, MembershipType};
+use crate::domain::values::{MembershipStatus, MembershipType, UserStatus};
 use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -69,6 +69,9 @@ pub struct TenantMember {
     pub name: Option<String>,
     pub membership_type: MembershipType,
     pub status: MembershipStatus,
+    /// 利用者アカウント自体の状態（ACTIVE / DISABLED / LOCKED）。不存在ユーザーは `None`。
+    /// 管理コンソールのメンバー一覧が無効化状態を表示するために返す。
+    pub user_status: Option<UserStatus>,
 }
 
 /// 招待トークンのバイト長（base64url で 43 文字程度）。
@@ -263,6 +266,7 @@ impl InvitationService {
                 name: user_map.get(&m.user_id).and_then(|u| u.name.clone()),
                 membership_type: m.membership_type,
                 status: m.status,
+                user_status: user_map.get(&m.user_id).map(|u| u.status),
             })
             .collect();
         Ok(members)
@@ -453,6 +457,15 @@ mod tests {
             unreachable!()
         }
         async fn update_password(&self, _id: Uuid, _password_hash: &str) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn reset_password_forced(&self, _id: Uuid, _password_hash: &str) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn update_status(&self, _id: Uuid, _status: UserStatus) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn delete(&self, _id: Uuid) -> DomainResult<()> {
             unreachable!()
         }
         async fn mark_email_verified(&self, _id: Uuid) -> DomainResult<()> {

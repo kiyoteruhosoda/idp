@@ -8,13 +8,15 @@
 use crate::application::tenant_management::{
     CreateTenantCommand, TenantManagementError, UpdateTenantCommand,
 };
+use crate::application::user_lifecycle::UserLifecycleError;
 use crate::domain::tenant::{Tenant, TenantId};
+use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::TenantStatus;
 use crate::presentation::admin::{IdpAdmin, IdpSystemAdmin, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
-    CreateTenantRequest, TenantCreatedResponse, TenantResponse, UpdateTenantRequest,
-    UpdateTenantSettingsRequest,
+    CreateTenantRequest, TenantAdminPasswordResetRequest, TenantCreatedResponse, TenantResponse,
+    UpdateTenantRequest, UpdateTenantSettingsRequest, UserPasswordResetResponse,
 };
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
@@ -216,6 +218,63 @@ pub async fn delete_tenant(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// 子テナントの利用者（テナント登録時の初期管理者等）のパスワードを再発行する
+/// （`POST /{tenant_id}/admin/tenants/{child_id}/admin-password-reset`）。
+///
+/// 対象は**直下の子テナント所属**の利用者をメールアドレスで指定する。32 文字以上のランダム
+/// パスワードを自動生成して `must_change_password` を設定し、`generated_password` を
+/// **この応答でのみ**平文で返す（テナント作成時と同じパターン。ADR-0009 §5）。
+#[utoipa::path(
+    post,
+    path = "/{tenant_id}/admin/tenants/{child_id}/admin-password-reset",
+    tag = "admin",
+    params(("child_id" = String, Path, description = "子テナントの UUID")),
+    request_body = TenantAdminPasswordResetRequest,
+    responses(
+        (status = 200, description = "再発行成功（generated_password を含む）", body = UserPasswordResetResponse),
+        (status = 400, description = "email が未指定"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.system.admin 必須）"),
+        (status = 404, description = "テナントまたは利用者が不存在"),
+    )
+)]
+pub async fn reset_tenant_admin_password(
+    RequirePerms(admin, _): RequirePerms<IdpSystemAdmin>,
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    headers: HeaderMap,
+    Path((_tenant_id, child_id)): Path<(String, String)>,
+    Json(body): Json<TenantAdminPasswordResetRequest>,
+) -> Result<Json<UserPasswordResetResponse>, ApiError> {
+    let child = parse_tenant_id(&child_id)?;
+    // 直下の子テナントであることを検証する（他系統のテナントを対象にさせない）。
+    let child_tenant = state
+        .tenants_admin
+        .get_child(tenant.context(), child)
+        .await
+        .map_err(map_error)?;
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
+    let reset = state
+        .users_lifecycle
+        .reset_password_by_email(
+            TenantContext::new(child_tenant.id),
+            &body.email,
+            admin.user_id,
+            &ctx,
+        )
+        .await
+        .map_err(map_lifecycle_error)?;
+    Ok(Json(UserPasswordResetResponse {
+        user_id: reset.user_id.to_string(),
+        generated_password: reset.generated_password,
+    }))
+}
+
 /// 設定画面のテナント設定区画: 自テナント（要求テナント自身）を取得する（`idp.tenant.admin` 必須。MT14）。
 #[utoipa::path(
     get,
@@ -296,6 +355,15 @@ fn parse_tenant_id(raw: &str) -> Result<TenantId, ApiError> {
     Uuid::parse_str(raw)
         .map(TenantId::from)
         .map_err(|_| ApiError::NotFound("tenant not found".to_string()))
+}
+
+fn map_lifecycle_error(e: UserLifecycleError) -> ApiError {
+    match e {
+        UserLifecycleError::NotFound => ApiError::NotFound("user not found".to_string()),
+        UserLifecycleError::Forbidden(m) => ApiError::Forbidden(m),
+        UserLifecycleError::Validation(m) => ApiError::BadRequest(m),
+        UserLifecycleError::Internal(m) => ApiError::Internal(m),
+    }
 }
 
 fn map_error(e: TenantManagementError) -> ApiError {

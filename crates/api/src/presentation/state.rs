@@ -40,6 +40,7 @@ use crate::application::tenant_management::TenantManagementService;
 use crate::application::tenant_resolution::TenantResolutionService;
 use crate::application::token::TokenService;
 use crate::application::totp_registration::TotpRegistrationService;
+use crate::application::user_lifecycle::UserLifecycleService;
 use crate::application::user_management::UserManagementService;
 use crate::application::userinfo::UserInfoService;
 use crate::config::Config;
@@ -121,6 +122,8 @@ pub struct AppState {
     pub permissions_admin: Arc<PermissionManagementService>,
     /// 管理者による利用者作成（自動生成パスワード・must_change_password。ADR-0009 §5）。
     pub users_admin: Arc<UserManagementService>,
+    /// 管理者による利用者ライフサイクル操作（無効化・削除・パスワード再発行。ADR-0009 §5）。
+    pub users_lifecycle: Arc<UserLifecycleService>,
     /// テナント作成・管理（idp.system.admin 必須。ADR-0009 §5・§6）。設定画面のテナント設定区画
     /// （自テナント参照・表示名更新。MT14）も本サービスを通す。
     pub tenants_admin: Arc<TenantManagementService>,
@@ -400,6 +403,17 @@ impl AppState {
             clock.clone(),
             ids.clone(),
         ));
+        // 管理者による利用者ライフサイクル操作（ADR-0009 §5）。パスワード再発行・無効化時は当該
+        // 利用者のセッション・トークンを失効させる。
+        let users_lifecycle = Arc::new(UserLifecycleService::new(
+            users.clone(),
+            sso_sessions.clone(),
+            refresh_tokens.clone(),
+            codes.clone(),
+            hasher.clone(),
+            audit.clone(),
+            clock.clone(),
+        ));
         // テナント作成・管理（ADR-0009 §5・§6）。初期管理者の構築は users_admin へ委譲し、テナント・
         // 管理者・メンバーシップ・権限付与は単一トランザクションで永続化する（unit of work。REF2）。
         // 付与は判定キャッシュを経由しないが、新規生成 ID のため該当キーがキャッシュに載っていることはない。
@@ -465,6 +479,7 @@ impl AppState {
             signing_keys.clone(),
             refresh_tokens,
             revoked_access_tokens,
+            users.clone(),
             hasher,
             clock.clone(),
             config.issuer().to_string(),
@@ -542,6 +557,7 @@ impl AppState {
             clients_status,
             permissions_admin,
             users_admin,
+            users_lifecycle,
             tenants_admin,
             system_settings,
             account_password,

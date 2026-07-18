@@ -38,7 +38,7 @@ use crate::domain::tenant::{Tenant, TenantId};
 use crate::domain::tenant_membership::TenantMembership;
 use crate::domain::totp_secret::TotpSecret;
 use crate::domain::user::User;
-use crate::domain::values::SigningKeyStatus;
+use crate::domain::values::{SigningKeyStatus, UserStatus};
 use crate::domain::webauthn_credential::WebAuthnCredential;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -139,6 +139,13 @@ pub trait UserRepository: Send + Sync {
     ) -> Result<()>;
     /// パスワードハッシュを更新し、`must_change_password` を解除する（パスワード変更、ADR-0009 §5）。
     async fn update_password(&self, id: Uuid, password_hash: &str) -> Result<()>;
+    /// パスワードハッシュを更新し、`must_change_password` を**設定**する（管理者による再発行。
+    /// 次回ログインで本人に変更させる。ADR-0009 §5）。
+    async fn reset_password_forced(&self, id: Uuid, password_hash: &str) -> Result<()>;
+    /// 利用者の状態（ACTIVE / DISABLED / LOCKED）を更新する（管理者による有効化・無効化）。
+    async fn update_status(&self, id: Uuid, status: UserStatus) -> Result<()>;
+    /// 利用者を削除する（管理者による削除。関連行は DB の FK CASCADE / SET NULL で後始末される）。
+    async fn delete(&self, id: Uuid) -> Result<()>;
     /// メール検証済みフラグを立てる（自己登録アカウントの確認リンク消費時。SEC6b）。
     async fn mark_email_verified(&self, id: Uuid) -> Result<()>;
     /// 表示言語設定を更新する（MT20。`None` で設定解除）。

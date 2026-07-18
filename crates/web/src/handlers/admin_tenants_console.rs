@@ -7,16 +7,18 @@ use crate::api_client::AdminApiError;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::csrf::console_csrf_token;
-use crate::dto::{AdminTenantCreateForm, TenantsQuery};
+use crate::dto::{
+    AdminPasswordResetForm, AdminTenantActionForm, AdminTenantCreateForm, TenantsQuery,
+};
 use crate::handlers::admin_console::{
     forbidden_response, redirect_to_login, resolve_admin, AdminResolution,
 };
 use crate::handlers::found;
 use crate::i18n::{Locale, Messages};
 use crate::state::WebState;
-use crate::templates::{render, TenantCreated, TenantsConsole};
+use crate::templates::{render, PasswordResetResult, TenantCreated, TenantsConsole};
 use crate::tenant::WebTenant;
-use axum::extract::{Extension, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::{header, HeaderMap};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
@@ -107,12 +109,103 @@ pub async fn create(
     .into_response()
 }
 
+/// 子テナントの削除（`POST /{tenant_id}/admin/tenants/{child_id}/delete`）。配下に子テナント・
+/// ユーザー・クライアントが残っている場合は api が 409 を返す（`?error=delete-conflict`）。
+pub async fn delete(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Path(child_id): Path<String>,
+    Form(form): Form<AdminTenantActionForm>,
+) -> Response {
+    match resolve_admin(&state, &correlation, &tenant, &headers).await {
+        AdminResolution::Ok(_) => {}
+        AdminResolution::Reject(resp) => return resp,
+    }
+    let base = format!("{}{TENANTS_SEGMENT}", tenant.prefix());
+    let sso = sso(&headers);
+    if console_csrf_token(&sso, state.config.csrf_secret()) != form.csrf_token {
+        return found(&format!("{base}?error=csrf"));
+    }
+    match state
+        .api
+        .delete_tenant(&correlation.0, &tenant.0, &sso, &child_id)
+        .await
+    {
+        Ok(()) => found(&base),
+        Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
+        Err(AdminApiError::Forbidden) => found(&format!("{base}?error=forbidden")),
+        Err(AdminApiError::NotFound) => found(&format!("{base}?error=notfound")),
+        Err(AdminApiError::Conflict(_)) => found(&format!("{base}?error=delete-conflict")),
+        Err(e) => {
+            tracing::error!(error = %describe(&e), "failed to delete tenant");
+            found(&format!("{base}?error=internal"))
+        }
+    }
+}
+
+/// 子テナント管理者のパスワード再発行
+/// （`POST /{tenant_id}/admin/tenants/{child_id}/reset-admin-password`）。
+/// 成功時は生成パスワードを一度だけ表示する。
+pub async fn reset_admin_password(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Path(child_id): Path<String>,
+    Form(form): Form<AdminPasswordResetForm>,
+) -> Response {
+    let admin = match resolve_admin(&state, &correlation, &tenant, &headers).await {
+        AdminResolution::Ok(uid) => uid,
+        AdminResolution::Reject(resp) => return resp,
+    };
+    let base = format!("{}{TENANTS_SEGMENT}", tenant.prefix());
+    let sso = sso(&headers);
+    if console_csrf_token(&sso, state.config.csrf_secret()) != form.csrf_token {
+        return found(&format!("{base}?error=csrf"));
+    }
+    let email = form.email.trim();
+    if email.is_empty() {
+        return found(&format!("{base}?error=validation"));
+    }
+    let reset = match state
+        .api
+        .reset_tenant_admin_password(&correlation.0, &tenant.0, &sso, &child_id, email)
+        .await
+    {
+        Ok(v) => v,
+        Err(AdminApiError::Unauthorized) => return redirect_to_login(&tenant),
+        Err(AdminApiError::Forbidden) => return found(&format!("{base}?error=forbidden")),
+        Err(AdminApiError::NotFound) => return found(&format!("{base}?error=reset-notfound")),
+        Err(AdminApiError::Validation(_)) => return found(&format!("{base}?error=validation")),
+        Err(e) => {
+            tracing::error!(error = %describe(&e), "failed to reset tenant admin password");
+            return found(&format!("{base}?error=internal"));
+        }
+    };
+    let messages = Messages::new(locale(&headers));
+    Html(render(&PasswordResetResult {
+        messages: &messages,
+        tenant: &tenant.prefix(),
+        admin: Some(&admin),
+        subject: email,
+        generated_password: &reset.generated_password,
+        back_href: &base,
+        back_label_key: "admin-tenants-back",
+    }))
+    .into_response()
+}
+
 fn error_key_for(error: &str) -> Option<&'static str> {
     match error {
         "csrf" => Some("admin-error-csrf"),
         "forbidden" => Some("admin-tenants-error-forbidden"),
         "validation" => Some("admin-tenants-error-validation"),
         "conflict" => Some("admin-tenants-error-conflict"),
+        "delete-conflict" => Some("admin-tenants-error-delete-conflict"),
+        "notfound" => Some("admin-tenants-error-notfound"),
+        "reset-notfound" => Some("admin-tenants-error-reset-notfound"),
         "internal" => Some("admin-error-internal"),
         _ => None,
     }

@@ -56,6 +56,7 @@
                 <i class="fa-solid fa-circle-question text-muted ms-1" aria-hidden="true" title="{{ messages.get("admin-tenants-self-registration-hint") }}"></i>
               </th>
               <th>{{ messages.get("admin-tenants-login") }}</th>
+              <th>{{ messages.get("admin-tenants-col-actions") }}</th>
             </tr>
           </thead>
           <tbody>
@@ -73,10 +74,30 @@
                   <a class="btn btn-sm btn-outline-secondary" href="/{{ t.id }}/admin/login"><i class="fa-solid fa-user-shield me-1" aria-hidden="true"></i>{{ messages.get("admin-tenants-login-admin") }}</a>
                 </div>
               </td>
+              <td>
+                <div class="d-flex flex-wrap gap-2">
+                  <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#tenant-reset-{{ loop.index }}"
+                          aria-expanded="false" aria-controls="tenant-reset-{{ loop.index }}">
+                    <i class="fa-solid fa-key me-1" aria-hidden="true"></i>{{ messages.get("admin-tenants-reset-admin-password") }}
+                  </button>
+                  <form method="post" action="{{ tenant }}/admin/tenants/{{ t.id }}/delete" class="d-inline" onsubmit="return confirm('{{ messages.get("admin-tenants-delete-confirm") }}')">
+                    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                    <button type="submit" class="btn btn-sm btn-outline-danger"><i class="fa-solid fa-trash me-1" aria-hidden="true"></i>{{ messages.get("admin-tenants-delete-button") }}</button>
+                  </form>
+                </div>
+                <div class="collapse mt-2" id="tenant-reset-{{ loop.index }}">
+                  <form method="post" action="{{ tenant }}/admin/tenants/{{ t.id }}/reset-admin-password" class="d-flex flex-wrap gap-2 align-items-center">
+                    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                    <input type="email" class="form-control form-control-sm w-auto" name="email" placeholder="{{ messages.get("admin-tenants-admin-email") }}" required>
+                    <button type="submit" class="btn btn-sm btn-secondary">{{ messages.get("admin-tenants-reset-admin-password-submit") }}</button>
+                  </form>
+                  <div class="form-text">{{ messages.get("admin-tenants-reset-admin-password-hint") }}</div>
+                </div>
+              </td>
             </tr>
             {% endfor %}
             {% if tenants.is_empty() %}
-            <tr><td colspan="5" class="text-center text-muted py-4">{{ messages.get("admin-tenants-list-empty") }}</td></tr>
+            <tr><td colspan="6" class="text-center text-muted py-4">{{ messages.get("admin-tenants-list-empty") }}</td></tr>
             {% endif %}
           </tbody>
         </table>

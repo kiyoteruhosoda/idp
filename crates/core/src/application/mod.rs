@@ -34,5 +34,6 @@ pub mod tenant_management;
 pub mod tenant_resolution;
 pub mod token;
 pub mod totp_registration;
+pub mod user_lifecycle;
 pub mod user_management;
 pub mod userinfo;

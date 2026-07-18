@@ -42,6 +42,17 @@ pub enum DefaultRisk {
     Dangerous,
 }
 
+/// 設定値の型（DB 上書き値の入力検証に使う）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingKind {
+    /// 非負整数（TTL 秒数・日数等）。
+    UnsignedInteger,
+    /// 真偽値（`true` / `false`）。
+    Boolean,
+    /// 自由文字列（URL 等）。
+    Text,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SettingDefinition {
     pub key: &'static str,
@@ -50,6 +61,7 @@ pub struct SettingDefinition {
     pub restart_required: bool,
     pub default_risk: DefaultRisk,
     pub default_value: Option<&'static str>,
+    pub kind: SettingKind,
 }
 
 pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
@@ -59,6 +71,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Review,
+        kind: SettingKind::Text,
         default_value: Some("http://localhost:8080"),
     },
     SettingDefinition {
@@ -67,6 +80,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Safe,
+        kind: SettingKind::Text,
         default_value: Some("0.0.0.0:8080"),
     },
     SettingDefinition {
@@ -75,6 +89,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         secret: true,
         restart_required: true,
         default_risk: DefaultRisk::Dangerous,
+        kind: SettingKind::Text,
         default_value: Some("mysql://idp:idp@127.0.0.1:3306/idp"),
     },
     SettingDefinition {
@@ -83,6 +98,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
         default_value: Some("10"),
     },
     SettingDefinition {
@@ -91,6 +107,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Safe,
+        kind: SettingKind::Text,
         default_value: Some("json"),
     },
     // api と web の両方が消費する値。web が DB 設定を解決/materialize するまでは env locked。
@@ -100,6 +117,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
         default_value: Some("600"),
     },
     SettingDefinition {
@@ -108,6 +126,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
         default_value: Some("60"),
     },
     SettingDefinition {
@@ -116,6 +135,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
         default_value: Some("28800"),
     },
     SettingDefinition {
@@ -124,6 +144,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
         default_value: Some("86400"),
     },
     SettingDefinition {
@@ -132,6 +153,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
         default_value: Some("900"),
     },
     SettingDefinition {
@@ -140,6 +162,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
         default_value: Some("3600"),
     },
     SettingDefinition {
@@ -148,6 +171,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
         default_value: Some("2592000"),
     },
     SettingDefinition {
@@ -156,6 +180,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
         default_value: Some("60"),
     },
     SettingDefinition {
@@ -164,6 +189,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
         default_value: Some("604800"),
     },
     SettingDefinition {
@@ -172,6 +198,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
         default_value: Some("3600"),
     },
     SettingDefinition {
@@ -180,6 +207,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
         default_value: Some("86400"),
     },
     SettingDefinition {
@@ -188,6 +216,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
         default_value: Some("60"),
     },
     SettingDefinition {
@@ -196,6 +225,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
         default_value: Some("60"),
     },
     // api と web の Cookie 属性を一致させる必要があるため、DB materialize までは env locked。
@@ -205,6 +235,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Dangerous,
+        kind: SettingKind::Boolean,
         default_value: None,
     },
     SettingDefinition {
@@ -213,6 +244,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         secret: true,
         restart_required: true,
         default_risk: DefaultRisk::Dangerous,
+        kind: SettingKind::Text,
         default_value: None,
     },
     SettingDefinition {
@@ -221,6 +253,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
         default_value: Some("30"),
     },
     SettingDefinition {
@@ -229,6 +262,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Review,
+        kind: SettingKind::Boolean,
         default_value: Some("false"),
     },
     // api/web の security header を一致させる必要があるため、DB materialize までは env locked。
@@ -238,6 +272,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Dangerous,
+        kind: SettingKind::UnsignedInteger,
         default_value: Some("0"),
     },
     SettingDefinition {
@@ -246,6 +281,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         secret: true,
         restart_required: true,
         default_risk: DefaultRisk::Dangerous,
+        kind: SettingKind::Text,
         default_value: None,
     },
     SettingDefinition {
@@ -254,6 +290,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         secret: true,
         restart_required: true,
         default_risk: DefaultRisk::Dangerous,
+        kind: SettingKind::Text,
         default_value: None,
     },
     SettingDefinition {
@@ -262,6 +299,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Review,
+        kind: SettingKind::Text,
         default_value: None,
     },
 ];

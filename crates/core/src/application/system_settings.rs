@@ -15,8 +15,9 @@ use crate::domain::error::{DomainError, Result};
 use crate::domain::mailer::SmtpServerConfig;
 use crate::domain::repositories::SystemSettingsRepository;
 use crate::domain::system_setting::{
-    SmtpSettingsView, SystemSetting, UpdateSmtpCommand, SMTP_FROM_ADDRESS, SMTP_HOST,
-    SMTP_PASSWORD, SMTP_PORT, SMTP_USERNAME, SMTP_USE_TLS,
+    runtime_setting_definition, SettingKind, SettingOwner, SmtpSettingsView, SystemSetting,
+    UpdateSmtpCommand, SMTP_FROM_ADDRESS, SMTP_HOST, SMTP_PASSWORD, SMTP_PORT, SMTP_USERNAME,
+    SMTP_USE_TLS,
 };
 use crate::domain::tenant_context::TenantContext;
 use std::collections::HashMap;
@@ -146,6 +147,84 @@ impl SystemSettingsService {
             .await;
 
         self.get_smtp().await
+    }
+
+    /// DB に保存されているランタイム設定（`RUNTIME_SETTING_DEFINITIONS` のキー）の上書き値を返す
+    /// （表示用。空文字列 = 未設定として除外する。secret キーは含めない）。
+    pub async fn runtime_overrides(&self) -> Result<HashMap<String, String>> {
+        let map = self.load_map().await?;
+        Ok(map
+            .into_iter()
+            .filter(|(key, value)| {
+                !value.is_empty()
+                    && runtime_setting_definition(key)
+                        .map(|def| !def.secret)
+                        .unwrap_or(false)
+            })
+            .collect())
+    }
+
+    /// ランタイム設定の DB 上書き値を更新する。`DB_MANAGED` かつ非 secret のキーのみ許可する。
+    /// `value` が `None` または空文字列のときは上書きを解除する（既定値・環境変数へ戻る）。
+    /// 反映には再起動が必要（起動時に `Config` が解決する）。
+    pub async fn update_runtime_setting(
+        &self,
+        tenant: TenantContext,
+        key: &str,
+        value: Option<String>,
+        actor: Uuid,
+        ctx: &RequestContext,
+    ) -> Result<()> {
+        let def = runtime_setting_definition(key).ok_or_else(|| {
+            DomainError::InvalidValue(format!("unknown runtime setting key: {key}"))
+        })?;
+        if def.owner != SettingOwner::DbManaged || def.secret {
+            return Err(DomainError::InvalidValue(format!(
+                "setting {key} is not DB-managed"
+            )));
+        }
+        let value = value.map(|v| v.trim().to_string()).unwrap_or_default();
+        if !value.is_empty() {
+            match def.kind {
+                SettingKind::UnsignedInteger => {
+                    // `Config` 側の最小の消費型（`KEY_ROTATION_LEAD_DAYS` 等の u32）でも起動時に
+                    // 必ずパースできるよう、u32 の範囲で検証する（範囲外を保存すると再起動が
+                    // 構成エラーで失敗するため）。
+                    value.parse::<u32>().map_err(|_| {
+                        DomainError::InvalidValue(format!(
+                            "setting {key} must be a non-negative integer (max {})",
+                            u32::MAX
+                        ))
+                    })?;
+                }
+                SettingKind::Boolean => {
+                    if value != "true" && value != "false" {
+                        return Err(DomainError::InvalidValue(format!(
+                            "setting {key} must be true or false"
+                        )));
+                    }
+                }
+                SettingKind::Text => {}
+            }
+        }
+        // 空文字列の upsert = 上書き解除（`Config` の resolver は空値を未設定として扱う）。
+        self.upsert_plain(key, &value).await?;
+        self.audit
+            .record(
+                AuditEventType::SystemSettingsUpdated,
+                AuditResult::Success,
+                Some(tenant.tenant_id()),
+                Some(actor),
+                None,
+                // 値そのものは記録しない（キーと設定/解除の別のみ）。
+                Some(&format!(
+                    "runtime {key} {}",
+                    if value.is_empty() { "cleared" } else { "set" }
+                )),
+                ctx,
+            )
+            .await;
+        Ok(())
     }
 
     async fn upsert_plain(&self, key: &str, value: &str) -> Result<()> {

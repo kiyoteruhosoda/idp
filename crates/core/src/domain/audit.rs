@@ -40,6 +40,11 @@ pub enum AuditEventType {
     TenantMembershipRevoked,
     /// 管理者による利用者の作成（ADR-0009 §5）。自動生成パスワードは記録しない。
     UserCreated,
+    /// 管理者による利用者の状態変更（有効化・無効化）・削除・パスワード再発行（ADR-0009 §5）。
+    /// 自動生成パスワードは記録しない。
+    UserStatusChanged,
+    UserDeleted,
+    UserPasswordReset,
     /// パスワード変更（初回強制変更を含む。ADR-0009 §5）。パスワードそのものは記録しない。
     PasswordChanged,
     /// テナントの作成・更新・削除（ADR-0009 §5）。自動生成パスワードは記録しない。
@@ -85,6 +90,9 @@ impl AuditEventType {
             Self::TenantInvitationAccepted => "tenant_invitation.accepted",
             Self::TenantMembershipRevoked => "tenant_membership.revoked",
             Self::UserCreated => "user.created",
+            Self::UserStatusChanged => "user.status_changed",
+            Self::UserDeleted => "user.deleted",
+            Self::UserPasswordReset => "user.password_reset",
             Self::PasswordChanged => "password.changed",
             Self::TenantCreated => "tenant.created",
             Self::TenantUpdated => "tenant.updated",

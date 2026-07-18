@@ -49,6 +49,7 @@ pub async fn list_members(
                 name: m.name,
                 membership_type: m.membership_type.as_str().to_string(),
                 status: m.status.as_str().to_string(),
+                user_status: m.user_status.map(|s| s.as_str().to_string()),
             })
             .collect(),
     ))

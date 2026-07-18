@@ -104,9 +104,23 @@ pub fn build(state: WebState) -> Router {
             "/admin/system-settings",
             post(admin_settings::update_system),
         )
+        // ランタイム設定の DB 上書き（root のみ。反映には再起動が必要）。
+        .route(
+            "/admin/system-settings/runtime",
+            post(admin_settings::update_runtime),
+        )
         .route(
             "/admin/tenants",
             get(admin_tenants_console::list).post(admin_tenants_console::create),
+        )
+        // 子テナントの削除・管理者パスワード再発行（root のみ）。
+        .route(
+            "/admin/tenants/{child_id}/delete",
+            post(admin_tenants_console::delete),
+        )
+        .route(
+            "/admin/tenants/{child_id}/reset-admin-password",
+            post(admin_tenants_console::reset_admin_password),
         )
         // クライアント（RP）管理画面。静的セグメント（new）は動的 {client_id} より優先。
         .route("/admin/clients", get(admin_clients_console::list))
@@ -149,11 +163,24 @@ pub fn build(state: WebState) -> Router {
             "/admin/users/{user_id}/permissions/revoke",
             post(admin_users_console::revoke),
         )
-        // メンバー（HOME/GUEST）一覧・ゲスト解除（ADR-0009 §3）。
+        // メンバー（HOME/GUEST）一覧・ゲスト解除（ADR-0009 §3）と、所属元（HOME）利用者の
+        // 無効化・有効化・パスワード再発行・削除（ADR-0009 §5）。
         .route("/admin/members", get(admin_members_console::list))
         .route(
             "/admin/members/{user_id}/revoke",
             post(admin_members_console::revoke),
+        )
+        .route(
+            "/admin/members/{user_id}/status",
+            post(admin_members_console::set_status),
+        )
+        .route(
+            "/admin/members/{user_id}/reset-password",
+            post(admin_members_console::reset_password),
+        )
+        .route(
+            "/admin/members/{user_id}/delete",
+            post(admin_members_console::delete),
         )
         // ゲスト招待の作成（ADR-0009 §3）。
         .route(

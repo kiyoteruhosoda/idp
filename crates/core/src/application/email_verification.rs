@@ -277,6 +277,15 @@ mod tests {
         async fn update_password(&self, _id: Uuid, _h: &str) -> DomainResult<()> {
             unreachable!()
         }
+        async fn reset_password_forced(&self, _id: Uuid, _password_hash: &str) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn update_status(&self, _id: Uuid, _status: UserStatus) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn delete(&self, _id: Uuid) -> DomainResult<()> {
+            unreachable!()
+        }
         async fn mark_email_verified(&self, id: Uuid) -> DomainResult<()> {
             let mut rows = self.rows.lock().unwrap();
             if let Some(user) = rows.iter_mut().find(|u| u.id == id) {

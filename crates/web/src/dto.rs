@@ -118,6 +118,46 @@ pub struct TenantsQuery {
     pub error: Option<String>,
 }
 
+/// テナント管理画面の CSRF のみのアクション（削除等）のフォーム。
+#[derive(Debug, Deserialize)]
+pub struct AdminTenantActionForm {
+    pub csrf_token: String,
+}
+
+/// 管理者によるパスワード再発行フォーム（対象をメールアドレスで指定する）。
+#[derive(Debug, Deserialize)]
+pub struct AdminPasswordResetForm {
+    #[serde(default)]
+    pub email: String,
+    pub csrf_token: String,
+}
+
+/// メンバー一覧の利用者状態変更フォーム（`ACTIVE` / `DISABLED`）。
+#[derive(Debug, Deserialize)]
+pub struct MemberStatusForm {
+    pub status: String,
+    pub csrf_token: String,
+}
+
+/// メンバー一覧の CSRF のみのアクション（削除・パスワード再発行等）のフォーム。
+/// `email` は結果画面の表示用（省略可。認可・対象解決には使わない）。
+#[derive(Debug, Deserialize)]
+pub struct MemberActionForm {
+    #[serde(default)]
+    pub email: String,
+    pub csrf_token: String,
+}
+
+/// 設定画面のランタイム設定（DB 上書き）フォーム
+/// （`POST /{tenant_id}/admin/system-settings/runtime`）。`value` が空 = 上書き解除。
+#[derive(Debug, Deserialize)]
+pub struct AdminRuntimeSettingForm {
+    pub key: String,
+    #[serde(default)]
+    pub value: String,
+    pub csrf_token: String,
+}
+
 /// SAML 連携登録フォーム（`POST /{tenant_id}/admin/saml`）。
 #[derive(Debug, Deserialize)]
 pub struct AdminSamlProviderForm {

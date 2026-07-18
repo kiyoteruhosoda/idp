@@ -52,6 +52,10 @@ pub struct ResolvedSetting {
     pub status: SettingSafetyStatus,
     /// 危険/安全判定の根拠。secret の平文・fingerprint は含めない。
     pub reason: String,
+    /// 起動時に解決された有効値（表示用）。secret のときは常に `None`（平文を外へ出さない）。
+    pub value: Option<String>,
+    /// 組み込み既定値（表示用）。secret のときは `None`。
+    pub default_value: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -412,6 +416,15 @@ impl<'a> ConfigResolver<'a> {
                 default_risk: def.default_risk,
                 status: self.safety_status(def.key, def.default_risk),
                 reason: self.safety_reason(def.key, def.default_risk),
+                value: (!def.secret)
+                    .then(|| {
+                        self.optional_string(def.key)
+                            .or_else(|| def.default_value.map(str::to_string))
+                    })
+                    .flatten(),
+                default_value: (!def.secret)
+                    .then(|| def.default_value.map(str::to_string))
+                    .flatten(),
             })
             .collect()
     }

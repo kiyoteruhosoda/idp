@@ -1,3 +1,39 @@
+## 2026-07-18（管理コンソール: 利用者ライフサイクル・テナント削除/PW再発行・設定の DB 上書き）
+
+- **crates/core・api — 利用者ライフサイクル API を新設**: `UserLifecycleService` を追加し、
+  `PATCH /admin/users/{id}`（有効化・無効化）・`DELETE /admin/users/{id}`（削除）・
+  `POST /admin/users/{id}/password-reset`（一時パスワード再発行。`must_change_password` 付与）を
+  実装した。所属元（HOME）が当該テナントの利用者のみ操作でき、自分自身への操作は禁止。再発行・
+  無効化時は SSO セッション・refresh token・未消費 authorization code を全失効させる。
+- **crates/api・web — 子テナントの削除と管理者パスワード再発行を画面へ接続**: テナント登録画面の
+  各行に「削除」（既存 `DELETE /admin/tenants/{child_id}` を接続。配下残存時は 409 を表示）と
+  「管理者PW再発行」（新設 `POST /admin/tenants/{child_id}/admin-password-reset`。メール指定で
+  一時パスワードを一度だけ表示）を追加した。
+- **crates/web — メンバー一覧を利用者管理のハブへ再構成**: 一覧に「利用者を作成」「ゲストを招待」
+  ボタンと、メンバーごとの権限参照リンク・アカウント状態（有効/無効/ロック）表示・無効化/有効化・
+  パスワード再発行・削除（HOME）／解除（GUEST）を追加。サイドバーの「利用者権限」「利用者を作成」を
+  「メンバー」「利用者を検索」へ整理した（権限リンクは HOME メンバーのみ。ゲストの `users`
+  レコードへは参加先管理者から到達できない。ADR-0009 §3）。
+- **crates/core・api・web — ランタイム設定の DB 上書きと現在値表示**: 設定画面のランタイム設定表に
+  有効値・出所バッジ（ENV/DB/既定値）・既定値・DB 上書き入力欄を追加し、`DB_MANAGED` キーを
+  `PUT /admin/system-settings/runtime` で上書き・解除できるようにした（値の型検証付き。反映は
+  API 再起動後）。
+- **docker/nginx.conf — web 画面のルーティング漏れ（404）を修正**: `/{tenant_id}/settings`
+  （プロフィール設定）・`forgot-password`・`password-reset`・`verify-email`・`invitations/accept`・
+  `/version` が api 側へ流れて 404 になっていたのを web へ振り分けた。`/logout` は POST（ポータル）
+  → web、GET（OIDC RP-Initiated Logout）→ api にメソッドで振り分け。
+- **crates/web — フッタのバージョン表記に Git バージョンを併記**: `IdP Web v0.1.0 (git describe)`
+  形式にした（ビルド時埋め込みが無い場合はパッケージ版のみ）。
+- **crates/core — `/introspect` が無効化・削除済み利用者のトークンを active と返す穴を塞いだ**:
+  access_token（JWT）・refresh_token の両経路で利用者の現在状態を確認し、非 ACTIVE・不存在は
+  `active: false` を返す（`/userinfo` と同じ判定。無効化・削除・パスワード再発行の即時反映）。
+- **crates/core — ランタイム設定の整数検証を u32 範囲に強化**: `KEY_ROTATION_LEAD_DAYS` 等の
+  u32 消費キーに範囲外の値（u32::MAX 超）を保存すると次回起動が構成エラーで失敗するため、
+  保存前に u32 でパース検証する。
+- **scripts/e2e.sh — `printf | grep -q` の SIGPIPE 誤検知を解消**: `set -o pipefail` 下で
+  `grep -q` の早期終了により `printf` が SIGPIPE(141) となり、マッチ成功でもパイプラインが
+  失敗扱いになっていた（テナント登録画面チェックで顕在化）。here-string（`<<<`）方式へ変更。
+
 ## 2026-07-18（エンドユーザー・ポータルのログイン新設とテナント登録 UI 改善）
 
 - **crates/core・api・web — エンドユーザー・ポータルの直接ログインを新設**: `/{tenant_id}/login` を

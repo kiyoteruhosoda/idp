@@ -188,6 +188,35 @@ impl UserRepository for SqlxUserRepository {
         Ok(())
     }
 
+    async fn reset_password_forced(&self, id: Uuid, password_hash: &str) -> Result<()> {
+        sqlx::query("UPDATE users SET password_hash = ?, must_change_password = 1 WHERE id = ?")
+            .bind(password_hash)
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        Ok(())
+    }
+
+    async fn update_status(&self, id: Uuid, status: UserStatus) -> Result<()> {
+        sqlx::query("UPDATE users SET status = ? WHERE id = ?")
+            .bind(status.as_str())
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        Ok(())
+    }
+
+    async fn delete(&self, id: Uuid) -> Result<()> {
+        sqlx::query("DELETE FROM users WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        Ok(())
+    }
+
     async fn mark_email_verified(&self, id: Uuid) -> Result<()> {
         sqlx::query("UPDATE users SET email_verified = 1 WHERE id = ?")
             .bind(id.to_string())
