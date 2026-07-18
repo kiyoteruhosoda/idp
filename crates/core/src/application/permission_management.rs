@@ -67,10 +67,9 @@ impl PermissionManagementService {
             .map_err(|e| PermissionManagementError::Internal(e.to_string()))
     }
 
-    /// 対象利用者を内部 ID で取得する（管理コンソールの表示用）。所属元が要求テナントの利用者
-    /// （HOME）に加え、要求テナントで **ACTIVE なメンバーシップ**を持つゲストも参照できる
-    /// （権限の付与・剥奪対象と同じ範囲。ADR-0009 §4）。それ以外（不存在・テナント越し）は
-    /// 存在推測を防ぐため一律 404 相当。
+    /// 対象利用者を内部 ID で取得する（管理コンソールの表示用）。不存在、または所属元が
+    /// 要求テナント以外（テナント越しの参照。ゲストを含む）は 404 相当（ADR-0009 §3:
+    /// 参加先管理者はゲストの `users` レコードへ到達できない）。
     pub async fn get_user(
         &self,
         tenant: TenantContext,
@@ -78,19 +77,7 @@ impl PermissionManagementService {
     ) -> Result<User, PermissionManagementError> {
         match self.find_user_by_id(target).await? {
             Some(user) if user.tenant_id == tenant.tenant_id() => Ok(user),
-            Some(user) => {
-                let active_member = self
-                    .memberships
-                    .is_active_member(tenant.tenant_id(), target)
-                    .await
-                    .map_err(|e| PermissionManagementError::Internal(e.to_string()))?;
-                if active_member {
-                    Ok(user)
-                } else {
-                    Err(PermissionManagementError::NotFound)
-                }
-            }
-            None => Err(PermissionManagementError::NotFound),
+            _ => Err(PermissionManagementError::NotFound),
         }
     }
 

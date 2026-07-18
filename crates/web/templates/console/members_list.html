@@ -20,7 +20,7 @@
     <tbody>
       {% for m in members %}
       <tr>
-        <td><a href="{{ tenant }}/admin/users/{{ m.user_id }}/permissions">{{ m.email.as_deref().unwrap_or("-") }}</a></td>
+        <td>{% if m.membership_type == "HOME" %}<a href="{{ tenant }}/admin/users/{{ m.user_id }}/permissions">{{ m.email.as_deref().unwrap_or("-") }}</a>{% else %}{{ m.email.as_deref().unwrap_or("-") }}{% endif %}</td>
         <td>{{ m.name.as_deref().unwrap_or("-") }}</td>
         <td>{% if m.membership_type == "GUEST" %}<span class="badge text-bg-info">{{ m.membership_type }}</span>{% else %}<span class="badge text-bg-secondary">{{ m.membership_type }}</span>{% endif %}</td>
         <td>{{ m.status }}</td>
@@ -32,8 +32,8 @@
         </td>
         <td>
           <div class="d-flex flex-wrap gap-2">
-            <a class="btn btn-outline-secondary btn-sm" href="{{ tenant }}/admin/users/{{ m.user_id }}/permissions"><i class="fa-solid fa-user-shield me-1" aria-hidden="true"></i>{{ messages.get("admin-members-permissions-button") }}</a>
             {% if m.membership_type == "HOME" %}
+              <a class="btn btn-outline-secondary btn-sm" href="{{ tenant }}/admin/users/{{ m.user_id }}/permissions"><i class="fa-solid fa-user-shield me-1" aria-hidden="true"></i>{{ messages.get("admin-members-permissions-button") }}</a>
               {% if m.user_status.as_deref() == Some("DISABLED") %}
               <form method="post" action="{{ tenant }}/admin/members/{{ m.user_id }}/status" class="d-inline">
                 <input type="hidden" name="csrf_token" value="{{ csrf }}">
