@@ -20,19 +20,19 @@
         <i class="fa-solid fa-building-circle-arrow-right me-2" aria-hidden="true"></i>{{ messages.get("admin-tenants-create-title") }}
       </div>
       <div class="card-body">
-        <form method="post" action="{{ tenant }}/admin/tenants" class="row g-3">
+        <form method="post" action="{{ tenant }}/admin/tenants">
           <input type="hidden" name="csrf_token" value="{{ csrf }}">
-          <div class="col-md-6">
+          <div class="mb-3">
             <label class="form-label" for="tenant-create-name">{{ messages.get("admin-tenants-name") }}</label>
-            <input class="form-control form-control-lg" id="tenant-create-name" name="name" autocomplete="off" required autofocus>
+            <input class="form-control" id="tenant-create-name" name="name" autocomplete="off" required autofocus>
           </div>
-          <div class="col-md-6">
+          <div class="mb-3">
             <label class="form-label" for="tenant-create-admin-email">{{ messages.get("admin-tenants-admin-email") }}</label>
-            <input type="email" class="form-control form-control-lg" id="tenant-create-admin-email" name="admin_email" autocomplete="off" required>
+            <input type="email" class="form-control" id="tenant-create-admin-email" name="admin_email" autocomplete="off" required>
           </div>
-          <div class="col-12 d-flex gap-2">
-            <button type="submit" class="btn btn-primary btn-lg"><i class="fa-solid fa-plus me-2" aria-hidden="true"></i>{{ messages.get("admin-tenants-create") }}</button>
-            <button type="button" class="btn btn-outline-secondary btn-lg" data-bs-toggle="collapse" data-bs-target="#tenant-create-panel">{{ messages.get("admin-tenants-add-close") }}</button>
+          <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-primary"><i class="fa-solid fa-plus me-2" aria-hidden="true"></i>{{ messages.get("admin-tenants-create") }}</button>
+            <button type="button" class="btn btn-outline-secondary" data-bs-toggle="collapse" data-bs-target="#tenant-create-panel">{{ messages.get("admin-tenants-add-close") }}</button>
           </div>
         </form>
       </div>
