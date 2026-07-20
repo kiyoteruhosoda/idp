@@ -1,3 +1,10 @@
+## 2026-07-20（deploy.sh: 中断で残った一時コンテナによる名前衝突を自動解消）
+
+- **scripts/deploy.sh — アプリコンテナ入れ替え失敗の修正**: `docker compose up -d --force-recreate` は
+  旧コンテナを「`<旧ID先頭12桁>_<コンテナ名>`」へ一時リネームしてから入れ替えるが、前回デプロイが
+  中断されるとこのコンテナが残り、次回が「Conflict. The container name ... is already in use」で
+  失敗していた。入れ替え前に当該パターンの残存コンテナを検出・削除する事前クリーンアップを追加。
+
 ## 2026-07-20（管理コンソール: SAML 連携アプリ一覧化・テナント画面の名称整理）
 
 - **crates/core・api・web — SAML 連携アプリの一覧表示を追加**: `GET /admin/saml-providers`
