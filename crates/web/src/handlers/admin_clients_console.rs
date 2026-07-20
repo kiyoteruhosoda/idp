@@ -5,6 +5,7 @@
 //! HTML の描画は Askama テンプレート（`templates/console/`）で行い、利用者入力は自動エスケープされる。
 //! `client_secret` は作成・再発行時にその画面でのみ平文表示する。
 
+use super::locale;
 use crate::admin_dto::{ClientCreatedView, ClientView};
 use crate::api_client::AdminApiError;
 use crate::cookies;
@@ -26,7 +27,6 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 use serde::Deserialize;
 use serde_json::json;
-use super::locale;
 
 const CLIENTS_SEGMENT: &str = "/admin/clients";
 

@@ -6,6 +6,7 @@
 //! エラーは各画面へ `error` クエリで伝える。CSRF は `console_csrf_token`、HTML は Askama テンプレートが
 //! 自動エスケープする。
 
+use super::locale;
 use crate::api_client::AdminApiError;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -26,7 +27,6 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 use idp_contracts::admin::UserSummaryResponse;
 use serde::Deserialize;
-use super::locale;
 
 const USERS_SEGMENT: &str = "/admin/users";
 

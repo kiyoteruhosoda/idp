@@ -8,6 +8,7 @@
 //! 認証・SSO 発行・TOTP 検証は api（`/internal/authenticate/portal*`）に委ね、web は CSRF（同期トークン）
 //! と Cookie 組み立て・画面描画・リダイレクトのみを担う（管理コンソールのログインと同じ責務分担）。
 
+use super::locale;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::csrf::portal_csrf_token;
@@ -21,7 +22,6 @@ use axum::extract::{Extension, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{AppendHeaders, Html, IntoResponse, Response};
 use axum::Form;
-use super::locale;
 use idp_contracts::auth::{
     InternalPortalAuthenticateRequest, InternalPortalAuthenticateResponse,
     InternalPortalMfaRequest, InternalPortalMfaResponse,
@@ -417,4 +417,3 @@ fn message_page(messages: &Messages, key: &str, status: StatusCode) -> Response 
     });
     (status, Html(body)).into_response()
 }
-

@@ -3,6 +3,7 @@
 //! 登録済みの SAML 連携アプリ（外部 IdP）を一覧し、Entity ID・SSO URL・証明書による
 //! 新規追加を提供する。データ操作は api の `/admin/saml-providers` へ SSO Cookie 転送で委譲する。
 
+use super::locale;
 use crate::api_client::AdminApiError;
 use crate::correlation::CorrelationId;
 use crate::csrf::console_csrf_token;
@@ -19,7 +20,6 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 use idp_contracts::admin::SamlProviderRegisterRequest;
 use serde::Deserialize;
-use super::locale;
 
 #[derive(Debug, Default, Deserialize)]
 pub struct SamlQuery {

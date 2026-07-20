@@ -4,6 +4,7 @@
 //! 転送で呼び、結果を Askama テンプレートに描画する（`{{ }}` は自動 HTML エスケープ）。読み取り専用の
 //! ため CSRF は無い。期間（from/to）の形式不正は api が 400 を返すため、web はそれを日時エラー表示へ写す。
 
+use super::locale;
 use crate::admin_dto::AuditLogView;
 use crate::api_client::AdminApiError;
 use crate::correlation::CorrelationId;
@@ -19,7 +20,6 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use idp_contracts::admin::ClientStatusResponse;
 use serde::Deserialize;
-use super::locale;
 
 const AUDIT_SEGMENT: &str = "/admin/audit-logs";
 /// api の既定ページサイズ（`audit_query::DEFAULT_LIMIT` と一致させる。ページャの「次あり」判定に使う）。

@@ -6,6 +6,7 @@
 //! Cookie 転送で委ねる。システム設定区画の可否は「api への GET が 403 か否か」で判定する（root 判定を
 //! web が別途持たず、認可の単一の出所を api に集約する）。
 
+use super::locale;
 use crate::api_client::AdminApiError;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -25,7 +26,6 @@ use axum::extract::{Extension, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
-use super::locale;
 
 const SETTINGS_SEGMENT: &str = "/admin/settings";
 

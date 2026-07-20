@@ -8,6 +8,7 @@
 //!
 //! 画面文言は `fluent` の翻訳リソースで管理する（`Accept-Language` で en / ja を切替）。
 
+use super::locale;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::dto::LoginForm;
@@ -22,7 +23,6 @@ use axum::response::{AppendHeaders, Html, IntoResponse, Response};
 use axum::Form;
 use idp_contracts::auth::{InternalAuthenticateRequest, InternalAuthenticateResponse};
 use idp_contracts::csrf::login_csrf_token;
-use super::locale;
 
 /// ログインフォームを表示する。`auth_session_id` Cookie（api の `/authorize` が発行）が必要。
 pub async fn login_page(

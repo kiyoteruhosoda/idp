@@ -4,6 +4,7 @@
 //! 所属元が他テナントの既存利用者で、内部 ID（UUID）で指定する（利用者検索は所属元テナント限定の
 //! ため、本画面では ID を管理者が別途確認して入力する）。招待トークンはこの結果画面でのみ表示する。
 
+use super::locale;
 use crate::api_client::AdminApiError;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -20,7 +21,6 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 use serde::Deserialize;
-use super::locale;
 
 /// 招待フォーム（`GET /{tenant_id}/admin/invitations`）。
 pub async fn new_form(

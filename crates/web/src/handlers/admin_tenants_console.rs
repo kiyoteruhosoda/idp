@@ -3,6 +3,7 @@
 //! 画面は React 風の reducer/component 分割を持つ小さなプログレッシブ UI として再構成し、
 //! 認可・永続化は api の `/{tenant_id}/admin/tenants`（`idp.system.admin` 必須）へ委譲する。
 
+use super::locale;
 use crate::api_client::AdminApiError;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -22,7 +23,6 @@ use axum::extract::{Extension, Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
-use super::locale;
 
 const TENANTS_SEGMENT: &str = "/admin/tenants";
 

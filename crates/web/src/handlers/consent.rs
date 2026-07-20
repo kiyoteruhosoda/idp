@@ -3,6 +3,7 @@
 //! ADR-0007: web はフォーム描画とリダイレクトのみを担い、同意の記録・code 発行は api の
 //! `/internal/consent-info`・`/internal/consent/approve`・`/internal/consent/deny` に委ねる。
 
+use super::locale;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::dto::ConsentForm;
@@ -20,7 +21,6 @@ use idp_contracts::auth::{
     InternalConsentDenyResponse, InternalConsentInfoResponse,
 };
 use idp_contracts::csrf::consent_csrf_token;
-use super::locale;
 
 /// 同意画面を表示する。`auth_session_id` Cookie（`/authorize` または `/login` が発行）が必要。
 pub async fn consent_page(

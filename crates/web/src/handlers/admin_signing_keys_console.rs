@@ -3,6 +3,7 @@
 //! 鍵一覧表示・新規生成フォーム・退役・削除操作を提供する。
 //! 操作の実体は api の `/admin/signing-keys/*` に SSO Cookie 転送で委譲する。
 
+use super::locale;
 use crate::admin_dto::SigningKeyView;
 use crate::api_client::AdminApiError;
 use crate::cookies;
@@ -20,7 +21,6 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 use serde::Deserialize;
-use super::locale;
 
 const SIGNING_KEYS_SEGMENT: &str = "/admin/signing-keys";
 

@@ -4,6 +4,7 @@
 //! 表示する。api の `POST /internal/change-password` に委ね、成功時は `LoginService` と同じ
 //! SSO 発行 → 同意/code 発行の結果（`redirect_to`）へ 302 する。
 
+use super::locale;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::dto::PasswordChangeForm;
@@ -18,7 +19,6 @@ use axum::response::{AppendHeaders, Html, IntoResponse, Response};
 use axum::Form;
 use idp_contracts::auth::{InternalChangePasswordRequest, InternalChangePasswordResponse};
 use idp_contracts::csrf::login_csrf_token;
-use super::locale;
 
 /// パスワード変更フォームを表示する。`auth_session_id` Cookie（パスワード検証済み状態）が必要。
 pub async fn page(State(state): State<WebState>, headers: HeaderMap) -> Response {

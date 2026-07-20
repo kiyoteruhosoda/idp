@@ -4,6 +4,7 @@
 //! begin/complete は JSON API として提供し、ブラウザの WebAuthn JS API から呼び出す。
 //! 一覧・削除は HTML フォームで提供する。
 
+use super::locale;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::handlers::forwarded_context;
@@ -23,7 +24,6 @@ use idp_contracts::auth::{
     InternalPasskeyRegisterCompleteRequest, InternalPasskeyRegisterCompleteResponse,
 };
 use serde::{Deserialize, Serialize};
-use super::locale;
 
 // ─── 登録フロー ──────────────────────────────────────────────────────────────
 

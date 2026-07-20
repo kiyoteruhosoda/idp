@@ -11,6 +11,7 @@
 //!
 //! Cookie 組み立て（SSO 発行・失効、CSRF 種）は web が行う。CSRF は web 内で完結する（`crate::csrf`）。
 
+use super::locale;
 use crate::api_client::AdminSession;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -30,7 +31,6 @@ use idp_contracts::auth::{
     InternalAdminChangePasswordRequest, InternalAdminChangePasswordResponse, InternalLogoutRequest,
 };
 use uuid::Uuid;
-use super::locale;
 
 /// 管理コンソールのホーム（`GET /{tenant_id}/admin`）。SSO を api へ転送して認可を確認する。
 pub async fn home(

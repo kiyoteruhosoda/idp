@@ -5,6 +5,7 @@
 //!   QR コード（SVG）と生シークレット（base32）を表示する。QR が使えない場合は生コードを入力する。
 //! * ログイン TOTP 画面（`/mfa/totp`）: パスワード認証後に TOTP 入力を求める。
 
+use super::locale;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::dto::TotpConfirmForm;
@@ -23,7 +24,6 @@ use idp_contracts::auth::{
 };
 use idp_contracts::csrf::login_csrf_token;
 use serde::Deserialize;
-use super::locale;
 
 // ── TOTP セットアップ ────────────────────────────────────────────────────────
 
