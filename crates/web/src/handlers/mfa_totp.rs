@@ -5,11 +5,12 @@
 //!   QR コード（SVG）と生シークレット（base32）を表示する。QR が使えない場合は生コードを入力する。
 //! * ログイン TOTP 画面（`/mfa/totp`）: パスワード認証後に TOTP 入力を求める。
 
+use super::locale;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::dto::TotpConfirmForm;
 use crate::handlers::{forwarded_context, found};
-use crate::i18n::{Locale, Messages};
+use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, MessagePage, TotpSetupTemplate, TotpVerifyTemplate};
 use crate::tenant::WebTenant;
@@ -390,14 +391,6 @@ pub fn generate_qr_svg(uri: &str) -> String {
 }
 
 // ── ヘルパー ────────────────────────────────────────────────────────────────
-
-fn locale(headers: &HeaderMap) -> Locale {
-    Locale::from_accept_language(
-        headers
-            .get(header::ACCEPT_LANGUAGE)
-            .and_then(|v| v.to_str().ok()),
-    )
-}
 
 fn render_verify_form(messages: &Messages, csrf: &str, error_key: Option<&str>) -> String {
     render(&TotpVerifyTemplate {

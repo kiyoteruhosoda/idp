@@ -32,3 +32,42 @@
 code {
   word-break: break-all;
 }
+
+/* 管理コンソール右上のユーザーメニュー。ラベルが長い識別子でもナビバーを崩さない */
+.navbar .navbar-user-label {
+  max-width: min(16rem, 45vw);
+}
+
+/* ドロップダウンはビューポート内に収め、長い識別子はヘッダ内で折り返す */
+.navbar .dropdown-menu {
+  max-width: calc(100vw - 1rem);
+}
+
+.navbar .dropdown-menu .dropdown-header {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* テーブル内の見出し・ボタンは折り返さない。CJK 文言は任意の文字間で折り返せるため、
+ * 狭い画面ではセルが縮んで 1 文字ずつ縦積みになり、行が縦へ伸びてしまう。
+ * 折り返しを禁止し、はみ出す分は .table-responsive の横スクロールに任せる */
+.table-responsive th,
+.table-responsive .btn {
+  white-space: nowrap;
+}
+
+/* 認証系画面（page.html）: <768px は上詰めにする。縦センタリングのままだと
+ * 上に余白を残しつつフォーム下部が画面外になり、スクロールが必要になるため。 */
+@media (max-width: 767.98px) {
+  .auth-content {
+    margin-top: 0 !important;
+  }
+}
+
+/* モバイルブラウザではアドレスバー分だけ 100vh が実表示域より大きく、
+ * 常に下へはみ出すため、実表示域基準の 100dvh で高さを取る */
+@supports (min-height: 100dvh) {
+  .min-vh-100 {
+    min-height: 100dvh !important;
+  }
+}

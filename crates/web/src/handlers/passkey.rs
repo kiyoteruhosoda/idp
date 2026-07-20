@@ -4,10 +4,11 @@
 //! begin/complete は JSON API として提供し、ブラウザの WebAuthn JS API から呼び出す。
 //! 一覧・削除は HTML フォームで提供する。
 
+use super::locale;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::handlers::forwarded_context;
-use crate::i18n::{Locale, Messages};
+use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, MessagePage, PasskeyListTemplate, PasskeyRegisterTemplate};
 use crate::tenant::WebTenant;
@@ -375,14 +376,6 @@ pub async fn login_complete_api(
 }
 
 // ─── ヘルパー ─────────────────────────────────────────────────────────────────
-
-fn locale(headers: &HeaderMap) -> Locale {
-    Locale::from_accept_language(
-        headers
-            .get(header::ACCEPT_LANGUAGE)
-            .and_then(|v| v.to_str().ok()),
-    )
-}
 
 fn error_page(messages: &Messages, status: StatusCode, error_key: &str) -> Response {
     let body = render(&MessagePage {

@@ -4,11 +4,12 @@
 //! 表示する。api の `POST /internal/change-password` に委ね、成功時は `LoginService` と同じ
 //! SSO 発行 → 同意/code 発行の結果（`redirect_to`）へ 302 する。
 
+use super::locale;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::dto::PasswordChangeForm;
 use crate::handlers::{forwarded_context, found};
-use crate::i18n::{Locale, Messages};
+use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, MessagePage, PasswordChangeTemplate};
 use crate::tenant::WebTenant;
@@ -157,14 +158,6 @@ pub async fn submit(
             (StatusCode::INTERNAL_SERVER_ERROR, Html(String::new())).into_response()
         }
     }
-}
-
-fn locale(headers: &HeaderMap) -> Locale {
-    Locale::from_accept_language(
-        headers
-            .get(header::ACCEPT_LANGUAGE)
-            .and_then(|v| v.to_str().ok()),
-    )
 }
 
 fn render_form(messages: &Messages, csrf: &str, error_key: Option<&str>) -> String {

@@ -3,11 +3,12 @@
 //! ADR-0007: web はフォーム描画とリダイレクトのみを担い、同意の記録・code 発行は api の
 //! `/internal/consent-info`・`/internal/consent/approve`・`/internal/consent/deny` に委ねる。
 
+use super::locale;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::dto::ConsentForm;
 use crate::handlers::{forwarded_context, found};
-use crate::i18n::{Locale, Messages};
+use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, ConsentTemplate, MessagePage};
 use crate::tenant::WebTenant;
@@ -139,14 +140,6 @@ pub async fn consent(
             }
         }
     }
-}
-
-fn locale(headers: &HeaderMap) -> Locale {
-    Locale::from_accept_language(
-        headers
-            .get(header::ACCEPT_LANGUAGE)
-            .and_then(|v| v.to_str().ok()),
-    )
 }
 
 fn error_page(messages: &Messages, status: StatusCode, error_key: &str) -> Response {

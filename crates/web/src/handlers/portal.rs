@@ -8,6 +8,7 @@
 //! 認証・SSO 発行・TOTP 検証は api（`/internal/authenticate/portal*`）に委ね、web は CSRF（同期トークン）
 //! と Cookie 組み立て・画面描画・リダイレクトのみを担う（管理コンソールのログインと同じ責務分担）。
 
+use super::locale;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::csrf::portal_csrf_token;
@@ -415,12 +416,4 @@ fn message_page(messages: &Messages, key: &str, status: StatusCode) -> Response 
         message: messages.get(key),
     });
     (status, Html(body)).into_response()
-}
-
-fn locale(headers: &HeaderMap) -> Locale {
-    Locale::from_accept_language(
-        headers
-            .get(header::ACCEPT_LANGUAGE)
-            .and_then(|v| v.to_str().ok()),
-    )
 }

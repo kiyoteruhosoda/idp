@@ -11,13 +11,14 @@
 //!
 //! Cookie 組み立て（SSO 発行・失効、CSRF 種）は web が行う。CSRF は web 内で完結する（`crate::csrf`）。
 
+use super::locale;
 use crate::api_client::AdminSession;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::csrf::admin_csrf_token;
 use crate::dto::{AdminPasswordChangeForm, LoginForm};
 use crate::handlers::{forwarded_context, found};
-use crate::i18n::{Locale, Messages};
+use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, AdminPasswordChange, ConsoleHome, ConsoleLogin, MessagePage};
 use crate::tenant::WebTenant;
@@ -417,14 +418,6 @@ pub(crate) fn forbidden_response(headers: &HeaderMap) -> Response {
     (StatusCode::FORBIDDEN, Html(body)).into_response()
 }
 
-fn locale(headers: &HeaderMap) -> Locale {
-    Locale::from_accept_language(
-        headers
-            .get(header::ACCEPT_LANGUAGE)
-            .and_then(|v| v.to_str().ok()),
-    )
-}
-
 fn reshow_login(messages: &Messages, status: StatusCode, csrf: &str, error_key: &str) -> Response {
     (
         status,
@@ -482,6 +475,7 @@ fn render_password_change_form(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::Locale;
 
     #[test]
     fn login_form_has_csrf_and_credential_fields() {

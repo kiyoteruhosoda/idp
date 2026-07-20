@@ -3,18 +3,19 @@
 //! 登録済みの SAML 連携アプリ（外部 IdP）を一覧し、Entity ID・SSO URL・証明書による
 //! 新規追加を提供する。データ操作は api の `/admin/saml-providers` へ SSO Cookie 転送で委譲する。
 
+use super::locale;
 use crate::api_client::AdminApiError;
 use crate::correlation::CorrelationId;
 use crate::csrf::console_csrf_token;
 use crate::dto::AdminSamlProviderForm;
 use crate::handlers::admin_console::{redirect_to_login, resolve_admin, AdminResolution};
 use crate::handlers::found;
-use crate::i18n::{Locale, Messages};
+use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, SamlProviderFormValues, SamlProvidersConsole};
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, Query, State};
-use axum::http::{header, HeaderMap};
+use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 use idp_contracts::admin::SamlProviderRegisterRequest;
@@ -121,14 +122,6 @@ pub async fn create(
 fn csrf_from(headers: &HeaderMap, secret: &[u8]) -> String {
     let sso = crate::cookies::get(headers, crate::cookies::SSO_SESSION_COOKIE).unwrap_or_default();
     console_csrf_token(&sso, secret)
-}
-
-fn locale(headers: &HeaderMap) -> Locale {
-    Locale::from_accept_language(
-        headers
-            .get(header::ACCEPT_LANGUAGE)
-            .and_then(|v| v.to_str().ok()),
-    )
 }
 
 fn sso_url_allowed(raw: &str) -> bool {

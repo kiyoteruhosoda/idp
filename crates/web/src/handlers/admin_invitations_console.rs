@@ -4,6 +4,7 @@
 //! 所属元が他テナントの既存利用者で、内部 ID（UUID）で指定する（利用者検索は所属元テナント限定の
 //! ため、本画面では ID を管理者が別途確認して入力する）。招待トークンはこの結果画面でのみ表示する。
 
+use super::locale;
 use crate::api_client::AdminApiError;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -11,12 +12,12 @@ use crate::csrf::console_csrf_token;
 use crate::handlers::admin_console::{
     forbidden_response, redirect_to_login, resolve_admin, AdminResolution,
 };
-use crate::i18n::{Locale, Messages};
+use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, InvitationCreated, InvitationForm};
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 use serde::Deserialize;
@@ -174,14 +175,6 @@ fn csrf_valid(headers: &HeaderMap, submitted: &str, key: &[u8]) -> bool {
     cookies::get(headers, cookies::SSO_SESSION_COOKIE)
         .map(|s| console_csrf_token(&s, key) == submitted)
         .unwrap_or(false)
-}
-
-fn locale(headers: &HeaderMap) -> Locale {
-    Locale::from_accept_language(
-        headers
-            .get(header::ACCEPT_LANGUAGE)
-            .and_then(|v| v.to_str().ok()),
-    )
 }
 
 fn bad_request(html: String) -> Response {

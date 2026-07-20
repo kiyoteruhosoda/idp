@@ -4,18 +4,19 @@
 //! 転送で呼び、結果を Askama テンプレートに描画する（`{{ }}` は自動 HTML エスケープ）。読み取り専用の
 //! ため CSRF は無い。期間（from/to）の形式不正は api が 400 を返すため、web はそれを日時エラー表示へ写す。
 
+use super::locale;
 use crate::admin_dto::AuditLogView;
 use crate::api_client::AdminApiError;
 use crate::correlation::CorrelationId;
 use crate::handlers::admin_console::{
     forbidden_response, redirect_to_login, resolve_admin, AdminResolution,
 };
-use crate::i18n::{Locale, Messages};
+use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, AuditLogs, ClientStatus, ConsoleNotice};
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, Query, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use idp_contracts::admin::ClientStatusResponse;
 use serde::Deserialize;
@@ -222,14 +223,6 @@ fn urlencode(s: &str) -> String {
     out
 }
 
-fn locale(headers: &HeaderMap) -> Locale {
-    Locale::from_accept_language(
-        headers
-            .get(header::ACCEPT_LANGUAGE)
-            .and_then(|v| v.to_str().ok()),
-    )
-}
-
 fn internal_error(messages: &Messages, tenant: &WebTenant, admin: &str) -> Response {
     let body = render(&ConsoleNotice {
         messages,
@@ -247,6 +240,7 @@ fn internal_error(messages: &Messages, tenant: &WebTenant, admin: &str) -> Respo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::Locale;
 
     fn tenant() -> WebTenant {
         WebTenant("00000000-0000-7000-8000-000000000000".to_string())

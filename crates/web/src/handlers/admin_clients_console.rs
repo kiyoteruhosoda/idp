@@ -5,6 +5,7 @@
 //! HTML の描画は Askama テンプレート（`templates/console/`）で行い、利用者入力は自動エスケープされる。
 //! `client_secret` は作成・再発行時にその画面でのみ平文表示する。
 
+use super::locale;
 use crate::admin_dto::{ClientCreatedView, ClientView};
 use crate::api_client::AdminApiError;
 use crate::cookies;
@@ -14,14 +15,14 @@ use crate::handlers::admin_console::{
     forbidden_response, redirect_to_login, resolve_admin, AdminResolution,
 };
 use crate::handlers::found;
-use crate::i18n::{Locale, Messages};
+use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{
     render, ClientDetail, ClientForm, ClientFormValues, ClientSecret, ClientsList, ConsoleNotice,
 };
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, Path, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 use serde::Deserialize;
@@ -535,14 +536,6 @@ fn render_secret_page(
 
 // ── レスポンスの共通ヘルパー ──────────────────────────────────────────────────
 
-fn locale(headers: &HeaderMap) -> Locale {
-    Locale::from_accept_language(
-        headers
-            .get(header::ACCEPT_LANGUAGE)
-            .and_then(|v| v.to_str().ok()),
-    )
-}
-
 /// api の 401/403 を web の画面挙動へ写す（ログイン誘導 / 403 画面）。それ以外は 500。
 fn map_data_error(
     messages: &Messages,
@@ -632,6 +625,7 @@ fn not_found(messages: &Messages, tenant: &WebTenant, admin: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::Locale;
 
     #[test]
     fn parse_uris_splits_and_drops_blanks() {

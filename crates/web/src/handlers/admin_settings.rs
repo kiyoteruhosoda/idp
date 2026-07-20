@@ -6,6 +6,7 @@
 //! Cookie 転送で委ねる。システム設定区画の可否は「api への GET が 403 か否か」で判定する（root 判定を
 //! web が別途持たず、認可の単一の出所を api に集約する）。
 
+use super::locale;
 use crate::api_client::AdminApiError;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -17,12 +18,12 @@ use crate::handlers::admin_console::{
     forbidden_response, redirect_to_login, resolve_admin, AdminResolution,
 };
 use crate::handlers::found;
-use crate::i18n::{Locale, Messages};
+use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, AdminSettings, ConsoleNotice};
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, Query, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 
@@ -238,14 +239,6 @@ fn describe(e: &AdminApiError) -> String {
 
 fn sso(headers: &HeaderMap) -> String {
     cookies::get(headers, cookies::SSO_SESSION_COOKIE).unwrap_or_default()
-}
-
-fn locale(headers: &HeaderMap) -> Locale {
-    Locale::from_accept_language(
-        headers
-            .get(header::ACCEPT_LANGUAGE)
-            .and_then(|v| v.to_str().ok()),
-    )
 }
 
 fn internal_error(messages: &Messages, tenant: &WebTenant, admin: &str) -> Response {

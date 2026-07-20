@@ -8,11 +8,12 @@
 //!
 //! 画面文言は `fluent` の翻訳リソースで管理する（`Accept-Language` で en / ja を切替）。
 
+use super::locale;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::dto::LoginForm;
 use crate::handlers::{forwarded_context, found, portal};
-use crate::i18n::{Locale, Messages};
+use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, LoginTemplate, MessagePage};
 use crate::tenant::WebTenant;
@@ -248,14 +249,6 @@ pub async fn login(
             (StatusCode::INTERNAL_SERVER_ERROR, Html(String::new())).into_response()
         }
     }
-}
-
-fn locale(headers: &HeaderMap) -> Locale {
-    Locale::from_accept_language(
-        headers
-            .get(header::ACCEPT_LANGUAGE)
-            .and_then(|v| v.to_str().ok()),
-    )
 }
 
 /// エラー付きでフォームを再表示する（AuthSession はまだ有効なため再入力できる）。
