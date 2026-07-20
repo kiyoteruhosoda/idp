@@ -2,6 +2,11 @@
 {% block title %}{{ messages.get("user-settings-title") }}{% endblock %}
 {% block column %}col-lg-8 mx-auto{% endblock %}
 {% block content %}
+{% if from_admin %}
+<div class="mb-3">
+  <a href="{{ tenant }}/admin"><i class="fa-solid fa-arrow-left me-2" aria-hidden="true"></i>{{ messages.get("user-settings-back-admin") }}</a>
+</div>
+{% endif %}
 <div class="d-flex align-items-start justify-content-between gap-2 mb-4">
   <div>
     <p class="text-muted text-uppercase fw-bold small mb-1">{{ messages.get("user-settings-kicker") }}</p>
@@ -21,6 +26,7 @@
   <div class="card-body">
     <p class="text-muted small">{{ messages.get("user-settings-language-help") }}</p>
     <form method="get" action="{{ tenant }}/settings" class="row g-2 align-items-end">
+      {% if from_admin %}<input type="hidden" name="from" value="admin">{% endif %}
       <div class="col-auto">
         <label class="form-label" for="lang">{{ messages.get("user-settings-language-current") }}</label>
         <select class="form-select" id="lang" name="lang">
@@ -40,6 +46,7 @@
   <div class="card-body">
     <p class="text-muted small">{{ messages.get("user-settings-password-help") }}</p>
     <form method="post" action="{{ tenant }}/settings/password">
+      {% if from_admin %}<input type="hidden" name="from" value="admin">{% endif %}
       <div class="mb-3">
         <label class="form-label" for="current_password">{{ messages.get("user-settings-current-password") }}</label>
         <input type="password" class="form-control" id="current_password" name="current_password" autocomplete="current-password" required>

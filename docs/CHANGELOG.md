@@ -1,3 +1,16 @@
+## 2026-07-20（管理コンソール: パスパラメータ抽出の 500 修正・プロフィール画面の戻り導線）
+
+- **crates/web — `{tenant_id}` 配下の ID 付きルートが一律 500 になる不具合を修正**: `.nest("/{tenant_id}", …)`
+  配下ではネスト元のパラメータも数えられるため、`/admin/members/{user_id}/reset-password` 等の
+  13 ハンドラで `Path<String>` の抽出が「Wrong number of path arguments. Expected 1 but got 2」で
+  失敗していた。`Path<(String, String)>` のタプル受けに修正（members の状態変更/PW再発行/削除/解除、
+  users の権限参照/付与/剥奪、clients の詳細/編集/secret 再発行、tenants の削除/管理者PW再発行）。
+  ルータの回帰テストを追加。
+- **crates/web — プロフィール設定に管理コンソールへの戻りリンクを追加**: コンソール右上の
+  「プロフィール設定を開く」から `/settings` へ遷移すると戻る手段が無かった。`?from=admin` で文脈を
+  引き継ぎ、画面左上に「管理コンソールへ戻る」リンクを表示する（言語変更・パスワード変更の
+  PRG 後も維持）。
+
 ## 2026-07-18（管理コンソール: 利用者ライフサイクル・テナント削除/PW再発行・設定の DB 上書き）
 
 - **crates/core・api — 利用者ライフサイクル API を新設**: `UserLifecycleService` を追加し、

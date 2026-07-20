@@ -157,7 +157,7 @@ pub async fn detail(
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
-    Path(client_id): Path<String>,
+    Path((_, client_id)): Path<(String, String)>,
 ) -> Response {
     let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
     let result = state
@@ -182,7 +182,7 @@ pub async fn edit_form(
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
-    Path(client_id): Path<String>,
+    Path((_, client_id)): Path<(String, String)>,
 ) -> Response {
     let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
     let result = state
@@ -220,7 +220,7 @@ pub async fn update(
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
-    Path(client_id): Path<String>,
+    Path((_, client_id)): Path<(String, String)>,
     Form(form): Form<EditClientForm>,
 ) -> Response {
     let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
@@ -296,7 +296,7 @@ pub async fn rotate_secret(
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
-    Path(client_id): Path<String>,
+    Path((_, client_id)): Path<(String, String)>,
     Form(form): Form<CsrfForm>,
 ) -> Response {
     let admin = admin_or_return!(&state, &correlation, &tenant, &headers);

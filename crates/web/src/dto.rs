@@ -85,14 +85,17 @@ pub struct AdminSystemSettingsForm {
 }
 
 /// セルフサービスのパスワード変更フォーム（`POST /{tenant_id}/settings/password`。MT15）。
+/// `from` は管理コンソールから開いた文脈の引き継ぎ（`admin` のとき PRG 後も戻り導線を維持する）。
 #[derive(Debug, Deserialize)]
 pub struct AccountPasswordForm {
     pub current_password: String,
     pub new_password: String,
     pub new_password_confirm: String,
+    #[serde(default)]
+    pub from: Option<String>,
 }
 
-/// 設定画面の GET クエリ（言語一時切替・保存/エラーバナー表示）。
+/// 設定画面の GET クエリ（言語一時切替・保存/エラーバナー表示・遷移元の引き継ぎ）。
 #[derive(Debug, Default, Deserialize)]
 pub struct SettingsQuery {
     #[serde(default)]
@@ -101,6 +104,9 @@ pub struct SettingsQuery {
     pub saved: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
+    /// 遷移元（`admin` = 管理コンソール。左上に戻るリンクを表示する）。
+    #[serde(default)]
+    pub from: Option<String>,
 }
 
 /// テナント登録フォーム（`POST /{tenant_id}/admin/tenants`。root / `idp.system.admin` 専用）。

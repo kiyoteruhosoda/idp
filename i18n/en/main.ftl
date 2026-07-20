@@ -445,6 +445,7 @@ admin-settings-runtime-edit-note = Saving with an empty value removes the DB ove
 user-settings-kicker = Self service
 user-settings-lead = Manage language, password, and multi-factor authentication from one place.
 user-settings-logout = Sign out
+user-settings-back-admin = Back to admin console
 user-settings-nav-label = Account setting categories
 user-settings-security-heading = Security
 user-settings-language-help = Your selection is saved to a cookie and, when signed in, to your user profile.

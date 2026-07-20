@@ -221,7 +221,7 @@ pub async fn view(
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
-    Path(user_id): Path<String>,
+    Path((_, user_id)): Path<(String, String)>,
     Query(query): Query<ViewQuery>,
 ) -> Response {
     let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
@@ -282,7 +282,7 @@ pub async fn grant(
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
-    Path(user_id): Path<String>,
+    Path((_, user_id)): Path<(String, String)>,
     Form(form): Form<PermissionForm>,
 ) -> Response {
     apply_change(
@@ -302,7 +302,7 @@ pub async fn revoke(
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
-    Path(user_id): Path<String>,
+    Path((_, user_id)): Path<(String, String)>,
     Form(form): Form<PermissionForm>,
 ) -> Response {
     apply_change(

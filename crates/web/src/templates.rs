@@ -526,6 +526,8 @@ pub struct UserSettings<'a> {
     /// 保存成功メッセージのキー（`None` なら非表示）。
     pub saved_key: Option<&'a str>,
     pub error_key: Option<&'a str>,
+    /// 管理コンソール（`?from=admin`）から開いたか。左上に戻るリンクを出し、フォーム送信でも維持する。
+    pub from_admin: bool,
 }
 
 /// Passkey 一覧画面（`GET /account/passkey`）。登録済みクレデンシャルの一覧と削除ボタン。

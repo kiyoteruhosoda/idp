@@ -36,6 +36,7 @@ pub async fn page(
         .get(header::ACCEPT_LANGUAGE)
         .and_then(|v| v.to_str().ok());
     let locale = Locale::resolve(query.lang.as_deref(), None, cookie_lang.as_deref(), accept);
+    let from_admin = query.from.as_deref() == Some("admin");
 
     // Messages は FluentBundle を含み !Send のため、await をまたがないよう先にレンダリングして解放する。
     let body = {
@@ -46,6 +47,7 @@ pub async fn page(
             current_lang: locale.as_tag(),
             saved_key: query.saved.as_deref().and_then(saved_key_for),
             error_key: query.error.as_deref().and_then(error_key_for),
+            from_admin,
         })
     };
 
@@ -98,11 +100,17 @@ pub async fn change_password(
     Form(form): Form<AccountPasswordForm>,
 ) -> Response {
     let base = format!("{}/settings", tenant.prefix());
+    // 管理コンソール発の文脈（戻るリンク）を PRG リダイレクト後も維持する。
+    let suffix = if form.from.as_deref() == Some("admin") {
+        "&from=admin"
+    } else {
+        ""
+    };
     if form.new_password != form.new_password_confirm {
-        return found(&format!("{base}?error=mismatch"));
+        return found(&format!("{base}?error=mismatch{suffix}"));
     }
     let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
-        return found(&format!("{base}?error=session"));
+        return found(&format!("{base}?error=session{suffix}"));
     };
     let ctx = forwarded_context(&headers, &correlation);
     let request = InternalAccountChangePasswordRequest {
@@ -124,15 +132,21 @@ pub async fn change_password(
         }
     };
     match outcome {
-        InternalAccountChangePasswordResponse::Ok => found(&format!("{base}?saved=password")),
+        InternalAccountChangePasswordResponse::Ok => {
+            found(&format!("{base}?saved=password{suffix}"))
+        }
         InternalAccountChangePasswordResponse::SessionExpired => {
-            found(&format!("{base}?error=session"))
+            found(&format!("{base}?error=session{suffix}"))
         }
         InternalAccountChangePasswordResponse::InvalidCurrentPassword => {
-            found(&format!("{base}?error=invalid-current"))
+            found(&format!("{base}?error=invalid-current{suffix}"))
         }
-        InternalAccountChangePasswordResponse::WeakPassword => found(&format!("{base}?error=weak")),
-        InternalAccountChangePasswordResponse::Internal => found(&format!("{base}?error=internal")),
+        InternalAccountChangePasswordResponse::WeakPassword => {
+            found(&format!("{base}?error=weak{suffix}"))
+        }
+        InternalAccountChangePasswordResponse::Internal => {
+            found(&format!("{base}?error=internal{suffix}"))
+        }
     }
 }
 
@@ -151,5 +165,38 @@ fn error_key_for(error: &str) -> Option<&'static str> {
         "session" => Some("user-settings-error-session"),
         "internal" => Some("user-settings-error-internal"),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn render_settings(from_admin: bool) -> String {
+        let messages = Messages::new(Locale::Ja);
+        render(&UserSettings {
+            messages: &messages,
+            tenant: "/00000000-0000-7000-8000-000000000000",
+            current_lang: "ja",
+            saved_key: None,
+            error_key: None,
+            from_admin,
+        })
+    }
+
+    #[test]
+    fn back_link_to_admin_console_is_shown_only_when_opened_from_admin() {
+        let html = render_settings(true);
+        assert!(html.contains("/00000000-0000-7000-8000-000000000000/admin\""));
+        // フォーム送信（言語・パスワード）でも管理コンソール文脈を hidden で引き継ぐ。
+        assert_eq!(
+            html.matches(r#"<input type="hidden" name="from" value="admin">"#)
+                .count(),
+            2
+        );
+
+        let html = render_settings(false);
+        assert!(!html.contains("/00000000-0000-7000-8000-000000000000/admin\""));
+        assert!(!html.contains(r#"name="from""#));
     }
 }

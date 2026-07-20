@@ -116,7 +116,7 @@ pub async fn delete(
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
-    Path(child_id): Path<String>,
+    Path((_, child_id)): Path<(String, String)>,
     Form(form): Form<AdminTenantActionForm>,
 ) -> Response {
     match resolve_admin(&state, &correlation, &tenant, &headers).await {
@@ -153,7 +153,7 @@ pub async fn reset_admin_password(
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
-    Path(child_id): Path<String>,
+    Path((_, child_id)): Path<(String, String)>,
     Form(form): Form<AdminPasswordResetForm>,
 ) -> Response {
     let admin = match resolve_admin(&state, &correlation, &tenant, &headers).await {

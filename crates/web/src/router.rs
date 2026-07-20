@@ -248,6 +248,9 @@ pub fn build(state: WebState) -> Router {
         )
         .route("/assets/react/app.js", get(react_assets::app_js))
         .route("/assets/react/app.js.map", get(react_assets::app_js_map))
+        // この nest 配下で `{user_id}` 等を持つルートは、ネスト元の `{tenant_id}` と合わせて
+        // パスパラメータが 2 つになる。ハンドラは `Path<(String, String)>` のタプルで受けること
+        // （`Path<String>` だと実行時に 500 "Wrong number of path arguments" になる）。
         .nest("/{tenant_id}", tenant_scoped)
         .layer(axum::middleware::from_fn(correlation::propagate))
         .layer(TraceLayer::new_for_http())
@@ -263,5 +266,63 @@ async fn root_entrypoint(root_tenant_id: Option<String>) -> impl IntoResponse {
             Redirect::temporary(&format!("/{id}/admin/login")).into_response()
         }
         _ => axum::http::StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    fn test_state() -> WebState {
+        WebState::build(Arc::new(
+            crate::config::Config::from_env().expect("config with dev defaults"),
+        ))
+    }
+
+    /// nest 配下の `{tenant_id}` ＋ `{user_id}` 等の 2 パラメータルートで `Path` 抽出が成立する
+    /// ことの回帰テスト。抽出が不一致だと axum が 500（"Wrong number of path arguments"）を返す。
+    /// ここではボディ無し POST のため `Form` 抽出の失敗（4xx）で止まるのが期待値であり、
+    /// API への到達は不要（ネットワークに依存しない）。
+    #[tokio::test]
+    async fn nested_two_param_routes_extract_path_without_error() {
+        let tenant = "019f6514-08ea-7138-ad71-838a7bdd3575";
+        let id = "019f7576-b5b8-73f2-a496-0df7a83c667f";
+        let post_uris = [
+            format!("/{tenant}/admin/members/{id}/revoke"),
+            format!("/{tenant}/admin/members/{id}/status"),
+            format!("/{tenant}/admin/members/{id}/reset-password"),
+            format!("/{tenant}/admin/members/{id}/delete"),
+            format!("/{tenant}/admin/users/{id}/permissions/grant"),
+            format!("/{tenant}/admin/users/{id}/permissions/revoke"),
+            format!("/{tenant}/admin/clients/{id}/edit"),
+            format!("/{tenant}/admin/clients/{id}/rotate-secret"),
+            format!("/{tenant}/admin/tenants/{id}/delete"),
+            format!("/{tenant}/admin/tenants/{id}/reset-admin-password"),
+        ];
+        for uri in post_uris {
+            let response = build(test_state())
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(&uri)
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            assert_ne!(
+                response.status(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "path extraction failed for {uri}"
+            );
+            assert!(
+                response.status().is_client_error(),
+                "unexpected status for {uri}"
+            );
+        }
     }
 }

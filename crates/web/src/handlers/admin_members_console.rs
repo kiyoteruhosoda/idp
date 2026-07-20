@@ -77,7 +77,7 @@ pub async fn revoke(
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
-    Path(user_id): Path<String>,
+    Path((_, user_id)): Path<(String, String)>,
     Form(form): Form<RevokeForm>,
 ) -> Response {
     match resolve_admin(&state, &correlation, &tenant, &headers).await {
@@ -108,7 +108,7 @@ pub async fn set_status(
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
-    Path(user_id): Path<String>,
+    Path((_, user_id)): Path<(String, String)>,
     Form(form): Form<MemberStatusForm>,
 ) -> Response {
     match resolve_admin(&state, &correlation, &tenant, &headers).await {
@@ -146,7 +146,7 @@ pub async fn reset_password(
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
-    Path(user_id): Path<String>,
+    Path((_, user_id)): Path<(String, String)>,
     Form(form): Form<MemberActionForm>,
 ) -> Response {
     let admin = match resolve_admin(&state, &correlation, &tenant, &headers).await {
@@ -193,7 +193,7 @@ pub async fn delete(
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
-    Path(user_id): Path<String>,
+    Path((_, user_id)): Path<(String, String)>,
     Form(form): Form<MemberActionForm>,
 ) -> Response {
     match resolve_admin(&state, &correlation, &tenant, &headers).await {
