@@ -140,10 +140,10 @@ pub fn build(state: WebState) -> Router {
             "/admin/clients/{client_id}/rotate-secret",
             post(admin_clients_console::rotate_secret),
         )
-        // SAML 連携登録画面。
+        // SAML 連携アプリ一覧・追加画面。
         .route(
             "/admin/saml",
-            get(admin_saml_console::new_form).post(admin_saml_console::create),
+            get(admin_saml_console::list).post(admin_saml_console::create),
         )
         // 利用者の作成・検索・権限付与/剥奪画面。
         .route("/admin/users", get(admin_users_console::search))

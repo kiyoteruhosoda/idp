@@ -208,7 +208,7 @@ pub fn build(state: AppState) -> Router {
         // SAML 外部 IdP 連携設定。idp.tenant.admin 必須。
         .route(
             "/admin/saml-providers",
-            post(admin_saml_providers::register),
+            get(admin_saml_providers::list).post(admin_saml_providers::register),
         )
         // 署名鍵管理 API（K1）。idp.tenant.admin 必須。
         .route(

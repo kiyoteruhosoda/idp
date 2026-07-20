@@ -36,6 +36,20 @@ pub async fn register(
     Ok((StatusCode::CREATED, Json(to_response(&provider))))
 }
 
+pub async fn list(
+    RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
+    State(state): State<AppState>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
+) -> Result<Json<Vec<SamlProviderResponse>>, ApiError> {
+    let providers = state
+        .saml_providers
+        .list(tenant.id())
+        .await
+        .map_err(|e| map_error(e, locale))?;
+    Ok(Json(providers.iter().map(to_response).collect()))
+}
+
 fn to_response(provider: &SamlIdentityProvider) -> SamlProviderResponse {
     SamlProviderResponse {
         id: provider.id.to_string(),

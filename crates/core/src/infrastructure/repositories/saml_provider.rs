@@ -90,4 +90,16 @@ impl SamlIdentityProviderRepository for SqlxSamlIdentityProviderRepository {
         .map_err(repo_err)?;
         row.as_ref().map(map_row).transpose()
     }
+
+    async fn list_for_tenant(&self, tenant_id: TenantId) -> Result<Vec<SamlIdentityProvider>> {
+        let rows = sqlx::query(
+            "SELECT id, tenant_id, display_name, entity_id, sso_url, x509_certificate, enabled, created_at, updated_at \
+             FROM saml_identity_providers WHERE tenant_id = ? ORDER BY created_at DESC",
+        )
+        .bind(tenant_id.as_uuid().to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        rows.iter().map(map_row).collect()
+    }
 }

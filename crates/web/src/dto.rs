@@ -164,7 +164,7 @@ pub struct AdminRuntimeSettingForm {
     pub csrf_token: String,
 }
 
-/// SAML 連携登録フォーム（`POST /{tenant_id}/admin/saml`）。
+/// SAML 連携アプリ追加フォーム（`POST /{tenant_id}/admin/saml`）。
 #[derive(Debug, Deserialize)]
 pub struct AdminSamlProviderForm {
     pub display_name: String,

@@ -1,4 +1,4 @@
-//! root 管理者向けテナント登録画面（web）。
+//! root 管理者向けテナント一覧・登録画面（web）。
 //!
 //! 画面は React 風の reducer/component 分割を持つ小さなプログレッシブ UI として再構成し、
 //! 認可・永続化は api の `/{tenant_id}/admin/tenants`（`idp.system.admin` 必須）へ委譲する。

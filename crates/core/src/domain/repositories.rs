@@ -175,6 +175,7 @@ pub trait ClientRepository: Send + Sync {
 pub trait SamlIdentityProviderRepository: Send + Sync {
     async fn create(&self, provider: &SamlIdentityProvider) -> Result<()>;
     async fn latest_for_tenant(&self, tenant_id: TenantId) -> Result<Option<SamlIdentityProvider>>;
+    async fn list_for_tenant(&self, tenant_id: TenantId) -> Result<Vec<SamlIdentityProvider>>;
 }
 
 #[async_trait]

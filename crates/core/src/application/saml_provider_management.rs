@@ -74,4 +74,14 @@ impl SamlProviderManagementService {
             })?;
         Ok(provider)
     }
+
+    pub async fn list(
+        &self,
+        tenant_id: TenantId,
+    ) -> Result<Vec<SamlIdentityProvider>, SamlProviderManagementError> {
+        self.providers
+            .list_for_tenant(tenant_id)
+            .await
+            .map_err(|e| SamlProviderManagementError::Internal(e.to_string()))
+    }
 }

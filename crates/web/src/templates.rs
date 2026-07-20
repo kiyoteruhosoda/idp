@@ -7,7 +7,9 @@
 //! 各テンプレート構造体は対応する `.html` を `#[template(path = ...)]` で束ね、コンパイル時に
 //! 型検証される（sqlx のコンパイル時クエリ検証と同じ思想）。
 
-use crate::admin_dto::{AuditLogView, ClientView, SigningKeyView, TenantCreatedView, TenantView};
+use crate::admin_dto::{
+    AuditLogView, ClientView, SamlProviderView, SigningKeyView, TenantCreatedView, TenantView,
+};
 use crate::i18n::Messages;
 use askama::Template;
 use idp_contracts::admin::{ClientStatusResponse, UserSummaryResponse};
@@ -550,20 +552,21 @@ pub struct PasskeyRegisterTemplate<'a> {
     pub error_key: Option<&'a str>,
 }
 
-/// SAML 連携登録フォーム（`GET /{tenant_id}/admin/saml`）。
+/// SAML 連携アプリ一覧・追加画面（`GET /{tenant_id}/admin/saml`）。
 #[derive(Template)]
-#[template(path = "console/saml_provider_form.html")]
-pub struct SamlProviderForm<'a> {
+#[template(path = "console/saml_providers.html")]
+pub struct SamlProvidersConsole<'a> {
     pub messages: &'a Messages,
     pub tenant: &'a str,
     pub admin: Admin<'a>,
     pub csrf: &'a str,
     pub saved: bool,
     pub error_key: Option<&'a str>,
+    pub providers: &'a [SamlProviderView],
     pub values: &'a SamlProviderFormValues,
 }
 
-/// SAML 連携登録フォームの入力値。
+/// SAML 連携アプリ追加フォームの入力値。
 #[derive(Default)]
 pub struct SamlProviderFormValues {
     pub display_name: String,

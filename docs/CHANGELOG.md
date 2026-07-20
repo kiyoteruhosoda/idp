@@ -1,3 +1,13 @@
+## 2026-07-20（管理コンソール: SAML 連携アプリ一覧化・テナント画面の名称整理）
+
+- **crates/core・api・web — SAML 連携アプリの一覧表示を追加**: `GET /admin/saml-providers`
+  （リポジトリ `list_for_tenant` → `SamlProviderManagementService::list` → api ハンドラ）を新設し、
+  `/admin/saml` 画面を「登録フォームのみ」から「SAML 連携アプリ一覧＋追加パネル」へ再構成した
+  （テナント一覧と同じ collapse パターン。表示名・Entity ID・SSO URL・有効/無効を表示）。
+  文言を「SAML 連携登録」→「SAML 連携アプリ一覧」「SAML 連携アプリ追加」へ変更。
+- **crates/web — テナント画面の名称を「テナント登録」→「テナント一覧」へ変更**: 画面は従来から
+  一覧＋追加の構成だったため、ナビ・タイトル・ホームカードの文言のみ実態に合わせた。
+
 ## 2026-07-20（管理コンソール: パスパラメータ抽出の 500 修正・プロフィール画面の戻り導線）
 
 - **crates/web — `{tenant_id}` 配下の ID 付きルートが一律 500 になる不具合を修正**: `.nest("/{tenant_id}", …)`

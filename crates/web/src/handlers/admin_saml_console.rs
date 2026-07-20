@@ -1,7 +1,7 @@
-//! SAML 連携登録コンソール画面（`/{tenant_id}/admin/saml`）。
+//! SAML 連携アプリ管理コンソール画面（`/{tenant_id}/admin/saml`）。
 //!
-//! 外部 IdP との SAML 連携に必要な Entity ID・SSO URL・証明書を登録するための UI を提供する。
-//! 現段階では web 側で入力値を検証し、後続の永続化 API 追加に備えてフォーム DTO と画面責務を分離する。
+//! 登録済みの SAML 連携アプリ（外部 IdP）を一覧し、Entity ID・SSO URL・証明書による
+//! 新規追加を提供する。データ操作は api の `/admin/saml-providers` へ SSO Cookie 転送で委譲する。
 
 use crate::api_client::AdminApiError;
 use crate::correlation::CorrelationId;
@@ -11,7 +11,7 @@ use crate::handlers::admin_console::{redirect_to_login, resolve_admin, AdminReso
 use crate::handlers::found;
 use crate::i18n::{Locale, Messages};
 use crate::state::WebState;
-use crate::templates::{render, SamlProviderForm, SamlProviderFormValues};
+use crate::templates::{render, SamlProviderFormValues, SamlProvidersConsole};
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, Query, State};
 use axum::http::{header, HeaderMap};
@@ -28,7 +28,7 @@ pub struct SamlQuery {
     pub error: Option<String>,
 }
 
-pub async fn new_form(
+pub async fn list(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
@@ -39,14 +39,26 @@ pub async fn new_form(
         AdminResolution::Ok(uid) => uid,
         AdminResolution::Reject(resp) => return resp,
     };
+    let sso = crate::cookies::get(&headers, crate::cookies::SSO_SESSION_COOKIE).unwrap_or_default();
+    let result = state
+        .api
+        .list_saml_providers(&correlation.0, &tenant.0, &sso)
+        .await;
     let messages = Messages::new(locale(&headers));
-    Html(render(&SamlProviderForm {
+    let (providers, error_key) = match result {
+        Ok(providers) => (providers, query.error.as_deref().and_then(error_key_for)),
+        Err(AdminApiError::Unauthorized) => return redirect_to_login(&tenant),
+        Err(AdminApiError::Forbidden) => (Vec::new(), Some("admin-settings-error-forbidden")),
+        Err(_) => (Vec::new(), Some("admin-error-internal")),
+    };
+    Html(render(&SamlProvidersConsole {
         messages: &messages,
         tenant: &tenant.prefix(),
         admin: Some(&admin),
         csrf: &csrf_from(&headers, state.config.csrf_secret()),
         saved: query.saved.is_some(),
-        error_key: query.error.as_deref().and_then(error_key_for),
+        error_key,
+        providers: &providers,
         values: &SamlProviderFormValues::default(),
     }))
     .into_response()
