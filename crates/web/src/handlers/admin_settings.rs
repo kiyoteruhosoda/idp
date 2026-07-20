@@ -17,14 +17,15 @@ use crate::handlers::admin_console::{
     forbidden_response, redirect_to_login, resolve_admin, AdminResolution,
 };
 use crate::handlers::found;
-use crate::i18n::{Locale, Messages};
+use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, AdminSettings, ConsoleNotice};
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, Query, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
+use super::locale;
 
 const SETTINGS_SEGMENT: &str = "/admin/settings";
 
@@ -238,14 +239,6 @@ fn describe(e: &AdminApiError) -> String {
 
 fn sso(headers: &HeaderMap) -> String {
     cookies::get(headers, cookies::SSO_SESSION_COOKIE).unwrap_or_default()
-}
-
-fn locale(headers: &HeaderMap) -> Locale {
-    Locale::from_accept_language(
-        headers
-            .get(header::ACCEPT_LANGUAGE)
-            .and_then(|v| v.to_str().ok()),
-    )
 }
 
 fn internal_error(messages: &Messages, tenant: &WebTenant, admin: &str) -> Response {

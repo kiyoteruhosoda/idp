@@ -14,18 +14,19 @@ use crate::handlers::admin_console::{
     forbidden_response, redirect_to_login, resolve_admin, AdminResolution,
 };
 use crate::handlers::found;
-use crate::i18n::{Locale, Messages};
+use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{
     render, ConsoleNotice, UserCreated, UserForm, UsersPermissions, UsersSearch,
 };
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, Path, Query, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 use idp_contracts::admin::UserSummaryResponse;
 use serde::Deserialize;
+use super::locale;
 
 const USERS_SEGMENT: &str = "/admin/users";
 
@@ -476,14 +477,6 @@ fn render_new_form(
 
 // ── 共通ヘルパー ──────────────────────────────────────────────────────────────
 
-fn locale(headers: &HeaderMap) -> Locale {
-    Locale::from_accept_language(
-        headers
-            .get(header::ACCEPT_LANGUAGE)
-            .and_then(|v| v.to_str().ok()),
-    )
-}
-
 fn not_found(messages: &Messages, tenant: &WebTenant, admin: &str) -> Response {
     let body = render(&ConsoleNotice {
         messages,
@@ -532,6 +525,7 @@ fn bad_request_form(html: String) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::Locale;
 
     fn tenant() -> WebTenant {
         WebTenant("00000000-0000-7000-8000-000000000000".to_string())

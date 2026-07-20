@@ -21,6 +21,7 @@ use axum::extract::{Extension, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{AppendHeaders, Html, IntoResponse, Response};
 use axum::Form;
+use super::locale;
 use idp_contracts::auth::{
     InternalPortalAuthenticateRequest, InternalPortalAuthenticateResponse,
     InternalPortalMfaRequest, InternalPortalMfaResponse,
@@ -417,10 +418,3 @@ fn message_page(messages: &Messages, key: &str, status: StatusCode) -> Response 
     (status, Html(body)).into_response()
 }
 
-fn locale(headers: &HeaderMap) -> Locale {
-    Locale::from_accept_language(
-        headers
-            .get(header::ACCEPT_LANGUAGE)
-            .and_then(|v| v.to_str().ok()),
-    )
-}

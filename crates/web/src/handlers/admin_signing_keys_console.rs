@@ -11,7 +11,7 @@ use crate::csrf::console_csrf_token;
 use crate::handlers::admin_console::{
     forbidden_response, redirect_to_login, resolve_admin, AdminResolution,
 };
-use crate::i18n::{Locale, Messages};
+use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, ConsoleNotice, SigningKeysList};
 use crate::tenant::WebTenant;
@@ -20,6 +20,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 use serde::Deserialize;
+use super::locale;
 
 const SIGNING_KEYS_SEGMENT: &str = "/admin/signing-keys";
 
@@ -278,15 +279,6 @@ fn csrf_valid(headers: &HeaderMap, submitted: &str, key: &[u8]) -> bool {
     cookies::get(headers, cookies::SSO_SESSION_COOKIE)
         .map(|s| console_csrf_token(&s, key) == submitted)
         .unwrap_or(false)
-}
-
-fn locale(headers: &HeaderMap) -> Locale {
-    use axum::http::header;
-    Locale::from_accept_language(
-        headers
-            .get(header::ACCEPT_LANGUAGE)
-            .and_then(|v| v.to_str().ok()),
-    )
 }
 
 fn render_list(

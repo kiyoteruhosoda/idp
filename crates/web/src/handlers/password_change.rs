@@ -8,7 +8,7 @@ use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::dto::PasswordChangeForm;
 use crate::handlers::{forwarded_context, found};
-use crate::i18n::{Locale, Messages};
+use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, MessagePage, PasswordChangeTemplate};
 use crate::tenant::WebTenant;
@@ -18,6 +18,7 @@ use axum::response::{AppendHeaders, Html, IntoResponse, Response};
 use axum::Form;
 use idp_contracts::auth::{InternalChangePasswordRequest, InternalChangePasswordResponse};
 use idp_contracts::csrf::login_csrf_token;
+use super::locale;
 
 /// パスワード変更フォームを表示する。`auth_session_id` Cookie（パスワード検証済み状態）が必要。
 pub async fn page(State(state): State<WebState>, headers: HeaderMap) -> Response {
@@ -157,14 +158,6 @@ pub async fn submit(
             (StatusCode::INTERNAL_SERVER_ERROR, Html(String::new())).into_response()
         }
     }
-}
-
-fn locale(headers: &HeaderMap) -> Locale {
-    Locale::from_accept_language(
-        headers
-            .get(header::ACCEPT_LANGUAGE)
-            .and_then(|v| v.to_str().ok()),
-    )
 }
 
 fn render_form(messages: &Messages, csrf: &str, error_key: Option<&str>) -> String {

@@ -7,7 +7,7 @@ use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::dto::ConsentForm;
 use crate::handlers::{forwarded_context, found};
-use crate::i18n::{Locale, Messages};
+use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, ConsentTemplate, MessagePage};
 use crate::tenant::WebTenant;
@@ -20,6 +20,7 @@ use idp_contracts::auth::{
     InternalConsentDenyResponse, InternalConsentInfoResponse,
 };
 use idp_contracts::csrf::consent_csrf_token;
+use super::locale;
 
 /// 同意画面を表示する。`auth_session_id` Cookie（`/authorize` または `/login` が発行）が必要。
 pub async fn consent_page(
@@ -139,14 +140,6 @@ pub async fn consent(
             }
         }
     }
-}
-
-fn locale(headers: &HeaderMap) -> Locale {
-    Locale::from_accept_language(
-        headers
-            .get(header::ACCEPT_LANGUAGE)
-            .and_then(|v| v.to_str().ok()),
-    )
 }
 
 fn error_page(messages: &Messages, status: StatusCode, error_key: &str) -> Response {

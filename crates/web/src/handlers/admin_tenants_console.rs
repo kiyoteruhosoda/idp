@@ -14,14 +14,15 @@ use crate::handlers::admin_console::{
     forbidden_response, redirect_to_login, resolve_admin, AdminResolution,
 };
 use crate::handlers::found;
-use crate::i18n::{Locale, Messages};
+use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, PasswordResetResult, TenantCreated, TenantsConsole};
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, Path, Query, State};
-use axum::http::{header, HeaderMap};
+use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
+use super::locale;
 
 const TENANTS_SEGMENT: &str = "/admin/tenants";
 
@@ -213,14 +214,6 @@ fn error_key_for(error: &str) -> Option<&'static str> {
 
 fn sso(headers: &HeaderMap) -> String {
     cookies::get(headers, cookies::SSO_SESSION_COOKIE).unwrap_or_default()
-}
-
-fn locale(headers: &HeaderMap) -> Locale {
-    Locale::from_accept_language(
-        headers
-            .get(header::ACCEPT_LANGUAGE)
-            .and_then(|v| v.to_str().ok()),
-    )
 }
 
 fn describe(e: &AdminApiError) -> String {

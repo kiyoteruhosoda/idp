@@ -26,10 +26,22 @@ pub mod vendor_assets;
 pub mod verify_email;
 
 use crate::correlation::CorrelationId;
-use axum::http::header::USER_AGENT;
-use axum::http::header::{HeaderValue, LOCATION};
+use crate::i18n::Locale;
+use axum::http::header::{HeaderValue, ACCEPT_LANGUAGE, LOCATION, USER_AGENT};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
+
+/// 表示言語を決める（`lang` Cookie > `Accept-Language` > 既定 `ja`。MT20）。
+/// 設定画面で保存した言語選択（`lang` Cookie）を全画面で尊重する。
+pub(crate) fn locale(headers: &HeaderMap) -> Locale {
+    let cookie_lang = crate::cookies::get(headers, crate::cookies::LANG_COOKIE);
+    Locale::resolve(
+        None,
+        None,
+        cookie_lang.as_deref(),
+        headers.get(ACCEPT_LANGUAGE).and_then(|v| v.to_str().ok()),
+    )
+}
 
 /// 内部認証呼び出しへ転送する接続元情報。
 pub(crate) struct ForwardedContext {
