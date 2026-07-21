@@ -64,7 +64,7 @@ ON DUPLICATE KEY UPDATE description = VALUES(description);
 
 -- 4) 初期管理者（root テナント所属。設計仕様 §3.1・ADR-0009 Phase 1-5）
 --    「変更前提のデフォルト値」として seed する。password_hash はアプリと同一の
---    Argon2id（PHC 文字列）で、既定パスワードはメールアドレスと同じ 'admin@example.com'
+--    Argon2id（PHC 文字列）で、既定パスワードは 'ChangeMe!123'
 --    （平文はコードに保持しない。変更手順は docs/OPERATIONS.md）。
 --    must_change_password = 1: 初回ログイン時にパスワード変更へ強制誘導する（誘導の実装はアプリ層）。
 SET @ts_hex := LPAD(HEX(CAST(FLOOR(UNIX_TIMESTAMP(NOW(3)) * 1000) AS UNSIGNED)), 12, '0');
@@ -87,7 +87,7 @@ INSERT INTO users (
 )
 SELECT
     @admin_candidate, @root, @sub_candidate, 'admin@example.com', 1, 'admin', 'Administrator',
-    '$argon2id$v=19$m=65536,t=3,p=4$L1NMbjFwV21BYllKWng5Ng$zTuAfd+FBQlcvMQF9KQyUFGkk2wqYNdAadNiCwKlTnY',
+    '$argon2id$v=19$m=65536,t=3,p=4$rDuN4UZ1uO9aCuJjci4tQw$9qhizRUIJntV/0+5fsyfdKt5Xmjw6WyEmPOLkOhY7QM',
     1, 'ACTIVE'
 FROM DUAL
 WHERE NOT EXISTS (
