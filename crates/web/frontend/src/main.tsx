@@ -19,7 +19,7 @@ interface SurfaceStrategy {
   readonly componentName: string;
   initialState(surface: HTMLElement): SurfaceState;
   reduce(state: SurfaceState, action: SurfaceAction): SurfaceState;
-  render(state: SurfaceState): React.ReactElement;
+  render(state: SurfaceState): React.ReactElement | null;
 }
 
 const baseInitialState = (surface: HTMLElement): SurfaceState => {
@@ -56,12 +56,10 @@ abstract class FormSurfaceStrategy implements SurfaceStrategy {
     }
   }
 
-  render(state: SurfaceState): React.ReactElement {
-    return (
-      <output className="react-status" data-component={this.componentName} aria-live="polite">
-        {state.submitting ? '送信中...' : state.dirty ? '入力内容を保持しています' : ''}
-      </output>
-    );
+  // 汎用フォーム（ログイン画面等）では可視ステータスを描画しない。フォーム状態は
+  // hydration 用の data-* 属性として引き続き保持する（SurfaceApp の useEffect を参照）。
+  render(_state: SurfaceState): React.ReactElement | null {
+    return null;
   }
 }
 

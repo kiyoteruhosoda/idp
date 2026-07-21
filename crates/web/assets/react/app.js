@@ -8058,12 +8058,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 		}
 	}
 	render(e) {
-		return /* @__PURE__ */ (0, x.jsx)("output", {
-			className: "react-status",
-			"data-component": this.componentName,
-			"aria-live": "polite",
-			children: e.submitting ? "送信中..." : e.dirty ? "入力内容を保持しています" : ""
-		});
+		return null;
 	}
 }, C = class extends S {
 	componentName = "GenericPageSurface";

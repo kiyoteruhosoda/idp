@@ -349,7 +349,7 @@ docker compose -f docker-compose.deploy.yml run --rm --entrypoint sqlx migrate m
 ## 初期管理ユーザーのパスワードを変更したいとき
 
 初期管理ユーザー `admin@example.com`（root テナント所属）は「変更前提のデフォルト値」として seed
-される（既定パスワード `ChangeMe!123`、`must_change_password = 1`）。本番では初回ログイン後すぐに
+される（既定パスワードはメールアドレスと同じ `admin@example.com`、`must_change_password = 1`）。本番では初回ログイン後すぐに
 変更する。パスワード変更（リセット）画面の実装後は初回ログイン時に強制誘導される（ADR-0009 §5。
 それまでの間に代替手段で変更した場合は `must_change_password` を手動で 0 に戻す）。
 

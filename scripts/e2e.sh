@@ -7,7 +7,7 @@
 #
 # 前提:
 #   - MariaDB が起動し、マイグレーション適用済み（`sqlx migrate run` もしくは
-#     `docker compose run --rm migrate`）。初期管理ユーザー admin@example.com / ChangeMe!123 が seed 済み。
+#     `docker compose run --rm migrate`）。初期管理ユーザー admin@example.com / admin@example.com が seed 済み。
 #   - 環境変数 TEST_DATABASE_URL（既定 mysql://idp:idp@127.0.0.1:3306/idp）。
 #
 # 使い方:
@@ -129,18 +129,18 @@ pass "api /token → id_token 発行（web ログインの code は有効）"
 info "4) 管理コンソール: admin ログイン → クライアント作成 → 権限付与 → 状況/監査"
 AJAR="$(mktemp)"
 # E2E を再実行可能にするため、初期管理者を seed と同じ初回変更待ち状態へ戻す。
-mariadb_exec "UPDATE users SET password_hash='\$argon2id\$v=19\$m=65536,t=3,p=4\$rDuN4UZ1uO9aCuJjci4tQw\$9qhizRUIJntV/0+5fsyfdKt5Xmjw6WyEmPOLkOhY7QM', must_change_password=1, failed_login_count=0, locked_until=NULL WHERE tenant_id='${ROOT}' AND email='admin@example.com';" >/dev/null
+mariadb_exec "UPDATE users SET password_hash='\$argon2id\$v=19\$m=65536,t=3,p=4\$L1NMbjFwV21BYllKWng5Ng\$zTuAfd+FBQlcvMQF9KQyUFGkk2wqYNdAadNiCwKlTnY', must_change_password=1, failed_login_count=0, locked_until=NULL WHERE tenant_id='${ROOT}' AND email='admin@example.com';" >/dev/null
 login_html="$(curl -fsS -c "$AJAR" "${WEB}/${ROOT}/admin/login")"
 acsrf="$(printf '%s' "$login_html" | grep -oE '[a-f0-9]{64}' | head -1)"
 admin_login_body="$(mktemp)"
 admin_loc="$(curl -fsS -b "$AJAR" -c "$AJAR" -o "$admin_login_body" -w '%{redirect_url}' -X POST "${WEB}/${ROOT}/admin/login" \
   -H 'content-type: application/x-www-form-urlencoded' \
-  --data-urlencode "username=admin" --data-urlencode "password=ChangeMe!123" --data-urlencode "csrf_token=${acsrf}")"
+  --data-urlencode "username=admin" --data-urlencode "password=admin@example.com" --data-urlencode "csrf_token=${acsrf}")"
 if [[ -z "$admin_loc" ]] && grep -q 'admin/password-change' "$admin_login_body"; then
   pcsrf_admin="$(grep -oE 'name="csrf_token" value="[a-f0-9]{64}"' "$admin_login_body" | grep -oE '[a-f0-9]{64}' | head -1)"
   admin_loc="$(curl -fsS -b "$AJAR" -c "$AJAR" -o /dev/null -w '%{redirect_url}' -X POST "${WEB}/${ROOT}/admin/password-change" \
     -H 'content-type: application/x-www-form-urlencoded' \
-    --data-urlencode "username=admin" --data-urlencode "current_password=ChangeMe!123" \
+    --data-urlencode "username=admin" --data-urlencode "current_password=admin@example.com" \
     --data-urlencode "new_password=ChangeMe!1234" --data-urlencode "new_password_confirm=ChangeMe!1234" \
     --data-urlencode "csrf_token=${pcsrf_admin}")"
 fi
