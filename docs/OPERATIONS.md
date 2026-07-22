@@ -411,6 +411,10 @@ cp dist-prod/.env.production.example dist-prod/.env
 # dist-prod/.env の ISSUER / PUBLIC_WEB_BASE_URL と CHANGE-ME を実値へ変更
 ```
 
+`CHANGE-ME` の置換を忘れたまま実行した場合、`deploy.sh` はコンテナ起動前に該当キー名と
+生成コマンド（`openssl rand -base64 32` 等）を表示して停止する。表示に従って `.env` を
+修正し、再実行する。
+
 ## ロールバックしたいとき
 
 - アプリ: 前のバージョンの `dist/` を残しておき、そこで `./deploy.sh app` を実行する

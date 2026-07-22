@@ -1,4 +1,16 @@
 
+## 2026-07-22（設定/デプロイ: .env の CHANGE-ME プレースホルダ残りを fail-fast で明示）
+
+- **crates/core・crates/web — `KEY_ENCRYPTION_KEY`・`CSRF_SECRET` のプレースホルダ検出**: `.env.*.example` を
+  手動コピーして `CHANGE-ME` を置換し忘れると、api は `KEY_ENCRYPTION_KEY must be base64: Invalid symbol 45,
+  offset 6` という素の base64 エラーで crash-loop し原因に辿り着けなかった（staging で実際に発生。`-` が
+  offset 6 = `CHANGE-ME` そのもの）。base64 復号の前に `CHANGE-ME` を検出し、「テンプレートのプレースホルダの
+  まま」という原因と対処（`openssl rand -base64 32`）を明示するエラーへ変更。通常の base64 エラーにも生成
+  コマンドのヒントを追記（core は `decode_secret_32` へ共通化、web の `CSRF_SECRET` も同様）。
+- **scripts/deploy.sh — 既存 .env のプレースホルダ検査**: 秘密キー（`MARIADB_PASSWORD`・`KEY_ENCRYPTION_KEY`・
+  `INTERNAL_SERVICE_TOKEN`・`CSRF_SECRET`・`DATABASE_URL` 等）に `CHANGE-ME` が残っていたら、コンテナ起動前に
+  該当キー名と生成コマンドを提示して停止する（`ensure_no_placeholder_secrets`）。`test_deploy.sh` にケース追加。
+
 ## 2026-07-22（デプロイ: DB 認証プリフライトで既存 volume とのパスワード不一致を fail-fast）
 
 - **scripts/deploy.sh — MariaDB 起動後・migration 前にアプリ用ユーザーの認証を検証**: MariaDB 公式
