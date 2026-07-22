@@ -70,8 +70,12 @@ dist_dir="${IDP_DIST_DIR:-}"
 target_dir="${IDP_TARGET_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 
 # パス中の {PROJECT} を project の値へ展開する（プロジェクト名の一元管理）。
-dev_workdir="${dev_workdir//\{PROJECT\}/$project}"
-dist_dir="${dist_dir//\{PROJECT\}/$project}"
+# 置換文字列側では bash 5.2 の patsub_replacement により `&`（マッチ全体）・`\` が
+# 特別扱いされるため、project 値を差し込む前に両者をエスケープしてリテラル挿入する。
+_project_repl="${project//\\/\\\\}"
+_project_repl="${_project_repl//&/\\&}"
+dev_workdir="${dev_workdir//\{PROJECT\}/$_project_repl}"
+dist_dir="${dist_dir//\{PROJECT\}/$_project_repl}"
 
 log() { printf '[idp:build-remote-container] %s\n' "$*" >&2; }
 die() { printf '[idp:build-remote-container][error] %s\n' "$*" >&2; exit 1; }
