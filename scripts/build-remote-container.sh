@@ -16,7 +16,7 @@
 #   ./build-remote-container.sh reset
 #
 # 設定（環境変数で上書き可。下の既定値を環境に合わせて書き換えてもよい）:
-#   IDP_PROJECT        dev コンテナ内のプロジェクト名（IDP_DEV_WORKDIR の既定に使う）
+#   IDP_PROJECT        dev コンテナ内のプロジェクト名（設定ファイルの PROJECT でも指定可。{PROJECT} の展開元）
 #   IDP_DEV_CONTAINER  ビルドを行う dev コンテナ名
 #   IDP_DEV_USER       コンテナ内でビルドする実行ユーザー
 #   IDP_DEV_WORKDIR    コンテナ内のリポジトリ working dir（scripts/build.sh がある場所）
@@ -24,10 +24,12 @@
 #   IDP_TARGET_DIR     デプロイ先ディレクトリ（既定: このスクリプトの場所）
 #
 # 設定は上記の環境変数のほか、**スクリプトと同じ場所の `build-remote-container.env`**（KEY=VALUE 形式）
-# にも書ける（`export` 等のコマンド実行は不要）。例:
+# にも書ける（`export` 等のコマンド実行は不要）。プロジェクト名は PROJECT に 1 度だけ書けばよく、
+# 各パスの `{PROJECT}` がその値へ展開される。例:
+#     PROJECT=idp
 #     IDP_DEV_CONTAINER=ubuntu-dev
-#     IDP_DEV_WORKDIR=/work/project/photonest
-#     IDP_DIST_DIR=/var/services/homes/kyon/.../work/project/photonest/dist
+#     IDP_DEV_WORKDIR=/work/project/{PROJECT}
+#     IDP_DIST_DIR=/var/services/homes/kyon/.../work/project/{PROJECT}/dist
 # ※ デプロイ用 `.env`（deploy.sh / Compose が読む秘密情報ファイル）とは別物。ここへ書いても効かない。
 #
 # 前提: docker（デプロイ先）と、ビルド用 dev コンテナが起動していること。
@@ -38,6 +40,7 @@ set -euo pipefail
 # 未設定のものだけ設定ファイルの値で補う。行頭コメント（#）・空行・不正キーは無視し、値は前後空白と
 # 空白に続くインラインコメント（` # ...`）を除去する（`#` を含む値でも空白が前に無ければ保持）。
 _config_file="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build-remote-container.env"
+_config_loaded_keys=()   # 設定ファイルから実際に取り込んだキー（起動情報の表示用）
 if [[ -f "$_config_file" ]]; then
   while IFS= read -r _line || [[ -n "$_line" ]]; do
     _line="${_line%$'\r'}"
@@ -50,17 +53,29 @@ if [[ -f "$_config_file" ]]; then
     _val="${_val#"${_val%%[![:space:]]*}"}"       # 先頭空白を除去
     _val="${_val%"${_val##*[![:space:]]}"}"       # 末尾空白を除去
     [[ "$_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-    [[ -z "${!_key:-}" ]] && export "$_key=$_val"
+    if [[ -z "${!_key:-}" ]]; then
+      export "$_key=$_val"
+      _config_loaded_keys+=("$_key")
+    fi
   done <"$_config_file"
 fi
 
 # ---- 既定値（設定ファイル／環境変数で上書きされる。直接編集も可） ------------------
-project="${IDP_PROJECT:-idp}"
+# プロジェクト名は 1 度だけ定義する。環境変数 IDP_PROJECT > 設定ファイル PROJECT > 既定値 idp。
+project="${IDP_PROJECT:-${PROJECT:-idp}}"
 dev_container="${IDP_DEV_CONTAINER:-ubuntu-dev}"
 dev_user="${IDP_DEV_USER:-sshuser}"
-dev_workdir="${IDP_DEV_WORKDIR:-/work/project/${project}}"
+dev_workdir="${IDP_DEV_WORKDIR:-/work/project/$project}"
 dist_dir="${IDP_DIST_DIR:-}"
 target_dir="${IDP_TARGET_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+
+# パス中の {PROJECT} を project の値へ展開する（プロジェクト名の一元管理）。
+# 置換文字列側では bash 5.2 の patsub_replacement により `&`（マッチ全体）・`\` が
+# 特別扱いされるため、project 値を差し込む前に両者をエスケープしてリテラル挿入する。
+_project_repl="${project//\\/\\\\}"
+_project_repl="${_project_repl//&/\\&}"
+dev_workdir="${dev_workdir//\{PROJECT\}/$_project_repl}"
+dist_dir="${dist_dir//\{PROJECT\}/$_project_repl}"
 
 log() { printf '[idp:build-remote-container] %s\n' "$*" >&2; }
 die() { printf '[idp:build-remote-container][error] %s\n' "$*" >&2; exit 1; }
@@ -71,11 +86,30 @@ for arg in "$@"; do
   case "$arg" in app | migrate | reset) mode="$arg" ;; esac
 done
 
+# ---- 起動情報（どの引数で動き・どの設定を読み込み・どう解決したかを表示） -------------
+log "START  project=$project  mode=$mode"
+log "  引数        : $([[ $# -gt 0 ]] && printf '%q ' "$@" || printf '(なし → 既定 %s)' "$mode")"
+if [[ -f "$_config_file" ]]; then
+  if [[ ${#_config_loaded_keys[@]} -gt 0 ]]; then
+    log "  設定ファイル: $_config_file （読込: ${_config_loaded_keys[*]}）"
+  else
+    log "  設定ファイル: $_config_file （取り込んだキーなし＝全て環境変数が優先）"
+  fi
+else
+  log "  設定ファイル: なし（$_config_file 不在。環境変数と既定値のみ）"
+fi
+log "  解決した設定:"
+log "    PROJECT           = $project"
+log "    IDP_DEV_CONTAINER = $dev_container"
+log "    IDP_DEV_USER      = $dev_user"
+log "    IDP_DEV_WORKDIR   = $dev_workdir"
+log "    IDP_DIST_DIR      = ${dist_dir:-(未設定)}"
+log "    IDP_TARGET_DIR    = $target_dir"
+
 command -v docker >/dev/null 2>&1 || die "docker が見つかりません。"
 [[ -n "$dist_dir" ]] || die "IDP_DIST_DIR（ホストから見えるビルド済み dist/ の絶対パス）を設定してください。"
 
 cd "$target_dir"
-log "START  project=$project  mode=$mode  target=$target_dir"
 
 # デプロイ先 .env のイメージ設定（IMAGE_TAG / IMAGE_PREFIX）をビルドへ引き継ぐ。これを揃えないと
 # build.sh は既定（idp/*:latest）で作る一方、docker-compose.deploy.yml は .env のタグを要求して
