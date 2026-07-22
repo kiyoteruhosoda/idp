@@ -144,12 +144,26 @@ fn ensure_production_secrets(
 }
 
 /// `CSRF_SECRET`（base64、32 バイト）を読み込む。未設定なら開発用デフォルトを使う。
+///
+/// `.env.*.example` のプレースホルダ `CHANGE-ME` が残ったまま起動されるケースが実際に多い
+/// （素の base64 エラーでは原因に辿り着けない）ため、プレースホルダは base64 復号より先に
+/// 検出し、対処（`openssl rand -base64 32`）まで案内する（api 側 `decode_secret_32` と同方針）。
 fn load_csrf_secret() -> anyhow::Result<([u8; 32], bool)> {
     match env_lookup("CSRF_SECRET") {
         Some(v) => {
-            let bytes = STANDARD
-                .decode(&v)
-                .map_err(|e| anyhow::anyhow!("CSRF_SECRET must be base64: {e}"))?;
+            let v = v.trim();
+            if v.contains("CHANGE-ME") {
+                anyhow::bail!(
+                    "CSRF_SECRET is still the .env template placeholder \"CHANGE-ME\"; \
+                     replace it with a real value (generate with `openssl rand -base64 32`, \
+                     shared with api)"
+                );
+            }
+            let bytes = STANDARD.decode(v).map_err(|e| {
+                anyhow::anyhow!(
+                    "CSRF_SECRET must be base64 (generate with `openssl rand -base64 32`): {e}"
+                )
+            })?;
             let arr: [u8; 32] = bytes
                 .try_into()
                 .map_err(|_| anyhow::anyhow!("CSRF_SECRET must decode to exactly 32 bytes"))?;

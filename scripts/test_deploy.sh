@@ -253,4 +253,23 @@ if grep -qE '^[A-Za-z_][A-Za-z0-9_]*=.*CHANGE-ME' .env; then
 fi
 grep -q -- '--project-name idp-stg -f docker-compose.yml' "$DOCKER_STUB_LOG"
 
+# --- 既存 .env にプレースホルダ CHANGE-ME が残っている場合はコンテナ起動前に fail-fast する ---
+# （.env.*.example を手動コピーして置換し忘れると、api が KEY_ENCRYPTION_KEY を base64 として
+#   解釈できず crash-loop する。deploy.sh が原因のキー名と生成コマンドを明示して止めること。）
+sed -i 's|^KEY_ENCRYPTION_KEY=.*|KEY_ENCRYPTION_KEY=CHANGE-ME|' .env
+: >"$DOCKER_STUB_LOG"
+set +e
+./deploy.sh app >/tmp/deploy-placeholder.out 2>&1
+status=$?
+set -e
+[[ $status -eq 1 ]] || { echo "deploy must fail fast when CHANGE-ME remains in .env" >&2; cat /tmp/deploy-placeholder.out >&2; exit 1; }
+grep -q 'CHANGE-ME が残っています: KEY_ENCRYPTION_KEY' /tmp/deploy-placeholder.out ||
+  { echo "placeholder diagnostic must name the offending key" >&2; cat /tmp/deploy-placeholder.out >&2; exit 1; }
+grep -q 'openssl rand -base64 32' /tmp/deploy-placeholder.out ||
+  { echo "placeholder diagnostic must include the generation command" >&2; exit 1; }
+if grep -q 'up -d' "$DOCKER_STUB_LOG"; then
+  echo "containers must not start when placeholder secrets remain" >&2
+  exit 1
+fi
+
 echo "deploy script tests passed"

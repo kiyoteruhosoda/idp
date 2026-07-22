@@ -232,10 +232,31 @@ merge_missing_env_keys() {
   return 0
 }
 
+# .env にテンプレートのプレースホルダ CHANGE-ME が残っていたら fail-fast する。
+# `.env.*.example` を手動コピーして置換し忘れた場合、api は KEY_ENCRYPTION_KEY 等を base64 として
+# 解釈できず crash-loop する（エラーは `Invalid symbol 45, offset 6` としか出ない）ため、
+# コンテナ起動前に原因と対処を明示して止める。
+ensure_no_placeholder_secrets() {
+  local key value leftover=()
+  for key in MARIADB_PASSWORD MARIADB_ROOT_PASSWORD KEY_ENCRYPTION_KEY INTERNAL_SERVICE_TOKEN CSRF_SECRET DATABASE_URL TEST_DATABASE_URL; do
+    value="$(get_env_var "$key")"
+    [[ "$value" == *CHANGE-ME* ]] && leftover+=("$key")
+  done
+  [[ ${#leftover[@]} -eq 0 ]] && return 0
+  err ".env にテンプレートのプレースホルダ CHANGE-ME が残っています: ${leftover[*]}"
+  err "対処: .env の該当キーへ実値を設定してから再実行してください。"
+  err "  * KEY_ENCRYPTION_KEY / CSRF_SECRET: openssl rand -base64 32"
+  err "  * INTERNAL_SERVICE_TOKEN: openssl rand -hex 32"
+  err "  * MARIADB_PASSWORD / MARIADB_ROOT_PASSWORD: openssl rand -hex 24"
+  err "    （DATABASE_URL / TEST_DATABASE_URL 内のパスワード部分も MARIADB_PASSWORD と揃える）"
+  die "placeholder secrets (CHANGE-ME) remain in .env"
+}
+
 ensure_env_file() {
   if [[ -f "$env_file" ]]; then
     log "既存の .env を使用します（上書きしません）。"
     merge_missing_env_keys
+    ensure_no_placeholder_secrets
     if [[ -z "$(get_env_var COMPOSE_PROJECT_NAME)" ]]; then
       LEGACY_COMPOSE_PROJECT_NAME="$(legacy_compose_project_name)"
       warn "既存 .env に COMPOSE_PROJECT_NAME が無いため、既存 volume を保護するため従来の Compose project name ($LEGACY_COMPOSE_PROJECT_NAME) を使用します。変更する場合は volume 移行または reset 後に .env へ明示してください。"
@@ -260,6 +281,7 @@ ensure_env_file() {
   fill_change_me TEST_DATABASE_URL "$db_password"
   set_env_var COMPOSE_PROJECT_NAME "$(default_compose_project_name)"
   chmod 600 "$env_file"
+  ensure_no_placeholder_secrets
   log ".env を生成しました（パーミッション 600、Compose project: $(get_env_var COMPOSE_PROJECT_NAME)）。"
 }
 

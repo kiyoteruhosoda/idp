@@ -475,18 +475,7 @@ fn ensure_production_secrets(
 /// `KEY_ENCRYPTION_KEY`（base64、32 バイト）を読み込む。未設定なら開発用デフォルトを使う。
 fn load_key_encryption_key() -> anyhow::Result<([u8; 32], bool)> {
     match env_lookup("KEY_ENCRYPTION_KEY") {
-        Some(v) => {
-            let bytes = STANDARD
-                .decode(v.trim())
-                .map_err(|e| anyhow::anyhow!("KEY_ENCRYPTION_KEY must be base64: {e}"))?;
-            let arr: [u8; 32] = bytes.try_into().map_err(|b: Vec<u8>| {
-                anyhow::anyhow!(
-                    "KEY_ENCRYPTION_KEY must decode to 32 bytes, got {}",
-                    b.len()
-                )
-            })?;
-            Ok((arr, false))
-        }
+        Some(v) => Ok((decode_secret_32("KEY_ENCRYPTION_KEY", &v)?, false)),
         None => Ok((*DEV_KEY_ENCRYPTION_KEY, true)),
     }
 }
@@ -494,17 +483,30 @@ fn load_key_encryption_key() -> anyhow::Result<([u8; 32], bool)> {
 /// `CSRF_SECRET`（base64、32 バイト）を読み込む。未設定なら開発用デフォルトを使う。
 fn load_csrf_secret() -> anyhow::Result<([u8; 32], bool)> {
     match env_lookup("CSRF_SECRET") {
-        Some(v) => {
-            let bytes = STANDARD
-                .decode(v.trim())
-                .map_err(|e| anyhow::anyhow!("CSRF_SECRET must be base64: {e}"))?;
-            let arr: [u8; 32] = bytes.try_into().map_err(|b: Vec<u8>| {
-                anyhow::anyhow!("CSRF_SECRET must decode to 32 bytes, got {}", b.len())
-            })?;
-            Ok((arr, false))
-        }
+        Some(v) => Ok((decode_secret_32("CSRF_SECRET", &v)?, false)),
         None => Ok((*DEV_CSRF_SECRET, true)),
     }
+}
+
+/// base64 の 32 バイトシークレット（`KEY_ENCRYPTION_KEY`・`CSRF_SECRET`）を復号する。
+///
+/// `.env.*.example` のプレースホルダ `CHANGE-ME` が残ったまま起動されるケースが実際に多い
+/// （素の base64 エラーは `Invalid symbol 45, offset 6` としか出ず原因に辿り着けない）ため、
+/// プレースホルダは base64 復号より先に検出し、対処（`openssl rand -base64 32`）まで案内する。
+fn decode_secret_32(name: &str, value: &str) -> anyhow::Result<[u8; 32]> {
+    let value = value.trim();
+    if value.contains("CHANGE-ME") {
+        anyhow::bail!(
+            "{name} is still the .env template placeholder \"CHANGE-ME\"; \
+             replace it with a real value (generate with `openssl rand -base64 32`)"
+        );
+    }
+    let bytes = STANDARD.decode(value).map_err(|e| {
+        anyhow::anyhow!("{name} must be base64 (generate with `openssl rand -base64 32`): {e}")
+    })?;
+    bytes
+        .try_into()
+        .map_err(|b: Vec<u8>| anyhow::anyhow!("{name} must decode to 32 bytes, got {}", b.len()))
 }
 
 fn secs(v: u64) -> Duration {
@@ -588,6 +590,36 @@ mod tests {
         assert!(ensure_production_secrets("https://idp.example.com", false, false, false).is_ok());
         // http（ローカル開発）は開発用デフォルトを許容する（起動時 warning のみ）。
         assert!(ensure_production_secrets("http://localhost:8080", true, true, true).is_ok());
+    }
+
+    #[test]
+    fn secret_decode_rejects_template_placeholder_with_guidance() {
+        // `.env.*.example` の CHANGE-ME 残りは base64 エラーではなく原因と対処を明示する。
+        let err = decode_secret_32("KEY_ENCRYPTION_KEY", "CHANGE-ME").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("CHANGE-ME"), "message was: {msg}");
+        assert!(
+            msg.contains("openssl rand -base64 32"),
+            "message was: {msg}"
+        );
+    }
+
+    #[test]
+    fn secret_decode_accepts_32_bytes_and_reports_bad_input() {
+        let encoded = STANDARD.encode([7u8; 32]);
+        assert_eq!(
+            decode_secret_32("KEY_ENCRYPTION_KEY", &encoded).unwrap(),
+            [7u8; 32]
+        );
+        // 前後空白は許容する（.env の手編集で紛れ込みやすい）。
+        assert_eq!(
+            decode_secret_32("KEY_ENCRYPTION_KEY", &format!(" {encoded}\n")).unwrap(),
+            [7u8; 32]
+        );
+        let short = decode_secret_32("CSRF_SECRET", &STANDARD.encode([7u8; 16])).unwrap_err();
+        assert!(short.to_string().contains("32 bytes, got 16"));
+        let not_base64 = decode_secret_32("CSRF_SECRET", "not/base64!!").unwrap_err();
+        assert!(not_base64.to_string().contains("openssl rand -base64 32"));
     }
 
     #[test]
