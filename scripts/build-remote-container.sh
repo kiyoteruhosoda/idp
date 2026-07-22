@@ -35,7 +35,8 @@ set -euo pipefail
 
 # ---- 設定ファイル（任意）を読み込む: <スクリプトと同じ場所>/build-remote-container.env -----
 # KEY=VALUE 行だけを安全に取り込む（source/eval しない）。既に設定済みの環境変数を優先し、
-# 未設定のものだけ設定ファイルの値で補う。コメント（#）・空行・不正キーは無視する。
+# 未設定のものだけ設定ファイルの値で補う。行頭コメント（#）・空行・不正キーは無視し、値は前後空白と
+# 空白に続くインラインコメント（` # ...`）を除去する（`#` を含む値でも空白が前に無ければ保持）。
 _config_file="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build-remote-container.env"
 if [[ -f "$_config_file" ]]; then
   while IFS= read -r _line || [[ -n "$_line" ]]; do
@@ -45,6 +46,9 @@ if [[ -f "$_config_file" ]]; then
     _key="${_line%%=*}"
     _val="${_line#*=}"
     _key="${_key//[[:space:]]/}"
+    _val="${_val%%[[:space:]]#*}"                 # 空白+# 以降のインラインコメントを除去
+    _val="${_val#"${_val%%[![:space:]]*}"}"       # 先頭空白を除去
+    _val="${_val%"${_val##*[![:space:]]}"}"       # 末尾空白を除去
     [[ "$_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
     [[ -z "${!_key:-}" ]] && export "$_key=$_val"
   done <"$_config_file"
