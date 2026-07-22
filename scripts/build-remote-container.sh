@@ -23,10 +23,34 @@
 #   IDP_DIST_DIR       ホストから見えるビルド済み dist/ の絶対パス（必須。無指定はエラー）
 #   IDP_TARGET_DIR     デプロイ先ディレクトリ（既定: このスクリプトの場所）
 #
+# 設定は上記の環境変数のほか、**スクリプトと同じ場所の `build-remote-container.env`**（KEY=VALUE 形式）
+# にも書ける（`export` 等のコマンド実行は不要）。例:
+#     IDP_DEV_CONTAINER=ubuntu-dev
+#     IDP_DEV_WORKDIR=/work/project/photonest
+#     IDP_DIST_DIR=/var/services/homes/kyon/.../work/project/photonest/dist
+# ※ デプロイ用 `.env`（deploy.sh / Compose が読む秘密情報ファイル）とは別物。ここへ書いても効かない。
+#
 # 前提: docker（デプロイ先）と、ビルド用 dev コンテナが起動していること。
 set -euo pipefail
 
-# ---- 既定値（環境に合わせて編集するか、環境変数で上書きする） --------------------
+# ---- 設定ファイル（任意）を読み込む: <スクリプトと同じ場所>/build-remote-container.env -----
+# KEY=VALUE 行だけを安全に取り込む（source/eval しない）。既に設定済みの環境変数を優先し、
+# 未設定のものだけ設定ファイルの値で補う。コメント（#）・空行・不正キーは無視する。
+_config_file="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build-remote-container.env"
+if [[ -f "$_config_file" ]]; then
+  while IFS= read -r _line || [[ -n "$_line" ]]; do
+    _line="${_line%$'\r'}"
+    [[ "$_line" =~ ^[[:space:]]*# ]] && continue
+    [[ "$_line" == *=* ]] || continue
+    _key="${_line%%=*}"
+    _val="${_line#*=}"
+    _key="${_key//[[:space:]]/}"
+    [[ "$_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    [[ -z "${!_key:-}" ]] && export "$_key=$_val"
+  done <"$_config_file"
+fi
+
+# ---- 既定値（設定ファイル／環境変数で上書きされる。直接編集も可） ------------------
 project="${IDP_PROJECT:-idp}"
 dev_container="${IDP_DEV_CONTAINER:-ubuntu-dev}"
 dev_user="${IDP_DEV_USER:-sshuser}"
@@ -56,7 +80,8 @@ log "START  project=$project  mode=$mode  target=$target_dir"
 read_env_value() {
   local key="$1"
   [[ -f "$target_dir/.env" ]] || return 0
-  grep -E "^${key}=" "$target_dir/.env" | tail -n1 | cut -d= -f2- | tr -d '\r'
+  # キーが無ければ空を返す。set -o pipefail 下でも grep の不一致(1)で落ちないよう `|| true`。
+  { grep -E "^${key}=" "$target_dir/.env" | tail -n1 | cut -d= -f2- | tr -d '\r'; } || true
 }
 image_tag="${IMAGE_TAG:-$(read_env_value IMAGE_TAG)}"
 image_prefix="${IMAGE_PREFIX:-$(read_env_value IMAGE_PREFIX)}"

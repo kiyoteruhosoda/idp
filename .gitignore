@@ -28,3 +28,6 @@ dist/
 
 # Node/Vite frontend dependencies
 **/node_modules/
+
+# デプロイ先ローカルのビルド設定（build-remote-container.sh 用。ホスト固有・非コミット）
+build-remote-container.env
