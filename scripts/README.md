@@ -65,6 +65,10 @@ dist/
 - 使う Compose ファイルは固定: バンドル内では同梱の `docker-compose.yml`、リポジトリ内から実行した
   場合はルートの `docker-compose.deploy.yml`。選択の余地はない。
 - `reset` は DB volume を削除する破壊的操作（確認なしで即実行される）。`.env` は保持される。
+- MariaDB 起動後・migration 前に**アプリ用ユーザーの認証**を検証する。`Access denied for user 'idp'` で
+  停止した場合は、`.env` の `MARIADB_PASSWORD` が既存 DB volume（初回作成時のパスワードで固定）と不一致。
+  データを破棄してよければ `./deploy.sh reset` で volume を作り直し、保持したければ `.env` のパスワードを
+  volume 作成時の値へ戻す（MariaDB は初回以降 `.env` の変更を既存 volume へ反映しない）。
 
 前提: `docker`（Compose v2 または v1）と `openssl`。
 

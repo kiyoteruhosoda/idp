@@ -1,4 +1,16 @@
 
+## 2026-07-22（デプロイ: DB 認証プリフライトで既存 volume とのパスワード不一致を fail-fast）
+
+- **scripts/deploy.sh — MariaDB 起動後・migration 前にアプリ用ユーザーの認証を検証**: MariaDB 公式
+  イメージは data volume を初回作成時の `MARIADB_PASSWORD` で固定し、その後の `.env` 変更を既存 volume の
+  `idp` ユーザーへ反映しない。この不一致（例: `.env` 再生成・汎用→staging テンプレート切替）は healthcheck
+  （root/socket でサーバ稼働のみ確認）では検出できず、`migrate` が「Access denied for user 'idp'」で不可解に
+  3 回リトライして失敗していた。`start_database` に `preflight_db_auth` を追加し、`root_tenant_id()` と同じ
+  接続方式でアプリ用ユーザーの認証可否を確認。不一致なら原因（volume と `.env` のパスワード drift）と対処
+  （`./deploy.sh reset` で volume 再作成、または `.env` のパスワードを volume 作成時の値へ戻す）を明示して
+  即座に停止する。認証エラーは即断・一過性の失敗のみ短く再試行。診断出力の秘密マスクは既存経路を踏襲。
+  `test_deploy.sh` に認証失敗ケース（fail-fast・migrate 未実行・秘密マスク）を追加。
+
 ## 2026-07-22（SAML: SP 登録メタデータのファイルアップロード対応）
 
 - **crates/web — SP（クライアント）登録のメタデータ取り込みをファイルアップロードにも対応**: 管理コンソール

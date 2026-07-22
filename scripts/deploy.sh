@@ -382,10 +382,43 @@ sync_root_tenant_id_env() {
   fi
 }
 
+# MariaDB 公式イメージは data volume を「初回初期化時の MARIADB_PASSWORD」で固定し、その後 .env の
+# パスワードを変更しても既存 volume 内の idp ユーザーには反映しない。結果 migrate/api は新パスワードで
+# 接続し「Access denied for user 'idp'」で失敗する。healthcheck は root/socket でサーバ稼働しか見ないため、
+# この不一致は検出できず、意味のない migrate リトライ 3 回で終わる。migration の前にアプリ用ユーザーで
+# 実際に認証できるかを確認し、不一致なら原因と対処を明示して即座に停止する（fail-fast）。
+preflight_db_auth() {
+  local db_user db_name db_password attempt err_out
+  db_user="$(get_env_var MARIADB_USER)"; db_user="${db_user:-idp}"
+  db_name="$(get_env_var MARIADB_DATABASE)"; db_name="${db_name:-idp}"
+  db_password="$(get_env_var MARIADB_PASSWORD)"
+  log "DB 認証プリフライトを実行します（アプリ用ユーザー $db_user）..."
+  for attempt in 1 2 3; do
+    # root_tenant_id() と同じ接続方式でアプリ用ユーザーの認証可否だけを確認する。
+    # 認証エラーはパスワード不一致なので即断（リトライしない）。それ以外の一過性の失敗のみ短く再試行する。
+    if err_out="$("${compose[@]}" exec -T mariadb \
+        mariadb -u"$db_user" -p"$db_password" "$db_name" -N -B -e 'SELECT 1' 2>&1)"; then
+      log "DB 認証プリフライト OK（ユーザー $db_user）。"
+      return 0
+    fi
+    printf '%s' "$err_out" | grep -qi 'access denied' && break
+    [[ $attempt -lt 3 ]] && sleep 2
+  done
+  compose_diagnostics_for mariadb
+  err "アプリ用 DB ユーザー '$db_user' で認証できません（.env の MARIADB_PASSWORD が既存の DB volume と不一致）。"
+  err "MariaDB は data volume を初回作成時のパスワードで固定し、その後の .env 変更を反映しません。"
+  err "対処のいずれか:"
+  err "  * データを破棄してよい（初期構築・staging 等）: ./deploy.sh reset で DB volume を作り直す（既存データは消えます）"
+  err "  * データを保持したい: .env の MARIADB_PASSWORD を volume 作成時の値へ戻す"
+  err "    （または root で ALTER USER '$db_user'@'%' IDENTIFIED BY ... を実行してパスワードを揃える）"
+  die "DB authentication preflight failed"
+}
+
 start_database() {
   log "MariaDB を起動します..."
   "${compose[@]}" up -d mariadb
   wait_healthy mariadb
+  preflight_db_auth
 }
 
 remove_stale_renamed_containers() {
