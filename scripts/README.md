@@ -72,29 +72,42 @@ dist/
 
 基準ディレクトリは**スクリプト実体の置き場所**で決まる（冒頭「基準ディレクトリの解決」参照）。
 したがって stg/prod を同一ホストで分ける場合は、**環境ごとに別ディレクトリを用意し、その中に
-デプロイ一式（`deploy.sh` ＝ `dist/` のバンドル、一ホスト方式なら `build-remote-container.sh` も）と
-その環境の `.env` を置く**。`.env` は `.env.staging.example` / `.env.production.example` をコピーして
-`WEB_PORT` と `IMAGE_TAG` を環境ごとに分ける。
+デプロイ一式（`deploy.sh` ＝ `dist/` のバンドル）と、その環境の `.env`（＋一ホスト方式なら
+`build-remote-container.sh` と `build-remote-container.env`）を置く**。
 
 ```
 /opt/idp/
-├── stg/    deploy.sh + build-remote-container.sh + .env(stg)   # WEB_PORT/IMAGE_TAG = stg
-└── prod/   deploy.sh + build-remote-container.sh + .env(prod)  # WEB_PORT/IMAGE_TAG = prod
+├── stg/    deploy.sh + build-remote-container.sh + build-remote-container.env + .env  # COMPOSE_PROJECT_NAME=idp-stg
+└── prod/   deploy.sh + build-remote-container.sh + build-remote-container.env + .env  # COMPOSE_PROJECT_NAME=idp-prod
 ```
+
+**各環境ディレクトリで必要な設定（省くと起動しない）**:
+
+1. **`.env`**: `.env.staging.example` / `.env.production.example` をコピーする。この example は
+   `ISSUER`・`WEB_PORT`・`IMAGE_TAG`・`COMPOSE_PROJECT_NAME` を stg/prod で分けて設定済みだが、
+   **秘密情報（`MARIADB_PASSWORD`・`MARIADB_ROOT_PASSWORD`・`DATABASE_URL` のパスワード・
+   `KEY_ENCRYPTION_KEY`・`INTERNAL_SERVICE_TOKEN`・`CSRF_SECRET`）の `CHANGE-ME` を必ず実値に置換する**。
+   `deploy.sh` は既存 `.env` を上書きしない（`CHANGE-ME` のままでも秘密を生成しない）ため、置換前に
+   デプロイすると base64 として不正な `CHANGE-ME` を API/web が拒否して起動できない。あわせて `ISSUER` を
+   外部公開ホスト名/IP に合わせる。
+2. **`build-remote-container.env`**（一ホスト方式のみ）: `IDP_DIST_DIR`（必須。ホストから見える
+   ビルド済み `dist/` の絶対パス）等を書く。無いと `IDP_DIST_DIR` 未設定で `build-remote-container.sh` が
+   即エラー終了する（`build-remote-container.sh:110`）。環境変数で `IDP_DIST_DIR=...` を直接渡してもよい。
 
 デプロイ対象の選び方（どちらか。**`cd` だけでは対象は切り替わらない**）:
 
 ```bash
-# 1) その環境ディレクトリにある“その環境のコピー”を実行する
+# 1) その環境ディレクトリにある“その環境のコピー”を実行する（build-remote-container.env も同ディレクトリで読む）
 cd /opt/idp/stg && ./build-remote-container.sh app     # → stg/.env を使用
 cd /opt/idp/prod && ./build-remote-container.sh app    # → prod/.env を使用
 
 # 2) IDP_TARGET_DIR で対象を明示する（build-remote-container.sh のみ）
-IDP_TARGET_DIR=/opt/idp/stg /opt/idp/prod/build-remote-container.sh app   # → stg/.env を使用
+IDP_TARGET_DIR=/opt/idp/stg IDP_DIST_DIR=/path/to/dist /opt/idp/prod/build-remote-container.sh app  # → stg/.env
 ```
 
 `cd /opt/idp/stg` してから `../prod/build-remote-container.sh` のように**別ディレクトリの実体**を
 呼ぶと、`IDP_TARGET_DIR` 未指定なら基準は prod になり **prod の `.env` が使われる**（`cd` は無視される）。
+同様に、シェルに `IDP_TARGET_DIR` が export 済みだとスクリプト位置より優先される点にも注意。
 
 ## 典型的な流れ
 
