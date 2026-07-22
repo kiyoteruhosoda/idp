@@ -1,3 +1,10 @@
+## 2026-07-22（デプロイ: 既定の外部公開ポートを stg 8061 / prod 8060 に統一）
+
+- **env サンプル・OPERATIONS — 同一ホスト運用の既定 WEB_PORT を整理**: staging の外部公開ポートを
+  `8081` から `8061` に変更し（`.env.staging.example` の `ISSUER`／`PUBLIC_WEB_BASE_URL`／`WEB_PORT`）、
+  production は従来どおり `8060`。`docs/OPERATIONS.md` の stg/prod デプロイ表も stg `8061` / prod `8060` に
+  そろえた（コンテナ内ポートは常に `8080` のまま。外部公開ポートのみ変更）。
+
 ## 2026-07-22（SAML: SP メタデータ出力・外部 IdP メタデータ取り込み）
 
 - **crates/core — SAML メタデータの解析・生成を追加**: ドメイン `domain::saml_metadata` に、外部 IdP の
