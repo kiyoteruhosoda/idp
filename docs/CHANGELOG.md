@@ -1,3 +1,15 @@
+
+## 2026-07-22（デプロイ: 一ホスト方式 build-remote.sh を追加）
+
+- **scripts — `build-remote.sh` を追加**: デプロイ先で git 取得 → 自己更新 → `build.sh` →
+  `deploy.sh` を 1 本で実行する一ホスト方式。デプロイ先に置くのは最初にこのスクリプト 1 本だけでよく、
+  ソースは git から取得するため `dist/` の転送が不要になる。実行のたびにリポジトリ上の
+  `build-remote.sh` と自分を比較し、不一致なら自身を上書きして再実行する（自己更新）。取得元・
+  ブランチ・取得先は `IDP_REPO_URL` / `IDP_BRANCH` / `IDP_SRC_DIR` で変更できる。従来の二ホスト方式
+  （`build.sh` → `dist/` 転送 → `deploy.sh`）はそのまま利用できる。
+- **CI — `scripts/test_build_remote.sh` を追加**: 実物の git（ローカル origin を clone）と
+  スタブ化した `build.sh` / `deploy.sh` / `docker` で、取得・自己更新・モード委譲・再実行ループ非発生を検証する。
+
 ## 2026-07-22（デプロイ: 既定の外部公開ポートを stg 8061 / prod 8060 に統一）
 
 - **env サンプル・OPERATIONS — 同一ホスト運用の既定 WEB_PORT を整理**: staging の外部公開ポートを

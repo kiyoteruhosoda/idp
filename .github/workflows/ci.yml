@@ -42,6 +42,8 @@ jobs:
         run: cargo test --workspace --locked
       - name: Shell deployment tests
         run: ./scripts/test_deploy.sh
+      - name: Remote build/deploy script tests
+        run: ./scripts/test_build_remote.sh
       - name: E2E
         run: ./scripts/e2e.sh
       - name: Docker build and deploy bundle

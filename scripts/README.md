@@ -17,8 +17,10 @@
 |---|---|
 | `build.sh` | **ビルド側**: Docker イメージ（api/web/migrate）をビルドし、tar ＋ デプロイ一式を `dist/` へ出力 |
 | `deploy.sh` | **デプロイ先**: デプロイの単一入口（初回・更新・migrate・reset）。`dist/` に同梱される |
+| `build-remote.sh` | **デプロイ先（一ホスト方式）**: git 取得 → 自己更新 → `build.sh` → `deploy.sh` を 1 本で実行。dist/ の転送が不要 |
 | `e2e.sh` | web→api の疎通 E2E（api・web を実プロセス起動して HTTP で検証） |
 | `test_deploy.sh` | `deploy.sh` の CLI/エラー処理をスタブ docker で検証（CI 用） |
+| `test_build_remote.sh` | `build-remote.sh` の取得・自己更新・委譲をスタブで検証（CI 用） |
 
 ## build.sh — ビルド（ビルド側・起動しない）
 
@@ -75,6 +77,35 @@ cd /opt/idp/dist
 
 更新は新しい `dist/` を上書き転送して `./deploy.sh app` を再実行する。ロールバックは前のバージョンの
 `dist/` を残しておき、そこで `./deploy.sh app` を実行する。
+
+## build-remote.sh — デプロイ先だけで完結する一ホスト方式
+
+上の二ホスト方式（ビルド側で `build.sh` → `dist/` を転送）に対し、`build-remote.sh` は
+**デプロイ先で git 取得からデプロイまでを一気通貫**で行う。デプロイ先に置くのは最初に
+この 1 本だけでよく、以後の運用でスクリプト自体が更新されても、実行時に git 上の最新版へ
+自分を書き換えて再実行する（自己更新）。
+
+```bash
+# === デプロイ先（Docker が動くホスト。最初に build-remote.sh を 1 本だけ配置） ===
+./build-remote.sh            # app: git 取得 → 自己更新 → build.sh → deploy.sh app
+./build-remote.sh migrate    # migrate を委譲
+./build-remote.sh reset      # reset を委譲（破壊的）
+```
+
+- ソースを git から取得（`clone` / `fetch`）するので **`dist/` の転送は不要**。`build.sh` を
+  デプロイ先で実行してイメージをローカルにビルドし、そのまま `deploy.sh` へ渡す。
+- 実行のたびに git 上の `scripts/build-remote.sh` と自分を比較し、不一致なら自分を上書きして
+  再実行する。取得と自己更新は初回のみで、再実行後は二重取得しない。
+- 設定は環境変数（既定のままでも動く）:
+
+  | 変数 | 既定 | 用途 |
+  |---|---|---|
+  | `IDP_REPO_URL` | `https://github.com/kiyoteruhosoda/idp.git` | 取得元 git URL |
+  | `IDP_BRANCH` | `main` | 取得ブランチ |
+  | `IDP_SRC_DIR` | `<スクリプトの場所>/src` | ソース取得先 |
+  | `IMAGE_TAG` | `latest` | `build.sh` / `deploy` へ引き継ぐイメージタグ |
+
+前提: `git` と、`build.sh` / `deploy.sh` の前提（`docker`・`openssl`）。
 
 ## e2e.sh — 疎通 E2E
 

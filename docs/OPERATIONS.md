@@ -292,6 +292,23 @@ cd /opt/idp/dist   # 転送先（例）
 使う compose は同梱の `docker-compose.yml`（`build:` を持たず `image:` 参照。リポジトリ内から実行した
 場合はルートの `docker-compose.deploy.yml`）。前提: `docker`（Compose v2）と `openssl`。
 
+## デプロイ先だけで取得→ビルド→デプロイしたいとき（一ホスト方式）
+
+デプロイ先で Docker が動くなら、`dist/` を転送する代わりに `build-remote.sh` 一本で
+git 取得からデプロイまでを完結できる。デプロイ先に置くのは最初にこの 1 本だけでよい
+（以後スクリプトが更新されても実行時に自己更新する）。
+
+```sh
+cd /opt/idp        # build-remote.sh を置いた場所（例）
+./build-remote.sh app        # git 取得 → 自己更新 → build.sh → deploy.sh app
+```
+
+内容: git からソースを取得（`clone` / `fetch`）→ リポジトリの `build-remote.sh` と不一致なら
+自己更新して再実行 → デプロイ先で `build.sh` を実行してイメージをローカルにビルド →
+生成した `dist/deploy.sh` に `app` / `migrate` / `reset` を委譲。取得元・ブランチ・取得先は
+`IDP_REPO_URL` / `IDP_BRANCH` / `IDP_SRC_DIR` で変更できる。前提: `git`・`docker`・`openssl`。
+詳細は `scripts/README.md`。
+
 ## マイグレーションだけを適用したいとき（デプロイ先）
 
 ```sh
