@@ -90,6 +90,11 @@ dist/
    `deploy.sh` は既存 `.env` を上書きしない（`CHANGE-ME` のままでも秘密を生成しない）ため、置換前に
    デプロイすると base64 として不正な `CHANGE-ME` を API/web が拒否して起動できない。あわせて `ISSUER` を
    外部公開ホスト名/IP に合わせる。
+   - **⚠️ `.env` を先に作ること。** `.env` が無いまま `deploy.sh`/`build-remote-container.sh` を実行すると、
+     `deploy.sh` は `.env.staging/.production.example` ではなく**汎用 `.env.example`（既定 `WEB_PORT=8060`・
+     `IMAGE_TAG=latest`）**から `.env` を自動生成し、さらに `build-remote-container.sh` はタグを `.env` から
+     読めず `latest` でビルドするため、**stg のつもりが既定（本番相当）設定で起動する**。`COMPOSE_PROJECT_NAME`
+     はディレクトリ名から `idp-<dir>` に決まるので prod とは衝突しないが、ポート/タグ/ISSUER が既定値になる。
 2. **`build-remote-container.env`**（一ホスト方式のみ）: `IDP_DIST_DIR`（必須。ホストから見える
    ビルド済み `dist/` の絶対パス）等を書く。無いと `IDP_DIST_DIR` 未設定で `build-remote-container.sh` が
    即エラー終了する（`build-remote-container.sh:110`）。環境変数で `IDP_DIST_DIR=...` を直接渡してもよい。
