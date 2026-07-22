@@ -1,7 +1,13 @@
 # scripts/
 
-運用・ビルド・検証をワンコマンド化したシェルスクリプト群。どのディレクトリから実行しても動く
-（各スクリプトが自身の位置から基準ディレクトリを解決する）。
+運用・ビルド・検証をワンコマンド化したシェルスクリプト群。各スクリプトは基準ディレクトリ
+（`.env`・Compose・`dist/` の置き場所）を、**実行時のカレントディレクトリ(`$PWD`)ではなく
+「スクリプトファイル自身の置き場所」**から解決する（`build-remote-container.sh` は `IDP_TARGET_DIR` で明示上書き可）。
+
+- 利点: 事前に `cd` しなくても、フルパスで呼べば常に正しい基準で動く。
+- 注意: **`cd` してもデプロイ対象は変わらない。対象は「どの場所にあるスクリプト実体を実行したか」で決まる。**
+  例えば `cd stg` してから本番ディレクトリにあるスクリプト実体を呼ぶと、本番の `.env` が使われる。
+  stg/prod を同一ホストに分ける運用は下記「stg/prod を同一ホストに置く」を参照。
 
 ## ホストの分離（重要）
 
@@ -54,15 +60,41 @@ dist/
 - 初回実行時に `.env` を `.env.example` から自動生成し、秘密情報（DB パスワード・
   `KEY_ENCRYPTION_KEY`・`INTERNAL_SERVICE_TOKEN`・`CSRF_SECRET`）を乱数生成する。
   **既存の `.env` は上書きしない**（冪等）。環境に合わせて確認する項目は `ISSUER`（公開 URL）と
-  `WEB_PORT`（公開ポート）の 2 つ。stg/prod を同一ホストに置く場合は、
-  `.env.staging.example` / `.env.production.example` を `.env` にコピーし、`WEB_PORT` と `IMAGE_TAG` を
-  環境ごとに分ける。
+  `WEB_PORT`（公開ポート）の 2 つ。
 - イメージは隣の `idp-*.tar` から自動で `docker load` する（読込済みで manifest と一致すればスキップ）。
 - 使う Compose ファイルは固定: バンドル内では同梱の `docker-compose.yml`、リポジトリ内から実行した
   場合はルートの `docker-compose.deploy.yml`。選択の余地はない。
 - `reset` は DB volume を削除する破壊的操作（確認なしで即実行される）。`.env` は保持される。
 
 前提: `docker`（Compose v2 または v1）と `openssl`。
+
+## stg/prod を同一ホストに置く
+
+基準ディレクトリは**スクリプト実体の置き場所**で決まる（冒頭「基準ディレクトリの解決」参照）。
+したがって stg/prod を同一ホストで分ける場合は、**環境ごとに別ディレクトリを用意し、その中に
+デプロイ一式（`deploy.sh` ＝ `dist/` のバンドル、一ホスト方式なら `build-remote-container.sh` も）と
+その環境の `.env` を置く**。`.env` は `.env.staging.example` / `.env.production.example` をコピーして
+`WEB_PORT` と `IMAGE_TAG` を環境ごとに分ける。
+
+```
+/opt/idp/
+├── stg/    deploy.sh + build-remote-container.sh + .env(stg)   # WEB_PORT/IMAGE_TAG = stg
+└── prod/   deploy.sh + build-remote-container.sh + .env(prod)  # WEB_PORT/IMAGE_TAG = prod
+```
+
+デプロイ対象の選び方（どちらか。**`cd` だけでは対象は切り替わらない**）:
+
+```bash
+# 1) その環境ディレクトリにある“その環境のコピー”を実行する
+cd /opt/idp/stg && ./build-remote-container.sh app     # → stg/.env を使用
+cd /opt/idp/prod && ./build-remote-container.sh app    # → prod/.env を使用
+
+# 2) IDP_TARGET_DIR で対象を明示する（build-remote-container.sh のみ）
+IDP_TARGET_DIR=/opt/idp/stg /opt/idp/prod/build-remote-container.sh app   # → stg/.env を使用
+```
+
+`cd /opt/idp/stg` してから `../prod/build-remote-container.sh` のように**別ディレクトリの実体**を
+呼ぶと、`IDP_TARGET_DIR` 未指定なら基準は prod になり **prod の `.env` が使われる**（`cd` は無視される）。
 
 ## 典型的な流れ
 

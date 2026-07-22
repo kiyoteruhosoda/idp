@@ -24,7 +24,7 @@ async fn idp_metadata_is_public_and_tenant_scoped() {
             .headers()
             .get(CONTENT_TYPE)
             .and_then(|v| v.to_str().ok()),
-        Some("application/samlmetadata+xml"),
+        Some("application/xml; charset=utf-8"),
     );
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await

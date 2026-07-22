@@ -58,7 +58,7 @@ pub async fn jwks(State(state): State<AppState>) -> Response {
     get,
     path = "/{tenant_id}/saml/metadata",
     tag = "saml",
-    responses((status = 200, description = "SAML IdP メタデータ（application/samlmetadata+xml）"))
+    responses((status = 200, description = "SAML IdP メタデータ（application/xml。SP 取り込み用にダウンロード）"))
 )]
 pub async fn saml_idp_metadata(
     State(state): State<AppState>,
@@ -70,7 +70,7 @@ pub async fn saml_idp_metadata(
     let xml = build_idp_metadata_xml(&issuer, &sso_url, signing_key.as_ref());
     (
         [
-            (header::CONTENT_TYPE, "application/samlmetadata+xml"),
+            (header::CONTENT_TYPE, "application/xml; charset=utf-8"),
             (
                 header::CONTENT_DISPOSITION,
                 "attachment; filename=\"idp-metadata.xml\"",
