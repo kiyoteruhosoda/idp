@@ -183,3 +183,25 @@ pub struct AdminSamlMetadataImportForm {
     pub metadata_xml: String,
     pub csrf_token: String,
 }
+
+/// SAML SP（クライアント）登録フォーム（`POST /{tenant_id}/admin/saml-clients`）。
+#[derive(Debug, Deserialize)]
+pub struct AdminSamlServiceProviderForm {
+    pub display_name: String,
+    pub entity_id: String,
+    pub acs_url: String,
+    #[serde(default)]
+    pub name_id_format: String,
+    #[serde(default)]
+    pub x509_certificate: String,
+    #[serde(default)]
+    pub enabled: Option<String>,
+    pub csrf_token: String,
+}
+
+/// SP メタデータ取り込みフォーム（`POST /{tenant_id}/admin/saml-clients/import`）。
+#[derive(Debug, Deserialize)]
+pub struct AdminSamlSpMetadataImportForm {
+    pub metadata_xml: String,
+    pub csrf_token: String,
+}

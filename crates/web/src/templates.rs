@@ -8,7 +8,8 @@
 //! 型検証される（sqlx のコンパイル時クエリ検証と同じ思想）。
 
 use crate::admin_dto::{
-    AuditLogView, ClientView, SamlProviderView, SigningKeyView, TenantCreatedView, TenantView,
+    AuditLogView, ClientView, SamlProviderView, SamlServiceProviderView, SigningKeyView,
+    TenantCreatedView, TenantView,
 };
 use crate::i18n::Messages;
 use askama::Template;
@@ -574,6 +575,33 @@ pub struct SamlProviderFormValues {
     pub display_name: String,
     pub entity_id: String,
     pub sso_url: String,
+    pub x509_certificate: String,
+    pub enabled: bool,
+}
+
+/// SAML SP（クライアント）一覧・追加画面（`GET /{tenant_id}/admin/saml-clients`）。
+#[derive(Template)]
+#[template(path = "console/saml_service_providers.html")]
+pub struct SamlServiceProvidersConsole<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub admin: Admin<'a>,
+    pub csrf: &'a str,
+    pub saved: bool,
+    /// メタデータ取り込みで初期値を反映した直後か（案内バナー表示・追加パネル展開に使う）。
+    pub imported: bool,
+    pub error_key: Option<&'a str>,
+    pub providers: &'a [SamlServiceProviderView],
+    pub values: &'a SamlServiceProviderFormValues,
+}
+
+/// SAML SP（クライアント）追加フォームの入力値。
+#[derive(Default)]
+pub struct SamlServiceProviderFormValues {
+    pub display_name: String,
+    pub entity_id: String,
+    pub acs_url: String,
+    pub name_id_format: String,
     pub x509_certificate: String,
     pub enabled: bool,
 }

@@ -4,6 +4,7 @@ pub mod admin_clients_console;
 pub mod admin_console;
 pub mod admin_invitations_console;
 pub mod admin_members_console;
+pub mod admin_saml_clients_console;
 pub mod admin_saml_console;
 pub mod admin_settings;
 pub mod admin_signing_keys_console;

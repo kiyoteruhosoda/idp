@@ -1,12 +1,20 @@
 
-## 2026-07-22（SAML: メタデータ出力を IdP メタデータへ修正）
+## 2026-07-22（SAML: IdP メタデータ出力と SP（クライアント）登録）
 
 - **crates/core・api・web — SAML メタデータ出力を SP → IdP メタデータへ修正**: 本プロダクトは IdP のため、
   `GET /{tenant_id}/saml/metadata` は `SPSSODescriptor` ではなく `IDPSSODescriptor` を返すべきだった。
   `EntityDescriptor`（`IDPSSODescriptor`）を生成する `build_idp_metadata_xml` に置き換え、SSO
-  エンドポイント（`{issuer}/saml/sso`）と ACTIVE 署名鍵（RSA を `RSAKeyValue` で埋め込み。JWKS の
-  `n`/`e` を base64 変換）を含めるようにした。ダウンロード導線の文言も「IdP メタデータ」へ修正。
-  外部 IdP メタデータの取り込み（`/admin/saml` の連携登録）は従来どおり。
+  エンドポイント（`{issuer}/saml/sso`）と ACTIVE 署名鍵を `KeyDescriptor` に含める。署名鍵は RS256 を
+  `RSAKeyValue`、ES256 を `ECKeyValue`（XMLDSIG11）で埋め込む（JWKS の `n`/`e`・`x`/`y` を変換）。
+- **crates/core・api・web — SAML SP（クライアント）登録機能を追加**: 本 IdP を信頼する SP をテナント単位で
+  登録する。ドメイン `saml_service_provider`＋マイグレーション `saml_service_providers`（entity_id・
+  acs_url・name_id_format・任意の証明書）、`parse_sp_metadata`（`SPSSODescriptor` から entity_id・
+  ACS URL（HTTP-POST 優先）・証明書・NameID を抽出）、管理 API `/admin/saml-service-providers`（一覧・
+  登録・メタデータ取り込み）、管理コンソール `/admin/saml-clients`（SP メタデータ貼り付けで登録フォーム
+  初期化・IdP メタデータのダウンロード導線）を追加。
+- 認証フロー（アサーション送受信・ACS・SSO・署名検証）は本変更の対象外（メタデータ出力・取り込みと
+  SP 登録のみ）。外部 IdP 連携（`/admin/saml`。本プロダクトが SP として外部 IdP でログインする既存機能）は
+  従来どおり別機能として残す。
 
 ## 2026-07-22（デプロイ: 一ホスト方式 build-remote.sh を追加）
 

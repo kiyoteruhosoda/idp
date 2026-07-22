@@ -81,16 +81,48 @@ pub async fn saml_idp_metadata(
         .into_response()
 }
 
-/// ACTIVE 署名鍵（RSA）の公開 modulus/exponent を SAML の `RSAKeyValue` 用 base64 で取り出す。
-/// JWKS の `n`/`e`（base64url）を base64（標準）へ変換する。取得できない場合は `None`（KeyDescriptor 省略）。
+/// ACTIVE 署名鍵の公開値を SAML `KeyValue` 用に取り出す。RSA は `RSAKeyValue`（modulus/exponent）、
+/// EC は `ECKeyValue`（NamedCurve URI と非圧縮点）へ変換する。取得できない場合は `None`（KeyDescriptor 省略）。
 async fn active_idp_signing_key(state: &AppState) -> Option<IdpSigningKey> {
     let kid = state.keys.active_signing_key().await.ok()?.kid;
     let jwks = state.keys.jwks().await.ok()?;
     let jwk = jwks.keys.into_iter().find(|k| k.kid == kid)?;
-    Some(IdpSigningKey {
-        modulus_b64: base64url_to_base64(jwk.n.as_deref()?)?,
-        exponent_b64: base64url_to_base64(jwk.e.as_deref()?)?,
-    })
+    match jwk.kty.as_str() {
+        "RSA" => Some(IdpSigningKey::Rsa {
+            modulus_b64: base64url_to_base64(jwk.n.as_deref()?)?,
+            exponent_b64: base64url_to_base64(jwk.e.as_deref()?)?,
+        }),
+        "EC" => {
+            let named_curve_uri = named_curve_uri(jwk.crv.as_deref()?)?;
+            // XMLDSIG の ECKeyValue は非圧縮点（0x04 || X || Y）を base64 で持つ。
+            let mut point = vec![0x04u8];
+            point.extend_from_slice(
+                &URL_SAFE_NO_PAD
+                    .decode(jwk.x.as_deref()?.trim_end_matches('='))
+                    .ok()?,
+            );
+            point.extend_from_slice(
+                &URL_SAFE_NO_PAD
+                    .decode(jwk.y.as_deref()?.trim_end_matches('='))
+                    .ok()?,
+            );
+            Some(IdpSigningKey::Ec {
+                named_curve_uri,
+                public_key_b64: STANDARD.encode(point),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// JWK の `crv` を XMLDSIG11 `NamedCurve` の URN へ変換する（MVP は P-256 のみ）。
+fn named_curve_uri(crv: &str) -> Option<String> {
+    match crv {
+        "P-256" => Some("urn:oid:1.2.840.10045.3.1.7".to_string()),
+        "P-384" => Some("urn:oid:1.3.132.0.34".to_string()),
+        "P-521" => Some("urn:oid:1.3.132.0.35".to_string()),
+        _ => None,
+    }
 }
 
 fn base64url_to_base64(value: &str) -> Option<String> {

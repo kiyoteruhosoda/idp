@@ -12,6 +12,7 @@ pub mod password_reset_token;
 pub mod refresh_token;
 pub mod revoked_access_token;
 pub mod saml_provider;
+pub mod saml_service_provider;
 pub mod signing_key;
 pub mod sso_session;
 pub mod system_setting;

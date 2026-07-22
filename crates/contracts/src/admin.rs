@@ -111,6 +111,48 @@ pub struct SamlMetadataImportResponse {
     pub x509_certificate: String,
 }
 
+/// SAML SP（クライアント）登録リクエスト（`POST /admin/saml-service-providers`）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SamlServiceProviderRegisterRequest {
+    pub display_name: String,
+    pub entity_id: String,
+    pub acs_url: String,
+    /// NameID フォーマット（空なら既定の persistent）。
+    #[serde(default)]
+    pub name_id_format: String,
+    /// 署名/暗号証明書（任意）。
+    #[serde(default)]
+    pub x509_certificate: Option<String>,
+    pub enabled: bool,
+}
+
+/// SAML SP（クライアント）の管理 API 表現。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SamlServiceProviderResponse {
+    pub id: String,
+    pub tenant_id: String,
+    pub display_name: String,
+    pub entity_id: String,
+    pub acs_url: String,
+    pub name_id_format: String,
+    pub enabled: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// SAML SP メタデータ取り込みの応答（登録フォームの初期値）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SamlSpMetadataImportResponse {
+    #[serde(default)]
+    pub display_name: String,
+    pub entity_id: String,
+    pub acs_url: String,
+    #[serde(default)]
+    pub name_id_format: String,
+    #[serde(default)]
+    pub x509_certificate: String,
+}
+
 /// SAML 外部 IdP の管理 API 表現。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SamlProviderResponse {

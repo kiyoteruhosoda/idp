@@ -6,10 +6,10 @@
 use crate::correlation;
 use crate::handlers::{
     admin_clients_console, admin_console, admin_invitations_console, admin_members_console,
-    admin_saml_console, admin_settings, admin_signing_keys_console, admin_status_console,
-    admin_tenants_console, admin_users_console, consent, health, invitation_accept, login,
-    mfa_totp, passkey, password_change, password_reset, portal, react_assets, stylesheet,
-    user_settings, vendor_assets, verify_email,
+    admin_saml_clients_console, admin_saml_console, admin_settings, admin_signing_keys_console,
+    admin_status_console, admin_tenants_console, admin_users_console, consent, health,
+    invitation_accept, login, mfa_totp, passkey, password_change, password_reset, portal,
+    react_assets, stylesheet, user_settings, vendor_assets, verify_email,
 };
 use crate::security_headers::add_security_headers;
 use crate::state::WebState;
@@ -149,6 +149,16 @@ pub fn build(state: WebState) -> Router {
         .route(
             "/admin/saml/import",
             post(admin_saml_console::import_metadata),
+        )
+        // SAML SP（クライアント）一覧・追加画面。
+        .route(
+            "/admin/saml-clients",
+            get(admin_saml_clients_console::list).post(admin_saml_clients_console::create),
+        )
+        // SP メタデータ取り込み（登録フォームへ初期値反映）。
+        .route(
+            "/admin/saml-clients/import",
+            post(admin_saml_clients_console::import_metadata),
         )
         // 利用者の作成・検索・権限付与/剥奪画面。
         .route("/admin/users", get(admin_users_console::search))

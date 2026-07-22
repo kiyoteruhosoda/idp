@@ -3,9 +3,9 @@
 use crate::presentation::correlation;
 use crate::presentation::handlers::{
     admin, admin_audit, admin_clients, admin_invitations, admin_members, admin_permissions,
-    admin_saml_providers, admin_signing_keys, admin_system_settings, admin_tenants, admin_users,
-    authorize, consent, discovery, health, internal_auth, introspect, invitations, logout, mfa,
-    passkey, register, revoke, token, userinfo,
+    admin_saml_providers, admin_saml_service_providers, admin_signing_keys, admin_system_settings,
+    admin_tenants, admin_users, authorize, consent, discovery, health, internal_auth, introspect,
+    invitations, logout, mfa, passkey, register, revoke, token, userinfo,
 };
 use crate::presentation::openapi::ApiDoc;
 use crate::presentation::security_headers::add_security_headers;
@@ -214,6 +214,16 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/admin/saml-providers/import-metadata",
             post(admin_saml_providers::import_metadata),
+        )
+        // SAML SP（クライアント）登録。idp.tenant.admin 必須。
+        .route(
+            "/admin/saml-service-providers",
+            get(admin_saml_service_providers::list).post(admin_saml_service_providers::register),
+        )
+        // SP メタデータ取り込み（解析のみ・非永続）。idp.tenant.admin 必須。
+        .route(
+            "/admin/saml-service-providers/import-metadata",
+            post(admin_saml_service_providers::import_metadata),
         )
         // 署名鍵管理 API（K1）。idp.tenant.admin 必須。
         .route(

@@ -13,7 +13,8 @@ use crate::admin_dto::{
 };
 use idp_contracts::admin::{
     AvailablePermissionsResponse, ClientStatusResponse, SamlMetadataImportResponse,
-    SamlProviderRegisterRequest, SamlProviderResponse, UserPermissionsResponse,
+    SamlProviderRegisterRequest, SamlProviderResponse, SamlServiceProviderRegisterRequest,
+    SamlServiceProviderResponse, SamlSpMetadataImportResponse, UserPermissionsResponse,
     UserSummaryResponse, WhoamiResponse,
 };
 use idp_contracts::auth::{
@@ -882,6 +883,62 @@ impl ApiClient {
             Method::POST,
             tenant_id,
             "/admin/saml-providers/import-metadata",
+            correlation_id,
+            sso,
+            Some(serde_json::json!({ "metadata_xml": metadata_xml })),
+        )
+        .await
+    }
+
+    /// SAML SP（クライアント）一覧（`GET /admin/saml-service-providers`）。
+    pub async fn list_saml_service_providers(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+    ) -> Result<Vec<crate::admin_dto::SamlServiceProviderView>, AdminApiError> {
+        self.admin_send(
+            Method::GET,
+            tenant_id,
+            "/admin/saml-service-providers",
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
+    /// SAML SP（クライアント）登録（`POST /admin/saml-service-providers`）。
+    pub async fn register_saml_service_provider(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        body: SamlServiceProviderRegisterRequest,
+    ) -> Result<SamlServiceProviderResponse, AdminApiError> {
+        self.admin_send(
+            Method::POST,
+            tenant_id,
+            "/admin/saml-service-providers",
+            correlation_id,
+            sso,
+            Some(serde_json::to_value(body).map_err(|e| AdminApiError::Transport(e.to_string()))?),
+        )
+        .await
+    }
+
+    /// SP メタデータ取り込み（`POST /admin/saml-service-providers/import-metadata`）。
+    pub async fn import_saml_sp_metadata(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        metadata_xml: &str,
+    ) -> Result<SamlSpMetadataImportResponse, AdminApiError> {
+        self.admin_send(
+            Method::POST,
+            tenant_id,
+            "/admin/saml-service-providers/import-metadata",
             correlation_id,
             sso,
             Some(serde_json::json!({ "metadata_xml": metadata_xml })),

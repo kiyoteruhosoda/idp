@@ -29,6 +29,7 @@ pub mod portal_login;
 pub mod register;
 pub mod revocation;
 pub mod saml_provider_management;
+pub mod saml_service_provider_management;
 pub mod system_settings;
 pub mod tenant_management;
 pub mod tenant_resolution;

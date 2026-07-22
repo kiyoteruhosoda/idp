@@ -1,0 +1,112 @@
+{% extends "console/layout.html" %}
+{% block content %}
+<section class="admin-saml-clients">
+  <div class="d-flex flex-wrap align-items-start justify-content-between gap-2 mb-3">
+    <div>
+      <h2 class="h4 mb-1">{{ messages.get("admin-saml-client-title") }}</h2>
+      <p class="text-muted mb-0">{{ messages.get("admin-saml-client-lead") }}</p>
+    </div>
+    <div class="d-flex flex-wrap gap-2">
+      <a class="btn btn-outline-secondary" href="{{ tenant }}/saml/metadata">
+        <i class="fa-solid fa-download me-2" aria-hidden="true"></i>{{ messages.get("admin-saml-idp-metadata-download") }}
+      </a>
+      <button class="btn btn-primary" type="button" data-bs-toggle="collapse" data-bs-target="#saml-client-create-panel"
+              aria-expanded="{% if error_key.is_some() || imported %}true{% else %}false{% endif %}" aria-controls="saml-client-create-panel">
+        <i class="fa-solid fa-plus me-2" aria-hidden="true"></i>{{ messages.get("admin-saml-client-add") }}
+      </button>
+    </div>
+  </div>
+
+  {% if saved %}<div class="alert alert-success" role="status">{{ messages.get("admin-saml-client-saved") }}</div>{% endif %}
+  {% if imported %}<div class="alert alert-info" role="status">{{ messages.get("admin-saml-client-imported") }}</div>{% endif %}
+  {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
+
+  <div class="collapse {% if error_key.is_some() || imported %}show{% endif %}" id="saml-client-create-panel">
+    <div class="card mb-4">
+      <div class="card-header d-flex align-items-center">
+        <i class="fa-solid fa-cube me-2" aria-hidden="true"></i>{{ messages.get("admin-saml-client-create-title") }}
+      </div>
+      <div class="card-body">
+        <form method="post" action="{{ tenant }}/admin/saml-clients/import" class="mb-4">
+          <input type="hidden" name="csrf_token" value="{{ csrf }}">
+          <label class="form-label" for="metadata_xml">{{ messages.get("admin-saml-client-import-field") }}</label>
+          <textarea class="form-control font-monospace" id="metadata_xml" name="metadata_xml" rows="6" placeholder="&lt;EntityDescriptor ...&gt;&lt;SPSSODescriptor ...&gt;"></textarea>
+          <div class="form-text">{{ messages.get("admin-saml-client-import-hint") }}</div>
+          <button type="submit" class="btn btn-outline-primary mt-2">
+            <i class="fa-solid fa-file-import me-2" aria-hidden="true"></i>{{ messages.get("admin-saml-client-import-button") }}
+          </button>
+        </form>
+        <hr class="my-4">
+        <form method="post" action="{{ tenant }}/admin/saml-clients">
+          <input type="hidden" name="csrf_token" value="{{ csrf }}">
+          <div class="mb-3">
+            <label class="form-label" for="display_name">{{ messages.get("admin-saml-client-field-display-name") }}</label>
+            <input type="text" class="form-control" id="display_name" name="display_name" value="{{ values.display_name }}" required maxlength="255">
+          </div>
+          <div class="mb-3">
+            <label class="form-label" for="entity_id">{{ messages.get("admin-saml-client-field-entity-id") }}</label>
+            <input type="text" class="form-control" id="entity_id" name="entity_id" value="{{ values.entity_id }}" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label" for="acs_url">{{ messages.get("admin-saml-client-field-acs-url") }}</label>
+            <input type="url" class="form-control" id="acs_url" name="acs_url" value="{{ values.acs_url }}" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label" for="name_id_format">{{ messages.get("admin-saml-client-field-name-id-format") }}</label>
+            <input type="text" class="form-control" id="name_id_format" name="name_id_format" value="{{ values.name_id_format }}" placeholder="urn:oasis:names:tc:SAML:2.0:nameid-format:persistent">
+            <div class="form-text">{{ messages.get("admin-saml-client-name-id-format-hint") }}</div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label" for="x509_certificate">{{ messages.get("admin-saml-client-field-certificate") }}</label>
+            <textarea class="form-control font-monospace" id="x509_certificate" name="x509_certificate" rows="6">{{ values.x509_certificate }}</textarea>
+            <div class="form-text">{{ messages.get("admin-saml-client-certificate-hint") }}</div>
+          </div>
+          <div class="form-check mb-3">
+            <input type="checkbox" class="form-check-input" id="saml-client-enabled" name="enabled" value="true" {% if values.enabled %}checked{% endif %}>
+            <label class="form-check-label" for="saml-client-enabled">{{ messages.get("admin-saml-client-field-enabled") }}</label>
+          </div>
+          <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-primary"><i class="fa-solid fa-plus me-2" aria-hidden="true"></i>{{ messages.get("admin-saml-client-submit") }}</button>
+            <button type="button" class="btn btn-outline-secondary" data-bs-toggle="collapse" data-bs-target="#saml-client-create-panel">{{ messages.get("admin-saml-client-add-close") }}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header d-flex align-items-center justify-content-between">
+      <span>{{ messages.get("admin-saml-client-list-title") }}</span>
+    </div>
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <thead>
+            <tr>
+              <th>{{ messages.get("admin-saml-client-field-display-name") }}</th>
+              <th>{{ messages.get("admin-saml-client-field-entity-id") }}</th>
+              <th>{{ messages.get("admin-saml-client-field-acs-url") }}</th>
+              <th>{{ messages.get("admin-saml-client-col-status") }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for p in providers %}
+            <tr>
+              <td>{{ p.display_name }}</td>
+              <td><code>{{ p.entity_id }}</code></td>
+              <td class="text-break">{{ p.acs_url }}</td>
+              <td>
+                {% if p.enabled %}<span class="badge text-bg-success">{{ messages.get("admin-saml-client-enabled-on") }}</span>{% else %}<span class="badge text-bg-secondary">{{ messages.get("admin-saml-client-enabled-off") }}</span>{% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+            {% if providers.is_empty() %}
+            <tr><td colspan="4" class="text-center text-muted py-4">{{ messages.get("admin-saml-client-list-empty") }}</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}

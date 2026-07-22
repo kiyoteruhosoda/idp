@@ -93,6 +93,16 @@ pub struct SamlProviderView {
     pub enabled: bool,
 }
 
+/// SAML SP（クライアント）の公開表現（`GET /admin/saml-service-providers` の応答要素）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct SamlServiceProviderView {
+    pub display_name: String,
+    pub entity_id: String,
+    pub acs_url: String,
+    pub name_id_format: String,
+    pub enabled: bool,
+}
+
 /// 利用者作成応答（`POST /admin/users`）。`generated_password` は一度限り平文で返る（ADR-0009 §5）。
 #[derive(Debug, Clone, Deserialize)]
 pub struct UserCreatedView {

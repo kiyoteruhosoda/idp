@@ -31,6 +31,7 @@ use crate::domain::password_reset::PasswordResetToken;
 use crate::domain::refresh_token::RefreshToken;
 use crate::domain::revoked_access_token::RevokedAccessToken;
 use crate::domain::saml_provider::SamlIdentityProvider;
+use crate::domain::saml_service_provider::SamlServiceProvider;
 use crate::domain::signing_key::SigningKey;
 use crate::domain::sso_session::SsoSession;
 use crate::domain::system_setting::SystemSetting;
@@ -176,6 +177,13 @@ pub trait SamlIdentityProviderRepository: Send + Sync {
     async fn create(&self, provider: &SamlIdentityProvider) -> Result<()>;
     async fn latest_for_tenant(&self, tenant_id: TenantId) -> Result<Option<SamlIdentityProvider>>;
     async fn list_for_tenant(&self, tenant_id: TenantId) -> Result<Vec<SamlIdentityProvider>>;
+}
+
+/// SAML SP（クライアント）登録の永続化。テナント境界は `tenant_id` で強制する。
+#[async_trait]
+pub trait SamlServiceProviderRepository: Send + Sync {
+    async fn create(&self, provider: &SamlServiceProvider) -> Result<()>;
+    async fn list_for_tenant(&self, tenant_id: TenantId) -> Result<Vec<SamlServiceProvider>>;
 }
 
 #[async_trait]
