@@ -164,26 +164,6 @@ pub struct AdminRuntimeSettingForm {
     pub csrf_token: String,
 }
 
-/// SAML 連携アプリ追加フォーム（`POST /{tenant_id}/admin/saml`）。
-#[derive(Debug, Deserialize)]
-pub struct AdminSamlProviderForm {
-    pub display_name: String,
-    pub entity_id: String,
-    pub sso_url: String,
-    pub x509_certificate: String,
-    #[serde(default)]
-    pub enabled: Option<String>,
-    pub csrf_token: String,
-}
-
-/// 外部 IdP メタデータ取り込みフォーム（`POST /{tenant_id}/admin/saml/import`）。
-/// XML を api に解析させ、登録フォームへ初期値を反映する。
-#[derive(Debug, Deserialize)]
-pub struct AdminSamlMetadataImportForm {
-    pub metadata_xml: String,
-    pub csrf_token: String,
-}
-
 /// SAML SP（クライアント）登録フォーム（`POST /{tenant_id}/admin/saml-clients`）。
 #[derive(Debug, Deserialize)]
 pub struct AdminSamlServiceProviderForm {

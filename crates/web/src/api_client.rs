@@ -12,8 +12,7 @@ use crate::admin_dto::{
     InvitationCreatedView, MemberView, UserCreatedView,
 };
 use idp_contracts::admin::{
-    AvailablePermissionsResponse, ClientStatusResponse, SamlMetadataImportResponse,
-    SamlProviderRegisterRequest, SamlProviderResponse, SamlServiceProviderRegisterRequest,
+    AvailablePermissionsResponse, ClientStatusResponse, SamlServiceProviderRegisterRequest,
     SamlServiceProviderResponse, SamlSpMetadataImportResponse, UserPermissionsResponse,
     UserSummaryResponse, WhoamiResponse,
 };
@@ -829,63 +828,6 @@ impl ApiClient {
             correlation_id,
             sso,
             None,
-        )
-        .await
-    }
-
-    /// SAML 連携アプリ（外部 IdP）一覧（`GET /admin/saml-providers`）。
-    pub async fn list_saml_providers(
-        &self,
-        correlation_id: &str,
-        tenant_id: &str,
-        sso: &str,
-    ) -> Result<Vec<crate::admin_dto::SamlProviderView>, AdminApiError> {
-        self.admin_send(
-            Method::GET,
-            tenant_id,
-            "/admin/saml-providers",
-            correlation_id,
-            sso,
-            None,
-        )
-        .await
-    }
-
-    /// SAML 外部 IdP 登録（`POST /admin/saml-providers`）。
-    pub async fn register_saml_provider(
-        &self,
-        correlation_id: &str,
-        tenant_id: &str,
-        sso: &str,
-        body: SamlProviderRegisterRequest,
-    ) -> Result<SamlProviderResponse, AdminApiError> {
-        self.admin_send(
-            Method::POST,
-            tenant_id,
-            "/admin/saml-providers",
-            correlation_id,
-            sso,
-            Some(serde_json::to_value(body).map_err(|e| AdminApiError::Transport(e.to_string()))?),
-        )
-        .await
-    }
-
-    /// 外部 IdP メタデータ取り込み（`POST /admin/saml-providers/import-metadata`）。
-    /// メタデータ XML を api に解析させ、登録フォームの初期値を得る（永続化はしない）。
-    pub async fn import_saml_metadata(
-        &self,
-        correlation_id: &str,
-        tenant_id: &str,
-        sso: &str,
-        metadata_xml: &str,
-    ) -> Result<SamlMetadataImportResponse, AdminApiError> {
-        self.admin_send(
-            Method::POST,
-            tenant_id,
-            "/admin/saml-providers/import-metadata",
-            correlation_id,
-            sso,
-            Some(serde_json::json!({ "metadata_xml": metadata_xml })),
         )
         .await
     }

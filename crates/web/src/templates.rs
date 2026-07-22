@@ -8,8 +8,8 @@
 //! 型検証される（sqlx のコンパイル時クエリ検証と同じ思想）。
 
 use crate::admin_dto::{
-    AuditLogView, ClientView, SamlProviderView, SamlServiceProviderView, SigningKeyView,
-    TenantCreatedView, TenantView,
+    AuditLogView, ClientView, SamlServiceProviderView, SigningKeyView, TenantCreatedView,
+    TenantView,
 };
 use crate::i18n::Messages;
 use askama::Template;
@@ -551,32 +551,6 @@ pub struct PasskeyRegisterTemplate<'a> {
     /// `/{tenant_id}` プレフィクス（ADR-0009 §6）。
     pub tenant_prefix: &'a str,
     pub error_key: Option<&'a str>,
-}
-
-/// SAML 連携アプリ一覧・追加画面（`GET /{tenant_id}/admin/saml`）。
-#[derive(Template)]
-#[template(path = "console/saml_providers.html")]
-pub struct SamlProvidersConsole<'a> {
-    pub messages: &'a Messages,
-    pub tenant: &'a str,
-    pub admin: Admin<'a>,
-    pub csrf: &'a str,
-    pub saved: bool,
-    /// メタデータ取り込みで初期値を反映した直後か（案内バナー表示・追加パネル展開に使う）。
-    pub imported: bool,
-    pub error_key: Option<&'a str>,
-    pub providers: &'a [SamlProviderView],
-    pub values: &'a SamlProviderFormValues,
-}
-
-/// SAML 連携アプリ追加フォームの入力値。
-#[derive(Default)]
-pub struct SamlProviderFormValues {
-    pub display_name: String,
-    pub entity_id: String,
-    pub sso_url: String,
-    pub x509_certificate: String,
-    pub enabled: bool,
 }
 
 /// SAML SP（クライアント）一覧・追加画面（`GET /{tenant_id}/admin/saml-clients`）。

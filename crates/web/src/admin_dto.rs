@@ -84,15 +84,6 @@ pub struct SigningKeyView {
     pub created_at: String,
 }
 
-/// SAML 連携アプリ（外部 IdP）の公開表現（`GET /admin/saml-providers` の応答要素）。
-#[derive(Debug, Clone, Deserialize)]
-pub struct SamlProviderView {
-    pub display_name: String,
-    pub entity_id: String,
-    pub sso_url: String,
-    pub enabled: bool,
-}
-
 /// SAML SP（クライアント）の公開表現（`GET /admin/saml-service-providers` の応答要素）。
 #[derive(Debug, Clone, Deserialize)]
 pub struct SamlServiceProviderView {

@@ -80,35 +80,11 @@ pub struct GenerateSigningKeyRequest {
     pub algorithm: String,
 }
 
-/// SAML 外部 IdP 登録リクエスト（`POST /admin/saml-providers`）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SamlProviderRegisterRequest {
-    pub display_name: String,
-    pub entity_id: String,
-    pub sso_url: String,
-    pub x509_certificate: String,
-    pub enabled: bool,
-}
-
-/// SAML 外部 IdP メタデータ取り込みリクエスト（`POST /admin/saml-providers/import-metadata`）。
-/// 外部 IdP が公開する `EntityDescriptor` XML を貼り付けて登録候補値を得る。
+/// SAML メタデータ取り込みリクエスト（SP メタデータ XML を貼り付けて登録候補値を得る）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SamlMetadataImportRequest {
-    /// 外部 IdP の SAML メタデータ XML（`EntityDescriptor`）。
+    /// SAML メタデータ XML（`EntityDescriptor`）。
     pub metadata_xml: String,
-}
-
-/// SAML メタデータ取り込みの応答（登録フォームの初期値）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SamlMetadataImportResponse {
-    /// メタデータ由来の表示名候補（`md:Organization`）。無ければ空文字。
-    #[serde(default)]
-    pub display_name: String,
-    pub entity_id: String,
-    pub sso_url: String,
-    /// 署名証明書（`<ds:X509Certificate>` 本文）。無ければ空文字。
-    #[serde(default)]
-    pub x509_certificate: String,
 }
 
 /// SAML SP（クライアント）登録リクエスト（`POST /admin/saml-service-providers`）。
@@ -151,17 +127,4 @@ pub struct SamlSpMetadataImportResponse {
     pub name_id_format: String,
     #[serde(default)]
     pub x509_certificate: String,
-}
-
-/// SAML 外部 IdP の管理 API 表現。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SamlProviderResponse {
-    pub id: String,
-    pub tenant_id: String,
-    pub display_name: String,
-    pub entity_id: String,
-    pub sso_url: String,
-    pub enabled: bool,
-    pub created_at: String,
-    pub updated_at: String,
 }

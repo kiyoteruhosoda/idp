@@ -453,45 +453,15 @@ user-settings-language-submit = 言語を保存
 user-settings-password-help = 現在のパスワードを確認して新しいパスワードへ変更します。
 user-settings-mfa-help = 認証アプリやパスキーを追加・管理します。
 
-# SAML 連携アプリ管理（管理コンソール）。
-admin-nav-saml = SAML 連携アプリ一覧
-admin-nav-saml-desc = SAML 連携アプリ（外部 IdP）を一覧・追加します。
-admin-saml-title = SAML 連携アプリ一覧
-admin-saml-lead = 登録済みの SAML 連携アプリ（外部 ID プロバイダー）を一覧し、新しい連携を追加します。
-admin-saml-saved = SAML 連携アプリを追加しました。
-admin-saml-add = SAML 連携アプリ追加
-admin-saml-add-close = 閉じる
-admin-saml-create-title = 新規 SAML 連携アプリ
-admin-saml-list-title = 登録済み SAML 連携アプリ
-admin-saml-list-empty = まだ SAML 連携アプリが登録されていません。「SAML 連携アプリ追加」から最初の連携を登録してください。
-admin-saml-col-status = 状態
-admin-saml-enabled-on = 有効
-admin-saml-enabled-off = 無効
-admin-saml-field-display-name = 表示名
-admin-saml-field-entity-id = IdP Entity ID
-admin-saml-field-sso-url = SSO URL
-admin-saml-field-certificate = X.509 証明書
-admin-saml-certificate-hint = PEM 形式の証明書を貼り付けてください。
-admin-saml-field-enabled = 有効にする
-admin-saml-submit = SAML 連携アプリを追加
-admin-saml-error-validation = 必須項目を入力してください。
-admin-saml-error-sso-url = SSO URL は HTTPS または localhost を指定してください。
-
 # パスワード表示切替。
 password-visibility-show = パスワードを表示
 password-visibility-hide = パスワードを隠す
 
 # プロフィール導線。
 admin-profile-settings = プロフィール設定を開く
-admin-saml-error-conflict = 同じ Entity ID の SAML 連携が既に登録されています。
 
-# SAML メタデータ取り込み（外部 IdP）と自身の IdP メタデータ出力。
+# 自身の IdP メタデータ出力（SP クライアントがダウンロードする）。
 admin-saml-idp-metadata-download = IdP メタデータをダウンロード
-admin-saml-import-field = IdP メタデータ XML
-admin-saml-import-hint = 外部 IdP の SAML メタデータ（EntityDescriptor）を貼り付けると、下のフォームに自動入力します。
-admin-saml-import-button = メタデータから取り込む
-admin-saml-imported = メタデータから値を取り込みました。内容を確認して登録してください。
-admin-saml-error-import = SAML メタデータを解析できませんでした。IdP の EntityDescriptor XML であることを確認してください。
 
 # SAML SP（クライアント）登録（管理コンソール）。
 admin-nav-saml-clients = SAML クライアント (SP)

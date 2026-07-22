@@ -453,45 +453,15 @@ user-settings-language-submit = Save language
 user-settings-password-help = Confirm your current password before changing it.
 user-settings-mfa-help = Add or manage authenticator apps and passkeys.
 
-# SAML federated app management (admin console).
-admin-nav-saml = SAML federated apps
-admin-nav-saml-desc = List and add SAML federated apps (external IdPs).
-admin-saml-title = SAML federated apps
-admin-saml-lead = Review registered SAML federated apps (external identity providers) and add new federations for this tenant.
-admin-saml-saved = SAML federated app added.
-admin-saml-add = Add SAML federated app
-admin-saml-add-close = Close
-admin-saml-create-title = New SAML federated app
-admin-saml-list-title = Registered SAML federated apps
-admin-saml-list-empty = No SAML federated apps have been registered yet. Use "Add SAML federated app" to register the first one.
-admin-saml-col-status = Status
-admin-saml-enabled-on = Enabled
-admin-saml-enabled-off = Disabled
-admin-saml-field-display-name = Display name
-admin-saml-field-entity-id = IdP Entity ID
-admin-saml-field-sso-url = SSO URL
-admin-saml-field-certificate = X.509 certificate
-admin-saml-certificate-hint = Paste a PEM encoded certificate.
-admin-saml-field-enabled = Enable this provider
-admin-saml-submit = Add SAML federated app
-admin-saml-error-validation = Fill in all required fields.
-admin-saml-error-sso-url = SSO URL must use HTTPS or localhost.
-
 # Password visibility toggle.
 password-visibility-show = Show password
 password-visibility-hide = Hide password
 
 # Profile navigation.
 admin-profile-settings = Open profile settings
-admin-saml-error-conflict = A SAML federation with the same Entity ID already exists.
 
-# SAML metadata import (external IdP) and this IdP's metadata output.
+# This IdP's own SAML metadata output (downloaded by SP clients).
 admin-saml-idp-metadata-download = Download IdP metadata
-admin-saml-import-field = IdP metadata XML
-admin-saml-import-hint = Paste the external IdP's SAML metadata (EntityDescriptor) to auto-fill the fields below.
-admin-saml-import-button = Import from metadata
-admin-saml-imported = Imported values from the metadata. Review them below and save to register.
-admin-saml-error-import = Could not parse the SAML metadata. Make sure it is a valid IdP EntityDescriptor XML.
 
 # SAML service provider (client) registration (admin console).
 admin-nav-saml-clients = SAML clients (SP)

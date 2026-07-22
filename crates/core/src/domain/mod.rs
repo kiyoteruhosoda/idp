@@ -27,7 +27,6 @@ pub mod refresh_token;
 pub mod repositories;
 pub mod revoked_access_token;
 pub mod saml_metadata;
-pub mod saml_provider;
 pub mod saml_service_provider;
 pub mod signing_key;
 pub mod sso_session;
