@@ -7,7 +7,7 @@ use super::locale;
 use crate::api_client::AdminApiError;
 use crate::correlation::CorrelationId;
 use crate::csrf::console_csrf_token;
-use crate::dto::AdminSamlProviderForm;
+use crate::dto::{AdminSamlMetadataImportForm, AdminSamlProviderForm};
 use crate::handlers::admin_console::{redirect_to_login, resolve_admin, AdminResolution};
 use crate::handlers::found;
 use crate::i18n::Messages;
@@ -58,9 +58,85 @@ pub async fn list(
         admin: Some(&admin),
         csrf: &csrf_from(&headers, state.config.csrf_secret()),
         saved: query.saved.is_some(),
+        imported: false,
         error_key,
         providers: &providers,
         values: &SamlProviderFormValues::default(),
+    }))
+    .into_response()
+}
+
+/// 外部 IdP メタデータ XML を取り込み、登録フォームに初期値を反映して再描画する（PRG は挟まない）。
+/// api の解析結果は永続化しないため、続けて管理者が内容を確認して登録フォームを送信する。
+pub async fn import_metadata(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Form(form): Form<AdminSamlMetadataImportForm>,
+) -> Response {
+    let admin = match resolve_admin(&state, &correlation, &tenant, &headers).await {
+        AdminResolution::Ok(uid) => uid,
+        AdminResolution::Reject(resp) => return resp,
+    };
+    let base = format!("{}/admin/saml", tenant.prefix());
+    if csrf_from(&headers, state.config.csrf_secret()) != form.csrf_token {
+        return found(&format!("{base}?error=csrf"));
+    }
+    let sso = crate::cookies::get(&headers, crate::cookies::SSO_SESSION_COOKIE).unwrap_or_default();
+
+    let (values, imported, error_key) = match state
+        .api
+        .import_saml_metadata(&correlation.0, &tenant.0, &sso, &form.metadata_xml)
+        .await
+    {
+        Ok(parsed) => (
+            SamlProviderFormValues {
+                display_name: parsed.display_name,
+                entity_id: parsed.entity_id,
+                sso_url: parsed.sso_url,
+                x509_certificate: parsed.x509_certificate,
+                enabled: true,
+            },
+            true,
+            None,
+        ),
+        Err(AdminApiError::Unauthorized) => return redirect_to_login(&tenant),
+        Err(AdminApiError::Forbidden) => (
+            SamlProviderFormValues::default(),
+            false,
+            Some("admin-settings-error-forbidden"),
+        ),
+        Err(AdminApiError::Validation(_) | AdminApiError::NotFound) => (
+            SamlProviderFormValues::default(),
+            false,
+            Some("admin-saml-error-import"),
+        ),
+        Err(AdminApiError::Conflict(_) | AdminApiError::Transport(_)) => (
+            SamlProviderFormValues::default(),
+            false,
+            Some("admin-error-internal"),
+        ),
+    };
+
+    // 一覧は取り込み結果と併せて再描画する（取り込みに失敗しても登録済みは見せる）。
+    let providers = state
+        .api
+        .list_saml_providers(&correlation.0, &tenant.0, &sso)
+        .await
+        .unwrap_or_default();
+
+    let messages = Messages::new(locale(&headers));
+    Html(render(&SamlProvidersConsole {
+        messages: &messages,
+        tenant: &tenant.prefix(),
+        admin: Some(&admin),
+        csrf: &csrf_from(&headers, state.config.csrf_secret()),
+        saved: false,
+        imported,
+        error_key,
+        providers: &providers,
+        values: &values,
     }))
     .into_response()
 }

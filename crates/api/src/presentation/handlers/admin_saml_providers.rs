@@ -3,6 +3,7 @@
 use crate::application::saml_provider_management::{
     RegisterSamlProviderCommand, SamlProviderManagementError,
 };
+use crate::domain::saml_metadata::parse_idp_metadata;
 use crate::domain::saml_provider::SamlIdentityProvider;
 use crate::presentation::admin::{IdpAdmin, RequirePerms};
 use crate::presentation::error::ApiError;
@@ -12,7 +13,10 @@ use crate::presentation::tenant::ResolvedTenant;
 use axum::extract::{Extension, State};
 use axum::http::StatusCode;
 use axum::Json;
-use idp_contracts::admin::{SamlProviderRegisterRequest, SamlProviderResponse};
+use idp_contracts::admin::{
+    SamlMetadataImportRequest, SamlMetadataImportResponse, SamlProviderRegisterRequest,
+    SamlProviderResponse,
+};
 
 pub async fn register(
     RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
@@ -48,6 +52,24 @@ pub async fn list(
         .await
         .map_err(|e| map_error(e, locale))?;
     Ok(Json(providers.iter().map(to_response).collect()))
+}
+
+/// 外部 IdP メタデータ XML を解析し、登録フォームの初期値を返す（A5）。データは永続化しない。
+pub async fn import_metadata(
+    RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
+    State(_state): State<AppState>,
+    Extension(_tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
+    Json(body): Json<SamlMetadataImportRequest>,
+) -> Result<Json<SamlMetadataImportResponse>, ApiError> {
+    let parsed = parse_idp_metadata(&body.metadata_xml)
+        .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get("api-invalid-request")))?;
+    Ok(Json(SamlMetadataImportResponse {
+        display_name: parsed.display_name.unwrap_or_default(),
+        entity_id: parsed.entity_id,
+        sso_url: parsed.sso_url,
+        x509_certificate: parsed.x509_certificate,
+    }))
 }
 
 fn to_response(provider: &SamlIdentityProvider) -> SamlProviderResponse {

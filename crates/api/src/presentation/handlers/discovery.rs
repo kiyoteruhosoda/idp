@@ -2,10 +2,11 @@
 //! JWKS（`GET /.well-known/jwks.json`）（設計仕様 §4.5 / §4.6）。
 
 use crate::domain::issuer::tenant_issuer;
+use crate::domain::saml_metadata::build_sp_metadata_xml;
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
 use axum::extract::{Extension, State};
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::{json, Value};
@@ -43,6 +44,37 @@ pub async fn jwks(State(state): State<AppState>) -> Response {
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
+}
+
+/// SAML SP メタデータ（`GET /{tenant_id}/saml/metadata`）。
+///
+/// 本 IdP を SAML SP として記述する `EntityDescriptor`（`SPSSODescriptor`）を XML で返す。外部 SAML
+/// IdP の管理者がこの SP を登録するための公開メタデータで、テナント issuer を entityID とし、ACS URL も
+/// issuer から導出する。アサーション受信フロー自体は未実装のため、メタデータのみを提供する。
+#[utoipa::path(
+    get,
+    path = "/{tenant_id}/saml/metadata",
+    tag = "saml",
+    responses((status = 200, description = "SAML SP メタデータ（application/samlmetadata+xml）"))
+)]
+pub async fn saml_sp_metadata(
+    State(state): State<AppState>,
+    Extension(tenant): Extension<ResolvedTenant>,
+) -> Response {
+    let issuer = tenant_issuer(state.config.issuer(), tenant.id());
+    let acs_url = format!("{issuer}/saml/acs");
+    let xml = build_sp_metadata_xml(&issuer, &acs_url);
+    (
+        [
+            (header::CONTENT_TYPE, "application/samlmetadata+xml"),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"sp-metadata.xml\"",
+            ),
+        ],
+        xml,
+    )
+        .into_response()
 }
 
 fn discovery_document(issuer: &str) -> Value {

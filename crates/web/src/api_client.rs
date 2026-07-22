@@ -12,8 +12,9 @@ use crate::admin_dto::{
     InvitationCreatedView, MemberView, UserCreatedView,
 };
 use idp_contracts::admin::{
-    AvailablePermissionsResponse, ClientStatusResponse, SamlProviderRegisterRequest,
-    SamlProviderResponse, UserPermissionsResponse, UserSummaryResponse, WhoamiResponse,
+    AvailablePermissionsResponse, ClientStatusResponse, SamlMetadataImportResponse,
+    SamlProviderRegisterRequest, SamlProviderResponse, UserPermissionsResponse,
+    UserSummaryResponse, WhoamiResponse,
 };
 use idp_contracts::auth::{
     InternalAdminAuthenticateRequest, InternalAdminAuthenticateResponse,
@@ -864,6 +865,26 @@ impl ApiClient {
             correlation_id,
             sso,
             Some(serde_json::to_value(body).map_err(|e| AdminApiError::Transport(e.to_string()))?),
+        )
+        .await
+    }
+
+    /// 外部 IdP メタデータ取り込み（`POST /admin/saml-providers/import-metadata`）。
+    /// メタデータ XML を api に解析させ、登録フォームの初期値を得る（永続化はしない）。
+    pub async fn import_saml_metadata(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        metadata_xml: &str,
+    ) -> Result<SamlMetadataImportResponse, AdminApiError> {
+        self.admin_send(
+            Method::POST,
+            tenant_id,
+            "/admin/saml-providers/import-metadata",
+            correlation_id,
+            sso,
+            Some(serde_json::json!({ "metadata_xml": metadata_xml })),
         )
         .await
     }

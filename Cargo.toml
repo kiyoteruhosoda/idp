@@ -41,6 +41,8 @@ rand = "0.8"
 argon2 = "0.5"
 url = "2"
 percent-encoding = "2"
+# SAML メタデータの XML 解析（外部 IdP メタデータ取り込み）・XML 生成（自身の SP メタデータ出力）。
+quick-xml = "0.37"
 utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
 utoipa-swagger-ui = { version = "9", features = ["axum", "vendored"] }
 fluent = "0.17"

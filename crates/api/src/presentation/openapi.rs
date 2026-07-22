@@ -33,6 +33,7 @@ use utoipa::{Modify, OpenApi};
         handlers::userinfo::userinfo,
         handlers::discovery::openid_configuration,
         handlers::discovery::jwks,
+        handlers::discovery::saml_sp_metadata,
         handlers::logout::logout,
         handlers::revoke::revoke,
         handlers::introspect::introspect,
@@ -109,6 +110,7 @@ use utoipa::{Modify, OpenApi};
     modifiers(&BearerToken),
     tags(
         (name = "oidc", description = "OIDC コアエンドポイント"),
+        (name = "saml", description = "SAML メタデータ（SP メタデータ出力）"),
         (name = "auth", description = "ユーザー登録・認証"),
         (name = "admin", description = "管理 API（idp.tenant.admin 権限が必要。内部用）"),
     )

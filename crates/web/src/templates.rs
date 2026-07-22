@@ -561,6 +561,8 @@ pub struct SamlProvidersConsole<'a> {
     pub admin: Admin<'a>,
     pub csrf: &'a str,
     pub saved: bool,
+    /// メタデータ取り込みで初期値を反映した直後か（案内バナー表示・追加パネル展開に使う）。
+    pub imported: bool,
     pub error_key: Option<&'a str>,
     pub providers: &'a [SamlProviderView],
     pub values: &'a SamlProviderFormValues,

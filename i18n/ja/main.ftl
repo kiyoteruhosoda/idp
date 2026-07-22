@@ -484,3 +484,11 @@ password-visibility-hide = パスワードを隠す
 # プロフィール導線。
 admin-profile-settings = プロフィール設定を開く
 admin-saml-error-conflict = 同じ Entity ID の SAML 連携が既に登録されています。
+
+# SAML メタデータ取り込み（外部 IdP）と SP メタデータ出力。
+admin-saml-sp-metadata-download = SP メタデータをダウンロード
+admin-saml-import-field = IdP メタデータ XML
+admin-saml-import-hint = 外部 IdP の SAML メタデータ（EntityDescriptor）を貼り付けると、下のフォームに自動入力します。
+admin-saml-import-button = メタデータから取り込む
+admin-saml-imported = メタデータから値を取り込みました。内容を確認して登録してください。
+admin-saml-error-import = SAML メタデータを解析できませんでした。IdP の EntityDescriptor XML であることを確認してください。

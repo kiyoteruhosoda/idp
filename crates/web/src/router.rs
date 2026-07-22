@@ -145,6 +145,11 @@ pub fn build(state: WebState) -> Router {
             "/admin/saml",
             get(admin_saml_console::list).post(admin_saml_console::create),
         )
+        // 外部 IdP メタデータ取り込み（登録フォームへ初期値反映）。
+        .route(
+            "/admin/saml/import",
+            post(admin_saml_console::import_metadata),
+        )
         // 利用者の作成・検索・権限付与/剥奪画面。
         .route("/admin/users", get(admin_users_console::search))
         .route(

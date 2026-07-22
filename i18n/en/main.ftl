@@ -484,3 +484,11 @@ password-visibility-hide = Hide password
 # Profile navigation.
 admin-profile-settings = Open profile settings
 admin-saml-error-conflict = A SAML federation with the same Entity ID already exists.
+
+# SAML metadata import (external IdP) and SP metadata output.
+admin-saml-sp-metadata-download = Download SP metadata
+admin-saml-import-field = IdP metadata XML
+admin-saml-import-hint = Paste the external IdP's SAML metadata (EntityDescriptor) to auto-fill the fields below.
+admin-saml-import-button = Import from metadata
+admin-saml-imported = Imported values from the metadata. Review them below and save to register.
+admin-saml-error-import = Could not parse the SAML metadata. Make sure it is a valid IdP EntityDescriptor XML.

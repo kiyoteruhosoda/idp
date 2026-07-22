@@ -6,21 +6,37 @@
       <h2 class="h4 mb-1">{{ messages.get("admin-saml-title") }}</h2>
       <p class="text-muted mb-0">{{ messages.get("admin-saml-lead") }}</p>
     </div>
-    <button class="btn btn-primary" type="button" data-bs-toggle="collapse" data-bs-target="#saml-create-panel"
-            aria-expanded="{% if error_key.is_some() %}true{% else %}false{% endif %}" aria-controls="saml-create-panel">
-      <i class="fa-solid fa-plus me-2" aria-hidden="true"></i>{{ messages.get("admin-saml-add") }}
-    </button>
+    <div class="d-flex flex-wrap gap-2">
+      <a class="btn btn-outline-secondary" href="{{ tenant }}/saml/metadata">
+        <i class="fa-solid fa-download me-2" aria-hidden="true"></i>{{ messages.get("admin-saml-sp-metadata-download") }}
+      </a>
+      <button class="btn btn-primary" type="button" data-bs-toggle="collapse" data-bs-target="#saml-create-panel"
+              aria-expanded="{% if error_key.is_some() || imported %}true{% else %}false{% endif %}" aria-controls="saml-create-panel">
+        <i class="fa-solid fa-plus me-2" aria-hidden="true"></i>{{ messages.get("admin-saml-add") }}
+      </button>
+    </div>
   </div>
 
   {% if saved %}<div class="alert alert-success" role="status">{{ messages.get("admin-saml-saved") }}</div>{% endif %}
+  {% if imported %}<div class="alert alert-info" role="status">{{ messages.get("admin-saml-imported") }}</div>{% endif %}
   {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
 
-  <div class="collapse {% if error_key.is_some() %}show{% endif %}" id="saml-create-panel">
+  <div class="collapse {% if error_key.is_some() || imported %}show{% endif %}" id="saml-create-panel">
     <div class="card mb-4">
       <div class="card-header d-flex align-items-center">
         <i class="fa-solid fa-right-left me-2" aria-hidden="true"></i>{{ messages.get("admin-saml-create-title") }}
       </div>
       <div class="card-body">
+        <form method="post" action="{{ tenant }}/admin/saml/import" class="mb-4">
+          <input type="hidden" name="csrf_token" value="{{ csrf }}">
+          <label class="form-label" for="metadata_xml">{{ messages.get("admin-saml-import-field") }}</label>
+          <textarea class="form-control font-monospace" id="metadata_xml" name="metadata_xml" rows="6" placeholder="&lt;EntityDescriptor ...&gt;"></textarea>
+          <div class="form-text">{{ messages.get("admin-saml-import-hint") }}</div>
+          <button type="submit" class="btn btn-outline-primary mt-2">
+            <i class="fa-solid fa-file-import me-2" aria-hidden="true"></i>{{ messages.get("admin-saml-import-button") }}
+          </button>
+        </form>
+        <hr class="my-4">
         <form method="post" action="{{ tenant }}/admin/saml">
           <input type="hidden" name="csrf_token" value="{{ csrf }}">
           <div class="mb-3">

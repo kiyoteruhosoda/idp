@@ -175,3 +175,11 @@ pub struct AdminSamlProviderForm {
     pub enabled: Option<String>,
     pub csrf_token: String,
 }
+
+/// 外部 IdP メタデータ取り込みフォーム（`POST /{tenant_id}/admin/saml/import`）。
+/// XML を api に解析させ、登録フォームへ初期値を反映する。
+#[derive(Debug, Deserialize)]
+pub struct AdminSamlMetadataImportForm {
+    pub metadata_xml: String,
+    pub csrf_token: String,
+}

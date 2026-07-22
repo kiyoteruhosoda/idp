@@ -1,3 +1,18 @@
+## 2026-07-22（SAML: SP メタデータ出力・外部 IdP メタデータ取り込み）
+
+- **crates/core — SAML メタデータの解析・生成を追加**: ドメイン `domain::saml_metadata` に、外部 IdP の
+  `EntityDescriptor`（`IDPSSODescriptor`）から `entity_id`／`sso_url`（HTTP-Redirect 優先）／署名証明書を
+  抽出する `parse_idp_metadata` と、本 IdP を SAML SP として記述する `EntityDescriptor`（`SPSSODescriptor`）を
+  生成する `build_sp_metadata_xml` を実装した（`quick-xml`。名前空間接頭辞非依存・属性値は自動エスケープ）。
+- **crates/api — SP メタデータ出力と IdP メタデータ取り込みエンドポイントを追加**: 公開の
+  `GET /{tenant_id}/saml/metadata`（`application/samlmetadata+xml`。entityID＝テナント issuer）を
+  discovery と同じ公開領域へ、管理者向けの `POST /admin/saml-providers/import-metadata`（XML を解析して
+  登録候補値を返す。非永続）を追加した。
+- **crates/web — 管理コンソールにメタデータ取り込みと SP メタデータ導線を追加**: `/admin/saml` の追加
+  パネルにメタデータ XML 貼り付け欄と「メタデータから取り込む」を設け、api の解析結果で登録フォームを
+  初期化する。画面ヘッダに SP メタデータのダウンロードリンクを追加。
+- 認証フロー（アサーション送受信・ACS・署名検証）は本変更の対象外（メタデータの出力・取り込みのみ）。
+
 ## 2026-07-21（web: モバイル表示の崩れ修正・言語設定 Cookie の全画面反映）
 
 - **crates/web — 言語設定が設定画面以外へ反映されない不具合を修正**: 管理コンソール・ログイン等

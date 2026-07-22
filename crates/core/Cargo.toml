@@ -34,6 +34,7 @@ rand = { workspace = true }
 argon2 = { workspace = true }
 url = { workspace = true }
 percent-encoding = { workspace = true }
+quick-xml = { workspace = true }
 totp-rs = { workspace = true }
 lettre = { workspace = true }
 webauthn-rs = { workspace = true }

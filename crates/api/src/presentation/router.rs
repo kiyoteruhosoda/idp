@@ -210,6 +210,11 @@ pub fn build(state: AppState) -> Router {
             "/admin/saml-providers",
             get(admin_saml_providers::list).post(admin_saml_providers::register),
         )
+        // 外部 IdP メタデータ取り込み（解析のみ・非永続）。idp.tenant.admin 必須。
+        .route(
+            "/admin/saml-providers/import-metadata",
+            post(admin_saml_providers::import_metadata),
+        )
         // 署名鍵管理 API（K1）。idp.tenant.admin 必須。
         .route(
             "/admin/signing-keys",
@@ -228,6 +233,8 @@ pub fn build(state: AppState) -> Router {
             get(discovery::openid_configuration),
         )
         .route("/.well-known/jwks.json", get(discovery::jwks))
+        // SAML SP メタデータ出力（公開。この IdP を外部 IdP に登録するためのメタデータ）。
+        .route("/saml/metadata", get(discovery::saml_sp_metadata))
         // テナント解決（UUID 検証・存在/ACTIVE 確認）を全テナントルートへ付与する（ADR-0009 §7）。
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
