@@ -109,7 +109,11 @@ async fn create_tenant(env: &TestEnv, root_cookie: &str, name: &str) -> CreatedT
         ),
     )
     .await;
-    assert_eq!(res.status(), StatusCode::NO_CONTENT, "root leaves the tenant");
+    assert_eq!(
+        res.status(),
+        StatusCode::NO_CONTENT,
+        "root leaves the tenant"
+    );
 
     let admin_cookie = create_sso_session(&env.pool, &admin_id).await;
     CreatedTenant {

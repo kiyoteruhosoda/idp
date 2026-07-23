@@ -10,8 +10,8 @@ use crate::presentation::dto::{
     CreateTenantRequest, CreateUserRequest, GenerateSigningKeyRequest, GrantPermissionRequest,
     InvitationCreatedResponse, MemberResponse, OAuthErrorResponse, RegisterRequest,
     RegisterResponse, RuntimeSettingResponse, SigningKeyResponse, SystemSettingsResponse,
-    TenantAdminPasswordResetRequest, TenantResponse, TokenRequest,
-    TokenResponse, UpdateRuntimeSettingRequest, UpdateSystemSettingsRequest, UpdateTenantRequest,
+    TenantAdminPasswordResetRequest, TenantResponse, TokenRequest, TokenResponse,
+    UpdateRuntimeSettingRequest, UpdateSystemSettingsRequest, UpdateTenantRequest,
     UpdateTenantSettingsRequest, UpdateUserStatusRequest, UserCreatedResponse, UserInfoResponse,
     UserPasswordResetResponse, UserPermissionsResponse, VerifyEmailRequest,
 };

@@ -319,7 +319,6 @@ fn validate_name(name: String) -> Result<String, TenantManagementError> {
     Ok(trimmed)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
