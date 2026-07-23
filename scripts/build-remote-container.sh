@@ -22,7 +22,9 @@
 #   ./build-remote-container.sh app
 #   ./build-remote-container.sh reset
 #
-# 設定（環境変数で上書き可。下の既定値を環境に合わせて書き換えてもよい）:
+# 設定は環境変数、または下記 `build-remote-container.env` で行う。
+# **スクリプト冒頭の既定値を直接書き換えてはならない**（self-update が本ファイルを最新版で丸ごと
+# 差し替えるため、直接編集した値は次回実行時に失われる。設定は必ず env ファイル／環境変数で与える）:
 #   IDP_PROJECT        dev コンテナ内のプロジェクト名（設定ファイルの PROJECT でも指定可。{PROJECT} の展開元）
 #   IDP_DEV_CONTAINER  ビルドを行う dev コンテナ名
 #   IDP_DEV_USER       コンテナ内でビルドする実行ユーザー
@@ -67,7 +69,9 @@ if [[ -f "$_config_file" ]]; then
   done <"$_config_file"
 fi
 
-# ---- 既定値（設定ファイル／環境変数で上書きされる。直接編集も可） ------------------
+# ---- 既定値（設定ファイル build-remote-container.env／環境変数で上書きする） ---------
+# ここの既定値は直接書き換えないこと（self-update が本ファイルを差し替えるため編集は失われる。
+# 環境固有の設定は build-remote-container.env か環境変数で与える）。
 # プロジェクト名は 1 度だけ定義する。環境変数 IDP_PROJECT > 設定ファイル PROJECT > 既定値 idp。
 project="${IDP_PROJECT:-${PROJECT:-idp}}"
 dev_container="${IDP_DEV_CONTAINER:-ubuntu-dev}"
@@ -75,6 +79,10 @@ dev_user="${IDP_DEV_USER:-sshuser}"
 dev_workdir="${IDP_DEV_WORKDIR:-/work/project/$project}"
 dist_dir="${IDP_DIST_DIR:-}"
 target_dir="${IDP_TARGET_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+# self-update で自分自身を差し替えるため、絶対パスをここ（cd の前）で 1 度だけ確定する。
+# cd "$target_dir" 後に相対 BASH_SOURCE[0] を再解決すると別ディレクトリを指してしまう
+# （例: ./stg/build-remote-container.sh 起動で target_dir へ cd 済みだと ./stg が二重展開される）。
+self_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
 # パス中の {PROJECT} を project の値へ展開する（プロジェクト名の一元管理）。
 # 置換文字列側では bash 5.2 の patsub_replacement により `&`（マッチ全体）・`\` が
@@ -159,22 +167,25 @@ docker exec -u "$dev_user" "$dev_container" bash -lc "
 # 最新版で自分自身を置き換えて同じ引数で再実行する。IDP_SELF_UPDATED で再実行は 1 回に限定し
 # 無限ループを防ぐ（再実行後の git pull は no-op・self-update はスキップし、そのまま BUILD へ進む）。
 if [[ "${IDP_SELF_UPDATED:-0}" != "1" ]]; then
-  _self_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
-  if _self_tmp="$(mktemp "$(dirname "$_self_path")/.build-remote-container.XXXXXX" 2>/dev/null)"; then
+  if _self_tmp="$(mktemp "$(dirname "$self_path")/.build-remote-container.XXXXXX" 2>/dev/null)"; then
     if docker exec -u "$dev_user" "$dev_container" \
           bash -lc "cat '$dev_workdir/scripts/build-remote-container.sh'" >"$_self_tmp" 2>/dev/null \
-        && [[ -s "$_self_tmp" ]] && ! cmp -s "$_self_tmp" "$_self_path"; then
+        && [[ -s "$_self_tmp" ]] && ! cmp -s "$_self_tmp" "$self_path"; then
       log "SELF-UPDATE  build-remote-container.sh が更新されています。最新版へ差し替えて再実行します。"
-      chmod +x "$_self_tmp"
+      # mktemp は 0600 で作るため、差し替え後に他ユーザー・別の自動化アカウントから実行できなくなる。
+      # 既存スクリプトのパーミッションを引き継ぐ（取得できなければ実行に必要な 0755 を明示付与する）。
+      chmod --reference="$self_path" "$_self_tmp" 2>/dev/null \
+        || chmod "$(stat -c '%a' "$self_path" 2>/dev/null || echo 755)" "$_self_tmp" 2>/dev/null \
+        || chmod 0755 "$_self_tmp"
       # 同一ディレクトリ内 rename でアトミックに差し替える（実行中プロセスの fd は旧 inode を保持し、
       # 直後の exec がパス経由で新 inode を開き直すため、実行中スクリプトの破損を避けられる）。
-      mv -f "$_self_tmp" "$_self_path"
+      mv -f "$_self_tmp" "$self_path"
       export IDP_SELF_UPDATED=1
-      exec "$_self_path" "$@"
+      exec "$self_path" "$@"
     fi
     rm -f "$_self_tmp"
   else
-    log "SELF-UPDATE  一時ファイルを作成できないためスキップします（$_self_path のディレクトリ書込権限を確認）。"
+    log "SELF-UPDATE  一時ファイルを作成できないためスキップします（$self_path のディレクトリ書込権限を確認）。"
   fi
 fi
 
