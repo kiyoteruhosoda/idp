@@ -35,7 +35,6 @@ pub struct Config {
     auth_session_ttl_secs: u64,
     /// HSTS `max-age`（秒）。0 = HSTS ヘッダを付与しない（api 側と同キー `HSTS_MAX_AGE`）。
     hsts_max_age: u64,
-    root_tenant_id: Option<String>,
     log_format: LogFormat,
 }
 
@@ -66,7 +65,6 @@ impl Config {
                 DEFAULT_AUTH_SESSION_TTL_SECS,
             )?,
             hsts_max_age: env_parse("HSTS_MAX_AGE", 0u64)?,
-            root_tenant_id: env_lookup("ROOT_TENANT_ID"),
             log_format: match env_or("LOG_FORMAT", "json").to_ascii_lowercase().as_str() {
                 "pretty" => LogFormat::Pretty,
                 _ => LogFormat::Json,
@@ -106,10 +104,6 @@ impl Config {
     /// HSTS `max-age`（秒）。0 = HSTS ヘッダを付与しない。
     pub fn hsts_max_age(&self) -> u64 {
         self.hsts_max_age
-    }
-    /// `/` から管理ログイン画面へ誘導するための root テナント UUID。
-    pub fn root_tenant_id(&self) -> Option<&str> {
-        self.root_tenant_id.as_deref()
     }
     pub fn log_format(&self) -> LogFormat {
         self.log_format

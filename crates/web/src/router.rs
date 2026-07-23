@@ -7,14 +7,17 @@ use crate::correlation;
 use crate::handlers::{
     admin_clients_console, admin_console, admin_invitations_console, admin_members_console,
     admin_saml_clients_console, admin_settings, admin_signing_keys_console, admin_status_console,
-    admin_tenants_console, admin_users_console, consent, health, invitation_accept, login,
+    admin_tenants_console, admin_users_console, consent, health, invitation_accept, locale, login,
     mfa_totp, passkey, password_change, password_reset, portal, react_assets, stylesheet,
     user_settings, vendor_assets, verify_email,
 };
+use crate::i18n::Messages;
 use crate::security_headers::add_security_headers;
 use crate::state::WebState;
+use crate::templates::{render, MessagePage};
 use crate::tenant::capture_tenant;
-use axum::response::{IntoResponse, Redirect};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
 use axum::Router;
 use tower_http::trace::TraceLayer;
@@ -226,13 +229,7 @@ pub fn build(state: WebState) -> Router {
         .route_layer(axum::middleware::from_fn(capture_tenant));
 
     Router::new()
-        .route(
-            "/",
-            get({
-                let root_tenant_id = state.config.root_tenant_id().map(str::to_owned);
-                move || root_entrypoint(root_tenant_id.clone())
-            }),
-        )
+        .route("/", get(root_entrypoint))
         .route("/healthz", get(health::liveness))
         .route("/readyz", get(health::readiness))
         .route("/version", get(health::version))
@@ -279,13 +276,21 @@ pub fn build(state: WebState) -> Router {
         .with_state(state)
 }
 
-async fn root_entrypoint(root_tenant_id: Option<String>) -> impl IntoResponse {
-    match root_tenant_id {
-        Some(id) if uuid::Uuid::parse_str(&id).is_ok() => {
-            Redirect::temporary(&format!("/{id}/admin/login")).into_response()
-        }
-        _ => axum::http::StatusCode::NOT_FOUND.into_response(),
-    }
+/// ルート（テナント未指定）のランディング。
+///
+/// 以前は `/{root_tenant_id}/admin/login` へリダイレクトしていたが、これは素のドメインへアクセス
+/// しただけで root テナントの UUID と管理ログイン画面を露出させ、root を狙う攻撃の起点になり得た。
+/// テナントを推測させないため、リダイレクトを廃止し、特定テナントに触れない汎用の案内ページを
+/// 描画する（正規の利用者は管理者から案内された `/{tenant_id}/...` URL でアクセスする）。
+async fn root_entrypoint(headers: HeaderMap) -> impl IntoResponse {
+    let messages = Messages::new(locale(&headers));
+    (
+        StatusCode::NOT_FOUND,
+        Html(render(&MessagePage {
+            title: messages.get("root-landing-title"),
+            message: messages.get("root-landing-message"),
+        })),
+    )
 }
 
 #[cfg(test)]
@@ -300,6 +305,44 @@ mod tests {
         WebState::build(Arc::new(
             crate::config::Config::from_env().expect("config with dev defaults"),
         ))
+    }
+
+    /// ルート `/` はリダイレクトせず案内ページ（404）を返し、レスポンスに root テナントの UUID を
+    /// 一切含めない（素のドメインアクセスで root を露出させない）ことの回帰テスト。
+    #[tokio::test]
+    async fn root_does_not_redirect_or_leak_tenant() {
+        let response = build(test_state())
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        // リダイレクトしない（Location ヘッダを付けない）。
+        assert!(
+            response
+                .headers()
+                .get(axum::http::header::LOCATION)
+                .is_none(),
+            "root must not redirect"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let text = String::from_utf8_lossy(&body);
+        // UUID（`/{tenant_id}/...`）を本文に埋め込まない。
+        assert!(
+            !text.contains("/admin/login"),
+            "root page must not expose an admin login link"
+        );
+        let uuid_re_hits = text
+            .split(|c: char| !(c.is_ascii_hexdigit() || c == '-'))
+            .any(|tok| uuid::Uuid::parse_str(tok).is_ok());
+        assert!(!uuid_re_hits, "root page must not embed any tenant UUID");
     }
 
     /// nest 配下の `{tenant_id}` ＋ `{user_id}` 等の 2 パラメータルートで `Path` 抽出が成立する
