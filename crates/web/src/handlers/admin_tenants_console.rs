@@ -81,13 +81,7 @@ pub async fn create(
     }
     let created = match state
         .api
-        .create_tenant(
-            &correlation.0,
-            &tenant.0,
-            &sso,
-            form.name.trim(),
-            form.admin_email.trim(),
-        )
+        .create_tenant(&correlation.0, &tenant.0, &sso, form.name.trim())
         .await
     {
         Ok(v) => v,

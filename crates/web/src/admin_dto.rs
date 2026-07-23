@@ -157,7 +157,8 @@ pub struct TenantView {
     pub status: String,
 }
 
-/// テナント作成応答（`POST /admin/tenants`）。初期管理者パスワードは一度だけ表示する。
+/// テナント作成応答（`POST /admin/tenants`）。作成者自身がブートストラップ管理者になるため、
+/// 初期管理者 ID・平文パスワードは含まない（作成したテナントそのものを返す。ADR-0009 §4）。
 #[derive(Debug, Clone, Deserialize)]
 pub struct TenantCreatedView {
     pub id: String,
@@ -171,8 +172,6 @@ pub struct TenantCreatedView {
     pub created_at: String,
     #[serde(default)]
     pub updated_at: String,
-    pub admin_user_id: String,
-    pub generated_password: String,
 }
 
 /// システム設定の公開表現（`GET/PUT /admin/system-settings` の応答。MT14）。

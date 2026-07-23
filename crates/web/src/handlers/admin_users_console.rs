@@ -1,7 +1,8 @@
-//! 利用者の作成・検索・権限付与/剥奪のサーバレンダリング画面（web。A2・ADR-0006・ADR-0009 §5・
-//! ADR-0007 §4）。
+//! 利用者の作成・権限付与/剥奪のサーバレンダリング画面（web。A2・ADR-0006・ADR-0009 §5・
+//! ADR-0007 §4）。一覧・検索の起点はメンバー画面（`/admin/members`）で、本モジュールは個別利用者の
+//! 作成と権限管理を担う。
 //!
-//! api の JSON 管理 API（利用者作成・検索・取得・権限一覧/付与/剥奪・付与可能コード）を管理者の SSO
+//! api の JSON 管理 API（利用者作成・取得・権限一覧/付与/剥奪・付与可能コード）を管理者の SSO
 //! Cookie 転送で呼び、結果を HTML に描画する。作成・付与・剥奪の POST は Post/Redirect/Get で処理し、
 //! エラーは各画面へ `error` クエリで伝える。CSRF は `console_csrf_token`、HTML は Askama テンプレートが
 //! 自動エスケープする。
@@ -17,9 +18,7 @@ use crate::handlers::admin_console::{
 use crate::handlers::found;
 use crate::i18n::Messages;
 use crate::state::WebState;
-use crate::templates::{
-    render, ConsoleNotice, UserCreated, UserForm, UsersPermissions, UsersSearch,
-};
+use crate::templates::{render, ConsoleNotice, UserCreated, UserForm, UsersPermissions};
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -152,61 +151,6 @@ pub async fn create(
 fn normalize(s: &str) -> Option<&str> {
     let s = s.trim();
     (!s.is_empty()).then_some(s)
-}
-
-// ── 利用者検索 ────────────────────────────────────────────────────────────────
-
-#[derive(Debug, Deserialize)]
-pub struct SearchQuery {
-    #[serde(default)]
-    pub q: Option<String>,
-}
-
-pub async fn search(
-    State(state): State<WebState>,
-    Extension(correlation): Extension<CorrelationId>,
-    Extension(tenant): Extension<WebTenant>,
-    headers: HeaderMap,
-    Query(query): Query<SearchQuery>,
-) -> Response {
-    let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
-    let term = query.q.unwrap_or_default();
-
-    if term.trim().is_empty() {
-        let messages = Messages::new(locale(&headers));
-        return Html(render_search(
-            &messages,
-            &tenant,
-            &admin,
-            &term,
-            SearchResult::Empty,
-        ))
-        .into_response();
-    }
-    let result = state
-        .api
-        .search_user(&correlation.0, &tenant.0, &sso(&headers), &term)
-        .await;
-    let messages = Messages::new(locale(&headers));
-    match result {
-        Ok(user) => Html(render_search(
-            &messages,
-            &tenant,
-            &admin,
-            &term,
-            SearchResult::Found(&user),
-        ))
-        .into_response(),
-        Err(AdminApiError::NotFound) => Html(render_search(
-            &messages,
-            &tenant,
-            &admin,
-            &term,
-            SearchResult::NotFound,
-        ))
-        .into_response(),
-        Err(e) => map_data_error(&messages, &tenant, &admin, &headers, e),
-    }
 }
 
 // ── 権限画面 ──────────────────────────────────────────────────────────────────
@@ -400,34 +344,6 @@ fn csrf_valid(headers: &HeaderMap, submitted: &str, key: &[u8]) -> bool {
 
 // ── レンダリング ──────────────────────────────────────────────────────────────
 
-enum SearchResult<'a> {
-    Empty,
-    NotFound,
-    Found(&'a UserSummaryResponse),
-}
-
-fn render_search(
-    messages: &Messages,
-    tenant: &WebTenant,
-    admin: &str,
-    term: &str,
-    result: SearchResult,
-) -> String {
-    let (user, not_found) = match result {
-        SearchResult::Empty => (None, false),
-        SearchResult::NotFound => (None, true),
-        SearchResult::Found(user) => (Some(user), false),
-    };
-    render(&UsersSearch {
-        messages,
-        tenant: &tenant.prefix(),
-        admin: Some(admin),
-        term,
-        user,
-        not_found,
-    })
-}
-
 #[allow(clippy::too_many_arguments)]
 fn render_permissions(
     messages: &Messages,
@@ -485,8 +401,8 @@ fn not_found(messages: &Messages, tenant: &WebTenant, admin: &str) -> Response {
         heading: Some(&messages.get("admin-user-not-found-title")),
         message: &messages.get("admin-user-not-found-message"),
         is_error: false,
-        back_href: Some(&format!("{}{USERS_SEGMENT}", tenant.prefix())),
-        back_label: &messages.get("admin-users-back"),
+        back_href: Some(&format!("{}/admin/members", tenant.prefix())),
+        back_label: &messages.get("admin-members-back"),
     });
     (StatusCode::NOT_FOUND, Html(body)).into_response()
 }
@@ -541,22 +457,6 @@ mod tests {
             name: None,
             status: "ACTIVE".into(),
         }
-    }
-
-    #[test]
-    fn search_result_escapes_user_fields() {
-        let messages = Messages::new(Locale::Ja);
-        let html = render_search(
-            &messages,
-            &tenant(),
-            "admin-1",
-            "alice",
-            SearchResult::Found(&user()),
-        );
-        // Askama は HTML を数値文字参照でエスケープする（`<` → `&#60;`）。生タグが残らないことを確認する。
-        assert!(html.contains("&#60;b&#62;alice&#60;/b&#62;"));
-        assert!(!html.contains("<b>alice"));
-        assert!(html.contains("/permissions"));
     }
 
     #[test]

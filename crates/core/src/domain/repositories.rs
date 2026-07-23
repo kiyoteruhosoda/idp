@@ -69,13 +69,13 @@ pub trait TenantRepository: Send + Sync {
 /// ドメインオブジェクトの構築・検証は Application 層の責務で、実装は永続化のみを担う。
 #[async_trait]
 pub trait TenantProvisioningRepository: Send + Sync {
-    /// テナント・初期管理者・HOME メンバーシップ・権限付与を原子的に永続化する。
-    /// 一意制約違反（email / preferred_username / root 重複）は `Conflict`、
-    /// `admin_permission_code` が `permissions` マスタに無い場合は `InvalidValue` を返す。
+    /// テナント・作成者のブートストラップ管理者メンバーシップ・権限付与を原子的に永続化する
+    /// （ADR-0009 §4）。作成者ユーザー自体は既存（親テナント所属）のため新規作成しない。
+    /// 一意制約違反（root 重複・メンバーシップ重複）は `Conflict`、`admin_permission_code` が
+    /// `permissions` マスタに無い場合は `InvalidValue` を返す。
     async fn provision(
         &self,
         tenant: &Tenant,
-        admin: &User,
         admin_membership: &TenantMembership,
         admin_permission_code: &str,
         granted_at: DateTime<Utc>,

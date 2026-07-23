@@ -30,6 +30,9 @@ const MEMBERS_SEGMENT: &str = "/admin/members";
 pub struct ViewQuery {
     #[serde(default)]
     pub error: Option<String>,
+    /// メンバー一覧の絞り込み語（メールアドレス・氏名の部分一致。大文字小文字を無視）。
+    #[serde(default)]
+    pub q: Option<String>,
 }
 
 /// メンバー一覧（`GET /{tenant_id}/admin/members`）。
@@ -51,16 +54,21 @@ pub async fn list(
     let messages = Messages::new(locale(&headers));
     let csrf = csrf_from(&headers, state.config.csrf_secret());
     let error_key = query.error.as_deref().and_then(error_key_for);
+    let term = query.q.unwrap_or_default();
     match result {
-        Ok(members) => Html(render(&MembersList {
-            messages: &messages,
-            tenant: &tenant.prefix(),
-            admin: Some(&admin),
-            members: &members,
-            csrf: &csrf,
-            error_key,
-        }))
-        .into_response(),
+        Ok(all) => {
+            let members = filter_members(&all, &term);
+            Html(render(&MembersList {
+                messages: &messages,
+                tenant: &tenant.prefix(),
+                admin: Some(&admin),
+                members: &members,
+                query: term.trim(),
+                csrf: &csrf,
+                error_key,
+            }))
+            .into_response()
+        }
         Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
         Err(AdminApiError::Forbidden) => forbidden_response(&headers),
         Err(_) => internal_error(&messages, &tenant, &admin),
@@ -216,6 +224,27 @@ pub async fn delete(
         Err(AdminApiError::NotFound) => found(&format!("{base}?error=user-notfound")),
         Err(_) => found(&format!("{base}?error=internal")),
     }
+}
+
+/// メンバー一覧を絞り込み語で部分一致フィルタする（メールアドレス・氏名。大文字小文字を無視）。
+/// 空語のときは全件返す。一覧は api が全件返すため、絞り込みは web 側で行う（api 変更は不要）。
+fn filter_members(
+    members: &[crate::admin_dto::MemberView],
+    term: &str,
+) -> Vec<crate::admin_dto::MemberView> {
+    let needle = term.trim().to_lowercase();
+    if needle.is_empty() {
+        return members.to_vec();
+    }
+    members
+        .iter()
+        .filter(|m| {
+            let email = m.email.as_deref().unwrap_or_default().to_lowercase();
+            let name = m.name.as_deref().unwrap_or_default().to_lowercase();
+            email.contains(&needle) || name.contains(&needle)
+        })
+        .cloned()
+        .collect()
 }
 
 fn error_key_for(error: &str) -> Option<&'static str> {

@@ -72,11 +72,10 @@ class TenantRegistrationStrategy extends FormSurfaceStrategy {
 
   render(state: SurfaceState): React.ReactElement {
     const name = state.fields.name?.trim() ?? '';
-    const email = state.fields.admin_email?.trim() ?? '';
-    const ready = name.length > 0 && email.includes('@');
+    const ready = name.length > 0;
     return (
       <section className="react-status" data-component={this.componentName} aria-live="polite">
-        <strong>React:</strong> {ready ? '登録できます' : 'テナント名と管理者メールを入力してください'}
+        <strong>React:</strong> {ready ? '登録できます' : 'テナント名を入力してください'}
         {state.submitting ? <span> / 送信中...</span> : null}
       </section>
     );

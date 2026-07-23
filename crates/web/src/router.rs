@@ -165,8 +165,7 @@ pub fn build(state: WebState) -> Router {
             "/admin/saml-clients/{id}/delete",
             post(admin_saml_clients_console::delete),
         )
-        // 利用者の作成・検索・権限付与/剥奪画面。
-        .route("/admin/users", get(admin_users_console::search))
+        // 利用者の作成・権限付与/剥奪画面（一覧・検索の起点はメンバー画面。/admin/members）。
         .route(
             "/admin/users/new",
             get(admin_users_console::new_form).post(admin_users_console::create),

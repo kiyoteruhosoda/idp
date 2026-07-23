@@ -158,17 +158,19 @@ tcsrf="$(printf '%s' "$tenants_html" | grep -oE 'name="csrf_token" value="[a-f0-
 [[ -n "$tcsrf" ]] || fail "テナント登録画面が CSRF を返しません"
 TENANT_SUFFIX="$(date +%s)"
 TENANT_NAME="E2E Tenant ${TENANT_SUFFIX}"
-TENANT_ADMIN="tenant-admin-${TENANT_SUFFIX}@example.com"
 tenant_created="$(curl -fsS -b "$AJAR" -X POST "${WEB}/${ROOT}/admin/tenants" \
   -H 'content-type: application/x-www-form-urlencoded' \
-  --data-urlencode "name=${TENANT_NAME}" --data-urlencode "admin_email=${TENANT_ADMIN}" \
+  --data-urlencode "name=${TENANT_NAME}" \
   --data-urlencode "csrf_token=${tcsrf}")"
-grep -q "admin-tenants-generated-password\|初期パスワード\|Initial password" <<<"$tenant_created" || fail "テナント作成結果が初期パスワード表示を含みません"
-[[ "$(mariadb_exec "SELECT COUNT(*) FROM tenants WHERE parent_tenant_id='${ROOT}' AND name='${TENANT_NAME}';")" == "1" ]] \
-  || fail "テナント作成が DB に反映されません"
-[[ "$(mariadb_exec "SELECT COUNT(*) FROM users WHERE email='${TENANT_ADMIN}';")" == "1" ]] \
-  || fail "作成テナントの初期管理者が DB に反映されません"
-pass "テナント登録画面（React surface）→ web→api POST /admin/tenants → DB 反映"
+grep -q "${TENANT_NAME}\|admin-tenants-created-title\|Tenant registered\|テナントを登録しました" <<<"$tenant_created" || fail "テナント作成結果画面が表示されません"
+NEW_TENANT_ID="$(mariadb_exec "SELECT id FROM tenants WHERE parent_tenant_id='${ROOT}' AND name='${TENANT_NAME}' LIMIT 1;")"
+[[ -n "$NEW_TENANT_ID" ]] || fail "テナント作成が DB に反映されません"
+# 作成者（root 管理者）が新テナントの ACTIVE な GUEST 管理者になっている（ブートストラップ）。
+[[ "$(mariadb_exec "SELECT COUNT(*) FROM tenant_memberships tm JOIN users u ON u.id=tm.user_id WHERE tm.tenant_id='${NEW_TENANT_ID}' AND u.tenant_id='${ROOT}' AND u.email='admin@example.com' AND tm.membership_type='GUEST' AND tm.status='ACTIVE';")" == "1" ]] \
+  || fail "作成者のブートストラップ・ゲスト管理者メンバーシップが DB に反映されません"
+[[ "$(mariadb_exec "SELECT COUNT(*) FROM user_permissions up JOIN users u ON u.id=up.user_id WHERE up.tenant_id='${NEW_TENANT_ID}' AND u.email='admin@example.com' AND up.permission_code='idp.tenant.admin';")" == "1" ]] \
+  || fail "作成者の idp.tenant.admin 付与が DB に反映されません"
+pass "テナント登録画面（React surface）→ web→api POST /admin/tenants → 作成者がブートストラップ管理者（DB 反映）"
 
 ccsrf="$(curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin/clients/new" | grep -oE 'name="csrf_token" value="[a-f0-9]{64}"' | grep -oE '[a-f0-9]{64}')"
 created="$(curl -fsS -b "$AJAR" -X POST "${WEB}/${ROOT}/admin/clients/new" \
@@ -183,10 +185,11 @@ curl -fsS -b "$AJAR" -o /dev/null -w '%{http_code}' "${WEB}/${ROOT}/admin/status
 curl -fsS -b "$AJAR" -o /dev/null -w '%{http_code}' "${WEB}/${ROOT}/admin/audit-logs"  | grep -q 200 || fail "監査画面が 200 を返しません"
 pass "状況・監査画面（web→api /admin/clients/status・/admin/audit-logs）"
 
-# 利用者検索→権限付与→剥奪。
-sr="$(curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin/users?q=${U}@example.com")"
-tid="$(printf '%s' "$sr" | grep -oE "/${ROOT}/admin/users/[0-9a-f-]{36}/permissions" | head -1 | sed -E 's#.*/users/([0-9a-f-]{36})/permissions#\1#')"
-[[ -n "$tid" ]] || fail "利用者検索がヒットしません"
+# メンバー一覧（絞り込み）→ 権限付与。利用者検索画面は廃止したためメンバー画面が起点。
+members_html="$(curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin/members?q=${U}")"
+grep -q "/${ROOT}/admin/users/[0-9a-f-]\{36\}/permissions" <<<"$members_html" || fail "メンバー絞り込みが権限リンクを返しません"
+tid="$(mariadb_exec "SELECT id FROM users WHERE tenant_id='${ROOT}' AND preferred_username='${U}' LIMIT 1;")"
+[[ -n "$tid" ]] || fail "対象利用者が見つかりません"
 perm_page="$(mktemp)"
 perm_status="$(curl -sS -b "$AJAR" -o "$perm_page" -w '%{http_code}' "${WEB}/${ROOT}/admin/users/${tid}/permissions")"
 if [[ "$perm_status" == "200" ]]; then
@@ -202,6 +205,6 @@ else
 fi
 [[ "$(mariadb_exec "SELECT COUNT(*) FROM user_permissions WHERE user_id='${tid}' AND permission_code='idp.tenant.admin';")" == "1" ]] \
   || fail "権限付与が DB に反映されません"
-pass "利用者検索 → idp.tenant.admin 付与（web/api、DB 反映を確認）"
+pass "メンバー絞り込み → idp.tenant.admin 付与（web/api、DB 反映を確認）"
 
 printf '\n\033[32mE2E OK\033[0m — web→api の疎通が全て通りました。\n'

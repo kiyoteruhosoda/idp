@@ -74,8 +74,10 @@
 | テナント管理（`/{tenant_id}/admin/tenants...`） | テナントの作成・一覧・取得・更新・削除。実質 root だけがテナントを作成できる |
 | システム設定（`/{tenant_id}/admin/system-settings...`） | システム設定の閲覧・変更 |
 
-- テナント作成時に、新テナントを所属元・scope とする `idp.tenant.admin` を持つ管理者ユーザーを同時生成する
-  （ADR-0009 §5）。作成者（root の system admin）は作成後のテナント内部を操作できない。
+- テナント作成時に、**作成者自身**を新テナントのブートストラップ管理者として登録する（ACTIVE な
+  GUEST メンバーシップ＋新テナント scope の `idp.tenant.admin`。ADR-0009 §5）。作成者は自身の SSO
+  セッションのまま新テナントで正式な管理者を登録・付与し、最後に自身のゲストメンバーシップを解除して
+  離脱する。離脱後は作成者（root の system admin）は当該テナント内部を操作できない。
 
 ### `idp.tenant.admin` が必要（当該テナントの管理者。`idp.system.admin` でも可＝root テナントに限る）
 

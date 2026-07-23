@@ -41,6 +41,23 @@ impl TenantMembership {
         }
     }
 
+    /// 作成者を新テナントのブートストラップ管理者にするための、直接 `ACTIVE` な GUEST メンバーシップ
+    /// （ADR-0009 §4）。招待フローを経ないため `invited_by`・トークンは持たない。テナント作成時に
+    /// 作成者（root の system 管理者）へ `idp.tenant.admin` と併せて付与し、以後の初期設定を可能にする。
+    pub fn new_active_guest(tenant_id: TenantId, user_id: Uuid, now: DateTime<Utc>) -> Self {
+        Self {
+            tenant_id,
+            user_id,
+            membership_type: MembershipType::Guest,
+            status: MembershipStatus::Active,
+            invited_by: None,
+            invitation_token_hash: None,
+            invitation_expires_at: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
     pub fn is_home(&self) -> bool {
         self.membership_type == MembershipType::Home
     }

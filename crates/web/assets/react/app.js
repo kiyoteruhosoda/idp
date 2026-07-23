@@ -8065,7 +8065,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 }, te = { TenantRegistrationConsole: new class extends S {
 	componentName = "TenantRegistrationConsole";
 	render(e) {
-		let t = e.fields.name?.trim() ?? "", n = e.fields.admin_email?.trim() ?? "", r = t.length > 0 && n.includes("@");
+		let t = (e.fields.name?.trim() ?? "").length > 0;
 		return /* @__PURE__ */ (0, x.jsxs)("section", {
 			className: "react-status",
 			"data-component": this.componentName,
@@ -8073,7 +8073,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 			children: [
 				/* @__PURE__ */ (0, x.jsx)("strong", { children: "React:" }),
 				" ",
-				r ? "登録できます" : "テナント名と管理者メールを入力してください",
+				t ? "登録できます" : "テナント名を入力してください",
 				e.submitting ? /* @__PURE__ */ (0, x.jsx)("span", { children: " / 送信中..." }) : null
 			]
 		});

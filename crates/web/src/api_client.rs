@@ -529,29 +529,6 @@ impl ApiClient {
 
     // ── 利用者・権限（管理コンソールの権限画面）─────────────────────────────────
 
-    /// 利用者検索（`GET /admin/users?q=`）。該当なしは `NotFound`。
-    pub async fn search_user(
-        &self,
-        correlation_id: &str,
-        tenant_id: &str,
-        sso: &str,
-        q: &str,
-    ) -> Result<UserSummaryResponse, AdminApiError> {
-        let response = self
-            .http
-            .get(format!("{}/{}/admin/users", self.base_url, tenant_id))
-            .query(&[("q", q)])
-            .header(REQUEST_ID_HEADER, correlation_id)
-            .header(
-                reqwest::header::COOKIE,
-                format!("{SSO_SESSION_COOKIE}={sso}"),
-            )
-            .send()
-            .await
-            .map_err(|e| AdminApiError::Transport(e.to_string()))?;
-        Self::handle_admin_response(response, "/admin/users").await
-    }
-
     /// 利用者取得（`GET /admin/users/{id}`）。
     pub async fn get_user(
         &self,
@@ -1147,14 +1124,14 @@ impl ApiClient {
         .await
     }
 
-    /// 子テナント作成（`POST /admin/tenants`。idp.system.admin 必須）。
+    /// 子テナント作成（`POST /admin/tenants`。idp.system.admin 必須）。作成者自身が新テナントの
+    /// ブートストラップ管理者になる（ADR-0009 §4）。応答は作成したテナント。
     pub async fn create_tenant(
         &self,
         correlation_id: &str,
         tenant_id: &str,
         sso_session_id: &str,
         name: &str,
-        admin_email: &str,
     ) -> Result<crate::admin_dto::TenantCreatedView, AdminApiError> {
         self.admin_send(
             Method::POST,
@@ -1162,7 +1139,7 @@ impl ApiClient {
             "/admin/tenants",
             correlation_id,
             sso_session_id,
-            Some(serde_json::json!({ "name": name, "admin_email": admin_email })),
+            Some(serde_json::json!({ "name": name })),
         )
         .await
     }

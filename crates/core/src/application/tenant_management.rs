@@ -4,12 +4,13 @@
 //! root のみ存在）を要求するため、**実質的にテナントを作成できるのは root だけ**になる（§4。判定は
 //! Presentation の `RequirePerms<IdpSystemAdmin>` が担う）。
 //!
-//! 作成時に、新テナントを所属元とする管理者ユーザーを[`UserManagementService`]で構築し（自動生成
-//! パスワード・`must_change_password`。§5）、新テナントを scope とする `idp.tenant.admin` を付与する。
-//! 以後この管理者だけがテナント内部を管理でき、作成者（root の system.admin）は内部を操作できない
-//! （テナント独立。§1）。生成パスワードは**この一度だけ**平文で返す（ログ・監査には出さない）。
+//! 作成時に、**作成者自身**を新テナントのブートストラップ管理者として登録する（ACTIVE な GUEST
+//! メンバーシップ＋新テナント scope の `idp.tenant.admin`）。作成者は自身の SSO セッションのまま新
+//! テナントの管理コンソールへ入り、正式な管理者（新テナント所属の HOME 利用者）を登録して
+//! `idp.tenant.admin` を付与し、最後に自身のゲストメンバーシップを解除して離脱する（解除時に当該テナント
+//! scope の権限行も後始末される。§3）。初期パスワードの受け渡しを伴わないため、平文パスワードは返さない。
 //!
-//! テナント行・管理者ユーザー・HOME メンバーシップ・権限付与は
+//! テナント行・作成者のブートストラップメンバーシップ・権限付与は
 //! [`TenantProvisioningRepository`] が**単一トランザクション**で永続化する（unit of work。REF2）。
 //! 途中失敗で「管理者のいないテナント」が残ることはない。
 //!
@@ -17,9 +18,6 @@
 //! 他テナントの子は不存在として扱う）。root テナントはアプリ層で削除を禁止する（§1）。
 
 use crate::application::audit::{AuditService, RequestContext};
-use crate::application::user_management::{
-    CreateUserCommand, UserManagementError, UserManagementService,
-};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
@@ -32,14 +30,12 @@ use crate::domain::values::TenantStatus;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// 新テナントの管理者へ付与する権限（scope = 新テナント。ADR-0009 §5）。
+/// 作成者（ブートストラップ管理者）へ付与する権限（scope = 新テナント。ADR-0009 §4）。
 const TENANT_ADMIN_PERMISSION: &str = "idp.tenant.admin";
 
 #[derive(Debug, Clone)]
 pub struct CreateTenantCommand {
     pub name: String,
-    /// 初期管理者のメールアドレス（新テナントを所属元とする管理者ユーザーを生成する）。
-    pub admin_email: String,
 }
 
 /// 部分更新コマンド。`None` のフィールドは変更しない。
@@ -47,14 +43,6 @@ pub struct CreateTenantCommand {
 pub struct UpdateTenantCommand {
     pub name: Option<String>,
     pub status: Option<TenantStatus>,
-}
-
-/// テナント作成結果。`generated_password` は初期管理者の自動生成パスワードで、**この一度だけ**平文で
-/// 返す（保存はハッシュのみ、ログ・監査には出さない。§5）。
-pub struct CreatedTenant {
-    pub tenant: Tenant,
-    pub admin_user_id: Uuid,
-    pub generated_password: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -71,19 +59,8 @@ pub enum TenantManagementError {
     Internal(String),
 }
 
-impl From<UserManagementError> for TenantManagementError {
-    fn from(e: UserManagementError) -> Self {
-        match e {
-            UserManagementError::Validation(m) => TenantManagementError::Validation(m),
-            UserManagementError::Conflict(m) => TenantManagementError::Conflict(m),
-            UserManagementError::Internal(m) => TenantManagementError::Internal(m),
-        }
-    }
-}
-
 pub struct TenantManagementService {
     tenants: Arc<dyn TenantRepository>,
-    users: Arc<UserManagementService>,
     provisioning: Arc<dyn TenantProvisioningRepository>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
@@ -93,7 +70,6 @@ pub struct TenantManagementService {
 impl TenantManagementService {
     pub fn new(
         tenants: Arc<dyn TenantRepository>,
-        users: Arc<UserManagementService>,
         provisioning: Arc<dyn TenantProvisioningRepository>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
@@ -101,7 +77,6 @@ impl TenantManagementService {
     ) -> Self {
         Self {
             tenants,
-            users,
             provisioning,
             audit,
             clock,
@@ -109,17 +84,17 @@ impl TenantManagementService {
         }
     }
 
-    /// `requesting` テナント配下に子テナントを作成し、初期管理者ユーザー（自動生成パスワード・
-    /// `must_change_password`）を生成して新テナント scope の `idp.tenant.admin` を付与する。
-    /// 4 行（テナント・ユーザー・HOME メンバーシップ・権限）は単一トランザクションで永続化する
-    /// （unit of work。REF2）。生成パスワードを一度だけ返す（§5）。
+    /// `requesting` テナント配下に子テナントを作成し、**作成者自身**（`actor`）を新テナントの
+    /// ブートストラップ管理者として登録する（ACTIVE な GUEST メンバーシップ＋新テナント scope の
+    /// `idp.tenant.admin`）。3 行（テナント・メンバーシップ・権限）は単一トランザクションで永続化する
+    /// （unit of work。REF2）。作成者は以後、正式な管理者を登録・付与してから自身を解除する（§3・§4）。
     pub async fn create_tenant(
         &self,
         requesting: TenantContext,
         cmd: CreateTenantCommand,
         actor: Uuid,
         ctx: &RequestContext,
-    ) -> Result<CreatedTenant, TenantManagementError> {
+    ) -> Result<Tenant, TenantManagementError> {
         let name = validate_name(cmd.name)?;
 
         let now = self.clock.now();
@@ -134,45 +109,21 @@ impl TenantManagementService {
             updated_at: now,
         };
 
-        // 初期管理者は新テナントを所属元として構築する（検証・自動生成パスワードのハッシュ化まで。
-        // 永続化はまだ行わないため、メール不正等の検証エラーではテナントも作られない）。
-        let prepared = self
-            .users
-            .prepare_user(
-                TenantContext::new(tenant.id),
-                CreateUserCommand {
-                    email: cmd.admin_email,
-                    preferred_username: None,
-                    name: None,
-                },
-            )
-            .await?;
-        let admin = &prepared.user;
-        let membership = TenantMembership::new_home(tenant.id, admin.id, now);
+        // 作成者を新テナントのブートストラップ管理者にする（ACTIVE GUEST。所属元は親テナントのまま）。
+        let membership = TenantMembership::new_active_guest(tenant.id, actor, now);
 
-        // テナント・管理者・HOME メンバーシップ・idp.tenant.admin 付与を原子的に永続化する（§4・§5）。
-        // 権限付与はキャッシュ付きリポジトリを経由しないが、テナント ID・ユーザー ID とも今生成した
-        // ものであり、判定キャッシュに該当キーが載っていることはない（stale deny は起きない）。
+        // テナント・作成者メンバーシップ・idp.tenant.admin 付与を原子的に永続化する（§4）。
+        // 権限付与はキャッシュ付きリポジトリを経由しないが、テナント ID は今生成したものであり、
+        // 判定キャッシュに該当キーが載っていることはない（stale deny は起きない）。
         self.provisioning
-            .provision(&tenant, admin, &membership, TENANT_ADMIN_PERMISSION, now)
+            .provision(&tenant, &membership, TENANT_ADMIN_PERMISSION, now)
             .await
             .map_err(|e| match e {
                 DomainError::Conflict(m) => TenantManagementError::Conflict(m),
                 other => TenantManagementError::Internal(other.to_string()),
             })?;
 
-        // 監査には内部 ID のみ記録する（生成パスワードは出さない。§5）。
-        self.audit
-            .record(
-                AuditEventType::UserCreated,
-                AuditResult::Success,
-                Some(tenant.id),
-                Some(actor),
-                None,
-                Some(&format!("user={}", admin.id)),
-                ctx,
-            )
-            .await;
+        // 監査には内部 ID のみ記録する。
         self.audit
             .record(
                 AuditEventType::TenantCreated,
@@ -180,16 +131,12 @@ impl TenantManagementService {
                 Some(tenant.id),
                 Some(actor),
                 None,
-                Some(&format!("tenant={} admin={}", tenant.id, admin.id)),
+                Some(&format!("tenant={} bootstrap_admin={}", tenant.id, actor)),
                 ctx,
             )
             .await;
 
-        Ok(CreatedTenant {
-            tenant,
-            admin_user_id: prepared.user.id,
-            generated_password: prepared.generated_password,
-        })
+        Ok(tenant)
     }
 
     /// `requesting` テナントの直下の子テナントを一覧する（§6）。
@@ -372,17 +319,15 @@ fn validate_name(name: String) -> Result<String, TenantManagementError> {
     Ok(trimmed)
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::user_management::UserManagementService;
     use crate::domain::audit::AuditEvent;
     use crate::domain::error::Result as DomainResult;
-    use crate::domain::password::PasswordHasher;
-    use crate::domain::repositories::{AuditLogSink, TenantMembershipRepository, UserRepository};
+    use crate::domain::repositories::AuditLogSink;
     use crate::domain::tenant_membership::TenantMembership;
-    use crate::domain::user::User;
-    use crate::domain::values::UserStatus;
+    use crate::domain::values::{MembershipStatus, MembershipType};
     use async_trait::async_trait;
     use chrono::{DateTime, TimeZone, Utc};
     use std::sync::Mutex;
@@ -407,16 +352,6 @@ mod tests {
         }
     }
 
-    struct PlainHasher;
-    impl PasswordHasher for PlainHasher {
-        fn hash(&self, password: &str) -> Result<String, DomainError> {
-            Ok(format!("hash:{password}"))
-        }
-        fn verify(&self, password: &str, hash: &str) -> Result<bool, DomainError> {
-            Ok(hash == format!("hash:{password}"))
-        }
-    }
-
     #[derive(Default)]
     struct CapturingSink {
         events: Mutex<Vec<AuditEvent>>,
@@ -426,101 +361,6 @@ mod tests {
         async fn record(&self, event: &AuditEvent) -> DomainResult<()> {
             self.events.lock().unwrap().push(event.clone());
             Ok(())
-        }
-    }
-
-    #[derive(Default)]
-    struct FakeUsers {
-        rows: Mutex<Vec<User>>,
-    }
-    #[async_trait]
-    impl UserRepository for FakeUsers {
-        async fn create(&self, u: &User) -> DomainResult<()> {
-            self.rows.lock().unwrap().push(u.clone());
-            Ok(())
-        }
-        async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<User>> {
-            Ok(self
-                .rows
-                .lock()
-                .unwrap()
-                .iter()
-                .find(|u| u.id == id)
-                .cloned())
-        }
-        async fn find_by_sub(&self, _s: Uuid) -> DomainResult<Option<User>> {
-            unreachable!()
-        }
-        async fn find_by_email(&self, t: TenantId, e: &str) -> DomainResult<Option<User>> {
-            Ok(self
-                .rows
-                .lock()
-                .unwrap()
-                .iter()
-                .find(|u| u.tenant_id == t && u.email == e)
-                .cloned())
-        }
-        async fn find_by_username(&self, _t: TenantId, _n: &str) -> DomainResult<Option<User>> {
-            Ok(None)
-        }
-        async fn update_login_state(
-            &self,
-            _id: Uuid,
-            _c: i32,
-            _l: Option<DateTime<Utc>>,
-        ) -> DomainResult<()> {
-            unreachable!()
-        }
-        async fn update_password(&self, _id: Uuid, _password_hash: &str) -> DomainResult<()> {
-            unreachable!()
-        }
-        async fn reset_password_forced(&self, _id: Uuid, _password_hash: &str) -> DomainResult<()> {
-            unreachable!()
-        }
-        async fn update_status(&self, _id: Uuid, _status: UserStatus) -> DomainResult<()> {
-            unreachable!()
-        }
-        async fn delete(&self, _id: Uuid) -> DomainResult<()> {
-            unreachable!()
-        }
-        async fn mark_email_verified(&self, _id: Uuid) -> DomainResult<()> {
-            unreachable!()
-        }
-        async fn update_language(&self, _id: Uuid, _language: Option<&str>) -> DomainResult<()> {
-            unreachable!()
-        }
-    }
-
-    #[derive(Default)]
-    struct FakeMemberships {
-        rows: Mutex<Vec<TenantMembership>>,
-    }
-    #[async_trait]
-    impl TenantMembershipRepository for FakeMemberships {
-        async fn create(&self, m: &TenantMembership) -> DomainResult<()> {
-            self.rows.lock().unwrap().push(m.clone());
-            Ok(())
-        }
-        async fn find(&self, _t: TenantId, _u: Uuid) -> DomainResult<Option<TenantMembership>> {
-            unreachable!()
-        }
-        async fn list_for_tenant(&self, _t: TenantId) -> DomainResult<Vec<TenantMembership>> {
-            unreachable!()
-        }
-        async fn is_active_member(&self, _t: TenantId, _u: Uuid) -> DomainResult<bool> {
-            unreachable!()
-        }
-        async fn find_by_invitation_token_hash(
-            &self,
-            _h: &str,
-        ) -> DomainResult<Option<TenantMembership>> {
-            unreachable!()
-        }
-        async fn activate(&self, _t: TenantId, _u: Uuid) -> DomainResult<()> {
-            unreachable!()
-        }
-        async fn delete(&self, _t: TenantId, _u: Uuid) -> DomainResult<()> {
-            unreachable!()
         }
     }
 
@@ -588,7 +428,6 @@ mod tests {
         async fn provision(
             &self,
             tenant: &Tenant,
-            admin: &User,
             admin_membership: &TenantMembership,
             admin_permission_code: &str,
             _granted_at: DateTime<Utc>,
@@ -604,8 +443,8 @@ mod tests {
                 .unwrap()
                 .push(admin_membership.clone());
             self.granted.lock().unwrap().push((
-                tenant.id,
-                admin.id,
+                admin_membership.tenant_id,
+                admin_membership.user_id,
                 admin_permission_code.to_string(),
             ));
             Ok(())
@@ -634,14 +473,6 @@ mod tests {
     fn harness_with(fail_provision: bool) -> Harness {
         let sink = Arc::new(CapturingSink::default());
         let audit = Arc::new(AuditService::new(sink.clone(), Arc::new(FixedClock(now()))));
-        let user_mgmt = Arc::new(UserManagementService::new(
-            Arc::new(FakeUsers::default()),
-            Arc::new(FakeMemberships::default()),
-            Arc::new(PlainHasher),
-            audit.clone(),
-            Arc::new(FixedClock(now())),
-            Arc::new(SeqIds(Mutex::new(1000))),
-        ));
         let tenants = Arc::new(FakeTenants::default());
         let provisioning = Arc::new(FakeProvisioning {
             tenants: tenants.clone(),
@@ -651,7 +482,6 @@ mod tests {
         });
         let svc = TenantManagementService::new(
             tenants.clone(),
-            user_mgmt,
             provisioning.clone(),
             audit,
             Arc::new(FixedClock(now())),
@@ -671,54 +501,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_tenant_provisions_admin_and_grants_tenant_admin() {
+    async fn create_tenant_adds_creator_as_bootstrap_guest_admin() {
         let h = harness();
-        let created = h
+        let actor = Uuid::new_v4();
+        let tenant = h
             .svc
             .create_tenant(
                 root(),
                 CreateTenantCommand {
                     name: "  Acme  ".to_string(),
-                    admin_email: "admin@acme.example.com".to_string(),
                 },
-                Uuid::new_v4(),
+                actor,
                 &ctx(),
             )
             .await
             .expect("created");
 
-        assert_eq!(created.tenant.name, "Acme");
-        assert_eq!(created.tenant.parent_tenant_id, Some(root().tenant_id()));
-        assert!(created.generated_password.len() >= 32);
-        // 新テナント scope で idp.tenant.admin が付与される。
+        assert_eq!(tenant.name, "Acme");
+        assert_eq!(tenant.parent_tenant_id, Some(root().tenant_id()));
+        // 新テナント scope で作成者へ idp.tenant.admin が付与される。
         let granted = h.provisioning.granted.lock().unwrap().clone();
         assert_eq!(
             granted,
-            vec![(
-                created.tenant.id,
-                created.admin_user_id,
-                "idp.tenant.admin".to_string()
-            )]
+            vec![(tenant.id, actor, "idp.tenant.admin".to_string())]
         );
-        // 管理者の HOME メンバーシップが同一 unit of work に含まれる。
+        // 作成者の ACTIVE GUEST メンバーシップが同一 unit of work に含まれる。
         let memberships = h.provisioning.memberships.lock().unwrap();
         assert_eq!(memberships.len(), 1);
-        assert!(memberships[0].is_home());
-        assert_eq!(memberships[0].tenant_id, created.tenant.id);
-        assert_eq!(memberships[0].user_id, created.admin_user_id);
-        // 監査に tenant.created + user.created が記録され、生成パスワードは漏れない。
+        assert_eq!(memberships[0].membership_type, MembershipType::Guest);
+        assert_eq!(memberships[0].status, MembershipStatus::Active);
+        assert_eq!(memberships[0].tenant_id, tenant.id);
+        assert_eq!(memberships[0].user_id, actor);
+        // 監査に tenant.created が記録され、初期管理者ユーザーは作られない（user.created は無し）。
         let events = h.sink.events.lock().unwrap();
         assert!(events
             .iter()
             .any(|e| e.event_type == AuditEventType::TenantCreated));
         assert!(events
             .iter()
-            .any(|e| e.event_type == AuditEventType::UserCreated));
-        assert!(events.iter().all(|e| e
-            .reason
-            .as_deref()
-            .map(|r| !r.contains(&created.generated_password))
-            .unwrap_or(true)));
+            .all(|e| e.event_type != AuditEventType::UserCreated));
     }
 
     #[tokio::test]
@@ -730,7 +551,6 @@ mod tests {
                 root(),
                 CreateTenantCommand {
                     name: "Acme".to_string(),
-                    admin_email: "admin@acme.example.com".to_string(),
                 },
                 Uuid::new_v4(),
                 &ctx(),
@@ -741,7 +561,7 @@ mod tests {
         assert!(h.tenants.rows.lock().unwrap().is_empty());
         assert!(h.provisioning.memberships.lock().unwrap().is_empty());
         assert!(h.provisioning.granted.lock().unwrap().is_empty());
-        // 成功監査（tenant.created / user.created）も記録されない。
+        // 成功監査（tenant.created）も記録されない。
         assert!(h.sink.events.lock().unwrap().is_empty());
     }
 
@@ -754,7 +574,6 @@ mod tests {
                     root(),
                     CreateTenantCommand {
                         name: "   ".to_string(),
-                        admin_email: "a@b.example.com".to_string(),
                     },
                     Uuid::new_v4(),
                     &ctx()
@@ -762,27 +581,6 @@ mod tests {
                 .await,
             Err(TenantManagementError::Validation(_))
         ));
-    }
-
-    #[tokio::test]
-    async fn create_tenant_rejects_invalid_admin_email_without_creating_tenant() {
-        let h = harness();
-        assert!(matches!(
-            h.svc
-                .create_tenant(
-                    root(),
-                    CreateTenantCommand {
-                        name: "Acme".to_string(),
-                        admin_email: "not-an-email".to_string(),
-                    },
-                    Uuid::new_v4(),
-                    &ctx()
-                )
-                .await,
-            Err(TenantManagementError::Validation(_))
-        ));
-        // 孤立テナントが作られていないこと（メール検証は作成前）。
-        assert!(h.tenants.rows.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -794,14 +592,13 @@ mod tests {
                 root(),
                 CreateTenantCommand {
                     name: "Child".to_string(),
-                    admin_email: "a@child.example.com".to_string(),
                 },
                 Uuid::new_v4(),
                 &ctx(),
             )
             .await
             .unwrap();
-        let child_id = created.tenant.id;
+        let child_id = created.id;
 
         // 別テナントからは見えない（NotFound）。
         let other = TenantContext::new(TenantId::from(Uuid::from_u128(0xBBBB)));
@@ -857,7 +654,6 @@ mod tests {
                 root(),
                 CreateTenantCommand {
                     name: "Parent".to_string(),
-                    admin_email: "a@parent.example.com".to_string(),
                 },
                 Uuid::new_v4(),
                 &ctx(),
@@ -867,10 +663,9 @@ mod tests {
         // parent の下に孫を作る（parent を requesting として）。
         h.svc
             .create_tenant(
-                TenantContext::new(parent.tenant.id),
+                TenantContext::new(parent.id),
                 CreateTenantCommand {
                     name: "Grandchild".to_string(),
-                    admin_email: "a@grand.example.com".to_string(),
                 },
                 Uuid::new_v4(),
                 &ctx(),
@@ -880,7 +675,7 @@ mod tests {
 
         assert!(matches!(
             h.svc
-                .delete_tenant(root(), parent.tenant.id, Uuid::new_v4(), &ctx())
+                .delete_tenant(root(), parent.id, Uuid::new_v4(), &ctx())
                 .await,
             Err(TenantManagementError::Conflict(_))
         ));

@@ -271,13 +271,12 @@ pub struct GenerateSigningKeyRequest {
 // --- テナント管理（ADR-0009 §5・§6。`idp.system.admin` 必須） --------------------------------
 
 /// 子テナント作成リクエスト（`POST /{tenant_id}/admin/tenants`）。`id`（UUID）はシステムが自動採番する。
+/// 作成者自身が新テナントのブートストラップ管理者（ACTIVE GUEST + `idp.tenant.admin`）になるため、
+/// 初期管理者メールは受け取らない（ADR-0009 §4）。
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateTenantRequest {
     /// テナント表示名。一意制約なし・URL には使わない。
     pub name: String,
-    /// 初期管理者のメールアドレス。新テナントを所属元とし新テナント scope の `idp.tenant.admin` を
-    /// 付与した管理者ユーザーを生成する。パスワードは自動生成し `generated_password` で一度だけ返す。
-    pub admin_email: String,
 }
 
 /// 子テナント部分更新リクエスト（`PATCH /{tenant_id}/admin/tenants/{child_id}`）。
@@ -304,18 +303,6 @@ pub struct TenantResponse {
     pub self_registration_enabled: bool,
     pub created_at: String,
     pub updated_at: String,
-}
-
-/// テナント作成レスポンス。`generated_password` は初期管理者の自動生成パスワードで、**この応答でのみ**
-/// 平文で返る（ログ・監査には出さない。ADR-0009 §5）。
-#[derive(Debug, Serialize, ToSchema)]
-pub struct TenantCreatedResponse {
-    #[serde(flatten)]
-    pub tenant: TenantResponse,
-    /// 生成された初期管理者ユーザーの内部 ID（UUID）。
-    pub admin_user_id: String,
-    /// 初期管理者の自動生成パスワード（平文。一度限り）。
-    pub generated_password: String,
 }
 
 /// 設定画面の自テナント表示名更新リクエスト（`PATCH /{tenant_id}/admin/settings/tenant`。MT14）。

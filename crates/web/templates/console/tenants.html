@@ -26,10 +26,7 @@
             <label class="form-label" for="tenant-create-name">{{ messages.get("admin-tenants-name") }}</label>
             <input class="form-control" id="tenant-create-name" name="name" autocomplete="off" required autofocus>
           </div>
-          <div class="mb-3">
-            <label class="form-label" for="tenant-create-admin-email">{{ messages.get("admin-tenants-admin-email") }}</label>
-            <input type="email" class="form-control" id="tenant-create-admin-email" name="admin_email" autocomplete="off" required>
-          </div>
+          <p class="text-muted small">{{ messages.get("admin-tenants-bootstrap-hint") }}</p>
           <div class="d-flex gap-2">
             <button type="submit" class="btn btn-primary"><i class="fa-solid fa-plus me-2" aria-hidden="true"></i>{{ messages.get("admin-tenants-create") }}</button>
             <button type="button" class="btn btn-outline-secondary" data-bs-toggle="collapse" data-bs-target="#tenant-create-panel">{{ messages.get("admin-tenants-add-close") }}</button>

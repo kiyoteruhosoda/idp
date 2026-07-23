@@ -415,12 +415,12 @@ impl AppState {
             audit.clone(),
             clock.clone(),
         ));
-        // テナント作成・管理（ADR-0009 §5・§6）。初期管理者の構築は users_admin へ委譲し、テナント・
-        // 管理者・メンバーシップ・権限付与は単一トランザクションで永続化する（unit of work。REF2）。
-        // 付与は判定キャッシュを経由しないが、新規生成 ID のため該当キーがキャッシュに載っていることはない。
+        // テナント作成・管理（ADR-0009 §4・§6）。作成者を新テナントのブートストラップ管理者
+        // （ACTIVE GUEST + idp.tenant.admin）として登録し、テナント・メンバーシップ・権限付与は
+        // 単一トランザクションで永続化する（unit of work。REF2）。付与は判定キャッシュを経由しないが、
+        // 新規生成テナント ID のため該当キーがキャッシュに載っていることはない。
         let tenants_admin = Arc::new(TenantManagementService::new(
             tenants.clone(),
-            users_admin.clone(),
             Arc::new(SqlxTenantProvisioningRepository::new(pool.clone())),
             audit.clone(),
             clock.clone(),

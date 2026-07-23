@@ -1,9 +1,11 @@
-//! テナント作成・管理エンドポイント（`/{tenant_id}/admin/tenants`。ADR-0009 §5・§6）。
+//! テナント作成・管理エンドポイント（`/{tenant_id}/admin/tenants`。ADR-0009 §4・§6）。
 //!
 //! すべて `idp.system.admin` 権限が必要（`RequirePerms<IdpSystemAdmin>`）。`idp.system.admin` は root
 //! scope でしか存在できないため、実質的にテナントを作成・削除できるのは root テナントの system 管理者
-//! だけになる（§4）。作成時は初期管理者ユーザーを自動生成し、`generated_password` を**その応答でのみ**
-//! 平文で返す（ログ・監査には出さない）。判定は Application 層（`TenantManagementService`）が行う。
+//! だけになる（§4）。作成時は**作成者自身**を新テナントのブートストラップ管理者（ACTIVE GUEST +
+//! `idp.tenant.admin`）として登録する（平文パスワードは返さない）。判定は Application 層
+//! （`TenantManagementService`）が行う。なお、子テナント管理者のパスワード再発行
+//! （`admin-password-reset`）は、作成後に登録された利用者をメールアドレスで対象に残置する。
 
 use crate::application::tenant_management::{
     CreateTenantCommand, TenantManagementError, UpdateTenantCommand,
@@ -15,8 +17,8 @@ use crate::domain::values::TenantStatus;
 use crate::presentation::admin::{IdpAdmin, IdpSystemAdmin, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
-    CreateTenantRequest, TenantAdminPasswordResetRequest, TenantCreatedResponse, TenantResponse,
-    UpdateTenantRequest, UpdateTenantSettingsRequest, UserPasswordResetResponse,
+    CreateTenantRequest, TenantAdminPasswordResetRequest, TenantResponse, UpdateTenantRequest,
+    UpdateTenantSettingsRequest, UserPasswordResetResponse,
 };
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
@@ -51,18 +53,20 @@ pub async fn list_tenants(
     Ok(Json(children.iter().map(tenant_response).collect()))
 }
 
-/// 子テナントを作成する。初期管理者ユーザーを自動生成し、`generated_password` を平文で一度だけ返す。
+/// 子テナントを作成する。作成者自身が新テナントのブートストラップ管理者（ACTIVE GUEST +
+/// `idp.tenant.admin`）になる（ADR-0009 §4）。作成者は以後、正式な管理者を登録・付与してから自身を
+/// 解除して離脱する。
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/tenants",
     tag = "admin",
     request_body = CreateTenantRequest,
     responses(
-        (status = 201, description = "作成成功（generated_password を含む）", body = TenantCreatedResponse),
+        (status = 201, description = "作成成功（作成したテナント）", body = TenantResponse),
         (status = 400, description = "バリデーションエラー"),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.system.admin 必須）"),
-        (status = 409, description = "初期管理者メールの重複等"),
+        (status = 409, description = "テナント作成の一意制約違反等"),
     )
 )]
 pub async fn create_tenant(
@@ -72,7 +76,7 @@ pub async fn create_tenant(
     Extension(tenant): Extension<ResolvedTenant>,
     headers: HeaderMap,
     Json(body): Json<CreateTenantRequest>,
-) -> Result<(StatusCode, Json<TenantCreatedResponse>), ApiError> {
+) -> Result<(StatusCode, Json<TenantResponse>), ApiError> {
     let ctx = request_context(
         &headers,
         &correlation,
@@ -82,23 +86,13 @@ pub async fn create_tenant(
         .tenants_admin
         .create_tenant(
             tenant.context(),
-            CreateTenantCommand {
-                name: body.name,
-                admin_email: body.admin_email,
-            },
+            CreateTenantCommand { name: body.name },
             admin.user_id,
             &ctx,
         )
         .await
         .map_err(map_error)?;
-    Ok((
-        StatusCode::CREATED,
-        Json(TenantCreatedResponse {
-            tenant: tenant_response(&created.tenant),
-            admin_user_id: created.admin_user_id.to_string(),
-            generated_password: created.generated_password,
-        }),
-    ))
+    Ok((StatusCode::CREATED, Json(tenant_response(&created))))
 }
 
 /// 直下の子テナント 1 件を取得する。

@@ -112,10 +112,10 @@ pub struct SettingsQuery {
 }
 
 /// テナント登録フォーム（`POST /{tenant_id}/admin/tenants`。root / `idp.system.admin` 専用）。
+/// 作成者自身が新テナントのブートストラップ管理者になるため初期管理者メールは受け取らない（ADR-0009 §4）。
 #[derive(Debug, Deserialize)]
 pub struct AdminTenantCreateForm {
     pub name: String,
-    pub admin_email: String,
     pub csrf_token: String,
 }
 

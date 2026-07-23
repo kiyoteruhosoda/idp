@@ -9,8 +9,20 @@
 </div>
 <p class="text-muted">{{ messages.get("admin-members-intro") }}</p>
 {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
+<form method="get" action="{{ tenant }}/admin/members" class="mb-3" role="search">
+  <div class="input-group" style="max-width: 28rem;">
+    <span class="input-group-text"><i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i></span>
+    <input type="search" class="form-control" name="q" value="{{ query }}" placeholder="{{ messages.get("admin-members-search-placeholder") }}" aria-label="{{ messages.get("admin-members-search-label") }}">
+    <button type="submit" class="btn btn-outline-secondary">{{ messages.get("admin-members-search-button") }}</button>
+    {% if !query.is_empty() %}<a class="btn btn-outline-secondary" href="{{ tenant }}/admin/members">{{ messages.get("admin-members-search-clear") }}</a>{% endif %}
+  </div>
+</form>
 {% if members.is_empty() %}
+{% if query.is_empty() %}
 <p class="text-muted">{{ messages.get("admin-members-none") }}</p>
+{% else %}
+<p class="text-muted">{{ messages.get("admin-members-search-none") }}</p>
+{% endif %}
 {% else %}
 <div class="table-responsive">
   <table class="table table-hover align-middle">

@@ -219,19 +219,6 @@ pub struct ClientStatus<'a> {
     pub views: &'a [ClientStatusResponse],
 }
 
-/// 利用者検索画面（`GET /{tenant_id}/admin/users`）。`user` が該当利用者、`not_found` は検索したが
-/// 見つからなかったことを表す（未検索時は両方 `None`/`false`）。
-#[derive(Template)]
-#[template(path = "console/users_search.html")]
-pub struct UsersSearch<'a> {
-    pub messages: &'a Messages,
-    pub tenant: &'a str,
-    pub admin: Admin<'a>,
-    pub term: &'a str,
-    pub user: Option<&'a UserSummaryResponse>,
-    pub not_found: bool,
-}
-
 /// 利用者の権限画面（`GET /{tenant_id}/admin/users/{id}/permissions`）。
 #[derive(Template)]
 #[template(path = "console/users_permissions.html")]
@@ -279,6 +266,8 @@ pub struct MembersList<'a> {
     pub tenant: &'a str,
     pub admin: Admin<'a>,
     pub members: &'a [crate::admin_dto::MemberView],
+    /// 現在の絞り込み語（検索ボックスの再表示用。空なら未絞り込み）。
+    pub query: &'a str,
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
 }
