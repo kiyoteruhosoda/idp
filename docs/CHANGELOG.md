@@ -1,3 +1,10 @@
+## 2026-07-23（build-remote-container.sh の起動ログを読みやすく）
+
+- **起動時に配置環境（stg/prod 等）とモードを見やすく表示するようにした**: START ヘッダを罫線で囲み、
+  ターゲットディレクトリ名から分類した**環境（`stg`/`prod`/その他はディレクトリ名）とモード（`app`/`migrate`/`reset`）**を
+  冒頭で明示する。ログ接頭辞を `[idp:build-remote-container]` から **`[idp:container]`** へ短縮して読みやすくした
+  （git 版 `[idp:build-remote]` と区別）。環境分類は初回の既定イメージタグ決定ロジックと共通化した（重複排除）。
+
 ## 2026-07-23（build-remote-container.sh の自己更新）
 
 - **`build-remote-container.sh` が古ければ実行のたびに最新版へ自動更新するようにした**: このスクリプトは
