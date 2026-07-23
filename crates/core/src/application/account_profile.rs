@@ -6,6 +6,7 @@
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::repositories::{SsoSessionRepository, UserRepository};
+use crate::domain::user::User;
 use crate::domain::values::validate_display_name;
 use std::sync::Arc;
 
@@ -58,20 +59,14 @@ impl AccountProfileService {
 
     /// 現在のプロフィール（表示名・ログイン識別子・メール）を取得する。
     pub async fn get(&self, sso_session_id: &str) -> ProfileOutcome {
-        let user_id = match self.resolve_user(sso_session_id).await {
-            Ok(Some(id)) => id,
-            Ok(None) => return ProfileOutcome::SessionExpired,
-            Err(e) => return ProfileOutcome::Internal(e),
-        };
-        match self.users.find_by_id(user_id).await {
+        match self.resolve_active_user(sso_session_id).await {
             Ok(Some(user)) => ProfileOutcome::Ok {
                 name: user.name,
                 preferred_username: user.preferred_username,
                 email: user.email,
             },
-            // セッションは有効なのにユーザーが消えている＝直近で無効化された等。未ログイン扱い。
             Ok(None) => ProfileOutcome::SessionExpired,
-            Err(e) => ProfileOutcome::Internal(e.to_string()),
+            Err(e) => ProfileOutcome::Internal(e),
         }
     }
 
@@ -91,24 +86,32 @@ impl AccountProfileService {
             }
         }
 
-        let user_id = match self.resolve_user(&cmd.sso_session_id).await {
-            Ok(Some(id)) => id,
+        let user = match self.resolve_active_user(&cmd.sso_session_id).await {
+            Ok(Some(user)) => user,
             Ok(None) => return UpdateNameOutcome::SessionExpired,
             Err(e) => return UpdateNameOutcome::Internal(e),
         };
 
-        if let Err(e) = self.users.update_name(user_id, normalized.as_deref()).await {
+        if let Err(e) = self.users.update_name(user.id, normalized.as_deref()).await {
             return UpdateNameOutcome::Internal(e.to_string());
         }
         UpdateNameOutcome::Ok
     }
 
-    /// SSO セッションから本人（`user_id`）を解決する。`Ok(None)` はセッション無効。
-    async fn resolve_user(&self, sso_session_id: &str) -> Result<Option<uuid::Uuid>, String> {
+    /// SSO セッションから本人を解決し、**有効なユーザー行**を返す。セッション無効・ユーザー不在・
+    /// 無効化済み（LOCKED/DISABLED）はいずれも `Ok(None)`（未ログイン扱い）。他の認証済み経路
+    /// （`AdminAccessService` / `AccountPasswordService`）と同様に `is_active()` を必須とし、
+    /// セッションが残存する無効アカウントによる操作を防ぐ。
+    async fn resolve_active_user(&self, sso_session_id: &str) -> Result<Option<User>, String> {
         let now = self.clock.now();
         let session_hash = crypto::sha256_hex(sso_session_id);
-        match self.sso_sessions.find_by_hash(&session_hash).await {
-            Ok(Some(s)) if s.is_valid_at(now) => Ok(Some(s.user_id)),
+        let user_id = match self.sso_sessions.find_by_hash(&session_hash).await {
+            Ok(Some(s)) if s.is_valid_at(now) => s.user_id,
+            Ok(_) => return Ok(None),
+            Err(e) => return Err(e.to_string()),
+        };
+        match self.users.find_by_id(user_id).await {
+            Ok(Some(user)) if user.is_active() => Ok(Some(user)),
             Ok(_) => Ok(None),
             Err(e) => Err(e.to_string()),
         }

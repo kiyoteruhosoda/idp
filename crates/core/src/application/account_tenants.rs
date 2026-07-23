@@ -65,16 +65,18 @@ impl AccountTenantsService {
         };
 
         // 各メンバーシップのテナント表示名を解決する（所属数は小さく N+1 は問題にならない）。
-        // テナント行が見つからないメンバーシップ（削除競合等）はスキップする。
+        // テナント行が見つからないメンバーシップ（削除競合等）や、`DISABLED` なテナントはスキップする。
+        // 無効テナントは `TenantResolutionService::resolve` が拒否する（遷移先が常に 404 になる）ため、
+        // 切り替え候補に出さない。
         let mut result = Vec::with_capacity(memberships.len());
         for m in memberships {
             match self.tenants.find_by_id(m.tenant_id).await {
-                Ok(Some(tenant)) => result.push(AccountTenant {
+                Ok(Some(tenant)) if tenant.is_active() => result.push(AccountTenant {
                     tenant_id: tenant.id.to_string(),
                     name: tenant.name,
                     membership_type: m.membership_type.as_str().to_string(),
                 }),
-                Ok(None) => continue,
+                Ok(_) => continue,
                 Err(e) => return ListTenantsOutcome::Internal(e.to_string()),
             }
         }
