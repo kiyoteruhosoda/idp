@@ -1,3 +1,14 @@
+## 2026-07-23（build-remote-container.sh の自己更新）
+
+- **`build-remote-container.sh` が古ければ実行のたびに最新版へ自動更新するようにした**: このスクリプトは
+  `dist/` に含まれない手置きブートストラップのため `git pull` では更新されず、機能追加（例:
+  `build-remote-container.env` の読み込み）が反映されないまま `IDP_DIST_DIR` 未設定エラーで停止する事故があった。
+  BUILD ステップを SYNC（`git pull` のみ）→ SELF-UPDATE → BUILD（`build.sh`）へ分割し、SYNC 直後に dev
+  コンテナ内の最新 `build-remote-container.sh` と byte 比較して、異なれば最新版へ自分自身を差し替え同じ引数で
+  自動再実行する（同一ディレクトリ内 rename でアトミック差し替え、`IDP_SELF_UPDATED` で再実行 1 回に限定）。
+  `build-remote-container.env`（サイト固有設定）は対象外。自動更新が働くのは既に self-update 対応版が
+  置かれている場合で、未対応の古い版は一度だけ手動差し替えが必要（以後は自動）。
+
 ## 2026-07-23（アセット URL のキャッシュバスティング）
 
 - **アセット URL に `?v={バージョン}` を付与し、デプロイ後も旧 CSS/JS が配られる問題を修正**: `app.css` 等は

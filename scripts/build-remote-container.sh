@@ -5,10 +5,17 @@
 # 生成された dist/ をコンテナのワークスペース（ホストから見えるパス）からデプロイ先へ取り込み、
 # 同梱の deploy.sh を実行する。**デプロイ先に git は不要**（build-remote.sh の git 版が使えない環境向け）。
 #
-# 3 ステップを 1 本で実行する（旧来の別 pick.sh は本スクリプトへ統合済み）:
-#   BUILD  … dev コンテナ内で git pull → scripts/build.sh（dist/ を生成）
+# 4 ステップを 1 本で実行する（旧来の別 pick.sh は本スクリプトへ統合済み）:
+#   SYNC   … dev コンテナ内で git pull（最新ソース取得）
+#   BUILD  … dev コンテナ内で scripts/build.sh（dist/ を生成）
 #   PICK   … ビルド済み dist/ をデプロイ先へ取り込み
 #   DEPLOY … 取り込んだ deploy.sh を実行
+#
+# 自己更新（self-update）: このスクリプト自身は dist/ に含まれない手置きブートストラップのため、
+# git pull では更新されない。そこで SYNC 後に dev コンテナ内の最新 build-remote-container.sh と
+# byte 比較し、異なれば最新版へ自分自身を差し替えて同じ引数で自動再実行する（初回に限らず毎回）。
+# ※ この自動更新が働くのは「本スクリプトが既に self-update 対応版であること」が前提。まだ未対応の
+#   古い版がデプロイ先にある場合は、一度だけ手動で最新版へ差し替える必要がある（以後は自動）。
 #
 # 使い方（デプロイ先で。モードはどの引数位置でも拾う。既定 migrate）:
 #   ./build-remote-container.sh            # migrate
@@ -136,14 +143,48 @@ image_prefix="${IMAGE_PREFIX:-$(read_env_value IMAGE_PREFIX)}"
 image_tag="${image_tag:-$(image_tag_from_target_dir)}"
 image_prefix="${image_prefix:-idp}"
 
-# --- BUILD（dev コンテナ内で git pull → build.sh） ------------------------------
+# --- SYNC（dev コンテナ内で git pull だけ先に行う。build.sh はまだ走らせない） -------
+# self-update（下記）より前に最新ソースを取得しておくことで、この後で最新の
+# build-remote-container.sh を dev コンテナから取り出して自分自身と比較できるようにする。
+log "SYNC   dev コンテナ '$dev_container' で git pull します（$dev_workdir）..."
+docker exec -u "$dev_user" "$dev_container" bash -lc "
+  set -e
+  cd '$dev_workdir'
+  git pull --ff-only
+" || die "dev コンテナ内での git pull に失敗しました。"
+
+# --- SELF-UPDATE（このスクリプト自身が古ければ最新版へ差し替えて再実行。初回に限らず毎回） ---
+# デプロイ先の build-remote-container.sh は dist/ に含まれない「手置きブートストラップ」なので
+# git pull しても自動更新されない。ここで dev コンテナ内の最新版と byte 単位で比較し、異なれば
+# 最新版で自分自身を置き換えて同じ引数で再実行する。IDP_SELF_UPDATED で再実行は 1 回に限定し
+# 無限ループを防ぐ（再実行後の git pull は no-op・self-update はスキップし、そのまま BUILD へ進む）。
+if [[ "${IDP_SELF_UPDATED:-0}" != "1" ]]; then
+  _self_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+  if _self_tmp="$(mktemp "$(dirname "$_self_path")/.build-remote-container.XXXXXX" 2>/dev/null)"; then
+    if docker exec -u "$dev_user" "$dev_container" \
+          bash -lc "cat '$dev_workdir/scripts/build-remote-container.sh'" >"$_self_tmp" 2>/dev/null \
+        && [[ -s "$_self_tmp" ]] && ! cmp -s "$_self_tmp" "$_self_path"; then
+      log "SELF-UPDATE  build-remote-container.sh が更新されています。最新版へ差し替えて再実行します。"
+      chmod +x "$_self_tmp"
+      # 同一ディレクトリ内 rename でアトミックに差し替える（実行中プロセスの fd は旧 inode を保持し、
+      # 直後の exec がパス経由で新 inode を開き直すため、実行中スクリプトの破損を避けられる）。
+      mv -f "$_self_tmp" "$_self_path"
+      export IDP_SELF_UPDATED=1
+      exec "$_self_path" "$@"
+    fi
+    rm -f "$_self_tmp"
+  else
+    log "SELF-UPDATE  一時ファイルを作成できないためスキップします（$_self_path のディレクトリ書込権限を確認）。"
+  fi
+fi
+
+# --- BUILD（dev コンテナ内で build.sh。git pull は SYNC 済み） ---------------------
 log "BUILD  dev コンテナ '$dev_container' でビルドします（$dev_workdir, image=${image_prefix}/*:${image_tag}）..."
 docker exec \
   -e IMAGE_TAG="$image_tag" -e IMAGE_PREFIX="$image_prefix" \
   -u "$dev_user" "$dev_container" bash -lc "
   set -e
   cd '$dev_workdir'
-  git pull --ff-only
   ./scripts/build.sh
 " || die "コンテナ内ビルドに失敗しました。"
 

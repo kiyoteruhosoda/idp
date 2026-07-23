@@ -390,6 +390,18 @@ cd /volume1/docker/idp/stg
 `.env.example` に増えた**設定キーだけ**は `deploy.sh` が既存 `.env` へ自動追記する（既存値・秘密は
 不変。`COMPOSE_PROJECT_NAME` は volume 保護のため対象外）。個別の値を変えたいときは `.env` を手編集する。
 
+**`build-remote-container.sh` 自身の自動更新**: このスクリプトは `dist/` に含まれない手置き
+ブートストラップのため、`git pull` では更新されない。そこで実行のたびに、SYNC（コンテナ内 `git pull`）
+の直後に dev コンテナ内の最新版と byte 比較し、**古ければ最新版へ自分自身を差し替えて自動再実行する**
+（初回に限らず毎回。`build-remote-container.env` は対象外で、手元の設定はそのまま保持される）。
+そのため、通常はデプロイ先の `build-remote-container.sh` を手動で更新する必要はない。
+
+> ただし自動更新が働くのは、デプロイ先の `build-remote-container.sh` が**既に self-update 対応版**の
+> 場合に限る。まだ未対応の古い版が置かれている環境（例: `build-remote-container.env` を読み込まず
+> `IDP_DIST_DIR` 未設定エラーで即停止する版）では、**一度だけ**リポジトリの
+> `scripts/build-remote-container.sh` を手動でコピーして置き換える（上の「初回だけの手順」1. と同じ操作）。
+> 以後の更新は自動化される。
+
 ## マイグレーションだけを適用したいとき（デプロイ先）
 
 ```sh
