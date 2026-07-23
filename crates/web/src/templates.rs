@@ -37,6 +37,77 @@ pub fn footer_version() -> String {
     }
 }
 
+/// アセット URL に付与するキャッシュバスティング用バージョン（`/assets/app.css?v=...`）。
+///
+/// アセットはバイナリ同梱でデプロイ単位でしか変わらないが、URL が安定だと中間キャッシュ
+/// （CDN・ブラウザ）の TTL が尽きるまで旧アセットが配られ続ける（実際に Cloudflare が
+/// origin の `max-age=0` を上書きして 4 時間キャッシュさせる）。デプロイごとに URL 自体を
+/// 変えることで、キャッシュ TTL に依存せず必ず新しいアセットを取得させる。
+/// クエリ値として安全な文字（英数・`.` `-` `_`）以外は `-` へ置換する。
+pub fn asset_version() -> &'static str {
+    static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    VERSION.get_or_init(|| {
+        let git = BuildTimeVersionInfoProvider::new(app_version())
+            .version_info()
+            .git_version;
+        let raw = if git.is_empty() || git == "unknown" {
+            app_version().to_string()
+        } else {
+            format!("{}-{git}", app_version())
+        };
+        raw.chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect()
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::i18n::{Locale, Messages};
+
+    #[test]
+    fn asset_version_is_url_safe_and_non_empty() {
+        let v = asset_version();
+        assert!(!v.is_empty());
+        assert!(v
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')));
+    }
+
+    /// アセット参照はデプロイごとに URL が変わるよう `?v={asset_version}` を必ず付ける
+    /// （中間キャッシュ（CDN・ブラウザ）が旧 CSS/JS を配り続けるのを防ぐ）。
+    #[test]
+    fn rendered_pages_reference_versioned_asset_urls() {
+        let messages = Messages::new(Locale::Ja);
+        let console = render(&ConsoleHome {
+            messages: &messages,
+            tenant: "/t",
+            admin: None,
+            tenant_name: None,
+        });
+        let auth = render(&ConsoleLogin {
+            messages: &messages,
+            csrf: "csrf",
+            error_key: None,
+        });
+        let v = asset_version();
+        for html in [&console, &auth] {
+            assert!(html.contains(&format!("/assets/app.css?v={v}")));
+            assert!(html.contains(&format!("/assets/vendor/bootstrap.min.css?v={v}")));
+            assert!(html.contains(&format!("/assets/vendor/bootstrap.bundle.min.js?v={v}")));
+            assert!(html.contains(&format!("/assets/react/app.js?v={v}")));
+            assert!(!html.contains("/assets/app.css\""));
+        }
+    }
+}
+
 /// テンプレートを描画して HTML 文字列を返す。描画エラー（実質 fmt エラーのみ）は握りつぶさず
 /// ログに残し、最小限のエラーページへフォールバックする（フェイルソフト）。
 pub fn render<T: Template>(template: &T) -> String {

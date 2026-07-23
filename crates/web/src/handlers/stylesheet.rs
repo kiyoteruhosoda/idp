@@ -14,8 +14,10 @@ pub async fn app_css() -> impl IntoResponse {
     (
         [
             (CONTENT_TYPE, "text/css; charset=utf-8"),
-            // テンプレートが安定 URL を直接参照する。デプロイ後に更新を拾えるよう revalidate させる。
-            (CACHE_CONTROL, "public, max-age=0, must-revalidate"),
+            // テンプレートは `?v={asset_version}` 付き URL で参照し、デプロイごとに URL 自体が
+            // 変わる（キャッシュバスティング）。そのため長期キャッシュしてよい。
+            // revalidate 方式は中間 CDN（Cloudflare）が max-age を上書きするため機能しない。
+            (CACHE_CONTROL, "public, max-age=31536000, immutable"),
         ],
         APP_CSS,
     )
