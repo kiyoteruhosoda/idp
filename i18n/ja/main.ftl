@@ -1,6 +1,6 @@
 # ログイン画面の文言（キーは en/main.ftl と共通。日本語訳は手動で追記する）。
 login-title = サインイン
-login-username = ユーザー名またはメールアドレス
+login-username = ユーザー名
 login-password = パスワード
 login-forgot-password = パスワードをお忘れですか？
 login-submit = サインイン
@@ -505,3 +505,7 @@ admin-saml-client-delete = 削除
 admin-saml-client-delete-confirm = この SAML クライアントを削除しますか？この操作は取り消せません。
 admin-saml-client-deleted = SAML クライアントを削除しました。
 admin-saml-client-error-import = SP メタデータを解析できませんでした。SP の EntityDescriptor XML であることを確認してください。
+
+# ルート（テナント未指定）ランディング。特定テナントの UUID を露出しないための汎用案内。
+root-landing-title = テナントを指定してください
+root-landing-message = このページにアクセスするにはテナント別の URL が必要です。管理者から案内されたログイン URL をご利用ください。

@@ -135,12 +135,12 @@ acsrf="$(printf '%s' "$login_html" | grep -oE '[a-f0-9]{64}' | head -1)"
 admin_login_body="$(mktemp)"
 admin_loc="$(curl -fsS -b "$AJAR" -c "$AJAR" -o "$admin_login_body" -w '%{redirect_url}' -X POST "${WEB}/${ROOT}/admin/login" \
   -H 'content-type: application/x-www-form-urlencoded' \
-  --data-urlencode "username=admin" --data-urlencode "password=admin@example.com" --data-urlencode "csrf_token=${acsrf}")"
+  --data-urlencode "username=admin@example.com" --data-urlencode "password=admin@example.com" --data-urlencode "csrf_token=${acsrf}")"
 if [[ -z "$admin_loc" ]] && grep -q 'admin/password-change' "$admin_login_body"; then
   pcsrf_admin="$(grep -oE 'name="csrf_token" value="[a-f0-9]{64}"' "$admin_login_body" | grep -oE '[a-f0-9]{64}' | head -1)"
   admin_loc="$(curl -fsS -b "$AJAR" -c "$AJAR" -o /dev/null -w '%{redirect_url}' -X POST "${WEB}/${ROOT}/admin/password-change" \
     -H 'content-type: application/x-www-form-urlencoded' \
-    --data-urlencode "username=admin" --data-urlencode "current_password=admin@example.com" \
+    --data-urlencode "username=admin@example.com" --data-urlencode "current_password=admin@example.com" \
     --data-urlencode "new_password=ChangeMe!1234" --data-urlencode "new_password_confirm=ChangeMe!1234" \
     --data-urlencode "csrf_token=${pcsrf_admin}")"
 fi

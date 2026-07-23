@@ -38,6 +38,11 @@ sqlx マイグレーション（MariaDB）を管理する。
 - `0012_rename_root_tenant`: root テナントの既定表示名を `Root` から `ROOT` へ更新する（0002 の seed
   既定 `Root` のままの行に限定。運用者が別名へ変更した行は上書きしない）。追記型のため 0002 は
   書き換えず、本マイグレーションで更新する。
+- `0013_admin_username_email`: 初期管理者 `admin@example.com` のログイン識別子（`preferred_username`）を、
+  メールアドレスと同じ `admin@example.com` へ更新する（0002 の seed 既定 `admin` のままの行に限定。
+  運用者が別名へ変更した行は上書きしない）。ログインは email ではなく `preferred_username` で照合する
+  （ADR-0009 §8）ため、初期案内どおり `admin@example.com` でログインできるようにする。追記型のため
+  0002 は書き換えず、本マイグレーションで更新する。
 
 root テナントの UUID は環境ごとに異なる。確認手順は `docs/OPERATIONS.md`
 「root テナントの UUID を確認したいとき」を参照。

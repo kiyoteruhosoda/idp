@@ -1,6 +1,6 @@
 # Login screen messages (English is the source of truth; keys are shared across locales).
 login-title = Sign in
-login-username = Username or email
+login-username = Username
 login-password = Password
 login-forgot-password = Forgot your password?
 login-submit = Sign in
@@ -505,3 +505,7 @@ admin-saml-client-updated = SAML client updated.
 admin-saml-client-delete = Delete
 admin-saml-client-delete-confirm = Delete this SAML client? This cannot be undone.
 admin-saml-client-deleted = SAML client deleted.
+
+# Root (no tenant specified) landing. Generic notice that avoids exposing any specific tenant UUID.
+root-landing-title = Tenant required
+root-landing-message = This page requires a tenant-specific URL. Please use the login URL provided by your administrator.

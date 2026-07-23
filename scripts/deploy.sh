@@ -206,7 +206,7 @@ set_env_var() {
 # 既存 .env に、`.env.example` にあって不足している「設定キー」だけを追記する（バージョン更新で
 # 増えたキーへ自動追随）。既存の値は一切書き換えない（秘密・手編集を保全）。次は対象外:
 #   * 秘密情報（example 値が CHANGE-ME）。誤って空/プレースホルダで上書きしないため。
-#   * 値が空のキー（ROOT_TENANT_ID 等。deploy.sh が別途設定する）。
+#   * 値が空のキー（deploy.sh が別途設定する、または任意設定のもの）。
 #   * COMPOSE_PROJECT_NAME（volume 名前空間。誤って別 volume を指すと破損するため既存挙動を維持）。
 merge_missing_env_keys() {
   [[ -f "$example_file" ]] || return 0
@@ -393,17 +393,6 @@ root_tenant_id() {
     -e 'SELECT id FROM tenants WHERE parent_tenant_id IS NULL' 2>/dev/null || true
 }
 
-sync_root_tenant_id_env() {
-  local root
-  root="$(root_tenant_id)"
-  if [[ -n "$root" ]]; then
-    set_env_var ROOT_TENANT_ID "$root"
-    log "ROOT_TENANT_ID を .env に反映しました: $root"
-  else
-    warn "root テナント UUID を取得できませんでした。/ はログイン画面へ誘導できません。"
-  fi
-}
-
 # MariaDB 公式イメージは data volume を「初回初期化時の MARIADB_PASSWORD」で固定し、その後 .env の
 # パスワードを変更しても既存 volume 内の idp ユーザーには反映しない。結果 migrate/api は新パスワードで
 # 接続し「Access denied for user 'idp'」で失敗する。healthcheck は root/socket でサーバ稼働しか見ないため、
@@ -477,7 +466,6 @@ remove_stale_renamed_containers() {
 replace_app_containers() {
   local web_port issuer ready_url root login_url
   log "api・web・proxy を起動します（--force-recreate で全モード必ずアプリコンテナを入れ替え）..."
-  sync_root_tenant_id_env
   remove_stale_renamed_containers
   "${compose[@]}" up -d --force-recreate --remove-orphans "${APP_SERVICES[@]}"
   wait_healthy api
