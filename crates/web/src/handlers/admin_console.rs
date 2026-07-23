@@ -43,11 +43,22 @@ pub async fn home(
         AdminResolution::Ok(user_id) => user_id,
         AdminResolution::Reject(resp) => return resp,
     };
+    // 現在のテナント表示名を api から取得してヘッダに出す（root は既定 `ROOT`）。取得に失敗しても
+    // ホーム自体は描画したいので、名前だけ省いてフェイルソフトする（idp.system.admin は IdpAdmin の
+    // 代替として許可されるため root 管理者でも取得できる。ADR-0009 §4）。
+    let sso = cookies::get(&headers, cookies::SSO_SESSION_COOKIE).unwrap_or_default();
+    let tenant_name = state
+        .api
+        .get_current_tenant(&correlation.0, &tenant.0, &sso)
+        .await
+        .ok()
+        .map(|t| t.name);
     let messages = Messages::new(locale(&headers));
     Html(render(&ConsoleHome {
         messages: &messages,
         tenant: &tenant.prefix(),
         admin: Some(&admin),
+        tenant_name: tenant_name.as_deref(),
     }))
     .into_response()
 }
@@ -496,8 +507,10 @@ mod tests {
             messages: &messages,
             tenant: "/00000000-0000-7000-8000-000000000000",
             admin: Some("user-123"),
+            tenant_name: Some("ROOT"),
         });
         assert!(html.contains("user-123"));
+        assert!(html.contains("ROOT"));
         assert!(html.contains("action=\"/00000000-0000-7000-8000-000000000000/admin/logout\""));
         assert!(html.contains("/00000000-0000-7000-8000-000000000000/admin/clients"));
     }

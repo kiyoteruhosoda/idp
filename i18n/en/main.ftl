@@ -405,6 +405,7 @@ admin-password-reset-result-title = Password reissued
 admin-password-reset-result-subject = Target
 admin-password-reset-result-warning = The new temporary password is shown only once on this screen. Share it through a secure channel. The user must change it at next sign-in.
 admin-home-heading = Administration menu
+admin-home-current-tenant = Current tenant:
 admin-home-groups-label = Administration menu grouped by category
 admin-home-group-operations = Operations and audit
 admin-home-group-operations-desc = Review runtime status and logs.

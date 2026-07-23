@@ -35,6 +35,9 @@ sqlx マイグレーション（MariaDB）を管理する。
 - `0009_default_admin_password`: 初期管理者 `admin@example.com` の既定パスワードを、メールアドレスと
   同じ `admin@example.com` へ更新する（0002 の旧既定 `ChangeMe!123` のままの行に限定。変更済み
   パスワードは上書きしない）。追記型のため 0002 は書き換えず、本マイグレーションで更新する。
+- `0012_rename_root_tenant`: root テナントの既定表示名を `Root` から `ROOT` へ更新する（0002 の seed
+  既定 `Root` のままの行に限定。運用者が別名へ変更した行は上書きしない）。追記型のため 0002 は
+  書き換えず、本マイグレーションで更新する。
 
 root テナントの UUID は環境ごとに異なる。確認手順は `docs/OPERATIONS.md`
 「root テナントの UUID を確認したいとき」を参照。

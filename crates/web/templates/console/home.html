@@ -2,7 +2,11 @@
 {% block content %}
 <div class="mb-4">
   <p class="text-muted text-uppercase fw-bold small mb-1">{{ messages.get("admin-console-title") }}</p>
-  <h1 class="h3 mb-1">{{ messages.get("admin-home-heading") }}</h1>
+  <h1 class="h3 mb-1 d-flex align-items-center gap-2">
+    {{ messages.get("admin-home-heading") }}
+    {% if let Some(name) = tenant_name %}<span class="badge text-bg-secondary align-middle"><i class="fa-solid fa-building me-1" aria-hidden="true"></i>{{ name }}</span>{% endif %}
+  </h1>
+  {% if let Some(name) = tenant_name %}<p class="text-muted mb-1">{{ messages.get("admin-home-current-tenant") }} <span class="fw-semibold">{{ name }}</span></p>{% endif %}
   <p class="text-muted mb-0">{{ messages.get("admin-home-intro") }}</p>
 </div>
 

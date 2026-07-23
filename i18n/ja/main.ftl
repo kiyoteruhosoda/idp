@@ -405,6 +405,7 @@ admin-password-reset-result-title = パスワードを再発行しました
 admin-password-reset-result-subject = 対象
 admin-password-reset-result-warning = 新しい一時パスワードはこの画面で一度だけ表示されます。安全な経路で本人へ共有してください。本人は次回ログイン時に変更が必要です。
 admin-home-heading = 管理メニュー
+admin-home-current-tenant = 現在のテナント:
 admin-home-groups-label = 種別ごとの管理メニュー
 admin-home-group-operations = 運用・監査
 admin-home-group-operations-desc = 稼働状況とログを確認します。

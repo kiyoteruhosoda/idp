@@ -161,6 +161,8 @@ pub struct ConsoleHome<'a> {
     /// `/{tenant_id}` プレフィクス（ADR-0009 §6）。
     pub tenant: &'a str,
     pub admin: Admin<'a>,
+    /// 現在のテナント表示名（root は既定 `ROOT`）。取得できなかった場合は `None`。
+    pub tenant_name: Option<&'a str>,
 }
 
 /// 管理コンソールのログイン画面（`GET /{tenant_id}/admin/login`）。共通レイアウトには載せない。
