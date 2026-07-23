@@ -1,3 +1,13 @@
+## 2026-07-23（バージョン情報画面に DB マイグレーション適用状態を表示）
+
+- **バージョン情報画面（`/version`）に DB スキーマの適用状態を追加**: DB を直接参照できない運用者が、
+  適用済みマイグレーション version を画面から確認できるようにした。「適用済みバージョン」（`_sqlx_migrations`
+  の最大 version）・「期待バージョン」（稼働中 api に埋め込まれた最大 version）・両者の一致状態を表示する。
+  web は DB 非依存のため、api の新規エンドポイント `GET /version/schema`（`{expected, applied}` を返す。
+  認証不要）から取得する。api 未到達時はフェイルソフトで「取得できません」を表示。`db.rs` は
+  `embedded_schema_version()`／`applied_schema_version()` を切り出し、`verify_schema_version` も同関数を再利用。
+  contracts に `SchemaVersionInfo` を追加。
+
 ## 2026-07-23（初期管理者のログイン識別子を admin@example.com に統一 + ログイン欄の表記修正 + ルート `/` のリダイレクト廃止）
 
 - **初期管理者のログイン識別子（ユーザー名）を `admin@example.com` に変更**: ログインは email ではなく

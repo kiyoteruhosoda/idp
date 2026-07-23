@@ -36,6 +36,7 @@ use idp_contracts::auth::{
     InternalTotpDeleteResponse, InternalTotpSetupRequest, InternalTotpSetupResponse,
     InternalVerifyTotpRequest, InternalVerifyTotpResponse,
 };
+use idp_contracts::version::SchemaVersionInfo;
 use reqwest::Method;
 
 /// サービス認証トークンのヘッダ名（api 側 `require_service_token` と一致させる）。
@@ -1317,6 +1318,20 @@ impl ApiClient {
             Ok(resp) => resp.status().is_success(),
             Err(_) => false,
         }
+    }
+
+    /// api の `GET /version/schema` から DB スキーマ（マイグレーション）の適用状態を取得する。
+    /// バージョン情報画面の表示用。api 未到達・デコード失敗はいずれも `None`（fail-soft。画面は
+    /// 「取得できません」を表示する）。認証不要の公開エンドポイントのためサービストークンは付けない。
+    pub async fn fetch_schema_version(&self) -> Option<SchemaVersionInfo> {
+        self.http
+            .get(format!("{}/version/schema", self.base_url))
+            .send()
+            .await
+            .ok()?
+            .json::<SchemaVersionInfo>()
+            .await
+            .ok()
     }
 
     /// `/internal/*` への POST 共通処理（サービストークン＋correlation_id を付与して JSON をやり取り）。

@@ -256,6 +256,7 @@ pub fn build(state: AppState) -> Router {
         .route("/healthz", get(health::liveness))
         .route("/readyz", get(health::readiness))
         .route("/version", get(health::version))
+        .route("/version/schema", get(health::schema_version))
         .nest("/{tenant_id}", tenant_scoped)
         .merge(internal)
         .merge(SwaggerUi::new("/api/docs").url("/api/openapi.json", ApiDoc::openapi()))

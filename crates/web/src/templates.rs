@@ -15,7 +15,9 @@ use crate::i18n::Messages;
 use askama::Template;
 use idp_contracts::admin::{ClientStatusResponse, UserSummaryResponse};
 use idp_contracts::auth::PasskeyCredentialInfo;
-use idp_contracts::version::{BuildTimeVersionInfoProvider, VersionInfo, VersionInfoProvider};
+use idp_contracts::version::{
+    BuildTimeVersionInfoProvider, SchemaVersionInfo, VersionInfo, VersionInfoProvider,
+};
 
 /// フッタなどの共通 UI に表示する Cargo パッケージバージョン。
 pub fn app_version() -> &'static str {
@@ -121,6 +123,9 @@ pub struct MessagePage {
 #[template(path = "version.html")]
 pub struct VersionTemplate {
     pub info: VersionInfo,
+    /// DB スキーマ（マイグレーション）の適用状態。api から取得できなければ `None`（画面は
+    /// 「取得できません」を表示）。web は DB を持たないため api 経由で受け取る。
+    pub schema: Option<SchemaVersionInfo>,
 }
 
 /// 強制パスワード変更画面（`GET /{tenant_id}/password-change`、ADR-0009 §5）。ログインフロー中

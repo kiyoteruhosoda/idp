@@ -20,7 +20,31 @@
   </div>
 </div>
 
+<div class="card mb-4" aria-labelledby="schema-card-title">
+  <div class="card-header" id="schema-card-title">データベース（マイグレーション）</div>
+  <div class="card-body p-0">
+    {% if let Some(schema) = schema %}
+    <dl class="row mb-0 py-2">
+      <dt class="col-sm-4 px-4 py-2">適用済みバージョン</dt>
+      <dd class="col-sm-8 px-4 py-2 mb-0">
+        {% if let Some(applied) = schema.applied %}<code>{{ applied }}</code>{% else %}<span class="text-muted">未適用または取得不可</span>{% endif %}
+      </dd>
+      <dt class="col-sm-4 px-4 py-2 border-top">期待バージョン（api）</dt>
+      <dd class="col-sm-8 px-4 py-2 mb-0 border-top">
+        {% if let Some(expected) = schema.expected %}<code>{{ expected }}</code>{% else %}<span class="text-muted">不明</span>{% endif %}
+      </dd>
+      <dt class="col-sm-4 px-4 py-2 border-top">状態</dt>
+      <dd class="col-sm-8 px-4 py-2 mb-0 border-top">
+        {% if schema.applied >= schema.expected %}<span class="badge text-bg-success">最新（スキーマ一致）</span>{% else %}<span class="badge text-bg-warning">DB が遅れています（migrate 未適用）</span>{% endif %}
+      </dd>
+    </dl>
+    {% else %}
+    <p class="mb-0 px-4 py-3 text-muted">スキーマの適用状態を取得できませんでした（api 未到達）。</p>
+    {% endif %}
+  </div>
+</div>
+
 <div class="alert alert-light border" aria-label="補足">
-  <p class="mb-0 small text-muted">Git version はビルド時の `git describe --always --dirty --tags` に基づきます。</p>
+  <p class="mb-0 small text-muted">Git version はビルド時の `git describe --always --dirty --tags` に基づきます。バージョンは sqlx マイグレーションの通し番号（`_sqlx_migrations` の version）です。「期待バージョン」は稼働中 api に埋め込まれた最大 version、「適用済み」は DB に反映済みの最大 version を表します。</p>
 </div>
 {% endblock %}
