@@ -8,7 +8,7 @@
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::response::IntoResponse;
 
-const APP_CSS: &str = include_str!("../../assets/app.css");
+pub(crate) const APP_CSS: &str = include_str!("../../assets/app.css");
 
 pub async fn app_css() -> impl IntoResponse {
     (

@@ -6,7 +6,7 @@
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::response::IntoResponse;
 
-const APP_JS: &str = include_str!("../../assets/react/app.js");
+pub(crate) const APP_JS: &str = include_str!("../../assets/react/app.js");
 const APP_JS_MAP: &str = include_str!("../../assets/react/app.js.map");
 
 #[derive(Clone, Copy)]

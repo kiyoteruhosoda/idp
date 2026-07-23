@@ -12,9 +12,10 @@
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::response::IntoResponse;
 
-const BOOTSTRAP_CSS: &str = include_str!("../../assets/vendor/bootstrap.min.css");
-const BOOTSTRAP_JS: &str = include_str!("../../assets/vendor/bootstrap.bundle.min.js");
-const FONTAWESOME_CSS: &str = include_str!("../../assets/vendor/fontawesome/css/all.min.css");
+pub(crate) const BOOTSTRAP_CSS: &str = include_str!("../../assets/vendor/bootstrap.min.css");
+pub(crate) const BOOTSTRAP_JS: &str = include_str!("../../assets/vendor/bootstrap.bundle.min.js");
+pub(crate) const FONTAWESOME_CSS: &str =
+    include_str!("../../assets/vendor/fontawesome/css/all.min.css");
 const FA_SOLID_WOFF2: &[u8] =
     include_bytes!("../../assets/vendor/fontawesome/webfonts/fa-solid-900.woff2");
 const FA_REGULAR_WOFF2: &[u8] =

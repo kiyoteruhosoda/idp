@@ -43,6 +43,11 @@ pub fn footer_version() -> String {
 /// （CDN・ブラウザ）の TTL が尽きるまで旧アセットが配られ続ける（実際に Cloudflare が
 /// origin の `max-age=0` を上書きして 4 時間キャッシュさせる）。デプロイごとに URL 自体を
 /// 変えることで、キャッシュ TTL に依存せず必ず新しいアセットを取得させる。
+///
+/// 値は「パッケージ版[-git 版]-同梱アセットの内容ダイジェスト」。git バージョンが注入されない
+/// ビルド経路（`IDP_GIT_VERSION` 未指定の docker-compose ビルドはコンテナ内に `.git` も無く
+/// `unknown` になる）でも、アセット内容が変わればダイジェストが変わり URL が更新されるため、
+/// `immutable` キャッシュで旧アセットが固定化されない。
 /// クエリ値として安全な文字（英数・`.` `-` `_`）以外は `-` へ置換する。
 pub fn asset_version() -> &'static str {
     static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -50,10 +55,11 @@ pub fn asset_version() -> &'static str {
         let git = BuildTimeVersionInfoProvider::new(app_version())
             .version_info()
             .git_version;
+        let digest = embedded_assets_digest();
         let raw = if git.is_empty() || git == "unknown" {
-            app_version().to_string()
+            format!("{}-{digest:016x}", app_version())
         } else {
-            format!("{}-{git}", app_version())
+            format!("{}-{git}-{digest:016x}", app_version())
         };
         raw.chars()
             .map(|c| {
@@ -65,6 +71,32 @@ pub fn asset_version() -> &'static str {
             })
             .collect()
     })
+}
+
+/// `?v=` 付き URL で参照される同梱アセットの内容ダイジェスト。キャッシュバスティング用途のため
+/// 暗号強度は不要（FNV-1a 64bit）。webfont は安定 URL（FA CSS 内の相対参照）でクエリを付けられず
+/// ダイジェストを変えても配信 URL が変わらないため対象外。
+fn embedded_assets_digest() -> u64 {
+    [
+        crate::handlers::stylesheet::APP_CSS,
+        crate::handlers::react_assets::APP_JS,
+        crate::handlers::vendor_assets::BOOTSTRAP_CSS,
+        crate::handlers::vendor_assets::BOOTSTRAP_JS,
+        crate::handlers::vendor_assets::FONTAWESOME_CSS,
+    ]
+    .into_iter()
+    .fold(0xcbf2_9ce4_8422_2325, |hash, asset| {
+        fnv1a64(hash, asset.as_bytes())
+    })
+}
+
+/// FNV-1a 64bit ハッシュ（`hash` を初期値として `bytes` を畳み込む）。
+fn fnv1a64(mut hash: u64, bytes: &[u8]) -> u64 {
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 #[cfg(test)]
@@ -79,6 +111,24 @@ mod tests {
         assert!(v
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')));
+    }
+
+    /// git バージョンが注入されないビルドでもアセット内容の変化で URL が変わるよう、
+    /// バージョンは必ず内容ダイジェストを含む。
+    #[test]
+    fn asset_version_includes_content_digest() {
+        let digest = format!("{:016x}", embedded_assets_digest());
+        assert!(asset_version().ends_with(&digest));
+    }
+
+    #[test]
+    fn content_digest_changes_when_asset_bytes_change() {
+        let base = 0xcbf2_9ce4_8422_2325;
+        assert_ne!(
+            fnv1a64(base, b"body { color: red }"),
+            fnv1a64(base, b"body { color: blue }")
+        );
+        assert_ne!(fnv1a64(base, b""), fnv1a64(fnv1a64(base, b"a"), b""));
     }
 
     /// アセット参照はデプロイごとに URL が変わるよう `?v={asset_version}` を必ず付ける
