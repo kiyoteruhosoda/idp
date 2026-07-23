@@ -6,7 +6,7 @@
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::response::IntoResponse;
 
-const APP_JS: &str = include_str!("../../assets/react/app.js");
+pub(crate) const APP_JS: &str = include_str!("../../assets/react/app.js");
 const APP_JS_MAP: &str = include_str!("../../assets/react/app.js.map");
 
 #[derive(Clone, Copy)]
@@ -24,9 +24,15 @@ impl ReactAssetKind {
     }
 
     fn cache_control(self) -> &'static str {
-        // `react_bootstrap.html` references these stable URLs directly. Keep them
-        // revalidating so browsers can pick up newly embedded bundles after a deploy.
-        "public, max-age=0, must-revalidate"
+        match self {
+            // `react_bootstrap.html` references the bundle with a `?v={asset_version}`
+            // query, so the URL changes on every deploy (cache busting) and the body
+            // can be cached long-term.
+            Self::JavaScript => "public, max-age=31536000, immutable",
+            // The source map is referenced from inside the bundle without a version
+            // query (stable URL), so keep its staleness bounded.
+            Self::SourceMap => "public, max-age=86400",
+        }
     }
 
     fn body(self) -> &'static str {

@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="/assets/vendor/bootstrap.min.css">
-<link rel="stylesheet" href="/assets/vendor/fontawesome/css/all.min.css">
-<link rel="stylesheet" href="/assets/app.css">
+<link rel="stylesheet" href="/assets/vendor/bootstrap.min.css?v={{ crate::templates::asset_version() }}">
+<link rel="stylesheet" href="/assets/vendor/fontawesome/css/all.min.css?v={{ crate::templates::asset_version() }}">
+<link rel="stylesheet" href="/assets/app.css?v={{ crate::templates::asset_version() }}">
 <title>{{ messages.get("admin-console-title") }}</title>
 </head>
 <body class="d-flex flex-column min-vh-100">
@@ -72,7 +72,7 @@
   </main>
 </div>
 {% include "footer.html" %}
-<script src="/assets/vendor/bootstrap.bundle.min.js"></script>
+<script src="/assets/vendor/bootstrap.bundle.min.js?v={{ crate::templates::asset_version() }}"></script>
 {% include "react_bootstrap.html" %}
 </body>
 </html>
