@@ -3,10 +3,13 @@
 - **バージョン情報画面（`/version`）に DB スキーマの適用状態を追加**: DB を直接参照できない運用者が、
   適用済みマイグレーション version を画面から確認できるようにした。「適用済みバージョン」（`_sqlx_migrations`
   の最大 version）・「期待バージョン」（稼働中 api に埋め込まれた最大 version）・両者の一致状態を表示する。
-  web は DB 非依存のため、api の新規エンドポイント `GET /version/schema`（`{expected, applied}` を返す。
-  認証不要）から取得する。api 未到達時はフェイルソフトで「取得できません」を表示。`db.rs` は
-  `embedded_schema_version()`／`applied_schema_version()` を切り出し、`verify_schema_version` も同関数を再利用。
-  contracts に `SchemaVersionInfo` を追加。
+  web は DB 非依存のため、api の新規エンドポイント `GET /version/schema`（`{expected, db_readable, applied}` を
+  返す。認証不要）から取得する。状態は「最新／DB が遅れています（migrate 未適用）／DB 読み取り不可（運用障害）」を
+  区別し（DB 読み取り失敗を「遅れ」と誤表示しないよう `db_readable` で区別し、api はエラーをログに残す）、api 未到達時は
+  フェイルソフトで「取得できません（api 未起動の可能性）」を表示。`db.rs` は `embedded_schema_version()`／
+  `applied_schema_version()` を切り出し、`verify_schema_version` も同関数を再利用。contracts に `SchemaVersionInfo` を追加。
+  なお api は DB が期待 version 未満だと fail-fast で起動を中止する（ADR-0004）ため、遅れている状態では本画面自体が
+  配信されないことがある（その場合は api ログの `expected`/`applied` で確認）。
 
 ## 2026-07-23（初期管理者のログイン識別子を admin@example.com に統一 + ログイン欄の表記修正 + ルート `/` のリダイレクト廃止）
 

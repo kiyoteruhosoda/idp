@@ -27,7 +27,7 @@
     <dl class="row mb-0 py-2">
       <dt class="col-sm-4 px-4 py-2">適用済みバージョン</dt>
       <dd class="col-sm-8 px-4 py-2 mb-0">
-        {% if let Some(applied) = schema.applied %}<code>{{ applied }}</code>{% else %}<span class="text-muted">未適用または取得不可</span>{% endif %}
+        {% if !schema.db_readable %}<span class="text-muted">DB を読み取れません</span>{% else if let Some(applied) = schema.applied %}<code>{{ applied }}</code>{% else %}<span class="text-muted">未適用</span>{% endif %}
       </dd>
       <dt class="col-sm-4 px-4 py-2 border-top">期待バージョン（api）</dt>
       <dd class="col-sm-8 px-4 py-2 mb-0 border-top">
@@ -35,11 +35,11 @@
       </dd>
       <dt class="col-sm-4 px-4 py-2 border-top">状態</dt>
       <dd class="col-sm-8 px-4 py-2 mb-0 border-top">
-        {% if schema.applied >= schema.expected %}<span class="badge text-bg-success">最新（スキーマ一致）</span>{% else %}<span class="badge text-bg-warning">DB が遅れています（migrate 未適用）</span>{% endif %}
+        {% if !schema.db_readable %}<span class="badge text-bg-danger">DB 読み取り不可（運用障害）</span>{% else if schema.applied >= schema.expected %}<span class="badge text-bg-success">最新（スキーマ一致）</span>{% else %}<span class="badge text-bg-warning">DB が遅れています（migrate 未適用）</span>{% endif %}
       </dd>
     </dl>
     {% else %}
-    <p class="mb-0 px-4 py-3 text-muted">スキーマの適用状態を取得できませんでした（api 未到達）。</p>
+    <p class="mb-0 px-4 py-3 text-muted">スキーマの適用状態を取得できませんでした（api 未到達）。api が停止している可能性があります。DB が期待バージョン未満だと api は起動を中止する（fail-fast）ため、この状態のときは api のログで <code>expected</code> / <code>applied</code> を確認してください。</p>
     {% endif %}
   </div>
 </div>
