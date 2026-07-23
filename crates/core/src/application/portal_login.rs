@@ -45,8 +45,8 @@ const MFA_TICKET_TTL_SECS: i64 = 300;
 
 #[derive(Debug)]
 pub struct PortalLoginCommand {
-    /// ログイン識別子（メールアドレス。ADR-0009 §8）。
-    pub email: String,
+    /// ログイン識別子（ユーザー名 = `preferred_username`。ADR-0009 §8）。
+    pub username: String,
     pub password: String,
 }
 
@@ -60,8 +60,8 @@ pub struct PortalMfaCommand {
 /// ような一時状態を持たないため、管理コンソールと同じく現行パスワードを含め毎回フルに再検証する。
 #[derive(Debug)]
 pub struct PortalChangePasswordCommand {
-    /// ログイン識別子（メールアドレス）。
-    pub email: String,
+    /// ログイン識別子（ユーザー名 = `preferred_username`）。
+    pub username: String,
     pub current_password: String,
     pub new_password: String,
 }
@@ -80,9 +80,9 @@ pub enum PortalLoginOutcome {
     /// 自己登録アカウントのメール未検証（SEC6b）。
     EmailVerificationRequired,
     /// 強制パスワード変更が必要（ADR-0009 §5）。web は強制パスワード変更フォームへ誘導する
-    /// （管理コンソールと同方式。`email` は入力値をフォーム再表示用に返す）。
+    /// （管理コンソールと同方式。`username` は入力値をフォーム再表示用に返す）。
     PasswordChangeRequired {
-        email: String,
+        username: String,
     },
     /// IP 単位のレート制限超過。
     RateLimited,
@@ -197,8 +197,8 @@ impl PortalLoginService {
             }
         }
 
-        // 2. ユーザー検索（ログイン識別子はメールアドレスに統一）。認証は所属元テナント限定（ADR-0009 §8）。
-        let user = match self.users.find_by_email(tenant_id, &cmd.email).await {
+        // 2. ユーザー検索（ログイン識別子は preferred_username）。認証は所属元テナント限定（ADR-0009 §8）。
+        let user = match self.users.find_by_username(tenant_id, &cmd.username).await {
             Ok(Some(u)) => u,
             Ok(None) => {
                 self.record_failure(tenant_id, None, "unknown_user", ctx)
@@ -257,7 +257,9 @@ impl PortalLoginService {
         // 8. 強制パスワード変更（ADR-0009 §5）。SSO はまだ発行せず、強制変更フォームへ誘導する
         //    （管理コンソールと同方式。`change_password` で現行パスワードを含め再検証する）。
         if user.must_change_password {
-            return PortalLoginOutcome::PasswordChangeRequired { email: cmd.email };
+            return PortalLoginOutcome::PasswordChangeRequired {
+                username: cmd.username,
+            };
         }
 
         // 9. TOTP（MFA）が設定済みなら SSO を発行せず TOTP 入力ステップへ誘導する。
@@ -302,7 +304,7 @@ impl PortalLoginService {
             }
         }
 
-        let user = match self.users.find_by_email(tenant_id, &cmd.email).await {
+        let user = match self.users.find_by_username(tenant_id, &cmd.username).await {
             Ok(Some(u)) => u,
             Ok(None) => return PortalChangePasswordOutcome::InvalidCredentials,
             Err(e) => return PortalChangePasswordOutcome::Internal(e.to_string()),

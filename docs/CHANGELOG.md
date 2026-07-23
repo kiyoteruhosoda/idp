@@ -1,4 +1,3 @@
-
 ## 2026-07-23（SAML SP の変更・削除を追加 + 設定値の優先順位を「既定値 < ENV < DB」へ + 設定用途の説明を追加）
 
 - **SAML SP（クライアント）の変更・削除を追加**: 従来は登録・一覧のみだった SAML サービスプロバイダ管理に
@@ -15,6 +14,22 @@
 - **各設定が何に使われるかの説明を追加**: `SettingDefinition` に `description` を追加し、全ランタイム設定キーへ
   用途の一文を付与。`ResolvedSetting` → `RuntimeSettingResponse` → web `RuntimeSettingView` → 設定画面へ透過し、
   ランタイム設定表のキー欄に説明を表示する。
+
+## 2026-07-23（ログイン識別子を preferred_username に確定 + 未指定時は email を既定値化）
+
+- **ログイン識別子を `preferred_username` に確定（ADR-0009 §8）**: 同日先行の「メールアドレスのみ統一」
+  （下記エントリ）を反転し、ログイン照合を `find_by_username`（`preferred_username`）に戻した。メール
+  アドレスでのログイン（`find_by_email`）は行わない。3 経路（OIDC・ポータル・管理コンソール）の資格情報
+  フィールドを `email`→`username` に戻し、ログイン画面テンプレート・i18n（`login-username`）・契約 DTO・
+  core コマンド・e2e・統合テストを更新。ポータル初回強制変更の共有画面（`ForcedPasswordChange`）と
+  MFA/メール検証ゲートはそのまま維持し、識別子フィールドのみ `username` に揃えた。
+- **`preferred_username` 未指定時は `email` を既定値化**: 自己登録（`register`）・管理者作成
+  （`user_management`）で `preferred_username` が未指定なら `email` と同値を採用する。採用値は
+  `domain::values::validate_preferred_username` でカラム長（`VARCHAR(255)`）超過を永続化前に検証する
+  （`email` は `VARCHAR(320)` のため既定値化で超え得る）。既存ユーザー向けに `preferred_username IS NULL`
+  を `email` で埋める backfill マイグレーション（`0011_backfill_preferred_username`）を追加。email が別
+  ユーザーの `preferred_username` と衝突する行はスキップして UNIQUE 違反によるマイグレーション中断を防ぐ
+  （LEFT JOIN + IS NULL。衝突行は NULL のまま残し運用で個別解消）。
 
 ## 2026-07-23（ログイン識別子をメールアドレスに統一 + ポータル初回ログインの強制変更誘導を統合）
 

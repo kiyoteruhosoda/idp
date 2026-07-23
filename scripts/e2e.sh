@@ -102,7 +102,7 @@ csrf="$(curl -fsS -b "$CJAR" "${WEB}/${ROOT}/login" | grep -oE '[a-f0-9]{64}' | 
 [[ -n "$csrf" ]] || fail "web /{tenant_id}/login がフォーム（CSRF）を返しません"
 loc="$(curl -fsS -b "$CJAR" -c "$CJAR" -o /dev/null -w '%{redirect_url}' -X POST "${WEB}/${ROOT}/login" \
   -H 'content-type: application/x-www-form-urlencoded' -H 'X-Forwarded-For: 203.0.113.5' \
-  --data-urlencode "email=${U}@example.com" --data-urlencode "password=${P}" --data-urlencode "csrf_token=${csrf}")"
+  --data-urlencode "username=${U}" --data-urlencode "password=${P}" --data-urlencode "csrf_token=${csrf}")"
 # 初回ログインは profile/email が未同意のため同意画面（F3）へ誘導される。
 [[ "$loc" == *"/${ROOT}/consent"* ]] || fail "web ログインが同意画面へ誘導しません（$loc）"
 pass "web /{tenant_id}/login → api /internal/authenticate → SSO Cookie + /{tenant_id}/consent 誘導（初回は要同意）"
@@ -135,12 +135,12 @@ acsrf="$(printf '%s' "$login_html" | grep -oE '[a-f0-9]{64}' | head -1)"
 admin_login_body="$(mktemp)"
 admin_loc="$(curl -fsS -b "$AJAR" -c "$AJAR" -o "$admin_login_body" -w '%{redirect_url}' -X POST "${WEB}/${ROOT}/admin/login" \
   -H 'content-type: application/x-www-form-urlencoded' \
-  --data-urlencode "email=admin@example.com" --data-urlencode "password=admin@example.com" --data-urlencode "csrf_token=${acsrf}")"
+  --data-urlencode "username=admin" --data-urlencode "password=admin@example.com" --data-urlencode "csrf_token=${acsrf}")"
 if [[ -z "$admin_loc" ]] && grep -q 'admin/password-change' "$admin_login_body"; then
   pcsrf_admin="$(grep -oE 'name="csrf_token" value="[a-f0-9]{64}"' "$admin_login_body" | grep -oE '[a-f0-9]{64}' | head -1)"
   admin_loc="$(curl -fsS -b "$AJAR" -c "$AJAR" -o /dev/null -w '%{redirect_url}' -X POST "${WEB}/${ROOT}/admin/password-change" \
     -H 'content-type: application/x-www-form-urlencoded' \
-    --data-urlencode "email=admin@example.com" --data-urlencode "current_password=admin@example.com" \
+    --data-urlencode "username=admin" --data-urlencode "current_password=admin@example.com" \
     --data-urlencode "new_password=ChangeMe!1234" --data-urlencode "new_password_confirm=ChangeMe!1234" \
     --data-urlencode "csrf_token=${pcsrf_admin}")"
 fi

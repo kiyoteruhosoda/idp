@@ -93,7 +93,7 @@ pub async fn authenticate(
             tenant,
             LoginCommand {
                 auth_session_id: req.auth_session_id,
-                email: req.email,
+                username: req.username,
                 password: req.password,
                 csrf_token: req.csrf_token,
             },
@@ -254,7 +254,7 @@ pub async fn authenticate_admin(
         .login(
             tenant,
             AdminLoginCommand {
-                email: req.email,
+                username: req.username,
                 password: req.password,
             },
             &ctx,
@@ -274,8 +274,8 @@ pub async fn authenticate_admin(
         }
         AdminLoginOutcome::Locked => InternalAdminAuthenticateResponse::Locked,
         AdminLoginOutcome::Forbidden => InternalAdminAuthenticateResponse::Forbidden,
-        AdminLoginOutcome::PasswordChangeRequired { email } => {
-            InternalAdminAuthenticateResponse::PasswordChangeRequired { email }
+        AdminLoginOutcome::PasswordChangeRequired { username } => {
+            InternalAdminAuthenticateResponse::PasswordChangeRequired { username }
         }
         AdminLoginOutcome::WeakPassword => {
             tracing::error!("unexpected WeakPassword outcome from admin authenticate");
@@ -306,7 +306,7 @@ pub async fn authenticate_portal(
         .login(
             tenant,
             PortalLoginCommand {
-                email: req.email,
+                username: req.username,
                 password: req.password,
             },
             &ctx,
@@ -328,8 +328,8 @@ pub async fn authenticate_portal(
         PortalLoginOutcome::EmailVerificationRequired => {
             InternalPortalAuthenticateResponse::EmailVerificationRequired
         }
-        PortalLoginOutcome::PasswordChangeRequired { email } => {
-            InternalPortalAuthenticateResponse::PasswordChangeRequired { email }
+        PortalLoginOutcome::PasswordChangeRequired { username } => {
+            InternalPortalAuthenticateResponse::PasswordChangeRequired { username }
         }
         PortalLoginOutcome::RateLimited => InternalPortalAuthenticateResponse::RateLimited,
         PortalLoginOutcome::InvalidCredentials => {
@@ -405,7 +405,7 @@ pub async fn authenticate_portal_change_password(
         .change_password(
             tenant,
             PortalChangePasswordCommand {
-                email: req.email,
+                username: req.username,
                 current_password: req.current_password,
                 new_password: req.new_password,
             },
@@ -463,7 +463,7 @@ pub async fn admin_change_password(
         .change_password(
             tenant,
             AdminChangePasswordCommand {
-                email: req.email,
+                username: req.username,
                 current_password: req.current_password,
                 new_password: req.new_password,
             },

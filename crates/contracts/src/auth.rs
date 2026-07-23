@@ -21,8 +21,9 @@ pub struct InternalAuthenticateRequest {
     pub tenant_id: Option<String>,
     #[serde(default)]
     pub auth_session_id: Option<String>,
-    /// ログイン識別子はメールアドレスに統一する（ADR-0009 §8。`(tenant_id, email)` 一意化）。
-    pub email: String,
+    /// ログイン識別子（ユーザー名 = `preferred_username`。ADR-0009 §8）。既定では email と同値
+    /// （作成時に未指定なら email を採用）だが、照合は `preferred_username` に対して行う。
+    pub username: String,
     pub password: String,
     pub csrf_token: String,
     #[serde(default)]
@@ -310,8 +311,8 @@ pub struct InternalAdminAuthenticateRequest {
     /// 管理ログインのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する（fail-closed。SEC4）。
     #[serde(default)]
     pub tenant_id: Option<String>,
-    /// ログイン識別子はメールアドレスに統一する（ADR-0009 §8）。
-    pub email: String,
+    /// ログイン識別子（ユーザー名 = `preferred_username`。ADR-0009 §8）。
+    pub username: String,
     pub password: String,
     #[serde(default)]
     pub ip_address: Option<String>,
@@ -353,8 +354,8 @@ pub enum InternalAdminAuthenticateResponse {
     /// 資格情報は正しいが テナント admin 権限を保有しない。
     Forbidden,
     /// 認証成功・管理権限保有だが `must_change_password`（ADR-0009 §5）。パスワード変更画面へ誘導する。
-    /// `email` はフォーム再表示用に入力値をそのまま返す。SSO はまだ発行しない。
-    PasswordChangeRequired { email: String },
+    /// `username` はフォーム再表示用に入力値をそのまま返す。SSO はまだ発行しない。
+    PasswordChangeRequired { username: String },
     /// api 内部エラー。
     Internal,
 }
@@ -366,8 +367,8 @@ pub enum InternalAdminAuthenticateResponse {
 pub struct InternalAdminChangePasswordRequest {
     #[serde(default)]
     pub tenant_id: Option<String>,
-    /// ログイン識別子はメールアドレスに統一する（ADR-0009 §8）。
-    pub email: String,
+    /// ログイン識別子（ユーザー名 = `preferred_username`。ADR-0009 §8）。
+    pub username: String,
     pub current_password: String,
     pub new_password: String,
     #[serde(default)]
@@ -403,8 +404,8 @@ pub struct InternalPortalAuthenticateRequest {
     /// ログインのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する。
     #[serde(default)]
     pub tenant_id: Option<String>,
-    /// ログイン識別子はメールアドレスに統一する（ADR-0009 §8）。
-    pub email: String,
+    /// ログイン識別子（ユーザー名 = `preferred_username`。ADR-0009 §8）。
+    pub username: String,
     pub password: String,
     #[serde(default)]
     pub ip_address: Option<String>,
@@ -429,8 +430,8 @@ pub enum InternalPortalAuthenticateResponse {
     /// 自己登録アカウントのメール未検証（SEC6b）。確認リンクを踏むよう案内する。
     EmailVerificationRequired,
     /// 強制パスワード変更が必要（ADR-0009 §5）。web は強制パスワード変更フォームへ誘導する
-    /// （管理コンソールと同方式。`email` は入力値をフォーム再表示用にそのまま返す）。
-    PasswordChangeRequired { email: String },
+    /// （管理コンソールと同方式。`username` は入力値をフォーム再表示用にそのまま返す）。
+    PasswordChangeRequired { username: String },
     /// IP 単位のレート制限超過。
     RateLimited,
     /// 資格情報不正。
@@ -448,8 +449,8 @@ pub enum InternalPortalAuthenticateResponse {
 pub struct InternalPortalChangePasswordRequest {
     #[serde(default)]
     pub tenant_id: Option<String>,
-    /// ログイン識別子（メールアドレス）。
-    pub email: String,
+    /// ログイン識別子（ユーザー名 = `preferred_username`）。
+    pub username: String,
     pub current_password: String,
     pub new_password: String,
     #[serde(default)]
