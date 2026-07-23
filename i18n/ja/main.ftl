@@ -370,7 +370,6 @@ admin-nav-tenants = テナント一覧
 admin-tenants-title = テナント一覧
 admin-tenants-intro = root 管理者のみが子テナントを登録できます。作成時に初期管理者と一時パスワードを自動生成します。
 admin-tenants-create-title = 新規テナント
-admin-tenants-create-under = 新しいテナントは次の配下に作成されます:
 admin-tenants-add = テナントを追加
 admin-tenants-add-close = 閉じる
 admin-tenants-name = テナント名

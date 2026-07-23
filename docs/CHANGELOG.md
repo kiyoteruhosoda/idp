@@ -3,9 +3,8 @@
 - **root テナントの既定表示名を `Root` → `ROOT` に変更**: seed（0002）の既定名 `Root` のままの root 行だけを
   `ROOT` へ更新するマイグレーション（0012。運用者が別名へ変更した行は上書きしない。追記型で 0002 は書き換えない）を追加。
 - **管理コンソールに現在のテナント名を表示**: ホーム画面（`/{tenant_id}/admin`）の見出しに現在テナント名（root は `ROOT`）を
-  バッジ表示し、テナント作成フォーム（`/{tenant_id}/admin/tenants`）に「新しいテナントは 〇〇 の配下に作成されます」と
-  作成元（親）テナント名を表示する。名前は api の `GET /admin/settings/tenant` から取得し、取得失敗時は名前だけ省いて
-  描画する（フェイルソフト）。i18n（ja/en）に `admin-home-current-tenant`・`admin-tenants-create-under` を追加。
+  バッジ表示する。名前は api の `GET /admin/settings/tenant` から取得し、取得失敗時は名前だけ省いて描画する（フェイルソフト）。
+  i18n（ja/en）に `admin-home-current-tenant` を追加。
 
 ## 2026-07-23（SAML SP の変更・削除を追加 + 設定値の優先順位を「既定値 < ENV < DB」へ + 設定用途の説明を追加）
 

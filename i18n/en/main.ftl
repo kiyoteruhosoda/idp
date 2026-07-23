@@ -370,7 +370,6 @@ admin-nav-tenants = Tenants
 admin-tenants-title = Tenants
 admin-tenants-intro = Only root administrators can register child tenants. An initial administrator and temporary password are generated on creation.
 admin-tenants-create-title = New tenant
-admin-tenants-create-under = The new tenant will be created under
 admin-tenants-add = Add a tenant
 admin-tenants-add-close = Close
 admin-tenants-name = Tenant name
