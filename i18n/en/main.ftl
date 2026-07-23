@@ -1,10 +1,10 @@
 # Login screen messages (English is the source of truth; keys are shared across locales).
 login-title = Sign in
-login-email = Email address
+login-username = Username or email
 login-password = Password
 login-forgot-password = Forgot your password?
 login-submit = Sign in
-login-error-invalid-credentials = The email address or password is incorrect.
+login-error-invalid-credentials = The username or password is incorrect.
 login-error-locked = This account is temporarily locked. Please try again later.
 login-error-email-not-verified = Please verify your email address before signing in. Check your inbox for the verification link.
 login-error-session-expired = Your sign-in session has expired. Please start over from the application.

@@ -147,6 +147,22 @@ pub fn validate_email(email: &str) -> Result<(), DomainError> {
     }
 }
 
+/// `preferred_username`（ログイン識別子）が格納先カラムの上限に収まるか検証する。
+///
+/// `users.preferred_username` は `VARCHAR(255)`、`users.email` は `VARCHAR(320)` であり、未指定時に
+/// email を既定値へ採用する経路（`register` / `user_management`）で長い email がカラム長を超えると
+/// 永続化時に内部エラーになる。それを防ぐため、採用前に文字数上限を検証する。
+pub const PREFERRED_USERNAME_MAX_LEN: usize = 255;
+
+pub fn validate_preferred_username(value: &str) -> Result<(), DomainError> {
+    if value.chars().count() > PREFERRED_USERNAME_MAX_LEN {
+        return Err(DomainError::InvalidValue(format!(
+            "preferred_username must be at most {PREFERRED_USERNAME_MAX_LEN} characters"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,5 +192,12 @@ mod tests {
         assert!(validate_email("@b").is_err());
         assert!(validate_email("a@").is_err());
         assert!(validate_email("").is_err());
+    }
+
+    #[test]
+    fn preferred_username_length_is_capped_at_column_limit() {
+        assert!(validate_preferred_username("alice").is_ok());
+        assert!(validate_preferred_username(&"x".repeat(PREFERRED_USERNAME_MAX_LEN)).is_ok());
+        assert!(validate_preferred_username(&"x".repeat(PREFERRED_USERNAME_MAX_LEN + 1)).is_err());
     }
 }

@@ -18,7 +18,10 @@ use crate::domain::repositories::{TenantMembershipRepository, TenantRepository, 
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::tenant_membership::TenantMembership;
 use crate::domain::user::User;
-use crate::domain::values::{validate_email as domain_validate_email, UserStatus};
+use crate::domain::values::{
+    validate_email as domain_validate_email,
+    validate_preferred_username as domain_validate_preferred_username, UserStatus,
+};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -120,7 +123,12 @@ impl RegisterService {
         let email = cmd.email.trim().to_string();
         validate_email(&email)?;
         validate_password(&cmd.password)?;
-        let preferred_username = normalize_optional(cmd.preferred_username);
+        // ログイン識別子は preferred_username。未指定なら email を既定値として採用する（ADR-0009 §8）。
+        let preferred_username =
+            normalize_optional(cmd.preferred_username).unwrap_or_else(|| email.clone());
+        // カラム長（VARCHAR(255)）超過を永続化前に弾く（email は VARCHAR(320) のため既定値化で超え得る）。
+        domain_validate_preferred_username(&preferred_username)
+            .map_err(|e| RegisterError::Validation(e.to_string()))?;
         let name = normalize_optional(cmd.name);
         let tenant_id = tenant.tenant_id();
 
@@ -138,18 +146,16 @@ impl RegisterService {
                 "email already registered".to_string(),
             ));
         }
-        if let Some(username) = &preferred_username {
-            if self
-                .users
-                .find_by_username(tenant_id, username)
-                .await
-                .map_err(internal)?
-                .is_some()
-            {
-                return Err(RegisterError::Conflict(
-                    "preferred_username already taken".to_string(),
-                ));
-            }
+        if self
+            .users
+            .find_by_username(tenant_id, &preferred_username)
+            .await
+            .map_err(internal)?
+            .is_some()
+        {
+            return Err(RegisterError::Conflict(
+                "preferred_username already taken".to_string(),
+            ));
         }
 
         let password_hash = self.hasher.hash(&cmd.password).map_err(internal)?;
@@ -160,7 +166,7 @@ impl RegisterService {
             sub: self.ids.new_id(),
             email,
             email_verified: false,
-            preferred_username,
+            preferred_username: Some(preferred_username),
             name,
             language: None,
             password_hash,

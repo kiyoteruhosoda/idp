@@ -44,8 +44,8 @@ pub fn csrf_token(auth_session_id: &str, key: &[u8]) -> String {
 pub struct LoginCommand {
     /// `auth_session_id` Cookie の値。
     pub auth_session_id: Option<String>,
-    /// ログイン識別子（メールアドレス。ADR-0009 §8。`(tenant_id, email)` 一意化）。
-    pub email: String,
+    /// ログイン識別子（ユーザー名 = `preferred_username`。ADR-0009 §8）。
+    pub username: String,
     pub password: String,
     pub csrf_token: String,
 }
@@ -191,9 +191,9 @@ impl LoginService {
             }
         }
 
-        // 4. ユーザー検索（ログイン識別子はメールアドレスに統一）。
+        // 4. ユーザー検索（ログイン識別子は preferred_username）。メールアドレスでの照合は行わない。
         //    認証は所属元テナント限定 = このテナントを所属元とするユーザーのみが対象（ADR-0009 §8）。
-        let user = match self.users.find_by_email(tenant_id, &cmd.email).await {
+        let user = match self.users.find_by_username(tenant_id, &cmd.username).await {
             Ok(Some(u)) => u,
             Ok(None) => {
                 self.audit

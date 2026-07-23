@@ -1,10 +1,10 @@
 # ログイン画面の文言（キーは en/main.ftl と共通。日本語訳は手動で追記する）。
 login-title = サインイン
-login-email = メールアドレス
+login-username = ユーザー名またはメールアドレス
 login-password = パスワード
 login-forgot-password = パスワードをお忘れですか？
 login-submit = サインイン
-login-error-invalid-credentials = メールアドレスまたはパスワードが正しくありません。
+login-error-invalid-credentials = ユーザー名またはパスワードが正しくありません。
 login-error-locked = このアカウントは一時的にロックされています。しばらくしてからお試しください。
 login-error-email-not-verified = ログインの前にメールアドレスの確認を完了してください。確認メールのリンクをご確認ください。
 login-error-session-expired = サインインのセッションが期限切れです。アプリケーションからやり直してください。
