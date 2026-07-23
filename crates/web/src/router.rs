@@ -58,6 +58,7 @@ pub fn build(state: WebState) -> Router {
         // 利用者のセルフサービス設定画面（MT15）。パスワード変更・言語・MFA 導線。SSO 認証が必要。
         .route("/settings", get(user_settings::page))
         .route("/settings/password", post(user_settings::change_password))
+        .route("/settings/name", post(user_settings::change_name))
         // 招待承諾画面（ADR-0009 §3・MT17）。招待メールのリンクから開く。SSO 認証が必要。
         .route(
             "/invitations/accept",
@@ -103,6 +104,8 @@ pub fn build(state: WebState) -> Router {
         )
         .route("/admin/logout", post(admin_console::logout))
         .route("/admin", get(admin_console::home))
+        // テナント切り替え（所属テナントの管理コンソールへ遷移。ADR-0009 §8）。
+        .route("/admin/switch-tenant", get(admin_console::switch_tenant))
         // 設定画面（MT14）。テナント設定（idp.tenant.admin）＋ root のみのシステム設定区画（SMTP）。
         .route("/admin/settings", get(admin_settings::page))
         .route(

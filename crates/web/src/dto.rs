@@ -97,6 +97,16 @@ pub struct AccountPasswordForm {
     pub from: Option<String>,
 }
 
+/// セルフサービスの表示名変更フォーム（`POST /{tenant_id}/settings/name`）。
+/// `from` は管理コンソールから開いた文脈の引き継ぎ（PRG 後も戻り導線を維持する）。
+#[derive(Debug, Deserialize)]
+pub struct AccountNameForm {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub from: Option<String>,
+}
+
 /// 設定画面の GET クエリ（言語一時切替・保存/エラーバナー表示・遷移元の引き継ぎ）。
 #[derive(Debug, Default, Deserialize)]
 pub struct SettingsQuery {

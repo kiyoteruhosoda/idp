@@ -16,6 +16,8 @@ use idp_contracts::admin::WhoamiResponse;
 pub async fn whoami(RequirePerms(admin, _): RequirePerms<IdpAdmin>) -> Response {
     Json(WhoamiResponse {
         user_id: admin.user_id.to_string(),
+        name: admin.name,
+        preferred_username: admin.preferred_username,
     })
     .into_response()
 }

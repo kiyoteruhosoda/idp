@@ -93,6 +93,12 @@ pub trait TenantMembershipRepository: Send + Sync {
     /// ユーザーが指定テナントで `ACTIVE` なメンバーシップ（HOME または GUEST）を持つか
     /// （OIDC フローのメンバーシップ判定。ADR-0009 §8）。
     async fn is_active_member(&self, tenant_id: TenantId, user_id: Uuid) -> Result<bool>;
+    /// ユーザーが `ACTIVE` なメンバーシップ（HOME / GUEST）を持つ全テナントを返す
+    /// （テナント切り替え UI 用。ADR-0009 §3）。`tenant_memberships_user_idx` を用いる。
+    /// 既定実装は空（テスト用フェイクは呼ばれない。本番の sqlx 実装のみが上書きする）。
+    async fn list_active_for_user(&self, _user_id: Uuid) -> Result<Vec<TenantMembership>> {
+        Ok(Vec::new())
+    }
     /// 招待トークンのハッシュで `INVITED` 中の行を検索する（承諾エンドポイント用）。
     async fn find_by_invitation_token_hash(
         &self,
@@ -150,6 +156,13 @@ pub trait UserRepository: Send + Sync {
     async fn mark_email_verified(&self, id: Uuid) -> Result<()>;
     /// 表示言語設定を更新する（MT20。`None` で設定解除）。
     async fn update_language(&self, id: Uuid, language: Option<&str>) -> Result<()>;
+    /// 表示名（`users.name`）を更新する（セルフサービス。`None` で表示名を解除＝`NULL`）。
+    /// 既定実装は未対応エラー（本番の sqlx 実装のみが上書きする。テスト用フェイクは呼ばれない）。
+    async fn update_name(&self, _id: Uuid, _name: Option<&str>) -> Result<()> {
+        Err(crate::domain::error::DomainError::Repository(
+            "update_name is not supported by this repository".to_string(),
+        ))
+    }
 }
 
 #[async_trait]

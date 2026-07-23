@@ -483,6 +483,23 @@ pub struct TenantsConsole<'a> {
     pub error_key: Option<&'a str>,
 }
 
+/// テナント切り替え画面（`GET /{tenant_id}/admin/switch-tenant`）。ログイン中ユーザーが `ACTIVE` な
+/// メンバーシップを持つテナントを一覧し、対象テナントの管理コンソールへ遷移する。SSO はホスト共有の
+/// ため再ログインは不要（ADR-0009 §8）。
+#[derive(Template)]
+#[template(path = "console/switch_tenant.html")]
+pub struct SwitchTenant<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub admin: Admin<'a>,
+    /// 切り替え可能なテナント一覧。
+    pub tenants: &'a [idp_contracts::auth::AccountTenantSummary],
+    /// 現在開いているテナントの内部 ID（現在地の強調に使う）。
+    pub current_tenant_id: &'a str,
+    /// api からの一覧取得に失敗したか（失敗時は注意文言を表示する）。
+    pub load_failed: bool,
+}
+
 /// テナント作成結果（`POST /{tenant_id}/admin/tenants` 成功時）。
 #[derive(Template)]
 #[template(path = "console/tenant_created.html")]
@@ -525,6 +542,10 @@ pub struct UserSettings<'a> {
     pub tenant: &'a str,
     /// 現在の表示言語（`ja` / `en`）。言語セレクタの初期選択に使う。
     pub current_lang: &'a str,
+    /// 現在の表示名（プリフィル用。未設定なら空文字）。
+    pub current_name: &'a str,
+    /// ログイン識別子（表示のみ・変更不可。未設定なら空文字）。
+    pub preferred_username: &'a str,
     /// 保存成功メッセージのキー（`None` なら非表示）。
     pub saved_key: Option<&'a str>,
     pub error_key: Option<&'a str>,

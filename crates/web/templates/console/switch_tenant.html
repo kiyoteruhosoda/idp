@@ -1,0 +1,40 @@
+{% extends "console/layout.html" %}
+{% block content %}
+<div class="mb-4">
+  <h1 class="h3 mb-1">{{ messages.get("admin-switch-tenant-title") }}</h1>
+  <p class="text-muted mb-0">{{ messages.get("admin-switch-tenant-intro") }}</p>
+</div>
+
+{% if load_failed %}
+<div class="alert alert-warning" role="alert">{{ messages.get("admin-switch-tenant-load-failed") }}</div>
+{% endif %}
+
+<div class="card" data-component="SwitchTenantList">
+  <div class="list-group list-group-flush">
+    {% for t in tenants %}
+    {% if t.tenant_id == current_tenant_id %}
+    <div class="list-group-item d-flex flex-wrap align-items-center justify-content-between gap-2 active" aria-current="true">
+      <span class="d-flex align-items-center gap-2">
+        <i class="fa-solid fa-building" aria-hidden="true"></i>
+        <span class="fw-semibold">{{ t.name }}</span>
+        {% if t.membership_type == "HOME" %}<span class="badge text-bg-light">{{ messages.get("admin-switch-tenant-home") }}</span>{% else %}<span class="badge text-bg-light">{{ messages.get("admin-switch-tenant-guest") }}</span>{% endif %}
+      </span>
+      <span class="badge text-bg-secondary">{{ messages.get("admin-switch-tenant-current") }}</span>
+    </div>
+    {% else %}
+    <a class="list-group-item list-group-item-action d-flex flex-wrap align-items-center justify-content-between gap-2" href="/{{ t.tenant_id }}/admin">
+      <span class="d-flex align-items-center gap-2">
+        <i class="fa-solid fa-building text-muted" aria-hidden="true"></i>
+        <span class="fw-semibold">{{ t.name }}</span>
+        {% if t.membership_type == "HOME" %}<span class="badge text-bg-light">{{ messages.get("admin-switch-tenant-home") }}</span>{% else %}<span class="badge text-bg-light">{{ messages.get("admin-switch-tenant-guest") }}</span>{% endif %}
+      </span>
+      <span class="text-primary"><i class="fa-solid fa-arrow-right-to-bracket me-1" aria-hidden="true"></i>{{ messages.get("admin-switch-tenant-open") }}</span>
+    </a>
+    {% endif %}
+    {% endfor %}
+    {% if tenants.is_empty() && !load_failed %}
+    <div class="list-group-item text-center text-muted py-4">{{ messages.get("admin-switch-tenant-empty") }}</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

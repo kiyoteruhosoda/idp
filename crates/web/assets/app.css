@@ -56,6 +56,14 @@ code {
   white-space: nowrap;
 }
 
+/* 表のセル内の識別子（テナント ID 等の <code>）は、既定の `code { word-break: break-all }` だと
+ * 狭い画面で 1 文字ずつ縦積みになり、ID 列が極端に細くなって一覧全体が崩れる。表内では折り返さず、
+ * はみ出す分は .table-responsive の横スクロールに任せる（上の見出し・ボタンと同じ方針）。 */
+.table-responsive td code {
+  white-space: nowrap;
+  word-break: normal;
+}
+
 /* パスワード表示切替ボタン（password_visibility.html の .password-toggle）の枠線を、
  * 隣接する入力欄（form-control: admin-login-username / admin-login-password 等）と揃える。
  * btn-outline-secondary の既定枠線色（--bs-secondary）だと入力欄の枠線色と食い違うため。 */

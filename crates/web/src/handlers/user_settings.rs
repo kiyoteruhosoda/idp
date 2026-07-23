@@ -9,7 +9,7 @@
 
 use crate::cookies;
 use crate::correlation::CorrelationId;
-use crate::dto::{AccountPasswordForm, SettingsQuery};
+use crate::dto::{AccountNameForm, AccountPasswordForm, SettingsQuery};
 use crate::handlers::{forwarded_context, found};
 use crate::i18n::{Locale, Messages};
 use crate::state::WebState;
@@ -21,7 +21,9 @@ use axum::response::{AppendHeaders, Html, IntoResponse, Response};
 use axum::Form;
 use idp_contracts::auth::{
     InternalAccountChangePasswordRequest, InternalAccountChangePasswordResponse,
+    InternalAccountProfileRequest, InternalAccountProfileResponse,
     InternalAccountUpdateLanguageRequest, InternalAccountUpdateLanguageResponse,
+    InternalAccountUpdateNameRequest, InternalAccountUpdateNameResponse,
 };
 
 /// 設定画面（`GET /{tenant_id}/settings`）。`?lang=` があれば言語 Cookie を保存し、ログイン中なら DB へも永続化する。
@@ -38,6 +40,33 @@ pub async fn page(
     let locale = Locale::resolve(query.lang.as_deref(), None, cookie_lang.as_deref(), accept);
     let from_admin = query.from.as_deref() == Some("admin");
 
+    // 表示名・ログイン識別子のプリフィル値を api から取得する（Messages は !Send のため await より先に）。
+    // 未ログイン・取得失敗時は空文字で描画する（フェイルソフト）。
+    let (current_name, preferred_username) =
+        match cookies::get(&headers, cookies::SSO_SESSION_COOKIE) {
+            Some(sso) => {
+                let req = InternalAccountProfileRequest {
+                    sso_session_id: sso,
+                };
+                match state.api.account_profile(&req).await {
+                    Ok(InternalAccountProfileResponse::Ok {
+                        name,
+                        preferred_username,
+                        ..
+                    }) => (
+                        name.unwrap_or_default(),
+                        preferred_username.unwrap_or_default(),
+                    ),
+                    Ok(_) => (String::new(), String::new()),
+                    Err(e) => {
+                        tracing::error!(error = %e, "account profile fetch call to api failed");
+                        (String::new(), String::new())
+                    }
+                }
+            }
+            None => (String::new(), String::new()),
+        };
+
     // Messages は FluentBundle を含み !Send のため、await をまたがないよう先にレンダリングして解放する。
     let body = {
         let messages = Messages::new(locale);
@@ -45,6 +74,8 @@ pub async fn page(
             messages: &messages,
             tenant: &tenant.prefix(),
             current_lang: locale.as_tag(),
+            current_name: &current_name,
+            preferred_username: &preferred_username,
             saved_key: query.saved.as_deref().and_then(saved_key_for),
             error_key: query.error.as_deref().and_then(error_key_for),
             from_admin,
@@ -150,9 +181,51 @@ pub async fn change_password(
     }
 }
 
+/// セルフサービスの表示名変更（`POST /{tenant_id}/settings/name`）。
+pub async fn change_name(
+    State(state): State<WebState>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Form(form): Form<AccountNameForm>,
+) -> Response {
+    let base = format!("{}/settings", tenant.prefix());
+    let suffix = if form.from.as_deref() == Some("admin") {
+        "&from=admin"
+    } else {
+        ""
+    };
+    let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
+        return found(&format!("{base}?error=session{suffix}"));
+    };
+    let request = InternalAccountUpdateNameRequest {
+        sso_session_id: sso,
+        name: form.name,
+    };
+    let outcome = match state.api.account_update_name(&request).await {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::error!(error = %e, "account update-name call to api failed");
+            return StatusCode::BAD_GATEWAY.into_response();
+        }
+    };
+    match outcome {
+        InternalAccountUpdateNameResponse::Ok => found(&format!("{base}?saved=name{suffix}")),
+        InternalAccountUpdateNameResponse::SessionExpired => {
+            found(&format!("{base}?error=session{suffix}"))
+        }
+        InternalAccountUpdateNameResponse::Invalid => {
+            found(&format!("{base}?error=name-invalid{suffix}"))
+        }
+        InternalAccountUpdateNameResponse::Internal => {
+            found(&format!("{base}?error=internal{suffix}"))
+        }
+    }
+}
+
 fn saved_key_for(saved: &str) -> Option<&'static str> {
     match saved {
         "password" => Some("user-settings-password-saved"),
+        "name" => Some("user-settings-name-saved"),
         _ => None,
     }
 }
@@ -164,6 +237,7 @@ fn error_key_for(error: &str) -> Option<&'static str> {
         "weak" => Some("user-settings-error-weak"),
         "session" => Some("user-settings-error-session"),
         "internal" => Some("user-settings-error-internal"),
+        "name-invalid" => Some("user-settings-error-name-invalid"),
         _ => None,
     }
 }
@@ -178,6 +252,8 @@ mod tests {
             messages: &messages,
             tenant: "/00000000-0000-7000-8000-000000000000",
             current_lang: "ja",
+            current_name: "",
+            preferred_username: "",
             saved_key: None,
             error_key: None,
             from_admin,
@@ -188,11 +264,11 @@ mod tests {
     fn back_link_to_admin_console_is_shown_only_when_opened_from_admin() {
         let html = render_settings(true);
         assert!(html.contains("/00000000-0000-7000-8000-000000000000/admin\""));
-        // フォーム送信（言語・パスワード）でも管理コンソール文脈を hidden で引き継ぐ。
+        // フォーム送信（表示名・言語・パスワード）でも管理コンソール文脈を hidden で引き継ぐ。
         assert_eq!(
             html.matches(r#"<input type="hidden" name="from" value="admin">"#)
                 .count(),
-            2
+            3
         );
 
         let html = render_settings(false);

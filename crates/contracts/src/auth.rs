@@ -777,3 +777,90 @@ pub enum InternalAccountUpdateLanguageResponse {
     /// api 内部エラー。
     Internal,
 }
+
+/// セルフサービスのプロフィール取得 API（`POST /internal/account/profile`）のリクエスト。
+///
+/// 設定画面が現在の表示名などを再表示（プリフィル）するために、SSO セッション経由で本人の
+/// プロフィールを取得する。取得のみで副作用は無い（POST なのは SSO を body で転送するため）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAccountProfileRequest {
+    /// SSO セッション Cookie の生値（web が転送）。
+    pub sso_session_id: String,
+}
+
+/// セルフサービスのプロフィール取得 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAccountProfileResponse {
+    Ok {
+        /// 表示名（未設定なら `None`）。
+        name: Option<String>,
+        /// ログイン識別子（未設定なら `None`）。表示のみ・変更不可。
+        preferred_username: Option<String>,
+        /// メールアドレス。
+        email: String,
+    },
+    /// SSO セッションが無い・期限切れ。
+    SessionExpired,
+    /// api 内部エラー。
+    Internal,
+}
+
+/// セルフサービスの表示名更新 API（`POST /internal/account/update-name`）のリクエスト。
+///
+/// ログイン済みユーザーが SSO セッション経由で自分の `users.name`（表示名）を更新する。
+/// `name` が空文字・空白のみ・`None` の場合は表示名を解除（DB は `NULL`）する。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAccountUpdateNameRequest {
+    /// SSO セッション Cookie の生値（web が転送）。
+    pub sso_session_id: String,
+    /// 新しい表示名。空・空白のみ・未指定は解除扱い。
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// セルフサービスの表示名更新 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAccountUpdateNameResponse {
+    Ok,
+    /// SSO セッションが無い・期限切れ。
+    SessionExpired,
+    /// 表示名が長すぎる等、値が不正。
+    Invalid,
+    /// api 内部エラー。
+    Internal,
+}
+
+/// 切り替え可能なテナント 1 件の要約（テナント切り替え UI 用）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountTenantSummary {
+    /// テナントの内部 ID（URL プレフィクスに使う）。
+    pub tenant_id: String,
+    /// テナント表示名。
+    pub name: String,
+    /// メンバーシップ種別（`HOME` / `GUEST`）。
+    pub membership_type: String,
+}
+
+/// セルフサービスの所属テナント一覧 API（`POST /internal/account/tenants`）のリクエスト。
+///
+/// ログイン中ユーザーが `ACTIVE` なメンバーシップを持つテナントを列挙する（テナント切り替え用）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAccountTenantsRequest {
+    /// SSO セッション Cookie の生値（web が転送）。
+    pub sso_session_id: String,
+}
+
+/// セルフサービスの所属テナント一覧 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAccountTenantsResponse {
+    Ok {
+        tenants: Vec<AccountTenantSummary>,
+    },
+    /// SSO セッションが無い・期限切れ。
+    SessionExpired,
+    /// api 内部エラー。
+    Internal,
+}

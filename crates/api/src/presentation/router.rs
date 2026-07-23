@@ -61,6 +61,20 @@ pub fn build(state: AppState) -> Router {
             "/internal/account/update-language",
             post(internal_auth::account_update_language),
         )
+        // セルフサービスのプロフィール取得・表示名更新（ログイン済みユーザーの設定画面）。
+        .route(
+            "/internal/account/profile",
+            post(internal_auth::account_profile),
+        )
+        .route(
+            "/internal/account/update-name",
+            post(internal_auth::account_update_name),
+        )
+        // ログイン中ユーザーの所属テナント列挙（テナント切り替え UI）。
+        .route(
+            "/internal/account/tenants",
+            post(internal_auth::account_tenants),
+        )
         .route("/internal/logout", post(internal_auth::logout))
         // パスワードリセット（忘失時。MT18）。未ログイン経路（web がフォームを仲介する）。
         .route(

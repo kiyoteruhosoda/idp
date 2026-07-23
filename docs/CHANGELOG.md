@@ -1,3 +1,25 @@
+## 2026-07-23（管理コンソール: 表示名の表示・変更、テナント切り替え、テナント一覧の折り返し修正、deploy 末尾に root URL）
+
+- **ヘッダに表示名を出す**: 管理コンソール右上（モバイルでは左上）のユーザーメニューが内部 ID（UUID）ではなく
+  表示名を出すようにした。`GET /admin/whoami` が `name`／`preferred_username` を返すよう拡張し、web は
+  「表示名 → ログイン識別子 → 内部 ID」の順で空でない最初の値を採用する。SSO セッション解決時に読み込む
+  ユーザー行から取得するため追加クエリは発生しない（`AuthorizedAdmin` に `name`／`preferred_username` を追加）。
+- **プロフィール設定に表示名の変更を追加**: 利用者のセルフサービス設定画面（`/{tenant_id}/settings`）に表示名
+  （`users.name`）の編集フォームを追加。空・空白のみは解除（`NULL`）に正規化する。内部 API
+  `POST /internal/account/profile`（取得）・`POST /internal/account/update-name`（更新）と
+  `AccountProfileService`・`UserRepository::update_name` を追加。
+- **テナント切り替え機能を追加**: ユーザーメニューに「テナントを切り替え」を追加し、`ACTIVE` なメンバーシップを
+  持つテナントの管理コンソールへ遷移できる画面（`GET /{tenant_id}/admin/switch-tenant`）を新設。SSO はホスト共有の
+  ため再ログインは不要（ADR-0009 §8）。内部 API `POST /internal/account/tenants`・`AccountTenantsService`・
+  `TenantMembershipRepository::list_active_for_user` を追加。
+- **管理コンソールのホーム表示の重複を解消**: ホーム見出し横のテナント名バッジと「現在のテナント: 〜」の二重表示を
+  1 箇所（「現在のテナント」行のバッジ）に統一。
+- **テナント一覧の折り返し崩れを修正**: 表セル内の識別子（`<code>`）が既定の `word-break: break-all` により
+  狭い画面で 1 文字ずつ縦積みになり ID 列が崩れていたのを、表内では折り返さず `.table-responsive` の横スクロールへ
+  逃がすよう修正（`.table-responsive td code`）。
+- **deploy.sh の末尾に root テナント URL を表示**: デプロイ完了時のまとめとして root テナントの管理コンソール URL・
+  ログイン URL を最後に出力するようにした。
+
 ## 2026-07-23（バージョン情報画面に DB マイグレーション適用状態を表示）
 
 - **バージョン情報画面（`/version`）に DB スキーマの適用状態を追加**: DB を直接参照できない運用者が、

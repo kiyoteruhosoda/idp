@@ -10,6 +10,8 @@
 
 use crate::application::account_language::AccountLanguageService;
 use crate::application::account_password::AccountPasswordService;
+use crate::application::account_profile::AccountProfileService;
+use crate::application::account_tenants::AccountTenantsService;
 use crate::application::admin_access::AdminAccessService;
 use crate::application::admin_login::AdminLoginService;
 use crate::application::audit::AuditService;
@@ -133,6 +135,10 @@ pub struct AppState {
     pub account_password: Arc<AccountPasswordService>,
     /// セルフサービスの表示言語変更（ログイン済みユーザーの設定画面。MT20）。
     pub account_language: Arc<AccountLanguageService>,
+    /// セルフサービスの表示名（プロフィール）取得・更新（ログイン済みユーザーの設定画面）。
+    pub account_profile: Arc<AccountProfileService>,
+    /// ログイン中ユーザーの所属テナント列挙（テナント切り替え UI）。
+    pub account_tenants: Arc<AccountTenantsService>,
     /// セルフサービス・パスワードリセット（忘失時。メールリンク経由。MT18）。
     pub password_reset: Arc<PasswordResetService>,
     /// ゲスト招待・メンバーシップ（ADR-0009 §3）。
@@ -215,6 +221,19 @@ impl AppState {
         let account_language = Arc::new(AccountLanguageService::new(
             sso_sessions.clone(),
             users.clone(),
+            clock.clone(),
+        ));
+        // セルフサービスの表示名（プロフィール）取得・更新（ログイン済みユーザー）。
+        let account_profile = Arc::new(AccountProfileService::new(
+            sso_sessions.clone(),
+            users.clone(),
+            clock.clone(),
+        ));
+        // ログイン中ユーザーの所属テナント列挙（テナント切り替え UI）。
+        let account_tenants = Arc::new(AccountTenantsService::new(
+            sso_sessions.clone(),
+            tenant_memberships.clone(),
+            tenants.clone(),
             clock.clone(),
         ));
         // パスワードリセット（忘失時。MT18）。SMTP はシステム設定（MT14）、配送は MT17 の Mailer を
@@ -563,6 +582,8 @@ impl AppState {
             system_settings,
             account_password,
             account_language,
+            account_profile,
+            account_tenants,
             password_reset,
             invitations,
             audit_query,
