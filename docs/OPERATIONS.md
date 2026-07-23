@@ -134,7 +134,8 @@ curl -sS "$ISSUER/admin/audit-logs?event_type=token.issued&client_id=<cid>&from=
 ## 利用者に管理権限を付与／剥奪したいとき
 
 管理コンソールの権限付与 UI は未実装のため、SQL で `user_permissions` を操作する（権限モデルは
-ADR-0006・ADR-0009 §4）。付与できる権限コードは `permissions` マスタに存在するもの
+ADR-0006・ADR-0009 §4。権限コードとエンドポイント別の要求権限の一覧は `docs/PERMISSIONS.md`）。
+付与できる権限コードは `permissions` マスタに存在するもの
 （`idp.system.admin` / `idp.tenant.admin`）に限り、**scope（`tenant_id`）の明示が必須**。
 初期管理者（`admin@example.com`）には seed で `idp.system.admin`（scope = root）が付与済み。
 
