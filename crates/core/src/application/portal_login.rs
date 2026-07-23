@@ -21,7 +21,7 @@ use crate::application::totp_registration::verify_totp_code;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
-use crate::domain::password::PasswordHasher;
+use crate::domain::password::{validate_password_strength, PasswordHasher};
 use crate::domain::rate_limit::LoginRateLimiter;
 use crate::domain::repositories::{SsoSessionRepository, TotpSecretRepository, UserRepository};
 use crate::domain::sso_session::SsoSession;
@@ -45,7 +45,8 @@ const MFA_TICKET_TTL_SECS: i64 = 300;
 
 #[derive(Debug)]
 pub struct PortalLoginCommand {
-    pub username: String,
+    /// ログイン識別子（メールアドレス。ADR-0009 §8）。
+    pub email: String,
     pub password: String,
 }
 
@@ -53,6 +54,16 @@ pub struct PortalLoginCommand {
 pub struct PortalMfaCommand {
     pub mfa_ticket: String,
     pub totp_code: String,
+}
+
+/// ポータルの強制パスワード変更（ADR-0009 §5）のコマンド。ポータルログインは `auth_session_id` の
+/// ような一時状態を持たないため、管理コンソールと同じく現行パスワードを含め毎回フルに再検証する。
+#[derive(Debug)]
+pub struct PortalChangePasswordCommand {
+    /// ログイン識別子（メールアドレス）。
+    pub email: String,
+    pub current_password: String,
+    pub new_password: String,
 }
 
 /// ポータルログインの結果。Presentation は画面（HTML）に写す。
@@ -68,14 +79,35 @@ pub enum PortalLoginOutcome {
     },
     /// 自己登録アカウントのメール未検証（SEC6b）。
     EmailVerificationRequired,
-    /// 強制パスワード変更が必要（ADR-0009 §5）。ポータルからは変更できないため案内のみ。
-    PasswordChangeRequired,
+    /// 強制パスワード変更が必要（ADR-0009 §5）。web は強制パスワード変更フォームへ誘導する
+    /// （管理コンソールと同方式。`email` は入力値をフォーム再表示用に返す）。
+    PasswordChangeRequired {
+        email: String,
+    },
     /// IP 単位のレート制限超過。
     RateLimited,
     /// 資格情報不正（ユーザー不存在・パスワード不一致・無効アカウントを区別しない）。
     InvalidCredentials,
     /// アカウントロック中。
     Locked,
+    Internal(String),
+}
+
+/// ポータルの強制パスワード変更の結果。
+pub enum PortalChangePasswordOutcome {
+    /// 変更成功。SSO Cookie を発行してアカウント画面へ 302 する。
+    Success {
+        sso_session_id: String,
+        user_language: Option<String>,
+    },
+    /// IP 単位のレート制限超過。
+    RateLimited,
+    /// 資格情報不正（利用者不存在・現行パスワード不一致・無効アカウントを区別しない）。
+    InvalidCredentials,
+    /// アカウントロック中。
+    Locked,
+    /// 新パスワードが強度要件を満たさない。
+    WeakPassword,
     Internal(String),
 }
 
@@ -157,8 +189,8 @@ impl PortalLoginService {
             }
         }
 
-        // 2. ユーザー検索（username → 見つからなければ email）。認証は所属元テナント限定（ADR-0009 §8）。
-        let user = match self.find_user(tenant_id, &cmd.username).await {
+        // 2. ユーザー検索（ログイン識別子はメールアドレスに統一）。認証は所属元テナント限定（ADR-0009 §8）。
+        let user = match self.users.find_by_email(tenant_id, &cmd.email).await {
             Ok(Some(u)) => u,
             Ok(None) => {
                 self.record_failure(tenant_id, None, "unknown_user", ctx)
@@ -214,9 +246,10 @@ impl PortalLoginService {
             return PortalLoginOutcome::EmailVerificationRequired;
         }
 
-        // 8. 強制パスワード変更（ADR-0009 §5）。ポータルからは変更手段を提供しないため案内のみ。
+        // 8. 強制パスワード変更（ADR-0009 §5）。SSO はまだ発行せず、強制変更フォームへ誘導する
+        //    （管理コンソールと同方式。`change_password` で現行パスワードを含め再検証する）。
         if user.must_change_password {
-            return PortalLoginOutcome::PasswordChangeRequired;
+            return PortalLoginOutcome::PasswordChangeRequired { email: cmd.email };
         }
 
         // 9. TOTP（MFA）が設定済みなら SSO を発行せず TOTP 入力ステップへ誘導する。
@@ -235,6 +268,124 @@ impl PortalLoginService {
             Err(e) => return PortalLoginOutcome::Internal(e),
         };
         PortalLoginOutcome::Success {
+            sso_session_id,
+            user_language: user.language.clone(),
+        }
+    }
+
+    /// 強制パスワード変更（ADR-0009 §5）。ポータルログインを現行パスワードを含めフルに再検証し、
+    /// 成功時に新パスワードを保存して SSO セッションを発行する（管理コンソールの `change_password` と
+    /// 同方式。ポータルは admin 権限を要求しない点だけが異なる）。この状態のユーザーは自己登録 MFA を
+    /// 設定できないため（SSO が必要）、変更後に改めて TOTP 判定へ進む必要はない。
+    pub async fn change_password(
+        &self,
+        tenant: TenantContext,
+        cmd: PortalChangePasswordCommand,
+        ctx: &RequestContext,
+    ) -> PortalChangePasswordOutcome {
+        let now = self.clock.now();
+        let tenant_id = tenant.tenant_id();
+
+        if let Some(ip) = &ctx.ip_address {
+            if !self.rate_limiter.check_and_record(ip, now) {
+                self.record_failure(tenant_id, None, "ip_rate_limited", ctx)
+                    .await;
+                return PortalChangePasswordOutcome::RateLimited;
+            }
+        }
+
+        let user = match self.users.find_by_email(tenant_id, &cmd.email).await {
+            Ok(Some(u)) => u,
+            Ok(None) => return PortalChangePasswordOutcome::InvalidCredentials,
+            Err(e) => return PortalChangePasswordOutcome::Internal(e.to_string()),
+        };
+
+        if user.is_locked_at(now) {
+            return PortalChangePasswordOutcome::Locked;
+        }
+        if !user.is_active() {
+            return PortalChangePasswordOutcome::InvalidCredentials;
+        }
+        if !user.must_change_password {
+            // 変更不要な状態でこのエンドポイントに来るのは想定外（多重送信等）。fail-closed。
+            return PortalChangePasswordOutcome::InvalidCredentials;
+        }
+
+        let verified = match self
+            .hasher
+            .verify(&cmd.current_password, &user.password_hash)
+        {
+            Ok(v) => v,
+            Err(e) => return PortalChangePasswordOutcome::Internal(e.to_string()),
+        };
+        if !verified {
+            // 現行パスワード不一致は通常ログインと同じ失敗カウント・ロック判定に載せる。
+            let now = self.clock.now();
+            let failed = user.failed_login_count + 1;
+            let locked_until = if failed >= MAX_FAILED_LOGINS {
+                Some(now + Duration::minutes(LOCK_DURATION_MINUTES))
+            } else {
+                None
+            };
+            if let Err(e) = self
+                .users
+                .update_login_state(user.id, failed, locked_until)
+                .await
+            {
+                return PortalChangePasswordOutcome::Internal(e.to_string());
+            }
+            self.record_failure(tenant_id, Some(user.id), "invalid_password", ctx)
+                .await;
+            if locked_until.is_some() {
+                self.audit
+                    .record(
+                        AuditEventType::LoginLocked,
+                        AuditResult::Failure,
+                        Some(tenant_id),
+                        Some(user.id),
+                        None,
+                        Some("too_many_failures"),
+                        ctx,
+                    )
+                    .await;
+                return PortalChangePasswordOutcome::Locked;
+            }
+            return PortalChangePasswordOutcome::InvalidCredentials;
+        }
+
+        if validate_password_strength(&cmd.new_password).is_err() {
+            return PortalChangePasswordOutcome::WeakPassword;
+        }
+        let new_hash = match self.hasher.hash(&cmd.new_password) {
+            Ok(h) => h,
+            Err(e) => return PortalChangePasswordOutcome::Internal(e.to_string()),
+        };
+        if let Err(e) = self.users.update_password(user.id, &new_hash).await {
+            return PortalChangePasswordOutcome::Internal(e.to_string());
+        }
+        self.audit
+            .record(
+                AuditEventType::PasswordChanged,
+                AuditResult::Success,
+                Some(tenant_id),
+                Some(user.id),
+                None,
+                None,
+                ctx,
+            )
+            .await;
+
+        if user.failed_login_count > 0 || user.locked_until.is_some() {
+            if let Err(e) = self.users.update_login_state(user.id, 0, None).await {
+                return PortalChangePasswordOutcome::Internal(e.to_string());
+            }
+        }
+
+        let sso_session_id = match self.issue_sso(tenant_id, &user, ctx, now).await {
+            Ok(id) => id,
+            Err(e) => return PortalChangePasswordOutcome::Internal(e),
+        };
+        PortalChangePasswordOutcome::Success {
             sso_session_id,
             user_language: user.language.clone(),
         }
@@ -366,20 +517,6 @@ impl PortalLoginService {
             ticket,
             now.timestamp(),
         )
-    }
-
-    async fn find_user(
-        &self,
-        tenant_id: TenantId,
-        username: &str,
-    ) -> Result<Option<User>, crate::domain::error::DomainError> {
-        if let Some(user) = self.users.find_by_username(tenant_id, username).await? {
-            return Ok(Some(user));
-        }
-        if username.contains('@') {
-            return self.users.find_by_email(tenant_id, username).await;
-        }
-        Ok(None)
     }
 
     /// パスワード不一致時の失敗カウント更新とロック判定（login.rs / admin_login.rs と同ポリシー）。

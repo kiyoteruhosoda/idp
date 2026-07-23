@@ -30,7 +30,8 @@ use idp_contracts::auth::{
     InternalPasskeyRegisterCompleteResponse, InternalPasswordResetCompleteRequest,
     InternalPasswordResetCompleteResponse, InternalPasswordResetRequestRequest,
     InternalPasswordResetRequestResponse, InternalPortalAuthenticateRequest,
-    InternalPortalAuthenticateResponse, InternalPortalMfaRequest, InternalPortalMfaResponse,
+    InternalPortalAuthenticateResponse, InternalPortalChangePasswordRequest,
+    InternalPortalChangePasswordResponse, InternalPortalMfaRequest, InternalPortalMfaResponse,
     InternalTotpConfirmRequest, InternalTotpConfirmResponse, InternalTotpDeleteRequest,
     InternalTotpDeleteResponse, InternalTotpSetupRequest, InternalTotpSetupResponse,
     InternalVerifyTotpRequest, InternalVerifyTotpResponse,
@@ -145,6 +146,20 @@ impl ApiClient {
     ) -> anyhow::Result<InternalPortalMfaResponse> {
         self.post_internal("/internal/authenticate/portal/mfa", correlation_id, req)
             .await
+    }
+
+    /// ポータルの強制パスワード変更（`POST /internal/authenticate/portal/change-password`、ADR-0009 §5）。
+    pub async fn authenticate_portal_change_password(
+        &self,
+        correlation_id: &str,
+        req: &InternalPortalChangePasswordRequest,
+    ) -> anyhow::Result<InternalPortalChangePasswordResponse> {
+        self.post_internal(
+            "/internal/authenticate/portal/change-password",
+            correlation_id,
+            req,
+        )
+        .await
     }
 
     /// 管理コンソールの強制パスワード変更（`POST /internal/authenticate/admin/change-password`）。

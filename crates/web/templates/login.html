@@ -10,8 +10,8 @@
     <form method="post" action="">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <div class="mb-3">
-        <label class="form-label" for="login-username">{{ messages.get("login-username") }}</label>
-        <input type="text" class="form-control" id="login-username" name="username" autocomplete="username" required autofocus>
+        <label class="form-label" for="login-email">{{ messages.get("login-email") }}</label>
+        <input type="email" class="form-control" id="login-email" name="email" autocomplete="email" required autofocus>
       </div>
       <div class="mb-3">
         <label class="form-label" for="login-password">{{ messages.get("login-password") }}</label>

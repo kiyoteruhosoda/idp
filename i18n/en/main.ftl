@@ -1,10 +1,10 @@
 # Login screen messages (English is the source of truth; keys are shared across locales).
 login-title = Sign in
-login-username = Username or email
+login-email = Email address
 login-password = Password
 login-forgot-password = Forgot your password?
 login-submit = Sign in
-login-error-invalid-credentials = The username or password is incorrect.
+login-error-invalid-credentials = The email address or password is incorrect.
 login-error-locked = This account is temporarily locked. Please try again later.
 login-error-email-not-verified = Please verify your email address before signing in. Check your inbox for the verification link.
 login-error-session-expired = Your sign-in session has expired. Please start over from the application.
@@ -14,7 +14,6 @@ login-error-rate-limited = Too many attempts. Please wait a moment and try again
 # End-user portal login (standalone sign-in to the IdP account page, without an OIDC app).
 portal-login-title = Sign in to your account
 portal-login-lead = Sign in to manage your account settings.
-portal-login-password-change-required = Your password must be changed before you can sign in here. Please use the "Forgot your password?" link to reset it, or contact your administrator.
 
 # Forced password change (ADR-0009 §5). Shown after signing in with an auto-generated password.
 password-change-title = Change your password

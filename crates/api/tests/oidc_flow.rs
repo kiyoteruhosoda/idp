@@ -92,10 +92,11 @@ async fn internal_authenticate(
     password: &str,
     csrf: &str,
 ) -> (StatusCode, Value) {
+    // ログイン識別子はメールアドレスに統一（`register_user` は email = {username}@example.com で作る）。
     let body = json!({
         "tenant_id": tenant,
         "auth_session_id": auth_session,
-        "username": username,
+        "email": format!("{username}@example.com"),
         "password": password,
         "csrf_token": csrf,
     });

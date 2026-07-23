@@ -12,11 +12,11 @@ use super::locale;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::csrf::portal_csrf_token;
-use crate::dto::{LoginForm, PortalTotpForm};
+use crate::dto::{ForcedPasswordChangeForm, LoginForm, PortalTotpForm};
 use crate::handlers::{forwarded_context, found};
 use crate::i18n::{Locale, Messages};
 use crate::state::WebState;
-use crate::templates::{render, MessagePage, PortalLogin, PortalMfa};
+use crate::templates::{render, ForcedPasswordChange, MessagePage, PortalLogin, PortalMfa};
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, State};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -24,6 +24,7 @@ use axum::response::{AppendHeaders, Html, IntoResponse, Response};
 use axum::Form;
 use idp_contracts::auth::{
     InternalPortalAuthenticateRequest, InternalPortalAuthenticateResponse,
+    InternalPortalChangePasswordRequest, InternalPortalChangePasswordResponse,
     InternalPortalMfaRequest, InternalPortalMfaResponse,
 };
 
@@ -89,7 +90,7 @@ pub async fn login(
     let ctx = forwarded_context(headers, correlation);
     let request = InternalPortalAuthenticateRequest {
         tenant_id: Some(tenant.0.clone()),
-        username: form.username,
+        email: form.email,
         password: form.password,
         ip_address: ctx.ip_address,
         user_agent: ctx.user_agent,
@@ -140,11 +141,18 @@ pub async fn login(
             "login-error-email-not-verified",
             StatusCode::FORBIDDEN,
         ),
-        InternalPortalAuthenticateResponse::PasswordChangeRequired => message_page(
-            &messages,
-            "portal-login-password-change-required",
-            StatusCode::FORBIDDEN,
-        ),
+        InternalPortalAuthenticateResponse::PasswordChangeRequired { email } => {
+            // 強制パスワード変更（ADR-0009 §5）。管理コンソールと同じ共有画面を流用し、SSO はまだ
+            // 発行しない。portal_csrf Cookie は維持し、変更フォームへ同じ csrf を埋め込む。
+            Html(render_password_change_form(
+                &messages,
+                &tenant.prefix(),
+                &csrf,
+                &email,
+                None,
+            ))
+            .into_response()
+        }
         InternalPortalAuthenticateResponse::RateLimited => reshow_login(
             &messages,
             &tenant.prefix(),
@@ -167,6 +175,135 @@ pub async fn login(
             "login-error-locked",
         ),
         InternalPortalAuthenticateResponse::Internal => {
+            (StatusCode::INTERNAL_SERVER_ERROR, Html(String::new())).into_response()
+        }
+    }
+}
+
+/// ポータルの強制パスワード変更ページ（`GET /{tenant_id}/login/password-change`、ADR-0009 §5）。
+/// ブックマーク・再読込対策として直接アクセスはログイン画面へ誘導する（本人性は `POST /login` からの
+/// フォーム遷移で確認済みの email を要するため、GET 単独では変更を開始できない。管理コンソールと同方式）。
+pub async fn password_change_page(Extension(tenant): Extension<WebTenant>) -> Response {
+    found(&format!("{}/login", tenant.prefix()))
+}
+
+/// ポータルの強制パスワード変更の実行（`POST /{tenant_id}/login/password-change`、ADR-0009 §5）。
+/// 成功時は SSO Cookie を発行してアカウント画面へ 302 する（管理コンソールと同じ共有画面を流用）。
+pub async fn password_change(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Form(form): Form<ForcedPasswordChangeForm>,
+) -> Response {
+    let secure = state.config.cookie_secure();
+
+    // CSRF 検証（ログイン時と同じ portal_csrf の種で照合する）。
+    let csrf_id = cookies::get(&headers, cookies::PORTAL_CSRF_COOKIE);
+    let csrf_ok = csrf_id
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(|id| portal_csrf_token(id, state.config.csrf_secret()) == form.csrf_token)
+        .unwrap_or(false);
+    if !csrf_ok {
+        let messages = Messages::new(locale(&headers));
+        return (
+            StatusCode::BAD_REQUEST,
+            Html(render_password_change_form(
+                &messages,
+                &tenant.prefix(),
+                "",
+                &form.email,
+                Some("login-error-csrf"),
+            )),
+        )
+            .into_response();
+    }
+    let csrf = portal_csrf_token(&csrf_id.unwrap_or_default(), state.config.csrf_secret());
+
+    if form.new_password != form.new_password_confirm {
+        let messages = Messages::new(locale(&headers));
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Html(render_password_change_form(
+                &messages,
+                &tenant.prefix(),
+                &csrf,
+                &form.email,
+                Some("password-change-error-mismatch"),
+            )),
+        )
+            .into_response();
+    }
+
+    let ctx = forwarded_context(&headers, &correlation);
+    let request = InternalPortalChangePasswordRequest {
+        tenant_id: Some(tenant.0.clone()),
+        email: form.email.clone(),
+        current_password: form.current_password,
+        new_password: form.new_password,
+        ip_address: ctx.ip_address,
+        user_agent: ctx.user_agent,
+    };
+    let outcome = match state
+        .api
+        .authenticate_portal_change_password(&ctx.correlation_id, &request)
+        .await
+    {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::error!(error = %e, "portal change-password call to api failed");
+            return StatusCode::BAD_GATEWAY.into_response();
+        }
+    };
+
+    let messages = Messages::new(locale(&headers));
+    match outcome {
+        InternalPortalChangePasswordResponse::Success {
+            sso_session_id,
+            sso_absolute_ttl_secs,
+            user_language,
+        } => sso_success_response(
+            &sso_session_id,
+            sso_absolute_ttl_secs,
+            user_language.as_deref(),
+            &tenant,
+            secure,
+            &[cookies::PORTAL_CSRF_COOKIE],
+        ),
+        InternalPortalChangePasswordResponse::RateLimited => reshow_password_change(
+            &messages,
+            &tenant.prefix(),
+            StatusCode::TOO_MANY_REQUESTS,
+            &csrf,
+            &form.email,
+            "login-error-rate-limited",
+        ),
+        InternalPortalChangePasswordResponse::InvalidCredentials => reshow_password_change(
+            &messages,
+            &tenant.prefix(),
+            StatusCode::UNAUTHORIZED,
+            &csrf,
+            &form.email,
+            "password-change-error-invalid-current",
+        ),
+        InternalPortalChangePasswordResponse::Locked => reshow_password_change(
+            &messages,
+            &tenant.prefix(),
+            StatusCode::FORBIDDEN,
+            &csrf,
+            &form.email,
+            "login-error-locked",
+        ),
+        InternalPortalChangePasswordResponse::WeakPassword => reshow_password_change(
+            &messages,
+            &tenant.prefix(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &csrf,
+            &form.email,
+            "password-change-error-weak",
+        ),
+        InternalPortalChangePasswordResponse::Internal => {
             (StatusCode::INTERNAL_SERVER_ERROR, Html(String::new())).into_response()
         }
     }
@@ -370,6 +507,45 @@ fn render_login_form(
         csrf,
         error_key,
     })
+}
+
+/// 強制パスワード変更フォームの HTML を共有テンプレート（[`ForcedPasswordChange`]）から描画する。
+/// 送信先はポータルの `POST /{tenant_id}/login/password-change`（管理コンソールは別 action）。
+fn render_password_change_form(
+    messages: &Messages,
+    tenant_prefix: &str,
+    csrf: &str,
+    email: &str,
+    error_key: Option<&str>,
+) -> String {
+    render(&ForcedPasswordChange {
+        messages,
+        action: &format!("{tenant_prefix}/login/password-change"),
+        csrf,
+        email,
+        error_key,
+    })
+}
+
+fn reshow_password_change(
+    messages: &Messages,
+    tenant_prefix: &str,
+    status: StatusCode,
+    csrf: &str,
+    email: &str,
+    error_key: &str,
+) -> Response {
+    (
+        status,
+        Html(render_password_change_form(
+            messages,
+            tenant_prefix,
+            csrf,
+            email,
+            Some(error_key),
+        )),
+    )
+        .into_response()
 }
 
 fn reshow_login(

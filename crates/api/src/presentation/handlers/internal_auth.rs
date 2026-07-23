@@ -25,7 +25,8 @@ use crate::application::change_password::{ChangePasswordCommand, ChangePasswordO
 use crate::application::login::{LoginCommand, LoginOutcome};
 use crate::application::password_reset::{RequestResetOutcome, ResetPasswordOutcome};
 use crate::application::portal_login::{
-    PortalLoginCommand, PortalLoginOutcome, PortalMfaCommand, PortalMfaOutcome,
+    PortalChangePasswordCommand, PortalChangePasswordOutcome, PortalLoginCommand,
+    PortalLoginOutcome, PortalMfaCommand, PortalMfaOutcome,
 };
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::state::AppState;
@@ -44,7 +45,8 @@ use idp_contracts::auth::{
     InternalChangePasswordResponse, InternalLogoutRequest, InternalPasswordResetCompleteRequest,
     InternalPasswordResetCompleteResponse, InternalPasswordResetRequestRequest,
     InternalPasswordResetRequestResponse, InternalPortalAuthenticateRequest,
-    InternalPortalAuthenticateResponse, InternalPortalMfaRequest, InternalPortalMfaResponse,
+    InternalPortalAuthenticateResponse, InternalPortalChangePasswordRequest,
+    InternalPortalChangePasswordResponse, InternalPortalMfaRequest, InternalPortalMfaResponse,
 };
 
 /// 内部サービス認証トークンを載せるヘッダ名（小文字。`HeaderMap` は大小無視で引ける）。
@@ -91,7 +93,7 @@ pub async fn authenticate(
             tenant,
             LoginCommand {
                 auth_session_id: req.auth_session_id,
-                username: req.username,
+                email: req.email,
                 password: req.password,
                 csrf_token: req.csrf_token,
             },
@@ -252,7 +254,7 @@ pub async fn authenticate_admin(
         .login(
             tenant,
             AdminLoginCommand {
-                username: req.username,
+                email: req.email,
                 password: req.password,
             },
             &ctx,
@@ -272,8 +274,8 @@ pub async fn authenticate_admin(
         }
         AdminLoginOutcome::Locked => InternalAdminAuthenticateResponse::Locked,
         AdminLoginOutcome::Forbidden => InternalAdminAuthenticateResponse::Forbidden,
-        AdminLoginOutcome::PasswordChangeRequired { username } => {
-            InternalAdminAuthenticateResponse::PasswordChangeRequired { username }
+        AdminLoginOutcome::PasswordChangeRequired { email } => {
+            InternalAdminAuthenticateResponse::PasswordChangeRequired { email }
         }
         AdminLoginOutcome::WeakPassword => {
             tracing::error!("unexpected WeakPassword outcome from admin authenticate");
@@ -304,7 +306,7 @@ pub async fn authenticate_portal(
         .login(
             tenant,
             PortalLoginCommand {
-                username: req.username,
+                email: req.email,
                 password: req.password,
             },
             &ctx,
@@ -326,8 +328,8 @@ pub async fn authenticate_portal(
         PortalLoginOutcome::EmailVerificationRequired => {
             InternalPortalAuthenticateResponse::EmailVerificationRequired
         }
-        PortalLoginOutcome::PasswordChangeRequired => {
-            InternalPortalAuthenticateResponse::PasswordChangeRequired
+        PortalLoginOutcome::PasswordChangeRequired { email } => {
+            InternalPortalAuthenticateResponse::PasswordChangeRequired { email }
         }
         PortalLoginOutcome::RateLimited => InternalPortalAuthenticateResponse::RateLimited,
         PortalLoginOutcome::InvalidCredentials => {
@@ -385,6 +387,58 @@ pub async fn authenticate_portal_mfa(
     }))
 }
 
+/// ポータルの強制パスワード変更（`POST /internal/authenticate/portal/change-password`、ADR-0009 §5）。
+/// ポータルログインは一時状態を持たないため、現行パスワードを含めフルに再検証する（admin 権限は不要）。
+pub async fn authenticate_portal_change_password(
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Json(req): Json<InternalPortalChangePasswordRequest>,
+) -> Result<Json<InternalPortalChangePasswordResponse>, Response> {
+    let ctx = RequestContext {
+        correlation_id: correlation.0,
+        ip_address: req.ip_address,
+        user_agent: req.user_agent,
+    };
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let outcome = state
+        .portal_login
+        .change_password(
+            tenant,
+            PortalChangePasswordCommand {
+                email: req.email,
+                current_password: req.current_password,
+                new_password: req.new_password,
+            },
+            &ctx,
+        )
+        .await;
+    let ttl = state.config.sso_absolute_ttl().as_secs();
+    Ok(Json(match outcome {
+        PortalChangePasswordOutcome::Success {
+            sso_session_id,
+            user_language,
+        } => InternalPortalChangePasswordResponse::Success {
+            sso_session_id,
+            sso_absolute_ttl_secs: ttl,
+            user_language,
+        },
+        PortalChangePasswordOutcome::RateLimited => {
+            InternalPortalChangePasswordResponse::RateLimited
+        }
+        PortalChangePasswordOutcome::InvalidCredentials => {
+            InternalPortalChangePasswordResponse::InvalidCredentials
+        }
+        PortalChangePasswordOutcome::Locked => InternalPortalChangePasswordResponse::Locked,
+        PortalChangePasswordOutcome::WeakPassword => {
+            InternalPortalChangePasswordResponse::WeakPassword
+        }
+        PortalChangePasswordOutcome::Internal(e) => {
+            tracing::error!(error = %e, "internal portal change-password failed with internal error");
+            InternalPortalChangePasswordResponse::Internal
+        }
+    }))
+}
+
 /// 管理コンソールの強制パスワード変更（`POST /internal/authenticate/admin/change-password`、
 /// ADR-0009 §5）。管理ログインは一時状態を持たないため、現行パスワードを含めフルに再検証する。
 pub async fn admin_change_password(
@@ -403,7 +457,7 @@ pub async fn admin_change_password(
         .change_password(
             tenant,
             AdminChangePasswordCommand {
-                username: req.username,
+                email: req.email,
                 current_password: req.current_password,
                 new_password: req.new_password,
             },

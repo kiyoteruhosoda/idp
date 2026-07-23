@@ -42,6 +42,11 @@ pub fn build(state: AppState) -> Router {
             "/internal/authenticate/portal/mfa",
             post(internal_auth::authenticate_portal_mfa),
         )
+        // ポータルの強制パスワード変更（初回ログイン時。ADR-0009 §5）。
+        .route(
+            "/internal/authenticate/portal/change-password",
+            post(internal_auth::authenticate_portal_change_password),
+        )
         .route(
             "/internal/change-password",
             post(internal_auth::change_password),

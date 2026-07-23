@@ -36,7 +36,8 @@ const LOCK_DURATION_MINUTES: i64 = 15;
 
 #[derive(Debug)]
 pub struct AdminLoginCommand {
-    pub username: String,
+    /// ログイン識別子（メールアドレス。ADR-0009 §8）。
+    pub email: String,
     pub password: String,
 }
 
@@ -44,7 +45,8 @@ pub struct AdminLoginCommand {
 /// `auth_session_id` のような一時状態を持たないため、現行パスワードを含め毎回フルに再検証する。
 #[derive(Debug)]
 pub struct AdminChangePasswordCommand {
-    pub username: String,
+    /// ログイン識別子（メールアドレス。ADR-0009 §8）。
+    pub email: String,
     pub current_password: String,
     pub new_password: String,
 }
@@ -58,7 +60,7 @@ pub enum AdminLoginOutcome {
     /// 認証成功・管理権限保有だが `must_change_password`（ADR-0009 §5）。パスワード変更画面へ誘導する。
     /// SSO はまだ発行しない（変更完了までは他の操作を許可しない）。
     PasswordChangeRequired {
-        username: String,
+        email: String,
     },
     /// IP 単位のレート制限超過。
     RateLimited,
@@ -139,9 +141,9 @@ impl AdminLoginService {
             }
         }
 
-        // 2. ユーザー検索（username → 見つからなければ email として検索）。
+        // 2. ユーザー検索（ログイン識別子はメールアドレスに統一）。
         //    認証は所属元テナント限定（ADR-0009 §8）。
-        let user = match self.find_user(tenant_id, &cmd.username).await {
+        let user = match self.users.find_by_email(tenant_id, &cmd.email).await {
             Ok(Some(u)) => u,
             Ok(None) => {
                 self.audit
@@ -234,9 +236,7 @@ impl AdminLoginService {
 
         // 6.5. 強制パスワード変更（ADR-0009 §5）。SSO はまだ発行せず変更画面へ誘導する。
         if user.must_change_password {
-            return AdminLoginOutcome::PasswordChangeRequired {
-                username: cmd.username,
-            };
+            return AdminLoginOutcome::PasswordChangeRequired { email: cmd.email };
         }
 
         // 7. 成功: 失敗カウンタとロックをリセットする。
@@ -306,7 +306,7 @@ impl AdminLoginService {
             }
         }
 
-        let user = match self.find_user(tenant_id, &cmd.username).await {
+        let user = match self.users.find_by_email(tenant_id, &cmd.email).await {
             Ok(Some(u)) => u,
             Ok(None) => return AdminLoginOutcome::InvalidCredentials,
             Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
@@ -446,20 +446,6 @@ impl AdminLoginService {
                 ctx,
             )
             .await;
-    }
-
-    async fn find_user(
-        &self,
-        tenant_id: TenantId,
-        username: &str,
-    ) -> Result<Option<User>, crate::domain::error::DomainError> {
-        if let Some(user) = self.users.find_by_username(tenant_id, username).await? {
-            return Ok(Some(user));
-        }
-        if username.contains('@') {
-            return self.users.find_by_email(tenant_id, username).await;
-        }
-        Ok(None)
     }
 
     /// パスワード不一致時の失敗カウント更新とロック判定（login.rs と同ポリシー）。

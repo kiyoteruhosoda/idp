@@ -133,16 +133,19 @@ pub struct PasswordChangeTemplate<'a> {
     pub error_key: Option<&'a str>,
 }
 
-/// 管理コンソールの強制パスワード変更画面（`GET/POST /{tenant_id}/admin/password-change`、
-/// ADR-0009 §5）。管理ログインは一時状態を持たないため `username` を隠しフィールドで維持する。
+/// 強制パスワード変更画面（初回ログイン時。ADR-0009 §5）。管理コンソールログイン
+/// （`POST /{tenant_id}/admin/password-change`）とポータル（一般）ログイン
+/// （`POST /{tenant_id}/login/password-change`）で共有する。どちらも一時状態を持たないため、
+/// `email`（ログイン識別子）を隠しフィールドで維持し、フォーム送信先は `action` で切り替える。
+/// OIDC ログインの強制変更（[`PasswordChangeTemplate`]）は `auth_session_id` で本人を識別するため別画面。
 #[derive(Template)]
-#[template(path = "console/password_change.html")]
-pub struct AdminPasswordChange<'a> {
+#[template(path = "password_change_forced.html")]
+pub struct ForcedPasswordChange<'a> {
     pub messages: &'a Messages,
-    /// `/{tenant_id}` プレフィクス（フォーム送信先の組み立てに使う。ADR-0009 §6）。
-    pub tenant_prefix: &'a str,
+    /// フォーム送信先の絶対パス（例 `/{tenant_id}/admin/password-change`）。
+    pub action: &'a str,
     pub csrf: &'a str,
-    pub username: &'a str,
+    pub email: &'a str,
     pub error_key: Option<&'a str>,
 }
 

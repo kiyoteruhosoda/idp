@@ -16,11 +16,11 @@ use crate::api_client::AdminSession;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::csrf::admin_csrf_token;
-use crate::dto::{AdminPasswordChangeForm, LoginForm};
+use crate::dto::{ForcedPasswordChangeForm, LoginForm};
 use crate::handlers::{forwarded_context, found};
 use crate::i18n::Messages;
 use crate::state::WebState;
-use crate::templates::{render, AdminPasswordChange, ConsoleHome, ConsoleLogin, MessagePage};
+use crate::templates::{render, ConsoleHome, ConsoleLogin, ForcedPasswordChange, MessagePage};
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, State};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -115,7 +115,7 @@ pub async fn login(
     let ctx = forwarded_context(&headers, &correlation);
     let request = InternalAdminAuthenticateRequest {
         tenant_id: Some(tenant.0.clone()),
-        username: form.username,
+        email: form.email,
         password: form.password,
         ip_address: ctx.ip_address,
         user_agent: ctx.user_agent,
@@ -155,14 +155,14 @@ pub async fn login(
             )
                 .into_response()
         }
-        InternalAdminAuthenticateResponse::PasswordChangeRequired { username } => {
+        InternalAdminAuthenticateResponse::PasswordChangeRequired { email } => {
             // 強制パスワード変更（ADR-0009 §5）。SSO はまだ発行されていない。CSRF Cookie は維持し、
             // 変更フォームへ同じ csrf を埋め込む（ブラウザに残る Cookie で照合できる）。
             Html(render_password_change_form(
                 &messages,
                 &tenant.prefix(),
                 &csrf,
-                &username,
+                &email,
                 None,
             ))
             .into_response()
@@ -199,7 +199,7 @@ pub async fn login(
 
 /// 強制パスワード変更ページ（`GET /{tenant_id}/admin/password-change`）。ブックマーク・再読込対策として
 /// 直接アクセスはログイン画面へ誘導する（本人性は `POST /admin/login` からのフォーム遷移で確認済みの
-/// username を要するため、GET 単独では変更を開始できない）。
+/// email（ログイン識別子）を要するため、GET 単独では変更を開始できない）。
 pub async fn password_change_page(Extension(tenant): Extension<WebTenant>) -> Response {
     found(&format!("{}/admin/login", tenant.prefix()))
 }
@@ -210,7 +210,7 @@ pub async fn password_change(
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
-    Form(form): Form<AdminPasswordChangeForm>,
+    Form(form): Form<ForcedPasswordChangeForm>,
 ) -> Response {
     let csrf_id = cookies::get(&headers, cookies::ADMIN_CSRF_COOKIE);
     let csrf_ok = csrf_id
@@ -226,7 +226,7 @@ pub async fn password_change(
                 &messages,
                 &tenant.prefix(),
                 "",
-                &form.username,
+                &form.email,
                 Some("login-error-csrf"),
             )),
         )
@@ -242,7 +242,7 @@ pub async fn password_change(
                 &messages,
                 &tenant.prefix(),
                 &csrf,
-                &form.username,
+                &form.email,
                 Some("password-change-error-mismatch"),
             )),
         )
@@ -252,7 +252,7 @@ pub async fn password_change(
     let ctx = forwarded_context(&headers, &correlation);
     let request = InternalAdminChangePasswordRequest {
         tenant_id: Some(tenant.0.clone()),
-        username: form.username.clone(),
+        email: form.email.clone(),
         current_password: form.current_password,
         new_password: form.new_password,
         ip_address: ctx.ip_address,
@@ -298,7 +298,7 @@ pub async fn password_change(
             &tenant.prefix(),
             StatusCode::TOO_MANY_REQUESTS,
             &csrf,
-            &form.username,
+            &form.email,
             "login-error-rate-limited",
         ),
         InternalAdminChangePasswordResponse::InvalidCredentials => reshow_password_change(
@@ -306,7 +306,7 @@ pub async fn password_change(
             &tenant.prefix(),
             StatusCode::UNAUTHORIZED,
             &csrf,
-            &form.username,
+            &form.email,
             "password-change-error-invalid-current",
         ),
         InternalAdminChangePasswordResponse::Locked => reshow_password_change(
@@ -314,7 +314,7 @@ pub async fn password_change(
             &tenant.prefix(),
             StatusCode::FORBIDDEN,
             &csrf,
-            &form.username,
+            &form.email,
             "login-error-locked",
         ),
         InternalAdminChangePasswordResponse::Forbidden => reshow_password_change(
@@ -322,7 +322,7 @@ pub async fn password_change(
             &tenant.prefix(),
             StatusCode::FORBIDDEN,
             &csrf,
-            &form.username,
+            &form.email,
             "admin-login-error-forbidden",
         ),
         InternalAdminChangePasswordResponse::WeakPassword => reshow_password_change(
@@ -330,7 +330,7 @@ pub async fn password_change(
             &tenant.prefix(),
             StatusCode::UNPROCESSABLE_ENTITY,
             &csrf,
-            &form.username,
+            &form.email,
             "password-change-error-weak",
         ),
         InternalAdminChangePasswordResponse::Internal => {
@@ -431,7 +431,7 @@ fn reshow_password_change(
     tenant_prefix: &str,
     status: StatusCode,
     csrf: &str,
-    username: &str,
+    email: &str,
     error_key: &str,
 ) -> Response {
     (
@@ -440,7 +440,7 @@ fn reshow_password_change(
             messages,
             tenant_prefix,
             csrf,
-            username,
+            email,
             Some(error_key),
         )),
     )
@@ -456,18 +456,20 @@ fn render_login_form(messages: &Messages, csrf: &str, error_key: Option<&str>) -
     })
 }
 
+/// 強制パスワード変更フォームの HTML を共有テンプレート（[`ForcedPasswordChange`]）から描画する。
+/// 送信先は管理コンソールの `POST /{tenant_id}/admin/password-change`（ポータルは別ハンドラで別 action）。
 fn render_password_change_form(
     messages: &Messages,
     tenant_prefix: &str,
     csrf: &str,
-    username: &str,
+    email: &str,
     error_key: Option<&str>,
 ) -> String {
-    render(&AdminPasswordChange {
+    render(&ForcedPasswordChange {
         messages,
-        tenant_prefix,
+        action: &format!("{tenant_prefix}/admin/password-change"),
         csrf,
-        username,
+        email,
         error_key,
     })
 }
@@ -482,7 +484,7 @@ mod tests {
         let messages = Messages::new(Locale::Ja);
         let html = render_login_form(&messages, "deadbeef", None);
         assert!(html.contains("name=\"csrf_token\" value=\"deadbeef\""));
-        assert!(html.contains("name=\"username\""));
+        assert!(html.contains("name=\"email\""));
         assert!(html.contains("name=\"password\""));
         assert!(!html.contains("role=\"alert\""));
     }

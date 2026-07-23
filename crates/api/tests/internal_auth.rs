@@ -65,6 +65,8 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
         support::insert_public_client(&pool, &root_tenant_id, &["openid", "profile", "email"])
             .await;
     let username = format!("int{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
+    // ログイン識別子はメールアドレスに統一（register_user は email = {username}@example.com で作る）。
+    let email = format!("{username}@example.com");
     let password = "correct-horse-battery";
     register_user(&app, &root_tenant_id, &username, password).await;
     support::mark_email_verified(&pool, &root_tenant_id, &username).await;
@@ -78,7 +80,7 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
             None,
             json!({
                 "auth_session_id": auth_session,
-                "username": username,
+                "email": email,
                 "password": password,
                 "csrf_token": csrf_token(&auth_session, &csrf_secret),
             }),
@@ -95,7 +97,7 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
             Some("wrong-token"),
             json!({
                 "auth_session_id": auth_session,
-                "username": username,
+                "email": email,
                 "password": password,
                 "csrf_token": csrf_token(&auth_session, &csrf_secret),
             }),
@@ -113,7 +115,7 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
             json!({
                 "tenant_id": root_tenant_id,
                 "auth_session_id": auth_session,
-                "username": username,
+                "email": email,
                 "password": password,
                 "csrf_token": "0".repeat(64),
             }),
@@ -133,7 +135,7 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
             json!({
                 "tenant_id": root_tenant_id,
                 "auth_session_id": auth_session,
-                "username": username,
+                "email": email,
                 "password": password,
                 "csrf_token": csrf_token(&auth_session, &csrf_secret),
                 "ip_address": "203.0.113.7",
@@ -198,7 +200,7 @@ async fn admin_authenticate_rejects_unknown_user() {
             Some(SERVICE_TOKEN),
             json!({
                 "tenant_id": root_tenant_id,
-                "username": format!("nobody-{}", uuid::Uuid::new_v4()),
+                "email": format!("nobody-{}@example.com", uuid::Uuid::new_v4()),
                 "password": "whatever",
                 "ip_address": "203.0.113.9",
             }),
@@ -214,7 +216,7 @@ async fn admin_authenticate_rejects_unknown_user() {
         post_internal(
             "/internal/authenticate/admin",
             None,
-            json!({ "username": "x", "password": "y" }),
+            json!({ "email": "x", "password": "y" }),
         ),
     )
     .await;
@@ -222,8 +224,8 @@ async fn admin_authenticate_rejects_unknown_user() {
 
     // tenant_id が無い・不正な内部リクエストは 400（fail-closed。SEC4）。
     for bad in [
-        json!({ "username": "x", "password": "y" }),
-        json!({ "tenant_id": "not-a-uuid", "username": "x", "password": "y" }),
+        json!({ "email": "x", "password": "y" }),
+        json!({ "tenant_id": "not-a-uuid", "email": "x", "password": "y" }),
     ] {
         let response = send(
             &app,

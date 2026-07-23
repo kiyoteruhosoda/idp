@@ -2,10 +2,10 @@
 
 use serde::Deserialize;
 
-/// ログインフォーム（`POST /login`）。
+/// ログインフォーム（`POST /login`）。ログイン識別子はメールアドレスに統一する（ADR-0009 §8）。
 #[derive(Debug, Deserialize)]
 pub struct LoginForm {
-    pub username: String,
+    pub email: String,
     pub password: String,
     pub csrf_token: String,
 }
@@ -43,11 +43,13 @@ pub struct PasswordChangeForm {
     pub csrf_token: String,
 }
 
-/// 管理コンソールの強制パスワード変更フォーム（`POST /admin/password-change`、ADR-0009 §5）。
-/// 管理ログインは一時状態を持たないため `username` を含めフルに再送する。
+/// 強制パスワード変更フォーム（初回ログイン時。ADR-0009 §5）。管理コンソールログイン
+/// （`POST /admin/password-change`）とポータル（一般）ログイン（`POST /login/password-change`）で
+/// 共有する。どちらも `auth_session_id` のような一時状態を持たないため、`email`（ログイン識別子）を
+/// 含めフルに再送し、api 側で現行パスワードを含め再検証する。
 #[derive(Debug, Deserialize)]
-pub struct AdminPasswordChangeForm {
-    pub username: String,
+pub struct ForcedPasswordChangeForm {
+    pub email: String,
     pub current_password: String,
     pub new_password: String,
     pub new_password_confirm: String,

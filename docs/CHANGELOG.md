@@ -1,4 +1,21 @@
 
+## 2026-07-23（ログイン識別子をメールアドレスに統一 + ポータル初回ログインの強制変更誘導を統合）
+
+- **ログインをメールアドレスのみに統一（ADR-0009 §8）**: OIDC ログイン・ポータル（一般）ログイン・
+  管理コンソールログインの 3 経路の資格情報フィールドを `username`→`email` にリネームし、利用者検索を
+  `find_by_email` 限定にした（従来は「username で検索 → 見つからなければ `@` を含むとき email」の二段構え）。
+  `preferred_username` は OIDC `profile` クレーム（任意・NULL 可・テナント内一意の表示ハンドル）としての
+  役割に限定し、ログイン識別子には使わない。契約 DTO（`InternalAuthenticateRequest` 等）・core コマンド・
+  web フォーム（`LoginForm`）・ログイン画面テンプレート（`type="email"`・`autocomplete="email"`）・
+  i18n（`login-email`・エラー文言）を更新。
+- **ポータル（一般）ログインの初回強制パスワード変更を admin と統合（ADR-0009 §5）**: 従来ポータル経路のみ
+  `must_change_password` を検出しても案内メッセージを出して 403 で拒否するだけで変更手段が無かった不整合を、
+  管理コンソールと**同じ強制変更画面を流用**して解消した。web フォーム DTO（`ForcedPasswordChangeForm`）と
+  テンプレート（`password_change_forced.html` / `ForcedPasswordChange`。送信先を `action` で切替）を admin と
+  共有化（`console/password_change.html` を統合）。core は `PortalLoginService::change_password`（admin と同方式・
+  admin 権限は不要）、api は `POST /internal/authenticate/portal/change-password`、web は
+  `POST /{tenant_id}/login/password-change` を新設。
+
 ## 2026-07-22（設定/デプロイ: .env の CHANGE-ME プレースホルダ残りを fail-fast で明示）
 
 - **crates/core・crates/web — `KEY_ENCRYPTION_KEY`・`CSRF_SECRET` のプレースホルダ検出**: `.env.*.example` を

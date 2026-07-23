@@ -44,7 +44,8 @@ pub fn csrf_token(auth_session_id: &str, key: &[u8]) -> String {
 pub struct LoginCommand {
     /// `auth_session_id` Cookie の値。
     pub auth_session_id: Option<String>,
-    pub username: String,
+    /// ログイン識別子（メールアドレス。ADR-0009 §8。`(tenant_id, email)` 一意化）。
+    pub email: String,
     pub password: String,
     pub csrf_token: String,
 }
@@ -190,9 +191,9 @@ impl LoginService {
             }
         }
 
-        // 4. ユーザー検索（username → 見つからなければ email として検索）。
+        // 4. ユーザー検索（ログイン識別子はメールアドレスに統一）。
         //    認証は所属元テナント限定 = このテナントを所属元とするユーザーのみが対象（ADR-0009 §8）。
-        let user = match self.find_user(tenant_id, &cmd.username).await {
+        let user = match self.users.find_by_email(tenant_id, &cmd.email).await {
             Ok(Some(u)) => u,
             Ok(None) => {
                 self.audit
@@ -424,20 +425,6 @@ impl LoginService {
             sso_session_id,
             user_language: user.language.clone(),
         }
-    }
-
-    async fn find_user(
-        &self,
-        tenant_id: TenantId,
-        username: &str,
-    ) -> Result<Option<User>, crate::domain::error::DomainError> {
-        if let Some(user) = self.users.find_by_username(tenant_id, username).await? {
-            return Ok(Some(user));
-        }
-        if username.contains('@') {
-            return self.users.find_by_email(tenant_id, username).await;
-        }
-        Ok(None)
     }
 
     /// パスワード不一致時の失敗カウント更新とロック判定。

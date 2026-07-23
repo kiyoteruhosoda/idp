@@ -25,6 +25,12 @@ pub fn build(state: WebState) -> Router {
         .route("/login", get(login::login_page).post(login::login))
         // エンドユーザー・ポータルの TOTP 入力（`/login` 直接ログイン経路の 2 段階目）。
         .route("/login/mfa", get(portal::mfa_page).post(portal::mfa_submit))
+        // エンドユーザー・ポータルの強制パスワード変更（初回ログイン時。ADR-0009 §5。管理コンソールと
+        // 同じ共有画面を流用）。
+        .route(
+            "/login/password-change",
+            get(portal::password_change_page).post(portal::password_change),
+        )
         // エンドユーザーのログアウト（アカウント画面から。SSO 失効）。
         .route("/logout", post(portal::logout))
         // 強制パスワード変更（ADR-0009 §5、MT12）。パスワード認証成功後・SSO 発行前の pending 状態で使う。

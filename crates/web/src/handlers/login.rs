@@ -81,7 +81,7 @@ pub async fn login(
     let request = InternalAuthenticateRequest {
         tenant_id: Some(tenant.0.clone()),
         auth_session_id: auth_session_id.clone(),
-        username: form.username,
+        email: form.email,
         password: form.password,
         csrf_token: form.csrf_token,
         ip_address: ctx.ip_address,

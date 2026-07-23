@@ -57,7 +57,7 @@ code {
 }
 
 /* パスワード表示切替ボタン（password_visibility.html の .password-toggle）の枠線を、
- * 隣接する入力欄（form-control: admin-login-username / admin-login-password 等）と揃える。
+ * 隣接する入力欄（form-control: admin-login-email / admin-login-password 等）と揃える。
  * btn-outline-secondary の既定枠線色（--bs-secondary）だと入力欄の枠線色と食い違うため。 */
 .password-toggle {
   border: var(--bs-border-width) solid var(--bs-border-color);
