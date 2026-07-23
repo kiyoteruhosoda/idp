@@ -21,6 +21,28 @@
 {% if let Some(key) = saved_key %}<div class="alert alert-success" role="status">{{ messages.get(key) }}</div>{% endif %}
 {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
 
+<div class="card mb-4 user-settings-profile" id="profile">
+  <div class="card-header d-flex align-items-center"><i class="fa-solid fa-id-card me-2" aria-hidden="true"></i>{{ messages.get("user-settings-profile-heading") }}</div>
+  <div class="card-body">
+    <p class="text-muted small">{{ messages.get("user-settings-profile-help") }}</p>
+    <form method="post" action="{{ tenant }}/settings/name">
+      {% if from_admin %}<input type="hidden" name="from" value="admin">{% endif %}
+      {% if preferred_username != "" %}
+      <div class="mb-3">
+        <label class="form-label">{{ messages.get("user-settings-login-id") }}</label>
+        <input type="text" class="form-control" value="{{ preferred_username }}" disabled>
+      </div>
+      {% endif %}
+      <div class="mb-3">
+        <label class="form-label" for="display_name">{{ messages.get("user-settings-display-name") }}</label>
+        <input type="text" class="form-control" id="display_name" name="name" value="{{ current_name }}" maxlength="255" autocomplete="name">
+        <div class="form-text">{{ messages.get("user-settings-display-name-help") }}</div>
+      </div>
+      <button type="submit" class="btn btn-primary">{{ messages.get("user-settings-display-name-submit") }}</button>
+    </form>
+  </div>
+</div>
+
 <div class="card mb-4 user-settings-language" id="language">
   <div class="card-header d-flex align-items-center"><i class="fa-solid fa-language me-2" aria-hidden="true"></i>{{ messages.get("user-settings-language-heading") }}</div>
   <div class="card-body">

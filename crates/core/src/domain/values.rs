@@ -163,6 +163,20 @@ pub fn validate_preferred_username(value: &str) -> Result<(), DomainError> {
     Ok(())
 }
 
+/// `users.name`（表示名）の格納先カラム上限。
+pub const DISPLAY_NAME_MAX_LEN: usize = 255;
+
+/// 表示名（`users.name`）が格納先カラムの上限に収まるか検証する。表示名は一意制約・書式制約を
+/// 持たない自由入力のため、長さのみを検証する（空・空白のみは呼び出し側で解除＝`None` に正規化する）。
+pub fn validate_display_name(value: &str) -> Result<(), DomainError> {
+    if value.chars().count() > DISPLAY_NAME_MAX_LEN {
+        return Err(DomainError::InvalidValue(format!(
+            "name must be at most {DISPLAY_NAME_MAX_LEN} characters"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

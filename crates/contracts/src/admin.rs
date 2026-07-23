@@ -11,6 +11,12 @@ use serde::{Deserialize, Serialize};
 pub struct WhoamiResponse {
     /// 認可済み管理利用者の内部 ID（UUID 文字列）。
     pub user_id: String,
+    /// 表示名（未設定なら `None`）。管理コンソールのヘッダ表示に使う。
+    #[serde(default)]
+    pub name: Option<String>,
+    /// ログイン識別子（未設定なら `None`）。表示名が無いときのヘッダ表示の代替に使う。
+    #[serde(default)]
+    pub preferred_username: Option<String>,
 }
 
 /// 利用者の要約（`GET /admin/users?q=` 検索・`GET /admin/users/{id}` の応答）。管理コンソールの

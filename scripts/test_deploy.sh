@@ -97,6 +97,9 @@ before="$(grep '^MARIADB_PASSWORD=' .env)"
 after="$(grep '^MARIADB_PASSWORD=' .env)"
 [[ "$before" == "$after" ]] || { echo "existing .env was overwritten" >&2; exit 1; }
 grep -q 'ログイン URL:' /tmp/deploy-app.out
+# デプロイ末尾の root テナント URL まとめ（管理コンソール URL を含む）を表示する。
+grep -q 'Root テナント URL:' /tmp/deploy-app.out
+grep -q '管理コンソール: .*/admin' /tmp/deploy-app.out
 grep -q -- '--project-name idp-repo -f docker-compose.deploy.yml' "$DOCKER_STUB_LOG"
 grep -q 'run --rm migrate' "$DOCKER_STUB_LOG"
 

@@ -72,7 +72,8 @@ pub enum AdminApiError {
 
 /// 管理者の SSO Cookie を api の `/admin/*`（`RequirePerms<IdpAdmin>`）へ転送した結果（ADR-0007 §4）。
 pub enum AdminSession {
-    /// 有効な SSO ＋ テナント admin 権限（`idp.tenant.admin`／`idp.system.admin`）保有。管理利用者の内部 ID を返す。
+    /// 有効な SSO ＋ テナント admin 権限（`idp.tenant.admin`／`idp.system.admin`）保有。
+    /// 管理コンソールのヘッダに出す表示ラベル（表示名 → ログイン識別子 → 内部 ID の順で採用）を返す。
     Authenticated(String),
     /// 未認証・SSO 期限切れ（ログイン画面へ誘導する）。
     Unauthenticated,
@@ -80,6 +81,15 @@ pub enum AdminSession {
     Forbidden,
     /// api 呼び出し失敗（構成/障害）。
     Error,
+}
+
+/// 管理コンソールのヘッダに出す表示ラベルを決める。表示名（`name`）→ ログイン識別子
+/// （`preferred_username`）→ 内部 ID（`user_id`）の順で、空でない最初の値を採用する。
+fn admin_display_label(w: WhoamiResponse) -> String {
+    let non_empty = |s: Option<String>| s.map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    non_empty(w.name)
+        .or_else(|| non_empty(w.preferred_username))
+        .unwrap_or(w.user_id)
 }
 
 /// api への HTTP クライアント。`reqwest::Client` は接続プールを内包するため clone は安価。
@@ -416,7 +426,7 @@ impl ApiClient {
         };
         match response.status() {
             reqwest::StatusCode::OK => match response.json::<WhoamiResponse>().await {
-                Ok(w) => AdminSession::Authenticated(w.user_id),
+                Ok(w) => AdminSession::Authenticated(admin_display_label(w)),
                 Err(e) => {
                     tracing::error!(error = %e, "failed to decode whoami response");
                     AdminSession::Error
@@ -1307,6 +1317,33 @@ impl ApiClient {
             .await
     }
 
+    /// セルフサービスのプロフィール（表示名等）を取得する（設定画面のプリフィル用）。
+    pub async fn account_profile(
+        &self,
+        req: &idp_contracts::auth::InternalAccountProfileRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalAccountProfileResponse> {
+        self.post_internal("/internal/account/profile", "", req)
+            .await
+    }
+
+    /// ログイン済みユーザーの表示名（`users.name`）を更新する。
+    pub async fn account_update_name(
+        &self,
+        req: &idp_contracts::auth::InternalAccountUpdateNameRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalAccountUpdateNameResponse> {
+        self.post_internal("/internal/account/update-name", "", req)
+            .await
+    }
+
+    /// ログイン中ユーザーの所属テナント（`ACTIVE`）を列挙する（テナント切り替え UI 用）。
+    pub async fn account_tenants(
+        &self,
+        req: &idp_contracts::auth::InternalAccountTenantsRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalAccountTenantsResponse> {
+        self.post_internal("/internal/account/tenants", "", req)
+            .await
+    }
+
     /// api への到達性を確認する（`GET /healthz`）。web の readiness で使う。
     pub async fn is_api_reachable(&self) -> bool {
         match self
@@ -1365,5 +1402,48 @@ impl ApiClient {
             .json::<R>()
             .await
             .map_err(|e| anyhow::anyhow!("failed to decode api {path} response: {e}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::admin_display_label;
+    use idp_contracts::admin::WhoamiResponse;
+
+    fn whoami(name: Option<&str>, preferred_username: Option<&str>) -> WhoamiResponse {
+        WhoamiResponse {
+            user_id: "019f8ea9-0879-7f75-85ab-68b0571b6e7d".to_string(),
+            name: name.map(str::to_string),
+            preferred_username: preferred_username.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn display_label_prefers_name_then_username_then_id() {
+        // 表示名があれば表示名。
+        assert_eq!(
+            admin_display_label(whoami(Some("Alice"), Some("alice"))),
+            "Alice"
+        );
+        // 表示名が無ければログイン識別子。
+        assert_eq!(admin_display_label(whoami(None, Some("alice"))), "alice");
+        // どちらも無ければ内部 ID。
+        assert_eq!(
+            admin_display_label(whoami(None, None)),
+            "019f8ea9-0879-7f75-85ab-68b0571b6e7d"
+        );
+    }
+
+    #[test]
+    fn display_label_treats_blank_values_as_absent() {
+        // 空白のみは未設定として扱い、次の候補へフォールバックする。
+        assert_eq!(
+            admin_display_label(whoami(Some("   "), Some("alice"))),
+            "alice"
+        );
+        assert_eq!(
+            admin_display_label(whoami(Some(""), Some(""))),
+            "019f8ea9-0879-7f75-85ab-68b0571b6e7d"
+        );
     }
 }

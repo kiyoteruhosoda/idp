@@ -71,6 +71,9 @@ compose=()
 COMPOSE_PROJECT=""
 LEGACY_COMPOSE_PROJECT_NAME=""
 DIAGNOSTIC_SERVICES=(mariadb migrate api web proxy)
+# デプロイ完了時のまとめ表示に使う root テナントの URL（replace_app_containers で確定する）。
+ROOT_LOGIN_URL=""
+ROOT_ADMIN_URL=""
 
 get_env_var() {
   local key="$1"
@@ -464,7 +467,7 @@ remove_stale_renamed_containers() {
 }
 
 replace_app_containers() {
-  local web_port issuer ready_url root login_url
+  local web_port issuer ready_url root
   log "api・web・proxy を起動します（--force-recreate で全モード必ずアプリコンテナを入れ替え）..."
   remove_stale_renamed_containers
   "${compose[@]}" up -d --force-recreate --remove-orphans "${APP_SERVICES[@]}"
@@ -477,15 +480,29 @@ replace_app_containers() {
   log "readiness を確認します: $ready_url"
   for _ in $(seq 1 30); do
     if curl -fsS "$ready_url" >/dev/null 2>&1; then
-      root="$(root_tenant_id)"; login_url="${issuer%/}/${root:-<root-tenant-id>}/login"
+      root="$(root_tenant_id)"; root="${root:-<root-tenant-id>}"
+      # デプロイ完了時のまとめ（スクリプト末尾）で表示するため、root テナントの URL を保持する。
+      ROOT_LOGIN_URL="${issuer%/}/${root}/login"
+      ROOT_ADMIN_URL="${issuer%/}/${root}/admin"
       log "readyz OK。デプロイが完了しました。"
-      log "ログイン URL: $login_url"
+      log "ログイン URL: $ROOT_LOGIN_URL"
       return 0
     fi
     sleep 2
   done
   compose_diagnostics
   die "readyz が OK になりませんでした。"
+}
+
+# デプロイの最後に root テナントの URL をまとめて表示する（実行者が接続先へ即座に飛べるように）。
+# replace_app_containers が readyz OK 時に確定した値を使う。未確定（早期 return 等）なら表示しない。
+print_root_urls() {
+  [[ -n "$ROOT_ADMIN_URL" || -n "$ROOT_LOGIN_URL" ]] || return 0
+  log "──────────────────────────────────────────────"
+  log "Root テナント URL:"
+  [[ -n "$ROOT_ADMIN_URL" ]] && log "  管理コンソール: $ROOT_ADMIN_URL"
+  [[ -n "$ROOT_LOGIN_URL" ]] && log "  ログイン:       $ROOT_LOGIN_URL"
+  log "──────────────────────────────────────────────"
 }
 
 phase_begin "env"; ensure_env_file; phase_end
@@ -519,3 +536,4 @@ phase_begin "cleanup"
 docker image prune -f >/dev/null 2>&1 || true
 phase_end
 log "Deploy complete (mode: $mode)"
+print_root_urls

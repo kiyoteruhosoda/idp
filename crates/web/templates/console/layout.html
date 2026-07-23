@@ -24,6 +24,7 @@
         <ul class="dropdown-menu dropdown-menu-end">
           <li><span class="dropdown-header">{{ messages.get("admin-signed-in-as") }} {{ uid }}</span></li>
           <li><a class="dropdown-item" href="{{ tenant }}/settings?from=admin">{{ messages.get("admin-profile-settings") }}</a></li>
+          <li><a class="dropdown-item" href="{{ tenant }}/admin/switch-tenant">{{ messages.get("admin-switch-tenant-menu") }}</a></li>
           <li><hr class="dropdown-divider"></li>
           <li>
             <form method="post" action="{{ tenant }}/admin/logout">

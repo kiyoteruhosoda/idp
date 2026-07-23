@@ -20,13 +20,16 @@ use crate::dto::{ForcedPasswordChangeForm, LoginForm};
 use crate::handlers::{forwarded_context, found};
 use crate::i18n::Messages;
 use crate::state::WebState;
-use crate::templates::{render, ConsoleHome, ConsoleLogin, ForcedPasswordChange, MessagePage};
+use crate::templates::{
+    render, ConsoleHome, ConsoleLogin, ForcedPasswordChange, MessagePage, SwitchTenant,
+};
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{AppendHeaders, Html, IntoResponse, Response};
 use axum::Form;
 use idp_contracts::auth::{
+    InternalAccountTenantsRequest, InternalAccountTenantsResponse,
     InternalAdminAuthenticateRequest, InternalAdminAuthenticateResponse,
     InternalAdminChangePasswordRequest, InternalAdminChangePasswordResponse, InternalLogoutRequest,
 };
@@ -59,6 +62,47 @@ pub async fn home(
         tenant: &tenant.prefix(),
         admin: Some(&admin),
         tenant_name: tenant_name.as_deref(),
+    }))
+    .into_response()
+}
+
+/// テナント切り替え画面（`GET /{tenant_id}/admin/switch-tenant`）。ログイン中ユーザーが `ACTIVE` な
+/// メンバーシップを持つテナントを一覧し、対象テナントの管理コンソールへ遷移できる。SSO はホスト共有の
+/// ため再ログインは不要（ADR-0009 §8）。
+pub async fn switch_tenant(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+) -> Response {
+    let admin = match resolve_admin(&state, &correlation, &tenant, &headers).await {
+        AdminResolution::Ok(user_id) => user_id,
+        AdminResolution::Reject(resp) => return resp,
+    };
+    // 所属テナント一覧を api から取得する（SSO Cookie 転送）。取得に失敗しても画面は描画し、注意文言を出す。
+    let sso = cookies::get(&headers, cookies::SSO_SESSION_COOKIE).unwrap_or_default();
+    let (tenants, load_failed) = match state
+        .api
+        .account_tenants(&InternalAccountTenantsRequest {
+            sso_session_id: sso,
+        })
+        .await
+    {
+        Ok(InternalAccountTenantsResponse::Ok { tenants }) => (tenants, false),
+        Ok(_) => (Vec::new(), false),
+        Err(e) => {
+            tracing::error!(error = %e, "account tenants list call to api failed");
+            (Vec::new(), true)
+        }
+    };
+    let messages = Messages::new(locale(&headers));
+    Html(render(&SwitchTenant {
+        messages: &messages,
+        tenant: &tenant.prefix(),
+        admin: Some(&admin),
+        tenants: &tenants,
+        current_tenant_id: &tenant.0,
+        load_failed,
     }))
     .into_response()
 }

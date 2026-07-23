@@ -235,4 +235,14 @@ impl UserRepository for SqlxUserRepository {
             .map_err(repo_err)?;
         Ok(())
     }
+
+    async fn update_name(&self, id: Uuid, name: Option<&str>) -> Result<()> {
+        sqlx::query("UPDATE users SET name = ? WHERE id = ?")
+            .bind(name)
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        Ok(())
+    }
 }

@@ -15,6 +15,7 @@ use crate::domain::crypto;
 use crate::domain::permission;
 use crate::domain::repositories::{SsoSessionRepository, UserPermissionRepository, UserRepository};
 use crate::domain::tenant_context::TenantContext;
+use crate::domain::user::User;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -30,9 +31,16 @@ pub enum AdminAccess {
 }
 
 /// 認可された管理利用者（Presentation ハンドラへ注入される最小限の身元）。
+///
+/// `name`・`preferred_username` は管理コンソールのヘッダ表示（`GET /admin/whoami`）に使う。
+/// セッション解決時にユーザー行を読み込む過程で得られるため、追加のクエリは発生しない。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorizedAdmin {
     pub user_id: Uuid,
+    /// 表示名（未設定なら `None`）。
+    pub name: Option<String>,
+    /// ログイン識別子（未設定なら `None`）。
+    pub preferred_username: Option<String>,
 }
 
 pub struct AdminAccessService {
@@ -68,10 +76,11 @@ impl AdminAccessService {
         sso_session_id: Option<&str>,
         required_permission: &str,
     ) -> AdminAccess {
-        let user_id = match self.resolve_session_user(sso_session_id).await {
-            Some(id) => id,
+        let user = match self.resolve_session_user(sso_session_id).await {
+            Some(user) => user,
             None => return AdminAccess::Unauthenticated,
         };
+        let user_id = user.id;
 
         // 要求権限、または idp.system.admin（root scope のみ存在。root 自身の管理を含む）の
         // いずれかを、要求テナントを scope として保有するか（完全一致）。
@@ -86,7 +95,11 @@ impl AdminAccessService {
             .has_any_permission(tenant_id, user_id, codes)
             .await
         {
-            Ok(true) => AdminAccess::Granted(AuthorizedAdmin { user_id }),
+            Ok(true) => AdminAccess::Granted(AuthorizedAdmin {
+                user_id,
+                name: user.name.clone(),
+                preferred_username: user.preferred_username.clone(),
+            }),
             Ok(false) => AdminAccess::Forbidden,
             Err(e) => {
                 tracing::error!(error = %e, "failed to check permission for admin access");
@@ -102,12 +115,15 @@ impl AdminAccessService {
     /// リポジトリ障害はいずれも `None`（未認証）に倒す（fail-closed）。本人性の最終確認（被招待者本人か）は
     /// 呼び出し側のユースケースがトークン照合で行う。
     pub async fn authenticated_user(&self, sso_session_id: Option<&str>) -> Option<Uuid> {
-        self.resolve_session_user(sso_session_id).await
+        self.resolve_session_user(sso_session_id)
+            .await
+            .map(|user| user.id)
     }
 
     /// Cookie 平文 session_id → SSO セッション取得 → 有効性検証 → ユーザー有効性確認 の
-    /// 共通フロー（REF3）。いずれかの段階で失敗したら `None`（fail-closed）。
-    async fn resolve_session_user(&self, sso_session_id: Option<&str>) -> Option<Uuid> {
+    /// 共通フロー（REF3）。いずれかの段階で失敗したら `None`（fail-closed）。有効なら
+    /// 解決したユーザー行を返す（呼び出し側が id・表示名等を利用する。追加クエリを避けるため）。
+    async fn resolve_session_user(&self, sso_session_id: Option<&str>) -> Option<User> {
         let session_id = sso_session_id.filter(|s| !s.is_empty())?;
 
         // Cookie は平文 session_id、DB にはその SHA-256 のみ（sso_session.rs と同じ導出）。
@@ -127,7 +143,7 @@ impl AdminAccessService {
 
         // 利用者が現存し有効であること（無効化された管理者を締め出す）。
         match self.users.find_by_id(session.user_id).await {
-            Ok(Some(user)) if user.is_active() => Some(session.user_id),
+            Ok(Some(user)) if user.is_active() => Some(user),
             Ok(_) => None,
             Err(e) => {
                 tracing::error!(error = %e, "failed to load user for sso session");
@@ -352,7 +368,11 @@ mod tests {
         assert_eq!(
             svc.authorize(TenantContext::new(tenant), Some("sid"), ADMIN_PERM)
                 .await,
-            AdminAccess::Granted(AuthorizedAdmin { user_id: uid })
+            AdminAccess::Granted(AuthorizedAdmin {
+                user_id: uid,
+                name: Some("Administrator".to_string()),
+                preferred_username: Some("admin".to_string()),
+            })
         );
     }
 
@@ -369,7 +389,11 @@ mod tests {
         assert_eq!(
             svc.authorize(TenantContext::new(root), Some("sid"), ADMIN_PERM)
                 .await,
-            AdminAccess::Granted(AuthorizedAdmin { user_id: uid })
+            AdminAccess::Granted(AuthorizedAdmin {
+                user_id: uid,
+                name: Some("Administrator".to_string()),
+                preferred_username: Some("admin".to_string()),
+            })
         );
     }
 

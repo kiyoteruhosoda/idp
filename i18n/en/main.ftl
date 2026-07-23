@@ -509,3 +509,24 @@ admin-saml-client-deleted = SAML client deleted.
 # Root (no tenant specified) landing. Generic notice that avoids exposing any specific tenant UUID.
 root-landing-title = Tenant required
 root-landing-message = This page requires a tenant-specific URL. Please use the login URL provided by your administrator.
+
+# Self-service settings: display name (profile).
+user-settings-profile-heading = Profile
+user-settings-profile-help = Set or change your display name. Your login identifier cannot be changed.
+user-settings-login-id = Login identifier
+user-settings-display-name = Display name
+user-settings-display-name-help = The name shown in the admin console and elsewhere. Leave blank to clear it.
+user-settings-display-name-submit = Save display name
+user-settings-name-saved = Display name updated.
+user-settings-error-name-invalid = Display name is too long (255 characters max).
+
+# Tenant switching.
+admin-switch-tenant-menu = Switch tenant
+admin-switch-tenant-title = Switch tenant
+admin-switch-tenant-intro = Move to the admin console of a tenant you belong to. No re-login required.
+admin-switch-tenant-load-failed = Could not load your tenants. Please try again later.
+admin-switch-tenant-home = Home
+admin-switch-tenant-guest = Guest
+admin-switch-tenant-current = Current tenant
+admin-switch-tenant-open = Open
+admin-switch-tenant-empty = No tenants available to switch to.

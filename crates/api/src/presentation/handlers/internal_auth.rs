@@ -17,6 +17,8 @@
 
 use crate::application::account_language::{UpdateLanguageCommand, UpdateLanguageOutcome};
 use crate::application::account_password::{AccountPasswordCommand, AccountPasswordOutcome};
+use crate::application::account_profile::{ProfileOutcome, UpdateNameCommand, UpdateNameOutcome};
+use crate::application::account_tenants::ListTenantsOutcome;
 use crate::application::admin_login::{
     AdminChangePasswordCommand, AdminLoginCommand, AdminLoginOutcome,
 };
@@ -37,8 +39,11 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use idp_contracts::auth::{
-    InternalAccountChangePasswordRequest, InternalAccountChangePasswordResponse,
+    AccountTenantSummary, InternalAccountChangePasswordRequest,
+    InternalAccountChangePasswordResponse, InternalAccountProfileRequest,
+    InternalAccountProfileResponse, InternalAccountTenantsRequest, InternalAccountTenantsResponse,
     InternalAccountUpdateLanguageRequest, InternalAccountUpdateLanguageResponse,
+    InternalAccountUpdateNameRequest, InternalAccountUpdateNameResponse,
     InternalAdminAuthenticateRequest, InternalAdminAuthenticateResponse,
     InternalAdminChangePasswordRequest, InternalAdminChangePasswordResponse,
     InternalAuthenticateRequest, InternalAuthenticateResponse, InternalChangePasswordRequest,
@@ -605,6 +610,81 @@ pub async fn account_update_language(
         UpdateLanguageOutcome::Internal(e) => {
             tracing::error!(error = %e, "account update-language failed with internal error");
             InternalAccountUpdateLanguageResponse::Internal
+        }
+    })
+}
+
+/// セルフサービスのプロフィール取得（`POST /internal/account/profile`）。設定画面が表示名等を
+/// 再表示するために SSO セッション経由で本人のプロフィールを取得する（副作用なし）。
+pub async fn account_profile(
+    State(state): State<AppState>,
+    Json(req): Json<InternalAccountProfileRequest>,
+) -> Json<InternalAccountProfileResponse> {
+    let outcome = state.account_profile.get(&req.sso_session_id).await;
+    Json(match outcome {
+        ProfileOutcome::Ok {
+            name,
+            preferred_username,
+            email,
+        } => InternalAccountProfileResponse::Ok {
+            name,
+            preferred_username,
+            email,
+        },
+        ProfileOutcome::SessionExpired => InternalAccountProfileResponse::SessionExpired,
+        ProfileOutcome::Internal(e) => {
+            tracing::error!(error = %e, "account profile fetch failed with internal error");
+            InternalAccountProfileResponse::Internal
+        }
+    })
+}
+
+/// セルフサービスの表示名更新（`POST /internal/account/update-name`）。ログイン済みユーザーが
+/// SSO セッション経由で自分の表示名（`users.name`）を更新する。空・空白のみは解除扱い。
+pub async fn account_update_name(
+    State(state): State<AppState>,
+    Json(req): Json<InternalAccountUpdateNameRequest>,
+) -> Json<InternalAccountUpdateNameResponse> {
+    let outcome = state
+        .account_profile
+        .update_name(UpdateNameCommand {
+            sso_session_id: req.sso_session_id,
+            name: req.name,
+        })
+        .await;
+    Json(match outcome {
+        UpdateNameOutcome::Ok => InternalAccountUpdateNameResponse::Ok,
+        UpdateNameOutcome::SessionExpired => InternalAccountUpdateNameResponse::SessionExpired,
+        UpdateNameOutcome::Invalid => InternalAccountUpdateNameResponse::Invalid,
+        UpdateNameOutcome::Internal(e) => {
+            tracing::error!(error = %e, "account update-name failed with internal error");
+            InternalAccountUpdateNameResponse::Internal
+        }
+    })
+}
+
+/// ログイン中ユーザーの所属テナント列挙（`POST /internal/account/tenants`）。テナント切り替え UI が
+/// 切替先候補（`ACTIVE` メンバーシップを持つテナント）を取得するために呼ぶ。
+pub async fn account_tenants(
+    State(state): State<AppState>,
+    Json(req): Json<InternalAccountTenantsRequest>,
+) -> Json<InternalAccountTenantsResponse> {
+    let outcome = state.account_tenants.list(&req.sso_session_id).await;
+    Json(match outcome {
+        ListTenantsOutcome::Ok(tenants) => InternalAccountTenantsResponse::Ok {
+            tenants: tenants
+                .into_iter()
+                .map(|t| AccountTenantSummary {
+                    tenant_id: t.tenant_id,
+                    name: t.name,
+                    membership_type: t.membership_type,
+                })
+                .collect(),
+        },
+        ListTenantsOutcome::SessionExpired => InternalAccountTenantsResponse::SessionExpired,
+        ListTenantsOutcome::Internal(e) => {
+            tracing::error!(error = %e, "account tenants list failed with internal error");
+            InternalAccountTenantsResponse::Internal
         }
     })
 }

@@ -118,6 +118,19 @@ impl TenantMembershipRepository for SqlxTenantMembershipRepository {
         rows.iter().map(map_row).collect()
     }
 
+    async fn list_active_for_user(&self, user_id: Uuid) -> Result<Vec<TenantMembership>> {
+        let sql = format!(
+            "SELECT {SELECT_COLUMNS} FROM tenant_memberships \
+             WHERE user_id = ? AND status = 'ACTIVE' ORDER BY membership_type, created_at"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(user_id.to_string())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        rows.iter().map(map_row).collect()
+    }
+
     async fn is_active_member(&self, tenant_id: TenantId, user_id: Uuid) -> Result<bool> {
         let row = sqlx::query(
             "SELECT 1 FROM tenant_memberships WHERE tenant_id = ? AND user_id = ? AND status = 'ACTIVE'",
