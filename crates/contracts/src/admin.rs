@@ -102,6 +102,22 @@ pub struct SamlServiceProviderRegisterRequest {
     pub enabled: bool,
 }
 
+/// SAML SP（クライアント）更新リクエスト（`PUT /admin/saml-service-providers/{id}`）。
+/// 登録と同じ項目を受け取り、指定 SP の内容を置き換える（テナントは変更しない）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SamlServiceProviderUpdateRequest {
+    pub display_name: String,
+    pub entity_id: String,
+    pub acs_url: String,
+    /// NameID フォーマット（空なら既定の persistent）。
+    #[serde(default)]
+    pub name_id_format: String,
+    /// 署名/暗号証明書（任意）。
+    #[serde(default)]
+    pub x509_certificate: Option<String>,
+    pub enabled: bool,
+}
+
 /// SAML SP（クライアント）の管理 API 表現。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SamlServiceProviderResponse {
@@ -111,6 +127,9 @@ pub struct SamlServiceProviderResponse {
     pub entity_id: String,
     pub acs_url: String,
     pub name_id_format: String,
+    /// 署名/暗号証明書（任意。設定されていなければ `None`）。編集フォームの初期値に使う。
+    #[serde(default)]
+    pub x509_certificate: Option<String>,
     pub enabled: bool,
     pub created_at: String,
     pub updated_at: String,

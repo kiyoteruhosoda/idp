@@ -87,10 +87,14 @@ pub struct SigningKeyView {
 /// SAML SP（クライアント）の公開表現（`GET /admin/saml-service-providers` の応答要素）。
 #[derive(Debug, Clone, Deserialize)]
 pub struct SamlServiceProviderView {
+    pub id: String,
     pub display_name: String,
     pub entity_id: String,
     pub acs_url: String,
     pub name_id_format: String,
+    /// 署名/暗号証明書（任意）。編集フォームの初期値に使う。
+    #[serde(default)]
+    pub x509_certificate: Option<String>,
     pub enabled: bool,
 }
 
@@ -191,6 +195,9 @@ pub struct RuntimeSettingView {
     pub status: String,
     #[serde(default)]
     pub reason: String,
+    /// この設定が何に使われるかの説明（運用者向け）。
+    #[serde(default)]
+    pub description: String,
     /// 起動時に解決された有効値（非 secret のみ）。DB 更新後も再起動までは変わらない。
     #[serde(default)]
     pub value: Option<String>,

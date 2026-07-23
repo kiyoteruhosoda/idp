@@ -180,3 +180,9 @@ pub struct AdminSamlServiceProviderForm {
     pub enabled: Option<String>,
     pub csrf_token: String,
 }
+
+/// SAML SP（クライアント）削除フォーム（`POST /{tenant_id}/admin/saml-clients/{id}/delete`）。
+#[derive(Debug, Deserialize)]
+pub struct AdminSamlServiceProviderDeleteForm {
+    pub csrf_token: String,
+}

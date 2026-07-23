@@ -8,7 +8,7 @@ mod support;
 
 use axum::http::StatusCode;
 use serde_json::json;
-use support::{body_json, create_plain_user, create_sso_session, get, post, send};
+use support::{body_json, create_plain_user, create_sso_session, delete, get, post, put, send};
 
 const SP_METADATA: &str = r#"<?xml version="1.0"?>
 <md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata"
@@ -108,6 +108,127 @@ async fn admin_can_register_and_list_saml_clients_but_others_cannot() {
     assert!(
         entities.contains(&"urn:sp:example"),
         "list contains created SP"
+    );
+}
+
+#[tokio::test]
+async fn admin_can_update_and_delete_saml_client() {
+    let Some(env) = support::setup("saml sp update/delete").await else {
+        return;
+    };
+    let base = format!("/{}/admin/saml-service-providers", env.root_tenant_id);
+    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+
+    // 登録して id を得る。
+    let res = send(
+        &env.app,
+        post(
+            &admin_cookie,
+            &base,
+            json!({
+                "display_name": "Editable SP",
+                "entity_id": "urn:sp:editable",
+                "acs_url": "https://sp.example.test/acs",
+                "enabled": true
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let created = body_json(res).await;
+    let id = created["id"].as_str().expect("id").to_string();
+    let item_uri = format!("{base}/{id}");
+
+    // 更新: 表示名・ACS・enabled を変更。
+    let res = send(
+        &env.app,
+        put(
+            &admin_cookie,
+            &item_uri,
+            json!({
+                "display_name": "Renamed SP",
+                "entity_id": "urn:sp:editable",
+                "acs_url": "https://sp.example.test/acs2",
+                "name_id_format": "",
+                "x509_certificate": "MIICERT==",
+                "enabled": false
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK, "admin update -> 200");
+    let updated = body_json(res).await;
+    assert_eq!(updated["display_name"], "Renamed SP");
+    assert_eq!(updated["acs_url"], "https://sp.example.test/acs2");
+    assert_eq!(updated["enabled"], false);
+    assert_eq!(updated["x509_certificate"], "MIICERT==");
+
+    // 非 HTTPS ACS への更新は 400。
+    let res = send(
+        &env.app,
+        put(
+            &admin_cookie,
+            &item_uri,
+            json!({
+                "display_name": "Renamed SP",
+                "entity_id": "urn:sp:editable",
+                "acs_url": "http://sp.evil.test/acs",
+                "enabled": true
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        res.status(),
+        StatusCode::BAD_REQUEST,
+        "non-https update -> 400"
+    );
+
+    // 権限の無い利用者は削除できない → 403。
+    let plain_user_id = create_plain_user(&env.pool, &env.root_tenant_id).await;
+    let plain_cookie = create_sso_session(&env.pool, &plain_user_id).await;
+    let res = send(&env.app, delete(&plain_cookie, &item_uri)).await;
+    assert_eq!(
+        res.status(),
+        StatusCode::FORBIDDEN,
+        "no perms delete -> 403"
+    );
+
+    // 管理者は削除できる → 204。
+    let res = send(&env.app, delete(&admin_cookie, &item_uri)).await;
+    assert_eq!(res.status(), StatusCode::NO_CONTENT, "admin delete -> 204");
+
+    // 二重削除・存在しない id は 404。
+    let res = send(&env.app, delete(&admin_cookie, &item_uri)).await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND, "delete missing -> 404");
+    let res = send(
+        &env.app,
+        put(
+            &admin_cookie,
+            &item_uri,
+            json!({
+                "display_name": "X",
+                "entity_id": "urn:sp:editable",
+                "acs_url": "https://sp.example.test/acs",
+                "enabled": true
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND, "update missing -> 404");
+
+    // 一覧に含まれない。
+    let res = send(&env.app, get(&admin_cookie, &base)).await;
+    let list = body_json(res).await;
+    let entities: Vec<&str> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v["entity_id"].as_str())
+        .collect();
+    assert!(
+        !entities.contains(&"urn:sp:editable"),
+        "deleted SP not listed"
     );
 }
 

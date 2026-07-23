@@ -156,6 +156,15 @@ pub fn build(state: WebState) -> Router {
             "/admin/saml-clients/import",
             post(admin_saml_clients_console::import_metadata),
         )
+        // SP の更新・削除（HTML フォームは POST のみのため専用パス）。
+        .route(
+            "/admin/saml-clients/{id}/update",
+            post(admin_saml_clients_console::update),
+        )
+        .route(
+            "/admin/saml-clients/{id}/delete",
+            post(admin_saml_clients_console::delete),
+        )
         // 利用者の作成・検索・権限付与/剥奪画面。
         .route("/admin/users", get(admin_users_console::search))
         .route(
@@ -313,6 +322,8 @@ mod tests {
             format!("/{tenant}/admin/clients/{id}/rotate-secret"),
             format!("/{tenant}/admin/tenants/{id}/delete"),
             format!("/{tenant}/admin/tenants/{id}/reset-admin-password"),
+            format!("/{tenant}/admin/saml-clients/{id}/update"),
+            format!("/{tenant}/admin/saml-clients/{id}/delete"),
         ];
         for uri in post_uris {
             let response = build(test_state())

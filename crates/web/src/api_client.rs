@@ -13,8 +13,8 @@ use crate::admin_dto::{
 };
 use idp_contracts::admin::{
     AvailablePermissionsResponse, ClientStatusResponse, SamlServiceProviderRegisterRequest,
-    SamlServiceProviderResponse, SamlSpMetadataImportResponse, UserPermissionsResponse,
-    UserSummaryResponse, WhoamiResponse,
+    SamlServiceProviderResponse, SamlServiceProviderUpdateRequest, SamlSpMetadataImportResponse,
+    UserPermissionsResponse, UserSummaryResponse, WhoamiResponse,
 };
 use idp_contracts::auth::{
     InternalAdminAuthenticateRequest, InternalAdminAuthenticateResponse,
@@ -880,6 +880,45 @@ impl ApiClient {
             correlation_id,
             sso,
             Some(serde_json::to_value(body).map_err(|e| AdminApiError::Transport(e.to_string()))?),
+        )
+        .await
+    }
+
+    /// SAML SP（クライアント）更新（`PUT /admin/saml-service-providers/{id}`）。
+    pub async fn update_saml_service_provider(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        id: &str,
+        body: SamlServiceProviderUpdateRequest,
+    ) -> Result<SamlServiceProviderResponse, AdminApiError> {
+        self.admin_send(
+            Method::PUT,
+            tenant_id,
+            &format!("/admin/saml-service-providers/{id}"),
+            correlation_id,
+            sso,
+            Some(serde_json::to_value(body).map_err(|e| AdminApiError::Transport(e.to_string()))?),
+        )
+        .await
+    }
+
+    /// SAML SP（クライアント）削除（`DELETE /admin/saml-service-providers/{id}`）。
+    pub async fn delete_saml_service_provider(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        id: &str,
+    ) -> Result<(), AdminApiError> {
+        self.admin_send_no_content(
+            Method::DELETE,
+            tenant_id,
+            &format!("/admin/saml-service-providers/{id}"),
+            correlation_id,
+            sso,
+            None,
         )
         .await
     }

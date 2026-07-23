@@ -565,6 +565,10 @@ pub struct SamlServiceProvidersConsole<'a> {
     pub admin: Admin<'a>,
     pub csrf: &'a str,
     pub saved: bool,
+    /// 更新完了直後か（成功バナー表示に使う）。
+    pub updated: bool,
+    /// 削除完了直後か（成功バナー表示に使う）。
+    pub deleted: bool,
     /// メタデータ取り込みで初期値を反映した直後か（案内バナー表示・追加パネル展開に使う）。
     pub imported: bool,
     pub error_key: Option<&'a str>,

@@ -1,4 +1,21 @@
 
+## 2026-07-23（SAML SP の変更・削除を追加 + 設定値の優先順位を「既定値 < ENV < DB」へ + 設定用途の説明を追加）
+
+- **SAML SP（クライアント）の変更・削除を追加**: 従来は登録・一覧のみだった SAML サービスプロバイダ管理に
+  更新（`PUT /{tenant_id}/admin/saml-service-providers/{id}`）と削除（`DELETE …/{id}`。成功時 204）を追加。
+  domain（`SamlServiceProvider::apply` による検証付き変更）・repository trait（`find_by_id`／`update`／`delete`）・
+  sqlx 実装・application（`update`／`delete`、`NotFound` エラー）・contracts（`SamlServiceProviderUpdateRequest`、
+  応答へ `x509_certificate` 追加）・api ハンドラ／ルータ・web（api クライアント・コンソールの行内編集フォーム／
+  削除ボタン・ルータ）・i18n（ja/en）を一気通貫で追加。テナント境界内の id のみ操作でき、他テナントの id は 404。
+- **設定値の優先順位を「組み込み既定値 < 環境変数（ENV）< DB（system_settings）」へ修正**: 「あとから DB で
+  上書きできる」思想に合わせ、`DbManaged` のキーは DB 値が ENV を上書きするようにした（ADR-0010 の decision に整合。
+  従来コメントと実装は `ENV > DB` だった）。DB を読む前や DB 内 secret 復号に必要な bootstrap 系・api/web で値を
+  一致させたいキーは従来どおり `EnvLocked`（DB を参照せず ENV > 既定値）。`config.rs`・`system_setting.rs`・
+  `CLAUDE.md`・設定画面の注記（env-locked-note）を更新。
+- **各設定が何に使われるかの説明を追加**: `SettingDefinition` に `description` を追加し、全ランタイム設定キーへ
+  用途の一文を付与。`ResolvedSetting` → `RuntimeSettingResponse` → web `RuntimeSettingView` → 設定画面へ透過し、
+  ランタイム設定表のキー欄に説明を表示する。
+
 ## 2026-07-23（ログイン識別子をメールアドレスに統一 + ポータル初回ログインの強制変更誘導を統合）
 
 - **ログインをメールアドレスのみに統一（ADR-0009 §8）**: OIDC ログイン・ポータル（一般）ログイン・

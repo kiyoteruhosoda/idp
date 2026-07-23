@@ -38,30 +38,87 @@ pub struct NewSamlServiceProvider {
     pub enabled: bool,
 }
 
+/// 既存 SP の変更内容。テナントは変更しない（別テナントへの付け替えは不可）。
+pub struct SamlServiceProviderChanges {
+    pub display_name: String,
+    pub entity_id: String,
+    pub acs_url: String,
+    pub name_id_format: String,
+    pub x509_certificate: Option<String>,
+    pub enabled: bool,
+}
+
 impl SamlServiceProvider {
     pub fn register(id: Uuid, input: NewSamlServiceProvider, now: DateTime<Utc>) -> Result<Self> {
-        let display_name = required(input.display_name, "display_name")?;
-        let entity_id = required(input.entity_id, "entity_id")?;
-        let acs_url = validate_acs_url(&input.acs_url)?;
-        let name_id_format = match input.name_id_format.trim() {
-            "" => DEFAULT_NAME_ID_FORMAT.to_string(),
-            other => other.to_string(),
-        };
-        let x509_certificate = input
-            .x509_certificate
-            .map(|c| c.trim().to_string())
-            .filter(|c| !c.is_empty());
+        let fields = ValidatedFields::new(
+            input.display_name,
+            input.entity_id,
+            input.acs_url,
+            input.name_id_format,
+            input.x509_certificate,
+        )?;
         Ok(Self {
             id,
             tenant_id: input.tenant_id,
-            display_name,
-            entity_id,
-            acs_url,
-            name_id_format,
-            x509_certificate,
+            display_name: fields.display_name,
+            entity_id: fields.entity_id,
+            acs_url: fields.acs_url,
+            name_id_format: fields.name_id_format,
+            x509_certificate: fields.x509_certificate,
             enabled: input.enabled,
             created_at: now,
             updated_at: now,
+        })
+    }
+
+    /// 変更内容を検証して適用する（テナント・id・created_at は不変。updated_at を更新する）。
+    pub fn apply(&mut self, changes: SamlServiceProviderChanges, now: DateTime<Utc>) -> Result<()> {
+        let fields = ValidatedFields::new(
+            changes.display_name,
+            changes.entity_id,
+            changes.acs_url,
+            changes.name_id_format,
+            changes.x509_certificate,
+        )?;
+        self.display_name = fields.display_name;
+        self.entity_id = fields.entity_id;
+        self.acs_url = fields.acs_url;
+        self.name_id_format = fields.name_id_format;
+        self.x509_certificate = fields.x509_certificate;
+        self.enabled = changes.enabled;
+        self.updated_at = now;
+        Ok(())
+    }
+}
+
+/// 登録・変更で共通の入力検証・正規化結果。
+struct ValidatedFields {
+    display_name: String,
+    entity_id: String,
+    acs_url: String,
+    name_id_format: String,
+    x509_certificate: Option<String>,
+}
+
+impl ValidatedFields {
+    fn new(
+        display_name: String,
+        entity_id: String,
+        acs_url: String,
+        name_id_format: String,
+        x509_certificate: Option<String>,
+    ) -> Result<Self> {
+        Ok(Self {
+            display_name: required(display_name, "display_name")?,
+            entity_id: required(entity_id, "entity_id")?,
+            acs_url: validate_acs_url(&acs_url)?,
+            name_id_format: match name_id_format.trim() {
+                "" => DEFAULT_NAME_ID_FORMAT.to_string(),
+                other => other.to_string(),
+            },
+            x509_certificate: x509_certificate
+                .map(|c| c.trim().to_string())
+                .filter(|c| !c.is_empty()),
         })
     }
 }
@@ -127,5 +184,65 @@ mod tests {
         assert_eq!(sp.name_id_format, DEFAULT_NAME_ID_FORMAT);
         // 空白のみの証明書は None に正規化する。
         assert_eq!(sp.x509_certificate, None);
+    }
+
+    #[test]
+    fn apply_updates_fields_and_validates() {
+        let created = Utc::now();
+        let mut sp = SamlServiceProvider::register(
+            Uuid::nil(),
+            NewSamlServiceProvider {
+                tenant_id: Uuid::nil().into(),
+                display_name: "App".to_string(),
+                entity_id: "urn:sp".to_string(),
+                acs_url: "https://sp.example.test/acs".to_string(),
+                name_id_format: String::new(),
+                x509_certificate: None,
+                enabled: true,
+            },
+            created,
+        )
+        .expect("register");
+
+        let later = created + chrono::Duration::seconds(5);
+        sp.apply(
+            SamlServiceProviderChanges {
+                display_name: "Renamed".to_string(),
+                entity_id: "urn:sp:renamed".to_string(),
+                acs_url: "https://sp.example.test/acs2".to_string(),
+                name_id_format: String::new(),
+                x509_certificate: Some("cert".to_string()),
+                enabled: false,
+            },
+            later,
+        )
+        .expect("apply");
+
+        assert_eq!(sp.display_name, "Renamed");
+        assert_eq!(sp.entity_id, "urn:sp:renamed");
+        assert_eq!(sp.acs_url, "https://sp.example.test/acs2");
+        assert_eq!(sp.name_id_format, DEFAULT_NAME_ID_FORMAT);
+        assert_eq!(sp.x509_certificate.as_deref(), Some("cert"));
+        assert!(!sp.enabled);
+        // id・created_at は不変、updated_at のみ進む。
+        assert_eq!(sp.id, Uuid::nil());
+        assert_eq!(sp.created_at, created);
+        assert_eq!(sp.updated_at, later);
+
+        // 非 HTTPS ACS は拒否し、状態は変更しない。
+        assert!(sp
+            .apply(
+                SamlServiceProviderChanges {
+                    display_name: "X".to_string(),
+                    entity_id: "urn:sp:x".to_string(),
+                    acs_url: "http://sp.evil.test/acs".to_string(),
+                    name_id_format: String::new(),
+                    x509_certificate: None,
+                    enabled: true,
+                },
+                later,
+            )
+            .is_err());
+        assert_eq!(sp.display_name, "Renamed");
     }
 }

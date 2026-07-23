@@ -18,6 +18,8 @@
   </div>
 
   {% if saved %}<div class="alert alert-success" role="status">{{ messages.get("admin-saml-client-saved") }}</div>{% endif %}
+  {% if updated %}<div class="alert alert-success" role="status">{{ messages.get("admin-saml-client-updated") }}</div>{% endif %}
+  {% if deleted %}<div class="alert alert-success" role="status">{{ messages.get("admin-saml-client-deleted") }}</div>{% endif %}
   {% if imported %}<div class="alert alert-info" role="status">{{ messages.get("admin-saml-client-imported") }}</div>{% endif %}
   {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
 
@@ -92,6 +94,7 @@
               <th>{{ messages.get("admin-saml-client-field-entity-id") }}</th>
               <th>{{ messages.get("admin-saml-client-field-acs-url") }}</th>
               <th>{{ messages.get("admin-saml-client-col-status") }}</th>
+              <th class="text-end">{{ messages.get("admin-saml-client-col-actions") }}</th>
             </tr>
           </thead>
           <tbody>
@@ -103,10 +106,59 @@
               <td>
                 {% if p.enabled %}<span class="badge text-bg-success">{{ messages.get("admin-saml-client-enabled-on") }}</span>{% else %}<span class="badge text-bg-secondary">{{ messages.get("admin-saml-client-enabled-off") }}</span>{% endif %}
               </td>
+              <td class="text-end text-nowrap">
+                <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#saml-client-edit-{{ p.id }}" aria-controls="saml-client-edit-{{ p.id }}" aria-expanded="false">
+                  <i class="fa-solid fa-pen me-1" aria-hidden="true"></i>{{ messages.get("admin-saml-client-edit") }}
+                </button>
+                <form method="post" action="{{ tenant }}/admin/saml-clients/{{ p.id }}/delete" class="d-inline"
+                      onsubmit="return confirm('{{ messages.get("admin-saml-client-delete-confirm") }}');">
+                  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                  <button type="submit" class="btn btn-sm btn-outline-danger">
+                    <i class="fa-solid fa-trash me-1" aria-hidden="true"></i>{{ messages.get("admin-saml-client-delete") }}
+                  </button>
+                </form>
+              </td>
+            </tr>
+            <tr class="collapse" id="saml-client-edit-{{ p.id }}">
+              <td colspan="5" class="bg-body-tertiary">
+                <form method="post" action="{{ tenant }}/admin/saml-clients/{{ p.id }}/update" class="py-2">
+                  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                  <div class="mb-3">
+                    <label class="form-label" for="edit-display_name-{{ p.id }}">{{ messages.get("admin-saml-client-field-display-name") }}</label>
+                    <input type="text" class="form-control" id="edit-display_name-{{ p.id }}" name="display_name" value="{{ p.display_name }}" required maxlength="255">
+                  </div>
+                  <div class="mb-3">
+                    <label class="form-label" for="edit-entity_id-{{ p.id }}">{{ messages.get("admin-saml-client-field-entity-id") }}</label>
+                    <input type="text" class="form-control" id="edit-entity_id-{{ p.id }}" name="entity_id" value="{{ p.entity_id }}" required>
+                  </div>
+                  <div class="mb-3">
+                    <label class="form-label" for="edit-acs_url-{{ p.id }}">{{ messages.get("admin-saml-client-field-acs-url") }}</label>
+                    <input type="url" class="form-control" id="edit-acs_url-{{ p.id }}" name="acs_url" value="{{ p.acs_url }}" required>
+                  </div>
+                  <div class="mb-3">
+                    <label class="form-label" for="edit-name_id_format-{{ p.id }}">{{ messages.get("admin-saml-client-field-name-id-format") }}</label>
+                    <input type="text" class="form-control" id="edit-name_id_format-{{ p.id }}" name="name_id_format" value="{{ p.name_id_format }}">
+                    <div class="form-text">{{ messages.get("admin-saml-client-name-id-format-hint") }}</div>
+                  </div>
+                  <div class="mb-3">
+                    <label class="form-label" for="edit-x509-{{ p.id }}">{{ messages.get("admin-saml-client-field-certificate") }}</label>
+                    <textarea class="form-control font-monospace" id="edit-x509-{{ p.id }}" name="x509_certificate" rows="6">{{ p.x509_certificate.as_deref().unwrap_or("") }}</textarea>
+                    <div class="form-text">{{ messages.get("admin-saml-client-certificate-hint") }}</div>
+                  </div>
+                  <div class="form-check mb-3">
+                    <input type="checkbox" class="form-check-input" id="edit-enabled-{{ p.id }}" name="enabled" value="true" {% if p.enabled %}checked{% endif %}>
+                    <label class="form-check-label" for="edit-enabled-{{ p.id }}">{{ messages.get("admin-saml-client-field-enabled") }}</label>
+                  </div>
+                  <div class="d-flex gap-2">
+                    <button type="submit" class="btn btn-primary"><i class="fa-solid fa-floppy-disk me-2" aria-hidden="true"></i>{{ messages.get("admin-saml-client-update-submit") }}</button>
+                    <button type="button" class="btn btn-outline-secondary" data-bs-toggle="collapse" data-bs-target="#saml-client-edit-{{ p.id }}">{{ messages.get("admin-saml-client-edit-cancel") }}</button>
+                  </div>
+                </form>
+              </td>
             </tr>
             {% endfor %}
             {% if providers.is_empty() %}
-            <tr><td colspan="4" class="text-center text-muted py-4">{{ messages.get("admin-saml-client-list-empty") }}</td></tr>
+            <tr><td colspan="5" class="text-center text-muted py-4">{{ messages.get("admin-saml-client-list-empty") }}</td></tr>
             {% endif %}
           </tbody>
         </table>

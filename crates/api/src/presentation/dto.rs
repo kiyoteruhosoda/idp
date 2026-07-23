@@ -345,6 +345,8 @@ pub struct RuntimeSettingResponse {
     pub status: String,
     /// 判定理由。secret の平文・fingerprint は含まない。
     pub reason: String,
+    /// この設定が何に使われるかの説明（運用者向け）。
+    pub description: String,
     /// 起動時に解決された有効値（非 secret のみ）。DB 更新後も再起動までは変わらない。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,

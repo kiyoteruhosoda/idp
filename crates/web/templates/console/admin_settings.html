@@ -91,6 +91,7 @@
           <tr>
             <td>
               <code>{{ item.key }}</code>
+              {% if !item.description.is_empty() %}<div class="text-muted small mt-1">{{ item.description }}</div>{% endif %}
               {% if item.restart_required %}<div class="form-text">{{ messages.get("admin-settings-runtime-restart-required") }}</div>{% endif %}
             </td>
             <td>

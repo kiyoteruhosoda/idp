@@ -12,7 +12,7 @@ use crate::presentation::security_headers::add_security_headers;
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::resolve_tenant;
 use axum::middleware;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::Router;
 use tower_http::trace::TraceLayer;
 use utoipa::OpenApi;
@@ -219,6 +219,11 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/admin/saml-service-providers/import-metadata",
             post(admin_saml_service_providers::import_metadata),
+        )
+        // SP の更新・削除。idp.tenant.admin 必須。
+        .route(
+            "/admin/saml-service-providers/{id}",
+            put(admin_saml_service_providers::update).delete(admin_saml_service_providers::delete),
         )
         // 署名鍵管理 API（K1）。idp.tenant.admin 必須。
         .route(

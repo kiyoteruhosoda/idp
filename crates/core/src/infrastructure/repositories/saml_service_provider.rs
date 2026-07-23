@@ -92,4 +92,62 @@ impl SamlServiceProviderRepository for SqlxSamlServiceProviderRepository {
         .map_err(repo_err)?;
         rows.iter().map(map_row).collect()
     }
+
+    async fn find_by_id(
+        &self,
+        tenant_id: TenantId,
+        id: Uuid,
+    ) -> Result<Option<SamlServiceProvider>> {
+        let row = sqlx::query(
+            "SELECT id, tenant_id, display_name, entity_id, acs_url, name_id_format, x509_certificate, enabled, created_at, updated_at \
+             FROM saml_service_providers WHERE tenant_id = ? AND id = ?",
+        )
+        .bind(tenant_id.as_uuid().to_string())
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        row.as_ref().map(map_row).transpose()
+    }
+
+    async fn update(&self, provider: &SamlServiceProvider) -> Result<()> {
+        let result = sqlx::query(
+            "UPDATE saml_service_providers \
+             SET display_name = ?, entity_id = ?, acs_url = ?, name_id_format = ?, \
+                 x509_certificate = ?, enabled = ?, updated_at = ? \
+             WHERE tenant_id = ? AND id = ?",
+        )
+        .bind(&provider.display_name)
+        .bind(&provider.entity_id)
+        .bind(&provider.acs_url)
+        .bind(&provider.name_id_format)
+        .bind(&provider.x509_certificate)
+        .bind(provider.enabled)
+        .bind(provider.updated_at.naive_utc())
+        .bind(provider.tenant_id.as_uuid().to_string())
+        .bind(provider.id.to_string())
+        .execute(&self.pool)
+        .await;
+
+        match result {
+            Ok(_) => Ok(()),
+            Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
+                Err(DomainError::Conflict(
+                    "SAML service provider entity_id already exists in this tenant".to_string(),
+                ))
+            }
+            Err(e) => Err(repo_err(e)),
+        }
+    }
+
+    async fn delete(&self, tenant_id: TenantId, id: Uuid) -> Result<bool> {
+        let result =
+            sqlx::query("DELETE FROM saml_service_providers WHERE tenant_id = ? AND id = ?")
+                .bind(tenant_id.as_uuid().to_string())
+                .bind(id.to_string())
+                .execute(&self.pool)
+                .await
+                .map_err(repo_err)?;
+        Ok(result.rows_affected() > 0)
+    }
 }

@@ -1,30 +1,36 @@
 //! SAML SP（クライアント）管理コンソール画面（`/{tenant_id}/admin/saml-clients`）。
 //!
-//! 本プロダクト（IdP）が信頼する SP を一覧・追加する。SP メタデータ XML の取り込みで登録フォームを
-//! 初期化できる。データ操作は api の `/admin/saml-service-providers` へ SSO Cookie 転送で委譲する。
+//! 本プロダクト（IdP）が信頼する SP を一覧・追加・変更・削除する。SP メタデータ XML の取り込みで登録
+//! フォームを初期化できる。データ操作は api の `/admin/saml-service-providers` へ SSO Cookie 転送で委譲する
+//! （HTML フォームは PUT/DELETE を送れないため、変更・削除は専用 POST パス `/{id}/update`・`/{id}/delete` を
+//! 経由し、api 側の PUT/DELETE へ変換する）。
 
 use super::locale;
 use crate::api_client::AdminApiError;
 use crate::correlation::CorrelationId;
 use crate::csrf::console_csrf_token;
-use crate::dto::AdminSamlServiceProviderForm;
+use crate::dto::{AdminSamlServiceProviderDeleteForm, AdminSamlServiceProviderForm};
 use crate::handlers::admin_console::{redirect_to_login, resolve_admin, AdminResolution};
 use crate::handlers::found;
 use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, SamlServiceProviderFormValues, SamlServiceProvidersConsole};
 use crate::tenant::WebTenant;
-use axum::extract::{Extension, Multipart, Query, State};
+use axum::extract::{Extension, Multipart, Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
-use idp_contracts::admin::SamlServiceProviderRegisterRequest;
+use idp_contracts::admin::{SamlServiceProviderRegisterRequest, SamlServiceProviderUpdateRequest};
 use serde::Deserialize;
 
 #[derive(Debug, Default, Deserialize)]
 pub struct SamlClientQuery {
     #[serde(default)]
     pub saved: Option<String>,
+    #[serde(default)]
+    pub updated: Option<String>,
+    #[serde(default)]
+    pub deleted: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
 }
@@ -58,6 +64,8 @@ pub async fn list(
         admin: Some(&admin),
         csrf: &csrf_from(&headers, state.config.csrf_secret()),
         saved: query.saved.is_some(),
+        updated: query.updated.is_some(),
+        deleted: query.deleted.is_some(),
         imported: false,
         error_key,
         providers: &providers,
@@ -247,12 +255,102 @@ pub async fn import_metadata(
         admin: Some(&admin),
         csrf: &csrf_from(&headers, state.config.csrf_secret()),
         saved: false,
+        updated: false,
+        deleted: false,
         imported,
         error_key,
         providers: &providers,
         values: &values,
     }))
     .into_response()
+}
+
+/// SP の更新（`POST /{tenant_id}/admin/saml-clients/{id}/update`）。
+pub async fn update(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Path((_, id)): Path<(String, String)>,
+    Form(form): Form<AdminSamlServiceProviderForm>,
+) -> Response {
+    match resolve_admin(&state, &correlation, &tenant, &headers).await {
+        AdminResolution::Ok(_) => {}
+        AdminResolution::Reject(resp) => return resp,
+    }
+    let base = format!("{}/admin/saml-clients", tenant.prefix());
+    if csrf_from(&headers, state.config.csrf_secret()) != form.csrf_token {
+        return found(&format!("{base}?error=csrf"));
+    }
+    if form.display_name.trim().is_empty()
+        || form.entity_id.trim().is_empty()
+        || form.acs_url.trim().is_empty()
+    {
+        return found(&format!("{base}?error=validation"));
+    }
+    if !acs_url_allowed(&form.acs_url) {
+        return found(&format!("{base}?error=acs-url"));
+    }
+
+    let sso = crate::cookies::get(&headers, crate::cookies::SSO_SESSION_COOKIE).unwrap_or_default();
+    let x509 = form.x509_certificate.trim();
+    match state
+        .api
+        .update_saml_service_provider(
+            &correlation.0,
+            &tenant.0,
+            &sso,
+            &id,
+            SamlServiceProviderUpdateRequest {
+                display_name: form.display_name,
+                entity_id: form.entity_id,
+                acs_url: form.acs_url,
+                name_id_format: form.name_id_format,
+                x509_certificate: (!x509.is_empty()).then(|| x509.to_string()),
+                enabled: form.enabled.is_some(),
+            },
+        )
+        .await
+    {
+        Ok(_) => found(&format!("{base}?updated=1")),
+        Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
+        Err(AdminApiError::Forbidden) => found(&format!("{base}?error=forbidden")),
+        Err(AdminApiError::Validation(_)) => found(&format!("{base}?error=validation")),
+        Err(AdminApiError::Conflict(_)) => found(&format!("{base}?error=conflict")),
+        Err(AdminApiError::NotFound) => found(&format!("{base}?error=notfound")),
+        Err(AdminApiError::Transport(_)) => found(&format!("{base}?error=internal")),
+    }
+}
+
+/// SP の削除（`POST /{tenant_id}/admin/saml-clients/{id}/delete`）。
+pub async fn delete(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Path((_, id)): Path<(String, String)>,
+    Form(form): Form<AdminSamlServiceProviderDeleteForm>,
+) -> Response {
+    match resolve_admin(&state, &correlation, &tenant, &headers).await {
+        AdminResolution::Ok(_) => {}
+        AdminResolution::Reject(resp) => return resp,
+    }
+    let base = format!("{}/admin/saml-clients", tenant.prefix());
+    if csrf_from(&headers, state.config.csrf_secret()) != form.csrf_token {
+        return found(&format!("{base}?error=csrf"));
+    }
+    let sso = crate::cookies::get(&headers, crate::cookies::SSO_SESSION_COOKIE).unwrap_or_default();
+    match state
+        .api
+        .delete_saml_service_provider(&correlation.0, &tenant.0, &sso, &id)
+        .await
+    {
+        Ok(()) => found(&format!("{base}?deleted=1")),
+        Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
+        Err(AdminApiError::Forbidden) => found(&format!("{base}?error=forbidden")),
+        Err(AdminApiError::NotFound) => found(&format!("{base}?error=notfound")),
+        Err(_) => found(&format!("{base}?error=internal")),
+    }
 }
 
 fn csrf_from(headers: &HeaderMap, secret: &[u8]) -> String {
@@ -277,6 +375,7 @@ fn error_key_for(error: &str) -> Option<&'static str> {
         "validation" => Some("admin-saml-client-error-validation"),
         "acs-url" => Some("admin-saml-client-error-acs-url"),
         "conflict" => Some("admin-saml-client-error-conflict"),
+        "notfound" => Some("admin-saml-client-error-notfound"),
         "forbidden" => Some("admin-settings-error-forbidden"),
         "internal" => Some("admin-error-internal"),
         _ => None,

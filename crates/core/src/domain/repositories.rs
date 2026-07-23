@@ -175,6 +175,16 @@ pub trait ClientRepository: Send + Sync {
 pub trait SamlServiceProviderRepository: Send + Sync {
     async fn create(&self, provider: &SamlServiceProvider) -> Result<()>;
     async fn list_for_tenant(&self, tenant_id: TenantId) -> Result<Vec<SamlServiceProvider>>;
+    /// テナント境界内で id 解決する（他テナントの id を持ち込んでも解決させない）。
+    async fn find_by_id(
+        &self,
+        tenant_id: TenantId,
+        id: Uuid,
+    ) -> Result<Option<SamlServiceProvider>>;
+    /// 既存 SP を更新する（同一テナント・id のレコードのみ。entity_id 重複は `Conflict`）。
+    async fn update(&self, provider: &SamlServiceProvider) -> Result<()>;
+    /// テナント境界内で SP を削除する。削除できた場合 `true`、対象が無ければ `false`。
+    async fn delete(&self, tenant_id: TenantId, id: Uuid) -> Result<bool>;
 }
 
 #[async_trait]

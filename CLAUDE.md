@@ -189,13 +189,20 @@ let issuer = config.issuer();
 std::env::var("ISSUER")?;
 ```
 
-優先順位: 環境変数 > DB（system_settings テーブル）> デフォルト値
+優先順位: **組み込みデフォルト値 < 環境変数（ENV）< DB（system_settings テーブル）**。
+「あとから DB で上書きできる」という思想で、より運用に近い層（DB）を優先する。
+
+- ただし DB 上書きを受け付けるのは `DbManaged` のキーだけ。DB を読む前や DB 内 secret の復号に必要な
+  bootstrap 系（`DATABASE_URL`・`KEY_ENCRYPTION_KEY`・`INTERNAL_SERVICE_TOKEN`・`CSRF_SECRET` 等）や、
+  api/web で値を一致させる必要があるキーは `EnvLocked` とし、DB を参照せず ENV > 既定値 で解決する（ADR-0010）。
+- 各キーの出所区分（`Builtin` / `EnvLocked` / `DbManaged`）と説明は `domain/system_setting.rs` の
+  `RUNTIME_SETTING_DEFINITIONS` を単一の出所として集中管理する。
 
 新しい設定キーを追加する場合：
 
-1. `src/config.rs` — 設定項目（getter）と読み込みロジックを追加
-2. 既定値を定義（`config.rs` 内の defaults）
-3. DB 上書き対応が必要なら system_settings 定義に追加
+1. `domain/system_setting.rs` — `RUNTIME_SETTING_DEFINITIONS` に定義（出所区分・既定値・型・**用途の説明**）を追加
+2. `src/config.rs` — 設定項目（getter）と読み込みロジックを追加
+3. DB 上書き対応が必要なら `owner: DbManaged` とする（`EnvLocked` は DB を無視して ENV > 既定値）
 
 ---
 

@@ -307,6 +307,10 @@ pub fn patch(cookie: &str, uri: &str, body: Value) -> Request<Body> {
     request(Method::PATCH, cookie, uri, Some(body))
 }
 
+pub fn put(cookie: &str, uri: &str, body: Value) -> Request<Body> {
+    request(Method::PUT, cookie, uri, Some(body))
+}
+
 pub fn delete(cookie: &str, uri: &str) -> Request<Body> {
     request(Method::DELETE, cookie, uri, None)
 }

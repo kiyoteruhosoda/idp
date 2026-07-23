@@ -1,7 +1,12 @@
 //! アプリケーション設定。
 //!
 //! 設定値の取得は **必ず本モジュール経由**で行う。生の環境変数・DSN を各所で直接参照しない。
-//! 優先順位: 環境変数 > DB（system_settings テーブル）> 既定値。
+//!
+//! 優先順位: **組み込み既定値 < 環境変数（ENV）< DB（system_settings テーブル）**。
+//! 「あとから DB で上書きできる」という思想で、より運用に近い層（DB）を優先する。
+//! ただし DB 上書きを受け付けるのは `DbManaged` のキーだけ。`EnvLocked`（DB を読む前や DB 内 secret の
+//! 復号に必要な bootstrap 系、api/web で値を一致させたいキー）は DB を参照せず ENV > 既定値 で解決する
+//! （ADR-0010）。`Builtin` は常に既定値。
 //!
 //! 一部の getter（各種 TTL・クロックスキュー）は後続フェーズ（T2〜）で使用するため、
 //! 現時点では未使用でも保持する。
@@ -56,6 +61,8 @@ pub struct ResolvedSetting {
     pub value: Option<String>,
     /// 組み込み既定値（表示用）。secret のときは `None`。
     pub default_value: Option<String>,
+    /// この設定が何に使われるかの説明（運用者向け。設定画面に表示する）。
+    pub description: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -304,15 +311,22 @@ impl<'a> ConfigResolver<'a> {
         Self { db_settings }
     }
 
+    /// 有効値を解決する。優先順位は「既定値 < ENV < DB」。
+    ///
+    /// DB を優先するのは `DbManaged` のキーだけ（あとから DB で上書きできるという思想）。
+    /// それ以外（`EnvLocked` / 未定義キー）は DB を参照せず ENV のみを見る。DB・ENV とも無ければ
+    /// `None`（呼び出し側が既定値へフォールバック）。
     fn optional_string(&self, key: &str) -> Option<String> {
-        env_lookup(key).or_else(|| {
-            let db_allowed = runtime_setting_definition(key)
-                .map(|def| def.owner == SettingOwner::DbManaged)
-                .unwrap_or(false);
-            db_allowed
-                .then(|| self.db_settings.get(key).filter(|v| !v.is_empty()).cloned())
-                .flatten()
-        })
+        let db_allowed = runtime_setting_definition(key)
+            .map(|def| def.owner == SettingOwner::DbManaged)
+            .unwrap_or(false);
+        // DB 管理キーは DB 値を最優先（ENV を上書きする）。
+        if db_allowed {
+            if let Some(v) = self.db_settings.get(key).filter(|v| !v.is_empty()) {
+                return Some(v.clone());
+            }
+        }
+        env_lookup(key)
     }
 
     fn string(&self, key: &str, default: &str) -> String {
@@ -333,13 +347,12 @@ impl<'a> ConfigResolver<'a> {
         }
     }
 
+    /// 有効値の出所を返す（[`optional_string`] と同じ優先順位: 既定値 < ENV < DB）。
     fn source(&self, key: &str) -> SettingSource {
-        if env_lookup(key).is_some() {
-            return SettingSource::Env;
-        }
         let db_allowed = runtime_setting_definition(key)
             .map(|def| def.owner == SettingOwner::DbManaged)
             .unwrap_or(false);
+        // DB 管理キーで DB 値があれば DB が有効（ENV より優先）。
         if db_allowed
             && self
                 .db_settings
@@ -347,10 +360,12 @@ impl<'a> ConfigResolver<'a> {
                 .filter(|v| !v.is_empty())
                 .is_some()
         {
-            SettingSource::Db
-        } else {
-            SettingSource::Builtin
+            return SettingSource::Db;
         }
+        if env_lookup(key).is_some() {
+            return SettingSource::Env;
+        }
+        SettingSource::Builtin
     }
 
     fn safety_status(&self, key: &str, default_risk: DefaultRisk) -> SettingSafetyStatus {
@@ -425,6 +440,7 @@ impl<'a> ConfigResolver<'a> {
                 default_value: (!def.secret)
                     .then(|| def.default_value.map(str::to_string))
                     .flatten(),
+                description: def.description.to_string(),
             })
             .collect()
     }
@@ -639,12 +655,23 @@ mod tests {
     }
 
     #[test]
-    fn env_overrides_db_managed_settings() {
+    fn db_managed_settings_override_env() {
+        // 「あとから DB で上書きできる」思想: DB_MANAGED キーは DB 値が ENV を上書きする。
         let _env = env_guard();
         std::env::set_var("KEY_ROTATION_LEAD_DAYS", "14");
         let db = HashMap::from([("KEY_ROTATION_LEAD_DAYS".to_string(), "7".to_string())]);
         let config = Config::from_env_and_db_settings(&db).unwrap();
-        assert_eq!(config.key_rotation_lead_days(), 14);
+        assert_eq!(config.key_rotation_lead_days(), 7);
+        let rotation = config
+            .resolved_settings()
+            .iter()
+            .find(|setting| setting.key == "KEY_ROTATION_LEAD_DAYS")
+            .unwrap();
+        assert_eq!(rotation.source, SettingSource::Db);
+        // ENV しか無ければ ENV が有効（既定値 < ENV）。
+        std::env::set_var("KEY_ROTATION_LEAD_DAYS", "21");
+        let config = Config::from_env_and_db_settings(&HashMap::new()).unwrap();
+        assert_eq!(config.key_rotation_lead_days(), 21);
         let rotation = config
             .resolved_settings()
             .iter()

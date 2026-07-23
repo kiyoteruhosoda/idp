@@ -214,6 +214,7 @@ fn to_runtime_response(
         }
         .to_string(),
         reason: setting.reason.clone(),
+        description: setting.description.clone(),
         value: setting.value.clone(),
         default_value: setting.default_value.clone(),
         db_value: if setting.secret {
