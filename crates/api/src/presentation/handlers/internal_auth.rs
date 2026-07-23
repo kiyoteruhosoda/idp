@@ -422,6 +422,12 @@ pub async fn authenticate_portal_change_password(
             sso_absolute_ttl_secs: ttl,
             user_language,
         },
+        PortalChangePasswordOutcome::MfaRequired { mfa_ticket } => {
+            InternalPortalChangePasswordResponse::MfaRequired { mfa_ticket }
+        }
+        PortalChangePasswordOutcome::EmailVerificationRequired => {
+            InternalPortalChangePasswordResponse::EmailVerificationRequired
+        }
         PortalChangePasswordOutcome::RateLimited => {
             InternalPortalChangePasswordResponse::RateLimited
         }

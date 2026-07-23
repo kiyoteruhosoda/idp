@@ -469,6 +469,13 @@ pub enum InternalPortalChangePasswordResponse {
         #[serde(default)]
         user_language: Option<String>,
     },
+    /// パスワード変更成功だが TOTP が必要（`login()` と同じ MFA ゲート）。`mfa_ticket` を Cookie 化して
+    /// TOTP 入力画面へ誘導する。SSO はまだ発行しない。
+    MfaRequired {
+        mfa_ticket: String,
+    },
+    /// 自己登録アカウントのメール未検証（SEC6b）。確認リンクを踏むよう案内する。
+    EmailVerificationRequired,
     RateLimited,
     /// 資格情報不正（利用者不存在・現行パスワード不一致・無効アカウント等を区別しない）。
     InvalidCredentials,

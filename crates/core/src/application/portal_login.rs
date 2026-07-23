@@ -95,11 +95,19 @@ pub enum PortalLoginOutcome {
 
 /// ポータルの強制パスワード変更の結果。
 pub enum PortalChangePasswordOutcome {
-    /// 変更成功。SSO Cookie を発行してアカウント画面へ 302 する。
+    /// 変更成功（TOTP 未設定）。SSO Cookie を発行してアカウント画面へ 302 する。
     Success {
         sso_session_id: String,
         user_language: Option<String>,
     },
+    /// パスワード変更は成功したが TOTP が必要（`login()` と同じ MFA ゲート）。`mfa_ticket` を Cookie 化して
+    /// TOTP 入力画面へ誘導する。SSO はまだ発行しない（所持のみでの MFA バイパスを防ぐ）。
+    MfaRequired {
+        mfa_ticket: String,
+    },
+    /// 自己登録アカウントのメール未検証（SEC6b）。ステートレスな本経路は `login()` のメール検証ゲートを
+    /// 経ていないため、ここで再判定する（管理者が未検証ユーザーをリセットした場合の抜け道を塞ぐ）。
+    EmailVerificationRequired,
     /// IP 単位のレート制限超過。
     RateLimited,
     /// 資格情報不正（利用者不存在・現行パスワード不一致・無効アカウントを区別しない）。
@@ -353,6 +361,14 @@ impl PortalLoginService {
             return PortalChangePasswordOutcome::InvalidCredentials;
         }
 
+        // メール検証ゲート（SEC6b）。`login()` はメール検証を強制変更より先に判定するが、本経路は
+        // ステートレスで直接呼べるため、その前提に依存できない。現行パスワード検証後に判定して列挙を防ぐ。
+        if !user.email_verified {
+            self.record_failure(tenant_id, Some(user.id), "email_not_verified", ctx)
+                .await;
+            return PortalChangePasswordOutcome::EmailVerificationRequired;
+        }
+
         if validate_password_strength(&cmd.new_password).is_err() {
             return PortalChangePasswordOutcome::WeakPassword;
         }
@@ -379,6 +395,18 @@ impl PortalLoginService {
             if let Err(e) = self.users.update_login_state(user.id, 0, None).await {
                 return PortalChangePasswordOutcome::Internal(e.to_string());
             }
+        }
+
+        // TOTP（MFA）が設定済みなら SSO を発行せず TOTP 入力ステップへ誘導する（`login()` と同じ MFA ゲート）。
+        // 管理者が既存 TOTP 利用者のパスワードをリセットした場合でも、生成パスワードの所持だけでは
+        // 第二要素を迂回できないようにする。
+        let has_totp = match user_has_confirmed_totp(self.totp_secrets.as_ref(), user.id).await {
+            Ok(v) => v,
+            Err(e) => return PortalChangePasswordOutcome::Internal(e.to_string()),
+        };
+        if has_totp {
+            let ticket = self.issue_ticket(tenant_id, user.id, now);
+            return PortalChangePasswordOutcome::MfaRequired { mfa_ticket: ticket };
         }
 
         let sso_session_id = match self.issue_sso(tenant_id, &user, ctx, now).await {

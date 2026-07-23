@@ -271,6 +271,26 @@ pub async fn password_change(
             secure,
             &[cookies::PORTAL_CSRF_COOKIE],
         ),
+        InternalPortalChangePasswordResponse::MfaRequired { mfa_ticket } => {
+            // パスワード変更成功・MFA 必要（MFA ゲート）: `mfa_ticket` を Cookie 化して TOTP 入力画面へ。
+            // portal_csrf Cookie は MFA フォームで再利用する（login の MfaRequired と同方式）。
+            let ticket_cookie = cookies::build(
+                cookies::PORTAL_MFA_COOKIE,
+                &mfa_ticket,
+                PORTAL_MFA_TTL_SECS,
+                secure,
+            );
+            (
+                AppendHeaders([(header::SET_COOKIE, ticket_cookie)]),
+                found(&format!("{}/login/mfa", tenant.prefix())),
+            )
+                .into_response()
+        }
+        InternalPortalChangePasswordResponse::EmailVerificationRequired => message_page(
+            &messages,
+            "login-error-email-not-verified",
+            StatusCode::FORBIDDEN,
+        ),
         InternalPortalChangePasswordResponse::RateLimited => reshow_password_change(
             &messages,
             &tenant.prefix(),
