@@ -92,8 +92,8 @@ _project_repl="${_project_repl//&/\\&}"
 dev_workdir="${dev_workdir//\{PROJECT\}/$_project_repl}"
 dist_dir="${dist_dir//\{PROJECT\}/$_project_repl}"
 
-log() { printf '[idp:build-remote-container] %s\n' "$*" >&2; }
-die() { printf '[idp:build-remote-container][error] %s\n' "$*" >&2; exit 1; }
+log() { printf '[idp:container] %s\n' "$*" >&2; }
+die() { printf '[idp:container][error] %s\n' "$*" >&2; exit 1; }
 
 # モードは引数のどこにあっても拾う（余分な語が前に付いても動く）。既定 migrate。
 mode=migrate
@@ -101,8 +101,28 @@ for arg in "$@"; do
   case "$arg" in app | migrate | reset) mode="$arg" ;; esac
 done
 
-# ---- 起動情報（どの引数で動き・どの設定を読み込み・どう解決したかを表示） -------------
-log "START  project=$project  mode=$mode"
+# 配置環境をターゲットディレクトリ名から分類する（stg / prod / other）。表示と、初回の既定イメージ
+# タグ決定の共通の元にする（同じ分類を 2 か所に書かないため）。
+classify_target_env() {
+  case "$(basename "$target_dir")" in
+    stg | staging | *-stg | *-staging) printf 'stg\n' ;;
+    prod | production | *-prod | *-production) printf 'prod\n' ;;
+    *) printf 'other\n' ;;
+  esac
+}
+env_class="$(classify_target_env)"
+# 表示用の環境ラベル。stg/prod はそのまま、その他はディレクトリ名をそのまま出す。
+case "$env_class" in
+  stg | prod) environment="$env_class" ;;
+  *) environment="$(basename "$target_dir")" ;;
+esac
+
+# ---- 起動情報（どの環境へ・どのモードで動き・どの設定を読み込み・どう解決したかを表示） ----
+log "══════════════════════════════════════════════"
+log "  環境 (ENV) : $environment"
+log "  モード     : $mode"
+log "  project    : $project"
+log "══════════════════════════════════════════════"
 log "  引数        : $([[ $# -gt 0 ]] && printf '%q ' "$@" || printf '(なし → 既定 %s)' "$mode")"
 if [[ -f "$_config_file" ]]; then
   if [[ ${#_config_loaded_keys[@]} -gt 0 ]]; then
@@ -119,7 +139,7 @@ log "    IDP_DEV_CONTAINER = $dev_container"
 log "    IDP_DEV_USER      = $dev_user"
 log "    IDP_DEV_WORKDIR   = $dev_workdir"
 log "    IDP_DIST_DIR      = ${dist_dir:-(未設定)}"
-log "    IDP_TARGET_DIR    = $target_dir"
+log "    IDP_TARGET_DIR    = $target_dir （環境=$environment）"
 
 command -v docker >/dev/null 2>&1 || die "docker が見つかりません。"
 [[ -n "$dist_dir" ]] || die "IDP_DIST_DIR（ホストから見えるビルド済み dist/ の絶対パス）を設定してください。"
@@ -136,19 +156,17 @@ read_env_value() {
   # キーが無ければ空を返す。set -o pipefail 下でも grep の不一致(1)で落ちないよう `|| true`。
   { grep -E "^${key}=" "$target_dir/.env" | tail -n1 | cut -d= -f2- | tr -d '\r'; } || true
 }
-# ターゲットディレクトリ名から既定タグを判定する。初回（.env 未生成）でも stg/prod ディレクトリなら
-# deploy.sh がそのディレクトリの .env.<env>.example から生成する IMAGE_TAG（stg/prod）とビルドタグを
-# 一致させ、「latest でビルド → .env は stg を要求 → イメージ不一致」を防ぐ。
-image_tag_from_target_dir() {
-  case "$(basename "$target_dir")" in
-    stg | staging | *-stg | *-staging) printf 'stg\n' ;;
-    prod | production | *-prod | *-production) printf 'prod\n' ;;
-    *) printf 'latest\n' ;;
-  esac
-}
+# 初回（.env 未生成）の既定イメージタグを配置環境から決める。stg/prod ディレクトリなら deploy.sh が
+# .env.<env>.example から生成する IMAGE_TAG（stg/prod）とビルドタグを一致させ、「latest でビルド →
+# .env は stg を要求 → イメージ不一致」を防ぐ。その他の環境は latest。分類は env_class を再利用する。
 image_tag="${IMAGE_TAG:-$(read_env_value IMAGE_TAG)}"
 image_prefix="${IMAGE_PREFIX:-$(read_env_value IMAGE_PREFIX)}"
-image_tag="${image_tag:-$(image_tag_from_target_dir)}"
+if [[ -z "$image_tag" ]]; then
+  case "$env_class" in
+    stg | prod) image_tag="$env_class" ;;
+    *) image_tag=latest ;;
+  esac
+fi
 image_prefix="${image_prefix:-idp}"
 
 # --- SYNC（dev コンテナ内で git pull だけ先に行う。build.sh はまだ走らせない） -------
@@ -220,4 +238,4 @@ chmod +x "$target_dir"/*.sh 2>/dev/null || true
 log "DEPLOY ./deploy.sh $mode"
 "$target_dir/deploy.sh" "$mode"
 
-log "END    mode=$mode"
+log "END    環境=$environment  モード=$mode（完了）"
