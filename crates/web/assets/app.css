@@ -101,6 +101,9 @@ code {
     border: 0;
     padding: 0.25rem 0;
     white-space: normal;
+    /* 長い値（区切りの無いメール・reason・平文の client_id 等）もカード内で折り返し、
+     * .table-responsive の横スクロールが復活しないようにする */
+    overflow-wrap: anywhere;
   }
 
   /* 各セルの上に列見出し（data-label）を小さく表示する。data-label の無いセル
