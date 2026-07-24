@@ -25,24 +25,24 @@
 {% endif %}
 {% else %}
 <div class="table-responsive">
-  <table class="table table-hover align-middle">
+  <table class="table table-cards table-hover align-middle">
     <thead>
       <tr><th>{{ messages.get("admin-user-col-email") }}</th><th>{{ messages.get("admin-users-field-name") }}</th><th>{{ messages.get("admin-members-col-type") }}</th><th>{{ messages.get("admin-members-col-status") }}</th><th>{{ messages.get("admin-members-col-user-status") }}</th><th>{{ messages.get("admin-signing-keys-col-actions") }}</th></tr>
     </thead>
     <tbody>
       {% for m in members %}
       <tr>
-        <td>{% if m.membership_type == "HOME" %}<a href="{{ tenant }}/admin/users/{{ m.user_id }}/permissions">{{ m.email.as_deref().unwrap_or("-") }}</a>{% else %}{{ m.email.as_deref().unwrap_or("-") }}{% endif %}</td>
-        <td>{{ m.name.as_deref().unwrap_or("-") }}</td>
-        <td>{% if m.membership_type == "GUEST" %}<span class="badge text-bg-info">{{ m.membership_type }}</span>{% else %}<span class="badge text-bg-secondary">{{ m.membership_type }}</span>{% endif %}</td>
-        <td>{{ m.status }}</td>
-        <td>
+        <td data-label="{{ messages.get("admin-user-col-email") }}">{% if m.membership_type == "HOME" %}<a href="{{ tenant }}/admin/users/{{ m.user_id }}/permissions">{{ m.email.as_deref().unwrap_or("-") }}</a>{% else %}{{ m.email.as_deref().unwrap_or("-") }}{% endif %}</td>
+        <td data-label="{{ messages.get("admin-users-field-name") }}">{{ m.name.as_deref().unwrap_or("-") }}</td>
+        <td data-label="{{ messages.get("admin-members-col-type") }}">{% if m.membership_type == "GUEST" %}<span class="badge text-bg-info">{{ m.membership_type }}</span>{% else %}<span class="badge text-bg-secondary">{{ m.membership_type }}</span>{% endif %}</td>
+        <td data-label="{{ messages.get("admin-members-col-status") }}">{{ m.status }}</td>
+        <td data-label="{{ messages.get("admin-members-col-user-status") }}">
           {% if m.user_status.as_deref() == Some("ACTIVE") %}<span class="badge text-bg-success">{{ messages.get("admin-members-user-status-active") }}</span>
           {% else if m.user_status.as_deref() == Some("DISABLED") %}<span class="badge text-bg-danger">{{ messages.get("admin-members-user-status-disabled") }}</span>
           {% else if m.user_status.is_some() %}<span class="badge text-bg-warning">{{ messages.get("admin-members-user-status-locked") }}</span>
           {% else %}-{% endif %}
         </td>
-        <td>
+        <td data-label="{{ messages.get("admin-signing-keys-col-actions") }}">
           <div class="d-flex flex-wrap gap-2">
             {% if m.membership_type == "HOME" %}
               <a class="btn btn-outline-secondary btn-sm" href="{{ tenant }}/admin/users/{{ m.user_id }}/permissions"><i class="fa-solid fa-user-shield me-1" aria-hidden="true"></i>{{ messages.get("admin-members-permissions-button") }}</a>

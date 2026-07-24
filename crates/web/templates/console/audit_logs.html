@@ -49,13 +49,13 @@
 <p class="text-muted">{{ messages.get("admin-audit-none") }}</p>
 {% else %}
 <div class="table-responsive">
-  <table class="table table-hover align-middle">
+  <table class="table table-cards table-hover align-middle">
     <thead>
       <tr><th>{{ messages.get("admin-audit-col-time") }}</th><th>{{ messages.get("admin-audit-col-event") }}</th><th>{{ messages.get("admin-audit-col-result") }}</th><th>{{ messages.get("admin-audit-col-client") }}</th><th>{{ messages.get("admin-audit-col-correlation") }}</th><th>{{ messages.get("admin-audit-col-ip") }}</th><th>{{ messages.get("admin-audit-col-reason") }}</th></tr>
     </thead>
     <tbody>
       {% for e in entries %}
-      <tr><td>{{ e.occurred_at }}</td><td><code>{{ e.event_type }}</code></td><td>{% if e.result == "failure" %}<span class="badge text-bg-danger result-failure">{{ e.result }}</span>{% else %}<span class="badge text-bg-success">{{ e.result }}</span>{% endif %}</td><td>{{ e.client_id.as_deref().unwrap_or("-") }}</td><td><code>{{ e.correlation_id }}</code></td><td>{{ e.ip_address.as_deref().unwrap_or("-") }}</td><td>{{ e.reason.as_deref().unwrap_or("-") }}</td></tr>
+      <tr><td data-label="{{ messages.get("admin-audit-col-time") }}">{{ e.occurred_at }}</td><td data-label="{{ messages.get("admin-audit-col-event") }}"><code>{{ e.event_type }}</code></td><td data-label="{{ messages.get("admin-audit-col-result") }}">{% if e.result == "failure" %}<span class="badge text-bg-danger result-failure">{{ e.result }}</span>{% else %}<span class="badge text-bg-success">{{ e.result }}</span>{% endif %}</td><td data-label="{{ messages.get("admin-audit-col-client") }}">{{ e.client_id.as_deref().unwrap_or("-") }}</td><td data-label="{{ messages.get("admin-audit-col-correlation") }}"><code>{{ e.correlation_id }}</code></td><td data-label="{{ messages.get("admin-audit-col-ip") }}">{{ e.ip_address.as_deref().unwrap_or("-") }}</td><td data-label="{{ messages.get("admin-audit-col-reason") }}">{{ e.reason.as_deref().unwrap_or("-") }}</td></tr>
       {% endfor %}
     </tbody>
   </table>

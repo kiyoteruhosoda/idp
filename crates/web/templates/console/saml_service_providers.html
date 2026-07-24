@@ -87,7 +87,7 @@
     </div>
     <div class="card-body p-0">
       <div class="table-responsive">
-        <table class="table table-hover align-middle mb-0">
+        <table class="table table-cards table-hover align-middle mb-0">
           <thead>
             <tr>
               <th>{{ messages.get("admin-saml-client-field-display-name") }}</th>
@@ -100,13 +100,13 @@
           <tbody>
             {% for p in providers %}
             <tr>
-              <td>{{ p.display_name }}</td>
-              <td><code>{{ p.entity_id }}</code></td>
-              <td class="text-break">{{ p.acs_url }}</td>
-              <td>
+              <td data-label="{{ messages.get("admin-saml-client-field-display-name") }}">{{ p.display_name }}</td>
+              <td data-label="{{ messages.get("admin-saml-client-field-entity-id") }}"><code>{{ p.entity_id }}</code></td>
+              <td class="text-break" data-label="{{ messages.get("admin-saml-client-field-acs-url") }}">{{ p.acs_url }}</td>
+              <td data-label="{{ messages.get("admin-saml-client-col-status") }}">
                 {% if p.enabled %}<span class="badge text-bg-success">{{ messages.get("admin-saml-client-enabled-on") }}</span>{% else %}<span class="badge text-bg-secondary">{{ messages.get("admin-saml-client-enabled-off") }}</span>{% endif %}
               </td>
-              <td class="text-end text-nowrap">
+              <td class="text-end text-nowrap" data-label="{{ messages.get("admin-saml-client-col-actions") }}">
                 <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#saml-client-edit-{{ p.id }}" aria-controls="saml-client-edit-{{ p.id }}" aria-expanded="false">
                   <i class="fa-solid fa-pen me-1" aria-hidden="true"></i>{{ messages.get("admin-saml-client-edit") }}
                 </button>
