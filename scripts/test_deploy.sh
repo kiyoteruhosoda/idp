@@ -167,11 +167,28 @@ grep -q './deploy.sh reset' /tmp/deploy-checksum-fail.out ||
 # 結論（初期化が必要）を明示すること。
 grep -q '初期化' /tmp/deploy-checksum-fail.out ||
   { echo "checksum mismatch guidance must state that DB re-initialization is required" >&2; exit 1; }
+# バックアップコマンドは compose の service（mariadb）経由で解決すること（v1/v2 の命名差に耐える）。
+grep -q 'exec -T mariadb sh -c' /tmp/deploy-checksum-fail.out ||
+  { echo "backup command must resolve the mariadb service via compose (v1/v2 safe)" >&2; exit 1; }
+# Compose v2 固定のコンテナ名（project-mariadb-1）を直書きしないこと（v1 では project_mariadb_1）。
+if grep -qE 'docker exec [^ ]*-mariadb-1' /tmp/deploy-checksum-fail.out; then
+  echo "backup command must not hardcode a compose-v2 container name" >&2
+  exit 1
+fi
 # 対処案内を MariaDB のコンテナログ（無関係なノイズ）で埋もれさせないこと。
 if grep -q '\[idp\]\[diagnostic\] logs tail: mariadb' /tmp/deploy-checksum-fail.out; then
   echo "checksum mismatch must not bury guidance under mariadb container logs" >&2
   exit 1
 fi
+
+# バックアップ対象 DB 名は ENV > .env の順で解決すること（MARIADB_DATABASE を環境で上書きしたら
+# 既定 idp ではなくその DB をダンプするコマンドを出す）。
+: >"$DOCKER_STUB_LOG"
+set +e
+MARIADB_DATABASE=tenantdb DOCKER_STUB_MIGRATE_CHECKSUM_MISMATCH=1 ./scripts/deploy.sh migrate >/tmp/deploy-checksum-dbname.out 2>&1
+set -e
+grep -q -- '--single-transaction tenantdb' /tmp/deploy-checksum-dbname.out ||
+  { echo "backup command must honor MARIADB_DATABASE env override (env > .env)" >&2; cat /tmp/deploy-checksum-dbname.out >&2; exit 1; }
 # 決定論的な失敗はリトライしない（migrate は 1 回だけ実行される）。
 if [[ "$(grep -c 'run --rm -T migrate' "$DOCKER_STUB_LOG")" -ne 1 ]]; then
   echo "checksum mismatch must not be retried (migrate should run exactly once)" >&2

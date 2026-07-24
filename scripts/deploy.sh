@@ -384,12 +384,16 @@ wait_healthy() {
 # 「Aborted connection ... Got an error reading communication packets」という一見無関係な警告だけが
 # 残り、真因が埋もれる。ここで検出し、リトライせず対処可能なメッセージで即停止する（fail-fast）。
 migration_checksum_mismatch_guidance() {
-  local out="$1" ver db_name mariadb_container
+  local out="$1" ver db_name compose_cli
   # version が取れなくても案内は出す（set -e + pipefail で中断しないよう best-effort にする）。
   ver="$(printf '%s' "$out" | grep -oiE 'migration [0-9]+ was previously applied' \
     | grep -oE '[0-9]+' | head -n1 || true)"
-  db_name="$(get_env_var MARIADB_DATABASE)"; db_name="${db_name:-idp}"
-  mariadb_container="${COMPOSE_PROJECT:-idp}-mariadb-1"
+  # DB 名は Compose / preflight_db_auth と同じ「ENV > .env > 既定」の解決順にする（ENV 上書き時に
+  # 誤って別 DB をダンプしないため）。
+  db_name="${MARIADB_DATABASE:-$(get_env_var MARIADB_DATABASE)}"; db_name="${db_name:-idp}"
+  # コンテナ名は直接組み立てない（Compose v2 は project-mariadb-1、v1 は project_mariadb_1 で命名が
+  # 異なる）。初期化済みの compose コマンドでサービス名 mariadb を解決させる。
+  compose_cli="${compose[*]:-docker compose}"
   # 対処が最初に目に入るよう、結論（初期化が必要）を先頭に置き、具体コマンドを併記する。
   err "════════════════════════════════════════════════════════════════════"
   err "▶ 必要な操作: DB の初期化（再作成）が必要です。"
@@ -401,7 +405,7 @@ migration_checksum_mismatch_guidance() {
   err ""
   err "対処 A: この DB を作り直してよい場合（初期構築・staging・seed のみ 等）— 推奨"
   err "  1) バックアップ（任意・推奨。1 行で実行できます）:"
-  err "     docker exec ${mariadb_container} sh -c 'exec mariadb-dump -uroot -p\"\$MARIADB_ROOT_PASSWORD\" --single-transaction ${db_name}' > backup.sql"
+  err "     ${compose_cli} exec -T mariadb sh -c 'exec mariadb-dump -uroot -p\"\$MARIADB_ROOT_PASSWORD\" --single-transaction ${db_name}' > backup.sql"
   err "  2) 初期化して再デプロイ（※既存データは全消去されます）:"
   err "     ./deploy.sh reset"
   err ""
