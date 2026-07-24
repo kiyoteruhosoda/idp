@@ -17,6 +17,7 @@ use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::csrf::admin_csrf_token;
 use crate::dto::{ForcedPasswordChangeForm, LoginForm};
+use crate::error_pages;
 use crate::handlers::{forwarded_context, found};
 use crate::i18n::Messages;
 use crate::state::WebState;
@@ -439,14 +440,29 @@ pub(crate) async fn resolve_admin(
     headers: &HeaderMap,
 ) -> AdminResolution {
     let sso = cookies::get(headers, cookies::SSO_SESSION_COOKIE).unwrap_or_default();
-    match state
+    let session = state
         .api
         .admin_whoami(&correlation.0, &tenant.0, &sso)
-        .await
-    {
+        .await;
+    admin_resolution(session, tenant, headers)
+}
+
+/// whoami の結果 → 画面応答の写像（api 呼び出しから分離してテスト可能にする）。
+///
+/// テナントが解決できない（`NotFound`）ときは 404 ページを返す。ここを `Error` と同じ 502 に倒すと、
+/// 存在しないテナントの URL がゲートウェイ障害に見えてしまう（原因の切り分けを誤らせる）。
+fn admin_resolution(
+    session: AdminSession,
+    tenant: &WebTenant,
+    headers: &HeaderMap,
+) -> AdminResolution {
+    match session {
         AdminSession::Authenticated(user_id) => AdminResolution::Ok(user_id),
         AdminSession::Unauthenticated => AdminResolution::Reject(redirect_to_login(tenant)),
         AdminSession::Forbidden => AdminResolution::Reject(forbidden_response(headers)),
+        AdminSession::NotFound => {
+            AdminResolution::Reject(error_pages::page(StatusCode::NOT_FOUND, headers))
+        }
         AdminSession::Error => {
             AdminResolution::Reject((StatusCode::BAD_GATEWAY, Html(String::new())).into_response())
         }
@@ -557,5 +573,34 @@ mod tests {
         assert!(html.contains("ROOT"));
         assert!(html.contains("action=\"/00000000-0000-7000-8000-000000000000/admin/logout\""));
         assert!(html.contains("/00000000-0000-7000-8000-000000000000/admin/clients"));
+    }
+
+    fn reject_status(session: AdminSession) -> StatusCode {
+        let tenant = WebTenant("019f8ea8-f5dd-7fc7-ac15-a7d4337e4610".to_string());
+        match admin_resolution(session, &tenant, &HeaderMap::new()) {
+            AdminResolution::Ok(_) => panic!("expected a rejection"),
+            AdminResolution::Reject(response) => response.status(),
+        }
+    }
+
+    /// api がテナントを解決できない（404）ときは 404 ページを返す。502（ゲートウェイ障害）に
+    /// 倒すと、存在しないテナントの URL が障害に見えて切り分けを誤らせるための回帰テスト。
+    #[test]
+    fn unknown_tenant_is_rejected_as_not_found_not_bad_gateway() {
+        assert_eq!(reject_status(AdminSession::NotFound), StatusCode::NOT_FOUND);
+    }
+
+    /// 他の分岐は従来どおり（未認証→ログインへ 302、権限不足→403、api 障害→502）。
+    #[test]
+    fn other_sessions_keep_their_responses() {
+        assert_eq!(
+            reject_status(AdminSession::Unauthenticated),
+            StatusCode::FOUND
+        );
+        assert_eq!(
+            reject_status(AdminSession::Forbidden),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(reject_status(AdminSession::Error), StatusCode::BAD_GATEWAY);
     }
 }
