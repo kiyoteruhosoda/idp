@@ -4,11 +4,12 @@
 //! 一律配置する（root を含め特別分岐を設けない。api の router.rs と同じ方式）。
 
 use crate::correlation;
+use crate::error_pages;
 use crate::handlers::{
     admin_clients_console, admin_console, admin_invitations_console, admin_members_console,
     admin_saml_clients_console, admin_settings, admin_signing_keys_console, admin_status_console,
-    admin_tenants_console, admin_users_console, consent, errors, health, invitation_accept, locale,
-    login, mfa_totp, passkey, password_change, password_reset, portal, react_assets, stylesheet,
+    admin_tenants_console, admin_users_console, consent, health, invitation_accept, locale, login,
+    mfa_totp, passkey, password_change, password_reset, portal, react_assets, stylesheet,
     user_settings, vendor_assets, verify_email,
 };
 use crate::i18n::Messages;
@@ -272,8 +273,12 @@ pub fn build(state: WebState) -> Router {
         // （`Path<String>` だと実行時に 500 "Wrong number of path arguments" になる）。
         .nest("/{tenant_id}", tenant_scoped)
         // どのルートにも一致しないリクエストには 404 エラーページを返す（axum 既定の空応答を避ける）。
-        .fallback(errors::fallback)
+        .fallback(error_pages::fallback)
         .layer(axum::middleware::from_fn(correlation::propagate))
+        // 全エラー応答（4xx / 5xx）の本文を共通エラーページへ揃える。ハンドラが本文なしで返した応答・
+        // extractor の拒否・メソッド不一致（405）もここで HTML 化される（`error_pages` のモジュール
+        // ドキュメント参照）。ルーティングの外側に置くことで、未マッチ・拒否経路も対象になる。
+        .layer(axum::middleware::from_fn(error_pages::render_error_pages))
         .layer(TraceLayer::new_for_http())
         .layer(axum::middleware::from_fn(move |req, next| {
             add_security_headers(req, next, hsts_max_age)
@@ -375,6 +380,54 @@ mod tests {
             text.contains("<!DOCTYPE html>"),
             "fallback must render the full error page, not an empty body"
         );
+    }
+
+    /// 実ルータでもエラーページのミドルウェアが効いていること（メソッド不一致の 405 と、
+    /// extractor 拒否の内部メッセージ非露出）の回帰テスト。エラー応答の HTML 化は
+    /// `error_pages` に集約しているため、ここでは配線されていることだけを確認する。
+    #[tokio::test]
+    async fn error_responses_are_rendered_as_pages_by_the_router() {
+        // GET 専用ルートへ POST（405）。
+        let response = build(test_state())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/version")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("405"), "error page must show the status code");
+        assert!(text.contains("<!DOCTYPE html>"));
+
+        // フォーム抽出の拒否で axum 既定のプレーンテキスト（内部詳細）を露出させない。
+        let tenant = "019f6514-08ea-7138-ad71-838a7bdd3575";
+        let response = build(test_state())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/{tenant}/login"))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert!(response.status().is_client_error());
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let text = String::from_utf8_lossy(&body);
+        assert!(
+            !text.contains("Failed to deserialize"),
+            "internal rejection message must not leak: {text}"
+        );
+        assert!(text.contains("<!DOCTYPE html>"));
     }
 
     /// nest 配下の `{tenant_id}` ＋ `{user_id}` 等の 2 パラメータルートで `Path` 抽出が成立する

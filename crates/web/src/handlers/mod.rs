@@ -11,7 +11,6 @@ pub mod admin_status_console;
 pub mod admin_tenants_console;
 pub mod admin_users_console;
 pub mod consent;
-pub mod errors;
 pub mod health;
 pub mod invitation_accept;
 pub mod login;
