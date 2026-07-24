@@ -79,8 +79,25 @@ pub enum AdminSession {
     Unauthenticated,
     /// 認証済みだがテナント admin 権限なし（403 画面）。
     Forbidden,
+    /// api がテナントを解決できなかった（404）。経路の `{tenant_id}` が未知・`DISABLED`・UUID 不正の
+    /// いずれか（api の `resolve_tenant` はどれも 404 に倒す）。web は UUID 形式しか検証しないため、
+    /// 実在しないテナントの管理コンソール URL はここに落ちる。
+    NotFound,
     /// api 呼び出し失敗（構成/障害）。
     Error,
+}
+
+/// whoami の非 200 応答をセッション状態へ写す。200（本文のデコードを伴う）は呼び出し側で扱う。
+///
+/// 404 を `Error` に含めない（＝ 502 に倒さない）のが要点。存在しないテナントの URL はゲートウェイ
+/// 障害ではなく「そのページは無い」であり、画面も 404 を出す必要がある。
+fn admin_session_for_status(status: reqwest::StatusCode) -> AdminSession {
+    match status {
+        reqwest::StatusCode::UNAUTHORIZED => AdminSession::Unauthenticated,
+        reqwest::StatusCode::FORBIDDEN => AdminSession::Forbidden,
+        reqwest::StatusCode::NOT_FOUND => AdminSession::NotFound,
+        _ => AdminSession::Error,
+    }
 }
 
 /// 管理コンソールのヘッダに出す表示ラベルを決める。表示名（`name`）→ ログイン識別子
@@ -432,11 +449,12 @@ impl ApiClient {
                     AdminSession::Error
                 }
             },
-            reqwest::StatusCode::UNAUTHORIZED => AdminSession::Unauthenticated,
-            reqwest::StatusCode::FORBIDDEN => AdminSession::Forbidden,
             other => {
-                tracing::error!(status = %other, "unexpected whoami status from api");
-                AdminSession::Error
+                let session = admin_session_for_status(other);
+                if matches!(session, AdminSession::Error) {
+                    tracing::error!(status = %other, "unexpected whoami status from api");
+                }
+                session
             }
         }
     }
@@ -1407,8 +1425,35 @@ impl ApiClient {
 
 #[cfg(test)]
 mod tests {
-    use super::admin_display_label;
+    use super::{admin_display_label, admin_session_for_status, AdminSession};
     use idp_contracts::admin::WhoamiResponse;
+
+    /// whoami の非 200 応答の写像。404（api がテナントを解決できない）を `Error` に含めない
+    /// ＝ 画面を 502 に倒さないことの回帰テスト。
+    #[test]
+    fn whoami_statuses_map_to_sessions() {
+        assert!(matches!(
+            admin_session_for_status(reqwest::StatusCode::UNAUTHORIZED),
+            AdminSession::Unauthenticated
+        ));
+        assert!(matches!(
+            admin_session_for_status(reqwest::StatusCode::FORBIDDEN),
+            AdminSession::Forbidden
+        ));
+        assert!(matches!(
+            admin_session_for_status(reqwest::StatusCode::NOT_FOUND),
+            AdminSession::NotFound
+        ));
+        // テナント解決の一時障害（503）等、想定外はゲートウェイ障害として扱う。
+        assert!(matches!(
+            admin_session_for_status(reqwest::StatusCode::SERVICE_UNAVAILABLE),
+            AdminSession::Error
+        ));
+        assert!(matches!(
+            admin_session_for_status(reqwest::StatusCode::INTERNAL_SERVER_ERROR),
+            AdminSession::Error
+        ));
+    }
 
     fn whoami(name: Option<&str>, preferred_username: Option<&str>) -> WhoamiResponse {
         WhoamiResponse {
