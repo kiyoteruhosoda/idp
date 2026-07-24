@@ -42,7 +42,7 @@
     </div>
     <div class="card-body p-0">
       <div class="table-responsive">
-        <table class="table table-hover align-middle mb-0">
+        <table class="table table-cards table-hover align-middle mb-0">
           <thead>
             <tr>
               <th>ID</th>
@@ -59,19 +59,19 @@
           <tbody>
             {% for t in tenants %}
             <tr>
-              <td><code>{{ t.id }}</code></td>
-              <td>{{ t.name }}</td>
-              <td>{{ t.status }}</td>
-              <td>
+              <td data-label="ID"><code>{{ t.id }}</code></td>
+              <td data-label="{{ messages.get("admin-tenants-name") }}">{{ t.name }}</td>
+              <td data-label="Status">{{ t.status }}</td>
+              <td data-label="{{ messages.get("admin-tenants-self-registration") }}">
                 {% if t.self_registration_enabled %}<span class="badge text-bg-success">{{ messages.get("admin-tenants-self-registration-on") }}</span>{% else %}<span class="badge text-bg-secondary">{{ messages.get("admin-tenants-self-registration-off") }}</span>{% endif %}
               </td>
-              <td>
+              <td data-label="{{ messages.get("admin-tenants-login") }}">
                 <div class="d-flex flex-wrap gap-2">
                   <a class="btn btn-sm btn-outline-primary" href="/{{ t.id }}/login"><i class="fa-solid fa-right-to-bracket me-1" aria-hidden="true"></i>{{ messages.get("admin-tenants-login-user") }}</a>
                   <a class="btn btn-sm btn-outline-secondary" href="/{{ t.id }}/admin/login"><i class="fa-solid fa-user-shield me-1" aria-hidden="true"></i>{{ messages.get("admin-tenants-login-admin") }}</a>
                 </div>
               </td>
-              <td>
+              <td data-label="{{ messages.get("admin-tenants-col-actions") }}">
                 <div class="d-flex flex-wrap gap-2">
                   <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#tenant-reset-{{ loop.index }}"
                           aria-expanded="false" aria-controls="tenant-reset-{{ loop.index }}">

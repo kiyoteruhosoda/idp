@@ -64,6 +64,64 @@ code {
   word-break: normal;
 }
 
+/* 一覧テーブルは狭い画面（<768px）ではカード表示へ変形する。
+ * PC（>=768px）は従来どおりの表。モバイルでは見出し行（thead）を隠し、1 行を
+ * 「項目名（各セルの data-label）＋値」を縦積みしたカードに組み替える（横スクロールを不要にする）。
+ * 対象の <table> に .table-cards を付け、各データセルに列見出しと同じ翻訳を data-label で与える。 */
+@media (max-width: 767.98px) {
+  .table-cards,
+  .table-cards tbody,
+  .table-cards tr:not(.collapse),
+  .table-cards td {
+    display: block;
+    width: 100%;
+  }
+
+  /* 見出し行はカードでは項目名を各セルの data-label で示すため隠す */
+  .table-cards thead {
+    display: none;
+  }
+
+  /* Bootstrap collapse 行（SAML 編集フォーム等）は開いたときだけブロック表示にし、
+   * 閉じている間は .collapse:not(.show) の非表示を維持する */
+  .table-cards tr.collapse.show {
+    display: block;
+  }
+
+  /* データ行（collapse 以外）を 1 枚のカードにする */
+  .table-cards tr:not(.collapse) {
+    margin-bottom: 0.75rem;
+    padding: 0.75rem 1rem;
+    border: var(--bs-border-width) solid var(--bs-border-color);
+    border-radius: var(--bs-border-radius);
+    background-color: var(--bs-body-bg);
+  }
+
+  .table-cards td {
+    border: 0;
+    padding: 0.25rem 0;
+    white-space: normal;
+  }
+
+  /* 各セルの上に列見出し（data-label）を小さく表示する。data-label の無いセル
+   * （操作ボタン列・空表示の colspan セル等）には項目名を出さない */
+  .table-cards td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 0.125rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: var(--bs-secondary-color);
+  }
+
+  /* カード内では識別子（<code>）を折り返す（横スクロール前提の nowrap を打ち消す） */
+  .table-cards td code {
+    white-space: normal;
+    word-break: break-all;
+  }
+}
+
 /* パスワード表示切替ボタン（password_visibility.html の .password-toggle）の枠線を、
  * 隣接する入力欄（form-control: admin-login-username / admin-login-password 等）と揃える。
  * btn-outline-secondary の既定枠線色（--bs-secondary）だと入力欄の枠線色と食い違うため。 */

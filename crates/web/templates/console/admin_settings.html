@@ -78,7 +78,7 @@
   <div class="card-body">
     <p class="text-muted small">{{ messages.get("admin-settings-runtime-note") }}</p>
     <div class="table-responsive">
-      <table class="table table-hover align-middle mb-0">
+      <table class="table table-cards table-hover align-middle mb-0">
         <thead><tr>
           <th>{{ messages.get("admin-settings-runtime-col-key") }}</th>
           <th>{{ messages.get("admin-settings-runtime-col-value") }}</th>
@@ -89,12 +89,12 @@
         <tbody>
           {% for item in sys.runtime_settings %}
           <tr>
-            <td>
+            <td data-label="{{ messages.get("admin-settings-runtime-col-key") }}">
               <code>{{ item.key }}</code>
               {% if !item.description.is_empty() %}<div class="text-muted small mt-1">{{ item.description }}</div>{% endif %}
               {% if item.restart_required %}<div class="form-text">{{ messages.get("admin-settings-runtime-restart-required") }}</div>{% endif %}
             </td>
-            <td>
+            <td data-label="{{ messages.get("admin-settings-runtime-col-value") }}">
               {% if item.secret %}
                 <span class="text-muted">{{ messages.get("admin-settings-runtime-secret") }}</span>
               {% else %}
@@ -104,8 +104,8 @@
               {% else if item.source == "DB" %}<span class="badge text-bg-primary ms-1">DB</span>
               {% else %}<span class="badge text-bg-secondary ms-1">{{ messages.get("admin-settings-runtime-source-default") }}</span>{% endif %}
             </td>
-            <td>{% if item.secret %}-{% else %}<code>{{ item.default_value.as_deref().unwrap_or("-") }}</code>{% endif %}</td>
-            <td>
+            <td data-label="{{ messages.get("admin-settings-runtime-col-default") }}">{% if item.secret %}-{% else %}<code>{{ item.default_value.as_deref().unwrap_or("-") }}</code>{% endif %}</td>
+            <td data-label="{{ messages.get("admin-settings-runtime-col-db") }}">
               {% if item.editable %}
                 {% if item.source == "ENV" %}
                   <span class="text-muted small">{{ messages.get("admin-settings-runtime-env-locked-note") }}</span>
@@ -120,7 +120,7 @@
                 <span class="text-muted small">{{ messages.get("admin-settings-runtime-not-editable") }}</span>
               {% endif %}
             </td>
-            <td>
+            <td data-label="{{ messages.get("admin-settings-runtime-col-status") }}">
               {% if item.status == "NEEDS_ACTION" %}<span class="badge text-bg-warning" title="{{ item.reason }}">{{ messages.get("admin-settings-runtime-needs-action") }}</span>{% else %}<span class="badge text-bg-success" title="{{ item.reason }}">{{ messages.get("admin-settings-runtime-safe") }}</span>{% endif %}
             </td>
           </tr>

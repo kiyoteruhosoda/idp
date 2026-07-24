@@ -8,13 +8,13 @@
 <p class="text-muted">{{ messages.get("admin-clients-none") }}</p>
 {% else %}
 <div class="table-responsive">
-  <table class="table table-hover align-middle">
+  <table class="table table-cards table-hover align-middle">
     <thead>
       <tr><th>{{ messages.get("admin-client-col-name") }}</th><th>{{ messages.get("admin-client-col-id") }}</th><th>{{ messages.get("admin-client-col-type") }}</th><th>{{ messages.get("admin-client-col-status") }}</th><th>{{ messages.get("admin-client-col-scopes") }}</th></tr>
     </thead>
     <tbody>
       {% for c in clients %}
-      <tr><td><a class="text-decoration-none" href="{{ tenant }}/admin/clients/{{ c.client_id }}">{{ c.app_name }}</a></td><td><code>{{ c.client_id }}</code></td><td>{{ c.client_type }}</td><td>{% if c.client_status == "ACTIVE" %}<span class="badge text-bg-success">{{ c.client_status }}</span>{% else %}<span class="badge text-bg-secondary">{{ c.client_status }}</span>{% endif %}</td><td>{{ c.scopes.join(" ") }}</td></tr>
+      <tr><td data-label="{{ messages.get("admin-client-col-name") }}"><a class="text-decoration-none" href="{{ tenant }}/admin/clients/{{ c.client_id }}">{{ c.app_name }}</a></td><td data-label="{{ messages.get("admin-client-col-id") }}"><code>{{ c.client_id }}</code></td><td data-label="{{ messages.get("admin-client-col-type") }}">{{ c.client_type }}</td><td data-label="{{ messages.get("admin-client-col-status") }}">{% if c.client_status == "ACTIVE" %}<span class="badge text-bg-success">{{ c.client_status }}</span>{% else %}<span class="badge text-bg-secondary">{{ c.client_status }}</span>{% endif %}</td><td data-label="{{ messages.get("admin-client-col-scopes") }}">{{ c.scopes.join(" ") }}</td></tr>
       {% endfor %}
     </tbody>
   </table>

@@ -332,6 +332,6 @@ mod tests {
         assert!(html.contains("&#60;Used&#62;"));
         assert!(html.contains("DISABLED"));
         assert!(html.contains("openid profile"));
-        assert!(html.contains("<td>-</td>"));
+        assert!(html.contains(">-</td>"));
     }
 }

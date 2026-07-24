@@ -5,7 +5,7 @@
 <div class="alert alert-danger" role="alert">{{ messages.get(err) }}</div>
 {% endif %}
 <div class="table-responsive mb-4">
-  <table class="table table-hover align-middle">
+  <table class="table table-cards table-hover align-middle">
     <thead>
       <tr>
         <th>{{ messages.get("admin-signing-keys-col-kid") }}</th>
@@ -23,13 +23,13 @@
       {% else %}
       {% for key in keys %}
       <tr>
-        <td><code>{{ key.kid }}</code></td>
-        <td>{{ key.algorithm }}</td>
-        <td>{% if key.status == "ACTIVE" %}<span class="badge text-bg-success">{{ key.status }}</span>{% else %}<span class="badge text-bg-secondary">{{ key.status }}</span>{% endif %}</td>
-        <td>{{ key.not_before }}</td>
-        <td>{{ key.not_after }}</td>
-        <td>{{ key.created_at }}</td>
-        <td>
+        <td data-label="{{ messages.get("admin-signing-keys-col-kid") }}"><code>{{ key.kid }}</code></td>
+        <td data-label="{{ messages.get("admin-signing-keys-col-alg") }}">{{ key.algorithm }}</td>
+        <td data-label="{{ messages.get("admin-signing-keys-col-status") }}">{% if key.status == "ACTIVE" %}<span class="badge text-bg-success">{{ key.status }}</span>{% else %}<span class="badge text-bg-secondary">{{ key.status }}</span>{% endif %}</td>
+        <td data-label="{{ messages.get("admin-signing-keys-col-not-before") }}">{{ key.not_before }}</td>
+        <td data-label="{{ messages.get("admin-signing-keys-col-not-after") }}">{{ key.not_after }}</td>
+        <td data-label="{{ messages.get("admin-signing-keys-col-created") }}">{{ key.created_at }}</td>
+        <td data-label="{{ messages.get("admin-signing-keys-col-actions") }}">
           {% if key.status == "ACTIVE" %}
           <form method="post" action="{{ tenant }}/admin/signing-keys/retire" class="d-inline">
             <input type="hidden" name="kid" value="{{ key.kid }}">
