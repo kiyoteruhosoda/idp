@@ -1,3 +1,17 @@
+## 2026-07-24（migrate のチェックサム不一致を fail-fast で明示するようにした）
+
+- **適用済みマイグレーションのチェックサム不一致を検出し、リトライせず対処を提示するようにした**: 既存 DB へ
+  適用済みのマイグレーションファイルを後から改訂すると（例: root テナント UUID の固定化＝ADR-0011。`0002` の
+  チェックサムが変わる）、`sqlx migrate run` は「migration N was previously applied but has been modified」で
+  決定論的に失敗する。従来の `deploy.sh` はこれを一過性の失敗と同様に 3 回リトライして時間を浪費し、最終的に
+  「DB migration failed after 3 attempts」としか表示しなかった。MariaDB 側には失敗した migrate プロセスが接続を
+  切ったときの「Aborted connection … Got an error reading communication packets」という一見無関係な警告だけが
+  残り、真因が埋もれていた。`run_migrations_with_retry` が migrate の出力を検査してチェックサム不一致を判別し、
+  リトライせず即停止した上で、原因（適用済みファイルの改変 / イメージと DB 履歴の食い違い）と対処
+  （意図的な改訂なら `./deploy.sh reset`、非意図なら該当ファイルを元へ戻す、データ保持なら追記型の新規
+  マイグレーション）を案内するようにした。あわせて migrate 出力を `mask_secrets` 経由で表示するようにし、
+  接続エラー時に DATABASE_URL 等の機微値が deploy ログへ漏れないようにした。挙動は `scripts/test_deploy.sh` で検証。
+
 ## 2026-07-24（管理コンソールの一覧テーブルをモバイルでカード表示にした）
 
 - **一覧テーブルを狭い画面（<768px）でカード表示に変形するようにした**: 管理コンソールの一覧

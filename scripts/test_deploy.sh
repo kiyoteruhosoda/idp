@@ -40,6 +40,11 @@ if [[ "${1:-}" == "compose" ]]; then
   case "${1:-}" in
     up) if [[ "${DOCKER_STUB_FAIL_UP:-0}" == "1" ]]; then echo "up failed with ${MARIADB_PASSWORD:-secret}" >&2; exit 42; fi; exit 0 ;;
     run)
+      if [[ "${DOCKER_STUB_MIGRATE_CHECKSUM_MISMATCH:-0}" == "1" && "$*" == *"migrate"* ]]; then
+        # sqlx は適用済みマイグレーションの改変を検出すると、この文言で適用を中止する。
+        echo "error: migration 2 was previously applied but has been modified" >&2
+        exit 1
+      fi
       if [[ "${DOCKER_STUB_FAIL_MIGRATE:-0}" == "1" && "$*" == *"migrate"* ]]; then
         echo "migrate failed with ${MARIADB_PASSWORD:-secret}" >&2
         exit 17
@@ -101,7 +106,7 @@ grep -q 'ログイン URL:' /tmp/deploy-app.out
 grep -q 'Root テナント URL:' /tmp/deploy-app.out
 grep -q '管理コンソール: .*/admin' /tmp/deploy-app.out
 grep -q -- '--project-name idp-repo -f docker-compose.deploy.yml' "$DOCKER_STUB_LOG"
-grep -q 'run --rm migrate' "$DOCKER_STUB_LOG"
+grep -q 'run --rm -T migrate' "$DOCKER_STUB_LOG"
 
 sed -i '/^COMPOSE_PROJECT_NAME=/d' .env
 : >"$DOCKER_STUB_LOG"
@@ -145,6 +150,48 @@ if grep -q "$(grep '^MARIADB_PASSWORD=' .env | cut -d= -f2-)" /tmp/deploy-migrat
   exit 1
 fi
 
+# 適用済みマイグレーションのチェックサム不一致（sqlx の "previously applied but has been modified"）は
+# 決定論的な失敗。リトライせず即停止し、原因（適用済みファイルの改変）と対処（reset 等）を提示する。
+: >"$DOCKER_STUB_LOG"
+set +e
+DOCKER_STUB_MIGRATE_CHECKSUM_MISMATCH=1 ./scripts/deploy.sh migrate >/tmp/deploy-checksum-fail.out 2>&1
+status=$?
+set -e
+[[ $status -eq 1 ]] || { echo "deploy must fail fast on migration checksum mismatch" >&2; cat /tmp/deploy-checksum-fail.out >&2; exit 1; }
+grep -q 'チェックサム' /tmp/deploy-checksum-fail.out ||
+  { echo "checksum mismatch guidance must explain the checksum error" >&2; exit 1; }
+grep -q 'version 2' /tmp/deploy-checksum-fail.out ||
+  { echo "checksum mismatch guidance must name the affected migration version" >&2; exit 1; }
+grep -q './deploy.sh reset' /tmp/deploy-checksum-fail.out ||
+  { echo "checksum mismatch guidance must offer the reset remedy" >&2; exit 1; }
+# 決定論的な失敗はリトライしない（migrate は 1 回だけ実行される）。
+if [[ "$(grep -c 'run --rm -T migrate' "$DOCKER_STUB_LOG")" -ne 1 ]]; then
+  echo "checksum mismatch must not be retried (migrate should run exactly once)" >&2
+  cat "$DOCKER_STUB_LOG" >&2
+  exit 1
+fi
+if grep -q 'DB migration failed after 3 attempts' /tmp/deploy-checksum-fail.out; then
+  echo "checksum mismatch must fail fast, not exhaust retries" >&2
+  exit 1
+fi
+
+# 秘密値に sed のメタ文字（[ . * ^ $ | 等）が含まれても mask_secrets が壊れないこと。マスク処理は
+# migrate 成功時にも毎回走るため、ここが失敗すると成功デプロイまで pipefail で中断してしまう。
+orig_pw_line="$(grep '^MARIADB_PASSWORD=' .env)"
+: >"$DOCKER_STUB_LOG"
+sed -i 's|^MARIADB_PASSWORD=.*|MARIADB_PASSWORD=p[a.s*s^d$x|' .env
+set +e
+./scripts/deploy.sh app >/tmp/deploy-metachar-secret.out 2>&1
+status=$?
+set -e
+[[ $status -eq 0 ]] || { echo "metacharacter secret must not abort a successful deploy" >&2; cat /tmp/deploy-metachar-secret.out >&2; exit 1; }
+if grep -qF 'p[a.s*s^d$x' /tmp/deploy-metachar-secret.out; then
+  echo "metacharacter secret must be masked (not leaked) in deploy output" >&2
+  exit 1
+fi
+# .env を元のパスワードへ戻し、後続テストへ影響させない。
+sed -i "s|^MARIADB_PASSWORD=.*|${orig_pw_line}|" .env
+
 # アプリ用 DB ユーザーの認証が失敗する（既存 volume と .env のパスワード不一致）場合は、意味のない
 # migrate リトライではなくプリフライトで即座に停止し、原因と対処を提示する。
 : >"$DOCKER_STUB_LOG"
@@ -159,7 +206,7 @@ grep -q 'MARIADB_PASSWORD' /tmp/deploy-db-auth-fail.out ||
   { echo "preflight diagnostic must mention MARIADB_PASSWORD mismatch" >&2; exit 1; }
 grep -q './deploy.sh reset' /tmp/deploy-db-auth-fail.out ||
   { echo "preflight diagnostic must suggest reset remedy" >&2; exit 1; }
-if grep -q 'run --rm migrate' "$DOCKER_STUB_LOG"; then
+if grep -q 'run --rm -T migrate' "$DOCKER_STUB_LOG"; then
   echo "migrate must not run when DB auth preflight fails" >&2
   exit 1
 fi
@@ -182,7 +229,7 @@ if grep -q './deploy.sh reset' /tmp/deploy-db-conn-fail.out; then
   echo "non-auth preflight failure must NOT recommend destructive reset" >&2
   exit 1
 fi
-if grep -q 'run --rm migrate' "$DOCKER_STUB_LOG"; then
+if grep -q 'run --rm -T migrate' "$DOCKER_STUB_LOG"; then
   echo "migrate must not run when DB preflight fails" >&2
   exit 1
 fi

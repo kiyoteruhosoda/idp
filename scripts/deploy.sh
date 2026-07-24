@@ -82,11 +82,16 @@ get_env_var() {
 }
 
 mask_secrets() {
-  local sed_expr=() key value
+  local sed_expr=() key value escaped
   if [[ -f "$env_file" ]]; then
     for key in MARIADB_PASSWORD MARIADB_ROOT_PASSWORD KEY_ENCRYPTION_KEY INTERNAL_SERVICE_TOKEN CSRF_SECRET; do
       value="$(get_env_var "$key" 2>/dev/null || true)"
-      [[ -n "$value" ]] && sed_expr+=(-e "s|${value//|/\\|}|***MASKED***|g")
+      [[ -n "$value" ]] || continue
+      # 秘密値を sed の BRE パターンとして使うため、メタ文字（\ . * [ ] ^ $ と区切りの |）を
+      # エスケープする。これを怠ると、記号を含むパスワード（例 MARIADB_PASSWORD=[…）で不正な
+      # 正規表現になり sed が失敗し、pipefail 下では migrate 成功時のマスク処理までデプロイを中断させる。
+      escaped="$(printf '%s' "$value" | sed 's/[][\.*^$|]/\\&/g')"
+      sed_expr+=(-e "s|${escaped}|***MASKED***|g")
     done
   fi
   if [[ ${#sed_expr[@]} -gt 0 ]]; then sed "${sed_expr[@]}"; else cat; fi
@@ -373,11 +378,48 @@ wait_healthy() {
   die "$service が healthy になりませんでした（${timeout}s タイムアウト）。"
 }
 
+# sqlx は適用済みマイグレーションの内容が変わると「migration <n> was previously applied but has
+# been modified」で適用を中止する（履歴改変からの保護）。これは決定論的な失敗で、リトライしても必ず
+# 同じ結果になる。MariaDB 側には失敗した migrate プロセスが接続を切ったときの
+# 「Aborted connection ... Got an error reading communication packets」という一見無関係な警告だけが
+# 残り、真因が埋もれる。ここで検出し、リトライせず対処可能なメッセージで即停止する（fail-fast）。
+migration_checksum_mismatch_guidance() {
+  local out="$1" ver
+  # version が取れなくても案内は出す（set -e + pipefail で中断しないよう best-effort にする）。
+  ver="$(printf '%s' "$out" | grep -oiE 'migration [0-9]+ was previously applied' \
+    | grep -oE '[0-9]+' | head -n1 || true)"
+  err "適用済みマイグレーション${ver:+（version $ver）}の内容が、DB に記録されたチェックサムと一致しません。"
+  err "sqlx は適用済みマイグレーションの改変を検出すると適用を中止します（意図しない履歴改変からの保護）。"
+  err "原因は次のいずれかです:"
+  err "  1) 既存 DB へ適用済みのマイグレーションファイルを後から編集した"
+  err "     （seed の一度限りの改訂など。例: root テナント UUID の固定化＝ADR-0011 / ADR-0009 §11）。"
+  err "  2) デプロイするイメージと、この DB のマイグレーション履歴が食い違っている。"
+  err "対処のいずれか:"
+  err "  * 改訂が意図的で、この DB を作り直してよい（初期構築・staging 等）:"
+  err "    ./deploy.sh reset で DB volume を作り直す（既存データは消えます。事前にバックアップを推奨。"
+  err "    手順は docs/OPERATIONS.md「DB を作り直したいとき」）。"
+  err "  * 編集が意図的でない: 該当マイグレーションファイルを元の内容へ戻して再デプロイする。"
+  err "  * データを保持したまま改訂を反映したい: 適用済みファイルは編集せず、追記型の新規マイグレーション"
+  err "    として書き直す（docs/OPERATIONS.md・migrations/README.md 参照）。"
+}
+
 run_migrations_with_retry() {
-  local attempt status
+  local attempt status out
   for attempt in 1 2 3; do
-    if "${compose[@]}" run --rm migrate; then return 0; fi
-    status=$?
+    # migrate の出力を取り込みつつ（機微値をマスクして）画面へも流す。sqlx のエラー本文を検査して
+    # 決定論的な失敗（チェックサム不一致）を判別するため。-T で疑似 TTY を無効化し出力を綺麗に取り込む。
+    # set -e で捕捉前に停止しないよう、コマンド置換は if 条件で評価して exit code を退避する。
+    if out="$("${compose[@]}" run --rm -T migrate 2>&1)"; then status=0; else status=$?; fi
+    printf '%s\n' "$out" | mask_secrets
+    [[ $status -eq 0 ]] && return 0
+
+    # チェックサム不一致はリトライ無意味。原因（適用済みマイグレーションの改変）を明示して即停止する。
+    if printf '%s' "$out" | grep -qiE 'was previously applied but has been modified'; then
+      migration_checksum_mismatch_guidance "$out"
+      compose_diagnostics_for migrate mariadb
+      die "DB migration failed: 適用済みマイグレーションのチェックサム不一致（リトライを省略しました）"
+    fi
+
     warn "DB migration failed (attempt $attempt/3, exit=$status); Docker logs を出力します"
     compose_diagnostics_for migrate mariadb
     if [[ $attempt -lt 3 ]]; then
