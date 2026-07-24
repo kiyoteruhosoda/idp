@@ -14,6 +14,7 @@ pub mod cookies;
 pub mod correlation;
 pub mod csrf;
 pub mod dto;
+pub mod error_pages;
 pub mod handlers;
 pub mod i18n;
 pub mod router;

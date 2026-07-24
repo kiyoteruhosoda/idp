@@ -1,0 +1,11 @@
+{% extends "page.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+<div class="card border-0 bg-transparent text-center">
+  <div class="card-body p-4">
+    <p class="display-1 fw-bold text-muted mb-2">{{ code }}</p>
+    <h1 class="h4 mb-3">{{ title }}</h1>
+    <p class="mb-0 text-muted">{{ message }}</p>
+  </div>
+</div>
+{% endblock %}

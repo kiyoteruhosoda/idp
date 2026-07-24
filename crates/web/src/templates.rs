@@ -239,6 +239,20 @@ pub struct MessagePage {
     pub message: String,
 }
 
+/// HTTP エラーページ（全ステータスコード対応。403 / 404 / 500 等）。ステータスコードを大きく表示し、
+/// タイトルと説明文を添える。テナント文脈を持たない未マッチ経路（fallback）でも描画できるよう、
+/// 翻訳済みの文字列だけを受け取る（`Messages` へは依存しない）。
+/// 描画の入口は `crate::error_pages`（ハンドラから直接呼ぶ `page()` と、全エラー応答を揃える
+/// ミドルウェア）に集約する。
+#[derive(Template)]
+#[template(path = "error_page.html")]
+pub struct ErrorPage {
+    /// 表示するステータスコード（例 `"404"`）。
+    pub code: String,
+    pub title: String,
+    pub message: String,
+}
+
 /// バージョン情報ページ（`GET /version`）。
 #[derive(Template)]
 #[template(path = "version.html")]
