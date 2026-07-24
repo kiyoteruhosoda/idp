@@ -530,3 +530,11 @@ admin-switch-tenant-guest = Guest
 admin-switch-tenant-current = Current tenant
 admin-switch-tenant-open = Open
 admin-switch-tenant-empty = No tenants available to switch to.
+
+# HTTP error pages (403 / 404 / 500). Shown for forbidden, unmatched, and unexpected-failure requests.
+error-403-title = Access denied
+error-403-message = You do not have permission to view this page.
+error-404-title = Page not found
+error-404-message = The page you are looking for does not exist or may have been moved.
+error-500-title = Something went wrong
+error-500-message = An unexpected error occurred. Please try again later.

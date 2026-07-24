@@ -7,8 +7,8 @@ use crate::correlation;
 use crate::handlers::{
     admin_clients_console, admin_console, admin_invitations_console, admin_members_console,
     admin_saml_clients_console, admin_settings, admin_signing_keys_console, admin_status_console,
-    admin_tenants_console, admin_users_console, consent, health, invitation_accept, locale, login,
-    mfa_totp, passkey, password_change, password_reset, portal, react_assets, stylesheet,
+    admin_tenants_console, admin_users_console, consent, errors, health, invitation_accept, locale,
+    login, mfa_totp, passkey, password_change, password_reset, portal, react_assets, stylesheet,
     user_settings, vendor_assets, verify_email,
 };
 use crate::i18n::Messages;
@@ -271,6 +271,8 @@ pub fn build(state: WebState) -> Router {
         // パスパラメータが 2 つになる。ハンドラは `Path<(String, String)>` のタプルで受けること
         // （`Path<String>` だと実行時に 500 "Wrong number of path arguments" になる）。
         .nest("/{tenant_id}", tenant_scoped)
+        // どのルートにも一致しないリクエストには 404 エラーページを返す（axum 既定の空応答を避ける）。
+        .fallback(errors::fallback)
         .layer(axum::middleware::from_fn(correlation::propagate))
         .layer(TraceLayer::new_for_http())
         .layer(axum::middleware::from_fn(move |req, next| {
@@ -346,6 +348,33 @@ mod tests {
             .split(|c: char| !(c.is_ascii_hexdigit() || c == '-'))
             .any(|tok| uuid::Uuid::parse_str(tok).is_ok());
         assert!(!uuid_re_hits, "root page must not embed any tenant UUID");
+    }
+
+    /// どのルートにも一致しない URL は 404 のエラーページ（HTML 本文つき）を返す（axum 既定の空応答に
+    /// しない）ことの回帰テスト。
+    #[tokio::test]
+    async fn unmatched_route_returns_404_error_page() {
+        let response = build(test_state())
+            .oneshot(
+                Request::builder()
+                    .uri("/no/such/path")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let text = String::from_utf8_lossy(&body);
+        // ステータスコードと説明文を含むエラーページが描画される。
+        assert!(text.contains("404"), "error page must show the status code");
+        assert!(
+            text.contains("<!DOCTYPE html>"),
+            "fallback must render the full error page, not an empty body"
+        );
     }
 
     /// nest 配下の `{tenant_id}` ＋ `{user_id}` 等の 2 パラメータルートで `Path` 抽出が成立する

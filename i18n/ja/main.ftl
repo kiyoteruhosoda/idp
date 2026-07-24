@@ -530,3 +530,11 @@ admin-switch-tenant-guest = ゲスト
 admin-switch-tenant-current = 現在のテナント
 admin-switch-tenant-open = 開く
 admin-switch-tenant-empty = 切り替え可能なテナントがありません。
+
+# HTTP error pages (403 / 404 / 500). Shown for forbidden, unmatched, and unexpected-failure requests.
+error-403-title = アクセスが拒否されました
+error-403-message = このページを表示する権限がありません。
+error-404-title = ページが見つかりません
+error-404-message = お探しのページは存在しないか、移動された可能性があります。
+error-500-title = エラーが発生しました
+error-500-message = 予期しないエラーが発生しました。時間をおいて再度お試しください。

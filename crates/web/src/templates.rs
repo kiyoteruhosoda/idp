@@ -239,6 +239,18 @@ pub struct MessagePage {
     pub message: String,
 }
 
+/// HTTP エラーページ（403 / 404 / 500 など）。ステータスコードを大きく表示し、タイトルと説明文を
+/// 添える。テナント文脈を持たない未マッチ経路（fallback）でも描画できるよう、翻訳済みの文字列だけを
+/// 受け取る（`Messages` へは依存しない）。
+#[derive(Template)]
+#[template(path = "error_page.html")]
+pub struct ErrorPage {
+    /// 表示するステータスコード（例 `"404"`）。
+    pub code: String,
+    pub title: String,
+    pub message: String,
+}
+
 /// バージョン情報ページ（`GET /version`）。
 #[derive(Template)]
 #[template(path = "version.html")]
