@@ -15,6 +15,10 @@ use url::Url;
 ///
 /// `origins` には Cookie を共有するサービスの公開オリジン（`ISSUER`・`PUBLIC_WEB_BASE_URL`）を
 /// 渡す。検証失敗時は構成エラーとして起動を中止する想定のメッセージを返す（fail-fast）。
+///
+/// 検証 1・2 に加え、**全オリジンのスキーム一致**も要求する。各サービスは Cookie の `Secure` 属性を
+/// 自身の公開オリジンのスキームから独立に導出するため、https/http が混在すると片側だけが
+/// `Secure` Cookie を発行し、もう片側（http）へブラウザが Cookie を送信せずログインループになる。
 pub fn validate_cookie_domain(raw: &str, origins: &[&str]) -> Result<String, String> {
     // RFC 6265 に従い先頭のドットは無視する（`.example.com` と `example.com` は同義）。
     let domain = raw.trim().trim_start_matches('.').to_ascii_lowercase();
@@ -28,10 +32,14 @@ pub fn validate_cookie_domain(raw: &str, origins: &[&str]) -> Result<String, Str
     }
 
     // 検証 1: 各公開オリジンのホストの親ドメイン（または同一）であること。
+    // あわせてスキームを収集し、混在（https/http）を拒否する（`Secure` 属性の非対称化を防ぐ）。
+    let mut schemes: Vec<String> = Vec::new();
     for origin in origins {
-        let host = Url::parse(origin)
-            .ok()
-            .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+        let url = Url::parse(origin)
+            .map_err(|_| format!("cannot parse origin `{origin}` to validate COOKIE_DOMAIN"))?;
+        let host = url
+            .host_str()
+            .map(str::to_ascii_lowercase)
             .ok_or_else(|| format!("cannot parse origin `{origin}` to validate COOKIE_DOMAIN"))?;
         let matches = host == domain || host.ends_with(&format!(".{domain}"));
         if !matches {
@@ -41,6 +49,16 @@ pub fn validate_cookie_domain(raw: &str, origins: &[&str]) -> Result<String, Str
                  api and web must be subdomains of the same registrable domain (ADR-0012)"
             ));
         }
+        schemes.push(url.scheme().to_ascii_lowercase());
+    }
+    if schemes.windows(2).any(|pair| pair[0] != pair[1]) {
+        return Err(format!(
+            "COOKIE_DOMAIN is set but the shared-cookie origins mix schemes ({origins:?}); \
+             each service derives the cookie `Secure` attribute from its own origin, so a \
+             Secure cookie issued by the https side is never sent to the http side and every \
+             login would loop. Use the same scheme (https) for both ISSUER and \
+             PUBLIC_WEB_BASE_URL (ADR-0012)"
+        ));
     }
 
     // 検証 2: public suffix そのものではないこと。登録可能ドメイン（eTLD+1）が取れない値は
@@ -118,5 +136,23 @@ mod tests {
     #[test]
     fn rejects_when_origin_is_unparsable() {
         assert!(validate_cookie_domain("example.com", &["not a url"]).is_err());
+    }
+
+    #[test]
+    fn rejects_mixed_schemes_between_shared_cookie_origins() {
+        // https 側だけが Secure Cookie を発行し、http 側へは送信されない（ログインループ）ため、
+        // COOKIE_DOMAIN 設定時のスキーム混在は起動時に拒否する。
+        let err = validate_cookie_domain(
+            "example.com",
+            &["https://api.example.com", "http://id.example.com"],
+        )
+        .unwrap_err();
+        assert!(err.contains("mix schemes"), "{err}");
+        // 同一スキームなら http 同士（ローカル・テスト構成）も https 同士も受理する。
+        assert!(validate_cookie_domain(
+            "example.com",
+            &["http://api.example.com", "http://id.example.com"],
+        )
+        .is_ok());
     }
 }
