@@ -179,6 +179,20 @@ grep -q 'ログイン URL: https://id.example.com/' /tmp/deploy-domain-split.out
 grep -q '管理コンソール: https://id.example.com/.*/admin' /tmp/deploy-domain-split.out ||
   { echo "admin URL must be based on PUBLIC_WEB_BASE_URL, not ISSUER" >&2; exit 1; }
 
+# IPv6 の bind では、URL のホスト部として使える形（角括弧付き）で probe する。
+# ワイルドカード（::）は IPv4 ループバックではなく IPv6 ループバックへ読み替える
+# （IPv6 のみで待ち受けているポートへ到達できず readiness がタイムアウトするため）。
+sed -i 's/^WEB_BIND_HOST=.*/WEB_BIND_HOST=::/' .env
+sed -i 's/^API_BIND_HOST=.*/API_BIND_HOST=::1/' .env
+: >"$DOCKER_STUB_LOG"; : >"$CURL_STUB_LOG"
+./scripts/deploy.sh app >/tmp/deploy-ipv6.out 2>&1
+grep -q 'http://\[::1\]:8060/readyz' "$CURL_STUB_LOG" ||
+  { echo "IPv6 wildcard bind must probe the bracketed IPv6 loopback" >&2; cat "$CURL_STUB_LOG" >&2; exit 1; }
+grep -q 'http://\[::1\]:8070/readyz' "$CURL_STUB_LOG" ||
+  { echo "IPv6 literal bind must be bracketed in the probe URL" >&2; cat "$CURL_STUB_LOG" >&2; exit 1; }
+sed -i 's/^WEB_BIND_HOST=.*/WEB_BIND_HOST=127.0.0.1/' .env
+sed -i 's/^API_BIND_HOST=.*/API_BIND_HOST=127.0.0.1/' .env
+
 # override ファイルが無い配置で domain-split を指定したら fail-fast する。
 mv docker-compose.domain-split.yml "$TMP/domain-split.yml.bak"
 set +e
