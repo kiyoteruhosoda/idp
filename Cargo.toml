@@ -6,7 +6,9 @@ members = ["crates/core", "crates/contracts", "crates/api", "crates/web"]
 # ADR-0007（API/Web サービス分割）: P1 で core（domain/application/infrastructure）と api（presentation +
 # バイナリ）へ分割。P3 で contracts（serde DTO 契約）と web（HTML 描画 + API クライアント）を追加した。
 [workspace.dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net"] }
+# `time` は再試行のバックオフ・定期ローテーションの sleep で使う（sqlx 経由の feature 統合に
+# 依存させず明示する）。
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "time"] }
 axum = { version = "0.8", features = ["macros"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace"] }

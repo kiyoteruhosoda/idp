@@ -71,10 +71,23 @@ pub struct TestEnv {
     pub csrf_secret: [u8; 32],
 }
 
+/// テストプールの既定接続上限（sqlx の既定値と同じ）。並走数がこれを超えるテストは
+/// `connect_pool_with_max_connections` で枠を明示する。
+pub const DEFAULT_POOL_MAX_CONNECTIONS: u32 = 10;
+
 /// `TEST_DATABASE_URL` の DB へ接続し、マイグレーションをプロセス内で一度だけ適用する。
 /// 既定では未設定を失敗にする（CI/--check で DB テストをスキップ不能にする）。
 /// ローカルで意図的に DB 統合テストだけを省略する場合のみ `IDP_ALLOW_DB_TEST_SKIP=1` を指定する。
 pub async fn connect_pool(test_name: &str) -> Option<MySqlPool> {
+    connect_pool_with_max_connections(test_name, DEFAULT_POOL_MAX_CONNECTIONS).await
+}
+
+/// 接続上限を明示して接続する（同時実行数とプール枠の予算を突き合わせたいテスト向け）。
+/// 枠が並走数を下回ると、接続を保持したまま進む処理（例: advisory lock 区間）で acquire 待ちが発生する。
+pub async fn connect_pool_with_max_connections(
+    test_name: &str,
+    max_connections: u32,
+) -> Option<MySqlPool> {
     let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
         if std::env::var("IDP_ALLOW_DB_TEST_SKIP").ok().as_deref() == Some("1") {
             eprintln!(
@@ -85,6 +98,7 @@ pub async fn connect_pool(test_name: &str) -> Option<MySqlPool> {
         panic!("TEST_DATABASE_URL is required for {test_name} integration test; set IDP_ALLOW_DB_TEST_SKIP=1 only for local unit-only runs");
     };
     let pool = MySqlPoolOptions::new()
+        .max_connections(max_connections)
         .connect(&url)
         .await
         .expect("connect to test database");

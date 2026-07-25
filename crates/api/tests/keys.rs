@@ -28,11 +28,22 @@ struct Claims {
     exp: usize,
 }
 
-// RSA 鍵生成は同期 CPU 処理のため、並走ブートストラップの検証にはマルチスレッドランタイムを使う
-// （current_thread だと keygen がリアクタをブロックし、他タスクの DB I/O が進まない）。
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+/// 同時ブートストラップ数（`insert_if_no_active` の排他区間へ実際にレースを起こすためのタスク数）。
+const CONCURRENT_BOOTSTRAPS: usize = 8;
+
+/// プール枠は「同時ブートストラップ数 + 検証クエリ用の予備」。`insert_if_no_active` は advisory lock を
+/// 保持する間 1 接続を占有するため、枠が並走数を下回ると acquire 待ちで詰まる。
+const POOL_MAX_CONNECTIONS: u32 = CONCURRENT_BOOTSTRAPS as u32 + 2;
+
+// ワーカースレッドは 1 本だけにする（回帰ガード）。RSA 鍵生成は CPU バウンドだが blocking プールへ
+// 退避してあるため、並走数がワーカー数を超えてもランタイムは他タスク（DB I/O・排他区間を保持した
+// タスク）を進められる。鍵生成をワーカースレッド上で直接実行する実装へ戻すと、8 本の生成が 1 本の
+// ワーカーを占有して排他区間が進まず、このテストは接続保持のまま滞留して落ちる。
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn ensure_key_is_idempotent_and_token_verifies_against_jwks() {
-    let Some(pool) = support::connect_pool("key service").await else {
+    let Some(pool) =
+        support::connect_pool_with_max_connections("key service", POOL_MAX_CONNECTIONS).await
+    else {
         return;
     };
 
@@ -55,7 +66,7 @@ async fn ensure_key_is_idempotent_and_token_verifies_against_jwks() {
     // 並走安全性（SEC5）: 複数インスタンスの同時ブートストラップでも ACTIVE 鍵は 1 本
     // （`insert_if_no_active` の advisory lock による排他区間）。
     let mut tasks = Vec::new();
-    for _ in 0..8 {
+    for _ in 0..CONCURRENT_BOOTSTRAPS {
         let svc = service.clone();
         tasks.push(tokio::spawn(async move { svc.ensure_active_key().await }));
     }
