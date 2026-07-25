@@ -19,8 +19,8 @@ use crate::state::WebState;
 use crate::templates::{render, ForcedPasswordChange, MessagePage, PortalLogin, PortalMfa};
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, State};
-use axum::http::{header, HeaderMap, StatusCode};
-use axum::response::{AppendHeaders, Html, IntoResponse, Response};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 use idp_contracts::auth::{
     InternalPortalAuthenticateRequest, InternalPortalAuthenticateResponse,
@@ -39,14 +39,12 @@ pub async fn login_page(state: &WebState, tenant: &WebTenant, headers: &HeaderMa
     // CSRF の種（推測不能な乱数）を新規発行し、Cookie とフォーム双方へ渡す（admin ログインと同方式）。
     let csrf_id = uuid::Uuid::new_v4().simple().to_string();
     let csrf = portal_csrf_token(&csrf_id, state.config.csrf_secret());
-    let csrf_cookie = cookies::build(
-        cookies::PORTAL_CSRF_COOKIE,
-        &csrf_id,
-        PORTAL_CSRF_TTL_SECS,
-        state.config.cookie_secure(),
-    );
+    let set_cookies =
+        state
+            .set_cookies()
+            .set_local(cookies::PORTAL_CSRF_COOKIE, &csrf_id, PORTAL_CSRF_TTL_SECS);
     (
-        AppendHeaders([(header::SET_COOKIE, csrf_cookie)]),
+        set_cookies.into_headers(),
         Html(render(&PortalLogin {
             messages: &messages,
             tenant_prefix: &tenant.prefix(),
@@ -108,31 +106,28 @@ pub async fn login(
     };
 
     let messages = Messages::new(locale(headers));
-    let secure = state.config.cookie_secure();
     match outcome {
         InternalPortalAuthenticateResponse::Success {
             sso_session_id,
             sso_absolute_ttl_secs,
             user_language,
         } => sso_success_response(
+            state,
             &sso_session_id,
             sso_absolute_ttl_secs,
             user_language.as_deref(),
             tenant,
-            secure,
-            state.config.cookie_domain(),
             &[cookies::PORTAL_CSRF_COOKIE],
         ),
         InternalPortalAuthenticateResponse::MfaRequired { mfa_ticket } => {
             // `mfa_ticket` を Cookie 化して TOTP 入力画面へ。portal_csrf Cookie は MFA フォームで再利用する。
-            let ticket_cookie = cookies::build(
+            let set_cookies = state.set_cookies().set_local(
                 cookies::PORTAL_MFA_COOKIE,
                 &mfa_ticket,
                 PORTAL_MFA_TTL_SECS,
-                secure,
             );
             (
-                AppendHeaders([(header::SET_COOKIE, ticket_cookie)]),
+                set_cookies.into_headers(),
                 found(&format!("{}/login/mfa", tenant.prefix())),
             )
                 .into_response()
@@ -197,8 +192,6 @@ pub async fn password_change(
     headers: HeaderMap,
     Form(form): Form<ForcedPasswordChangeForm>,
 ) -> Response {
-    let secure = state.config.cookie_secure();
-
     // CSRF 検証（ログイン時と同じ portal_csrf の種で照合する）。
     let csrf_id = cookies::get(&headers, cookies::PORTAL_CSRF_COOKIE);
     let csrf_ok = csrf_id
@@ -265,25 +258,23 @@ pub async fn password_change(
             sso_absolute_ttl_secs,
             user_language,
         } => sso_success_response(
+            &state,
             &sso_session_id,
             sso_absolute_ttl_secs,
             user_language.as_deref(),
             &tenant,
-            secure,
-            state.config.cookie_domain(),
             &[cookies::PORTAL_CSRF_COOKIE],
         ),
         InternalPortalChangePasswordResponse::MfaRequired { mfa_ticket } => {
             // パスワード変更成功・MFA 必要（MFA ゲート）: `mfa_ticket` を Cookie 化して TOTP 入力画面へ。
             // portal_csrf Cookie は MFA フォームで再利用する（login の MfaRequired と同方式）。
-            let ticket_cookie = cookies::build(
+            let set_cookies = state.set_cookies().set_local(
                 cookies::PORTAL_MFA_COOKIE,
                 &mfa_ticket,
                 PORTAL_MFA_TTL_SECS,
-                secure,
             );
             (
-                AppendHeaders([(header::SET_COOKIE, ticket_cookie)]),
+                set_cookies.into_headers(),
                 found(&format!("{}/login/mfa", tenant.prefix())),
             )
                 .into_response()
@@ -363,7 +354,6 @@ pub async fn mfa_submit(
 ) -> Response {
     // 注: `Messages`（FluentBundle）は !Send のため、api の await をまたいで保持しない
     //（各分岐で必要時に生成する）。
-    let secure = state.config.cookie_secure();
 
     let csrf_id = cookies::get(&headers, cookies::PORTAL_CSRF_COOKIE);
     let csrf_ok = csrf_id
@@ -416,12 +406,11 @@ pub async fn mfa_submit(
             sso_absolute_ttl_secs,
             user_language,
         } => sso_success_response(
+            &state,
             &sso_session_id,
             sso_absolute_ttl_secs,
             user_language.as_deref(),
             &tenant,
-            secure,
-            state.config.cookie_domain(),
             &[cookies::PORTAL_CSRF_COOKIE, cookies::PORTAL_MFA_COOKIE],
         ),
         InternalPortalMfaResponse::InvalidCode => reshow_mfa(
@@ -433,9 +422,9 @@ pub async fn mfa_submit(
         ),
         // チケット切れ・レート制限はログインからやり直させる（チケット Cookie を失効）。
         InternalPortalMfaResponse::TicketExpired | InternalPortalMfaResponse::RateLimited => {
-            let expire = cookies::expire(cookies::PORTAL_MFA_COOKIE, secure);
+            let set_cookies = state.set_cookies().expire_local(cookies::PORTAL_MFA_COOKIE);
             (
-                AppendHeaders([(header::SET_COOKIE, expire)]),
+                set_cookies.into_headers(),
                 found(&format!("{}/login", tenant.prefix())),
             )
                 .into_response()
@@ -469,54 +458,45 @@ pub async fn logout(
             )
             .await;
     }
-    let expire = cookies::shared_expire_headers(
-        cookies::SSO_SESSION_COOKIE,
-        state.config.cookie_secure(),
-        state.config.cookie_domain(),
-    );
+    let set_cookies = state
+        .set_cookies()
+        .expire_shared(cookies::SSO_SESSION_COOKIE);
     (
-        AppendHeaders(expire),
+        set_cookies.into_headers(),
         found(&format!("{}/login", tenant.prefix())),
     )
         .into_response()
 }
 
 /// SSO Cookie を発行し、任意の一時 Cookie を失効させてアカウント画面へ 302 する共通処理。
-/// SSO Cookie はサービス横断（api の `/authorize` も読む）のため `domain` を反映する（ADR-0012 §3）。
-/// 失効させる一時 Cookie（CSRF・MFA チケット）は web ローカルなので host-only のまま。
+/// SSO Cookie はサービス横断（api の `/authorize` も読む）のため `set_shared` で発行する
+/// （ADR-0012 §3）。失効させる一時 Cookie（CSRF・MFA チケット）は web ローカルなので host-only のまま。
 fn sso_success_response(
+    state: &WebState,
     sso_session_id: &str,
     sso_absolute_ttl_secs: u64,
     user_language: Option<&str>,
     tenant: &WebTenant,
-    secure: bool,
-    domain: Option<&str>,
     expire_cookies: &[&str],
 ) -> Response {
-    let mut set_cookies = cookies::shared_set_cookie_headers(
+    let mut set_cookies = state.set_cookies().set_shared(
         cookies::SSO_SESSION_COOKIE,
         sso_session_id,
         sso_absolute_ttl_secs,
-        secure,
-        domain,
     );
     for name in expire_cookies {
-        set_cookies.push((header::SET_COOKIE, cookies::expire(name, secure)));
+        set_cookies = set_cookies.expire_local(name);
     }
     // ユーザーの DB 言語設定があれば lang Cookie に同期する（MT20: DB > Cookie）。
     if let Some(lang) = user_language.and_then(Locale::from_tag) {
-        set_cookies.push((
-            header::SET_COOKIE,
-            cookies::build(
-                cookies::LANG_COOKIE,
-                lang.as_tag(),
-                cookies::LANG_COOKIE_MAX_AGE_SECS,
-                secure,
-            ),
-        ));
+        set_cookies = set_cookies.set_local(
+            cookies::LANG_COOKIE,
+            lang.as_tag(),
+            cookies::LANG_COOKIE_MAX_AGE_SECS,
+        );
     }
     (
-        AppendHeaders(set_cookies),
+        set_cookies.into_headers(),
         found(&format!("{}/settings", tenant.prefix())),
     )
         .into_response()

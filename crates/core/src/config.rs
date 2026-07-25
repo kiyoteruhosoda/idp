@@ -16,6 +16,7 @@ use crate::domain::system_setting::{
     runtime_setting_definition, DefaultRisk, SettingOwner, RUNTIME_SETTING_DEFINITIONS,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
+use idp_contracts::cookies::CookiePolicy;
 use std::collections::HashMap;
 use std::env;
 use std::time::Duration;
@@ -96,7 +97,8 @@ pub struct Config {
     tenant_cache_ttl: Duration,
     /// scope→権限解決キャッシュの TTL（ADR-0009 §7。付与・剥奪時は即時 invalidate される）。
     permission_cache_ttl: Duration,
-    cookie_secure: bool,
+    /// サービス横断 Cookie の属性方針（`Secure` と `Domain`。ADR-0012 §3）。web と同じ値を設定する。
+    cookie_policy: CookiePolicy,
     key_encryption_key: [u8; 32],
     key_encryption_key_is_dev: bool,
     /// 署名鍵ローテーション: `not_after` のこの日数前に新鍵を生成して旧鍵を退役させる（K2）。
@@ -113,9 +115,6 @@ pub struct Config {
     /// 利用者がブラウザで開く web 画面の公開ベース URL（招待メールの承諾リンク等。MT17）。
     /// api/web で同一値必須のため EnvLocked（ADR-0012 §2）。
     public_web_base_url: String,
-    /// サービス横断 Cookie（sso_session_id・auth_session_id）の `Domain` 属性（ADR-0012 §3）。
-    /// `None` = host-only（単一オリジン構成の従来挙動）。
-    cookie_domain: Option<String>,
     resolved_settings: Vec<ResolvedSetting>,
 }
 
@@ -164,6 +163,7 @@ impl Config {
             ),
             None => None,
         };
+        let cookie_policy = CookiePolicy::new(cookie_secure, cookie_domain.as_deref());
 
         Ok(Self {
             issuer,
@@ -192,7 +192,7 @@ impl Config {
             email_verification_ttl: secs(resolver.parse("EMAIL_VERIFICATION_TTL_SECS", 86_400)?),
             tenant_cache_ttl: secs(resolver.parse("TENANT_CACHE_TTL_SECS", 60)?),
             permission_cache_ttl: secs(resolver.parse("PERMISSION_CACHE_TTL_SECS", 60)?),
-            cookie_secure,
+            cookie_policy,
             key_encryption_key,
             key_encryption_key_is_dev,
             key_rotation_lead_days: resolver.parse("KEY_ROTATION_LEAD_DAYS", 30)?,
@@ -203,7 +203,6 @@ impl Config {
             csrf_secret,
             csrf_secret_is_dev,
             public_web_base_url,
-            cookie_domain,
             resolved_settings: resolver.resolved_settings(),
         })
     }
@@ -270,7 +269,12 @@ impl Config {
     }
     /// Cookie に `Secure` 属性を付けるか（設計仕様 §2.4。開発時の http issuer では無効化できる）。
     pub fn cookie_secure(&self) -> bool {
-        self.cookie_secure
+        self.cookie_policy.secure()
+    }
+    /// サービス横断 Cookie の属性方針（`Secure` + `Domain`）。発行・失効はこれを経由する
+    /// （ADR-0012 §3。`Domain` を渡し忘れた発行箇所が生まれないようにするため）。
+    pub fn cookie_policy(&self) -> &CookiePolicy {
+        &self.cookie_policy
     }
     /// 秘密鍵（SigningKeys.private_key_encrypted）の暗号化に使う 32 バイト鍵。
     pub fn key_encryption_key(&self) -> &[u8; 32] {
@@ -317,7 +321,7 @@ impl Config {
     /// サービス横断 Cookie（sso_session_id・auth_session_id）に付与する `Domain` 属性（ADR-0012 §3）。
     /// `None` = host-only（単一オリジン構成の従来挙動）。web と同じ値を設定する。
     pub fn cookie_domain(&self) -> Option<&str> {
-        self.cookie_domain.as_deref()
+        self.cookie_policy.domain()
     }
 
     pub fn resolved_settings(&self) -> &[ResolvedSetting] {

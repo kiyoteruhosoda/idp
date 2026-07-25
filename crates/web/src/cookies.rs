@@ -1,15 +1,22 @@
-//! Cookie の読み書きヘルパー。
+//! Cookie の読み書き（axum アダプタ）。
 //!
-//! 属性は設計仕様 §2.4 に従い `HttpOnly` / `Secure` / `SameSite=Lax` / `Path=/` を付与する
-//! （`Secure` は `Config::cookie_secure()`。開発時の http issuer では無効化できる）。
+//! 名前と `Set-Cookie` 値の組み立ては api と共有する必要があるため
+//! [`idp_contracts::cookies`] に単一定義してある。本モジュールは `HeaderMap` からの読み出しと、
+//! 応答へ載せる `Set-Cookie` ヘッダの組み立て（[`SetCookies`]）という axum 依存の部分を担う。
+//!
+//! web が発行する Cookie は 2 種類ある。取り違えると SSO が壊れる（別ドメイン構成で api が
+//! セッションを読めない／CSRF Cookie が不必要に親ドメインへ広がる）ため、[`SetCookies`] では
+//! メソッド名で区別する。
+//!
+//! - **サービス横断**（`sso_session_id`・`auth_session_id`）: api も読む。`set_shared` / `expire_shared`
+//! - **web ローカル**（`lang`・CSRF・MFA チケット）: web だけが読む。`set_local` / `expire_local`
 
-use axum::http::header::COOKIE;
-use axum::http::HeaderMap;
+use axum::http::header::{COOKIE, SET_COOKIE};
+use axum::http::{HeaderMap, HeaderName};
+use axum::response::AppendHeaders;
 
-/// `auth_session_id` Cookie（`/authorize` 〜 `/login` の短命 Cookie）。
-pub const AUTH_SESSION_COOKIE: &str = "auth_session_id";
-/// SSO セッション Cookie（値は session_id 平文。DB にはハッシュのみ保存）。
-pub const SSO_SESSION_COOKIE: &str = "sso_session_id";
+pub use idp_contracts::cookies::{CookiePolicy, AUTH_SESSION_COOKIE, SSO_SESSION_COOKIE};
+
 /// 管理ログインフォームの CSRF 用 Cookie（GET で発行する推測不能な乱数。同期トークンの種）。
 pub const ADMIN_CSRF_COOKIE: &str = "admin_csrf_id";
 /// エンドユーザー・ポータルのログインフォーム CSRF 用 Cookie（`admin_csrf_id` と同じ仕組み・別名前空間）。
@@ -23,105 +30,88 @@ pub const LANG_COOKIE_MAX_AGE_SECS: u64 = 31_536_000;
 
 /// リクエストの `Cookie` ヘッダから `name` の値を取り出す。
 pub fn get(headers: &HeaderMap, name: &str) -> Option<String> {
-    headers.get_all(COOKIE).iter().find_map(|value| {
-        value.to_str().ok().and_then(|raw| {
-            raw.split(';').find_map(|pair| {
-                let (k, v) = pair.trim().split_once('=')?;
-                (k == name).then(|| v.to_string())
-            })
-        })
-    })
+    idp_contracts::cookies::read(
+        headers
+            .get_all(COOKIE)
+            .iter()
+            .filter_map(|value| value.to_str().ok()),
+        name,
+    )
 }
 
-/// `Set-Cookie` の値を構築する。
-pub fn build(name: &str, value: &str, max_age_secs: u64, secure: bool) -> String {
-    build_with_domain(name, value, max_age_secs, secure, None)
-}
-
-/// Cookie を失効させる `Set-Cookie` の値を構築する。
-pub fn expire(name: &str, secure: bool) -> String {
-    build(name, "", 0, secure)
-}
-
-fn build_with_domain(
-    name: &str,
-    value: &str,
-    max_age_secs: u64,
-    secure: bool,
-    domain: Option<&str>,
-) -> String {
-    let mut cookie = format!("{name}={value}; Max-Age={max_age_secs}");
-    if let Some(domain) = domain {
-        cookie.push_str(&format!("; Domain={domain}"));
-    }
-    cookie.push_str("; Path=/; HttpOnly; SameSite=Lax");
-    if secure {
-        cookie.push_str("; Secure");
-    }
-    cookie
-}
-
-/// サービス横断 Cookie（`sso_session_id`・`auth_session_id`）の `Set-Cookie` 値一式を構築する
-/// （ADR-0012 §3。api 側 `presentation/cookies.rs` と同一実装）。
+/// 応答へ載せる `Set-Cookie` ヘッダの集合。`WebState::set_cookies()` から作り、メソッドを繋いで
+/// 組み立てて `AppendHeaders` として返す（`IntoResponse` のタプルへそのまま渡せる）。
 ///
-/// - `domain` が `None`（単一オリジン構成）: 従来どおり host-only の 1 本のみ。
-/// - `domain` が `Some`（別ドメイン構成）: `Domain` 属性付き Cookie に加えて、`Domain` 属性なしの
-///   同名削除 Cookie（`Max-Age=0`）を併送する。単一オリジン構成から移行した既存ブラウザに残る
-///   host-only Cookie を掃除しないと、同名 Cookie の二重送信で古いセッションが新しいセッションを
-///   覆い隠す（ログインループ）。
-///
-/// web ローカルの Cookie（`lang`・CSRF 関連等、api が読まないもの）には使わず [`build`] のまま
-/// host-only に保つ。
-pub fn build_shared(
-    name: &str,
-    value: &str,
-    max_age_secs: u64,
-    secure: bool,
-    domain: Option<&str>,
-) -> Vec<String> {
-    match domain {
-        None => vec![build(name, value, max_age_secs, secure)],
-        Some(d) => vec![
-            build_with_domain(name, value, max_age_secs, secure, Some(d)),
-            build(name, "", 0, secure),
-        ],
+/// ```ignore
+/// (state.set_cookies()
+///     .set_shared(cookies::SSO_SESSION_COOKIE, &sso_session_id, ttl)
+///     .expire_shared(cookies::AUTH_SESSION_COOKIE)
+///     .into_headers(),
+///  found(&redirect_to)).into_response()
+/// ```
+#[derive(Debug, Clone)]
+pub struct SetCookies {
+    policy: CookiePolicy,
+    headers: Vec<(HeaderName, String)>,
+}
+
+impl SetCookies {
+    pub fn new(policy: CookiePolicy) -> Self {
+        Self {
+            policy,
+            headers: Vec::new(),
+        }
     }
-}
 
-/// サービス横断 Cookie を失効させる `Set-Cookie` 値一式を構築する。削除 Cookie も発行時と同じ
-/// `Domain` で出さないと消えないため、`domain` 設定時はドメイン付き削除 + host-only 削除を併送する。
-pub fn expire_shared(name: &str, secure: bool, domain: Option<&str>) -> Vec<String> {
-    build_shared(name, "", 0, secure, domain)
-}
+    /// サービス横断 Cookie を発行する（`COOKIE_DOMAIN` 設定時は `Domain` 付き + host-only 削除の併送）。
+    #[must_use]
+    pub fn set_shared(mut self, name: &str, value: &str, max_age_secs: u64) -> Self {
+        self.push_all(self.policy.set_shared(name, value, max_age_secs));
+        self
+    }
 
-/// サービス横断 Cookie の `Set-Cookie` 値一式を `Set-Cookie` ヘッダの組として返す
-/// （`AppendHeaders` へそのまま渡せる形）。
-pub fn shared_set_cookie_headers(
-    name: &str,
-    value: &str,
-    max_age_secs: u64,
-    secure: bool,
-    domain: Option<&str>,
-) -> Vec<(axum::http::HeaderName, String)> {
-    build_shared(name, value, max_age_secs, secure, domain)
-        .into_iter()
-        .map(|cookie| (axum::http::header::SET_COOKIE, cookie))
-        .collect()
-}
+    /// サービス横断 Cookie を失効させる。
+    #[must_use]
+    pub fn expire_shared(mut self, name: &str) -> Self {
+        self.push_all(self.policy.expire_shared(name));
+        self
+    }
 
-/// サービス横断 Cookie の失効を `Set-Cookie` ヘッダの組として返す。
-pub fn shared_expire_headers(
-    name: &str,
-    secure: bool,
-    domain: Option<&str>,
-) -> Vec<(axum::http::HeaderName, String)> {
-    shared_set_cookie_headers(name, "", 0, secure, domain)
+    /// web ローカル Cookie を発行する（host-only。`Domain` は付けない）。
+    #[must_use]
+    pub fn set_local(mut self, name: &str, value: &str, max_age_secs: u64) -> Self {
+        self.headers
+            .push((SET_COOKIE, self.policy.set_local(name, value, max_age_secs)));
+        self
+    }
+
+    /// web ローカル Cookie を失効させる。
+    #[must_use]
+    pub fn expire_local(mut self, name: &str) -> Self {
+        self.headers
+            .push((SET_COOKIE, self.policy.expire_local(name)));
+        self
+    }
+
+    /// 応答へ付与する `Set-Cookie` ヘッダ。
+    pub fn into_headers(self) -> AppendHeaders<Vec<(HeaderName, String)>> {
+        AppendHeaders(self.headers)
+    }
+
+    fn push_all(&mut self, cookies: Vec<String>) {
+        self.headers
+            .extend(cookies.into_iter().map(|cookie| (SET_COOKIE, cookie)));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
+
+    fn values(set_cookies: SetCookies) -> Vec<String> {
+        set_cookies.headers.into_iter().map(|(_, v)| v).collect()
+    }
 
     #[test]
     fn reads_a_cookie_from_the_header() {
@@ -130,54 +120,54 @@ mod tests {
             COOKIE,
             HeaderValue::from_static("a=1; auth_session_id=abc123; b=2"),
         );
-        assert_eq!(get(&headers, "auth_session_id").as_deref(), Some("abc123"));
+        assert_eq!(
+            get(&headers, AUTH_SESSION_COOKIE).as_deref(),
+            Some("abc123")
+        );
         assert_eq!(get(&headers, "missing"), None);
     }
 
     #[test]
-    fn builds_cookie_with_required_attributes() {
-        let c = build("sso_session_id", "v", 600, true);
+    fn reads_a_cookie_split_across_several_cookie_headers() {
+        let mut headers = HeaderMap::new();
+        headers.append(COOKIE, HeaderValue::from_static("a=1"));
+        headers.append(COOKIE, HeaderValue::from_static("sso_session_id=xyz"));
+        assert_eq!(get(&headers, SSO_SESSION_COOKIE).as_deref(), Some("xyz"));
+    }
+
+    #[test]
+    fn login_success_cookies_are_accumulated_in_order() {
+        // ログイン成功の代表形: SSO 発行 + auth_session 失効 + 言語同期（ADR-0012 §3 / MT20）。
+        let set_cookies = SetCookies::new(CookiePolicy::new(true, None))
+            .set_shared(SSO_SESSION_COOKIE, "sess", 600)
+            .expire_shared(AUTH_SESSION_COOKIE)
+            .set_local(LANG_COOKIE, "ja", LANG_COOKIE_MAX_AGE_SECS);
         assert_eq!(
-            c,
-            "sso_session_id=v; Max-Age=600; Path=/; HttpOnly; SameSite=Lax; Secure"
-        );
-        let c = expire("sso_session_id", false);
-        assert_eq!(
-            c,
-            "sso_session_id=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax"
+            values(set_cookies),
+            vec![
+                "sso_session_id=sess; Max-Age=600; Path=/; HttpOnly; SameSite=Lax; Secure",
+                "auth_session_id=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax; Secure",
+                "lang=ja; Max-Age=31536000; Path=/; HttpOnly; SameSite=Lax; Secure",
+            ]
         );
     }
 
     #[test]
-    fn shared_cookie_without_domain_keeps_host_only_behavior() {
-        // COOKIE_DOMAIN 未設定（単一オリジン構成）は従来と同一の 1 本のみ（ADR-0012 の回帰条件）。
-        assert_eq!(
-            build_shared("sso_session_id", "v", 600, true, None),
-            vec!["sso_session_id=v; Max-Age=600; Path=/; HttpOnly; SameSite=Lax; Secure"]
+    fn shared_cookies_carry_the_domain_and_local_cookies_do_not() {
+        // 別ドメイン構成: セッションだけが親ドメインへ広がり、CSRF・言語は host-only のまま。
+        let set_cookies = SetCookies::new(CookiePolicy::new(false, Some("example.com")))
+            .set_shared(SSO_SESSION_COOKIE, "sess", 600)
+            .expire_local(ADMIN_CSRF_COOKIE);
+        let values = values(set_cookies);
+        assert_eq!(values.len(), 3, "domain cookie + host-only cleanup + csrf");
+        assert!(values[0].contains("Domain=example.com"), "{values:?}");
+        assert!(
+            !values[1].contains("Domain=") && values[1].contains("Max-Age=0"),
+            "{values:?}"
         );
-        assert_eq!(
-            expire_shared("sso_session_id", false, None),
-            vec!["sso_session_id=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax"]
-        );
-    }
-
-    #[test]
-    fn shared_cookie_with_domain_adds_host_only_cleanup() {
-        // Domain 付き発行と同時に host-only の同名削除 Cookie を併送する（移行時の残留掃除）。
-        assert_eq!(
-            build_shared("sso_session_id", "v", 600, true, Some("example.com")),
-            vec![
-                "sso_session_id=v; Max-Age=600; Domain=example.com; Path=/; HttpOnly; SameSite=Lax; Secure",
-                "sso_session_id=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax; Secure",
-            ]
-        );
-        // 削除もドメイン付き + host-only の両方で出す（Domain が違う Cookie は消えないため）。
-        assert_eq!(
-            expire_shared("auth_session_id", false, Some("example.com")),
-            vec![
-                "auth_session_id=; Max-Age=0; Domain=example.com; Path=/; HttpOnly; SameSite=Lax",
-                "auth_session_id=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax",
-            ]
+        assert!(
+            values[2].starts_with("admin_csrf_id=") && !values[2].contains("Domain="),
+            "{values:?}"
         );
     }
 }

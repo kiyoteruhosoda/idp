@@ -1,3 +1,22 @@
+## 2026-07-25（Cookie の名前・属性組み立てを `idp-contracts` へ集約し、ログアウトの越境を E2E で固定した）
+
+- **Cookie の契約を `idp_contracts::cookies` へ単一化した**: api（`presentation/cookies.rs`）と
+  web（`cookies.rs`）に同一実装・同一テストの複製があり、さらに `api_client.rs` が
+  `sso_session_id` の名前を三重に定義していた。名前・`Set-Cookie` 組み立て・`Cookie` ヘッダ解析を
+  contracts へ移し、各サービスには axum アダプタ（`HeaderMap` 読み出し・ヘッダ化）だけを残した。
+- **`CookiePolicy`（`Secure` + `Domain`）を導入**し、発行箇所が `secure`・`domain` を引数で持ち回る形を
+  やめた。web は `WebState::set_cookies()` から `set_shared` / `expire_shared`（api も読むセッション
+  Cookie）と `set_local` / `expire_local`（web だけが読む CSRF・言語・MFA チケット）をメソッド名で
+  区別する。新しい発行箇所で `Domain` を渡し忘れて別ドメイン構成の SSO が壊れる型の事故を防ぐ。
+- **ログアウトの Cookie 越境を E2E テストに追加**（`e2e_domain_split.rs` ケース 2）: api の
+  RP-initiated Logout・web のポータルログアウトの双方で、相手ドメインに保存された SSO Cookie が
+  jar から消え、再 `/authorize` がログイン画面へ戻ることを実挙動で確認する。削除 Cookie の
+  `Domain` 付与漏れ（＝ログアウトしたのにログインしたまま）を検出できるようにした。
+- **web の本番シークレット検証を自オリジンにも適用**（fail-fast）: `ISSUER` だけでなく
+  `PUBLIC_WEB_BASE_URL` が `https://` の場合も開発用デフォルトの `INTERNAL_SERVICE_TOKEN` /
+  `CSRF_SECRET` での起動を拒否する。web を https で公開しつつ `ISSUER` を内部 http URL に取り違えた
+  構成で、api と共有する CSRF 鍵が既知の開発用値のまま動く（CSRF トークンを偽造できる）のを防ぐ。
+
 ## 2026-07-25（api/web の別ドメイン（サブドメイン）公開に対応した。MT29 / ADR-0012）
 
 - **`COOKIE_DOMAIN` を新設**（EnvLocked。api/web で同値必須）: 設定時、サービス横断 Cookie

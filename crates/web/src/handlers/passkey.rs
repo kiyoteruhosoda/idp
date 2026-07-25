@@ -14,7 +14,7 @@ use crate::templates::{render, MessagePage, PasskeyListTemplate, PasskeyRegister
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::{AppendHeaders, Html, IntoResponse, Json, Response};
+use axum::response::{Html, IntoResponse, Json, Response};
 use axum::Form;
 use idp_contracts::auth::{
     InternalPasskeyDeleteRequest, InternalPasskeyDeleteResponse, InternalPasskeyListRequest,
@@ -294,29 +294,22 @@ pub async fn login_complete_api(
         }
     };
 
-    let secure = state.config.cookie_secure();
-    let domain = state.config.cookie_domain();
-
     match outcome {
         InternalPasskeyLoginCompleteResponse::Success {
             redirect_to,
             sso_session_id,
             sso_absolute_ttl_secs,
         } => {
-            let mut set_cookies = cookies::shared_set_cookie_headers(
-                cookies::SSO_SESSION_COOKIE,
-                &sso_session_id,
-                sso_absolute_ttl_secs,
-                secure,
-                domain,
-            );
-            set_cookies.extend(cookies::shared_expire_headers(
-                cookies::AUTH_SESSION_COOKIE,
-                secure,
-                domain,
-            ));
+            let set_cookies = state
+                .set_cookies()
+                .set_shared(
+                    cookies::SSO_SESSION_COOKIE,
+                    &sso_session_id,
+                    sso_absolute_ttl_secs,
+                )
+                .expire_shared(cookies::AUTH_SESSION_COOKIE);
             (
-                AppendHeaders(set_cookies),
+                set_cookies.into_headers(),
                 Json(LoginCompleteJsonResponse {
                     redirect_to: Some(redirect_to),
                     error: None,
@@ -329,22 +322,20 @@ pub async fn login_complete_api(
             sso_session_id,
             sso_absolute_ttl_secs,
         } => {
-            let mut set_cookies = cookies::shared_set_cookie_headers(
-                cookies::SSO_SESSION_COOKIE,
-                &sso_session_id,
-                sso_absolute_ttl_secs,
-                secure,
-                domain,
-            );
-            set_cookies.extend(cookies::shared_set_cookie_headers(
-                cookies::AUTH_SESSION_COOKIE,
-                &auth_session_id,
-                state.config.auth_session_ttl_secs(),
-                secure,
-                domain,
-            ));
+            let set_cookies = state
+                .set_cookies()
+                .set_shared(
+                    cookies::SSO_SESSION_COOKIE,
+                    &sso_session_id,
+                    sso_absolute_ttl_secs,
+                )
+                .set_shared(
+                    cookies::AUTH_SESSION_COOKIE,
+                    &auth_session_id,
+                    state.config.auth_session_ttl_secs(),
+                );
             (
-                AppendHeaders(set_cookies),
+                set_cookies.into_headers(),
                 Json(LoginCompleteJsonResponse {
                     redirect_to: Some(format!("{}/consent", tenant.prefix())),
                     error: None,

@@ -17,7 +17,7 @@ use crate::templates::{render, UserSettings};
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
-use axum::response::{AppendHeaders, Html, IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 use idp_contracts::auth::{
     InternalAccountChangePasswordRequest, InternalAccountChangePasswordResponse,
@@ -110,13 +110,12 @@ pub async fn page(
                     }
                 }
             }
-            let cookie = cookies::build(
+            let set_cookies = state.set_cookies().set_local(
                 cookies::LANG_COOKIE,
                 tag,
                 cookies::LANG_COOKIE_MAX_AGE_SECS,
-                state.config.cookie_secure(),
             );
-            (AppendHeaders([(header::SET_COOKIE, cookie)]), Html(body)).into_response()
+            (set_cookies.into_headers(), Html(body)).into_response()
         }
         None => Html(body).into_response(),
     }

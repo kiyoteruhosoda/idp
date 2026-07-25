@@ -10,9 +10,12 @@
 //! 1. 別ドメイン構成: `/authorize`（api ドメイン）→ 302 → `/login`（web ドメイン）→ POST →
 //!    SSO Cookie が `Domain=COOKIE_DOMAIN` で保存され、再度の `/authorize` に SSO Cookie が
 //!    送信されて即時 code 発行される。`auth_session_id` の逆方向（api → web）も同フローで検証する。
-//! 2. host-only 残留の掃除: 事前に host-only の同名 Cookie を仕込んだ状態でログインし、
+//! 2. ログアウト（api の RP-initiated Logout・web のポータルログアウト）で、相手ドメインに
+//!    保存された SSO Cookie まで消える。削除 Cookie の `Domain` 付与漏れは「ログアウトしたのに
+//!    ログインしたまま」になるため、jar 上の残留と再 `/authorize` の挙動で確認する。
+//! 3. host-only 残留の掃除: 事前に host-only の同名 Cookie を仕込んだ状態でログインし、
 //!    削除併送により二重 Cookie が解消される。
-//! 3. 回帰: `COOKIE_DOMAIN` 未設定（単一オリジン構成）で従来挙動（host-only・Domain 属性なし）が
+//! 4. 回帰: `COOKIE_DOMAIN` 未設定（単一オリジン構成）で従来挙動（host-only・Domain 属性なし）が
 //!    変わらない。
 
 mod support;
@@ -257,6 +260,54 @@ async fn run_login_flow(
     }
 }
 
+/// ログアウト後の `/authorize` が「未ログイン」として web のログイン画面へ戻ることを確かめる。
+/// SSO Cookie が消えていなければ即時 code 発行になるため、ここで検出できる。
+async fn assert_login_required_again(client: &reqwest::Client, stack: &Stack, client_id: &str) {
+    let response = client
+        .get(format!(
+            "{}{}",
+            stack.api_base,
+            authorize_uri_openid_only(&stack.root_tenant_id, client_id)
+        ))
+        .send()
+        .await
+        .expect("GET /authorize after logout");
+    assert_eq!(response.status(), StatusCode::FOUND);
+    assert_eq!(
+        location(&response),
+        format!("{}/{}/login", stack.web_base, stack.root_tenant_id),
+        "the SSO cookie must be gone on the api origin after logout"
+    );
+}
+
+/// 別ドメイン構成では削除 Cookie も発行時と同じ `Domain` で出さないと消えないため、
+/// ドメイン付き削除 + host-only 削除の 2 本が揃っていることを確かめる（ADR-0012 §3）。
+fn assert_expires_shared_cookie(response: &reqwest::Response, name: &str, domain: &str) {
+    let cookies = set_cookies_for(response, name);
+    assert_eq!(cookies.len(), 2, "domain + host-only deletion: {cookies:?}");
+    assert!(
+        cookies[0].contains(&format!("Domain={domain}")) && cookies[0].contains("Max-Age=0"),
+        "{cookies:?}"
+    );
+    assert!(
+        !cookies[1].contains("Domain=") && cookies[1].contains("Max-Age=0"),
+        "{cookies:?}"
+    );
+}
+
+/// Cookie jar が `url` へ送る Cookie に `name` が残っていないこと。
+fn assert_jar_dropped(jar: &reqwest::cookie::Jar, url: &str, name: &str) {
+    let url: reqwest::Url = url.parse().unwrap();
+    let remaining = jar
+        .cookies(&url)
+        .map(|v| v.to_str().unwrap_or_default().to_string())
+        .unwrap_or_default();
+    assert!(
+        !remaining.contains(&format!("{name}=")),
+        "jar still sends {name} to {url}: {remaining}"
+    );
+}
+
 fn assert_immediate_code(second_authorize: &reqwest::Response) {
     assert_eq!(second_authorize.status(), StatusCode::FOUND);
     let callback = location(second_authorize);
@@ -266,7 +317,7 @@ fn assert_immediate_code(second_authorize: &reqwest::Response) {
     );
 }
 
-/// ケース 1+2: 別ドメイン構成で SSO / auth_session Cookie が双方向に越境する。
+/// ケース 1: 別ドメイン構成で SSO / auth_session Cookie が双方向に越境する。
 #[tokio::test(flavor = "multi_thread")]
 async fn cross_domain_login_shares_cookies_between_api_and_web() {
     let Some(stack) =
@@ -307,6 +358,80 @@ async fn cross_domain_login_shares_cookies_between_api_and_web() {
     );
 
     assert_immediate_code(&result.second_authorize);
+}
+
+/// ケース 2a: api の RP-initiated Logout（`GET /{tenant_id}/logout`）で、web ドメインに保存された
+/// SSO Cookie が消える。削除 Cookie に `Domain` を付け忘れるとブラウザ上の Cookie は残り、
+/// 「ログアウトしたのにログインしたまま」になるため、実ブラウザ相当の jar で確認する。
+#[tokio::test(flavor = "multi_thread")]
+async fn api_logout_clears_the_shared_cookie_on_the_web_origin() {
+    let Some(stack) =
+        start_stack("api.example.test", "id.example.test", Some("example.test")).await
+    else {
+        return;
+    };
+    let client_id =
+        support::insert_public_client(&stack.pool, &stack.root_tenant_id, &["openid"]).await;
+    let password = "correct-horse-battery";
+    let username = create_login_user(&stack, password).await;
+    let (client, jar) = browser(&["api.example.test", "id.example.test"]);
+
+    let result = run_login_flow(&client, &stack, &client_id, &username, password).await;
+    assert_immediate_code(&result.second_authorize);
+
+    let logout = client
+        .get(format!(
+            "{}/{}/logout",
+            stack.api_base, stack.root_tenant_id
+        ))
+        .send()
+        .await
+        .expect("GET /logout");
+    assert_eq!(logout.status(), StatusCode::NO_CONTENT);
+    assert_expires_shared_cookie(&logout, "sso_session_id", "example.test");
+
+    // api ドメインで受け取った削除が web ドメインの Cookie にも効く（Domain 付き削除の効果）。
+    assert_jar_dropped(&jar, &format!("{}/", stack.web_base), "sso_session_id");
+    assert_jar_dropped(&jar, &format!("{}/", stack.api_base), "sso_session_id");
+    assert_login_required_again(&client, &stack, &client_id).await;
+}
+
+/// ケース 2b: web のポータル・ログアウト（`POST /{tenant_id}/logout`）で、api ドメインへ送られる
+/// SSO Cookie も消える（web だけが host-only 削除を出すと api 側にセッションが残る）。
+#[tokio::test(flavor = "multi_thread")]
+async fn web_logout_clears_the_shared_cookie_on_the_api_origin() {
+    let Some(stack) =
+        start_stack("api.example.test", "id.example.test", Some("example.test")).await
+    else {
+        return;
+    };
+    let client_id =
+        support::insert_public_client(&stack.pool, &stack.root_tenant_id, &["openid"]).await;
+    let password = "correct-horse-battery";
+    let username = create_login_user(&stack, password).await;
+    let (client, jar) = browser(&["api.example.test", "id.example.test"]);
+
+    let result = run_login_flow(&client, &stack, &client_id, &username, password).await;
+    assert_immediate_code(&result.second_authorize);
+
+    let logout = client
+        .post(format!(
+            "{}/{}/logout",
+            stack.web_base, stack.root_tenant_id
+        ))
+        .send()
+        .await
+        .expect("POST /logout");
+    assert_eq!(logout.status(), StatusCode::FOUND);
+    assert_eq!(
+        location(&logout),
+        format!("/{}/login", stack.root_tenant_id)
+    );
+    assert_expires_shared_cookie(&logout, "sso_session_id", "example.test");
+
+    assert_jar_dropped(&jar, &format!("{}/", stack.web_base), "sso_session_id");
+    assert_jar_dropped(&jar, &format!("{}/", stack.api_base), "sso_session_id");
+    assert_login_required_again(&client, &stack, &client_id).await;
 }
 
 /// ケース 3: 単一オリジン構成から移行したブラウザに残る host-only Cookie が削除併送で掃除され、

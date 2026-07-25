@@ -26,8 +26,8 @@ use crate::templates::{
 };
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, State};
-use axum::http::{header, HeaderMap, StatusCode};
-use axum::response::{AppendHeaders, Html, IntoResponse, Response};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 use idp_contracts::auth::{
     InternalAccountTenantsRequest, InternalAccountTenantsResponse,
@@ -130,14 +130,11 @@ pub async fn login_page(
     // CSRF の種（推測不能な乱数）を新規発行し、Cookie とフォーム双方へ渡す。
     let csrf_id = Uuid::new_v4().simple().to_string();
     let csrf = admin_csrf_token(&csrf_id, state.config.csrf_secret());
-    let csrf_cookie = cookies::build(
-        cookies::ADMIN_CSRF_COOKIE,
-        &csrf_id,
-        3600,
-        state.config.cookie_secure(),
-    );
+    let set_cookies = state
+        .set_cookies()
+        .set_local(cookies::ADMIN_CSRF_COOKIE, &csrf_id, 3600);
     (
-        AppendHeaders([(header::SET_COOKIE, csrf_cookie)]),
+        set_cookies.into_headers(),
         Html(render_login_form(&messages, &csrf, None)),
     )
         .into_response()
@@ -189,24 +186,20 @@ pub async fn login(
     };
 
     let messages = Messages::new(locale(&headers));
-    let secure = state.config.cookie_secure();
     match outcome {
         InternalAdminAuthenticateResponse::Success {
             sso_session_id,
             sso_absolute_ttl_secs,
         } => {
-            let mut set_cookies = cookies::shared_set_cookie_headers(
-                cookies::SSO_SESSION_COOKIE,
-                &sso_session_id,
-                sso_absolute_ttl_secs,
-                secure,
-                state.config.cookie_domain(),
-            );
-            set_cookies.push((
-                header::SET_COOKIE,
-                cookies::expire(cookies::ADMIN_CSRF_COOKIE, secure),
-            ));
-            (AppendHeaders(set_cookies), found(&admin_home_path(&tenant))).into_response()
+            let set_cookies = state
+                .set_cookies()
+                .set_shared(
+                    cookies::SSO_SESSION_COOKIE,
+                    &sso_session_id,
+                    sso_absolute_ttl_secs,
+                )
+                .expire_local(cookies::ADMIN_CSRF_COOKIE);
+            (set_cookies.into_headers(), found(&admin_home_path(&tenant))).into_response()
         }
         InternalAdminAuthenticateResponse::PasswordChangeRequired { username } => {
             // 強制パスワード変更（ADR-0009 §5）。SSO はまだ発行されていない。CSRF Cookie は維持し、
@@ -324,24 +317,20 @@ pub async fn password_change(
     };
 
     let messages = Messages::new(locale(&headers));
-    let secure = state.config.cookie_secure();
     match outcome {
         InternalAdminChangePasswordResponse::Success {
             sso_session_id,
             sso_absolute_ttl_secs,
         } => {
-            let mut set_cookies = cookies::shared_set_cookie_headers(
-                cookies::SSO_SESSION_COOKIE,
-                &sso_session_id,
-                sso_absolute_ttl_secs,
-                secure,
-                state.config.cookie_domain(),
-            );
-            set_cookies.push((
-                header::SET_COOKIE,
-                cookies::expire(cookies::ADMIN_CSRF_COOKIE, secure),
-            ));
-            (AppendHeaders(set_cookies), found(&admin_home_path(&tenant))).into_response()
+            let set_cookies = state
+                .set_cookies()
+                .set_shared(
+                    cookies::SSO_SESSION_COOKIE,
+                    &sso_session_id,
+                    sso_absolute_ttl_secs,
+                )
+                .expire_local(cookies::ADMIN_CSRF_COOKIE);
+            (set_cookies.into_headers(), found(&admin_home_path(&tenant))).into_response()
         }
         InternalAdminChangePasswordResponse::RateLimited => reshow_password_change(
             &messages,
@@ -411,12 +400,10 @@ pub async fn logout(
             )
             .await;
     }
-    let expire = cookies::shared_expire_headers(
-        cookies::SSO_SESSION_COOKIE,
-        state.config.cookie_secure(),
-        state.config.cookie_domain(),
-    );
-    (AppendHeaders(expire), redirect_to_login(&tenant)).into_response()
+    let set_cookies = state
+        .set_cookies()
+        .expire_shared(cookies::SSO_SESSION_COOKIE);
+    (set_cookies.into_headers(), redirect_to_login(&tenant)).into_response()
 }
 
 /// 認可済み管理者の解決結果。`Reject` は誘導/エラーの完成済み Response を持つ。

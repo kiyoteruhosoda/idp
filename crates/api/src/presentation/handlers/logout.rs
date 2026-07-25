@@ -22,7 +22,7 @@ use crate::presentation::handlers::{found, request_context};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
 use axum::extract::{Extension, Query, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{AppendHeaders, Html, IntoResponse, Response};
 use serde::Deserialize;
 use serde::Serialize;
@@ -92,10 +92,11 @@ pub async fn logout(
         .await;
 
     // SSO Cookie を失効させる（COOKIE_DOMAIN 設定時はドメイン付き + host-only の両方。ADR-0012 §3）。
-    let expire_cookies = cookies::expire_shared(
-        cookies::SSO_SESSION_COOKIE,
-        state.config.cookie_secure(),
-        state.config.cookie_domain(),
+    let set_cookies = cookies::headers(
+        state
+            .config
+            .cookie_policy()
+            .expire_shared(cookies::SSO_SESSION_COOKIE),
     );
 
     // Back-channel logout: 各クライアントへ logout_token を非同期送信。
@@ -125,11 +126,6 @@ pub async fn logout(
         }
         uri
     });
-
-    let set_cookies: Vec<(header::HeaderName, String)> = expire_cookies
-        .into_iter()
-        .map(|cookie| (header::SET_COOKIE, cookie))
-        .collect();
 
     // Front-channel logout がある場合は iframe HTML を返す。
     if !result.frontchannel_uris.is_empty() {

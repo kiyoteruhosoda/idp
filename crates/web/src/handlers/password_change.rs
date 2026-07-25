@@ -15,7 +15,7 @@ use crate::templates::{render, MessagePage, PasswordChangeTemplate};
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::{AppendHeaders, Html, IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 use idp_contracts::auth::{InternalChangePasswordRequest, InternalChangePasswordResponse};
 use idp_contracts::csrf::login_csrf_token;
@@ -83,48 +83,41 @@ pub async fn submit(
     };
 
     let messages = Messages::new(locale(&headers));
-    let secure = state.config.cookie_secure();
     match outcome {
         InternalChangePasswordResponse::Success {
             redirect_to,
             sso_session_id,
             sso_absolute_ttl_secs,
         } => {
-            let mut set_cookies = cookies::shared_set_cookie_headers(
-                cookies::SSO_SESSION_COOKIE,
-                &sso_session_id,
-                sso_absolute_ttl_secs,
-                secure,
-                state.config.cookie_domain(),
-            );
-            set_cookies.extend(cookies::shared_expire_headers(
-                cookies::AUTH_SESSION_COOKIE,
-                secure,
-                state.config.cookie_domain(),
-            ));
-            (AppendHeaders(set_cookies), found(&redirect_to)).into_response()
+            let set_cookies = state
+                .set_cookies()
+                .set_shared(
+                    cookies::SSO_SESSION_COOKIE,
+                    &sso_session_id,
+                    sso_absolute_ttl_secs,
+                )
+                .expire_shared(cookies::AUTH_SESSION_COOKIE);
+            (set_cookies.into_headers(), found(&redirect_to)).into_response()
         }
         InternalChangePasswordResponse::ConsentRequired {
             auth_session_id: new_auth_session_id,
             sso_session_id,
             sso_absolute_ttl_secs,
         } => {
-            let mut set_cookies = cookies::shared_set_cookie_headers(
-                cookies::SSO_SESSION_COOKIE,
-                &sso_session_id,
-                sso_absolute_ttl_secs,
-                secure,
-                state.config.cookie_domain(),
-            );
-            set_cookies.extend(cookies::shared_set_cookie_headers(
-                cookies::AUTH_SESSION_COOKIE,
-                &new_auth_session_id,
-                state.config.auth_session_ttl_secs(),
-                secure,
-                state.config.cookie_domain(),
-            ));
+            let set_cookies = state
+                .set_cookies()
+                .set_shared(
+                    cookies::SSO_SESSION_COOKIE,
+                    &sso_session_id,
+                    sso_absolute_ttl_secs,
+                )
+                .set_shared(
+                    cookies::AUTH_SESSION_COOKIE,
+                    &new_auth_session_id,
+                    state.config.auth_session_ttl_secs(),
+                );
             (
-                AppendHeaders(set_cookies),
+                set_cookies.into_headers(),
                 found(&format!("{}/consent", tenant.prefix())),
             )
                 .into_response()
