@@ -59,7 +59,7 @@ impl KeyService {
         if self.find_active_key().await?.is_some() {
             return Ok(());
         }
-        let key = self.new_key_material(SigningAlgorithm::Rs256)?;
+        let key = self.new_key_material(SigningAlgorithm::Rs256).await?;
         let inserted = self
             .repo
             .insert_if_no_active(&key)
@@ -226,7 +226,7 @@ impl KeyService {
         &self,
         algorithm: SigningAlgorithm,
     ) -> anyhow::Result<SigningKey> {
-        let key = self.new_key_material(algorithm)?;
+        let key = self.new_key_material(algorithm).await?;
         self.repo
             .insert(&key)
             .await
@@ -236,11 +236,11 @@ impl KeyService {
     }
 
     /// 新しい ACTIVE 鍵の材料（鍵ペア生成・秘密鍵暗号化・kid 採番）を組み立てる（永続化しない）。
-    fn new_key_material(&self, algorithm: SigningAlgorithm) -> anyhow::Result<SigningKey> {
-        let (private_pem, public_pem) = match algorithm {
-            SigningAlgorithm::Rs256 => jwt::generate_rsa_keypair()?,
-            SigningAlgorithm::Es256 => jwt::generate_ec_keypair()?,
-        };
+    ///
+    /// 鍵ペア生成は blocking プールへ退避する（下記 `generate_keypair`）。秘密鍵の暗号化（AES-GCM）は
+    /// 短時間で終わるためそのまま実行する。
+    async fn new_key_material(&self, algorithm: SigningAlgorithm) -> anyhow::Result<SigningKey> {
+        let (private_pem, public_pem) = generate_keypair(algorithm).await?;
         let now = self.clock.now();
         let alg_tag = algorithm.as_str().to_lowercase().replace("256", "");
         let kid = format!(
@@ -263,5 +263,68 @@ impl KeyService {
             created_at: now,
             updated_at: now,
         })
+    }
+}
+
+/// 署名鍵ペアを **blocking プールで**生成し、`(秘密鍵 PEM, 公開鍵 PEM)` を返す。
+///
+/// RSA 鍵生成は素数探索のため CPU バウンドで、実行時間の裾が長い（数百 ms〜秒級）。これを非同期
+/// タスクの中で直接呼ぶと tokio のワーカースレッドを占有し、そのスレッドに載っている**他の全 future**
+/// （HTTP リクエスト処理・DB I/O・排他区間を保持したブートストラップタスク）が生成完了まで進まない。
+/// ワーカー数を超える並走が起きると、advisory lock を保持したタスクが poll されず、待機側は
+/// プール接続を握ったまま滞留する（→ サーバ側タイムアウトによる接続断）。
+/// `spawn_blocking` で専用スレッドへ退避することで、生成中もランタイムは他の future を進められる。
+async fn generate_keypair(algorithm: SigningAlgorithm) -> anyhow::Result<(String, String)> {
+    tokio::task::spawn_blocking(move || match algorithm {
+        SigningAlgorithm::Rs256 => jwt::generate_rsa_keypair(),
+        SigningAlgorithm::Es256 => jwt::generate_ec_keypair(),
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("signing key generation task failed: {e}"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Notify;
+
+    /// 鍵生成中もランタイムが他タスクを進められることの回帰テスト（DB 不要）。
+    ///
+    /// ワーカースレッド 1 本のランタイム上で、(A) RSA 鍵生成タスクと (B) 即座に完了するタスクを
+    /// 「A が生成に入ってから B を投入する」順で走らせ、**B が先に完了する**ことを確認する。
+    /// 生成をワーカースレッド上で直接実行する実装（`spawn_blocking` 無し）では、A が生成を終える
+    /// まで B は poll されないため完了順が逆転して落ちる。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn keypair_generation_does_not_block_the_runtime_worker() {
+        let completion_order = Arc::new(AtomicUsize::new(0));
+        let generation_started = Arc::new(Notify::new());
+
+        let keygen = {
+            let completion_order = completion_order.clone();
+            let generation_started = generation_started.clone();
+            tokio::spawn(async move {
+                generation_started.notify_one();
+                generate_keypair(SigningAlgorithm::Rs256)
+                    .await
+                    .expect("generate RSA keypair");
+                completion_order.fetch_add(1, Ordering::SeqCst)
+            })
+        };
+
+        // A が実際に走り出してから B を投入する（投入順による偶然の逆転を排除する）。
+        generation_started.notified().await;
+
+        let other = {
+            let completion_order = completion_order.clone();
+            tokio::spawn(async move { completion_order.fetch_add(1, Ordering::SeqCst) })
+        };
+
+        let other_position = other.await.expect("join the non-blocking task");
+        let keygen_position = keygen.await.expect("join the keygen task");
+        assert!(
+            other_position < keygen_position,
+            "keygen must not occupy the runtime worker: other task finished at {other_position}, keygen at {keygen_position}"
+        );
     }
 }
