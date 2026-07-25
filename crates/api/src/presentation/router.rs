@@ -170,9 +170,11 @@ pub fn build(state: AppState) -> Router {
         )
         // メンバー・招待（ADR-0009 §3・§6）。idp.tenant.admin 必須。
         .route("/admin/members", get(admin_members::list_members))
+        // ゲストメンバーシップの解除（DELETE）と一時停止・再開（PATCH。MT24）。
         .route(
             "/admin/members/{user_id}",
-            axum::routing::delete(admin_members::revoke_member),
+            axum::routing::delete(admin_members::revoke_member)
+                .patch(admin_members::update_member_status),
         )
         .route(
             "/admin/invitations",

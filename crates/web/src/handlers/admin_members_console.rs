@@ -200,6 +200,86 @@ pub async fn reset_password(
     .into_response()
 }
 
+/// ゲストメンバーシップの一時停止（`POST /{tenant_id}/admin/members/{user_id}/suspend`。MT24）。
+/// 解除（削除）と違い、メンバーシップと権限を残したままアクセスだけを止める。
+pub async fn suspend(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Path((_, user_id)): Path<(String, String)>,
+    Form(form): Form<MemberActionForm>,
+) -> Response {
+    set_member_status(
+        &state,
+        &correlation,
+        &tenant,
+        &headers,
+        &user_id,
+        &form,
+        "SUSPENDED",
+    )
+    .await
+}
+
+/// 一時停止したゲストメンバーシップの再開（`POST /{tenant_id}/admin/members/{user_id}/resume`。MT24）。
+pub async fn resume(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Path((_, user_id)): Path<(String, String)>,
+    Form(form): Form<MemberActionForm>,
+) -> Response {
+    set_member_status(
+        &state,
+        &correlation,
+        &tenant,
+        &headers,
+        &user_id,
+        &form,
+        "ACTIVE",
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn set_member_status(
+    state: &WebState,
+    correlation: &CorrelationId,
+    tenant: &WebTenant,
+    headers: &HeaderMap,
+    user_id: &str,
+    form: &MemberActionForm,
+    status: &str,
+) -> Response {
+    match resolve_admin(state, correlation, tenant, headers).await {
+        AdminResolution::Ok(_) => {}
+        AdminResolution::Reject(resp) => return resp,
+    }
+    let base = format!("{}{MEMBERS_SEGMENT}", tenant.prefix());
+    if !csrf_valid(headers, &form.csrf_token, state.config.csrf_secret()) {
+        return found(&format!("{base}?error=csrf"));
+    }
+    let notice = if status == "SUSPENDED" {
+        "member-suspended"
+    } else {
+        "member-resumed"
+    };
+    match state
+        .api
+        .update_member_status(&correlation.0, &tenant.0, &sso(headers), user_id, status)
+        .await
+    {
+        Ok(()) => found(&format!("{base}?notice={notice}")),
+        Err(AdminApiError::Unauthorized) => redirect_to_login(tenant),
+        // HOME・遷移できない状態（既に停止済み等）は api が 403 を返す。
+        Err(AdminApiError::Forbidden) => found(&format!("{base}?error=forbidden")),
+        Err(AdminApiError::NotFound) => found(&format!("{base}?error=notfound")),
+        Err(_) => found(&format!("{base}?error=internal")),
+    }
+}
+
 /// 利用者の MFA 解除（`POST /{tenant_id}/admin/members/{user_id}/reset-mfa`。MT21）。
 /// 端末を失って本人では解除できない状態からの復旧手段。TOTP と Passkey をまとめて外す。
 /// 秘密情報を伴わないため結果画面は出さず、一覧へ戻して完了通知を出す（Post/Redirect/Get）。
@@ -293,6 +373,8 @@ fn notice_key_for(notice: &str) -> Option<&'static str> {
     match notice {
         "mfa-reset" => Some("admin-members-mfa-reset-done"),
         "mfa-none" => Some("admin-members-mfa-reset-none"),
+        "member-suspended" => Some("admin-members-suspend-done"),
+        "member-resumed" => Some("admin-members-resume-done"),
         _ => None,
     }
 }
@@ -415,6 +497,35 @@ mod tests {
         assert!(confirm.contains('\''), "fixture must contain an apostrophe");
         assert!(english.contains("&#39;"), "apostrophe must be escaped");
         assert!(!english.contains(&format!("data-confirm=\"{confirm}\"")));
+    }
+
+    /// MT24: ゲストの行だけに停止・再開ボタンを出し、状態に応じて片方だけ出す
+    /// （停止中に「一時停止」を出すと押しても 403 になるだけで、操作できるように見えてしまう）。
+    #[test]
+    fn suspend_and_resume_buttons_follow_the_membership_state() {
+        let active_guest = render_list(&[member("GUEST")], None);
+        assert!(active_guest.contains("/suspend"), "{active_guest}");
+        assert!(!active_guest.contains("/resume"));
+
+        let mut suspended = member("GUEST");
+        suspended.status = "SUSPENDED".into();
+        let html = render_list(&[suspended], None);
+        assert!(html.contains("/resume"), "{html}");
+        assert!(!html.contains("/suspend"));
+        // 停止中であることが一覧で分かる。
+        assert!(html.contains(&Messages::new(Locale::Ja).get("admin-members-status-suspended")));
+
+        // HOME は停止できない（api も 403 を返す）ので導線を出さない。
+        let home = render_list(&[member("HOME")], None);
+        assert!(!home.contains("/suspend"));
+        assert!(!home.contains("/resume"));
+
+        // 招待中（未承諾）はまだアクセスが無いため停止対象にならない。
+        let mut invited = member("GUEST");
+        invited.status = "INVITED".into();
+        let html = render_list(&[invited], None);
+        assert!(!html.contains("/suspend"), "{html}");
+        assert!(!html.contains("/resume"));
     }
 
     /// 解除後の完了通知は「外した」「元から無かった」を区別して出す。

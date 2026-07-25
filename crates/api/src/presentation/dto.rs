@@ -427,6 +427,15 @@ pub struct UserPasswordResetResponse {
     pub generated_password: String,
 }
 
+/// ゲストメンバーシップの状態更新リクエスト（`PATCH /{tenant_id}/admin/members/{user_id}`。MT24）。
+/// 受け付けるのは `SUSPENDED`（一時停止）と `ACTIVE`（再開）のみ。`INVITED` は招待フローが管理する
+/// 状態のため、ここからは設定できない。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateMemberStatusRequest {
+    /// `SUSPENDED` = 一時停止 / `ACTIVE` = 再開。
+    pub status: String,
+}
+
 /// 管理者による MFA 解除レスポンス（MT21）。何を外したかだけを返し、シークレット・
 /// クレデンシャルの内容は含めない。未設定でも成功（すべて `false` / `0`）になる。
 #[derive(Debug, Serialize, ToSchema)]

@@ -540,6 +540,16 @@ mod tests {
     }
     #[async_trait]
     impl RefreshTokenRepository for FakeRefreshTokens {
+        async fn revoke_all_for_user_in_tenant(
+            &self,
+            _tenant: TenantId,
+            _user_id: Uuid,
+            _now: DateTime<Utc>,
+        ) -> DomainResult<()> {
+            // ライフサイクル操作はユーザー単位で全失効させる（テナント単位の失効はゲストの
+            // 一時停止（MT24）専用）。
+            unreachable!()
+        }
         async fn create(&self, _t: &RefreshToken) -> DomainResult<()> {
             unreachable!()
         }

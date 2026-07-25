@@ -1,13 +1,15 @@
 //! テナントメンバー管理エンドポイント（`/{tenant_id}/admin/members`。ADR-0009 §3・§6）。
 //!
 //! すべて `idp.tenant.admin` 権限が必要（`RequirePerms<IdpAdmin>`）。参加先テナントの管理者が行えるのは
-//! メンバー一覧の閲覧と**ゲストメンバーシップの解除**のみで、HOME は解除できない。ゲストの `users`
-//! レコード（パスワード・状態・MFA・プロフィール）は操作できない（所属元テナントの管理者と本人のみ。§3）。
+//! メンバー一覧の閲覧と**ゲストメンバーシップの解除・一時停止/再開**（MT24）のみで、HOME は解除も停止も
+//! できない。ゲストの `users` レコード（パスワード・状態・MFA・プロフィール）は操作できない
+//! （所属元テナントの管理者と本人のみ。§3）。
 
 use crate::application::invitation::InvitationError;
+use crate::domain::values::MembershipStatus;
 use crate::presentation::admin::{IdpAdmin, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
-use crate::presentation::dto::MemberResponse;
+use crate::presentation::dto::{MemberResponse, UpdateMemberStatusRequest};
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
 use crate::presentation::i18n::{ApiLocale, ApiMessages};
@@ -91,6 +93,69 @@ pub async fn revoke_member(
         .revoke_membership(tenant.context(), target, admin.user_id, &ctx)
         .await
         .map_err(|e| map_error(e, locale))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// ゲストメンバーシップの一時停止・再開（`PATCH /{tenant_id}/admin/members/{user_id}`。MT24）。
+///
+/// `status` に `SUSPENDED` を指定すると停止、`ACTIVE` を指定すると再開する。停止できるのは GUEST の
+/// `ACTIVE` のみ、再開できるのは `SUSPENDED` のみ（それ以外は 403）。解除（`DELETE`）と違い
+/// メンバーシップ行と当該テナント scope の権限行は残るため、再開すれば停止前の状態に戻る。
+#[utoipa::path(
+    patch,
+    path = "/{tenant_id}/admin/members/{user_id}",
+    tag = "admin",
+    params(("user_id" = String, Path, description = "対象利用者の内部 ID（UUID）")),
+    request_body = UpdateMemberStatusRequest,
+    responses(
+        (status = 204, description = "更新成功"),
+        (status = 400, description = "user_id が UUID でない・status が不正"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足・HOME は停止不可・遷移できない状態"),
+        (status = 404, description = "メンバーシップが不存在"),
+    )
+)]
+#[allow(clippy::too_many_arguments)]
+pub async fn update_member_status(
+    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
+    headers: HeaderMap,
+    Path((_tenant_id, user_id)): Path<(String, String)>,
+    Json(body): Json<UpdateMemberStatusRequest>,
+) -> Result<StatusCode, ApiError> {
+    // `ApiMessages`（fluent バンドル）は `Send` ではないため、`.await` を跨いで保持しない
+    // （保持するとハンドラの future が `Send` でなくなり axum の `Handler` を満たさない）。
+    let target = Uuid::parse_str(&user_id)
+        .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get("api-invalid-request")))?;
+    // 受け付けるのは停止・再開の 2 遷移のみ。`INVITED` は招待フローが管理する状態のため、
+    // ここから直接は設定させない。
+    let status = MembershipStatus::parse(body.status.trim())
+        .ok()
+        .filter(|s| matches!(s, MembershipStatus::Active | MembershipStatus::Suspended))
+        .ok_or_else(|| ApiError::BadRequest(ApiMessages::new(locale).get("api-invalid-request")))?;
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
+    let result = match status {
+        MembershipStatus::Suspended => {
+            state
+                .invitations
+                .suspend_membership(tenant.context(), target, admin.user_id, &ctx)
+                .await
+        }
+        _ => {
+            state
+                .invitations
+                .resume_membership(tenant.context(), target, admin.user_id, &ctx)
+                .await
+        }
+    };
+    result.map_err(|e| map_error(e, locale))?;
     Ok(StatusCode::NO_CONTENT)
 }
 

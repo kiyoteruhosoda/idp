@@ -114,6 +114,25 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
         Ok(row.0 > 0)
     }
 
+    async fn revoke_all_for_user_in_tenant(
+        &self,
+        tenant_id: TenantId,
+        user_id: Uuid,
+        revoked_at: DateTime<Utc>,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE refresh_tokens SET revoked_at = ? \
+             WHERE tenant_id = ? AND user_id = ? AND revoked_at IS NULL",
+        )
+        .bind(revoked_at)
+        .bind(tenant_id.as_uuid().to_string())
+        .bind(user_id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        Ok(())
+    }
+
     async fn revoke_all_for_user(&self, user_id: Uuid, revoked_at: DateTime<Utc>) -> Result<()> {
         sqlx::query(
             "UPDATE refresh_tokens SET revoked_at = ? \

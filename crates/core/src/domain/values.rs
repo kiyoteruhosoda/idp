@@ -67,10 +67,17 @@ string_enum!(
 );
 
 string_enum!(
-    /// テナントメンバーシップの状態（ADR-0009 §3）。INVITED は招待中（未承諾）。
+    /// テナントメンバーシップの状態（ADR-0009 §3）。
+    ///
+    /// - `INVITED`: 招待中（未承諾）。
+    /// - `ACTIVE`: 参加中。`is_active_member` が true になる唯一の状態。
+    /// - `SUSPENDED`: 一時停止（GUEST のみ。MT24）。メンバーシップ行と当該テナント scope の権限行を
+    ///   残したままアクセスだけを止める。`ACTIVE` ではないため `is_active_member` は false を返し、
+    ///   再開すれば停止前の状態（権限を含む）に戻る。解除（削除）との違いはここ。
     MembershipStatus {
         Invited => "INVITED",
         Active => "ACTIVE",
+        Suspended => "SUSPENDED",
     }
 );
 

@@ -36,7 +36,7 @@
         <td data-label="{{ messages.get("admin-user-col-email") }}">{% if m.membership_type == "HOME" %}<a href="{{ tenant }}/admin/users/{{ m.user_id }}/permissions">{{ m.email.as_deref().unwrap_or("-") }}</a>{% else %}{{ m.email.as_deref().unwrap_or("-") }}{% endif %}</td>
         <td data-label="{{ messages.get("admin-users-field-name") }}">{{ m.name.as_deref().unwrap_or("-") }}</td>
         <td data-label="{{ messages.get("admin-members-col-type") }}">{% if m.membership_type == "GUEST" %}<span class="badge text-bg-info">{{ m.membership_type }}</span>{% else %}<span class="badge text-bg-secondary">{{ m.membership_type }}</span>{% endif %}</td>
-        <td data-label="{{ messages.get("admin-members-col-status") }}">{{ m.status }}</td>
+        <td data-label="{{ messages.get("admin-members-col-status") }}">{% if m.status == "SUSPENDED" %}<span class="badge text-bg-warning">{{ messages.get("admin-members-status-suspended") }}</span>{% else %}{{ m.status }}{% endif %}</td>
         <td data-label="{{ messages.get("admin-members-col-user-status") }}">
           {% if m.user_status.as_deref() == Some("ACTIVE") %}<span class="badge text-bg-success">{{ messages.get("admin-members-user-status-active") }}</span>
           {% else if m.user_status.as_deref() == Some("DISABLED") %}<span class="badge text-bg-danger">{{ messages.get("admin-members-user-status-disabled") }}</span>
@@ -75,6 +75,17 @@
                 <button type="submit" class="btn btn-outline-danger btn-sm"><i class="fa-solid fa-trash me-1" aria-hidden="true"></i>{{ messages.get("admin-members-delete-button") }}</button>
               </form>
             {% else %}
+              {% if m.status == "SUSPENDED" %}
+              <form method="post" action="{{ tenant }}/admin/members/{{ m.user_id }}/resume" class="d-inline" data-confirm="{{ messages.get("admin-members-resume-confirm") }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                <button type="submit" class="btn btn-outline-success btn-sm"><i class="fa-solid fa-play me-1" aria-hidden="true"></i>{{ messages.get("admin-members-resume-button") }}</button>
+              </form>
+              {% else if m.status == "ACTIVE" %}
+              <form method="post" action="{{ tenant }}/admin/members/{{ m.user_id }}/suspend" class="d-inline" data-confirm="{{ messages.get("admin-members-suspend-confirm") }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                <button type="submit" class="btn btn-outline-warning btn-sm"><i class="fa-solid fa-pause me-1" aria-hidden="true"></i>{{ messages.get("admin-members-suspend-button") }}</button>
+              </form>
+              {% endif %}
               <form method="post" action="{{ tenant }}/admin/members/{{ m.user_id }}/revoke" class="d-inline" data-confirm="{{ messages.get("admin-members-revoke-confirm") }}">
                 <input type="hidden" name="csrf_token" value="{{ csrf }}">
                 <button type="submit" class="btn btn-outline-danger btn-sm">{{ messages.get("admin-members-revoke-button") }}</button>

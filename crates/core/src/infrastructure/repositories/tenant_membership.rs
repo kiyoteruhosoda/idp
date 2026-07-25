@@ -159,6 +159,22 @@ impl TenantMembershipRepository for SqlxTenantMembershipRepository {
         row.as_ref().map(map_row).transpose()
     }
 
+    async fn update_status(
+        &self,
+        tenant_id: TenantId,
+        user_id: Uuid,
+        status: MembershipStatus,
+    ) -> Result<()> {
+        sqlx::query("UPDATE tenant_memberships SET status = ? WHERE tenant_id = ? AND user_id = ?")
+            .bind(status.as_str())
+            .bind(tenant_id.as_uuid().to_string())
+            .bind(user_id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        Ok(())
+    }
+
     async fn activate(&self, tenant_id: TenantId, user_id: Uuid) -> Result<()> {
         sqlx::query(
             "UPDATE tenant_memberships \

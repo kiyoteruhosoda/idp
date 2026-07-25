@@ -65,6 +65,26 @@ impl TenantMembership {
     pub fn is_active(&self) -> bool {
         self.status == MembershipStatus::Active
     }
+
+    /// 一時停止中か（MT24）。停止中はアクセスできないが、メンバーシップ行と当該テナント scope の
+    /// 権限行は残っており、再開すれば元の状態に戻る（解除＝削除との違い）。
+    pub fn is_suspended(&self) -> bool {
+        self.status == MembershipStatus::Suspended
+    }
+
+    /// 一時停止できる状態か（MT24）。GUEST の `ACTIVE` のみ。
+    ///
+    /// HOME は所属元そのもので、停止するとログインする先が無くなる（無効化は
+    /// [`crate::application::user_lifecycle`] のアカウント無効化を使う）。`INVITED` は
+    /// まだアクセスを持たないため止める対象が無い。
+    pub fn can_be_suspended(&self) -> bool {
+        !self.is_home() && self.status == MembershipStatus::Active
+    }
+
+    /// 停止から再開できる状態か（MT24）。
+    pub fn can_be_resumed(&self) -> bool {
+        !self.is_home() && self.status == MembershipStatus::Suspended
+    }
 }
 
 #[cfg(test)]
@@ -95,5 +115,46 @@ mod tests {
     fn tracks_invitation_lifecycle() {
         assert!(!membership(MembershipType::Guest, MembershipStatus::Invited).is_active());
         assert!(membership(MembershipType::Guest, MembershipStatus::Active).is_active());
+    }
+
+    /// MT24: 停止中はアクセスできない（`is_active` が false）。
+    #[test]
+    fn suspended_guest_is_not_active() {
+        let suspended = membership(MembershipType::Guest, MembershipStatus::Suspended);
+        assert!(!suspended.is_active());
+        assert!(suspended.is_suspended());
+    }
+
+    /// 停止できるのは GUEST の ACTIVE だけ。HOME は所属元そのもので、止めるとログイン先が無くなる。
+    /// INVITED はまだアクセスを持たないため止める対象が無い。
+    #[test]
+    fn only_active_guests_can_be_suspended_and_only_suspended_ones_resumed() {
+        let cases = [
+            (MembershipType::Guest, MembershipStatus::Active, true, false),
+            (
+                MembershipType::Guest,
+                MembershipStatus::Suspended,
+                false,
+                true,
+            ),
+            (
+                MembershipType::Guest,
+                MembershipStatus::Invited,
+                false,
+                false,
+            ),
+            (MembershipType::Home, MembershipStatus::Active, false, false),
+            (
+                MembershipType::Home,
+                MembershipStatus::Suspended,
+                false,
+                false,
+            ),
+        ];
+        for (kind, status, suspendable, resumable) in cases {
+            let m = membership(kind, status);
+            assert_eq!(m.can_be_suspended(), suspendable, "{kind:?}/{status:?}");
+            assert_eq!(m.can_be_resumed(), resumable, "{kind:?}/{status:?}");
+        }
     }
 }
