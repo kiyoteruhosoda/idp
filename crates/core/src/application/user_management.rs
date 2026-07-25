@@ -186,10 +186,13 @@ impl UserManagementService {
         let user = prepared.user;
 
         self.users.create(&user).await.map_err(|e| match e {
-            // 事前チェックをすり抜けた一意制約違反（競合）。どちらのキーかは区別できないため
-            // メール重複として扱う（`preferred_username` の既定値は email であり実質同義）。
+            // 事前チェックをすり抜けた一意制約違反（同時実行の競合）。DB から返るのは
+            // 「email か preferred_username のどちらかが重複した」ことだけで、どちらかは区別
+            // できない。ここで片方（例: メール重複）と断定すると、`preferred_username` を明示
+            // 指定した利用者が username 衝突したときに「重複していないメールを直せ」と誤誘導する。
+            // 稀な経路なので、断定せず両方を挙げる中立の文言にする（具体的な指摘は事前チェックが担う）。
             DomainError::Conflict(_) => {
-                UserManagementError::Conflict(UserMessage::new(keys::USER_EMAIL_CONFLICT))
+                UserManagementError::Conflict(UserMessage::new(keys::USER_ALREADY_EXISTS))
             }
             other => UserManagementError::Internal(other.to_string()),
         })?;

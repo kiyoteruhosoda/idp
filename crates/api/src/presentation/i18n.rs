@@ -212,6 +212,26 @@ mod tests {
         }
     }
 
+    /// 事前チェックをすり抜けた一意制約違反のフォールバックは、**どちらの項目が重複したかを
+    /// 断定しない**中立の文言でなければならない。DB が返すのは「email か preferred_username の
+    /// どちらかが重複した」ことだけで、片方と断定すると `preferred_username` を明示指定した
+    /// 利用者が username 衝突したときに「重複していないメールを直せ」と誤誘導する。
+    #[test]
+    fn the_uniqueness_race_fallback_does_not_name_a_single_field() {
+        use crate::domain::message::keys;
+        let en = ApiMessages::new(ApiLocale::En).get(keys::USER_ALREADY_EXISTS);
+        let ja = ApiMessages::new(ApiLocale::Ja).get(keys::USER_ALREADY_EXISTS);
+        // 両方の可能性を挙げる（「または」で並記する）文言であること。
+        assert!(en.contains("email") && en.contains("username"), "{en}");
+        assert!(
+            ja.contains("メールアドレス") && ja.contains("ユーザー名"),
+            "{ja}"
+        );
+        // 個別のキーは事前チェック用に残っており、こちらは片方だけを指す。
+        let email_only = ApiMessages::new(ApiLocale::En).get(keys::USER_EMAIL_CONFLICT);
+        assert!(!email_only.contains("username"), "{email_only}");
+    }
+
     /// 埋め込み引数（Fluent の `{ $name }`）が展開されること。展開されないと利用者には
     /// どの値が問題なのか分からないメッセージが出る。
     #[test]

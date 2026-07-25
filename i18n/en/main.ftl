@@ -676,3 +676,4 @@ api-password-too-long = The password must be at most { $max } characters.
 api-tenant-not-empty = This tenant still has users or clients. Remove them first.
 api-tenant-already-exists = A tenant with these details already exists.
 api-saml-sp-entity-id-conflict = A SAML service provider with this entity ID is already registered.
+api-user-already-exists = A user with this email address or username already exists.

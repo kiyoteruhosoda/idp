@@ -676,3 +676,4 @@ api-password-too-long = パスワードは { $max } 文字以内で入力して�
 api-tenant-not-empty = このテナントには利用者またはクライアントが残っています。先に削除してください。
 api-tenant-already-exists = 同じ内容のテナントがすでに存在します。
 api-saml-sp-entity-id-conflict = この entity ID の SAML サービスプロバイダはすでに登録されています。
+api-user-already-exists = このメールアドレスまたはユーザー名の利用者はすでに存在します。

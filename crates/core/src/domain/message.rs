@@ -69,6 +69,7 @@ pub mod keys {
     pub const USER_NOT_FOUND: &str = "api-user-not-found";
     pub const USER_EMAIL_CONFLICT: &str = "api-user-email-conflict";
     pub const USER_USERNAME_CONFLICT: &str = "api-user-username-conflict";
+    pub const USER_ALREADY_EXISTS: &str = "api-user-already-exists";
     pub const USER_EMAIL_REQUIRED: &str = "api-user-email-required";
     pub const USER_EMAIL_INVALID: &str = "api-user-email-invalid";
     pub const USER_USERNAME_TOO_LONG: &str = "api-user-username-too-long";
@@ -142,6 +143,7 @@ pub mod keys {
         USER_NOT_FOUND,
         USER_EMAIL_CONFLICT,
         USER_USERNAME_CONFLICT,
+        USER_ALREADY_EXISTS,
         USER_EMAIL_REQUIRED,
         USER_EMAIL_INVALID,
         USER_USERNAME_TOO_LONG,
