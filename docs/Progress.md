@@ -38,6 +38,7 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 | 優先度 | ID | 課題内容 | 工数 | 影響度 | 重要度 | 難易度 |
 |---:|---|---|---:|---:|---:|---:|
 | 25.0 | MT26 | web 共有ランタイム設定の DB materialize（`AUTH_SESSION_TTL_SECS`・`COOKIE_SECURE`・`HSTS_MAX_AGE` 等の EnvLocked 解除。web が DB 設定を解決できるようにする） | 大 | 大 | 中 | 大 |
+| 22.5 | MT29 | api/web の別ドメイン公開対応（ADR-0012。`COOKIE_DOMAIN` 新設・authorize→login/consent の絶対 URL 化・web の自オリジン設定と Secure 判定変更・起動時検証・OPERATIONS 追記） | 中 | 大 | 中 | 中 |
 | 13.5 | MT21 | 管理者による MFA リセット（TOTP・Passkey の解除。本人が端末を失った場合の復旧手段） | 中 | 中 | 中 | 中 |
 | 13.5 | MT24 | ゲストメンバーシップの一時停止（`SUSPENDED` 状態の追加。DDL 変更を伴う。現状は解除＝削除のみ） | 中 | 中 | 中 | 中 |
 | 4.5 | MT22 | 利用者の一覧表示（ページング付き一覧 API と画面。現状は完全一致検索とメンバー一覧のみ） | 中 | 中 | 小 | 中 |
@@ -47,3 +48,28 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 | 1.0 | MT23 | テナント編集 UI（表示名・状態 ACTIVE/DISABLED の変更。API の `PATCH /admin/tenants/{id}` は実装済みで画面が未接続） | 小 | 小 | 小 | 小 |
 | 1.0 | MT28 | 未使用テーブル `saml_identity_providers` の削除（外部 IdP 連携廃止の contract フェーズ。旧アプリが完全にいなくなった後続リリースで DROP マイグレーションを追加。ADR-0004 §6） | 小 | 小 | 小 | 小 |
 | 0.5 | MT25 | 管理者による利用者プロフィール編集（メール・表示名・ユーザー名の変更 API と画面） | 中 | 小 | 小 | 小 |
+
+## 詳細
+
+### MT29: api/web の別ドメイン公開対応
+
+設計は `docs/adr/0012-api-web-domain-split.md` に固定済み。実装スコープ:
+
+1. `COOKIE_DOMAIN` を新設（`RUNTIME_SETTING_DEFINITIONS` に EnvLocked で定義。api/web 双方の
+   `cookies::build`/clear に `Domain` 属性を反映。未設定 = host-only の従来挙動。設定時は host-only の
+   同名削除 Cookie を併送し、既存デプロイからの移行で残留する旧 Cookie を掃除する）。
+2. api の `AuthorizeOutcome::LoginRequired`/`ConsentRequired` の 302 先を
+   `{PUBLIC_WEB_BASE_URL}` 基点の絶対 URL へ変更。
+3. web に自オリジン設定 `PUBLIC_WEB_BASE_URL` を追加し、Cookie `Secure` 判定を `ISSUER` から自オリジンの
+   スキームへ変更。あわせて api 側の `PUBLIC_WEB_BASE_URL` を DbManaged → EnvLocked へ変更
+   （api/web で同一値必須のため。DB 上書き運用からの移行手順を OPERATIONS に記載）。
+4. 起動時検証（fail-fast）: `COOKIE_DOMAIN` が `ISSUER`・`PUBLIC_WEB_BASE_URL` 双方の親ドメインであり、
+   かつ public suffix（eTLD）そのものでないこと（Public Suffix List 判定。例: `psl` クレート）。
+5. `docs/OPERATIONS.md` に別ドメイン構成の手順（環境変数・vhost 例・親ドメイン同居の注意・
+   `PUBLIC_WEB_BASE_URL` の ENV 移行手順）を追記。
+6. web→api E2E テストの新設（ADR-0012 §7。api/web を実サーバとして同時起動し、Cookie jar 有効の
+   クライアントで authorize→login→SSO Cookie 越境→即時 code 発行を実挙動で検証。別ドメイン・
+   単一オリジン両構成＋host-only 残留掃除のケースを含む。現状は web の統合テストが存在せず、
+   Cookie 共有の退行を検出できない）。
+
+推奨モデル: Opus 4.8（セッション Cookie の到達範囲＝セキュリティ境界に触れるため）。
