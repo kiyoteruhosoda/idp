@@ -4,8 +4,8 @@ use crate::presentation::correlation;
 use crate::presentation::handlers::{
     admin, admin_audit, admin_clients, admin_invitations, admin_members, admin_permissions,
     admin_saml_service_providers, admin_signing_keys, admin_system_settings, admin_tenants,
-    admin_users, authorize, consent, discovery, health, internal_auth, introspect, invitations,
-    logout, mfa, passkey, register, revoke, token, userinfo,
+    admin_users, authorize, consent, discovery, health, internal_auth, internal_runtime_settings,
+    introspect, invitations, logout, mfa, passkey, register, revoke, token, userinfo,
 };
 use crate::presentation::openapi::ApiDoc;
 use crate::presentation::security_headers::add_security_headers;
@@ -110,6 +110,12 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/internal/passkey/login/complete",
             post(passkey::login_complete),
+        )
+        // web が起動時に読む共有ランタイム設定（MT26 / ADR-0013）。web は DB を持たないため、
+        // api/web の両方が消費する DB 管理値（COOKIE_SECURE 等）はここが唯一の出所になる。
+        .route(
+            idp_contracts::runtime_settings::SHARED_RUNTIME_SETTINGS_PATH,
+            get(internal_runtime_settings::shared_runtime_settings),
         )
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),

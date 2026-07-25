@@ -42,21 +42,9 @@ pub async fn run() -> anyhow::Result<()> {
         .await
         .context("database schema version check failed")?;
 
-    let settings_repo =
-        infrastructure::repositories::system_setting::SqlxSystemSettingsRepository::new(
-            pool.clone(),
-        );
-    let db_settings = {
-        use domain::repositories::SystemSettingsRepository as _;
-        settings_repo
-            .load_all()
-            .await
-            .context("failed to load DB-managed settings")?
-            .into_iter()
-            .filter(|setting| !setting.is_secret)
-            .map(|setting| (setting.key, setting.value))
-            .collect::<std::collections::HashMap<_, _>>()
-    };
+    let db_settings = load_db_managed_settings(&pool)
+        .await
+        .context("failed to load DB-managed settings")?;
     let config = config::Config::from_env_and_db_settings(&db_settings)
         .context("failed to resolve configuration from env/DB/defaults")?;
 
@@ -118,6 +106,27 @@ pub async fn run() -> anyhow::Result<()> {
         .context("server error")?;
 
     Ok(())
+}
+
+/// `system_settings` から DB 管理設定（非 secret）を読み出す。[`config::Config`] の解決に渡す
+/// 起動時スナップショットであり、**起動後に読み直さない**。
+///
+/// `/internal/runtime-settings`（MT26 / ADR-0013）はこのスナップショット由来の値を web へ配る。
+/// 「実行中の api が使っている値」と「web が受け取る値」を同じものに保つための境界がここにある。
+pub async fn load_db_managed_settings(
+    pool: &sqlx::MySqlPool,
+) -> anyhow::Result<std::collections::HashMap<String, String>> {
+    use domain::repositories::SystemSettingsRepository as _;
+    let repo = infrastructure::repositories::system_setting::SqlxSystemSettingsRepository::new(
+        pool.clone(),
+    );
+    Ok(repo
+        .load_all()
+        .await?
+        .into_iter()
+        .filter(|setting| !setting.is_secret)
+        .map(|setting| (setting.key, setting.value))
+        .collect())
 }
 
 /// 署名鍵ブートストラップを、一過性の失敗に対して指数バックオフで再試行する。

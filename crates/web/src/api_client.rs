@@ -36,8 +36,12 @@ use idp_contracts::auth::{
     InternalTotpDeleteResponse, InternalTotpSetupRequest, InternalTotpSetupResponse,
     InternalVerifyTotpRequest, InternalVerifyTotpResponse,
 };
+use idp_contracts::runtime_settings::{
+    SharedRuntimeSettingsResponse, SHARED_RUNTIME_SETTINGS_PATH,
+};
 use idp_contracts::version::SchemaVersionInfo;
 use reqwest::Method;
+use std::collections::HashMap;
 
 /// SSO セッション Cookie 名。api へ転送する `Cookie` ヘッダの組み立てに使う（名前の契約は
 /// `idp_contracts::cookies` に単一定義してあり、ここで再定義しない）。
@@ -1362,6 +1366,35 @@ impl ApiClient {
     ) -> anyhow::Result<idp_contracts::auth::InternalAccountTenantsResponse> {
         self.post_internal("/internal/account/tenants", "", req)
             .await
+    }
+
+    /// api と共有するランタイム設定の DB 上書き値を取得する（MT26 / ADR-0013）。
+    ///
+    /// web は DB を持たないため、`COOKIE_SECURE`・`HSTS_MAX_AGE`・`AUTH_SESSION_TTL_SECS` のような
+    /// 「api と値がずれると壊れる」設定の DB 上書き値を api から受け取る。起動時に 1 度だけ呼ぶ
+    /// （反映には web の再起動が必要。MT27）。
+    ///
+    /// 返るのは DB 上書き値だけで、api の有効値ではない。ここに無いキーは web 自身の
+    /// ENV → 既定値で解決する。
+    pub async fn fetch_shared_runtime_settings(&self) -> anyhow::Result<HashMap<String, String>> {
+        let path = SHARED_RUNTIME_SETTINGS_PATH;
+        let response = self
+            .http
+            .get(format!("{}{}", self.base_url, path))
+            .header(SERVICE_TOKEN_HEADER, &self.service_token)
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("request to api {path} failed: {e}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            // 401 はサービストークンの不一致（api と web で `INTERNAL_SERVICE_TOKEN` がずれている）。
+            anyhow::bail!("api {path} returned unexpected status {status}");
+        }
+        let body = response
+            .json::<SharedRuntimeSettingsResponse>()
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to decode api {path} response: {e}"))?;
+        Ok(body.settings.into_iter().collect())
     }
 
     /// api への到達性を確認する（`GET /healthz`）。web の readiness で使う。
