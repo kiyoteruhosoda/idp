@@ -8,6 +8,14 @@
   した（ローカル既定は `http://localhost:8070` / `http://localhost:8060`）。`PUBLIC_WEB_BASE_URL` は
   既定トポロジで必須になるためコメントアウトをやめた。ローカル既定では Cookie がポートを区別しない
   ため `COOKIE_DOMAIN` は不要（未設定のままで両サービスに届く）。
+- `deploy.sh`: 既定変更が**稼働中の `.env` へ波及しない**ようにした（`migration_value_for`）。
+  バージョン更新時の不足キー追記に `.env.example` の新既定をそのまま流すと公開先が黙って変わるため、
+  `PUBLISH_TOPOLOGY` が無い `.env` には `single-origin` を追記し（本 ADR 以前の配置＝単一オリジン）、
+  `PUBLIC_WEB_BASE_URL` は追記しない（未設定＝`ISSUER` フォールバック＝従来挙動）。
+- README・OPERATIONS のローカル開発手順（プロキシなしで api・web をホスト実行）で
+  `PUBLIC_WEB_BASE_URL=http://localhost:8081` を**両プロセスに**渡すようにした。未設定だと
+  `ISSUER`（api の `:8080`）へフォールバックし、`/authorize` がログイン画面へ飛ばす先が web ではなく
+  api になっていた。
 - **待ち受けポートの記載を新設した。** `docs/OPERATIONS.md`「待ち受けポート一覧」に、前段プロキシ →
   ホスト公開ポート（`.env`）→ コンテナ内ポート（固定）の 3 段を表で整理し、ローカル開発時の待ち受けも
   併記した。README にも要約表を置いた。「単一オリジンで公開したいとき」の手順も追加した。

@@ -38,6 +38,14 @@ ADR-0007 で api（OIDC protocol・JSON 管理 API）と web（HTML 画面）を
 1. **既定値の変更点は 2 か所**。`scripts/deploy.sh` の未設定時フォールバックと、`.env*.example` の
    `PUBLISH_TOPOLOGY` 行。`.env` に値がある既存配置は**その値のまま動く**（`single-origin` を
    明記済みの環境は無変更で単一オリジンを維持する）。
+6. **既定変更は既存 `.env` へ波及させない**（`deploy.sh` の `migration_value_for`）。`.env.example` の
+   既定値は**新規配置向け**であり、バージョン更新時の不足キー追記（`merge_missing_env_keys`）に
+   そのまま流し込むと、稼働中の配置の公開先が黙って変わる。次の 2 キーだけ読み替える。
+   - `PUBLISH_TOPOLOGY` が無い `.env` は本 ADR 以前に作られた＝単一オリジンで動いてきた配置なので、
+     `single-origin` を追記する（新既定を入れない）。トポロジ変更は運用者が明示的に行う。
+   - `PUBLIC_WEB_BASE_URL` は**追記しない**。テンプレートの実値（ローカルの web オリジン）を本番の
+     `.env` へ入れると、`ISSUER` は本番ドメインのままログイン・招待・リセットのリダイレクト先だけが
+     localhost になる。未設定なら api・web とも `ISSUER` へフォールバックする（＝従来挙動）。
 2. **`.env*.example` は `ISSUER` と `PUBLIC_WEB_BASE_URL` を別オリジンで出力する**。ローカル既定は
    `http://localhost:8070`（api＝`API_PORT`）と `http://localhost:8060`（web＝`WEB_PORT`）。
    `PUBLIC_WEB_BASE_URL` はこれまで既定でコメントアウトだったが、既定トポロジで必須になるため
@@ -67,9 +75,9 @@ ADR-0007 で api（OIDC protocol・JSON 管理 API）と web（HTML 画面）を
   併置する場合、分ける必要があるポートも 2 つずつになる。
 - 既定の `.env` で確認すべき値が 1 つ増える（`ISSUER` に加えて `PUBLIC_WEB_BASE_URL`）。
 - 単一オリジンを前提に「1 ポートだけ開ける」運用をしていた読み手にとって、既定の意味が変わる。
-  `.env` に `PUBLISH_TOPOLOGY` を明記済みの環境は影響を受けないが、**未設定のまま運用していた
-  環境は再デプロイでトポロジが変わる**（`.env.example` 由来の `.env` には常に値が入るため、
-  実際に該当するのは手書き `.env` の場合のみ）。
+  稼働中の配置は決定 6 の読み替えで守られるが、**「既定＝新規配置の既定」と「既存 `.env` の
+  移行値」が食い違う**状態を `deploy.sh` に持つことになる。読み替え対象のキーは最小限に保ち、
+  追加するたびに理由をコード内に残す。
 
 **Alternatives considered**
 

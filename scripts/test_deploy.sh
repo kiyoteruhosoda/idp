@@ -142,6 +142,32 @@ printf 'SENTINEL_KEEP=keepme' >>.env   # 末尾改行なしの最終行を作る
 grep -q '^SENTINEL_KEEP=keepme$' .env || { echo "last line without trailing newline was corrupted by append" >&2; exit 1; }
 grep -q '^LOG_FORMAT=pretty$' .env || { echo "key not appended after newline normalization" >&2; exit 1; }
 
+# 追記で既存配置の「公開先・公開トポロジ」を黙って変えないこと（ADR-0016 の既定変更の移行）。
+# 本番想定: ISSUER は公開ドメイン、PUBLIC_WEB_BASE_URL と PUBLISH_TOPOLOGY は当時の .env に無い。
+sed -i 's|^ISSUER=.*|ISSUER=https://idp.example.com|' .env
+sed -i '/^PUBLIC_WEB_BASE_URL=/d' .env
+sed -i '/^PUBLISH_TOPOLOGY=/d' .env
+: >"$DOCKER_STUB_LOG"; : >"${CURL_STUB_LOG:-/dev/null}"
+./scripts/deploy.sh app >/tmp/deploy-migrate-topology.out 2>&1
+# PUBLIC_WEB_BASE_URL は追記しない（未設定＝ISSUER フォールバック＝従来挙動）。localhost を
+# 本番 .env へ書き込むと、ログイン・招待・リセットのリダイレクト先だけが localhost になる。
+if grep -q '^PUBLIC_WEB_BASE_URL=' .env; then
+  echo "PUBLIC_WEB_BASE_URL must not be backfilled into an existing .env" >&2
+  grep '^PUBLIC_WEB_BASE_URL=' .env >&2
+  exit 1
+fi
+grep -q 'ログイン URL: https://idp.example.com/' /tmp/deploy-migrate-topology.out ||
+  { echo "existing deployment must keep redirecting to its own ISSUER origin" >&2; exit 1; }
+# PUBLISH_TOPOLOGY が無い .env は ADR-0016 以前の配置＝単一オリジンなので、その意味を維持する。
+grep -q '^PUBLISH_TOPOLOGY=single-origin$' .env ||
+  { echo "missing PUBLISH_TOPOLOGY must be backfilled as single-origin, not the new default" >&2; exit 1; }
+grep -q '公開トポロジ: single-origin' /tmp/deploy-migrate-topology.out ||
+  { echo "existing deployment must keep the single-origin topology" >&2; exit 1; }
+# 移行検証で書き換えた値を .env.example の既定へ戻す（以降のトポロジ試験の前提）。
+sed -i 's|^ISSUER=.*|ISSUER=http://localhost:8070|' .env
+sed -i 's/^PUBLISH_TOPOLOGY=.*/PUBLISH_TOPOLOGY=domain-split/' .env
+printf 'PUBLIC_WEB_BASE_URL=http://localhost:8060\n' >>.env
+
 # --- 公開トポロジ（ADR-0015・ADR-0016。既定 domain-split / 明示指定の single-origin） ---
 export CURL_STUB_LOG="$TMP/curl.log"
 

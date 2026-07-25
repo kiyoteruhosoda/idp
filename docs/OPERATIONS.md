@@ -10,9 +10,10 @@ api（DB 直結。既定 :8080）と web（HTML 画面。既定 :8081）を別�
 ```sh
 docker compose up -d mariadb          # MariaDB 10.11 を起動
 sqlx migrate run                       # マイグレーション適用（要 DATABASE_URL）
-# 別々のシェルで（web は api を API_BASE_URL で呼ぶ）
-cargo run -p idp-api                   # api 起動（既定 0.0.0.0:8080）
-API_BASE_URL=http://localhost:8080 cargo run -p idp-web   # web 起動（既定 0.0.0.0:8081）
+# 別々のシェルで（web は api を API_BASE_URL で呼ぶ。PUBLIC_WEB_BASE_URL は両者に同値で渡す）
+PUBLIC_WEB_BASE_URL=http://localhost:8081 cargo run -p idp-api   # api 起動（既定 0.0.0.0:8080）
+PUBLIC_WEB_BASE_URL=http://localhost:8081 API_BASE_URL=http://localhost:8080 \
+  cargo run -p idp-web                                           # web 起動（既定 0.0.0.0:8081）
 ```
 
 ブラウザは通常は同梱リバースプロキシ経由で使う。ローカルで直に触る場合、ログイン画面・
@@ -397,7 +398,9 @@ DB を直接参照せずに、いま DB へ適用されているマイグレー�
 | MariaDB（`docker compose up -d mariadb`） | `127.0.0.1:3306` | `MARIADB_BIND_HOST` / `MARIADB_PORT` |
 
 この場合はプロキシを立てないため、web の `API_BASE_URL` を `http://localhost:8080`（api の直アドレス）
-にし、`PUBLIC_WEB_BASE_URL` を `http://localhost:8081` にする。
+にし、`PUBLIC_WEB_BASE_URL`（`http://localhost:8081`）を **api・web の両プロセスへ同値で**渡す。
+未設定だと両者とも `ISSUER`（既定 `http://localhost:8080`）へフォールバックし、`/authorize` が
+ログイン画面へ飛ばす先が web ではなく api になる。
 
 ### 単一オリジンで公開したいとき（`PUBLISH_TOPOLOGY=single-origin`）
 

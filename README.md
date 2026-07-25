@@ -223,12 +223,15 @@ sequenceDiagram
 docker compose up -d mariadb   # MariaDB 10.11 を起動
 sqlx migrate run               # マイグレーション適用（要 DATABASE_URL）
 # 別々のシェルで起動する（web は api を API_BASE_URL 越しに呼ぶ）
-cargo run -p idp-api           # api 起動（既定: 0.0.0.0:8080）
-API_BASE_URL=http://localhost:8080 cargo run -p idp-web   # web 起動（既定: 0.0.0.0:8081）
+PUBLIC_WEB_BASE_URL=http://localhost:8081 cargo run -p idp-api   # api 起動（既定: 0.0.0.0:8080）
+PUBLIC_WEB_BASE_URL=http://localhost:8081 API_BASE_URL=http://localhost:8080 \
+  cargo run -p idp-web                                           # web 起動（既定: 0.0.0.0:8081）
 ```
 
 プロキシを立てないため、ログイン画面・管理コンソールは web（`:8081`）、OIDC protocol・JSON 管理 API は
-api（`:8080`）へ直接アクセスする。両者は同一の `INTERNAL_SERVICE_TOKEN` を共有する。
+api（`:8080`）へ直接アクセスする。`PUBLIC_WEB_BASE_URL` は**両プロセスに同値で**渡すこと（未設定だと
+`ISSUER`＝api の `:8080` にフォールバックし、`/authorize` がログイン画面へ飛ばす先を api 側にしてしまう）。
+両者は同一の `INTERNAL_SERVICE_TOKEN` も共有する。
 
 詳細な手順・環境変数は [`docs/OPERATIONS.md`](docs/OPERATIONS.md) を参照。
 
