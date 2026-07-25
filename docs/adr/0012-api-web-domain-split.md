@@ -47,12 +47,15 @@ ADR-0007 で api（OIDC protocol・JSON 管理 API）と web（HTML 画面）を
 | キー | 読む側 | 意味 | 出所区分（ADR-0010） |
 |---|---|---|---|
 | `ISSUER` | api / web | **api の公開オリジン**（OIDC issuer。ID Token `iss` と完全一致）。web はブラウザを api へ向けるリダイレクトの基点として参照する | EnvLocked（既存） |
-| `PUBLIC_WEB_BASE_URL` | api / web | **web の公開オリジン**。api は `/authorize` からログイン/同意画面への 302 とメールリンク生成に使う（既存）。web は**自オリジン**として Cookie `Secure` 判定・絶対 URL 生成に使う（新規参照） | api 側: DbManaged のまま（api のみが DB を読めるため）。web 側: ENV > 既定値（既定は `ISSUER`＝単一オリジン） |
+| `PUBLIC_WEB_BASE_URL` | api / web | **web の公開オリジン**。api は `/authorize` からログイン/同意画面への 302 とメールリンク生成に使う（既存）。web は**自オリジン**として Cookie `Secure` 判定・絶対 URL 生成に使う（新規参照） | **EnvLocked へ変更**（下記） |
 | `API_BASE_URL` | web | web→api の**サーバ間内部到達先**（reqwest）。公開ドメインとは独立（内部ネットワークのアドレスでよい） | EnvLocked 相当（web は DB を持たない。既存） |
 | `COOKIE_DOMAIN` | api / web | **新設**。サービス横断 Cookie に付与する `Domain` 属性（例 `.example.com`）。**未設定 = host-only**（単一オリジン構成の従来挙動） | **EnvLocked**（api/web で一致必須のため DB 上書き不可） |
 
-- `PUBLIC_WEB_BASE_URL` は「api/web で一致が必要」なキーではない（api は相手の、web は自分の URL として
-  それぞれ独立に読む）ため、api 側の出所区分は DbManaged のまま変えない。
+- `PUBLIC_WEB_BASE_URL` は api（相手の URL としてリダイレクト先に使う）と web（自分の URL として
+  Secure 判定・絶対 URL 生成に使う）が**同一の公開オリジンを指す前提の値**であり、不一致は全ログイン
+  フローを壊す（api が `id-a` へ 302、web は `id-b` として振る舞う、など）。ADR-0010 の
+  「api/web で値を一致させる必要があるキーは EnvLocked」の規則に従い、**DbManaged から EnvLocked へ
+  変更する**（DB 側だけの変更や片側の typo が検出されないまま効いてしまう事態を防ぐ。実装は MT29）。
 - web の Cookie `Secure` 判定は `ISSUER` のスキームではなく**自オリジン（`PUBLIC_WEB_BASE_URL`）のスキーム**
   で行うよう改める（`COOKIE_SECURE` による明示上書きは従来どおり）。
 - 新設キーは CLAUDE.md「設定管理」の手順どおり `RUNTIME_SETTING_DEFINITIONS`（`domain/system_setting.rs`）へ
@@ -64,6 +67,12 @@ ADR-0007 で api（OIDC protocol・JSON 管理 API）と web（HTML 画面）を
   `auth_session_id`（`/authorize`〜`/login` の短命セッション）。
 - `COOKIE_DOMAIN` 設定時は両サービスの Cookie 組み立て（`cookies::build`）が同一の `Domain` 属性を出力する。
   削除 Cookie（`Max-Age=0`）も同じ `Domain` で出さないと消えないため、build/clear の両方に適用する。
+- **既存デプロイからの移行（host-only Cookie の残留対策）**: Cookie の識別子は名前だけでなく `Domain` を
+  含むため、単一オリジン構成から `COOKIE_DOMAIN` を有効化しても、ブラウザに残った旧 host-only の
+  `sso_session_id` / `auth_session_id` は上書き・失効されず、同名 Cookie が二重送信されて古いセッションが
+  新しいセッションを覆い隠しうる（ログインループ・セッション取り違え）。これを防ぐため、
+  `COOKIE_DOMAIN` 設定時の Set-Cookie は**ドメイン付き Cookie の発行と同時に、`Domain` 属性なしの
+  同名削除 Cookie（`Max-Age=0`）を併送する**（build/clear 共通。host-only 残留を能動的に掃除する）。
 - `SameSite=Lax` / `HttpOnly` / `Secure` / `Path=/` は現行のまま変更しない（same-site サブドメイン間の
   トップレベル遷移・フォーム POST では Lax でも Cookie が送信される）。
 - web ローカルの Cookie（`lang`・CSRF 関連等、api が読まないもの）は host-only のまま広げない。
@@ -105,8 +114,14 @@ ADR-0007 で api（OIDC protocol・JSON 管理 API）と web（HTML 画面）を
 - `Domain=.example.com` の Cookie は**同一親ドメイン配下の全サブドメインへ送信される**。同じ親ドメインに
   信頼できない他サービスを同居させない、という運用上の前提が新たに生じる（OPERATIONS に明記する）。
 - 設定不整合時の障害モードが増える（`COOKIE_DOMAIN` 片側未設定 → ログインループ、`PUBLIC_WEB_BASE_URL`
-  誤設定 → 誤ドメインへの 302）。起動時検証（`COOKIE_DOMAIN` が `ISSUER`・`PUBLIC_WEB_BASE_URL` 双方の
-  親ドメインであること）で fail-fast にする。
+  誤設定 → 誤ドメインへの 302）。起動時検証で fail-fast にする。検証内容は次の 2 点:
+  1. `COOKIE_DOMAIN` が `ISSUER`・`PUBLIC_WEB_BASE_URL` 双方のホストの親ドメイン（または同一）であること。
+  2. `COOKIE_DOMAIN` が **public suffix（eTLD。例 `.co.uk`・`.com`）そのものでないこと**。public suffix は
+     `api.example.co.uk` / `id.example.co.uk` 双方の親として検証 1 を通過してしまうが、ブラウザは
+     public suffix への `Domain` Cookie を拒否するため、起動は成功するのに Cookie が一切共有されない
+     ログインループになる。Public Suffix List に基づく判定（例: `psl` クレート）で起動時に拒否する。
+- `PUBLIC_WEB_BASE_URL` の EnvLocked 化（決定 2）は既存の DbManaged 運用からの**破壊的変更**:
+  DB（system_settings）で上書きしていた環境は、同じ値を ENV へ移す必要がある（OPERATIONS に移行手順を記載）。
 - ローカル開発（`localhost` ポート違い）は same-site だが `Domain` 属性を使えないため、開発は従来どおり
   単一オリジン（または host-only のまま同一ホスト名）で行う。
 

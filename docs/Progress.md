@@ -56,13 +56,16 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 設計は `docs/adr/0012-api-web-domain-split.md` に固定済み。実装スコープ:
 
 1. `COOKIE_DOMAIN` を新設（`RUNTIME_SETTING_DEFINITIONS` に EnvLocked で定義。api/web 双方の
-   `cookies::build`/clear に `Domain` 属性を反映。未設定 = host-only の従来挙動）。
+   `cookies::build`/clear に `Domain` 属性を反映。未設定 = host-only の従来挙動。設定時は host-only の
+   同名削除 Cookie を併送し、既存デプロイからの移行で残留する旧 Cookie を掃除する）。
 2. api の `AuthorizeOutcome::LoginRequired`/`ConsentRequired` の 302 先を
    `{PUBLIC_WEB_BASE_URL}` 基点の絶対 URL へ変更。
 3. web に自オリジン設定 `PUBLIC_WEB_BASE_URL` を追加し、Cookie `Secure` 判定を `ISSUER` から自オリジンの
-   スキームへ変更。
-4. 起動時検証: `COOKIE_DOMAIN` が `ISSUER`・`PUBLIC_WEB_BASE_URL` 双方の親ドメインであることを fail-fast
-   で確認。
-5. `docs/OPERATIONS.md` に別ドメイン構成の手順（環境変数・vhost 例・親ドメイン同居の注意）を追記。
+   スキームへ変更。あわせて api 側の `PUBLIC_WEB_BASE_URL` を DbManaged → EnvLocked へ変更
+   （api/web で同一値必須のため。DB 上書き運用からの移行手順を OPERATIONS に記載）。
+4. 起動時検証（fail-fast）: `COOKIE_DOMAIN` が `ISSUER`・`PUBLIC_WEB_BASE_URL` 双方の親ドメインであり、
+   かつ public suffix（eTLD）そのものでないこと（Public Suffix List 判定。例: `psl` クレート）。
+5. `docs/OPERATIONS.md` に別ドメイン構成の手順（環境変数・vhost 例・親ドメイン同居の注意・
+   `PUBLIC_WEB_BASE_URL` の ENV 移行手順）を追記。
 
 推奨モデル: Opus 4.8（セッション Cookie の到達範囲＝セキュリティ境界に触れるため）。
