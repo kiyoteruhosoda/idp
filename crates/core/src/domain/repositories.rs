@@ -35,7 +35,7 @@ use crate::domain::signing_key::SigningKey;
 use crate::domain::sso_session::SsoSession;
 use crate::domain::system_setting::SystemSetting;
 use crate::domain::tenant::{Tenant, TenantId};
-use crate::domain::tenant_membership::TenantMembership;
+use crate::domain::tenant_membership::{TenantMemberFilter, TenantMemberPage, TenantMembership};
 use crate::domain::totp_secret::TotpSecret;
 use crate::domain::user::User;
 use crate::domain::values::{MembershipStatus, SigningKeyStatus, UserStatus};
@@ -88,8 +88,6 @@ pub trait TenantMembershipRepository: Send + Sync {
     /// メンバーシップを作成する（HOME はユーザー作成時、GUEST は招待作成時）。
     async fn create(&self, membership: &TenantMembership) -> Result<()>;
     async fn find(&self, tenant_id: TenantId, user_id: Uuid) -> Result<Option<TenantMembership>>;
-    /// 指定テナントのメンバー一覧（HOME / GUEST）を返す（`/{tenant_id}/admin/members`）。
-    async fn list_for_tenant(&self, tenant_id: TenantId) -> Result<Vec<TenantMembership>>;
     /// ユーザーが指定テナントで `ACTIVE` なメンバーシップ（HOME または GUEST）を持つか
     /// （OIDC フローのメンバーシップ判定。ADR-0009 §8）。
     async fn is_active_member(&self, tenant_id: TenantId, user_id: Uuid) -> Result<bool>;
@@ -119,6 +117,19 @@ pub trait TenantMembershipRepository: Send + Sync {
     async fn delete(&self, tenant_id: TenantId, user_id: Uuid) -> Result<()>;
 }
 
+/// メンバー一覧（読み取りモデル）の照会（MT22）。書き込み（[`TenantMembershipRepository`]）とは
+/// 関心を分ける（`AuditLogSink` と `AuditLogQuery` と同じ分け方）。
+///
+/// 絞り込みが利用者側の列（メール・氏名）に掛かる一方でページはメンバーシップ単位のため、
+/// 実装はメンバーシップと利用者を**結合した 1 クエリ**で解決する（全件を読み込んでから
+/// アプリ側で絞る方式は、テナントの規模に比例して破綻するため採らない）。
+#[async_trait]
+pub trait TenantMemberQuery: Send + Sync {
+    /// 条件に一致するメンバーをメールアドレスの昇順（同値は `user_id` 昇順）に 1 ページ分返す。
+    /// 並び順は安定でなければならない（ページ間で行が重複・欠落しないため）。
+    async fn search(&self, filter: &TenantMemberFilter) -> Result<TenantMemberPage>;
+}
+
 #[async_trait]
 pub trait UserRepository: Send + Sync {
     /// ユーザーを作成する（`user.tenant_id` = 所属元テナント）。HOME メンバーシップの同時作成は
@@ -134,17 +145,6 @@ pub trait UserRepository: Send + Sync {
     async fn find_by_email(&self, tenant_id: TenantId, email: &str) -> Result<Option<User>>;
     /// 所属元が `tenant_id` のユーザーを preferred_username で検索する。
     async fn find_by_username(&self, tenant_id: TenantId, username: &str) -> Result<Option<User>>;
-    /// 複数の内部 ID で一括取得する（N+1 回避。`list_members` 等で使用）。
-    /// 見つかったものだけを返す（欠落は無視）。順序は保証しない。
-    async fn find_by_ids(&self, ids: &[Uuid]) -> Result<Vec<User>> {
-        let mut result = Vec::with_capacity(ids.len());
-        for &id in ids {
-            if let Some(u) = self.find_by_id(id).await? {
-                result.push(u);
-            }
-        }
-        Ok(result)
-    }
     /// ログイン失敗回数・ロック期限を更新する（ロックポリシー、設計仕様 §4.3）。
     async fn update_login_state(
         &self,

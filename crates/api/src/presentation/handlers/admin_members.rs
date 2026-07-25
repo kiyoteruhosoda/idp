@@ -6,27 +6,34 @@
 //! （所属元テナントの管理者と本人のみ。§3）。
 
 use crate::application::invitation::InvitationError;
+use crate::application::member_directory::MemberSearchParams;
 use crate::domain::values::MembershipStatus;
 use crate::presentation::admin::{IdpAdmin, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
-use crate::presentation::dto::{MemberResponse, UpdateMemberStatusRequest};
+use crate::presentation::dto::{
+    MemberListQueryParams, MemberListResponse, MemberResponse, UpdateMemberStatusRequest,
+};
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
 use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
-use axum::extract::{Extension, Path, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use uuid::Uuid;
 
-/// 当該テナントのメンバー（HOME / GUEST）を一覧する。
+/// 当該テナントのメンバー（HOME / GUEST）を一覧する（MT22 でページング・絞り込みを追加）。
+///
+/// 絞り込み・並び替え・ページングはすべて DB 側で行う。全件を返して呼び出し側で絞る方式は、
+/// テナントの規模に比例して応答が膨らむため採らない。
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/members",
     tag = "admin",
+    params(MemberListQueryParams),
     responses(
-        (status = 200, description = "メンバー一覧", body = [MemberResponse]),
+        (status = 200, description = "メンバー一覧（1 ページ分と総件数）", body = MemberListResponse),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
     )
@@ -36,14 +43,22 @@ pub async fn list_members(
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
-) -> Result<Json<Vec<MemberResponse>>, ApiError> {
-    let members = state
-        .invitations
-        .list_members(tenant.context())
+    Query(params): Query<MemberListQueryParams>,
+) -> Result<Json<MemberListResponse>, ApiError> {
+    let search = MemberSearchParams {
+        search: params.q,
+        limit: params.limit,
+        offset: params.offset,
+    };
+    let result = state
+        .member_directory
+        .search(tenant.context(), search)
         .await
-        .map_err(|e| map_error(e, locale))?;
-    Ok(Json(
-        members
+        .map_err(|e| map_error(InvitationError::Internal(e.to_string()), locale))?;
+    Ok(Json(MemberListResponse {
+        members: result
+            .page
+            .members
             .into_iter()
             .map(|m| MemberResponse {
                 user_id: m.user_id.to_string(),
@@ -54,7 +69,10 @@ pub async fn list_members(
                 user_status: m.user_status.map(|s| s.as_str().to_string()),
             })
             .collect(),
-    ))
+        total: result.page.total,
+        limit: result.limit,
+        offset: result.offset,
+    }))
 }
 
 /// ゲストメンバーシップを解除する（ゲストの追放）。HOME は解除できない（403）。解除時、当該テナントを

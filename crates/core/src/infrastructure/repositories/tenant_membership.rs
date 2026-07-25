@@ -106,18 +106,6 @@ impl TenantMembershipRepository for SqlxTenantMembershipRepository {
         row.as_ref().map(map_row).transpose()
     }
 
-    async fn list_for_tenant(&self, tenant_id: TenantId) -> Result<Vec<TenantMembership>> {
-        let sql = format!(
-            "SELECT {SELECT_COLUMNS} FROM tenant_memberships WHERE tenant_id = ? ORDER BY created_at"
-        );
-        let rows = sqlx::query(&sql)
-            .bind(tenant_id.as_uuid().to_string())
-            .fetch_all(&self.pool)
-            .await
-            .map_err(repo_err)?;
-        rows.iter().map(map_row).collect()
-    }
-
     async fn list_active_for_user(&self, user_id: Uuid) -> Result<Vec<TenantMembership>> {
         let sql = format!(
             "SELECT {SELECT_COLUMNS} FROM tenant_memberships \

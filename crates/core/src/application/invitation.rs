@@ -26,7 +26,7 @@ use crate::domain::repositories::{
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::tenant_membership::TenantMembership;
-use crate::domain::values::{MembershipStatus, MembershipType, UserStatus};
+use crate::domain::values::{MembershipStatus, MembershipType};
 use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -58,20 +58,6 @@ pub struct CreatedInvitation {
     pub email_sent: bool,
     /// 被招待者のメールアドレス（画面表示用。送信先の確認）。
     pub invitee_email: String,
-}
-
-/// メンバー一覧の 1 件（`GET /{tenant_id}/admin/members`）。HOME / GUEST を問わず、当該テナントに
-/// 参加している利用者を表す。email / name は表示用に所属元照合なしで解決する（招待作成は内部 ID で
-/// 行うため、参加先管理者が被招待者を識別できるよう最小限の情報のみ返す）。
-pub struct TenantMember {
-    pub user_id: Uuid,
-    pub email: Option<String>,
-    pub name: Option<String>,
-    pub membership_type: MembershipType,
-    pub status: MembershipStatus,
-    /// 利用者アカウント自体の状態（ACTIVE / DISABLED / LOCKED）。不存在ユーザーは `None`。
-    /// 管理コンソールのメンバー一覧が無効化状態を表示するために返す。
-    pub user_status: Option<UserStatus>,
 }
 
 /// 招待トークンのバイト長（base64url で 43 文字程度）。
@@ -241,39 +227,6 @@ impl InvitationService {
                 false
             }
         }
-    }
-
-    /// 当該テナントのメンバー（HOME / GUEST）を一覧する（§3・§6）。各メンバーの email / name は
-    /// 表示用に解決する（不存在ユーザーは email / name を `None` とする）。
-    pub async fn list_members(
-        &self,
-        host: TenantContext,
-    ) -> Result<Vec<TenantMember>, InvitationError> {
-        let memberships = self
-            .memberships
-            .list_for_tenant(host.tenant_id())
-            .await
-            .map_err(|e| InvitationError::Internal(e.to_string()))?;
-        let user_ids: Vec<Uuid> = memberships.iter().map(|m| m.user_id).collect();
-        let users = self
-            .users
-            .find_by_ids(&user_ids)
-            .await
-            .map_err(|e| InvitationError::Internal(e.to_string()))?;
-        let user_map: std::collections::HashMap<Uuid, &crate::domain::user::User> =
-            users.iter().map(|u| (u.id, u)).collect();
-        let members = memberships
-            .into_iter()
-            .map(|m| TenantMember {
-                user_id: m.user_id,
-                email: user_map.get(&m.user_id).map(|u| u.email.clone()),
-                name: user_map.get(&m.user_id).and_then(|u| u.name.clone()),
-                membership_type: m.membership_type,
-                status: m.status,
-                user_status: user_map.get(&m.user_id).map(|u| u.status),
-            })
-            .collect();
-        Ok(members)
     }
 
     /// 招待を承諾する。承諾者は**所属元テナントでログイン済み**のユーザー（`session_user_id`）で、
@@ -663,9 +616,6 @@ mod tests {
                 .iter()
                 .find(|m| m.tenant_id == tenant_id && m.user_id == user_id)
                 .cloned())
-        }
-        async fn list_for_tenant(&self, _t: TenantId) -> DomainResult<Vec<TenantMembership>> {
-            unreachable!()
         }
         async fn is_active_member(&self, _t: TenantId, _u: Uuid) -> DomainResult<bool> {
             unreachable!()

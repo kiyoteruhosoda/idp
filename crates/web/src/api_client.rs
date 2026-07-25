@@ -9,7 +9,7 @@
 
 use crate::admin_dto::{
     ApiErrorBody, AuditLogView, ClientCreatedView, ClientSecretView, ClientView,
-    InvitationCreatedView, MemberView, UserCreatedView,
+    InvitationCreatedView, MemberListView, UserCreatedView,
 };
 use idp_contracts::admin::{
     AvailablePermissionsResponse, ClientStatusResponse, SamlServiceProviderRegisterRequest,
@@ -760,22 +760,28 @@ impl ApiClient {
 
     // ── メンバー・招待（ADR-0009 §3）─────────────────────────────────────────
 
-    /// メンバー一覧（`GET /admin/members`。HOME / GUEST を問わない）。
+    /// メンバー一覧（`GET /admin/members`。HOME / GUEST を問わない）。絞り込み・ページングの
+    /// 条件は `(key, value)` の並びで渡す（MT22。絞り込みは api 側＝DB で行う）。
     pub async fn list_members(
         &self,
         correlation_id: &str,
         tenant_id: &str,
         sso: &str,
-    ) -> Result<Vec<MemberView>, AdminApiError> {
-        self.admin_send(
-            Method::GET,
-            tenant_id,
-            "/admin/members",
-            correlation_id,
-            sso,
-            None,
-        )
-        .await
+        query: &[(&str, String)],
+    ) -> Result<MemberListView, AdminApiError> {
+        let response = self
+            .http
+            .get(format!("{}/{}/admin/members", self.base_url, tenant_id))
+            .query(query)
+            .header(REQUEST_ID_HEADER, correlation_id)
+            .header(
+                reqwest::header::COOKIE,
+                format!("{SSO_SESSION_COOKIE}={sso}"),
+            )
+            .send()
+            .await
+            .map_err(|e| AdminApiError::Transport(e.to_string()))?;
+        Self::handle_admin_response(response, "/admin/members").await
     }
 
     /// ゲストメンバーシップの一時停止・再開（`PATCH /admin/members/{user_id}`。MT24）。

@@ -509,9 +509,6 @@ mod tests {
         async fn find(&self, _t: TenantId, _u: Uuid) -> DomainResult<Option<TenantMembership>> {
             unreachable!()
         }
-        async fn list_for_tenant(&self, _t: TenantId) -> DomainResult<Vec<TenantMembership>> {
-            unreachable!()
-        }
         async fn is_active_member(&self, t: TenantId, _u: Uuid) -> DomainResult<bool> {
             assert_eq!(
                 t, self.tenant_id,

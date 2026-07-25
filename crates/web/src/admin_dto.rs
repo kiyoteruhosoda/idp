@@ -125,6 +125,18 @@ pub struct MemberView {
     pub user_status: Option<String>,
 }
 
+/// メンバー一覧の 1 ページ分（`GET /admin/members`。MT22）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct MemberListView {
+    pub members: Vec<MemberView>,
+    /// 絞り込み後の総件数（ページング前）。「全 N 件」の表示と次ページの有無に使う。
+    pub total: i64,
+    /// api が実際に適用した 1 ページの件数（クランプ後）。ページ送りの刻み幅として使う。
+    pub limit: i64,
+    #[allow(dead_code)]
+    pub offset: i64,
+}
+
 /// 管理者によるパスワード再発行応答（`POST /admin/users/{id}/password-reset` ほか）。
 /// `generated_password` は一度限り平文で返る（ADR-0009 §5）。
 #[derive(Debug, Clone, Deserialize)]

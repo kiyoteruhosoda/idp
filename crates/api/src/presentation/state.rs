@@ -28,6 +28,7 @@ use crate::application::invitation::InvitationService;
 use crate::application::key_service::KeyService;
 use crate::application::login::LoginService;
 use crate::application::logout::LogoutService;
+use crate::application::member_directory::MemberDirectoryService;
 use crate::application::mfa_login::MfaLoginService;
 use crate::application::passkey_authentication::PasskeyAuthenticationService;
 use crate::application::passkey_registration::PasskeyRegistrationService;
@@ -75,6 +76,7 @@ use crate::infrastructure::repositories::signing_key::SqlxSigningKeyRepository;
 use crate::infrastructure::repositories::sso_session::SqlxSsoSessionRepository;
 use crate::infrastructure::repositories::system_setting::SqlxSystemSettingsRepository;
 use crate::infrastructure::repositories::tenant::SqlxTenantRepository;
+use crate::infrastructure::repositories::tenant_member_query::SqlxTenantMemberQuery;
 use crate::infrastructure::repositories::tenant_membership::SqlxTenantMembershipRepository;
 use crate::infrastructure::repositories::tenant_provisioning::SqlxTenantProvisioningRepository;
 use crate::infrastructure::repositories::totp_secret::SqlxTotpSecretRepository;
@@ -143,6 +145,7 @@ pub struct AppState {
     pub password_reset: Arc<PasswordResetService>,
     /// ゲスト招待・メンバーシップ（ADR-0009 §3）。
     pub invitations: Arc<InvitationService>,
+    pub member_directory: Arc<MemberDirectoryService>,
     pub audit_query: Arc<AuditQueryService>,
     pub logout: Arc<LogoutService>,
     pub revocation: Arc<RevocationService>,
@@ -463,6 +466,11 @@ impl AppState {
             config.invitation_ttl(),
             config.public_web_base_url().to_string(),
         ));
+        // メンバー一覧の参照（MT22）。絞り込み・ページングを DB 側で行う読み取り専用の経路で、
+        // メンバーシップの変更（InvitationService）とは関心を分ける。
+        let member_directory = Arc::new(MemberDirectoryService::new(Arc::new(
+            SqlxTenantMemberQuery::new(pool.clone()),
+        )));
         let admin_access = Arc::new(AdminAccessService::new(
             sso_sessions.clone(),
             users.clone(),
@@ -590,6 +598,7 @@ impl AppState {
             account_tenants,
             password_reset,
             invitations,
+            member_directory,
             audit_query,
             logout,
             revocation,
