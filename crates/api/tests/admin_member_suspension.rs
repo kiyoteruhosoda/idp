@@ -34,15 +34,23 @@ async fn insert_active_guest(pool: &MySqlPool, tenant_id: &str, user_id: &str) {
     .expect("insert guest membership");
 }
 
-async fn insert_refresh_token(pool: &MySqlPool, tenant_id: &str, user_id: &str) -> String {
+/// `refresh_tokens` は `(tenant_id, client_id)` の複合外部キーで `clients` を参照するため、
+/// 発行元クライアントは実在させる必要がある（`client_id` は呼び出し側が用意する）。
+async fn insert_refresh_token(
+    pool: &MySqlPool,
+    tenant_id: &str,
+    user_id: &str,
+    client_id: &str,
+) -> String {
     let hash = format!("{:064x}", uuid::Uuid::now_v7().as_u128());
     sqlx::query(
         "INSERT INTO refresh_tokens (token_hash, tenant_id, user_id, client_id, scope, expires_at) \
-         VALUES (?, ?, ?, 'test-client', '[\"openid\"]', DATE_ADD(UTC_TIMESTAMP(6), INTERVAL 30 DAY))",
+         VALUES (?, ?, ?, ?, '[\"openid\"]', DATE_ADD(UTC_TIMESTAMP(6), INTERVAL 30 DAY))",
     )
     .bind(&hash)
     .bind(tenant_id)
     .bind(user_id)
+    .bind(client_id)
     .execute(pool)
     .await
     .expect("insert refresh token");
@@ -145,9 +153,13 @@ async fn admin_suspends_and_resumes_a_guest_without_losing_membership_or_permiss
     // ── 準備: ACTIVE な GUEST、当該テナント scope の権限、両テナントの refresh token。
     insert_active_guest(&env.pool, &env.root_tenant_id, &guest).await;
     grant_permission(&env.pool, &env.root_tenant_id, &guest, "idp.tenant.admin").await;
-    let host_token = insert_refresh_token(&env.pool, &env.root_tenant_id, &guest).await;
+    let host_client =
+        support::insert_public_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
+    let home_client = support::insert_public_client(&env.pool, &home_tenant, &["openid"]).await;
+    let host_token =
+        insert_refresh_token(&env.pool, &env.root_tenant_id, &guest, &host_client).await;
     // 所属元テナントで発行済みのトークン。停止は host テナントへの措置なので巻き込んではいけない。
-    let home_token = insert_refresh_token(&env.pool, &home_tenant, &guest).await;
+    let home_token = insert_refresh_token(&env.pool, &home_tenant, &guest, &home_client).await;
 
     // ── 不正な status は 400（INVITED は招待フローが管理する状態のため直接は設定させない）。
     for bad in ["INVITED", "nonsense", ""] {
