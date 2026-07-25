@@ -397,7 +397,7 @@ https://api.example.com → ${API_BIND_HOST}:${API_PORT} → 同梱 nginx :8081 
    WEB_BIND_HOST=127.0.0.1     # 前段プロキシが同一ホストなら loopback のままでよい
    WEB_PORT=8060               # web（HTML 画面）の公開ポート
    API_BIND_HOST=127.0.0.1
-   API_PORT=8070               # api（OIDC protocol・JSON 管理 API）の公開ポート
+   API_PORT=8061               # api（OIDC protocol・JSON 管理 API）の公開ポート
    ```
 
 2. 公開オリジンと Cookie を設定する（**4 つとも api/web で同じ値にする**）。
@@ -419,7 +419,7 @@ https://api.example.com → ${API_BIND_HOST}:${API_PORT} → 同梱 nginx :8081 
 
 ```sh
 curl -fsS http://127.0.0.1:8060/readyz      # web
-curl -fsS http://127.0.0.1:8070/readyz      # api
+curl -fsS http://127.0.0.1:8061/readyz      # api
 curl -fsS https://api.example.com/.well-known/openid-configuration | jq .issuer   # api ドメイン
 curl -sS -o /dev/null -w '%{http_code}\n' https://api.example.com/internal/runtime-settings  # 404
 ```
@@ -614,12 +614,15 @@ DB volume を削除してからマイグレーション・起動をやり直す�
 `docker-compose.deploy.yml` はコンテナ内の proxy を常に `8080` で待ち受けさせ、ホスト側の外部公開ポートだけを `.env` の `WEB_PORT` で変える。
 同じホストに 2 環境を置く場合、同じ `WEB_PORT` は同時に bind できないため、例として以下のように分ける。
 
-| 環境 | 配置例 | `.env` テンプレート | 外部 URL 例 | `WEB_PORT` | `IMAGE_TAG` |
-| --- | --- | --- | --- | --- | --- |
-| stg | `/opt/idp/stg` | `.env.staging.example` | `http://<host>:8061` | `8061` | `stg` |
-| prod | `/opt/idp/prod` | `.env.production.example` | `http://<host>:8060` | `8060` | `prod` |
+| 環境 | 配置例 | `.env` テンプレート | 外部 URL 例 | `WEB_PORT` | `API_PORT` | `IMAGE_TAG` |
+| --- | --- | --- | --- | --- | --- | --- |
+| stg | `/opt/idp/stg` | `.env.staging.example` | `http://<host>:8065` | `8065` | `8066` | `stg` |
+| prod | `/opt/idp/prod` | `.env.production.example` | `http://<host>:8060` | `8060` | `8061` | `prod` |
 
-`ISSUER` と `PUBLIC_WEB_BASE_URL` は、ブラウザが外から到達する URL（例: `http://192.0.2.10:8061`）に合わせる。
+`API_PORT` を使うのは `PUBLISH_TOPOLOGY=domain-split` のときだけだが、既定値も 4 環境分で重複しないよう
+分けてある（単一オリジン構成では未使用のまま残しておいてよい）。
+
+`ISSUER` と `PUBLIC_WEB_BASE_URL` は、ブラウザが外から到達する URL（例: `http://192.0.2.10:8065`）に合わせる。
 同一ホストでは `IMAGE_TAG` も `stg` / `prod` のように分け、`latest` を両環境で共有しない。
 
 ```sh

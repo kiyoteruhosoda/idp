@@ -17,4 +17,4 @@ services:
     ports:
       # ベース側の "${WEB_BIND_HOST}:${WEB_PORT}:8080"（= web）に加えて api 側を公開する。
       # WEB_PORT と同じ値にはできない（ホストポート衝突）。
-      - "${API_BIND_HOST:-127.0.0.1}:${API_PORT:-8070}:8081"
+      - "${API_BIND_HOST:-127.0.0.1}:${API_PORT:-8061}:8081"

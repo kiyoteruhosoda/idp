@@ -105,8 +105,8 @@ dist/
 
 ```
 /opt/idp/
-├── stg/    …ディレクトリ名 stg → .env.staging.example から生成（COMPOSE_PROJECT_NAME=idp-stg, WEB_PORT=8061, IMAGE_TAG=stg）
-└── prod/   …ディレクトリ名 prod → .env.production.example から生成（COMPOSE_PROJECT_NAME=idp-prod, WEB_PORT=8060, IMAGE_TAG=prod）
+├── stg/    …ディレクトリ名 stg → .env.staging.example から生成（COMPOSE_PROJECT_NAME=idp-stg, WEB_PORT=8065, API_PORT=8066, IMAGE_TAG=stg）
+└── prod/   …ディレクトリ名 prod → .env.production.example から生成（COMPOSE_PROJECT_NAME=idp-prod, WEB_PORT=8060, API_PORT=8061, IMAGE_TAG=prod）
 ```
 
 **各環境ディレクトリで必要な設定**:

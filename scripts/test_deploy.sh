@@ -171,7 +171,7 @@ grep -q -- '-f docker-compose.deploy.yml -f docker-compose.domain-split.yml' "$D
   { echo "domain-split must overlay docker-compose.domain-split.yml" >&2; cat "$DOCKER_STUB_LOG" >&2; exit 1; }
 grep -q 'http://127.0.0.1:8060/readyz' "$CURL_STUB_LOG" ||
   { echo "domain-split must probe the web readiness endpoint" >&2; cat "$CURL_STUB_LOG" >&2; exit 1; }
-grep -q 'http://127.0.0.1:8070/readyz' "$CURL_STUB_LOG" ||
+grep -q 'http://127.0.0.1:8061/readyz' "$CURL_STUB_LOG" ||
   { echo "domain-split must probe the api readiness endpoint" >&2; cat "$CURL_STUB_LOG" >&2; exit 1; }
 # 画面（/login・/admin）を返すのは web なので、まとめの URL は PUBLIC_WEB_BASE_URL 基点にする。
 grep -q 'ログイン URL: https://id.example.com/' /tmp/deploy-domain-split.out ||
@@ -188,7 +188,7 @@ sed -i 's/^API_BIND_HOST=.*/API_BIND_HOST=::1/' .env
 ./scripts/deploy.sh app >/tmp/deploy-ipv6.out 2>&1
 grep -q 'http://\[::1\]:8060/readyz' "$CURL_STUB_LOG" ||
   { echo "IPv6 wildcard bind must probe the bracketed IPv6 loopback" >&2; cat "$CURL_STUB_LOG" >&2; exit 1; }
-grep -q 'http://\[::1\]:8070/readyz' "$CURL_STUB_LOG" ||
+grep -q 'http://\[::1\]:8061/readyz' "$CURL_STUB_LOG" ||
   { echo "IPv6 literal bind must be bracketed in the probe URL" >&2; cat "$CURL_STUB_LOG" >&2; exit 1; }
 sed -i 's/^WEB_BIND_HOST=.*/WEB_BIND_HOST=127.0.0.1/' .env
 sed -i 's/^API_BIND_HOST=.*/API_BIND_HOST=127.0.0.1/' .env
@@ -403,7 +403,9 @@ cd "$TMP/stg"
 ./deploy.sh migrate >/tmp/deploy-stg.out 2>&1
 grep -q '生成元: .env.staging.example' /tmp/deploy-stg.out ||
   { echo "stg dir must seed .env from .env.staging.example" >&2; cat /tmp/deploy-stg.out >&2; exit 1; }
-grep -q '^WEB_PORT=8061$' .env || { echo "stg .env must use staging WEB_PORT (8061)" >&2; exit 1; }
+grep -q '^WEB_PORT=8065$' .env || { echo "stg .env must use staging WEB_PORT (8065)" >&2; exit 1; }
+# domain-split 用の api ポートも prod（8061）と衝突しない stg 既定になっていること。
+grep -q '^API_PORT=8066$' .env || { echo "stg .env must use staging API_PORT (8066)" >&2; exit 1; }
 grep -q '^IMAGE_TAG=stg$' .env || { echo "stg .env must use staging IMAGE_TAG (stg)" >&2; exit 1; }
 grep -q '^COMPOSE_PROJECT_NAME=idp-stg$' .env || { echo "stg .env must use idp-stg project name" >&2; exit 1; }
 # DATABASE_URL はテンプレートの :3307 を保持しつつ CHANGE-ME を実パスワードへ置換する。

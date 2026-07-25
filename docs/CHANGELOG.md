@@ -1,3 +1,14 @@
+## 2026-07-25（デプロイ: 既定の外部公開ポートを prod 8060/8061・stg 8065/8066 に整理）
+
+- 同一ホストに stg/prod を併置したとき 4 つの公開ポート（各環境の web / api）が重複せず、
+  かつ環境ごとに連番でまとまるよう既定値を並べ直した。prod = web `8060` / api `8061`、
+  stg = web `8065` / api `8066`。`API_PORT` は `PUBLISH_TOPOLOGY=domain-split` のときだけ使う。
+- 変更したのは既定値のみ（`.env.example`・`.env.production.example`・`.env.staging.example`、
+  `docker-compose.domain-split.yml` と `deploy.sh` のフォールバック）。既存環境の `.env` に
+  明示された値はそのまま優先されるため、動作中のデプロイのポートは変わらない。
+- stg の `ISSUER` / `PUBLIC_WEB_BASE_URL` の既定も `http://localhost:8065` に合わせた。
+- `test_deploy.sh` に stg の `API_PORT` 既定の検証を追加した。
+
 ## 2026-07-25（api/web の別ドメイン公開をデプロイ構成として実装した。ADR-0015）
 
 - **`PUBLISH_TOPOLOGY` を新設**（`single-origin` 既定 / `domain-split`）。`domain-split` では

@@ -588,7 +588,7 @@ replace_app_containers() {
   ready_urls=("http://${web_host}:${web_port}/readyz")
   if [[ "$PUBLISH_TOPOLOGY" == "domain-split" ]]; then
     # domain-split では web と api が別ポートで公開されるため、両方の readiness を確認する。
-    api_port="$(get_env_var API_PORT)"; api_port="${api_port:-8070}"
+    api_port="$(get_env_var API_PORT)"; api_port="${api_port:-8061}"
     api_host="$(probe_host "$(get_env_var API_BIND_HOST)")"
     ready_urls+=("http://${api_host}:${api_port}/readyz")
   fi
