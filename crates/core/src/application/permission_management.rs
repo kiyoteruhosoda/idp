@@ -384,6 +384,14 @@ mod tests {
     }
     #[async_trait]
     impl TenantMembershipRepository for FakeMemberships {
+        async fn update_status(
+            &self,
+            _t: TenantId,
+            _u: Uuid,
+            _s: crate::domain::values::MembershipStatus,
+        ) -> DomainResult<()> {
+            unreachable!()
+        }
         async fn create(&self, _m: &TenantMembership) -> DomainResult<()> {
             unreachable!()
         }

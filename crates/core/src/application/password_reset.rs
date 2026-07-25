@@ -476,6 +476,14 @@ mod tests {
     }
     #[async_trait]
     impl RefreshTokenRepository for FakeRefreshTokens {
+        async fn revoke_all_for_user_in_tenant(
+            &self,
+            _tenant: TenantId,
+            _user_id: Uuid,
+            _now: DateTime<Utc>,
+        ) -> DomainResult<()> {
+            unreachable!()
+        }
         async fn create(&self, _t: &RefreshToken) -> DomainResult<()> {
             unreachable!()
         }

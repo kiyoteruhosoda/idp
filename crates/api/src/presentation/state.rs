@@ -454,6 +454,8 @@ impl AppState {
             users.clone(),
             tenant_memberships.clone(),
             user_permissions.clone(),
+            // ゲスト停止時、当該テナント分の refresh token を失効させる（MT24）。
+            refresh_tokens.clone(),
             system_settings.clone(),
             Arc::new(LettreSmtpMailer::new()),
             audit.clone(),

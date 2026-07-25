@@ -1,3 +1,22 @@
+## 2026-07-25（ゲストメンバーシップの一時停止を追加した。MT24）
+
+- **`tenant_memberships.status` に `SUSPENDED` を追加**（マイグレーション `0014_membership_suspended`）。
+  従来ゲストのアクセスを止める手段は解除（削除）だけで、解除は当該テナント scope の権限行も消すため
+  戻すには招待からやり直しだった。休職・委託の中断のような一時的な措置のために、メンバーシップ行と
+  権限行を残したままアクセスだけを止められるようにした。
+- **`PATCH /{tenant_id}/admin/members/{user_id}`**（`status` = `SUSPENDED` / `ACTIVE`）を追加し、
+  管理コンソールのメンバー一覧にゲスト行の「一時停止」「再開」を追加した。停止できるのは GUEST の
+  `ACTIVE` のみ、再開できるのは `SUSPENDED` のみ（HOME は所属元そのもので、止めるとログイン先が
+  無くなるため不可。アカウント無効化を使う）。
+- `is_active_member`（`/authorize` のメンバーシップ判定）は `status = 'ACTIVE'` を見るため、
+  値の追加だけで停止が効く（判定側の変更は不要）。
+- **停止時に当該テナントで発行済みの refresh token を失効させる**（`revoke_all_for_user_in_tenant` を
+  追加）。既存の refresh token は `/authorize` を通らずトークンを更新し続けられるため、失効させないと
+  停止が効くのは最長で refresh token の寿命（既定 30 日）先になる。**他テナント分は失効させない**
+  （ゲストの停止は 1 テナントへの措置で、所属元での利用を巻き込んではいけない）。SSO セッションも
+  ホスト単位で共有されるため失効させない。
+- 監査へ `tenant_membership.suspended` / `tenant_membership.resumed` を記録する。
+
 ## 2026-07-25（管理者による MFA 解除を追加した。MT21）
 
 - **`POST /{tenant_id}/admin/users/{user_id}/mfa-reset` を追加**（`idp.tenant.admin` 必須）。

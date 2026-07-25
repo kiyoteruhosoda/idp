@@ -38,7 +38,7 @@ use crate::domain::tenant::{Tenant, TenantId};
 use crate::domain::tenant_membership::TenantMembership;
 use crate::domain::totp_secret::TotpSecret;
 use crate::domain::user::User;
-use crate::domain::values::{SigningKeyStatus, UserStatus};
+use crate::domain::values::{MembershipStatus, SigningKeyStatus, UserStatus};
 use crate::domain::webauthn_credential::WebAuthnCredential;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -106,6 +106,15 @@ pub trait TenantMembershipRepository: Send + Sync {
     ) -> Result<Option<TenantMembership>>;
     /// 招待を承諾し、`ACTIVE` へ遷移させる（トークン関連カラムは呼び出し側でクリアする）。
     async fn activate(&self, tenant_id: TenantId, user_id: Uuid) -> Result<()>;
+    /// メンバーシップの状態を更新する（`ACTIVE` ⇄ `SUSPENDED` の一時停止・再開。MT24）。
+    /// 遷移の可否判定は Application 層（[`crate::domain::tenant_membership::TenantMembership`] の
+    /// `can_be_suspended` / `can_be_resumed`）が担い、本メソッドは書き込みのみを行う。
+    async fn update_status(
+        &self,
+        tenant_id: TenantId,
+        user_id: Uuid,
+        status: MembershipStatus,
+    ) -> Result<()>;
     /// ゲストメンバーシップを解除する（HOME の解除は呼び出し側が禁止する）。
     async fn delete(&self, tenant_id: TenantId, user_id: Uuid) -> Result<()>;
 }
@@ -397,6 +406,17 @@ pub trait RefreshTokenRepository: Send + Sync {
     async fn exists_by_parent_hash(&self, parent_hash: &str) -> Result<bool>;
     /// 指定ユーザーの全 Refresh Token を失効させる（ユーザー単位の全セッション無効化、F5）。
     async fn revoke_all_for_user(&self, user_id: Uuid, revoked_at: DateTime<Utc>) -> Result<()>;
+    /// 指定テナントで発行済みの refresh token をまとめて失効させる（ゲストの一時停止。MT24）。
+    ///
+    /// ユーザー単位の全失効（[`revoke_all_for_user`](Self::revoke_all_for_user)）と違い、**他テナントでの
+    /// 利用は妨げない**。ゲストの停止は 1 つのテナントに対する措置であり、その利用者が所属元テナントで
+    /// 使っているトークンまで巻き込んではいけない。
+    async fn revoke_all_for_user_in_tenant(
+        &self,
+        tenant_id: TenantId,
+        user_id: Uuid,
+        revoked_at: DateTime<Utc>,
+    ) -> Result<()>;
 }
 
 /// ユーザーがクライアントに付与した同意済み scope の永続化（F3: Consent）。

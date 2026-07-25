@@ -208,6 +208,15 @@ pub fn build(state: WebState) -> Router {
             "/admin/members/{user_id}/reset-mfa",
             post(admin_members_console::reset_mfa),
         )
+        // ゲストメンバーシップの一時停止・再開（MT24）。解除（削除）と違い元に戻せる。
+        .route(
+            "/admin/members/{user_id}/suspend",
+            post(admin_members_console::suspend),
+        )
+        .route(
+            "/admin/members/{user_id}/resume",
+            post(admin_members_console::resume),
+        )
         .route(
             "/admin/members/{user_id}/delete",
             post(admin_members_console::delete),
@@ -448,6 +457,8 @@ mod tests {
             format!("/{tenant}/admin/members/{id}/status"),
             format!("/{tenant}/admin/members/{id}/reset-password"),
             format!("/{tenant}/admin/members/{id}/reset-mfa"),
+            format!("/{tenant}/admin/members/{id}/suspend"),
+            format!("/{tenant}/admin/members/{id}/resume"),
             format!("/{tenant}/admin/members/{id}/delete"),
             format!("/{tenant}/admin/users/{id}/permissions/grant"),
             format!("/{tenant}/admin/users/{id}/permissions/revoke"),

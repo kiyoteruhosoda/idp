@@ -21,7 +21,7 @@ use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::mailer::{Mailer, OutgoingEmail};
 use crate::domain::repositories::{
-    TenantMembershipRepository, UserPermissionRepository, UserRepository,
+    RefreshTokenRepository, TenantMembershipRepository, UserPermissionRepository, UserRepository,
 };
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
@@ -81,6 +81,8 @@ pub struct InvitationService {
     users: Arc<dyn UserRepository>,
     memberships: Arc<dyn TenantMembershipRepository>,
     permissions: Arc<dyn UserPermissionRepository>,
+    /// ゲスト停止時に当該テナント分の refresh token を失効させるために使う（MT24）。
+    refresh_tokens: Arc<dyn RefreshTokenRepository>,
     /// SMTP 接続情報の出所（MT14 のシステム設定。実行時に変更されるため送信ごとに引く）。
     system_settings: Arc<SystemSettingsService>,
     mailer: Arc<dyn Mailer>,
@@ -97,6 +99,7 @@ impl InvitationService {
         users: Arc<dyn UserRepository>,
         memberships: Arc<dyn TenantMembershipRepository>,
         permissions: Arc<dyn UserPermissionRepository>,
+        refresh_tokens: Arc<dyn RefreshTokenRepository>,
         system_settings: Arc<SystemSettingsService>,
         mailer: Arc<dyn Mailer>,
         audit: Arc<AuditService>,
@@ -108,6 +111,7 @@ impl InvitationService {
             users,
             memberships,
             permissions,
+            refresh_tokens,
             system_settings,
             mailer,
             audit,
@@ -334,6 +338,112 @@ impl InvitationService {
         Ok(())
     }
 
+    /// ゲストメンバーシップを一時停止する（MT24）。GUEST の `ACTIVE` のみ（それ以外は `Forbidden`）。
+    ///
+    /// 解除（[`revoke_membership`](Self::revoke_membership)）との違いは**元に戻せること**。
+    /// メンバーシップ行と当該テナント scope の権限行を残したまま `SUSPENDED` にし、アクセスだけを
+    /// 止める。再開すれば権限も含めて元の状態に戻るため、休職・委託の中断のような一時的な措置に使える。
+    ///
+    /// 併せて**当該テナントで発行済みの refresh token を失効させる**。停止は `/authorize` の
+    /// メンバーシップ判定（`is_active_member`）で効くが、既存の refresh token はそこを通らず
+    /// トークンを更新し続けられるため、これを失効させないと停止が効くのは最長で refresh token の
+    /// 寿命（既定 30 日）先になる。
+    ///
+    /// SSO セッションは**失効させない**。SSO セッションはホスト単位で共有され（ADR-0009 §8）、
+    /// 消すとその利用者の所属元テナントのログインまで巻き込む。停止は 1 テナントに対する措置であり、
+    /// 他テナントでの利用を妨げてはいけない。当該テナントへのアクセスは次の `/authorize` で止まる。
+    pub async fn suspend_membership(
+        &self,
+        host: TenantContext,
+        target_user_id: Uuid,
+        actor: Uuid,
+        ctx: &RequestContext,
+    ) -> Result<(), InvitationError> {
+        let host_id = host.tenant_id();
+        let membership = self.require_membership(host_id, target_user_id).await?;
+        if !membership.can_be_suspended() {
+            return Err(InvitationError::Forbidden(
+                "only active guest memberships can be suspended".to_string(),
+            ));
+        }
+
+        self.memberships
+            .update_status(host_id, target_user_id, MembershipStatus::Suspended)
+            .await
+            .map_err(|e| InvitationError::Internal(e.to_string()))?;
+
+        // 当該テナント分の refresh token を失効させる（他テナント分は残す）。失効できなければ
+        // 停止が効かないままになるため、成功を返さない（fail-closed）。メンバーシップは既に
+        // SUSPENDED だが、再実行は冪等ではないので（停止済みは Forbidden）、運用は解除か
+        // 再開→再停止で復旧する。
+        self.refresh_tokens
+            .revoke_all_for_user_in_tenant(host_id, target_user_id, self.clock.now())
+            .await
+            .map_err(|e| InvitationError::Internal(e.to_string()))?;
+
+        self.audit
+            .record(
+                AuditEventType::TenantMembershipSuspended,
+                AuditResult::Success,
+                Some(host_id),
+                Some(actor),
+                None,
+                Some(&format!("member={target_user_id}")),
+                ctx,
+            )
+            .await;
+        Ok(())
+    }
+
+    /// 一時停止したゲストメンバーシップを再開する（MT24）。`SUSPENDED` の GUEST のみ。
+    /// 権限行は停止中も残っているため、`ACTIVE` へ戻すだけで停止前の状態に復帰する。
+    pub async fn resume_membership(
+        &self,
+        host: TenantContext,
+        target_user_id: Uuid,
+        actor: Uuid,
+        ctx: &RequestContext,
+    ) -> Result<(), InvitationError> {
+        let host_id = host.tenant_id();
+        let membership = self.require_membership(host_id, target_user_id).await?;
+        if !membership.can_be_resumed() {
+            return Err(InvitationError::Forbidden(
+                "only suspended guest memberships can be resumed".to_string(),
+            ));
+        }
+
+        self.memberships
+            .update_status(host_id, target_user_id, MembershipStatus::Active)
+            .await
+            .map_err(|e| InvitationError::Internal(e.to_string()))?;
+
+        self.audit
+            .record(
+                AuditEventType::TenantMembershipResumed,
+                AuditResult::Success,
+                Some(host_id),
+                Some(actor),
+                None,
+                Some(&format!("member={target_user_id}")),
+                ctx,
+            )
+            .await;
+        Ok(())
+    }
+
+    /// 当該テナントのメンバーシップ行を取得する。不存在は `NotFound`（テナント越しの存在推測を防ぐ）。
+    async fn require_membership(
+        &self,
+        host_id: TenantId,
+        target_user_id: Uuid,
+    ) -> Result<TenantMembership, InvitationError> {
+        match self.memberships.find(host_id, target_user_id).await {
+            Ok(Some(m)) => Ok(m),
+            Ok(None) => Err(InvitationError::NotFound),
+            Err(e) => Err(InvitationError::Internal(e.to_string())),
+        }
+    }
+
     /// ゲストメンバーシップを解除する（ゲストの追放。§3）。HOME は解除できない（`Forbidden`）。
     /// 解除時、当該テナントを scope とするそのユーザーの権限行も削除する（§3）。
     ///
@@ -348,11 +458,7 @@ impl InvitationService {
         ctx: &RequestContext,
     ) -> Result<(), InvitationError> {
         let host_id = host.tenant_id();
-        let membership = match self.memberships.find(host_id, target_user_id).await {
-            Ok(Some(m)) => m,
-            Ok(None) => return Err(InvitationError::NotFound),
-            Err(e) => return Err(InvitationError::Internal(e.to_string())),
-        };
+        let membership = self.require_membership(host_id, target_user_id).await?;
         if membership.is_home() {
             return Err(InvitationError::Forbidden(
                 "home membership cannot be revoked".to_string(),
@@ -391,7 +497,7 @@ impl InvitationService {
 mod tests {
     use super::*;
     use crate::domain::audit::AuditEvent;
-    use crate::domain::error::Result as DomainResult;
+    use crate::domain::error::{DomainError, Result as DomainResult};
     use crate::domain::mailer::SmtpServerConfig;
     use crate::domain::repositories::{AuditLogSink, SystemSettingsRepository};
     use crate::domain::system_setting::SystemSetting;
@@ -476,12 +582,71 @@ mod tests {
         }
     }
 
+    /// テナント単位の refresh token 失効を記録するフェイク（MT24）。
+    #[derive(Default)]
+    struct FakeRefreshTokens {
+        revoked: Mutex<Vec<(TenantId, Uuid)>>,
+        fail: Mutex<bool>,
+    }
+    #[async_trait]
+    impl RefreshTokenRepository for FakeRefreshTokens {
+        async fn create(
+            &self,
+            _t: &crate::domain::refresh_token::RefreshToken,
+        ) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn find_by_hash(
+            &self,
+            _tenant: TenantId,
+            _h: &str,
+        ) -> DomainResult<Option<crate::domain::refresh_token::RefreshToken>> {
+            unreachable!()
+        }
+        async fn revoke(&self, _h: &str, _now: DateTime<Utc>) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn exists_by_parent_hash(&self, _p: &str) -> DomainResult<bool> {
+            unreachable!()
+        }
+        async fn revoke_all_for_user(&self, _u: Uuid, _now: DateTime<Utc>) -> DomainResult<()> {
+            // ゲストの停止はテナント単位で失効させる（ユーザー全体を巻き込まない）。
+            unreachable!()
+        }
+        async fn revoke_all_for_user_in_tenant(
+            &self,
+            tenant_id: TenantId,
+            user_id: Uuid,
+            _now: DateTime<Utc>,
+        ) -> DomainResult<()> {
+            if *self.fail.lock().unwrap() {
+                return Err(DomainError::Repository("connection lost".into()));
+            }
+            self.revoked.lock().unwrap().push((tenant_id, user_id));
+            Ok(())
+        }
+    }
+
     #[derive(Default)]
     struct FakeMemberships {
         rows: Mutex<Vec<TenantMembership>>,
     }
     #[async_trait]
     impl TenantMembershipRepository for FakeMemberships {
+        async fn update_status(
+            &self,
+            tenant_id: TenantId,
+            user_id: Uuid,
+            status: MembershipStatus,
+        ) -> DomainResult<()> {
+            let mut rows = self.rows.lock().unwrap();
+            let row = rows
+                .iter_mut()
+                .find(|m| m.tenant_id == tenant_id && m.user_id == user_id)
+                .ok_or_else(|| DomainError::Repository("membership not found".into()))?;
+            row.status = status;
+            Ok(())
+        }
         async fn create(&self, membership: &TenantMembership) -> DomainResult<()> {
             self.rows.lock().unwrap().push(membership.clone());
             Ok(())
@@ -713,6 +878,7 @@ mod tests {
         sink: Arc<CapturingSink>,
         settings: Arc<FakeSettingsRepo>,
         mailer: Arc<FakeMailer>,
+        refresh_tokens: Arc<FakeRefreshTokens>,
     ) -> InvitationService {
         let audit = Arc::new(AuditService::new(sink, Arc::new(FixedClock(now()))));
         let system_settings = Arc::new(SystemSettingsService::new(
@@ -725,6 +891,7 @@ mod tests {
             Arc::new(FakeUsers { user }),
             memberships,
             permissions,
+            refresh_tokens,
             system_settings,
             mailer,
             audit,
@@ -747,6 +914,7 @@ mod tests {
             sink,
             Arc::new(FakeSettingsRepo::default()),
             Arc::new(FakeMailer::default()),
+            Arc::new(FakeRefreshTokens::default()),
         )
     }
 
@@ -823,6 +991,7 @@ mod tests {
             sink.clone(),
             smtp_configured_settings(),
             mailer.clone(),
+            Arc::new(FakeRefreshTokens::default()),
         );
 
         let created = svc
@@ -870,6 +1039,7 @@ mod tests {
             Arc::new(CapturingSink::default()),
             Arc::new(FakeSettingsRepo::default()), // SMTP 未設定
             mailer.clone(),
+            Arc::new(FakeRefreshTokens::default()),
         );
 
         let created = svc
@@ -898,6 +1068,7 @@ mod tests {
                 fail: true,
                 ..Default::default()
             }),
+            Arc::new(FakeRefreshTokens::default()),
         );
 
         let created = svc
@@ -1014,6 +1185,7 @@ mod tests {
             }),
             memberships.clone(),
             Arc::new(FakePermissions::default()),
+            Arc::new(FakeRefreshTokens::default()),
             system_settings,
             Arc::new(FakeMailer::default()),
             audit,
@@ -1144,5 +1316,163 @@ mod tests {
         ));
         // HOME は残る。
         assert_eq!(memberships.rows.lock().unwrap().len(), 1);
+    }
+
+    /// MT24: 停止はメンバーシップと権限を残したまま `SUSPENDED` にし、当該テナント分の
+    /// refresh token を失効させる。再開すると停止前の状態（権限込み）へ戻る。
+    #[tokio::test]
+    async fn suspends_and_resumes_guest_keeping_membership_and_permissions() {
+        let host: TenantId = Uuid::now_v7().into();
+        let home: TenantId = Uuid::now_v7().into();
+        let guest = Uuid::new_v4();
+        let memberships = Arc::new(FakeMemberships::default());
+        memberships
+            .rows
+            .lock()
+            .unwrap()
+            .push(TenantMembership::new_active_guest(host, guest, now()));
+        let permissions = Arc::new(FakePermissions::default());
+        permissions
+            .granted
+            .lock()
+            .unwrap()
+            .push((host, guest, "idp.tenant.admin".to_string()));
+        let refresh_tokens = Arc::new(FakeRefreshTokens::default());
+        let sink = Arc::new(CapturingSink::default());
+        let svc = service_with_mail(
+            Some(test_user(guest, home)),
+            memberships.clone(),
+            permissions.clone(),
+            sink.clone(),
+            Arc::new(FakeSettingsRepo::default()),
+            Arc::new(FakeMailer::default()),
+            refresh_tokens.clone(),
+        );
+
+        svc.suspend_membership(TenantContext::new(host), guest, Uuid::new_v4(), &ctx())
+            .await
+            .expect("suspend");
+
+        let row = memberships.rows.lock().unwrap()[0].clone();
+        assert!(row.is_suspended());
+        assert!(!row.is_active(), "suspended guests must not pass is_active");
+        // 解除（削除）と違い、メンバーシップも権限も残る。
+        assert_eq!(memberships.rows.lock().unwrap().len(), 1);
+        assert_eq!(permissions.granted.lock().unwrap().len(), 1);
+        // 当該テナント分の refresh token だけを失効させる。
+        assert_eq!(*refresh_tokens.revoked.lock().unwrap(), vec![(host, guest)]);
+        assert_eq!(
+            sink.events.lock().unwrap()[0].event_type,
+            AuditEventType::TenantMembershipSuspended
+        );
+
+        // 再開すると ACTIVE へ戻り、権限もそのまま。
+        svc.resume_membership(TenantContext::new(host), guest, Uuid::new_v4(), &ctx())
+            .await
+            .expect("resume");
+        assert!(memberships.rows.lock().unwrap()[0].is_active());
+        assert_eq!(permissions.granted.lock().unwrap().len(), 1);
+        assert_eq!(
+            sink.events.lock().unwrap()[1].event_type,
+            AuditEventType::TenantMembershipResumed
+        );
+    }
+
+    /// HOME・招待中・二重停止・未停止の再開はいずれも拒否する（遷移の可否は domain が持つ）。
+    #[tokio::test]
+    async fn suspend_and_resume_reject_invalid_transitions() {
+        let host: TenantId = Uuid::now_v7().into();
+        let home: TenantId = Uuid::now_v7().into();
+        let user = Uuid::new_v4();
+        let memberships = Arc::new(FakeMemberships::default());
+        memberships
+            .rows
+            .lock()
+            .unwrap()
+            .push(TenantMembership::new_home(host, user, now()));
+        let svc = service(
+            Some(test_user(user, host)),
+            memberships.clone(),
+            Arc::new(FakePermissions::default()),
+            Arc::new(CapturingSink::default()),
+        );
+
+        // HOME は停止できない（所属元を止めるとログイン先が無くなる）。
+        assert!(matches!(
+            svc.suspend_membership(TenantContext::new(host), user, Uuid::new_v4(), &ctx())
+                .await,
+            Err(InvitationError::Forbidden(_))
+        ));
+        // ACTIVE を再開しようとしても拒否。
+        assert!(matches!(
+            svc.resume_membership(TenantContext::new(host), user, Uuid::new_v4(), &ctx())
+                .await,
+            Err(InvitationError::Forbidden(_))
+        ));
+        // メンバーシップが無ければ NotFound（テナント越しの存在推測を防ぐ）。
+        assert!(matches!(
+            svc.suspend_membership(
+                TenantContext::new(Uuid::now_v7().into()),
+                user,
+                Uuid::new_v4(),
+                &ctx()
+            )
+            .await,
+            Err(InvitationError::NotFound)
+        ));
+        // 招待中（未承諾）はまだアクセスが無いため停止対象にならない。
+        let invited = Uuid::new_v4();
+        memberships.rows.lock().unwrap().push(TenantMembership {
+            tenant_id: host,
+            user_id: invited,
+            membership_type: MembershipType::Guest,
+            status: MembershipStatus::Invited,
+            invited_by: None,
+            invitation_token_hash: None,
+            invitation_expires_at: None,
+            created_at: now(),
+            updated_at: now(),
+        });
+        assert!(matches!(
+            svc.suspend_membership(TenantContext::new(host), invited, Uuid::new_v4(), &ctx())
+                .await,
+            Err(InvitationError::Forbidden(_))
+        ));
+        let _ = home;
+    }
+
+    /// refresh token の失効に失敗したら停止は成功を返さない（停止したのにトークンで
+    /// アクセスし続けられる、という取り違えを防ぐ）。
+    #[tokio::test]
+    async fn suspend_fails_when_tenant_refresh_tokens_cannot_be_revoked() {
+        let host: TenantId = Uuid::now_v7().into();
+        let home: TenantId = Uuid::now_v7().into();
+        let guest = Uuid::new_v4();
+        let memberships = Arc::new(FakeMemberships::default());
+        memberships
+            .rows
+            .lock()
+            .unwrap()
+            .push(TenantMembership::new_active_guest(host, guest, now()));
+        let refresh_tokens = Arc::new(FakeRefreshTokens::default());
+        *refresh_tokens.fail.lock().unwrap() = true;
+        let sink = Arc::new(CapturingSink::default());
+        let svc = service_with_mail(
+            Some(test_user(guest, home)),
+            memberships.clone(),
+            Arc::new(FakePermissions::default()),
+            sink.clone(),
+            Arc::new(FakeSettingsRepo::default()),
+            Arc::new(FakeMailer::default()),
+            refresh_tokens,
+        );
+
+        assert!(matches!(
+            svc.suspend_membership(TenantContext::new(host), guest, Uuid::new_v4(), &ctx())
+                .await,
+            Err(InvitationError::Internal(_))
+        ));
+        // 失敗したときは監査へ成功を残さない。
+        assert!(sink.events.lock().unwrap().is_empty());
     }
 }

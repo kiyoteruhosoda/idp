@@ -778,6 +778,27 @@ impl ApiClient {
         .await
     }
 
+    /// ゲストメンバーシップの一時停止・再開（`PATCH /admin/members/{user_id}`。MT24）。
+    /// `status` は `SUSPENDED`（停止）または `ACTIVE`（再開）。
+    pub async fn update_member_status(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        user_id: &str,
+        status: &str,
+    ) -> Result<(), AdminApiError> {
+        self.admin_send_no_content(
+            Method::PATCH,
+            tenant_id,
+            &format!("/admin/members/{user_id}"),
+            correlation_id,
+            sso,
+            Some(serde_json::json!({ "status": status })),
+        )
+        .await
+    }
+
     /// ゲストメンバーシップの解除（`DELETE /admin/members/{user_id}`。HOME は不可）。
     pub async fn revoke_member(
         &self,

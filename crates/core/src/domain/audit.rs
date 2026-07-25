@@ -38,6 +38,10 @@ pub enum AuditEventType {
     TenantInvitationCreated,
     TenantInvitationAccepted,
     TenantMembershipRevoked,
+    /// ゲストメンバーシップの一時停止・再開（MT24）。解除（削除）と違い、メンバーシップ行と
+    /// 当該テナント scope の権限行は残る。
+    TenantMembershipSuspended,
+    TenantMembershipResumed,
     /// 管理者による利用者の作成（ADR-0009 §5）。自動生成パスワードは記録しない。
     UserCreated,
     /// 管理者による利用者の状態変更（有効化・無効化）・削除・パスワード再発行（ADR-0009 §5）。
@@ -92,6 +96,8 @@ impl AuditEventType {
             Self::TenantInvitationCreated => "tenant_invitation.created",
             Self::TenantInvitationAccepted => "tenant_invitation.accepted",
             Self::TenantMembershipRevoked => "tenant_membership.revoked",
+            Self::TenantMembershipSuspended => "tenant_membership.suspended",
+            Self::TenantMembershipResumed => "tenant_membership.resumed",
             Self::UserCreated => "user.created",
             Self::UserStatusChanged => "user.status_changed",
             Self::UserDeleted => "user.deleted",
