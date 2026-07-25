@@ -345,6 +345,11 @@ pub struct RuntimeSettingResponse {
     pub db_value: Option<String>,
     /// この画面（DB）から上書きできるか（`owner == DB_MANAGED` かつ非 secret）。
     pub editable: bool,
+    /// **保存済みだが実行中の api へ未反映**か（MT27）。DB に保存された値と、api が起動時に
+    /// 解決した有効値がずれている状態を指す。上書きの**解除**が未反映の場合も `true`。
+    pub pending_restart: bool,
+    /// web も消費するキーか（ADR-0013）。`true` のキーは反映に **api と web の両方**の再起動が要る。
+    pub shared_with_web: bool,
 }
 
 /// システム設定の公開表現（`GET/PUT /{tenant_id}/admin/system-settings`）。SMTP パスワードは

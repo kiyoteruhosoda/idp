@@ -66,6 +66,42 @@ pub struct ResolvedSetting {
     pub description: String,
 }
 
+impl ResolvedSetting {
+    /// **保存済みだが実行中のプロセスへ未反映**か（MT27）。
+    ///
+    /// `resolved_settings` は起動時のスナップショットで、`db_current` は現在 `system_settings` に
+    /// 保存されている上書き値（未設定は `None`）である。この 2 つがずれていれば、設定画面で保存した
+    /// 値はまだ効いていない。
+    ///
+    /// 保存しても挙動が変わらないことは画面から見えず、運用者は「保存したのに直らない」という
+    /// 誤った結論に至る。判定をここに置くのは、比較のルール（とくに**上書きの解除**も未反映で
+    /// ある点）を表示側で再現させないためである。
+    ///
+    /// 判定するのは `DbManaged` かつ非 secret かつ `restart_required` のキーだけである。
+    ///
+    /// - `restart_required` が false のキーは参照のたびに DB を読むため常に反映済み。
+    /// - secret は起動時スナップショットに平文を残さない（`value` が常に `None`）ため比較できない。
+    /// - **`DbManaged` 以外は DB 行があっても比較しない。** `EnvLocked` / `Builtin` のキーは解決時に
+    ///   DB を一切参照しないため `source` が `Db` になり得ず、残存行と突き合わせると永遠に未反映と
+    ///   出続ける。しかも `editable` が false なので画面から消せず、警告が消せないまま居座る。
+    ///   出所区分が `DbManaged` から変わったキー（`PUBLIC_WEB_BASE_URL`・`COOKIE_DOMAIN` は
+    ///   ADR-0012 で `EnvLocked` へ移した）の `system_settings` 行が残っている環境で実際に起きる。
+    ///   これらの行はそもそも設定の解決に影響しない（無視される）ので、未反映ではない。
+    pub fn is_pending_restart(&self, db_current: Option<&str>) -> bool {
+        if !self.restart_required || self.secret || self.owner != SettingOwner::DbManaged {
+            return false;
+        }
+        match db_current {
+            // DB に上書きがある: 起動時にも同じ値を DB から採っていれば反映済み。
+            Some(value) => {
+                !(self.source == SettingSource::Db && self.value.as_deref() == Some(value))
+            }
+            // DB に上書きが無い: 起動時に DB から採っていたなら、解除がまだ効いていない。
+            None => self.source == SettingSource::Db,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingSafetyStatus {
     Safe,
@@ -619,6 +655,99 @@ mod tests {
         ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// MT27: 起動時スナップショットと現在の DB 上書き値がずれていれば「保存済み・未反映」。
+    #[test]
+    fn pending_restart_compares_the_startup_snapshot_with_the_stored_override() {
+        let setting = |source: SettingSource, value: Option<&str>| ResolvedSetting {
+            key: "COOKIE_SECURE".to_string(),
+            owner: SettingOwner::DbManaged,
+            source,
+            secret: false,
+            restart_required: true,
+            default_risk: DefaultRisk::Safe,
+            status: SettingSafetyStatus::Safe,
+            reason: String::new(),
+            value: value.map(str::to_string),
+            default_value: Some("false".to_string()),
+            description: String::new(),
+        };
+
+        // 起動時に DB から採った値と保存値が一致 → 反映済み。
+        assert!(!setting(SettingSource::Db, Some("true")).is_pending_restart(Some("true")));
+        // 保存値が変わった → 未反映。
+        assert!(setting(SettingSource::Db, Some("true")).is_pending_restart(Some("false")));
+        // 起動時は ENV/既定値で、あとから DB 上書きを保存した → 未反映。
+        assert!(setting(SettingSource::Env, Some("false")).is_pending_restart(Some("true")));
+        // **上書きの解除も未反映**（起動時は DB から採っていた）。ここを取りこぼすと、
+        // 「解除したのに元の値に戻らない」が画面から見えない。
+        assert!(setting(SettingSource::Db, Some("true")).is_pending_restart(None));
+        // 起動時も現在も DB 上書きが無い → 反映済み。
+        assert!(!setting(SettingSource::Env, Some("false")).is_pending_restart(None));
+    }
+
+    /// 出所区分が `DbManaged` から `EnvLocked` へ変わったキー（ADR-0012 の
+    /// `PUBLIC_WEB_BASE_URL`・`COOKIE_DOMAIN`）の `system_settings` 行が残っていても未反映にしない。
+    ///
+    /// `EnvLocked` は解決時に DB を見ないので `source` が `Db` になり得ず、突き合わせると永遠に
+    /// 未反映と出る。しかも `editable` が false で画面から消せないため、再起動しても消えない警告が
+    /// 居座ることになる。残存行は設定の解決に影響しない（無視される）ので未反映ではない。
+    #[test]
+    fn stale_rows_for_env_locked_keys_are_not_reported_as_pending() {
+        let env_locked = ResolvedSetting {
+            key: "PUBLIC_WEB_BASE_URL".to_string(),
+            owner: SettingOwner::EnvLocked,
+            // EnvLocked は DB を参照しないため、DB 行があっても source は Env / Builtin にしかならない。
+            source: SettingSource::Env,
+            secret: false,
+            restart_required: true,
+            default_risk: DefaultRisk::Safe,
+            status: SettingSafetyStatus::Safe,
+            reason: String::new(),
+            value: Some("https://idp.example.com".to_string()),
+            default_value: None,
+            description: String::new(),
+        };
+        assert!(!env_locked.is_pending_restart(Some("https://old.example.com")));
+        assert!(!env_locked.is_pending_restart(None));
+
+        // Builtin（常に既定値）も同じ理由で対象外。
+        let builtin = ResolvedSetting {
+            key: "BIND_ADDR".to_string(),
+            owner: SettingOwner::Builtin,
+            source: SettingSource::Builtin,
+            ..env_locked.clone()
+        };
+        assert!(!builtin.is_pending_restart(Some("0.0.0.0:9999")));
+    }
+
+    /// 再起動不要のキーは参照のたびに DB を読むため常に反映済み。secret は平文をスナップショットに
+    /// 残さない（比較できない）ため未反映とは判定しない。
+    #[test]
+    fn pending_restart_is_never_reported_for_live_or_secret_settings() {
+        let base = ResolvedSetting {
+            key: "SMTP_HOST".to_string(),
+            owner: SettingOwner::DbManaged,
+            source: SettingSource::Db,
+            secret: false,
+            restart_required: false,
+            default_risk: DefaultRisk::Safe,
+            status: SettingSafetyStatus::Safe,
+            reason: String::new(),
+            value: Some("old".to_string()),
+            default_value: None,
+            description: String::new(),
+        };
+        assert!(!base.is_pending_restart(Some("new")));
+
+        let secret = ResolvedSetting {
+            secret: true,
+            restart_required: true,
+            value: None,
+            ..base.clone()
+        };
+        assert!(!secret.is_pending_restart(Some("new")));
     }
 
     #[test]

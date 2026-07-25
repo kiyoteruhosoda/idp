@@ -702,6 +702,10 @@ pub struct AdminSettings<'a> {
     pub error_key: Option<&'a str>,
     /// root のみ `Some`。SMTP 設定区画を描画する。
     pub system: Option<&'a crate::admin_dto::SystemSettingsView>,
+    /// 保存済みだが api へ未反映のキー名（MT27）。空なら未反映なし。
+    pub pending_api_keys: &'a [String],
+    /// api は反映済みだが web が古い共有キー名（MT27）。api だけを再起動した状態で残る。
+    pub stale_web_keys: &'a [String],
 }
 
 /// 利用者のセルフサービス設定画面（`GET /{tenant_id}/settings`。MT15）。パスワード変更・言語設定・
