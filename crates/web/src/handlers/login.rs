@@ -99,6 +99,7 @@ pub async fn login(
     // FluentBundle は Send でないため、await をまたがないようここで生成する。
     let messages = Messages::new(locale(&headers));
     let secure = state.config.cookie_secure();
+    let domain = state.config.cookie_domain();
     match outcome {
         InternalAuthenticateResponse::Success {
             redirect_to,
@@ -107,55 +108,46 @@ pub async fn login(
             user_language,
         } => {
             // SSO Cookie を発行し、短命の auth_session_id Cookie は失効させる。
-            let sso_cookie = cookies::build(
+            let mut set_cookies = cookies::shared_set_cookie_headers(
                 cookies::SSO_SESSION_COOKIE,
                 &sso_session_id,
                 sso_absolute_ttl_secs,
                 secure,
+                domain,
             );
-            let expire_auth = cookies::expire(cookies::AUTH_SESSION_COOKIE, secure);
+            set_cookies.extend(cookies::shared_expire_headers(
+                cookies::AUTH_SESSION_COOKIE,
+                secure,
+                domain,
+            ));
             // ユーザーの DB 言語設定があれば lang Cookie に同期する（MT20: DB > Cookie の優先順）。
-            let redirect = found(&redirect_to);
             if let Some(lang) = user_language
                 .as_deref()
                 .and_then(crate::i18n::Locale::from_tag)
             {
-                let lang_cookie = cookies::build(
-                    cookies::LANG_COOKIE,
-                    lang.as_tag(),
-                    cookies::LANG_COOKIE_MAX_AGE_SECS,
-                    secure,
-                );
-                (
-                    AppendHeaders([
-                        (header::SET_COOKIE, sso_cookie),
-                        (header::SET_COOKIE, expire_auth),
-                        (header::SET_COOKIE, lang_cookie),
-                    ]),
-                    redirect,
-                )
-                    .into_response()
-            } else {
-                (
-                    AppendHeaders([
-                        (header::SET_COOKIE, sso_cookie),
-                        (header::SET_COOKIE, expire_auth),
-                    ]),
-                    redirect,
-                )
-                    .into_response()
+                set_cookies.push((
+                    header::SET_COOKIE,
+                    cookies::build(
+                        cookies::LANG_COOKIE,
+                        lang.as_tag(),
+                        cookies::LANG_COOKIE_MAX_AGE_SECS,
+                        secure,
+                    ),
+                ));
             }
+            (AppendHeaders(set_cookies), found(&redirect_to)).into_response()
         }
         InternalAuthenticateResponse::MfaRequired { auth_session_id } => {
             // パスワード認証成功・MFA 必要: auth_session_id Cookie を維持して TOTP 入力画面へ。
-            let auth_cookie = cookies::build(
+            let set_cookies = cookies::shared_set_cookie_headers(
                 cookies::AUTH_SESSION_COOKIE,
                 &auth_session_id,
                 state.config.auth_session_ttl_secs(),
                 secure,
+                domain,
             );
             (
-                AppendHeaders([(header::SET_COOKIE, auth_cookie)]),
+                AppendHeaders(set_cookies),
                 found(&format!("{}/mfa/totp", tenant.prefix())),
             )
                 .into_response()
@@ -163,14 +155,15 @@ pub async fn login(
         InternalAuthenticateResponse::PasswordChangeRequired { auth_session_id } => {
             // パスワード認証成功・強制変更必要（ADR-0009 §5）: auth_session_id Cookie を維持して
             // パスワード変更画面へ。
-            let auth_cookie = cookies::build(
+            let set_cookies = cookies::shared_set_cookie_headers(
                 cookies::AUTH_SESSION_COOKIE,
                 &auth_session_id,
                 state.config.auth_session_ttl_secs(),
                 secure,
+                domain,
             );
             (
-                AppendHeaders([(header::SET_COOKIE, auth_cookie)]),
+                AppendHeaders(set_cookies),
                 found(&format!("{}/password-change", tenant.prefix())),
             )
                 .into_response()
@@ -179,9 +172,10 @@ pub async fn login(
             // 期限切れ・不正な auth_session_id はここでクリアして `/login` へ戻す。Cookie が無くなれば
             // 次の GET はポータルログイン（クライアント非依存）を表示するため、放置された OIDC セッション
             // Cookie が残ってもエンドユーザーが自分のアカウント画面へ入れなくなる状態を自己回復する。
-            let expire = cookies::expire(cookies::AUTH_SESSION_COOKIE, secure);
+            let set_cookies =
+                cookies::shared_expire_headers(cookies::AUTH_SESSION_COOKIE, secure, domain);
             (
-                AppendHeaders([(header::SET_COOKIE, expire)]),
+                AppendHeaders(set_cookies),
                 found(&format!("{}/login", tenant.prefix())),
             )
                 .into_response()
@@ -222,25 +216,24 @@ pub async fn login(
             sso_absolute_ttl_secs,
         } => {
             // SSO Cookie を発行し、同意画面用の auth_session_id Cookie を設定する。
-            let sso_cookie = cookies::build(
+            let mut set_cookies = cookies::shared_set_cookie_headers(
                 cookies::SSO_SESSION_COOKIE,
                 &sso_session_id,
                 sso_absolute_ttl_secs,
                 secure,
+                domain,
             );
             // auth_session_id はまだ有効（同意画面で使う）ので期限をそのまま保持する。
             // 具体的な TTL は api 側で設定済みのため、ここでは既存の Cookie を上書きする。
-            let auth_cookie = cookies::build(
+            set_cookies.extend(cookies::shared_set_cookie_headers(
                 cookies::AUTH_SESSION_COOKIE,
                 &new_auth_session_id,
                 state.config.auth_session_ttl_secs(),
                 secure,
-            );
+                domain,
+            ));
             (
-                AppendHeaders([
-                    (header::SET_COOKIE, sso_cookie),
-                    (header::SET_COOKIE, auth_cookie),
-                ]),
+                AppendHeaders(set_cookies),
                 found(&format!("{}/consent", tenant.prefix())),
             )
                 .into_response()

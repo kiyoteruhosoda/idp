@@ -47,3 +47,8 @@ tower = { workspace = true, features = ["util"] }
 jsonwebtoken = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+# web→api E2E テスト（ADR-0012 §7）: api/web を実サーバとして同時起動し、Cookie jar 有効の
+# クライアントで SSO Cookie の越境を実挙動で検証する。dev-dependency のため web の
+# 「sqlx 非依存」という crate 境界（ADR-0007)は侵さない。
+idp-web = { path = "../web" }
+reqwest = { workspace = true, features = ["cookies"] }

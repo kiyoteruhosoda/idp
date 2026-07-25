@@ -60,6 +60,9 @@ pub struct TestEnv {
     pub pool: MySqlPool,
     /// 基底 issuer（`config.issuer()`）。per-tenant issuer は `<issuer>/<tenant_id>`。
     pub issuer: String,
+    /// web 画面の公開ベース URL（`config.public_web_base_url()`）。`/authorize` のログイン・同意
+    /// リダイレクトは ADR-0012 §4 でこの絶対 URL 基点になった（既定は issuer と同一オリジン）。
+    pub public_web_base_url: String,
     /// seed 済み root テナントの UUID（固定値だが構造 `parent_tenant_id IS NULL` で DB から引く）。
     pub root_tenant_id: String,
     /// seed の初期管理者（root 所属・idp.system.admin 保有）の内部 ID。
@@ -122,6 +125,7 @@ pub async fn setup(test_name: &str) -> Option<TestEnv> {
 
     let config = Arc::new(Config::from_env().expect("load config"));
     let issuer = config.issuer().to_string();
+    let public_web_base_url = config.public_web_base_url().to_string();
     let csrf_secret = *config.csrf_secret();
     let state = AppState::build(pool.clone(), config, Arc::new(SystemClock));
     KEY_BOOTSTRAP
@@ -137,6 +141,7 @@ pub async fn setup(test_name: &str) -> Option<TestEnv> {
         app: router::build(state),
         pool,
         issuer,
+        public_web_base_url,
         root_tenant_id,
         root_admin_id,
         csrf_secret,

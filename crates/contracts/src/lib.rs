@@ -7,6 +7,7 @@
 
 pub mod admin;
 pub mod auth;
+pub mod cookie_domain;
 pub mod csrf;
 
 pub mod version;

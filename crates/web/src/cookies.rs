@@ -35,17 +35,87 @@ pub fn get(headers: &HeaderMap, name: &str) -> Option<String> {
 
 /// `Set-Cookie` の値を構築する。
 pub fn build(name: &str, value: &str, max_age_secs: u64, secure: bool) -> String {
-    let mut cookie =
-        format!("{name}={value}; Max-Age={max_age_secs}; Path=/; HttpOnly; SameSite=Lax");
+    build_with_domain(name, value, max_age_secs, secure, None)
+}
+
+/// Cookie を失効させる `Set-Cookie` の値を構築する。
+pub fn expire(name: &str, secure: bool) -> String {
+    build(name, "", 0, secure)
+}
+
+fn build_with_domain(
+    name: &str,
+    value: &str,
+    max_age_secs: u64,
+    secure: bool,
+    domain: Option<&str>,
+) -> String {
+    let mut cookie = format!("{name}={value}; Max-Age={max_age_secs}");
+    if let Some(domain) = domain {
+        cookie.push_str(&format!("; Domain={domain}"));
+    }
+    cookie.push_str("; Path=/; HttpOnly; SameSite=Lax");
     if secure {
         cookie.push_str("; Secure");
     }
     cookie
 }
 
-/// Cookie を失効させる `Set-Cookie` の値を構築する。
-pub fn expire(name: &str, secure: bool) -> String {
-    build(name, "", 0, secure)
+/// サービス横断 Cookie（`sso_session_id`・`auth_session_id`）の `Set-Cookie` 値一式を構築する
+/// （ADR-0012 §3。api 側 `presentation/cookies.rs` と同一実装）。
+///
+/// - `domain` が `None`（単一オリジン構成）: 従来どおり host-only の 1 本のみ。
+/// - `domain` が `Some`（別ドメイン構成）: `Domain` 属性付き Cookie に加えて、`Domain` 属性なしの
+///   同名削除 Cookie（`Max-Age=0`）を併送する。単一オリジン構成から移行した既存ブラウザに残る
+///   host-only Cookie を掃除しないと、同名 Cookie の二重送信で古いセッションが新しいセッションを
+///   覆い隠す（ログインループ）。
+///
+/// web ローカルの Cookie（`lang`・CSRF 関連等、api が読まないもの）には使わず [`build`] のまま
+/// host-only に保つ。
+pub fn build_shared(
+    name: &str,
+    value: &str,
+    max_age_secs: u64,
+    secure: bool,
+    domain: Option<&str>,
+) -> Vec<String> {
+    match domain {
+        None => vec![build(name, value, max_age_secs, secure)],
+        Some(d) => vec![
+            build_with_domain(name, value, max_age_secs, secure, Some(d)),
+            build(name, "", 0, secure),
+        ],
+    }
+}
+
+/// サービス横断 Cookie を失効させる `Set-Cookie` 値一式を構築する。削除 Cookie も発行時と同じ
+/// `Domain` で出さないと消えないため、`domain` 設定時はドメイン付き削除 + host-only 削除を併送する。
+pub fn expire_shared(name: &str, secure: bool, domain: Option<&str>) -> Vec<String> {
+    build_shared(name, "", 0, secure, domain)
+}
+
+/// サービス横断 Cookie の `Set-Cookie` 値一式を `Set-Cookie` ヘッダの組として返す
+/// （`AppendHeaders` へそのまま渡せる形）。
+pub fn shared_set_cookie_headers(
+    name: &str,
+    value: &str,
+    max_age_secs: u64,
+    secure: bool,
+    domain: Option<&str>,
+) -> Vec<(axum::http::HeaderName, String)> {
+    build_shared(name, value, max_age_secs, secure, domain)
+        .into_iter()
+        .map(|cookie| (axum::http::header::SET_COOKIE, cookie))
+        .collect()
+}
+
+/// サービス横断 Cookie の失効を `Set-Cookie` ヘッダの組として返す。
+pub fn shared_expire_headers(
+    name: &str,
+    secure: bool,
+    domain: Option<&str>,
+) -> Vec<(axum::http::HeaderName, String)> {
+    shared_set_cookie_headers(name, "", 0, secure, domain)
 }
 
 #[cfg(test)]
@@ -75,6 +145,39 @@ mod tests {
         assert_eq!(
             c,
             "sso_session_id=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax"
+        );
+    }
+
+    #[test]
+    fn shared_cookie_without_domain_keeps_host_only_behavior() {
+        // COOKIE_DOMAIN 未設定（単一オリジン構成）は従来と同一の 1 本のみ（ADR-0012 の回帰条件）。
+        assert_eq!(
+            build_shared("sso_session_id", "v", 600, true, None),
+            vec!["sso_session_id=v; Max-Age=600; Path=/; HttpOnly; SameSite=Lax; Secure"]
+        );
+        assert_eq!(
+            expire_shared("sso_session_id", false, None),
+            vec!["sso_session_id=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax"]
+        );
+    }
+
+    #[test]
+    fn shared_cookie_with_domain_adds_host_only_cleanup() {
+        // Domain 付き発行と同時に host-only の同名削除 Cookie を併送する（移行時の残留掃除）。
+        assert_eq!(
+            build_shared("sso_session_id", "v", 600, true, Some("example.com")),
+            vec![
+                "sso_session_id=v; Max-Age=600; Domain=example.com; Path=/; HttpOnly; SameSite=Lax; Secure",
+                "sso_session_id=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax; Secure",
+            ]
+        );
+        // 削除もドメイン付き + host-only の両方で出す（Domain が違う Cookie は消えないため）。
+        assert_eq!(
+            expire_shared("auth_session_id", false, Some("example.com")),
+            vec![
+                "auth_session_id=; Max-Age=0; Domain=example.com; Path=/; HttpOnly; SameSite=Lax",
+                "auth_session_id=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax",
+            ]
         );
     }
 }

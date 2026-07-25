@@ -158,8 +158,12 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::FOUND, "redirect to /login");
-    // api は未ログイン時に /{tenant_id}/login（web が描画）へ 302 する（ADR-0009 §6、MT13）。
-    assert_eq!(location(&response), format!("/{root_tenant_id}/login"));
+    // api は未ログイン時に web のログイン画面へ 302 する（ADR-0009 §6、MT13）。別ドメイン構成に
+    // 対応するため PUBLIC_WEB_BASE_URL 基点の絶対 URL になった（ADR-0012 §4）。
+    assert_eq!(
+        location(&response),
+        format!("{}/{root_tenant_id}/login", env.public_web_base_url)
+    );
     let auth_session = cookie_value(&response, "auth_session_id").expect("auth_session_id cookie");
 
     // CSRF は auth_session 由来（web が描画・api の LoginService が検証）。

@@ -1,3 +1,22 @@
+## 2026-07-25（api/web の別ドメイン（サブドメイン）公開に対応した。MT29 / ADR-0012）
+
+- **`COOKIE_DOMAIN` を新設**（EnvLocked。api/web で同値必須）: 設定時、サービス横断 Cookie
+  （`sso_session_id`・`auth_session_id`）に `Domain` 属性を付与し、同一親ドメイン配下のサブドメイン間で
+  SSO Cookie を共有できるようにした。発行・削除の両方で host-only の同名削除 Cookie を併送し、
+  単一オリジン構成から移行したブラウザに残る旧 Cookie を掃除する（同名二重送信によるログインループ防止）。
+  未設定なら従来どおり host-only（単一オリジン構成の挙動は不変）。
+- **`/authorize` のログイン・同意リダイレクトを `PUBLIC_WEB_BASE_URL` 基点の絶対 URL 化**
+  （単一オリジン構成では issuer と同値のため実質不変）。
+- **web に自オリジン設定 `PUBLIC_WEB_BASE_URL` を追加**し、Cookie `Secure` 判定を `ISSUER` から
+  自オリジンのスキームへ変更。api 側 `PUBLIC_WEB_BASE_URL` は DbManaged → **EnvLocked へ変更**
+  （api/web で同値必須のため。DB 上書き運用からの移行手順は OPERATIONS.md）。
+- **起動時検証（fail-fast）**: `COOKIE_DOMAIN` が `ISSUER`・`PUBLIC_WEB_BASE_URL` 双方の親ドメインで
+  あること、public suffix（eTLD）そのものでないこと（Public Suffix List 判定）を api/web 共通の
+  検証（`idp_contracts::cookie_domain`）で確認する。
+- **web→api E2E テストを新設**（`crates/api/tests/e2e_domain_split.rs`）: api/web を実サーバとして
+  同時起動し、Cookie jar 有効のクライアントで authorize→login→SSO Cookie 越境→即時 code 発行を
+  実挙動で検証（別ドメイン・単一オリジン両構成＋host-only 残留掃除）。
+
 ## 2026-07-24（存在しないテナントの管理コンソール URL が 502 になっていたのを 404 にした）
 
 - **web が api の whoami 404 を 502 に化けさせていたのを修正した**: `/{tenant_id}/admin` 系の画面は

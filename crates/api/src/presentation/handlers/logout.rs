@@ -23,7 +23,7 @@ use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
 use axum::extract::{Extension, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{AppendHeaders, Html, IntoResponse, Response};
 use serde::Deserialize;
 use serde::Serialize;
 use std::sync::Arc;
@@ -91,8 +91,12 @@ pub async fn logout(
         )
         .await;
 
-    // SSO Cookie を失効させる。
-    let expire_cookie = cookies::expire(cookies::SSO_SESSION_COOKIE, state.config.cookie_secure());
+    // SSO Cookie を失効させる（COOKIE_DOMAIN 設定時はドメイン付き + host-only の両方。ADR-0012 §3）。
+    let expire_cookies = cookies::expire_shared(
+        cookies::SSO_SESSION_COOKIE,
+        state.config.cookie_secure(),
+        state.config.cookie_domain(),
+    );
 
     // Back-channel logout: 各クライアントへ logout_token を非同期送信。
     if !result.backchannel_targets.is_empty() {
@@ -122,33 +126,22 @@ pub async fn logout(
         uri
     });
 
+    let set_cookies: Vec<(header::HeaderName, String)> = expire_cookies
+        .into_iter()
+        .map(|cookie| (header::SET_COOKIE, cookie))
+        .collect();
+
     // Front-channel logout がある場合は iframe HTML を返す。
     if !result.frontchannel_uris.is_empty() {
         let html = build_frontchannel_html(&result.frontchannel_uris, redirect_to.as_deref());
-        return (
-            StatusCode::OK,
-            [(header::SET_COOKIE, expire_cookie)],
-            Html(html),
-        )
-            .into_response();
+        return (StatusCode::OK, AppendHeaders(set_cookies), Html(html)).into_response();
     }
 
     // Front-channel なし: redirect or 200。
     if let Some(uri) = redirect_to {
-        let mut resp = found(&uri).into_response();
-        resp.headers_mut().insert(
-            header::SET_COOKIE,
-            expire_cookie
-                .parse()
-                .unwrap_or_else(|_| axum::http::HeaderValue::from_static("")),
-        );
-        resp
+        (AppendHeaders(set_cookies), found(&uri)).into_response()
     } else {
-        (
-            StatusCode::NO_CONTENT,
-            [(header::SET_COOKIE, expire_cookie)],
-        )
-            .into_response()
+        (StatusCode::NO_CONTENT, AppendHeaders(set_cookies)).into_response()
     }
 }
 

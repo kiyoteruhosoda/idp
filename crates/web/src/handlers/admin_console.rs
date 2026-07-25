@@ -195,21 +195,18 @@ pub async fn login(
             sso_session_id,
             sso_absolute_ttl_secs,
         } => {
-            let sso_cookie = cookies::build(
+            let mut set_cookies = cookies::shared_set_cookie_headers(
                 cookies::SSO_SESSION_COOKIE,
                 &sso_session_id,
                 sso_absolute_ttl_secs,
                 secure,
+                state.config.cookie_domain(),
             );
-            let expire_csrf = cookies::expire(cookies::ADMIN_CSRF_COOKIE, secure);
-            (
-                AppendHeaders([
-                    (header::SET_COOKIE, sso_cookie),
-                    (header::SET_COOKIE, expire_csrf),
-                ]),
-                found(&admin_home_path(&tenant)),
-            )
-                .into_response()
+            set_cookies.push((
+                header::SET_COOKIE,
+                cookies::expire(cookies::ADMIN_CSRF_COOKIE, secure),
+            ));
+            (AppendHeaders(set_cookies), found(&admin_home_path(&tenant))).into_response()
         }
         InternalAdminAuthenticateResponse::PasswordChangeRequired { username } => {
             // 強制パスワード変更（ADR-0009 §5）。SSO はまだ発行されていない。CSRF Cookie は維持し、
@@ -333,21 +330,18 @@ pub async fn password_change(
             sso_session_id,
             sso_absolute_ttl_secs,
         } => {
-            let sso_cookie = cookies::build(
+            let mut set_cookies = cookies::shared_set_cookie_headers(
                 cookies::SSO_SESSION_COOKIE,
                 &sso_session_id,
                 sso_absolute_ttl_secs,
                 secure,
+                state.config.cookie_domain(),
             );
-            let expire_csrf = cookies::expire(cookies::ADMIN_CSRF_COOKIE, secure);
-            (
-                AppendHeaders([
-                    (header::SET_COOKIE, sso_cookie),
-                    (header::SET_COOKIE, expire_csrf),
-                ]),
-                found(&admin_home_path(&tenant)),
-            )
-                .into_response()
+            set_cookies.push((
+                header::SET_COOKIE,
+                cookies::expire(cookies::ADMIN_CSRF_COOKIE, secure),
+            ));
+            (AppendHeaders(set_cookies), found(&admin_home_path(&tenant))).into_response()
         }
         InternalAdminChangePasswordResponse::RateLimited => reshow_password_change(
             &messages,
@@ -417,12 +411,12 @@ pub async fn logout(
             )
             .await;
     }
-    let expire = cookies::expire(cookies::SSO_SESSION_COOKIE, state.config.cookie_secure());
-    (
-        AppendHeaders([(header::SET_COOKIE, expire)]),
-        redirect_to_login(&tenant),
-    )
-        .into_response()
+    let expire = cookies::shared_expire_headers(
+        cookies::SSO_SESSION_COOKIE,
+        state.config.cookie_secure(),
+        state.config.cookie_domain(),
+    );
+    (AppendHeaders(expire), redirect_to_login(&tenant)).into_response()
 }
 
 /// 認可済み管理者の解決結果。`Reject` は誘導/エラーの完成済み Response を持つ。

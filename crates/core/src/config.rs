@@ -111,7 +111,11 @@ pub struct Config {
     csrf_secret: [u8; 32],
     csrf_secret_is_dev: bool,
     /// 利用者がブラウザで開く web 画面の公開ベース URL（招待メールの承諾リンク等。MT17）。
+    /// api/web で同一値必須のため EnvLocked（ADR-0012 §2）。
     public_web_base_url: String,
+    /// サービス横断 Cookie（sso_session_id・auth_session_id）の `Domain` 属性（ADR-0012 §3）。
+    /// `None` = host-only（単一オリジン構成の従来挙動）。
+    cookie_domain: Option<String>,
     resolved_settings: Vec<ResolvedSetting>,
 }
 
@@ -146,6 +150,19 @@ impl Config {
         let public_web_base_url = match resolver.optional_string("PUBLIC_WEB_BASE_URL") {
             Some(v) => normalize_issuer(v),
             None => issuer.clone(),
+        };
+        // サービス横断 Cookie の Domain 属性（ADR-0012）。設定時は issuer / public_web_base_url 双方の
+        // 親ドメインであり public suffix でないことを起動時に検証する（不整合はログインループになるため
+        // fail-fast）。
+        let cookie_domain = match resolver.optional_string("COOKIE_DOMAIN") {
+            Some(raw) => Some(
+                idp_contracts::cookie_domain::validate_cookie_domain(
+                    &raw,
+                    &[issuer.as_str(), public_web_base_url.as_str()],
+                )
+                .map_err(|e| anyhow::anyhow!(e))?,
+            ),
+            None => None,
         };
 
         Ok(Self {
@@ -186,6 +203,7 @@ impl Config {
             csrf_secret,
             csrf_secret_is_dev,
             public_web_base_url,
+            cookie_domain,
             resolved_settings: resolver.resolved_settings(),
         })
     }
@@ -295,6 +313,11 @@ impl Config {
     /// 承諾リンク等に使う。既定は issuer と同一オリジン。MT17）。
     pub fn public_web_base_url(&self) -> &str {
         &self.public_web_base_url
+    }
+    /// サービス横断 Cookie（sso_session_id・auth_session_id）に付与する `Domain` 属性（ADR-0012 §3）。
+    /// `None` = host-only（単一オリジン構成の従来挙動）。web と同じ値を設定する。
+    pub fn cookie_domain(&self) -> Option<&str> {
+        self.cookie_domain.as_deref()
     }
 
     pub fn resolved_settings(&self) -> &[ResolvedSetting] {
@@ -758,6 +781,54 @@ mod tests {
 
         std::env::remove_var("COOKIE_SECURE");
         std::env::remove_var("HSTS_MAX_AGE");
+    }
+
+    #[test]
+    fn cookie_domain_is_validated_at_startup() {
+        let _env = env_guard();
+        std::env::set_var("ISSUER", "http://api.example.com");
+        std::env::set_var("PUBLIC_WEB_BASE_URL", "http://id.example.com");
+
+        // 両オリジンの親ドメインなら受理し、正規化した値を保持する。
+        std::env::set_var("COOKIE_DOMAIN", ".Example.com");
+        let config = Config::from_env_and_db_settings(&HashMap::new()).unwrap();
+        assert_eq!(config.cookie_domain(), Some("example.com"));
+
+        // 片方の親でない・public suffix は起動を失敗させる（fail-fast）。
+        std::env::set_var("COOKIE_DOMAIN", "other.com");
+        assert!(Config::from_env_and_db_settings(&HashMap::new()).is_err());
+        std::env::set_var("COOKIE_DOMAIN", "com");
+        assert!(Config::from_env_and_db_settings(&HashMap::new()).is_err());
+
+        // 未設定 = host-only（従来挙動）。
+        std::env::remove_var("COOKIE_DOMAIN");
+        let config = Config::from_env_and_db_settings(&HashMap::new()).unwrap();
+        assert_eq!(config.cookie_domain(), None);
+
+        std::env::remove_var("ISSUER");
+        std::env::remove_var("PUBLIC_WEB_BASE_URL");
+    }
+
+    #[test]
+    fn public_web_base_url_is_env_locked_and_ignores_db() {
+        // ADR-0012 §2: api/web で同一値必須のため DbManaged → EnvLocked へ変更。DB 値は無視される。
+        let _env = env_guard();
+        std::env::remove_var("PUBLIC_WEB_BASE_URL");
+        std::env::remove_var("ISSUER");
+        let db = HashMap::from([(
+            "PUBLIC_WEB_BASE_URL".to_string(),
+            "http://db-managed.example.com".to_string(),
+        )]);
+        let config = Config::from_env_and_db_settings(&db).unwrap();
+        // DB 値ではなく既定（issuer と同一オリジン）へフォールバックする。
+        assert_eq!(config.public_web_base_url(), config.issuer());
+        let setting = config
+            .resolved_settings()
+            .iter()
+            .find(|setting| setting.key == "PUBLIC_WEB_BASE_URL")
+            .unwrap();
+        assert_eq!(setting.owner, SettingOwner::EnvLocked);
+        assert_eq!(setting.source, SettingSource::Builtin);
     }
 
     #[test]

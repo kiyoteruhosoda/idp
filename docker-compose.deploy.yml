@@ -55,6 +55,8 @@ services:
       HSTS_MAX_AGE: ${HSTS_MAX_AGE:-}
       CSRF_SECRET: ${CSRF_SECRET:-}
       PUBLIC_WEB_BASE_URL: ${PUBLIC_WEB_BASE_URL:-}
+      # サービス横断 Cookie の Domain 属性（別ドメイン構成のみ。ADR-0012。web と同値）。
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
     restart: unless-stopped
     mem_limit: 512m
     pids_limit: 256
@@ -87,6 +89,9 @@ services:
       COOKIE_SECURE: ${COOKIE_SECURE:-}
       CSRF_SECRET: ${CSRF_SECRET:-}
       HSTS_MAX_AGE: ${HSTS_MAX_AGE:-}
+      # web 自身の公開オリジン（別ドメイン構成のみ。ADR-0012。api と同値）。
+      PUBLIC_WEB_BASE_URL: ${PUBLIC_WEB_BASE_URL:-}
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
     restart: unless-stopped
     mem_limit: 512m
     pids_limit: 256

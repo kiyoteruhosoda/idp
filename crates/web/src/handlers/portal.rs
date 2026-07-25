@@ -120,6 +120,7 @@ pub async fn login(
             user_language.as_deref(),
             tenant,
             secure,
+            state.config.cookie_domain(),
             &[cookies::PORTAL_CSRF_COOKIE],
         ),
         InternalPortalAuthenticateResponse::MfaRequired { mfa_ticket } => {
@@ -269,6 +270,7 @@ pub async fn password_change(
             user_language.as_deref(),
             &tenant,
             secure,
+            state.config.cookie_domain(),
             &[cookies::PORTAL_CSRF_COOKIE],
         ),
         InternalPortalChangePasswordResponse::MfaRequired { mfa_ticket } => {
@@ -419,6 +421,7 @@ pub async fn mfa_submit(
             user_language.as_deref(),
             &tenant,
             secure,
+            state.config.cookie_domain(),
             &[cookies::PORTAL_CSRF_COOKIE, cookies::PORTAL_MFA_COOKIE],
         ),
         InternalPortalMfaResponse::InvalidCode => reshow_mfa(
@@ -466,33 +469,37 @@ pub async fn logout(
             )
             .await;
     }
-    let expire = cookies::expire(cookies::SSO_SESSION_COOKIE, state.config.cookie_secure());
+    let expire = cookies::shared_expire_headers(
+        cookies::SSO_SESSION_COOKIE,
+        state.config.cookie_secure(),
+        state.config.cookie_domain(),
+    );
     (
-        AppendHeaders([(header::SET_COOKIE, expire)]),
+        AppendHeaders(expire),
         found(&format!("{}/login", tenant.prefix())),
     )
         .into_response()
 }
 
 /// SSO Cookie を発行し、任意の一時 Cookie を失効させてアカウント画面へ 302 する共通処理。
+/// SSO Cookie はサービス横断（api の `/authorize` も読む）のため `domain` を反映する（ADR-0012 §3）。
+/// 失効させる一時 Cookie（CSRF・MFA チケット）は web ローカルなので host-only のまま。
 fn sso_success_response(
     sso_session_id: &str,
     sso_absolute_ttl_secs: u64,
     user_language: Option<&str>,
     tenant: &WebTenant,
     secure: bool,
+    domain: Option<&str>,
     expire_cookies: &[&str],
 ) -> Response {
-    let mut set_cookies: Vec<(header::HeaderName, String)> = Vec::new();
-    set_cookies.push((
-        header::SET_COOKIE,
-        cookies::build(
-            cookies::SSO_SESSION_COOKIE,
-            sso_session_id,
-            sso_absolute_ttl_secs,
-            secure,
-        ),
-    ));
+    let mut set_cookies = cookies::shared_set_cookie_headers(
+        cookies::SSO_SESSION_COOKIE,
+        sso_session_id,
+        sso_absolute_ttl_secs,
+        secure,
+        domain,
+    );
     for name in expire_cookies {
         set_cookies.push((header::SET_COOKIE, cookies::expire(name, secure)));
     }
