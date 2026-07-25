@@ -331,16 +331,32 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         default_value: None,
         description: "CSRF トークンを導出する HMAC 鍵（32 バイト）。api/web で一致必須のため DB 上書き不可。",
     },
+    // api（相手の URL としてリダイレクト・メールリンクに使う）と web（自オリジンとして Secure 判定・
+    // 絶対 URL 生成に使う）で同一値必須のため EnvLocked（ADR-0012 §2。DbManaged から変更）。
     SettingDefinition {
         key: "PUBLIC_WEB_BASE_URL",
-        owner: SettingOwner::DbManaged,
+        owner: SettingOwner::EnvLocked,
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Review,
         kind: SettingKind::Text,
         default_value: None,
-        description: "利用者がブラウザで開く web 画面の公開ベース URL。招待・リセットメールのリンク生成に使う。\
-                      未設定なら issuer と同一オリジン。",
+        description: "利用者がブラウザで開く web 画面の公開ベース URL。api は /authorize からログイン・\
+                      同意画面への 302 とメールリンク生成に、web は自オリジンとして使う。api/web で\
+                      一致必須のため DB 上書き不可。未設定なら issuer と同一オリジン。",
+    },
+    // api/web の Cookie 属性を一致させる必要があるため EnvLocked（ADR-0012 §2）。
+    SettingDefinition {
+        key: "COOKIE_DOMAIN",
+        owner: SettingOwner::EnvLocked,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::Text,
+        default_value: None,
+        description: "サービス横断 Cookie（sso_session_id・auth_session_id）に付与する Domain 属性\
+                      （例 `example.com`）。api/web を別サブドメインで公開する構成でのみ設定する。\
+                      未設定 = host-only（単一オリジン構成の従来挙動）。",
     },
 ];
 

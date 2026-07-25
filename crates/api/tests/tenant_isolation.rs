@@ -675,7 +675,7 @@ async fn oidc_flow_enforces_membership_and_per_tenant_issuer() {
     assert_eq!(res.status(), StatusCode::FOUND);
     assert_eq!(
         location(&res),
-        format!("/{}/login", b.id),
+        format!("{}/{}/login", env.public_web_base_url, b.id),
         "SSO session without membership must not resume in tenant B"
     );
 

@@ -13,8 +13,8 @@ use crate::state::WebState;
 use crate::templates::{render, ConsentTemplate, MessagePage};
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, State};
-use axum::http::{header, HeaderMap, StatusCode};
-use axum::response::{Html, IntoResponse, Response};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{AppendHeaders, Html, IntoResponse, Response};
 use axum::Form;
 use idp_contracts::auth::{
     InternalConsentApproveRequest, InternalConsentApproveResponse, InternalConsentDenyRequest,
@@ -103,8 +103,12 @@ pub async fn consent(
         let messages = Messages::new(locale(&headers));
         match result {
             Ok(InternalConsentApproveResponse::Success { redirect_to }) => {
-                let expire_auth = cookies::expire(cookies::AUTH_SESSION_COOKIE, secure);
-                ([(header::SET_COOKIE, expire_auth)], found(&redirect_to)).into_response()
+                let expire_auth = cookies::shared_expire_headers(
+                    cookies::AUTH_SESSION_COOKIE,
+                    secure,
+                    state.config.cookie_domain(),
+                );
+                (AppendHeaders(expire_auth), found(&redirect_to)).into_response()
             }
             Ok(InternalConsentApproveResponse::SessionExpired) => error_page(
                 &messages,
@@ -127,8 +131,12 @@ pub async fn consent(
         let messages = Messages::new(locale(&headers));
         match result {
             Ok(InternalConsentDenyResponse::Ok { redirect_to }) => {
-                let expire_auth = cookies::expire(cookies::AUTH_SESSION_COOKIE, secure);
-                ([(header::SET_COOKIE, expire_auth)], found(&redirect_to)).into_response()
+                let expire_auth = cookies::shared_expire_headers(
+                    cookies::AUTH_SESSION_COOKIE,
+                    secure,
+                    state.config.cookie_domain(),
+                );
+                (AppendHeaders(expire_auth), found(&redirect_to)).into_response()
             }
             Ok(InternalConsentDenyResponse::SessionExpired) => error_page(
                 &messages,

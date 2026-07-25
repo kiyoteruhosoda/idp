@@ -204,7 +204,8 @@ DELETE up FROM user_permissions up
 | `ACCESS_TOKEN_TTL_SECS` | `900` | Access Token 有効期間 |
 | `ID_TOKEN_TTL_SECS` | `3600` | ID Token 有効期間 |
 | `CLOCK_SKEW_SECS` | `60` | JWT 検証時のクロックスキュー許容 |
-| `PUBLIC_WEB_BASE_URL` | `ISSUER` と同値 | 招待メール・パスワードリセット等のリンクの土台（web 画面の公開 URL）。web を別オリジンへ置く構成でのみ設定 |
+| `PUBLIC_WEB_BASE_URL` | `ISSUER` と同値 | web 画面の公開 URL。`/authorize` からのログイン・同意リダイレクトと招待・リセットメールのリンクの土台。**api・web で同値必須（ENV でのみ設定可。DB 上書き不可）**。web を別オリジンへ置く構成でのみ設定 |
+| `COOKIE_DOMAIN` | 未設定（host-only） | サービス横断 Cookie（`sso_session_id`・`auth_session_id`）の `Domain` 属性。api/web を別サブドメインで公開する構成でのみ設定（**api・web で同値必須**。下記「api と web を別ドメインで公開したいとき」参照） |
 | `PASSWORD_RESET_TTL_SECS` | `3600` | パスワードリセットトークンの有効期間 |
 | `EMAIL_VERIFICATION_TTL_SECS` | `86400` | 自己登録アカウントのメール検証トークンの有効期間（SEC6b） |
 | `RUST_LOG` | `info,idp=debug` | ログフィルタ |
@@ -284,6 +285,56 @@ docker compose -f docker-compose.deploy.yml exec -T mariadb sh -c \
 ```sh
 docker compose -f docker-compose.deploy.yml -f docker-compose.db-debug.yml \
   --profile db-debug up -d mariadb
+```
+
+## api と web を別ドメイン（サブドメイン）で公開したいとき（ADR-0012）
+
+単一オリジン・パスルーティング（上記）に代えて、api と web をドメイン単位で分けて公開できる。
+**両者は同一の登録可能ドメイン（eTLD+1）のサブドメインであること**（例: `api.example.com` と
+`id.example.com`）。全く無関係なドメイン間の分割はサポートしない。
+
+api・web 双方に次を設定する（**4 つとも api/web で同じ値にする**）。
+
+```sh
+ISSUER=https://api.example.com              # api の公開オリジン
+PUBLIC_WEB_BASE_URL=https://id.example.com  # web の公開オリジン
+COOKIE_DOMAIN=example.com                   # サービス横断 Cookie の Domain 属性（先頭ドット不要）
+COOKIE_SECURE=true
+```
+
+- `API_BASE_URL`（web のみ）はサーバ間の内部到達先であり、公開ドメインとは独立（内部ネットワークの
+  アドレスのままでよい）。
+- リバースプロキシはパス振り分け表の代わりに**ドメインごとの vhost**（api ドメイン → api、
+  web ドメイン → web）にする。`/internal/*` はどちらのドメインでも公開しない。
+
+```nginx
+server { server_name api.example.com; location / { proxy_pass http://api:8080; } }
+server { server_name id.example.com;  location / { proxy_pass http://web:8081; } }
+```
+
+注意:
+
+- **同じ親ドメインに信頼できない他サービスを同居させない**。`Domain=example.com` の Cookie は
+  `example.com` 配下の全サブドメインへ送信される。
+- `COOKIE_DOMAIN` は起動時に検証され、`ISSUER`・`PUBLIC_WEB_BASE_URL` 双方の親ドメインでない値や
+  public suffix（`com`・`co.uk` 等）そのものを設定すると**起動に失敗する**（設定不整合による
+  ログインループを防ぐ fail-fast）。
+- `COOKIE_DOMAIN` を有効化すると、以後の Set-Cookie には旧構成の host-only Cookie を掃除する
+  削除 Cookie が自動で併送される。ブラウザ側の手動対応は不要。
+- ローカル開発（`localhost` ポート違い）では `COOKIE_DOMAIN` を使わず、従来どおり単一オリジンで行う。
+
+### `PUBLIC_WEB_BASE_URL` を DB 管理から ENV へ移行する（破壊的変更）
+
+`PUBLIC_WEB_BASE_URL` は api/web で同値必須のため ENV 専用（DB 上書き不可）になった。過去に
+管理コンソールのランタイム設定（DB `system_settings`）で上書きしていた環境は、**同じ値を api の
+`.env`（環境変数）へ移してから更新する**。DB に残った値は無視される（削除は任意）。
+
+```sh
+# 1. 現在の DB 値を確認する
+docker compose -f docker-compose.deploy.yml exec -T mariadb sh -c \
+  'exec mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE" \
+   -e "SELECT value FROM system_settings WHERE \`key\`='"'"'PUBLIC_WEB_BASE_URL'"'"';"'
+# 2. その値を .env の PUBLIC_WEB_BASE_URL に設定し、api（と web）を再起動する
 ```
 
 ## イメージをビルドしたいとき（ビルド側。ソースがあるホスト）
