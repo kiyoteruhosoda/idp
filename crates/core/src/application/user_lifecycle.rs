@@ -1,12 +1,13 @@
-//! 管理者による利用者ライフサイクル操作（無効化・有効化・削除・パスワード再発行。ADR-0009 §5）。
+//! 管理者による利用者ライフサイクル操作（無効化・有効化・削除・パスワード再発行・MFA 解除。
+//! ADR-0009 §5・MT21）。
 //!
 //! 操作対象は**所属元（HOME）が要求テナントの利用者のみ**（`users.tenant_id` 照合。ゲストの
 //! `users` レコードは所属元テナントの管理者だけが操作できる。§3）。自分自身への操作は禁止する
-//! （誤操作によるロックアウト防止。パスワード変更はセルフサービスを使う）。
+//! （誤操作によるロックアウト防止。パスワード変更・MFA 解除はセルフサービスを使う）。
 //!
 //! パスワード再発行は作成時と同じ方針（[`crate::application::user_management`]）: 32 文字以上の
 //! ランダムパスワードを自動生成し、`must_change_password = true` を設定する。生成パスワードは
-//! **その応答でのみ**平文で返し、ログ・監査には出さない。再発行・無効化時は当該利用者の
+//! **その応答でのみ**平文で返し、ログ・監査には出さない。再発行・無効化・MFA 解除時は当該利用者の
 //! SSO セッション・refresh token・未消費 authorization code を全失効させる。
 
 use crate::application::audit::{AuditService, RequestContext};
@@ -15,7 +16,8 @@ use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::password::PasswordHasher;
 use crate::domain::repositories::{
-    AuthorizationCodeRepository, RefreshTokenRepository, SsoSessionRepository, UserRepository,
+    AuthorizationCodeRepository, RefreshTokenRepository, SsoSessionRepository,
+    TotpSecretRepository, UserRepository, WebAuthnCredentialRepository,
 };
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::user::User;
@@ -30,6 +32,16 @@ const GENERATED_PASSWORD_BYTES: usize = 32;
 pub struct ResetUserPassword {
     pub user_id: Uuid,
     pub generated_password: String,
+}
+
+/// MFA 解除の結果（MT21）。何を外したかを管理者へ返す（監査にも同じ粒度で記録する）。
+/// シークレット・クレデンシャルそのものは含めない。
+pub struct MfaReset {
+    pub user_id: Uuid,
+    /// TOTP 設定が存在して削除されたか（未設定なら `false`）。
+    pub totp_removed: bool,
+    /// 削除した Passkey（WebAuthn クレデンシャル）の件数。
+    pub passkeys_removed: u64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -53,17 +65,22 @@ pub struct UserLifecycleService {
     sso_sessions: Arc<dyn SsoSessionRepository>,
     refresh_tokens: Arc<dyn RefreshTokenRepository>,
     codes: Arc<dyn AuthorizationCodeRepository>,
+    totp_secrets: Arc<dyn TotpSecretRepository>,
+    webauthn_credentials: Arc<dyn WebAuthnCredentialRepository>,
     hasher: Arc<dyn PasswordHasher>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
 }
 
 impl UserLifecycleService {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         users: Arc<dyn UserRepository>,
         sso_sessions: Arc<dyn SsoSessionRepository>,
         refresh_tokens: Arc<dyn RefreshTokenRepository>,
         codes: Arc<dyn AuthorizationCodeRepository>,
+        totp_secrets: Arc<dyn TotpSecretRepository>,
+        webauthn_credentials: Arc<dyn WebAuthnCredentialRepository>,
         hasher: Arc<dyn PasswordHasher>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
@@ -73,6 +90,8 @@ impl UserLifecycleService {
             sso_sessions,
             refresh_tokens,
             codes,
+            totp_secrets,
+            webauthn_credentials,
             hasher,
             audit,
             clock,
@@ -179,6 +198,69 @@ impl UserLifecycleService {
         Ok(())
     }
 
+    /// 利用者の MFA（TOTP・Passkey）を解除する（MT21）。本人が端末を失って自分では解除できない
+    /// 状態からの復旧手段。
+    ///
+    /// TOTP と Passkey を**両方まとめて**外す。片方だけ残ると本人はログインできないままで、
+    /// 復旧手段として成立しないため。すでに未設定でもエラーにせず、何を外したかを結果で返す
+    /// （管理者が「効いたのか」を確認できるようにする）。
+    ///
+    /// 併せて当該利用者の SSO セッション・refresh token・未消費 code を失効させる。この操作の
+    /// 契機は「端末の紛失・盗難」であり、その端末が生きたセッションを保持している可能性がある
+    /// ためである（MFA を外すだけでは、紛失した端末のログイン状態はそのまま残る）。
+    pub async fn reset_mfa(
+        &self,
+        tenant: TenantContext,
+        target: Uuid,
+        actor: Uuid,
+        ctx: &RequestContext,
+    ) -> Result<MfaReset, UserLifecycleError> {
+        let user = self.find_home_user(tenant, target).await?;
+        self.ensure_not_self(user.id, actor)?;
+
+        // 「外した件数」を返すため、削除の前に TOTP の有無を確認する（delete は冪等で件数を返さない）。
+        let totp_removed = self
+            .totp_secrets
+            .find_by_user_id(user.id)
+            .await
+            .map_err(internal)?
+            .is_some();
+        if totp_removed {
+            self.totp_secrets.delete(user.id).await.map_err(internal)?;
+        }
+        let passkeys_removed = self
+            .webauthn_credentials
+            .delete_all_for_user(user.id)
+            .await
+            .map_err(internal)?;
+
+        self.revoke_credentials(user.id).await;
+
+        // 監査には対象と外した要素の粒度のみ記録する（シークレット・クレデンシャルは出さない）。
+        self.audit
+            .record(
+                AuditEventType::UserMfaReset,
+                AuditResult::Success,
+                Some(tenant.tenant_id()),
+                Some(actor),
+                None,
+                Some(&format!(
+                    "user={} totp={} passkeys={}",
+                    user.id,
+                    if totp_removed { "removed" } else { "absent" },
+                    passkeys_removed
+                )),
+                ctx,
+            )
+            .await;
+
+        Ok(MfaReset {
+            user_id: user.id,
+            totp_removed,
+            passkeys_removed,
+        })
+    }
+
     async fn reset_password_for(
         &self,
         tenant: TenantContext,
@@ -260,6 +342,8 @@ mod tests {
     use crate::domain::repositories::AuditLogSink;
     use crate::domain::sso_session::SsoSession;
     use crate::domain::tenant::TenantId;
+    use crate::domain::totp_secret::TotpSecret;
+    use crate::domain::webauthn_credential::WebAuthnCredential;
     use async_trait::async_trait;
     use chrono::{DateTime, TimeZone, Utc};
     use std::sync::Mutex;
@@ -460,6 +544,76 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct FakeTotpSecrets {
+        rows: Mutex<Vec<TotpSecret>>,
+        deleted: Mutex<Vec<Uuid>>,
+    }
+    #[async_trait]
+    impl TotpSecretRepository for FakeTotpSecrets {
+        async fn upsert(&self, secret: &TotpSecret) -> DomainResult<()> {
+            self.rows.lock().unwrap().push(secret.clone());
+            Ok(())
+        }
+        async fn find_by_user_id(&self, user_id: Uuid) -> DomainResult<Option<TotpSecret>> {
+            Ok(self
+                .rows
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|s| s.user_id == user_id)
+                .cloned())
+        }
+        async fn confirm(&self, _id: Uuid, _at: DateTime<Utc>) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn delete(&self, user_id: Uuid) -> DomainResult<()> {
+            self.rows.lock().unwrap().retain(|s| s.user_id != user_id);
+            self.deleted.lock().unwrap().push(user_id);
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeWebAuthnCredentials {
+        rows: Mutex<Vec<(Uuid, Uuid)>>,
+    }
+    #[async_trait]
+    impl WebAuthnCredentialRepository for FakeWebAuthnCredentials {
+        async fn create(&self, _c: &WebAuthnCredential) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn find_by_id(&self, _id: Uuid) -> DomainResult<Option<WebAuthnCredential>> {
+            unreachable!()
+        }
+        async fn find_by_credential_id(
+            &self,
+            _credential_id: &str,
+        ) -> DomainResult<Option<WebAuthnCredential>> {
+            unreachable!()
+        }
+        async fn list_by_user_id(&self, _user_id: Uuid) -> DomainResult<Vec<WebAuthnCredential>> {
+            unreachable!()
+        }
+        async fn update_passkey(
+            &self,
+            _id: Uuid,
+            _passkey_json: &str,
+            _last_used_at: DateTime<Utc>,
+        ) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn delete(&self, _id: Uuid, _user_id: Uuid) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn delete_all_for_user(&self, user_id: Uuid) -> DomainResult<u64> {
+            let mut rows = self.rows.lock().unwrap();
+            let before = rows.len();
+            rows.retain(|(_, owner)| *owner != user_id);
+            Ok((before - rows.len()) as u64)
+        }
+    }
+
     fn user(id: Uuid, tenant: TenantId) -> User {
         User {
             id,
@@ -480,6 +634,16 @@ mod tests {
         }
     }
 
+    fn totp_secret(user_id: Uuid) -> TotpSecret {
+        TotpSecret {
+            user_id,
+            secret_encrypted: "ciphertext".to_string(),
+            confirmed_at: Some(now()),
+            created_at: now(),
+            updated_at: now(),
+        }
+    }
+
     fn ctx() -> RequestContext {
         RequestContext {
             correlation_id: "corr-1".to_string(),
@@ -493,6 +657,8 @@ mod tests {
         sso: Arc<FakeSsoSessions>,
         refresh: Arc<FakeRefreshTokens>,
         codes: Arc<FakeCodes>,
+        totp: Arc<FakeTotpSecrets>,
+        passkeys: Arc<FakeWebAuthnCredentials>,
         sink: Arc<CapturingSink>,
         svc: UserLifecycleService,
     }
@@ -502,6 +668,8 @@ mod tests {
         let sso = Arc::new(FakeSsoSessions::default());
         let refresh = Arc::new(FakeRefreshTokens::default());
         let codes = Arc::new(FakeCodes::default());
+        let totp = Arc::new(FakeTotpSecrets::default());
+        let passkeys = Arc::new(FakeWebAuthnCredentials::default());
         let sink = Arc::new(CapturingSink::default());
         let audit = Arc::new(AuditService::new(sink.clone(), Arc::new(FixedClock(now()))));
         let svc = UserLifecycleService::new(
@@ -509,6 +677,8 @@ mod tests {
             sso.clone(),
             refresh.clone(),
             codes.clone(),
+            totp.clone(),
+            passkeys.clone(),
             Arc::new(PlainHasher),
             audit,
             Arc::new(FixedClock(now())),
@@ -518,6 +688,8 @@ mod tests {
             sso,
             refresh,
             codes,
+            totp,
+            passkeys,
             sink,
             svc,
         }
@@ -655,6 +827,99 @@ mod tests {
                 )
                 .await,
             Err(UserLifecycleError::Validation(_))
+        ));
+    }
+
+    /// MT21: TOTP と Passkey を両方外し、紛失端末が握っているセッション・トークンも失効させる。
+    #[tokio::test]
+    async fn resets_both_mfa_factors_and_revokes_credentials() {
+        let tenant: TenantId = Uuid::now_v7().into();
+        let f = fixture();
+        let target = Uuid::now_v7();
+        let other = Uuid::now_v7();
+        f.users.create(&user(target, tenant)).await.unwrap();
+        f.totp.upsert(&totp_secret(target)).await.unwrap();
+        // 他人の分・対象の分を混在させ、対象の分だけが消えることを見る。
+        f.passkeys.rows.lock().unwrap().extend([
+            (Uuid::now_v7(), target),
+            (Uuid::now_v7(), target),
+            (Uuid::now_v7(), other),
+        ]);
+
+        let reset = f
+            .svc
+            .reset_mfa(TenantContext::new(tenant), target, Uuid::now_v7(), &ctx())
+            .await
+            .expect("reset mfa");
+
+        assert!(reset.totp_removed);
+        assert_eq!(reset.passkeys_removed, 2);
+        assert!(f.totp.rows.lock().unwrap().is_empty());
+        assert_eq!(
+            f.passkeys
+                .rows
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(_, owner)| *owner)
+                .collect::<Vec<_>>(),
+            vec![other],
+            "other users' passkeys must survive"
+        );
+        // 紛失した端末の生きたセッションを残さない。
+        assert_eq!(*f.sso.revoked_users.lock().unwrap(), vec![target]);
+        assert_eq!(*f.refresh.revoked_users.lock().unwrap(), vec![target]);
+        assert_eq!(*f.codes.revoked_users.lock().unwrap(), vec![target]);
+
+        let events = f.sink.events.lock().unwrap();
+        assert_eq!(events[0].event_type, AuditEventType::UserMfaReset);
+        let reason = events[0].reason.clone().unwrap_or_default();
+        assert!(reason.contains("totp=removed"), "{reason}");
+        assert!(reason.contains("passkeys=2"), "{reason}");
+        // 監査にシークレットを出さない。
+        assert!(!reason.contains("secret"), "{reason}");
+    }
+
+    /// MFA 未設定の利用者でも失敗させない（管理者は設定の有無を知らずに操作する）。
+    #[tokio::test]
+    async fn resetting_mfa_is_idempotent_when_nothing_is_configured() {
+        let tenant: TenantId = Uuid::now_v7().into();
+        let f = fixture();
+        let target = Uuid::now_v7();
+        f.users.create(&user(target, tenant)).await.unwrap();
+
+        let reset = f
+            .svc
+            .reset_mfa(TenantContext::new(tenant), target, Uuid::now_v7(), &ctx())
+            .await
+            .expect("reset mfa");
+        assert!(!reset.totp_removed);
+        assert_eq!(reset.passkeys_removed, 0);
+        assert!(f.totp.deleted.lock().unwrap().is_empty());
+    }
+
+    /// 他テナントの利用者・自分自身は他のライフサイクル操作と同じ扱い。
+    #[tokio::test]
+    async fn resetting_mfa_rejects_cross_tenant_and_self() {
+        let tenant: TenantId = Uuid::now_v7().into();
+        let other: TenantId = Uuid::now_v7().into();
+        let f = fixture();
+        let foreign = Uuid::now_v7();
+        f.users.create(&user(foreign, other)).await.unwrap();
+        assert!(matches!(
+            f.svc
+                .reset_mfa(TenantContext::new(tenant), foreign, Uuid::now_v7(), &ctx())
+                .await,
+            Err(UserLifecycleError::NotFound)
+        ));
+
+        let own = Uuid::now_v7();
+        f.users.create(&user(own, tenant)).await.unwrap();
+        assert!(matches!(
+            f.svc
+                .reset_mfa(TenantContext::new(tenant), own, own, &ctx())
+                .await,
+            Err(UserLifecycleError::Forbidden(_))
         ));
     }
 

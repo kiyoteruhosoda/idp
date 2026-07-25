@@ -133,4 +133,13 @@ impl WebAuthnCredentialRepository for SqlxWebAuthnCredentialRepository {
             .map_err(repo_err)?;
         Ok(())
     }
+
+    async fn delete_all_for_user(&self, user_id: Uuid) -> Result<u64> {
+        let result = sqlx::query("DELETE FROM user_webauthn_credentials WHERE user_id = ?")
+            .bind(user_id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        Ok(result.rows_affected())
+    }
 }

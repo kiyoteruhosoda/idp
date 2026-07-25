@@ -427,6 +427,17 @@ pub struct UserPasswordResetResponse {
     pub generated_password: String,
 }
 
+/// 管理者による MFA 解除レスポンス（MT21）。何を外したかだけを返し、シークレット・
+/// クレデンシャルの内容は含めない。未設定でも成功（すべて `false` / `0`）になる。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct UserMfaResetResponse {
+    pub user_id: String,
+    /// TOTP 設定が存在して削除されたか。
+    pub totp_removed: bool,
+    /// 削除した Passkey（WebAuthn クレデンシャル）の件数。
+    pub passkeys_removed: u64,
+}
+
 /// 子テナント管理者のパスワード再発行リクエスト
 /// （`POST /{tenant_id}/admin/tenants/{child_id}/admin-password-reset`）。
 #[derive(Debug, Deserialize, ToSchema)]

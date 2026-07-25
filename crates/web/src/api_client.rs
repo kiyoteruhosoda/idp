@@ -738,6 +738,26 @@ impl ApiClient {
         .await
     }
 
+    /// 利用者の MFA 解除（`POST /admin/users/{user_id}/mfa-reset`。MT21）。
+    /// TOTP と Passkey をまとめて外し、外した内訳を返す。
+    pub async fn reset_user_mfa(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        user_id: &str,
+    ) -> Result<crate::admin_dto::UserMfaResetView, AdminApiError> {
+        self.admin_send(
+            Method::POST,
+            tenant_id,
+            &format!("/admin/users/{user_id}/mfa-reset"),
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
     // ── メンバー・招待（ADR-0009 §3）─────────────────────────────────────────
 
     /// メンバー一覧（`GET /admin/members`。HOME / GUEST を問わない）。

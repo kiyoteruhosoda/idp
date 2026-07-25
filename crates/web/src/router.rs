@@ -205,6 +205,10 @@ pub fn build(state: WebState) -> Router {
             post(admin_members_console::reset_password),
         )
         .route(
+            "/admin/members/{user_id}/reset-mfa",
+            post(admin_members_console::reset_mfa),
+        )
+        .route(
             "/admin/members/{user_id}/delete",
             post(admin_members_console::delete),
         )
@@ -442,6 +446,7 @@ mod tests {
             format!("/{tenant}/admin/members/{id}/revoke"),
             format!("/{tenant}/admin/members/{id}/status"),
             format!("/{tenant}/admin/members/{id}/reset-password"),
+            format!("/{tenant}/admin/members/{id}/reset-mfa"),
             format!("/{tenant}/admin/members/{id}/delete"),
             format!("/{tenant}/admin/users/{id}/permissions/grant"),
             format!("/{tenant}/admin/users/{id}/permissions/revoke"),

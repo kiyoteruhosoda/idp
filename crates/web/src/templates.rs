@@ -410,6 +410,8 @@ pub struct MembersList<'a> {
     pub query: &'a str,
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
+    /// 完了通知の翻訳キー（Post/Redirect/Get で戻ったときの操作結果。MT21 の MFA 解除など）。
+    pub notice_key: Option<&'a str>,
 }
 
 /// 管理者によるパスワード再発行の結果画面（一度限りの生成パスワード表示。ADR-0009 §5）。
