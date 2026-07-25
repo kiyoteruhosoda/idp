@@ -115,6 +115,7 @@ crates/
     src/auth.rs       # 内部認証 API（/internal/authenticate*）の DTO 契約
     src/cookies.rs    # Cookie 名と Set-Cookie 組み立て（両サービスが読み書きする値の契約）
     src/csrf.rs       # CSRF 同期トークンの導出（web が生成し api が検証する）
+    src/runtime_settings.rs # api/web 共有ランタイム設定（web が起動時に api から受け取る。ADR-0013）
     # DTO だけでなく「api と web で一致していないと壊れる値・導出」もここに単一定義する
 
   api/                # idp-api（lib=idp_api / bin=idp）。core を再エクスポートし presentation を提供
@@ -196,16 +197,22 @@ std::env::var("ISSUER")?;
 「あとから DB で上書きできる」という思想で、より運用に近い層（DB）を優先する。
 
 - ただし DB 上書きを受け付けるのは `DbManaged` のキーだけ。DB を読む前や DB 内 secret の復号に必要な
-  bootstrap 系（`DATABASE_URL`・`KEY_ENCRYPTION_KEY`・`INTERNAL_SERVICE_TOKEN`・`CSRF_SECRET` 等）や、
-  api/web で値を一致させる必要があるキーは `EnvLocked` とし、DB を参照せず ENV > 既定値 で解決する（ADR-0010）。
-- 各キーの出所区分（`Builtin` / `EnvLocked` / `DbManaged`）と説明は `domain/system_setting.rs` の
-  `RUNTIME_SETTING_DEFINITIONS` を単一の出所として集中管理する。
+  bootstrap 系（`DATABASE_URL`・`KEY_ENCRYPTION_KEY`・`INTERNAL_SERVICE_TOKEN`・`CSRF_SECRET` 等）と、
+  ブラウザ経路の同一性に関わる `PUBLIC_WEB_BASE_URL`・`COOKIE_DOMAIN` は `EnvLocked` とし、DB を参照せず
+  ENV > 既定値 で解決する（ADR-0010 / ADR-0012）。
+- **api と web の両方が消費するキー**は `shared_with_web: true` かつ `DbManaged` とする。web は DB を
+  持たないため、起動時に api の `GET /internal/runtime-settings` から DB 上書き値を受け取って
+  `既定値 < ENV < DB` で解決する（ADR-0013）。secret はこの経路で共有しない。
+- 各キーの出所区分（`Builtin` / `EnvLocked` / `DbManaged`）・`shared_with_web`・説明は
+  `domain/system_setting.rs` の `RUNTIME_SETTING_DEFINITIONS` を単一の出所として集中管理する。
 
 新しい設定キーを追加する場合：
 
 1. `domain/system_setting.rs` — `RUNTIME_SETTING_DEFINITIONS` に定義（出所区分・既定値・型・**用途の説明**）を追加
 2. `src/config.rs` — 設定項目（getter）と読み込みロジックを追加
 3. DB 上書き対応が必要なら `owner: DbManaged` とする（`EnvLocked` は DB を無視して ENV > 既定値）
+4. web も読むキーなら `shared_with_web: true` とし、`crates/web/src/config.rs` で
+   `SharedSettingResolver` 経由に読む（エンドポイント・API クライアントの変更は不要）
 
 ---
 

@@ -1,12 +1,19 @@
 //! web サービスの設定（ADR-0007）。
 //!
 //! web は DB を持たないため、api とは別の（小さな）設定を持つ。取得は必ず本モジュール経由で行い、
-//! 生の環境変数を各所で直接参照しない。優先順位は「環境変数 > 既定値」。
+//! 生の環境変数を各所で直接参照しない。優先順位は
+//! **「既定値 < 環境変数（ENV）< api 経由の DB 上書き値」**（MT26 / ADR-0013）。
 //! （空文字列は「未設定」として扱う。Compose の `${VAR:-}` 対策は api の config と同じ方針。）
+//!
+//! api 経由の DB 上書きを受けるのは、api と web の**両方が消費する**共有キー
+//! （`COOKIE_SECURE`・`HSTS_MAX_AGE`・`AUTH_SESSION_TTL_SECS`）だけ。web 固有のキー
+//! （`WEB_BIND_ADDR`・`API_BASE_URL`）と bootstrap secret（`INTERNAL_SERVICE_TOKEN`・
+//! `CSRF_SECRET`）、api/web で一致必須の `PUBLIC_WEB_BASE_URL`・`COOKIE_DOMAIN` は ENV > 既定値のまま。
 #![allow(dead_code)]
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use idp_contracts::cookies::CookiePolicy;
+use std::collections::HashMap;
 use std::env;
 
 /// 内部サービス認証トークンの開発用デフォルト（api 側と同値。ADR-0007 §5）。
@@ -43,10 +50,27 @@ pub struct Config {
     /// HSTS `max-age`（秒）。0 = HSTS ヘッダを付与しない（api 側と同キー `HSTS_MAX_AGE`）。
     hsts_max_age: u64,
     log_format: LogFormat,
+    /// api 経由の DB 上書き値を採用した共有キー（起動ログ用。値は含めない）。
+    shared_settings_from_api: Vec<String>,
 }
 
 impl Config {
+    /// 環境変数と既定値だけで組み立てる（api の DB 上書きを反映しない）。
+    ///
+    /// api へ問い合わせる前の bootstrap（`API_BASE_URL`・`INTERNAL_SERVICE_TOKEN` の取得）と、
+    /// api を起動しないテストで使う。実際の起動経路は
+    /// [`from_env_and_shared_settings`](Self::from_env_and_shared_settings)。
     pub fn from_env() -> anyhow::Result<Self> {
+        Self::from_env_and_shared_settings(&HashMap::new())
+    }
+
+    /// api から受け取った共有ランタイム設定の DB 上書き値を最優先に、設定を解決する
+    /// （MT26 / ADR-0013。優先順位は 既定値 < ENV < `shared`）。
+    ///
+    /// `shared` に無いキーは従来どおり ENV → 既定値へフォールバックする。とくに `COOKIE_SECURE` の
+    /// 既定は **web 自身の公開オリジン**のスキームであり（ADR-0012 §2）、api の既定を引き継がない。
+    pub fn from_env_and_shared_settings(shared: &HashMap<String, String>) -> anyhow::Result<Self> {
+        let resolver = SharedSettingResolver::new(shared);
         // api の公開オリジン（= OIDC issuer。ブラウザを api へ向けるリダイレクトの基点）。
         let issuer = normalize_base_url(env_or("ISSUER", "http://localhost:8080"));
         // web 自身の公開オリジン（ADR-0012 §2）。未設定は issuer と同一オリジン（単一オリジン構成）。
@@ -54,7 +78,7 @@ impl Config {
         // Cookie の Secure 属性。既定は自オリジン（PUBLIC_WEB_BASE_URL）のスキームに従う
         // （ADR-0012 §2。issuer ではなく web 自身の公開スキームで判定する）。
         let cookie_secure =
-            env_parse("COOKIE_SECURE", public_web_base_url.starts_with("https://"))?;
+            resolver.parse("COOKIE_SECURE", public_web_base_url.starts_with("https://"))?;
         // サービス横断 Cookie の Domain 属性。api 側と同じ検証（親ドメイン整合・public suffix 拒否）を
         // 起動時に行う（不整合はログインループになるため fail-fast）。
         let cookie_domain = match env_lookup("COOKIE_DOMAIN") {
@@ -91,15 +115,14 @@ impl Config {
             csrf_secret,
             csrf_secret_is_dev,
             cookie_policy,
-            auth_session_ttl_secs: env_parse(
-                "AUTH_SESSION_TTL_SECS",
-                DEFAULT_AUTH_SESSION_TTL_SECS,
-            )?,
-            hsts_max_age: env_parse("HSTS_MAX_AGE", 0u64)?,
+            auth_session_ttl_secs: resolver
+                .parse("AUTH_SESSION_TTL_SECS", DEFAULT_AUTH_SESSION_TTL_SECS)?,
+            hsts_max_age: resolver.parse("HSTS_MAX_AGE", 0u64)?,
             log_format: match env_or("LOG_FORMAT", "json").to_ascii_lowercase().as_str() {
                 "pretty" => LogFormat::Pretty,
                 _ => LogFormat::Json,
             },
+            shared_settings_from_api: resolver.applied_keys(),
         })
     }
 
@@ -152,6 +175,54 @@ impl Config {
     }
     pub fn log_format(&self) -> LogFormat {
         self.log_format
+    }
+    /// api 経由の DB 上書き値を採用した共有キー名（起動ログ用。**値は含めない**）。
+    pub fn shared_settings_from_api(&self) -> &[String] {
+        &self.shared_settings_from_api
+    }
+}
+
+/// 「既定値 < ENV < api 経由の DB 上書き値」で共有キーを解決する（MT26 / ADR-0013）。
+///
+/// どのキーが DB 由来だったかを記録し、起動ログで運用者に見せる（設定画面の値と実際に効いている値が
+/// 食い違ったときの切り分けに要る）。
+struct SharedSettingResolver<'a> {
+    shared: &'a HashMap<String, String>,
+    applied: std::cell::RefCell<Vec<String>>,
+}
+
+impl<'a> SharedSettingResolver<'a> {
+    fn new(shared: &'a HashMap<String, String>) -> Self {
+        Self {
+            shared,
+            applied: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+
+    /// 有効値を文字列で解決する（DB 上書き > ENV。どちらも無ければ `None`）。
+    fn optional_string(&self, key: &str) -> Option<String> {
+        if let Some(v) = self.shared.get(key).filter(|v| !v.is_empty()) {
+            self.applied.borrow_mut().push(key.to_string());
+            return Some(v.clone());
+        }
+        env_lookup(key)
+    }
+
+    fn parse<T>(&self, key: &str, default: T) -> anyhow::Result<T>
+    where
+        T: std::str::FromStr,
+        T::Err: std::fmt::Display,
+    {
+        match self.optional_string(key) {
+            Some(v) => v
+                .parse::<T>()
+                .map_err(|e| anyhow::anyhow!("invalid value for {key}: {e}")),
+            None => Ok(default),
+        }
+    }
+
+    fn applied_keys(&self) -> Vec<String> {
+        self.applied.borrow().clone()
     }
 }
 
@@ -247,22 +318,22 @@ fn env_or(key: &str, default: &str) -> String {
     env_lookup(key).unwrap_or_else(|| default.to_string())
 }
 
-fn env_parse<T>(key: &str, default: T) -> anyhow::Result<T>
-where
-    T: std::str::FromStr,
-    T::Err: std::fmt::Display,
-{
-    match env_lookup(key) {
-        Some(v) => v
-            .parse::<T>()
-            .map_err(|e| anyhow::anyhow!("invalid value for {key}: {e}")),
-        None => Ok(default),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    /// プロセス共有の環境変数を触るテストを直列化するためのロック（`cargo test` はスレッド並列）。
+    /// `Config::from_env*` を呼ぶテストは必ずこれを取得する。
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// `ENV_LOCK` を取得する。ロック保持中に別テストが panic して poison しても、排他自体は
+    /// 保たれているため内側の値を取り出して継続する。
+    fn env_guard() -> MutexGuard<'static, ()> {
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     #[test]
     fn base_url_is_normalized_without_trailing_slash() {
@@ -347,10 +418,9 @@ mod tests {
         std::env::remove_var(key);
     }
 
-    /// `from_env` を使うテストはプロセス共有の環境変数を触るため 1 つのテストに直列化する
-    /// （`cargo test` はスレッド並列で走る）。
     #[test]
     fn self_origin_and_cookie_domain_resolution() {
+        let _env = env_guard();
         // 別ドメイン構成: Secure 判定は issuer ではなく自オリジン（PUBLIC_WEB_BASE_URL）に従う
         // （ADR-0012 §2）。http の自オリジンなら Secure なし。
         std::env::set_var("ISSUER", "http://api.example.com");
@@ -393,5 +463,80 @@ mod tests {
         std::env::remove_var("INTERNAL_SERVICE_TOKEN");
         std::env::remove_var("CSRF_SECRET");
         std::env::remove_var("ISSUER");
+    }
+
+    /// MT26 / ADR-0013: api 経由の DB 上書き値は ENV・既定値より優先する。
+    #[test]
+    fn shared_settings_from_api_take_precedence_over_env_and_defaults() {
+        let _env = env_guard();
+        std::env::remove_var("ISSUER");
+        std::env::remove_var("PUBLIC_WEB_BASE_URL");
+        // ENV 側にはあえて DB と異なる値を置き、DB が勝つことを固定する。
+        std::env::set_var("COOKIE_SECURE", "false");
+        std::env::set_var("HSTS_MAX_AGE", "1");
+        std::env::set_var("AUTH_SESSION_TTL_SECS", "60");
+
+        let shared = HashMap::from([
+            ("COOKIE_SECURE".to_string(), "true".to_string()),
+            ("HSTS_MAX_AGE".to_string(), "31536000".to_string()),
+            ("AUTH_SESSION_TTL_SECS".to_string(), "1200".to_string()),
+        ]);
+        let config = Config::from_env_and_shared_settings(&shared).unwrap();
+        assert!(config.cookie_secure());
+        assert_eq!(config.hsts_max_age(), 31_536_000);
+        assert_eq!(config.auth_session_ttl_secs(), 1_200);
+        let mut applied = config.shared_settings_from_api().to_vec();
+        applied.sort();
+        assert_eq!(
+            applied,
+            ["AUTH_SESSION_TTL_SECS", "COOKIE_SECURE", "HSTS_MAX_AGE"]
+        );
+
+        // DB 上書きが無ければ ENV へ、ENV も無ければ既定値へ落ちる。
+        let config = Config::from_env_and_shared_settings(&HashMap::new()).unwrap();
+        assert!(!config.cookie_secure());
+        assert_eq!(config.hsts_max_age(), 1);
+        assert_eq!(config.auth_session_ttl_secs(), 60);
+        assert!(config.shared_settings_from_api().is_empty());
+
+        std::env::remove_var("COOKIE_SECURE");
+        std::env::remove_var("HSTS_MAX_AGE");
+        std::env::remove_var("AUTH_SESSION_TTL_SECS");
+        let config = Config::from_env_and_shared_settings(&HashMap::new()).unwrap();
+        assert!(
+            !config.cookie_secure(),
+            "http origin defaults to non-Secure"
+        );
+        assert_eq!(config.hsts_max_age(), 0);
+        assert_eq!(
+            config.auth_session_ttl_secs(),
+            DEFAULT_AUTH_SESSION_TTL_SECS
+        );
+    }
+
+    /// 空文字列の DB 上書きは「未設定」として ENV へ落とす（api 側が上書き解除に空文字列を
+    /// 使うため。`system_settings.update_runtime_setting`）。
+    #[test]
+    fn empty_shared_override_falls_back_to_env() {
+        let _env = env_guard();
+        std::env::set_var("HSTS_MAX_AGE", "42");
+        let shared = HashMap::from([("HSTS_MAX_AGE".to_string(), String::new())]);
+        let config = Config::from_env_and_shared_settings(&shared).unwrap();
+        assert_eq!(config.hsts_max_age(), 42);
+        assert!(config.shared_settings_from_api().is_empty());
+        std::env::remove_var("HSTS_MAX_AGE");
+    }
+
+    /// 不正な DB 上書き値は起動を失敗させる（値を黙って捨てて既定へ落ちると、設定画面の表示と
+    /// 実挙動が食い違ったまま動いてしまう）。
+    #[test]
+    fn invalid_shared_override_fails_startup() {
+        let _env = env_guard();
+        std::env::remove_var("HSTS_MAX_AGE");
+        let shared = HashMap::from([("HSTS_MAX_AGE".to_string(), "not-a-number".to_string())]);
+        let err = Config::from_env_and_shared_settings(&shared)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("HSTS_MAX_AGE"), "{err}");
     }
 }

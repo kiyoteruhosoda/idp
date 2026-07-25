@@ -196,8 +196,8 @@ DELETE up FROM user_permissions up
 | `LOG_FORMAT` | `json` | `json` / `pretty` |
 | `KEY_ENCRYPTION_KEY` | 開発用固定値 | 署名秘密鍵の暗号化キー（base64、32 バイト）。**`ISSUER` が https のとき未設定なら起動失敗** |
 | `INTERNAL_SERVICE_TOKEN` | 開発用固定値 | web→api の `/internal/*` 共有シークレット（api・web で同値）。**`ISSUER` が https のとき未設定なら起動失敗** |
-| `COOKIE_SECURE` | issuer が https なら `true` | Cookie の `Secure` 属性 |
-| `AUTH_SESSION_TTL_SECS` | `600` | AuthSession の有効期間 |
+| `COOKIE_SECURE` | 自サービスの公開オリジンが https なら `true` | Cookie の `Secure` 属性。**DB 上書き可**（下記） |
+| `AUTH_SESSION_TTL_SECS` | `600` | AuthSession の有効期間。**DB 上書き可**（下記） |
 | `AUTHORIZATION_CODE_TTL_SECS` | `60` | authorization code の有効期間 |
 | `SSO_IDLE_TTL_SECS` | `28800` | SSO idle タイムアウト（8h） |
 | `SSO_ABSOLUTE_TTL_SECS` | `86400` | SSO absolute タイムアウト（24h） |
@@ -208,7 +208,26 @@ DELETE up FROM user_permissions up
 | `COOKIE_DOMAIN` | 未設定（host-only） | サービス横断 Cookie（`sso_session_id`・`auth_session_id`）の `Domain` 属性。api/web を別サブドメインで公開する構成でのみ設定（**api・web で同値必須**。下記「api と web を別ドメインで公開したいとき」参照） |
 | `PASSWORD_RESET_TTL_SECS` | `3600` | パスワードリセットトークンの有効期間 |
 | `EMAIL_VERIFICATION_TTL_SECS` | `86400` | 自己登録アカウントのメール検証トークンの有効期間（SEC6b） |
+| `HSTS_MAX_AGE` | `0`（無効） | `Strict-Transport-Security` の `max-age`（秒）。**DB 上書き可**（下記） |
 | `RUST_LOG` | `info,idp=debug` | ログフィルタ |
+
+環境変数より **DB（`system_settings`）の値が優先される**（ADR-0010）。DB で変更するには root 管理者で
+`/{root_tenant_id}/admin/settings` を開き、システム設定区画のランタイム設定を編集する。
+
+## ランタイム設定を DB で変更したいとき
+
+1. root テナントの system 管理者で `/{root_tenant_id}/admin/settings` を開く。
+2. システム設定区画のランタイム設定一覧で、出所が `DB_MANAGED` の項目を編集して保存する
+   （`ENV_LOCKED` の項目は画面から変更できない。`.env` を編集して再デプロイする）。
+3. **サービスを再起動して反映する。** 設定は起動時にしか読み込まれない。
+
+- `COOKIE_SECURE`・`HSTS_MAX_AGE`・`AUTH_SESSION_TTL_SECS` は api と web の**両方**が使う
+  （ADR-0013）。web は起動時に api から値を受け取るため、**api → web の順に両方を再起動する**。
+  片方だけ再起動すると値がずれ、ログインが通らない・片側のドメインだけ保護が外れる状態になる。
+- 値を空にして保存すると上書きが解除され、環境変数（無ければ組み込み既定値）へ戻る。
+- api へ到達できないと web は起動に失敗する（設定を取り違えたまま動かさないため）。
+  `could not read DB-managed runtime settings from api` が出たら、まず api の死活と
+  `INTERNAL_SERVICE_TOKEN` が api・web で同値かを確認する。
 
 ## 本番用の鍵暗号化キーを作りたいとき
 

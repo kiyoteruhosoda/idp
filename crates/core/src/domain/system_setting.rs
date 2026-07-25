@@ -63,6 +63,11 @@ pub enum SettingKind {
 pub struct SettingDefinition {
     pub key: &'static str,
     pub owner: SettingOwner,
+    /// api と web の**両方**が消費する値か（MT26 / ADR-0013）。web は DB を持たないため、
+    /// `true` かつ `DbManaged` のキーは起動時に api の `/internal/runtime-settings` から
+    /// DB 上書き値を取得して解決する。`EnvLocked` の共有キー（`CSRF_SECRET` 等）は
+    /// DB 上書き自体が無いので `false`。
+    pub shared_with_web: bool,
     pub secret: bool,
     pub restart_required: bool,
     pub default_risk: DefaultRisk,
@@ -75,6 +80,7 @@ pub struct SettingDefinition {
 pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     SettingDefinition {
         key: "ISSUER",
+        shared_with_web: false,
         owner: SettingOwner::EnvLocked,
         secret: false,
         restart_required: true,
@@ -86,6 +92,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "BIND_ADDR",
+        shared_with_web: false,
         owner: SettingOwner::EnvLocked,
         secret: false,
         restart_required: true,
@@ -96,6 +103,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "DATABASE_URL",
+        shared_with_web: false,
         owner: SettingOwner::EnvLocked,
         secret: true,
         restart_required: true,
@@ -106,6 +114,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "DB_MAX_CONNECTIONS",
+        shared_with_web: false,
         owner: SettingOwner::EnvLocked,
         secret: false,
         restart_required: true,
@@ -116,6 +125,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "LOG_FORMAT",
+        shared_with_web: false,
         owner: SettingOwner::EnvLocked,
         secret: false,
         restart_required: true,
@@ -124,20 +134,24 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         default_value: Some("json"),
         description: "ログ出力形式（`json` = 構造化ログ / `pretty` = 開発向け整形）。",
     },
-    // api と web の両方が消費する値。web が DB 設定を解決/materialize するまでは env locked。
+    // api と web の両方が消費する値（MT26 / ADR-0013）。web は起動時に api から DB 上書き値を
+    // 取得して解決するため DB 管理できる。反映には api・web 双方の再起動が必要。
     SettingDefinition {
         key: "AUTH_SESSION_TTL_SECS",
-        owner: SettingOwner::EnvLocked,
+        shared_with_web: true,
+        owner: SettingOwner::DbManaged,
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::UnsignedInteger,
         default_value: Some("600"),
         description: "認可フロー中の一時ログインセッション（auth_session）の有効期限（秒）。\
-                      ログイン〜同意完了までに許す時間。",
+                      ログイン〜同意完了までに許す時間。api・web の両方が使うため、変更の反映には\
+                      両サービスの再起動が必要。",
     },
     SettingDefinition {
         key: "AUTHORIZATION_CODE_TTL_SECS",
+        shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
         restart_required: true,
@@ -148,6 +162,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "SSO_IDLE_TTL_SECS",
+        shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
         restart_required: true,
@@ -158,6 +173,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "SSO_ABSOLUTE_TTL_SECS",
+        shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
         restart_required: true,
@@ -168,6 +184,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "ACCESS_TOKEN_TTL_SECS",
+        shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
         restart_required: true,
@@ -178,6 +195,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "ID_TOKEN_TTL_SECS",
+        shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
         restart_required: true,
@@ -188,6 +206,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "REFRESH_TOKEN_TTL_SECS",
+        shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
         restart_required: true,
@@ -199,6 +218,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "CLOCK_SKEW_SECS",
+        shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
         restart_required: true,
@@ -209,6 +229,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "INVITATION_TTL_SECS",
+        shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
         restart_required: true,
@@ -219,6 +240,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "PASSWORD_RESET_TTL_SECS",
+        shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
         restart_required: true,
@@ -229,6 +251,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "EMAIL_VERIFICATION_TTL_SECS",
+        shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
         restart_required: true,
@@ -239,6 +262,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "TENANT_CACHE_TTL_SECS",
+        shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
         restart_required: true,
@@ -249,6 +273,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "PERMISSION_CACHE_TTL_SECS",
+        shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
         restart_required: true,
@@ -257,19 +282,24 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         default_value: Some("60"),
         description: "scope→権限解決キャッシュの TTL（秒）。付与・剥奪時は即時 invalidate される。",
     },
-    // api と web の Cookie 属性を一致させる必要があるため、DB materialize までは env locked。
+    // api と web の Cookie 属性を一致させる必要がある共有キー（MT26 / ADR-0013）。DB 値は両サービスが
+    // 同じ経路（api の /internal/runtime-settings）から受け取るため、DB 管理でも属性がずれない。
+    // 未設定時の既定は各サービスが**自分の公開オリジンのスキーム**から導く（ADR-0012 §2）。
     SettingDefinition {
         key: "COOKIE_SECURE",
-        owner: SettingOwner::EnvLocked,
+        shared_with_web: true,
+        owner: SettingOwner::DbManaged,
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Dangerous,
         kind: SettingKind::Boolean,
         default_value: None,
-        description: "セッション Cookie に `Secure` 属性を付けるか。HTTPS 配置では `true` 必須。",
+        description: "セッション Cookie に `Secure` 属性を付けるか。HTTPS 配置では `true` 必須。\
+                      api・web の両方が使うため、変更の反映には両サービスの再起動が必要。",
     },
     SettingDefinition {
         key: "KEY_ENCRYPTION_KEY",
+        shared_with_web: false,
         owner: SettingOwner::EnvLocked,
         secret: true,
         restart_required: true,
@@ -281,6 +311,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "KEY_ROTATION_LEAD_DAYS",
+        shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
         restart_required: true,
@@ -291,6 +322,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "TRUST_FORWARDED_HEADERS",
+        shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
         restart_required: true,
@@ -300,19 +332,22 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         description: "リバースプロキシの `X-Forwarded-For` / `X-Forwarded-Proto` を信頼するか。\
                       信頼できるプロキシ配下でのみ `true` にする（クライアント IP・スキーム判定に影響）。",
     },
-    // api/web の security header を一致させる必要があるため、DB materialize までは env locked。
+    // api/web の security header を一致させる必要がある共有キー（MT26 / ADR-0013）。
     SettingDefinition {
         key: "HSTS_MAX_AGE",
-        owner: SettingOwner::EnvLocked,
+        shared_with_web: true,
+        owner: SettingOwner::DbManaged,
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Dangerous,
         kind: SettingKind::UnsignedInteger,
         default_value: Some("0"),
-        description: "HSTS レスポンスヘッダの `max-age`（秒）。0 で HSTS を付与しない。HTTPS 配置では正の値を設定。",
+        description: "HSTS レスポンスヘッダの `max-age`（秒）。0 で HSTS を付与しない。HTTPS 配置では\
+                      正の値を設定。api・web の両方が使うため、変更の反映には両サービスの再起動が必要。",
     },
     SettingDefinition {
         key: "INTERNAL_SERVICE_TOKEN",
+        shared_with_web: false,
         owner: SettingOwner::EnvLocked,
         secret: true,
         restart_required: true,
@@ -323,6 +358,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "CSRF_SECRET",
+        shared_with_web: false,
         owner: SettingOwner::EnvLocked,
         secret: true,
         restart_required: true,
@@ -335,6 +371,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     // 絶対 URL 生成に使う）で同一値必須のため EnvLocked（ADR-0012 §2。DbManaged から変更）。
     SettingDefinition {
         key: "PUBLIC_WEB_BASE_URL",
+        shared_with_web: false,
         owner: SettingOwner::EnvLocked,
         secret: false,
         restart_required: true,
@@ -348,6 +385,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     // api/web の Cookie 属性を一致させる必要があるため EnvLocked（ADR-0012 §2）。
     SettingDefinition {
         key: "COOKIE_DOMAIN",
+        shared_with_web: false,
         owner: SettingOwner::EnvLocked,
         secret: false,
         restart_required: true,
@@ -364,6 +402,55 @@ pub fn runtime_setting_definition(key: &str) -> Option<&'static SettingDefinitio
     RUNTIME_SETTING_DEFINITIONS
         .iter()
         .find(|def| def.key == key)
+}
+
+/// api と web の両方が消費する DB 管理キー（MT26 / ADR-0013）。api はこの一覧の DB 上書き値だけを
+/// `/internal/runtime-settings` で web へ渡す。secret は決して共有しない（web は bootstrap secret を
+/// 自分の ENV から読む）。
+pub fn shared_with_web_setting_keys() -> impl Iterator<Item = &'static str> {
+    RUNTIME_SETTING_DEFINITIONS
+        .iter()
+        .filter(|def| def.shared_with_web && !def.secret)
+        .map(|def| def.key)
+}
+
+/// 指定キーが web と共有する DB 管理キーか。
+pub fn is_shared_with_web(key: &str) -> bool {
+    runtime_setting_definition(key)
+        .map(|def| def.shared_with_web && !def.secret)
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// web と共有するキーは DB 上書きを受け付けられなければ意味が無い（`EnvLocked` のまま
+    /// `shared_with_web` を立てると、api は DB 値を無視するのに web へは配れる、という不整合になる）。
+    #[test]
+    fn shared_with_web_keys_are_db_managed_and_not_secret() {
+        for def in RUNTIME_SETTING_DEFINITIONS
+            .iter()
+            .filter(|def| def.shared_with_web)
+        {
+            assert_eq!(
+                def.owner,
+                SettingOwner::DbManaged,
+                "{} is shared with web but not DB-managed",
+                def.key
+            );
+            assert!(!def.secret, "{} is shared with web but secret", def.key);
+        }
+    }
+
+    /// 定義キーの重複は「どちらが効くか」が探索順に依存する事故になるため禁止する。
+    #[test]
+    fn runtime_setting_keys_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for def in RUNTIME_SETTING_DEFINITIONS {
+            assert!(seen.insert(def.key), "duplicate setting key: {}", def.key);
+        }
+    }
 }
 
 /// SMTP（メール配送）設定。参照時は平文パスワードを含めず「設定済みか否か」のみを外へ渡す

@@ -1,3 +1,22 @@
+## 2026-07-25（api/web 共有ランタイム設定を DB 管理へ移した。MT26 / ADR-0013）
+
+- **`COOKIE_SECURE`・`HSTS_MAX_AGE`・`AUTH_SESSION_TTL_SECS` を EnvLocked → DbManaged へ変更**し、
+  root 設定画面から変更できるようにした。これらは api と web の両方が消費するため、web が DB を
+  読めない（ADR-0007）ことを理由に ENV 固定のまま残っていた。
+- **api を共有設定の唯一の出所にした**: `GET /internal/runtime-settings`（サービストークン保護）を
+  追加し、web は起動時にここから DB 上書き値を取得して `既定値 < ENV < DB` の順で解決する。
+  返すのは **DB 上書き値だけ**で api の有効値ではない（`COOKIE_SECURE` の既定は各サービスが
+  自分の公開オリジンのスキームから導くため。ADR-0012 §2）。secret は共有しない。
+- **設定定義に `shared_with_web` を追加**（`domain/system_setting.rs`）。「api と web の両方が消費する
+  DB 管理キー」を定義側に持たせ、キー一覧が実装の複数箇所へ散らないようにした。`shared_with_web` かつ
+  `EnvLocked`／secret の組み合わせはテストで禁止する。
+- **取得に失敗した web は起動しない**（指数バックオフ 5 回 → fail-fast）。共有キーはずれても 500 に
+  ならず「ログインが通らない」「保護が外れる」という静かな壊れ方をするため、ENV だけで起動する
+  fail-soft は採らない。不正な DB 値のパース失敗も同様に起動を失敗させる。
+- ADR-0010 §2 が想定していた `.env` marker への materialize は本用途では採用せず、ADR-0013 として
+  判断を記録した（ホスト上のファイル書き換えを避ける）。変更の反映には **api と web 両方の再起動**が
+  必要（MT27 で扱う）。
+
 ## 2026-07-25（Cookie の名前・属性組み立てを `idp-contracts` へ集約し、ログアウトの越境を E2E で固定した）
 
 - **Cookie の契約を `idp_contracts::cookies` へ単一化した**: api（`presentation/cookies.rs`）と

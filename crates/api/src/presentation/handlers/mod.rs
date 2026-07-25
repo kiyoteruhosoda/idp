@@ -16,6 +16,7 @@ pub mod consent;
 pub mod discovery;
 pub mod health;
 pub mod internal_auth;
+pub mod internal_runtime_settings;
 pub mod introspect;
 pub mod invitations;
 pub mod logout;

@@ -725,20 +725,32 @@ mod tests {
         std::env::remove_var("KEY_ROTATION_LEAD_DAYS");
     }
 
+    /// MT26 / ADR-0013: api と web が共有するランタイム設定も DB 上書きを受け付ける
+    /// （web は起動時に api の `/internal/runtime-settings` から同じ値を受け取る）。
     #[test]
-    fn shared_web_runtime_settings_ignore_db_until_materialized() {
+    fn shared_web_runtime_settings_are_db_managed() {
         let _env = env_guard();
         std::env::remove_var("AUTH_SESSION_TTL_SECS");
-        let db = HashMap::from([("AUTH_SESSION_TTL_SECS".to_string(), "1200".to_string())]);
+        std::env::remove_var("COOKIE_SECURE");
+        std::env::remove_var("HSTS_MAX_AGE");
+        let db = HashMap::from([
+            ("AUTH_SESSION_TTL_SECS".to_string(), "1200".to_string()),
+            ("COOKIE_SECURE".to_string(), "true".to_string()),
+            ("HSTS_MAX_AGE".to_string(), "31536000".to_string()),
+        ]);
         let config = Config::from_env_and_db_settings(&db).unwrap();
-        assert_eq!(config.auth_session_ttl(), Duration::from_secs(600));
-        let ttl = config
-            .resolved_settings()
-            .iter()
-            .find(|setting| setting.key == "AUTH_SESSION_TTL_SECS")
-            .unwrap();
-        assert_eq!(ttl.owner, SettingOwner::EnvLocked);
-        assert_eq!(ttl.source, SettingSource::Builtin);
+        assert_eq!(config.auth_session_ttl(), Duration::from_secs(1_200));
+        assert!(config.cookie_secure());
+        assert_eq!(config.hsts_max_age(), 31_536_000);
+        for key in ["AUTH_SESSION_TTL_SECS", "COOKIE_SECURE", "HSTS_MAX_AGE"] {
+            let setting = config
+                .resolved_settings()
+                .iter()
+                .find(|setting| setting.key == key)
+                .unwrap();
+            assert_eq!(setting.owner, SettingOwner::DbManaged, "{key}");
+            assert_eq!(setting.source, SettingSource::Db, "{key}");
+        }
     }
 
     #[test]
