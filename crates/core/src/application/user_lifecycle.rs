@@ -1,9 +1,11 @@
-//! 管理者による利用者ライフサイクル操作（無効化・有効化・削除・パスワード再発行・MFA 解除。
-//! ADR-0009 §5・MT21）。
+//! 管理者による利用者ライフサイクル操作（無効化・有効化・削除・パスワード再発行・MFA 解除・
+//! プロフィール編集。ADR-0009 §5・MT21・MT25）。
 //!
 //! 操作対象は**所属元（HOME）が要求テナントの利用者のみ**（`users.tenant_id` 照合。ゲストの
 //! `users` レコードは所属元テナントの管理者だけが操作できる。§3）。自分自身への操作は禁止する
-//! （誤操作によるロックアウト防止。パスワード変更・MFA 解除はセルフサービスを使う）。
+//! （誤操作によるロックアウト防止。パスワード変更・MFA 解除はセルフサービスを使う）。ただし
+//! プロフィール編集（[`UserLifecycleService::update_profile`]）はロックアウトを招かないため自分自身も
+//! 対象にできる。
 //!
 //! パスワード再発行は作成時と同じ方針（[`crate::application::user_management`]）: 32 文字以上の
 //! ランダムパスワードを自動生成し、`must_change_password = true` を設定する。生成パスワードは
@@ -14,6 +16,7 @@ use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
+use crate::domain::message::MessageKey;
 use crate::domain::password::PasswordHasher;
 use crate::domain::repositories::{
     AuthorizationCodeRepository, RefreshTokenRepository, SsoSessionRepository,
@@ -21,7 +24,9 @@ use crate::domain::repositories::{
 };
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::user::User;
-use crate::domain::values::UserStatus;
+use crate::domain::values::{
+    validate_display_name, validate_email, validate_preferred_username, UserStatus,
+};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -45,14 +50,26 @@ pub struct MfaReset {
     pub passkeys_removed: u64,
 }
 
+/// プロフィール編集の指示（MT25）。`None` のフィールドは変更しない（部分更新）。
+/// `preferred_username` / `name` に空文字を渡すと「解除（`NULL`）」を意味する。
+#[derive(Debug, Default, Clone)]
+pub struct UpdateUserProfileCommand {
+    pub email: Option<String>,
+    pub preferred_username: Option<String>,
+    pub name: Option<String>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum UserLifecycleError {
     #[error("user not found")]
     NotFound,
     #[error("forbidden: {0}")]
-    Forbidden(String),
+    Forbidden(MessageKey),
     #[error("validation error: {0}")]
-    Validation(String),
+    Validation(MessageKey),
+    /// email / preferred_username がテナント内で既に使われている（MT25）。
+    #[error("conflict: {0}")]
+    Conflict(MessageKey),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -123,7 +140,9 @@ impl UserLifecycleService {
     ) -> Result<ResetUserPassword, UserLifecycleError> {
         let email = email.trim();
         if email.is_empty() {
-            return Err(UserLifecycleError::Validation("email is required".into()));
+            return Err(UserLifecycleError::Validation(MessageKey::new(
+                "api-email-required",
+            )));
         }
         let user = self
             .users
@@ -146,9 +165,9 @@ impl UserLifecycleService {
         ctx: &RequestContext,
     ) -> Result<(), UserLifecycleError> {
         if status == UserStatus::Locked {
-            return Err(UserLifecycleError::Validation(
-                "LOCKED cannot be set by administrators".into(),
-            ));
+            return Err(UserLifecycleError::Validation(MessageKey::new(
+                "api-user-status-locked-forbidden",
+            )));
         }
         let user = self.find_home_user(tenant, target).await?;
         self.ensure_not_self(user.id, actor)?;
@@ -171,6 +190,132 @@ impl UserLifecycleService {
             )
             .await;
         Ok(())
+    }
+
+    /// 利用者のプロフィール（メール・ログイン識別子・表示名）を編集する（MT25）。
+    ///
+    /// 対象は他のライフサイクル操作と同じく**所属元（HOME）が要求テナントの利用者のみ**。ただし
+    /// **自分自身も編集できる**（他操作の自己禁止はロックアウト防止が目的で、表示名やメールの変更は
+    /// ロックアウトを招かない。管理者が自分のメールを直せないと運用が詰まる）。
+    ///
+    /// 変更後の email は**管理者がメール所有を保証する扱い**とし、検証済み（`email_verified`）を
+    /// 維持する（管理者作成ユーザーと同じ方針。ADR-0009 §5・SEC6b）。これによりメール変更直後に
+    /// 本人がログイン不能になることを避ける。
+    ///
+    /// `preferred_username` はログイン識別子（ADR-0009 §8）であり、変更するとその利用者の**ログイン
+    /// 名が変わる**。空文字は解除を意味するが、解除するとパスワードログインできなくなるため
+    /// `Validation` で拒否する。
+    pub async fn update_profile(
+        &self,
+        tenant: TenantContext,
+        target: Uuid,
+        cmd: UpdateUserProfileCommand,
+        actor: Uuid,
+        ctx: &RequestContext,
+    ) -> Result<User, UserLifecycleError> {
+        let user = self.find_home_user(tenant, target).await?;
+        let tenant_id = tenant.tenant_id();
+        let mut changed: Vec<&'static str> = Vec::new();
+
+        let email = match cmd.email.as_deref().map(str::trim) {
+            Some(email) if email != user.email => {
+                validate_email(email).map_err(UserLifecycleError::Validation)?;
+                // 一意性の事前チェック（分かりやすいエラー）。最終的な保証は DB の UNIQUE 制約。
+                if self
+                    .users
+                    .find_by_email(tenant_id, email)
+                    .await
+                    .map_err(internal)?
+                    .is_some()
+                {
+                    return Err(UserLifecycleError::Conflict(MessageKey::new(
+                        "api-user-email-conflict",
+                    )));
+                }
+                changed.push("email");
+                email.to_string()
+            }
+            _ => user.email.clone(),
+        };
+
+        let preferred_username = match cmd.preferred_username.as_deref().map(str::trim) {
+            Some(value) if Some(value) != user.preferred_username.as_deref() => {
+                if value.is_empty() {
+                    return Err(UserLifecycleError::Validation(MessageKey::new(
+                        "api-username-required",
+                    )));
+                }
+                validate_preferred_username(value).map_err(UserLifecycleError::Validation)?;
+                if self
+                    .users
+                    .find_by_username(tenant_id, value)
+                    .await
+                    .map_err(internal)?
+                    .is_some()
+                {
+                    return Err(UserLifecycleError::Conflict(MessageKey::new(
+                        "api-user-username-conflict",
+                    )));
+                }
+                changed.push("preferred_username");
+                Some(value.to_string())
+            }
+            _ => user.preferred_username.clone(),
+        };
+
+        let name = match cmd.name.as_deref().map(str::trim) {
+            Some(value) => {
+                validate_display_name(value).map_err(UserLifecycleError::Validation)?;
+                // 空文字は表示名の解除（`NULL`）。
+                let next = (!value.is_empty()).then(|| value.to_string());
+                if next != user.name {
+                    changed.push("name");
+                }
+                next
+            }
+            None => user.name.clone(),
+        };
+
+        if changed.is_empty() {
+            // 変更が無いなら書き込みも監査もしない（監査ログを無内容な行で埋めない）。
+            return Ok(user);
+        }
+
+        self.users
+            .update_profile(
+                user.id,
+                &email,
+                preferred_username.as_deref(),
+                name.as_deref(),
+            )
+            .await
+            .map_err(|e| match e {
+                // 事前チェックとの競合（同時更新）のみ。どちらの一意キーかは DB からは特定できない。
+                crate::domain::error::DomainError::Conflict(_) => {
+                    UserLifecycleError::Conflict(MessageKey::new("api-user-identity-conflict"))
+                }
+                other => internal(other),
+            })?;
+
+        // 監査には対象と「変更した項目名」のみ記録する（メール・表示名そのものは PII のため出さない）。
+        self.audit
+            .record(
+                AuditEventType::UserProfileUpdated,
+                AuditResult::Success,
+                Some(tenant_id),
+                Some(actor),
+                None,
+                Some(&format!("user={} fields={}", user.id, changed.join(","))),
+                ctx,
+            )
+            .await;
+
+        Ok(User {
+            email,
+            preferred_username,
+            name,
+            ..user
+        })
     }
 
     /// 利用者を削除する。関連行（メンバーシップ・権限・セッション・トークン・MFA 資格情報）は
@@ -318,9 +463,9 @@ impl UserLifecycleService {
 
     fn ensure_not_self(&self, target: Uuid, actor: Uuid) -> Result<(), UserLifecycleError> {
         if target == actor {
-            return Err(UserLifecycleError::Forbidden(
-                "cannot operate on your own account".into(),
-            ));
+            return Err(UserLifecycleError::Forbidden(MessageKey::new(
+                "api-user-self-operation-forbidden",
+            )));
         }
         Ok(())
     }
@@ -458,8 +603,14 @@ mod tests {
                 .find(|u| u.tenant_id == t && u.email == e)
                 .cloned())
         }
-        async fn find_by_username(&self, _t: TenantId, _n: &str) -> DomainResult<Option<User>> {
-            unreachable!()
+        async fn find_by_username(&self, t: TenantId, n: &str) -> DomainResult<Option<User>> {
+            Ok(self
+                .rows
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|u| u.tenant_id == t && u.preferred_username.as_deref() == Some(n))
+                .cloned())
         }
         async fn update_login_state(
             &self,
@@ -502,6 +653,23 @@ mod tests {
         }
         async fn update_language(&self, _id: Uuid, _language: Option<&str>) -> DomainResult<()> {
             unreachable!()
+        }
+        async fn update_profile(
+            &self,
+            id: Uuid,
+            email: &str,
+            preferred_username: Option<&str>,
+            name: Option<&str>,
+        ) -> DomainResult<()> {
+            let mut rows = self.rows.lock().unwrap();
+            let user = rows
+                .iter_mut()
+                .find(|u| u.id == id)
+                .ok_or_else(|| DomainError::Repository("not found".into()))?;
+            user.email = email.to_string();
+            user.preferred_username = preferred_username.map(str::to_string);
+            user.name = name.map(str::to_string);
+            Ok(())
         }
     }
 
@@ -1039,5 +1207,247 @@ mod tests {
             f.sink.events.lock().unwrap()[0].event_type,
             AuditEventType::UserDeleted
         );
+    }
+
+    // ── プロフィール編集（MT25）────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn updates_profile_and_audits_only_the_changed_field_names() {
+        let tenant: TenantId = Uuid::now_v7().into();
+        let f = fixture();
+        let target = Uuid::now_v7();
+        f.users.create(&user(target, tenant)).await.unwrap();
+
+        let updated = f
+            .svc
+            .update_profile(
+                TenantContext::new(tenant),
+                target,
+                UpdateUserProfileCommand {
+                    email: Some("  renamed@example.com  ".into()),
+                    preferred_username: Some("renamed".into()),
+                    name: Some("Renamed User".into()),
+                },
+                Uuid::now_v7(),
+                &ctx(),
+            )
+            .await
+            .expect("updated");
+
+        assert_eq!(updated.email, "renamed@example.com");
+        assert_eq!(updated.preferred_username.as_deref(), Some("renamed"));
+        assert_eq!(updated.name.as_deref(), Some("Renamed User"));
+        // 管理者が所有を保証する扱いのため検証済みを維持する（メール変更でログイン不能にしない）。
+        assert!(updated.email_verified);
+
+        let stored = f.users.rows.lock().unwrap()[0].clone();
+        assert_eq!(stored.email, "renamed@example.com");
+
+        let events = f.sink.events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, AuditEventType::UserProfileUpdated);
+        let reason = events[0].reason.clone().expect("reason");
+        assert!(
+            reason.contains("fields=email,preferred_username,name"),
+            "{reason}"
+        );
+        // 値そのもの（PII）は監査に出さない。
+        assert!(!reason.contains("renamed@example.com"), "{reason}");
+        assert!(!reason.contains("Renamed User"), "{reason}");
+    }
+
+    #[tokio::test]
+    async fn updates_profile_partially_and_clears_the_display_name_with_an_empty_value() {
+        let tenant: TenantId = Uuid::now_v7().into();
+        let f = fixture();
+        let target = Uuid::now_v7();
+        let mut existing = user(target, tenant);
+        existing.name = Some("Old Name".into());
+        existing.preferred_username = Some("keep-me".into());
+        f.users.create(&existing).await.unwrap();
+
+        // name のみ空文字 = 表示名の解除。email / preferred_username は未指定なので現状維持。
+        let updated = f
+            .svc
+            .update_profile(
+                TenantContext::new(tenant),
+                target,
+                UpdateUserProfileCommand {
+                    name: Some("   ".into()),
+                    ..Default::default()
+                },
+                Uuid::now_v7(),
+                &ctx(),
+            )
+            .await
+            .expect("updated");
+        assert_eq!(updated.name, None);
+        assert_eq!(updated.email, existing.email);
+        assert_eq!(updated.preferred_username.as_deref(), Some("keep-me"));
+
+        let reason = f.sink.events.lock().unwrap()[0]
+            .reason
+            .clone()
+            .expect("reason");
+        assert!(reason.contains("fields=name"), "{reason}");
+    }
+
+    #[tokio::test]
+    async fn updating_profile_with_no_change_does_not_write_or_audit() {
+        let tenant: TenantId = Uuid::now_v7().into();
+        let f = fixture();
+        let target = Uuid::now_v7();
+        let existing = user(target, tenant);
+        f.users.create(&existing).await.unwrap();
+
+        f.svc
+            .update_profile(
+                TenantContext::new(tenant),
+                target,
+                UpdateUserProfileCommand {
+                    email: Some(existing.email.clone()),
+                    ..Default::default()
+                },
+                Uuid::now_v7(),
+                &ctx(),
+            )
+            .await
+            .expect("no-op update");
+        assert!(f.sink.events.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn updating_profile_rejects_duplicates_within_the_tenant() {
+        let tenant: TenantId = Uuid::now_v7().into();
+        let f = fixture();
+        let target = Uuid::now_v7();
+        f.users.create(&user(target, tenant)).await.unwrap();
+        let mut other = user(Uuid::now_v7(), tenant);
+        other.email = "taken@example.com".into();
+        other.preferred_username = Some("taken".into());
+        f.users.create(&other).await.unwrap();
+
+        assert!(matches!(
+            f.svc
+                .update_profile(
+                    TenantContext::new(tenant),
+                    target,
+                    UpdateUserProfileCommand {
+                        email: Some("taken@example.com".into()),
+                        ..Default::default()
+                    },
+                    Uuid::now_v7(),
+                    &ctx(),
+                )
+                .await,
+            Err(UserLifecycleError::Conflict(_))
+        ));
+        assert!(matches!(
+            f.svc
+                .update_profile(
+                    TenantContext::new(tenant),
+                    target,
+                    UpdateUserProfileCommand {
+                        preferred_username: Some("taken".into()),
+                        ..Default::default()
+                    },
+                    Uuid::now_v7(),
+                    &ctx(),
+                )
+                .await,
+            Err(UserLifecycleError::Conflict(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn updating_profile_rejects_invalid_input_and_clearing_the_login_identifier() {
+        let tenant: TenantId = Uuid::now_v7().into();
+        let f = fixture();
+        let target = Uuid::now_v7();
+        let mut existing = user(target, tenant);
+        existing.preferred_username = Some("alice".into());
+        f.users.create(&existing).await.unwrap();
+
+        let invalid = |cmd| {
+            let svc = &f.svc;
+            async move {
+                svc.update_profile(
+                    TenantContext::new(tenant),
+                    target,
+                    cmd,
+                    Uuid::now_v7(),
+                    &ctx(),
+                )
+                .await
+            }
+        };
+
+        assert!(matches!(
+            invalid(UpdateUserProfileCommand {
+                email: Some("not-an-email".into()),
+                ..Default::default()
+            })
+            .await,
+            Err(UserLifecycleError::Validation(_))
+        ));
+        // ログイン識別子の解除はパスワードログイン不能を招くため拒否する。
+        assert!(matches!(
+            invalid(UpdateUserProfileCommand {
+                preferred_username: Some("".into()),
+                ..Default::default()
+            })
+            .await,
+            Err(UserLifecycleError::Validation(_))
+        ));
+        // カラム長超過は永続化前に入力エラーとして返す。
+        assert!(matches!(
+            invalid(UpdateUserProfileCommand {
+                name: Some("x".repeat(256)),
+                ..Default::default()
+            })
+            .await,
+            Err(UserLifecycleError::Validation(_))
+        ));
+    }
+
+    /// プロフィール編集は他のライフサイクル操作と違い自分自身も対象にできる（ロックアウトを招かない）。
+    /// 一方、テナント越し（所属元が他テナント）は他操作と同じく `NotFound`。
+    #[tokio::test]
+    async fn updating_own_profile_is_allowed_but_cross_tenant_is_not() {
+        let tenant: TenantId = Uuid::now_v7().into();
+        let other: TenantId = Uuid::now_v7().into();
+        let f = fixture();
+        let me = Uuid::now_v7();
+        f.users.create(&user(me, tenant)).await.unwrap();
+
+        f.svc
+            .update_profile(
+                TenantContext::new(tenant),
+                me,
+                UpdateUserProfileCommand {
+                    name: Some("My Name".into()),
+                    ..Default::default()
+                },
+                me,
+                &ctx(),
+            )
+            .await
+            .expect("self edit is allowed");
+
+        assert!(matches!(
+            f.svc
+                .update_profile(
+                    TenantContext::new(other),
+                    me,
+                    UpdateUserProfileCommand {
+                        name: Some("Hijack".into()),
+                        ..Default::default()
+                    },
+                    Uuid::now_v7(),
+                    &ctx(),
+                )
+                .await,
+            Err(UserLifecycleError::NotFound)
+        ));
     }
 }

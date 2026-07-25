@@ -17,6 +17,7 @@ pub mod dto;
 pub mod error_pages;
 pub mod handlers;
 pub mod i18n;
+pub mod language;
 pub mod router;
 pub mod security_headers;
 pub mod state;

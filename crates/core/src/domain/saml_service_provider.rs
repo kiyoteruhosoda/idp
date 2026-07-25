@@ -4,7 +4,7 @@
 //! SP 登録はテナント境界に属し、Entity ID はテナント内で一意に扱う。ACS URL は HTTPS を原則とし、
 //! ローカル開発用途のみ `http://localhost` / loopback を許可する。
 
-use crate::domain::error::{DomainError, Result};
+use crate::domain::message::MessageKey;
 use crate::domain::tenant::TenantId;
 use chrono::{DateTime, Utc};
 use url::Url;
@@ -49,7 +49,11 @@ pub struct SamlServiceProviderChanges {
 }
 
 impl SamlServiceProvider {
-    pub fn register(id: Uuid, input: NewSamlServiceProvider, now: DateTime<Utc>) -> Result<Self> {
+    pub fn register(
+        id: Uuid,
+        input: NewSamlServiceProvider,
+        now: DateTime<Utc>,
+    ) -> std::result::Result<Self, MessageKey> {
         let fields = ValidatedFields::new(
             input.display_name,
             input.entity_id,
@@ -72,7 +76,11 @@ impl SamlServiceProvider {
     }
 
     /// 変更内容を検証して適用する（テナント・id・created_at は不変。updated_at を更新する）。
-    pub fn apply(&mut self, changes: SamlServiceProviderChanges, now: DateTime<Utc>) -> Result<()> {
+    pub fn apply(
+        &mut self,
+        changes: SamlServiceProviderChanges,
+        now: DateTime<Utc>,
+    ) -> std::result::Result<(), MessageKey> {
         let fields = ValidatedFields::new(
             changes.display_name,
             changes.entity_id,
@@ -107,7 +115,7 @@ impl ValidatedFields {
         acs_url: String,
         name_id_format: String,
         x509_certificate: Option<String>,
-    ) -> Result<Self> {
+    ) -> std::result::Result<Self, MessageKey> {
         Ok(Self {
             display_name: required(display_name, "display_name")?,
             entity_id: required(entity_id, "entity_id")?,
@@ -124,23 +132,22 @@ impl ValidatedFields {
 }
 
 /// ACS URL の検証。HTTPS を原則とし、ローカル開発のみ `http://localhost` / loopback を許可する。
-pub fn validate_acs_url(raw: &str) -> Result<String> {
+pub fn validate_acs_url(raw: &str) -> std::result::Result<String, MessageKey> {
     let trimmed = required(raw.to_string(), "acs_url")?;
-    let parsed = Url::parse(&trimmed)
-        .map_err(|_| DomainError::InvalidValue("acs_url must be a valid URL".to_string()))?;
+    let parsed =
+        Url::parse(&trimmed).map_err(|_| MessageKey::new("api-saml-sp-acs-url-invalid"))?;
     match parsed.scheme() {
         "https" => Ok(trimmed),
         "http" if is_localhost(&parsed) => Ok(trimmed),
-        _ => Err(DomainError::InvalidValue(
-            "acs_url must use https or localhost http".to_string(),
-        )),
+        _ => Err(MessageKey::new("api-saml-sp-acs-url-scheme")),
     }
 }
 
-fn required(value: String, field: &str) -> Result<String> {
+/// 必須項目の空チェック。訳文ではなく翻訳キーを返し、どの項目かは差し込み値で伝える（MT19）。
+fn required(value: String, field: &'static str) -> std::result::Result<String, MessageKey> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        return Err(DomainError::InvalidValue(format!("{field} is required")));
+        return Err(MessageKey::with_value("api-field-required", field));
     }
     Ok(trimmed.to_string())
 }

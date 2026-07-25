@@ -144,9 +144,7 @@ fn map_error(e: KeyManagementError, locale: ApiLocale) -> ApiError {
         KeyManagementError::NotFound(_) => {
             ApiError::NotFound(msgs.get("api-signing-key-not-found"))
         }
-        KeyManagementError::Validation(_) => {
-            ApiError::BadRequest(ApiMessages::new(locale).get("api-invalid-request"))
-        }
+        KeyManagementError::Validation(m) => ApiError::BadRequest(msgs.get_message(&m)),
         KeyManagementError::Internal(m) => ApiError::Internal(m),
     }
 }

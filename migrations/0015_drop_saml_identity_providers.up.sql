@@ -1,0 +1,11 @@
+-- 未使用テーブル `saml_identity_providers` を削除する（MT28。外部 IdP 連携廃止の contract フェーズ）。
+--
+-- 0008 で追加した外部 IdP（SAML IdP としての被連携ではなく、本 IdP が外部 IdP へ委譲する）設定表は、
+-- 方針転換（本 IdP は SAML SP を受け入れる側に限る。0010 の `saml_service_providers`）により
+-- 参照コードが 1 行も残っていない。ADR-0004 §6 の expand/contract に従い、
+-- 「アプリから参照を外す（expand 済み）」→「後続リリースでテーブルを落とす（本マイグレーション =
+-- contract）」の 2 段で行う。
+--
+-- 冪等性: `IF EXISTS` により再適用しても失敗しない。
+-- 依存関係: 本表を参照する外部キーは存在しない（`tenants(id)` を参照する側のみ）。
+DROP TABLE IF EXISTS saml_identity_providers;

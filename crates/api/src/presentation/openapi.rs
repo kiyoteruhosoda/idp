@@ -13,8 +13,8 @@ use crate::presentation::dto::{
     SystemSettingsResponse, TenantAdminPasswordResetRequest, TenantResponse, TokenRequest,
     TokenResponse, UpdateMemberStatusRequest, UpdateRuntimeSettingRequest,
     UpdateSystemSettingsRequest, UpdateTenantRequest, UpdateTenantSettingsRequest,
-    UpdateUserStatusRequest, UserCreatedResponse, UserInfoResponse, UserMfaResetResponse,
-    UserPasswordResetResponse, UserPermissionsResponse, VerifyEmailRequest,
+    UpdateUserProfileRequest, UpdateUserStatusRequest, UserCreatedResponse, UserInfoResponse,
+    UserMfaResetResponse, UserPasswordResetResponse, UserPermissionsResponse, VerifyEmailRequest,
 };
 use crate::presentation::handlers;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
@@ -59,6 +59,7 @@ use utoipa::{Modify, OpenApi};
         handlers::admin_system_settings::update_runtime_setting,
         handlers::admin_users::create_user,
         handlers::admin_users::update_user_status,
+        handlers::admin_users::update_user_profile,
         handlers::admin_users::delete_user,
         handlers::admin_users::reset_user_password,
         handlers::admin_users::reset_user_mfa,
@@ -100,6 +101,7 @@ use utoipa::{Modify, OpenApi};
         UserCreatedResponse,
         UpdateUserStatusRequest,
         UpdateMemberStatusRequest,
+        UpdateUserProfileRequest,
         UserMfaResetResponse,
         UserPasswordResetResponse,
         TenantAdminPasswordResetRequest,

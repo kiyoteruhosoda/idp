@@ -16,6 +16,7 @@ use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::error::DomainError;
 use crate::domain::id_generator::IdGenerator;
+use crate::domain::message::MessageKey;
 use crate::domain::password::PasswordHasher;
 use crate::domain::repositories::{TenantMembershipRepository, UserRepository};
 use crate::domain::tenant_context::TenantContext;
@@ -57,9 +58,9 @@ pub struct PreparedUser {
 #[derive(Debug, thiserror::Error)]
 pub enum UserManagementError {
     #[error("validation error: {0}")]
-    Validation(String),
+    Validation(MessageKey),
     #[error("conflict: {0}")]
-    Conflict(String),
+    Conflict(MessageKey),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -107,7 +108,7 @@ impl UserManagementService {
             normalize_optional(cmd.preferred_username).unwrap_or_else(|| email.clone());
         // カラム長（VARCHAR(255)）超過を永続化前に弾く（email は VARCHAR(320) のため既定値化で超え得る）。
         domain_validate_preferred_username(&preferred_username)
-            .map_err(|e| UserManagementError::Validation(e.to_string()))?;
+            .map_err(UserManagementError::Validation)?;
         let name = normalize_optional(cmd.name);
         let tenant_id = tenant.tenant_id();
 
@@ -120,9 +121,9 @@ impl UserManagementService {
             .map_err(internal)?
             .is_some()
         {
-            return Err(UserManagementError::Conflict(
-                "email already registered".to_string(),
-            ));
+            return Err(UserManagementError::Conflict(MessageKey::new(
+                "api-user-email-conflict",
+            )));
         }
         if self
             .users
@@ -131,9 +132,9 @@ impl UserManagementService {
             .map_err(internal)?
             .is_some()
         {
-            return Err(UserManagementError::Conflict(
-                "preferred_username already taken".to_string(),
-            ));
+            return Err(UserManagementError::Conflict(MessageKey::new(
+                "api-user-username-conflict",
+            )));
         }
 
         let generated_password = crypto::random_token(GENERATED_PASSWORD_BYTES);
@@ -180,7 +181,11 @@ impl UserManagementService {
         let user = prepared.user;
 
         self.users.create(&user).await.map_err(|e| match e {
-            DomainError::Conflict(m) => UserManagementError::Conflict(m),
+            // DB の一意制約違反は (tenant_id, email) / (tenant_id, preferred_username) のいずれか。
+            // 事前チェックとの競合（同時登録）でのみ到達するため、どちらかを特定せず一括で伝える。
+            DomainError::Conflict(_) => {
+                UserManagementError::Conflict(MessageKey::new("api-user-identity-conflict"))
+            }
             other => UserManagementError::Internal(other.to_string()),
         })?;
 
@@ -216,7 +221,7 @@ impl UserManagementService {
 }
 
 fn validate_email(email: &str) -> Result<(), UserManagementError> {
-    domain_validate_email(email).map_err(|e| UserManagementError::Validation(e.to_string()))
+    domain_validate_email(email).map_err(UserManagementError::Validation)
 }
 
 fn normalize_optional(value: Option<String>) -> Option<String> {

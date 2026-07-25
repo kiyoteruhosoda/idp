@@ -626,10 +626,12 @@ pub async fn account_profile(
             name,
             preferred_username,
             email,
+            language,
         } => InternalAccountProfileResponse::Ok {
             name,
             preferred_username,
             email,
+            language,
         },
         ProfileOutcome::SessionExpired => InternalAccountProfileResponse::SessionExpired,
         ProfileOutcome::Internal(e) => {

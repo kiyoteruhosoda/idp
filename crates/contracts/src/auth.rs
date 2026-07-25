@@ -799,6 +799,10 @@ pub enum InternalAccountProfileResponse {
         preferred_username: Option<String>,
         /// メールアドレス。
         email: String,
+        /// 保存済みの表示言語（`ja` / `en`。未設定なら `None`）。web の表示言語決定で
+        /// Cookie より優先する（MT20。`CLAUDE.md`「国際化」の優先順 2 位）。
+        #[serde(default)]
+        language: Option<String>,
     },
     /// SSO セッションが無い・期限切れ。
     SessionExpired,

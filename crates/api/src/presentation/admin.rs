@@ -17,6 +17,7 @@
 
 use crate::application::admin_access::{AdminAccess, AuthorizedAdmin};
 use crate::presentation::cookies;
+use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
 use axum::extract::FromRequestParts;
@@ -93,12 +94,12 @@ where
             AdminAccess::Unauthenticated => Err(error_response(
                 StatusCode::UNAUTHORIZED,
                 "unauthorized",
-                "authentication required",
+                &messages(parts).get("api-authentication-required"),
             )),
             AdminAccess::Forbidden => Err(error_response(
                 StatusCode::FORBIDDEN,
                 "forbidden",
-                "insufficient permission",
+                &messages(parts).get("api-permission-insufficient"),
             )),
         }
     }
@@ -127,7 +128,7 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
             None => Err(error_response(
                 StatusCode::UNAUTHORIZED,
                 "unauthorized",
-                "authentication required",
+                &messages(parts).get("api-authentication-required"),
             )),
         }
     }
@@ -135,4 +136,14 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
 
 fn error_response(status: StatusCode, code: &str, message: &str) -> Response {
     (status, Json(json!({ "error": code, "message": message }))).into_response()
+}
+
+/// リクエストの `Accept-Language` に従う翻訳辞書（MT19）。extractor の拒否応答（401 / 403）も
+/// 利用者に見えるメッセージであり、ハンドラ内のエラーと同じ言語で返す。
+fn messages(parts: &Parts) -> ApiMessages {
+    let header = parts
+        .headers
+        .get(axum::http::header::ACCEPT_LANGUAGE)
+        .and_then(|v| v.to_str().ok());
+    ApiMessages::new(ApiLocale::from_accept_language(header))
 }

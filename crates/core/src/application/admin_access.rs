@@ -4,6 +4,10 @@
 //! CLAUDE.md「権限管理」に従い、検証は本 Application 層で行い、Presentation には**結果（可否）のみ**
 //! 渡す（Presentation は `RequirePerms` extractor で本サービスを呼ぶ）。
 //!
+//! 判定は 2 段構えで、**要求テナントで `ACTIVE` なメンバーシップを持つこと**（MT24）と
+//! **要求権限を要求テナント scope で保有すること**の両方を要求する。前者が必要なのは、ゲストの
+//! 一時停止（`SUSPENDED`）が権限行を残す可逆な操作であり、権限だけを見る判定では停止が効かないため。
+//!
 //! 権限は「要求テナントを scope に持つか」の**完全一致**で判定する（ADR-0009 §4）。
 //! `idp.system.admin` は root scope でしか存在できず（DB CHECK ＋アプリ層の二重防御）、
 //! root テナント自身のテナント管理を含むため、要求権限に加えて常に代替として許可する。
@@ -13,7 +17,9 @@
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::permission;
-use crate::domain::repositories::{SsoSessionRepository, UserPermissionRepository, UserRepository};
+use crate::domain::repositories::{
+    SsoSessionRepository, TenantMembershipRepository, UserPermissionRepository, UserRepository,
+};
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::user::User;
 use std::sync::Arc;
@@ -47,6 +53,7 @@ pub struct AdminAccessService {
     sso_sessions: Arc<dyn SsoSessionRepository>,
     users: Arc<dyn UserRepository>,
     permissions: Arc<dyn UserPermissionRepository>,
+    memberships: Arc<dyn TenantMembershipRepository>,
     clock: Arc<dyn Clock>,
 }
 
@@ -55,12 +62,14 @@ impl AdminAccessService {
         sso_sessions: Arc<dyn SsoSessionRepository>,
         users: Arc<dyn UserRepository>,
         permissions: Arc<dyn UserPermissionRepository>,
+        memberships: Arc<dyn TenantMembershipRepository>,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
             sso_sessions,
             users,
             permissions,
+            memberships,
             clock,
         }
     }
@@ -81,10 +90,23 @@ impl AdminAccessService {
             None => return AdminAccess::Unauthenticated,
         };
         let user_id = user.id;
+        let tenant_id = tenant.tenant_id();
+
+        // 要求テナントで **ACTIVE なメンバーシップ**を持つこと（MT24）。権限行だけを見ると、
+        // ゲストを一時停止（`SUSPENDED`）しても権限行が残るため管理操作が通ってしまう。
+        // 一時停止は可逆であることが要件で権限行を消せないので、停止の実効性はこの判定が担う。
+        // 解除（行の削除）に対する二重防御にもなる（権限の後始末が漏れてもアクセスは止まる）。
+        match self.memberships.is_active_member(tenant_id, user_id).await {
+            Ok(true) => {}
+            Ok(false) => return AdminAccess::Forbidden,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to check tenant membership for admin access");
+                return AdminAccess::Forbidden;
+            }
+        }
 
         // 要求権限、または idp.system.admin（root scope のみ存在。root 自身の管理を含む）の
         // いずれかを、要求テナントを scope として保有するか（完全一致）。
-        let tenant_id = tenant.tenant_id();
         let codes: &[&str] = if required_permission == permission::SYSTEM_ADMIN {
             &[permission::SYSTEM_ADMIN]
         } else {
@@ -159,6 +181,7 @@ mod tests {
     use crate::domain::error::Result as DomainResult;
     use crate::domain::sso_session::SsoSession;
     use crate::domain::tenant::TenantId;
+    use crate::domain::tenant_membership::TenantMembership;
     use crate::domain::user::User;
     use crate::domain::values::UserStatus;
     use async_trait::async_trait;
@@ -343,17 +366,86 @@ mod tests {
         }
     }
 
+    /// メンバーシップの有無を切り替えられるフェイク（MT24 の ACTIVE メンバーシップ要求の検証用）。
+    struct FakeMemberships {
+        active: bool,
+    }
+    #[async_trait]
+    impl TenantMembershipRepository for FakeMemberships {
+        async fn create(&self, _m: &TenantMembership) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn find(&self, _t: TenantId, _u: Uuid) -> DomainResult<Option<TenantMembership>> {
+            unreachable!()
+        }
+        async fn is_active_member(&self, _t: TenantId, _u: Uuid) -> DomainResult<bool> {
+            Ok(self.active)
+        }
+        async fn find_by_invitation_token_hash(
+            &self,
+            _h: &str,
+        ) -> DomainResult<Option<TenantMembership>> {
+            unreachable!()
+        }
+        async fn activate(&self, _t: TenantId, _u: Uuid) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn update_status(
+            &self,
+            _t: TenantId,
+            _u: Uuid,
+            _s: crate::domain::values::MembershipStatus,
+        ) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn delete(&self, _t: TenantId, _u: Uuid) -> DomainResult<()> {
+            unreachable!()
+        }
+    }
+
     fn service(
         session: Option<SsoSession>,
         user: Option<User>,
         granted: Vec<(TenantId, Uuid, String)>,
     ) -> AdminAccessService {
+        service_with_membership(session, user, granted, true)
+    }
+
+    fn service_with_membership(
+        session: Option<SsoSession>,
+        user: Option<User>,
+        granted: Vec<(TenantId, Uuid, String)>,
+        active_member: bool,
+    ) -> AdminAccessService {
         AdminAccessService::new(
             Arc::new(FakeSsoSessions { session }),
             Arc::new(FakeUsers { user }),
             Arc::new(FakePermissions { granted }),
+            Arc::new(FakeMemberships {
+                active: active_member,
+            }),
             Arc::new(FixedClock(fixed_now())),
         )
+    }
+
+    /// MT24: 権限を持っていても、要求テナントで ACTIVE なメンバーシップが無ければ拒否する。
+    /// ゲストの一時停止（`SUSPENDED`）は権限行を残す可逆な操作なので、ここで止まらないと
+    /// 停止したゲストが管理操作を続けられてしまう。
+    #[tokio::test]
+    async fn denies_when_membership_is_not_active_even_with_the_permission() {
+        let uid = Uuid::new_v4();
+        let tenant: TenantId = Uuid::now_v7().into();
+        let svc = service_with_membership(
+            Some(test_session("sid", uid, true)),
+            Some(test_user(uid, tenant, UserStatus::Active)),
+            vec![(tenant, uid, ADMIN_PERM.to_string())],
+            false,
+        );
+        assert_eq!(
+            svc.authorize(TenantContext::new(tenant), Some("sid"), ADMIN_PERM)
+                .await,
+            AdminAccess::Forbidden
+        );
     }
 
     #[tokio::test]

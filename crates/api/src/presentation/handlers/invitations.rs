@@ -11,6 +11,7 @@ use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::AcceptInvitationRequest;
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
+use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
 use axum::extract::{Extension, State};
@@ -36,6 +37,7 @@ pub async fn accept_invitation(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
     headers: HeaderMap,
     Json(body): Json<AcceptInvitationRequest>,
 ) -> Result<StatusCode, ApiError> {
@@ -48,17 +50,18 @@ pub async fn accept_invitation(
         .invitations
         .accept_invitation(tenant.context(), user_id, &body.token, &ctx)
         .await
-        .map_err(map_error)?;
+        .map_err(|e| map_error(e, locale))?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn map_error(e: InvitationError) -> ApiError {
+fn map_error(e: InvitationError, locale: ApiLocale) -> ApiError {
+    let msgs = ApiMessages::new(locale);
     match e {
-        InvitationError::NotFound => ApiError::NotFound("not found".to_string()),
-        InvitationError::AlreadyMember => ApiError::Conflict("already a member".to_string()),
-        InvitationError::Forbidden(m) => ApiError::Forbidden(m),
+        InvitationError::NotFound => ApiError::NotFound(msgs.get("api-invitation-not-found")),
+        InvitationError::AlreadyMember => ApiError::Conflict(msgs.get("api-member-already")),
+        InvitationError::Forbidden(m) => ApiError::Forbidden(msgs.get_message(&m)),
         InvitationError::InvalidOrExpired => {
-            ApiError::BadRequest("invalid or expired invitation".to_string())
+            ApiError::BadRequest(msgs.get("api-invitation-invalid-or-expired"))
         }
         InvitationError::Internal(m) => ApiError::Internal(m),
     }

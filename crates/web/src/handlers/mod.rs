@@ -32,8 +32,14 @@ use axum::http::header::{HeaderValue, ACCEPT_LANGUAGE, LOCATION, USER_AGENT};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 
-/// 表示言語を決める（`lang` Cookie > `Accept-Language` > 既定 `ja`。MT20）。
-/// 設定画面で保存した言語選択（`lang` Cookie）を全画面で尊重する。
+/// 表示言語を決める（MT20）。
+///
+/// 決定順（`?lang=` > ユーザー設定 > Cookie > ブラウザ言語 > 既定 `ja`）のうち上位 2 つは
+/// [`crate::language::resolve_language`] middleware が解決し、結果を**リクエストの `lang` Cookie へ
+/// 正規化して**渡してくる。したがってここでは Cookie > `Accept-Language` > 既定 `ja` を見れば足りる。
+///
+/// 優先順位の判断を middleware 1 箇所に集約するため、ハンドラは `?lang=` を自前で解釈しない
+/// （画面ごとに解釈すると、画面が増えたときに優先順位が食い違う）。
 pub(crate) fn locale(headers: &HeaderMap) -> Locale {
     let cookie_lang = crate::cookies::get(headers, crate::cookies::LANG_COOKIE);
     Locale::resolve(

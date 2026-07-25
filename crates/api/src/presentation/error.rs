@@ -34,7 +34,9 @@ impl ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, code, message) = self.parts();
-        // 内部エラーの詳細はクライアントに漏らさず、ログにのみ残す。
+        // 内部エラーの詳細はクライアントに漏らさず、ログにのみ残す。500 の本文は翻訳しない
+        // （利用者に取れる行動が無く、ロケール解決の経路を増やすだけ。MT19。詳細は
+        // `presentation::i18n` のモジュールコメント「翻訳の対象外」）。
         let body = if status == StatusCode::INTERNAL_SERVER_ERROR {
             tracing::error!(error = %message, "internal server error");
             json!({ "error": code, "message": "internal server error" })

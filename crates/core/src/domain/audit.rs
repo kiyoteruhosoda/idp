@@ -49,6 +49,9 @@ pub enum AuditEventType {
     UserStatusChanged,
     UserDeleted,
     UserPasswordReset,
+    /// 管理者による利用者プロフィール（メール・表示名・ログイン識別子）の更新（MT25）。
+    /// 変更した項目名のみ記録し、値そのもの（PII）は記録しない。
+    UserProfileUpdated,
     /// 管理者による MFA（TOTP・Passkey）の解除（MT21）。本人が端末を失った場合の復旧手段。
     /// 解除した要素の種別と件数のみ記録し、シークレット・クレデンシャルは記録しない。
     UserMfaReset,
@@ -102,6 +105,7 @@ impl AuditEventType {
             Self::UserStatusChanged => "user.status_changed",
             Self::UserDeleted => "user.deleted",
             Self::UserPasswordReset => "user.password_reset",
+            Self::UserProfileUpdated => "user.profile_updated",
             Self::UserMfaReset => "user.mfa_reset",
             Self::PasswordChanged => "password.changed",
             Self::TenantCreated => "tenant.created",

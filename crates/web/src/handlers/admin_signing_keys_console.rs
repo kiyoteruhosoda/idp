@@ -94,6 +94,7 @@ pub async fn generate(
 
     let result = state
         .api
+        .for_locale(locale(&headers))
         .generate_signing_key(&correlation.0, &tenant.0, &sso, &form.algorithm)
         .await;
     match result {
@@ -162,6 +163,7 @@ pub async fn retire(
 
     let result = state
         .api
+        .for_locale(locale(&headers))
         .retire_signing_key(&correlation.0, &tenant.0, &sso, &form.kid)
         .await;
     match result {
@@ -228,6 +230,7 @@ pub async fn delete(
 
     let result = state
         .api
+        .for_locale(locale(&headers))
         .delete_signing_key(&correlation.0, &tenant.0, &sso, &form.kid)
         .await;
     match result {
