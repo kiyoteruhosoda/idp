@@ -1,3 +1,22 @@
+## 2026-07-25（api/web の別ドメイン公開をデプロイ構成として実装した。ADR-0015）
+
+- **`PUBLISH_TOPOLOGY` を新設**（`single-origin` 既定 / `domain-split`）。`domain-split` では
+  `docker-compose.domain-split.yml` と `docker/nginx.domain-split.conf` を重ね、同梱プロキシが
+  **リッスンポートでサービスを分ける**（`:8080` → web、`:8081` → api）。前段のリバースプロキシが
+  `id.example.com` / `api.example.com` を各ポートへ振り分ける。ADR-0012 §6 の「ドメインごとの
+  vhost」に代わる決定（同梱 nginx にドメイン名を持たせると前段プロキシと二重管理になるため）。
+- api・web コンテナは**両構成でホストへ publish しない**ため、`/internal/*` の 404 遮断点は
+  1 か所（同梱プロキシ）のままで公開面が広がらない。公開ポートは `WEB_PORT`（web）と
+  新設 `API_PORT`（api）で、`WEB_PORT` の意味は両構成で変わらない（既存 `.env` はそのまま動く）。
+- `deploy.sh`: トポロジに応じて override を重ね、`domain-split` では web・api **両方**の
+  `/readyz` を待つようにした。未知のトポロジ値は fail-fast。
+- `deploy.sh`（既存不具合の修正）: 完了時に表示する root テナント URL の基点を `ISSUER` から
+  **`PUBLIC_WEB_BASE_URL`**（未設定なら `ISSUER`）へ変更した。`/{tenant}/login`・`/{tenant}/admin`
+  を返すのは web のため、別ドメイン構成では api ホストの誤った URL を表示していた。
+- `deploy.sh`（既存不具合の修正）: Compose 定義に無いサービスを待つ場合、120 秒のタイムアウト後に
+  「healthy になりませんでした」と誤誘導していたのを、定義の欠落として即座に落とすようにした。
+- アプリ（Rust）側は MT29 で実装済みのため無変更。
+
 ## 2026-07-25（保存済み・未反映のランタイム設定を設定画面で可視化した。MT27 / ADR-0014）
 
 - ランタイム設定は起動時にしか読まれないため、設定画面で保存しても api・web を再起動するまで

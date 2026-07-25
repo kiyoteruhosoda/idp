@@ -1,0 +1,20 @@
+# 別ドメイン公開（ADR-0012・ADR-0015）用の override。単一オリジン構成の Compose に重ねて使う。
+# `docker-compose.db-debug.yml` と同じ「override で足すだけ」の形。
+#
+#   docker compose -f docker-compose.deploy.yml -f docker-compose.domain-split.yml up -d
+#
+# 手で -f を並べる必要はない。`.env` に `PUBLISH_TOPOLOGY=domain-split` を設定すれば
+# `scripts/deploy.sh` が本ファイルを自動で重ねる。
+#
+# 変更点は proxy の 2 点だけ:
+#   1. nginx 設定をポート分割版へ差し替える（volumes はマウント先パスをキーにマージされる）
+#   2. api 用の公開ポートを追加する（ports は追記マージ。ベースの WEB_PORT→8080 は残る）
+# api・web コンテナは publish しない（公開点は proxy だけ）。
+services:
+  proxy:
+    volumes:
+      - ./docker/nginx.domain-split.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      # ベース側の "${WEB_BIND_HOST}:${WEB_PORT}:8080"（= web）に加えて api 側を公開する。
+      # WEB_PORT と同じ値にはできない（ホストポート衝突）。
+      - "${API_BIND_HOST:-127.0.0.1}:${API_PORT:-8070}:8081"

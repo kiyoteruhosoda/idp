@@ -43,7 +43,9 @@ IMAGE_TAG=1.0.0 ./scripts/build.sh  # イメージタグを指定（既定 lates
 dist/
 ├── idp-api.tar / idp-web.tar / idp-migrate.tar   # ビルド済みイメージ
 ├── docker-compose.yml                            # デプロイ用 Compose（image: 参照のみ）
-├── docker/nginx.conf                             # リバースプロキシ設定
+├── docker-compose.domain-split.yml               # 別ドメイン公開の override（ADR-0015）
+├── docker/nginx.conf                             # リバースプロキシ設定（単一オリジン）
+├── docker/nginx.domain-split.conf                # リバースプロキシ設定（ポート分割）
 ├── .env.example                                  # 設定テンプレート
 ├── deploy.sh                                     # デプロイ入口
 └── manifest.env / manifest.sha256               # 照合用メタデータ
@@ -60,10 +62,13 @@ dist/
 - 初回実行時に `.env` を `.env.example` から自動生成し、秘密情報（DB パスワード・
   `KEY_ENCRYPTION_KEY`・`INTERNAL_SERVICE_TOKEN`・`CSRF_SECRET`）を乱数生成する。
   **既存の `.env` は上書きしない**（冪等）。環境に合わせて確認する項目は `ISSUER`（公開 URL）と
-  `WEB_PORT`（公開ポート）の 2 つ。
+  `WEB_PORT`（公開ポート）の 2 つ。api と web を別サブドメインで公開する場合は加えて
+  `PUBLISH_TOPOLOGY=domain-split`・`API_PORT`・`PUBLIC_WEB_BASE_URL`・`COOKIE_DOMAIN`
+  （手順は `docs/OPERATIONS.md`）。
 - イメージは隣の `idp-*.tar` から自動で `docker load` する（読込済みで manifest と一致すればスキップ）。
 - 使う Compose ファイルは固定: バンドル内では同梱の `docker-compose.yml`、リポジトリ内から実行した
-  場合はルートの `docker-compose.deploy.yml`。選択の余地はない。
+  場合はルートの `docker-compose.deploy.yml`。選択の余地はない。`PUBLISH_TOPOLOGY=domain-split`
+  のときだけ `docker-compose.domain-split.yml` を自動で重ねる（手で `-f` を指定しない）。
 - `reset` は DB volume を削除する破壊的操作（確認なしで即実行される）。`.env` は保持される。
 - MariaDB 起動後・migration 前に**アプリ用ユーザーの認証**を検証する。`Access denied for user 'idp'` で
   停止した場合は、`.env` の `MARIADB_PASSWORD` が既存 DB volume（初回作成時のパスワードで固定）と不一致。

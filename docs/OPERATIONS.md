@@ -346,6 +346,15 @@ api の JSON 管理 API と同じ `/{tenant_id}/admin/...` 名前空間を共有
 web→api の `/internal/*` は共有シークレット `INTERNAL_SERVICE_TOKEN`（api・web で同値）で保護する。
 デバッグで api/web を直に叩きたい場合は `docker-compose.yml` の該当 `ports:` を一時的に有効化する。
 
+公開の形は `.env` の `PUBLISH_TOPOLOGY` で選ぶ（ADR-0015）。
+
+| 値 | 公開ポート | 振り分け | nginx 設定 |
+|---|---|---|---|
+| `single-origin`（既定） | `WEB_PORT` のみ | パス・`Accept`・メソッド | `docker/nginx.conf` |
+| `domain-split` | `WEB_PORT`（web）・`API_PORT`（api） | リッスンポート | `docker/nginx.domain-split.conf` |
+
+`domain-split` の手順は下記「api と web を別ドメイン（サブドメイン）で公開したいとき」を参照。
+
 ### MariaDB の公開範囲と保守接続
 
 デプロイ用 Compose（`docker-compose.deploy.yml`）では、MariaDB を既定でホストへ publish しない。
@@ -365,30 +374,70 @@ docker compose -f docker-compose.deploy.yml -f docker-compose.db-debug.yml \
   --profile db-debug up -d mariadb
 ```
 
-## api と web を別ドメイン（サブドメイン）で公開したいとき（ADR-0012）
+## api と web を別ドメイン（サブドメイン）で公開したいとき（ADR-0012・ADR-0015）
 
 単一オリジン・パスルーティング（上記）に代えて、api と web をドメイン単位で分けて公開できる。
 **両者は同一の登録可能ドメイン（eTLD+1）のサブドメインであること**（例: `api.example.com` と
 `id.example.com`）。全く無関係なドメイン間の分割はサポートしない。
 
-api・web 双方に次を設定する（**4 つとも api/web で同じ値にする**）。
+同梱リバースプロキシは**リッスンポートでサービスを分ける**（ADR-0015）。前段のリバースプロキシ
+（Synology DSM 等）が TLS 終端とドメイン振り分けを行い、ポート単位でここへ流す。
+
+```
+https://id.example.com  → ${WEB_BIND_HOST}:${WEB_PORT} → 同梱 nginx :8080 → web
+https://api.example.com → ${API_BIND_HOST}:${API_PORT} → 同梱 nginx :8081 → api
+```
+
+### 手順
+
+1. `.env` にトポロジと api 側の公開ポートを設定する。
+
+   ```sh
+   PUBLISH_TOPOLOGY=domain-split
+   WEB_BIND_HOST=127.0.0.1     # 前段プロキシが同一ホストなら loopback のままでよい
+   WEB_PORT=8060               # web（HTML 画面）の公開ポート
+   API_BIND_HOST=127.0.0.1
+   API_PORT=8070               # api（OIDC protocol・JSON 管理 API）の公開ポート
+   ```
+
+2. 公開オリジンと Cookie を設定する（**4 つとも api/web で同じ値にする**）。
+
+   ```sh
+   ISSUER=https://api.example.com              # api の公開オリジン
+   PUBLIC_WEB_BASE_URL=https://id.example.com  # web の公開オリジン
+   COOKIE_DOMAIN=example.com                   # サービス横断 Cookie の Domain 属性（先頭ドット不要）
+   COOKIE_SECURE=true
+   ```
+
+3. 前段プロキシで 2 つのドメインを各ポートへ向け、証明書を設定する。
+   `TRUST_FORWARDED_HEADERS=true`・`HSTS_MAX_AGE` は両ドメインに同様に適用する。
+
+4. `./deploy.sh app` で再デプロイする（`docker-compose.domain-split.yml` は deploy.sh が自動で
+   重ねる。手で `-f` を指定する必要はない）。api・web の両方の再起動が必要。
+
+### 確認
 
 ```sh
-ISSUER=https://api.example.com              # api の公開オリジン
-PUBLIC_WEB_BASE_URL=https://id.example.com  # web の公開オリジン
-COOKIE_DOMAIN=example.com                   # サービス横断 Cookie の Domain 属性（先頭ドット不要）
-COOKIE_SECURE=true
+curl -fsS http://127.0.0.1:8060/readyz      # web
+curl -fsS http://127.0.0.1:8070/readyz      # api
+curl -fsS https://api.example.com/.well-known/openid-configuration | jq .issuer   # api ドメイン
+curl -sS -o /dev/null -w '%{http_code}\n' https://api.example.com/internal/runtime-settings  # 404
 ```
 
-- `API_BASE_URL`（web のみ）はサーバ間の内部到達先であり、公開ドメインとは独立（内部ネットワークの
-  アドレスのままでよい）。
-- リバースプロキシはパス振り分け表の代わりに**ドメインごとの vhost**（api ドメイン → api、
-  web ドメイン → web）にする。`/internal/*` はどちらのドメインでも公開しない。
+管理ログインは web ドメイン側（`https://id.example.com/{root テナント UUID}/login`）。
+RP に登録する OIDC エンドポイントは api ドメイン側。
 
-```nginx
-server { server_name api.example.com; location / { proxy_pass http://api:8080; } }
-server { server_name id.example.com;  location / { proxy_pass http://web:8081; } }
-```
+### 注意
+
+- `API_BASE_URL`（web のみ）はサーバ間の内部到達先であり、公開ドメインとは独立（Compose ネットワーク内の
+  `http://api:8080` のままでよい）。
+- `/internal/*` は同梱 nginx が**どちらのポートでも 404** を返す。api・web コンテナはホストへ
+  publish されないため、公開点は同梱プロキシだけ。前段プロキシが**別ホスト**にあり
+  `WEB_BIND_HOST` / `API_BIND_HOST` を広げる場合は、前段・ファイアウォールでも `/internal/*` を
+  遮断する。
+- 同一ホストに stg/prod を併置する場合は `WEB_PORT` と同様に `API_PORT` も環境ごとに分ける。
+- 単一オリジン構成へ戻すには `PUBLISH_TOPOLOGY=single-origin` に戻し、`COOKIE_DOMAIN` を削除して
+  `ISSUER`・`PUBLIC_WEB_BASE_URL` を同一オリジンに揃えてから再デプロイする。
 
 注意:
 
