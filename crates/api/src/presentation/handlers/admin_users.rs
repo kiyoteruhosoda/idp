@@ -10,7 +10,8 @@ use crate::domain::values::UserStatus;
 use crate::presentation::admin::{IdpAdmin, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
-    CreateUserRequest, UpdateUserStatusRequest, UserCreatedResponse, UserPasswordResetResponse,
+    CreateUserRequest, UpdateUserStatusRequest, UserCreatedResponse, UserMfaResetResponse,
+    UserPasswordResetResponse,
 };
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::{map_permission_management_error, request_context};
@@ -251,6 +252,49 @@ pub async fn reset_user_password(
     Ok(Json(UserPasswordResetResponse {
         user_id: reset.user_id.to_string(),
         generated_password: reset.generated_password,
+    }))
+}
+
+/// 利用者の MFA（TOTP・Passkey）を解除する（`POST /{tenant_id}/admin/users/{user_id}/mfa-reset`。MT21）。
+/// 端末を失って本人では解除できない状態からの復旧手段。TOTP と Passkey を両方外し、当該利用者の
+/// セッション・トークンも失効させる（紛失端末が生きたセッションを保持している可能性があるため）。
+/// MFA 未設定でも成功する（何も外さなかったことが応答で分かる）。
+#[utoipa::path(
+    post,
+    path = "/{tenant_id}/admin/users/{user_id}/mfa-reset",
+    tag = "admin",
+    params(("user_id" = String, Path, description = "対象利用者の内部 ID（UUID）")),
+    responses(
+        (status = 200, description = "解除成功（外した要素の内訳を含む）", body = UserMfaResetResponse),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足・自分自身は解除不可（セルフサービスを使う）"),
+        (status = 404, description = "不存在（所属元が他テナントの場合を含む）"),
+    )
+)]
+pub async fn reset_user_mfa(
+    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
+    headers: HeaderMap,
+    Path((_tenant_id, user_id)): Path<(String, String)>,
+) -> Result<Json<UserMfaResetResponse>, ApiError> {
+    let target = parse_user_id(&user_id, locale)?;
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
+    let reset = state
+        .users_lifecycle
+        .reset_mfa(tenant.context(), target, admin.user_id, &ctx)
+        .await
+        .map_err(|e| map_user_lifecycle_error(e, locale))?;
+    Ok(Json(UserMfaResetResponse {
+        user_id: reset.user_id.to_string(),
+        totp_removed: reset.totp_removed,
+        passkeys_removed: reset.passkeys_removed,
     }))
 }
 

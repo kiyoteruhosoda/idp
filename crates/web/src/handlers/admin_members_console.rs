@@ -30,6 +30,9 @@ const MEMBERS_SEGMENT: &str = "/admin/members";
 pub struct ViewQuery {
     #[serde(default)]
     pub error: Option<String>,
+    /// 完了通知（Post/Redirect/Get で操作結果を伝える。MT21 の MFA 解除など）。
+    #[serde(default)]
+    pub notice: Option<String>,
     /// メンバー一覧の絞り込み語（メールアドレス・氏名の部分一致。大文字小文字を無視）。
     #[serde(default)]
     pub q: Option<String>,
@@ -54,6 +57,7 @@ pub async fn list(
     let messages = Messages::new(locale(&headers));
     let csrf = csrf_from(&headers, state.config.csrf_secret());
     let error_key = query.error.as_deref().and_then(error_key_for);
+    let notice_key = query.notice.as_deref().and_then(notice_key_for);
     let term = query.q.unwrap_or_default();
     match result {
         Ok(all) => {
@@ -66,6 +70,7 @@ pub async fn list(
                 query: term.trim(),
                 csrf: &csrf,
                 error_key,
+                notice_key,
             }))
             .into_response()
         }
@@ -195,6 +200,43 @@ pub async fn reset_password(
     .into_response()
 }
 
+/// 利用者の MFA 解除（`POST /{tenant_id}/admin/members/{user_id}/reset-mfa`。MT21）。
+/// 端末を失って本人では解除できない状態からの復旧手段。TOTP と Passkey をまとめて外す。
+/// 秘密情報を伴わないため結果画面は出さず、一覧へ戻して完了通知を出す（Post/Redirect/Get）。
+pub async fn reset_mfa(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Path((_, user_id)): Path<(String, String)>,
+    Form(form): Form<MemberActionForm>,
+) -> Response {
+    match resolve_admin(&state, &correlation, &tenant, &headers).await {
+        AdminResolution::Ok(_) => {}
+        AdminResolution::Reject(resp) => return resp,
+    }
+    let base = format!("{}{MEMBERS_SEGMENT}", tenant.prefix());
+    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
+        return found(&format!("{base}?error=csrf"));
+    }
+    match state
+        .api
+        .reset_user_mfa(&correlation.0, &tenant.0, &sso(&headers), &user_id)
+        .await
+    {
+        // 何も設定されていなかった場合も成功だが、管理者には区別して伝える（「効いていない」と
+        // 誤解して操作を繰り返すのを防ぐ）。
+        Ok(reset) if !reset.totp_removed && reset.passkeys_removed == 0 => {
+            found(&format!("{base}?notice=mfa-none"))
+        }
+        Ok(_) => found(&format!("{base}?notice=mfa-reset")),
+        Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
+        Err(AdminApiError::Forbidden) => found(&format!("{base}?error=self")),
+        Err(AdminApiError::NotFound) => found(&format!("{base}?error=user-notfound")),
+        Err(_) => found(&format!("{base}?error=internal")),
+    }
+}
+
 /// 利用者の削除（`POST /{tenant_id}/admin/members/{user_id}/delete`）。
 /// 所属元（HOME）が当該テナントの利用者のみ。自分自身は削除できない。
 pub async fn delete(
@@ -247,6 +289,14 @@ fn filter_members(
         .collect()
 }
 
+fn notice_key_for(notice: &str) -> Option<&'static str> {
+    match notice {
+        "mfa-reset" => Some("admin-members-mfa-reset-done"),
+        "mfa-none" => Some("admin-members-mfa-reset-none"),
+        _ => None,
+    }
+}
+
 fn error_key_for(error: &str) -> Option<&'static str> {
     match error {
         "csrf" => Some("admin-error-csrf"),
@@ -287,4 +337,96 @@ fn internal_error(messages: &Messages, tenant: &WebTenant, admin: &str) -> Respo
         back_label: "",
     });
     (StatusCode::INTERNAL_SERVER_ERROR, Html(body)).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::admin_dto::MemberView;
+    use crate::i18n::Locale;
+
+    fn tenant() -> WebTenant {
+        WebTenant("00000000-0000-7000-8000-000000000000".to_string())
+    }
+
+    fn member(membership_type: &str) -> MemberView {
+        MemberView {
+            user_id: "11111111-1111-1111-1111-111111111111".into(),
+            email: Some("u@example.com".into()),
+            name: None,
+            membership_type: membership_type.into(),
+            status: "ACTIVE".into(),
+            user_status: Some("ACTIVE".into()),
+        }
+    }
+
+    fn render_list(members: &[MemberView], notice_key: Option<&str>) -> String {
+        let messages = Messages::new(Locale::Ja);
+        render(&MembersList {
+            messages: &messages,
+            tenant: &tenant().prefix(),
+            admin: Some("admin-1"),
+            members,
+            query: "",
+            csrf: "csrf123",
+            error_key: None,
+            notice_key,
+        })
+    }
+
+    /// MT21: 所属元（HOME）の利用者にだけ MFA 解除ボタンを出す。ゲストは所属元テナントの管理者が
+    /// 操作する対象で、こちらからは（api も 404 を返すため）出してはいけない。
+    #[test]
+    fn mfa_reset_button_is_shown_for_home_members_only() {
+        let home = render_list(&[member("HOME")], None);
+        assert!(home.contains("/reset-mfa"), "{home}");
+        assert!(home.contains("name=\"csrf_token\" value=\"csrf123\""));
+
+        let guest = render_list(&[member("GUEST")], None);
+        assert!(!guest.contains("/reset-mfa"), "{guest}");
+    }
+
+    /// 確認ダイアログの文言は `data-confirm` 属性で渡す（インライン JS の文字列へ埋め込まない）。
+    ///
+    /// `onsubmit="return confirm('…')"` へ埋め込むと、Askama が `'` を `&#39;` にしてもブラウザが
+    /// 属性値の解釈時に `'` へ戻すため、英語の "user's" のようなアポストロフィが JS 文字列を
+    /// 終端させてハンドラごと構文エラーになり、**確認なしで破壊的操作が送信される**。
+    /// 属性値として渡せば HTML エスケープがそのまま正しい防御になる。
+    #[test]
+    fn confirmation_text_is_passed_as_an_attribute_not_inline_javascript() {
+        let html = render_list(&[member("HOME")], None);
+        assert!(!html.contains("onsubmit="), "no inline handlers: {html}");
+        assert!(html.contains("data-confirm="));
+
+        // アポストロフィを含む文言（英語ロケール）でも属性として正しくエスケープされ、
+        // 生の `'` が属性値を終端しない。
+        let messages = Messages::new(Locale::En);
+        let english = render(&MembersList {
+            messages: &messages,
+            tenant: &tenant().prefix(),
+            admin: Some("admin-1"),
+            members: &[member("HOME")],
+            query: "",
+            csrf: "csrf123",
+            error_key: None,
+            notice_key: None,
+        });
+        let confirm = messages.get("admin-members-reset-mfa-confirm");
+        assert!(confirm.contains('\''), "fixture must contain an apostrophe");
+        assert!(english.contains("&#39;"), "apostrophe must be escaped");
+        assert!(!english.contains(&format!("data-confirm=\"{confirm}\"")));
+    }
+
+    /// 解除後の完了通知は「外した」「元から無かった」を区別して出す。
+    #[test]
+    fn mfa_reset_notices_distinguish_removed_from_absent() {
+        let removed = render_list(&[member("HOME")], notice_key_for("mfa-reset"));
+        assert!(removed.contains(&Messages::new(Locale::Ja).get("admin-members-mfa-reset-done")));
+
+        let absent = render_list(&[member("HOME")], notice_key_for("mfa-none"));
+        assert!(absent.contains(&Messages::new(Locale::Ja).get("admin-members-mfa-reset-none")));
+
+        // 未知の通知値は無視する（クエリ経由で任意文字列が来るため）。
+        assert!(notice_key_for("../../etc/passwd").is_none());
+    }
 }

@@ -219,6 +219,11 @@ pub fn build(state: AppState) -> Router {
             "/admin/users/{user_id}/password-reset",
             post(admin_users::reset_user_password),
         )
+        // 利用者の MFA（TOTP・Passkey）解除（端末紛失時の復旧。MT21）。idp.tenant.admin 必須。
+        .route(
+            "/admin/users/{user_id}/mfa-reset",
+            post(admin_users::reset_user_mfa),
+        )
         // 利用者権限の付与・剥奪・参照（A2、ADR-0006）。idp.tenant.admin 必須。
         .route(
             "/admin/users/{user_id}/permissions",

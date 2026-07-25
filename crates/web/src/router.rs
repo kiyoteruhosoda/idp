@@ -8,9 +8,9 @@ use crate::error_pages;
 use crate::handlers::{
     admin_clients_console, admin_console, admin_invitations_console, admin_members_console,
     admin_saml_clients_console, admin_settings, admin_signing_keys_console, admin_status_console,
-    admin_tenants_console, admin_users_console, consent, health, invitation_accept, locale, login,
-    mfa_totp, passkey, password_change, password_reset, portal, react_assets, stylesheet,
-    user_settings, vendor_assets, verify_email,
+    admin_tenants_console, admin_users_console, consent, console_script, health, invitation_accept,
+    locale, login, mfa_totp, passkey, password_change, password_reset, portal, react_assets,
+    stylesheet, user_settings, vendor_assets, verify_email,
 };
 use crate::i18n::Messages;
 use crate::security_headers::add_security_headers;
@@ -205,6 +205,10 @@ pub fn build(state: WebState) -> Router {
             post(admin_members_console::reset_password),
         )
         .route(
+            "/admin/members/{user_id}/reset-mfa",
+            post(admin_members_console::reset_mfa),
+        )
+        .route(
             "/admin/members/{user_id}/delete",
             post(admin_members_console::delete),
         )
@@ -238,6 +242,7 @@ pub fn build(state: WebState) -> Router {
         .route("/readyz", get(health::readiness))
         .route("/version", get(health::version))
         .route("/assets/app.css", get(stylesheet::app_css))
+        .route("/assets/console.js", get(console_script::console_js))
         .route(
             "/assets/vendor/bootstrap.min.css",
             get(vendor_assets::bootstrap_css),
@@ -442,6 +447,7 @@ mod tests {
             format!("/{tenant}/admin/members/{id}/revoke"),
             format!("/{tenant}/admin/members/{id}/status"),
             format!("/{tenant}/admin/members/{id}/reset-password"),
+            format!("/{tenant}/admin/members/{id}/reset-mfa"),
             format!("/{tenant}/admin/members/{id}/delete"),
             format!("/{tenant}/admin/users/{id}/permissions/grant"),
             format!("/{tenant}/admin/users/{id}/permissions/revoke"),

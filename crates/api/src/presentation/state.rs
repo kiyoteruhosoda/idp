@@ -423,13 +423,15 @@ impl AppState {
             clock.clone(),
             ids.clone(),
         ));
-        // 管理者による利用者ライフサイクル操作（ADR-0009 §5）。パスワード再発行・無効化時は当該
-        // 利用者のセッション・トークンを失効させる。
+        // 管理者による利用者ライフサイクル操作（ADR-0009 §5・MT21）。パスワード再発行・無効化・
+        // MFA 解除時は当該利用者のセッション・トークンを失効させる。
         let users_lifecycle = Arc::new(UserLifecycleService::new(
             users.clone(),
             sso_sessions.clone(),
             refresh_tokens.clone(),
             codes.clone(),
+            totp_secrets.clone(),
+            webauthn_credentials.clone(),
             hasher.clone(),
             audit.clone(),
             clock.clone(),

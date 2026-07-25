@@ -134,6 +134,16 @@ pub struct UserPasswordResetView {
     pub generated_password: String,
 }
 
+/// 管理者による MFA 解除の結果（`POST /admin/users/{id}/mfa-reset`。MT21）。
+/// 何を外したかだけが返る（シークレット・クレデンシャルは含まれない）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct UserMfaResetView {
+    #[allow(dead_code)]
+    pub user_id: String,
+    pub totp_removed: bool,
+    pub passkeys_removed: u64,
+}
+
 /// 招待作成応答（`POST /admin/invitations`）。`token` は一度限り平文で返る（ADR-0009 §3）。
 #[derive(Debug, Clone, Deserialize)]
 pub struct InvitationCreatedView {

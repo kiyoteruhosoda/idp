@@ -470,6 +470,9 @@ pub trait WebAuthnCredentialRepository: Send + Sync {
     ) -> Result<()>;
     /// クレデンシャルを削除する。所有者チェック（`user_id` 照合）も行う。不存在は冪等に無視する。
     async fn delete(&self, id: Uuid, user_id: Uuid) -> Result<()>;
+    /// ユーザーの全クレデンシャルを削除し、削除件数を返す（管理者による MFA 解除。MT21）。
+    /// 端末紛失時の復旧手段のため、1 件ずつではなくまとめて消す（消し残しは復旧の失敗になる）。
+    async fn delete_all_for_user(&self, user_id: Uuid) -> Result<u64>;
 }
 
 /// システム設定（root/idp.system.admin が管理する IdP 全体設定。ADR-0009 §5、MT14）の永続化。

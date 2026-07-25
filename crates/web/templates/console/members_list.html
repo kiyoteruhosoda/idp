@@ -9,6 +9,7 @@
 </div>
 <p class="text-muted">{{ messages.get("admin-members-intro") }}</p>
 {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
+{% if let Some(key) = notice_key %}<div class="alert alert-success" role="status"><i class="fa-solid fa-circle-check me-2" aria-hidden="true"></i>{{ messages.get(key) }}</div>{% endif %}
 <form method="get" action="{{ tenant }}/admin/members" class="mb-3" role="search">
   <div class="input-group" style="max-width: 28rem;">
     <span class="input-group-text"><i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i></span>
@@ -53,23 +54,28 @@
                 <button type="submit" class="btn btn-outline-success btn-sm"><i class="fa-solid fa-user-check me-1" aria-hidden="true"></i>{{ messages.get("admin-members-enable-button") }}</button>
               </form>
               {% else %}
-              <form method="post" action="{{ tenant }}/admin/members/{{ m.user_id }}/status" class="d-inline" onsubmit="return confirm('{{ messages.get("admin-members-disable-confirm") }}')">
+              <form method="post" action="{{ tenant }}/admin/members/{{ m.user_id }}/status" class="d-inline" data-confirm="{{ messages.get("admin-members-disable-confirm") }}">
                 <input type="hidden" name="csrf_token" value="{{ csrf }}">
                 <input type="hidden" name="status" value="DISABLED">
                 <button type="submit" class="btn btn-outline-warning btn-sm"><i class="fa-solid fa-user-slash me-1" aria-hidden="true"></i>{{ messages.get("admin-members-disable-button") }}</button>
               </form>
               {% endif %}
-              <form method="post" action="{{ tenant }}/admin/members/{{ m.user_id }}/reset-password" class="d-inline" onsubmit="return confirm('{{ messages.get("admin-members-reset-password-confirm") }}')">
+              <form method="post" action="{{ tenant }}/admin/members/{{ m.user_id }}/reset-password" class="d-inline" data-confirm="{{ messages.get("admin-members-reset-password-confirm") }}">
                 <input type="hidden" name="csrf_token" value="{{ csrf }}">
                 <input type="hidden" name="email" value="{{ m.email.as_deref().unwrap_or("") }}">
                 <button type="submit" class="btn btn-outline-secondary btn-sm"><i class="fa-solid fa-key me-1" aria-hidden="true"></i>{{ messages.get("admin-members-reset-password-button") }}</button>
               </form>
-              <form method="post" action="{{ tenant }}/admin/members/{{ m.user_id }}/delete" class="d-inline" onsubmit="return confirm('{{ messages.get("admin-members-delete-confirm") }}')">
+              <form method="post" action="{{ tenant }}/admin/members/{{ m.user_id }}/reset-mfa" class="d-inline" data-confirm="{{ messages.get("admin-members-reset-mfa-confirm") }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                <input type="hidden" name="email" value="{{ m.email.as_deref().unwrap_or("") }}">
+                <button type="submit" class="btn btn-outline-secondary btn-sm"><i class="fa-solid fa-mobile-screen-button me-1" aria-hidden="true"></i>{{ messages.get("admin-members-reset-mfa-button") }}</button>
+              </form>
+              <form method="post" action="{{ tenant }}/admin/members/{{ m.user_id }}/delete" class="d-inline" data-confirm="{{ messages.get("admin-members-delete-confirm") }}">
                 <input type="hidden" name="csrf_token" value="{{ csrf }}">
                 <button type="submit" class="btn btn-outline-danger btn-sm"><i class="fa-solid fa-trash me-1" aria-hidden="true"></i>{{ messages.get("admin-members-delete-button") }}</button>
               </form>
             {% else %}
-              <form method="post" action="{{ tenant }}/admin/members/{{ m.user_id }}/revoke" class="d-inline" onsubmit="return confirm('{{ messages.get("admin-members-revoke-confirm") }}')">
+              <form method="post" action="{{ tenant }}/admin/members/{{ m.user_id }}/revoke" class="d-inline" data-confirm="{{ messages.get("admin-members-revoke-confirm") }}">
                 <input type="hidden" name="csrf_token" value="{{ csrf }}">
                 <button type="submit" class="btn btn-outline-danger btn-sm">{{ messages.get("admin-members-revoke-button") }}</button>
               </form>
