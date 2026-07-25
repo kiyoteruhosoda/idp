@@ -14,7 +14,7 @@ use crate::templates::{render, ConsentTemplate, MessagePage};
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::{AppendHeaders, Html, IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 use idp_contracts::auth::{
     InternalConsentApproveRequest, InternalConsentApproveResponse, InternalConsentDenyRequest,
@@ -83,7 +83,6 @@ pub async fn consent(
     Form(form): Form<ConsentForm>,
 ) -> Response {
     let ctx = forwarded_context(&headers, &correlation);
-    let secure = state.config.cookie_secure();
 
     // CSRF チェック（FluentBundle を await 前に使わないよう先に行う）。
     let expected_csrf = consent_csrf_token(&form.auth_session_id, state.config.csrf_secret());
@@ -103,12 +102,10 @@ pub async fn consent(
         let messages = Messages::new(locale(&headers));
         match result {
             Ok(InternalConsentApproveResponse::Success { redirect_to }) => {
-                let expire_auth = cookies::shared_expire_headers(
-                    cookies::AUTH_SESSION_COOKIE,
-                    secure,
-                    state.config.cookie_domain(),
-                );
-                (AppendHeaders(expire_auth), found(&redirect_to)).into_response()
+                let set_cookies = state
+                    .set_cookies()
+                    .expire_shared(cookies::AUTH_SESSION_COOKIE);
+                (set_cookies.into_headers(), found(&redirect_to)).into_response()
             }
             Ok(InternalConsentApproveResponse::SessionExpired) => error_page(
                 &messages,
@@ -131,12 +128,10 @@ pub async fn consent(
         let messages = Messages::new(locale(&headers));
         match result {
             Ok(InternalConsentDenyResponse::Ok { redirect_to }) => {
-                let expire_auth = cookies::shared_expire_headers(
-                    cookies::AUTH_SESSION_COOKIE,
-                    secure,
-                    state.config.cookie_domain(),
-                );
-                (AppendHeaders(expire_auth), found(&redirect_to)).into_response()
+                let set_cookies = state
+                    .set_cookies()
+                    .expire_shared(cookies::AUTH_SESSION_COOKIE);
+                (set_cookies.into_headers(), found(&redirect_to)).into_response()
             }
             Ok(InternalConsentDenyResponse::SessionExpired) => error_page(
                 &messages,

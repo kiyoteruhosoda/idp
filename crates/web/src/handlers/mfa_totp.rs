@@ -15,8 +15,8 @@ use crate::state::WebState;
 use crate::templates::{render, MessagePage, TotpSetupTemplate, TotpVerifyTemplate};
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, State};
-use axum::http::{header, HeaderMap, StatusCode};
-use axum::response::{AppendHeaders, Html, IntoResponse, Response};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 use idp_contracts::auth::{
     InternalTotpConfirmRequest, InternalTotpDeleteRequest, InternalTotpSetupRequest,
@@ -275,7 +275,6 @@ pub async fn verify(
     };
 
     let messages = Messages::new(locale(&headers));
-    let secure = state.config.cookie_secure();
 
     match outcome {
         InternalVerifyTotpResponse::Success {
@@ -284,57 +283,46 @@ pub async fn verify(
             sso_absolute_ttl_secs,
             user_language,
         } => {
-            let mut set_cookies = cookies::shared_set_cookie_headers(
-                cookies::SSO_SESSION_COOKIE,
-                &sso_session_id,
-                sso_absolute_ttl_secs,
-                secure,
-                state.config.cookie_domain(),
-            );
-            set_cookies.extend(cookies::shared_expire_headers(
-                cookies::AUTH_SESSION_COOKIE,
-                secure,
-                state.config.cookie_domain(),
-            ));
+            let mut set_cookies = state
+                .set_cookies()
+                .set_shared(
+                    cookies::SSO_SESSION_COOKIE,
+                    &sso_session_id,
+                    sso_absolute_ttl_secs,
+                )
+                .expire_shared(cookies::AUTH_SESSION_COOKIE);
             // ユーザーの DB 言語設定があれば lang Cookie に同期する（MT20: DB > Cookie の優先順）。
-            let redirect = found(&redirect_to);
             if let Some(lang) = user_language
                 .as_deref()
                 .and_then(crate::i18n::Locale::from_tag)
             {
-                set_cookies.push((
-                    header::SET_COOKIE,
-                    cookies::build(
-                        cookies::LANG_COOKIE,
-                        lang.as_tag(),
-                        cookies::LANG_COOKIE_MAX_AGE_SECS,
-                        secure,
-                    ),
-                ));
+                set_cookies = set_cookies.set_local(
+                    cookies::LANG_COOKIE,
+                    lang.as_tag(),
+                    cookies::LANG_COOKIE_MAX_AGE_SECS,
+                );
             }
-            (AppendHeaders(set_cookies), redirect).into_response()
+            (set_cookies.into_headers(), found(&redirect_to)).into_response()
         }
         InternalVerifyTotpResponse::ConsentRequired {
             auth_session_id: new_auth_session_id,
             sso_session_id,
             sso_absolute_ttl_secs,
         } => {
-            let mut set_cookies = cookies::shared_set_cookie_headers(
-                cookies::SSO_SESSION_COOKIE,
-                &sso_session_id,
-                sso_absolute_ttl_secs,
-                secure,
-                state.config.cookie_domain(),
-            );
-            set_cookies.extend(cookies::shared_set_cookie_headers(
-                cookies::AUTH_SESSION_COOKIE,
-                &new_auth_session_id,
-                state.config.auth_session_ttl_secs(),
-                secure,
-                state.config.cookie_domain(),
-            ));
+            let set_cookies = state
+                .set_cookies()
+                .set_shared(
+                    cookies::SSO_SESSION_COOKIE,
+                    &sso_session_id,
+                    sso_absolute_ttl_secs,
+                )
+                .set_shared(
+                    cookies::AUTH_SESSION_COOKIE,
+                    &new_auth_session_id,
+                    state.config.auth_session_ttl_secs(),
+                );
             (
-                AppendHeaders(set_cookies),
+                set_cookies.into_headers(),
                 found(&format!("{}/consent", tenant.prefix())),
             )
                 .into_response()

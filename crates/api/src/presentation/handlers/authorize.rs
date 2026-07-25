@@ -8,7 +8,7 @@ use crate::presentation::handlers::{found, request_context};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
 use axum::extract::{Extension, Query, State};
-use axum::http::{header, HeaderMap, HeaderName, StatusCode};
+use axum::http::{HeaderMap, HeaderName, StatusCode};
 use axum::response::{AppendHeaders, IntoResponse, Response};
 use axum::Json;
 
@@ -97,14 +97,9 @@ pub async fn authorize(
 
 /// `auth_session_id` Cookie の `Set-Cookie` ヘッダ組（サービス横断 Cookie。ADR-0012 §3）。
 fn auth_session_cookies(state: &AppState, auth_session_id: &str) -> Vec<(HeaderName, String)> {
-    cookies::build_shared(
+    cookies::headers(state.config.cookie_policy().set_shared(
         cookies::AUTH_SESSION_COOKIE,
         auth_session_id,
         state.config.auth_session_ttl().as_secs(),
-        state.config.cookie_secure(),
-        state.config.cookie_domain(),
-    )
-    .into_iter()
-    .map(|cookie| (header::SET_COOKIE, cookie))
-    .collect()
+    ))
 }

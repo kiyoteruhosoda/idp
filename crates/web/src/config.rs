@@ -6,6 +6,7 @@
 #![allow(dead_code)]
 
 use base64::{engine::general_purpose::STANDARD, Engine};
+use idp_contracts::cookies::CookiePolicy;
 use std::env;
 
 /// 内部サービス認証トークンの開発用デフォルト（api 側と同値。ADR-0007 §5）。
@@ -35,10 +36,9 @@ pub struct Config {
     internal_service_token_is_dev: bool,
     csrf_secret: [u8; 32],
     csrf_secret_is_dev: bool,
-    cookie_secure: bool,
-    /// サービス横断 Cookie（sso_session_id・auth_session_id）の `Domain` 属性（ADR-0012 §3）。
-    /// api 側の `COOKIE_DOMAIN` と同一値を設定する。`None` = host-only（従来挙動）。
-    cookie_domain: Option<String>,
+    /// Cookie の属性方針（`Secure` + サービス横断 Cookie の `Domain`。ADR-0012 §2・§3）。
+    /// `Domain` は api 側の `COOKIE_DOMAIN` と同一値を設定する。`None` = host-only（従来挙動）。
+    cookie_policy: CookiePolicy,
     auth_session_ttl_secs: u64,
     /// HSTS `max-age`（秒）。0 = HSTS ヘッダを付与しない（api 側と同キー `HSTS_MAX_AGE`）。
     hsts_max_age: u64,
@@ -48,7 +48,7 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         // api の公開オリジン（= OIDC issuer。ブラウザを api へ向けるリダイレクトの基点）。
-        let issuer = normalize_issuer(env_or("ISSUER", "http://localhost:8080"));
+        let issuer = normalize_base_url(env_or("ISSUER", "http://localhost:8080"));
         // web 自身の公開オリジン（ADR-0012 §2）。未設定は issuer と同一オリジン（単一オリジン構成）。
         let public_web_base_url = normalize_base_url(env_or("PUBLIC_WEB_BASE_URL", &issuer));
         // Cookie の Secure 属性。既定は自オリジン（PUBLIC_WEB_BASE_URL）のスキームに従う
@@ -67,6 +67,7 @@ impl Config {
             ),
             None => None,
         };
+        let cookie_policy = CookiePolicy::new(cookie_secure, cookie_domain.as_deref());
         let (internal_service_token, internal_service_token_is_dev) =
             match env_lookup("INTERNAL_SERVICE_TOKEN") {
                 Some(v) => (v, false),
@@ -74,7 +75,12 @@ impl Config {
             };
         let (csrf_secret, csrf_secret_is_dev) = load_csrf_secret()?;
         // 本番（https issuer）では開発用デフォルトのトークンで起動しない（fail-fast。api 側と同方針）。
-        ensure_production_secrets(&issuer, internal_service_token_is_dev, csrf_secret_is_dev)?;
+        ensure_production_secrets(
+            &issuer,
+            &public_web_base_url,
+            internal_service_token_is_dev,
+            csrf_secret_is_dev,
+        )?;
         Ok(Self {
             bind_addr: env_or("WEB_BIND_ADDR", "0.0.0.0:8081"),
             // api への到達先。単一オリジン構成ではプロキシ内部アドレス、ローカルでは api の直アドレス。
@@ -84,8 +90,7 @@ impl Config {
             internal_service_token_is_dev,
             csrf_secret,
             csrf_secret_is_dev,
-            cookie_secure,
-            cookie_domain,
+            cookie_policy,
             auth_session_ttl_secs: env_parse(
                 "AUTH_SESSION_TTL_SECS",
                 DEFAULT_AUTH_SESSION_TTL_SECS,
@@ -125,12 +130,17 @@ impl Config {
     }
     /// web が組み立てる Cookie に `Secure` を付けるか（api の応答値を Cookie 化する際に使う）。
     pub fn cookie_secure(&self) -> bool {
-        self.cookie_secure
+        self.cookie_policy.secure()
     }
     /// サービス横断 Cookie（sso_session_id・auth_session_id）に付与する `Domain` 属性（ADR-0012 §3）。
     /// api と同じ値を設定する。`None` = host-only（単一オリジン構成の従来挙動）。
     pub fn cookie_domain(&self) -> Option<&str> {
-        self.cookie_domain.as_deref()
+        self.cookie_policy.domain()
+    }
+    /// Cookie の属性方針。Cookie の発行・失効は必ずこれを経由する（ADR-0012 §3。`Domain` を
+    /// 渡し忘れた発行箇所が生まれないようにするため）。通常は `WebState::set_cookies()` を使う。
+    pub fn cookie_policy(&self) -> &CookiePolicy {
+        &self.cookie_policy
     }
     /// `auth_session_id` Cookie の TTL（秒）。api 側の `AUTH_SESSION_TTL_SECS` と合わせる。
     pub fn auth_session_ttl_secs(&self) -> u64 {
@@ -145,26 +155,36 @@ impl Config {
     }
 }
 
-fn normalize_issuer(raw: String) -> String {
-    raw.trim_end_matches('/').to_string()
-}
-
-/// 本番相当（issuer が `https://`）で開発用デフォルトのシークレットが使われていたら起動を失敗させる。
+/// 本番相当で開発用デフォルトのシークレットが使われていたら起動を失敗させる。
+///
+/// 本番相当の判定には **issuer と web 自身の公開オリジンの両方**を見る（ADR-0012 §2 で web は
+/// 自身の公開オリジンを持つようになったため）。どちらか一方でも `https://` なら公開配置とみなす。
+/// issuer だけを見ていると、`PUBLIC_WEB_BASE_URL` が https の公開配置で `ISSUER` を内部 http URL に
+/// 取り違えた構成が素通りし、api と共有する `CSRF_SECRET` が既知の開発用値のまま動いてしまう
+/// （CSRF トークンを誰でも偽造できる）。
 fn ensure_production_secrets(
     issuer: &str,
+    public_web_base_url: &str,
     internal_service_token_is_dev: bool,
     csrf_secret_is_dev: bool,
 ) -> anyhow::Result<()> {
-    if issuer.starts_with("https://") && internal_service_token_is_dev {
+    let public_origin = if issuer.starts_with("https://") {
+        issuer
+    } else if public_web_base_url.starts_with("https://") {
+        public_web_base_url
+    } else {
+        return Ok(());
+    };
+    if internal_service_token_is_dev {
         anyhow::bail!(
-            "ISSUER is https ({issuer}) but INTERNAL_SERVICE_TOKEN is not set; \
+            "the public origin is https ({public_origin}) but INTERNAL_SERVICE_TOKEN is not set; \
              refusing to start with the built-in development token. \
              Set INTERNAL_SERVICE_TOKEN (shared with api) in production."
         );
     }
-    if issuer.starts_with("https://") && csrf_secret_is_dev {
+    if csrf_secret_is_dev {
         anyhow::bail!(
-            "ISSUER is https ({issuer}) but CSRF_SECRET is not set; \
+            "the public origin is https ({public_origin}) but CSRF_SECRET is not set; \
              refusing to start with the built-in development secret. \
              Set CSRF_SECRET (base64, 32 bytes, shared with api) in production."
         );
@@ -202,8 +222,18 @@ fn load_csrf_secret() -> anyhow::Result<([u8; 32], bool)> {
     }
 }
 
+/// 公開ベース URL を正規化する: 末尾スラッシュを落とし、**スキームを小文字化**する。
+///
+/// URI のスキームは大小を区別しない（RFC 3986 §3.1）。`HTTPS://id.example.com` のような表記でも
+/// https と判定できないと、Cookie の `Secure` 判定と本番シークレットの fail-fast（どちらも
+/// スキームを見る）がすり抜ける。ホスト・パスはそのまま残す（issuer は ID Token の `iss` と
+/// 完全一致させる必要があるため、こちらで勝手に変えない）。
 fn normalize_base_url(raw: String) -> String {
-    raw.trim_end_matches('/').to_string()
+    let trimmed = raw.trim_end_matches('/');
+    match trimmed.split_once("://") {
+        Some((scheme, rest)) => format!("{}://{rest}", scheme.to_ascii_lowercase()),
+        None => trimmed.to_string(),
+    }
 }
 
 fn env_lookup(key: &str) -> Option<String> {
@@ -243,11 +273,70 @@ mod tests {
     }
 
     #[test]
+    fn base_url_scheme_is_lowercased_but_host_is_left_alone() {
+        // スキームは大小を区別しない（RFC 3986 §3.1）。https 判定（Cookie の Secure・本番
+        // シークレットの fail-fast）が `HTTPS://` 表記をすり抜けないように正規化する。
+        assert_eq!(
+            normalize_base_url("HTTPS://ID.Example.com/".to_string()),
+            "https://ID.Example.com"
+        );
+        // スキームを持たない値は素通しする（誤って壊さない）。
+        assert_eq!(
+            normalize_base_url("id.example.com".to_string()),
+            "id.example.com"
+        );
+    }
+
+    #[test]
     fn production_secrets_are_required_when_issuer_is_https() {
-        assert!(ensure_production_secrets("https://idp.example.com", true, false).is_err());
-        assert!(ensure_production_secrets("https://idp.example.com", false, true).is_err());
-        assert!(ensure_production_secrets("https://idp.example.com", false, false).is_ok());
-        assert!(ensure_production_secrets("http://localhost:8080", true, true).is_ok());
+        let issuer = "https://idp.example.com";
+        assert!(ensure_production_secrets(issuer, issuer, true, false).is_err());
+        assert!(ensure_production_secrets(issuer, issuer, false, true).is_err());
+        assert!(ensure_production_secrets(issuer, issuer, false, false).is_ok());
+        assert!(ensure_production_secrets(
+            "http://localhost:8080",
+            "http://localhost:8081",
+            true,
+            true
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn production_secrets_are_required_when_only_the_web_origin_is_https() {
+        // ADR-0012 §2: web は自身の公開オリジンを持つ。https で公開されている以上、ISSUER の
+        // スキームがどうであれ開発用シークレット（api と共有する CSRF 鍵）では起動させない。
+        let err = ensure_production_secrets(
+            "http://api-internal:8080",
+            "https://id.example.com",
+            false,
+            true,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("https://id.example.com"), "{err}");
+        assert!(err.contains("CSRF_SECRET"), "{err}");
+        assert!(ensure_production_secrets(
+            "http://api-internal:8080",
+            "https://id.example.com",
+            true,
+            false
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn uppercase_https_scheme_is_still_treated_as_production() {
+        // `HTTPS://` 表記でも fail-fast が効く（`from_env` は normalize_base_url を通すため、
+        // ensure_production_secrets には小文字化済みの値が渡る）。
+        let public_web_base_url = normalize_base_url("HTTPS://id.example.com".to_string());
+        assert!(ensure_production_secrets(
+            "http://api-internal:8080",
+            &public_web_base_url,
+            false,
+            true
+        )
+        .is_err());
     }
 
     #[test]
@@ -283,6 +372,26 @@ mod tests {
         assert_eq!(config.public_web_base_url(), "http://api.example.com");
         assert_eq!(config.cookie_domain(), None);
 
+        // https の自オリジンなら Secure を付ける。判定の基準は issuer ではなく自オリジンであること
+        // （ADR-0012 §2）を、http の issuer と組み合わせて固定する。
+        // https 公開では開発用シークレットを拒否するため、本物の値を与える。
+        std::env::set_var("INTERNAL_SERVICE_TOKEN", "test-internal-service-token");
+        std::env::set_var("CSRF_SECRET", STANDARD.encode([7u8; 32]));
+        std::env::set_var("PUBLIC_WEB_BASE_URL", "https://id.example.com");
+        let config = Config::from_env().unwrap();
+        assert!(config.cookie_secure(), "Secure follows the web origin");
+
+        // COOKIE_SECURE の明示指定は自オリジンのスキームより優先する（プロキシ終端構成の逃げ道）。
+        std::env::set_var("COOKIE_SECURE", "false");
+        assert!(!Config::from_env().unwrap().cookie_secure());
+        std::env::set_var("COOKIE_SECURE", "true");
+        std::env::set_var("PUBLIC_WEB_BASE_URL", "http://id.example.com");
+        assert!(Config::from_env().unwrap().cookie_secure());
+
+        std::env::remove_var("COOKIE_SECURE");
+        std::env::remove_var("PUBLIC_WEB_BASE_URL");
+        std::env::remove_var("INTERNAL_SERVICE_TOKEN");
+        std::env::remove_var("CSRF_SECRET");
         std::env::remove_var("ISSUER");
     }
 }

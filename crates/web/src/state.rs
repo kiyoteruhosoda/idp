@@ -2,6 +2,7 @@
 
 use crate::api_client::ApiClient;
 use crate::config::Config;
+use crate::cookies::SetCookies;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -17,5 +18,10 @@ impl WebState {
             config.internal_service_token().to_string(),
         );
         Self { config, api }
+    }
+
+    /// 応答へ載せる `Set-Cookie` の組み立てを始める（属性方針は設定から取る。ADR-0012 §3）。
+    pub fn set_cookies(&self) -> SetCookies {
+        SetCookies::new(self.config.cookie_policy().clone())
     }
 }

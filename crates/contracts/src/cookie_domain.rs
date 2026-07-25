@@ -113,6 +113,16 @@ mod tests {
     }
 
     #[test]
+    fn rejects_a_sibling_host_of_the_other_origin() {
+        // 実際に起きやすい取り違え: 片方のホスト名（`api.example.com`）をそのまま COOKIE_DOMAIN に
+        // 設定する構成。自分自身の親（＝同一）ではあるが、兄弟ホストである web には届かず、
+        // web が発行した SSO Cookie を api が読めない（ログインループ）。
+        let err = validate_cookie_domain("api.example.com", ORIGINS).unwrap_err();
+        assert!(err.contains("not a parent domain"), "{err}");
+        assert!(err.contains("id.example.com"), "{err}");
+    }
+
+    #[test]
     fn rejects_public_suffix() {
         // `com` は両ホストの親として検証 1 を通るが、public suffix なので拒否する。
         let err = validate_cookie_domain("com", ORIGINS).unwrap_err();

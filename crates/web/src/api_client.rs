@@ -39,12 +39,14 @@ use idp_contracts::auth::{
 use idp_contracts::version::SchemaVersionInfo;
 use reqwest::Method;
 
+/// SSO セッション Cookie 名。api へ転送する `Cookie` ヘッダの組み立てに使う（名前の契約は
+/// `idp_contracts::cookies` に単一定義してあり、ここで再定義しない）。
+use idp_contracts::cookies::SSO_SESSION_COOKIE;
+
 /// サービス認証トークンのヘッダ名（api 側 `require_service_token` と一致させる）。
 const SERVICE_TOKEN_HEADER: &str = "x-internal-auth-token";
 /// correlation_id（requestId）の伝播ヘッダ名（api 側 correlation ミドルウェアと一致させる）。
 const REQUEST_ID_HEADER: &str = "x-request-id";
-/// SSO セッション Cookie 名（api の `cookies::SSO_SESSION_COOKIE` と一致させる）。
-const SSO_SESSION_COOKIE: &str = "sso_session_id";
 
 /// メール検証リンク消費（SEC6b）の結果。
 pub enum VerifyEmailResult {
