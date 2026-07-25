@@ -77,12 +77,18 @@ impl ResolvedSetting {
     /// 誤った結論に至る。判定をここに置くのは、比較のルール（とくに**上書きの解除**も未反映で
     /// ある点）を表示側で再現させないためである。
     ///
-    /// `restart_required` が false のキーは参照のたびに DB を読むため常に反映済みとみなす。
-    /// secret は起動時スナップショットに平文を残さない（`value` が常に `None`）ため比較できず、
-    /// 常に「反映済み」を返す。現行の secret はすべて `EnvLocked` で DB 上書きを持ち得ないため
-    /// この分岐に実害は無い（判定を値の有無に頼らず明示するために置く）。
+    /// 判定するのは `DbManaged` かつ非 secret かつ `restart_required` のキーだけである。
+    ///
+    /// - `restart_required` が false のキーは参照のたびに DB を読むため常に反映済み。
+    /// - secret は起動時スナップショットに平文を残さない（`value` が常に `None`）ため比較できない。
+    /// - **`DbManaged` 以外は DB 行があっても比較しない。** `EnvLocked` / `Builtin` のキーは解決時に
+    ///   DB を一切参照しないため `source` が `Db` になり得ず、残存行と突き合わせると永遠に未反映と
+    ///   出続ける。しかも `editable` が false なので画面から消せず、警告が消せないまま居座る。
+    ///   出所区分が `DbManaged` から変わったキー（`PUBLIC_WEB_BASE_URL`・`COOKIE_DOMAIN` は
+    ///   ADR-0012 で `EnvLocked` へ移した）の `system_settings` 行が残っている環境で実際に起きる。
+    ///   これらの行はそもそも設定の解決に影響しない（無視される）ので、未反映ではない。
     pub fn is_pending_restart(&self, db_current: Option<&str>) -> bool {
-        if !self.restart_required || self.secret {
+        if !self.restart_required || self.secret || self.owner != SettingOwner::DbManaged {
             return false;
         }
         match db_current {
@@ -679,6 +685,41 @@ mod tests {
         assert!(setting(SettingSource::Db, Some("true")).is_pending_restart(None));
         // 起動時も現在も DB 上書きが無い → 反映済み。
         assert!(!setting(SettingSource::Env, Some("false")).is_pending_restart(None));
+    }
+
+    /// 出所区分が `DbManaged` から `EnvLocked` へ変わったキー（ADR-0012 の
+    /// `PUBLIC_WEB_BASE_URL`・`COOKIE_DOMAIN`）の `system_settings` 行が残っていても未反映にしない。
+    ///
+    /// `EnvLocked` は解決時に DB を見ないので `source` が `Db` になり得ず、突き合わせると永遠に
+    /// 未反映と出る。しかも `editable` が false で画面から消せないため、再起動しても消えない警告が
+    /// 居座ることになる。残存行は設定の解決に影響しない（無視される）ので未反映ではない。
+    #[test]
+    fn stale_rows_for_env_locked_keys_are_not_reported_as_pending() {
+        let env_locked = ResolvedSetting {
+            key: "PUBLIC_WEB_BASE_URL".to_string(),
+            owner: SettingOwner::EnvLocked,
+            // EnvLocked は DB を参照しないため、DB 行があっても source は Env / Builtin にしかならない。
+            source: SettingSource::Env,
+            secret: false,
+            restart_required: true,
+            default_risk: DefaultRisk::Safe,
+            status: SettingSafetyStatus::Safe,
+            reason: String::new(),
+            value: Some("https://idp.example.com".to_string()),
+            default_value: None,
+            description: String::new(),
+        };
+        assert!(!env_locked.is_pending_restart(Some("https://old.example.com")));
+        assert!(!env_locked.is_pending_restart(None));
+
+        // Builtin（常に既定値）も同じ理由で対象外。
+        let builtin = ResolvedSetting {
+            key: "BIND_ADDR".to_string(),
+            owner: SettingOwner::Builtin,
+            source: SettingSource::Builtin,
+            ..env_locked.clone()
+        };
+        assert!(!builtin.is_pending_restart(Some("0.0.0.0:9999")));
     }
 
     /// 再起動不要のキーは参照のたびに DB を読むため常に反映済み。secret は平文をスナップショットに

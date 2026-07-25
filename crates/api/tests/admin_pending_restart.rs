@@ -11,6 +11,8 @@
 //! 3. **上書きを解除しても未反映**（起動時は DB から採っていたので、まだ既定値に戻っていない）。
 //! 4. その状態で api を起動し直すと未反映が解消する。
 //! 5. 共有キー（`shared_with_web`）はその旨が応答に載る（反映に web の再起動も要るため）。
+//! 6. 出所区分が `DbManaged` から `EnvLocked` へ変わったキーの残存行は未反映にしない
+//!    （`EnvLocked` は DB を見ないので、突き合わせると再起動しても消えない警告になる）。
 //!
 //! `system_settings` はテナント列を持たない IdP 全体の共有テーブルで、テストバイナリは並列に走る。
 //! 他のテストと同じキーを書き換えると互いに競合するため、本テスト専用のキー
@@ -31,6 +33,9 @@ use support::{body_json, create_sso_session, get, send};
 const KEY: &str = "TENANT_CACHE_TTL_SECS";
 /// 共有キーの代表。値は書き換えず `shared_with_web` フラグの確認にだけ使う。
 const SHARED_KEY: &str = "COOKIE_SECURE";
+/// `EnvLocked` のキー（ADR-0012 で `DbManaged` から移した）。残存行があっても未反映にしないことの確認用。
+/// `EnvLocked` は解決時に DB を参照しないため、この行を入れても設定の解決には影響しない。
+const ENV_LOCKED_KEY: &str = "PUBLIC_WEB_BASE_URL";
 
 async fn upsert_setting(pool: &sqlx::MySqlPool, key: &str, value: &str) {
     sqlx::query(
@@ -132,4 +137,21 @@ async fn saved_settings_are_reported_as_pending_until_the_api_restarts() {
     assert_eq!(shared["shared_with_web"], true, "{shared}");
     let own = runtime_setting(&restarted, &admin_cookie, &env.root_tenant_id, KEY).await;
     assert_eq!(own["shared_with_web"], false, "{own}");
+
+    // ── 6. 出所区分が `DbManaged` から `EnvLocked` へ変わったキーの残存行は未反映にしない。
+    // `EnvLocked` は解決時に DB を見ないので `source` が `DB` になり得ず、突き合わせると
+    // **再起動しても消えない**警告が出続ける。しかも `editable` が false で画面から消せない。
+    upsert_setting(&pool, ENV_LOCKED_KEY, "https://legacy.example.com").await;
+    let legacy = start_api(&pool).await;
+    let item = runtime_setting(&legacy, &admin_cookie, &env.root_tenant_id, ENV_LOCKED_KEY).await;
+    assert_ne!(item["source"], "DB", "EnvLocked は DB を参照しない: {item}");
+    assert_eq!(
+        item["editable"], false,
+        "画面から消せないキーであることの確認: {item}"
+    );
+    assert_eq!(
+        item["pending_restart"], false,
+        "残存行は設定の解決に影響しないので未反映ではない: {item}"
+    );
+    delete_setting(&pool, ENV_LOCKED_KEY).await;
 }
