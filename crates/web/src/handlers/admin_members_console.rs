@@ -386,6 +386,37 @@ mod tests {
         assert!(!guest.contains("/reset-mfa"), "{guest}");
     }
 
+    /// 確認ダイアログの文言は `data-confirm` 属性で渡す（インライン JS の文字列へ埋め込まない）。
+    ///
+    /// `onsubmit="return confirm('…')"` へ埋め込むと、Askama が `'` を `&#39;` にしてもブラウザが
+    /// 属性値の解釈時に `'` へ戻すため、英語の "user's" のようなアポストロフィが JS 文字列を
+    /// 終端させてハンドラごと構文エラーになり、**確認なしで破壊的操作が送信される**。
+    /// 属性値として渡せば HTML エスケープがそのまま正しい防御になる。
+    #[test]
+    fn confirmation_text_is_passed_as_an_attribute_not_inline_javascript() {
+        let html = render_list(&[member("HOME")], None);
+        assert!(!html.contains("onsubmit="), "no inline handlers: {html}");
+        assert!(html.contains("data-confirm="));
+
+        // アポストロフィを含む文言（英語ロケール）でも属性として正しくエスケープされ、
+        // 生の `'` が属性値を終端しない。
+        let messages = Messages::new(Locale::En);
+        let english = render(&MembersList {
+            messages: &messages,
+            tenant: &tenant().prefix(),
+            admin: Some("admin-1"),
+            members: &[member("HOME")],
+            query: "",
+            csrf: "csrf123",
+            error_key: None,
+            notice_key: None,
+        });
+        let confirm = messages.get("admin-members-reset-mfa-confirm");
+        assert!(confirm.contains('\''), "fixture must contain an apostrophe");
+        assert!(english.contains("&#39;"), "apostrophe must be escaped");
+        assert!(!english.contains(&format!("data-confirm=\"{confirm}\"")));
+    }
+
     /// 解除後の完了通知は「外した」「元から無かった」を区別して出す。
     #[test]
     fn mfa_reset_notices_distinguish_removed_from_absent() {

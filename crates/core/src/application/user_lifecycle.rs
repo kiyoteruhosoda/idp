@@ -35,7 +35,8 @@ pub struct ResetUserPassword {
 }
 
 /// MFA 解除の結果（MT21）。何を外したかを管理者へ返す（監査にも同じ粒度で記録する）。
-/// シークレット・クレデンシャルそのものは含めない。
+/// シークレット・クレデンシャルそのものは含めない（`Debug` に載る値も同様）。
+#[derive(Debug)]
 pub struct MfaReset {
     pub user_id: Uuid,
     /// TOTP 設定が存在して削除されたか（未設定なら `false`）。
@@ -208,6 +209,12 @@ impl UserLifecycleService {
     /// 併せて当該利用者の SSO セッション・refresh token・未消費 code を失効させる。この操作の
     /// 契機は「端末の紛失・盗難」であり、その端末が生きたセッションを保持している可能性がある
     /// ためである（MFA を外すだけでは、紛失した端末のログイン状態はそのまま残る）。
+    ///
+    /// **失効に失敗したらこの操作全体を失敗させる**（他のライフサイクル操作と違い fail-open に
+    /// しない）。パスワード再発行や無効化では、失効が漏れても資格情報そのものが変わっている／
+    /// アカウントが無効になっているという別の防御線が残る。MFA 解除では失効が唯一の防御線で、
+    /// 「盗まれた端末のセッションは切れた」と管理者へ伝えたのに実際は生きている、という取り違えを
+    /// 生む。MFA の削除は済んでいるが、再実行は冪等なので失効だけをやり直せる。
     pub async fn reset_mfa(
         &self,
         tenant: TenantContext,
@@ -234,7 +241,8 @@ impl UserLifecycleService {
             .await
             .map_err(internal)?;
 
-        self.revoke_credentials(user.id).await;
+        // 失効できなければ成功を返さない（紛失端末のセッションが生き残る）。監査も記録しない。
+        self.revoke_credentials_strict(user.id).await?;
 
         // 監査には対象と外した要素の粒度のみ記録する（シークレット・クレデンシャルは出さない）。
         self.audit
@@ -317,6 +325,12 @@ impl UserLifecycleService {
         Ok(())
     }
 
+    /// 資格情報を失効させ、**失敗はログに留めて先へ進む**（fail-open）。
+    ///
+    /// パスワード再発行・無効化から使う。これらは失効が漏れても「パスワードが変わっている」
+    /// 「アカウントが無効」という別の防御線が残るため、一過性の DB エラーで操作全体を失敗させる
+    /// 方が運用上の害が大きい。失効が唯一の防御線になる MFA 解除では
+    /// [`revoke_credentials_strict`](Self::revoke_credentials_strict) を使う。
     async fn revoke_credentials(&self, user_id: Uuid) {
         let now = self.clock.now();
         if let Err(e) = self.sso_sessions.delete_all_for_user(user_id).await {
@@ -327,6 +341,36 @@ impl UserLifecycleService {
         }
         if let Err(e) = self.codes.revoke_all_active_for_user(user_id, now).await {
             tracing::warn!(error = %e, "failed to revoke authorization codes in user lifecycle operation");
+        }
+    }
+
+    /// 資格情報を失効させ、**1 つでも失敗したら呼び出し元へ伝える**（fail-closed）。
+    ///
+    /// 途中で失敗しても残りは試みる（部分的にでも失効させた方が安全側）。返すのは最初のエラー。
+    async fn revoke_credentials_strict(&self, user_id: Uuid) -> Result<(), UserLifecycleError> {
+        let now = self.clock.now();
+        let mut first_error = None;
+        let mut remember = |label: &str, result: crate::domain::error::Result<()>| {
+            if let Err(e) = result {
+                tracing::error!(error = %e, credential = label, "failed to revoke credentials");
+                first_error.get_or_insert_with(|| internal(e));
+            }
+        };
+        remember(
+            "sso_session",
+            self.sso_sessions.delete_all_for_user(user_id).await,
+        );
+        remember(
+            "refresh_token",
+            self.refresh_tokens.revoke_all_for_user(user_id, now).await,
+        );
+        remember(
+            "authorization_code",
+            self.codes.revoke_all_active_for_user(user_id, now).await,
+        );
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(()),
         }
     }
 }
@@ -464,6 +508,8 @@ mod tests {
     #[derive(Default)]
     struct FakeSsoSessions {
         revoked_users: Mutex<Vec<Uuid>>,
+        /// `true` のとき失効が DB エラーで失敗する（fail-closed の検証用）。
+        fail_revoke: Mutex<bool>,
     }
     #[async_trait]
     impl SsoSessionRepository for FakeSsoSessions {
@@ -480,6 +526,9 @@ mod tests {
             unreachable!()
         }
         async fn delete_all_for_user(&self, user_id: Uuid) -> DomainResult<()> {
+            if *self.fail_revoke.lock().unwrap() {
+                return Err(DomainError::Repository("connection lost".into()));
+            }
             self.revoked_users.lock().unwrap().push(user_id);
             Ok(())
         }
@@ -896,6 +945,46 @@ mod tests {
         assert!(!reset.totp_removed);
         assert_eq!(reset.passkeys_removed, 0);
         assert!(f.totp.deleted.lock().unwrap().is_empty());
+    }
+
+    /// MT21: 失効に失敗したら MFA 解除は成功を返さない（fail-closed）。
+    ///
+    /// 「盗まれた端末のセッションは切れた」と管理者へ伝えたのに実際は生きている、という取り違えを
+    /// 防ぐ。ここが fail-open に戻ると、監査には成功が残り応答も 200 になってしまう。
+    #[tokio::test]
+    async fn mfa_reset_fails_when_credentials_cannot_be_revoked() {
+        let tenant: TenantId = Uuid::now_v7().into();
+        let f = fixture();
+        let target = Uuid::now_v7();
+        f.users.create(&user(target, tenant)).await.unwrap();
+        f.totp.upsert(&totp_secret(target)).await.unwrap();
+        *f.sso.fail_revoke.lock().unwrap() = true;
+
+        let err = f
+            .svc
+            .reset_mfa(TenantContext::new(tenant), target, Uuid::now_v7(), &ctx())
+            .await
+            .expect_err("revocation failure must fail the reset");
+        assert!(matches!(err, UserLifecycleError::Internal(_)), "{err:?}");
+        // 失敗したときは監査へ成功を残さない。
+        assert!(f.sink.events.lock().unwrap().is_empty());
+        // 失効できなかった側があっても、残りは試みる（部分的にでも失効させる）。
+        assert_eq!(*f.refresh.revoked_users.lock().unwrap(), vec![target]);
+        assert_eq!(*f.codes.revoked_users.lock().unwrap(), vec![target]);
+
+        // 再実行は冪等: 失効が回復すれば成功する（MFA は既に外れているので totp_removed = false）。
+        *f.sso.fail_revoke.lock().unwrap() = false;
+        let reset = f
+            .svc
+            .reset_mfa(TenantContext::new(tenant), target, Uuid::now_v7(), &ctx())
+            .await
+            .expect("retry succeeds");
+        assert!(!reset.totp_removed);
+        assert_eq!(*f.sso.revoked_users.lock().unwrap(), vec![target]);
+        assert_eq!(
+            f.sink.events.lock().unwrap()[0].event_type,
+            AuditEventType::UserMfaReset
+        );
     }
 
     /// 他テナントの利用者・自分自身は他のライフサイクル操作と同じ扱い。

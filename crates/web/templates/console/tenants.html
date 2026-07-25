@@ -77,7 +77,7 @@
                           aria-expanded="false" aria-controls="tenant-reset-{{ loop.index }}">
                     <i class="fa-solid fa-key me-1" aria-hidden="true"></i>{{ messages.get("admin-tenants-reset-admin-password") }}
                   </button>
-                  <form method="post" action="{{ tenant }}/admin/tenants/{{ t.id }}/delete" class="d-inline" onsubmit="return confirm('{{ messages.get("admin-tenants-delete-confirm") }}')">
+                  <form method="post" action="{{ tenant }}/admin/tenants/{{ t.id }}/delete" class="d-inline" data-confirm="{{ messages.get("admin-tenants-delete-confirm") }}">
                     <input type="hidden" name="csrf_token" value="{{ csrf }}">
                     <button type="submit" class="btn btn-sm btn-outline-danger"><i class="fa-solid fa-trash me-1" aria-hidden="true"></i>{{ messages.get("admin-tenants-delete-button") }}</button>
                   </form>

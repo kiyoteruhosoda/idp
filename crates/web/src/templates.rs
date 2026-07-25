@@ -79,6 +79,7 @@ pub fn asset_version() -> &'static str {
 fn embedded_assets_digest() -> u64 {
     [
         crate::handlers::stylesheet::APP_CSS,
+        crate::handlers::console_script::CONSOLE_JS,
         crate::handlers::react_assets::APP_JS,
         crate::handlers::vendor_assets::BOOTSTRAP_CSS,
         crate::handlers::vendor_assets::BOOTSTRAP_JS,
@@ -155,6 +156,34 @@ mod tests {
             assert!(html.contains(&format!("/assets/react/app.js?v={v}")));
             assert!(!html.contains("/assets/app.css\""));
         }
+        // 共通スクリプトは管理コンソールのレイアウト（`console/layout.html`）が読み込む。
+        // ログイン画面は `page.html` を使い、`data-confirm` を持つフォームも無いため対象外。
+        assert!(console.contains(&format!("/assets/console.js?v={v}")));
+    }
+
+    /// `data-confirm` を持つテンプレートは、必ず共通スクリプトを読み込むレイアウトを継承していること。
+    /// 継承していないと確認ダイアログが黙って出ないまま破壊的操作が送信される。
+    #[test]
+    fn templates_using_data_confirm_extend_the_console_layout() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/templates/console");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(dir).expect("read templates/console") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("html") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("read template");
+            if !source.contains("data-confirm=") {
+                continue;
+            }
+            checked += 1;
+            assert!(
+                source.contains(r#"{% extends "console/layout.html" %}"#),
+                "{} uses data-confirm but does not extend console/layout.html",
+                path.display()
+            );
+        }
+        assert!(checked > 0, "expected templates using data-confirm");
     }
 }
 

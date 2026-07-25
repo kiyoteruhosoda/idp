@@ -8,9 +8,9 @@ use crate::error_pages;
 use crate::handlers::{
     admin_clients_console, admin_console, admin_invitations_console, admin_members_console,
     admin_saml_clients_console, admin_settings, admin_signing_keys_console, admin_status_console,
-    admin_tenants_console, admin_users_console, consent, health, invitation_accept, locale, login,
-    mfa_totp, passkey, password_change, password_reset, portal, react_assets, stylesheet,
-    user_settings, vendor_assets, verify_email,
+    admin_tenants_console, admin_users_console, consent, console_script, health, invitation_accept,
+    locale, login, mfa_totp, passkey, password_change, password_reset, portal, react_assets,
+    stylesheet, user_settings, vendor_assets, verify_email,
 };
 use crate::i18n::Messages;
 use crate::security_headers::add_security_headers;
@@ -242,6 +242,7 @@ pub fn build(state: WebState) -> Router {
         .route("/readyz", get(health::readiness))
         .route("/version", get(health::version))
         .route("/assets/app.css", get(stylesheet::app_css))
+        .route("/assets/console.js", get(console_script::console_js))
         .route(
             "/assets/vendor/bootstrap.min.css",
             get(vendor_assets::bootstrap_css),

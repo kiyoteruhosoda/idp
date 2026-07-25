@@ -111,7 +111,7 @@
                   <i class="fa-solid fa-pen me-1" aria-hidden="true"></i>{{ messages.get("admin-saml-client-edit") }}
                 </button>
                 <form method="post" action="{{ tenant }}/admin/saml-clients/{{ p.id }}/delete" class="d-inline"
-                      onsubmit="return confirm('{{ messages.get("admin-saml-client-delete-confirm") }}');">
+                      data-confirm="{{ messages.get("admin-saml-client-delete-confirm") }}">
                   <input type="hidden" name="csrf_token" value="{{ csrf }}">
                   <button type="submit" class="btn btn-sm btn-outline-danger">
                     <i class="fa-solid fa-trash me-1" aria-hidden="true"></i>{{ messages.get("admin-saml-client-delete") }}
