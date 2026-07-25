@@ -9,8 +9,8 @@ trap 'rm -rf "$TMP"' EXIT
 # --- リポジトリ配置（scripts/deploy.sh ＋ ルートの docker-compose.deploy.yml） ---
 mkdir -p "$TMP/repo/scripts" "$TMP/repo/docker" "$TMP/bin"
 cp "$ROOT/scripts/deploy.sh" "$TMP/repo/scripts/"
-cp "$ROOT/.env.example" "$ROOT/docker-compose.deploy.yml" "$TMP/repo/"
-cp "$ROOT/docker/nginx.conf" "$TMP/repo/docker/"
+cp "$ROOT/.env.example" "$ROOT/docker-compose.deploy.yml" "$ROOT/docker-compose.domain-split.yml" "$TMP/repo/"
+cp "$ROOT/docker/nginx.conf" "$ROOT/docker/nginx.domain-split.conf" "$TMP/repo/docker/"
 
 cat > "$TMP/bin/openssl" <<'STUB'
 #!/usr/bin/env bash
@@ -24,6 +24,8 @@ chmod +x "$TMP/bin/openssl"
 
 cat > "$TMP/bin/curl" <<'STUB'
 #!/usr/bin/env bash
+# readiness probe の宛先を検証できるよう、呼び出しを記録する（成否は常に成功）。
+if [[ -n "${CURL_STUB_LOG:-}" ]]; then printf 'curl %s\n' "$*" >>"$CURL_STUB_LOG"; fi
 exit 0
 STUB
 chmod +x "$TMP/bin/curl"
@@ -64,6 +66,9 @@ if [[ "${1:-}" == "compose" ]]; then
       if [[ "$*" == *"SELECT id FROM tenants"* ]]; then printf '01970000-0000-7000-8000-000000000001\n'; fi
       exit 0 ;;
     logs) echo "stub docker logs for ${*: -1}: ${MARIADB_PASSWORD:-secret}"; exit 0 ;;
+    # deploy.sh は `config --services` で「定義に無いサービスを待ち続ける」事故を防いでいる。
+    # DOCKER_STUB_SERVICES で定義一覧を差し替えられるようにして、その分岐を検証できるようにする。
+    config) tr ' ' '\n' <<<"${DOCKER_STUB_SERVICES:-api mariadb migrate proxy web}"; exit 0 ;;
   esac
 fi
 case "${1:-}" in
@@ -136,6 +141,88 @@ printf 'SENTINEL_KEEP=keepme' >>.env   # 末尾改行なしの最終行を作る
 ./scripts/deploy.sh app >/tmp/deploy-nonl.out 2>&1
 grep -q '^SENTINEL_KEEP=keepme$' .env || { echo "last line without trailing newline was corrupted by append" >&2; exit 1; }
 grep -q '^LOG_FORMAT=pretty$' .env || { echo "key not appended after newline normalization" >&2; exit 1; }
+
+# --- 公開トポロジ（ADR-0015。single-origin / domain-split） ---
+export CURL_STUB_LOG="$TMP/curl.log"
+
+# 既定（.env.example の PUBLISH_TOPOLOGY=single-origin）では override を重ねず、
+# readiness も WEB_PORT の 1 つだけを見る。
+: >"$DOCKER_STUB_LOG"; : >"$CURL_STUB_LOG"
+./scripts/deploy.sh app >/tmp/deploy-single-origin.out 2>&1
+grep -q '公開トポロジ: single-origin' /tmp/deploy-single-origin.out
+if grep -q -- '-f docker-compose.domain-split.yml' "$DOCKER_STUB_LOG"; then
+  echo "single-origin must not overlay the domain-split compose file" >&2
+  exit 1
+fi
+grep -q 'http://127.0.0.1:8060/readyz' "$CURL_STUB_LOG" ||
+  { echo "single-origin must probe the WEB_PORT readiness endpoint" >&2; cat "$CURL_STUB_LOG" >&2; exit 1; }
+# 単一オリジン構成では PUBLIC_WEB_BASE_URL 未設定＝ISSUER 基点のまま（挙動不変）。
+grep -q 'ログイン URL: http://localhost:8060/' /tmp/deploy-single-origin.out ||
+  { echo "single-origin login URL must stay ISSUER-based" >&2; exit 1; }
+
+# domain-split では override を重ね、web（WEB_PORT）と api（API_PORT）の両方の readiness を見る。
+sed -i 's/^PUBLISH_TOPOLOGY=.*/PUBLISH_TOPOLOGY=domain-split/' .env
+sed -i 's|^ISSUER=.*|ISSUER=https://api.example.com|' .env
+printf 'PUBLIC_WEB_BASE_URL=https://id.example.com\n' >>.env
+: >"$DOCKER_STUB_LOG"; : >"$CURL_STUB_LOG"
+./scripts/deploy.sh app >/tmp/deploy-domain-split.out 2>&1
+grep -q '公開トポロジ: domain-split' /tmp/deploy-domain-split.out
+grep -q -- '-f docker-compose.deploy.yml -f docker-compose.domain-split.yml' "$DOCKER_STUB_LOG" ||
+  { echo "domain-split must overlay docker-compose.domain-split.yml" >&2; cat "$DOCKER_STUB_LOG" >&2; exit 1; }
+grep -q 'http://127.0.0.1:8060/readyz' "$CURL_STUB_LOG" ||
+  { echo "domain-split must probe the web readiness endpoint" >&2; cat "$CURL_STUB_LOG" >&2; exit 1; }
+grep -q 'http://127.0.0.1:8070/readyz' "$CURL_STUB_LOG" ||
+  { echo "domain-split must probe the api readiness endpoint" >&2; cat "$CURL_STUB_LOG" >&2; exit 1; }
+# 画面（/login・/admin）を返すのは web なので、まとめの URL は PUBLIC_WEB_BASE_URL 基点にする。
+grep -q 'ログイン URL: https://id.example.com/' /tmp/deploy-domain-split.out ||
+  { echo "login URL must be based on PUBLIC_WEB_BASE_URL, not ISSUER" >&2; cat /tmp/deploy-domain-split.out >&2; exit 1; }
+grep -q '管理コンソール: https://id.example.com/.*/admin' /tmp/deploy-domain-split.out ||
+  { echo "admin URL must be based on PUBLIC_WEB_BASE_URL, not ISSUER" >&2; exit 1; }
+
+# IPv6 の bind では、URL のホスト部として使える形（角括弧付き）で probe する。
+# ワイルドカード（::）は IPv4 ループバックではなく IPv6 ループバックへ読み替える
+# （IPv6 のみで待ち受けているポートへ到達できず readiness がタイムアウトするため）。
+sed -i 's/^WEB_BIND_HOST=.*/WEB_BIND_HOST=::/' .env
+sed -i 's/^API_BIND_HOST=.*/API_BIND_HOST=::1/' .env
+: >"$DOCKER_STUB_LOG"; : >"$CURL_STUB_LOG"
+./scripts/deploy.sh app >/tmp/deploy-ipv6.out 2>&1
+grep -q 'http://\[::1\]:8060/readyz' "$CURL_STUB_LOG" ||
+  { echo "IPv6 wildcard bind must probe the bracketed IPv6 loopback" >&2; cat "$CURL_STUB_LOG" >&2; exit 1; }
+grep -q 'http://\[::1\]:8070/readyz' "$CURL_STUB_LOG" ||
+  { echo "IPv6 literal bind must be bracketed in the probe URL" >&2; cat "$CURL_STUB_LOG" >&2; exit 1; }
+sed -i 's/^WEB_BIND_HOST=.*/WEB_BIND_HOST=127.0.0.1/' .env
+sed -i 's/^API_BIND_HOST=.*/API_BIND_HOST=127.0.0.1/' .env
+
+# override ファイルが無い配置で domain-split を指定したら fail-fast する。
+mv docker-compose.domain-split.yml "$TMP/domain-split.yml.bak"
+set +e
+./scripts/deploy.sh app >/tmp/deploy-domain-split-missing.out 2>&1
+status=$?
+set -e
+[[ $status -ne 0 ]] || { echo "domain-split without the overlay file must fail" >&2; exit 1; }
+grep -q 'docker-compose.domain-split.yml がありません' /tmp/deploy-domain-split-missing.out
+mv "$TMP/domain-split.yml.bak" docker-compose.domain-split.yml
+
+# 未知のトポロジ値は誤記のまま起動させず fail-fast する。
+sed -i 's/^PUBLISH_TOPOLOGY=.*/PUBLISH_TOPOLOGY=split-domain/' .env
+set +e
+./scripts/deploy.sh app >/tmp/deploy-topology-typo.out 2>&1
+status=$?
+set -e
+[[ $status -ne 0 ]] || { echo "unknown PUBLISH_TOPOLOGY must fail" >&2; exit 1; }
+grep -q "PUBLISH_TOPOLOGY が不正です: 'split-domain'" /tmp/deploy-topology-typo.out
+
+# Compose 定義に無いサービスは、待機タイムアウトではなく即座に原因を示して落とす。
+sed -i 's/^PUBLISH_TOPOLOGY=.*/PUBLISH_TOPOLOGY=single-origin/' .env
+sed -i 's|^ISSUER=.*|ISSUER=http://localhost:8060|' .env
+sed -i '/^PUBLIC_WEB_BASE_URL=/d' .env
+set +e
+DOCKER_STUB_SERVICES="api mariadb migrate web" ./scripts/deploy.sh app >/tmp/deploy-missing-service.out 2>&1
+status=$?
+set -e
+[[ $status -ne 0 ]] || { echo "missing compose service must fail" >&2; exit 1; }
+grep -q 'proxy が Compose 定義にありません' /tmp/deploy-missing-service.out
+unset CURL_STUB_LOG
 
 set +e
 DOCKER_STUB_FAIL_MIGRATE=1 ./scripts/deploy.sh migrate >/tmp/deploy-migrate-fail.out 2>&1

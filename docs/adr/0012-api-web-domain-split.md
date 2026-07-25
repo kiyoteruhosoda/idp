@@ -96,6 +96,10 @@ ADR-0007 で api（OIDC protocol・JSON 管理 API）と web（HTML 画面）を
 ### 6. リバースプロキシ・公開範囲
 
 - パスルーティング表に代えて、**ドメインごとの vhost**（api ドメイン → api、web ドメイン → web）とする。
+  > **本項は ADR-0015 で置き換えられた。** 実装では vhost（`server_name`）ではなく
+  > **リッスンポート分割**（同梱 nginx の `:8080` → web、`:8081` → api）を採る。前段プロキシが既に
+  > ドメインで振り分けているため、同梱 nginx にもドメイン名を持たせると二重管理になるという理由。
+  > 決定と手順は `docs/adr/0015-domain-split-by-listen-port.md` を参照。
 - `/internal/*` は**どちらのドメインでも公開しない**（ADR-0007 §5 のとおり内部ネットワーク限定＋
   サービス認証トークン）。
 - HSTS（`HSTS_MAX_AGE`）・`X-Forwarded-*` の信頼（`TRUST_FORWARDED_HEADERS`）は両ドメインに同様に適用する。

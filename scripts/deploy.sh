@@ -30,6 +30,8 @@ else
 fi
 cd "$base"
 [[ -f "$base/$compose_file" ]] || die "$compose_file がありません（デプロイ用 Compose）。"
+# 別ドメイン公開（ADR-0015）の override。バンドル内・リポジトリ内のどちらでも $base 直下に置く。
+domain_split_compose_file="docker-compose.domain-split.yml"
 
 timestamp_millis() {
   local ts
@@ -71,6 +73,12 @@ compose=()
 COMPOSE_PROJECT=""
 LEGACY_COMPOSE_PROJECT_NAME=""
 DIAGNOSTIC_SERVICES=(mariadb migrate api web proxy)
+# 公開トポロジ（ADR-0015）。init_compose_command が .env から確定する。
+#   single-origin: 1 ポートをパスで振り分ける（既定）
+#   domain-split : web / api をリッスンポートで分け、前段プロキシが別サブドメインを割り当てる
+PUBLISH_TOPOLOGY="single-origin"
+# Compose が認識しているサービス名の一覧（init_compose_command で確定。取得失敗時は空）。
+COMPOSE_DEFINED_SERVICES=""
 # デプロイ完了時のまとめ表示に使う root テナントの URL（replace_app_containers で確定する）。
 ROOT_LOGIN_URL=""
 ROOT_ADMIN_URL=""
@@ -186,7 +194,7 @@ fill_change_me() {
 }
 
 init_compose_command() {
-  local project_name
+  local project_name topology
   project_name="$(get_env_var COMPOSE_PROJECT_NAME)"
   project_name="${project_name:-${LEGACY_COMPOSE_PROJECT_NAME:-$(default_compose_project_name)}}"
   if docker compose version >/dev/null 2>&1; then
@@ -196,8 +204,26 @@ init_compose_command() {
   else
     die "docker compose（v2）または docker-compose（v1）が見つかりません。"
   fi
+  # 公開トポロジ（ADR-0015）。domain-split では override を重ね、proxy が web / api を
+  # 別ポートで公開する。未知の値は fail-fast（誤記のまま単一オリジンで起動させない）。
+  topology="$(get_env_var PUBLISH_TOPOLOGY)"
+  PUBLISH_TOPOLOGY="${topology:-single-origin}"
+  case "$PUBLISH_TOPOLOGY" in
+    single-origin) ;;
+    domain-split)
+      [[ -f "$base/$domain_split_compose_file" ]] \
+        || die "PUBLISH_TOPOLOGY=domain-split ですが $domain_split_compose_file がありません。"
+      compose+=(-f "$domain_split_compose_file")
+      ;;
+    *)
+      die "PUBLISH_TOPOLOGY が不正です: '$PUBLISH_TOPOLOGY'（single-origin または domain-split）。"
+      ;;
+  esac
   COMPOSE_PROJECT="$project_name"
+  # wait_healthy が「定義に無いサービス」を待ち続けないよう、サービス名の一覧を控えておく。
+  COMPOSE_DEFINED_SERVICES="$("${compose[@]}" config --services 2>/dev/null || true)"
   log "Compose project name: $project_name"
+  log "公開トポロジ: $PUBLISH_TOPOLOGY"
 }
 
 set_env_var() {
@@ -352,6 +378,12 @@ wait_healthy() {
   local service="$1" timeout interval cid status now deadline next_log
   timeout="${2:-$(health_timeout_secs "$service")}"
   interval="$(health_poll_interval_secs)"
+  # Compose にサービス定義自体が無い場合、`ps -q` は空を返し続けるためタイムアウトまで待って
+  # 「healthy になりませんでした」で落ちる（原因を誤らせる）。定義の有無を先に確かめて即座に落とす。
+  # 定義一覧が取れなかった環境では判定をスキップする（従来どおり待機する）。
+  if [[ -n "$COMPOSE_DEFINED_SERVICES" ]] && ! grep -qx "$service" <<<"$COMPOSE_DEFINED_SERVICES"; then
+    die "$service が Compose 定義にありません（PUBLISH_TOPOLOGY=$PUBLISH_TOPOLOGY / $compose_file）。"
+  fi
   now="$(date +%s)"
   deadline=$((now + timeout))
   next_log=$((now + 30))
@@ -522,8 +554,25 @@ remove_stale_renamed_containers() {
     | grep -E "^[0-9a-f]+ [0-9a-f]{12}_${COMPOSE_PROJECT}[-_][a-z]+[-_][0-9]+$" || true)
 }
 
+# publish されたポートを叩くための接続先ホスト（URL のホスト部として使える形で返す）。
+# bind がワイルドカードや未設定のときは同じプロトコルのループバックへ読み替える。IPv6 の
+# ワイルドカード（::）を IPv4 ループバックに読み替えると、IPv6 のみで待ち受けているポートへ
+# 到達できず readiness がタイムアウトするため、プロトコルを揃える。
+# IPv6 リテラルはコロンがポート区切りと衝突するので角括弧で囲む（RFC 3986）。
+probe_host() {
+  local bind_host="$1"
+  case "$bind_host" in
+    ""|0.0.0.0) printf '127.0.0.1\n' ;;      # 未設定（既定 127.0.0.1）・IPv4 ワイルドカード
+    "::"|"[::]") printf '[::1]\n' ;;         # IPv6 ワイルドカード
+    \[*\]) printf '%s\n' "$bind_host" ;;     # 角括弧付きの IPv6 リテラルはそのまま
+    *:*) printf '[%s]\n' "$bind_host" ;;     # 裸の IPv6 リテラル（例 ::1）は角括弧で囲む
+    *) printf '%s\n' "$bind_host" ;;         # IPv4 アドレス・ホスト名
+  esac
+}
+
 replace_app_containers() {
-  local web_port issuer ready_url root
+  local web_port api_port web_host api_host issuer web_base root
+  local -a ready_urls=()
   log "api・web・proxy を起動します（--force-recreate で全モード必ずアプリコンテナを入れ替え）..."
   remove_stale_renamed_containers
   "${compose[@]}" up -d --force-recreate --remove-orphans "${APP_SERVICES[@]}"
@@ -531,15 +580,25 @@ replace_app_containers() {
   wait_healthy web
   wait_healthy proxy
   web_port="$(get_env_var WEB_PORT)"; web_port="${web_port:-8060}"
+  web_host="$(probe_host "$(get_env_var WEB_BIND_HOST)")"
   issuer="$(get_env_var ISSUER)"; issuer="${issuer:-http://localhost:${web_port}}"
-  ready_url="http://127.0.0.1:${web_port}/readyz"
-  log "readiness を確認します: $ready_url"
+  # 画面（/{tenant}/login・/{tenant}/admin）を返すのは web なので、まとめ表示の基点は web の
+  # 公開オリジンにする。単一オリジン構成では PUBLIC_WEB_BASE_URL＝ISSUER なので挙動は変わらない。
+  web_base="$(get_env_var PUBLIC_WEB_BASE_URL)"; web_base="${web_base:-$issuer}"
+  ready_urls=("http://${web_host}:${web_port}/readyz")
+  if [[ "$PUBLISH_TOPOLOGY" == "domain-split" ]]; then
+    # domain-split では web と api が別ポートで公開されるため、両方の readiness を確認する。
+    api_port="$(get_env_var API_PORT)"; api_port="${api_port:-8070}"
+    api_host="$(probe_host "$(get_env_var API_BIND_HOST)")"
+    ready_urls+=("http://${api_host}:${api_port}/readyz")
+  fi
+  log "readiness を確認します: ${ready_urls[*]}"
   for _ in $(seq 1 30); do
-    if curl -fsS "$ready_url" >/dev/null 2>&1; then
+    if all_ready "${ready_urls[@]}"; then
       root="$(root_tenant_id)"; root="${root:-<root-tenant-id>}"
       # デプロイ完了時のまとめ（スクリプト末尾）で表示するため、root テナントの URL を保持する。
-      ROOT_LOGIN_URL="${issuer%/}/${root}/login"
-      ROOT_ADMIN_URL="${issuer%/}/${root}/admin"
+      ROOT_LOGIN_URL="${web_base%/}/${root}/login"
+      ROOT_ADMIN_URL="${web_base%/}/${root}/admin"
       log "readyz OK。デプロイが完了しました。"
       log "ログイン URL: $ROOT_LOGIN_URL"
       return 0
@@ -547,7 +606,16 @@ replace_app_containers() {
     sleep 2
   done
   compose_diagnostics
-  die "readyz が OK になりませんでした。"
+  die "readyz が OK になりませんでした（${ready_urls[*]}）。"
+}
+
+# 渡された readiness URL がすべて OK なら 0 を返す。
+all_ready() {
+  local url
+  for url in "$@"; do
+    curl -fsS "$url" >/dev/null 2>&1 || return 1
+  done
+  return 0
 }
 
 # デプロイの最後に root テナントの URL をまとめて表示する（実行者が接続先へ即座に飛べるように）。

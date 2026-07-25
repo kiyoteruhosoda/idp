@@ -87,6 +87,10 @@ done
 
 cp "$repo_root/docker-compose.deploy.yml" "$out_dir/docker-compose.yml"
 cp "$repo_root/docker/nginx.conf" "$out_dir/docker/nginx.conf"
+# 別ドメイン公開（ADR-0015）用の override 一式。PUBLISH_TOPOLOGY=domain-split のとき
+# deploy.sh がこれらを重ねる。バンドルだけで両トポロジをデプロイできるよう常に同梱する。
+cp "$repo_root/docker-compose.domain-split.yml" "$out_dir/docker-compose.domain-split.yml"
+cp "$repo_root/docker/nginx.domain-split.conf" "$out_dir/docker/nginx.domain-split.conf"
 cp "$repo_root/.env.example" "$out_dir/.env.example"
 cp "$repo_root/.env.staging.example" "$out_dir/.env.staging.example"
 cp "$repo_root/.env.production.example" "$out_dir/.env.production.example"
