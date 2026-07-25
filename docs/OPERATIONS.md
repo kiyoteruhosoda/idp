@@ -223,7 +223,9 @@ DELETE up FROM user_permissions up
 
 - `COOKIE_SECURE`・`HSTS_MAX_AGE`・`AUTH_SESSION_TTL_SECS` は api と web の**両方**が使う
   （ADR-0013）。web は起動時に api から値を受け取るため、**api → web の順に両方を再起動する**。
-  片方だけ再起動すると値がずれ、ログインが通らない・片側のドメインだけ保護が外れる状態になる。
+  api を再起動するまでは保存した値は誰にも反映されない（web が先に再起動しても、api が配るのは
+  api 自身が起動時に読み込んだ値のため、新しい値を先取りすることはない）。web の再起動を忘れると
+  api だけが新しい値で動くため、必ず両方を再起動する。
 - 値を空にして保存すると上書きが解除され、環境変数（無ければ組み込み既定値）へ戻る。
 - api へ到達できないと web は起動に失敗する（設定を取り違えたまま動かさないため）。
   `could not read DB-managed runtime settings from api` が出たら、まず api の死活と

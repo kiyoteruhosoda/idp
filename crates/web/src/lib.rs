@@ -35,10 +35,11 @@ use std::time::Duration;
 pub async fn run() -> anyhow::Result<()> {
     let _ = dotenvy::dotenv();
 
-    // 1 段目: ENV だけで組み立てる。api へ問い合わせるための `API_BASE_URL` と
-    // `INTERNAL_SERVICE_TOKEN` がここで確定する。
-    let bootstrap = config::Config::from_env().context("failed to load web configuration")?;
-    telemetry::init(&bootstrap);
+    // 1 段目: api へ問い合わせるための最小の設定だけを読む（`API_BASE_URL`・
+    // `INTERNAL_SERVICE_TOKEN`・`LOG_FORMAT`）。共有キーはここでは**パースしない** — ENV に
+    // 不正値があっても、DB 上書き（優先順位で ENV より上）で復旧できるようにするため。
+    let bootstrap = config::Bootstrap::from_env().context("failed to load web configuration")?;
+    telemetry::init(bootstrap.log_format());
 
     if bootstrap.internal_service_token_is_dev() {
         tracing::warn!(
@@ -90,12 +91,13 @@ pub async fn run() -> anyhow::Result<()> {
 /// 進まなくなる。設定を取り違えたまま動く web より、起動しない web の方が原因に辿り着ける
 /// （Compose では `depends_on: api(service_healthy)` と `restart` で回復する）。
 async fn fetch_shared_runtime_settings(
-    config: &config::Config,
+    bootstrap: &config::Bootstrap,
 ) -> anyhow::Result<HashMap<String, String>> {
     const ATTEMPTS: u32 = 5;
     const INITIAL_BACKOFF: Duration = Duration::from_millis(500);
 
-    let api = api_client::ApiClient::new(config.api_base_url(), config.internal_service_token());
+    let api =
+        api_client::ApiClient::new(bootstrap.api_base_url(), bootstrap.internal_service_token());
     let mut backoff = INITIAL_BACKOFF;
     let mut last_error = None;
     for attempt in 1..=ATTEMPTS {
@@ -123,7 +125,7 @@ async fn fetch_shared_runtime_settings(
             "could not read DB-managed runtime settings from api ({}) after {ATTEMPTS} attempts; \
              refusing to start with possibly divergent COOKIE_SECURE / HSTS_MAX_AGE / \
              AUTH_SESSION_TTL_SECS",
-            config.api_base_url()
+            bootstrap.api_base_url()
         )))
 }
 

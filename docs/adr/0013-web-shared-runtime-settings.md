@@ -43,6 +43,18 @@ ADR-0010 §2 は `DB_MANAGED` かつ再起動が必要な値を「DB を正と�
 - web は起動時に 1 度だけこれを呼び、`既定値 < ENV < api 経由の DB 値` の順で設定を解決する。
 - 上記 3 キーを `ENV_LOCKED` から `DB_MANAGED` へ変更する（＝ root 設定画面から変更できるようになる）。
 
+### 1-a. api が返すのは「起動時スナップショット」であり `system_settings` の現在値ではない
+
+api は起動時に読み込んだ DB 管理設定（`Config` の解決結果のうち出所が DB のもの）を返し、リクエストごとに
+テーブルを読み直さない。
+
+毎回 DB を読むと、**設定を保存したが api をまだ再起動していない**状態で web だけが（クラッシュ後の
+自動再起動などで）新しい値を拾い、この仕組みが防ごうとしている不一致そのものが起きる。運用手順で
+「api → web の順に再起動する」と書いても、web の再起動は運用手順の外でも起こる。
+
+スナップショットを配ることで、**web が受け取れる値は必ず実行中の api が使っている値**になる。
+新しい値の公開は api の再起動が担い、web はいつ再起動しても api に追随する。
+
 `.env` の materialize（ADR-0010 §2）は本用途では採らない。ファイル書き換えを伴わないため、
 `deploy.sh` は `.env` の生成・保持に専念でき、DB reset で DB 管理値が消えるという寿命の扱いも変わらない。
 
@@ -61,6 +73,16 @@ web は `PUBLIC_WEB_BASE_URL`、api は `ISSUER`）。したがって api は DB
 `shared_with_web` は非 secret キーにのみ立てる（`domain/system_setting.rs` のテストで強制する）。
 web が必要とする bootstrap secret（`INTERNAL_SERVICE_TOKEN`・`CSRF_SECRET`）は ADR-0010 の方針どおり
 `ENV_LOCKED` のままで、web 自身の環境変数から読む。api が secret を配る経路は作らない。
+
+### 3-a. web の bootstrap は共有キーをパースしない
+
+web は api へ問い合わせるための最小の設定（`API_BASE_URL`・`INTERNAL_SERVICE_TOKEN`・`LOG_FORMAT`）だけを
+先に読む（`config::Bootstrap`）。ここで ENV の共有キーまでパースすると、ENV に不正値がある時点で
+（DB に正しい上書きがあっても）api へ問い合わせる前に起動が失敗し、`ENV < DB` の優先順位で復旧できない。
+
+一方、bootstrap secret（`INTERNAL_SERVICE_TOKEN`・`CSRF_SECRET`）の fail-fast は bootstrap 段階で行う。
+これらは `EnvLocked` で DB からは直せないため、api 未到達のときに「api へ繋がらない」ではなく本来の
+設定誤りを先に見せる方が原因に辿り着ける。
 
 ### 4. 取得に失敗したら web は起動しない（fail-fast）
 
@@ -84,8 +106,11 @@ ENV だけで起動する fail-soft は採らない。共有キーはいずれ�
   片側だけ typo する事故が構造的に無くなる。
 - web の起動が api の可用性に依存するようになる（従来は独立に起動できた）。Compose の依存関係は
   すでにこの順序であり、readiness も api 到達性で判定していた（`/readyz`）ため運用上の変化は小さい。
-- 設定変更後に web を再起動し忘れると、api と web で値がずれた状態が生じる。起動ログへ
+- 設定変更後に web を再起動し忘れると、api だけが新しい値で動く（web は古い値のまま）。逆向きの
+  ずれ（web だけが新しい値）は 1-a のスナップショットにより構造的に起きない。起動ログへ
   「api から受け取って適用したキー名」を出し、切り分けできるようにする（値は出さない）。
+- api の再起動が「新しい値を公開する」操作になる。設定画面での保存だけでは api も web も挙動が
+  変わらないため、運用手順は **api → web の順に再起動**で統一できる。
 - 新しい共有キーを増やすときは、定義へ `shared_with_web: true` を立て、web の `config.rs` で
   `SharedSettingResolver` 経由に読み替えるだけでよい（エンドポイント・クライアントは変更不要）。
 

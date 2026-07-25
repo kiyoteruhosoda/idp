@@ -54,11 +54,64 @@ pub struct Config {
     shared_settings_from_api: Vec<String>,
 }
 
+/// api へ問い合わせるために必要な最小の設定（MT26 / ADR-0013）。
+///
+/// **共有キー（`COOKIE_SECURE`・`HSTS_MAX_AGE`・`AUTH_SESSION_TTL_SECS`）には触れない。**
+/// ここで ENV の共有キーをパースしてしまうと、ENV に不正値があるだけで（DB に正しい上書きが
+/// あっても）api へ問い合わせる前に起動が失敗し、`ENV < DB` の優先順位で復旧できなくなる。
+///
+/// 一方 bootstrap secret は `EnvLocked` で DB からは直せないため、**ここで fail-fast する**
+/// （api 未到達のときに「api へ繋がらない」ではなく本来の設定誤りを先に見せるため）。
+#[derive(Debug, Clone)]
+pub struct Bootstrap {
+    api_base_url: String,
+    internal_service_token: String,
+    internal_service_token_is_dev: bool,
+    log_format: LogFormat,
+}
+
+impl Bootstrap {
+    pub fn from_env() -> anyhow::Result<Self> {
+        let issuer = normalize_base_url(env_or("ISSUER", "http://localhost:8080"));
+        let public_web_base_url = normalize_base_url(env_or("PUBLIC_WEB_BASE_URL", &issuer));
+        let (internal_service_token, internal_service_token_is_dev) =
+            match env_lookup("INTERNAL_SERVICE_TOKEN") {
+                Some(v) => (v, false),
+                None => (DEV_INTERNAL_SERVICE_TOKEN.to_string(), true),
+            };
+        // base64 の形式検証も兼ねる（DB では直せない値なので早く落とす）。
+        let (_, csrf_secret_is_dev) = load_csrf_secret()?;
+        ensure_production_secrets(
+            &issuer,
+            &public_web_base_url,
+            internal_service_token_is_dev,
+            csrf_secret_is_dev,
+        )?;
+        Ok(Self {
+            api_base_url: normalize_base_url(env_or("API_BASE_URL", "http://localhost:8080")),
+            internal_service_token,
+            internal_service_token_is_dev,
+            log_format: parse_log_format(),
+        })
+    }
+
+    pub fn api_base_url(&self) -> &str {
+        &self.api_base_url
+    }
+    pub fn internal_service_token(&self) -> &str {
+        &self.internal_service_token
+    }
+    pub fn internal_service_token_is_dev(&self) -> bool {
+        self.internal_service_token_is_dev
+    }
+    pub fn log_format(&self) -> LogFormat {
+        self.log_format
+    }
+}
+
 impl Config {
-    /// 環境変数と既定値だけで組み立てる（api の DB 上書きを反映しない）。
-    ///
-    /// api へ問い合わせる前の bootstrap（`API_BASE_URL`・`INTERNAL_SERVICE_TOKEN` の取得）と、
-    /// api を起動しないテストで使う。実際の起動経路は
+    /// 環境変数と既定値だけで組み立てる（api の DB 上書きを反映しない）。api を起動しない
+    /// テスト専用。実際の起動経路は
     /// [`from_env_and_shared_settings`](Self::from_env_and_shared_settings)。
     pub fn from_env() -> anyhow::Result<Self> {
         Self::from_env_and_shared_settings(&HashMap::new())
@@ -118,10 +171,7 @@ impl Config {
             auth_session_ttl_secs: resolver
                 .parse("AUTH_SESSION_TTL_SECS", DEFAULT_AUTH_SESSION_TTL_SECS)?,
             hsts_max_age: resolver.parse("HSTS_MAX_AGE", 0u64)?,
-            log_format: match env_or("LOG_FORMAT", "json").to_ascii_lowercase().as_str() {
-                "pretty" => LogFormat::Pretty,
-                _ => LogFormat::Json,
-            },
+            log_format: parse_log_format(),
             shared_settings_from_api: resolver.applied_keys(),
         })
     }
@@ -316,6 +366,14 @@ fn env_lookup(key: &str) -> Option<String> {
 
 fn env_or(key: &str, default: &str) -> String {
     env_lookup(key).unwrap_or_else(|| default.to_string())
+}
+
+/// `LOG_FORMAT`（`EnvLocked`）を読む。未知の値は既定の JSON へ倒す（ログ初期化を失敗させない）。
+fn parse_log_format() -> LogFormat {
+    match env_or("LOG_FORMAT", "json").to_ascii_lowercase().as_str() {
+        "pretty" => LogFormat::Pretty,
+        _ => LogFormat::Json,
+    }
 }
 
 #[cfg(test)]
@@ -538,5 +596,49 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("HSTS_MAX_AGE"), "{err}");
+    }
+
+    /// ENV の共有キーが壊れていても bootstrap は通り、DB 上書きで復旧できる（MT26 / ADR-0013）。
+    /// bootstrap が共有キーをパースしてしまうと、`ENV < DB` の優先順位があるのに api へ
+    /// 問い合わせる前に落ちてしまい、DB からは直せなくなる。
+    #[test]
+    fn bootstrap_ignores_malformed_shared_env_values_so_db_can_recover_them() {
+        let _env = env_guard();
+        std::env::set_var("HSTS_MAX_AGE", "not-a-number");
+        std::env::set_var("AUTH_SESSION_TTL_SECS", "soon");
+        std::env::set_var("API_BASE_URL", "http://api:8080/");
+
+        // bootstrap は api へ到達するための値だけを読む → 壊れた共有キーは無視される。
+        let bootstrap = Bootstrap::from_env().expect("bootstrap must not parse shared keys");
+        assert_eq!(bootstrap.api_base_url(), "http://api:8080");
+
+        // 壊れた ENV は DB 上書きで救える。
+        let shared = HashMap::from([
+            ("HSTS_MAX_AGE".to_string(), "31536000".to_string()),
+            ("AUTH_SESSION_TTL_SECS".to_string(), "900".to_string()),
+        ]);
+        let config = Config::from_env_and_shared_settings(&shared).expect("DB values recover ENV");
+        assert_eq!(config.hsts_max_age(), 31_536_000);
+        assert_eq!(config.auth_session_ttl_secs(), 900);
+
+        // DB 上書きが無ければ従来どおり構成エラー（壊れた ENV を黙って無視はしない）。
+        assert!(Config::from_env_and_shared_settings(&HashMap::new()).is_err());
+
+        std::env::remove_var("HSTS_MAX_AGE");
+        std::env::remove_var("AUTH_SESSION_TTL_SECS");
+        std::env::remove_var("API_BASE_URL");
+    }
+
+    /// bootstrap でも本番シークレットの fail-fast は効く（`EnvLocked` で DB からは直せないため、
+    /// api 未到達より先に本来の設定誤りを見せる）。
+    #[test]
+    fn bootstrap_still_rejects_development_secrets_on_a_public_origin() {
+        let _env = env_guard();
+        std::env::set_var("ISSUER", "https://api.example.com");
+        std::env::remove_var("INTERNAL_SERVICE_TOKEN");
+        std::env::remove_var("CSRF_SECRET");
+        let err = Bootstrap::from_env().unwrap_err().to_string();
+        assert!(err.contains("INTERNAL_SERVICE_TOKEN"), "{err}");
+        std::env::remove_var("ISSUER");
     }
 }

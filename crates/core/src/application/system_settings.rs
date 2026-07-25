@@ -15,9 +15,9 @@ use crate::domain::error::{DomainError, Result};
 use crate::domain::mailer::SmtpServerConfig;
 use crate::domain::repositories::SystemSettingsRepository;
 use crate::domain::system_setting::{
-    is_shared_with_web, runtime_setting_definition, SettingKind, SettingOwner, SmtpSettingsView,
-    SystemSetting, UpdateSmtpCommand, SMTP_FROM_ADDRESS, SMTP_HOST, SMTP_PASSWORD, SMTP_PORT,
-    SMTP_USERNAME, SMTP_USE_TLS,
+    runtime_setting_definition, SettingKind, SettingOwner, SmtpSettingsView, SystemSetting,
+    UpdateSmtpCommand, SMTP_FROM_ADDRESS, SMTP_HOST, SMTP_PASSWORD, SMTP_PORT, SMTP_USERNAME,
+    SMTP_USE_TLS,
 };
 use crate::domain::tenant_context::TenantContext;
 use std::collections::HashMap;
@@ -161,19 +161,6 @@ impl SystemSettingsService {
                         .map(|def| !def.secret)
                         .unwrap_or(false)
             })
-            .collect())
-    }
-
-    /// web と共有するランタイム設定（`shared_with_web` かつ非 secret）の DB 上書き値を返す
-    /// （MT26 / ADR-0013）。web は DB を持たないため、api が唯一の出所として起動時に渡す。
-    ///
-    /// 返すのは **DB の上書き値だけ**で、api の有効値（ENV・既定値まで解決した結果）ではない。
-    /// 未設定（空文字列）のキーは含めず、web 側は自分の ENV → 自分の既定値へフォールバックする。
-    pub async fn shared_web_overrides(&self) -> Result<HashMap<String, String>> {
-        let map = self.load_map().await?;
-        Ok(map
-            .into_iter()
-            .filter(|(key, value)| !value.is_empty() && is_shared_with_web(key))
             .collect())
     }
 

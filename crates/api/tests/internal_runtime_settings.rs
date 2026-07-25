@@ -4,7 +4,7 @@
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test internal_runtime_settings
 //!
 //! web は DB を持たないため、api/web の両方が消費する DB 管理設定（`COOKIE_SECURE` 等）はこの
-//! エンドポイントが唯一の出所になる。検証するのは次の 4 点:
+//! エンドポイントが唯一の出所になる。検証するのは次の 5 点:
 //!
 //! 1. `/internal/*` 共通のサービストークンで保護されている（未提示・不一致は 401）。
 //! 2. `shared_with_web` のキーの DB 上書き値**だけ**を返す（api 専用のキーは漏らさない）。
@@ -12,7 +12,11 @@
 //!    api だけ新しい値で動き web は古い値のまま、という静かな不一致になる。
 //!    web を dev-dependency として使う理由は `e2e_domain_split.rs` と同じ（web の sqlx 非依存という
 //!    crate 境界は侵さない）。
-//! 4. 上書き解除（空文字列）は「未設定」として返さない（web は自分の ENV へフォールバックする）。
+//! 4. 返すのは**実行中の api の起動時スナップショット**であり `system_settings` の現在値ではない
+//!    （ADR-0013 §2）。DB を書き換えても、再起動していない api の応答は変わらない。これが崩れると
+//!    「保存したが api を再起動していない」状態で web だけが新しい値を拾い、本エンドポイントが
+//!    防ごうとしている不一致そのものが起きる。
+//! 5. 上書き解除（空文字列）は「未設定」として返さない（web は自分の ENV へフォールバックする）。
 //!
 //! `system_settings` はテナント列を持たない IdP 全体の共有テーブルで、テストバイナリは並列に走る。
 //! 同じキーを書き換えるケースを複数のテスト関数へ分けると互いに競合するため、**1 つのテスト関数**に
@@ -22,11 +26,15 @@ mod support;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use idp_api::config::Config;
+use idp_api::domain::clock::Clock;
+use idp_api::presentation::{router, state::AppState};
 use idp_contracts::runtime_settings::{
     SharedRuntimeSettingsResponse, SHARED_RUNTIME_SETTINGS_PATH,
 };
 use std::collections::HashMap;
 use std::future::IntoFuture;
+use std::sync::Arc;
 use support::{send, SERVICE_TOKEN, SERVICE_TOKEN_HEADER};
 
 /// このテストが書き換える共有キー（＝ web へ渡ることを期待するキー）。
@@ -63,6 +71,18 @@ async fn delete_setting(pool: &sqlx::MySqlPool, key: &str) {
         .expect("delete system setting");
 }
 
+/// api の起動シーケンス（DB 管理設定の読み出し → `Config` 解決 → ルータ組立）を再現する。
+/// 本番と同じ `idp_api::load_db_managed_settings` を通すことで、「api が起動時に適用した値」と
+/// エンドポイントが配る値が同じであることをテストでも保証する。
+async fn start_api(pool: &sqlx::MySqlPool) -> axum::Router {
+    let db_settings = idp_api::load_db_managed_settings(pool)
+        .await
+        .expect("load DB-managed settings");
+    let config = Config::from_env_and_db_settings(&db_settings).expect("resolve api config");
+    let clock: Arc<dyn Clock> = Arc::new(support::SystemClock);
+    router::build(AppState::build(pool.clone(), Arc::new(config), clock))
+}
+
 async fn fetch_settings(app: &axum::Router) -> SharedRuntimeSettingsResponse {
     let response = send(app, get_shared_settings(Some(SERVICE_TOKEN))).await;
     assert_eq!(response.status(), StatusCode::OK, "shared runtime settings");
@@ -78,18 +98,18 @@ async fn shared_runtime_settings_are_protected_scoped_and_reach_the_web_configur
         return;
     };
     let pool = env.pool.clone();
-    let app = env.app.clone();
 
     // ── 1. サービストークンが無ければ 401（本文まで到達しない）。
-    let response = send(&app, get_shared_settings(None)).await;
+    let response = send(&env.app, get_shared_settings(None)).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "missing token");
-    let response = send(&app, get_shared_settings(Some("wrong-token"))).await;
+    let response = send(&env.app, get_shared_settings(Some("wrong-token"))).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "wrong token");
 
-    // ── 2. 共有キーと api 専用キーを並べて投入し、共有キーだけが返ることを見る。
+    // ── 2. 共有キーを DB へ入れ、その状態で api を「起動」する。
     upsert_setting(&pool, "COOKIE_SECURE", "true").await;
     upsert_setting(&pool, "HSTS_MAX_AGE", "31536000").await;
     upsert_setting(&pool, "AUTH_SESSION_TTL_SECS", "1200").await;
+    let app = start_api(&pool).await;
 
     let body = fetch_settings(&app).await;
     assert_eq!(
@@ -129,7 +149,7 @@ async fn shared_runtime_settings_are_protected_scoped_and_reach_the_web_configur
     std::env::set_var("HSTS_MAX_AGE", "1");
     std::env::set_var("AUTH_SESSION_TTL_SECS", "60");
 
-    let bootstrap = idp_web::config::Config::from_env().expect("bootstrap web config");
+    let bootstrap = idp_web::config::Bootstrap::from_env().expect("bootstrap web config");
     let client = idp_web::api_client::ApiClient::new(
         bootstrap.api_base_url(),
         bootstrap.internal_service_token(),
@@ -152,18 +172,32 @@ async fn shared_runtime_settings_are_protected_scoped_and_reach_the_web_configur
         "web must report which keys came from the DB"
     );
 
-    // ── 4. 上書き解除（空文字列）は「未設定」として返さない → web は自分の ENV へ戻る。
-    upsert_setting(&pool, "HSTS_MAX_AGE", "").await;
+    // ── 4. DB を書き換えても、再起動していない api の応答は変わらない（起動時スナップショット）。
+    // これが崩れると、api がまだ古い値で動いているのに web だけ新しい値を拾える状態になる。
+    upsert_setting(&pool, "HSTS_MAX_AGE", "63072000").await;
     let shared = client
         .fetch_shared_runtime_settings()
         .await
         .expect("refetch shared runtime settings");
-    assert!(
-        !shared.contains_key("HSTS_MAX_AGE"),
-        "cleared overrides must be absent, not empty: {shared:?}"
+    assert_eq!(
+        shared.get("HSTS_MAX_AGE").map(String::as_str),
+        Some("31536000"),
+        "a running api must keep serving the value it started with"
     );
-    let web_config =
-        idp_web::config::Config::from_env_and_shared_settings(&shared).expect("resolve web config");
+
+    // ── 5. 上書き解除（空文字列）は、api を再起動した時点で「未設定」になる → web は ENV へ戻る。
+    upsert_setting(&pool, "HSTS_MAX_AGE", "").await;
+    let restarted = start_api(&pool).await;
+    let body = fetch_settings(&restarted).await;
+    assert!(
+        !body.settings.contains_key("HSTS_MAX_AGE"),
+        "cleared overrides must be absent, not empty: {:?}",
+        body.settings
+    );
+    let web_config = idp_web::config::Config::from_env_and_shared_settings(
+        &body.settings.clone().into_iter().collect(),
+    )
+    .expect("resolve web config");
     assert_eq!(web_config.hsts_max_age(), 1, "falls back to the web ENV");
 
     for key in SHARED_KEYS {
