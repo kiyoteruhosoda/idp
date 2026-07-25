@@ -121,6 +121,12 @@ pub struct ApiClient {
     http: reqwest::Client,
     base_url: String,
     service_token: String,
+    /// api へ引き継ぐ表示言語（`Accept-Language`）。`None` なら送らず、api は既定 `ja` を使う。
+    ///
+    /// 表示言語を決めるのは web で、api は `Accept-Language` しか見ない（`CLAUDE.md`「国際化」）。
+    /// web が決めた言語を載せることで、画面と api のエラーメッセージが同じ言語になる。
+    /// **Cookie・`lang` クエリは api へ送らない**（api がそれらを見ないための境界）。
+    accept_language: Option<&'static str>,
 }
 
 impl ApiClient {
@@ -129,6 +135,25 @@ impl ApiClient {
             http: reqwest::Client::new(),
             base_url: base_url.into(),
             service_token: service_token.into(),
+            accept_language: None,
+        }
+    }
+
+    /// 表示言語を引き継いだクライアントを返す（MT20）。以降の api 呼び出しへ `Accept-Language` を
+    /// 付与し、api のエラーメッセージを画面と同じ言語で受け取る。`reqwest::Client` は Arc 内包の
+    /// ため clone は安価で、リクエストごとに作ってよい。
+    pub fn for_locale(&self, locale: crate::i18n::Locale) -> Self {
+        Self {
+            accept_language: Some(locale.as_tag()),
+            ..self.clone()
+        }
+    }
+
+    /// `Accept-Language` を（決まっていれば）付与する。
+    fn with_language(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match self.accept_language {
+            Some(tag) => request.header(reqwest::header::ACCEPT_LANGUAGE, tag),
+            None => request,
         }
     }
 
@@ -699,6 +724,28 @@ impl ApiClient {
         .await
     }
 
+    /// 利用者プロフィール（メール・ログイン識別子・表示名）の更新
+    /// （`PATCH /admin/users/{user_id}/profile`。MT25）。`profile` は
+    /// `{ email, preferred_username, name }`（`name` は空文字で解除を意味する）。
+    pub async fn update_user_profile(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        user_id: &str,
+        profile: serde_json::Value,
+    ) -> Result<UserSummaryResponse, AdminApiError> {
+        self.admin_send(
+            Method::PATCH,
+            tenant_id,
+            &format!("/admin/users/{user_id}/profile"),
+            correlation_id,
+            sso,
+            Some(profile),
+        )
+        .await
+    }
+
     /// 利用者の削除（`DELETE /admin/users/{user_id}`。所属元が当該テナントの利用者のみ）。
     pub async fn delete_user(
         &self,
@@ -770,13 +817,15 @@ impl ApiClient {
         query: &[(&str, String)],
     ) -> Result<MemberListView, AdminApiError> {
         let response = self
-            .http
-            .get(format!("{}/{}/admin/members", self.base_url, tenant_id))
-            .query(query)
-            .header(REQUEST_ID_HEADER, correlation_id)
-            .header(
-                reqwest::header::COOKIE,
-                format!("{SSO_SESSION_COOKIE}={sso}"),
+            .with_language(
+                self.http
+                    .get(format!("{}/{}/admin/members", self.base_url, tenant_id))
+                    .query(query)
+                    .header(REQUEST_ID_HEADER, correlation_id)
+                    .header(
+                        reqwest::header::COOKIE,
+                        format!("{SSO_SESSION_COOKIE}={sso}"),
+                    ),
             )
             .send()
             .await
@@ -874,13 +923,15 @@ impl ApiClient {
         query: &[(&str, String)],
     ) -> Result<Vec<AuditLogView>, AdminApiError> {
         let response = self
-            .http
-            .get(format!("{}/{}/admin/audit-logs", self.base_url, tenant_id))
-            .query(query)
-            .header(REQUEST_ID_HEADER, correlation_id)
-            .header(
-                reqwest::header::COOKIE,
-                format!("{SSO_SESSION_COOKIE}={sso}"),
+            .with_language(
+                self.http
+                    .get(format!("{}/{}/admin/audit-logs", self.base_url, tenant_id))
+                    .query(query)
+                    .header(REQUEST_ID_HEADER, correlation_id)
+                    .header(
+                        reqwest::header::COOKIE,
+                        format!("{SSO_SESSION_COOKIE}={sso}"),
+                    ),
             )
             .send()
             .await
@@ -1093,14 +1144,15 @@ impl ApiClient {
     where
         T: serde::de::DeserializeOwned,
     {
-        let mut req = self
-            .http
-            .request(method, format!("{}/{}{}", self.base_url, tenant_id, path))
-            .header(REQUEST_ID_HEADER, correlation_id)
-            .header(
-                reqwest::header::COOKIE,
-                format!("{SSO_SESSION_COOKIE}={sso}"),
-            );
+        let mut req = self.with_language(
+            self.http
+                .request(method, format!("{}/{}{}", self.base_url, tenant_id, path))
+                .header(REQUEST_ID_HEADER, correlation_id)
+                .header(
+                    reqwest::header::COOKIE,
+                    format!("{SSO_SESSION_COOKIE}={sso}"),
+                ),
+        );
         if let Some(json) = body {
             req = req.json(&json);
         }
@@ -1121,14 +1173,15 @@ impl ApiClient {
         sso: &str,
         body: Option<serde_json::Value>,
     ) -> Result<(), AdminApiError> {
-        let mut req = self
-            .http
-            .request(method, format!("{}/{}{}", self.base_url, tenant_id, path))
-            .header(REQUEST_ID_HEADER, correlation_id)
-            .header(
-                reqwest::header::COOKIE,
-                format!("{SSO_SESSION_COOKIE}={sso}"),
-            );
+        let mut req = self.with_language(
+            self.http
+                .request(method, format!("{}/{}{}", self.base_url, tenant_id, path))
+                .header(REQUEST_ID_HEADER, correlation_id)
+                .header(
+                    reqwest::header::COOKIE,
+                    format!("{SSO_SESSION_COOKIE}={sso}"),
+                ),
+        );
         if let Some(json) = body {
             req = req.json(&json);
         }
@@ -1222,6 +1275,28 @@ impl ApiClient {
             correlation_id,
             sso_session_id,
             Some(serde_json::json!({ "name": name })),
+        )
+        .await
+    }
+
+    /// 子テナントの表示名・状態を部分更新する（`PATCH /admin/tenants/{child_id}`。
+    /// idp.system.admin 必須。MT23）。`status` は `ACTIVE` / `DISABLED`。
+    pub async fn update_tenant(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso_session_id: &str,
+        child_id: &str,
+        name: &str,
+        status: &str,
+    ) -> Result<crate::admin_dto::TenantView, AdminApiError> {
+        self.admin_send(
+            Method::PATCH,
+            tenant_id,
+            &format!("/admin/tenants/{child_id}"),
+            correlation_id,
+            sso_session_id,
+            Some(serde_json::json!({ "name": name, "status": status })),
         )
         .await
     }
@@ -1483,10 +1558,12 @@ impl ApiClient {
         R: serde::de::DeserializeOwned,
     {
         let response = self
-            .http
-            .post(format!("{}{}", self.base_url, path))
-            .header(SERVICE_TOKEN_HEADER, &self.service_token)
-            .header(REQUEST_ID_HEADER, correlation_id)
+            .with_language(
+                self.http
+                    .post(format!("{}{}", self.base_url, path))
+                    .header(SERVICE_TOKEN_HEADER, &self.service_token)
+                    .header(REQUEST_ID_HEADER, correlation_id),
+            )
             .json(body)
             .send()
             .await

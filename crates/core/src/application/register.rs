@@ -12,6 +12,7 @@
 use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
 use crate::domain::id_generator::IdGenerator;
+use crate::domain::message::MessageKey;
 use crate::domain::password::{validate_password_strength, PasswordHasher};
 use crate::domain::rate_limit::LoginRateLimiter;
 use crate::domain::repositories::{TenantMembershipRepository, TenantRepository, UserRepository};
@@ -46,15 +47,15 @@ pub struct RegisteredUser {
 #[derive(Debug, thiserror::Error)]
 pub enum RegisterError {
     #[error("validation error: {0}")]
-    Validation(String),
+    Validation(MessageKey),
     /// 当該テナントで自己登録が無効（SEC6。既定）。
     #[error("forbidden: {0}")]
-    Forbidden(String),
+    Forbidden(MessageKey),
     /// IP 単位のレート制限超過（SEC6）。
     #[error("too many registration attempts")]
     RateLimited,
     #[error("conflict: {0}")]
-    Conflict(String),
+    Conflict(MessageKey),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -115,9 +116,9 @@ impl RegisterService {
             .map(|t| t.self_registration_enabled)
             .unwrap_or(false);
         if !self_registration_enabled {
-            return Err(RegisterError::Forbidden(
-                "self-registration is disabled for this tenant".to_string(),
-            ));
+            return Err(RegisterError::Forbidden(MessageKey::new(
+                "api-register-self-registration-disabled",
+            )));
         }
 
         let email = cmd.email.trim().to_string();
@@ -128,7 +129,7 @@ impl RegisterService {
             normalize_optional(cmd.preferred_username).unwrap_or_else(|| email.clone());
         // カラム長（VARCHAR(255)）超過を永続化前に弾く（email は VARCHAR(320) のため既定値化で超え得る）。
         domain_validate_preferred_username(&preferred_username)
-            .map_err(|e| RegisterError::Validation(e.to_string()))?;
+            .map_err(RegisterError::Validation)?;
         let name = normalize_optional(cmd.name);
         let tenant_id = tenant.tenant_id();
 
@@ -142,9 +143,9 @@ impl RegisterService {
             .map_err(internal)?
             .is_some()
         {
-            return Err(RegisterError::Conflict(
-                "email already registered".to_string(),
-            ));
+            return Err(RegisterError::Conflict(MessageKey::new(
+                "api-user-email-conflict",
+            )));
         }
         if self
             .users
@@ -153,9 +154,9 @@ impl RegisterService {
             .map_err(internal)?
             .is_some()
         {
-            return Err(RegisterError::Conflict(
-                "preferred_username already taken".to_string(),
-            ));
+            return Err(RegisterError::Conflict(MessageKey::new(
+                "api-user-username-conflict",
+            )));
         }
 
         let password_hash = self.hasher.hash(&cmd.password).map_err(internal)?;
@@ -179,7 +180,10 @@ impl RegisterService {
         };
 
         self.users.create(&user).await.map_err(|e| match e {
-            DomainError::Conflict(m) => RegisterError::Conflict(m),
+            // 事前チェックとの競合（同時登録）のみ。どちらの一意キーかは DB からは特定できない。
+            DomainError::Conflict(_) => {
+                RegisterError::Conflict(MessageKey::new("api-user-identity-conflict"))
+            }
             other => RegisterError::Internal(other.to_string()),
         })?;
 
@@ -200,7 +204,7 @@ impl RegisterService {
 }
 
 fn validate_email(email: &str) -> Result<(), RegisterError> {
-    domain_validate_email(email).map_err(|e| RegisterError::Validation(e.to_string()))
+    domain_validate_email(email).map_err(RegisterError::Validation)
 }
 
 fn validate_password(password: &str) -> Result<(), RegisterError> {

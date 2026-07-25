@@ -2,6 +2,7 @@
 
 use crate::domain::clock::Clock;
 use crate::domain::id_generator::IdGenerator;
+use crate::domain::message::MessageKey;
 use crate::domain::repositories::SamlServiceProviderRepository;
 use crate::domain::saml_service_provider::{
     NewSamlServiceProvider, SamlServiceProvider, SamlServiceProviderChanges,
@@ -34,8 +35,8 @@ pub struct UpdateSamlServiceProviderCommand {
 
 #[derive(Debug)]
 pub enum SamlServiceProviderManagementError {
-    Validation(String),
-    Conflict(String),
+    Validation(MessageKey),
+    Conflict(MessageKey),
     NotFound,
     Internal(String),
 }
@@ -76,17 +77,17 @@ impl SamlServiceProviderManagementService {
             },
             self.clock.now(),
         )
-        .map_err(|e| SamlServiceProviderManagementError::Validation(e.to_string()))?;
+        .map_err(SamlServiceProviderManagementError::Validation)?;
 
         self.providers
             .create(&provider)
             .await
             .map_err(|e| match e {
-                crate::domain::error::DomainError::Conflict(m) => {
-                    SamlServiceProviderManagementError::Conflict(m)
-                }
-                crate::domain::error::DomainError::InvalidValue(m) => {
-                    SamlServiceProviderManagementError::Validation(m)
+                // 一意キーは (tenant_id, entity_id) のみ。
+                crate::domain::error::DomainError::Conflict(_) => {
+                    SamlServiceProviderManagementError::Conflict(MessageKey::new(
+                        "api-saml-sp-entity-id-conflict",
+                    ))
                 }
                 other => SamlServiceProviderManagementError::Internal(other.to_string()),
             })?;
@@ -126,18 +127,17 @@ impl SamlServiceProviderManagementService {
                 },
                 self.clock.now(),
             )
-            .map_err(|e| SamlServiceProviderManagementError::Validation(e.to_string()))?;
+            .map_err(SamlServiceProviderManagementError::Validation)?;
 
         let updated = self
             .providers
             .update(&provider)
             .await
             .map_err(|e| match e {
-                crate::domain::error::DomainError::Conflict(m) => {
-                    SamlServiceProviderManagementError::Conflict(m)
-                }
-                crate::domain::error::DomainError::InvalidValue(m) => {
-                    SamlServiceProviderManagementError::Validation(m)
+                crate::domain::error::DomainError::Conflict(_) => {
+                    SamlServiceProviderManagementError::Conflict(MessageKey::new(
+                        "api-saml-sp-entity-id-conflict",
+                    ))
                 }
                 other => SamlServiceProviderManagementError::Internal(other.to_string()),
             })?;

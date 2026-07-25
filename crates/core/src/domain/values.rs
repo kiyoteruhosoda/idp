@@ -6,6 +6,7 @@
 #![allow(dead_code)]
 
 use crate::domain::error::DomainError;
+use crate::domain::message::MessageKey;
 
 /// 文字列許可値を持つ enum を、`as_str` / `parse` 付きで定義するマクロ。
 macro_rules! string_enum {
@@ -139,18 +140,28 @@ string_enum!(
     }
 );
 
+/// `users.email` の格納先カラム上限（`VARCHAR(320)`）。
+pub const EMAIL_MAX_LEN: usize = 320;
+
 /// メールアドレスの簡易バリデーション（MVP）。
 ///
-/// 空でなく、`@` を挟んで両側に文字があることを検証する。
-/// `register` と `user_management` で共通の基準として使う。
-pub fn validate_email(email: &str) -> Result<(), DomainError> {
+/// 空でなく、`@` を挟んで両側に文字があり、カラム長（`VARCHAR(320)`）に収まることを検証する。
+/// `register` と `user_management`・`user_lifecycle`（管理者による編集）で共通の基準として使う。
+/// 長さを見ないと、上限超過が永続化時の内部エラー（500）として現れ、入力エラーとして返せない。
+///
+/// エラーは利用者へそのまま返るため、訳文ではなく**翻訳キー**を返す（MT19。訳出は Presentation 層）。
+pub fn validate_email(email: &str) -> Result<(), MessageKey> {
+    if email.chars().count() > EMAIL_MAX_LEN {
+        return Err(MessageKey::with_value(
+            "api-email-too-long",
+            EMAIL_MAX_LEN.to_string(),
+        ));
+    }
     let parts: Vec<&str> = email.split('@').collect();
     if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
         Ok(())
     } else {
-        Err(DomainError::InvalidValue(
-            "invalid email format".to_string(),
-        ))
+        Err(MessageKey::new("api-email-invalid"))
     }
 }
 
@@ -161,11 +172,12 @@ pub fn validate_email(email: &str) -> Result<(), DomainError> {
 /// 永続化時に内部エラーになる。それを防ぐため、採用前に文字数上限を検証する。
 pub const PREFERRED_USERNAME_MAX_LEN: usize = 255;
 
-pub fn validate_preferred_username(value: &str) -> Result<(), DomainError> {
+pub fn validate_preferred_username(value: &str) -> Result<(), MessageKey> {
     if value.chars().count() > PREFERRED_USERNAME_MAX_LEN {
-        return Err(DomainError::InvalidValue(format!(
-            "preferred_username must be at most {PREFERRED_USERNAME_MAX_LEN} characters"
-        )));
+        return Err(MessageKey::with_value(
+            "api-username-too-long",
+            PREFERRED_USERNAME_MAX_LEN.to_string(),
+        ));
     }
     Ok(())
 }
@@ -175,11 +187,12 @@ pub const DISPLAY_NAME_MAX_LEN: usize = 255;
 
 /// 表示名（`users.name`）が格納先カラムの上限に収まるか検証する。表示名は一意制約・書式制約を
 /// 持たない自由入力のため、長さのみを検証する（空・空白のみは呼び出し側で解除＝`None` に正規化する）。
-pub fn validate_display_name(value: &str) -> Result<(), DomainError> {
+pub fn validate_display_name(value: &str) -> Result<(), MessageKey> {
     if value.chars().count() > DISPLAY_NAME_MAX_LEN {
-        return Err(DomainError::InvalidValue(format!(
-            "name must be at most {DISPLAY_NAME_MAX_LEN} characters"
-        )));
+        return Err(MessageKey::with_value(
+            "api-display-name-too-long",
+            DISPLAY_NAME_MAX_LEN.to_string(),
+        ));
     }
     Ok(())
 }

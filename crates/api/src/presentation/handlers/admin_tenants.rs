@@ -22,6 +22,7 @@ use crate::presentation::dto::{
 };
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
+use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
 use axum::extract::{Extension, Path, State};
@@ -44,12 +45,13 @@ pub async fn list_tenants(
     RequirePerms(_admin, _): RequirePerms<IdpSystemAdmin>,
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
 ) -> Result<Json<Vec<TenantResponse>>, ApiError> {
     let children = state
         .tenants_admin
         .list_children(tenant.context())
         .await
-        .map_err(map_error)?;
+        .map_err(|e| map_error(e, locale))?;
     Ok(Json(children.iter().map(tenant_response).collect()))
 }
 
@@ -74,6 +76,7 @@ pub async fn create_tenant(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
     headers: HeaderMap,
     Json(body): Json<CreateTenantRequest>,
 ) -> Result<(StatusCode, Json<TenantResponse>), ApiError> {
@@ -91,7 +94,7 @@ pub async fn create_tenant(
             &ctx,
         )
         .await
-        .map_err(map_error)?;
+        .map_err(|e| map_error(e, locale))?;
     Ok((StatusCode::CREATED, Json(tenant_response(&created))))
 }
 
@@ -112,14 +115,15 @@ pub async fn get_tenant(
     RequirePerms(_admin, _): RequirePerms<IdpSystemAdmin>,
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
     Path((_tenant_id, child_id)): Path<(String, String)>,
 ) -> Result<Json<TenantResponse>, ApiError> {
-    let child = parse_tenant_id(&child_id)?;
+    let child = parse_tenant_id(&child_id, locale)?;
     let found = state
         .tenants_admin
         .get_child(tenant.context(), child)
         .await
-        .map_err(map_error)?;
+        .map_err(|e| map_error(e, locale))?;
     Ok(Json(tenant_response(&found)))
 }
 
@@ -138,16 +142,18 @@ pub async fn get_tenant(
         (status = 404, description = "不存在"),
     )
 )]
+#[allow(clippy::too_many_arguments)]
 pub async fn update_tenant(
     RequirePerms(admin, _): RequirePerms<IdpSystemAdmin>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
     headers: HeaderMap,
     Path((_tenant_id, child_id)): Path<(String, String)>,
     Json(body): Json<UpdateTenantRequest>,
 ) -> Result<Json<TenantResponse>, ApiError> {
-    let child = parse_tenant_id(&child_id)?;
+    let child = parse_tenant_id(&child_id, locale)?;
     let ctx = request_context(
         &headers,
         &correlation,
@@ -158,7 +164,9 @@ pub async fn update_tenant(
         .as_deref()
         .map(TenantStatus::parse)
         .transpose()
-        .map_err(|_| ApiError::BadRequest("invalid status".to_string()))?;
+        .map_err(|_| {
+            ApiError::BadRequest(ApiMessages::new(locale).get("api-tenant-status-invalid"))
+        })?;
     let updated = state
         .tenants_admin
         .update_tenant(
@@ -172,7 +180,7 @@ pub async fn update_tenant(
             &ctx,
         )
         .await
-        .map_err(map_error)?;
+        .map_err(|e| map_error(e, locale))?;
     Ok(Json(tenant_response(&updated)))
 }
 
@@ -195,10 +203,11 @@ pub async fn delete_tenant(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
     headers: HeaderMap,
     Path((_tenant_id, child_id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    let child = parse_tenant_id(&child_id)?;
+    let child = parse_tenant_id(&child_id, locale)?;
     let ctx = request_context(
         &headers,
         &correlation,
@@ -208,7 +217,7 @@ pub async fn delete_tenant(
         .tenants_admin
         .delete_tenant(tenant.context(), child, admin.user_id, &ctx)
         .await
-        .map_err(map_error)?;
+        .map_err(|e| map_error(e, locale))?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -232,22 +241,24 @@ pub async fn delete_tenant(
         (status = 404, description = "テナントまたは利用者が不存在"),
     )
 )]
+#[allow(clippy::too_many_arguments)]
 pub async fn reset_tenant_admin_password(
     RequirePerms(admin, _): RequirePerms<IdpSystemAdmin>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
     headers: HeaderMap,
     Path((_tenant_id, child_id)): Path<(String, String)>,
     Json(body): Json<TenantAdminPasswordResetRequest>,
 ) -> Result<Json<UserPasswordResetResponse>, ApiError> {
-    let child = parse_tenant_id(&child_id)?;
+    let child = parse_tenant_id(&child_id, locale)?;
     // 直下の子テナントであることを検証する（他系統のテナントを対象にさせない）。
     let child_tenant = state
         .tenants_admin
         .get_child(tenant.context(), child)
         .await
-        .map_err(map_error)?;
+        .map_err(|e| map_error(e, locale))?;
     let ctx = request_context(
         &headers,
         &correlation,
@@ -262,7 +273,7 @@ pub async fn reset_tenant_admin_password(
             &ctx,
         )
         .await
-        .map_err(map_lifecycle_error)?;
+        .map_err(|e| map_lifecycle_error(e, locale))?;
     Ok(Json(UserPasswordResetResponse {
         user_id: reset.user_id.to_string(),
         generated_password: reset.generated_password,
@@ -284,12 +295,13 @@ pub async fn get_current_tenant(
     RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
 ) -> Result<Json<TenantResponse>, ApiError> {
     let current = state
         .tenants_admin
         .get_current(tenant.context())
         .await
-        .map_err(map_error)?;
+        .map_err(|e| map_error(e, locale))?;
     Ok(Json(tenant_response(&current)))
 }
 
@@ -311,6 +323,7 @@ pub async fn update_current_tenant(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
     headers: HeaderMap,
     Json(body): Json<UpdateTenantSettingsRequest>,
 ) -> Result<Json<TenantResponse>, ApiError> {
@@ -329,7 +342,7 @@ pub async fn update_current_tenant(
             &ctx,
         )
         .await
-        .map_err(map_error)?;
+        .map_err(|e| map_error(e, locale))?;
     Ok(Json(tenant_response(&updated)))
 }
 
@@ -345,27 +358,30 @@ fn tenant_response(t: &Tenant) -> TenantResponse {
     }
 }
 
-fn parse_tenant_id(raw: &str) -> Result<TenantId, ApiError> {
+fn parse_tenant_id(raw: &str, locale: ApiLocale) -> Result<TenantId, ApiError> {
     Uuid::parse_str(raw)
         .map(TenantId::from)
-        .map_err(|_| ApiError::NotFound("tenant not found".to_string()))
+        .map_err(|_| ApiError::NotFound(ApiMessages::new(locale).get("api-tenant-not-found")))
 }
 
-fn map_lifecycle_error(e: UserLifecycleError) -> ApiError {
+fn map_lifecycle_error(e: UserLifecycleError, locale: ApiLocale) -> ApiError {
+    let msgs = ApiMessages::new(locale);
     match e {
-        UserLifecycleError::NotFound => ApiError::NotFound("user not found".to_string()),
-        UserLifecycleError::Forbidden(m) => ApiError::Forbidden(m),
-        UserLifecycleError::Validation(m) => ApiError::BadRequest(m),
+        UserLifecycleError::NotFound => ApiError::NotFound(msgs.get("api-user-not-found")),
+        UserLifecycleError::Forbidden(m) => ApiError::Forbidden(msgs.get_message(&m)),
+        UserLifecycleError::Validation(m) => ApiError::BadRequest(msgs.get_message(&m)),
+        UserLifecycleError::Conflict(m) => ApiError::Conflict(msgs.get_message(&m)),
         UserLifecycleError::Internal(m) => ApiError::Internal(m),
     }
 }
 
-fn map_error(e: TenantManagementError) -> ApiError {
+fn map_error(e: TenantManagementError, locale: ApiLocale) -> ApiError {
+    let msgs = ApiMessages::new(locale);
     match e {
-        TenantManagementError::Validation(m) => ApiError::BadRequest(m),
-        TenantManagementError::NotFound => ApiError::NotFound("tenant not found".to_string()),
-        TenantManagementError::Forbidden(m) => ApiError::Forbidden(m),
-        TenantManagementError::Conflict(m) => ApiError::Conflict(m),
+        TenantManagementError::Validation(m) => ApiError::BadRequest(msgs.get_message(&m)),
+        TenantManagementError::NotFound => ApiError::NotFound(msgs.get("api-tenant-not-found")),
+        TenantManagementError::Forbidden(m) => ApiError::Forbidden(msgs.get_message(&m)),
+        TenantManagementError::Conflict(m) => ApiError::Conflict(msgs.get_message(&m)),
         TenantManagementError::Internal(m) => ApiError::Internal(m),
     }
 }

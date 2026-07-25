@@ -1,13 +1,29 @@
 //! API 層の国際化（MT19）。
 //!
-//! `Accept-Language` ヘッダから表示言語を決定し、管理 API のエラーメッセージを翻訳する。
-//! エラーコードは言語不変。`message` フィールドのみ翻訳する。
-//! 既定ロケールは `ja`（システム既定。`CLAUDE.md` § 国際化）。
+//! `Accept-Language` ヘッダから表示言語を決定し、API のエラーメッセージを翻訳する。
+//! **エラーコードは言語不変**（`error` フィールドは固定値）で、`message` のみ翻訳する。
+//! 既定ロケールは `ja`（システム既定。`CLAUDE.md`「国際化」）。参照するのは `Accept-Language`
+//! だけで、Cookie・セッション・URL クエリ・DB のユーザー設定は見ない（表示言語の決定は web の責務）。
+//!
+//! Domain / Application 層は訳文を持たず [`crate::domain::message::MessageKey`] を返す。
+//! [`ApiMessages::get_message`] がそれを訳出する（層をまたいで文言をコピーしないための境界）。
+//!
+//! **翻訳の対象外**:
+//!
+//! * OAuth 2.0 / OIDC のプロトコルエラー（`/token`・`/authorize`・`/introspect`・`/revoke`・
+//!   `/userinfo`）。`error` はもちろん `error_description` も RFC 6749 §4.1.2.1 が
+//!   「クライアント開発者向け」と定める機械/開発者向けの値であり、RP に届く固定文字列として扱う。
+//!   RP のログや自動処理が文言に依存し得るため、リクエストごとに言語を変えない。
+//! * 500（`server_error`）の本文。内部エラーの詳細はクライアントへ出さず固定文字列を返す
+//!   （[`crate::presentation::error::ApiError`]）。利用者に取れる行動が無く、翻訳しても
+//!   得られるものが無い一方、ロケール解決の経路を増やす。
+//! * 内部ログ・監査ログ（運用言語＝英語で統一する。`CLAUDE.md`「ログ」）。
 //!
 //! `FluentBundle` は `!Send` のためリクエスト境界を跨いだ保持が不可。
 //! `ApiMessages::new(locale)` でリクエストごとに生成する。
 
-use fluent::{FluentBundle, FluentResource};
+use crate::domain::message::MessageKey;
+use fluent::{FluentArgs, FluentBundle, FluentResource};
 use unic_langid::{langid, LanguageIdentifier};
 
 const EN_FTL: &str = include_str!(concat!(
@@ -108,6 +124,23 @@ impl ApiMessages {
 
     /// 翻訳キーからメッセージを取得する。未定義キーはキー名をそのまま返す（フェイルソフト）。
     pub fn get(&self, key: &str) -> String {
+        self.format(key, None)
+    }
+
+    /// Domain / Application 層が返した [`MessageKey`] を訳出する（MT19）。
+    /// 差し込み値は翻訳文の `{ $value }` に入る。
+    pub fn get_message(&self, message: &MessageKey) -> String {
+        match message.value() {
+            Some(value) => {
+                let mut args = FluentArgs::new();
+                args.set("value", value);
+                self.format(message.key(), Some(&args))
+            }
+            None => self.format(message.key(), None),
+        }
+    }
+
+    fn format(&self, key: &str, args: Option<&FluentArgs>) -> String {
         let Some(message) = self.bundle.get_message(key) else {
             tracing::warn!(key, "missing api translation key");
             return key.to_string();
@@ -116,7 +149,7 @@ impl ApiMessages {
             return key.to_string();
         };
         let mut errors = Vec::new();
-        let value = self.bundle.format_pattern(pattern, None, &mut errors);
+        let value = self.bundle.format_pattern(pattern, args, &mut errors);
         if !errors.is_empty() {
             tracing::warn!(key, ?errors, "fluent formatting errors");
         }
@@ -176,5 +209,87 @@ mod tests {
     fn api_messages_returns_key_for_unknown_keys() {
         let msg = ApiMessages::new(ApiLocale::En);
         assert_eq!(msg.get("no-such-api-key"), "no-such-api-key");
+    }
+
+    #[test]
+    fn message_keys_interpolate_their_value() {
+        let en = ApiMessages::new(ApiLocale::En);
+        let msg = en.get_message(&MessageKey::with_value("api-password-too-short", "8"));
+        assert!(msg.contains('8'), "{msg}");
+        assert!(
+            !msg.contains("$value"),
+            "placeholder must be substituted: {msg}"
+        );
+
+        let ja = ApiMessages::new(ApiLocale::Ja);
+        let msg = ja.get_message(&MessageKey::with_value("api-password-too-short", "8"));
+        assert!(msg.contains('8'), "{msg}");
+    }
+
+    /// コード側で使う `api-*` キーは **en / ja の両方**に訳が無ければならない。
+    /// 片方だけだと、その言語の利用者にキー名（`api-client-scope-unsupported`）がそのまま出る。
+    /// 訳文を足し忘れたまま気付けないので、ソースからキーを抽出して突き合わせる。
+    #[test]
+    fn every_api_message_key_used_in_code_is_translated_in_both_locales() {
+        let sources = [
+            include_str!("handlers/admin_clients.rs"),
+            include_str!("handlers/admin_invitations.rs"),
+            include_str!("handlers/admin_members.rs"),
+            include_str!("handlers/admin_permissions.rs"),
+            include_str!("handlers/admin_saml_service_providers.rs"),
+            include_str!("handlers/admin_signing_keys.rs"),
+            include_str!("handlers/admin_system_settings.rs"),
+            include_str!("handlers/admin_tenants.rs"),
+            include_str!("handlers/admin_users.rs"),
+            include_str!("handlers/admin_audit.rs"),
+            include_str!("handlers/invitations.rs"),
+            include_str!("handlers/register.rs"),
+            include_str!("handlers/mod.rs"),
+            // Domain / Application 層が返す MessageKey の定義元。
+            include_str!("../../../core/src/domain/values.rs"),
+            include_str!("../../../core/src/domain/password.rs"),
+            include_str!("../../../core/src/domain/saml_service_provider.rs"),
+            include_str!("../../../core/src/application/client_management.rs"),
+            include_str!("../../../core/src/application/invitation.rs"),
+            include_str!("../../../core/src/application/key_service.rs"),
+            include_str!("../../../core/src/application/permission_management.rs"),
+            include_str!("../../../core/src/application/register.rs"),
+            include_str!("../../../core/src/application/tenant_management.rs"),
+            include_str!("../../../core/src/application/user_lifecycle.rs"),
+            include_str!("../../../core/src/application/user_management.rs"),
+        ];
+
+        let mut keys: Vec<String> = Vec::new();
+        for source in sources {
+            for (index, _) in source.match_indices("\"api-") {
+                let rest = &source[index + 1..];
+                let Some(end) = rest.find('"') else { continue };
+                let key = &rest[..end];
+                if key
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+                {
+                    keys.push(key.to_string());
+                }
+            }
+        }
+        keys.sort();
+        keys.dedup();
+        assert!(
+            keys.len() > 40,
+            "expected to find the api keys, got {keys:?}"
+        );
+
+        for locale in [ApiLocale::En, ApiLocale::Ja] {
+            let messages = ApiMessages::new(locale);
+            let missing: Vec<&String> = keys
+                .iter()
+                .filter(|key| messages.get(key) == **key)
+                .collect();
+            assert!(
+                missing.is_empty(),
+                "{locale:?} is missing translations for {missing:?}"
+            );
+        }
     }
 }

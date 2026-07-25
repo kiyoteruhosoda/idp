@@ -231,4 +231,28 @@ impl UserRepository for SqlxUserRepository {
             .map_err(repo_err)?;
         Ok(())
     }
+
+    async fn update_profile(
+        &self,
+        id: Uuid,
+        email: &str,
+        preferred_username: Option<&str>,
+        name: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query("UPDATE users SET email = ?, preferred_username = ?, name = ? WHERE id = ?")
+            .bind(email)
+            .bind(preferred_username)
+            .bind(name)
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| match &e {
+                // 事前チェックとの競合（同時更新）は DB の UNIQUE 制約が最終的に保証する。
+                sqlx::Error::Database(db) if db.is_unique_violation() => {
+                    DomainError::Conflict("email or preferred_username already exists".to_string())
+                }
+                _ => DomainError::Repository(e.to_string()),
+            })?;
+        Ok(())
+    }
 }

@@ -22,6 +22,7 @@ use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
 use crate::domain::id_generator::IdGenerator;
+use crate::domain::message::MessageKey;
 use crate::domain::repositories::{TenantProvisioningRepository, TenantRepository};
 use crate::domain::tenant::{Tenant, TenantId};
 use crate::domain::tenant_context::TenantContext;
@@ -48,13 +49,13 @@ pub struct UpdateTenantCommand {
 #[derive(Debug, thiserror::Error)]
 pub enum TenantManagementError {
     #[error("validation error: {0}")]
-    Validation(String),
+    Validation(MessageKey),
     #[error("not found")]
     NotFound,
     #[error("forbidden: {0}")]
-    Forbidden(String),
+    Forbidden(MessageKey),
     #[error("conflict: {0}")]
-    Conflict(String),
+    Conflict(MessageKey),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -119,7 +120,10 @@ impl TenantManagementService {
             .provision(&tenant, &membership, TENANT_ADMIN_PERMISSION, now)
             .await
             .map_err(|e| match e {
-                DomainError::Conflict(m) => TenantManagementError::Conflict(m),
+                // テナントの一意キーは単一 root の番兵列のみ（表示名は一意でない）。到達は競合時のみ。
+                DomainError::Conflict(_) => {
+                    TenantManagementError::Conflict(MessageKey::new("api-tenant-create-conflict"))
+                }
                 other => TenantManagementError::Internal(other.to_string()),
             })?;
 
@@ -254,9 +258,9 @@ impl TenantManagementService {
         let tenant = self.load_child(requesting, child_id).await?;
         // root は構造的に誰の子でもない（load_child で既に弾かれる）が、明示的に禁止して二重防御とする。
         if tenant.is_root() {
-            return Err(TenantManagementError::Forbidden(
-                "the root tenant cannot be deleted".to_string(),
-            ));
+            return Err(TenantManagementError::Forbidden(MessageKey::new(
+                "api-tenant-root-cannot-delete",
+            )));
         }
         // 配下に子テナントが存在しないこと（アプリ層の事前検証。§1）。
         let grandchildren = self
@@ -265,14 +269,17 @@ impl TenantManagementService {
             .await
             .map_err(|e| TenantManagementError::Internal(e.to_string()))?;
         if !grandchildren.is_empty() {
-            return Err(TenantManagementError::Conflict(
-                "tenant has child tenants".to_string(),
-            ));
+            return Err(TenantManagementError::Conflict(MessageKey::new(
+                "api-tenant-has-children",
+            )));
         }
 
         // ユーザー/クライアントの残存は DB の FK（ON DELETE RESTRICT）が Conflict に倒す（§1）。
         self.tenants.delete(tenant.id).await.map_err(|e| match e {
-            DomainError::Conflict(m) => TenantManagementError::Conflict(m),
+            // FK（ON DELETE RESTRICT）による拒否 = 配下に利用者・クライアントが残っている（§1）。
+            DomainError::Conflict(_) => {
+                TenantManagementError::Conflict(MessageKey::new("api-tenant-has-dependents"))
+            }
             other => TenantManagementError::Internal(other.to_string()),
         })?;
 
@@ -312,9 +319,9 @@ impl TenantManagementService {
 fn validate_name(name: String) -> Result<String, TenantManagementError> {
     let trimmed = name.trim().to_string();
     if trimmed.is_empty() {
-        return Err(TenantManagementError::Validation(
-            "tenant name must not be empty".to_string(),
-        ));
+        return Err(TenantManagementError::Validation(MessageKey::new(
+            "api-tenant-name-empty",
+        )));
     }
     Ok(trimmed)
 }

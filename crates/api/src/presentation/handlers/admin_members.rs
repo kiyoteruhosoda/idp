@@ -181,8 +181,8 @@ fn map_error(e: InvitationError, locale: ApiLocale) -> ApiError {
     let msgs = ApiMessages::new(locale);
     match e {
         InvitationError::NotFound => ApiError::NotFound(msgs.get("api-member-not-found")),
-        InvitationError::AlreadyMember => ApiError::Conflict("already a member".to_string()),
-        InvitationError::Forbidden(m) => ApiError::Forbidden(m),
+        InvitationError::AlreadyMember => ApiError::Conflict(msgs.get("api-member-already")),
+        InvitationError::Forbidden(m) => ApiError::Forbidden(msgs.get_message(&m)),
         InvitationError::InvalidOrExpired => ApiError::BadRequest(msgs.get("api-invalid-request")),
         InvitationError::Internal(m) => ApiError::Internal(m),
     }

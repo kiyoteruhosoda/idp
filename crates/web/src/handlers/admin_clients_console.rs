@@ -133,8 +133,10 @@ pub async fn create(
         "scopes": parse_scopes(&form.scopes),
         "require_pkce": form.require_pkce.is_some(),
     });
+    // api のバリデーション/競合メッセージをこの画面へ出すため、決定言語を引き継ぐ（MT20）。
     let result = state
         .api
+        .for_locale(locale(&headers))
         .create_client(&correlation.0, &tenant.0, &sso(&headers), body)
         .await;
     let messages = Messages::new(locale(&headers));
@@ -271,6 +273,7 @@ pub async fn update(
     });
     let result = state
         .api
+        .for_locale(locale(&headers))
         .update_client(&correlation.0, &tenant.0, &sso(&headers), &client_id, body)
         .await;
     let messages = Messages::new(locale(&headers));
@@ -308,6 +311,7 @@ pub async fn rotate_secret(
     }
     let rotated = state
         .api
+        .for_locale(locale(&headers))
         .rotate_client_secret(&correlation.0, &tenant.0, &sso(&headers), &client_id)
         .await;
     match rotated {

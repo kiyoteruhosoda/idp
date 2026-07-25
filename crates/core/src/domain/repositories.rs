@@ -172,6 +172,21 @@ pub trait UserRepository: Send + Sync {
             "update_name is not supported by this repository".to_string(),
         ))
     }
+    /// プロフィール（メール・ログイン識別子・表示名）をまとめて更新する（管理者による編集。MT25）。
+    /// `preferred_username` / `name` の `None` は「解除（`NULL`）」を意味する。テナント内の
+    /// `(tenant_id, email)` / `(tenant_id, preferred_username)` 一意制約違反は `Conflict` を返す。
+    /// 既定実装は未対応エラー（`update_name` と同じ方針。本番の sqlx 実装のみが上書きする）。
+    async fn update_profile(
+        &self,
+        _id: Uuid,
+        _email: &str,
+        _preferred_username: Option<&str>,
+        _name: Option<&str>,
+    ) -> Result<()> {
+        Err(crate::domain::error::DomainError::Repository(
+            "update_profile is not supported by this repository".to_string(),
+        ))
+    }
 }
 
 #[async_trait]

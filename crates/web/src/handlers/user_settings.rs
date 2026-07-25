@@ -10,34 +10,33 @@
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::dto::{AccountNameForm, AccountPasswordForm, SettingsQuery};
-use crate::handlers::{forwarded_context, found};
-use crate::i18n::{Locale, Messages};
+use crate::handlers::{forwarded_context, found, locale};
+use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, UserSettings};
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, Query, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 use idp_contracts::auth::{
     InternalAccountChangePasswordRequest, InternalAccountChangePasswordResponse,
     InternalAccountProfileRequest, InternalAccountProfileResponse,
-    InternalAccountUpdateLanguageRequest, InternalAccountUpdateLanguageResponse,
     InternalAccountUpdateNameRequest, InternalAccountUpdateNameResponse,
 };
 
-/// 設定画面（`GET /{tenant_id}/settings`）。`?lang=` があれば言語 Cookie を保存し、ログイン中なら DB へも永続化する。
+/// 設定画面（`GET /{tenant_id}/settings`）。
+///
+/// `?lang=` の解釈・`lang` Cookie の保存・ユーザー設定（DB）への永続化は
+/// [`crate::language::resolve_language`] middleware が全画面共通で行う（MT20）。ここは決定済みの
+/// 言語で描画するだけで、言語セレクタは `?lang=` を付けた同一 URL へのリンクとして機能する。
 pub async fn page(
     State(state): State<WebState>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Query(query): Query<SettingsQuery>,
 ) -> Response {
-    let cookie_lang = cookies::get(&headers, cookies::LANG_COOKIE);
-    let accept = headers
-        .get(header::ACCEPT_LANGUAGE)
-        .and_then(|v| v.to_str().ok());
-    let locale = Locale::resolve(query.lang.as_deref(), None, cookie_lang.as_deref(), accept);
+    let locale = locale(&headers);
     let from_admin = query.from.as_deref() == Some("admin");
 
     // 表示名・ログイン識別子のプリフィル値を api から取得する（Messages は !Send のため await より先に）。
@@ -82,43 +81,7 @@ pub async fn page(
         })
     };
 
-    // 明示的な言語選択（有効な `?lang=`）のときのみ Cookie を保存し、ログイン中なら DB へも永続化する。
-    let set_lang = query
-        .lang
-        .as_deref()
-        .and_then(Locale::from_tag)
-        .map(|l| l.as_tag());
-    match set_lang {
-        Some(tag) => {
-            // ログイン中なら DB にも言語設定を保存する（MT20）。
-            if let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) {
-                let req = InternalAccountUpdateLanguageRequest {
-                    sso_session_id: sso,
-                    language: tag.to_string(),
-                };
-                match state.api.account_update_language(&req).await {
-                    Ok(InternalAccountUpdateLanguageResponse::Ok) => {}
-                    Ok(InternalAccountUpdateLanguageResponse::SessionExpired) => {
-                        // セッション切れ — Cookie のみ更新して続行。
-                        tracing::debug!("SSO session expired during language update");
-                    }
-                    Ok(other) => {
-                        tracing::warn!(?other, "unexpected outcome from update-language");
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "account update-language call to api failed");
-                    }
-                }
-            }
-            let set_cookies = state.set_cookies().set_local(
-                cookies::LANG_COOKIE,
-                tag,
-                cookies::LANG_COOKIE_MAX_AGE_SECS,
-            );
-            (set_cookies.into_headers(), Html(body)).into_response()
-        }
-        None => Html(body).into_response(),
-    }
+    Html(body).into_response()
 }
 
 /// セルフサービスのパスワード変更（`POST /{tenant_id}/settings/password`）。
@@ -244,6 +207,7 @@ fn error_key_for(error: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::Locale;
 
     fn render_settings(from_admin: bool) -> String {
         let messages = Messages::new(Locale::Ja);

@@ -300,8 +300,19 @@ API は `Accept-Language` のみからレスポンス言語を決め、**Cookie�
   将来的に翻訳管理システムや DB 管理へ移行できる構成にする。多言語**データ**（製品情報等）が必要になった場合は
   言語別の翻訳テーブルで対応する。
 
-> 現状は i18n が web crate のみ（`fluent`、既定 `en`、画面文言限定）で API 側は未導入。上記の責務分離・
-> 優先順位・API 多言語化・既定 `ja` への統一は目標設計であり、実装は `docs/Progress.md`（MT19・MT20）で追う。
+**Domain / Application 層は訳文を持たない。** 利用者へ返すエラーは `domain::message::MessageKey`
+（翻訳キー＋差し込み値）で返し、訳出は Presentation 層（api: `presentation::i18n::ApiMessages`）が
+`Accept-Language` に応じて行う。同じエラーを「api の応答では利用者の言語」「内部ログでは運用言語（英語）」
+の二重の要求に、文言をコピーせず応える境界である（`MessageKey` の `Display` はキーを出すため、ログは
+言語設定に関係なくグレップできる）。
+
+**翻訳の対象外**（意図的に固定文字列のまま返す）:
+
+- OAuth 2.0 / OIDC のプロトコルエラー（`/token`・`/authorize`・`/introspect`・`/revoke`・`/userinfo`）。
+  `error_description` も RFC 6749 §4.1.2.1 が「クライアント開発者向け」と定める RP 向けの値であり、
+  RP のログ・自動処理が文言に依存し得るためリクエストごとに変えない。
+- 500（`server_error`）の本文。内部エラーの詳細はクライアントへ出さない。
+- 内部ログ・監査ログ（上記「対象外」参照）。
 
 ---
 

@@ -475,6 +475,7 @@ impl AppState {
             sso_sessions.clone(),
             users.clone(),
             user_permissions,
+            tenant_memberships.clone(),
             clock.clone(),
         ));
 

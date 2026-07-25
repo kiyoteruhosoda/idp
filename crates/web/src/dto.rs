@@ -134,6 +134,18 @@ pub struct AdminTenantCreateForm {
 pub struct TenantsQuery {
     #[serde(default)]
     pub error: Option<String>,
+    /// 更新完了通知（Post/Redirect/Get で戻ったときに成功バナーを出す）。
+    #[serde(default)]
+    pub saved: Option<String>,
+}
+
+/// 子テナントの編集フォーム（`POST /{tenant_id}/admin/tenants/{child_id}/update`。MT23）。
+/// 表示名と状態（`ACTIVE` / `DISABLED`）を変更する。api の `PATCH /admin/tenants/{child_id}` へ委ねる。
+#[derive(Debug, Deserialize)]
+pub struct AdminTenantUpdateForm {
+    pub name: String,
+    pub status: String,
+    pub csrf_token: String,
 }
 
 /// テナント管理画面の CSRF のみのアクション（削除等）のフォーム。

@@ -3,15 +3,15 @@
 //! すべて `idp.tenant.admin` 権限が必要（`RequirePerms<IdpAdmin>`）。パスワードハッシュ等の機微情報は返さない。
 //! 権限の一覧・付与・剥奪は `admin_permissions` にある。
 
-use crate::application::user_lifecycle::UserLifecycleError;
+use crate::application::user_lifecycle::{UpdateUserProfileCommand, UserLifecycleError};
 use crate::application::user_management::{CreateUserCommand, UserManagementError};
 use crate::domain::user::User;
 use crate::domain::values::UserStatus;
 use crate::presentation::admin::{IdpAdmin, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
-    CreateUserRequest, UpdateUserStatusRequest, UserCreatedResponse, UserMfaResetResponse,
-    UserPasswordResetResponse,
+    CreateUserRequest, UpdateUserProfileRequest, UpdateUserStatusRequest, UserCreatedResponse,
+    UserMfaResetResponse, UserPasswordResetResponse,
 };
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::{map_permission_management_error, request_context};
@@ -157,8 +157,9 @@ pub async fn update_user_status(
     Json(body): Json<UpdateUserStatusRequest>,
 ) -> Result<Json<UserSummaryResponse>, ApiError> {
     let target = parse_user_id(&user_id, locale)?;
-    let status = UserStatus::parse(&body.status)
-        .map_err(|_| ApiError::BadRequest("invalid status".to_string()))?;
+    let status = UserStatus::parse(&body.status).map_err(|_| {
+        ApiError::BadRequest(ApiMessages::new(locale).get("api-user-status-invalid"))
+    })?;
     let ctx = request_context(
         &headers,
         &correlation,
@@ -175,6 +176,62 @@ pub async fn update_user_status(
         .await
         .map_err(|e| map_permission_management_error(e, locale))?;
     Ok(Json(summary(&user)))
+}
+
+/// 利用者のプロフィール（メール・表示名・ログイン識別子）を編集する
+/// （`PATCH /{tenant_id}/admin/users/{user_id}/profile`。MT25）。所属元が当該テナントの利用者のみ。
+///
+/// 状態変更（`PATCH /admin/users/{user_id}`）と分けているのは認可の粒度が違うため:
+/// プロフィール編集はロックアウトを招かないので**自分自身も対象にできる**（状態変更・削除・
+/// パスワード再発行・MFA 解除は自己操作禁止）。
+#[utoipa::path(
+    patch,
+    path = "/{tenant_id}/admin/users/{user_id}/profile",
+    tag = "admin",
+    params(("user_id" = String, Path, description = "対象利用者の内部 ID（UUID）")),
+    request_body = UpdateUserProfileRequest,
+    responses(
+        (status = 200, description = "更新後の利用者"),
+        (status = 400, description = "バリデーションエラー（メール書式・長さ・ログイン識別子の解除）"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
+        (status = 404, description = "不存在（所属元が他テナントの場合を含む）"),
+        (status = 409, description = "email / preferred_username がテナント内で重複"),
+    )
+)]
+#[allow(clippy::too_many_arguments)]
+pub async fn update_user_profile(
+    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
+    headers: HeaderMap,
+    Path((_tenant_id, user_id)): Path<(String, String)>,
+    Json(body): Json<UpdateUserProfileRequest>,
+) -> Result<Json<UserSummaryResponse>, ApiError> {
+    let target = parse_user_id(&user_id, locale)?;
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
+    let updated = state
+        .users_lifecycle
+        .update_profile(
+            tenant.context(),
+            target,
+            UpdateUserProfileCommand {
+                email: body.email,
+                preferred_username: body.preferred_username,
+                name: body.name,
+            },
+            admin.user_id,
+            &ctx,
+        )
+        .await
+        .map_err(|e| map_user_lifecycle_error(e, locale))?;
+    Ok(Json(summary(&updated)))
 }
 
 /// 利用者を削除する（`DELETE /{tenant_id}/admin/users/{user_id}`）。所属元が当該テナントの
@@ -304,12 +361,12 @@ fn parse_user_id(raw: &str, locale: ApiLocale) -> Result<Uuid, ApiError> {
 }
 
 fn map_user_lifecycle_error(e: UserLifecycleError, locale: ApiLocale) -> ApiError {
+    let msgs = ApiMessages::new(locale);
     match e {
-        UserLifecycleError::NotFound => {
-            ApiError::NotFound(ApiMessages::new(locale).get("api-user-not-found"))
-        }
-        UserLifecycleError::Forbidden(m) => ApiError::Forbidden(m),
-        UserLifecycleError::Validation(m) => ApiError::BadRequest(m),
+        UserLifecycleError::NotFound => ApiError::NotFound(msgs.get("api-user-not-found")),
+        UserLifecycleError::Forbidden(m) => ApiError::Forbidden(msgs.get_message(&m)),
+        UserLifecycleError::Validation(m) => ApiError::BadRequest(msgs.get_message(&m)),
+        UserLifecycleError::Conflict(m) => ApiError::Conflict(msgs.get_message(&m)),
         UserLifecycleError::Internal(m) => ApiError::Internal(m),
     }
 }
@@ -326,10 +383,11 @@ fn summary(u: &User) -> UserSummaryResponse {
     }
 }
 
-fn map_user_management_error(e: UserManagementError, _locale: ApiLocale) -> ApiError {
+fn map_user_management_error(e: UserManagementError, locale: ApiLocale) -> ApiError {
+    let msgs = ApiMessages::new(locale);
     match e {
-        UserManagementError::Validation(m) => ApiError::BadRequest(m),
-        UserManagementError::Conflict(m) => ApiError::Conflict(m),
+        UserManagementError::Validation(m) => ApiError::BadRequest(msgs.get_message(&m)),
+        UserManagementError::Conflict(m) => ApiError::Conflict(msgs.get_message(&m)),
         UserManagementError::Internal(m) => ApiError::Internal(m),
     }
 }
