@@ -18,18 +18,43 @@ IdP ドメインの Cookie セッションによる **SSO** を含む。
 
 ## システム構成
 
-同一ホストの Docker Compose 上で `web`（IdP 本体）と `mariadb` が動作し、DDL・マスタデータの適用は
-常駐させない `migrate` ワンショットジョブが担う。`web` は内部で DDD 4層に分かれる。
+同一ホストの Docker Compose 上で 4 つのサービスが動く（ADR-0007）。
+
+- **api**（`idp-api`）— OIDC protocol・JSON 管理 API・内部 API。**DB へ直結する唯一のサービス**で、
+  内部は DDD 4層に分かれる
+- **web**（`idp-web`）— ログイン画面・管理コンソールの HTML 描画。**sqlx を持たず**、データ操作は
+  api へ HTTP 越しに行う
+- **proxy**（nginx）— **唯一の公開点**。api・web コンテナはホストへ publish しない
+- **mariadb** — 永続化。DDL・マスタデータの適用は常駐させない `migrate` ワンショットジョブが担う
+
+公開の形（`PUBLISH_TOPOLOGY`）の既定は **`domain-split`**（ADR-0015・ADR-0016）。同梱プロキシが
+**リッスンポートでサービスを分け**、前段のリバースプロキシが TLS 終端とドメイン振り分けを行う。
+1 ポートをパスで振り分ける単一オリジン構成（`single-origin`）も明示指定で選べる。
 
 ```mermaid
 graph TB
   subgraph client["クライアント側"]
-    B["ブラウザ（ユーザー）"]
+    B["ブラウザ（利用者）"]
     RP["Client アプリ（RP）"]
   end
 
+  FE["前段リバースプロキシ<br/>TLS 終端・ドメイン振り分け<br/>（Synology DSM 等）"]
+
   subgraph host["Docker Compose ホスト"]
-    subgraph web["web サービス : axum / Rust"]
+    subgraph proxy["proxy : nginx（唯一の公開点）"]
+      direction TB
+      PW["listen 8080 — web 面"]
+      PA["listen 8081 — api 面"]
+    end
+
+    subgraph web["web : idp-web（axum + Askama。DB 非依存）"]
+      direction TB
+      WH["handlers・templates<br/>ログイン画面・管理コンソール"]
+      WC["api_client（reqwest）"]
+      WH --> WC
+    end
+
+    subgraph api["api : idp-api（axum。DDD 4層）"]
       direction TB
       P["Presentation<br/>router・handlers・DTO・cookies"]
       A["Application<br/>authorize・login・token・userinfo<br/>code_issuance・audit・key_service"]
@@ -39,44 +64,83 @@ graph TB
       A --> D
       I -. implements .-> D
     end
-    DB[("MariaDB 10.11<br/>users・clients・auth/sso sessions<br/>authorization_codes・signing_keys・audit_log")]
-    MIG["migrate ジョブ<br/>sqlx migrate run（DDL + seed）"]
-    web -->|"sqlx / mysql"| DB
+
+    DB[("MariaDB 10.11 : 3306<br/>users・clients・auth/sso sessions<br/>authorization_codes・signing_keys・audit_log")]
+    MIG["migrate ジョブ（ワンショット）<br/>sqlx migrate run（DDL + seed）"]
+
+    PW -->|"web:8081"| WH
+    PA -->|"api:8080"| P
+    WC -->|"内部 API へ直結（プロキシを通さない）<br/>API_BASE_URL=http://api:8080"| P
+    I -->|"sqlx / mysql"| DB
     MIG -->|"適用時のみ"| DB
   end
 
-  B -->|"/authorize・/login フォーム"| P
-  RP -->|"/token・/userinfo・/jwks・/discovery"| P
+  B -->|"id ドメイン: ログイン画面・管理コンソール<br/>api ドメイン: /authorize"| FE
+  RP -->|"api ドメイン: /token・/userinfo・/jwks・/discovery"| FE
+  FE -->|"WEB_PORT → 8080"| PW
+  FE -->|"API_PORT → 8081"| PA
   B -.->|"302 redirect + code"| RP
 ```
 
+`idp-contracts` クレートが api ↔ web で共有する DTO・Cookie 名・CSRF 導出・ランタイム設定を単一定義する
+（`web` は sqlx / infrastructure に依存しない。crate 境界で強制）。
+
+### 待ち受けポート
+
+ポートは **前段プロキシ → ホスト公開ポート（`.env` で変える）→ コンテナ内ポート（固定）** の 3 段。
+
+| 段 | 待ち受け | 既定値 | 転送先 |
+|---|---|---|---|
+| ホスト公開（web） | `WEB_BIND_HOST`:`WEB_PORT` | `127.0.0.1:8060` | `proxy:8080` |
+| ホスト公開（api） | `API_BIND_HOST`:`API_PORT` | `127.0.0.1:8070` | `proxy:8081` |
+| コンテナ内 | `proxy` | `8080`（web 面）/ `8081`（api 面） | `web:8081` / `api:8080` |
+| コンテナ内 | `api`（`BIND_ADDR`） | `0.0.0.0:8080` | MariaDB |
+| コンテナ内 | `web`（`WEB_BIND_ADDR`） | `0.0.0.0:8081` | `http://api:8080` |
+| コンテナ内 | `mariadb` | `3306` | — |
+
+- **proxy の `8080` は web 面**（api コンテナの `8080` とは別物）。単一オリジン構成とポート公開定義を
+  共有するための割り当て（ADR-0015）。
+- ホスト公開の bind 既定は**ループバック**。`single-origin` では `API_PORT` を公開しない。
+- `/internal/*` はプロキシが**どの公開ポートでも 404** を返す（多層防御）。web→api の内部呼び出しは
+  Compose ネットワーク内で直結し、共有シークレット `INTERNAL_SERVICE_TOKEN` で保護する。
+
+詳細（stg/prod 併置時のポート分け・ローカル開発時の待ち受け）は
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md)「待ち受けポート一覧」を参照。
+
 ### 認可コードフロー（PKCE S256 + SSO）
+
+`/authorize`・`/token`・`/userinfo` は **api**、ログイン画面は **web** が担う。web は認証処理そのものを
+持たず、api の内部 API（`/internal/authenticate*`）へ委譲する。
 
 ```mermaid
 sequenceDiagram
   autonumber
   participant U as ブラウザ
   participant C as Client RP
-  participant IdP as IdP axum
+  participant W as web (HTML)
+  participant API as api (OIDC)
   participant DB as MariaDB
 
   C->>U: 認可要求へ誘導 [code_challenge]
-  U->>IdP: GET /authorize
+  U->>API: GET /{tenant}/authorize
   alt SSO Cookie が有効
-    IdP->>DB: SSO セッション確認・code 発行
-    IdP-->>U: 302 redirect_uri?code+state
+    API->>DB: SSO セッション確認・code 発行
+    API-->>U: 302 redirect_uri?code+state
   else 未ログイン
-    IdP-->>U: 302 /login [auth_session_id Cookie]
-    U->>IdP: POST /login [username, password, csrf]
-    IdP->>DB: 認証・SSO 発行・code 発行
-    IdP-->>U: 302 redirect_uri?code+state
+    API-->>U: 302 web のログイン画面へ [auth_session_id Cookie]
+    U->>W: GET /{tenant}/login
+    U->>W: POST /{tenant}/login [username, password, csrf]
+    W->>API: POST /internal/authenticate [共有トークン]
+    API->>DB: 認証・SSO 発行・code 発行
+    API-->>W: リダイレクト先 + Set-Cookie
+    W-->>U: 302 redirect_uri?code+state
   end
   U->>C: code を受け渡し
-  C->>IdP: POST /token [code, code_verifier]
-  IdP->>DB: code を one-time 消費・PKCE 検証
-  IdP-->>C: ID Token + Access Token [RS256]
-  C->>IdP: GET /userinfo [Bearer access_token]
-  IdP-->>C: scope に応じた claim
+  C->>API: POST /token [code, code_verifier]
+  API->>DB: code を one-time 消費・PKCE 検証
+  API-->>C: ID Token + Access Token [RS256]
+  C->>API: GET /userinfo [Bearer access_token]
+  API-->>C: scope に応じた claim
 ```
 
 ## 機能一覧
@@ -149,15 +213,22 @@ sequenceDiagram
 ```
 
 初期管理ユーザー `admin@example.com`（既定パスワードは初回ログイン後に変更）が seed される。
+`.env` で環境に合わせて確認するのは公開 URL（`ISSUER`＝api / `PUBLIC_WEB_BASE_URL`＝web）と
+公開ポート（`WEB_PORT` / `API_PORT`）。
 別ホストへのデプロイは `dist/` を転送して中の `./deploy.sh` を実行する（`scripts/README.md` 参照）。
 
-### ローカル開発（web はホストで実行）
+### ローカル開発（api・web をホストで実行）
 
 ```sh
 docker compose up -d mariadb   # MariaDB 10.11 を起動
 sqlx migrate run               # マイグレーション適用（要 DATABASE_URL）
-cargo run                      # IdP サーバ起動（既定: 0.0.0.0:8080）
+# 別々のシェルで起動する（web は api を API_BASE_URL 越しに呼ぶ）
+cargo run -p idp-api           # api 起動（既定: 0.0.0.0:8080）
+API_BASE_URL=http://localhost:8080 cargo run -p idp-web   # web 起動（既定: 0.0.0.0:8081）
 ```
+
+プロキシを立てないため、ログイン画面・管理コンソールは web（`:8081`）、OIDC protocol・JSON 管理 API は
+api（`:8080`）へ直接アクセスする。両者は同一の `INTERNAL_SERVICE_TOKEN` を共有する。
 
 詳細な手順・環境変数は [`docs/OPERATIONS.md`](docs/OPERATIONS.md) を参照。
 

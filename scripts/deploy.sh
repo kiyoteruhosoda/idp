@@ -73,10 +73,10 @@ compose=()
 COMPOSE_PROJECT=""
 LEGACY_COMPOSE_PROJECT_NAME=""
 DIAGNOSTIC_SERVICES=(mariadb migrate api web proxy)
-# 公開トポロジ（ADR-0015）。init_compose_command が .env から確定する。
-#   single-origin: 1 ポートをパスで振り分ける（既定）
-#   domain-split : web / api をリッスンポートで分け、前段プロキシが別サブドメインを割り当てる
-PUBLISH_TOPOLOGY="single-origin"
+# 公開トポロジ（ADR-0015・ADR-0016）。init_compose_command が .env から確定する。
+#   domain-split : web / api をリッスンポートで分け、前段プロキシが別サブドメインを割り当てる（既定）
+#   single-origin: 1 ポート（WEB_PORT）をパスで振り分ける
+PUBLISH_TOPOLOGY="domain-split"
 # Compose が認識しているサービス名の一覧（init_compose_command で確定。取得失敗時は空）。
 COMPOSE_DEFINED_SERVICES=""
 # デプロイ完了時のまとめ表示に使う root テナントの URL（replace_app_containers で確定する）。
@@ -204,10 +204,10 @@ init_compose_command() {
   else
     die "docker compose（v2）または docker-compose（v1）が見つかりません。"
   fi
-  # 公開トポロジ（ADR-0015）。domain-split では override を重ね、proxy が web / api を
-  # 別ポートで公開する。未知の値は fail-fast（誤記のまま単一オリジンで起動させない）。
+  # 公開トポロジ（ADR-0015・ADR-0016）。既定の domain-split では override を重ね、proxy が
+  # web / api を別ポートで公開する。未知の値は fail-fast（誤記のまま別トポロジで起動させない）。
   topology="$(get_env_var PUBLISH_TOPOLOGY)"
-  PUBLISH_TOPOLOGY="${topology:-single-origin}"
+  PUBLISH_TOPOLOGY="${topology:-domain-split}"
   case "$PUBLISH_TOPOLOGY" in
     single-origin) ;;
     domain-split)

@@ -1,3 +1,23 @@
+## 2026-07-25（公開トポロジの既定を domain-split にし、待ち受けポートとシステム構成図を整備した。ADR-0016）
+
+- **`PUBLISH_TOPOLOGY` の既定を `single-origin` → `domain-split` へ変更した**（ADR-0016）。
+  `deploy.sh` の未設定時フォールバックと `.env*.example` の 2 か所のみの変更で、`.env` に値がある
+  既存配置は挙動不変（`single-origin` を明記済みの環境はそのまま単一オリジンを維持する）。
+  単一オリジンは明示指定で継続サポートする（`docker/nginx.conf`・トポロジ試験とも維持）。
+- `.env*.example` は `ISSUER`（api）と `PUBLIC_WEB_BASE_URL`（web）を**別オリジンで出力**するように
+  した（ローカル既定は `http://localhost:8070` / `http://localhost:8060`）。`PUBLIC_WEB_BASE_URL` は
+  既定トポロジで必須になるためコメントアウトをやめた。ローカル既定では Cookie がポートを区別しない
+  ため `COOKIE_DOMAIN` は不要（未設定のままで両サービスに届く）。
+- **待ち受けポートの記載を新設した。** `docs/OPERATIONS.md`「待ち受けポート一覧」に、前段プロキシ →
+  ホスト公開ポート（`.env`）→ コンテナ内ポート（固定）の 3 段を表で整理し、ローカル開発時の待ち受けも
+  併記した。README にも要約表を置いた。「単一オリジンで公開したいとき」の手順も追加した。
+- **README のシステム構成図を現行構成へ更新した。** 単一サービス（`web` が IdP 本体）のままだった図を、
+  proxy / api / web / mariadb ＋ migrate の 4 サービス構成と待ち受けポートを含む図へ差し替え、
+  認可コードフローの図も api（`/authorize`・`/token`）と web（ログイン画面 → `/internal/authenticate`）の
+  分担を反映した形に更新した。
+- ADR-0007 §2・ADR-0012 §1・ADR-0015 §Decision 3 の「単一オリジンを既定とする」記述に ADR-0016 への
+  参照を追記した。
+
 ## 2026-07-25（api/web の別ドメイン公開をデプロイ構成として実装した。ADR-0015）
 
 - **`PUBLISH_TOPOLOGY` を新設**（`single-origin` 既定 / `domain-split`）。`domain-split` では

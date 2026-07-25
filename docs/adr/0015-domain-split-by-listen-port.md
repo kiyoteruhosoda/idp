@@ -44,6 +44,8 @@ ADR-0012 §6 は「パス振り分け表に代えて、ドメインごとの vho
 3. **単一オリジン・パスルーティング構成は既定として残す**（ADR-0012 §1）。切替は `.env` の
    `PUBLISH_TOPOLOGY`（`single-origin` 既定 / `domain-split`）のみ。`domain-split` のとき
    `scripts/deploy.sh` が `docker-compose.domain-split.yml` を重ねる。未知の値は起動を止める。
+   → **既定は ADR-0016 で `domain-split` へ変更した**（`single-origin` は明示指定で継続サポート。
+   切替方法と fail-fast の挙動は本項のまま）。
 4. **コンテナ内 8080 を web に割り当てる。** proxy のヘルスチェック（`127.0.0.1:8080/readyz`）と
    ベース Compose のポート公開定義（`${WEB_BIND_HOST}:${WEB_PORT}:8080`）を無変更で流用でき、
    `WEB_PORT` の意味（＝ブラウザ向け HTML の公開ポート）が両構成で一貫する。新設は `API_PORT` /

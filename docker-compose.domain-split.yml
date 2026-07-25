@@ -1,10 +1,11 @@
-# 別ドメイン公開（ADR-0012・ADR-0015）用の override。単一オリジン構成の Compose に重ねて使う。
+# 別ドメイン公開（ADR-0012・ADR-0015）用の override。ベース Compose に重ねて使う。
 # `docker-compose.db-debug.yml` と同じ「override で足すだけ」の形。
 #
 #   docker compose -f docker-compose.deploy.yml -f docker-compose.domain-split.yml up -d
 #
-# 手で -f を並べる必要はない。`.env` に `PUBLISH_TOPOLOGY=domain-split` を設定すれば
-# `scripts/deploy.sh` が本ファイルを自動で重ねる。
+# 手で -f を並べる必要はない。`PUBLISH_TOPOLOGY` の**既定が domain-split**（ADR-0016）なので、
+# `scripts/deploy.sh` は `.env` に指定が無くても本ファイルを重ねる。単一オリジンへ戻すときだけ
+# `.env` に `PUBLISH_TOPOLOGY=single-origin` を明記する（そのとき本ファイルは重ならない）。
 #
 # 変更点は proxy の 2 点だけ:
 #   1. nginx 設定をポート分割版へ差し替える（volumes はマウント先パスをキーにマージされる）
