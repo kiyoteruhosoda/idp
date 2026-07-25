@@ -48,7 +48,7 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         // api の公開オリジン（= OIDC issuer。ブラウザを api へ向けるリダイレクトの基点）。
-        let issuer = normalize_issuer(env_or("ISSUER", "http://localhost:8080"));
+        let issuer = normalize_base_url(env_or("ISSUER", "http://localhost:8080"));
         // web 自身の公開オリジン（ADR-0012 §2）。未設定は issuer と同一オリジン（単一オリジン構成）。
         let public_web_base_url = normalize_base_url(env_or("PUBLIC_WEB_BASE_URL", &issuer));
         // Cookie の Secure 属性。既定は自オリジン（PUBLIC_WEB_BASE_URL）のスキームに従う
@@ -155,10 +155,6 @@ impl Config {
     }
 }
 
-fn normalize_issuer(raw: String) -> String {
-    raw.trim_end_matches('/').to_string()
-}
-
 /// 本番相当で開発用デフォルトのシークレットが使われていたら起動を失敗させる。
 ///
 /// 本番相当の判定には **issuer と web 自身の公開オリジンの両方**を見る（ADR-0012 §2 で web は
@@ -226,8 +222,18 @@ fn load_csrf_secret() -> anyhow::Result<([u8; 32], bool)> {
     }
 }
 
+/// 公開ベース URL を正規化する: 末尾スラッシュを落とし、**スキームを小文字化**する。
+///
+/// URI のスキームは大小を区別しない（RFC 3986 §3.1）。`HTTPS://id.example.com` のような表記でも
+/// https と判定できないと、Cookie の `Secure` 判定と本番シークレットの fail-fast（どちらも
+/// スキームを見る）がすり抜ける。ホスト・パスはそのまま残す（issuer は ID Token の `iss` と
+/// 完全一致させる必要があるため、こちらで勝手に変えない）。
 fn normalize_base_url(raw: String) -> String {
-    raw.trim_end_matches('/').to_string()
+    let trimmed = raw.trim_end_matches('/');
+    match trimmed.split_once("://") {
+        Some((scheme, rest)) => format!("{}://{rest}", scheme.to_ascii_lowercase()),
+        None => trimmed.to_string(),
+    }
 }
 
 fn env_lookup(key: &str) -> Option<String> {
@@ -267,6 +273,21 @@ mod tests {
     }
 
     #[test]
+    fn base_url_scheme_is_lowercased_but_host_is_left_alone() {
+        // スキームは大小を区別しない（RFC 3986 §3.1）。https 判定（Cookie の Secure・本番
+        // シークレットの fail-fast）が `HTTPS://` 表記をすり抜けないように正規化する。
+        assert_eq!(
+            normalize_base_url("HTTPS://ID.Example.com/".to_string()),
+            "https://ID.Example.com"
+        );
+        // スキームを持たない値は素通しする（誤って壊さない）。
+        assert_eq!(
+            normalize_base_url("id.example.com".to_string()),
+            "id.example.com"
+        );
+    }
+
+    #[test]
     fn production_secrets_are_required_when_issuer_is_https() {
         let issuer = "https://idp.example.com";
         assert!(ensure_production_secrets(issuer, issuer, true, false).is_err());
@@ -300,6 +321,20 @@ mod tests {
             "https://id.example.com",
             true,
             false
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn uppercase_https_scheme_is_still_treated_as_production() {
+        // `HTTPS://` 表記でも fail-fast が効く（`from_env` は normalize_base_url を通すため、
+        // ensure_production_secrets には小文字化済みの値が渡る）。
+        let public_web_base_url = normalize_base_url("HTTPS://id.example.com".to_string());
+        assert!(ensure_production_secrets(
+            "http://api-internal:8080",
+            &public_web_base_url,
+            false,
+            true
         )
         .is_err());
     }

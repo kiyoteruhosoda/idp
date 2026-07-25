@@ -473,8 +473,18 @@ impl<'a> ConfigResolver<'a> {
     }
 }
 
+/// 公開ベース URL を正規化する: 末尾スラッシュを落とし、**スキームを小文字化**する。
+///
+/// URI のスキームは大小を区別しない（RFC 3986 §3.1）。`HTTPS://idp.example.com` のような表記でも
+/// https と判定できないと、Cookie の `Secure` 判定と本番シークレットの fail-fast（どちらもスキームを
+/// 見る）がすり抜ける。ホスト・パスはそのまま残す（issuer は ID Token の `iss` と完全一致させる
+/// 必要があるため、こちらで勝手に変えない）。
 fn normalize_issuer(raw: String) -> String {
-    raw.trim_end_matches('/').to_string()
+    let trimmed = raw.trim_end_matches('/');
+    match trimmed.split_once("://") {
+        Some((scheme, rest)) => format!("{}://{rest}", scheme.to_ascii_lowercase()),
+        None => trimmed.to_string(),
+    }
 }
 
 /// 本番相当（issuer が `https://`）で開発用デフォルトのシークレットが使われていたら起動を失敗させる。
@@ -620,6 +630,13 @@ mod tests {
         assert_eq!(
             normalize_issuer("https://idp.example.com".to_string()),
             "https://idp.example.com"
+        );
+        // スキームは大小を区別しない（RFC 3986 §3.1）ため小文字化する。これが無いと
+        // `HTTPS://` 表記で Cookie の Secure 判定・本番シークレットの fail-fast がすり抜ける。
+        // ホストは ID Token の `iss` と完全一致させる必要があるためそのまま残す。
+        assert_eq!(
+            normalize_issuer("HTTPS://IdP.example.com/".to_string()),
+            "https://IdP.example.com"
         );
     }
 

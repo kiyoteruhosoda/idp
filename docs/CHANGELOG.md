@@ -16,6 +16,10 @@
   `PUBLIC_WEB_BASE_URL` が `https://` の場合も開発用デフォルトの `INTERNAL_SERVICE_TOKEN` /
   `CSRF_SECRET` での起動を拒否する。web を https で公開しつつ `ISSUER` を内部 http URL に取り違えた
   構成で、api と共有する CSRF 鍵が既知の開発用値のまま動く（CSRF トークンを偽造できる）のを防ぐ。
+- **公開ベース URL のスキームを正規化時に小文字化**した（api/web 双方）。URI のスキームは大小を
+  区別しない（RFC 3986 §3.1）が、`https://` の前方一致で判定していたため `HTTPS://` 表記では
+  Cookie の `Secure` 付与と上記の本番シークレット検証がすり抜けていた。ホスト・パスは
+  変更しない（issuer は ID Token の `iss` と完全一致させる必要があるため）。
 
 ## 2026-07-25（api/web の別ドメイン（サブドメイン）公開に対応した。MT29 / ADR-0012）
 
