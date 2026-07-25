@@ -48,6 +48,10 @@ sqlx マイグレーション（MariaDB）を管理する。
   ゲストの一時停止用。CHECK 制約の張り替えのみで既存行は変更しない（expand）。`down` は残存する
   `SUSPENDED` 行を `INVITED` へ倒してから旧 CHECK へ戻す（`ACTIVE` へ戻すと、止めたはずのゲストの
   アクセスがロールバックで復活してしまうため）。
+- `0015_drop_saml_identity_providers`: 0008 で追加した外部 IdP 設定表 `saml_identity_providers` を削除する
+  （参照コードは既に存在しない。ADR-0004 §6 の expand/contract の contract 側。MT28）。`down` は 0008 と
+  同一定義で再作成する（ENGINE・CHARSET・COLLATE を含めて一致させないと外部キーが errno 150 で失敗する）。
+  行データは復元しない。
 
 root テナントの UUID は固定値 `00000000-0000-7000-8000-000000000001`（全環境共通・git 管理。ADR-0011）。
 管理者ログイン URL は `/00000000-0000-7000-8000-000000000001/...`。

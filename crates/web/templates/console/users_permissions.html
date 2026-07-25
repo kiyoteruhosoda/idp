@@ -2,14 +2,35 @@
 {% block content %}
 <h2 class="h4 mb-3">{{ messages.get("admin-users-title") }}</h2>
 {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
+{% if saved %}<div class="alert alert-success" role="status"><i class="fa-solid fa-circle-check me-2" aria-hidden="true"></i>{{ messages.get("admin-users-profile-saved") }}</div>{% endif %}
 <div class="card mb-4">
   <div class="card-body">
-    <dl class="row mb-0">
-      <dt class="col-sm-3">{{ messages.get("admin-user-col-email") }}</dt><dd class="col-sm-9">{{ user.email }}</dd>
-      <dt class="col-sm-3">{{ messages.get("admin-user-col-username") }}</dt><dd class="col-sm-9">{{ user.preferred_username.as_deref().unwrap_or("-") }}</dd>
+    <dl class="row">
       <dt class="col-sm-3">{{ messages.get("admin-user-col-id") }}</dt><dd class="col-sm-9"><code>{{ user.id }}</code></dd>
-      <dt class="col-sm-3">{{ messages.get("admin-user-col-status") }}</dt><dd class="col-sm-9">{{ user.status }}</dd>
+      <dt class="col-sm-3">{{ messages.get("admin-user-col-status") }}</dt><dd class="col-sm-9 mb-0">{{ user.status }}</dd>
     </dl>
+    <h3 class="h6">{{ messages.get("admin-users-profile-title") }}</h3>
+    <p class="text-muted small">{{ messages.get("admin-users-profile-hint") }}</p>
+    <form method="post" action="{{ tenant }}/admin/users/{{ user.id }}/profile">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <div class="row g-3">
+        <div class="col-md-4">
+          <label class="form-label" for="profile-email">{{ messages.get("admin-user-col-email") }}</label>
+          <input type="email" class="form-control" id="profile-email" name="email" value="{{ user.email }}" autocomplete="off" required>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label" for="profile-username">{{ messages.get("admin-user-col-username") }}</label>
+          <input type="text" class="form-control" id="profile-username" name="preferred_username" value="{{ user.preferred_username.as_deref().unwrap_or("") }}" autocomplete="off" required>
+          <div class="form-text">{{ messages.get("admin-users-profile-username-hint") }}</div>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label" for="profile-name">{{ messages.get("admin-users-field-name") }}</label>
+          <input type="text" class="form-control" id="profile-name" name="name" value="{{ user.name.as_deref().unwrap_or("") }}" autocomplete="off">
+          <div class="form-text">{{ messages.get("admin-users-profile-name-hint") }}</div>
+        </div>
+      </div>
+      <button type="submit" class="btn btn-primary mt-3"><i class="fa-solid fa-floppy-disk me-2" aria-hidden="true"></i>{{ messages.get("admin-users-profile-save") }}</button>
+    </form>
   </div>
 </div>
 <h3 class="h5 mb-3">{{ messages.get("admin-permissions-current") }}</h3>
@@ -50,7 +71,6 @@
   </div>
 </div>
 <div class="d-flex gap-2">
-  <a class="btn btn-outline-secondary" href="{{ tenant }}/admin/members">{{ messages.get("admin-members-back") }}</a>
   <a class="btn btn-outline-secondary" href="{{ tenant }}/admin/members">{{ messages.get("admin-members-back") }}</a>
 </div>
 {% endblock %}

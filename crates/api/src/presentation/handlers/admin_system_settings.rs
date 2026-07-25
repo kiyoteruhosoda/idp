@@ -18,6 +18,7 @@ use crate::presentation::dto::{
 };
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
+use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
 use axum::extract::{Extension, State};
@@ -71,11 +72,13 @@ pub async fn get_system_settings(
         (status = 403, description = "権限不足（idp.system.admin 必須）"),
     )
 )]
+#[allow(clippy::too_many_arguments)]
 pub async fn update_runtime_setting(
     RequirePerms(admin, _): RequirePerms<IdpSystemAdmin>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
     headers: HeaderMap,
     Json(body): Json<UpdateRuntimeSettingRequest>,
 ) -> Result<Json<SystemSettingsResponse>, ApiError> {
@@ -89,7 +92,11 @@ pub async fn update_runtime_setting(
         .update_runtime_setting(tenant.context(), &body.key, body.value, admin.user_id, &ctx)
         .await
         .map_err(|e| match e {
-            DomainError::InvalidValue(m) => ApiError::BadRequest(m),
+            // ランタイム設定の値の書式違反（キー未知・パース不能）。運用者向けの管理 API であり、
+            // どのキーが不正かは要求本文から自明なため、共通の「不正なリクエスト」を返す。
+            DomainError::InvalidValue(_) => {
+                ApiError::BadRequest(ApiMessages::new(locale).get("api-runtime-setting-invalid"))
+            }
             other => ApiError::Internal(other.to_string()),
         })?;
     let smtp = state

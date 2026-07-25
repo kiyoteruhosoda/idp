@@ -70,8 +70,10 @@ pub async fn create(
         ));
     }
 
+    // api のバリデーション/競合メッセージをこの画面へ出すため、決定言語を引き継ぐ（MT20）。
     let result = state
         .api
+        .for_locale(locale(&headers))
         .create_invitation(&correlation.0, &tenant.0, &sso(&headers), &form.user_id)
         .await;
     let messages = Messages::new(locale(&headers));

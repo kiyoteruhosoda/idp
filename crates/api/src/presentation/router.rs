@@ -12,7 +12,7 @@ use crate::presentation::security_headers::add_security_headers;
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::resolve_tenant;
 use axum::middleware;
-use axum::routing::{get, post, put};
+use axum::routing::{get, patch, post, put};
 use axum::Router;
 use tower_http::trace::TraceLayer;
 use utoipa::OpenApi;
@@ -217,6 +217,10 @@ pub fn build(state: AppState) -> Router {
                 .delete(admin_users::delete_user),
         )
         // 利用者のパスワード再発行（must_change_password 付き自動生成）。idp.tenant.admin 必須。
+        .route(
+            "/admin/users/{user_id}/profile",
+            patch(admin_users::update_user_profile),
+        )
         .route(
             "/admin/users/{user_id}/password-reset",
             post(admin_users::reset_user_password),

@@ -161,6 +161,30 @@ mod tests {
         assert!(console.contains(&format!("/assets/console.js?v={v}")));
     }
 
+    /// MT20: 管理コンソールの共通レイアウトに言語切替 UI がある（未ログイン画面にも出す。
+    /// ログイン前に言語を変えられないと、読めない言語のままログインを強いられる）。
+    /// `action` を持たない GET フォームなので、レイアウトを継承する全画面で現在のパスへ送信される。
+    #[test]
+    fn console_layout_offers_a_language_switcher() {
+        let messages = Messages::new(Locale::Ja);
+        for admin in [Some("admin-1"), None] {
+            let html = render(&ConsoleHome {
+                messages: &messages,
+                tenant: "/t",
+                admin,
+                tenant_name: None,
+            });
+            assert!(
+                html.contains(&messages.get("admin-language-switch")),
+                "admin={admin:?}: {html}"
+            );
+            assert!(html.contains(r#"name="lang" value="ja""#), "{html}");
+            assert!(html.contains(r#"name="lang" value="en""#), "{html}");
+            // 送信先は現在のパス（`action` を持たない）。
+            assert!(!html.contains(r#"<form method="get" action"#), "{html}");
+        }
+    }
+
     /// `data-confirm` を持つテンプレートは、必ず共通スクリプトを読み込むレイアウトを継承していること。
     /// 継承していないと確認ダイアログが黙って出ないまま破壊的操作が送信される。
     #[test]
@@ -400,6 +424,8 @@ pub struct UsersPermissions<'a> {
     pub available: &'a [String],
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
+    /// プロフィール保存の完了通知（Post/Redirect/Get で戻ったときに成功バナーを出す。MT25）。
+    pub saved: bool,
 }
 
 /// 利用者作成フォーム（`GET/POST /{tenant_id}/admin/users/new`、ADR-0009 §5・§6）。
@@ -653,6 +679,8 @@ pub struct TenantsConsole<'a> {
     pub tenants: &'a [TenantView],
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
+    /// 更新完了通知（Post/Redirect/Get で戻ったときに成功バナーを出す。MT23）。
+    pub saved: bool,
 }
 
 /// テナント切り替え画面（`GET /{tenant_id}/admin/switch-tenant`）。ログイン中ユーザーが `ACTIVE` な

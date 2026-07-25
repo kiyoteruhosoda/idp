@@ -117,8 +117,10 @@ pub async fn create(
         "preferred_username": normalize(&form.preferred_username),
         "name": normalize(&form.name),
     });
+    // api のバリデーション/競合メッセージをこの画面へ出すため、決定言語を引き継ぐ（MT20）。
     let result = state
         .api
+        .for_locale(locale(&headers))
         .create_user(&correlation.0, &tenant.0, &sso(&headers), body)
         .await;
     let messages = Messages::new(locale(&headers));
@@ -159,6 +161,9 @@ fn normalize(s: &str) -> Option<&str> {
 pub struct ViewQuery {
     #[serde(default)]
     pub error: Option<String>,
+    /// 完了通知（Post/Redirect/Get。`profile` = プロフィール保存。MT25）。
+    #[serde(default)]
+    pub saved: Option<String>,
 }
 
 pub async fn view(
@@ -209,9 +214,73 @@ pub async fn view(
     let csrf = csrf_from(&headers, state.config.csrf_secret());
     let error_key = query.error.as_deref().and_then(error_key_for);
     Html(render_permissions(
-        &messages, &tenant, &admin, &user, &codes, &available, &csrf, error_key,
+        &messages,
+        &tenant,
+        &admin,
+        &user,
+        &codes,
+        &available,
+        &csrf,
+        error_key,
+        query.saved.as_deref() == Some("profile"),
     ))
     .into_response()
+}
+
+// ── プロフィール編集（MT25）──────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct ProfileForm {
+    pub email: String,
+    #[serde(default)]
+    pub preferred_username: String,
+    #[serde(default)]
+    pub name: String,
+    pub csrf_token: String,
+}
+
+/// 利用者プロフィールの更新（`POST /{tenant_id}/admin/users/{user_id}/profile`。MT25）。
+/// api の `PATCH /admin/users/{user_id}/profile` に委ね、Post/Redirect/Get で詳細画面へ戻す。
+/// 検証（メール書式・長さ・一意性）は api 側が唯一の出所で、web は結果をエラークエリへ写すだけ。
+pub async fn update_profile(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Path((_, user_id)): Path<(String, String)>,
+    Form(form): Form<ProfileForm>,
+) -> Response {
+    match resolve_admin(&state, &correlation, &tenant, &headers).await {
+        AdminResolution::Ok(_) => {}
+        AdminResolution::Reject(resp) => return resp,
+    }
+    let base = format!("{}{USERS_SEGMENT}/{user_id}/permissions", tenant.prefix());
+    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
+        return found(&format!("{base}?error=csrf"));
+    }
+    match state
+        .api
+        .update_user_profile(
+            &correlation.0,
+            &tenant.0,
+            &sso(&headers),
+            &user_id,
+            serde_json::json!({
+                "email": form.email.trim(),
+                "preferred_username": form.preferred_username.trim(),
+                "name": form.name.trim(),
+            }),
+        )
+        .await
+    {
+        Ok(_) => found(&format!("{base}?saved=profile")),
+        Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
+        Err(AdminApiError::Forbidden) => forbidden_response(&headers),
+        Err(AdminApiError::NotFound) => found(&format!("{base}?error=notfound")),
+        Err(AdminApiError::Validation(_)) => found(&format!("{base}?error=profile-invalid")),
+        Err(AdminApiError::Conflict(_)) => found(&format!("{base}?error=profile-conflict")),
+        Err(_) => found(&format!("{base}?error=internal")),
+    }
 }
 
 // ── 付与・剥奪の実行（Post/Redirect/Get） ─────────────────────────────────────
@@ -319,6 +388,8 @@ fn error_key_for(error: &str) -> Option<&'static str> {
         "csrf" => Some("admin-error-csrf"),
         "code" => Some("admin-permission-error-unknown"),
         "notfound" => Some("admin-user-not-found-message"),
+        "profile-invalid" => Some("admin-users-profile-error-invalid"),
+        "profile-conflict" => Some("admin-users-profile-error-conflict"),
         "internal" => Some("admin-error-internal"),
         _ => None,
     }
@@ -354,6 +425,7 @@ fn render_permissions(
     available: &[String],
     csrf: &str,
     error_key: Option<&str>,
+    saved: bool,
 ) -> String {
     render(&UsersPermissions {
         messages,
@@ -364,6 +436,7 @@ fn render_permissions(
         available,
         csrf,
         error_key,
+        saved,
     })
 }
 
@@ -471,6 +544,7 @@ mod tests {
             &["idp.admin".into(), "idp.viewer".into()],
             "csrf123",
             None,
+            false,
         );
         assert!(html.contains("idp.admin"));
         assert!(html.contains("permissions/grant"));

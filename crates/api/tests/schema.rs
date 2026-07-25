@@ -34,6 +34,10 @@ const EXPECTED_TABLES: &[&str] = &[
     "audit_log",
 ];
 
+/// contract 済み（DROP マイグレーション適用後）で存在してはならないテーブル。
+/// 追記型マイグレーションでは down で復活しうるため、up 適用後の状態を明示的に固定する。
+const DROPPED_TABLES: &[&str] = &["saml_identity_providers"];
+
 async fn count(pool: &MySqlPool, sql: &str) -> i64 {
     sqlx::query(sql)
         .fetch_one(pool)
@@ -84,6 +88,19 @@ async fn migrations_apply_and_multi_tenant_guarantees_hold() {
         .expect("query information_schema")
         .get::<i64, _>(0);
         assert_eq!(n, 1, "table `{table}` must exist after migration");
+    }
+
+    for table in DROPPED_TABLES {
+        let n = sqlx::query(
+            "SELECT COUNT(*) FROM information_schema.tables \
+             WHERE table_schema = DATABASE() AND table_name = ?",
+        )
+        .bind(table)
+        .fetch_one(&pool)
+        .await
+        .expect("query information_schema")
+        .get::<i64, _>(0);
+        assert_eq!(n, 0, "table `{table}` must be dropped after migration");
     }
 
     // --- seed: root テナント（固定 UUID。ADR-0011） --------------------

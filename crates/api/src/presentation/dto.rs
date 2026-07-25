@@ -423,6 +423,20 @@ pub struct UpdateUserStatusRequest {
     pub status: String,
 }
 
+/// 管理者による利用者プロフィール更新リクエスト（`PATCH /{tenant_id}/admin/users/{user_id}/profile`。
+/// MT25）。省略したフィールドは変更しない（部分更新）。`preferred_username` はログイン識別子であり、
+/// 変更するとその利用者のログイン名が変わる（空文字での解除は 400）。`name` に空文字を渡すと
+/// 表示名を解除する。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateUserProfileRequest {
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub preferred_username: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
 /// 管理者によるパスワード再発行レスポンス。`generated_password` は**この応答でのみ**平文で返る
 /// （`must_change_password` が設定され、本人が次回ログインで変更する。ログ・監査には出さない）。
 #[derive(Debug, Serialize, ToSchema)]

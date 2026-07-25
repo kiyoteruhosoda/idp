@@ -11,6 +11,7 @@ use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
+use crate::domain::message::MessageKey;
 use crate::domain::permission::{self, PermissionCode};
 use crate::domain::repositories::{
     TenantMembershipRepository, UserPermissionRepository, UserRepository,
@@ -23,11 +24,11 @@ use uuid::Uuid;
 #[derive(Debug, thiserror::Error)]
 pub enum PermissionManagementError {
     #[error("validation error: {0}")]
-    Validation(String),
+    Validation(MessageKey),
     #[error("not found")]
     NotFound,
     #[error("forbidden: {0}")]
-    Forbidden(String),
+    Forbidden(MessageKey),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -125,8 +126,9 @@ impl PermissionManagementService {
         actor: Uuid,
         ctx: &RequestContext,
     ) -> Result<Vec<String>, PermissionManagementError> {
-        let code = PermissionCode::parse(code)
-            .map_err(|e| PermissionManagementError::Validation(e.to_string()))?;
+        let code = PermissionCode::parse(code).map_err(|_| {
+            PermissionManagementError::Validation(MessageKey::new("api-permission-unknown"))
+        })?;
         self.ensure_user_in_tenant(tenant, target).await?;
         self.ensure_system_admin_change_allowed(tenant, &code, actor)
             .await?;
@@ -161,8 +163,9 @@ impl PermissionManagementService {
         actor: Uuid,
         ctx: &RequestContext,
     ) -> Result<Vec<String>, PermissionManagementError> {
-        let code = PermissionCode::parse(code)
-            .map_err(|e| PermissionManagementError::Validation(e.to_string()))?;
+        let code = PermissionCode::parse(code).map_err(|_| {
+            PermissionManagementError::Validation(MessageKey::new("api-permission-unknown"))
+        })?;
         self.ensure_user_in_tenant(tenant, target).await?;
         self.ensure_system_admin_change_allowed(tenant, &code, actor)
             .await?;
@@ -239,9 +242,9 @@ impl PermissionManagementService {
             .await
         {
             Ok(true) => Ok(()),
-            Ok(false) => Err(PermissionManagementError::Forbidden(
-                "only idp.system.admin holders may grant or revoke idp.system.admin".to_string(),
-            )),
+            Ok(false) => Err(PermissionManagementError::Forbidden(MessageKey::new(
+                "api-permission-system-admin-forbidden",
+            ))),
             Err(e) => Err(PermissionManagementError::Internal(e.to_string())),
         }
     }
@@ -255,7 +258,9 @@ fn audit_reason(code: &PermissionCode, target: Uuid) -> String {
 fn map_repo_error(e: DomainError) -> PermissionManagementError {
     match e {
         // 未知の権限コード（`permissions` マスタに無い）等は不正リクエスト扱い。
-        DomainError::InvalidValue(m) => PermissionManagementError::Validation(m),
+        DomainError::InvalidValue(_) => {
+            PermissionManagementError::Validation(MessageKey::new("api-permission-unknown"))
+        }
         other => PermissionManagementError::Internal(other.to_string()),
     }
 }

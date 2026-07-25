@@ -145,10 +145,12 @@ fn to_response(provider: &SamlServiceProvider) -> SamlServiceProviderResponse {
 fn map_error(error: SamlServiceProviderManagementError, locale: ApiLocale) -> ApiError {
     let messages = ApiMessages::new(locale);
     match error {
-        SamlServiceProviderManagementError::Validation(_) => {
-            ApiError::BadRequest(messages.get("api-invalid-request"))
+        SamlServiceProviderManagementError::Validation(m) => {
+            ApiError::BadRequest(messages.get_message(&m))
         }
-        SamlServiceProviderManagementError::Conflict(message) => ApiError::Conflict(message),
+        SamlServiceProviderManagementError::Conflict(m) => {
+            ApiError::Conflict(messages.get_message(&m))
+        }
         SamlServiceProviderManagementError::NotFound => {
             ApiError::NotFound(messages.get("api-saml-sp-not-found"))
         }

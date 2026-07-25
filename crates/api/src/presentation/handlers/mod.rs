@@ -86,9 +86,9 @@ pub(crate) fn map_permission_management_error(
 ) -> ApiError {
     let msgs = ApiMessages::new(locale);
     match e {
-        PermissionManagementError::Validation(m) => ApiError::BadRequest(m),
+        PermissionManagementError::Validation(m) => ApiError::BadRequest(msgs.get_message(&m)),
         PermissionManagementError::NotFound => ApiError::NotFound(msgs.get("api-user-not-found")),
-        PermissionManagementError::Forbidden(m) => ApiError::Forbidden(m),
+        PermissionManagementError::Forbidden(m) => ApiError::Forbidden(msgs.get_message(&m)),
         PermissionManagementError::Internal(m) => ApiError::Internal(m),
     }
 }

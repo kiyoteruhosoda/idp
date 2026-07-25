@@ -13,6 +13,7 @@ use crate::domain::client::Client;
 use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
 use crate::domain::id_generator::IdGenerator;
+use crate::domain::message::MessageKey;
 use crate::domain::password::PasswordHasher;
 use crate::domain::repositories::ClientRepository;
 use crate::domain::tenant_context::TenantContext;
@@ -65,11 +66,11 @@ pub struct RegisteredClient {
 #[derive(Debug, thiserror::Error)]
 pub enum ClientManagementError {
     #[error("validation error: {0}")]
-    Validation(String),
+    Validation(MessageKey),
     #[error("not found")]
     NotFound,
     #[error("conflict: {0}")]
-    Conflict(String),
+    Conflict(MessageKey),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -153,7 +154,10 @@ impl ClientManagementService {
         };
 
         self.clients.create(&client).await.map_err(|e| match e {
-            DomainError::Conflict(m) => ClientManagementError::Conflict(m),
+            // DB の一意制約違反はテナント内の client_id 重複しかない（他の一意キーを持たない）。
+            DomainError::Conflict(_) => {
+                ClientManagementError::Conflict(MessageKey::new("api-client-id-conflict"))
+            }
             other => ClientManagementError::Internal(other.to_string()),
         })?;
 
@@ -252,9 +256,9 @@ impl ClientManagementService {
     ) -> Result<(Client, String), ClientManagementError> {
         let mut client = self.load(tenant, client_id).await?;
         if client.client_type != ClientType::Confidential {
-            return Err(ClientManagementError::Validation(
-                "only confidential clients have a secret".to_string(),
-            ));
+            return Err(ClientManagementError::Validation(MessageKey::new(
+                "api-client-secret-public",
+            )));
         }
 
         let plain = crate::domain::crypto::random_token(CLIENT_SECRET_BYTES);
@@ -300,9 +304,9 @@ impl ClientManagementService {
 fn validate_app_name(app_name: String) -> Result<String, ClientManagementError> {
     let trimmed = app_name.trim().to_string();
     if trimmed.is_empty() {
-        return Err(ClientManagementError::Validation(
-            "app_name must not be empty".to_string(),
-        ));
+        return Err(ClientManagementError::Validation(MessageKey::new(
+            "api-client-app-name-empty",
+        )));
     }
     Ok(trimmed)
 }
@@ -310,17 +314,18 @@ fn validate_app_name(app_name: String) -> Result<String, ClientManagementError> 
 /// redirect URI 群を検証する。1 件以上・重複なし・各 URI が §2.3 の制約を満たすこと。
 fn validate_redirect_uris(uris: &[String]) -> Result<Vec<String>, ClientManagementError> {
     if uris.is_empty() {
-        return Err(ClientManagementError::Validation(
-            "at least one redirect_uri is required".to_string(),
-        ));
+        return Err(ClientManagementError::Validation(MessageKey::new(
+            "api-client-redirect-uris-empty",
+        )));
     }
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::with_capacity(uris.len());
     for uri in uris {
         validate_redirect_uri(uri)?;
         if !seen.insert(uri.as_str()) {
-            return Err(ClientManagementError::Validation(format!(
-                "duplicate redirect_uri: {uri}"
+            return Err(ClientManagementError::Validation(MessageKey::with_value(
+                "api-client-redirect-uri-duplicate",
+                uri,
             )));
         }
         out.push(uri.clone());
@@ -331,20 +336,27 @@ fn validate_redirect_uris(uris: &[String]) -> Result<Vec<String>, ClientManageme
 /// 単一 redirect URI の制約（設計仕様 §2.3）: 絶対 http(s) URL・フラグメント禁止・ワイルドカード禁止。
 fn validate_redirect_uri(uri: &str) -> Result<(), ClientManagementError> {
     if uri.contains('*') {
-        return Err(ClientManagementError::Validation(format!(
-            "redirect_uri must not contain a wildcard: {uri}"
+        return Err(ClientManagementError::Validation(MessageKey::with_value(
+            "api-client-redirect-uri-wildcard",
+            uri,
         )));
     }
-    let parsed = url::Url::parse(uri)
-        .map_err(|_| ClientManagementError::Validation(format!("invalid redirect_uri: {uri}")))?;
+    let parsed = url::Url::parse(uri).map_err(|_| {
+        ClientManagementError::Validation(MessageKey::with_value(
+            "api-client-redirect-uri-invalid",
+            uri,
+        ))
+    })?;
     if !matches!(parsed.scheme(), "http" | "https") {
-        return Err(ClientManagementError::Validation(format!(
-            "redirect_uri scheme must be http or https: {uri}"
+        return Err(ClientManagementError::Validation(MessageKey::with_value(
+            "api-client-redirect-uri-scheme",
+            uri,
         )));
     }
     if parsed.fragment().is_some() {
-        return Err(ClientManagementError::Validation(format!(
-            "redirect_uri must not contain a fragment: {uri}"
+        return Err(ClientManagementError::Validation(MessageKey::with_value(
+            "api-client-redirect-uri-fragment",
+            uri,
         )));
     }
     Ok(())
@@ -353,25 +365,29 @@ fn validate_redirect_uri(uri: &str) -> Result<(), ClientManagementError> {
 /// scope 群を検証する。1 件以上・既知の OIDC scope のみ・`openid` を含み・重複なしであること。
 fn validate_scopes(scopes: &[String]) -> Result<Vec<String>, ClientManagementError> {
     if scopes.is_empty() {
-        return Err(ClientManagementError::Validation(
-            "at least one scope is required".to_string(),
-        ));
+        return Err(ClientManagementError::Validation(MessageKey::new(
+            "api-client-scopes-empty",
+        )));
     }
     let mut seen = std::collections::HashSet::new();
     for scope in scopes {
         Scope::parse(scope).map_err(|_| {
-            ClientManagementError::Validation(format!("unsupported scope: {scope}"))
+            ClientManagementError::Validation(MessageKey::with_value(
+                "api-client-scope-unsupported",
+                scope,
+            ))
         })?;
         if !seen.insert(scope.as_str()) {
-            return Err(ClientManagementError::Validation(format!(
-                "duplicate scope: {scope}"
+            return Err(ClientManagementError::Validation(MessageKey::with_value(
+                "api-client-scope-duplicate",
+                scope,
             )));
         }
     }
     if !scopes.iter().any(|s| s == Scope::OpenId.as_str()) {
-        return Err(ClientManagementError::Validation(
-            "scopes must include `openid`".to_string(),
-        ));
+        return Err(ClientManagementError::Validation(MessageKey::new(
+            "api-client-scopes-missing-openid",
+        )));
     }
     Ok(scopes.to_vec())
 }

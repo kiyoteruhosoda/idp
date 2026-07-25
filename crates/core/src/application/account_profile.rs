@@ -16,6 +16,8 @@ pub enum ProfileOutcome {
         name: Option<String>,
         preferred_username: Option<String>,
         email: String,
+        /// 保存済みの表示言語（`users.language`。未設定なら `None`）。MT20。
+        language: Option<String>,
     },
     /// SSO セッションが無い・期限切れ。
     SessionExpired,
@@ -64,6 +66,7 @@ impl AccountProfileService {
                 name: user.name,
                 preferred_username: user.preferred_username,
                 email: user.email,
+                language: user.language,
             },
             Ok(None) => ProfileOutcome::SessionExpired,
             Err(e) => ProfileOutcome::Internal(e),

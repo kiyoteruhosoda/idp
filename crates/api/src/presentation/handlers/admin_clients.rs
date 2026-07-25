@@ -279,9 +279,9 @@ fn client_response(c: &Client) -> ClientResponse {
 fn map_error(e: ClientManagementError, locale: ApiLocale) -> ApiError {
     let msgs = ApiMessages::new(locale);
     match e {
-        ClientManagementError::Validation(m) => ApiError::BadRequest(m),
+        ClientManagementError::Validation(m) => ApiError::BadRequest(msgs.get_message(&m)),
         ClientManagementError::NotFound => ApiError::NotFound(msgs.get("api-client-not-found")),
-        ClientManagementError::Conflict(m) => ApiError::Conflict(m),
+        ClientManagementError::Conflict(m) => ApiError::Conflict(msgs.get_message(&m)),
         ClientManagementError::Internal(m) => ApiError::Internal(m),
     }
 }

@@ -13,6 +13,7 @@ use crate::handlers::{
     stylesheet, user_settings, vendor_assets, verify_email,
 };
 use crate::i18n::Messages;
+use crate::language::resolve_language;
 use crate::security_headers::add_security_headers;
 use crate::state::WebState;
 use crate::templates::{render, MessagePage};
@@ -126,7 +127,11 @@ pub fn build(state: WebState) -> Router {
             "/admin/tenants",
             get(admin_tenants_console::list).post(admin_tenants_console::create),
         )
-        // 子テナントの削除・管理者パスワード再発行（root のみ）。
+        // 子テナントの編集（表示名・状態。MT23）・削除・管理者パスワード再発行（root のみ）。
+        .route(
+            "/admin/tenants/{child_id}/update",
+            post(admin_tenants_console::update),
+        )
         .route(
             "/admin/tenants/{child_id}/delete",
             post(admin_tenants_console::delete),
@@ -180,6 +185,11 @@ pub fn build(state: WebState) -> Router {
         .route(
             "/admin/users/{user_id}/permissions",
             get(admin_users_console::view),
+        )
+        // プロフィール（メール・ログイン識別子・表示名）の編集（MT25）。
+        .route(
+            "/admin/users/{user_id}/profile",
+            post(admin_users_console::update_profile),
         )
         .route(
             "/admin/users/{user_id}/permissions/grant",
@@ -243,6 +253,12 @@ pub fn build(state: WebState) -> Router {
             "/admin/signing-keys/delete",
             post(admin_signing_keys_console::delete),
         )
+        // 表示言語の決定（MT20）は tenant 解決より内側で行う。`?lang=` / ユーザー設定 / Cookie /
+        // ブラウザ言語の優先順位をここへ一本化し、各ハンドラは `handlers::locale` を呼ぶだけにする。
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            resolve_language,
+        ))
         .route_layer(axum::middleware::from_fn(capture_tenant));
 
     Router::new()
@@ -444,6 +460,95 @@ mod tests {
         assert!(text.contains("<!DOCTYPE html>"));
     }
 
+    /// MT20: 表示言語の決定は middleware が担い、**全画面**で `?lang=` が効く。
+    ///
+    /// 未ログインのログイン画面（api を呼ばずに描画できる画面）で検証する。`?lang=` を付けた
+    /// リクエストは (1) その応答が指定言語で描画され、(2) `lang` Cookie が保存される。
+    /// 以前は画面ごとに `?lang=` を解釈する／しないが分かれていた（設定画面のみ対応）。
+    #[tokio::test]
+    async fn language_query_applies_to_every_page_and_is_persisted() {
+        let tenant = "019f6514-08ea-7138-ad71-838a7bdd3575";
+        let english = Messages::new(crate::i18n::Locale::En).get("login-title");
+        let japanese = Messages::new(crate::i18n::Locale::Ja).get("login-title");
+
+        for (uri, expected, expect_cookie) in [
+            // `?lang=` が最優先（Accept-Language より強い）。
+            (format!("/{tenant}/admin/login?lang=en"), &english, true),
+            (format!("/{tenant}/login?lang=en"), &english, true),
+            // 非対応値は無視して次順位（ここでは Accept-Language 無しのため既定 ja）。
+            (format!("/{tenant}/admin/login?lang=fr"), &japanese, false),
+            // `?lang=` 無しは既定 ja。Cookie も書き換えない。
+            (format!("/{tenant}/admin/login"), &japanese, false),
+        ] {
+            let response = build(test_state())
+                .oneshot(
+                    Request::builder()
+                        .uri(&uri)
+                        .header("accept-language", "ja")
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            let cookies: Vec<String> = response
+                .headers()
+                .get_all(axum::http::header::SET_COOKIE)
+                .iter()
+                .filter_map(|v| v.to_str().ok())
+                .map(str::to_string)
+                .collect();
+            let saved = cookies.iter().any(|c| c.starts_with("lang="));
+            assert_eq!(saved, expect_cookie, "uri={uri} cookies={cookies:?}");
+
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            let text = String::from_utf8_lossy(&body);
+            assert!(text.contains(expected.as_str()), "uri={uri}: {text}");
+        }
+    }
+
+    /// `?lang=` が無ければ `lang` Cookie が効き、それも無ければブラウザ言語へ落ちる。
+    #[tokio::test]
+    async fn language_falls_back_to_the_cookie_then_the_browser() {
+        let tenant = "019f6514-08ea-7138-ad71-838a7bdd3575";
+        let english = Messages::new(crate::i18n::Locale::En).get("login-title");
+        let uri = format!("/{tenant}/admin/login");
+
+        // Cookie はブラウザ言語より優先する。
+        let response = build(test_state())
+            .oneshot(
+                Request::builder()
+                    .uri(&uri)
+                    .header(axum::http::header::COOKIE, "lang=en")
+                    .header("accept-language", "ja")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        assert!(String::from_utf8_lossy(&body).contains(english.as_str()));
+
+        // Cookie が無ければブラウザ言語。
+        let response = build(test_state())
+            .oneshot(
+                Request::builder()
+                    .uri(&uri)
+                    .header("accept-language", "en-US,en;q=0.9")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        assert!(String::from_utf8_lossy(&body).contains(english.as_str()));
+    }
+
     /// nest 配下の `{tenant_id}` ＋ `{user_id}` 等の 2 パラメータルートで `Path` 抽出が成立する
     /// ことの回帰テスト。抽出が不一致だと axum が 500（"Wrong number of path arguments"）を返す。
     /// ここではボディ無し POST のため `Form` 抽出の失敗（4xx）で止まるのが期待値であり、
@@ -460,10 +565,12 @@ mod tests {
             format!("/{tenant}/admin/members/{id}/suspend"),
             format!("/{tenant}/admin/members/{id}/resume"),
             format!("/{tenant}/admin/members/{id}/delete"),
+            format!("/{tenant}/admin/users/{id}/profile"),
             format!("/{tenant}/admin/users/{id}/permissions/grant"),
             format!("/{tenant}/admin/users/{id}/permissions/revoke"),
             format!("/{tenant}/admin/clients/{id}/edit"),
             format!("/{tenant}/admin/clients/{id}/rotate-secret"),
+            format!("/{tenant}/admin/tenants/{id}/update"),
             format!("/{tenant}/admin/tenants/{id}/delete"),
             format!("/{tenant}/admin/tenants/{id}/reset-admin-password"),
             format!("/{tenant}/admin/saml-clients/{id}/update"),

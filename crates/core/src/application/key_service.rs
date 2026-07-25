@@ -3,6 +3,7 @@
 
 use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
+use crate::domain::message::MessageKey;
 use crate::domain::repositories::SigningKeyRepository;
 use crate::domain::signing_key::SigningKey;
 use crate::domain::values::{SigningAlgorithm, SigningKeyStatus};
@@ -26,7 +27,7 @@ pub enum KeyManagementError {
     #[error("not found: {0}")]
     NotFound(String),
     #[error("validation error: {0}")]
-    Validation(String),
+    Validation(MessageKey),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -178,8 +179,8 @@ impl KeyService {
             .ok_or_else(|| KeyManagementError::NotFound(kid.to_string()))?;
 
         if key.status == SigningKeyStatus::Retired {
-            return Err(KeyManagementError::Validation(format!(
-                "key {kid} is already RETIRED"
+            return Err(KeyManagementError::Validation(MessageKey::new(
+                "api-signing-key-retire-failed",
             )));
         }
 
@@ -202,9 +203,9 @@ impl KeyService {
             .ok_or_else(|| KeyManagementError::NotFound(kid.to_string()))?;
 
         if key.status == SigningKeyStatus::Active {
-            return Err(KeyManagementError::Validation(
-                "cannot delete an ACTIVE key; retire it first".to_string(),
-            ));
+            return Err(KeyManagementError::Validation(MessageKey::new(
+                "api-signing-key-delete-failed",
+            )));
         }
 
         self.repo

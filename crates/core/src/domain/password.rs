@@ -1,6 +1,7 @@
 //! パスワードハッシュの抽象（DIP 境界）。実装は infrastructure 層（argon2）。
 
 use crate::domain::error::DomainError;
+use crate::domain::message::MessageKey;
 
 pub trait PasswordHasher: Send + Sync {
     /// 平文パスワードをハッシュ化して PHC 文字列を返す。
@@ -18,15 +19,17 @@ pub const MAX_PASSWORD_LEN: usize = 256;
 
 /// パスワード強度を検証する（登録・変更で共通）。長さはバイト単位で判定する（argon2 の計算量は
 /// バイト長に依存し、マルチバイト文字でも上限が意味を持つようにするため）。
-pub fn validate_password_strength(password: &str) -> Result<(), String> {
+pub fn validate_password_strength(password: &str) -> Result<(), MessageKey> {
     if password.len() < MIN_PASSWORD_LEN {
-        return Err(format!(
-            "password must be at least {MIN_PASSWORD_LEN} characters"
+        return Err(MessageKey::with_value(
+            "api-password-too-short",
+            MIN_PASSWORD_LEN.to_string(),
         ));
     }
     if password.len() > MAX_PASSWORD_LEN {
-        return Err(format!(
-            "password must be at most {MAX_PASSWORD_LEN} characters"
+        return Err(MessageKey::with_value(
+            "api-password-too-long",
+            MAX_PASSWORD_LEN.to_string(),
         ));
     }
     Ok(())
