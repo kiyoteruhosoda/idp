@@ -52,6 +52,13 @@ pub struct Config {
     log_format: LogFormat,
     /// api 経由の DB 上書き値を採用した共有キー（起動ログ用。値は含めない）。
     shared_settings_from_api: Vec<String>,
+    /// 起動時に api から受け取った共有ランタイム設定のスナップショット（MT27）。
+    ///
+    /// 設定画面で「web に未反映の共有キー」を出すために保持する。api の再起動でスナップショットが
+    /// 更新されても web は起動時の値を使い続けるため、両者を突き合わせないと**api だけが新しい値で
+    /// 動いている**状態が誰にも見えない（ADR-0013 §Consequences）。secret はこの経路に載らない
+    /// （ADR-0013 §3）ので保持して問題ない。
+    shared_runtime_settings: HashMap<String, String>,
 }
 
 /// api へ問い合わせるために必要な最小の設定（MT26 / ADR-0013）。
@@ -173,6 +180,7 @@ impl Config {
             hsts_max_age: resolver.parse("HSTS_MAX_AGE", 0u64)?,
             log_format: parse_log_format(),
             shared_settings_from_api: resolver.applied_keys(),
+            shared_runtime_settings: shared.clone(),
         })
     }
 
@@ -230,6 +238,39 @@ impl Config {
     pub fn shared_settings_from_api(&self) -> &[String] {
         &self.shared_settings_from_api
     }
+
+    /// 起動時に api から受け取った共有ランタイム設定。設定画面が現在の api のスナップショットと
+    /// 突き合わせ、web への未反映を検出するために使う（MT27）。
+    pub fn shared_runtime_settings(&self) -> &HashMap<String, String> {
+        &self.shared_runtime_settings
+    }
+}
+
+/// 起動時に web が適用した共有設定と、api が現在配っている共有設定を突き合わせ、**web に未反映の
+/// キー**を返す（MT27）。返すのはキー名だけで、値は含めない。
+///
+/// api の再起動は新しい値の公開そのもの（ADR-0013 §1-a）なので、api が再起動して web が
+/// そのままなら、api だけが新しい値で動いている。逆向き（web だけが新しい値）はスナップショット
+/// 方式により構造的に起きない。
+pub fn stale_shared_settings(
+    applied: &HashMap<String, String>,
+    current: &HashMap<String, String>,
+) -> Vec<String> {
+    let mut keys: Vec<String> = current
+        .iter()
+        .filter(|(key, value)| applied.get(*key) != Some(*value))
+        .map(|(key, _)| key.clone())
+        // 上書きが解除されたキー（api 側から消えた）も未反映。
+        .chain(
+            applied
+                .keys()
+                .filter(|key| !current.contains_key(*key))
+                .cloned(),
+        )
+        .collect();
+    keys.sort();
+    keys.dedup();
+    keys
 }
 
 /// 「既定値 < ENV < api 経由の DB 上書き値」で共有キーを解決する（MT26 / ADR-0013）。
@@ -524,6 +565,47 @@ mod tests {
     }
 
     /// MT26 / ADR-0013: api 経由の DB 上書き値は ENV・既定値より優先する。
+    /// MT27: 起動時に web が適用した共有設定と api の現在値がずれていれば「web に未反映」。
+    #[test]
+    fn stale_shared_settings_reports_keys_the_web_has_not_picked_up() {
+        let applied = HashMap::from([
+            ("COOKIE_SECURE".to_string(), "true".to_string()),
+            ("HSTS_MAX_AGE".to_string(), "31536000".to_string()),
+        ]);
+
+        // 完全に一致していれば未反映なし。
+        assert!(stale_shared_settings(&applied, &applied).is_empty());
+
+        // 値が変わったキーだけを挙げる。
+        let changed = HashMap::from([
+            ("COOKIE_SECURE".to_string(), "false".to_string()),
+            ("HSTS_MAX_AGE".to_string(), "31536000".to_string()),
+        ]);
+        assert_eq!(
+            stale_shared_settings(&applied, &changed),
+            vec!["COOKIE_SECURE".to_string()]
+        );
+
+        // api 側に新しく増えたキーも未反映。
+        let added = HashMap::from([
+            ("COOKIE_SECURE".to_string(), "true".to_string()),
+            ("HSTS_MAX_AGE".to_string(), "31536000".to_string()),
+            ("AUTH_SESSION_TTL_SECS".to_string(), "900".to_string()),
+        ]);
+        assert_eq!(
+            stale_shared_settings(&applied, &added),
+            vec!["AUTH_SESSION_TTL_SECS".to_string()]
+        );
+
+        // **上書きが解除された（api 側から消えた）キーも未反映**。ここを落とすと、
+        // 解除したのに web だけ古い上書きで動き続けている状態が画面から見えない。
+        let removed = HashMap::from([("COOKIE_SECURE".to_string(), "true".to_string())]);
+        assert_eq!(
+            stale_shared_settings(&applied, &removed),
+            vec!["HSTS_MAX_AGE".to_string()]
+        );
+    }
+
     #[test]
     fn shared_settings_from_api_take_precedence_over_env_and_defaults() {
         let _env = env_guard();

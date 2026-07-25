@@ -8,6 +8,7 @@
 
 use super::locale;
 use crate::api_client::AdminApiError;
+use crate::config;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::csrf::console_csrf_token;
@@ -53,6 +54,14 @@ pub async fn page(
         .api
         .get_system_settings(&correlation.0, &tenant.0, &sso)
         .await;
+    // web への未反映（MT27）: web が起動時に受け取った共有設定と、api が今配っている共有設定のずれ。
+    // api だけを再起動した状態がこれに当たる（ADR-0013 §Consequences）。システム設定区画を見られない
+    // 管理者（root 以外）には出さないので、その場合は問い合わせない。
+    let stale_web_keys = if system_result.is_ok() {
+        stale_web_shared_settings(&state).await
+    } else {
+        Vec::new()
+    };
 
     let messages = Messages::new(locale(&headers));
 
@@ -73,6 +82,18 @@ pub async fn page(
         }
     };
 
+    // 保存済みだが api へ未反映のキー（MT27）。判定は api が返す（規則の単一の出所は core）。
+    let pending_api_keys: Vec<String> = system
+        .as_ref()
+        .map(|s| {
+            s.runtime_settings
+                .iter()
+                .filter(|item| item.pending_restart)
+                .map(|item| item.key.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+
     Html(render(&AdminSettings {
         messages: &messages,
         tenant: &tenant.prefix(),
@@ -85,8 +106,28 @@ pub async fn page(
         saved: query.saved.is_some(),
         error_key: query.error.as_deref().and_then(error_key_for),
         system: system.as_ref(),
+        pending_api_keys: &pending_api_keys,
+        stale_web_keys: &stale_web_keys,
     }))
     .into_response()
+}
+
+/// web が起動時に適用した共有設定と、api が現在配っている共有設定を突き合わせ、**web に未反映の**
+/// キー名を返す（MT27）。
+///
+/// 取得に失敗したら空を返す（設定画面そのものは表示できる方が運用上有用で、ここでの失敗は
+/// 「未反映が無い」ではなく「判定できない」に過ぎない）。起動時の fail-fast（ADR-0013 §4）とは
+/// 目的が違う点に注意する。あちらは誤った設定で動き続けないため、こちらは補助表示のため。
+async fn stale_web_shared_settings(state: &WebState) -> Vec<String> {
+    match state.api.fetch_shared_runtime_settings().await {
+        Ok(current) => {
+            config::stale_shared_settings(state.config.shared_runtime_settings(), &current)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to check shared runtime settings for staleness");
+            Vec::new()
+        }
+    }
 }
 
 /// テナント表示名の更新（`POST /{tenant_id}/admin/settings/tenant`）。

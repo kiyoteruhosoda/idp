@@ -8,7 +8,7 @@
 use crate::config::{ResolvedSetting, SettingSafetyStatus, SettingSource};
 use crate::domain::error::DomainError;
 use crate::domain::system_setting::{
-    DefaultRisk, SettingOwner, SmtpSettingsView, UpdateSmtpCommand,
+    is_shared_with_web, DefaultRisk, SettingOwner, SmtpSettingsView, UpdateSmtpCommand,
 };
 use crate::presentation::admin::{IdpSystemAdmin, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
@@ -223,5 +223,9 @@ fn to_runtime_response(
             db_value.cloned()
         },
         editable: setting.owner == SettingOwner::DbManaged && !setting.secret,
+        // 保存しただけでは挙動が変わらないことを画面から見えるようにする（MT27）。判定規則は
+        // `ResolvedSetting::is_pending_restart` が単一の出所（上書きの解除も未反映に含む）。
+        pending_restart: setting.is_pending_restart(db_value.map(String::as_str)),
+        shared_with_web: is_shared_with_web(&setting.key),
     }
 }

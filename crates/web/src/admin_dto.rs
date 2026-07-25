@@ -231,6 +231,12 @@ pub struct RuntimeSettingView {
     /// この画面（DB）から上書きできるか（`DB_MANAGED` かつ非 secret）。
     #[serde(default)]
     pub editable: bool,
+    /// 保存済みだが実行中の api へ未反映か（MT27）。上書きの解除が未反映の場合も `true`。
+    #[serde(default)]
+    pub pending_restart: bool,
+    /// web も消費するキーか（ADR-0013）。反映に api と web の両方の再起動が要る。
+    #[serde(default)]
+    pub shared_with_web: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

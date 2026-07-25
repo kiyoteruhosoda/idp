@@ -9,6 +9,20 @@
 {% if saved %}<div class="alert alert-success" role="status">{{ messages.get("admin-settings-saved") }}</div>{% endif %}
 {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
 
+{% if !pending_api_keys.is_empty() || !stale_web_keys.is_empty() %}
+<div class="alert alert-warning" role="status">
+  <p class="fw-semibold mb-1"><i class="fa-solid fa-triangle-exclamation me-2" aria-hidden="true"></i>{{ messages.get("admin-settings-pending-heading") }}</p>
+  <p class="mb-2">{{ messages.get("admin-settings-pending-lead") }}</p>
+  {% if !pending_api_keys.is_empty() %}
+  <p class="mb-1">{{ messages.get("admin-settings-pending-api") }} {% for key in pending_api_keys %}<code>{{ key }}</code>{% if !loop.last %}, {% endif %}{% endfor %}</p>
+  {% endif %}
+  {% if !stale_web_keys.is_empty() %}
+  <p class="mb-1">{{ messages.get("admin-settings-pending-web") }} {% for key in stale_web_keys %}<code>{{ key }}</code>{% if !loop.last %}, {% endif %}{% endfor %}</p>
+  {% endif %}
+  <p class="mb-0 small">{{ messages.get("admin-settings-pending-howto") }}</p>
+</div>
+{% endif %}
+
 <div class="card mb-4 admin-settings-tenant" id="tenant-settings">
   <div class="card-header d-flex align-items-center"><i class="fa-solid fa-building me-2" aria-hidden="true"></i>{{ messages.get("admin-settings-tenant-heading") }}</div>
   <div class="card-body">
@@ -92,7 +106,8 @@
             <td data-label="{{ messages.get("admin-settings-runtime-col-key") }}">
               <code>{{ item.key }}</code>
               {% if !item.description.is_empty() %}<div class="text-muted small mt-1">{{ item.description }}</div>{% endif %}
-              {% if item.restart_required %}<div class="form-text">{{ messages.get("admin-settings-runtime-restart-required") }}</div>{% endif %}
+              {% if item.restart_required %}<div class="form-text">{% if item.shared_with_web %}{{ messages.get("admin-settings-runtime-restart-required-both") }}{% else %}{{ messages.get("admin-settings-runtime-restart-required") }}{% endif %}</div>{% endif %}
+              {% if item.pending_restart %}<div class="mt-1"><span class="badge text-bg-warning">{{ messages.get("admin-settings-runtime-pending") }}</span></div>{% endif %}
             </td>
             <td data-label="{{ messages.get("admin-settings-runtime-col-value") }}">
               {% if item.secret %}
