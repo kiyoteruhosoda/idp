@@ -79,9 +79,7 @@ pub async fn run() -> anyhow::Result<()> {
     let state = presentation::state::AppState::build(pool.clone(), Arc::new(config.clone()), clock);
 
     // 署名鍵ブートストラップ: ACTIVE 鍵が無ければ生成して永続化する。
-    state
-        .keys
-        .ensure_active_key()
+    ensure_active_signing_key(&state.keys)
         .await
         .context("failed to ensure an active signing key")?;
 
@@ -120,6 +118,44 @@ pub async fn run() -> anyhow::Result<()> {
         .context("server error")?;
 
     Ok(())
+}
+
+/// 署名鍵ブートストラップを、一過性の失敗に対して指数バックオフで再試行する。
+///
+/// `ensure_active_key` は冪等（ACTIVE 鍵があれば何もしない・挿入は advisory lock で排他）なので
+/// 再試行は安全。ここで失敗する典型は「他インスタンスと同時起動して排他ロック待ちがタイムアウトした」
+/// 「DB 接続が一過性に切れた」であり、いずれも次の試行で解消する。全試行が失敗したときだけ
+/// 起動を失敗させる（鍵が無ければトークン発行ができないため fail-fast は維持する）。
+async fn ensure_active_signing_key(
+    keys: &application::key_service::KeyService,
+) -> anyhow::Result<()> {
+    const ATTEMPTS: u32 = 5;
+    const INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_millis(500);
+
+    let mut backoff = INITIAL_BACKOFF;
+    let mut last_error = None;
+    for attempt in 1..=ATTEMPTS {
+        match keys.ensure_active_key().await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                if attempt < ATTEMPTS {
+                    tracing::warn!(
+                        error = %e,
+                        attempt,
+                        max_attempts = ATTEMPTS,
+                        backoff_ms = backoff.as_millis(),
+                        "signing key bootstrap failed; retrying"
+                    );
+                    tokio::time::sleep(backoff).await;
+                    backoff *= 2;
+                }
+                last_error = Some(e);
+            }
+        }
+    }
+    Err(last_error
+        .unwrap_or_else(|| anyhow::anyhow!("signing key bootstrap did not run"))
+        .context(format!("giving up after {ATTEMPTS} attempts")))
 }
 
 async fn shutdown_signal() {
