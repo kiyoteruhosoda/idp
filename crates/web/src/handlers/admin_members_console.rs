@@ -130,10 +130,14 @@ fn pager_links(
     offset: i64,
     page: &MemberListView,
 ) -> (Option<String>, Option<String>) {
-    // limit は api が実際に適用した値。0 以下が返ることは無いが、割り算・加算の安全側として弾く。
+    // limit は api が実際に適用した値。0 以下が返ることは無いが、加算の安全側として弾く。
     let limit = page.limit.max(1);
+    // `offset` はクエリ由来（`?offset=9223372036854775807` も来る）。素の加算は debug ビルドで
+    // オーバーフロー panic、release ビルドでは負の値へ回り込んで不正な「次へ」リンクになるため、
+    // 飽和加算にする。飽和した値は `total` 未満にならないので「次へ」は出ない（意図どおり）。
+    let next_offset = offset.saturating_add(limit);
     let prev = (offset > 0).then(|| members_href(tenant, term, (offset - limit).max(0)));
-    let next = (offset + limit < page.total).then(|| members_href(tenant, term, offset + limit));
+    let next = (next_offset < page.total).then(|| members_href(tenant, term, next_offset));
     (prev, next)
 }
 
@@ -625,6 +629,21 @@ mod tests {
         let (prev, next) = pager_links(&tenant(), "", 1, &last);
         assert!(prev.expect("prev").ends_with("/admin/members?offset=0"));
         assert_eq!(next, None);
+    }
+
+    /// `offset` はクエリ由来なので極端な値も来る。素の加算は debug ビルドでオーバーフロー panic、
+    /// release ビルドでは負の値へ回り込んで不正な「次へ」リンクを作る。
+    #[test]
+    fn huge_offset_does_not_overflow_the_next_link() {
+        let page = MemberListView {
+            members: Vec::new(),
+            total: 10,
+            limit: 50,
+            offset: i64::MAX,
+        };
+        let (prev, next) = pager_links(&tenant(), "", i64::MAX, &page);
+        assert_eq!(next, None, "範囲外なので「次へ」は出さない");
+        assert!(prev.is_some(), "先頭ではないので「前へ」は出す");
     }
 
     /// 絞り込み語はページ送りのリンクへ引き継ぐ（次ページで条件が消えると別の集合になる）。
