@@ -6,6 +6,7 @@
 //! 別途通知し、被招待者は所属元テナントでログイン済みのセッションで `/invitations/accept` に提示する。
 
 use crate::application::invitation::InvitationError;
+use crate::domain::message::keys;
 use crate::presentation::admin::{IdpAdmin, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{CreateInvitationRequest, InvitationCreatedResponse};
@@ -44,7 +45,7 @@ pub async fn create_invitation(
     Json(body): Json<CreateInvitationRequest>,
 ) -> Result<(StatusCode, Json<InvitationCreatedResponse>), ApiError> {
     let target = Uuid::parse_str(&body.user_id)
-        .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get("api-invalid-request")))?;
+        .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get(keys::INVALID_REQUEST)))?;
     let ctx = request_context(
         &headers,
         &correlation,
@@ -69,10 +70,12 @@ pub async fn create_invitation(
 fn map_error(e: InvitationError, locale: ApiLocale) -> ApiError {
     let msgs = ApiMessages::new(locale);
     match e {
-        InvitationError::NotFound => ApiError::NotFound(msgs.get("api-invitation-user-not-found")),
-        InvitationError::AlreadyMember => ApiError::Conflict("already a member".to_string()),
-        InvitationError::Forbidden(m) => ApiError::Forbidden(m),
-        InvitationError::InvalidOrExpired => ApiError::BadRequest(msgs.get("api-invalid-request")),
+        InvitationError::NotFound => ApiError::NotFound(msgs.get(keys::INVITATION_USER_NOT_FOUND)),
+        InvitationError::AlreadyMember => ApiError::Conflict(msgs.get(keys::MEMBER_ALREADY)),
+        InvitationError::Forbidden(m) => ApiError::Forbidden(msgs.message(&m)),
+        InvitationError::InvalidOrExpired => {
+            ApiError::BadRequest(msgs.get(keys::INVITATION_INVALID_OR_EXPIRED))
+        }
         InvitationError::Internal(m) => ApiError::Internal(m),
     }
 }

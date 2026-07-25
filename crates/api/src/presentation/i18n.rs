@@ -7,7 +7,8 @@
 //! `FluentBundle` は `!Send` のためリクエスト境界を跨いだ保持が不可。
 //! `ApiMessages::new(locale)` でリクエストごとに生成する。
 
-use fluent::{FluentBundle, FluentResource};
+use crate::domain::message::UserMessage;
+use fluent::{FluentArgs, FluentBundle, FluentResource};
 use unic_langid::{langid, LanguageIdentifier};
 
 const EN_FTL: &str = include_str!(concat!(
@@ -108,6 +109,24 @@ impl ApiMessages {
 
     /// 翻訳キーからメッセージを取得する。未定義キーはキー名をそのまま返す（フェイルソフト）。
     pub fn get(&self, key: &str) -> String {
+        self.format(key, None)
+    }
+
+    /// Application 層が返した [`UserMessage`]（翻訳キー + 埋め込み引数）を訳す（MT19）。
+    ///
+    /// 文言そのものではなくキーを受け取るため、Application 層は言語を知らなくてよい。
+    pub fn message(&self, message: &UserMessage) -> String {
+        if message.args().is_empty() {
+            return self.format(message.key(), None);
+        }
+        let mut args = FluentArgs::new();
+        for (name, value) in message.args() {
+            args.set(*name, value.as_str());
+        }
+        self.format(message.key(), Some(&args))
+    }
+
+    fn format(&self, key: &str, args: Option<&FluentArgs>) -> String {
         let Some(message) = self.bundle.get_message(key) else {
             tracing::warn!(key, "missing api translation key");
             return key.to_string();
@@ -116,7 +135,7 @@ impl ApiMessages {
             return key.to_string();
         };
         let mut errors = Vec::new();
-        let value = self.bundle.format_pattern(pattern, None, &mut errors);
+        let value = self.bundle.format_pattern(pattern, args, &mut errors);
         if !errors.is_empty() {
             tracing::warn!(key, ?errors, "fluent formatting errors");
         }
@@ -170,6 +189,39 @@ mod tests {
 
         let ja = ApiMessages::new(ApiLocale::Ja);
         assert_eq!(ja.get("api-user-not-found"), "ユーザーが見つかりません。");
+    }
+
+    /// 利用者向けメッセージのキーは**両言語**に訳がなければならない。訳が無いとキー名がそのまま
+    /// 応答に出る（`get` はフェイルソフトのため気付けない）。キー定数を増やして翻訳リソースへの
+    /// 追記を忘れる、という取りこぼしをここで落とす。
+    #[test]
+    fn every_user_message_key_is_translated_in_both_locales() {
+        for locale in [ApiLocale::Ja, ApiLocale::En] {
+            let messages = ApiMessages::new(locale);
+            for key in crate::domain::message::keys::ALL {
+                let translated = messages.get(key);
+                assert_ne!(
+                    &translated, key,
+                    "missing {locale:?} translation for message key `{key}`"
+                );
+                assert!(
+                    !translated.is_empty(),
+                    "empty {locale:?} translation for message key `{key}`"
+                );
+            }
+        }
+    }
+
+    /// 埋め込み引数（Fluent の `{ $name }`）が展開されること。展開されないと利用者には
+    /// どの値が問題なのか分からないメッセージが出る。
+    #[test]
+    fn message_arguments_are_interpolated() {
+        use crate::domain::message::{keys, UserMessage};
+        let messages = ApiMessages::new(ApiLocale::En);
+        let rendered = messages
+            .message(&UserMessage::new(keys::CLIENT_SCOPE_UNSUPPORTED).with("scope", "banana"));
+        assert!(rendered.contains("banana"), "{rendered}");
+        assert!(!rendered.contains("$scope"), "{rendered}");
     }
 
     #[test]

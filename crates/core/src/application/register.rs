@@ -12,6 +12,7 @@
 use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
 use crate::domain::id_generator::IdGenerator;
+use crate::domain::message::{keys, UserMessage};
 use crate::domain::password::{validate_password_strength, PasswordHasher};
 use crate::domain::rate_limit::LoginRateLimiter;
 use crate::domain::repositories::{TenantMembershipRepository, TenantRepository, UserRepository};
@@ -21,6 +22,7 @@ use crate::domain::user::User;
 use crate::domain::values::{
     validate_email as domain_validate_email,
     validate_preferred_username as domain_validate_preferred_username, UserStatus,
+    PREFERRED_USERNAME_MAX_LEN,
 };
 use std::sync::Arc;
 use uuid::Uuid;
@@ -46,15 +48,15 @@ pub struct RegisteredUser {
 #[derive(Debug, thiserror::Error)]
 pub enum RegisterError {
     #[error("validation error: {0}")]
-    Validation(String),
+    Validation(UserMessage),
     /// 当該テナントで自己登録が無効（SEC6。既定）。
     #[error("forbidden: {0}")]
-    Forbidden(String),
+    Forbidden(UserMessage),
     /// IP 単位のレート制限超過（SEC6）。
     #[error("too many registration attempts")]
     RateLimited,
     #[error("conflict: {0}")]
-    Conflict(String),
+    Conflict(UserMessage),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -115,9 +117,9 @@ impl RegisterService {
             .map(|t| t.self_registration_enabled)
             .unwrap_or(false);
         if !self_registration_enabled {
-            return Err(RegisterError::Forbidden(
-                "self-registration is disabled for this tenant".to_string(),
-            ));
+            return Err(RegisterError::Forbidden(UserMessage::new(
+                keys::REGISTER_DISABLED,
+            )));
         }
 
         let email = cmd.email.trim().to_string();
@@ -127,8 +129,12 @@ impl RegisterService {
         let preferred_username =
             normalize_optional(cmd.preferred_username).unwrap_or_else(|| email.clone());
         // カラム長（VARCHAR(255)）超過を永続化前に弾く（email は VARCHAR(320) のため既定値化で超え得る）。
-        domain_validate_preferred_username(&preferred_username)
-            .map_err(|e| RegisterError::Validation(e.to_string()))?;
+        domain_validate_preferred_username(&preferred_username).map_err(|_| {
+            RegisterError::Validation(
+                UserMessage::new(keys::USER_USERNAME_TOO_LONG)
+                    .with("max", PREFERRED_USERNAME_MAX_LEN.to_string()),
+            )
+        })?;
         let name = normalize_optional(cmd.name);
         let tenant_id = tenant.tenant_id();
 
@@ -142,9 +148,9 @@ impl RegisterService {
             .map_err(internal)?
             .is_some()
         {
-            return Err(RegisterError::Conflict(
-                "email already registered".to_string(),
-            ));
+            return Err(RegisterError::Conflict(UserMessage::new(
+                keys::USER_EMAIL_CONFLICT,
+            )));
         }
         if self
             .users
@@ -153,9 +159,9 @@ impl RegisterService {
             .map_err(internal)?
             .is_some()
         {
-            return Err(RegisterError::Conflict(
-                "preferred_username already taken".to_string(),
-            ));
+            return Err(RegisterError::Conflict(UserMessage::new(
+                keys::USER_USERNAME_CONFLICT,
+            )));
         }
 
         let password_hash = self.hasher.hash(&cmd.password).map_err(internal)?;
@@ -179,7 +185,11 @@ impl RegisterService {
         };
 
         self.users.create(&user).await.map_err(|e| match e {
-            DomainError::Conflict(m) => RegisterError::Conflict(m),
+            // 事前チェックをすり抜けた一意制約違反（競合）。どちらのキーかは区別できないため
+            // メール重複として扱う（`preferred_username` の既定値は email であり実質同義）。
+            DomainError::Conflict(_) => {
+                RegisterError::Conflict(UserMessage::new(keys::USER_EMAIL_CONFLICT))
+            }
             other => RegisterError::Internal(other.to_string()),
         })?;
 
@@ -200,7 +210,8 @@ impl RegisterService {
 }
 
 fn validate_email(email: &str) -> Result<(), RegisterError> {
-    domain_validate_email(email).map_err(|e| RegisterError::Validation(e.to_string()))
+    domain_validate_email(email)
+        .map_err(|_| RegisterError::Validation(UserMessage::new(keys::USER_EMAIL_INVALID)))
 }
 
 fn validate_password(password: &str) -> Result<(), RegisterError> {

@@ -7,6 +7,7 @@ use crate::application::client_management::{
     ClientManagementError, RegisterClientCommand, UpdateClientCommand,
 };
 use crate::domain::client::Client;
+use crate::domain::message::keys;
 use crate::domain::values::{ClientStatus, ClientType};
 use crate::presentation::admin::{IdpAdmin, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
@@ -51,7 +52,7 @@ pub async fn create_client(
         state.config.trust_forwarded_headers(),
     );
     let client_type = ClientType::parse(&body.client_type).map_err(|_| {
-        ApiError::BadRequest(ApiMessages::new(locale).get("api-client-type-invalid"))
+        ApiError::BadRequest(ApiMessages::new(locale).get(keys::CLIENT_TYPE_INVALID))
     })?;
     let cmd = RegisterClientCommand {
         app_name: body.app_name,
@@ -170,7 +171,7 @@ pub async fn update_client(
         .map(ClientStatus::parse)
         .transpose()
         .map_err(|_| {
-            ApiError::BadRequest(ApiMessages::new(locale).get("api-client-status-invalid"))
+            ApiError::BadRequest(ApiMessages::new(locale).get(keys::CLIENT_STATUS_INVALID))
         })?;
     let cmd = UpdateClientCommand {
         app_name: body.app_name,
@@ -279,9 +280,9 @@ fn client_response(c: &Client) -> ClientResponse {
 fn map_error(e: ClientManagementError, locale: ApiLocale) -> ApiError {
     let msgs = ApiMessages::new(locale);
     match e {
-        ClientManagementError::Validation(m) => ApiError::BadRequest(m),
-        ClientManagementError::NotFound => ApiError::NotFound(msgs.get("api-client-not-found")),
-        ClientManagementError::Conflict(m) => ApiError::Conflict(m),
+        ClientManagementError::Validation(m) => ApiError::BadRequest(msgs.message(&m)),
+        ClientManagementError::NotFound => ApiError::NotFound(msgs.get(keys::CLIENT_NOT_FOUND)),
+        ClientManagementError::Conflict(m) => ApiError::Conflict(msgs.message(&m)),
         ClientManagementError::Internal(m) => ApiError::Internal(m),
     }
 }

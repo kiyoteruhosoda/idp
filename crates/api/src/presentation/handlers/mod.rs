@@ -29,6 +29,7 @@ pub mod userinfo;
 
 use crate::application::audit::RequestContext;
 use crate::application::permission_management::PermissionManagementError;
+use crate::domain::message::keys;
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::error::ApiError;
 use crate::presentation::i18n::{ApiLocale, ApiMessages};
@@ -86,9 +87,9 @@ pub(crate) fn map_permission_management_error(
 ) -> ApiError {
     let msgs = ApiMessages::new(locale);
     match e {
-        PermissionManagementError::Validation(m) => ApiError::BadRequest(m),
-        PermissionManagementError::NotFound => ApiError::NotFound(msgs.get("api-user-not-found")),
-        PermissionManagementError::Forbidden(m) => ApiError::Forbidden(m),
+        PermissionManagementError::Validation(m) => ApiError::BadRequest(msgs.message(&m)),
+        PermissionManagementError::NotFound => ApiError::NotFound(msgs.get(keys::USER_NOT_FOUND)),
+        PermissionManagementError::Forbidden(m) => ApiError::Forbidden(msgs.message(&m)),
         PermissionManagementError::Internal(m) => ApiError::Internal(m),
     }
 }

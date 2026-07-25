@@ -4,6 +4,7 @@
 //! 生成アルゴリズムは `RS256`（RSA-2048）または `ES256`（NIST P-256）。
 
 use crate::application::key_service::KeyManagementError;
+use crate::domain::message::keys;
 use crate::domain::signing_key::SigningKey;
 use crate::domain::values::SigningAlgorithm;
 use crate::presentation::admin::{IdpAdmin, RequirePerms};
@@ -59,7 +60,7 @@ pub async fn generate_key(
     Json(body): Json<GenerateSigningKeyRequest>,
 ) -> Result<(StatusCode, Json<SigningKeyResponse>), ApiError> {
     let algorithm = SigningAlgorithm::parse(&body.algorithm)
-        .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get("api-invalid-request")))?;
+        .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get(keys::INVALID_REQUEST)))?;
 
     let key = state
         .keys
@@ -142,10 +143,10 @@ fn map_error(e: KeyManagementError, locale: ApiLocale) -> ApiError {
     let msgs = ApiMessages::new(locale);
     match e {
         KeyManagementError::NotFound(_) => {
-            ApiError::NotFound(msgs.get("api-signing-key-not-found"))
+            ApiError::NotFound(msgs.get(keys::SIGNING_KEY_NOT_FOUND))
         }
-        KeyManagementError::Validation(_) => {
-            ApiError::BadRequest(ApiMessages::new(locale).get("api-invalid-request"))
+        KeyManagementError::Validation(m) => {
+            ApiError::BadRequest(ApiMessages::new(locale).message(&m))
         }
         KeyManagementError::Internal(m) => ApiError::Internal(m),
     }

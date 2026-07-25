@@ -16,6 +16,7 @@ use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::error::DomainError;
 use crate::domain::id_generator::IdGenerator;
+use crate::domain::message::{keys, UserMessage};
 use crate::domain::password::PasswordHasher;
 use crate::domain::repositories::{TenantMembershipRepository, UserRepository};
 use crate::domain::tenant_context::TenantContext;
@@ -24,6 +25,7 @@ use crate::domain::user::User;
 use crate::domain::values::{
     validate_email as domain_validate_email,
     validate_preferred_username as domain_validate_preferred_username, UserStatus,
+    PREFERRED_USERNAME_MAX_LEN,
 };
 use std::sync::Arc;
 use uuid::Uuid;
@@ -57,9 +59,9 @@ pub struct PreparedUser {
 #[derive(Debug, thiserror::Error)]
 pub enum UserManagementError {
     #[error("validation error: {0}")]
-    Validation(String),
+    Validation(UserMessage),
     #[error("conflict: {0}")]
-    Conflict(String),
+    Conflict(UserMessage),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -106,8 +108,12 @@ impl UserManagementService {
         let preferred_username =
             normalize_optional(cmd.preferred_username).unwrap_or_else(|| email.clone());
         // カラム長（VARCHAR(255)）超過を永続化前に弾く（email は VARCHAR(320) のため既定値化で超え得る）。
-        domain_validate_preferred_username(&preferred_username)
-            .map_err(|e| UserManagementError::Validation(e.to_string()))?;
+        domain_validate_preferred_username(&preferred_username).map_err(|_| {
+            UserManagementError::Validation(
+                UserMessage::new(keys::USER_USERNAME_TOO_LONG)
+                    .with("max", PREFERRED_USERNAME_MAX_LEN.to_string()),
+            )
+        })?;
         let name = normalize_optional(cmd.name);
         let tenant_id = tenant.tenant_id();
 
@@ -120,9 +126,9 @@ impl UserManagementService {
             .map_err(internal)?
             .is_some()
         {
-            return Err(UserManagementError::Conflict(
-                "email already registered".to_string(),
-            ));
+            return Err(UserManagementError::Conflict(UserMessage::new(
+                keys::USER_EMAIL_CONFLICT,
+            )));
         }
         if self
             .users
@@ -131,9 +137,9 @@ impl UserManagementService {
             .map_err(internal)?
             .is_some()
         {
-            return Err(UserManagementError::Conflict(
-                "preferred_username already taken".to_string(),
-            ));
+            return Err(UserManagementError::Conflict(UserMessage::new(
+                keys::USER_USERNAME_CONFLICT,
+            )));
         }
 
         let generated_password = crypto::random_token(GENERATED_PASSWORD_BYTES);
@@ -180,7 +186,11 @@ impl UserManagementService {
         let user = prepared.user;
 
         self.users.create(&user).await.map_err(|e| match e {
-            DomainError::Conflict(m) => UserManagementError::Conflict(m),
+            // 事前チェックをすり抜けた一意制約違反（競合）。どちらのキーかは区別できないため
+            // メール重複として扱う（`preferred_username` の既定値は email であり実質同義）。
+            DomainError::Conflict(_) => {
+                UserManagementError::Conflict(UserMessage::new(keys::USER_EMAIL_CONFLICT))
+            }
             other => UserManagementError::Internal(other.to_string()),
         })?;
 
@@ -216,7 +226,8 @@ impl UserManagementService {
 }
 
 fn validate_email(email: &str) -> Result<(), UserManagementError> {
-    domain_validate_email(email).map_err(|e| UserManagementError::Validation(e.to_string()))
+    domain_validate_email(email)
+        .map_err(|_| UserManagementError::Validation(UserMessage::new(keys::USER_EMAIL_INVALID)))
 }
 
 fn normalize_optional(value: Option<String>) -> Option<String> {

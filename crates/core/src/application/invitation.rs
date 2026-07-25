@@ -20,6 +20,7 @@ use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::mailer::{Mailer, OutgoingEmail};
+use crate::domain::message::{keys, UserMessage};
 use crate::domain::repositories::{
     RefreshTokenRepository, TenantMembershipRepository, UserPermissionRepository, UserRepository,
 };
@@ -40,7 +41,7 @@ pub enum InvitationError {
     AlreadyMember,
     /// 承諾者が被招待ユーザー本人でない／HOME は解除できない等。
     #[error("forbidden: {0}")]
-    Forbidden(String),
+    Forbidden(UserMessage),
     /// 招待トークンが無効・期限切れ。
     #[error("invalid or expired invitation")]
     InvalidOrExpired,
@@ -260,9 +261,9 @@ impl InvitationService {
         }
         // 承諾者は被招待ユーザー本人であること（ログイン済みセッションで確認。§3）。
         if membership.user_id != session_user_id {
-            return Err(InvitationError::Forbidden(
-                "only the invited user may accept this invitation".to_string(),
-            ));
+            return Err(InvitationError::Forbidden(UserMessage::new(
+                keys::INVITATION_ACCEPT_FORBIDDEN,
+            )));
         }
         // 期限切れは承諾不可（INVITED のまま）。
         let now = self.clock.now();
@@ -315,9 +316,9 @@ impl InvitationService {
         let host_id = host.tenant_id();
         let membership = self.require_membership(host_id, target_user_id).await?;
         if !membership.can_be_suspended() {
-            return Err(InvitationError::Forbidden(
-                "only active guest memberships can be suspended".to_string(),
-            ));
+            return Err(InvitationError::Forbidden(UserMessage::new(
+                keys::MEMBER_SUSPEND_NOT_ALLOWED,
+            )));
         }
 
         self.memberships
@@ -360,9 +361,9 @@ impl InvitationService {
         let host_id = host.tenant_id();
         let membership = self.require_membership(host_id, target_user_id).await?;
         if !membership.can_be_resumed() {
-            return Err(InvitationError::Forbidden(
-                "only suspended guest memberships can be resumed".to_string(),
-            ));
+            return Err(InvitationError::Forbidden(UserMessage::new(
+                keys::MEMBER_RESUME_NOT_ALLOWED,
+            )));
         }
 
         self.memberships
@@ -413,9 +414,9 @@ impl InvitationService {
         let host_id = host.tenant_id();
         let membership = self.require_membership(host_id, target_user_id).await?;
         if membership.is_home() {
-            return Err(InvitationError::Forbidden(
-                "home membership cannot be revoked".to_string(),
-            ));
+            return Err(InvitationError::Forbidden(UserMessage::new(
+                keys::MEMBER_HOME_CANNOT_REMOVE,
+            )));
         }
 
         // 当該テナントを scope とする権限行を一括削除する（§3）。失敗時はここで中断し、

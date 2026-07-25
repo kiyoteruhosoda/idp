@@ -14,6 +14,7 @@ use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
+use crate::domain::message::{keys, UserMessage};
 use crate::domain::password::PasswordHasher;
 use crate::domain::repositories::{
     AuthorizationCodeRepository, RefreshTokenRepository, SsoSessionRepository,
@@ -50,9 +51,9 @@ pub enum UserLifecycleError {
     #[error("user not found")]
     NotFound,
     #[error("forbidden: {0}")]
-    Forbidden(String),
+    Forbidden(UserMessage),
     #[error("validation error: {0}")]
-    Validation(String),
+    Validation(UserMessage),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -123,7 +124,9 @@ impl UserLifecycleService {
     ) -> Result<ResetUserPassword, UserLifecycleError> {
         let email = email.trim();
         if email.is_empty() {
-            return Err(UserLifecycleError::Validation("email is required".into()));
+            return Err(UserLifecycleError::Validation(UserMessage::new(
+                keys::USER_EMAIL_REQUIRED,
+            )));
         }
         let user = self
             .users
@@ -146,9 +149,9 @@ impl UserLifecycleService {
         ctx: &RequestContext,
     ) -> Result<(), UserLifecycleError> {
         if status == UserStatus::Locked {
-            return Err(UserLifecycleError::Validation(
-                "LOCKED cannot be set by administrators".into(),
-            ));
+            return Err(UserLifecycleError::Validation(UserMessage::new(
+                keys::USER_STATUS_LOCKED_NOT_ALLOWED,
+            )));
         }
         let user = self.find_home_user(tenant, target).await?;
         self.ensure_not_self(user.id, actor)?;
@@ -318,9 +321,9 @@ impl UserLifecycleService {
 
     fn ensure_not_self(&self, target: Uuid, actor: Uuid) -> Result<(), UserLifecycleError> {
         if target == actor {
-            return Err(UserLifecycleError::Forbidden(
-                "cannot operate on your own account".into(),
-            ));
+            return Err(UserLifecycleError::Forbidden(UserMessage::new(
+                keys::USER_SELF_OPERATION_FORBIDDEN,
+            )));
         }
         Ok(())
     }

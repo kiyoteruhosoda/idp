@@ -7,6 +7,7 @@
 
 use crate::application::invitation::InvitationError;
 use crate::application::member_directory::MemberSearchParams;
+use crate::domain::message::keys;
 use crate::domain::values::MembershipStatus;
 use crate::presentation::admin::{IdpAdmin, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
@@ -100,7 +101,7 @@ pub async fn revoke_member(
     Path((_tenant_id, user_id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     let target = Uuid::parse_str(&user_id)
-        .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get("api-invalid-request")))?;
+        .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get(keys::INVALID_REQUEST)))?;
     let ctx = request_context(
         &headers,
         &correlation,
@@ -147,13 +148,13 @@ pub async fn update_member_status(
     // `ApiMessages`（fluent バンドル）は `Send` ではないため、`.await` を跨いで保持しない
     // （保持するとハンドラの future が `Send` でなくなり axum の `Handler` を満たさない）。
     let target = Uuid::parse_str(&user_id)
-        .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get("api-invalid-request")))?;
+        .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get(keys::INVALID_REQUEST)))?;
     // 受け付けるのは停止・再開の 2 遷移のみ。`INVITED` は招待フローが管理する状態のため、
     // ここから直接は設定させない。
     let status = MembershipStatus::parse(body.status.trim())
         .ok()
         .filter(|s| matches!(s, MembershipStatus::Active | MembershipStatus::Suspended))
-        .ok_or_else(|| ApiError::BadRequest(ApiMessages::new(locale).get("api-invalid-request")))?;
+        .ok_or_else(|| ApiError::BadRequest(ApiMessages::new(locale).get(keys::INVALID_REQUEST)))?;
     let ctx = request_context(
         &headers,
         &correlation,
@@ -180,10 +181,12 @@ pub async fn update_member_status(
 fn map_error(e: InvitationError, locale: ApiLocale) -> ApiError {
     let msgs = ApiMessages::new(locale);
     match e {
-        InvitationError::NotFound => ApiError::NotFound(msgs.get("api-member-not-found")),
-        InvitationError::AlreadyMember => ApiError::Conflict("already a member".to_string()),
-        InvitationError::Forbidden(m) => ApiError::Forbidden(m),
-        InvitationError::InvalidOrExpired => ApiError::BadRequest(msgs.get("api-invalid-request")),
+        InvitationError::NotFound => ApiError::NotFound(msgs.get(keys::MEMBER_NOT_FOUND)),
+        InvitationError::AlreadyMember => ApiError::Conflict(msgs.get(keys::MEMBER_ALREADY)),
+        InvitationError::Forbidden(m) => ApiError::Forbidden(msgs.message(&m)),
+        InvitationError::InvalidOrExpired => {
+            ApiError::BadRequest(msgs.get(keys::INVITATION_INVALID_OR_EXPIRED))
+        }
         InvitationError::Internal(m) => ApiError::Internal(m),
     }
 }

@@ -300,8 +300,11 @@ API は `Accept-Language` のみからレスポンス言語を決め、**Cookie�
   将来的に翻訳管理システムや DB 管理へ移行できる構成にする。多言語**データ**（製品情報等）が必要になった場合は
   言語別の翻訳テーブルで対応する。
 
-> 現状は i18n が web crate のみ（`fluent`、既定 `en`、画面文言限定）で API 側は未導入。上記の責務分離・
-> 優先順位・API 多言語化・既定 `ja` への統一は目標設計であり、実装は `docs/Progress.md`（MT19・MT20）で追う。
+> API 側の多言語化は MT19 で完了した。API は `Accept-Language` のみを見て既定 `ja` へフォールバックし、
+> 利用者向けメッセージは Application 層が**翻訳キー**（`domain/message.rs` の `UserMessage`）を返し
+> Presentation 層が訳す。キーは `keys::ALL` に集約し、両言語の訳が揃っていることをテストで強制する。
+> web 側の言語決定順（`?lang=` → ユーザー設定 → Cookie → ブラウザ → 既定）は未実装で、
+> 実装は `docs/Progress.md`（MT20）で追う。
 
 ---
 

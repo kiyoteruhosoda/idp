@@ -6,11 +6,13 @@
 //! extractor が SSO セッションから利用者を解決し、ユースケースがトークンと突き合わせる。§3）。
 
 use crate::application::invitation::InvitationError;
+use crate::domain::message::keys;
 use crate::presentation::admin::AuthenticatedUser;
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::AcceptInvitationRequest;
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
+use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
 use axum::extract::{Extension, State};
@@ -37,6 +39,7 @@ pub async fn accept_invitation(
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
     headers: HeaderMap,
+    locale: ApiLocale,
     Json(body): Json<AcceptInvitationRequest>,
 ) -> Result<StatusCode, ApiError> {
     let ctx = request_context(
@@ -48,17 +51,18 @@ pub async fn accept_invitation(
         .invitations
         .accept_invitation(tenant.context(), user_id, &body.token, &ctx)
         .await
-        .map_err(map_error)?;
+        .map_err(|e| map_error(e, locale))?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn map_error(e: InvitationError) -> ApiError {
+fn map_error(e: InvitationError, locale: ApiLocale) -> ApiError {
+    let msgs = ApiMessages::new(locale);
     match e {
-        InvitationError::NotFound => ApiError::NotFound("not found".to_string()),
-        InvitationError::AlreadyMember => ApiError::Conflict("already a member".to_string()),
-        InvitationError::Forbidden(m) => ApiError::Forbidden(m),
+        InvitationError::NotFound => ApiError::NotFound(msgs.get(keys::MEMBER_NOT_FOUND)),
+        InvitationError::AlreadyMember => ApiError::Conflict(msgs.get(keys::MEMBER_ALREADY)),
+        InvitationError::Forbidden(m) => ApiError::Forbidden(msgs.message(&m)),
         InvitationError::InvalidOrExpired => {
-            ApiError::BadRequest("invalid or expired invitation".to_string())
+            ApiError::BadRequest(msgs.get(keys::INVITATION_INVALID_OR_EXPIRED))
         }
         InvitationError::Internal(m) => ApiError::Internal(m),
     }

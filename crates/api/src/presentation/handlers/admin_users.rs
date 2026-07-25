@@ -5,6 +5,7 @@
 
 use crate::application::user_lifecycle::UserLifecycleError;
 use crate::application::user_management::{CreateUserCommand, UserManagementError};
+use crate::domain::message::keys;
 use crate::domain::user::User;
 use crate::domain::values::UserStatus;
 use crate::presentation::admin::{IdpAdmin, RequirePerms};
@@ -95,7 +96,7 @@ pub async fn search_user(
     let term = query.q.unwrap_or_default();
     if term.trim().is_empty() {
         return Err(ApiError::NotFound(
-            ApiMessages::new(locale).get("api-user-not-found"),
+            ApiMessages::new(locale).get(keys::USER_NOT_FOUND),
         ));
     }
     match state
@@ -106,7 +107,7 @@ pub async fn search_user(
     {
         Some(user) => Ok(Json(summary(&user))),
         None => Err(ApiError::NotFound(
-            ApiMessages::new(locale).get("api-user-not-found"),
+            ApiMessages::new(locale).get(keys::USER_NOT_FOUND),
         )),
     }
 }
@@ -120,7 +121,7 @@ pub async fn get_user(
     Path((_tenant_id, user_id)): Path<(String, String)>,
 ) -> Result<Json<UserSummaryResponse>, ApiError> {
     let target = Uuid::parse_str(&user_id)
-        .map_err(|_| ApiError::NotFound(ApiMessages::new(locale).get("api-user-not-found")))?;
+        .map_err(|_| ApiError::NotFound(ApiMessages::new(locale).get(keys::USER_NOT_FOUND)))?;
     let user = state
         .permissions_admin
         .get_user(tenant.context(), target)
@@ -157,8 +158,9 @@ pub async fn update_user_status(
     Json(body): Json<UpdateUserStatusRequest>,
 ) -> Result<Json<UserSummaryResponse>, ApiError> {
     let target = parse_user_id(&user_id, locale)?;
-    let status = UserStatus::parse(&body.status)
-        .map_err(|_| ApiError::BadRequest("invalid status".to_string()))?;
+    let status = UserStatus::parse(&body.status).map_err(|_| {
+        ApiError::BadRequest(ApiMessages::new(locale).get(keys::USER_STATUS_INVALID))
+    })?;
     let ctx = request_context(
         &headers,
         &correlation,
@@ -300,16 +302,20 @@ pub async fn reset_user_mfa(
 
 fn parse_user_id(raw: &str, locale: ApiLocale) -> Result<Uuid, ApiError> {
     Uuid::parse_str(raw)
-        .map_err(|_| ApiError::NotFound(ApiMessages::new(locale).get("api-user-not-found")))
+        .map_err(|_| ApiError::NotFound(ApiMessages::new(locale).get(keys::USER_NOT_FOUND)))
 }
 
 fn map_user_lifecycle_error(e: UserLifecycleError, locale: ApiLocale) -> ApiError {
     match e {
         UserLifecycleError::NotFound => {
-            ApiError::NotFound(ApiMessages::new(locale).get("api-user-not-found"))
+            ApiError::NotFound(ApiMessages::new(locale).get(keys::USER_NOT_FOUND))
         }
-        UserLifecycleError::Forbidden(m) => ApiError::Forbidden(m),
-        UserLifecycleError::Validation(m) => ApiError::BadRequest(m),
+        UserLifecycleError::Forbidden(m) => {
+            ApiError::Forbidden(ApiMessages::new(locale).message(&m))
+        }
+        UserLifecycleError::Validation(m) => {
+            ApiError::BadRequest(ApiMessages::new(locale).message(&m))
+        }
         UserLifecycleError::Internal(m) => ApiError::Internal(m),
     }
 }
@@ -326,10 +332,11 @@ fn summary(u: &User) -> UserSummaryResponse {
     }
 }
 
-fn map_user_management_error(e: UserManagementError, _locale: ApiLocale) -> ApiError {
+fn map_user_management_error(e: UserManagementError, locale: ApiLocale) -> ApiError {
+    let msgs = ApiMessages::new(locale);
     match e {
-        UserManagementError::Validation(m) => ApiError::BadRequest(m),
-        UserManagementError::Conflict(m) => ApiError::Conflict(m),
+        UserManagementError::Validation(m) => ApiError::BadRequest(msgs.message(&m)),
+        UserManagementError::Conflict(m) => ApiError::Conflict(msgs.message(&m)),
         UserManagementError::Internal(m) => ApiError::Internal(m),
     }
 }

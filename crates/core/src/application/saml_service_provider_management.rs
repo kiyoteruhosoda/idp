@@ -2,6 +2,7 @@
 
 use crate::domain::clock::Clock;
 use crate::domain::id_generator::IdGenerator;
+use crate::domain::message::{keys, UserMessage};
 use crate::domain::repositories::SamlServiceProviderRepository;
 use crate::domain::saml_service_provider::{
     NewSamlServiceProvider, SamlServiceProvider, SamlServiceProviderChanges,
@@ -35,7 +36,7 @@ pub struct UpdateSamlServiceProviderCommand {
 #[derive(Debug)]
 pub enum SamlServiceProviderManagementError {
     Validation(String),
-    Conflict(String),
+    Conflict(UserMessage),
     NotFound,
     Internal(String),
 }
@@ -82,8 +83,10 @@ impl SamlServiceProviderManagementService {
             .create(&provider)
             .await
             .map_err(|e| match e {
-                crate::domain::error::DomainError::Conflict(m) => {
-                    SamlServiceProviderManagementError::Conflict(m)
+                crate::domain::error::DomainError::Conflict(_) => {
+                    SamlServiceProviderManagementError::Conflict(UserMessage::new(
+                        keys::SAML_SP_ENTITY_ID_CONFLICT,
+                    ))
                 }
                 crate::domain::error::DomainError::InvalidValue(m) => {
                     SamlServiceProviderManagementError::Validation(m)
@@ -133,8 +136,10 @@ impl SamlServiceProviderManagementService {
             .update(&provider)
             .await
             .map_err(|e| match e {
-                crate::domain::error::DomainError::Conflict(m) => {
-                    SamlServiceProviderManagementError::Conflict(m)
+                crate::domain::error::DomainError::Conflict(_) => {
+                    SamlServiceProviderManagementError::Conflict(UserMessage::new(
+                        keys::SAML_SP_ENTITY_ID_CONFLICT,
+                    ))
                 }
                 crate::domain::error::DomainError::InvalidValue(m) => {
                     SamlServiceProviderManagementError::Validation(m)

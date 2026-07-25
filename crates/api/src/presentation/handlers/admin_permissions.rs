@@ -5,6 +5,7 @@
 //! （`user_permission.granted` / `.revoked`）。判定は Application 層（`PermissionManagementService`）
 //! が行い、本ハンドラは HTTP への写像のみを担う。
 
+use crate::domain::message::keys;
 use crate::presentation::admin::{IdpAdmin, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{GrantPermissionRequest, UserPermissionsResponse};
@@ -170,5 +171,5 @@ pub async fn revoke_permission(
 fn parse_user_id(raw: &str, locale: ApiLocale) -> Result<Uuid, ApiError> {
     use crate::presentation::i18n::ApiMessages;
     Uuid::parse_str(raw)
-        .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get("api-invalid-request")))
+        .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get(keys::INVALID_REQUEST)))
 }

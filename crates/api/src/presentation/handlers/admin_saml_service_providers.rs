@@ -4,6 +4,7 @@ use crate::application::saml_service_provider_management::{
     RegisterSamlServiceProviderCommand, SamlServiceProviderManagementError,
     UpdateSamlServiceProviderCommand,
 };
+use crate::domain::message::keys;
 use crate::domain::saml_metadata::parse_sp_metadata;
 use crate::domain::saml_service_provider::SamlServiceProvider;
 use crate::presentation::admin::{IdpAdmin, RequirePerms};
@@ -110,7 +111,7 @@ pub async fn import_metadata(
     Json(body): Json<SamlMetadataImportRequest>,
 ) -> Result<Json<SamlSpMetadataImportResponse>, ApiError> {
     let parsed = parse_sp_metadata(&body.metadata_xml)
-        .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get("api-invalid-request")))?;
+        .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get(keys::INVALID_REQUEST)))?;
     Ok(Json(SamlSpMetadataImportResponse {
         display_name: parsed.display_name.unwrap_or_default(),
         entity_id: parsed.entity_id,
@@ -124,7 +125,7 @@ pub async fn import_metadata(
 /// （存在しない id を細かく区別して情報を与えない）。
 fn parse_id(raw: &str, locale: ApiLocale) -> Result<Uuid, ApiError> {
     Uuid::parse_str(raw)
-        .map_err(|_| ApiError::NotFound(ApiMessages::new(locale).get("api-saml-sp-not-found")))
+        .map_err(|_| ApiError::NotFound(ApiMessages::new(locale).get(keys::SAML_SP_NOT_FOUND)))
 }
 
 fn to_response(provider: &SamlServiceProvider) -> SamlServiceProviderResponse {
@@ -146,11 +147,13 @@ fn map_error(error: SamlServiceProviderManagementError, locale: ApiLocale) -> Ap
     let messages = ApiMessages::new(locale);
     match error {
         SamlServiceProviderManagementError::Validation(_) => {
-            ApiError::BadRequest(messages.get("api-invalid-request"))
+            ApiError::BadRequest(messages.get(keys::INVALID_REQUEST))
         }
-        SamlServiceProviderManagementError::Conflict(message) => ApiError::Conflict(message),
+        SamlServiceProviderManagementError::Conflict(message) => {
+            ApiError::Conflict(messages.message(&message))
+        }
         SamlServiceProviderManagementError::NotFound => {
-            ApiError::NotFound(messages.get("api-saml-sp-not-found"))
+            ApiError::NotFound(messages.get(keys::SAML_SP_NOT_FOUND))
         }
         SamlServiceProviderManagementError::Internal(message) => ApiError::Internal(message),
     }
