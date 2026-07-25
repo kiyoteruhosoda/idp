@@ -67,5 +67,9 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
    かつ public suffix（eTLD）そのものでないこと（Public Suffix List 判定。例: `psl` クレート）。
 5. `docs/OPERATIONS.md` に別ドメイン構成の手順（環境変数・vhost 例・親ドメイン同居の注意・
    `PUBLIC_WEB_BASE_URL` の ENV 移行手順）を追記。
+6. web→api E2E テストの新設（ADR-0012 §7。api/web を実サーバとして同時起動し、Cookie jar 有効の
+   クライアントで authorize→login→SSO Cookie 越境→即時 code 発行を実挙動で検証。別ドメイン・
+   単一オリジン両構成＋host-only 残留掃除のケースを含む。現状は web の統合テストが存在せず、
+   Cookie 共有の退行を検出できない）。
 
 推奨モデル: Opus 4.8（セッション Cookie の到達範囲＝セキュリティ境界に触れるため）。

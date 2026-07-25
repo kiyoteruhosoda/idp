@@ -134,9 +134,32 @@ ADR-0007 で api（OIDC protocol・JSON 管理 API）と web（HTML 画面）を
 - **単一オリジン・パスルーティングの継続**: 公開範囲・TLS の独立制御ができない → 既定としては残すが、
   本番公開の目標構成にはしない。
 
+### 7. テスト戦略: Cookie 越境を実際に検証する web→api E2E を必須とする
+
+現状のテストは本 ADR の挙動を**検証できない**。web には `crates/web/tests/`（統合テスト）が存在せず、
+api の `tests/oidc_flow.rs` は web の役をテストコードが代行して `/internal/*` を直接呼び、Cookie も
+ヘッダ文字列を手で組み立てている（ブラウザの `Domain` 属性・same-site・host-only 同名競合の規則を
+エミュレートしていない）。このままでは Cookie 共有が壊れてもテストが通る。
+
+MT29 の実装には次の E2E テストを含める（受け入れ条件）。
+
+- **構成**: api と web を実プロセス（またはローカルポートに bind した実サーバ）として同時起動し、
+  Cookie jar 有効の HTTP クライアント（reqwest `cookie_store` + `resolve()` で
+  `api.example.test` / `id.example.test` → `127.0.0.1` を上書き）でブラウザ相当の遷移を辿る。
+  Cookie jar が `Domain` 属性・ホスト一致を解釈するため、越境可否を実挙動で検証できる。
+- **ケース**:
+  1. 別ドメイン構成: `/authorize`（api ドメイン）→ 302 → `/login`（web ドメイン）→ POST → SSO Cookie が
+     `Domain=COOKIE_DOMAIN` で保存され、**再度の `/authorize`（api ドメイン）に SSO Cookie が送信されて**
+     即時 code 発行される（ログイン→API 連携の本丸）。
+  2. `auth_session_id` の逆方向: api（Set-Cookie）→ web（`/login` で読む）に届く。
+  3. host-only 残留の掃除: 事前に host-only の同名 Cookie を仕込んだ状態でログインし、削除併送により
+     二重 Cookie が解消される。
+  4. 回帰: `COOKIE_DOMAIN` 未設定（単一オリジン構成）で従来挙動が変わらない。
+- 起動時検証（親ドメイン整合・public suffix 拒否）はユニットテストで網羅する。
+
 ## Follow-ups
 
 - 実装は `docs/Progress.md` の **MT29** で追う（`COOKIE_DOMAIN` 新設・絶対 URL 化・web 自オリジン設定・
-  起動時検証）。
+  起動時検証・web→api E2E テスト）。
 - `docs/OPERATIONS.md` に別ドメイン構成の設定手順（環境変数一覧・vhost 例・親ドメイン同居の注意）を追記する。
 - 完了時に ADR-0007 §2 へ「別ドメイン構成は ADR-0012 で正式サポート化」の注記を入れる。
