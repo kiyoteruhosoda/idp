@@ -61,14 +61,17 @@ dist/
 
 - 初回実行時に `.env` を `.env.example` から自動生成し、秘密情報（DB パスワード・
   `KEY_ENCRYPTION_KEY`・`INTERNAL_SERVICE_TOKEN`・`CSRF_SECRET`）を乱数生成する。
-  **既存の `.env` は上書きしない**（冪等）。環境に合わせて確認する項目は `ISSUER`（公開 URL）と
-  `WEB_PORT`（公開ポート）の 2 つ。api と web を別サブドメインで公開する場合は加えて
-  `PUBLISH_TOPOLOGY=domain-split`・`API_PORT`・`PUBLIC_WEB_BASE_URL`・`COOKIE_DOMAIN`
-  （手順は `docs/OPERATIONS.md`）。
+  **既存の `.env` は上書きしない**（冪等）。環境に合わせて確認する項目は公開 URL
+  （`ISSUER`＝api / `PUBLIC_WEB_BASE_URL`＝web）と公開ポート（`WEB_PORT`＝web / `API_PORT`＝api）。
+  既定のトポロジは `domain-split`（api と web を別サブドメインで公開。ADR-0016）なので、実ドメインで
+  公開する場合は加えて `COOKIE_DOMAIN`・`COOKIE_SECURE` を設定する（手順は `docs/OPERATIONS.md`）。
+  1 ポートだけ開ける単一オリジン構成にする場合は `PUBLISH_TOPOLOGY=single-origin` を明記し、
+  `ISSUER` と `PUBLIC_WEB_BASE_URL` を同一オリジンに揃える。
 - イメージは隣の `idp-*.tar` から自動で `docker load` する（読込済みで manifest と一致すればスキップ）。
 - 使う Compose ファイルは固定: バンドル内では同梱の `docker-compose.yml`、リポジトリ内から実行した
-  場合はルートの `docker-compose.deploy.yml`。選択の余地はない。`PUBLISH_TOPOLOGY=domain-split`
-  のときだけ `docker-compose.domain-split.yml` を自動で重ねる（手で `-f` を指定しない）。
+  場合はルートの `docker-compose.deploy.yml`。選択の余地はない。`PUBLISH_TOPOLOGY` が
+  `domain-split`（既定。未設定時もこれ）なら `docker-compose.domain-split.yml` を自動で重ねる
+  （手で `-f` を指定しない）。`single-origin` を明記したときだけ重ねない。
 - `reset` は DB volume を削除する破壊的操作（確認なしで即実行される）。`.env` は保持される。
 - MariaDB 起動後・migration 前に**アプリ用ユーザーの認証**を検証する。`Access denied for user 'idp'` で
   停止した場合は、`.env` の `MARIADB_PASSWORD` が既存 DB volume（初回作成時のパスワードで固定）と不一致。

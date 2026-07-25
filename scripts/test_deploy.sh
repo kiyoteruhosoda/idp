@@ -142,28 +142,59 @@ printf 'SENTINEL_KEEP=keepme' >>.env   # 末尾改行なしの最終行を作る
 grep -q '^SENTINEL_KEEP=keepme$' .env || { echo "last line without trailing newline was corrupted by append" >&2; exit 1; }
 grep -q '^LOG_FORMAT=pretty$' .env || { echo "key not appended after newline normalization" >&2; exit 1; }
 
-# --- 公開トポロジ（ADR-0015。single-origin / domain-split） ---
-export CURL_STUB_LOG="$TMP/curl.log"
-
-# 既定（.env.example の PUBLISH_TOPOLOGY=single-origin）では override を重ねず、
-# readiness も WEB_PORT の 1 つだけを見る。
-: >"$DOCKER_STUB_LOG"; : >"$CURL_STUB_LOG"
-./scripts/deploy.sh app >/tmp/deploy-single-origin.out 2>&1
-grep -q '公開トポロジ: single-origin' /tmp/deploy-single-origin.out
-if grep -q -- '-f docker-compose.domain-split.yml' "$DOCKER_STUB_LOG"; then
-  echo "single-origin must not overlay the domain-split compose file" >&2
+# 追記で既存配置の「公開先・公開トポロジ」を黙って変えないこと（ADR-0016 の既定変更の移行）。
+# 本番想定: ISSUER は公開ドメイン、PUBLIC_WEB_BASE_URL と PUBLISH_TOPOLOGY は当時の .env に無い。
+sed -i 's|^ISSUER=.*|ISSUER=https://idp.example.com|' .env
+sed -i '/^PUBLIC_WEB_BASE_URL=/d' .env
+sed -i '/^PUBLISH_TOPOLOGY=/d' .env
+: >"$DOCKER_STUB_LOG"; : >"${CURL_STUB_LOG:-/dev/null}"
+./scripts/deploy.sh app >/tmp/deploy-migrate-topology.out 2>&1
+# PUBLIC_WEB_BASE_URL は追記しない（未設定＝ISSUER フォールバック＝従来挙動）。localhost を
+# 本番 .env へ書き込むと、ログイン・招待・リセットのリダイレクト先だけが localhost になる。
+if grep -q '^PUBLIC_WEB_BASE_URL=' .env; then
+  echo "PUBLIC_WEB_BASE_URL must not be backfilled into an existing .env" >&2
+  grep '^PUBLIC_WEB_BASE_URL=' .env >&2
   exit 1
 fi
-grep -q 'http://127.0.0.1:8060/readyz' "$CURL_STUB_LOG" ||
-  { echo "single-origin must probe the WEB_PORT readiness endpoint" >&2; cat "$CURL_STUB_LOG" >&2; exit 1; }
-# 単一オリジン構成では PUBLIC_WEB_BASE_URL 未設定＝ISSUER 基点のまま（挙動不変）。
-grep -q 'ログイン URL: http://localhost:8060/' /tmp/deploy-single-origin.out ||
-  { echo "single-origin login URL must stay ISSUER-based" >&2; exit 1; }
-
-# domain-split では override を重ね、web（WEB_PORT）と api（API_PORT）の両方の readiness を見る。
+grep -q 'ログイン URL: https://idp.example.com/' /tmp/deploy-migrate-topology.out ||
+  { echo "existing deployment must keep redirecting to its own ISSUER origin" >&2; exit 1; }
+# PUBLISH_TOPOLOGY が無い .env は ADR-0016 以前の配置＝単一オリジンなので、その意味を維持する。
+grep -q '^PUBLISH_TOPOLOGY=single-origin$' .env ||
+  { echo "missing PUBLISH_TOPOLOGY must be backfilled as single-origin, not the new default" >&2; exit 1; }
+grep -q '公開トポロジ: single-origin' /tmp/deploy-migrate-topology.out ||
+  { echo "existing deployment must keep the single-origin topology" >&2; exit 1; }
+# 移行検証で書き換えた値を .env.example の既定へ戻す（以降のトポロジ試験の前提）。
+sed -i 's|^ISSUER=.*|ISSUER=http://localhost:8070|' .env
 sed -i 's/^PUBLISH_TOPOLOGY=.*/PUBLISH_TOPOLOGY=domain-split/' .env
+printf 'PUBLIC_WEB_BASE_URL=http://localhost:8060\n' >>.env
+
+# --- 公開トポロジ（ADR-0015・ADR-0016。既定 domain-split / 明示指定の single-origin） ---
+export CURL_STUB_LOG="$TMP/curl.log"
+
+# 既定（.env.example の PUBLISH_TOPOLOGY=domain-split。ADR-0016）では override を重ね、
+# web（WEB_PORT）と api（API_PORT）の両方の readiness を見る。
+: >"$DOCKER_STUB_LOG"; : >"$CURL_STUB_LOG"
+./scripts/deploy.sh app >/tmp/deploy-default-topology.out 2>&1
+grep -q '公開トポロジ: domain-split' /tmp/deploy-default-topology.out ||
+  { echo "default topology must be domain-split" >&2; cat /tmp/deploy-default-topology.out >&2; exit 1; }
+grep -q -- '-f docker-compose.deploy.yml -f docker-compose.domain-split.yml' "$DOCKER_STUB_LOG" ||
+  { echo "default topology must overlay docker-compose.domain-split.yml" >&2; cat "$DOCKER_STUB_LOG" >&2; exit 1; }
+grep -q 'http://127.0.0.1:8060/readyz' "$CURL_STUB_LOG" ||
+  { echo "default topology must probe the web readiness endpoint" >&2; cat "$CURL_STUB_LOG" >&2; exit 1; }
+grep -q 'http://127.0.0.1:8070/readyz' "$CURL_STUB_LOG" ||
+  { echo "default topology must probe the api readiness endpoint" >&2; cat "$CURL_STUB_LOG" >&2; exit 1; }
+
+# PUBLISH_TOPOLOGY が空（値なし）でも既定の domain-split に落ちる。
+sed -i 's/^PUBLISH_TOPOLOGY=.*/PUBLISH_TOPOLOGY=/' .env
+: >"$DOCKER_STUB_LOG"; : >"$CURL_STUB_LOG"
+./scripts/deploy.sh app >/tmp/deploy-topology-empty.out 2>&1
+grep -q '公開トポロジ: domain-split' /tmp/deploy-topology-empty.out ||
+  { echo "empty PUBLISH_TOPOLOGY must fall back to domain-split" >&2; exit 1; }
+sed -i 's/^PUBLISH_TOPOLOGY=.*/PUBLISH_TOPOLOGY=domain-split/' .env
+
+# 実ドメインで公開する場合も同じ経路。まとめの URL だけが公開オリジン基点に変わる。
 sed -i 's|^ISSUER=.*|ISSUER=https://api.example.com|' .env
-printf 'PUBLIC_WEB_BASE_URL=https://id.example.com\n' >>.env
+sed -i 's|^PUBLIC_WEB_BASE_URL=.*|PUBLIC_WEB_BASE_URL=https://id.example.com|' .env
 : >"$DOCKER_STUB_LOG"; : >"$CURL_STUB_LOG"
 ./scripts/deploy.sh app >/tmp/deploy-domain-split.out 2>&1
 grep -q '公開トポロジ: domain-split' /tmp/deploy-domain-split.out
@@ -212,10 +243,29 @@ set -e
 [[ $status -ne 0 ]] || { echo "unknown PUBLISH_TOPOLOGY must fail" >&2; exit 1; }
 grep -q "PUBLISH_TOPOLOGY が不正です: 'split-domain'" /tmp/deploy-topology-typo.out
 
-# Compose 定義に無いサービスは、待機タイムアウトではなく即座に原因を示して落とす。
+# single-origin を明記したときだけ override を重ねず、readiness も WEB_PORT の 1 つだけを見る。
 sed -i 's/^PUBLISH_TOPOLOGY=.*/PUBLISH_TOPOLOGY=single-origin/' .env
 sed -i 's|^ISSUER=.*|ISSUER=http://localhost:8060|' .env
-sed -i '/^PUBLIC_WEB_BASE_URL=/d' .env
+# 単一オリジンでは api・web とも同一オリジン（= WEB_PORT）に揃える。
+sed -i 's|^PUBLIC_WEB_BASE_URL=.*|PUBLIC_WEB_BASE_URL=http://localhost:8060|' .env
+: >"$DOCKER_STUB_LOG"; : >"$CURL_STUB_LOG"
+./scripts/deploy.sh app >/tmp/deploy-single-origin.out 2>&1
+grep -q '公開トポロジ: single-origin' /tmp/deploy-single-origin.out
+if grep -q -- '-f docker-compose.domain-split.yml' "$DOCKER_STUB_LOG"; then
+  echo "single-origin must not overlay the domain-split compose file" >&2
+  exit 1
+fi
+grep -q 'http://127.0.0.1:8060/readyz' "$CURL_STUB_LOG" ||
+  { echo "single-origin must probe the WEB_PORT readiness endpoint" >&2; cat "$CURL_STUB_LOG" >&2; exit 1; }
+if grep -q 'http://127.0.0.1:8070/readyz' "$CURL_STUB_LOG"; then
+  echo "single-origin must not probe the API_PORT readiness endpoint" >&2
+  exit 1
+fi
+# 単一オリジン構成では ISSUER と PUBLIC_WEB_BASE_URL が同一オリジンなので、まとめの URL も同じ。
+grep -q 'ログイン URL: http://localhost:8060/' /tmp/deploy-single-origin.out ||
+  { echo "single-origin login URL must stay on the WEB_PORT origin" >&2; exit 1; }
+
+# Compose 定義に無いサービスは、待機タイムアウトではなく即座に原因を示して落とす。
 set +e
 DOCKER_STUB_SERVICES="api mariadb migrate web" ./scripts/deploy.sh app >/tmp/deploy-missing-service.out 2>&1
 status=$?
@@ -366,6 +416,9 @@ cp "$ROOT/scripts/deploy.sh" "$TMP/bundle/"
 cp "$ROOT/docker-compose.deploy.yml" "$TMP/bundle/docker-compose.yml"
 cp "$ROOT/.env.example" "$TMP/bundle/"
 cp "$ROOT/docker/nginx.conf" "$TMP/bundle/docker/"
+# build.sh は既定トポロジ（domain-split）の override 一式も必ず同梱する。
+cp "$ROOT/docker-compose.domain-split.yml" "$TMP/bundle/"
+cp "$ROOT/docker/nginx.domain-split.conf" "$TMP/bundle/docker/"
 for svc in api web migrate; do
   touch "$TMP/bundle/idp-${svc}.tar"
   printf '%s_ref=idp/%s:latest\n%s_image_id=sha256:stub-image-id\n' "$svc" "$svc" "$svc"
@@ -393,6 +446,8 @@ cp "$ROOT/scripts/deploy.sh" "$TMP/stg/"
 cp "$ROOT/docker-compose.deploy.yml" "$TMP/stg/docker-compose.yml"
 cp "$ROOT/.env.example" "$ROOT/.env.staging.example" "$TMP/stg/"
 cp "$ROOT/docker/nginx.conf" "$TMP/stg/docker/"
+cp "$ROOT/docker-compose.domain-split.yml" "$TMP/stg/"
+cp "$ROOT/docker/nginx.domain-split.conf" "$TMP/stg/docker/"
 for svc in api web migrate; do
   touch "$TMP/stg/idp-${svc}.tar"
   printf '%s_ref=idp/%s:stg\n%s_image_id=sha256:stub-image-id\n' "$svc" "$svc" "$svc"

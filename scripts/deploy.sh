@@ -73,10 +73,10 @@ compose=()
 COMPOSE_PROJECT=""
 LEGACY_COMPOSE_PROJECT_NAME=""
 DIAGNOSTIC_SERVICES=(mariadb migrate api web proxy)
-# 公開トポロジ（ADR-0015）。init_compose_command が .env から確定する。
-#   single-origin: 1 ポートをパスで振り分ける（既定）
-#   domain-split : web / api をリッスンポートで分け、前段プロキシが別サブドメインを割り当てる
-PUBLISH_TOPOLOGY="single-origin"
+# 公開トポロジ（ADR-0015・ADR-0016）。init_compose_command が .env から確定する。
+#   domain-split : web / api をリッスンポートで分け、前段プロキシが別サブドメインを割り当てる（既定）
+#   single-origin: 1 ポート（WEB_PORT）をパスで振り分ける
+PUBLISH_TOPOLOGY="domain-split"
 # Compose が認識しているサービス名の一覧（init_compose_command で確定。取得失敗時は空）。
 COMPOSE_DEFINED_SERVICES=""
 # デプロイ完了時のまとめ表示に使う root テナントの URL（replace_app_containers で確定する）。
@@ -204,10 +204,10 @@ init_compose_command() {
   else
     die "docker compose（v2）または docker-compose（v1）が見つかりません。"
   fi
-  # 公開トポロジ（ADR-0015）。domain-split では override を重ね、proxy が web / api を
-  # 別ポートで公開する。未知の値は fail-fast（誤記のまま単一オリジンで起動させない）。
+  # 公開トポロジ（ADR-0015・ADR-0016）。既定の domain-split では override を重ね、proxy が
+  # web / api を別ポートで公開する。未知の値は fail-fast（誤記のまま別トポロジで起動させない）。
   topology="$(get_env_var PUBLISH_TOPOLOGY)"
-  PUBLISH_TOPOLOGY="${topology:-single-origin}"
+  PUBLISH_TOPOLOGY="${topology:-domain-split}"
   case "$PUBLISH_TOPOLOGY" in
     single-origin) ;;
     domain-split)
@@ -242,6 +242,25 @@ set_env_var() {
 #   * 秘密情報（example 値が CHANGE-ME）。誤って空/プレースホルダで上書きしないため。
 #   * 値が空のキー（deploy.sh が別途設定する、または任意設定のもの）。
 #   * COMPOSE_PROJECT_NAME（volume 名前空間。誤って別 volume を指すと破損するため既存挙動を維持）。
+# 既存 `.env` へ「不足キー」を追記するときの値を決める。テンプレート（`.env.example`）の既定値は
+# **新規配置向け**であり、そのまま既存配置へ入れると公開先や公開トポロジが黙って変わるキーがある。
+# 標準出力へ実際に書く値を返し、追記自体を見送る場合は 1 を返す。
+migration_value_for() {
+  local key="$1" template_value="$2"
+  case "$key" in
+    # ADR-0016 で既定を domain-split へ変更した。このキーが無い `.env` はそれ以前に作られたもの＝
+    # 単一オリジンで動いてきた配置なので、従来どおり single-origin を維持する。トポロジの変更は
+    # 運用者が `.env` を明示的に書き換えて行う（再デプロイで公開ポートが増えるのを防ぐ）。
+    PUBLISH_TOPOLOGY) printf 'single-origin\n' ;;
+    # ADR-0016 でテンプレートに実値（ローカルの web オリジン）が入った。これを既存 `.env` へ
+    # 追記すると、本番の ISSUER を保ったままログイン・招待・リセットのリダイレクト先だけが
+    # localhost になる。未設定なら api・web とも ISSUER へフォールバックする（＝従来挙動）ため、
+    # 追記しない。別ドメイン公開へ移行するときは運用者が実ドメインを明記する。
+    PUBLIC_WEB_BASE_URL) return 1 ;;
+    *) printf '%s\n' "$template_value" ;;
+  esac
+}
+
 merge_missing_env_keys() {
   [[ -f "$example_file" ]] || return 0
   local line key value added=0
@@ -255,6 +274,10 @@ merge_missing_env_keys() {
     [[ "$key" == COMPOSE_PROJECT_NAME ]] && continue
     [[ -z "$value" || "$value" == *CHANGE-ME* ]] && continue
     grep -qE "^[[:space:]]*${key}=" "$env_file" && continue
+    # テンプレートの既定値をそのまま追記すると既存配置の意味が変わるキーは、従来挙動を保つ値へ
+    # 読み替える（追記自体を見送ることもある）。バージョン更新が黙って公開先を変えないため。
+    if ! value="$(migration_value_for "$key" "$value")"; then continue; fi
+    line="${key}=${value}"
     # 追記前に末尾改行を保証する。手編集で末尾改行の無い .env でも、最終行の値へ連結して
     # 壊さないようにする（例: `FOO=bar` + `LOG_FORMAT=pretty` → `FOO=barLOG_FORMAT=...` を防ぐ）。
     if [[ -s "$env_file" && -n "$(tail -c1 "$env_file")" ]]; then printf '\n' >>"$env_file"; fi

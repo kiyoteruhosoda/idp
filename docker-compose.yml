@@ -138,6 +138,12 @@ services:
 
   # リバースプロキシ（ADR-0007 §2）。単一オリジンでブラウザのトラフィックをパスで web/api へ振り分ける。
   # /login・/admin/console/* → web、/internal/* は遮断、それ以外 → api。
+  # 本ファイル（開発・ビルド用）は単体では単一オリジン構成。既定トポロジは domain-split（ADR-0016）で、
+  # `.env.example` の ISSUER（api＝API_PORT）と PUBLIC_WEB_BASE_URL（web＝WEB_PORT）も別オリジンを
+  # 前提にしているため、その .env をそのまま使うなら override を重ねること
+  # （デプロイ経路では deploy.sh が自動で重ねる。手で起動するときだけ -f が要る）:
+  #   docker compose -f docker-compose.yml -f docker-compose.domain-split.yml up -d
+  # 単一オリジンで動かす場合は .env の ISSUER と PUBLIC_WEB_BASE_URL を WEB_PORT の同一オリジンに揃える。
   proxy:
     image: nginx:1.27-alpine
     volumes:

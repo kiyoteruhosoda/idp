@@ -10,14 +10,16 @@ api（DB 直結。既定 :8080）と web（HTML 画面。既定 :8081）を別�
 ```sh
 docker compose up -d mariadb          # MariaDB 10.11 を起動
 sqlx migrate run                       # マイグレーション適用（要 DATABASE_URL）
-# 別々のシェルで（web は api を API_BASE_URL で呼ぶ）
-cargo run -p idp-api                   # api 起動（既定 0.0.0.0:8080）
-API_BASE_URL=http://localhost:8080 cargo run -p idp-web   # web 起動（既定 0.0.0.0:8081）
+# 別々のシェルで（web は api を API_BASE_URL で呼ぶ。PUBLIC_WEB_BASE_URL は両者に同値で渡す）
+PUBLIC_WEB_BASE_URL=http://localhost:8081 cargo run -p idp-api   # api 起動（既定 0.0.0.0:8080）
+PUBLIC_WEB_BASE_URL=http://localhost:8081 API_BASE_URL=http://localhost:8080 \
+  cargo run -p idp-web                                           # web 起動（既定 0.0.0.0:8081）
 ```
 
-ブラウザは通常はリバースプロキシ（単一オリジン）経由で使う。ローカルで直に触る場合、ログイン画面・
+ブラウザは通常は同梱リバースプロキシ経由で使う。ローカルで直に触る場合、ログイン画面・
 管理コンソールは web（:8081）、OIDC protocol・JSON 管理 API は api（:8080）。両者は同一の
 `INTERNAL_SERVICE_TOKEN` を共有する（web→api の `/internal/*` 呼び出しに必要）。
+待ち受けポートの全体像は「リバースプロキシと公開範囲」の「待ち受けポート一覧」を参照。
 
 ## マイグレーションを適用したいとき
 
@@ -329,12 +331,84 @@ DB を直接参照せずに、いま DB へ適用されているマイグレー�
 > api コンテナのログに出力される `schema version` 照合行（`expected` / `applied`）で状態を確認する。本画面は
 > 主に「デプロイ後に期待 version まで適用できたか（適用済み＝期待）」の確認に用いる。
 
-## リバースプロキシと公開範囲（ADR-0007 §2・ADR-0009 §6、MT13）
+## リバースプロキシと公開範囲（ADR-0007 §2・ADR-0015・ADR-0016）
 
-ブラウザは**単一オリジン**（リバースプロキシ、既定 `WEB_PORT`）に来て、プロキシがパスで振り分ける。
-web の画面 URL はテナント経路化されており（`/{tenant_id}/login` 等）、管理コンソール（HTML）は
-api の JSON 管理 API と同じ `/{tenant_id}/admin/...` 名前空間を共有するため、この経路のみ
-`Accept` ヘッダ（`text/html` を含むか）で振り分ける。
+同梱リバースプロキシ（`proxy` サービス）が唯一の公開点で、api・web コンテナは**ホストへ直接公開
+しない**。web→api の `/internal/*` は共有シークレット `INTERNAL_SERVICE_TOKEN`（api・web で同値）で
+保護し、プロキシは**どの公開ポートでも** `/internal/*` に 404 を返す（多層防御）。デバッグで api/web を
+直に叩きたい場合は `docker-compose.yml` の該当 `ports:` を一時的に有効化する。
+
+公開の形は `.env` の `PUBLISH_TOPOLOGY` で選ぶ。
+
+| 値 | 公開ポート | 振り分け | nginx 設定 |
+|---|---|---|---|
+| `domain-split`（既定） | `WEB_PORT`（web）・`API_PORT`（api） | リッスンポート | `docker/nginx.domain-split.conf` |
+| `single-origin` | `WEB_PORT` のみ | パス・`Accept`・メソッド | `docker/nginx.conf` |
+
+既定は `domain-split` で、**ポートとサービスが 1:1** になる（ADR-0016）。前段のリバースプロキシ
+（Synology DSM 等）が TLS 終端とドメイン振り分けを行い、ポート単位で同梱プロキシへ流す。実ドメインで
+公開する手順は下記「api と web を別ドメイン（サブドメイン）で公開したいとき」を参照。
+
+`single-origin` に切り替えると 1 ポートをパスで振り分ける（下記「単一オリジンで公開したいとき」）。
+未設定は既定に落ちるが、いずれでもない値は起動を止める（誤記のまま別トポロジで動かさない）。
+
+### 待ち受けポート一覧
+
+ポートは 3 段ある。**前段プロキシ → ホスト公開ポート（`.env` で変える）→ コンテナ内ポート（固定）**。
+コンテナ内ポートは `.env` で変えない（Compose が固定値を注入する）。
+
+#### ホストで公開するポート（`.env` で設定する）
+
+| 用途 | `.env` のキー | 既定値 | 転送先（コンテナ内） | トポロジ |
+|---|---|---|---|---|
+| web（ログイン画面・管理コンソール） | `WEB_BIND_HOST` / `WEB_PORT` | `127.0.0.1` / `8060` | `proxy:8080` | 両方 |
+| api（OIDC protocol・JSON 管理 API） | `API_BIND_HOST` / `API_PORT` | `127.0.0.1` / `8070` | `proxy:8081` | `domain-split` のみ |
+| MariaDB（開発 Compose・保守 override のみ） | `MARIADB_BIND_HOST` / `MARIADB_PORT` | `127.0.0.1` / `3306` | `mariadb:3306` | 両方 |
+| Redis（`profiles: optional`。未使用） | `REDIS_PORT` | `6379` | `redis:6379` | 両方 |
+
+- bind の既定は**ループバック**（`127.0.0.1`）。前段プロキシが同一ホストにある前提。別ホストの前段から
+  届かせる場合だけ広げる（その場合は前段・ファイアウォールでも `/internal/*` を遮断する）。
+- `single-origin` では `API_PORT` を公開しない（`API_BIND_HOST` / `API_PORT` は未使用）。
+- 同一ホストに stg/prod を併置する場合は `WEB_PORT`・`API_PORT`・`MARIADB_PORT` を環境ごとに分ける。
+- デプロイ用 Compose（`docker-compose.deploy.yml`）は MariaDB をホスト公開しない（下記「MariaDB の
+  公開範囲と保守接続」）。
+
+#### コンテナが listen するポート（固定。Compose が注入する）
+
+| サービス | listen | 何を受けるか | 転送先 |
+|---|---|---|---|
+| `proxy`（nginx） | `8080` | web 面。`WEB_PORT` からの転送 | `web:8081` |
+| `proxy`（nginx） | `8081` | api 面。`API_PORT` からの転送（`domain-split` のみ） | `api:8080` |
+| `api` | `8080`（`BIND_ADDR=0.0.0.0:8080`） | proxy からの api 面・web からの `/internal/*` 直結 | MariaDB |
+| `web` | `8081`（`WEB_BIND_ADDR=0.0.0.0:8081`） | proxy からの web 面 | `API_BASE_URL=http://api:8080` |
+| `mariadb` | `3306` | api・migrate からの sqlx 接続 | — |
+
+- **proxy の 8080 が web 面**である点に注意する（api コンテナの 8080 とは別物）。proxy のヘルスチェックと
+  ベース Compose のポート公開定義を両トポロジで無変更に保つための割り当て（ADR-0015 §Decision 4）。
+- `single-origin` では proxy の 8081 は使わない（`nginx.conf` は 8080 だけを listen する）。
+- web→api の呼び出しは Compose ネットワーク内で `http://api:8080` へ直結し、**プロキシを通らない**。
+  `API_BASE_URL` は内部到達先であり、公開ドメイン（`ISSUER`）とは独立。
+
+#### ローカル開発（コンテナを使わずホストで実行するとき）
+
+| プロセス | 既定 listen | 変更キー |
+|---|---|---|
+| `cargo run -p idp-api`（`idp`） | `0.0.0.0:8080` | `BIND_ADDR` |
+| `cargo run -p idp-web`（`idp-web`） | `0.0.0.0:8081` | `WEB_BIND_ADDR` |
+| MariaDB（`docker compose up -d mariadb`） | `127.0.0.1:3306` | `MARIADB_BIND_HOST` / `MARIADB_PORT` |
+
+この場合はプロキシを立てないため、web の `API_BASE_URL` を `http://localhost:8080`（api の直アドレス）
+にし、`PUBLIC_WEB_BASE_URL`（`http://localhost:8081`）を **api・web の両プロセスへ同値で**渡す。
+未設定だと両者とも `ISSUER`（既定 `http://localhost:8080`）へフォールバックし、`/authorize` が
+ログイン画面へ飛ばす先が web ではなく api になる。
+
+### 単一オリジンで公開したいとき（`PUBLISH_TOPOLOGY=single-origin`）
+
+前段プロキシを持たず 1 ポートだけ開ける配置では、単一オリジン・パスルーティングを選ぶ。ブラウザは
+リバースプロキシ（`WEB_PORT`）だけに来て、プロキシがパスで振り分ける。web の画面 URL はテナント
+経路化されており（`/{tenant_id}/login` 等）、管理コンソール（HTML）は api の JSON 管理 API と同じ
+`/{tenant_id}/admin/...` 名前空間を共有するため、この経路のみ `Accept` ヘッダ（`text/html` を含むか）で
+振り分ける。
 
 - `/{tenant_id}/admin(/...)?` → `Accept: text/html` を含む（ブラウザの画面遷移）なら **web**（管理コンソール）、
   それ以外（`curl` 等の JSON API クライアント）は **api**（JSON 管理 API）
@@ -342,18 +416,18 @@ api の JSON 管理 API と同じ `/{tenant_id}/admin/...` 名前空間を共有
 - `/internal/*` → **遮断**（外部公開しない。web→api の内部呼び出しは Compose ネットワーク内で直結）
 - それ以外（`/{tenant_id}/authorize`・`/token`・`/userinfo`・`/.well-known`・`/healthz`・OpenAPI）→ **api**
 
-ルーティング定義は `docker/nginx.conf`。api・web は既定で**ホストへ直接公開しない**（プロキシ経由のみ）。
-web→api の `/internal/*` は共有シークレット `INTERNAL_SERVICE_TOKEN`（api・web で同値）で保護する。
-デバッグで api/web を直に叩きたい場合は `docker-compose.yml` の該当 `ports:` を一時的に有効化する。
+ルーティング定義は `docker/nginx.conf`。切り替え手順は次のとおり。
 
-公開の形は `.env` の `PUBLISH_TOPOLOGY` で選ぶ（ADR-0015）。
+1. `.env` を単一オリジンへ揃える。
 
-| 値 | 公開ポート | 振り分け | nginx 設定 |
-|---|---|---|---|
-| `single-origin`（既定） | `WEB_PORT` のみ | パス・`Accept`・メソッド | `docker/nginx.conf` |
-| `domain-split` | `WEB_PORT`（web）・`API_PORT`（api） | リッスンポート | `docker/nginx.domain-split.conf` |
+   ```sh
+   PUBLISH_TOPOLOGY=single-origin
+   ISSUER=http://localhost:8060              # api・web とも同一オリジン（= WEB_PORT）
+   PUBLIC_WEB_BASE_URL=http://localhost:8060 # ISSUER と同値にする
+   ```
 
-`domain-split` の手順は下記「api と web を別ドメイン（サブドメイン）で公開したいとき」を参照。
+2. `COOKIE_DOMAIN` の行を削除する（単一オリジンでは host-only Cookie でよい）。
+3. `./deploy.sh app` で再デプロイする。`API_PORT` の公開は自動的に無くなる（override を重ねない）。
 
 ### MariaDB の公開範囲と保守接続
 
@@ -374,9 +448,9 @@ docker compose -f docker-compose.deploy.yml -f docker-compose.db-debug.yml \
   --profile db-debug up -d mariadb
 ```
 
-## api と web を別ドメイン（サブドメイン）で公開したいとき（ADR-0012・ADR-0015）
+## api と web を別ドメイン（サブドメイン）で公開したいとき（ADR-0012・ADR-0015・ADR-0016）
 
-単一オリジン・パスルーティング（上記）に代えて、api と web をドメイン単位で分けて公開できる。
+**これが既定のトポロジ**（`PUBLISH_TOPOLOGY=domain-split`）。api と web をドメイン単位で分けて公開する。
 **両者は同一の登録可能ドメイン（eTLD+1）のサブドメインであること**（例: `api.example.com` と
 `id.example.com`）。全く無関係なドメイン間の分割はサポートしない。
 
@@ -388,12 +462,15 @@ https://id.example.com  → ${WEB_BIND_HOST}:${WEB_PORT} → 同梱 nginx :8080 
 https://api.example.com → ${API_BIND_HOST}:${API_PORT} → 同梱 nginx :8081 → api
 ```
 
+`.env.example` 由来の既定はローカル向けの `http://localhost:8070`（api）/ `http://localhost:8060`（web）
+なので、実ドメインで公開するときは下記の手順で公開オリジンと Cookie を設定する。
+
 ### 手順
 
-1. `.env` にトポロジと api 側の公開ポートを設定する。
+1. `.env` でトポロジ（既定のまま）と公開ポートを確認する。
 
    ```sh
-   PUBLISH_TOPOLOGY=domain-split
+   PUBLISH_TOPOLOGY=domain-split   # 既定。明記しておくと意図が読み取れる
    WEB_BIND_HOST=127.0.0.1     # 前段プロキシが同一ホストなら loopback のままでよい
    WEB_PORT=8060               # web（HTML 画面）の公開ポート
    API_BIND_HOST=127.0.0.1
@@ -436,8 +513,7 @@ RP に登録する OIDC エンドポイントは api ドメイン側。
   `WEB_BIND_HOST` / `API_BIND_HOST` を広げる場合は、前段・ファイアウォールでも `/internal/*` を
   遮断する。
 - 同一ホストに stg/prod を併置する場合は `WEB_PORT` と同様に `API_PORT` も環境ごとに分ける。
-- 単一オリジン構成へ戻すには `PUBLISH_TOPOLOGY=single-origin` に戻し、`COOKIE_DOMAIN` を削除して
-  `ISSUER`・`PUBLIC_WEB_BASE_URL` を同一オリジンに揃えてから再デプロイする。
+- 単一オリジン構成にするには上記「単一オリジンで公開したいとき」の手順に従う。
 
 注意:
 
@@ -448,7 +524,8 @@ RP に登録する OIDC エンドポイントは api ドメイン側。
   ログインループを防ぐ fail-fast）。
 - `COOKIE_DOMAIN` を有効化すると、以後の Set-Cookie には旧構成の host-only Cookie を掃除する
   削除 Cookie が自動で併送される。ブラウザ側の手動対応は不要。
-- ローカル開発（`localhost` ポート違い）では `COOKIE_DOMAIN` を使わず、従来どおり単一オリジンで行う。
+- ローカル開発（`localhost` のポート違い）では `COOKIE_DOMAIN` を**設定しない**。Cookie はポートを
+  区別しないため、host-only Cookie（`localhost`）のままで web:`WEB_PORT` と api:`API_PORT` の双方に届く。
 
 ### `PUBLIC_WEB_BASE_URL` を DB 管理から ENV へ移行する（破壊的変更）
 
@@ -488,7 +565,9 @@ cd /opt/idp/dist   # 転送先（例）
 ```
 
 内容: 初回は秘密情報（DB パスワード・`KEY_ENCRYPTION_KEY`・`INTERNAL_SERVICE_TOKEN`・`CSRF_SECRET`）を
-乱数生成して `.env` を作成（確認する項目は `ISSUER` と `WEB_PORT`。同一ホストの stg/prod は sample env で `WEB_PORT` / `IMAGE_TAG` を分ける）→ 同梱 tar からイメージを
+乱数生成して `.env` を作成（確認する項目は公開 URL の `ISSUER`（api）・`PUBLIC_WEB_BASE_URL`（web）と
+公開ポートの `WEB_PORT` / `API_PORT`。同一ホストの stg/prod は sample env で公開ポート / `IMAGE_TAG` を
+分ける）→ 同梱 tar からイメージを
 `docker load`（manifest と照合。読込済みならスキップ）→ MariaDB 起動 → マイグレーション
 （DDL + マスタデータ）適用 → api・web・proxy を起動 → `/readyz` で起動確認。
 
@@ -564,8 +643,8 @@ Synology DSM のようにデプロイ先へ直接 git を入れられない場�
 
 3. `.env` は最小設定でよい。初回実行で `deploy.sh` が `.env.example` から `.env` を自動生成し、
    秘密情報（`KEY_ENCRYPTION_KEY`・DB パスワード・`CSRF_SECRET` 等）を乱数生成する。生成後、
-   デプロイ先の `.env` で **`ISSUER`（公開 URL）と `WEB_PORT`（公開ポート）** の 2 つだけ環境に
-   合わせて確認・編集し、もう一度実行する。
+   デプロイ先の `.env` で **公開 URL（`ISSUER`＝api / `PUBLIC_WEB_BASE_URL`＝web）と公開ポート
+   （`WEB_PORT` / `API_PORT`）** だけ環境に合わせて確認・編集し、もう一度実行する。
 
 **以後の運用（自動）**
 
@@ -611,15 +690,19 @@ DB volume を削除してからマイグレーション・起動をやり直す�
 
 ## 同一ホストに stg / prod を置く場合
 
-`docker-compose.deploy.yml` はコンテナ内の proxy を常に `8080` で待ち受けさせ、ホスト側の外部公開ポートだけを `.env` の `WEB_PORT` で変える。
-同じホストに 2 環境を置く場合、同じ `WEB_PORT` は同時に bind できないため、例として以下のように分ける。
+`docker-compose.deploy.yml` はコンテナ内の proxy を常に `8080`（web 面）/ `8081`（api 面）で待ち受けさせ、
+ホスト側の外部公開ポートだけを `.env` の `WEB_PORT` / `API_PORT` で変える。同じホストに 2 環境を置く
+場合、同じポートは同時に bind できないため、例として以下のように分ける（既定の `domain-split` では
+`API_PORT` も分ける）。
 
-| 環境 | 配置例 | `.env` テンプレート | 外部 URL 例 | `WEB_PORT` | `IMAGE_TAG` |
-| --- | --- | --- | --- | --- | --- |
-| stg | `/opt/idp/stg` | `.env.staging.example` | `http://<host>:8061` | `8061` | `stg` |
-| prod | `/opt/idp/prod` | `.env.production.example` | `http://<host>:8060` | `8060` | `prod` |
+| 環境 | 配置例 | `.env` テンプレート | web の外部 URL 例 | `WEB_PORT` | api の外部 URL 例 | `API_PORT` | `IMAGE_TAG` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| stg | `/opt/idp/stg` | `.env.staging.example` | `http://<host>:8061` | `8061` | `http://<host>:8071` | `8071` | `stg` |
+| prod | `/opt/idp/prod` | `.env.production.example` | `http://<host>:8060` | `8060` | `http://<host>:8070` | `8070` | `prod` |
 
-`ISSUER` と `PUBLIC_WEB_BASE_URL` は、ブラウザが外から到達する URL（例: `http://192.0.2.10:8061`）に合わせる。
+`PUBLIC_WEB_BASE_URL` は web に、`ISSUER` は api に、それぞれブラウザ・RP が外から到達する URL
+（例: `http://192.0.2.10:8061` / `http://192.0.2.10:8071`）を設定する。`single-origin` に切り替えた
+場合は両者を `WEB_PORT` の同一オリジンに揃え、`API_PORT` は使わない。
 同一ホストでは `IMAGE_TAG` も `stg` / `prod` のように分け、`latest` を両環境で共有しない。
 
 ```sh
