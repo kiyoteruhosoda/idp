@@ -3,8 +3,12 @@
 //! メンバー管理の起点となるハブ画面。api の JSON 管理 API を管理者の SSO Cookie 転送で呼ぶ。
 //! ゲストはメンバーシップの解除のみでき（HOME は api 側が 403 を返す）、所属元（HOME）の利用者には
 //! 無効化・有効化・パスワード再発行・削除を提供する（対象が所属元でない場合は api 側が 404 を返す）。
+//!
+//! 一覧の**絞り込み・ページングは api（DB）側**が行う（MT22）。web は検索語とページ位置をクエリで
+//! 引き継ぎ、応答の `total` からページャの前後リンクを組み立てるだけで、全件を受け取らない。
 
 use super::locale;
+use crate::admin_dto::MemberListView;
 use crate::api_client::AdminApiError;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -34,8 +38,12 @@ pub struct ViewQuery {
     #[serde(default)]
     pub notice: Option<String>,
     /// メンバー一覧の絞り込み語（メールアドレス・氏名の部分一致。大文字小文字を無視）。
+    /// 絞り込みは api（DB）側で行う。
     #[serde(default)]
     pub q: Option<String>,
+    /// ページャの読み飛ばし件数。未指定は 0。
+    #[serde(default)]
+    pub offset: Option<i64>,
 }
 
 /// メンバー一覧（`GET /{tenant_id}/admin/members`）。
@@ -50,34 +58,109 @@ pub async fn list(
         AdminResolution::Ok(uid) => uid,
         AdminResolution::Reject(resp) => return resp,
     };
+    let term = query.q.clone().unwrap_or_default();
+    let offset = query.offset.unwrap_or(0).max(0);
+    // 絞り込み・ページングは api（DB）側で行う。web 側で全件を受けてから絞る方式は、
+    // テナントの規模に比例して応答が膨らむため採らない（MT22）。
+    let mut params: Vec<(&str, String)> = vec![("offset", offset.to_string())];
+    if !term.trim().is_empty() {
+        params.push(("q", term.trim().to_string()));
+    }
     let result = state
         .api
-        .list_members(&correlation.0, &tenant.0, &sso(&headers))
+        .list_members(&correlation.0, &tenant.0, &sso(&headers), &params)
         .await;
     let messages = Messages::new(locale(&headers));
     let csrf = csrf_from(&headers, state.config.csrf_secret());
     let error_key = query.error.as_deref().and_then(error_key_for);
     let notice_key = query.notice.as_deref().and_then(notice_key_for);
-    let term = query.q.unwrap_or_default();
     match result {
-        Ok(all) => {
-            let members = filter_members(&all, &term);
-            Html(render(&MembersList {
-                messages: &messages,
-                tenant: &tenant.prefix(),
-                admin: Some(&admin),
-                members: &members,
-                query: term.trim(),
-                csrf: &csrf,
-                error_key,
-                notice_key,
-            }))
-            .into_response()
-        }
+        Ok(page) => Html(render_list(
+            &messages,
+            &tenant,
+            &admin,
+            &csrf,
+            &page,
+            term.trim(),
+            offset,
+            error_key,
+            notice_key,
+        ))
+        .into_response(),
         Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
         Err(AdminApiError::Forbidden) => forbidden_response(&headers),
         Err(_) => internal_error(&messages, &tenant, &admin),
     }
+}
+
+/// メンバー一覧の描画（ページャのリンク組み立てを含む）。
+#[allow(clippy::too_many_arguments)]
+fn render_list(
+    messages: &Messages,
+    tenant: &WebTenant,
+    admin: &str,
+    csrf: &str,
+    page: &MemberListView,
+    term: &str,
+    offset: i64,
+    error_key: Option<&str>,
+    notice_key: Option<&str>,
+) -> String {
+    let (prev_href, next_href) = pager_links(tenant, term, offset, page);
+    render(&MembersList {
+        messages,
+        tenant: &tenant.prefix(),
+        admin: Some(admin),
+        members: &page.members,
+        total: page.total,
+        query: term,
+        csrf,
+        error_key,
+        notice_key,
+        prev_href,
+        next_href,
+    })
+}
+
+/// ページャの前後リンク。次ページの有無は**総件数**で判定する（1 ページに満たない件数かどうかで
+/// 判定すると、最後のページがちょうど埋まったときに空ページへのリンクが出る）。
+fn pager_links(
+    tenant: &WebTenant,
+    term: &str,
+    offset: i64,
+    page: &MemberListView,
+) -> (Option<String>, Option<String>) {
+    // limit は api が実際に適用した値。0 以下が返ることは無いが、加算の安全側として弾く。
+    let limit = page.limit.max(1);
+    // `offset` はクエリ由来（`?offset=9223372036854775807` も来る）。素の加算は debug ビルドで
+    // オーバーフロー panic、release ビルドでは負の値へ回り込んで不正な「次へ」リンクになるため、
+    // 飽和加算にする。飽和した値は `total` 未満にならないので「次へ」は出ない（意図どおり）。
+    let next_offset = offset.saturating_add(limit);
+    let prev = (offset > 0).then(|| members_href(tenant, term, (offset - limit).max(0)));
+    let next = (next_offset < page.total).then(|| members_href(tenant, term, next_offset));
+    (prev, next)
+}
+
+fn members_href(tenant: &WebTenant, term: &str, offset: i64) -> String {
+    let mut query = format!("offset={offset}");
+    if !term.is_empty() {
+        query.push_str(&format!("&q={}", urlencode(term)));
+    }
+    format!("{}{MEMBERS_SEGMENT}?{query}", tenant.prefix())
+}
+
+/// クエリ文字列へ載せる値のパーセントエンコード（RFC 3986 の unreserved 以外を変換する）。
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 #[derive(Debug, Deserialize)]
@@ -350,25 +433,6 @@ pub async fn delete(
 
 /// メンバー一覧を絞り込み語で部分一致フィルタする（メールアドレス・氏名。大文字小文字を無視）。
 /// 空語のときは全件返す。一覧は api が全件返すため、絞り込みは web 側で行う（api 変更は不要）。
-fn filter_members(
-    members: &[crate::admin_dto::MemberView],
-    term: &str,
-) -> Vec<crate::admin_dto::MemberView> {
-    let needle = term.trim().to_lowercase();
-    if needle.is_empty() {
-        return members.to_vec();
-    }
-    members
-        .iter()
-        .filter(|m| {
-            let email = m.email.as_deref().unwrap_or_default().to_lowercase();
-            let name = m.name.as_deref().unwrap_or_default().to_lowercase();
-            email.contains(&needle) || name.contains(&needle)
-        })
-        .cloned()
-        .collect()
-}
-
 fn notice_key_for(notice: &str) -> Option<&'static str> {
     match notice {
         "mfa-reset" => Some("admin-members-mfa-reset-done"),
@@ -442,29 +506,41 @@ mod tests {
         }
     }
 
-    fn render_list(members: &[MemberView], notice_key: Option<&str>) -> String {
-        let messages = Messages::new(Locale::Ja);
-        render(&MembersList {
-            messages: &messages,
-            tenant: &tenant().prefix(),
-            admin: Some("admin-1"),
+    /// 1 ページ分の応答（総件数はページの件数と同じ = 1 ページで収まる状態）。
+    fn page(members: Vec<MemberView>) -> MemberListView {
+        let total = members.len() as i64;
+        MemberListView {
             members,
-            query: "",
-            csrf: "csrf123",
-            error_key: None,
+            total,
+            limit: 50,
+            offset: 0,
+        }
+    }
+
+    fn render_page(members: &[MemberView], notice_key: Option<&str>) -> String {
+        let messages = Messages::new(Locale::Ja);
+        super::render_list(
+            &messages,
+            &tenant(),
+            "admin-1",
+            "csrf123",
+            &page(members.to_vec()),
+            "",
+            0,
+            None,
             notice_key,
-        })
+        )
     }
 
     /// MT21: 所属元（HOME）の利用者にだけ MFA 解除ボタンを出す。ゲストは所属元テナントの管理者が
     /// 操作する対象で、こちらからは（api も 404 を返すため）出してはいけない。
     #[test]
     fn mfa_reset_button_is_shown_for_home_members_only() {
-        let home = render_list(&[member("HOME")], None);
+        let home = render_page(&[member("HOME")], None);
         assert!(home.contains("/reset-mfa"), "{home}");
         assert!(home.contains("name=\"csrf_token\" value=\"csrf123\""));
 
-        let guest = render_list(&[member("GUEST")], None);
+        let guest = render_page(&[member("GUEST")], None);
         assert!(!guest.contains("/reset-mfa"), "{guest}");
     }
 
@@ -476,23 +552,24 @@ mod tests {
     /// 属性値として渡せば HTML エスケープがそのまま正しい防御になる。
     #[test]
     fn confirmation_text_is_passed_as_an_attribute_not_inline_javascript() {
-        let html = render_list(&[member("HOME")], None);
+        let html = render_page(&[member("HOME")], None);
         assert!(!html.contains("onsubmit="), "no inline handlers: {html}");
         assert!(html.contains("data-confirm="));
 
         // アポストロフィを含む文言（英語ロケール）でも属性として正しくエスケープされ、
         // 生の `'` が属性値を終端しない。
         let messages = Messages::new(Locale::En);
-        let english = render(&MembersList {
-            messages: &messages,
-            tenant: &tenant().prefix(),
-            admin: Some("admin-1"),
-            members: &[member("HOME")],
-            query: "",
-            csrf: "csrf123",
-            error_key: None,
-            notice_key: None,
-        });
+        let english = super::render_list(
+            &messages,
+            &tenant(),
+            "admin-1",
+            "csrf123",
+            &page(vec![member("HOME")]),
+            "",
+            0,
+            None,
+            None,
+        );
         let confirm = messages.get("admin-members-reset-mfa-confirm");
         assert!(confirm.contains('\''), "fixture must contain an apostrophe");
         assert!(english.contains("&#39;"), "apostrophe must be escaped");
@@ -503,38 +580,95 @@ mod tests {
     /// （停止中に「一時停止」を出すと押しても 403 になるだけで、操作できるように見えてしまう）。
     #[test]
     fn suspend_and_resume_buttons_follow_the_membership_state() {
-        let active_guest = render_list(&[member("GUEST")], None);
+        let active_guest = render_page(&[member("GUEST")], None);
         assert!(active_guest.contains("/suspend"), "{active_guest}");
         assert!(!active_guest.contains("/resume"));
 
         let mut suspended = member("GUEST");
         suspended.status = "SUSPENDED".into();
-        let html = render_list(&[suspended], None);
+        let html = render_page(&[suspended], None);
         assert!(html.contains("/resume"), "{html}");
         assert!(!html.contains("/suspend"));
         // 停止中であることが一覧で分かる。
         assert!(html.contains(&Messages::new(Locale::Ja).get("admin-members-status-suspended")));
 
         // HOME は停止できない（api も 403 を返す）ので導線を出さない。
-        let home = render_list(&[member("HOME")], None);
+        let home = render_page(&[member("HOME")], None);
         assert!(!home.contains("/suspend"));
         assert!(!home.contains("/resume"));
 
         // 招待中（未承諾）はまだアクセスが無いため停止対象にならない。
         let mut invited = member("GUEST");
         invited.status = "INVITED".into();
-        let html = render_list(&[invited], None);
+        let html = render_page(&[invited], None);
         assert!(!html.contains("/suspend"), "{html}");
         assert!(!html.contains("/resume"));
+    }
+
+    /// MT22: ページャは**総件数**で次ページの有無を決める。ページがちょうど埋まったかどうかで
+    /// 判定すると、最後のページが満杯のときに空ページへのリンクが出る。
+    #[test]
+    fn next_link_appears_only_while_rows_remain() {
+        let full = MemberListView {
+            members: vec![member("HOME")],
+            total: 2,
+            limit: 1,
+            offset: 0,
+        };
+        let (prev, next) = pager_links(&tenant(), "", 0, &full);
+        assert_eq!(prev, None, "先頭ページに「前へ」は出さない");
+        assert!(next.expect("next").ends_with("/admin/members?offset=1"));
+
+        // 最終ページ（offset + limit == total）では次ページを出さない。
+        let last = MemberListView {
+            members: vec![member("HOME")],
+            total: 2,
+            limit: 1,
+            offset: 1,
+        };
+        let (prev, next) = pager_links(&tenant(), "", 1, &last);
+        assert!(prev.expect("prev").ends_with("/admin/members?offset=0"));
+        assert_eq!(next, None);
+    }
+
+    /// `offset` はクエリ由来なので極端な値も来る。素の加算は debug ビルドでオーバーフロー panic、
+    /// release ビルドでは負の値へ回り込んで不正な「次へ」リンクを作る。
+    #[test]
+    fn huge_offset_does_not_overflow_the_next_link() {
+        let page = MemberListView {
+            members: Vec::new(),
+            total: 10,
+            limit: 50,
+            offset: i64::MAX,
+        };
+        let (prev, next) = pager_links(&tenant(), "", i64::MAX, &page);
+        assert_eq!(next, None, "範囲外なので「次へ」は出さない");
+        assert!(prev.is_some(), "先頭ではないので「前へ」は出す");
+    }
+
+    /// 絞り込み語はページ送りのリンクへ引き継ぐ（次ページで条件が消えると別の集合になる）。
+    /// クエリ文字列に載せるためパーセントエンコードする。
+    #[test]
+    fn pager_links_keep_the_search_term_encoded() {
+        let page = MemberListView {
+            members: vec![member("HOME")],
+            total: 100,
+            limit: 50,
+            offset: 0,
+        };
+        let (_, next) = pager_links(&tenant(), "a b&c", 0, &page);
+        let next = next.expect("next");
+        assert!(next.contains("offset=50"), "{next}");
+        assert!(next.contains("q=a%20b%26c"), "{next}");
     }
 
     /// 解除後の完了通知は「外した」「元から無かった」を区別して出す。
     #[test]
     fn mfa_reset_notices_distinguish_removed_from_absent() {
-        let removed = render_list(&[member("HOME")], notice_key_for("mfa-reset"));
+        let removed = render_page(&[member("HOME")], notice_key_for("mfa-reset"));
         assert!(removed.contains(&Messages::new(Locale::Ja).get("admin-members-mfa-reset-done")));
 
-        let absent = render_list(&[member("HOME")], notice_key_for("mfa-none"));
+        let absent = render_page(&[member("HOME")], notice_key_for("mfa-none"));
         assert!(absent.contains(&Messages::new(Locale::Ja).get("admin-members-mfa-reset-none")));
 
         // 未知の通知値は無視する（クエリ経由で任意文字列が来るため）。

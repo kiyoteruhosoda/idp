@@ -474,6 +474,32 @@ pub struct MemberResponse {
     pub user_status: Option<String>,
 }
 
+/// メンバー一覧のクエリパラメータ（`GET /{tenant_id}/admin/members`。MT22）。
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct MemberListQueryParams {
+    /// 絞り込み語。メールアドレス・氏名の**部分一致**（大文字小文字を無視）。未指定・空は絞り込まない。
+    #[serde(default)]
+    pub q: Option<String>,
+    /// 1 ページの件数。未指定は 50、上限 200（超過分は上限へ丸める）。
+    #[serde(default)]
+    pub limit: Option<i64>,
+    /// 読み飛ばす件数。未指定は 0。
+    #[serde(default)]
+    pub offset: Option<i64>,
+}
+
+/// メンバー一覧のレスポンス（`GET /{tenant_id}/admin/members`。MT22）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MemberListResponse {
+    pub members: Vec<MemberResponse>,
+    /// `limit` / `offset` を無視した該当総数。画面が「全 N 件」と次ページの有無を確定できる。
+    pub total: i64,
+    /// 実際に適用された値（クランプ後）。要求値をそのまま返さないのは、上限で丸めた結果を
+    /// 呼び出し側がページ送りの計算にそのまま使えるようにするため。
+    pub limit: i64,
+    pub offset: i64,
+}
+
 /// ゲスト招待作成リクエスト（`POST /{tenant_id}/admin/invitations`）。被招待者は所属元が他テナントの
 /// 既存利用者で、内部 ID で指定する。
 #[derive(Debug, Deserialize, ToSchema)]

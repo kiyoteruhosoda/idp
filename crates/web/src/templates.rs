@@ -434,13 +434,19 @@ pub struct MembersList<'a> {
     pub messages: &'a Messages,
     pub tenant: &'a str,
     pub admin: Admin<'a>,
+    /// 現在のページに含まれるメンバー（MT22 でページングを導入。全件ではない）。
     pub members: &'a [crate::admin_dto::MemberView],
+    /// 絞り込み後の総件数（ページング前）。「全 N 件」の表示に使う。
+    pub total: i64,
     /// 現在の絞り込み語（検索ボックスの再表示用。空なら未絞り込み）。
     pub query: &'a str,
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
     /// 完了通知の翻訳キー（Post/Redirect/Get で戻ったときの操作結果。MT21 の MFA 解除など）。
     pub notice_key: Option<&'a str>,
+    /// ページャの前後リンク（クエリ文字列を組み立て済み）。該当がなければ `None`。
+    pub prev_href: Option<String>,
+    pub next_href: Option<String>,
 }
 
 /// 管理者によるパスワード再発行の結果画面（一度限りの生成パスワード表示。ADR-0009 §5）。

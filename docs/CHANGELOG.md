@@ -1,3 +1,20 @@
+## 2026-07-25（メンバー一覧をページング付きにした。MT22）
+
+- **`GET /{tenant_id}/admin/members` に絞り込み（`q`）・ページング（`limit` / `offset`）を追加**した。
+  従来は当該テナントのメンバーシップと利用者を**全件**読み込んで web 側で絞り込んでいたため、
+  テナントの規模に比例して応答が膨らみ、利用者が増えると破綻する作りだった。絞り込み・並び替え・
+  ページングをすべて DB 側（`tenant_memberships` と `users` の結合 1 クエリ）で行うようにした。
+- **応答の形が配列からオブジェクト（`{members, total, limit, offset}`）に変わる**破壊的変更。
+  `total` は絞り込み後の総件数で、画面が「該当件数」と次ページの有無を確定できる。`limit` は api が
+  実際に適用した値（既定 50・上限 200 へ丸めた後）で、呼び出し側がページ送りの刻み幅に使える。
+  この API を消費するのは管理コンソール（web）だけで、api と web は同時に配置される。
+- 検索語は `LIKE` のワイルドカード（`%` / `_`）をエスケープする（しないと `%` が全件一致になる）。
+- 管理コンソールのメンバー一覧に該当件数の表示と前後ページのリンクを追加した。検索は web 内の
+  絞り込みから api（DB）側の絞り込みに変わり、**現在のページだけでなく全件が検索対象**になった。
+- 読み取り専用の経路として `TenantMemberQuery`（domain）／`MemberDirectoryService`（application）を
+  追加し、メンバーシップの変更（`InvitationService`）と関心を分けた。全件取得を前提とした
+  `TenantMembershipRepository::list_for_tenant` と `UserRepository::find_by_ids` は用途が無くなったため削除した。
+
 ## 2026-07-25（ゲストメンバーシップの一時停止を追加した。MT24）
 
 - **`tenant_memberships.status` に `SUSPENDED` を追加**（マイグレーション `0014_membership_suspended`）。

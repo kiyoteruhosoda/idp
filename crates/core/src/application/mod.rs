@@ -22,6 +22,7 @@ pub mod invitation;
 pub mod key_service;
 pub mod login;
 pub mod logout;
+pub mod member_directory;
 pub mod mfa_login;
 pub mod passkey_authentication;
 pub mod passkey_registration;

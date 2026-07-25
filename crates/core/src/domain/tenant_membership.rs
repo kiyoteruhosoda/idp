@@ -5,9 +5,46 @@
 #![allow(dead_code)]
 
 use crate::domain::tenant::TenantId;
-use crate::domain::values::{MembershipStatus, MembershipType};
+use crate::domain::values::{MembershipStatus, MembershipType, UserStatus};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
+
+/// メンバー一覧の 1 件（読み取りモデル）。HOME / GUEST を問わず、当該テナントに参加している
+/// 利用者を表す。メンバーシップと利用者を結合した表示専用の行であり、エンティティではない。
+///
+/// email / name は表示用に所属元照合なしで解決する（招待作成は内部 ID で行うため、参加先管理者が
+/// 被招待者を識別できるよう最小限の情報のみ返す）。
+#[derive(Debug, Clone)]
+pub struct TenantMember {
+    pub user_id: Uuid,
+    pub email: Option<String>,
+    pub name: Option<String>,
+    pub membership_type: MembershipType,
+    pub status: MembershipStatus,
+    /// 利用者アカウント自体の状態（ACTIVE / DISABLED / LOCKED）。不存在ユーザーは `None`。
+    /// 管理コンソールのメンバー一覧が無効化状態を表示するために返す。
+    pub user_status: Option<UserStatus>,
+}
+
+/// メンバー一覧の絞り込み条件（MT22）。SQL の組み立ては infrastructure が行う。
+///
+/// テナント越しの閲覧を防ぐため `tenant_id` は必須（`Option` にしない）。`search` はメール
+/// アドレス・氏名の**部分一致**で、正規化（trim・空を `None`）は Application 層が済ませてから渡す。
+#[derive(Debug, Clone)]
+pub struct TenantMemberFilter {
+    pub tenant_id: TenantId,
+    pub search: Option<String>,
+    pub limit: i64,
+    pub offset: i64,
+}
+
+/// メンバー一覧の 1 ページ分。`total` は `limit` / `offset` を無視した該当総数で、
+/// 画面が「全 N 件」と次ページの有無を確定できるようにする。
+#[derive(Debug, Clone)]
+pub struct TenantMemberPage {
+    pub members: Vec<TenantMember>,
+    pub total: i64,
+}
 
 #[derive(Debug, Clone)]
 pub struct TenantMembership {

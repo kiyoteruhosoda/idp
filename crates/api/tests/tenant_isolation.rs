@@ -529,10 +529,11 @@ async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions()
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
-    let members = body_json(res).await;
-    let guest_entry = members
+    // 一覧はページング付きのオブジェクト（`{members, total, limit, offset}`）を返す（MT22）。
+    let body = body_json(res).await;
+    let guest_entry = body["members"]
         .as_array()
-        .unwrap()
+        .expect("members array")
         .iter()
         .find(|m| m["user_id"].as_str() == Some(guest_id.as_str()))
         .expect("guest appears in member list");
