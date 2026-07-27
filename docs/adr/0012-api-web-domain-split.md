@@ -1,10 +1,12 @@
 # ADR-0012: api と web を別ドメイン（別オリジン）で公開する
 
-- Status: Accepted
+- Status: Accepted（**§Decision 1 のホスト名前提と §Decision 3 は ADR-0018 で置き換え**）
 - Date: 2026-07-25
 - 関連: `docs/adr/0007-api-web-service-split.md`（§2 で「サブドメイン分割」を代替として保留していた決定を本 ADR で採用する）、
   `docs/adr/0010-zero-touch-deployment-and-configuration-provenance.md`（設定キーの出所区分）、
-  `docs/Progress.md`（MT29）
+  `docs/adr/0018-cookie-free-api-web-handoff.md`（api と web を兄弟サブドメインにすると `Domain` が
+  apex まで広がり、他環境へセッション Cookie が漏れる。ホスト名の入れ子化と Cookie 非依存の
+  状態受け渡しへ移行する）、`docs/Progress.md`（MT29・T1・T2）
 
 ## Context
 

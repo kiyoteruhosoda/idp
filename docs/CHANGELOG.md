@@ -1,3 +1,17 @@
+## 2026-07-27（api↔web の Cookie 共有をやめる方針を決定した。ADR-0018）
+
+- **ADR-0018 を追加した。** api と web を**兄弟**サブドメインで公開すると、両方を覆う `COOKIE_DOMAIN` が
+  apex（`nolumia.com`）しか無くなり、prod のセッション Cookie（平文がそのまま bearer credential）が
+  stg のホストへも送信される。これを解消するため次の 2 つを決定した。
+  1. **api を web の子サブドメインへ移す**（`api.idp.nolumia.com` / `COOKIE_DOMAIN=idp.nolumia.com`）。
+     Cookie スコープが環境内に閉じる。コード変更は不要（`.env` の 3 キーと DNS・証明書のみ）。
+  2. **api↔web の状態受け渡しから Cookie を外す**。`/authorize` は `auth_session_id` を Set-Cookie
+     せず単回ハンドルとして URL で渡し、SSO 判定と `/logout` の Cookie 破棄は web が自ドメインで行う。
+     完了後は `COOKIE_DOMAIN` 未設定（host-only）が既定になる。
+- ADR-0012 の §Decision 1（ホスト名前提）・§Decision 3（サービス横断 Cookie の `Domain` 付与）は
+  ADR-0018 で置き換えた。`docs/OPERATIONS.md` の別ドメイン公開手順も入れ子の例へ改めた。
+- 実装は `docs/Progress.md` の T1（ホスト名入れ子）・T2（Cookie 非依存化）。
+
 ## 2026-07-27（stg/prod の公開ポート・公開ドメインを実運用値に確定した）
 
 - **デプロイ用 `.env` テンプレートの公開ポートを実運用値へ変更した。** prod = `10000`（web）/
