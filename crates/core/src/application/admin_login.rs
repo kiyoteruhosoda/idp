@@ -200,7 +200,9 @@ impl AdminLoginService {
             Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
         };
         if !verified {
-            return self.handle_password_failure(tenant_id, &user, ctx).await;
+            return self
+                .handle_password_failure(tenant_id, &user, "invalid_password", ctx)
+                .await;
         }
 
         // 6. 権限確認（資格情報は正しいが管理権限を持たない利用者を締め出す）。
@@ -335,19 +337,12 @@ impl AdminLoginService {
         };
         if !user.must_change_password && !duplicate_submit {
             // 変更不要な状態でこのエンドポイントに来るのは想定外。fail-closed
-            //（利用者列挙を避けるため資格情報エラーと同じ応答にする）。
-            self.audit
-                .record(
-                    AuditEventType::LoginFailed,
-                    AuditResult::Failure,
-                    Some(tenant_id),
-                    Some(user.id),
-                    None,
-                    Some("password_change_not_required"),
-                    ctx,
-                )
+            //（利用者列挙を避けるため資格情報エラーと同じ応答にする）。上の `new_password` 照合が
+            // パスワードの正誤オラクルになるため、通常ログインと同じ失敗カウント・ロック判定に載せて
+            // 本経路がロックアウトを迂回する推測口にならないようにする。
+            return self
+                .handle_password_failure(tenant_id, &user, "password_change_not_required", ctx)
                 .await;
-            return AdminLoginOutcome::InvalidCredentials;
         }
 
         if !duplicate_submit {
@@ -359,7 +354,9 @@ impl AdminLoginService {
                 Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
             };
             if !verified {
-                return self.handle_password_failure(tenant_id, &user, ctx).await;
+                return self
+                    .handle_password_failure(tenant_id, &user, "invalid_password", ctx)
+                    .await;
             }
         }
 
@@ -485,6 +482,7 @@ impl AdminLoginService {
         &self,
         tenant_id: TenantId,
         user: &User,
+        reason: &str,
         ctx: &RequestContext,
     ) -> AdminLoginOutcome {
         let now = self.clock.now();
@@ -510,7 +508,7 @@ impl AdminLoginService {
                 Some(tenant_id),
                 Some(user.id),
                 None,
-                Some("invalid_password"),
+                Some(reason),
                 ctx,
             )
             .await;

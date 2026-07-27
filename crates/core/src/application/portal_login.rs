@@ -333,15 +333,17 @@ impl PortalLoginService {
         };
         if !user.must_change_password && !duplicate_submit {
             // 変更不要な状態でこのエンドポイントに来るのは想定外。fail-closed
-            //（利用者列挙を避けるため資格情報エラーと同じ応答にする）。
-            self.record_failure(
-                tenant_id,
-                Some(user.id),
-                "password_change_not_required",
-                ctx,
-            )
-            .await;
-            return PortalChangePasswordOutcome::InvalidCredentials;
+            //（利用者列挙を避けるため資格情報エラーと同じ応答にする）。上の `new_password` 照合が
+            // パスワードの正誤オラクルになるため、通常ログインと同じ失敗カウント・ロック判定に載せて
+            // 本経路がロックアウトを迂回する推測口にならないようにする。
+            return self
+                .handle_change_password_failure(
+                    tenant_id,
+                    &user,
+                    "password_change_not_required",
+                    ctx,
+                )
+                .await;
         }
 
         let verified = if duplicate_submit {
@@ -357,37 +359,9 @@ impl PortalLoginService {
         };
         if !verified {
             // 現行パスワード不一致は通常ログインと同じ失敗カウント・ロック判定に載せる。
-            let now = self.clock.now();
-            let failed = user.failed_login_count + 1;
-            let locked_until = if failed >= MAX_FAILED_LOGINS {
-                Some(now + Duration::minutes(LOCK_DURATION_MINUTES))
-            } else {
-                None
-            };
-            if let Err(e) = self
-                .users
-                .update_login_state(user.id, failed, locked_until)
-                .await
-            {
-                return PortalChangePasswordOutcome::Internal(e.to_string());
-            }
-            self.record_failure(tenant_id, Some(user.id), "invalid_password", ctx)
+            return self
+                .handle_change_password_failure(tenant_id, &user, "invalid_password", ctx)
                 .await;
-            if locked_until.is_some() {
-                self.audit
-                    .record(
-                        AuditEventType::LoginLocked,
-                        AuditResult::Failure,
-                        Some(tenant_id),
-                        Some(user.id),
-                        None,
-                        Some("too_many_failures"),
-                        ctx,
-                    )
-                    .await;
-                return PortalChangePasswordOutcome::Locked;
-            }
-            return PortalChangePasswordOutcome::InvalidCredentials;
         }
 
         // メール検証ゲート（SEC6b）。`login()` はメール検証を強制変更より先に判定するが、本経路は
@@ -577,6 +551,49 @@ impl PortalLoginService {
             ticket,
             now.timestamp(),
         )
+    }
+
+    /// 強制パスワード変更経路の資格情報不一致（現行パスワード不一致・変更不要状態での照合失敗）を
+    /// 通常ログインと同じ失敗カウント・ロック判定に載せる（[`Self::handle_password_failure`] と
+    /// 同ポリシー。戻り値の型だけが異なる）。
+    async fn handle_change_password_failure(
+        &self,
+        tenant_id: TenantId,
+        user: &User,
+        reason: &str,
+        ctx: &RequestContext,
+    ) -> PortalChangePasswordOutcome {
+        let now = self.clock.now();
+        let failed = user.failed_login_count + 1;
+        let locked_until = if failed >= MAX_FAILED_LOGINS {
+            Some(now + Duration::minutes(LOCK_DURATION_MINUTES))
+        } else {
+            None
+        };
+        if let Err(e) = self
+            .users
+            .update_login_state(user.id, failed, locked_until)
+            .await
+        {
+            return PortalChangePasswordOutcome::Internal(e.to_string());
+        }
+        self.record_failure(tenant_id, Some(user.id), reason, ctx)
+            .await;
+        if locked_until.is_some() {
+            self.audit
+                .record(
+                    AuditEventType::LoginLocked,
+                    AuditResult::Failure,
+                    Some(tenant_id),
+                    Some(user.id),
+                    None,
+                    Some("too_many_failures"),
+                    ctx,
+                )
+                .await;
+            return PortalChangePasswordOutcome::Locked;
+        }
+        PortalChangePasswordOutcome::InvalidCredentials
     }
 
     /// パスワード不一致時の失敗カウント更新とロック判定（login.rs / admin_login.rs と同ポリシー）。
