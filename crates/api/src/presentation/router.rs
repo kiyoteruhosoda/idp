@@ -25,6 +25,13 @@ pub fn build(state: AppState) -> Router {
     // （リバースプロキシで /internal/* を遮断する前提）。多層防御としてサービス認証トークン
     // （X-Internal-Auth-Token）を必須にする route_layer をこのサブルータにのみ付ける。
     let internal = Router::new()
+        // 認可フローの再開（web ハンドオフのハンドル交換 + SSO 判定。ADR-0018 決定 2）。
+        .route(
+            "/internal/authorize/resume",
+            post(authorize::authorize_resume),
+        )
+        // RP-initiated logout（end_session_endpoint は web。api は失効・通知・URL 組み立てを担う）。
+        .route("/internal/logout/rp", post(logout::rp_logout))
         .route("/internal/authenticate", post(internal_auth::authenticate))
         .route(
             "/internal/authenticate/admin",
@@ -131,7 +138,8 @@ pub fn build(state: AppState) -> Router {
         .route("/authorize", get(authorize::authorize))
         .route("/token", post(token::token))
         .route("/userinfo", get(userinfo::userinfo))
-        .route("/logout", get(logout::logout))
+        // `/logout`（end_session_endpoint）は web が受ける（ADR-0018 決定 2）。api はブラウザ
+        // Cookie を読まないため、公開の logout ルートを持たない（処理は /internal/logout/rp）。
         .route("/revoke", post(revoke::revoke))
         .route("/introspect", post(introspect::introspect))
         // 管理者身元確認（idp.tenant.admin 必須。RequirePerms<IdpAdmin>）。web の管理コンソールが SSO Cookie

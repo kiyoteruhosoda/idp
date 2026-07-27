@@ -35,7 +35,6 @@ use utoipa::{Modify, OpenApi};
         handlers::discovery::openid_configuration,
         handlers::discovery::jwks,
         handlers::discovery::saml_idp_metadata,
-        handlers::logout::logout,
         handlers::revoke::revoke,
         handlers::introspect::introspect,
         handlers::admin_clients::create_client,

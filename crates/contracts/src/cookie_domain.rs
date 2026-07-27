@@ -1,4 +1,8 @@
-//! `COOKIE_DOMAIN`（サービス横断 Cookie の `Domain` 属性）の起動時検証（ADR-0012）。
+//! `COOKIE_DOMAIN` の起動時検証（ADR-0012 で導入、ADR-0018 決定 4 で用途変更）。
+//!
+//! セッション Cookie は常に host-only で発行されるため、本値は旧 ADR-0012 構成でブラウザに残った
+//! `Domain` 付き Cookie を掃除する削除 Cookie にだけ使う。検証条件（親ドメイン整合・public suffix
+//! 拒否）は削除 Cookie がブラウザに受理されるための条件として同じに保つ。
 //!
 //! api と web が同一の検証を行う必要があるため、csrf と同様に contracts で共有する。
 //! 検証内容は ADR-0012 §Consequences の 2 点:
@@ -31,7 +35,12 @@ pub fn validate_cookie_domain(raw: &str, origins: &[&str]) -> Result<String, Str
         ));
     }
 
-    // 検証 1: 各公開オリジンのホストの親ドメイン（または同一）であること。
+    // 検証 1: 各公開オリジンのホストの**真の親ドメイン**であること。
+    //
+    // 同一ホストは不可: RFC 6265 §5.3 の Cookie 同一性は (name, domain, path) で決まり host-only
+    // フラグを含まないため、`COOKIE_DOMAIN` がホスト名そのものだと、掃除用の `Domain` 付き削除
+    // Cookie（Max-Age=0）が**同時に発行した host-only セッション Cookie を上書き削除**してしまう
+    // （毎回セッションが消えるログインループ。ADR-0018 決定 4）。
     // あわせてスキームを収集し、混在（https/http）を拒否する（`Secure` 属性の非対称化を防ぐ）。
     let mut schemes: Vec<String> = Vec::new();
     for origin in origins {
@@ -41,12 +50,20 @@ pub fn validate_cookie_domain(raw: &str, origins: &[&str]) -> Result<String, Str
             .host_str()
             .map(str::to_ascii_lowercase)
             .ok_or_else(|| format!("cannot parse origin `{origin}` to validate COOKIE_DOMAIN"))?;
-        let matches = host == domain || host.ends_with(&format!(".{domain}"));
-        if !matches {
+        if host == domain {
+            return Err(format!(
+                "COOKIE_DOMAIN `{domain}` equals the host of `{origin}`; the legacy-cleanup \
+                 deletion cookie would also delete the freshly issued host-only session cookie \
+                 (RFC 6265 treats them as the same cookie) and every login would loop. \
+                 Set the OLD parent domain being cleaned up, or unset COOKIE_DOMAIN (ADR-0018)"
+            ));
+        }
+        if !host.ends_with(&format!(".{domain}")) {
             return Err(format!(
                 "COOKIE_DOMAIN `{domain}` is not a parent domain of `{host}` (from `{origin}`); \
-                 browsers reject such Domain cookies and every login would loop. \
-                 api and web must be subdomains of the same registrable domain (ADR-0012)"
+                 browsers reject such Domain cookies, so the legacy-cleanup deletion cookie \
+                 would never be accepted. \
+                 api and web must be subdomains of the same registrable domain (ADR-0018)"
             ));
         }
         schemes.push(url.scheme().to_ascii_lowercase());
@@ -94,12 +111,20 @@ mod tests {
     }
 
     #[test]
-    fn accepts_domain_equal_to_origin_host() {
-        // 単一オリジン相当（host-only と同じ到達範囲）でも設定自体は許容する。
-        assert_eq!(
-            validate_cookie_domain("idp.example.com", &["https://idp.example.com"]).unwrap(),
-            "idp.example.com"
-        );
+    fn rejects_domain_equal_to_origin_host() {
+        // ホスト名そのものは不可: RFC 6265 の Cookie 同一性は host-only フラグを含まないため、
+        // 掃除用の Domain 付き削除 Cookie が host-only セッション Cookie を上書き削除してしまう
+        // （ADR-0018 決定 4）。
+        let err =
+            validate_cookie_domain("idp.example.com", &["https://idp.example.com"]).unwrap_err();
+        assert!(err.contains("equals the host"), "{err}");
+        // 入れ子ホスト構成（api が web の子）で web ホストを指定した場合も同様に拒否する。
+        let err = validate_cookie_domain(
+            "idp.example.com",
+            &["https://api.idp.example.com", "https://idp.example.com"],
+        )
+        .unwrap_err();
+        assert!(err.contains("equals the host"), "{err}");
     }
 
     #[test]
@@ -115,11 +140,13 @@ mod tests {
     #[test]
     fn rejects_a_sibling_host_of_the_other_origin() {
         // 実際に起きやすい取り違え: 片方のホスト名（`api.example.com`）をそのまま COOKIE_DOMAIN に
-        // 設定する構成。自分自身の親（＝同一）ではあるが、兄弟ホストである web には届かず、
-        // web が発行した SSO Cookie を api が読めない（ログインループ）。
+        // 設定する構成。同一ホスト拒否（削除 Cookie の自壊防止）に掛かる。
         let err = validate_cookie_domain("api.example.com", ORIGINS).unwrap_err();
+        assert!(err.contains("equals the host"), "{err}");
+        // オリジンの順序に依らず、もう片方の親でない値も拒否される。
+        let err =
+            validate_cookie_domain("id.example.com", &["https://api.example.com"]).unwrap_err();
         assert!(err.contains("not a parent domain"), "{err}");
-        assert!(err.contains("id.example.com"), "{err}");
     }
 
     #[test]

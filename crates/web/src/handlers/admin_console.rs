@@ -193,7 +193,7 @@ pub async fn login(
         } => {
             let set_cookies = state
                 .set_cookies()
-                .set_shared(
+                .set_session(
                     cookies::SSO_SESSION_COOKIE,
                     &sso_session_id,
                     sso_absolute_ttl_secs,
@@ -324,7 +324,7 @@ pub async fn password_change(
         } => {
             let set_cookies = state
                 .set_cookies()
-                .set_shared(
+                .set_session(
                     cookies::SSO_SESSION_COOKIE,
                     &sso_session_id,
                     sso_absolute_ttl_secs,
@@ -402,7 +402,7 @@ pub async fn logout(
     }
     let set_cookies = state
         .set_cookies()
-        .expire_shared(cookies::SSO_SESSION_COOKIE);
+        .expire_session(cookies::SSO_SESSION_COOKIE);
     (set_cookies.into_headers(), redirect_to_login(&tenant)).into_response()
 }
 

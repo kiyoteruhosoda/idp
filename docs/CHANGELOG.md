@@ -1,3 +1,26 @@
+## 2026-07-27（ADR-0018 を実装した: api はブラウザ Cookie を読み書きしない）
+
+- **`/authorize` の Set-Cookie を廃止した（ADR-0018 決定 2・3）。** 検証成功時は AuthSession に
+  束ねた**単回・短命（60 秒）のハンドル**を発行し、`{web}/{tenant}/login?auth_session=...` へ 302 する。
+  web はハンドルを新設の `POST /internal/authorize/resume` で即座に交換（交換時に消費 = 単回使用）し、
+  `auth_session_id` を自ドメインの host-only Cookie へ移して 303 で URL から除去する。SSO 判定・
+  `prompt` / `max_age` の評価・同意チェック・code 発行も resume（web が SSO Cookie の値をボディで
+  渡す）へ移した。マイグレーション 0016 で `auth_sessions` に `prompt` / `max_age` /
+  `handle_hash` / `handle_expires_at` を追加。
+- **RP-initiated Logout の起点を web へ移した。** `end_session_endpoint` は
+  `{web}/{tenant}/logout`（discovery も変更）。api は新設の `POST /internal/logout/rp` で SSO 失効・
+  back-channel 通知・`post_logout_redirect_uri` の検証と `state` 付与を担い、SSO Cookie の破棄と
+  front-channel iframe ページの描画（Askama テンプレート化）は web が行う。api の公開
+  `GET /{tenant}/logout` は削除した。
+- **セッション Cookie（`sso_session_id`・`auth_session_id`）は常に host-only になった（決定 4）。**
+  `CookiePolicy` の `set_shared`/`expire_shared` を `set_session`/`expire_session` へ改め、
+  `COOKIE_DOMAIN` は「旧 ADR-0012 構成でブラウザに残った `Domain` 付き Cookie を掃除する削除 Cookie の
+  併送」にだけ使う（既定は未設定）。
+- **`.env` テンプレートを入れ子ホスト名へ変更した（決定 1）。** prod は `api.idp.nolumia.com`（api）/
+  `idp.nolumia.com`（web）、stg は `api.idpstg.nolumia.com` / `idpstg.nolumia.com`。`COOKIE_DOMAIN` は
+  既定で未設定。**`ISSUER` が変わるため RP 再設定と DNS・証明書（web/api 両ホストを SAN に含める）の
+  デプロイ作業が別途必要**（`docs/Progress.md` T1）。
+
 ## 2026-07-27（api↔web の Cookie 共有をやめる方針を決定した。ADR-0018）
 
 - **ADR-0018 を追加した。** api と web を**兄弟**サブドメインで公開すると、両方を覆う `COOKIE_DOMAIN` が

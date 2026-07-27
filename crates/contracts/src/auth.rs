@@ -9,6 +9,93 @@
 
 use serde::{Deserialize, Serialize};
 
+/// 認可フロー再開 API（`POST /internal/authorize/resume`、ADR-0018 決定 2）のリクエスト。
+///
+/// api の `/authorize` はブラウザ Cookie を読まず、web へのリダイレクト URL に単回・短命の
+/// ハンドル（`?auth_session=`）を載せる。web はハンドルと**自ドメインの host-only**
+/// `sso_session_id` Cookie の値を本 API へ渡し、api がハンドル交換（単回消費）と SSO 判定・
+/// 同意チェック・code 発行までを行う（`/internal/authenticate` と同じ応答パターン）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAuthorizeResumeRequest {
+    /// フローのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する（fail-closed。SEC4）。
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    /// `/authorize` がリダイレクト URL に載せた単回ハンドル。
+    pub handle: String,
+    /// web の host-only `sso_session_id` Cookie の値（無ければ `None` = 未ログイン）。
+    #[serde(default)]
+    pub sso_session_id: Option<String>,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// 認可フロー再開 API のレスポンス。`result` タグで判別する。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAuthorizeResumeResponse {
+    /// SSO 有効かつ同意済み。code 発行済みの `redirect_to`（RP URL）へ 302 する。
+    Redirect { redirect_to: String },
+    /// リクエスト続行不可（`prompt=none` で未ログイン・未同意など）。エラーコード付きの
+    /// `redirect_to`（RP URL）へ 302 する。
+    ErrorRedirect { redirect_to: String },
+    /// SSO 有効だが同意が必要。web は `auth_session_id` を host-only Cookie 化して `/consent` へ。
+    ConsentRequired { auth_session_id: String },
+    /// 認証が必要。web は `auth_session_id` を host-only Cookie 化してログインフォームを表示する。
+    LoginRequired { auth_session_id: String },
+    /// ハンドルが無効・期限切れ・使用済み（`/authorize` からやり直し）。
+    ExpiredHandle,
+    /// api 内部エラー。
+    Internal,
+}
+
+/// RP-initiated Logout の内部 API（`POST /internal/logout/rp`、ADR-0018 決定 2）のリクエスト。
+///
+/// OIDC の `end_session_endpoint` は web（`GET /{tenant_id}/logout`）が受け、web が自ドメインの
+/// `sso_session_id` Cookie とクエリパラメータを本 API へ転送する。api は SSO セッションの失効・
+/// back-channel 通知・`post_logout_redirect_uri` の検証と組み立て（`state` 付与を含む）を担い、
+/// **SSO Cookie の破棄と front-channel iframe ページの描画は web が行う**。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalRpLogoutRequest {
+    /// ログアウト対象フローのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する。
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    /// web の host-only `sso_session_id` Cookie の値（無ければ `None` = ログアウト済み扱い）。
+    #[serde(default)]
+    pub sso_session_id: Option<String>,
+    /// `client_id` クエリ（`post_logout_redirect_uri` の検証に使う。任意）。
+    #[serde(default)]
+    pub client_id: Option<String>,
+    /// RP が指定したログアウト後のリダイレクト先（登録済みのもののみ許可される）。
+    #[serde(default)]
+    pub post_logout_redirect_uri: Option<String>,
+    /// RP が受け取るランダム値（検証済み redirect URI に透過的に付与される）。
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// RP-initiated Logout の内部 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalRpLogoutResponse {
+    /// ログアウト処理完了（セッションが無かった場合も冪等に成功）。web は SSO Cookie を破棄し、
+    /// `frontchannel_uris` があれば iframe ページを描画、無ければ `redirect_to` へ 302
+    /// （どちらも無ければ完了ページを表示）する。
+    Ok {
+        /// front-channel logout の iframe に読み込ませる URI 群（`iss` クエリ付与済み）。
+        frontchannel_uris: Vec<String>,
+        /// 検証済みの post-logout リダイレクト先（`state` 付与済み。未指定・検証失敗は `None`）。
+        redirect_to: Option<String>,
+    },
+    /// api 内部エラー。
+    Internal,
+}
+
 /// 内部認証 API（`POST /internal/authenticate`）のリクエスト。
 ///
 /// web が資格情報・`auth_session_id` 参照・接続元情報（`X-Forwarded-For` 由来 IP・User-Agent）を

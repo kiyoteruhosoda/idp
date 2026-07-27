@@ -11,25 +11,38 @@
 use super::locale;
 use crate::cookies;
 use crate::correlation::CorrelationId;
-use crate::dto::LoginForm;
-use crate::handlers::{forwarded_context, found, portal};
+use crate::dto::{LoginForm, LoginPageQuery};
+use crate::handlers::{forwarded_context, found, portal, see_other};
 use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, LoginTemplate, MessagePage};
 use crate::tenant::WebTenant;
-use axum::extract::{Extension, State};
+use axum::extract::{Extension, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
-use idp_contracts::auth::{InternalAuthenticateRequest, InternalAuthenticateResponse};
+use idp_contracts::auth::{
+    InternalAuthenticateRequest, InternalAuthenticateResponse, InternalAuthorizeResumeRequest,
+    InternalAuthorizeResumeResponse,
+};
 use idp_contracts::csrf::login_csrf_token;
 
-/// ログインフォームを表示する。`auth_session_id` Cookie（api の `/authorize` が発行）が必要。
+/// ログインフォームを表示する。OIDC フローは api の `/authorize` からのハンドオフ
+/// （`?auth_session=` の単回ハンドル。ADR-0018 決定 2）または host-only の `auth_session_id`
+/// Cookie で継続する。
 pub async fn login_page(
     State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
+    Query(query): Query<LoginPageQuery>,
 ) -> Response {
+    // ハンドオフ受領: ハンドルを即座に `/internal/authorize/resume` で交換し（SSO 判定を含む）、
+    // `auth_session_id` を自ドメインの host-only Cookie へ移して 303 で URL から除去する。
+    if let Some(handle) = query.auth_session.filter(|h| !h.is_empty()) {
+        return resume_authorize_handoff(&state, &correlation, &tenant, &headers, handle).await;
+    }
+
     let Some(auth_session_id) = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE) else {
         // OIDC の `auth_session_id` が無い直接アクセスは、IdP 自身のアカウント画面へ入るための
         // ポータルログインとして扱う（`/{tenant_id}/login` を単独で開けるようにする）。
@@ -44,6 +57,93 @@ pub async fn login_page(
         None,
     ))
     .into_response()
+}
+
+/// `/authorize` ハンドオフの再開（ADR-0018 決定 2）。web が自ドメインの `sso_session_id` を読み、
+/// 単回ハンドルとともに api へ渡す。SSO 有効なら code 付き RP URL が返り、ログイン画面を出さずに
+/// フローが完了する（従来 api が Cookie で行っていた SSO 復元と同じ振る舞い）。
+async fn resume_authorize_handoff(
+    state: &WebState,
+    correlation: &CorrelationId,
+    tenant: &WebTenant,
+    headers: &HeaderMap,
+    handle: String,
+) -> Response {
+    let ctx = forwarded_context(headers, correlation);
+    let request = InternalAuthorizeResumeRequest {
+        tenant_id: Some(tenant.0.clone()),
+        handle,
+        sso_session_id: cookies::get(headers, cookies::SSO_SESSION_COOKIE),
+        ip_address: ctx.ip_address,
+        user_agent: ctx.user_agent,
+    };
+    let outcome = match state
+        .api
+        .authorize_resume(&ctx.correlation_id, &request)
+        .await
+    {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            tracing::error!(error = %e, "authorize resume call to api failed");
+            return StatusCode::BAD_GATEWAY.into_response();
+        }
+    };
+
+    let messages = Messages::new(locale(headers));
+    let auth_session_ttl = state.config.auth_session_ttl_secs();
+    match outcome {
+        // SSO 復元で code 発行済み（またはフロー終了のエラー）。残っている古い auth_session
+        // Cookie を掃除して RP へ返す。
+        InternalAuthorizeResumeResponse::Redirect { redirect_to }
+        | InternalAuthorizeResumeResponse::ErrorRedirect { redirect_to } => (
+            state
+                .set_cookies()
+                .expire_session(cookies::AUTH_SESSION_COOKIE)
+                .into_headers(),
+            found(&redirect_to),
+        )
+            .into_response(),
+        InternalAuthorizeResumeResponse::ConsentRequired { auth_session_id } => (
+            state
+                .set_cookies()
+                .set_session(
+                    cookies::AUTH_SESSION_COOKIE,
+                    &auth_session_id,
+                    auth_session_ttl,
+                )
+                .into_headers(),
+            see_other(&format!("{}/consent", tenant.prefix())),
+        )
+            .into_response(),
+        InternalAuthorizeResumeResponse::LoginRequired { auth_session_id } => (
+            state
+                .set_cookies()
+                .set_session(
+                    cookies::AUTH_SESSION_COOKIE,
+                    &auth_session_id,
+                    auth_session_ttl,
+                )
+                .into_headers(),
+            // 303 で自 URL へ付け替え、ハンドルをアドレスバー・履歴から除去する。
+            see_other(&format!("{}/login", tenant.prefix())),
+        )
+            .into_response(),
+        InternalAuthorizeResumeResponse::ExpiredHandle => {
+            // リロード等で消費済みのハンドル。初回受領時の Cookie が残っていれば通常表示へ戻す。
+            if cookies::get(headers, cookies::AUTH_SESSION_COOKIE).is_some() {
+                see_other(&format!("{}/login", tenant.prefix()))
+            } else {
+                error_page(
+                    &messages,
+                    StatusCode::BAD_REQUEST,
+                    "login-error-session-expired",
+                )
+            }
+        }
+        InternalAuthorizeResumeResponse::Internal => {
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }
 
 /// ログインフォームの HTML をテンプレートから描画する。埋め込む値（翻訳文言・CSRF トークン）は
@@ -108,12 +208,12 @@ pub async fn login(
             // SSO Cookie を発行し、短命の auth_session_id Cookie は失効させる。
             let mut set_cookies = state
                 .set_cookies()
-                .set_shared(
+                .set_session(
                     cookies::SSO_SESSION_COOKIE,
                     &sso_session_id,
                     sso_absolute_ttl_secs,
                 )
-                .expire_shared(cookies::AUTH_SESSION_COOKIE);
+                .expire_session(cookies::AUTH_SESSION_COOKIE);
             // ユーザーの DB 言語設定があれば lang Cookie に同期する（MT20: DB > Cookie の優先順）。
             if let Some(lang) = user_language
                 .as_deref()
@@ -129,7 +229,7 @@ pub async fn login(
         }
         InternalAuthenticateResponse::MfaRequired { auth_session_id } => {
             // パスワード認証成功・MFA 必要: auth_session_id Cookie を維持して TOTP 入力画面へ。
-            let set_cookies = state.set_cookies().set_shared(
+            let set_cookies = state.set_cookies().set_session(
                 cookies::AUTH_SESSION_COOKIE,
                 &auth_session_id,
                 state.config.auth_session_ttl_secs(),
@@ -143,7 +243,7 @@ pub async fn login(
         InternalAuthenticateResponse::PasswordChangeRequired { auth_session_id } => {
             // パスワード認証成功・強制変更必要（ADR-0009 §5）: auth_session_id Cookie を維持して
             // パスワード変更画面へ。
-            let set_cookies = state.set_cookies().set_shared(
+            let set_cookies = state.set_cookies().set_session(
                 cookies::AUTH_SESSION_COOKIE,
                 &auth_session_id,
                 state.config.auth_session_ttl_secs(),
@@ -160,7 +260,7 @@ pub async fn login(
             // Cookie が残ってもエンドユーザーが自分のアカウント画面へ入れなくなる状態を自己回復する。
             let set_cookies = state
                 .set_cookies()
-                .expire_shared(cookies::AUTH_SESSION_COOKIE);
+                .expire_session(cookies::AUTH_SESSION_COOKIE);
             (
                 set_cookies.into_headers(),
                 found(&format!("{}/login", tenant.prefix())),
@@ -207,12 +307,12 @@ pub async fn login(
             // 具体的な TTL は api 側で設定済みのため、ここでは既存の Cookie を上書きする。
             let set_cookies = state
                 .set_cookies()
-                .set_shared(
+                .set_session(
                     cookies::SSO_SESSION_COOKIE,
                     &sso_session_id,
                     sso_absolute_ttl_secs,
                 )
-                .set_shared(
+                .set_session(
                     cookies::AUTH_SESSION_COOKIE,
                     &new_auth_session_id,
                     state.config.auth_session_ttl_secs(),

@@ -10,6 +10,32 @@ pub struct LoginForm {
     pub csrf_token: String,
 }
 
+/// ログイン画面のクエリ（`GET /login`）。
+#[derive(Debug, Deserialize)]
+pub struct LoginPageQuery {
+    /// api の `/authorize` がハンドオフ URL に載せた単回・短命のハンドル（ADR-0018 決定 2）。
+    /// web は即座に `/internal/authorize/resume` で交換し、303 で URL から除去する。
+    #[serde(default)]
+    pub auth_session: Option<String>,
+}
+
+/// RP-initiated Logout のクエリ（`GET /logout`、OIDC RP-initiated Logout 1.0。ADR-0018 決定 2）。
+#[derive(Debug, Deserialize)]
+pub struct RpLogoutQuery {
+    /// 失効対象の ID Token（任意。現実装では使用しない）。
+    #[serde(default)]
+    pub id_token_hint: Option<String>,
+    /// ログアウト後のリダイレクト先（登録済みのもののみ api が許可する）。
+    #[serde(default)]
+    pub post_logout_redirect_uri: Option<String>,
+    /// RP が受け取るランダム値（redirect_uri に透過的に付与）。
+    #[serde(default)]
+    pub state: Option<String>,
+    /// post_logout_redirect_uri の検証に使う（任意）。
+    #[serde(default)]
+    pub client_id: Option<String>,
+}
+
 /// TOTP 確認フォーム（`POST /account/mfa/totp/setup`）。
 #[derive(Debug, Deserialize)]
 pub struct TotpConfirmForm {

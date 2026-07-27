@@ -22,7 +22,8 @@ use idp_contracts::auth::{
 };
 use idp_contracts::csrf::consent_csrf_token;
 
-/// 同意画面を表示する。`auth_session_id` Cookie（`/authorize` または `/login` が発行）が必要。
+/// 同意画面を表示する。`auth_session_id` Cookie（`/authorize` ハンドオフの受領時またはログイン成功時に
+/// web が発行した host-only Cookie。ADR-0018 決定 2）が必要。
 pub async fn consent_page(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -104,7 +105,7 @@ pub async fn consent(
             Ok(InternalConsentApproveResponse::Success { redirect_to }) => {
                 let set_cookies = state
                     .set_cookies()
-                    .expire_shared(cookies::AUTH_SESSION_COOKIE);
+                    .expire_session(cookies::AUTH_SESSION_COOKIE);
                 (set_cookies.into_headers(), found(&redirect_to)).into_response()
             }
             Ok(InternalConsentApproveResponse::SessionExpired) => error_page(
@@ -130,7 +131,7 @@ pub async fn consent(
             Ok(InternalConsentDenyResponse::Ok { redirect_to }) => {
                 let set_cookies = state
                     .set_cookies()
-                    .expire_shared(cookies::AUTH_SESSION_COOKIE);
+                    .expire_session(cookies::AUTH_SESSION_COOKIE);
                 (set_cookies.into_headers(), found(&redirect_to)).into_response()
             }
             Ok(InternalConsentDenyResponse::SessionExpired) => error_page(

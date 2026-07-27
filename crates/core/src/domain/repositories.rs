@@ -231,6 +231,16 @@ pub trait AuthSessionRepository: Send + Sync {
     /// フローを開始したテナントの auth session のみ返す（他テナントの session id を
     /// 持ち込んでも解決させない）。
     async fn find_by_id(&self, tenant_id: TenantId, id: &str) -> Result<Option<AuthSession>>;
+    /// web ハンドオフ用ハンドル（SHA-256）で auth session を引く（ADR-0018 決定 2）。
+    /// `find_by_id` と同じくフローのテナントに限定する。期限・消費済み判定は Application 層が行う。
+    async fn find_by_handle(
+        &self,
+        tenant_id: TenantId,
+        handle_hash: &str,
+    ) -> Result<Option<AuthSession>>;
+    /// ハンドルを単回使用として消費する（`handle_hash` を NULL 化）。すでに消費済み（並行交換に
+    /// 負けた・再利用）なら `false` を返す。
+    async fn consume_handle(&self, id: &str, handle_hash: &str) -> Result<bool>;
     /// 認証済みユーザーと `auth_time` を設定する（`/login` 成功時）。
     async fn set_authenticated_user(
         &self,

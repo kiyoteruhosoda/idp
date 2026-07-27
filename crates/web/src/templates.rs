@@ -263,6 +263,17 @@ pub struct TotpVerifyTemplate<'a> {
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
 }
+/// RP-initiated logout の front-channel 通知ページ（`GET /{tenant_id}/logout`。ADR-0018 決定 2 で
+/// api から移設）。各 RP の `frontchannel_logout_uri` を不可視 iframe で読み込み、全 iframe の
+/// ロード後（またはタイムアウト後）に post-logout リダイレクト先へ遷移する。
+#[derive(Template)]
+#[template(path = "rp_logout.html")]
+pub struct RpLogoutPage<'a> {
+    pub messages: &'a Messages,
+    pub frontchannel_uris: &'a [String],
+    pub redirect_to: Option<&'a str>,
+}
+
 #[derive(Template)]
 #[template(path = "login.html")]
 pub struct LoginTemplate<'a> {

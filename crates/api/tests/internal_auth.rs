@@ -14,9 +14,7 @@ use axum::http::header::CONTENT_TYPE;
 use axum::http::{Request, StatusCode};
 use idp_api::application::login::csrf_token;
 use serde_json::json;
-use support::{
-    body_json, cookie_value, post_internal, send, CODE_CHALLENGE, REDIRECT_URI, SERVICE_TOKEN,
-};
+use support::{body_json, post_internal, send, CODE_CHALLENGE, REDIRECT_URI, SERVICE_TOKEN};
 
 async fn register_user(app: &axum::Router, tenant: &str, username: &str, password: &str) {
     let payload = json!({
@@ -38,19 +36,13 @@ async fn register_user(app: &axum::Router, tenant: &str, username: &str, passwor
     assert_eq!(response.status(), StatusCode::CREATED, "user registration");
 }
 
-/// `/authorize` を開始して `auth_session_id` Cookie を得る（未ログインなので /login へ 302）。
+/// `/authorize` を開始して `auth_session_id` を得る（ハンドオフ → resume。ADR-0018 決定 2）。
 async fn start_authorize(app: &axum::Router, tenant: &str, client_id: &str) -> String {
     let uri = format!(
         "/{tenant}/authorize?response_type=code&client_id={client_id}&redirect_uri={}&scope=openid%20profile%20email&state=st&nonce=no&code_challenge={CODE_CHALLENGE}&code_challenge_method=S256",
         "http%3A%2F%2Flocalhost%3A3000%2Fcallback"
     );
-    let response = send(
-        app,
-        Request::builder().uri(uri).body(Body::empty()).unwrap(),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::FOUND, "authorize -> login");
-    cookie_value(&response, "auth_session_id").expect("auth_session_id cookie")
+    support::begin_login(app, tenant, &uri).await
 }
 
 #[tokio::test]

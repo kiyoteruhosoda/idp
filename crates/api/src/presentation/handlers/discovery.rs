@@ -28,7 +28,14 @@ pub async fn openid_configuration(
     Extension(tenant): Extension<ResolvedTenant>,
 ) -> Json<Value> {
     let issuer = tenant_issuer(state.config.issuer(), tenant.id());
-    Json(discovery_document(&issuer))
+    // end_session_endpoint は web が受ける（ADR-0018 決定 2。api はブラウザ Cookie を読まないため、
+    // RP-initiated logout の起点は SSO Cookie を自ドメインで扱える web 側になる）。
+    let end_session_endpoint = format!(
+        "{}/{}/logout",
+        state.config.public_web_base_url(),
+        tenant.id()
+    );
+    Json(discovery_document(&issuer, &end_session_endpoint))
 }
 
 /// JWKS（ACTIVE + RETIRED の公開鍵）。
@@ -130,13 +137,13 @@ fn base64url_to_base64(value: &str) -> Option<String> {
     Some(STANDARD.encode(bytes))
 }
 
-fn discovery_document(issuer: &str) -> Value {
+fn discovery_document(issuer: &str, end_session_endpoint: &str) -> Value {
     json!({
         "issuer": issuer,
         "authorization_endpoint": format!("{issuer}/authorize"),
         "token_endpoint": format!("{issuer}/token"),
         "userinfo_endpoint": format!("{issuer}/userinfo"),
-        "end_session_endpoint": format!("{issuer}/logout"),
+        "end_session_endpoint": end_session_endpoint,
         "revocation_endpoint": format!("{issuer}/revoke"),
         "introspection_endpoint": format!("{issuer}/introspect"),
         "jwks_uri": format!("{issuer}/.well-known/jwks.json"),
@@ -162,25 +169,32 @@ mod tests {
 
     #[test]
     fn discovery_endpoints_derive_from_issuer() {
-        let doc = discovery_document("https://idp.example.com");
-        assert_eq!(doc["issuer"], "https://idp.example.com");
+        // end_session_endpoint だけは web の URL（ADR-0018 決定 2: RP-initiated logout の起点は web）。
+        let doc = discovery_document(
+            "https://api.idp.example.com",
+            "https://idp.example.com/tenant-a/logout",
+        );
+        assert_eq!(doc["issuer"], "https://api.idp.example.com");
         assert_eq!(
             doc["authorization_endpoint"],
-            "https://idp.example.com/authorize"
+            "https://api.idp.example.com/authorize"
         );
         assert_eq!(
             doc["jwks_uri"],
-            "https://idp.example.com/.well-known/jwks.json"
+            "https://api.idp.example.com/.well-known/jwks.json"
         );
         assert_eq!(doc["code_challenge_methods_supported"], json!(["S256"]));
         assert_eq!(
             doc["end_session_endpoint"],
-            "https://idp.example.com/logout"
+            "https://idp.example.com/tenant-a/logout"
         );
-        assert_eq!(doc["revocation_endpoint"], "https://idp.example.com/revoke");
+        assert_eq!(
+            doc["revocation_endpoint"],
+            "https://api.idp.example.com/revoke"
+        );
         assert_eq!(
             doc["introspection_endpoint"],
-            "https://idp.example.com/introspect"
+            "https://api.idp.example.com/introspect"
         );
         assert_eq!(doc["frontchannel_logout_supported"], true);
         assert_eq!(doc["backchannel_logout_supported"], true);

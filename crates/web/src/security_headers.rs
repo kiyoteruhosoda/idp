@@ -44,10 +44,12 @@ pub async fn add_security_headers(request: Request, next: Next, hsts_max_age: u6
         HeaderName::from_static("x-frame-options"),
         HeaderValue::from_static("DENY"),
     );
-    headers.insert(
-        HeaderName::from_static("content-security-policy"),
-        HeaderValue::from_static(CONTENT_SECURITY_POLICY),
-    );
+    // ハンドラが応答に CSP を設定済みの場合は尊重する（RP-initiated logout の front-channel ページが
+    // 通知先オリジンだけ `frame-src` を許可した CSP を使う。`handlers::rp_logout`）。
+    let csp = HeaderName::from_static("content-security-policy");
+    if !headers.contains_key(&csp) {
+        headers.insert(csp, HeaderValue::from_static(CONTENT_SECURITY_POLICY));
+    }
 
     if hsts_max_age > 0 {
         if let Ok(value) = HeaderValue::from_str(&format!("max-age={hsts_max_age}")) {

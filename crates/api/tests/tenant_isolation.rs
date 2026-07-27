@@ -25,13 +25,13 @@
 mod support;
 
 use axum::body::Body;
-use axum::http::header::{AUTHORIZATION, COOKIE};
+use axum::http::header::AUTHORIZATION;
 use axum::http::{Request, StatusCode};
 use serde_json::json;
 use sqlx::Row;
 use support::{
     authorize_uri_openid_only as authorize_uri, body_json, create_sso_session, delete,
-    exchange_code, get, location, post, query_param, send, setup as support_setup, unique, TestEnv,
+    exchange_code, get, post, query_param, send, setup as support_setup, unique, TestEnv,
     REDIRECT_URI,
 };
 
@@ -664,20 +664,21 @@ async fn oidc_flow_enforces_membership_and_per_tenant_issuer() {
     let sso_cookie = create_sso_session(&env.pool, &user_a).await;
 
     // メンバーシップのないテナント B のフローでは未認証扱い（code は出ずログインへ。§8）。
+    // ADR-0018 決定 2: SSO 判定は /authorize（Cookie）ではなく resume（web がボディで渡す）で行う。
     let res = send(
         &env.app,
         Request::builder()
             .uri(authorize_uri(&b.id, &client_b))
-            .header(COOKIE, format!("sso_session_id={sso_cookie}"))
             .body(Body::empty())
             .unwrap(),
     )
     .await;
     assert_eq!(res.status(), StatusCode::FOUND);
+    let handle = support::handoff_handle(&res);
+    let body = support::resume_authorize(&env.app, &b.id, &handle, Some(&sso_cookie)).await;
     assert_eq!(
-        location(&res),
-        format!("{}/{}/login", env.public_web_base_url, b.id),
-        "SSO session without membership must not resume in tenant B"
+        body["result"], "login_required",
+        "SSO session without membership must not resume in tenant B: {body}"
     );
 
     // 所属元テナント A では SSO で code が発行される。
@@ -685,13 +686,15 @@ async fn oidc_flow_enforces_membership_and_per_tenant_issuer() {
         &env.app,
         Request::builder()
             .uri(authorize_uri(&a.id, &client_a))
-            .header(COOKIE, format!("sso_session_id={sso_cookie}"))
             .body(Body::empty())
             .unwrap(),
     )
     .await;
     assert_eq!(res.status(), StatusCode::FOUND);
-    let callback = location(&res);
+    let handle = support::handoff_handle(&res);
+    let body = support::resume_authorize(&env.app, &a.id, &handle, Some(&sso_cookie)).await;
+    assert_eq!(body["result"], "redirect", "SSO resume in tenant A: {body}");
+    let callback = body["redirect_to"].as_str().unwrap().to_string();
     assert!(
         callback.starts_with(REDIRECT_URI),
         "expected code redirect, got {callback}"
@@ -770,17 +773,18 @@ async fn oidc_flow_enforces_membership_and_per_tenant_issuer() {
         &env.app,
         Request::builder()
             .uri(authorize_uri(&b.id, &client_b))
-            .header(COOKIE, format!("sso_session_id={sso_cookie}"))
             .body(Body::empty())
             .unwrap(),
     )
     .await;
     assert_eq!(res.status(), StatusCode::FOUND);
-    let callback = location(&res);
-    assert!(
-        callback.starts_with(REDIRECT_URI),
-        "guest with ACTIVE membership resumes SSO in tenant B, got {callback}"
+    let handle = support::handoff_handle(&res);
+    let body = support::resume_authorize(&env.app, &b.id, &handle, Some(&sso_cookie)).await;
+    assert_eq!(
+        body["result"], "redirect",
+        "guest with ACTIVE membership resumes SSO in tenant B: {body}"
     );
+    let callback = body["redirect_to"].as_str().unwrap().to_string();
     let code_b = query_param(&callback, "code").expect("code for tenant B");
 
     // ゲストのトークンも B の issuer で発行され、B の /userinfo で使える。

@@ -19,11 +19,12 @@ use idp_contracts::admin::{
 use idp_contracts::auth::{
     InternalAdminAuthenticateRequest, InternalAdminAuthenticateResponse,
     InternalAdminChangePasswordRequest, InternalAdminChangePasswordResponse,
-    InternalAuthenticateRequest, InternalAuthenticateResponse, InternalChangePasswordRequest,
-    InternalChangePasswordResponse, InternalConsentApproveRequest, InternalConsentApproveResponse,
-    InternalConsentDenyRequest, InternalConsentDenyResponse, InternalConsentInfoResponse,
-    InternalLogoutRequest, InternalPasskeyDeleteRequest, InternalPasskeyDeleteResponse,
-    InternalPasskeyListRequest, InternalPasskeyListResponse, InternalPasskeyLoginBeginRequest,
+    InternalAuthenticateRequest, InternalAuthenticateResponse, InternalAuthorizeResumeRequest,
+    InternalAuthorizeResumeResponse, InternalChangePasswordRequest, InternalChangePasswordResponse,
+    InternalConsentApproveRequest, InternalConsentApproveResponse, InternalConsentDenyRequest,
+    InternalConsentDenyResponse, InternalConsentInfoResponse, InternalLogoutRequest,
+    InternalPasskeyDeleteRequest, InternalPasskeyDeleteResponse, InternalPasskeyListRequest,
+    InternalPasskeyListResponse, InternalPasskeyLoginBeginRequest,
     InternalPasskeyLoginBeginResponse, InternalPasskeyLoginCompleteRequest,
     InternalPasskeyLoginCompleteResponse, InternalPasskeyRegisterBeginRequest,
     InternalPasskeyRegisterBeginResponse, InternalPasskeyRegisterCompleteRequest,
@@ -32,9 +33,10 @@ use idp_contracts::auth::{
     InternalPasswordResetRequestResponse, InternalPortalAuthenticateRequest,
     InternalPortalAuthenticateResponse, InternalPortalChangePasswordRequest,
     InternalPortalChangePasswordResponse, InternalPortalMfaRequest, InternalPortalMfaResponse,
-    InternalTotpConfirmRequest, InternalTotpConfirmResponse, InternalTotpDeleteRequest,
-    InternalTotpDeleteResponse, InternalTotpSetupRequest, InternalTotpSetupResponse,
-    InternalVerifyTotpRequest, InternalVerifyTotpResponse,
+    InternalRpLogoutRequest, InternalRpLogoutResponse, InternalTotpConfirmRequest,
+    InternalTotpConfirmResponse, InternalTotpDeleteRequest, InternalTotpDeleteResponse,
+    InternalTotpSetupRequest, InternalTotpSetupResponse, InternalVerifyTotpRequest,
+    InternalVerifyTotpResponse,
 };
 use idp_contracts::runtime_settings::{
     SharedRuntimeSettingsResponse, SHARED_RUNTIME_SETTINGS_PATH,
@@ -155,6 +157,29 @@ impl ApiClient {
             Some(tag) => request.header(reqwest::header::ACCEPT_LANGUAGE, tag),
             None => request,
         }
+    }
+
+    /// 認可フローの再開（`POST /internal/authorize/resume`、ADR-0018 決定 2）。`/authorize` からの
+    /// ハンドオフで受け取った単回ハンドルと自ドメインの SSO Cookie 値を渡し、SSO 判定・code 発行
+    /// までを api に委ねる。
+    pub async fn authorize_resume(
+        &self,
+        correlation_id: &str,
+        req: &InternalAuthorizeResumeRequest,
+    ) -> anyhow::Result<InternalAuthorizeResumeResponse> {
+        self.post_internal("/internal/authorize/resume", correlation_id, req)
+            .await
+    }
+
+    /// RP-initiated logout（`POST /internal/logout/rp`、ADR-0018 決定 2）。SSO 失効・back-channel
+    /// 通知・post-logout リダイレクト URL の組み立てを api に委ねる（Cookie 破棄は web が行う）。
+    pub async fn rp_logout(
+        &self,
+        correlation_id: &str,
+        req: &InternalRpLogoutRequest,
+    ) -> anyhow::Result<InternalRpLogoutResponse> {
+        self.post_internal("/internal/logout/rp", correlation_id, req)
+            .await
     }
 
     /// OIDC ログイン認証（`POST /internal/authenticate`）。
