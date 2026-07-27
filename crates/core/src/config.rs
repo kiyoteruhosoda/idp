@@ -134,7 +134,7 @@ pub struct Config {
     tenant_cache_ttl: Duration,
     /// scope→権限解決キャッシュの TTL（ADR-0009 §7。付与・剥奪時は即時 invalidate される）。
     permission_cache_ttl: Duration,
-    /// サービス横断 Cookie の属性方針（`Secure` と `Domain`。ADR-0012 §3）。web と同じ値を設定する。
+    /// Cookie の属性方針（`Secure` と旧 `Domain` Cookie の掃除。ADR-0018 決定 2・4）。web と同じ値を設定する。
     cookie_policy: CookiePolicy,
     key_encryption_key: [u8; 32],
     key_encryption_key_is_dev: bool,
@@ -196,9 +196,9 @@ impl Config {
         let public_web_base_url = public_web_base_url_override
             .clone()
             .unwrap_or_else(|| issuer.clone());
-        // サービス横断 Cookie の Domain 属性（ADR-0012）。設定時は issuer / public_web_base_url 双方の
-        // 親ドメインであり public suffix でないことを起動時に検証する（不整合はログインループになるため
-        // fail-fast）。
+        // 旧 ADR-0012 構成の Domain 付き Cookie を掃除するための COOKIE_DOMAIN（ADR-0018 決定 4）。
+        // 設定時は issuer / public_web_base_url 双方の親ドメインであり public suffix でないことを
+        // 起動時に検証する（削除 Cookie がブラウザに受理されない値を弾く fail-fast）。
         let cookie_domain = match resolver.optional_string("COOKIE_DOMAIN") {
             Some(raw) => Some(
                 idp_contracts::cookie_domain::validate_cookie_domain(
@@ -318,8 +318,8 @@ impl Config {
     pub fn cookie_secure(&self) -> bool {
         self.cookie_policy.secure()
     }
-    /// サービス横断 Cookie の属性方針（`Secure` + `Domain`）。発行・失効はこれを経由する
-    /// （ADR-0012 §3。`Domain` を渡し忘れた発行箇所が生まれないようにするため）。
+    /// Cookie の属性方針。api はブラウザ Cookie を発行しない（ADR-0018 決定 2）ため現在は
+    /// `cookie_secure` / `cookie_domain` の解決結果の入れ物としてのみ使う。
     pub fn cookie_policy(&self) -> &CookiePolicy {
         &self.cookie_policy
     }
@@ -382,10 +382,10 @@ impl Config {
     pub fn public_web_base_url(&self) -> &str {
         &self.public_web_base_url
     }
-    /// サービス横断 Cookie（sso_session_id・auth_session_id）に付与する `Domain` 属性（ADR-0012 §3）。
-    /// `None` = host-only（単一オリジン構成の従来挙動）。web と同じ値を設定する。
+    /// 旧 ADR-0012 構成の `Domain` 付き Cookie を掃除するための `COOKIE_DOMAIN`（ADR-0018 決定 4）。
+    /// `None` = 掃除なし（既定）。セッション Cookie は常に host-only で発行される（web 側）。
     pub fn cookie_domain(&self) -> Option<&str> {
-        self.cookie_policy.domain()
+        self.cookie_policy.legacy_cleanup_domain()
     }
 
     pub fn resolved_settings(&self) -> &[ResolvedSetting] {

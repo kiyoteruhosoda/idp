@@ -1,15 +1,15 @@
 //! Cookie の読み書き（axum アダプタ）。
 //!
-//! 名前と `Set-Cookie` 値の組み立ては api と共有する必要があるため
-//! [`idp_contracts::cookies`] に単一定義してある。本モジュールは `HeaderMap` からの読み出しと、
-//! 応答へ載せる `Set-Cookie` ヘッダの組み立て（[`SetCookies`]）という axum 依存の部分を担う。
+//! 名前と `Set-Cookie` 値の組み立ては api との契約のため [`idp_contracts::cookies`] に単一定義
+//! してある。本モジュールは `HeaderMap` からの読み出しと、応答へ載せる `Set-Cookie` ヘッダの
+//! 組み立て（[`SetCookies`]）という axum 依存の部分を担う。
 //!
-//! web が発行する Cookie は 2 種類ある。取り違えると SSO が壊れる（別ドメイン構成で api が
-//! セッションを読めない／CSRF Cookie が不必要に親ドメインへ広がる）ため、[`SetCookies`] では
-//! メソッド名で区別する。
+//! ブラウザ Cookie はすべて web だけが発行・読取する host-only Cookie である（ADR-0018 決定 2。
+//! api はブラウザ Cookie を読まない）。[`SetCookies`] のメソッドは 2 種類に分かれる。
 //!
-//! - **サービス横断**（`sso_session_id`・`auth_session_id`）: api も読む。`set_shared` / `expire_shared`
-//! - **web ローカル**（`lang`・CSRF・MFA チケット）: web だけが読む。`set_local` / `expire_local`
+//! - **セッション**（`sso_session_id`・`auth_session_id`）: `set_session` / `expire_session`。
+//!   旧 ADR-0012 構成でブラウザに残った `Domain` 付き Cookie の掃除（削除併送）を伴う。
+//! - **web ローカル**（`lang`・CSRF・MFA チケット）: `set_local` / `expire_local`。
 
 use axum::http::header::{COOKIE, SET_COOKIE};
 use axum::http::{HeaderMap, HeaderName};
@@ -44,8 +44,8 @@ pub fn get(headers: &HeaderMap, name: &str) -> Option<String> {
 ///
 /// ```ignore
 /// (state.set_cookies()
-///     .set_shared(cookies::SSO_SESSION_COOKIE, &sso_session_id, ttl)
-///     .expire_shared(cookies::AUTH_SESSION_COOKIE)
+///     .set_session(cookies::SSO_SESSION_COOKIE, &sso_session_id, ttl)
+///     .expire_session(cookies::AUTH_SESSION_COOKIE)
 ///     .into_headers(),
 ///  found(&redirect_to)).into_response()
 /// ```
@@ -63,17 +63,18 @@ impl SetCookies {
         }
     }
 
-    /// サービス横断 Cookie を発行する（`COOKIE_DOMAIN` 設定時は `Domain` 付き + host-only 削除の併送）。
+    /// セッション Cookie を host-only で発行する（`COOKIE_DOMAIN` 設定時は旧 `Domain` 付き
+    /// Cookie の削除を併送する。ADR-0018 決定 2・4）。
     #[must_use]
-    pub fn set_shared(mut self, name: &str, value: &str, max_age_secs: u64) -> Self {
-        self.push_all(self.policy.set_shared(name, value, max_age_secs));
+    pub fn set_session(mut self, name: &str, value: &str, max_age_secs: u64) -> Self {
+        self.push_all(self.policy.set_session(name, value, max_age_secs));
         self
     }
 
-    /// サービス横断 Cookie を失効させる。
+    /// セッション Cookie を失効させる。
     #[must_use]
-    pub fn expire_shared(mut self, name: &str) -> Self {
-        self.push_all(self.policy.expire_shared(name));
+    pub fn expire_session(mut self, name: &str) -> Self {
+        self.push_all(self.policy.expire_session(name));
         self
     }
 
@@ -137,10 +138,10 @@ mod tests {
 
     #[test]
     fn login_success_cookies_are_accumulated_in_order() {
-        // ログイン成功の代表形: SSO 発行 + auth_session 失効 + 言語同期（ADR-0012 §3 / MT20）。
+        // ログイン成功の代表形: SSO 発行 + auth_session 失効 + 言語同期（ADR-0018 決定 2 / MT20）。
         let set_cookies = SetCookies::new(CookiePolicy::new(true, None))
-            .set_shared(SSO_SESSION_COOKIE, "sess", 600)
-            .expire_shared(AUTH_SESSION_COOKIE)
+            .set_session(SSO_SESSION_COOKIE, "sess", 600)
+            .expire_session(AUTH_SESSION_COOKIE)
             .set_local(LANG_COOKIE, "ja", LANG_COOKIE_MAX_AGE_SECS);
         assert_eq!(
             values(set_cookies),
@@ -153,16 +154,20 @@ mod tests {
     }
 
     #[test]
-    fn shared_cookies_carry_the_domain_and_local_cookies_do_not() {
-        // 別ドメイン構成: セッションだけが親ドメインへ広がり、CSRF・言語は host-only のまま。
+    fn session_cookies_stay_host_only_and_clean_up_the_legacy_domain() {
+        // ADR-0018 決定 2・4: セッション Cookie 本体は常に host-only。COOKIE_DOMAIN が設定されて
+        // いる移行期間は旧 `Domain` 付き Cookie の削除を併送する。CSRF 等のローカル Cookie は対象外。
         let set_cookies = SetCookies::new(CookiePolicy::new(false, Some("example.com")))
-            .set_shared(SSO_SESSION_COOKIE, "sess", 600)
+            .set_session(SSO_SESSION_COOKIE, "sess", 600)
             .expire_local(ADMIN_CSRF_COOKIE);
         let values = values(set_cookies);
-        assert_eq!(values.len(), 3, "domain cookie + host-only cleanup + csrf");
-        assert!(values[0].contains("Domain=example.com"), "{values:?}");
+        assert_eq!(values.len(), 3, "host-only cookie + legacy cleanup + csrf");
         assert!(
-            !values[1].contains("Domain=") && values[1].contains("Max-Age=0"),
+            values[0].starts_with("sso_session_id=sess") && !values[0].contains("Domain="),
+            "{values:?}"
+        );
+        assert!(
+            values[1].contains("Domain=example.com") && values[1].contains("Max-Age=0"),
             "{values:?}"
         );
         assert!(

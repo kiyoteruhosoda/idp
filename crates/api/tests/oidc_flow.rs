@@ -8,15 +8,15 @@
 mod support;
 
 use axum::body::Body;
-use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, COOKIE};
+use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
 use axum::http::{Request, StatusCode};
 use base64::Engine as _;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde_json::{json, Value};
 use sqlx::{MySqlPool, Row};
 use support::{
-    body_json, cookie_value, location, query_param, send, CODE_CHALLENGE, CODE_VERIFIER,
-    REDIRECT_URI, REDIRECT_URI_ENC, SERVICE_TOKEN, SERVICE_TOKEN_HEADER,
+    body_json, handoff_handle, location, query_param, resume_authorize, send, CODE_CHALLENGE,
+    CODE_VERIFIER, REDIRECT_URI, REDIRECT_URI_ENC, SERVICE_TOKEN, SERVICE_TOKEN_HEADER,
 };
 
 /// 一意な public client（openid/profile/email）を登録して client_id を返す。
@@ -143,7 +143,8 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     let sub = register_user(&app, &root_tenant_id, &username, password).await; // 条件 1
     support::mark_email_verified(&pool, &root_tenant_id, &username).await;
 
-    // 条件 2, 3: /authorize 開始 → 未ログインなので /login へ。
+    // 条件 2, 3: /authorize 開始 → web の /login へハンドオフ（ADR-0018 決定 2: Cookie ではなく
+    // 単回ハンドルを URL に載せる。PUBLIC_WEB_BASE_URL 基点の絶対 URL。ADR-0012 §4）。
     let response = send(
         &app,
         Request::builder()
@@ -157,14 +158,28 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
             .unwrap(),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::FOUND, "redirect to /login");
-    // api は未ログイン時に web のログイン画面へ 302 する（ADR-0009 §6、MT13）。別ドメイン構成に
-    // 対応するため PUBLIC_WEB_BASE_URL 基点の絶対 URL になった（ADR-0012 §4）。
-    assert_eq!(
-        location(&response),
-        format!("{}/{root_tenant_id}/login", env.public_web_base_url)
+    assert_eq!(response.status(), StatusCode::FOUND, "handoff to /login");
+    assert!(
+        location(&response).starts_with(&format!(
+            "{}/{root_tenant_id}/login?auth_session=",
+            env.public_web_base_url
+        )),
+        "handoff URL: {}",
+        location(&response)
     );
-    let auth_session = cookie_value(&response, "auth_session_id").expect("auth_session_id cookie");
+    let handle = handoff_handle(&response);
+
+    // web 相当: ハンドルを resume で交換して auth_session_id を得る（SSO なし → login_required）。
+    let body = resume_authorize(&app, &root_tenant_id, &handle, None).await;
+    assert_eq!(body["result"], "login_required");
+    let auth_session = body["auth_session_id"]
+        .as_str()
+        .expect("auth_session_id")
+        .to_string();
+
+    // ハンドルは単回使用（ADR-0018 決定 3）: 再利用は拒否される。
+    let body = resume_authorize(&app, &root_tenant_id, &handle, None).await;
+    assert_eq!(body["result"], "expired_handle", "handle reuse is rejected");
 
     // CSRF は auth_session 由来（web が描画・api の LoginService が検証）。
     let csrf = login_csrf(&auth_session, &env.csrf_secret);
@@ -367,7 +382,8 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
-    // 条件 6: 2 回目の /authorize は SSO により再ログインなしで code が返る。
+    // 条件 6: 2 回目の /authorize は SSO により再ログインなしで code が返る（ADR-0018 決定 2:
+    // api は SSO Cookie を読まないため、web 相当の resume 呼び出しに sso_session_id を載せる）。
     let response = send(
         &app,
         Request::builder()
@@ -377,13 +393,18 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
                 "state-2nd",
                 "nonce-2nd",
             ))
-            .header(COOKIE, format!("sso_session_id={sso_cookie}"))
             .body(Body::empty())
             .unwrap(),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::FOUND, "SSO resume");
-    let callback = location(&response);
+    assert_eq!(response.status(), StatusCode::FOUND, "handoff to /login");
+    let second_handle = handoff_handle(&response);
+    let body = resume_authorize(&app, &root_tenant_id, &second_handle, Some(&sso_cookie)).await;
+    assert_eq!(body["result"], "redirect", "SSO resume issues a code");
+    let callback = body["redirect_to"]
+        .as_str()
+        .expect("redirect_to")
+        .to_string();
     assert!(
         callback.starts_with(REDIRECT_URI),
         "expected direct redirect to client, got {callback}"
@@ -419,6 +440,47 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     assert_eq!(
         second_claims.claims["auth_time"], id_claims.claims["auth_time"],
         "auth_time keeps the first login time on SSO resume"
+    );
+
+    // `prompt=none`（サイレント認証・iframe 経路）: SSO ありなら対話なしで code、SSO なしなら
+    // `login_required` エラーが RP へ返る（ADR-0018 の回帰条件。判定は resume で行われる）。
+    let prompt_none_uri = format!(
+        "{}&prompt=none",
+        authorize_uri(&root_tenant_id, &client_id, "state-silent", "nonce-silent")
+    );
+    let response = send(
+        &app,
+        Request::builder()
+            .uri(&prompt_none_uri)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FOUND);
+    let handle = handoff_handle(&response);
+    let body = resume_authorize(&app, &root_tenant_id, &handle, Some(&sso_cookie)).await;
+    assert_eq!(body["result"], "redirect", "prompt=none with SSO: {body}");
+    assert!(query_param(body["redirect_to"].as_str().unwrap(), "code").is_some());
+
+    let response = send(
+        &app,
+        Request::builder()
+            .uri(&prompt_none_uri)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    let handle = handoff_handle(&response);
+    let body = resume_authorize(&app, &root_tenant_id, &handle, None).await;
+    assert_eq!(body["result"], "error_redirect", "prompt=none without SSO");
+    let error_callback = body["redirect_to"].as_str().unwrap();
+    assert_eq!(
+        query_param(error_callback, "error").as_deref(),
+        Some("login_required")
+    );
+    assert_eq!(
+        query_param(error_callback, "state").as_deref(),
+        Some("state-silent")
     );
 
     // 条件 13: 監査ログ（login / code 発行・使用 / token 発行 / SSO）。
@@ -460,22 +522,18 @@ async fn refresh_token_rotation_introspection_and_revocation_e2e() {
     register_user(&app, &root_tenant_id, &username, password).await;
     support::mark_email_verified(&pool, &root_tenant_id, &username).await;
 
-    let response = send(
+    let auth_session = support::begin_login(
         &app,
-        Request::builder()
-            .uri(authorize_uri_with_scope(
-                &root_tenant_id,
-                &client_id,
-                "openid offline_access",
-                "state-refresh",
-                "nonce-refresh",
-            ))
-            .body(Body::empty())
-            .unwrap(),
+        &root_tenant_id,
+        &authorize_uri_with_scope(
+            &root_tenant_id,
+            &client_id,
+            "openid offline_access",
+            "state-refresh",
+            "nonce-refresh",
+        ),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::FOUND, "redirect to /login");
-    let auth_session = cookie_value(&response, "auth_session_id").expect("auth_session_id cookie");
     let csrf = login_csrf(&auth_session, &env.csrf_secret);
 
     let (status, body) = internal_authenticate(
@@ -770,16 +828,13 @@ async fn login_lockout_after_repeated_failures() {
     register_user(&app, &root_tenant_id, &username, password).await;
     support::mark_email_verified(&pool, &root_tenant_id, &username).await;
 
-    // AuthSession を作ってログイン画面へ。
-    let response = send(
+    // AuthSession を作ってログイン画面へ（ハンドオフ → resume）。
+    let auth_session = support::begin_login(
         &app,
-        Request::builder()
-            .uri(authorize_uri(&root_tenant_id, &client_id, "st", "no"))
-            .body(Body::empty())
-            .unwrap(),
+        &root_tenant_id,
+        &authorize_uri(&root_tenant_id, &client_id, "st", "no"),
     )
     .await;
-    let auth_session = cookie_value(&response, "auth_session_id").expect("auth_session cookie");
     let csrf = login_csrf(&auth_session, &env.csrf_secret);
 
     // 9 回失敗 → invalid_credentials、10 回目でロック（locked）。

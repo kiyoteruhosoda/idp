@@ -1,41 +1,38 @@
-//! 認可エンドポイント（`GET /authorize`、設計仕様 §4.2）。
+//! 認可エンドポイント（`GET /authorize`、設計仕様 §4.2、ADR-0018 決定 2）。
 
-use crate::application::authorize::{AuthorizeOutcome, AuthorizeRequest};
-use crate::presentation::cookies;
+use crate::application::audit::RequestContext;
+use crate::application::authorize::{
+    AuthorizeOutcome, AuthorizeRequest, ResumeCommand, ResumeOutcome,
+};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{AuthorizeParams, OAuthErrorResponse};
-use crate::presentation::handlers::{found, request_context};
+use crate::presentation::handlers::found;
 use crate::presentation::state::AppState;
-use crate::presentation::tenant::ResolvedTenant;
+use crate::presentation::tenant::{require_internal_tenant, ResolvedTenant};
 use axum::extract::{Extension, Query, State};
-use axum::http::{HeaderMap, HeaderName, StatusCode};
-use axum::response::{AppendHeaders, IntoResponse, Response};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
+use idp_contracts::auth::{InternalAuthorizeResumeRequest, InternalAuthorizeResumeResponse};
 
-/// OIDC 認可エンドポイント。検証成功時は `redirect_uri` または `/login` または `/consent` へ 302 する。
-/// `prompt` / `max_age` に正式対応（F3）。`login_hint` / `acr_values` は引き続き無視する。
+/// OIDC 認可エンドポイント。ブラウザ Cookie は読み書きしない（ADR-0018 決定 2）。
+/// 検証成功時は AuthSession を作成し、単回・短命のハンドルを URL に載せて web の `/login` へ 302 する。
+/// SSO 復元・`prompt` / `max_age` の評価は web が呼ぶ `/internal/authorize/resume` で行う。
 #[utoipa::path(
     get,
     path = "/{tenant_id}/authorize",
     tag = "oidc",
     params(AuthorizeParams),
     responses(
-        (status = 302, description = "redirect_uri（code/error 付与）または /login または /consent へリダイレクト"),
+        (status = 302, description = "redirect_uri（error 付与）または web の /login（単回ハンドル付き）へリダイレクト"),
         (status = 400, description = "client_id / redirect_uri が無効（リダイレクトしない）", body = OAuthErrorResponse),
     )
 )]
 pub async fn authorize(
     State(state): State<AppState>,
-    Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
-    headers: HeaderMap,
     Query(params): Query<AuthorizeParams>,
 ) -> Response {
-    let ctx = request_context(
-        &headers,
-        &correlation,
-        state.config.trust_forwarded_headers(),
-    );
     let request = AuthorizeRequest {
         response_type: params.response_type,
         client_id: params.client_id,
@@ -45,45 +42,20 @@ pub async fn authorize(
         nonce: params.nonce,
         code_challenge: params.code_challenge,
         code_challenge_method: params.code_challenge_method,
-        sso_session_id: cookies::get(&headers, cookies::SSO_SESSION_COOKIE),
         prompt: params.prompt,
         max_age: params.max_age,
     };
 
-    match state
-        .authorize
-        .authorize(tenant.context(), request, &ctx)
-        .await
-    {
-        AuthorizeOutcome::Redirect { location } | AuthorizeOutcome::ErrorRedirect { location } => {
-            found(&location)
-        }
-        // ログイン・同意画面は web が描画する。別ドメイン構成（ADR-0012 §4)に対応するため
-        // `PUBLIC_WEB_BASE_URL` 基点の絶対 URL へ 302 する（単一オリジン構成では issuer と同値）。
-        AuthorizeOutcome::LoginRequired { auth_session_id } => {
-            let set_cookies = auth_session_cookies(&state, &auth_session_id);
-            (
-                AppendHeaders(set_cookies),
-                found(&format!(
-                    "{}/{}/login",
-                    state.config.public_web_base_url(),
-                    tenant.id()
-                )),
-            )
-                .into_response()
-        }
-        AuthorizeOutcome::ConsentRequired { auth_session_id } => {
-            let set_cookies = auth_session_cookies(&state, &auth_session_id);
-            (
-                AppendHeaders(set_cookies),
-                found(&format!(
-                    "{}/{}/consent",
-                    state.config.public_web_base_url(),
-                    tenant.id()
-                )),
-            )
-                .into_response()
-        }
+    match state.authorize.authorize(tenant.context(), request).await {
+        AuthorizeOutcome::ErrorRedirect { location } => found(&location),
+        // ログイン・同意画面は web が描画する。ハンドルは web が受領後ただちに自ドメインの
+        // host-only Cookie へ移して URL から除去する（単回・短命。ADR-0018 決定 2・3）。
+        AuthorizeOutcome::HandoffToWeb { handle } => found(&format!(
+            "{}/{}/login?auth_session={}",
+            state.config.public_web_base_url(),
+            tenant.id(),
+            handle
+        )),
         AuthorizeOutcome::FatalError { error, description } => (
             StatusCode::BAD_REQUEST,
             Json(OAuthErrorResponse {
@@ -95,11 +67,60 @@ pub async fn authorize(
     }
 }
 
-/// `auth_session_id` Cookie の `Set-Cookie` ヘッダ組（サービス横断 Cookie。ADR-0012 §3）。
-fn auth_session_cookies(state: &AppState, auth_session_id: &str) -> Vec<(HeaderName, String)> {
-    cookies::headers(state.config.cookie_policy().set_shared(
-        cookies::AUTH_SESSION_COOKIE,
-        auth_session_id,
-        state.config.auth_session_ttl().as_secs(),
-    ))
+/// 認可フローの再開（`POST /internal/authorize/resume`、ADR-0018 決定 2）。
+///
+/// web がハンドオフ URL の単回ハンドルと、自ドメインの host-only `sso_session_id` Cookie の値を
+/// 転送する。api はハンドルを単回消費して SSO 復元 → `max_age` → 同意チェック → code 発行を行い、
+/// `/internal/authenticate` と同じ応答パターンで返す。
+pub async fn authorize_resume(
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Json(req): Json<InternalAuthorizeResumeRequest>,
+) -> Result<Json<InternalAuthorizeResumeResponse>, Response> {
+    // 接続元情報は web が転送する（api はプロキシ直下ではないため自前で X-Forwarded-For を見ない）。
+    let ctx = RequestContext {
+        correlation_id: correlation.0,
+        ip_address: req.ip_address,
+        user_agent: req.user_agent,
+    };
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let outcome = state
+        .authorize
+        .resume(
+            tenant,
+            ResumeCommand {
+                handle: req.handle,
+                sso_session_id: req.sso_session_id,
+            },
+            &ctx,
+        )
+        .await;
+    // SSO 復元成功時、web が手元の `sso_session_id` を host-only で再発行するための TTL
+    // （ログイン成功時の発行と同じ値。旧 Domain Cookie の移行にも使われる）。
+    let ttl = state.config.sso_absolute_ttl().as_secs();
+    Ok(Json(match outcome {
+        ResumeOutcome::Redirect { location } => InternalAuthorizeResumeResponse::Redirect {
+            redirect_to: location,
+            sso_absolute_ttl_secs: ttl,
+        },
+        ResumeOutcome::ErrorRedirect { location } => {
+            InternalAuthorizeResumeResponse::ErrorRedirect {
+                redirect_to: location,
+            }
+        }
+        ResumeOutcome::ConsentRequired { auth_session_id } => {
+            InternalAuthorizeResumeResponse::ConsentRequired {
+                auth_session_id,
+                sso_absolute_ttl_secs: ttl,
+            }
+        }
+        ResumeOutcome::LoginRequired { auth_session_id } => {
+            InternalAuthorizeResumeResponse::LoginRequired { auth_session_id }
+        }
+        ResumeOutcome::ExpiredHandle => InternalAuthorizeResumeResponse::ExpiredHandle,
+        ResumeOutcome::Internal(e) => {
+            tracing::error!(error = %e, "authorize resume failed with internal error");
+            InternalAuthorizeResumeResponse::Internal
+        }
+    }))
 }

@@ -130,6 +130,19 @@ string_enum!(
 );
 
 string_enum!(
+    /// 認可リクエストの `prompt`（OIDC Core §3.1.2.1 のうち本 IdP が解釈する値）。
+    ///
+    /// SSO 判定が `/authorize` から `/internal/authorize/resume` へ移った（ADR-0018 決定 2）ため、
+    /// 評価時点まで auth_session に保存して持ち越す。未指定・未知の値は保存しない
+    /// （`parse(...).ok()` で `None` に落とす。従来の「未知値は無視する」挙動を維持）。
+    Prompt {
+        None => "none",
+        Login => "login",
+        Consent => "consent",
+    }
+);
+
+string_enum!(
     /// OIDC scope。要求 scope は `Clients.scopes` の部分集合であること。
     /// `offline_access` は Refresh Token 発行を要求する（設計仕様 §9.1）。
     Scope {

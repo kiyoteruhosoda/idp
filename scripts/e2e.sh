@@ -94,9 +94,14 @@ CID="e2e-cli-$(date +%s)"
 # クライアントは root テナントへ帰属させる（ADR-0009 §2。root は parent_tenant_id IS NULL の唯一の行）。
 mariadb_exec "SET @root := (SELECT id FROM tenants WHERE parent_tenant_id IS NULL); INSERT INTO clients (id,tenant_id,client_id,client_secret_hash,client_type,client_status,app_name,redirect_uris,grant_types,response_types,scopes,token_endpoint_auth_method,require_pkce) VALUES (UUID(),@root,'${CID}',NULL,'public','ACTIVE','E2E',JSON_ARRAY('${REDIRECT_URI}'),JSON_ARRAY('authorization_code'),JSON_ARRAY('code'),JSON_ARRAY('openid','profile','email'),'none',1);"
 authz="${authz/CLIENT/$CID}"
-loc="$(curl -fsS -c "$CJAR" -o /dev/null -w '%{redirect_url}' "$authz")"
-[[ "$loc" == *"/${ROOT}/login"* ]] || fail "/authorize が /{tenant_id}/login へ誘導しません（$loc）"
-pass "/authorize → /{tenant_id}/login 302・auth_session Cookie 発行"
+loc="$(curl -fsS -o /dev/null -w '%{redirect_url}' "$authz")"
+# ADR-0018 決定 2: api は Set-Cookie せず、単回ハンドルを URL に載せて web の /login へ 302 する。
+[[ "$loc" == *"/${ROOT}/login?auth_session="* ]] || fail "/authorize が単回ハンドル付きで /{tenant_id}/login へ誘導しません（$loc）"
+handle="${loc#*auth_session=}"
+# web がハンドルを resume で交換して host-only Cookie を発行し、303 で URL からハンドルを除去する。
+loc="$(curl -fsS -b "$CJAR" -c "$CJAR" -o /dev/null -w '%{redirect_url}' "${WEB}/${ROOT}/login?auth_session=${handle}")"
+[[ "$loc" == *"/${ROOT}/login" ]] || fail "web がハンドル受領後に /login へ付け替えません（$loc）"
+pass "/authorize → web ハンドオフ → auth_session Cookie 発行・URL からハンドル除去（303）"
 
 csrf="$(curl -fsS -b "$CJAR" "${WEB}/${ROOT}/login" | grep -oE '[a-f0-9]{64}' | head -1)"
 [[ -n "$csrf" ]] || fail "web /{tenant_id}/login がフォーム（CSRF）を返しません"

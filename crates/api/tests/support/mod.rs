@@ -391,6 +391,74 @@ pub fn authorize_uri_openid_only(tenant: &str, client_id: &str) -> String {
     )
 }
 
+/// `/authorize` のハンドオフ 302 から単回ハンドル（`?auth_session=`）を取り出す（ADR-0018 決定 2）。
+/// 併せて「api がブラウザ Cookie を一切発行しない」ことも検証する。
+pub fn handoff_handle(response: &axum::response::Response) -> String {
+    assert!(
+        response
+            .headers()
+            .get_all(SET_COOKIE)
+            .iter()
+            .next()
+            .is_none(),
+        "the api must not set browser cookies on /authorize (ADR-0018)"
+    );
+    query_param(&location(response), "auth_session").expect("auth_session handle in Location")
+}
+
+/// `/internal/authorize/resume` を呼ぶ（web の代わり）。`sso_session_id` は `Some` で SSO 判定を伴う。
+/// 応答は `result` タグ付き JSON。
+pub async fn resume_authorize(
+    app: &axum::Router,
+    tenant: &str,
+    handle: &str,
+    sso_session_id: Option<&str>,
+) -> Value {
+    let response = send(
+        app,
+        post_internal(
+            "/internal/authorize/resume",
+            Some(SERVICE_TOKEN),
+            json!({
+                "tenant_id": tenant,
+                "handle": handle,
+                "sso_session_id": sso_session_id,
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::OK,
+        "authorize resume"
+    );
+    body_json(response).await
+}
+
+/// `/authorize` → resume（SSO なし）で `auth_session_id` を得るショートカット（旧 Set-Cookie 相当）。
+pub async fn begin_login(app: &axum::Router, tenant: &str, authorize_uri: &str) -> String {
+    let response = send(
+        app,
+        Request::builder()
+            .uri(authorize_uri)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::FOUND,
+        "handoff to web /login"
+    );
+    let handle = handoff_handle(&response);
+    let body = resume_authorize(app, tenant, &handle, None).await;
+    assert_eq!(body["result"], "login_required", "no SSO yet: {body}");
+    body["auth_session_id"]
+        .as_str()
+        .expect("auth_session_id")
+        .to_string()
+}
+
 /// 認可コードをトークンへ交換する（public client・PKCE）。
 pub async fn exchange_code(
     app: &axum::Router,

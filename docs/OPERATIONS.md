@@ -258,8 +258,8 @@ DELETE up FROM user_permissions up
 | `ACCESS_TOKEN_TTL_SECS` | `900` | Access Token 有効期間 |
 | `ID_TOKEN_TTL_SECS` | `3600` | ID Token 有効期間 |
 | `CLOCK_SKEW_SECS` | `60` | JWT 検証時のクロックスキュー許容 |
-| `PUBLIC_WEB_BASE_URL` | `ISSUER` と同値 | web 画面の公開 URL。`/authorize` からのログイン・同意リダイレクトと招待・リセットメールのリンクの土台。**api・web で同値必須（ENV でのみ設定可。DB 上書き不可）**。web を別オリジンへ置く構成でのみ設定 |
-| `COOKIE_DOMAIN` | 未設定（host-only） | サービス横断 Cookie（`sso_session_id`・`auth_session_id`）の `Domain` 属性。api/web を別サブドメインで公開する構成でのみ設定（**api・web で同値必須**。下記「api と web を別ドメインで公開したいとき」参照） |
+| `PUBLIC_WEB_BASE_URL` | `ISSUER` と同値 | web 画面の公開 URL。`/authorize` からのログインハンドオフと招待・リセットメールのリンクの土台。**api・web で同値必須（ENV でのみ設定可。DB 上書き不可）**。web を別オリジンへ置く構成でのみ設定 |
+| `COOKIE_DOMAIN` | 未設定（既定） | 旧 ADR-0012 構成でブラウザに残った `Domain` 付きセッション Cookie を掃除する旧 Domain 値。セッション Cookie は常に host-only で発行される（ADR-0018）。移行期間のみ設定し、掃除後は未設定へ戻す（**api・web で同値必須**） |
 | `PASSWORD_RESET_TTL_SECS` | `3600` | パスワードリセットトークンの有効期間 |
 | `EMAIL_VERIFICATION_TTL_SECS` | `86400` | 自己登録アカウントのメール検証トークンの有効期間（SEC6b） |
 | `HSTS_MAX_AGE` | `0`（無効） | `Strict-Transport-Security` の `max-age`（秒）。**DB 上書き可**（下記） |
@@ -495,8 +495,7 @@ DB を直接参照せずに、いま DB へ適用されているマイグレー�
    PUBLIC_WEB_BASE_URL=http://localhost:8060 # ISSUER と同値にする
    ```
 
-2. `COOKIE_DOMAIN` の行を削除する（単一オリジンでは host-only Cookie でよい）。
-3. `./deploy.sh app` で再デプロイする。`API_PORT` の公開は自動的に無くなる（override を重ねない）。
+2. `./deploy.sh app` で再デプロイする。`API_PORT` の公開は自動的に無くなる（override を重ねない）。
 
 ### MariaDB の公開範囲と保守接続
 
@@ -523,10 +522,11 @@ docker compose -f docker-compose.deploy.yml -f docker-compose.db-debug.yml \
 **両者は同一の登録可能ドメイン（eTLD+1）のサブドメインであること**。全く無関係なドメイン間の分割は
 サポートしない。
 
-**api は web の子サブドメインにする**（例: web `id.example.com` / api `api.id.example.com`。ADR-0018）。
-`api.example.com` と `id.example.com` のような**兄弟**にすると、両方を覆う `COOKIE_DOMAIN` が
-`example.com`（apex）しか無くなり、同じ親ドメイン配下の他環境・他サービスへセッション Cookie が
-送信される。入れ子なら `COOKIE_DOMAIN=id.example.com` まで絞れる。
+**api は web の子サブドメインにする**（例: web `id.example.com` / api `api.id.example.com`。
+ADR-0018 決定 1）。セッション Cookie は web の host-only になった（ADR-0018 決定 2）ため通常運用で
+`Domain` 付き Cookie は存在しないが、旧構成からの移行期に掃除用 `COOKIE_DOMAIN` を使う場合、
+兄弟構成では apex（`example.com`）しか指定できず、同じ親ドメイン配下の他環境・他サービスへ
+削除 Cookie の対象範囲が広がる。入れ子なら `id.example.com` まで絞れる。
 
 同梱リバースプロキシは**リッスンポートでサービスを分ける**（ADR-0015）。前段のリバースプロキシ
 （Synology DSM 等）が TLS 終端とドメイン振り分けを行い、ポート単位でここへ流す。
@@ -551,12 +551,12 @@ https://api.id.example.com → ${API_BIND_HOST}:${API_PORT} → 同梱 nginx :80
    API_PORT=8070               # api（OIDC protocol・JSON 管理 API）の公開ポート
    ```
 
-2. 公開オリジンと Cookie を設定する（**4 つとも api/web で同じ値にする**）。
+2. 公開オリジンと Cookie を設定する（**3 つとも api/web で同じ値にする**。`COOKIE_DOMAIN` は
+   設定しない = 既定。ADR-0018 決定 4）。
 
    ```sh
    ISSUER=https://api.id.example.com           # api の公開オリジン（web の子サブドメイン）
    PUBLIC_WEB_BASE_URL=https://id.example.com  # web の公開オリジン
-   COOKIE_DOMAIN=id.example.com                # サービス横断 Cookie の Domain 属性（先頭ドット不要）
    COOKIE_SECURE=true
    ```
 
@@ -591,16 +591,14 @@ RP に登録する OIDC エンドポイントは api ドメイン側。
 
 注意:
 
-- **`COOKIE_DOMAIN` 配下に信頼できない他サービス・他環境を同居させない**。`Domain=id.example.com` の
-  Cookie は `id.example.com` 配下の全サブドメインへ送信される。api を web の子にして `COOKIE_DOMAIN` を
-  web のホスト名まで絞るのは、この配下を IdP 自身のホストだけに限るためでもある（ADR-0018）。
+- **セッション Cookie（`sso_session_id`・`auth_session_id`）は web の host-only Cookie**（ADR-0018
+  決定 2）。api はブラウザ Cookie を読み書きせず、`/authorize` は単回・短命のハンドルを URL に載せて
+  web へハンドオフする。`COOKIE_DOMAIN` を設定する必要はない（既定は未設定）。
+- 旧 ADR-0012 構成（`Domain` 付き Cookie）から移行する場合のみ、掃除のため移行期間だけ
+  `COOKIE_DOMAIN` に旧値を設定する。設定中の Set-Cookie には旧 `Domain` 付き Cookie を消す削除
+  Cookie が自動で併送される（ブラウザ側の手動対応は不要）。掃除が済んだら未設定へ戻す。
 - `COOKIE_DOMAIN` は起動時に検証され、`ISSUER`・`PUBLIC_WEB_BASE_URL` 双方の親ドメインでない値や
-  public suffix（`com`・`co.uk` 等）そのものを設定すると**起動に失敗する**（設定不整合による
-  ログインループを防ぐ fail-fast）。
-- `COOKIE_DOMAIN` を有効化すると、以後の Set-Cookie には旧構成の host-only Cookie を掃除する
-  削除 Cookie が自動で併送される。ブラウザ側の手動対応は不要。
-- ローカル開発（`localhost` のポート違い）では `COOKIE_DOMAIN` を**設定しない**。Cookie はポートを
-  区別しないため、host-only Cookie（`localhost`）のままで web:`WEB_PORT` と api:`API_PORT` の双方に届く。
+  public suffix（`com`・`co.uk` 等）そのものを設定すると**起動に失敗する**（fail-fast）。
 
 ### `PUBLIC_WEB_BASE_URL` を DB 管理から ENV へ移行する（破壊的変更）
 
@@ -772,29 +770,25 @@ DB volume を削除してからマイグレーション・起動をやり直す�
 
 | 環境 | 配置例 | `.env` テンプレート | web の公開 URL | `WEB_PORT` | api の公開 URL | `API_PORT` | `IMAGE_TAG` |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| stg | `/opt/idp/stg` | `.env.staging.example` | `https://idpstg.nolumia.com` | `10010` | `https://idpapistg.nolumia.com` | `10011` | `stg` |
-| prod | `/opt/idp/prod` | `.env.production.example` | `https://idp.nolumia.com` | `10000` | `https://idpapi.nolumia.com` | `10001` | `prod` |
+| stg | `/opt/idp/stg` | `.env.staging.example` | `https://idpstg.nolumia.com` | `10010` | `https://api.idpstg.nolumia.com` | `10011` | `stg` |
+| prod | `/opt/idp/prod` | `.env.production.example` | `https://idp.nolumia.com` | `10000` | `https://api.idp.nolumia.com` | `10001` | `prod` |
 
 前段のリバースプロキシ（Synology DSM 等）で TLS を終端し、上表のドメインを同一ホストの
 `127.0.0.1:<WEB_PORT>` / `127.0.0.1:<API_PORT>` へ流す。`PUBLIC_WEB_BASE_URL` は web に、`ISSUER` は
 api に、それぞれブラウザ・RP が外から到達する URL（上表の公開 URL）を設定する。
 `single-origin` に切り替えた場合は両者を `WEB_PORT` の同一オリジンに揃え、`API_PORT` は使わない。
 
-`COOKIE_DOMAIN` は `idp` / `idpapi` の共通の親である `nolumia.com` になる（サブドメイン同士の
-共通の親でないと起動時検証で失敗する）。stg も同じ `nolumia.com` になる。
+api は web の子サブドメイン（`api.idp.nolumia.com` / `api.idpstg.nolumia.com`。ADR-0018 決定 1）。
+セッション Cookie は各 web ホストの host-only（ADR-0018 決定 2）のため、prod と stg の Cookie
+スコープは交わらない。`COOKIE_DOMAIN` は設定しない（既定）。
 
-> **警告（受容中のリスク）**: `Domain=nolumia.com` の Cookie は `nolumia.com` 配下の**全ホスト**へ
-> 送信される。prod にログイン済みのブラウザが stg のホストへアクセスすると、prod の
-> `sso_session_id` / `auth_session_id` が stg サービスへ渡る。この値は平文がそのまま
-> bearer credential（api は受け取った値の SHA-256 で DB を引く）であり、stg 側で観測・記録できれば
-> prod セッションを再生できる。当面は **stg を prod と同等の信頼境界で扱う**こと（アクセス制限・
-> リクエストログに Cookie を残さない・同一ブラウザで両環境を跨いで使わない）。
->
-> 解消の方針は ADR-0018 で決定済み（実装は `docs/Progress.md` の T1・T2）。**api を web の子
-> サブドメインへ移して** `Domain` を web のホスト名まで絞り（`api.idp.nolumia.com` /
-> `COOKIE_DOMAIN=idp.nolumia.com`）、続けて api↔web の状態受け渡しから Cookie を外す。
-> なお **api・web を兄弟のまま stg だけを深いサブドメインへ移しても解決しない**
-> （prod の `Domain=nolumia.com` が stg ホストも覆うため）。
+> **移行メモ**: 旧構成（web `idp.nolumia.com` / api `idpapi.nolumia.com` の兄弟 +
+> `COOKIE_DOMAIN=nolumia.com`）から移行する場合、ブラウザに `Domain=nolumia.com` の Cookie が
+> 残っている。移行後しばらく `COOKIE_DOMAIN=nolumia.com` を設定したまま運用すると、ログイン・
+> ログアウト時に旧 Cookie の削除が併送されて掃除される。掃除期間が終わったら未設定へ戻す。
+> また **`ISSUER` が変わる**ため、RP 側の再設定（discovery・`iss`）が必要。DNS に
+> `api.idp.nolumia.com` / `api.idpstg.nolumia.com` を追加し、証明書は web・api 両方のホスト名を
+> SAN に含める（ワイルドカード `*.idp.nolumia.com` は bare な `idp.nolumia.com` に一致しない）。
 同一ホストでは `IMAGE_TAG` も `stg` / `prod` のように分け、`latest` を両環境で共有しない。
 
 ```sh

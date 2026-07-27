@@ -11,6 +11,11 @@ login-error-session-expired = サインインのセッションが期限切れ�
 login-error-csrf = フォームの有効期限が切れました。ページを再読み込みしてやり直してください。
 login-error-rate-limited = 試行回数が多すぎます。しばらく待ってからお試しください。
 
+# RP-initiated logout（OIDC end_session_endpoint。web が受ける。ADR-0018）。
+logout-title = サインアウト
+logout-in-progress-message = サインアウトしています…
+logout-done-message = サインアウトしました。
+
 # エンドユーザー・ポータルのログイン（OIDC アプリを介さず IdP のアカウント画面へ直接サインインする）。
 portal-login-title = アカウントにサインイン
 portal-login-lead = アカウント設定を管理するにはサインインしてください。

@@ -1,13 +1,14 @@
-//! Cookie の読み書き（axum アダプタ）。
+//! Cookie の読み出し（axum アダプタ）。
 //!
-//! 名前と `Set-Cookie` 値の組み立ては web と共有する必要があるため
-//! [`idp_contracts::cookies`] に単一定義してある。本モジュールは `HeaderMap` からの読み出しと
-//! `Set-Cookie` ヘッダ化という axum 依存の部分だけを担う。
+//! api はブラウザに対して Cookie を発行しない（ADR-0018 決定 2）。読み出しも、web の `api_client`
+//! がサーバ間呼び出しで明示的に付与した `Cookie: sso_session_id=...` ヘッダ（管理 JSON API の
+//! 認証 extractor。`presentation::admin`）に限る。名前は web と共有する契約のため
+//! [`idp_contracts::cookies`] に単一定義してある。
 
-use axum::http::header::{COOKIE, SET_COOKIE};
-use axum::http::{HeaderMap, HeaderName};
+use axum::http::header::COOKIE;
+use axum::http::HeaderMap;
 
-pub use idp_contracts::cookies::{CookiePolicy, AUTH_SESSION_COOKIE, SSO_SESSION_COOKIE};
+pub use idp_contracts::cookies::{AUTH_SESSION_COOKIE, SSO_SESSION_COOKIE};
 
 /// リクエストの `Cookie` ヘッダから `name` の値を取り出す。
 pub fn get(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -18,14 +19,6 @@ pub fn get(headers: &HeaderMap, name: &str) -> Option<String> {
             .filter_map(|value| value.to_str().ok()),
         name,
     )
-}
-
-/// `Set-Cookie` 値一式を `AppendHeaders` へ渡せるヘッダの組に変換する。
-pub fn headers(cookies: impl IntoIterator<Item = String>) -> Vec<(HeaderName, String)> {
-    cookies
-        .into_iter()
-        .map(|cookie| (SET_COOKIE, cookie))
-        .collect()
 }
 
 #[cfg(test)]
@@ -53,14 +46,5 @@ mod tests {
         headers.append(COOKIE, HeaderValue::from_static("a=1"));
         headers.append(COOKIE, HeaderValue::from_static("sso_session_id=xyz"));
         assert_eq!(get(&headers, SSO_SESSION_COOKIE).as_deref(), Some("xyz"));
-    }
-
-    #[test]
-    fn converts_cookies_into_set_cookie_headers() {
-        let policy = CookiePolicy::new(true, Some("example.com"));
-        let out = headers(policy.expire_shared(SSO_SESSION_COOKIE));
-        assert_eq!(out.len(), 2);
-        assert!(out.iter().all(|(name, _)| name == SET_COOKIE));
-        assert!(out[0].1.contains("Domain=example.com"));
     }
 }

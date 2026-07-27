@@ -302,12 +302,12 @@ pub async fn login_complete_api(
         } => {
             let set_cookies = state
                 .set_cookies()
-                .set_shared(
+                .set_session(
                     cookies::SSO_SESSION_COOKIE,
                     &sso_session_id,
                     sso_absolute_ttl_secs,
                 )
-                .expire_shared(cookies::AUTH_SESSION_COOKIE);
+                .expire_session(cookies::AUTH_SESSION_COOKIE);
             (
                 set_cookies.into_headers(),
                 Json(LoginCompleteJsonResponse {
@@ -324,12 +324,12 @@ pub async fn login_complete_api(
         } => {
             let set_cookies = state
                 .set_cookies()
-                .set_shared(
+                .set_session(
                     cookies::SSO_SESSION_COOKIE,
                     &sso_session_id,
                     sso_absolute_ttl_secs,
                 )
-                .set_shared(
+                .set_session(
                     cookies::AUTH_SESSION_COOKIE,
                     &auth_session_id,
                     state.config.auth_session_ttl_secs(),

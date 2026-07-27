@@ -4,7 +4,7 @@ use crate::domain::auth_session::AuthSession;
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::AuthSessionRepository;
 use crate::domain::tenant::TenantId;
-use crate::domain::values::CodeChallengeMethod;
+use crate::domain::values::{CodeChallengeMethod, Prompt};
 use crate::infrastructure::db::Db;
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
@@ -23,8 +23,8 @@ impl SqlxAuthSessionRepository {
 }
 
 const SELECT_COLUMNS: &str = "id, tenant_id, client_id, redirect_uri, scope, state, nonce, \
-     code_challenge, code_challenge_method, authenticated_user_id, auth_time, \
-     password_verified_at, expires_at, created_at, updated_at";
+     code_challenge, code_challenge_method, prompt, max_age, handle_hash, handle_expires_at, \
+     authenticated_user_id, auth_time, password_verified_at, expires_at, created_at, updated_at";
 
 fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
@@ -39,6 +39,10 @@ fn map_row(row: &MySqlRow) -> Result<AuthSession> {
     let tenant_id: String = row.try_get("tenant_id").map_err(repo_err)?;
     let scope: Vec<u8> = row.try_get("scope").map_err(repo_err)?;
     let ccm: String = row.try_get("code_challenge_method").map_err(repo_err)?;
+    let prompt: Option<String> = row.try_get("prompt").map_err(repo_err)?;
+    let max_age: Option<i64> = row.try_get("max_age").map_err(repo_err)?;
+    let handle_expires_at: Option<NaiveDateTime> =
+        row.try_get("handle_expires_at").map_err(repo_err)?;
     let user_id: Option<String> = row.try_get("authenticated_user_id").map_err(repo_err)?;
     let auth_time: Option<NaiveDateTime> = row.try_get("auth_time").map_err(repo_err)?;
     let password_verified_at: Option<NaiveDateTime> =
@@ -56,6 +60,10 @@ fn map_row(row: &MySqlRow) -> Result<AuthSession> {
         nonce: row.try_get("nonce").map_err(repo_err)?,
         code_challenge: row.try_get("code_challenge").map_err(repo_err)?,
         code_challenge_method: CodeChallengeMethod::parse(&ccm)?,
+        prompt: prompt.as_deref().map(Prompt::parse).transpose()?,
+        max_age: max_age.map(|v| v.max(0) as u64),
+        handle_hash: row.try_get("handle_hash").map_err(repo_err)?,
+        handle_expires_at: handle_expires_at.map(to_utc),
         authenticated_user_id: user_id
             .map(|s| {
                 Uuid::parse_str(&s)
@@ -76,8 +84,9 @@ impl AuthSessionRepository for SqlxAuthSessionRepository {
         sqlx::query(
             "INSERT INTO auth_sessions \
              (id, tenant_id, client_id, redirect_uri, scope, state, nonce, code_challenge, \
-              code_challenge_method, authenticated_user_id, auth_time, expires_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              code_challenge_method, prompt, max_age, handle_hash, handle_expires_at, \
+              authenticated_user_id, auth_time, expires_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&session.id)
         .bind(session.tenant_id.to_string())
@@ -88,6 +97,10 @@ impl AuthSessionRepository for SqlxAuthSessionRepository {
         .bind(&session.nonce)
         .bind(&session.code_challenge)
         .bind(session.code_challenge_method.as_str())
+        .bind(session.prompt.map(|p| p.as_str()))
+        .bind(session.max_age.map(|v| v as i64))
+        .bind(&session.handle_hash)
+        .bind(session.handle_expires_at.map(|d| d.naive_utc()))
         .bind(session.authenticated_user_id.map(|u| u.to_string()))
         .bind(session.auth_time.map(|d| d.naive_utc()))
         .bind(session.expires_at.naive_utc())
@@ -107,6 +120,39 @@ impl AuthSessionRepository for SqlxAuthSessionRepository {
             .await
             .map_err(repo_err)?;
         row.as_ref().map(map_row).transpose()
+    }
+
+    async fn find_by_handle(
+        &self,
+        tenant_id: TenantId,
+        handle_hash: &str,
+    ) -> Result<Option<AuthSession>> {
+        let sql = format!(
+            "SELECT {SELECT_COLUMNS} FROM auth_sessions WHERE handle_hash = ? AND tenant_id = ?"
+        );
+        let row = sqlx::query(&sql)
+            .bind(handle_hash)
+            .bind(tenant_id.to_string())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        row.as_ref().map(map_row).transpose()
+    }
+
+    async fn consume_handle(&self, id: &str, handle_hash: &str) -> Result<bool> {
+        // WHERE に handle_hash を含めることで単回使用を原子的に強制する。並行する交換は
+        // 片方だけが 1 行更新に成功し、負けた側（および再利用）は 0 行 = false になる。
+        let result = sqlx::query(
+            "UPDATE auth_sessions \
+             SET handle_hash = NULL, handle_expires_at = NULL \
+             WHERE id = ? AND handle_hash = ?",
+        )
+        .bind(id)
+        .bind(handle_hash)
+        .execute(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        Ok(result.rows_affected() == 1)
     }
 
     async fn set_authenticated_user(

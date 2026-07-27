@@ -460,7 +460,7 @@ pub async fn logout(
     }
     let set_cookies = state
         .set_cookies()
-        .expire_shared(cookies::SSO_SESSION_COOKIE);
+        .expire_session(cookies::SSO_SESSION_COOKIE);
     (
         set_cookies.into_headers(),
         found(&format!("{}/login", tenant.prefix())),
@@ -469,8 +469,8 @@ pub async fn logout(
 }
 
 /// SSO Cookie を発行し、任意の一時 Cookie を失効させてアカウント画面へ 302 する共通処理。
-/// SSO Cookie はサービス横断（api の `/authorize` も読む）のため `set_shared` で発行する
-/// （ADR-0012 §3）。失効させる一時 Cookie（CSRF・MFA チケット）は web ローカルなので host-only のまま。
+/// SSO Cookie は host-only のセッション Cookie（ADR-0018 決定 2。api へはボディ転送で渡す）。
+/// 失効させる一時 Cookie（CSRF・MFA チケット）は web ローカル。
 fn sso_success_response(
     state: &WebState,
     sso_session_id: &str,
@@ -479,7 +479,7 @@ fn sso_success_response(
     tenant: &WebTenant,
     expire_cookies: &[&str],
 ) -> Response {
-    let mut set_cookies = state.set_cookies().set_shared(
+    let mut set_cookies = state.set_cookies().set_session(
         cookies::SSO_SESSION_COOKIE,
         sso_session_id,
         sso_absolute_ttl_secs,

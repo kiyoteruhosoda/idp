@@ -43,8 +43,8 @@ pub struct Config {
     internal_service_token_is_dev: bool,
     csrf_secret: [u8; 32],
     csrf_secret_is_dev: bool,
-    /// Cookie の属性方針（`Secure` + サービス横断 Cookie の `Domain`。ADR-0012 §2・§3）。
-    /// `Domain` は api 側の `COOKIE_DOMAIN` と同一値を設定する。`None` = host-only（従来挙動）。
+    /// Cookie の属性方針（`Secure` + 旧 `Domain` 付き Cookie の掃除。ADR-0018 決定 2・4）。
+    /// `COOKIE_DOMAIN` は api 側と同一値を設定する。`None` = 掃除なし（既定）。
     cookie_policy: CookiePolicy,
     auth_session_ttl_secs: u64,
     /// HSTS `max-age`（秒）。0 = HSTS ヘッダを付与しない（api 側と同キー `HSTS_MAX_AGE`）。
@@ -145,8 +145,8 @@ impl Config {
         // （ADR-0012 §2。issuer ではなく web 自身の公開スキームで判定する）。
         let cookie_secure =
             resolver.parse("COOKIE_SECURE", public_web_base_url.starts_with("https://"))?;
-        // サービス横断 Cookie の Domain 属性。api 側と同じ検証（親ドメイン整合・public suffix 拒否）を
-        // 起動時に行う（不整合はログインループになるため fail-fast）。
+        // 旧 ADR-0012 構成の Domain 付き Cookie を掃除するための COOKIE_DOMAIN（ADR-0018 決定 4）。
+        // api 側と同じ検証（親ドメイン整合・public suffix 拒否）を起動時に行う（fail-fast）。
         let cookie_domain = match env_lookup("COOKIE_DOMAIN") {
             Some(raw) => Some(
                 idp_contracts::cookie_domain::validate_cookie_domain(
@@ -219,10 +219,10 @@ impl Config {
     pub fn cookie_secure(&self) -> bool {
         self.cookie_policy.secure()
     }
-    /// サービス横断 Cookie（sso_session_id・auth_session_id）に付与する `Domain` 属性（ADR-0012 §3）。
-    /// api と同じ値を設定する。`None` = host-only（単一オリジン構成の従来挙動）。
+    /// 旧 ADR-0012 構成の `Domain` 付き Cookie を掃除するための `COOKIE_DOMAIN`（ADR-0018 決定 4）。
+    /// `None` = 掃除なし（既定）。セッション Cookie は常に host-only で発行される。
     pub fn cookie_domain(&self) -> Option<&str> {
-        self.cookie_policy.domain()
+        self.cookie_policy.legacy_cleanup_domain()
     }
     /// Cookie の属性方針。Cookie の発行・失効は必ずこれを経由する（ADR-0012 §3。`Domain` を
     /// 渡し忘れた発行箇所が生まれないようにするため）。通常は `WebState::set_cookies()` を使う。

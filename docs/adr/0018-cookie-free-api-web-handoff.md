@@ -1,6 +1,6 @@
 # ADR-0018: api↔web の状態受け渡しから Cookie を外し、ホスト名を入れ子にして Cookie スコープを閉じる
 
-- Status: Accepted（実装は `docs/Progress.md` T1・T2）
+- Status: Accepted（決定 2〜4 は実装済み。決定 1 の DNS・証明書・RP 再設定は `docs/Progress.md` T1）
 - Date: 2026-07-27
 - 関連: `docs/adr/0012-api-web-domain-split.md`（**§Decision 1 のホスト名前提と §Decision 3「サービス横断
   Cookie に `Domain` を付与する」を本 ADR で置き換える**）、`docs/adr/0007-api-web-service-split.md`（§3 内部認証 API）、

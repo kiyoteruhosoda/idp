@@ -22,6 +22,7 @@ pub mod password_change;
 pub mod password_reset;
 pub mod portal;
 pub mod react_assets;
+pub mod rp_logout;
 pub mod stylesheet;
 pub mod user_settings;
 pub mod vendor_assets;
@@ -85,6 +86,18 @@ pub(crate) fn forwarded_context(
 pub(crate) fn found(location: &str) -> Response {
     match HeaderValue::from_str(location) {
         Ok(value) => (StatusCode::FOUND, [(LOCATION, value)]).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "redirect location is not a valid header value");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// `303 See Other` リダイレクト。ハンドオフ URL の単回ハンドル（`?auth_session=`）をアドレスバー・
+/// 履歴から即座に除去する自 URL への付け替えに使う（ADR-0018 決定 2）。
+pub(crate) fn see_other(location: &str) -> Response {
+    match HeaderValue::from_str(location) {
+        Ok(value) => (StatusCode::SEE_OTHER, [(LOCATION, value)]).into_response(),
         Err(e) => {
             tracing::error!(error = %e, "redirect location is not a valid header value");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()

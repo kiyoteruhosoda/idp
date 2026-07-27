@@ -11,6 +11,11 @@ login-error-session-expired = Your sign-in session has expired. Please start ove
 login-error-csrf = The form has expired. Please reload the page and try again.
 login-error-rate-limited = Too many attempts. Please wait a moment and try again.
 
+# RP-initiated logout (OIDC end_session_endpoint served by web. ADR-0018).
+logout-title = Sign out
+logout-in-progress-message = Signing you out…
+logout-done-message = You have been signed out.
+
 # End-user portal login (standalone sign-in to the IdP account page, without an OIDC app).
 portal-login-title = Sign in to your account
 portal-login-lead = Sign in to manage your account settings.

@@ -1,0 +1,35 @@
+{% extends "page.html" %}
+{% block title %}{{ messages.get("logout-title") }}{% endblock %}
+{% block content %}
+<div class="card border-0 bg-transparent">
+  <div class="card-header text-center py-3 border-0 bg-transparent">
+    <h1 class="h4 mb-0">{{ messages.get("logout-title") }}</h1>
+  </div>
+  <div class="card-body p-4 text-center">
+    <p class="mb-0">{{ messages.get("logout-in-progress-message") }}</p>
+  </div>
+</div>
+{% for uri in frontchannel_uris %}
+<iframe src="{{ uri }}" style="display:none;width:0;height:0;" sandbox="allow-same-origin allow-scripts"></iframe>
+{% endfor %}
+{% if let Some(redirect_to) = redirect_to %}
+<div id="logout-redirect" data-url="{{ redirect_to }}" hidden></div>
+{% endif %}
+<script>
+(function () {
+  var holder = document.getElementById('logout-redirect');
+  if (!holder) { return; }
+  var target = holder.dataset.url;
+  var frames = document.querySelectorAll('iframe');
+  var loaded = 0;
+  var moved = false;
+  function done() { if (!moved) { moved = true; window.location.href = target; } }
+  if (frames.length === 0) { done(); return; }
+  frames.forEach(function (f) {
+    f.onload = function () { loaded++; if (loaded >= frames.length) { done(); } };
+  });
+  /* RP 側 iframe が load を発火しない場合でも 5 秒でリダイレクトする。 */
+  setTimeout(done, 5000);
+})();
+</script>
+{% endblock %}

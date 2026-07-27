@@ -1481,6 +1481,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unic-langid",
+ "url",
  "uuid",
 ]
 

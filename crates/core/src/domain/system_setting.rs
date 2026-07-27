@@ -390,7 +390,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
                       同意画面への 302 とメールリンク生成に、web は自オリジンとして使う。api/web で\
                       一致必須のため DB 上書き不可。未設定なら issuer と同一オリジン。",
     },
-    // api/web の Cookie 属性を一致させる必要があるため EnvLocked（ADR-0012 §2）。
+    // api/web の Cookie 掃除挙動を一致させる必要があるため EnvLocked（ADR-0012 §2）。
     SettingDefinition {
         key: "COOKIE_DOMAIN",
         shared_with_web: false,
@@ -400,9 +400,11 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::Text,
         default_value: None,
-        description: "サービス横断 Cookie（sso_session_id・auth_session_id）に付与する Domain 属性\
-                      （例 `example.com`）。api/web を別サブドメインで公開する構成でのみ設定する。\
-                      未設定 = host-only（単一オリジン構成の従来挙動）。",
+        description: "旧 ADR-0012 構成でブラウザに残った Domain 付きセッション Cookie\
+                      （sso_session_id・auth_session_id）を掃除するための旧 Domain 値\
+                      （例 `example.com`）。セッション Cookie は常に host-only で発行される\
+                      （ADR-0018 決定 2・4）ため、移行期間だけ設定し、掃除が済んだら未設定へ戻す。\
+                      未設定（既定）= 掃除なし。",
     },
 ];
 
