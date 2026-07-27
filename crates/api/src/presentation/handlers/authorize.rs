@@ -95,9 +95,13 @@ pub async fn authorize_resume(
             &ctx,
         )
         .await;
+    // SSO 復元成功時、web が手元の `sso_session_id` を host-only で再発行するための TTL
+    // （ログイン成功時の発行と同じ値。旧 Domain Cookie の移行にも使われる）。
+    let ttl = state.config.sso_absolute_ttl().as_secs();
     Ok(Json(match outcome {
         ResumeOutcome::Redirect { location } => InternalAuthorizeResumeResponse::Redirect {
             redirect_to: location,
+            sso_absolute_ttl_secs: ttl,
         },
         ResumeOutcome::ErrorRedirect { location } => {
             InternalAuthorizeResumeResponse::ErrorRedirect {
@@ -105,7 +109,10 @@ pub async fn authorize_resume(
             }
         }
         ResumeOutcome::ConsentRequired { auth_session_id } => {
-            InternalAuthorizeResumeResponse::ConsentRequired { auth_session_id }
+            InternalAuthorizeResumeResponse::ConsentRequired {
+                auth_session_id,
+                sso_absolute_ttl_secs: ttl,
+            }
         }
         ResumeOutcome::LoginRequired { auth_session_id } => {
             InternalAuthorizeResumeResponse::LoginRequired { auth_session_id }

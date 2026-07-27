@@ -32,16 +32,28 @@ pub struct InternalAuthorizeResumeRequest {
 }
 
 /// 認可フロー再開 API のレスポンス。`result` タグで判別する。
+///
+/// SSO 復元に成功した応答（`Redirect`・`ConsentRequired`）には `sso_absolute_ttl_secs` を含める。
+/// web はこれで手元の `sso_session_id` を host-only で**再発行**する。`COOKIE_DOMAIN`（旧 ADR-0012
+/// 構成の掃除）設定中は再発行に旧 `Domain` 付き Cookie の削除が併送されるため、明示的な
+/// ログイン・ログアウトを経ない既存セッションもサイレント復元の時点で host-only へ移行し、
+/// 旧親ドメイン配下（stg 等）へ bearer credential が送信され続ける露出を閉じる。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAuthorizeResumeResponse {
     /// SSO 有効かつ同意済み。code 発行済みの `redirect_to`（RP URL）へ 302 する。
-    Redirect { redirect_to: String },
+    Redirect {
+        redirect_to: String,
+        sso_absolute_ttl_secs: u64,
+    },
     /// リクエスト続行不可（`prompt=none` で未ログイン・未同意など）。エラーコード付きの
     /// `redirect_to`（RP URL）へ 302 する。
     ErrorRedirect { redirect_to: String },
     /// SSO 有効だが同意が必要。web は `auth_session_id` を host-only Cookie 化して `/consent` へ。
-    ConsentRequired { auth_session_id: String },
+    ConsentRequired {
+        auth_session_id: String,
+        sso_absolute_ttl_secs: u64,
+    },
     /// 認証が必要。web は `auth_session_id` を host-only Cookie 化してログインフォームを表示する。
     LoginRequired { auth_session_id: String },
     /// ハンドルが無効・期限切れ・使用済み（`/authorize` からやり直し）。

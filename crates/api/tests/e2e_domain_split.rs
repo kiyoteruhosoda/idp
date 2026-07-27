@@ -489,6 +489,20 @@ async fn legacy_domain_cookie_is_cleaned_up_on_login() {
 
     // 新しいセッションで即時 code 発行が成立する（stale に覆い隠されない）。
     assert_immediate_code(&result.second_authorize);
+
+    // サイレント SSO 復元（明示的なログインを経ない経路）でも SSO Cookie が host-only で再発行され、
+    // 旧 Domain 削除が併送される。ログインし直さない既存セッションもここで移行され、旧親ドメイン
+    // 配下へ bearer credential が送信され続けない。
+    let resumed = set_cookies_for(&result.second_authorize, "sso_session_id");
+    assert_eq!(resumed.len(), 2, "{resumed:?}");
+    assert!(
+        !resumed[0].contains("Domain=") && !resumed[0].contains("Max-Age=0"),
+        "silent resume must reissue the session host-only: {resumed:?}"
+    );
+    assert!(
+        resumed[1].contains("Domain=example.test") && resumed[1].contains("Max-Age=0"),
+        "silent resume must delete the legacy domain cookie: {resumed:?}"
+    );
 }
 
 /// ケース 4（回帰）: 単一オリジン構成（`COOKIE_DOMAIN` 未設定）で従来挙動（host-only・

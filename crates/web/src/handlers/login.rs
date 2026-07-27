@@ -70,10 +70,11 @@ async fn resume_authorize_handoff(
     handle: String,
 ) -> Response {
     let ctx = forwarded_context(headers, correlation);
+    let sso_session_id = cookies::get(headers, cookies::SSO_SESSION_COOKIE);
     let request = InternalAuthorizeResumeRequest {
         tenant_id: Some(tenant.0.clone()),
         handle,
-        sso_session_id: cookies::get(headers, cookies::SSO_SESSION_COOKIE),
+        sso_session_id: sso_session_id.clone(),
         ip_address: ctx.ip_address,
         user_agent: ctx.user_agent,
     };
@@ -89,13 +90,36 @@ async fn resume_authorize_handoff(
         }
     };
 
+    // SSO 復元に成功した応答では、手元の `sso_session_id` を host-only で再発行する。
+    // `COOKIE_DOMAIN`（旧 ADR-0012 構成の掃除）設定中は旧 `Domain` 付き Cookie の削除が併送される
+    // ため、明示的なログイン・ログアウトを経ない既存セッションもサイレント復元の時点で host-only へ
+    // 移行し、旧親ドメイン配下へ bearer credential が送信され続ける露出を閉じる（ADR-0018 決定 4）。
+    let refresh_sso =
+        |set_cookies: crate::cookies::SetCookies, ttl_secs: u64| match sso_session_id.as_deref() {
+            Some(sso) => set_cookies.set_session(cookies::SSO_SESSION_COOKIE, sso, ttl_secs),
+            None => set_cookies,
+        };
+
     let messages = Messages::new(locale(headers));
     let auth_session_ttl = state.config.auth_session_ttl_secs();
     match outcome {
-        // SSO 復元で code 発行済み（またはフロー終了のエラー）。残っている古い auth_session
-        // Cookie を掃除して RP へ返す。
-        InternalAuthorizeResumeResponse::Redirect { redirect_to }
-        | InternalAuthorizeResumeResponse::ErrorRedirect { redirect_to } => (
+        // SSO 復元で code 発行済み。残っている古い auth_session Cookie を掃除して RP へ返す。
+        InternalAuthorizeResumeResponse::Redirect {
+            redirect_to,
+            sso_absolute_ttl_secs,
+        } => (
+            refresh_sso(
+                state
+                    .set_cookies()
+                    .expire_session(cookies::AUTH_SESSION_COOKIE),
+                sso_absolute_ttl_secs,
+            )
+            .into_headers(),
+            found(&redirect_to),
+        )
+            .into_response(),
+        // フロー終了のエラー（prompt=none 失敗等）。RP へエラーを返す。
+        InternalAuthorizeResumeResponse::ErrorRedirect { redirect_to } => (
             state
                 .set_cookies()
                 .expire_session(cookies::AUTH_SESSION_COOKIE)
@@ -103,15 +127,19 @@ async fn resume_authorize_handoff(
             found(&redirect_to),
         )
             .into_response(),
-        InternalAuthorizeResumeResponse::ConsentRequired { auth_session_id } => (
-            state
-                .set_cookies()
-                .set_session(
+        InternalAuthorizeResumeResponse::ConsentRequired {
+            auth_session_id,
+            sso_absolute_ttl_secs,
+        } => (
+            refresh_sso(
+                state.set_cookies().set_session(
                     cookies::AUTH_SESSION_COOKIE,
                     &auth_session_id,
                     auth_session_ttl,
-                )
-                .into_headers(),
+                ),
+                sso_absolute_ttl_secs,
+            )
+            .into_headers(),
             see_other(&format!("{}/consent", tenant.prefix())),
         )
             .into_response(),
