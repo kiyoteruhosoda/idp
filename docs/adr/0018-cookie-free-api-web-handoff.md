@@ -115,7 +115,10 @@ ADR-0012 は、api（OIDC protocol）と web（HTML 画面）を別サブドメ�
 
 - **`ISSUER` が変わる**（api のホスト名変更）。discovery・ID Token の `iss` が変わるため、
   **RP 側の再設定が必要**。移行はメンテナンス枠で行う。
-- 証明書は `*.idp.nolumia.com` のワイルドカード 1 枚で web・api 両ホストを賄える（stg も同様）。
+- 証明書は **web・api 両方のホスト名を SAN に含める**必要がある。`*.idp.nolumia.com` の
+  ワイルドカードは `api.idp.nolumia.com` には一致するが、**bare な `idp.nolumia.com` には一致しない**
+  （ワイルドカードは左 1 ラベルのみを覆う）。1 枚にまとめるなら SAN = `idp.nolumia.com` +
+  `api.idp.nolumia.com`（または `*.idp.nolumia.com` + `idp.nolumia.com`）とし、2 枚に分けてもよい。stg も同様。
 - `/authorize` から web への往復が 1 回増える。`prompt=none`（サイレント認証）もリダイレクトで
   完結するためユーザー操作は不要だが、iframe 経路の挙動はテストで確認する。
 - URL に載せる `auth_session` ハンドルは**単回使用・短命・高エントロピー**とし、`Referrer-Policy` を

@@ -70,8 +70,11 @@ api を web の**子**にすると `Domain` を web のホスト名まで絞れ�
 
 手順:
 
-1. DNS に `api.idp.nolumia.com` / `api.idpstg.nolumia.com` を追加し、証明書を用意する
-   （`*.idp.nolumia.com` のワイルドカード 1 枚で web・api 両ホストを賄える）。
+1. DNS に `api.idp.nolumia.com` / `api.idpstg.nolumia.com` を追加し、証明書を用意する。
+   **証明書は web・api 両方のホスト名を SAN に含めること**（`*.idp.nolumia.com` のワイルドカードは
+   `api.idp.nolumia.com` には一致するが **bare な `idp.nolumia.com` には一致しない**）。
+   1 枚にまとめるなら SAN = `idp.nolumia.com` + `api.idp.nolumia.com`（または
+   `*.idp.nolumia.com` + `idp.nolumia.com`）。stg も同様。
 2. 前段プロキシの振り分け先は現行のまま（`WEB_PORT` / `API_PORT` は変えない）。
 3. `.env` の `ISSUER`・`PUBLIC_WEB_BASE_URL`・`COOKIE_DOMAIN` を上表へ変更し、`.env.*.example` も更新する。
 4. **`ISSUER` 変更に伴い RP 側の再設定が必要**（discovery・ID Token の `iss` が変わる）。
