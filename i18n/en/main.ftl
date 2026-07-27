@@ -9,6 +9,7 @@ login-error-locked = This account is temporarily locked. Please try again later.
 login-error-email-not-verified = Please verify your email address before signing in. Check your inbox for the verification link.
 login-error-session-expired = Your sign-in session has expired. Please start over from the application.
 login-error-csrf = The form has expired. Please reload the page and try again.
+login-error-csrf-retry = The form had expired, so a fresh one has been loaded. Please try again.
 login-error-rate-limited = Too many attempts. Please wait a moment and try again.
 
 # RP-initiated logout (OIDC end_session_endpoint served by web. ADR-0018).

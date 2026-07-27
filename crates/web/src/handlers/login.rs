@@ -12,7 +12,7 @@ use super::locale;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::dto::{LoginForm, LoginPageQuery};
-use crate::handlers::{forwarded_context, found, portal, see_other};
+use crate::handlers::{form_retry_error_key, forwarded_context, found, portal, see_other};
 use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, LoginTemplate, MessagePage};
@@ -43,18 +43,21 @@ pub async fn login_page(
         return resume_authorize_handoff(&state, &correlation, &tenant, &headers, handle).await;
     }
 
+    // PRG で戻ったときのエラーバナー（CSRF 不一致 → `?error=csrf`）。
+    let error_key = form_retry_error_key(query.error.as_deref());
+
     let Some(auth_session_id) = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE) else {
         // OIDC の `auth_session_id` が無い直接アクセスは、IdP 自身のアカウント画面へ入るための
         // ポータルログインとして扱う（`/{tenant_id}/login` を単独で開けるようにする）。
         // 注: `Messages`（FluentBundle）は !Send のため、await をまたぐ前に生成してはならない。
-        return portal::login_page(&state, &tenant, &headers).await;
+        return portal::login_page(&state, &tenant, &headers, error_key).await;
     };
     let messages = Messages::new(locale(&headers));
     Html(render_form(
         &messages,
         &tenant.prefix(),
         &login_csrf_token(&auth_session_id, state.config.csrf_secret()),
-        None,
+        error_key,
     ))
     .into_response()
 }
@@ -286,6 +289,10 @@ pub async fn login(
             // 期限切れ・不正な auth_session_id はここでクリアして `/login` へ戻す。Cookie が無くなれば
             // 次の GET はポータルログイン（クライアント非依存）を表示するため、放置された OIDC セッション
             // Cookie が残ってもエンドユーザーが自分のアカウント画面へ入れなくなる状態を自己回復する。
+            tracing::warn!(
+                correlation_id = %ctx.correlation_id,
+                "login failed: auth session expired; clearing cookie and redirecting to /login"
+            );
             let set_cookies = state
                 .set_cookies()
                 .expire_session(cookies::AUTH_SESSION_COOKIE);
@@ -296,7 +303,13 @@ pub async fn login(
                 .into_response()
         }
         InternalAuthenticateResponse::CsrfMismatch => {
-            error_page(&messages, StatusCode::BAD_REQUEST, "login-error-csrf")
+            // PRG: 303 で GET へ付け替え、現在の Cookie から導出した新しいトークンのフォームを自動で
+            // 再表示する（従来はエラーページを返すだけで、リロードすると POST が再送されて復帰できなかった）。
+            tracing::warn!(
+                correlation_id = %ctx.correlation_id,
+                "login failed: csrf token mismatch; redirecting to fresh login form"
+            );
+            see_other(&format!("{}/login?error=csrf", tenant.prefix()))
         }
         InternalAuthenticateResponse::RateLimited => error_page(
             &messages,

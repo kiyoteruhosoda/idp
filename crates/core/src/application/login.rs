@@ -154,20 +154,46 @@ impl LoginService {
 
         // 1. Cookie の auth_session_id から AuthSession を取得する（フローのテナントに限る）。
         let Some(session_id) = cmd.auth_session_id.as_deref().filter(|s| !s.is_empty()) else {
+            tracing::warn!(
+                correlation_id = %ctx.correlation_id,
+                "login rejected: auth_session_id cookie missing"
+            );
             return LoginOutcome::SessionExpired;
         };
         let session = match self.auth_sessions.find_by_id(tenant_id, session_id).await {
             Ok(Some(s)) => s,
-            Ok(None) => return LoginOutcome::SessionExpired,
+            Ok(None) => {
+                tracing::warn!(
+                    correlation_id = %ctx.correlation_id,
+                    "login rejected: auth session not found (already consumed or wrong tenant)"
+                );
+                return LoginOutcome::SessionExpired;
+            }
             Err(e) => return LoginOutcome::Internal(e.to_string()),
         };
         if session.is_expired_at(now) {
             let _ = self.auth_sessions.delete(&session.id).await;
+            tracing::warn!(
+                correlation_id = %ctx.correlation_id,
+                "login rejected: auth session expired"
+            );
             return LoginOutcome::SessionExpired;
         }
 
-        // 2. CSRF トークン検証。
+        // 2. CSRF トークン検証。不一致は攻撃だけでなく「別タブでの新フローによる Cookie 差し替え」等の
+        //    正規操作でも起こるため、監査に記録して web 側でフォーム再表示（PRG）に載せる。
         if csrf_token(&session.id, &self.csrf_secret) != cmd.csrf_token {
+            self.audit
+                .record(
+                    AuditEventType::LoginFailed,
+                    AuditResult::Failure,
+                    Some(tenant_id),
+                    None,
+                    Some(&session.client_id),
+                    Some("csrf_mismatch"),
+                    ctx,
+                )
+                .await;
             return LoginOutcome::CsrfMismatch;
         }
 

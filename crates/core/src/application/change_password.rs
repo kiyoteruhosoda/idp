@@ -132,6 +132,17 @@ impl ChangePasswordService {
 
         // 3. CSRF トークン検証（login_csrf_token と同じ導出を使う）。
         if idp_contracts::csrf::login_csrf_token(session_id, &self.csrf_secret) != cmd.csrf_token {
+            self.audit
+                .record(
+                    AuditEventType::LoginFailed,
+                    AuditResult::Failure,
+                    Some(tenant_id),
+                    Some(user_id),
+                    Some(&session.client_id),
+                    Some("password_change_csrf_mismatch"),
+                    ctx,
+                )
+                .await;
             return ChangePasswordOutcome::CsrfMismatch;
         }
 
@@ -145,6 +156,10 @@ impl ChangePasswordService {
         };
         if !user.is_active() || !user.must_change_password {
             // 変更不要な状態でこのエンドポイントに来るのは想定外（多重送信等）。fail-closed。
+            tracing::warn!(
+                correlation_id = %ctx.correlation_id,
+                "password change rejected: user not in must-change state (duplicate submit?)"
+            );
             return ChangePasswordOutcome::SessionExpired;
         }
 
@@ -157,6 +172,17 @@ impl ChangePasswordService {
             Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
         };
         if !verified {
+            self.audit
+                .record(
+                    AuditEventType::LoginFailed,
+                    AuditResult::Failure,
+                    Some(tenant_id),
+                    Some(user.id),
+                    Some(&client_id),
+                    Some("invalid_current_password"),
+                    ctx,
+                )
+                .await;
             return ChangePasswordOutcome::InvalidCurrentPassword;
         }
 

@@ -8,13 +8,13 @@
 use super::locale;
 use crate::cookies;
 use crate::correlation::CorrelationId;
-use crate::dto::TotpConfirmForm;
-use crate::handlers::{forwarded_context, found};
+use crate::dto::{FormPageQuery, TotpConfirmForm};
+use crate::handlers::{form_retry_error_key, forwarded_context, found, see_other};
 use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, MessagePage, TotpSetupTemplate, TotpVerifyTemplate};
 use crate::tenant::WebTenant;
-use axum::extract::{Extension, State};
+use axum::extract::{Extension, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
@@ -229,7 +229,12 @@ pub async fn setup_delete(
 // ── ログインフロー TOTP 入力 ─────────────────────────────────────────────────
 
 /// TOTP 入力ページ（`GET /mfa/totp`）。ログインフロー中（パスワード認証後）に表示する。
-pub async fn verify_page(State(state): State<WebState>, headers: HeaderMap) -> Response {
+/// `?error=csrf` は CSRF 不一致の POST から PRG で戻ったときのエラーバナー表示。
+pub async fn verify_page(
+    State(state): State<WebState>,
+    Query(query): Query<FormPageQuery>,
+    headers: HeaderMap,
+) -> Response {
     let messages = Messages::new(locale(&headers));
     let Some(auth_session_id) = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE) else {
         return error_page(
@@ -241,7 +246,7 @@ pub async fn verify_page(State(state): State<WebState>, headers: HeaderMap) -> R
     Html(render_verify_form(
         &messages,
         &login_csrf_token(&auth_session_id, state.config.csrf_secret()),
-        None,
+        form_retry_error_key(query.error.as_deref()),
     ))
     .into_response()
 }
@@ -335,13 +340,25 @@ pub async fn verify(
             state.config.csrf_secret(),
         ),
         InternalVerifyTotpResponse::CsrfMismatch => {
-            error_page(&messages, StatusCode::BAD_REQUEST, "login-error-csrf")
+            // PRG: 303 で GET へ付け替え、現在の Cookie から導出した新しいトークンのフォームを自動で
+            // 再表示する（従来はエラーページを返すだけで、リロードすると POST が再送されて復帰できなかった）。
+            tracing::warn!(
+                correlation_id = %ctx.correlation_id,
+                "totp verify failed: csrf token mismatch; redirecting to fresh form"
+            );
+            see_other(&format!("{}/mfa/totp?error=csrf", tenant.prefix()))
         }
-        InternalVerifyTotpResponse::SessionExpired => error_page(
-            &messages,
-            StatusCode::BAD_REQUEST,
-            "mfa-error-session-expired",
-        ),
+        InternalVerifyTotpResponse::SessionExpired => {
+            tracing::warn!(
+                correlation_id = %ctx.correlation_id,
+                "totp verify failed: auth session expired"
+            );
+            error_page(
+                &messages,
+                StatusCode::BAD_REQUEST,
+                "mfa-error-session-expired",
+            )
+        }
         InternalVerifyTotpResponse::Internal => {
             (StatusCode::INTERNAL_SERVER_ERROR, Html(String::new())).into_response()
         }

@@ -9,6 +9,7 @@ login-error-locked = このアカウントは一時的にロックされてい�
 login-error-email-not-verified = ログインの前にメールアドレスの確認を完了してください。確認メールのリンクをご確認ください。
 login-error-session-expired = サインインのセッションが期限切れです。アプリケーションからやり直してください。
 login-error-csrf = フォームの有効期限が切れました。ページを再読み込みしてやり直してください。
+login-error-csrf-retry = フォームの有効期限が切れたため、新しいフォームを読み込みました。お手数ですがもう一度入力してください。
 login-error-rate-limited = 試行回数が多すぎます。しばらく待ってからお試しください。
 
 # RP-initiated logout（OIDC end_session_endpoint。web が受ける。ADR-0018）。

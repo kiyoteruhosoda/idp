@@ -7,13 +7,13 @@
 use super::locale;
 use crate::cookies;
 use crate::correlation::CorrelationId;
-use crate::dto::PasswordChangeForm;
-use crate::handlers::{forwarded_context, found};
+use crate::dto::{FormPageQuery, PasswordChangeForm};
+use crate::handlers::{form_retry_error_key, forwarded_context, found, see_other};
 use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, MessagePage, PasswordChangeTemplate};
 use crate::tenant::WebTenant;
-use axum::extract::{Extension, State};
+use axum::extract::{Extension, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
@@ -21,7 +21,12 @@ use idp_contracts::auth::{InternalChangePasswordRequest, InternalChangePasswordR
 use idp_contracts::csrf::login_csrf_token;
 
 /// パスワード変更フォームを表示する。`auth_session_id` Cookie（パスワード検証済み状態）が必要。
-pub async fn page(State(state): State<WebState>, headers: HeaderMap) -> Response {
+/// `?error=csrf` は CSRF 不一致の POST から PRG で戻ったときのエラーバナー表示。
+pub async fn page(
+    State(state): State<WebState>,
+    Query(query): Query<FormPageQuery>,
+    headers: HeaderMap,
+) -> Response {
     let messages = Messages::new(locale(&headers));
     let Some(auth_session_id) = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE) else {
         return error_page(
@@ -33,7 +38,7 @@ pub async fn page(State(state): State<WebState>, headers: HeaderMap) -> Response
     Html(render_form(
         &messages,
         &login_csrf_token(&auth_session_id, state.config.csrf_secret()),
-        None,
+        form_retry_error_key(query.error.as_deref()),
     ))
     .into_response()
 }
@@ -122,21 +127,39 @@ pub async fn submit(
             )
                 .into_response()
         }
-        InternalChangePasswordResponse::SessionExpired => error_page(
-            &messages,
-            StatusCode::BAD_REQUEST,
-            "login-error-session-expired",
-        ),
-        InternalChangePasswordResponse::CsrfMismatch => {
-            error_page(&messages, StatusCode::BAD_REQUEST, "login-error-csrf")
+        InternalChangePasswordResponse::SessionExpired => {
+            tracing::warn!(
+                correlation_id = %ctx.correlation_id,
+                "password change failed: auth session expired or not in must-change state"
+            );
+            error_page(
+                &messages,
+                StatusCode::BAD_REQUEST,
+                "login-error-session-expired",
+            )
         }
-        InternalChangePasswordResponse::InvalidCurrentPassword => reshow_form(
-            &messages,
-            StatusCode::UNAUTHORIZED,
-            auth_session_id.as_deref(),
-            "password-change-error-invalid-current",
-            state.config.csrf_secret(),
-        ),
+        InternalChangePasswordResponse::CsrfMismatch => {
+            // PRG: 303 で GET へ付け替え、現在の Cookie から導出した新しいトークンのフォームを自動で
+            // 再表示する（従来はエラーページを返すだけで、リロードすると POST が再送されて復帰できなかった）。
+            tracing::warn!(
+                correlation_id = %ctx.correlation_id,
+                "password change failed: csrf token mismatch; redirecting to fresh form"
+            );
+            see_other(&format!("{}/password-change?error=csrf", tenant.prefix()))
+        }
+        InternalChangePasswordResponse::InvalidCurrentPassword => {
+            tracing::warn!(
+                correlation_id = %ctx.correlation_id,
+                "password change failed: current password mismatch"
+            );
+            reshow_form(
+                &messages,
+                StatusCode::UNAUTHORIZED,
+                auth_session_id.as_deref(),
+                "password-change-error-invalid-current",
+                state.config.csrf_secret(),
+            )
+        }
         InternalChangePasswordResponse::WeakPassword => reshow_form(
             &messages,
             StatusCode::UNPROCESSABLE_ENTITY,
