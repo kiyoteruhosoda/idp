@@ -520,15 +520,20 @@ docker compose -f docker-compose.deploy.yml -f docker-compose.db-debug.yml \
 ## api と web を別ドメイン（サブドメイン）で公開したいとき（ADR-0012・ADR-0015・ADR-0016）
 
 **これが既定のトポロジ**（`PUBLISH_TOPOLOGY=domain-split`）。api と web をドメイン単位で分けて公開する。
-**両者は同一の登録可能ドメイン（eTLD+1）のサブドメインであること**（例: `api.example.com` と
-`id.example.com`）。全く無関係なドメイン間の分割はサポートしない。
+**両者は同一の登録可能ドメイン（eTLD+1）のサブドメインであること**。全く無関係なドメイン間の分割は
+サポートしない。
+
+**api は web の子サブドメインにする**（例: web `id.example.com` / api `api.id.example.com`。ADR-0018）。
+`api.example.com` と `id.example.com` のような**兄弟**にすると、両方を覆う `COOKIE_DOMAIN` が
+`example.com`（apex）しか無くなり、同じ親ドメイン配下の他環境・他サービスへセッション Cookie が
+送信される。入れ子なら `COOKIE_DOMAIN=id.example.com` まで絞れる。
 
 同梱リバースプロキシは**リッスンポートでサービスを分ける**（ADR-0015）。前段のリバースプロキシ
 （Synology DSM 等）が TLS 終端とドメイン振り分けを行い、ポート単位でここへ流す。
 
 ```
-https://id.example.com  → ${WEB_BIND_HOST}:${WEB_PORT} → 同梱 nginx :8080 → web
-https://api.example.com → ${API_BIND_HOST}:${API_PORT} → 同梱 nginx :8081 → api
+https://id.example.com     → ${WEB_BIND_HOST}:${WEB_PORT} → 同梱 nginx :8080 → web
+https://api.id.example.com → ${API_BIND_HOST}:${API_PORT} → 同梱 nginx :8081 → api
 ```
 
 `.env.example` 由来の既定はローカル向けの `http://localhost:8070`（api）/ `http://localhost:8060`（web）
@@ -549,9 +554,9 @@ https://api.example.com → ${API_BIND_HOST}:${API_PORT} → 同梱 nginx :8081 
 2. 公開オリジンと Cookie を設定する（**4 つとも api/web で同じ値にする**）。
 
    ```sh
-   ISSUER=https://api.example.com              # api の公開オリジン
+   ISSUER=https://api.id.example.com           # api の公開オリジン（web の子サブドメイン）
    PUBLIC_WEB_BASE_URL=https://id.example.com  # web の公開オリジン
-   COOKIE_DOMAIN=example.com                   # サービス横断 Cookie の Domain 属性（先頭ドット不要）
+   COOKIE_DOMAIN=id.example.com                # サービス横断 Cookie の Domain 属性（先頭ドット不要）
    COOKIE_SECURE=true
    ```
 
@@ -566,8 +571,8 @@ https://api.example.com → ${API_BIND_HOST}:${API_PORT} → 同梱 nginx :8081 
 ```sh
 curl -fsS http://127.0.0.1:8060/readyz      # web
 curl -fsS http://127.0.0.1:8070/readyz      # api
-curl -fsS https://api.example.com/.well-known/openid-configuration | jq .issuer   # api ドメイン
-curl -sS -o /dev/null -w '%{http_code}\n' https://api.example.com/internal/runtime-settings  # 404
+curl -fsS https://api.id.example.com/.well-known/openid-configuration | jq .issuer   # api ドメイン
+curl -sS -o /dev/null -w '%{http_code}\n' https://api.id.example.com/internal/runtime-settings  # 404
 ```
 
 管理ログインは web ドメイン側（`https://id.example.com/{root テナント UUID}/login`）。
@@ -586,8 +591,9 @@ RP に登録する OIDC エンドポイントは api ドメイン側。
 
 注意:
 
-- **同じ親ドメインに信頼できない他サービスを同居させない**。`Domain=example.com` の Cookie は
-  `example.com` 配下の全サブドメインへ送信される。
+- **`COOKIE_DOMAIN` 配下に信頼できない他サービス・他環境を同居させない**。`Domain=id.example.com` の
+  Cookie は `id.example.com` 配下の全サブドメインへ送信される。api を web の子にして `COOKIE_DOMAIN` を
+  web のホスト名まで絞るのは、この配下を IdP 自身のホストだけに限るためでもある（ADR-0018）。
 - `COOKIE_DOMAIN` は起動時に検証され、`ISSUER`・`PUBLIC_WEB_BASE_URL` 双方の親ドメインでない値や
   public suffix（`com`・`co.uk` 等）そのものを設定すると**起動に失敗する**（設定不整合による
   ログインループを防ぐ fail-fast）。
@@ -782,9 +788,13 @@ api に、それぞれブラウザ・RP が外から到達する URL（上表の
 > `sso_session_id` / `auth_session_id` が stg サービスへ渡る。この値は平文がそのまま
 > bearer credential（api は受け取った値の SHA-256 で DB を引く）であり、stg 側で観測・記録できれば
 > prod セッションを再生できる。当面は **stg を prod と同等の信頼境界で扱う**こと（アクセス制限・
-> リクエストログに Cookie を残さない・同一ブラウザで両環境を跨いで使わない）。恒久的な分離案は
-> `docs/Progress.md` の T1 で管理する。**stg だけを 1 段深いサブドメインへ移しても解決しない**
-> （prod の `Domain=nolumia.com` が stg ホストも覆うため、両環境とも環境別の親ドメインへ移す必要がある）。
+> リクエストログに Cookie を残さない・同一ブラウザで両環境を跨いで使わない）。
+>
+> 解消の方針は ADR-0018 で決定済み（実装は `docs/Progress.md` の T1・T2）。**api を web の子
+> サブドメインへ移して** `Domain` を web のホスト名まで絞り（`api.idp.nolumia.com` /
+> `COOKIE_DOMAIN=idp.nolumia.com`）、続けて api↔web の状態受け渡しから Cookie を外す。
+> なお **api・web を兄弟のまま stg だけを深いサブドメインへ移しても解決しない**
+> （prod の `Domain=nolumia.com` が stg ホストも覆うため）。
 同一ホストでは `IMAGE_TAG` も `stg` / `prod` のように分け、`latest` を両環境で共有しない。
 
 ```sh

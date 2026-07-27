@@ -37,14 +37,18 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 
 | 優先度 | ID | 課題内容 | 工数 | 影響度 | 重要度 | 難易度 |
 |---:|---|---|---:|---:|---:|---:|
-| 25 | T1 | stg と prod のサービス横断 Cookie スコープを分離する（⬜未着手・🟡要判断） | 大 | 中 | 大 | 大 |
+| 45 | T1 | api のホスト名を web の子サブドメインへ移し、Cookie スコープを環境内に閉じる（⬜未着手） | 小 | 中 | 大 | 中 |
+| 25 | T2 | api↔web の状態受け渡しから Cookie を外す（`/authorize`・`/logout`。T1 の後。⬜未着手） | 大 | 中 | 大 | 大 |
 
 ## 詳細
 
-### T1. stg と prod のサービス横断 Cookie スコープを分離する
+T1・T2 とも ADR-0018（`docs/adr/0018-cookie-free-api-web-handoff.md`）の決定 1・決定 2 の実装。
+**T1 だけで現行の露出は塞がる**（コード変更なし）ため先に実施し、T2 は多層防御として続ける。
 
-**現状（受容中のリスク）**: `domain-split` では api・web の共通の親ドメインを `COOKIE_DOMAIN` に
-設定する必要があり、prod（`idp.nolumia.com` / `idpapi.nolumia.com`）・stg（`idpstg.nolumia.com` /
+### 現状（受容中のリスク）
+
+`domain-split` では api・web の共通の親ドメインを `COOKIE_DOMAIN` に設定する必要があり、
+prod（`idp.nolumia.com` / `idpapi.nolumia.com`）・stg（`idpstg.nolumia.com` /
 `idpapistg.nolumia.com`）とも `nolumia.com` になる。`Domain=nolumia.com` の Cookie は
 **`nolumia.com` 配下の全ホストへ送信される**ため、prod にログイン済みのブラウザが stg のどちらかの
 ホストへアクセスすると、prod の `sso_session_id` / `auth_session_id` が stg サービスへ渡る。
@@ -54,11 +58,42 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 **当面の運用前提**: stg を prod と同等の信頼境界で扱う（アクセス制限、リクエストログに Cookie を
 残さない、同一ブラウザで両環境を跨いで使わない）。
 
-**恒久対応の候補**（いずれもドメイン設計の変更を伴うため要判断）:
+### T1. api のホスト名を web の子サブドメインへ移す（ADR-0018 決定 1）
 
-1. 環境ごとに 1 段深いサブドメインへ移す（prod = `*.prod.nolumia.com` / `COOKIE_DOMAIN=prod.nolumia.com`、
-   stg = `*.stg.nolumia.com` / `COOKIE_DOMAIN=stg.nolumia.com`）。Cookie スコープが交わらず完全分離。
-   **stg だけを深くしても解決しない**（prod の `Domain=nolumia.com` が stg ホストも覆うため）。
-2. stg を別の登録可能ドメインへ移す（prod のホスト名は現状維持）。
-3. Cookie 名を環境ごとに分ける（`idp_stg_sso_session_id` 等）。同時ログインの上書きは防げるが、
-   **送信自体は止まらない**ので credential exposure の解決にはならない（1・2 の補助）。
+api を web の**子**にすると `Domain` を web のホスト名まで絞れ、prod と stg の Cookie スコープが
+交わらなくなる。コード変更は不要で、`.env` の 3 キーと DNS・証明書だけで完了する。
+
+| 環境 | web | api | `COOKIE_DOMAIN` | ポート |
+|---|---|---|---|---|
+| prod | `idp.nolumia.com` | `api.idp.nolumia.com` | `idp.nolumia.com` | 10000 / 10001 |
+| stg | `idpstg.nolumia.com` | `api.idpstg.nolumia.com` | `idpstg.nolumia.com` | 10010 / 10011 |
+
+手順:
+
+1. DNS に `api.idp.nolumia.com` / `api.idpstg.nolumia.com` を追加し、証明書を用意する。
+   **証明書は web・api 両方のホスト名を SAN に含めること**（`*.idp.nolumia.com` のワイルドカードは
+   `api.idp.nolumia.com` には一致するが **bare な `idp.nolumia.com` には一致しない**）。
+   1 枚にまとめるなら SAN = `idp.nolumia.com` + `api.idp.nolumia.com`（または
+   `*.idp.nolumia.com` + `idp.nolumia.com`）。stg も同様。
+2. 前段プロキシの振り分け先は現行のまま（`WEB_PORT` / `API_PORT` は変えない）。
+3. `.env` の `ISSUER`・`PUBLIC_WEB_BASE_URL`・`COOKIE_DOMAIN` を上表へ変更し、`.env.*.example` も更新する。
+4. **`ISSUER` 変更に伴い RP 側の再設定が必要**（discovery・ID Token の `iss` が変わる）。
+   メンテナンス枠で実施する。
+
+### T2. api↔web の状態受け渡しから Cookie を外す（ADR-0018 決定 2）
+
+api がブラウザ Cookie を読み書きしないようにする。実装対象は次の 3 経路のみ
+（`/token`・`/userinfo`・`/jwks`・`/introspect` と管理 JSON API は元から Cookie 非依存）。
+
+1. `/authorize` の `auth_session_id`: Set-Cookie をやめ、web へのリダイレクト URL に単回・短命の
+   ハンドルとして載せる。web は受領後ただちに自ドメインの host-only Cookie へ移し URL から除去する
+   （`handlers/authorize.rs`・`crates/web/src/handlers/{login,consent}.rs`）。
+2. `/authorize` の SSO 判定: api は SSO Cookie を読まない。web が自ドメインの host-only
+   `sso_session_id` を読み、`/internal/*` の新エンドポイントへ渡す。api は SSO 有効なら
+   `redirect_to`（code 付き）を返す（`/internal/authenticate` と同じ応答パターン。
+   DTO は `crates/contracts/src/auth.rs`）。
+3. `/logout`: 起点を web にする。api は `id_token_hint` 検証・back-channel 通知・
+   `post_logout_redirect_uri` 組み立てを担い、SSO Cookie の破棄は web が行う。
+
+完了後に `COOKIE_DOMAIN` を未設定（host-only）へ戻す。既存ブラウザに残る `Domain` 付き Cookie は
+削除 Cookie の併送で掃除する（ADR-0012 §3 と逆向き）。`prompt=none`（iframe 経路）の回帰テストを含める。
