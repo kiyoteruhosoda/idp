@@ -16,16 +16,16 @@ use crate::api_client::AdminSession;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::csrf::admin_csrf_token;
-use crate::dto::{ForcedPasswordChangeForm, LoginForm};
+use crate::dto::{ForcedPasswordChangeForm, FormPageQuery, LoginForm};
 use crate::error_pages;
-use crate::handlers::{forwarded_context, found};
+use crate::handlers::{form_retry_error_key, forwarded_context, found, see_other};
 use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{
     render, ConsoleHome, ConsoleLogin, ForcedPasswordChange, MessagePage, SwitchTenant,
 };
 use crate::tenant::WebTenant;
-use axum::extract::{Extension, State};
+use axum::extract::{Extension, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
@@ -109,10 +109,12 @@ pub async fn switch_tenant(
 }
 
 /// 管理ログインフォーム（`GET /{tenant_id}/admin/login`）。既にログイン済みならホームへ 302 する。
+/// `?error=csrf` は CSRF 不一致の POST から PRG で戻ったときのエラーバナー表示。
 pub async fn login_page(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
+    Query(query): Query<FormPageQuery>,
     headers: HeaderMap,
 ) -> Response {
     // 既に有効な SSO ＋ 権限を持つならホームへ。
@@ -127,15 +129,23 @@ pub async fn login_page(
     }
 
     let messages = Messages::new(locale(&headers));
-    // CSRF の種（推測不能な乱数）を新規発行し、Cookie とフォーム双方へ渡す。
-    let csrf_id = Uuid::new_v4().simple().to_string();
+    // CSRF の種（推測不能な乱数）を Cookie とフォーム双方へ渡す。既に有効な種 Cookie があれば
+    // 使い回して TTL を延長する（GET のたびに回転させると複数タブで開いた古いフォームが必ず
+    // CSRF 不一致になる。種はセッション非依存の乱数であり、使い回しても保護強度は変わらない）。
+    let csrf_id = cookies::get(&headers, cookies::ADMIN_CSRF_COOKIE)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| Uuid::new_v4().simple().to_string());
     let csrf = admin_csrf_token(&csrf_id, state.config.csrf_secret());
     let set_cookies = state
         .set_cookies()
         .set_local(cookies::ADMIN_CSRF_COOKIE, &csrf_id, 3600);
     (
         set_cookies.into_headers(),
-        Html(render_login_form(&messages, &csrf, None)),
+        Html(render_login_form(
+            &messages,
+            &csrf,
+            form_retry_error_key(query.error.as_deref()),
+        )),
     )
         .into_response()
 }
@@ -156,12 +166,13 @@ pub async fn login(
         .map(|id| admin_csrf_token(id, state.config.csrf_secret()) == form.csrf_token)
         .unwrap_or(false);
     if !csrf_ok {
-        let messages = Messages::new(locale(&headers));
-        return (
-            StatusCode::BAD_REQUEST,
-            Html(render_login_form(&messages, "", Some("login-error-csrf"))),
-        )
-            .into_response();
+        // PRG: 303 で GET へ付け替え、新しい種 Cookie とトークンでフォームを自動再表示する
+        //（従来は空の CSRF を埋めたフォームを再描画するため、再送信しても復帰できなかった）。
+        tracing::warn!(
+            correlation_id = %correlation.0,
+            "admin login failed: csrf token mismatch or seed cookie expired; redirecting to fresh form"
+        );
+        return see_other(&format!("{}/admin/login?error=csrf", tenant.prefix()));
     }
     let csrf = admin_csrf_token(&csrf_id.unwrap_or_default(), state.config.csrf_secret());
 
@@ -265,18 +276,13 @@ pub async fn password_change(
         .map(|id| admin_csrf_token(id, state.config.csrf_secret()) == form.csrf_token)
         .unwrap_or(false);
     if !csrf_ok {
-        let messages = Messages::new(locale(&headers));
-        return (
-            StatusCode::BAD_REQUEST,
-            Html(render_password_change_form(
-                &messages,
-                &tenant.prefix(),
-                "",
-                &form.username,
-                Some("login-error-csrf"),
-            )),
-        )
-            .into_response();
+        // PRG: 強制変更フォームは `POST /admin/login` からのフォーム遷移でしか開始できない
+        //（username を運ぶ）ため、ログイン画面へ 303 で戻して最初からやり直させる。
+        tracing::warn!(
+            correlation_id = %correlation.0,
+            "admin forced password change failed: csrf token mismatch or seed cookie expired; redirecting to login"
+        );
+        return see_other(&format!("{}/admin/login?error=csrf", tenant.prefix()));
     }
     let csrf = admin_csrf_token(&csrf_id.unwrap_or_default(), state.config.csrf_secret());
 

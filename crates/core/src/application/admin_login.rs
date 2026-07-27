@@ -200,7 +200,9 @@ impl AdminLoginService {
             Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
         };
         if !verified {
-            return self.handle_password_failure(tenant_id, &user, ctx).await;
+            return self
+                .handle_password_failure(tenant_id, &user, "invalid_password", ctx)
+                .await;
         }
 
         // 6. 権限確認（資格情報は正しいが管理権限を持たない利用者を締め出す）。
@@ -320,20 +322,42 @@ impl AdminLoginService {
         if !user.is_active() {
             return AdminLoginOutcome::InvalidCredentials;
         }
-        if !user.must_change_password {
-            // 変更不要な状態でこのエンドポイントに来るのは想定外（多重送信等）。fail-closed。
-            return AdminLoginOutcome::InvalidCredentials;
+        // 多重送信の検出（冪等化）: 直前の送信で変更が成功して `must_change_password` が下りた直後の
+        // 再送では、旧 current_password が新ハッシュに一致せず「現在のパスワードが違う」と誤表示される。
+        // `new_password` が現行ハッシュに一致する場合は同じ変更の再送とみなし、保存をスキップして
+        // 成功時と同じ後続（admin 権限確認 → SSO 発行）へ進める（照合は現行パスワードの完全な検証で、
+        // 認証強度は通常ログインと等価）。
+        let duplicate_submit = if user.must_change_password {
+            false
+        } else {
+            match self.hasher.verify(&cmd.new_password, &user.password_hash) {
+                Ok(v) => v,
+                Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
+            }
+        };
+        if !user.must_change_password && !duplicate_submit {
+            // 変更不要な状態でこのエンドポイントに来るのは想定外。fail-closed
+            //（利用者列挙を避けるため資格情報エラーと同じ応答にする）。上の `new_password` 照合が
+            // パスワードの正誤オラクルになるため、通常ログインと同じ失敗カウント・ロック判定に載せて
+            // 本経路がロックアウトを迂回する推測口にならないようにする。
+            return self
+                .handle_password_failure(tenant_id, &user, "password_change_not_required", ctx)
+                .await;
         }
 
-        let verified = match self
-            .hasher
-            .verify(&cmd.current_password, &user.password_hash)
-        {
-            Ok(v) => v,
-            Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
-        };
-        if !verified {
-            return self.handle_password_failure(tenant_id, &user, ctx).await;
+        if !duplicate_submit {
+            let verified = match self
+                .hasher
+                .verify(&cmd.current_password, &user.password_hash)
+            {
+                Ok(v) => v,
+                Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
+            };
+            if !verified {
+                return self
+                    .handle_password_failure(tenant_id, &user, "invalid_password", ctx)
+                    .await;
+            }
         }
 
         let has_admin = match self
@@ -352,27 +376,30 @@ impl AdminLoginService {
             return AdminLoginOutcome::Forbidden;
         }
 
-        if validate_password_strength(&cmd.new_password).is_err() {
-            return AdminLoginOutcome::WeakPassword;
+        // 多重送信（変更適用済み）の場合は保存・監査をスキップし、成功時と同じ後続へ進める。
+        if !duplicate_submit {
+            if validate_password_strength(&cmd.new_password).is_err() {
+                return AdminLoginOutcome::WeakPassword;
+            }
+            let new_hash = match self.hasher.hash(&cmd.new_password) {
+                Ok(h) => h,
+                Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
+            };
+            if let Err(e) = self.users.update_password(user.id, &new_hash).await {
+                return AdminLoginOutcome::Internal(e.to_string());
+            }
+            self.audit
+                .record(
+                    AuditEventType::PasswordChanged,
+                    AuditResult::Success,
+                    Some(tenant_id),
+                    Some(user.id),
+                    None,
+                    None,
+                    ctx,
+                )
+                .await;
         }
-        let new_hash = match self.hasher.hash(&cmd.new_password) {
-            Ok(h) => h,
-            Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
-        };
-        if let Err(e) = self.users.update_password(user.id, &new_hash).await {
-            return AdminLoginOutcome::Internal(e.to_string());
-        }
-        self.audit
-            .record(
-                AuditEventType::PasswordChanged,
-                AuditResult::Success,
-                Some(tenant_id),
-                Some(user.id),
-                None,
-                None,
-                ctx,
-            )
-            .await;
 
         if user.failed_login_count > 0 || user.locked_until.is_some() {
             if let Err(e) = self.users.update_login_state(user.id, 0, None).await {
@@ -455,6 +482,7 @@ impl AdminLoginService {
         &self,
         tenant_id: TenantId,
         user: &User,
+        reason: &str,
         ctx: &RequestContext,
     ) -> AdminLoginOutcome {
         let now = self.clock.now();
@@ -480,7 +508,7 @@ impl AdminLoginService {
                 Some(tenant_id),
                 Some(user.id),
                 None,
-                Some("invalid_password"),
+                Some(reason),
                 ctx,
             )
             .await;

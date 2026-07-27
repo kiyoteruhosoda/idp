@@ -7,7 +7,7 @@ use super::locale;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::dto::ConsentForm;
-use crate::handlers::{forwarded_context, found};
+use crate::handlers::{forwarded_context, found, see_other};
 use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, ConsentTemplate, MessagePage};
@@ -88,8 +88,13 @@ pub async fn consent(
     // CSRF チェック（FluentBundle を await 前に使わないよう先に行う）。
     let expected_csrf = consent_csrf_token(&form.auth_session_id, state.config.csrf_secret());
     if form.csrf_token != expected_csrf {
-        let messages = Messages::new(locale(&headers));
-        return error_page(&messages, StatusCode::BAD_REQUEST, "consent-error-csrf");
+        // PRG: 303 で同意画面の GET へ付け替え、新しいトークンのフォームを自動で再表示する
+        //（従来はエラーページを返すだけで、リロードすると POST が再送されて復帰できなかった）。
+        tracing::warn!(
+            correlation_id = %ctx.correlation_id,
+            "consent failed: csrf token mismatch; redirecting to fresh consent form"
+        );
+        return see_other(&format!("{}/consent", tenant.prefix()));
     }
 
     if form.action == "approve" {

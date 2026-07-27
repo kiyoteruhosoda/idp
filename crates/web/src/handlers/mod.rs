@@ -52,6 +52,16 @@ pub(crate) fn locale(headers: &HeaderMap) -> Locale {
     )
 }
 
+/// PRG（Post/Redirect/Get）で戻ったフォームページの `?error=` をエラーバナーの翻訳キーへ写す。
+/// CSRF 不一致の POST は 303 で `?error=csrf` 付きの GET へ付け替え、新しいトークンのフォームを
+/// 自動で再表示する（POST 応答のままエラーページを返すと、リロードが再送信になり復帰できない）。
+pub(crate) fn form_retry_error_key(error: Option<&str>) -> Option<&'static str> {
+    match error {
+        Some("csrf") => Some("login-error-csrf-retry"),
+        _ => None,
+    }
+}
+
 /// 内部認証呼び出しへ転送する接続元情報。
 pub(crate) struct ForwardedContext {
     pub correlation_id: String,

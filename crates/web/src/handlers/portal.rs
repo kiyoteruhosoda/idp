@@ -13,7 +13,7 @@ use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::csrf::portal_csrf_token;
 use crate::dto::{ForcedPasswordChangeForm, LoginForm, PortalTotpForm};
-use crate::handlers::{forwarded_context, found};
+use crate::handlers::{forwarded_context, found, see_other};
 use crate::i18n::{Locale, Messages};
 use crate::state::WebState;
 use crate::templates::{render, ForcedPasswordChange, MessagePage, PortalLogin, PortalMfa};
@@ -34,10 +34,21 @@ const PORTAL_CSRF_TTL_SECS: u64 = 900;
 const PORTAL_MFA_TTL_SECS: u64 = 300;
 
 /// ポータルのログインフォーム（`GET /{tenant_id}/login`、`auth_session_id` 無し）。
-pub async fn login_page(state: &WebState, tenant: &WebTenant, headers: &HeaderMap) -> Response {
+/// `error_key` は PRG（CSRF 不一致 → `?error=csrf`）で戻ったときのエラーバナー。
+pub async fn login_page(
+    state: &WebState,
+    tenant: &WebTenant,
+    headers: &HeaderMap,
+    error_key: Option<&str>,
+) -> Response {
     let messages = Messages::new(locale(headers));
-    // CSRF の種（推測不能な乱数）を新規発行し、Cookie とフォーム双方へ渡す（admin ログインと同方式）。
-    let csrf_id = uuid::Uuid::new_v4().simple().to_string();
+    // CSRF の種（推測不能な乱数）を Cookie とフォーム双方へ渡す（admin ログインと同方式）。
+    // 既に有効な種 Cookie があれば使い回して TTL を延長する。GET のたびに回転させると、複数タブで
+    // ログイン画面を開いたときに古いタブのフォームが必ず CSRF 不一致になるため（種はセッション非依存の
+    // 乱数であり、使い回しても保護強度は変わらない）。
+    let csrf_id = cookies::get(headers, cookies::PORTAL_CSRF_COOKIE)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
     let csrf = portal_csrf_token(&csrf_id, state.config.csrf_secret());
     let set_cookies =
         state
@@ -49,7 +60,7 @@ pub async fn login_page(state: &WebState, tenant: &WebTenant, headers: &HeaderMa
             messages: &messages,
             tenant_prefix: &tenant.prefix(),
             csrf: &csrf,
-            error_key: None,
+            error_key,
         })),
     )
         .into_response()
@@ -71,17 +82,13 @@ pub async fn login(
         .map(|id| portal_csrf_token(id, state.config.csrf_secret()) == form.csrf_token)
         .unwrap_or(false);
     if !csrf_ok {
-        let messages = Messages::new(locale(headers));
-        return (
-            StatusCode::BAD_REQUEST,
-            Html(render_login_form(
-                &messages,
-                &tenant.prefix(),
-                "",
-                Some("login-error-csrf"),
-            )),
-        )
-            .into_response();
+        // PRG: 303 で GET へ付け替え、新しい種 Cookie とトークンでフォームを自動再表示する
+        //（従来は空の CSRF を埋めたフォームを再描画するため、再送信しても復帰できなかった）。
+        tracing::warn!(
+            correlation_id = %correlation.0,
+            "portal login failed: csrf token mismatch or seed cookie expired; redirecting to fresh form"
+        );
+        return see_other(&format!("{}/login?error=csrf", tenant.prefix()));
     }
     let csrf = portal_csrf_token(&csrf_id.unwrap_or_default(), state.config.csrf_secret());
 
@@ -200,18 +207,14 @@ pub async fn password_change(
         .map(|id| portal_csrf_token(id, state.config.csrf_secret()) == form.csrf_token)
         .unwrap_or(false);
     if !csrf_ok {
-        let messages = Messages::new(locale(&headers));
-        return (
-            StatusCode::BAD_REQUEST,
-            Html(render_password_change_form(
-                &messages,
-                &tenant.prefix(),
-                "",
-                &form.username,
-                Some("login-error-csrf"),
-            )),
-        )
-            .into_response();
+        // PRG: 強制変更フォームは `POST /login` からのフォーム遷移でしか開始できない（username を運ぶ）
+        // ため、ログイン画面へ 303 で戻して最初からやり直させる（従来は空の CSRF を埋めたフォームを
+        // 再描画するため、再送信しても復帰できなかった）。
+        tracing::warn!(
+            correlation_id = %correlation.0,
+            "portal forced password change failed: csrf token mismatch or seed cookie expired; redirecting to login"
+        );
+        return see_other(&format!("{}/login?error=csrf", tenant.prefix()));
     }
     let csrf = portal_csrf_token(&csrf_id.unwrap_or_default(), state.config.csrf_secret());
 
@@ -362,14 +365,24 @@ pub async fn mfa_submit(
         .map(|id| portal_csrf_token(id, state.config.csrf_secret()) == form.csrf_token)
         .unwrap_or(false);
     if !csrf_ok {
+        tracing::warn!(
+            correlation_id = %correlation.0,
+            "portal mfa failed: csrf token mismatch or seed cookie expired"
+        );
+        let Some(id) = csrf_id.as_deref().filter(|s| !s.is_empty()) else {
+            // 種 Cookie が無い（期限切れ等）: フォームを再表示しても照合できないため、
+            // ログインからやり直す（PRG）。
+            return see_other(&format!("{}/login?error=csrf", tenant.prefix()));
+        };
+        // 古いフォームからの再送: 現在の種から導出した新しいトークンで再表示する。
         let messages = Messages::new(locale(&headers));
-        let csrf = portal_csrf_token(&csrf_id.unwrap_or_default(), state.config.csrf_secret());
+        let csrf = portal_csrf_token(id, state.config.csrf_secret());
         return reshow_mfa(
             &messages,
             &tenant.prefix(),
             StatusCode::BAD_REQUEST,
             &csrf,
-            "login-error-csrf",
+            "login-error-csrf-retry",
         );
     }
     let csrf = portal_csrf_token(&csrf_id.unwrap_or_default(), state.config.csrf_secret());

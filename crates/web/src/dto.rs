@@ -17,6 +17,18 @@ pub struct LoginPageQuery {
     /// web は即座に `/internal/authorize/resume` で交換し、303 で URL から除去する。
     #[serde(default)]
     pub auth_session: Option<String>,
+    /// POST の失敗（CSRF 不一致等）から PRG で戻ったときのエラー種別（`csrf` のみ）。
+    /// 新しいトークンで再描画したフォームにエラーバナーを出す。
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// フォーム系ページ共通の PRG 戻りクエリ（`?error=csrf`）。CSRF 不一致の POST から 303 で GET へ
+/// 戻したときに、新しいトークンで再描画したフォームへエラーバナーを出すために使う。
+#[derive(Debug, Default, Deserialize)]
+pub struct FormPageQuery {
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 /// RP-initiated Logout のクエリ（`GET /logout`、OIDC RP-initiated Logout 1.0。ADR-0018 決定 2）。
