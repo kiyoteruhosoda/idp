@@ -188,6 +188,12 @@ pub struct AdminRuntimeSettingForm {
     pub csrf_token: String,
 }
 
+/// api・web の再起動フォーム（`POST /{tenant_id}/admin/restart`。ADR-0017）。
+#[derive(Debug, Deserialize)]
+pub struct AdminRestartForm {
+    pub csrf_token: String,
+}
+
 /// SAML SP（クライアント）登録フォーム（`POST /{tenant_id}/admin/saml-clients`）。
 #[derive(Debug, Deserialize)]
 pub struct AdminSamlServiceProviderForm {

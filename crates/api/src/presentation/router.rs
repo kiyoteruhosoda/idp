@@ -3,9 +3,10 @@
 use crate::presentation::correlation;
 use crate::presentation::handlers::{
     admin, admin_audit, admin_clients, admin_invitations, admin_members, admin_permissions,
-    admin_saml_service_providers, admin_signing_keys, admin_system_settings, admin_tenants,
-    admin_users, authorize, consent, discovery, health, internal_auth, internal_runtime_settings,
-    introspect, invitations, logout, mfa, passkey, register, revoke, token, userinfo,
+    admin_restart, admin_saml_service_providers, admin_signing_keys, admin_system_settings,
+    admin_tenants, admin_users, authorize, consent, discovery, health, internal_auth,
+    internal_runtime_settings, introspect, invitations, logout, mfa, passkey, register, revoke,
+    token, userinfo,
 };
 use crate::presentation::openapi::ApiDoc;
 use crate::presentation::security_headers::add_security_headers;
@@ -168,6 +169,8 @@ pub fn build(state: AppState) -> Router {
             "/admin/system-settings/runtime",
             axum::routing::put(admin_system_settings::update_runtime_setting),
         )
+        // 保存したランタイム設定を反映するための api 再起動（idp.system.admin 必須。ADR-0017）。
+        .route("/admin/restart", post(admin_restart::restart_service))
         // メンバー・招待（ADR-0009 §3・§6）。idp.tenant.admin 必須。
         .route("/admin/members", get(admin_members::list_members))
         // ゲストメンバーシップの解除（DELETE）と一時停止・再開（PATCH。MT24）。

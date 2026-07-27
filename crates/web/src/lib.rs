@@ -20,6 +20,7 @@ pub mod i18n;
 pub mod language;
 pub mod router;
 pub mod security_headers;
+pub mod service_restart;
 pub mod state;
 pub mod telemetry;
 pub mod templates;
@@ -67,6 +68,8 @@ pub async fn run() -> anyhow::Result<()> {
     let api_base_url = config.api_base_url().to_string();
 
     let state = state::WebState::build(Arc::new(config));
+    // 設定画面からの再起動要求（ADR-0017）。ハンドラは `WebState` 越しに同じ値を持つ。
+    let restart = state.restart.clone();
     let app = router::build(state);
 
     let listener = tokio::net::TcpListener::bind(addr)
@@ -76,9 +79,13 @@ pub async fn run() -> anyhow::Result<()> {
     tracing::info!(%addr, api_base_url, "IdP web server started");
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(restart.clone()))
         .await
         .context("web server error")?;
+
+    if restart.was_requested() {
+        tracing::info!("exiting to be restarted by the process manager");
+    }
 
     Ok(())
 }
@@ -130,8 +137,16 @@ async fn fetch_shared_runtime_settings(
         )))
 }
 
-async fn shutdown_signal() {
-    if tokio::signal::ctrl_c().await.is_ok() {
-        tracing::info!("shutdown signal received");
+/// graceful shutdown のきっかけ: OS のシグナルか、設定画面からの再起動要求（ADR-0017）。
+async fn shutdown_signal(restart: service_restart::ServiceRestart) {
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => {
+            if result.is_ok() {
+                tracing::info!("shutdown signal received");
+            }
+        }
+        _ = restart.requested() => {
+            tracing::info!("restart requested from the admin console; draining in-flight requests");
+        }
     }
 }

@@ -55,8 +55,10 @@ pub enum SettingKind {
     UnsignedInteger,
     /// 真偽値（`true` / `false`）。
     Boolean,
-    /// 自由文字列（URL 等）。
+    /// 自由文字列。
     Text,
+    /// サービスの公開ベース URL（`ISSUER` 等）。スキームとホストを持つ絶対 URL であること。
+    PublicBaseUrl,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,17 +80,23 @@ pub struct SettingDefinition {
 }
 
 pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
+    // api と web の両方が消費する（web は `PUBLIC_WEB_BASE_URL` 未設定時の自オリジンと
+    // `COOKIE_DOMAIN` の検証に使う）。ADR-0017 で `EnvLocked` から DB 管理へ移した。
     SettingDefinition {
         key: "ISSUER",
-        shared_with_web: false,
-        owner: SettingOwner::EnvLocked,
+        shared_with_web: true,
+        owner: SettingOwner::DbManaged,
         secret: false,
         restart_required: true,
         default_risk: DefaultRisk::Review,
-        kind: SettingKind::Text,
+        kind: SettingKind::PublicBaseUrl,
         default_value: Some("http://localhost:8080"),
-        description: "OIDC issuer。発行する ID Token / アクセストークンの `iss` と各種メタデータの \
-                      基底 URL になる。デプロイ先の公開 URL に一致させる。",
+        description: "OIDC issuer。発行する ID Token / アクセストークンの `iss` と、ディスカバリ \
+                      文書（`/.well-known/openid-configuration`）に載る各エンドポイント URL の基底に \
+                      なる。ブラウザと RP から見た api の公開 URL に一致させる。api・web の両方が \
+                      使うため、変更の反映には両サービスの再起動が必要。**ホスト名を変えると \
+                      登録済みの Passkey が使えなくなり（WebAuthn の RP ID が変わる）、RP 側にも \
+                      新しい issuer の設定が要る。**",
     },
     SettingDefinition {
         key: "BIND_ADDR",
@@ -421,6 +429,142 @@ pub fn is_shared_with_web(key: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// 公開ベース URL（[`SettingKind::PublicBaseUrl`]）として妥当かを検証する。
+///
+/// `ISSUER` は ID Token の `iss` とディスカバリ文書の各 URL の基底になる。壊れた値を保存すると
+/// 次回起動から**全 RP のトークン検証が落ちる**ため、保存の時点で弾く。末尾スラッシュは
+/// [`crate::config`] が正規化するのでここでは許容する。
+pub fn validate_public_base_url(key: &str, value: &str) -> Result<(), String> {
+    let url = url::Url::parse(value.trim()).map_err(|_| {
+        format!("setting {key} must be an absolute URL (e.g. https://idp.example.com)")
+    })?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(format!(
+            "setting {key} must use the http or https scheme, got `{}`",
+            url.scheme()
+        ));
+    }
+    if url.host_str().unwrap_or_default().is_empty() {
+        return Err(format!("setting {key} must include a host name"));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(format!("setting {key} must not contain credentials"));
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(format!(
+            "setting {key} must not contain a query string or fragment"
+        ));
+    }
+    Ok(())
+}
+
+/// issuer が本番相当（https）か。
+///
+/// https では開発用の既定 secret での起動を拒否する（`config::ensure_production_secrets`）。
+/// **起動時の fail-fast と、保存前の起動可否検査（[`ensure_override_is_bootable`]）が同じ判定を
+/// 使う**ようにするため、述語をここに置く。片方だけがスキームの判定規則を変えると、保存はできるのに
+/// 起動できない値が生まれる。
+pub fn requires_production_secrets(issuer: &str) -> bool {
+    issuer.trim().to_ascii_lowercase().starts_with("https://")
+}
+
+/// 起動時に使われた bootstrap secret が開発用の既定値のままか（ADR-0017）。
+///
+/// これらは `EnvLocked` で DB からは直せない。`ISSUER` を https にすると api も web も開発用既定
+/// secret での起動を拒否するため、この組み合わせをそのまま保存させると「保存 → 再起動 → 二度と
+/// 起動しない」に至り、設定画面ごと消えて復旧手段が DB の直接編集しか残らない。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DevelopmentSecrets {
+    pub key_encryption_key: bool,
+    pub internal_service_token: bool,
+    pub csrf_secret: bool,
+}
+
+impl DevelopmentSecrets {
+    /// 開発用既定のまま使われている secret の環境変数名（設定すべきものを運用者へ示す）。
+    pub fn unset_keys(&self) -> Vec<&'static str> {
+        let mut keys = Vec::new();
+        if self.key_encryption_key {
+            keys.push("KEY_ENCRYPTION_KEY");
+        }
+        if self.internal_service_token {
+            keys.push("INTERNAL_SERVICE_TOKEN");
+        }
+        if self.csrf_secret {
+            keys.push("CSRF_SECRET");
+        }
+        keys
+    }
+}
+
+/// 保存前の起動可否検査に必要な、実行中プロセスの配置状態（ADR-0017）。
+///
+/// 起動時に fail-fast する条件のうち、**`ISSUER` の値によって成否が変わるもの**を集めて渡す。
+/// いずれも `EnvLocked` で DB からは直せない値なので、`ISSUER` 側を保存させないことでしか
+/// 「保存 → 再起動 → 二度と起動しない」を防げない。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeploymentState {
+    pub development_secrets: DevelopmentSecrets,
+    /// `COOKIE_DOMAIN`（`EnvLocked`）。`None` = host-only で、そもそも整合検証が走らない。
+    pub cookie_domain: Option<String>,
+    /// **明示設定された** `PUBLIC_WEB_BASE_URL`（`EnvLocked`）。`None` = issuer と同一オリジンへ
+    /// 追従するため、issuer を変えてもスキームがずれることはない。
+    pub public_web_base_url_override: Option<String>,
+}
+
+/// 保存しようとしている DB 上書き値で**次回の起動が成功するか**を検査する（ADR-0017）。
+///
+/// DB 上書きは再起動して初めて効くので、起動を失敗させる値は保存の時点でしか止められない。
+/// 失敗させたときは、起動しない api と web が残るだけでなく設定画面も落ちるため、画面からの
+/// 修正ができなくなる（復旧手段が DB の直接編集しか残らない）。
+///
+/// 検査するのは `ISSUER` だけである。他の `DbManaged` キーは値の書式さえ通れば起動を止めない
+/// （書式は [`SettingKind`] 側で検証する）。
+pub fn ensure_override_is_bootable(
+    key: &str,
+    value: &str,
+    state: &DeploymentState,
+) -> Result<(), String> {
+    if key != "ISSUER" {
+        return Ok(());
+    }
+
+    // 1. https の issuer は本番 secret を要求する（`config::ensure_production_secrets` と同じ条件）。
+    if requires_production_secrets(value) {
+        let missing = state.development_secrets.unset_keys();
+        if !missing.is_empty() {
+            return Err(format!(
+                "refusing to store an https ISSUER while the built-in development secrets are in \
+                 use ({}); both api and web refuse to start in that state and this settings screen \
+                 would be gone. Set them as environment variables first, restart, then set ISSUER \
+                 here",
+                missing.join(", ")
+            ));
+        }
+    }
+
+    // 2. `COOKIE_DOMAIN` を設定した配置では、issuer のホストがそのドメイン配下で、かつ
+    //    `PUBLIC_WEB_BASE_URL` とスキームが一致していなければ **api も web も起動に失敗する**
+    //    （ADR-0012 の fail-fast）。起動時とまったく同じ関数で検査し、判定規則を二重化しない。
+    if let Some(domain) = &state.cookie_domain {
+        // `PUBLIC_WEB_BASE_URL` 未設定なら issuer に追従するので、新しい issuer を両方に置く。
+        let web_origin = state
+            .public_web_base_url_override
+            .as_deref()
+            .unwrap_or(value);
+        idp_contracts::cookie_domain::validate_cookie_domain(domain, &[value, web_origin])
+            .map_err(|e| {
+                format!(
+                    "refusing to store an ISSUER that breaks the configured COOKIE_DOMAIN; \
+                     api and web would both fail to start and this settings screen would be gone: \
+                     {e}"
+                )
+            })?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -441,6 +585,113 @@ mod tests {
             );
             assert!(!def.secret, "{} is shared with web but secret", def.key);
         }
+    }
+
+    /// ISSUER は DB から変えられる（ADR-0017）。ここが `EnvLocked` に戻ると、設定画面に行は出るのに
+    /// 保存できない（`editable` が false になる）状態へ静かに戻る。
+    #[test]
+    fn issuer_is_db_managed_and_shared_with_web() {
+        let def = runtime_setting_definition("ISSUER").expect("ISSUER is defined");
+        assert_eq!(def.owner, SettingOwner::DbManaged);
+        assert!(def.shared_with_web);
+        assert_eq!(def.kind, SettingKind::PublicBaseUrl);
+        assert!(def.restart_required);
+    }
+
+    #[test]
+    fn public_base_urls_require_a_scheme_and_host() {
+        assert!(validate_public_base_url("ISSUER", "https://idp.example.com").is_ok());
+        // 末尾スラッシュは `config` が正規化するので受ける。
+        assert!(validate_public_base_url("ISSUER", "https://idp.example.com/").is_ok());
+        assert!(validate_public_base_url("ISSUER", "http://localhost:8080").is_ok());
+        // ホストだけ・スキーム違い・資格情報・クエリは弾く。
+        assert!(validate_public_base_url("ISSUER", "idp.example.com").is_err());
+        assert!(validate_public_base_url("ISSUER", "ftp://idp.example.com").is_err());
+        assert!(validate_public_base_url("ISSUER", "https://user:pw@idp.example.com").is_err());
+        assert!(validate_public_base_url("ISSUER", "https://idp.example.com?a=1").is_err());
+        assert!(validate_public_base_url("ISSUER", "").is_err());
+    }
+
+    /// https の ISSUER を保存できてしまうと、再起動で api も web も起動しなくなり、直す画面ごと
+    /// 消える。開発用既定 secret が残っている間は保存の時点で止める（ADR-0017）。
+    #[test]
+    fn an_https_issuer_is_refused_while_development_secrets_are_in_use() {
+        let dev = DeploymentState {
+            development_secrets: DevelopmentSecrets {
+                key_encryption_key: true,
+                internal_service_token: false,
+                csrf_secret: true,
+            },
+            ..DeploymentState::default()
+        };
+        let err = ensure_override_is_bootable("ISSUER", "https://idp.example.com", &dev)
+            .expect_err("must be refused");
+        assert!(err.contains("KEY_ENCRYPTION_KEY"), "{err}");
+        assert!(err.contains("CSRF_SECRET"), "{err}");
+        assert!(!err.contains("INTERNAL_SERVICE_TOKEN"), "{err}");
+
+        // http（ローカル開発）はそのまま起動できるので通す。
+        assert!(ensure_override_is_bootable("ISSUER", "http://localhost:8080", &dev).is_ok());
+        // secret が本番値なら https も通す。
+        assert!(ensure_override_is_bootable(
+            "ISSUER",
+            "https://idp.example.com",
+            &DeploymentState::default()
+        )
+        .is_ok());
+        // 他のキーは起動可否に関わらない。
+        assert!(ensure_override_is_bootable("HSTS_MAX_AGE", "https://x", &dev).is_ok());
+    }
+
+    /// `COOKIE_DOMAIN` を設定した配置では、issuer がそのドメインから外れる／`PUBLIC_WEB_BASE_URL` と
+    /// スキームがずれると **api も web も起動に失敗する**（ADR-0012 の fail-fast）。開発用 secret の
+    /// 検査だけでは素通りしてしまい、再起動ボタンを押した瞬間に両サービスが起動ループへ入って
+    /// 設定画面ごと消える。保存の時点で止める（ADR-0017）。
+    #[test]
+    fn an_issuer_that_breaks_the_locked_cookie_domain_is_refused() {
+        let state = |web: Option<&str>| DeploymentState {
+            development_secrets: DevelopmentSecrets::default(),
+            cookie_domain: Some("example.com".to_string()),
+            public_web_base_url_override: web.map(str::to_string),
+        };
+
+        // 同一ドメイン配下で、明示された web オリジンとスキームも揃っていれば通る。
+        assert!(ensure_override_is_bootable(
+            "ISSUER",
+            "https://api.example.com",
+            &state(Some("https://id.example.com"))
+        )
+        .is_ok());
+
+        // ドメインの外へ出る値は拒否する（ブラウザが Domain Cookie を拒み、ログインが回らない）。
+        let err = ensure_override_is_bootable(
+            "ISSUER",
+            "https://api.other.com",
+            &state(Some("https://id.example.com")),
+        )
+        .expect_err("outside COOKIE_DOMAIN must be refused");
+        assert!(err.contains("COOKIE_DOMAIN"), "{err}");
+
+        // 明示された web オリジンとスキームがずれる値も拒否する（Secure 属性が非対称になる）。
+        assert!(ensure_override_is_bootable(
+            "ISSUER",
+            "http://api.example.com",
+            &state(Some("https://id.example.com"))
+        )
+        .is_err());
+
+        // `PUBLIC_WEB_BASE_URL` 未設定なら web は issuer に追従するのでスキームはずれない。
+        assert!(
+            ensure_override_is_bootable("ISSUER", "http://api.example.com", &state(None)).is_ok()
+        );
+
+        // `COOKIE_DOMAIN` 未設定（host-only）ではそもそも整合検証が走らない。
+        assert!(ensure_override_is_bootable(
+            "ISSUER",
+            "https://api.other.com",
+            &DeploymentState::default()
+        )
+        .is_ok());
     }
 
     /// 定義キーの重複は「どちらが効くか」が探索順に依存する事故になるため禁止する。

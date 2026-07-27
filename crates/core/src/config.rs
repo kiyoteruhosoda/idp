@@ -13,7 +13,8 @@
 #![allow(dead_code)]
 
 use crate::domain::system_setting::{
-    runtime_setting_definition, DefaultRisk, SettingOwner, RUNTIME_SETTING_DEFINITIONS,
+    requires_production_secrets, runtime_setting_definition, DefaultRisk, DeploymentState,
+    DevelopmentSecrets, SettingOwner, RUNTIME_SETTING_DEFINITIONS,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use idp_contracts::cookies::CookiePolicy;
@@ -151,6 +152,13 @@ pub struct Config {
     /// 利用者がブラウザで開く web 画面の公開ベース URL（招待メールの承諾リンク等。MT17）。
     /// api/web で同一値必須のため EnvLocked（ADR-0012 §2）。
     public_web_base_url: String,
+    /// **明示設定された** `PUBLIC_WEB_BASE_URL`（`None` = issuer へ追従）。
+    ///
+    /// 解決後の値（`public_web_base_url`）からは「issuer に追従しているのか、たまたま同値を明示
+    /// したのか」を区別できない。`ISSUER` の DB 上書きを保存してよいかの判定（ADR-0017）は
+    /// この区別を要する — 追従なら issuer を変えてもスキームはずれないが、明示設定なら
+    /// `COOKIE_DOMAIN` 配置でスキーム不一致になり起動しなくなる。
+    public_web_base_url_override: Option<String>,
     resolved_settings: Vec<ResolvedSetting>,
 }
 
@@ -182,10 +190,12 @@ impl Config {
         )?;
         // 招待メール等の承諾リンクの土台。単一オリジン構成（ADR-0007）では issuer と同一オリジンに
         // web 画面が同居するため既定は issuer。web を別オリジンへ置く構成でのみ明示設定する。
-        let public_web_base_url = match resolver.optional_string("PUBLIC_WEB_BASE_URL") {
-            Some(v) => normalize_issuer(v),
-            None => issuer.clone(),
-        };
+        let public_web_base_url_override = resolver
+            .optional_string("PUBLIC_WEB_BASE_URL")
+            .map(normalize_issuer);
+        let public_web_base_url = public_web_base_url_override
+            .clone()
+            .unwrap_or_else(|| issuer.clone());
         // サービス横断 Cookie の Domain 属性（ADR-0012）。設定時は issuer / public_web_base_url 双方の
         // 親ドメインであり public suffix でないことを起動時に検証する（不整合はログインループになるため
         // fail-fast）。
@@ -239,6 +249,7 @@ impl Config {
             csrf_secret,
             csrf_secret_is_dev,
             public_web_base_url,
+            public_web_base_url_override,
             resolved_settings: resolver.resolved_settings(),
         })
     }
@@ -348,6 +359,23 @@ impl Config {
     /// 開発用デフォルトの CSRF シークレットを使っているか（本番では起動を拒否する）。
     pub fn csrf_secret_is_dev(&self) -> bool {
         self.csrf_secret_is_dev
+    }
+
+    /// ランタイム設定の DB 上書きを保存する前の「その値で次回起動できるか」判定へ渡す、
+    /// 実行中プロセスの配置状態（ADR-0017）。
+    ///
+    /// 起動時 fail-fast の条件のうち `ISSUER` の値で成否が変わるもの（開発用既定 secret の使用状況・
+    /// `COOKIE_DOMAIN` / 明示設定された `PUBLIC_WEB_BASE_URL`）をまとめて渡す。
+    pub fn deployment_state(&self) -> DeploymentState {
+        DeploymentState {
+            development_secrets: DevelopmentSecrets {
+                key_encryption_key: self.key_encryption_key_is_dev,
+                internal_service_token: self.internal_service_token_is_dev,
+                csrf_secret: self.csrf_secret_is_dev,
+            },
+            cookie_domain: self.cookie_domain().map(str::to_string),
+            public_web_base_url_override: self.public_web_base_url_override.clone(),
+        }
     }
     /// 利用者がブラウザで開く web 画面の公開ベース URL（末尾スラッシュ無し。招待メールの
     /// 承諾リンク等に使う。既定は issuer と同一オリジン。MT17）。
@@ -534,7 +562,8 @@ fn ensure_production_secrets(
     internal_service_token_is_dev: bool,
     csrf_secret_is_dev: bool,
 ) -> anyhow::Result<()> {
-    if !issuer.starts_with("https://") {
+    // 判定規則は domain に単一化する（保存前の起動可否検査と同じ述語を使うため。ADR-0017）。
+    if !requires_production_secrets(issuer) {
         return Ok(());
     }
     if key_encryption_key_is_dev {
@@ -969,6 +998,39 @@ mod tests {
 
         std::env::remove_var("ISSUER");
         std::env::remove_var("PUBLIC_WEB_BASE_URL");
+    }
+
+    /// ADR-0017: ISSUER は DB 上書きを受ける（ディスカバリ文書と `iss` が `http://localhost:8080`
+    /// のまま直せない、という状態を無くすため）。ENV より DB が優先される。
+    #[test]
+    fn issuer_is_overridden_by_db_settings() {
+        let _env = env_guard();
+        std::env::set_var("ISSUER", "http://localhost:8080");
+        std::env::remove_var("PUBLIC_WEB_BASE_URL");
+        std::env::remove_var("COOKIE_DOMAIN");
+
+        let db = HashMap::from([("ISSUER".to_string(), "http://idp.example.test/".to_string())]);
+        let config = Config::from_env_and_db_settings(&db).unwrap();
+        // 末尾スラッシュは正規化される（`iss` と完全一致させるため）。
+        assert_eq!(config.issuer(), "http://idp.example.test");
+        // PUBLIC_WEB_BASE_URL 未設定なら issuer と同一オリジン。DB 上書きがそこまで届く。
+        assert_eq!(config.public_web_base_url(), "http://idp.example.test");
+
+        let setting = config
+            .resolved_settings()
+            .iter()
+            .find(|s| s.key == "ISSUER")
+            .cloned()
+            .unwrap();
+        assert_eq!(setting.owner, SettingOwner::DbManaged);
+        assert_eq!(setting.source, SettingSource::Db);
+        assert_eq!(setting.value.as_deref(), Some("http://idp.example.test/"));
+
+        // DB 上書きが無ければ ENV へ戻る。
+        let config = Config::from_env_and_db_settings(&HashMap::new()).unwrap();
+        assert_eq!(config.issuer(), "http://localhost:8080");
+
+        std::env::remove_var("ISSUER");
     }
 
     #[test]

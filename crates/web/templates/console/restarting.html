@@ -1,0 +1,27 @@
+{#- 再起動中の待機画面（ADR-0017）。
+
+     共通レイアウト（console/layout.html）を継承しない。この画面を描いた直後に web 自身が停止するため、
+     ナビゲーションのリンクはどれも数秒間つながらず、押せてしまうと「壊れた」ように見える。戻る導線を
+     持たない 1 枚ものにして、`<meta http-equiv="refresh">` で設定画面へ戻すことだけをさせる
+     （JS を使わないのは CSP の `script-src` にインラインを増やさないため）。CSS はブラウザの
+     キャッシュから読める前提で、読めなくても文章として成立するようにしておく。 -#}
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="{{ retry_after_seconds }};url={{ settings_href }}">
+<link rel="stylesheet" href="/assets/vendor/bootstrap.min.css?v={{ crate::templates::asset_version() }}">
+<link rel="stylesheet" href="/assets/app.css?v={{ crate::templates::asset_version() }}">
+<title>{{ messages.get("admin-restart-progress-title") }}</title>
+</head>
+<body class="d-flex flex-column min-vh-100">
+<main class="container py-5" style="max-width: 40rem;">
+  <h1 class="h4 mb-3">{{ messages.get("admin-restart-progress-title") }}</h1>
+  <p>{{ messages.get("admin-restart-progress-lead") }}</p>
+  <p class="text-muted">{{ messages.get("admin-restart-progress-wait") }}</p>
+  <p class="text-muted small mb-0">{{ messages.get("admin-restart-progress-manual") }}
+    <a href="{{ settings_href }}">{{ messages.get("admin-restart-progress-link") }}</a></p>
+</main>
+</body>
+</html>

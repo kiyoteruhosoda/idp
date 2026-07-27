@@ -1443,6 +1443,28 @@ impl ApiClient {
         .await
     }
 
+    /// api の再起動要求（`POST /{tenant_id}/admin/restart`。ADR-0017）。
+    ///
+    /// api は受理（202）を返してから停止するので、**この呼び出しの成功は「停止した」ではなく
+    /// 「受理された」**を意味する。web 自身の停止はこの成功を確認してから行う（web が先に落ちると
+    /// api への要求が届かないうえ、web が先に起動して古い共有設定を掴む）。
+    pub async fn request_restart(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+    ) -> Result<(), AdminApiError> {
+        self.admin_send_no_content(
+            Method::POST,
+            tenant_id,
+            "/admin/restart",
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
     /// セルフサービスのパスワード変更（`POST /internal/account/change-password`。MT15）。
     pub async fn account_change_password(
         &self,

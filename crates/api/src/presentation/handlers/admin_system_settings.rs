@@ -97,6 +97,20 @@ pub async fn update_runtime_setting(
             DomainError::InvalidValue(_) => {
                 ApiError::BadRequest(ApiMessages::new(locale).get("api-runtime-setting-invalid"))
             }
+            // 書式は正しいが、その値では次回起動できない（https ISSUER × 開発用既定 secret、
+            // または COOKIE_DOMAIN との不整合）。400 と混ぜると画面が「書式が不正」としか言えず、
+            // 運用者は正しい URL を疑い続ける。配置状態との衝突として 409 で区別する（ADR-0017）。
+            //
+            // 画面へ返すのは翻訳済みの一般的な案内なので、**どの条件で落ちたか**は運用ログへ出す
+            // （原因を突き止めるにはこちらが要る。運用ログは運用言語で統一する）。
+            DomainError::Conflict(reason) => {
+                tracing::warn!(
+                    key = %body.key,
+                    reason = %reason,
+                    "rejected a runtime setting override that would prevent the next startup"
+                );
+                ApiError::Conflict(ApiMessages::new(locale).get("api-runtime-setting-not-bootable"))
+            }
             other => ApiError::Internal(other.to_string()),
         })?;
     let smtp = state

@@ -9,6 +9,7 @@
 pub use idp_core::{application, config, domain, infrastructure, telemetry};
 
 pub mod presentation;
+pub mod service_restart;
 
 use anyhow::Context;
 use std::net::SocketAddr;
@@ -87,6 +88,8 @@ pub async fn run() -> anyhow::Result<()> {
         });
     }
 
+    // 設定画面からの再起動要求（ADR-0017）。ハンドラは `AppState` 越しに同じ値を持つ。
+    let restart = state.restart.clone();
     let app = presentation::router::build(state);
 
     let addr: SocketAddr = config
@@ -101,9 +104,15 @@ pub async fn run() -> anyhow::Result<()> {
     tracing::info!(%addr, issuer = config.issuer(), "IdP server started");
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(restart.clone()))
         .await
         .context("server error")?;
+
+    if restart.was_requested() {
+        // 新しいプロセスを起こすのは配置側の再起動ポリシー（ADR-0017）。終了コードは 0 なので
+        // `restart: unless-stopped` / `always` 系でのみ再起動される。
+        tracing::info!("exiting to be restarted by the process manager");
+    }
 
     Ok(())
 }
@@ -167,8 +176,16 @@ async fn ensure_active_signing_key(
         .context(format!("giving up after {ATTEMPTS} attempts")))
 }
 
-async fn shutdown_signal() {
-    if tokio::signal::ctrl_c().await.is_ok() {
-        tracing::info!("shutdown signal received");
+/// graceful shutdown のきっかけ: OS のシグナルか、設定画面からの再起動要求（ADR-0017）。
+async fn shutdown_signal(restart: service_restart::ServiceRestart) {
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => {
+            if result.is_ok() {
+                tracing::info!("shutdown signal received");
+            }
+        }
+        _ = restart.requested() => {
+            tracing::info!("restart requested from the admin console; draining in-flight requests");
+        }
     }
 }
