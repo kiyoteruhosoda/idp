@@ -458,7 +458,7 @@ cd "$TMP/stg"
 ./deploy.sh migrate >/tmp/deploy-stg.out 2>&1
 grep -q '生成元: .env.staging.example' /tmp/deploy-stg.out ||
   { echo "stg dir must seed .env from .env.staging.example" >&2; cat /tmp/deploy-stg.out >&2; exit 1; }
-grep -q '^WEB_PORT=8061$' .env || { echo "stg .env must use staging WEB_PORT (8061)" >&2; exit 1; }
+grep -q '^WEB_PORT=10010$' .env || { echo "stg .env must use staging WEB_PORT (10010)" >&2; exit 1; }
 grep -q '^IMAGE_TAG=stg$' .env || { echo "stg .env must use staging IMAGE_TAG (stg)" >&2; exit 1; }
 grep -q '^COMPOSE_PROJECT_NAME=idp-stg$' .env || { echo "stg .env must use idp-stg project name" >&2; exit 1; }
 # DATABASE_URL はテンプレートの :3307 を保持しつつ CHANGE-ME を実パスワードへ置換する。
@@ -469,6 +469,10 @@ if grep -qE '^[A-Za-z_][A-Za-z0-9_]*=.*CHANGE-ME' .env; then
   exit 1
 fi
 grep -q -- '--project-name idp-stg -f docker-compose.yml' "$DOCKER_STUB_LOG"
+grep -q '^API_PORT=10011$' .env || { echo "stg .env must use staging API_PORT (10011)" >&2; exit 1; }
+# domain-split の公開ドメイン（idpstg / idpapistg）は COOKIE_DOMAIN=nolumia.com で Cookie を共有する。
+grep -q '^COOKIE_DOMAIN=nolumia.com$' .env ||
+  { echo "stg .env must set COOKIE_DOMAIN for the domain-split public domains" >&2; exit 1; }
 
 # --- 既存 .env にプレースホルダ CHANGE-ME が残っている場合はコンテナ起動前に fail-fast する ---
 # （.env.*.example を手動コピーして置換し忘れると、api が KEY_ENCRYPTION_KEY を base64 として

@@ -37,9 +37,28 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 
 | 優先度 | ID | 課題内容 | 工数 | 影響度 | 重要度 | 難易度 |
 |---:|---|---|---:|---:|---:|---:|
-
-（現在、進行中・未着手のタスクはない。完了分は `CHANGELOG.md` を参照）
+| 25 | T1 | stg と prod のサービス横断 Cookie スコープを分離する（⬜未着手・🟡要判断） | 大 | 中 | 大 | 大 |
 
 ## 詳細
 
-（現在、詳細補足が必要なタスクはない）
+### T1. stg と prod のサービス横断 Cookie スコープを分離する
+
+**現状（受容中のリスク）**: `domain-split` では api・web の共通の親ドメインを `COOKIE_DOMAIN` に
+設定する必要があり、prod（`idp.nolumia.com` / `idpapi.nolumia.com`）・stg（`idpstg.nolumia.com` /
+`idpapistg.nolumia.com`）とも `nolumia.com` になる。`Domain=nolumia.com` の Cookie は
+**`nolumia.com` 配下の全ホストへ送信される**ため、prod にログイン済みのブラウザが stg のどちらかの
+ホストへアクセスすると、prod の `sso_session_id` / `auth_session_id` が stg サービスへ渡る。
+これらは平文がそのまま bearer credential（api は受け取った値の SHA-256 で DB を引く。
+`application/admin_access.rs`）であり、stg 側で観測・記録できれば prod セッションを再生できる。
+
+**当面の運用前提**: stg を prod と同等の信頼境界で扱う（アクセス制限、リクエストログに Cookie を
+残さない、同一ブラウザで両環境を跨いで使わない）。
+
+**恒久対応の候補**（いずれもドメイン設計の変更を伴うため要判断）:
+
+1. 環境ごとに 1 段深いサブドメインへ移す（prod = `*.prod.nolumia.com` / `COOKIE_DOMAIN=prod.nolumia.com`、
+   stg = `*.stg.nolumia.com` / `COOKIE_DOMAIN=stg.nolumia.com`）。Cookie スコープが交わらず完全分離。
+   **stg だけを深くしても解決しない**（prod の `Domain=nolumia.com` が stg ホストも覆うため）。
+2. stg を別の登録可能ドメインへ移す（prod のホスト名は現状維持）。
+3. Cookie 名を環境ごとに分ける（`idp_stg_sso_session_id` 等）。同時ログインの上書きは防げるが、
+   **送信自体は止まらない**ので credential exposure の解決にはならない（1・2 の補助）。
