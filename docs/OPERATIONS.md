@@ -166,6 +166,10 @@ curl -sS "$ISSUER/$ROOT_TENANT_ID/admin/logs?service=web&target=idp_web::handler
 
 INFO 以下は DB へ保存しない（コンテナの標準出力に出る構造化ログを参照する）。
 
+`RUST_LOG` は**標準出力の絞り込みだけ**に効く。`RUST_LOG=warn` のように絞っても、この画面には
+WARN / ERROR が correlation ID 付きで残り続ける（運用のためのログレベル設定で、障害調査に使う
+画面が黙って空になるのを避けるため）。
+
 ## 利用者に管理権限を付与／剥奪したいとき
 
 管理コンソールの権限付与 UI は未実装のため、SQL で `user_permissions` を操作する（権限モデルは

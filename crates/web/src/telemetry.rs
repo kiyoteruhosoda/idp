@@ -7,6 +7,10 @@
 //! **送信は best-effort**。取り込み層は決してブロックせず（有界チャネルへ `try_send`）、送信の
 //! 失敗はログに出さない（送信失敗のログがまた送信を誘発して止まらなくなるため）。stdout の
 //! 構造化ログには通常どおり出るので、DB へ届かなくても情報そのものは失われない。
+//!
+//! **`RUST_LOG` は stdout 出力だけを絞り、DB 取り込みには効かせない**（層ごとのフィルタにする）。
+//! 全体フィルタにすると `RUST_LOG=warn` のときリクエストスパン（INFO）ごと落ちて、WARN / ERROR は
+//! 拾えても `correlation_id` が失われる（api 側 `idp_core::telemetry` と同じ扱い）。
 
 use crate::api_client::ApiClient;
 use crate::config::LogFormat;
@@ -15,6 +19,8 @@ use idp_contracts::application_log::{
 };
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tracing::{Level, Metadata};
+use tracing_subscriber::filter::{filter_fn, FilterFn};
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 
@@ -24,9 +30,25 @@ const CHANNEL_CAPACITY: usize = 512;
 const BATCH_SIZE: usize = 64;
 /// たまっていなくても、この間隔で送信を試みる（少数のエラーが画面に出るまで待たされないように）。
 const FLUSH_INTERVAL: Duration = Duration::from_secs(5);
+/// 1 回の送信に許す上限時間。api が接続だけ受けて応答を返さない場合、単一の転送タスクが
+/// そこで止まり続けると以降の WARN / ERROR がチャネル溢れで捨てられ続けるため、必ず打ち切る。
+const UPLOAD_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// 送信経路自身が出すログを取り込まないための除外 target（再帰防止）。
-const EXCLUDED_TARGETS: &[&str] = &["idp_web::telemetry", "idp_web::api_client"];
+///
+/// **`idp_web::api_client` 全体は除外しない。** そこには画面が使う api 呼び出しの失敗
+/// （接続不能・デコード失敗・想定外ステータス）が含まれ、運用者が最も見たいログそのものだから。
+/// ログ送信経路（`push_application_logs` とそれを回す [`spawn_forwarder`]）は**自分ではログを
+/// 出さない**（失敗は `let _ =` で捨てる）ので、除外すべきものはこのモジュールだけで足りる。
+const EXCLUDED_TARGETS: &[&str] = &["idp_web::telemetry"];
+
+/// 取り込み層に付けるフィルタ。スパンは追跡キー（`correlation_id`）を拾うため必ず通し、
+/// イベントは WARN 以上だけを通す（api 側 `idp_core::telemetry::capture_filter` と同じ）。
+fn capture_filter() -> FilterFn {
+    let predicate: fn(&Metadata<'_>) -> bool =
+        |meta| meta.is_span() || *meta.level() <= Level::WARN;
+    filter_fn(predicate)
+}
 
 struct ChannelSink(mpsc::Sender<ApplicationLogPayload>);
 
@@ -57,12 +79,20 @@ pub fn init(log_format: LogFormat) -> ApplicationLogForwarder {
         capture = capture.exclude_target(*target);
     }
 
-    let registry = tracing_subscriber::registry().with(filter).with(capture);
+    let registry = tracing_subscriber::registry().with(capture.with_filter(capture_filter()));
+    // `RUST_LOG` は出力層にだけ効かせる（上記モジュールコメント参照）。
     match log_format {
         LogFormat::Json => registry
-            .with(tracing_subscriber::fmt::layer().json().flatten_event(true))
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .json()
+                    .flatten_event(true)
+                    .with_filter(filter),
+            )
             .init(),
-        LogFormat::Pretty => registry.with(tracing_subscriber::fmt::layer()).init(),
+        LogFormat::Pretty => registry
+            .with(tracing_subscriber::fmt::layer().with_filter(filter))
+            .init(),
     }
 
     ApplicationLogForwarder { rx }
@@ -90,7 +120,7 @@ pub fn spawn_forwarder(api: ApiClient, mut forwarder: ApplicationLogForwarder) {
                 // 送信端がすべて落ちた = 購読者がいない。最後の分を送って終わる。
                 Ok(None) => {
                     if !batch.is_empty() {
-                        let _ = api.push_application_logs(std::mem::take(&mut batch)).await;
+                        upload(&api, std::mem::take(&mut batch)).await;
                     }
                     return;
                 }
@@ -98,8 +128,15 @@ pub fn spawn_forwarder(api: ApiClient, mut forwarder: ApplicationLogForwarder) {
             }
             if !batch.is_empty() {
                 // `mem::take` は空の Vec を残すので、次の周回はそのまま使い回せる。
-                let _ = api.push_application_logs(std::mem::take(&mut batch)).await;
+                upload(&api, std::mem::take(&mut batch)).await;
             }
         }
     });
+}
+
+/// 1 バッチを api へ送る。失敗も時間切れも握り潰す（再帰防止。取りこぼしは stdout に残る）。
+/// **必ず [`UPLOAD_TIMEOUT`] で打ち切る**（`ApiClient` の `reqwest::Client` は総リクエスト
+/// タイムアウトを持たないため、応答しない api に当たると転送タスクが永久に止まる）。
+async fn upload(api: &ApiClient, records: Vec<ApplicationLogPayload>) {
+    let _ = tokio::time::timeout(UPLOAD_TIMEOUT, api.push_application_logs(records)).await;
 }
