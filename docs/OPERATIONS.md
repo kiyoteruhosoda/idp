@@ -775,11 +775,16 @@ api に、それぞれブラウザ・RP が外から到達する URL（上表の
 `single-origin` に切り替えた場合は両者を `WEB_PORT` の同一オリジンに揃え、`API_PORT` は使わない。
 
 `COOKIE_DOMAIN` は `idp` / `idpapi` の共通の親である `nolumia.com` になる（サブドメイン同士の
-共通の親でないと起動時検証で失敗する）。stg も同じ `nolumia.com` になるため、サービス横断 Cookie
-（`sso_session_id`・`auth_session_id`）は名前・Domain が prod と一致し、**同一ブラウザで stg と prod へ
-同時にログインした状態は保てない**（後からログインした側が上書きする）。環境を跨いだ同時ログインが
-必要になったら、`idp.stg.nolumia.com` / `idpapi.stg.nolumia.com` のように stg を 1 段深いサブドメインへ
-移し、`COOKIE_DOMAIN=stg.nolumia.com` で分離する。
+共通の親でないと起動時検証で失敗する）。stg も同じ `nolumia.com` になる。
+
+> **警告（受容中のリスク）**: `Domain=nolumia.com` の Cookie は `nolumia.com` 配下の**全ホスト**へ
+> 送信される。prod にログイン済みのブラウザが stg のホストへアクセスすると、prod の
+> `sso_session_id` / `auth_session_id` が stg サービスへ渡る。この値は平文がそのまま
+> bearer credential（api は受け取った値の SHA-256 で DB を引く）であり、stg 側で観測・記録できれば
+> prod セッションを再生できる。当面は **stg を prod と同等の信頼境界で扱う**こと（アクセス制限・
+> リクエストログに Cookie を残さない・同一ブラウザで両環境を跨いで使わない）。恒久的な分離案は
+> `docs/Progress.md` の T1 で管理する。**stg だけを 1 段深いサブドメインへ移しても解決しない**
+> （prod の `Domain=nolumia.com` が stg ホストも覆うため、両環境とも環境別の親ドメインへ移す必要がある）。
 同一ホストでは `IMAGE_TAG` も `stg` / `prod` のように分け、`latest` を両環境で共有しない。
 
 ```sh

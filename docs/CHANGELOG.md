@@ -8,9 +8,10 @@
   `https://idpstg.nolumia.com` / `https://idpapistg.nolumia.com`。あわせて domain-split で必須の
   `COOKIE_DOMAIN=nolumia.com` と `COOKIE_SECURE=true` / `TRUST_FORWARDED_HEADERS=true`（prod は
   `HSTS_MAX_AGE=31536000`）をテンプレートに入れた。
-- 既知の制約: stg と prod が同じ登録可能ドメイン（`nolumia.com`）配下のため、サービス横断 Cookie
-  （`sso_session_id`・`auth_session_id`）は名前・Domain が一致し、同一ブラウザで両環境へ同時ログイン
-  した状態は保てない。分離が必要になったら stg を 1 段深いサブドメインへ移す（`docs/OPERATIONS.md`）。
+- 既知のリスク（受容して運用する）: stg と prod が同じ登録可能ドメイン（`nolumia.com`）配下のため
+  `COOKIE_DOMAIN` が一致し、prod のサービス横断 Cookie（平文がそのまま bearer credential）が stg の
+  ホストへも送信される。当面は stg を prod と同等の信頼境界で扱う。恒久的なドメイン分離は
+  `docs/Progress.md` の T1 で管理する。
 - `docs/OPERATIONS.md`（stg/prod 併置表・待ち受けポート一覧）・`scripts/README.md`・`test_deploy.sh`
   の期待値を新ポートへ更新した。
 
