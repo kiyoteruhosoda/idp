@@ -108,15 +108,17 @@ dist/
 
 ```
 /opt/idp/
-├── stg/    …ディレクトリ名 stg → .env.staging.example から生成（COMPOSE_PROJECT_NAME=idp-stg, WEB_PORT=8061, IMAGE_TAG=stg）
-└── prod/   …ディレクトリ名 prod → .env.production.example から生成（COMPOSE_PROJECT_NAME=idp-prod, WEB_PORT=8060, IMAGE_TAG=prod）
+├── stg/    …ディレクトリ名 stg → .env.staging.example から生成（COMPOSE_PROJECT_NAME=idp-stg, WEB_PORT=10010/API_PORT=10011, IMAGE_TAG=stg）
+└── prod/   …ディレクトリ名 prod → .env.production.example から生成（COMPOSE_PROJECT_NAME=idp-prod, WEB_PORT=10000/API_PORT=10001, IMAGE_TAG=prod）
 ```
 
 **各環境ディレクトリで必要な設定**:
 
 1. **`.env.staging.example` / `.env.production.example`** をそのディレクトリに置く（`dist/` バンドルに同梱。
    `build.sh` が出力する）。初回デプロイ時に `deploy.sh` がこれを生成元にして `.env` を作り、秘密を乱数生成する。
-   - デプロイ後、生成された `.env` の **`ISSUER`（既定 `http://localhost:<port>`）を外部公開ホスト名/IP に合わせる**。
+   - stg/prod テンプレートの `ISSUER`・`PUBLIC_WEB_BASE_URL`・`COOKIE_DOMAIN` は
+     `nolumia.com` の公開ドメイン向けに設定済み。**別のホスト名で公開する場合はこの 3 つを変更する**
+     （汎用 `.env.example` から生成した場合は既定の `http://localhost:<port>` のままなので必ず変更する）。
    - `.env` を**自分で先に作る**場合（`cp .env.staging.example .env`）は、`deploy.sh` が既存 `.env` を上書きせず
      秘密も生成しないため、**`CHANGE-ME`（`MARIADB_PASSWORD`・`KEY_ENCRYPTION_KEY`・`INTERNAL_SERVICE_TOKEN`・
      `CSRF_SECRET` 等）を必ず実値に置換する**。プレースホルダのままだと base64 不正で API/web が起動しない。

@@ -435,6 +435,9 @@ DB を直接参照せずに、いま DB へ適用されているマイグレー�
 - bind の既定は**ループバック**（`127.0.0.1`）。前段プロキシが同一ホストにある前提。別ホストの前段から
   届かせる場合だけ広げる（その場合は前段・ファイアウォールでも `/internal/*` を遮断する）。
 - `single-origin` では `API_PORT` を公開しない（`API_BIND_HOST` / `API_PORT` は未使用）。
+- 上表の既定値は Compose の組み込みフォールバック（ローカル開発向け）。stg/prod のデプロイ用
+  テンプレート（`.env.staging.example` / `.env.production.example`）は実際の公開ポートを設定済みで、
+  prod = `10000`（web）/ `10001`（api）、stg = `10010`（web）/ `10011`（api）。
 - 同一ホストに stg/prod を併置する場合は `WEB_PORT`・`API_PORT`・`MARIADB_PORT` を環境ごとに分ける。
 - デプロイ用 Compose（`docker-compose.deploy.yml`）は MariaDB をホスト公開しない（下記「MariaDB の
   公開範囲と保守接続」）。
@@ -761,14 +764,22 @@ DB volume を削除してからマイグレーション・起動をやり直す�
 場合、同じポートは同時に bind できないため、例として以下のように分ける（既定の `domain-split` では
 `API_PORT` も分ける）。
 
-| 環境 | 配置例 | `.env` テンプレート | web の外部 URL 例 | `WEB_PORT` | api の外部 URL 例 | `API_PORT` | `IMAGE_TAG` |
+| 環境 | 配置例 | `.env` テンプレート | web の公開 URL | `WEB_PORT` | api の公開 URL | `API_PORT` | `IMAGE_TAG` |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| stg | `/opt/idp/stg` | `.env.staging.example` | `http://<host>:8061` | `8061` | `http://<host>:8071` | `8071` | `stg` |
-| prod | `/opt/idp/prod` | `.env.production.example` | `http://<host>:8060` | `8060` | `http://<host>:8070` | `8070` | `prod` |
+| stg | `/opt/idp/stg` | `.env.staging.example` | `https://idpstg.nolumia.com` | `10010` | `https://idpapistg.nolumia.com` | `10011` | `stg` |
+| prod | `/opt/idp/prod` | `.env.production.example` | `https://idp.nolumia.com` | `10000` | `https://idpapi.nolumia.com` | `10001` | `prod` |
 
-`PUBLIC_WEB_BASE_URL` は web に、`ISSUER` は api に、それぞれブラウザ・RP が外から到達する URL
-（例: `http://192.0.2.10:8061` / `http://192.0.2.10:8071`）を設定する。`single-origin` に切り替えた
-場合は両者を `WEB_PORT` の同一オリジンに揃え、`API_PORT` は使わない。
+前段のリバースプロキシ（Synology DSM 等）で TLS を終端し、上表のドメインを同一ホストの
+`127.0.0.1:<WEB_PORT>` / `127.0.0.1:<API_PORT>` へ流す。`PUBLIC_WEB_BASE_URL` は web に、`ISSUER` は
+api に、それぞれブラウザ・RP が外から到達する URL（上表の公開 URL）を設定する。
+`single-origin` に切り替えた場合は両者を `WEB_PORT` の同一オリジンに揃え、`API_PORT` は使わない。
+
+`COOKIE_DOMAIN` は `idp` / `idpapi` の共通の親である `nolumia.com` になる（サブドメイン同士の
+共通の親でないと起動時検証で失敗する）。stg も同じ `nolumia.com` になるため、サービス横断 Cookie
+（`sso_session_id`・`auth_session_id`）は名前・Domain が prod と一致し、**同一ブラウザで stg と prod へ
+同時にログインした状態は保てない**（後からログインした側が上書きする）。環境を跨いだ同時ログインが
+必要になったら、`idp.stg.nolumia.com` / `idpapi.stg.nolumia.com` のように stg を 1 段深いサブドメインへ
+移し、`COOKIE_DOMAIN=stg.nolumia.com` で分離する。
 同一ホストでは `IMAGE_TAG` も `stg` / `prod` のように分け、`latest` を両環境で共有しない。
 
 ```sh
