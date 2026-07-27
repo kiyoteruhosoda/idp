@@ -132,6 +132,28 @@ mod tests {
         assert_ne!(fnv1a64(base, b""), fnv1a64(fnv1a64(base, b"a"), b""));
     }
 
+    /// 再起動待機画面は「自力で設定画面へ戻る」ことと「押せる導線を持たない」ことが要件
+    /// （ADR-0017）。この画面を返した直後に web が止まるため、ナビゲーションを載せるとどのリンクも
+    /// 数秒間つながらず、壊れたように見える。
+    #[test]
+    fn the_restarting_page_reloads_itself_and_offers_no_console_navigation() {
+        let messages = Messages::new(Locale::Ja);
+        let html = render(&Restarting {
+            messages: &messages,
+            settings_href: "/t/admin/settings",
+            retry_after_seconds: 20,
+        });
+        assert!(
+            html.contains(r#"<meta http-equiv="refresh" content="20;url=/t/admin/settings">"#),
+            "{html}"
+        );
+        assert!(
+            !html.contains("<nav"),
+            "no navigation while both are down: {html}"
+        );
+        assert!(!html.contains("/admin/logout"), "{html}");
+    }
+
     /// アセット参照はデプロイごとに URL が変わるよう `?v={asset_version}` を必ず付ける
     /// （中間キャッシュ（CDN・ブラウザ）が旧 CSS/JS を配り続けるのを防ぐ）。
     #[test]
@@ -734,6 +756,19 @@ pub struct AdminSettings<'a> {
     pub pending_api_keys: &'a [String],
     /// api は反映済みだが web が古い共有キー名（MT27）。api だけを再起動した状態で残る。
     pub stale_web_keys: &'a [String],
+}
+
+/// 再起動中の待機画面（`POST /{tenant_id}/admin/restart` の応答。ADR-0017）。
+///
+/// これを返した直後に web 自身が停止するため、共通レイアウト（ナビゲーション）は継承しない。
+#[derive(Template)]
+#[template(path = "console/restarting.html")]
+pub struct Restarting<'a> {
+    pub messages: &'a Messages,
+    /// 再読み込み先（設定画面）。
+    pub settings_href: &'a str,
+    /// 自動再読み込みまでの秒数。両サービスが起動し直すのに要する時間より少し長く取る。
+    pub retry_after_seconds: u64,
 }
 
 /// 利用者のセルフサービス設定画面（`GET /{tenant_id}/settings`。MT15）。パスワード変更・言語設定・

@@ -214,7 +214,8 @@ sequenceDiagram
 
 初期管理ユーザー `admin@example.com`（既定パスワードは初回ログイン後に変更）が seed される。
 `.env` で環境に合わせて確認するのは公開 URL（`ISSUER`＝api / `PUBLIC_WEB_BASE_URL`＝web）と
-公開ポート（`WEB_PORT` / `API_PORT`）。
+公開ポート（`WEB_PORT` / `API_PORT`）。`ISSUER` は配置後に root 管理者の設定画面からも変更できる
+（ADR-0017。同じ画面の再起動ボタンで反映する）。
 別ホストへのデプロイは `dist/` を転送して中の `./deploy.sh` を実行する（`scripts/README.md` 参照）。
 
 ### ローカル開発（api・web をホストで実行）

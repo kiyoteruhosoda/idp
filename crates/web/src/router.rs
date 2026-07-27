@@ -7,10 +7,10 @@ use crate::correlation;
 use crate::error_pages;
 use crate::handlers::{
     admin_clients_console, admin_console, admin_invitations_console, admin_members_console,
-    admin_saml_clients_console, admin_settings, admin_signing_keys_console, admin_status_console,
-    admin_tenants_console, admin_users_console, consent, console_script, health, invitation_accept,
-    locale, login, mfa_totp, passkey, password_change, password_reset, portal, react_assets,
-    stylesheet, user_settings, vendor_assets, verify_email,
+    admin_restart_console, admin_saml_clients_console, admin_settings, admin_signing_keys_console,
+    admin_status_console, admin_tenants_console, admin_users_console, consent, console_script,
+    health, invitation_accept, locale, login, mfa_totp, passkey, password_change, password_reset,
+    portal, react_assets, stylesheet, user_settings, vendor_assets, verify_email,
 };
 use crate::i18n::Messages;
 use crate::language::resolve_language;
@@ -123,6 +123,8 @@ pub fn build(state: WebState) -> Router {
             "/admin/system-settings/runtime",
             post(admin_settings::update_runtime),
         )
+        // 保存したランタイム設定を反映するための api → web の再起動（root のみ。ADR-0017）。
+        .route("/admin/restart", post(admin_restart_console::restart))
         .route(
             "/admin/tenants",
             get(admin_tenants_console::list).post(admin_tenants_console::create),

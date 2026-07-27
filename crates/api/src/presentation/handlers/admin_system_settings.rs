@@ -97,6 +97,12 @@ pub async fn update_runtime_setting(
             DomainError::InvalidValue(_) => {
                 ApiError::BadRequest(ApiMessages::new(locale).get("api-runtime-setting-invalid"))
             }
+            // 書式は正しいが、その値では次回起動できない（https ISSUER × 開発用既定 secret）。
+            // 400 と混ぜると画面が「書式が不正」としか言えず、運用者は正しい URL を疑い続ける。
+            // 配置状態との衝突として 409 で区別する（ADR-0017）。
+            DomainError::Conflict(_) => {
+                ApiError::Conflict(ApiMessages::new(locale).get("api-runtime-setting-not-bootable"))
+            }
             other => ApiError::Internal(other.to_string()),
         })?;
     let smtp = state

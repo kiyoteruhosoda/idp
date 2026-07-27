@@ -27,6 +27,8 @@ use crate::domain::repositories::{
     AuthorizationCodeRepository, PasswordResetTokenRepository, RefreshTokenRepository,
     SsoSessionRepository, UserRepository,
 };
+#[cfg(test)]
+use crate::domain::system_setting::DevelopmentSecrets;
 use crate::domain::tenant_context::TenantContext;
 use std::sync::Arc;
 
@@ -639,6 +641,7 @@ mod tests {
         let system_settings = Arc::new(SystemSettingsService::new(
             settings_repo,
             TEST_KEY,
+            DevelopmentSecrets::default(),
             audit.clone(),
             Arc::new(FixedClock),
         ));

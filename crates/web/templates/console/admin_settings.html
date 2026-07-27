@@ -146,6 +146,21 @@
     <p class="text-muted small mt-2 mb-0">{{ messages.get("admin-settings-runtime-edit-note") }}</p>
   </div>
 </div>
+
+{#- 保存したランタイム設定を反映するための再起動（ADR-0017）。設定を変えられるのに反映だけ
+    シェル作業が要る、という状態を無くすための導線。押した瞬間に全リクエストが切れるので、
+    確認ダイアログ（data-confirm）と前提条件の説明を必ず添える。 -#}
+<div class="card mb-4 admin-settings-restart" id="restart">
+  <div class="card-header d-flex align-items-center"><i class="fa-solid fa-power-off me-2" aria-hidden="true"></i>{{ messages.get("admin-restart-heading") }}</div>
+  <div class="card-body">
+    <p class="mb-2">{{ messages.get("admin-restart-note") }}</p>
+    <p class="text-muted small">{{ messages.get("admin-restart-policy-note") }}</p>
+    <form method="post" action="{{ tenant }}/admin/restart" data-confirm="{{ messages.get("admin-restart-confirm") }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <button type="submit" class="btn btn-warning">{{ messages.get("admin-restart-submit") }}</button>
+    </form>
+  </div>
+</div>
 {% endif %}
 
 <a class="btn btn-outline-secondary" href="{{ tenant }}/admin">{{ messages.get("admin-settings-back") }}</a>

@@ -1,3 +1,20 @@
+## 2026-07-27（`ISSUER` を DB 管理にし、設定画面から api・web を再起動できるようにした。ADR-0017）
+
+- **`ISSUER` を `ENV_LOCKED` → `DB_MANAGED`（`shared_with_web`）へ移した。** ディスカバリ文書の各 URL と
+  ID Token の `iss` が既定の `http://localhost:8080` のまま、設定画面からは直せない状態を解消した。
+  web は ADR-0013 の共有ランタイム設定経路（`GET /internal/runtime-settings`）で同じ値を受け取る。
+  反映には api → web 両方の再起動が必要（未反映は既存の警告に出る）。
+- **`ISSUER` の保存時検証を追加した。** 書式（スキーム＋ホストを持つ絶対 URL。資格情報・クエリ・
+  フラグメント不可）は 400、`https://` を開発用の既定 secret のまま保存しようとした場合は 409 で拒否する。
+  後者を通すと再起動で api・web が起動しなくなり、直す画面ごと消えるため保存の時点で止める。
+  起動可否の判定は起動時 fail-fast と同じ述語（`domain::system_setting::requires_production_secrets`）を使う。
+- **設定画面から api → web を再起動できるようにした。** `POST /{tenant_id}/admin/restart`
+  （api・web の双方。`idp.system.admin` 必須）と設定画面のボタンを追加した。api の受理（202）を
+  確認してから web を停止する。停止するだけで、起動し直すのは配置側の再起動ポリシー
+  （`restart: unless-stopped` 等）に委ねる。要求は監査ログ（`service.restart_requested`）に残る。
+- 再起動中は待機画面（自動で設定画面へ戻る）を返す。共通レイアウトは継承しない（数秒間どの導線も
+  つながらないため）。
+
 ## 2026-07-25（公開トポロジの既定を domain-split にし、待ち受けポートとシステム構成図を整備した。ADR-0016）
 
 - **`PUBLISH_TOPOLOGY` の既定を `single-origin` → `domain-split` へ変更した**（ADR-0016）。

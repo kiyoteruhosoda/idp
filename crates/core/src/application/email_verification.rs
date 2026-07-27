@@ -19,6 +19,8 @@ use crate::domain::crypto;
 use crate::domain::email_verification::EmailVerificationToken;
 use crate::domain::mailer::{Mailer, OutgoingEmail};
 use crate::domain::repositories::{EmailVerificationTokenRepository, UserRepository};
+#[cfg(test)]
+use crate::domain::system_setting::DevelopmentSecrets;
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
 use std::sync::Arc;
@@ -431,6 +433,7 @@ mod tests {
         let system_settings = Arc::new(SystemSettingsService::new(
             settings_repo,
             TEST_KEY,
+            DevelopmentSecrets::default(),
             audit.clone(),
             Arc::new(FixedClock),
         ));

@@ -243,7 +243,7 @@ DELETE up FROM user_permissions up
 
 | 変数 | 既定値 | 用途 |
 |---|---|---|
-| `ISSUER` | `http://localhost:8080` | OIDC issuer（末尾スラッシュ無しに正規化） |
+| `ISSUER` | `http://localhost:8080` | OIDC issuer（末尾スラッシュ無しに正規化）。ディスカバリ文書の各 URL と ID Token の `iss` の基底。**DB 上書き可**（下記。反映には api・web 両方の再起動が必要） |
 | `BIND_ADDR` | `0.0.0.0:8080` | 待ち受けアドレス |
 | `DATABASE_URL` | `mysql://idp:idp@127.0.0.1:3306/idp` | MariaDB DSN |
 | `DB_MAX_CONNECTIONS` | `10` | 接続プール上限 |
@@ -274,14 +274,15 @@ DELETE up FROM user_permissions up
 2. システム設定区画のランタイム設定一覧で、出所が `DB_MANAGED` の項目を編集して保存する
    （`ENV_LOCKED` の項目は画面から変更できない。`.env` を編集して再デプロイする）。
 3. **サービスを再起動して反映する。** 設定は起動時にしか読み込まれない（ADR-0014）。
+   同じ画面の「再起動して反映する」ボタン（下記「保存した設定を反映したいとき」）で実行できる。
    各項目の説明に「api の再起動が必要」か「api と web の両方の再起動が必要」かが出る。
 4. 画面を再読み込みし、**「保存した設定がまだ効いていません」の警告が消えたこと**を確認する。
    保存しただけで再起動していない項目には「保存済み・未反映」バッジが付く。api だけを再起動して
    web を忘れた状態も、この警告に「web に未反映」として出る。
 
 - 上書きを**解除**した場合も再起動するまでは戻らない（未反映として警告に出る）。
-- `COOKIE_SECURE`・`HSTS_MAX_AGE`・`AUTH_SESSION_TTL_SECS` は api と web の**両方**が使う
-  （ADR-0013）。web は起動時に api から値を受け取るため、**api → web の順に両方を再起動する**。
+- `ISSUER`・`COOKIE_SECURE`・`HSTS_MAX_AGE`・`AUTH_SESSION_TTL_SECS` は api と web の**両方**が使う
+  （ADR-0013・ADR-0017）。web は起動時に api から値を受け取るため、**api → web の順に両方を再起動する**。
   api を再起動するまでは保存した値は誰にも反映されない（web が先に再起動しても、api が配るのは
   api 自身が起動時に読み込んだ値のため、新しい値を先取りすることはない）。web の再起動を忘れると
   api だけが新しい値で動くため、必ず両方を再起動する。
@@ -289,6 +290,57 @@ DELETE up FROM user_permissions up
 - api へ到達できないと web は起動に失敗する（設定を取り違えたまま動かさないため）。
   `could not read DB-managed runtime settings from api` が出たら、まず api の死活と
   `INTERNAL_SERVICE_TOKEN` が api・web で同値かを確認する。
+
+### `ISSUER`（ディスカバリ文書・`iss` の URL）を変えたいとき
+
+`/.well-known/openid-configuration` の各 URL や ID Token の `iss` が `http://localhost:8080` のままなら、
+`ISSUER` が既定値のままである。上記の手順で `ISSUER` に公開 URL（例 `https://idp.example.com`）を
+保存し、api → web を再起動する。
+
+- 値は **スキーム（http/https）とホストを持つ絶対 URL**。末尾スラッシュは自動で落ちる。
+  クエリ・フラグメント・資格情報を含む値は保存できない（400）。
+- **https にするには、先に `KEY_ENCRYPTION_KEY`・`INTERNAL_SERVICE_TOKEN`・`CSRF_SECRET` を
+  環境変数で設定して再起動しておく。** これらが開発用の既定値のままだと api も web も https では
+  起動しないため、保存の時点で拒否される（409。画面に不足しているキー名が出る）。
+- 別オリジンで web を公開している場合、`PUBLIC_WEB_BASE_URL` は `ENV_LOCKED` なので `.env` 側の
+  変更が必要（ADR-0012）。`ISSUER` だけを変えると `COOKIE_DOMAIN` の親ドメイン検証で起動が
+  失敗することがある。
+
+**ホスト名まで変える場合の影響**（スキーム・ポートだけの変更では起きないものも含む）:
+
+| 影響 | 内容 | 対処 |
+|---|---|---|
+| 登録済み Passkey が使えなくなる | WebAuthn の RP ID は issuer のホスト名から導出する。ホストが変わると別 RP 扱いになる | 利用者に再登録してもらう（`docs/OPERATIONS.md`「MFA の端末を失った利用者を復旧させたいとき」の手順で解除できる） |
+| RP 側の設定が古い issuer のままになる | RP は `iss` の完全一致を検証する | 各 RP のディスカバリ URL / issuer 設定を更新する |
+| ログイン中の利用者がログアウトする | Cookie はホスト単位で保存される | 再ログインしてもらう |
+
+## 保存した設定を反映したいとき（api・web の再起動）
+
+1. root テナントの system 管理者で `/{root_tenant_id}/admin/settings` を開く。
+2. 一番下の「再起動して反映する」で **api と web を再起動** する（確認ダイアログが出る。
+   処理中のログイン・API 呼び出しは打ち切られ、数秒間どちらのサービスも応答しない）。
+3. 待機画面が自動で設定画面へ戻る。「保存した設定がまだ効いていません」の警告が消えていれば反映完了。
+
+- **停止するだけで、起動し直すのは配置側の再起動ポリシー**（ADR-0017）。終了コードは 0 なので、
+  次のいずれかが必要になる。ポリシーが無い環境では**停止したままになる**。
+
+  | 配置 | 必要な設定 |
+  |---|---|
+  | Docker Compose | `restart: unless-stopped` または `always`（本リポジトリの compose は設定済み） |
+  | systemd | `Restart=always` |
+  | Kubernetes | `restartPolicy: Always`（Deployment の既定） |
+
+- 順序は **api → web**（web は起動時に api から共有設定を受け取るため）。ボタンはこの順で実行する。
+  api への要求が失敗した場合は web を止めない（画面が消えて再起動を指示できなくなるため）。
+- 画面が戻らないときは、再起動ポリシーを確認したうえでシェルから起動する。
+
+```sh
+# Compose の場合（api → web の順）
+docker compose restart api
+docker compose restart web
+```
+
+- 再起動の要求は監査ログに `service.restart_requested` として残る。
 
 ## 本番用の鍵暗号化キーを作りたいとき
 

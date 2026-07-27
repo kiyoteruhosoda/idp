@@ -15,7 +15,8 @@ use crate::domain::error::{DomainError, Result};
 use crate::domain::mailer::SmtpServerConfig;
 use crate::domain::repositories::SystemSettingsRepository;
 use crate::domain::system_setting::{
-    runtime_setting_definition, SettingKind, SettingOwner, SmtpSettingsView, SystemSetting,
+    ensure_override_is_bootable, runtime_setting_definition, validate_public_base_url,
+    DevelopmentSecrets, SettingKind, SettingOwner, SmtpSettingsView, SystemSetting,
     UpdateSmtpCommand, SMTP_FROM_ADDRESS, SMTP_HOST, SMTP_PASSWORD, SMTP_PORT, SMTP_USERNAME,
     SMTP_USE_TLS,
 };
@@ -27,6 +28,9 @@ use uuid::Uuid;
 pub struct SystemSettingsService {
     repo: Arc<dyn SystemSettingsRepository>,
     key_encryption_key: [u8; 32],
+    /// 実行中のプロセスが開発用既定 secret を使っているか（ADR-0017）。DB 上書きを保存する前に
+    /// 「その値で次回起動できるか」を判定するために持つ。
+    development_secrets: DevelopmentSecrets,
     audit: Arc<AuditService>,
     #[allow(dead_code)]
     clock: Arc<dyn Clock>,
@@ -36,12 +40,14 @@ impl SystemSettingsService {
     pub fn new(
         repo: Arc<dyn SystemSettingsRepository>,
         key_encryption_key: [u8; 32],
+        development_secrets: DevelopmentSecrets,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
             repo,
             key_encryption_key,
+            development_secrets,
             audit,
             clock,
         }
@@ -205,7 +211,15 @@ impl SystemSettingsService {
                     }
                 }
                 SettingKind::Text => {}
+                SettingKind::PublicBaseUrl => {
+                    validate_public_base_url(key, &value).map_err(DomainError::InvalidValue)?;
+                }
             }
+            // 書式が正しくても、その値では次回起動できないことがある（https ISSUER × 開発用既定
+            // secret）。保存してしまうと再起動で api・web ごと落ちて画面から直せなくなるため、
+            // 「値の書式」ではなく「配置状態との衝突」として 409 相当で返す（ADR-0017）。
+            ensure_override_is_bootable(key, &value, self.development_secrets)
+                .map_err(DomainError::Conflict)?;
         }
         // 空文字列の upsert = 上書き解除（`Config` の resolver は空値を未設定として扱う）。
         self.upsert_plain(key, &value).await?;

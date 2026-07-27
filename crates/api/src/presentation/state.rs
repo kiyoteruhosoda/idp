@@ -38,6 +38,7 @@ use crate::application::portal_login::PortalLoginService;
 use crate::application::register::RegisterService;
 use crate::application::revocation::RevocationService;
 use crate::application::saml_service_provider_management::SamlServiceProviderManagementService;
+use crate::application::service_restart::ServiceRestartService;
 use crate::application::system_settings::SystemSettingsService;
 use crate::application::tenant_management::TenantManagementService;
 use crate::application::tenant_resolution::TenantResolutionService;
@@ -84,6 +85,7 @@ use crate::infrastructure::repositories::user::SqlxUserRepository;
 use crate::infrastructure::repositories::user_permission::SqlxUserPermissionRepository;
 use crate::infrastructure::repositories::webauthn_credential::SqlxWebAuthnCredentialRepository;
 use crate::infrastructure::webauthn::WebAuthnService;
+use crate::service_restart::ServiceRestart;
 use axum::extract::FromRef;
 use std::sync::Arc;
 
@@ -156,6 +158,11 @@ pub struct AppState {
     pub passkey_authentication: Arc<PasskeyAuthenticationService>,
     /// SAML SP（クライアント）登録（テナント管理者向け）。
     pub saml_service_providers: Arc<SamlServiceProviderManagementService>,
+    /// 設定画面からの再起動要求（ADR-0017）。`run()` の graceful shutdown がこの値を待つ。
+    /// テストでは `build` が作った値を誰も待たないため、要求しても何も起きない。
+    pub restart: ServiceRestart,
+    /// 再起動ユースケース（監査記録 → 停止要求。ADR-0017）。`restart` と同じ signal を指す。
+    pub service_restart: Arc<ServiceRestartService>,
 }
 
 impl AppState {
@@ -206,9 +213,12 @@ impl AppState {
             clock.clone(),
         ));
         // システム設定（SMTP 等。root のみ。MT14）。秘匿値は key_encryption_key で暗号化して保存する。
+        // 開発用既定 secret の使用状況も渡す（ランタイム設定の保存前に「その値で次回起動できるか」を
+        // 判定するため。ADR-0017）。
         let system_settings = Arc::new(SystemSettingsService::new(
             Arc::new(SqlxSystemSettingsRepository::new(pool.clone())),
             *config.key_encryption_key(),
+            config.development_secrets(),
             audit.clone(),
             clock.clone(),
         ));
@@ -569,6 +579,13 @@ impl AppState {
             config.sso_idle_ttl(),
             config.sso_absolute_ttl(),
         ));
+        // 設定画面からの再起動（ADR-0017）。signal 自体は `run()` の graceful shutdown へ、
+        // ユースケース（監査 → 停止要求）はハンドラへ渡すため、同じ値を 2 経路で保持する。
+        let restart = ServiceRestart::new();
+        let service_restart = Arc::new(ServiceRestartService::new(
+            Arc::new(restart.clone()),
+            audit.clone(),
+        ));
 
         Self {
             pool,
@@ -609,6 +626,8 @@ impl AppState {
             passkey_registration,
             passkey_authentication,
             saml_service_providers,
+            restart,
+            service_restart,
         }
     }
 }

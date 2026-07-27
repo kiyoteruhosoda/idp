@@ -395,6 +395,16 @@ pub struct UpdateRuntimeSettingRequest {
     pub value: Option<String>,
 }
 
+/// 再起動要求の受理応答（`POST /{tenant_id}/admin/restart`。ADR-0017）。
+///
+/// 応答を返した**あと**に停止するため、これは「受理した」であって「再起動が終わった」ではない。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RestartServiceResponse {
+    /// 停止するサービス名（現状は常に `api`）。
+    pub service: String,
+    pub restarting: bool,
+}
+
 // --- 利用者作成（ADR-0009 §5・§6。`idp.tenant.admin` 必須） -----------------------------------
 
 /// 管理者による利用者作成リクエスト（`POST /{tenant_id}/admin/users`）。パスワードは自動生成する。

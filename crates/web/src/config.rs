@@ -6,7 +6,7 @@
 //! （空文字列は「未設定」として扱う。Compose の `${VAR:-}` 対策は api の config と同じ方針。）
 //!
 //! api 経由の DB 上書きを受けるのは、api と web の**両方が消費する**共有キー
-//! （`COOKIE_SECURE`・`HSTS_MAX_AGE`・`AUTH_SESSION_TTL_SECS`）だけ。web 固有のキー
+//! （`ISSUER`・`COOKIE_SECURE`・`HSTS_MAX_AGE`・`AUTH_SESSION_TTL_SECS`）だけ。web 固有のキー
 //! （`WEB_BIND_ADDR`・`API_BASE_URL`）と bootstrap secret（`INTERNAL_SERVICE_TOKEN`・
 //! `CSRF_SECRET`）、api/web で一致必須の `PUBLIC_WEB_BASE_URL`・`COOKIE_DOMAIN` は ENV > 既定値のまま。
 #![allow(dead_code)]
@@ -69,6 +69,11 @@ pub struct Config {
 ///
 /// 一方 bootstrap secret は `EnvLocked` で DB からは直せないため、**ここで fail-fast する**
 /// （api 未到達のときに「api へ繋がらない」ではなく本来の設定誤りを先に見せるため）。
+///
+/// `ISSUER` は DB 上書きを受ける（ADR-0017）が、ここではまだ api へ問い合わせていないので ENV 値で
+/// 判定する。DB 上書きが https で ENV が http の構成では本段では素通りし、共有設定を受け取ってから
+/// [`Config::from_env_and_shared_settings`] が同じ検査で落とす。api 側も保存時に同じ組み合わせを
+/// 拒否する（`domain::system_setting::ensure_override_is_bootable`）ため、この経路には通常入らない。
 #[derive(Debug, Clone)]
 pub struct Bootstrap {
     api_base_url: String,
@@ -132,7 +137,8 @@ impl Config {
     pub fn from_env_and_shared_settings(shared: &HashMap<String, String>) -> anyhow::Result<Self> {
         let resolver = SharedSettingResolver::new(shared);
         // api の公開オリジン（= OIDC issuer。ブラウザを api へ向けるリダイレクトの基点）。
-        let issuer = normalize_base_url(env_or("ISSUER", "http://localhost:8080"));
+        // ADR-0017 で DB 管理へ移したため、api から受け取った上書き値を最優先で採る。
+        let issuer = normalize_base_url(resolver.string("ISSUER", "http://localhost:8080"));
         // web 自身の公開オリジン（ADR-0012 §2）。未設定は issuer と同一オリジン（単一オリジン構成）。
         let public_web_base_url = normalize_base_url(env_or("PUBLIC_WEB_BASE_URL", &issuer));
         // Cookie の Secure 属性。既定は自オリジン（PUBLIC_WEB_BASE_URL）のスキームに従う
@@ -310,6 +316,12 @@ impl<'a> SharedSettingResolver<'a> {
                 .map_err(|e| anyhow::anyhow!("invalid value for {key}: {e}")),
             None => Ok(default),
         }
+    }
+
+    /// 有効値を文字列で解決する（DB 上書き > ENV > 既定値）。
+    fn string(&self, key: &str, default: &str) -> String {
+        self.optional_string(key)
+            .unwrap_or_else(|| default.to_string())
     }
 
     fn applied_keys(&self) -> Vec<String> {
@@ -604,6 +616,28 @@ mod tests {
             stale_shared_settings(&applied, &removed),
             vec!["HSTS_MAX_AGE".to_string()]
         );
+    }
+
+    /// ADR-0017: `ISSUER` も api 経由の DB 上書きを受ける共有キーになった。web がこれを取りこぼすと、
+    /// 単一オリジン構成で web の自オリジン（`PUBLIC_WEB_BASE_URL` 未設定時 = issuer）だけが古い
+    /// `http://localhost:8080` のまま残り、api とブラウザ経路がずれる。
+    #[test]
+    fn issuer_from_api_overrides_env_for_the_web_origin() {
+        let _env = env_guard();
+        std::env::set_var("ISSUER", "http://localhost:8080");
+        std::env::remove_var("PUBLIC_WEB_BASE_URL");
+        std::env::remove_var("COOKIE_DOMAIN");
+
+        let shared = HashMap::from([("ISSUER".to_string(), "http://idp.example.test".to_string())]);
+        let config = Config::from_env_and_shared_settings(&shared).unwrap();
+        assert_eq!(config.public_web_base_url(), "http://idp.example.test");
+        assert_eq!(config.shared_settings_from_api(), ["ISSUER"]);
+
+        // 上書きが無ければ ENV に戻る。
+        let config = Config::from_env_and_shared_settings(&HashMap::new()).unwrap();
+        assert_eq!(config.public_web_base_url(), "http://localhost:8080");
+
+        std::env::remove_var("ISSUER");
     }
 
     #[test]

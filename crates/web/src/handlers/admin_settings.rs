@@ -252,6 +252,10 @@ pub async fn update_runtime(
         Err(AdminApiError::Validation(_)) => {
             found(&format!("{base}?error=runtime-validation#runtime-settings"))
         }
+        // 409 = 書式は正しいが、その値では次回起動できない（ADR-0017）。
+        Err(AdminApiError::Conflict(_)) => found(&format!(
+            "{base}?error=runtime-not-bootable#runtime-settings"
+        )),
         Err(_) => found(&format!("{base}?error=internal")),
     }
 }
@@ -262,6 +266,10 @@ fn error_key_for(error: &str) -> Option<&'static str> {
         "forbidden" => Some("admin-settings-error-forbidden"),
         "validation" => Some("admin-settings-error-validation"),
         "runtime-validation" => Some("admin-settings-error-runtime-validation"),
+        // 書式は正しいが、その値では起動できない（ADR-0017）。書式エラーと同じ文言にすると
+        // 運用者は URL を疑い続けて、実際に足りない secret に辿り着けない。
+        "runtime-not-bootable" => Some("admin-settings-error-runtime-not-bootable"),
+        "restart" => Some("admin-restart-error"),
         "internal" => Some("admin-error-internal"),
         _ => None,
     }

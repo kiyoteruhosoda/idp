@@ -13,7 +13,8 @@
 #![allow(dead_code)]
 
 use crate::domain::system_setting::{
-    runtime_setting_definition, DefaultRisk, SettingOwner, RUNTIME_SETTING_DEFINITIONS,
+    requires_production_secrets, runtime_setting_definition, DefaultRisk, DevelopmentSecrets,
+    SettingOwner, RUNTIME_SETTING_DEFINITIONS,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use idp_contracts::cookies::CookiePolicy;
@@ -349,6 +350,16 @@ impl Config {
     pub fn csrf_secret_is_dev(&self) -> bool {
         self.csrf_secret_is_dev
     }
+
+    /// 実行中のプロセスがどの bootstrap secret を開発用既定のまま使っているか（ADR-0017）。
+    /// ランタイム設定の DB 上書きを保存する前の「その値で次回起動できるか」判定に渡す。
+    pub fn development_secrets(&self) -> DevelopmentSecrets {
+        DevelopmentSecrets {
+            key_encryption_key: self.key_encryption_key_is_dev,
+            internal_service_token: self.internal_service_token_is_dev,
+            csrf_secret: self.csrf_secret_is_dev,
+        }
+    }
     /// 利用者がブラウザで開く web 画面の公開ベース URL（末尾スラッシュ無し。招待メールの
     /// 承諾リンク等に使う。既定は issuer と同一オリジン。MT17）。
     pub fn public_web_base_url(&self) -> &str {
@@ -534,7 +545,8 @@ fn ensure_production_secrets(
     internal_service_token_is_dev: bool,
     csrf_secret_is_dev: bool,
 ) -> anyhow::Result<()> {
-    if !issuer.starts_with("https://") {
+    // 判定規則は domain に単一化する（保存前の起動可否検査と同じ述語を使うため。ADR-0017）。
+    if !requires_production_secrets(issuer) {
         return Ok(());
     }
     if key_encryption_key_is_dev {
@@ -969,6 +981,39 @@ mod tests {
 
         std::env::remove_var("ISSUER");
         std::env::remove_var("PUBLIC_WEB_BASE_URL");
+    }
+
+    /// ADR-0017: ISSUER は DB 上書きを受ける（ディスカバリ文書と `iss` が `http://localhost:8080`
+    /// のまま直せない、という状態を無くすため）。ENV より DB が優先される。
+    #[test]
+    fn issuer_is_overridden_by_db_settings() {
+        let _env = env_guard();
+        std::env::set_var("ISSUER", "http://localhost:8080");
+        std::env::remove_var("PUBLIC_WEB_BASE_URL");
+        std::env::remove_var("COOKIE_DOMAIN");
+
+        let db = HashMap::from([("ISSUER".to_string(), "http://idp.example.test/".to_string())]);
+        let config = Config::from_env_and_db_settings(&db).unwrap();
+        // 末尾スラッシュは正規化される（`iss` と完全一致させるため）。
+        assert_eq!(config.issuer(), "http://idp.example.test");
+        // PUBLIC_WEB_BASE_URL 未設定なら issuer と同一オリジン。DB 上書きがそこまで届く。
+        assert_eq!(config.public_web_base_url(), "http://idp.example.test");
+
+        let setting = config
+            .resolved_settings()
+            .iter()
+            .find(|s| s.key == "ISSUER")
+            .cloned()
+            .unwrap();
+        assert_eq!(setting.owner, SettingOwner::DbManaged);
+        assert_eq!(setting.source, SettingSource::Db);
+        assert_eq!(setting.value.as_deref(), Some("http://idp.example.test/"));
+
+        // DB 上書きが無ければ ENV へ戻る。
+        let config = Config::from_env_and_db_settings(&HashMap::new()).unwrap();
+        assert_eq!(config.issuer(), "http://localhost:8080");
+
+        std::env::remove_var("ISSUER");
     }
 
     #[test]
