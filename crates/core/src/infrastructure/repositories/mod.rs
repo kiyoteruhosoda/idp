@@ -1,5 +1,6 @@
 //! sqlx（MariaDB）によるドメインリポジトリトレイトの実装。
 
+pub mod application_log;
 pub mod audit_log;
 pub mod auth_session;
 pub mod authorization_code;

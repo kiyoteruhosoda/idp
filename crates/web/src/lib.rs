@@ -41,7 +41,9 @@ pub async fn run() -> anyhow::Result<()> {
     // `INTERNAL_SERVICE_TOKEN`・`LOG_FORMAT`）。共有キーはここでは**パースしない** — ENV に
     // 不正値があっても、DB 上書き（優先順位で ENV より上）で復旧できるようにするため。
     let bootstrap = config::Bootstrap::from_env().context("failed to load web configuration")?;
-    telemetry::init(bootstrap.log_format());
+    // ログ初期化は api への問い合わせより前に要る。転送用の受信端だけ受け取っておき、
+    // `ApiClient` が組み上がってから転送タスクを起こす（CLAUDE.md「ログ」）。
+    let log_forwarder = telemetry::init(bootstrap.log_format());
 
     if bootstrap.internal_service_token_is_dev() {
         tracing::warn!(
@@ -68,6 +70,8 @@ pub async fn run() -> anyhow::Result<()> {
     let api_base_url = config.api_base_url().to_string();
 
     let state = state::WebState::build(Arc::new(config));
+    // web の WARN / ERROR を api の `log` テーブルへ流す（web は DB を持たないため）。
+    telemetry::spawn_forwarder(state.api.clone(), log_forwarder);
     // 設定画面からの再起動要求（ADR-0017）。ハンドラは `WebState` 越しに同じ値を持つ。
     let restart = state.restart.clone();
     let app = router::build(state);

@@ -2,11 +2,11 @@
 
 use crate::presentation::correlation;
 use crate::presentation::handlers::{
-    admin, admin_audit, admin_clients, admin_invitations, admin_members, admin_permissions,
-    admin_restart, admin_saml_service_providers, admin_signing_keys, admin_system_settings,
-    admin_tenants, admin_users, authorize, consent, discovery, health, internal_auth,
-    internal_runtime_settings, introspect, invitations, logout, mfa, passkey, register, revoke,
-    token, userinfo,
+    admin, admin_application_logs, admin_audit, admin_clients, admin_invitations, admin_members,
+    admin_permissions, admin_restart, admin_saml_service_providers, admin_signing_keys,
+    admin_system_settings, admin_tenants, admin_users, authorize, consent, discovery, health,
+    internal_auth, internal_runtime_settings, introspect, invitations, logout, mfa, passkey,
+    register, revoke, token, userinfo,
 };
 use crate::presentation::openapi::ApiDoc;
 use crate::presentation::security_headers::add_security_headers;
@@ -124,6 +124,12 @@ pub fn build(state: AppState) -> Router {
         .route(
             idp_contracts::runtime_settings::SHARED_RUNTIME_SETTINGS_PATH,
             get(internal_runtime_settings::shared_runtime_settings),
+        )
+        // web の WARN / ERROR 取り込み（CLAUDE.md「ログ」）。web は DB を持たないため、自身の
+        // アプリケーションログはここへ送って `log` テーブルへ書いてもらう。
+        .route(
+            "/internal/logs",
+            post(admin_application_logs::ingest_application_logs),
         )
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -252,6 +258,11 @@ pub fn build(state: AppState) -> Router {
         )
         // 監査ログ参照（A3、設計仕様 §7）。idp.tenant.admin 必須。
         .route("/admin/audit-logs", get(admin_audit::list_audit_logs))
+        // エラー・警告ログ参照（`log` テーブル）。テナント横断の運用情報のため idp.system.admin 必須。
+        .route(
+            "/admin/logs",
+            get(admin_application_logs::list_application_logs),
+        )
         // SAML SP（クライアント）登録。idp.tenant.admin 必須。
         .route(
             "/admin/saml-service-providers",

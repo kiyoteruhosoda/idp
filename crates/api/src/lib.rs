@@ -22,7 +22,9 @@ pub async fn run() -> anyhow::Result<()> {
 
     let config = config::Config::from_env().context("failed to load configuration")?;
 
-    telemetry::init(&config);
+    // ログ初期化は DB 接続より前に要る。受信端だけ受け取っておき、プールができてから
+    // `log` テーブルへの書き込みタスクを起こす（CLAUDE.md「ログ」）。
+    let log_receiver = telemetry::init(&config);
 
     if config.key_encryption_key_is_dev() {
         tracing::warn!(
@@ -72,6 +74,13 @@ pub async fn run() -> anyhow::Result<()> {
         .await
         .context("failed to ensure an active signing key")?;
 
+    // エラー・警告ログの DB 書き込み（CLAUDE.md「ログ」）。取り込み層 → チャネル → ここ。
+    spawn_application_log_writer(state.application_logs.clone(), log_receiver);
+    spawn_application_log_purge(
+        state.application_logs.clone(),
+        config.app_log_retention_days(),
+    );
+
     // 署名鍵自動ローテーション（K2）: バックグラウンドタスクで定期チェック。
     {
         let keys = state.keys.clone();
@@ -115,6 +124,75 @@ pub async fn run() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// 1 回の INSERT でまとめる最大件数（バースト時に 1 文が巨大にならないように区切る）。
+const APP_LOG_BATCH_SIZE: usize = 128;
+/// 保持期間の適用間隔。日単位の保持なので 1 時間ごとで十分。
+const APP_LOG_PURGE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3_600);
+
+/// `tracing` が拾った WARN / ERROR を `log` テーブルへ書き続けるタスクを起こす。
+///
+/// **このタスクは自分の失敗をログに出さない**。ログ書き込みの失敗ログがまた書き込みを誘発して
+/// 止まらなくなるため、失敗は捨てる（stdout の構造化ログには元のイベントが出ているので、
+/// 情報そのものは失われない。DB への保存は best-effort）。
+fn spawn_application_log_writer(
+    logs: Arc<application::application_log::ApplicationLogService>,
+    mut receiver: infrastructure::log_capture::ApplicationLogReceiver,
+) {
+    tokio::spawn(async move {
+        while let Some(mut batch) = receiver.recv_batch(APP_LOG_BATCH_SIZE).await {
+            // 溢れて捨てた件数は、捨てたこと自体をログに出す代わりに 1 行の記録として残す
+            // （`tracing` へ出すと取り込み層が拾って再帰する）。
+            let dropped = receiver.take_dropped();
+            // `recv_batch` は 1 件以上たまってから返すので、batch は必ず非空。
+            if let (true, Some(occurred_at)) = (
+                dropped > 0,
+                batch.first().map(|first| first.occurred_at.clone()),
+            ) {
+                batch.push(dropped_notice(dropped, occurred_at));
+            }
+            let _ = logs.ingest(&batch).await;
+        }
+    });
+}
+
+/// 溢れて捨てた件数を伝える 1 件を組み立てる。
+fn dropped_notice(
+    dropped: u64,
+    occurred_at: String,
+) -> idp_contracts::application_log::ApplicationLogPayload {
+    idp_contracts::application_log::ApplicationLogPayload {
+        occurred_at,
+        level: "WARN".to_string(),
+        service: idp_contracts::application_log::SERVICE_API.to_string(),
+        target: "idp_api::log_writer".to_string(),
+        message: format!(
+            "dropped {dropped} application log record(s); the DB write queue was full"
+        ),
+        correlation_id: None,
+        tenant_id: None,
+        traceback: None,
+    }
+}
+
+/// 保持期間を過ぎたエラー・警告ログを定期的に削除するタスクを起こす。
+/// `retention_days = 0` は「削除しない」（設定で明示的に選んだ場合のみ）。
+fn spawn_application_log_purge(
+    logs: Arc<application::application_log::ApplicationLogService>,
+    retention_days: u32,
+) {
+    if retention_days == 0 {
+        tracing::info!("application log retention is disabled (APP_LOG_RETENTION_DAYS=0)");
+        return;
+    }
+    tokio::spawn(async move {
+        loop {
+            // 削除の成否はログに出さない（取り込み層が拾って自己増殖するため）。
+            let _ = logs.purge_expired(retention_days).await;
+            tokio::time::sleep(APP_LOG_PURGE_INTERVAL).await;
+        }
+    });
 }
 
 /// `system_settings` から DB 管理設定（非 secret）を読み出す。[`config::Config`] の解決に渡す

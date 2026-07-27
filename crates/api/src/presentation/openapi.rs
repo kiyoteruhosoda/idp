@@ -69,6 +69,7 @@ use utoipa::{Modify, OpenApi};
         handlers::admin_invitations::create_invitation,
         handlers::invitations::accept_invitation,
         handlers::admin_audit::list_audit_logs,
+        handlers::admin_application_logs::list_application_logs,
         handlers::admin_signing_keys::list_keys,
         handlers::admin_signing_keys::generate_key,
         handlers::admin_signing_keys::retire_key,

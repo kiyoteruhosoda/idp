@@ -6,6 +6,7 @@
 //! utoipa による OpenAPI は api 側で継続する（外部公開 API の DTO は api の presentation に置く）。
 
 pub mod admin;
+pub mod application_log;
 pub mod auth;
 pub mod cookie_domain;
 pub mod cookies;

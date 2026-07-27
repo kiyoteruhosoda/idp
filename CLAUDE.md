@@ -113,6 +113,7 @@ crates/
 
   contracts/          # idp-contracts（lib=idp_contracts）。api ↔ web 共有の serde DTO。DB/axum 非依存
     src/auth.rs       # 内部認証 API（/internal/authenticate*）の DTO 契約
+    src/application_log.rs # エラー・警告ログの DTO と tracing 取り込み層（api/web が同じ形で組み立てる）
     src/cookies.rs    # Cookie 名と Set-Cookie 組み立て（両サービスが読み書きする値の契約）
     src/csrf.rs       # CSRF 同期トークンの導出（web が生成し api が検証する）
     src/runtime_settings.rs # api/web 共有ランタイム設定（web が起動時に api から受け取る。ADR-0013）

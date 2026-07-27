@@ -14,6 +14,7 @@ use crate::admin_dto::{
 use crate::i18n::Messages;
 use askama::Template;
 use idp_contracts::admin::{ClientStatusResponse, UserSummaryResponse};
+use idp_contracts::application_log::ApplicationLogEntryResponse;
 use idp_contracts::auth::PasskeyCredentialInfo;
 use idp_contracts::version::{
     BuildTimeVersionInfoProvider, SchemaVersionInfo, VersionInfo, VersionInfoProvider,
@@ -431,6 +432,26 @@ pub struct AuditLogs<'a> {
     pub from: &'a str,
     pub to: &'a str,
     pub entries: &'a [AuditLogView],
+    pub prev_href: Option<String>,
+    pub next_href: Option<String>,
+}
+
+/// エラー・警告ログ一覧（`GET /{tenant_id}/admin/logs`）。フィルタ値は再入力用に展開済み文字列で渡す。
+/// ページャの前後リンク（クエリ文字列を組み立て済み）は該当がなければ `None`。
+#[derive(Template)]
+#[template(path = "console/application_logs.html")]
+pub struct ApplicationLogs<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub admin: Admin<'a>,
+    pub date_error: bool,
+    pub level: &'a str,
+    pub service: &'a str,
+    pub target: &'a str,
+    pub correlation_id: &'a str,
+    pub from: &'a str,
+    pub to: &'a str,
+    pub entries: &'a [ApplicationLogEntryResponse],
     pub prev_href: Option<String>,
     pub next_href: Option<String>,
 }

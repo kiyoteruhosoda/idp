@@ -175,6 +175,31 @@ pub struct AuditLogEntryResponse {
     pub correlation_id: String,
 }
 
+/// エラー・警告ログ検索のクエリパラメータ（管理 API。`log` テーブル）。
+/// `from` / `to` は RFC3339（例 `2026-07-06T00:00:00Z`）。未指定の項目は絞り込まない。
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct ApplicationLogQueryString {
+    /// `ERROR` または `WARN`。
+    #[serde(default)]
+    pub level: Option<String>,
+    /// `api` または `web`。
+    #[serde(default)]
+    pub service: Option<String>,
+    /// 出力元モジュールパスの前方一致（例 `idp_api::presentation`）。
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub correlation_id: Option<String>,
+    #[serde(default)]
+    pub from: Option<String>,
+    #[serde(default)]
+    pub to: Option<String>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub offset: Option<i64>,
+}
+
 /// 利用者への権限付与リクエスト（管理 API、A2・ADR-0006）。
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct GrantPermissionRequest {

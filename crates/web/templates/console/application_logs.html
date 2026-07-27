@@ -1,0 +1,92 @@
+{% extends "console/layout.html" %}
+{% block content %}
+<h2 class="h4 mb-3">{{ messages.get("admin-applog-title") }}</h2>
+<p class="text-muted">{{ messages.get("admin-applog-description") }}</p>
+{% if date_error %}<div class="alert alert-danger" role="alert">{{ messages.get("admin-audit-error-datetime") }}</div>{% endif %}
+<div class="card mb-4">
+  <div class="card-body">
+    <form method="get" action="{{ tenant }}/admin/logs">
+      <div class="row g-3">
+        <div class="col-md-3">
+          <label class="form-label" for="applog-level">{{ messages.get("admin-applog-filter-level") }}</label>
+          <select class="form-select" id="applog-level" name="level">
+            <option value=""{% if level.is_empty() %} selected{% endif %}>{{ messages.get("admin-applog-filter-level-all") }}</option>
+            <option value="ERROR"{% if level == "ERROR" %} selected{% endif %}>ERROR</option>
+            <option value="WARN"{% if level == "WARN" %} selected{% endif %}>WARN</option>
+          </select>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label" for="applog-service">{{ messages.get("admin-applog-filter-service") }}</label>
+          <select class="form-select" id="applog-service" name="service">
+            <option value=""{% if service.is_empty() %} selected{% endif %}>{{ messages.get("admin-applog-filter-service-all") }}</option>
+            <option value="api"{% if service == "api" %} selected{% endif %}>api</option>
+            <option value="web"{% if service == "web" %} selected{% endif %}>web</option>
+          </select>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label" for="applog-target">{{ messages.get("admin-applog-filter-target") }}</label>
+          <input type="text" class="form-control" id="applog-target" name="target" value="{{ target }}" placeholder="idp_api::presentation">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label" for="applog-correlation-id">{{ messages.get("admin-audit-filter-correlation") }}</label>
+          <input type="text" class="form-control" id="applog-correlation-id" name="correlation_id" value="{{ correlation_id }}">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label" for="applog-from">{{ messages.get("admin-audit-filter-from") }}</label>
+          <input type="text" class="form-control" id="applog-from" name="from" value="{{ from }}" placeholder="2026-07-06T00:00:00Z">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label" for="applog-to">{{ messages.get("admin-audit-filter-to") }}</label>
+          <input type="text" class="form-control" id="applog-to" name="to" value="{{ to }}" placeholder="2026-07-06T23:59:59Z">
+        </div>
+        <div class="col-md-6 d-flex align-items-end">
+          <small class="text-muted">{{ messages.get("admin-audit-filter-datetime-hint") }}</small>
+        </div>
+      </div>
+      <div class="mt-3 d-flex align-items-center gap-2">
+        <button type="submit" class="btn btn-primary"><i class="fa-solid fa-magnifying-glass me-2" aria-hidden="true"></i>{{ messages.get("admin-audit-search") }}</button>
+        <a class="btn btn-outline-secondary" href="{{ tenant }}/admin/logs">{{ messages.get("admin-audit-reset") }}</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% if entries.is_empty() %}
+<p class="text-muted">{{ messages.get("admin-applog-none") }}</p>
+{% else %}
+<div class="table-responsive">
+  <table class="table table-cards table-hover align-middle">
+    <thead>
+      <tr><th>{{ messages.get("admin-audit-col-time") }}</th><th>{{ messages.get("admin-applog-col-level") }}</th><th>{{ messages.get("admin-applog-col-service") }}</th><th>{{ messages.get("admin-applog-col-target") }}</th><th>{{ messages.get("admin-applog-col-message") }}</th><th>{{ messages.get("admin-audit-col-correlation") }}</th></tr>
+    </thead>
+    <tbody>
+      {% for e in entries %}
+      <tr>
+        <td data-label="{{ messages.get("admin-audit-col-time") }}">{{ e.occurred_at }}</td>
+        <td data-label="{{ messages.get("admin-applog-col-level") }}">{% if e.level == "ERROR" %}<span class="badge text-bg-danger level-error">{{ e.level }}</span>{% else %}<span class="badge text-bg-warning level-warn">{{ e.level }}</span>{% endif %}</td>
+        <td data-label="{{ messages.get("admin-applog-col-service") }}">{{ e.service }}</td>
+        <td data-label="{{ messages.get("admin-applog-col-target") }}"><code>{{ e.target }}</code></td>
+        <td data-label="{{ messages.get("admin-applog-col-message") }}">
+          {{ e.message }}
+          {% if let Some(traceback) = e.traceback %}
+          <details class="mt-1">
+            <summary class="text-muted small">{{ messages.get("admin-applog-col-traceback") }}</summary>
+            <pre class="small mb-0 mt-1 text-break text-wrap">{{ traceback }}</pre>
+          </details>
+          {% endif %}
+        </td>
+        <td data-label="{{ messages.get("admin-audit-col-correlation") }}"><code>{{ e.correlation_id.as_deref().unwrap_or("-") }}</code></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% if prev_href.is_some() || next_href.is_some() %}
+<nav aria-label="Pagination">
+  <ul class="pagination">
+    {% if let Some(href) = prev_href %}<li class="page-item"><a class="page-link" href="{{ href }}">{{ messages.get("admin-audit-prev") }}</a></li>{% endif %}
+    {% if let Some(href) = next_href %}<li class="page-item"><a class="page-link" href="{{ href }}">{{ messages.get("admin-audit-next") }}</a></li>{% endif %}
+  </ul>
+</nav>
+{% endif %}
+{% endblock %}

@@ -14,6 +14,7 @@ use crate::application::account_profile::AccountProfileService;
 use crate::application::account_tenants::AccountTenantsService;
 use crate::application::admin_access::AdminAccessService;
 use crate::application::admin_login::AdminLoginService;
+use crate::application::application_log::ApplicationLogService;
 use crate::application::audit::AuditService;
 use crate::application::audit_query::AuditQueryService;
 use crate::application::authorize::AuthorizeService;
@@ -59,6 +60,9 @@ use crate::infrastructure::id_generator::UuidV7Generator;
 use crate::infrastructure::mailer::LettreSmtpMailer;
 use crate::infrastructure::password::Argon2PasswordHasher;
 use crate::infrastructure::rate_limit::InMemoryLoginRateLimiter;
+use crate::infrastructure::repositories::application_log::{
+    SqlxApplicationLogQuery, SqlxApplicationLogSink,
+};
 use crate::infrastructure::repositories::audit_log::{SqlxAuditLogQuery, SqlxAuditLogSink};
 use crate::infrastructure::repositories::auth_session::SqlxAuthSessionRepository;
 use crate::infrastructure::repositories::authorization_code::SqlxAuthorizationCodeRepository;
@@ -149,6 +153,9 @@ pub struct AppState {
     pub invitations: Arc<InvitationService>,
     pub member_directory: Arc<MemberDirectoryService>,
     pub audit_query: Arc<AuditQueryService>,
+    /// エラー・警告ログ（`log` テーブル）の取り込み・参照・掃除（CLAUDE.md「ログ」）。
+    /// api 自身の `tracing` 取り込みタスク・web からの `/internal/logs`・管理画面の参照が共有する。
+    pub application_logs: Arc<ApplicationLogService>,
     pub logout: Arc<LogoutService>,
     pub revocation: Arc<RevocationService>,
     pub introspection: Arc<IntrospectionService>,
@@ -397,6 +404,11 @@ impl AppState {
             audit_logs.clone(),
         ));
         let audit_query = Arc::new(AuditQueryService::new(audit_logs));
+        let application_logs = Arc::new(ApplicationLogService::new(
+            Arc::new(SqlxApplicationLogSink::new(pool.clone())),
+            Arc::new(SqlxApplicationLogQuery::new(pool.clone())),
+            clock.clone(),
+        ));
         let token = Arc::new(TokenService::new(
             clients.clone(),
             users.clone(),
@@ -618,6 +630,7 @@ impl AppState {
             invitations,
             member_directory,
             audit_query,
+            application_logs,
             logout,
             revocation,
             introspection,

@@ -9,6 +9,7 @@ use axum::extract::Request;
 use axum::http::HeaderValue;
 use axum::middleware::Next;
 use axum::response::Response;
+use tracing::Instrument as _;
 use uuid::Uuid;
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
@@ -29,7 +30,11 @@ pub async fn propagate(mut request: Request, next: Next) -> Response {
 
     request.extensions_mut().insert(CorrelationId(id.clone()));
 
-    let mut response = next.run(request).await;
+    // 以降の処理を `correlation_id` 付きのスパンで囲う。ハンドラが出す WARN / ERROR は
+    // 取り込み層がこのスパンから追跡キーを拾い、`log.correlation_id` に載せる（CLAUDE.md「ログ」）。
+    // web は同じ id を api へも転送するため、web 側のエラーと api 側の記録が同じキーで並ぶ。
+    let span = tracing::info_span!("http_request", correlation_id = %id);
+    let mut response = next.run(request).instrument(span).await;
     if let Ok(value) = HeaderValue::from_str(&id) {
         response.headers_mut().insert(REQUEST_ID_HEADER, value);
     }

@@ -136,6 +136,36 @@ curl -sS "$ISSUER/admin/audit-logs?event_type=token.issued&client_id=<cid>&from=
   -H "Cookie: sso_session_id=<セッションID>"
 ```
 
+## エラー・警告ログを確認したいとき
+
+api・web が出力した WARN / ERROR は `log` テーブルへ保存され、管理コンソールの
+**「エラー・警告ログ」**（`/{tenant_id}/admin/logs`）から参照できる。監査ログが「誰が何をしたか」を
+残すのに対し、こちらは「システムが何を失敗したか」を残す。
+
+**閲覧には `idp.system.admin`（root 管理者）が必要**。全テナントの記録が同じテーブルに載るため、
+テナント管理者には開かない（テナント単位の追跡は監査ログを使う）。
+
+画面では レベル（ERROR / WARN）・サービス（api / web）・出力元モジュール（前方一致）・
+correlation ID・期間で絞り込める。`correlation_id` は監査ログと同じ値なので、同じリクエストの
+「監査イベント」と「内部エラー」を突き合わせられる。
+
+管理 API を直接叩く場合は `GET /{tenant_id}/admin/logs`。
+
+```bash
+# 直近のエラー（新しい順、既定 50 件）。root 管理者の SSO セッション Cookie が必要。
+curl -sS "$ISSUER/$ROOT_TENANT_ID/admin/logs?level=ERROR" \
+  -H "Cookie: sso_session_id=<セッションID>"
+
+# サービス・出力元モジュール・期間で絞る（from/to は RFC3339）。
+curl -sS "$ISSUER/$ROOT_TENANT_ID/admin/logs?service=web&target=idp_web::handlers&from=2026-07-01T00:00:00Z" \
+  -H "Cookie: sso_session_id=<セッションID>"
+```
+
+保持期間は `APP_LOG_RETENTION_DAYS`（既定 30 日）。これより古い行は 1 時間ごとに削除される。
+`0` にすると削除されない（テーブルが際限なく増えるため、外部へログを退避している場合のみ選ぶ）。
+
+INFO 以下は DB へ保存しない（コンテナの標準出力に出る構造化ログを参照する）。
+
 ## 利用者に管理権限を付与／剥奪したいとき
 
 管理コンソールの権限付与 UI は未実装のため、SQL で `user_permissions` を操作する（権限モデルは
@@ -263,6 +293,7 @@ DELETE up FROM user_permissions up
 | `PASSWORD_RESET_TTL_SECS` | `3600` | パスワードリセットトークンの有効期間 |
 | `EMAIL_VERIFICATION_TTL_SECS` | `86400` | 自己登録アカウントのメール検証トークンの有効期間（SEC6b） |
 | `HSTS_MAX_AGE` | `0`（無効） | `Strict-Transport-Security` の `max-age`（秒）。**DB 上書き可**（下記） |
+| `APP_LOG_RETENTION_DAYS` | `30` | エラー・警告ログ（`log` テーブル）の保持日数。`0` = 削除しない。**DB 上書き可** |
 | `RUST_LOG` | `info,idp=debug` | ログフィルタ |
 
 環境変数より **DB（`system_settings`）の値が優先される**（ADR-0010）。DB で変更するには root 管理者で
