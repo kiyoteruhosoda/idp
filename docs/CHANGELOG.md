@@ -5,9 +5,12 @@
   web は ADR-0013 の共有ランタイム設定経路（`GET /internal/runtime-settings`）で同じ値を受け取る。
   反映には api → web 両方の再起動が必要（未反映は既存の警告に出る）。
 - **`ISSUER` の保存時検証を追加した。** 書式（スキーム＋ホストを持つ絶対 URL。資格情報・クエリ・
-  フラグメント不可）は 400、`https://` を開発用の既定 secret のまま保存しようとした場合は 409 で拒否する。
-  後者を通すと再起動で api・web が起動しなくなり、直す画面ごと消えるため保存の時点で止める。
-  起動可否の判定は起動時 fail-fast と同じ述語（`domain::system_setting::requires_production_secrets`）を使う。
+  フラグメント不可）は 400、**起動時 fail-fast に掛かる値**は 409 で拒否する。後者を通すと再起動で
+  api・web が起動しなくなり、直す画面ごと消えるため保存の時点で止める。対象は
+  「`https://` × 開発用の既定 secret」と「`COOKIE_DOMAIN` 設定時にその配下から外れる／明示された
+  `PUBLIC_WEB_BASE_URL` とスキームがずれる」の両方で、判定には起動時と同じ述語・同じ関数
+  （`requires_production_secrets`・`contracts::cookie_domain::validate_cookie_domain`）を使う。
+  どの条件で落ちたかは運用ログへ出す。
 - **設定画面から api → web を再起動できるようにした。** `POST /{tenant_id}/admin/restart`
   （api・web の双方。`idp.system.admin` 必須）と設定画面のボタンを追加した。api の受理（202）を
   確認してから web を停止する。停止するだけで、起動し直すのは配置側の再起動ポリシー

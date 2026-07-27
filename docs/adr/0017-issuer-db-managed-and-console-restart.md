@@ -50,16 +50,33 @@ DB 上書きは起動時にしか読まれないので、**壊れた値を保存
 
 - **書式**（`SettingKind::PublicBaseUrl`）: スキーム（http/https）とホストを持つ絶対 URL であること。
   資格情報・クエリ・フラグメントを含まないこと。→ 400。
-- **起動可否**（`ensure_override_is_bootable`）: `https://` の `ISSUER` を、開発用の既定 secret が
-  使われている状態では保存させない。→ **409**。
+- **起動可否**（`ensure_override_is_bootable`）: 書式が正しくても起動時 fail-fast に掛かる値を
+  保存させない。→ **409**。検査するのは、起動時の fail-fast のうち **`ISSUER` の値で成否が
+  変わるもの**すべてである。
+
+  | 条件 | 起動時に落ちる場所 | 落ちるサービス |
+  |---|---|---|
+  | `https://` の `ISSUER` × 開発用の既定 secret | `config::ensure_production_secrets` | api・web |
+  | `COOKIE_DOMAIN` 設定時に、その配下から外れる `ISSUER` | `contracts::cookie_domain::validate_cookie_domain` | api・web |
+  | `COOKIE_DOMAIN` 設定時に、明示された `PUBLIC_WEB_BASE_URL` とスキームがずれる `ISSUER` | 同上 | api・web |
+
+  いずれも相手側（secret・`COOKIE_DOMAIN`・`PUBLIC_WEB_BASE_URL`）が `ENV_LOCKED` で DB からは
+  直せないため、**`ISSUER` 側を保存させないことでしか防げない**。判定に要る配置状態は
+  `DeploymentState` にまとめ、`Config::deployment_state()` から Application 層へ渡す。
 
 400 と 409 を分けるのは、画面に出す文言が違うからである。前者は「URL を直せ」、後者は「URL は正しい。
-先に secret を環境変数で設定しろ」であり、同じ「保存できません」に潰すと運用者は正しい URL を疑い続けて
-本当の原因（足りない secret）に辿り着けない。
+先に配置側（secret・`COOKIE_DOMAIN` 周り）を直せ」であり、同じ「保存できません」に潰すと運用者は
+正しい URL を疑い続けて本当の原因に辿り着けない。409 の応答本文は翻訳済みの一般的な案内なので、
+**どの条件で落ちたか**は運用ログ（運用言語）へ出す。
 
-起動可否の判定は、起動時 fail-fast（`config::ensure_production_secrets`）と**同じ述語**
-（`domain::system_setting::requires_production_secrets`）を使う。片方だけがスキームの判定規則を変えると、
+起動可否の判定は、起動時 fail-fast と**同じ述語・同じ関数**を使う
+（`domain::system_setting::requires_production_secrets` と
+`idp_contracts::cookie_domain::validate_cookie_domain`）。片方だけが判定規則を変えると、
 保存はできるのに起動できない値がまた生まれる。
+
+`PUBLIC_WEB_BASE_URL` は「明示設定されたか」を区別して保持する（`Config::public_web_base_url_override`）。
+未設定なら web の自オリジンは issuer に追従するのでスキームはずれないが、明示設定なら `ISSUER` を
+変えた瞬間にずれ得る。解決後の値だけでは両者を区別できない。
 
 ### 3. 設定画面から api → web を再起動できるようにする
 
@@ -101,6 +118,14 @@ ADR-0014 は「設定保存時にサービスを自動再起動する」を退�
 - **再起動ポリシーの無い環境では、押すとサービスが停止したままになる。** ボタンの説明文と確認
   ダイアログでこれを明示するが、仕組みとして防いではいない。アプリからは配置側のポリシーを知る
   手段が無いためである。
+- **単一インスタンス配置を前提にする。** このボタンが止めるのは要求を受け取ったプロセスだけで、
+  複数レプリカ配置では他のレプリカが起動時スナップショットのまま残る。実装が悪いのではなく、
+  多重化した瞬間に「設定を反映する」という操作がデプロイ全体のロールアウトになり、アプリ内の
+  仕組みでは担えなくなる（k8s なら `kubectl rollout restart`、Compose のスケール構成なら
+  `docker compose restart <service>` が本来の手段である）。本リポジトリの配置形態は ADR-0007・
+  ADR-0015・ADR-0016 のとおり api 1・web 1 の Compose であり、`InMemoryLoginRateLimiter` や
+  権限キャッシュも同じ前提に立っている。多重化を扱うなら、まずそれらと ADR-0013 のスナップショット
+  モデルごと設計し直すことになるため、本 ADR の範囲外とする。
 - `ISSUER` を https にする配置では、先に 3 つの secret を環境変数で設定して再起動しておく必要がある
   （順序が逆だと保存が 409 で拒否される）。これは起動時 fail-fast と同じ制約を保存時へ前倒しした
   ものであり、新しい制約ではない。

@@ -9,6 +9,13 @@
 //! を担い、新しいプロセスの起動は配置側の再起動ポリシー（Compose の `restart: unless-stopped`・
 //! systemd の `Restart=always`・k8s の `restartPolicy: Always`）に委ねる。終了コードは 0 なので、
 //! **`on-failure` 系のポリシーでは再起動されない**（`docs/OPERATIONS.md` に明記する）。
+//!
+//! **単一インスタンス配置が前提である。** 止まるのは要求を受け取ったこのプロセスだけなので、
+//! 複数レプリカ配置では他のレプリカが起動時スナップショットのまま残り、古い issuer / 設定で
+//! 応答し続ける。多重化した時点で「設定を反映する」はデプロイ全体のロールアウト（k8s なら
+//! `kubectl rollout restart`）になり、アプリ内の仕組みでは担えない。本リポジトリの配置形態は
+//! api 1・web 1 の Compose（ADR-0007・ADR-0016）で、`InMemoryLoginRateLimiter` や権限キャッシュも
+//! 同じ前提に立っている。判断の経緯は ADR-0017 §Consequences を参照。
 
 use crate::domain::service_lifecycle::ServiceRestarter;
 use std::sync::atomic::{AtomicBool, Ordering};

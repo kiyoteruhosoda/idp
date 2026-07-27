@@ -301,10 +301,17 @@ DELETE up FROM user_permissions up
   クエリ・フラグメント・資格情報を含む値は保存できない（400）。
 - **https にするには、先に `KEY_ENCRYPTION_KEY`・`INTERNAL_SERVICE_TOKEN`・`CSRF_SECRET` を
   環境変数で設定して再起動しておく。** これらが開発用の既定値のままだと api も web も https では
-  起動しないため、保存の時点で拒否される（409。画面に不足しているキー名が出る）。
+  起動しないため、保存の時点で拒否される（409）。
 - 別オリジンで web を公開している場合、`PUBLIC_WEB_BASE_URL` は `ENV_LOCKED` なので `.env` 側の
-  変更が必要（ADR-0012）。`ISSUER` だけを変えると `COOKIE_DOMAIN` の親ドメイン検証で起動が
-  失敗することがある。
+  変更が必要（ADR-0012）。`COOKIE_DOMAIN` を設定している構成では、`ISSUER` のホストがその
+  ドメイン配下で、`PUBLIC_WEB_BASE_URL` とスキーム（http/https）が一致している必要がある。
+  外れる値は保存の時点で拒否される（409）。
+
+409 で拒否されたときは、**具体的にどの条件で落ちたかが api のログに出る**（画面には共通の案内のみ）。
+
+```sh
+docker compose logs api | grep 'would prevent the next startup'
+```
 
 **ホスト名まで変える場合の影響**（スキーム・ポートだけの変更では起きないものも含む）:
 
@@ -333,6 +340,13 @@ DELETE up FROM user_permissions up
 - 順序は **api → web**（web は起動時に api から共有設定を受け取るため）。ボタンはこの順で実行する。
   api への要求が失敗した場合は web を止めない（画面が消えて再起動を指示できなくなるため）。
 - 画面が戻らないときは、再起動ポリシーを確認したうえでシェルから起動する。
+- **api・web を 1 インスタンスずつ動かす配置が前提**（本リポジトリの Compose 構成）。複数レプリカへ
+  スケールしている場合、このボタンは要求を受け取ったレプリカしか止めない。残りは古い設定のまま
+  応答し続けるため、下記のようにデプロイ全体をロールアウトする。
+
+  ```sh
+  kubectl rollout restart deployment/idp-api && kubectl rollout restart deployment/idp-web
+  ```
 
 ```sh
 # Compose の場合（api → web の順）

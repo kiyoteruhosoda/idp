@@ -218,7 +218,7 @@ impl AppState {
         let system_settings = Arc::new(SystemSettingsService::new(
             Arc::new(SqlxSystemSettingsRepository::new(pool.clone())),
             *config.key_encryption_key(),
-            config.development_secrets(),
+            config.deployment_state(),
             audit.clone(),
             clock.clone(),
         ));

@@ -330,7 +330,7 @@ admin-settings-save = Save
 admin-settings-error-forbidden = You do not have permission to change this setting.
 admin-settings-error-validation = Please check your input.
 admin-settings-error-runtime-validation = The runtime setting could not be saved. Check that the key is DB-managed and the value has the correct format (number or true/false).
-admin-settings-error-runtime-not-bootable = The value has a valid format, but the services could not start with it, so it was not saved. Setting an https ISSUER requires KEY_ENCRYPTION_KEY, INTERNAL_SERVICE_TOKEN and CSRF_SECRET to be set as environment variables first.
+admin-settings-error-runtime-not-bootable = The value has a valid format, but the services could not start with it, so it was not saved. (1) An https ISSUER requires KEY_ENCRYPTION_KEY, INTERNAL_SERVICE_TOKEN and CSRF_SECRET to be set as environment variables first. (2) When COOKIE_DOMAIN is set, the ISSUER host must stay under that domain and use the same scheme as PUBLIC_WEB_BASE_URL. The exact reason is in the api log.
 admin-restart-heading = Restart to apply
 admin-restart-note = Restarts the api and then the web service so that saved runtime settings take effect. Sign-ins and API calls in progress are cut off, and both services are unavailable for a few seconds.
 admin-restart-policy-note = Only the services are stopped; starting them again is up to the deployment (Docker `restart: unless-stopped`, systemd `Restart=always`, Kubernetes `restartPolicy: Always`). Without such a policy the services stay down and have to be started by hand.
@@ -433,7 +433,7 @@ api-permission-system-admin-forbidden = Only holders of idp.system.admin can gra
 api-register-self-registration-disabled = Self sign-up is disabled for this tenant. Ask an administrator to create your account.
 api-register-rate-limited = Too many sign-up attempts. Please wait a moment and try again.
 api-runtime-setting-invalid = The runtime setting could not be saved. Check the key and the value.
-api-runtime-setting-not-bootable = The value is valid but the services could not start with it. Setting an https ISSUER requires KEY_ENCRYPTION_KEY, INTERNAL_SERVICE_TOKEN and CSRF_SECRET to be set as environment variables first.
+api-runtime-setting-not-bootable = The value is valid, but the services could not start with it, so it was not saved. (1) An https ISSUER requires KEY_ENCRYPTION_KEY, INTERNAL_SERVICE_TOKEN and CSRF_SECRET to be set as environment variables first. (2) When COOKIE_DOMAIN is set, the ISSUER host must stay under that domain and use the same scheme as PUBLIC_WEB_BASE_URL. The exact reason is in the api log.
 api-tenant-name-empty = The tenant name must not be empty.
 api-tenant-status-invalid = Invalid status. Choose ACTIVE or DISABLED.
 api-tenant-create-conflict = The tenant could not be created (a conflict such as a duplicate).

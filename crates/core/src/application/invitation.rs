@@ -25,7 +25,7 @@ use crate::domain::repositories::{
     RefreshTokenRepository, TenantMembershipRepository, UserPermissionRepository, UserRepository,
 };
 #[cfg(test)]
-use crate::domain::system_setting::DevelopmentSecrets;
+use crate::domain::system_setting::DeploymentState;
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::tenant_membership::TenantMembership;
@@ -837,7 +837,7 @@ mod tests {
         let system_settings = Arc::new(SystemSettingsService::new(
             settings,
             TEST_KEY,
-            DevelopmentSecrets::default(),
+            DeploymentState::default(),
             audit.clone(),
             Arc::new(FixedClock(now())),
         ));
@@ -1130,7 +1130,7 @@ mod tests {
         let system_settings = Arc::new(SystemSettingsService::new(
             Arc::new(FakeSettingsRepo::default()),
             TEST_KEY,
-            DevelopmentSecrets::default(),
+            DeploymentState::default(),
             audit.clone(),
             Arc::new(FixedClock(now())),
         ));

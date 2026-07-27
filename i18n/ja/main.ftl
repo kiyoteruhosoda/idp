@@ -330,7 +330,7 @@ admin-settings-save = 保存
 admin-settings-error-forbidden = この設定を変更する権限がありません。
 admin-settings-error-validation = 入力内容を確認してください。
 admin-settings-error-runtime-validation = ランタイム設定を保存できませんでした。キーが DB 管理対象であること、値の形式（数値・true/false）を確認してください。
-admin-settings-error-runtime-not-bootable = 値の書式は正しいものの、この値ではサービスが起動できないため保存しませんでした。ISSUER を https にするには、先に KEY_ENCRYPTION_KEY・INTERNAL_SERVICE_TOKEN・CSRF_SECRET を環境変数で設定してください。
+admin-settings-error-runtime-not-bootable = 値の書式は正しいものの、この値ではサービスが起動できないため保存しませんでした。(1) ISSUER を https にするには、先に KEY_ENCRYPTION_KEY・INTERNAL_SERVICE_TOKEN・CSRF_SECRET を環境変数で設定してください。(2) COOKIE_DOMAIN を設定している場合、ISSUER のホストはそのドメイン配下で、PUBLIC_WEB_BASE_URL とスキーム（http/https）が一致している必要があります。具体的な理由は api のログに出ます。
 admin-restart-heading = 再起動して反映する
 admin-restart-note = 保存したランタイム設定を反映するため、api → web の順に再起動します。処理中のログイン・API 呼び出しは打ち切られ、数秒間どちらのサービスも応答しません。
 admin-restart-policy-note = 停止するだけで、起動し直すのは配置側の再起動ポリシー（Docker の `restart: unless-stopped`、systemd の `Restart=always`、Kubernetes の `restartPolicy: Always`）です。ポリシーが無い環境では停止したままになり、手動で起動する必要があります。
@@ -433,7 +433,7 @@ api-permission-system-admin-forbidden = idp.system.admin の付与・剥奪は�
 api-register-self-registration-disabled = このテナントではセルフ登録が無効です。管理者にアカウントの作成を依頼してください。
 api-register-rate-limited = 登録の試行回数が多すぎます。しばらく待ってからお試しください。
 api-runtime-setting-invalid = ランタイム設定を保存できませんでした。キーと値を確認してください。
-api-runtime-setting-not-bootable = 値の書式は正しいものの、この値ではサービスが起動できません。ISSUER を https にするには、先に KEY_ENCRYPTION_KEY・INTERNAL_SERVICE_TOKEN・CSRF_SECRET を環境変数で設定してください。
+api-runtime-setting-not-bootable = 値の書式は正しいものの、この値ではサービスが起動できないため保存しませんでした。(1) ISSUER を https にするには、先に KEY_ENCRYPTION_KEY・INTERNAL_SERVICE_TOKEN・CSRF_SECRET を環境変数で設定してください。(2) COOKIE_DOMAIN を設定している場合、ISSUER のホストはそのドメイン配下で、PUBLIC_WEB_BASE_URL とスキーム（http/https）が一致している必要があります。具体的な理由は api のログに出ます。
 api-tenant-name-empty = テナント名を入力してください。
 api-tenant-status-invalid = 状態が無効です。ACTIVE または DISABLED を指定してください。
 api-tenant-create-conflict = テナントを作成できませんでした（重複などの競合）。

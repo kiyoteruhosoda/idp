@@ -13,8 +13,8 @@
 #![allow(dead_code)]
 
 use crate::domain::system_setting::{
-    requires_production_secrets, runtime_setting_definition, DefaultRisk, DevelopmentSecrets,
-    SettingOwner, RUNTIME_SETTING_DEFINITIONS,
+    requires_production_secrets, runtime_setting_definition, DefaultRisk, DeploymentState,
+    DevelopmentSecrets, SettingOwner, RUNTIME_SETTING_DEFINITIONS,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use idp_contracts::cookies::CookiePolicy;
@@ -152,6 +152,13 @@ pub struct Config {
     /// 利用者がブラウザで開く web 画面の公開ベース URL（招待メールの承諾リンク等。MT17）。
     /// api/web で同一値必須のため EnvLocked（ADR-0012 §2）。
     public_web_base_url: String,
+    /// **明示設定された** `PUBLIC_WEB_BASE_URL`（`None` = issuer へ追従）。
+    ///
+    /// 解決後の値（`public_web_base_url`）からは「issuer に追従しているのか、たまたま同値を明示
+    /// したのか」を区別できない。`ISSUER` の DB 上書きを保存してよいかの判定（ADR-0017）は
+    /// この区別を要する — 追従なら issuer を変えてもスキームはずれないが、明示設定なら
+    /// `COOKIE_DOMAIN` 配置でスキーム不一致になり起動しなくなる。
+    public_web_base_url_override: Option<String>,
     resolved_settings: Vec<ResolvedSetting>,
 }
 
@@ -183,10 +190,12 @@ impl Config {
         )?;
         // 招待メール等の承諾リンクの土台。単一オリジン構成（ADR-0007）では issuer と同一オリジンに
         // web 画面が同居するため既定は issuer。web を別オリジンへ置く構成でのみ明示設定する。
-        let public_web_base_url = match resolver.optional_string("PUBLIC_WEB_BASE_URL") {
-            Some(v) => normalize_issuer(v),
-            None => issuer.clone(),
-        };
+        let public_web_base_url_override = resolver
+            .optional_string("PUBLIC_WEB_BASE_URL")
+            .map(normalize_issuer);
+        let public_web_base_url = public_web_base_url_override
+            .clone()
+            .unwrap_or_else(|| issuer.clone());
         // サービス横断 Cookie の Domain 属性（ADR-0012）。設定時は issuer / public_web_base_url 双方の
         // 親ドメインであり public suffix でないことを起動時に検証する（不整合はログインループになるため
         // fail-fast）。
@@ -240,6 +249,7 @@ impl Config {
             csrf_secret,
             csrf_secret_is_dev,
             public_web_base_url,
+            public_web_base_url_override,
             resolved_settings: resolver.resolved_settings(),
         })
     }
@@ -351,13 +361,20 @@ impl Config {
         self.csrf_secret_is_dev
     }
 
-    /// 実行中のプロセスがどの bootstrap secret を開発用既定のまま使っているか（ADR-0017）。
-    /// ランタイム設定の DB 上書きを保存する前の「その値で次回起動できるか」判定に渡す。
-    pub fn development_secrets(&self) -> DevelopmentSecrets {
-        DevelopmentSecrets {
-            key_encryption_key: self.key_encryption_key_is_dev,
-            internal_service_token: self.internal_service_token_is_dev,
-            csrf_secret: self.csrf_secret_is_dev,
+    /// ランタイム設定の DB 上書きを保存する前の「その値で次回起動できるか」判定へ渡す、
+    /// 実行中プロセスの配置状態（ADR-0017）。
+    ///
+    /// 起動時 fail-fast の条件のうち `ISSUER` の値で成否が変わるもの（開発用既定 secret の使用状況・
+    /// `COOKIE_DOMAIN` / 明示設定された `PUBLIC_WEB_BASE_URL`）をまとめて渡す。
+    pub fn deployment_state(&self) -> DeploymentState {
+        DeploymentState {
+            development_secrets: DevelopmentSecrets {
+                key_encryption_key: self.key_encryption_key_is_dev,
+                internal_service_token: self.internal_service_token_is_dev,
+                csrf_secret: self.csrf_secret_is_dev,
+            },
+            cookie_domain: self.cookie_domain().map(str::to_string),
+            public_web_base_url_override: self.public_web_base_url_override.clone(),
         }
     }
     /// 利用者がブラウザで開く web 画面の公開ベース URL（末尾スラッシュ無し。招待メールの
