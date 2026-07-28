@@ -62,6 +62,52 @@ pub enum InternalAuthorizeResumeResponse {
     Internal,
 }
 
+/// SAML SSO 再開 API（`POST /internal/saml/resume`）のリクエスト。
+///
+/// api の `/{tenant_id}/saml/sso` は AuthnRequest を検証して web の `/saml/continue` へ
+/// 単回・短命のハンドル付きで 302 する（OIDC の `/authorize` と同じハンドオフ。ADR-0018 決定 2）。
+/// web は初回はハンドル、ログイン後の再開は `saml_request_id`（host-only Cookie）を、自ドメインの
+/// `sso_session_id` Cookie の値とともに本 API へ渡す。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalSamlResumeRequest {
+    /// フローのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する。
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    /// `/saml/sso` がリダイレクト URL に載せた単回ハンドル（初回のみ）。
+    #[serde(default)]
+    pub handle: Option<String>,
+    /// ログイン後の再開に使う進行状態 id（web の host-only `saml_request_id` Cookie の値）。
+    #[serde(default)]
+    pub saml_request_id: Option<String>,
+    /// web の host-only `sso_session_id` Cookie の値（無ければ `None` = 未ログイン）。
+    #[serde(default)]
+    pub sso_session_id: Option<String>,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// SAML SSO 再開 API のレスポンス。`result` タグで判別する。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalSamlResumeResponse {
+    /// SSO 有効。web は `acs_url` へ `SAMLResponse`（base64 済み）と `relay_state` を自動 POST する
+    /// フォームを描画し、`saml_request_id` Cookie を失効させる。
+    Completed {
+        acs_url: String,
+        saml_response: String,
+        #[serde(default)]
+        relay_state: Option<String>,
+    },
+    /// 認証が必要。web は `saml_request_id` を host-only Cookie 化してポータルログインへ誘導する。
+    LoginRequired { saml_request_id: String },
+    /// ハンドル・進行状態が無効・期限切れ・使用済み（SP からやり直し）。
+    Expired,
+    /// api 内部エラー。
+    Internal,
+}
+
 /// RP-initiated Logout の内部 API（`POST /internal/logout/rp`、ADR-0018 決定 2）のリクエスト。
 ///
 /// OIDC の `end_session_endpoint` は web（`GET /{tenant_id}/logout`）が受け、web が自ドメインの

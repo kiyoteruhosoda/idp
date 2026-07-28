@@ -6,7 +6,7 @@ use crate::presentation::handlers::{
     admin_permissions, admin_restart, admin_saml_service_providers, admin_signing_keys,
     admin_system_settings, admin_tenants, admin_users, authorize, consent, discovery, health,
     internal_auth, internal_runtime_settings, introspect, invitations, logout, mfa, passkey,
-    register, revoke, token, userinfo,
+    register, revoke, saml_sso, token, userinfo,
 };
 use crate::presentation::openapi::ApiDoc;
 use crate::presentation::security_headers::add_security_headers;
@@ -30,6 +30,8 @@ pub fn build(state: AppState) -> Router {
             "/internal/authorize/resume",
             post(authorize::authorize_resume),
         )
+        // SAML SSO フローの再開（web ハンドオフのハンドル交換 + SSO 判定 + 応答発行）。
+        .route("/internal/saml/resume", post(saml_sso::saml_resume))
         // RP-initiated logout（end_session_endpoint は web。api は失効・通知・URL 組み立てを担う）。
         .route("/internal/logout/rp", post(logout::rp_logout))
         .route("/internal/authenticate", post(internal_auth::authenticate))
@@ -298,6 +300,11 @@ pub fn build(state: AppState) -> Router {
         .route("/.well-known/jwks.json", get(discovery::jwks))
         // SAML IdP メタデータ出力（公開。SP がこの IdP を信頼するために取り込むメタデータ）。
         .route("/saml/metadata", get(discovery::saml_idp_metadata))
+        // SAML SSO エンドポイント（メタデータが広告する SingleSignOnService。Redirect / POST 両対応）。
+        .route(
+            "/saml/sso",
+            get(saml_sso::sso_redirect).post(saml_sso::sso_post),
+        )
         // テナント解決（UUID 検証・存在/ACTIVE 確認）を全テナントルートへ付与する（ADR-0009 §7）。
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),

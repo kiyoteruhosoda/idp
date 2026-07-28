@@ -26,6 +26,7 @@ pub mod mfa;
 pub mod passkey;
 pub mod register;
 pub mod revoke;
+pub mod saml_sso;
 pub mod token;
 pub mod userinfo;
 

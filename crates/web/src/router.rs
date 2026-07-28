@@ -10,7 +10,8 @@ use crate::handlers::{
     admin_restart_console, admin_saml_clients_console, admin_settings, admin_signing_keys_console,
     admin_status_console, admin_tenants_console, admin_users_console, consent, console_script,
     health, invitation_accept, locale, login, mfa_totp, passkey, password_change, password_reset,
-    portal, react_assets, rp_logout, stylesheet, user_settings, vendor_assets, verify_email,
+    portal, react_assets, rp_logout, saml_sso, stylesheet, user_settings, vendor_assets,
+    verify_email,
 };
 use crate::i18n::Messages;
 use crate::language::resolve_language;
@@ -39,6 +40,8 @@ pub fn build(state: WebState) -> Router {
         // GET: OIDC RP-initiated Logout（end_session_endpoint。ADR-0018 決定 2 で api から移設）。
         // POST: エンドユーザーのログアウト（アカウント画面から。SSO 失効）。
         .route("/logout", get(rp_logout::logout).post(portal::logout))
+        // SAML SSO の継続（api の /saml/sso からのハンドオフ受領と、ログイン後のフロー復帰）。
+        .route("/saml/continue", get(saml_sso::continue_sso))
         // 強制パスワード変更（ADR-0009 §5、MT12）。パスワード認証成功後・SSO 発行前の pending 状態で使う。
         .route(
             "/password-change",

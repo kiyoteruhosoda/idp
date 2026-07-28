@@ -35,6 +35,7 @@ argon2 = { workspace = true }
 url = { workspace = true }
 percent-encoding = { workspace = true }
 quick-xml = { workspace = true }
+flate2 = { workspace = true }
 totp-rs = { workspace = true }
 lettre = { workspace = true }
 webauthn-rs = { workspace = true }

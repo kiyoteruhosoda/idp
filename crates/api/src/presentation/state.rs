@@ -39,7 +39,9 @@ use crate::application::portal_login::PortalLoginService;
 use crate::application::register::RegisterService;
 use crate::application::revocation::RevocationService;
 use crate::application::saml_service_provider_management::SamlServiceProviderManagementService;
+use crate::application::saml_sso::SamlSsoService;
 use crate::application::service_restart::ServiceRestartService;
+use crate::application::sso_restore::SsoRestorer;
 use crate::application::system_settings::SystemSettingsService;
 use crate::application::tenant_management::TenantManagementService;
 use crate::application::tenant_resolution::TenantResolutionService;
@@ -77,6 +79,7 @@ use crate::infrastructure::repositories::password_reset_token::SqlxPasswordReset
 use crate::infrastructure::repositories::refresh_token::SqlxRefreshTokenRepository;
 use crate::infrastructure::repositories::revoked_access_token::SqlxRevokedAccessTokenRepository;
 use crate::infrastructure::repositories::saml_service_provider::SqlxSamlServiceProviderRepository;
+use crate::infrastructure::repositories::saml_sso_request::SqlxSamlSsoRequestRepository;
 use crate::infrastructure::repositories::signing_key::SqlxSigningKeyRepository;
 use crate::infrastructure::repositories::sso_session::SqlxSsoSessionRepository;
 use crate::infrastructure::repositories::system_setting::SqlxSystemSettingsRepository;
@@ -165,6 +168,8 @@ pub struct AppState {
     pub passkey_authentication: Arc<PasskeyAuthenticationService>,
     /// SAML SP（クライアント）登録（テナント管理者向け）。
     pub saml_service_providers: Arc<SamlServiceProviderManagementService>,
+    /// SAML SP-initiated SSO（`/saml/sso` の受信と `/internal/saml/resume` の応答発行）。
+    pub saml_sso: Arc<SamlSsoService>,
     /// 設定画面からの再起動要求（ADR-0017）。`run()` の graceful shutdown がこの値を待つ。
     /// テストでは `build` が作った値を誰も待たないため、要求しても何も起きない。
     pub restart: ServiceRestart,
@@ -315,18 +320,35 @@ impl AppState {
             config.email_verification_ttl(),
             config.public_web_base_url().to_string(),
         ));
-        let authorize = Arc::new(AuthorizeService::new(
-            clients.clone(),
-            users.clone(),
-            auth_sessions.clone(),
+        // SSO 復元の共通判定（OIDC authorize と SAML SSO が共有する）。
+        let sso_restorer = Arc::new(SsoRestorer::new(
             sso_sessions.clone(),
+            users.clone(),
             tenant_memberships.clone(),
-            client_consents.clone(),
-            code_issuance.clone(),
             audit.clone(),
             clock.clone(),
-            config.auth_session_ttl(),
             config.sso_idle_ttl(),
+        ));
+        let authorize = Arc::new(AuthorizeService::new(
+            clients.clone(),
+            auth_sessions.clone(),
+            sso_restorer.clone(),
+            client_consents.clone(),
+            code_issuance.clone(),
+            clock.clone(),
+            config.auth_session_ttl(),
+        ));
+        // SAML SP-initiated SSO。進行状態の TTL は OIDC の auth_session と同じ値を使う。
+        let saml_sso = Arc::new(SamlSsoService::new(
+            Arc::new(SqlxSamlServiceProviderRepository::new(pool.clone())),
+            Arc::new(SqlxSamlSsoRequestRepository::new(pool.clone())),
+            users.clone(),
+            sso_restorer.clone(),
+            keys.clone(),
+            audit.clone(),
+            clock.clone(),
+            config.issuer().to_string(),
+            config.auth_session_ttl(),
         ));
         let login = Arc::new(LoginService::new(
             users.clone(),
@@ -639,6 +661,7 @@ impl AppState {
             passkey_registration,
             passkey_authentication,
             saml_service_providers,
+            saml_sso,
             restart,
             service_restart,
         }

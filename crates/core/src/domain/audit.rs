@@ -20,6 +20,9 @@ pub enum AuditEventType {
     SsoSessionResumed,
     SsoSessionExpired,
     SsoSessionTerminated,
+    /// SAML SSO: 署名付き SAML Response（アサーション）の発行（成功）／AuthnRequest の拒否（失敗。
+    /// 未登録 SP・ACS 不一致等。理由を記録する）。
+    SamlResponseIssued,
     /// 管理者による利用者権限の付与／剥奪（ADR-0006、設計仕様 §7）。
     UserPermissionGranted,
     UserPermissionRevoked,
@@ -89,6 +92,7 @@ impl AuditEventType {
             Self::SsoSessionResumed => "sso_session.resumed",
             Self::SsoSessionExpired => "sso_session.expired",
             Self::SsoSessionTerminated => "sso_session.terminated",
+            Self::SamlResponseIssued => "saml_response.issued",
             Self::UserPermissionGranted => "user_permission.granted",
             Self::UserPermissionRevoked => "user_permission.revoked",
             Self::ClientRegistered => "client.registered",

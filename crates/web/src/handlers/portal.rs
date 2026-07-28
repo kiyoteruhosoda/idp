@@ -120,6 +120,7 @@ pub async fn login(
             user_language,
         } => sso_success_response(
             state,
+            headers,
             &sso_session_id,
             sso_absolute_ttl_secs,
             user_language.as_deref(),
@@ -262,6 +263,7 @@ pub async fn password_change(
             user_language,
         } => sso_success_response(
             &state,
+            &headers,
             &sso_session_id,
             sso_absolute_ttl_secs,
             user_language.as_deref(),
@@ -420,6 +422,7 @@ pub async fn mfa_submit(
             user_language,
         } => sso_success_response(
             &state,
+            &headers,
             &sso_session_id,
             sso_absolute_ttl_secs,
             user_language.as_deref(),
@@ -484,8 +487,12 @@ pub async fn logout(
 /// SSO Cookie を発行し、任意の一時 Cookie を失効させてアカウント画面へ 302 する共通処理。
 /// SSO Cookie は host-only のセッション Cookie（ADR-0018 決定 2。api へはボディ転送で渡す）。
 /// 失効させる一時 Cookie（CSRF・MFA チケット）は web ローカル。
+///
+/// SAML SSO からログインへ誘導された場合（`saml_request_id` Cookie あり）は、アカウント画面
+/// ではなく `/saml/continue` へ戻してフローを完了させる。
 fn sso_success_response(
     state: &WebState,
+    headers: &HeaderMap,
     sso_session_id: &str,
     sso_absolute_ttl_secs: u64,
     user_language: Option<&str>,
@@ -508,11 +515,12 @@ fn sso_success_response(
             cookies::LANG_COOKIE_MAX_AGE_SECS,
         );
     }
-    (
-        set_cookies.into_headers(),
-        found(&format!("{}/settings", tenant.prefix())),
-    )
-        .into_response()
+    let destination = if cookies::get(headers, cookies::SAML_REQUEST_COOKIE).is_some() {
+        format!("{}/saml/continue", tenant.prefix())
+    } else {
+        format!("{}/settings", tenant.prefix())
+    };
+    (set_cookies.into_headers(), found(&destination)).into_response()
 }
 
 fn render_login_form(

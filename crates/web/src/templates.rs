@@ -425,6 +425,19 @@ pub struct ConsentTemplate<'a> {
     pub requested_scopes: &'a [String],
 }
 
+/// SAML SSO の自動 POST ページ（`GET /{tenant_id}/saml/continue`）。署名済み `SAMLResponse` を
+/// SP の ACS へ POST するフォームを描画し、インライン JS で即時送信する（JS 無効時は送信ボタン）。
+/// 送信先が外部オリジンのため、ハンドラは ACS オリジンを `form-action` に許可した CSP を付ける。
+#[derive(Template)]
+#[template(path = "saml_post.html")]
+pub struct SamlPostPage<'a> {
+    pub messages: &'a Messages,
+    pub acs_url: &'a str,
+    /// base64 済みの SAML Response（テンプレートが hidden input へエスケープして埋め込む）。
+    pub saml_response: &'a str,
+    pub relay_state: Option<&'a str>,
+}
+
 /// タイトルと本文のみの最小ページ（ログインのエラー・権限不足など、共通レイアウトに載せない画面）。
 #[derive(Template)]
 #[template(path = "message_page.html")]

@@ -45,6 +45,8 @@ reqwest = { workspace = true }
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }
 jsonwebtoken = { workspace = true }
+# SAML SSO テストでの AuthnRequest 圧縮（HTTP-Redirect binding の DEFLATE）。
+flate2 = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 # web→api E2E テスト（ADR-0012 §7）: api/web を実サーバとして同時起動し、Cookie jar 有効の

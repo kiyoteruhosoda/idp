@@ -59,8 +59,8 @@ pub async fn jwks(State(state): State<AppState>) -> Response {
 ///
 /// 本 IdP を記述する `EntityDescriptor`（`IDPSSODescriptor`）を XML で返す。SP（クライアント）がこの IdP を
 /// 信頼するために取り込む公開メタデータで、テナント issuer を entityID とし、SSO URL も issuer から導出する。
-/// 署名用 `KeyDescriptor` には ACTIVE 署名鍵（RSA）を `RSAKeyValue` で含める。SSO エンドポイントの
-/// 認証フロー自体は未実装のため、現時点ではメタデータのみを提供する。
+/// 署名用 `KeyDescriptor` には ACTIVE 署名鍵（RSA）を `RSAKeyValue` で含める。広告する
+/// SingleSignOnService は [`super::saml_sso`]（`/{tenant_id}/saml/sso`）が実装する。
 #[utoipa::path(
     get,
     path = "/{tenant_id}/saml/metadata",
