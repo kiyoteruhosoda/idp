@@ -1,13 +1,6 @@
 # 開発・ビルド用の Compose（ソースがあるホスト向け。api/web/migrate は build: でソースからビルドする）。
 # ソースを持たないデプロイ先では、代わりにビルド済みイメージを image: 参照する docker-compose.deploy.yml を
 # 使う（scripts/deploy.sh がそちらを使用）。イメージの受け渡しは scripts/README.md「ホストの分離」参照。
-
-# Compose プロジェクト名の既定値。コンテナ・ネットワーク・ボリュームはすべてこの名前を
-# 接頭辞に持つ（例: idp-mariadb-1 / idp_mariadb_data）。環境ごとに分けるときは値を直接
-# 書き換えるのではなく .env の COMPOSE_PROJECT_NAME で上書きする（idp-stg / idp-prod）。
-# 優先順位は -p フラグ > COMPOSE_PROJECT_NAME > 下記 name: > ディレクトリ名。
-name: idp
-
 services:
   mariadb:
     image: mariadb:10.11
