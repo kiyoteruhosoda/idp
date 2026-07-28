@@ -73,10 +73,15 @@ dist/
   `domain-split`（既定。未設定時もこれ）なら `docker-compose.domain-split.yml` を自動で重ねる
   （手で `-f` を指定しない）。`single-origin` を明記したときだけ重ねない。
 - `reset` は DB volume を削除する破壊的操作（確認なしで即実行される）。`.env` は保持される。
-- MariaDB 起動後・migration 前に**アプリ用ユーザーの認証**を検証する。`Access denied for user 'idp'` で
-  停止した場合は、`.env` の `MARIADB_PASSWORD` が既存 DB volume（初回作成時のパスワードで固定）と不一致。
-  データを破棄してよければ `./deploy.sh reset` で volume を作り直し、保持したければ `.env` のパスワードを
-  volume 作成時の値へ戻す（MariaDB は初回以降 `.env` の変更を既存 volume へ反映しない）。
+- MariaDB 起動後・migration 前に**アプリ用ユーザーの認証**を検証する。MariaDB は data volume 初回作成時の
+  パスワードを固定し、以後の `.env` 変更を既存 volume へ反映しないため、`.env` の `MARIADB_PASSWORD` を
+  変えると `Access denied for user 'idp'` になる。この不一致は `.env` を正とし、`MARIADB_ROOT_PASSWORD` で
+  root 認証できる場合は**DB 側のパスワードを `.env` の値へ自動同期して続行する**（データは保持される）。
+  root でも認証できない場合（`.env` ごと別物）だけ停止する。この場合は `KEY_ENCRYPTION_KEY` も変わっており
+  既存 DB の署名鍵を復号できないため、元の `.env` を戻すか `./deploy.sh reset` で作り直す。
+- DB 資格情報は `.env` を自前で解釈せず、**Compose が解決した実効値**（`mariadb` コンテナの環境変数）を
+  読む。`.env` の dotenv 構文（引用符・インラインコメント・変数展開）の解釈は Compose が唯一の正で、
+  api / migrate へ渡る値と必ず一致させるため。コンテナから読めない場合だけ `ENV > .env > 既定値` へ退避する。
 
 前提: `docker`（Compose v2 または v1）と `openssl`。
 

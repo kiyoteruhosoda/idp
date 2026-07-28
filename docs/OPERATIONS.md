@@ -796,6 +796,27 @@ DDL・マスタデータの適用は常駐させない専用ジョブ（`migrate
 DB volume を削除してからマイグレーション・起動をやり直す。破壊的操作（確認なしで即実行される）。
 `.env`（秘密情報・サイト固定値）は保持される。
 
+## DB パスワードを変えたいとき／`Access denied for user 'idp'` で止まるとき（デプロイ先）
+
+`.env` の `MARIADB_PASSWORD` を新しい値へ書き換えて再デプロイする。
+
+```sh
+# .env の MARIADB_PASSWORD を新しい値に書き換えてから
+./deploy.sh app
+```
+
+MariaDB は data volume 初回作成時のパスワードを固定し、以後の `.env` 変更を既存 volume へ反映しない。
+`deploy.sh` は migration 前のプリフライトでこの不一致を検出し、`.env` を正として **root 経由で DB 側の
+`idp` ユーザーのパスワードを `.env` の値へ同期してから続行する**（データは保持される）。したがって
+`MARIADB_ROOT_PASSWORD` が既存 volume と一致している限り、パスワード変更は再デプロイだけで完了する。
+
+`MARIADB_ROOT_PASSWORD` も一致しない場合（`.env` を作り直した・別環境の `.env` を持ち込んだ）は
+プリフライトで停止する。この状態では `KEY_ENCRYPTION_KEY` も変わっており、既存 DB の暗号化済み署名鍵は
+元の `.env` 無しでは復号できない。対処は次のいずれか。
+
+- データを保持したい → 元の `.env`（バックアップ）へ戻して再デプロイする
+- データを破棄してよい（初期構築・staging 等）→ `./deploy.sh reset`（既存データは消える）
+
 ## 同一ホストに stg / prod を置く場合
 
 `docker-compose.deploy.yml` はコンテナ内の proxy を常に `8080`（web 面）/ `8081`（api 面）で待ち受けさせ、
