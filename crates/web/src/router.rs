@@ -174,6 +174,11 @@ pub fn build(state: WebState) -> Router {
             "/admin/saml-clients/import",
             post(admin_saml_clients_console::import_metadata),
         )
+        // IdP メタデータを web オリジンからダウンロードする（api への直接リンクを露出しない）。
+        .route(
+            "/admin/saml-clients/idp-metadata",
+            get(admin_saml_clients_console::download_idp_metadata),
+        )
         // SP の更新・削除（HTML フォームは POST のみのため専用パス）。
         .route(
             "/admin/saml-clients/{id}/update",

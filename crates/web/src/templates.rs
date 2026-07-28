@@ -208,16 +208,14 @@ mod tests {
         }
     }
 
-    /// IdP メタデータのダウンロード導線は **api オリジンの絶対 URL**であること。
-    /// 別ドメイン公開（ADR-0015。web = `https://idp.example.com` / api = `https://api.idp.example.com`）
-    /// では web オリジン相対だと web 側に該当ルートが無く 404 になる。
+    /// IdP メタデータのダウンロード導線は api への直接リンクではなく、web のルートであること。
     #[test]
-    fn saml_console_links_idp_metadata_on_the_api_origin() {
+    fn saml_console_links_idp_metadata_on_the_web_origin() {
         let messages = Messages::new(Locale::Ja);
         let html = render(&SamlServiceProvidersConsole {
             messages: &messages,
             tenant: "/t",
-            idp_metadata_url: "https://api.idp.example.com/t/saml/metadata",
+            idp_metadata_url: "/t/admin/saml-clients/idp-metadata",
             admin: Some("admin-1"),
             csrf: "csrf",
             saved: false,
@@ -229,18 +227,16 @@ mod tests {
             values: &SamlServiceProviderFormValues::default(),
         });
         assert!(
-            html.contains(r#"href="https://api.idp.example.com/t/saml/metadata""#),
+            html.contains(r#"href="/t/admin/saml-clients/idp-metadata""#),
             "{html}"
         );
-        assert!(!html.contains(r#"href="/t/saml/metadata""#), "{html}");
+        assert!(!html.contains("api.idp.example.com"), "{html}");
     }
 
     /// テンプレートに直書きする `href` / `action` のパスは、必ず **web 自身のルート**であること。
     ///
-    /// api だけが提供するパス（`/{tenant_id}/saml/metadata` 等）を web オリジン相対で書くと、
-    /// 別ドメイン公開（ADR-0015。web と api でオリジンが異なる）では web に該当ルートが無く 404 に
-    /// なる。api のエンドポイントへ導く導線は、ハンドラで issuer 基点の**絶対 URL**を組み立てて
-    /// テンプレートへ値として渡す（値まるごとがテンプレート式のものは静的に判定できないので対象外）。
+    /// api だけが提供するパスを web オリジン相対で書かない。ブラウザ向け導線が必要なら、web に
+    /// 明示的なユースケースのルートを設ける（値まるごとがテンプレート式のものは静的判定の対象外）。
     #[test]
     fn template_link_targets_are_routes_this_service_serves() {
         let routes = crate::router::declared_route_paths();
@@ -970,9 +966,7 @@ pub struct PasskeyRegisterTemplate<'a> {
 pub struct SamlServiceProvidersConsole<'a> {
     pub messages: &'a Messages,
     pub tenant: &'a str,
-    /// IdP メタデータの公開 URL（`{issuer}/{tenant_id}/saml/metadata`）。**絶対 URL**であること。
-    /// api が提供するエンドポイントなので、別ドメイン公開（ADR-0015）では web オリジン相対では
-    /// 到達できない。SP へ渡す値としても issuer 側の URL が正しい。
+    /// 管理画面と同じ web オリジンにある IdP メタデータのダウンロード URL。
     pub idp_metadata_url: &'a str,
     pub admin: Admin<'a>,
     pub csrf: &'a str,

@@ -17,7 +17,7 @@ use crate::state::WebState;
 use crate::templates::{render, SamlServiceProviderFormValues, SamlServiceProvidersConsole};
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, Multipart, Path, Query, State};
-use axum::http::HeaderMap;
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 use idp_contracts::admin::{SamlServiceProviderRegisterRequest, SamlServiceProviderUpdateRequest};
@@ -61,7 +61,7 @@ pub async fn list(
     Html(render(&SamlServiceProvidersConsole {
         messages: &messages,
         tenant: &tenant.prefix(),
-        idp_metadata_url: &idp_metadata_url(state.config.issuer(), &tenant),
+        idp_metadata_url: &idp_metadata_url(&tenant),
         admin: Some(&admin),
         csrf: &csrf_from(&headers, state.config.csrf_secret()),
         saved: query.saved.is_some(),
@@ -253,7 +253,7 @@ pub async fn import_metadata(
     Html(render(&SamlServiceProvidersConsole {
         messages: &messages,
         tenant: &tenant.prefix(),
-        idp_metadata_url: &idp_metadata_url(state.config.issuer(), &tenant),
+        idp_metadata_url: &idp_metadata_url(&tenant),
         admin: Some(&admin),
         csrf: &csrf_from(&headers, state.config.csrf_secret()),
         saved: false,
@@ -355,14 +355,44 @@ pub async fn delete(
     }
 }
 
-/// IdP メタデータの公開 URL（`{issuer}/{tenant_id}/saml/metadata`）。
-///
-/// このエンドポイントは **api** が提供する（`crates/api` の `discovery::saml_idp_metadata`）。
-/// 別ドメイン公開（ADR-0015）では web と api のオリジンが異なるため、web オリジン相対で
-/// リンクすると web 側に該当ルートが無く 404 になる。SP へ渡す取り込み URL としても、
-/// entityID（= テナント issuer）と同じオリジンの URL が正しい。
-fn idp_metadata_url(issuer: &str, tenant: &WebTenant) -> String {
-    format!("{}{}/saml/metadata", issuer, tenant.prefix())
+/// 管理画面から利用する IdP メタデータのダウンロード URL。
+fn idp_metadata_url(tenant: &WebTenant) -> String {
+    format!("{}/admin/saml-clients/idp-metadata", tenant.prefix())
+}
+
+/// api の公開メタデータを取得し、管理画面と同じ web オリジンからファイルとして返す。
+pub async fn download_idp_metadata(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+) -> Response {
+    match resolve_admin(&state, &correlation, &tenant, &headers).await {
+        AdminResolution::Ok(_) => {}
+        AdminResolution::Reject(response) => return response,
+    }
+
+    match state
+        .api
+        .fetch_saml_idp_metadata(&correlation.0, &tenant.0)
+        .await
+    {
+        Ok(xml) => (
+            [
+                (header::CONTENT_TYPE, "application/xml; charset=utf-8"),
+                (
+                    header::CONTENT_DISPOSITION,
+                    "attachment; filename=\"idp-metadata.xml\"",
+                ),
+            ],
+            xml,
+        )
+            .into_response(),
+        Err(error) => {
+            tracing::error!(error = %error, tenant_id = %tenant.0, "failed to download IdP metadata");
+            StatusCode::BAD_GATEWAY.into_response()
+        }
+    }
 }
 
 fn csrf_from(headers: &HeaderMap, secret: &[u8]) -> String {
@@ -398,14 +428,13 @@ fn error_key_for(error: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
 
-    /// IdP メタデータ URL は api の公開オリジン（issuer）に対する絶対 URL であること。
-    /// 別ドメイン公開（ADR-0015）では web オリジン相対だと 404 になる。
+    /// 管理画面のリンクは api を露出せず、web のダウンロードユースケースを指すこと。
     #[test]
-    fn idp_metadata_url_is_absolute_on_the_issuer_origin() {
+    fn idp_metadata_url_points_to_the_web_download_route() {
         let tenant = WebTenant("00000000-0000-7000-8000-000000000001".to_string());
         assert_eq!(
-            idp_metadata_url("https://api.idp.example.com", &tenant),
-            "https://api.idp.example.com/00000000-0000-7000-8000-000000000001/saml/metadata"
+            idp_metadata_url(&tenant),
+            "/00000000-0000-7000-8000-000000000001/admin/saml-clients/idp-metadata"
         );
     }
 }

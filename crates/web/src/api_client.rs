@@ -163,6 +163,27 @@ impl ApiClient {
         }
     }
 
+    /// SAML IdP メタデータを api から取得する。
+    ///
+    /// ブラウザを api オリジンへ直接遷移させず、web が提供するダウンロード用ユースケースから
+    /// 利用する。api との通信経路は本クライアントへ集約し、presentation 層へ HTTP の詳細を
+    /// 漏らさない。
+    pub async fn fetch_saml_idp_metadata(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+    ) -> anyhow::Result<String> {
+        self.http
+            .get(format!("{}/{tenant_id}/saml/metadata", self.base_url))
+            .header(REQUEST_ID_HEADER, correlation_id)
+            .send()
+            .await?
+            .error_for_status()?
+            .text()
+            .await
+            .map_err(Into::into)
+    }
+
     /// 認可フローの再開（`POST /internal/authorize/resume`、ADR-0018 決定 2）。`/authorize` からの
     /// ハンドオフで受け取った単回ハンドルと自ドメインの SSO Cookie 値を渡し、SSO 判定・code 発行
     /// までを api に委ねる。
