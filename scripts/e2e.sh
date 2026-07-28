@@ -190,18 +190,14 @@ curl -fsS -b "$AJAR" -o /dev/null -w '%{http_code}' "${WEB}/${ROOT}/admin/status
 curl -fsS -b "$AJAR" -o /dev/null -w '%{http_code}' "${WEB}/${ROOT}/admin/audit-logs"  | grep -q 200 || fail "監査画面が 200 を返しません"
 pass "状況・監査画面（web→api /admin/clients/status・/admin/audit-logs）"
 
-# SAML: IdP メタデータの導線。メタデータを提供するのは api だけなので、管理コンソール（web）の
-# ダウンロードリンクは api オリジンの絶対 URL でなければならない。web オリジン相対で書くと
-# 別ドメイン公開（ADR-0015。web と api でオリジンが違う）で 404 になる。
+# SAML: api を直接露出せず、管理画面と同じ web オリジンから IdP メタデータをダウンロードする。
 saml_html="$(curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin/saml-clients")"
-metadata_href="$(grep -oE 'href="[^"]*/saml/metadata"' <<<"$saml_html" | head -1 | sed -E 's/^href="//; s/"$//')"
-[[ "$metadata_href" == "${API}/${ROOT}/saml/metadata" ]] \
-  || fail "IdP メタデータのリンクが api オリジンの絶対 URL ではありません: ${metadata_href:-（リンク無し）}"
-curl -fsS "$metadata_href" | grep -q "IDPSSODescriptor" || fail "IdP メタデータが取得できません"
-# web は SAML メタデータのルートを持たない（api 専用エンドポイント）。相対リンクへの退行検出。
-curl -sS -o /dev/null -w '%{http_code}' "${WEB}/${ROOT}/saml/metadata" | grep -q 404 \
-  || fail "web が /saml/metadata を返しています（api 専用のはず）"
-pass "IdP メタデータ導線（コンソールのリンクは api オリジン絶対 URL・web は 404）"
+metadata_href="$(grep -oE 'href="[^"]*/admin/saml-clients/idp-metadata"' <<<"$saml_html" | head -1 | sed -E 's/^href="//; s/"$//')"
+[[ "$metadata_href" == "/${ROOT}/admin/saml-clients/idp-metadata" ]] \
+  || fail "IdP メタデータのリンクが web のダウンロード URL ではありません: ${metadata_href:-（リンク無し）}"
+curl -fsS -b "$AJAR" "${WEB}${metadata_href}" | grep -q "IDPSSODescriptor" \
+  || fail "IdP メタデータを web のダウンロード URL から取得できません"
+pass "IdP メタデータ導線（コンソールと同じ web オリジンからダウンロード）"
 
 # メンバー一覧（絞り込み）→ 権限付与。利用者検索画面は廃止したためメンバー画面が起点。
 members_html="$(curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin/members?q=${U}")"
