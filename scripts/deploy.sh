@@ -128,6 +128,11 @@ mask_secrets() {
   if [[ ${#values[@]} -gt 0 ]]; then
     for value in "${values[@]}"; do
       [[ -n "$value" ]] || continue
+      # マスクはログ本文に対する単純な部分文字列置換なので、短い値は普通の語と衝突する。
+      # 例えば MARIADB_PASSWORD=idp を masking すると `[idp][diagnostic]` まで潰れ、原因究明のための
+      # 診断出力そのものが読めなくなる（マスクの目的と逆の結果になる）。衝突しない長さの値だけを対象にする。
+      # deploy.sh が生成する秘密は 44〜48 文字で、この閾値を必ず超える。
+      [[ ${#value} -ge 8 ]] || continue
       # 秘密値を sed の BRE パターンとして使うため、メタ文字（\ . * [ ] ^ $ と区切りの |）を
       # エスケープする。これを怠ると、記号を含むパスワード（例 MARIADB_PASSWORD=[…）で不正な
       # 正規表現になり sed が失敗し、pipefail 下では migrate 成功時のマスク処理までデプロイを中断させる。

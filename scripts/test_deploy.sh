@@ -1,10 +1,24 @@
 #!/usr/bin/env bash
 # scripts/test_deploy.sh — deploy.sh の CLI/エラー処理をスタブ docker で検証する（CI 用）。
-set -euo pipefail
+set -Eeuo pipefail
+
+# アサーションの多くは素の `grep -q`（メッセージ無し）で、失敗すると set -e が何も出さずに終了する。
+# CI ログに手掛かりが残らず、ローカルで再現するまで原因が分からないため、最後に失敗した行と式を控えて
+# おき、異常終了したときだけ出す。デプロイの失敗そのものを検証するケース（set +e 区間の意図的な失敗）
+# でも ERR は発火するため、その場では出さず記録だけに留める。
+LAST_ERR=""
+trap 'LAST_ERR="line $LINENO: $BASH_COMMAND"' ERR
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+# EXIT トラップは 1 つしか持てないため、後始末と失敗報告をまとめて行う。
+on_exit() {
+  local status=$?
+  rm -rf "$TMP"
+  [[ $status -eq 0 || -z "$LAST_ERR" ]] ||
+    echo "[test_deploy] FAILED (exit $status); last failing command was $LAST_ERR" >&2
+}
+trap on_exit EXIT
 
 # --- リポジトリ配置（scripts/deploy.sh ＋ ルートの docker-compose.deploy.yml） ---
 mkdir -p "$TMP/repo/scripts" "$TMP/repo/docker" "$TMP/bin"
@@ -388,6 +402,18 @@ if grep -qF 'p[a.s*s^d$x' /tmp/deploy-metachar-secret.out; then
 fi
 # .env を元のパスワードへ戻し、後続テストへ影響させない。
 sed -i "s|^MARIADB_PASSWORD=.*|${orig_pw_line}|" .env
+
+# 短い値（開発・CI で使う MARIADB_PASSWORD=idp 等）をマスク対象にしてはならない。マスクはログ本文への
+# 単純な部分文字列置換なので、`idp` を潰すと `[idp][diagnostic]` まで消えて診断が読めなくなる。
+: >"$DOCKER_STUB_LOG"
+set +e
+MARIADB_PASSWORD=idp MARIADB_ROOT_PASSWORD=root DOCKER_STUB_FAIL_UP=1 \
+  ./scripts/deploy.sh app >/tmp/deploy-short-secret.out 2>&1
+status=$?
+set -e
+[[ $status -eq 42 ]] || { echo "deploy failure should preserve failing exit code" >&2; cat /tmp/deploy-short-secret.out >&2; exit 1; }
+grep -q '\[idp\]\[diagnostic\] compose ps' /tmp/deploy-short-secret.out ||
+  { echo "short secret values must not be masked (diagnostics became unreadable)" >&2; cat /tmp/deploy-short-secret.out >&2; exit 1; }
 
 # DB 資格情報は .env の字面ではなく Compose が解決した実効値（mariadb コンテナの環境変数）を使うこと。
 # `.env` の dotenv 構文（引用符・インラインコメント・変数展開）を deploy.sh 側で再実装すると必ず
