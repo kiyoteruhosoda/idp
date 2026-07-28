@@ -128,12 +128,13 @@ impl SamlSsoRequestRepository for SqlxSamlSsoRequestRepository {
         Ok(result.rows_affected() == 1)
     }
 
-    async fn delete(&self, id: &str) -> Result<()> {
-        sqlx::query("DELETE FROM saml_sso_requests WHERE id = ?")
+    async fn delete(&self, id: &str) -> Result<bool> {
+        // 応答発行前のクレームを兼ねる: 並行する resume は片方だけが 1 行削除に成功する。
+        let result = sqlx::query("DELETE FROM saml_sso_requests WHERE id = ?")
             .bind(id)
             .execute(&self.pool)
             .await
             .map_err(repo_err)?;
-        Ok(())
+        Ok(result.rows_affected() == 1)
     }
 }

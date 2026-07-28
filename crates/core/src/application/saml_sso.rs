@@ -328,21 +328,24 @@ impl SamlSsoService {
             Err(e) => return SamlResumeOutcome::Internal(e.to_string()),
         };
 
-        // 4. 署名付き SAML Response を発行し、進行状態を削除する。
+        // 4. 進行状態を原子的に消費（クレーム）してから応答を発行する。同じ `saml_request_id` の
+        //    並行 resume は片方だけが削除（1 行）に成功し、負けた側は Expired になる
+        //    （1 つの AuthnRequest に対する成功アサーションの二重発行を防ぐ）。
+        match self.requests.delete(&request.id).await {
+            Ok(true) => {}
+            Ok(false) => return SamlResumeOutcome::Expired,
+            Err(e) => return SamlResumeOutcome::Internal(e.to_string()),
+        }
         match self
             .issue_response(tenant, &request, &provider, restored.user_id, restored, ctx)
             .await
         {
-            Ok(saml_response) => {
-                if let Err(e) = self.requests.delete(&request.id).await {
-                    tracing::warn!(error = %e, "failed to delete SAML SSO request after issuance");
-                }
-                SamlResumeOutcome::Completed {
-                    acs_url: request.acs_url,
-                    saml_response,
-                    relay_state: request.relay_state,
-                }
-            }
+            Ok(saml_response) => SamlResumeOutcome::Completed {
+                acs_url: request.acs_url,
+                saml_response,
+                relay_state: request.relay_state,
+            },
+            // クレーム後の失敗は進行状態が消費済みのため再開できない（SP からやり直す）。
             Err(e) => SamlResumeOutcome::Internal(e),
         }
     }

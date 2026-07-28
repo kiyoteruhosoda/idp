@@ -252,7 +252,9 @@ pub trait SamlSsoRequestRepository: Send + Sync {
     /// ハンドルを単回使用として消費する（`handle_hash` を NULL 化）。すでに消費済み（並行交換に
     /// 負けた・再利用）なら `false` を返す。
     async fn consume_handle(&self, id: &str, handle_hash: &str) -> Result<bool>;
-    async fn delete(&self, id: &str) -> Result<()>;
+    /// 進行状態を削除する。応答発行前の**原子的なクレーム**を兼ねるため、削除できた場合のみ
+    /// `true` を返す（並行 resume に負けた・消費済みなら `false` = 発行不可）。
+    async fn delete(&self, id: &str) -> Result<bool>;
 }
 
 #[async_trait]

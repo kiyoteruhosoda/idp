@@ -34,8 +34,10 @@ const DIGEST_SHA256: &str = "http://www.w3.org/2001/04/xmlenc#sha256";
 const SIG_RSA_SHA256: &str = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256";
 const SIG_ECDSA_SHA256: &str = "http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha256";
 const STATUS_SUCCESS: &str = "urn:oasis:names:tc:SAML:2.0:status:Success";
-const AUTHN_CONTEXT_PASSWORD_PROTECTED: &str =
-    "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport";
+/// `AuthnContextClassRef`。SSO セッションは確立時の認証手段（パスワード・TOTP・Passkey）を保持
+/// しないため、特定の強度（例: `PasswordProtectedTransport`）を主張せず `unspecified` を用いる
+/// （誤った認証強度を SP に伝えない）。手段別のコンテキスト送出はセッションへの手段記録が前提。
+const AUTHN_CONTEXT_UNSPECIFIED: &str = "urn:oasis:names:tc:SAML:2.0:ac:classes:unspecified";
 const SUBJECT_CONFIRMATION_BEARER: &str = "urn:oasis:names:tc:SAML:2.0:cm:bearer";
 
 /// SAML Response の組み立て入力。ID（`response_id` / `assertion_id`）は NCName 制約のため
@@ -196,7 +198,7 @@ fn build_assertion(input: &SamlResponseInput) -> String {
 <saml:AudienceRestriction><saml:Audience>{audience}</saml:Audience></saml:AudienceRestriction>\
 </saml:Conditions>\
 <saml:AuthnStatement AuthnInstant=\"{authn_instant}\" SessionIndex=\"{session_index}\">\
-<saml:AuthnContext><saml:AuthnContextClassRef>{AUTHN_CONTEXT_PASSWORD_PROTECTED}</saml:AuthnContextClassRef></saml:AuthnContext>\
+<saml:AuthnContext><saml:AuthnContextClassRef>{AUTHN_CONTEXT_UNSPECIFIED}</saml:AuthnContextClassRef></saml:AuthnContext>\
 </saml:AuthnStatement>\
 {attribute_statement}\
 </saml:Assertion>",
@@ -338,6 +340,11 @@ mod tests {
         assert!(xml.contains("user@example.test</saml:NameID>"));
         assert!(xml.contains("InResponseTo=\"_req1\""));
         assert!(xml.contains("SessionIndex=\"_session1\""));
+        // 認証手段を保持しないため、特定の認証強度（PasswordProtectedTransport 等）を主張しない。
+        assert!(xml.contains(&format!(
+            "<saml:AuthnContextClassRef>{AUTHN_CONTEXT_UNSPECIFIED}</saml:AuthnContextClassRef>"
+        )));
+        assert!(!xml.contains("PasswordProtectedTransport"));
         // Destination のクエリ `&` は正準形でエスケープされる。
         assert!(xml.contains("Destination=\"https://sp.example.test/acs?x=1&amp;y=2\""));
         // 生成 XML は整形式（再パース可能）である。
