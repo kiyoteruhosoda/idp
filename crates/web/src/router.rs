@@ -338,6 +338,58 @@ async fn root_entrypoint(headers: HeaderMap) -> impl IntoResponse {
     )
 }
 
+/// `build` が `route` に宣言したパスを、パラメータ名を潰した形（`/admin/users/{}`）で集める。
+///
+/// 自分のソースを読むのは、axum の `Router` が登録済みパスを公開しないため。ルート一覧を必要とする
+/// 検査（テンプレートのリンク先・リバースプロキシの振り分け）が、ルート追加のたびに手で更新される
+/// 別の一覧と食い違わないようにする。
+#[cfg(test)]
+pub(crate) fn declared_route_paths() -> std::collections::HashSet<String> {
+    let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/router.rs"))
+        .expect("read router.rs");
+    // 本関数より下（テスト専用コード）にはルートでないパス文字列が並ぶので切り落とす。
+    // コメント行も落とす（説明として書いた `route` の例を実在のルートと数えないため）。
+    let source: String = source
+        .split("#[cfg(test)]")
+        .next()
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut paths = std::collections::HashSet::new();
+    for after in source.split(".route(").skip(1) {
+        let Some(open) = after.find('"') else {
+            continue;
+        };
+        let Some(len) = after[open + 1..].find('"') else {
+            continue;
+        };
+        paths.insert(collapse_params(&after[open + 1..open + 1 + len]));
+    }
+    paths
+}
+
+/// `{{ expr }}`（Askama）・`{param}`（axum ルート）といったパラメータを `{}` に潰す。
+/// 開き記号が連続する `{{` も 1 つのパラメータとして扱えるよう、閉じ記号までを一括で捨てる。
+#[cfg(test)]
+pub(crate) fn collapse_params(raw: &str) -> String {
+    let mut out = String::new();
+    let mut rest = raw;
+    while let Some(start) = rest.find('{') {
+        out.push_str(&rest[..start]);
+        let Some(end) = rest[start..].find('}') else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        out.push_str("{}");
+        // `}}` のように閉じ記号が連続する分を読み飛ばす。
+        rest = rest[start + end..].trim_start_matches('}');
+    }
+    out.push_str(rest);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -345,6 +397,48 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use std::sync::Arc;
     use tower::ServiceExt;
+
+    /// 単一オリジン構成（`PUBLISH_TOPOLOGY=single-origin`）のリバースプロキシは、パスを見て web と
+    /// api へ振り分ける。web の画面のパスが `docker/nginx.conf` に列挙されていないと catch-all で
+    /// api へ流れ、404 になる（web にルートはあるのに届かない。ドメイン分割構成で web オリジン相対
+    /// リンクが api のパスへ届かないのと同じ、経路とサービスの取り違え）。
+    ///
+    /// 正規表現の評価まではしない。**画面の第 1 セグメントが設定に現れること**だけを見て、ルートを
+    /// 足したのに振り分けを足し忘れた退行を検出する。
+    #[test]
+    fn single_origin_proxy_routes_every_web_page_to_web() {
+        let conf = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docker/nginx.conf"
+        ))
+        .expect("read docker/nginx.conf");
+        // `location` ブロックの宣言行だけを対象にする（コメントに書いてあるだけでは振り分けされない）。
+        let locations: String = conf
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("location"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        // 非テナントのパスは対象外。`/`・`/version`・`/assets/...` はプロキシに個別の location が
+        // あり、`/healthz`・`/readyz` は api にも同じルートがあるので catch-all で api が答えてよい。
+        let non_tenant = ["/", "/healthz", "/readyz", "/version"];
+        let mut checked = 0;
+        for route in declared_route_paths() {
+            if non_tenant.contains(&route.as_str()) || route.starts_with("/assets/") {
+                continue;
+            }
+            let Some(segment) = route.trim_start_matches('/').split('/').next() else {
+                continue;
+            };
+            checked += 1;
+            assert!(
+                locations.contains(segment),
+                "route `{route}` is served by web but `{segment}` does not appear in any \
+                 location of docker/nginx.conf; 単一オリジン構成で api へ流れて 404 になる"
+            );
+        }
+        assert!(checked > 0, "expected routes to check");
+    }
 
     fn test_state() -> WebState {
         WebState::build(Arc::new(
