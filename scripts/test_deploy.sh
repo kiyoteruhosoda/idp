@@ -55,13 +55,31 @@ if [[ "${1:-}" == "compose" ]]; then
     down) exit 0 ;;
     ps) printf 'cid-%s\n' "${3:-svc}"; exit 0 ;;
     exec)
-      if [[ "${DOCKER_STUB_FAIL_DB_AUTH:-0}" == "1" && "$*" == *"SELECT 1"* ]]; then
-        echo "ERROR 1045 (28000): Access denied for user 'idp'@'172.27.0.6' (using password: YES)" >&2
+      # パスワード同期（root で ALTER USER）。成功すると以後アプリ用ユーザーの認証も通るよう、
+      # マーカーファイルで「同期済み」を記録する（実 DB の挙動を模す）。
+      if [[ "$*" == *"ALTER USER"* ]]; then
+        if [[ "${DOCKER_STUB_ROOT_AUTH_OK:-0}" == "1" ]]; then
+          [[ -n "${DOCKER_STUB_SYNCED_MARKER:-}" ]] && : >"$DOCKER_STUB_SYNCED_MARKER"
+          exit 0
+        fi
+        echo "ERROR 1045 (28000): Access denied for user 'root'@'localhost' (using password: YES)" >&2
         exit 1
       fi
-      if [[ "${DOCKER_STUB_FAIL_DB_CONN:-0}" == "1" && "$*" == *"SELECT 1"* ]]; then
-        echo "ERROR 1049 (42000): Unknown database 'idp'" >&2
-        exit 1
+      if [[ "$*" == *"SELECT 1"* ]]; then
+        if [[ "$*" == *"-uroot"* ]]; then
+          [[ "${DOCKER_STUB_ROOT_AUTH_OK:-0}" == "1" ]] && exit 0
+          echo "ERROR 1045 (28000): Access denied for user 'root'@'localhost' (using password: YES)" >&2
+          exit 1
+        fi
+        if [[ "${DOCKER_STUB_FAIL_DB_AUTH:-0}" == "1" ]]; then
+          if [[ -n "${DOCKER_STUB_SYNCED_MARKER:-}" && -f "${DOCKER_STUB_SYNCED_MARKER}" ]]; then exit 0; fi
+          echo "ERROR 1045 (28000): Access denied for user 'idp'@'172.27.0.6' (using password: YES)" >&2
+          exit 1
+        fi
+        if [[ "${DOCKER_STUB_FAIL_DB_CONN:-0}" == "1" ]]; then
+          echo "ERROR 1049 (42000): Unknown database 'idp'" >&2
+          exit 1
+        fi
       fi
       if [[ "$*" == *"SELECT id FROM tenants"* ]]; then printf '01970000-0000-7000-8000-000000000001\n'; fi
       exit 0 ;;
@@ -354,8 +372,47 @@ fi
 # .env を元のパスワードへ戻し、後続テストへ影響させない。
 sed -i "s|^MARIADB_PASSWORD=.*|${orig_pw_line}|" .env
 
-# アプリ用 DB ユーザーの認証が失敗する（既存 volume と .env のパスワード不一致）場合は、意味のない
-# migrate リトライではなくプリフライトで即座に停止し、原因と対処を提示する。
+# .env の値がクォートで囲まれていても、Compose と同じ解釈（対のクォートを外す）で DB へ接続すること。
+# ここを外さないと、正しい .env でも認証プリフライトが偽陽性で落ち、さらにパスワード同期が
+# クォート込みの誤った値を DB へ書き込んでしまう。
+: >"$DOCKER_STUB_LOG"
+sed -i 's|^MARIADB_PASSWORD=.*|MARIADB_PASSWORD="quoted-secret"|' .env
+./scripts/deploy.sh migrate >/tmp/deploy-quoted-secret.out 2>&1
+grep -qF -- '-pquoted-secret' "$DOCKER_STUB_LOG" ||
+  { echo "quoted .env value must be unquoted like Compose does" >&2; cat "$DOCKER_STUB_LOG" >&2; exit 1; }
+if grep -qF -- '-p"quoted-secret"' "$DOCKER_STUB_LOG"; then
+  echo "surrounding quotes must not be passed through to the DB client" >&2
+  exit 1
+fi
+sed -i "s|^MARIADB_PASSWORD=.*|${orig_pw_line}|" .env
+
+# アプリ用ユーザーの認証が失敗しても root が有効なら、DB 側のパスワードを .env へ揃えて復旧し、
+# デプロイを続行する（既存データを保持したまま drift を解消する）。
+: >"$DOCKER_STUB_LOG"
+export DOCKER_STUB_SYNCED_MARKER="$TMP/db-password-synced"
+rm -f "$DOCKER_STUB_SYNCED_MARKER"
+set +e
+DOCKER_STUB_FAIL_DB_AUTH=1 DOCKER_STUB_ROOT_AUTH_OK=1 \
+  ./scripts/deploy.sh migrate >/tmp/deploy-db-auth-sync.out 2>&1
+status=$?
+set -e
+[[ $status -eq 0 ]] || {
+  echo "deploy must recover from password drift when root credentials are valid" >&2
+  cat /tmp/deploy-db-auth-sync.out >&2; exit 1
+}
+grep -q 'ALTER USER' "$DOCKER_STUB_LOG" ||
+  { echo "password drift must be repaired via ALTER USER" >&2; cat "$DOCKER_STUB_LOG" >&2; exit 1; }
+grep -q 'run --rm -T migrate' "$DOCKER_STUB_LOG" ||
+  { echo "migrate must run after the password was synced" >&2; exit 1; }
+if grep -q "$(grep '^MARIADB_PASSWORD=' .env | cut -d= -f2-)" /tmp/deploy-db-auth-sync.out; then
+  echo "secret was not masked while syncing the DB password" >&2
+  exit 1
+fi
+rm -f "$DOCKER_STUB_SYNCED_MARKER"
+unset DOCKER_STUB_SYNCED_MARKER
+
+# アプリ用ユーザーでも root でも認証できない場合（= .env ごと別物）は、意味のない migrate リトライでは
+# なくプリフライトで即座に停止し、原因と対処を提示する。
 : >"$DOCKER_STUB_LOG"
 set +e
 DOCKER_STUB_FAIL_DB_AUTH=1 ./scripts/deploy.sh migrate >/tmp/deploy-db-auth-fail.out 2>&1
@@ -370,6 +427,10 @@ grep -q './deploy.sh reset' /tmp/deploy-db-auth-fail.out ||
   { echo "preflight diagnostic must suggest reset remedy" >&2; exit 1; }
 if grep -q 'run --rm -T migrate' "$DOCKER_STUB_LOG"; then
   echo "migrate must not run when DB auth preflight fails" >&2
+  exit 1
+fi
+if grep -q 'ALTER USER' "$DOCKER_STUB_LOG"; then
+  echo "password must not be altered when root credentials are invalid too" >&2
   exit 1
 fi
 if grep -q "$(grep '^MARIADB_PASSWORD=' .env | cut -d= -f2-)" /tmp/deploy-db-auth-fail.out; then
