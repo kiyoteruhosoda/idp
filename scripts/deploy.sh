@@ -82,11 +82,20 @@ COMPOSE_DEFINED_SERVICES=""
 # デプロイ完了時のまとめ表示に使う root テナントの URL（replace_app_containers で確定する）。
 ROOT_LOGIN_URL=""
 ROOT_ADMIN_URL=""
+# .env の字面ではなく Compose が解決した実効値でマスクするための追加パターン（resolve_db_credentials が設定）。
+EXTRA_MASK_VALUES=()
+# Compose が解決した DB 資格情報（resolve_db_credentials が確定させる）。
+DB_USER=""
+DB_NAME=""
+DB_PASSWORD=""
+DB_ROOT_PASSWORD=""
 
-# Compose の dotenv 解釈に合わせ、値を囲む対のクォートを外す（"..." / '...'）。外さないと
-# 「Compose はクォートを外した値でコンテナを作るのに deploy.sh はクォート込みで認証する」という
-# 食い違いが起き、正しい .env でも DB 認証プリフライトが偽陽性で落ちる（さらにパスワード同期は
-# 誤った値を DB へ書き込みかねない）。二重引用符内だけ \" \\ をエスケープとして解く。
+# Compose の dotenv 解釈に近づけ、値を囲む対のクォートを外す（"..." / '...'）。二重引用符内だけ
+# \" \\ をエスケープとして解く。
+# これは**近似**であり Compose の dotenv 実装と完全には一致しない（インラインコメント・変数展開・
+# \n 等の解釈は再現しない）。したがって DB を書き換える判断（パスワード同期）にはこの値を使わず、
+# 実効値は container_env_value で Compose 自身に解決させる。ここでの用途はログのマスクと、
+# コンテナから読めないときの退避に限る。
 strip_env_quotes() {
   local value="$1"
   if [[ ${#value} -ge 2 && "${value:0:1}" == '"' && "${value: -1}" == '"' ]]; then
@@ -107,10 +116,17 @@ get_env_var() {
 }
 
 mask_secrets() {
-  local sed_expr=() key value escaped
+  local sed_expr=() key value escaped values=()
   if [[ -f "$env_file" ]]; then
     for key in MARIADB_PASSWORD MARIADB_ROOT_PASSWORD KEY_ENCRYPTION_KEY INTERNAL_SERVICE_TOKEN CSRF_SECRET; do
-      value="$(get_env_var "$key" 2>/dev/null || true)"
+      values+=("$(get_env_var "$key" 2>/dev/null || true)")
+    done
+  fi
+  # .env の字面と Compose が解決した実効値は必ずしも一致しない（引用符・インラインコメント・変数展開）。
+  # 実際に使う値も併せてマスク対象にする（resolve_db_credentials が確定させる）。
+  values+=(${EXTRA_MASK_VALUES[@]+"${EXTRA_MASK_VALUES[@]}"})
+  if [[ ${#values[@]} -gt 0 ]]; then
+    for value in "${values[@]}"; do
       [[ -n "$value" ]] || continue
       # 秘密値を sed の BRE パターンとして使うため、メタ文字（\ . * [ ] ^ $ と区切りの |）を
       # エスケープする。これを怠ると、記号を含むパスワード（例 MARIADB_PASSWORD=[…）で不正な
@@ -460,9 +476,8 @@ migration_checksum_mismatch_guidance() {
   # version が取れなくても案内は出す（set -e + pipefail で中断しないよう best-effort にする）。
   ver="$(printf '%s' "$out" | grep -oiE 'migration [0-9]+ was previously applied' \
     | grep -oE '[0-9]+' | head -n1 || true)"
-  # DB 名は Compose / preflight_db_auth と同じ「ENV > .env > 既定」の解決順にする（ENV 上書き時に
-  # 誤って別 DB をダンプしないため）。
-  db_name="${MARIADB_DATABASE:-$(get_env_var MARIADB_DATABASE)}"; db_name="${db_name:-idp}"
+  # DB 名は preflight_db_auth と同じ実効値（Compose の解決結果）にする（誤って別 DB をダンプしないため）。
+  db_name="${DB_NAME:-${MARIADB_DATABASE:-$(get_env_var MARIADB_DATABASE)}}"; db_name="${db_name:-idp}"
   # コンテナ名は直接組み立てない（Compose v2 は project-mariadb-1、v1 は project_mariadb_1 で命名が
   # 異なる）。初期化済みの compose コマンドでサービス名 mariadb を解決させる。
   compose_cli="${compose[*]:-docker compose}"
@@ -518,9 +533,9 @@ run_migrations_with_retry() {
 }
 
 root_tenant_id() {
-  local db_user db_name db_password
-  db_user="$(get_env_var MARIADB_USER)"; db_name="$(get_env_var MARIADB_DATABASE)"; db_password="$(get_env_var MARIADB_PASSWORD)"
-  "${compose[@]}" exec -T mariadb mariadb -u"${db_user:-idp}" -p"$db_password" "${db_name:-idp}" -N -B \
+  # 資格情報は preflight_db_auth（start_database）が確定させた実効値を使う。未確定なら解決してから読む。
+  [[ -n "$DB_USER" ]] || resolve_db_credentials
+  "${compose[@]}" exec -T mariadb mariadb -u"$DB_USER" -p"$DB_PASSWORD" "$DB_NAME" -N -B \
     -e 'SELECT id FROM tenants WHERE parent_tenant_id IS NULL' 2>/dev/null || true
 }
 
@@ -540,6 +555,39 @@ sql_identifier() {
 }
 
 APP_DB_AUTH_ERROR=""
+
+# 起動中のコンテナが実際に持っている環境変数を読む。`.env` の解釈（クォート・インラインコメント・
+# 変数展開・エスケープ）は Compose の dotenv 実装が唯一の正であり、deploy.sh がそれを再実装すると
+# 必ずどこかで食い違う。`up -d mariadb` は `.env` が変われば必ずコンテナを作り直すため、コンテナの
+# 環境変数＝今の `.env` を Compose が解決した値＝api / migrate へ渡る値になる。パスワード同期は
+# DB を書き換える操作なので、推測した値ではなくこの実効値だけを使う。
+container_env_value() {
+  local service="$1" name="$2"
+  "${compose[@]}" exec -T "$service" sh -c "printf %s \"\${${name}-}\"" 2>/dev/null || true
+}
+
+# DB 資格情報を確定させる。Compose の解決結果（mariadb コンテナの環境変数）を最優先し、取得できない
+# 場合だけ従来どおり ENV > .env > 既定値へ退避する（コンテナ未起動でも診断だけは出せるようにするため）。
+resolve_db_credentials() {
+  local from_container
+  from_container="$(container_env_value mariadb MARIADB_USER)"
+  DB_USER="${from_container:-${MARIADB_USER:-$(get_env_var MARIADB_USER)}}"; DB_USER="${DB_USER:-idp}"
+  from_container="$(container_env_value mariadb MARIADB_DATABASE)"
+  DB_NAME="${from_container:-${MARIADB_DATABASE:-$(get_env_var MARIADB_DATABASE)}}"; DB_NAME="${DB_NAME:-idp}"
+  from_container="$(container_env_value mariadb MARIADB_PASSWORD)"
+  DB_PASSWORD="${from_container:-${MARIADB_PASSWORD:-$(get_env_var MARIADB_PASSWORD)}}"
+  from_container="$(container_env_value mariadb MARIADB_ROOT_PASSWORD)"
+  DB_ROOT_PASSWORD="${from_container:-${MARIADB_ROOT_PASSWORD:-$(get_env_var MARIADB_ROOT_PASSWORD)}}"
+  EXTRA_MASK_VALUES=("$DB_PASSWORD" "$DB_ROOT_PASSWORD")
+}
+
+# 「パスワード不一致」だけを drift として扱う。MariaDB は資格情報が正しくても DB へのアクセス権が
+# 無ければ 1044（ER_DBACCESS_DENIED_ERROR）を、同じ "Access denied for user ..." の文言で返すため、
+# 文字列だけで判定すると権限不足を drift と誤認し、GRANT で意図的に絞った権限を広げてしまう。
+# 認証固有のエラーコード 1045（ER_ACCESS_DENIED_ERROR）に限定する。
+is_password_mismatch_error() {
+  printf '%s' "$1" | grep -qE 'ERROR 1045[[:space:]]*\('
+}
 
 # アプリ用 DB ユーザーで実際に接続できるかを 1 回試す。migrate と同じ TCP 経路で試す
 # （-h mariadb でコンテナ IP から接続＝ '%' ホスト定義にマッチ）。ソケット（-h 省略＝localhost）だと
@@ -565,7 +613,7 @@ sync_app_db_password() {
   # root はコンテナ内ソケット（= 'root'@'localhost'）で確認する。'root'@'%' はイメージ設定次第で
   # 存在しないことがあり、TCP で試すと「同期できるのに不可」と誤判定するため。
   if ! out="$("${compose[@]}" exec -T mariadb mariadb -uroot -p"$root_password" -N -B -e 'SELECT 1' 2>&1)"; then
-    if printf '%s' "$out" | grep -qi 'access denied'; then return 2; fi
+    if is_password_mismatch_error "$out"; then return 2; fi
     printf '%s\n' "$out" | mask_secrets >&2
     return 1
   fi
@@ -591,21 +639,17 @@ FLUSH PRIVILEGES;"
 # 揃えられない場合だけ、原因と対処を明示して即座に停止する（fail-fast）。
 preflight_db_auth() {
   local db_user db_name db_password root_password attempt auth_denied=0 sync_status=0
-  # 資格情報は Compose と同じ解決順（エクスポート済みシェル環境変数 > .env ファイル値）で読む。
-  # Compose は ${MARIADB_PASSWORD} をシェル環境変数から先に補間するため、ここも同じ実効値を使わないと
-  # 「Compose/migrate は有効なのにプリフライトだけ弾く／その逆」の食い違いが起きる。
-  db_user="${MARIADB_USER:-$(get_env_var MARIADB_USER)}"; db_user="${db_user:-idp}"
-  db_name="${MARIADB_DATABASE:-$(get_env_var MARIADB_DATABASE)}"; db_name="${db_name:-idp}"
-  db_password="${MARIADB_PASSWORD:-$(get_env_var MARIADB_PASSWORD)}"
-  root_password="${MARIADB_ROOT_PASSWORD:-$(get_env_var MARIADB_ROOT_PASSWORD)}"
+  resolve_db_credentials
+  db_user="$DB_USER"; db_name="$DB_NAME"; db_password="$DB_PASSWORD"; root_password="$DB_ROOT_PASSWORD"
   log "DB 認証プリフライトを実行します（アプリ用ユーザー $db_user）..."
   for attempt in 1 2 3; do
-    # 認証エラーはパスワード不一致なので即断（リトライしない）。それ以外の一過性の失敗のみ短く再試行する。
+    # パスワード不一致（1045）は決定論的なのでリトライせず即断する。それ以外（権限不足 1044・DB 不在・
+    # 一過性のネットワーク障害等）は drift ではないため、短く再試行してから汎用エラーとして報告する。
     if try_app_db_auth "$db_user" "$db_name" "$db_password"; then
       log "DB 認証プリフライト OK（ユーザー $db_user）。"
       return 0
     fi
-    if printf '%s' "$APP_DB_AUTH_ERROR" | grep -qi 'access denied'; then auth_denied=1; break; fi
+    if is_password_mismatch_error "$APP_DB_AUTH_ERROR"; then auth_denied=1; break; fi
     auth_denied=0
     [[ $attempt -lt 3 ]] && sleep 2
   done

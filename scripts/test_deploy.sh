@@ -55,6 +55,17 @@ if [[ "${1:-}" == "compose" ]]; then
     down) exit 0 ;;
     ps) printf 'cid-%s\n' "${3:-svc}"; exit 0 ;;
     exec)
+      # コンテナの環境変数読み出し（deploy.sh は .env を自前で解釈せず Compose の解決結果を読む）。
+      # DOCKER_STUB_CONTAINER_ENV_FILE で「コンテナが持つ環境変数」を差し替えられるようにし、
+      # .env の字面と実効値が食い違うケース（引用符・インラインコメント）を検証できるようにする。
+      if [[ "$*" == *"printf %s"* ]]; then
+        var="$(printf '%s' "$*" | grep -oE '\$\{[A-Za-z_]+' | tail -n1 | tr -d '${')"
+        if [[ -n "${DOCKER_STUB_CONTAINER_ENV_FILE:-}" && -f "${DOCKER_STUB_CONTAINER_ENV_FILE}" && -n "$var" ]]; then
+          line="$(grep -E "^${var}=" "$DOCKER_STUB_CONTAINER_ENV_FILE" | tail -n1 || true)"
+          [[ -n "$line" ]] && printf '%s' "${line#*=}"
+        fi
+        exit 0
+      fi
       # パスワード同期（root で ALTER USER）。成功すると以後アプリ用ユーザーの認証も通るよう、
       # マーカーファイルで「同期済み」を記録する（実 DB の挙動を模す）。
       if [[ "$*" == *"ALTER USER"* ]]; then
@@ -78,6 +89,12 @@ if [[ "${1:-}" == "compose" ]]; then
         fi
         if [[ "${DOCKER_STUB_FAIL_DB_CONN:-0}" == "1" ]]; then
           echo "ERROR 1049 (42000): Unknown database 'idp'" >&2
+          exit 1
+        fi
+        # 資格情報は正しいが DB へのアクセス権が無い場合。1045 と同じ "Access denied for user" で
+        # 始まるが、パスワード不一致ではない（エラーコードは 1044）。
+        if [[ "${DOCKER_STUB_FAIL_DB_PRIV:-0}" == "1" ]]; then
+          echo "ERROR 1044 (42000): Access denied for user 'idp'@'%' to database 'idp'" >&2
           exit 1
         fi
       fi
@@ -372,19 +389,55 @@ fi
 # .env を元のパスワードへ戻し、後続テストへ影響させない。
 sed -i "s|^MARIADB_PASSWORD=.*|${orig_pw_line}|" .env
 
-# .env の値がクォートで囲まれていても、Compose と同じ解釈（対のクォートを外す）で DB へ接続すること。
-# ここを外さないと、正しい .env でも認証プリフライトが偽陽性で落ち、さらにパスワード同期が
-# クォート込みの誤った値を DB へ書き込んでしまう。
+# DB 資格情報は .env の字面ではなく Compose が解決した実効値（mariadb コンテナの環境変数）を使うこと。
+# `.env` の dotenv 構文（引用符・インラインコメント・変数展開）を deploy.sh 側で再実装すると必ず
+# 食い違い、パスワード同期が誤った値を DB へ書き込んでしまう。
 : >"$DOCKER_STUB_LOG"
-sed -i 's|^MARIADB_PASSWORD=.*|MARIADB_PASSWORD="quoted-secret"|' .env
-./scripts/deploy.sh migrate >/tmp/deploy-quoted-secret.out 2>&1
-grep -qF -- '-pquoted-secret' "$DOCKER_STUB_LOG" ||
-  { echo "quoted .env value must be unquoted like Compose does" >&2; cat "$DOCKER_STUB_LOG" >&2; exit 1; }
-if grep -qF -- '-p"quoted-secret"' "$DOCKER_STUB_LOG"; then
-  echo "surrounding quotes must not be passed through to the DB client" >&2
+export DOCKER_STUB_CONTAINER_ENV_FILE="$TMP/container-env"
+cat > "$DOCKER_STUB_CONTAINER_ENV_FILE" <<'ENVEOF'
+MARIADB_USER=idp
+MARIADB_DATABASE=idp
+MARIADB_PASSWORD=resolved-secret
+MARIADB_ROOT_PASSWORD=resolved-root-secret
+ENVEOF
+# .env には Compose なら `resolved-secret` に解決される書き方（引用符＋インラインコメント）を置く。
+sed -i 's|^MARIADB_PASSWORD=.*|MARIADB_PASSWORD="resolved-secret" # rotated|' .env
+./scripts/deploy.sh migrate >/tmp/deploy-resolved-secret.out 2>&1
+grep -qF -- '-presolved-secret' "$DOCKER_STUB_LOG" ||
+  { echo "DB credentials must come from the Compose-resolved container environment" >&2; cat "$DOCKER_STUB_LOG" >&2; exit 1; }
+if grep -qF -- '-p"resolved-secret"' "$DOCKER_STUB_LOG"; then
+  echo "raw .env text must not be passed through to the DB client" >&2
+  exit 1
+fi
+# 実効値は .env の字面と一致しなくてもマスクされること（診断出力からの漏洩防止）。
+if grep -qF 'resolved-secret' /tmp/deploy-resolved-secret.out; then
+  echo "Compose-resolved secret must be masked in deploy output" >&2
   exit 1
 fi
 sed -i "s|^MARIADB_PASSWORD=.*|${orig_pw_line}|" .env
+rm -f "$DOCKER_STUB_CONTAINER_ENV_FILE"
+unset DOCKER_STUB_CONTAINER_ENV_FILE
+
+# 資格情報は正しいが DB へのアクセス権が無い場合（1044）は、パスワード不一致（1045）ではない。
+# 権限を勝手に GRANT で広げず、破壊的な reset も勧めない汎用エラーとして報告する。
+: >"$DOCKER_STUB_LOG"
+set +e
+DOCKER_STUB_FAIL_DB_PRIV=1 DOCKER_STUB_ROOT_AUTH_OK=1 \
+  ./scripts/deploy.sh migrate >/tmp/deploy-db-priv-fail.out 2>&1
+status=$?
+set -e
+[[ $status -eq 1 ]] || { echo "deploy must fail fast on a privilege error" >&2; cat /tmp/deploy-db-priv-fail.out >&2; exit 1; }
+grep -q 'DB preflight failed (non-authentication error)' /tmp/deploy-db-priv-fail.out ||
+  { echo "privilege error must not be reported as password drift" >&2; cat /tmp/deploy-db-priv-fail.out >&2; exit 1; }
+if grep -q 'ALTER USER\|GRANT ALL' "$DOCKER_STUB_LOG"; then
+  echo "privilege error must not trigger password sync / GRANT" >&2
+  cat "$DOCKER_STUB_LOG" >&2
+  exit 1
+fi
+if grep -q './deploy.sh reset' /tmp/deploy-db-priv-fail.out; then
+  echo "privilege error must NOT recommend destructive reset" >&2
+  exit 1
+fi
 
 # アプリ用ユーザーの認証が失敗しても root が有効なら、DB 側のパスワードを .env へ揃えて復旧し、
 # デプロイを続行する（既存データを保持したまま drift を解消する）。
