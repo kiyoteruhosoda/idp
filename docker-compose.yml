@@ -1,6 +1,8 @@
 # 開発・ビルド用の Compose（ソースがあるホスト向け。api/web/migrate は build: でソースからビルドする）。
 # ソースを持たないデプロイ先では、代わりにビルド済みイメージを image: 参照する docker-compose.deploy.yml を
 # 使う（scripts/deploy.sh がそちらを使用）。イメージの受け渡しは scripts/README.md「ホストの分離」参照。
+name: ${COMPOSE_PROJECT_NAME:-idp-dev}
+
 services:
   mariadb:
     image: mariadb:10.11
