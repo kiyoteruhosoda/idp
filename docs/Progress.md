@@ -38,16 +38,16 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 | 優先度 | ID | 課題内容 | 工数 | 影響度 | 重要度 | 難易度 |
 |---:|---|---|---:|---:|---:|---:|
 | 45 | T1 | 入れ子ホスト名（`api.idp.nolumia.com` 等）の DNS・証明書・RP 再設定を実施する（⬜未着手。コード側は完了） | 小 | 中 | 大 | 小 |
+| 45 | SEC3 | OIDC フローの TOTP 検証にレート制限・ロックアウトが無い（ポータル側にはある）（⬜未着手） | 小 | 中 | 大 | 中 |
 | 23 | SEC2 | ログアウト系 URI（`backchannel_logout_uri` ほか）が無検証 → 認証済み blind SSRF（⬜未着手） | 中 | 中 | 大 | 中 |
+| 23 | SEC4 | single-origin 構成で admin の変更系 POST（`restart`・secret 再発行・password/MFA reset 等）が same-site スクリプトから CSRF 可能（body 無しエンドポイントは JSON content-type が防御にならない）（⬜未着手） | 中 | 中 | 大 | 中 |
 | 15 | SEC11 | `INTERNAL_SERVICE_TOKEN` に長さ・形式検証が無く、http issuer では dev 既定へフォールバックする（⬜未着手） | 小 | 中 | 大 | 小 |
-| 14 | SEC4 | single-origin 構成で admin JSON API にブラウザ Cookie が届き、api 側に Origin/CSRF 検証が無い（⬜未着手） | 中 | 中 | 中 | 中 |
 | 9 | SEC5 | CSRF double-submit の種（`admin_csrf_id`/`portal_csrf_id`）がオリジン非分離 → `__Host-` 前置（⬜未着手） | 小 | 中 | 中 | 小 |
 | 9 | SEC7 | 認証成功時に `auth_session_id` を再生成しない（`sso_session_id` は再生成済みで非対称）（⬜未着手） | 小 | 小 | 中 | 中 |
 | 9 | SEC9 | クエリ文字列（`?auth_session=`・`?code_challenge=`）が `TraceLayer` 既定スパン経由でログに出うる（⬜未着手） | 小 | 中 | 中 | 小 |
 | 8 | SEC1 | web が `X-Forwarded-For` を無条件信頼（api の `TRUST_FORWARDED_HEADERS` ゲートを迂回）→ レート制限回避・監査ログ汚染（⬜未着手） | 中 | 中 | 大 | 小 |
-| 8 | SEC3 | OIDC フローの TOTP 検証にレート制限・ロックアウトが無い（ポータル側にはある）（⬜未着手） | 小 | 中 | 大 | 中 |
 | 8 | SEC6 | `auth_sessions.id` だけ DB に平文保存（他の bearer credential は全てハッシュ）（⬜未着手） | 中 | 小 | 大 | 中 |
-| 5 | SEC8 | authorization code 再利用検知時に発行済みトークンを失効させない（refresh 側は実装済みで非対称）（⬜未着手） | 中 | 小 | 中 | 中 |
+| 8 | SEC8 | 再利用検知時に子孫トークンファミリを失効させない（authorization code・refresh token の両方）（⬜未着手） | 中 | 小 | 大 | 中 |
 | 5 | SEC12 | 低リスク改善のまとめ（CSP `unsafe-inline`・Swagger 無認証・`require_pkce` 死に設定・同意 POST の Cookie 非束縛・argon2 パラメータ非明示・auth_sessions の GC/照合/`expect()`）（⬜未着手） | 中 | 中 | 小 | 中 |
 | 3 | SEC10 | `/token`・`/introspect`・`/revoke` にレート制限が無い（Argon2 増幅型 DoS）（⬜未着手） | 小 | 小 | 中 | 小 |
 
@@ -115,11 +115,20 @@ auth_session 生存 600 秒間、6 桁 TOTP を無制限に総当たり可能。
 
 既定の domain-split では `sso_session_id` が host-only で api ホストへ送られず安全。しかし
 `PUBLISH_TOPOLOGY=single-origin` では nginx が `/{tenant}/admin/*` を `Accept` ヘッダで振り分け
-（`docker/nginx.conf:51-54, 79-81`）、`Accept: application/json` で同一オリジンのブラウザ Cookie 付き
+（`docker/nginx.conf:51-54, 79-81`）、`Accept: application/json` で同一サイトのブラウザ Cookie 付き
 リクエストが api の管理 API に到達する。api の admin extractor は Cookie のみ検証し Origin/Referer/CSRF を
-見ない（`crates/api/src/presentation/admin.rs:67-106`）。現状 CSRF が成立しないのは `axum::Json` extractor が
-JSON content-type を要求する副次効果に依存するだけで、`Form` 受理や CORS 追加で即座に CSRF になる。
-対策: api の admin 経路に Origin 検証を追加する。
+見ない（`crates/api/src/presentation/admin.rs:67-106`）。
+
+**JSON content-type は防御になっていない**（当初の記述を訂正）。変更系エンドポイントの一部は `Json`
+extractor を持たず body 不要で発火する — `restart_service`（`crates/api/src/presentation/handlers/admin_restart.rs:35`）、
+`rotate_client_secret`（`admin_clients.rs:207`）、`reset_user_password` / `reset_user_mfa`
+（`admin_users.rs:289, 331`）。これらは POST（simple method）かつ body 無し・`Accept` は CORS-safelisted の
+ため、同一サイト（同一 eTLD+1 のサブドメイン）に置いたスクリプトから `fetch(url, {method:'POST',
+credentials:'include', headers:{Accept:'application/json'}})` の **simple request（プリフライト無し）** で
+到達できる。`SameSite=Lax` の SSO Cookie は same-site なので送信され、nginx は api へ振り分ける。
+つまり single-origin では admin 再起動・secret 再発行・password/MFA reset が即座に CSRF 可能。
+対策: api の admin 経路に Origin/Referer 検証（許可オリジン一致）を追加する。DELETE/PATCH はプリフライトで
+守られるが、防御を content-type に依存させない。
 
 #### SEC5. CSRF double-submit の種がオリジン非分離
 
@@ -141,11 +150,18 @@ MFA 待ちの認可セッションを乗っ取れる。対策: `handle_hash` と
 は認証前に発行した Cookie 値を使い回す。`sso_session_id` はログイン毎に再生成するのに非対称。
 `password_verified_at` / `authenticated_user_id` を初めて立てる時点で id をローテートする。
 
-#### SEC8. code 再利用検知時に発行済みトークンを失効させない
+#### SEC8. 再利用検知時に子孫トークンファミリを失効させない（code・refresh の両方）
 
-`crates/core/src/application/token.rs:219-235` は再利用を監査記録するだけで、1 回目の交換で発行済みの
-アクセス／リフレッシュトークンは生かしたまま。refresh 側は再利用でチェーン失効を実装済み（`token.rs:411-434`）で
-非対称。監査 reason も「not found/expired/used」を 1 文字列に丸め、真の再利用を区別できない。
+- **authorization code**: `crates/core/src/application/token.rs:219-235` は再利用を監査記録するだけで、
+  1 回目の交換で発行済みのアクセス／リフレッシュトークンは生かしたまま。監査 reason も
+  「not found/expired/used」を 1 文字列に丸め、真の再利用を期限切れと区別できない。
+- **refresh token**（当初の記述を訂正）: 再利用検知時（`token.rs:410-434`）に `revoke(&rt_hash, now)` で
+  **提示された（親）トークンしか失効させない**（`crates/core/src/infrastructure/repositories/refresh_token.rs:94-105`
+  は `token_hash` 完全一致の 1 行のみ更新）。そこから rotation 済みの**子トークン（子孫チェーン）は有効なまま**
+  残る。当初「refresh 側はチェーン失効を実装済み」と書いたが誤り。`revoke_all_for_user_in_tenant`
+  （`refresh_token.rs:117-`）は存在するが再利用検知経路では呼ばれない。
+- 対策: 再利用検知時に当該トークンファミリ（`parent_hash` を辿る子孫、または発行元 auth_session/user
+  単位）を一括失効させる。RFC 6819 / OAuth 2.1 の推奨に沿える。
 
 #### SEC9. クエリ文字列がログに出うる（ADR-0018 の受け入れ条件が未達）
 
