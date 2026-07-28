@@ -140,6 +140,8 @@ pub struct Config {
     key_encryption_key_is_dev: bool,
     /// 署名鍵ローテーション: `not_after` のこの日数前に新鍵を生成して旧鍵を退役させる（K2）。
     key_rotation_lead_days: u32,
+    /// エラー・警告ログ（`log` テーブル）の保持日数。`0` は削除しない。
+    app_log_retention_days: u32,
     /// リバースプロキシが付与する `X-Forwarded-For` / `X-Forwarded-Proto` を信頼するか（S1）。
     trust_forwarded_headers: bool,
     /// HSTS `max-age`（秒）。0 = HSTS ヘッダを付与しない（S1）。
@@ -242,6 +244,7 @@ impl Config {
             key_encryption_key,
             key_encryption_key_is_dev,
             key_rotation_lead_days: resolver.parse("KEY_ROTATION_LEAD_DAYS", 30)?,
+            app_log_retention_days: resolver.parse("APP_LOG_RETENTION_DAYS", 30)?,
             trust_forwarded_headers: resolver.parse("TRUST_FORWARDED_HEADERS", false)?,
             hsts_max_age: resolver.parse("HSTS_MAX_AGE", 0u64)?,
             internal_service_token,
@@ -334,6 +337,10 @@ impl Config {
     /// 署名鍵ローテーション: `not_after` のこの日数前に次期鍵を生成して旧鍵を退役させる（K2）。
     pub fn key_rotation_lead_days(&self) -> u32 {
         self.key_rotation_lead_days
+    }
+    /// エラー・警告ログの保持日数（`0` = 削除しない）。
+    pub fn app_log_retention_days(&self) -> u32 {
+        self.app_log_retention_days
     }
     /// リバースプロキシが付与する `X-Forwarded-For` / `X-Forwarded-Proto` を信頼するか（S1）。
     pub fn trust_forwarded_headers(&self) -> bool {

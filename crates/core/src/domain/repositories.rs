@@ -19,6 +19,9 @@
 //! - **テナント列を持たないテーブル**（署名鍵・jti 失効リスト・TOTP・WebAuthn・チャレンジ）。
 #![allow(dead_code)]
 
+use crate::domain::application_log::{
+    ApplicationLogEntry, ApplicationLogFilter, ApplicationLogRecord,
+};
 use crate::domain::audit::{AuditEvent, AuditLogEntry, AuditLogFilter};
 use crate::domain::auth_session::AuthSession;
 use crate::domain::authorization_code::AuthorizationCode;
@@ -359,6 +362,25 @@ pub trait AuditLogQuery: Send + Sync {
         &self,
         tenant_id: TenantId,
     ) -> Result<Vec<(String, DateTime<Utc>)>>;
+}
+
+/// アプリケーションログ（`log`）の書き込み（CLAUDE.md「ログ」）。`tracing` の WARN / ERROR を
+/// 非同期にまとめて永続化する。**ここでの失敗はログに出さない**（書き込み失敗のログがまた書き込みを
+/// 誘発する無限ループを避けるため。実装側で握り潰す）。
+#[async_trait]
+pub trait ApplicationLogSink: Send + Sync {
+    /// 複数件をまとめて記録する。空スライスは何もしない。
+    async fn record_batch(&self, records: &[ApplicationLogRecord]) -> Result<()>;
+
+    /// `older_than` より古い行を削除し、削除件数を返す（保持期間の適用）。
+    async fn purge_older_than(&self, older_than: DateTime<Utc>) -> Result<u64>;
+}
+
+/// `log` の読み取り（管理コンソールのエラー・警告ログ画面）。書き込みとは関心を分ける。
+#[async_trait]
+pub trait ApplicationLogQuery: Send + Sync {
+    /// 条件に一致するログを新しい順（`occurred_at` 降順、同時刻は `id` 降順）に返す。
+    async fn search(&self, filter: &ApplicationLogFilter) -> Result<Vec<ApplicationLogEntry>>;
 }
 
 /// 利用者が保有する権限コード（ADR-0006）の参照・付与・剥奪（DIP 境界）。

@@ -32,6 +32,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "user_webauthn_credentials",
     "passkey_challenges",
     "audit_log",
+    "log",
 ];
 
 /// contract 済み（DROP マイグレーション適用後）で存在してはならないテーブル。

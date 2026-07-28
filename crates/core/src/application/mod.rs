@@ -8,6 +8,7 @@ pub mod account_profile;
 pub mod account_tenants;
 pub mod admin_access;
 pub mod admin_login;
+pub mod application_log;
 pub mod audit;
 pub mod audit_query;
 pub mod authorize;

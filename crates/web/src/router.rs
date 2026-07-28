@@ -241,6 +241,8 @@ pub fn build(state: WebState) -> Router {
         )
         // 状況確認画面（監査ログ・クライアント状況）。読み取り専用。
         .route("/admin/audit-logs", get(admin_status_console::audit_logs))
+        // エラー・警告ログ（`log` テーブル）。api 側は idp.system.admin を要求する。
+        .route("/admin/logs", get(admin_status_console::application_logs))
         .route("/admin/status", get(admin_status_console::client_status))
         // 署名鍵管理画面（K1）。
         .route("/admin/signing-keys", get(admin_signing_keys_console::list))

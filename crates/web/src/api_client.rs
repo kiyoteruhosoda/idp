@@ -16,6 +16,10 @@ use idp_contracts::admin::{
     SamlServiceProviderResponse, SamlServiceProviderUpdateRequest, SamlSpMetadataImportResponse,
     UserPermissionsResponse, UserSummaryResponse, WhoamiResponse,
 };
+use idp_contracts::application_log::{
+    ApplicationLogEntryResponse, ApplicationLogIngestRequest, ApplicationLogIngestResponse,
+    ApplicationLogPayload,
+};
 use idp_contracts::auth::{
     InternalAdminAuthenticateRequest, InternalAdminAuthenticateResponse,
     InternalAdminChangePasswordRequest, InternalAdminChangePasswordResponse,
@@ -962,6 +966,57 @@ impl ApiClient {
             .await
             .map_err(|e| AdminApiError::Transport(e.to_string()))?;
         Self::handle_admin_response(response, "/admin/audit-logs").await
+    }
+
+    /// エラー・警告ログ検索（`GET /admin/logs`）。フィルタは `(key, value)` の並びで渡す。
+    /// 参照権限は api 側が `idp.system.admin` で強制する（テナント横断の運用情報のため）。
+    pub async fn search_application_logs(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        query: &[(&str, String)],
+    ) -> Result<Vec<ApplicationLogEntryResponse>, AdminApiError> {
+        let response = self
+            .with_language(
+                self.http
+                    .get(format!("{}/{}/admin/logs", self.base_url, tenant_id))
+                    .query(query)
+                    .header(REQUEST_ID_HEADER, correlation_id)
+                    .header(
+                        reqwest::header::COOKIE,
+                        format!("{SSO_SESSION_COOKIE}={sso}"),
+                    ),
+            )
+            .send()
+            .await
+            .map_err(|e| AdminApiError::Transport(e.to_string()))?;
+        Self::handle_admin_response(response, "/admin/logs").await
+    }
+
+    /// 自身の WARN / ERROR を api へ送って `log` テーブルへ書いてもらう（`POST /internal/logs`）。
+    /// web は DB を持たないため、これがアプリケーションログを残す唯一の経路（CLAUDE.md「ログ」）。
+    ///
+    /// **失敗しても呼び出し側はログを出さないこと**（送信失敗のログがまた送信を誘発するため）。
+    /// 受理件数を返す。
+    pub async fn push_application_logs(
+        &self,
+        records: Vec<ApplicationLogPayload>,
+    ) -> anyhow::Result<usize> {
+        let response = self
+            .http
+            .post(format!("{}/internal/logs", self.base_url))
+            .header(SERVICE_TOKEN_HEADER, &self.service_token)
+            .json(&ApplicationLogIngestRequest { records })
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            anyhow::bail!("api /internal/logs returned status {}", response.status());
+        }
+        Ok(response
+            .json::<ApplicationLogIngestResponse>()
+            .await?
+            .accepted)
     }
 
     /// クライアント状況一覧（`GET /admin/clients/status`）。

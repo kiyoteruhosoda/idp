@@ -12,6 +12,10 @@ path = "src/lib.rs"
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+chrono = { workspace = true }
+# アプリケーションログ取り込み層（api / web が同じ形でレコードを組み立てるための共有実装）。
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 sha2 = { workspace = true }
 hmac = { workspace = true }
 hex = { workspace = true }

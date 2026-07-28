@@ -329,6 +329,19 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         description: "署名鍵ローテーションの先行日数。`not_after` のこの日数前に次期鍵を生成し旧鍵を退役させる。",
     },
     SettingDefinition {
+        key: "APP_LOG_RETENTION_DAYS",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
+        default_value: Some("30"),
+        description: "エラー・警告ログ（`log` テーブル）の保持日数。これより古い行は定期的に削除する。\
+                      `0` を指定すると削除しない（テーブルが際限なく増えるため、外部でログを退避して \
+                      いる場合にのみ選ぶこと）。",
+    },
+    SettingDefinition {
         key: "TRUST_FORWARDED_HEADERS",
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
