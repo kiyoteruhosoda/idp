@@ -7,7 +7,7 @@
       <p class="text-muted mb-0">{{ messages.get("admin-saml-client-lead") }}</p>
     </div>
     <div class="d-flex flex-wrap gap-2">
-      <a class="btn btn-outline-secondary" href="{{ tenant }}/saml/metadata">
+      <a class="btn btn-outline-secondary" href="{{ idp_metadata_url }}">
         <i class="fa-solid fa-download me-2" aria-hidden="true"></i>{{ messages.get("admin-saml-idp-metadata-download") }}
       </a>
       <button class="btn btn-primary" type="button" data-bs-toggle="collapse" data-bs-target="#saml-client-create-panel"

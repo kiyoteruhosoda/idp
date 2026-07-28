@@ -208,6 +208,33 @@ mod tests {
         }
     }
 
+    /// IdP メタデータのダウンロード導線は **api オリジンの絶対 URL**であること。
+    /// 別ドメイン公開（ADR-0015。web = `https://idp.example.com` / api = `https://api.idp.example.com`）
+    /// では web オリジン相対だと web 側に該当ルートが無く 404 になる。
+    #[test]
+    fn saml_console_links_idp_metadata_on_the_api_origin() {
+        let messages = Messages::new(Locale::Ja);
+        let html = render(&SamlServiceProvidersConsole {
+            messages: &messages,
+            tenant: "/t",
+            idp_metadata_url: "https://api.idp.example.com/t/saml/metadata",
+            admin: Some("admin-1"),
+            csrf: "csrf",
+            saved: false,
+            updated: false,
+            deleted: false,
+            imported: false,
+            error_key: None,
+            providers: &[],
+            values: &SamlServiceProviderFormValues::default(),
+        });
+        assert!(
+            html.contains(r#"href="https://api.idp.example.com/t/saml/metadata""#),
+            "{html}"
+        );
+        assert!(!html.contains(r#"href="/t/saml/metadata""#), "{html}");
+    }
+
     /// `data-confirm` を持つテンプレートは、必ず共通スクリプトを読み込むレイアウトを継承していること。
     /// 継承していないと確認ダイアログが黙って出ないまま破壊的操作が送信される。
     #[test]
@@ -850,6 +877,10 @@ pub struct PasskeyRegisterTemplate<'a> {
 pub struct SamlServiceProvidersConsole<'a> {
     pub messages: &'a Messages,
     pub tenant: &'a str,
+    /// IdP メタデータの公開 URL（`{issuer}/{tenant_id}/saml/metadata`）。**絶対 URL**であること。
+    /// api が提供するエンドポイントなので、別ドメイン公開（ADR-0015）では web オリジン相対では
+    /// 到達できない。SP へ渡す値としても issuer 側の URL が正しい。
+    pub idp_metadata_url: &'a str,
     pub admin: Admin<'a>,
     pub csrf: &'a str,
     pub saved: bool,

@@ -35,6 +35,10 @@ pub enum LogFormat {
 pub struct Config {
     bind_addr: String,
     api_base_url: String,
+    /// api の公開オリジン（= OIDC issuer）。ブラウザから api のエンドポイントへ向かう絶対 URL の
+    /// 基点。`api_base_url`（web→api のサーバ間到達先。Compose 内部アドレスになりうる）とは別物で、
+    /// **ブラウザに出す URL には必ずこちらを使う**。
+    issuer: String,
     /// web 自身の公開オリジン（ADR-0012 §2。Cookie `Secure` 判定・絶対 URL 生成に使う）。
     /// api 側の `PUBLIC_WEB_BASE_URL` と同一値を設定する。未設定なら issuer と同一オリジン
     /// （単一オリジン構成）。
@@ -175,6 +179,7 @@ impl Config {
             bind_addr: env_or("WEB_BIND_ADDR", "0.0.0.0:8081"),
             // api への到達先。単一オリジン構成ではプロキシ内部アドレス、ローカルでは api の直アドレス。
             api_base_url: normalize_base_url(env_or("API_BASE_URL", "http://localhost:8080")),
+            issuer,
             public_web_base_url,
             internal_service_token,
             internal_service_token_is_dev,
@@ -210,6 +215,13 @@ impl Config {
     }
     pub fn csrf_secret_is_dev(&self) -> bool {
         self.csrf_secret_is_dev
+    }
+    /// api の公開オリジン（= OIDC issuer。末尾スラッシュ無し）。ブラウザを api のエンドポイントへ
+    /// 向ける絶対 URL の基点。別ドメイン公開（ADR-0015）では web と api でオリジンが異なるため、
+    /// api が提供するエンドポイント（`/{tenant_id}/saml/metadata` 等）へのリンクを web オリジン
+    /// 相対で書くと 404 になる。
+    pub fn issuer(&self) -> &str {
+        &self.issuer
     }
     /// web 自身の公開オリジン（末尾スラッシュ無し。ADR-0012 §2）。
     pub fn public_web_base_url(&self) -> &str {

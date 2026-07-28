@@ -61,6 +61,7 @@ pub async fn list(
     Html(render(&SamlServiceProvidersConsole {
         messages: &messages,
         tenant: &tenant.prefix(),
+        idp_metadata_url: &idp_metadata_url(state.config.issuer(), &tenant),
         admin: Some(&admin),
         csrf: &csrf_from(&headers, state.config.csrf_secret()),
         saved: query.saved.is_some(),
@@ -252,6 +253,7 @@ pub async fn import_metadata(
     Html(render(&SamlServiceProvidersConsole {
         messages: &messages,
         tenant: &tenant.prefix(),
+        idp_metadata_url: &idp_metadata_url(state.config.issuer(), &tenant),
         admin: Some(&admin),
         csrf: &csrf_from(&headers, state.config.csrf_secret()),
         saved: false,
@@ -353,6 +355,16 @@ pub async fn delete(
     }
 }
 
+/// IdP メタデータの公開 URL（`{issuer}/{tenant_id}/saml/metadata`）。
+///
+/// このエンドポイントは **api** が提供する（`crates/api` の `discovery::saml_idp_metadata`）。
+/// 別ドメイン公開（ADR-0015）では web と api のオリジンが異なるため、web オリジン相対で
+/// リンクすると web 側に該当ルートが無く 404 になる。SP へ渡す取り込み URL としても、
+/// entityID（= テナント issuer）と同じオリジンの URL が正しい。
+fn idp_metadata_url(issuer: &str, tenant: &WebTenant) -> String {
+    format!("{}{}/saml/metadata", issuer, tenant.prefix())
+}
+
 fn csrf_from(headers: &HeaderMap, secret: &[u8]) -> String {
     let sso = crate::cookies::get(headers, crate::cookies::SSO_SESSION_COOKIE).unwrap_or_default();
     console_csrf_token(&sso, secret)
@@ -379,5 +391,21 @@ fn error_key_for(error: &str) -> Option<&'static str> {
         "forbidden" => Some("admin-settings-error-forbidden"),
         "internal" => Some("admin-error-internal"),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// IdP メタデータ URL は api の公開オリジン（issuer）に対する絶対 URL であること。
+    /// 別ドメイン公開（ADR-0015）では web オリジン相対だと 404 になる。
+    #[test]
+    fn idp_metadata_url_is_absolute_on_the_issuer_origin() {
+        let tenant = WebTenant("00000000-0000-7000-8000-000000000001".to_string());
+        assert_eq!(
+            idp_metadata_url("https://api.idp.example.com", &tenant),
+            "https://api.idp.example.com/00000000-0000-7000-8000-000000000001/saml/metadata"
+        );
     }
 }
