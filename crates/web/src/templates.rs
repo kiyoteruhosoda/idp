@@ -208,6 +208,113 @@ mod tests {
         }
     }
 
+    /// IdP メタデータのダウンロード導線は **api オリジンの絶対 URL**であること。
+    /// 別ドメイン公開（ADR-0015。web = `https://idp.example.com` / api = `https://api.idp.example.com`）
+    /// では web オリジン相対だと web 側に該当ルートが無く 404 になる。
+    #[test]
+    fn saml_console_links_idp_metadata_on_the_api_origin() {
+        let messages = Messages::new(Locale::Ja);
+        let html = render(&SamlServiceProvidersConsole {
+            messages: &messages,
+            tenant: "/t",
+            idp_metadata_url: "https://api.idp.example.com/t/saml/metadata",
+            admin: Some("admin-1"),
+            csrf: "csrf",
+            saved: false,
+            updated: false,
+            deleted: false,
+            imported: false,
+            error_key: None,
+            providers: &[],
+            values: &SamlServiceProviderFormValues::default(),
+        });
+        assert!(
+            html.contains(r#"href="https://api.idp.example.com/t/saml/metadata""#),
+            "{html}"
+        );
+        assert!(!html.contains(r#"href="/t/saml/metadata""#), "{html}");
+    }
+
+    /// テンプレートに直書きする `href` / `action` のパスは、必ず **web 自身のルート**であること。
+    ///
+    /// api だけが提供するパス（`/{tenant_id}/saml/metadata` 等）を web オリジン相対で書くと、
+    /// 別ドメイン公開（ADR-0015。web と api でオリジンが異なる）では web に該当ルートが無く 404 に
+    /// なる。api のエンドポイントへ導く導線は、ハンドラで issuer 基点の**絶対 URL**を組み立てて
+    /// テンプレートへ値として渡す（値まるごとがテンプレート式のものは静的に判定できないので対象外）。
+    #[test]
+    fn template_link_targets_are_routes_this_service_serves() {
+        let routes = crate::router::declared_route_paths();
+        let mut checked = 0;
+        for (template, raw) in template_link_targets() {
+            let Some(path) = normalize_template_path(&raw) else {
+                continue;
+            };
+            checked += 1;
+            assert!(
+                routes.contains(&path),
+                "{template} links `{raw}` but web serves no route `{path}`; \
+                 api のエンドポイントならハンドラで issuer 基点の絶対 URL を渡すこと"
+            );
+        }
+        assert!(checked > 0, "expected link targets to check");
+    }
+
+    /// テンプレートの `href="…"` / `action="…"` を (ファイル名, 値) で列挙する。
+    fn template_link_targets() -> Vec<(String, String)> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+            for entry in std::fs::read_dir(dir).expect("read templates dir") {
+                let path = entry.expect("dir entry").path();
+                if path.is_dir() {
+                    walk(&path, out);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("html") {
+                    continue;
+                }
+                let name = path.display().to_string();
+                let source = std::fs::read_to_string(&path).expect("read template");
+                for attr in ["href=\"", "action=\""] {
+                    for after in source.split(attr).skip(1) {
+                        if let Some(len) = after.find('"') {
+                            out.push((name.clone(), after[..len].to_string()));
+                        }
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(
+            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/templates")),
+            &mut out,
+        );
+        out
+    }
+
+    /// テンプレートの値を `router.rs` のパスと比較できる形へ正規化する。判定できない値は `None`。
+    fn normalize_template_path(raw: &str) -> Option<String> {
+        let raw = raw.trim();
+        // 外部 URL・アンカー・空値は経路の対象外。
+        if raw.is_empty()
+            || raw.starts_with("http://")
+            || raw.starts_with("https://")
+            || raw.starts_with('#')
+            || raw.starts_with("mailto:")
+        {
+            return None;
+        }
+        // 値まるごとがテンプレート式（= ハンドラが組み立てた URL。絶対 URL でありうる）。
+        if raw.starts_with("{{") && raw.ends_with("}}") && raw.matches("{{").count() == 1 {
+            return None;
+        }
+        let path = crate::router::collapse_params(raw);
+        // クエリ・フラグメントは経路の同定に関係しない。
+        let path = path.split(['?', '#']).next().unwrap_or_default();
+        // 先頭のテナントプレフィクス（`{{ tenant }}…` / `/{{ t.id }}…`）を落とす。
+        let path = path.strip_prefix("{}").unwrap_or(path);
+        let path = path.strip_prefix("/{}").unwrap_or(path);
+        path.starts_with('/').then(|| path.to_string())
+    }
+
     /// `data-confirm` を持つテンプレートは、必ず共通スクリプトを読み込むレイアウトを継承していること。
     /// 継承していないと確認ダイアログが黙って出ないまま破壊的操作が送信される。
     #[test]
@@ -850,6 +957,10 @@ pub struct PasskeyRegisterTemplate<'a> {
 pub struct SamlServiceProvidersConsole<'a> {
     pub messages: &'a Messages,
     pub tenant: &'a str,
+    /// IdP メタデータの公開 URL（`{issuer}/{tenant_id}/saml/metadata`）。**絶対 URL**であること。
+    /// api が提供するエンドポイントなので、別ドメイン公開（ADR-0015）では web オリジン相対では
+    /// 到達できない。SP へ渡す値としても issuer 側の URL が正しい。
+    pub idp_metadata_url: &'a str,
     pub admin: Admin<'a>,
     pub csrf: &'a str,
     pub saved: bool,
