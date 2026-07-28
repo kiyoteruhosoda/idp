@@ -35,6 +35,8 @@ use utoipa::{Modify, OpenApi};
         handlers::discovery::openid_configuration,
         handlers::discovery::jwks,
         handlers::discovery::saml_idp_metadata,
+        handlers::saml_sso::sso_redirect,
+        handlers::saml_sso::sso_post,
         handlers::revoke::revoke,
         handlers::introspect::introspect,
         handlers::admin_clients::create_client,
@@ -76,6 +78,7 @@ use utoipa::{Modify, OpenApi};
         handlers::admin_signing_keys::delete_key,
     ),
     components(schemas(
+        handlers::saml_sso::SamlSsoForm,
         RegisterRequest,
         RegisterResponse,
         VerifyEmailRequest,

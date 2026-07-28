@@ -12,6 +12,12 @@ login-error-csrf = フォームの有効期限が切れました。ページを�
 login-error-csrf-retry = フォームの有効期限が切れたため、新しいフォームを読み込みました。お手数ですがもう一度入力してください。
 login-error-rate-limited = 試行回数が多すぎます。しばらく待ってからお試しください。
 
+# SAML SSO の継続画面（署名済み SAMLResponse を SP の ACS へ自動 POST する）。
+saml-continue-title = アプリケーションへサインイン
+saml-continue-message = アプリケーションへ戻っています…
+saml-continue-submit = 続行
+saml-error-expired = サインイン要求の有効期限が切れました。アプリケーションからやり直してください。
+
 # RP-initiated logout（OIDC end_session_endpoint。web が受ける。ADR-0018）。
 logout-title = サインアウト
 logout-in-progress-message = サインアウトしています…

@@ -23,6 +23,9 @@ pub const ADMIN_CSRF_COOKIE: &str = "admin_csrf_id";
 pub const PORTAL_CSRF_COOKIE: &str = "portal_csrf_id";
 /// ポータルの TOTP 入力ステップで `mfa_ticket`（署名付き短命チケット）を保持する Cookie。
 pub const PORTAL_MFA_COOKIE: &str = "portal_mfa_ticket";
+/// SAML SSO の進行状態 id を保持する Cookie。SSO 未確立で `/saml/continue` から
+/// ログインへ誘導したあと、ログイン成功時にフローへ復帰するために使う（web ローカル）。
+pub const SAML_REQUEST_COOKIE: &str = "saml_request_id";
 /// 表示言語の選択を保持する Cookie（`ja` / `en`。MT15。決定チェーンの優先度3）。
 pub const LANG_COOKIE: &str = "lang";
 /// 言語 Cookie の保持期間（既定 1 年）。UI 設定のため長命にする。

@@ -12,6 +12,12 @@ login-error-csrf = The form has expired. Please reload the page and try again.
 login-error-csrf-retry = The form had expired, so a fresh one has been loaded. Please try again.
 login-error-rate-limited = Too many attempts. Please wait a moment and try again.
 
+# SAML SSO continue page (auto-POST of the signed SAMLResponse to the SP's ACS).
+saml-continue-title = Signing in to the application
+saml-continue-message = Returning you to the application…
+saml-continue-submit = Continue
+saml-error-expired = The sign-in request has expired. Please start over from the application.
+
 # RP-initiated logout (OIDC end_session_endpoint served by web. ADR-0018).
 logout-title = Sign out
 logout-in-progress-message = Signing you out…

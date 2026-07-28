@@ -818,6 +818,7 @@ version = "1.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
 dependencies = [
+ "crc32fast",
  "miniz_oxide",
  "zlib-rs",
 ]
@@ -1385,6 +1386,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "dotenvy",
+ "flate2",
  "fluent",
  "hex",
  "idp-contracts",
@@ -1436,6 +1438,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
+ "flate2",
  "hex",
  "hmac",
  "idp-contracts",

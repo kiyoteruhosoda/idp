@@ -1,3 +1,20 @@
+## 2026-07-28（SAML SSO エンドポイントを実装した）
+
+- **メタデータが広告していた SingleSignOnService（`{issuer}/{tenant_id}/saml/sso`）を実装した。**
+  SP-initiated SSO（HTTP-Redirect / HTTP-POST 両バインディング）で AuthnRequest を受け、登録済み SP
+  （entity_id 照合・ACS URL の完全一致・enabled）を検証したうえで、署名付き SAML Response
+  （Assertion への enveloped XML 署名。RS256 / ES256、OIDC と同じ ACTIVE 署名鍵）を SP の ACS へ
+  自動 POST するフォームで返す。NameID は SP 登録の Format に従う（emailAddress → メール、それ以外 →
+  OIDC と同じ `sub`）。発行・拒否は `saml_response.issued` として監査記録する。
+- **認証は OIDC と同じ web ハンドオフ方式（ADR-0018 決定 2）。** api はブラウザ Cookie を読まず、
+  進行状態（`saml_sso_requests` 表。0018）を作って単回・短命ハンドルで web の
+  `/{tenant_id}/saml/continue` へ 302 する。web が SSO Cookie とともに `/internal/saml/resume` を呼び、
+  SSO 未確立ならポータルログインへ誘導して成功後にフローへ復帰する（TOTP・強制パスワード変更を含む）。
+  SSO 復元の判定（有効期限・ユーザー有効性・テナントメンバーシップ・idle 延長）は
+  `application::sso_restore::SsoRestorer` へ切り出し、OIDC の authorize と共有する。
+- **XML 署名は排他的 C14N 正準形で直接生成する方式。** 生成 XML を最初から正準形（全closeタグ・
+  正準属性順・正準エスケープ）で出力し、そのバイト列へ署名する（`domain::saml_response`）。
+
 ## 2026-07-28（IdP メタデータのダウンロードリンクが 404 になるのを修正した）
 
 - **管理コンソールの「IdP メタデータをダウンロード」が 404 になっていたのを修正した。** リンクが

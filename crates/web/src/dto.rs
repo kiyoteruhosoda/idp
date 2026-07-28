@@ -10,6 +10,15 @@ pub struct LoginForm {
     pub csrf_token: String,
 }
 
+/// SAML SSO 継続画面のクエリ（`GET /saml/continue`）。
+#[derive(Debug, Deserialize)]
+pub struct SamlContinueQuery {
+    /// api の `/saml/sso` がハンドオフ URL に載せた単回・短命のハンドル。web は即座に
+    /// `/internal/saml/resume` で交換する（ADR-0018 決定 2 と同方式）。
+    #[serde(default)]
+    pub handle: Option<String>,
+}
+
 /// ログイン画面のクエリ（`GET /login`）。
 #[derive(Debug, Deserialize)]
 pub struct LoginPageQuery {

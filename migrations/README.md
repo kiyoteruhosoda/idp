@@ -58,6 +58,10 @@ sqlx マイグレーション（MariaDB）を管理する。
   ため外部キーは張らない（テナント・ユーザー削除後も行を保持する）。許可値（`level` / `service`）は
   DB ネイティブ ENUM ではなく `VARCHAR` + `CHECK` で持ち、Rust 側 enum（`domain::application_log`）で
   集中管理する。`down` は表ごと削除する（業務データを持たないため）。
+- `0018_saml_sso_requests`: SAML SP-initiated SSO の進行状態表 `saml_sso_requests` を追加する
+  （OIDC の `auth_sessions` に相当。web ハンドオフのハンドル・検証済み ACS・`InResponseTo`・RelayState を
+  応答発行まで保持する）。`down` は表ごと削除する（一時状態のみでロールバック時に失うのは進行中の
+  SSO フローだけ。SP からやり直せる）。
 
 root テナントの UUID は固定値 `00000000-0000-7000-8000-000000000001`（全環境共通・git 管理。ADR-0011）。
 管理者ログイン URL は `/00000000-0000-7000-8000-000000000001/...`。

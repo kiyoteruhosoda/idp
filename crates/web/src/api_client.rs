@@ -37,10 +37,10 @@ use idp_contracts::auth::{
     InternalPasswordResetRequestResponse, InternalPortalAuthenticateRequest,
     InternalPortalAuthenticateResponse, InternalPortalChangePasswordRequest,
     InternalPortalChangePasswordResponse, InternalPortalMfaRequest, InternalPortalMfaResponse,
-    InternalRpLogoutRequest, InternalRpLogoutResponse, InternalTotpConfirmRequest,
-    InternalTotpConfirmResponse, InternalTotpDeleteRequest, InternalTotpDeleteResponse,
-    InternalTotpSetupRequest, InternalTotpSetupResponse, InternalVerifyTotpRequest,
-    InternalVerifyTotpResponse,
+    InternalRpLogoutRequest, InternalRpLogoutResponse, InternalSamlResumeRequest,
+    InternalSamlResumeResponse, InternalTotpConfirmRequest, InternalTotpConfirmResponse,
+    InternalTotpDeleteRequest, InternalTotpDeleteResponse, InternalTotpSetupRequest,
+    InternalTotpSetupResponse, InternalVerifyTotpRequest, InternalVerifyTotpResponse,
 };
 use idp_contracts::runtime_settings::{
     SharedRuntimeSettingsResponse, SHARED_RUNTIME_SETTINGS_PATH,
@@ -172,6 +172,18 @@ impl ApiClient {
         req: &InternalAuthorizeResumeRequest,
     ) -> anyhow::Result<InternalAuthorizeResumeResponse> {
         self.post_internal("/internal/authorize/resume", correlation_id, req)
+            .await
+    }
+
+    /// SAML SSO フローの再開（`POST /internal/saml/resume`）。`/saml/sso` からのハンドオフで
+    /// 受け取った単回ハンドル（またはログイン後の `saml_request_id`）と自ドメインの SSO Cookie 値を
+    /// 渡し、SSO 判定・署名付き SAML Response の発行までを api に委ねる。
+    pub async fn saml_resume(
+        &self,
+        correlation_id: &str,
+        req: &InternalSamlResumeRequest,
+    ) -> anyhow::Result<InternalSamlResumeResponse> {
+        self.post_internal("/internal/saml/resume", correlation_id, req)
             .await
     }
 

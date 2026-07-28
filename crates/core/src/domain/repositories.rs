@@ -34,6 +34,7 @@ use crate::domain::password_reset::PasswordResetToken;
 use crate::domain::refresh_token::RefreshToken;
 use crate::domain::revoked_access_token::RevokedAccessToken;
 use crate::domain::saml_service_provider::SamlServiceProvider;
+use crate::domain::saml_sso_request::SamlSsoRequest;
 use crate::domain::signing_key::SigningKey;
 use crate::domain::sso_session::SsoSession;
 use crate::domain::system_setting::SystemSetting;
@@ -221,11 +222,37 @@ pub trait SamlServiceProviderRepository: Send + Sync {
         tenant_id: TenantId,
         id: Uuid,
     ) -> Result<Option<SamlServiceProvider>>;
+    /// テナント境界内で entity_id 解決する（SSO エンドポイントの AuthnRequest `Issuer` 照合。
+    /// `(tenant_id, entity_id)` は一意）。
+    async fn find_by_entity_id(
+        &self,
+        tenant_id: TenantId,
+        entity_id: &str,
+    ) -> Result<Option<SamlServiceProvider>>;
     /// 既存 SP を更新する（同一テナント・id のレコードのみ。entity_id 重複は `Conflict`）。
     /// 更新できた場合 `true`、対象が無ければ（find 後に別管理者が削除した競合等）`false`。
     async fn update(&self, provider: &SamlServiceProvider) -> Result<bool>;
     /// テナント境界内で SP を削除する。削除できた場合 `true`、対象が無ければ `false`。
     async fn delete(&self, tenant_id: TenantId, id: Uuid) -> Result<bool>;
+}
+
+/// SAML SP-initiated SSO の進行状態（`saml_sso_requests`）の永続化。
+/// ハンドルの単回消費は [`AuthSessionRepository`] と同じ原子的 UPDATE 方式で強制する。
+#[async_trait]
+pub trait SamlSsoRequestRepository: Send + Sync {
+    async fn create(&self, request: &SamlSsoRequest) -> Result<()>;
+    /// フローを開始したテナントの行のみ返す（他テナントの id を持ち込んでも解決させない）。
+    async fn find_by_id(&self, tenant_id: TenantId, id: &str) -> Result<Option<SamlSsoRequest>>;
+    /// web ハンドオフ用ハンドル（SHA-256）で行を引く。テナント限定は `find_by_id` と同じ。
+    async fn find_by_handle(
+        &self,
+        tenant_id: TenantId,
+        handle_hash: &str,
+    ) -> Result<Option<SamlSsoRequest>>;
+    /// ハンドルを単回使用として消費する（`handle_hash` を NULL 化）。すでに消費済み（並行交換に
+    /// 負けた・再利用）なら `false` を返す。
+    async fn consume_handle(&self, id: &str, handle_hash: &str) -> Result<bool>;
+    async fn delete(&self, id: &str) -> Result<()>;
 }
 
 #[async_trait]

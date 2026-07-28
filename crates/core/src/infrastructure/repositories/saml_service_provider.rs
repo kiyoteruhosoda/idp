@@ -110,6 +110,23 @@ impl SamlServiceProviderRepository for SqlxSamlServiceProviderRepository {
         row.as_ref().map(map_row).transpose()
     }
 
+    async fn find_by_entity_id(
+        &self,
+        tenant_id: TenantId,
+        entity_id: &str,
+    ) -> Result<Option<SamlServiceProvider>> {
+        let row = sqlx::query(
+            "SELECT id, tenant_id, display_name, entity_id, acs_url, name_id_format, x509_certificate, enabled, created_at, updated_at \
+             FROM saml_service_providers WHERE tenant_id = ? AND entity_id = ?",
+        )
+        .bind(tenant_id.as_uuid().to_string())
+        .bind(entity_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        row.as_ref().map(map_row).transpose()
+    }
+
     async fn update(&self, provider: &SamlServiceProvider) -> Result<bool> {
         let result = sqlx::query(
             "UPDATE saml_service_providers \

@@ -9,17 +9,16 @@
 //! エラー方針: `client_id` / `redirect_uri` が無効な場合はリダイレクトせず、
 //! それ以外のエラーは `redirect_uri` にエラーコードを付与して返す。
 
-use crate::application::audit::{AuditService, RequestContext};
+use crate::application::audit::RequestContext;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
-use crate::domain::audit::{AuditEventType, AuditResult};
+use crate::application::sso_restore::SsoRestorer;
 use crate::domain::auth_session::AuthSession;
 use crate::domain::client::Client;
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::error::OAuthErrorCode;
 use crate::domain::repositories::{
-    AuthSessionRepository, ClientConsentRepository, ClientRepository, SsoSessionRepository,
-    TenantMembershipRepository, UserRepository,
+    AuthSessionRepository, ClientConsentRepository, ClientRepository,
 };
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::{CodeChallengeMethod, Prompt, Scope};
@@ -87,46 +86,35 @@ pub enum ResumeOutcome {
 
 pub struct AuthorizeService {
     clients: Arc<dyn ClientRepository>,
-    users: Arc<dyn UserRepository>,
     auth_sessions: Arc<dyn AuthSessionRepository>,
-    sso_sessions: Arc<dyn SsoSessionRepository>,
-    memberships: Arc<dyn TenantMembershipRepository>,
+    /// SSO 復元の共通判定（SAML SSO と共有。[`crate::application::sso_restore`]）。
+    sso_restorer: Arc<SsoRestorer>,
     client_consents: Arc<dyn ClientConsentRepository>,
     code_issuance: Arc<CodeIssuanceService>,
-    audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
     auth_session_ttl: Duration,
-    sso_idle_ttl: Duration,
 }
 
 impl AuthorizeService {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         clients: Arc<dyn ClientRepository>,
-        users: Arc<dyn UserRepository>,
         auth_sessions: Arc<dyn AuthSessionRepository>,
-        sso_sessions: Arc<dyn SsoSessionRepository>,
-        memberships: Arc<dyn TenantMembershipRepository>,
+        sso_restorer: Arc<SsoRestorer>,
         client_consents: Arc<dyn ClientConsentRepository>,
         code_issuance: Arc<CodeIssuanceService>,
-        audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
         auth_session_ttl: std::time::Duration,
-        sso_idle_ttl: std::time::Duration,
     ) -> Self {
         Self {
             clients,
-            users,
             auth_sessions,
-            sso_sessions,
-            memberships,
+            sso_restorer,
             client_consents,
             code_issuance,
-            audit,
             clock,
             auth_session_ttl: Duration::from_std(auth_session_ttl)
                 .expect("auth session TTL out of range"),
-            sso_idle_ttl: Duration::from_std(sso_idle_ttl).expect("SSO idle TTL out of range"),
         }
     }
 
@@ -274,8 +262,9 @@ impl AuthorizeService {
         // 2. SSO 復元を試みる（`prompt=login` は常に再認証）。
         if !force_login {
             if let Some(session_id) = non_empty(cmd.sso_session_id.as_deref()) {
-                match self.try_resume_sso(tenant, session_id, ctx).await {
-                    Ok(Some((user_id, auth_time))) => {
+                match self.sso_restorer.try_resume(tenant, session_id, ctx).await {
+                    Ok(Some(restored)) => {
+                        let (user_id, auth_time) = (restored.user_id, restored.auth_time);
                         // `max_age` チェック: auth_time から max_age 秒超過していれば再認証。
                         let max_age_exceeded = session.max_age.is_some_and(|max_age| {
                             (now - auth_time).num_seconds() > max_age as i64
@@ -431,76 +420,6 @@ impl AuthorizeService {
                 false
             }
         }
-    }
-
-    /// SSO セッションの復元を試みる。有効なら `(user_id, auth_time)` を返し idle 期限を延長する。
-    /// 期限切れは削除して `sso_session.expired` を監査ログへ記録する。
-    async fn try_resume_sso(
-        &self,
-        tenant: TenantContext,
-        session_id: &str,
-        ctx: &RequestContext,
-    ) -> Result<
-        Option<(uuid::Uuid, chrono::DateTime<chrono::Utc>)>,
-        crate::domain::error::DomainError,
-    > {
-        let session_hash = crypto::sha256_hex(session_id);
-        let Some(session) = self.sso_sessions.find_by_hash(&session_hash).await? else {
-            return Ok(None);
-        };
-
-        let now = self.clock.now();
-        if !session.is_valid_at(now) {
-            self.sso_sessions.delete(&session_hash).await?;
-            self.audit
-                .record(
-                    AuditEventType::SsoSessionExpired,
-                    AuditResult::Failure,
-                    Some(tenant.tenant_id()),
-                    Some(session.user_id),
-                    None,
-                    Some("idle or absolute timeout"),
-                    ctx,
-                )
-                .await;
-            return Ok(None);
-        }
-
-        // ユーザーが無効化されていれば SSO 復元しない（再ログインで検出させる）。
-        match self.users.find_by_id(session.user_id).await? {
-            Some(user) if user.is_active() && !user.is_locked_at(now) => {}
-            _ => return Ok(None),
-        }
-
-        // OIDC フローのメンバーシップ判定（ADR-0009 §8）: SSO セッションはホスト単位で共有されるため、
-        // ユーザーが**要求テナントの ACTIVE メンバーシップ（HOME または GUEST）を持つこと**を検証する。
-        // メンバーシップのない SSO セッションは当該テナントのフローでは未認証として扱う（= ログインへ）。
-        // ゲストは所属元テナントでログインしてこの SSO を確立し、参加先テナントではこの判定で許可される。
-        if !self
-            .memberships
-            .is_active_member(tenant.tenant_id(), session.user_id)
-            .await?
-        {
-            return Ok(None);
-        }
-
-        // idle 期限を +8h 更新（absolute は変更しない）。auth_time は初回ログイン時刻を維持する。
-        self.sso_sessions
-            .extend_idle(&session_hash, now + self.sso_idle_ttl)
-            .await?;
-        self.audit
-            .record(
-                AuditEventType::SsoSessionResumed,
-                AuditResult::Success,
-                Some(tenant.tenant_id()),
-                Some(session.user_id),
-                None,
-                None,
-                ctx,
-            )
-            .await;
-
-        Ok(Some((session.user_id, session.auth_time)))
     }
 }
 
