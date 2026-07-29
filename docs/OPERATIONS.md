@@ -826,15 +826,15 @@ MariaDB は data volume 初回作成時のパスワードを固定し、以後�
 
 | 環境 | 配置例 | `.env` テンプレート | web の公開 URL | `WEB_PORT` | api の公開 URL | `API_PORT` | `IMAGE_TAG` |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| stg | `/opt/idp/stg` | `.env.staging.example` | `https://idpstg.nolumia.com` | `10010` | `https://idpapistg.nolumia.com` | `10011` | `stg` |
-| prod | `/opt/idp/prod` | `.env.production.example` | `https://idp.nolumia.com` | `10000` | `https://idpapi.nolumia.com` | `10001` | `prod` |
+| stg | `/opt/idp/stg` | `.env.staging.example` | `https://idpstg.nolumia.com` | `10010` | `https://identitystg.nolumia.com` | `10011` | `stg` |
+| prod | `/opt/idp/prod` | `.env.production.example` | `https://idp.nolumia.com` | `10000` | `https://identity.nolumia.com` | `10001` | `prod` |
 
 前段のリバースプロキシ（Synology DSM 等）で TLS を終端し、上表のドメインを同一ホストの
 `127.0.0.1:<WEB_PORT>` / `127.0.0.1:<API_PORT>` へ流す。`PUBLIC_WEB_BASE_URL` は web に、`ISSUER` は
 api に、それぞれブラウザ・RP が外から到達する URL（上表の公開 URL）を設定する。
 `single-origin` に切り替えた場合は両者を `WEB_PORT` の同一オリジンに揃え、`API_PORT` は使わない。
 
-api は web の兄弟サブドメイン（`idpapi.nolumia.com` / `idpapistg.nolumia.com`。ADR-0019 決定 1。
+api は web の兄弟サブドメイン（`identity.nolumia.com` / `identitystg.nolumia.com`。ADR-0019 決定 1。
 どちらも apex 直下の 1 ラベルなので、ワイルドカード証明書 `*.nolumia.com` 1 枚で web・api の
 両ホストを覆える）。セッション Cookie は各 web ホストの host-only（ADR-0018 決定 2・4）のため、
 prod と stg の Cookie スコープは交わらない。**`COOKIE_DOMAIN` は設定しない**（兄弟命名で設定すると

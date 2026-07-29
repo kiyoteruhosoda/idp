@@ -3,7 +3,7 @@
 - **ADR-0018 決定 1（入れ子ホスト名）を撤回した（ADR-0019 決定 1）。** ワイルドカード証明書は
   左 1 ラベルしか覆えず、サブサブドメイン（`api.idp.nolumia.com`）には別証明書が必要になるため。
   `.env.production.example` / `.env.staging.example` と `docs/OPERATIONS.md` の公開ホスト名を
-  兄弟命名（`idpapi.nolumia.com` / `idpapistg.nolumia.com`）へ戻した。決定 2〜4（api の Cookie
+  兄弟命名（`identity.nolumia.com` / `identitystg.nolumia.com`）へ戻した。決定 2〜4（api の Cookie
   非依存・host-only）は実装済みのため、兄弟命名でも stg/prod の Cookie スコープは交わらない。
   成立条件として **`COOKIE_DOMAIN` は掃除用途以外で設定禁止**を明記した。Progress.md 旧 T1
   （入れ子ホスト名の適用作業）は不要になり削除した。

@@ -14,7 +14,7 @@ ADR-0018 決定 1 は、api を web の**子サブドメイン**（`api.idp.nolu
 しかし適用作業（Progress.md 旧 T1）を進めたところ、2 つの問題が判明した。
 
 1. **サブサブドメインは証明書運用上使えない。** ワイルドカード証明書は左 1 ラベルしか覆えない
-   ため、`*.nolumia.com` は `idp.nolumia.com` と `idpapi.nolumia.com` には一致するが
+   ため、`*.nolumia.com` は `idp.nolumia.com` と `identity.nolumia.com` には一致するが
    `api.idp.nolumia.com` には一致しない。子サブドメイン構成には環境ごとに別証明書
    （SAN 追加または `*.idp.nolumia.com` 等）が必要で、この配置ではそれが用意できない。
 2. **決定 1 の前提だった脅威は、決定 2〜4 の実装完了で既に消えている。** 兄弟命名が危険だったのは
@@ -38,8 +38,8 @@ ADR-0018 決定 1 は、api を web の**子サブドメイン**（`api.idp.nolu
 
 | 環境 | web（HTML 画面） | api（protocol・JSON） |
 |---|---|---|
-| prod | `idp.nolumia.com` | `idpapi.nolumia.com` |
-| stg | `idpstg.nolumia.com` | `idpapistg.nolumia.com` |
+| prod | `idp.nolumia.com` | `identity.nolumia.com` |
+| stg | `idpstg.nolumia.com` | `identitystg.nolumia.com` |
 
 - ADR-0018 決定 1（入れ子命名）を撤回する。どちらのホストも apex 直下の 1 ラベルなので、
   ワイルドカード証明書 `*.nolumia.com` 1 枚で全ホストを覆える。

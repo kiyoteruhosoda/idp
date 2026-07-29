@@ -52,7 +52,7 @@ ADR-0012 は、api（OIDC protocol）と web（HTML 画面）を別サブドメ�
 > **撤回（2026-07-29・ADR-0019）**: ワイルドカード証明書は左 1 ラベルしか覆えず、
 > サブサブドメイン（`api.idp.nolumia.com`）には別証明書が必要になるため適用できなかった。
 > 決定 2〜4 の実装完了により Domain 付きセッション Cookie 自体が存在しなくなったので、
-> 兄弟サブドメイン（`idpapi.nolumia.com` 等）+ `COOKIE_DOMAIN` 未設定の維持で置き換える。
+> 兄弟サブドメイン（`identity.nolumia.com` 等）+ `COOKIE_DOMAIN` 未設定の維持で置き換える。
 
 | 環境 | web（HTML 画面） | api（protocol・JSON） | Cookie スコープ |
 |---|---|---|---|
