@@ -1,7 +1,12 @@
 //! `webauthn-rs` ラッパー。
 //!
 //! `Webauthn` インスタンスの構築と、登録・認証の始終フロー（begin/finish）を一箇所に集約する。
-//! RP ID は issuer URL のホスト名部分、RP オリジンは issuer URL そのものを使う。
+//! RP ID は web の公開ベース URL（`PUBLIC_WEB_BASE_URL`。未設定時は issuer に追従）のホスト名部分、
+//! RP オリジンはその URL のオリジン（scheme + host + port。パスは落とす）を使う。Passkey の
+//! セレモニー（`navigator.credentials.*`）は web のページ上で実行されるため、RP ID・origin は
+//! web のオリジンに対して成立させる（ADR-0019 決定 2。
+//! issuer＝api のオリジンから導出すると、domain-split では api ホストが web ページの登録可能
+//! サフィックスにならず、セレモニーがブラウザ側で常に失敗する）。
 //!
 //! エラー型は `webauthn_rs::WebauthnError` を文字列にしてアプリエラーとして返す。
 
@@ -26,24 +31,36 @@ impl std::fmt::Debug for WebAuthnService {
 }
 
 impl WebAuthnService {
-    /// `issuer` から RP ID（ホスト名）と RP オリジンを導出して `Webauthn` を構築する。
+    /// `web_base_url`（web の公開ベース URL）から RP ID（ホスト名）と RP オリジンを導出して
+    /// `Webauthn` を構築する。
     ///
     /// # Panics
-    /// `issuer` が有効な URL でない場合、またはホスト名がない場合は panic する
+    /// `web_base_url` が有効な URL でない場合、またはホスト名がない場合は panic する
     /// （設定ミスなので起動時に即座に検出する）。
-    pub fn new(issuer: &str) -> Self {
-        let origin =
-            Url::parse(issuer).unwrap_or_else(|e| panic!("ISSUER is not a valid URL: {e}"));
-        let rp_id = origin
+    pub fn new(web_base_url: &str) -> Self {
+        let base = Url::parse(web_base_url)
+            .unwrap_or_else(|e| panic!("PUBLIC_WEB_BASE_URL is not a valid URL: {e}"));
+        let rp_id = base
             .host_str()
-            .unwrap_or_else(|| panic!("ISSUER URL has no host: {issuer}"));
-        let inner = WebauthnBuilder::new(rp_id, &origin)
+            .unwrap_or_else(|| panic!("PUBLIC_WEB_BASE_URL has no host: {web_base_url}"))
+            .to_string();
+        let origin = ceremony_origin(&base);
+        let inner = WebauthnBuilder::new(&rp_id, &origin)
             .unwrap_or_else(|e| panic!("failed to build Webauthn: {e}"))
             .rp_name("OIDC IdP")
             .build()
             .unwrap_or_else(|e| panic!("failed to build Webauthn: {e}"));
         Self { inner }
     }
+}
+
+/// セレモニーの期待オリジン（scheme + host + port のみ）。ブラウザの `clientDataJSON.origin` は
+/// 常にパス無しのオリジンのため、公開ベース URL がパスプレフィクス付き（例
+/// `https://example.com/idp`。`validate_public_base_url` はパスを許容する）でも一致するよう、
+/// パスを落としてから `WebauthnBuilder` へ渡す。
+fn ceremony_origin(base: &Url) -> Url {
+    Url::parse(&base.origin().ascii_serialization())
+        .unwrap_or_else(|e| panic!("PUBLIC_WEB_BASE_URL has no valid origin: {e}"))
 }
 
 impl WebAuthnPort for WebAuthnService {
@@ -116,5 +133,28 @@ impl WebAuthnPort for WebAuthnService {
         self.inner
             .finish_discoverable_authentication(credential, state, creds)
             .map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ceremony_origin_strips_path_prefix() {
+        let base = Url::parse("https://idp.example.com/prefix").expect("parse");
+        assert_eq!(ceremony_origin(&base).as_str(), "https://idp.example.com/");
+    }
+
+    #[test]
+    fn ceremony_origin_keeps_non_default_port() {
+        let base = Url::parse("http://localhost:8081/idp").expect("parse");
+        assert_eq!(ceremony_origin(&base).as_str(), "http://localhost:8081/");
+    }
+
+    #[test]
+    fn builds_from_a_base_url_with_a_path_prefix() {
+        // パス付きの公開ベース URL でも構築でき、RP ID はホスト名になる。
+        let _ = WebAuthnService::new("https://idp.example.com/prefix");
     }
 }

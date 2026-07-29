@@ -1,6 +1,7 @@
 # ADR-0018: api↔web の状態受け渡しから Cookie を外し、ホスト名を入れ子にして Cookie スコープを閉じる
 
-- Status: Accepted（決定 2〜4 は実装済み。決定 1 の DNS・証明書・RP 再設定は `docs/Progress.md` T1）
+- Status: Accepted（決定 2〜4 は実装済み。**決定 1 はワイルドカード証明書の 1 ラベル制約により
+  適用不能と判明し、ADR-0019 で撤回した** — 兄弟サブドメイン + `COOKIE_DOMAIN` 恒久未設定へ）
 - Date: 2026-07-27
 - 関連: `docs/adr/0012-api-web-domain-split.md`（**§Decision 1 のホスト名前提と §Decision 3「サービス横断
   Cookie に `Domain` を付与する」を本 ADR で置き換える**）、`docs/adr/0007-api-web-service-split.md`（§3 内部認証 API）、
@@ -46,7 +47,12 @@ ADR-0012 は、api（OIDC protocol）と web（HTML 画面）を別サブドメ�
 
 ## Decision
 
-### 1. ホスト名を入れ子にする（api を web の子サブドメインにする）
+### 1. ホスト名を入れ子にする（api を web の子サブドメインにする）〔ADR-0019 で撤回〕
+
+> **撤回（2026-07-29・ADR-0019）**: ワイルドカード証明書は左 1 ラベルしか覆えず、
+> サブサブドメイン（`api.idp.nolumia.com`）には別証明書が必要になるため適用できなかった。
+> 決定 2〜4 の実装完了により Domain 付きセッション Cookie 自体が存在しなくなったので、
+> 兄弟サブドメイン（`identity.nolumia.com` 等）+ `COOKIE_DOMAIN` 未設定の維持で置き換える。
 
 | 環境 | web（HTML 画面） | api（protocol・JSON） | Cookie スコープ |
 |---|---|---|---|

@@ -585,11 +585,12 @@ impl AppState {
             *config.csrf_secret(),
         ));
 
-        // WebAuthn の RP ID・origin は**基底 issuer のホスト**から導出する（ADR-0009 §6）。
-        // per-tenant issuer（`<基底>/<tenant_id>`）は渡さない — WebAuthn はプロトコル上ホスト単位であり、
-        // パスを含められないため。テナント分離は「クレデンシャル ⇔ ユーザー ⇔ 所属元テナント」の
-        // アプリ層の紐付けで実現する。`config.issuer()` は基底（ホスト）issuer。
-        let webauthn = Arc::new(WebAuthnService::new(config.issuer()));
+        // WebAuthn の RP ID・origin は **web の公開ベース URL のホスト**から導出する（ADR-0019 決定 2。
+        // Passkey のセレモニーは web のページ上で実行されるため。`PUBLIC_WEB_BASE_URL` 未設定時は
+        // issuer に追従し、single-origin では従来と同値になる）。per-tenant のパスは渡さない —
+        // WebAuthn はプロトコル上ホスト単位であり、パスを含められないため（ADR-0009 §6）。
+        // テナント分離は「クレデンシャル ⇔ ユーザー ⇔ 所属元テナント」のアプリ層の紐付けで実現する。
+        let webauthn = Arc::new(WebAuthnService::new(config.public_web_base_url()));
         let passkey_registration = Arc::new(PasskeyRegistrationService::new(
             webauthn_credentials.clone(),
             passkey_challenges.clone(),

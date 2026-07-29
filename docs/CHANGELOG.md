@@ -1,3 +1,19 @@
+## 2026-07-29（api を兄弟サブドメインへ戻し、WebAuthn RP ID を web オリジン由来にした（ADR-0019））
+
+- **ADR-0018 決定 1（入れ子ホスト名）を撤回した（ADR-0019 決定 1）。** ワイルドカード証明書は
+  左 1 ラベルしか覆えず、サブサブドメイン（`api.idp.nolumia.com`）には別証明書が必要になるため。
+  `.env.production.example` / `.env.staging.example` と `docs/OPERATIONS.md` の公開ホスト名を
+  兄弟命名（`identity.nolumia.com` / `identitystg.nolumia.com`）へ戻した。決定 2〜4（api の Cookie
+  非依存・host-only）は実装済みのため、兄弟命名でも stg/prod の Cookie スコープは交わらない。
+  成立条件として **`COOKIE_DOMAIN` は掃除用途以外で設定禁止**を明記した。Progress.md 旧 T1
+  （入れ子ホスト名の適用作業）は不要になり削除した。
+- **WebAuthn の RP ID・origin の導出元を `ISSUER` から `PUBLIC_WEB_BASE_URL` へ変更した
+  （ADR-0019 決定 2）。** Passkey のセレモニーは web のページ上で実行されるため、issuer
+  （api のオリジン）由来だと domain-split では RP ID が呼び出し元オリジンのサフィックスに
+  ならず常に失敗していた。single-origin（`PUBLIC_WEB_BASE_URL` 未設定 = issuer 追従）では
+  従来と同値で挙動不変。「ホスト名を変えると登録済み Passkey が使えなくなる」注意の対象キーも
+  `PUBLIC_WEB_BASE_URL` へ移した（設定説明・`docs/OPERATIONS.md`・ADR-0017 追記）。
+
 ## 2026-07-28（SAML SSO エンドポイントを実装した）
 
 - **メタデータが広告していた SingleSignOnService（`{issuer}/{tenant_id}/saml/sso`）を実装した。**

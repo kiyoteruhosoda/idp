@@ -134,6 +134,8 @@ ADR-0014 は「設定保存時にサービスを自動再起動する」を退�
   扱われる。RP 側の issuer 設定の更新と、ホスト単位の Cookie が失われることによる再ログインも
   同時に必要になる。これは `.env` で変えていたときも同じで本 ADR が作った制約ではないが、画面から
   手軽に変えられるようになった分だけ踏みやすい。設定項目の説明文と `docs/OPERATIONS.md` に明記する。
+  → **ADR-0019 決定 2 で RP ID の導出元は `PUBLIC_WEB_BASE_URL`（web の公開ベース URL。未設定時は
+  issuer に追従）へ変更した。** この注意が付くキーも `PUBLIC_WEB_BASE_URL` へ移っている。
 
 ## Rejected alternatives
 

@@ -352,7 +352,7 @@ docker compose logs api | grep 'would prevent the next startup'
 
 | 影響 | 内容 | 対処 |
 |---|---|---|
-| 登録済み Passkey が使えなくなる | WebAuthn の RP ID は issuer のホスト名から導出する。ホストが変わると別 RP 扱いになる | 利用者に再登録してもらう（`docs/OPERATIONS.md`「MFA の端末を失った利用者を復旧させたいとき」の手順で解除できる） |
+| 登録済み Passkey が使えなくなる（`PUBLIC_WEB_BASE_URL` のホスト変更時） | WebAuthn の RP ID は web の公開ベース URL（`PUBLIC_WEB_BASE_URL`。未設定時は issuer に追従）のホスト名から導出する（ADR-0019 決定 2）。ホストが変わると別 RP 扱いになる | 利用者に再登録してもらう（`docs/OPERATIONS.md`「MFA の端末を失った利用者を復旧させたいとき」の手順で解除できる） |
 | RP 側の設定が古い issuer のままになる | RP は `iss` の完全一致を検証する | 各 RP のディスカバリ URL / issuer 設定を更新する |
 | ログイン中の利用者がログアウトする | Cookie はホスト単位で保存される | 再ログインしてもらう |
 
@@ -826,25 +826,26 @@ MariaDB は data volume 初回作成時のパスワードを固定し、以後�
 
 | 環境 | 配置例 | `.env` テンプレート | web の公開 URL | `WEB_PORT` | api の公開 URL | `API_PORT` | `IMAGE_TAG` |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| stg | `/opt/idp/stg` | `.env.staging.example` | `https://idpstg.nolumia.com` | `10010` | `https://api.idpstg.nolumia.com` | `10011` | `stg` |
-| prod | `/opt/idp/prod` | `.env.production.example` | `https://idp.nolumia.com` | `10000` | `https://api.idp.nolumia.com` | `10001` | `prod` |
+| stg | `/opt/idp/stg` | `.env.staging.example` | `https://idpstg.nolumia.com` | `10010` | `https://identitystg.nolumia.com` | `10011` | `stg` |
+| prod | `/opt/idp/prod` | `.env.production.example` | `https://idp.nolumia.com` | `10000` | `https://identity.nolumia.com` | `10001` | `prod` |
 
 前段のリバースプロキシ（Synology DSM 等）で TLS を終端し、上表のドメインを同一ホストの
 `127.0.0.1:<WEB_PORT>` / `127.0.0.1:<API_PORT>` へ流す。`PUBLIC_WEB_BASE_URL` は web に、`ISSUER` は
 api に、それぞれブラウザ・RP が外から到達する URL（上表の公開 URL）を設定する。
 `single-origin` に切り替えた場合は両者を `WEB_PORT` の同一オリジンに揃え、`API_PORT` は使わない。
 
-api は web の子サブドメイン（`api.idp.nolumia.com` / `api.idpstg.nolumia.com`。ADR-0018 決定 1）。
-セッション Cookie は各 web ホストの host-only（ADR-0018 決定 2）のため、prod と stg の Cookie
-スコープは交わらない。`COOKIE_DOMAIN` は設定しない（既定）。
+api は web の兄弟サブドメイン（`identity.nolumia.com` / `identitystg.nolumia.com`。ADR-0019 決定 1。
+どちらも apex 直下の 1 ラベルなので、ワイルドカード証明書 `*.nolumia.com` 1 枚で web・api の
+両ホストを覆える）。セッション Cookie は各 web ホストの host-only（ADR-0018 決定 2・4）のため、
+prod と stg の Cookie スコープは交わらない。**`COOKIE_DOMAIN` は設定しない**（兄弟命名で設定すると
+apex まで Cookie が広がる。下記の掃除用途のみ例外）。
 
-> **移行メモ**: 旧構成（web `idp.nolumia.com` / api `idpapi.nolumia.com` の兄弟 +
-> `COOKIE_DOMAIN=nolumia.com`）から移行する場合、ブラウザに `Domain=nolumia.com` の Cookie が
-> 残っている。移行後しばらく `COOKIE_DOMAIN=nolumia.com` を設定したまま運用すると、ログイン・
-> ログアウト時に旧 Cookie の削除が併送されて掃除される。掃除期間が終わったら未設定へ戻す。
-> また **`ISSUER` が変わる**ため、RP 側の再設定（discovery・`iss`）が必要。DNS に
-> `api.idp.nolumia.com` / `api.idpstg.nolumia.com` を追加し、証明書は web・api 両方のホスト名を
-> SAN に含める（ワイルドカード `*.idp.nolumia.com` は bare な `idp.nolumia.com` に一致しない）。
+> **移行メモ**: 旧 ADR-0012 構成（`COOKIE_DOMAIN=nolumia.com` の Domain 付き Cookie）から
+> 移行する場合、ブラウザに `Domain=nolumia.com` の Cookie が残っている。移行後しばらく
+> `COOKIE_DOMAIN=nolumia.com` を設定したまま運用すると、ログイン・ログアウト時に旧 Cookie の
+> 削除が併送されて掃除される。掃除期間が終わったら未設定へ戻す。
+> **`ISSUER` を変更した場合**は RP 側の再設定（discovery・`iss`、SAML SP はメタデータ再取り込み）が
+> 必要。
 同一ホストでは `IMAGE_TAG` も `stg` / `prod` のように分け、`latest` を両環境で共有しない。
 
 ```sh

@@ -37,7 +37,6 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 
 | 優先度 | ID | 課題内容 | 工数 | 影響度 | 重要度 | 難易度 |
 |---:|---|---|---:|---:|---:|---:|
-| 45 | T1 | 入れ子ホスト名（`api.idp.nolumia.com` 等）の DNS・証明書・RP 再設定を実施する（⬜未着手。コード側は完了） | 小 | 中 | 大 | 小 |
 | 45 | SEC3 | OIDC フローの TOTP 検証にレート制限・ロックアウトが無い（ポータル側にはある）（⬜未着手） | 小 | 中 | 大 | 中 |
 | 23 | SEC2 | ログアウト系 URI（`backchannel_logout_uri` ほか）が無検証 → 認証済み blind SSRF（⬜未着手） | 中 | 中 | 大 | 中 |
 | 23 | SEC4 | single-origin 構成で admin の変更系 POST（`restart`・secret 再発行・password/MFA reset 等）が same-site スクリプトから CSRF 可能（body 無しエンドポイントは JSON content-type が防御にならない）（⬜未着手） | 中 | 中 | 大 | 中 |
@@ -52,31 +51,6 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 | 3 | SEC10 | `/token`・`/introspect`・`/revoke` にレート制限が無い（Argon2 増幅型 DoS）（⬜未着手） | 小 | 小 | 中 | 小 |
 
 ## 詳細
-
-### T1. 入れ子ホスト名のデプロイ作業（ADR-0018 決定 1 の残作業）
-
-ADR-0018 のコード実装（決定 2〜4: api の Cookie 非依存化・host-only 化・`COOKIE_DOMAIN` 既定
-未設定）と `.env.*.example` の入れ子ホスト名への変更は完了した（`docs/CHANGELOG.md` 2026-07-27）。
-残るのは stg / prod 環境への適用作業のみ。
-
-| 環境 | web | api | ポート |
-|---|---|---|---|
-| prod | `idp.nolumia.com` | `api.idp.nolumia.com` | 10000 / 10001 |
-| stg | `idpstg.nolumia.com` | `api.idpstg.nolumia.com` | 10010 / 10011 |
-
-手順:
-
-1. DNS に `api.idp.nolumia.com` / `api.idpstg.nolumia.com` を追加し、証明書を用意する。
-   **証明書は web・api 両方のホスト名を SAN に含めること**（`*.idp.nolumia.com` のワイルドカードは
-   `api.idp.nolumia.com` には一致するが **bare な `idp.nolumia.com` には一致しない**）。
-   1 枚にまとめるなら SAN = `idp.nolumia.com` + `api.idp.nolumia.com`（または
-   `*.idp.nolumia.com` + `idp.nolumia.com`）。stg も同様。
-2. 前段プロキシの振り分け先は現行のまま（`WEB_PORT` / `API_PORT` は変えない）。
-3. `.env` の `ISSUER` を上表の api ホストへ変更する（`PUBLIC_WEB_BASE_URL` は不変）。
-   旧構成の `Domain=nolumia.com` Cookie がブラウザに残っている間は `COOKIE_DOMAIN=nolumia.com` を
-   移行期間だけ残して掃除させ、期間が終わったら未設定へ戻す（ADR-0018 決定 4）。
-4. **`ISSUER` 変更に伴い RP 側の再設定が必要**（discovery・ID Token の `iss` が変わる。
-   `end_session_endpoint` も web の `/{tenant_id}/logout` へ変わった）。メンテナンス枠で実施する。
 
 ### セキュリティレビュー（SEC1〜SEC12）
 

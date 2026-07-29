@@ -94,9 +94,9 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         description: "OIDC issuer。発行する ID Token / アクセストークンの `iss` と、ディスカバリ \
                       文書（`/.well-known/openid-configuration`）に載る各エンドポイント URL の基底に \
                       なる。ブラウザと RP から見た api の公開 URL に一致させる。api・web の両方が \
-                      使うため、変更の反映には両サービスの再起動が必要。**ホスト名を変えると \
-                      登録済みの Passkey が使えなくなり（WebAuthn の RP ID が変わる）、RP 側にも \
-                      新しい issuer の設定が要る。**",
+                      使うため、変更の反映には両サービスの再起動が必要。**変更すると RP 側にも \
+                      新しい issuer の設定（discovery・`iss` 検証・SAML メタデータ再取り込み）が \
+                      要る。**",
     },
     SettingDefinition {
         key: "BIND_ADDR",
@@ -401,7 +401,9 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         default_value: None,
         description: "利用者がブラウザで開く web 画面の公開ベース URL。api は /authorize からログイン・\
                       同意画面への 302 とメールリンク生成に、web は自オリジンとして使う。api/web で\
-                      一致必須のため DB 上書き不可。未設定なら issuer と同一オリジン。",
+                      一致必須のため DB 上書き不可。未設定なら issuer と同一オリジン。**ホスト名を\
+                      変えると登録済みの Passkey が使えなくなる（WebAuthn の RP ID はこの URL の\
+                      ホスト名から導出する。ADR-0019 決定 2）。**",
     },
     // api/web の Cookie 掃除挙動を一致させる必要があるため EnvLocked（ADR-0012 §2）。
     SettingDefinition {
