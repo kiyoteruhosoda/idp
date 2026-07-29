@@ -1,7 +1,11 @@
 //! `webauthn-rs` ラッパー。
 //!
 //! `Webauthn` インスタンスの構築と、登録・認証の始終フロー（begin/finish）を一箇所に集約する。
-//! RP ID は issuer URL のホスト名部分、RP オリジンは issuer URL そのものを使う。
+//! RP ID は web の公開ベース URL（`PUBLIC_WEB_BASE_URL`。未設定時は issuer に追従）のホスト名部分、
+//! RP オリジンはその URL そのものを使う。Passkey のセレモニー（`navigator.credentials.*`）は web の
+//! ページ上で実行されるため、RP ID・origin は web のオリジンに対して成立させる（ADR-0019 決定 2。
+//! issuer＝api のオリジンから導出すると、domain-split では api ホストが web ページの登録可能
+//! サフィックスにならず、セレモニーがブラウザ側で常に失敗する）。
 //!
 //! エラー型は `webauthn_rs::WebauthnError` を文字列にしてアプリエラーとして返す。
 
@@ -26,17 +30,18 @@ impl std::fmt::Debug for WebAuthnService {
 }
 
 impl WebAuthnService {
-    /// `issuer` から RP ID（ホスト名）と RP オリジンを導出して `Webauthn` を構築する。
+    /// `web_base_url`（web の公開ベース URL）から RP ID（ホスト名）と RP オリジンを導出して
+    /// `Webauthn` を構築する。
     ///
     /// # Panics
-    /// `issuer` が有効な URL でない場合、またはホスト名がない場合は panic する
+    /// `web_base_url` が有効な URL でない場合、またはホスト名がない場合は panic する
     /// （設定ミスなので起動時に即座に検出する）。
-    pub fn new(issuer: &str) -> Self {
-        let origin =
-            Url::parse(issuer).unwrap_or_else(|e| panic!("ISSUER is not a valid URL: {e}"));
+    pub fn new(web_base_url: &str) -> Self {
+        let origin = Url::parse(web_base_url)
+            .unwrap_or_else(|e| panic!("PUBLIC_WEB_BASE_URL is not a valid URL: {e}"));
         let rp_id = origin
             .host_str()
-            .unwrap_or_else(|| panic!("ISSUER URL has no host: {issuer}"));
+            .unwrap_or_else(|| panic!("PUBLIC_WEB_BASE_URL has no host: {web_base_url}"));
         let inner = WebauthnBuilder::new(rp_id, &origin)
             .unwrap_or_else(|e| panic!("failed to build Webauthn: {e}"))
             .rp_name("OIDC IdP")
