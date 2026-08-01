@@ -244,7 +244,14 @@ impl Config {
             password_reset_ttl: secs(resolver.parse("PASSWORD_RESET_TTL_SECS", 3_600)?),
             email_verification_ttl: secs(resolver.parse("EMAIL_VERIFICATION_TTL_SECS", 86_400)?),
             login_lockout: LockoutPolicy {
-                max_failed_attempts: resolver.parse("LOGIN_MAX_FAILED_ATTEMPTS", 10u32)? as i32,
+                // i32 に収まらない巨大値は「実質ロックしない」として i32::MAX へ飽和させる
+                //（`as` キャストだと負数へラップし、初回失敗で即ロックという逆の挙動になる。
+                //  DB 保存値で起動を失敗させるとロックアウト設定の修正自体ができなくなるため
+                //  fail-fast にはしない）。
+                max_failed_attempts: i32::try_from(
+                    resolver.parse("LOGIN_MAX_FAILED_ATTEMPTS", 10u32)?,
+                )
+                .unwrap_or(i32::MAX),
                 lock_duration_secs: resolver.parse("LOGIN_LOCK_DURATION_SECS", 900u64)?,
             },
             auth_policy_default_effect: DefaultPolicyEffect::parse(
@@ -1081,6 +1088,24 @@ mod tests {
             .unwrap();
         assert_eq!(setting.owner, SettingOwner::EnvLocked);
         assert_eq!(setting.source, SettingSource::Builtin);
+    }
+
+    /// レビュー修正の回帰テスト: `LOGIN_MAX_FAILED_ATTEMPTS` の i32 超過値は負数へラップさせず
+    /// i32::MAX へ飽和させる（ラップすると初回失敗で即ロックという逆の挙動になる）。
+    #[test]
+    fn oversized_lockout_threshold_saturates_instead_of_wrapping() {
+        let _env = env_guard();
+        std::env::remove_var("LOGIN_MAX_FAILED_ATTEMPTS");
+        let db = HashMap::from([(
+            "LOGIN_MAX_FAILED_ATTEMPTS".to_string(),
+            u32::MAX.to_string(),
+        )]);
+        let config = Config::from_env_and_db_settings(&db).unwrap();
+        assert_eq!(config.login_lockout().max_failed_attempts, i32::MAX);
+        // 通常値はそのまま。
+        let db = HashMap::from([("LOGIN_MAX_FAILED_ATTEMPTS".to_string(), "5".to_string())]);
+        let config = Config::from_env_and_db_settings(&db).unwrap();
+        assert_eq!(config.login_lockout().max_failed_attempts, 5);
     }
 
     #[test]

@@ -6,19 +6,28 @@
 //! （ADR-0009 §5）ため、現行パスワードの再入力を要求する。
 //!
 //! 成功後の SSO 発行 → 同意チェック → code 発行は `LoginService`／`MfaLoginService` と共通のフロー
-//! （`CodeIssuanceService` を再利用）。`must_change_password` は自動生成パスワードでの作成時のみ
-//! 付与され、その時点のユーザーは一度もログインしていない（自己登録 MFA は SSO が必要なため未設定）
-//! ため、変更後に改めて MFA 判定へ進む必要はない。
+//! （`CodeIssuanceService` を再利用）。
+//!
+//! 本サービスは SSO セッション・code を**発行する側**のため、発行前に認証ポリシー
+//! （ユーザー認証・認証ポリシー仕様書 §9）を再評価する。`must_change_password` は自動生成
+//! パスワードでの新規作成だけでなく**管理者による既存ユーザーのパスワード再発行**でも立つため、
+//! 「変更後に MFA 判定は不要」とは限らない。`require_mfa` 一致時は TOTP 設定済みなら MFA ステップへ
+//! 誘導し、未設定なら単一要素での成立を拒否する（LoginService と同じ規則。仕様 §24.4）。
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authorize::code_redirect;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
+use crate::application::mfa_login::user_has_confirmed_totp;
 use crate::domain::audit::{AuditEventType, AuditResult};
+use crate::domain::authentication_policy::{
+    evaluate_policies, AuthenticationContext, DefaultPolicyEffect, PolicyDecision,
+};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::password::{validate_password_strength, PasswordHasher};
 use crate::domain::repositories::{
-    AuthSessionRepository, ClientConsentRepository, SsoSessionRepository, UserRepository,
+    AuthSessionRepository, AuthenticationPolicyRepository, ClientConsentRepository,
+    SsoSessionRepository, TotpSecretRepository, UserRepository,
 };
 use crate::domain::sso_session::SsoSession;
 use crate::domain::tenant_context::TenantContext;
@@ -43,6 +52,16 @@ pub enum ChangePasswordOutcome {
         auth_session_id: String,
         sso_session_id: String,
     },
+    /// 変更成功だが認証ポリシーが MFA を必須とし、TOTP 設定済み。TOTP 入力画面へ誘導する
+    /// （`auth_session_id` Cookie は維持。SSO はまだ発行しない）。
+    MfaRequired {
+        auth_session_id: String,
+    },
+    /// 変更は成功したが認証ポリシーによりログインを拒否（仕様 §7.4 `deny`）。SSO は発行しない。
+    PolicyDenied,
+    /// 変更は成功したが認証ポリシーが MFA を必須とし、使用可能な認証器（確認済み TOTP）が無い。
+    /// ポータルから MFA を設定するよう案内する。SSO は発行しない。
+    MfaEnrollmentRequired,
     /// AuthSession が無い・期限切れ・パスワード変更待ち状態でない（`/authorize` からやり直し）。
     SessionExpired,
     /// CSRF トークン不一致。
@@ -59,12 +78,15 @@ pub struct ChangePasswordService {
     users: Arc<dyn UserRepository>,
     sso_sessions: Arc<dyn SsoSessionRepository>,
     client_consents: Arc<dyn ClientConsentRepository>,
+    totp_secrets: Arc<dyn TotpSecretRepository>,
+    authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
     code_issuance: Arc<CodeIssuanceService>,
     hasher: Arc<dyn PasswordHasher>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
     sso_idle_ttl: Duration,
     sso_absolute_ttl: Duration,
+    policy_default_effect: DefaultPolicyEffect,
     csrf_secret: [u8; 32],
 }
 
@@ -75,12 +97,15 @@ impl ChangePasswordService {
         users: Arc<dyn UserRepository>,
         sso_sessions: Arc<dyn SsoSessionRepository>,
         client_consents: Arc<dyn ClientConsentRepository>,
+        totp_secrets: Arc<dyn TotpSecretRepository>,
+        authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
         code_issuance: Arc<CodeIssuanceService>,
         hasher: Arc<dyn PasswordHasher>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
         sso_idle_ttl: std::time::Duration,
         sso_absolute_ttl: std::time::Duration,
+        policy_default_effect: DefaultPolicyEffect,
         csrf_secret: [u8; 32],
     ) -> Self {
         Self {
@@ -88,6 +113,8 @@ impl ChangePasswordService {
             users,
             sso_sessions,
             client_consents,
+            totp_secrets,
+            authentication_policies,
             code_issuance,
             hasher,
             audit,
@@ -95,6 +122,7 @@ impl ChangePasswordService {
             sso_idle_ttl: Duration::from_std(sso_idle_ttl).expect("SSO idle TTL out of range"),
             sso_absolute_ttl: Duration::from_std(sso_absolute_ttl)
                 .expect("SSO absolute TTL out of range"),
+            policy_default_effect,
             csrf_secret,
         }
     }
@@ -208,6 +236,69 @@ impl ChangePasswordService {
                 ctx,
             )
             .await;
+
+        // 6.5. 認証ポリシー評価（仕様 §9）。本サービスは SSO・code を発行する側のため、発行前に
+        //      LoginService と同じ規則を適用する（`must_change_password` は管理者による既存ユーザーの
+        //      パスワード再発行でも立つため、TOTP 設定済みユーザーもこの経路を通り得る）。
+        //      パスワード変更自体は本人のセルフサービスとして完了させ、セッション発行のみをゲートする。
+        let decision = match self
+            .authentication_policies
+            .list_enabled_for_tenant(tenant_id)
+            .await
+        {
+            Ok(policies) => evaluate_policies(
+                &policies,
+                &AuthenticationContext {
+                    client_id: Some(&client_id),
+                    user_id: user.id,
+                },
+                self.policy_default_effect,
+            ),
+            Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
+        };
+        match &decision {
+            PolicyDecision::Deny { policy_code } => {
+                self.audit
+                    .record(
+                        AuditEventType::LoginPolicyDenied,
+                        AuditResult::Failure,
+                        Some(tenant_id),
+                        Some(user.id),
+                        Some(&client_id),
+                        Some(&format!("policy={policy_code}")),
+                        ctx,
+                    )
+                    .await;
+                return ChangePasswordOutcome::PolicyDenied;
+            }
+            PolicyDecision::RequireMfa { policy_code } => {
+                let has_totp =
+                    match user_has_confirmed_totp(self.totp_secrets.as_ref(), user.id).await {
+                        Ok(v) => v,
+                        Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
+                    };
+                if has_totp {
+                    // AuthSession は `authenticated_user_id` と `password_verified_at` が設定済み
+                    //（MFA pending 相当）のため、そのまま TOTP 検証ステップへ引き継げる。
+                    return ChangePasswordOutcome::MfaRequired {
+                        auth_session_id: session.id,
+                    };
+                }
+                self.audit
+                    .record(
+                        AuditEventType::LoginPolicyDenied,
+                        AuditResult::Failure,
+                        Some(tenant_id),
+                        Some(user.id),
+                        Some(&client_id),
+                        Some(&format!("policy={policy_code} reason=mfa_not_enrolled")),
+                        ctx,
+                    )
+                    .await;
+                return ChangePasswordOutcome::MfaEnrollmentRequired;
+            }
+            PolicyDecision::Allow { .. } => {}
+        }
 
         // 7. auth_time を設定する（パスワード変更完了時刻を認証時刻とする）。
         if let Err(e) = self

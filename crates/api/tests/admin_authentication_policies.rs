@@ -459,3 +459,100 @@ async fn require_mfa_policy_blocks_single_factor_login_without_enrollment() {
         "policy is scoped to user: {body}"
     );
 }
+
+/// レビュー修正の回帰テスト: `must_change_password`（管理者作成・パスワード再発行）ユーザーに
+/// `require_mfa` ポリシーが一致する場合、強制パスワード変更フローの完了で SSO・code を発行しない
+/// （TOTP 未設定なら単一要素での成立を拒否する。仕様 §24.4）。
+#[tokio::test]
+async fn require_mfa_policy_is_enforced_after_forced_password_change() {
+    let Some(env) = support::setup("require_mfa after forced change").await else {
+        return;
+    };
+    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let client_id =
+        support::insert_public_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
+
+    // 管理者が利用者を作成する（自動生成パスワード・must_change_password 付き）。
+    let username = format!("forced-{}", support::unique());
+    let res = send(
+        &env.app,
+        post(
+            &admin_cookie,
+            &format!("/{}/admin/users", env.root_tenant_id),
+            json!({
+                "email": format!("{username}@example.com"),
+                "preferred_username": username,
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED, "admin creates user");
+    let created = body_json(res).await;
+    let user_id = created["user_id"].as_str().expect("user id").to_string();
+    let generated_password = created["generated_password"]
+        .as_str()
+        .expect("generated password")
+        .to_string();
+
+    // このユーザー限定の require_mfa ポリシーを作成する。
+    let res = send(
+        &env.app,
+        post(
+            &admin_cookie,
+            &format!("/{}/admin/authentication-policies", env.root_tenant_id),
+            json!({
+                "policy_code": format!("it-forced-mfa-{}", support::unique()),
+                "policy_name": "MFA after forced change",
+                "priority": 1,
+                "effect": "require_mfa",
+                "user_ids": [user_id],
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK, "create policy");
+
+    // ログイン → password_change_required。
+    let authorize_uri = authorize_uri_openid_only(&env.root_tenant_id, &client_id);
+    let auth_session = begin_login(&env.app, &env.root_tenant_id, &authorize_uri).await;
+    let csrf = login_csrf(&auth_session, &env.csrf_secret);
+    let body = internal_authenticate(
+        &env.app,
+        &env.root_tenant_id,
+        &auth_session,
+        &username,
+        &generated_password,
+        &csrf,
+    )
+    .await;
+    assert_eq!(
+        body["result"], "password_change_required",
+        "generated password forces change: {body}"
+    );
+
+    // 強制パスワード変更を完了しても、SSO・code は発行されず MFA 設定を要求される。
+    let change_body = json!({
+        "tenant_id": env.root_tenant_id,
+        "auth_session_id": auth_session,
+        "current_password": generated_password,
+        "new_password": "NewSecurePass9!",
+        "csrf_token": csrf,
+    });
+    let res = send(
+        &env.app,
+        Request::builder()
+            .method("POST")
+            .uri("/internal/change-password")
+            .header(CONTENT_TYPE, "application/json")
+            .header(SERVICE_TOKEN_HEADER, SERVICE_TOKEN)
+            .body(Body::from(change_body.to_string()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK, "change password call");
+    let body = body_json(res).await;
+    assert_eq!(
+        body["result"], "mfa_enrollment_required",
+        "forced-change flow must not bypass require_mfa: {body}"
+    );
+}

@@ -13,6 +13,8 @@ login-error-csrf-retry = フォームの有効期限が切れたため、新し�
 login-error-rate-limited = 試行回数が多すぎます。しばらく待ってからお試しください。
 login-error-policy-denied = 組織の認証ポリシーによりログインが拒否されました。管理者にお問い合わせください。
 login-error-mfa-enrollment-required = 組織のポリシーにより多要素認証が必須です。ログインの前にアカウント設定から認証アプリを設定してください。
+login-error-passkey-invalid = このパスキーを検証できませんでした。もう一度試すか、パスワードでサインインしてください。
+login-error-passkey-retry = サインイン試行の有効期限が切れました。もう一度お試しください。
 
 # SAML SSO の継続画面（署名済み SAMLResponse を SP の ACS へ自動 POST する）。
 saml-continue-title = アプリケーションへサインイン

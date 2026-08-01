@@ -127,6 +127,32 @@ pub async fn submit(
             )
                 .into_response()
         }
+        InternalChangePasswordResponse::MfaRequired { auth_session_id } => {
+            // 変更成功・ポリシーにより MFA 必須（TOTP 設定済み）: auth_session_id Cookie を維持して
+            // TOTP 入力画面へ（ログインフローの MfaRequired と同じ遷移）。
+            let set_cookies = state.set_cookies().set_session(
+                cookies::AUTH_SESSION_COOKIE,
+                &auth_session_id,
+                state.config.auth_session_ttl_secs(),
+            );
+            (
+                set_cookies.into_headers(),
+                found(&format!("{}/mfa/totp", tenant.prefix())),
+            )
+                .into_response()
+        }
+        // 認証ポリシーによる拒否（パスワード変更自体は完了している）。
+        InternalChangePasswordResponse::PolicyDenied => error_page(
+            &messages,
+            StatusCode::FORBIDDEN,
+            "login-error-policy-denied",
+        ),
+        // ポリシーが MFA 必須だが認証器（TOTP）が未設定。ポータルで設定するよう案内する。
+        InternalChangePasswordResponse::MfaEnrollmentRequired => error_page(
+            &messages,
+            StatusCode::FORBIDDEN,
+            "login-error-mfa-enrollment-required",
+        ),
         InternalChangePasswordResponse::SessionExpired => {
             tracing::warn!(
                 correlation_id = %ctx.correlation_id,

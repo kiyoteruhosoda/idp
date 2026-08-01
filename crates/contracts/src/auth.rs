@@ -363,6 +363,16 @@ pub enum InternalChangePasswordResponse {
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
     },
+    /// 変更成功だが認証ポリシーが MFA を必須とし、TOTP 設定済み。`auth_session_id` Cookie を維持して
+    /// TOTP 入力画面 `/mfa/totp` へ誘導する（SSO はまだ発行しない）。
+    MfaRequired {
+        auth_session_id: String,
+    },
+    /// 変更は成功したが認証ポリシーによりログインを拒否（仕様 §7.4 `deny`）。
+    PolicyDenied,
+    /// 変更は成功したが認証ポリシーが MFA を必須とし、使用可能な認証器（確認済み TOTP）が無い。
+    /// web はポータルから MFA を設定するよう案内する。
+    MfaEnrollmentRequired,
     SessionExpired,
     CsrfMismatch,
     /// 現行パスワードが不一致。

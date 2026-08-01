@@ -379,12 +379,15 @@ impl AppState {
             users.clone(),
             sso_sessions.clone(),
             client_consents.clone(),
+            totp_secrets.clone(),
+            authentication_policies.clone(),
             code_issuance.clone(),
             hasher.clone(),
             audit.clone(),
             clock.clone(),
             config.sso_idle_ttl(),
             config.sso_absolute_ttl(),
+            config.auth_policy_default_effect(),
             *config.csrf_secret(),
         ));
         let consent = Arc::new(ConsentService::new(
