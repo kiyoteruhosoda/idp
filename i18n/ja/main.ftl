@@ -11,6 +11,10 @@ login-error-session-expired = サインインのセッションが期限切れ�
 login-error-csrf = フォームの有効期限が切れました。ページを再読み込みしてやり直してください。
 login-error-csrf-retry = フォームの有効期限が切れたため、新しいフォームを読み込みました。お手数ですがもう一度入力してください。
 login-error-rate-limited = 試行回数が多すぎます。しばらく待ってからお試しください。
+login-error-policy-denied = 組織の認証ポリシーによりログインが拒否されました。管理者にお問い合わせください。
+login-error-mfa-enrollment-required = 組織のポリシーにより多要素認証が必須です。ログインの前にアカウント設定から認証アプリを設定してください。
+login-error-passkey-invalid = このパスキーを検証できませんでした。もう一度試すか、パスワードでサインインしてください。
+login-error-passkey-retry = サインイン試行の有効期限が切れました。もう一度お試しください。
 
 # SAML SSO の継続画面（署名済み SAMLResponse を SP の ACS へ自動 POST する）。
 saml-continue-title = アプリケーションへサインイン
@@ -442,6 +446,12 @@ api-signing-key-not-found = 署名鍵が見つかりません。
 api-signing-key-retire-failed = 退役できるのは ACTIVE な鍵のみです。
 api-signing-key-delete-failed = 削除できるのは RETIRED な鍵のみです。
 api-tenant-not-found = テナントが見つかりません。
+api-auth-policy-not-found = 認証ポリシーが見つかりません。
+api-auth-policy-code-invalid = ポリシーコードが不正です。半角英数字と「-」「_」「.」で 1〜100 文字にしてください。
+api-auth-policy-name-invalid = ポリシー名は 1〜200 文字にしてください。
+api-auth-policy-effect-invalid = 効果が不正です。allow / deny / require_mfa から選んでください。
+api-auth-policy-conditions-invalid = 適用条件が不正です。クライアント ID は空にできず（最大 255 文字）、各リストは最大 100 件です。
+api-auth-policy-code-conflict = そのポリシーコードは、このテナントで既に使われています。
 api-audit-invalid-datetime = 「{ $value }」の日時形式が無効です。RFC 3339 形式（例: 2026-07-06T00:00:00Z）で指定してください。
 api-email-required = メールアドレスを入力してください。
 api-email-invalid = 有効なメールアドレスを入力してください。

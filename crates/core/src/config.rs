@@ -12,6 +12,7 @@
 //! 現時点では未使用でも保持する。
 #![allow(dead_code)]
 
+use crate::domain::authentication_policy::{DefaultPolicyEffect, LockoutPolicy};
 use crate::domain::system_setting::{
     requires_production_secrets, runtime_setting_definition, DefaultRisk, DeploymentState,
     DevelopmentSecrets, SettingOwner, RUNTIME_SETTING_DEFINITIONS,
@@ -130,6 +131,10 @@ pub struct Config {
     password_reset_ttl: Duration,
     /// メール検証トークンの有効期限（SEC6b）。
     email_verification_ttl: Duration,
+    /// アカウントロックのポリシー（失敗許容回数・ロック時間。ユーザー認証・認証ポリシー仕様書 §17）。
+    login_lockout: LockoutPolicy,
+    /// 認証ポリシーが 1 件も一致しないときの既定動作（同仕様 §9.4）。
+    auth_policy_default_effect: DefaultPolicyEffect,
     /// テナント解決キャッシュの TTL（ADR-0009 §7。id → tenant のホットパス）。
     tenant_cache_ttl: Duration,
     /// scope→権限解決キャッシュの TTL（ADR-0009 §7。付与・剥奪時は即時 invalidate される）。
@@ -238,6 +243,21 @@ impl Config {
             invitation_ttl: secs(resolver.parse("INVITATION_TTL_SECS", 604_800)?),
             password_reset_ttl: secs(resolver.parse("PASSWORD_RESET_TTL_SECS", 3_600)?),
             email_verification_ttl: secs(resolver.parse("EMAIL_VERIFICATION_TTL_SECS", 86_400)?),
+            login_lockout: LockoutPolicy {
+                // i32 に収まらない巨大値は「実質ロックしない」として i32::MAX へ飽和させる
+                //（`as` キャストだと負数へラップし、初回失敗で即ロックという逆の挙動になる。
+                //  DB 保存値で起動を失敗させるとロックアウト設定の修正自体ができなくなるため
+                //  fail-fast にはしない）。
+                max_failed_attempts: i32::try_from(
+                    resolver.parse("LOGIN_MAX_FAILED_ATTEMPTS", 10u32)?,
+                )
+                .unwrap_or(i32::MAX),
+                lock_duration_secs: resolver.parse("LOGIN_LOCK_DURATION_SECS", 900u64)?,
+            },
+            auth_policy_default_effect: DefaultPolicyEffect::parse(
+                &resolver.string("AUTH_POLICY_DEFAULT_EFFECT", "allow"),
+            )
+            .map_err(|e| anyhow::anyhow!("invalid value for AUTH_POLICY_DEFAULT_EFFECT: {e}"))?,
             tenant_cache_ttl: secs(resolver.parse("TENANT_CACHE_TTL_SECS", 60)?),
             permission_cache_ttl: secs(resolver.parse("PERMISSION_CACHE_TTL_SECS", 60)?),
             cookie_policy,
@@ -308,6 +328,14 @@ impl Config {
 
     pub fn email_verification_ttl(&self) -> Duration {
         self.email_verification_ttl
+    }
+    /// アカウントロックのポリシー（失敗許容回数・ロック時間。全ログイン経路へ一律適用する）。
+    pub fn login_lockout(&self) -> LockoutPolicy {
+        self.login_lockout
+    }
+    /// 認証ポリシーが 1 件も一致しないときの既定動作（`allow` / `deny`）。
+    pub fn auth_policy_default_effect(&self) -> DefaultPolicyEffect {
+        self.auth_policy_default_effect
     }
     /// テナント解決キャッシュ（id → tenant）の TTL（ADR-0009 §7）。
     pub fn tenant_cache_ttl(&self) -> Duration {
@@ -1060,6 +1088,24 @@ mod tests {
             .unwrap();
         assert_eq!(setting.owner, SettingOwner::EnvLocked);
         assert_eq!(setting.source, SettingSource::Builtin);
+    }
+
+    /// レビュー修正の回帰テスト: `LOGIN_MAX_FAILED_ATTEMPTS` の i32 超過値は負数へラップさせず
+    /// i32::MAX へ飽和させる（ラップすると初回失敗で即ロックという逆の挙動になる）。
+    #[test]
+    fn oversized_lockout_threshold_saturates_instead_of_wrapping() {
+        let _env = env_guard();
+        std::env::remove_var("LOGIN_MAX_FAILED_ATTEMPTS");
+        let db = HashMap::from([(
+            "LOGIN_MAX_FAILED_ATTEMPTS".to_string(),
+            u32::MAX.to_string(),
+        )]);
+        let config = Config::from_env_and_db_settings(&db).unwrap();
+        assert_eq!(config.login_lockout().max_failed_attempts, i32::MAX);
+        // 通常値はそのまま。
+        let db = HashMap::from([("LOGIN_MAX_FAILED_ATTEMPTS".to_string(), "5".to_string())]);
+        let config = Config::from_env_and_db_settings(&db).unwrap();
+        assert_eq!(config.login_lockout().max_failed_attempts, 5);
     }
 
     #[test]

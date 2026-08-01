@@ -24,6 +24,7 @@ use crate::domain::application_log::{
 };
 use crate::domain::audit::{AuditEvent, AuditLogEntry, AuditLogFilter};
 use crate::domain::auth_session::AuthSession;
+use crate::domain::authentication_policy::AuthenticationPolicy;
 use crate::domain::authorization_code::AuthorizationCode;
 use crate::domain::client::Client;
 use crate::domain::consent::ClientConsent;
@@ -288,6 +289,34 @@ pub trait AuthSessionRepository: Send + Sync {
         verified_at: DateTime<Utc>,
     ) -> Result<()>;
     async fn delete(&self, id: &str) -> Result<()>;
+}
+
+/// 認証ポリシー（ユーザー認証・認証ポリシー仕様書 §7）の永続化。テナント境界は `tenant_id` で強制する。
+///
+/// 評価（[`crate::domain::authentication_policy::evaluate_policies`]）はドメインの純粋関数が担い、
+/// 本トレイトは行の読み書きのみを担う。ログインのホットパスは `list_enabled_for_tenant` を使う。
+#[async_trait]
+pub trait AuthenticationPolicyRepository: Send + Sync {
+    /// ポリシーを作成する。`(tenant_id, policy_code)` 重複は `Conflict`。
+    async fn create(&self, policy: &AuthenticationPolicy) -> Result<()>;
+    /// テナントの全ポリシー（無効を含む）を priority 昇順（同値は policy_code 昇順）で返す（管理画面用）。
+    async fn list_for_tenant(&self, tenant_id: TenantId) -> Result<Vec<AuthenticationPolicy>>;
+    /// テナントの**有効な**ポリシーのみを priority 昇順で返す（ログイン時の評価用）。
+    async fn list_enabled_for_tenant(
+        &self,
+        tenant_id: TenantId,
+    ) -> Result<Vec<AuthenticationPolicy>>;
+    /// テナント境界内で id 解決する（他テナントの id を持ち込んでも解決させない）。
+    async fn find_by_id(
+        &self,
+        tenant_id: TenantId,
+        id: Uuid,
+    ) -> Result<Option<AuthenticationPolicy>>;
+    /// 既存ポリシーを更新する（同一テナント・id の行のみ。policy_code 重複は `Conflict`）。
+    /// 更新できた場合 `true`、対象が無ければ `false`。
+    async fn update(&self, policy: &AuthenticationPolicy) -> Result<bool>;
+    /// テナント境界内でポリシーを削除する。削除できた場合 `true`、対象が無ければ `false`。
+    async fn delete(&self, tenant_id: TenantId, id: Uuid) -> Result<bool>;
 }
 
 #[async_trait]

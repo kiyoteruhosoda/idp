@@ -207,6 +207,12 @@ pub enum InternalAuthenticateResponse {
     /// パスワード認証成功だが自己登録アカウントのメール未検証（SEC6b）。確認リンクを踏むまで
     /// ログインを許可しない。web は「メールを確認して」の案内を表示する。
     EmailVerificationRequired,
+    /// 認証ポリシーにより拒否（ユーザー認証・認証ポリシー仕様書 §7.4 `deny`）。
+    /// web は「組織のポリシーで拒否された」旨を表示する（資格情報は検証済みのため列挙リスクは無い）。
+    PolicyDenied,
+    /// 認証ポリシーが MFA を必須としたが、使用可能な認証器（確認済み TOTP）が無い。
+    /// web はポータルから MFA を設定するよう案内する。
+    MfaEnrollmentRequired,
     /// AuthSession が無い・期限切れ（`/authorize` からやり直し）。
     SessionExpired,
     /// CSRF トークン不一致。
@@ -357,6 +363,16 @@ pub enum InternalChangePasswordResponse {
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
     },
+    /// 変更成功だが認証ポリシーが MFA を必須とし、TOTP 設定済み。`auth_session_id` Cookie を維持して
+    /// TOTP 入力画面 `/mfa/totp` へ誘導する（SSO はまだ発行しない）。
+    MfaRequired {
+        auth_session_id: String,
+    },
+    /// 変更は成功したが認証ポリシーによりログインを拒否（仕様 §7.4 `deny`）。
+    PolicyDenied,
+    /// 変更は成功したが認証ポリシーが MFA を必須とし、使用可能な認証器（確認済み TOTP）が無い。
+    /// web はポータルから MFA を設定するよう案内する。
+    MfaEnrollmentRequired,
     SessionExpired,
     CsrfMismatch,
     /// 現行パスワードが不一致。
@@ -895,6 +911,8 @@ pub enum InternalPasskeyLoginCompleteResponse {
     SessionExpired,
     /// クレデンシャルが無効。
     InvalidCredential,
+    /// 認証ポリシーにより拒否（ユーザー認証・認証ポリシー仕様書 §7.4 `deny`）。
+    PolicyDenied,
     /// api 内部エラー。
     Internal,
 }

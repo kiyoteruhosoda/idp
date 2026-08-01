@@ -22,6 +22,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "permissions",
     "user_permissions",
     "auth_sessions",
+    "authentication_policies",
     "sso_sessions",
     "authorization_codes",
     "refresh_tokens",

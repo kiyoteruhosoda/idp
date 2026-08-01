@@ -27,7 +27,13 @@
     <div class="d-grid mb-3">
       <button type="button" class="btn btn-outline-secondary" id="btn-passkey-login"><i class="fa-solid fa-key me-2" aria-hidden="true"></i>{{ messages.get("login-passkey-button") }}</button>
     </div>
-    <div id="passkey-error" style="display:none">
+    {# api のエラーコード → 表示文言の対応表。属性値はテンプレートが HTML エスケープし、
+       スクリプトは dataset 経由で復号済みの文言を読む（JS 文字列への直接埋め込みを避ける）。 #}
+    <div id="passkey-error" style="display:none"
+         data-msg-policy-denied="{{ messages.get("login-error-policy-denied") }}"
+         data-msg-invalid-credential="{{ messages.get("login-error-passkey-invalid") }}"
+         data-msg-challenge-not-found="{{ messages.get("login-error-passkey-retry") }}"
+         data-msg-session-expired="{{ messages.get("login-error-session-expired") }}">
       <p class="text-danger small text-center mb-0" role="alert" id="passkey-error-msg"></p>
     </div>
   </div>
@@ -86,7 +92,15 @@
       if (result.redirect_to) {
         window.location.href = result.redirect_to;
       } else {
-        throw new Error(result.error || 'Authentication failed');
+        // api のエラーコードを #passkey-error の data 属性（翻訳済み文言）へ写す。
+        const messages = document.getElementById('passkey-error').dataset;
+        const localized = {
+          'policy_denied': messages.msgPolicyDenied,
+          'invalid_credential': messages.msgInvalidCredential,
+          'challenge_not_found': messages.msgChallengeNotFound,
+          'session_expired': messages.msgSessionExpired,
+        }[result.error];
+        throw new Error(localized || messages.msgInvalidCredential || 'Authentication failed');
       }
     } catch (e) {
       document.getElementById('passkey-error-msg').textContent = e.message;

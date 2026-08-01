@@ -3,6 +3,7 @@
 pub mod application_log;
 pub mod audit_log;
 pub mod auth_session;
+pub mod authentication_policy;
 pub mod authorization_code;
 pub mod cached_user_permission;
 pub mod client;

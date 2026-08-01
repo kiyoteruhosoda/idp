@@ -4,21 +4,30 @@
 //! 成功時は SSO セッション発行 → 同意チェック → 同意済みなら code 発行（`code_issuance` 共通モジュール）
 //! → AuthSession 削除。同意未完なら `/consent` へ誘導する（F3）。
 //!
-//! ロックポリシー: username 単位で連続 10 回失敗 → 15 分ロック。IP 単位のレート制限。
+//! ロックポリシー: username 単位で連続 `LOGIN_MAX_FAILED_ATTEMPTS` 回失敗 →
+//! `LOGIN_LOCK_DURATION_SECS` 秒ロック（設定注入。既定 10 回 / 15 分）。IP 単位のレート制限。
 //! 成功時に `failed_login_count = 0` / `locked_until = NULL` へリセットする。
+//!
+//! 認証ポリシー（ユーザー認証・認証ポリシー仕様書 §7〜§9）: パスワード検証成功後に
+//! テナントの有効ポリシーを評価し、`deny` は拒否（`PolicyDenied`）、`require_mfa` は
+//! TOTP 未設定なら拒否（`MfaEnrollmentRequired`）・設定済みなら既存の MFA ステップへ倒す。
+//! パスワード検証後に評価することで、資格情報を知らない攻撃者からはポリシーの存在を観測できない。
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authorize::code_redirect;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::application::mfa_login::user_has_confirmed_totp;
 use crate::domain::audit::{AuditEventType, AuditResult};
+use crate::domain::authentication_policy::{
+    evaluate_policies, AuthenticationContext, DefaultPolicyEffect, LockoutPolicy, PolicyDecision,
+};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::password::PasswordHasher;
 use crate::domain::rate_limit::LoginRateLimiter;
 use crate::domain::repositories::{
-    AuthSessionRepository, ClientConsentRepository, SsoSessionRepository, TotpSecretRepository,
-    UserRepository,
+    AuthSessionRepository, AuthenticationPolicyRepository, ClientConsentRepository,
+    SsoSessionRepository, TotpSecretRepository, UserRepository,
 };
 use crate::domain::sso_session::SsoSession;
 use crate::domain::tenant::TenantId;
@@ -26,11 +35,6 @@ use crate::domain::tenant_context::TenantContext;
 use crate::domain::user::User;
 use chrono::Duration;
 use std::sync::Arc;
-
-/// username 単位のロック閾値（連続失敗回数）。
-const MAX_FAILED_LOGINS: i32 = 10;
-/// ロック時間（分）。
-const LOCK_DURATION_MINUTES: i64 = 15;
 
 /// `auth_session_id` に紐づく CSRF トークンを導出する。
 ///
@@ -79,6 +83,12 @@ pub enum LoginOutcome {
     /// ログインを許可しない。SSO Cookie は発行しない。パスワード検証後に判定するため、資格情報を
     /// 知らない攻撃者からはメール検証状態を観測できない（列挙防止）。
     EmailVerificationRequired,
+    /// 認証ポリシーにより拒否（仕様 §7.4 `deny`）。資格情報の成否は既に確認済みのため、
+    /// 資格情報エラーとは別の文言で「組織のポリシーで拒否された」ことを表示してよい。
+    PolicyDenied,
+    /// 認証ポリシーが MFA を必須としたが、ユーザーに使用可能な認証器（確認済み TOTP）が無い。
+    /// ポータルから MFA を設定するよう案内する。SSO Cookie は発行しない。
+    MfaEnrollmentRequired,
     /// AuthSession が無い・期限切れ（`/authorize` からやり直し）。
     SessionExpired,
     /// CSRF トークン不一致。
@@ -98,6 +108,7 @@ pub struct LoginService {
     sso_sessions: Arc<dyn SsoSessionRepository>,
     client_consents: Arc<dyn ClientConsentRepository>,
     totp_secrets: Arc<dyn TotpSecretRepository>,
+    authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
     code_issuance: Arc<CodeIssuanceService>,
     hasher: Arc<dyn PasswordHasher>,
     rate_limiter: Arc<dyn LoginRateLimiter>,
@@ -105,6 +116,8 @@ pub struct LoginService {
     clock: Arc<dyn Clock>,
     sso_idle_ttl: Duration,
     sso_absolute_ttl: Duration,
+    lockout: LockoutPolicy,
+    policy_default_effect: DefaultPolicyEffect,
     csrf_secret: [u8; 32],
 }
 
@@ -116,6 +129,7 @@ impl LoginService {
         sso_sessions: Arc<dyn SsoSessionRepository>,
         client_consents: Arc<dyn ClientConsentRepository>,
         totp_secrets: Arc<dyn TotpSecretRepository>,
+        authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
         code_issuance: Arc<CodeIssuanceService>,
         hasher: Arc<dyn PasswordHasher>,
         rate_limiter: Arc<dyn LoginRateLimiter>,
@@ -123,6 +137,8 @@ impl LoginService {
         clock: Arc<dyn Clock>,
         sso_idle_ttl: std::time::Duration,
         sso_absolute_ttl: std::time::Duration,
+        lockout: LockoutPolicy,
+        policy_default_effect: DefaultPolicyEffect,
         csrf_secret: [u8; 32],
     ) -> Self {
         Self {
@@ -131,6 +147,7 @@ impl LoginService {
             sso_sessions,
             client_consents,
             totp_secrets,
+            authentication_policies,
             code_issuance,
             hasher,
             rate_limiter,
@@ -139,6 +156,8 @@ impl LoginService {
             sso_idle_ttl: Duration::from_std(sso_idle_ttl).expect("SSO idle TTL out of range"),
             sso_absolute_ttl: Duration::from_std(sso_absolute_ttl)
                 .expect("SSO absolute TTL out of range"),
+            lockout,
+            policy_default_effect,
             csrf_secret,
         }
     }
@@ -306,9 +325,44 @@ impl LoginService {
             return LoginOutcome::EmailVerificationRequired;
         }
 
-        // 8.5. 強制パスワード変更（ADR-0009 §5）。自動生成パスワードで作成された利用者は、MFA・同意より
-        //      先にパスワード変更画面へ誘導する（変更完了までは他の操作を許可しない）。この状態のユーザーは
-        //      自己登録 MFA を設定できないため（SSO が必要）、変更後に改めて MFA 判定へ進む必要はない。
+        // 8.2. 認証ポリシー評価（ユーザー認証・認証ポリシー仕様書 §9）。パスワード検証成功後に
+        //      評価する（資格情報を知らない攻撃者にポリシーの存在・内容を観測させない）。
+        //      `deny` は即拒否。`require_mfa` は後段の MFA 判定（9.）で強制する。
+        let policy_decision = match self
+            .authentication_policies
+            .list_enabled_for_tenant(tenant_id)
+            .await
+        {
+            Ok(policies) => evaluate_policies(
+                &policies,
+                &AuthenticationContext {
+                    client_id: Some(&client_id),
+                    user_id: user.id,
+                },
+                self.policy_default_effect,
+            ),
+            Err(e) => return LoginOutcome::Internal(e.to_string()),
+        };
+        if let PolicyDecision::Deny { policy_code } = &policy_decision {
+            self.audit
+                .record(
+                    AuditEventType::LoginPolicyDenied,
+                    AuditResult::Failure,
+                    Some(tenant_id),
+                    Some(user.id),
+                    Some(&client_id),
+                    Some(&format!("policy={policy_code}")),
+                    ctx,
+                )
+                .await;
+            return LoginOutcome::PolicyDenied;
+        }
+
+        // 8.5. 強制パスワード変更（ADR-0009 §5）。自動生成パスワードで作成・再発行された利用者は、
+        //      MFA・同意より先にパスワード変更画面へ誘導する（変更完了までは他の操作を許可しない）。
+        //      TOTP の検証・ポリシーの MFA 要件は変更完了時に `ChangePasswordService` が適用する
+        //      （`must_change_password` は管理者による既存ユーザーのパスワード再発行でも立つため、
+        //      「この状態のユーザーに MFA 判定は不要」とは限らない）。
         if user.must_change_password {
             if let Err(e) = self
                 .auth_sessions
@@ -323,6 +377,9 @@ impl LoginService {
         }
 
         // 9. MFA（TOTP）が設定済みか確認する。設定済みなら TOTP 入力ステップへ誘導する。
+        //    認証ポリシーが MFA 必須（`require_mfa`）なのに使用可能な認証器が無い場合は、
+        //    単一要素での成立を許さず拒否する（仕様 §24.4「MFA 必須ユーザーが単一要素のみでは
+        //    認証完了しないこと」）。
         let has_totp = match user_has_confirmed_totp(self.totp_secrets.as_ref(), user.id).await {
             Ok(v) => v,
             Err(e) => return LoginOutcome::Internal(e.to_string()),
@@ -339,6 +396,20 @@ impl LoginService {
             return LoginOutcome::MfaRequired {
                 auth_session_id: session.id,
             };
+        }
+        if let PolicyDecision::RequireMfa { policy_code } = &policy_decision {
+            self.audit
+                .record(
+                    AuditEventType::LoginPolicyDenied,
+                    AuditResult::Failure,
+                    Some(tenant_id),
+                    Some(user.id),
+                    Some(&client_id),
+                    Some(&format!("policy={policy_code} reason=mfa_not_enrolled")),
+                    ctx,
+                )
+                .await;
+            return LoginOutcome::MfaEnrollmentRequired;
         }
 
         // 10. SSO セッション発行（Cookie には session_id、DB には SHA-256 ハッシュ）。
@@ -463,11 +534,7 @@ impl LoginService {
     ) -> LoginOutcome {
         let now = self.clock.now();
         let failed = user.failed_login_count + 1;
-        let locked_until = if failed >= MAX_FAILED_LOGINS {
-            Some(now + Duration::minutes(LOCK_DURATION_MINUTES))
-        } else {
-            None
-        };
+        let locked_until = self.lockout.locked_until_after_failure(failed, now);
 
         if let Err(e) = self
             .users

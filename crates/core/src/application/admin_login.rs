@@ -26,11 +26,6 @@ use crate::domain::user::User;
 use chrono::Duration;
 use std::sync::Arc;
 
-/// username 単位のロック閾値（連続失敗回数）。通常ログイン（`login.rs`）と揃える。
-const MAX_FAILED_LOGINS: i32 = 10;
-/// ロック時間（分）。
-const LOCK_DURATION_MINUTES: i64 = 15;
-
 // 管理ログインフォームの CSRF 同期トークン導出（`admin_csrf_token`）は、ADR-0007 で管理コンソールを
 // web crate へ移設したのに伴い web 側（`idp-web` の `csrf` モジュール）へ移った。api（core）は保持しない。
 
@@ -85,6 +80,8 @@ pub struct AdminLoginService {
     clock: Arc<dyn Clock>,
     sso_idle_ttl: Duration,
     sso_absolute_ttl: Duration,
+    /// アカウントロックのポリシー（設定注入。通常ログイン `login.rs` と同じ値を使う）。
+    lockout: crate::domain::authentication_policy::LockoutPolicy,
 }
 
 impl AdminLoginService {
@@ -99,6 +96,7 @@ impl AdminLoginService {
         clock: Arc<dyn Clock>,
         sso_idle_ttl: std::time::Duration,
         sso_absolute_ttl: std::time::Duration,
+        lockout: crate::domain::authentication_policy::LockoutPolicy,
     ) -> Self {
         Self {
             users,
@@ -111,6 +109,7 @@ impl AdminLoginService {
             sso_idle_ttl: Duration::from_std(sso_idle_ttl).expect("SSO idle TTL out of range"),
             sso_absolute_ttl: Duration::from_std(sso_absolute_ttl)
                 .expect("SSO absolute TTL out of range"),
+            lockout,
         }
     }
 
@@ -487,11 +486,7 @@ impl AdminLoginService {
     ) -> AdminLoginOutcome {
         let now = self.clock.now();
         let failed = user.failed_login_count + 1;
-        let locked_until = if failed >= MAX_FAILED_LOGINS {
-            Some(now + Duration::minutes(LOCK_DURATION_MINUTES))
-        } else {
-            None
-        };
+        let locked_until = self.lockout.locked_until_after_failure(failed, now);
 
         if let Err(e) = self
             .users

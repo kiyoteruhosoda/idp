@@ -581,3 +581,53 @@ pub struct InvitationCreatedResponse {
 pub struct AcceptInvitationRequest {
     pub token: String,
 }
+
+/// 認証ポリシー 1 件（ユーザー認証・認証ポリシー仕様書 §7）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AuthenticationPolicyResponse {
+    pub id: String,
+    pub policy_code: String,
+    pub policy_name: String,
+    /// 評価順（昇順 = 小さいほど優先）。
+    pub priority: i32,
+    pub enabled: bool,
+    /// `allow` / `deny` / `require_mfa`。
+    pub effect: String,
+    /// 対象クライアント（空 = 全クライアント）。
+    pub client_ids: Vec<String>,
+    /// 対象ユーザーの内部 ID（空 = 全ユーザー）。
+    pub user_ids: Vec<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// 認証ポリシー一覧（priority 昇順）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AuthenticationPoliciesResponse {
+    pub policies: Vec<AuthenticationPolicyResponse>,
+}
+
+/// 認証ポリシーの作成・更新（全項目置換）リクエスト。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct AuthenticationPolicyUpsertRequest {
+    /// テナント内一意の識別コード（英数字と `-` `_` `.`、1〜100 文字）。
+    pub policy_code: String,
+    pub policy_name: String,
+    /// 評価順（昇順 = 小さいほど優先）。
+    pub priority: i32,
+    /// 省略時は有効（`true`）。
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    /// `allow` / `deny` / `require_mfa`。
+    pub effect: String,
+    /// 対象クライアント（省略・空 = 全クライアント）。
+    #[serde(default)]
+    pub client_ids: Vec<String>,
+    /// 対象ユーザーの内部 ID（UUID。省略・空 = 全ユーザー）。
+    #[serde(default)]
+    pub user_ids: Vec<String>,
+}
+
+fn default_enabled() -> bool {
+    true
+}

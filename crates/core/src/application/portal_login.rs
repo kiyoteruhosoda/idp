@@ -36,10 +36,6 @@ use uuid::Uuid;
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// username 単位のロック閾値（連続失敗回数）。通常ログイン（`login.rs`）と揃える。
-const MAX_FAILED_LOGINS: i32 = 10;
-/// ロック時間（分）。
-const LOCK_DURATION_MINUTES: i64 = 15;
 /// MFA チケットの有効期間（秒）。TOTP 入力までの猶予。
 const MFA_TICKET_TTL_SECS: i64 = 300;
 
@@ -146,6 +142,8 @@ pub struct PortalLoginService {
     ticket_secret: [u8; 32],
     sso_idle_ttl: Duration,
     sso_absolute_ttl: Duration,
+    /// アカウントロックのポリシー（設定注入。通常ログイン `login.rs` と同じ値を使う）。
+    lockout: crate::domain::authentication_policy::LockoutPolicy,
 }
 
 impl PortalLoginService {
@@ -162,6 +160,7 @@ impl PortalLoginService {
         ticket_secret: [u8; 32],
         sso_idle_ttl: std::time::Duration,
         sso_absolute_ttl: std::time::Duration,
+        lockout: crate::domain::authentication_policy::LockoutPolicy,
     ) -> Self {
         Self {
             users,
@@ -176,6 +175,7 @@ impl PortalLoginService {
             sso_idle_ttl: Duration::from_std(sso_idle_ttl).expect("SSO idle TTL out of range"),
             sso_absolute_ttl: Duration::from_std(sso_absolute_ttl)
                 .expect("SSO absolute TTL out of range"),
+            lockout,
         }
     }
 
@@ -565,11 +565,7 @@ impl PortalLoginService {
     ) -> PortalChangePasswordOutcome {
         let now = self.clock.now();
         let failed = user.failed_login_count + 1;
-        let locked_until = if failed >= MAX_FAILED_LOGINS {
-            Some(now + Duration::minutes(LOCK_DURATION_MINUTES))
-        } else {
-            None
-        };
+        let locked_until = self.lockout.locked_until_after_failure(failed, now);
         if let Err(e) = self
             .users
             .update_login_state(user.id, failed, locked_until)
@@ -605,11 +601,7 @@ impl PortalLoginService {
     ) -> PortalLoginOutcome {
         let now = self.clock.now();
         let failed = user.failed_login_count + 1;
-        let locked_until = if failed >= MAX_FAILED_LOGINS {
-            Some(now + Duration::minutes(LOCK_DURATION_MINUTES))
-        } else {
-            None
-        };
+        let locked_until = self.lockout.locked_until_after_failure(failed, now);
         if let Err(e) = self
             .users
             .update_login_state(user.id, failed, locked_until)

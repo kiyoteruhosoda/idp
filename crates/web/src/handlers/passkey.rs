@@ -362,6 +362,12 @@ pub async fn login_complete_api(
             })
             .into_response()
         }
+        // 認証ポリシーによる拒否。フロント側スクリプトはこのコードを翻訳キーへ写す。
+        InternalPasskeyLoginCompleteResponse::PolicyDenied => Json(LoginCompleteJsonResponse {
+            redirect_to: None,
+            error: Some("policy_denied".to_string()),
+        })
+        .into_response(),
         InternalPasskeyLoginCompleteResponse::Internal => {
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }

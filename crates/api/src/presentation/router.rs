@@ -2,11 +2,11 @@
 
 use crate::presentation::correlation;
 use crate::presentation::handlers::{
-    admin, admin_application_logs, admin_audit, admin_clients, admin_invitations, admin_members,
-    admin_permissions, admin_restart, admin_saml_service_providers, admin_signing_keys,
-    admin_system_settings, admin_tenants, admin_users, authorize, consent, discovery, health,
-    internal_auth, internal_runtime_settings, introspect, invitations, logout, mfa, passkey,
-    register, revoke, saml_sso, token, userinfo,
+    admin, admin_application_logs, admin_audit, admin_authentication_policies, admin_clients,
+    admin_invitations, admin_members, admin_permissions, admin_restart,
+    admin_saml_service_providers, admin_signing_keys, admin_system_settings, admin_tenants,
+    admin_users, authorize, consent, discovery, health, internal_auth, internal_runtime_settings,
+    introspect, invitations, logout, mfa, passkey, register, revoke, saml_sso, token, userinfo,
 };
 use crate::presentation::openapi::ApiDoc;
 use crate::presentation::security_headers::add_security_headers;
@@ -257,6 +257,17 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/admin/users/{user_id}/permissions/{permission_code}",
             axum::routing::delete(admin_permissions::revoke_permission),
+        )
+        // 認証ポリシーの管理（ユーザー認証・認証ポリシー仕様書 §7）。idp.tenant.admin 必須。
+        .route(
+            "/admin/authentication-policies",
+            get(admin_authentication_policies::list_authentication_policies)
+                .post(admin_authentication_policies::create_authentication_policy),
+        )
+        .route(
+            "/admin/authentication-policies/{policy_id}",
+            put(admin_authentication_policies::update_authentication_policy)
+                .delete(admin_authentication_policies::delete_authentication_policy),
         )
         // 監査ログ参照（A3、設計仕様 §7）。idp.tenant.admin 必須。
         .route("/admin/audit-logs", get(admin_audit::list_audit_logs))
