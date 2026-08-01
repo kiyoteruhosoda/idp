@@ -358,9 +358,11 @@ impl LoginService {
             return LoginOutcome::PolicyDenied;
         }
 
-        // 8.5. 強制パスワード変更（ADR-0009 §5）。自動生成パスワードで作成された利用者は、MFA・同意より
-        //      先にパスワード変更画面へ誘導する（変更完了までは他の操作を許可しない）。この状態のユーザーは
-        //      自己登録 MFA を設定できないため（SSO が必要）、変更後に改めて MFA 判定へ進む必要はない。
+        // 8.5. 強制パスワード変更（ADR-0009 §5）。自動生成パスワードで作成・再発行された利用者は、
+        //      MFA・同意より先にパスワード変更画面へ誘導する（変更完了までは他の操作を許可しない）。
+        //      TOTP の検証・ポリシーの MFA 要件は変更完了時に `ChangePasswordService` が適用する
+        //      （`must_change_password` は管理者による既存ユーザーのパスワード再発行でも立つため、
+        //      「この状態のユーザーに MFA 判定は不要」とは限らない）。
         if user.must_change_password {
             if let Err(e) = self
                 .auth_sessions
