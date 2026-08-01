@@ -38,29 +38,55 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 | 優先度 | ID | 課題内容 | 工数 | 影響度 | 重要度 | 難易度 |
 |---:|---|---|---:|---:|---:|---:|
 | 45 | SEC3 | OIDC フローの TOTP 検証にレート制限・ロックアウトが無い（ポータル側にはある）（⬜未着手） | 小 | 中 | 大 | 中 |
-| 14 | AP2 | 認証ポリシーの評価をポータル・管理コンソールログインへも適用する（現状は OIDC フローのみ。ADR-0020）（⬜未着手） | 中 | 中 | 中 | 中 |
-| 8 | AP3 | 認証ポリシーの条件種別を拡張する（ネットワークゾーン・国・端末・時間帯・requested_acr 等。仕様 §8）と `require_specific_method` 効果（⬜未着手） | 大 | 中 | 中 | 大 |
-| 5 | AP1 | 認証ポリシーの管理画面（web コンソール UI。現状は API のみ）（⬜未着手） | 中 | 中 | 小 | 中 |
 | 23 | SEC2 | ログアウト系 URI（`backchannel_logout_uri` ほか）が無検証 → 認証済み blind SSRF（⬜未着手） | 中 | 中 | 大 | 中 |
 | 23 | SEC4 | single-origin 構成で admin の変更系 POST（`restart`・secret 再発行・password/MFA reset 等）が same-site スクリプトから CSRF 可能（body 無しエンドポイントは JSON content-type が防御にならない）（⬜未着手） | 中 | 中 | 大 | 中 |
 | 15 | SEC11 | `INTERNAL_SERVICE_TOKEN` に長さ・形式検証が無く、http issuer では dev 既定へフォールバックする（⬜未着手） | 小 | 中 | 大 | 小 |
+| 15 | AP5 | Step-up 認証（仕様 §15。認証済みユーザーへの再認証・強い認証の要求。MFA 設定変更・パスワード変更等の重要操作に適用。AP4 が前提）（⬜未着手） | 大 | 中 | 中 | 大 |
+| 15 | AP9 | 認証器の統合管理（仕様 §5。`user_authenticators` への統合・状態管理（pending/active/suspended/revoked）・リカバリーコード・email/sms OTP）（⬜未着手） | 大 | 中 | 中 | 大 |
+| 15 | AP10 | 外部 IdP 認証（仕様 §13。外部 OIDC/SAML IdP を認証器として使う。`iss`+`sub` での外部ユーザー識別・トークン検証・IdP 制限ポリシー）（⬜未着手） | 大 | 大 | 中 | 大 |
+| 14 | AP2 | 認証ポリシーの評価をポータル・管理コンソールログインへも適用する（現状は OIDC フローのみ。ADR-0020）（⬜未着手） | 中 | 中 | 中 | 中 |
+| 14 | AP4 | 認証セッションへの認証方式・強度・MFA 完了状態の記録（仕様 §14.3・§18.1。`sso_sessions` へ `authentication_methods`・`authentication_strength`・`mfa_completed_at` を追加。MFA 経過時間による再認証（§18.2）と Step-up の判定材料）（⬜未着手） | 中 | 中 | 中 | 中 |
 | 9 | SEC5 | CSRF double-submit の種（`admin_csrf_id`/`portal_csrf_id`）がオリジン非分離 → `__Host-` 前置（⬜未着手） | 小 | 中 | 中 | 小 |
 | 9 | SEC7 | 認証成功時に `auth_session_id` を再生成しない（`sso_session_id` は再生成済みで非対称）（⬜未着手） | 小 | 小 | 中 | 中 |
 | 9 | SEC9 | クエリ文字列（`?auth_session=`・`?code_challenge=`）が `TraceLayer` 既定スパン経由でログに出うる（⬜未着手） | 小 | 中 | 中 | 小 |
 | 8 | SEC1 | web が `X-Forwarded-For` を無条件信頼（api の `TRUST_FORWARDED_HEADERS` ゲートを迂回）→ レート制限回避・監査ログ汚染（⬜未着手） | 中 | 中 | 大 | 小 |
 | 8 | SEC6 | `auth_sessions.id` だけ DB に平文保存（他の bearer credential は全てハッシュ）（⬜未着手） | 中 | 小 | 大 | 中 |
 | 8 | SEC8 | 再利用検知時に子孫トークンファミリを失効させない（authorization code・refresh token の両方）（⬜未着手） | 中 | 小 | 大 | 中 |
+| 8 | AP3 | 認証ポリシーの条件種別を拡張する（ネットワークゾーン・国・端末・時間帯・requested_acr 等。仕様 §8）と `require_specific_method` 効果（⬜未着手） | 大 | 中 | 中 | 大 |
+| 8 | AP8 | ログイン識別子の複数化（仕様 §4。`user_login_identifiers`: 電話番号・社員番号等の種別、表示値と正規化値の分離、識別子単位の無効化）（⬜未着手） | 大 | 大 | 小 | 大 |
 | 5 | SEC12 | 低リスク改善のまとめ（CSP `unsafe-inline`・Swagger 無認証・`require_pkce` 死に設定・同意 POST の Cookie 非束縛・argon2 パラメータ非明示・auth_sessions の GC/照合/`expect()`）（⬜未着手） | 中 | 中 | 小 | 中 |
+| 5 | AP1 | 認証ポリシーの管理画面（web コンソール UI。現状は API のみ）（⬜未着手） | 中 | 中 | 小 | 中 |
+| 5 | AP7 | パスワードポリシーの拡張（仕様 §11.2。漏えい済みパスワード検出・過去パスワード再利用禁止・有効期限。現状は最小文字数のみ）（⬜未着手） | 中 | 小 | 中 | 中 |
 | 3 | SEC10 | `/token`・`/introspect`・`/revoke` にレート制限が無い（Argon2 増幅型 DoS）（⬜未着手） | 小 | 小 | 中 | 小 |
+| 3 | AP6 | アカウントロックの管理者解除（仕様 §17.1・§24.6。`locked_until` を即時クリアする管理操作。現状は期限経過待ちのみ）と段階的ロック（⬜未着手） | 小 | 小 | 中 | 小 |
 
 ## 詳細
 
-### 認証ポリシーのフォローアップ（AP1〜AP3）
+### ユーザー認証・認証ポリシー仕様書の残実装（AP1〜AP10）
 
-ADR-0020 で `authentication_policies`（deny / require_mfa / allow、client_ids・user_ids 条件）と
-管理 API・OIDC ログインフローへの適用を導入済み。残タスクは (AP1) web コンソールの管理画面、
-(AP2) ポータル・管理コンソールログインへの評価適用（ポータルはクライアント文脈が無いため
-`user_ids` 条件と require_mfa が主対象）、(AP3) 仕様 §8 の残り条件種別と `require_specific_method`。
+ADR-0020 で `authentication_policies`（deny / require_mfa / allow、client_ids・user_ids 条件）・
+管理 API・OIDC ログインフロー（パスワード・パスキー・強制パスワード変更）への適用・アカウント
+ロックの設定化（`LOGIN_MAX_FAILED_ATTEMPTS` / `LOGIN_LOCK_DURATION_SECS`）を導入済み。
+仕様書に対する残実装をタスク化する:
+
+- **AP1** 管理画面（web コンソール UI）。現状は API のみ（手順は `docs/OPERATIONS.md`）。
+- **AP2** ポータル・管理コンソールログインへの評価適用。ポータルはクライアント文脈が無いため
+  `user_ids` 条件と require_mfa が主対象。
+- **AP3** 条件種別の拡張（仕様 §8: ネットワークゾーン・国・端末信頼・時間帯・requested_acr 等）と
+  `require_specific_method` 効果。WebAuthn 必須・UV 必須等の要求（§12.2）を含む。
+- **AP4** 認証セッションへの `authentication_methods`・`authentication_strength`・
+  `mfa_completed_at` の記録（§14.3・§18.1）。MFA 経過時間による再認証（§18.2
+  `max_authentication_age`）と AP5 の判定材料になるため先行させる。
+- **AP5** Step-up 認証（§15）。MFA 設定変更・パスワード変更・外部 IdP 紐付け等の重要操作へ、
+  現在の認証強度・前回認証時刻に応じた追加認証を要求する。AP4 が前提。
+- **AP6** アカウントロックの管理者即時解除（`locked_until` クリア）と段階的ロック（§17.1）。
+- **AP7** パスワードポリシーの拡張（§11.2）。
+- **AP8** ログイン識別子の複数化（§4 `user_login_identifiers`）。`users.email` /
+  `preferred_username` 直付けからの移行（expand/contract）を伴う。
+- **AP9** 認証器の統合管理（§5 `user_authenticators`）。TOTP・WebAuthn の別テーブルを状態付きの
+  統合モデルへ寄せ、リカバリーコード・email/sms OTP を追加する。AP8 と同じく DDL 移行が主コスト。
+- **AP10** 外部 IdP 認証（§13）。外部 OIDC/SAML IdP を認証器として使い、`iss`+`sub` で内部
+  ユーザーへ紐付ける。IdP 制限・外部 MFA 信頼の判定は認証ポリシーの条件として表現する。
 
 ### セキュリティレビュー（SEC1〜SEC12）
 
