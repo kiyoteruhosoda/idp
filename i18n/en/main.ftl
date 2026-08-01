@@ -11,6 +11,8 @@ login-error-session-expired = Your sign-in session has expired. Please start ove
 login-error-csrf = The form has expired. Please reload the page and try again.
 login-error-csrf-retry = The form had expired, so a fresh one has been loaded. Please try again.
 login-error-rate-limited = Too many attempts. Please wait a moment and try again.
+login-error-policy-denied = Sign-in was blocked by your organization's authentication policy. Please contact your administrator.
+login-error-mfa-enrollment-required = Your organization requires multi-factor authentication. Please set up an authenticator app from your account settings before signing in.
 
 # SAML SSO continue page (auto-POST of the signed SAMLResponse to the SP's ACS).
 saml-continue-title = Signing in to the application
@@ -442,6 +444,12 @@ api-signing-key-not-found = Signing key not found.
 api-signing-key-retire-failed = Only ACTIVE keys can be retired.
 api-signing-key-delete-failed = Only RETIRED keys can be deleted.
 api-tenant-not-found = Tenant not found.
+api-auth-policy-not-found = Authentication policy not found.
+api-auth-policy-code-invalid = Invalid policy code. Use 1-100 ASCII letters, digits, '-', '_' or '.'.
+api-auth-policy-name-invalid = The policy name must be 1-200 characters.
+api-auth-policy-effect-invalid = Invalid effect. Choose allow, deny or require_mfa.
+api-auth-policy-conditions-invalid = Invalid conditions. Client IDs must be non-empty (max 255 chars) and each list may contain at most 100 entries.
+api-auth-policy-code-conflict = This policy code is already used in this tenant.
 api-audit-invalid-datetime = "{ $value }" is not a valid date-time. Use RFC 3339, e.g. 2026-07-06T00:00:00Z.
 api-email-required = An email address is required.
 api-email-invalid = Enter a valid email address.

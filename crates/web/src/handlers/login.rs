@@ -338,6 +338,21 @@ pub async fn login(
             StatusCode::FORBIDDEN,
             "login-error-email-not-verified",
         ),
+        // 認証ポリシーによる拒否。資格情報は検証済みのため、資格情報エラーとは別の文言で表示する。
+        InternalAuthenticateResponse::PolicyDenied => reshow_form(
+            &messages,
+            &tenant.prefix(),
+            StatusCode::FORBIDDEN,
+            auth_session_id.as_deref(),
+            "login-error-policy-denied",
+            state.config.csrf_secret(),
+        ),
+        // ポリシーが MFA 必須だが認証器（TOTP）が未設定。ポータルで設定するよう案内する。
+        InternalAuthenticateResponse::MfaEnrollmentRequired => error_page(
+            &messages,
+            StatusCode::FORBIDDEN,
+            "login-error-mfa-enrollment-required",
+        ),
         InternalAuthenticateResponse::ConsentRequired {
             auth_session_id: new_auth_session_id,
             sso_session_id,

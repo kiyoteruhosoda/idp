@@ -11,6 +11,13 @@ pub enum AuditEventType {
     LoginSucceeded,
     LoginFailed,
     LoginLocked,
+    /// 認証ポリシーによるログイン拒否（ユーザー認証・認証ポリシー仕様書 §21）。`reason` に
+    /// 一致したポリシーコードを記録する（資格情報は記録しない）。
+    LoginPolicyDenied,
+    /// 管理者による認証ポリシーの作成・更新・削除（同仕様 §21）。`reason` にポリシーコードを記録する。
+    AuthenticationPolicyCreated,
+    AuthenticationPolicyUpdated,
+    AuthenticationPolicyDeleted,
     AuthorizationCodeIssued,
     AuthorizationCodeUsed,
     AuthorizationCodeReuseDetected,
@@ -83,6 +90,10 @@ impl AuditEventType {
             Self::LoginSucceeded => "login.succeeded",
             Self::LoginFailed => "login.failed",
             Self::LoginLocked => "login.locked",
+            Self::LoginPolicyDenied => "login.policy_denied",
+            Self::AuthenticationPolicyCreated => "authentication_policy.created",
+            Self::AuthenticationPolicyUpdated => "authentication_policy.updated",
+            Self::AuthenticationPolicyDeleted => "authentication_policy.deleted",
             Self::AuthorizationCodeIssued => "authorization_code.issued",
             Self::AuthorizationCodeUsed => "authorization_code.used",
             Self::AuthorizationCodeReuseDetected => "authorization_code.reuse_detected",

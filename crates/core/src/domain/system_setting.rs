@@ -290,6 +290,44 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         default_value: Some("60"),
         description: "scope→権限解決キャッシュの TTL（秒）。付与・剥奪時は即時 invalidate される。",
     },
+    // アカウントロックのポリシー（ユーザー認証・認証ポリシー仕様書 §17）。従来ハードコードだった
+    // 「10 回失敗 / 15 分ロック」を運用で調整できるようにする。OIDC ログイン・ポータルログイン・
+    // 管理コンソールログインの全経路へ一律に適用する。
+    SettingDefinition {
+        key: "LOGIN_MAX_FAILED_ATTEMPTS",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
+        default_value: Some("10"),
+        description: "アカウントロックまでの連続ログイン失敗の許容回数。成功でリセットされる。",
+    },
+    SettingDefinition {
+        key: "LOGIN_LOCK_DURATION_SECS",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
+        default_value: Some("900"),
+        description: "連続失敗でロックした際のロック時間（秒）。経過後は自動で再試行できる（恒久ロックはしない）。",
+    },
+    // 認証ポリシー（authentication_policies）が 1 件も一致しないときの既定動作（同仕様 §9.4）。
+    SettingDefinition {
+        key: "AUTH_POLICY_DEFAULT_EFFECT",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Review,
+        kind: SettingKind::Text,
+        default_value: Some("allow"),
+        description: "認証ポリシーが 1 件も一致しない場合の既定動作（`allow` / `deny`）。`deny` にすると\
+                      許可ポリシーを明示したクライアント・ユーザーしかログインできなくなるため注意。",
+    },
     // api と web の Cookie 属性を一致させる必要がある共有キー（MT26 / ADR-0013）。DB 値は両サービスが
     // 同じ経路（api の /internal/runtime-settings）から受け取るため、DB 管理でも属性がずれない。
     // 未設定時の既定は各サービスが**自分の公開オリジンのスキーム**から導く（ADR-0012 §2）。

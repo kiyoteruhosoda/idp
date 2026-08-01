@@ -134,6 +134,8 @@ pub async fn authenticate(
         LoginOutcome::EmailVerificationRequired => {
             InternalAuthenticateResponse::EmailVerificationRequired
         }
+        LoginOutcome::PolicyDenied => InternalAuthenticateResponse::PolicyDenied,
+        LoginOutcome::MfaEnrollmentRequired => InternalAuthenticateResponse::MfaEnrollmentRequired,
         LoginOutcome::SessionExpired => InternalAuthenticateResponse::SessionExpired,
         LoginOutcome::CsrfMismatch => InternalAuthenticateResponse::CsrfMismatch,
         LoginOutcome::RateLimited => InternalAuthenticateResponse::RateLimited,

@@ -3,17 +3,25 @@
 //! パスワード入力なしで Passkey だけでログインする。認証フロー:
 //! 1. `begin()` — discoverable チャレンジを生成して options JSON を返す。
 //! 2. `complete()` — ブラウザからのクレデンシャルを検証し、SSO セッション発行 → code 発行。
+//!
+//! 認証ポリシー（ユーザー認証・認証ポリシー仕様書 §7〜§9）: `deny` ポリシーはこの経路でも
+//! 拒否する（パスワード経路だけ塞いでも迂回できてしまうため）。`require_mfa` は WebAuthn が
+//! 所有＋生体/知識（User Verification）の複数要素・フィッシング耐性認証であるため満たすものと扱う。
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authorize::code_redirect;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::domain::audit::{AuditEventType, AuditResult};
+use crate::domain::authentication_policy::{
+    evaluate_policies, AuthenticationContext, DefaultPolicyEffect, PolicyDecision,
+};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::passkey_challenge::{PasskeyChallenge, PasskeyChallengeType};
 use crate::domain::repositories::{
-    AuthSessionRepository, ClientConsentRepository, PasskeyChallengeRepository,
-    SsoSessionRepository, TenantMembershipRepository, UserRepository, WebAuthnCredentialRepository,
+    AuthSessionRepository, AuthenticationPolicyRepository, ClientConsentRepository,
+    PasskeyChallengeRepository, SsoSessionRepository, TenantMembershipRepository, UserRepository,
+    WebAuthnCredentialRepository,
 };
 use crate::domain::sso_session::SsoSession;
 use crate::domain::tenant::TenantId;
@@ -48,6 +56,8 @@ pub enum PasskeyAuthOutcome {
     SessionExpired,
     /// クレデンシャルが無効。
     InvalidCredential,
+    /// 認証ポリシーにより拒否（仕様 §7.4 `deny`）。
+    PolicyDenied,
     /// 内部エラー。
     Internal(String),
 }
@@ -60,12 +70,14 @@ pub struct PasskeyAuthenticationService {
     memberships: Arc<dyn TenantMembershipRepository>,
     sso_sessions: Arc<dyn SsoSessionRepository>,
     client_consents: Arc<dyn ClientConsentRepository>,
+    authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
     code_issuance: Arc<CodeIssuanceService>,
     webauthn: Arc<dyn WebAuthnPort>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
     sso_idle_ttl: Duration,
     sso_absolute_ttl: Duration,
+    policy_default_effect: DefaultPolicyEffect,
 }
 
 impl PasskeyAuthenticationService {
@@ -78,12 +90,14 @@ impl PasskeyAuthenticationService {
         memberships: Arc<dyn TenantMembershipRepository>,
         sso_sessions: Arc<dyn SsoSessionRepository>,
         client_consents: Arc<dyn ClientConsentRepository>,
+        authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
         code_issuance: Arc<CodeIssuanceService>,
         webauthn: Arc<dyn WebAuthnPort>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
         sso_idle_ttl: StdDuration,
         sso_absolute_ttl: StdDuration,
+        policy_default_effect: DefaultPolicyEffect,
     ) -> Self {
         Self {
             webauthn_credentials,
@@ -93,6 +107,7 @@ impl PasskeyAuthenticationService {
             memberships,
             sso_sessions,
             client_consents,
+            authentication_policies,
             code_issuance,
             webauthn,
             audit,
@@ -100,6 +115,7 @@ impl PasskeyAuthenticationService {
             sso_idle_ttl: Duration::from_std(sso_idle_ttl).expect("SSO idle TTL out of range"),
             sso_absolute_ttl: Duration::from_std(sso_absolute_ttl)
                 .expect("SSO absolute TTL out of range"),
+            policy_default_effect,
         }
     }
 
@@ -277,6 +293,38 @@ impl PasskeyAuthenticationService {
         }
 
         let client_id = session.client_id.clone();
+
+        // 8.5. 認証ポリシー評価（仕様 §9）。`deny` はパスキー経路でも拒否する。
+        //      `require_mfa` は WebAuthn（所有要素 + User Verification）が満たすため通過する。
+        let decision = match self
+            .authentication_policies
+            .list_enabled_for_tenant(tenant_id)
+            .await
+        {
+            Ok(policies) => evaluate_policies(
+                &policies,
+                &AuthenticationContext {
+                    client_id: Some(&client_id),
+                    user_id,
+                },
+                self.policy_default_effect,
+            ),
+            Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
+        };
+        if let PolicyDecision::Deny { policy_code } = &decision {
+            self.audit
+                .record(
+                    AuditEventType::LoginPolicyDenied,
+                    AuditResult::Failure,
+                    Some(tenant_id),
+                    Some(user_id),
+                    Some(&client_id),
+                    Some(&format!("policy={policy_code}")),
+                    ctx,
+                )
+                .await;
+            return PasskeyAuthOutcome::PolicyDenied;
+        }
 
         // 9. auth_time を設定する。
         if let Err(e) = self

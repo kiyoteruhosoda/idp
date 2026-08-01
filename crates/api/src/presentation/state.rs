@@ -17,6 +17,7 @@ use crate::application::admin_login::AdminLoginService;
 use crate::application::application_log::ApplicationLogService;
 use crate::application::audit::AuditService;
 use crate::application::audit_query::AuditQueryService;
+use crate::application::authentication_policy_management::AuthenticationPolicyManagementService;
 use crate::application::authorize::AuthorizeService;
 use crate::application::change_password::ChangePasswordService;
 use crate::application::client_management::ClientManagementService;
@@ -67,6 +68,7 @@ use crate::infrastructure::repositories::application_log::{
 };
 use crate::infrastructure::repositories::audit_log::{SqlxAuditLogQuery, SqlxAuditLogSink};
 use crate::infrastructure::repositories::auth_session::SqlxAuthSessionRepository;
+use crate::infrastructure::repositories::authentication_policy::SqlxAuthenticationPolicyRepository;
 use crate::infrastructure::repositories::authorization_code::SqlxAuthorizationCodeRepository;
 use crate::infrastructure::repositories::cached_user_permission::{
     CachedUserPermissionRepository, PermissionKey,
@@ -133,6 +135,8 @@ pub struct AppState {
     pub clients_admin: Arc<ClientManagementService>,
     pub clients_status: Arc<ClientStatusService>,
     pub permissions_admin: Arc<PermissionManagementService>,
+    /// 認証ポリシーの管理（CRUD。ユーザー認証・認証ポリシー仕様書 §7）。評価はログイン系サービスが行う。
+    pub authentication_policies_admin: Arc<AuthenticationPolicyManagementService>,
     /// 管理者による利用者作成（自動生成パスワード・must_change_password。ADR-0009 §5）。
     pub users_admin: Arc<UserManagementService>,
     /// 管理者による利用者ライフサイクル操作（無効化・削除・パスワード再発行。ADR-0009 §5）。
@@ -207,6 +211,8 @@ impl AppState {
             ));
         let client_consents = Arc::new(SqlxClientConsentRepository::new(pool.clone()));
         let totp_secrets = Arc::new(SqlxTotpSecretRepository::new(pool.clone()));
+        let authentication_policies =
+            Arc::new(SqlxAuthenticationPolicyRepository::new(pool.clone()));
         let webauthn_credentials = Arc::new(SqlxWebAuthnCredentialRepository::new(pool.clone()));
         let passkey_challenges = Arc::new(SqlxPasskeyChallengeRepository::new(pool.clone()));
         let audit_sink = Arc::new(SqlxAuditLogSink::new(pool.clone()));
@@ -356,6 +362,7 @@ impl AppState {
             sso_sessions.clone(),
             client_consents.clone(),
             totp_secrets.clone(),
+            authentication_policies.clone(),
             code_issuance.clone(),
             hasher.clone(),
             rate_limiter.clone(),
@@ -363,6 +370,8 @@ impl AppState {
             clock.clone(),
             config.sso_idle_ttl(),
             config.sso_absolute_ttl(),
+            config.login_lockout(),
+            config.auth_policy_default_effect(),
             *config.csrf_secret(),
         ));
         let change_password = Arc::new(ChangePasswordService::new(
@@ -397,6 +406,7 @@ impl AppState {
             clock.clone(),
             config.sso_idle_ttl(),
             config.sso_absolute_ttl(),
+            config.login_lockout(),
         ));
         // エンドユーザー・ポータルの直接ログイン。admin_login と同機構（クライアント非依存の SSO 直接発行）
         // だが admin 権限を要求せず、TOTP（MFA）を尊重する。`mfa_ticket` の署名鍵は CSRF 秘密鍵を流用する。
@@ -412,6 +422,7 @@ impl AppState {
             *config.csrf_secret(),
             config.sso_idle_ttl(),
             config.sso_absolute_ttl(),
+            config.login_lockout(),
         ));
         let clients_admin = Arc::new(ClientManagementService::new(
             clients.clone(),
@@ -459,6 +470,13 @@ impl AppState {
             user_permissions.clone(),
             audit.clone(),
             clock.clone(),
+        ));
+        // 認証ポリシーの管理（CRUD）。評価用のリポジトリ（login / passkey_authentication）と同一実装を共有する。
+        let authentication_policies_admin = Arc::new(AuthenticationPolicyManagementService::new(
+            authentication_policies.clone(),
+            audit.clone(),
+            clock.clone(),
+            ids.clone(),
         ));
         // 管理者による利用者作成（ADR-0009 §5）。テナント作成フロー（tenants_admin）が生成する初期
         // 管理者ユーザーもこのサービスを通す（作成ロジックの単一の出所）。
@@ -607,12 +625,14 @@ impl AppState {
             tenant_memberships.clone(),
             sso_sessions.clone(),
             client_consents,
+            authentication_policies.clone(),
             code_issuance,
             webauthn,
             audit.clone(),
             clock.clone(),
             config.sso_idle_ttl(),
             config.sso_absolute_ttl(),
+            config.auth_policy_default_effect(),
         ));
         // 設定画面からの再起動（ADR-0017）。signal 自体は `run()` の graceful shutdown へ、
         // ユースケース（監査 → 停止要求）はハンドラへ渡すため、同じ値を 2 経路で保持する。
@@ -641,6 +661,7 @@ impl AppState {
             clients_admin,
             clients_status,
             permissions_admin,
+            authentication_policies_admin,
             users_admin,
             users_lifecycle,
             tenants_admin,

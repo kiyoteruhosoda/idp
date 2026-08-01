@@ -1,3 +1,18 @@
+## 2026-08-01（認証ポリシーを導入し、アカウントロックを設定化した（ADR-0020））
+
+- **テナント単位の認証ポリシー（`authentication_policies`）を導入した。** 効果は
+  `allow` / `deny` / `require_mfa`、適用条件は `client_ids` / `user_ids`（空 = 制限しない、AND）。
+  評価は優先順位昇順・**拒否優先**のドメイン純粋関数で、パスワード／パスキー検証成功後に行う
+  （資格情報を知らない攻撃者へポリシーの存在を観測させない）。`require_mfa` 一致時、TOTP 設定済みは
+  既存 MFA ステップへ、未設定は単一要素での成立を拒否する。パスキーは `require_mfa` を満たす。
+  拒否は `login.policy_denied` として監査記録する。一致ポリシー無しの既定動作は
+  `AUTH_POLICY_DEFAULT_EFFECT`（既定 `allow`、`deny` へ切替可）。
+- **管理 API（`/{tenant_id}/admin/authentication-policies`、CRUD、`idp.tenant.admin` 必須）を追加した。**
+  変更は `authentication_policy.created` / `.updated` / `.deleted` として監査記録する。
+- **アカウントロックの閾値を設定化した。** 3 つのログインサービスにハードコードされていた
+  「10 回失敗 / 15 分ロック」を `LOGIN_MAX_FAILED_ATTEMPTS` / `LOGIN_LOCK_DURATION_SECS`
+  （DbManaged）からの注入（`LockoutPolicy`）に一本化した（既定値は従来と同じ）。
+
 ## 2026-07-29（api を兄弟サブドメインへ戻し、WebAuthn RP ID を web オリジン由来にした（ADR-0019））
 
 - **ADR-0018 決定 1（入れ子ホスト名）を撤回した（ADR-0019 決定 1）。** ワイルドカード証明書は

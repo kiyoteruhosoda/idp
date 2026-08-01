@@ -38,6 +38,9 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 | 優先度 | ID | 課題内容 | 工数 | 影響度 | 重要度 | 難易度 |
 |---:|---|---|---:|---:|---:|---:|
 | 45 | SEC3 | OIDC フローの TOTP 検証にレート制限・ロックアウトが無い（ポータル側にはある）（⬜未着手） | 小 | 中 | 大 | 中 |
+| 14 | AP2 | 認証ポリシーの評価をポータル・管理コンソールログインへも適用する（現状は OIDC フローのみ。ADR-0020）（⬜未着手） | 中 | 中 | 中 | 中 |
+| 8 | AP3 | 認証ポリシーの条件種別を拡張する（ネットワークゾーン・国・端末・時間帯・requested_acr 等。仕様 §8）と `require_specific_method` 効果（⬜未着手） | 大 | 中 | 中 | 大 |
+| 5 | AP1 | 認証ポリシーの管理画面（web コンソール UI。現状は API のみ）（⬜未着手） | 中 | 中 | 小 | 中 |
 | 23 | SEC2 | ログアウト系 URI（`backchannel_logout_uri` ほか）が無検証 → 認証済み blind SSRF（⬜未着手） | 中 | 中 | 大 | 中 |
 | 23 | SEC4 | single-origin 構成で admin の変更系 POST（`restart`・secret 再発行・password/MFA reset 等）が same-site スクリプトから CSRF 可能（body 無しエンドポイントは JSON content-type が防御にならない）（⬜未着手） | 中 | 中 | 大 | 中 |
 | 15 | SEC11 | `INTERNAL_SERVICE_TOKEN` に長さ・形式検証が無く、http issuer では dev 既定へフォールバックする（⬜未着手） | 小 | 中 | 大 | 小 |
@@ -51,6 +54,13 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 | 3 | SEC10 | `/token`・`/introspect`・`/revoke` にレート制限が無い（Argon2 増幅型 DoS）（⬜未着手） | 小 | 小 | 中 | 小 |
 
 ## 詳細
+
+### 認証ポリシーのフォローアップ（AP1〜AP3）
+
+ADR-0020 で `authentication_policies`（deny / require_mfa / allow、client_ids・user_ids 条件）と
+管理 API・OIDC ログインフローへの適用を導入済み。残タスクは (AP1) web コンソールの管理画面、
+(AP2) ポータル・管理コンソールログインへの評価適用（ポータルはクライアント文脈が無いため
+`user_ids` 条件と require_mfa が主対象）、(AP3) 仕様 §8 の残り条件種別と `require_specific_method`。
 
 ### セキュリティレビュー（SEC1〜SEC12）
 

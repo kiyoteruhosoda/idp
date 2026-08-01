@@ -199,6 +199,37 @@ DELETE up FROM user_permissions up
 権限を保有する利用者は、有効な SSO セッション（一度ログイン済み）で `GET /admin/whoami` に
 アクセスでき、自身の `user_id` が返る（保護の疎通確認用）。
 
+## ログインを制限したいとき（認証ポリシー・アカウントロック）
+
+テナント管理者（`idp.tenant.admin`）は認証ポリシー API で「このクライアントはログイン禁止」
+「このユーザーは MFA 必須」等の規則を宣言できる（ADR-0020）。管理画面は未実装のため API を直接叩く
+（エンドポイント仕様は Swagger UI `/api/docs` を参照）。
+
+```bash
+# 一覧
+curl -b "sso_session_id=<管理者セッション>" \
+  https://<api>/{tenant_id}/admin/authentication-policies
+
+# 例: 特定クライアントのログインを拒否する
+curl -b "sso_session_id=<管理者セッション>" -H 'Content-Type: application/json' \
+  -d '{"policy_code":"deny-legacy","policy_name":"Deny legacy app","priority":1,
+       "effect":"deny","client_ids":["legacy-app"]}' \
+  https://<api>/{tenant_id}/admin/authentication-policies
+
+# 例: 特定ユーザーに MFA を必須にする（TOTP 未設定のユーザーはログイン不可になる）
+curl -b "sso_session_id=<管理者セッション>" -H 'Content-Type: application/json' \
+  -d '{"policy_code":"mfa-admins","policy_name":"MFA for admins","priority":10,
+       "effect":"require_mfa","user_ids":["<ユーザーUUID>"]}' \
+  https://<api>/{tenant_id}/admin/authentication-policies
+```
+
+- 条件（`client_ids` / `user_ids`）は空 = 制限しない、複数条件は AND。`deny` は常に他へ優先する。
+- 一致するポリシーが無いときの既定動作はランタイム設定 `AUTH_POLICY_DEFAULT_EFFECT`
+  （既定 `allow`。`deny` にすると許可ポリシーを明示した対象しかログインできない）。
+- アカウントロックの閾値はランタイム設定 `LOGIN_MAX_FAILED_ATTEMPTS`（既定 10 回）・
+  `LOGIN_LOCK_DURATION_SECS`（既定 900 秒）で調整する（設定手順は「ランタイム設定を DB で
+  変更したいとき」参照。反映には再起動が必要）。
+
 ## ゲスト招待をメールで届けたいとき
 
 1. root 管理者で `/{root_tenant_id}/admin/settings` を開き、システム設定区画に SMTP（ホスト・ポート・

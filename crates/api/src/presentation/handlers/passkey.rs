@@ -207,6 +207,7 @@ pub async fn login_complete(
         PasskeyAuthOutcome::InvalidCredential => {
             InternalPasskeyLoginCompleteResponse::InvalidCredential
         }
+        PasskeyAuthOutcome::PolicyDenied => InternalPasskeyLoginCompleteResponse::PolicyDenied,
         PasskeyAuthOutcome::Internal(e) => {
             tracing::error!(error = %e, "passkey login complete error");
             InternalPasskeyLoginCompleteResponse::Internal
