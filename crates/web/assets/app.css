@@ -140,6 +140,25 @@ code {
   }
 }
 
+/* 送信中の目印（submit-feedback.js）。押した瞬間にボタンの幅が変わると、隣のボタン
+ * （同意画面の承認／拒否など）が動いて押し間違いの元になる。ラベルは場所を占めたまま
+ * 隠し、スピナーをその上に重ねる。 */
+button[aria-busy='true'] {
+  position: relative;
+}
+
+button[aria-busy='true'] .js-submit-label {
+  visibility: hidden;
+}
+
+.js-submit-spinner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  /* 自分の半分だけ戻して中央に置く（.spinner-border-sm は 1rem 角）。 */
+  margin: -0.5rem 0 0 -0.5rem;
+}
+
 /* モバイルブラウザではアドレスバー分だけ 100vh が実表示域より大きく、
  * 常に下へはみ出すため、実表示域基準の 100dvh で高さを取る */
 @supports (min-height: 100dvh) {

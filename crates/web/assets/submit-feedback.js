@@ -15,10 +15,14 @@
 //   そのためこのスクリプトは console.js より後に読み込む（同じ要素のリスナは登録順に走る）。
 // - **戻るボタンで復元されたページは送信中ではない。** bfcache から戻ると DOM が
 //   そのまま復元されるので、`pageshow` で印を落とす（回りっぱなしのボタンを残さない）。
+// - **ボタンの幅を変えない。** スピナーをラベルの前に足すとボタンが横に伸び、隣のボタン
+//   （同意画面の承認／拒否など）が動いて押し間違いの元になる。ラベルを包んで場所ごと
+//   隠し、スピナーはその上に重ねる（見た目の指定は `app.css`）。
 (function () {
   'use strict';
 
   var SPINNER_CLASS = 'js-submit-spinner';
+  var LABEL_CLASS = 'js-submit-label';
 
   function submitButtonOf(form, submitter) {
     if (submitter) {
@@ -35,10 +39,17 @@
     button.setAttribute('aria-busy', 'true');
     // <input type="submit"> は子要素を持てないため、スピナーは <button> にだけ足す
     if (button.nodeName === 'BUTTON') {
+      // ラベルを包んでから隠す（要素ごと消すのではなく場所を残すことで幅を保つ）
+      var label = document.createElement('span');
+      label.className = LABEL_CLASS;
+      while (button.firstChild) {
+        label.appendChild(button.firstChild);
+      }
+      button.appendChild(label);
       var spinner = document.createElement('span');
-      spinner.className = 'spinner-border spinner-border-sm me-2 ' + SPINNER_CLASS;
+      spinner.className = 'spinner-border spinner-border-sm ' + SPINNER_CLASS;
       spinner.setAttribute('aria-hidden', 'true');
-      button.insertBefore(spinner, button.firstChild);
+      button.appendChild(spinner);
     }
     window.setTimeout(function () {
       button.disabled = true;
@@ -58,6 +69,15 @@
     var spinners = document.querySelectorAll('.' + SPINNER_CLASS);
     Array.prototype.forEach.call(spinners, function (spinner) {
       spinner.parentNode.removeChild(spinner);
+    });
+    // 包んだラベルを元に戻す（次に押したときに二重に包まないため）
+    var labels = document.querySelectorAll('.' + LABEL_CLASS);
+    Array.prototype.forEach.call(labels, function (label) {
+      var button = label.parentNode;
+      while (label.firstChild) {
+        button.insertBefore(label.firstChild, label);
+      }
+      button.removeChild(label);
     });
   }
 
