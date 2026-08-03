@@ -67,24 +67,11 @@ class GenericPageStrategy extends FormSurfaceStrategy {
   readonly componentName = 'GenericPageSurface';
 }
 
-class TenantRegistrationStrategy extends FormSurfaceStrategy {
-  readonly componentName = 'TenantRegistrationConsole';
-
-  render(state: SurfaceState): React.ReactElement {
-    const name = state.fields.name?.trim() ?? '';
-    const ready = name.length > 0;
-    return (
-      <section className="react-status" data-component={this.componentName} aria-live="polite">
-        <strong>React:</strong> {ready ? '登録できます' : 'テナント名を入力してください'}
-        {state.submitting ? <span> / 送信中...</span> : null}
-      </section>
-    );
-  }
-}
-
-const strategies: Record<string, SurfaceStrategy> = {
-  TenantRegistrationConsole: new TenantRegistrationStrategy(),
-};
+// 画面固有の描画を持つ surface だけをここに登録する。未登録の `data-react-surface`
+// は GenericPageStrategy（可視要素を描画せず、フォーム状態を data-* に反映するだけ）
+// になる。文言を描画する strategy を追加する場合は、テンプレートと同じ翻訳
+// （`messages.get`）を使う経路を用意し、ここに日本語を直書きしない。
+const strategies: Record<string, SurfaceStrategy> = {};
 
 const strategyFor = (surface: HTMLElement): SurfaceStrategy => {
   const name = surface.dataset.reactSurface ?? '';
@@ -134,12 +121,14 @@ const mountSurface = (surface: HTMLElement) => {
   );
 };
 
-const inferSurfaceName = () => document.querySelector<HTMLElement>('[data-react-surface]')?.dataset.reactSurface ?? 'GenericPageSurface';
-
 const hydrateAll = () => {
-  document.body.dataset.reactSurface ||= inferSurfaceName();
+  const declared = Array.from(document.querySelectorAll<HTMLElement>('[data-react-surface]'));
+  document.body.dataset.reactSurface ||= declared[0]?.dataset.reactSurface ?? 'GenericPageSurface';
   document.body.dataset.reactMode = 'react';
-  const surfaces = new Set<HTMLElement>([document.body, ...document.querySelectorAll<HTMLElement>('[data-react-surface]')]);
+  // 描画先はテンプレートが宣言した領域だけにする。document.body を描画先にすると
+  // island が </footer> の後ろ（レイアウトの外）へ差し込まれるため、宣言が無い画面
+  // でのみ body をフォーム状態の観測対象として使う。
+  const surfaces = declared.length > 0 ? declared : [document.body];
   surfaces.forEach(mountSurface);
 };
 
