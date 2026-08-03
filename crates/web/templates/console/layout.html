@@ -89,6 +89,9 @@
 {% include "footer.html" %}
 <script src="/assets/vendor/bootstrap.bundle.min.js?v={{ crate::templates::asset_version() }}"></script>
 <script src="/assets/console.js?v={{ crate::templates::asset_version() }}"></script>
+<!-- 送信中の目印は console.js（確認ダイアログ）より後に読み込む。取り消された送信へ
+     印を付けないため、リスナの登録順に依存する（submit-feedback.js のコメント参照）。 -->
+<script src="/assets/submit-feedback.js?v={{ crate::templates::asset_version() }}"></script>
 {% include "react_bootstrap.html" %}
 </body>
 </html>

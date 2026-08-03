@@ -81,6 +81,7 @@ fn embedded_assets_digest() -> u64 {
     [
         crate::handlers::stylesheet::APP_CSS,
         crate::handlers::console_script::CONSOLE_JS,
+        crate::handlers::submit_feedback_script::SUBMIT_FEEDBACK_JS,
         crate::handlers::react_assets::APP_JS,
         crate::handlers::vendor_assets::BOOTSTRAP_CSS,
         crate::handlers::vendor_assets::BOOTSTRAP_JS,
@@ -179,9 +180,18 @@ mod tests {
             assert!(html.contains(&format!("/assets/react/app.js?v={v}")));
             assert!(!html.contains("/assets/app.css\""));
         }
-        // 共通スクリプトは管理コンソールのレイアウト（`console/layout.html`）が読み込む。
-        // ログイン画面は `page.html` を使い、`data-confirm` を持つフォームも無いため対象外。
+        // 確認ダイアログの共通スクリプトは管理コンソールのレイアウト（`console/layout.html`）が
+        // 読み込む。ログイン画面は `page.html` を使い、`data-confirm` を持つフォームも無いため対象外。
         assert!(console.contains(&format!("/assets/console.js?v={v}")));
+        // 送信中の目印はどの画面のフォームにも要るので、両方のレイアウトが読み込む。
+        for html in [&console, &auth] {
+            assert!(html.contains(&format!("/assets/submit-feedback.js?v={v}")));
+        }
+        // 取り消された送信へ印を付けないため、確認ダイアログより後に読み込む（登録順に走る）。
+        assert!(
+            console.find("/assets/console.js") < console.find("/assets/submit-feedback.js"),
+            "submit-feedback.js must load after console.js: {console}"
+        );
     }
 
     /// MT20: 管理コンソールの共通レイアウトに言語切替 UI がある（未ログイン画面にも出す。
