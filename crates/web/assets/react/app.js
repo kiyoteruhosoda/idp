@@ -8016,7 +8016,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 			props: r
 		};
 	}
-	e.jsx = n, e.jsxs = n;
+	e.jsx = n;
 })), v = /* @__PURE__ */ o(((e, t) => {
 	t.exports = _();
 })), y = /* @__PURE__ */ c(u(), 1), b = g(), x = v(), ee = (e) => {
@@ -8062,23 +8062,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 	}
 }, C = class extends S {
 	componentName = "GenericPageSurface";
-}, te = { TenantRegistrationConsole: new class extends S {
-	componentName = "TenantRegistrationConsole";
-	render(e) {
-		let t = (e.fields.name?.trim() ?? "").length > 0;
-		return /* @__PURE__ */ (0, x.jsxs)("section", {
-			className: "react-status",
-			"data-component": this.componentName,
-			"aria-live": "polite",
-			children: [
-				/* @__PURE__ */ (0, x.jsx)("strong", { children: "React:" }),
-				" ",
-				t ? "登録できます" : "テナント名を入力してください",
-				e.submitting ? /* @__PURE__ */ (0, x.jsx)("span", { children: " / 送信中..." }) : null
-			]
-		});
-	}
-}() }, ne = (e) => te[e.dataset.reactSurface ?? ""] ?? new C(), re = ({ surface: e, strategy: t }) => {
+}, te = {}, ne = (e) => te[e.dataset.reactSurface ?? ""] ?? new C(), re = ({ surface: e, strategy: t }) => {
 	let [n, r] = (0, y.useReducer)(t.reduce.bind(t), e, t.initialState.bind(t));
 	return (0, y.useEffect)(() => {
 		let t = (e) => {
@@ -8104,10 +8088,11 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 		surface: e,
 		strategy: n
 	}) }));
-}, ie = () => document.querySelector("[data-react-surface]")?.dataset.reactSurface ?? "GenericPageSurface", ae = () => {
-	document.body.dataset.reactSurface ||= ie(), document.body.dataset.reactMode = "react", (/* @__PURE__ */ new Set([document.body, ...document.querySelectorAll("[data-react-surface]")])).forEach(w);
+}, ie = () => {
+	let e = Array.from(document.querySelectorAll("[data-react-surface]"));
+	document.body.dataset.reactSurface ||= e[0]?.dataset.reactSurface ?? "GenericPageSurface", document.body.dataset.reactMode = "react", (e.length > 0 ? e : [document.body]).forEach(w);
 };
-document.readyState === "loading" ? document.addEventListener("DOMContentLoaded", ae) : ae();
+document.readyState === "loading" ? document.addEventListener("DOMContentLoaded", ie) : ie();
 //#endregion
 
 //# sourceMappingURL=app.js.map

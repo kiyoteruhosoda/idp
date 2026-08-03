@@ -154,7 +154,9 @@ grep -q "/${ROOT}/admin/clients" <<<"$admin_home_html" || fail "管理ホーム�
 pass "admin ログイン → 必要なら初期パスワード変更 → ホーム描画（web→api /admin/whoami）"
 
 react_asset="$(curl -fsS "${WEB}/assets/react/app.js")"
-grep -q "TenantRegistrationConsole" <<<"$react_asset" || fail "React bundle がテナント登録 surface を含んでいません"
+grep -q "reactSurface" <<<"$react_asset" || fail "React bundle が data-react-surface の hydration を含んでいません"
+# 開発用のステータス文言（翻訳を経ない直書き）が画面へ混入していないことの回帰防止。
+! grep -q "テナント名を入力してください" <<<"$react_asset" || fail "React bundle に開発用のデバッグ表示が残っています"
 pass "React bundle 配信（/assets/react/app.js）"
 
 tenants_html="$(curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin/tenants")"
