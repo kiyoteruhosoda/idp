@@ -10,8 +10,8 @@ use crate::handlers::{
     admin_restart_console, admin_saml_clients_console, admin_settings, admin_signing_keys_console,
     admin_status_console, admin_tenants_console, admin_users_console, consent, console_script,
     health, invitation_accept, locale, login, mfa_totp, passkey, password_change, password_reset,
-    portal, react_assets, rp_logout, saml_sso, stylesheet, user_settings, vendor_assets,
-    verify_email,
+    portal, react_assets, rp_logout, saml_sso, stylesheet, submit_feedback_script, user_settings,
+    vendor_assets, verify_email,
 };
 use crate::i18n::Messages;
 use crate::language::resolve_language;
@@ -281,6 +281,10 @@ pub fn build(state: WebState) -> Router {
         .route("/version", get(health::version))
         .route("/assets/app.css", get(stylesheet::app_css))
         .route("/assets/console.js", get(console_script::console_js))
+        .route(
+            "/assets/submit-feedback.js",
+            get(submit_feedback_script::submit_feedback_js),
+        )
         .route(
             "/assets/vendor/bootstrap.min.css",
             get(vendor_assets::bootstrap_css),

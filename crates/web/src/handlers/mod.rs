@@ -25,6 +25,7 @@ pub mod react_assets;
 pub mod rp_logout;
 pub mod saml_sso;
 pub mod stylesheet;
+pub mod submit_feedback_script;
 pub mod user_settings;
 pub mod vendor_assets;
 pub mod verify_email;
