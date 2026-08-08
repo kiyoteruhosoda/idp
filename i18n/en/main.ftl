@@ -329,6 +329,8 @@ mfa-error-not-signed-in = You must be signed in to perform this action.
 mfa-error-already-configured = Two-factor authentication is already configured. Remove it before setting up again.
 mfa-error-not-configured = Two-factor authentication is not configured.
 mfa-error-mfa-not-pending = This page is not available in the current state. Please sign in again.
+mfa-error-rate-limited = Too many attempts. Please wait a moment and try again.
+mfa-error-locked = This account is temporarily locked after repeated failed attempts. Please try again later.
 
 # ── Passkey（WebAuthn） ──────────────────────────────────────────────────────
 passkey-title = Passkeys

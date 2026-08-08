@@ -325,6 +325,10 @@ pub enum InternalVerifyTotpResponse {
     SessionExpired,
     CsrfMismatch,
     InvalidCode,
+    /// IP 単位のレート制限に掛かった（SEC3）。
+    RateLimited,
+    /// アカウントがロック中（TOTP の連続失敗、またはパスワード認証側の失敗によるロック。SEC3）。
+    Locked,
     Internal,
 }
 

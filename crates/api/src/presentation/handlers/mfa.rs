@@ -140,6 +140,8 @@ pub async fn verify_totp(
         MfaLoginOutcome::SessionExpired => InternalVerifyTotpResponse::SessionExpired,
         MfaLoginOutcome::CsrfMismatch => InternalVerifyTotpResponse::CsrfMismatch,
         MfaLoginOutcome::InvalidCode => InternalVerifyTotpResponse::InvalidCode,
+        MfaLoginOutcome::RateLimited => InternalVerifyTotpResponse::RateLimited,
+        MfaLoginOutcome::Locked => InternalVerifyTotpResponse::Locked,
         MfaLoginOutcome::Internal(e) => {
             tracing::error!(error = %e, "mfa verify internal error");
             InternalVerifyTotpResponse::Internal

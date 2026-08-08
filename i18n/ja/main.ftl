@@ -329,6 +329,8 @@ mfa-error-not-signed-in = この操作を行うにはサインインが必要で
 mfa-error-already-configured = 二段階認証はすでに設定されています。再設定するには先に削除してください。
 mfa-error-not-configured = 二段階認証が設定されていません。
 mfa-error-mfa-not-pending = 現在の状態ではこのページは利用できません。再度サインインしてください。
+mfa-error-rate-limited = 試行回数が多すぎます。しばらく待ってから再度お試しください。
+mfa-error-locked = 認証の失敗が続いたため、このアカウントは一時的にロックされています。しばらくしてから再度お試しください。
 
 # ── Passkey（WebAuthn） ──────────────────────────────────────────────────────
 passkey-title = パスキー

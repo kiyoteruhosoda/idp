@@ -37,7 +37,6 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 
 | 優先度 | ID | 課題内容 | 工数 | 影響度 | 重要度 | 難易度 |
 |---:|---|---|---:|---:|---:|---:|
-| 45 | SEC3 | OIDC フローの TOTP 検証にレート制限・ロックアウトが無い（ポータル側にはある）（⬜未着手） | 小 | 中 | 大 | 中 |
 | 23 | SEC2 | ログアウト系 URI（`backchannel_logout_uri` ほか）が無検証 → 認証済み blind SSRF（⬜未着手） | 中 | 中 | 大 | 中 |
 | 23 | SEC4 | single-origin 構成で admin の変更系 POST（`restart`・secret 再発行・password/MFA reset 等）が same-site スクリプトから CSRF 可能（body 無しエンドポイントは JSON content-type が防御にならない）（⬜未着手） | 中 | 中 | 大 | 中 |
 | 15 | SEC11 | `INTERNAL_SERVICE_TOKEN` に長さ・形式検証が無く、http issuer では dev 既定へフォールバックする（⬜未着手） | 小 | 中 | 大 | 小 |
@@ -126,12 +125,6 @@ api は `request_context()` が `trust_forwarded`（`TRUST_FORWARDED_HEADERS`、
 サーバ側から POST する（`crates/api/src/presentation/handlers/logout.rs:152-160`、5 秒タイムアウトのみ）ため、
 テナント管理者権限で `http://169.254.169.254/...`・内部サービスへ POST を打たせられる。対策: 3 種とも
 `validate_redirect_uri` 相当を通し、backchannel はさらにプライベート IP 拒否／allowlist を検討する。
-
-#### SEC3. OIDC フローの TOTP にレート制限・ロックアウトが無い
-
-`crates/core/src/application/mfa_login.rs:101-177` は失敗時に監査するだけで、レート制限・失敗カウンタ・
-ロックが無い。ポータル側 MFA にはレート制限がある（`crates/core/src/application/portal_login.rs:300`）ため非対称。
-auth_session 生存 600 秒間、6 桁 TOTP を無制限に総当たり可能。パスワード窃取済み攻撃者の MFA 突破につながる。
 
 #### SEC4. single-origin で admin JSON API に Cookie が届き、api 側に Origin/CSRF 検証が無い
 

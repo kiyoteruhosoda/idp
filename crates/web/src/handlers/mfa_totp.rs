@@ -339,6 +339,15 @@ pub async fn verify(
             "mfa-error-invalid-code",
             state.config.csrf_secret(),
         ),
+        // レート制限・ロックはフォームを出しても再試行できないため、案内だけのページにする（SEC3）。
+        InternalVerifyTotpResponse::RateLimited => error_page(
+            &messages,
+            StatusCode::TOO_MANY_REQUESTS,
+            "mfa-error-rate-limited",
+        ),
+        InternalVerifyTotpResponse::Locked => {
+            error_page(&messages, StatusCode::FORBIDDEN, "mfa-error-locked")
+        }
         InternalVerifyTotpResponse::CsrfMismatch => {
             // PRG: 303 で GET へ付け替え、現在の Cookie から導出した新しいトークンのフォームを自動で
             // 再表示する（従来はエラーページを返すだけで、リロードすると POST が再送されて復帰できなかった）。
