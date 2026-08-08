@@ -403,6 +403,8 @@ impl AppState {
             users.clone(),
             sso_sessions.clone(),
             user_permissions.clone(),
+            totp_secrets.clone(),
+            authentication_policies.clone(),
             hasher.clone(),
             rate_limiter.clone(),
             audit.clone(),
@@ -410,6 +412,7 @@ impl AppState {
             config.sso_idle_ttl(),
             config.sso_absolute_ttl(),
             config.login_lockout(),
+            config.auth_policy_default_effect(),
         ));
         // エンドユーザー・ポータルの直接ログイン。admin_login と同機構（クライアント非依存の SSO 直接発行）
         // だが admin 権限を要求せず、TOTP（MFA）を尊重する。`mfa_ticket` の署名鍵は CSRF 秘密鍵を流用する。
@@ -417,6 +420,7 @@ impl AppState {
             users.clone(),
             sso_sessions.clone(),
             totp_secrets.clone(),
+            authentication_policies.clone(),
             hasher.clone(),
             rate_limiter.clone(),
             audit.clone(),
@@ -426,6 +430,7 @@ impl AppState {
             config.sso_idle_ttl(),
             config.sso_absolute_ttl(),
             config.login_lockout(),
+            config.auth_policy_default_effect(),
         ));
         let clients_admin = Arc::new(ClientManagementService::new(
             clients.clone(),

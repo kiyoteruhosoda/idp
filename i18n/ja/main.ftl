@@ -46,6 +46,7 @@ password-change-error-weak = 新しいパスワードは 8 文字以上にして
 admin-console-title = 管理コンソール
 admin-login-title = 管理者サインイン
 admin-login-error-forbidden = このアカウントには管理者権限がありません。
+admin-login-error-mfa-required = このアカウントは組織のポリシーにより多要素認証が必須です。アカウントポータルからログインして第二要素を完了してから、管理コンソールへお戻りください。
 admin-signed-in-as = サインイン中
 admin-logout = サインアウト
 admin-home-intro = 管理コンソールへようこそ。管理する項目を選択してください。

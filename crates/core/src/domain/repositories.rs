@@ -43,7 +43,9 @@ use crate::domain::tenant::{Tenant, TenantId};
 use crate::domain::tenant_membership::{TenantMemberFilter, TenantMemberPage, TenantMembership};
 use crate::domain::totp_secret::TotpSecret;
 use crate::domain::user::User;
-use crate::domain::values::{MembershipStatus, SigningKeyStatus, UserStatus};
+use crate::domain::values::{
+    AuthenticationMethod, MembershipStatus, SigningKeyStatus, UserStatus,
+};
 use crate::domain::webauthn_credential::WebAuthnCredential;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -323,11 +325,36 @@ pub trait AuthenticationPolicyRepository: Send + Sync {
 pub trait SsoSessionRepository: Send + Sync {
     async fn create(&self, session: &SsoSession) -> Result<()>;
     async fn find_by_hash(&self, session_hash: &str) -> Result<Option<SsoSession>>;
+    /// 指定ユーザーの全 SSO セッションを新しい順に返す（セルフサービスのセッション一覧。G10）。
+    /// 期限切れ行の除外は呼び出し側（Application 層）が `is_valid_at` で行う。
+    /// 既定実装は空（テスト用フェイクは呼ばれない。本番の sqlx 実装のみが上書きする）。
+    async fn list_for_user(&self, _user_id: Uuid) -> Result<Vec<SsoSession>> {
+        Ok(Vec::new())
+    }
     /// SSO 復元時に idle 期限を延長する（absolute は変更しない、設計仕様 §3.4）。
     async fn extend_idle(&self, session_hash: &str, idle_expires_at: DateTime<Utc>) -> Result<()>;
+    /// 第二要素の検証完了を記録する（AP4・AP5。Step-up 認証で既存セッションを昇格させる経路）。
+    /// `methods` は昇格後の全認証方式で、強度は実装が [`AuthenticationStrength::from_methods`]
+    /// で導出する（導出規則の単一の出所をドメインに置くため、呼び出し側は強度を渡さない）。
+    /// 既定実装は未対応エラー（本番の sqlx 実装のみが上書きする）。
+    async fn record_second_factor(
+        &self,
+        _session_hash: &str,
+        _methods: &[AuthenticationMethod],
+        _completed_at: DateTime<Utc>,
+    ) -> Result<()> {
+        Err(crate::domain::error::DomainError::Repository(
+            "record_second_factor is not supported by this repository".to_string(),
+        ))
+    }
     async fn delete(&self, session_hash: &str) -> Result<()>;
     /// 指定ユーザーの全 SSO セッションを削除する（ユーザー単位の全セッション無効化、F5）。
     async fn delete_all_for_user(&self, user_id: Uuid) -> Result<()>;
+    /// 期限切れ（idle または absolute 超過）のセッションをまとめて削除し、削除件数を返す（GC）。
+    /// 既定実装は何もしない（テスト用フェイクは呼ばれない）。
+    async fn delete_expired(&self, _now: DateTime<Utc>) -> Result<u64> {
+        Ok(0)
+    }
 }
 
 #[async_trait]

@@ -153,6 +153,80 @@ string_enum!(
     }
 );
 
+string_enum!(
+    /// 認証セッションで実際に検証された認証方式（ユーザー認証・認証ポリシー仕様書 §14.3・§18.1）。
+    ///
+    /// 「どの認証器で本人確認したか」の記録であり、認証ポリシー（どの条件を課すか）とは別軸。
+    /// `sso_sessions.authentication_methods` に JSON 配列として保存し、Step-up 認証（§15）と
+    /// MFA 経過時間による再認証（§18.2）の判定材料にする。
+    AuthenticationMethod {
+        Password => "password",
+        Totp => "totp",
+        WebAuthn => "webauthn",
+        RecoveryCode => "recovery_code",
+        EmailOtp => "email_otp",
+        SmsOtp => "sms_otp",
+        ExternalIdp => "external_idp",
+    }
+);
+
+impl AuthenticationMethod {
+    /// OIDC `amr`（Authentication Methods References、RFC 8176）の対応値。
+    /// ID Token へ載せる際の語彙は RFC 側に合わせる（内部の記録値は本 enum が単一の出所）。
+    pub fn amr(&self) -> &'static str {
+        match self {
+            Self::Password => "pwd",
+            Self::Totp => "otp",
+            Self::WebAuthn => "hwk",
+            Self::RecoveryCode => "rba",
+            Self::EmailOtp | Self::SmsOtp => "otp",
+            Self::ExternalIdp => "fed",
+        }
+    }
+
+    /// この方式が第二要素（所持・生体）として数えられるか。
+    ///
+    /// パスワードは知識要素のため単独では多要素にならない。外部 IdP は「外部での認証結果の
+    /// 引き受け」であり、外部側の MFA を信頼するかは認証ポリシーの判断（§13）に委ねるため、
+    /// ここでは第二要素として数えない。
+    pub fn is_second_factor(&self) -> bool {
+        matches!(
+            self,
+            Self::Totp | Self::WebAuthn | Self::RecoveryCode | Self::EmailOtp | Self::SmsOtp
+        )
+    }
+}
+
+string_enum!(
+    /// 認証セッションの認証強度（同仕様 §14.3）。
+    ///
+    /// 認証方式の集合から導出する派生値だが、判定のたびに数え直さなくて済むよう保存もする
+    /// （導出規則の単一の出所は [`AuthenticationStrength::from_methods`]）。
+    AuthenticationStrength {
+        SingleFactor => "single_factor",
+        MultiFactor => "multi_factor",
+    }
+);
+
+impl AuthenticationStrength {
+    /// 認証方式の集合から強度を導出する。第二要素を 1 つでも含めば `MultiFactor`。
+    pub fn from_methods(methods: &[AuthenticationMethod]) -> Self {
+        if methods.iter().any(|m| m.is_second_factor()) {
+            Self::MultiFactor
+        } else {
+            Self::SingleFactor
+        }
+    }
+
+    /// `required` 以上の強度か（`MultiFactor` は `SingleFactor` の要求を満たす）。
+    pub fn satisfies(&self, required: Self) -> bool {
+        match required {
+            Self::SingleFactor => true,
+            Self::MultiFactor => *self == Self::MultiFactor,
+        }
+    }
+}
+
 /// `users.email` の格納先カラム上限（`VARCHAR(320)`）。
 pub const EMAIL_MAX_LEN: usize = 320;
 
@@ -246,5 +320,39 @@ mod tests {
         assert!(validate_preferred_username("alice").is_ok());
         assert!(validate_preferred_username(&"x".repeat(PREFERRED_USERNAME_MAX_LEN)).is_ok());
         assert!(validate_preferred_username(&"x".repeat(PREFERRED_USERNAME_MAX_LEN + 1)).is_err());
+    }
+
+    #[test]
+    fn strength_is_derived_from_the_second_factor() {
+        use AuthenticationMethod::*;
+        assert_eq!(
+            AuthenticationStrength::from_methods(&[Password]),
+            AuthenticationStrength::SingleFactor
+        );
+        assert_eq!(
+            AuthenticationStrength::from_methods(&[Password, Totp]),
+            AuthenticationStrength::MultiFactor
+        );
+        assert_eq!(
+            AuthenticationStrength::from_methods(&[WebAuthn]),
+            AuthenticationStrength::MultiFactor
+        );
+        // 外部 IdP 単体は多要素と数えない（外部 MFA の信頼は認証ポリシーの判断。仕様 §13）。
+        assert_eq!(
+            AuthenticationStrength::from_methods(&[ExternalIdp]),
+            AuthenticationStrength::SingleFactor
+        );
+    }
+
+    #[test]
+    fn multi_factor_satisfies_single_factor_requirement_but_not_the_reverse() {
+        assert!(AuthenticationStrength::MultiFactor
+            .satisfies(AuthenticationStrength::SingleFactor));
+        assert!(AuthenticationStrength::MultiFactor
+            .satisfies(AuthenticationStrength::MultiFactor));
+        assert!(AuthenticationStrength::SingleFactor
+            .satisfies(AuthenticationStrength::SingleFactor));
+        assert!(!AuthenticationStrength::SingleFactor
+            .satisfies(AuthenticationStrength::MultiFactor));
     }
 }

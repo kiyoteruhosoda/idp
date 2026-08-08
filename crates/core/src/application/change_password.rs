@@ -30,6 +30,7 @@ use crate::domain::repositories::{
     SsoSessionRepository, TotpSecretRepository, UserRepository,
 };
 use crate::domain::sso_session::SsoSession;
+use crate::domain::values::AuthenticationMethod;
 use crate::domain::tenant_context::TenantContext;
 use chrono::Duration;
 use std::sync::Arc;
@@ -311,17 +312,16 @@ impl ChangePasswordService {
 
         // 8. SSO セッション発行。
         let sso_session_id = crypto::random_hex(32);
-        let sso = SsoSession {
-            session_hash: crypto::sha256_hex(&sso_session_id),
-            user_id: user.id,
-            auth_time: now,
-            idle_expires_at: now + self.sso_idle_ttl,
-            absolute_expires_at: now + self.sso_absolute_ttl,
-            user_agent: ctx.user_agent.clone(),
-            ip_address: ctx.ip_address.clone(),
-            created_at: now,
-            updated_at: now,
-        };
+        let sso = SsoSession::establish(
+            crypto::sha256_hex(&sso_session_id),
+            user.id,
+            now,
+            self.sso_idle_ttl,
+            self.sso_absolute_ttl,
+            vec![AuthenticationMethod::Password],
+            ctx.user_agent.clone(),
+            ctx.ip_address.clone(),
+        );
         if let Err(e) = self.sso_sessions.create(&sso).await {
             return ChangePasswordOutcome::Internal(e.to_string());
         }

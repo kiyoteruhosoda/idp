@@ -521,6 +521,13 @@ pub enum InternalAdminAuthenticateResponse {
     /// 認証成功・管理権限保有だが `must_change_password`（ADR-0009 §5）。パスワード変更画面へ誘導する。
     /// `username` はフォーム再表示用に入力値をそのまま返す。SSO はまだ発行しない。
     PasswordChangeRequired { username: String },
+    /// 認証ポリシーにより拒否（AP2。ユーザー認証・認証ポリシー仕様書 §7.4 `deny`）。
+    PolicyDenied,
+    /// 認証ポリシーが MFA を必須としたが、使用可能な認証器（確認済み TOTP）が無い（AP2）。
+    MfaEnrollmentRequired,
+    /// 認証ポリシーが MFA を必須で、認証器は登録済み（AP2）。管理コンソールのログインは第二要素の
+    /// 入力ステップを持たないため、ポータルログインで MFA を通してから入るよう案内する。
+    MfaRequired,
     /// api 内部エラー。
     Internal,
 }
@@ -556,6 +563,12 @@ pub enum InternalAdminChangePasswordResponse {
     Locked,
     Forbidden,
     WeakPassword,
+    /// 変更は成功したが認証ポリシーにより拒否（AP2）。
+    PolicyDenied,
+    /// 変更は成功したが認証ポリシーが MFA を必須とし、使用可能な認証器が無い（AP2）。
+    MfaEnrollmentRequired,
+    /// 変更は成功したが認証ポリシーが MFA を必須（認証器は登録済み。AP2）。
+    MfaRequired,
     Internal,
 }
 
@@ -597,6 +610,10 @@ pub enum InternalPortalAuthenticateResponse {
     /// 強制パスワード変更が必要（ADR-0009 §5）。web は強制パスワード変更フォームへ誘導する
     /// （管理コンソールと同方式。`username` は入力値をフォーム再表示用にそのまま返す）。
     PasswordChangeRequired { username: String },
+    /// 認証ポリシーにより拒否（AP2。仕様 §7.4 `deny`）。
+    PolicyDenied,
+    /// 認証ポリシーが MFA を必須としたが、使用可能な認証器（確認済み TOTP）が無い（AP2）。
+    MfaEnrollmentRequired,
     /// IP 単位のレート制限超過。
     RateLimited,
     /// 資格情報不正。
@@ -642,6 +659,10 @@ pub enum InternalPortalChangePasswordResponse {
     },
     /// 自己登録アカウントのメール未検証（SEC6b）。確認リンクを踏むよう案内する。
     EmailVerificationRequired,
+    /// 変更は成功したが認証ポリシーにより拒否（AP2）。
+    PolicyDenied,
+    /// 変更は成功したが認証ポリシーが MFA を必須とし、使用可能な認証器が無い（AP2）。
+    MfaEnrollmentRequired,
     RateLimited,
     /// 資格情報不正（利用者不存在・現行パスワード不一致・無効アカウント等を区別しない）。
     InvalidCredentials,
@@ -679,6 +700,8 @@ pub enum InternalPortalMfaResponse {
     InvalidCode,
     /// チケットが無効・期限切れ（ログインからやり直し）。
     TicketExpired,
+    /// 認証ポリシーにより拒否（AP2。チケット発行後にポリシーが変わった場合）。
+    PolicyDenied,
     /// IP 単位のレート制限超過。
     RateLimited,
     /// api 内部エラー。

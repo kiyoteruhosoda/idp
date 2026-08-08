@@ -291,6 +291,11 @@ pub async fn authenticate_admin(
         AdminLoginOutcome::PasswordChangeRequired { username } => {
             InternalAdminAuthenticateResponse::PasswordChangeRequired { username }
         }
+        AdminLoginOutcome::PolicyDenied => InternalAdminAuthenticateResponse::PolicyDenied,
+        AdminLoginOutcome::MfaEnrollmentRequired => {
+            InternalAdminAuthenticateResponse::MfaEnrollmentRequired
+        }
+        AdminLoginOutcome::MfaRequired => InternalAdminAuthenticateResponse::MfaRequired,
         AdminLoginOutcome::WeakPassword => {
             tracing::error!("unexpected WeakPassword outcome from admin authenticate");
             InternalAdminAuthenticateResponse::Internal
@@ -345,6 +350,10 @@ pub async fn authenticate_portal(
         PortalLoginOutcome::PasswordChangeRequired { username } => {
             InternalPortalAuthenticateResponse::PasswordChangeRequired { username }
         }
+        PortalLoginOutcome::PolicyDenied => InternalPortalAuthenticateResponse::PolicyDenied,
+        PortalLoginOutcome::MfaEnrollmentRequired => {
+            InternalPortalAuthenticateResponse::MfaEnrollmentRequired
+        }
         PortalLoginOutcome::RateLimited => InternalPortalAuthenticateResponse::RateLimited,
         PortalLoginOutcome::InvalidCredentials => {
             InternalPortalAuthenticateResponse::InvalidCredentials
@@ -393,6 +402,7 @@ pub async fn authenticate_portal_mfa(
         },
         PortalMfaOutcome::InvalidCode => InternalPortalMfaResponse::InvalidCode,
         PortalMfaOutcome::TicketExpired => InternalPortalMfaResponse::TicketExpired,
+        PortalMfaOutcome::PolicyDenied => InternalPortalMfaResponse::PolicyDenied,
         PortalMfaOutcome::RateLimited => InternalPortalMfaResponse::RateLimited,
         PortalMfaOutcome::Internal(e) => {
             tracing::error!(error = %e, "internal portal mfa failed with internal error");
@@ -438,6 +448,12 @@ pub async fn authenticate_portal_change_password(
         },
         PortalChangePasswordOutcome::MfaRequired { mfa_ticket } => {
             InternalPortalChangePasswordResponse::MfaRequired { mfa_ticket }
+        }
+        PortalChangePasswordOutcome::PolicyDenied => {
+            InternalPortalChangePasswordResponse::PolicyDenied
+        }
+        PortalChangePasswordOutcome::MfaEnrollmentRequired => {
+            InternalPortalChangePasswordResponse::MfaEnrollmentRequired
         }
         PortalChangePasswordOutcome::EmailVerificationRequired => {
             InternalPortalChangePasswordResponse::EmailVerificationRequired
@@ -499,6 +515,11 @@ pub async fn admin_change_password(
         AdminLoginOutcome::Locked => InternalAdminChangePasswordResponse::Locked,
         AdminLoginOutcome::Forbidden => InternalAdminChangePasswordResponse::Forbidden,
         AdminLoginOutcome::WeakPassword => InternalAdminChangePasswordResponse::WeakPassword,
+        AdminLoginOutcome::PolicyDenied => InternalAdminChangePasswordResponse::PolicyDenied,
+        AdminLoginOutcome::MfaEnrollmentRequired => {
+            InternalAdminChangePasswordResponse::MfaEnrollmentRequired
+        }
+        AdminLoginOutcome::MfaRequired => InternalAdminChangePasswordResponse::MfaRequired,
         AdminLoginOutcome::PasswordChangeRequired { .. } => {
             tracing::error!("unexpected PasswordChangeRequired outcome from admin change-password");
             InternalAdminChangePasswordResponse::Internal

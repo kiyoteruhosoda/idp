@@ -30,6 +30,7 @@ use crate::domain::repositories::{
     UserRepository,
 };
 use crate::domain::sso_session::SsoSession;
+use crate::domain::values::AuthenticationMethod;
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::user::User;
@@ -237,17 +238,17 @@ impl MfaLoginService {
 
         // 9. SSO セッション発行。
         let sso_session_id = crypto::random_hex(32);
-        let sso = SsoSession {
-            session_hash: crypto::sha256_hex(&sso_session_id),
+        let sso = SsoSession::establish(
+            crypto::sha256_hex(&sso_session_id),
             user_id,
-            auth_time: now,
-            idle_expires_at: now + self.sso_idle_ttl,
-            absolute_expires_at: now + self.sso_absolute_ttl,
-            user_agent: ctx.user_agent.clone(),
-            ip_address: ctx.ip_address.clone(),
-            created_at: now,
-            updated_at: now,
-        };
+            now,
+            self.sso_idle_ttl,
+            self.sso_absolute_ttl,
+            vec![AuthenticationMethod::Password,
+                AuthenticationMethod::Totp,],
+            ctx.user_agent.clone(),
+            ctx.ip_address.clone(),
+        );
         if let Err(e) = self.sso_sessions.create(&sso).await {
             return MfaLoginOutcome::Internal(e.to_string());
         }

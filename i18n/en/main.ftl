@@ -46,6 +46,7 @@ password-change-error-weak = The new password must be at least 8 characters.
 admin-console-title = Admin console
 admin-login-title = Admin sign in
 admin-login-error-forbidden = This account does not have administrator access.
+admin-login-error-mfa-required = Your organization requires multi-factor authentication for this account. Sign in from the account portal to complete the second step, then return to the admin console.
 admin-signed-in-as = Signed in as
 admin-logout = Sign out
 admin-home-intro = Welcome to the admin console. Choose a management area.

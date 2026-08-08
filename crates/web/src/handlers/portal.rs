@@ -178,6 +178,19 @@ pub async fn login(
             &csrf,
             "login-error-locked",
         ),
+        // 認証ポリシー（AP2）。資格情報は検証済みなので資格情報エラーとは別の文言を出す。
+        InternalPortalAuthenticateResponse::PolicyDenied => reshow_login(
+            &messages,
+            &tenant.prefix(),
+            StatusCode::FORBIDDEN,
+            &csrf,
+            "login-error-policy-denied",
+        ),
+        InternalPortalAuthenticateResponse::MfaEnrollmentRequired => message_page(
+            &messages,
+            "login-error-mfa-enrollment-required",
+            StatusCode::FORBIDDEN,
+        ),
         InternalPortalAuthenticateResponse::Internal => {
             (StatusCode::INTERNAL_SERVER_ERROR, Html(String::new())).into_response()
         }
@@ -287,6 +300,16 @@ pub async fn password_change(
         InternalPortalChangePasswordResponse::EmailVerificationRequired => message_page(
             &messages,
             "login-error-email-not-verified",
+            StatusCode::FORBIDDEN,
+        ),
+        InternalPortalChangePasswordResponse::PolicyDenied => message_page(
+            &messages,
+            "login-error-policy-denied",
+            StatusCode::FORBIDDEN,
+        ),
+        InternalPortalChangePasswordResponse::MfaEnrollmentRequired => message_page(
+            &messages,
+            "login-error-mfa-enrollment-required",
             StatusCode::FORBIDDEN,
         ),
         InternalPortalChangePasswordResponse::RateLimited => reshow_password_change(
@@ -442,6 +465,19 @@ pub async fn mfa_submit(
             (
                 set_cookies.into_headers(),
                 found(&format!("{}/login", tenant.prefix())),
+            )
+                .into_response()
+        }
+        // ポリシー拒否はチケットを失効させて終える（再試行しても結果は変わらない）。
+        InternalPortalMfaResponse::PolicyDenied => {
+            let set_cookies = state.set_cookies().expire_local(cookies::PORTAL_MFA_COOKIE);
+            (
+                set_cookies.into_headers(),
+                message_page(
+                    &messages,
+                    "login-error-policy-denied",
+                    StatusCode::FORBIDDEN,
+                ),
             )
                 .into_response()
         }
