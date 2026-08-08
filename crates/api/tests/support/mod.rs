@@ -38,8 +38,14 @@ static KEY_BOOTSTRAP: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_n
 
 /// 内部認証エンドポイント（`/internal/*`）のサービストークン（ADR-0007 §5）。
 /// `setup()` が `INTERNAL_SERVICE_TOKEN` へ固定注入する。
-pub const SERVICE_TOKEN: &str = "test-internal-service-token";
+// 32 文字以上（`idp_contracts::deployment::INTERNAL_SERVICE_TOKEN_MIN_LEN`）。SEC11。
+pub const SERVICE_TOKEN: &str = "test-internal-service-token-0123456789";
 pub const SERVICE_TOKEN_HEADER: &str = "x-internal-auth-token";
+
+/// テスト用の bootstrap secret（base64、32 バイト）。開発用既定値ではないので本番相当の
+/// fail-fast（SEC11）を満たす。値そのものに意味はない。
+pub const TEST_KEY_ENCRYPTION_KEY: &str = "dGVzdC1rZXktZW5jcnlwdGlvbi1rZXktMDEyMzQ1Njc=";
+pub const TEST_CSRF_SECRET: &str = "dGVzdC1jc3JmLXNlY3JldC1mb3ItaW50ZWctdGVzdHM=";
 
 // RFC 7636 Appendix B のテストベクタ（S256）。
 pub const CODE_VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
@@ -114,6 +120,10 @@ pub async fn connect_pool_with_max_connections(
 pub async fn setup(test_name: &str) -> Option<TestEnv> {
     // 内部認証エンドポイントのサービストークンを既知値に固定する（/internal/* を使うテスト向け）。
     std::env::set_var("INTERNAL_SERVICE_TOKEN", SERVICE_TOKEN);
+    // ループバック以外のホスト名を使うテスト（`e2e_domain_split`）は本番相当と判定され、開発用
+    // 既定 secret では起動できない（SEC11）。テスト用の固定値を注入して fail-fast を満たす。
+    std::env::set_var("KEY_ENCRYPTION_KEY", TEST_KEY_ENCRYPTION_KEY);
+    std::env::set_var("CSRF_SECRET", TEST_CSRF_SECRET);
     let pool = connect_pool(test_name).await?;
 
     let root_tenant_id: String =

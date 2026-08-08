@@ -1,3 +1,16 @@
+## 2026-08-08（`INTERNAL_SERVICE_TOKEN` の検証と本番判定の見直し（SEC11））
+
+- **`INTERNAL_SERVICE_TOKEN` に最低要件（32 文字以上・`CHANGE-ME` 検出）を課した。**
+  `/internal/*`（認証・パスワード変更・MFA 検証）を守る唯一の資格情報でありながら、
+  `KEY_ENCRYPTION_KEY` / `CSRF_SECRET` と違って無検証で 1 文字でも起動できていた。
+- **開発用既定 secret の fail-fast を「https のとき」から「ループバック以外を公開しているとき」へ
+  広げた。** 前段で TLS を終端して `ISSUER=http://id.example.com` とした配置では判定が効かず、
+  ソースに埋め込まれた既知トークンのまま `/internal/*` が開いていた（防御が前段プロキシの
+  `/internal/` 404 一枚だけになる）。`ISSUER` の DB 上書きを保存してよいかの判定（ADR-0017）も
+  同じ述語を使うため同時に厳しくなる。
+- 判定と検証は `idp-contracts` の `deployment` モジュールへ単一定義した。api と web が別々に
+  持っていると「api は起動するが web は起動しない」がおきるため。
+
 ## 2026-08-08（ログアウト系 URI の検証と管理 API の Origin 検証を追加した（SEC2・SEC4））
 
 - **クライアントのログアウト系 URI を検証するようにした（SEC2）。** `redirect_uris` は

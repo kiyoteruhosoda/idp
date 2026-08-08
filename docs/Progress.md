@@ -37,7 +37,6 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 
 | 優先度 | ID | 課題内容 | 工数 | 影響度 | 重要度 | 難易度 |
 |---:|---|---|---:|---:|---:|---:|
-| 15 | SEC11 | `INTERNAL_SERVICE_TOKEN` に長さ・形式検証が無く、http issuer では dev 既定へフォールバックする（⬜未着手） | 小 | 中 | 大 | 小 |
 | 15 | AP5 | Step-up 認証（仕様 §15。認証済みユーザーへの再認証・強い認証の要求。MFA 設定変更・パスワード変更等の重要操作に適用。AP4 が前提）（⬜未着手） | 大 | 中 | 中 | 大 |
 | 15 | AP9 | 認証器の統合管理（仕様 §5。`user_authenticators` への統合・状態管理（pending/active/suspended/revoked）・リカバリーコード・email/sms OTP）（⬜未着手） | 大 | 中 | 中 | 大 |
 | 15 | AP10 | 外部 IdP 認証（仕様 §13。外部 OIDC/SAML IdP を認証器として使う。`iss`+`sub` での外部ユーザー識別・トークン検証・IdP 制限ポリシー）（⬜未着手） | 大 | 大 | 中 | 大 |
@@ -159,14 +158,6 @@ api / web とも `TraceLayer::new_for_http()`（`crates/api/src/presentation/rou
 
 client_secret は Argon2 照合（`crates/core/src/application/token.rs:602-605`）で総当たりは非現実的だが、
 メモリハード関数の CPU/メモリ増幅型 DoS が成立する。
-
-#### SEC11. `INTERNAL_SERVICE_TOKEN` の検証欠如と http issuer フォールバック
-
-`CSRF_SECRET` / `KEY_ENCRYPTION_KEY` は 32 バイト強制なのに、`INTERNAL_SERVICE_TOKEN` は無検証で
-1 文字でも本番起動が通る（`crates/core/src/config.rs:179-183`）。加えて dev 既定シークレットの起動時
-fail-fast（`config.rs:566-598`）は `ISSUER` が https のときだけ効くため、TLS を前段で終端し ISSUER を http に
-した配置では既知トークンで `/internal/*` が開き、防御が nginx の `/internal/` 404 一枚になる。
-対策: トークンの最小長・`CHANGE-ME` 検出を追加し、http issuer 運用の危険性を明示する。
 
 #### SEC12. 低リスク改善のまとめ
 
