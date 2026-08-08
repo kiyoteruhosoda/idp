@@ -380,6 +380,57 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
                       いる場合にのみ選ぶこと）。",
     },
     SettingDefinition {
+        key: "STEP_UP_MAX_AGE_SECS",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
+        default_value: Some("300"),
+        description: "Step-up 認証（AP5）の再確認間隔（秒）。パスワード変更・認証器の追加削除などの \
+                      重要操作は、直近の本人確認からこの秒数を超えていると本人確認をやり直させる。\
+                      短くするほど盗まれたセッションで悪用できる窓が狭まり、長くするほど操作の \
+                      たびの再入力が減る。",
+    },
+    SettingDefinition {
+        key: "BACKCHANNEL_LOGOUT_MAX_ATTEMPTS",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
+        default_value: Some("8"),
+        description: "Back-channel logout 通知の再送上限回数。指数バックオフ（30 秒 → 最大 1 時間）で \
+                      再試行し、この回数に達した通知は打ち切る（打ち切りの記録は残る）。`0` は \
+                      「1 度も送らない」ではなく「送信を無効化する」意味になるため指定しないこと。",
+    },
+    SettingDefinition {
+        key: "BACKCHANNEL_LOGOUT_POLL_INTERVAL_SECS",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
+        default_value: Some("15"),
+        description: "Back-channel logout 送信ワーカーが送信キューを確認する間隔（秒）。短くするほど \
+                      通知が速く届くが、DB へのポーリングが増える。",
+    },
+    SettingDefinition {
+        key: "BACKCHANNEL_LOGOUT_RETENTION_DAYS",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
+        default_value: Some("7"),
+        description: "Back-channel logout 送信キューの決着済み（送信成功・打ち切り）の行を保持する \
+                      日数。これより古い行は定期的に削除する。`0` を指定すると削除しない。",
+    },
+    SettingDefinition {
         key: "TRUST_FORWARDED_HEADERS",
         shared_with_web: false,
         owner: SettingOwner::DbManaged,

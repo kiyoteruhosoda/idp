@@ -8,10 +8,10 @@ use crate::error_pages;
 use crate::handlers::{
     admin_clients_console, admin_console, admin_invitations_console, admin_members_console,
     admin_restart_console, admin_saml_clients_console, admin_settings, admin_signing_keys_console,
-    admin_status_console, admin_tenants_console, admin_users_console, consent, console_script,
-    health, invitation_accept, locale, login, mfa_totp, passkey, password_change, password_reset,
-    portal, react_assets, rp_logout, saml_sso, stylesheet, submit_feedback_script, user_settings,
-    vendor_assets, verify_email,
+    admin_status_console, admin_tenants_console, admin_users_console, authenticators, consent,
+    console_script, external_login, health, invitation_accept, locale, login, mfa_totp, passkey,
+    password_change, password_reset, portal, react_assets, rp_logout, saml_sso, step_up,
+    stylesheet, submit_feedback_script, user_security, user_settings, vendor_assets, verify_email,
 };
 use crate::i18n::Messages;
 use crate::language::resolve_language;
@@ -65,6 +65,37 @@ pub fn build(state: WebState) -> Router {
         .route("/settings", get(user_settings::page))
         .route("/settings/password", post(user_settings::change_password))
         .route("/settings/name", post(user_settings::change_name))
+        // 外部 IdP ログイン（AP10）。開始は 302、コールバックは外部 IdP からの戻り先。
+        .route("/external/{provider}/start", get(external_login::start))
+        .route(
+            "/external/{provider}/callback",
+            get(external_login::callback),
+        )
+        // MFA 入力画面から「メールでコードを送る」（AP9）。
+        .route("/mfa/totp/email-code", post(mfa_totp::send_email_code))
+        // 認証器の管理（一覧・一時停止・失効・リカバリーコード発行。AP9）。
+        .route("/settings/authenticators", get(authenticators::page))
+        .route(
+            "/settings/authenticators/status",
+            post(authenticators::set_status),
+        )
+        .route(
+            "/settings/recovery-codes",
+            post(authenticators::issue_recovery_codes),
+        )
+        // Step-up 認証の本人確認画面（重要操作の直前。AP5）。
+        .route("/settings/verify", get(step_up::page))
+        .route("/settings/verify", post(step_up::verify))
+        // セルフサービスのセキュリティ画面（セッション一覧・失効／連携アプリ解除。G10）。
+        .route("/settings/security", get(user_security::page))
+        .route(
+            "/settings/security/revoke-session",
+            post(user_security::revoke_session),
+        )
+        .route(
+            "/settings/security/revoke-consent",
+            post(user_security::revoke_consent),
+        )
         // 招待承諾画面（ADR-0009 §3・MT17）。招待メールのリンクから開く。SSO 認証が必要。
         .route(
             "/invitations/accept",

@@ -11,6 +11,7 @@
 use crate::application::account_language::AccountLanguageService;
 use crate::application::account_password::AccountPasswordService;
 use crate::application::account_profile::AccountProfileService;
+use crate::application::account_security::AccountSecurityService;
 use crate::application::account_tenants::AccountTenantsService;
 use crate::application::admin_access::AdminAccessService;
 use crate::application::admin_login::AdminLoginService;
@@ -18,13 +19,19 @@ use crate::application::application_log::ApplicationLogService;
 use crate::application::audit::AuditService;
 use crate::application::audit_query::AuditQueryService;
 use crate::application::authentication_policy_management::AuthenticationPolicyManagementService;
+use crate::application::authenticator_management::AuthenticatorManagementService;
 use crate::application::authorize::AuthorizeService;
+use crate::application::backchannel_logout::{
+    BackchannelLogoutDeliveryService, KeyServiceLogoutTokenSigner,
+};
 use crate::application::change_password::ChangePasswordService;
 use crate::application::client_management::ClientManagementService;
 use crate::application::client_status::ClientStatusService;
 use crate::application::code_issuance::CodeIssuanceService;
 use crate::application::consent::ConsentService;
 use crate::application::email_verification::EmailVerificationService;
+use crate::application::external_idp_management::ExternalIdpManagementService;
+use crate::application::external_login::ExternalLoginService;
 use crate::application::introspection::IntrospectionService;
 use crate::application::invitation::InvitationService;
 use crate::application::key_service::KeyService;
@@ -43,6 +50,7 @@ use crate::application::saml_service_provider_management::SamlServiceProviderMan
 use crate::application::saml_sso::SamlSsoService;
 use crate::application::service_restart::ServiceRestartService;
 use crate::application::sso_restore::SsoRestorer;
+use crate::application::step_up::StepUpService;
 use crate::application::system_settings::SystemSettingsService;
 use crate::application::tenant_management::TenantManagementService;
 use crate::application::tenant_resolution::TenantResolutionService;
@@ -57,8 +65,10 @@ use crate::domain::clock::Clock;
 use crate::domain::id_generator::IdGenerator;
 use crate::domain::repositories::UserPermissionRepository;
 use crate::domain::tenant::{Tenant, TenantId};
+use crate::infrastructure::backchannel_logout::ReqwestBackchannelLogoutSender;
 use crate::infrastructure::cache::InMemoryTtlCache;
 use crate::infrastructure::db::Db;
+use crate::infrastructure::external_oidc::ReqwestExternalOidcClient;
 use crate::infrastructure::id_generator::UuidV7Generator;
 use crate::infrastructure::mailer::LettreSmtpMailer;
 use crate::infrastructure::password::Argon2PasswordHasher;
@@ -70,12 +80,17 @@ use crate::infrastructure::repositories::audit_log::{SqlxAuditLogQuery, SqlxAudi
 use crate::infrastructure::repositories::auth_session::SqlxAuthSessionRepository;
 use crate::infrastructure::repositories::authentication_policy::SqlxAuthenticationPolicyRepository;
 use crate::infrastructure::repositories::authorization_code::SqlxAuthorizationCodeRepository;
+use crate::infrastructure::repositories::backchannel_logout::SqlxBackchannelLogoutDeliveryRepository;
 use crate::infrastructure::repositories::cached_user_permission::{
     CachedUserPermissionRepository, PermissionKey,
 };
 use crate::infrastructure::repositories::client::SqlxClientRepository;
 use crate::infrastructure::repositories::consent::SqlxClientConsentRepository;
 use crate::infrastructure::repositories::email_verification_token::SqlxEmailVerificationTokenRepository;
+use crate::infrastructure::repositories::external_idp::{
+    SqlxExternalIdentityProviderRepository, SqlxExternalIdentityRepository,
+    SqlxExternalLoginRequestRepository,
+};
 use crate::infrastructure::repositories::passkey_challenge::SqlxPasskeyChallengeRepository;
 use crate::infrastructure::repositories::password_reset_token::SqlxPasswordResetTokenRepository;
 use crate::infrastructure::repositories::refresh_token::SqlxRefreshTokenRepository;
@@ -91,6 +106,7 @@ use crate::infrastructure::repositories::tenant_membership::SqlxTenantMembership
 use crate::infrastructure::repositories::tenant_provisioning::SqlxTenantProvisioningRepository;
 use crate::infrastructure::repositories::totp_secret::SqlxTotpSecretRepository;
 use crate::infrastructure::repositories::user::SqlxUserRepository;
+use crate::infrastructure::repositories::user_authenticator::SqlxUserAuthenticatorRepository;
 use crate::infrastructure::repositories::user_permission::SqlxUserPermissionRepository;
 use crate::infrastructure::repositories::webauthn_credential::SqlxWebAuthnCredentialRepository;
 use crate::infrastructure::webauthn::WebAuthnService;
@@ -164,6 +180,26 @@ pub struct AppState {
     /// api 自身の `tracing` 取り込みタスク・web からの `/internal/logs`・管理画面の参照が共有する。
     pub application_logs: Arc<ApplicationLogService>,
     pub logout: Arc<LogoutService>,
+    /// セルフサービスのセキュリティ画面（セッション一覧・失効／連携アプリ解除。G10）。
+    pub account_security: Arc<AccountSecurityService>,
+    /// Step-up 認証（重要操作の直前の本人確認。AP5）。
+    pub step_up: Arc<StepUpService>,
+    /// 認証器の統合管理（一覧・状態変更・リカバリーコード・email OTP。AP9）。
+    pub authenticators: Arc<AuthenticatorManagementService>,
+    /// 認証器の登録簿（AP9）。期限切れコードの GC が直接使う。
+    pub authenticator_repository: Arc<dyn crate::domain::repositories::UserAuthenticatorRepository>,
+    /// 外部 IdP ログイン（AP10）。
+    pub external_login: Arc<ExternalLoginService>,
+    /// 外部 IdP 設定の管理（AP10）。
+    pub external_idps: Arc<ExternalIdpManagementService>,
+    /// 外部 IdP 設定の参照（ログイン画面のボタン用）。GC・一覧が直接使う。
+    pub external_providers:
+        Arc<dyn crate::domain::repositories::ExternalIdentityProviderRepository>,
+    /// 外部 IdP ログインの進行状態（AP10）。期限切れの GC が直接使う。
+    pub external_login_requests:
+        Arc<dyn crate::domain::repositories::ExternalLoginRequestRepository>,
+    /// Back-channel logout の送信キュー（G5）。ハンドラは積むだけ、送信はワーカーが行う。
+    pub backchannel_logout: Arc<BackchannelLogoutDeliveryService>,
     pub revocation: Arc<RevocationService>,
     pub introspection: Arc<IntrospectionService>,
     pub totp_registration: Arc<TotpRegistrationService>,
@@ -180,6 +216,13 @@ pub struct AppState {
     /// 再起動ユースケース（監査記録 → 停止要求。ADR-0017）。`restart` と同じ signal を指す。
     pub service_restart: Arc<ServiceRestartService>,
 }
+
+/// Back-channel logout ワーカーが 1 回の起動で扱う通知の最大件数。
+///
+/// 大きくすると復旧時の追いつきは速いが、落ちている RP が多いと 1 回の走行が長引く（各件で
+/// タイムアウトを待つため）。ポーリング間隔（`BACKCHANNEL_LOGOUT_POLL_INTERVAL_SECS`）に対して
+/// 走行が伸びすぎない程度に抑える。
+const BACKCHANNEL_LOGOUT_BATCH_SIZE: u32 = 50;
 
 impl AppState {
     /// すべてのユースケースを組み立てる（トレイト越しのコンストラクタ注入）。
@@ -240,6 +283,21 @@ impl AppState {
             audit.clone(),
             clock.clone(),
         ));
+        // AP9: 認証器の統合管理。種別ごとの表に散っていた登録状況を 1 つの登録簿へ集約し、
+        // リカバリーコード・email OTP を追加する。
+        let authenticator_repository: Arc<
+            dyn crate::domain::repositories::UserAuthenticatorRepository,
+        > = Arc::new(SqlxUserAuthenticatorRepository::new(pool.clone()));
+        let authenticators = Arc::new(AuthenticatorManagementService::new(
+            authenticator_repository.clone(),
+            users.clone(),
+            system_settings.clone(),
+            Arc::new(LettreSmtpMailer::new()),
+            audit.clone(),
+            clock.clone(),
+            ids.clone(),
+        ));
+
         // セルフサービスのパスワード変更（ログイン済みユーザー。MT15）。
         let account_password = Arc::new(AccountPasswordService::new(
             sso_sessions.clone(),
@@ -403,6 +461,8 @@ impl AppState {
             users.clone(),
             sso_sessions.clone(),
             user_permissions.clone(),
+            totp_secrets.clone(),
+            authentication_policies.clone(),
             hasher.clone(),
             rate_limiter.clone(),
             audit.clone(),
@@ -410,13 +470,16 @@ impl AppState {
             config.sso_idle_ttl(),
             config.sso_absolute_ttl(),
             config.login_lockout(),
+            config.auth_policy_default_effect(),
         ));
         // エンドユーザー・ポータルの直接ログイン。admin_login と同機構（クライアント非依存の SSO 直接発行）
         // だが admin 権限を要求せず、TOTP（MFA）を尊重する。`mfa_ticket` の署名鍵は CSRF 秘密鍵を流用する。
         let portal_login = Arc::new(PortalLoginService::new(
+            authenticator_repository.clone(),
             users.clone(),
             sso_sessions.clone(),
             totp_secrets.clone(),
+            authentication_policies.clone(),
             hasher.clone(),
             rate_limiter.clone(),
             audit.clone(),
@@ -426,6 +489,7 @@ impl AppState {
             config.sso_idle_ttl(),
             config.sso_absolute_ttl(),
             config.login_lockout(),
+            config.auth_policy_default_effect(),
         ));
         let clients_admin = Arc::new(ClientManagementService::new(
             clients.clone(),
@@ -494,6 +558,7 @@ impl AppState {
         // 管理者による利用者ライフサイクル操作（ADR-0009 §5・MT21）。パスワード再発行・無効化・
         // MFA 解除時は当該利用者のセッション・トークンを失効させる。
         let users_lifecycle = Arc::new(UserLifecycleService::new(
+            authenticator_repository.clone(),
             users.clone(),
             sso_sessions.clone(),
             refresh_tokens.clone(),
@@ -563,6 +628,80 @@ impl AppState {
             config.issuer().to_string(),
         ));
 
+        // AP10: 外部 IdP ログイン。外部 IdP は「本 IdP がクライアントとして振る舞う」唯一の経路で、
+        // ID Token の検証（署名・iss・aud・exp・nonce）は `ExternalOidcClient` の実装に閉じている。
+        let external_providers: Arc<
+            dyn crate::domain::repositories::ExternalIdentityProviderRepository,
+        > = Arc::new(SqlxExternalIdentityProviderRepository::new(pool.clone()));
+        let external_login_requests: Arc<
+            dyn crate::domain::repositories::ExternalLoginRequestRepository,
+        > = Arc::new(SqlxExternalLoginRequestRepository::new(pool.clone()));
+        let external_login = Arc::new(ExternalLoginService::new(
+            external_providers.clone(),
+            Arc::new(SqlxExternalIdentityRepository::new(pool.clone())),
+            external_login_requests.clone(),
+            users.clone(),
+            sso_sessions.clone(),
+            auth_sessions.clone(),
+            client_consents.clone(),
+            code_issuance.clone(),
+            authentication_policies.clone(),
+            Arc::new(ReqwestExternalOidcClient::new()),
+            audit.clone(),
+            clock.clone(),
+            ids.clone(),
+            *config.key_encryption_key(),
+            config.public_web_base_url().to_string(),
+            config.sso_idle_ttl(),
+            config.sso_absolute_ttl(),
+            config.auth_policy_default_effect(),
+        ));
+        let external_idps = Arc::new(ExternalIdpManagementService::new(
+            external_providers.clone(),
+            audit.clone(),
+            clock.clone(),
+            ids.clone(),
+            *config.key_encryption_key(),
+        ));
+
+        // AP5: Step-up 認証。IP レート制限はログインと同一の制限器を共有する（別枠にすると、
+        // ログインで締め出された攻撃者が step-up 経由で試行を続けられる）。
+        let step_up = Arc::new(StepUpService::new(
+            sso_sessions.clone(),
+            users.clone(),
+            totp_secrets.clone(),
+            hasher.clone(),
+            rate_limiter.clone(),
+            audit.clone(),
+            clock.clone(),
+            *config.key_encryption_key(),
+            config.step_up_max_age_secs(),
+        ));
+
+        // G10: セルフサービスのセキュリティ画面。
+        let account_security = Arc::new(AccountSecurityService::new(
+            sso_sessions.clone(),
+            users.clone(),
+            client_consents.clone(),
+            clients.clone(),
+            refresh_tokens.clone(),
+            audit.clone(),
+            clock.clone(),
+        ));
+
+        // G5: Back-channel logout の送信キュー。ログアウトのハンドラは通知要求を積むだけで終え、
+        // 実際の HTTP 送信は `idp_api::run` が起動するワーカーが再試行付きで行う。
+        let backchannel_logout = Arc::new(BackchannelLogoutDeliveryService::new(
+            Arc::new(SqlxBackchannelLogoutDeliveryRepository::new(pool.clone())),
+            Arc::new(KeyServiceLogoutTokenSigner::new(keys.clone())),
+            Arc::new(ReqwestBackchannelLogoutSender::new()),
+            ids.clone(),
+            clock.clone(),
+            config.issuer().to_string(),
+            config.backchannel_logout_max_attempts() as i32,
+            BACKCHANNEL_LOGOUT_BATCH_SIZE,
+        ));
+
         // F5: Token 管理（revocation / introspection）。
         let revocation = Arc::new(RevocationService::new(
             clients.clone(),
@@ -585,6 +724,7 @@ impl AppState {
         ));
 
         let totp_registration = Arc::new(TotpRegistrationService::new(
+            authenticators.clone(),
             totp_secrets.clone(),
             sso_sessions.clone(),
             *config.key_encryption_key(),
@@ -592,6 +732,7 @@ impl AppState {
             clock.clone(),
         ));
         let mfa_login = Arc::new(MfaLoginService::new(
+            authenticator_repository.clone(),
             auth_sessions.clone(),
             totp_secrets,
             users.clone(),
@@ -617,6 +758,7 @@ impl AppState {
         // テナント分離は「クレデンシャル ⇔ ユーザー ⇔ 所属元テナント」のアプリ層の紐付けで実現する。
         let webauthn = Arc::new(WebAuthnService::new(config.public_web_base_url()));
         let passkey_registration = Arc::new(PasskeyRegistrationService::new(
+            authenticators.clone(),
             webauthn_credentials.clone(),
             passkey_challenges.clone(),
             sso_sessions.clone(),
@@ -626,6 +768,7 @@ impl AppState {
         ));
         let passkey_authentication = Arc::new(PasskeyAuthenticationService::new(
             webauthn_credentials,
+            authenticator_repository.clone(),
             passkey_challenges,
             auth_sessions.clone(),
             users.clone(),
@@ -683,6 +826,15 @@ impl AppState {
             audit_query,
             application_logs,
             logout,
+            account_security,
+            step_up,
+            authenticators,
+            authenticator_repository,
+            external_login,
+            external_idps,
+            external_providers,
+            external_login_requests,
+            backchannel_logout,
             revocation,
             introspection,
             totp_registration,

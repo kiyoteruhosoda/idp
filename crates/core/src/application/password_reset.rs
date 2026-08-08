@@ -502,6 +502,15 @@ mod tests {
             self.revoked_users.lock().unwrap().push(user_id);
             Ok(())
         }
+        async fn revoke_all_for_user_and_client(
+            &self,
+            _t: TenantId,
+            _u: Uuid,
+            _c: &str,
+            _at: DateTime<Utc>,
+        ) -> DomainResult<()> {
+            unreachable!()
+        }
     }
 
     #[derive(Default)]

@@ -25,6 +25,10 @@
 </main>
 {% include "footer.html" %}
 <script src="/assets/vendor/bootstrap.bundle.min.js?v={{ crate::templates::asset_version() }}"></script>
+{#- 画面固有のスクリプト。確認ダイアログ（`assets/console.js`）は送信中の目印より**先**に
+    読み込む必要があるため、`submit-feedback.js` の前に置く（取り消された送信へ印を付けないため。
+    `console/layout.html` と同じ順序）。 -#}
+{% block scripts %}{% endblock %}
 <script src="/assets/submit-feedback.js?v={{ crate::templates::asset_version() }}"></script>
 {% include "react_bootstrap.html" %}
 </body>

@@ -18,6 +18,8 @@ pub struct AuthorizationCode {
     pub scope: Vec<String>,
     pub nonce: String,
     pub auth_time: DateTime<Utc>,
+    /// ID Token へ載せる SSO セッション識別子（G5）。`None` = セッション不明（本列の導入前の code）。
+    pub sid: Option<String>,
     pub code_challenge: String,
     pub code_challenge_method: CodeChallengeMethod,
     pub expires_at: DateTime<Utc>,

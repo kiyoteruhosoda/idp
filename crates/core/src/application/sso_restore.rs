@@ -14,6 +14,7 @@ use crate::domain::repositories::{
     SsoSessionRepository, TenantMembershipRepository, UserRepository,
 };
 use crate::domain::tenant_context::TenantContext;
+use crate::domain::values::{AuthenticationMethod, AuthenticationStrength};
 use chrono::{DateTime, Duration, Utc};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -26,6 +27,12 @@ pub struct RestoredSso {
     /// セッションの SHA-256（Cookie 生値は含まない）。SAML の `SessionIndex` 等、
     /// セッションを不透明に参照する用途に使える。
     pub session_hash: String,
+    /// 本セッションを確立した認証方式（AP4。仕様 §14.3）。
+    pub authentication_methods: Vec<AuthenticationMethod>,
+    /// 認証強度（AP4）。Step-up 認証（§15）の判定材料。
+    pub authentication_strength: AuthenticationStrength,
+    /// 第二要素の検証完了時刻（AP4）。MFA 経過時間による再認証（§18.2）の判定材料。
+    pub mfa_completed_at: Option<DateTime<Utc>>,
 }
 
 pub struct SsoRestorer {
@@ -124,6 +131,9 @@ impl SsoRestorer {
             user_id: session.user_id,
             auth_time: session.auth_time,
             session_hash,
+            authentication_methods: session.authentication_methods,
+            authentication_strength: session.authentication_strength,
+            mfa_completed_at: session.mfa_completed_at,
         }))
     }
 }

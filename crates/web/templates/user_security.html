@@ -1,0 +1,103 @@
+{% extends "page.html" %}
+{% block title %}{{ messages.get("user-security-title") }}{% endblock %}
+{% block column %}col-lg-9 mx-auto{% endblock %}
+{% block scripts %}<script src="/assets/console.js?v={{ crate::templates::asset_version() }}"></script>{% endblock %}
+{% block content %}
+<div class="mb-3">
+  <a href="{{ tenant }}/settings"><i class="fa-solid fa-arrow-left me-2" aria-hidden="true"></i>{{ messages.get("user-security-back-settings") }}</a>
+</div>
+<div class="mb-4">
+  <p class="text-muted text-uppercase fw-bold small mb-1">{{ messages.get("user-settings-kicker") }}</p>
+  <h1 class="h3 mb-1">{{ messages.get("user-security-title") }}</h1>
+  <p class="text-muted mb-0">{{ messages.get("user-security-lead") }}</p>
+</div>
+
+{% if let Some(key) = saved_key %}<div class="alert alert-success" role="status">{{ messages.get(key) }}</div>{% endif %}
+{% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
+
+<div class="card mb-4" id="sessions">
+  <div class="card-header d-flex align-items-center"><i class="fa-solid fa-display me-2" aria-hidden="true"></i>{{ messages.get("user-security-sessions-heading") }}</div>
+  <div class="card-body">
+    <p class="text-muted small">{{ messages.get("user-security-sessions-help") }}</p>
+    {% if sessions.is_empty() %}
+    <p class="text-muted mb-0">{{ messages.get("user-security-sessions-empty") }}</p>
+    {% else %}
+    <div class="table-responsive">
+      <table class="table align-middle">
+        <thead>
+          <tr>
+            <th scope="col">{{ messages.get("user-security-session-device") }}</th>
+            <th scope="col">{{ messages.get("user-security-session-ip") }}</th>
+            <th scope="col">{{ messages.get("user-security-session-auth-time") }}</th>
+            <th scope="col">{{ messages.get("user-security-session-expires") }}</th>
+            <th scope="col"><span class="visually-hidden">{{ messages.get("user-security-session-revoke") }}</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for session in sessions %}
+          <tr>
+            <td>
+              <span class="d-block text-break">{{ session.user_agent }}</span>
+              {% if session.current %}<span class="badge text-bg-primary">{{ messages.get("user-security-session-current") }}</span>{% endif %}
+              {% if session.multi_factor %}<span class="badge text-bg-success">{{ messages.get("user-security-session-mfa") }}</span>{% endif %}
+            </td>
+            <td>{{ session.ip_address }}</td>
+            <td>{{ session.auth_time }}</td>
+            <td>{{ session.absolute_expires_at }}</td>
+            <td class="text-end">
+              {% if !session.current %}
+              <form method="post" action="{{ tenant }}/settings/security/revoke-session" data-confirm="{{ messages.get("user-security-session-revoke-confirm") }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                <input type="hidden" name="session_id" value="{{ session.id }}">
+                <button type="submit" class="btn btn-outline-danger btn-sm">{{ messages.get("user-security-session-revoke") }}</button>
+              </form>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card mb-4" id="connected-apps">
+  <div class="card-header d-flex align-items-center"><i class="fa-solid fa-plug me-2" aria-hidden="true"></i>{{ messages.get("user-security-apps-heading") }}</div>
+  <div class="card-body">
+    <p class="text-muted small">{{ messages.get("user-security-apps-help") }}</p>
+    {% if connected_apps.is_empty() %}
+    <p class="text-muted mb-0">{{ messages.get("user-security-apps-empty") }}</p>
+    {% else %}
+    <div class="table-responsive">
+      <table class="table align-middle">
+        <thead>
+          <tr>
+            <th scope="col">{{ messages.get("user-security-app-name") }}</th>
+            <th scope="col">{{ messages.get("user-security-app-scopes") }}</th>
+            <th scope="col">{{ messages.get("user-security-app-granted-at") }}</th>
+            <th scope="col"><span class="visually-hidden">{{ messages.get("user-security-app-revoke") }}</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for app in connected_apps %}
+          <tr>
+            <td class="text-break">{{ app.app_name }}</td>
+            <td><code>{{ app.scopes }}</code></td>
+            <td>{{ app.granted_at }}</td>
+            <td class="text-end">
+              <form method="post" action="{{ tenant }}/settings/security/revoke-consent" data-confirm="{{ messages.get("user-security-app-revoke-confirm") }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                <input type="hidden" name="client_id" value="{{ app.client_id }}">
+                <button type="submit" class="btn btn-outline-danger btn-sm">{{ messages.get("user-security-app-revoke") }}</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

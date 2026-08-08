@@ -291,6 +291,11 @@ curl -b "sso_session_id=<管理者セッション>" -H 'Content-Type: applicatio
 
 ## MFA の端末を失った利用者を復旧させたいとき
 
+**まず本人に自力復旧を試してもらう。** リカバリーコードを発行済みなら、MFA 入力画面の同じ入力欄へ
+コードを 1 本入力すればログインできる。メールアドレスが検証済みなら、同じ画面の
+「メールでコードを送る」でワンタイムコードを受け取ることもできる。どちらも通らない場合のみ、
+以下の管理者による解除を行う。
+
 認証アプリ（TOTP）やパスキーを登録した端末を失うと、本人はログインできないため自分では解除できない。
 テナント管理者が代わりに解除する。
 
@@ -308,6 +313,65 @@ curl -b "sso_session_id=<管理者セッション>" -H 'Content-Type: applicatio
   （端末を失って自分もログインできない場合は、別の管理者に依頼する）。
 - 実行は `user.mfa_reset` として監査ログに残る（外した要素の種別と件数のみ。シークレットは記録しない）。
 - 解除後、その利用者は**パスワードのみ**でログインできる状態になる。本人確認を済ませてから実行する。
+
+## 利用者に自分のセッション・連携アプリ・認証器を管理させたいとき
+
+設定画面のセルフサービスで完結する。管理者の操作は要らない。
+
+| 画面 | できること |
+|---|---|
+| `/{tenant_id}/settings/security` | ログイン中のセッション一覧と個別失効、連携済みアプリ（同意）の取り消し |
+| `/{tenant_id}/settings/authenticators` | 認証器（TOTP・パスキー・メール OTP・リカバリーコード）の一覧、一時停止／再開／失効、リカバリーコードの発行 |
+
+- 一覧の「現在のセッション」は失効させられない（操作すると「現在のセッションは失効できません」と
+  返る。誤って自分を締め出さないため）。今使っているセッションを終わらせるのはログアウト操作。
+- **リカバリーコードは発行時に一度だけ表示される**（DB にはハッシュのみ保存）。再表示はできないため、
+  発行し直す運用になる。発行し直すと**古いコードは全て無効**になる。
+- リカバリーコードは MFA 入力画面の同じ入力欄へそのまま入力する（別画面へ移動する必要はない）。
+  1 コードにつき 1 回だけ使える。
+- **認証器の追加・削除・状態変更とセッションの失効は Step-up 認証（本人確認のやり直し）の対象**で、
+  直近の本人確認から `STEP_UP_MAX_AGE_SECS`（既定 300 秒）を超えていると
+  `/{tenant_id}/settings/verify` へ誘導される。MFA を設定している利用者には第 2 要素での確認を求める。
+  連携アプリの取り消しは対象外（取り消しても被害が広がらず、いつでもやり直せるため）。
+
+## 外部 IdP でログインさせたいとき
+
+テナントごとに外部の OpenID Provider を登録すると、ログイン画面にその IdP のボタンが出る。
+現状は **OIDC のみ**（SAML の外部 IdP は未対応）。
+
+1. 外部 IdP 側で本 IdP をクライアントとして登録し、`client_id` と（confidential なら）`client_secret`
+   を得る。コールバック URL は `<PUBLIC_WEB_BASE_URL>/{tenant_id}/external/{provider_code}/callback`
+   （登録後、`GET /admin/external-idps` の `redirect_uri` にも同じ値が出る）。
+2. 管理 API で登録する（`idp.tenant.admin` 必須。`idp.system.admin` でも可）。
+
+```bash
+curl -sS -X POST "$ISSUER/{tenant_id}/admin/external-idps" \
+  -H 'Content-Type: application/json' \
+  -H "Cookie: sso_session_id=<セッションID>" \
+  -d '{
+    "provider_code": "corp",
+    "display_name": "Corp SSO",
+    "issuer": "https://login.corp.example.com",
+    "authorization_endpoint": "https://login.corp.example.com/authorize",
+    "token_endpoint": "https://login.corp.example.com/token",
+    "jwks_uri": "https://login.corp.example.com/jwks.json",
+    "client_id": "…",
+    "client_secret": "…"
+  }'
+```
+
+- 一覧: `GET /{tenant_id}/admin/external-idps`、更新: `PATCH …/{id}`、削除: `DELETE …/{id}`。
+- **`client_secret` は応答に含まれない**（暗号化保存。設定済みかは `has_client_secret` で分かる）。
+  更新時に省略すれば既存値を維持し、空文字を送ると削除して public クライアント化する。
+- エンドポイントは **https のみ**・内部宛先（ループバック・プライベート・リンクローカル）は拒否する
+  （本 IdP のサーバに任意の URL を叩かせないため）。
+- 利用者の同一性は外部 IdP の **`iss` + `sub`** だけで判定する（メールアドレスは同一性の根拠にしない）。
+  既定では**事前に連携済みの利用者しかログインできない**。`allow_auto_link` を有効にすると、
+  外部 IdP が `email_verified: true` を返した場合に限り同じメールアドレスの既存利用者へ自動連携する。
+  外部 IdP のメール検証を信用できるときだけ有効にする。
+- 無効化は `enabled: false`（設定は残したままボタンだけ消える）。削除すると**連携済みの対応付けも
+  一緒に消える**ため、再度ログインさせるには連携をやり直す必要がある。
+- 管理画面（web コンソール UI）は未実装（`docs/Progress.md` AP1）。現状は上記 API を用いる。
 
 ## 自己登録（/auth/register）を開放したいとき
 
@@ -340,6 +404,10 @@ curl -b "sso_session_id=<管理者セッション>" -H 'Content-Type: applicatio
 | `EMAIL_VERIFICATION_TTL_SECS` | `86400` | 自己登録アカウントのメール検証トークンの有効期間（SEC6b） |
 | `HSTS_MAX_AGE` | `0`（無効） | `Strict-Transport-Security` の `max-age`（秒）。**DB 上書き可**（下記） |
 | `APP_LOG_RETENTION_DAYS` | `30` | エラー・警告ログ（`log` テーブル）の保持日数。`0` = 削除しない。**DB 上書き可** |
+| `STEP_UP_MAX_AGE_SECS` | `300` | 機微操作（パスワード変更・認証器の追加削除・セッション失効）の前に本人確認をやり直させる間隔（秒）。**DB 上書き可** |
+| `BACKCHANNEL_LOGOUT_MAX_ATTEMPTS` | `8` | Back-channel logout 通知の再送上限。指数バックオフ（30 秒 → 最大 1 時間）。**DB 上書き可** |
+| `BACKCHANNEL_LOGOUT_POLL_INTERVAL_SECS` | `15` | Back-channel logout 送信ワーカーが送信キューを見る間隔（秒）。**DB 上書き可** |
+| `BACKCHANNEL_LOGOUT_RETENTION_DAYS` | `7` | 決着済み（送信成功・打ち切り）の送信キュー行の保持日数。`0` = 削除しない。**DB 上書き可** |
 | `RUST_LOG` | `info,idp=debug` | ログフィルタ |
 
 環境変数より **DB（`system_settings`）の値が優先される**（ADR-0010）。DB で変更するには root 管理者で

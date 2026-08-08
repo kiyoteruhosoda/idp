@@ -36,6 +36,7 @@ use crate::domain::sso_session::SsoSession;
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::user::User;
+use crate::domain::values::AuthenticationMethod;
 use chrono::Duration;
 use std::sync::Arc;
 
@@ -424,17 +425,16 @@ impl LoginService {
 
         // 10. SSO セッション発行（Cookie には session_id、DB には SHA-256 ハッシュ）。
         let sso_session_id = crypto::random_hex(32);
-        let sso = SsoSession {
-            session_hash: crypto::sha256_hex(&sso_session_id),
-            user_id: user.id,
-            auth_time: now,
-            idle_expires_at: now + self.sso_idle_ttl,
-            absolute_expires_at: now + self.sso_absolute_ttl,
-            user_agent: ctx.user_agent.clone(),
-            ip_address: ctx.ip_address.clone(),
-            created_at: now,
-            updated_at: now,
-        };
+        let sso = SsoSession::establish(
+            crypto::sha256_hex(&sso_session_id),
+            user.id,
+            now,
+            self.sso_idle_ttl,
+            self.sso_absolute_ttl,
+            vec![AuthenticationMethod::Password],
+            ctx.user_agent.clone(),
+            ctx.ip_address.clone(),
+        );
         if let Err(e) = self.sso_sessions.create(&sso).await {
             return LoginOutcome::Internal(e.to_string());
         }
@@ -464,7 +464,7 @@ impl LoginService {
         // 10. AuthSession に認証結果を記録する。
         if let Err(e) = self
             .auth_sessions
-            .set_authenticated_user(&session.id, user.id, now)
+            .set_authenticated_user(&session.id, user.id, now, Some(&sso.sid()))
             .await
         {
             return LoginOutcome::Internal(e.to_string());
@@ -511,6 +511,7 @@ impl LoginService {
                     scope: session.scope.clone(),
                     nonce: session.nonce.clone(),
                     auth_time: now,
+                    sid: Some(sso.sid()),
                     code_challenge: session.code_challenge.clone(),
                     code_challenge_method: session.code_challenge_method,
                 },
@@ -686,11 +687,13 @@ mod tests {
             id: &str,
             user_id: Uuid,
             auth_time: DateTime<Utc>,
+            sso_sid: Option<&str>,
         ) -> DomainResult<()> {
             let mut rows = self.rows.lock().unwrap();
             if let Some(row) = rows.iter_mut().find(|s| s.id == id) {
                 row.authenticated_user_id = Some(user_id);
                 row.auth_time = Some(auth_time);
+                row.sso_sid = sso_sid.map(str::to_string);
             }
             Ok(())
         }
@@ -947,6 +950,7 @@ mod tests {
                 authenticated_user_id: None,
                 auth_time: None,
                 password_verified_at: None,
+                sso_sid: None,
                 expires_at: now() + Duration::seconds(600),
                 created_at: now(),
                 updated_at: now(),

@@ -521,6 +521,13 @@ pub enum InternalAdminAuthenticateResponse {
     /// 認証成功・管理権限保有だが `must_change_password`（ADR-0009 §5）。パスワード変更画面へ誘導する。
     /// `username` はフォーム再表示用に入力値をそのまま返す。SSO はまだ発行しない。
     PasswordChangeRequired { username: String },
+    /// 認証ポリシーにより拒否（AP2。ユーザー認証・認証ポリシー仕様書 §7.4 `deny`）。
+    PolicyDenied,
+    /// 認証ポリシーが MFA を必須としたが、使用可能な認証器（確認済み TOTP）が無い（AP2）。
+    MfaEnrollmentRequired,
+    /// 認証ポリシーが MFA を必須で、認証器は登録済み（AP2）。管理コンソールのログインは第二要素の
+    /// 入力ステップを持たないため、ポータルログインで MFA を通してから入るよう案内する。
+    MfaRequired,
     /// api 内部エラー。
     Internal,
 }
@@ -556,6 +563,12 @@ pub enum InternalAdminChangePasswordResponse {
     Locked,
     Forbidden,
     WeakPassword,
+    /// 変更は成功したが認証ポリシーにより拒否（AP2）。
+    PolicyDenied,
+    /// 変更は成功したが認証ポリシーが MFA を必須とし、使用可能な認証器が無い（AP2）。
+    MfaEnrollmentRequired,
+    /// 変更は成功したが認証ポリシーが MFA を必須（認証器は登録済み。AP2）。
+    MfaRequired,
     Internal,
 }
 
@@ -597,6 +610,10 @@ pub enum InternalPortalAuthenticateResponse {
     /// 強制パスワード変更が必要（ADR-0009 §5）。web は強制パスワード変更フォームへ誘導する
     /// （管理コンソールと同方式。`username` は入力値をフォーム再表示用にそのまま返す）。
     PasswordChangeRequired { username: String },
+    /// 認証ポリシーにより拒否（AP2。仕様 §7.4 `deny`）。
+    PolicyDenied,
+    /// 認証ポリシーが MFA を必須としたが、使用可能な認証器（確認済み TOTP）が無い（AP2）。
+    MfaEnrollmentRequired,
     /// IP 単位のレート制限超過。
     RateLimited,
     /// 資格情報不正。
@@ -642,6 +659,10 @@ pub enum InternalPortalChangePasswordResponse {
     },
     /// 自己登録アカウントのメール未検証（SEC6b）。確認リンクを踏むよう案内する。
     EmailVerificationRequired,
+    /// 変更は成功したが認証ポリシーにより拒否（AP2）。
+    PolicyDenied,
+    /// 変更は成功したが認証ポリシーが MFA を必須とし、使用可能な認証器が無い（AP2）。
+    MfaEnrollmentRequired,
     RateLimited,
     /// 資格情報不正（利用者不存在・現行パスワード不一致・無効アカウント等を区別しない）。
     InvalidCredentials,
@@ -679,6 +700,8 @@ pub enum InternalPortalMfaResponse {
     InvalidCode,
     /// チケットが無効・期限切れ（ログインからやり直し）。
     TicketExpired,
+    /// 認証ポリシーにより拒否（AP2。チケット発行後にポリシーが変わった場合）。
+    PolicyDenied,
     /// IP 単位のレート制限超過。
     RateLimited,
     /// api 内部エラー。
@@ -1033,5 +1056,403 @@ pub enum InternalAccountTenantsResponse {
     /// SSO セッションが無い・期限切れ。
     SessionExpired,
     /// api 内部エラー。
+    Internal,
+}
+
+// ── セルフサービスのセキュリティ画面（G10） ──────────────────────────────────
+
+/// ログイン中セッション 1 件の要約（セキュリティ画面）。
+///
+/// `id` は失効要求で指すための表示用 ID。SSO Cookie の値でも DB の主キー（`session_hash`）でも
+/// なく、そこから非可逆に導いた値なので、提示しても他人のセッションを解決・詐称する材料にならない。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountSessionSummary {
+    pub id: String,
+    /// 今このブラウザで使っているセッションか（画面で「現在のセッション」と示す）。
+    pub current: bool,
+    /// 認証時刻（RFC 3339）。
+    pub auth_time: String,
+    /// 第二要素まで完了しているか（AP4 の記録）。
+    pub multi_factor: bool,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    pub created_at: String,
+    /// 無操作での失効時刻（RFC 3339）。
+    pub idle_expires_at: String,
+    /// 絶対期限（RFC 3339）。
+    pub absolute_expires_at: String,
+}
+
+/// 連携済みアプリ 1 件の要約（セキュリティ画面）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountConnectedAppSummary {
+    pub client_id: String,
+    /// 表示名（クライアントが削除済みなら `client_id` と同じ値になる）。
+    pub app_name: String,
+    pub scopes: Vec<String>,
+    pub granted_at: String,
+    pub updated_at: String,
+}
+
+/// セキュリティ画面の表示内容取得 API（`POST /internal/account/security`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAccountSecurityRequest {
+    /// フローのテナント（連携済みアプリはテナント単位で持つため必須）。
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    /// SSO セッション Cookie の生値（web が転送）。
+    pub sso_session_id: String,
+}
+
+/// セキュリティ画面の表示内容取得 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAccountSecurityResponse {
+    Ok {
+        sessions: Vec<AccountSessionSummary>,
+        connected_apps: Vec<AccountConnectedAppSummary>,
+    },
+    /// SSO セッションが無い・期限切れ・利用者が無効。
+    SessionExpired,
+    Internal,
+}
+
+/// セッション失効 API（`POST /internal/account/security/revoke-session`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAccountRevokeSessionRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+    /// [`AccountSessionSummary::id`] で示した表示用 ID。
+    pub session_id: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// セッション失効 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAccountRevokeSessionResponse {
+    /// 失効した（既に消えていた場合も含む）。
+    Ok,
+    /// 指定 ID が当人のセッションに無い（他人のセッション・古い画面からの再送）。
+    NotFound,
+    /// 今使っているセッション自身は切らせない（ログアウト導線へ回す）。
+    CurrentSession,
+    SessionExpired,
+    Internal,
+}
+
+/// 連携解除 API（`POST /internal/account/security/revoke-consent`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAccountRevokeConsentRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+    pub client_id: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// 連携解除 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAccountRevokeConsentResponse {
+    /// 取り消した（同意が無かった場合も含む）。
+    Ok,
+    SessionExpired,
+    Internal,
+}
+
+// ── Step-up 認証（AP5） ──────────────────────────────────────────────────────
+
+/// Step-up の判定・検証 API が扱う重要操作。値は `domain::step_up::SensitiveOperation` の
+/// 文字列表現と一致させる（api 側で `parse` する）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalStepUpCheckRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    /// SSO セッション Cookie の生値（web が転送）。
+    pub sso_session_id: String,
+    /// 対象操作（`change_password` / `manage_authenticators` / `manage_external_identities` /
+    /// `revoke_session`）。
+    pub operation: String,
+}
+
+/// Step-up 判定 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalStepUpCheckResponse {
+    /// 直近の本人確認が要件を満たしている。そのまま操作してよい。
+    Satisfied,
+    /// 本人確認をやり直す必要がある。`second_factor_required` が真なら TOTP まで求める。
+    ChallengeRequired {
+        second_factor_required: bool,
+    },
+    /// SSO セッションが無い・期限切れ・利用者が無効。
+    SessionExpired,
+    /// 未知の操作名（api が受け付けない値）。
+    UnknownOperation,
+    Internal,
+}
+
+/// Step-up 検証 API のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalStepUpVerifyRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+    pub operation: String,
+    pub password: String,
+    /// 第二要素が求められている場合のみ必要。
+    #[serde(default)]
+    pub totp_code: Option<String>,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// Step-up 検証 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalStepUpVerifyResponse {
+    /// 確認できた。続けて操作してよい。
+    Ok,
+    /// パスワードまたは TOTP が不一致（どちらが違うかは返さない）。
+    InvalidCredentials,
+    /// 第二要素が要るのにコードが提示されていない。
+    SecondFactorRequired,
+    RateLimited,
+    SessionExpired,
+    UnknownOperation,
+    Internal,
+}
+
+// ── 認証器の統合管理（AP9） ──────────────────────────────────────────────────
+
+/// 登録済み認証器 1 件の要約（セキュリティ画面）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthenticatorSummaryResponse {
+    pub id: String,
+    /// 種別（`totp` / `webauthn` / `email_otp`）。リカバリーコードは本数で別に返す。
+    pub authenticator_type: String,
+    /// 状態（`pending` / `active` / `suspended`）。失効済みは返さない。
+    pub status: String,
+    pub label: String,
+    pub created_at: String,
+    #[serde(default)]
+    pub last_used_at: Option<String>,
+}
+
+/// 認証器一覧 API（`POST /internal/account/authenticators`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAuthenticatorsRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+}
+
+/// 認証器一覧 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAuthenticatorsResponse {
+    Ok {
+        authenticators: Vec<AuthenticatorSummaryResponse>,
+        /// 未使用のリカバリーコードの残数。
+        recovery_codes_remaining: usize,
+    },
+    SessionExpired,
+    Internal,
+}
+
+/// 認証器の状態変更 API（`POST /internal/account/authenticators/status`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAuthenticatorStatusRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+    pub authenticator_id: String,
+    /// 遷移先（`active` / `suspended` / `revoked`）。
+    pub status: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// 認証器の状態変更 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAuthenticatorStatusResponse {
+    Ok,
+    /// 指定 ID が当人の認証器に無い。
+    NotFound,
+    /// その状態へは遷移できない（失効済みを戻す等）。
+    InvalidTransition,
+    /// 未知の状態名。
+    UnknownStatus,
+    SessionExpired,
+    Internal,
+}
+
+/// リカバリーコード発行 API（`POST /internal/account/recovery-codes`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalRecoveryCodesRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// リカバリーコード発行 API のレスポンス。**平文はこの応答でのみ返る**（DB はハッシュのみ）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalRecoveryCodesResponse {
+    Ok { codes: Vec<String> },
+    SessionExpired,
+    Internal,
+}
+
+/// email OTP 送信 API（`POST /internal/account/email-otp`）のリクエスト。
+///
+/// ログイン中の第二要素として使うため、`sso_session_id` ではなく **MFA 待ちの利用者**を指す
+/// 必要がある。web はログインフローの `auth_session_id`（OIDC）または `mfa_ticket`（ポータル）を
+/// 持っているので、api 側でそこから利用者を解決する。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalEmailOtpRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    /// OIDC ログインフローの `auth_session_id`（MFA 待ち状態）。
+    #[serde(default)]
+    pub auth_session_id: Option<String>,
+    /// ポータルログインの `mfa_ticket`。
+    #[serde(default)]
+    pub mfa_ticket: Option<String>,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// email OTP 送信 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalEmailOtpResponse {
+    /// 送信した（送信先アドレスは返さない）。
+    Sent,
+    /// SMTP が未設定でメールを送れない。
+    Unavailable,
+    /// MFA 待ちの状態ではない（セッション・チケットが無効）。
+    SessionExpired,
+    Internal,
+}
+
+// ── 外部 IdP ログイン（AP10） ────────────────────────────────────────────────
+
+/// ログイン画面に並べる外部 IdP 1 件（有効なもののみ）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalIdpButton {
+    /// URL に載せる識別コード。
+    pub provider_code: String,
+    pub display_name: String,
+}
+
+/// 有効な外部 IdP の一覧 API（`POST /internal/external/providers`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalExternalProvidersRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+}
+
+/// 有効な外部 IdP の一覧 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalExternalProvidersResponse {
+    Ok { providers: Vec<ExternalIdpButton> },
+    Internal,
+}
+
+/// 外部 IdP ログインの開始 API（`POST /internal/external/start`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalExternalStartRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub provider_code: String,
+    /// OIDC 認可フローの途中から呼ぶ場合の `auth_session_id`（ポータル経由なら `None`）。
+    #[serde(default)]
+    pub auth_session_id: Option<String>,
+}
+
+/// 外部 IdP ログインの開始 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalExternalStartResponse {
+    /// 外部 IdP の認可エンドポイントへ 302 する。
+    Redirect {
+        location: String,
+    },
+    /// プロバイダが無い・無効。
+    ProviderUnavailable,
+    Internal,
+}
+
+/// 外部 IdP からのコールバック API（`POST /internal/external/callback`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalExternalCallbackRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub state: String,
+    pub code: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// 外部 IdP からのコールバック API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalExternalCallbackResponse {
+    /// 認証成功。`sso_session_id` を Cookie 化して `redirect_to` へ送る。
+    ///
+    /// `redirect_to` は OIDC 認可フローの途中から来ていれば code 付きの `redirect_uri`
+    /// （RP へ戻る絶対 URL）、そうでなければ `None`（web が自分のアカウント画面へ戻す）。
+    /// 認可要求のパラメータは api 側の auth_session にしか無いため、web には組み立てさせない。
+    Success {
+        sso_session_id: String,
+        sso_absolute_ttl_secs: u64,
+        #[serde(default)]
+        redirect_to: Option<String>,
+        #[serde(default)]
+        user_language: Option<String>,
+    },
+    /// 認証は通ったが RP への同意がまだ。web は同意画面へ誘導する。
+    ConsentRequired {
+        auth_session_id: String,
+        sso_session_id: String,
+        sso_absolute_ttl_secs: u64,
+        #[serde(default)]
+        user_language: Option<String>,
+    },
+    /// `state` が無効・期限切れ・二重使用。
+    StateExpired,
+    /// 外部 IdP での認証は通ったが、対応する利用者が居ない。
+    NotLinked,
+    /// 対応する利用者は居るが無効・ロック中。
+    UserUnavailable,
+    /// 認証ポリシーによる拒否。
+    PolicyDenied,
+    /// 外部 IdP との通信・トークン検証に失敗した。
+    ExternalFailure,
     Internal,
 }

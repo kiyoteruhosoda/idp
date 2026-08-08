@@ -9,6 +9,7 @@
 //! 所有＋生体/知識（User Verification）の複数要素・フィッシング耐性認証であるため満たすものと扱う。
 
 use crate::application::audit::{AuditService, RequestContext};
+use crate::application::authenticator_management::is_blocked_in_registry;
 use crate::application::authorize::code_redirect;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::domain::audit::{AuditEventType, AuditResult};
@@ -20,12 +21,14 @@ use crate::domain::crypto;
 use crate::domain::passkey_challenge::{PasskeyChallenge, PasskeyChallengeType};
 use crate::domain::repositories::{
     AuthSessionRepository, AuthenticationPolicyRepository, ClientConsentRepository,
-    PasskeyChallengeRepository, SsoSessionRepository, TenantMembershipRepository, UserRepository,
-    WebAuthnCredentialRepository,
+    PasskeyChallengeRepository, SsoSessionRepository, TenantMembershipRepository,
+    UserAuthenticatorRepository, UserRepository, WebAuthnCredentialRepository,
 };
 use crate::domain::sso_session::SsoSession;
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
+use crate::domain::user_authenticator::AuthenticatorType;
+use crate::domain::values::AuthenticationMethod;
 use crate::domain::webauthn_port::WebAuthnPort;
 use chrono::Duration;
 use std::sync::Arc;
@@ -64,6 +67,8 @@ pub enum PasskeyAuthOutcome {
 
 pub struct PasskeyAuthenticationService {
     webauthn_credentials: Arc<dyn WebAuthnCredentialRepository>,
+    /// 認証器の登録簿（AP9）。一時停止・失効はここにしか無いため、認証時に必ず見る。
+    authenticators: Arc<dyn UserAuthenticatorRepository>,
     passkey_challenges: Arc<dyn PasskeyChallengeRepository>,
     auth_sessions: Arc<dyn AuthSessionRepository>,
     users: Arc<dyn UserRepository>,
@@ -84,6 +89,7 @@ impl PasskeyAuthenticationService {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         webauthn_credentials: Arc<dyn WebAuthnCredentialRepository>,
+        authenticators: Arc<dyn UserAuthenticatorRepository>,
         passkey_challenges: Arc<dyn PasskeyChallengeRepository>,
         auth_sessions: Arc<dyn AuthSessionRepository>,
         users: Arc<dyn UserRepository>,
@@ -101,6 +107,7 @@ impl PasskeyAuthenticationService {
     ) -> Self {
         Self {
             webauthn_credentials,
+            authenticators,
             passkey_challenges,
             auth_sessions,
             users,
@@ -216,6 +223,22 @@ impl PasskeyAuthenticationService {
         let user_id = stored_cred.user_id;
         let cred_row_id = stored_cred.id;
 
+        // 登録簿でこの 1 本が止められていないかを見る（AP9）。公開鍵は
+        // `user_webauthn_credentials` に残ったままなので、ここで見ないと一時停止・失効が
+        // 効かない。パスキーは 1 利用者に複数あるため、止めた 1 本だけを塞ぐ。
+        match is_blocked_in_registry(
+            self.authenticators.as_ref(),
+            user_id,
+            AuthenticatorType::WebAuthn,
+            Some(cred_row_id),
+        )
+        .await
+        {
+            Ok(true) => return PasskeyAuthOutcome::InvalidCredential,
+            Ok(false) => {}
+            Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
+        }
+
         // 5. WebAuthn 検証。
         let dk = DiscoverableKey::from(&passkey);
         let auth_result =
@@ -326,28 +349,28 @@ impl PasskeyAuthenticationService {
             return PasskeyAuthOutcome::PolicyDenied;
         }
 
-        // 9. auth_time を設定する。
+        // 9. SSO セッションを組み立てる（`sid` を auth_session へ預けるため、永続化より先に作る）。
+        let sso_session_id = crypto::random_hex(32);
+        let sso = SsoSession::establish(
+            crypto::sha256_hex(&sso_session_id),
+            user_id,
+            now,
+            self.sso_idle_ttl,
+            self.sso_absolute_ttl,
+            vec![AuthenticationMethod::WebAuthn],
+            ctx.user_agent.clone(),
+            ctx.ip_address.clone(),
+        );
+
+        // 10. auth_time と `sid` を設定する。
         if let Err(e) = self
             .auth_sessions
-            .set_authenticated_user(&session.id, user_id, now)
+            .set_authenticated_user(&session.id, user_id, now, Some(&sso.sid()))
             .await
         {
             return PasskeyAuthOutcome::Internal(e.to_string());
         }
 
-        // 10. SSO セッション発行。
-        let sso_session_id = crypto::random_hex(32);
-        let sso = SsoSession {
-            session_hash: crypto::sha256_hex(&sso_session_id),
-            user_id,
-            auth_time: now,
-            idle_expires_at: now + self.sso_idle_ttl,
-            absolute_expires_at: now + self.sso_absolute_ttl,
-            user_agent: ctx.user_agent.clone(),
-            ip_address: ctx.ip_address.clone(),
-            created_at: now,
-            updated_at: now,
-        };
         if let Err(e) = self.sso_sessions.create(&sso).await {
             return PasskeyAuthOutcome::Internal(e.to_string());
         }
@@ -414,6 +437,7 @@ impl PasskeyAuthenticationService {
                     scope: session.scope.clone(),
                     nonce: session.nonce.clone(),
                     auth_time: now,
+                    sid: Some(sso.sid()),
                     code_challenge: session.code_challenge.clone(),
                     code_challenge_method: session.code_challenge_method,
                 },

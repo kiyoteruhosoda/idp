@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 use crate::domain::tenant::TenantId;
-use crate::domain::values::{ClientStatus, ClientType, TokenEndpointAuthMethod};
+use crate::domain::values::{ClientStatus, ClientType, GrantType, TokenEndpointAuthMethod};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
@@ -51,5 +51,68 @@ impl Client {
     /// 要求 scope がすべて登録 scope の部分集合か（設計仕様 §4.2）。
     pub fn allows_scopes(&self, requested: &[String]) -> bool {
         requested.iter().all(|s| self.scopes.contains(s))
+    }
+
+    /// 指定の grant_type が登録済みか（G4）。
+    ///
+    /// `client_credentials` は利用者不在でアクセストークンを取れる強い許可のため、テナント管理者が
+    /// クライアント単位で明示的に有効化したものだけに限る（confidential であることは別途要求する）。
+    pub fn allows_grant_type(&self, grant_type: GrantType) -> bool {
+        self.grant_types.iter().any(|g| g == grant_type.as_str())
+    }
+
+    /// サーバ間（M2M）でのトークン取得を許可されているか（G4）。
+    /// public client は資格情報を秘匿できないため、登録上許可されていても常に不可とする。
+    pub fn allows_client_credentials(&self) -> bool {
+        self.client_type == ClientType::Confidential
+            && self.allows_grant_type(GrantType::ClientCredentials)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn client(client_type: ClientType, grant_types: &[&str]) -> Client {
+        let now = Utc.with_ymd_and_hms(2026, 8, 1, 0, 0, 0).unwrap();
+        Client {
+            id: Uuid::from_u128(1),
+            tenant_id: TenantId::from(Uuid::from_u128(2)),
+            client_id: "c".to_string(),
+            client_secret_hash: None,
+            client_type,
+            client_status: ClientStatus::Active,
+            app_name: "app".to_string(),
+            redirect_uris: vec![],
+            grant_types: grant_types.iter().map(|s| s.to_string()).collect(),
+            response_types: vec!["code".to_string()],
+            scopes: vec![],
+            token_endpoint_auth_method: TokenEndpointAuthMethod::ClientSecretBasic,
+            require_pkce: true,
+            post_logout_redirect_uris: vec![],
+            frontchannel_logout_uri: None,
+            backchannel_logout_uri: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// public client は登録上許可されていても M2M を使えない（秘密を秘匿できないため）。
+    #[test]
+    fn client_credentials_requires_a_confidential_client_and_an_explicit_grant() {
+        assert!(client(
+            ClientType::Confidential,
+            &["authorization_code", "client_credentials"]
+        )
+        .allows_client_credentials());
+        assert!(
+            !client(ClientType::Confidential, &["authorization_code"]).allows_client_credentials()
+        );
+        assert!(!client(
+            ClientType::Public,
+            &["authorization_code", "client_credentials"]
+        )
+        .allows_client_credentials());
     }
 }

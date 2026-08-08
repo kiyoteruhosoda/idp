@@ -6,16 +6,18 @@
 //! 次を担う:
 //!
 //! 1. SSO セッションの特定・終了（LogoutService）と監査記録。
-//! 2. Back-channel logout: 登録クライアントの backchannel_logout_uri へ logout_token JWT を POST（非同期）。
+//! 2. Back-channel logout: 通知要求を永続キューへ積む（送信はワーカー。G5）。
 //! 3. `post_logout_redirect_uri` の検証と `state` 付与済みリダイレクト URL の組み立て。
 //! 4. Front-channel logout URI 群（`iss` クエリ付与済み）の列挙。
 //!
 //! SSO Cookie の破棄と front-channel iframe ページの描画は web が行う。
+//!
+//! 通知の送信をこのリクエスト内で行わないのは意図的（G5）。従来は `tokio::spawn` で撃ちっぱなしに
+//! していたため、非 2xx もプロセス再起動も黙って通知を失っていた。要求を行として残し、再試行付きの
+//! ワーカー（`BackchannelLogoutDeliveryService`）に送信させる。
 
 use crate::application::audit::RequestContext;
-use crate::application::key_service::KeyService;
-use crate::application::logout::BackchannelTarget;
-use crate::infrastructure::jwt;
+use crate::application::backchannel_logout::LogoutNotification;
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::require_internal_tenant;
@@ -23,20 +25,6 @@ use axum::extract::{Extension, State};
 use axum::response::Response;
 use axum::Json;
 use idp_contracts::auth::{InternalRpLogoutRequest, InternalRpLogoutResponse};
-use serde::Serialize;
-use std::sync::Arc;
-use uuid::Uuid;
-
-/// back-channel logout token のクレーム（OpenID Back-Channel Logout 1.0）。
-#[derive(Debug, Serialize)]
-struct LogoutTokenClaims {
-    iss: String,
-    sub: String,
-    aud: String,
-    iat: i64,
-    jti: String,
-    events: serde_json::Value,
-}
 
 /// RP-initiated logout の内部エンドポイント。
 pub async fn rp_logout(
@@ -62,15 +50,32 @@ pub async fn rp_logout(
         )
         .await;
 
-    // Back-channel logout: 各クライアントへ logout_token を非同期送信。
+    // Back-channel logout: 通知要求をキューへ積む（送信はワーカー。G5）。ここで HTTP を打つと、
+    // 落ちている RP のタイムアウトぶんだけ利用者のログアウト応答が遅れる。
     if !result.backchannel_targets.is_empty() {
-        if let Some(user_sub) = result.user_sub.clone() {
-            let targets = result.backchannel_targets.clone();
-            let keys = state.keys.clone();
-            let issuer = state.config.issuer().to_string();
-            tokio::spawn(async move {
-                send_backchannel_logout_tokens(targets, &user_sub, &issuer, &keys).await;
-            });
+        if let Some(user_sub) = result.user_sub.as_deref() {
+            let notifications: Vec<LogoutNotification> = result
+                .backchannel_targets
+                .iter()
+                .map(|t| LogoutNotification {
+                    client_id: t.client_id.clone(),
+                    backchannel_logout_uri: t.backchannel_logout_uri.clone(),
+                })
+                .collect();
+            if let Err(e) = state
+                .backchannel_logout
+                .enqueue(
+                    tenant.tenant_id(),
+                    user_sub,
+                    result.sid.as_deref(),
+                    &notifications,
+                )
+                .await
+            {
+                // 積めなかった通知は復旧できない。ログアウト自体は成立しているので応答は返すが、
+                // RP 側にセッションが残るため ERROR として残す。
+                tracing::error!(error = %e, "failed to enqueue back-channel logout notifications");
+            }
         }
     }
 
@@ -94,93 +99,4 @@ pub async fn rp_logout(
         frontchannel_uris: result.frontchannel_uris,
         redirect_to,
     }))
-}
-
-/// back-channel logout token を各クライアントへ POST する。
-async fn send_backchannel_logout_tokens(
-    targets: Vec<BackchannelTarget>,
-    user_sub: &str,
-    issuer: &str,
-    keys: &Arc<KeyService>,
-) {
-    // 現在の署名鍵を取得。
-    let active_key = match keys.active_signing_key().await {
-        Ok(k) => k,
-        Err(e) => {
-            tracing::warn!(error = %e, "no active signing key for back-channel logout tokens");
-            return;
-        }
-    };
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .unwrap_or_default();
-
-    let now = chrono::Utc::now().timestamp();
-
-    for target in &targets {
-        // 送信直前にも宛先を検査する（SEC2）。登録時の検証（`client_management`）だけでは、
-        // 検証導入より前に登録された行や DB を直接編集された行が素通りしてしまう。
-        if crate::domain::outbound_uri::is_internal_destination(&target.backchannel_logout_uri) {
-            tracing::warn!(
-                client_id = %target.client_id,
-                "skipped back-channel logout: the registered URI points at an internal destination"
-            );
-            continue;
-        }
-
-        let claims = LogoutTokenClaims {
-            iss: issuer.to_string(),
-            sub: user_sub.to_string(),
-            aud: target.client_id.clone(),
-            iat: now,
-            jti: Uuid::new_v4().to_string(),
-            events: serde_json::json!({
-                "http://schemas.openid.net/event/backchannel-logout": {}
-            }),
-        };
-
-        let logout_token = match jwt::sign(
-            &active_key.private_pem,
-            &active_key.kid,
-            "logout+jwt",
-            &active_key.algorithm,
-            &claims,
-        ) {
-            Ok(t) => t,
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    client_id = %target.client_id,
-                    "failed to sign back-channel logout token"
-                );
-                continue;
-            }
-        };
-
-        let url = target.backchannel_logout_uri.clone();
-        let client = client.clone();
-        tokio::spawn(async move {
-            match client
-                .post(&url)
-                .form(&[("logout_token", &logout_token)])
-                .send()
-                .await
-            {
-                Ok(resp) => {
-                    if !resp.status().is_success() {
-                        tracing::warn!(
-                            status = %resp.status(),
-                            url = %url,
-                            "back-channel logout endpoint returned non-2xx"
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, url = %url, "back-channel logout request failed");
-                }
-            }
-        });
-    }
 }

@@ -248,6 +248,25 @@ pub async fn login(
             &csrf,
             "admin-login-error-forbidden",
         ),
+        // 認証ポリシー（AP2）。資格情報は検証済みなので、資格情報エラーとは別の文言を出す。
+        InternalAdminAuthenticateResponse::PolicyDenied => reshow_login(
+            &messages,
+            StatusCode::FORBIDDEN,
+            &csrf,
+            "login-error-policy-denied",
+        ),
+        InternalAdminAuthenticateResponse::MfaEnrollmentRequired => reshow_login(
+            &messages,
+            StatusCode::FORBIDDEN,
+            &csrf,
+            "login-error-mfa-enrollment-required",
+        ),
+        InternalAdminAuthenticateResponse::MfaRequired => reshow_login(
+            &messages,
+            StatusCode::FORBIDDEN,
+            &csrf,
+            "admin-login-error-mfa-required",
+        ),
         InternalAdminAuthenticateResponse::Internal => {
             (StatusCode::INTERNAL_SERVER_ERROR, Html(String::new())).into_response()
         }
@@ -377,6 +396,30 @@ pub async fn password_change(
             &csrf,
             &form.username,
             "password-change-error-weak",
+        ),
+        InternalAdminChangePasswordResponse::PolicyDenied => reshow_password_change(
+            &messages,
+            &tenant.prefix(),
+            StatusCode::FORBIDDEN,
+            &csrf,
+            &form.username,
+            "login-error-policy-denied",
+        ),
+        InternalAdminChangePasswordResponse::MfaEnrollmentRequired => reshow_password_change(
+            &messages,
+            &tenant.prefix(),
+            StatusCode::FORBIDDEN,
+            &csrf,
+            &form.username,
+            "login-error-mfa-enrollment-required",
+        ),
+        InternalAdminChangePasswordResponse::MfaRequired => reshow_password_change(
+            &messages,
+            &tenant.prefix(),
+            StatusCode::FORBIDDEN,
+            &csrf,
+            &form.username,
+            "admin-login-error-mfa-required",
         ),
         InternalAdminChangePasswordResponse::Internal => {
             (StatusCode::INTERNAL_SERVER_ERROR, Html(String::new())).into_response()

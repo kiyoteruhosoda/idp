@@ -1616,6 +1616,138 @@ impl ApiClient {
             .await
     }
 
+    /// 有効な外部 IdP を一覧する（ログイン画面のボタン用。AP10）。
+    pub async fn external_providers(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalExternalProvidersRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalExternalProvidersResponse> {
+        self.post_internal("/internal/external/providers", correlation_id, req)
+            .await
+    }
+
+    /// 外部 IdP ログインを開始し、認可エンドポイントの URL を得る（AP10）。
+    pub async fn external_start(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalExternalStartRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalExternalStartResponse> {
+        self.post_internal("/internal/external/start", correlation_id, req)
+            .await
+    }
+
+    /// 外部 IdP からのコールバックを検証させる（AP10）。
+    pub async fn external_callback(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalExternalCallbackRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalExternalCallbackResponse> {
+        self.post_internal("/internal/external/callback", correlation_id, req)
+            .await
+    }
+
+    /// 登録済み認証器の一覧とリカバリーコードの残数を取得する（AP9）。
+    pub async fn account_authenticators(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalAuthenticatorsRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalAuthenticatorsResponse> {
+        self.post_internal("/internal/account/authenticators", correlation_id, req)
+            .await
+    }
+
+    /// 認証器の状態を変える（一時停止・再開・失効。AP9）。
+    pub async fn account_authenticator_status(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalAuthenticatorStatusRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalAuthenticatorStatusResponse> {
+        self.post_internal(
+            "/internal/account/authenticators/status",
+            correlation_id,
+            req,
+        )
+        .await
+    }
+
+    /// リカバリーコードを（再）発行する（AP9）。平文はこの応答でのみ得られる。
+    pub async fn account_recovery_codes(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalRecoveryCodesRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalRecoveryCodesResponse> {
+        self.post_internal("/internal/account/recovery-codes", correlation_id, req)
+            .await
+    }
+
+    /// MFA 待ちの利用者へ email OTP を送る（AP9）。
+    pub async fn account_email_otp(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalEmailOtpRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalEmailOtpResponse> {
+        self.post_internal("/internal/account/email-otp", correlation_id, req)
+            .await
+    }
+
+    /// 重要操作の直前に step-up が要るかを判定する（AP5）。
+    pub async fn step_up_check(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalStepUpCheckRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalStepUpCheckResponse> {
+        self.post_internal("/internal/step-up/check", correlation_id, req)
+            .await
+    }
+
+    /// step-up の本人確認を検証する（AP5）。
+    pub async fn step_up_verify(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalStepUpVerifyRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalStepUpVerifyResponse> {
+        self.post_internal("/internal/step-up/verify", correlation_id, req)
+            .await
+    }
+
+    /// セルフサービスのセキュリティ画面の表示内容（セッション一覧・連携済みアプリ）を取得する（G10）。
+    pub async fn account_security(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalAccountSecurityRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalAccountSecurityResponse> {
+        self.post_internal("/internal/account/security", correlation_id, req)
+            .await
+    }
+
+    /// ログイン中セッションを失効させる（G10）。
+    pub async fn account_revoke_session(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalAccountRevokeSessionRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalAccountRevokeSessionResponse> {
+        self.post_internal(
+            "/internal/account/security/revoke-session",
+            correlation_id,
+            req,
+        )
+        .await
+    }
+
+    /// 連携済みアプリの同意を取り消す（G10）。
+    pub async fn account_revoke_consent(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalAccountRevokeConsentRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalAccountRevokeConsentResponse> {
+        self.post_internal(
+            "/internal/account/security/revoke-consent",
+            correlation_id,
+            req,
+        )
+        .await
+    }
+
     /// ログイン中ユーザーの所属テナント（`ACTIVE`）を列挙する（テナント切り替え UI 用）。
     pub async fn account_tenants(
         &self,

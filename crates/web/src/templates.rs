@@ -324,24 +324,34 @@ mod tests {
     /// `data-confirm` を持つテンプレートは、必ず共通スクリプトを読み込むレイアウトを継承していること。
     /// 継承していないと確認ダイアログが黙って出ないまま破壊的操作が送信される。
     #[test]
-    fn templates_using_data_confirm_extend_the_console_layout() {
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/templates/console");
+    fn templates_using_data_confirm_load_the_confirm_handler() {
+        // `data-confirm` は `assets/console.js` のハンドラが読む属性。属性だけ書いてスクリプトを
+        // 読み込み忘れると、確認ダイアログが出ないまま破壊的操作が通る（画面上は何も変わらないので
+        // 気付けない）。共通レイアウト経由でも直接読み込みでもよいが、どちらかは必須とする。
+        let roots = [
+            concat!(env!("CARGO_MANIFEST_DIR"), "/templates"),
+            concat!(env!("CARGO_MANIFEST_DIR"), "/templates/console"),
+        ];
         let mut checked = 0;
-        for entry in std::fs::read_dir(dir).expect("read templates/console") {
-            let path = entry.expect("dir entry").path();
-            if path.extension().and_then(|e| e.to_str()) != Some("html") {
-                continue;
+        for dir in roots {
+            for entry in std::fs::read_dir(dir).expect("read templates dir") {
+                let path = entry.expect("dir entry").path();
+                if path.extension().and_then(|e| e.to_str()) != Some("html") {
+                    continue;
+                }
+                let source = std::fs::read_to_string(&path).expect("read template");
+                if !source.contains("data-confirm=") {
+                    continue;
+                }
+                checked += 1;
+                let loads_handler = source.contains(r#"{% extends "console/layout.html" %}"#)
+                    || source.contains("/assets/console.js");
+                assert!(
+                    loads_handler,
+                    "{} uses data-confirm but never loads assets/console.js",
+                    path.display()
+                );
             }
-            let source = std::fs::read_to_string(&path).expect("read template");
-            if !source.contains("data-confirm=") {
-                continue;
-            }
-            checked += 1;
-            assert!(
-                source.contains(r#"{% extends "console/layout.html" %}"#),
-                "{} uses data-confirm but does not extend console/layout.html",
-                path.display()
-            );
         }
         assert!(checked > 0, "expected templates using data-confirm");
     }
@@ -376,6 +386,10 @@ pub struct TotpVerifyTemplate<'a> {
     pub messages: &'a Messages,
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
+    /// 「メールでコードを送る」導線を出すか（AP9）。
+    pub email_otp_available: bool,
+    /// その導線の送信先（テナントごとに変わるため呼び出し側が組み立てる）。
+    pub email_otp_action: &'a str,
 }
 /// RP-initiated logout の front-channel 通知ページ（`GET /{tenant_id}/logout`。ADR-0018 決定 2 で
 /// api から移設）。各 RP の `frontchannel_logout_uri` を不可視 iframe で読み込み、全 iframe の
@@ -408,6 +422,8 @@ pub struct PortalLogin<'a> {
     pub tenant_prefix: &'a str,
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
+    /// 有効な外部 IdP（AP10）。空ならボタン領域ごと出さない。
+    pub external_providers: &'a [idp_contracts::auth::ExternalIdpButton],
 }
 
 /// ポータルの TOTP 入力画面（`GET /{tenant_id}/login/mfa`）。`mfa_ticket` Cookie を保持した状態で表示する。
@@ -761,6 +777,8 @@ pub struct ClientFormValues {
     pub scopes: String,
     pub require_pkce: bool,
     pub client_status: String,
+    /// サーバ間（M2M）連携で `client_credentials` grant を許可するか（G4）。
+    pub allow_client_credentials: bool,
 }
 
 impl ClientFormValues {
@@ -773,6 +791,7 @@ impl ClientFormValues {
             scopes: "openid".to_string(),
             require_pkce: true,
             client_status: "ACTIVE".to_string(),
+            allow_client_credentials: false,
         }
     }
 
@@ -785,6 +804,8 @@ impl ClientFormValues {
             scopes: c.scopes.join(" "),
             require_pkce: c.require_pkce,
             client_status: c.client_status.clone(),
+            // 許可の真の出所は api が返す `grant_types`（G4）。フォームはその写しを表示する。
+            allow_client_credentials: c.grant_types.iter().any(|g| g == "client_credentials"),
         }
     }
 }
@@ -948,6 +969,101 @@ pub struct UserSettings<'a> {
     pub error_key: Option<&'a str>,
     /// 管理コンソール（`?from=admin`）から開いたか。左上に戻るリンクを出し、フォーム送信でも維持する。
     pub from_admin: bool,
+}
+
+/// 認証器一覧の 1 行（AP9）。種別・状態は翻訳キーに写した状態で受ける。
+pub struct AuthenticatorView {
+    pub id: String,
+    /// 種別の翻訳キー。
+    pub type_key: &'static str,
+    /// 状態の翻訳キー。
+    pub status_key: &'static str,
+    pub label: String,
+    pub created_at: String,
+    /// 直近の利用時刻（未使用なら空文字）。
+    pub last_used_at: String,
+    /// 一時停止ボタンを出すか（`active` のときだけ）。
+    pub suspendable: bool,
+    /// 再開ボタンを出すか（`suspended` のときだけ）。
+    pub resumable: bool,
+}
+
+/// 認証器の管理画面（`GET /{tenant_id}/settings/authenticators`。AP9）。
+#[derive(Template)]
+#[template(path = "user_authenticators.html")]
+pub struct UserAuthenticators<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub csrf: &'a str,
+    pub authenticators: &'a [AuthenticatorView],
+    /// 未使用のリカバリーコードの残数。
+    pub recovery_codes_remaining: usize,
+    pub saved_key: Option<&'a str>,
+    pub error_key: Option<&'a str>,
+}
+
+/// リカバリーコードの発行結果（AP9）。平文はこの画面でしか表示しない。
+#[derive(Template)]
+#[template(path = "recovery_codes.html")]
+pub struct RecoveryCodes<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub codes: &'a [String],
+}
+
+/// Step-up 認証の本人確認画面（`GET /{tenant_id}/settings/verify`。AP5）。
+#[derive(Template)]
+#[template(path = "step_up_challenge.html")]
+pub struct StepUpChallenge<'a> {
+    pub messages: &'a Messages,
+    /// `/{tenant_id}` プレフィクス。
+    pub tenant: &'a str,
+    /// ログイン後フォーム用の同期トークン（`console_csrf_token`）。
+    pub csrf: &'a str,
+    /// 対象操作（そのまま POST へ載せ、api が要件を決め直す）。
+    pub operation: &'a str,
+    /// 確認後に戻る先（web 側で同一テナントのパスに限定済み）。
+    pub next: &'a str,
+    /// TOTP 入力欄を出すか（要件が多要素のとき）。
+    pub second_factor_required: bool,
+    pub error_key: Option<&'a str>,
+}
+
+/// セキュリティ画面のセッション 1 行（G10）。時刻は api が返した RFC 3339 文字列をそのまま出す。
+pub struct SecuritySessionView {
+    /// 失効フォームに載せる表示用 ID（`session_hash` の非可逆な導出値）。
+    pub id: String,
+    pub current: bool,
+    pub multi_factor: bool,
+    pub auth_time: String,
+    /// User-Agent（未記録なら空文字。`Option` を避けてテンプレートを単純に保つ）。
+    pub user_agent: String,
+    pub ip_address: String,
+    pub absolute_expires_at: String,
+}
+
+/// セキュリティ画面の連携済みアプリ 1 行（G10）。
+pub struct ConnectedAppView {
+    pub client_id: String,
+    pub app_name: String,
+    /// 同意済み scope（空白区切りの表示用文字列）。
+    pub scopes: String,
+    pub granted_at: String,
+}
+
+/// セルフサービスのセキュリティ画面（`GET /{tenant_id}/settings/security`。G10）。
+#[derive(Template)]
+#[template(path = "user_security.html")]
+pub struct UserSecurity<'a> {
+    pub messages: &'a Messages,
+    /// `/{tenant_id}` プレフィクス（フォーム送信先の組み立てに使う）。
+    pub tenant: &'a str,
+    /// ログイン後フォーム用の同期トークン（`console_csrf_token`）。
+    pub csrf: &'a str,
+    pub sessions: &'a [SecuritySessionView],
+    pub connected_apps: &'a [ConnectedAppView],
+    pub saved_key: Option<&'a str>,
+    pub error_key: Option<&'a str>,
 }
 
 /// Passkey 一覧画面（`GET /account/passkey`）。登録済みクレデンシャルの一覧と削除ボタン。

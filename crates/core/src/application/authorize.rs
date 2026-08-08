@@ -195,6 +195,7 @@ impl AuthorizeService {
             authenticated_user_id: None,
             auth_time: None,
             password_verified_at: None,
+            sso_sid: None,
             expires_at: now + self.auth_session_ttl,
             created_at: now,
             updated_at: now,
@@ -265,6 +266,8 @@ impl AuthorizeService {
                 match self.sso_restorer.try_resume(tenant, session_id, ctx).await {
                     Ok(Some(restored)) => {
                         let (user_id, auth_time) = (restored.user_id, restored.auth_time);
+                        // ID Token へ載せる `sid`（G5）。復元したセッションから導出する。
+                        let sid = crate::domain::sso_session::sid_of(&restored.session_hash);
                         // `max_age` チェック: auth_time から max_age 秒超過していれば再認証。
                         let max_age_exceeded = session.max_age.is_some_and(|max_age| {
                             (now - auth_time).num_seconds() > max_age as i64
@@ -291,6 +294,7 @@ impl AuthorizeService {
                                     scope: session.scope.clone(),
                                     nonce: session.nonce.clone(),
                                     auth_time,
+                                    sid: Some(sid.clone()),
                                     code_challenge: session.code_challenge.clone(),
                                     code_challenge_method: session.code_challenge_method,
                                 };
@@ -345,7 +349,12 @@ impl AuthorizeService {
                             // 同意画面へ: AuthSession を認証済み状態にして web に返す。
                             if let Err(e) = self
                                 .auth_sessions
-                                .set_authenticated_user(&session.id, user_id, auth_time)
+                                .set_authenticated_user(
+                                    &session.id,
+                                    user_id,
+                                    auth_time,
+                                    Some(sid.as_str()),
+                                )
                                 .await
                             {
                                 tracing::error!(error = %e, "failed to mark session for consent");
@@ -657,6 +666,7 @@ mod tests {
             authenticated_user_id: None,
             auth_time: None,
             password_verified_at: None,
+            sso_sid: None,
             expires_at: now + Duration::minutes(10),
             created_at: now,
             updated_at: now,

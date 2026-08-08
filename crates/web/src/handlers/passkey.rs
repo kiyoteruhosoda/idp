@@ -8,6 +8,7 @@ use super::locale;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::handlers::forwarded_context;
+use crate::handlers::step_up::{self, MANAGE_AUTHENTICATORS};
 use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, MessagePage, PasskeyListTemplate, PasskeyRegisterTemplate};
@@ -71,9 +72,24 @@ pub async fn list_page(
 
 /// Passkey 登録ページ（`GET /account/passkey/register`）。SSO Cookie が必要。
 pub async fn register_page(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
 ) -> Response {
+    // 認証器の追加は step-up の対象（AP5。TOTP セットアップと同じ理由）。
+    if let Err(response) = step_up::require_step_up(
+        &state,
+        &correlation,
+        &tenant,
+        &headers,
+        MANAGE_AUTHENTICATORS,
+        &format!("{}/account/passkey/register", tenant.prefix()),
+    )
+    .await
+    {
+        return response;
+    }
     let messages = Messages::new(locale(&headers));
     if cookies::get(&headers, cookies::SSO_SESSION_COOKIE).is_none() {
         return error_page(
@@ -101,12 +117,27 @@ pub struct RegisterBeginBody {
 pub async fn register_begin_api(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Json(body): Json<RegisterBeginBody>,
 ) -> Response {
     let Some(sso_session_id) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
+    // 画面と同じく step-up の対象（AP5）。**画面のゲートだけでは守れない**: 認証器を実際に
+    // 作るのはこの JSON エンドポイントで、Cookie を持つ呼び出し元は画面を経由せず直接叩ける。
+    if let Err(response) = step_up::require_step_up_api(
+        &state,
+        &correlation,
+        &tenant,
+        &headers,
+        MANAGE_AUTHENTICATORS,
+        &format!("{}/account/passkey/register", tenant.prefix()),
+    )
+    .await
+    {
+        return response;
+    }
     // user_name は認証器に表示される名前。SSO セッションからは取得できないため入力名を使う。
     let req = InternalPasskeyRegisterBeginRequest {
         sso_session_id,
@@ -143,12 +174,27 @@ pub struct RegisterCompleteBody {
 pub async fn register_complete_api(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Json(body): Json<RegisterCompleteBody>,
 ) -> Response {
     let Some(sso_session_id) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
+    // 画面と同じく step-up の対象（AP5）。**画面のゲートだけでは守れない**: 認証器を実際に
+    // 作るのはこの JSON エンドポイントで、Cookie を持つ呼び出し元は画面を経由せず直接叩ける。
+    if let Err(response) = step_up::require_step_up_api(
+        &state,
+        &correlation,
+        &tenant,
+        &headers,
+        MANAGE_AUTHENTICATORS,
+        &format!("{}/account/passkey/register", tenant.prefix()),
+    )
+    .await
+    {
+        return response;
+    }
     let req = InternalPasskeyRegisterCompleteRequest {
         sso_session_id,
         challenge_id: body.challenge_id,
@@ -187,9 +233,23 @@ pub struct DeleteForm {
 pub async fn delete(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Form(form): Form<DeleteForm>,
 ) -> Response {
+    // 認証器の削除は step-up の対象（AP5）。
+    if let Err(response) = step_up::require_step_up(
+        &state,
+        &correlation,
+        &tenant,
+        &headers,
+        MANAGE_AUTHENTICATORS,
+        &format!("{}/account/passkey", tenant.prefix()),
+    )
+    .await
+    {
+        return response;
+    }
     let Some(sso_session_id) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         // FluentBundle は !Send なので await の前に作成・消費する。
         let messages = Messages::new(locale(&headers));

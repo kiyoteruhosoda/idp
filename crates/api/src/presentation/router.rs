@@ -3,7 +3,7 @@
 use crate::presentation::correlation;
 use crate::presentation::handlers::{
     admin, admin_application_logs, admin_audit, admin_authentication_policies, admin_clients,
-    admin_invitations, admin_members, admin_permissions, admin_restart,
+    admin_external_idps, admin_invitations, admin_members, admin_permissions, admin_restart,
     admin_saml_service_providers, admin_signing_keys, admin_system_settings, admin_tenants,
     admin_users, authorize, consent, discovery, health, internal_auth, internal_runtime_settings,
     introspect, invitations, logout, mfa, passkey, register, revoke, saml_sso, token, userinfo,
@@ -79,6 +79,58 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/internal/account/update-name",
             post(internal_auth::account_update_name),
+        )
+        // 外部 IdP ログイン（AP10）。
+        .route(
+            "/internal/external/providers",
+            post(internal_auth::external_providers),
+        )
+        .route(
+            "/internal/external/start",
+            post(internal_auth::external_start),
+        )
+        .route(
+            "/internal/external/callback",
+            post(internal_auth::external_callback),
+        )
+        // 認証器の統合管理（一覧・状態変更・リカバリーコード・email OTP。AP9）。
+        .route(
+            "/internal/account/authenticators",
+            post(internal_auth::account_authenticators),
+        )
+        .route(
+            "/internal/account/authenticators/status",
+            post(internal_auth::account_authenticator_status),
+        )
+        .route(
+            "/internal/account/recovery-codes",
+            post(internal_auth::account_recovery_codes),
+        )
+        .route(
+            "/internal/account/email-otp",
+            post(internal_auth::account_email_otp),
+        )
+        // Step-up 認証（重要操作の直前の本人確認。AP5）。
+        .route(
+            "/internal/step-up/check",
+            post(internal_auth::step_up_check),
+        )
+        .route(
+            "/internal/step-up/verify",
+            post(internal_auth::step_up_verify),
+        )
+        // セルフサービスのセキュリティ画面（セッション一覧・失効／連携アプリ解除。G10）。
+        .route(
+            "/internal/account/security",
+            post(internal_auth::account_security),
+        )
+        .route(
+            "/internal/account/security/revoke-session",
+            post(internal_auth::account_revoke_session),
+        )
+        .route(
+            "/internal/account/security/revoke-consent",
+            post(internal_auth::account_revoke_consent),
         )
         // ログイン中ユーザーの所属テナント列挙（テナント切り替え UI）。
         .route(
@@ -268,6 +320,17 @@ pub fn build(state: AppState) -> Router {
             "/admin/authentication-policies/{policy_id}",
             put(admin_authentication_policies::update_authentication_policy)
                 .delete(admin_authentication_policies::delete_authentication_policy),
+        )
+        // 外部 IdP 設定（AP10）。idp.tenant.admin 必須。クライアントシークレットは書き込み専用。
+        .route(
+            "/admin/external-idps",
+            get(admin_external_idps::list_external_idps)
+                .post(admin_external_idps::register_external_idp),
+        )
+        .route(
+            "/admin/external-idps/{id}",
+            patch(admin_external_idps::update_external_idp)
+                .delete(admin_external_idps::delete_external_idp),
         )
         // 監査ログ参照（A3、設計仕様 §7）。idp.tenant.admin 必須。
         .route("/admin/audit-logs", get(admin_audit::list_audit_logs))

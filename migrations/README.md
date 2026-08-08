@@ -62,6 +62,32 @@ sqlx マイグレーション（MariaDB）を管理する。
   （OIDC の `auth_sessions` に相当。web ハンドオフのハンドル・検証済み ACS・`InResponseTo`・RelayState を
   応答発行まで保持する）。`down` は表ごと削除する（一時状態のみでロールバック時に失うのは進行中の
   SSO フローだけ。SP からやり直せる）。
+- `0020_sso_session_authentication_context`: `sso_sessions` に認証コンテキスト
+  （`authentication_methods` JSON・`authentication_strength`・`mfa_completed_at`）を追加する（AP4）。
+  「どの方式で・どの強度で認証したか」をセッションに残し、Step-up（AP5）と認証ポリシーの
+  `require_mfa` 判定の材料となる。既存行は `single_factor` を既定値として埋める（expand）。
+  許可値は `VARCHAR` + `CHECK`（Rust 側 `domain::values::AuthenticationStrength` で集中管理）。
+- `0021_backchannel_logout_deliveries`: バックチャネルログアウトの配送キュー表
+  `backchannel_logout_deliveries` と、`sid` を発行経路へ通すための列
+  （`auth_sessions.sso_sid`・`authorization_codes.sid`・`refresh_tokens.sid`）を追加する（G5）。
+  `/token` はブラウザ Cookie を読めない（ADR-0018）ため、SSO セッションの `sid` を
+  auth_session → authorization_code / refresh_token と受け渡して ID Token へ載せる。
+  キューには**署名済み logout_token を保存しない**（再送のたびに発行し直す。長命な bearer を
+  DB に寝かせないため）。`down` は表と列を削除する（配送待ちの再試行だけを失う）。
+- `0022_sso_session_step_up`: `sso_sessions.step_up_at` を追加する（AP5）。機微操作の再認証鮮度を
+  測る基準時刻で、単要素なら本列、多要素なら `mfa_completed_at` を見る。既存行は NULL
+  （＝鮮度不明として再認証を要求する fail-closed 側）。
+- `0023_user_authenticators`: 認証器の統合レジストリ `user_authenticators` を追加する（AP9。expand
+  フェーズ）。種別・状態（`pending`→`active`⇄`suspended`→`revoked`）・ラベル・最終使用時刻を
+  一元管理する。**秘密は移送しない**（TOTP は `user_totp_secrets`、パスキーは
+  `user_webauthn_credentials` に残し、`credential_ref` で対応付ける）。既存の TOTP・パスキーは
+  冪等な `INSERT ... SELECT` で backfill する。秘密の集約は contract フェーズ（`docs/Progress.md` AP11）。
+- `0024_external_identity_providers`: 外部 IdP 連携の 3 表を追加する（AP10）。
+  `external_identity_providers`（テナントごとの外部 OpenID Provider 設定。クライアント
+  シークレットは暗号化列）、`user_external_identities`（`iss` + `sub` による同一性。
+  `(provider_id, external_subject)` と `(user_id, provider_id)` を UNIQUE）、
+  `external_login_requests`（`state` のハッシュ・`nonce`・PKCE verifier を認可往復の間だけ保持）。
+  `down` は 3 表を削除する（連携の対応付けを失うため、再連携が必要になる）。
 
 root テナントの UUID は固定値 `00000000-0000-7000-8000-000000000001`（全環境共通・git 管理。ADR-0011）。
 管理者ログイン URL は `/00000000-0000-7000-8000-000000000001/...`。

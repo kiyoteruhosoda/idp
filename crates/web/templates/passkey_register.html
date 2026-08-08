@@ -53,6 +53,9 @@
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ name })
     });
+    // 本人確認が切れていたらサーバが誘導先を返す（403）。fetch はリダイレクトを黙って追って
+    // しまうため、遷移はここで行う。
+    if (beginRes.status === 403 && await goToStepUp(beginRes)) { return; }
     if (!beginRes.ok) { return showError('Server error (begin)'); }
     const { challenge_id, options } = await beginRes.json();
 
@@ -89,6 +92,7 @@
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ challenge_id, name, credential: credJson })
     });
+    if (completeRes.status === 403 && await goToStepUp(completeRes)) { return; }
     if (!completeRes.ok) { return showError('Server error (complete)'); }
     const result = await completeRes.json();
     if (result.result === 'ok') {
@@ -97,6 +101,17 @@
     } else {
       showError(result.result || 'Registration failed');
     }
+  }
+
+  // step-up が要求されたら本人確認画面へ送る。遷移できたときだけ true を返す。
+  async function goToStepUp(res) {
+    let body;
+    try { body = await res.clone().json(); } catch (e) { return false; }
+    if (body && body.result === 'step_up_required' && typeof body.location === 'string') {
+      window.location.assign(body.location);
+      return true;
+    }
+    return false;
   }
 
   function showError(msg) {
