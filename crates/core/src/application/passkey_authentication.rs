@@ -9,6 +9,7 @@
 //! 所有＋生体/知識（User Verification）の複数要素・フィッシング耐性認証であるため満たすものと扱う。
 
 use crate::application::audit::{AuditService, RequestContext};
+use crate::application::authenticator_management::is_blocked_in_registry;
 use crate::application::authorize::code_redirect;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::domain::audit::{AuditEventType, AuditResult};
@@ -20,12 +21,13 @@ use crate::domain::crypto;
 use crate::domain::passkey_challenge::{PasskeyChallenge, PasskeyChallengeType};
 use crate::domain::repositories::{
     AuthSessionRepository, AuthenticationPolicyRepository, ClientConsentRepository,
-    PasskeyChallengeRepository, SsoSessionRepository, TenantMembershipRepository, UserRepository,
-    WebAuthnCredentialRepository,
+    PasskeyChallengeRepository, SsoSessionRepository, TenantMembershipRepository,
+    UserAuthenticatorRepository, UserRepository, WebAuthnCredentialRepository,
 };
 use crate::domain::sso_session::SsoSession;
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
+use crate::domain::user_authenticator::AuthenticatorType;
 use crate::domain::values::AuthenticationMethod;
 use crate::domain::webauthn_port::WebAuthnPort;
 use chrono::Duration;
@@ -65,6 +67,8 @@ pub enum PasskeyAuthOutcome {
 
 pub struct PasskeyAuthenticationService {
     webauthn_credentials: Arc<dyn WebAuthnCredentialRepository>,
+    /// 認証器の登録簿（AP9）。一時停止・失効はここにしか無いため、認証時に必ず見る。
+    authenticators: Arc<dyn UserAuthenticatorRepository>,
     passkey_challenges: Arc<dyn PasskeyChallengeRepository>,
     auth_sessions: Arc<dyn AuthSessionRepository>,
     users: Arc<dyn UserRepository>,
@@ -85,6 +89,7 @@ impl PasskeyAuthenticationService {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         webauthn_credentials: Arc<dyn WebAuthnCredentialRepository>,
+        authenticators: Arc<dyn UserAuthenticatorRepository>,
         passkey_challenges: Arc<dyn PasskeyChallengeRepository>,
         auth_sessions: Arc<dyn AuthSessionRepository>,
         users: Arc<dyn UserRepository>,
@@ -102,6 +107,7 @@ impl PasskeyAuthenticationService {
     ) -> Self {
         Self {
             webauthn_credentials,
+            authenticators,
             passkey_challenges,
             auth_sessions,
             users,
@@ -216,6 +222,22 @@ impl PasskeyAuthenticationService {
 
         let user_id = stored_cred.user_id;
         let cred_row_id = stored_cred.id;
+
+        // 登録簿でこの 1 本が止められていないかを見る（AP9）。公開鍵は
+        // `user_webauthn_credentials` に残ったままなので、ここで見ないと一時停止・失効が
+        // 効かない。パスキーは 1 利用者に複数あるため、止めた 1 本だけを塞ぐ。
+        match is_blocked_in_registry(
+            self.authenticators.as_ref(),
+            user_id,
+            AuthenticatorType::WebAuthn,
+            Some(cred_row_id),
+        )
+        .await
+        {
+            Ok(true) => return PasskeyAuthOutcome::InvalidCredential,
+            Ok(false) => {}
+            Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
+        }
 
         // 5. WebAuthn 検証。
         let dk = DiscoverableKey::from(&passkey);

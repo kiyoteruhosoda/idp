@@ -573,6 +573,19 @@ pub trait RefreshTokenRepository: Send + Sync {
         user_id: Uuid,
         revoked_at: DateTime<Utc>,
     ) -> Result<()>;
+
+    /// 指定テナントの**1 クライアント**へ発行済みの refresh token を失効させる（連携解除。G10）。
+    ///
+    /// 利用者が 1 つのアプリの連携を解除したときに、同じテナントの他のアプリまで巻き込まないための
+    /// 単位。テナント単位の全失効（[`revoke_all_for_user_in_tenant`](Self::revoke_all_for_user_in_tenant)）
+    /// は管理者によるゲスト停止のための措置で、目的が違う。
+    async fn revoke_all_for_user_and_client(
+        &self,
+        tenant_id: TenantId,
+        user_id: Uuid,
+        client_id: &str,
+        revoked_at: DateTime<Utc>,
+    ) -> Result<()>;
 }
 
 /// ユーザーがクライアントに付与した同意済み scope の永続化（F3: Consent）。
@@ -695,10 +708,16 @@ pub trait ExternalIdentityProviderRepository: Send + Sync {
 pub trait ExternalIdentityRepository: Send + Sync {
     /// 連携を作成する。同じ外部アカウントの二重連携は `Conflict`。
     async fn create(&self, identity: &ExternalIdentity) -> Result<()>;
-    /// 外部の `sub` から連携を引く。
+    /// 検証済みの `iss` + `sub` から連携を引く。
+    ///
+    /// `provider_id` だけでなく `external_issuer` も条件に含める。管理者はプロバイダの `issuer` を
+    /// 後から変更できるため、`provider_id` + `sub` だけで引くと、**別の issuer にある同じ `sub` の
+    /// アカウントが、以前連携した利用者に化ける**。連携時の issuer と一致しなければ引けない
+    /// （＝未連携として扱う）のが正しい。
     async fn find_by_subject(
         &self,
         provider_id: Uuid,
+        external_issuer: &str,
         external_subject: &str,
     ) -> Result<Option<ExternalIdentity>>;
     /// 利用者の全連携を返す（セルフサービスの表示・解除用）。

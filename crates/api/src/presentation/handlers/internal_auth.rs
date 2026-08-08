@@ -28,7 +28,9 @@ use crate::application::admin_login::{
 use crate::application::audit::RequestContext;
 use crate::application::authenticator_management::AuthenticatorManagementError;
 use crate::application::change_password::{ChangePasswordCommand, ChangePasswordOutcome};
-use crate::application::external_login::{CallbackCommand, CallbackOutcome, StartOutcome};
+use crate::application::external_login::{
+    CallbackCommand, CallbackOutcome, StartOutcome, SuccessLocation,
+};
 use crate::application::login::{LoginCommand, LoginOutcome};
 use crate::application::password_reset::{RequestResetOutcome, ResetPasswordOutcome};
 use crate::application::portal_login::{
@@ -1193,13 +1195,26 @@ pub async fn external_callback(
             .await
         {
             CallbackOutcome::Success {
+                location,
                 sso_session_id,
-                auth_session_id,
                 user_language,
             } => InternalExternalCallbackResponse::Success {
                 sso_session_id,
                 sso_absolute_ttl_secs: ttl,
+                redirect_to: match location {
+                    SuccessLocation::Redirect(url) => Some(url),
+                    SuccessLocation::Account => None,
+                },
+                user_language,
+            },
+            CallbackOutcome::ConsentRequired {
                 auth_session_id,
+                sso_session_id,
+                user_language,
+            } => InternalExternalCallbackResponse::ConsentRequired {
+                auth_session_id,
+                sso_session_id,
+                sso_absolute_ttl_secs: ttl,
                 user_language,
             },
             CallbackOutcome::StateExpired => InternalExternalCallbackResponse::StateExpired,

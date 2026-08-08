@@ -23,6 +23,8 @@
 //! 「外部で認証した」ことは `deny` を免れる理由にならない。
 
 use crate::application::audit::{AuditService, RequestContext};
+use crate::application::authorize::code_redirect;
+use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::authentication_policy::{
     evaluate_policies, AuthenticationContext, DefaultPolicyEffect, PolicyDecision,
@@ -34,13 +36,14 @@ use crate::domain::external_oidc_port::{ExternalOidcClient, ExternalTokenRequest
 use crate::domain::id_generator::IdGenerator;
 use crate::domain::pkce;
 use crate::domain::repositories::{
-    AuthenticationPolicyRepository, ExternalIdentityProviderRepository, ExternalIdentityRepository,
-    ExternalLoginRequestRepository, SsoSessionRepository, UserRepository,
+    AuthSessionRepository, AuthenticationPolicyRepository, ClientConsentRepository,
+    ExternalIdentityProviderRepository, ExternalIdentityRepository, ExternalLoginRequestRepository,
+    SsoSessionRepository, UserRepository,
 };
 use crate::domain::sso_session::SsoSession;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::AuthenticationMethod;
-use chrono::Duration;
+use chrono::{DateTime, Duration, Utc};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use std::sync::Arc;
 
@@ -69,10 +72,21 @@ pub struct CallbackCommand {
 
 /// 外部 IdP ログインの完了結果。
 pub enum CallbackOutcome {
-    /// 認証成功。SSO Cookie を発行する。`auth_session_id` があれば OIDC フローの再開へ戻す。
+    /// 認証成功。SSO Cookie を発行する。
+    ///
+    /// `location` は認証後に送る先。OIDC 認可フローの途中から来ていれば **code 付きの
+    /// `redirect_uri`**（＝ RP へ戻す）、そうでなければ本サービス内の戻り先。ここを web 側に
+    /// 組み立てさせない（認可要求のパラメータは auth_session にしか無い）。
     Success {
+        location: SuccessLocation,
         sso_session_id: String,
-        auth_session_id: Option<String>,
+        user_language: Option<String>,
+    },
+    /// 外部 IdP での認証は通ったが、RP への同意がまだ。同意画面へ誘導する
+    /// （他のログイン経路と同じ扱い。外部で認証したことは同意の代わりにならない）。
+    ConsentRequired {
+        auth_session_id: String,
+        sso_session_id: String,
         user_language: Option<String>,
     },
     /// `state` が無効・期限切れ・二重使用（外部 IdP からやり直し）。
@@ -88,12 +102,24 @@ pub enum CallbackOutcome {
     Internal(String),
 }
 
+/// 認証成功後の戻り先。
+pub enum SuccessLocation {
+    /// OIDC 認可フローの続き（code 付きの `redirect_uri`。絶対 URL）。
+    Redirect(String),
+    /// 認可フローの外から来た。web が自分の画面（アカウント設定）へ戻す。
+    Account,
+}
+
 pub struct ExternalLoginService {
     providers: Arc<dyn ExternalIdentityProviderRepository>,
     identities: Arc<dyn ExternalIdentityRepository>,
     requests: Arc<dyn ExternalLoginRequestRepository>,
     users: Arc<dyn UserRepository>,
     sso_sessions: Arc<dyn SsoSessionRepository>,
+    /// OIDC 認可フローの途中から来た場合に続きを進めるための依存（他のログイン経路と共通）。
+    auth_sessions: Arc<dyn AuthSessionRepository>,
+    client_consents: Arc<dyn ClientConsentRepository>,
+    code_issuance: Arc<CodeIssuanceService>,
     authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
     oidc: Arc<dyn ExternalOidcClient>,
     audit: Arc<AuditService>,
@@ -115,6 +141,9 @@ impl ExternalLoginService {
         requests: Arc<dyn ExternalLoginRequestRepository>,
         users: Arc<dyn UserRepository>,
         sso_sessions: Arc<dyn SsoSessionRepository>,
+        auth_sessions: Arc<dyn AuthSessionRepository>,
+        client_consents: Arc<dyn ClientConsentRepository>,
+        code_issuance: Arc<CodeIssuanceService>,
         authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
         oidc: Arc<dyn ExternalOidcClient>,
         audit: Arc<AuditService>,
@@ -132,6 +161,9 @@ impl ExternalLoginService {
             requests,
             users,
             sso_sessions,
+            auth_sessions,
+            client_consents,
+            code_issuance,
             authentication_policies,
             oidc,
             audit,
@@ -305,7 +337,7 @@ impl ExternalLoginService {
         // 5. `iss` + `sub` で利用者を解決する。
         let identity = match self
             .identities
-            .find_by_subject(provider.id, &claims.subject)
+            .find_by_subject(provider.id, &claims.issuer, &claims.subject)
             .await
         {
             Ok(v) => v,
@@ -419,9 +451,137 @@ impl ExternalLoginService {
             )
             .await;
 
-        CallbackOutcome::Success {
+        // 10. OIDC 認可フローの途中から来ていれば、その続きを進める（同意確認 → code 発行）。
+        //     ここで進めないと、認可要求のパラメータ（client_id・redirect_uri・PKCE・nonce）は
+        //     auth_session にしか無いため RP へ戻れない。
+        let Some(auth_session_id) = request.auth_session_id.clone() else {
+            return CallbackOutcome::Success {
+                location: SuccessLocation::Account,
+                sso_session_id,
+                user_language: user.language.clone(),
+            };
+        };
+        self.resume_authorization(
+            tenant,
+            &auth_session_id,
+            &user,
+            &sso,
             sso_session_id,
-            auth_session_id: request.auth_session_id,
+            now,
+            ctx,
+        )
+        .await
+    }
+
+    /// 外部 IdP で認証した利用者について、中断していた OIDC 認可フローを再開する。
+    ///
+    /// 手順は他のログイン経路（`LoginService` / `MfaLoginService`）の後半と同じ: 認証済みとして
+    /// auth_session に紐づけ、同意を確認し、authorization code を発行して RP へ戻す。共通部分は
+    /// `CodeIssuanceService` に寄せてあるため、ここで写しているのは「同意が要るかの判定」だけ。
+    ///
+    /// auth_session が既に期限切れなら、外部 IdP での認証自体は成立しているので SSO は発行した
+    /// まま、アカウント画面へ戻す（RP へは戻れないが、ログインし直しは要らない）。
+    #[allow(clippy::too_many_arguments)]
+    async fn resume_authorization(
+        &self,
+        tenant: TenantContext,
+        auth_session_id: &str,
+        user: &crate::domain::user::User,
+        sso: &SsoSession,
+        sso_session_id: String,
+        now: DateTime<Utc>,
+        ctx: &RequestContext,
+    ) -> CallbackOutcome {
+        let tenant_id = tenant.tenant_id();
+        let session = match self
+            .auth_sessions
+            .find_by_id(tenant_id, auth_session_id)
+            .await
+        {
+            Ok(Some(session)) if !session.is_expired_at(now) => session,
+            Ok(_) => {
+                // 認可の再開はできないが、ログイン自体は成立している。
+                tracing::info!("external login finished after its auth session had expired");
+                return CallbackOutcome::Success {
+                    location: SuccessLocation::Account,
+                    sso_session_id,
+                    user_language: user.language.clone(),
+                };
+            }
+            Err(e) => return CallbackOutcome::Internal(e.to_string()),
+        };
+
+        // 認証時刻と `sid` を auth_session へ記録する（ID Token の `auth_time` / `sid` の出所）。
+        if let Err(e) = self
+            .auth_sessions
+            .set_authenticated_user(&session.id, user.id, now, Some(&sso.sid()))
+            .await
+        {
+            return CallbackOutcome::Internal(e.to_string());
+        }
+
+        // 同意チェック（`openid` は暗黙同意）。
+        let scopes_needing_consent: Vec<String> = session
+            .scope
+            .iter()
+            .filter(|s| s.as_str() != "openid")
+            .cloned()
+            .collect();
+        let consented = if scopes_needing_consent.is_empty() {
+            true
+        } else {
+            match self
+                .client_consents
+                .find(tenant_id, user.id, &session.client_id)
+                .await
+            {
+                Ok(Some(consent)) => consent.covers(&scopes_needing_consent),
+                Ok(None) => false,
+                Err(e) => return CallbackOutcome::Internal(e.to_string()),
+            }
+        };
+        if !consented {
+            return CallbackOutcome::ConsentRequired {
+                auth_session_id: session.id,
+                sso_session_id,
+                user_language: user.language.clone(),
+            };
+        }
+
+        let code = match self
+            .code_issuance
+            .issue(
+                IssueCodeCommand {
+                    tenant,
+                    user_id: user.id,
+                    client_id: session.client_id.clone(),
+                    redirect_uri: session.redirect_uri.clone(),
+                    scope: session.scope.clone(),
+                    nonce: session.nonce.clone(),
+                    auth_time: now,
+                    sid: Some(sso.sid()),
+                    code_challenge: session.code_challenge.clone(),
+                    code_challenge_method: session.code_challenge_method,
+                },
+                ctx,
+            )
+            .await
+        {
+            Ok(c) => c,
+            Err(e) => return CallbackOutcome::Internal(e.to_string()),
+        };
+
+        if let Err(e) = self.auth_sessions.delete(&session.id).await {
+            tracing::warn!(error = %e, "failed to delete auth session after external login");
+        }
+
+        CallbackOutcome::Success {
+            location: SuccessLocation::Redirect(code_redirect(
+                &session.redirect_uri,
+                &code,
+                &session.state,
+            )),
+            sso_session_id,
             user_language: user.language.clone(),
         }
     }
@@ -472,7 +632,7 @@ impl ExternalLoginService {
             Err(crate::domain::error::DomainError::Conflict(_)) => {
                 let existing = self
                     .identities
-                    .find_by_subject(provider.id, &claims.subject)
+                    .find_by_subject(provider.id, &claims.issuer, &claims.subject)
                     .await
                     .map_err(|e| e.to_string())?;
                 Ok(existing.map(|i| i.user_id))

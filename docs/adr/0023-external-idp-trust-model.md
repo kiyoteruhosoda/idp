@@ -24,9 +24,15 @@
 
 ### 1. 同一性は `iss` + `sub` のペアのみ
 
-`user_external_identities` は `(provider_id, external_subject)` を UNIQUE とし、この組でのみ
-利用者を引く。`(user_id, provider_id)` も UNIQUE にして、1 人が同じプロバイダに複数の外部 ID を
-持てないようにする（どちらが正か決められなくなるため）。
+`user_external_identities` は連携時の `iss` を `external_issuer` として保存し、**引くときも
+`iss` + `sub` の両方で絞る**。`(provider_id, external_subject)` を UNIQUE とし、
+`(user_id, provider_id)` も UNIQUE にして、1 人が同じプロバイダに複数の外部 ID を持てない
+ようにする（どちらが正か決められなくなるため）。
+
+`iss` を条件から外して `provider_id` + `sub` だけで引くと、**管理者がプロバイダの `issuer` を
+別の IdP へ張り替えたとき、新しい IdP にある同じ `sub` のアカウントが以前の利用者に化ける**。
+`iss` が変われば既存の連携は引けない（＝未連携として拒否する）のが正しい振る舞いで、
+連携し直しを求める。
 
 **メールアドレスは同一性の根拠にしない。** プロフィールの更新にも使わない。
 
@@ -58,7 +64,18 @@ JWKS による署名検証・`iss` 一致・`aud` 一致・`exp`・`nonce` 一�
 https であることとループバック・プライベート・リンクローカルでないことを検査する。
 登録時だけ見ても、更新で差し替えられれば意味がない。
 
-### 6. `state` はブラウザ Cookie に置かず、DB の進行状態で照合する
+### 6. 認可フローの続きは api が進める
+
+外部 IdP から戻った時点で OIDC 認可フローの途中だった場合、**その続き（認証済みの記録・同意確認・
+authorization code の発行）も api が行い**、web には戻り先の URL を返すだけにする。認可要求の
+パラメータ（`client_id`・`redirect_uri`・PKCE・`nonce`）は api 側の `auth_sessions` にしか無く、
+web には組み立てようがない。他のログイン経路（パスワード・MFA・パスキー）と同じ責務分担で、
+共通部分は `CodeIssuanceService` に寄せてある。
+
+auth_session が既に期限切れなら、外部 IdP での認証自体は成立しているので SSO は発行したまま
+アカウント画面へ戻す（RP へは戻れないが、ログインし直しは要らない）。
+
+### 7. `state` はブラウザ Cookie に置かず、DB の進行状態で照合する
 
 `external_login_requests` に `state` のハッシュ・`nonce`・PKCE の `code_verifier`（暗号化）を持ち、
 外部 IdP から戻ってきた `state` を鍵として引く。ADR-0018 と同じ理由で、api はブラウザ Cookie を

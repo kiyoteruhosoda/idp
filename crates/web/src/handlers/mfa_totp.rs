@@ -110,6 +110,7 @@ pub async fn setup_page(
 pub async fn setup_confirm(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Form(form): Form<TotpConfirmForm>,
 ) -> Response {
@@ -121,6 +122,19 @@ pub async fn setup_confirm(
             "mfa-error-not-signed-in",
         );
     };
+    // 認証器を有効化するのはこの POST（画面のゲートだけでは守れない。passkey と同じ理由）。
+    if let Err(response) = step_up::require_step_up(
+        &state,
+        &correlation,
+        &tenant,
+        &headers,
+        MANAGE_AUTHENTICATORS,
+        &format!("{}/account/mfa/totp/setup", tenant.prefix()),
+    )
+    .await
+    {
+        return response;
+    }
 
     let req = InternalTotpConfirmRequest {
         sso_session_id: sso_session_id.clone(),

@@ -1423,12 +1423,24 @@ pub struct InternalExternalCallbackRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalExternalCallbackResponse {
-    /// 認証成功。`sso_session_id` を Cookie 化する。`auth_session_id` があれば OIDC フローを再開する。
+    /// 認証成功。`sso_session_id` を Cookie 化して `redirect_to` へ送る。
+    ///
+    /// `redirect_to` は OIDC 認可フローの途中から来ていれば code 付きの `redirect_uri`
+    /// （RP へ戻る絶対 URL）、そうでなければ `None`（web が自分のアカウント画面へ戻す）。
+    /// 認可要求のパラメータは api 側の auth_session にしか無いため、web には組み立てさせない。
     Success {
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
         #[serde(default)]
-        auth_session_id: Option<String>,
+        redirect_to: Option<String>,
+        #[serde(default)]
+        user_language: Option<String>,
+    },
+    /// 認証は通ったが RP への同意がまだ。web は同意画面へ誘導する。
+    ConsentRequired {
+        auth_session_id: String,
+        sso_session_id: String,
+        sso_absolute_ttl_secs: u64,
         #[serde(default)]
         user_language: Option<String>,
     },

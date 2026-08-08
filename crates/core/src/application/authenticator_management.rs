@@ -574,6 +574,37 @@ impl AuthenticatorManagementService {
     }
 }
 
+/// 登録簿で**止められている**認証器かを判定する（AP9。認証経路のゲート）。
+///
+/// AP9 は expand フェーズで、秘密は今も `user_totp_secrets` / `user_webauthn_credentials` に
+/// あり、検証もそちらを読む。だが一時停止・失効は登録簿にしか書かれないため、**認証経路が
+/// 登録簿を見なければ「止めたはずの認証器で入れてしまう」**。画面が「停止中」と言っている
+/// ものは入れてはいけない。この関数がその橋渡しをする。
+///
+/// 判定は「止められた行があるか」に限る。行が無い・`pending` の場合は既存経路の判断
+/// （`confirmed_at` の有無など）に委ねる。登録簿はこの段階では**確認済みかどうかの出所では
+/// ない**ため、ここで塞ぐと DB の一時障害で登録簿の更新だけが落ちた利用者を締め出しかねない。
+/// 契約フェーズ（AP11）で秘密ごと移したら、登録簿が唯一の出所になる。
+///
+/// `credential_ref` を渡すと、その資格情報に対応する 1 行だけを見る（パスキーは 1 利用者に
+/// 複数あるため、1 本を止めても他の本は使える）。`None` なら同じ種別の行を見る（TOTP）。
+pub async fn is_blocked_in_registry(
+    repository: &dyn UserAuthenticatorRepository,
+    user_id: Uuid,
+    authenticator_type: AuthenticatorType,
+    credential_ref: Option<Uuid>,
+) -> Result<bool, crate::domain::error::DomainError> {
+    let rows = repository.list_for_user(user_id).await?;
+    Ok(rows
+        .iter()
+        .filter(|a| a.authenticator_type == authenticator_type)
+        .filter(|a| match credential_ref {
+            Some(reference) => a.credential_ref == Some(reference),
+            None => true,
+        })
+        .any(|a| a.is_blocked()))
+}
+
 /// 使い捨てコード（リカバリーコード・OTP）を正規化して消費する（AP9）。
 ///
 /// ログイン経路（`MfaLoginService`）と管理ユースケースの両方が呼ぶため、**正規化の規則を 1 箇所に
@@ -622,6 +653,8 @@ fn numeric_code(digits: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::error::DomainError;
+    use async_trait::async_trait;
 
     #[test]
     fn numeric_codes_keep_their_width() {
@@ -637,5 +670,138 @@ mod tests {
     fn numeric_codes_are_not_constant() {
         let first = numeric_code(6);
         assert!((0..50).any(|_| numeric_code(6) != first));
+    }
+
+    /// 登録簿だけを返すフェイク（認証経路のゲートを見るのに秘密の表は要らない）。
+    struct FakeRegistry(Vec<UserAuthenticator>);
+
+    #[async_trait]
+    impl UserAuthenticatorRepository for FakeRegistry {
+        async fn create(&self, _a: &UserAuthenticator) -> Result<(), DomainError> {
+            unreachable!()
+        }
+        async fn list_for_user(
+            &self,
+            user_id: Uuid,
+        ) -> Result<Vec<UserAuthenticator>, DomainError> {
+            Ok(self
+                .0
+                .iter()
+                .filter(|a| a.user_id == user_id)
+                .cloned()
+                .collect())
+        }
+    }
+
+    fn user() -> Uuid {
+        Uuid::from_u128(1)
+    }
+
+    fn row(
+        authenticator_type: AuthenticatorType,
+        status: AuthenticatorStatus,
+        credential_ref: Option<Uuid>,
+    ) -> UserAuthenticator {
+        let at = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+        UserAuthenticator {
+            id: Uuid::from_u128(900),
+            user_id: user(),
+            authenticator_type,
+            status,
+            label: String::new(),
+            secret_encrypted: None,
+            credential_ref,
+            target: None,
+            confirmed_at: Some(at),
+            last_used_at: None,
+            expires_at: None,
+            revoked_at: None,
+            created_at: at,
+            updated_at: at,
+        }
+    }
+
+    /// 一時停止・失効させた TOTP は、秘密が `user_totp_secrets` に残っていても認証に使わせない。
+    #[tokio::test]
+    async fn a_stopped_totp_is_blocked_even_though_its_secret_still_exists() {
+        for status in [AuthenticatorStatus::Suspended, AuthenticatorStatus::Revoked] {
+            let repo = FakeRegistry(vec![row(AuthenticatorType::Totp, status, None)]);
+            assert!(
+                is_blocked_in_registry(&repo, user(), AuthenticatorType::Totp, None)
+                    .await
+                    .unwrap(),
+                "{status} should block"
+            );
+        }
+    }
+
+    /// `active` / `pending` は塞がない（`pending` は「未確認」であって止められてはいない）。
+    #[tokio::test]
+    async fn active_and_pending_authenticators_are_not_blocked() {
+        for status in [AuthenticatorStatus::Active, AuthenticatorStatus::Pending] {
+            let repo = FakeRegistry(vec![row(AuthenticatorType::Totp, status, None)]);
+            assert!(
+                !is_blocked_in_registry(&repo, user(), AuthenticatorType::Totp, None)
+                    .await
+                    .unwrap(),
+                "{status} should not block"
+            );
+        }
+    }
+
+    /// 登録簿に行が無い場合は塞がない（確認済みかの出所は expand フェーズでは既存表のまま。
+    /// ここで塞ぐと、登録簿の更新だけが落ちた利用者を締め出す）。
+    #[tokio::test]
+    async fn a_missing_registry_row_does_not_block() {
+        let repo = FakeRegistry(Vec::new());
+        assert!(
+            !is_blocked_in_registry(&repo, user(), AuthenticatorType::Totp, None)
+                .await
+                .unwrap()
+        );
+    }
+
+    /// パスキーは 1 利用者に複数ある。1 本を止めても、他の本は使えなければならない。
+    #[tokio::test]
+    async fn stopping_one_passkey_leaves_the_others_usable() {
+        let stopped = Uuid::from_u128(10);
+        let alive = Uuid::from_u128(11);
+        let repo = FakeRegistry(vec![
+            row(
+                AuthenticatorType::WebAuthn,
+                AuthenticatorStatus::Revoked,
+                Some(stopped),
+            ),
+            row(
+                AuthenticatorType::WebAuthn,
+                AuthenticatorStatus::Active,
+                Some(alive),
+            ),
+        ]);
+        assert!(
+            is_blocked_in_registry(&repo, user(), AuthenticatorType::WebAuthn, Some(stopped))
+                .await
+                .unwrap()
+        );
+        assert!(
+            !is_blocked_in_registry(&repo, user(), AuthenticatorType::WebAuthn, Some(alive))
+                .await
+                .unwrap()
+        );
+    }
+
+    /// 種別が違えば干渉しない（TOTP を止めてもパスキーは使える）。
+    #[tokio::test]
+    async fn stopping_one_type_does_not_block_another() {
+        let repo = FakeRegistry(vec![row(
+            AuthenticatorType::Totp,
+            AuthenticatorStatus::Suspended,
+            None,
+        )]);
+        assert!(
+            !is_blocked_in_registry(&repo, user(), AuthenticatorType::WebAuthn, None)
+                .await
+                .unwrap()
+        );
     }
 }

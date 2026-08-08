@@ -2,7 +2,11 @@
 //!
 //! - `GET /{tenant_id}/external/{provider}/start` — api に認可 URL を作らせて外部 IdP へ 302 する。
 //! - `GET /{tenant_id}/external/{provider}/callback` — 外部 IdP から戻る先。api に検証させ、
-//!   成功なら SSO Cookie を発行して元の画面へ戻す。
+//!   成功なら SSO Cookie を発行して戻り先へ送る。
+//!
+//! OIDC 認可フローの途中から来ていた場合、その続き（同意確認・code 発行）を進めるのも api で、
+//! web は返ってきた戻り先へ 302 するだけである。認可要求のパラメータ（`client_id`・`redirect_uri`・
+//! PKCE・`nonce`）は api 側の auth_session にしか無く、web には組み立てようがない。
 //!
 //! `state` / `nonce` / PKCE の生成・検証はすべて api 側（進行状態は DB）。web は Cookie の組み立てと
 //! 画面遷移だけを担う（他のログイン経路と同じ責務分担）。**Cookie に `state` を置かない**のは、
@@ -132,14 +136,19 @@ pub async fn callback(
         InternalExternalCallbackResponse::Success {
             sso_session_id,
             sso_absolute_ttl_secs,
-            auth_session_id,
+            redirect_to,
             user_language,
         } => {
-            let mut set_cookies = state.set_cookies().set_session(
-                cookies::SSO_SESSION_COOKIE,
-                &sso_session_id,
-                sso_absolute_ttl_secs,
-            );
+            let mut set_cookies = state
+                .set_cookies()
+                .set_session(
+                    cookies::SSO_SESSION_COOKIE,
+                    &sso_session_id,
+                    sso_absolute_ttl_secs,
+                )
+                // 認可まで進んだなら auth_session は api 側で使い切っている。認可の外から来た
+                // 場合も、この Cookie を残す理由は無い。
+                .expire_session(cookies::AUTH_SESSION_COOKIE);
             // ユーザーの DB 言語設定があれば lang Cookie に同期する（MT20: DB > Cookie）。
             if let Some(lang) = user_language.as_deref().and_then(Locale::from_tag) {
                 set_cookies = set_cookies.set_local(
@@ -148,14 +157,43 @@ pub async fn callback(
                     cookies::LANG_COOKIE_MAX_AGE_SECS,
                 );
             }
-            // OIDC 認可フローの途中から来ていれば、認可の再開へ戻す（`/authorize` をやり直すと
-            // 認可要求のパラメータが失われる）。そうでなければアカウント画面へ。
-            let destination = if auth_session_id.is_some() {
-                format!("{}/authorize/resume", tenant.prefix())
-            } else {
-                format!("{}/settings", tenant.prefix())
-            };
+            // OIDC 認可フローの途中から来ていれば、api が組み立てた code 付き `redirect_uri` へ
+            // 送る（認可要求のパラメータは api 側の auth_session にしか無いため、web では
+            // 組み立てられない）。そうでなければアカウント画面へ。
+            let destination =
+                redirect_to.unwrap_or_else(|| format!("{}/settings", tenant.prefix()));
             (set_cookies.into_headers(), found(&destination)).into_response()
+        }
+        InternalExternalCallbackResponse::ConsentRequired {
+            auth_session_id,
+            sso_session_id,
+            sso_absolute_ttl_secs,
+            user_language,
+        } => {
+            let mut set_cookies = state
+                .set_cookies()
+                .set_session(
+                    cookies::SSO_SESSION_COOKIE,
+                    &sso_session_id,
+                    sso_absolute_ttl_secs,
+                )
+                .set_session(
+                    cookies::AUTH_SESSION_COOKIE,
+                    &auth_session_id,
+                    state.config.auth_session_ttl_secs(),
+                );
+            if let Some(lang) = user_language.as_deref().and_then(Locale::from_tag) {
+                set_cookies = set_cookies.set_local(
+                    cookies::LANG_COOKIE,
+                    lang.as_tag(),
+                    cookies::LANG_COOKIE_MAX_AGE_SECS,
+                );
+            }
+            (
+                set_cookies.into_headers(),
+                found(&format!("{}/consent", tenant.prefix())),
+            )
+                .into_response()
         }
         InternalExternalCallbackResponse::StateExpired => message_page(
             &messages,

@@ -117,12 +117,27 @@ pub struct RegisterBeginBody {
 pub async fn register_begin_api(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Json(body): Json<RegisterBeginBody>,
 ) -> Response {
     let Some(sso_session_id) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
+    // 画面と同じく step-up の対象（AP5）。**画面のゲートだけでは守れない**: 認証器を実際に
+    // 作るのはこの JSON エンドポイントで、Cookie を持つ呼び出し元は画面を経由せず直接叩ける。
+    if let Err(response) = step_up::require_step_up_api(
+        &state,
+        &correlation,
+        &tenant,
+        &headers,
+        MANAGE_AUTHENTICATORS,
+        &format!("{}/account/passkey/register", tenant.prefix()),
+    )
+    .await
+    {
+        return response;
+    }
     // user_name は認証器に表示される名前。SSO セッションからは取得できないため入力名を使う。
     let req = InternalPasskeyRegisterBeginRequest {
         sso_session_id,
@@ -159,12 +174,27 @@ pub struct RegisterCompleteBody {
 pub async fn register_complete_api(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Json(body): Json<RegisterCompleteBody>,
 ) -> Response {
     let Some(sso_session_id) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
+    // 画面と同じく step-up の対象（AP5）。**画面のゲートだけでは守れない**: 認証器を実際に
+    // 作るのはこの JSON エンドポイントで、Cookie を持つ呼び出し元は画面を経由せず直接叩ける。
+    if let Err(response) = step_up::require_step_up_api(
+        &state,
+        &correlation,
+        &tenant,
+        &headers,
+        MANAGE_AUTHENTICATORS,
+        &format!("{}/account/passkey/register", tenant.prefix()),
+    )
+    .await
+    {
+        return response;
+    }
     let req = InternalPasskeyRegisterCompleteRequest {
         sso_session_id,
         challenge_id: body.challenge_id,

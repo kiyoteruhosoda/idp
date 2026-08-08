@@ -283,14 +283,16 @@ impl ExternalIdentityRepository for SqlxExternalIdentityRepository {
     async fn find_by_subject(
         &self,
         provider_id: Uuid,
+        external_issuer: &str,
         external_subject: &str,
     ) -> Result<Option<ExternalIdentity>> {
         let sql = format!(
             "SELECT {IDENTITY_COLUMNS} FROM user_external_identities \
-             WHERE provider_id = ? AND external_subject = ?"
+             WHERE provider_id = ? AND external_issuer = ? AND external_subject = ?"
         );
         let row = sqlx::query(&sql)
             .bind(provider_id.to_string())
+            .bind(external_issuer)
             .bind(external_subject)
             .fetch_optional(&self.pool)
             .await

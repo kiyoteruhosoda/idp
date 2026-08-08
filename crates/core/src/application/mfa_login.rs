@@ -17,7 +17,9 @@
 //! リセットしない（そこで消すと、再ログインを挟むだけでロックを回避できる）。
 
 use crate::application::audit::{AuditService, RequestContext};
-use crate::application::authenticator_management::consume_single_use_code;
+use crate::application::authenticator_management::{
+    consume_single_use_code, is_blocked_in_registry,
+};
 use crate::application::authorize::code_redirect;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::application::totp_registration::verify_totp_code;
@@ -378,8 +380,19 @@ impl MfaLoginService {
         ctx: &RequestContext,
     ) -> Result<Option<AuthenticationMethod>, String> {
         // TOTP。未設定なら次へ倒す（TOTP を持たずリカバリーコードだけの利用者があり得る）。
+        // 登録簿で止められた TOTP は、秘密が残っていても通さない（AP9。一時停止・失効は
+        // 登録簿にしか書かれないため、ここで見ないと「止めたはずの認証器」で入れてしまう）。
+        let totp_blocked = is_blocked_in_registry(
+            self.authenticators.as_ref(),
+            user_id,
+            AuthenticatorType::Totp,
+            None,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
         match self.totp_secrets.find_by_user_id(user_id).await {
-            Ok(Some(record)) if record.is_confirmed() => {
+            Ok(Some(record)) if record.is_confirmed() && !totp_blocked => {
                 let secret = crypto::decrypt(&record.secret_encrypted, &self.key_encryption_key)
                     .map_err(|e| e.to_string())?;
                 if verify_totp_code(&secret, code).map_err(|e| e.to_string())? {

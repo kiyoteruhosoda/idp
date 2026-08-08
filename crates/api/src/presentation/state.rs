@@ -642,6 +642,9 @@ impl AppState {
             external_login_requests.clone(),
             users.clone(),
             sso_sessions.clone(),
+            auth_sessions.clone(),
+            client_consents.clone(),
+            code_issuance.clone(),
             authentication_policies.clone(),
             Arc::new(ReqwestExternalOidcClient::new()),
             audit.clone(),
@@ -765,6 +768,7 @@ impl AppState {
         ));
         let passkey_authentication = Arc::new(PasskeyAuthenticationService::new(
             webauthn_credentials,
+            authenticator_repository.clone(),
             passkey_challenges,
             auth_sessions.clone(),
             users.clone(),

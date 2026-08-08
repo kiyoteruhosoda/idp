@@ -267,10 +267,11 @@ impl AccountSecurityService {
             return RevokeConsentOutcome::Internal(e.to_string());
         }
         // 同意行だけ消しても発行済みトークンは生きている。利用者から見た「解除」を成立させるため、
-        // 当該テナントで発行済みの refresh token を失効させる（他テナントの利用は妨げない）。
+        // **解除したクライアントへ**発行済みの refresh token を失効させる。テナント単位で消すと、
+        // 1 つのアプリを外しただけで同じテナントの他のアプリからも締め出される。
         if let Err(e) = self
             .refresh_tokens
-            .revoke_all_for_user_in_tenant(tenant_id, user_id, now)
+            .revoke_all_for_user_and_client(tenant_id, user_id, client_id, now)
             .await
         {
             // 同意の取り消し自体は成立している。トークンが残る点は運用ログで追えるようにする。
@@ -533,7 +534,9 @@ mod tests {
 
     #[derive(Default)]
     struct FakeRefreshTokens {
-        revoked_tenants: Mutex<Vec<(TenantId, Uuid)>>,
+        /// 失効を要求された `(テナント, 利用者, クライアント)`。連携解除がクライアント単位に
+        /// 絞られているかを見るため、クライアントまで記録する。
+        revoked: Mutex<Vec<(TenantId, Uuid, String)>>,
     }
     #[async_trait]
     impl RefreshTokenRepository for FakeRefreshTokens {
@@ -554,11 +557,21 @@ mod tests {
         }
         async fn revoke_all_for_user_in_tenant(
             &self,
-            t: TenantId,
-            u: Uuid,
+            _t: TenantId,
+            _u: Uuid,
             _at: DateTime<Utc>,
         ) -> DomainResult<()> {
-            self.revoked_tenants.lock().unwrap().push((t, u));
+            // 連携解除ではテナント単位の全失効を呼んではいけない（他のアプリを巻き込む）。
+            unreachable!("consent revocation must not revoke every client in the tenant")
+        }
+        async fn revoke_all_for_user_and_client(
+            &self,
+            t: TenantId,
+            u: Uuid,
+            c: &str,
+            _at: DateTime<Utc>,
+        ) -> DomainResult<()> {
+            self.revoked.lock().unwrap().push((t, u, c.to_string()));
             Ok(())
         }
     }
@@ -766,9 +779,10 @@ mod tests {
             RevokeConsentOutcome::Ok
         ));
         assert!(h.consents.rows.lock().unwrap().is_empty());
+        // 解除したクライアントのトークンだけを失効させる（同じテナントの他アプリは残る）。
         assert_eq!(
-            *h.refresh_tokens.revoked_tenants.lock().unwrap(),
-            vec![(tenant_id(), user_id())]
+            *h.refresh_tokens.revoked.lock().unwrap(),
+            vec![(tenant_id(), user_id(), "app-a".to_string())]
         );
     }
 

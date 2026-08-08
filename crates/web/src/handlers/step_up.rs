@@ -22,12 +22,13 @@ use crate::tenant::WebTenant;
 use axum::extract::{Extension, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
-use axum::Form;
+use axum::{Form, Json};
 use idp_contracts::auth::{
     InternalStepUpCheckRequest, InternalStepUpCheckResponse, InternalStepUpVerifyRequest,
     InternalStepUpVerifyResponse,
 };
 use serde::Deserialize;
+use serde_json::json;
 
 /// 重要操作の識別子（api の `domain::step_up::SensitiveOperation` の文字列表現と一致させる）。
 /// web 側の呼び出しはこの定数を使い、リテラルを散らさない（綴りがずれると api が
@@ -57,7 +58,57 @@ pub struct StepUpForm {
     pub csrf_token: String,
 }
 
-/// 重要操作の入口で呼ぶゲート。
+/// ゲートの判定結果（応答の形は呼び出し側の経路で変わるため、ここでは判定だけを返す）。
+enum Gate {
+    /// 操作を続けてよい。
+    Pass,
+    /// 本人確認が要る。値は誘導先の画面。
+    Challenge(String),
+    /// ログインからやり直し。
+    LoginRequired,
+    /// この経路の都合ではない失敗（api 不達・実装の不整合）。
+    Failed(StatusCode),
+}
+
+/// ゲートの判定を 1 箇所に閉じる（HTML 経路も JSON 経路もここを通す）。
+async fn evaluate(
+    state: &WebState,
+    correlation: &CorrelationId,
+    tenant: &WebTenant,
+    headers: &HeaderMap,
+    operation: &str,
+    next: &str,
+) -> Gate {
+    let Some(sso) = cookies::get(headers, cookies::SSO_SESSION_COOKIE) else {
+        return Gate::LoginRequired;
+    };
+    let request = InternalStepUpCheckRequest {
+        tenant_id: Some(tenant.0.clone()),
+        sso_session_id: sso,
+        operation: operation.to_string(),
+    };
+    match state.api.step_up_check(&correlation.0, &request).await {
+        Ok(InternalStepUpCheckResponse::Satisfied) => Gate::Pass,
+        Ok(InternalStepUpCheckResponse::ChallengeRequired { .. }) => {
+            Gate::Challenge(challenge_path(tenant, operation, next))
+        }
+        Ok(InternalStepUpCheckResponse::SessionExpired) => Gate::LoginRequired,
+        Ok(InternalStepUpCheckResponse::UnknownOperation) => {
+            // 呼び出し側が定数で渡す値なので、ここに来るのは実装の不整合。fail-closed で止める。
+            tracing::error!(operation, "step-up check rejected an unknown operation");
+            Gate::Failed(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+        Ok(InternalStepUpCheckResponse::Internal) => {
+            Gate::Failed(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "step-up check call to api failed");
+            Gate::Failed(StatusCode::BAD_GATEWAY)
+        }
+    }
+}
+
+/// 重要操作の入口で呼ぶゲート（画面遷移を伴う HTML 経路用）。
 ///
 /// `Ok(())` なら操作を続けてよい。`Err(response)` は呼び出し側がそのまま返す（本人確認画面への
 /// リダイレクト、または未ログイン時のログイン画面への誘導）。
@@ -69,34 +120,37 @@ pub async fn require_step_up(
     operation: &str,
     next: &str,
 ) -> Result<(), Response> {
-    let Some(sso) = cookies::get(headers, cookies::SSO_SESSION_COOKIE) else {
-        return Err(found(&format!("{}/login", tenant.prefix())));
-    };
-    let request = InternalStepUpCheckRequest {
-        tenant_id: Some(tenant.0.clone()),
-        sso_session_id: sso,
-        operation: operation.to_string(),
-    };
-    match state.api.step_up_check(&correlation.0, &request).await {
-        Ok(InternalStepUpCheckResponse::Satisfied) => Ok(()),
-        Ok(InternalStepUpCheckResponse::ChallengeRequired { .. }) => {
-            Err(found(&challenge_path(tenant, operation, next)))
-        }
-        Ok(InternalStepUpCheckResponse::SessionExpired) => {
-            Err(found(&format!("{}/login", tenant.prefix())))
-        }
-        Ok(InternalStepUpCheckResponse::UnknownOperation) => {
-            // 呼び出し側が定数で渡す値なので、ここに来るのは実装の不整合。fail-closed で止める。
-            tracing::error!(operation, "step-up check rejected an unknown operation");
-            Err(StatusCode::INTERNAL_SERVER_ERROR.into_response())
-        }
-        Ok(InternalStepUpCheckResponse::Internal) => {
-            Err(StatusCode::INTERNAL_SERVER_ERROR.into_response())
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "step-up check call to api failed");
-            Err(StatusCode::BAD_GATEWAY.into_response())
-        }
+    match evaluate(state, correlation, tenant, headers, operation, next).await {
+        Gate::Pass => Ok(()),
+        Gate::Challenge(path) => Err(found(&path)),
+        Gate::LoginRequired => Err(found(&format!("{}/login", tenant.prefix()))),
+        Gate::Failed(status) => Err(status.into_response()),
+    }
+}
+
+/// 同じゲートの JSON API 用（`fetch` から呼ばれる更新系エンドポイント）。
+///
+/// **画面を出すハンドラだけを守っても意味がない。** 画面は入口の案内に過ぎず、実際に認証器を
+/// 作るのは JSON エンドポイントで、盗んだ Cookie を持つ呼び出し元は画面を経由せず直接叩ける。
+/// リダイレクトを返すと `fetch` が黙って追ってしまい HTML が JSON として読まれるため、こちらは
+/// 403 に誘導先を載せて返し、遷移はスクリプトに行わせる。
+pub async fn require_step_up_api(
+    state: &WebState,
+    correlation: &CorrelationId,
+    tenant: &WebTenant,
+    headers: &HeaderMap,
+    operation: &str,
+    next: &str,
+) -> Result<(), Response> {
+    match evaluate(state, correlation, tenant, headers, operation, next).await {
+        Gate::Pass => Ok(()),
+        Gate::Challenge(path) => Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "result": "step_up_required", "location": path })),
+        )
+            .into_response()),
+        Gate::LoginRequired => Err(StatusCode::UNAUTHORIZED.into_response()),
+        Gate::Failed(status) => Err(status.into_response()),
     }
 }
 

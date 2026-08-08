@@ -133,6 +133,17 @@ pub struct UserAuthenticator {
 
 impl UserAuthenticator {
     /// 指定時刻に認証へ使えるか（状態が `Active` かつ期限内）。
+    /// 利用者（または管理者）の操作で**止められている**か。
+    ///
+    /// `pending` は「まだ確認が済んでいない」であって止められてはいない。止めた・失効させたの
+    /// 2 状態だけが、既存の認証経路を塞ぐ根拠になる。
+    pub fn is_blocked(&self) -> bool {
+        matches!(
+            self.status,
+            AuthenticatorStatus::Suspended | AuthenticatorStatus::Revoked
+        )
+    }
+
     pub fn is_usable_at(&self, now: DateTime<Utc>) -> bool {
         self.status.is_usable() && self.expires_at.is_none_or(|exp| exp > now)
     }
