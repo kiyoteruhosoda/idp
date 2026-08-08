@@ -6,6 +6,7 @@
 
 use super::locale;
 use crate::cookies;
+use crate::handlers::step_up::{self, MANAGE_AUTHENTICATORS};
 use crate::correlation::CorrelationId;
 use crate::handlers::forwarded_context;
 use crate::i18n::Messages;
@@ -71,9 +72,24 @@ pub async fn list_page(
 
 /// Passkey 登録ページ（`GET /account/passkey/register`）。SSO Cookie が必要。
 pub async fn register_page(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
 ) -> Response {
+    // 認証器の追加は step-up の対象（AP5。TOTP セットアップと同じ理由）。
+    if let Err(response) = step_up::require_step_up(
+        &state,
+        &correlation,
+        &tenant,
+        &headers,
+        MANAGE_AUTHENTICATORS,
+        &format!("{}/account/passkey/register", tenant.prefix()),
+    )
+    .await
+    {
+        return response;
+    }
     let messages = Messages::new(locale(&headers));
     if cookies::get(&headers, cookies::SSO_SESSION_COOKIE).is_none() {
         return error_page(
@@ -187,9 +203,23 @@ pub struct DeleteForm {
 pub async fn delete(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Form(form): Form<DeleteForm>,
 ) -> Response {
+    // 認証器の削除は step-up の対象（AP5）。
+    if let Err(response) = step_up::require_step_up(
+        &state,
+        &correlation,
+        &tenant,
+        &headers,
+        MANAGE_AUTHENTICATORS,
+        &format!("{}/account/passkey", tenant.prefix()),
+    )
+    .await
+    {
+        return response;
+    }
     let Some(sso_session_id) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         // FluentBundle は !Send なので await の前に作成・消費する。
         let messages = Messages::new(locale(&headers));

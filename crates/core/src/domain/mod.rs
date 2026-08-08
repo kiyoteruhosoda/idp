@@ -39,6 +39,7 @@ pub mod saml_sso_request;
 pub mod service_lifecycle;
 pub mod signing_key;
 pub mod sso_session;
+pub mod step_up;
 pub mod system_setting;
 pub mod tenant;
 pub mod tenant_context;

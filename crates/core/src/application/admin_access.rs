@@ -364,6 +364,7 @@ mod tests {
             ],
             authentication_strength: crate::domain::values::AuthenticationStrength::SingleFactor,
             mfa_completed_at: None,
+            step_up_at: Some(now),
             user_agent: None,
             ip_address: None,
             created_at: now,

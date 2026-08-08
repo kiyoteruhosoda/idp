@@ -80,6 +80,12 @@ pub fn build(state: AppState) -> Router {
             "/internal/account/update-name",
             post(internal_auth::account_update_name),
         )
+        // Step-up 認証（重要操作の直前の本人確認。AP5）。
+        .route("/internal/step-up/check", post(internal_auth::step_up_check))
+        .route(
+            "/internal/step-up/verify",
+            post(internal_auth::step_up_verify),
+        )
         // セルフサービスのセキュリティ画面（セッション一覧・失効／連携アプリ解除。G10）。
         .route(
             "/internal/account/security",

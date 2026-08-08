@@ -66,6 +66,9 @@ pub enum AuditEventType {
     /// 管理者による MFA（TOTP・Passkey）の解除（MT21）。本人が端末を失った場合の復旧手段。
     /// 解除した要素の種別と件数のみ記録し、シークレット・クレデンシャルは記録しない。
     UserMfaReset,
+    /// Step-up 認証（AP5。仕様 §15）の成否。`reason` に対象操作を記録する（資格情報は記録しない）。
+    StepUpSucceeded,
+    StepUpFailed,
     /// パスワード変更（初回強制変更を含む。ADR-0009 §5）。パスワードそのものは記録しない。
     PasswordChanged,
     /// テナントの作成・更新・削除（ADR-0009 §5）。自動生成パスワードは記録しない。
@@ -127,6 +130,8 @@ impl AuditEventType {
             Self::UserPasswordReset => "user.password_reset",
             Self::UserProfileUpdated => "user.profile_updated",
             Self::UserMfaReset => "user.mfa_reset",
+            Self::StepUpSucceeded => "step_up.succeeded",
+            Self::StepUpFailed => "step_up.failed",
             Self::PasswordChanged => "password.changed",
             Self::TenantCreated => "tenant.created",
             Self::TenantUpdated => "tenant.updated",

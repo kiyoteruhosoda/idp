@@ -1616,6 +1616,26 @@ impl ApiClient {
             .await
     }
 
+    /// 重要操作の直前に step-up が要るかを判定する（AP5）。
+    pub async fn step_up_check(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalStepUpCheckRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalStepUpCheckResponse> {
+        self.post_internal("/internal/step-up/check", correlation_id, req)
+            .await
+    }
+
+    /// step-up の本人確認を検証する（AP5）。
+    pub async fn step_up_verify(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalStepUpVerifyRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalStepUpVerifyResponse> {
+        self.post_internal("/internal/step-up/verify", correlation_id, req)
+            .await
+    }
+
     /// セルフサービスのセキュリティ画面の表示内容（セッション一覧・連携済みアプリ）を取得する（G10）。
     pub async fn account_security(
         &self,

@@ -811,3 +811,15 @@ user-security-app-scopes = 権限
 user-security-app-granted-at = 連携日時
 user-security-app-revoke = 連携を解除
 user-security-app-revoke-confirm = このアプリとの連携を解除しますか？ 次回は改めて同意が必要になります。
+
+# Step-up 認証（AP5）
+step-up-title = 本人確認
+step-up-lead = この操作はログイン方法そのものを変更します。続ける前に本人確認を行ってください。
+step-up-password = パスワード
+step-up-totp = 認証アプリのコード
+step-up-totp-help = 認証アプリに表示されている 6 桁のコードを入力してください。
+step-up-submit = 確認する
+step-up-cancel = キャンセルして戻る
+step-up-error-csrf = フォームの有効期限が切れました。もう一度お試しください。
+step-up-error-invalid = 本人確認できませんでした。パスワードとコードを確認して、もう一度お試しください。
+step-up-error-second-factor = この操作には認証アプリのコードも必要です。

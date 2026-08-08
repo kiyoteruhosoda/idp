@@ -23,7 +23,7 @@ impl SqlxSsoSessionRepository {
 
 const SELECT_COLUMNS: &str = "session_hash, user_id, auth_time, idle_expires_at, \
      absolute_expires_at, authentication_methods, authentication_strength, mfa_completed_at, \
-     user_agent, ip_address, created_at, updated_at";
+     step_up_at, user_agent, ip_address, created_at, updated_at";
 
 fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
@@ -78,6 +78,10 @@ fn map_row(row: &MySqlRow) -> Result<SsoSession> {
             .try_get::<Option<NaiveDateTime>, _>("mfa_completed_at")
             .map_err(repo_err)?
             .map(to_utc),
+        step_up_at: row
+            .try_get::<Option<NaiveDateTime>, _>("step_up_at")
+            .map_err(repo_err)?
+            .map(to_utc),
         user_agent: row.try_get("user_agent").map_err(repo_err)?,
         ip_address: row.try_get("ip_address").map_err(repo_err)?,
         created_at: to_utc(row.try_get("created_at").map_err(repo_err)?),
@@ -91,9 +95,9 @@ impl SsoSessionRepository for SqlxSsoSessionRepository {
         sqlx::query(
             "INSERT INTO sso_sessions \
              (session_hash, user_id, auth_time, idle_expires_at, absolute_expires_at, \
-              authentication_methods, authentication_strength, mfa_completed_at, \
+              authentication_methods, authentication_strength, mfa_completed_at, step_up_at, \
               user_agent, ip_address) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&session.session_hash)
         .bind(session.user_id.to_string())
@@ -103,6 +107,7 @@ impl SsoSessionRepository for SqlxSsoSessionRepository {
         .bind(methods_to_json(&session.authentication_methods))
         .bind(session.authentication_strength.as_str())
         .bind(session.mfa_completed_at.map(|t| t.naive_utc()))
+        .bind(session.step_up_at.map(|t| t.naive_utc()))
         .bind(&session.user_agent)
         .bind(&session.ip_address)
         .execute(&self.pool)
@@ -162,6 +167,45 @@ impl SsoSessionRepository for SqlxSsoSessionRepository {
         .execute(&self.pool)
         .await
         .map_err(repo_err)?;
+        Ok(())
+    }
+
+    async fn record_step_up(
+        &self,
+        session_hash: &str,
+        methods: &[AuthenticationMethod],
+        verified_at: DateTime<Utc>,
+    ) -> Result<()> {
+        let strength = AuthenticationStrength::from_methods(methods);
+        // 第二要素を通した step-up だけが `mfa_completed_at` を進める。単一要素の再確認で
+        // MFA の鮮度まで回復させると、パスワードを知る攻撃者が第二要素を迂回できてしまう。
+        // 既存値を残すため、単一要素のときは `mfa_completed_at` を触らない（COALESCE ではなく
+        // 更新対象から外す）。
+        if strength == AuthenticationStrength::MultiFactor {
+            sqlx::query(
+                "UPDATE sso_sessions \
+                 SET authentication_methods = ?, authentication_strength = ?, \
+                     mfa_completed_at = ?, step_up_at = ? \
+                 WHERE session_hash = ?",
+            )
+            .bind(methods_to_json(methods))
+            .bind(strength.as_str())
+            .bind(verified_at.naive_utc())
+            .bind(verified_at.naive_utc())
+            .bind(session_hash)
+            .execute(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        } else {
+            // 単一要素の再確認では強度も下げない（多要素で確立したセッションを、パスワードの
+            // 再入力で単一要素へ格下げしてはいけない）。更新するのは step-up の時刻だけ。
+            sqlx::query("UPDATE sso_sessions SET step_up_at = ? WHERE session_hash = ?")
+                .bind(verified_at.naive_utc())
+                .bind(session_hash)
+                .execute(&self.pool)
+                .await
+                .map_err(repo_err)?;
+        }
         Ok(())
     }
 

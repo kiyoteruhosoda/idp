@@ -1477,6 +1477,7 @@ dependencies = [
  "hex",
  "hmac",
  "idp-contracts",
+ "percent-encoding",
  "qrcode",
  "reqwest",
  "serde",

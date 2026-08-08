@@ -7,6 +7,7 @@
 
 use super::locale;
 use crate::cookies;
+use crate::handlers::step_up::{self, MANAGE_AUTHENTICATORS};
 use crate::correlation::CorrelationId;
 use crate::dto::{FormPageQuery, TotpConfirmForm};
 use crate::handlers::{form_retry_error_key, forwarded_context, found, see_other};
@@ -33,8 +34,23 @@ use serde::Deserialize;
 pub async fn setup_page(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
 ) -> Response {
+    // 認証器の追加は step-up の対象（AP5）。盗まれたセッションで自分の認証器を足されると、
+    // 以後は正規の資格情報として振る舞われてしまう。
+    if let Err(response) = step_up::require_step_up(
+        &state,
+        &correlation,
+        &tenant,
+        &headers,
+        MANAGE_AUTHENTICATORS,
+        &format!("{}/account/mfa/totp/setup", tenant.prefix()),
+    )
+    .await
+    {
+        return response;
+    }
     let Some(sso_session_id) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         // FluentBundle は !Send なので await の前に作成・消費する。
         let messages = Messages::new(locale(&headers));
@@ -186,8 +202,22 @@ pub async fn setup_confirm(
 pub async fn setup_delete(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
 ) -> Response {
+    // 認証器の削除も step-up の対象（AP5）。MFA を外せれば以後は単一要素で入れてしまう。
+    if let Err(response) = step_up::require_step_up(
+        &state,
+        &correlation,
+        &tenant,
+        &headers,
+        MANAGE_AUTHENTICATORS,
+        &format!("{}/settings", tenant.prefix()),
+    )
+    .await
+    {
+        return response;
+    }
     let Some(sso_session_id) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         let messages = Messages::new(locale(&headers));
         return error_page(

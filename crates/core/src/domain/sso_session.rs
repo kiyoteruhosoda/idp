@@ -27,6 +27,9 @@ pub struct SsoSession {
     /// Step-up（§15）はこの時刻を基準にする（`auth_time` ではない。パスワードだけ入れ直しても
     /// MFA の鮮度は回復しない）。
     pub mfa_completed_at: Option<DateTime<Utc>>,
+    /// 重要操作の直前に本人確認（step-up）を通した時刻（AP5。仕様 §15）。`auth_time` は SSO の
+    /// 起点で復元では動かないため、「今この操作をしてよいか」の新しさは別に測る。
+    pub step_up_at: Option<DateTime<Utc>>,
     pub user_agent: Option<String>,
     pub ip_address: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -61,6 +64,8 @@ impl SsoSession {
             authentication_strength: strength,
             // 第二要素は「たった今」検証されている（ログイン経路以外からは establish しない）。
             mfa_completed_at: (strength == AuthenticationStrength::MultiFactor).then_some(now),
+            // ログインそのものが本人確認なので、確立直後は step-up 済みとして扱う。
+            step_up_at: Some(now),
             user_agent,
             ip_address,
             created_at: now,
@@ -150,6 +155,7 @@ mod tests {
             authentication_strength: AuthenticationStrength::from_methods(&methods),
             authentication_methods: methods,
             mfa_completed_at,
+            step_up_at: Some(now()),
             user_agent: None,
             ip_address: None,
             created_at: now(),

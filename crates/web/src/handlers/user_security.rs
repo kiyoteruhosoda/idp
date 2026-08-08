@@ -10,7 +10,7 @@
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::csrf::console_csrf_token;
-use crate::handlers::{forwarded_context, found, locale, see_other};
+use crate::handlers::{forwarded_context, found, locale, see_other, step_up};
 use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, SecuritySessionView, UserSecurity, ConnectedAppView};
@@ -140,6 +140,20 @@ pub async fn revoke_session(
             "security session revocation rejected: csrf token mismatch"
         );
         return see_other(&format!("{base}?error=csrf"));
+    }
+    // 他端末の締め出しは step-up の対象（AP5）。セッションを盗んだ側が、本人の端末を先に
+    // 切って締め出す（＝気付きと復旧を遅らせる）のを防ぐ。
+    if let Err(response) = step_up::require_step_up(
+        &state,
+        &correlation,
+        &tenant,
+        &headers,
+        step_up::REVOKE_SESSION,
+        &base,
+    )
+    .await
+    {
+        return response;
     }
 
     let ctx = forwarded_context(&headers, &correlation);

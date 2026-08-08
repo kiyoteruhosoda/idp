@@ -968,6 +968,24 @@ pub struct UserSettings<'a> {
     pub from_admin: bool,
 }
 
+/// Step-up 認証の本人確認画面（`GET /{tenant_id}/settings/verify`。AP5）。
+#[derive(Template)]
+#[template(path = "step_up_challenge.html")]
+pub struct StepUpChallenge<'a> {
+    pub messages: &'a Messages,
+    /// `/{tenant_id}` プレフィクス。
+    pub tenant: &'a str,
+    /// ログイン後フォーム用の同期トークン（`console_csrf_token`）。
+    pub csrf: &'a str,
+    /// 対象操作（そのまま POST へ載せ、api が要件を決め直す）。
+    pub operation: &'a str,
+    /// 確認後に戻る先（web 側で同一テナントのパスに限定済み）。
+    pub next: &'a str,
+    /// TOTP 入力欄を出すか（要件が多要素のとき）。
+    pub second_factor_required: bool,
+    pub error_key: Option<&'a str>,
+}
+
 /// セキュリティ画面のセッション 1 行（G10）。時刻は api が返した RFC 3339 文字列をそのまま出す。
 pub struct SecuritySessionView {
     /// 失効フォームに載せる表示用 ID（`session_hash` の非可逆な導出値）。

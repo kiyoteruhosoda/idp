@@ -12,6 +12,7 @@ use crate::application::account_language::AccountLanguageService;
 use crate::application::account_password::AccountPasswordService;
 use crate::application::account_profile::AccountProfileService;
 use crate::application::account_security::AccountSecurityService;
+use crate::application::step_up::StepUpService;
 use crate::application::account_tenants::AccountTenantsService;
 use crate::application::admin_access::AdminAccessService;
 use crate::application::admin_login::AdminLoginService;
@@ -172,6 +173,8 @@ pub struct AppState {
     pub logout: Arc<LogoutService>,
     /// セルフサービスのセキュリティ画面（セッション一覧・失効／連携アプリ解除。G10）。
     pub account_security: Arc<AccountSecurityService>,
+    /// Step-up 認証（重要操作の直前の本人確認。AP5）。
+    pub step_up: Arc<StepUpService>,
     /// Back-channel logout の送信キュー（G5）。ハンドラは積むだけ、送信はワーカーが行う。
     pub backchannel_logout: Arc<BackchannelLogoutDeliveryService>,
     pub revocation: Arc<RevocationService>,
@@ -585,6 +588,20 @@ impl AppState {
             config.issuer().to_string(),
         ));
 
+        // AP5: Step-up 認証。IP レート制限はログインと同一の制限器を共有する（別枠にすると、
+        // ログインで締め出された攻撃者が step-up 経由で試行を続けられる）。
+        let step_up = Arc::new(StepUpService::new(
+            sso_sessions.clone(),
+            users.clone(),
+            totp_secrets.clone(),
+            hasher.clone(),
+            rate_limiter.clone(),
+            audit.clone(),
+            clock.clone(),
+            *config.key_encryption_key(),
+            config.step_up_max_age_secs(),
+        ));
+
         // G10: セルフサービスのセキュリティ画面。
         let account_security = Arc::new(AccountSecurityService::new(
             sso_sessions.clone(),
@@ -730,6 +747,7 @@ impl AppState {
             application_logs,
             logout,
             account_security,
+            step_up,
             backchannel_logout,
             revocation,
             introspection,

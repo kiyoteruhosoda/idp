@@ -353,6 +353,20 @@ pub trait SsoSessionRepository: Send + Sync {
             "record_second_factor is not supported by this repository".to_string(),
         ))
     }
+    /// Step-up 認証（AP5）の完了を記録する。`methods` はこの step-up で検証した方式で、
+    /// 第二要素を含む場合のみ `mfa_completed_at` と強度も更新する（単一要素の再確認で多要素
+    /// セッションを格下げしない・MFA の鮮度を回復させない、が実装の責務）。
+    /// 既定実装は未対応エラー（本番の sqlx 実装のみが上書きする）。
+    async fn record_step_up(
+        &self,
+        _session_hash: &str,
+        _methods: &[AuthenticationMethod],
+        _verified_at: DateTime<Utc>,
+    ) -> Result<()> {
+        Err(crate::domain::error::DomainError::Repository(
+            "record_step_up is not supported by this repository".to_string(),
+        ))
+    }
     async fn delete(&self, session_hash: &str) -> Result<()>;
     /// 指定ユーザーの全 SSO セッションを削除する（ユーザー単位の全セッション無効化、F5）。
     async fn delete_all_for_user(&self, user_id: Uuid) -> Result<()>;

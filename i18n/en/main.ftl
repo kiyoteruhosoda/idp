@@ -811,3 +811,15 @@ user-security-app-scopes = Permissions
 user-security-app-granted-at = Connected at
 user-security-app-revoke = Disconnect
 user-security-app-revoke-confirm = Disconnect this app? It will need your consent again next time.
+
+# Step-up 認証（AP5）
+step-up-title = Confirm it's you
+step-up-lead = This action changes how you sign in, so please confirm your identity before continuing.
+step-up-password = Password
+step-up-totp = Authenticator code
+step-up-totp-help = Enter the 6-digit code from your authenticator app.
+step-up-submit = Confirm
+step-up-cancel = Cancel and go back
+step-up-error-csrf = The form expired. Please try again.
+step-up-error-invalid = We could not confirm your identity. Check your password and code, then try again.
+step-up-error-second-factor = This action also requires your authenticator code.

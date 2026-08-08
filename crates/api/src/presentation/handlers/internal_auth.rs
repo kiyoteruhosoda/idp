@@ -22,6 +22,8 @@ use crate::application::account_security::{
     RevokeConsentOutcome, RevokeSessionOutcome, SecurityOverviewOutcome,
 };
 use crate::application::account_tenants::ListTenantsOutcome;
+use crate::application::step_up::{StepUpCheckOutcome, StepUpVerifyCommand, StepUpVerifyOutcome};
+use crate::domain::step_up::SensitiveOperation;
 use crate::application::admin_login::{
     AdminChangePasswordCommand, AdminLoginCommand, AdminLoginOutcome,
 };
@@ -59,6 +61,8 @@ use idp_contracts::auth::{
     InternalPasswordResetRequestResponse, InternalPortalAuthenticateRequest,
     InternalPortalAuthenticateResponse, InternalPortalChangePasswordRequest,
     InternalPortalChangePasswordResponse, InternalPortalMfaRequest, InternalPortalMfaResponse,
+    InternalStepUpCheckRequest, InternalStepUpCheckResponse, InternalStepUpVerifyRequest,
+    InternalStepUpVerifyResponse,
 };
 
 /// 内部サービス認証トークンを載せるヘッダ名（小文字。`HeaderMap` は大小無視で引ける）。
@@ -835,6 +839,80 @@ pub async fn account_revoke_consent(
         RevokeConsentOutcome::Internal(e) => {
             tracing::error!(error = %e, "account consent revocation failed with internal error");
             InternalAccountRevokeConsentResponse::Internal
+        }
+    }))
+}
+
+/// Step-up の判定（`POST /internal/step-up/check`。AP5）。
+///
+/// 重要操作の直前に web が呼び、`ChallengeRequired` なら本人確認画面へ誘導する。
+pub async fn step_up_check(
+    State(state): State<AppState>,
+    Json(req): Json<InternalStepUpCheckRequest>,
+) -> Result<Json<InternalStepUpCheckResponse>, Response> {
+    // テナントは必須（他の `/internal/*` と同じ fail-closed。監査のテナント記録に使う）。
+    let _tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let Some(operation) = SensitiveOperation::parse(&req.operation) else {
+        return Ok(Json(InternalStepUpCheckResponse::UnknownOperation));
+    };
+    Ok(Json(
+        match state.step_up.check(&req.sso_session_id, operation).await {
+            StepUpCheckOutcome::Satisfied => InternalStepUpCheckResponse::Satisfied,
+            StepUpCheckOutcome::ChallengeRequired {
+                second_factor_required,
+            } => InternalStepUpCheckResponse::ChallengeRequired {
+                second_factor_required,
+            },
+            StepUpCheckOutcome::SessionExpired => InternalStepUpCheckResponse::SessionExpired,
+            StepUpCheckOutcome::Internal(e) => {
+                tracing::error!(error = %e, "step-up check failed with internal error");
+                InternalStepUpCheckResponse::Internal
+            }
+        },
+    ))
+}
+
+/// Step-up の検証（`POST /internal/step-up/verify`。AP5）。CSRF は web 側で検証済み。
+pub async fn step_up_verify(
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Json(req): Json<InternalStepUpVerifyRequest>,
+) -> Result<Json<InternalStepUpVerifyResponse>, Response> {
+    let ctx = RequestContext {
+        correlation_id: correlation.0,
+        ip_address: req.ip_address,
+        user_agent: req.user_agent,
+    };
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let Some(operation) = SensitiveOperation::parse(&req.operation) else {
+        return Ok(Json(InternalStepUpVerifyResponse::UnknownOperation));
+    };
+    let outcome = state
+        .step_up
+        .verify(
+            tenant,
+            StepUpVerifyCommand {
+                sso_session_id: req.sso_session_id,
+                operation,
+                password: req.password,
+                totp_code: req.totp_code,
+            },
+            &ctx,
+        )
+        .await;
+    Ok(Json(match outcome {
+        StepUpVerifyOutcome::Ok => InternalStepUpVerifyResponse::Ok,
+        StepUpVerifyOutcome::InvalidCredentials => {
+            InternalStepUpVerifyResponse::InvalidCredentials
+        }
+        StepUpVerifyOutcome::SecondFactorRequired => {
+            InternalStepUpVerifyResponse::SecondFactorRequired
+        }
+        StepUpVerifyOutcome::RateLimited => InternalStepUpVerifyResponse::RateLimited,
+        StepUpVerifyOutcome::SessionExpired => InternalStepUpVerifyResponse::SessionExpired,
+        StepUpVerifyOutcome::Internal(e) => {
+            tracing::error!(error = %e, "step-up verify failed with internal error");
+            InternalStepUpVerifyResponse::Internal
         }
     }))
 }

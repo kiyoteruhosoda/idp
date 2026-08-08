@@ -150,6 +150,8 @@ pub struct Config {
     key_rotation_lead_days: u32,
     /// エラー・警告ログ（`log` テーブル）の保持日数。`0` は削除しない。
     app_log_retention_days: u32,
+    /// Step-up 認証（AP5）の再確認間隔（秒）。
+    step_up_max_age_secs: u64,
     /// Back-channel logout 通知の再送上限回数（G5）。
     backchannel_logout_max_attempts: u32,
     /// Back-channel logout 送信ワーカーのポーリング間隔（秒。G5）。
@@ -275,6 +277,7 @@ impl Config {
             key_encryption_key_is_dev,
             key_rotation_lead_days: resolver.parse("KEY_ROTATION_LEAD_DAYS", 30)?,
             app_log_retention_days: resolver.parse("APP_LOG_RETENTION_DAYS", 30)?,
+            step_up_max_age_secs: resolver.parse("STEP_UP_MAX_AGE_SECS", 300u64)?,
             backchannel_logout_max_attempts: resolver
                 .parse("BACKCHANNEL_LOGOUT_MAX_ATTEMPTS", 8u32)?,
             backchannel_logout_poll_interval_secs: resolver
@@ -385,6 +388,10 @@ impl Config {
     /// エラー・警告ログの保持日数（`0` = 削除しない）。
     pub fn app_log_retention_days(&self) -> u32 {
         self.app_log_retention_days
+    }
+    /// Step-up 認証（AP5）の再確認間隔（秒）。
+    pub fn step_up_max_age_secs(&self) -> u64 {
+        self.step_up_max_age_secs
     }
     /// Back-channel logout 通知の再送上限回数（G5）。
     pub fn backchannel_logout_max_attempts(&self) -> u32 {

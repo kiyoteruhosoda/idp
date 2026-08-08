@@ -1169,3 +1169,66 @@ pub enum InternalAccountRevokeConsentResponse {
     SessionExpired,
     Internal,
 }
+
+// ── Step-up 認証（AP5） ──────────────────────────────────────────────────────
+
+/// Step-up の判定・検証 API が扱う重要操作。値は `domain::step_up::SensitiveOperation` の
+/// 文字列表現と一致させる（api 側で `parse` する）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalStepUpCheckRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    /// SSO セッション Cookie の生値（web が転送）。
+    pub sso_session_id: String,
+    /// 対象操作（`change_password` / `manage_authenticators` / `manage_external_identities` /
+    /// `revoke_session`）。
+    pub operation: String,
+}
+
+/// Step-up 判定 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalStepUpCheckResponse {
+    /// 直近の本人確認が要件を満たしている。そのまま操作してよい。
+    Satisfied,
+    /// 本人確認をやり直す必要がある。`second_factor_required` が真なら TOTP まで求める。
+    ChallengeRequired { second_factor_required: bool },
+    /// SSO セッションが無い・期限切れ・利用者が無効。
+    SessionExpired,
+    /// 未知の操作名（api が受け付けない値）。
+    UnknownOperation,
+    Internal,
+}
+
+/// Step-up 検証 API のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalStepUpVerifyRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+    pub operation: String,
+    pub password: String,
+    /// 第二要素が求められている場合のみ必要。
+    #[serde(default)]
+    pub totp_code: Option<String>,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// Step-up 検証 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalStepUpVerifyResponse {
+    /// 確認できた。続けて操作してよい。
+    Ok,
+    /// パスワードまたは TOTP が不一致（どちらが違うかは返さない）。
+    InvalidCredentials,
+    /// 第二要素が要るのにコードが提示されていない。
+    SecondFactorRequired,
+    RateLimited,
+    SessionExpired,
+    UnknownOperation,
+    Internal,
+}

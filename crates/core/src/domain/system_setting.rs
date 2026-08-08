@@ -380,6 +380,20 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
                       いる場合にのみ選ぶこと）。",
     },
     SettingDefinition {
+        key: "STEP_UP_MAX_AGE_SECS",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
+        default_value: Some("300"),
+        description: "Step-up 認証（AP5）の再確認間隔（秒）。パスワード変更・認証器の追加削除などの \
+                      重要操作は、直近の本人確認からこの秒数を超えていると本人確認をやり直させる。\
+                      短くするほど盗まれたセッションで悪用できる窓が狭まり、長くするほど操作の \
+                      たびの再入力が減る。",
+    },
+    SettingDefinition {
         key: "BACKCHANNEL_LOGOUT_MAX_ATTEMPTS",
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
