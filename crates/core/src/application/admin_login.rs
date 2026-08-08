@@ -31,10 +31,10 @@ use crate::domain::repositories::{
     UserPermissionRepository, UserRepository,
 };
 use crate::domain::sso_session::SsoSession;
-use crate::domain::values::AuthenticationMethod;
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::user::User;
+use crate::domain::values::AuthenticationMethod;
 use chrono::Duration;
 use std::sync::Arc;
 
@@ -175,8 +175,13 @@ impl AdminLoginService {
         match decision {
             PolicyDecision::Allow { .. } => Ok(()),
             PolicyDecision::Deny { policy_code } => {
-                self.record_policy_denied(tenant_id, user_id, &format!("policy={policy_code}"), ctx)
-                    .await;
+                self.record_policy_denied(
+                    tenant_id,
+                    user_id,
+                    &format!("policy={policy_code}"),
+                    ctx,
+                )
+                .await;
                 Err(AdminLoginOutcome::PolicyDenied)
             }
             PolicyDecision::RequireMfa { policy_code } => {

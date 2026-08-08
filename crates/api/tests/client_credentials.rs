@@ -67,7 +67,9 @@ async fn issues_an_access_token_without_an_id_token_or_refresh_token() {
 
     assert_eq!(tokens["token_type"], "Bearer");
     assert_eq!(tokens["scope"], "reports.read");
-    assert!(tokens["access_token"].as_str().is_some_and(|t| !t.is_empty()));
+    assert!(tokens["access_token"]
+        .as_str()
+        .is_some_and(|t| !t.is_empty()));
     // 利用者が居ないため、この 2 つは**存在してはならない**（OIDC Core の ID Token 定義に反する）。
     assert_eq!(
         tokens["id_token"],
@@ -147,7 +149,8 @@ async fn rejects_a_public_client() {
     let Some(env) = support::setup("client_credentials").await else {
         return;
     };
-    let client_id = support::insert_public_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
+    let client_id =
+        support::insert_public_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
 
     let response = send(
         &env.app,

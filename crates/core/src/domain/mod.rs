@@ -6,9 +6,9 @@
 pub mod application_log;
 pub mod audit;
 pub mod auth_session;
-pub mod backchannel_logout;
 pub mod authentication_policy;
 pub mod authorization_code;
+pub mod backchannel_logout;
 pub mod cache;
 pub mod client;
 pub mod clock;

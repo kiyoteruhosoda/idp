@@ -497,7 +497,10 @@ mod tests {
             unreachable!()
         }
         async fn revoke(&self, _t: TenantId, _u: Uuid, client_id: &str) -> DomainResult<()> {
-            self.rows.lock().unwrap().retain(|c| c.client_id != client_id);
+            self.rows
+                .lock()
+                .unwrap()
+                .retain(|c| c.client_id != client_id);
             Ok(())
         }
         async fn list_for_user(&self, _t: TenantId, _u: Uuid) -> DomainResult<Vec<ClientConsent>> {
@@ -537,11 +540,7 @@ mod tests {
         async fn create(&self, _t: &RefreshToken) -> DomainResult<()> {
             unreachable!()
         }
-        async fn find_by_hash(
-            &self,
-            _t: TenantId,
-            _h: &str,
-        ) -> DomainResult<Option<RefreshToken>> {
+        async fn find_by_hash(&self, _t: TenantId, _h: &str) -> DomainResult<Option<RefreshToken>> {
             unreachable!()
         }
         async fn revoke(&self, _h: &str, _at: DateTime<Utc>) -> DomainResult<()> {
@@ -622,7 +621,11 @@ mod tests {
                 vec![AuthenticationMethod::Password, AuthenticationMethod::Totp],
                 true,
             ),
-            session("expired-cookie", vec![AuthenticationMethod::Password], false),
+            session(
+                "expired-cookie",
+                vec![AuthenticationMethod::Password],
+                false,
+            ),
         ]);
         h.consents.rows.lock().unwrap().push(ClientConsent {
             user_id: user_id(),
@@ -662,8 +665,8 @@ mod tests {
             session("current-cookie", vec![AuthenticationMethod::Password], true),
             session("other-cookie", vec![AuthenticationMethod::Password], true),
         ]);
-        let other_id = session("other-cookie", vec![AuthenticationMethod::Password], true)
-            .display_id();
+        let other_id =
+            session("other-cookie", vec![AuthenticationMethod::Password], true).display_id();
 
         assert!(matches!(
             h.service
@@ -685,13 +688,13 @@ mod tests {
     #[tokio::test]
     async fn revoking_the_current_session_is_refused() {
         let h = harness(true);
-        h.sessions
-            .rows
-            .lock()
-            .unwrap()
-            .push(session("current-cookie", vec![AuthenticationMethod::Password], true));
-        let current_id = session("current-cookie", vec![AuthenticationMethod::Password], true)
-            .display_id();
+        h.sessions.rows.lock().unwrap().push(session(
+            "current-cookie",
+            vec![AuthenticationMethod::Password],
+            true,
+        ));
+        let current_id =
+            session("current-cookie", vec![AuthenticationMethod::Password], true).display_id();
 
         assert!(matches!(
             h.service
@@ -711,12 +714,13 @@ mod tests {
     #[tokio::test]
     async fn a_session_id_that_is_not_ours_is_not_found() {
         let h = harness(true);
-        h.sessions
-            .rows
-            .lock()
-            .unwrap()
-            .push(session("current-cookie", vec![AuthenticationMethod::Password], true));
-        let foreign = crate::domain::sso_session::display_id_of(&crypto::sha256_hex("someone-else"));
+        h.sessions.rows.lock().unwrap().push(session(
+            "current-cookie",
+            vec![AuthenticationMethod::Password],
+            true,
+        ));
+        let foreign =
+            crate::domain::sso_session::display_id_of(&crypto::sha256_hex("someone-else"));
 
         assert!(matches!(
             h.service
@@ -736,11 +740,11 @@ mod tests {
     #[tokio::test]
     async fn revoking_a_consent_also_revokes_refresh_tokens_in_that_tenant() {
         let h = harness(true);
-        h.sessions
-            .rows
-            .lock()
-            .unwrap()
-            .push(session("current-cookie", vec![AuthenticationMethod::Password], true));
+        h.sessions.rows.lock().unwrap().push(session(
+            "current-cookie",
+            vec![AuthenticationMethod::Password],
+            true,
+        ));
         h.consents.rows.lock().unwrap().push(ClientConsent {
             user_id: user_id(),
             tenant_id: tenant_id(),
@@ -772,11 +776,11 @@ mod tests {
     #[tokio::test]
     async fn a_disabled_user_cannot_use_the_screen() {
         let h = harness(false);
-        h.sessions
-            .rows
-            .lock()
-            .unwrap()
-            .push(session("current-cookie", vec![AuthenticationMethod::Password], true));
+        h.sessions.rows.lock().unwrap().push(session(
+            "current-cookie",
+            vec![AuthenticationMethod::Password],
+            true,
+        ));
         assert!(matches!(
             h.service
                 .overview(TenantContext::new(tenant_id()), "current-cookie")

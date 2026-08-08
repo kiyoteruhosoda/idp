@@ -7,9 +7,9 @@
 
 use super::locale;
 use crate::cookies;
-use crate::handlers::step_up::{self, MANAGE_AUTHENTICATORS};
 use crate::correlation::CorrelationId;
 use crate::dto::{FormPageQuery, TotpConfirmForm};
+use crate::handlers::step_up::{self, MANAGE_AUTHENTICATORS};
 use crate::handlers::{form_retry_error_key, forwarded_context, found, see_other};
 use crate::i18n::Messages;
 use crate::state::WebState;

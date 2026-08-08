@@ -33,10 +33,10 @@ use crate::domain::repositories::{
     SsoSessionRepository, TotpSecretRepository, UserRepository,
 };
 use crate::domain::sso_session::SsoSession;
-use crate::domain::values::AuthenticationMethod;
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::user::User;
+use crate::domain::values::AuthenticationMethod;
 use chrono::Duration;
 use std::sync::Arc;
 

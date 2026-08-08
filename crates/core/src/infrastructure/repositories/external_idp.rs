@@ -5,8 +5,7 @@ use crate::domain::external_idp::{
     ExternalIdentity, ExternalIdentityProvider, ExternalLoginRequest,
 };
 use crate::domain::repositories::{
-    ExternalIdentityProviderRepository, ExternalIdentityRepository,
-    ExternalLoginRequestRepository,
+    ExternalIdentityProviderRepository, ExternalIdentityRepository, ExternalLoginRequestRepository,
 };
 use crate::domain::tenant::TenantId;
 use crate::infrastructure::db::Db;
@@ -96,7 +95,9 @@ impl ExternalIdentityProviderRepository for SqlxExternalIdentityProviderReposito
         .execute(&self.pool)
         .await
         .map_err(|e| {
-            if e.as_database_error().is_some_and(|d| d.is_unique_violation()) {
+            if e.as_database_error()
+                .is_some_and(|d| d.is_unique_violation())
+            {
                 DomainError::Conflict("provider code already exists".to_string())
             } else {
                 repo_err(e)
@@ -105,10 +106,7 @@ impl ExternalIdentityProviderRepository for SqlxExternalIdentityProviderReposito
         Ok(())
     }
 
-    async fn list_for_tenant(
-        &self,
-        tenant_id: TenantId,
-    ) -> Result<Vec<ExternalIdentityProvider>> {
+    async fn list_for_tenant(&self, tenant_id: TenantId) -> Result<Vec<ExternalIdentityProvider>> {
         let sql = format!(
             "SELECT {PROVIDER_COLUMNS} FROM external_identity_providers \
              WHERE tenant_id = ? ORDER BY provider_code ASC"
@@ -197,7 +195,9 @@ impl ExternalIdentityProviderRepository for SqlxExternalIdentityProviderReposito
         .execute(&self.pool)
         .await
         .map_err(|e| {
-            if e.as_database_error().is_some_and(|d| d.is_unique_violation()) {
+            if e.as_database_error()
+                .is_some_and(|d| d.is_unique_violation())
+            {
                 DomainError::Conflict("provider code already exists".to_string())
             } else {
                 repo_err(e)
@@ -269,7 +269,9 @@ impl ExternalIdentityRepository for SqlxExternalIdentityRepository {
         .await
         .map_err(|e| {
             // 同じ外部アカウントの二重連携・同じプロバイダの重複連携はどちらも一意制約違反。
-            if e.as_database_error().is_some_and(|d| d.is_unique_violation()) {
+            if e.as_database_error()
+                .is_some_and(|d| d.is_unique_violation())
+            {
                 DomainError::Conflict("external identity is already linked".to_string())
             } else {
                 repo_err(e)

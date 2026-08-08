@@ -805,10 +805,7 @@ impl ClientFormValues {
             require_pkce: c.require_pkce,
             client_status: c.client_status.clone(),
             // 許可の真の出所は api が返す `grant_types`（G4）。フォームはその写しを表示する。
-            allow_client_credentials: c
-                .grant_types
-                .iter()
-                .any(|g| g == "client_credentials"),
+            allow_client_credentials: c.grant_types.iter().any(|g| g == "client_credentials"),
         }
     }
 }

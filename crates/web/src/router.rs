@@ -8,13 +8,10 @@ use crate::error_pages;
 use crate::handlers::{
     admin_clients_console, admin_console, admin_invitations_console, admin_members_console,
     admin_restart_console, admin_saml_clients_console, admin_settings, admin_signing_keys_console,
-    authenticators, external_login,
-    admin_status_console, admin_tenants_console, admin_users_console, consent, console_script,
-    health, invitation_accept, locale, login, mfa_totp, passkey, password_change, password_reset,
-    portal, react_assets, rp_logout, saml_sso, step_up, stylesheet, submit_feedback_script,
-    user_security,
-    user_settings,
-    vendor_assets, verify_email,
+    admin_status_console, admin_tenants_console, admin_users_console, authenticators, consent,
+    console_script, external_login, health, invitation_accept, locale, login, mfa_totp, passkey,
+    password_change, password_reset, portal, react_assets, rp_logout, saml_sso, step_up,
+    stylesheet, submit_feedback_script, user_security, user_settings, vendor_assets, verify_email,
 };
 use crate::i18n::Messages;
 use crate::language::resolve_language;
@@ -70,7 +67,10 @@ pub fn build(state: WebState) -> Router {
         .route("/settings/name", post(user_settings::change_name))
         // 外部 IdP ログイン（AP10）。開始は 302、コールバックは外部 IdP からの戻り先。
         .route("/external/{provider}/start", get(external_login::start))
-        .route("/external/{provider}/callback", get(external_login::callback))
+        .route(
+            "/external/{provider}/callback",
+            get(external_login::callback),
+        )
         // MFA 入力画面から「メールでコードを送る」（AP9）。
         .route("/mfa/totp/email-code", post(mfa_totp::send_email_code))
         // 認証器の管理（一覧・一時停止・失効・リカバリーコード発行。AP9）。

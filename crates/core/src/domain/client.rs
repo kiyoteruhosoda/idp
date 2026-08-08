@@ -106,11 +106,13 @@ mod tests {
             &["authorization_code", "client_credentials"]
         )
         .allows_client_credentials());
-        assert!(!client(ClientType::Confidential, &["authorization_code"])
-            .allows_client_credentials());
         assert!(
-            !client(ClientType::Public, &["authorization_code", "client_credentials"])
-                .allows_client_credentials()
+            !client(ClientType::Confidential, &["authorization_code"]).allows_client_credentials()
         );
+        assert!(!client(
+            ClientType::Public,
+            &["authorization_code", "client_credentials"]
+        )
+        .allows_client_credentials());
     }
 }

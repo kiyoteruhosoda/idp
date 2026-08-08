@@ -97,7 +97,9 @@ impl UserAuthenticatorRepository for SqlxUserAuthenticatorRepository {
         .await
         .map_err(|e| {
             // 同じ WebAuthn クレデンシャルの二重登録は一意制約で弾かれる。
-            if e.as_database_error().is_some_and(|d| d.is_unique_violation()) {
+            if e.as_database_error()
+                .is_some_and(|d| d.is_unique_violation())
+            {
                 DomainError::Conflict("authenticator already registered".to_string())
             } else {
                 repo_err(e)

@@ -23,6 +23,7 @@
 //! （`client_ids` 条件を持つポリシーは一致しない ＝ `user_ids` 条件と全体条件が主対象）。
 
 use crate::application::audit::{AuditService, RequestContext};
+use crate::application::authenticator_management::consume_single_use_code;
 use crate::application::mfa_login::user_has_confirmed_totp;
 use crate::application::totp_registration::verify_totp_code;
 use crate::domain::audit::{AuditEventType, AuditResult};
@@ -33,16 +34,15 @@ use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::password::{validate_password_strength, PasswordHasher};
 use crate::domain::rate_limit::LoginRateLimiter;
-use crate::application::authenticator_management::consume_single_use_code;
 use crate::domain::repositories::{
     AuthenticationPolicyRepository, SsoSessionRepository, TotpSecretRepository,
     UserAuthenticatorRepository, UserRepository,
 };
-use crate::domain::user_authenticator::AuthenticatorType;
 use crate::domain::sso_session::SsoSession;
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::user::User;
+use crate::domain::user_authenticator::AuthenticatorType;
 use crate::domain::values::AuthenticationMethod;
 use chrono::{DateTime, Duration, Utc};
 use hmac::{Hmac, Mac};

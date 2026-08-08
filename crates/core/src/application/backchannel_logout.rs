@@ -9,7 +9,9 @@
 //! ログアウトが成立する値が長期間残り、再試行のたびに `iat` / `exp` も古いままになる。`jti` だけは
 //! 行の作成時に確定させ、再試行でも変えない（RP は `jti` で重複配送を弾ける）。
 
-use crate::domain::backchannel_logout::{retry_backoff, BackchannelLogoutDelivery};
+use crate::domain::backchannel_logout::{
+    retry_backoff, BackchannelLogoutDelivery, NewBackchannelLogoutDelivery,
+};
 use crate::domain::clock::Clock;
 use crate::domain::error::Result;
 use crate::domain::id_generator::IdGenerator;
@@ -142,13 +144,15 @@ impl BackchannelLogoutDeliveryService {
             .iter()
             .map(|n| {
                 BackchannelLogoutDelivery::new(
-                    self.ids.new_id(),
-                    self.ids.new_id(),
-                    tenant_id,
-                    n.client_id.clone(),
-                    n.backchannel_logout_uri.clone(),
-                    subject.to_string(),
-                    sid.map(str::to_string),
+                    NewBackchannelLogoutDelivery {
+                        id: self.ids.new_id(),
+                        jti: self.ids.new_id(),
+                        tenant_id,
+                        client_id: n.client_id.clone(),
+                        target_uri: n.backchannel_logout_uri.clone(),
+                        subject: subject.to_string(),
+                        sid: sid.map(str::to_string),
+                    },
                     now,
                 )
             })
@@ -390,7 +394,9 @@ mod tests {
             repo,
             Arc::new(StubSigner),
             sender,
-            Arc::new(SequentialIds { next: Mutex::new(0) }),
+            Arc::new(SequentialIds {
+                next: Mutex::new(0),
+            }),
             Arc::new(FixedClock),
             "https://idp.example.com".to_string(),
             5,
@@ -406,13 +412,15 @@ mod tests {
         BackchannelLogoutDelivery {
             attempts,
             ..BackchannelLogoutDelivery::new(
-                Uuid::from_u128(100),
-                Uuid::from_u128(200),
-                tenant(),
-                "rp-1".to_string(),
-                uri.to_string(),
-                "sub-1".to_string(),
-                Some("sid-1".to_string()),
+                NewBackchannelLogoutDelivery {
+                    id: Uuid::from_u128(100),
+                    jti: Uuid::from_u128(200),
+                    tenant_id: tenant(),
+                    client_id: "rp-1".to_string(),
+                    target_uri: uri.to_string(),
+                    subject: "sub-1".to_string(),
+                    sid: Some("sid-1".to_string()),
+                },
                 now(),
             )
         }
@@ -452,7 +460,10 @@ mod tests {
         assert!(rows.iter().all(|r| r.attempts == 0));
         // jti は行ごとに異なる（RP 側の冪等判定が別の通知を同一視しないため）。
         assert_ne!(rows[0].jti, rows[1].jti);
-        assert!(sender.sent.lock().unwrap().is_empty(), "同期区間では送らない");
+        assert!(
+            sender.sent.lock().unwrap().is_empty(),
+            "同期区間では送らない"
+        );
     }
 
     #[tokio::test]
@@ -476,7 +487,10 @@ mod tests {
         let claims: serde_json::Value = serde_json::from_str(&token).unwrap();
         assert_eq!(claims["sid"], "sid-1");
         assert_eq!(claims["exp"], now().timestamp() + LOGOUT_TOKEN_TTL_SECS);
-        assert_eq!(claims["iss"], format!("https://idp.example.com/{}", tenant()));
+        assert_eq!(
+            claims["iss"],
+            format!("https://idp.example.com/{}", tenant())
+        );
     }
 
     /// 非 2xx・接続失敗は失敗として記録し、バックオフ後に再試行できる状態にする。

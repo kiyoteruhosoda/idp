@@ -26,9 +26,7 @@ use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::password::PasswordHasher;
 use crate::domain::rate_limit::LoginRateLimiter;
-use crate::domain::repositories::{
-    SsoSessionRepository, TotpSecretRepository, UserRepository,
-};
+use crate::domain::repositories::{SsoSessionRepository, TotpSecretRepository, UserRepository};
 use crate::domain::step_up::{
     evaluate_step_up, SensitiveOperation, StepUpDecision, StepUpRequirement,
 };
@@ -41,7 +39,9 @@ pub enum StepUpCheckOutcome {
     /// 要件を満たしている。操作を続けてよい。
     Satisfied,
     /// 本人確認をやり直す必要がある。`second_factor_required` が真なら TOTP まで求める。
-    ChallengeRequired { second_factor_required: bool },
+    ChallengeRequired {
+        second_factor_required: bool,
+    },
     /// SSO セッションが無い・期限切れ・利用者が無効。
     SessionExpired,
     Internal(String),
@@ -263,10 +263,7 @@ impl StepUpService {
                 Some(tenant.tenant_id()),
                 Some(user_id),
                 None,
-                Some(&format!(
-                    "operation={} reason={reason}",
-                    operation.as_str()
-                )),
+                Some(&format!("operation={} reason={reason}", operation.as_str())),
                 ctx,
             )
             .await;
@@ -357,8 +354,7 @@ mod tests {
             self.step_ups.lock().unwrap().push(methods.to_vec());
             let mut row = self.row.lock().unwrap();
             row.step_up_at = Some(verified_at);
-            if AuthenticationStrength::from_methods(methods)
-                == AuthenticationStrength::MultiFactor
+            if AuthenticationStrength::from_methods(methods) == AuthenticationStrength::MultiFactor
             {
                 row.mfa_completed_at = Some(verified_at);
             }
@@ -445,8 +441,7 @@ mod tests {
         async fn find_by_user_id(&self, user_id: Uuid) -> DomainResult<Option<TotpSecret>> {
             Ok(self.confirmed.then(|| TotpSecret {
                 user_id,
-                secret_encrypted: crypto::encrypt(b"12345678901234567890", &KEY)
-                    .expect("encrypt"),
+                secret_encrypted: crypto::encrypt(b"12345678901234567890", &KEY).expect("encrypt"),
                 confirmed_at: Some(now()),
                 created_at: now(),
                 updated_at: now(),

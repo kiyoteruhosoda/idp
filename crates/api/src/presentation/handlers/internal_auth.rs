@@ -22,22 +22,22 @@ use crate::application::account_security::{
     RevokeConsentOutcome, RevokeSessionOutcome, SecurityOverviewOutcome,
 };
 use crate::application::account_tenants::ListTenantsOutcome;
-use crate::application::authenticator_management::AuthenticatorManagementError;
-use crate::application::external_login::{CallbackCommand, CallbackOutcome, StartOutcome};
-use crate::domain::user_authenticator::AuthenticatorStatus;
-use crate::application::step_up::{StepUpCheckOutcome, StepUpVerifyCommand, StepUpVerifyOutcome};
-use crate::domain::step_up::SensitiveOperation;
 use crate::application::admin_login::{
     AdminChangePasswordCommand, AdminLoginCommand, AdminLoginOutcome,
 };
 use crate::application::audit::RequestContext;
+use crate::application::authenticator_management::AuthenticatorManagementError;
 use crate::application::change_password::{ChangePasswordCommand, ChangePasswordOutcome};
+use crate::application::external_login::{CallbackCommand, CallbackOutcome, StartOutcome};
 use crate::application::login::{LoginCommand, LoginOutcome};
 use crate::application::password_reset::{RequestResetOutcome, ResetPasswordOutcome};
 use crate::application::portal_login::{
     PortalChangePasswordCommand, PortalChangePasswordOutcome, PortalLoginCommand,
     PortalLoginOutcome, PortalMfaCommand, PortalMfaOutcome,
 };
+use crate::application::step_up::{StepUpCheckOutcome, StepUpVerifyCommand, StepUpVerifyOutcome};
+use crate::domain::step_up::SensitiveOperation;
+use crate::domain::user_authenticator::AuthenticatorStatus;
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::require_internal_tenant;
@@ -48,35 +48,34 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use idp_contracts::auth::{
     AccountConnectedAppSummary, AccountSessionSummary, AccountTenantSummary,
-    InternalAccountChangePasswordRequest,
-    InternalAccountChangePasswordResponse, InternalAccountProfileRequest,
-    InternalAccountProfileResponse, InternalAccountRevokeConsentRequest,
-    InternalAccountRevokeConsentResponse, InternalAccountRevokeSessionRequest,
-    InternalAccountRevokeSessionResponse, InternalAccountSecurityRequest,
-    InternalAccountSecurityResponse, InternalAccountTenantsRequest, InternalAccountTenantsResponse,
-    InternalAccountUpdateLanguageRequest, InternalAccountUpdateLanguageResponse,
-    InternalAccountUpdateNameRequest, InternalAccountUpdateNameResponse,
-    InternalAdminAuthenticateRequest, InternalAdminAuthenticateResponse,
-    InternalAdminChangePasswordRequest, InternalAdminChangePasswordResponse,
-    InternalAuthenticateRequest, InternalAuthenticateResponse, InternalChangePasswordRequest,
-    InternalChangePasswordResponse, InternalLogoutRequest, InternalPasswordResetCompleteRequest,
-    InternalPasswordResetCompleteResponse, InternalPasswordResetRequestRequest,
-    InternalPasswordResetRequestResponse, InternalPortalAuthenticateRequest,
-    InternalPortalAuthenticateResponse, InternalPortalChangePasswordRequest,
-    InternalPortalChangePasswordResponse, InternalPortalMfaRequest, InternalPortalMfaResponse,
-    InternalStepUpCheckRequest, InternalStepUpCheckResponse, InternalStepUpVerifyRequest,
-    InternalStepUpVerifyResponse,
-};
-use idp_contracts::auth::{
-    ExternalIdpButton, InternalExternalCallbackRequest, InternalExternalCallbackResponse,
-    InternalExternalProvidersRequest, InternalExternalProvidersResponse,
-    InternalExternalStartRequest, InternalExternalStartResponse,
+    InternalAccountChangePasswordRequest, InternalAccountChangePasswordResponse,
+    InternalAccountProfileRequest, InternalAccountProfileResponse,
+    InternalAccountRevokeConsentRequest, InternalAccountRevokeConsentResponse,
+    InternalAccountRevokeSessionRequest, InternalAccountRevokeSessionResponse,
+    InternalAccountSecurityRequest, InternalAccountSecurityResponse, InternalAccountTenantsRequest,
+    InternalAccountTenantsResponse, InternalAccountUpdateLanguageRequest,
+    InternalAccountUpdateLanguageResponse, InternalAccountUpdateNameRequest,
+    InternalAccountUpdateNameResponse, InternalAdminAuthenticateRequest,
+    InternalAdminAuthenticateResponse, InternalAdminChangePasswordRequest,
+    InternalAdminChangePasswordResponse, InternalAuthenticateRequest, InternalAuthenticateResponse,
+    InternalChangePasswordRequest, InternalChangePasswordResponse, InternalLogoutRequest,
+    InternalPasswordResetCompleteRequest, InternalPasswordResetCompleteResponse,
+    InternalPasswordResetRequestRequest, InternalPasswordResetRequestResponse,
+    InternalPortalAuthenticateRequest, InternalPortalAuthenticateResponse,
+    InternalPortalChangePasswordRequest, InternalPortalChangePasswordResponse,
+    InternalPortalMfaRequest, InternalPortalMfaResponse, InternalStepUpCheckRequest,
+    InternalStepUpCheckResponse, InternalStepUpVerifyRequest, InternalStepUpVerifyResponse,
 };
 use idp_contracts::auth::{
     AuthenticatorSummaryResponse, InternalAuthenticatorStatusRequest,
     InternalAuthenticatorStatusResponse, InternalAuthenticatorsRequest,
     InternalAuthenticatorsResponse, InternalEmailOtpRequest, InternalEmailOtpResponse,
     InternalRecoveryCodesRequest, InternalRecoveryCodesResponse,
+};
+use idp_contracts::auth::{
+    ExternalIdpButton, InternalExternalCallbackRequest, InternalExternalCallbackResponse,
+    InternalExternalProvidersRequest, InternalExternalProvidersResponse,
+    InternalExternalStartRequest, InternalExternalStartResponse,
 };
 
 /// 内部サービス認証トークンを載せるヘッダ名（小文字。`HeaderMap` は大小無視で引ける）。
@@ -787,9 +786,7 @@ pub async fn account_security(
                 })
                 .collect(),
         },
-        SecurityOverviewOutcome::SessionExpired => {
-            InternalAccountSecurityResponse::SessionExpired
-        }
+        SecurityOverviewOutcome::SessionExpired => InternalAccountSecurityResponse::SessionExpired,
         SecurityOverviewOutcome::Internal(e) => {
             tracing::error!(error = %e, "account security overview failed with internal error");
             InternalAccountSecurityResponse::Internal
@@ -916,9 +913,7 @@ pub async fn step_up_verify(
         .await;
     Ok(Json(match outcome {
         StepUpVerifyOutcome::Ok => InternalStepUpVerifyResponse::Ok,
-        StepUpVerifyOutcome::InvalidCredentials => {
-            InternalStepUpVerifyResponse::InvalidCredentials
-        }
+        StepUpVerifyOutcome::InvalidCredentials => InternalStepUpVerifyResponse::InvalidCredentials,
         StepUpVerifyOutcome::SecondFactorRequired => {
             InternalStepUpVerifyResponse::SecondFactorRequired
         }
@@ -1162,9 +1157,7 @@ pub async fn external_start(
             StartOutcome::Redirect { location } => {
                 InternalExternalStartResponse::Redirect { location }
             }
-            StartOutcome::ProviderUnavailable => {
-                InternalExternalStartResponse::ProviderUnavailable
-            }
+            StartOutcome::ProviderUnavailable => InternalExternalStartResponse::ProviderUnavailable,
             StartOutcome::Internal(e) => {
                 tracing::error!(error = %e, "external idp login start failed");
                 InternalExternalStartResponse::Internal

@@ -1192,7 +1192,9 @@ pub enum InternalStepUpCheckResponse {
     /// 直近の本人確認が要件を満たしている。そのまま操作してよい。
     Satisfied,
     /// 本人確認をやり直す必要がある。`second_factor_required` が真なら TOTP まで求める。
-    ChallengeRequired { second_factor_required: bool },
+    ChallengeRequired {
+        second_factor_required: bool,
+    },
     /// SSO セッションが無い・期限切れ・利用者が無効。
     SessionExpired,
     /// 未知の操作名（api が受け付けない値）。
@@ -1396,7 +1398,9 @@ pub struct InternalExternalStartRequest {
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalExternalStartResponse {
     /// 外部 IdP の認可エンドポイントへ 302 する。
-    Redirect { location: String },
+    Redirect {
+        location: String,
+    },
     /// プロバイダが無い・無効。
     ProviderUnavailable,
     Internal,

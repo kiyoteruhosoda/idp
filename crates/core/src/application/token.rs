@@ -854,8 +854,7 @@ fn resolve_client_credentials_scopes(
             .scopes
             .iter()
             .filter(|s| {
-                s.as_str() != Scope::OfflineAccess.as_str()
-                    && !user_bound.contains(&s.as_str())
+                s.as_str() != Scope::OfflineAccess.as_str() && !user_bound.contains(&s.as_str())
             })
             .cloned()
             .collect()),
@@ -904,7 +903,13 @@ mod tests {
     /// scope 省略時は、利用者前提の scope（openid / profile / email）と offline_access を落とす。
     #[test]
     fn omitted_scope_defaults_to_the_non_user_bound_registered_scopes() {
-        let client = client_with_scopes(&["openid", "profile", "email", "offline_access", "reports.read"]);
+        let client = client_with_scopes(&[
+            "openid",
+            "profile",
+            "email",
+            "offline_access",
+            "reports.read",
+        ]);
         assert_eq!(
             resolve_client_credentials_scopes(&client, None).unwrap(),
             vec!["reports.read".to_string()]

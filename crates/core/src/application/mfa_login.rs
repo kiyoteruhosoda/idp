@@ -17,6 +17,7 @@
 //! リセットしない（そこで消すと、再ログインを挟むだけでロックを回避できる）。
 
 use crate::application::audit::{AuditService, RequestContext};
+use crate::application::authenticator_management::consume_single_use_code;
 use crate::application::authorize::code_redirect;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::application::totp_registration::verify_totp_code;
@@ -25,17 +26,16 @@ use crate::domain::authentication_policy::LockoutPolicy;
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::rate_limit::LoginRateLimiter;
-use crate::application::authenticator_management::consume_single_use_code;
 use crate::domain::repositories::{
     AuthSessionRepository, ClientConsentRepository, SsoSessionRepository, TotpSecretRepository,
     UserAuthenticatorRepository, UserRepository,
 };
-use crate::domain::user_authenticator::AuthenticatorType;
 use crate::domain::sso_session::SsoSession;
-use crate::domain::values::AuthenticationMethod;
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::user::User;
+use crate::domain::user_authenticator::AuthenticatorType;
+use crate::domain::values::AuthenticationMethod;
 use chrono::Duration;
 use std::sync::Arc;
 use uuid::Uuid;

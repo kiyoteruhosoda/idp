@@ -281,7 +281,10 @@ mod tests {
     #[test]
     fn next_is_restricted_to_this_tenants_paths() {
         let t = tenant();
-        assert_eq!(safe_next(&t, Some("/t1/account/passkey")), "/t1/account/passkey");
+        assert_eq!(
+            safe_next(&t, Some("/t1/account/passkey")),
+            "/t1/account/passkey"
+        );
         assert_eq!(safe_next(&t, Some("/t1")), "/t1");
         assert_eq!(safe_next(&t, Some("/t1?x=1")), "/t1?x=1");
 

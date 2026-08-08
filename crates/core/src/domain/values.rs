@@ -367,13 +367,13 @@ mod tests {
 
     #[test]
     fn multi_factor_satisfies_single_factor_requirement_but_not_the_reverse() {
-        assert!(AuthenticationStrength::MultiFactor
-            .satisfies(AuthenticationStrength::SingleFactor));
-        assert!(AuthenticationStrength::MultiFactor
-            .satisfies(AuthenticationStrength::MultiFactor));
-        assert!(AuthenticationStrength::SingleFactor
-            .satisfies(AuthenticationStrength::SingleFactor));
-        assert!(!AuthenticationStrength::SingleFactor
-            .satisfies(AuthenticationStrength::MultiFactor));
+        assert!(AuthenticationStrength::MultiFactor.satisfies(AuthenticationStrength::SingleFactor));
+        assert!(AuthenticationStrength::MultiFactor.satisfies(AuthenticationStrength::MultiFactor));
+        assert!(
+            AuthenticationStrength::SingleFactor.satisfies(AuthenticationStrength::SingleFactor)
+        );
+        assert!(
+            !AuthenticationStrength::SingleFactor.satisfies(AuthenticationStrength::MultiFactor)
+        );
     }
 }

@@ -6,9 +6,9 @@
 
 use super::locale;
 use crate::cookies;
-use crate::handlers::step_up::{self, MANAGE_AUTHENTICATORS};
 use crate::correlation::CorrelationId;
 use crate::handlers::forwarded_context;
+use crate::handlers::step_up::{self, MANAGE_AUTHENTICATORS};
 use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, MessagePage, PasskeyListTemplate, PasskeyRegisterTemplate};

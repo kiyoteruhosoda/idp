@@ -299,7 +299,11 @@ impl IntrospectionService {
 
     /// `sub` クレームのクライアントが現存し ACTIVE であるかを返す（G4。照会失敗は非活性扱い）。
     async fn client_subject_is_active(&self, tenant: TenantContext, sub: &str) -> bool {
-        match self.clients.find_by_client_id(tenant.tenant_id(), sub).await {
+        match self
+            .clients
+            .find_by_client_id(tenant.tenant_id(), sub)
+            .await
+        {
             Ok(Some(client)) => client.is_active(),
             Ok(None) => false,
             Err(e) => {

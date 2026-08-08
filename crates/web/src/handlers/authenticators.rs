@@ -159,9 +159,7 @@ pub async fn set_status(
         .account_authenticator_status(&ctx.correlation_id, &request)
         .await
     {
-        Ok(InternalAuthenticatorStatusResponse::Ok) => {
-            see_other(&format!("{base}?saved=status"))
-        }
+        Ok(InternalAuthenticatorStatusResponse::Ok) => see_other(&format!("{base}?saved=status")),
         Ok(InternalAuthenticatorStatusResponse::NotFound) => {
             see_other(&format!("{base}?error=not-found"))
         }

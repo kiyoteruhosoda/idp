@@ -12,10 +12,6 @@ use crate::application::account_language::AccountLanguageService;
 use crate::application::account_password::AccountPasswordService;
 use crate::application::account_profile::AccountProfileService;
 use crate::application::account_security::AccountSecurityService;
-use crate::application::authenticator_management::AuthenticatorManagementService;
-use crate::application::external_idp_management::ExternalIdpManagementService;
-use crate::application::external_login::ExternalLoginService;
-use crate::application::step_up::StepUpService;
 use crate::application::account_tenants::AccountTenantsService;
 use crate::application::admin_access::AdminAccessService;
 use crate::application::admin_login::AdminLoginService;
@@ -23,20 +19,23 @@ use crate::application::application_log::ApplicationLogService;
 use crate::application::audit::AuditService;
 use crate::application::audit_query::AuditQueryService;
 use crate::application::authentication_policy_management::AuthenticationPolicyManagementService;
+use crate::application::authenticator_management::AuthenticatorManagementService;
 use crate::application::authorize::AuthorizeService;
+use crate::application::backchannel_logout::{
+    BackchannelLogoutDeliveryService, KeyServiceLogoutTokenSigner,
+};
 use crate::application::change_password::ChangePasswordService;
 use crate::application::client_management::ClientManagementService;
 use crate::application::client_status::ClientStatusService;
 use crate::application::code_issuance::CodeIssuanceService;
 use crate::application::consent::ConsentService;
 use crate::application::email_verification::EmailVerificationService;
+use crate::application::external_idp_management::ExternalIdpManagementService;
+use crate::application::external_login::ExternalLoginService;
 use crate::application::introspection::IntrospectionService;
 use crate::application::invitation::InvitationService;
 use crate::application::key_service::KeyService;
 use crate::application::login::LoginService;
-use crate::application::backchannel_logout::{
-    BackchannelLogoutDeliveryService, KeyServiceLogoutTokenSigner,
-};
 use crate::application::logout::LogoutService;
 use crate::application::member_directory::MemberDirectoryService;
 use crate::application::mfa_login::MfaLoginService;
@@ -51,6 +50,7 @@ use crate::application::saml_service_provider_management::SamlServiceProviderMan
 use crate::application::saml_sso::SamlSsoService;
 use crate::application::service_restart::ServiceRestartService;
 use crate::application::sso_restore::SsoRestorer;
+use crate::application::step_up::StepUpService;
 use crate::application::system_settings::SystemSettingsService;
 use crate::application::tenant_management::TenantManagementService;
 use crate::application::tenant_resolution::TenantResolutionService;
@@ -66,15 +66,9 @@ use crate::domain::id_generator::IdGenerator;
 use crate::domain::repositories::UserPermissionRepository;
 use crate::domain::tenant::{Tenant, TenantId};
 use crate::infrastructure::backchannel_logout::ReqwestBackchannelLogoutSender;
-use crate::infrastructure::repositories::backchannel_logout::SqlxBackchannelLogoutDeliveryRepository;
-use crate::infrastructure::external_oidc::ReqwestExternalOidcClient;
-use crate::infrastructure::repositories::external_idp::{
-    SqlxExternalIdentityProviderRepository, SqlxExternalIdentityRepository,
-    SqlxExternalLoginRequestRepository,
-};
-use crate::infrastructure::repositories::user_authenticator::SqlxUserAuthenticatorRepository;
 use crate::infrastructure::cache::InMemoryTtlCache;
 use crate::infrastructure::db::Db;
+use crate::infrastructure::external_oidc::ReqwestExternalOidcClient;
 use crate::infrastructure::id_generator::UuidV7Generator;
 use crate::infrastructure::mailer::LettreSmtpMailer;
 use crate::infrastructure::password::Argon2PasswordHasher;
@@ -86,12 +80,17 @@ use crate::infrastructure::repositories::audit_log::{SqlxAuditLogQuery, SqlxAudi
 use crate::infrastructure::repositories::auth_session::SqlxAuthSessionRepository;
 use crate::infrastructure::repositories::authentication_policy::SqlxAuthenticationPolicyRepository;
 use crate::infrastructure::repositories::authorization_code::SqlxAuthorizationCodeRepository;
+use crate::infrastructure::repositories::backchannel_logout::SqlxBackchannelLogoutDeliveryRepository;
 use crate::infrastructure::repositories::cached_user_permission::{
     CachedUserPermissionRepository, PermissionKey,
 };
 use crate::infrastructure::repositories::client::SqlxClientRepository;
 use crate::infrastructure::repositories::consent::SqlxClientConsentRepository;
 use crate::infrastructure::repositories::email_verification_token::SqlxEmailVerificationTokenRepository;
+use crate::infrastructure::repositories::external_idp::{
+    SqlxExternalIdentityProviderRepository, SqlxExternalIdentityRepository,
+    SqlxExternalLoginRequestRepository,
+};
 use crate::infrastructure::repositories::passkey_challenge::SqlxPasskeyChallengeRepository;
 use crate::infrastructure::repositories::password_reset_token::SqlxPasswordResetTokenRepository;
 use crate::infrastructure::repositories::refresh_token::SqlxRefreshTokenRepository;
@@ -107,6 +106,7 @@ use crate::infrastructure::repositories::tenant_membership::SqlxTenantMembership
 use crate::infrastructure::repositories::tenant_provisioning::SqlxTenantProvisioningRepository;
 use crate::infrastructure::repositories::totp_secret::SqlxTotpSecretRepository;
 use crate::infrastructure::repositories::user::SqlxUserRepository;
+use crate::infrastructure::repositories::user_authenticator::SqlxUserAuthenticatorRepository;
 use crate::infrastructure::repositories::user_permission::SqlxUserPermissionRepository;
 use crate::infrastructure::repositories::webauthn_credential::SqlxWebAuthnCredentialRepository;
 use crate::infrastructure::webauthn::WebAuthnService;
@@ -285,8 +285,9 @@ impl AppState {
         ));
         // AP9: 認証器の統合管理。種別ごとの表に散っていた登録状況を 1 つの登録簿へ集約し、
         // リカバリーコード・email OTP を追加する。
-        let authenticator_repository: Arc<dyn crate::domain::repositories::UserAuthenticatorRepository> =
-            Arc::new(SqlxUserAuthenticatorRepository::new(pool.clone()));
+        let authenticator_repository: Arc<
+            dyn crate::domain::repositories::UserAuthenticatorRepository,
+        > = Arc::new(SqlxUserAuthenticatorRepository::new(pool.clone()));
         let authenticators = Arc::new(AuthenticatorManagementService::new(
             authenticator_repository.clone(),
             users.clone(),

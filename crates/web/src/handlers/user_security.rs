@@ -13,7 +13,7 @@ use crate::csrf::console_csrf_token;
 use crate::handlers::{forwarded_context, found, locale, see_other, step_up};
 use crate::i18n::Messages;
 use crate::state::WebState;
-use crate::templates::{render, SecuritySessionView, UserSecurity, ConnectedAppView};
+use crate::templates::{render, ConnectedAppView, SecuritySessionView, UserSecurity};
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, Query, State};
 use axum::http::{HeaderMap, StatusCode};

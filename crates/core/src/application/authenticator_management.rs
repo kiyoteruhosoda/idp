@@ -20,9 +20,7 @@ use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::id_generator::IdGenerator;
 use crate::domain::mailer::{Mailer, OutgoingEmail};
-use crate::domain::repositories::{
-    UserAuthenticatorRepository, UserRepository,
-};
+use crate::domain::repositories::{UserAuthenticatorRepository, UserRepository};
 use crate::domain::user_authenticator::{
     AuthenticatorStatus, AuthenticatorType, UserAuthenticator,
 };
@@ -283,7 +281,10 @@ impl AuthenticatorManagementService {
                 Some(user_id),
                 None,
                 // 残数を残すと「あと何本か」を運用側から追える（コードそのものは記録しない）。
-                Some(&format!("remaining={}", self.remaining_after(user_id).await)),
+                Some(&format!(
+                    "remaining={}",
+                    self.remaining_after(user_id).await
+                )),
                 ctx,
             )
             .await;

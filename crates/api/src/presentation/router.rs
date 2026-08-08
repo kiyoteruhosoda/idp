@@ -3,8 +3,7 @@
 use crate::presentation::correlation;
 use crate::presentation::handlers::{
     admin, admin_application_logs, admin_audit, admin_authentication_policies, admin_clients,
-    admin_external_idps,
-    admin_invitations, admin_members, admin_permissions, admin_restart,
+    admin_external_idps, admin_invitations, admin_members, admin_permissions, admin_restart,
     admin_saml_service_providers, admin_signing_keys, admin_system_settings, admin_tenants,
     admin_users, authorize, consent, discovery, health, internal_auth, internal_runtime_settings,
     introspect, invitations, logout, mfa, passkey, register, revoke, saml_sso, token, userinfo,
@@ -86,7 +85,10 @@ pub fn build(state: AppState) -> Router {
             "/internal/external/providers",
             post(internal_auth::external_providers),
         )
-        .route("/internal/external/start", post(internal_auth::external_start))
+        .route(
+            "/internal/external/start",
+            post(internal_auth::external_start),
+        )
         .route(
             "/internal/external/callback",
             post(internal_auth::external_callback),
@@ -109,7 +111,10 @@ pub fn build(state: AppState) -> Router {
             post(internal_auth::account_email_otp),
         )
         // Step-up 認証（重要操作の直前の本人確認。AP5）。
-        .route("/internal/step-up/check", post(internal_auth::step_up_check))
+        .route(
+            "/internal/step-up/check",
+            post(internal_auth::step_up_check),
+        )
         .route(
             "/internal/step-up/verify",
             post(internal_auth::step_up_verify),

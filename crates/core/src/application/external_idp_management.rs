@@ -186,7 +186,11 @@ impl ExternalIdpManagementService {
                 "authorization_endpoint",
                 &mut provider.authorization_endpoint,
             ),
-            (cmd.token_endpoint, "token_endpoint", &mut provider.token_endpoint),
+            (
+                cmd.token_endpoint,
+                "token_endpoint",
+                &mut provider.token_endpoint,
+            ),
             (cmd.jwks_uri, "jwks_uri", &mut provider.jwks_uri),
         ] {
             if let Some(url) = value {

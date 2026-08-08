@@ -154,10 +154,7 @@ impl ClientManagementService {
             redirect_uris,
             // ブラウザ経由の利用者ログインは Authorization Code Flow のみ（設計仕様 §5）。
             // `client_credentials` は M2M 用の追加許可で、confidential のみ受け付ける（G4）。
-            grant_types: grant_types_for(
-                cmd.client_type,
-                cmd.allow_client_credentials,
-            ),
+            grant_types: grant_types_for(cmd.client_type, cmd.allow_client_credentials),
             response_types: vec!["code".to_string()],
             scopes,
             token_endpoint_auth_method: auth_method,

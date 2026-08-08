@@ -359,9 +359,7 @@ mod tests {
             auth_time: now - Duration::minutes(5),
             idle_expires_at: idle,
             absolute_expires_at: abs,
-            authentication_methods: vec![
-                crate::domain::values::AuthenticationMethod::Password,
-            ],
+            authentication_methods: vec![crate::domain::values::AuthenticationMethod::Password],
             authentication_strength: crate::domain::values::AuthenticationStrength::SingleFactor,
             mfa_completed_at: None,
             step_up_at: Some(now),

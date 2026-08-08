@@ -196,8 +196,7 @@ mod tests {
             "not-a-url",
         ] {
             assert!(
-                ExternalIdentityProvider::validate_endpoint(bad, "authorization_endpoint")
-                    .is_err(),
+                ExternalIdentityProvider::validate_endpoint(bad, "authorization_endpoint").is_err(),
                 "{bad} must be rejected"
             );
         }

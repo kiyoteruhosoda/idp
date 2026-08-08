@@ -50,9 +50,7 @@ use crate::domain::user::User;
 use crate::domain::user_authenticator::{
     AuthenticatorStatus, AuthenticatorType, UserAuthenticator,
 };
-use crate::domain::values::{
-    AuthenticationMethod, MembershipStatus, SigningKeyStatus, UserStatus,
-};
+use crate::domain::values::{AuthenticationMethod, MembershipStatus, SigningKeyStatus, UserStatus};
 use crate::domain::webauthn_credential::WebAuthnCredential;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -631,11 +629,7 @@ pub trait BackchannelLogoutDeliveryRepository: Send + Sync {
     ) -> Result<()>;
 
     /// 決着済み（送信成功、または試行上限に達した）の古い行を削除し、削除件数を返す。
-    async fn purge_settled(
-        &self,
-        older_than: DateTime<Utc>,
-        max_attempts: i32,
-    ) -> Result<u64>;
+    async fn purge_settled(&self, older_than: DateTime<Utc>, max_attempts: i32) -> Result<u64>;
 }
 
 /// Access Token の jti 失効リスト（F5: Token 管理）。
@@ -669,8 +663,7 @@ pub trait TotpSecretRepository: Send + Sync {
 pub trait ExternalIdentityProviderRepository: Send + Sync {
     async fn create(&self, provider: &ExternalIdentityProvider) -> Result<()>;
     /// テナントの全プロバイダを `provider_code` 昇順で返す（管理画面用）。
-    async fn list_for_tenant(&self, tenant_id: TenantId)
-        -> Result<Vec<ExternalIdentityProvider>>;
+    async fn list_for_tenant(&self, tenant_id: TenantId) -> Result<Vec<ExternalIdentityProvider>>;
     /// テナントの**有効な**プロバイダのみ返す（ログイン画面のボタン用）。
     async fn list_enabled_for_tenant(
         &self,

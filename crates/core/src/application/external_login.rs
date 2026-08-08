@@ -52,7 +52,9 @@ const STATE_BYTES: usize = 32;
 /// 外部 IdP ログインの開始結果。
 pub enum StartOutcome {
     /// 外部 IdP の認可エンドポイントへ 302 する。
-    Redirect { location: String },
+    Redirect {
+        location: String,
+    },
     /// プロバイダが無い・無効。
     ProviderUnavailable,
     Internal(String),
@@ -238,7 +240,11 @@ impl ExternalLoginService {
         }
 
         // 2. プロバイダ設定を読み直す（進行中に無効化された可能性がある）。
-        let provider = match self.providers.find_by_id(tenant_id, request.provider_id).await {
+        let provider = match self
+            .providers
+            .find_by_id(tenant_id, request.provider_id)
+            .await
+        {
             Ok(Some(p)) if p.enabled => p,
             Ok(_) => return CallbackOutcome::StateExpired,
             Err(e) => return CallbackOutcome::Internal(e.to_string()),
@@ -254,15 +260,13 @@ impl ExternalLoginService {
                 Err(e) => return CallbackOutcome::Internal(e.to_string()),
             };
         let client_secret = match provider.client_secret_encrypted.as_deref() {
-            Some(encrypted) => {
-                match crypto::decrypt(encrypted, &self.key_encryption_key) {
-                    Ok(bytes) => match String::from_utf8(bytes) {
-                        Ok(v) => Some(v),
-                        Err(e) => return CallbackOutcome::Internal(e.to_string()),
-                    },
+            Some(encrypted) => match crypto::decrypt(encrypted, &self.key_encryption_key) {
+                Ok(bytes) => match String::from_utf8(bytes) {
+                    Ok(v) => Some(v),
                     Err(e) => return CallbackOutcome::Internal(e.to_string()),
-                }
-            }
+                },
+                Err(e) => return CallbackOutcome::Internal(e.to_string()),
+            },
             None => None,
         };
 
@@ -435,7 +439,11 @@ impl ExternalLoginService {
         if !provider.allow_auto_link || !claims.email_verified {
             return Ok(None);
         }
-        let Some(email) = claims.email.as_deref().map(str::trim).filter(|e| !e.is_empty())
+        let Some(email) = claims
+            .email
+            .as_deref()
+            .map(str::trim)
+            .filter(|e| !e.is_empty())
         else {
             return Ok(None);
         };

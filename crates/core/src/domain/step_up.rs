@@ -273,27 +273,18 @@ mod tests {
     /// 第二要素を持たない利用者には多要素を求めない（求めても永久に通らないため）。
     #[test]
     fn requirement_falls_back_to_single_factor_without_an_enrolled_authenticator() {
-        let with = StepUpRequirement::for_operation(
-            SensitiveOperation::ManageAuthenticators,
-            300,
-            true,
-        );
+        let with =
+            StepUpRequirement::for_operation(SensitiveOperation::ManageAuthenticators, 300, true);
         assert_eq!(with.required_strength, AuthenticationStrength::MultiFactor);
-        let without = StepUpRequirement::for_operation(
-            SensitiveOperation::ManageAuthenticators,
-            300,
-            false,
-        );
+        let without =
+            StepUpRequirement::for_operation(SensitiveOperation::ManageAuthenticators, 300, false);
         assert_eq!(
             without.required_strength,
             AuthenticationStrength::SingleFactor
         );
         // 第二要素を要求しない操作は、認証器を持っていても単一要素で足りる。
-        let password = StepUpRequirement::for_operation(
-            SensitiveOperation::ChangePassword,
-            300,
-            true,
-        );
+        let password =
+            StepUpRequirement::for_operation(SensitiveOperation::ChangePassword, 300, true);
         assert_eq!(
             password.required_strength,
             AuthenticationStrength::SingleFactor

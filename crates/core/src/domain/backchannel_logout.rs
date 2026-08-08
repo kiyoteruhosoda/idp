@@ -37,26 +37,30 @@ pub struct BackchannelLogoutDelivery {
     pub updated_at: DateTime<Utc>,
 }
 
+/// 新規の送信要求を組み立てるための値（試行回数・時刻は [`BackchannelLogoutDelivery::new`] が決める）。
+#[derive(Debug, Clone)]
+pub struct NewBackchannelLogoutDelivery {
+    pub id: Uuid,
+    /// `logout_token` の `jti`。再試行で変えないため、行の作成時に確定させる。
+    pub jti: Uuid,
+    pub tenant_id: TenantId,
+    pub client_id: String,
+    pub target_uri: String,
+    pub subject: String,
+    pub sid: Option<String>,
+}
+
 impl BackchannelLogoutDelivery {
     /// 新規の送信要求を組み立てる（次回試行は即時）。
-    pub fn new(
-        id: Uuid,
-        jti: Uuid,
-        tenant_id: TenantId,
-        client_id: String,
-        target_uri: String,
-        subject: String,
-        sid: Option<String>,
-        now: DateTime<Utc>,
-    ) -> Self {
+    pub fn new(new: NewBackchannelLogoutDelivery, now: DateTime<Utc>) -> Self {
         Self {
-            id,
-            tenant_id,
-            client_id,
-            target_uri,
-            subject,
-            sid,
-            jti,
+            id: new.id,
+            tenant_id: new.tenant_id,
+            client_id: new.client_id,
+            target_uri: new.target_uri,
+            subject: new.subject,
+            sid: new.sid,
+            jti: new.jti,
             attempts: 0,
             next_attempt_at: now,
             last_error: None,

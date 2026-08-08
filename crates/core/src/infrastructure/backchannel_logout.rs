@@ -56,7 +56,11 @@ impl BackchannelLogoutSender for ReqwestBackchannelLogoutSender {
         let snippet = response
             .text()
             .await
-            .map(|body| body.chars().take(BODY_SNIPPET_MAX_CHARS).collect::<String>())
+            .map(|body| {
+                body.chars()
+                    .take(BODY_SNIPPET_MAX_CHARS)
+                    .collect::<String>()
+            })
             .unwrap_or_default();
         Err(format!("endpoint returned {status}: {snippet}"))
     }

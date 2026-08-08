@@ -57,7 +57,8 @@ pub struct CredentialInfo {
 
 pub struct PasskeyRegistrationService {
     /// 認証器の登録簿（AP9）。passkey 本体は `user_webauthn_credentials` に残し、状態を反映する。
-    authenticators: Arc<crate::application::authenticator_management::AuthenticatorManagementService>,
+    authenticators:
+        Arc<crate::application::authenticator_management::AuthenticatorManagementService>,
     webauthn_credentials: Arc<dyn WebAuthnCredentialRepository>,
     passkey_challenges: Arc<dyn PasskeyChallengeRepository>,
     sso_sessions: Arc<dyn SsoSessionRepository>,
