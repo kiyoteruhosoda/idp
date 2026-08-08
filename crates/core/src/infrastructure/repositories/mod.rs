@@ -5,6 +5,7 @@ pub mod audit_log;
 pub mod auth_session;
 pub mod authentication_policy;
 pub mod authorization_code;
+pub mod backchannel_logout;
 pub mod cached_user_permission;
 pub mod client;
 pub mod consent;

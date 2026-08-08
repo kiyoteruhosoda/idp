@@ -43,6 +43,10 @@ pub struct IdTokenClaims {
     pub auth_time: i64,
     pub nonce: String,
     pub jti: String,
+    /// SSO セッション識別子（OIDC Back-Channel Logout 1.0 §2.1。G5）。RP はこの値で
+    /// 「どのセッションのログアウト通知か」を突き合わせ、セッション単位で失効できる。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sid: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -318,6 +322,7 @@ impl TokenService {
             auth_time: auth_code.auth_time.timestamp(),
             nonce: auth_code.nonce.clone(),
             jti: Uuid::new_v4().to_string(),
+            sid: auth_code.sid.clone(),
             email: has(Scope::Email).then(|| user.email.clone()),
             email_verified: has(Scope::Email).then_some(user.email_verified),
             preferred_username: has(Scope::Profile)
@@ -349,6 +354,8 @@ impl TokenService {
                 user_id: auth_code.user_id,
                 client_id: client_id.clone(),
                 scope: auth_code.scope.clone(),
+                // ID Token の `sid`（G5）。rotation でも引き継ぎ、logout_token と同じセッションを指す。
+                sid: auth_code.sid.clone(),
                 expires_at: now + chrono::Duration::from_std(self.refresh_token_ttl).unwrap(),
                 revoked_at: None,
                 created_at: now,
@@ -493,6 +500,8 @@ impl TokenService {
             auth_time: iat,       // refresh 時は現在時刻（再認証なし）
             nonce: String::new(), // refresh grant では nonce は不要
             jti: Uuid::new_v4().to_string(),
+            // 元の認可で確立したセッションを指し続ける（rotation で引き継いだ値。G5）。
+            sid: stored.sid.clone(),
             email: has(Scope::Email).then(|| user.email.clone()),
             email_verified: has(Scope::Email).then_some(user.email_verified),
             preferred_username: has(Scope::Profile)
@@ -523,6 +532,7 @@ impl TokenService {
             user_id: stored.user_id,
             client_id: client_id.clone(),
             scope: stored.scope.clone(),
+            sid: stored.sid.clone(),
             expires_at: stored.expires_at, // TTL は引き継ぐ（スライドさせない）
             revoked_at: None,
             created_at: now,

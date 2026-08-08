@@ -11,6 +11,7 @@ pub mod admin_login;
 pub mod application_log;
 pub mod audit;
 pub mod audit_query;
+pub mod backchannel_logout;
 pub mod authentication_policy_management;
 pub mod authorize;
 pub mod change_password;

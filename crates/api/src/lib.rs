@@ -81,6 +81,39 @@ pub async fn run() -> anyhow::Result<()> {
         config.app_log_retention_days(),
     );
 
+    // Back-channel logout の送信ワーカー（G5）。ログアウトのハンドラは通知要求をキューへ積むだけで
+    // 終わり、実際の HTTP 送信と再試行はここが担う。プロセスが落ちても未送信分は行として残るため、
+    // 再起動後にこのループが拾い直す。
+    {
+        let deliveries = state.backchannel_logout.clone();
+        let interval = config.backchannel_logout_poll_interval();
+        let retention_days = config.backchannel_logout_retention_days();
+        tokio::spawn(async move {
+            // 決着済み行の掃除は毎回やる必要がないため、一定回数に 1 度だけ走らせる。
+            let purge_every = (3_600 / interval.as_secs().max(1)).max(1);
+            let mut tick: u64 = 0;
+            loop {
+                match deliveries.deliver_due().await {
+                    Ok(handled) if handled > 0 => {
+                        tracing::debug!(handled, "processed back-channel logout deliveries");
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::error!(error = %e, "back-channel logout delivery run failed");
+                    }
+                }
+                if retention_days > 0 && tick % purge_every == 0 {
+                    let retention = chrono::Duration::days(retention_days as i64);
+                    if let Err(e) = deliveries.purge_settled(retention).await {
+                        tracing::error!(error = %e, "back-channel logout queue purge failed");
+                    }
+                }
+                tick = tick.wrapping_add(1);
+                tokio::time::sleep(interval).await;
+            }
+        });
+    }
+
     // 署名鍵自動ローテーション（K2）: バックグラウンドタスクで定期チェック。
     {
         let keys = state.keys.clone();

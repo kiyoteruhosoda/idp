@@ -156,8 +156,11 @@ fn discovery_document(issuer: &str, end_session_endpoint: &str) -> Value {
         "code_challenge_methods_supported": ["S256"],
         "frontchannel_logout_supported": true,
         "backchannel_logout_supported": true,
+        // logout_token に `sid` を載せるため、RP はセッション単位で失効できる（G5）。
+        "backchannel_logout_session_supported": true,
+        "frontchannel_logout_session_supported": false,
         "claims_supported": [
-            "sub", "iss", "aud", "exp", "iat", "auth_time", "nonce",
+            "sub", "iss", "aud", "exp", "iat", "auth_time", "nonce", "sid",
             "email", "email_verified", "preferred_username", "name"
         ],
     })
@@ -198,5 +201,12 @@ mod tests {
         );
         assert_eq!(doc["frontchannel_logout_supported"], true);
         assert_eq!(doc["backchannel_logout_supported"], true);
+        // `sid` を載せる以上、セッション単位のログアウト対応も広告する（G5）。
+        assert_eq!(doc["backchannel_logout_session_supported"], true);
+        assert!(doc["claims_supported"]
+            .as_array()
+            .expect("claims_supported")
+            .iter()
+            .any(|v| v == "sid"));
     }
 }

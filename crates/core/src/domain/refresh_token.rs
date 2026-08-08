@@ -17,6 +17,8 @@ pub struct RefreshToken {
     pub user_id: Uuid,
     pub client_id: String,
     pub scope: Vec<String>,
+    /// ID Token へ載せる SSO セッション識別子（G5）。rotation で引き継ぐ。
+    pub sid: Option<String>,
     pub expires_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,

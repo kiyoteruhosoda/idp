@@ -301,16 +301,7 @@ impl ChangePasswordService {
             PolicyDecision::Allow { .. } => {}
         }
 
-        // 7. auth_time を設定する（パスワード変更完了時刻を認証時刻とする）。
-        if let Err(e) = self
-            .auth_sessions
-            .set_authenticated_user(&session.id, user.id, now)
-            .await
-        {
-            return ChangePasswordOutcome::Internal(e.to_string());
-        }
-
-        // 8. SSO セッション発行。
+        // 7. SSO セッションを組み立てる（`sid` を auth_session へ預けるため、永続化より先に作る）。
         let sso_session_id = crypto::random_hex(32);
         let sso = SsoSession::establish(
             crypto::sha256_hex(&sso_session_id),
@@ -322,6 +313,16 @@ impl ChangePasswordService {
             ctx.user_agent.clone(),
             ctx.ip_address.clone(),
         );
+
+        // 8. auth_time と `sid` を設定する（パスワード変更完了時刻を認証時刻とする）。
+        if let Err(e) = self
+            .auth_sessions
+            .set_authenticated_user(&session.id, user.id, now, Some(&sso.sid()))
+            .await
+        {
+            return ChangePasswordOutcome::Internal(e.to_string());
+        }
+
         if let Err(e) = self.sso_sessions.create(&sso).await {
             return ChangePasswordOutcome::Internal(e.to_string());
         }
@@ -388,6 +389,7 @@ impl ChangePasswordService {
                     scope: session.scope.clone(),
                     nonce: session.nonce.clone(),
                     auth_time: now,
+                    sid: Some(sso.sid()),
                     code_challenge: session.code_challenge.clone(),
                     code_challenge_method: session.code_challenge_method,
                 },

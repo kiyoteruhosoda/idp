@@ -26,6 +26,7 @@ use crate::domain::audit::{AuditEvent, AuditLogEntry, AuditLogFilter};
 use crate::domain::auth_session::AuthSession;
 use crate::domain::authentication_policy::AuthenticationPolicy;
 use crate::domain::authorization_code::AuthorizationCode;
+use crate::domain::backchannel_logout::BackchannelLogoutDelivery;
 use crate::domain::client::Client;
 use crate::domain::consent::ClientConsent;
 use crate::domain::email_verification::EmailVerificationToken;
@@ -276,12 +277,17 @@ pub trait AuthSessionRepository: Send + Sync {
     /// ハンドルを単回使用として消費する（`handle_hash` を NULL 化）。すでに消費済み（並行交換に
     /// 負けた・再利用）なら `false` を返す。
     async fn consume_handle(&self, id: &str, handle_hash: &str) -> Result<bool>;
-    /// 認証済みユーザーと `auth_time` を設定する（`/login` 成功時）。
+    /// 認証済みユーザーと `auth_time`、確立した SSO セッションの `sid` を設定する（`/login` 成功時）。
+    ///
+    /// `sso_sid` は同意画面を挟む経路（`ConsentService::approve`）が code 発行時に読む（G5）。
+    /// 認証と code 発行が別リクエストに分かれ、その時点では SSO Cookie が手元に無いため、
+    /// ここで auth_session へ預ける。
     async fn set_authenticated_user(
         &self,
         id: &str,
         user_id: Uuid,
         auth_time: DateTime<Utc>,
+        sso_sid: Option<&str>,
     ) -> Result<()>;
     /// パスワード検証成功後に MFA pending 状態を記録する（`password_verified_at` を設定）。
     async fn set_password_verified(
@@ -568,6 +574,48 @@ pub trait ClientConsentRepository: Send + Sync {
     /// 指定テナントにおけるユーザーの全同意レコードを返す（同意取り消し画面・管理用）。
     async fn list_for_user(&self, tenant_id: TenantId, user_id: Uuid)
         -> Result<Vec<ClientConsent>>;
+}
+
+/// Back-channel logout 送信要求の永続キュー（G5）。
+///
+/// ログアウト処理（同期）は [`enqueue`](Self::enqueue) で要求を積むだけにし、送信はワーカーが
+/// [`claim_due`](Self::claim_due) で取り出して行う。「HTTP 送信の成否がログアウト応答を遅らせない」
+/// ことと「プロセスが落ちても未送信が消えない」ことを同時に満たすための分離。
+#[async_trait]
+pub trait BackchannelLogoutDeliveryRepository: Send + Sync {
+    /// 送信要求をまとめて積む（空スライスは何もしない）。
+    async fn enqueue(&self, deliveries: &[BackchannelLogoutDelivery]) -> Result<()>;
+
+    /// 送信すべき要求を取り出して**試行回数を進め、次回時刻を押し出す**（原子的なクレーム）。
+    ///
+    /// 対象は「未送信」「`next_attempt_at <= now`」「`attempts < max_attempts`」の行。取り出しと
+    /// 更新を分けると、同じ行を二重に送ってしまう（RP から見て重複配送になる）ため実装は原子的に行う。
+    /// 返す行は更新後の状態（`attempts` は加算済み）。
+    async fn claim_due(
+        &self,
+        now: DateTime<Utc>,
+        max_attempts: i32,
+        limit: u32,
+    ) -> Result<Vec<BackchannelLogoutDelivery>>;
+
+    /// 送信成功を記録する（`delivered_at` を設定）。
+    async fn mark_delivered(&self, id: Uuid, delivered_at: DateTime<Utc>) -> Result<()>;
+
+    /// 送信失敗を記録する（次回試行時刻と直近の失敗理由）。試行回数は
+    /// [`claim_due`](Self::claim_due) で加算済みのため、ここでは進めない。
+    async fn mark_failed(
+        &self,
+        id: Uuid,
+        next_attempt_at: DateTime<Utc>,
+        error: &str,
+    ) -> Result<()>;
+
+    /// 決着済み（送信成功、または試行上限に達した）の古い行を削除し、削除件数を返す。
+    async fn purge_settled(
+        &self,
+        older_than: DateTime<Utc>,
+        max_attempts: i32,
+    ) -> Result<u64>;
 }
 
 /// Access Token の jti 失効リスト（F5: Token 管理）。

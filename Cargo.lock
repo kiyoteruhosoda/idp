@@ -1448,6 +1448,7 @@ dependencies = [
  "percent-encoding",
  "quick-xml",
  "rand 0.8.6",
+ "reqwest",
  "rsa",
  "serde",
  "serde_json",

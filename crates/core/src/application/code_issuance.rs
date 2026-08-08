@@ -26,6 +26,9 @@ pub struct IssueCodeCommand {
     pub scope: Vec<String>,
     pub nonce: String,
     pub auth_time: DateTime<Utc>,
+    /// 認可を与えた SSO セッションの `sid`（G5）。ID Token・logout_token が同じセッションを指す
+    /// ための識別子で、`/token` は Cookie を読めないため発行時に引き継ぐ。
+    pub sid: Option<String>,
     pub code_challenge: String,
     pub code_challenge_method: CodeChallengeMethod,
 }
@@ -70,6 +73,7 @@ impl CodeIssuanceService {
             scope: cmd.scope,
             nonce: cmd.nonce,
             auth_time: cmd.auth_time,
+            sid: cmd.sid,
             code_challenge: cmd.code_challenge,
             code_challenge_method: cmd.code_challenge_method,
             expires_at: now + self.ttl,

@@ -227,16 +227,7 @@ impl MfaLoginService {
             }
         }
 
-        // 8. auth_time を設定する（MFA 完了時刻を認証時刻とする）。
-        if let Err(e) = self
-            .auth_sessions
-            .set_authenticated_user(&session.id, user_id, now)
-            .await
-        {
-            return MfaLoginOutcome::Internal(e.to_string());
-        }
-
-        // 9. SSO セッション発行。
+        // 8. SSO セッションを組み立てる（`sid` を auth_session へ預けるため、永続化より先に作る）。
         let sso_session_id = crypto::random_hex(32);
         let sso = SsoSession::establish(
             crypto::sha256_hex(&sso_session_id),
@@ -249,6 +240,16 @@ impl MfaLoginService {
             ctx.user_agent.clone(),
             ctx.ip_address.clone(),
         );
+
+        // 9. auth_time と `sid` を設定する（MFA 完了時刻を認証時刻とする）。
+        if let Err(e) = self
+            .auth_sessions
+            .set_authenticated_user(&session.id, user_id, now, Some(&sso.sid()))
+            .await
+        {
+            return MfaLoginOutcome::Internal(e.to_string());
+        }
+
         if let Err(e) = self.sso_sessions.create(&sso).await {
             return MfaLoginOutcome::Internal(e.to_string());
         }
@@ -315,6 +316,7 @@ impl MfaLoginService {
                     scope: session.scope.clone(),
                     nonce: session.nonce.clone(),
                     auth_time: now,
+                    sid: Some(sso.sid()),
                     code_challenge: session.code_challenge.clone(),
                     code_challenge_method: session.code_challenge_method,
                 },
@@ -528,11 +530,13 @@ mod tests {
             id: &str,
             user_id: Uuid,
             auth_time: DateTime<Utc>,
+            sso_sid: Option<&str>,
         ) -> DomainResult<()> {
             let mut rows = self.rows.lock().unwrap();
             if let Some(row) = rows.iter_mut().find(|s| s.id == id) {
                 row.authenticated_user_id = Some(user_id);
                 row.auth_time = Some(auth_time);
+                row.sso_sid = sso_sid.map(str::to_string);
             }
             Ok(())
         }
@@ -773,6 +777,7 @@ mod tests {
                     authenticated_user_id: Some(user_id),
                     auth_time: None,
                     password_verified_at: Some(now()),
+                    sso_sid: None,
                     expires_at: now() + Duration::seconds(600),
                     created_at: now(),
                     updated_at: now(),

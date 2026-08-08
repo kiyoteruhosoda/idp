@@ -327,16 +327,7 @@ impl PasskeyAuthenticationService {
             return PasskeyAuthOutcome::PolicyDenied;
         }
 
-        // 9. auth_time を設定する。
-        if let Err(e) = self
-            .auth_sessions
-            .set_authenticated_user(&session.id, user_id, now)
-            .await
-        {
-            return PasskeyAuthOutcome::Internal(e.to_string());
-        }
-
-        // 10. SSO セッション発行。
+        // 9. SSO セッションを組み立てる（`sid` を auth_session へ預けるため、永続化より先に作る）。
         let sso_session_id = crypto::random_hex(32);
         let sso = SsoSession::establish(
             crypto::sha256_hex(&sso_session_id),
@@ -348,6 +339,16 @@ impl PasskeyAuthenticationService {
             ctx.user_agent.clone(),
             ctx.ip_address.clone(),
         );
+
+        // 10. auth_time と `sid` を設定する。
+        if let Err(e) = self
+            .auth_sessions
+            .set_authenticated_user(&session.id, user_id, now, Some(&sso.sid()))
+            .await
+        {
+            return PasskeyAuthOutcome::Internal(e.to_string());
+        }
+
         if let Err(e) = self.sso_sessions.create(&sso).await {
             return PasskeyAuthOutcome::Internal(e.to_string());
         }
@@ -414,6 +415,7 @@ impl PasskeyAuthenticationService {
                     scope: session.scope.clone(),
                     nonce: session.nonce.clone(),
                     auth_time: now,
+                    sid: Some(sso.sid()),
                     code_challenge: session.code_challenge.clone(),
                     code_challenge_method: session.code_challenge_method,
                 },

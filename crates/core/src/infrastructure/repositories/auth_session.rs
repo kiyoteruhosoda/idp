@@ -24,7 +24,8 @@ impl SqlxAuthSessionRepository {
 
 const SELECT_COLUMNS: &str = "id, tenant_id, client_id, redirect_uri, scope, state, nonce, \
      code_challenge, code_challenge_method, prompt, max_age, handle_hash, handle_expires_at, \
-     authenticated_user_id, auth_time, password_verified_at, expires_at, created_at, updated_at";
+     authenticated_user_id, auth_time, password_verified_at, sso_sid, expires_at, created_at, \
+     updated_at";
 
 fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
@@ -72,6 +73,7 @@ fn map_row(row: &MySqlRow) -> Result<AuthSession> {
             .transpose()?,
         auth_time: auth_time.map(to_utc),
         password_verified_at: password_verified_at.map(to_utc),
+        sso_sid: row.try_get("sso_sid").map_err(repo_err)?,
         expires_at: to_utc(row.try_get("expires_at").map_err(repo_err)?),
         created_at: to_utc(row.try_get("created_at").map_err(repo_err)?),
         updated_at: to_utc(row.try_get("updated_at").map_err(repo_err)?),
@@ -160,12 +162,16 @@ impl AuthSessionRepository for SqlxAuthSessionRepository {
         id: &str,
         user_id: Uuid,
         auth_time: DateTime<Utc>,
+        sso_sid: Option<&str>,
     ) -> Result<()> {
         sqlx::query(
-            "UPDATE auth_sessions SET authenticated_user_id = ?, auth_time = ? WHERE id = ?",
+            "UPDATE auth_sessions \
+             SET authenticated_user_id = ?, auth_time = ?, sso_sid = ? \
+             WHERE id = ?",
         )
         .bind(user_id.to_string())
         .bind(auth_time.naive_utc())
+        .bind(sso_sid)
         .bind(id)
         .execute(&self.pool)
         .await

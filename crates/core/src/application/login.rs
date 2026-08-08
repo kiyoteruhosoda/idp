@@ -464,7 +464,7 @@ impl LoginService {
         // 10. AuthSession に認証結果を記録する。
         if let Err(e) = self
             .auth_sessions
-            .set_authenticated_user(&session.id, user.id, now)
+            .set_authenticated_user(&session.id, user.id, now, Some(&sso.sid()))
             .await
         {
             return LoginOutcome::Internal(e.to_string());
@@ -511,6 +511,7 @@ impl LoginService {
                     scope: session.scope.clone(),
                     nonce: session.nonce.clone(),
                     auth_time: now,
+                    sid: Some(sso.sid()),
                     code_challenge: session.code_challenge.clone(),
                     code_challenge_method: session.code_challenge_method,
                 },
@@ -686,11 +687,13 @@ mod tests {
             id: &str,
             user_id: Uuid,
             auth_time: DateTime<Utc>,
+            sso_sid: Option<&str>,
         ) -> DomainResult<()> {
             let mut rows = self.rows.lock().unwrap();
             if let Some(row) = rows.iter_mut().find(|s| s.id == id) {
                 row.authenticated_user_id = Some(user_id);
                 row.auth_time = Some(auth_time);
+                row.sso_sid = sso_sid.map(str::to_string);
             }
             Ok(())
         }
@@ -947,6 +950,7 @@ mod tests {
                 authenticated_user_id: None,
                 auth_time: None,
                 password_verified_at: None,
+                sso_sid: None,
                 expires_at: now() + Duration::seconds(600),
                 created_at: now(),
                 updated_at: now(),

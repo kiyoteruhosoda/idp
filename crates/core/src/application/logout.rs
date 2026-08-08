@@ -30,6 +30,9 @@ pub struct LogoutResult {
     pub user_sub: Option<String>,
     /// ログアウトしたユーザーの内部 ID（監査用）。
     pub user_id: Option<Uuid>,
+    /// 終了した SSO セッションの `sid`（G5）。logout_token へ載せ、RP がセッション単位で失効できる
+    /// ようにする。セッションを特定できなかった場合は `None`（RP は `sub` 単位の失効へ落ちる）。
+    pub sid: Option<String>,
     /// back-channel logout 通知先（`backchannel_logout_uri` を持つ全クライアント）。
     pub backchannel_targets: Vec<BackchannelTarget>,
     /// front-channel logout URI 群（`frontchannel_logout_uri` を持つ全クライアント）。
@@ -87,8 +90,10 @@ impl LogoutService {
         let now = self.clock.now();
 
         // 1. SSO セッションの特定と終了。
-        let (user_id, user_sub) = if let Some(sid) = sso_session_id.filter(|s| !s.is_empty()) {
-            let hash = crypto::sha256_hex(sid);
+        let (user_id, user_sub, sid) = if let Some(session_id) =
+            sso_session_id.filter(|s| !s.is_empty())
+        {
+            let hash = crypto::sha256_hex(session_id);
             let session = match self.sso_sessions.find_by_hash(&hash).await {
                 Ok(Some(s)) => s,
                 _ => {
@@ -96,6 +101,7 @@ impl LogoutService {
                     return LogoutResult {
                         user_sub: None,
                         user_id: None,
+                        sid: None,
                         backchannel_targets: vec![],
                         frontchannel_uris: vec![],
                         post_logout_redirect_uri: None,
@@ -103,6 +109,9 @@ impl LogoutService {
                 }
             };
             let uid = session.user_id;
+            // `sid` は行を消す前に導出する（削除後は `session_hash` しか手元に残らないため、
+            // 導出関数は行ではなくハッシュを受ける形にしてある）。
+            let sid = session.sid();
 
             // SSO セッション削除。
             if let Err(e) = self.sso_sessions.delete(&hash).await {
@@ -132,9 +141,9 @@ impl LogoutService {
                 )
                 .await;
 
-            (Some(uid), sub)
+            (Some(uid), sub, Some(sid))
         } else {
-            (None, None)
+            (None, None, None)
         };
 
         // 2. テナントの全クライアントを取得して logout endpoint を持つものを収集
@@ -210,6 +219,7 @@ impl LogoutService {
         LogoutResult {
             user_sub,
             user_id,
+            sid,
             backchannel_targets,
             frontchannel_uris,
             post_logout_redirect_uri,

@@ -45,6 +45,7 @@ fn map_row(row: &MySqlRow) -> Result<RefreshToken> {
         client_id: row.try_get("client_id").map_err(repo_err)?,
         scope: serde_json::from_slice(&scope)
             .map_err(|e| DomainError::Repository(format!("invalid JSON in `scope`: {e}")))?,
+        sid: row.try_get("sid").map_err(repo_err)?,
         expires_at: to_utc(row.try_get("expires_at").map_err(repo_err)?),
         revoked_at: revoked_at.map(to_utc),
         created_at: to_utc(row.try_get("created_at").map_err(repo_err)?),
@@ -56,8 +57,9 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
     async fn create(&self, token: &RefreshToken) -> Result<()> {
         sqlx::query(
             "INSERT INTO refresh_tokens \
-             (token_hash, parent_hash, tenant_id, user_id, client_id, scope, expires_at, revoked_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             (token_hash, parent_hash, tenant_id, user_id, client_id, scope, sid, expires_at, \
+              revoked_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&token.token_hash)
         .bind(&token.parent_hash)
@@ -65,6 +67,7 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
         .bind(token.user_id.to_string())
         .bind(&token.client_id)
         .bind(serde_json::to_string(&token.scope).map_err(repo_err)?)
+        .bind(&token.sid)
         .bind(token.expires_at.naive_utc())
         .bind(token.revoked_at.map(|d| d.naive_utc()))
         .execute(&self.pool)
@@ -79,7 +82,7 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
         token_hash: &str,
     ) -> Result<Option<RefreshToken>> {
         let row = sqlx::query(
-            "SELECT token_hash, parent_hash, tenant_id, user_id, client_id, scope, \
+            "SELECT token_hash, parent_hash, tenant_id, user_id, client_id, scope, sid, \
              expires_at, revoked_at, created_at \
              FROM refresh_tokens WHERE token_hash = ? AND tenant_id = ?",
         )

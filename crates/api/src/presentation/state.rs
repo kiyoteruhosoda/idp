@@ -29,6 +29,9 @@ use crate::application::introspection::IntrospectionService;
 use crate::application::invitation::InvitationService;
 use crate::application::key_service::KeyService;
 use crate::application::login::LoginService;
+use crate::application::backchannel_logout::{
+    BackchannelLogoutDeliveryService, KeyServiceLogoutTokenSigner,
+};
 use crate::application::logout::LogoutService;
 use crate::application::member_directory::MemberDirectoryService;
 use crate::application::mfa_login::MfaLoginService;
@@ -57,6 +60,8 @@ use crate::domain::clock::Clock;
 use crate::domain::id_generator::IdGenerator;
 use crate::domain::repositories::UserPermissionRepository;
 use crate::domain::tenant::{Tenant, TenantId};
+use crate::infrastructure::backchannel_logout::ReqwestBackchannelLogoutSender;
+use crate::infrastructure::repositories::backchannel_logout::SqlxBackchannelLogoutDeliveryRepository;
 use crate::infrastructure::cache::InMemoryTtlCache;
 use crate::infrastructure::db::Db;
 use crate::infrastructure::id_generator::UuidV7Generator;
@@ -164,6 +169,8 @@ pub struct AppState {
     /// api 自身の `tracing` 取り込みタスク・web からの `/internal/logs`・管理画面の参照が共有する。
     pub application_logs: Arc<ApplicationLogService>,
     pub logout: Arc<LogoutService>,
+    /// Back-channel logout の送信キュー（G5）。ハンドラは積むだけ、送信はワーカーが行う。
+    pub backchannel_logout: Arc<BackchannelLogoutDeliveryService>,
     pub revocation: Arc<RevocationService>,
     pub introspection: Arc<IntrospectionService>,
     pub totp_registration: Arc<TotpRegistrationService>,
@@ -180,6 +187,13 @@ pub struct AppState {
     /// 再起動ユースケース（監査記録 → 停止要求。ADR-0017）。`restart` と同じ signal を指す。
     pub service_restart: Arc<ServiceRestartService>,
 }
+
+/// Back-channel logout ワーカーが 1 回の起動で扱う通知の最大件数。
+///
+/// 大きくすると復旧時の追いつきは速いが、落ちている RP が多いと 1 回の走行が長引く（各件で
+/// タイムアウトを待つため）。ポーリング間隔（`BACKCHANNEL_LOGOUT_POLL_INTERVAL_SECS`）に対して
+/// 走行が伸びすぎない程度に抑える。
+const BACKCHANNEL_LOGOUT_BATCH_SIZE: u32 = 50;
 
 impl AppState {
     /// すべてのユースケースを組み立てる（トレイト越しのコンストラクタ注入）。
@@ -568,6 +582,19 @@ impl AppState {
             config.issuer().to_string(),
         ));
 
+        // G5: Back-channel logout の送信キュー。ログアウトのハンドラは通知要求を積むだけで終え、
+        // 実際の HTTP 送信は `idp_api::run` が起動するワーカーが再試行付きで行う。
+        let backchannel_logout = Arc::new(BackchannelLogoutDeliveryService::new(
+            Arc::new(SqlxBackchannelLogoutDeliveryRepository::new(pool.clone())),
+            Arc::new(KeyServiceLogoutTokenSigner::new(keys.clone())),
+            Arc::new(ReqwestBackchannelLogoutSender::new()),
+            ids.clone(),
+            clock.clone(),
+            config.issuer().to_string(),
+            config.backchannel_logout_max_attempts() as i32,
+            BACKCHANNEL_LOGOUT_BATCH_SIZE,
+        ));
+
         // F5: Token 管理（revocation / introspection）。
         let revocation = Arc::new(RevocationService::new(
             clients.clone(),
@@ -688,6 +715,7 @@ impl AppState {
             audit_query,
             application_logs,
             logout,
+            backchannel_logout,
             revocation,
             introspection,
             totp_registration,

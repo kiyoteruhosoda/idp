@@ -150,6 +150,12 @@ pub struct Config {
     key_rotation_lead_days: u32,
     /// エラー・警告ログ（`log` テーブル）の保持日数。`0` は削除しない。
     app_log_retention_days: u32,
+    /// Back-channel logout 通知の再送上限回数（G5）。
+    backchannel_logout_max_attempts: u32,
+    /// Back-channel logout 送信ワーカーのポーリング間隔（秒。G5）。
+    backchannel_logout_poll_interval_secs: u64,
+    /// Back-channel logout 送信キューの決着済み行の保持日数（`0` は削除しない。G5）。
+    backchannel_logout_retention_days: u32,
     /// リバースプロキシが付与する `X-Forwarded-For` / `X-Forwarded-Proto` を信頼するか（S1）。
     trust_forwarded_headers: bool,
     /// HSTS `max-age`（秒）。0 = HSTS ヘッダを付与しない（S1）。
@@ -269,6 +275,12 @@ impl Config {
             key_encryption_key_is_dev,
             key_rotation_lead_days: resolver.parse("KEY_ROTATION_LEAD_DAYS", 30)?,
             app_log_retention_days: resolver.parse("APP_LOG_RETENTION_DAYS", 30)?,
+            backchannel_logout_max_attempts: resolver
+                .parse("BACKCHANNEL_LOGOUT_MAX_ATTEMPTS", 8u32)?,
+            backchannel_logout_poll_interval_secs: resolver
+                .parse("BACKCHANNEL_LOGOUT_POLL_INTERVAL_SECS", 15u64)?,
+            backchannel_logout_retention_days: resolver
+                .parse("BACKCHANNEL_LOGOUT_RETENTION_DAYS", 7u32)?,
             trust_forwarded_headers: resolver.parse("TRUST_FORWARDED_HEADERS", false)?,
             hsts_max_age: resolver.parse("HSTS_MAX_AGE", 0u64)?,
             internal_service_token,
@@ -373,6 +385,18 @@ impl Config {
     /// エラー・警告ログの保持日数（`0` = 削除しない）。
     pub fn app_log_retention_days(&self) -> u32 {
         self.app_log_retention_days
+    }
+    /// Back-channel logout 通知の再送上限回数（G5）。
+    pub fn backchannel_logout_max_attempts(&self) -> u32 {
+        self.backchannel_logout_max_attempts
+    }
+    /// Back-channel logout 送信ワーカーのポーリング間隔（G5）。
+    pub fn backchannel_logout_poll_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.backchannel_logout_poll_interval_secs)
+    }
+    /// Back-channel logout 送信キューの決着済み行の保持日数（`0` = 削除しない。G5）。
+    pub fn backchannel_logout_retention_days(&self) -> u32 {
+        self.backchannel_logout_retention_days
     }
     /// リバースプロキシが付与する `X-Forwarded-For` / `X-Forwarded-Proto` を信頼するか（S1）。
     pub fn trust_forwarded_headers(&self) -> bool {
