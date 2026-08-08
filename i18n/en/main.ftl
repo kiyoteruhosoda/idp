@@ -868,3 +868,13 @@ mfa-verify-code-help = Enter the code from your authenticator app, a recovery co
 mfa-verify-email-code = Email me a code instead
 mfa-verify-email-sent = We sent a code to your registered email address.
 mfa-verify-email-unavailable = Email codes are not available because email delivery is not configured. Please contact your administrator.
+
+# 外部 IdP ログイン（AP10）
+external-login-title = Sign in with your organization
+external-login-divider = Or sign in with
+external-login-error-unavailable = That sign-in method is not available.
+external-login-error-denied = Sign-in was cancelled at your organization's identity provider.
+external-login-error-invalid = The sign-in response was incomplete. Please start again.
+external-login-error-expired = The sign-in attempt expired. Please start again.
+external-login-error-not-linked = Your account at that identity provider is not linked to an account here. Please contact your administrator.
+external-login-error-failed = We could not verify the response from your identity provider. Please try again or contact your administrator.

@@ -31,6 +31,9 @@ use crate::domain::client::Client;
 use crate::domain::consent::ClientConsent;
 use crate::domain::email_verification::EmailVerificationToken;
 use crate::domain::error::Result;
+use crate::domain::external_idp::{
+    ExternalIdentity, ExternalIdentityProvider, ExternalLoginRequest,
+};
 use crate::domain::passkey_challenge::PasskeyChallenge;
 use crate::domain::password_reset::PasswordResetToken;
 use crate::domain::refresh_token::RefreshToken;
@@ -659,6 +662,77 @@ pub trait TotpSecretRepository: Send + Sync {
     async fn confirm(&self, user_id: Uuid, confirmed_at: DateTime<Utc>) -> Result<()>;
     /// ユーザーの TOTP シークレットを削除する（冪等: 不存在でもエラーにしない）。
     async fn delete(&self, user_id: Uuid) -> Result<()>;
+}
+
+/// 外部 IdP 設定（AP10。仕様 §13）の永続化。テナント境界は `tenant_id` で強制する。
+#[async_trait]
+pub trait ExternalIdentityProviderRepository: Send + Sync {
+    async fn create(&self, provider: &ExternalIdentityProvider) -> Result<()>;
+    /// テナントの全プロバイダを `provider_code` 昇順で返す（管理画面用）。
+    async fn list_for_tenant(&self, tenant_id: TenantId)
+        -> Result<Vec<ExternalIdentityProvider>>;
+    /// テナントの**有効な**プロバイダのみ返す（ログイン画面のボタン用）。
+    async fn list_enabled_for_tenant(
+        &self,
+        tenant_id: TenantId,
+    ) -> Result<Vec<ExternalIdentityProvider>>;
+    /// テナント境界内で `provider_code` 解決する（他テナントのコードを持ち込んでも解決させない）。
+    async fn find_by_code(
+        &self,
+        tenant_id: TenantId,
+        provider_code: &str,
+    ) -> Result<Option<ExternalIdentityProvider>>;
+    /// テナント境界内で id 解決する。
+    async fn find_by_id(
+        &self,
+        tenant_id: TenantId,
+        id: Uuid,
+    ) -> Result<Option<ExternalIdentityProvider>>;
+    /// 既存プロバイダを更新する。更新できた場合 `true`、対象が無ければ `false`。
+    async fn update(&self, provider: &ExternalIdentityProvider) -> Result<bool>;
+    /// テナント境界内で削除する。削除できた場合 `true`。
+    async fn delete(&self, tenant_id: TenantId, id: Uuid) -> Result<bool>;
+}
+
+/// 外部 IdP 上の同一性と本 IdP 利用者の対応（AP10。仕様 §13.2）の永続化。
+///
+/// 検索キーは `(provider_id, external_subject)` で、これが唯一の連携根拠。`tenant_id` を取らない
+/// のは、プロバイダ自体がテナントに属する（＝プロバイダ経由で境界が決まる）ため。
+#[async_trait]
+pub trait ExternalIdentityRepository: Send + Sync {
+    /// 連携を作成する。同じ外部アカウントの二重連携は `Conflict`。
+    async fn create(&self, identity: &ExternalIdentity) -> Result<()>;
+    /// 外部の `sub` から連携を引く。
+    async fn find_by_subject(
+        &self,
+        provider_id: Uuid,
+        external_subject: &str,
+    ) -> Result<Option<ExternalIdentity>>;
+    /// 利用者の全連携を返す（セルフサービスの表示・解除用）。
+    async fn list_for_user(&self, user_id: Uuid) -> Result<Vec<ExternalIdentity>>;
+    /// 利用時刻を記録する。
+    async fn touch_last_used(&self, id: Uuid, at: DateTime<Utc>) -> Result<()>;
+    /// 連携を解除する（所有者チェック込み）。削除できた場合 `true`。
+    async fn delete(&self, id: Uuid, user_id: Uuid) -> Result<bool>;
+}
+
+/// 外部 IdP へのリダイレクトからコールバックまでの進行状態（AP10）の永続化。
+///
+/// `state` は単回使用。消費は「削除できたら勝ち」の原子的なクレームで行う（`saml_sso_requests`
+/// と同じ方式。読んでから消すと、同じ `state` の同時提示で両方通る）。
+#[async_trait]
+pub trait ExternalLoginRequestRepository: Send + Sync {
+    async fn create(&self, request: &ExternalLoginRequest) -> Result<()>;
+    /// `state` のハッシュで引く（テナント境界込み）。
+    async fn find_by_state(
+        &self,
+        tenant_id: TenantId,
+        state_hash: &str,
+    ) -> Result<Option<ExternalLoginRequest>>;
+    /// 進行状態を削除する。**削除できた場合のみ `true`**（単回使用のクレームを兼ねる）。
+    async fn consume(&self, id: Uuid) -> Result<bool>;
+    /// 期限切れの進行状態をまとめて削除し、件数を返す（GC）。
+    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64>;
 }
 
 /// 認証器の統合登録簿（AP9。仕様 §5）。

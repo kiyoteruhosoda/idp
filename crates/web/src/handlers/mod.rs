@@ -13,6 +13,7 @@ pub mod admin_tenants_console;
 pub mod admin_users_console;
 pub mod consent;
 pub mod console_script;
+pub mod external_login;
 pub mod health;
 pub mod invitation_accept;
 pub mod login;

@@ -3,6 +3,7 @@
 use crate::presentation::correlation;
 use crate::presentation::handlers::{
     admin, admin_application_logs, admin_audit, admin_authentication_policies, admin_clients,
+    admin_external_idps,
     admin_invitations, admin_members, admin_permissions, admin_restart,
     admin_saml_service_providers, admin_signing_keys, admin_system_settings, admin_tenants,
     admin_users, authorize, consent, discovery, health, internal_auth, internal_runtime_settings,
@@ -79,6 +80,16 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/internal/account/update-name",
             post(internal_auth::account_update_name),
+        )
+        // 外部 IdP ログイン（AP10）。
+        .route(
+            "/internal/external/providers",
+            post(internal_auth::external_providers),
+        )
+        .route("/internal/external/start", post(internal_auth::external_start))
+        .route(
+            "/internal/external/callback",
+            post(internal_auth::external_callback),
         )
         // 認証器の統合管理（一覧・状態変更・リカバリーコード・email OTP。AP9）。
         .route(
@@ -304,6 +315,17 @@ pub fn build(state: AppState) -> Router {
             "/admin/authentication-policies/{policy_id}",
             put(admin_authentication_policies::update_authentication_policy)
                 .delete(admin_authentication_policies::delete_authentication_policy),
+        )
+        // 外部 IdP 設定（AP10）。idp.tenant.admin 必須。クライアントシークレットは書き込み専用。
+        .route(
+            "/admin/external-idps",
+            get(admin_external_idps::list_external_idps)
+                .post(admin_external_idps::register_external_idp),
+        )
+        .route(
+            "/admin/external-idps/{id}",
+            patch(admin_external_idps::update_external_idp)
+                .delete(admin_external_idps::delete_external_idp),
         )
         // 監査ログ参照（A3、設計仕様 §7）。idp.tenant.admin 必須。
         .route("/admin/audit-logs", get(admin_audit::list_audit_logs))

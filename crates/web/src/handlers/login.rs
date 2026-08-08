@@ -50,7 +50,7 @@ pub async fn login_page(
         // OIDC の `auth_session_id` が無い直接アクセスは、IdP 自身のアカウント画面へ入るための
         // ポータルログインとして扱う（`/{tenant_id}/login` を単独で開けるようにする）。
         // 注: `Messages`（FluentBundle）は !Send のため、await をまたぐ前に生成してはならない。
-        return portal::login_page(&state, &tenant, &headers, error_key).await;
+        return portal::login_page(&state, &correlation, &tenant, &headers, error_key).await;
     };
     let messages = Messages::new(locale(&headers));
     Html(render_form(

@@ -16,10 +16,18 @@ pub fn is_valid_code_verifier(verifier: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~'))
 }
 
+/// `code_verifier` から S256 の `code_challenge` を作る。
+///
+/// 本 IdP は RP としても振る舞う（外部 IdP ログイン。AP10）ため、検証側だけでなく生成側も要る。
+/// 検証（[`verify_s256`]）と同じ変換を 1 箇所に置き、両者がずれないようにする。
+pub fn s256_challenge(code_verifier: &str) -> String {
+    let digest = Sha256::digest(code_verifier.as_bytes());
+    URL_SAFE_NO_PAD.encode(digest)
+}
+
 /// S256 検証: `BASE64URL-ENCODE(SHA256(ASCII(code_verifier))) == code_challenge`。
 pub fn verify_s256(code_verifier: &str, code_challenge: &str) -> bool {
-    let digest = Sha256::digest(code_verifier.as_bytes());
-    URL_SAFE_NO_PAD.encode(digest) == code_challenge
+    s256_challenge(code_verifier) == code_challenge
 }
 
 #[cfg(test)]
@@ -29,6 +37,13 @@ mod tests {
     // RFC 7636 Appendix B のテストベクタ。
     const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
     const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+
+    /// 生成と検証が同じ変換であること（RFC 7636 Appendix B のベクタで固定する）。
+    #[test]
+    fn generates_the_rfc7636_challenge() {
+        assert_eq!(s256_challenge(VERIFIER), CHALLENGE);
+        assert!(verify_s256(VERIFIER, &s256_challenge(VERIFIER)));
+    }
 
     #[test]
     fn verifies_rfc7636_test_vector() {

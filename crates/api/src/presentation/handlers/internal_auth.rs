@@ -23,6 +23,7 @@ use crate::application::account_security::{
 };
 use crate::application::account_tenants::ListTenantsOutcome;
 use crate::application::authenticator_management::AuthenticatorManagementError;
+use crate::application::external_login::{CallbackCommand, CallbackOutcome, StartOutcome};
 use crate::domain::user_authenticator::AuthenticatorStatus;
 use crate::application::step_up::{StepUpCheckOutcome, StepUpVerifyCommand, StepUpVerifyOutcome};
 use crate::domain::step_up::SensitiveOperation;
@@ -65,6 +66,11 @@ use idp_contracts::auth::{
     InternalPortalChangePasswordResponse, InternalPortalMfaRequest, InternalPortalMfaResponse,
     InternalStepUpCheckRequest, InternalStepUpCheckResponse, InternalStepUpVerifyRequest,
     InternalStepUpVerifyResponse,
+};
+use idp_contracts::auth::{
+    ExternalIdpButton, InternalExternalCallbackRequest, InternalExternalCallbackResponse,
+    InternalExternalProvidersRequest, InternalExternalProvidersResponse,
+    InternalExternalStartRequest, InternalExternalStartResponse,
 };
 use idp_contracts::auth::{
     AuthenticatorSummaryResponse, InternalAuthenticatorStatusRequest,
@@ -1106,6 +1112,111 @@ pub async fn account_email_otp(
             Err(e) => {
                 tracing::error!(error = %e, "email otp delivery failed");
                 InternalEmailOtpResponse::Internal
+            }
+        },
+    ))
+}
+
+/// 有効な外部 IdP の一覧（`POST /internal/external/providers`。AP10）。
+/// ログイン画面のボタンを描くために web が呼ぶ。
+pub async fn external_providers(
+    State(state): State<AppState>,
+    Json(req): Json<InternalExternalProvidersRequest>,
+) -> Result<Json<InternalExternalProvidersResponse>, Response> {
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    Ok(Json(
+        match state
+            .external_providers
+            .list_enabled_for_tenant(tenant.tenant_id())
+            .await
+        {
+            Ok(providers) => InternalExternalProvidersResponse::Ok {
+                providers: providers
+                    .into_iter()
+                    .map(|p| ExternalIdpButton {
+                        provider_code: p.provider_code,
+                        display_name: p.display_name,
+                    })
+                    .collect(),
+            },
+            Err(e) => {
+                tracing::error!(error = %e, "external idp list failed");
+                InternalExternalProvidersResponse::Internal
+            }
+        },
+    ))
+}
+
+/// 外部 IdP ログインの開始（`POST /internal/external/start`。AP10）。
+pub async fn external_start(
+    State(state): State<AppState>,
+    Json(req): Json<InternalExternalStartRequest>,
+) -> Result<Json<InternalExternalStartResponse>, Response> {
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    Ok(Json(
+        match state
+            .external_login
+            .start(tenant, &req.provider_code, req.auth_session_id)
+            .await
+        {
+            StartOutcome::Redirect { location } => {
+                InternalExternalStartResponse::Redirect { location }
+            }
+            StartOutcome::ProviderUnavailable => {
+                InternalExternalStartResponse::ProviderUnavailable
+            }
+            StartOutcome::Internal(e) => {
+                tracing::error!(error = %e, "external idp login start failed");
+                InternalExternalStartResponse::Internal
+            }
+        },
+    ))
+}
+
+/// 外部 IdP からのコールバック（`POST /internal/external/callback`。AP10）。
+pub async fn external_callback(
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Json(req): Json<InternalExternalCallbackRequest>,
+) -> Result<Json<InternalExternalCallbackResponse>, Response> {
+    let ctx = RequestContext {
+        correlation_id: correlation.0,
+        ip_address: req.ip_address,
+        user_agent: req.user_agent,
+    };
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let ttl = state.config.sso_absolute_ttl().as_secs();
+    Ok(Json(
+        match state
+            .external_login
+            .callback(
+                tenant,
+                CallbackCommand {
+                    state: req.state,
+                    code: req.code,
+                },
+                &ctx,
+            )
+            .await
+        {
+            CallbackOutcome::Success {
+                sso_session_id,
+                auth_session_id,
+                user_language,
+            } => InternalExternalCallbackResponse::Success {
+                sso_session_id,
+                sso_absolute_ttl_secs: ttl,
+                auth_session_id,
+                user_language,
+            },
+            CallbackOutcome::StateExpired => InternalExternalCallbackResponse::StateExpired,
+            CallbackOutcome::NotLinked => InternalExternalCallbackResponse::NotLinked,
+            CallbackOutcome::UserUnavailable => InternalExternalCallbackResponse::UserUnavailable,
+            CallbackOutcome::PolicyDenied => InternalExternalCallbackResponse::PolicyDenied,
+            CallbackOutcome::ExternalFailure => InternalExternalCallbackResponse::ExternalFailure,
+            CallbackOutcome::Internal(e) => {
+                tracing::error!(error = %e, "external idp callback failed");
+                InternalExternalCallbackResponse::Internal
             }
         },
     ))

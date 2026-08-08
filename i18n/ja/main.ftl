@@ -868,3 +868,13 @@ mfa-verify-code-help = 認証アプリのコード、リカバリーコード、
 mfa-verify-email-code = 代わりにメールでコードを受け取る
 mfa-verify-email-sent = 登録済みのメールアドレスへコードを送信しました。
 mfa-verify-email-unavailable = メール送信が設定されていないため、メールのコードは利用できません。管理者にお問い合わせください。
+
+# 外部 IdP ログイン（AP10）
+external-login-title = 組織のアカウントでログイン
+external-login-divider = または次でログイン
+external-login-error-unavailable = そのログイン方法は利用できません。
+external-login-error-denied = 組織の IdP でログインがキャンセルされました。
+external-login-error-invalid = ログイン応答が不完全でした。最初からやり直してください。
+external-login-error-expired = ログインの有効期限が切れました。最初からやり直してください。
+external-login-error-not-linked = その IdP のアカウントは、こちらのアカウントと連携されていません。管理者にお問い合わせください。
+external-login-error-failed = IdP からの応答を検証できませんでした。もう一度お試しいただくか、管理者にお問い合わせください。

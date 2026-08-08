@@ -13,6 +13,8 @@ use crate::application::account_password::AccountPasswordService;
 use crate::application::account_profile::AccountProfileService;
 use crate::application::account_security::AccountSecurityService;
 use crate::application::authenticator_management::AuthenticatorManagementService;
+use crate::application::external_idp_management::ExternalIdpManagementService;
+use crate::application::external_login::ExternalLoginService;
 use crate::application::step_up::StepUpService;
 use crate::application::account_tenants::AccountTenantsService;
 use crate::application::admin_access::AdminAccessService;
@@ -65,6 +67,11 @@ use crate::domain::repositories::UserPermissionRepository;
 use crate::domain::tenant::{Tenant, TenantId};
 use crate::infrastructure::backchannel_logout::ReqwestBackchannelLogoutSender;
 use crate::infrastructure::repositories::backchannel_logout::SqlxBackchannelLogoutDeliveryRepository;
+use crate::infrastructure::external_oidc::ReqwestExternalOidcClient;
+use crate::infrastructure::repositories::external_idp::{
+    SqlxExternalIdentityProviderRepository, SqlxExternalIdentityRepository,
+    SqlxExternalLoginRequestRepository,
+};
 use crate::infrastructure::repositories::user_authenticator::SqlxUserAuthenticatorRepository;
 use crate::infrastructure::cache::InMemoryTtlCache;
 use crate::infrastructure::db::Db;
@@ -181,6 +188,16 @@ pub struct AppState {
     pub authenticators: Arc<AuthenticatorManagementService>,
     /// 認証器の登録簿（AP9）。期限切れコードの GC が直接使う。
     pub authenticator_repository: Arc<dyn crate::domain::repositories::UserAuthenticatorRepository>,
+    /// 外部 IdP ログイン（AP10）。
+    pub external_login: Arc<ExternalLoginService>,
+    /// 外部 IdP 設定の管理（AP10）。
+    pub external_idps: Arc<ExternalIdpManagementService>,
+    /// 外部 IdP 設定の参照（ログイン画面のボタン用）。GC・一覧が直接使う。
+    pub external_providers:
+        Arc<dyn crate::domain::repositories::ExternalIdentityProviderRepository>,
+    /// 外部 IdP ログインの進行状態（AP10）。期限切れの GC が直接使う。
+    pub external_login_requests:
+        Arc<dyn crate::domain::repositories::ExternalLoginRequestRepository>,
     /// Back-channel logout の送信キュー（G5）。ハンドラは積むだけ、送信はワーカーが行う。
     pub backchannel_logout: Arc<BackchannelLogoutDeliveryService>,
     pub revocation: Arc<RevocationService>,
@@ -610,6 +627,39 @@ impl AppState {
             config.issuer().to_string(),
         ));
 
+        // AP10: 外部 IdP ログイン。外部 IdP は「本 IdP がクライアントとして振る舞う」唯一の経路で、
+        // ID Token の検証（署名・iss・aud・exp・nonce）は `ExternalOidcClient` の実装に閉じている。
+        let external_providers: Arc<
+            dyn crate::domain::repositories::ExternalIdentityProviderRepository,
+        > = Arc::new(SqlxExternalIdentityProviderRepository::new(pool.clone()));
+        let external_login_requests: Arc<
+            dyn crate::domain::repositories::ExternalLoginRequestRepository,
+        > = Arc::new(SqlxExternalLoginRequestRepository::new(pool.clone()));
+        let external_login = Arc::new(ExternalLoginService::new(
+            external_providers.clone(),
+            Arc::new(SqlxExternalIdentityRepository::new(pool.clone())),
+            external_login_requests.clone(),
+            users.clone(),
+            sso_sessions.clone(),
+            authentication_policies.clone(),
+            Arc::new(ReqwestExternalOidcClient::new()),
+            audit.clone(),
+            clock.clone(),
+            ids.clone(),
+            *config.key_encryption_key(),
+            config.public_web_base_url().to_string(),
+            config.sso_idle_ttl(),
+            config.sso_absolute_ttl(),
+            config.auth_policy_default_effect(),
+        ));
+        let external_idps = Arc::new(ExternalIdpManagementService::new(
+            external_providers.clone(),
+            audit.clone(),
+            clock.clone(),
+            ids.clone(),
+            *config.key_encryption_key(),
+        ));
+
         // AP5: Step-up 認証。IP レート制限はログインと同一の制限器を共有する（別枠にすると、
         // ログインで締め出された攻撃者が step-up 経由で試行を続けられる）。
         let step_up = Arc::new(StepUpService::new(
@@ -775,6 +825,10 @@ impl AppState {
             step_up,
             authenticators,
             authenticator_repository,
+            external_login,
+            external_idps,
+            external_providers,
+            external_login_requests,
             backchannel_logout,
             revocation,
             introspection,

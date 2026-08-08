@@ -36,6 +36,9 @@ const EXPECTED_TABLES: &[&str] = &[
     "log",
     "backchannel_logout_deliveries",
     "user_authenticators",
+    "external_identity_providers",
+    "user_external_identities",
+    "external_login_requests",
 ];
 
 /// contract 済み（DROP マイグレーション適用後）で存在してはならないテーブル。

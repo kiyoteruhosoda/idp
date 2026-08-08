@@ -422,6 +422,8 @@ pub struct PortalLogin<'a> {
     pub tenant_prefix: &'a str,
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
+    /// 有効な外部 IdP（AP10）。空ならボタン領域ごと出さない。
+    pub external_providers: &'a [idp_contracts::auth::ExternalIdpButton],
 }
 
 /// ポータルの TOTP 入力画面（`GET /{tenant_id}/login/mfa`）。`mfa_ticket` Cookie を保持した状態で表示する。

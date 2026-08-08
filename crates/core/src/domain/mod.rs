@@ -16,6 +16,8 @@ pub mod consent;
 pub mod crypto;
 pub mod email_verification;
 pub mod error;
+pub mod external_idp;
+pub mod external_oidc_port;
 pub mod id_generator;
 pub mod issuer;
 pub mod jwt;

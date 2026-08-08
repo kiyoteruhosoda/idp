@@ -1616,6 +1616,36 @@ impl ApiClient {
             .await
     }
 
+    /// 有効な外部 IdP を一覧する（ログイン画面のボタン用。AP10）。
+    pub async fn external_providers(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalExternalProvidersRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalExternalProvidersResponse> {
+        self.post_internal("/internal/external/providers", correlation_id, req)
+            .await
+    }
+
+    /// 外部 IdP ログインを開始し、認可エンドポイントの URL を得る（AP10）。
+    pub async fn external_start(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalExternalStartRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalExternalStartResponse> {
+        self.post_internal("/internal/external/start", correlation_id, req)
+            .await
+    }
+
+    /// 外部 IdP からのコールバックを検証させる（AP10）。
+    pub async fn external_callback(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalExternalCallbackRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalExternalCallbackResponse> {
+        self.post_internal("/internal/external/callback", correlation_id, req)
+            .await
+    }
+
     /// 登録済み認証器の一覧とリカバリーコードの残数を取得する（AP9）。
     pub async fn account_authenticators(
         &self,

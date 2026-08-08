@@ -1354,3 +1354,89 @@ pub enum InternalEmailOtpResponse {
     SessionExpired,
     Internal,
 }
+
+// ── 外部 IdP ログイン（AP10） ────────────────────────────────────────────────
+
+/// ログイン画面に並べる外部 IdP 1 件（有効なもののみ）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalIdpButton {
+    /// URL に載せる識別コード。
+    pub provider_code: String,
+    pub display_name: String,
+}
+
+/// 有効な外部 IdP の一覧 API（`POST /internal/external/providers`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalExternalProvidersRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+}
+
+/// 有効な外部 IdP の一覧 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalExternalProvidersResponse {
+    Ok { providers: Vec<ExternalIdpButton> },
+    Internal,
+}
+
+/// 外部 IdP ログインの開始 API（`POST /internal/external/start`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalExternalStartRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub provider_code: String,
+    /// OIDC 認可フローの途中から呼ぶ場合の `auth_session_id`（ポータル経由なら `None`）。
+    #[serde(default)]
+    pub auth_session_id: Option<String>,
+}
+
+/// 外部 IdP ログインの開始 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalExternalStartResponse {
+    /// 外部 IdP の認可エンドポイントへ 302 する。
+    Redirect { location: String },
+    /// プロバイダが無い・無効。
+    ProviderUnavailable,
+    Internal,
+}
+
+/// 外部 IdP からのコールバック API（`POST /internal/external/callback`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalExternalCallbackRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub state: String,
+    pub code: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// 外部 IdP からのコールバック API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalExternalCallbackResponse {
+    /// 認証成功。`sso_session_id` を Cookie 化する。`auth_session_id` があれば OIDC フローを再開する。
+    Success {
+        sso_session_id: String,
+        sso_absolute_ttl_secs: u64,
+        #[serde(default)]
+        auth_session_id: Option<String>,
+        #[serde(default)]
+        user_language: Option<String>,
+    },
+    /// `state` が無効・期限切れ・二重使用。
+    StateExpired,
+    /// 外部 IdP での認証は通ったが、対応する利用者が居ない。
+    NotLinked,
+    /// 対応する利用者は居るが無効・ロック中。
+    UserUnavailable,
+    /// 認証ポリシーによる拒否。
+    PolicyDenied,
+    /// 外部 IdP との通信・トークン検証に失敗した。
+    ExternalFailure,
+    Internal,
+}

@@ -81,20 +81,34 @@ pub async fn run() -> anyhow::Result<()> {
         config.app_log_retention_days(),
     );
 
-    // 期限切れの使い捨てコード（email OTP）の掃除（AP9）。リカバリーコードは期限を持たないため
-    // 対象外（`expires_at IS NULL`）。1 時間ごとで十分な粒度（コードの寿命は 10 分）。
+    // 期限切れの一時レコードの掃除（AP9・AP10）: 使い捨てコード（email OTP）と外部 IdP ログインの
+    // 進行状態。リカバリーコードは期限を持たないため対象外（`expires_at IS NULL`）。
+    // 1 時間ごとで十分な粒度（どちらも寿命は 10 分で、放置しても認証には使えない）。
     {
         let authenticators = state.authenticator_repository.clone();
+        let external_requests = state.external_login_requests.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(3_600)).await;
-                match authenticators.delete_expired(chrono::Utc::now()).await {
+                let now = chrono::Utc::now();
+                match authenticators.delete_expired(now).await {
                     Ok(deleted) if deleted > 0 => {
                         tracing::debug!(deleted, "purged expired one-time authenticator codes");
                     }
                     Ok(_) => {}
                     Err(e) => {
                         tracing::error!(error = %e, "expired authenticator code purge failed");
+                    }
+                }
+                // 外部 IdP ログインの進行状態（AP10）も同じ周期で掃除する。寿命は 10 分で、
+                // 完了した分は消費時に消えるため、残るのは離脱したフローだけ。
+                match external_requests.delete_expired(now).await {
+                    Ok(deleted) if deleted > 0 => {
+                        tracing::debug!(deleted, "purged expired external login requests");
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::error!(error = %e, "expired external login request purge failed");
                     }
                 }
             }

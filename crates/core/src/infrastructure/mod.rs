@@ -7,6 +7,7 @@ pub mod cache;
 pub mod clock;
 pub mod crypto;
 pub mod db;
+pub mod external_oidc;
 pub mod id_generator;
 pub mod jwt;
 pub mod log_capture;

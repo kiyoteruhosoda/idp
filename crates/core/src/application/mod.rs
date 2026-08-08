@@ -22,6 +22,8 @@ pub mod client_status;
 pub mod code_issuance;
 pub mod consent;
 pub mod email_verification;
+pub mod external_idp_management;
+pub mod external_login;
 pub mod introspection;
 pub mod invitation;
 pub mod key_service;
