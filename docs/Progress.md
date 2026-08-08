@@ -53,6 +53,7 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 | 8 | SEC8 | 再利用検知時に子孫トークンファミリを失効させない（authorization code・refresh token の両方）（⬜未着手） | 中 | 小 | 大 | 中 |
 | 8 | AP3 | 認証ポリシーの条件種別を拡張する（ネットワークゾーン・国・端末・時間帯・requested_acr 等。仕様 §8）と `require_specific_method` 効果（⬜未着手） | 大 | 中 | 中 | 大 |
 | 8 | AP8 | ログイン識別子の複数化（仕様 §4。`user_login_identifiers`: 電話番号・社員番号等の種別、表示値と正規化値の分離、識別子単位の無効化）（⬜未着手） | 大 | 大 | 小 | 大 |
+| 5 | SEC13 | ログイン失敗カウンタの更新が read-modify-write で原子的でない（並行試行でロック閾値に届かないことがある。3 つのログイン経路に共通）（⬜未着手） | 中 | 中 | 中 | 小 |
 | 5 | SEC12 | 低リスク改善のまとめ（CSP `unsafe-inline`・Swagger 無認証・`require_pkce` 死に設定・同意 POST の Cookie 非束縛・argon2 パラメータ非明示・auth_sessions の GC/照合/`expect()`）（⬜未着手） | 中 | 中 | 小 | 中 |
 | 5 | AP1 | 認証ポリシーの管理画面（web コンソール UI。現状は API のみ）（⬜未着手） | 中 | 中 | 小 | 中 |
 | 5 | AP7 | パスワードポリシーの拡張（仕様 §11.2。漏えい済みパスワード検出・過去パスワード再利用禁止・有効期限。現状は最小文字数のみ）（⬜未着手） | 中 | 小 | 中 | 中 |
@@ -96,7 +97,7 @@ ADR-0020 で `authentication_policies`（deny / require_mfa / allow、client_ids
 - **AP10** 外部 IdP 認証（§13）。外部 OIDC/SAML IdP を認証器として使い、`iss`+`sub` で内部
   ユーザーへ紐付ける。IdP 制限・外部 MFA 信頼の判定は認証ポリシーの条件として表現する。
 
-### セキュリティレビュー（SEC1〜SEC12）
+### セキュリティレビュー（SEC1〜SEC13）
 
 api / web の別サブドメイン構成を対象にした調査で検出した課題。**「api には対策があるのに web 側に無い」
 非対称**が主軸。良好な点（回帰させない）: redirect_uri/post_logout の完全一致、code の 256bit・SHA-256・
@@ -158,6 +159,20 @@ api / web とも `TraceLayer::new_for_http()`（`crates/api/src/presentation/rou
 
 client_secret は Argon2 照合（`crates/core/src/application/token.rs:602-605`）で総当たりは非現実的だが、
 メモリハード関数の CPU/メモリ増幅型 DoS が成立する。
+
+#### SEC13. 失敗カウンタの更新が原子的でない
+
+`LoginService::handle_password_failure`・`MfaLoginService::handle_totp_failure`・
+`PortalLoginService` の失敗処理はいずれも「`user.failed_login_count` を読む → +1 して
+`update_login_state` で上書き」で、read-modify-write が原子的でない。並行して届いた N 件の試行が
+同じ値を読むと、N 回失敗しても行は 1 しか進まず、ロック閾値に届かないことがある。IP 単位の
+レート制限（既定 30 回/5 分）が総試行数を抑えるため実害は限定的だが、ロックは多層防御の
+一枚なので取りこぼしたくない。
+
+対策: `UPDATE users SET failed_login_count = failed_login_count + 1, locked_until = CASE ... END`
+のように 1 文で加算とロック判定を行うリポジトリメソッドを追加し、3 経路をそれに寄せる。
+`UserRepository` にメソッドが増えるため、各ユニットテストのフェイク実装（10 箇所前後）にも
+追随が要る。
 
 #### SEC12. 低リスク改善のまとめ
 

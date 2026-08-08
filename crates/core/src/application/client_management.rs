@@ -14,6 +14,7 @@ use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
 use crate::domain::id_generator::IdGenerator;
 use crate::domain::message::MessageKey;
+use crate::domain::outbound_uri::is_internal_destination;
 use crate::domain::password::PasswordHasher;
 use crate::domain::repositories::ClientRepository;
 use crate::domain::tenant_context::TenantContext;
@@ -459,52 +460,14 @@ fn validate_backchannel_logout_uri(
     let Some(uri) = uri.map(|u| u.trim().to_string()).filter(|u| !u.is_empty()) else {
         return Ok(None);
     };
-    let parsed = validate_absolute_web_uri(&uri, &LOGOUT_URI_KEYS)?;
-    if host_is_internal(&parsed) {
+    validate_absolute_web_uri(&uri, &LOGOUT_URI_KEYS)?;
+    if is_internal_destination(&uri) {
         return Err(ClientManagementError::Validation(MessageKey::with_value(
             "api-client-backchannel-logout-uri-internal-host",
             &uri,
         )));
     }
     Ok(Some(uri))
-}
-
-/// URL のホストが内部（ループバック・プライベート・リンクローカル等）を指すか。
-fn host_is_internal(url: &url::Url) -> bool {
-    use std::net::{Ipv4Addr, Ipv6Addr};
-
-    fn ipv4_is_internal(ip: Ipv4Addr) -> bool {
-        ip.is_loopback()
-            || ip.is_private()
-            || ip.is_link_local()
-            || ip.is_unspecified()
-            || ip.is_broadcast()
-            || ip.is_documentation()
-            // CGNAT（100.64.0.0/10）。クラウドのメタデータ・内部 LB が置かれることがある。
-            || (ip.octets()[0] == 100 && (64..128).contains(&ip.octets()[1]))
-    }
-    fn ipv6_is_internal(ip: Ipv6Addr) -> bool {
-        if let Some(v4) = ip.to_ipv4_mapped() {
-            return ipv4_is_internal(v4);
-        }
-        ip.is_loopback()
-            || ip.is_unspecified()
-            // unique local（fc00::/7）と link-local（fe80::/10）。
-            || (ip.segments()[0] & 0xfe00) == 0xfc00
-            || (ip.segments()[0] & 0xffc0) == 0xfe80
-    }
-
-    match url.host() {
-        Some(url::Host::Ipv4(ip)) => ipv4_is_internal(ip),
-        Some(url::Host::Ipv6(ip)) => ipv6_is_internal(ip),
-        // 名前解決の結果までは見ない（登録時に解決しても rebinding で覆せる）。
-        // 明らかに自ホストを指す名前だけは弾く。
-        Some(url::Host::Domain(host)) => {
-            let host = host.to_ascii_lowercase();
-            host == "localhost" || host.ends_with(".localhost")
-        }
-        None => true,
-    }
 }
 
 /// scope 群を検証する。1 件以上・既知の OIDC scope のみ・`openid` を含み・重複なしであること。

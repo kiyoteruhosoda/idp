@@ -6,7 +6,10 @@
 //!
 //! ロックポリシー: username 単位で連続 `LOGIN_MAX_FAILED_ATTEMPTS` 回失敗 →
 //! `LOGIN_LOCK_DURATION_SECS` 秒ロック（設定注入。既定 10 回 / 15 分）。IP 単位のレート制限。
-//! 成功時に `failed_login_count = 0` / `locked_until = NULL` へリセットする。
+//! 失敗カウンタのリセット（`failed_login_count = 0` / `locked_until = NULL`）は、**認証が最後まで
+//! 通った時点**でのみ行う。MFA 待ちで返す経路ではリセットせず、TOTP 成功時に
+//! [`crate::application::mfa_login::MfaLoginService`] が行う（SEC3。パスワード成功のたびに消すと、
+//! パスワードを知る攻撃者が TOTP のロックを永久に回避できる）。
 //!
 //! 認証ポリシー（ユーザー認証・認証ポリシー仕様書 §7〜§9）: パスワード検証成功後に
 //! テナントの有効ポリシーを評価し、`deny` は拒否（`PolicyDenied`）、`require_mfa` は
@@ -300,13 +303,12 @@ impl LoginService {
                 .await;
         }
 
-        // 8. 成功: 失敗カウンタとロックをリセットする。
-        if user.failed_login_count > 0 || user.locked_until.is_some() {
-            if let Err(e) = self.users.update_login_state(user.id, 0, None).await {
-                return LoginOutcome::Internal(e.to_string());
-            }
-        }
-
+        // 8. パスワード検証成功。**ここでは失敗カウンタをリセットしない**（SEC3）。
+        //    リセットは「認証が最後まで通った時点」（10. の直前、または MFA 成功時に
+        //    `MfaLoginService`）で行う。ここで消すと、パスワードを知っている攻撃者が
+        //    「TOTP を上限手前まで失敗 → 正しいパスワードで再ログインしてカウンタを 0 に戻す」を
+        //    繰り返してロックを永久に回避できる。
+        //
         // 8.1. メール検証ゲート（SEC6b）。自己登録アカウントは `email_verified` が立つまでログイン不可。
         //      管理者作成・招待ユーザーは検証済みで作られるため掛からない。パスワード検証成功後に判定する
         //      ことで、資格情報を知らない攻撃者からは検証状態を観測できない（列挙防止）。
@@ -410,6 +412,14 @@ impl LoginService {
                 )
                 .await;
             return LoginOutcome::MfaEnrollmentRequired;
+        }
+
+        // 9.5. ここまで来た＝単一要素で認証が成立した（MFA 待ちではない）。失敗カウンタと
+        //      ロックをリセットする（SEC3。MFA 待ちの経路では `MfaLoginService` が TOTP 成功時に行う）。
+        if user.failed_login_count > 0 || user.locked_until.is_some() {
+            if let Err(e) = self.users.update_login_state(user.id, 0, None).await {
+                return LoginOutcome::Internal(e.to_string());
+            }
         }
 
         // 10. SSO セッション発行（Cookie には session_id、DB には SHA-256 ハッシュ）。
@@ -587,5 +597,449 @@ mod tests {
         // HMAC-SHA256 hex（64 文字）でフォームに埋め込める安全な文字のみ。
         assert_eq!(a.len(), 64);
         assert!(a.bytes().all(|b| b.is_ascii_hexdigit()));
+    }
+
+    // ── SEC3: MFA 待ちのパスワード成功では失敗カウンタを消さない ──────────────
+
+    use crate::domain::auth_session::AuthSession;
+    use crate::domain::authentication_policy::AuthenticationPolicy;
+    use crate::domain::authorization_code::AuthorizationCode;
+    use crate::domain::consent::ClientConsent;
+    use crate::domain::error::{DomainError, Result as DomainResult};
+    use crate::domain::repositories::{AuditLogSink, AuthorizationCodeRepository};
+    use crate::domain::totp_secret::TotpSecret;
+    use crate::domain::values::{CodeChallengeMethod, UserStatus};
+    use async_trait::async_trait;
+    use chrono::{DateTime, TimeZone, Utc};
+    use std::sync::Mutex;
+    use uuid::Uuid;
+
+    const CSRF_KEY: [u8; 32] = *b"unit-test-csrf-0123456789abcdef!";
+    const SESSION_ID: &str = "auth-session-id";
+
+    fn now() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 7, 12, 12, 0, 0).unwrap()
+    }
+
+    struct FixedClock;
+    impl Clock for FixedClock {
+        fn now(&self) -> DateTime<Utc> {
+            now()
+        }
+    }
+
+    struct PlainHasher;
+    impl PasswordHasher for PlainHasher {
+        fn hash(&self, password: &str) -> Result<String, DomainError> {
+            Ok(format!("hash:{password}"))
+        }
+        fn verify(&self, password: &str, hash: &str) -> Result<bool, DomainError> {
+            Ok(hash == format!("hash:{password}"))
+        }
+    }
+
+    struct AllowAll;
+    impl LoginRateLimiter for AllowAll {
+        fn check_and_record(&self, _key: &str, _now: DateTime<Utc>) -> bool {
+            true
+        }
+    }
+
+    #[derive(Default)]
+    struct DiscardingSink;
+    #[async_trait]
+    impl AuditLogSink for DiscardingSink {
+        async fn record(&self, _event: &crate::domain::audit::AuditEvent) -> DomainResult<()> {
+            Ok(())
+        }
+    }
+
+    struct FakeAuthSessions {
+        rows: Mutex<Vec<AuthSession>>,
+    }
+    #[async_trait]
+    impl AuthSessionRepository for FakeAuthSessions {
+        async fn create(&self, _s: &AuthSession) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn find_by_id(&self, t: TenantId, id: &str) -> DomainResult<Option<AuthSession>> {
+            Ok(self
+                .rows
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|s| s.tenant_id == t && s.id == id)
+                .cloned())
+        }
+        async fn find_by_handle(
+            &self,
+            _t: TenantId,
+            _h: &str,
+        ) -> DomainResult<Option<AuthSession>> {
+            unreachable!()
+        }
+        async fn consume_handle(&self, _id: &str, _h: &str) -> DomainResult<bool> {
+            unreachable!()
+        }
+        async fn set_authenticated_user(
+            &self,
+            id: &str,
+            user_id: Uuid,
+            auth_time: DateTime<Utc>,
+        ) -> DomainResult<()> {
+            let mut rows = self.rows.lock().unwrap();
+            if let Some(row) = rows.iter_mut().find(|s| s.id == id) {
+                row.authenticated_user_id = Some(user_id);
+                row.auth_time = Some(auth_time);
+            }
+            Ok(())
+        }
+        async fn set_password_verified(
+            &self,
+            id: &str,
+            user_id: Uuid,
+            verified_at: DateTime<Utc>,
+        ) -> DomainResult<()> {
+            let mut rows = self.rows.lock().unwrap();
+            if let Some(row) = rows.iter_mut().find(|s| s.id == id) {
+                row.authenticated_user_id = Some(user_id);
+                row.password_verified_at = Some(verified_at);
+            }
+            Ok(())
+        }
+        async fn delete(&self, id: &str) -> DomainResult<()> {
+            self.rows.lock().unwrap().retain(|s| s.id != id);
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeUsers {
+        rows: Mutex<Vec<User>>,
+    }
+    #[async_trait]
+    impl UserRepository for FakeUsers {
+        async fn create(&self, _u: &User) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn find_by_id(&self, _id: Uuid) -> DomainResult<Option<User>> {
+            unreachable!()
+        }
+        async fn find_by_sub(&self, _s: Uuid) -> DomainResult<Option<User>> {
+            unreachable!()
+        }
+        async fn find_by_email(&self, _t: TenantId, _e: &str) -> DomainResult<Option<User>> {
+            unreachable!()
+        }
+        async fn find_by_username(&self, t: TenantId, name: &str) -> DomainResult<Option<User>> {
+            Ok(self
+                .rows
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|u| u.tenant_id == t && u.preferred_username.as_deref() == Some(name))
+                .cloned())
+        }
+        async fn update_login_state(
+            &self,
+            id: Uuid,
+            count: i32,
+            locked_until: Option<DateTime<Utc>>,
+        ) -> DomainResult<()> {
+            let mut rows = self.rows.lock().unwrap();
+            if let Some(row) = rows.iter_mut().find(|u| u.id == id) {
+                row.failed_login_count = count;
+                row.locked_until = locked_until;
+            }
+            Ok(())
+        }
+        async fn update_password(&self, _id: Uuid, _h: &str) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn reset_password_forced(&self, _id: Uuid, _h: &str) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn update_status(&self, _id: Uuid, _s: UserStatus) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn delete(&self, _id: Uuid) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn mark_email_verified(&self, _id: Uuid) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn update_language(&self, _id: Uuid, _l: Option<&str>) -> DomainResult<()> {
+            unreachable!()
+        }
+    }
+
+    /// TOTP 設定済み／未設定を切り替えるだけのフェイク。
+    struct FakeTotpSecrets {
+        confirmed: bool,
+    }
+    #[async_trait]
+    impl TotpSecretRepository for FakeTotpSecrets {
+        async fn upsert(&self, _s: &TotpSecret) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn find_by_user_id(&self, user_id: Uuid) -> DomainResult<Option<TotpSecret>> {
+            Ok(self.confirmed.then(|| TotpSecret {
+                user_id,
+                secret_encrypted: String::new(),
+                confirmed_at: Some(now()),
+                created_at: now(),
+                updated_at: now(),
+            }))
+        }
+        async fn confirm(&self, _u: Uuid, _c: DateTime<Utc>) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn delete(&self, _u: Uuid) -> DomainResult<()> {
+            unreachable!()
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeSsoSessions;
+    #[async_trait]
+    impl SsoSessionRepository for FakeSsoSessions {
+        async fn create(&self, _s: &SsoSession) -> DomainResult<()> {
+            Ok(())
+        }
+        async fn find_by_hash(&self, _h: &str) -> DomainResult<Option<SsoSession>> {
+            unreachable!()
+        }
+        async fn extend_idle(&self, _h: &str, _t: DateTime<Utc>) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn delete(&self, _h: &str) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn delete_all_for_user(&self, _u: Uuid) -> DomainResult<()> {
+            unreachable!()
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeConsents;
+    #[async_trait]
+    impl ClientConsentRepository for FakeConsents {
+        async fn find(
+            &self,
+            _t: TenantId,
+            _u: Uuid,
+            _c: &str,
+        ) -> DomainResult<Option<ClientConsent>> {
+            Ok(None)
+        }
+        async fn upsert(&self, _c: &ClientConsent) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn revoke(&self, _t: TenantId, _u: Uuid, _c: &str) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn list_for_user(&self, _t: TenantId, _u: Uuid) -> DomainResult<Vec<ClientConsent>> {
+            unreachable!()
+        }
+    }
+
+    #[derive(Default)]
+    struct FakePolicies;
+    #[async_trait]
+    impl AuthenticationPolicyRepository for FakePolicies {
+        async fn create(&self, _p: &AuthenticationPolicy) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn list_for_tenant(&self, _t: TenantId) -> DomainResult<Vec<AuthenticationPolicy>> {
+            unreachable!()
+        }
+        async fn list_enabled_for_tenant(
+            &self,
+            _t: TenantId,
+        ) -> DomainResult<Vec<AuthenticationPolicy>> {
+            Ok(Vec::new())
+        }
+        async fn find_by_id(
+            &self,
+            _t: TenantId,
+            _id: Uuid,
+        ) -> DomainResult<Option<AuthenticationPolicy>> {
+            unreachable!()
+        }
+        async fn update(&self, _p: &AuthenticationPolicy) -> DomainResult<bool> {
+            unreachable!()
+        }
+        async fn delete(&self, _t: TenantId, _id: Uuid) -> DomainResult<bool> {
+            unreachable!()
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeCodes;
+    #[async_trait]
+    impl AuthorizationCodeRepository for FakeCodes {
+        async fn create(&self, _c: &AuthorizationCode) -> DomainResult<()> {
+            Ok(())
+        }
+        async fn consume(
+            &self,
+            _t: TenantId,
+            _h: &str,
+            _u: DateTime<Utc>,
+        ) -> DomainResult<Option<AuthorizationCode>> {
+            unreachable!()
+        }
+        async fn revoke_all_active_for_user(
+            &self,
+            _u: Uuid,
+            _n: DateTime<Utc>,
+        ) -> DomainResult<()> {
+            unreachable!()
+        }
+    }
+
+    struct Harness {
+        service: LoginService,
+        users: Arc<FakeUsers>,
+        tenant: TenantContext,
+        user_id: Uuid,
+    }
+
+    /// `failed_login_count` を `initial_failures` にした利用者で 1 回ログインする土台。
+    fn harness(has_totp: bool, initial_failures: i32) -> Harness {
+        let tenant_id: TenantId = Uuid::now_v7().into();
+        let user_id = Uuid::now_v7();
+
+        let users = Arc::new(FakeUsers::default());
+        users.rows.lock().unwrap().push(User {
+            id: user_id,
+            tenant_id,
+            sub: Uuid::now_v7(),
+            email: "user@example.com".to_string(),
+            email_verified: true,
+            preferred_username: Some("user".to_string()),
+            name: None,
+            language: None,
+            password_hash: "hash:correct-password".to_string(),
+            must_change_password: false,
+            status: UserStatus::Active,
+            failed_login_count: initial_failures,
+            locked_until: None,
+            created_at: now(),
+            updated_at: now(),
+        });
+
+        let auth_sessions = Arc::new(FakeAuthSessions {
+            rows: Mutex::new(vec![AuthSession {
+                id: SESSION_ID.to_string(),
+                tenant_id,
+                client_id: "client-a".to_string(),
+                redirect_uri: "https://rp.example.com/cb".to_string(),
+                scope: vec!["openid".to_string()],
+                state: "state-1".to_string(),
+                nonce: "nonce-1".to_string(),
+                code_challenge: "challenge".to_string(),
+                code_challenge_method: CodeChallengeMethod::S256,
+                prompt: None,
+                max_age: None,
+                handle_hash: None,
+                handle_expires_at: None,
+                authenticated_user_id: None,
+                auth_time: None,
+                password_verified_at: None,
+                expires_at: now() + Duration::seconds(600),
+                created_at: now(),
+                updated_at: now(),
+            }]),
+        });
+
+        let clock: Arc<dyn Clock> = Arc::new(FixedClock);
+        let audit = Arc::new(AuditService::new(Arc::new(DiscardingSink), clock.clone()));
+        let code_issuance = Arc::new(CodeIssuanceService::new(
+            Arc::new(FakeCodes),
+            audit.clone(),
+            clock.clone(),
+            std::time::Duration::from_secs(60),
+        ));
+
+        let service = LoginService::new(
+            users.clone(),
+            auth_sessions,
+            Arc::new(FakeSsoSessions),
+            Arc::new(FakeConsents),
+            Arc::new(FakeTotpSecrets {
+                confirmed: has_totp,
+            }),
+            Arc::new(FakePolicies),
+            code_issuance,
+            Arc::new(PlainHasher),
+            Arc::new(AllowAll),
+            audit,
+            clock,
+            std::time::Duration::from_secs(3600),
+            std::time::Duration::from_secs(28800),
+            LockoutPolicy {
+                max_failed_attempts: 10,
+                lock_duration_secs: 900,
+            },
+            DefaultPolicyEffect::Allow,
+            CSRF_KEY,
+        );
+
+        Harness {
+            service,
+            users,
+            tenant: TenantContext::new(tenant_id),
+            user_id,
+        }
+    }
+
+    impl Harness {
+        async fn login(&self) -> LoginOutcome {
+            let ctx = RequestContext {
+                correlation_id: "test-correlation".to_string(),
+                ip_address: Some("203.0.113.10".to_string()),
+                user_agent: None,
+            };
+            self.service
+                .login(
+                    self.tenant,
+                    LoginCommand {
+                        auth_session_id: Some(SESSION_ID.to_string()),
+                        username: "user".to_string(),
+                        password: "correct-password".to_string(),
+                        csrf_token: csrf_token(SESSION_ID, &CSRF_KEY),
+                    },
+                    &ctx,
+                )
+                .await
+        }
+
+        fn failed_count(&self) -> i32 {
+            self.users.rows.lock().unwrap()[0].failed_login_count
+        }
+    }
+
+    /// SEC3 の要: MFA 待ちで止まる経路では失敗カウンタを消さない。消してしまうと、パスワードを
+    /// 知っている攻撃者が「TOTP を上限手前まで失敗 → 再ログインでカウンタを 0 に戻す」を
+    /// 繰り返してロックを永久に回避できる。
+    #[tokio::test]
+    async fn mfa_pending_login_keeps_the_failure_counter() {
+        let h = harness(true, 4);
+        assert!(matches!(h.login().await, LoginOutcome::MfaRequired { .. }));
+        assert_eq!(h.failed_count(), 4, "MFA 待ちではリセットしない");
+    }
+
+    /// 単一要素で認証が成立する経路（TOTP 未設定）は従来どおりリセットする。
+    #[tokio::test]
+    async fn completed_single_factor_login_resets_the_failure_counter() {
+        let h = harness(false, 4);
+        let outcome = h.login().await;
+        assert!(
+            matches!(outcome, LoginOutcome::Success { .. }),
+            "TOTP 未設定なら単一要素で成立する"
+        );
+        assert_eq!(h.failed_count(), 0);
+        let _ = h.user_id;
     }
 }

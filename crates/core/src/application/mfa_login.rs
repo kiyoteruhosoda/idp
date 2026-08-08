@@ -12,6 +12,9 @@
 //!
 //! 6 桁 TOTP は探索空間が 10^6 しかなく、auth_session の生存中（既定 600 秒）に無制限の試行を
 //! 許すとパスワード窃取済みの攻撃者が MFA を突破できるため、どちらも省略できない。
+//!
+//! 失敗カウンタのリセットは **TOTP 成功時にここで**行う。`LoginService` はパスワード成功だけでは
+//! リセットしない（そこで消すと、再ログインを挟むだけでロックを回避できる）。
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authorize::code_redirect;

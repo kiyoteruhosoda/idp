@@ -25,7 +25,10 @@ use std::time::Duration;
 
 /// 秘密鍵暗号化キーの開発用デフォルト（ちょうど 32 バイト）。本番では必ず `KEY_ENCRYPTION_KEY`
 /// を設定する。運用では DB 外の鍵管理（KMS 等）へ移行する。
-const DEV_KEY_ENCRYPTION_KEY: &[u8; 32] = b"idp-dev-insecure-key-0123456789!";
+///
+/// `DEV_CSRF_SECRET` と同じく公開する（統合テストが「既定値と同じバイト列」を明示注入するのに使う。
+/// 共有テスト DB 上の署名鍵を全テストバイナリで相互に復号できる状態を保つため）。
+pub const DEV_KEY_ENCRYPTION_KEY: &[u8; 32] = b"idp-dev-insecure-key-0123456789!";
 
 /// サービス間内部認証トークンの開発用デフォルト（ADR-0007 §5）。本番では必ず
 /// `INTERNAL_SERVICE_TOKEN` を設定する。web→api の `/internal/*` 呼び出しを保護する共有シークレット。
