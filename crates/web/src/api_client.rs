@@ -1616,6 +1616,50 @@ impl ApiClient {
             .await
     }
 
+    /// 登録済み認証器の一覧とリカバリーコードの残数を取得する（AP9）。
+    pub async fn account_authenticators(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalAuthenticatorsRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalAuthenticatorsResponse> {
+        self.post_internal("/internal/account/authenticators", correlation_id, req)
+            .await
+    }
+
+    /// 認証器の状態を変える（一時停止・再開・失効。AP9）。
+    pub async fn account_authenticator_status(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalAuthenticatorStatusRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalAuthenticatorStatusResponse> {
+        self.post_internal(
+            "/internal/account/authenticators/status",
+            correlation_id,
+            req,
+        )
+        .await
+    }
+
+    /// リカバリーコードを（再）発行する（AP9）。平文はこの応答でのみ得られる。
+    pub async fn account_recovery_codes(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalRecoveryCodesRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalRecoveryCodesResponse> {
+        self.post_internal("/internal/account/recovery-codes", correlation_id, req)
+            .await
+    }
+
+    /// MFA 待ちの利用者へ email OTP を送る（AP9）。
+    pub async fn account_email_otp(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalEmailOtpRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalEmailOtpResponse> {
+        self.post_internal("/internal/account/email-otp", correlation_id, req)
+            .await
+    }
+
     /// 重要操作の直前に step-up が要るかを判定する（AP5）。
     pub async fn step_up_check(
         &self,

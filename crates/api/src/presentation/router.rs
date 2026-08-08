@@ -80,6 +80,23 @@ pub fn build(state: AppState) -> Router {
             "/internal/account/update-name",
             post(internal_auth::account_update_name),
         )
+        // 認証器の統合管理（一覧・状態変更・リカバリーコード・email OTP。AP9）。
+        .route(
+            "/internal/account/authenticators",
+            post(internal_auth::account_authenticators),
+        )
+        .route(
+            "/internal/account/authenticators/status",
+            post(internal_auth::account_authenticator_status),
+        )
+        .route(
+            "/internal/account/recovery-codes",
+            post(internal_auth::account_recovery_codes),
+        )
+        .route(
+            "/internal/account/email-otp",
+            post(internal_auth::account_email_otp),
+        )
         // Step-up 認証（重要操作の直前の本人確認。AP5）。
         .route("/internal/step-up/check", post(internal_auth::step_up_check))
         .route(

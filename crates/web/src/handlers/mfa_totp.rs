@@ -262,6 +262,7 @@ pub async fn setup_delete(
 /// `?error=csrf` は CSRF 不一致の POST から PRG で戻ったときのエラーバナー表示。
 pub async fn verify_page(
     State(state): State<WebState>,
+    Extension(tenant): Extension<WebTenant>,
     Query(query): Query<FormPageQuery>,
     headers: HeaderMap,
 ) -> Response {
@@ -276,7 +277,9 @@ pub async fn verify_page(
     Html(render_verify_form(
         &messages,
         &login_csrf_token(&auth_session_id, state.config.csrf_secret()),
-        form_retry_error_key(query.error.as_deref()),
+        // 送信結果の案内も同じ `?error=` に載せる（PRG のため）。
+        verify_banner_key(query.error.as_deref()),
+        &tenant.prefix(),
     ))
     .into_response()
 }
@@ -368,6 +371,7 @@ pub async fn verify(
             auth_session_id.as_deref(),
             "mfa-error-invalid-code",
             state.config.csrf_secret(),
+            &tenant.prefix(),
         ),
         // レート制限・ロックはフォームを出しても再試行できないため、案内だけのページにする（SEC3）。
         InternalVerifyTotpResponse::RateLimited => error_page(
@@ -426,12 +430,92 @@ pub fn generate_qr_svg(uri: &str) -> String {
 
 // ── ヘルパー ────────────────────────────────────────────────────────────────
 
-fn render_verify_form(messages: &Messages, csrf: &str, error_key: Option<&str>) -> String {
+/// TOTP 入力画面のバナー用に、`?error=` の値を翻訳キーへ写す。
+///
+/// CSRF・再試行のエラー（`form_retry_error_key`）に加えて、email OTP の送信結果も同じクエリで
+/// 運ぶ（PRG のため）。未知の値は何も出さない。
+fn verify_banner_key(value: Option<&str>) -> Option<&'static str> {
+    match value {
+        Some("email-sent") => Some("mfa-verify-email-sent"),
+        Some("email-unavailable") => Some("mfa-verify-email-unavailable"),
+        Some("session") => Some("mfa-error-session-expired"),
+        other => form_retry_error_key(other),
+    }
+}
+
+fn render_verify_form(
+    messages: &Messages,
+    csrf: &str,
+    error_key: Option<&str>,
+    tenant_prefix: &str,
+) -> String {
     render(&TotpVerifyTemplate {
         messages,
         csrf,
         error_key,
+        // メール送信の可否（SMTP 設定の有無）は api しか知らないため、導線は常に出し、
+        // 未設定なら送信結果として案内する（画面から設定状況を推測させない）。
+        email_otp_available: true,
+        email_otp_action: &format!("{tenant_prefix}/mfa/totp/email-code"),
     })
+}
+
+/// email OTP の送信要求（`POST /{tenant_id}/mfa/totp/email-code`。AP9）。
+///
+/// MFA 待ちの `auth_session_id` を api へ渡し、登録済みメールアドレスへ短命コードを送らせる。
+/// 送信の成否は画面のバナーで返し、いずれの場合も TOTP 入力画面に留まる。
+pub async fn send_email_code(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Form(form): Form<EmailCodeForm>,
+) -> Response {
+    let messages_locale = locale(&headers);
+    let Some(auth_session_id) = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE) else {
+        let messages = Messages::new(messages_locale);
+        return error_page(
+            &messages,
+            StatusCode::BAD_REQUEST,
+            "mfa-error-session-expired",
+        );
+    };
+    // CSRF は TOTP フォームと同じ同期トークン（`auth_session_id` 由来）で照合する。
+    if login_csrf_token(&auth_session_id, state.config.csrf_secret()) != form.csrf_token {
+        return see_other(&format!("{}/mfa/totp?error=csrf", tenant.prefix()));
+    }
+
+    let ctx = forwarded_context(&headers, &correlation);
+    let request = idp_contracts::auth::InternalEmailOtpRequest {
+        tenant_id: Some(tenant.0.clone()),
+        auth_session_id: Some(auth_session_id),
+        mfa_ticket: None,
+        ip_address: ctx.ip_address,
+        user_agent: ctx.user_agent,
+    };
+    let error = match state
+        .api
+        .account_email_otp(&ctx.correlation_id, &request)
+        .await
+    {
+        Ok(idp_contracts::auth::InternalEmailOtpResponse::Sent) => "email-sent",
+        Ok(idp_contracts::auth::InternalEmailOtpResponse::Unavailable) => "email-unavailable",
+        Ok(idp_contracts::auth::InternalEmailOtpResponse::SessionExpired) => "session",
+        Ok(idp_contracts::auth::InternalEmailOtpResponse::Internal) => {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "email otp request to api failed");
+            return StatusCode::BAD_GATEWAY.into_response();
+        }
+    };
+    see_other(&format!("{}/mfa/totp?error={error}", tenant.prefix()))
+}
+
+/// email OTP 送信フォーム（CSRF トークンのみ）。
+#[derive(Debug, Deserialize)]
+pub struct EmailCodeForm {
+    pub csrf_token: String,
 }
 
 fn reshow_verify_form(
@@ -440,6 +524,7 @@ fn reshow_verify_form(
     auth_session_id: Option<&str>,
     error_key: &str,
     csrf_secret: &[u8],
+    tenant_prefix: &str,
 ) -> Response {
     match auth_session_id {
         Some(id) => (
@@ -448,6 +533,7 @@ fn reshow_verify_form(
                 messages,
                 &login_csrf_token(id, csrf_secret),
                 Some(error_key),
+                tenant_prefix,
             )),
         )
             .into_response(),

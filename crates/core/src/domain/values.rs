@@ -5,16 +5,21 @@
 //! DB との相互変換は infrastructure 層のリポジトリが担う。
 #![allow(dead_code)]
 
-use crate::domain::error::DomainError;
 use crate::domain::message::MessageKey;
 
 /// 文字列許可値を持つ enum を、`as_str` / `parse` 付きで定義するマクロ。
+///
+/// バリアントにも doc コメント（属性）を書ける。状態遷移を持つ enum は「どの値が何を意味するか」を
+/// 型の隣に置けないと、DB の CHECK 制約とコードのどちらが正なのか読み手に伝わらない。
 macro_rules! string_enum {
-    ($(#[$meta:meta])* $name:ident { $($variant:ident => $value:literal),+ $(,)? }) => {
+    (
+        $(#[$meta:meta])*
+        $name:ident { $($(#[$vmeta:meta])* $variant:ident => $value:literal),+ $(,)? }
+    ) => {
         $(#[$meta])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub enum $name {
-            $($variant),+
+            $($(#[$vmeta])* $variant),+
         }
 
         impl $name {
@@ -24,10 +29,10 @@ macro_rules! string_enum {
                 }
             }
 
-            pub fn parse(s: &str) -> Result<Self, DomainError> {
+            pub fn parse(s: &str) -> Result<Self, $crate::domain::error::DomainError> {
                 match s {
                     $($value => Ok(Self::$variant),)+
-                    other => Err(DomainError::InvalidValue(format!(
+                    other => Err($crate::domain::error::DomainError::InvalidValue(format!(
                         concat!(stringify!($name), ": {}"), other
                     ))),
                 }
@@ -41,6 +46,9 @@ macro_rules! string_enum {
         }
     };
 }
+
+// 許可値の定義形式を 1 つに保つため、他のドメインモジュールからも同じマクロを使う。
+pub(crate) use string_enum;
 
 string_enum!(
     /// ユーザーのアカウント状態。

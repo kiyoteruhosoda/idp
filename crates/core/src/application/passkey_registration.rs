@@ -56,6 +56,8 @@ pub struct CredentialInfo {
 }
 
 pub struct PasskeyRegistrationService {
+    /// 認証器の登録簿（AP9）。passkey 本体は `user_webauthn_credentials` に残し、状態を反映する。
+    authenticators: Arc<crate::application::authenticator_management::AuthenticatorManagementService>,
     webauthn_credentials: Arc<dyn WebAuthnCredentialRepository>,
     passkey_challenges: Arc<dyn PasskeyChallengeRepository>,
     sso_sessions: Arc<dyn SsoSessionRepository>,
@@ -66,6 +68,9 @@ pub struct PasskeyRegistrationService {
 
 impl PasskeyRegistrationService {
     pub fn new(
+        authenticators: Arc<
+            crate::application::authenticator_management::AuthenticatorManagementService,
+        >,
         webauthn_credentials: Arc<dyn WebAuthnCredentialRepository>,
         passkey_challenges: Arc<dyn PasskeyChallengeRepository>,
         sso_sessions: Arc<dyn SsoSessionRepository>,
@@ -74,6 +79,7 @@ impl PasskeyRegistrationService {
         ids: Arc<dyn IdGenerator>,
     ) -> Self {
         Self {
+            authenticators,
             webauthn_credentials,
             passkey_challenges,
             sso_sessions,
@@ -194,6 +200,12 @@ impl PasskeyRegistrationService {
             }
         })?;
 
+        // 登録簿へ反映する（AP9）。ここが漏れると、登録したパスキーが一覧に出ず一時停止もできない。
+        self.authenticators
+            .register_webauthn(user_id, cred_id, &cred.name)
+            .await
+            .map_err(|e| PasskeyRegistrationError::Internal(e.to_string()))?;
+
         Ok(cred_id)
     }
 
@@ -207,6 +219,10 @@ impl PasskeyRegistrationService {
         self.webauthn_credentials
             .delete(credential_id, user_id)
             .await?;
+        self.authenticators
+            .revoke_webauthn(user_id, credential_id)
+            .await
+            .map_err(|e| PasskeyRegistrationError::Internal(e.to_string()))?;
         Ok(())
     }
 

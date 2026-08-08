@@ -1232,3 +1232,125 @@ pub enum InternalStepUpVerifyResponse {
     UnknownOperation,
     Internal,
 }
+
+// ── 認証器の統合管理（AP9） ──────────────────────────────────────────────────
+
+/// 登録済み認証器 1 件の要約（セキュリティ画面）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthenticatorSummaryResponse {
+    pub id: String,
+    /// 種別（`totp` / `webauthn` / `email_otp`）。リカバリーコードは本数で別に返す。
+    pub authenticator_type: String,
+    /// 状態（`pending` / `active` / `suspended`）。失効済みは返さない。
+    pub status: String,
+    pub label: String,
+    pub created_at: String,
+    #[serde(default)]
+    pub last_used_at: Option<String>,
+}
+
+/// 認証器一覧 API（`POST /internal/account/authenticators`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAuthenticatorsRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+}
+
+/// 認証器一覧 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAuthenticatorsResponse {
+    Ok {
+        authenticators: Vec<AuthenticatorSummaryResponse>,
+        /// 未使用のリカバリーコードの残数。
+        recovery_codes_remaining: usize,
+    },
+    SessionExpired,
+    Internal,
+}
+
+/// 認証器の状態変更 API（`POST /internal/account/authenticators/status`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAuthenticatorStatusRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+    pub authenticator_id: String,
+    /// 遷移先（`active` / `suspended` / `revoked`）。
+    pub status: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// 認証器の状態変更 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAuthenticatorStatusResponse {
+    Ok,
+    /// 指定 ID が当人の認証器に無い。
+    NotFound,
+    /// その状態へは遷移できない（失効済みを戻す等）。
+    InvalidTransition,
+    /// 未知の状態名。
+    UnknownStatus,
+    SessionExpired,
+    Internal,
+}
+
+/// リカバリーコード発行 API（`POST /internal/account/recovery-codes`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalRecoveryCodesRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// リカバリーコード発行 API のレスポンス。**平文はこの応答でのみ返る**（DB はハッシュのみ）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalRecoveryCodesResponse {
+    Ok { codes: Vec<String> },
+    SessionExpired,
+    Internal,
+}
+
+/// email OTP 送信 API（`POST /internal/account/email-otp`）のリクエスト。
+///
+/// ログイン中の第二要素として使うため、`sso_session_id` ではなく **MFA 待ちの利用者**を指す
+/// 必要がある。web はログインフローの `auth_session_id`（OIDC）または `mfa_ticket`（ポータル）を
+/// 持っているので、api 側でそこから利用者を解決する。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalEmailOtpRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    /// OIDC ログインフローの `auth_session_id`（MFA 待ち状態）。
+    #[serde(default)]
+    pub auth_session_id: Option<String>,
+    /// ポータルログインの `mfa_ticket`。
+    #[serde(default)]
+    pub mfa_ticket: Option<String>,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// email OTP 送信 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalEmailOtpResponse {
+    /// 送信した（送信先アドレスは返さない）。
+    Sent,
+    /// SMTP が未設定でメールを送れない。
+    Unavailable,
+    /// MFA 待ちの状態ではない（セッション・チケットが無効）。
+    SessionExpired,
+    Internal,
+}

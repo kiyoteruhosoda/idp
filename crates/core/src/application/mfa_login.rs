@@ -25,10 +25,12 @@ use crate::domain::authentication_policy::LockoutPolicy;
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::rate_limit::LoginRateLimiter;
+use crate::application::authenticator_management::consume_single_use_code;
 use crate::domain::repositories::{
     AuthSessionRepository, ClientConsentRepository, SsoSessionRepository, TotpSecretRepository,
-    UserRepository,
+    UserAuthenticatorRepository, UserRepository,
 };
+use crate::domain::user_authenticator::AuthenticatorType;
 use crate::domain::sso_session::SsoSession;
 use crate::domain::values::AuthenticationMethod;
 use crate::domain::tenant::TenantId;
@@ -72,6 +74,9 @@ pub struct MfaLoginCommand {
 }
 
 pub struct MfaLoginService {
+    /// 認証器の登録簿（AP9）。リカバリーコード・email OTP の消費に使う。要るのは消費だけなので、
+    /// 管理ユースケース全体ではなくリポジトリを直接受ける（正規化は共有関数に閉じている）。
+    authenticators: Arc<dyn UserAuthenticatorRepository>,
     auth_sessions: Arc<dyn AuthSessionRepository>,
     totp_secrets: Arc<dyn TotpSecretRepository>,
     users: Arc<dyn UserRepository>,
@@ -91,6 +96,7 @@ pub struct MfaLoginService {
 impl MfaLoginService {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        authenticators: Arc<dyn UserAuthenticatorRepository>,
         auth_sessions: Arc<dyn AuthSessionRepository>,
         totp_secrets: Arc<dyn TotpSecretRepository>,
         users: Arc<dyn UserRepository>,
@@ -107,6 +113,7 @@ impl MfaLoginService {
         csrf_secret: [u8; 32],
     ) -> Self {
         Self {
+            authenticators,
             auth_sessions,
             totp_secrets,
             users,
@@ -199,26 +206,22 @@ impl MfaLoginService {
             return MfaLoginOutcome::Internal("user not active".to_string());
         }
 
-        // 6. TOTP シークレットを取得して検証する。
-        let totp_record = match self.totp_secrets.find_by_user_id(user_id).await {
-            Ok(Some(r)) if r.is_confirmed() => r,
-            Ok(_) => return MfaLoginOutcome::SessionExpired,
-            Err(e) => return MfaLoginOutcome::Internal(e.to_string()),
+        // 6. 第二要素を検証する。入力欄は 1 つで、TOTP・リカバリーコード・email OTP のどれでも
+        //    受ける（AP9）。認証器を失った利用者に別の入力画面へ移らせると、その画面へ辿り着く
+        //    ことが復旧の前提になってしまう。値の形式で分岐せず、順に照合する（いずれも保存済み
+        //    シークレットとの照合なので、取り違えは起こらない）。
+        let second_factor = match self
+            .verify_second_factor(tenant_id, user_id, &cmd.totp_code, ctx)
+            .await
+        {
+            Ok(Some(method)) => method,
+            Ok(None) => {
+                return self
+                    .handle_totp_failure(tenant_id, &user, &client_id, now, ctx)
+                    .await;
+            }
+            Err(e) => return MfaLoginOutcome::Internal(e),
         };
-        let secret_bytes =
-            match crypto::decrypt(&totp_record.secret_encrypted, &self.key_encryption_key) {
-                Ok(b) => b,
-                Err(e) => return MfaLoginOutcome::Internal(e.to_string()),
-            };
-        let valid = match verify_totp_code(&secret_bytes, &cmd.totp_code) {
-            Ok(v) => v,
-            Err(e) => return MfaLoginOutcome::Internal(e.to_string()),
-        };
-        if !valid {
-            return self
-                .handle_totp_failure(tenant_id, &user, &client_id, now, ctx)
-                .await;
-        }
 
         // 7. 成功: 失敗カウンタとロックをリセットする（パスワード認証の成功時と同じ扱い）。
         if user.failed_login_count > 0 || user.locked_until.is_some() {
@@ -235,8 +238,7 @@ impl MfaLoginService {
             now,
             self.sso_idle_ttl,
             self.sso_absolute_ttl,
-            vec![AuthenticationMethod::Password,
-                AuthenticationMethod::Totp,],
+            vec![AuthenticationMethod::Password, second_factor],
             ctx.user_agent.clone(),
             ctx.ip_address.clone(),
         );
@@ -342,6 +344,89 @@ impl MfaLoginService {
 
     /// TOTP 不一致時の失敗カウント更新とロック判定（SEC3）。
     ///
+    /// `auth_session_id` から MFA 待ちの利用者を解決する（AP9。email OTP の送信先を決めるために
+    /// 使う）。パスワード検証済み（`password_verified_at` 非 NULL）でなければ `None` を返す
+    /// —— 未認証のリクエストでメール送信を誘発させないため。
+    pub async fn pending_mfa_user(
+        &self,
+        tenant: TenantContext,
+        auth_session_id: &str,
+    ) -> Option<Uuid> {
+        let now = self.clock.now();
+        let session = self
+            .auth_sessions
+            .find_by_id(tenant.tenant_id(), auth_session_id)
+            .await
+            .ok()
+            .flatten()?;
+        if session.is_expired_at(now) || session.password_verified_at.is_none() {
+            return None;
+        }
+        session.authenticated_user_id
+    }
+
+    /// 第二要素を検証する（AP9）。通ったら、記録すべき認証方式を返す。どれにも一致しなければ
+    /// `Ok(None)`（呼び出し側が失敗として扱う）。
+    ///
+    /// 照合の順序は TOTP → リカバリーコード → email OTP。TOTP を先に見るのは、日常的に使われる
+    /// 経路を最短にするため（後ろ 2 つは DB アクセスを伴う）。
+    async fn verify_second_factor(
+        &self,
+        tenant_id: TenantId,
+        user_id: Uuid,
+        code: &str,
+        ctx: &RequestContext,
+    ) -> Result<Option<AuthenticationMethod>, String> {
+        // TOTP。未設定なら次へ倒す（TOTP を持たずリカバリーコードだけの利用者があり得る）。
+        match self.totp_secrets.find_by_user_id(user_id).await {
+            Ok(Some(record)) if record.is_confirmed() => {
+                let secret = crypto::decrypt(&record.secret_encrypted, &self.key_encryption_key)
+                    .map_err(|e| e.to_string())?;
+                if verify_totp_code(&secret, code).map_err(|e| e.to_string())? {
+                    return Ok(Some(AuthenticationMethod::Totp));
+                }
+            }
+            Ok(_) => {}
+            Err(e) => return Err(e.to_string()),
+        }
+
+        // リカバリーコード・email OTP（いずれも 1 回きり）。消費できたら第二要素として通す。
+        let now = self.clock.now();
+        for (authenticator_type, method) in [
+            (
+                AuthenticatorType::RecoveryCode,
+                AuthenticationMethod::RecoveryCode,
+            ),
+            (AuthenticatorType::EmailOtp, AuthenticationMethod::EmailOtp),
+        ] {
+            if consume_single_use_code(
+                self.authenticators.as_ref(),
+                user_id,
+                authenticator_type,
+                code,
+                now,
+            )
+            .await
+            .map_err(|e| e.to_string())?
+            {
+                self.audit
+                    .record(
+                        AuditEventType::RecoveryCodeUsed,
+                        AuditResult::Success,
+                        Some(tenant_id),
+                        Some(user_id),
+                        None,
+                        Some(&format!("type={authenticator_type}")),
+                        ctx,
+                    )
+                    .await;
+                return Ok(Some(method));
+            }
+        }
+
+        Ok(None)
+    }
+
     /// カウンタはパスワード認証（`LoginService::handle_password_failure`）と同じ
     /// `users.failed_login_count` を進める。MFA だけを別カウンタにすると、パスワードで N-1 回、
     /// TOTP で N-1 回という配分でロックを免れる余地が残るため共有する。
@@ -551,6 +636,19 @@ mod tests {
         async fn delete(&self, id: &str) -> DomainResult<()> {
             self.rows.lock().unwrap().retain(|s| s.id != id);
             Ok(())
+        }
+    }
+
+    /// 認証器の登録簿のフェイク。既定実装（見つからない）に任せるので、`create` だけ塞ぐ。
+    /// リカバリーコード・email OTP を持たない利用者の経路を再現する。
+    struct FakeAuthenticators;
+    #[async_trait]
+    impl UserAuthenticatorRepository for FakeAuthenticators {
+        async fn create(
+            &self,
+            _a: &crate::domain::user_authenticator::UserAuthenticator,
+        ) -> DomainResult<()> {
+            unreachable!()
         }
     }
 
@@ -805,6 +903,7 @@ mod tests {
             ));
 
             let service = MfaLoginService::new(
+                Arc::new(FakeAuthenticators),
                 auth_sessions,
                 totp_secrets.clone(),
                 users.clone(),

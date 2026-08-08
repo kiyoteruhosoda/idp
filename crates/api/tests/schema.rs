@@ -35,6 +35,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "audit_log",
     "log",
     "backchannel_logout_deliveries",
+    "user_authenticators",
 ];
 
 /// contract 済み（DROP マイグレーション適用後）で存在してはならないテーブル。

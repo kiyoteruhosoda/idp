@@ -12,6 +12,7 @@ use crate::application::account_language::AccountLanguageService;
 use crate::application::account_password::AccountPasswordService;
 use crate::application::account_profile::AccountProfileService;
 use crate::application::account_security::AccountSecurityService;
+use crate::application::authenticator_management::AuthenticatorManagementService;
 use crate::application::step_up::StepUpService;
 use crate::application::account_tenants::AccountTenantsService;
 use crate::application::admin_access::AdminAccessService;
@@ -64,6 +65,7 @@ use crate::domain::repositories::UserPermissionRepository;
 use crate::domain::tenant::{Tenant, TenantId};
 use crate::infrastructure::backchannel_logout::ReqwestBackchannelLogoutSender;
 use crate::infrastructure::repositories::backchannel_logout::SqlxBackchannelLogoutDeliveryRepository;
+use crate::infrastructure::repositories::user_authenticator::SqlxUserAuthenticatorRepository;
 use crate::infrastructure::cache::InMemoryTtlCache;
 use crate::infrastructure::db::Db;
 use crate::infrastructure::id_generator::UuidV7Generator;
@@ -175,6 +177,10 @@ pub struct AppState {
     pub account_security: Arc<AccountSecurityService>,
     /// Step-up 認証（重要操作の直前の本人確認。AP5）。
     pub step_up: Arc<StepUpService>,
+    /// 認証器の統合管理（一覧・状態変更・リカバリーコード・email OTP。AP9）。
+    pub authenticators: Arc<AuthenticatorManagementService>,
+    /// 認証器の登録簿（AP9）。期限切れコードの GC が直接使う。
+    pub authenticator_repository: Arc<dyn crate::domain::repositories::UserAuthenticatorRepository>,
     /// Back-channel logout の送信キュー（G5）。ハンドラは積むだけ、送信はワーカーが行う。
     pub backchannel_logout: Arc<BackchannelLogoutDeliveryService>,
     pub revocation: Arc<RevocationService>,
@@ -260,6 +266,20 @@ impl AppState {
             audit.clone(),
             clock.clone(),
         ));
+        // AP9: 認証器の統合管理。種別ごとの表に散っていた登録状況を 1 つの登録簿へ集約し、
+        // リカバリーコード・email OTP を追加する。
+        let authenticator_repository: Arc<dyn crate::domain::repositories::UserAuthenticatorRepository> =
+            Arc::new(SqlxUserAuthenticatorRepository::new(pool.clone()));
+        let authenticators = Arc::new(AuthenticatorManagementService::new(
+            authenticator_repository.clone(),
+            users.clone(),
+            system_settings.clone(),
+            Arc::new(LettreSmtpMailer::new()),
+            audit.clone(),
+            clock.clone(),
+            ids.clone(),
+        ));
+
         // セルフサービスのパスワード変更（ログイン済みユーザー。MT15）。
         let account_password = Arc::new(AccountPasswordService::new(
             sso_sessions.clone(),
@@ -437,6 +457,7 @@ impl AppState {
         // エンドユーザー・ポータルの直接ログイン。admin_login と同機構（クライアント非依存の SSO 直接発行）
         // だが admin 権限を要求せず、TOTP（MFA）を尊重する。`mfa_ticket` の署名鍵は CSRF 秘密鍵を流用する。
         let portal_login = Arc::new(PortalLoginService::new(
+            authenticator_repository.clone(),
             users.clone(),
             sso_sessions.clone(),
             totp_secrets.clone(),
@@ -519,6 +540,7 @@ impl AppState {
         // 管理者による利用者ライフサイクル操作（ADR-0009 §5・MT21）。パスワード再発行・無効化・
         // MFA 解除時は当該利用者のセッション・トークンを失効させる。
         let users_lifecycle = Arc::new(UserLifecycleService::new(
+            authenticator_repository.clone(),
             users.clone(),
             sso_sessions.clone(),
             refresh_tokens.clone(),
@@ -648,6 +670,7 @@ impl AppState {
         ));
 
         let totp_registration = Arc::new(TotpRegistrationService::new(
+            authenticators.clone(),
             totp_secrets.clone(),
             sso_sessions.clone(),
             *config.key_encryption_key(),
@@ -655,6 +678,7 @@ impl AppState {
             clock.clone(),
         ));
         let mfa_login = Arc::new(MfaLoginService::new(
+            authenticator_repository.clone(),
             auth_sessions.clone(),
             totp_secrets,
             users.clone(),
@@ -680,6 +704,7 @@ impl AppState {
         // テナント分離は「クレデンシャル ⇔ ユーザー ⇔ 所属元テナント」のアプリ層の紐付けで実現する。
         let webauthn = Arc::new(WebAuthnService::new(config.public_web_base_url()));
         let passkey_registration = Arc::new(PasskeyRegistrationService::new(
+            authenticators.clone(),
             webauthn_credentials.clone(),
             passkey_challenges.clone(),
             sso_sessions.clone(),
@@ -748,6 +773,8 @@ impl AppState {
             logout,
             account_security,
             step_up,
+            authenticators,
+            authenticator_repository,
             backchannel_logout,
             revocation,
             introspection,

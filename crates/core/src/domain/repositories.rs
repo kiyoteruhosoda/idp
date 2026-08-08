@@ -44,6 +44,9 @@ use crate::domain::tenant::{Tenant, TenantId};
 use crate::domain::tenant_membership::{TenantMemberFilter, TenantMemberPage, TenantMembership};
 use crate::domain::totp_secret::TotpSecret;
 use crate::domain::user::User;
+use crate::domain::user_authenticator::{
+    AuthenticatorStatus, AuthenticatorType, UserAuthenticator,
+};
 use crate::domain::values::{
     AuthenticationMethod, MembershipStatus, SigningKeyStatus, UserStatus,
 };
@@ -656,6 +659,89 @@ pub trait TotpSecretRepository: Send + Sync {
     async fn confirm(&self, user_id: Uuid, confirmed_at: DateTime<Utc>) -> Result<()>;
     /// ユーザーの TOTP シークレットを削除する（冪等: 不存在でもエラーにしない）。
     async fn delete(&self, user_id: Uuid) -> Result<()>;
+}
+
+/// 認証器の統合登録簿（AP9。仕様 §5）。
+///
+/// 種別（TOTP・WebAuthn・リカバリーコード・email OTP）によらず「この利用者が使える認証器」を
+/// 1 箇所で答えるためのポート。種別固有の秘密は従来のテーブルが持ち続ける（expand フェーズ）。
+/// テナント列を持たない表のため `tenant_id` は取らない（モジュールコメント参照。境界は
+/// ユースケース側が `users.tenant_id` 照合で強制する）。
+///
+/// 参照系・消費系のメソッドは既定実装（「見つからない」）を持つ。テスト用フェイクの記述量を
+/// 抑えるためであり、**既定はいずれも fail-closed 側へ倒れる**（見つからない ＝ その認証器では
+/// 認証が通らない）。書き込みの `create` だけは既定を持たない（黙って成功すると登録が消える）。
+/// 本番の sqlx 実装は全メソッドを上書きする。
+#[async_trait]
+pub trait UserAuthenticatorRepository: Send + Sync {
+    /// 認証器を登録する（`pending` または `active`）。
+    async fn create(&self, authenticator: &UserAuthenticator) -> Result<()>;
+    /// 内部 ID で引く。
+    async fn find_by_id(&self, _id: Uuid) -> Result<Option<UserAuthenticator>> {
+        Ok(None)
+    }
+    /// 利用者の全認証器を新しい順に返す（失効済みを含む。管理・表示用）。
+    async fn list_for_user(&self, _user_id: Uuid) -> Result<Vec<UserAuthenticator>> {
+        Ok(Vec::new())
+    }
+    /// 利用者の**使える**認証器（`active` かつ期限内）を種別で絞って返す（ログインのホットパス）。
+    /// `authenticator_type` が `None` なら全種別。
+    async fn list_usable_for_user(
+        &self,
+        _user_id: Uuid,
+        _authenticator_type: Option<AuthenticatorType>,
+        _now: DateTime<Utc>,
+    ) -> Result<Vec<UserAuthenticator>> {
+        Ok(Vec::new())
+    }
+    /// 状態を更新する（遷移の可否は Application 層が
+    /// [`AuthenticatorStatus::can_transition_to`] で判定してから呼ぶ）。
+    /// 対象が無ければ `false`。
+    async fn update_status(
+        &self,
+        _id: Uuid,
+        _user_id: Uuid,
+        _status: AuthenticatorStatus,
+        _at: DateTime<Utc>,
+    ) -> Result<bool> {
+        Ok(false)
+    }
+    /// 表示名を更新する。対象が無ければ `false`。
+    async fn update_label(&self, _id: Uuid, _user_id: Uuid, _label: &str) -> Result<bool> {
+        Ok(false)
+    }
+    /// 利用時刻を記録する（認証成功時）。
+    async fn touch_last_used(&self, _id: Uuid, _at: DateTime<Utc>) -> Result<()> {
+        Ok(())
+    }
+    /// 使い捨て認証器（リカバリーコード・OTP）を**原子的に消費**する。
+    ///
+    /// `active` かつ期限内の行だけを `revoked` にして返す。すでに使われていた・期限切れ・
+    /// 不存在なら `None`。「引いてから状態を見て更新する」方式だと、同じコードを同時に 2 回
+    /// 出された場合に両方通ってしまう（authorization code と同じ理由で原子的に行う）。
+    async fn consume_single_use(
+        &self,
+        _user_id: Uuid,
+        _authenticator_type: AuthenticatorType,
+        _secret_hash: &str,
+        _now: DateTime<Utc>,
+    ) -> Result<Option<UserAuthenticator>> {
+        Ok(None)
+    }
+    /// 指定種別の未失効の行をまとめて失効させ、件数を返す（リカバリーコードの再発行時に
+    /// 古い束を無効化する）。
+    async fn revoke_all_of_type(
+        &self,
+        _user_id: Uuid,
+        _authenticator_type: AuthenticatorType,
+        _at: DateTime<Utc>,
+    ) -> Result<u64> {
+        Ok(0)
+    }
+    /// 期限切れの使い捨て行を削除し、件数を返す（GC）。
+    async fn delete_expired(&self, _now: DateTime<Utc>) -> Result<u64> {
+        Ok(0)
+    }
 }
 
 /// ユーザーの WebAuthn（FIDO2 Passkey）クレデンシャル。

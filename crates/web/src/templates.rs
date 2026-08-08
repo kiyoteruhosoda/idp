@@ -386,6 +386,10 @@ pub struct TotpVerifyTemplate<'a> {
     pub messages: &'a Messages,
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
+    /// 「メールでコードを送る」導線を出すか（AP9）。
+    pub email_otp_available: bool,
+    /// その導線の送信先（テナントごとに変わるため呼び出し側が組み立てる）。
+    pub email_otp_action: &'a str,
 }
 /// RP-initiated logout の front-channel 通知ページ（`GET /{tenant_id}/logout`。ADR-0018 決定 2 で
 /// api から移設）。各 RP の `frontchannel_logout_uri` を不可視 iframe で読み込み、全 iframe の
@@ -966,6 +970,46 @@ pub struct UserSettings<'a> {
     pub error_key: Option<&'a str>,
     /// 管理コンソール（`?from=admin`）から開いたか。左上に戻るリンクを出し、フォーム送信でも維持する。
     pub from_admin: bool,
+}
+
+/// 認証器一覧の 1 行（AP9）。種別・状態は翻訳キーに写した状態で受ける。
+pub struct AuthenticatorView {
+    pub id: String,
+    /// 種別の翻訳キー。
+    pub type_key: &'static str,
+    /// 状態の翻訳キー。
+    pub status_key: &'static str,
+    pub label: String,
+    pub created_at: String,
+    /// 直近の利用時刻（未使用なら空文字）。
+    pub last_used_at: String,
+    /// 一時停止ボタンを出すか（`active` のときだけ）。
+    pub suspendable: bool,
+    /// 再開ボタンを出すか（`suspended` のときだけ）。
+    pub resumable: bool,
+}
+
+/// 認証器の管理画面（`GET /{tenant_id}/settings/authenticators`。AP9）。
+#[derive(Template)]
+#[template(path = "user_authenticators.html")]
+pub struct UserAuthenticators<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub csrf: &'a str,
+    pub authenticators: &'a [AuthenticatorView],
+    /// 未使用のリカバリーコードの残数。
+    pub recovery_codes_remaining: usize,
+    pub saved_key: Option<&'a str>,
+    pub error_key: Option<&'a str>,
+}
+
+/// リカバリーコードの発行結果（AP9）。平文はこの画面でしか表示しない。
+#[derive(Template)]
+#[template(path = "recovery_codes.html")]
+pub struct RecoveryCodes<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub codes: &'a [String],
 }
 
 /// Step-up 認証の本人確認画面（`GET /{tenant_id}/settings/verify`。AP5）。

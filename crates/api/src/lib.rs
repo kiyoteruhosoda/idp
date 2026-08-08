@@ -81,6 +81,26 @@ pub async fn run() -> anyhow::Result<()> {
         config.app_log_retention_days(),
     );
 
+    // 期限切れの使い捨てコード（email OTP）の掃除（AP9）。リカバリーコードは期限を持たないため
+    // 対象外（`expires_at IS NULL`）。1 時間ごとで十分な粒度（コードの寿命は 10 分）。
+    {
+        let authenticators = state.authenticator_repository.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(3_600)).await;
+                match authenticators.delete_expired(chrono::Utc::now()).await {
+                    Ok(deleted) if deleted > 0 => {
+                        tracing::debug!(deleted, "purged expired one-time authenticator codes");
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::error!(error = %e, "expired authenticator code purge failed");
+                    }
+                }
+            }
+        });
+    }
+
     // Back-channel logout の送信ワーカー（G5）。ログアウトのハンドラは通知要求をキューへ積むだけで
     // 終わり、実際の HTTP 送信と再試行はここが担う。プロセスが落ちても未送信分は行として残るため、
     // 再起動後にこのループが拾い直す。

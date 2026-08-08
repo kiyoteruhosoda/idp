@@ -8,6 +8,7 @@ use crate::error_pages;
 use crate::handlers::{
     admin_clients_console, admin_console, admin_invitations_console, admin_members_console,
     admin_restart_console, admin_saml_clients_console, admin_settings, admin_signing_keys_console,
+    authenticators,
     admin_status_console, admin_tenants_console, admin_users_console, consent, console_script,
     health, invitation_accept, locale, login, mfa_totp, passkey, password_change, password_reset,
     portal, react_assets, rp_logout, saml_sso, step_up, stylesheet, submit_feedback_script,
@@ -67,6 +68,18 @@ pub fn build(state: WebState) -> Router {
         .route("/settings", get(user_settings::page))
         .route("/settings/password", post(user_settings::change_password))
         .route("/settings/name", post(user_settings::change_name))
+        // MFA 入力画面から「メールでコードを送る」（AP9）。
+        .route("/mfa/totp/email-code", post(mfa_totp::send_email_code))
+        // 認証器の管理（一覧・一時停止・失効・リカバリーコード発行。AP9）。
+        .route("/settings/authenticators", get(authenticators::page))
+        .route(
+            "/settings/authenticators/status",
+            post(authenticators::set_status),
+        )
+        .route(
+            "/settings/recovery-codes",
+            post(authenticators::issue_recovery_codes),
+        )
         // Step-up 認証の本人確認画面（重要操作の直前。AP5）。
         .route("/settings/verify", get(step_up::page))
         .route("/settings/verify", post(step_up::verify))

@@ -22,6 +22,8 @@ use crate::application::account_security::{
     RevokeConsentOutcome, RevokeSessionOutcome, SecurityOverviewOutcome,
 };
 use crate::application::account_tenants::ListTenantsOutcome;
+use crate::application::authenticator_management::AuthenticatorManagementError;
+use crate::domain::user_authenticator::AuthenticatorStatus;
 use crate::application::step_up::{StepUpCheckOutcome, StepUpVerifyCommand, StepUpVerifyOutcome};
 use crate::domain::step_up::SensitiveOperation;
 use crate::application::admin_login::{
@@ -63,6 +65,12 @@ use idp_contracts::auth::{
     InternalPortalChangePasswordResponse, InternalPortalMfaRequest, InternalPortalMfaResponse,
     InternalStepUpCheckRequest, InternalStepUpCheckResponse, InternalStepUpVerifyRequest,
     InternalStepUpVerifyResponse,
+};
+use idp_contracts::auth::{
+    AuthenticatorSummaryResponse, InternalAuthenticatorStatusRequest,
+    InternalAuthenticatorStatusResponse, InternalAuthenticatorsRequest,
+    InternalAuthenticatorsResponse, InternalEmailOtpRequest, InternalEmailOtpResponse,
+    InternalRecoveryCodesRequest, InternalRecoveryCodesResponse,
 };
 
 /// 内部サービス認証トークンを載せるヘッダ名（小文字。`HeaderMap` は大小無視で引ける）。
@@ -915,6 +923,192 @@ pub async fn step_up_verify(
             InternalStepUpVerifyResponse::Internal
         }
     }))
+}
+
+/// 登録済み認証器の一覧（`POST /internal/account/authenticators`。AP9）。
+pub async fn account_authenticators(
+    State(state): State<AppState>,
+    Json(req): Json<InternalAuthenticatorsRequest>,
+) -> Result<Json<InternalAuthenticatorsResponse>, Response> {
+    let _tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let Some(user_id) = state
+        .admin_access
+        .authenticated_user(Some(&req.sso_session_id))
+        .await
+    else {
+        return Ok(Json(InternalAuthenticatorsResponse::SessionExpired));
+    };
+
+    let authenticators = match state.authenticators.list(user_id).await {
+        Ok(list) => list,
+        Err(e) => {
+            tracing::error!(error = %e, "authenticator list failed");
+            return Ok(Json(InternalAuthenticatorsResponse::Internal));
+        }
+    };
+    let recovery_codes_remaining = match state
+        .authenticators
+        .usable_recovery_code_count(user_id)
+        .await
+    {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::error!(error = %e, "recovery code count failed");
+            return Ok(Json(InternalAuthenticatorsResponse::Internal));
+        }
+    };
+
+    Ok(Json(InternalAuthenticatorsResponse::Ok {
+        authenticators: authenticators
+            .into_iter()
+            .map(|a| AuthenticatorSummaryResponse {
+                id: a.id.to_string(),
+                authenticator_type: a.authenticator_type.as_str().to_string(),
+                status: a.status.as_str().to_string(),
+                label: a.label,
+                created_at: a.created_at.to_rfc3339(),
+                last_used_at: a.last_used_at.map(|t| t.to_rfc3339()),
+            })
+            .collect(),
+        recovery_codes_remaining,
+    }))
+}
+
+/// 認証器の状態変更（`POST /internal/account/authenticators/status`。AP9）。
+pub async fn account_authenticator_status(
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Json(req): Json<InternalAuthenticatorStatusRequest>,
+) -> Result<Json<InternalAuthenticatorStatusResponse>, Response> {
+    let ctx = RequestContext {
+        correlation_id: correlation.0,
+        ip_address: req.ip_address,
+        user_agent: req.user_agent,
+    };
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let Ok(status) = AuthenticatorStatus::parse(&req.status) else {
+        return Ok(Json(InternalAuthenticatorStatusResponse::UnknownStatus));
+    };
+    let Ok(authenticator_id) = uuid::Uuid::parse_str(&req.authenticator_id) else {
+        return Ok(Json(InternalAuthenticatorStatusResponse::NotFound));
+    };
+    let Some(user_id) = state
+        .admin_access
+        .authenticated_user(Some(&req.sso_session_id))
+        .await
+    else {
+        return Ok(Json(InternalAuthenticatorStatusResponse::SessionExpired));
+    };
+
+    Ok(Json(
+        match state
+            .authenticators
+            .set_status(tenant.tenant_id(), user_id, authenticator_id, status, &ctx)
+            .await
+        {
+            Ok(()) => InternalAuthenticatorStatusResponse::Ok,
+            Err(AuthenticatorManagementError::NotFound) => {
+                InternalAuthenticatorStatusResponse::NotFound
+            }
+            Err(AuthenticatorManagementError::InvalidTransition) => {
+                InternalAuthenticatorStatusResponse::InvalidTransition
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "authenticator status change failed");
+                InternalAuthenticatorStatusResponse::Internal
+            }
+        },
+    ))
+}
+
+/// リカバリーコードの発行（`POST /internal/account/recovery-codes`。AP9）。
+///
+/// 平文はこの応答でしか返らない。web は 1 度だけ表示し、保存しない。
+pub async fn account_recovery_codes(
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Json(req): Json<InternalRecoveryCodesRequest>,
+) -> Result<Json<InternalRecoveryCodesResponse>, Response> {
+    let ctx = RequestContext {
+        correlation_id: correlation.0,
+        ip_address: req.ip_address,
+        user_agent: req.user_agent,
+    };
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let Some(user_id) = state
+        .admin_access
+        .authenticated_user(Some(&req.sso_session_id))
+        .await
+    else {
+        return Ok(Json(InternalRecoveryCodesResponse::SessionExpired));
+    };
+
+    Ok(Json(
+        match state
+            .authenticators
+            .issue_recovery_codes(tenant.tenant_id(), user_id, &ctx)
+            .await
+        {
+            Ok(issued) => InternalRecoveryCodesResponse::Ok {
+                codes: issued.codes,
+            },
+            Err(e) => {
+                tracing::error!(error = %e, "recovery code issuance failed");
+                InternalRecoveryCodesResponse::Internal
+            }
+        },
+    ))
+}
+
+/// email OTP の送信（`POST /internal/account/email-otp`。AP9）。
+///
+/// **MFA 待ちの利用者**にだけ送る。未認証のリクエストでメール送信を誘発させないため、
+/// パスワード検証済みの `auth_session_id`（OIDC）か、署名済みの `mfa_ticket`（ポータル）から
+/// 利用者を解決できた場合に限る。
+pub async fn account_email_otp(
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Json(req): Json<InternalEmailOtpRequest>,
+) -> Result<Json<InternalEmailOtpResponse>, Response> {
+    let ctx = RequestContext {
+        correlation_id: correlation.0,
+        ip_address: req.ip_address,
+        user_agent: req.user_agent,
+    };
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+
+    let user_id = match (req.auth_session_id.as_deref(), req.mfa_ticket.as_deref()) {
+        (Some(auth_session_id), _) if !auth_session_id.is_empty() => {
+            state
+                .mfa_login
+                .pending_mfa_user(tenant, auth_session_id)
+                .await
+        }
+        (_, Some(ticket)) if !ticket.is_empty() => {
+            state.portal_login.pending_mfa_user(tenant, ticket)
+        }
+        _ => None,
+    };
+    let Some(user_id) = user_id else {
+        return Ok(Json(InternalEmailOtpResponse::SessionExpired));
+    };
+
+    Ok(Json(
+        match state
+            .authenticators
+            .send_email_otp(tenant.tenant_id(), user_id, &ctx)
+            .await
+        {
+            Ok(()) => InternalEmailOtpResponse::Sent,
+            Err(AuthenticatorManagementError::MailUnavailable) => {
+                InternalEmailOtpResponse::Unavailable
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "email otp delivery failed");
+                InternalEmailOtpResponse::Internal
+            }
+        },
+    ))
 }
 
 #[cfg(test)]

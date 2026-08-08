@@ -46,6 +46,7 @@ pub mod tenant_context;
 pub mod tenant_membership;
 pub mod totp_secret;
 pub mod user;
+pub mod user_authenticator;
 pub mod values;
 pub mod webauthn_credential;
 pub mod webauthn_port;

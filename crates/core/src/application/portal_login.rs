@@ -33,9 +33,12 @@ use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::password::{validate_password_strength, PasswordHasher};
 use crate::domain::rate_limit::LoginRateLimiter;
+use crate::application::authenticator_management::consume_single_use_code;
 use crate::domain::repositories::{
-    AuthenticationPolicyRepository, SsoSessionRepository, TotpSecretRepository, UserRepository,
+    AuthenticationPolicyRepository, SsoSessionRepository, TotpSecretRepository,
+    UserAuthenticatorRepository, UserRepository,
 };
+use crate::domain::user_authenticator::AuthenticatorType;
 use crate::domain::sso_session::SsoSession;
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
@@ -154,6 +157,8 @@ pub enum PortalMfaOutcome {
 }
 
 pub struct PortalLoginService {
+    /// 認証器の登録簿（AP9）。リカバリーコード・email OTP の消費に使う。
+    authenticators: Arc<dyn UserAuthenticatorRepository>,
     users: Arc<dyn UserRepository>,
     sso_sessions: Arc<dyn SsoSessionRepository>,
     totp_secrets: Arc<dyn TotpSecretRepository>,
@@ -176,6 +181,7 @@ pub struct PortalLoginService {
 impl PortalLoginService {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        authenticators: Arc<dyn UserAuthenticatorRepository>,
         users: Arc<dyn UserRepository>,
         sso_sessions: Arc<dyn SsoSessionRepository>,
         totp_secrets: Arc<dyn TotpSecretRepository>,
@@ -192,6 +198,7 @@ impl PortalLoginService {
         policy_default_effect: DefaultPolicyEffect,
     ) -> Self {
         Self {
+            authenticators,
             users,
             sso_sessions,
             totp_secrets,
@@ -595,26 +602,20 @@ impl PortalLoginService {
             return PortalMfaOutcome::TicketExpired;
         }
 
-        // 4. TOTP シークレットを取得して検証する。
-        let totp_record = match self.totp_secrets.find_by_user_id(user_id).await {
-            Ok(Some(r)) if r.is_confirmed() => r,
-            Ok(_) => return PortalMfaOutcome::TicketExpired,
-            Err(e) => return PortalMfaOutcome::Internal(e.to_string()),
+        // 4. 第二要素を検証する。OIDC ログインと同じく、TOTP・リカバリーコード・email OTP の
+        //    どれでも 1 つの入力欄で受ける（AP9。認証器を失った利用者の復旧経路を残す）。
+        let second_factor = match self
+            .verify_second_factor(user_id, &cmd.totp_code, now)
+            .await
+        {
+            Ok(Some(method)) => method,
+            Ok(None) => {
+                self.record_failure(tenant_id, Some(user_id), "invalid_totp", ctx)
+                    .await;
+                return PortalMfaOutcome::InvalidCode;
+            }
+            Err(e) => return PortalMfaOutcome::Internal(e),
         };
-        let secret_bytes =
-            match crypto::decrypt(&totp_record.secret_encrypted, &self.key_encryption_key) {
-                Ok(b) => b,
-                Err(e) => return PortalMfaOutcome::Internal(e.to_string()),
-            };
-        let valid = match verify_totp_code(&secret_bytes, &cmd.totp_code) {
-            Ok(v) => v,
-            Err(e) => return PortalMfaOutcome::Internal(e.to_string()),
-        };
-        if !valid {
-            self.record_failure(tenant_id, Some(user_id), "invalid_totp", ctx)
-                .await;
-            return PortalMfaOutcome::InvalidCode;
-        }
 
         // 4.5. 認証ポリシーの再評価（AP2）。チケット発行後にポリシーが `deny` へ変わった場合でも
         //      SSO を発行しない（チケットの寿命 5 分ぶんだけ古い判断で通してしまわないため）。
@@ -639,7 +640,7 @@ impl PortalLoginService {
             .issue_sso(
                 tenant_id,
                 &user,
-                vec![AuthenticationMethod::Password, AuthenticationMethod::Totp],
+                vec![AuthenticationMethod::Password, second_factor],
                 ctx,
                 now,
             )
@@ -700,6 +701,55 @@ impl PortalLoginService {
             )
             .await;
         Ok(sso_session_id)
+    }
+
+    /// `mfa_ticket` から MFA 待ちの利用者を解決する（AP9。email OTP の送信先を決めるために使う）。
+    /// チケットが無効・期限切れなら `None`。
+    pub fn pending_mfa_user(&self, tenant: TenantContext, ticket: &str) -> Option<Uuid> {
+        self.verify_ticket(tenant.tenant_id(), ticket, self.clock.now())
+    }
+
+    /// 第二要素を検証する（AP9）。通ったら記録すべき認証方式を返す。`MfaLoginService` と同じ
+    /// 順序・同じ正規化を使う（経路ごとに規則が違うと、片方でだけ通るコードができる）。
+    async fn verify_second_factor(
+        &self,
+        user_id: Uuid,
+        code: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<AuthenticationMethod>, String> {
+        match self.totp_secrets.find_by_user_id(user_id).await {
+            Ok(Some(record)) if record.is_confirmed() => {
+                let secret = crypto::decrypt(&record.secret_encrypted, &self.key_encryption_key)
+                    .map_err(|e| e.to_string())?;
+                if verify_totp_code(&secret, code).map_err(|e| e.to_string())? {
+                    return Ok(Some(AuthenticationMethod::Totp));
+                }
+            }
+            Ok(_) => {}
+            Err(e) => return Err(e.to_string()),
+        }
+
+        for (authenticator_type, method) in [
+            (
+                AuthenticatorType::RecoveryCode,
+                AuthenticationMethod::RecoveryCode,
+            ),
+            (AuthenticatorType::EmailOtp, AuthenticationMethod::EmailOtp),
+        ] {
+            if consume_single_use_code(
+                self.authenticators.as_ref(),
+                user_id,
+                authenticator_type,
+                code,
+                now,
+            )
+            .await
+            .map_err(|e| e.to_string())?
+            {
+                return Ok(Some(method));
+            }
+        }
+        Ok(None)
     }
 
     /// 署名付き `mfa_ticket` を発行する。

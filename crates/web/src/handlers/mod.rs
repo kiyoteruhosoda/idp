@@ -26,6 +26,7 @@ pub mod rp_logout;
 pub mod saml_sso;
 pub mod stylesheet;
 pub mod submit_feedback_script;
+pub mod authenticators;
 pub mod step_up;
 pub mod user_security;
 pub mod user_settings;
