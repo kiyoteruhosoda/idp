@@ -10,6 +10,7 @@
 //!   （ログイン成功時は [`super::portal`] が本画面へ戻す）
 
 use super::locale;
+use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::dto::SamlContinueQuery;
@@ -27,13 +28,17 @@ use idp_contracts::auth::{InternalSamlResumeRequest, InternalSamlResumeResponse}
 pub async fn continue_sso(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Query(query): Query<SamlContinueQuery>,
 ) -> Response {
-    let ctx = forwarded_context(&headers, &correlation);
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
     let handle = query.handle.filter(|h| !h.is_empty());
-    let saml_request_id = cookies::get(&headers, cookies::SAML_REQUEST_COOKIE);
+    let saml_request_id = cookies::get(
+        &headers,
+        &state.origin_bound_cookie(cookies::SAML_REQUEST_COOKIE),
+    );
     if handle.is_none() && saml_request_id.is_none() {
         // ハンドオフ経由でも復帰経由でもない直接アクセス。
         let messages = Messages::new(locale(&headers));
@@ -75,7 +80,7 @@ pub async fn continue_sso(
                 [(CONTENT_SECURITY_POLICY, acs_form_action_csp(&acs_url))],
                 state
                     .set_cookies()
-                    .expire_local(cookies::SAML_REQUEST_COOKIE)
+                    .expire_local(&state.origin_bound_cookie(cookies::SAML_REQUEST_COOKIE))
                     .into_headers(),
                 Html(body),
             )
@@ -85,7 +90,7 @@ pub async fn continue_sso(
             // 進行状態 id を Cookie 化してポータルログインへ。TTL は api 側の進行状態と同じ
             // auth_session TTL に合わせる。303 でハンドルを URL・履歴から除去する。
             let set_cookies = state.set_cookies().set_local(
-                cookies::SAML_REQUEST_COOKIE,
+                &state.origin_bound_cookie(cookies::SAML_REQUEST_COOKIE),
                 &saml_request_id,
                 state.config.auth_session_ttl_secs(),
             );
@@ -98,7 +103,7 @@ pub async fn continue_sso(
         InternalSamlResumeResponse::Expired => {
             let set_cookies = state
                 .set_cookies()
-                .expire_local(cookies::SAML_REQUEST_COOKIE);
+                .expire_local(&state.origin_bound_cookie(cookies::SAML_REQUEST_COOKIE));
             (set_cookies.into_headers(), expired_page(&messages)).into_response()
         }
         InternalSamlResumeResponse::Internal => StatusCode::INTERNAL_SERVER_ERROR.into_response(),

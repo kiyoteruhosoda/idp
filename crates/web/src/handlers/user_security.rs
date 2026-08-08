@@ -7,6 +7,7 @@
 //! 破壊的操作（セッション失効・連携解除）は POST とし、ログイン後フォーム用の同期トークン
 //! （`console_csrf_token`。SSO セッション id 由来）で保護する。
 
+use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::csrf::console_csrf_token;
@@ -126,6 +127,7 @@ pub async fn page(
 pub async fn revoke_session(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Form(form): Form<RevokeSessionForm>,
@@ -156,7 +158,7 @@ pub async fn revoke_session(
         return response;
     }
 
-    let ctx = forwarded_context(&headers, &correlation);
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
     let request = InternalAccountRevokeSessionRequest {
         tenant_id: Some(tenant.0.clone()),
         sso_session_id: sso,
@@ -195,6 +197,7 @@ pub async fn revoke_session(
 pub async fn revoke_consent(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Form(form): Form<RevokeConsentForm>,
@@ -211,7 +214,7 @@ pub async fn revoke_consent(
         return see_other(&format!("{base}?error=csrf"));
     }
 
-    let ctx = forwarded_context(&headers, &correlation);
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
     let request = InternalAccountRevokeConsentRequest {
         tenant_id: Some(tenant.0.clone()),
         sso_session_id: sso,

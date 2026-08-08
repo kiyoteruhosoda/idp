@@ -755,6 +755,14 @@ mod tests {
     }
     #[async_trait]
     impl RefreshTokenRepository for FakeRefreshTokens {
+        async fn revoke_family(
+            &self,
+            _t: TenantId,
+            _family: &str,
+            _at: DateTime<Utc>,
+        ) -> DomainResult<u64> {
+            unreachable!()
+        }
         async fn revoke_all_for_user_in_tenant(
             &self,
             _tenant: TenantId,
@@ -806,6 +814,13 @@ mod tests {
     }
     #[async_trait]
     impl AuthorizationCodeRepository for FakeCodes {
+        async fn find_used(
+            &self,
+            _t: TenantId,
+            _h: &str,
+        ) -> DomainResult<Option<AuthorizationCode>> {
+            unreachable!()
+        }
         async fn create(&self, _c: &AuthorizationCode) -> DomainResult<()> {
             unreachable!()
         }

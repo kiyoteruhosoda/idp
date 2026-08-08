@@ -16,6 +16,8 @@ chrono = { workspace = true }
 # アプリケーションログ取り込み層（api / web が同じ形でレコードを組み立てるための共有実装）。
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+# HTTP アクセススパンの単一定義（SEC9）。axum ではなく `http` の基本型にのみ依存する。
+http = { workspace = true }
 sha2 = { workspace = true }
 hmac = { workspace = true }
 hex = { workspace = true }

@@ -160,15 +160,19 @@ impl AuthSessionRepository for SqlxAuthSessionRepository {
     async fn set_authenticated_user(
         &self,
         id: &str,
+        new_id: &str,
         user_id: Uuid,
         auth_time: DateTime<Utc>,
         sso_sid: Option<&str>,
     ) -> Result<()> {
+        // id の再生成を同じ UPDATE に含める（SEC7）。別文に分けると、認証済みフラグは立っているのに
+        // 旧 id がまだ引ける瞬間ができる。
         sqlx::query(
             "UPDATE auth_sessions \
-             SET authenticated_user_id = ?, auth_time = ?, sso_sid = ? \
+             SET id = ?, authenticated_user_id = ?, auth_time = ?, sso_sid = ? \
              WHERE id = ?",
         )
+        .bind(new_id)
         .bind(user_id.to_string())
         .bind(auth_time.naive_utc())
         .bind(sso_sid)
@@ -182,14 +186,16 @@ impl AuthSessionRepository for SqlxAuthSessionRepository {
     async fn set_password_verified(
         &self,
         id: &str,
+        new_id: &str,
         user_id: Uuid,
         verified_at: DateTime<Utc>,
     ) -> Result<()> {
         sqlx::query(
             "UPDATE auth_sessions \
-             SET authenticated_user_id = ?, password_verified_at = ? \
+             SET id = ?, authenticated_user_id = ?, password_verified_at = ? \
              WHERE id = ?",
         )
+        .bind(new_id)
         .bind(user_id.to_string())
         .bind(verified_at.naive_utc())
         .bind(id)

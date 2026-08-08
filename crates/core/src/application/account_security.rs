@@ -540,6 +540,14 @@ mod tests {
     }
     #[async_trait]
     impl RefreshTokenRepository for FakeRefreshTokens {
+        async fn revoke_family(
+            &self,
+            _t: TenantId,
+            _family: &str,
+            _at: DateTime<Utc>,
+        ) -> DomainResult<u64> {
+            unreachable!()
+        }
         async fn create(&self, _t: &RefreshToken) -> DomainResult<()> {
             unreachable!()
         }

@@ -11,6 +11,7 @@
 //! （オープンリダイレクトを作らないため）。`//evil.example.com` のような「スキームなし絶対 URL」は
 //! ブラウザが別オリジンとして解決するので、単に先頭が `/` かどうかでは足りない。
 
+use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::csrf::console_csrf_token;
@@ -214,6 +215,7 @@ pub async fn page(
 pub async fn verify(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Form(form): Form<StepUpForm>,
@@ -232,7 +234,7 @@ pub async fn verify(
         return see_other(&format!("{challenge}&error=csrf"));
     }
 
-    let ctx = forwarded_context(&headers, &correlation);
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
     let request = InternalStepUpVerifyRequest {
         tenant_id: Some(tenant.0.clone()),
         sso_session_id: sso,

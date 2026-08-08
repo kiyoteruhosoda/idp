@@ -7,6 +7,7 @@
 //! 認証器を触る操作はすべて step-up（AP5）の対象。盗まれたセッションで認証器を足されると、
 //! 以後は正規の資格情報として振る舞われてしまう。
 
+use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::csrf::console_csrf_token;
@@ -121,6 +122,7 @@ pub async fn page(
 pub async fn set_status(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Form(form): Form<StatusForm>,
@@ -145,7 +147,7 @@ pub async fn set_status(
         return response;
     }
 
-    let ctx = forwarded_context(&headers, &correlation);
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
     let request = InternalAuthenticatorStatusRequest {
         tenant_id: Some(tenant.0.clone()),
         sso_session_id: sso,
@@ -187,6 +189,7 @@ pub async fn set_status(
 pub async fn issue_recovery_codes(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Form(form): Form<RecoveryCodesForm>,
@@ -211,7 +214,7 @@ pub async fn issue_recovery_codes(
         return response;
     }
 
-    let ctx = forwarded_context(&headers, &correlation);
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
     let request = InternalRecoveryCodesRequest {
         tenant_id: Some(tenant.0.clone()),
         sso_session_id: sso,

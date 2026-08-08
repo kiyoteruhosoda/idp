@@ -5,6 +5,7 @@
 //! 一覧・削除は HTML フォームで提供する。
 
 use super::locale;
+use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::handlers::forwarded_context;
@@ -330,11 +331,12 @@ pub struct LoginCompleteJsonResponse {
 pub async fn login_complete_api(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Json(body): Json<LoginCompleteBody>,
 ) -> Response {
-    let ctx = forwarded_context(&headers, &correlation);
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
     let req = InternalPasskeyLoginCompleteRequest {
         tenant_id: Some(tenant.0.clone()),
         challenge_id: body.challenge_id,

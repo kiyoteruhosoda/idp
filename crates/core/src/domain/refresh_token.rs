@@ -12,6 +12,13 @@ pub struct RefreshToken {
     pub token_hash: String,
     /// rotation で発行する際に設定する（チェーンの前トークンの hash）。
     pub parent_hash: Option<String>,
+    /// このトークンを生んだ認可グラント（authorization code）の SHA-256（SEC8）。code 交換で
+    /// 発行した根トークンと、そこから rotation で派生した子孫すべてが同じ値を持つ ＝ **トークン
+    /// ファミリの識別子**。再利用を検知したときはこの値でファミリごと失効させる。
+    ///
+    /// `parent_hash` はチェーンを 1 段ずつしか辿れず、再利用検知時に子孫を追えない。
+    /// `None` は移行前（0025 より前）に rotation 済みだった行だけで、次の rotation で埋まる。
+    pub grant_hash: Option<String>,
     /// トークンを発行したテナント（ADR-0009 §8。使用・失効は同一テナントに限る）。
     pub tenant_id: TenantId,
     pub user_id: Uuid,
@@ -35,5 +42,50 @@ impl RefreshToken {
 
     pub fn is_valid_at(&self, now: DateTime<Utc>) -> bool {
         !self.is_revoked() && !self.is_expired_at(now)
+    }
+
+    /// このトークンから rotation で発行する子へ引き継ぐファミリ識別子（SEC8）。
+    ///
+    /// 自身が `grant_hash` を持たない移行前の行なら、**自身の hash を新しい家族の起点にする**。
+    /// 祖先を辿らないのは、辿るための再帰が rotation のホットパスに載るため。こうしておけば、
+    /// 移行前から生きているチェーンも次の rotation 以降はファミリ失効の対象になる。
+    pub fn family_hash(&self) -> String {
+        self.grant_hash
+            .clone()
+            .unwrap_or_else(|| self.token_hash.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn token(token_hash: &str, grant_hash: Option<&str>) -> RefreshToken {
+        let now = Utc::now();
+        RefreshToken {
+            token_hash: token_hash.to_string(),
+            parent_hash: None,
+            grant_hash: grant_hash.map(str::to_string),
+            tenant_id: Uuid::nil().into(),
+            user_id: Uuid::nil(),
+            client_id: "rp".to_string(),
+            scope: vec!["openid".to_string()],
+            sid: None,
+            expires_at: now,
+            revoked_at: None,
+            created_at: now,
+        }
+    }
+
+    #[test]
+    fn family_is_inherited_from_the_authorization_grant() {
+        assert_eq!(token("child", Some("grant")).family_hash(), "grant");
+    }
+
+    #[test]
+    fn legacy_rows_start_a_new_family_at_their_own_hash() {
+        // 0025 より前に rotation 済みだった行は `grant_hash` を持たない。祖先を辿らずに
+        // 自分を起点とすることで、次の rotation 以降はファミリ失効の対象になる。
+        assert_eq!(token("legacy", None).family_hash(), "legacy");
     }
 }

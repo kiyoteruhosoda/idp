@@ -493,7 +493,8 @@ impl ExternalLoginService {
         ctx: &RequestContext,
     ) -> CallbackOutcome {
         let tenant_id = tenant.tenant_id();
-        let session = match self
+        // 認証結果の記録時に id を再生成する（SEC7）ため mut。
+        let mut session = match self
             .auth_sessions
             .find_by_id(tenant_id, auth_session_id)
             .await
@@ -512,13 +513,16 @@ impl ExternalLoginService {
         };
 
         // 認証時刻と `sid` を auth_session へ記録する（ID Token の `auth_time` / `sid` の出所）。
+        // id も再生成する（SEC7）。
+        let rotated_id = crypto::random_hex(32);
         if let Err(e) = self
             .auth_sessions
-            .set_authenticated_user(&session.id, user.id, now, Some(&sso.sid()))
+            .set_authenticated_user(&session.id, &rotated_id, user.id, now, Some(&sso.sid()))
             .await
         {
             return CallbackOutcome::Internal(e.to_string());
         }
+        session.id = rotated_id;
 
         // 同意チェック（`openid` は暗黙同意）。
         let scopes_needing_consent: Vec<String> = session

@@ -53,6 +53,9 @@ pub struct Config {
     auth_session_ttl_secs: u64,
     /// HSTS `max-age`（秒）。0 = HSTS ヘッダを付与しない（api 側と同キー `HSTS_MAX_AGE`）。
     hsts_max_age: u64,
+    /// リバースプロキシの `X-Forwarded-For` を信頼するか（api 側と同キー `TRUST_FORWARDED_HEADERS`。
+    /// SEC1）。既定 `false` = ヘッダを無視して TCP 接続元を使う。
+    trust_forwarded_headers: bool,
     log_format: LogFormat,
     /// api 経由の DB 上書き値を採用した共有キー（起動ログ用。値は含めない）。
     shared_settings_from_api: Vec<String>,
@@ -199,6 +202,7 @@ impl Config {
             auth_session_ttl_secs: resolver
                 .parse("AUTH_SESSION_TTL_SECS", DEFAULT_AUTH_SESSION_TTL_SECS)?,
             hsts_max_age: resolver.parse("HSTS_MAX_AGE", 0u64)?,
+            trust_forwarded_headers: resolver.parse("TRUST_FORWARDED_HEADERS", false)?,
             log_format: parse_log_format(),
             shared_settings_from_api: resolver.applied_keys(),
             shared_runtime_settings: shared.clone(),
@@ -258,6 +262,12 @@ impl Config {
     /// HSTS `max-age`（秒）。0 = HSTS ヘッダを付与しない。
     pub fn hsts_max_age(&self) -> u64 {
         self.hsts_max_age
+    }
+    /// `X-Forwarded-For` を信頼してクライアント IP を採るか（SEC1）。`false`（既定）なら
+    /// ヘッダを無視し、TCP 接続元アドレス（`ConnectInfo`）を使う。api 側と同じキー・同じ既定で、
+    /// 信頼できるリバースプロキシ配下でのみ `true` にする。
+    pub fn trust_forwarded_headers(&self) -> bool {
+        self.trust_forwarded_headers
     }
     pub fn log_format(&self) -> LogFormat {
         self.log_format

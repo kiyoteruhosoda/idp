@@ -707,7 +707,9 @@ https://api.id.example.com → ${API_BIND_HOST}:${API_PORT} → 同梱 nginx :80
    ```
 
 3. 前段プロキシで 2 つのドメインを各ポートへ向け、証明書を設定する。
-   `TRUST_FORWARDED_HEADERS=true`・`HSTS_MAX_AGE` は両ドメインに同様に適用する。
+   `TRUST_FORWARDED_HEADERS=true`・`HSTS_MAX_AGE` は両ドメインに同様に適用する
+   （`TRUST_FORWARDED_HEADERS` は api・web の**両サービス**が読む。未設定＝`false` のままだと、
+   ログインの監査ログとレート制限の IP がプロキシのアドレスになり利用者を識別できない）。
 
 4. `./deploy.sh app` で再デプロイする（`docker-compose.domain-split.yml` は deploy.sh が自動で
    重ねる。手で `-f` を指定する必要はない）。api・web の両方の再起動が必要。

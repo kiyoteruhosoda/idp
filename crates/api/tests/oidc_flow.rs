@@ -668,6 +668,29 @@ async fn refresh_token_rotation_introspection_and_revocation_e2e() {
     );
     assert_eq!(body_json(response).await["error"], "invalid_grant");
 
+    // SEC8: 再利用を検知したら、そこから rotation 済みの子トークンまで失効させる。
+    // 親だけを失効させると、攻撃者が先に交換して得た子トークンが生き残ってしまう。
+    let response = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/{root_tenant_id}/token"))
+            .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(AUTHORIZATION, basic_auth(&client_id, &secret))
+            .body(Body::from(format!(
+                "grant_type=refresh_token&refresh_token={}",
+                utf8_percent_encode(rotated_refresh, NON_ALPHANUMERIC)
+            )))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "descendant of a reused refresh token must be revoked too"
+    );
+    assert_eq!(body_json(response).await["error"], "invalid_grant");
+
     let response = send(
         &app,
         Request::builder()

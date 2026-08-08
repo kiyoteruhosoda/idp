@@ -281,22 +281,31 @@ pub trait AuthSessionRepository: Send + Sync {
     /// ハンドルを単回使用として消費する（`handle_hash` を NULL 化）。すでに消費済み（並行交換に
     /// 負けた・再利用）なら `false` を返す。
     async fn consume_handle(&self, id: &str, handle_hash: &str) -> Result<bool>;
-    /// 認証済みユーザーと `auth_time`、確立した SSO セッションの `sid` を設定する（`/login` 成功時）。
+    /// 認証済みユーザーと `auth_time`、確立した SSO セッションの `sid` を設定し、**同時に id を
+    /// `new_id` へ再生成する**（`/login` 成功時。SEC7）。
     ///
     /// `sso_sid` は同意画面を挟む経路（`ConsentService::approve`）が code 発行時に読む（G5）。
     /// 認証と code 発行が別リクエストに分かれ、その時点では SSO Cookie が手元に無いため、
     /// ここで auth_session へ預ける。
+    ///
+    /// id の再生成（セッション固定攻撃対策）を独立したメソッドにせず記録と 1 文にまとめてあるのは、
+    /// 「認証前に発行した Cookie 値が認証後も通る瞬間」を作らないためである。`sso_session_id` は
+    /// ログインのたびに再生成しており（`SsoSession::establish`）、それと非対称にしない。
     async fn set_authenticated_user(
         &self,
         id: &str,
+        new_id: &str,
         user_id: Uuid,
         auth_time: DateTime<Utc>,
         sso_sid: Option<&str>,
     ) -> Result<()>;
-    /// パスワード検証成功後に MFA pending 状態を記録する（`password_verified_at` を設定）。
+    /// パスワード検証成功後に MFA pending 状態を記録し（`password_verified_at` を設定）、
+    /// **同時に id を `new_id` へ再生成する**（SEC7。理由は
+    /// [`set_authenticated_user`](Self::set_authenticated_user) 参照）。
     async fn set_password_verified(
         &self,
         id: &str,
+        new_id: &str,
         user_id: Uuid,
         verified_at: DateTime<Utc>,
     ) -> Result<()>;
@@ -392,6 +401,14 @@ pub trait AuthorizationCodeRepository: Send + Sync {
         tenant_id: TenantId,
         code_hash: &str,
         used_at: DateTime<Utc>,
+    ) -> Result<Option<AuthorizationCode>>;
+    /// **すでに消費済み**の code を hash で引く（SEC8）。`consume` が `None` を返したときに
+    /// 「本当の再利用」と「不存在・期限切れ」を切り分けるために使う。未消費・不存在・期限切れで
+    /// 削除済み・他テナント発行はいずれも `None`。
+    async fn find_used(
+        &self,
+        tenant_id: TenantId,
+        code_hash: &str,
     ) -> Result<Option<AuthorizationCode>>;
     /// ログアウト時にユーザーの未消費・期限内の全 code を即時失効させる（`used_at` を設定）。
     async fn revoke_all_active_for_user(&self, user_id: Uuid, now: DateTime<Utc>) -> Result<()>;
@@ -560,6 +577,19 @@ pub trait RefreshTokenRepository: Send + Sync {
     /// `parent_hash` でチェーンを検索し、存在する（未失効・失効問わず）場合は `true`。
     /// reuse detection で同一 parent から二重発行が起きていないかを確認するために使う。
     async fn exists_by_parent_hash(&self, parent_hash: &str) -> Result<bool>;
+    /// 同一の認可グラントから発行されたトークンファミリを一括失効させる（SEC8）。
+    /// `family_hash` は [`RefreshToken::family_hash`](crate::domain::refresh_token::RefreshToken::family_hash)
+    /// の値、または authorization code の SHA-256。失効させた行数を返す（監査に載せる）。
+    ///
+    /// 再利用を検知したときに提示されたトークンだけを失効させると、そこから rotation 済みの
+    /// **子孫が有効なまま残る**（攻撃者が先に交換していれば攻撃者側が生き残る）。RFC 6819 §5.2.2.3 /
+    /// OAuth 2.1 は同一グラント由来のトークンをまとめて失効させることを求めている。
+    async fn revoke_family(
+        &self,
+        tenant_id: TenantId,
+        family_hash: &str,
+        revoked_at: DateTime<Utc>,
+    ) -> Result<u64>;
     /// 指定ユーザーの全 Refresh Token を失効させる（ユーザー単位の全セッション無効化、F5）。
     async fn revoke_all_for_user(&self, user_id: Uuid, revoked_at: DateTime<Utc>) -> Result<()>;
     /// 指定テナントで発行済みの refresh token をまとめて失効させる（ゲストの一時停止。MT24）。

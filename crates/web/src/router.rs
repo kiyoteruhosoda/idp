@@ -3,6 +3,7 @@
 //! テナント外パス（`/healthz`・`/readyz`）を除き、すべての画面 URL を `/{tenant_id}/...` 配下に
 //! 一律配置する（root を含め特別分岐を設けない。api の router.rs と同じ方式）。
 
+use crate::client_ip::resolve_client_ip;
 use crate::correlation;
 use crate::error_pages;
 use crate::handlers::{
@@ -27,6 +28,7 @@ use tower_http::trace::TraceLayer;
 
 pub fn build(state: WebState) -> Router {
     let hsts_max_age = state.config.hsts_max_age();
+    let trust_forwarded = state.config.trust_forwarded_headers();
     let tenant_scoped = Router::new()
         .route("/login", get(login::login_page).post(login::login))
         // エンドユーザー・ポータルの TOTP 入力（`/login` 直接ログイン経路の 2 段階目）。
@@ -353,11 +355,18 @@ pub fn build(state: WebState) -> Router {
         // どのルートにも一致しないリクエストには 404 エラーページを返す（axum 既定の空応答を避ける）。
         .fallback(error_pages::fallback)
         .layer(axum::middleware::from_fn(correlation::propagate))
+        // 接続元 IP の決定（SEC1）。`X-Forwarded-For` を信じるかは api と同じ設定キーでゲートし、
+        // 非信頼時は TCP 接続元へ落とす。ハンドラは `Extension<ClientIp>` で結果だけを受け取る。
+        .layer(axum::middleware::from_fn(move |req, next| {
+            resolve_client_ip(trust_forwarded, req, next)
+        }))
         // 全エラー応答（4xx / 5xx）の本文を共通エラーページへ揃える。ハンドラが本文なしで返した応答・
         // extractor の拒否・メソッド不一致（405）もここで HTML 化される（`error_pages` のモジュール
         // ドキュメント参照）。ルーティングの外側に置くことで、未マッチ・拒否経路も対象になる。
         .layer(axum::middleware::from_fn(error_pages::render_error_pages))
-        .layer(TraceLayer::new_for_http())
+        // アクセススパンはパスのみを記録する（クエリ文字列に載る `?auth_session=` 等の単回ハンドルを
+        // ログへ落とさない。SEC9）。組み立ては api と共有する。
+        .layer(TraceLayer::new_for_http().make_span_with(idp_contracts::http_trace::request_span))
         .layer(axum::middleware::from_fn(move |req, next| {
             add_security_headers(req, next, hsts_max_age)
         }))

@@ -240,23 +240,49 @@ impl TokenService {
             ));
         };
         let now = self.clock.now();
-        let consumed = match self
-            .codes
-            .consume(tenant_id, &crypto::sha256_hex(code), now)
-            .await
-        {
+        // code の hash は消費とファミリ鍵（`grant_hash`。SEC8）の両方で使うので 1 度だけ計算する。
+        let code_hash = crypto::sha256_hex(code);
+        let consumed = match self.codes.consume(tenant_id, &code_hash, now).await {
             Ok(c) => c,
             Err(e) => return Err(internal(&e)),
         };
         let Some(auth_code) = consumed else {
+            // 消費できなかった理由を切り分ける（SEC8）。「期限切れ」「そもそも存在しない」と
+            // **本当の再利用**（1 度交換済みの code をもう一度出してきた）は意味が違い、
+            // 前者は RP の実装ミスや遅延、後者は code の漏えいを示す。1 文字列に丸めていると
+            // 監査から攻撃を拾えない。
+            let used_code = match self.codes.find_used(tenant_id, &code_hash).await {
+                Ok(v) => v,
+                Err(e) => return Err(internal(&e)),
+            };
+            let (reason, used_code) = match used_code {
+                Some(used) => {
+                    // 本当の再利用。1 回目の交換で発行済みのトークンファミリを失効させる。
+                    // 攻撃者と正規 RP のどちらが先に交換したか区別できない以上、両方を止めて
+                    // 再認証させるのが RFC 6819 §5.2.1.1 の求めるところ。
+                    let revoked = match self
+                        .refresh_tokens
+                        .revoke_family(tenant_id, &code_hash, now)
+                        .await
+                    {
+                        Ok(n) => n,
+                        Err(e) => return Err(internal(&e)),
+                    };
+                    (
+                        format!("authorization code replayed; revoked {revoked} refresh token(s)"),
+                        Some(used),
+                    )
+                }
+                None => ("authorization code not found or expired".to_string(), None),
+            };
             self.audit
                 .record(
                     AuditEventType::AuthorizationCodeReuseDetected,
                     AuditResult::Failure,
                     Some(tenant_id),
-                    None,
+                    used_code.map(|c| c.user_id),
                     Some(&client_id),
-                    Some("code not found, expired, or already used"),
+                    Some(&reason),
                     ctx,
                 )
                 .await;
@@ -350,6 +376,10 @@ impl TokenService {
             let rt = RefreshToken {
                 token_hash: crypto::sha256_hex(&plain),
                 parent_hash: None,
+                // このグラント（authorization code）由来のトークンファミリの起点（SEC8）。
+                // rotation で子孫へ引き継がれ、code / refresh のどちらの再利用検知からも
+                // 同じ鍵で一括失効できる。
+                grant_hash: Some(code_hash.clone()),
                 tenant_id,
                 user_id: auth_code.user_id,
                 client_id: client_id.clone(),
@@ -450,8 +480,19 @@ impl TokenService {
         };
         if already_rotated {
             // このトークンはすでに rotation 済み → 再利用攻撃の可能性。
-            // 旧トークンも失効させる（best-effort）。
-            let _ = self.refresh_tokens.revoke(&rt_hash, now).await;
+            // 提示されたトークンだけを失効させると、そこから rotation 済みの**子孫が生き残る**
+            // （攻撃者が先に交換していれば攻撃者側が残る）。同一グラント由来のファミリごと失効させ、
+            // 正規の RP にも再認証させる（SEC8。RFC 6819 §5.2.2.3 / OAuth 2.1）。
+            // 失効に失敗したら 500 を返して落とす（従来は best-effort で握り潰していたが、
+            // 「再利用を検知したのに何も失効していない」状態を成功扱いで返してはいけない）。
+            let revoked = match self
+                .refresh_tokens
+                .revoke_family(tenant_id, &stored.family_hash(), now)
+                .await
+            {
+                Ok(n) => n,
+                Err(e) => return Err(internal(&e)),
+            };
             self.audit
                 .record(
                     AuditEventType::RefreshTokenReuseDetected,
@@ -459,7 +500,9 @@ impl TokenService {
                     Some(tenant_id),
                     Some(stored.user_id),
                     Some(&client_id),
-                    Some("refresh token already rotated"),
+                    Some(&format!(
+                        "refresh token already rotated; revoked {revoked} token(s) in the grant family"
+                    )),
                     ctx,
                 )
                 .await;
@@ -528,6 +571,9 @@ impl TokenService {
         let new_rt = RefreshToken {
             token_hash: crypto::sha256_hex(&new_rt_plain),
             parent_hash: Some(rt_hash.clone()),
+            // ファミリ識別子を引き継ぐ（SEC8）。移行前の行（`grant_hash` が NULL）なら
+            // 提示されたトークンの hash が新しいファミリの起点になる。
+            grant_hash: Some(stored.family_hash()),
             tenant_id,
             user_id: stored.user_id,
             client_id: client_id.clone(),

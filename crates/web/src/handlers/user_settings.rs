@@ -7,6 +7,7 @@
 //! 言語設定（MT20）: `?lang=` を受けたら `lang` Cookie に保存し、ログイン中なら DB へも永続化する
 //! （`POST /internal/account/update-language`）。
 
+use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::dto::{AccountNameForm, AccountPasswordForm, SettingsQuery};
@@ -88,6 +89,7 @@ pub async fn page(
 pub async fn change_password(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Form(form): Form<AccountPasswordForm>,
@@ -105,7 +107,7 @@ pub async fn change_password(
     let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         return found(&format!("{base}?error=session{suffix}"));
     };
-    let ctx = forwarded_context(&headers, &correlation);
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
     let request = InternalAccountChangePasswordRequest {
         sso_session_id: sso,
         current_password: form.current_password,

@@ -233,7 +233,8 @@ impl AuthorizeService {
             return ResumeOutcome::ExpiredHandle;
         }
         let handle_hash = crypto::sha256_hex(&cmd.handle);
-        let session = match self
+        // SSO 復元で認証済みにするとき id を再生成する（SEC7）ため mut。
+        let mut session = match self
             .auth_sessions
             .find_by_handle(tenant.tenant_id(), &handle_hash)
             .await
@@ -347,10 +348,14 @@ impl AuthorizeService {
                             }
 
                             // 同意画面へ: AuthSession を認証済み状態にして web に返す。
+                            // SSO からの復元でも id を再生成する（SEC7）。同意画面へ渡す
+                            // `auth_session_id` は再生成後の値。
+                            let rotated_id = crypto::random_hex(32);
                             if let Err(e) = self
                                 .auth_sessions
                                 .set_authenticated_user(
                                     &session.id,
+                                    &rotated_id,
                                     user_id,
                                     auth_time,
                                     Some(sid.as_str()),
@@ -367,6 +372,7 @@ impl AuthorizeService {
                                     ),
                                 };
                             }
+                            session.id = rotated_id;
                             return ResumeOutcome::ConsentRequired {
                                 auth_session_id: session.id,
                             };
