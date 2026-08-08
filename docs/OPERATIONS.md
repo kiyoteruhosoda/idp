@@ -97,6 +97,17 @@ api・web を別プロセスで起動し、`/authorize`→web `/login`→`/token
 （DB には argon2 ハッシュのみ保存。以後は再表示できないため保管する。紛失時は再発行する）。
 呼び出しには対象テナントを scope とする `idp.tenant.admin`（または `idp.system.admin`）を保有する利用者の有効な SSO セッション（`sso_session_id` Cookie）が要る。
 
+管理 API の変更系（POST / PUT / PATCH / DELETE）は、`Origin`（無ければ `Referer`）を送る場合
+`PUBLIC_WEB_BASE_URL` か `ISSUER` のオリジンと一致していないと 403 になる。ブラウザの JavaScript から
+直接呼ぶときは、この 2 つのいずれかのオリジンのページから呼ぶ。`curl` のように両ヘッダを送らない
+クライアントは影響を受けない。
+
+ログアウト系 URI（`post_logout_redirect_uris` / `frontchannel_logout_uri` /
+`backchannel_logout_uri`）は `redirect_uris` と同じ制約（絶対 http(s)・フラグメント禁止・
+ワイルドカード禁止）を満たす必要がある。`backchannel_logout_uri` はさらに、ループバック・
+プライベート・リンクローカル等のアドレスを**リテラルで**指定できない（内部サービスへ向けるときは
+ホスト名で指定する）。
+
 ```bash
 # 有効な SSO セッションの Cookie を付けて呼ぶ（ブラウザのセッションでも可）。
 curl -sS -X POST "$ISSUER/admin/clients" \

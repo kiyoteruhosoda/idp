@@ -18,6 +18,7 @@
 use crate::application::admin_access::{AdminAccess, AuthorizedAdmin};
 use crate::presentation::cookies;
 use crate::presentation::i18n::{ApiLocale, ApiMessages};
+use crate::presentation::origin;
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
 use axum::extract::FromRequestParts;
@@ -74,6 +75,10 @@ where
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
+        // Cookie を資格情報にする以上、変更系はオリジンを検証する（SEC4）。認可より前に落とす。
+        if !origin::is_allowed(parts, &state.config) {
+            return Err(forbidden_origin(parts));
+        }
         let sso_session_id = cookies::get(&parts.headers, cookies::SSO_SESSION_COOKIE);
         // 要求テナントはパス由来の `ResolvedTenant`（`resolve_tenant` middleware が注入。ADR-0009 §7）。
         // 権限判定は「要求テナントを scope に持つか」の完全一致（§4）。middleware 未通過は配線ミス。
@@ -118,6 +123,10 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
+        // 権限は問わないが Cookie 認証であることは同じなので、変更系は同様に検証する（SEC4）。
+        if !origin::is_allowed(parts, &state.config) {
+            return Err(forbidden_origin(parts));
+        }
         let sso_session_id = cookies::get(&parts.headers, cookies::SSO_SESSION_COOKIE);
         match state
             .admin_access
@@ -136,6 +145,20 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
 
 fn error_response(status: StatusCode, code: &str, message: &str) -> Response {
     (status, Json(json!({ "error": code, "message": message }))).into_response()
+}
+
+/// 許可外オリジンからの Cookie 認証変更操作（SEC4）。認可の可否は明かさず 403 で落とす。
+fn forbidden_origin(parts: &Parts) -> Response {
+    tracing::warn!(
+        method = %parts.method,
+        path = %parts.uri.path(),
+        "rejected cookie-authenticated request from a disallowed origin"
+    );
+    error_response(
+        StatusCode::FORBIDDEN,
+        "forbidden",
+        &messages(parts).get("api-origin-not-allowed"),
+    )
 }
 
 /// リクエストの `Accept-Language` に従う翻訳辞書（MT19）。extractor の拒否応答（401 / 403）も

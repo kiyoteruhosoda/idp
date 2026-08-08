@@ -1,3 +1,21 @@
+## 2026-08-08（ログアウト系 URI の検証と管理 API の Origin 検証を追加した（SEC2・SEC4））
+
+- **クライアントのログアウト系 URI を検証するようにした（SEC2）。** `redirect_uris` は
+  絶対 http(s)・フラグメント禁止・ワイルドカード禁止を課していたのに、
+  `post_logout_redirect_uris` / `frontchannel_logout_uri` / `backchannel_logout_uri` は
+  無検証で保存していた。3 種とも同じ検査を通し、登録時・更新時の両方で適用する。
+- **`backchannel_logout_uri` はさらに内部宛先を拒否する。** api がサーバ側から POST する唯一の
+  外向き URI であり、テナント管理者権限で `http://169.254.169.254/...` 等を登録できると
+  認証済み blind SSRF になる。ループバック・プライベート・リンクローカル・CGNAT・
+  unique local のアドレスリテラルと `localhost` を拒否する（名前解決の結果までは見ないため、
+  閉じた配置では前段プロキシの egress 制御を併用する）。
+- **Cookie 認証の変更系リクエストに Origin / Referer 検証を追加した（SEC4）。**
+  `single-origin` トポロジでは `Accept: application/json` を付けた same-site スクリプトから
+  api の管理 API へ Cookie 付きで到達でき、body を取らない POST（`restart`・secret 再発行・
+  password/MFA reset）はプリフライトも発生しないため CSRF が成立していた。`RequirePerms` /
+  `AuthenticatedUser` extractor が、変更系メソッドで許可オリジン（`PUBLIC_WEB_BASE_URL` と
+  `ISSUER`）との一致を要求する。ヘッダを持たないリクエスト（`curl` 等）は従来どおり通す。
+
 ## 2026-08-08（OIDC ログインの TOTP 検証に総当たり対策を入れた（SEC3））
 
 - **OIDC ログインフローの TOTP 検証（`/internal/mfa/totp/verify`）に、IP 単位のレート制限と
