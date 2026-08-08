@@ -25,7 +25,10 @@ use std::time::Duration;
 
 /// 秘密鍵暗号化キーの開発用デフォルト（ちょうど 32 バイト）。本番では必ず `KEY_ENCRYPTION_KEY`
 /// を設定する。運用では DB 外の鍵管理（KMS 等）へ移行する。
-const DEV_KEY_ENCRYPTION_KEY: &[u8; 32] = b"idp-dev-insecure-key-0123456789!";
+///
+/// `DEV_CSRF_SECRET` と同じく公開する（統合テストが「既定値と同じバイト列」を明示注入するのに使う。
+/// 共有テスト DB 上の署名鍵を全テストバイナリで相互に復号できる状態を保つため）。
+pub const DEV_KEY_ENCRYPTION_KEY: &[u8; 32] = b"idp-dev-insecure-key-0123456789!";
 
 /// サービス間内部認証トークンの開発用デフォルト（ADR-0007 §5）。本番では必ず
 /// `INTERNAL_SERVICE_TOKEN` を設定する。web→api の `/internal/*` 呼び出しを保護する共有シークレット。
@@ -183,12 +186,13 @@ impl Config {
         // web→api の /internal/* 呼び出しを保護する共有シークレット（ADR-0007 §5）。
         let (internal_service_token, internal_service_token_is_dev) =
             match env_lookup("INTERNAL_SERVICE_TOKEN") {
-                Some(v) => (v, false),
+                Some(v) => (validate_internal_service_token(v)?, false),
                 None => (DEV_INTERNAL_SERVICE_TOKEN.to_string(), true),
             };
         // CSRF トークン HMAC 鍵（SEC7）。web と api で同じ値を設定する。
         let (csrf_secret, csrf_secret_is_dev) = load_csrf_secret()?;
-        // 本番（https issuer）では開発用デフォルトのシークレットで起動しない（fail-fast）。
+        // 本番相当（ループバック以外の公開オリジン）では開発用デフォルトのシークレットで
+        // 起動しない（fail-fast。SEC11）。
         ensure_production_secrets(
             &issuer,
             key_encryption_key_is_dev,
@@ -586,11 +590,12 @@ fn normalize_issuer(raw: String) -> String {
     }
 }
 
-/// 本番相当（issuer が `https://`）で開発用デフォルトのシークレットが使われていたら起動を失敗させる。
+/// 本番相当の配置で開発用デフォルトのシークレットが使われていたら起動を失敗させる。
 ///
 /// 開発用デフォルト（`DEV_KEY_ENCRYPTION_KEY`・`DEV_INTERNAL_SERVICE_TOKEN`・`DEV_CSRF_SECRET`）は
 /// ソースに埋め込まれた既知値であり、本番で使うと署名鍵の暗号化・`/internal/*` の保護・CSRF 防御が
-/// 実質無効になる。warning での見逃しを防ぐため、http（ローカル開発）以外では設定漏れを構成エラーとする。
+/// 実質無効になる。warning での見逃しを防ぐため、ローカルループバック以外の配置では設定漏れを
+/// 構成エラーとする（SEC11。前段で TLS を終端して `ISSUER` を http にした配置も本番扱いになる）。
 fn ensure_production_secrets(
     issuer: &str,
     key_encryption_key_is_dev: bool,
@@ -603,21 +608,21 @@ fn ensure_production_secrets(
     }
     if key_encryption_key_is_dev {
         anyhow::bail!(
-            "ISSUER is https ({issuer}) but KEY_ENCRYPTION_KEY is not set; \
+            "ISSUER ({issuer}) is not a local loopback origin but KEY_ENCRYPTION_KEY is not set; \
              refusing to start with the built-in development key. \
              Set KEY_ENCRYPTION_KEY (base64, 32 bytes) in production."
         );
     }
     if internal_service_token_is_dev {
         anyhow::bail!(
-            "ISSUER is https ({issuer}) but INTERNAL_SERVICE_TOKEN is not set; \
+            "ISSUER ({issuer}) is not a local loopback origin but INTERNAL_SERVICE_TOKEN is not set; \
              refusing to start with the built-in development token. \
              Set INTERNAL_SERVICE_TOKEN (shared with web) in production."
         );
     }
     if csrf_secret_is_dev {
         anyhow::bail!(
-            "ISSUER is https ({issuer}) but CSRF_SECRET is not set; \
+            "ISSUER ({issuer}) is not a local loopback origin but CSRF_SECRET is not set; \
              refusing to start with the built-in development key. \
              Set CSRF_SECRET (base64, 32 bytes, shared with web) in production."
         );
@@ -639,6 +644,12 @@ fn load_csrf_secret() -> anyhow::Result<([u8; 32], bool)> {
         Some(v) => Ok((decode_secret_32("CSRF_SECRET", &v)?, false)),
         None => Ok((*DEV_CSRF_SECRET, true)),
     }
+}
+
+/// `INTERNAL_SERVICE_TOKEN` の最低要件を検査する（SEC11）。判定は web と共有の契約に置く。
+fn validate_internal_service_token(value: String) -> anyhow::Result<String> {
+    idp_contracts::deployment::validate_internal_service_token(&value)
+        .map_err(|e| anyhow::anyhow!(e))
 }
 
 /// base64 の 32 バイトシークレット（`KEY_ENCRYPTION_KEY`・`CSRF_SECRET`）を復号する。
@@ -719,6 +730,20 @@ mod tests {
         ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// ループバック以外の公開オリジンを使うテストは本番相当と判定される（SEC11）ため、開発用
+    /// 既定 secret のままでは `Config` を組み立てられない。テスト用の値を注入する。
+    fn set_production_secrets() {
+        std::env::set_var("KEY_ENCRYPTION_KEY", STANDARD.encode([1u8; 32]));
+        std::env::set_var("CSRF_SECRET", STANDARD.encode([2u8; 32]));
+        std::env::set_var("INTERNAL_SERVICE_TOKEN", "t".repeat(32));
+    }
+
+    fn clear_production_secrets() {
+        std::env::remove_var("KEY_ENCRYPTION_KEY");
+        std::env::remove_var("CSRF_SECRET");
+        std::env::remove_var("INTERNAL_SERVICE_TOKEN");
     }
 
     /// MT27: 起動時スナップショットと現在の DB 上書き値がずれていれば「保存済み・未反映」。
@@ -1012,6 +1037,7 @@ mod tests {
     #[test]
     fn cookie_domain_is_validated_at_startup() {
         let _env = env_guard();
+        set_production_secrets();
         std::env::set_var("ISSUER", "http://api.example.com");
         std::env::set_var("PUBLIC_WEB_BASE_URL", "http://id.example.com");
 
@@ -1033,6 +1059,7 @@ mod tests {
 
         std::env::remove_var("ISSUER");
         std::env::remove_var("PUBLIC_WEB_BASE_URL");
+        clear_production_secrets();
     }
 
     /// ADR-0017: ISSUER は DB 上書きを受ける（ディスカバリ文書と `iss` が `http://localhost:8080`
@@ -1040,6 +1067,8 @@ mod tests {
     #[test]
     fn issuer_is_overridden_by_db_settings() {
         let _env = env_guard();
+        // DB 上書き後の issuer はループバック以外なので本番相当になる（SEC11）。
+        set_production_secrets();
         std::env::set_var("ISSUER", "http://localhost:8080");
         std::env::remove_var("PUBLIC_WEB_BASE_URL");
         std::env::remove_var("COOKIE_DOMAIN");
@@ -1066,6 +1095,7 @@ mod tests {
         assert_eq!(config.issuer(), "http://localhost:8080");
 
         std::env::remove_var("ISSUER");
+        clear_production_secrets();
     }
 
     #[test]

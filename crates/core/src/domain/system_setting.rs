@@ -513,14 +513,22 @@ pub fn validate_public_base_url(key: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// issuer が本番相当（https）か。
+/// issuer が本番相当か（＝開発用の既定 secret での起動を拒否すべきか）。
 ///
-/// https では開発用の既定 secret での起動を拒否する（`config::ensure_production_secrets`）。
+/// 判定は「**ローカルループバック以外を公開している**」。https はもちろん、http でも
+/// loopback 以外のホストを名乗るなら前段で TLS を終端した本番配置とみなす（SEC11）。
+///
+/// スキームだけで判定していた頃は、TLS をプロキシで終端して `ISSUER=http://id.example.com` と
+/// した配置で fail-fast が効かず、ソースに埋まった既知の `INTERNAL_SERVICE_TOKEN` のまま
+/// `/internal/*` が開いていた（防御が nginx の `/internal/` 404 一枚だけになる）。
+///
 /// **起動時の fail-fast と、保存前の起動可否検査（[`ensure_override_is_bootable`]）が同じ判定を
-/// 使う**ようにするため、述語をここに置く。片方だけがスキームの判定規則を変えると、保存はできるのに
+/// 使う**ようにするため、述語をここに置く。片方だけが判定規則を変えると、保存はできるのに
 /// 起動できない値が生まれる。
+/// 判定そのものは api / web 共有の契約に置く（`idp_contracts::deployment`）。web が別判定を
+/// 持つと「api は起動して web は起動しない」がおきるため。
 pub fn requires_production_secrets(issuer: &str) -> bool {
-    issuer.trim().to_ascii_lowercase().starts_with("https://")
+    idp_contracts::deployment::requires_production_secrets(issuer)
 }
 
 /// 起動時に使われた bootstrap secret が開発用の既定値のままか（ADR-0017）。

@@ -14,6 +14,7 @@ use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
 use crate::domain::id_generator::IdGenerator;
 use crate::domain::message::MessageKey;
+use crate::domain::outbound_uri::is_internal_destination;
 use crate::domain::password::PasswordHasher;
 use crate::domain::repositories::ClientRepository;
 use crate::domain::tenant_context::TenantContext;
@@ -110,6 +111,12 @@ impl ClientManagementService {
         let app_name = validate_app_name(cmd.app_name)?;
         let redirect_uris = validate_redirect_uris(&cmd.redirect_uris)?;
         let scopes = validate_scopes(&cmd.scopes)?;
+        // ログアウト系 URI も redirect URI と同じ検査を通す（SEC2）。
+        let post_logout_redirect_uris =
+            validate_post_logout_redirect_uris(&cmd.post_logout_redirect_uris)?;
+        let frontchannel_logout_uri =
+            validate_frontchannel_logout_uri(cmd.frontchannel_logout_uri)?;
+        let backchannel_logout_uri = validate_backchannel_logout_uri(cmd.backchannel_logout_uri)?;
 
         // client 種別に応じて認証方式・PKCE・secret を決める。
         // public: 認証なし・PKCE 必須・secret なし。confidential: client_secret_basic・secret 発行。
@@ -146,9 +153,9 @@ impl ClientManagementService {
             scopes,
             token_endpoint_auth_method: auth_method,
             require_pkce,
-            post_logout_redirect_uris: cmd.post_logout_redirect_uris,
-            frontchannel_logout_uri: cmd.frontchannel_logout_uri,
-            backchannel_logout_uri: cmd.backchannel_logout_uri,
+            post_logout_redirect_uris,
+            frontchannel_logout_uri,
+            backchannel_logout_uri,
             created_at: now,
             updated_at: now,
         };
@@ -216,14 +223,15 @@ impl ClientManagementService {
         if let Some(status) = cmd.status {
             client.client_status = status;
         }
+        // 更新時も登録時と同じ検査を通す（SEC2。登録を通しても更新で差し替えられては意味がない）。
         if let Some(uris) = cmd.post_logout_redirect_uris {
-            client.post_logout_redirect_uris = uris;
+            client.post_logout_redirect_uris = validate_post_logout_redirect_uris(&uris)?;
         }
         if let Some(uri) = cmd.frontchannel_logout_uri {
-            client.frontchannel_logout_uri = uri;
+            client.frontchannel_logout_uri = validate_frontchannel_logout_uri(uri)?;
         }
         if let Some(uri) = cmd.backchannel_logout_uri {
-            client.backchannel_logout_uri = uri;
+            client.backchannel_logout_uri = validate_backchannel_logout_uri(uri)?;
         }
 
         self.clients
@@ -333,33 +341,133 @@ fn validate_redirect_uris(uris: &[String]) -> Result<Vec<String>, ClientManageme
     Ok(out)
 }
 
+/// URI 種別ごとの検証エラーの翻訳キー束。
+///
+/// `MessageKey` のキーは静的文字列に限る（動的キーは訳の抜けを静かに増やす）ため、
+/// 検証ロジックを共有しつつ文言だけを種別ごとに差し替える。
+struct UriMessageKeys {
+    invalid: &'static str,
+    scheme: &'static str,
+    fragment: &'static str,
+    wildcard: &'static str,
+    duplicate: &'static str,
+}
+
+const REDIRECT_URI_KEYS: UriMessageKeys = UriMessageKeys {
+    invalid: "api-client-redirect-uri-invalid",
+    scheme: "api-client-redirect-uri-scheme",
+    fragment: "api-client-redirect-uri-fragment",
+    wildcard: "api-client-redirect-uri-wildcard",
+    duplicate: "api-client-redirect-uri-duplicate",
+};
+
+/// ログアウト系 URI（`post_logout_redirect_uris` / `frontchannel_logout_uri` /
+/// `backchannel_logout_uri`）用のキー束。
+const LOGOUT_URI_KEYS: UriMessageKeys = UriMessageKeys {
+    invalid: "api-client-logout-uri-invalid",
+    scheme: "api-client-logout-uri-scheme",
+    fragment: "api-client-logout-uri-fragment",
+    wildcard: "api-client-logout-uri-wildcard",
+    duplicate: "api-client-logout-uri-duplicate",
+};
+
 /// 単一 redirect URI の制約（設計仕様 §2.3）: 絶対 http(s) URL・フラグメント禁止・ワイルドカード禁止。
 fn validate_redirect_uri(uri: &str) -> Result<(), ClientManagementError> {
+    validate_absolute_web_uri(uri, &REDIRECT_URI_KEYS).map(|_| ())
+}
+
+/// 絶対 http(s) URL・フラグメント禁止・ワイルドカード禁止を検証し、解析済み URL を返す。
+fn validate_absolute_web_uri(
+    uri: &str,
+    keys: &UriMessageKeys,
+) -> Result<url::Url, ClientManagementError> {
     if uri.contains('*') {
         return Err(ClientManagementError::Validation(MessageKey::with_value(
-            "api-client-redirect-uri-wildcard",
+            keys.wildcard,
             uri,
         )));
     }
     let parsed = url::Url::parse(uri).map_err(|_| {
-        ClientManagementError::Validation(MessageKey::with_value(
-            "api-client-redirect-uri-invalid",
-            uri,
-        ))
+        ClientManagementError::Validation(MessageKey::with_value(keys.invalid, uri))
     })?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(ClientManagementError::Validation(MessageKey::with_value(
-            "api-client-redirect-uri-scheme",
+            keys.scheme,
             uri,
         )));
     }
     if parsed.fragment().is_some() {
         return Err(ClientManagementError::Validation(MessageKey::with_value(
-            "api-client-redirect-uri-fragment",
+            keys.fragment,
             uri,
         )));
     }
-    Ok(())
+    Ok(parsed)
+}
+
+/// `post_logout_redirect_uris` を検証する（SEC2）。0 件は許容（機能を使わない）。
+///
+/// ブラウザのリダイレクト先であり `redirect_uris` と同じ危険（オープンリダイレクト・
+/// スキーム悪用）を持つため、同じ制約を課す。
+fn validate_post_logout_redirect_uris(
+    uris: &[String],
+) -> Result<Vec<String>, ClientManagementError> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(uris.len());
+    for uri in uris {
+        let uri = uri.trim();
+        if uri.is_empty() {
+            continue;
+        }
+        validate_absolute_web_uri(uri, &LOGOUT_URI_KEYS)?;
+        if !seen.insert(uri.to_string()) {
+            return Err(ClientManagementError::Validation(MessageKey::with_value(
+                LOGOUT_URI_KEYS.duplicate,
+                uri,
+            )));
+        }
+        out.push(uri.to_string());
+    }
+    Ok(out)
+}
+
+/// `frontchannel_logout_uri` を検証する（SEC2）。空文字は「未設定」として扱う。
+///
+/// ブラウザが iframe で読み込む URL なので、リダイレクト先と同じ制約で足りる
+/// （IdP のサーバからは接続しないため SSRF にはならない）。
+fn validate_frontchannel_logout_uri(
+    uri: Option<String>,
+) -> Result<Option<String>, ClientManagementError> {
+    let Some(uri) = uri.map(|u| u.trim().to_string()).filter(|u| !u.is_empty()) else {
+        return Ok(None);
+    };
+    validate_absolute_web_uri(&uri, &LOGOUT_URI_KEYS)?;
+    Ok(Some(uri))
+}
+
+/// `backchannel_logout_uri` を検証する（SEC2）。空文字は「未設定」として扱う。
+///
+/// **api がサーバ側から POST する唯一の外向き URI** であり、テナント管理者権限で任意の宛先を
+/// 登録できると認証済み blind SSRF（クラウドメタデータ・内部管理 API への到達）になる。
+/// リダイレクト先と同じ形式制約に加え、プライベート・ループバック・リンクローカル等の
+/// アドレスリテラルを拒否する。
+///
+/// なお、これは登録時の検査であり、名前解決の結果が内部アドレスになる DNS 由来の到達
+/// （DNS rebinding を含む）までは防げない。閉じたい配置では前段プロキシの egress 制御を併用する。
+fn validate_backchannel_logout_uri(
+    uri: Option<String>,
+) -> Result<Option<String>, ClientManagementError> {
+    let Some(uri) = uri.map(|u| u.trim().to_string()).filter(|u| !u.is_empty()) else {
+        return Ok(None);
+    };
+    validate_absolute_web_uri(&uri, &LOGOUT_URI_KEYS)?;
+    if is_internal_destination(&uri) {
+        return Err(ClientManagementError::Validation(MessageKey::with_value(
+            "api-client-backchannel-logout-uri-internal-host",
+            &uri,
+        )));
+    }
+    Ok(Some(uri))
 }
 
 /// scope 群を検証する。1 件以上・既知の OIDC scope のみ・`openid` を含み・重複なしであること。
@@ -434,5 +542,93 @@ mod tests {
     fn app_name_is_trimmed_and_non_empty() {
         assert_eq!(validate_app_name("  App  ".to_string()).unwrap(), "App");
         assert!(validate_app_name("   ".to_string()).is_err());
+    }
+
+    // ── SEC2: ログアウト系 URI の検証 ────────────────────────────────────────
+
+    #[test]
+    fn post_logout_redirect_uris_follow_the_redirect_uri_rules() {
+        // 0 件は「機能を使わない」なので許容する。空文字は無視する。
+        assert!(validate_post_logout_redirect_uris(&[]).unwrap().is_empty());
+        assert!(validate_post_logout_redirect_uris(&["  ".to_string()])
+            .unwrap()
+            .is_empty());
+
+        assert_eq!(
+            validate_post_logout_redirect_uris(&[
+                " https://app.example.com/after-logout ".to_string()
+            ])
+            .unwrap(),
+            vec!["https://app.example.com/after-logout".to_string()]
+        );
+
+        for bad in [
+            "https://app.example.com/x#frag",
+            "https://app.example.com/*",
+            "javascript:alert(1)",
+            "not-a-url",
+        ] {
+            assert!(
+                validate_post_logout_redirect_uris(&[bad.to_string()]).is_err(),
+                "{bad} must be rejected"
+            );
+        }
+        assert!(validate_post_logout_redirect_uris(&[
+            "https://a.example.com/out".to_string(),
+            "https://a.example.com/out".to_string(),
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn frontchannel_logout_uri_is_validated_and_empty_means_unset() {
+        assert_eq!(validate_frontchannel_logout_uri(None).unwrap(), None);
+        assert_eq!(
+            validate_frontchannel_logout_uri(Some("  ".to_string())).unwrap(),
+            None
+        );
+        assert_eq!(
+            validate_frontchannel_logout_uri(Some("https://app.example.com/fc".to_string()))
+                .unwrap(),
+            Some("https://app.example.com/fc".to_string())
+        );
+        assert!(validate_frontchannel_logout_uri(Some("file:///etc/passwd".to_string())).is_err());
+        // ブラウザが読み込むだけなので、プライベート宛でも SSRF にはならない（拒否しない）。
+        assert!(
+            validate_frontchannel_logout_uri(Some("http://127.0.0.1:9000/fc".to_string())).is_ok()
+        );
+    }
+
+    #[test]
+    fn backchannel_logout_uri_rejects_internal_destinations() {
+        assert_eq!(validate_backchannel_logout_uri(None).unwrap(), None);
+        assert_eq!(
+            validate_backchannel_logout_uri(Some("https://rp.example.com/bc".to_string())).unwrap(),
+            Some("https://rp.example.com/bc".to_string())
+        );
+        // 名前で指す内部サービスは（解決結果を見ないため）通す。
+        assert!(validate_backchannel_logout_uri(Some("http://rp:3000/bc".to_string())).is_ok());
+
+        for bad in [
+            // クラウドのインスタンスメタデータ（link-local）。
+            "http://169.254.169.254/latest/meta-data/",
+            "http://127.0.0.1:8080/internal",
+            "http://localhost/internal",
+            "http://app.LOCALHOST/internal",
+            "http://10.0.0.5/admin",
+            "http://192.168.1.1/admin",
+            "http://172.16.0.1/admin",
+            "http://100.64.0.1/admin",
+            "http://0.0.0.0/",
+            "http://[::1]/internal",
+            "http://[fd00::1]/internal",
+            "http://[fe80::1]/internal",
+            "http://[::ffff:127.0.0.1]/internal",
+        ] {
+            assert!(
+                validate_backchannel_logout_uri(Some(bad.to_string())).is_err(),
+                "{bad} must be rejected as an internal destination"
+            );
+        }
     }
 }

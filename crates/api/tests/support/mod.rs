@@ -14,6 +14,7 @@
 use axum::body::Body;
 use axum::http::header::{CONTENT_TYPE, COOKIE, LOCATION, SET_COOKIE};
 use axum::http::{Method, Request};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use idp_api::config::Config;
 use idp_api::domain::clock::Clock;
 use idp_api::domain::password::PasswordHasher as _;
@@ -38,7 +39,8 @@ static KEY_BOOTSTRAP: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_n
 
 /// 内部認証エンドポイント（`/internal/*`）のサービストークン（ADR-0007 §5）。
 /// `setup()` が `INTERNAL_SERVICE_TOKEN` へ固定注入する。
-pub const SERVICE_TOKEN: &str = "test-internal-service-token";
+// 32 文字以上（`idp_contracts::deployment::INTERNAL_SERVICE_TOKEN_MIN_LEN`）。SEC11。
+pub const SERVICE_TOKEN: &str = "test-internal-service-token-0123456789";
 pub const SERVICE_TOKEN_HEADER: &str = "x-internal-auth-token";
 
 // RFC 7636 Appendix B のテストベクタ（S256）。
@@ -82,12 +84,40 @@ pub async fn connect_pool(test_name: &str) -> Option<MySqlPool> {
     connect_pool_with_max_connections(test_name, DEFAULT_POOL_MAX_CONNECTIONS).await
 }
 
+/// DB を使うテストが共通で行う環境変数の準備。**すべてのテストバイナリで同じ値になる**ように、
+/// `setup()` ではなく接続関数（どのテストも必ず通る）で行う。
+///
+/// - `INTERNAL_SERVICE_TOKEN`: `/internal/*` を叩くテスト向けの既知値。32 文字以上（SEC11）。
+/// - `KEY_ENCRYPTION_KEY` / `CSRF_SECRET`: **未設定のときだけ**、開発用既定値と同じバイト列を
+///   base64 で明示注入する。ループバック以外のホスト名を使うテスト（`e2e_domain_split`）は
+///   本番相当と判定され、開発用既定のままでは起動できないため（SEC11）。実効値を変えないので、
+///   共有テスト DB 上の署名鍵をどのテストバイナリからも復号できる状態が保たれる（CI のように
+///   環境変数で与えられている場合はそちらを尊重する）。
+fn prepare_test_env() {
+    std::env::set_var("INTERNAL_SERVICE_TOKEN", SERVICE_TOKEN);
+    set_env_if_unset(
+        "KEY_ENCRYPTION_KEY",
+        &STANDARD.encode(idp_api::config::DEV_KEY_ENCRYPTION_KEY),
+    );
+    set_env_if_unset(
+        "CSRF_SECRET",
+        &STANDARD.encode(idp_api::config::DEV_CSRF_SECRET),
+    );
+}
+
+fn set_env_if_unset(key: &str, value: &str) {
+    if std::env::var_os(key).is_none_or(|v| v.is_empty()) {
+        std::env::set_var(key, value);
+    }
+}
+
 /// 接続上限を明示して接続する（同時実行数とプール枠の予算を突き合わせたいテスト向け）。
 /// 枠が並走数を下回ると、接続を保持したまま進む処理（例: advisory lock 区間）で acquire 待ちが発生する。
 pub async fn connect_pool_with_max_connections(
     test_name: &str,
     max_connections: u32,
 ) -> Option<MySqlPool> {
+    prepare_test_env();
     let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
         if std::env::var("IDP_ALLOW_DB_TEST_SKIP").ok().as_deref() == Some("1") {
             eprintln!(
@@ -112,8 +142,6 @@ pub async fn connect_pool_with_max_connections(
 
 /// アプリ全体（AppState + ルータ）を組み立てる。署名鍵はプロセス内で一度だけブートストラップする。
 pub async fn setup(test_name: &str) -> Option<TestEnv> {
-    // 内部認証エンドポイントのサービストークンを既知値に固定する（/internal/* を使うテスト向け）。
-    std::env::set_var("INTERNAL_SERVICE_TOKEN", SERVICE_TOKEN);
     let pool = connect_pool(test_name).await?;
 
     let root_tenant_id: String =

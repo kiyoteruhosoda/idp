@@ -120,6 +120,16 @@ async fn send_backchannel_logout_tokens(
     let now = chrono::Utc::now().timestamp();
 
     for target in &targets {
+        // 送信直前にも宛先を検査する（SEC2）。登録時の検証（`client_management`）だけでは、
+        // 検証導入より前に登録された行や DB を直接編集された行が素通りしてしまう。
+        if crate::domain::outbound_uri::is_internal_destination(&target.backchannel_logout_uri) {
+            tracing::warn!(
+                client_id = %target.client_id,
+                "skipped back-channel logout: the registered URI points at an internal destination"
+            );
+            continue;
+        }
+
         let claims = LogoutTokenClaims {
             iss: issuer.to_string(),
             sub: user_sub.to_string(),

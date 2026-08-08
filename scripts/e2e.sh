@@ -26,7 +26,7 @@ API="http://localhost:8080"
 # reqwest が IPv4-only の api へ到達できないことがある。
 API_INTERNAL="http://127.0.0.1:8080"
 WEB="http://localhost:8081"
-TOKEN="e2e-internal-service-token"
+TOKEN="e2e-internal-service-token-0123456789"
 CODE_CHALLENGE="E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
 CODE_VERIFIER="dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
 REDIRECT_URI="http://localhost:3000/callback"

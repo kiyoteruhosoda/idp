@@ -97,6 +97,17 @@ api・web を別プロセスで起動し、`/authorize`→web `/login`→`/token
 （DB には argon2 ハッシュのみ保存。以後は再表示できないため保管する。紛失時は再発行する）。
 呼び出しには対象テナントを scope とする `idp.tenant.admin`（または `idp.system.admin`）を保有する利用者の有効な SSO セッション（`sso_session_id` Cookie）が要る。
 
+管理 API の変更系（POST / PUT / PATCH / DELETE）は、`Origin`（無ければ `Referer`）を送る場合
+`PUBLIC_WEB_BASE_URL` か `ISSUER` のオリジンと一致していないと 403 になる。ブラウザの JavaScript から
+直接呼ぶときは、この 2 つのいずれかのオリジンのページから呼ぶ。`curl` のように両ヘッダを送らない
+クライアントは影響を受けない。
+
+ログアウト系 URI（`post_logout_redirect_uris` / `frontchannel_logout_uri` /
+`backchannel_logout_uri`）は `redirect_uris` と同じ制約（絶対 http(s)・フラグメント禁止・
+ワイルドカード禁止）を満たす必要がある。`backchannel_logout_uri` はさらに、ループバック・
+プライベート・リンクローカル等のアドレスを**リテラルで**指定できない（内部サービスへ向けるときは
+ホスト名で指定する）。
+
 ```bash
 # 有効な SSO セッションの Cookie を付けて呼ぶ（ブラウザのセッションでも可）。
 curl -sS -X POST "$ISSUER/admin/clients" \
@@ -313,8 +324,8 @@ curl -b "sso_session_id=<管理者セッション>" -H 'Content-Type: applicatio
 | `DATABASE_URL` | `mysql://idp:idp@127.0.0.1:3306/idp` | MariaDB DSN |
 | `DB_MAX_CONNECTIONS` | `10` | 接続プール上限 |
 | `LOG_FORMAT` | `json` | `json` / `pretty` |
-| `KEY_ENCRYPTION_KEY` | 開発用固定値 | 署名秘密鍵の暗号化キー（base64、32 バイト）。**`ISSUER` が https のとき未設定なら起動失敗** |
-| `INTERNAL_SERVICE_TOKEN` | 開発用固定値 | web→api の `/internal/*` 共有シークレット（api・web で同値）。**`ISSUER` が https のとき未設定なら起動失敗** |
+| `KEY_ENCRYPTION_KEY` | 開発用固定値 | 署名秘密鍵の暗号化キー（base64、32 バイト）。**`ISSUER` がループバック以外のとき未設定なら起動失敗** |
+| `INTERNAL_SERVICE_TOKEN` | 開発用固定値 | web→api の `/internal/*` 共有シークレット（api・web で同値。**32 文字以上**）。**`ISSUER` がループバック以外のとき未設定なら起動失敗** |
 | `COOKIE_SECURE` | 自サービスの公開オリジンが https なら `true` | Cookie の `Secure` 属性。**DB 上書き可**（下記） |
 | `AUTH_SESSION_TTL_SECS` | `600` | AuthSession の有効期間。**DB 上書き可**（下記） |
 | `AUTHORIZATION_CODE_TTL_SECS` | `60` | authorization code の有効期間 |
@@ -365,9 +376,10 @@ curl -b "sso_session_id=<管理者セッション>" -H 'Content-Type: applicatio
 
 - 値は **スキーム（http/https）とホストを持つ絶対 URL**。末尾スラッシュは自動で落ちる。
   クエリ・フラグメント・資格情報を含む値は保存できない（400）。
-- **https にするには、先に `KEY_ENCRYPTION_KEY`・`INTERNAL_SERVICE_TOKEN`・`CSRF_SECRET` を
-  環境変数で設定して再起動しておく。** これらが開発用の既定値のままだと api も web も https では
-  起動しないため、保存の時点で拒否される（409）。
+- **`localhost` 以外のホストにするには、先に `KEY_ENCRYPTION_KEY`・`INTERNAL_SERVICE_TOKEN`・
+  `CSRF_SECRET` を環境変数で設定して再起動しておく。** これらが開発用の既定値のままだと api も web も
+  起動しないため、保存の時点で拒否される（409）。判定は https だけでなく「ループバック以外の公開
+  オリジン」で行う（前段で TLS を終端して `ISSUER` を http にした配置も本番扱い）。
 - 別オリジンで web を公開している場合、`PUBLIC_WEB_BASE_URL` は `ENV_LOCKED` なので `.env` 側の
   変更が必要（ADR-0012）。`COOKIE_DOMAIN` を設定している構成では、`ISSUER` のホストがその
   ドメイン配下で、`PUBLIC_WEB_BASE_URL` とスキーム（http/https）が一致している必要がある。

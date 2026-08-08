@@ -418,7 +418,7 @@ impl AppState {
             sso_sessions.clone(),
             totp_secrets.clone(),
             hasher.clone(),
-            rate_limiter,
+            rate_limiter.clone(),
             audit.clone(),
             clock.clone(),
             *config.key_encryption_key(),
@@ -598,11 +598,15 @@ impl AppState {
             sso_sessions.clone(),
             client_consents.clone(),
             code_issuance.clone(),
+            // パスワード認証と同じ limiter インスタンス・同じロックポリシーを共有する（SEC3）。
+            // 別枠にすると「パスワードで上限まで、TOTP でさらに上限まで」と試行できてしまう。
+            rate_limiter.clone(),
             audit.clone(),
             clock.clone(),
             *config.key_encryption_key(),
             config.sso_idle_ttl(),
             config.sso_absolute_ttl(),
+            config.login_lockout(),
             *config.csrf_secret(),
         ));
 

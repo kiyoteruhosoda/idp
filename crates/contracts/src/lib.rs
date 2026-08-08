@@ -11,6 +11,7 @@ pub mod auth;
 pub mod cookie_domain;
 pub mod cookies;
 pub mod csrf;
+pub mod deployment;
 pub mod runtime_settings;
 
 pub mod version;

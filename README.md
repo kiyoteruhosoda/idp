@@ -167,8 +167,9 @@ sequenceDiagram
 - **SSO セッション** — ログイン成功時に発行。Cookie には平文 session_id、DB には SHA-256 ハッシュのみ保存。
   2 回目以降の `/authorize` では再ログインなしで code を発行し、idle 期限を延長する
   （`auth_time` は初回ログイン時刻を維持）
-- **アカウントロック** — username 単位で連続 10 回失敗 → 15 分ロック（成功時リセット）。
-  IP 単位のレート制限も実施
+- **アカウントロック** — username 単位で連続 10 回失敗 → 15 分ロック（成功時リセット。閾値は
+  `LOGIN_MAX_FAILED_ATTEMPTS` / `LOGIN_LOCK_DURATION_SECS` で変更可）。パスワードと TOTP（MFA）の
+  失敗は同じカウンタを進める。IP 単位のレート制限も両者で同じ枠を消費する
 - **Cookie 属性** — `HttpOnly` / `Secure`（設定可）/ `SameSite=Lax` / `Path=/`
 
 ### セキュリティ・鍵管理

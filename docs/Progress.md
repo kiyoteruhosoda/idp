@@ -37,10 +37,6 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 
 | 優先度 | ID | 課題内容 | 工数 | 影響度 | 重要度 | 難易度 |
 |---:|---|---|---:|---:|---:|---:|
-| 45 | SEC3 | OIDC フローの TOTP 検証にレート制限・ロックアウトが無い（ポータル側にはある）（⬜未着手） | 小 | 中 | 大 | 中 |
-| 23 | SEC2 | ログアウト系 URI（`backchannel_logout_uri` ほか）が無検証 → 認証済み blind SSRF（⬜未着手） | 中 | 中 | 大 | 中 |
-| 23 | SEC4 | single-origin 構成で admin の変更系 POST（`restart`・secret 再発行・password/MFA reset 等）が same-site スクリプトから CSRF 可能（body 無しエンドポイントは JSON content-type が防御にならない）（⬜未着手） | 中 | 中 | 大 | 中 |
-| 15 | SEC11 | `INTERNAL_SERVICE_TOKEN` に長さ・形式検証が無く、http issuer では dev 既定へフォールバックする（⬜未着手） | 小 | 中 | 大 | 小 |
 | 15 | AP5 | Step-up 認証（仕様 §15。認証済みユーザーへの再認証・強い認証の要求。MFA 設定変更・パスワード変更等の重要操作に適用。AP4 が前提）（⬜未着手） | 大 | 中 | 中 | 大 |
 | 15 | AP9 | 認証器の統合管理（仕様 §5。`user_authenticators` への統合・状態管理（pending/active/suspended/revoked）・リカバリーコード・email/sms OTP）（⬜未着手） | 大 | 中 | 中 | 大 |
 | 15 | AP10 | 外部 IdP 認証（仕様 §13。外部 OIDC/SAML IdP を認証器として使う。`iss`+`sub` での外部ユーザー識別・トークン検証・IdP 制限ポリシー）（⬜未着手） | 大 | 大 | 中 | 大 |
@@ -57,6 +53,7 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 | 8 | SEC8 | 再利用検知時に子孫トークンファミリを失効させない（authorization code・refresh token の両方）（⬜未着手） | 中 | 小 | 大 | 中 |
 | 8 | AP3 | 認証ポリシーの条件種別を拡張する（ネットワークゾーン・国・端末・時間帯・requested_acr 等。仕様 §8）と `require_specific_method` 効果（⬜未着手） | 大 | 中 | 中 | 大 |
 | 8 | AP8 | ログイン識別子の複数化（仕様 §4。`user_login_identifiers`: 電話番号・社員番号等の種別、表示値と正規化値の分離、識別子単位の無効化）（⬜未着手） | 大 | 大 | 小 | 大 |
+| 5 | SEC13 | ログイン失敗カウンタの更新が read-modify-write で原子的でない（並行試行でロック閾値に届かないことがある。3 つのログイン経路に共通）（⬜未着手） | 中 | 中 | 中 | 小 |
 | 5 | SEC12 | 低リスク改善のまとめ（CSP `unsafe-inline`・Swagger 無認証・`require_pkce` 死に設定・同意 POST の Cookie 非束縛・argon2 パラメータ非明示・auth_sessions の GC/照合/`expect()`）（⬜未着手） | 中 | 中 | 小 | 中 |
 | 5 | AP1 | 認証ポリシーの管理画面（web コンソール UI。現状は API のみ）（⬜未着手） | 中 | 中 | 小 | 中 |
 | 5 | AP7 | パスワードポリシーの拡張（仕様 §11.2。漏えい済みパスワード検出・過去パスワード再利用禁止・有効期限。現状は最小文字数のみ）（⬜未着手） | 中 | 小 | 中 | 中 |
@@ -100,7 +97,7 @@ ADR-0020 で `authentication_policies`（deny / require_mfa / allow、client_ids
 - **AP10** 外部 IdP 認証（§13）。外部 OIDC/SAML IdP を認証器として使い、`iss`+`sub` で内部
   ユーザーへ紐付ける。IdP 制限・外部 MFA 信頼の判定は認証ポリシーの条件として表現する。
 
-### セキュリティレビュー（SEC1〜SEC12）
+### セキュリティレビュー（SEC1〜SEC13）
 
 api / web の別サブドメイン構成を対象にした調査で検出した課題。**「api には対策があるのに web 側に無い」
 非対称**が主軸。良好な点（回帰させない）: redirect_uri/post_logout の完全一致、code の 256bit・SHA-256・
@@ -117,40 +114,6 @@ api は `request_context()` が `trust_forwarded`（`TRUST_FORWARDED_HEADERS`、
 （30回/5分）を回避、送らなければ IP が `None` になりレート制限自体をスキップ（`crates/core/src/application/login.rs:203`
 の `if let Some(ip)` ガード）、監査ログの IP も任意汚染できる。対策: web にも `TRUST_FORWARDED_HEADERS`
 相当のゲートと、非信頼時の `ConnectInfo` フォールバックを入れる。
-
-#### SEC2. ログアウト系 URI が無検証 → 認証済み blind SSRF
-
-`redirect_uris` は `validate_redirect_uri`（スキーム・フラグメント・ワイルドカード検査）を通るのに、
-`backchannel_logout_uri` / `frontchannel_logout_uri` / `post_logout_redirect_uris` はそのまま代入される
-（`crates/core/src/application/client_management.rs:149-151, 219-227`）。特に `backchannel_logout_uri` は api が
-サーバ側から POST する（`crates/api/src/presentation/handlers/logout.rs:152-160`、5 秒タイムアウトのみ）ため、
-テナント管理者権限で `http://169.254.169.254/...`・内部サービスへ POST を打たせられる。対策: 3 種とも
-`validate_redirect_uri` 相当を通し、backchannel はさらにプライベート IP 拒否／allowlist を検討する。
-
-#### SEC3. OIDC フローの TOTP にレート制限・ロックアウトが無い
-
-`crates/core/src/application/mfa_login.rs:101-177` は失敗時に監査するだけで、レート制限・失敗カウンタ・
-ロックが無い。ポータル側 MFA にはレート制限がある（`crates/core/src/application/portal_login.rs:300`）ため非対称。
-auth_session 生存 600 秒間、6 桁 TOTP を無制限に総当たり可能。パスワード窃取済み攻撃者の MFA 突破につながる。
-
-#### SEC4. single-origin で admin JSON API に Cookie が届き、api 側に Origin/CSRF 検証が無い
-
-既定の domain-split では `sso_session_id` が host-only で api ホストへ送られず安全。しかし
-`PUBLISH_TOPOLOGY=single-origin` では nginx が `/{tenant}/admin/*` を `Accept` ヘッダで振り分け
-（`docker/nginx.conf:51-54, 79-81`）、`Accept: application/json` で同一サイトのブラウザ Cookie 付き
-リクエストが api の管理 API に到達する。api の admin extractor は Cookie のみ検証し Origin/Referer/CSRF を
-見ない（`crates/api/src/presentation/admin.rs:67-106`）。
-
-**JSON content-type は防御になっていない**（当初の記述を訂正）。変更系エンドポイントの一部は `Json`
-extractor を持たず body 不要で発火する — `restart_service`（`crates/api/src/presentation/handlers/admin_restart.rs:35`）、
-`rotate_client_secret`（`admin_clients.rs:207`）、`reset_user_password` / `reset_user_mfa`
-（`admin_users.rs:289, 331`）。これらは POST（simple method）かつ body 無し・`Accept` は CORS-safelisted の
-ため、同一サイト（同一 eTLD+1 のサブドメイン）に置いたスクリプトから `fetch(url, {method:'POST',
-credentials:'include', headers:{Accept:'application/json'}})` の **simple request（プリフライト無し）** で
-到達できる。`SameSite=Lax` の SSO Cookie は same-site なので送信され、nginx は api へ振り分ける。
-つまり single-origin では admin 再起動・secret 再発行・password/MFA reset が即座に CSRF 可能。
-対策: api の admin 経路に Origin/Referer 検証（許可オリジン一致）を追加する。DELETE/PATCH はプリフライトで
-守られるが、防御を content-type に依存させない。
 
 #### SEC5. CSRF double-submit の種がオリジン非分離
 
@@ -197,13 +160,19 @@ api / web とも `TraceLayer::new_for_http()`（`crates/api/src/presentation/rou
 client_secret は Argon2 照合（`crates/core/src/application/token.rs:602-605`）で総当たりは非現実的だが、
 メモリハード関数の CPU/メモリ増幅型 DoS が成立する。
 
-#### SEC11. `INTERNAL_SERVICE_TOKEN` の検証欠如と http issuer フォールバック
+#### SEC13. 失敗カウンタの更新が原子的でない
 
-`CSRF_SECRET` / `KEY_ENCRYPTION_KEY` は 32 バイト強制なのに、`INTERNAL_SERVICE_TOKEN` は無検証で
-1 文字でも本番起動が通る（`crates/core/src/config.rs:179-183`）。加えて dev 既定シークレットの起動時
-fail-fast（`config.rs:566-598`）は `ISSUER` が https のときだけ効くため、TLS を前段で終端し ISSUER を http に
-した配置では既知トークンで `/internal/*` が開き、防御が nginx の `/internal/` 404 一枚になる。
-対策: トークンの最小長・`CHANGE-ME` 検出を追加し、http issuer 運用の危険性を明示する。
+`LoginService::handle_password_failure`・`MfaLoginService::handle_totp_failure`・
+`PortalLoginService` の失敗処理はいずれも「`user.failed_login_count` を読む → +1 して
+`update_login_state` で上書き」で、read-modify-write が原子的でない。並行して届いた N 件の試行が
+同じ値を読むと、N 回失敗しても行は 1 しか進まず、ロック閾値に届かないことがある。IP 単位の
+レート制限（既定 30 回/5 分）が総試行数を抑えるため実害は限定的だが、ロックは多層防御の
+一枚なので取りこぼしたくない。
+
+対策: `UPDATE users SET failed_login_count = failed_login_count + 1, locked_until = CASE ... END`
+のように 1 文で加算とロック判定を行うリポジトリメソッドを追加し、3 経路をそれに寄せる。
+`UserRepository` にメソッドが増えるため、各ユニットテストのフェイク実装（10 箇所前後）にも
+追随が要る。
 
 #### SEC12. 低リスク改善のまとめ
 
@@ -284,7 +253,7 @@ RP に残る。加えて `LogoutTokenClaims` に `sid` が無く、`exp` も無�
 `sub` 単位でしか失効できず（同一ユーザーの別デバイスのセッションまで巻き添え）、Discovery で
 `backchannel_logout_session_supported` を広告できない。対策: `sso_sessions` の識別子から導出した
 `sid` を ID Token とログアウトトークンの双方へ載せ、送信を再試行付きの永続キュー（テーブル + ワーカー）
-にする。SEC2（`backchannel_logout_uri` の無検証）と同じ箇所を触るので併せて直すのが安い。
+にする。登録時の URI 検証（旧 SEC2）は対応済みなので、残るのは送信の信頼性と `sid`・`exp` の付与。
 
 #### G6. メトリクスが無い
 

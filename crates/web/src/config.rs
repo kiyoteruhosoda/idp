@@ -92,7 +92,12 @@ impl Bootstrap {
         let public_web_base_url = normalize_base_url(env_or("PUBLIC_WEB_BASE_URL", &issuer));
         let (internal_service_token, internal_service_token_is_dev) =
             match env_lookup("INTERNAL_SERVICE_TOKEN") {
-                Some(v) => (v, false),
+                // 最低要件（長さ・プレースホルダ）は api と共有の契約で検査する（SEC11）。
+                Some(v) => (
+                    idp_contracts::deployment::validate_internal_service_token(&v)
+                        .map_err(|e| anyhow::anyhow!(e))?,
+                    false,
+                ),
                 None => (DEV_INTERNAL_SERVICE_TOKEN.to_string(), true),
             };
         // base64 の形式検証も兼ねる（DB では直せない値なので早く落とす）。
@@ -164,7 +169,12 @@ impl Config {
         let cookie_policy = CookiePolicy::new(cookie_secure, cookie_domain.as_deref());
         let (internal_service_token, internal_service_token_is_dev) =
             match env_lookup("INTERNAL_SERVICE_TOKEN") {
-                Some(v) => (v, false),
+                // 最低要件（長さ・プレースホルダ）は api と共有の契約で検査する（SEC11）。
+                Some(v) => (
+                    idp_contracts::deployment::validate_internal_service_token(&v)
+                        .map_err(|e| anyhow::anyhow!(e))?,
+                    false,
+                ),
                 None => (DEV_INTERNAL_SERVICE_TOKEN.to_string(), true),
             };
         let (csrf_secret, csrf_secret_is_dev) = load_csrf_secret()?;
@@ -354,23 +364,26 @@ fn ensure_production_secrets(
     internal_service_token_is_dev: bool,
     csrf_secret_is_dev: bool,
 ) -> anyhow::Result<()> {
-    let public_origin = if issuer.starts_with("https://") {
+    // 判定は api と共有の契約に置く（SEC11）。https だけでなく、前段で TLS を終端して
+    // http のループバック以外を公開している配置も本番扱いにする。
+    use idp_contracts::deployment::requires_production_secrets;
+    let public_origin = if requires_production_secrets(issuer) {
         issuer
-    } else if public_web_base_url.starts_with("https://") {
+    } else if requires_production_secrets(public_web_base_url) {
         public_web_base_url
     } else {
         return Ok(());
     };
     if internal_service_token_is_dev {
         anyhow::bail!(
-            "the public origin is https ({public_origin}) but INTERNAL_SERVICE_TOKEN is not set; \
+            "the public origin ({public_origin}) is not a local loopback origin but INTERNAL_SERVICE_TOKEN is not set; \
              refusing to start with the built-in development token. \
              Set INTERNAL_SERVICE_TOKEN (shared with api) in production."
         );
     }
     if csrf_secret_is_dev {
         anyhow::bail!(
-            "the public origin is https ({public_origin}) but CSRF_SECRET is not set; \
+            "the public origin ({public_origin}) is not a local loopback origin but CSRF_SECRET is not set; \
              refusing to start with the built-in development secret. \
              Set CSRF_SECRET (base64, 32 bytes, shared with api) in production."
         );
@@ -458,6 +471,18 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// ループバック以外の公開オリジンを使うテストは本番相当と判定される（SEC11）ため、開発用
+    /// 既定 secret のままでは `Config` を組み立てられない。テスト用の値を注入する。
+    fn set_production_secrets() {
+        std::env::set_var("INTERNAL_SERVICE_TOKEN", "t".repeat(32));
+        std::env::set_var("CSRF_SECRET", STANDARD.encode([7u8; 32]));
+    }
+
+    fn clear_production_secrets() {
+        std::env::remove_var("INTERNAL_SERVICE_TOKEN");
+        std::env::remove_var("CSRF_SECRET");
+    }
+
     #[test]
     fn base_url_is_normalized_without_trailing_slash() {
         assert_eq!(
@@ -500,8 +525,10 @@ mod tests {
     fn production_secrets_are_required_when_only_the_web_origin_is_https() {
         // ADR-0012 §2: web は自身の公開オリジンを持つ。https で公開されている以上、ISSUER の
         // スキームがどうであれ開発用シークレット（api と共有する CSRF 鍵）では起動させない。
+        // issuer 側は loopback（＝本番判定にならない）にして、web の公開オリジンだけで
+        // 判定されることを固定する。
         let err = ensure_production_secrets(
-            "http://api-internal:8080",
+            "http://localhost:8080",
             "https://id.example.com",
             false,
             true,
@@ -511,7 +538,7 @@ mod tests {
         assert!(err.contains("https://id.example.com"), "{err}");
         assert!(err.contains("CSRF_SECRET"), "{err}");
         assert!(ensure_production_secrets(
-            "http://api-internal:8080",
+            "http://localhost:8080",
             "https://id.example.com",
             true,
             false
@@ -525,7 +552,7 @@ mod tests {
         // ensure_production_secrets には小文字化済みの値が渡る）。
         let public_web_base_url = normalize_base_url("HTTPS://id.example.com".to_string());
         assert!(ensure_production_secrets(
-            "http://api-internal:8080",
+            "http://localhost:8080",
             &public_web_base_url,
             false,
             true
@@ -544,6 +571,8 @@ mod tests {
     #[test]
     fn self_origin_and_cookie_domain_resolution() {
         let _env = env_guard();
+        // ループバック以外のオリジンを使うので本番相当（SEC11）。secret を先に用意する。
+        set_production_secrets();
         // 別ドメイン構成: Secure 判定は issuer ではなく自オリジン（PUBLIC_WEB_BASE_URL）に従う
         // （ADR-0012 §2）。http の自オリジンなら Secure なし。
         std::env::set_var("ISSUER", "http://api.example.com");
@@ -567,9 +596,6 @@ mod tests {
 
         // https の自オリジンなら Secure を付ける。判定の基準は issuer ではなく自オリジンであること
         // （ADR-0012 §2）を、http の issuer と組み合わせて固定する。
-        // https 公開では開発用シークレットを拒否するため、本物の値を与える。
-        std::env::set_var("INTERNAL_SERVICE_TOKEN", "test-internal-service-token");
-        std::env::set_var("CSRF_SECRET", STANDARD.encode([7u8; 32]));
         std::env::set_var("PUBLIC_WEB_BASE_URL", "https://id.example.com");
         let config = Config::from_env().unwrap();
         assert!(config.cookie_secure(), "Secure follows the web origin");
@@ -583,8 +609,7 @@ mod tests {
 
         std::env::remove_var("COOKIE_SECURE");
         std::env::remove_var("PUBLIC_WEB_BASE_URL");
-        std::env::remove_var("INTERNAL_SERVICE_TOKEN");
-        std::env::remove_var("CSRF_SECRET");
+        clear_production_secrets();
         std::env::remove_var("ISSUER");
     }
 
@@ -636,6 +661,8 @@ mod tests {
     #[test]
     fn issuer_from_api_overrides_env_for_the_web_origin() {
         let _env = env_guard();
+        // 上書き後の issuer はループバック以外なので本番相当になる（SEC11）。
+        set_production_secrets();
         std::env::set_var("ISSUER", "http://localhost:8080");
         std::env::remove_var("PUBLIC_WEB_BASE_URL");
         std::env::remove_var("COOKIE_DOMAIN");
@@ -650,6 +677,7 @@ mod tests {
         assert_eq!(config.public_web_base_url(), "http://localhost:8080");
 
         std::env::remove_var("ISSUER");
+        clear_production_secrets();
     }
 
     #[test]
@@ -657,6 +685,7 @@ mod tests {
         let _env = env_guard();
         std::env::remove_var("ISSUER");
         std::env::remove_var("PUBLIC_WEB_BASE_URL");
+        std::env::remove_var("COOKIE_DOMAIN");
         // ENV 側にはあえて DB と異なる値を置き、DB が勝つことを固定する。
         std::env::set_var("COOKIE_SECURE", "false");
         std::env::set_var("HSTS_MAX_AGE", "1");

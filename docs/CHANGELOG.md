@@ -1,3 +1,63 @@
+## 2026-08-08（レビュー指摘の反映: ロック回避経路と送信時の宛先検査）
+
+- **MFA 待ちのパスワード成功では失敗カウンタをリセットしないようにした（SEC3 の追補）。**
+  `LoginService` はパスワード検証直後に `failed_login_count` を 0 に戻していたため、パスワードを
+  知っている攻撃者が「TOTP を上限手前まで失敗 → 正しいパスワードで再ログイン → カウンタが 0」を
+  繰り返してロックを永久に回避できた。リセットは認証が最後まで通った時点（単一要素で成立する経路、
+  または `MfaLoginService` の TOTP 成功時）だけで行う。
+- **back-channel logout の送信直前にも宛先を検査するようにした（SEC2 の追補）。** 登録時の検証だけでは、
+  検証導入より前に登録された行や DB を直接編集された行が素通りし、SSRF が残っていた。判定は
+  `domain/outbound_uri.rs` に単一定義し、登録時（`client_management`）と送信時（`logout` ハンドラ）が
+  同じ規則を使う。内部宛先はスキップして WARN を出す。
+- ドキュメント用レンジ（192.0.2.0/24 等）は拒否対象から外した。経路が無いだけで「内部」ではなく、
+  検証環境が RP の代用に使うことがあるため。
+
+## 2026-08-08（`INTERNAL_SERVICE_TOKEN` の検証と本番判定の見直し（SEC11））
+
+- **`INTERNAL_SERVICE_TOKEN` に最低要件（32 文字以上・`CHANGE-ME` 検出）を課した。**
+  `/internal/*`（認証・パスワード変更・MFA 検証）を守る唯一の資格情報でありながら、
+  `KEY_ENCRYPTION_KEY` / `CSRF_SECRET` と違って無検証で 1 文字でも起動できていた。
+- **開発用既定 secret の fail-fast を「https のとき」から「ループバック以外を公開しているとき」へ
+  広げた。** 前段で TLS を終端して `ISSUER=http://id.example.com` とした配置では判定が効かず、
+  ソースに埋め込まれた既知トークンのまま `/internal/*` が開いていた（防御が前段プロキシの
+  `/internal/` 404 一枚だけになる）。`ISSUER` の DB 上書きを保存してよいかの判定（ADR-0017）も
+  同じ述語を使うため同時に厳しくなる。
+- 判定と検証は `idp-contracts` の `deployment` モジュールへ単一定義した。api と web が別々に
+  持っていると「api は起動するが web は起動しない」がおきるため。
+
+## 2026-08-08（ログアウト系 URI の検証と管理 API の Origin 検証を追加した（SEC2・SEC4））
+
+- **クライアントのログアウト系 URI を検証するようにした（SEC2）。** `redirect_uris` は
+  絶対 http(s)・フラグメント禁止・ワイルドカード禁止を課していたのに、
+  `post_logout_redirect_uris` / `frontchannel_logout_uri` / `backchannel_logout_uri` は
+  無検証で保存していた。3 種とも同じ検査を通し、登録時・更新時の両方で適用する。
+- **`backchannel_logout_uri` はさらに内部宛先を拒否する。** api がサーバ側から POST する唯一の
+  外向き URI であり、テナント管理者権限で `http://169.254.169.254/...` 等を登録できると
+  認証済み blind SSRF になる。ループバック・プライベート・リンクローカル・CGNAT・
+  unique local のアドレスリテラルと `localhost` を拒否する（名前解決の結果までは見ないため、
+  閉じた配置では前段プロキシの egress 制御を併用する）。
+- **Cookie 認証の変更系リクエストに Origin / Referer 検証を追加した（SEC4）。**
+  `single-origin` トポロジでは `Accept: application/json` を付けた same-site スクリプトから
+  api の管理 API へ Cookie 付きで到達でき、body を取らない POST（`restart`・secret 再発行・
+  password/MFA reset）はプリフライトも発生しないため CSRF が成立していた。`RequirePerms` /
+  `AuthenticatedUser` extractor が、変更系メソッドで許可オリジン（`PUBLIC_WEB_BASE_URL` と
+  `ISSUER`）との一致を要求する。ヘッダを持たないリクエスト（`curl` 等）は従来どおり通す。
+
+## 2026-08-08（OIDC ログインの TOTP 検証に総当たり対策を入れた（SEC3））
+
+- **OIDC ログインフローの TOTP 検証（`/internal/mfa/totp/verify`）に、IP 単位のレート制限と
+  ユーザー単位の失敗カウント・期限付きロックを追加した。** それまで失敗は監査記録だけで、
+  auth_session の生存中（既定 600 秒）は 6 桁コードを無制限に試せた。ポータル側 MFA には
+  レート制限があり非対称だった。
+- レート制限はパスワード認証と**同じ limiter インスタンス**、ロックはパスワード認証と同じ
+  `LockoutPolicy` / `users.failed_login_count` / `locked_until` を共有する。別枠にすると
+  「パスワードで上限手前まで、TOTP でさらに上限手前まで」と配分してロックを免れられるため。
+- ロック中のアカウントは TOTP 照合の前に拒否し、検証成功時は失敗カウンタとロックを解除する
+  （パスワード認証の成功時と同じ扱い）。監査には `ip_rate_limited` / `invalid_totp` /
+  `account_locked` / `too_many_failures` を記録する。
+- 応答に `RateLimited`（429）・`Locked`（403）を追加し、web は再試行できないため
+  フォームではなく案内ページを返す（`mfa-error-rate-limited` / `mfa-error-locked`）。
+
 ## 2026-08-03（フォームの送信中を押したボタンで示す（ADR-0021））
 
 - **押した送信ボタンにスピナーが出て、送信が終わるまで押せなくなった。** サーバレンダリングの
