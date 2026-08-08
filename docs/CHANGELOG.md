@@ -6,6 +6,11 @@
   レートリミッタ・監査ログの IP になるため、web だけが素通しだと api 側のゲートがログイン経路で
   迂回されていた（ヘッダを変え続ければ IP レート制限を回避、送らなければ判定自体をスキップ）。
   判定は `client_ip` middleware 1 箇所に集約し、ハンドラは `Extension<ClientIp>` で結果だけを受ける。
+  信頼する場合でも採るのは **最右**の値（信頼するプロキシが追記した接続元）にした。プロキシは
+  クライアント申告を消さずに追記する（nginx の `$proxy_add_x_forwarded_for`）ため、先頭を採ると
+  ゲートを通したうえで偽装がそのまま通る。同梱の nginx も `$remote_addr` で**上書き**するようにし、
+  導出は api と共有（`idp_contracts::forwarded`）にした。信頼するホップは 1 段と仮定する
+  （多段構成では前段プロキシの IP が記録される＝精度は落ちるが偽装はされない）。
 - **未認証フォームの CSRF 種を `__Host-` でオリジンへ束縛した（SEC5）。** `admin_csrf_id` /
   `portal_csrf_id` に加え、`portal_mfa_ticket` / `saml_request_id` も対象。Cookie はサブドメイン間で
   分離されないため、同一親ドメインの別サブドメインを奪った攻撃者が `Domain=親` の種を強制して
@@ -16,7 +21,8 @@
   発行した `auth_session_id` だけ使い回していた非対称を解消した。パスワード・MFA・パスキー・
   外部 IdP・強制パスワード変更・SSO 復元の 6 経路すべてが対象。
 - **再利用検知でトークンファミリを一括失効するようにした（SEC8）。** `refresh_tokens.grant_hash`
-  （元の authorization code の SHA-256。rotation で引き継ぐ）を追加し（0025）、refresh token の
+  （元の authorization code の SHA-256。rotation で引き継ぐ）を追加し（0025。
+  既存行は再帰 CTE でチェーン全体を根から埋め戻す）、refresh token の
   再利用検知では提示されたトークンだけでなく**同一グラント由来の子孫すべて**を失効させる
   （従来は親 1 本のみで、攻撃者が先に交換して得た子トークンが生き残った）。authorization code の
   再利用も同じ鍵でトークンを失効させ、監査 reason を「本当の再利用」と「不存在・期限切れ」に

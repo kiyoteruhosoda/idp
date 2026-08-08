@@ -19,13 +19,42 @@ ALTER TABLE refresh_tokens
 
 -- 既存行の埋め戻し。
 --
--- 根（`parent_hash IS NULL` = code 交換で発行された行）は自分自身の hash を家族 id とする。
--- 元の code の hash はもう手元に無い（`authorization_codes` は TTL 60 秒で消える）ので、
+-- **チェーン全体**を根から辿って同じ家族 id にする。根だけを埋めて子孫を NULL のままにすると、
+-- 移行前に 1 度でも rotation 済みのチェーン（R → C）が `R` と `C` に分裂し、古い `R` を再生された
+-- ときに `C` 以降の生きているトークンが失効しない ＝ 保護が TTL 満了まで穴のままになる。
+--
+-- 根（`parent_hash IS NULL` = code 交換で発行された行）の家族 id は自分自身の hash とする。
+-- 元の code の hash はもう手元に無い（`authorization_codes` は TTL 60 秒で消える）が、
 -- 「同一グラントから派生した集合」を一意に指せればよい家族 id としてはこれで足りる。
 --
--- 既に rotation 済みの子孫は NULL のまま残す。祖先を辿るには再帰 CTE が要り、DML での可用性が
--- バージョン差の影響を受けるため、ここでは踏まない。代わりにアプリ側が rotation のたびに
--- 親の `grant_hash`（無ければ親の `token_hash`）を引き継ぐので、**移行前から生きている
--- チェーンも次の rotation でファミリを持つ**。refresh token には有効期限があるため、
--- 埋まらない行は TTL 経過で消える。
-UPDATE refresh_tokens SET grant_hash = token_hash WHERE parent_hash IS NULL AND grant_hash IS NULL;
+-- 再帰結果を一時表へ落としてから UPDATE するのは、更新対象と同じ表を再帰の起点にしているため
+-- （同一文で読み書きすると実装依存の制限に触れる）。`depth` は破損データによる無限再帰の歯止めで、
+-- 実運用の rotation 回数を大きく超える値を上限にしてある。
+CREATE TEMPORARY TABLE refresh_token_family_backfill (
+    token_hash CHAR(64)  NOT NULL,
+    grant_hash CHAR(64)  NOT NULL,
+    PRIMARY KEY (token_hash)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
+
+INSERT INTO refresh_token_family_backfill (token_hash, grant_hash)
+WITH RECURSIVE chain (token_hash, grant_hash, depth) AS (
+    SELECT token_hash, token_hash, 0
+      FROM refresh_tokens
+     WHERE parent_hash IS NULL
+    UNION ALL
+    SELECT rt.token_hash, c.grant_hash, c.depth + 1
+      FROM refresh_tokens rt
+      JOIN chain c ON rt.parent_hash = c.token_hash
+     WHERE c.depth < 100000
+)
+SELECT token_hash, grant_hash FROM chain;
+
+UPDATE refresh_tokens t
+  JOIN refresh_token_family_backfill b ON b.token_hash = t.token_hash
+   SET t.grant_hash = b.grant_hash
+ WHERE t.grant_hash IS NULL;
+
+DROP TEMPORARY TABLE refresh_token_family_backfill;
+
+-- 根が既に消えているチェーン（現状 refresh_tokens の GC は無いので発生しない）だけが NULL のまま
+-- 残る。その行はアプリが次の rotation で自分の hash を起点に新しい家族を作る（`family_hash()`）。

@@ -11,6 +11,8 @@
 //!
 //! そこで api と**同じ設定キー・同じ既定値**（`TRUST_FORWARDED_HEADERS`、既定 `false`）でゲートし、
 //! 非信頼時は TCP 接続元アドレス（[`axum::extract::ConnectInfo`]）へフォールバックする。
+//! 信頼する場合でも採るのは**最右**の値（信頼するプロキシが追記した接続元）で、先頭の
+//! クライアント申告は採らない（導出は [`idp_contracts::forwarded`] に api と共有で置いてある）。
 //! api には `ConnectInfo` 相当が無い（web からのサーバ間呼び出しなので接続元は常に web）ため、
 //! フォールバック先を持つのは web だけである。
 //!
@@ -31,8 +33,8 @@ pub struct ClientIp(pub Option<String>);
 
 /// 接続元 IP を決めて `Extension` へ載せる middleware。
 ///
-/// `trust_forwarded` が `true` のときだけ `X-Forwarded-For` の先頭値を採り、空・非 ASCII なら
-/// `ConnectInfo` へ落とす。`false` のときはヘッダを一切見ない。
+/// `trust_forwarded` が `true` のときだけ `X-Forwarded-For` を見て**最右**の値を採り、値が無い・
+/// 空・非 ASCII なら `ConnectInfo` へ落とす。`false` のときはヘッダを一切見ない。
 pub async fn resolve_client_ip(
     trust_forwarded: bool,
     mut request: Request,
@@ -40,13 +42,15 @@ pub async fn resolve_client_ip(
 ) -> Response {
     let forwarded = trust_forwarded
         .then(|| {
-            request
-                .headers()
-                .get("x-forwarded-for")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.split(',').next())
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
+            // 採るのは**最右**の値（信頼するプロキシが追記した接続元）。先頭はクライアントが
+            // 名乗った値でありうる（`idp_contracts::forwarded` のモジュールドキュメント参照）。
+            idp_contracts::forwarded::client_ip(
+                request
+                    .headers()
+                    .get_all("x-forwarded-for")
+                    .iter()
+                    .filter_map(|v| v.to_str().ok()),
+            )
         })
         .flatten();
     let peer = request
@@ -106,9 +110,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn takes_the_first_forwarded_value_when_trusted() {
+    async fn takes_the_hop_appended_by_the_trusted_proxy() {
+        // 単一の値（同梱 nginx は `$remote_addr` で上書きする）はそのまま採る。
         assert_eq!(
-            resolved_ip(true, Some("198.51.100.9, 203.0.113.7")).await,
+            resolved_ip(true, Some("198.51.100.9")).await,
+            "198.51.100.9"
+        );
+        // 追記型のプロキシ設定に差し替えられていても、クライアントが先頭へ書いた申告は採らない。
+        assert_eq!(
+            resolved_ip(true, Some("192.0.2.66, 198.51.100.9")).await,
             "198.51.100.9"
         );
     }
