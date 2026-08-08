@@ -76,6 +76,14 @@ impl UserInfoService {
     ) -> Result<UserInfoClaims, UserInfoError> {
         let claims = self.verify_access_token(tenant, bearer_token).await?;
 
+        // `client_credentials` で発行したトークンは利用者主体ではないため `/userinfo` では使えない
+        //（G4）。`sub` はクライアント自身で、返すべき利用者クレームが存在しない。
+        if claims.subject_is_client() {
+            return Err(UserInfoError::InvalidToken(
+                "client_credentials tokens have no end-user subject",
+            ));
+        }
+
         let scopes: Vec<&str> = claims.scope.split_whitespace().collect();
         if !scopes.contains(&Scope::OpenId.as_str()) {
             return Err(UserInfoError::InsufficientScope);

@@ -5,6 +5,11 @@
 //!   scope に `offline_access` が含まれる場合は Refresh Token も発行する。
 //! - `refresh_token` grant: client 認証 → Refresh Token の検証 → rotation →
 //!   reuse detection → 新 Access Token / ID Token 発行。
+//! - `client_credentials` grant（G4）: client 認証 → grant 許可の確認 → scope 検証 →
+//!   Access Token のみ発行。利用者が居ないフローなので **ID Token も Refresh Token も出さない**
+//!   （OIDC Core は ID Token を「エンドユーザーの認証結果」と定めており、認証していない主体に
+//!   発行してはならない）。`sub` はクライアント自身（`client_id`）で、利用者主体のトークンと
+//!   取り違えないよう `sub_type` クレームで明示する。
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::key_service::KeyService;
@@ -48,6 +53,12 @@ pub struct IdTokenClaims {
     pub name: Option<String>,
 }
 
+/// `sub_type` クレームの値: 主体がクライアント自身（`client_credentials` grant。G4）。
+///
+/// クレーム自体が無い場合はエンドユーザー主体（従来のトークン）。値ではなく**有無**で区別すること
+/// で、本クレーム導入前に発行済みのトークンも従来どおり利用者主体として扱える。
+pub const SUBJECT_TYPE_CLIENT: &str = "client";
+
 /// Access Token のクレーム（設計仕様 §5.2）。`aud` は `/userinfo` に固定する。
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AccessTokenClaims {
@@ -59,6 +70,17 @@ pub struct AccessTokenClaims {
     pub exp: i64,
     pub iat: i64,
     pub jti: String,
+    /// 主体の種別（G4）。`client_credentials` で発行したトークンだけが
+    /// [`SUBJECT_TYPE_CLIENT`] を持つ。省略 = エンドユーザー主体。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub_type: Option<String>,
+}
+
+impl AccessTokenClaims {
+    /// 主体がクライアント自身か（`client_credentials` で発行されたトークンか）。
+    pub fn subject_is_client(&self) -> bool {
+        self.sub_type.as_deref() == Some(SUBJECT_TYPE_CLIENT)
+    }
 }
 
 /// `/userinfo` 用 Access Token の `aud` を構築する（issuer は末尾スラッシュ無し）。
@@ -79,6 +101,9 @@ pub struct TokenCommand {
     pub basic_credentials: Option<(String, String)>,
     /// `refresh_token` grant 専用。
     pub refresh_token: Option<String>,
+    /// `client_credentials` grant で要求する scope（空白区切り）。省略時はクライアントの登録 scope
+    /// から既定集合を導く（G4）。
+    pub scope: Option<String>,
 }
 
 /// トークンエンドポイントのエラー（RFC 6749 §5.2 形式で返す）。
@@ -99,7 +124,9 @@ impl TokenError {
 
 pub struct IssuedTokens {
     pub access_token: String,
-    pub id_token: String,
+    /// 利用者を認証した grant（`authorization_code` / `refresh_token`）でのみ発行する。
+    /// `client_credentials` は利用者が居ないため `None`（G4）。
+    pub id_token: Option<String>,
     pub expires_in: u64,
     pub scope: String,
     /// `offline_access` scope が含まれる場合のみ発行する。
@@ -164,9 +191,10 @@ impl TokenService {
         match cmd.grant_type.as_deref() {
             Some("authorization_code") => self.exchange_code(tenant, cmd, ctx).await,
             Some("refresh_token") => self.exchange_refresh_token(tenant, cmd, ctx).await,
+            Some("client_credentials") => self.issue_client_credentials(tenant, cmd, ctx).await,
             _ => Err(TokenError::new(
                 OAuthErrorCode::UnsupportedGrantType,
-                "grant_type must be `authorization_code` or `refresh_token`",
+                "grant_type must be `authorization_code`, `refresh_token` or `client_credentials`",
             )),
         }
     }
@@ -306,6 +334,7 @@ impl TokenService {
             exp: iat + self.access_token_ttl.as_secs() as i64,
             iat,
             jti: Uuid::new_v4().to_string(),
+            sub_type: None,
         };
         let id_token = self.sign_id_token(&id_claims).await?;
         let access_token = self.sign_access_token(&access_claims).await?;
@@ -357,7 +386,7 @@ impl TokenService {
 
         Ok(IssuedTokens {
             access_token,
-            id_token,
+            id_token: Some(id_token),
             expires_in: self.access_token_ttl.as_secs(),
             scope: scope_str,
             refresh_token: refresh_token_plain,
@@ -480,6 +509,7 @@ impl TokenService {
             exp: iat + self.access_token_ttl.as_secs() as i64,
             iat,
             jti: Uuid::new_v4().to_string(),
+            sub_type: None,
         };
         let id_token = self.sign_id_token(&id_claims).await?;
         let access_token = self.sign_access_token(&access_claims).await?;
@@ -537,10 +567,91 @@ impl TokenService {
 
         Ok(IssuedTokens {
             access_token,
-            id_token,
+            id_token: Some(id_token),
             expires_in: self.access_token_ttl.as_secs(),
             scope: scope_str,
             refresh_token: Some(new_rt_plain),
+        })
+    }
+
+    /// `client_credentials` grant の処理（G4。RFC 6749 §4.4）。
+    ///
+    /// 利用者が居ないフローのため、発行するのは Access Token だけで ID Token も Refresh Token も
+    /// 出さない。`sub` はクライアント自身とし、`sub_type` で利用者主体のトークンと区別できるように
+    /// する（`/userinfo` はこのトークンを拒否し、`/introspect` はクライアントの状態を見る）。
+    async fn issue_client_credentials(
+        &self,
+        tenant: TenantContext,
+        cmd: TokenCommand,
+        ctx: &RequestContext,
+    ) -> Result<IssuedTokens, TokenError> {
+        let tenant_id = tenant.tenant_id();
+        // 1. client の存在・状態・認証。public client は `authenticate_client` が素通しするため、
+        //    ここでは grant 許可の判定（`allows_client_credentials`）が confidential も強制する。
+        let client_id = resolve_client_id(&cmd)?;
+        let client = self.load_active_client(tenant, &client_id, ctx).await?;
+        self.authenticate_client(tenant, &client, &cmd, ctx).await?;
+
+        // 2. grant 許可の確認。confidential かつ `client_credentials` を登録済みのクライアントのみ。
+        if !client.allows_client_credentials() {
+            self.audit
+                .record(
+                    AuditEventType::ClientAuthenticationFailed,
+                    AuditResult::Failure,
+                    Some(tenant_id),
+                    None,
+                    Some(&client_id),
+                    Some("client_credentials_not_allowed"),
+                    ctx,
+                )
+                .await;
+            return Err(TokenError::new(
+                OAuthErrorCode::UnauthorizedClient,
+                "client is not allowed to use the client_credentials grant",
+            ));
+        }
+
+        // 3. scope の決定と検証。省略時はクライアントの登録 scope から既定集合を導く。
+        let scopes = resolve_client_credentials_scopes(&client, cmd.scope.as_deref())?;
+        let scope_str = scopes.join(" ");
+
+        // 4. Access Token を発行する（ID Token・Refresh Token は出さない）。
+        let now = self.clock.now();
+        let iat = now.timestamp();
+        let issuer = tenant_issuer(&self.base_issuer, tenant_id);
+        let access_claims = AccessTokenClaims {
+            iss: issuer.clone(),
+            // 利用者不在のため主体はクライアント自身（RFC 6749 §4.4 の運用慣行）。
+            sub: client.client_id.clone(),
+            aud: userinfo_audience(&issuer),
+            client_id: client.client_id.clone(),
+            scope: scope_str.clone(),
+            exp: iat + self.access_token_ttl.as_secs() as i64,
+            iat,
+            jti: Uuid::new_v4().to_string(),
+            sub_type: Some(SUBJECT_TYPE_CLIENT.to_string()),
+        };
+        let access_token = self.sign_access_token(&access_claims).await?;
+
+        self.audit
+            .record(
+                AuditEventType::TokenIssued,
+                AuditResult::Success,
+                Some(tenant_id),
+                // 利用者が居ないので user_id は残さない（クライアント自身が主体）。
+                None,
+                Some(&client.client_id),
+                Some("grant=client_credentials"),
+                ctx,
+            )
+            .await;
+
+        Ok(IssuedTokens {
+            access_token,
+            id_token: None,
+            expires_in: self.access_token_ttl.as_secs(),
+            scope: scope_str,
+            refresh_token: None,
         })
     }
 
@@ -696,10 +807,153 @@ fn resolve_client_id(cmd: &TokenCommand) -> Result<String, TokenError> {
     }
 }
 
+/// `client_credentials` の scope を決める（G4）。
+///
+/// - 要求あり: すべてがクライアントの登録 scope の部分集合であること（`/authorize` と同じ完全一致判定）。
+/// - 要求なし: 登録 scope から**利用者前提の scope を除いた**集合を既定とする。`openid` は
+///   「エンドユーザーの認証」を要求する scope、`profile` / `email` は利用者のクレームを指すもので、
+///   利用者の居ないトークンに載せる意味がない。`offline_access` は Refresh Token の要求であり、
+///   本 grant は資格情報を出し直せる（＝更新の必要がない）ため常に拒否する。
+fn resolve_client_credentials_scopes(
+    client: &Client,
+    requested: Option<&str>,
+) -> Result<Vec<String>, TokenError> {
+    let user_bound = [
+        Scope::OpenId.as_str(),
+        Scope::Profile.as_str(),
+        Scope::Email.as_str(),
+    ];
+    match requested.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(raw) => {
+            let scopes: Vec<String> = raw.split_whitespace().map(str::to_string).collect();
+            if scopes.iter().any(|s| s == Scope::OfflineAccess.as_str()) {
+                return Err(TokenError::new(
+                    OAuthErrorCode::InvalidScope,
+                    "offline_access is not available for the client_credentials grant",
+                ));
+            }
+            if !client.allows_scopes(&scopes) {
+                return Err(TokenError::new(
+                    OAuthErrorCode::InvalidScope,
+                    "requested scope exceeds the scopes registered for this client",
+                ));
+            }
+            Ok(scopes)
+        }
+        None => Ok(client
+            .scopes
+            .iter()
+            .filter(|s| {
+                s.as_str() != Scope::OfflineAccess.as_str()
+                    && !user_bound.contains(&s.as_str())
+            })
+            .cloned()
+            .collect()),
+    }
+}
+
 fn internal<E: std::fmt::Display>(e: &E) -> TokenError {
     tracing::error!(error = %e, "token endpoint internal error");
     TokenError {
         code: OAuthErrorCode::ServerError,
         description: "internal server error".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::tenant::TenantId;
+    use crate::domain::values::{ClientStatus, ClientType, TokenEndpointAuthMethod};
+    use chrono::TimeZone;
+
+    fn client_with_scopes(scopes: &[&str]) -> Client {
+        let now = chrono::Utc.with_ymd_and_hms(2026, 8, 1, 0, 0, 0).unwrap();
+        Client {
+            id: Uuid::from_u128(1),
+            tenant_id: TenantId::from(Uuid::from_u128(2)),
+            client_id: "svc".to_string(),
+            client_secret_hash: None,
+            client_type: ClientType::Confidential,
+            client_status: ClientStatus::Active,
+            app_name: "svc".to_string(),
+            redirect_uris: vec![],
+            grant_types: vec!["client_credentials".to_string()],
+            response_types: vec!["code".to_string()],
+            scopes: scopes.iter().map(|s| s.to_string()).collect(),
+            token_endpoint_auth_method: TokenEndpointAuthMethod::ClientSecretBasic,
+            require_pkce: true,
+            post_logout_redirect_uris: vec![],
+            frontchannel_logout_uri: None,
+            backchannel_logout_uri: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// scope 省略時は、利用者前提の scope（openid / profile / email）と offline_access を落とす。
+    #[test]
+    fn omitted_scope_defaults_to_the_non_user_bound_registered_scopes() {
+        let client = client_with_scopes(&["openid", "profile", "email", "offline_access", "reports.read"]);
+        assert_eq!(
+            resolve_client_credentials_scopes(&client, None).unwrap(),
+            vec!["reports.read".to_string()]
+        );
+        // 該当が無ければ空（scope 無しのトークンになる）。
+        let client = client_with_scopes(&["openid", "email"]);
+        assert!(resolve_client_credentials_scopes(&client, None)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn requested_scope_must_be_a_subset_of_the_registered_scopes() {
+        let client = client_with_scopes(&["reports.read", "reports.write"]);
+        assert_eq!(
+            resolve_client_credentials_scopes(&client, Some("reports.read")).unwrap(),
+            vec!["reports.read".to_string()]
+        );
+        let err = resolve_client_credentials_scopes(&client, Some("reports.read admin.all"))
+            .expect_err("未登録 scope は拒否する");
+        assert_eq!(err.code, OAuthErrorCode::InvalidScope);
+    }
+
+    /// `offline_access` は本 grant では常に拒否する（資格情報を出し直せるため更新の必要がない）。
+    #[test]
+    fn offline_access_is_rejected_even_when_registered() {
+        let client = client_with_scopes(&["offline_access", "reports.read"]);
+        let err = resolve_client_credentials_scopes(&client, Some("offline_access"))
+            .expect_err("offline_access は拒否する");
+        assert_eq!(err.code, OAuthErrorCode::InvalidScope);
+    }
+
+    /// 空文字・空白のみの scope は「省略」と同じに扱う（フォームの空欄で 400 にしない）。
+    #[test]
+    fn blank_scope_is_treated_as_omitted() {
+        let client = client_with_scopes(&["reports.read"]);
+        assert_eq!(
+            resolve_client_credentials_scopes(&client, Some("   ")).unwrap(),
+            vec!["reports.read".to_string()]
+        );
+    }
+
+    /// `sub_type` は `client_credentials` のトークンだけが持ち、省略時は利用者主体として読む
+    /// （本クレーム導入前に発行したトークンとの互換）。
+    #[test]
+    fn subject_type_distinguishes_client_tokens_from_end_user_tokens() {
+        let mut claims = AccessTokenClaims {
+            iss: "https://idp.example.com/t".to_string(),
+            sub: "svc".to_string(),
+            aud: "https://idp.example.com/t/userinfo".to_string(),
+            client_id: "svc".to_string(),
+            scope: String::new(),
+            exp: 0,
+            iat: 0,
+            jti: "j".to_string(),
+            sub_type: Some(SUBJECT_TYPE_CLIENT.to_string()),
+        };
+        assert!(claims.subject_is_client());
+        claims.sub_type = None;
+        assert!(!claims.subject_is_client());
     }
 }

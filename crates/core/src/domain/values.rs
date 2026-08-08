@@ -154,6 +154,19 @@ string_enum!(
 );
 
 string_enum!(
+    /// `/token` が受け付ける grant_type（RFC 6749 / OIDC Core）。
+    ///
+    /// クライアントごとの許可は `clients.grant_types`（JSON 配列）が持ち、その許可値の単一の出所が
+    /// 本 enum。`client_credentials`（G4）は利用者不在のサーバ間（M2M）用で、confidential client かつ
+    /// 明示的に許可されたクライアントに限る。
+    GrantType {
+        AuthorizationCode => "authorization_code",
+        RefreshToken => "refresh_token",
+        ClientCredentials => "client_credentials",
+    }
+);
+
+string_enum!(
     /// 認証セッションで実際に検証された認証方式（ユーザー認証・認証ポリシー仕様書 §14.3・§18.1）。
     ///
     /// 「どの認証器で本人確認したか」の記録であり、認証ポリシー（どの条件を課すか）とは別軸。

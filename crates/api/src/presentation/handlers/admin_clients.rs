@@ -59,6 +59,7 @@ pub async fn create_client(
         redirect_uris: body.redirect_uris,
         scopes: body.scopes,
         require_pkce: body.require_pkce,
+        allow_client_credentials: body.allow_client_credentials.unwrap_or(false),
         post_logout_redirect_uris: body.post_logout_redirect_uris.unwrap_or_default(),
         frontchannel_logout_uri: body.frontchannel_logout_uri,
         backchannel_logout_uri: body.backchannel_logout_uri,
@@ -180,6 +181,7 @@ pub async fn update_client(
         post_logout_redirect_uris: body.post_logout_redirect_uris,
         frontchannel_logout_uri: body.frontchannel_logout_uri.map(Some),
         backchannel_logout_uri: body.backchannel_logout_uri.map(Some),
+        allow_client_credentials: body.allow_client_credentials,
     };
 
     let client = state

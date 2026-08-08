@@ -67,6 +67,8 @@ pub struct TokenRequest {
     pub client_id: Option<String>,
     /// `refresh_token` grant 専用。
     pub refresh_token: Option<String>,
+    /// `client_credentials` grant で要求する scope（空白区切り。G4）。
+    pub scope: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -74,7 +76,9 @@ pub struct TokenResponse {
     pub access_token: String,
     pub token_type: String,
     pub expires_in: u64,
-    pub id_token: String,
+    /// 利用者を認証した grant でのみ返却する（`client_credentials` は利用者が居ないため省略。G4）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id_token: Option<String>,
     pub scope: String,
     /// `offline_access` scope を要求した場合のみ返却する。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -101,6 +105,10 @@ pub struct ClientRegisterRequest {
     /// 省略時は既定（true）。public は常に PKCE 必須。
     #[serde(default)]
     pub require_pkce: Option<bool>,
+    /// サーバ間（M2M）連携で `client_credentials` grant を許可するか（G4。既定 false）。
+    /// confidential クライアントのみ有効。
+    #[serde(default)]
+    pub allow_client_credentials: Option<bool>,
     /// RP-initiated logout のリダイレクト先（登録済みのもののみ許可）。
     #[serde(default)]
     pub post_logout_redirect_uris: Option<Vec<String>>,
@@ -121,6 +129,9 @@ pub struct ClientUpdateRequest {
     pub redirect_uris: Option<Vec<String>>,
     #[serde(default)]
     pub scopes: Option<Vec<String>>,
+    /// `client_credentials` grant の許可（G4）。confidential クライアントのみ有効。
+    #[serde(default)]
+    pub allow_client_credentials: Option<bool>,
     /// `ACTIVE` または `DISABLED`。
     #[serde(default)]
     pub client_status: Option<String>,

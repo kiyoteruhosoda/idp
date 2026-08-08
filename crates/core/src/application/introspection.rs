@@ -148,10 +148,10 @@ impl IntrospectionService {
                 if resp.active {
                     return Ok(resp);
                 }
-                Ok(self.introspect_access_token(token, &issuer).await)
+                Ok(self.introspect_access_token(tenant, token, &issuer).await)
             }
             _ => {
-                let resp = self.introspect_access_token(token, &issuer).await;
+                let resp = self.introspect_access_token(tenant, token, &issuer).await;
                 if resp.active {
                     return Ok(resp);
                 }
@@ -163,7 +163,12 @@ impl IntrospectionService {
     }
 
     /// Access Token（JWT）のイントロスペクション。`issuer` は要求テナントの合成 issuer。
-    async fn introspect_access_token(&self, token: &str, issuer: &str) -> IntrospectionResponse {
+    async fn introspect_access_token(
+        &self,
+        tenant: TenantContext,
+        token: &str,
+        issuer: &str,
+    ) -> IntrospectionResponse {
         // JWT ヘッダから kid を取得。
         let header = match jsonwebtoken::decode_header(token) {
             Ok(h) => h,
@@ -220,9 +225,16 @@ impl IntrospectionService {
             }
         }
 
-        // 利用者の現在の状態確認。無効化・削除済み利用者のトークンは exp 前でも inactive にする
+        // 主体の現在の状態確認。無効化・削除済みの主体のトークンは exp 前でも inactive にする
         // （管理者による無効化・削除を即時反映する。/userinfo と同じ判定）。
-        if !self.subject_is_active(&claims.sub).await {
+        // `client_credentials` のトークン（G4）は主体がクライアント自身なので、利用者ではなく
+        // クライアントの有効性を見る（`sub` は UUID ではないため利用者検索では必ず落ちてしまう）。
+        let subject_active = if claims.subject_is_client() {
+            self.client_subject_is_active(tenant, &claims.sub).await
+        } else {
+            self.subject_is_active(&claims.sub).await
+        };
+        if !subject_active {
             return IntrospectionResponse::inactive();
         }
 
@@ -282,6 +294,18 @@ impl IntrospectionService {
             // refresh token は不透明トークンで JWT の `jti` を持たない。保存している SHA-256 ハッシュを
             // `jti` として返すと内部保存値が client へ漏れるため付与しない（RFC 7662 で jti は任意）。
             jti: None,
+        }
+    }
+
+    /// `sub` クレームのクライアントが現存し ACTIVE であるかを返す（G4。照会失敗は非活性扱い）。
+    async fn client_subject_is_active(&self, tenant: TenantContext, sub: &str) -> bool {
+        match self.clients.find_by_client_id(tenant.tenant_id(), sub).await {
+            Ok(Some(client)) => client.is_active(),
+            Ok(None) => false,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load client during introspection");
+                false
+            }
         }
     }
 
