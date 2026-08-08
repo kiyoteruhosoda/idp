@@ -232,9 +232,19 @@ nginx にも `add_header Access-Control-*` が無い（`docker/nginx.conf`）。
 呼ぶのは常にクロスオリジンになる。`application/x-www-form-urlencoded` は CORS-safelisted なので
 リクエスト自体は飛ぶが、`Access-Control-Allow-Origin` が無いためブラウザが**レスポンスを読めない**。
 `clients.client_type = 'public'`・`token_endpoint_auth_method = 'none'` を DDL でサポートし PKCE を
-必須にしている以上、想定利用者は SPA だが現状は到達できない。対策: `/token`・`/userinfo`・
-`/.well-known/*`・`/revoke`・`/introspect` に、クライアントの `redirect_uris` のオリジン集合を
-許可元とする CORS を付ける（ワイルドカード `*` にしない。`credentials` は許可しない）。
+必須にしている以上、想定利用者は SPA だが現状は到達できない。
+
+対策は経路ごとに分ける。**「クライアントの `redirect_uris` から許可オリジンを引く」を全経路へ一律
+適用することはできない**（リクエストからクライアントを特定できない経路があるため）:
+
+| 経路 | クライアント特定 | 方針 |
+|---|---|---|
+| `/.well-known/openid-configuration`・`/.well-known/jwks.json`・`/{tenant}/saml/metadata` | **不可**（client_id もトークンも載らない） | 無認証で誰でも取得できる公開メタデータなので `Access-Control-Allow-Origin: *`。`Allow-Credentials` は付けない |
+| `/token`・`/revoke`・`/introspect` | 可（body の `client_id`） | `application/x-www-form-urlencoded` は CORS-safelisted でプリフライトが発生しないため、実リクエストの `client_id` から `redirect_uris` のオリジン集合を引いて `Access-Control-Allow-Origin` に反映する |
+| `/userinfo` | **不可**（`Authorization: Bearer` が非 safelisted → 必ずプリフライトされるが、OPTIONS にトークンは載らない） | テナント内 public client の `redirect_uris` オリジンを合わせた allowlist、または配置レベルの設定キー（`CORS_ALLOWED_ORIGINS`）で照合する |
+
+いずれの経路も **`Access-Control-Allow-Credentials` は付けない**（api はブラウザ Cookie を読まない。
+ADR-0018）。したがって公開メタデータの `*` はセッションの持ち出しにつながらない。
 
 #### G2. 期限切れレコードの GC が `log` テーブルにしか無い
 
@@ -323,7 +333,17 @@ OPERATIONS に**制約として明記**する（コストは低く、誤った�
   scope 追加時の再同意（`authorize.rs` の同意判定）以外で consent 行が変わらない。
 
 対策: ポータルに「セキュリティ」タブを設け、セッション一覧＋失効と連携アプリ一覧＋取り消しを載せる。
-リポジトリ層は揃っているので application + presentation + テンプレートの追加で足りる。
+**必要な作業量は 2 つで異なる**:
+
+- **consent 側**はリポジトリ層が揃っているので application + presentation + テンプレートで足りる。
+- **セッション側はリポジトリ層から要る**。`SsoSessionRepository`（`crates/core/src/domain/repositories.rs:323-331`）は
+  `create` / `find_by_hash` / `extend_idle` / `delete` / `delete_all_for_user` のみで、
+  **ユーザー単位の一覧取得が trait にも sqlx 実装にも無い**。`list_for_user(user_id)` の追加が要る。
+  表示に要る列（`auth_time`・`user_agent`・`ip_address`・`created_at`）は `sso_sessions` に既にあり
+  索引 `sso_sessions_user_idx` も張ってあるので、マイグレーションは不要。
+  失効は既存の `delete(session_hash)` で足りるが、PK が秘密値由来のハッシュなので、画面へ
+  ハッシュをそのまま出すか非可逆の表示用 ID を別に持つかは実装時に決める（ハッシュ自体は
+  Cookie 値ではなく、提示しても認証には使えない）。
 
 #### G11. web crate に統合テストが無い
 
