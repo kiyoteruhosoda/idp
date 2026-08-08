@@ -81,6 +81,73 @@ pub async fn run() -> anyhow::Result<()> {
         config.app_log_retention_days(),
     );
 
+    // 期限切れの一時レコードの掃除（AP9・AP10）: 使い捨てコード（email OTP）と外部 IdP ログインの
+    // 進行状態。リカバリーコードは期限を持たないため対象外（`expires_at IS NULL`）。
+    // 1 時間ごとで十分な粒度（どちらも寿命は 10 分で、放置しても認証には使えない）。
+    {
+        let authenticators = state.authenticator_repository.clone();
+        let external_requests = state.external_login_requests.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(3_600)).await;
+                let now = chrono::Utc::now();
+                match authenticators.delete_expired(now).await {
+                    Ok(deleted) if deleted > 0 => {
+                        tracing::debug!(deleted, "purged expired one-time authenticator codes");
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::error!(error = %e, "expired authenticator code purge failed");
+                    }
+                }
+                // 外部 IdP ログインの進行状態（AP10）も同じ周期で掃除する。寿命は 10 分で、
+                // 完了した分は消費時に消えるため、残るのは離脱したフローだけ。
+                match external_requests.delete_expired(now).await {
+                    Ok(deleted) if deleted > 0 => {
+                        tracing::debug!(deleted, "purged expired external login requests");
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::error!(error = %e, "expired external login request purge failed");
+                    }
+                }
+            }
+        });
+    }
+
+    // Back-channel logout の送信ワーカー（G5）。ログアウトのハンドラは通知要求をキューへ積むだけで
+    // 終わり、実際の HTTP 送信と再試行はここが担う。プロセスが落ちても未送信分は行として残るため、
+    // 再起動後にこのループが拾い直す。
+    {
+        let deliveries = state.backchannel_logout.clone();
+        let interval = config.backchannel_logout_poll_interval();
+        let retention_days = config.backchannel_logout_retention_days();
+        tokio::spawn(async move {
+            // 決着済み行の掃除は毎回やる必要がないため、一定回数に 1 度だけ走らせる。
+            let purge_every = (3_600 / interval.as_secs().max(1)).max(1);
+            let mut tick: u64 = 0;
+            loop {
+                match deliveries.deliver_due().await {
+                    Ok(handled) if handled > 0 => {
+                        tracing::debug!(handled, "processed back-channel logout deliveries");
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::error!(error = %e, "back-channel logout delivery run failed");
+                    }
+                }
+                if retention_days > 0 && tick.is_multiple_of(purge_every) {
+                    let retention = chrono::Duration::days(retention_days as i64);
+                    if let Err(e) = deliveries.purge_settled(retention).await {
+                        tracing::error!(error = %e, "back-channel logout queue purge failed");
+                    }
+                }
+                tick = tick.wrapping_add(1);
+                tokio::time::sleep(interval).await;
+            }
+        });
+    }
+
     // 署名鍵自動ローテーション（K2）: バックグラウンドタスクで定期チェック。
     {
         let keys = state.keys.clone();

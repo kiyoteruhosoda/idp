@@ -47,6 +47,13 @@
         <div class="form-text">{{ messages.get("admin-client-field-pkce-hint") }}</div>
       </div>
       {% endif %}
+      {% if values.client_type == "confidential" %}
+      <div class="form-check mb-3">
+        <input type="checkbox" class="form-check-input" id="client-allow-client-credentials" name="allow_client_credentials"{% if values.allow_client_credentials %} checked{% endif %}>
+        <label class="form-check-label" for="client-allow-client-credentials">{{ messages.get("admin-client-field-client-credentials") }}</label>
+        <div class="form-text">{{ messages.get("admin-client-field-client-credentials-hint") }}</div>
+      </div>
+      {% endif %}
       <div class="d-flex align-items-center gap-2">
         <button type="submit" class="btn btn-primary">{{ messages.get("admin-form-save") }}</button>
         <a class="btn btn-outline-secondary" href="{{ tenant }}/admin/clients">{{ messages.get("admin-form-cancel") }}</a>

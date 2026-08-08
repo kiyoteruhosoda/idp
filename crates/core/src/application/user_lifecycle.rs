@@ -20,10 +20,12 @@ use crate::domain::message::MessageKey;
 use crate::domain::password::PasswordHasher;
 use crate::domain::repositories::{
     AuthorizationCodeRepository, RefreshTokenRepository, SsoSessionRepository,
-    TotpSecretRepository, UserRepository, WebAuthnCredentialRepository,
+    TotpSecretRepository, UserAuthenticatorRepository, UserRepository,
+    WebAuthnCredentialRepository,
 };
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::user::User;
+use crate::domain::user_authenticator::AuthenticatorType;
 use crate::domain::values::{
     validate_display_name, validate_email, validate_preferred_username, UserStatus,
 };
@@ -79,6 +81,9 @@ fn internal(e: crate::domain::error::DomainError) -> UserLifecycleError {
 }
 
 pub struct UserLifecycleService {
+    /// 認証器の登録簿（AP9）。MFA 解除で登録簿側も失効させる。要るのは失効だけなので、
+    /// 管理ユースケース全体ではなくリポジトリを直接受ける。
+    authenticators: Arc<dyn UserAuthenticatorRepository>,
     users: Arc<dyn UserRepository>,
     sso_sessions: Arc<dyn SsoSessionRepository>,
     refresh_tokens: Arc<dyn RefreshTokenRepository>,
@@ -93,6 +98,7 @@ pub struct UserLifecycleService {
 impl UserLifecycleService {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        authenticators: Arc<dyn UserAuthenticatorRepository>,
         users: Arc<dyn UserRepository>,
         sso_sessions: Arc<dyn SsoSessionRepository>,
         refresh_tokens: Arc<dyn RefreshTokenRepository>,
@@ -104,6 +110,7 @@ impl UserLifecycleService {
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
+            authenticators,
             users,
             sso_sessions,
             refresh_tokens,
@@ -385,6 +392,21 @@ impl UserLifecycleService {
             .delete_all_for_user(user.id)
             .await
             .map_err(internal)?;
+
+        // 認証器の登録簿（AP9）も同じ操作で失効させる。ここが漏れると、解除したはずの認証器が
+        // 一覧に残り、リカバリーコードの古い束も生き続ける（＝古い紙で入れてしまう）。
+        let now = self.clock.now();
+        for authenticator_type in [
+            AuthenticatorType::Totp,
+            AuthenticatorType::WebAuthn,
+            AuthenticatorType::RecoveryCode,
+            AuthenticatorType::EmailOtp,
+        ] {
+            self.authenticators
+                .revoke_all_of_type(user.id, authenticator_type, now)
+                .await
+                .map_err(internal)?;
+        }
 
         // 失効できなければ成功を返さない（紛失端末のセッションが生き残る）。監査も記録しない。
         self.revoke_credentials_strict(user.id).await?;
@@ -673,6 +695,31 @@ mod tests {
         }
     }
 
+    /// 認証器の登録簿のフェイク。MFA 解除で「どの種別を失効させたか」だけ記録する
+    /// （他のメソッドはトレイトの既定実装 ＝ 見つからない、で足りる）。
+    #[derive(Default)]
+    struct FakeAuthenticators {
+        revoked_types: Mutex<Vec<AuthenticatorType>>,
+    }
+    #[async_trait]
+    impl UserAuthenticatorRepository for FakeAuthenticators {
+        async fn create(
+            &self,
+            _a: &crate::domain::user_authenticator::UserAuthenticator,
+        ) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn revoke_all_of_type(
+            &self,
+            _u: Uuid,
+            authenticator_type: AuthenticatorType,
+            _at: DateTime<Utc>,
+        ) -> DomainResult<u64> {
+            self.revoked_types.lock().unwrap().push(authenticator_type);
+            Ok(0)
+        }
+    }
+
     #[derive(Default)]
     struct FakeSsoSessions {
         revoked_users: Mutex<Vec<Uuid>>,
@@ -741,6 +788,15 @@ mod tests {
         ) -> DomainResult<()> {
             self.revoked_users.lock().unwrap().push(user_id);
             Ok(())
+        }
+        async fn revoke_all_for_user_and_client(
+            &self,
+            _t: TenantId,
+            _u: Uuid,
+            _c: &str,
+            _at: DateTime<Utc>,
+        ) -> DomainResult<()> {
+            unreachable!()
         }
     }
 
@@ -900,6 +956,7 @@ mod tests {
         let sink = Arc::new(CapturingSink::default());
         let audit = Arc::new(AuditService::new(sink.clone(), Arc::new(FixedClock(now()))));
         let svc = UserLifecycleService::new(
+            Arc::new(FakeAuthenticators::default()),
             users.clone(),
             sso.clone(),
             refresh.clone(),

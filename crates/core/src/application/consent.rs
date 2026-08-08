@@ -185,6 +185,9 @@ impl ConsentService {
                     scope: session.scope.clone(),
                     nonce: session.nonce.clone(),
                     auth_time,
+                    // ログイン時に確立した SSO セッションの sid（G5）。同意画面を挟む経路では
+                    // ここが code 発行の唯一の入手経路になる。
+                    sid: session.sso_sid.clone(),
                     code_challenge: session.code_challenge.clone(),
                     code_challenge_method: session.code_challenge_method,
                 },

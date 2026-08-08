@@ -8,21 +8,33 @@
 //!
 //! そこで本ユースケースは資格情報を検証し、テナント admin 権限（`idp.tenant.admin`／`idp.system.admin`）の保有を確認したうえで **SSO セッションを
 //! 直接発行する**（code 発行・redirect は行わない）。ロックアウト（設計仕様 §4.3）と IP レート制限は
-//! 通常ログインと同じ方針で適用する。発行された SSO セッションは通常ログインのものと同一機構
+//! 通常ログインと同じ方針で適用する。
+//!
+//! 認証ポリシー（AP2。ユーザー認証・認証ポリシー仕様書 §7〜§9）も OIDC ログインと同じ規則で適用する。
+//! 管理コンソールはクライアント文脈を持たないため評価コンテキストの `client_id` は `None`（`client_ids`
+//! 条件を持つポリシーは一致しない）。管理コンソールこそ `deny` / `require_mfa` の対象から外せない
+//! （最も強い権限を持つ利用者が入る画面であり、ここが素通りするとポリシーは実質無効になる）。発行された SSO セッションは通常ログインのものと同一機構
 //! （`sso_session_id` Cookie ＝ 平文、DB は SHA-256）であり、`RequirePerms<IdpAdmin>` がそのまま検証する。
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::audit::{AuditEventType, AuditResult};
+use crate::domain::authentication_policy::{
+    evaluate_policies, AuthenticationContext, DefaultPolicyEffect, PolicyDecision,
+};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::password::{validate_password_strength, PasswordHasher};
 use crate::domain::permission;
 use crate::domain::rate_limit::LoginRateLimiter;
-use crate::domain::repositories::{SsoSessionRepository, UserPermissionRepository, UserRepository};
+use crate::domain::repositories::{
+    AuthenticationPolicyRepository, SsoSessionRepository, TotpSecretRepository,
+    UserPermissionRepository, UserRepository,
+};
 use crate::domain::sso_session::SsoSession;
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::user::User;
+use crate::domain::values::AuthenticationMethod;
 use chrono::Duration;
 use std::sync::Arc;
 
@@ -67,6 +79,16 @@ pub enum AdminLoginOutcome {
     Forbidden,
     /// 新パスワードが強度要件を満たさない（`change_password` のみ）。
     WeakPassword,
+    /// 認証ポリシーにより拒否（AP2。仕様 §7.4 `deny`）。
+    PolicyDenied,
+    /// 認証ポリシーが MFA を必須としたが、使用可能な認証器（確認済み TOTP）が無い（AP2）。
+    /// 管理コンソールは TOTP 入力ステップを持たないため、MFA 必須の管理者はポータル経由で
+    /// 認証器を登録するか、ポータルログインで第二要素を通す必要がある。
+    MfaEnrollmentRequired,
+    /// 認証ポリシーが MFA を必須とし、利用者は認証器を持っている（AP2）。管理コンソールのログインは
+    /// 第二要素の入力ステップを持たないため、ポータルログイン（`/{tenant_id}/login`）で MFA まで
+    /// 通してから管理コンソールへ入るよう案内する。
+    MfaRequired,
     Internal(String),
 }
 
@@ -74,6 +96,8 @@ pub struct AdminLoginService {
     users: Arc<dyn UserRepository>,
     sso_sessions: Arc<dyn SsoSessionRepository>,
     permissions: Arc<dyn UserPermissionRepository>,
+    totp_secrets: Arc<dyn TotpSecretRepository>,
+    authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
     hasher: Arc<dyn PasswordHasher>,
     rate_limiter: Arc<dyn LoginRateLimiter>,
     audit: Arc<AuditService>,
@@ -82,6 +106,8 @@ pub struct AdminLoginService {
     sso_absolute_ttl: Duration,
     /// アカウントロックのポリシー（設定注入。通常ログイン `login.rs` と同じ値を使う）。
     lockout: crate::domain::authentication_policy::LockoutPolicy,
+    /// 一致するポリシーが無い場合の既定動作（AP2。`login.rs` と同じ設定値を使う）。
+    policy_default_effect: DefaultPolicyEffect,
 }
 
 impl AdminLoginService {
@@ -90,6 +116,8 @@ impl AdminLoginService {
         users: Arc<dyn UserRepository>,
         sso_sessions: Arc<dyn SsoSessionRepository>,
         permissions: Arc<dyn UserPermissionRepository>,
+        totp_secrets: Arc<dyn TotpSecretRepository>,
+        authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
         hasher: Arc<dyn PasswordHasher>,
         rate_limiter: Arc<dyn LoginRateLimiter>,
         audit: Arc<AuditService>,
@@ -97,11 +125,14 @@ impl AdminLoginService {
         sso_idle_ttl: std::time::Duration,
         sso_absolute_ttl: std::time::Duration,
         lockout: crate::domain::authentication_policy::LockoutPolicy,
+        policy_default_effect: DefaultPolicyEffect,
     ) -> Self {
         Self {
             users,
             sso_sessions,
             permissions,
+            totp_secrets,
+            authentication_policies,
             hasher,
             rate_limiter,
             audit,
@@ -110,7 +141,94 @@ impl AdminLoginService {
             sso_absolute_ttl: Duration::from_std(sso_absolute_ttl)
                 .expect("SSO absolute TTL out of range"),
             lockout,
+            policy_default_effect,
         }
+    }
+
+    /// 認証ポリシーを評価し、SSO を発行してよいかを判定する（AP2）。
+    ///
+    /// `Ok(())` なら発行可。`Err(outcome)` はそのまま呼び出し側の戻り値になる。管理コンソールは
+    /// 第二要素の入力ステップを持たないため、`require_mfa` は認証器の有無で案内を出し分けて
+    /// **いずれにせよ SSO を発行しない**（単一要素で管理コンソールに入れてしまわないため）。
+    async fn check_policy(
+        &self,
+        tenant_id: TenantId,
+        user_id: uuid::Uuid,
+        ctx: &RequestContext,
+    ) -> Result<(), AdminLoginOutcome> {
+        let policies = match self
+            .authentication_policies
+            .list_enabled_for_tenant(tenant_id)
+            .await
+        {
+            Ok(p) => p,
+            Err(e) => return Err(AdminLoginOutcome::Internal(e.to_string())),
+        };
+        let decision = evaluate_policies(
+            &policies,
+            &AuthenticationContext {
+                client_id: None,
+                user_id,
+            },
+            self.policy_default_effect,
+        );
+        match decision {
+            PolicyDecision::Allow { .. } => Ok(()),
+            PolicyDecision::Deny { policy_code } => {
+                self.record_policy_denied(
+                    tenant_id,
+                    user_id,
+                    &format!("policy={policy_code}"),
+                    ctx,
+                )
+                .await;
+                Err(AdminLoginOutcome::PolicyDenied)
+            }
+            PolicyDecision::RequireMfa { policy_code } => {
+                let has_totp = match crate::application::mfa_login::user_has_confirmed_totp(
+                    self.totp_secrets.as_ref(),
+                    user_id,
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(e) => return Err(AdminLoginOutcome::Internal(e.to_string())),
+                };
+                let reason = if has_totp {
+                    format!("policy={policy_code} reason=mfa_step_not_available")
+                } else {
+                    format!("policy={policy_code} reason=mfa_not_enrolled")
+                };
+                self.record_policy_denied(tenant_id, user_id, &reason, ctx)
+                    .await;
+                Err(if has_totp {
+                    AdminLoginOutcome::MfaRequired
+                } else {
+                    AdminLoginOutcome::MfaEnrollmentRequired
+                })
+            }
+        }
+    }
+
+    /// ポリシー拒否を監査へ記録する（AP2。OIDC ログインと同じイベント種別・理由形式）。
+    async fn record_policy_denied(
+        &self,
+        tenant_id: TenantId,
+        user_id: uuid::Uuid,
+        reason: &str,
+        ctx: &RequestContext,
+    ) {
+        self.audit
+            .record(
+                AuditEventType::LoginPolicyDenied,
+                AuditResult::Failure,
+                Some(tenant_id),
+                Some(user_id),
+                None,
+                Some(reason),
+                ctx,
+            )
+            .await;
     }
 
     pub async fn login(
@@ -235,6 +353,11 @@ impl AdminLoginService {
             return AdminLoginOutcome::Forbidden;
         }
 
+        // 6.4. 認証ポリシー評価（AP2）。資格情報・権限の確認後、SSO 発行前にゲートする。
+        if let Err(outcome) = self.check_policy(tenant_id, user.id, ctx).await {
+            return outcome;
+        }
+
         // 6.5. 強制パスワード変更（ADR-0009 §5）。SSO はまだ発行せず変更画面へ誘導する。
         if user.must_change_password {
             return AdminLoginOutcome::PasswordChangeRequired {
@@ -251,17 +374,16 @@ impl AdminLoginService {
 
         // 8. SSO セッション発行（Cookie には session_id、DB には SHA-256 ハッシュ。login.rs と同一機構）。
         let sso_session_id = crypto::random_hex(32);
-        let sso = SsoSession {
-            session_hash: crypto::sha256_hex(&sso_session_id),
-            user_id: user.id,
-            auth_time: now,
-            idle_expires_at: now + self.sso_idle_ttl,
-            absolute_expires_at: now + self.sso_absolute_ttl,
-            user_agent: ctx.user_agent.clone(),
-            ip_address: ctx.ip_address.clone(),
-            created_at: now,
-            updated_at: now,
-        };
+        let sso = SsoSession::establish(
+            crypto::sha256_hex(&sso_session_id),
+            user.id,
+            now,
+            self.sso_idle_ttl,
+            self.sso_absolute_ttl,
+            vec![AuthenticationMethod::Password],
+            ctx.user_agent.clone(),
+            ctx.ip_address.clone(),
+        );
         if let Err(e) = self.sso_sessions.create(&sso).await {
             return AdminLoginOutcome::Internal(e.to_string());
         }
@@ -375,6 +497,11 @@ impl AdminLoginService {
             return AdminLoginOutcome::Forbidden;
         }
 
+        // 認証ポリシー評価（AP2）。本経路も SSO を発行する側なので `login` と同じ規則を適用する。
+        if let Err(outcome) = self.check_policy(tenant_id, user.id, ctx).await {
+            return outcome;
+        }
+
         // 多重送信（変更適用済み）の場合は保存・監査をスキップし、成功時と同じ後続へ進める。
         if !duplicate_submit {
             if validate_password_strength(&cmd.new_password).is_err() {
@@ -407,17 +534,16 @@ impl AdminLoginService {
         }
 
         let sso_session_id = crypto::random_hex(32);
-        let sso = SsoSession {
-            session_hash: crypto::sha256_hex(&sso_session_id),
-            user_id: user.id,
-            auth_time: now,
-            idle_expires_at: now + self.sso_idle_ttl,
-            absolute_expires_at: now + self.sso_absolute_ttl,
-            user_agent: ctx.user_agent.clone(),
-            ip_address: ctx.ip_address.clone(),
-            created_at: now,
-            updated_at: now,
-        };
+        let sso = SsoSession::establish(
+            crypto::sha256_hex(&sso_session_id),
+            user.id,
+            now,
+            self.sso_idle_ttl,
+            self.sso_absolute_ttl,
+            vec![AuthenticationMethod::Password],
+            ctx.user_agent.clone(),
+            ctx.ip_address.clone(),
+        );
         if let Err(e) = self.sso_sessions.create(&sso).await {
             return AdminLoginOutcome::Internal(e.to_string());
         }

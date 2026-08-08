@@ -38,4 +38,5 @@ quick-xml = { workspace = true }
 flate2 = { workspace = true }
 totp-rs = { workspace = true }
 lettre = { workspace = true }
+reqwest = { workspace = true }
 webauthn-rs = { workspace = true }

@@ -28,7 +28,7 @@ impl SqlxAuthorizationCodeRepository {
 
 const SELECT_COLUMNS: &str =
     "code_hash, tenant_id, user_id, client_id, redirect_uri, scope, nonce, \
-     auth_time, code_challenge, code_challenge_method, expires_at, used_at, \
+     auth_time, sid, code_challenge, code_challenge_method, expires_at, used_at, \
      created_at, updated_at";
 
 fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
@@ -59,6 +59,7 @@ fn map_row(row: &MySqlRow) -> Result<AuthorizationCode> {
             .map_err(|e| DomainError::Repository(format!("invalid JSON in `scope`: {e}")))?,
         nonce: row.try_get("nonce").map_err(repo_err)?,
         auth_time: to_utc(row.try_get("auth_time").map_err(repo_err)?),
+        sid: row.try_get("sid").map_err(repo_err)?,
         code_challenge: row.try_get("code_challenge").map_err(repo_err)?,
         code_challenge_method: CodeChallengeMethod::parse(&ccm)?,
         expires_at: to_utc(row.try_get("expires_at").map_err(repo_err)?),
@@ -74,8 +75,8 @@ impl AuthorizationCodeRepository for SqlxAuthorizationCodeRepository {
         sqlx::query(
             "INSERT INTO authorization_codes \
              (code_hash, tenant_id, user_id, client_id, redirect_uri, scope, nonce, auth_time, \
-              code_challenge, code_challenge_method, expires_at, used_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              sid, code_challenge, code_challenge_method, expires_at, used_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&code.code_hash)
         .bind(code.tenant_id.to_string())
@@ -85,6 +86,7 @@ impl AuthorizationCodeRepository for SqlxAuthorizationCodeRepository {
         .bind(serde_json::to_string(&code.scope).map_err(repo_err)?)
         .bind(&code.nonce)
         .bind(code.auth_time.naive_utc())
+        .bind(&code.sid)
         .bind(&code.code_challenge)
         .bind(code.code_challenge_method.as_str())
         .bind(code.expires_at.naive_utc())

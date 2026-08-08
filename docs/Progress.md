@@ -37,14 +37,6 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 
 | 優先度 | ID | 課題内容 | 工数 | 影響度 | 重要度 | 難易度 |
 |---:|---|---|---:|---:|---:|---:|
-| 15 | AP5 | Step-up 認証（仕様 §15。認証済みユーザーへの再認証・強い認証の要求。MFA 設定変更・パスワード変更等の重要操作に適用。AP4 が前提）（⬜未着手） | 大 | 中 | 中 | 大 |
-| 15 | AP9 | 認証器の統合管理（仕様 §5。`user_authenticators` への統合・状態管理（pending/active/suspended/revoked）・リカバリーコード・email/sms OTP）（⬜未着手） | 大 | 中 | 中 | 大 |
-| 15 | AP10 | 外部 IdP 認証（仕様 §13。外部 OIDC/SAML IdP を認証器として使う。`iss`+`sub` での外部ユーザー識別・トークン検証・IdP 制限ポリシー）（⬜未着手） | 大 | 大 | 中 | 大 |
-| 15 | G4 | `client_credentials` grant 未対応（サーバ間＝M2M 連携が一切できない）（⬜未着手） | 大 | 大 | 中 | 中 |
-| 14 | G5 | Back-channel logout が撃ちっぱなし（リトライ・永続キュー無し）＋ `logout_token` に `sid`・`exp` が無くセッション単位ログアウトができない（⬜未着手） | 中 | 中 | 中 | 中 |
-| 14 | G10 | 利用者セルフサービスの欠落（ログイン中セッションの一覧・失効／連携済みアプリ（consent）の確認・取り消し。`ClientConsentRepository::revoke`・`list_for_user` は実装済みだが呼び出し元が無い）（⬜未着手） | 中 | 中 | 中 | 中 |
-| 14 | AP2 | 認証ポリシーの評価をポータル・管理コンソールログインへも適用する（現状は OIDC フローのみ。ADR-0020）（⬜未着手） | 中 | 中 | 中 | 中 |
-| 14 | AP4 | 認証セッションへの認証方式・強度・MFA 完了状態の記録（仕様 §14.3・§18.1。`sso_sessions` へ `authentication_methods`・`authentication_strength`・`mfa_completed_at` を追加。MFA 経過時間による再認証（§18.2）と Step-up の判定材料）（⬜未着手） | 中 | 中 | 中 | 中 |
 | 9 | SEC5 | CSRF double-submit の種（`admin_csrf_id`/`portal_csrf_id`）がオリジン非分離 → `__Host-` 前置（⬜未着手） | 小 | 中 | 中 | 小 |
 | 9 | SEC7 | 認証成功時に `auth_session_id` を再生成しない（`sso_session_id` は再生成済みで非対称）（⬜未着手） | 小 | 小 | 中 | 中 |
 | 9 | SEC9 | クエリ文字列（`?auth_session=`・`?code_challenge=`）が `TraceLayer` 既定スパン経由でログに出うる（⬜未着手） | 小 | 中 | 中 | 小 |
@@ -57,6 +49,8 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 | 5 | SEC12 | 低リスク改善のまとめ（CSP `unsafe-inline`・Swagger 無認証・`require_pkce` 死に設定・同意 POST の Cookie 非束縛・argon2 パラメータ非明示・auth_sessions の GC/照合/`expect()`）（⬜未着手） | 中 | 中 | 小 | 中 |
 | 5 | AP1 | 認証ポリシーの管理画面（web コンソール UI。現状は API のみ）（⬜未着手） | 中 | 中 | 小 | 中 |
 | 5 | AP7 | パスワードポリシーの拡張（仕様 §11.2。漏えい済みパスワード検出・過去パスワード再利用禁止・有効期限。現状は最小文字数のみ）（⬜未着手） | 中 | 小 | 中 | 中 |
+| 5 | AP11 | AP9 の contract フェーズ（TOTP/WebAuthn の秘密を `user_authenticators` へ集約し、`user_totp_secrets` / `user_webauthn_credentials` を撤去）（⬜未着手） | 中 | 中 | 小 | 中 |
+| 5 | AP12 | SAML 外部 IdP（AP10 は OIDC のみ実装。`external_identity_providers` の protocol 拡張が要る）（⬜未着手） | 大 | 中 | 小 | 大 |
 | 5 | G1 | CORS 未実装（api・nginx とも）。public client（SPA）がブラウザから `/token`・`/userinfo`・`/.well-known/*` を呼べない（⬜未着手） | 中 | 中 | 小 | 中 |
 | 5 | G2 | 期限切れレコードの GC が `log` テーブルにしか無い（`auth_sessions`・`authorization_codes`・`refresh_tokens`・`sso_sessions`・`revoked_access_tokens`・`passkey_challenges`・各種トークン表が無限に増える）（⬜未着手） | 中 | 中 | 中 | 小 |
 | 5 | G9 | api のシングルインスタンス前提が明文化されていない（レートリミッタ・キャッシュがプロセス内メモリ、鍵ローテーションが排他制御無し）（⬜未着手） | 小 | 大 | 小 | 小 |
@@ -66,6 +60,7 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 | 3 | AP6 | アカウントロックの管理者解除（仕様 §17.1・§24.6。`locked_until` を即時クリアする管理操作。現状は期限経過待ちのみ）と段階的ロック（⬜未着手） | 小 | 小 | 中 | 小 |
 | 3 | G3 | `client_secret_post` 未対応（`client_secret_basic` / `none` のみ。RP ライブラリ既定との相互運用性）（⬜未着手） | 小 | 中 | 小 | 小 |
 | 3 | G8 | `audit_log` に絞り込み用の索引（`client_id`・`user_id`・`result`・複合 `(tenant_id, occurred_at)`）と保持期間の仕組みが無い（`log` にはある）（⬜未着手） | 小 | 中 | 小 | 小 |
+| 2 | AP13 | SMS OTP の送信経路が無い（認証方式・認証器種別としては定義済みだが、送信アダプタと登録画面が未実装）（⬜未着手） | 中 | 小 | 小 | 中 |
 | 2 | G6 | メトリクスが無い（`/metrics` 非公開。ログイン成功率・トークン発行レート・レイテンシ・DB プール枯渇を監視できない）（⬜未着手） | 中 | 中 | 小 | 小 |
 | 1 | G7 | 一覧 API のページング欠落（`list_clients`・`list_tenants`・権限一覧は全件返す。members・audit にはある）（⬜未着手） | 小 | 小 | 小 | 小 |
 
@@ -79,23 +74,61 @@ ADR-0020 で `authentication_policies`（deny / require_mfa / allow、client_ids
 仕様書に対する残実装をタスク化する:
 
 - **AP1** 管理画面（web コンソール UI）。現状は API のみ（手順は `docs/OPERATIONS.md`）。
-- **AP2** ポータル・管理コンソールログインへの評価適用。ポータルはクライアント文脈が無いため
-  `user_ids` 条件と require_mfa が主対象。
+  AP10 で追加した外部 IdP 設定（`/admin/external-idps`）も同じく API のみのため、本タスクの対象に含む。
 - **AP3** 条件種別の拡張（仕様 §8: ネットワークゾーン・国・端末信頼・時間帯・requested_acr 等）と
   `require_specific_method` 効果。WebAuthn 必須・UV 必須等の要求（§12.2）を含む。
-- **AP4** 認証セッションへの `authentication_methods`・`authentication_strength`・
-  `mfa_completed_at` の記録（§14.3・§18.1）。MFA 経過時間による再認証（§18.2
-  `max_authentication_age`）と AP5 の判定材料になるため先行させる。
-- **AP5** Step-up 認証（§15）。MFA 設定変更・パスワード変更・外部 IdP 紐付け等の重要操作へ、
-  現在の認証強度・前回認証時刻に応じた追加認証を要求する。AP4 が前提。
+  AP4 で認証方式・強度を記録済みなので、`require_specific_method` の判定材料は揃っている。
 - **AP6** アカウントロックの管理者即時解除（`locked_until` クリア）と段階的ロック（§17.1）。
 - **AP7** パスワードポリシーの拡張（§11.2）。
 - **AP8** ログイン識別子の複数化（§4 `user_login_identifiers`）。`users.email` /
   `preferred_username` 直付けからの移行（expand/contract）を伴う。
-- **AP9** 認証器の統合管理（§5 `user_authenticators`）。TOTP・WebAuthn の別テーブルを状態付きの
-  統合モデルへ寄せ、リカバリーコード・email/sms OTP を追加する。AP8 と同じく DDL 移行が主コスト。
-- **AP10** 外部 IdP 認証（§13）。外部 OIDC/SAML IdP を認証器として使い、`iss`+`sub` で内部
-  ユーザーへ紐付ける。IdP 制限・外部 MFA 信頼の判定は認証ポリシーの条件として表現する。
+
+AP2・AP4・AP5・AP9・AP10 は実装済み（`CHANGELOG.md` 参照）。AP9 の残り（contract フェーズ）と
+AP10 の残り（SAML 外部 IdP）は下記「積み残し」に切り出した。
+
+### 積み残し（AP9・AP10 実装からの繰り越し。AP11〜AP13）
+
+#### AP11. AP9 の contract フェーズ（秘密の集約）
+
+AP9 は expand フェーズだけを入れた。`user_authenticators` は**認証器の種別・状態・ラベル・
+最終使用時刻**を一元管理するが、**秘密そのものは既存表に残したまま**である（TOTP の共有鍵は
+`user_totp_secrets`、パスキーの公開鍵・署名カウンタは `user_webauthn_credentials`）。
+`user_authenticators.credential_ref` が元の行を指し、検証経路は従来どおり元の表を読む。
+
+分けた理由は移行リスク。秘密の移送は暗号化のまま運び直す（あるいは復号→再暗号化する）操作で、
+途中で失敗すると**利用者が MFA を通れなくなり自力で復旧できない**。状態管理だけを先に移して
+運用で慣らし、参照経路を切り替えてから秘密を動かす。
+
+contract フェーズでやること:
+
+1. 検証経路（TOTP 照合・WebAuthn assertion）の読み出しを `user_authenticators` 側へ切り替える。
+2. 秘密を `user_authenticators.secret_encrypted` へ移すマイグレーション（`credential_ref` で対応付け）。
+3. `user_totp_secrets` / `user_webauthn_credentials` の削除と、`credential_ref` 列の撤去。
+
+各段は独立したマイグレーションにし、1 と 2 の間に**両方を読める期間**を挟む（ローリングデプロイ中に
+古いプロセスが残るため）。
+
+#### AP12. SAML 外部 IdP
+
+AP10 で入れたのは **OIDC の外部 IdP のみ**。`external_identity_providers` は
+`issuer` / `authorization_endpoint` / `token_endpoint` / `jwks_uri` / `client_id` という
+OIDC 前提の列構成で、SAML の IdP メタデータ（`SingleSignOnService` URL・署名証明書・
+`NameID` 形式）を表現できない。対応するなら `protocol` 列（`oidc` / `saml`）を足し、
+プロトコル固有の設定は JSON 列へ寄せるか別表に分ける設計判断が要る（ADR 対象）。
+
+なお本 IdP を **SAML の IdP として**振る舞わせる側（`/{tenant}/saml/metadata`・`saml_sso_requests`）は
+既に別途存在する。ここで言う SAML は**外部 IdP を利用者の認証元として使う（SP 側）**方向の話で、
+向きが逆である。
+
+#### AP13. SMS OTP の送信経路
+
+`AuthenticationMethod::SmsOtp` と `AuthenticatorType::SmsOtp` は AP4 / AP9 で語彙としては定義済み
+（認証強度の判定・認証器一覧の表示は SMS を受け入れる）だが、**送信アダプタ（SMS ゲートウェイの
+ポートと実装）と電話番号の登録・確認画面が無い**ため、実際には登録も認証もできない。
+メール OTP（`lettre`）と同じ形のポート＋インフラ実装を足すのが最小の作業。
+
+送信事業者の選定と、電話番号を PII としてどう保持するか（ログ非出力は既定として、DB では
+暗号化するか正規化値のみ持つか）は未決。
 
 ### セキュリティレビュー（SEC1〜SEC13）
 
@@ -235,26 +268,6 @@ ADR-0018）。したがって公開メタデータの `*` はセッションの�
 実装は body から 2 フィールドを読むだけ。対策: body での受け取りを追加し Discovery に広告する
 （Basic と body の**併用は `invalid_request`** とする）。
 
-#### G4. `client_credentials` grant 未対応
-
-`TokenService::issue` の分岐は `authorization_code` / `refresh_token` のみ
-（`crates/core/src/application/token.rs:164-170`）。サーバ間（M2M）でアクセストークンを取る手段が
-無く、IdP を「アプリのユーザーログイン」にしか使えない。バッチ・内部サービス・API ゲートウェイ連携は
-現状 `INTERNAL_SERVICE_TOKEN` の共有シークレット一本に頼るしかない。対策: `client_credentials` を
-confidential client 限定で追加し、`sub` をクライアント自身とする（ID Token は発行しない・
-`offline_access` は許可しない）。scope は `Clients.scopes` の部分集合に限る。
-
-#### G5. Back-channel logout の信頼性と `sid` 欠落
-
-`send_backchannel_logout_tokens`（`crates/api/src/presentation/handlers/logout.rs:100-172`）は
-`tokio::spawn` で撃ちっぱなし。非 2xx は WARN を出すだけでリトライせず、プロセス再起動で
-未送信分が消える。RP 側のログアウトが**黙って落ちる**ため、ログアウトしたつもりのセッションが
-RP に残る。加えて `LogoutTokenClaims` に `sid` が無く、`exp` も無い。`sid` が無いと RP は
-`sub` 単位でしか失効できず（同一ユーザーの別デバイスのセッションまで巻き添え）、Discovery で
-`backchannel_logout_session_supported` を広告できない。対策: `sso_sessions` の識別子から導出した
-`sid` を ID Token とログアウトトークンの双方へ載せ、送信を再試行付きの永続キュー（テーブル + ワーカー）
-にする。登録時の URI 検証（旧 SEC2）は対応済みなので、残るのは送信の信頼性と `sid`・`exp` の付与。
-
 #### G6. メトリクスが無い
 
 `/metrics`（Prometheus）に相当する出口が無く、可観測性は JSON ログと `log`・`audit_log` テーブルだけ。
@@ -288,31 +301,6 @@ RP に残る。加えて `LogoutTokenClaims` に `sid` が無く、`exp` も無�
 CLAUDE.md は Redis を「セッションストアとして任意採用」と書くが実装は無い。対策: まず README /
 OPERATIONS に**制約として明記**する（コストは低く、誤った水平スケールを防げる）。共有ストア
 （Redis 実装 + ローテーションの DB アドバイザリロック）は別タスクとする。
-
-#### G10. 利用者セルフサービスの欠落
-
-`user_settings` にあるのはパスワード変更・氏名変更・言語のみ（`crates/web/src/handlers/user_settings.rs`）。
-一般的な IdP が持つ次の 2 つが無い:
-
-- **ログイン中セッションの一覧・失効**。`sso_sessions` を本人が見て個別に切れない（できるのは
-  現在のセッションのログアウトだけ）。端末を紛失した利用者の自助手段が無い。
-- **連携済みアプリ（consent）の確認・取り消し**。`ClientConsentRepository` には `revoke` と
-  `list_for_user` が実装済み（`crates/core/src/infrastructure/repositories/consent.rs:93,106`）だが、
-  application 層・エンドポイントからの**呼び出し元が無い**。一度同意すると利用者側から解除できず、
-  scope 追加時の再同意（`authorize.rs` の同意判定）以外で consent 行が変わらない。
-
-対策: ポータルに「セキュリティ」タブを設け、セッション一覧＋失効と連携アプリ一覧＋取り消しを載せる。
-**必要な作業量は 2 つで異なる**:
-
-- **consent 側**はリポジトリ層が揃っているので application + presentation + テンプレートで足りる。
-- **セッション側はリポジトリ層から要る**。`SsoSessionRepository`（`crates/core/src/domain/repositories.rs:323-331`）は
-  `create` / `find_by_hash` / `extend_idle` / `delete` / `delete_all_for_user` のみで、
-  **ユーザー単位の一覧取得が trait にも sqlx 実装にも無い**。`list_for_user(user_id)` の追加が要る。
-  表示に要る列（`auth_time`・`user_agent`・`ip_address`・`created_at`）は `sso_sessions` に既にあり
-  索引 `sso_sessions_user_idx` も張ってあるので、マイグレーションは不要。
-  失効は既存の `delete(session_hash)` で足りるが、PK が秘密値由来のハッシュなので、画面へ
-  ハッシュをそのまま出すか非可逆の表示用 ID を別に持つかは実装時に決める（ハッシュ自体は
-  Cookie 値ではなく、提示しても認証には使えない）。
 
 #### G11. web crate に統合テストが無い
 

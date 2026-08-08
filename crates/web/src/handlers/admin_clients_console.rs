@@ -92,6 +92,9 @@ pub struct NewClientForm {
     pub scopes: String,
     #[serde(default)]
     pub require_pkce: Option<String>,
+    /// チェックボックスは「チェック時のみ送られる」ため `Option<String>` で受ける（G4）。
+    #[serde(default)]
+    pub allow_client_credentials: Option<String>,
     pub csrf_token: String,
 }
 
@@ -110,6 +113,7 @@ pub async fn create(
         scopes: form.scopes.clone(),
         require_pkce: form.require_pkce.is_some(),
         client_status: "ACTIVE".to_string(),
+        allow_client_credentials: form.allow_client_credentials.is_some(),
     };
 
     // Messages（FluentBundle）は Send でないため、api の await をまたいで保持しない（login.rs と同じ理由）。
@@ -132,6 +136,7 @@ pub async fn create(
         "redirect_uris": parse_uris(&form.redirect_uris),
         "scopes": parse_scopes(&form.scopes),
         "require_pkce": form.require_pkce.is_some(),
+        "allow_client_credentials": form.allow_client_credentials.is_some(),
     });
     // api のバリデーション/競合メッセージをこの画面へ出すため、決定言語を引き継ぐ（MT20）。
     let result = state
@@ -215,6 +220,8 @@ pub struct EditClientForm {
     pub redirect_uris: String,
     pub scopes: String,
     pub client_status: String,
+    #[serde(default)]
+    pub allow_client_credentials: Option<String>,
     pub csrf_token: String,
 }
 
@@ -270,6 +277,7 @@ pub async fn update(
         "redirect_uris": parse_uris(&form.redirect_uris),
         "scopes": parse_scopes(&form.scopes),
         "client_status": form.client_status,
+        "allow_client_credentials": form.allow_client_credentials.is_some(),
     });
     let result = state
         .api

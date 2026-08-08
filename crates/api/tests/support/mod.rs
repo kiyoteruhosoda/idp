@@ -310,6 +310,39 @@ pub async fn insert_confidential_client(
     (client_id, secret.to_string())
 }
 
+/// `client_credentials` grant を許可した confidential client を登録して
+/// `(client_id, client_secret)` を返す（G4）。`grant_types` に `client_credentials` を含める点だけが
+/// [`insert_confidential_client`] と異なる。
+pub async fn insert_m2m_client(
+    pool: &MySqlPool,
+    tenant_id: &str,
+    scopes: &[&str],
+) -> (String, String) {
+    let client_id = format!("it-m2m-{}", unique());
+    let secret = "e2e-super-secret-value";
+    let secret_hash = Argon2PasswordHasher::new()
+        .hash(secret)
+        .expect("hash secret");
+    sqlx::query(
+        "INSERT INTO clients (id, tenant_id, client_id, client_secret_hash, client_type, \
+         client_status, app_name, redirect_uris, grant_types, response_types, scopes, \
+         token_endpoint_auth_method, require_pkce) \
+         VALUES (?, ?, ?, ?, 'confidential', 'ACTIVE', 'Integration M2M App', ?, \
+         '[\"authorization_code\", \"client_credentials\"]', '[\"code\"]', ?, \
+         'client_secret_basic', 1)",
+    )
+    .bind(uuid::Uuid::now_v7().to_string())
+    .bind(tenant_id)
+    .bind(&client_id)
+    .bind(secret_hash)
+    .bind(json!([REDIRECT_URI]).to_string())
+    .bind(json!(scopes).to_string())
+    .execute(pool)
+    .await
+    .expect("insert m2m client");
+    (client_id, secret.to_string())
+}
+
 /// ランダムな識別子片（メール・名前の一意化に使う。12 文字の hex）。
 pub fn unique() -> String {
     uuid::Uuid::new_v4().simple().to_string()[..12].to_string()

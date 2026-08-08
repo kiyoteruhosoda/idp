@@ -41,9 +41,10 @@ pub enum AuditEventType {
     RefreshTokenIssued,
     RefreshTokenUsed,
     RefreshTokenReuseDetected,
-    /// 同意の付与・取り消し（F3: Consent）。
+    /// 同意の付与・取り消し（F3: Consent）。`ConsentRevoked` は利用者自身による連携解除（G10）。
     ConsentGranted,
     ConsentDenied,
+    ConsentRevoked,
     /// ゲスト招待の作成・承諾・メンバーシップ解除（ADR-0009 §3）。招待トークンは記録しない。
     TenantInvitationCreated,
     TenantInvitationAccepted,
@@ -62,9 +63,26 @@ pub enum AuditEventType {
     /// 管理者による利用者プロフィール（メール・表示名・ログイン識別子）の更新（MT25）。
     /// 変更した項目名のみ記録し、値そのもの（PII）は記録しない。
     UserProfileUpdated,
+    /// 認証器（AP9。仕様 §5）の状態変更・リカバリーコードの発行と使用・email OTP の送信。
+    /// `reason` に種別・件数・残数を記録する（コード・シークレットそのものは記録しない）。
+    AuthenticatorStatusChanged,
+    RecoveryCodesIssued,
+    RecoveryCodeUsed,
+    EmailOtpSent,
     /// 管理者による MFA（TOTP・Passkey）の解除（MT21）。本人が端末を失った場合の復旧手段。
     /// 解除した要素の種別と件数のみ記録し、シークレット・クレデンシャルは記録しない。
     UserMfaReset,
+    /// 外部 IdP ログイン（AP10。仕様 §13）の成否。`reason` にプロバイダコードと失敗理由を
+    /// 記録する（外部 IdP のトークン・クレームは記録しない）。
+    ExternalLoginSucceeded,
+    ExternalLoginFailed,
+    /// 外部 IdP 設定（AP10）の作成・更新・削除。`reason` にプロバイダコードを記録する。
+    ExternalIdpCreated,
+    ExternalIdpUpdated,
+    ExternalIdpDeleted,
+    /// Step-up 認証（AP5。仕様 §15）の成否。`reason` に対象操作を記録する（資格情報は記録しない）。
+    StepUpSucceeded,
+    StepUpFailed,
     /// パスワード変更（初回強制変更を含む。ADR-0009 §5）。パスワードそのものは記録しない。
     PasswordChanged,
     /// テナントの作成・更新・削除（ADR-0009 §5）。自動生成パスワードは記録しない。
@@ -114,6 +132,7 @@ impl AuditEventType {
             Self::RefreshTokenReuseDetected => "refresh_token.reuse_detected",
             Self::ConsentGranted => "consent.granted",
             Self::ConsentDenied => "consent.denied",
+            Self::ConsentRevoked => "consent.revoked",
             Self::TenantInvitationCreated => "tenant_invitation.created",
             Self::TenantInvitationAccepted => "tenant_invitation.accepted",
             Self::TenantMembershipRevoked => "tenant_membership.revoked",
@@ -124,7 +143,18 @@ impl AuditEventType {
             Self::UserDeleted => "user.deleted",
             Self::UserPasswordReset => "user.password_reset",
             Self::UserProfileUpdated => "user.profile_updated",
+            Self::AuthenticatorStatusChanged => "authenticator.status_changed",
+            Self::RecoveryCodesIssued => "recovery_codes.issued",
+            Self::RecoveryCodeUsed => "recovery_code.used",
+            Self::EmailOtpSent => "email_otp.sent",
             Self::UserMfaReset => "user.mfa_reset",
+            Self::ExternalLoginSucceeded => "external_login.succeeded",
+            Self::ExternalLoginFailed => "external_login.failed",
+            Self::ExternalIdpCreated => "external_idp.created",
+            Self::ExternalIdpUpdated => "external_idp.updated",
+            Self::ExternalIdpDeleted => "external_idp.deleted",
+            Self::StepUpSucceeded => "step_up.succeeded",
+            Self::StepUpFailed => "step_up.failed",
             Self::PasswordChanged => "password.changed",
             Self::TenantCreated => "tenant.created",
             Self::TenantUpdated => "tenant.updated",

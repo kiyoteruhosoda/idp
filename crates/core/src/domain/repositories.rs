@@ -26,10 +26,14 @@ use crate::domain::audit::{AuditEvent, AuditLogEntry, AuditLogFilter};
 use crate::domain::auth_session::AuthSession;
 use crate::domain::authentication_policy::AuthenticationPolicy;
 use crate::domain::authorization_code::AuthorizationCode;
+use crate::domain::backchannel_logout::BackchannelLogoutDelivery;
 use crate::domain::client::Client;
 use crate::domain::consent::ClientConsent;
 use crate::domain::email_verification::EmailVerificationToken;
 use crate::domain::error::Result;
+use crate::domain::external_idp::{
+    ExternalIdentity, ExternalIdentityProvider, ExternalLoginRequest,
+};
 use crate::domain::passkey_challenge::PasskeyChallenge;
 use crate::domain::password_reset::PasswordResetToken;
 use crate::domain::refresh_token::RefreshToken;
@@ -43,7 +47,10 @@ use crate::domain::tenant::{Tenant, TenantId};
 use crate::domain::tenant_membership::{TenantMemberFilter, TenantMemberPage, TenantMembership};
 use crate::domain::totp_secret::TotpSecret;
 use crate::domain::user::User;
-use crate::domain::values::{MembershipStatus, SigningKeyStatus, UserStatus};
+use crate::domain::user_authenticator::{
+    AuthenticatorStatus, AuthenticatorType, UserAuthenticator,
+};
+use crate::domain::values::{AuthenticationMethod, MembershipStatus, SigningKeyStatus, UserStatus};
 use crate::domain::webauthn_credential::WebAuthnCredential;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -274,12 +281,17 @@ pub trait AuthSessionRepository: Send + Sync {
     /// ハンドルを単回使用として消費する（`handle_hash` を NULL 化）。すでに消費済み（並行交換に
     /// 負けた・再利用）なら `false` を返す。
     async fn consume_handle(&self, id: &str, handle_hash: &str) -> Result<bool>;
-    /// 認証済みユーザーと `auth_time` を設定する（`/login` 成功時）。
+    /// 認証済みユーザーと `auth_time`、確立した SSO セッションの `sid` を設定する（`/login` 成功時）。
+    ///
+    /// `sso_sid` は同意画面を挟む経路（`ConsentService::approve`）が code 発行時に読む（G5）。
+    /// 認証と code 発行が別リクエストに分かれ、その時点では SSO Cookie が手元に無いため、
+    /// ここで auth_session へ預ける。
     async fn set_authenticated_user(
         &self,
         id: &str,
         user_id: Uuid,
         auth_time: DateTime<Utc>,
+        sso_sid: Option<&str>,
     ) -> Result<()>;
     /// パスワード検証成功後に MFA pending 状態を記録する（`password_verified_at` を設定）。
     async fn set_password_verified(
@@ -323,11 +335,50 @@ pub trait AuthenticationPolicyRepository: Send + Sync {
 pub trait SsoSessionRepository: Send + Sync {
     async fn create(&self, session: &SsoSession) -> Result<()>;
     async fn find_by_hash(&self, session_hash: &str) -> Result<Option<SsoSession>>;
+    /// 指定ユーザーの全 SSO セッションを新しい順に返す（セルフサービスのセッション一覧。G10）。
+    /// 期限切れ行の除外は呼び出し側（Application 層）が `is_valid_at` で行う。
+    /// 既定実装は空（テスト用フェイクは呼ばれない。本番の sqlx 実装のみが上書きする）。
+    async fn list_for_user(&self, _user_id: Uuid) -> Result<Vec<SsoSession>> {
+        Ok(Vec::new())
+    }
     /// SSO 復元時に idle 期限を延長する（absolute は変更しない、設計仕様 §3.4）。
     async fn extend_idle(&self, session_hash: &str, idle_expires_at: DateTime<Utc>) -> Result<()>;
+    /// 第二要素の検証完了を記録する（AP4・AP5。Step-up 認証で既存セッションを昇格させる経路）。
+    /// `methods` は昇格後の全認証方式で、強度は実装が [`AuthenticationStrength::from_methods`]
+    /// で導出する（導出規則の単一の出所をドメインに置くため、呼び出し側は強度を渡さない）。
+    /// 既定実装は未対応エラー（本番の sqlx 実装のみが上書きする）。
+    async fn record_second_factor(
+        &self,
+        _session_hash: &str,
+        _methods: &[AuthenticationMethod],
+        _completed_at: DateTime<Utc>,
+    ) -> Result<()> {
+        Err(crate::domain::error::DomainError::Repository(
+            "record_second_factor is not supported by this repository".to_string(),
+        ))
+    }
+    /// Step-up 認証（AP5）の完了を記録する。`methods` はこの step-up で検証した方式で、
+    /// 第二要素を含む場合のみ `mfa_completed_at` と強度も更新する（単一要素の再確認で多要素
+    /// セッションを格下げしない・MFA の鮮度を回復させない、が実装の責務）。
+    /// 既定実装は未対応エラー（本番の sqlx 実装のみが上書きする）。
+    async fn record_step_up(
+        &self,
+        _session_hash: &str,
+        _methods: &[AuthenticationMethod],
+        _verified_at: DateTime<Utc>,
+    ) -> Result<()> {
+        Err(crate::domain::error::DomainError::Repository(
+            "record_step_up is not supported by this repository".to_string(),
+        ))
+    }
     async fn delete(&self, session_hash: &str) -> Result<()>;
     /// 指定ユーザーの全 SSO セッションを削除する（ユーザー単位の全セッション無効化、F5）。
     async fn delete_all_for_user(&self, user_id: Uuid) -> Result<()>;
+    /// 期限切れ（idle または absolute 超過）のセッションをまとめて削除し、削除件数を返す（GC）。
+    /// 既定実装は何もしない（テスト用フェイクは呼ばれない）。
+    async fn delete_expired(&self, _now: DateTime<Utc>) -> Result<u64> {
+        Ok(0)
+    }
 }
 
 #[async_trait]
@@ -522,6 +573,19 @@ pub trait RefreshTokenRepository: Send + Sync {
         user_id: Uuid,
         revoked_at: DateTime<Utc>,
     ) -> Result<()>;
+
+    /// 指定テナントの**1 クライアント**へ発行済みの refresh token を失効させる（連携解除。G10）。
+    ///
+    /// 利用者が 1 つのアプリの連携を解除したときに、同じテナントの他のアプリまで巻き込まないための
+    /// 単位。テナント単位の全失効（[`revoke_all_for_user_in_tenant`](Self::revoke_all_for_user_in_tenant)）
+    /// は管理者によるゲスト停止のための措置で、目的が違う。
+    async fn revoke_all_for_user_and_client(
+        &self,
+        tenant_id: TenantId,
+        user_id: Uuid,
+        client_id: &str,
+        revoked_at: DateTime<Utc>,
+    ) -> Result<()>;
 }
 
 /// ユーザーがクライアントに付与した同意済み scope の永続化（F3: Consent）。
@@ -541,6 +605,44 @@ pub trait ClientConsentRepository: Send + Sync {
     /// 指定テナントにおけるユーザーの全同意レコードを返す（同意取り消し画面・管理用）。
     async fn list_for_user(&self, tenant_id: TenantId, user_id: Uuid)
         -> Result<Vec<ClientConsent>>;
+}
+
+/// Back-channel logout 送信要求の永続キュー（G5）。
+///
+/// ログアウト処理（同期）は [`enqueue`](Self::enqueue) で要求を積むだけにし、送信はワーカーが
+/// [`claim_due`](Self::claim_due) で取り出して行う。「HTTP 送信の成否がログアウト応答を遅らせない」
+/// ことと「プロセスが落ちても未送信が消えない」ことを同時に満たすための分離。
+#[async_trait]
+pub trait BackchannelLogoutDeliveryRepository: Send + Sync {
+    /// 送信要求をまとめて積む（空スライスは何もしない）。
+    async fn enqueue(&self, deliveries: &[BackchannelLogoutDelivery]) -> Result<()>;
+
+    /// 送信すべき要求を取り出して**試行回数を進め、次回時刻を押し出す**（原子的なクレーム）。
+    ///
+    /// 対象は「未送信」「`next_attempt_at <= now`」「`attempts < max_attempts`」の行。取り出しと
+    /// 更新を分けると、同じ行を二重に送ってしまう（RP から見て重複配送になる）ため実装は原子的に行う。
+    /// 返す行は更新後の状態（`attempts` は加算済み）。
+    async fn claim_due(
+        &self,
+        now: DateTime<Utc>,
+        max_attempts: i32,
+        limit: u32,
+    ) -> Result<Vec<BackchannelLogoutDelivery>>;
+
+    /// 送信成功を記録する（`delivered_at` を設定）。
+    async fn mark_delivered(&self, id: Uuid, delivered_at: DateTime<Utc>) -> Result<()>;
+
+    /// 送信失敗を記録する（次回試行時刻と直近の失敗理由）。試行回数は
+    /// [`claim_due`](Self::claim_due) で加算済みのため、ここでは進めない。
+    async fn mark_failed(
+        &self,
+        id: Uuid,
+        next_attempt_at: DateTime<Utc>,
+        error: &str,
+    ) -> Result<()>;
+
+    /// 決着済み（送信成功、または試行上限に達した）の古い行を削除し、削除件数を返す。
+    async fn purge_settled(&self, older_than: DateTime<Utc>, max_attempts: i32) -> Result<u64>;
 }
 
 /// Access Token の jti 失効リスト（F5: Token 管理）。
@@ -567,6 +669,165 @@ pub trait TotpSecretRepository: Send + Sync {
     async fn confirm(&self, user_id: Uuid, confirmed_at: DateTime<Utc>) -> Result<()>;
     /// ユーザーの TOTP シークレットを削除する（冪等: 不存在でもエラーにしない）。
     async fn delete(&self, user_id: Uuid) -> Result<()>;
+}
+
+/// 外部 IdP 設定（AP10。仕様 §13）の永続化。テナント境界は `tenant_id` で強制する。
+#[async_trait]
+pub trait ExternalIdentityProviderRepository: Send + Sync {
+    async fn create(&self, provider: &ExternalIdentityProvider) -> Result<()>;
+    /// テナントの全プロバイダを `provider_code` 昇順で返す（管理画面用）。
+    async fn list_for_tenant(&self, tenant_id: TenantId) -> Result<Vec<ExternalIdentityProvider>>;
+    /// テナントの**有効な**プロバイダのみ返す（ログイン画面のボタン用）。
+    async fn list_enabled_for_tenant(
+        &self,
+        tenant_id: TenantId,
+    ) -> Result<Vec<ExternalIdentityProvider>>;
+    /// テナント境界内で `provider_code` 解決する（他テナントのコードを持ち込んでも解決させない）。
+    async fn find_by_code(
+        &self,
+        tenant_id: TenantId,
+        provider_code: &str,
+    ) -> Result<Option<ExternalIdentityProvider>>;
+    /// テナント境界内で id 解決する。
+    async fn find_by_id(
+        &self,
+        tenant_id: TenantId,
+        id: Uuid,
+    ) -> Result<Option<ExternalIdentityProvider>>;
+    /// 既存プロバイダを更新する。更新できた場合 `true`、対象が無ければ `false`。
+    async fn update(&self, provider: &ExternalIdentityProvider) -> Result<bool>;
+    /// テナント境界内で削除する。削除できた場合 `true`。
+    async fn delete(&self, tenant_id: TenantId, id: Uuid) -> Result<bool>;
+}
+
+/// 外部 IdP 上の同一性と本 IdP 利用者の対応（AP10。仕様 §13.2）の永続化。
+///
+/// 検索キーは `(provider_id, external_subject)` で、これが唯一の連携根拠。`tenant_id` を取らない
+/// のは、プロバイダ自体がテナントに属する（＝プロバイダ経由で境界が決まる）ため。
+#[async_trait]
+pub trait ExternalIdentityRepository: Send + Sync {
+    /// 連携を作成する。同じ外部アカウントの二重連携は `Conflict`。
+    async fn create(&self, identity: &ExternalIdentity) -> Result<()>;
+    /// 検証済みの `iss` + `sub` から連携を引く。
+    ///
+    /// `provider_id` だけでなく `external_issuer` も条件に含める。管理者はプロバイダの `issuer` を
+    /// 後から変更できるため、`provider_id` + `sub` だけで引くと、**別の issuer にある同じ `sub` の
+    /// アカウントが、以前連携した利用者に化ける**。連携時の issuer と一致しなければ引けない
+    /// （＝未連携として扱う）のが正しい。
+    async fn find_by_subject(
+        &self,
+        provider_id: Uuid,
+        external_issuer: &str,
+        external_subject: &str,
+    ) -> Result<Option<ExternalIdentity>>;
+    /// 利用者の全連携を返す（セルフサービスの表示・解除用）。
+    async fn list_for_user(&self, user_id: Uuid) -> Result<Vec<ExternalIdentity>>;
+    /// 利用時刻を記録する。
+    async fn touch_last_used(&self, id: Uuid, at: DateTime<Utc>) -> Result<()>;
+    /// 連携を解除する（所有者チェック込み）。削除できた場合 `true`。
+    async fn delete(&self, id: Uuid, user_id: Uuid) -> Result<bool>;
+}
+
+/// 外部 IdP へのリダイレクトからコールバックまでの進行状態（AP10）の永続化。
+///
+/// `state` は単回使用。消費は「削除できたら勝ち」の原子的なクレームで行う（`saml_sso_requests`
+/// と同じ方式。読んでから消すと、同じ `state` の同時提示で両方通る）。
+#[async_trait]
+pub trait ExternalLoginRequestRepository: Send + Sync {
+    async fn create(&self, request: &ExternalLoginRequest) -> Result<()>;
+    /// `state` のハッシュで引く（テナント境界込み）。
+    async fn find_by_state(
+        &self,
+        tenant_id: TenantId,
+        state_hash: &str,
+    ) -> Result<Option<ExternalLoginRequest>>;
+    /// 進行状態を削除する。**削除できた場合のみ `true`**（単回使用のクレームを兼ねる）。
+    async fn consume(&self, id: Uuid) -> Result<bool>;
+    /// 期限切れの進行状態をまとめて削除し、件数を返す（GC）。
+    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64>;
+}
+
+/// 認証器の統合登録簿（AP9。仕様 §5）。
+///
+/// 種別（TOTP・WebAuthn・リカバリーコード・email OTP）によらず「この利用者が使える認証器」を
+/// 1 箇所で答えるためのポート。種別固有の秘密は従来のテーブルが持ち続ける（expand フェーズ）。
+/// テナント列を持たない表のため `tenant_id` は取らない（モジュールコメント参照。境界は
+/// ユースケース側が `users.tenant_id` 照合で強制する）。
+///
+/// 参照系・消費系のメソッドは既定実装（「見つからない」）を持つ。テスト用フェイクの記述量を
+/// 抑えるためであり、**既定はいずれも fail-closed 側へ倒れる**（見つからない ＝ その認証器では
+/// 認証が通らない）。書き込みの `create` だけは既定を持たない（黙って成功すると登録が消える）。
+/// 本番の sqlx 実装は全メソッドを上書きする。
+#[async_trait]
+pub trait UserAuthenticatorRepository: Send + Sync {
+    /// 認証器を登録する（`pending` または `active`）。
+    async fn create(&self, authenticator: &UserAuthenticator) -> Result<()>;
+    /// 内部 ID で引く。
+    async fn find_by_id(&self, _id: Uuid) -> Result<Option<UserAuthenticator>> {
+        Ok(None)
+    }
+    /// 利用者の全認証器を新しい順に返す（失効済みを含む。管理・表示用）。
+    async fn list_for_user(&self, _user_id: Uuid) -> Result<Vec<UserAuthenticator>> {
+        Ok(Vec::new())
+    }
+    /// 利用者の**使える**認証器（`active` かつ期限内）を種別で絞って返す（ログインのホットパス）。
+    /// `authenticator_type` が `None` なら全種別。
+    async fn list_usable_for_user(
+        &self,
+        _user_id: Uuid,
+        _authenticator_type: Option<AuthenticatorType>,
+        _now: DateTime<Utc>,
+    ) -> Result<Vec<UserAuthenticator>> {
+        Ok(Vec::new())
+    }
+    /// 状態を更新する（遷移の可否は Application 層が
+    /// [`AuthenticatorStatus::can_transition_to`] で判定してから呼ぶ）。
+    /// 対象が無ければ `false`。
+    async fn update_status(
+        &self,
+        _id: Uuid,
+        _user_id: Uuid,
+        _status: AuthenticatorStatus,
+        _at: DateTime<Utc>,
+    ) -> Result<bool> {
+        Ok(false)
+    }
+    /// 表示名を更新する。対象が無ければ `false`。
+    async fn update_label(&self, _id: Uuid, _user_id: Uuid, _label: &str) -> Result<bool> {
+        Ok(false)
+    }
+    /// 利用時刻を記録する（認証成功時）。
+    async fn touch_last_used(&self, _id: Uuid, _at: DateTime<Utc>) -> Result<()> {
+        Ok(())
+    }
+    /// 使い捨て認証器（リカバリーコード・OTP）を**原子的に消費**する。
+    ///
+    /// `active` かつ期限内の行だけを `revoked` にして返す。すでに使われていた・期限切れ・
+    /// 不存在なら `None`。「引いてから状態を見て更新する」方式だと、同じコードを同時に 2 回
+    /// 出された場合に両方通ってしまう（authorization code と同じ理由で原子的に行う）。
+    async fn consume_single_use(
+        &self,
+        _user_id: Uuid,
+        _authenticator_type: AuthenticatorType,
+        _secret_hash: &str,
+        _now: DateTime<Utc>,
+    ) -> Result<Option<UserAuthenticator>> {
+        Ok(None)
+    }
+    /// 指定種別の未失効の行をまとめて失効させ、件数を返す（リカバリーコードの再発行時に
+    /// 古い束を無効化する）。
+    async fn revoke_all_of_type(
+        &self,
+        _user_id: Uuid,
+        _authenticator_type: AuthenticatorType,
+        _at: DateTime<Utc>,
+    ) -> Result<u64> {
+        Ok(0)
+    }
+    /// 期限切れの使い捨て行を削除し、件数を返す（GC）。
+    async fn delete_expired(&self, _now: DateTime<Utc>) -> Result<u64> {
+        Ok(0)
+    }
 }
 
 /// ユーザーの WebAuthn（FIDO2 Passkey）クレデンシャル。

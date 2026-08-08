@@ -37,10 +37,14 @@ const PORTAL_MFA_TTL_SECS: u64 = 300;
 /// `error_key` は PRG（CSRF 不一致 → `?error=csrf`）で戻ったときのエラーバナー。
 pub async fn login_page(
     state: &WebState,
+    correlation: &CorrelationId,
     tenant: &WebTenant,
     headers: &HeaderMap,
     error_key: Option<&str>,
 ) -> Response {
+    // 外部 IdP のボタン（AP10）。取得できなくてもパスワードログインは出す（フェイルソフト）。
+    // Messages は !Send なので、api の await より先に済ませる。
+    let external_providers = load_external_providers(state, correlation, tenant).await;
     let messages = Messages::new(locale(headers));
     // CSRF の種（推測不能な乱数）を Cookie とフォーム双方へ渡す（admin ログインと同方式）。
     // 既に有効な種 Cookie があれば使い回して TTL を延長する。GET のたびに回転させると、複数タブで
@@ -61,6 +65,7 @@ pub async fn login_page(
             tenant_prefix: &tenant.prefix(),
             csrf: &csrf,
             error_key,
+            external_providers: &external_providers,
         })),
     )
         .into_response()
@@ -178,6 +183,19 @@ pub async fn login(
             &csrf,
             "login-error-locked",
         ),
+        // 認証ポリシー（AP2）。資格情報は検証済みなので資格情報エラーとは別の文言を出す。
+        InternalPortalAuthenticateResponse::PolicyDenied => reshow_login(
+            &messages,
+            &tenant.prefix(),
+            StatusCode::FORBIDDEN,
+            &csrf,
+            "login-error-policy-denied",
+        ),
+        InternalPortalAuthenticateResponse::MfaEnrollmentRequired => message_page(
+            &messages,
+            "login-error-mfa-enrollment-required",
+            StatusCode::FORBIDDEN,
+        ),
         InternalPortalAuthenticateResponse::Internal => {
             (StatusCode::INTERNAL_SERVER_ERROR, Html(String::new())).into_response()
         }
@@ -287,6 +305,16 @@ pub async fn password_change(
         InternalPortalChangePasswordResponse::EmailVerificationRequired => message_page(
             &messages,
             "login-error-email-not-verified",
+            StatusCode::FORBIDDEN,
+        ),
+        InternalPortalChangePasswordResponse::PolicyDenied => message_page(
+            &messages,
+            "login-error-policy-denied",
+            StatusCode::FORBIDDEN,
+        ),
+        InternalPortalChangePasswordResponse::MfaEnrollmentRequired => message_page(
+            &messages,
+            "login-error-mfa-enrollment-required",
             StatusCode::FORBIDDEN,
         ),
         InternalPortalChangePasswordResponse::RateLimited => reshow_password_change(
@@ -445,6 +473,19 @@ pub async fn mfa_submit(
             )
                 .into_response()
         }
+        // ポリシー拒否はチケットを失効させて終える（再試行しても結果は変わらない）。
+        InternalPortalMfaResponse::PolicyDenied => {
+            let set_cookies = state.set_cookies().expire_local(cookies::PORTAL_MFA_COOKIE);
+            (
+                set_cookies.into_headers(),
+                message_page(
+                    &messages,
+                    "login-error-policy-denied",
+                    StatusCode::FORBIDDEN,
+                ),
+            )
+                .into_response()
+        }
         InternalPortalMfaResponse::Internal => {
             (StatusCode::INTERNAL_SERVER_ERROR, Html(String::new())).into_response()
         }
@@ -534,7 +575,30 @@ fn render_login_form(
         tenant_prefix,
         csrf,
         error_key,
+        // 再表示（資格情報エラー等）では外部 IdP のボタンを省く。ここは api を await できない
+        // 同期の描画関数で、そのために呼び出し側全部へ一覧を配るのは割に合わない。
+        // 利用者は一度ログイン画面へ戻れば（`GET /login`）ボタンを見られる。
+        external_providers: &[],
     })
+}
+
+/// 有効な外部 IdP を取得する（失敗時は空。ログイン画面自体は必ず出す）。
+async fn load_external_providers(
+    state: &WebState,
+    correlation: &CorrelationId,
+    tenant: &WebTenant,
+) -> Vec<idp_contracts::auth::ExternalIdpButton> {
+    let request = idp_contracts::auth::InternalExternalProvidersRequest {
+        tenant_id: Some(tenant.0.clone()),
+    };
+    match state.api.external_providers(&correlation.0, &request).await {
+        Ok(idp_contracts::auth::InternalExternalProvidersResponse::Ok { providers }) => providers,
+        Ok(_) => Vec::new(),
+        Err(e) => {
+            tracing::error!(error = %e, "external idp list call to api failed");
+            Vec::new()
+        }
+    }
 }
 
 /// 強制パスワード変更フォームの HTML を共有テンプレート（[`ForcedPasswordChange`]）から描画する。

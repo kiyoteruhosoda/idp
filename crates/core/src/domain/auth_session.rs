@@ -35,6 +35,9 @@ pub struct AuthSession {
     pub auth_time: Option<DateTime<Utc>>,
     /// パスワード検証成功時刻。非 NULL = パスワード検証済みで TOTP 入力待ち（MFA pending）。
     pub password_verified_at: Option<DateTime<Utc>>,
+    /// このフローで確立した SSO セッションの `sid`（G5）。同意画面を挟む経路では code 発行が
+    /// ログインと別リクエストになり、その時点では SSO Cookie が手元に無いため、ここへ持ち回す。
+    pub sso_sid: Option<String>,
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

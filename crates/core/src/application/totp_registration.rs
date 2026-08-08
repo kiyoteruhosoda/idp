@@ -8,6 +8,7 @@
 //! シークレットは `crypto::encrypt` で AES-256-GCM 暗号化して DB に保存し、
 //! 検証時にのみ復号する（signing_keys と同方式）。
 
+use crate::application::authenticator_management::AuthenticatorManagementService;
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::error::DomainError;
@@ -55,6 +56,8 @@ pub struct TotpSetupData {
 }
 
 pub struct TotpRegistrationService {
+    /// 認証器の登録簿（AP9）。秘密は本サービス側の表に残しつつ、状態は登録簿へ反映する。
+    authenticators: Arc<AuthenticatorManagementService>,
     totp_secrets: Arc<dyn TotpSecretRepository>,
     sso_sessions: Arc<dyn SsoSessionRepository>,
     key_encryption_key: [u8; 32],
@@ -64,6 +67,7 @@ pub struct TotpRegistrationService {
 
 impl TotpRegistrationService {
     pub fn new(
+        authenticators: Arc<AuthenticatorManagementService>,
         totp_secrets: Arc<dyn TotpSecretRepository>,
         sso_sessions: Arc<dyn SsoSessionRepository>,
         key_encryption_key: [u8; 32],
@@ -71,6 +75,7 @@ impl TotpRegistrationService {
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
+            authenticators,
             totp_secrets,
             sso_sessions,
             key_encryption_key,
@@ -113,6 +118,11 @@ impl TotpRegistrationService {
             updated_at: now,
         };
         self.totp_secrets.upsert(&record).await?;
+        // 登録簿へ仮登録として積む（AP9）。ここが漏れると、確認前の TOTP が一覧に出ない。
+        self.authenticators
+            .register_totp_pending(user_id)
+            .await
+            .map_err(|e| TotpRegistrationError::Internal(e.to_string()))?;
 
         Ok(TotpSetupData {
             totp_uri,
@@ -148,6 +158,10 @@ impl TotpRegistrationService {
 
         let now = self.clock.now();
         self.totp_secrets.confirm(user_id, now).await?;
+        self.authenticators
+            .activate_totp(user_id)
+            .await
+            .map_err(|e| TotpRegistrationError::Internal(e.to_string()))?;
         Ok(())
     }
 
@@ -155,6 +169,10 @@ impl TotpRegistrationService {
     pub async fn delete(&self, sso_session_id: &str) -> Result<(), TotpRegistrationError> {
         let user_id = self.resolve_user(sso_session_id).await?;
         self.totp_secrets.delete(user_id).await?;
+        self.authenticators
+            .revoke_totp(user_id)
+            .await
+            .map_err(|e| TotpRegistrationError::Internal(e.to_string()))?;
         Ok(())
     }
 

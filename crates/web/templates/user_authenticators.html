@@ -1,0 +1,92 @@
+{% extends "page.html" %}
+{% block title %}{{ messages.get("authenticators-title") }}{% endblock %}
+{% block column %}col-lg-9 mx-auto{% endblock %}
+{% block scripts %}<script src="/assets/console.js?v={{ crate::templates::asset_version() }}"></script>{% endblock %}
+{% block content %}
+<div class="mb-3">
+  <a href="{{ tenant }}/settings"><i class="fa-solid fa-arrow-left me-2" aria-hidden="true"></i>{{ messages.get("user-security-back-settings") }}</a>
+</div>
+<div class="mb-4">
+  <p class="text-muted text-uppercase fw-bold small mb-1">{{ messages.get("user-settings-kicker") }}</p>
+  <h1 class="h3 mb-1">{{ messages.get("authenticators-title") }}</h1>
+  <p class="text-muted mb-0">{{ messages.get("authenticators-lead") }}</p>
+</div>
+
+{% if let Some(key) = saved_key %}<div class="alert alert-success" role="status">{{ messages.get(key) }}</div>{% endif %}
+{% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
+
+<div class="card mb-4">
+  <div class="card-header d-flex align-items-center"><i class="fa-solid fa-shield-halved me-2" aria-hidden="true"></i>{{ messages.get("authenticators-registered-heading") }}</div>
+  <div class="card-body">
+    {% if authenticators.is_empty() %}
+    <p class="text-muted">{{ messages.get("authenticators-empty") }}</p>
+    {% else %}
+    <div class="table-responsive">
+      <table class="table align-middle">
+        <thead>
+          <tr>
+            <th scope="col">{{ messages.get("authenticators-column-type") }}</th>
+            <th scope="col">{{ messages.get("authenticators-column-label") }}</th>
+            <th scope="col">{{ messages.get("authenticators-column-status") }}</th>
+            <th scope="col">{{ messages.get("authenticators-column-last-used") }}</th>
+            <th scope="col"><span class="visually-hidden">{{ messages.get("authenticators-column-actions") }}</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in authenticators %}
+          <tr>
+            <td>{{ messages.get(a.type_key) }}</td>
+            <td class="text-break">{{ a.label }}</td>
+            <td>{{ messages.get(a.status_key) }}</td>
+            <td>{{ a.last_used_at }}</td>
+            <td class="text-end">
+              <div class="d-flex gap-2 justify-content-end">
+                {% if a.suspendable %}
+                <form method="post" action="{{ tenant }}/settings/authenticators/status" data-confirm="{{ messages.get("authenticators-suspend-confirm") }}">
+                  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                  <input type="hidden" name="authenticator_id" value="{{ a.id }}">
+                  <input type="hidden" name="status" value="suspended">
+                  <button type="submit" class="btn btn-outline-secondary btn-sm">{{ messages.get("authenticators-suspend") }}</button>
+                </form>
+                {% endif %}
+                {% if a.resumable %}
+                <form method="post" action="{{ tenant }}/settings/authenticators/status">
+                  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                  <input type="hidden" name="authenticator_id" value="{{ a.id }}">
+                  <input type="hidden" name="status" value="active">
+                  <button type="submit" class="btn btn-outline-primary btn-sm">{{ messages.get("authenticators-resume") }}</button>
+                </form>
+                {% endif %}
+                <form method="post" action="{{ tenant }}/settings/authenticators/status" data-confirm="{{ messages.get("authenticators-revoke-confirm") }}">
+                  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                  <input type="hidden" name="authenticator_id" value="{{ a.id }}">
+                  <input type="hidden" name="status" value="revoked">
+                  <button type="submit" class="btn btn-outline-danger btn-sm">{{ messages.get("authenticators-revoke") }}</button>
+                </form>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+    <div class="d-flex flex-wrap gap-2 mt-3">
+      <a class="btn btn-outline-secondary" href="{{ tenant }}/account/mfa/totp/setup"><i class="fa-solid fa-mobile-screen me-2" aria-hidden="true"></i>{{ messages.get("user-settings-mfa-totp") }}</a>
+      <a class="btn btn-outline-secondary" href="{{ tenant }}/account/passkey"><i class="fa-solid fa-key me-2" aria-hidden="true"></i>{{ messages.get("user-settings-mfa-passkey") }}</a>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-4" id="recovery-codes">
+  <div class="card-header d-flex align-items-center"><i class="fa-solid fa-life-ring me-2" aria-hidden="true"></i>{{ messages.get("authenticators-recovery-heading") }}</div>
+  <div class="card-body">
+    <p class="text-muted small">{{ messages.get("authenticators-recovery-help") }}</p>
+    <p class="mb-3">{{ messages.get("authenticators-recovery-remaining") }} <strong>{{ recovery_codes_remaining }}</strong></p>
+    <form method="post" action="{{ tenant }}/settings/recovery-codes" data-confirm="{{ messages.get("authenticators-recovery-confirm") }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <button type="submit" class="btn btn-primary">{{ messages.get("authenticators-recovery-issue") }}</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

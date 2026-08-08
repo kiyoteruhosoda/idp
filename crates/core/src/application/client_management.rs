@@ -18,7 +18,7 @@ use crate::domain::outbound_uri::is_internal_destination;
 use crate::domain::password::PasswordHasher;
 use crate::domain::repositories::ClientRepository;
 use crate::domain::tenant_context::TenantContext;
-use crate::domain::values::{ClientStatus, ClientType, Scope, TokenEndpointAuthMethod};
+use crate::domain::values::{ClientStatus, ClientType, GrantType, Scope, TokenEndpointAuthMethod};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -35,6 +35,9 @@ pub struct RegisterClientCommand {
     pub scopes: Vec<String>,
     /// 省略時は既定（true）。public は PKCE 必須のため false を指定しても true に矯正する。
     pub require_pkce: Option<bool>,
+    /// サーバ間（M2M）連携で `client_credentials` grant を使えるようにするか（G4。既定 false）。
+    /// public client は資格情報を秘匿できないため、指定されても無効のまま登録する。
+    pub allow_client_credentials: bool,
     /// RP-initiated logout 後のリダイレクト先（任意）。F4。
     pub post_logout_redirect_uris: Vec<String>,
     /// front-channel logout URI（任意）。F4。
@@ -56,6 +59,8 @@ pub struct UpdateClientCommand {
     pub frontchannel_logout_uri: Option<Option<String>>,
     /// back-channel logout URI（`Some(None)` で削除）。F4。
     pub backchannel_logout_uri: Option<Option<String>>,
+    /// `client_credentials` grant の許可（G4）。public client には適用しない。
+    pub allow_client_credentials: Option<bool>,
 }
 
 /// 登録結果。`client_secret` は confidential のときのみ平文で返る（保存はハッシュのみ）。
@@ -147,8 +152,9 @@ impl ClientManagementService {
             client_status: ClientStatus::Active,
             app_name,
             redirect_uris,
-            // MVP は Authorization Code Flow のみ対応（設計仕様 §5）。
-            grant_types: vec!["authorization_code".to_string()],
+            // ブラウザ経由の利用者ログインは Authorization Code Flow のみ（設計仕様 §5）。
+            // `client_credentials` は M2M 用の追加許可で、confidential のみ受け付ける（G4）。
+            grant_types: grant_types_for(cmd.client_type, cmd.allow_client_credentials),
             response_types: vec!["code".to_string()],
             scopes,
             token_endpoint_auth_method: auth_method,
@@ -233,6 +239,9 @@ impl ClientManagementService {
         if let Some(uri) = cmd.backchannel_logout_uri {
             client.backchannel_logout_uri = validate_backchannel_logout_uri(uri)?;
         }
+        if let Some(allow) = cmd.allow_client_credentials {
+            client.grant_types = grant_types_for(client.client_type, allow);
+        }
 
         self.clients
             .update(&client)
@@ -307,6 +316,19 @@ impl ClientManagementService {
             .map_err(|e| ClientManagementError::Internal(e.to_string()))?
             .ok_or(ClientManagementError::NotFound)
     }
+}
+
+/// クライアントへ付与する grant_type の集合を決める（G4）。
+///
+/// `authorization_code` は全クライアント共通の基本許可。`client_credentials` は confidential かつ
+/// 管理者が明示的に有効化したときだけ足す（public client は指定されても付けない）。`refresh_token`
+/// は `offline_access` scope の同意で制御しており grant_types では絞らない（従来どおり）。
+fn grant_types_for(client_type: ClientType, allow_client_credentials: bool) -> Vec<String> {
+    let mut grants = vec![GrantType::AuthorizationCode.as_str().to_string()];
+    if allow_client_credentials && client_type == ClientType::Confidential {
+        grants.push(GrantType::ClientCredentials.as_str().to_string());
+    }
+    grants
 }
 
 fn validate_app_name(app_name: String) -> Result<String, ClientManagementError> {
