@@ -1,3 +1,40 @@
+## 2026-08-08（優先度 14・15 の実装: 認証コンテキスト・Step-up・認証器統合・外部 IdP・M2M・ログアウト信頼性・セルフサービス）
+
+- **認証セッションへ認証コンテキストを記録するようにした（AP4）。** `sso_sessions` に
+  `authentication_methods` / `authentication_strength` / `mfa_completed_at` を追加し（0020）、
+  ログイン経路 5 つすべてが `SsoSession::establish` 経由で記録する。強度と MFA 完了時刻の導出は
+  ドメイン 1 箇所に閉じた（経路ごとに計算すると Step-up・再認証の判定が食い違う）。
+- **認証ポリシーをポータル・管理コンソールのログインへも適用した（AP2）。** これまで OIDC フロー
+  だけが評価対象で、`deny` されたはずの利用者がポータル経由で SSO セッションを得られた。
+  クライアント文脈が無いため `client_id` は `None`。管理コンソールは第二要素の入力ステップを
+  持たないため、`require_mfa` が掛かる利用者はいずれの案内でも SSO を発行しない。
+- **Step-up 認証を追加した（AP5）。** パスワード変更・認証器の追加削除・セッション失効・外部 IdP の
+  紐付けは、直近の本人確認から `STEP_UP_MAX_AGE_SECS`（既定 300 秒）を超えていれば確認をやり直させる。
+  認証器を登録済みの利用者が認証器を触る操作では第二要素まで求める。判定基準は AP4 の記録と、
+  新設した `sso_sessions.step_up_at`（0022）。
+- **認証器を統合管理するようにした（AP9）。** 種別ごとに別テーブルだった認証器を、状態
+  （pending/active/suspended/revoked）を持つ登録簿 `user_authenticators` へ集約した（0023。既存の
+  TOTP・パスキーは冪等に取り込む）。**リカバリーコード**（10 本の束・1 回きり・ハッシュ保存）と
+  **email OTP** を追加し、どちらも MFA 入力欄で TOTP と同じ欄から使える。SMS OTP は種別として
+  持つが送信手段がスタックに無いため発行経路は無い。秘密（TOTP 共有鍵・パスキー公開鍵）は元の表に
+  残す expand フェーズまで（判断と残作業は ADR-0022）。
+- **外部 IdP（OpenID Provider）認証を追加した（AP10）。** `iss` + `sub` だけを同一性の根拠とし、
+  メール一致の自動連携はプロバイダ単位の opt-in かつ外部 IdP が `email_verified` を主張する場合に
+  限る（0024）。ID Token の検証（JWKS 署名・`iss`・`aud`・`exp`・`nonce`）は `ExternalOidcClient` の
+  実装に閉じ、検証を通ったクレームだけがポートから出る契約にした（信頼モデルは ADR-0023）。
+- **`client_credentials` grant を追加した（G4）。** confidential かつ管理者が明示的に許可した
+  クライアントのみ。ID Token も Refresh Token も発行せず、`sub` はクライアント自身（`sub_type`
+  クレームで利用者主体のトークンと区別する）。これまで死んでいた `clients.grant_types` を許可の
+  出所として使う。
+- **back-channel logout に `sid`・`exp` を付け、送信を永続キュー＋再試行にした（G5）。**
+  RP がセッション単位で失効できるようになり（Discovery で `backchannel_logout_session_supported`
+  を広告）、`tokio::spawn` の撃ちっぱなしをやめて `backchannel_logout_deliveries` へ積み、
+  指数バックオフで再試行する（0021）。署名済み logout_token は保存せず送信直前に署名する
+  （`sid` の運び方とキューの設計は ADR-0024）。
+- **利用者セルフサービスにセッション一覧・失効と連携アプリの解除を追加した（G10）。**
+  `SsoSessionRepository::list_for_user` が trait にも実装にも無かったため追加。連携解除では
+  同意行だけでなく当該テナントの refresh token も失効させる。
+
 ## 2026-08-08（レビュー指摘の反映: ロック回避経路と送信時の宛先検査）
 
 - **MFA 待ちのパスワード成功では失敗カウンタをリセットしないようにした（SEC3 の追補）。**
