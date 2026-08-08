@@ -10,7 +10,8 @@ use crate::handlers::{
     admin_restart_console, admin_saml_clients_console, admin_settings, admin_signing_keys_console,
     admin_status_console, admin_tenants_console, admin_users_console, consent, console_script,
     health, invitation_accept, locale, login, mfa_totp, passkey, password_change, password_reset,
-    portal, react_assets, rp_logout, saml_sso, stylesheet, submit_feedback_script, user_settings,
+    portal, react_assets, rp_logout, saml_sso, stylesheet, submit_feedback_script, user_security,
+    user_settings,
     vendor_assets, verify_email,
 };
 use crate::i18n::Messages;
@@ -65,6 +66,16 @@ pub fn build(state: WebState) -> Router {
         .route("/settings", get(user_settings::page))
         .route("/settings/password", post(user_settings::change_password))
         .route("/settings/name", post(user_settings::change_name))
+        // セルフサービスのセキュリティ画面（セッション一覧・失効／連携アプリ解除。G10）。
+        .route("/settings/security", get(user_security::page))
+        .route(
+            "/settings/security/revoke-session",
+            post(user_security::revoke_session),
+        )
+        .route(
+            "/settings/security/revoke-consent",
+            post(user_security::revoke_consent),
+        )
         // 招待承諾画面（ADR-0009 §3・MT17）。招待メールのリンクから開く。SSO 認証が必要。
         .route(
             "/invitations/accept",

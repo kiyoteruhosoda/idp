@@ -86,6 +86,14 @@
   </div>
 </div>
 
+<div class="card mb-4 user-settings-sessions" id="sessions">
+  <div class="card-header d-flex align-items-center"><i class="fa-solid fa-display me-2" aria-hidden="true"></i>{{ messages.get("user-security-title") }}</div>
+  <div class="card-body">
+    <p class="text-muted small">{{ messages.get("user-security-lead") }}</p>
+    <a class="btn btn-outline-secondary" href="{{ tenant }}/settings/security"><i class="fa-solid fa-shield me-2" aria-hidden="true"></i>{{ messages.get("user-security-open") }}</a>
+  </div>
+</div>
+
 <div class="card mb-4 user-settings-mfa" id="mfa">
   <div class="card-header d-flex align-items-center"><i class="fa-solid fa-shield-halved me-2" aria-hidden="true"></i>{{ messages.get("user-settings-mfa-heading") }}</div>
   <div class="card-body">

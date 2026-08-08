@@ -11,6 +11,7 @@
 use crate::application::account_language::AccountLanguageService;
 use crate::application::account_password::AccountPasswordService;
 use crate::application::account_profile::AccountProfileService;
+use crate::application::account_security::AccountSecurityService;
 use crate::application::account_tenants::AccountTenantsService;
 use crate::application::admin_access::AdminAccessService;
 use crate::application::admin_login::AdminLoginService;
@@ -169,6 +170,8 @@ pub struct AppState {
     /// api 自身の `tracing` 取り込みタスク・web からの `/internal/logs`・管理画面の参照が共有する。
     pub application_logs: Arc<ApplicationLogService>,
     pub logout: Arc<LogoutService>,
+    /// セルフサービスのセキュリティ画面（セッション一覧・失効／連携アプリ解除。G10）。
+    pub account_security: Arc<AccountSecurityService>,
     /// Back-channel logout の送信キュー（G5）。ハンドラは積むだけ、送信はワーカーが行う。
     pub backchannel_logout: Arc<BackchannelLogoutDeliveryService>,
     pub revocation: Arc<RevocationService>,
@@ -582,6 +585,17 @@ impl AppState {
             config.issuer().to_string(),
         ));
 
+        // G10: セルフサービスのセキュリティ画面。
+        let account_security = Arc::new(AccountSecurityService::new(
+            sso_sessions.clone(),
+            users.clone(),
+            client_consents.clone(),
+            clients.clone(),
+            refresh_tokens.clone(),
+            audit.clone(),
+            clock.clone(),
+        ));
+
         // G5: Back-channel logout の送信キュー。ログアウトのハンドラは通知要求を積むだけで終え、
         // 実際の HTTP 送信は `idp_api::run` が起動するワーカーが再試行付きで行う。
         let backchannel_logout = Arc::new(BackchannelLogoutDeliveryService::new(
@@ -715,6 +729,7 @@ impl AppState {
             audit_query,
             application_logs,
             logout,
+            account_security,
             backchannel_logout,
             revocation,
             introspection,

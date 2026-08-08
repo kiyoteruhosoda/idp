@@ -80,6 +80,19 @@ pub fn build(state: AppState) -> Router {
             "/internal/account/update-name",
             post(internal_auth::account_update_name),
         )
+        // セルフサービスのセキュリティ画面（セッション一覧・失効／連携アプリ解除。G10）。
+        .route(
+            "/internal/account/security",
+            post(internal_auth::account_security),
+        )
+        .route(
+            "/internal/account/security/revoke-session",
+            post(internal_auth::account_revoke_session),
+        )
+        .route(
+            "/internal/account/security/revoke-consent",
+            post(internal_auth::account_revoke_consent),
+        )
         // ログイン中ユーザーの所属テナント列挙（テナント切り替え UI）。
         .route(
             "/internal/account/tenants",

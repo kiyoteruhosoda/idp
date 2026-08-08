@@ -1058,3 +1058,114 @@ pub enum InternalAccountTenantsResponse {
     /// api 内部エラー。
     Internal,
 }
+
+// ── セルフサービスのセキュリティ画面（G10） ──────────────────────────────────
+
+/// ログイン中セッション 1 件の要約（セキュリティ画面）。
+///
+/// `id` は失効要求で指すための表示用 ID。SSO Cookie の値でも DB の主キー（`session_hash`）でも
+/// なく、そこから非可逆に導いた値なので、提示しても他人のセッションを解決・詐称する材料にならない。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountSessionSummary {
+    pub id: String,
+    /// 今このブラウザで使っているセッションか（画面で「現在のセッション」と示す）。
+    pub current: bool,
+    /// 認証時刻（RFC 3339）。
+    pub auth_time: String,
+    /// 第二要素まで完了しているか（AP4 の記録）。
+    pub multi_factor: bool,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    pub created_at: String,
+    /// 無操作での失効時刻（RFC 3339）。
+    pub idle_expires_at: String,
+    /// 絶対期限（RFC 3339）。
+    pub absolute_expires_at: String,
+}
+
+/// 連携済みアプリ 1 件の要約（セキュリティ画面）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountConnectedAppSummary {
+    pub client_id: String,
+    /// 表示名（クライアントが削除済みなら `client_id` と同じ値になる）。
+    pub app_name: String,
+    pub scopes: Vec<String>,
+    pub granted_at: String,
+    pub updated_at: String,
+}
+
+/// セキュリティ画面の表示内容取得 API（`POST /internal/account/security`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAccountSecurityRequest {
+    /// フローのテナント（連携済みアプリはテナント単位で持つため必須）。
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    /// SSO セッション Cookie の生値（web が転送）。
+    pub sso_session_id: String,
+}
+
+/// セキュリティ画面の表示内容取得 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAccountSecurityResponse {
+    Ok {
+        sessions: Vec<AccountSessionSummary>,
+        connected_apps: Vec<AccountConnectedAppSummary>,
+    },
+    /// SSO セッションが無い・期限切れ・利用者が無効。
+    SessionExpired,
+    Internal,
+}
+
+/// セッション失効 API（`POST /internal/account/security/revoke-session`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAccountRevokeSessionRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+    /// [`AccountSessionSummary::id`] で示した表示用 ID。
+    pub session_id: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// セッション失効 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAccountRevokeSessionResponse {
+    /// 失効した（既に消えていた場合も含む）。
+    Ok,
+    /// 指定 ID が当人のセッションに無い（他人のセッション・古い画面からの再送）。
+    NotFound,
+    /// 今使っているセッション自身は切らせない（ログアウト導線へ回す）。
+    CurrentSession,
+    SessionExpired,
+    Internal,
+}
+
+/// 連携解除 API（`POST /internal/account/security/revoke-consent`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAccountRevokeConsentRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+    pub client_id: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// 連携解除 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAccountRevokeConsentResponse {
+    /// 取り消した（同意が無かった場合も含む）。
+    Ok,
+    SessionExpired,
+    Internal,
+}

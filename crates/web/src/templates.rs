@@ -324,24 +324,34 @@ mod tests {
     /// `data-confirm` を持つテンプレートは、必ず共通スクリプトを読み込むレイアウトを継承していること。
     /// 継承していないと確認ダイアログが黙って出ないまま破壊的操作が送信される。
     #[test]
-    fn templates_using_data_confirm_extend_the_console_layout() {
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/templates/console");
+    fn templates_using_data_confirm_load_the_confirm_handler() {
+        // `data-confirm` は `assets/console.js` のハンドラが読む属性。属性だけ書いてスクリプトを
+        // 読み込み忘れると、確認ダイアログが出ないまま破壊的操作が通る（画面上は何も変わらないので
+        // 気付けない）。共通レイアウト経由でも直接読み込みでもよいが、どちらかは必須とする。
+        let roots = [
+            concat!(env!("CARGO_MANIFEST_DIR"), "/templates"),
+            concat!(env!("CARGO_MANIFEST_DIR"), "/templates/console"),
+        ];
         let mut checked = 0;
-        for entry in std::fs::read_dir(dir).expect("read templates/console") {
-            let path = entry.expect("dir entry").path();
-            if path.extension().and_then(|e| e.to_str()) != Some("html") {
-                continue;
+        for dir in roots {
+            for entry in std::fs::read_dir(dir).expect("read templates dir") {
+                let path = entry.expect("dir entry").path();
+                if path.extension().and_then(|e| e.to_str()) != Some("html") {
+                    continue;
+                }
+                let source = std::fs::read_to_string(&path).expect("read template");
+                if !source.contains("data-confirm=") {
+                    continue;
+                }
+                checked += 1;
+                let loads_handler = source.contains(r#"{% extends "console/layout.html" %}"#)
+                    || source.contains("/assets/console.js");
+                assert!(
+                    loads_handler,
+                    "{} uses data-confirm but never loads assets/console.js",
+                    path.display()
+                );
             }
-            let source = std::fs::read_to_string(&path).expect("read template");
-            if !source.contains("data-confirm=") {
-                continue;
-            }
-            checked += 1;
-            assert!(
-                source.contains(r#"{% extends "console/layout.html" %}"#),
-                "{} uses data-confirm but does not extend console/layout.html",
-                path.display()
-            );
         }
         assert!(checked > 0, "expected templates using data-confirm");
     }
@@ -956,6 +966,43 @@ pub struct UserSettings<'a> {
     pub error_key: Option<&'a str>,
     /// 管理コンソール（`?from=admin`）から開いたか。左上に戻るリンクを出し、フォーム送信でも維持する。
     pub from_admin: bool,
+}
+
+/// セキュリティ画面のセッション 1 行（G10）。時刻は api が返した RFC 3339 文字列をそのまま出す。
+pub struct SecuritySessionView {
+    /// 失効フォームに載せる表示用 ID（`session_hash` の非可逆な導出値）。
+    pub id: String,
+    pub current: bool,
+    pub multi_factor: bool,
+    pub auth_time: String,
+    /// User-Agent（未記録なら空文字。`Option` を避けてテンプレートを単純に保つ）。
+    pub user_agent: String,
+    pub ip_address: String,
+    pub absolute_expires_at: String,
+}
+
+/// セキュリティ画面の連携済みアプリ 1 行（G10）。
+pub struct ConnectedAppView {
+    pub client_id: String,
+    pub app_name: String,
+    /// 同意済み scope（空白区切りの表示用文字列）。
+    pub scopes: String,
+    pub granted_at: String,
+}
+
+/// セルフサービスのセキュリティ画面（`GET /{tenant_id}/settings/security`。G10）。
+#[derive(Template)]
+#[template(path = "user_security.html")]
+pub struct UserSecurity<'a> {
+    pub messages: &'a Messages,
+    /// `/{tenant_id}` プレフィクス（フォーム送信先の組み立てに使う）。
+    pub tenant: &'a str,
+    /// ログイン後フォーム用の同期トークン（`console_csrf_token`）。
+    pub csrf: &'a str,
+    pub sessions: &'a [SecuritySessionView],
+    pub connected_apps: &'a [ConnectedAppView],
+    pub saved_key: Option<&'a str>,
+    pub error_key: Option<&'a str>,
 }
 
 /// Passkey 一覧画面（`GET /account/passkey`）。登録済みクレデンシャルの一覧と削除ボタン。

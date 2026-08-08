@@ -1616,6 +1616,44 @@ impl ApiClient {
             .await
     }
 
+    /// セルフサービスのセキュリティ画面の表示内容（セッション一覧・連携済みアプリ）を取得する（G10）。
+    pub async fn account_security(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalAccountSecurityRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalAccountSecurityResponse> {
+        self.post_internal("/internal/account/security", correlation_id, req)
+            .await
+    }
+
+    /// ログイン中セッションを失効させる（G10）。
+    pub async fn account_revoke_session(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalAccountRevokeSessionRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalAccountRevokeSessionResponse> {
+        self.post_internal(
+            "/internal/account/security/revoke-session",
+            correlation_id,
+            req,
+        )
+        .await
+    }
+
+    /// 連携済みアプリの同意を取り消す（G10）。
+    pub async fn account_revoke_consent(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalAccountRevokeConsentRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalAccountRevokeConsentResponse> {
+        self.post_internal(
+            "/internal/account/security/revoke-consent",
+            correlation_id,
+            req,
+        )
+        .await
+    }
+
     /// ログイン中ユーザーの所属テナント（`ACTIVE`）を列挙する（テナント切り替え UI 用）。
     pub async fn account_tenants(
         &self,

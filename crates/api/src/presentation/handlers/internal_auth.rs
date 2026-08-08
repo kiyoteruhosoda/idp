@@ -18,6 +18,9 @@
 use crate::application::account_language::{UpdateLanguageCommand, UpdateLanguageOutcome};
 use crate::application::account_password::{AccountPasswordCommand, AccountPasswordOutcome};
 use crate::application::account_profile::{ProfileOutcome, UpdateNameCommand, UpdateNameOutcome};
+use crate::application::account_security::{
+    RevokeConsentOutcome, RevokeSessionOutcome, SecurityOverviewOutcome,
+};
 use crate::application::account_tenants::ListTenantsOutcome;
 use crate::application::admin_login::{
     AdminChangePasswordCommand, AdminLoginCommand, AdminLoginOutcome,
@@ -39,9 +42,13 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use idp_contracts::auth::{
-    AccountTenantSummary, InternalAccountChangePasswordRequest,
+    AccountConnectedAppSummary, AccountSessionSummary, AccountTenantSummary,
+    InternalAccountChangePasswordRequest,
     InternalAccountChangePasswordResponse, InternalAccountProfileRequest,
-    InternalAccountProfileResponse, InternalAccountTenantsRequest, InternalAccountTenantsResponse,
+    InternalAccountProfileResponse, InternalAccountRevokeConsentRequest,
+    InternalAccountRevokeConsentResponse, InternalAccountRevokeSessionRequest,
+    InternalAccountRevokeSessionResponse, InternalAccountSecurityRequest,
+    InternalAccountSecurityResponse, InternalAccountTenantsRequest, InternalAccountTenantsResponse,
     InternalAccountUpdateLanguageRequest, InternalAccountUpdateLanguageResponse,
     InternalAccountUpdateNameRequest, InternalAccountUpdateNameResponse,
     InternalAdminAuthenticateRequest, InternalAdminAuthenticateResponse,
@@ -719,6 +726,117 @@ pub async fn account_tenants(
             InternalAccountTenantsResponse::Internal
         }
     })
+}
+
+/// セルフサービスのセキュリティ画面（`POST /internal/account/security`。G10）。
+///
+/// ログイン中セッションの一覧と連携済みアプリの一覧を返す。CSRF は web 側で検証済み。
+pub async fn account_security(
+    State(state): State<AppState>,
+    Json(req): Json<InternalAccountSecurityRequest>,
+) -> Result<Json<InternalAccountSecurityResponse>, Response> {
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let outcome = state
+        .account_security
+        .overview(tenant, &req.sso_session_id)
+        .await;
+    Ok(Json(match outcome {
+        SecurityOverviewOutcome::Ok(overview) => InternalAccountSecurityResponse::Ok {
+            sessions: overview
+                .sessions
+                .into_iter()
+                .map(|s| AccountSessionSummary {
+                    id: s.id,
+                    current: s.current,
+                    auth_time: s.auth_time.to_rfc3339(),
+                    multi_factor: s.multi_factor,
+                    user_agent: s.user_agent,
+                    ip_address: s.ip_address,
+                    created_at: s.created_at.to_rfc3339(),
+                    idle_expires_at: s.idle_expires_at.to_rfc3339(),
+                    absolute_expires_at: s.absolute_expires_at.to_rfc3339(),
+                })
+                .collect(),
+            connected_apps: overview
+                .connected_apps
+                .into_iter()
+                .map(|a| AccountConnectedAppSummary {
+                    client_id: a.client_id,
+                    app_name: a.app_name,
+                    scopes: a.scopes,
+                    granted_at: a.granted_at.to_rfc3339(),
+                    updated_at: a.updated_at.to_rfc3339(),
+                })
+                .collect(),
+        },
+        SecurityOverviewOutcome::SessionExpired => {
+            InternalAccountSecurityResponse::SessionExpired
+        }
+        SecurityOverviewOutcome::Internal(e) => {
+            tracing::error!(error = %e, "account security overview failed with internal error");
+            InternalAccountSecurityResponse::Internal
+        }
+    }))
+}
+
+/// ログイン中セッションの失効（`POST /internal/account/security/revoke-session`。G10）。
+pub async fn account_revoke_session(
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Json(req): Json<InternalAccountRevokeSessionRequest>,
+) -> Result<Json<InternalAccountRevokeSessionResponse>, Response> {
+    let ctx = RequestContext {
+        correlation_id: correlation.0,
+        ip_address: req.ip_address,
+        user_agent: req.user_agent,
+    };
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let outcome = state
+        .account_security
+        .revoke_session(tenant, &req.sso_session_id, &req.session_id, &ctx)
+        .await;
+    Ok(Json(match outcome {
+        RevokeSessionOutcome::Ok => InternalAccountRevokeSessionResponse::Ok,
+        RevokeSessionOutcome::NotFound => InternalAccountRevokeSessionResponse::NotFound,
+        RevokeSessionOutcome::CurrentSession => {
+            InternalAccountRevokeSessionResponse::CurrentSession
+        }
+        RevokeSessionOutcome::SessionExpired => {
+            InternalAccountRevokeSessionResponse::SessionExpired
+        }
+        RevokeSessionOutcome::Internal(e) => {
+            tracing::error!(error = %e, "account session revocation failed with internal error");
+            InternalAccountRevokeSessionResponse::Internal
+        }
+    }))
+}
+
+/// 連携済みアプリの解除（`POST /internal/account/security/revoke-consent`。G10）。
+pub async fn account_revoke_consent(
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Json(req): Json<InternalAccountRevokeConsentRequest>,
+) -> Result<Json<InternalAccountRevokeConsentResponse>, Response> {
+    let ctx = RequestContext {
+        correlation_id: correlation.0,
+        ip_address: req.ip_address,
+        user_agent: req.user_agent,
+    };
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let outcome = state
+        .account_security
+        .revoke_consent(tenant, &req.sso_session_id, &req.client_id, &ctx)
+        .await;
+    Ok(Json(match outcome {
+        RevokeConsentOutcome::Ok => InternalAccountRevokeConsentResponse::Ok,
+        RevokeConsentOutcome::SessionExpired => {
+            InternalAccountRevokeConsentResponse::SessionExpired
+        }
+        RevokeConsentOutcome::Internal(e) => {
+            tracing::error!(error = %e, "account consent revocation failed with internal error");
+            InternalAccountRevokeConsentResponse::Internal
+        }
+    }))
 }
 
 #[cfg(test)]
