@@ -329,6 +329,9 @@ pub enum InternalVerifyTotpResponse {
     RateLimited,
     /// アカウントがロック中（TOTP の連続失敗、またはパスワード認証側の失敗によるロック。SEC3）。
     Locked,
+    /// 認証ポリシーにより拒否された（AP2/AP3）。第二要素まで通っていても、`deny` へ変わった場合や
+    /// `require_specific_method` を満たさない方式だった場合はここへ来る。
+    PolicyDenied,
     Internal,
 }
 

@@ -44,6 +44,15 @@ pub struct AuthorizeParams {
     pub prompt: Option<String>,
     /// `max_age` パラメータ（OIDC Core §3.1.2.1）: SSO セッションの auth_time からの最大経過秒数。
     pub max_age: Option<u64>,
+    /// `acr_values` パラメータ（OIDC Core §3.1.2.1）: RP が要求する認証コンテキストクラス
+    /// （空白区切り。G12）。**要求は保証ではない** —— 認証ポリシーの `requested_acr` 条件（AP3）が
+    /// 参照するだけで、満たせない要求でエラーにはしない（同 §3.1.2.1 の voluntary な扱い）。
+    pub acr_values: Option<String>,
+    /// `login_hint` パラメータ（OIDC Core §3.1.2.1）: ログイン画面へ事前入力する識別子（G12）。
+    pub login_hint: Option<String>,
+    /// `ui_locales` パラメータ（OIDC Core §3.1.2.1）: RP が要求する表示言語（空白区切りの
+    /// BCP47 タグ。G12）。
+    pub ui_locales: Option<String>,
 }
 
 /// `POST /login` のフォームパラメータ（設計仕様 §4.3）。
@@ -598,14 +607,49 @@ pub struct AuthenticationPolicyResponse {
     /// 評価順（昇順 = 小さいほど優先）。
     pub priority: i32,
     pub enabled: bool,
-    /// `allow` / `deny` / `require_mfa`。
+    /// `allow` / `deny` / `require_mfa` / `require_specific_method`。
     pub effect: String,
+    /// `require_specific_method` の要求内容（他の効果では `null`。AP3）。
+    pub effect_params: Option<RequiredMethodsDto>,
     /// 対象クライアント（空 = 全クライアント）。
     pub client_ids: Vec<String>,
     /// 対象ユーザーの内部 ID（空 = 全ユーザー）。
     pub user_ids: Vec<String>,
+    /// 対象ネットワークゾーン（CIDR 表記。空 = 全ネットワーク。AP3）。
+    pub ip_cidrs: Vec<String>,
+    /// 適用時間帯（空 = 常時。AP3）。
+    pub time_windows: Vec<TimeWindowDto>,
+    /// 認可要求の `acr_values` 条件（空 = 要求内容を問わない。AP3）。
+    pub requested_acr: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// `require_specific_method` の要求内容（AP3。仕様 §12.2）。
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct RequiredMethodsDto {
+    /// 許可する認証方式（`password` / `totp` / `webauthn` / `recovery_code` / `email_otp` /
+    /// `sms_otp` / `external_idp`）。**いずれか 1 つ**を使っていれば満たす。
+    #[serde(default)]
+    pub methods: Vec<String>,
+    /// WebAuthn の User Verification（生体・PIN）を必須とするか。
+    #[serde(default)]
+    pub user_verification: bool,
+}
+
+/// 適用時間帯（AP3）。タイムゾーンは固定 UTC オフセット（分）で表す。
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct TimeWindowDto {
+    /// 対象曜日（0 = 日曜 … 6 = 土曜。空 = 全曜日）。
+    #[serde(default)]
+    pub days: Vec<u8>,
+    /// 開始時刻（0 時からの分。0〜1439）。
+    pub start_minute: u16,
+    /// 終了時刻（同上。開始より小さい場合は日をまたぐ帯）。
+    pub end_minute: u16,
+    /// UTC オフセット（分。例: JST = 540）。
+    #[serde(default)]
+    pub utc_offset_minutes: i16,
 }
 
 /// 認証ポリシー一覧（priority 昇順）。
@@ -625,14 +669,26 @@ pub struct AuthenticationPolicyUpsertRequest {
     /// 省略時は有効（`true`）。
     #[serde(default = "default_enabled")]
     pub enabled: bool,
-    /// `allow` / `deny` / `require_mfa`。
+    /// `allow` / `deny` / `require_mfa` / `require_specific_method`。
     pub effect: String,
+    /// `require_specific_method` の要求内容（他の効果で指定するとエラー。AP3）。
+    #[serde(default)]
+    pub effect_params: Option<RequiredMethodsDto>,
     /// 対象クライアント（省略・空 = 全クライアント）。
     #[serde(default)]
     pub client_ids: Vec<String>,
     /// 対象ユーザーの内部 ID（UUID。省略・空 = 全ユーザー）。
     #[serde(default)]
     pub user_ids: Vec<String>,
+    /// 対象ネットワークゾーン（CIDR 表記。省略・空 = 全ネットワーク。AP3）。
+    #[serde(default)]
+    pub ip_cidrs: Vec<String>,
+    /// 適用時間帯（省略・空 = 常時。AP3）。
+    #[serde(default)]
+    pub time_windows: Vec<TimeWindowDto>,
+    /// 認可要求の `acr_values` 条件（省略・空 = 要求内容を問わない。AP3）。
+    #[serde(default)]
+    pub requested_acr: Vec<String>,
 }
 
 fn default_enabled() -> bool {

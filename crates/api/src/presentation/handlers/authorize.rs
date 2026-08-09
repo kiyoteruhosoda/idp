@@ -44,6 +44,9 @@ pub async fn authorize(
         code_challenge_method: params.code_challenge_method,
         prompt: params.prompt,
         max_age: params.max_age,
+        acr_values: params.acr_values,
+        login_hint: params.login_hint,
+        ui_locales: params.ui_locales,
     };
 
     match state.authorize.authorize(tenant.context(), request).await {

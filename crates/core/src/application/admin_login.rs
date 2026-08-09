@@ -169,6 +169,10 @@ impl AdminLoginService {
             &AuthenticationContext {
                 client_id: None,
                 user_id,
+                ip_address: ctx.ip_address.as_deref(),
+                now: self.clock.now(),
+                // 管理コンソールのログインは OIDC 認可要求ではないため `acr_values` は無い。
+                requested_acr: &[],
             },
             self.policy_default_effect,
         );
@@ -206,6 +210,27 @@ impl AdminLoginService {
                 } else {
                     AdminLoginOutcome::MfaEnrollmentRequired
                 })
+            }
+            // `require_specific_method`（AP3）。管理コンソールのログインはパスワード（+ TOTP）
+            // しか通らないため、それで満たせない要求は拒否する。
+            PolicyDecision::RequireMethods {
+                policy_code,
+                requirement,
+            } => {
+                if requirement.satisfied_by(&[AuthenticationMethod::Password], false) {
+                    return Ok(());
+                }
+                self.record_policy_denied(
+                    tenant_id,
+                    user_id,
+                    &format!(
+                        "policy={policy_code} reason=method_required required={}",
+                        requirement.describe()
+                    ),
+                    ctx,
+                )
+                .await;
+                Err(AdminLoginOutcome::PolicyDenied)
             }
         }
     }

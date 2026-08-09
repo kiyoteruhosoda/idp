@@ -339,6 +339,8 @@ impl LoginService {
         // 8.2. 認証ポリシー評価（ユーザー認証・認証ポリシー仕様書 §9）。パスワード検証成功後に
         //      評価する（資格情報を知らない攻撃者にポリシーの存在・内容を観測させない）。
         //      `deny` は即拒否。`require_mfa` は後段の MFA 判定（9.）で強制する。
+        // 認可要求の `acr_values`（AP3 の `requested_acr` 条件が参照する）。
+        let requested_acr = session.requested_acr();
         let policy_decision = match self
             .authentication_policies
             .list_enabled_for_tenant(tenant_id)
@@ -349,6 +351,9 @@ impl LoginService {
                 &AuthenticationContext {
                     client_id: Some(&client_id),
                     user_id: user.id,
+                    ip_address: ctx.ip_address.as_deref(),
+                    now,
+                    requested_acr: &requested_acr,
                 },
                 self.policy_default_effect,
             ),
@@ -433,6 +438,30 @@ impl LoginService {
                 )
                 .await;
             return LoginOutcome::MfaEnrollmentRequired;
+        }
+        // 9.1. `require_specific_method`（AP3。仕様 §12.2）。ここへ来た時点で使った方式は
+        //      パスワードだけなので、方式指定を満たしていなければ成立させない。TOTP を要求する
+        //      ポリシーは上の MFA ステップ（`has_totp`）で満たされる経路へ入っており、そこで
+        //      `MfaLoginService` が最終的な方式集合に対して再評価する。パスキーを要求する
+        //      ポリシーはログイン画面のパスキーボタン（`PasskeyAuthenticationService`）が満たす。
+        if let Some((policy_code, requirement)) =
+            policy_decision.unmet_method_requirement(&[AuthenticationMethod::Password], false)
+        {
+            self.audit
+                .record(
+                    AuditEventType::LoginPolicyDenied,
+                    AuditResult::Failure,
+                    Some(tenant_id),
+                    Some(user.id),
+                    Some(&client_id),
+                    Some(&format!(
+                        "policy={policy_code} reason=method_required required={}",
+                        requirement.describe()
+                    )),
+                    ctx,
+                )
+                .await;
+            return LoginOutcome::PolicyDenied;
         }
 
         // 9.5. ここまで来た＝単一要素で認証が成立した（MFA 待ちではない）。失敗カウンタと
@@ -1005,6 +1034,9 @@ mod tests {
         let auth_sessions = Arc::new(FakeAuthSessions {
             rows: Mutex::new(vec![AuthSession {
                 id_hash: auth_session::id_hash(SESSION_ID),
+                acr_values: None,
+                login_hint: None,
+                ui_locales: None,
                 tenant_id,
                 client_id: "client-a".to_string(),
                 redirect_uri: "https://rp.example.com/cb".to_string(),

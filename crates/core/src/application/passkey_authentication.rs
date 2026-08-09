@@ -330,6 +330,9 @@ impl PasskeyAuthenticationService {
                 &AuthenticationContext {
                     client_id: Some(&client_id),
                     user_id,
+                    ip_address: ctx.ip_address.as_deref(),
+                    now,
+                    requested_acr: &session.requested_acr(),
                 },
                 self.policy_default_effect,
             ),
@@ -344,6 +347,28 @@ impl PasskeyAuthenticationService {
                     Some(user_id),
                     Some(&client_id),
                     Some(&format!("policy={policy_code}")),
+                    ctx,
+                )
+                .await;
+            return PasskeyAuthOutcome::PolicyDenied;
+        }
+        // `require_specific_method`（AP3）。パスキー認証は WebAuthn かつ User Verification 済み
+        // （`webauthn-rs` の検証を通っている）なので §12.2 の「WebAuthn 必須」「UV 必須」を満たす。
+        // 満たさないのは「TOTP でなければ駄目」のような別方式の指定に当たった場合。
+        if let Some((policy_code, requirement)) =
+            decision.unmet_method_requirement(&[AuthenticationMethod::WebAuthn], true)
+        {
+            self.audit
+                .record(
+                    AuditEventType::LoginPolicyDenied,
+                    AuditResult::Failure,
+                    Some(tenant_id),
+                    Some(user_id),
+                    Some(&client_id),
+                    Some(&format!(
+                        "policy={policy_code} reason=method_required required={}",
+                        requirement.describe()
+                    )),
                     ctx,
                 )
                 .await;

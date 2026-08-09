@@ -1,6 +1,8 @@
 //! `AuthenticationPolicyRepository` の sqlx 実装（ユーザー認証・認証ポリシー仕様書 §7）。
 
-use crate::domain::authentication_policy::{AuthenticationPolicy, PolicyConditions, PolicyEffect};
+use crate::domain::authentication_policy::{
+    AuthenticationPolicy, PolicyConditions, PolicyEffect, RequiredMethods,
+};
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::AuthenticationPolicyRepository;
 use crate::domain::tenant::TenantId;
@@ -44,6 +46,8 @@ fn map_row(row: &MySqlRow) -> Result<AuthenticationPolicy> {
     let tenant_id: String = row.try_get("tenant_id").map_err(repo_err)?;
     let effect: String = row.try_get("effect").map_err(repo_err)?;
     let conditions_raw: Vec<u8> = row.try_get("conditions").map_err(repo_err)?;
+    // MariaDB の JSON カラムは sqlx では BLOB として返るため、バイト列で受けて parse する。
+    let effect_params_raw: Option<Vec<u8>> = row.try_get("effect_params").map_err(repo_err)?;
     Ok(AuthenticationPolicy {
         id: Uuid::parse_str(&id)
             .map_err(|e| DomainError::Repository(format!("invalid UUID `{id}`: {e}")))?,
@@ -55,6 +59,12 @@ fn map_row(row: &MySqlRow) -> Result<AuthenticationPolicy> {
         priority: row.try_get("priority").map_err(repo_err)?,
         enabled: row.try_get::<bool, _>("enabled").map_err(repo_err)?,
         effect: PolicyEffect::parse(&effect)?,
+        effect_params: effect_params_raw
+            .map(|raw| serde_json::from_slice::<RequiredMethods>(&raw))
+            .transpose()
+            .map_err(|e| {
+                DomainError::Repository(format!("invalid JSON in `effect_params`: {e}"))
+            })?,
         conditions: serde_json::from_slice::<PolicyConditions>(&conditions_raw)
             .map_err(|e| DomainError::Repository(format!("invalid JSON in `conditions`: {e}")))?,
         created_at: to_utc(row.try_get("created_at").map_err(repo_err)?),
@@ -63,7 +73,17 @@ fn map_row(row: &MySqlRow) -> Result<AuthenticationPolicy> {
 }
 
 const SELECT_COLUMNS: &str = "id, tenant_id, policy_code, policy_name, priority, enabled, \
-     effect, conditions, created_at, updated_at";
+     effect, effect_params, conditions, created_at, updated_at";
+
+/// `effect_params` を JSON 文字列（無ければ `NULL`）へ。
+fn effect_params_json(policy: &AuthenticationPolicy) -> Result<Option<String>> {
+    policy
+        .effect_params
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(repo_err)
+}
 
 #[async_trait]
 impl AuthenticationPolicyRepository for SqlxAuthenticationPolicyRepository {
@@ -71,9 +91,9 @@ impl AuthenticationPolicyRepository for SqlxAuthenticationPolicyRepository {
         let conditions_json = serde_json::to_string(&policy.conditions).map_err(repo_err)?;
         sqlx::query(
             "INSERT INTO authentication_policies \
-             (id, tenant_id, policy_code, policy_name, priority, enabled, effect, conditions, \
-              created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             (id, tenant_id, policy_code, policy_name, priority, enabled, effect, \
+              effect_params, conditions, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(policy.id.to_string())
         .bind(policy.tenant_id.to_string())
@@ -82,6 +102,7 @@ impl AuthenticationPolicyRepository for SqlxAuthenticationPolicyRepository {
         .bind(policy.priority)
         .bind(policy.enabled)
         .bind(policy.effect.as_str())
+        .bind(effect_params_json(policy)?)
         .bind(conditions_json)
         .bind(policy.created_at)
         .bind(policy.updated_at)
@@ -139,7 +160,7 @@ impl AuthenticationPolicyRepository for SqlxAuthenticationPolicyRepository {
         let result = sqlx::query(
             "UPDATE authentication_policies SET \
              policy_code = ?, policy_name = ?, priority = ?, enabled = ?, effect = ?, \
-             conditions = ?, updated_at = ? \
+             effect_params = ?, conditions = ?, updated_at = ? \
              WHERE tenant_id = ? AND id = ?",
         )
         .bind(&policy.policy_code)
@@ -147,6 +168,7 @@ impl AuthenticationPolicyRepository for SqlxAuthenticationPolicyRepository {
         .bind(policy.priority)
         .bind(policy.enabled)
         .bind(policy.effect.as_str())
+        .bind(effect_params_json(policy)?)
         .bind(conditions_json)
         .bind(policy.updated_at)
         .bind(policy.tenant_id.to_string())

@@ -224,6 +224,7 @@ impl PortalLoginService {
         &self,
         tenant_id: TenantId,
         user_id: Uuid,
+        ip_address: Option<&str>,
     ) -> Result<PolicyDecision, String> {
         let policies = self
             .authentication_policies
@@ -235,6 +236,10 @@ impl PortalLoginService {
             &AuthenticationContext {
                 client_id: None,
                 user_id,
+                ip_address,
+                now: self.clock.now(),
+                // ポータルログインは OIDC 認可要求ではないため `acr_values` は無い。
+                requested_acr: &[],
             },
             self.policy_default_effect,
         ))
@@ -339,7 +344,10 @@ impl PortalLoginService {
         // 7.5. 認証ポリシー評価（AP2。仕様 §9）。パスワード検証成功後に評価する（資格情報を知らない
         //      攻撃者にポリシーの存在・内容を観測させない）。`deny` は即拒否、`require_mfa` は後段の
         //      MFA ゲート（9.）で強制する。
-        let policy_decision = match self.evaluate_policy(tenant_id, user.id).await {
+        let policy_decision = match self
+            .evaluate_policy(tenant_id, user.id, ctx.ip_address.as_deref())
+            .await
+        {
             Ok(d) => d,
             Err(e) => return PortalLoginOutcome::Internal(e),
         };
@@ -521,7 +529,10 @@ impl PortalLoginService {
 
         // 認証ポリシー評価（AP2）。本経路も SSO を発行する側なので `login()` と同じ規則を適用する
         // （パスワード変更自体は本人のセルフサービスとして完了させ、セッション発行のみをゲートする）。
-        let policy_decision = match self.evaluate_policy(tenant_id, user.id).await {
+        let policy_decision = match self
+            .evaluate_policy(tenant_id, user.id, ctx.ip_address.as_deref())
+            .await
+        {
             Ok(d) => d,
             Err(e) => return PortalChangePasswordOutcome::Internal(e),
         };
@@ -622,7 +633,10 @@ impl PortalLoginService {
         // 4.5. 認証ポリシーの再評価（AP2）。チケット発行後にポリシーが `deny` へ変わった場合でも
         //      SSO を発行しない（チケットの寿命 5 分ぶんだけ古い判断で通してしまわないため）。
         //      `require_mfa` はこの時点で満たされている（TOTP 検証済み）ので追加の判定は要らない。
-        match self.evaluate_policy(tenant_id, user_id).await {
+        match self
+            .evaluate_policy(tenant_id, user_id, ctx.ip_address.as_deref())
+            .await
+        {
             Ok(PolicyDecision::Deny { policy_code }) => {
                 self.record_policy_denied(
                     tenant_id,

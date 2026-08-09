@@ -250,6 +250,8 @@ impl ChangePasswordService {
         //      LoginService と同じ規則を適用する（`must_change_password` は管理者による既存ユーザーの
         //      パスワード再発行でも立つため、TOTP 設定済みユーザーもこの経路を通り得る）。
         //      パスワード変更自体は本人のセルフサービスとして完了させ、セッション発行のみをゲートする。
+        // 認可要求の `acr_values`（AP3 の `requested_acr` 条件が参照する）。
+        let requested_acr = session.requested_acr();
         let decision = match self
             .authentication_policies
             .list_enabled_for_tenant(tenant_id)
@@ -260,6 +262,9 @@ impl ChangePasswordService {
                 &AuthenticationContext {
                     client_id: Some(&client_id),
                     user_id: user.id,
+                    ip_address: ctx.ip_address.as_deref(),
+                    now,
+                    requested_acr: &requested_acr,
                 },
                 self.policy_default_effect,
             ),
@@ -305,6 +310,29 @@ impl ChangePasswordService {
                     )
                     .await;
                 return ChangePasswordOutcome::MfaEnrollmentRequired;
+            }
+            // `require_specific_method`（AP3）。この経路が完了した時点で使った方式はパスワードだけ。
+            PolicyDecision::RequireMethods {
+                policy_code,
+                requirement,
+            } => {
+                if !requirement.satisfied_by(&[AuthenticationMethod::Password], false) {
+                    self.audit
+                        .record(
+                            AuditEventType::LoginPolicyDenied,
+                            AuditResult::Failure,
+                            Some(tenant_id),
+                            Some(user.id),
+                            Some(&client_id),
+                            Some(&format!(
+                                "policy={policy_code} reason=method_required required={}",
+                                requirement.describe()
+                            )),
+                            ctx,
+                        )
+                        .await;
+                    return ChangePasswordOutcome::PolicyDenied;
+                }
             }
             PolicyDecision::Allow { .. } => {}
         }

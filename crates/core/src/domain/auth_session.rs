@@ -36,6 +36,13 @@ pub struct AuthSession {
     pub prompt: Option<Prompt>,
     /// 認可リクエストの `max_age`（秒。未指定は `None`）。`prompt` と同じく resume で評価する。
     pub max_age: Option<u64>,
+    /// 認可リクエストの `acr_values`（空白区切りの生値。G12）。認証ポリシーの `requested_acr`
+    /// 条件（AP3）が参照するため、評価時点（ログイン）まで持ち越す。
+    pub acr_values: Option<String>,
+    /// 認可リクエストの `login_hint`（ログイン画面のユーザー名プリフィル。G12）。
+    pub login_hint: Option<String>,
+    /// 認可リクエストの `ui_locales`（RP が要求する表示言語。空白区切りの BCP47 タグ。G12）。
+    pub ui_locales: Option<String>,
     /// web ハンドオフ用ハンドルの SHA-256（ADR-0018 決定 2）。単回使用: resume での交換時に
     /// `None` へ消費する。ハンドルはこの行（＝その `code_challenge`）に固定的に束ねられ、
     /// 他の認可要求へ付け替えられない。
@@ -57,6 +64,16 @@ pub struct AuthSession {
 impl AuthSession {
     pub fn is_expired_at(&self, now: DateTime<Utc>) -> bool {
         self.expires_at <= now
+    }
+
+    /// `acr_values` を空白区切りで分割した一覧（未指定は空）。
+    pub fn requested_acr(&self) -> Vec<String> {
+        self.acr_values
+            .as_deref()
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(str::to_string)
+            .collect()
     }
 
     /// web ハンドオフ用ハンドルが `now` 時点で交換可能か（未消費かつ期限内）。

@@ -380,6 +380,11 @@ impl ExternalLoginService {
                 &AuthenticationContext {
                     client_id: None,
                     user_id: user.id,
+                    ip_address: ctx.ip_address.as_deref(),
+                    now,
+                    // 外部 IdP のコールバック時点では auth_session をまだ引いていないため、
+                    // `acr_values` 条件は評価材料を持たない（＝一致しない）。
+                    requested_acr: &[],
                 },
                 self.policy_default_effect,
             ),
@@ -403,6 +408,26 @@ impl ExternalLoginService {
                 )
                 .await;
                 return CallbackOutcome::PolicyDenied;
+            }
+            PolicyDecision::RequireMethods {
+                policy_code,
+                requirement,
+            } => {
+                // 外部 IdP 経由で記録される方式は `external_idp` のみ。要求と食い違えば通さない
+                // （外部側でどの認証器が使われたかは観測できないため、要求を満たしたとみなせない）。
+                if !requirement.satisfied_by(&[AuthenticationMethod::ExternalIdp], false) {
+                    self.record_policy_denied(
+                        tenant,
+                        user.id,
+                        &format!(
+                            "policy={policy_code} reason=method_required required={}",
+                            requirement.describe()
+                        ),
+                        ctx,
+                    )
+                    .await;
+                    return CallbackOutcome::PolicyDenied;
+                }
             }
         }
 

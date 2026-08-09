@@ -756,6 +756,8 @@ impl AppState {
             config.sso_absolute_ttl(),
             config.login_lockout(),
             *config.csrf_secret(),
+            authentication_policies.clone(),
+            config.auth_policy_default_effect(),
         ));
 
         // WebAuthn の RP ID・origin は **web の公開ベース URL のホスト**から導出する（ADR-0019 決定 2。

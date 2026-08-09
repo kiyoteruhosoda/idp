@@ -398,6 +398,11 @@ pub async fn verify(
         InternalVerifyTotpResponse::Locked => {
             error_page(&messages, StatusCode::FORBIDDEN, "mfa-error-locked")
         }
+        InternalVerifyTotpResponse::PolicyDenied => error_page(
+            &messages,
+            StatusCode::FORBIDDEN,
+            "login-error-policy-denied",
+        ),
         InternalVerifyTotpResponse::CsrfMismatch => {
             // PRG: 303 で GET へ付け替え、現在の Cookie から導出した新しいトークンのフォームを自動で
             // 再表示する（従来はエラーページを返すだけで、リロードすると POST が再送されて復帰できなかった）。

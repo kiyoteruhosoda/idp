@@ -45,6 +45,13 @@ pub struct AuthorizeRequest {
     pub prompt: Option<String>,
     /// `max_age` パラメータ（秒）。
     pub max_age: Option<u64>,
+    /// `acr_values` パラメータ（空白区切り。G12）。認証ポリシーの `requested_acr` 条件（AP3）が
+    /// 参照する。IdP は要求された acr を**保証しない**（満たせない要求は単に一致しないだけ）。
+    pub acr_values: Option<String>,
+    /// `login_hint` パラメータ（ログイン画面のユーザー名プリフィル。G12）。
+    pub login_hint: Option<String>,
+    /// `ui_locales` パラメータ（RP が要求する表示言語。空白区切りの BCP47 タグ。G12）。
+    pub ui_locales: Option<String>,
 }
 
 pub enum AuthorizeOutcome {
@@ -193,6 +200,9 @@ impl AuthorizeService {
             code_challenge_method: CodeChallengeMethod::S256,
             prompt: req.prompt.as_deref().and_then(|p| Prompt::parse(p).ok()),
             max_age: req.max_age,
+            acr_values: non_empty(req.acr_values.as_deref()).map(str::to_string),
+            login_hint: non_empty(req.login_hint.as_deref()).map(str::to_string),
+            ui_locales: non_empty(req.ui_locales.as_deref()).map(str::to_string),
             handle_hash: Some(crypto::sha256_hex(&handle)),
             handle_expires_at: Some(now + Duration::seconds(HANDLE_TTL_SECS)),
             authenticated_user_id: None,
@@ -599,6 +609,9 @@ mod tests {
             code_challenge_method: Some("S256".to_string()),
             prompt: None,
             max_age: None,
+            acr_values: None,
+            login_hint: None,
+            ui_locales: None,
         }
     }
 
@@ -683,6 +696,9 @@ mod tests {
         let now = Utc::now();
         let mut session = AuthSession {
             id_hash: auth_session::id_hash("s"),
+            acr_values: None,
+            login_hint: None,
+            ui_locales: None,
             tenant_id: uuid::Uuid::now_v7().into(),
             client_id: "app".to_string(),
             redirect_uri: "https://client.example.com/cb".to_string(),

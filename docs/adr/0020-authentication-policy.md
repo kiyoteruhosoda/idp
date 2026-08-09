@@ -78,3 +78,63 @@ web 管理コンソールの画面は後続タスク（Progress AP1）。
   コンストラクタ引数が増えた（設定注入）。
 - 内部認証 API（`InternalAuthenticateResponse`）に `policy_denied` / `mfa_enrollment_required`、
   パスキー完了 API に `policy_denied` が増えた。web は対応する文言（i18n キー）を表示する。
+
+---
+
+## 追補（2026-08-09。AP3: 条件種別の拡張と `require_specific_method`）
+
+### 7. 追加した条件種別と、意図的に入れなかったもの
+
+仕様 §8 が挙げる条件のうち、**この IdP が自分で判定できる材料を持つもの**を実装した:
+
+| 条件 | 状態 | 判定材料 |
+|---|---|---|
+| `client_ids` / `user_ids` | 実装済（0019） | 認可要求・特定済み利用者 |
+| `ip_cidrs`（ネットワークゾーン） | **追加** | `RequestContext.ip_address`（SEC1 の `TRUST_FORWARDED_HEADERS` 判定を通った値） |
+| `time_windows`（時間帯） | **追加** | `Clock` |
+| `requested_acr` | **追加** | `/authorize` の `acr_values`（0028 で `auth_sessions` へ保存） |
+| 国 | 未実装 | GeoIP データベースも、それを供給する信頼済みヘッダの取り決めも配置に存在しない |
+| 端末信頼 | 未実装 | 端末を登録・識別する仕組み（デバイス登録簿）自体が無い |
+
+未実装の 2 つは「条件式を書けば動く」たぐいの不足ではなく、**判定材料を作る機能がまだ無い**。
+材料の無い条件を先に置くと、管理画面に「設定できるが決して一致しない条件」が並ぶ。
+Progress へ別タスクとして残す。
+
+条件はすべて AND、各条件の中の複数値は OR。**評価材料が無い条件は「一致しない」に倒す**
+（例: 接続元 IP を取れないリクエストは `ip_cidrs` 付きポリシーに一致しない）。`deny` の
+取りこぼしにはなるが、逆に「材料が無いから一致とみなす」にすると `allow` が無条件に広がる。
+一貫した規則の方が読み違えにくいと判断した。
+
+タイムゾーンは IANA 名ではなく**固定 UTC オフセット（分）**で持つ。夏時間を正しく扱うには
+tz データベースの同梱と更新運用が要り、「更新を怠るとポリシーが静かにずれる」というリスクを
+新たに背負う。固定オフセットなら判定は常に決定的で、夏時間のある地域は帯を 2 本に分けて表せる。
+
+### 8. `require_specific_method` は `require_mfa` と別の効果にする
+
+`require_mfa` は「第二要素を 1 つ足せばよい（方式は問わない）」、`require_specific_method` は
+「その方式でなければ通さない」（§12.2 の WebAuthn 必須・User Verification 必須）。片方に丸めると
+**TOTP を登録済みの利用者が「WebAuthn 必須」をすり抜ける**。評価順は
+`deny` > `require_specific_method` > `require_mfa` > `allow`（狭い要求を先に見る）。
+
+要求内容は `authentication_policies.effect_params`（JSON）に持つ。方式は OR で、AND を表したい
+場合はポリシーを 2 本に分ける（1 本の条件式に暗黙の AND を持ち込むと、管理画面での読み取りと
+監査の説明が難しくなる）。
+
+判定は**実際に使われた方式が確定した時点**で行う。具体的には:
+
+- パスワードのみで完了する経路（OIDC パスワード・強制パスワード変更・ポータル・管理コンソール）は
+  `[password]` に対して判定する。
+- MFA まで進む経路は `MfaLoginService` が `[password, 第二要素]` に対して**再評価**する。
+  パスワード段階だけで判定すると「TOTP を登録しているから MFA へ進む」経路で判定を素通りする。
+  このために `MfaLoginService` へ認証ポリシーのリポジトリを注入した。
+- パスキー経路は `[webauthn]` かつ User Verification 済みとして判定する。
+- 外部 IdP 経路は `[external_idp]` として判定する（外部側でどの認証器が使われたかは観測できない
+  ため、外部での MFA をもって方式要求を満たしたとはみなさない。§13.3 と同じ立場）。
+
+### 9. 影響
+
+- マイグレーション 0028: `authentication_policies.effect_params` 追加と `effect` の CHECK 拡張、
+  `auth_sessions` へ `acr_values` / `login_hint` / `ui_locales` を追加（G12 と共通）。
+- 管理 API のリクエスト・レスポンスに `effect_params` / `ip_cidrs` / `time_windows` /
+  `requested_acr` が増えた（いずれも省略可、既定は空 = 制限しない）。
+- `MfaLoginService` のコンストラクタ引数が増え、`MfaLoginOutcome::PolicyDenied` が増えた。

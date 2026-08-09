@@ -191,6 +191,22 @@ string_enum!(
     }
 );
 
+/// 認証ポリシーの `effect_params`（JSON）で方式を指定できるよう、**保存値の文字列**で
+/// シリアライズする（`Debug` のバリアント名ではない）。派生 derive を使わないのは、
+/// 許可値の単一の出所を [`AuthenticationMethod::as_str`] / `parse` に保つためである。
+impl serde::Serialize for AuthenticationMethod {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for AuthenticationMethod {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Self::parse(&raw).map_err(serde::de::Error::custom)
+    }
+}
+
 impl AuthenticationMethod {
     /// OIDC `amr`（Authentication Methods References、RFC 8176）の対応値。
     /// ID Token へ載せる際の語彙は RFC 側に合わせる（内部の記録値は本 enum が単一の出所）。
