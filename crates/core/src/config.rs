@@ -150,6 +150,8 @@ pub struct Config {
     key_rotation_lead_days: u32,
     /// エラー・警告ログ（`log` テーブル）の保持日数。`0` は削除しない。
     app_log_retention_days: u32,
+    /// CORS で追加許可するオリジン（カンマ区切りの生値。G1）。
+    cors_allowed_origins: String,
     /// 期限切れレコードの一括 GC（G2）の実行間隔（秒）。`0` は掃除しない。
     expired_record_purge_interval_secs: u64,
     /// Step-up 認証（AP5）の再確認間隔（秒）。
@@ -279,6 +281,7 @@ impl Config {
             key_encryption_key_is_dev,
             key_rotation_lead_days: resolver.parse("KEY_ROTATION_LEAD_DAYS", 30)?,
             app_log_retention_days: resolver.parse("APP_LOG_RETENTION_DAYS", 30)?,
+            cors_allowed_origins: resolver.string("CORS_ALLOWED_ORIGINS", ""),
             expired_record_purge_interval_secs: resolver
                 .parse("EXPIRED_RECORD_PURGE_INTERVAL_SECS", 3_600u64)?,
             step_up_max_age_secs: resolver.parse("STEP_UP_MAX_AGE_SECS", 300u64)?,
@@ -392,6 +395,10 @@ impl Config {
     /// エラー・警告ログの保持日数（`0` = 削除しない）。
     pub fn app_log_retention_days(&self) -> u32 {
         self.app_log_retention_days
+    }
+    /// CORS で追加許可するオリジン（G1）。テナント内 public クライアント由来のオリジンに足される。
+    pub fn cors_allowed_origins(&self) -> Vec<String> {
+        crate::application::cors_policy::parse_configured_origins(&self.cors_allowed_origins)
     }
     /// 期限切れレコードの一括 GC（G2）の実行間隔。`None` は掃除しない（`0` 指定）。
     pub fn expired_record_purge_interval(&self) -> Option<std::time::Duration> {

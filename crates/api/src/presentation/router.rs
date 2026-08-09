@@ -1,6 +1,7 @@
 //! axum ルータの組立。各コンテキストのルータを `.merge()` / `.nest()` で集約する。
 
 use crate::presentation::correlation;
+use crate::presentation::cors;
 use crate::presentation::handlers::{
     admin, admin_application_logs, admin_audit, admin_authentication_policies, admin_clients,
     admin_external_idps, admin_invitations, admin_members, admin_permissions, admin_restart,
@@ -394,6 +395,12 @@ pub fn build(state: AppState) -> Router {
         .nest("/{tenant_id}", tenant_scoped)
         .merge(internal)
         .merge(SwaggerUi::new("/api/docs").url("/api/openapi.json", ApiDoc::openapi()))
+        // CORS（G1）。`route_layer` ではなく `layer` で付けるのは、プリフライト（OPTIONS）が
+        // どのルートにもマッチせず 405 になるため——ここで受け止めて CORS ヘッダ付きで返す。
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            cors::apply_cors,
+        ))
         .layer(axum::middleware::from_fn(correlation::propagate))
         // アクセススパンはパスのみを記録する（クエリ文字列に載る `code`・`code_challenge` を
         // ログへ落とさない。SEC9）。組み立ては web と共有する。

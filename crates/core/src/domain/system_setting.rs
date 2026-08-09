@@ -380,6 +380,22 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
                       いる場合にのみ選ぶこと）。",
     },
     SettingDefinition {
+        key: "CORS_ALLOWED_ORIGINS",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::Text,
+        default_value: Some(""),
+        description: "ブラウザからの越境アクセス（CORS）を追加で許可するオリジンのカンマ区切り \
+                      （例 `https://app.example.com,https://admin.example.com`）。既定は空で、\
+                      許可されるのはテナント内 public クライアントの `redirect_uris` から導いた \
+                      オリジンだけ。公開メタデータ（`/.well-known/*`・`/saml/metadata`）は本設定に \
+                      関わらず誰でも取得できる。api はブラウザ Cookie を読まないため \
+                      `Access-Control-Allow-Credentials` は付けない。",
+    },
+    SettingDefinition {
         key: "EXPIRED_RECORD_PURGE_INTERVAL_SECS",
         shared_with_web: false,
         owner: SettingOwner::DbManaged,

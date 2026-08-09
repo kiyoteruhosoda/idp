@@ -29,6 +29,7 @@ use crate::application::client_management::ClientManagementService;
 use crate::application::client_status::ClientStatusService;
 use crate::application::code_issuance::CodeIssuanceService;
 use crate::application::consent::ConsentService;
+use crate::application::cors_policy::ApiCorsPolicy;
 use crate::application::email_verification::EmailVerificationService;
 use crate::application::expired_record_purge::ExpiredRecordPurgeService;
 use crate::application::external_idp_management::ExternalIdpManagementService;
@@ -202,6 +203,8 @@ pub struct AppState {
     /// 期限切れレコードの一括 GC（G2）。対象表の一覧は
     /// [`crate::infrastructure::repositories::expired_records`] にある。
     pub expired_records: Arc<ExpiredRecordPurgeService>,
+    /// CORS の許可オリジン判定（G1）。ミドルウェアが使う。
+    pub cors_policy: Arc<ApiCorsPolicy>,
     /// Back-channel logout の送信キュー（G5）。ハンドラは積むだけ、送信はワーカーが行う。
     pub backchannel_logout: Arc<BackchannelLogoutDeliveryService>,
     pub revocation: Arc<RevocationService>,
@@ -716,7 +719,7 @@ impl AppState {
             clock.clone(),
         ));
         let introspection = Arc::new(IntrospectionService::new(
-            clients,
+            clients.clone(),
             signing_keys.clone(),
             refresh_tokens,
             revoked_access_tokens,
@@ -796,6 +799,19 @@ impl AppState {
             audit.clone(),
         ));
 
+        // CORS の許可オリジン（G1）。`/token`・`/userinfo` はホットパスのため、テナント→オリジン
+        // 集合をテナント解決と同じ TTL でキャッシュする。管理画面で `redirect_uris` を変えた直後は
+        // 最大 TTL 分だけ古い集合が使われるが、TTL は既定で短く、影響は「新しいオリジンからの
+        // 読み取りが少しの間できない」だけ（古いオリジンが余分に通ることも同じ長さで起きる）。
+        let cors_policy = Arc::new(ApiCorsPolicy::new(
+            clients.clone(),
+            config.cors_allowed_origins(),
+            Arc::new(InMemoryTtlCache::new(
+                chrono_from_std(config.tenant_cache_ttl()),
+                clock.clone(),
+            )),
+        ));
+
         // 期限切れレコードの一括 GC（G2）。対象表の一覧は infrastructure 側に単一定義してあり、
         // ここは組み立てて `run()` のタスクへ渡すだけ。
         let expired_records = Arc::new(ExpiredRecordPurgeService::new(
@@ -859,6 +875,7 @@ impl AppState {
             restart,
             service_restart,
             expired_records,
+            cors_policy,
         }
     }
 }
