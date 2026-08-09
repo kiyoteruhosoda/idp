@@ -114,7 +114,7 @@ impl ClientRepository for SqlxClientRepository {
               redirect_uris, post_logout_redirect_uris, frontchannel_logout_uri, \
               backchannel_logout_uri, grant_types, response_types, scopes, \
               token_endpoint_auth_method) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(client.id.to_string())
         .bind(client.tenant_id.to_string())
