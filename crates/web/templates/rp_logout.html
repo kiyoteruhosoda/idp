@@ -15,21 +15,5 @@
 {% if let Some(redirect_to) = redirect_to %}
 <div id="logout-redirect" data-url="{{ redirect_to }}" hidden></div>
 {% endif %}
-<script>
-(function () {
-  var holder = document.getElementById('logout-redirect');
-  if (!holder) { return; }
-  var target = holder.dataset.url;
-  var frames = document.querySelectorAll('iframe');
-  var loaded = 0;
-  var moved = false;
-  function done() { if (!moved) { moved = true; window.location.href = target; } }
-  if (frames.length === 0) { done(); return; }
-  frames.forEach(function (f) {
-    f.onload = function () { loaded++; if (loaded >= frames.length) { done(); } };
-  });
-  /* RP 側 iframe が load を発火しない場合でも 5 秒でリダイレクトする。 */
-  setTimeout(done, 5000);
-})();
-</script>
+<script src="/assets/rp-logout.js?v={{ crate::templates::asset_version() }}" defer></script>
 {% endblock %}

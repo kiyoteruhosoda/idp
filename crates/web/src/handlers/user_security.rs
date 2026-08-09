@@ -136,7 +136,10 @@ pub async fn revoke_session(
     let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         return found(&format!("{}/login", tenant.prefix()));
     };
-    if console_csrf_token(&sso, state.config.csrf_secret()) != form.csrf_token {
+    if !idp_contracts::csrf::verify(
+        &console_csrf_token(&sso, state.config.csrf_secret()),
+        &form.csrf_token,
+    ) {
         tracing::warn!(
             correlation_id = %correlation.0,
             "security session revocation rejected: csrf token mismatch"
@@ -206,7 +209,10 @@ pub async fn revoke_consent(
     let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         return found(&format!("{}/login", tenant.prefix()));
     };
-    if console_csrf_token(&sso, state.config.csrf_secret()) != form.csrf_token {
+    if !idp_contracts::csrf::verify(
+        &console_csrf_token(&sso, state.config.csrf_secret()),
+        &form.csrf_token,
+    ) {
         tracing::warn!(
             correlation_id = %correlation.0,
             "security consent revocation rejected: csrf token mismatch"

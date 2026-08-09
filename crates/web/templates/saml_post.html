@@ -7,7 +7,7 @@
   </div>
   <div class="card-body p-4 text-center">
     <p class="mb-3">{{ messages.get("saml-continue-message") }}</p>
-    <form id="saml-post-form" method="post" action="{{ acs_url }}">
+    <form id="saml-post-form" data-auto-submit method="post" action="{{ acs_url }}">
       <input type="hidden" name="SAMLResponse" value="{{ saml_response }}">
       {% if let Some(relay_state) = relay_state %}
       <input type="hidden" name="RelayState" value="{{ relay_state }}">
@@ -18,5 +18,5 @@
     </form>
   </div>
 </div>
-<script>document.getElementById('saml-post-form').submit();</script>
+<script src="/assets/auto-submit.js?v={{ crate::templates::asset_version() }}" defer></script>
 {% endblock %}

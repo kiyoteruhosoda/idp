@@ -20,7 +20,6 @@ pub struct ClientView {
     pub response_types: Vec<String>,
     pub scopes: Vec<String>,
     pub token_endpoint_auth_method: String,
-    pub require_pkce: bool,
     pub created_at: String,
     pub updated_at: String,
 }

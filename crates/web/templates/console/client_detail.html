@@ -8,7 +8,6 @@
       <dt class="col-sm-3">{{ messages.get("admin-client-col-type") }}</dt><dd class="col-sm-9">{{ client.client_type }}</dd>
       <dt class="col-sm-3">{{ messages.get("admin-client-col-status") }}</dt><dd class="col-sm-9">{% if client.client_status == "ACTIVE" %}<span class="badge text-bg-success">{{ client.client_status }}</span>{% else %}<span class="badge text-bg-secondary">{{ client.client_status }}</span>{% endif %}</dd>
       <dt class="col-sm-3">{{ messages.get("admin-client-field-auth-method") }}</dt><dd class="col-sm-9">{{ client.token_endpoint_auth_method }}</dd>
-      <dt class="col-sm-3">{{ messages.get("admin-client-field-pkce") }}</dt><dd class="col-sm-9">{% if client.require_pkce %}true{% else %}false{% endif %}</dd>
       <dt class="col-sm-3">{{ messages.get("admin-client-field-uris") }}</dt><dd class="col-sm-9">{% if client.redirect_uris.is_empty() %}-{% else %}<ul class="list-unstyled mb-0">{% for u in client.redirect_uris %}<li><code>{{ u }}</code></li>{% endfor %}</ul>{% endif %}</dd>
       <dt class="col-sm-3">{{ messages.get("admin-client-col-scopes") }}</dt><dd class="col-sm-9">{{ client.scopes.join(" ") }}</dd>
       <dt class="col-sm-3">{{ messages.get("admin-client-field-grants") }}</dt><dd class="col-sm-9">{{ client.grant_types.join(" ") }}</dd>

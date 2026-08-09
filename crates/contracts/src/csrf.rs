@@ -17,6 +17,23 @@ fn hmac_sha256_hex(key: &[u8], message: &str) -> String {
     hex::encode(mac.finalize().into_bytes())
 }
 
+/// 導出したトークンと提示された値を**定数時間**で比較する。
+///
+/// CSRF トークンは HMAC の出力なので、先頭から一致した長さが漏れると 1 バイトずつ総当たりで
+/// 組み立てられる余地が理屈の上では残る（`==` は不一致が見つかった時点で返る）。実際に
+/// タイミング差を測るのは難しいが、比較を 1 か所に集めれば防ぐコストは無いに等しい。
+/// 長さが違えば `false`（長さは秘密ではない —— 常に 64 文字の 16 進）。
+pub fn verify(expected: &str, provided: &str) -> bool {
+    if expected.len() != provided.len() {
+        return false;
+    }
+    expected
+        .bytes()
+        .zip(provided.bytes())
+        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+        == 0
+}
+
 /// `auth_session_id` に紐づくログイン画面用 CSRF トークンを導出する。
 /// `key` は `CSRF_SECRET`（`[u8; 32]`）を渡す。
 pub fn login_csrf_token(auth_session_id: &str, key: &[u8]) -> String {
@@ -55,6 +72,17 @@ mod tests {
             login_csrf_token("session", key1),
             login_csrf_token("session", key2)
         );
+    }
+
+    #[test]
+    fn verify_accepts_only_an_exact_match() {
+        let token = login_csrf_token("session", TEST_KEY);
+        assert!(verify(&token, &token));
+        assert!(!verify(&token, &login_csrf_token("other", TEST_KEY)));
+        // 長さ違い（切り詰め・追記）も拒否する。
+        assert!(!verify(&token, &token[..63]));
+        assert!(!verify(&token, &format!("{token}0")));
+        assert!(!verify(&token, ""));
     }
 
     #[test]

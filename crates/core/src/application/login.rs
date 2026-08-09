@@ -212,7 +212,8 @@ impl LoginService {
 
         // 2. CSRF トークン検証。不一致は攻撃だけでなく「別タブでの新フローによる Cookie 差し替え」等の
         //    正規操作でも起こるため、監査に記録して web 側でフォーム再表示（PRG）に載せる。
-        if csrf_token(session_id, &self.csrf_secret) != cmd.csrf_token {
+        if !idp_contracts::csrf::verify(&csrf_token(session_id, &self.csrf_secret), &cmd.csrf_token)
+        {
             self.audit
                 .record(
                     AuditEventType::LoginFailed,

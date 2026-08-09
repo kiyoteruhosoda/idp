@@ -102,9 +102,6 @@ pub struct ClientRegisterRequest {
     pub client_type: String,
     pub redirect_uris: Vec<String>,
     pub scopes: Vec<String>,
-    /// 省略時は既定（true）。public は常に PKCE 必須。
-    #[serde(default)]
-    pub require_pkce: Option<bool>,
     /// サーバ間（M2M）連携で `client_credentials` grant を許可するか（G4。既定 false）。
     /// confidential クライアントのみ有効。
     #[serde(default)]
@@ -240,7 +237,6 @@ pub struct ClientResponse {
     pub response_types: Vec<String>,
     pub scopes: Vec<String>,
     pub token_endpoint_auth_method: String,
-    pub require_pkce: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub post_logout_redirect_uris: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

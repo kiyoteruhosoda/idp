@@ -380,6 +380,20 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
                       いる場合にのみ選ぶこと）。",
     },
     SettingDefinition {
+        key: "API_DOCS_ENABLED",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::Boolean,
+        default_value: Some("false"),
+        description: "Swagger UI（`/api/docs`）と OpenAPI 文書（`/api/openapi.json`）を配信するか。\
+                      既定は無効。api 面は公開されるため、有効にすると管理 API を含む全エンドポイントの\
+                      仕様が無認証で読める（秘密は含まないが攻撃対象の把握を助ける）。開発・検証環境で\
+                      のみ有効にすること。",
+    },
+    SettingDefinition {
         key: "CORS_ALLOWED_ORIGINS",
         shared_with_web: false,
         owner: SettingOwner::DbManaged,

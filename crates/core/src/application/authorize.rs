@@ -508,13 +508,38 @@ fn fatal(error: OAuthErrorCode, description: &str) -> AuthorizeOutcome {
     }
 }
 
+/// `redirect_uri` にクエリパラメータを足した URL を組み立てる。
+///
+/// `redirect_uri` は登録済み値との完全一致を通っているが、**ここでパニックさせない**（SEC12）。
+/// 登録時の検証をすり抜けた値（DB の直接編集・過去の緩い検証で入った行）が 1 つあるだけで、
+/// その RP を使う認可要求が毎回リクエストごと落ちることになる。解析できない場合は素朴に
+/// クエリを連結して返し、壊れているのは当該 RP の設定だけに留める。
+fn append_query(redirect_uri: &str, pairs: &[(&str, &str)]) -> String {
+    if let Ok(mut url) = url::Url::parse(redirect_uri) {
+        {
+            let mut query = url.query_pairs_mut();
+            for (key, value) in pairs {
+                query.append_pair(key, value);
+            }
+        }
+        return url.to_string();
+    }
+    tracing::error!("redirect_uri is not a parsable URL; falling back to query concatenation");
+    let encoded: Vec<String> = pairs
+        .iter()
+        .map(|(key, value)| {
+            let value =
+                percent_encoding::utf8_percent_encode(value, percent_encoding::NON_ALPHANUMERIC);
+            format!("{key}={value}")
+        })
+        .collect();
+    let separator = if redirect_uri.contains('?') { '&' } else { '?' };
+    format!("{redirect_uri}{separator}{}", encoded.join("&"))
+}
+
 /// `redirect_uri?code=...&state=...` を構築する（state は透過返却、設計仕様 §2.2）。
 pub fn code_redirect(redirect_uri: &str, code: &str, state: &str) -> String {
-    let mut url = url::Url::parse(redirect_uri).expect("redirect_uri validated as registered URL");
-    url.query_pairs_mut()
-        .append_pair("code", code)
-        .append_pair("state", state);
-    url.to_string()
+    append_query(redirect_uri, &[("code", code), ("state", state)])
 }
 
 /// `redirect_uri?error=...&error_description=...&state=...` を構築する（state は省略可）。
@@ -524,16 +549,14 @@ pub fn error_redirect_with_state(
     description: &str,
     state: Option<&str>,
 ) -> String {
-    let mut url = url::Url::parse(redirect_uri).expect("redirect_uri validated as registered URL");
-    {
-        let mut pairs = url.query_pairs_mut();
-        pairs.append_pair("error", error.as_str());
-        pairs.append_pair("error_description", description);
-        if let Some(state) = state {
-            pairs.append_pair("state", state);
-        }
+    let mut pairs: Vec<(&str, &str)> = vec![
+        ("error", error.as_str()),
+        ("error_description", description),
+    ];
+    if let Some(state) = state {
+        pairs.push(("state", state));
     }
-    url.to_string()
+    append_query(redirect_uri, &pairs)
 }
 
 #[cfg(test)]
@@ -556,7 +579,6 @@ mod tests {
             response_types: vec!["code".to_string()],
             scopes: vec!["openid".to_string(), "email".to_string()],
             token_endpoint_auth_method: TokenEndpointAuthMethod::None,
-            require_pkce: true,
             post_logout_redirect_uris: vec![],
             frontchannel_logout_uri: None,
             backchannel_logout_uri: None,

@@ -26,7 +26,7 @@ const SELECT_COLUMNS: &str =
     "id, tenant_id, client_id, client_secret_hash, client_type, client_status, \
      app_name, redirect_uris, post_logout_redirect_uris, frontchannel_logout_uri, \
      backchannel_logout_uri, grant_types, response_types, scopes, \
-     token_endpoint_auth_method, require_pkce, created_at, updated_at";
+     token_endpoint_auth_method, created_at, updated_at";
 
 fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
@@ -78,7 +78,6 @@ fn map_row(row: &MySqlRow) -> Result<Client> {
         response_types: parse_json_strings(&response_types, "response_types")?,
         scopes: parse_json_strings(&scopes, "scopes")?,
         token_endpoint_auth_method: TokenEndpointAuthMethod::parse(&auth_method)?,
-        require_pkce: row.try_get("require_pkce").map_err(repo_err)?,
         created_at: to_utc(row.try_get("created_at").map_err(repo_err)?),
         updated_at: to_utc(row.try_get("updated_at").map_err(repo_err)?),
     })
@@ -114,7 +113,7 @@ impl ClientRepository for SqlxClientRepository {
              (id, tenant_id, client_id, client_secret_hash, client_type, client_status, app_name, \
               redirect_uris, post_logout_redirect_uris, frontchannel_logout_uri, \
               backchannel_logout_uri, grant_types, response_types, scopes, \
-              token_endpoint_auth_method, require_pkce) \
+              token_endpoint_auth_method) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(client.id.to_string())
@@ -139,7 +138,6 @@ impl ClientRepository for SqlxClientRepository {
         .bind(to_json(&client.response_types, "response_types")?)
         .bind(to_json(&client.scopes, "scopes")?)
         .bind(client.token_endpoint_auth_method.as_str())
-        .bind(client.require_pkce)
         .execute(&self.pool)
         .await
         .map_err(|e| match &e {
@@ -172,7 +170,7 @@ impl ClientRepository for SqlxClientRepository {
              client_secret_hash = ?, client_type = ?, client_status = ?, app_name = ?, \
              redirect_uris = ?, post_logout_redirect_uris = ?, frontchannel_logout_uri = ?, \
              backchannel_logout_uri = ?, grant_types = ?, response_types = ?, scopes = ?, \
-             token_endpoint_auth_method = ?, require_pkce = ? \
+             token_endpoint_auth_method = ? \
              WHERE id = ? AND tenant_id = ?",
         )
         .bind(&client.client_secret_hash)
@@ -194,7 +192,6 @@ impl ClientRepository for SqlxClientRepository {
         .bind(to_json(&client.response_types, "response_types")?)
         .bind(to_json(&client.scopes, "scopes")?)
         .bind(client.token_endpoint_auth_method.as_str())
-        .bind(client.require_pkce)
         .bind(client.id.to_string())
         .bind(client.tenant_id.to_string())
         .execute(&self.pool)

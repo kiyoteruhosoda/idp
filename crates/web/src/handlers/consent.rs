@@ -87,9 +87,30 @@ pub async fn consent(
 ) -> Response {
     let ctx = forwarded_context(&headers, &correlation, &client_ip);
 
+    // 同意はフォーム値ではなく **Cookie の `auth_session_id`** に対して行う（SEC12）。
+    // フォーム値だけで動かしていたため、攻撃者が用意した認可セッションの id をフォームに
+    // 仕込んで踏ませれば、被害者のブラウザに「攻撃者のフローへの同意」を出せた。
+    // Cookie を権威にし、フォーム値はそれと一致する場合だけ受け付ける（値の運搬経路が 2 つある
+    // ことを利用した取り違えを塞ぐ）。
+    let Some(auth_session_id) = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE) else {
+        let messages = Messages::new(locale(&headers));
+        return error_page(
+            &messages,
+            StatusCode::BAD_REQUEST,
+            "consent-error-session-expired",
+        );
+    };
+    if !idp_contracts::csrf::verify(&auth_session_id, &form.auth_session_id) {
+        tracing::warn!(
+            correlation_id = %ctx.correlation_id,
+            "consent rejected: form auth_session_id does not match the cookie"
+        );
+        return see_other(&format!("{}/consent", tenant.prefix()));
+    }
+
     // CSRF チェック（FluentBundle を await 前に使わないよう先に行う）。
-    let expected_csrf = consent_csrf_token(&form.auth_session_id, state.config.csrf_secret());
-    if form.csrf_token != expected_csrf {
+    let expected_csrf = consent_csrf_token(&auth_session_id, state.config.csrf_secret());
+    if !idp_contracts::csrf::verify(&expected_csrf, &form.csrf_token) {
         // PRG: 303 で同意画面の GET へ付け替え、新しいトークンのフォームを自動で再表示する
         //（従来はエラーページを返すだけで、リロードすると POST が再送されて復帰できなかった）。
         tracing::warn!(
@@ -102,7 +123,7 @@ pub async fn consent(
     if form.action == "approve" {
         let req = InternalConsentApproveRequest {
             tenant_id: Some(tenant.0.clone()),
-            auth_session_id: form.auth_session_id.clone(),
+            auth_session_id: auth_session_id.clone(),
             ip_address: ctx.ip_address,
             user_agent: ctx.user_agent,
         };
@@ -128,7 +149,7 @@ pub async fn consent(
         // deny
         let req = InternalConsentDenyRequest {
             tenant_id: Some(tenant.0.clone()),
-            auth_session_id: form.auth_session_id.clone(),
+            auth_session_id: auth_session_id.clone(),
             ip_address: ctx.ip_address,
             user_agent: ctx.user_agent,
         };

@@ -40,13 +40,6 @@
         </select>
       </div>
       {% endif %}
-      {% if is_new %}
-      <div class="form-check mb-3">
-        <input type="checkbox" class="form-check-input" id="client-require-pkce" name="require_pkce"{% if values.require_pkce %} checked{% endif %}>
-        <label class="form-check-label" for="client-require-pkce">{{ messages.get("admin-client-field-pkce") }}</label>
-        <div class="form-text">{{ messages.get("admin-client-field-pkce-hint") }}</div>
-      </div>
-      {% endif %}
       {% if values.client_type == "confidential" %}
       <div class="form-check mb-3">
         <input type="checkbox" class="form-check-input" id="client-allow-client-credentials" name="allow_client_credentials"{% if values.allow_client_credentials %} checked{% endif %}>

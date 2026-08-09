@@ -22,6 +22,7 @@ use utoipa_swagger_ui::SwaggerUi;
 
 pub fn build(state: AppState) -> Router {
     let hsts_max_age = state.config.hsts_max_age();
+    let api_docs_enabled = state.config.api_docs_enabled();
     // 内部認証 API（ADR-0007 §3・§5）。web（将来）→api のサービス間 I/F。外部公開しない
     // （リバースプロキシで /internal/* を遮断する前提）。多層防御としてサービス認証トークン
     // （X-Internal-Auth-Token）を必須にする route_layer をこのサブルータにのみ付ける。
@@ -394,7 +395,16 @@ pub fn build(state: AppState) -> Router {
         .route("/version/schema", get(health::schema_version))
         .nest("/{tenant_id}", tenant_scoped)
         .merge(internal)
-        .merge(SwaggerUi::new("/api/docs").url("/api/openapi.json", ApiDoc::openapi()))
+        // Swagger UI と OpenAPI 文書（SEC12）。api 面は公開されるため既定では配信しない
+        // （管理 API を含む全エンドポイントの仕様が無認証で読めてしまう）。開発・検証環境では
+        // `API_DOCS_ENABLED=true` で有効化する。
+        .merge(if api_docs_enabled {
+            SwaggerUi::new("/api/docs")
+                .url("/api/openapi.json", ApiDoc::openapi())
+                .into()
+        } else {
+            Router::new()
+        })
         // CORS（G1）。`route_layer` ではなく `layer` で付けるのは、プリフライト（OPTIONS）が
         // どのルートにもマッチせず 405 になるため——ここで受け止めて CORS ヘッダ付きで返す。
         .layer(axum::middleware::from_fn_with_state(

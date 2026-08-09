@@ -498,7 +498,10 @@ pub async fn send_email_code(
         );
     };
     // CSRF は TOTP フォームと同じ同期トークン（`auth_session_id` 由来）で照合する。
-    if login_csrf_token(&auth_session_id, state.config.csrf_secret()) != form.csrf_token {
+    if !idp_contracts::csrf::verify(
+        &login_csrf_token(&auth_session_id, state.config.csrf_secret()),
+        &form.csrf_token,
+    ) {
         return see_other(&format!("{}/mfa/totp?error=csrf", tenant.prefix()));
     }
 

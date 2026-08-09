@@ -8,18 +8,23 @@
 //!
 //! さらに `hsts_max_age > 0` のときは `Strict-Transport-Security` を付与する。
 //!
-//! CSP の `script-src`/`style-src` に `'unsafe-inline'` を許容しているのは、現行テンプレート
-//! （login / passkey_register のインライン `<script>`、各画面のインライン `<style>`）のため。
-//! nonce 化してインライン許容を外すのは後続改善とする。
+//! `script-src` から `'unsafe-inline'` を外してある（SEC12）。インラインを許したままでは、
+//! 反射型 XSS が 1 か所でもあれば CSP が防御にならない。画面固有スクリプトはすべて自オリジンの
+//! アセット（`handlers::page_scripts`）へ切り出し、テンプレートが渡していた値は `data-*` 属性で
+//! 受け渡している。
+//!
+//! `style-src` の `'unsafe-inline'` は残している。現行テンプレートが `style="display:none"` の
+//! ような属性を多数使っており、これらは**スクリプト実行につながらない**（`style-src` は
+//! `javascript:` を持ち込めない）ため、優先度が違う。外すならクラス化とセットで行う。
 
 use axum::extract::Request;
 use axum::http::header::{HeaderName, HeaderValue};
 use axum::middleware::Next;
 use axum::response::Response;
 
-/// 自オリジン限定 + インライン許容（現行テンプレート互換）の CSP。
+/// 自オリジン限定の CSP。スクリプトはインラインを許さない（SEC12）。
 const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; \
-     script-src 'self' 'unsafe-inline'; \
+     script-src 'self'; \
      style-src 'self' 'unsafe-inline'; \
      img-src 'self' data:; \
      object-src 'none'; \
@@ -100,6 +105,11 @@ mod tests {
         let csp = headers["content-security-policy"].to_str().unwrap();
         assert!(csp.contains("frame-ancestors 'none'"));
         assert!(csp.contains("default-src 'self'"));
+        // インラインスクリプトを許さない（SEC12）。許すと XSS 1 か所で CSP が無力になる。
+        assert!(
+            !csp.contains("script-src 'self' 'unsafe-inline'"),
+            "script-src must not allow inline: {csp}"
+        );
         // HSTS は hsts_max_age = 0 では付与しない。
         assert!(!headers.contains_key("strict-transport-security"));
     }
