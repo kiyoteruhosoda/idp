@@ -231,6 +231,34 @@ pub async fn create_sso_session(pool: &MySqlPool, user_id: &str) -> String {
 }
 
 /// 権限を持たない利用者を指定テナントへ直接作成し、その内部 ID を返す。
+/// 自己登録 API（`POST /{tenant}/auth/register`）で利用者を 1 人作る。
+///
+/// 通常の作成経路を通すため、`users` だけでなく HOME メンバーシップ・ログイン識別子の登録簿
+/// （AP8）も本番と同じ形で埋まる。
+pub async fn register_user(app: &axum::Router, tenant: &str, username: &str, password: &str) {
+    let payload = serde_json::json!({
+        "email": format!("{username}@example.com"),
+        "preferred_username": username,
+        "password": password,
+        "name": "Integration Tester",
+    });
+    let response = send(
+        app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/{tenant}/auth/register"))
+            .header(CONTENT_TYPE, "application/json")
+            .body(Body::from(payload.to_string()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::CREATED,
+        "user registration"
+    );
+}
+
 pub async fn create_plain_user(pool: &MySqlPool, tenant_id: &str) -> String {
     let id = uuid::Uuid::now_v7().to_string();
     sqlx::query(

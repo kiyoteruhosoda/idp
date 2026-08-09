@@ -269,6 +269,45 @@ curl -b "sso_session_id=<管理者セッション>" -H 'Content-Type: applicatio
   操作できず、一覧では停止・解除のみ行える）。
 - 検索語の `%` や `_` はそのままの文字として扱う（ワイルドカードにはならない）。
 
+## 電話番号・社員番号でログインさせたいとき（AP8）
+
+ログイン欄に入力できる値は既定では利用者のログイン識別子（`preferred_username`）1 本だが、
+管理 API から**別の識別子を足せる**（ADR-0025）。組織がすでに配っている番号でログインさせたいとき、
+改姓でユーザー名を変える前に旧い名前を残しておきたいときに使う。
+
+```bash
+# 追加（identifier_type は username / email / phone_number / employee_number）
+curl -X POST "https://<api>/{tenant_id}/admin/users/{user_id}/login-identifiers" \
+  -H "Content-Type: application/json" -b "sso_session_id=<admin session>" \
+  -d '{"identifier_type":"phone_number","value":"090-1234-5678"}'
+
+# 一覧（無効な行も返る）
+curl "https://<api>/{tenant_id}/admin/users/{user_id}/login-identifiers" -b "sso_session_id=<admin session>"
+
+# 1 本だけ止める（行は残す）
+curl -X PATCH "https://<api>/{tenant_id}/admin/users/{user_id}/login-identifiers/{identifier_id}" \
+  -H "Content-Type: application/json" -b "sso_session_id=<admin session>" -d '{"is_active":false}'
+
+# 削除
+curl -X DELETE "https://<api>/{tenant_id}/admin/users/{user_id}/login-identifiers/{identifier_id}" \
+  -b "sso_session_id=<admin session>"
+```
+
+- `idp.tenant.admin` が必要。対象は**所属元（HOME）が当該テナントの利用者**のみ。
+- 照合は種別ごとに正規化して行う（電話番号は区切り記号を無視し、先頭の `+` だけ残す。ユーザー名・
+  メールは大小を無視。社員番号は空白を落として大小を無視）。応答の `normalized_value` が実際に
+  一致する値なので、登録直後にこれを見て意図どおりか確かめる。
+- **止めるときは削除ではなく `is_active: false`。** 行が残るため、その値を他の利用者が登録できない。
+  削除すると別人が同じ値を取れてしまい、宛先が黙って変わる。
+- 他の利用者に解決される値は 409 で拒否される（他人のログイン識別子・メールアドレスを含む）。
+- ログイン識別子そのもの（`preferred_username`）の変更は利用者のプロフィール編集から行う。
+  一覧に出る `username` 種別の写しは削除できない（消しても `users` 側が残り、ログインは通り続ける）。
+- **メールアドレスでのログインは既定では無効。** 有効にするには `email` 種別の識別子を明示的に
+  足す。所有確認（検証メール）は行わないので、管理者がアドレスの正しさを保証する扱いになる。
+- 追加・切替・削除は `user.login_identifier_added` / `.updated` / `.removed` として監査に残る
+  （残すのは**種別のみ**。電話番号・メールアドレスは PII なので値は残さない）。
+- web 管理コンソールの画面は未実装（`docs/Progress.md` AP1）。
+
 ## ゲストのアクセスを一時的に止めたいとき（MT24）
 
 休職・委託の中断などで、ゲストのアクセスを**あとで戻す前提で**止めたいときは解除ではなく一時停止を使う。

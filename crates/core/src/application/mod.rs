@@ -30,6 +30,7 @@ pub mod introspection;
 pub mod invitation;
 pub mod key_service;
 pub mod login;
+pub mod login_identifier_management;
 pub mod logout;
 pub mod member_directory;
 pub mod mfa_login;

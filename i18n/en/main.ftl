@@ -468,6 +468,13 @@ api-password-too-short = The password must be at least { $value } characters.
 api-password-too-long = The password must be at most { $value } characters.
 api-field-required = "{ $value }" is required.
 api-user-identity-conflict = That email address or sign-in name is already used by another user in this tenant.
+# Login identifiers (AP8). Values themselves are never echoed back in errors.
+api-login-identifier-required = Enter a value for the sign-in identifier.
+api-login-identifier-too-long = The sign-in identifier must be at most { $value } characters.
+api-login-identifier-type-invalid = Invalid identifier type. Choose username, email, phone_number or employee_number.
+api-login-identifier-phone-invalid = Enter a valid phone number (6-20 digits; '+', '-', spaces, dots and parentheses are allowed).
+api-login-identifier-conflict = That value already identifies another user in this tenant.
+api-login-identifier-primary-immutable = This is the copy of the user's primary sign-in name and cannot be removed. Change it from the user's profile instead.
 api-user-status-invalid = Invalid status. Choose ACTIVE or DISABLED.
 api-user-status-locked-forbidden = LOCKED cannot be set by an administrator. It is set automatically after repeated sign-in failures.
 api-user-self-operation-forbidden = You cannot perform this operation on your own account.

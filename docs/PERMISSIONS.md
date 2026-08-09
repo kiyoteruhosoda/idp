@@ -85,7 +85,7 @@
 |---|---|
 | クライアント管理（`/{tenant_id}/admin/clients...`） | RP（OIDC クライアント）の登録・一覧・取得・更新・シークレット再発行 |
 | SAML SP 管理（`/{tenant_id}/admin/saml-service-providers...`） | SAML Service Provider の登録・一覧・更新・削除・メタデータ取り込み |
-| ユーザー管理（`/{tenant_id}/admin/users...`） | 当該テナントを所属元とするユーザーの管理（作成・取得・状態変更・削除・パスワードリセット等） |
+| ユーザー管理（`/{tenant_id}/admin/users...`） | 当該テナントを所属元とするユーザーの管理（作成・取得・状態変更・削除・パスワードリセット・ログイン識別子の割り当て等） |
 | 付与可能な権限コード一覧（`GET /{tenant_id}/admin/permissions`） | `permissions` マスタの一覧（付与フォームの選択肢提示用） |
 | 権限の付与・剥奪・参照（`GET`/`POST /{tenant_id}/admin/users/{user_id}/permissions`、`DELETE …/{permission_code}`） | 当該テナント scope の権限を付与・剥奪・参照する（`idp.system.admin` の付与条件は上記「scope と判定ルール」を参照） |
 | メンバー管理（`/{tenant_id}/admin/members...`） | ゲストメンバーシップの解除等 |

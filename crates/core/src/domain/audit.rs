@@ -63,6 +63,11 @@ pub enum AuditEventType {
     /// 管理者による利用者プロフィール（メール・表示名・ログイン識別子）の更新（MT25）。
     /// 変更した項目名のみ記録し、値そのもの（PII）は記録しない。
     UserProfileUpdated,
+    /// 管理者によるログイン識別子（AP8。仕様 §4）の追加・有効/無効の切替・削除。
+    /// `reason` に**種別**のみ記録する（電話番号・メールアドレスは PII なので値は記録しない）。
+    UserLoginIdentifierAdded,
+    UserLoginIdentifierUpdated,
+    UserLoginIdentifierRemoved,
     /// 認証器（AP9。仕様 §5）の状態変更・リカバリーコードの発行と使用・email OTP の送信。
     /// `reason` に種別・件数・残数を記録する（コード・シークレットそのものは記録しない）。
     AuthenticatorStatusChanged,
@@ -143,6 +148,9 @@ impl AuditEventType {
             Self::UserDeleted => "user.deleted",
             Self::UserPasswordReset => "user.password_reset",
             Self::UserProfileUpdated => "user.profile_updated",
+            Self::UserLoginIdentifierAdded => "user.login_identifier_added",
+            Self::UserLoginIdentifierUpdated => "user.login_identifier_updated",
+            Self::UserLoginIdentifierRemoved => "user.login_identifier_removed",
             Self::AuthenticatorStatusChanged => "authenticator.status_changed",
             Self::RecoveryCodesIssued => "recovery_codes.issued",
             Self::RecoveryCodeUsed => "recovery_code.used",

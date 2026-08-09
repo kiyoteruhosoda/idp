@@ -38,6 +38,9 @@ use crate::application::introspection::IntrospectionService;
 use crate::application::invitation::InvitationService;
 use crate::application::key_service::KeyService;
 use crate::application::login::LoginService;
+use crate::application::login_identifier_management::{
+    LoginIdentifierManagementService, PrimaryLoginIdentifierSync,
+};
 use crate::application::logout::LogoutService;
 use crate::application::member_directory::MemberDirectoryService;
 use crate::application::mfa_login::MfaLoginService;
@@ -109,6 +112,7 @@ use crate::infrastructure::repositories::tenant_provisioning::SqlxTenantProvisio
 use crate::infrastructure::repositories::totp_secret::SqlxTotpSecretRepository;
 use crate::infrastructure::repositories::user::SqlxUserRepository;
 use crate::infrastructure::repositories::user_authenticator::SqlxUserAuthenticatorRepository;
+use crate::infrastructure::repositories::user_login_identifier::SqlxUserLoginIdentifierRepository;
 use crate::infrastructure::repositories::user_permission::SqlxUserPermissionRepository;
 use crate::infrastructure::repositories::webauthn_credential::SqlxWebAuthnCredentialRepository;
 use crate::infrastructure::webauthn::WebAuthnService;
@@ -157,6 +161,8 @@ pub struct AppState {
     pub authentication_policies_admin: Arc<AuthenticationPolicyManagementService>,
     /// 管理者による利用者作成（自動生成パスワード・must_change_password。ADR-0009 §5）。
     pub users_admin: Arc<UserManagementService>,
+    /// 管理者によるログイン識別子の割り当て（AP8）。
+    pub login_identifiers_admin: Arc<LoginIdentifierManagementService>,
     /// 管理者による利用者ライフサイクル操作（無効化・削除・パスワード再発行。ADR-0009 §5）。
     pub users_lifecycle: Arc<UserLifecycleService>,
     /// テナント作成・管理（idp.system.admin 必須。ADR-0009 §5・§6）。設定画面のテナント設定区画
@@ -269,6 +275,15 @@ impl AppState {
         let audit_logs = Arc::new(SqlxAuditLogQuery::new(pool.clone()));
         let hasher = Arc::new(Argon2PasswordHasher::new());
         let ids: Arc<dyn IdGenerator> = Arc::new(UuidV7Generator);
+        // AP8: ログイン識別子の登録簿。ログイン時の解決は `SqlxUserRepository` 側（1 クエリ）で、
+        // ここに載せるのは管理操作と `users.preferred_username` の写しの同期。
+        let login_identifier_repository: Arc<
+            dyn crate::domain::repositories::UserLoginIdentifierRepository,
+        > = Arc::new(SqlxUserLoginIdentifierRepository::new(pool.clone()));
+        let primary_login_identifiers = Arc::new(PrimaryLoginIdentifierSync::new(
+            login_identifier_repository.clone(),
+            ids.clone(),
+        ));
         let rate_limiter = Arc::new(InMemoryLoginRateLimiter::new(
             LOGIN_RATE_LIMIT_MAX_ATTEMPTS,
             chrono::Duration::minutes(LOGIN_RATE_LIMIT_WINDOW_MINUTES),
@@ -374,6 +389,7 @@ impl AppState {
             users.clone(),
             tenant_memberships.clone(),
             tenants.clone(),
+            primary_login_identifiers.clone(),
             hasher.clone(),
             register_rate_limiter,
             clock.clone(),
@@ -559,6 +575,7 @@ impl AppState {
         let users_admin = Arc::new(UserManagementService::new(
             users.clone(),
             tenant_memberships.clone(),
+            primary_login_identifiers.clone(),
             hasher.clone(),
             audit.clone(),
             clock.clone(),
@@ -569,6 +586,7 @@ impl AppState {
         let users_lifecycle = Arc::new(UserLifecycleService::new(
             authenticator_repository.clone(),
             users.clone(),
+            primary_login_identifiers.clone(),
             sso_sessions.clone(),
             refresh_tokens.clone(),
             codes.clone(),
@@ -577,6 +595,15 @@ impl AppState {
             hasher.clone(),
             audit.clone(),
             clock.clone(),
+        ));
+        // 管理者によるログイン識別子の割り当て（AP8。仕様 §4）。電話番号・社員番号のような
+        // 組織がすでに配っている値でログインさせるための管理操作。
+        let login_identifiers_admin = Arc::new(LoginIdentifierManagementService::new(
+            login_identifier_repository.clone(),
+            users.clone(),
+            audit.clone(),
+            clock.clone(),
+            ids.clone(),
         ));
         // テナント作成・管理（ADR-0009 §4・§6）。作成者を新テナントのブートストラップ管理者
         // （ACTIVE GUEST + idp.tenant.admin）として登録し、テナント・メンバーシップ・権限付与は
@@ -846,6 +873,7 @@ impl AppState {
             permissions_admin,
             authentication_policies_admin,
             users_admin,
+            login_identifiers_admin,
             users_lifecycle,
             tenants_admin,
             system_settings,

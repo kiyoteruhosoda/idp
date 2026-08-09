@@ -149,6 +149,47 @@ impl UserRepository for SqlxUserRepository {
         row.as_ref().map(map_row).transpose()
     }
 
+    /// ログイン欄の入力から解決する（AP8）。
+    ///
+    /// 登録簿（`user_login_identifiers`）の**有効な行**を、種別ごとの正規化キーで 1 クエリで引く。
+    /// 「全件読んでアプリ側で正規化して突き合わせる」方式は取らない（テナントの規模に比例して
+    /// 破綻するうえ、一意性の保証が DB から離れる）。
+    ///
+    /// 一致が無ければ `users.preferred_username` へ落とす。登録簿の導入は expand フェーズで、
+    /// 主たる識別子はまだ `users` 側にあるため（migration 0029）。
+    async fn find_by_login_identifier(
+        &self,
+        tenant_id: TenantId,
+        input: &str,
+    ) -> Result<Option<User>> {
+        let candidates = crate::domain::login_identifier::lookup_candidates(input);
+        if !candidates.is_empty() {
+            let placeholders = vec!["(?, ?)"; candidates.len()].join(", ");
+            let sql = format!(
+                "SELECT u.id AS id, u.tenant_id AS tenant_id, u.sub AS sub, u.email AS email, \
+                 u.email_verified AS email_verified, u.preferred_username AS preferred_username, \
+                 u.name AS name, u.language AS language, u.password_hash AS password_hash, \
+                 u.must_change_password AS must_change_password, u.status AS status, \
+                 u.failed_login_count AS failed_login_count, u.locked_until AS locked_until, \
+                 u.created_at AS created_at, u.updated_at AS updated_at \
+                 FROM user_login_identifiers i \
+                 JOIN users u ON u.id = i.user_id \
+                 WHERE i.tenant_id = ? AND i.is_active = 1 \
+                   AND (i.identifier_type, i.normalized_value) IN ({placeholders}) \
+                 LIMIT 1"
+            );
+            let mut query = sqlx::query(&sql).bind(tenant_id.to_string());
+            for (kind, normalized) in &candidates {
+                query = query.bind(kind.as_str()).bind(normalized.clone());
+            }
+            let row = query.fetch_optional(&self.pool).await.map_err(repo_err)?;
+            if let Some(row) = row {
+                return map_row(&row).map(Some);
+            }
+        }
+        self.find_by_username(tenant_id, input.trim()).await
+    }
+
     async fn update_login_state(
         &self,
         id: Uuid,

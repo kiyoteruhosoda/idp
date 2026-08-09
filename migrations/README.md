@@ -95,6 +95,14 @@ sqlx マイグレーション（MariaDB）を管理する。
   既存行は再帰 CTE で根から辿り、**チェーン全体を同じ家族 id で埋め戻す**（根だけ埋めると
   移行前に rotation 済みのチェーンが分裂し、古いトークンの再生で子孫が失効しない穴が残る）。
   `down` は列と索引を削除する（再利用検知は提示トークン 1 本の失効へ戻る）。
+- `0029_user_login_identifiers`: ログイン識別子の登録簿 `user_login_identifiers` を追加する（AP8。
+  expand フェーズ。ADR-0025）。種別（`username` / `email` / `phone_number` / `employee_number`）・
+  表示値・正規化値・有効/無効を持ち、`(tenant_id, identifier_type, normalized_value)` を UNIQUE に
+  する（無効な行も一意の対象＝止めた値を他人が取れない）。既存の `users.preferred_username` は
+  `username` 種別として冪等な `INSERT ... SELECT` で backfill し、**主たる識別子は `users` 側に
+  残す**（解決は「登録簿 → `preferred_username`」の順）。`users.email` は取り込まない
+  （取り込むと適用した瞬間からメールでログインできてしまい、認証の入り口が黙って広がる）。
+  `down` は表ごと削除する（追加登録した識別子だけを失い、パスワードログインは通り続ける）。
 
 root テナントの UUID は固定値 `00000000-0000-7000-8000-000000000001`（全環境共通・git 管理。ADR-0011）。
 管理者ログイン URL は `/00000000-0000-7000-8000-000000000001/...`。

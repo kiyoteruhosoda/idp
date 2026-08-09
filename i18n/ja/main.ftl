@@ -468,6 +468,13 @@ api-password-too-short = パスワードは { $value } 文字以上にしてく�
 api-password-too-long = パスワードは { $value } 文字以内にしてください。
 api-field-required = 「{ $value }」を入力してください。
 api-user-identity-conflict = そのメールアドレスまたはログイン識別子は、このテナントの別の利用者が既に使っています。
+# ログイン識別子（AP8）。エラーには値そのものを含めない。
+api-login-identifier-required = ログイン識別子の値を入力してください。
+api-login-identifier-too-long = ログイン識別子は { $value } 文字以内で入力してください。
+api-login-identifier-type-invalid = 識別子の種別が不正です。username / email / phone_number / employee_number から選んでください。
+api-login-identifier-phone-invalid = 有効な電話番号を入力してください（数字 6〜20 桁。「+」「-」「空白」「.」「()」を含められます）。
+api-login-identifier-conflict = その値は、このテナントの別の利用者を指しています。
+api-login-identifier-primary-immutable = これは利用者の主たるログイン識別子の写しのため削除できません。変更は利用者のプロフィール編集から行ってください。
 api-user-status-invalid = 状態が無効です。ACTIVE または DISABLED を指定してください。
 api-user-status-locked-forbidden = LOCKED は管理者が設定できません（ログイン失敗の連続で自動的に設定されます）。
 api-user-self-operation-forbidden = 自分自身のアカウントに対しては実行できません。

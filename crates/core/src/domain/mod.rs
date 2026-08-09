@@ -21,6 +21,7 @@ pub mod external_oidc_port;
 pub mod id_generator;
 pub mod issuer;
 pub mod jwt;
+pub mod login_identifier;
 pub mod mailer;
 pub mod message;
 pub mod outbound_uri;
