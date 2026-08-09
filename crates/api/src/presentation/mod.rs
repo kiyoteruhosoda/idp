@@ -6,6 +6,7 @@
 pub mod admin;
 pub mod cookies;
 pub mod correlation;
+pub mod cors;
 pub mod dto;
 pub mod error;
 pub mod handlers;

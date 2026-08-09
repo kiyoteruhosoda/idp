@@ -169,6 +169,10 @@ impl AdminLoginService {
             &AuthenticationContext {
                 client_id: None,
                 user_id,
+                ip_address: ctx.ip_address.as_deref(),
+                now: self.clock.now(),
+                // 管理コンソールのログインは OIDC 認可要求ではないため `acr_values` は無い。
+                requested_acr: &[],
             },
             self.policy_default_effect,
         );
@@ -206,6 +210,40 @@ impl AdminLoginService {
                 } else {
                     AdminLoginOutcome::MfaEnrollmentRequired
                 })
+            }
+            // `require_specific_method`（AP3）。管理コンソールのログインはパスワード（+ TOTP）
+            // しか通らないため、それで満たせない要求は拒否する。
+            PolicyDecision::RequireMethods { .. } => {
+                let used = [AuthenticationMethod::Password];
+                let Some(unmet) = decision.unmet_method_requirement(&used, false) else {
+                    return Ok(());
+                };
+                // TOTP を足せば満たせる利用者は MFA ステップへ送る（`require_mfa` と同じ扱い）。
+                // 最終判定はこのメソッドが TOTP 検証後にもう一度呼ばれる経路で行われる。
+                let has_totp = match crate::application::mfa_login::user_has_confirmed_totp(
+                    self.totp_secrets.as_ref(),
+                    user_id,
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(e) => return Err(AdminLoginOutcome::Internal(e.to_string())),
+                };
+                let reason = format!(
+                    "policy={} reason=method_required required={}",
+                    unmet.policy_code,
+                    unmet.requirement.describe()
+                );
+                if has_totp
+                    && decision.satisfied_by_adding(&used, AuthenticationMethod::Totp, false)
+                {
+                    self.record_policy_denied(tenant_id, user_id, &reason, ctx)
+                        .await;
+                    return Err(AdminLoginOutcome::MfaRequired);
+                }
+                self.record_policy_denied(tenant_id, user_id, &reason, ctx)
+                    .await;
+                Err(AdminLoginOutcome::PolicyDenied)
             }
         }
     }
@@ -611,16 +649,15 @@ impl AdminLoginService {
         ctx: &RequestContext,
     ) -> AdminLoginOutcome {
         let now = self.clock.now();
-        let failed = user.failed_login_count + 1;
-        let locked_until = self.lockout.locked_until_after_failure(failed, now);
-
-        if let Err(e) = self
+        // 加算とロック判定は 1 文の UPDATE に閉じる（SEC13）。
+        let failure = match self
             .users
-            .update_login_state(user.id, failed, locked_until)
+            .record_login_failure(user.id, self.lockout, now)
             .await
         {
-            return AdminLoginOutcome::Internal(e.to_string());
-        }
+            Ok(f) => f,
+            Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
+        };
 
         self.audit
             .record(
@@ -634,7 +671,7 @@ impl AdminLoginService {
             )
             .await;
 
-        if locked_until.is_some() {
+        if failure.is_locked() {
             self.audit
                 .record(
                     AuditEventType::LoginLocked,

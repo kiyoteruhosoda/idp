@@ -24,13 +24,16 @@ use crate::application::authorize::code_redirect;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::application::totp_registration::verify_totp_code;
 use crate::domain::audit::{AuditEventType, AuditResult};
-use crate::domain::authentication_policy::LockoutPolicy;
+use crate::domain::auth_session;
+use crate::domain::authentication_policy::{
+    evaluate_policies, AuthenticationContext, DefaultPolicyEffect, LockoutPolicy, PolicyDecision,
+};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::rate_limit::LoginRateLimiter;
 use crate::domain::repositories::{
-    AuthSessionRepository, ClientConsentRepository, SsoSessionRepository, TotpSecretRepository,
-    UserAuthenticatorRepository, UserRepository,
+    AuthSessionRepository, AuthenticationPolicyRepository, ClientConsentRepository,
+    SsoSessionRepository, TotpSecretRepository, UserAuthenticatorRepository, UserRepository,
 };
 use crate::domain::sso_session::SsoSession;
 use crate::domain::tenant::TenantId;
@@ -65,6 +68,9 @@ pub enum MfaLoginOutcome {
     RateLimited,
     /// アカウントがロック中（連続失敗、または他経路の失敗でロック済み。SEC3）。
     Locked,
+    /// 認証ポリシーにより拒否された（AP2/AP3）。第二要素まで通っていても、`deny` に
+    /// 変わった場合や `require_specific_method` を満たさない方式だった場合はここへ来る。
+    PolicyDenied,
     /// 内部エラー。
     Internal(String),
 }
@@ -93,6 +99,11 @@ pub struct MfaLoginService {
     sso_absolute_ttl: Duration,
     lockout: LockoutPolicy,
     csrf_secret: [u8; 32],
+    /// 認証ポリシー（AP2/AP3）。第二要素まで揃った**最終的な方式集合**に対して再評価するために持つ。
+    /// パスワード段階（`LoginService`）だけで判定すると、`require_specific_method` を課された
+    /// 利用者が「TOTP を登録しているから MFA へ進む」経路で判定を素通りしてしまう。
+    authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
+    policy_default_effect: DefaultPolicyEffect,
 }
 
 impl MfaLoginService {
@@ -113,6 +124,8 @@ impl MfaLoginService {
         sso_absolute_ttl: std::time::Duration,
         lockout: LockoutPolicy,
         csrf_secret: [u8; 32],
+        authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
+        policy_default_effect: DefaultPolicyEffect,
     ) -> Self {
         Self {
             authenticators,
@@ -131,6 +144,8 @@ impl MfaLoginService {
                 .expect("SSO absolute TTL out of range"),
             lockout,
             csrf_secret,
+            authentication_policies,
+            policy_default_effect,
         }
     }
 
@@ -147,14 +162,17 @@ impl MfaLoginService {
         let Some(session_id) = cmd.auth_session_id.as_deref().filter(|s| !s.is_empty()) else {
             return MfaLoginOutcome::SessionExpired;
         };
-        // 認証成功時に id を再生成する（SEC7）ため mut。
-        let mut session = match self.auth_sessions.find_by_id(tenant_id, session_id).await {
+        let session = match self
+            .auth_sessions
+            .find_by_id_hash(tenant_id, &auth_session::id_hash(session_id))
+            .await
+        {
             Ok(Some(s)) => s,
             Ok(None) => return MfaLoginOutcome::SessionExpired,
             Err(e) => return MfaLoginOutcome::Internal(e.to_string()),
         };
         if session.is_expired_at(now) {
-            let _ = self.auth_sessions.delete(&session.id).await;
+            let _ = self.auth_sessions.delete(&session.id_hash).await;
             return MfaLoginOutcome::SessionExpired;
         }
 
@@ -167,7 +185,10 @@ impl MfaLoginService {
         }
 
         // 3. CSRF トークン検証（login_csrf_token と同じ導出を使う）。
-        if idp_contracts::csrf::login_csrf_token(session_id, &self.csrf_secret) != cmd.csrf_token {
+        if !idp_contracts::csrf::verify(
+            &idp_contracts::csrf::login_csrf_token(session_id, &self.csrf_secret),
+            &cmd.csrf_token,
+        ) {
             return MfaLoginOutcome::CsrfMismatch;
         }
 
@@ -226,6 +247,48 @@ impl MfaLoginService {
             Err(e) => return MfaLoginOutcome::Internal(e),
         };
 
+        // 6.5. 認証ポリシーの再評価（AP3）。ここで初めて**最終的な認証方式の集合**
+        //      （パスワード + 実際に通った第二要素）が確定するため、`require_specific_method` は
+        //      この時点で判定する。パスワード段階で判定すると、TOTP 登録済みというだけで
+        //      「WebAuthn 必須」のポリシーを迂回できてしまう。
+        let used_methods = [AuthenticationMethod::Password, second_factor];
+        let decision = match self
+            .authentication_policies
+            .list_enabled_for_tenant(tenant_id)
+            .await
+        {
+            Ok(policies) => evaluate_policies(
+                &policies,
+                &AuthenticationContext {
+                    client_id: Some(&client_id),
+                    user_id,
+                    ip_address: ctx.ip_address.as_deref(),
+                    now,
+                    requested_acr: &session.requested_acr(),
+                },
+                self.policy_default_effect,
+            ),
+            Err(e) => return MfaLoginOutcome::Internal(e.to_string()),
+        };
+        if let PolicyDecision::Deny { policy_code } = &decision {
+            self.record_failure(tenant_id, Some(user_id), &client_id, "policy_denied", ctx)
+                .await;
+            tracing::info!(policy = %policy_code, "MFA login denied by authentication policy");
+            return MfaLoginOutcome::PolicyDenied;
+        }
+        // WebAuthn はこの経路を通らない（パスキーは `PasskeyAuthenticationService`）ため
+        // User Verification は常に未実施として扱う。
+        if let Some(unmet) = decision.unmet_method_requirement(&used_methods, false) {
+            self.record_failure(tenant_id, Some(user_id), &client_id, "method_required", ctx)
+                .await;
+            tracing::info!(
+                policy = %unmet.policy_code,
+                required = %unmet.requirement.describe(),
+                "MFA login denied: required authentication method not used"
+            );
+            return MfaLoginOutcome::PolicyDenied;
+        }
+
         // 7. 成功: 失敗カウンタとロックをリセットする（パスワード認証の成功時と同じ扱い）。
         if user.failed_login_count > 0 || user.locked_until.is_some() {
             if let Err(e) = self.users.update_login_state(user.id, 0, None).await {
@@ -248,14 +311,20 @@ impl MfaLoginService {
 
         // 9. auth_time と `sid` を設定する（MFA 完了時刻を認証時刻とする）。id も再生成する（SEC7）。
         let rotated_id = crypto::random_hex(32);
+        let rotated_id_hash = auth_session::id_hash(&rotated_id);
         if let Err(e) = self
             .auth_sessions
-            .set_authenticated_user(&session.id, &rotated_id, user_id, now, Some(&sso.sid()))
+            .set_authenticated_user(
+                &session.id_hash,
+                &rotated_id_hash,
+                user_id,
+                now,
+                Some(&sso.sid()),
+            )
             .await
         {
             return MfaLoginOutcome::Internal(e.to_string());
         }
-        session.id = rotated_id;
 
         if let Err(e) = self.sso_sessions.create(&sso).await {
             return MfaLoginOutcome::Internal(e.to_string());
@@ -306,7 +375,7 @@ impl MfaLoginService {
 
         if !consented {
             return MfaLoginOutcome::ConsentRequired {
-                auth_session_id: session.id,
+                auth_session_id: rotated_id,
                 sso_session_id,
             };
         }
@@ -336,7 +405,7 @@ impl MfaLoginService {
         };
 
         // 12. AuthSession を削除する。
-        if let Err(e) = self.auth_sessions.delete(&session.id).await {
+        if let Err(e) = self.auth_sessions.delete(&rotated_id_hash).await {
             tracing::warn!(error = %e, "failed to delete auth session after MFA code issuance");
         }
 
@@ -360,7 +429,7 @@ impl MfaLoginService {
         let now = self.clock.now();
         let session = self
             .auth_sessions
-            .find_by_id(tenant.tenant_id(), auth_session_id)
+            .find_by_id_hash(tenant.tenant_id(), &auth_session::id_hash(auth_session_id))
             .await
             .ok()
             .flatten()?;
@@ -454,21 +523,20 @@ impl MfaLoginService {
         now: chrono::DateTime<chrono::Utc>,
         ctx: &RequestContext,
     ) -> MfaLoginOutcome {
-        let failed = user.failed_login_count + 1;
-        let locked_until = self.lockout.locked_until_after_failure(failed, now);
-
-        if let Err(e) = self
+        // 加算とロック判定は 1 文の UPDATE に閉じる（SEC13）。
+        let failure = match self
             .users
-            .update_login_state(user.id, failed, locked_until)
+            .record_login_failure(user.id, self.lockout, now)
             .await
         {
-            return MfaLoginOutcome::Internal(e.to_string());
-        }
+            Ok(f) => f,
+            Err(e) => return MfaLoginOutcome::Internal(e.to_string()),
+        };
 
         self.record_failure(tenant_id, Some(user.id), client_id, "invalid_totp", ctx)
             .await;
 
-        if locked_until.is_some() {
+        if failure.is_locked() {
             self.audit
                 .record(
                     AuditEventType::LoginLocked,
@@ -511,7 +579,7 @@ impl MfaLoginService {
     pub async fn has_mfa_pending(&self, tenant: TenantContext, auth_session_id: &str) -> bool {
         let Ok(Some(session)) = self
             .auth_sessions
-            .find_by_id(tenant.tenant_id(), auth_session_id)
+            .find_by_id_hash(tenant.tenant_id(), &auth_session::id_hash(auth_session_id))
             .await
         else {
             return false;
@@ -599,6 +667,48 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct FakePolicies;
+    #[async_trait]
+    impl crate::domain::repositories::AuthenticationPolicyRepository for FakePolicies {
+        async fn create(
+            &self,
+            _p: &crate::domain::authentication_policy::AuthenticationPolicy,
+        ) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn list_for_tenant(
+            &self,
+            _t: TenantId,
+        ) -> DomainResult<Vec<crate::domain::authentication_policy::AuthenticationPolicy>> {
+            unreachable!()
+        }
+        /// ポリシー未設定のテナント（既定 allow）を模す。
+        async fn list_enabled_for_tenant(
+            &self,
+            _t: TenantId,
+        ) -> DomainResult<Vec<crate::domain::authentication_policy::AuthenticationPolicy>> {
+            Ok(Vec::new())
+        }
+        async fn find_by_id(
+            &self,
+            _t: TenantId,
+            _id: Uuid,
+        ) -> DomainResult<Option<crate::domain::authentication_policy::AuthenticationPolicy>>
+        {
+            unreachable!()
+        }
+        async fn update(
+            &self,
+            _p: &crate::domain::authentication_policy::AuthenticationPolicy,
+        ) -> DomainResult<bool> {
+            unreachable!()
+        }
+        async fn delete(&self, _t: TenantId, _id: Uuid) -> DomainResult<bool> {
+            unreachable!()
+        }
+    }
+
     struct FakeAuthSessions {
         rows: Mutex<Vec<AuthSession>>,
     }
@@ -607,13 +717,17 @@ mod tests {
         async fn create(&self, _s: &AuthSession) -> DomainResult<()> {
             unreachable!()
         }
-        async fn find_by_id(&self, t: TenantId, id: &str) -> DomainResult<Option<AuthSession>> {
+        async fn find_by_id_hash(
+            &self,
+            t: TenantId,
+            id_hash: &str,
+        ) -> DomainResult<Option<AuthSession>> {
             Ok(self
                 .rows
                 .lock()
                 .unwrap()
                 .iter()
-                .find(|s| s.tenant_id == t && s.id == id)
+                .find(|s| s.tenant_id == t && s.id_hash == id_hash)
                 .cloned())
         }
         async fn find_by_handle(
@@ -623,20 +737,20 @@ mod tests {
         ) -> DomainResult<Option<AuthSession>> {
             unreachable!()
         }
-        async fn consume_handle(&self, _id: &str, _h: &str) -> DomainResult<bool> {
+        async fn consume_handle(&self, _id: &str, _h: &str, _n: &str) -> DomainResult<bool> {
             unreachable!()
         }
         async fn set_authenticated_user(
             &self,
-            id: &str,
-            new_id: &str,
+            id_hash: &str,
+            new_id_hash: &str,
             user_id: Uuid,
             auth_time: DateTime<Utc>,
             sso_sid: Option<&str>,
         ) -> DomainResult<()> {
             let mut rows = self.rows.lock().unwrap();
-            if let Some(row) = rows.iter_mut().find(|s| s.id == id) {
-                row.id = new_id.to_string();
+            if let Some(row) = rows.iter_mut().find(|s| s.id_hash == id_hash) {
+                row.id_hash = new_id_hash.to_string();
                 row.authenticated_user_id = Some(user_id);
                 row.auth_time = Some(auth_time);
                 row.sso_sid = sso_sid.map(str::to_string);
@@ -652,9 +766,12 @@ mod tests {
         ) -> DomainResult<()> {
             unreachable!()
         }
-        async fn delete(&self, id: &str) -> DomainResult<()> {
-            self.rows.lock().unwrap().retain(|s| s.id != id);
+        async fn delete(&self, id_hash: &str) -> DomainResult<()> {
+            self.rows.lock().unwrap().retain(|s| s.id_hash != id_hash);
             Ok(())
+        }
+        async fn delete_expired(&self, _now: DateTime<Utc>) -> DomainResult<u64> {
+            unreachable!()
         }
     }
 
@@ -677,6 +794,30 @@ mod tests {
     }
     #[async_trait]
     impl UserRepository for FakeUsers {
+        /// 本番の sqlx 実装は 1 文の UPDATE で加算する（SEC13）。フェイクは単一スレッドの
+        /// テストでしか動かないので、同じ結果になる素朴な加算で足りる。
+        async fn record_login_failure(
+            &self,
+            id: Uuid,
+            lockout: crate::domain::authentication_policy::LockoutPolicy,
+            now: DateTime<Utc>,
+        ) -> DomainResult<crate::domain::user::LoginFailureRecord> {
+            let mut rows = self.rows.lock().unwrap();
+            let Some(row) = rows.iter_mut().find(|u| u.id == id) else {
+                return Ok(crate::domain::user::LoginFailureRecord {
+                    failed_login_count: 0,
+                    locked_until: None,
+                });
+            };
+            row.failed_login_count += 1;
+            if let Some(until) = lockout.locked_until_after_failure(row.failed_login_count, now) {
+                row.locked_until = Some(until);
+            }
+            Ok(crate::domain::user::LoginFailureRecord {
+                failed_login_count: row.failed_login_count,
+                locked_until: row.locked_until.filter(|u| *u > now),
+            })
+        }
         async fn create(&self, _u: &User) -> DomainResult<()> {
             unreachable!()
         }
@@ -885,7 +1026,10 @@ mod tests {
 
             let auth_sessions = Arc::new(FakeAuthSessions {
                 rows: Mutex::new(vec![AuthSession {
-                    id: SESSION_ID.to_string(),
+                    id_hash: auth_session::id_hash(SESSION_ID),
+                    acr_values: None,
+                    login_hint: None,
+                    ui_locales: None,
                     tenant_id,
                     client_id: CLIENT_ID.to_string(),
                     redirect_uri: "https://rp.example.com/cb".to_string(),
@@ -950,6 +1094,8 @@ mod tests {
                     lock_duration_secs: 900,
                 },
                 CSRF_SECRET,
+                Arc::new(FakePolicies),
+                DefaultPolicyEffect::Allow,
             );
 
             Self {

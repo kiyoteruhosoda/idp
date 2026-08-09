@@ -154,6 +154,22 @@ fn discovery_document(issuer: &str, end_session_endpoint: &str) -> Value {
         "id_token_signing_alg_values_supported": ["RS256"],
         "token_endpoint_auth_methods_supported": ["client_secret_basic", "none"],
         "code_challenge_methods_supported": ["S256"],
+        // 応答の返し方は `query` のみ（`form_post` は未実装。G12）。広告しないと、RP の
+        // メタデータ検証が厳しい実装（OIDC 認定テストを含む）が既定を推測して食い違う。
+        "response_modes_supported": ["query"],
+        // `prompt`（OIDC Core §3.1.2.1）。`select_account` は未対応 —— 本 IdP はブラウザごとに
+        // SSO セッションを 1 つしか持たないため「選ばせる別アカウント」が存在しない。
+        "prompt_values_supported": ["none", "login", "consent"],
+        // `request` / `request_uri`（署名付き要求オブジェクト）と `claims` は未対応。
+        // 既定は false だが、明示しておく方が RP 側の実装判断が早い。
+        "request_parameter_supported": false,
+        "request_uri_parameter_supported": false,
+        "claims_parameter_supported": false,
+        // `acr_values` は受け付けるが**保証しない**（認証ポリシーの条件として参照するだけ。AP3）。
+        // 保証できる値が無いので空配列を出す（キー自体を出さないより意図が明確）。
+        "acr_values_supported": [],
+        // ログイン画面が実際に描画できる言語（web の i18n リソースと一致させる）。
+        "ui_locales_supported": ["ja", "en"],
         "frontchannel_logout_supported": true,
         "backchannel_logout_supported": true,
         // logout_token に `sid` を載せるため、RP はセッション単位で失効できる（G5）。
@@ -187,6 +203,15 @@ mod tests {
             "https://api.idp.example.com/.well-known/jwks.json"
         );
         assert_eq!(doc["code_challenge_methods_supported"], json!(["S256"]));
+        // G12: RP のメタデータ検証が見る項目を明示的に広告する。
+        assert_eq!(doc["response_modes_supported"], json!(["query"]));
+        assert_eq!(doc["request_parameter_supported"], json!(false));
+        assert_eq!(doc["claims_parameter_supported"], json!(false));
+        assert_eq!(doc["ui_locales_supported"], json!(["ja", "en"]));
+        assert_eq!(
+            doc["prompt_values_supported"],
+            json!(["none", "login", "consent"])
+        );
         assert_eq!(
             doc["end_session_endpoint"],
             "https://idp.example.com/tenant-a/logout"

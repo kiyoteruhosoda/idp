@@ -144,7 +144,10 @@ pub async fn update_tenant(
     }
     let base = format!("{}{SETTINGS_SEGMENT}", tenant.prefix());
     let sso = sso(&headers);
-    if console_csrf_token(&sso, state.config.csrf_secret()) != form.csrf_token {
+    if !idp_contracts::csrf::verify(
+        &console_csrf_token(&sso, state.config.csrf_secret()),
+        &form.csrf_token,
+    ) {
         return found(&format!("{base}?error=csrf"));
     }
     match state
@@ -180,7 +183,10 @@ pub async fn update_system(
     }
     let base = format!("{}{SETTINGS_SEGMENT}", tenant.prefix());
     let sso = sso(&headers);
-    if console_csrf_token(&sso, state.config.csrf_secret()) != form.csrf_token {
+    if !idp_contracts::csrf::verify(
+        &console_csrf_token(&sso, state.config.csrf_secret()),
+        &form.csrf_token,
+    ) {
         return found(&format!("{base}?error=csrf"));
     }
     let port: Option<u16> = {
@@ -236,7 +242,10 @@ pub async fn update_runtime(
     }
     let base = format!("{}{SETTINGS_SEGMENT}", tenant.prefix());
     let sso = sso(&headers);
-    if console_csrf_token(&sso, state.config.csrf_secret()) != form.csrf_token {
+    if !idp_contracts::csrf::verify(
+        &console_csrf_token(&sso, state.config.csrf_secret()),
+        &form.csrf_token,
+    ) {
         return found(&format!("{base}?error=csrf"));
     }
     let value = form.value.trim();

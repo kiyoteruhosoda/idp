@@ -48,6 +48,9 @@ services:
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?set INTERNAL_SERVICE_TOKEN in .env}
       # 未指定（空）なら issuer のスキームから自動判定（https で有効）。
       COOKIE_SECURE: ${COOKIE_SECURE:-}
+      # 開発用スタックでは Swagger UI（/api/docs）を出す。公開環境では既定（false）のままにする
+      # ——管理 API を含む全仕様が無認証で読めるため（SEC12）。
+      API_DOCS_ENABLED: ${API_DOCS_ENABLED:-true}
       AUTH_SESSION_TTL_SECS: ${AUTH_SESSION_TTL_SECS:-}
       AUTHORIZATION_CODE_TTL_SECS: ${AUTHORIZATION_CODE_TTL_SECS:-}
       SSO_IDLE_TTL_SECS: ${SSO_IDLE_TTL_SECS:-}

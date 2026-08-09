@@ -29,7 +29,7 @@ use crate::domain::saml_response::{
     build_signed_response_xml, generate_saml_id, SamlResponseInput, SamlSigner,
 };
 use crate::domain::saml_service_provider::SamlServiceProvider;
-use crate::domain::saml_sso_request::SamlSsoRequest;
+use crate::domain::saml_sso_request::{self as saml_sso_request, SamlSsoRequest};
 use crate::domain::tenant_context::TenantContext;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -230,8 +230,10 @@ impl SamlSsoService {
         // 4. 進行状態を作成し、単回ハンドルで web へハンドオフする（ADR-0018 決定 2 と同方式）。
         let now = self.clock.now();
         let handle = crypto::random_hex(32);
+        // 平文の `saml_request_id` はここでは誰にも渡らない（web へ渡すのは単回ハンドルだけ）。
+        // web が受け取る値はハンドル交換時（`resume`）に作られる。
         let request = SamlSsoRequest {
-            id: crypto::random_hex(32),
+            id_hash: saml_sso_request::id_hash(&crypto::random_hex(32)),
             tenant_id: tenant.tenant_id(),
             service_provider_id: provider.id,
             sp_entity_id: provider.entity_id.clone(),
@@ -261,40 +263,48 @@ impl SamlSsoService {
         let now = self.clock.now();
 
         // 1. 進行状態の解決。初回はハンドルを単回消費し、ログイン後の再開は行 id で引く。
-        let request = if let Some(handle) = cmd.handle.as_deref().filter(|h| !h.is_empty()) {
-            let handle_hash = crypto::sha256_hex(handle);
-            let request = match self
-                .requests
-                .find_by_handle(tenant.tenant_id(), &handle_hash)
-                .await
-            {
-                Ok(Some(r)) => r,
-                Ok(None) => return SamlResumeOutcome::Expired,
-                Err(e) => return SamlResumeOutcome::Internal(e.to_string()),
-            };
-            if !request.handle_is_valid_at(now) || request.is_expired_at(now) {
+        //    DB にはハッシュしか無い（SEC6）ため、ハンドル交換の側では web へ返す平文をここで作る。
+        let (request, saml_request_id) =
+            if let Some(handle) = cmd.handle.as_deref().filter(|h| !h.is_empty()) {
+                let handle_hash = crypto::sha256_hex(handle);
+                let mut request = match self
+                    .requests
+                    .find_by_handle(tenant.tenant_id(), &handle_hash)
+                    .await
+                {
+                    Ok(Some(r)) => r,
+                    Ok(None) => return SamlResumeOutcome::Expired,
+                    Err(e) => return SamlResumeOutcome::Internal(e.to_string()),
+                };
+                if !request.handle_is_valid_at(now) || request.is_expired_at(now) {
+                    return SamlResumeOutcome::Expired;
+                }
+                let rotated_id = crypto::random_hex(32);
+                let rotated_id_hash = saml_sso_request::id_hash(&rotated_id);
+                match self
+                    .requests
+                    .consume_handle(&request.id_hash, &handle_hash, &rotated_id_hash)
+                    .await
+                {
+                    Ok(true) => request.id_hash = rotated_id_hash,
+                    // 並行する交換に負けた・再利用 → 単回使用として拒否する。
+                    Ok(false) => return SamlResumeOutcome::Expired,
+                    Err(e) => return SamlResumeOutcome::Internal(e.to_string()),
+                }
+                (request, rotated_id)
+            } else if let Some(id) = cmd.saml_request_id.as_deref().filter(|s| !s.is_empty()) {
+                match self
+                    .requests
+                    .find_by_id_hash(tenant.tenant_id(), &saml_sso_request::id_hash(id))
+                    .await
+                {
+                    Ok(Some(r)) if !r.is_expired_at(now) => (r, id.to_string()),
+                    Ok(_) => return SamlResumeOutcome::Expired,
+                    Err(e) => return SamlResumeOutcome::Internal(e.to_string()),
+                }
+            } else {
                 return SamlResumeOutcome::Expired;
-            }
-            match self
-                .requests
-                .consume_handle(&request.id, &handle_hash)
-                .await
-            {
-                Ok(true) => {}
-                // 並行する交換に負けた・再利用 → 単回使用として拒否する。
-                Ok(false) => return SamlResumeOutcome::Expired,
-                Err(e) => return SamlResumeOutcome::Internal(e.to_string()),
-            }
-            request
-        } else if let Some(id) = cmd.saml_request_id.as_deref().filter(|s| !s.is_empty()) {
-            match self.requests.find_by_id(tenant.tenant_id(), id).await {
-                Ok(Some(r)) if !r.is_expired_at(now) => r,
-                Ok(_) => return SamlResumeOutcome::Expired,
-                Err(e) => return SamlResumeOutcome::Internal(e.to_string()),
-            }
-        } else {
-            return SamlResumeOutcome::Expired;
-        };
+            };
 
         // 2. SSO 復元（OIDC と共通の判定。メンバーシップ検証を含む）。
         let restored = match cmd.sso_session_id.as_deref().filter(|s| !s.is_empty()) {
@@ -309,9 +319,7 @@ impl SamlSsoService {
             None => None,
         };
         let Some(restored) = restored else {
-            return SamlResumeOutcome::LoginRequired {
-                saml_request_id: request.id,
-            };
+            return SamlResumeOutcome::LoginRequired { saml_request_id };
         };
 
         // 3. SP を再解決する（フロー中の削除・無効化を SSO 成立後にも尊重する）。
@@ -322,7 +330,7 @@ impl SamlSsoService {
         {
             Ok(Some(p)) if p.enabled => p,
             Ok(_) => {
-                let _ = self.requests.delete(&request.id).await;
+                let _ = self.requests.delete(&request.id_hash).await;
                 return SamlResumeOutcome::Expired;
             }
             Err(e) => return SamlResumeOutcome::Internal(e.to_string()),
@@ -331,7 +339,7 @@ impl SamlSsoService {
         // 4. 進行状態を原子的に消費（クレーム）してから応答を発行する。同じ `saml_request_id` の
         //    並行 resume は片方だけが削除（1 行）に成功し、負けた側は Expired になる
         //    （1 つの AuthnRequest に対する成功アサーションの二重発行を防ぐ）。
-        match self.requests.delete(&request.id).await {
+        match self.requests.delete(&request.id_hash).await {
             Ok(true) => {}
             Ok(false) => return SamlResumeOutcome::Expired,
             Err(e) => return SamlResumeOutcome::Internal(e.to_string()),

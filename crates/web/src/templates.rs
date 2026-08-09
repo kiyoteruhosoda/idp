@@ -775,7 +775,6 @@ pub struct ClientFormValues {
     pub client_type: String,
     pub redirect_uris: String,
     pub scopes: String,
-    pub require_pkce: bool,
     pub client_status: String,
     /// サーバ間（M2M）連携で `client_credentials` grant を許可するか（G4）。
     pub allow_client_credentials: bool,
@@ -789,7 +788,6 @@ impl ClientFormValues {
             client_type: "confidential".to_string(),
             redirect_uris: String::new(),
             scopes: "openid".to_string(),
-            require_pkce: true,
             client_status: "ACTIVE".to_string(),
             allow_client_credentials: false,
         }
@@ -802,7 +800,6 @@ impl ClientFormValues {
             client_type: c.client_type.clone(),
             redirect_uris: c.redirect_uris.join("\n"),
             scopes: c.scopes.join(" "),
-            require_pkce: c.require_pkce,
             client_status: c.client_status.clone(),
             // 許可の真の出所は api が返す `grant_types`（G4）。フォームはその写しを表示する。
             allow_client_credentials: c.grant_types.iter().any(|g| g == "client_credentials"),

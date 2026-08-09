@@ -265,9 +265,9 @@ pub async fn insert_public_client(pool: &MySqlPool, tenant_id: &str, scopes: &[&
     sqlx::query(
         "INSERT INTO clients (id, tenant_id, client_id, client_secret_hash, client_type, \
          client_status, app_name, redirect_uris, grant_types, response_types, scopes, \
-         token_endpoint_auth_method, require_pkce) \
+         token_endpoint_auth_method) \
          VALUES (?, ?, ?, NULL, 'public', 'ACTIVE', 'Integration Test App', ?, \
-         '[\"authorization_code\"]', '[\"code\"]', ?, 'none', 1)",
+         '[\"authorization_code\"]', '[\"code\"]', ?, 'none')",
     )
     .bind(uuid::Uuid::now_v7().to_string())
     .bind(tenant_id)
@@ -294,9 +294,9 @@ pub async fn insert_confidential_client(
     sqlx::query(
         "INSERT INTO clients (id, tenant_id, client_id, client_secret_hash, client_type, \
          client_status, app_name, redirect_uris, grant_types, response_types, scopes, \
-         token_endpoint_auth_method, require_pkce) \
+         token_endpoint_auth_method) \
          VALUES (?, ?, ?, ?, 'confidential', 'ACTIVE', 'Integration Confidential App', ?, \
-         '[\"authorization_code\"]', '[\"code\"]', ?, 'client_secret_basic', 1)",
+         '[\"authorization_code\"]', '[\"code\"]', ?, 'client_secret_basic')",
     )
     .bind(uuid::Uuid::now_v7().to_string())
     .bind(tenant_id)
@@ -326,10 +326,10 @@ pub async fn insert_m2m_client(
     sqlx::query(
         "INSERT INTO clients (id, tenant_id, client_id, client_secret_hash, client_type, \
          client_status, app_name, redirect_uris, grant_types, response_types, scopes, \
-         token_endpoint_auth_method, require_pkce) \
+         token_endpoint_auth_method) \
          VALUES (?, ?, ?, ?, 'confidential', 'ACTIVE', 'Integration M2M App', ?, \
          '[\"authorization_code\", \"client_credentials\"]', '[\"code\"]', ?, \
-         'client_secret_basic', 1)",
+         'client_secret_basic')",
     )
     .bind(uuid::Uuid::now_v7().to_string())
     .bind(tenant_id)

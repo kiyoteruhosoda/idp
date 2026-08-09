@@ -1,3 +1,49 @@
+## 2026-08-09（優先度 8・5 の対応: SEC6・SEC12・SEC13・G1・G2・G9・AP3）
+
+- **進行状態テーブルの秘密値をハッシュ保存にした（SEC6）。** `auth_sessions.id` は web の
+  `auth_session_id` Cookie **そのもの**でありながら平文で主キーに置かれており、他の bearer
+  credential（`sso_sessions.session_hash`・`authorization_codes.code_hash`・`refresh_tokens.token_hash`・
+  同じ表の `handle_hash`）が全てハッシュ保存なのと非対称だった。DB 読取を得た者は TTL の間、
+  同意待ち・MFA 待ちの認可セッションを乗っ取れる。`id_hash`（SHA-256）へ移し、同じ構造だった
+  `saml_sso_requests.id`、平文の写しを持っていた `passkey_challenges.auth_session_id` /
+  `external_login_requests.auth_session_id` も揃えた（1 か所でも残るとハッシュ化の意味が無い）。
+  リポジトリのトレイトが平文を受け取らない形にして、生値を保存する経路を型の上で塞いだ。
+  ハンドル交換は平文 id が手元に無いため、消費と同じ UPDATE で id を再生成する。
+- **ログイン失敗カウンタの加算を原子的にした（SEC13）。** 「読む → +1 して上書き」だったため、
+  並行して届いた N 件の試行が同じ値を読むと N 回失敗しても行が 1 しか進まず、ロック閾値に
+  届かないことがあった。加算とロック判定を 1 文の UPDATE で行う `record_login_failure` を追加し、
+  失敗経路 5 つ（OIDC パスワード / MFA / ポータル ×2 / 管理コンソール）を寄せた。
+- **期限切れレコードの GC を 1 本のタスクに集約した（G2）。** 定期削除は `log` にしか無く、
+  `auth_sessions`・`authorization_codes`・`refresh_tokens`・`sso_sessions`・`revoked_access_tokens`・
+  `passkey_challenges`・各種一時トークン表は誰も消していなかった（`passkey_challenges` は
+  `delete_expired` を実装済みなのに呼び出し元が無かった）。`ExpiringRecordStore` ポートで掃除口を
+  1 ファイルに単一定義し、`EXPIRED_RECORD_PURGE_INTERVAL_SECS`（既定 3600）で回す。
+  `expires_at` を持つのに掃除対象へ載っていない表は統合テストが検出する。
+- **CORS を実装した（G1）。** 既定トポロジ（api と web が別ホスト名）では SPA からの `/token`・
+  `/userinfo` が常にクロスオリジンで、`Access-Control-Allow-Origin` が無いためブラウザが
+  レスポンスを読めなかった。公開メタデータは `*`、`/token`・`/revoke`・`/introspect`・`/userinfo` は
+  テナント内 public client の `redirect_uris` 由来のオリジン + `CORS_ALLOWED_ORIGINS` に限る。
+  管理 API・`/internal/*` には開けず、どの経路でも `Allow-Credentials` は付けない（ADR-0018）。
+- **api のシングルインスタンス前提を明文化した（G9）。** レートリミッタ・キャッシュがプロセス内
+  メモリ、鍵ローテーションが排他制御なし。README に「何が壊れるか」の一覧を、OPERATIONS に
+  `--scale api=N` を使わない旨を書いた。
+- **低リスク改善のまとめ（SEC12）。** CSP から `script-src 'unsafe-inline'` を外した（インライン
+  script を自オリジンのアセットへ切り出し、埋め込み値は `data-*` で渡す）。Swagger UI を
+  `API_DOCS_ENABLED`（既定 false）で制御。死に設定だった `clients.require_pkce` を列ごと削除
+  （PKCE S256 は無条件必須で、画面が「切れる」と誤解させていた）。同意 POST を Cookie の
+  `auth_session_id` に束縛。argon2 のパラメータを明示（19MiB/2/1）。CSRF 比較を定数時間に統一。
+  `/authorize` の redirect_uri 組み立てから `expect()` を除去。
+- **認証ポリシーの条件種別を拡張し `require_specific_method` を追加した（AP3）。** 条件に
+  `ip_cidrs`（ネットワークゾーン）・`time_windows`（時間帯）・`requested_acr` を追加し、効果に
+  「その方式でなければ通さない」を追加した（`require_mfa` に丸めると TOTP 登録済みの利用者が
+  WebAuthn 必須をすり抜ける）。判定は実際に使われた方式が確定した時点で行い、MFA 経路は
+  `MfaLoginService` が `[password, 第二要素]` に対して再評価する。`/authorize` は `acr_values`・
+  `login_hint`・`ui_locales` を受け付けて保存し、Discovery に対応状況を広告する。
+  国・端末信頼の条件は判定材料（GeoIP・デバイス登録簿）が無いため未実装（ADR-0020 追補・Progress AP14）。
+  一致した方式指定は**全件**を満たす必要があり（1 件目だけ見ると「AND はポリシー 2 本で表す」が
+  壊れる）、判定は各経路が SSO を発行する直前に置く。**復元した SSO セッションにも掛ける** ——
+  掛けないと、RP が `acr_values` で起動したポリシーをパスワードだけの既存セッションが素通りする。
+
 ## 2026-08-08（セキュリティレビューの高優先度対応: SEC1・SEC5・SEC7・SEC8・SEC9）
 
 - **web の `X-Forwarded-For` 無条件信頼をやめた（SEC1）。** api と同じ `TRUST_FORWARDED_HEADERS`

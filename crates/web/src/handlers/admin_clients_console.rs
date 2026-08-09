@@ -90,8 +90,6 @@ pub struct NewClientForm {
     pub client_type: String,
     pub redirect_uris: String,
     pub scopes: String,
-    #[serde(default)]
-    pub require_pkce: Option<String>,
     /// チェックボックスは「チェック時のみ送られる」ため `Option<String>` で受ける（G4）。
     #[serde(default)]
     pub allow_client_credentials: Option<String>,
@@ -111,7 +109,6 @@ pub async fn create(
         client_type: form.client_type.clone(),
         redirect_uris: form.redirect_uris.clone(),
         scopes: form.scopes.clone(),
-        require_pkce: form.require_pkce.is_some(),
         client_status: "ACTIVE".to_string(),
         allow_client_credentials: form.allow_client_credentials.is_some(),
     };
@@ -135,7 +132,6 @@ pub async fn create(
         "client_type": form.client_type,
         "redirect_uris": parse_uris(&form.redirect_uris),
         "scopes": parse_scopes(&form.scopes),
-        "require_pkce": form.require_pkce.is_some(),
         "allow_client_credentials": form.allow_client_credentials.is_some(),
     });
     // api のバリデーション/競合メッセージをこの画面へ出すため、決定言語を引き継ぐ（MT20）。
@@ -678,7 +674,6 @@ mod tests {
             response_types: vec!["code".into()],
             scopes: vec!["openid".into()],
             token_endpoint_auth_method: "none".into(),
-            require_pkce: true,
             created_at: "2026-07-06T00:00:00Z".into(),
             updated_at: "2026-07-06T00:00:00Z".into(),
         };

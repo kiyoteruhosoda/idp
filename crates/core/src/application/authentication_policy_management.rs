@@ -10,7 +10,9 @@
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::audit::{AuditEventType, AuditResult};
-use crate::domain::authentication_policy::{AuthenticationPolicy, PolicyConditions, PolicyEffect};
+use crate::domain::authentication_policy::{
+    AuthenticationPolicy, PolicyConditions, PolicyEffect, RequiredMethods, TimeWindow,
+};
 use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
 use crate::domain::id_generator::IdGenerator;
@@ -45,10 +47,18 @@ pub struct AuthenticationPolicyDraft {
     pub policy_name: String,
     pub priority: i32,
     pub enabled: bool,
-    /// `allow` / `deny` / `require_mfa`（不正値は Validation エラー）。
+    /// `allow` / `deny` / `require_mfa` / `require_specific_method`（不正値は Validation エラー）。
     pub effect: String,
+    /// `require_specific_method` の要求内容（他の効果では `None`。AP3）。
+    pub effect_params: Option<RequiredMethods>,
     pub client_ids: Vec<String>,
     pub user_ids: Vec<Uuid>,
+    /// ネットワークゾーン（CIDR 表記。AP3）。
+    pub ip_cidrs: Vec<String>,
+    /// 適用時間帯（AP3）。
+    pub time_windows: Vec<TimeWindow>,
+    /// 認可要求の `acr_values` 条件（AP3）。
+    pub requested_acr: Vec<String>,
 }
 
 pub struct AuthenticationPolicyManagementService {
@@ -223,17 +233,45 @@ fn validated(
             "api-auth-policy-effect-invalid",
         ))
     })?;
+    AuthenticationPolicy::validate_effect_params(effect, draft.effect_params.as_ref()).map_err(
+        |_| {
+            AuthenticationPolicyManagementError::Validation(MessageKey::new(
+                "api-auth-policy-effect-params-invalid",
+            ))
+        },
+    )?;
     if draft.client_ids.len() > MAX_CONDITION_ENTRIES
         || draft.user_ids.len() > MAX_CONDITION_ENTRIES
+        || draft.ip_cidrs.len() > MAX_CONDITION_ENTRIES
+        || draft.time_windows.len() > MAX_CONDITION_ENTRIES
+        || draft.requested_acr.len() > MAX_CONDITION_ENTRIES
         || draft
             .client_ids
             .iter()
             .any(|c| c.trim().is_empty() || c.len() > 255)
+        || draft
+            .requested_acr
+            .iter()
+            .any(|a| a.trim().is_empty() || a.len() > 255)
     {
         return Err(AuthenticationPolicyManagementError::Validation(
             MessageKey::new("api-auth-policy-conditions-invalid"),
         ));
     }
+    let conditions = PolicyConditions {
+        client_ids: draft.client_ids,
+        user_ids: draft.user_ids,
+        ip_cidrs: draft.ip_cidrs,
+        time_windows: draft.time_windows,
+        requested_acr: draft.requested_acr,
+    };
+    // CIDR・時間帯の形式は保存前に弾く（壊れた条件は評価時に黙って「一致しない」となり、
+    // deny ポリシーが効かない状態を作る）。
+    conditions.validate().map_err(|_| {
+        AuthenticationPolicyManagementError::Validation(MessageKey::new(
+            "api-auth-policy-conditions-invalid",
+        ))
+    })?;
     Ok(AuthenticationPolicy {
         id: Uuid::nil(),
         tenant_id: Uuid::nil().into(),
@@ -242,10 +280,8 @@ fn validated(
         priority: draft.priority,
         enabled: draft.enabled,
         effect,
-        conditions: PolicyConditions {
-            client_ids: draft.client_ids,
-            user_ids: draft.user_ids,
-        },
+        effect_params: draft.effect_params,
+        conditions,
         created_at: now,
         updated_at: now,
     })
@@ -285,6 +321,10 @@ mod tests {
 
     fn draft(code: &str) -> AuthenticationPolicyDraft {
         AuthenticationPolicyDraft {
+            effect_params: None,
+            ip_cidrs: Vec::new(),
+            time_windows: Vec::new(),
+            requested_acr: Vec::new(),
             policy_code: code.to_string(),
             policy_name: format!("policy {code}"),
             priority: 10,
@@ -469,22 +509,42 @@ mod tests {
 
         for bad in [
             AuthenticationPolicyDraft {
+                effect_params: None,
+                ip_cidrs: Vec::new(),
+                time_windows: Vec::new(),
+                requested_acr: Vec::new(),
                 policy_code: "bad code!".to_string(),
                 ..draft("x")
             },
             AuthenticationPolicyDraft {
+                effect_params: None,
+                ip_cidrs: Vec::new(),
+                time_windows: Vec::new(),
+                requested_acr: Vec::new(),
                 policy_name: "  ".to_string(),
                 ..draft("x")
             },
             AuthenticationPolicyDraft {
+                effect_params: None,
+                ip_cidrs: Vec::new(),
+                time_windows: Vec::new(),
+                requested_acr: Vec::new(),
                 effect: "block".to_string(),
                 ..draft("x")
             },
             AuthenticationPolicyDraft {
+                effect_params: None,
+                ip_cidrs: Vec::new(),
+                time_windows: Vec::new(),
+                requested_acr: Vec::new(),
                 client_ids: vec!["".to_string()],
                 ..draft("x")
             },
             AuthenticationPolicyDraft {
+                effect_params: None,
+                ip_cidrs: Vec::new(),
+                time_windows: Vec::new(),
+                requested_acr: Vec::new(),
                 user_ids: vec![Uuid::new_v4(); MAX_CONDITION_ENTRIES + 1],
                 ..draft("x")
             },

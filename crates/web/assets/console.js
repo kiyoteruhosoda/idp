@@ -19,3 +19,24 @@
     }
   });
 })();
+
+// SAML SP メタデータの取り込みフォーム（SEC12 で `console/saml_service_providers.html` の
+// インライン script から移設）。ファイルを選んだ瞬間に取り込みを実行する（別途「取り込み」ボタンを
+// 押さなくてよい）。JS 無効時はボタン送信の従来動作にフォールバックする。
+(function () {
+  var fileInput = document.getElementById("metadata_file");
+  var form = document.getElementById("saml-metadata-import-form");
+  if (!fileInput || !form) {
+    return;
+  }
+  fileInput.addEventListener("change", function () {
+    if (!fileInput.files || fileInput.files.length === 0) {
+      return;
+    }
+    if (typeof form.requestSubmit === "function") {
+      form.requestSubmit();
+    } else {
+      form.submit();
+    }
+  });
+})();

@@ -46,7 +46,7 @@ fn map_row(row: &MySqlRow) -> Result<PasskeyChallenge> {
         user_id,
         challenge_type,
         state_json: row.try_get("state_json").map_err(repo_err)?,
-        auth_session_id: row.try_get("auth_session_id").map_err(repo_err)?,
+        auth_session_id_hash: row.try_get("auth_session_id_hash").map_err(repo_err)?,
         expires_at: to_utc(row.try_get("expires_at").map_err(repo_err)?),
         created_at: to_utc(row.try_get("created_at").map_err(repo_err)?),
     })
@@ -57,14 +57,14 @@ impl PasskeyChallengeRepository for SqlxPasskeyChallengeRepository {
     async fn create(&self, challenge: &PasskeyChallenge) -> Result<()> {
         sqlx::query(
             "INSERT INTO passkey_challenges \
-             (id, user_id, challenge_type, state_json, auth_session_id, expires_at, created_at) \
+             (id, user_id, challenge_type, state_json, auth_session_id_hash, expires_at, created_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(challenge.id.to_string())
         .bind(challenge.user_id.map(|u| u.to_string()))
         .bind(challenge.challenge_type.as_str())
         .bind(&challenge.state_json)
-        .bind(&challenge.auth_session_id)
+        .bind(&challenge.auth_session_id_hash)
         .bind(challenge.expires_at.naive_utc())
         .bind(challenge.created_at.naive_utc())
         .execute(&self.pool)
@@ -75,7 +75,7 @@ impl PasskeyChallengeRepository for SqlxPasskeyChallengeRepository {
 
     async fn find_by_id(&self, id: Uuid) -> Result<Option<PasskeyChallenge>> {
         let row = sqlx::query(
-            "SELECT id, user_id, challenge_type, state_json, auth_session_id, expires_at, created_at \
+            "SELECT id, user_id, challenge_type, state_json, auth_session_id_hash, expires_at, created_at \
              FROM passkey_challenges WHERE id = ?",
         )
         .bind(id.to_string())
@@ -94,12 +94,12 @@ impl PasskeyChallengeRepository for SqlxPasskeyChallengeRepository {
         Ok(())
     }
 
-    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<()> {
-        sqlx::query("DELETE FROM passkey_challenges WHERE expires_at <= ?")
+    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64> {
+        let result = sqlx::query("DELETE FROM passkey_challenges WHERE expires_at <= ?")
             .bind(now.naive_utc())
             .execute(&self.pool)
             .await
             .map_err(repo_err)?;
-        Ok(())
+        Ok(result.rows_affected())
     }
 }

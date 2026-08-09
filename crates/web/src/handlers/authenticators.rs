@@ -131,7 +131,10 @@ pub async fn set_status(
     let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         return found(&format!("{}/login", tenant.prefix()));
     };
-    if console_csrf_token(&sso, state.config.csrf_secret()) != form.csrf_token {
+    if !idp_contracts::csrf::verify(
+        &console_csrf_token(&sso, state.config.csrf_secret()),
+        &form.csrf_token,
+    ) {
         return see_other(&format!("{base}?error=csrf"));
     }
     if let Err(response) = step_up::require_step_up(
@@ -198,7 +201,10 @@ pub async fn issue_recovery_codes(
     let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         return found(&format!("{}/login", tenant.prefix()));
     };
-    if console_csrf_token(&sso, state.config.csrf_secret()) != form.csrf_token {
+    if !idp_contracts::csrf::verify(
+        &console_csrf_token(&sso, state.config.csrf_secret()),
+        &form.csrf_token,
+    ) {
         return see_other(&format!("{base}?error=csrf"));
     }
     if let Err(response) = step_up::require_step_up(

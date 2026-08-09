@@ -24,7 +24,7 @@ use crate::domain::application_log::{
 };
 use crate::domain::audit::{AuditEvent, AuditLogEntry, AuditLogFilter};
 use crate::domain::auth_session::AuthSession;
-use crate::domain::authentication_policy::AuthenticationPolicy;
+use crate::domain::authentication_policy::{AuthenticationPolicy, LockoutPolicy};
 use crate::domain::authorization_code::AuthorizationCode;
 use crate::domain::backchannel_logout::BackchannelLogoutDelivery;
 use crate::domain::client::Client;
@@ -46,7 +46,7 @@ use crate::domain::system_setting::SystemSetting;
 use crate::domain::tenant::{Tenant, TenantId};
 use crate::domain::tenant_membership::{TenantMemberFilter, TenantMemberPage, TenantMembership};
 use crate::domain::totp_secret::TotpSecret;
-use crate::domain::user::User;
+use crate::domain::user::{LoginFailureRecord, User};
 use crate::domain::user_authenticator::{
     AuthenticatorStatus, AuthenticatorType, UserAuthenticator,
 };
@@ -158,12 +158,30 @@ pub trait UserRepository: Send + Sync {
     /// 所属元が `tenant_id` のユーザーを preferred_username で検索する。
     async fn find_by_username(&self, tenant_id: TenantId, username: &str) -> Result<Option<User>>;
     /// ログイン失敗回数・ロック期限を更新する（ロックポリシー、設計仕様 §4.3）。
+    ///
+    /// **失敗の記録には使わない**（[`Self::record_login_failure`] を使う）。読んだ値を +1 して
+    /// 書き戻すと並行試行で取りこぼす。こちらは「成功時のリセット」「管理者による解除」のように
+    /// 絶対値を書く用途に限る。
     async fn update_login_state(
         &self,
         id: Uuid,
         failed_login_count: i32,
         locked_until: Option<DateTime<Utc>>,
     ) -> Result<()>;
+    /// ログイン失敗を 1 件記録し、記録後の状態を返す（SEC13）。
+    ///
+    /// 加算とロック判定を**1 文**で行う。「読む → +1 して書き戻す」だと、並行して届いた N 件の
+    /// 試行が同じ値を読み、N 回失敗しても失敗回数が 1 しか進まずロック閾値に届かないことがある。
+    /// ロックは多層防御の一枚（IP 単位のレート制限とは別の層）なので、取りこぼさない。
+    ///
+    /// ロック判定を呼び出し側に残さないのは、閾値の比較対象になる失敗回数が
+    /// **この UPDATE の中でしか正しく分からない**ためである。
+    async fn record_login_failure(
+        &self,
+        id: Uuid,
+        lockout: LockoutPolicy,
+        now: DateTime<Utc>,
+    ) -> Result<LoginFailureRecord>;
     /// パスワードハッシュを更新し、`must_change_password` を解除する（パスワード変更、ADR-0009 §5）。
     async fn update_password(&self, id: Uuid, password_hash: &str) -> Result<()>;
     /// パスワードハッシュを更新し、`must_change_password` を**設定**する（管理者による再発行。
@@ -246,43 +264,79 @@ pub trait SamlServiceProviderRepository: Send + Sync {
 
 /// SAML SP-initiated SSO の進行状態（`saml_sso_requests`）の永続化。
 /// ハンドルの単回消費は [`AuthSessionRepository`] と同じ原子的 UPDATE 方式で強制する。
+/// SAML SP-initiated SSO の進行状態の永続化。
+///
+/// [`AuthSessionRepository`] と同じく **`saml_request_id` の平文を受け取らない**。引数の
+/// `id_hash` は [`crate::domain::saml_sso_request::id_hash`] で導出した SHA-256 である（SEC6）。
 #[async_trait]
 pub trait SamlSsoRequestRepository: Send + Sync {
     async fn create(&self, request: &SamlSsoRequest) -> Result<()>;
     /// フローを開始したテナントの行のみ返す（他テナントの id を持ち込んでも解決させない）。
-    async fn find_by_id(&self, tenant_id: TenantId, id: &str) -> Result<Option<SamlSsoRequest>>;
-    /// web ハンドオフ用ハンドル（SHA-256）で行を引く。テナント限定は `find_by_id` と同じ。
+    async fn find_by_id_hash(
+        &self,
+        tenant_id: TenantId,
+        id_hash: &str,
+    ) -> Result<Option<SamlSsoRequest>>;
+    /// web ハンドオフ用ハンドル（SHA-256）で行を引く。テナント限定は `find_by_id_hash` と同じ。
     async fn find_by_handle(
         &self,
         tenant_id: TenantId,
         handle_hash: &str,
     ) -> Result<Option<SamlSsoRequest>>;
-    /// ハンドルを単回使用として消費する（`handle_hash` を NULL 化）。すでに消費済み（並行交換に
-    /// 負けた・再利用）なら `false` を返す。
-    async fn consume_handle(&self, id: &str, handle_hash: &str) -> Result<bool>;
+    /// ハンドルを単回使用として消費し（`handle_hash` を NULL 化）、**同時に id を `new_id_hash`
+    /// へ再生成する**。すでに消費済み（並行交換に負けた・再利用）なら `false` を返す。
+    /// 再生成が要る理由は [`AuthSessionRepository::consume_handle`] と同じ。
+    async fn consume_handle(
+        &self,
+        id_hash: &str,
+        handle_hash: &str,
+        new_id_hash: &str,
+    ) -> Result<bool>;
     /// 進行状態を削除する。応答発行前の**原子的なクレーム**を兼ねるため、削除できた場合のみ
     /// `true` を返す（並行 resume に負けた・消費済みなら `false` = 発行不可）。
-    async fn delete(&self, id: &str) -> Result<bool>;
+    async fn delete(&self, id_hash: &str) -> Result<bool>;
+    /// 期限切れの行を削除し、削除件数を返す（G2 の一括 GC から呼ぶ）。
+    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64>;
 }
 
+/// 認可フローの一時状態（`/authorize` 〜 `/login` 完了）の永続化。
+///
+/// **本トレイトは `auth_session_id` の平文を一切受け取らない。** 引数の `id_hash` は
+/// [`crate::domain::auth_session::id_hash`] で導出した SHA-256 で、平文は Application 層より
+/// 上（web の Cookie・ハンドオフ）にしか存在しない（SEC6）。平文を渡す口を作らないことで、
+/// 「うっかり生値を保存する」経路を型の上で塞いでいる。
 #[async_trait]
 pub trait AuthSessionRepository: Send + Sync {
     async fn create(&self, session: &AuthSession) -> Result<()>;
     /// フローを開始したテナントの auth session のみ返す（他テナントの session id を
     /// 持ち込んでも解決させない）。
-    async fn find_by_id(&self, tenant_id: TenantId, id: &str) -> Result<Option<AuthSession>>;
+    async fn find_by_id_hash(
+        &self,
+        tenant_id: TenantId,
+        id_hash: &str,
+    ) -> Result<Option<AuthSession>>;
     /// web ハンドオフ用ハンドル（SHA-256）で auth session を引く（ADR-0018 決定 2）。
-    /// `find_by_id` と同じくフローのテナントに限定する。期限・消費済み判定は Application 層が行う。
+    /// `find_by_id_hash` と同じくフローのテナントに限定する。期限・消費済み判定は Application 層が行う。
     async fn find_by_handle(
         &self,
         tenant_id: TenantId,
         handle_hash: &str,
     ) -> Result<Option<AuthSession>>;
-    /// ハンドルを単回使用として消費する（`handle_hash` を NULL 化）。すでに消費済み（並行交換に
-    /// 負けた・再利用）なら `false` を返す。
-    async fn consume_handle(&self, id: &str, handle_hash: &str) -> Result<bool>;
+    /// ハンドルを単回使用として消費し（`handle_hash` を NULL 化）、**同時に id を
+    /// `new_id_hash` へ再生成する**。すでに消費済み（並行交換に負けた・再利用）なら `false` を返す。
+    ///
+    /// 交換と再生成を 1 文にまとめてあるのは、ハンドル経路では平文 id が手元に無いためである。
+    /// DB にはハッシュしか無く（SEC6）平文へ戻せないので、ハンドルを渡した web へ返す
+    /// `auth_session_id` は交換の時点で新しく作るしかない。ハンドル自体が単回使用なので、
+    /// この再生成はフロー 1 本につき 1 回だけ起きる。
+    async fn consume_handle(
+        &self,
+        id_hash: &str,
+        handle_hash: &str,
+        new_id_hash: &str,
+    ) -> Result<bool>;
     /// 認証済みユーザーと `auth_time`、確立した SSO セッションの `sid` を設定し、**同時に id を
-    /// `new_id` へ再生成する**（`/login` 成功時。SEC7）。
+    /// `new_id_hash` へ再生成する**（`/login` 成功時。SEC7）。
     ///
     /// `sso_sid` は同意画面を挟む経路（`ConsentService::approve`）が code 発行時に読む（G5）。
     /// 認証と code 発行が別リクエストに分かれ、その時点では SSO Cookie が手元に無いため、
@@ -293,23 +347,25 @@ pub trait AuthSessionRepository: Send + Sync {
     /// ログインのたびに再生成しており（`SsoSession::establish`）、それと非対称にしない。
     async fn set_authenticated_user(
         &self,
-        id: &str,
-        new_id: &str,
+        id_hash: &str,
+        new_id_hash: &str,
         user_id: Uuid,
         auth_time: DateTime<Utc>,
         sso_sid: Option<&str>,
     ) -> Result<()>;
     /// パスワード検証成功後に MFA pending 状態を記録し（`password_verified_at` を設定）、
-    /// **同時に id を `new_id` へ再生成する**（SEC7。理由は
+    /// **同時に id を `new_id_hash` へ再生成する**（SEC7。理由は
     /// [`set_authenticated_user`](Self::set_authenticated_user) 参照）。
     async fn set_password_verified(
         &self,
-        id: &str,
-        new_id: &str,
+        id_hash: &str,
+        new_id_hash: &str,
         user_id: Uuid,
         verified_at: DateTime<Utc>,
     ) -> Result<()>;
-    async fn delete(&self, id: &str) -> Result<()>;
+    async fn delete(&self, id_hash: &str) -> Result<()>;
+    /// 期限切れの行を削除し、削除件数を返す（G2 の一括 GC から呼ぶ）。
+    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64>;
 }
 
 /// 認証ポリシー（ユーザー認証・認証ポリシー仕様書 §7）の永続化。テナント境界は `tenant_id` で強制する。
@@ -915,6 +971,21 @@ pub trait PasskeyChallengeRepository: Send + Sync {
     async fn find_by_id(&self, id: Uuid) -> Result<Option<PasskeyChallenge>>;
     /// チャレンジを消費（削除）する（complete ステップで使用後に呼ぶ）。
     async fn delete(&self, id: Uuid) -> Result<()>;
-    /// 期限切れのチャレンジをまとめて削除する（定期クリーンアップ用）。
-    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<()>;
+    /// 期限切れのチャレンジをまとめて削除し、件数を返す（G2 の一括 GC から呼ぶ）。
+    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64>;
+}
+
+/// 期限切れ行を自分で掃除できるテーブルのポート（G2）。
+///
+/// 進行状態・使い捨てトークンの表は「期限が来たら意味を失う」が、削除する主体はどのユースケースにも
+/// 属さない。表ごとに個別のバックグラウンドループを生やすと、追加のたびに掃除漏れ（＝無限に増える表）が
+/// 生まれるため、**掃除できることを 1 つのポートで表明**し、起動時に 1 本のタスクへ束ねる。
+///
+/// `revoked_access_tokens` のように照合のホットパスに載る表は、肥大がそのままレイテンシになる。
+#[async_trait]
+pub trait ExpiringRecordStore: Send + Sync {
+    /// 掃除対象の識別子（ログに出すテーブル名）。
+    fn table_name(&self) -> &'static str;
+    /// `now` 時点で期限切れの行を削除し、削除件数を返す。
+    async fn purge_expired(&self, now: DateTime<Utc>) -> Result<u64>;
 }

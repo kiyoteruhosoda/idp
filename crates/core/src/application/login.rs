@@ -21,6 +21,7 @@ use crate::application::authorize::code_redirect;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::application::mfa_login::user_has_confirmed_totp;
 use crate::domain::audit::{AuditEventType, AuditResult};
+use crate::domain::auth_session;
 use crate::domain::authentication_policy::{
     evaluate_policies, AuthenticationContext, DefaultPolicyEffect, LockoutPolicy, PolicyDecision,
 };
@@ -183,9 +184,13 @@ impl LoginService {
             );
             return LoginOutcome::SessionExpired;
         };
-        // 認証成功時に id を再生成する（SEC7）ため mut。以降 `session.id` は常に「今この
-        // ブラウザが持つべき値」を指す。
-        let mut session = match self.auth_sessions.find_by_id(tenant_id, session_id).await {
+        // 認証成功時に id を再生成する（SEC7）ため mut。以降 `session.id_hash` は常に「今この
+        // ブラウザが持つべき値」のハッシュを指す。
+        let mut session = match self
+            .auth_sessions
+            .find_by_id_hash(tenant_id, &auth_session::id_hash(session_id))
+            .await
+        {
             Ok(Some(s)) => s,
             Ok(None) => {
                 tracing::warn!(
@@ -197,7 +202,7 @@ impl LoginService {
             Err(e) => return LoginOutcome::Internal(e.to_string()),
         };
         if session.is_expired_at(now) {
-            let _ = self.auth_sessions.delete(&session.id).await;
+            let _ = self.auth_sessions.delete(&session.id_hash).await;
             tracing::warn!(
                 correlation_id = %ctx.correlation_id,
                 "login rejected: auth session expired"
@@ -207,7 +212,8 @@ impl LoginService {
 
         // 2. CSRF トークン検証。不一致は攻撃だけでなく「別タブでの新フローによる Cookie 差し替え」等の
         //    正規操作でも起こるため、監査に記録して web 側でフォーム再表示（PRG）に載せる。
-        if csrf_token(&session.id, &self.csrf_secret) != cmd.csrf_token {
+        if !idp_contracts::csrf::verify(&csrf_token(session_id, &self.csrf_secret), &cmd.csrf_token)
+        {
             self.audit
                 .record(
                     AuditEventType::LoginFailed,
@@ -333,6 +339,8 @@ impl LoginService {
         // 8.2. 認証ポリシー評価（ユーザー認証・認証ポリシー仕様書 §9）。パスワード検証成功後に
         //      評価する（資格情報を知らない攻撃者にポリシーの存在・内容を観測させない）。
         //      `deny` は即拒否。`require_mfa` は後段の MFA 判定（9.）で強制する。
+        // 認可要求の `acr_values`（AP3 の `requested_acr` 条件が参照する）。
+        let requested_acr = session.requested_acr();
         let policy_decision = match self
             .authentication_policies
             .list_enabled_for_tenant(tenant_id)
@@ -343,6 +351,9 @@ impl LoginService {
                 &AuthenticationContext {
                     client_id: Some(&client_id),
                     user_id: user.id,
+                    ip_address: ctx.ip_address.as_deref(),
+                    now,
+                    requested_acr: &requested_acr,
                 },
                 self.policy_default_effect,
             ),
@@ -372,14 +383,18 @@ impl LoginService {
             let rotated_id = crypto::random_hex(32);
             if let Err(e) = self
                 .auth_sessions
-                .set_password_verified(&session.id, &rotated_id, user.id, now)
+                .set_password_verified(
+                    &session.id_hash,
+                    &auth_session::id_hash(&rotated_id),
+                    user.id,
+                    now,
+                )
                 .await
             {
                 return LoginOutcome::Internal(e.to_string());
             }
-            session.id = rotated_id;
             return LoginOutcome::PasswordChangeRequired {
-                auth_session_id: session.id,
+                auth_session_id: rotated_id,
             };
         }
 
@@ -396,14 +411,18 @@ impl LoginService {
             let rotated_id = crypto::random_hex(32);
             if let Err(e) = self
                 .auth_sessions
-                .set_password_verified(&session.id, &rotated_id, user.id, now)
+                .set_password_verified(
+                    &session.id_hash,
+                    &auth_session::id_hash(&rotated_id),
+                    user.id,
+                    now,
+                )
                 .await
             {
                 return LoginOutcome::Internal(e.to_string());
             }
-            session.id = rotated_id;
             return LoginOutcome::MfaRequired {
-                auth_session_id: session.id,
+                auth_session_id: rotated_id,
             };
         }
         if let PolicyDecision::RequireMfa { policy_code } = &policy_decision {
@@ -419,6 +438,31 @@ impl LoginService {
                 )
                 .await;
             return LoginOutcome::MfaEnrollmentRequired;
+        }
+        // 9.1. `require_specific_method`（AP3。仕様 §12.2）。ここへ来た時点で使った方式は
+        //      パスワードだけなので、方式指定を満たしていなければ成立させない。TOTP を要求する
+        //      ポリシーは上の MFA ステップ（`has_totp`）で満たされる経路へ入っており、そこで
+        //      `MfaLoginService` が最終的な方式集合に対して再評価する。パスキーを要求する
+        //      ポリシーはログイン画面のパスキーボタン（`PasskeyAuthenticationService`）が満たす。
+        if let Some(unmet) =
+            policy_decision.unmet_method_requirement(&[AuthenticationMethod::Password], false)
+        {
+            self.audit
+                .record(
+                    AuditEventType::LoginPolicyDenied,
+                    AuditResult::Failure,
+                    Some(tenant_id),
+                    Some(user.id),
+                    Some(&client_id),
+                    Some(&format!(
+                        "policy={} reason=method_required required={}",
+                        unmet.policy_code,
+                        unmet.requirement.describe()
+                    )),
+                    ctx,
+                )
+                .await;
+            return LoginOutcome::PolicyDenied;
         }
 
         // 9.5. ここまで来た＝単一要素で認証が成立した（MFA 待ちではない）。失敗カウンタと
@@ -471,12 +515,18 @@ impl LoginService {
         let rotated_id = crypto::random_hex(32);
         if let Err(e) = self
             .auth_sessions
-            .set_authenticated_user(&session.id, &rotated_id, user.id, now, Some(&sso.sid()))
+            .set_authenticated_user(
+                &session.id_hash,
+                &auth_session::id_hash(&rotated_id),
+                user.id,
+                now,
+                Some(&sso.sid()),
+            )
             .await
         {
             return LoginOutcome::Internal(e.to_string());
         }
-        session.id = rotated_id;
+        session.id_hash = auth_session::id_hash(&rotated_id);
 
         // 11. 同意チェック（`openid` は暗黙同意）。
         let scopes_needing_consent: Vec<String> = session
@@ -502,7 +552,7 @@ impl LoginService {
         if !consented {
             // 同意未完: AuthSession は認証済み状態のまま残す。同意画面へ。
             return LoginOutcome::ConsentRequired {
-                auth_session_id: session.id,
+                auth_session_id: rotated_id,
                 sso_session_id,
             };
         }
@@ -532,7 +582,7 @@ impl LoginService {
         };
 
         // 13. AuthSession を削除する（Cookie 失効はハンドラが行う）。
-        if let Err(e) = self.auth_sessions.delete(&session.id).await {
+        if let Err(e) = self.auth_sessions.delete(&session.id_hash).await {
             tracing::warn!(error = %e, "failed to delete auth session after code issuance");
         }
 
@@ -552,16 +602,15 @@ impl LoginService {
         ctx: &RequestContext,
     ) -> LoginOutcome {
         let now = self.clock.now();
-        let failed = user.failed_login_count + 1;
-        let locked_until = self.lockout.locked_until_after_failure(failed, now);
-
-        if let Err(e) = self
+        // 加算とロック判定は 1 文の UPDATE に閉じる（SEC13）。
+        let failure = match self
             .users
-            .update_login_state(user.id, failed, locked_until)
+            .record_login_failure(user.id, self.lockout, now)
             .await
         {
-            return LoginOutcome::Internal(e.to_string());
-        }
+            Ok(f) => f,
+            Err(e) => return LoginOutcome::Internal(e.to_string()),
+        };
 
         self.audit
             .record(
@@ -575,7 +624,7 @@ impl LoginService {
             )
             .await;
 
-        if locked_until.is_some() {
+        if failure.is_locked() {
             self.audit
                 .record(
                     AuditEventType::LoginLocked,
@@ -671,13 +720,17 @@ mod tests {
         async fn create(&self, _s: &AuthSession) -> DomainResult<()> {
             unreachable!()
         }
-        async fn find_by_id(&self, t: TenantId, id: &str) -> DomainResult<Option<AuthSession>> {
+        async fn find_by_id_hash(
+            &self,
+            t: TenantId,
+            id_hash: &str,
+        ) -> DomainResult<Option<AuthSession>> {
             Ok(self
                 .rows
                 .lock()
                 .unwrap()
                 .iter()
-                .find(|s| s.tenant_id == t && s.id == id)
+                .find(|s| s.tenant_id == t && s.id_hash == id_hash)
                 .cloned())
         }
         async fn find_by_handle(
@@ -687,20 +740,20 @@ mod tests {
         ) -> DomainResult<Option<AuthSession>> {
             unreachable!()
         }
-        async fn consume_handle(&self, _id: &str, _h: &str) -> DomainResult<bool> {
+        async fn consume_handle(&self, _id: &str, _h: &str, _n: &str) -> DomainResult<bool> {
             unreachable!()
         }
         async fn set_authenticated_user(
             &self,
-            id: &str,
-            new_id: &str,
+            id_hash: &str,
+            new_id_hash: &str,
             user_id: Uuid,
             auth_time: DateTime<Utc>,
             sso_sid: Option<&str>,
         ) -> DomainResult<()> {
             let mut rows = self.rows.lock().unwrap();
-            if let Some(row) = rows.iter_mut().find(|s| s.id == id) {
-                row.id = new_id.to_string();
+            if let Some(row) = rows.iter_mut().find(|s| s.id_hash == id_hash) {
+                row.id_hash = new_id_hash.to_string();
                 row.authenticated_user_id = Some(user_id);
                 row.auth_time = Some(auth_time);
                 row.sso_sid = sso_sid.map(str::to_string);
@@ -709,22 +762,25 @@ mod tests {
         }
         async fn set_password_verified(
             &self,
-            id: &str,
-            new_id: &str,
+            id_hash: &str,
+            new_id_hash: &str,
             user_id: Uuid,
             verified_at: DateTime<Utc>,
         ) -> DomainResult<()> {
             let mut rows = self.rows.lock().unwrap();
-            if let Some(row) = rows.iter_mut().find(|s| s.id == id) {
-                row.id = new_id.to_string();
+            if let Some(row) = rows.iter_mut().find(|s| s.id_hash == id_hash) {
+                row.id_hash = new_id_hash.to_string();
                 row.authenticated_user_id = Some(user_id);
                 row.password_verified_at = Some(verified_at);
             }
             Ok(())
         }
-        async fn delete(&self, id: &str) -> DomainResult<()> {
-            self.rows.lock().unwrap().retain(|s| s.id != id);
+        async fn delete(&self, id_hash: &str) -> DomainResult<()> {
+            self.rows.lock().unwrap().retain(|s| s.id_hash != id_hash);
             Ok(())
+        }
+        async fn delete_expired(&self, _now: DateTime<Utc>) -> DomainResult<u64> {
+            unreachable!()
         }
     }
 
@@ -734,6 +790,30 @@ mod tests {
     }
     #[async_trait]
     impl UserRepository for FakeUsers {
+        /// 本番の sqlx 実装は 1 文の UPDATE で加算する（SEC13）。フェイクは単一スレッドの
+        /// テストでしか動かないので、同じ結果になる素朴な加算で足りる。
+        async fn record_login_failure(
+            &self,
+            id: Uuid,
+            lockout: crate::domain::authentication_policy::LockoutPolicy,
+            now: DateTime<Utc>,
+        ) -> DomainResult<crate::domain::user::LoginFailureRecord> {
+            let mut rows = self.rows.lock().unwrap();
+            let Some(row) = rows.iter_mut().find(|u| u.id == id) else {
+                return Ok(crate::domain::user::LoginFailureRecord {
+                    failed_login_count: 0,
+                    locked_until: None,
+                });
+            };
+            row.failed_login_count += 1;
+            if let Some(until) = lockout.locked_until_after_failure(row.failed_login_count, now) {
+                row.locked_until = Some(until);
+            }
+            Ok(crate::domain::user::LoginFailureRecord {
+                failed_login_count: row.failed_login_count,
+                locked_until: row.locked_until.filter(|u| *u > now),
+            })
+        }
         async fn create(&self, _u: &User) -> DomainResult<()> {
             unreachable!()
         }
@@ -954,7 +1034,10 @@ mod tests {
 
         let auth_sessions = Arc::new(FakeAuthSessions {
             rows: Mutex::new(vec![AuthSession {
-                id: SESSION_ID.to_string(),
+                id_hash: auth_session::id_hash(SESSION_ID),
+                acr_values: None,
+                login_hint: None,
+                ui_locales: None,
                 tenant_id,
                 client_id: "client-a".to_string(),
                 redirect_uri: "https://rp.example.com/cb".to_string(),
@@ -1044,9 +1127,9 @@ mod tests {
             self.users.rows.lock().unwrap()[0].failed_login_count
         }
 
-        /// 保存されている auth_session の現在の id。
-        fn stored_session_id(&self) -> String {
-            self.auth_sessions.rows.lock().unwrap()[0].id.clone()
+        /// 保存されている auth_session の現在の id_hash。
+        fn stored_session_id_hash(&self) -> String {
+            self.auth_sessions.rows.lock().unwrap()[0].id_hash.clone()
         }
     }
 
@@ -1071,9 +1154,14 @@ mod tests {
         };
         assert_ne!(auth_session_id, SESSION_ID, "認証前の値を使い回さない");
         assert_eq!(
-            h.stored_session_id(),
+            h.stored_session_id_hash(),
+            auth_session::id_hash(&auth_session_id),
+            "DB 側も新しい id のハッシュに置き換わり、旧 id では引けない"
+        );
+        assert_ne!(
+            h.stored_session_id_hash(),
             auth_session_id,
-            "DB 側も新しい id に置き換わり、旧 id では引けない"
+            "DB には平文を置かない（SEC6）"
         );
     }
 

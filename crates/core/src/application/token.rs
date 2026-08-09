@@ -937,7 +937,6 @@ mod tests {
             response_types: vec!["code".to_string()],
             scopes: scopes.iter().map(|s| s.to_string()).collect(),
             token_endpoint_auth_method: TokenEndpointAuthMethod::ClientSecretBasic,
-            require_pkce: true,
             post_logout_redirect_uris: vec![],
             frontchannel_logout_uri: None,
             backchannel_logout_uri: None,

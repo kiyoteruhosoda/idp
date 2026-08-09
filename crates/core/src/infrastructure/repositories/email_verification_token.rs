@@ -21,6 +21,11 @@ impl SqlxEmailVerificationTokenRepository {
     pub fn new(pool: Db) -> Self {
         Self { pool }
     }
+
+    /// 期限切れ行の掃除（`expired_records` の `ExpiringRecordStore` 実装）が使う。
+    pub(super) fn pool(&self) -> &Db {
+        &self.pool
+    }
 }
 
 const SELECT_COLUMNS: &str = "token_hash, user_id, expires_at, used_at, created_at";

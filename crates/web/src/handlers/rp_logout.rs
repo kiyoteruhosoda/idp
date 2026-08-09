@@ -115,7 +115,7 @@ fn frontchannel_csp(frontchannel_uris: &[String]) -> String {
     origins.sort();
     origins.dedup();
     format!(
-        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; \
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
          img-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; \
          frame-ancestors 'none'; frame-src {}",
         origins.join(" ")

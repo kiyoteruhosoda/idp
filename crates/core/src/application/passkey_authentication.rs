@@ -13,6 +13,7 @@ use crate::application::authenticator_management::is_blocked_in_registry;
 use crate::application::authorize::code_redirect;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::domain::audit::{AuditEventType, AuditResult};
+use crate::domain::auth_session;
 use crate::domain::authentication_policy::{
     evaluate_policies, AuthenticationContext, DefaultPolicyEffect, PolicyDecision,
 };
@@ -149,7 +150,7 @@ impl PasskeyAuthenticationService {
             user_id: None,
             challenge_type: PasskeyChallengeType::Authenticate,
             state_json,
-            auth_session_id: auth_session_id.map(|s| s.to_string()),
+            auth_session_id_hash: auth_session_id.map(auth_session::id_hash),
             expires_at: now + Duration::from_std(CHALLENGE_TTL).unwrap(),
             created_at: now,
         };
@@ -298,13 +299,12 @@ impl PasskeyAuthenticationService {
         }
 
         // 8. AuthSession を取得して OIDC フローを継続する。
-        let Some(auth_session_id) = &challenge.auth_session_id else {
+        let Some(auth_session_id_hash) = challenge.auth_session_id_hash.as_deref() else {
             return PasskeyAuthOutcome::Internal("no auth_session_id in challenge".to_string());
         };
-        // 認証結果の記録時に id を再生成する（SEC7）ため mut。
-        let mut session = match self
+        let session = match self
             .auth_sessions
-            .find_by_id(tenant_id, auth_session_id)
+            .find_by_id_hash(tenant_id, auth_session_id_hash)
             .await
         {
             Ok(Some(s)) => s,
@@ -312,7 +312,7 @@ impl PasskeyAuthenticationService {
             Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
         };
         if session.is_expired_at(now) {
-            let _ = self.auth_sessions.delete(&session.id).await;
+            let _ = self.auth_sessions.delete(&session.id_hash).await;
             return PasskeyAuthOutcome::SessionExpired;
         }
 
@@ -330,6 +330,9 @@ impl PasskeyAuthenticationService {
                 &AuthenticationContext {
                     client_id: Some(&client_id),
                     user_id,
+                    ip_address: ctx.ip_address.as_deref(),
+                    now,
+                    requested_acr: &session.requested_acr(),
                 },
                 self.policy_default_effect,
             ),
@@ -344,6 +347,29 @@ impl PasskeyAuthenticationService {
                     Some(user_id),
                     Some(&client_id),
                     Some(&format!("policy={policy_code}")),
+                    ctx,
+                )
+                .await;
+            return PasskeyAuthOutcome::PolicyDenied;
+        }
+        // `require_specific_method`（AP3）。パスキー認証は WebAuthn かつ User Verification 済み
+        // （`webauthn-rs` の検証を通っている）なので §12.2 の「WebAuthn 必須」「UV 必須」を満たす。
+        // 満たさないのは「TOTP でなければ駄目」のような別方式の指定に当たった場合。
+        if let Some(unmet) =
+            decision.unmet_method_requirement(&[AuthenticationMethod::WebAuthn], true)
+        {
+            self.audit
+                .record(
+                    AuditEventType::LoginPolicyDenied,
+                    AuditResult::Failure,
+                    Some(tenant_id),
+                    Some(user_id),
+                    Some(&client_id),
+                    Some(&format!(
+                        "policy={} reason=method_required required={}",
+                        unmet.policy_code,
+                        unmet.requirement.describe()
+                    )),
                     ctx,
                 )
                 .await;
@@ -365,14 +391,20 @@ impl PasskeyAuthenticationService {
 
         // 10. auth_time と `sid` を設定する（id も再生成する。SEC7）。
         let rotated_id = crypto::random_hex(32);
+        let rotated_id_hash = auth_session::id_hash(&rotated_id);
         if let Err(e) = self
             .auth_sessions
-            .set_authenticated_user(&session.id, &rotated_id, user_id, now, Some(&sso.sid()))
+            .set_authenticated_user(
+                &session.id_hash,
+                &rotated_id_hash,
+                user_id,
+                now,
+                Some(&sso.sid()),
+            )
             .await
         {
             return PasskeyAuthOutcome::Internal(e.to_string());
         }
-        session.id = rotated_id;
 
         if let Err(e) = self.sso_sessions.create(&sso).await {
             return PasskeyAuthOutcome::Internal(e.to_string());
@@ -423,7 +455,7 @@ impl PasskeyAuthenticationService {
 
         if !consented {
             return PasskeyAuthOutcome::ConsentRequired {
-                auth_session_id: session.id,
+                auth_session_id: rotated_id,
                 sso_session_id,
             };
         }
@@ -453,7 +485,7 @@ impl PasskeyAuthenticationService {
         };
 
         // 13. AuthSession を削除する。
-        if let Err(e) = self.auth_sessions.delete(&session.id).await {
+        if let Err(e) = self.auth_sessions.delete(&rotated_id_hash).await {
             tracing::warn!(error = %e, "failed to delete auth session after passkey auth");
         }
 
@@ -520,6 +552,15 @@ mod tests {
     struct FakeUsers(Option<User>);
     #[async_trait]
     impl UserRepository for FakeUsers {
+        /// このテストはログイン失敗経路を通らない（SEC13 の検証は login / mfa_login にある）。
+        async fn record_login_failure(
+            &self,
+            _id: Uuid,
+            _lockout: crate::domain::authentication_policy::LockoutPolicy,
+            _now: chrono::DateTime<chrono::Utc>,
+        ) -> DomainResult<crate::domain::user::LoginFailureRecord> {
+            unreachable!()
+        }
         async fn create(&self, _u: &User) -> DomainResult<()> {
             unreachable!()
         }

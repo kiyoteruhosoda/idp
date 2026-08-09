@@ -8,11 +8,13 @@
 use crate::application::authentication_policy_management::{
     AuthenticationPolicyDraft, AuthenticationPolicyManagementError,
 };
-use crate::domain::authentication_policy::AuthenticationPolicy;
+use crate::domain::authentication_policy::{AuthenticationPolicy, RequiredMethods, TimeWindow};
+use crate::domain::values::AuthenticationMethod;
 use crate::presentation::admin::{IdpAdmin, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
-    AuthenticationPoliciesResponse, AuthenticationPolicyResponse, AuthenticationPolicyUpsertRequest,
+    AuthenticationPoliciesResponse, AuthenticationPolicyResponse,
+    AuthenticationPolicyUpsertRequest, RequiredMethodsDto, TimeWindowDto,
 };
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
@@ -174,6 +176,10 @@ fn to_response(policy: &AuthenticationPolicy) -> AuthenticationPolicyResponse {
         priority: policy.priority,
         enabled: policy.enabled,
         effect: policy.effect.as_str().to_string(),
+        effect_params: policy.effect_params.as_ref().map(|p| RequiredMethodsDto {
+            methods: p.methods.iter().map(|m| m.as_str().to_string()).collect(),
+            user_verification: p.user_verification,
+        }),
         client_ids: policy.conditions.client_ids.clone(),
         user_ids: policy
             .conditions
@@ -181,6 +187,19 @@ fn to_response(policy: &AuthenticationPolicy) -> AuthenticationPolicyResponse {
             .iter()
             .map(|u| u.to_string())
             .collect(),
+        ip_cidrs: policy.conditions.ip_cidrs.clone(),
+        time_windows: policy
+            .conditions
+            .time_windows
+            .iter()
+            .map(|w| TimeWindowDto {
+                days: w.days.clone(),
+                start_minute: w.start_minute,
+                end_minute: w.end_minute,
+                utc_offset_minutes: w.utc_offset_minutes,
+            })
+            .collect(),
+        requested_acr: policy.conditions.requested_acr.clone(),
         created_at: policy.created_at.to_rfc3339(),
         updated_at: policy.updated_at.to_rfc3339(),
     }
@@ -197,14 +216,48 @@ fn parse_draft(
         .iter()
         .map(|raw| parse_uuid(raw, locale))
         .collect::<Result<Vec<_>, _>>()?;
+    // 認証方式は DTO では文字列。ここで許可値へ写す（許可値の単一の出所はドメインの enum）。
+    let effect_params = body
+        .effect_params
+        .map(|p| {
+            let methods = p
+                .methods
+                .iter()
+                .map(|raw| {
+                    AuthenticationMethod::parse(raw).map_err(|_| {
+                        ApiError::BadRequest(
+                            ApiMessages::new(locale).get("api-auth-policy-effect-params-invalid"),
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok::<_, ApiError>(RequiredMethods {
+                methods,
+                user_verification: p.user_verification,
+            })
+        })
+        .transpose()?;
     Ok(AuthenticationPolicyDraft {
         policy_code: body.policy_code,
         policy_name: body.policy_name,
         priority: body.priority,
         enabled: body.enabled,
         effect: body.effect,
+        effect_params,
         client_ids: body.client_ids,
         user_ids,
+        ip_cidrs: body.ip_cidrs,
+        time_windows: body
+            .time_windows
+            .into_iter()
+            .map(|w| TimeWindow {
+                days: w.days,
+                start_minute: w.start_minute,
+                end_minute: w.end_minute,
+                utc_offset_minutes: w.utc_offset_minutes,
+            })
+            .collect(),
+        requested_acr: body.requested_acr,
     })
 }
 

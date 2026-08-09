@@ -87,7 +87,10 @@ pub async fn create(
         AdminResolution::Reject(resp) => return resp,
     }
     let base = format!("{}/admin/saml-clients", tenant.prefix());
-    if csrf_from(&headers, state.config.csrf_secret()) != form.csrf_token {
+    if !idp_contracts::csrf::verify(
+        &csrf_from(&headers, state.config.csrf_secret()),
+        &form.csrf_token,
+    ) {
         return found(&format!("{base}?error=csrf"));
     }
     if form.display_name.trim().is_empty()
@@ -281,7 +284,10 @@ pub async fn update(
         AdminResolution::Reject(resp) => return resp,
     }
     let base = format!("{}/admin/saml-clients", tenant.prefix());
-    if csrf_from(&headers, state.config.csrf_secret()) != form.csrf_token {
+    if !idp_contracts::csrf::verify(
+        &csrf_from(&headers, state.config.csrf_secret()),
+        &form.csrf_token,
+    ) {
         return found(&format!("{base}?error=csrf"));
     }
     if form.display_name.trim().is_empty()
@@ -338,7 +344,10 @@ pub async fn delete(
         AdminResolution::Reject(resp) => return resp,
     }
     let base = format!("{}/admin/saml-clients", tenant.prefix());
-    if csrf_from(&headers, state.config.csrf_secret()) != form.csrf_token {
+    if !idp_contracts::csrf::verify(
+        &csrf_from(&headers, state.config.csrf_secret()),
+        &form.csrf_token,
+    ) {
         return found(&format!("{base}?error=csrf"));
     }
     let sso = crate::cookies::get(&headers, crate::cookies::SSO_SESSION_COOKIE).unwrap_or_default();

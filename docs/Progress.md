@@ -37,20 +37,14 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 
 | 優先度 | ID | 課題内容 | 工数 | 影響度 | 重要度 | 難易度 |
 |---:|---|---|---:|---:|---:|---:|
-| 8 | SEC6 | `auth_sessions.id` だけ DB に平文保存（他の bearer credential は全てハッシュ）（⬜未着手） | 中 | 小 | 大 | 中 |
-| 8 | AP3 | 認証ポリシーの条件種別を拡張する（ネットワークゾーン・国・端末・時間帯・requested_acr 等。仕様 §8）と `require_specific_method` 効果（⬜未着手） | 大 | 中 | 中 | 大 |
 | 8 | AP8 | ログイン識別子の複数化（仕様 §4。`user_login_identifiers`: 電話番号・社員番号等の種別、表示値と正規化値の分離、識別子単位の無効化）（⬜未着手） | 大 | 大 | 小 | 大 |
-| 5 | SEC13 | ログイン失敗カウンタの更新が read-modify-write で原子的でない（並行試行でロック閾値に届かないことがある。3 つのログイン経路に共通）（⬜未着手） | 中 | 中 | 中 | 小 |
-| 5 | SEC12 | 低リスク改善のまとめ（CSP `unsafe-inline`・Swagger 無認証・`require_pkce` 死に設定・同意 POST の Cookie 非束縛・argon2 パラメータ非明示・auth_sessions の GC/照合/`expect()`）（⬜未着手） | 中 | 中 | 小 | 中 |
-| 5 | AP1 | 認証ポリシーの管理画面（web コンソール UI。現状は API のみ）（⬜未着手） | 中 | 中 | 小 | 中 |
+| 8 | AP14 | AP3 の残り: 国・端末信頼の条件（判定材料が無いため未実装。GeoIP かプロキシ供給ヘッダの取り決めと、デバイス登録簿が前提）（⬜未着手） | 大 | 中 | 中 | 大 |
+| 5 | AP1 | 認証ポリシーの管理画面（web コンソール UI。現状は API のみ。AP3 で増えた条件・効果も対象）（⬜未着手） | 中 | 中 | 小 | 中 |
 | 5 | AP7 | パスワードポリシーの拡張（仕様 §11.2。漏えい済みパスワード検出・過去パスワード再利用禁止・有効期限。現状は最小文字数のみ）（⬜未着手） | 中 | 小 | 中 | 中 |
 | 5 | AP11 | AP9 の contract フェーズ（TOTP/WebAuthn の秘密を `user_authenticators` へ集約し、`user_totp_secrets` / `user_webauthn_credentials` を撤去）（⬜未着手） | 中 | 中 | 小 | 中 |
 | 5 | AP12 | SAML 外部 IdP（AP10 は OIDC のみ実装。`external_identity_providers` の protocol 拡張が要る）（⬜未着手） | 大 | 中 | 小 | 大 |
-| 5 | G1 | CORS 未実装（api・nginx とも）。public client（SPA）がブラウザから `/token`・`/userinfo`・`/.well-known/*` を呼べない（⬜未着手） | 中 | 中 | 小 | 中 |
-| 5 | G2 | 期限切れレコードの GC が `log` テーブルにしか無い（`auth_sessions`・`authorization_codes`・`refresh_tokens`・`sso_sessions`・`revoked_access_tokens`・`passkey_challenges`・各種トークン表が無限に増える）（⬜未着手） | 中 | 中 | 中 | 小 |
-| 5 | G9 | api のシングルインスタンス前提が明文化されていない（レートリミッタ・キャッシュがプロセス内メモリ、鍵ローテーションが排他制御無し）（⬜未着手） | 小 | 大 | 小 | 小 |
 | 5 | G11 | web crate に統合テストが無い（`crates/web/tests/` 不在。ルータ経由の検証は `scripts/e2e.sh` 頼み）（⬜未着手） | 中 | 中 | 小 | 中 |
-| 5 | G12 | `/authorize` の任意パラメータ未対応（`login_hint`・`ui_locales`・`id_token_hint`・`acr_values`・`response_mode`・`prompt=select_account`）と Discovery の広告不足（⬜未着手） | 中 | 中 | 小 | 中 |
+| 5 | G12 | `/authorize` の任意パラメータの残り（`login_hint`・`ui_locales` を web が消費していない。`id_token_hint`・`response_mode=form_post`・`prompt=select_account` 未対応）（🚧進行中） | 中 | 中 | 小 | 中 |
 | 3 | SEC10 | `/token`・`/introspect`・`/revoke` にレート制限が無い（Argon2 増幅型 DoS）（⬜未着手） | 小 | 小 | 中 | 小 |
 | 3 | AP6 | アカウントロックの管理者解除（仕様 §17.1・§24.6。`locked_until` を即時クリアする管理操作。現状は期限経過待ちのみ）と段階的ロック（⬜未着手） | 小 | 小 | 中 | 小 |
 | 3 | G3 | `client_secret_post` 未対応（`client_secret_basic` / `none` のみ。RP ライブラリ既定との相互運用性）（⬜未着手） | 小 | 中 | 小 | 小 |
@@ -61,25 +55,24 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 
 ## 詳細
 
-### ユーザー認証・認証ポリシー仕様書の残実装（AP1〜AP10）
+### ユーザー認証・認証ポリシー仕様書の残実装（AP1・AP7・AP8・AP14）
 
-ADR-0020 で `authentication_policies`（deny / require_mfa / allow、client_ids・user_ids 条件）・
-管理 API・OIDC ログインフロー（パスワード・パスキー・強制パスワード変更）への適用・アカウント
-ロックの設定化（`LOGIN_MAX_FAILED_ATTEMPTS` / `LOGIN_LOCK_DURATION_SECS`）を導入済み。
-仕様書に対する残実装をタスク化する:
+ADR-0020 で認証ポリシー（deny / require_mfa / allow）・管理 API・OIDC ログインフローへの適用・
+アカウントロックの設定化を導入し、AP3 で条件種別（ネットワークゾーン・時間帯・requested_acr）と
+`require_specific_method` 効果を追加した（ADR-0020 の追補）。残りは以下。
 
 - **AP1** 管理画面（web コンソール UI）。現状は API のみ（手順は `docs/OPERATIONS.md`）。
-  AP10 で追加した外部 IdP 設定（`/admin/external-idps`）も同じく API のみのため、本タスクの対象に含む。
-- **AP3** 条件種別の拡張（仕様 §8: ネットワークゾーン・国・端末信頼・時間帯・requested_acr 等）と
-  `require_specific_method` 効果。WebAuthn 必須・UV 必須等の要求（§12.2）を含む。
-  AP4 で認証方式・強度を記録済みなので、`require_specific_method` の判定材料は揃っている。
-- **AP6** アカウントロックの管理者即時解除（`locked_until` クリア）と段階的ロック（§17.1）。
+  AP10 の外部 IdP 設定（`/admin/external-idps`）と、AP3 で増えた条件・効果の編集 UI も対象。
 - **AP7** パスワードポリシーの拡張（§11.2）。
 - **AP8** ログイン識別子の複数化（§4 `user_login_identifiers`）。`users.email` /
   `preferred_username` 直付けからの移行（expand/contract）を伴う。
+- **AP14** AP3 の残り: 国・端末信頼の条件。**条件式ではなく判定材料が無い**のが本体で、
+  国は GeoIP データベースの同梱かフロントプロキシが供給するヘッダの取り決め、端末信頼は
+  デバイス登録簿（登録・識別・信頼状態）がそれぞれ前提になる。材料の無い条件を先に置くと
+  「設定できるが決して一致しない条件」が管理画面に並ぶため、別タスクへ切り出した。
 
-AP2・AP4・AP5・AP9・AP10 は実装済み（`CHANGELOG.md` 参照）。AP9 の残り（contract フェーズ）と
-AP10 の残り（SAML 外部 IdP）は下記「積み残し」に切り出した。
+AP2・AP3・AP4・AP5・AP9・AP10 は実装済み（`CHANGELOG.md` 参照）。AP9 の残り（contract フェーズ）と
+AP10 の残り（SAML 外部 IdP）は下記「積み残し」にある。
 
 ### 積み残し（AP9・AP10 実装からの繰り越し。AP11〜AP13）
 
@@ -125,99 +118,32 @@ OIDC 前提の列構成で、SAML の IdP メタデータ（`SingleSignOnService
 送信事業者の選定と、電話番号を PII としてどう保持するか（ログ非出力は既定として、DB では
 暗号化するか正規化値のみ持つか）は未決。
 
-### セキュリティレビュー（SEC6・SEC10・SEC12・SEC13）
+### セキュリティレビュー（SEC10）
 
-api / web の別サブドメイン構成を対象にした調査で検出した課題。**「api には対策があるのに web 側に無い」
-非対称**が主軸。良好な点（回帰させない）: redirect_uri/post_logout の完全一致、code の 256bit・SHA-256・
-60 秒・原子的ワンタイム、PKCE S256 の無条件強制、client_secret の Argon2 保存、sso_session_id の
-256bit・ハッシュ保存・ログイン毎の再生成、ADR-0018 の Cookie 非依存ハンドオフ（単回・60 秒・テナント固定束縛）、
+api / web の別サブドメイン構成を対象にした調査で検出した課題のうち、SEC1・SEC5〜SEC9・SEC12・SEC13 は
+対応済み（`CHANGELOG.md` 参照）。良好な点（回帰させない）: redirect_uri/post_logout の完全一致、
+code の 256bit・SHA-256・60 秒・原子的ワンタイム、PKCE S256 の無条件強制、client_secret の Argon2 保存、
+sso_session_id の 256bit・ハッシュ保存・ログイン毎の再生成、ADR-0018 の Cookie 非依存ハンドオフ、
 web の `X-Forwarded-For` ゲート（SEC1）・CSRF 種の `__Host-` 束縛（SEC5）・`auth_session_id` の
-認証時再生成（SEC7）・再利用検知でのトークンファミリ失効（SEC8）・アクセスログのクエリ非記録（SEC9）。
-
-#### SEC6. `auth_sessions.id` だけ DB に平文保存
-
-Cookie 値がそのまま PK（`migrations/0001_baseline.up.sql` の `auth_sessions`、参照は `WHERE id = ?`
-`crates/core/src/infrastructure/repositories/auth_session.rs`）。同じ表の `handle_hash` すら
-SHA-256、他の bearer credential も全てハッシュ保存で非対称。DB 読取を得た者は TTL(600 秒)の間、同意待ち／
-MFA 待ちの認可セッションを乗っ取れる。対策: `handle_hash` と揃えて SHA-256 保存へ（マイグレーション必要）。
-
-SEC7 で認証成功時の id 再生成（`set_authenticated_user` / `set_password_verified` が同じ UPDATE で
-id を差し替える）は入っているため、本タスクは「Cookie 値そのものを PK に置かない」ことに絞られる。
-再生成の口が 1 箇所に閉じたぶん、ハッシュ化の際に触る場所も減っている。
+認証時再生成（SEC7）・再利用検知でのトークンファミリ失効（SEC8）・アクセスログのクエリ非記録（SEC9）・
+進行状態 id のハッシュ保存（SEC6）・失敗カウンタの原子的加算（SEC13）。
 
 #### SEC10. `/token`・`/introspect`・`/revoke` にレート制限が無い
 
-client_secret は Argon2 照合（`crates/core/src/application/token.rs:602-605`）で総当たりは非現実的だが、
+client_secret は Argon2 照合（`crates/core/src/application/token.rs`）で総当たりは非現実的だが、
 メモリハード関数の CPU/メモリ増幅型 DoS が成立する。
 
-#### SEC13. 失敗カウンタの更新が原子的でない
-
-`LoginService::handle_password_failure`・`MfaLoginService::handle_totp_failure`・
-`PortalLoginService` の失敗処理はいずれも「`user.failed_login_count` を読む → +1 して
-`update_login_state` で上書き」で、read-modify-write が原子的でない。並行して届いた N 件の試行が
-同じ値を読むと、N 回失敗しても行は 1 しか進まず、ロック閾値に届かないことがある。IP 単位の
-レート制限（既定 30 回/5 分）が総試行数を抑えるため実害は限定的だが、ロックは多層防御の
-一枚なので取りこぼしたくない。
-
-対策: `UPDATE users SET failed_login_count = failed_login_count + 1, locked_until = CASE ... END`
-のように 1 文で加算とロック判定を行うリポジトリメソッドを追加し、3 経路をそれに寄せる。
-`UserRepository` にメソッドが増えるため、各ユニットテストのフェイク実装（10 箇所前後）にも
-追随が要る。
-
-#### SEC12. 低リスク改善のまとめ
-
-- CSP に `script-src 'unsafe-inline'`（`crates/web/src/security_headers.rs`、コード内で自認済み）→ nonce 化。
-- Swagger UI `/api/docs` が無認証・CSP 無しで常時公開（`crates/api/src/presentation/router.rs:315`）→ 公開可否確認。
-- `Client::require_pkce` が死んだ設定（`crates/core/src/domain/client.rs:25`）。管理コンソールに「PKCE 必須」
-  チェックボックスが出る（`crates/web/templates/console/client_form.html:45`）のに `/authorize`・`/token` から
-  参照されず実際は常に S256 必須 → 削除か実装。
-- 同意 POST がフォーム値の `auth_session_id` だけで動き Cookie と突き合わせない（`crates/web/src/handlers/consent.rs:89`）。
-- argon2 が `Argon2::default()` でパラメータ非明示（依存更新で暗黙変化）→ 定数化。
-- `auth_sessions` の期限切れ GC ジョブが無い（G2 に統合） / ci 照合（`utf8mb4_unicode_ci`）の秘密値 PK /
-  `crates/core/src/application/authorize.rs:575,589` の `expect()` パニック経路 / CSRF 比較が非定数時間。
-
-### 機能・運用のギャップ（G1〜G12）
+### 機能・運用のギャップ（G3・G6〜G8・G11・G12）
 
 セキュリティ（SEC）・認証仕様（AP）とは別軸で、**IdP としての機能欠落・運用性**を対象にした
-レビューで検出した課題。良好な点（回帰させない）: DDD 4層と crate 境界の一致（web は sqlx に
-依存できない）、i18n の en/ja キー完全一致（771 行同数）、設定の出所区分（`Builtin`/`EnvLocked`/
+レビューで検出した課題。G1（CORS）・G2（期限切れ GC）・G9（シングルインスタンス前提の明文化）は
+対応済み（`CHANGELOG.md` 参照）。良好な点（回帰させない）: DDD 4層と crate 境界の一致（web は
+sqlx に依存できない）、i18n の en/ja キー完全一致、設定の出所区分（`Builtin`/`EnvLocked`/
 `DbManaged`）の単一定義、テナント分離の統合テスト、ADR による設計判断の追跡可能性。
-
-#### G1. CORS 未実装 → public client（SPA）が実質使えない
-
-api のルータに `CorsLayer` が無く（`crates/api/src/presentation/router.rs:327-340`）、
-nginx にも `add_header Access-Control-*` が無い（`docker/nginx.conf`）。既定トポロジは
-`domain-split`（api と web が別ホスト名）なので、SPA が `identity.example.com/{tenant}/token` を
-呼ぶのは常にクロスオリジンになる。`application/x-www-form-urlencoded` は CORS-safelisted なので
-リクエスト自体は飛ぶが、`Access-Control-Allow-Origin` が無いためブラウザが**レスポンスを読めない**。
-`clients.client_type = 'public'`・`token_endpoint_auth_method = 'none'` を DDL でサポートし PKCE を
-必須にしている以上、想定利用者は SPA だが現状は到達できない。
-
-対策は経路ごとに分ける。**「クライアントの `redirect_uris` から許可オリジンを引く」を全経路へ一律
-適用することはできない**（リクエストからクライアントを特定できない経路があるため）:
-
-| 経路 | クライアント特定 | 方針 |
-|---|---|---|
-| `/.well-known/openid-configuration`・`/.well-known/jwks.json`・`/{tenant}/saml/metadata` | **不可**（client_id もトークンも載らない） | 無認証で誰でも取得できる公開メタデータなので `Access-Control-Allow-Origin: *`。`Allow-Credentials` は付けない |
-| `/token`・`/revoke`・`/introspect` | 可（body の `client_id`） | `application/x-www-form-urlencoded` は CORS-safelisted でプリフライトが発生しないため、実リクエストの `client_id` から `redirect_uris` のオリジン集合を引いて `Access-Control-Allow-Origin` に反映する |
-| `/userinfo` | **不可**（`Authorization: Bearer` が非 safelisted → 必ずプリフライトされるが、OPTIONS にトークンは載らない） | テナント内 public client の `redirect_uris` オリジンを合わせた allowlist、または配置レベルの設定キー（`CORS_ALLOWED_ORIGINS`）で照合する |
-
-いずれの経路も **`Access-Control-Allow-Credentials` は付けない**（api はブラウザ Cookie を読まない。
-ADR-0018）。したがって公開メタデータの `*` はセッションの持ち出しにつながらない。
-
-#### G2. 期限切れレコードの GC が `log` テーブルにしか無い
-
-`crates/api/src/lib.rs:79` の `spawn_application_log_purge` だけが定期削除を行い、他は誰も消さない。
-`passkey_challenges` は `delete_expired` を実装済み（`crates/core/src/infrastructure/repositories/passkey_challenge.rs:97`）
-だが**呼び出し元が無い**。無限に増える表: `auth_sessions`・`authorization_codes`・`refresh_tokens`・
-`sso_sessions`・`revoked_access_tokens`・`passkey_challenges`・`password_reset_tokens`・
-`email_verification_tokens`・`saml_sso_requests`。`revoked_access_tokens` は `/introspect` の
-ブラックリスト照合に使うため、肥大はレイテンシに直結する。対策: 期限切れ削除を 1 本の
-バックグラウンドタスク（`spawn_expired_record_purge`）に集約し、間隔と保持期間を設定キー化する。
 
 #### G3. `client_secret_post` 未対応
 
-`/token` のクライアント認証は `Authorization: Basic` のみ（`crates/api/src/presentation/handlers/token.rs:43`、
+`/token` のクライアント認証は `Authorization: Basic` のみ（`crates/api/src/presentation/handlers/token.rs`、
 `TokenCommand` に `client_secret` フィールドが無い）。Discovery も
 `token_endpoint_auth_methods_supported: ["client_secret_basic", "none"]`。RFC 6749 §2.3.1 は
 `client_secret_basic` を推奨しつつ `client_secret_post` の受け入れも認めており、実際の RP
@@ -234,56 +160,46 @@ ADR-0018）。したがって公開メタデータの `*` はセッションの�
 
 #### G7. 一覧 API のページング欠落
 
-`list_clients`（`crates/api/src/presentation/handlers/admin_clients.rs:93`）・`list_tenants`
-（`admin_tenants.rs:44`）・権限一覧が `Vec` を全件返す。`admin_members`・`admin_audit` には
+`list_clients`（`crates/api/src/presentation/handlers/admin_clients.rs`）・`list_tenants`
+（`admin_tenants.rs`）・権限一覧が `Vec` を全件返す。`admin_members`・`admin_audit` には
 `limit`/`offset` があるので非対称。テナント内クライアントが数百になると管理コンソールが重くなる。
 
 #### G8. `audit_log` の索引不足と保持期間の欠如
 
 索引は `event_type`・`correlation_id`・`occurred_at`・`tenant_id` の**単一列 4 本**のみ
-（`migrations/0001_baseline.up.sql:365-368`）。管理コンソールの絞り込みは
+（`migrations/0001_baseline.up.sql`）。管理コンソールの絞り込みは
 「テナント × 期間 × event_type × result × client_id」の組み合わせなので、複合索引
 `(tenant_id, occurred_at)` が無いと期間検索が事実上の全表走査になり、`client_id`・`result`・
 `user_id` には索引すら無い。また `log` には `APP_LOG_RETENTION_DAYS` があるのに `audit_log` には
 保持期間の仕組みが無く、法定保存期間の設計も未定。対策: 複合索引の追加と
 `AUDIT_LOG_RETENTION_DAYS`（既定は「削除しない」）の導入。
 
-#### G9. api のシングルインスタンス前提が明文化されていない
-
-`InMemoryLoginRateLimiter`（`crates/core/src/infrastructure/rate_limit.rs`）・`InMemoryTtlCache`
-（`infrastructure/cache.rs`）はプロセス内メモリで、コード内コメントは「MVP は単一インスタンス前提」と
-断っている。さらに署名鍵の自動ローテーション（`crates/api/src/lib.rs:84-98`）は排他制御なしの
-バックグラウンドループ。api を 2 プロセス以上にすると、(a) ログインのレート制限が実質 N 倍に緩み、
-(b) 権限・テナントのキャッシュ無効化がインスタンス間で伝わらず、(c) 鍵ローテーションが競合しうる。
-CLAUDE.md は Redis を「セッションストアとして任意採用」と書くが実装は無い。対策: まず README /
-OPERATIONS に**制約として明記**する（コストは低く、誤った水平スケールを防げる）。共有ストア
-（Redis 実装 + ローテーションの DB アドバイザリロック）は別タスクとする。
-
 #### G11. web crate に統合テストが無い
 
-`crates/api/tests/` には 25 本の統合テスト（sqlx + axum）があるのに、`crates/web/tests/` は**存在しない**。
-web は 14.9k LOC で、ログイン・同意・MFA・パスキー・管理コンソールという**ブラウザ経路の入口全部**を
-持つ。ハンドラ内の `#[test]` は 89 個あるが、いずれも純関数・テンプレート描画の単体検証で、
-ルータ経由（Cookie・CSRF・リダイレクト・api クライアントのエラー処理）は `scripts/e2e.sh` の
-シェルスクリプト頼み。対策: `wiremock` で api をスタブし、`tower::ServiceExt::oneshot` で
-web ルータを叩く統合テストを追加する（DB 不要で CI が速い）。
+`crates/api/tests/` には統合テスト（sqlx + axum）があるのに、`crates/web/tests/` は**存在しない**。
+web はログイン・同意・MFA・パスキー・管理コンソールという**ブラウザ経路の入口全部**を持つ。
+ハンドラ内の `#[test]` はいずれも純関数・テンプレート描画の単体検証で、ルータ経由
+（Cookie・CSRF・リダイレクト・api クライアントのエラー処理）は `scripts/e2e.sh` のシェルスクリプト頼み。
+対策: `wiremock` で api をスタブし、`tower::ServiceExt::oneshot` で web ルータを叩く統合テストを
+追加する（DB 不要で CI が速い）。
 
-#### G12. `/authorize` の任意パラメータ未対応と Discovery の広告不足
+#### G12. `/authorize` の任意パラメータの残り
 
-`AuthorizeRequest`（`crates/core/src/application/authorize.rs:35-48`）が受けるのは
-`response_type`・`client_id`・`redirect_uri`・`scope`・`state`・`nonce`・`code_challenge`・
-`code_challenge_method`・`prompt`・`max_age` まで。未対応:
+`acr_values`・`login_hint`・`ui_locales` は `/authorize` が受け付けて `auth_sessions` へ保存する
+ところまで実装済み（AP3 と同じ 0028）。Discovery の広告（`response_modes_supported`・
+`prompt_values_supported`・`request_parameter_supported`・`claims_parameter_supported`・
+`acr_values_supported`・`ui_locales_supported`）も出している。残っているのは:
 
-- `login_hint` — ログイン画面にユーザー名を事前入力できない（再ログイン時の UX 低下）。
-- `ui_locales` — RP が表示言語を指定できない（web の言語決定順は URL/ユーザー設定/Cookie/
-  `Accept-Language` のみ。CLAUDE.md「国際化」の表に `ui_locales` を足すか、対象外と明記する）。
-- `id_token_hint` — `/logout`（RP-initiated logout）でも未使用。`post_logout_redirect_uri` の
+- **`login_hint` / `ui_locales` を web が消費していない。** 保存はされるが、ログイン画面の
+  ユーザー名プリフィルにも表示言語の決定にも使われていない。web は resume の 303 で状態を
+  落とすため、ログイン画面の描画時に api から取り直す口（例 `/internal/authorize/login-context`）が要る。
+  `ui_locales` を採用する場合は CLAUDE.md「国際化」の言語決定順の表にも位置づけを追記する
+  （利用者自身の明示的な選択より下、ブラウザ `Accept-Language` より上が妥当）。
+- **`id_token_hint`** — `/logout`（RP-initiated logout）で未使用。`post_logout_redirect_uri` の
   検証を id_token_hint に紐づけられない。
-- `acr_values` — AP3（認証ポリシーの `requested_acr` 条件）の前提。
-- `response_mode` — `query` 固定。`form_post` が要る RP に対応できない。
-- `prompt=select_account` — 複数アカウント切替の入口が無い（`Prompt::parse` は none/login/consent のみ）。
-
-Discovery も `response_modes_supported`・`request_parameter_supported`・`claims_parameter_supported`・
-`acr_values_supported`・`ui_locales_supported` を出しておらず、RP のメタデータ検証が厳しい実装
-（OIDC 認定テストを含む）で落ちうる。対策: `login_hint`・`ui_locales` を先に入れる（UX 直結・低コスト）。
-`response_mode=form_post` と `acr_values` は AP3 と合わせて判断する。
+- **`response_mode=form_post`** — 現状 `query` 固定。最終リダイレクトを組み立てるのは web 側の
+  複数経路（resume・ログイン成功・同意承認）なので、api が「URL」ではなく「送信先 + パラメータ」を
+  返す形への変更が要る。
+- **`prompt=select_account`** — `Prompt::parse` は none/login/consent のみ。本 IdP はブラウザごとに
+  SSO セッションを 1 つしか持たないため「選ばせる別アカウント」が存在せず、対応するなら
+  複数アカウント同時保持の設計から要る（Discovery では未対応として広告済み）。

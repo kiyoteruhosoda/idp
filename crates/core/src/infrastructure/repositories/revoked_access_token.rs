@@ -15,6 +15,11 @@ impl SqlxRevokedAccessTokenRepository {
     pub fn new(pool: Db) -> Self {
         Self { pool }
     }
+
+    /// 期限切れ行の掃除（`expired_records` の `ExpiringRecordStore` 実装）が使う。
+    pub(super) fn pool(&self) -> &Db {
+        &self.pool
+    }
 }
 
 fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {

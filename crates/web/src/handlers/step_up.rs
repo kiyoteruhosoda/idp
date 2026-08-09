@@ -226,7 +226,10 @@ pub async fn verify(
     let next = safe_next(&tenant, Some(&form.next));
     let challenge = challenge_path(&tenant, &form.operation, &next);
 
-    if console_csrf_token(&sso, state.config.csrf_secret()) != form.csrf_token {
+    if !idp_contracts::csrf::verify(
+        &console_csrf_token(&sso, state.config.csrf_secret()),
+        &form.csrf_token,
+    ) {
         tracing::warn!(
             correlation_id = %correlation.0,
             "step-up verification rejected: csrf token mismatch"

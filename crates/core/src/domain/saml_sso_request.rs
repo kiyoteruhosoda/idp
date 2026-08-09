@@ -5,14 +5,21 @@
 //! ハンドオフする（ADR-0018 のハンドオフ方式を SAML にも適用）。SSO 未確立の間は行 id
 //! （web の host-only `saml_request_id` Cookie）で再開し、応答発行時に削除する。
 
+use crate::domain::crypto;
 use crate::domain::tenant::TenantId;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+/// `saml_request_id`（web が host-only Cookie に持つランダム値）の SHA-256。
+/// auth_session_id と同じく bearer credential なので DB へはハッシュだけを保存する（SEC6）。
+pub fn id_hash(saml_request_id: &str) -> String {
+    crypto::sha256_hex(saml_request_id)
+}
+
 #[derive(Debug, Clone)]
 pub struct SamlSsoRequest {
-    /// 128bit 以上の推測不能なランダム値（web が host-only `saml_request_id` Cookie に保持する値）。
-    pub id: String,
+    /// `saml_request_id` の SHA-256（[`id_hash`]）。平文はここには入らない。
+    pub id_hash: String,
     /// フローを開始したテナント（`/{tenant_id}/saml/sso`。ADR-0009 §8）。
     pub tenant_id: TenantId,
     /// 解決済みの登録 SP。
@@ -53,7 +60,7 @@ mod tests {
     fn handle_validity_requires_both_hash_and_deadline() {
         let now = Utc::now();
         let mut request = SamlSsoRequest {
-            id: "r".to_string(),
+            id_hash: id_hash("r"),
             tenant_id: Uuid::now_v7().into(),
             service_provider_id: Uuid::nil(),
             sp_entity_id: "urn:sp".to_string(),

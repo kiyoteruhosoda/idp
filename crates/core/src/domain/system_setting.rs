@@ -380,6 +380,50 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
                       いる場合にのみ選ぶこと）。",
     },
     SettingDefinition {
+        key: "API_DOCS_ENABLED",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::Boolean,
+        default_value: Some("false"),
+        description: "Swagger UI（`/api/docs`）と OpenAPI 文書（`/api/openapi.json`）を配信するか。\
+                      既定は無効。api 面は公開されるため、有効にすると管理 API を含む全エンドポイントの\
+                      仕様が無認証で読める（秘密は含まないが攻撃対象の把握を助ける）。開発・検証環境で\
+                      のみ有効にすること。",
+    },
+    SettingDefinition {
+        key: "CORS_ALLOWED_ORIGINS",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::Text,
+        default_value: Some(""),
+        description: "ブラウザからの越境アクセス（CORS）を追加で許可するオリジンのカンマ区切り \
+                      （例 `https://app.example.com,https://admin.example.com`）。既定は空で、\
+                      許可されるのはテナント内 public クライアントの `redirect_uris` から導いた \
+                      オリジンだけ。公開メタデータ（`/.well-known/*`・`/saml/metadata`）は本設定に \
+                      関わらず誰でも取得できる。api はブラウザ Cookie を読まないため \
+                      `Access-Control-Allow-Credentials` は付けない。",
+    },
+    SettingDefinition {
+        key: "EXPIRED_RECORD_PURGE_INTERVAL_SECS",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
+        default_value: Some("3600"),
+        description: "期限切れレコード（認可セッション・authorization code・refresh token・SSO \
+                      セッション・失効 jti・パスキーチャレンジ・各種一時トークン）を掃除する間隔（秒）。\
+                      いずれも期限を過ぎれば認証には使えないため、頻度は容量とレイテンシのための\
+                      調整値である。`0` を指定すると掃除しない（表が際限なく増えるため非推奨）。",
+    },
+    SettingDefinition {
         key: "STEP_UP_MAX_AGE_SECS",
         shared_with_web: false,
         owner: SettingOwner::DbManaged,

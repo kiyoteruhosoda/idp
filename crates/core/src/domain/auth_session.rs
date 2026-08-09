@@ -2,15 +2,26 @@
 //! `/authorize` から `/login` 完了までの一時的な認可リクエスト状態。
 #![allow(dead_code)]
 
+use crate::domain::crypto;
 use crate::domain::tenant::TenantId;
 use crate::domain::values::{CodeChallengeMethod, Prompt};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+/// `auth_session_id`（web が host-only Cookie に持つ 128bit 以上のランダム値）の SHA-256。
+///
+/// この値は **bearer credential そのもの**（提示できれば同意待ち／MFA 待ちの認可セッションを操作できる）
+/// なので、他の bearer credential（`sso_sessions.session_hash`・`authorization_codes.code_hash`・
+/// `refresh_tokens.token_hash`・同じ表の `handle_hash`）と同じく DB へはハッシュだけを保存する（SEC6）。
+/// 平文はリクエスト／レスポンスの間だけ存在し、`AuthSession` にも載せない。
+pub fn id_hash(auth_session_id: &str) -> String {
+    crypto::sha256_hex(auth_session_id)
+}
+
 #[derive(Debug, Clone)]
 pub struct AuthSession {
-    /// 128bit 以上の推測不能なランダム値（web が host-only `auth_session_id` Cookie に保持する値）。
-    pub id: String,
+    /// `auth_session_id` の SHA-256（[`id_hash`]）。平文はここには入らない。
+    pub id_hash: String,
     /// フローを開始したテナント（`/{tenant_id}/authorize`。ADR-0009 §8）。
     pub tenant_id: TenantId,
     pub client_id: String,
@@ -25,6 +36,13 @@ pub struct AuthSession {
     pub prompt: Option<Prompt>,
     /// 認可リクエストの `max_age`（秒。未指定は `None`）。`prompt` と同じく resume で評価する。
     pub max_age: Option<u64>,
+    /// 認可リクエストの `acr_values`（空白区切りの生値。G12）。認証ポリシーの `requested_acr`
+    /// 条件（AP3）が参照するため、評価時点（ログイン）まで持ち越す。
+    pub acr_values: Option<String>,
+    /// 認可リクエストの `login_hint`（ログイン画面のユーザー名プリフィル。G12）。
+    pub login_hint: Option<String>,
+    /// 認可リクエストの `ui_locales`（RP が要求する表示言語。空白区切りの BCP47 タグ。G12）。
+    pub ui_locales: Option<String>,
     /// web ハンドオフ用ハンドルの SHA-256（ADR-0018 決定 2）。単回使用: resume での交換時に
     /// `None` へ消費する。ハンドルはこの行（＝その `code_challenge`）に固定的に束ねられ、
     /// 他の認可要求へ付け替えられない。
@@ -46,6 +64,16 @@ pub struct AuthSession {
 impl AuthSession {
     pub fn is_expired_at(&self, now: DateTime<Utc>) -> bool {
         self.expires_at <= now
+    }
+
+    /// `acr_values` を空白区切りで分割した一覧（未指定は空）。
+    pub fn requested_acr(&self) -> Vec<String> {
+        self.acr_values
+            .as_deref()
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(str::to_string)
+            .collect()
     }
 
     /// web ハンドオフ用ハンドルが `now` 時点で交換可能か（未消費かつ期限内）。

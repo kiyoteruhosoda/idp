@@ -10,9 +10,10 @@ use crate::handlers::{
     admin_clients_console, admin_console, admin_invitations_console, admin_members_console,
     admin_restart_console, admin_saml_clients_console, admin_settings, admin_signing_keys_console,
     admin_status_console, admin_tenants_console, admin_users_console, authenticators, consent,
-    console_script, external_login, health, invitation_accept, locale, login, mfa_totp, passkey,
-    password_change, password_reset, portal, react_assets, rp_logout, saml_sso, step_up,
-    stylesheet, submit_feedback_script, user_security, user_settings, vendor_assets, verify_email,
+    console_script, external_login, health, invitation_accept, locale, login, mfa_totp,
+    page_scripts, passkey, password_change, password_reset, portal, react_assets, rp_logout,
+    saml_sso, step_up, stylesheet, submit_feedback_script, user_security, user_settings,
+    vendor_assets, verify_email,
 };
 use crate::i18n::Messages;
 use crate::language::resolve_language;
@@ -318,6 +319,21 @@ pub fn build(state: WebState) -> Router {
             "/assets/submit-feedback.js",
             get(submit_feedback_script::submit_feedback_js),
         )
+        // 画面固有スクリプト（旧インライン script。SEC12）。
+        .route(
+            "/assets/passkey-login.js",
+            get(page_scripts::passkey_login_js),
+        )
+        .route(
+            "/assets/passkey-register.js",
+            get(page_scripts::passkey_register_js),
+        )
+        .route(
+            "/assets/password-visibility.js",
+            get(page_scripts::password_visibility_js),
+        )
+        .route("/assets/rp-logout.js", get(page_scripts::rp_logout_js))
+        .route("/assets/auto-submit.js", get(page_scripts::auto_submit_js))
         .route(
             "/assets/vendor/bootstrap.min.css",
             get(vendor_assets::bootstrap_css),

@@ -123,7 +123,7 @@ impl PasskeyRegistrationService {
             user_id: Some(user_id),
             challenge_type: PasskeyChallengeType::Register,
             state_json,
-            auth_session_id: None,
+            auth_session_id_hash: None,
             expires_at: now + chrono::Duration::from_std(CHALLENGE_TTL).unwrap(),
             created_at: now,
         };

@@ -231,6 +231,15 @@ mod tests {
     }
     #[async_trait]
     impl UserRepository for FakeUsers {
+        /// このテストはログイン失敗経路を通らない（SEC13 の検証は login / mfa_login にある）。
+        async fn record_login_failure(
+            &self,
+            _id: Uuid,
+            _lockout: crate::domain::authentication_policy::LockoutPolicy,
+            _now: chrono::DateTime<chrono::Utc>,
+        ) -> DomainResult<crate::domain::user::LoginFailureRecord> {
+            unreachable!()
+        }
         async fn create(&self, _u: &User) -> DomainResult<()> {
             unreachable!()
         }

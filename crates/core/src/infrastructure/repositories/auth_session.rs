@@ -22,8 +22,9 @@ impl SqlxAuthSessionRepository {
     }
 }
 
-const SELECT_COLUMNS: &str = "id, tenant_id, client_id, redirect_uri, scope, state, nonce, \
-     code_challenge, code_challenge_method, prompt, max_age, handle_hash, handle_expires_at, \
+const SELECT_COLUMNS: &str = "id_hash, tenant_id, client_id, redirect_uri, scope, state, nonce, \
+     code_challenge, code_challenge_method, prompt, max_age, acr_values, login_hint, \
+     ui_locales, handle_hash, handle_expires_at, \
      authenticated_user_id, auth_time, password_verified_at, sso_sid, expires_at, created_at, \
      updated_at";
 
@@ -49,7 +50,7 @@ fn map_row(row: &MySqlRow) -> Result<AuthSession> {
     let password_verified_at: Option<NaiveDateTime> =
         row.try_get("password_verified_at").map_err(repo_err)?;
     Ok(AuthSession {
-        id: row.try_get("id").map_err(repo_err)?,
+        id_hash: row.try_get("id_hash").map_err(repo_err)?,
         tenant_id: Uuid::parse_str(&tenant_id)
             .map_err(|e| DomainError::Repository(format!("invalid UUID `{tenant_id}`: {e}")))?
             .into(),
@@ -63,6 +64,9 @@ fn map_row(row: &MySqlRow) -> Result<AuthSession> {
         code_challenge_method: CodeChallengeMethod::parse(&ccm)?,
         prompt: prompt.as_deref().map(Prompt::parse).transpose()?,
         max_age: max_age.map(|v| v.max(0) as u64),
+        acr_values: row.try_get("acr_values").map_err(repo_err)?,
+        login_hint: row.try_get("login_hint").map_err(repo_err)?,
+        ui_locales: row.try_get("ui_locales").map_err(repo_err)?,
         handle_hash: row.try_get("handle_hash").map_err(repo_err)?,
         handle_expires_at: handle_expires_at.map(to_utc),
         authenticated_user_id: user_id
@@ -85,12 +89,13 @@ impl AuthSessionRepository for SqlxAuthSessionRepository {
     async fn create(&self, session: &AuthSession) -> Result<()> {
         sqlx::query(
             "INSERT INTO auth_sessions \
-             (id, tenant_id, client_id, redirect_uri, scope, state, nonce, code_challenge, \
-              code_challenge_method, prompt, max_age, handle_hash, handle_expires_at, \
+             (id_hash, tenant_id, client_id, redirect_uri, scope, state, nonce, code_challenge, \
+              code_challenge_method, prompt, max_age, acr_values, login_hint, ui_locales, \
+              handle_hash, handle_expires_at, \
               authenticated_user_id, auth_time, expires_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(&session.id)
+        .bind(&session.id_hash)
         .bind(session.tenant_id.to_string())
         .bind(&session.client_id)
         .bind(&session.redirect_uri)
@@ -101,6 +106,9 @@ impl AuthSessionRepository for SqlxAuthSessionRepository {
         .bind(session.code_challenge_method.as_str())
         .bind(session.prompt.map(|p| p.as_str()))
         .bind(session.max_age.map(|v| v as i64))
+        .bind(&session.acr_values)
+        .bind(&session.login_hint)
+        .bind(&session.ui_locales)
         .bind(&session.handle_hash)
         .bind(session.handle_expires_at.map(|d| d.naive_utc()))
         .bind(session.authenticated_user_id.map(|u| u.to_string()))
@@ -112,11 +120,16 @@ impl AuthSessionRepository for SqlxAuthSessionRepository {
         Ok(())
     }
 
-    async fn find_by_id(&self, tenant_id: TenantId, id: &str) -> Result<Option<AuthSession>> {
-        let sql =
-            format!("SELECT {SELECT_COLUMNS} FROM auth_sessions WHERE id = ? AND tenant_id = ?");
+    async fn find_by_id_hash(
+        &self,
+        tenant_id: TenantId,
+        id_hash: &str,
+    ) -> Result<Option<AuthSession>> {
+        let sql = format!(
+            "SELECT {SELECT_COLUMNS} FROM auth_sessions WHERE id_hash = ? AND tenant_id = ?"
+        );
         let row = sqlx::query(&sql)
-            .bind(id)
+            .bind(id_hash)
             .bind(tenant_id.to_string())
             .fetch_optional(&self.pool)
             .await
@@ -141,15 +154,22 @@ impl AuthSessionRepository for SqlxAuthSessionRepository {
         row.as_ref().map(map_row).transpose()
     }
 
-    async fn consume_handle(&self, id: &str, handle_hash: &str) -> Result<bool> {
+    async fn consume_handle(
+        &self,
+        id_hash: &str,
+        handle_hash: &str,
+        new_id_hash: &str,
+    ) -> Result<bool> {
         // WHERE に handle_hash を含めることで単回使用を原子的に強制する。並行する交換は
         // 片方だけが 1 行更新に成功し、負けた側（および再利用）は 0 行 = false になる。
+        // 同じ文で id_hash も差し替える（勝った側だけが新しい id を得る）。
         let result = sqlx::query(
             "UPDATE auth_sessions \
-             SET handle_hash = NULL, handle_expires_at = NULL \
-             WHERE id = ? AND handle_hash = ?",
+             SET handle_hash = NULL, handle_expires_at = NULL, id_hash = ? \
+             WHERE id_hash = ? AND handle_hash = ?",
         )
-        .bind(id)
+        .bind(new_id_hash)
+        .bind(id_hash)
         .bind(handle_hash)
         .execute(&self.pool)
         .await
@@ -159,8 +179,8 @@ impl AuthSessionRepository for SqlxAuthSessionRepository {
 
     async fn set_authenticated_user(
         &self,
-        id: &str,
-        new_id: &str,
+        id_hash: &str,
+        new_id_hash: &str,
         user_id: Uuid,
         auth_time: DateTime<Utc>,
         sso_sid: Option<&str>,
@@ -169,14 +189,14 @@ impl AuthSessionRepository for SqlxAuthSessionRepository {
         // 旧 id がまだ引ける瞬間ができる。
         sqlx::query(
             "UPDATE auth_sessions \
-             SET id = ?, authenticated_user_id = ?, auth_time = ?, sso_sid = ? \
-             WHERE id = ?",
+             SET id_hash = ?, authenticated_user_id = ?, auth_time = ?, sso_sid = ? \
+             WHERE id_hash = ?",
         )
-        .bind(new_id)
+        .bind(new_id_hash)
         .bind(user_id.to_string())
         .bind(auth_time.naive_utc())
         .bind(sso_sid)
-        .bind(id)
+        .bind(id_hash)
         .execute(&self.pool)
         .await
         .map_err(repo_err)?;
@@ -185,32 +205,41 @@ impl AuthSessionRepository for SqlxAuthSessionRepository {
 
     async fn set_password_verified(
         &self,
-        id: &str,
-        new_id: &str,
+        id_hash: &str,
+        new_id_hash: &str,
         user_id: Uuid,
         verified_at: DateTime<Utc>,
     ) -> Result<()> {
         sqlx::query(
             "UPDATE auth_sessions \
-             SET id = ?, authenticated_user_id = ?, password_verified_at = ? \
-             WHERE id = ?",
+             SET id_hash = ?, authenticated_user_id = ?, password_verified_at = ? \
+             WHERE id_hash = ?",
         )
-        .bind(new_id)
+        .bind(new_id_hash)
         .bind(user_id.to_string())
         .bind(verified_at.naive_utc())
-        .bind(id)
+        .bind(id_hash)
         .execute(&self.pool)
         .await
         .map_err(repo_err)?;
         Ok(())
     }
 
-    async fn delete(&self, id: &str) -> Result<()> {
-        sqlx::query("DELETE FROM auth_sessions WHERE id = ?")
-            .bind(id)
+    async fn delete(&self, id_hash: &str) -> Result<()> {
+        sqlx::query("DELETE FROM auth_sessions WHERE id_hash = ?")
+            .bind(id_hash)
             .execute(&self.pool)
             .await
             .map_err(repo_err)?;
         Ok(())
+    }
+
+    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64> {
+        let result = sqlx::query("DELETE FROM auth_sessions WHERE expires_at <= ?")
+            .bind(now.naive_utc())
+            .execute(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        Ok(result.rows_affected())
     }
 }

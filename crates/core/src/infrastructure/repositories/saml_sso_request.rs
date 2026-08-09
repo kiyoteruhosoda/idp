@@ -21,7 +21,7 @@ impl SqlxSamlSsoRequestRepository {
     }
 }
 
-const SELECT_COLUMNS: &str = "id, tenant_id, service_provider_id, sp_entity_id, acs_url, \
+const SELECT_COLUMNS: &str = "id_hash, tenant_id, service_provider_id, sp_entity_id, acs_url, \
      request_id, relay_state, handle_hash, handle_expires_at, expires_at, created_at";
 
 fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
@@ -43,7 +43,7 @@ fn map_row(row: &MySqlRow) -> Result<SamlSsoRequest> {
     let handle_expires_at: Option<NaiveDateTime> =
         row.try_get("handle_expires_at").map_err(repo_err)?;
     Ok(SamlSsoRequest {
-        id: row.try_get("id").map_err(repo_err)?,
+        id_hash: row.try_get("id_hash").map_err(repo_err)?,
         tenant_id: parse_uuid(&tenant_id)?.into(),
         service_provider_id: parse_uuid(&service_provider_id)?,
         sp_entity_id: row.try_get("sp_entity_id").map_err(repo_err)?,
@@ -62,11 +62,11 @@ impl SamlSsoRequestRepository for SqlxSamlSsoRequestRepository {
     async fn create(&self, request: &SamlSsoRequest) -> Result<()> {
         sqlx::query(
             "INSERT INTO saml_sso_requests \
-             (id, tenant_id, service_provider_id, sp_entity_id, acs_url, request_id, \
+             (id_hash, tenant_id, service_provider_id, sp_entity_id, acs_url, request_id, \
               relay_state, handle_hash, handle_expires_at, expires_at, created_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(&request.id)
+        .bind(&request.id_hash)
         .bind(request.tenant_id.to_string())
         .bind(request.service_provider_id.to_string())
         .bind(&request.sp_entity_id)
@@ -83,12 +83,16 @@ impl SamlSsoRequestRepository for SqlxSamlSsoRequestRepository {
         Ok(())
     }
 
-    async fn find_by_id(&self, tenant_id: TenantId, id: &str) -> Result<Option<SamlSsoRequest>> {
+    async fn find_by_id_hash(
+        &self,
+        tenant_id: TenantId,
+        id_hash: &str,
+    ) -> Result<Option<SamlSsoRequest>> {
         let sql = format!(
-            "SELECT {SELECT_COLUMNS} FROM saml_sso_requests WHERE id = ? AND tenant_id = ?"
+            "SELECT {SELECT_COLUMNS} FROM saml_sso_requests WHERE id_hash = ? AND tenant_id = ?"
         );
         let row = sqlx::query(&sql)
-            .bind(id)
+            .bind(id_hash)
             .bind(tenant_id.to_string())
             .fetch_optional(&self.pool)
             .await
@@ -113,14 +117,21 @@ impl SamlSsoRequestRepository for SqlxSamlSsoRequestRepository {
         row.as_ref().map(map_row).transpose()
     }
 
-    async fn consume_handle(&self, id: &str, handle_hash: &str) -> Result<bool> {
+    async fn consume_handle(
+        &self,
+        id_hash: &str,
+        handle_hash: &str,
+        new_id_hash: &str,
+    ) -> Result<bool> {
         // WHERE に handle_hash を含めることで単回使用を原子的に強制する（auth_sessions と同方式）。
+        // 同じ文で id_hash も差し替える（勝った側だけが新しい `saml_request_id` を得る）。
         let result = sqlx::query(
             "UPDATE saml_sso_requests \
-             SET handle_hash = NULL, handle_expires_at = NULL \
-             WHERE id = ? AND handle_hash = ?",
+             SET handle_hash = NULL, handle_expires_at = NULL, id_hash = ? \
+             WHERE id_hash = ? AND handle_hash = ?",
         )
-        .bind(id)
+        .bind(new_id_hash)
+        .bind(id_hash)
         .bind(handle_hash)
         .execute(&self.pool)
         .await
@@ -128,13 +139,22 @@ impl SamlSsoRequestRepository for SqlxSamlSsoRequestRepository {
         Ok(result.rows_affected() == 1)
     }
 
-    async fn delete(&self, id: &str) -> Result<bool> {
+    async fn delete(&self, id_hash: &str) -> Result<bool> {
         // 応答発行前のクレームを兼ねる: 並行する resume は片方だけが 1 行削除に成功する。
-        let result = sqlx::query("DELETE FROM saml_sso_requests WHERE id = ?")
-            .bind(id)
+        let result = sqlx::query("DELETE FROM saml_sso_requests WHERE id_hash = ?")
+            .bind(id_hash)
             .execute(&self.pool)
             .await
             .map_err(repo_err)?;
         Ok(result.rows_affected() == 1)
+    }
+
+    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64> {
+        let result = sqlx::query("DELETE FROM saml_sso_requests WHERE expires_at <= ?")
+            .bind(now.naive_utc())
+            .execute(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        Ok(result.rows_affected())
     }
 }

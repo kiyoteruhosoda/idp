@@ -29,7 +29,9 @@ use crate::application::client_management::ClientManagementService;
 use crate::application::client_status::ClientStatusService;
 use crate::application::code_issuance::CodeIssuanceService;
 use crate::application::consent::ConsentService;
+use crate::application::cors_policy::ApiCorsPolicy;
 use crate::application::email_verification::EmailVerificationService;
+use crate::application::expired_record_purge::ExpiredRecordPurgeService;
 use crate::application::external_idp_management::ExternalIdpManagementService;
 use crate::application::external_login::ExternalLoginService;
 use crate::application::introspection::IntrospectionService;
@@ -186,7 +188,7 @@ pub struct AppState {
     pub step_up: Arc<StepUpService>,
     /// 認証器の統合管理（一覧・状態変更・リカバリーコード・email OTP。AP9）。
     pub authenticators: Arc<AuthenticatorManagementService>,
-    /// 認証器の登録簿（AP9）。期限切れコードの GC が直接使う。
+    /// 認証器の登録簿（AP9）。
     pub authenticator_repository: Arc<dyn crate::domain::repositories::UserAuthenticatorRepository>,
     /// 外部 IdP ログイン（AP10）。
     pub external_login: Arc<ExternalLoginService>,
@@ -195,9 +197,14 @@ pub struct AppState {
     /// 外部 IdP 設定の参照（ログイン画面のボタン用）。GC・一覧が直接使う。
     pub external_providers:
         Arc<dyn crate::domain::repositories::ExternalIdentityProviderRepository>,
-    /// 外部 IdP ログインの進行状態（AP10）。期限切れの GC が直接使う。
+    /// 外部 IdP ログインの進行状態（AP10）。
     pub external_login_requests:
         Arc<dyn crate::domain::repositories::ExternalLoginRequestRepository>,
+    /// 期限切れレコードの一括 GC（G2）。対象表の一覧は
+    /// [`crate::infrastructure::repositories::expired_records`] にある。
+    pub expired_records: Arc<ExpiredRecordPurgeService>,
+    /// CORS の許可オリジン判定（G1）。ミドルウェアが使う。
+    pub cors_policy: Arc<ApiCorsPolicy>,
     /// Back-channel logout の送信キュー（G5）。ハンドラは積むだけ、送信はワーカーが行う。
     pub backchannel_logout: Arc<BackchannelLogoutDeliveryService>,
     pub revocation: Arc<RevocationService>,
@@ -401,6 +408,8 @@ impl AppState {
             code_issuance.clone(),
             clock.clone(),
             config.auth_session_ttl(),
+            authentication_policies.clone(),
+            config.auth_policy_default_effect(),
         ));
         // SAML SP-initiated SSO。進行状態の TTL は OIDC の auth_session と同じ値を使う。
         let saml_sso = Arc::new(SamlSsoService::new(
@@ -712,7 +721,7 @@ impl AppState {
             clock.clone(),
         ));
         let introspection = Arc::new(IntrospectionService::new(
-            clients,
+            clients.clone(),
             signing_keys.clone(),
             refresh_tokens,
             revoked_access_tokens,
@@ -749,6 +758,8 @@ impl AppState {
             config.sso_absolute_ttl(),
             config.login_lockout(),
             *config.csrf_secret(),
+            authentication_policies.clone(),
+            config.auth_policy_default_effect(),
         ));
 
         // WebAuthn の RP ID・origin は **web の公開ベース URL のホスト**から導出する（ADR-0019 決定 2。
@@ -790,6 +801,28 @@ impl AppState {
         let service_restart = Arc::new(ServiceRestartService::new(
             Arc::new(restart.clone()),
             audit.clone(),
+        ));
+
+        // CORS の許可オリジン（G1）。`/token`・`/userinfo` はホットパスのため、テナント→オリジン
+        // 集合をテナント解決と同じ TTL でキャッシュする。管理画面で `redirect_uris` を変えた直後は
+        // 最大 TTL 分だけ古い集合が使われるが、TTL は既定で短く、影響は「新しいオリジンからの
+        // 読み取りが少しの間できない」だけ（古いオリジンが余分に通ることも同じ長さで起きる）。
+        let cors_policy = Arc::new(ApiCorsPolicy::new(
+            clients.clone(),
+            config.cors_allowed_origins(),
+            Arc::new(InMemoryTtlCache::new(
+                chrono_from_std(config.tenant_cache_ttl()),
+                clock.clone(),
+            )),
+        ));
+
+        // 期限切れレコードの一括 GC（G2）。対象表の一覧は infrastructure 側に単一定義してあり、
+        // ここは組み立てて `run()` のタスクへ渡すだけ。
+        let expired_records = Arc::new(ExpiredRecordPurgeService::new(
+            crate::infrastructure::repositories::expired_records::all_expiring_record_stores(
+                pool.clone(),
+            ),
+            clock.clone(),
         ));
 
         Self {
@@ -845,6 +878,8 @@ impl AppState {
             saml_sso,
             restart,
             service_restart,
+            expired_records,
+            cors_policy,
         }
     }
 }

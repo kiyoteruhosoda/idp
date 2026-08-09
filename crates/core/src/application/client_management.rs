@@ -34,7 +34,6 @@ pub struct RegisterClientCommand {
     pub redirect_uris: Vec<String>,
     pub scopes: Vec<String>,
     /// 省略時は既定（true）。public は PKCE 必須のため false を指定しても true に矯正する。
-    pub require_pkce: Option<bool>,
     /// サーバ間（M2M）連携で `client_credentials` grant を使えるようにするか（G4。既定 false）。
     /// public client は資格情報を秘匿できないため、指定されても無効のまま登録する。
     pub allow_client_credentials: bool,
@@ -123,10 +122,12 @@ impl ClientManagementService {
             validate_frontchannel_logout_uri(cmd.frontchannel_logout_uri)?;
         let backchannel_logout_uri = validate_backchannel_logout_uri(cmd.backchannel_logout_uri)?;
 
-        // client 種別に応じて認証方式・PKCE・secret を決める。
-        // public: 認証なし・PKCE 必須・secret なし。confidential: client_secret_basic・secret 発行。
-        let (auth_method, require_pkce, secret_plain, secret_hash) = match cmd.client_type {
-            ClientType::Public => (TokenEndpointAuthMethod::None, true, None, None),
+        // client 種別に応じて認証方式・secret を決める。
+        // public: 認証なし・secret なし。confidential: client_secret_basic・secret 発行。
+        // PKCE（S256）は種別によらず `/authorize`・`/token` が無条件に要求する（クライアント単位の
+        // 設定は持たない。SEC12 で「実際には参照されない設定」を削除した）。
+        let (auth_method, secret_plain, secret_hash) = match cmd.client_type {
+            ClientType::Public => (TokenEndpointAuthMethod::None, None, None),
             ClientType::Confidential => {
                 let plain = crate::domain::crypto::random_token(CLIENT_SECRET_BYTES);
                 let hash = self
@@ -135,7 +136,6 @@ impl ClientManagementService {
                     .map_err(|e| ClientManagementError::Internal(e.to_string()))?;
                 (
                     TokenEndpointAuthMethod::ClientSecretBasic,
-                    cmd.require_pkce.unwrap_or(true),
                     Some(plain),
                     Some(hash),
                 )
@@ -158,7 +158,6 @@ impl ClientManagementService {
             response_types: vec!["code".to_string()],
             scopes,
             token_endpoint_auth_method: auth_method,
-            require_pkce,
             post_logout_redirect_uris,
             frontchannel_logout_uri,
             backchannel_logout_uri,

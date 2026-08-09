@@ -224,6 +224,7 @@ impl PortalLoginService {
         &self,
         tenant_id: TenantId,
         user_id: Uuid,
+        ip_address: Option<&str>,
     ) -> Result<PolicyDecision, String> {
         let policies = self
             .authentication_policies
@@ -235,6 +236,10 @@ impl PortalLoginService {
             &AuthenticationContext {
                 client_id: None,
                 user_id,
+                ip_address,
+                now: self.clock.now(),
+                // ポータルログインは OIDC 認可要求ではないため `acr_values` は無い。
+                requested_acr: &[],
             },
             self.policy_default_effect,
         ))
@@ -339,7 +344,10 @@ impl PortalLoginService {
         // 7.5. 認証ポリシー評価（AP2。仕様 §9）。パスワード検証成功後に評価する（資格情報を知らない
         //      攻撃者にポリシーの存在・内容を観測させない）。`deny` は即拒否、`require_mfa` は後段の
         //      MFA ゲート（9.）で強制する。
-        let policy_decision = match self.evaluate_policy(tenant_id, user.id).await {
+        let policy_decision = match self
+            .evaluate_policy(tenant_id, user.id, ctx.ip_address.as_deref())
+            .await
+        {
             Ok(d) => d,
             Err(e) => return PortalLoginOutcome::Internal(e),
         };
@@ -377,6 +385,25 @@ impl PortalLoginService {
             )
             .await;
             return PortalLoginOutcome::MfaEnrollmentRequired;
+        }
+        // `require_specific_method`（AP3）。ここまで来た＝この経路が完了する時点で使う方式は
+        // パスワードだけ（TOTP を持つ利用者は上の MFA ステップへ抜けており、`verify_mfa` が
+        // 最終的な方式集合で判定し直す）。満たしていなければ SSO を発行しない。
+        if let Some(unmet) =
+            policy_decision.unmet_method_requirement(&[AuthenticationMethod::Password], false)
+        {
+            self.record_policy_denied(
+                tenant_id,
+                user.id,
+                &format!(
+                    "policy={} reason=method_required required={}",
+                    unmet.policy_code,
+                    unmet.requirement.describe()
+                ),
+                ctx,
+            )
+            .await;
+            return PortalLoginOutcome::PolicyDenied;
         }
 
         // 10. TOTP 未設定: SSO セッションを発行する。
@@ -521,7 +548,10 @@ impl PortalLoginService {
 
         // 認証ポリシー評価（AP2）。本経路も SSO を発行する側なので `login()` と同じ規則を適用する
         // （パスワード変更自体は本人のセルフサービスとして完了させ、セッション発行のみをゲートする）。
-        let policy_decision = match self.evaluate_policy(tenant_id, user.id).await {
+        let policy_decision = match self
+            .evaluate_policy(tenant_id, user.id, ctx.ip_address.as_deref())
+            .await
+        {
             Ok(d) => d,
             Err(e) => return PortalChangePasswordOutcome::Internal(e),
         };
@@ -551,6 +581,23 @@ impl PortalLoginService {
             )
             .await;
             return PortalChangePasswordOutcome::MfaEnrollmentRequired;
+        }
+        // `require_specific_method`（AP3）。この経路で確定する方式はパスワードだけ。
+        if let Some(unmet) =
+            policy_decision.unmet_method_requirement(&[AuthenticationMethod::Password], false)
+        {
+            self.record_policy_denied(
+                tenant_id,
+                user.id,
+                &format!(
+                    "policy={} reason=method_required required={}",
+                    unmet.policy_code,
+                    unmet.requirement.describe()
+                ),
+                ctx,
+            )
+            .await;
+            return PortalChangePasswordOutcome::PolicyDenied;
         }
 
         let sso_session_id = match self
@@ -619,10 +666,17 @@ impl PortalLoginService {
             Err(e) => return PortalMfaOutcome::Internal(e),
         };
 
-        // 4.5. 認証ポリシーの再評価（AP2）。チケット発行後にポリシーが `deny` へ変わった場合でも
+        // 4.5. 認証ポリシーの再評価（AP2/AP3）。チケット発行後にポリシーが `deny` へ変わった場合でも
         //      SSO を発行しない（チケットの寿命 5 分ぶんだけ古い判断で通してしまわないため）。
-        //      `require_mfa` はこの時点で満たされている（TOTP 検証済み）ので追加の判定は要らない。
-        match self.evaluate_policy(tenant_id, user_id).await {
+        //      `require_mfa` はこの時点で満たされている（第二要素を検証済み）が、
+        //      `require_specific_method` は**実際に使った第二要素**が要求と一致するかで決まるため、
+        //      ここで最終的な方式集合に対して判定する（`Ok(_)` で素通しにすると、TOTP で
+        //      WebAuthn 必須のポリシーを回避できる）。
+        let used_methods = [AuthenticationMethod::Password, second_factor];
+        match self
+            .evaluate_policy(tenant_id, user_id, ctx.ip_address.as_deref())
+            .await
+        {
             Ok(PolicyDecision::Deny { policy_code }) => {
                 self.record_policy_denied(
                     tenant_id,
@@ -633,7 +687,23 @@ impl PortalLoginService {
                 .await;
                 return PortalMfaOutcome::PolicyDenied;
             }
-            Ok(_) => {}
+            Ok(decision) => {
+                // ポータルは WebAuthn を通らないため User Verification は未実施として扱う。
+                if let Some(unmet) = decision.unmet_method_requirement(&used_methods, false) {
+                    self.record_policy_denied(
+                        tenant_id,
+                        user_id,
+                        &format!(
+                            "policy={} reason=method_required required={}",
+                            unmet.policy_code,
+                            unmet.requirement.describe()
+                        ),
+                        ctx,
+                    )
+                    .await;
+                    return PortalMfaOutcome::PolicyDenied;
+                }
+            }
             Err(e) => return PortalMfaOutcome::Internal(e),
         }
 
@@ -792,18 +862,18 @@ impl PortalLoginService {
         ctx: &RequestContext,
     ) -> PortalChangePasswordOutcome {
         let now = self.clock.now();
-        let failed = user.failed_login_count + 1;
-        let locked_until = self.lockout.locked_until_after_failure(failed, now);
-        if let Err(e) = self
+        // 加算とロック判定は 1 文の UPDATE に閉じる（SEC13）。
+        let failure = match self
             .users
-            .update_login_state(user.id, failed, locked_until)
+            .record_login_failure(user.id, self.lockout, now)
             .await
         {
-            return PortalChangePasswordOutcome::Internal(e.to_string());
-        }
+            Ok(f) => f,
+            Err(e) => return PortalChangePasswordOutcome::Internal(e.to_string()),
+        };
         self.record_failure(tenant_id, Some(user.id), reason, ctx)
             .await;
-        if locked_until.is_some() {
+        if failure.is_locked() {
             self.audit
                 .record(
                     AuditEventType::LoginLocked,
@@ -828,18 +898,18 @@ impl PortalLoginService {
         ctx: &RequestContext,
     ) -> PortalLoginOutcome {
         let now = self.clock.now();
-        let failed = user.failed_login_count + 1;
-        let locked_until = self.lockout.locked_until_after_failure(failed, now);
-        if let Err(e) = self
+        // 加算とロック判定は 1 文の UPDATE に閉じる（SEC13）。
+        let failure = match self
             .users
-            .update_login_state(user.id, failed, locked_until)
+            .record_login_failure(user.id, self.lockout, now)
             .await
         {
-            return PortalLoginOutcome::Internal(e.to_string());
-        }
+            Ok(f) => f,
+            Err(e) => return PortalLoginOutcome::Internal(e.to_string()),
+        };
         self.record_failure(tenant_id, Some(user.id), "invalid_password", ctx)
             .await;
-        if locked_until.is_some() {
+        if failure.is_locked() {
             self.audit
                 .record(
                     AuditEventType::LoginLocked,

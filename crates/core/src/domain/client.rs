@@ -22,7 +22,6 @@ pub struct Client {
     pub response_types: Vec<String>,
     pub scopes: Vec<String>,
     pub token_endpoint_auth_method: TokenEndpointAuthMethod,
-    pub require_pkce: bool,
     /// RP-initiated logout 後のリダイレクト先として登録済みの URI 群（F4）。
     pub post_logout_redirect_uris: Vec<String>,
     /// front-channel logout 用 iframe URI（F4）。
@@ -89,7 +88,6 @@ mod tests {
             response_types: vec!["code".to_string()],
             scopes: vec![],
             token_endpoint_auth_method: TokenEndpointAuthMethod::ClientSecretBasic,
-            require_pkce: true,
             post_logout_redirect_uris: vec![],
             frontchannel_logout_uri: None,
             backchannel_logout_uri: None,
