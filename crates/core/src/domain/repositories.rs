@@ -678,9 +678,12 @@ pub trait RefreshTokenRepository: Send + Sync {
         tenant_id: TenantId,
         token_hash: &str,
     ) -> Result<Option<RefreshToken>>;
-    /// 指定 hash のトークンを失効させる（`revoked_at` を設定）。
-    /// 不存在・既失効でもエラーにしない（冪等）。
-    async fn revoke(&self, token_hash: &str, revoked_at: DateTime<Utc>) -> Result<()>;
+    /// 指定 hash のトークンを失効させる（`revoked_at` を設定）。失効させた行数を返す。
+    /// 不存在・既失効でもエラーにしない（冪等。その場合は `0`）。
+    ///
+    /// 行数を返すのは `/revoke` が「refresh_token として失効させられたか」を判断するため
+    /// （RFC 7009 §2.1。失効できなかったなら access_token として試し直す必要がある）。
+    async fn revoke(&self, token_hash: &str, revoked_at: DateTime<Utc>) -> Result<u64>;
     /// `parent_hash` でチェーンを検索し、存在する（未失効・失効問わず）場合は `true`。
     /// reuse detection で同一 parent から二重発行が起きていないかを確認するために使う。
     async fn exists_by_parent_hash(&self, parent_hash: &str) -> Result<bool>;

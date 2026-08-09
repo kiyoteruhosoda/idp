@@ -188,6 +188,11 @@ pub enum InternalRpLogoutResponse {
         /// 検証済みの post-logout リダイレクト先（`state` 付与済み。未指定・検証失敗は `None`）。
         redirect_to: Option<String>,
     },
+    /// `id_token_hint` が指す利用者と、web が転送したセッションの利用者が一致しないため
+    /// **何もしなかった**（G12）。web は **SSO Cookie を消してはならない** —— 消すと DB には
+    /// セッションが生きたままブラウザから戻れなくなり、守ろうとした別利用者のログイン状態を
+    /// 結局は壊してしまう。画面は「何も変更していない」ことを伝える。
+    SubjectMismatch,
     /// api 内部エラー。
     Internal,
 }

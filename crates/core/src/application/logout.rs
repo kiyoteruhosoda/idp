@@ -48,6 +48,18 @@ enum IdTokenHintOutcome {
     Invalid,
 }
 
+/// RP-initiated logout の帰結。
+pub enum LogoutOutcome {
+    /// ログアウト処理を実施した（対象セッションが無かった場合も含む。冪等）。
+    Completed(LogoutResult),
+    /// `id_token_hint` が指す利用者と、いま手元のセッションの利用者が一致しないため**何もしなかった**。
+    ///
+    /// Presentation は**ブラウザの SSO Cookie も消してはならない**。消すと「DB にはセッションが
+    /// 生きているのに、ブラウザからはそこへ戻れない」宙ぶらりんの状態になり、守ろうとした
+    /// 別利用者のログイン状態を結局は壊してしまう。
+    SubjectMismatch,
+}
+
 /// RP-initiated logout の結果。Presentation がこれを元に通知とリダイレクトを実施する。
 pub struct LogoutResult {
     /// ログアウトしたユーザーの `sub`（back-channel logout token に使用）。
@@ -117,7 +129,7 @@ impl LogoutService {
         id_token_hint: Option<&str>,
         post_logout_redirect_uri: Option<&str>,
         ctx: &RequestContext,
-    ) -> LogoutResult {
+    ) -> LogoutOutcome {
         let now = self.clock.now();
 
         // 1. `id_token_hint` の検証（G12）。セッションに触れる前に済ませる。
@@ -131,14 +143,14 @@ impl LogoutService {
                     Ok(Some(s)) => s,
                     _ => {
                         // セッション不明または DB エラー → ログアウト済み扱いで続行。
-                        return LogoutResult {
+                        return LogoutOutcome::Completed(LogoutResult {
                             user_sub: None,
                             user_id: None,
                             sid: None,
                             backchannel_targets: vec![],
                             frontchannel_uris: vec![],
                             post_logout_redirect_uri: None,
-                        };
+                        });
                     }
                 };
                 let uid = session.user_id;
@@ -171,14 +183,8 @@ impl LogoutService {
                                 ctx,
                             )
                             .await;
-                        return LogoutResult {
-                            user_sub: None,
-                            user_id: None,
-                            sid: None,
-                            backchannel_targets: vec![],
-                            frontchannel_uris: vec![],
-                            post_logout_redirect_uri: None,
-                        };
+                        // Cookie も消させない（消すと DB にだけ生きたセッションが残る）。
+                        return LogoutOutcome::SubjectMismatch;
                     }
                 }
 
@@ -285,14 +291,14 @@ impl LogoutService {
             });
 
         let _ = user_id; // suppress unused warning
-        LogoutResult {
+        LogoutOutcome::Completed(LogoutResult {
             user_sub,
             user_id,
             sid,
             backchannel_targets,
             frontchannel_uris,
             post_logout_redirect_uri,
-        }
+        })
     }
 
     /// `id_token_hint` を検証する（G12。OIDC RP-Initiated Logout 1.0 §2）。

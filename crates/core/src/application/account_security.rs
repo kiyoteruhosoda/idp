@@ -563,7 +563,7 @@ mod tests {
         async fn find_by_hash(&self, _t: TenantId, _h: &str) -> DomainResult<Option<RefreshToken>> {
             unreachable!()
         }
-        async fn revoke(&self, _h: &str, _at: DateTime<Utc>) -> DomainResult<()> {
+        async fn revoke(&self, _h: &str, _at: DateTime<Utc>) -> DomainResult<u64> {
             unreachable!()
         }
         async fn exists_by_parent_hash(&self, _h: &str) -> DomainResult<bool> {

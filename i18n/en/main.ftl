@@ -26,6 +26,7 @@ saml-error-expired = The sign-in request has expired. Please start over from the
 logout-title = Sign out
 logout-in-progress-message = Signing you out…
 logout-done-message = You have been signed out.
+logout-subject-mismatch-message = This sign-out request was issued for a different account than the one currently signed in, so nothing was changed. Sign out from this site directly if you want to end the current session.
 
 # End-user portal login (standalone sign-in to the IdP account page, without an OIDC app).
 portal-login-title = Sign in to your account

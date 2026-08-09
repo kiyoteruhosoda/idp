@@ -26,6 +26,7 @@ saml-error-expired = サインイン要求の有効期限が切れました。�
 logout-title = サインアウト
 logout-in-progress-message = サインアウトしています…
 logout-done-message = サインアウトしました。
+logout-subject-mismatch-message = このサインアウト要求は、現在サインインしているアカウントとは別のアカウント宛てに発行されたものです。何も変更していません。現在のセッションを終了したい場合は、このサイトから直接サインアウトしてください。
 
 # エンドユーザー・ポータルのログイン（OIDC アプリを介さず IdP のアカウント画面へ直接サインインする）。
 portal-login-title = アカウントにサインイン

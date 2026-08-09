@@ -117,6 +117,11 @@ impl RevocationService {
     }
 
     /// refresh_token の失効を試みる。失効させたら `true`。
+    ///
+    /// **該当行が無かった場合は `false`**。ここで `true` を返すと、`token_type_hint` を伴わない
+    /// access_token の失効要求が「refresh_token として失効済み」と誤判定され、access_token 側の
+    /// 失効が一度も試されないまま 200 が返る（RFC 7009 §2.1 は hint が外れたら他の種別も試すことを
+    /// 求めている）。
     async fn try_revoke_refresh_token(
         &self,
         token: &str,
@@ -125,7 +130,7 @@ impl RevocationService {
     ) -> bool {
         let hash = crypto::sha256_hex(token);
         match self.refresh_tokens.revoke(&hash, now).await {
-            Ok(_) => true,
+            Ok(revoked) => revoked > 0,
             Err(e) => {
                 tracing::warn!(error = %e, "failed to revoke refresh token");
                 false

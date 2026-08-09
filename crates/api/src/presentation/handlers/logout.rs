@@ -18,6 +18,7 @@
 
 use crate::application::audit::RequestContext;
 use crate::application::backchannel_logout::LogoutNotification;
+use crate::application::logout::LogoutOutcome;
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::require_internal_tenant;
@@ -39,7 +40,7 @@ pub async fn rp_logout(
     };
     let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
 
-    let result = state
+    let result = match state
         .logout
         .logout(
             tenant,
@@ -49,7 +50,15 @@ pub async fn rp_logout(
             req.post_logout_redirect_uri.as_deref(),
             &ctx,
         )
-        .await;
+        .await
+    {
+        LogoutOutcome::Completed(result) => result,
+        // `id_token_hint` が別の利用者を指していた（G12）。セッションは残したままなので、
+        // 通知もリダイレクトも起こさず、Cookie を消さないことだけを web へ伝える。
+        LogoutOutcome::SubjectMismatch => {
+            return Ok(Json(InternalRpLogoutResponse::SubjectMismatch))
+        }
+    };
 
     // Back-channel logout: 通知要求をキューへ積む（送信はワーカー。G5）。ここで HTTP を打つと、
     // 落ちている RP のタイムアウトぶんだけ利用者のログアウト応答が遅れる。

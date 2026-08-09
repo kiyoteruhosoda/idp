@@ -338,6 +338,9 @@ async fn a_hint_for_another_user_does_not_terminate_the_current_session() {
     )
     .await;
 
+    // `ok` ではなく `subject_mismatch` を返す。web はこれを見て **Cookie を消さない**
+    // （消すと DB にだけセッションが生きた宙ぶらりんの状態になる）。
+    assert_eq!(result["result"], "subject_mismatch", "{result}");
     assert!(
         result["redirect_to"].is_null(),
         "a mismatched hint must not produce a redirect: {result}"
