@@ -24,6 +24,7 @@ use crate::application::authorize::code_redirect;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::application::totp_registration::verify_totp_code;
 use crate::domain::audit::{AuditEventType, AuditResult};
+use crate::domain::auth_session;
 use crate::domain::authentication_policy::LockoutPolicy;
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
@@ -147,14 +148,17 @@ impl MfaLoginService {
         let Some(session_id) = cmd.auth_session_id.as_deref().filter(|s| !s.is_empty()) else {
             return MfaLoginOutcome::SessionExpired;
         };
-        // 認証成功時に id を再生成する（SEC7）ため mut。
-        let mut session = match self.auth_sessions.find_by_id(tenant_id, session_id).await {
+        let session = match self
+            .auth_sessions
+            .find_by_id_hash(tenant_id, &auth_session::id_hash(session_id))
+            .await
+        {
             Ok(Some(s)) => s,
             Ok(None) => return MfaLoginOutcome::SessionExpired,
             Err(e) => return MfaLoginOutcome::Internal(e.to_string()),
         };
         if session.is_expired_at(now) {
-            let _ = self.auth_sessions.delete(&session.id).await;
+            let _ = self.auth_sessions.delete(&session.id_hash).await;
             return MfaLoginOutcome::SessionExpired;
         }
 
@@ -248,14 +252,20 @@ impl MfaLoginService {
 
         // 9. auth_time と `sid` を設定する（MFA 完了時刻を認証時刻とする）。id も再生成する（SEC7）。
         let rotated_id = crypto::random_hex(32);
+        let rotated_id_hash = auth_session::id_hash(&rotated_id);
         if let Err(e) = self
             .auth_sessions
-            .set_authenticated_user(&session.id, &rotated_id, user_id, now, Some(&sso.sid()))
+            .set_authenticated_user(
+                &session.id_hash,
+                &rotated_id_hash,
+                user_id,
+                now,
+                Some(&sso.sid()),
+            )
             .await
         {
             return MfaLoginOutcome::Internal(e.to_string());
         }
-        session.id = rotated_id;
 
         if let Err(e) = self.sso_sessions.create(&sso).await {
             return MfaLoginOutcome::Internal(e.to_string());
@@ -306,7 +316,7 @@ impl MfaLoginService {
 
         if !consented {
             return MfaLoginOutcome::ConsentRequired {
-                auth_session_id: session.id,
+                auth_session_id: rotated_id,
                 sso_session_id,
             };
         }
@@ -336,7 +346,7 @@ impl MfaLoginService {
         };
 
         // 12. AuthSession を削除する。
-        if let Err(e) = self.auth_sessions.delete(&session.id).await {
+        if let Err(e) = self.auth_sessions.delete(&rotated_id_hash).await {
             tracing::warn!(error = %e, "failed to delete auth session after MFA code issuance");
         }
 
@@ -360,7 +370,7 @@ impl MfaLoginService {
         let now = self.clock.now();
         let session = self
             .auth_sessions
-            .find_by_id(tenant.tenant_id(), auth_session_id)
+            .find_by_id_hash(tenant.tenant_id(), &auth_session::id_hash(auth_session_id))
             .await
             .ok()
             .flatten()?;
@@ -511,7 +521,7 @@ impl MfaLoginService {
     pub async fn has_mfa_pending(&self, tenant: TenantContext, auth_session_id: &str) -> bool {
         let Ok(Some(session)) = self
             .auth_sessions
-            .find_by_id(tenant.tenant_id(), auth_session_id)
+            .find_by_id_hash(tenant.tenant_id(), &auth_session::id_hash(auth_session_id))
             .await
         else {
             return false;
@@ -607,13 +617,17 @@ mod tests {
         async fn create(&self, _s: &AuthSession) -> DomainResult<()> {
             unreachable!()
         }
-        async fn find_by_id(&self, t: TenantId, id: &str) -> DomainResult<Option<AuthSession>> {
+        async fn find_by_id_hash(
+            &self,
+            t: TenantId,
+            id_hash: &str,
+        ) -> DomainResult<Option<AuthSession>> {
             Ok(self
                 .rows
                 .lock()
                 .unwrap()
                 .iter()
-                .find(|s| s.tenant_id == t && s.id == id)
+                .find(|s| s.tenant_id == t && s.id_hash == id_hash)
                 .cloned())
         }
         async fn find_by_handle(
@@ -623,20 +637,20 @@ mod tests {
         ) -> DomainResult<Option<AuthSession>> {
             unreachable!()
         }
-        async fn consume_handle(&self, _id: &str, _h: &str) -> DomainResult<bool> {
+        async fn consume_handle(&self, _id: &str, _h: &str, _n: &str) -> DomainResult<bool> {
             unreachable!()
         }
         async fn set_authenticated_user(
             &self,
-            id: &str,
-            new_id: &str,
+            id_hash: &str,
+            new_id_hash: &str,
             user_id: Uuid,
             auth_time: DateTime<Utc>,
             sso_sid: Option<&str>,
         ) -> DomainResult<()> {
             let mut rows = self.rows.lock().unwrap();
-            if let Some(row) = rows.iter_mut().find(|s| s.id == id) {
-                row.id = new_id.to_string();
+            if let Some(row) = rows.iter_mut().find(|s| s.id_hash == id_hash) {
+                row.id_hash = new_id_hash.to_string();
                 row.authenticated_user_id = Some(user_id);
                 row.auth_time = Some(auth_time);
                 row.sso_sid = sso_sid.map(str::to_string);
@@ -652,9 +666,12 @@ mod tests {
         ) -> DomainResult<()> {
             unreachable!()
         }
-        async fn delete(&self, id: &str) -> DomainResult<()> {
-            self.rows.lock().unwrap().retain(|s| s.id != id);
+        async fn delete(&self, id_hash: &str) -> DomainResult<()> {
+            self.rows.lock().unwrap().retain(|s| s.id_hash != id_hash);
             Ok(())
+        }
+        async fn delete_expired(&self, _now: DateTime<Utc>) -> DomainResult<u64> {
+            unreachable!()
         }
     }
 
@@ -885,7 +902,7 @@ mod tests {
 
             let auth_sessions = Arc::new(FakeAuthSessions {
                 rows: Mutex::new(vec![AuthSession {
-                    id: SESSION_ID.to_string(),
+                    id_hash: auth_session::id_hash(SESSION_ID),
                     tenant_id,
                     client_id: CLIENT_ID.to_string(),
                     redirect_uri: "https://rp.example.com/cb".to_string(),

@@ -2,15 +2,26 @@
 //! `/authorize` から `/login` 完了までの一時的な認可リクエスト状態。
 #![allow(dead_code)]
 
+use crate::domain::crypto;
 use crate::domain::tenant::TenantId;
 use crate::domain::values::{CodeChallengeMethod, Prompt};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+/// `auth_session_id`（web が host-only Cookie に持つ 128bit 以上のランダム値）の SHA-256。
+///
+/// この値は **bearer credential そのもの**（提示できれば同意待ち／MFA 待ちの認可セッションを操作できる）
+/// なので、他の bearer credential（`sso_sessions.session_hash`・`authorization_codes.code_hash`・
+/// `refresh_tokens.token_hash`・同じ表の `handle_hash`）と同じく DB へはハッシュだけを保存する（SEC6）。
+/// 平文はリクエスト／レスポンスの間だけ存在し、`AuthSession` にも載せない。
+pub fn id_hash(auth_session_id: &str) -> String {
+    crypto::sha256_hex(auth_session_id)
+}
+
 #[derive(Debug, Clone)]
 pub struct AuthSession {
-    /// 128bit 以上の推測不能なランダム値（web が host-only `auth_session_id` Cookie に保持する値）。
-    pub id: String,
+    /// `auth_session_id` の SHA-256（[`id_hash`]）。平文はここには入らない。
+    pub id_hash: String,
     /// フローを開始したテナント（`/{tenant_id}/authorize`。ADR-0009 §8）。
     pub tenant_id: TenantId,
     pub client_id: String,

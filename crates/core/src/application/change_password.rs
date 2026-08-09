@@ -19,6 +19,7 @@ use crate::application::authorize::code_redirect;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::application::mfa_login::user_has_confirmed_totp;
 use crate::domain::audit::{AuditEventType, AuditResult};
+use crate::domain::auth_session;
 use crate::domain::authentication_policy::{
     evaluate_policies, AuthenticationContext, DefaultPolicyEffect, PolicyDecision,
 };
@@ -141,14 +142,17 @@ impl ChangePasswordService {
         let Some(session_id) = cmd.auth_session_id.as_deref().filter(|s| !s.is_empty()) else {
             return ChangePasswordOutcome::SessionExpired;
         };
-        // 認証成功時に id を再生成する（SEC7）ため mut。
-        let mut session = match self.auth_sessions.find_by_id(tenant_id, session_id).await {
+        let session = match self
+            .auth_sessions
+            .find_by_id_hash(tenant_id, &auth_session::id_hash(session_id))
+            .await
+        {
             Ok(Some(s)) => s,
             Ok(None) => return ChangePasswordOutcome::SessionExpired,
             Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
         };
         if session.is_expired_at(now) {
-            let _ = self.auth_sessions.delete(&session.id).await;
+            let _ = self.auth_sessions.delete(&session.id_hash).await;
             return ChangePasswordOutcome::SessionExpired;
         }
 
@@ -283,7 +287,7 @@ impl ChangePasswordService {
                     // AuthSession は `authenticated_user_id` と `password_verified_at` が設定済み
                     //（MFA pending 相当）のため、そのまま TOTP 検証ステップへ引き継げる。
                     return ChangePasswordOutcome::MfaRequired {
-                        auth_session_id: session.id,
+                        auth_session_id: session_id.to_string(),
                     };
                 }
                 self.audit
@@ -318,14 +322,20 @@ impl ChangePasswordService {
         // 8. auth_time と `sid` を設定する（パスワード変更完了時刻を認証時刻とする）。
         //    id も再生成する（SEC7）。
         let rotated_id = crypto::random_hex(32);
+        let rotated_id_hash = auth_session::id_hash(&rotated_id);
         if let Err(e) = self
             .auth_sessions
-            .set_authenticated_user(&session.id, &rotated_id, user.id, now, Some(&sso.sid()))
+            .set_authenticated_user(
+                &session.id_hash,
+                &rotated_id_hash,
+                user.id,
+                now,
+                Some(&sso.sid()),
+            )
             .await
         {
             return ChangePasswordOutcome::Internal(e.to_string());
         }
-        session.id = rotated_id;
 
         if let Err(e) = self.sso_sessions.create(&sso).await {
             return ChangePasswordOutcome::Internal(e.to_string());
@@ -376,7 +386,7 @@ impl ChangePasswordService {
 
         if !consented {
             return ChangePasswordOutcome::ConsentRequired {
-                auth_session_id: session.id,
+                auth_session_id: rotated_id,
                 sso_session_id,
             };
         }
@@ -406,7 +416,7 @@ impl ChangePasswordService {
         };
 
         // 11. AuthSession を削除する。
-        if let Err(e) = self.auth_sessions.delete(&session.id).await {
+        if let Err(e) = self.auth_sessions.delete(&rotated_id_hash).await {
             tracing::warn!(error = %e, "failed to delete auth session after password change");
         }
 

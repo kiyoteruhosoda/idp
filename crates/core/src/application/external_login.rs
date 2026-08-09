@@ -26,6 +26,7 @@ use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authorize::code_redirect;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::domain::audit::{AuditEventType, AuditResult};
+use crate::domain::auth_session;
 use crate::domain::authentication_policy::{
     evaluate_policies, AuthenticationContext, DefaultPolicyEffect, PolicyDecision,
 };
@@ -216,7 +217,7 @@ impl ExternalLoginService {
             state_hash: crypto::sha256_hex(&state),
             nonce: nonce.clone(),
             code_verifier_encrypted,
-            auth_session_id,
+            auth_session_id_hash: auth_session_id.as_deref().map(auth_session::id_hash),
             expires_at: now + Duration::seconds(REQUEST_TTL_SECS),
             created_at: now,
         };
@@ -454,7 +455,7 @@ impl ExternalLoginService {
         // 10. OIDC 認可フローの途中から来ていれば、その続きを進める（同意確認 → code 発行）。
         //     ここで進めないと、認可要求のパラメータ（client_id・redirect_uri・PKCE・nonce）は
         //     auth_session にしか無いため RP へ戻れない。
-        let Some(auth_session_id) = request.auth_session_id.clone() else {
+        let Some(auth_session_id_hash) = request.auth_session_id_hash.clone() else {
             return CallbackOutcome::Success {
                 location: SuccessLocation::Account,
                 sso_session_id,
@@ -463,7 +464,7 @@ impl ExternalLoginService {
         };
         self.resume_authorization(
             tenant,
-            &auth_session_id,
+            &auth_session_id_hash,
             &user,
             &sso,
             sso_session_id,
@@ -485,7 +486,7 @@ impl ExternalLoginService {
     async fn resume_authorization(
         &self,
         tenant: TenantContext,
-        auth_session_id: &str,
+        auth_session_id_hash: &str,
         user: &crate::domain::user::User,
         sso: &SsoSession,
         sso_session_id: String,
@@ -493,10 +494,9 @@ impl ExternalLoginService {
         ctx: &RequestContext,
     ) -> CallbackOutcome {
         let tenant_id = tenant.tenant_id();
-        // 認証結果の記録時に id を再生成する（SEC7）ため mut。
-        let mut session = match self
+        let session = match self
             .auth_sessions
-            .find_by_id(tenant_id, auth_session_id)
+            .find_by_id_hash(tenant_id, auth_session_id_hash)
             .await
         {
             Ok(Some(session)) if !session.is_expired_at(now) => session,
@@ -515,14 +515,20 @@ impl ExternalLoginService {
         // 認証時刻と `sid` を auth_session へ記録する（ID Token の `auth_time` / `sid` の出所）。
         // id も再生成する（SEC7）。
         let rotated_id = crypto::random_hex(32);
+        let rotated_id_hash = auth_session::id_hash(&rotated_id);
         if let Err(e) = self
             .auth_sessions
-            .set_authenticated_user(&session.id, &rotated_id, user.id, now, Some(&sso.sid()))
+            .set_authenticated_user(
+                &session.id_hash,
+                &rotated_id_hash,
+                user.id,
+                now,
+                Some(&sso.sid()),
+            )
             .await
         {
             return CallbackOutcome::Internal(e.to_string());
         }
-        session.id = rotated_id;
 
         // 同意チェック（`openid` は暗黙同意）。
         let scopes_needing_consent: Vec<String> = session
@@ -546,7 +552,7 @@ impl ExternalLoginService {
         };
         if !consented {
             return CallbackOutcome::ConsentRequired {
-                auth_session_id: session.id,
+                auth_session_id: rotated_id,
                 sso_session_id,
                 user_language: user.language.clone(),
             };
@@ -575,7 +581,7 @@ impl ExternalLoginService {
             Err(e) => return CallbackOutcome::Internal(e.to_string()),
         };
 
-        if let Err(e) = self.auth_sessions.delete(&session.id).await {
+        if let Err(e) = self.auth_sessions.delete(&rotated_id_hash).await {
             tracing::warn!(error = %e, "failed to delete auth session after external login");
         }
 

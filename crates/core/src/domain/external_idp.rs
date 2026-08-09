@@ -120,8 +120,9 @@ pub struct ExternalLoginRequest {
     pub nonce: String,
     /// PKCE の `code_verifier`（暗号文）。
     pub code_verifier_encrypted: String,
-    /// 呼び出し元の OIDC auth_session（ポータル経由なら `None`）。
-    pub auth_session_id: Option<String>,
+    /// 呼び出し元の OIDC auth_session の `id_hash`（ポータル経由なら `None`）。
+    /// auth_session_id は bearer credential なので、写しもハッシュで持つ（SEC6）。
+    pub auth_session_id_hash: Option<String>,
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
 }

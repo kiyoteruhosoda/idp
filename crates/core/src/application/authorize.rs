@@ -12,7 +12,7 @@
 use crate::application::audit::RequestContext;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::application::sso_restore::SsoRestorer;
-use crate::domain::auth_session::AuthSession;
+use crate::domain::auth_session::{self, AuthSession};
 use crate::domain::client::Client;
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
@@ -178,8 +178,11 @@ impl AuthorizeService {
         //    未知の `prompt` 値は従来どおり無視する（`parse(...).ok()`）。
         let now = self.clock.now();
         let handle = crypto::random_hex(32);
+        // 平文の auth_session_id はここでは誰にも渡らない（web へ渡すのは単回ハンドルだけ）ので、
+        // 生成した値は保存用のハッシュにしてすぐ捨てる。web が受け取る `auth_session_id` は
+        // ハンドル交換時（`resume`）に作られる。
         let session = AuthSession {
-            id: crypto::random_hex(32),
+            id_hash: auth_session::id_hash(&crypto::random_hex(32)),
             tenant_id: tenant.tenant_id(),
             client_id: client.client_id.clone(),
             redirect_uri: redirect_uri.to_string(),
@@ -246,12 +249,16 @@ impl AuthorizeService {
         if !session.handle_is_valid_at(now) || session.is_expired_at(now) {
             return ResumeOutcome::ExpiredHandle;
         }
+        // ハンドル交換で web が受け取る `auth_session_id`。DB にはハッシュしか無い（SEC6）ため、
+        // ここで平文を作って消費と同じ文で差し替える。交換に負けた側はこの値を得られない。
+        let mut auth_session_id = crypto::random_hex(32);
+        let new_id_hash = auth_session::id_hash(&auth_session_id);
         match self
             .auth_sessions
-            .consume_handle(&session.id, &handle_hash)
+            .consume_handle(&session.id_hash, &handle_hash, &new_id_hash)
             .await
         {
-            Ok(true) => {}
+            Ok(true) => session.id_hash = new_id_hash,
             // 並行する交換に負けた・再利用 → 単回使用として拒否する。
             Ok(false) => return ResumeOutcome::ExpiredHandle,
             Err(e) => return ResumeOutcome::Internal(e.to_string()),
@@ -301,7 +308,8 @@ impl AuthorizeService {
                                 };
                                 return match self.code_issuance.issue(cmd, ctx).await {
                                     Ok(code) => {
-                                        if let Err(e) = self.auth_sessions.delete(&session.id).await
+                                        if let Err(e) =
+                                            self.auth_sessions.delete(&session.id_hash).await
                                         {
                                             tracing::warn!(
                                                 error = %e,
@@ -336,7 +344,7 @@ impl AuthorizeService {
                             // 未同意（または force_consent）。
                             if prompt_none {
                                 // prompt=none では同意画面を出せないのでエラー（フロー終了）。
-                                let _ = self.auth_sessions.delete(&session.id).await;
+                                let _ = self.auth_sessions.delete(&session.id_hash).await;
                                 return ResumeOutcome::ErrorRedirect {
                                     location: error_redirect_with_state(
                                         &session.redirect_uri,
@@ -354,8 +362,8 @@ impl AuthorizeService {
                             if let Err(e) = self
                                 .auth_sessions
                                 .set_authenticated_user(
-                                    &session.id,
-                                    &rotated_id,
+                                    &session.id_hash,
+                                    &auth_session::id_hash(&rotated_id),
                                     user_id,
                                     auth_time,
                                     Some(sid.as_str()),
@@ -372,10 +380,8 @@ impl AuthorizeService {
                                     ),
                                 };
                             }
-                            session.id = rotated_id;
-                            return ResumeOutcome::ConsentRequired {
-                                auth_session_id: session.id,
-                            };
+                            auth_session_id = rotated_id;
+                            return ResumeOutcome::ConsentRequired { auth_session_id };
                         }
                         // max_age 超過 → ログインへ（SSO は復元しない）。prompt=none なら下でエラー。
                     }
@@ -390,7 +396,7 @@ impl AuthorizeService {
 
         // 3. SSO で完了できない: prompt=none はログイン画面を出せないのでエラー（フロー終了）。
         if prompt_none {
-            let _ = self.auth_sessions.delete(&session.id).await;
+            let _ = self.auth_sessions.delete(&session.id_hash).await;
             return ResumeOutcome::ErrorRedirect {
                 location: error_redirect_with_state(
                     &session.redirect_uri,
@@ -401,9 +407,7 @@ impl AuthorizeService {
             };
         }
 
-        ResumeOutcome::LoginRequired {
-            auth_session_id: session.id,
-        }
+        ResumeOutcome::LoginRequired { auth_session_id }
     }
 
     /// 同意チェック: ユーザーがクライアントに対してすべての scope に同意済みか確認する。
@@ -656,7 +660,7 @@ mod tests {
     fn handle_validity_requires_both_hash_and_deadline() {
         let now = Utc::now();
         let mut session = AuthSession {
-            id: "s".to_string(),
+            id_hash: auth_session::id_hash("s"),
             tenant_id: uuid::Uuid::now_v7().into(),
             client_id: "app".to_string(),
             redirect_uri: "https://client.example.com/cb".to_string(),

@@ -47,8 +47,9 @@ pub struct PasskeyChallenge {
     pub challenge_type: PasskeyChallengeType,
     /// `webauthn_rs::prelude::PasskeyRegistration` または `DiscoverableAuthentication` の JSON。
     pub state_json: String,
-    /// 認証チャレンジ: OIDC フローの `auth_sessions.id`（登録チャレンジでは `None`）。
-    pub auth_session_id: Option<String>,
+    /// 認証チャレンジ: OIDC フローの `auth_sessions.id_hash`（登録チャレンジでは `None`）。
+    /// auth_session_id は bearer credential なので、写しもハッシュで持つ（SEC6）。
+    pub auth_session_id_hash: Option<String>,
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
 }

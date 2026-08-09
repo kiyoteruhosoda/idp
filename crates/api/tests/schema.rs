@@ -39,6 +39,20 @@ const EXPECTED_TABLES: &[&str] = &[
     "external_identity_providers",
     "user_external_identities",
     "external_login_requests",
+    "saml_sso_requests",
+];
+
+/// 「bearer credential を平文で置いていない」ことを列の形で固定する（SEC6）。
+/// `(table, column)` は SHA-256 の 16 進 64 文字だけを入れる列で、平文が入る余地の無い
+/// `CHAR(64)` であること・平文時代の列名が残っていないことを検証する。
+const HASHED_CREDENTIAL_COLUMNS: &[(&str, &str)] = &[
+    ("auth_sessions", "id_hash"),
+    ("saml_sso_requests", "id_hash"),
+    ("passkey_challenges", "auth_session_id_hash"),
+    ("external_login_requests", "auth_session_id_hash"),
+    ("sso_sessions", "session_hash"),
+    ("authorization_codes", "code_hash"),
+    ("refresh_tokens", "token_hash"),
 ];
 
 /// contract 済み（DROP マイグレーション適用後）で存在してはならないテーブル。
@@ -108,6 +122,46 @@ async fn migrations_apply_and_multi_tenant_guarantees_hold() {
         .expect("query information_schema")
         .get::<i64, _>(0);
         assert_eq!(n, 0, "table `{table}` must be dropped after migration");
+    }
+
+    // --- SEC6: 秘密値の列はハッシュ（CHAR(64)）で、平文列は残っていない --------------
+    for (table, column) in HASHED_CREDENTIAL_COLUMNS {
+        let row = sqlx::query(
+            "SELECT column_type FROM information_schema.columns \
+             WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?",
+        )
+        .bind(table)
+        .bind(column)
+        .fetch_optional(&pool)
+        .await
+        .expect("query information_schema")
+        .unwrap_or_else(|| panic!("`{table}`.`{column}` must exist"));
+        assert_eq!(
+            row.get::<String, _>(0),
+            "char(64)",
+            "`{table}`.`{column}` must be a fixed-width SHA-256 hex column"
+        );
+    }
+    for (table, column) in [
+        ("auth_sessions", "id"),
+        ("saml_sso_requests", "id"),
+        ("passkey_challenges", "auth_session_id"),
+        ("external_login_requests", "auth_session_id"),
+    ] {
+        let n = sqlx::query(
+            "SELECT COUNT(*) FROM information_schema.columns \
+             WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?",
+        )
+        .bind(table)
+        .bind(column)
+        .fetch_one(&pool)
+        .await
+        .expect("query information_schema")
+        .get::<i64, _>(0);
+        assert_eq!(
+            n, 0,
+            "`{table}`.`{column}` must be gone (plaintext credential)"
+        );
     }
 
     // --- seed: root テナント（固定 UUID。ADR-0011） --------------------

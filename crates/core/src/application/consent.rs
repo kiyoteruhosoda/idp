@@ -11,6 +11,7 @@ use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authorize::{code_redirect, error_redirect_with_state};
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::domain::audit::{AuditEventType, AuditResult};
+use crate::domain::auth_session;
 use crate::domain::clock::Clock;
 use crate::domain::consent::ClientConsent;
 use crate::domain::error::OAuthErrorCode;
@@ -80,13 +81,13 @@ impl ConsentService {
         let now = self.clock.now();
         let Some(session) = self
             .auth_sessions
-            .find_by_id(tenant.tenant_id(), auth_session_id)
+            .find_by_id_hash(tenant.tenant_id(), &auth_session::id_hash(auth_session_id))
             .await?
         else {
             return Ok(None);
         };
         if session.is_expired_at(now) {
-            let _ = self.auth_sessions.delete(&session.id).await;
+            let _ = self.auth_sessions.delete(&session.id_hash).await;
             return Ok(None);
         }
         if session.authenticated_user_id.is_none() {
@@ -112,7 +113,7 @@ impl ConsentService {
             .collect();
 
         Ok(Some(ConsentInfo {
-            auth_session_id: session.id,
+            auth_session_id: auth_session_id.to_string(),
             client_name,
             client_id: session.client_id,
             requested_scopes,
@@ -130,7 +131,7 @@ impl ConsentService {
 
         let session = match self
             .auth_sessions
-            .find_by_id(tenant.tenant_id(), auth_session_id)
+            .find_by_id_hash(tenant.tenant_id(), &auth_session::id_hash(auth_session_id))
             .await
         {
             Ok(Some(s)) => s,
@@ -138,7 +139,7 @@ impl ConsentService {
             Err(e) => return ConsentOutcome::Internal(e.to_string()),
         };
         if session.is_expired_at(now) {
-            let _ = self.auth_sessions.delete(&session.id).await;
+            let _ = self.auth_sessions.delete(&session.id_hash).await;
             return ConsentOutcome::SessionExpired;
         }
         let Some(user_id) = session.authenticated_user_id else {
@@ -200,7 +201,7 @@ impl ConsentService {
         };
 
         // AuthSession を削除する（code 発行完了）。
-        if let Err(e) = self.auth_sessions.delete(&session.id).await {
+        if let Err(e) = self.auth_sessions.delete(&session.id_hash).await {
             tracing::warn!(error = %e, "failed to delete auth session after consent");
         }
 
@@ -220,7 +221,7 @@ impl ConsentService {
 
         let session = match self
             .auth_sessions
-            .find_by_id(tenant.tenant_id(), auth_session_id)
+            .find_by_id_hash(tenant.tenant_id(), &auth_session::id_hash(auth_session_id))
             .await
         {
             Ok(Some(s)) => s,
@@ -228,7 +229,7 @@ impl ConsentService {
             Err(e) => return ConsentOutcome::Internal(e.to_string()),
         };
         if session.is_expired_at(now) {
-            let _ = self.auth_sessions.delete(&session.id).await;
+            let _ = self.auth_sessions.delete(&session.id_hash).await;
             return ConsentOutcome::SessionExpired;
         }
         let user_id = session.authenticated_user_id;
@@ -246,7 +247,7 @@ impl ConsentService {
             .await;
 
         // AuthSession を削除する。
-        if let Err(e) = self.auth_sessions.delete(&session.id).await {
+        if let Err(e) = self.auth_sessions.delete(&session.id_hash).await {
             tracing::warn!(error = %e, "failed to delete auth session after consent denial");
         }
 

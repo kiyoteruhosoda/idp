@@ -246,43 +246,79 @@ pub trait SamlServiceProviderRepository: Send + Sync {
 
 /// SAML SP-initiated SSO の進行状態（`saml_sso_requests`）の永続化。
 /// ハンドルの単回消費は [`AuthSessionRepository`] と同じ原子的 UPDATE 方式で強制する。
+/// SAML SP-initiated SSO の進行状態の永続化。
+///
+/// [`AuthSessionRepository`] と同じく **`saml_request_id` の平文を受け取らない**。引数の
+/// `id_hash` は [`crate::domain::saml_sso_request::id_hash`] で導出した SHA-256 である（SEC6）。
 #[async_trait]
 pub trait SamlSsoRequestRepository: Send + Sync {
     async fn create(&self, request: &SamlSsoRequest) -> Result<()>;
     /// フローを開始したテナントの行のみ返す（他テナントの id を持ち込んでも解決させない）。
-    async fn find_by_id(&self, tenant_id: TenantId, id: &str) -> Result<Option<SamlSsoRequest>>;
-    /// web ハンドオフ用ハンドル（SHA-256）で行を引く。テナント限定は `find_by_id` と同じ。
+    async fn find_by_id_hash(
+        &self,
+        tenant_id: TenantId,
+        id_hash: &str,
+    ) -> Result<Option<SamlSsoRequest>>;
+    /// web ハンドオフ用ハンドル（SHA-256）で行を引く。テナント限定は `find_by_id_hash` と同じ。
     async fn find_by_handle(
         &self,
         tenant_id: TenantId,
         handle_hash: &str,
     ) -> Result<Option<SamlSsoRequest>>;
-    /// ハンドルを単回使用として消費する（`handle_hash` を NULL 化）。すでに消費済み（並行交換に
-    /// 負けた・再利用）なら `false` を返す。
-    async fn consume_handle(&self, id: &str, handle_hash: &str) -> Result<bool>;
+    /// ハンドルを単回使用として消費し（`handle_hash` を NULL 化）、**同時に id を `new_id_hash`
+    /// へ再生成する**。すでに消費済み（並行交換に負けた・再利用）なら `false` を返す。
+    /// 再生成が要る理由は [`AuthSessionRepository::consume_handle`] と同じ。
+    async fn consume_handle(
+        &self,
+        id_hash: &str,
+        handle_hash: &str,
+        new_id_hash: &str,
+    ) -> Result<bool>;
     /// 進行状態を削除する。応答発行前の**原子的なクレーム**を兼ねるため、削除できた場合のみ
     /// `true` を返す（並行 resume に負けた・消費済みなら `false` = 発行不可）。
-    async fn delete(&self, id: &str) -> Result<bool>;
+    async fn delete(&self, id_hash: &str) -> Result<bool>;
+    /// 期限切れの行を削除し、削除件数を返す（G2 の一括 GC から呼ぶ）。
+    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64>;
 }
 
+/// 認可フローの一時状態（`/authorize` 〜 `/login` 完了）の永続化。
+///
+/// **本トレイトは `auth_session_id` の平文を一切受け取らない。** 引数の `id_hash` は
+/// [`crate::domain::auth_session::id_hash`] で導出した SHA-256 で、平文は Application 層より
+/// 上（web の Cookie・ハンドオフ）にしか存在しない（SEC6）。平文を渡す口を作らないことで、
+/// 「うっかり生値を保存する」経路を型の上で塞いでいる。
 #[async_trait]
 pub trait AuthSessionRepository: Send + Sync {
     async fn create(&self, session: &AuthSession) -> Result<()>;
     /// フローを開始したテナントの auth session のみ返す（他テナントの session id を
     /// 持ち込んでも解決させない）。
-    async fn find_by_id(&self, tenant_id: TenantId, id: &str) -> Result<Option<AuthSession>>;
+    async fn find_by_id_hash(
+        &self,
+        tenant_id: TenantId,
+        id_hash: &str,
+    ) -> Result<Option<AuthSession>>;
     /// web ハンドオフ用ハンドル（SHA-256）で auth session を引く（ADR-0018 決定 2）。
-    /// `find_by_id` と同じくフローのテナントに限定する。期限・消費済み判定は Application 層が行う。
+    /// `find_by_id_hash` と同じくフローのテナントに限定する。期限・消費済み判定は Application 層が行う。
     async fn find_by_handle(
         &self,
         tenant_id: TenantId,
         handle_hash: &str,
     ) -> Result<Option<AuthSession>>;
-    /// ハンドルを単回使用として消費する（`handle_hash` を NULL 化）。すでに消費済み（並行交換に
-    /// 負けた・再利用）なら `false` を返す。
-    async fn consume_handle(&self, id: &str, handle_hash: &str) -> Result<bool>;
+    /// ハンドルを単回使用として消費し（`handle_hash` を NULL 化）、**同時に id を
+    /// `new_id_hash` へ再生成する**。すでに消費済み（並行交換に負けた・再利用）なら `false` を返す。
+    ///
+    /// 交換と再生成を 1 文にまとめてあるのは、ハンドル経路では平文 id が手元に無いためである。
+    /// DB にはハッシュしか無く（SEC6）平文へ戻せないので、ハンドルを渡した web へ返す
+    /// `auth_session_id` は交換の時点で新しく作るしかない。ハンドル自体が単回使用なので、
+    /// この再生成はフロー 1 本につき 1 回だけ起きる。
+    async fn consume_handle(
+        &self,
+        id_hash: &str,
+        handle_hash: &str,
+        new_id_hash: &str,
+    ) -> Result<bool>;
     /// 認証済みユーザーと `auth_time`、確立した SSO セッションの `sid` を設定し、**同時に id を
-    /// `new_id` へ再生成する**（`/login` 成功時。SEC7）。
+    /// `new_id_hash` へ再生成する**（`/login` 成功時。SEC7）。
     ///
     /// `sso_sid` は同意画面を挟む経路（`ConsentService::approve`）が code 発行時に読む（G5）。
     /// 認証と code 発行が別リクエストに分かれ、その時点では SSO Cookie が手元に無いため、
@@ -293,23 +329,25 @@ pub trait AuthSessionRepository: Send + Sync {
     /// ログインのたびに再生成しており（`SsoSession::establish`）、それと非対称にしない。
     async fn set_authenticated_user(
         &self,
-        id: &str,
-        new_id: &str,
+        id_hash: &str,
+        new_id_hash: &str,
         user_id: Uuid,
         auth_time: DateTime<Utc>,
         sso_sid: Option<&str>,
     ) -> Result<()>;
     /// パスワード検証成功後に MFA pending 状態を記録し（`password_verified_at` を設定）、
-    /// **同時に id を `new_id` へ再生成する**（SEC7。理由は
+    /// **同時に id を `new_id_hash` へ再生成する**（SEC7。理由は
     /// [`set_authenticated_user`](Self::set_authenticated_user) 参照）。
     async fn set_password_verified(
         &self,
-        id: &str,
-        new_id: &str,
+        id_hash: &str,
+        new_id_hash: &str,
         user_id: Uuid,
         verified_at: DateTime<Utc>,
     ) -> Result<()>;
-    async fn delete(&self, id: &str) -> Result<()>;
+    async fn delete(&self, id_hash: &str) -> Result<()>;
+    /// 期限切れの行を削除し、削除件数を返す（G2 の一括 GC から呼ぶ）。
+    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64>;
 }
 
 /// 認証ポリシー（ユーザー認証・認証ポリシー仕様書 §7）の永続化。テナント境界は `tenant_id` で強制する。
