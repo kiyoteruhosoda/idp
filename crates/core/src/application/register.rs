@@ -9,7 +9,6 @@
 //! よるテナント内メールアドレスの列挙を試行回数の面から抑える（完全な秘匿はメール検証フローの
 //! 導入まで行わない。無効テナントでは存在確認自体ができない）。
 
-use crate::application::login_identifier_management::PrimaryLoginIdentifierSync;
 use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
 use crate::domain::id_generator::IdGenerator;
@@ -65,8 +64,6 @@ pub struct RegisterService {
     users: Arc<dyn UserRepository>,
     memberships: Arc<dyn TenantMembershipRepository>,
     tenants: Arc<dyn TenantRepository>,
-    /// ログイン識別子の登録簿への写しを作る係（AP8。expand フェーズ）。
-    login_identifiers: Arc<PrimaryLoginIdentifierSync>,
     hasher: Arc<dyn PasswordHasher>,
     rate_limiter: Arc<dyn LoginRateLimiter>,
     clock: Arc<dyn Clock>,
@@ -74,12 +71,10 @@ pub struct RegisterService {
 }
 
 impl RegisterService {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         users: Arc<dyn UserRepository>,
         memberships: Arc<dyn TenantMembershipRepository>,
         tenants: Arc<dyn TenantRepository>,
-        login_identifiers: Arc<PrimaryLoginIdentifierSync>,
         hasher: Arc<dyn PasswordHasher>,
         rate_limiter: Arc<dyn LoginRateLimiter>,
         clock: Arc<dyn Clock>,
@@ -89,7 +84,6 @@ impl RegisterService {
             users,
             memberships,
             tenants,
-            login_identifiers,
             hasher,
             rate_limiter,
             clock,
@@ -201,17 +195,6 @@ impl RegisterService {
             .create(&TenantMembership::new_home(tenant_id, user.id, now))
             .await
             .map_err(internal)?;
-
-        // ログイン識別子の登録簿へ写しを作る（AP8。解決は登録簿を先に見るため、作成時から揃える）。
-        self.login_identifiers
-            .sync_username(tenant_id, user.id, user.preferred_username.as_deref())
-            .await
-            .map_err(|e| match e {
-                DomainError::Conflict(_) => {
-                    RegisterError::Conflict(MessageKey::new("api-user-identity-conflict"))
-                }
-                other => internal(other),
-            })?;
 
         Ok(RegisteredUser {
             sub: user.sub,
@@ -449,39 +432,12 @@ mod tests {
         }
     }
 
-    /// ログイン識別子の登録簿のフェイク（AP8）。同期呼び出しだけを記録する。
-    #[derive(Default)]
-    struct FakeLoginIdentifiers {
-        synced: Mutex<Vec<(Uuid, Option<String>)>>,
-    }
-    #[async_trait]
-    impl crate::domain::repositories::UserLoginIdentifierRepository for FakeLoginIdentifiers {
-        async fn sync_derived(
-            &self,
-            _tenant_id: TenantId,
-            user_id: Uuid,
-            _identifier_type: crate::domain::login_identifier::LoginIdentifierType,
-            value: Option<&str>,
-            _id: Uuid,
-        ) -> DomainResult<()> {
-            self.synced
-                .lock()
-                .unwrap()
-                .push((user_id, value.map(str::to_string)));
-            Ok(())
-        }
-    }
-
     fn service(tenant: Tenant, limiter_allowance: usize) -> (RegisterService, Arc<FakeUsers>) {
         let users = Arc::new(FakeUsers::default());
         let svc = RegisterService::new(
             users.clone(),
             Arc::new(FakeMemberships::default()),
             Arc::new(FakeTenants { tenant }),
-            Arc::new(PrimaryLoginIdentifierSync::new(
-                Arc::new(FakeLoginIdentifiers::default()),
-                Arc::new(SeqIds(Mutex::new(1000))),
-            )),
             Arc::new(PlainHasher),
             Arc::new(CountingLimiter {
                 limit: limiter_allowance,

@@ -80,22 +80,27 @@ AP2・AP3・AP4・AP5・AP8・AP9・AP10 は実装済み（`CHANGELOG.md` 参照
 
 AP8 は expand フェーズだけを入れた（ADR-0025）。`user_login_identifiers` は種別・表示値・
 正規化値・有効/無効を一元管理するが、**主たるログイン識別子は `users.preferred_username` に
-残したまま**である。解決は「登録簿の有効な行 → `users.preferred_username`」の順で、登録簿には
-`username` 種別の写しが入っている（migration 0029 の backfill）。
+残したまま**で、登録簿には**追加の識別子だけ**が入る（写しは取らない）。解決は
+「登録簿の有効な行 → `users.preferred_username`」の順。一覧 API は主識別子を読み出し時に
+合成して返している（`id` が `null` の行）。
 
 分けた理由は移行リスク。主識別子の移送は失敗すると**誰もログインできなくなる**操作で、
 登録簿の導入と同じ回に載せない（AP9 / AP11 と同じ分け方）。
 
 contract フェーズでやること:
 
-1. 解決から `users.preferred_username` へのフォールバックを外す（登録簿だけを見る）。
-2. 写しの同期（`PrimaryLoginIdentifierSync`）を撤去し、プロフィール編集を登録簿の更新へ寄せる。
+1. `users.preferred_username` を登録簿の `username` 種別（`is_primary` 相当）へ移すマイグレーション。
+2. 解決から `users.preferred_username` へのフォールバックを外す（登録簿だけを見る）。
+   一覧 API の合成行も不要になる。
 3. `users.preferred_username` 列の撤去。ID Token の `preferred_username` クレーム・
-   利用者一覧の表示は登録簿の `username` 種別から引く。
+   利用者一覧の表示・プロフィール編集を登録簿側へ寄せる。
 
 1 と 3 の間に**両方を読める期間**を挟む（ローリングデプロイ中に古いプロセスが残るため）。
 `users.preferred_username` を読んでいる箇所（プロフィール編集・利用者検索・`/userinfo` の
 クレーム組み立て）を洗い出すのが実質の作業量になる。
+
+移送が済めば、追加識別子と主識別子の衝突を**DB の一意制約**で防げるようになる（expand の間は
+アプリ層の事前チェックしか張れず、同時実行の窓が残る。ADR-0025「残る限界」）。
 
 #### AP11. AP9 の contract フェーズ（秘密の集約）
 

@@ -3,7 +3,6 @@
 use crate::domain::error::{DomainError, Result};
 use crate::domain::login_identifier::{LoginIdentifierType, UserLoginIdentifier};
 use crate::domain::repositories::UserLoginIdentifierRepository;
-use crate::domain::tenant::TenantId;
 use crate::infrastructure::db::Db;
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
@@ -125,72 +124,5 @@ impl UserLoginIdentifierRepository for SqlxUserLoginIdentifierRepository {
             .await
             .map_err(repo_err)?;
         Ok(result.rows_affected() > 0)
-    }
-
-    async fn sync_derived(
-        &self,
-        tenant_id: TenantId,
-        user_id: Uuid,
-        identifier_type: LoginIdentifierType,
-        value: Option<&str>,
-        id: Uuid,
-    ) -> Result<()> {
-        let Some(raw) = value.map(str::trim).filter(|v| !v.is_empty()) else {
-            sqlx::query(
-                "DELETE FROM user_login_identifiers WHERE user_id = ? AND identifier_type = ?",
-            )
-            .bind(user_id.to_string())
-            .bind(identifier_type.as_str())
-            .execute(&self.pool)
-            .await
-            .map_err(repo_err)?;
-            return Ok(());
-        };
-        let normalized = identifier_type.normalize(raw);
-
-        // 「消してから入れる」ではなく「更新して、無ければ入れる」にする。消してから入れる間に
-        // ログインが来ると、その一瞬だけ登録簿に行が無くなる（フォールバック先の
-        // `users.preferred_username` は既に新しい値なので実害は無いが、無効化していた行の
-        // `is_active` まで復活してしまうのを避けたい）。
-        let updated = sqlx::query(
-            "UPDATE user_login_identifiers SET display_value = ?, normalized_value = ? \
-             WHERE user_id = ? AND identifier_type = ?",
-        )
-        .bind(raw)
-        .bind(&normalized)
-        .bind(user_id.to_string())
-        .bind(identifier_type.as_str())
-        .execute(&self.pool)
-        .await
-        .map_err(|e| match &e {
-            sqlx::Error::Database(db) if db.is_unique_violation() => {
-                DomainError::Conflict("login identifier already exists".to_string())
-            }
-            _ => DomainError::Repository(e.to_string()),
-        })?;
-        if updated.rows_affected() > 0 {
-            return Ok(());
-        }
-
-        sqlx::query(
-            "INSERT INTO user_login_identifiers \
-             (id, tenant_id, user_id, identifier_type, display_value, normalized_value, is_active) \
-             VALUES (?, ?, ?, ?, ?, ?, 1)",
-        )
-        .bind(id.to_string())
-        .bind(tenant_id.to_string())
-        .bind(user_id.to_string())
-        .bind(identifier_type.as_str())
-        .bind(raw)
-        .bind(&normalized)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| match &e {
-            sqlx::Error::Database(db) if db.is_unique_violation() => {
-                DomainError::Conflict("login identifier already exists".to_string())
-            }
-            _ => DomainError::Repository(e.to_string()),
-        })?;
-        Ok(())
     }
 }

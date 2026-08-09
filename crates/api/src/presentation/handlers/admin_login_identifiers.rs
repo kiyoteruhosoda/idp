@@ -8,7 +8,7 @@
 //! 揺れる識別子の設定ミスに気づけない。
 
 use crate::application::login_identifier_management::{
-    AddLoginIdentifierCommand, LoginIdentifierManagementError,
+    AddLoginIdentifierCommand, LoginIdentifierEntry, LoginIdentifierManagementError,
 };
 use crate::domain::login_identifier::{LoginIdentifierType, UserLoginIdentifier};
 use crate::presentation::admin::{IdpAdmin, RequirePerms};
@@ -27,7 +27,9 @@ use uuid::Uuid;
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct LoginIdentifierResponse {
-    pub id: String,
+    /// 登録簿の行 id。`null` は**主たるログイン識別子**（`users.preferred_username`）を
+    /// 読み出し時に合成した行で、保存されていない。`is_primary` が `true` になる。
+    pub id: Option<String>,
     /// `username` / `email` / `phone_number` / `employee_number`。
     pub identifier_type: String,
     /// 登録されたままの値（表示用）。
@@ -35,21 +37,31 @@ pub struct LoginIdentifierResponse {
     /// 照合キー（種別ごとの正規化を適用した値）。
     pub normalized_value: String,
     pub is_active: bool,
+    /// 主たるログイン識別子か。`true` の行は識別子単位では変更・削除できない
+    /// （変えるならプロフィール編集、止めるならアカウントの無効化）。
+    pub is_primary: bool,
     pub created_at: String,
     pub updated_at: String,
 }
 
-impl From<UserLoginIdentifier> for LoginIdentifierResponse {
-    fn from(v: UserLoginIdentifier) -> Self {
+impl From<LoginIdentifierEntry> for LoginIdentifierResponse {
+    fn from(v: LoginIdentifierEntry) -> Self {
         Self {
-            id: v.id.to_string(),
+            id: v.id.map(|id| id.to_string()),
             identifier_type: v.identifier_type.as_str().to_string(),
             display_value: v.display_value,
             normalized_value: v.normalized_value,
             is_active: v.is_active,
+            is_primary: v.is_primary,
             created_at: v.created_at.to_rfc3339(),
             updated_at: v.updated_at.to_rfc3339(),
         }
+    }
+}
+
+impl From<UserLoginIdentifier> for LoginIdentifierResponse {
+    fn from(v: UserLoginIdentifier) -> Self {
+        LoginIdentifierEntry::from(v).into()
     }
 }
 
@@ -195,14 +207,13 @@ pub async fn update_login_identifier(
     Ok(Json(updated.into()))
 }
 
-/// 識別子を削除する。`users.preferred_username` の写しは削除できない（プロフィール編集で変える）。
+/// 識別子を削除する。主たるログイン識別子（`is_primary`）は登録簿に無いため対象にならない。
 #[utoipa::path(
     delete,
     path = "/{tenant_id}/admin/users/{user_id}/login-identifiers/{identifier_id}",
     tag = "admin",
     responses(
         (status = 204, description = "削除した"),
-        (status = 400, description = "主たるログイン識別子の写しは削除できない"),
         (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
         (status = 404, description = "利用者・識別子が見つからない"),
     )

@@ -34,7 +34,7 @@ use crate::domain::error::Result;
 use crate::domain::external_idp::{
     ExternalIdentity, ExternalIdentityProvider, ExternalLoginRequest,
 };
-use crate::domain::login_identifier::{LoginIdentifierType, UserLoginIdentifier};
+use crate::domain::login_identifier::UserLoginIdentifier;
 use crate::domain::passkey_challenge::PasskeyChallenge;
 use crate::domain::password_reset::PasswordResetToken;
 use crate::domain::refresh_token::RefreshToken;
@@ -267,21 +267,6 @@ pub trait UserLoginIdentifierRepository: Send + Sync {
     /// 識別子を削除する。対象（`(id, user_id)`）が無ければ `false`。
     async fn delete(&self, _id: Uuid, _user_id: Uuid) -> Result<bool> {
         Ok(false)
-    }
-    /// `users` 由来の識別子（`username` 種別）を現在値へ合わせる（expand フェーズの同期）。
-    ///
-    /// `value` が `None` なら当該種別の行を消す。プロフィール編集でログイン識別子が変わったのに
-    /// 登録簿が古いままだと、**変更前の値でログインできてしまう**（登録簿の方が先に引かれるため）。
-    /// 同期先を 1 メソッドに閉じて、書き込み経路がここを通ることを型で示す。
-    async fn sync_derived(
-        &self,
-        _tenant_id: TenantId,
-        _user_id: Uuid,
-        _identifier_type: LoginIdentifierType,
-        _value: Option<&str>,
-        _id: Uuid,
-    ) -> Result<()> {
-        Ok(())
     }
 }
 

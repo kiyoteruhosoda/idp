@@ -38,9 +38,7 @@ use crate::application::introspection::IntrospectionService;
 use crate::application::invitation::InvitationService;
 use crate::application::key_service::KeyService;
 use crate::application::login::LoginService;
-use crate::application::login_identifier_management::{
-    LoginIdentifierManagementService, PrimaryLoginIdentifierSync,
-};
+use crate::application::login_identifier_management::LoginIdentifierManagementService;
 use crate::application::logout::LogoutService;
 use crate::application::member_directory::MemberDirectoryService;
 use crate::application::mfa_login::MfaLoginService;
@@ -280,10 +278,6 @@ impl AppState {
         let login_identifier_repository: Arc<
             dyn crate::domain::repositories::UserLoginIdentifierRepository,
         > = Arc::new(SqlxUserLoginIdentifierRepository::new(pool.clone()));
-        let primary_login_identifiers = Arc::new(PrimaryLoginIdentifierSync::new(
-            login_identifier_repository.clone(),
-            ids.clone(),
-        ));
         let rate_limiter = Arc::new(InMemoryLoginRateLimiter::new(
             LOGIN_RATE_LIMIT_MAX_ATTEMPTS,
             chrono::Duration::minutes(LOGIN_RATE_LIMIT_WINDOW_MINUTES),
@@ -389,7 +383,6 @@ impl AppState {
             users.clone(),
             tenant_memberships.clone(),
             tenants.clone(),
-            primary_login_identifiers.clone(),
             hasher.clone(),
             register_rate_limiter,
             clock.clone(),
@@ -575,7 +568,6 @@ impl AppState {
         let users_admin = Arc::new(UserManagementService::new(
             users.clone(),
             tenant_memberships.clone(),
-            primary_login_identifiers.clone(),
             hasher.clone(),
             audit.clone(),
             clock.clone(),
@@ -586,7 +578,6 @@ impl AppState {
         let users_lifecycle = Arc::new(UserLifecycleService::new(
             authenticator_repository.clone(),
             users.clone(),
-            primary_login_identifiers.clone(),
             sso_sessions.clone(),
             refresh_tokens.clone(),
             codes.clone(),

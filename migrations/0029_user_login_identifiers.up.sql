@@ -17,18 +17,23 @@
 -- 利用者に見せたいのは登録したときの書き方である。正規化を表示にも使うと「登録した覚えのない
 -- 値が管理画面に並ぶ」ことになり、同一性の確認ができなくなる。
 --
--- # `users.preferred_username` / `users.email` との関係（expand フェーズ）
+-- # `users` との関係（expand フェーズ）: 既存の値は**写さない**
 --
--- 既存の `preferred_username` は**主たるログイン識別子のまま**にし、本テーブルへは
--- `username` 種別として写しを取り込む（下の backfill）。ログイン時の解決は
--- 「本テーブルの有効な行 → 無ければ `users.preferred_username`」の順で行う。
--- 列そのものの撤去（contract フェーズ）は本マイグレーションでは行わない。
--- 途中で失敗すると**誰もログインできなくなる**変更なので、登録簿の導入と主識別子の移送を
--- 同じ変更に載せない（ADR-0004 の expand/contract。AP9 / migration 0023 と同じ分け方）。
+-- 主たるログイン識別子は `users.preferred_username` のままで、本テーブルには
+-- **追加の識別子だけ**を置く。ログイン時の解決は「本テーブルの有効な行 → 無ければ
+-- `users.preferred_username`」の順。
 --
--- `users.email` は取り込まない。取り込むと「今日までメールでログインできなかった環境で、
--- マイグレーションを当てた瞬間からメールでログインできる」ことになり、認証の入り口が
--- 黙って広がる。メールでのログインを許すかはテナントの判断なので、管理 API から
+-- 写しを取らないのは、同じ値が 2 か所にあると**二重書きの同期**が必要になるためである。
+-- 同期が漏れた瞬間に「変更前のユーザー名でログインできる」「無効化したのに認証が通る」
+-- という状態が生まれ、しかもそれはプロフィール編集・利用者作成・登録簿の更新という
+-- 別々の経路をまたぐので、1 か所直せば済む問題にならない。主識別子を本テーブルへ移すのは
+-- contract フェーズ（`docs/Progress.md` AP15）でまとめて行う。途中で失敗すると**誰も
+-- ログインできなくなる**変更であり、登録簿の導入と同じ回に載せない（ADR-0004 の
+-- expand/contract。AP9 / migration 0023 と同じ分け方）。
+--
+-- `users.email` も同様に取り込まない。取り込むと「今日までメールでログインできなかった
+-- 環境で、マイグレーションを当てた瞬間からメールでログインできる」ことになり、認証の
+-- 入り口が黙って広がる。メールでのログインを許すかはテナントの判断なので、管理 API から
 -- `email` 種別の識別子を明示的に足したときだけ有効になる。
 CREATE TABLE user_login_identifiers (
     id               CHAR(36)     NOT NULL
@@ -60,47 +65,3 @@ CREATE TABLE user_login_identifiers (
     CONSTRAINT user_login_identifiers_tenant_fk FOREIGN KEY (tenant_id)
         REFERENCES tenants (id) ON DELETE RESTRICT
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
-
--- 既存の `preferred_username` を `username` 種別として取り込む（冪等。再実行しても二重登録しない）。
--- UUIDv7 は SQL では作れないため、version/variant ニブルを埋めた v4 相当の値を生成する
--- （migration 0023 と同じ方針。登録簿の id は時系列ソートに使わない）。
---
--- 正規化は Rust 側の `LoginIdentifierType::Username`（trim + 小文字化）と一致させる。
--- 照合列の照合順序が `utf8mb4_unicode_ci`（大小無視）なので、小文字化は表示上の一貫性のための
--- 正規化であって、一致判定の正しさはここに依存しない。
-INSERT INTO user_login_identifiers
-    (id, tenant_id, user_id, identifier_type, display_value, normalized_value, is_active, created_at)
-SELECT
-    LOWER(CONCAT(
-        SUBSTR(HEX(RANDOM_BYTES(4)), 1, 8), '-',
-        SUBSTR(HEX(RANDOM_BYTES(2)), 1, 4), '-4',
-        SUBSTR(HEX(RANDOM_BYTES(2)), 2, 3), '-a',
-        SUBSTR(HEX(RANDOM_BYTES(2)), 2, 3), '-',
-        SUBSTR(HEX(RANDOM_BYTES(6)), 1, 12)
-    )),
-    u.tenant_id,
-    u.id,
-    'username',
-    TRIM(u.preferred_username),
-    LOWER(TRIM(u.preferred_username)),
-    1,
-    u.created_at
-FROM users u
-WHERE u.preferred_username IS NOT NULL
-  AND TRIM(u.preferred_username) <> ''
-  AND CHAR_LENGTH(TRIM(u.preferred_username)) <= 255
-  AND NOT EXISTS (
-      SELECT 1 FROM user_login_identifiers i
-      WHERE i.user_id = u.id AND i.identifier_type = 'username'
-  )
-  -- `users` の一意制約は値そのものに掛かるため、前後の空白だけが違う 2 行
-  -- （`' alice'` と `'alice'`）は共存できる。TRIM すると同じキーになり、そのままでは本
-  -- マイグレーションが一意制約違反で落ちる。id の小さい方だけを取り込む。
-  -- 取り込まれなかった側も `users.preferred_username` へのフォールバックでログインできる。
-  AND NOT EXISTS (
-      SELECT 1 FROM users u2
-      WHERE u2.tenant_id = u.tenant_id
-        AND u2.preferred_username IS NOT NULL
-        AND LOWER(TRIM(u2.preferred_username)) = LOWER(TRIM(u.preferred_username))
-        AND u2.id < u.id
-  );

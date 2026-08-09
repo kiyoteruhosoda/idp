@@ -86,6 +86,43 @@ impl LoginIdentifierType {
         }
     }
 
+    /// 入力がこの種別**として読めるか**（書式の判定）。
+    ///
+    /// 登録時の検証（[`Self::normalize_checked`]）とログイン時の候補生成
+    /// （[`lookup_candidates`]）が**同じ判定**を使うのが要点である。両者がずれると、
+    /// 「登録できるのにログイン時に候補にならない値」（＝一致しない識別子）か、
+    /// 「登録できないのに候補にはなる値」（＝別種別の行に化けて当たる値）が生まれる。
+    ///
+    /// 後者が危ない。たとえば電話番号の正規化を任意の入力に掛けると、ユーザー名
+    /// `alice123456` から数字だけを抜いた `123456` が**他人の電話番号**に一致し得る。
+    /// 候補をこの判定で絞れば、電話番号らしくない入力は電話番号として引かれない。
+    pub fn accepts(&self, raw: &str) -> bool {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+        match self {
+            // ユーザー名は書式を持たない受け皿。
+            Self::Username => true,
+            // `@` を挟んで両側に文字がある（`values::validate_email` と同じ基準）。
+            Self::Email => {
+                let parts: Vec<&str> = trimmed.split('@').collect();
+                parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty()
+            }
+            // 数字と区切り記号だけで、桁数が範囲内。
+            Self::PhoneNumber => {
+                let digits = trimmed.chars().filter(char::is_ascii_digit).count();
+                trimmed
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || matches!(c, '+' | '-' | ' ' | '(' | ')' | '.'))
+                    && (PHONE_MIN_DIGITS..=PHONE_MAX_DIGITS).contains(&digits)
+            }
+            // 空白を含まない（正規化で空白を落とす以上、含む値を許すと
+            // 「登録した書き方では引けない」ことになる）。
+            Self::EmployeeNumber => !trimmed.chars().any(char::is_whitespace),
+        }
+    }
+
     /// 入力値を検証したうえで正規化する（登録時）。
     ///
     /// エラーは利用者へ返るため訳文ではなく**翻訳キー**を返す（訳出は Presentation 層。MT19）。
@@ -100,20 +137,13 @@ impl LoginIdentifierType {
                 DISPLAY_VALUE_MAX_LEN.to_string(),
             ));
         }
-        match self {
-            Self::Email => crate::domain::values::validate_email(trimmed)?,
-            Self::PhoneNumber => {
-                let digits = trimmed.chars().filter(char::is_ascii_digit).count();
-                // 数字と区切り記号以外が混ざっているものは弾く。通した先で「一致しない識別子」に
-                // なるだけで、登録者には理由が分からない。
-                let shaped = trimmed
-                    .chars()
-                    .all(|c| c.is_ascii_digit() || matches!(c, '+' | '-' | ' ' | '(' | ')' | '.'));
-                if !shaped || !(PHONE_MIN_DIGITS..=PHONE_MAX_DIGITS).contains(&digits) {
-                    return Err(MessageKey::new("api-login-identifier-phone-invalid"));
-                }
-            }
-            Self::Username | Self::EmployeeNumber => {}
+        if !self.accepts(trimmed) {
+            return Err(MessageKey::new(match self {
+                Self::Email => "api-email-invalid",
+                Self::PhoneNumber => "api-login-identifier-phone-invalid",
+                Self::EmployeeNumber => "api-login-identifier-employee-invalid",
+                Self::Username => "api-login-identifier-required",
+            }));
         }
         let normalized = self.normalize(trimmed);
         if normalized.is_empty() {
@@ -132,20 +162,25 @@ impl LoginIdentifierType {
 /// ログイン欄への入力を、種別ごとの照合キーの候補へ広げる。
 ///
 /// 入力そのものには種別が書かれていない（利用者は「自分の番号」を打つだけ）ため、
-/// **どの種別として読んだらどうなるか**を全通り作って一致を探す。種別ごとに正規化が違う以上、
+/// **どの種別として読んだらどうなるか**を作って一致を探す。種別ごとに正規化が違う以上、
 /// 「1 つに正規化してから引く」ことはできない。
 ///
-/// 空になる候補（数字を含まない入力を電話番号として読んだ場合など）は落とす。重複も落とす
-/// （`alice` は username と email で同じ正規化になるが、`IN` に同じ組を 2 度置く意味はない）。
+/// 候補を作るのは [`LoginIdentifierType::accepts`] が通る種別だけ。登録時の検証と同じ判定を
+/// 使うことで、「登録できる値は必ずその種別の候補になる」「登録できない読み方では引かない」の
+/// 両方が成り立つ。後者を守らないと、ユーザー名から抜き出した数字が他人の電話番号に当たる
+/// （`accepts` のコメント参照）。
+///
+/// 重複は落とす（`alice` は username と email で同じ正規化になり得るが、`IN` に同じ組を
+/// 2 度置く意味はない）。
 pub fn lookup_candidates(input: &str) -> Vec<(LoginIdentifierType, String)> {
     use LoginIdentifierType::*;
     let mut out: Vec<(LoginIdentifierType, String)> = Vec::new();
     for kind in [Username, Email, PhoneNumber, EmployeeNumber] {
+        if !kind.accepts(input) {
+            continue;
+        }
         let normalized = kind.normalize(input);
-        if normalized.is_empty()
-            || normalized == "+"
-            || normalized.chars().count() > NORMALIZED_VALUE_MAX_LEN
-        {
+        if normalized.is_empty() || normalized.chars().count() > NORMALIZED_VALUE_MAX_LEN {
             continue;
         }
         if !out.iter().any(|(k, v)| *k == kind && *v == normalized) {
@@ -192,8 +227,8 @@ mod tests {
             "09012345678"
         );
         assert_eq!(
-            LoginIdentifierType::PhoneNumber.normalize("+81 (90) 1234-5678"),
-            "+819012345678"
+            LoginIdentifierType::PhoneNumber.normalize("(090) 1234.5678"),
+            "09012345678"
         );
         assert_eq!(
             LoginIdentifierType::EmployeeNumber.normalize(" a-1234 "),
@@ -203,10 +238,12 @@ mod tests {
 
     #[test]
     fn phone_normalization_keeps_international_prefix_distinct() {
-        // 先頭の `+` を落とすと国内表記と国際表記が同じキーになり、別人の番号と衝突し得る。
+        // 先頭の `+` を落とすと国内表記と国際表記が同じキーになる。国番号と国内プレフィクスの
+        // 対応（`+81 90…` = `090…`）は国ごとに違い、ここで推測すると別人の番号に当たり得る。
+        // 両方でログインさせたいなら、両方を識別子として登録する。
         assert_ne!(
             LoginIdentifierType::PhoneNumber.normalize("+819012345678"),
-            LoginIdentifierType::PhoneNumber.normalize("819012345678")
+            LoginIdentifierType::PhoneNumber.normalize("09012345678")
         );
     }
 
@@ -228,21 +265,54 @@ mod tests {
         assert!(LoginIdentifierType::PhoneNumber
             .normalize_checked("090-1234-5678")
             .is_ok());
+        // 空白を含む社員番号は、正規化で空白が落ちて「登録した書き方では引けない」値になる。
+        assert!(LoginIdentifierType::EmployeeNumber
+            .normalize_checked("A 1234")
+            .is_err());
+        assert!(LoginIdentifierType::EmployeeNumber
+            .normalize_checked("A-1234")
+            .is_ok());
     }
 
+    /// 登録できる値は、必ずその種別の候補として引き当てられなければならない。
+    /// ここがずれると「登録はできたのにログインできない識別子」が生まれる。
     #[test]
-    fn lookup_candidates_cover_every_type_and_drop_empties() {
-        let candidates = lookup_candidates("Alice");
-        // username / email は同じ正規化になるので 1 件に畳まれ、employee_number が別途載る。
-        assert!(candidates.contains(&(LoginIdentifierType::Username, "alice".to_string())));
-        assert!(candidates.contains(&(LoginIdentifierType::EmployeeNumber, "ALICE".to_string())));
-        // 数字を含まない入力は電話番号の候補にならない。
+    fn every_registrable_value_is_looked_up_under_its_own_type() {
+        let cases = [
+            (LoginIdentifierType::Username, "Alice"),
+            (LoginIdentifierType::Email, "alice@example.com"),
+            (LoginIdentifierType::PhoneNumber, "090-1234-5678"),
+            (LoginIdentifierType::PhoneNumber, "+81 (90) 1234-5678"),
+            (LoginIdentifierType::EmployeeNumber, "A-1234"),
+        ];
+        for (kind, raw) in cases {
+            let normalized = kind.normalize_checked(raw).expect("registrable");
+            assert!(
+                lookup_candidates(raw).contains(&(kind, normalized.clone())),
+                "{kind} / {raw} が候補に出ない"
+            );
+        }
+    }
+
+    /// 逆向き: その種別として**登録できない**読み方では引かない。
+    ///
+    /// これを守らないと、ユーザー名 `alice123456` から数字を抜いた `123456` が、
+    /// 別人の電話番号に一致してしまう（`LIMIT 1` でどちらが返るかは不定）。
+    #[test]
+    fn does_not_look_up_types_the_input_could_not_be_registered_as() {
+        let candidates = lookup_candidates("alice123456");
         assert!(!candidates
             .iter()
             .any(|(k, _)| *k == LoginIdentifierType::PhoneNumber));
+        assert!(!candidates
+            .iter()
+            .any(|(k, _)| *k == LoginIdentifierType::Email));
+        assert!(candidates.contains(&(LoginIdentifierType::Username, "alice123456".to_string())));
 
-        let phone = lookup_candidates("090-1234-5678");
-        assert!(phone.contains(&(LoginIdentifierType::PhoneNumber, "09012345678".to_string())));
+        // 空白を含む入力は社員番号として引かない（`a b` から `AB` を作ると別人に当たり得る）。
+        assert!(!lookup_candidates("a b")
+            .iter()
+            .any(|(k, _)| *k == LoginIdentifierType::EmployeeNumber));
     }
 
     #[test]

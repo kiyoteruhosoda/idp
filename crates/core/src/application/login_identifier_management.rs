@@ -31,47 +31,6 @@ use crate::domain::user::User;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// 主たるログイン識別子（`users.preferred_username`）と登録簿の写しを一致させる係（AP8）。
-///
-/// expand フェーズでは同じ値が 2 か所にある。解決は登録簿を先に見るため、`users` 側だけを
-/// 変えると**変更前のユーザー名でログインできてしまう**。利用者の作成・プロフィール編集の
-/// どちらからも同じ 1 メソッドを通し、「同期の作法」がユースケースごとに分かれないようにする。
-///
-/// 写しの撤去（`preferred_username` 列そのものを登録簿へ移す contract フェーズ）まで生きる
-/// 一時的な部品であり、そのときこの型ごと消える。
-pub struct PrimaryLoginIdentifierSync {
-    identifiers: Arc<dyn UserLoginIdentifierRepository>,
-    ids: Arc<dyn IdGenerator>,
-}
-
-impl PrimaryLoginIdentifierSync {
-    pub fn new(
-        identifiers: Arc<dyn UserLoginIdentifierRepository>,
-        ids: Arc<dyn IdGenerator>,
-    ) -> Self {
-        Self { identifiers, ids }
-    }
-
-    /// 登録簿の `username` 種別の行を、現在の `preferred_username` に合わせる。
-    /// `None`（識別子の解除）なら行を消す。
-    pub async fn sync_username(
-        &self,
-        tenant_id: TenantId,
-        user_id: Uuid,
-        preferred_username: Option<&str>,
-    ) -> Result<(), DomainError> {
-        self.identifiers
-            .sync_derived(
-                tenant_id,
-                user_id,
-                LoginIdentifierType::Username,
-                preferred_username,
-                self.ids.new_id(),
-            )
-            .await
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct AddLoginIdentifierCommand {
     pub identifier_type: LoginIdentifierType,
@@ -79,6 +38,39 @@ pub struct AddLoginIdentifierCommand {
     pub value: String,
     /// 追加直後に有効にするか（既定 true）。
     pub is_active: bool,
+}
+
+/// 一覧の 1 件。登録簿の行そのものと、`users.preferred_username` から合成した主たる識別子の
+/// 両方を同じ形で表す。
+///
+/// `id` が `None` の行は**保存されていない**（合成）。主識別子は expand フェーズでは
+/// `users` 側にあり、識別子単位の操作（有効/無効・削除）の対象にならない。
+#[derive(Debug, Clone)]
+pub struct LoginIdentifierEntry {
+    pub id: Option<Uuid>,
+    pub identifier_type: LoginIdentifierType,
+    pub display_value: String,
+    pub normalized_value: String,
+    pub is_active: bool,
+    /// `users.preferred_username` そのもの（合成行）か。
+    pub is_primary: bool,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<UserLoginIdentifier> for LoginIdentifierEntry {
+    fn from(v: UserLoginIdentifier) -> Self {
+        Self {
+            id: Some(v.id),
+            identifier_type: v.identifier_type,
+            display_value: v.display_value,
+            normalized_value: v.normalized_value,
+            is_active: v.is_active,
+            is_primary: false,
+            created_at: v.created_at,
+            updated_at: v.updated_at,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -123,16 +115,40 @@ impl LoginIdentifierManagementService {
     }
 
     /// 利用者のログイン識別子を一覧する（無効な行も含む）。
+    ///
+    /// 先頭は `users.preferred_username` から**合成した**主たる識別子（[`LoginIdentifierEntry::id`]
+    /// が `None`）。expand フェーズでは主識別子を登録簿に持たないため、そのままでは管理画面に
+    /// 「その利用者が実際にログインに使える値」が揃わない。保存はせず、読むときにだけ足す。
     pub async fn list(
         &self,
         tenant: TenantContext,
         target: Uuid,
-    ) -> Result<Vec<UserLoginIdentifier>, LoginIdentifierManagementError> {
+    ) -> Result<Vec<LoginIdentifierEntry>, LoginIdentifierManagementError> {
         let user = self.find_home_user(tenant, target).await?;
-        self.identifiers
+        let stored = self
+            .identifiers
             .list_for_user(user.id)
             .await
-            .map_err(internal)
+            .map_err(internal)?;
+        let mut entries = Vec::with_capacity(stored.len() + 1);
+        if let Some(primary) = user.preferred_username.as_deref().map(str::trim) {
+            if !primary.is_empty() {
+                entries.push(LoginIdentifierEntry {
+                    id: None,
+                    identifier_type: LoginIdentifierType::Username,
+                    display_value: primary.to_string(),
+                    normalized_value: LoginIdentifierType::Username.normalize(primary),
+                    // 主識別子は `users` 側にあり、識別子単位では止められない（止めるなら
+                    // アカウントの無効化、変えるならプロフィール編集）。
+                    is_active: true,
+                    is_primary: true,
+                    created_at: user.created_at,
+                    updated_at: user.updated_at,
+                });
+            }
+        }
+        entries.extend(stored.into_iter().map(LoginIdentifierEntry::from));
+        Ok(entries)
     }
 
     /// ログイン識別子を追加する。
@@ -152,7 +168,7 @@ impl LoginIdentifierManagementService {
             .normalize_checked(&raw)
             .map_err(LoginIdentifierManagementError::Validation)?;
 
-        self.ensure_available(tenant_id, &user, cmd.identifier_type, &raw)
+        self.ensure_available(tenant_id, user.id, cmd.identifier_type, &raw)
             .await?;
 
         let now = self.clock.now();
@@ -232,9 +248,8 @@ impl LoginIdentifierManagementService {
 
     /// 識別子を削除する。
     ///
-    /// `users.preferred_username` の写し（`username` 種別）は削除させない。消しても
-    /// `users` 側が残っているためログインは通り続け、「消したのに使える」という食い違いだけが
-    /// 残る。ログイン識別子そのものを変えたいならプロフィール編集（MT25）を使う。
+    /// 主たるログイン識別子（`users.preferred_username`）は登録簿に無いため対象にならない
+    /// （一覧では `id` が `null` の合成行として出る）。変えたいならプロフィール編集（MT25）を使う。
     pub async fn remove(
         &self,
         tenant: TenantContext,
@@ -245,18 +260,6 @@ impl LoginIdentifierManagementService {
     ) -> Result<(), LoginIdentifierManagementError> {
         let user = self.find_home_user(tenant, target).await?;
         let identifier = self.find_owned(user.id, identifier_id).await?;
-        if identifier.identifier_type == LoginIdentifierType::Username
-            && user
-                .preferred_username
-                .as_deref()
-                .map(|v| LoginIdentifierType::Username.normalize(v))
-                .as_deref()
-                == Some(identifier.normalized_value.as_str())
-        {
-            return Err(LoginIdentifierManagementError::Validation(MessageKey::new(
-                "api-login-identifier-primary-immutable",
-            )));
-        }
         if !self
             .identifiers
             .delete(identifier.id, user.id)
@@ -276,30 +279,36 @@ impl LoginIdentifierManagementService {
         Ok(())
     }
 
-    /// 追加しようとしている値が、この利用者以外に解決されないことを確かめる。
+    /// 追加しようとしている値が、まだ誰のログインにも使われていないことを確かめる。
+    ///
+    /// **自分自身に解決される値も拒む。** 他人に解決される値が危ないのは自明だが、自分の
+    /// `users.preferred_username` と同じ値を登録簿にも足せてしまうと、その行を無効化しても
+    /// `preferred_username` へのフォールバックで認証が通る ——「止めたのに使える」識別子が
+    /// できる。重複させないことがその状態を作らせない一番簡単な方法である。
     async fn ensure_available(
         &self,
         tenant_id: TenantId,
-        user: &User,
+        user_id: Uuid,
         identifier_type: LoginIdentifierType,
         raw: &str,
     ) -> Result<(), LoginIdentifierManagementError> {
         // 1. 実際のログイン経路と同じ引き方。登録簿にも `users.preferred_username` にも当たる。
-        if let Some(found) = self
+        if self
             .users
             .find_by_login_identifier(tenant_id, raw)
             .await
             .map_err(internal)?
+            .is_some()
         {
-            if found.id != user.id {
-                return Err(LoginIdentifierManagementError::Conflict(MessageKey::new(
-                    "api-login-identifier-conflict",
-                )));
-            }
+            return Err(LoginIdentifierManagementError::Conflict(MessageKey::new(
+                "api-login-identifier-conflict",
+            )));
         }
         // 2. `users.email` は現状ログインの入り口ではないため 1 では当たらない。しかし他人の
         //    メールアドレスを自分のログイン識別子にできると、その人の連絡先で本人になりすませる。
         //    メール種別のときだけ、利用者表の側も見る。
+        // 本人のメールアドレスを本人の識別子にするのは正当な使い方（「メールでログインしたい」）
+        // なので、他人のものだけを拒む。
         if identifier_type == LoginIdentifierType::Email {
             if let Some(found) = self
                 .users
@@ -307,7 +316,7 @@ impl LoginIdentifierManagementService {
                 .await
                 .map_err(internal)?
             {
-                if found.id != user.id {
+                if found.id != user_id {
                     return Err(LoginIdentifierManagementError::Conflict(MessageKey::new(
                         "api-login-identifier-conflict",
                     )));
@@ -680,32 +689,53 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refuses_to_remove_the_copy_of_the_primary_username() {
-        let (service, repo) = service(vec![user(2, "alice", "alice@example.com")]);
-        // migration 0029 の backfill が作る行に相当する。
-        let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
-        repo.rows.lock().unwrap().push(UserLoginIdentifier {
-            id: Uuid::from_u128(50),
-            tenant_id: TenantId::from(Uuid::from_u128(1)),
-            user_id: Uuid::from_u128(2),
-            identifier_type: LoginIdentifierType::Username,
-            display_value: "alice".to_string(),
-            normalized_value: "alice".to_string(),
-            is_active: true,
-            created_at: now,
-            updated_at: now,
-        });
+    async fn rejects_a_value_that_already_resolves_to_the_user_themselves() {
+        // 自分の `preferred_username` を登録簿にも足せてしまうと、その行を無効化しても
+        // `users` へのフォールバックで認証が通る（「止めたのに使える」識別子）。
+        let (service, _) = service(vec![user(2, "alice", "alice@example.com")]);
         let err = service
-            .remove(
+            .add(
                 tenant(),
                 Uuid::from_u128(2),
-                Uuid::from_u128(50),
+                AddLoginIdentifierCommand {
+                    identifier_type: LoginIdentifierType::Username,
+                    value: "Alice".to_string(),
+                    is_active: true,
+                },
                 Uuid::from_u128(9),
                 &ctx(),
             )
             .await
             .unwrap_err();
-        assert!(matches!(err, LoginIdentifierManagementError::Validation(_)));
+        assert!(matches!(err, LoginIdentifierManagementError::Conflict(_)));
+    }
+
+    #[tokio::test]
+    async fn list_synthesizes_the_primary_identifier_which_cannot_be_targeted() {
+        let (service, _) = service(vec![user(2, "alice", "alice@example.com")]);
+        service
+            .add(
+                tenant(),
+                Uuid::from_u128(2),
+                AddLoginIdentifierCommand {
+                    identifier_type: LoginIdentifierType::EmployeeNumber,
+                    value: "E-1001".to_string(),
+                    is_active: true,
+                },
+                Uuid::from_u128(9),
+                &ctx(),
+            )
+            .await
+            .unwrap();
+
+        let entries = service.list(tenant(), Uuid::from_u128(2)).await.unwrap();
+        assert_eq!(entries.len(), 2);
+        // 合成した主識別子は保存されていない（id が無いので操作の対象にならない）。
+        assert!(entries[0].is_primary);
+        assert!(entries[0].id.is_none());
+        assert_eq!(entries[0].normalized_value, "alice");
+        assert!(!entries[1].is_primary);
+        assert!(entries[1].id.is_some());
     }
 
     #[tokio::test]

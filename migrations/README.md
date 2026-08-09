@@ -98,9 +98,11 @@ sqlx マイグレーション（MariaDB）を管理する。
 - `0029_user_login_identifiers`: ログイン識別子の登録簿 `user_login_identifiers` を追加する（AP8。
   expand フェーズ。ADR-0025）。種別（`username` / `email` / `phone_number` / `employee_number`）・
   表示値・正規化値・有効/無効を持ち、`(tenant_id, identifier_type, normalized_value)` を UNIQUE に
-  する（無効な行も一意の対象＝止めた値を他人が取れない）。既存の `users.preferred_username` は
-  `username` 種別として冪等な `INSERT ... SELECT` で backfill し、**主たる識別子は `users` 側に
-  残す**（解決は「登録簿 → `preferred_username`」の順）。`users.email` は取り込まない
+  する（無効な行も一意の対象＝止めた値を他人が取れない）。**既存データは移さない**。主たる
+  ログイン識別子は `users.preferred_username` のままで、本表には追加の識別子だけを置く
+  （解決は「登録簿 → `preferred_username`」の順）。写しを取ると同じ値が 2 か所にでき、同期漏れが
+  そのまま「変更前の名前でログインできる」「無効化したのに認証が通る」になるため、主識別子の
+  移送は contract フェーズ（`docs/Progress.md` AP15）へ分ける。`users.email` も取り込まない
   （取り込むと適用した瞬間からメールでログインできてしまい、認証の入り口が黙って広がる）。
   `down` は表ごと削除する（追加登録した識別子だけを失い、パスワードログインは通り続ける）。
 

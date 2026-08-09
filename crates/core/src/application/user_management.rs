@@ -11,7 +11,6 @@
 //! には結果のみ返す（`CLAUDE.md`「権限管理」）。
 
 use crate::application::audit::{AuditService, RequestContext};
-use crate::application::login_identifier_management::PrimaryLoginIdentifierSync;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
@@ -69,8 +68,6 @@ pub enum UserManagementError {
 pub struct UserManagementService {
     users: Arc<dyn UserRepository>,
     memberships: Arc<dyn TenantMembershipRepository>,
-    /// ログイン識別子の登録簿への写しを作る係（AP8。expand フェーズ）。
-    login_identifiers: Arc<PrimaryLoginIdentifierSync>,
     hasher: Arc<dyn PasswordHasher>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
@@ -78,11 +75,9 @@ pub struct UserManagementService {
 }
 
 impl UserManagementService {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         users: Arc<dyn UserRepository>,
         memberships: Arc<dyn TenantMembershipRepository>,
-        login_identifiers: Arc<PrimaryLoginIdentifierSync>,
         hasher: Arc<dyn PasswordHasher>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
@@ -91,7 +86,6 @@ impl UserManagementService {
         Self {
             users,
             memberships,
-            login_identifiers,
             hasher,
             audit,
             clock,
@@ -206,17 +200,6 @@ impl UserManagementService {
             ))
             .await
             .map_err(internal)?;
-
-        // ログイン識別子の登録簿へ写しを作る（AP8。解決は登録簿を先に見るため、作成時から揃える）。
-        self.login_identifiers
-            .sync_username(tenant_id, user.id, user.preferred_username.as_deref())
-            .await
-            .map_err(|e| match e {
-                DomainError::Conflict(_) => {
-                    UserManagementError::Conflict(MessageKey::new("api-user-identity-conflict"))
-                }
-                other => internal(other),
-            })?;
 
         // 監査には内部 ID のみ記録する（生成パスワードは出さない。§5）。
         self.audit
@@ -445,56 +428,15 @@ mod tests {
         }
     }
 
-    /// ログイン識別子の登録簿のフェイク（AP8）。同期呼び出しだけを記録する。
-    #[derive(Default)]
-    struct FakeLoginIdentifiers {
-        synced: Mutex<Vec<(Uuid, Option<String>)>>,
-    }
-    #[async_trait]
-    impl crate::domain::repositories::UserLoginIdentifierRepository for FakeLoginIdentifiers {
-        async fn sync_derived(
-            &self,
-            _tenant_id: TenantId,
-            user_id: Uuid,
-            _identifier_type: crate::domain::login_identifier::LoginIdentifierType,
-            value: Option<&str>,
-            _id: Uuid,
-        ) -> DomainResult<()> {
-            self.synced
-                .lock()
-                .unwrap()
-                .push((user_id, value.map(str::to_string)));
-            Ok(())
-        }
-    }
-
     fn service(
         users: Arc<FakeUsers>,
         memberships: Arc<FakeMemberships>,
         sink: Arc<CapturingSink>,
     ) -> UserManagementService {
-        service_with_identifiers(
-            users,
-            memberships,
-            sink,
-            Arc::new(FakeLoginIdentifiers::default()),
-        )
-    }
-
-    fn service_with_identifiers(
-        users: Arc<FakeUsers>,
-        memberships: Arc<FakeMemberships>,
-        sink: Arc<CapturingSink>,
-        identifiers: Arc<FakeLoginIdentifiers>,
-    ) -> UserManagementService {
         let audit = Arc::new(AuditService::new(sink, Arc::new(FixedClock(now()))));
         UserManagementService::new(
             users,
             memberships,
-            Arc::new(PrimaryLoginIdentifierSync::new(
-                identifiers,
-                Arc::new(FixedIds(Mutex::new(1000))),
-            )),
             Arc::new(PlainHasher),
             audit,
             Arc::new(FixedClock(now())),

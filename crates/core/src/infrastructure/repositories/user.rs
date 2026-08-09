@@ -155,6 +155,13 @@ impl UserRepository for SqlxUserRepository {
     /// 「全件読んでアプリ側で正規化して突き合わせる」方式は取らない（テナントの規模に比例して
     /// 破綻するうえ、一意性の保証が DB から離れる）。
     ///
+    /// **複数の利用者に当たったら誰も返さない。** 一意制約は `(tenant_id, identifier_type,
+    /// normalized_value)` に張ってあり、1 種別の中では 1 人に決まるが、種別をまたぐと
+    /// 「ユーザー名としては A、社員番号としては B」という入力があり得る。`LIMIT 1` で
+    /// どちらかを選ぶと、どちらが返るかが索引の都合で決まってしまう。曖昧な入力で
+    /// 認証を通すより、通さない方を選ぶ（候補生成側でも起きにくくしてある。
+    /// [`crate::domain::login_identifier::lookup_candidates`]）。
+    ///
     /// 一致が無ければ `users.preferred_username` へ落とす。登録簿の導入は expand フェーズで、
     /// 主たる識別子はまだ `users` 側にあるため（migration 0029）。
     async fn find_by_login_identifier(
@@ -166,9 +173,10 @@ impl UserRepository for SqlxUserRepository {
         if !candidates.is_empty() {
             let placeholders = vec!["(?, ?)"; candidates.len()].join(", ");
             let sql = format!(
-                "SELECT u.id AS id, u.tenant_id AS tenant_id, u.sub AS sub, u.email AS email, \
-                 u.email_verified AS email_verified, u.preferred_username AS preferred_username, \
-                 u.name AS name, u.language AS language, u.password_hash AS password_hash, \
+                "SELECT DISTINCT u.id AS id, u.tenant_id AS tenant_id, u.sub AS sub, \
+                 u.email AS email, u.email_verified AS email_verified, \
+                 u.preferred_username AS preferred_username, u.name AS name, \
+                 u.language AS language, u.password_hash AS password_hash, \
                  u.must_change_password AS must_change_password, u.status AS status, \
                  u.failed_login_count AS failed_login_count, u.locked_until AS locked_until, \
                  u.created_at AS created_at, u.updated_at AS updated_at \
@@ -176,15 +184,24 @@ impl UserRepository for SqlxUserRepository {
                  JOIN users u ON u.id = i.user_id \
                  WHERE i.tenant_id = ? AND i.is_active = 1 \
                    AND (i.identifier_type, i.normalized_value) IN ({placeholders}) \
-                 LIMIT 1"
+                 LIMIT 2"
             );
             let mut query = sqlx::query(&sql).bind(tenant_id.to_string());
             for (kind, normalized) in &candidates {
                 query = query.bind(kind.as_str()).bind(normalized.clone());
             }
-            let row = query.fetch_optional(&self.pool).await.map_err(repo_err)?;
-            if let Some(row) = row {
-                return map_row(&row).map(Some);
+            let rows = query.fetch_all(&self.pool).await.map_err(repo_err)?;
+            match rows.len() {
+                0 => {}
+                1 => return map_row(&rows[0]).map(Some),
+                _ => {
+                    // 曖昧。監査には残らない経路なので、運用ログにだけ残す（値は PII のため出さない）。
+                    tracing::warn!(
+                        tenant_id = %tenant_id,
+                        "login identifier resolved to multiple users; refusing to authenticate"
+                    );
+                    return Ok(None);
+                }
             }
         }
         self.find_by_username(tenant_id, input.trim()).await

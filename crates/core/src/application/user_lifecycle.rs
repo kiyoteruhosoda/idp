@@ -13,7 +13,6 @@
 //! SSO セッション・refresh token・未消費 authorization code を全失効させる。
 
 use crate::application::audit::{AuditService, RequestContext};
-use crate::application::login_identifier_management::PrimaryLoginIdentifierSync;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
@@ -86,8 +85,6 @@ pub struct UserLifecycleService {
     /// 管理ユースケース全体ではなくリポジトリを直接受ける。
     authenticators: Arc<dyn UserAuthenticatorRepository>,
     users: Arc<dyn UserRepository>,
-    /// ログイン識別子の登録簿への写しを保つ係（AP8。プロフィール編集でログイン識別子が変わる）。
-    login_identifiers: Arc<PrimaryLoginIdentifierSync>,
     sso_sessions: Arc<dyn SsoSessionRepository>,
     refresh_tokens: Arc<dyn RefreshTokenRepository>,
     codes: Arc<dyn AuthorizationCodeRepository>,
@@ -103,7 +100,6 @@ impl UserLifecycleService {
     pub fn new(
         authenticators: Arc<dyn UserAuthenticatorRepository>,
         users: Arc<dyn UserRepository>,
-        login_identifiers: Arc<PrimaryLoginIdentifierSync>,
         sso_sessions: Arc<dyn SsoSessionRepository>,
         refresh_tokens: Arc<dyn RefreshTokenRepository>,
         codes: Arc<dyn AuthorizationCodeRepository>,
@@ -116,7 +112,6 @@ impl UserLifecycleService {
         Self {
             authenticators,
             users,
-            login_identifiers,
             sso_sessions,
             refresh_tokens,
             codes,
@@ -311,23 +306,6 @@ impl UserLifecycleService {
                 }
                 other => internal(other),
             })?;
-
-        // ログイン識別子の登録簿へ写しを反映する（AP8。expand フェーズ）。
-        //
-        // **`users` の更新が通ったあとで必ず行う。** 解決は登録簿を先に見るため、ここを飛ばすと
-        // 変更前のユーザー名でログインできる状態が残る。反対に登録簿を先に書くと、`users` 側の
-        // 一意制約で失敗したときに登録簿だけが新しい値になる。
-        if changed.contains(&"preferred_username") {
-            self.login_identifiers
-                .sync_username(tenant_id, user.id, preferred_username.as_deref())
-                .await
-                .map_err(|e| match e {
-                    crate::domain::error::DomainError::Conflict(_) => {
-                        UserLifecycleError::Conflict(MessageKey::new("api-user-identity-conflict"))
-                    }
-                    other => internal(other),
-                })?;
-        }
 
         // 監査には対象と「変更した項目名」のみ記録する（メール・表示名そのものは PII のため出さない）。
         self.audit
@@ -1001,7 +979,6 @@ mod tests {
 
     struct Fixture {
         users: Arc<FakeUsers>,
-        login_identifiers: Arc<FakeLoginIdentifiers>,
         sso: Arc<FakeSsoSessions>,
         refresh: Arc<FakeRefreshTokens>,
         codes: Arc<FakeCodes>,
@@ -1011,41 +988,8 @@ mod tests {
         svc: UserLifecycleService,
     }
 
-    struct SeqIds(Mutex<u128>);
-    impl crate::domain::id_generator::IdGenerator for SeqIds {
-        fn new_id(&self) -> Uuid {
-            let mut n = self.0.lock().unwrap();
-            *n += 1;
-            Uuid::from_u128(*n)
-        }
-    }
-
-    /// ログイン識別子の登録簿のフェイク（AP8）。同期呼び出しだけを記録する。
-    #[derive(Default)]
-    struct FakeLoginIdentifiers {
-        synced: Mutex<Vec<(Uuid, Option<String>)>>,
-    }
-    #[async_trait]
-    impl crate::domain::repositories::UserLoginIdentifierRepository for FakeLoginIdentifiers {
-        async fn sync_derived(
-            &self,
-            _tenant_id: TenantId,
-            user_id: Uuid,
-            _identifier_type: crate::domain::login_identifier::LoginIdentifierType,
-            value: Option<&str>,
-            _id: Uuid,
-        ) -> DomainResult<()> {
-            self.synced
-                .lock()
-                .unwrap()
-                .push((user_id, value.map(str::to_string)));
-            Ok(())
-        }
-    }
-
     fn fixture() -> Fixture {
         let users = Arc::new(FakeUsers::default());
-        let login_identifiers = Arc::new(FakeLoginIdentifiers::default());
         let sso = Arc::new(FakeSsoSessions::default());
         let refresh = Arc::new(FakeRefreshTokens::default());
         let codes = Arc::new(FakeCodes::default());
@@ -1056,10 +1000,6 @@ mod tests {
         let svc = UserLifecycleService::new(
             Arc::new(FakeAuthenticators::default()),
             users.clone(),
-            Arc::new(PrimaryLoginIdentifierSync::new(
-                login_identifiers.clone(),
-                Arc::new(SeqIds(Mutex::new(1000))),
-            )),
             sso.clone(),
             refresh.clone(),
             codes.clone(),
@@ -1071,7 +1011,6 @@ mod tests {
         );
         Fixture {
             users,
-            login_identifiers,
             sso,
             refresh,
             codes,
@@ -1414,60 +1353,6 @@ mod tests {
         // 値そのもの（PII）は監査に出さない。
         assert!(!reason.contains("renamed@example.com"), "{reason}");
         assert!(!reason.contains("Renamed User"), "{reason}");
-    }
-
-    #[tokio::test]
-    async fn renaming_the_login_identifier_syncs_the_registry_copy() {
-        // AP8: 解決は登録簿を先に見るため、ここで同期しないと**変更前のユーザー名でログインできる**。
-        let tenant: TenantId = Uuid::now_v7().into();
-        let f = fixture();
-        let target = Uuid::now_v7();
-        f.users.create(&user(target, tenant)).await.unwrap();
-
-        f.svc
-            .update_profile(
-                TenantContext::new(tenant),
-                target,
-                UpdateUserProfileCommand {
-                    preferred_username: Some("renamed".into()),
-                    ..Default::default()
-                },
-                Uuid::now_v7(),
-                &ctx(),
-            )
-            .await
-            .expect("updated");
-
-        assert_eq!(
-            *f.login_identifiers.synced.lock().unwrap(),
-            vec![(target, Some("renamed".to_string()))]
-        );
-    }
-
-    #[tokio::test]
-    async fn changing_only_the_display_name_does_not_touch_the_registry() {
-        // 同期は識別子が変わったときだけ。無関係な編集で登録簿へ書き込むと、無効化した行の
-        // 状態まで巻き添えで動きかねない。
-        let tenant: TenantId = Uuid::now_v7().into();
-        let f = fixture();
-        let target = Uuid::now_v7();
-        f.users.create(&user(target, tenant)).await.unwrap();
-
-        f.svc
-            .update_profile(
-                TenantContext::new(tenant),
-                target,
-                UpdateUserProfileCommand {
-                    name: Some("New Name".into()),
-                    ..Default::default()
-                },
-                Uuid::now_v7(),
-                &ctx(),
-            )
-            .await
-            .expect("updated");
-
-        assert!(f.login_identifiers.synced.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
