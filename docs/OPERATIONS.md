@@ -408,6 +408,9 @@ curl -sS -X POST "$ISSUER/{tenant_id}/admin/external-idps" \
 | `BACKCHANNEL_LOGOUT_MAX_ATTEMPTS` | `8` | Back-channel logout 通知の再送上限。指数バックオフ（30 秒 → 最大 1 時間）。**DB 上書き可** |
 | `BACKCHANNEL_LOGOUT_POLL_INTERVAL_SECS` | `15` | Back-channel logout 送信ワーカーが送信キューを見る間隔（秒）。**DB 上書き可** |
 | `BACKCHANNEL_LOGOUT_RETENTION_DAYS` | `7` | 決着済み（送信成功・打ち切り）の送信キュー行の保持日数。`0` = 削除しない。**DB 上書き可** |
+| `EXPIRED_RECORD_PURGE_INTERVAL_SECS` | `3600` | 期限切れレコード（認可セッション・authorization code・refresh token・SSO セッション・失効 jti・パスキーチャレンジ・各種一時トークン）を掃除する間隔（秒）。`0` = 掃除しない（表が際限なく増えるため非推奨）。**DB 上書き可** |
+| `CORS_ALLOWED_ORIGINS` | 空 | ブラウザからの越境アクセスを追加で許可するオリジン（カンマ区切り）。既定ではテナント内 public クライアントの `redirect_uris` から導いたオリジンのみ許可する。**DB 上書き可** |
+| `API_DOCS_ENABLED` | `false` | Swagger UI（`/api/docs`）と OpenAPI 文書（`/api/openapi.json`）を配信するか。api 面は公開されるため、有効にすると管理 API を含む全仕様が無認証で読める。開発・検証環境でのみ `true` にする。**DB 上書き可** |
 | `RUST_LOG` | `info,idp=debug` | ログフィルタ |
 
 環境変数より **DB（`system_settings`）の値が優先される**（ADR-0010）。DB で変更するには root 管理者で
@@ -510,10 +513,14 @@ openssl rand -base64 32   # これを KEY_ENCRYPTION_KEY に設定する
 
 ## API 仕様を確認したいとき
 
-サーバ起動後に次へアクセスする（手書きの API 仕様書は無い）。
+**先に `API_DOCS_ENABLED=true` を設定する**（既定は無効。api 面は公開されるため、有効にすると
+管理 API を含む全エンドポイントの仕様が無認証で読める）。開発用 `docker-compose.yml` では既に
+有効になっている。設定後、サーバ起動して次へアクセスする（手書きの API 仕様書は無い）。
 
 - OpenAPI JSON: `GET /api/openapi.json`
 - Swagger UI: `GET /api/docs`
+
+無効のまま仕様だけ見たい場合は、ローカルで `API_DOCS_ENABLED=true cargo run -p idp-api` する。
 
 ## 死活・準備状態を確認したいとき
 

@@ -10,7 +10,8 @@
 //! [`crate::application::expired_record_purge::ExpiredRecordPurgeService`] が 1 本のタスクで回す。
 //!
 //! **このファイルが GC の対象一覧である。** 期限を持つ表を足したら、ここに実装を足して
-//! `all_expiring_record_stores` へ載せる（載せ忘れは同関数のテストが検出する）。
+//! `all_expiring_record_stores` と `PURGED_TABLES` へ載せる（載せ忘れは統合テスト
+//! `expired_record_purge::every_table_with_an_expiry_column_is_swept` が検出する）。
 
 use crate::domain::error::Result;
 use crate::domain::repositories::{
@@ -121,7 +122,8 @@ purge_directly!(
 /// 期限を持つ全テーブルの掃除口を組み立てる（**GC の対象一覧**）。
 ///
 /// 起動時にここで作った一式を [`crate::application::expired_record_purge::ExpiredRecordPurgeService`]
-/// へ渡す。表を足したときの追随漏れは `covers_every_table_with_an_expiry` が検出する。
+/// へ渡す。表を足したときの追随漏れは統合テスト
+/// `expired_record_purge::every_table_with_an_expiry_column_is_swept` が検出する。
 pub fn all_expiring_record_stores(pool: Db) -> Vec<Arc<dyn ExpiringRecordStore>> {
     vec![
         Arc::new(SqlxAuthSessionRepository::new(pool.clone())),
