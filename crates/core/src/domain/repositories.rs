@@ -24,7 +24,7 @@ use crate::domain::application_log::{
 };
 use crate::domain::audit::{AuditEvent, AuditLogEntry, AuditLogFilter};
 use crate::domain::auth_session::AuthSession;
-use crate::domain::authentication_policy::AuthenticationPolicy;
+use crate::domain::authentication_policy::{AuthenticationPolicy, LockoutPolicy};
 use crate::domain::authorization_code::AuthorizationCode;
 use crate::domain::backchannel_logout::BackchannelLogoutDelivery;
 use crate::domain::client::Client;
@@ -46,7 +46,7 @@ use crate::domain::system_setting::SystemSetting;
 use crate::domain::tenant::{Tenant, TenantId};
 use crate::domain::tenant_membership::{TenantMemberFilter, TenantMemberPage, TenantMembership};
 use crate::domain::totp_secret::TotpSecret;
-use crate::domain::user::User;
+use crate::domain::user::{LoginFailureRecord, User};
 use crate::domain::user_authenticator::{
     AuthenticatorStatus, AuthenticatorType, UserAuthenticator,
 };
@@ -158,12 +158,30 @@ pub trait UserRepository: Send + Sync {
     /// 所属元が `tenant_id` のユーザーを preferred_username で検索する。
     async fn find_by_username(&self, tenant_id: TenantId, username: &str) -> Result<Option<User>>;
     /// ログイン失敗回数・ロック期限を更新する（ロックポリシー、設計仕様 §4.3）。
+    ///
+    /// **失敗の記録には使わない**（[`Self::record_login_failure`] を使う）。読んだ値を +1 して
+    /// 書き戻すと並行試行で取りこぼす。こちらは「成功時のリセット」「管理者による解除」のように
+    /// 絶対値を書く用途に限る。
     async fn update_login_state(
         &self,
         id: Uuid,
         failed_login_count: i32,
         locked_until: Option<DateTime<Utc>>,
     ) -> Result<()>;
+    /// ログイン失敗を 1 件記録し、記録後の状態を返す（SEC13）。
+    ///
+    /// 加算とロック判定を**1 文**で行う。「読む → +1 して書き戻す」だと、並行して届いた N 件の
+    /// 試行が同じ値を読み、N 回失敗しても失敗回数が 1 しか進まずロック閾値に届かないことがある。
+    /// ロックは多層防御の一枚（IP 単位のレート制限とは別の層）なので、取りこぼさない。
+    ///
+    /// ロック判定を呼び出し側に残さないのは、閾値の比較対象になる失敗回数が
+    /// **この UPDATE の中でしか正しく分からない**ためである。
+    async fn record_login_failure(
+        &self,
+        id: Uuid,
+        lockout: LockoutPolicy,
+        now: DateTime<Utc>,
+    ) -> Result<LoginFailureRecord>;
     /// パスワードハッシュを更新し、`must_change_password` を解除する（パスワード変更、ADR-0009 §5）。
     async fn update_password(&self, id: Uuid, password_hash: &str) -> Result<()>;
     /// パスワードハッシュを更新し、`must_change_password` を**設定**する（管理者による再発行。

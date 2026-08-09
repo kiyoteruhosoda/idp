@@ -6,6 +6,24 @@ use crate::domain::values::UserStatus;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+/// ログイン失敗を 1 件記録した**後**の状態（[`crate::domain::repositories::UserRepository::record_login_failure`]）。
+///
+/// 加算とロック判定は 1 文の UPDATE で行われるため、呼び出し側はこの結果を見るだけでよい。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoginFailureRecord {
+    /// 記録後の連続失敗回数。
+    pub failed_login_count: i32,
+    /// ロックが掛かっているならその期限（掛かっていなければ `None`）。
+    pub locked_until: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl LoginFailureRecord {
+    /// この失敗でアカウントがロック状態になったか。
+    pub fn is_locked(&self) -> bool {
+        self.locked_until.is_some()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct User {
     /// 内部識別子。

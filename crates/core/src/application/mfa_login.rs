@@ -464,21 +464,20 @@ impl MfaLoginService {
         now: chrono::DateTime<chrono::Utc>,
         ctx: &RequestContext,
     ) -> MfaLoginOutcome {
-        let failed = user.failed_login_count + 1;
-        let locked_until = self.lockout.locked_until_after_failure(failed, now);
-
-        if let Err(e) = self
+        // 加算とロック判定は 1 文の UPDATE に閉じる（SEC13）。
+        let failure = match self
             .users
-            .update_login_state(user.id, failed, locked_until)
+            .record_login_failure(user.id, self.lockout, now)
             .await
         {
-            return MfaLoginOutcome::Internal(e.to_string());
-        }
+            Ok(f) => f,
+            Err(e) => return MfaLoginOutcome::Internal(e.to_string()),
+        };
 
         self.record_failure(tenant_id, Some(user.id), client_id, "invalid_totp", ctx)
             .await;
 
-        if locked_until.is_some() {
+        if failure.is_locked() {
             self.audit
                 .record(
                     AuditEventType::LoginLocked,
@@ -694,6 +693,30 @@ mod tests {
     }
     #[async_trait]
     impl UserRepository for FakeUsers {
+        /// 本番の sqlx 実装は 1 文の UPDATE で加算する（SEC13）。フェイクは単一スレッドの
+        /// テストでしか動かないので、同じ結果になる素朴な加算で足りる。
+        async fn record_login_failure(
+            &self,
+            id: Uuid,
+            lockout: crate::domain::authentication_policy::LockoutPolicy,
+            now: DateTime<Utc>,
+        ) -> DomainResult<crate::domain::user::LoginFailureRecord> {
+            let mut rows = self.rows.lock().unwrap();
+            let Some(row) = rows.iter_mut().find(|u| u.id == id) else {
+                return Ok(crate::domain::user::LoginFailureRecord {
+                    failed_login_count: 0,
+                    locked_until: None,
+                });
+            };
+            row.failed_login_count += 1;
+            if let Some(until) = lockout.locked_until_after_failure(row.failed_login_count, now) {
+                row.locked_until = Some(until);
+            }
+            Ok(crate::domain::user::LoginFailureRecord {
+                failed_login_count: row.failed_login_count,
+                locked_until: row.locked_until.filter(|u| *u > now),
+            })
+        }
         async fn create(&self, _u: &User) -> DomainResult<()> {
             unreachable!()
         }

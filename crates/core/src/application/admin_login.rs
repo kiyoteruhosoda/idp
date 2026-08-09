@@ -611,16 +611,15 @@ impl AdminLoginService {
         ctx: &RequestContext,
     ) -> AdminLoginOutcome {
         let now = self.clock.now();
-        let failed = user.failed_login_count + 1;
-        let locked_until = self.lockout.locked_until_after_failure(failed, now);
-
-        if let Err(e) = self
+        // 加算とロック判定は 1 文の UPDATE に閉じる（SEC13）。
+        let failure = match self
             .users
-            .update_login_state(user.id, failed, locked_until)
+            .record_login_failure(user.id, self.lockout, now)
             .await
         {
-            return AdminLoginOutcome::Internal(e.to_string());
-        }
+            Ok(f) => f,
+            Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
+        };
 
         self.audit
             .record(
@@ -634,7 +633,7 @@ impl AdminLoginService {
             )
             .await;
 
-        if locked_until.is_some() {
+        if failure.is_locked() {
             self.audit
                 .record(
                     AuditEventType::LoginLocked,

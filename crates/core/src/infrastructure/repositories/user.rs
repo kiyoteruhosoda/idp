@@ -1,9 +1,10 @@
 //! `UserRepository` の sqlx 実装。UUID は CHAR(36) 正準文字列として入出力する。
 
+use crate::domain::authentication_policy::LockoutPolicy;
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::UserRepository;
 use crate::domain::tenant::TenantId;
-use crate::domain::user::User;
+use crate::domain::user::{LoginFailureRecord, User};
 use crate::domain::values::UserStatus;
 use crate::infrastructure::db::Db;
 use async_trait::async_trait;
@@ -162,6 +163,56 @@ impl UserRepository for SqlxUserRepository {
             .await
             .map_err(repo_err)?;
         Ok(())
+    }
+
+    async fn record_login_failure(
+        &self,
+        id: Uuid,
+        lockout: LockoutPolicy,
+        now: DateTime<Utc>,
+    ) -> Result<LoginFailureRecord> {
+        // 加算とロック判定を 1 文で行う（SEC13）。読んで書き戻す方式では、並行する試行が同じ値を
+        // 読んで同じ値を書くため、N 回失敗しても 1 しか進まないことがある。
+        //
+        // **代入の順序に意味がある。** MariaDB / MySQL の単一表 UPDATE は SET を左から右へ評価し、
+        // 後続の式は先に更新された列の**新しい値**を見る。`locked_until` を先に置くことで、
+        // その CASE の中の `failed_login_count` は更新前の値を指す（逆順にすると 2 回分進む）。
+        let locked_until = now + chrono::Duration::seconds(lockout.lock_duration_secs as i64);
+        sqlx::query(
+            "UPDATE users \
+                SET locked_until = CASE WHEN failed_login_count + 1 >= ? THEN ? ELSE locked_until END, \
+                    failed_login_count = failed_login_count + 1 \
+              WHERE id = ?",
+        )
+        .bind(lockout.max_failed_attempts)
+        .bind(locked_until.naive_utc())
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(repo_err)?;
+
+        // 記録後の状態を読み直す（MariaDB の UPDATE は RETURNING を持たない）。並行する失敗が
+        // 間に挟まれば、より進んだ値・より新しいロック期限が返る。どちらも「今ロックされているか」の
+        // 判定としては正しく、監査に残る回数が実際の試行数を下回ることも無い。
+        let row = sqlx::query("SELECT failed_login_count, locked_until FROM users WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        let Some(row) = row else {
+            // 記録の途中で利用者が消えた（管理者削除）。ロック判定の対象が無いだけなので、
+            // 「ロックされていない」として扱う。
+            return Ok(LoginFailureRecord {
+                failed_login_count: 0,
+                locked_until: None,
+            });
+        };
+        let locked_until: Option<NaiveDateTime> = row.try_get("locked_until").map_err(repo_err)?;
+        Ok(LoginFailureRecord {
+            failed_login_count: row.try_get("failed_login_count").map_err(repo_err)?,
+            // 期限切れのロックは「掛かっていない」とみなす（読み直しの時点で判定する）。
+            locked_until: locked_until.map(to_utc).filter(|until| *until > now),
+        })
     }
 
     async fn update_password(&self, id: Uuid, password_hash: &str) -> Result<()> {
