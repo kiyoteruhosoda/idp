@@ -156,6 +156,49 @@ mod tests {
         assert!(!html.contains("/admin/logout"), "{html}");
     }
 
+    /// ログイン画面は認可要求の `login_hint` をユーザー名欄の初期値にする（G12）。値は RP が
+    /// 指定した任意の文字列なので、属性値として HTML エスケープされていることまで確かめる。
+    #[test]
+    fn the_login_form_prefills_the_username_from_the_login_hint() {
+        let messages = Messages::new(Locale::Ja);
+        let render_with = |login_hint| {
+            render(&LoginTemplate {
+                messages: &messages,
+                tenant_prefix: "/t",
+                csrf: "csrf-token",
+                error_key: None,
+                login_hint,
+            })
+        };
+
+        /// ユーザー名欄の `<input>` タグだけを切り出す（他の入力欄と取り違えないため）。
+        fn username_input(html: &str) -> String {
+            let start = html.find(r#"id="login-username""#).expect("username input");
+            let end = html[start..].find('>').expect("tag end");
+            html[start..start + end].to_string()
+        }
+
+        let html = render_with(Some("alice@example.com"));
+        assert!(
+            username_input(&html).contains(r#"value="alice@example.com""#),
+            "{html}"
+        );
+
+        // ヒントが無ければ初期値を持たない（空の value も置かない）。
+        let html = render_with(None);
+        assert!(!username_input(&html).contains("value="), "{html}");
+
+        // 属性を閉じて別の属性を差し込む値は、引用符ごとエスケープされて value の中に留まる。
+        let html = render_with(Some(r#"" autofocus onfocus="alert(1)"#));
+        let tag = username_input(&html);
+        assert!(tag.contains("alert(1)"), "the value is kept: {html}");
+        // 引用符がエスケープされるので value 属性は閉じられず、`onfocus="..."` は生えない。
+        assert!(
+            !tag.contains(r#"onfocus=""#),
+            "but never as an attribute: {html}"
+        );
+    }
+
     /// アセット参照はデプロイごとに URL が変わるよう `?v={asset_version}` を必ず付ける
     /// （中間キャッシュ（CDN・ブラウザ）が旧 CSS/JS を配り続けるのを防ぐ）。
     #[test]
@@ -410,6 +453,9 @@ pub struct LoginTemplate<'a> {
     pub tenant_prefix: &'a str,
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
+    /// 認可要求の `login_hint`（G12）。ログイン欄の初期値にするだけの**表示上のヒント**で、
+    /// 実在するアカウントを意味しない（RP が指定した任意の文字列。テンプレートがエスケープする）。
+    pub login_hint: Option<&'a str>,
 }
 
 /// エンドユーザー・ポータルのログイン画面（`GET /{tenant_id}/login`。OIDC の `auth_session` を持たない

@@ -17,6 +17,7 @@ use crate::handlers::{
 };
 use crate::i18n::Messages;
 use crate::language::resolve_language;
+use crate::login_context::load_rp_login_context;
 use crate::security_headers::add_security_headers;
 use crate::state::WebState;
 use crate::templates::{render, MessagePage};
@@ -301,10 +302,17 @@ pub fn build(state: WebState) -> Router {
             post(admin_signing_keys_console::delete),
         )
         // 表示言語の決定（MT20）は tenant 解決より内側で行う。`?lang=` / ユーザー設定 / Cookie /
-        // ブラウザ言語の優先順位をここへ一本化し、各ハンドラは `handlers::locale` を呼ぶだけにする。
+        // `ui_locales` / ブラウザ言語の優先順位をここへ一本化し、各ハンドラは `handlers::locale` を
+        // 呼ぶだけにする。
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             resolve_language,
+        ))
+        // 認可要求が持ち込む文脈（`login_hint` / `ui_locales`。G12）の取り直し。言語決定が
+        // `ui_locales` を読むため、`resolve_language` より外側（＝先に走る）に置く。
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            load_rp_login_context,
         ))
         .route_layer(axum::middleware::from_fn(capture_tenant));
 

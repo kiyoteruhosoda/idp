@@ -2,7 +2,7 @@
 
 use crate::application::audit::RequestContext;
 use crate::application::authorize::{
-    AuthorizeOutcome, AuthorizeRequest, ResumeCommand, ResumeOutcome,
+    AuthorizeOutcome, AuthorizeRequest, LoginContextOutcome, ResumeCommand, ResumeOutcome,
 };
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{AuthorizeParams, OAuthErrorResponse};
@@ -13,7 +13,10 @@ use axum::extract::{Extension, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use idp_contracts::auth::{InternalAuthorizeResumeRequest, InternalAuthorizeResumeResponse};
+use idp_contracts::auth::{
+    InternalAuthorizeLoginContextRequest, InternalAuthorizeLoginContextResponse,
+    InternalAuthorizeResumeRequest, InternalAuthorizeResumeResponse,
+};
 
 /// OIDC 認可エンドポイント。ブラウザ Cookie は読み書きしない（ADR-0018 決定 2）。
 /// 検証成功時は AuthSession を作成し、単回・短命のハンドルを URL に載せて web の `/login` へ 302 する。
@@ -126,4 +129,37 @@ pub async fn authorize_resume(
             InternalAuthorizeResumeResponse::Internal
         }
     }))
+}
+
+/// ログイン画面の文脈（`POST /internal/authorize/login-context`。G12）。
+///
+/// 認可要求が持ち込んだ `login_hint` / `ui_locales` を、web が持つ `auth_session_id` から引き直す。
+/// web は resume の 303 でこれらを手元に残せないため、ログイン画面の描画のたびにここで取り直す。
+pub async fn authorize_login_context(
+    State(state): State<AppState>,
+    Json(req): Json<InternalAuthorizeLoginContextRequest>,
+) -> Result<Json<InternalAuthorizeLoginContextResponse>, Response> {
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    Ok(Json(
+        match state
+            .authorize
+            .login_context(tenant, &req.auth_session_id)
+            .await
+        {
+            LoginContextOutcome::Ok {
+                login_hint,
+                ui_locales,
+            } => InternalAuthorizeLoginContextResponse::Ok {
+                login_hint,
+                ui_locales,
+            },
+            LoginContextOutcome::SessionExpired => {
+                InternalAuthorizeLoginContextResponse::SessionExpired
+            }
+            LoginContextOutcome::Internal(e) => {
+                tracing::error!(error = %e, "authorize login-context failed with internal error");
+                InternalAuthorizeLoginContextResponse::Internal
+            }
+        },
+    ))
 }

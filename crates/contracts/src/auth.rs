@@ -62,6 +62,39 @@ pub enum InternalAuthorizeResumeResponse {
     Internal,
 }
 
+/// ログイン画面の文脈取得 API（`POST /internal/authorize/login-context`。G12）のリクエスト。
+///
+/// `/authorize` が受け取った `login_hint` / `ui_locales` は auth_session に保存されるが、web は
+/// resume の 303（ハンドルを URL から外す付け替え）で状態を落とすため、ログイン画面の描画時に
+/// 手元へ残っていない。web は host-only `auth_session_id` Cookie の値を渡して取り直す。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAuthorizeLoginContextRequest {
+    /// フローのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する。
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    /// web の host-only `auth_session_id` Cookie の値。
+    pub auth_session_id: String,
+}
+
+/// ログイン画面の文脈取得 API のレスポンス。`result` タグで判別する。
+///
+/// 認可要求が持ち込んだ**表示上のヒントだけ**を返す（利用者・資格情報・同意状態は含めない）。
+/// `login_hint` は RP が指定した任意の文字列であり、実在するアカウントを意味しない。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAuthorizeLoginContextResponse {
+    Ok {
+        /// `login_hint`（ログイン欄のプリフィル用。未指定は `None`）。
+        login_hint: Option<String>,
+        /// `ui_locales`（空白区切りの BCP47 タグ。未指定は `None`）。
+        ui_locales: Option<String>,
+    },
+    /// `auth_session_id` が無効・期限切れ（web は文脈なしで描画を続ける）。
+    SessionExpired,
+    /// api 内部エラー。
+    Internal,
+}
+
 /// SAML SSO 再開 API（`POST /internal/saml/resume`）のリクエスト。
 ///
 /// api の `/{tenant_id}/saml/sso` は AuthnRequest を検証して web の `/saml/continue` へ

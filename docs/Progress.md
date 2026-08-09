@@ -44,7 +44,7 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 | 5 | AP11 | AP9 の contract フェーズ（TOTP/WebAuthn の秘密を `user_authenticators` へ集約し、`user_totp_secrets` / `user_webauthn_credentials` を撤去）（⬜未着手） | 中 | 中 | 小 | 中 |
 | 5 | AP12 | SAML 外部 IdP（AP10 は OIDC のみ実装。`external_identity_providers` の protocol 拡張が要る）（⬜未着手） | 大 | 中 | 小 | 大 |
 | 5 | G11 | web crate に統合テストが無い（`crates/web/tests/` 不在。ルータ経由の検証は `scripts/e2e.sh` 頼み）（⬜未着手） | 中 | 中 | 小 | 中 |
-| 5 | G12 | `/authorize` の任意パラメータの残り（`login_hint`・`ui_locales` を web が消費していない。`id_token_hint`・`response_mode=form_post`・`prompt=select_account` 未対応）（🚧進行中） | 中 | 中 | 小 | 中 |
+| 5 | G12 | `/authorize` の任意パラメータの残り（`id_token_hint`・`response_mode=form_post`・`prompt=select_account` 未対応。`login_hint`・`ui_locales` は対応済み）（🚧進行中） | 中 | 中 | 小 | 中 |
 | 3 | SEC10 | `/token`・`/introspect`・`/revoke` にレート制限が無い（Argon2 増幅型 DoS）（⬜未着手） | 小 | 小 | 中 | 小 |
 | 3 | AP6 | アカウントロックの管理者解除（仕様 §17.1・§24.6。`locked_until` を即時クリアする管理操作。現状は期限経過待ちのみ）と段階的ロック（⬜未着手） | 小 | 小 | 中 | 小 |
 | 3 | G3 | `client_secret_post` 未対応（`client_secret_basic` / `none` のみ。RP ライブラリ既定との相互運用性）（⬜未着手） | 小 | 中 | 小 | 小 |
@@ -214,13 +214,9 @@ web はログイン・同意・MFA・パスキー・管理コンソールとい�
 `acr_values`・`login_hint`・`ui_locales` は `/authorize` が受け付けて `auth_sessions` へ保存する
 ところまで実装済み（AP3 と同じ 0028）。Discovery の広告（`response_modes_supported`・
 `prompt_values_supported`・`request_parameter_supported`・`claims_parameter_supported`・
-`acr_values_supported`・`ui_locales_supported`）も出している。残っているのは:
+`acr_values_supported`・`ui_locales_supported`）も出している。`login_hint` / `ui_locales` の
+web での消費も対応済み（`CHANGELOG.md` 参照）。残っているのは:
 
-- **`login_hint` / `ui_locales` を web が消費していない。** 保存はされるが、ログイン画面の
-  ユーザー名プリフィルにも表示言語の決定にも使われていない。web は resume の 303 で状態を
-  落とすため、ログイン画面の描画時に api から取り直す口（例 `/internal/authorize/login-context`）が要る。
-  `ui_locales` を採用する場合は CLAUDE.md「国際化」の言語決定順の表にも位置づけを追記する
-  （利用者自身の明示的な選択より下、ブラウザ `Accept-Language` より上が妥当）。
 - **`id_token_hint`** — `/logout`（RP-initiated logout）で未使用。`post_logout_redirect_uri` の
   検証を id_token_hint に紐づけられない。
 - **`response_mode=form_post`** — 現状 `query` 固定。最終リダイレクトを組み立てるのは web 側の

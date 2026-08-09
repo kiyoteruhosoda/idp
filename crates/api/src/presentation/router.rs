@@ -33,6 +33,11 @@ pub fn build(state: AppState) -> Router {
             "/internal/authorize/resume",
             post(authorize::authorize_resume),
         )
+        // ログイン画面の文脈（`login_hint` / `ui_locales` の引き直し。G12）。
+        .route(
+            "/internal/authorize/login-context",
+            post(authorize::authorize_login_context),
+        )
         // SAML SSO フローの再開（web ハンドオフのハンドル交換 + SSO 判定 + 応答発行）。
         .route("/internal/saml/resume", post(saml_sso::saml_resume))
         // RP-initiated logout（end_session_endpoint は web。api は失効・通知・URL 組み立てを担う）。

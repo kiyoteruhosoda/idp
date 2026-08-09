@@ -19,6 +19,7 @@ pub mod error_pages;
 pub mod handlers;
 pub mod i18n;
 pub mod language;
+pub mod login_context;
 pub mod router;
 pub mod security_headers;
 pub mod service_restart;

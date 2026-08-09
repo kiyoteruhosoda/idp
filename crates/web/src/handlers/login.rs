@@ -15,6 +15,7 @@ use crate::correlation::CorrelationId;
 use crate::dto::{LoginForm, LoginPageQuery};
 use crate::handlers::{form_retry_error_key, forwarded_context, found, portal, see_other};
 use crate::i18n::Messages;
+use crate::login_context::RpLoginContext;
 use crate::state::WebState;
 use crate::templates::{render, LoginTemplate, MessagePage};
 use crate::tenant::WebTenant;
@@ -36,6 +37,7 @@ pub async fn login_page(
     Extension(correlation): Extension<CorrelationId>,
     Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
+    Extension(rp_context): Extension<RpLoginContext>,
     headers: HeaderMap,
     Query(query): Query<LoginPageQuery>,
 ) -> Response {
@@ -68,6 +70,8 @@ pub async fn login_page(
         &tenant.prefix(),
         &login_csrf_token(&auth_session_id, state.config.csrf_secret()),
         error_key,
+        // 認可要求の `login_hint` をユーザー名欄へ入れる（G12）。空文字は初期値にしない。
+        rp_context.login_hint.as_deref().filter(|h| !h.is_empty()),
     ))
     .into_response()
 }
@@ -195,12 +199,14 @@ fn render_form(
     tenant_prefix: &str,
     csrf: &str,
     error_key: Option<&str>,
+    login_hint: Option<&str>,
 ) -> String {
     render(&LoginTemplate {
         messages,
         tenant_prefix,
         csrf,
         error_key,
+        login_hint,
     })
 }
 
@@ -414,6 +420,9 @@ fn reshow_form(
                 tenant_prefix,
                 &login_csrf_token(id, csrf_secret),
                 Some(error_key),
+                // 再表示では `login_hint` を入れ直さない（利用者が別の識別子を入れて失敗した
+                // 場合に、RP の指定へ黙って戻すと入力し直しに気付けない）。
+                None,
             )),
         )
             .into_response(),
