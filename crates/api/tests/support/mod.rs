@@ -346,6 +346,16 @@ pub async fn insert_m2m_client(
     tenant_id: &str,
     scopes: &[&str],
 ) -> (String, String) {
+    insert_m2m_client_with_auth_method(pool, tenant_id, scopes, "client_secret_basic").await
+}
+
+/// [`insert_m2m_client`] と同じだが、クライアント認証方式を指定する（G3）。
+pub async fn insert_m2m_client_with_auth_method(
+    pool: &MySqlPool,
+    tenant_id: &str,
+    scopes: &[&str],
+    auth_method: &str,
+) -> (String, String) {
     let client_id = format!("it-m2m-{}", unique());
     let secret = "e2e-super-secret-value";
     let secret_hash = Argon2PasswordHasher::new()
@@ -356,8 +366,7 @@ pub async fn insert_m2m_client(
          client_status, app_name, redirect_uris, grant_types, response_types, scopes, \
          token_endpoint_auth_method) \
          VALUES (?, ?, ?, ?, 'confidential', 'ACTIVE', 'Integration M2M App', ?, \
-         '[\"authorization_code\", \"client_credentials\"]', '[\"code\"]', ?, \
-         'client_secret_basic')",
+         '[\"authorization_code\", \"client_credentials\"]', '[\"code\"]', ?, ?)",
     )
     .bind(uuid::Uuid::now_v7().to_string())
     .bind(tenant_id)
@@ -365,6 +374,7 @@ pub async fn insert_m2m_client(
     .bind(secret_hash)
     .bind(json!([REDIRECT_URI]).to_string())
     .bind(json!(scopes).to_string())
+    .bind(auth_method)
     .execute(pool)
     .await
     .expect("insert m2m client");

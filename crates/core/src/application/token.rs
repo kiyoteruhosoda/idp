@@ -12,6 +12,7 @@
 //!   取り違えないよう `sub_type` クレームで明示する。
 
 use crate::application::audit::{AuditService, RequestContext};
+use crate::application::client_authentication::{ClientAuthFailure, PresentedClientCredentials};
 use crate::application::key_service::KeyService;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::client::Client;
@@ -27,7 +28,7 @@ use crate::domain::repositories::{
     AuthorizationCodeRepository, ClientRepository, RefreshTokenRepository, UserRepository,
 };
 use crate::domain::tenant_context::TenantContext;
-use crate::domain::values::{ClientType, Scope, TokenEndpointAuthMethod};
+use crate::domain::values::Scope;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -99,10 +100,8 @@ pub struct TokenCommand {
     pub code: Option<String>,
     pub redirect_uri: Option<String>,
     pub code_verifier: Option<String>,
-    /// body の `client_id`（public client では必須）。
-    pub client_id: Option<String>,
-    /// `Authorization: Basic` から取り出した `(client_id, client_secret)`。
-    pub basic_credentials: Option<(String, String)>,
+    /// 提示されたクライアント資格情報（`Authorization: Basic` / body の `client_id`・`client_secret`）。
+    pub credentials: PresentedClientCredentials,
     /// `refresh_token` grant 専用。
     pub refresh_token: Option<String>,
     /// `client_credentials` grant で要求する scope（空白区切り）。省略時はクライアントの登録 scope
@@ -731,7 +730,10 @@ impl TokenService {
             .map_err(|e| internal(&e))
     }
 
-    /// クライアント認証（設計仕様 §4.4）。
+    /// クライアント認証（設計仕様 §4.4、RFC 6749 §2.3.1）。
+    ///
+    /// 照合する secret の選択（Basic か body か）は登録された `token_endpoint_auth_method` が
+    /// 決める（`client_authentication` に集約。G3）。ここが担うのはハッシュ照合と監査記録。
     async fn authenticate_client(
         &self,
         tenant: TenantContext,
@@ -739,46 +741,31 @@ impl TokenService {
         cmd: &TokenCommand,
         ctx: &RequestContext,
     ) -> Result<(), TokenError> {
-        match client.client_type {
-            ClientType::Confidential => {
-                let Some((_, secret)) = &cmd.basic_credentials else {
-                    return Err(self
-                        .client_auth_failed(
-                            tenant,
-                            &client.client_id,
-                            "missing_basic_credentials",
-                            ctx,
-                        )
-                        .await);
-                };
-                if client.token_endpoint_auth_method != TokenEndpointAuthMethod::ClientSecretBasic {
-                    return Err(self
-                        .client_auth_failed(
-                            tenant,
-                            &client.client_id,
-                            "unsupported_auth_method",
-                            ctx,
-                        )
-                        .await);
-                }
-                let Some(secret_hash) = &client.client_secret_hash else {
-                    return Err(self
-                        .client_auth_failed(tenant, &client.client_id, "client_has_no_secret", ctx)
-                        .await);
-                };
-                let ok = self
-                    .hasher
-                    .verify(secret, secret_hash)
-                    .map_err(|e| internal(&e))?;
-                if !ok {
-                    return Err(self
-                        .client_auth_failed(tenant, &client.client_id, "invalid_client_secret", ctx)
-                        .await);
-                }
-                Ok(())
+        let secret = match cmd.credentials.secret_for(client) {
+            Ok(Some(secret)) => secret,
+            // public client（`none`）は認証なしで通す。
+            Ok(None) => return Ok(()),
+            Err(failure) => {
+                return Err(self
+                    .client_auth_failed(tenant, &client.client_id, failure.as_str(), ctx)
+                    .await)
             }
-            ClientType::Public => Ok(()),
+        };
+        let Some(secret_hash) = &client.client_secret_hash else {
+            return Err(self
+                .client_auth_failed(tenant, &client.client_id, "client_has_no_secret", ctx)
+                .await);
+        };
+        let ok = self
+            .hasher
+            .verify(secret, secret_hash)
+            .map_err(|e| internal(&e))?;
+        if !ok {
+            return Err(self
+                .client_auth_failed(tenant, &client.client_id, "invalid_client_secret", ctx)
+                .await);
         }
+        Ok(())
     }
 
     async fn load_active_client(
@@ -849,14 +836,20 @@ impl TokenService {
 
 /// client_id を Basic ヘッダ優先で解決する。
 fn resolve_client_id(cmd: &TokenCommand) -> Result<String, TokenError> {
-    match (&cmd.basic_credentials, &cmd.client_id) {
-        (Some((basic_id, _)), Some(body_id)) if basic_id != body_id => Err(TokenError::new(
+    // RFC 6749 §2.3.1: 1 リクエストで複数の認証方式を使ってはならない（G3）。client を引く前に弾く。
+    cmd.credentials.ensure_single_method().map_err(|_| {
+        TokenError::new(
+            OAuthErrorCode::InvalidRequest,
+            "client credentials must be presented with a single authentication method",
+        )
+    })?;
+    match cmd.credentials.resolve_client_id() {
+        Ok(client_id) => Ok(client_id.to_string()),
+        Err(ClientAuthFailure::ClientIdMismatch) => Err(TokenError::new(
             OAuthErrorCode::InvalidRequest,
             "client_id mismatch between Authorization header and body",
         )),
-        (Some((basic_id, _)), _) => Ok(basic_id.clone()),
-        (None, Some(body_id)) if !body_id.is_empty() => Ok(body_id.clone()),
-        _ => Err(TokenError::new(
+        Err(_) => Err(TokenError::new(
             OAuthErrorCode::InvalidClient,
             "client authentication is required",
         )),

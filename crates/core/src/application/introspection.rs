@@ -1,10 +1,12 @@
 //! Token イントロスペクションエンドポイントのユースケース（F5: RFC 7662）。
 //!
-//! - confidential client の `client_secret_basic` 認証が必須（public client は使用不可）。
+//! - confidential client の認証が必須（public client は使用不可）。方式は `/token` と同じく
+//!   クライアントの登録値（`client_secret_basic` / `client_secret_post`）に従う。
 //! - access_token: JWT を検証（署名・iss・aud・exp）し、jti を失効リストと照合する。
 //! - refresh_token: DB で有効性（未失効・期限内）を確認する。
 //! - 不正トークン・不存在は `{ "active": false }` を返す（エラーにしない）。
 
+use crate::application::client_authentication::PresentedClientCredentials;
 use crate::application::token::{userinfo_audience, AccessTokenClaims};
 use crate::domain::client::Client;
 use crate::domain::clock::Clock;
@@ -18,7 +20,6 @@ use crate::domain::repositories::{
     UserRepository,
 };
 use crate::domain::tenant_context::TenantContext;
-use crate::domain::values::TokenEndpointAuthMethod;
 use jsonwebtoken::{Algorithm, Validation};
 use serde::Serialize;
 use std::sync::Arc;
@@ -124,17 +125,18 @@ impl IntrospectionService {
         tenant: TenantContext,
         token: &str,
         token_type_hint: Option<&str>,
-        client_id: &str,
-        basic_credentials: Option<(&str, &str)>,
+        credentials: &PresentedClientCredentials,
     ) -> Result<IntrospectionResponse, IntrospectionError> {
+        // confidential client 認証（必須。フローのテナントに属する client のみ解決する）。
+        // トークンの有無に関わらず先に認証する（未認証の相手に「トークンが空かどうか」だけを
+        // 別の応答で返す意味は無く、RFC 7662 §2.1 も認証を必須と定める）。
+        let client = self
+            .authenticate_confidential_client(tenant, credentials)
+            .await?;
+
         if token.is_empty() {
             return Ok(IntrospectionResponse::inactive());
         }
-
-        // confidential client 認証（必須。フローのテナントに属する client のみ解決する）。
-        let client = self
-            .authenticate_confidential_client(tenant, client_id, basic_credentials)
-            .await?;
 
         // `iss` はテナント毎に合成する（発行テナントに束縛。ADR-0009 §6）。
         let issuer = tenant_issuer(&self.base_issuer, tenant.tenant_id());
@@ -328,13 +330,26 @@ impl IntrospectionService {
         }
     }
 
-    /// confidential client のみ認証を許可する（RFC 7662 §2.1）。
+    /// confidential client のみ認証を許可する（RFC 7662 §2.1）。方式は `/token` と同じ
+    /// （`client_secret_basic` / `client_secret_post`。G3）。
     async fn authenticate_confidential_client(
         &self,
         tenant: TenantContext,
-        client_id: &str,
-        basic_credentials: Option<(&str, &str)>,
+        credentials: &PresentedClientCredentials,
     ) -> Result<Client, IntrospectionError> {
+        credentials.ensure_single_method().map_err(|_| {
+            IntrospectionError::new(
+                OAuthErrorCode::InvalidRequest,
+                "client credentials must be presented with a single authentication method",
+            )
+        })?;
+        let client_id = credentials.resolve_client_id().map_err(|_| {
+            IntrospectionError::new(
+                OAuthErrorCode::InvalidClient,
+                "client authentication is required for introspection",
+            )
+        })?;
+
         let client = self
             .clients
             .find_by_client_id(tenant.tenant_id(), client_id)
@@ -351,25 +366,24 @@ impl IntrospectionService {
             ));
         }
 
-        if client.token_endpoint_auth_method != TokenEndpointAuthMethod::ClientSecretBasic {
-            return Err(IntrospectionError::new(
-                OAuthErrorCode::InvalidClient,
-                "introspection requires confidential client (client_secret_basic)",
-            ));
-        }
+        // public client は使用不可（RFC 7662 §2.1）。`secret_for` は public を `Ok(None)` で
+        // 素通しするため、ここで先に弾く。
+        let secret = match credentials.secret_for(&client) {
+            Ok(Some(secret)) => secret,
+            Ok(None) => {
+                return Err(IntrospectionError::new(
+                    OAuthErrorCode::InvalidClient,
+                    "introspection requires a confidential client",
+                ))
+            }
+            Err(_) => {
+                return Err(IntrospectionError::new(
+                    OAuthErrorCode::InvalidClient,
+                    "client authentication failed",
+                ))
+            }
+        };
 
-        let (cid, secret) = basic_credentials.ok_or_else(|| {
-            IntrospectionError::new(
-                OAuthErrorCode::InvalidClient,
-                "client_secret_basic authentication required",
-            )
-        })?;
-        if cid != client_id {
-            return Err(IntrospectionError::new(
-                OAuthErrorCode::InvalidClient,
-                "client_id mismatch",
-            ));
-        }
         let hash = client.client_secret_hash.as_deref().ok_or_else(|| {
             IntrospectionError::new(OAuthErrorCode::InvalidClient, "client has no secret")
         })?;

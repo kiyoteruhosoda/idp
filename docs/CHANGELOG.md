@@ -1,3 +1,26 @@
+## 2026-08-09（G3: `client_secret_post` に対応）
+
+- **トークン系エンドポイントのクライアント認証に `client_secret_post` を追加した（G3。migration 0030）。**
+  従来は `Authorization: Basic`（`client_secret_basic`）だけを受け付けていた。RFC 6749 §2.3.1 は
+  Basic を推奨しつつ body での提示も認めており、実際の RP ライブラリ・SaaS 連携には
+  `client_secret_post` を既定にするものが多い。方式が合わないだけで連携できない状態を解消した。
+  - **どちらを使うかはクライアントの登録値（`token_endpoint_auth_method`）が決める。** 両方を常時
+    受け付ける実装にはしない —— そうすると `token_endpoint_auth_method` が「設定できるが効かない
+    値」になり、Basic 前提で登録した RP の secret が body 経由でも通ってしまう。confidential
+    クライアントの登録・編集（管理 API・管理コンソール）で選べるようにし、既定は
+    `client_secret_basic` のまま。`none` は confidential では選べない（secret を持ったまま
+    認証が外れるため）。
+  - **1 リクエストで両方を提示したら `invalid_request`**（§2.3.1）。片方だけ照合すると「Basic には
+    誤った secret、body には正しい secret」のような要求で、どちらが検証されたのかリクエストから
+    決められなくなる。
+  - **`/token` だけでなく `/introspect`・`/revoke` も同じ方式**（RFC 7009 §2.1・RFC 7662 §2.1）。
+    3 経路に散っていた Basic ヘッダの復号と方式判定を、`presentation::client_auth`（取り出し）と
+    `application::client_authentication`（どの secret を照合するかの選択）へ集約した。方式を
+    増やしたときに取りこぼす経路が出ないようにするため。
+  - Discovery に `token_endpoint_auth_methods_supported` の更新と、
+    `revocation_endpoint_auth_methods_supported`・`introspection_endpoint_auth_methods_supported`
+    を追加した。
+
 ## 2026-08-09（G12: `login_hint` / `ui_locales` を web が消費する）
 
 - **認可要求の `login_hint` / `ui_locales` をログイン画面へ反映した（G12）。** どちらも

@@ -195,3 +195,106 @@ async fn admin_can_manage_clients_but_others_cannot() {
     .await;
     assert_eq!(res.status(), StatusCode::NOT_FOUND, "missing client -> 404");
 }
+
+/// クライアント認証方式（G3）。confidential は `client_secret_post` を選べ、あとから切り替えられる。
+/// `none`（＝認証なし）と public への指定は拒否する。
+#[tokio::test]
+async fn confidential_clients_can_choose_the_client_authentication_method() {
+    let Some(env) = support::setup("admin clients auth method").await else {
+        return;
+    };
+    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let clients_uri = format!("/{}/admin/clients", env.root_tenant_id);
+
+    // 登録時に client_secret_post を選べる。
+    let res = send(
+        &env.app,
+        post(
+            &admin_cookie,
+            &clients_uri,
+            json!({
+                "app_name": "Post Auth App",
+                "client_type": "confidential",
+                "redirect_uris": [REDIRECT_URI],
+                "scopes": ["openid"],
+                "token_endpoint_auth_method": "client_secret_post",
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let created = body_json(res).await;
+    assert_eq!(created["token_endpoint_auth_method"], "client_secret_post");
+    let client_id = created["client_id"].as_str().unwrap().to_string();
+
+    // あとから client_secret_basic へ戻せる（secret はそのまま。提示場所だけが変わる）。
+    let res = send(
+        &env.app,
+        patch(
+            &admin_cookie,
+            &format!("{clients_uri}/{client_id}"),
+            json!({ "token_endpoint_auth_method": "client_secret_basic" }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(res).await["token_endpoint_auth_method"],
+        "client_secret_basic"
+    );
+
+    // `none` は confidential では選べない（secret を持ったまま認証が外れるため）。
+    let res = send(
+        &env.app,
+        patch(
+            &admin_cookie,
+            &format!("{clients_uri}/{client_id}"),
+            json!({ "token_endpoint_auth_method": "none" }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+    // 未知の値も拒否する。
+    let res = send(
+        &env.app,
+        patch(
+            &admin_cookie,
+            &format!("{clients_uri}/{client_id}"),
+            json!({ "token_endpoint_auth_method": "private_key_jwt" }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+    // public クライアントには設定できない。
+    let res = send(
+        &env.app,
+        post(
+            &admin_cookie,
+            &clients_uri,
+            json!({
+                "app_name": "Public App",
+                "client_type": "public",
+                "redirect_uris": [REDIRECT_URI],
+                "scopes": ["openid"],
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let public_client_id = body_json(res).await["client_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = send(
+        &env.app,
+        patch(
+            &admin_cookie,
+            &format!("{clients_uri}/{public_client_id}"),
+            json!({ "token_endpoint_auth_method": "client_secret_post" }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}

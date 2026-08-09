@@ -4,6 +4,7 @@
 //! 共通 DTO は `dto`、エラー変換は `error`。
 
 pub mod admin;
+pub mod client_auth;
 pub mod cookies;
 pub mod correlation;
 pub mod cors;

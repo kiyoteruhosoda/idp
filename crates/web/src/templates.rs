@@ -824,6 +824,8 @@ pub struct ClientFormValues {
     pub client_status: String,
     /// サーバ間（M2M）連携で `client_credentials` grant を許可するか（G4）。
     pub allow_client_credentials: bool,
+    /// クライアント認証方式（G3）。confidential のみ選択でき、public は常に `none`。
+    pub token_endpoint_auth_method: String,
 }
 
 impl ClientFormValues {
@@ -836,6 +838,7 @@ impl ClientFormValues {
             scopes: "openid".to_string(),
             client_status: "ACTIVE".to_string(),
             allow_client_credentials: false,
+            token_endpoint_auth_method: "client_secret_basic".to_string(),
         }
     }
 
@@ -849,6 +852,7 @@ impl ClientFormValues {
             client_status: c.client_status.clone(),
             // 許可の真の出所は api が返す `grant_types`（G4）。フォームはその写しを表示する。
             allow_client_credentials: c.grant_types.iter().any(|g| g == "client_credentials"),
+            token_endpoint_auth_method: c.token_endpoint_auth_method.clone(),
         }
     }
 }

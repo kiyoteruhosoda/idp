@@ -171,8 +171,8 @@ sequenceDiagram
 - **認可エンドポイント** `GET /authorize` — 認可リクエスト検証（client・redirect_uri 完全一致・
   scope・state/nonce 必須・PKCE S256）。有効な SSO セッションがあれば再ログインなしで
   authorization code を発行し、なければログイン画面へ誘導する
-- **トークンエンドポイント** `POST /token` — クライアント認証（confidential は
-  `client_secret_basic`、public は認証なし）、authorization code の**原子的 one-time 消費**
+- **トークンエンドポイント** `POST /token` — クライアント認証（confidential は登録した方式＝
+  `client_secret_basic` / `client_secret_post`、public は認証なし）、authorization code の**原子的 one-time 消費**
   （再利用は `invalid_grant` として検知）、PKCE 検証、ID Token / Access Token の発行
 - **UserInfo** `GET /userinfo` — Bearer の Access Token（`typ=at+jwt`）を検証し、
   scope に応じたクレームのみ返却（`openid`→`sub` / `email`→`email`, `email_verified` /

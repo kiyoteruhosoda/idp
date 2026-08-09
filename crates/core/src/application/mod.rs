@@ -17,6 +17,7 @@ pub mod authenticator_management;
 pub mod authorize;
 pub mod backchannel_logout;
 pub mod change_password;
+pub mod client_authentication;
 pub mod client_management;
 pub mod client_status;
 pub mod code_issuance;

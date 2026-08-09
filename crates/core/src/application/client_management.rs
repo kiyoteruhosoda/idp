@@ -37,6 +37,9 @@ pub struct RegisterClientCommand {
     /// サーバ間（M2M）連携で `client_credentials` grant を使えるようにするか（G4。既定 false）。
     /// public client は資格情報を秘匿できないため、指定されても無効のまま登録する。
     pub allow_client_credentials: bool,
+    /// confidential client のクライアント認証方式（G3）。`None` は既定の `client_secret_basic`。
+    /// public client には適用しない（常に `none`）。
+    pub token_endpoint_auth_method: Option<TokenEndpointAuthMethod>,
     /// RP-initiated logout 後のリダイレクト先（任意）。F4。
     pub post_logout_redirect_uris: Vec<String>,
     /// front-channel logout URI（任意）。F4。
@@ -60,6 +63,8 @@ pub struct UpdateClientCommand {
     pub backchannel_logout_uri: Option<Option<String>>,
     /// `client_credentials` grant の許可（G4）。public client には適用しない。
     pub allow_client_credentials: Option<bool>,
+    /// クライアント認証方式の変更（G3）。confidential client のみ。
+    pub token_endpoint_auth_method: Option<TokenEndpointAuthMethod>,
 }
 
 /// 登録結果。`client_secret` は confidential のときのみ平文で返る（保存はハッシュのみ）。
@@ -123,22 +128,19 @@ impl ClientManagementService {
         let backchannel_logout_uri = validate_backchannel_logout_uri(cmd.backchannel_logout_uri)?;
 
         // client 種別に応じて認証方式・secret を決める。
-        // public: 認証なし・secret なし。confidential: client_secret_basic・secret 発行。
+        // public: 認証なし・secret なし。confidential: secret 発行 + 提示方式の選択（G3）。
         // PKCE（S256）は種別によらず `/authorize`・`/token` が無条件に要求する（クライアント単位の
         // 設定は持たない。SEC12 で「実際には参照されない設定」を削除した）。
         let (auth_method, secret_plain, secret_hash) = match cmd.client_type {
             ClientType::Public => (TokenEndpointAuthMethod::None, None, None),
             ClientType::Confidential => {
+                let method = validate_confidential_auth_method(cmd.token_endpoint_auth_method)?;
                 let plain = crate::domain::crypto::random_token(CLIENT_SECRET_BYTES);
                 let hash = self
                     .hasher
                     .hash(&plain)
                     .map_err(|e| ClientManagementError::Internal(e.to_string()))?;
-                (
-                    TokenEndpointAuthMethod::ClientSecretBasic,
-                    Some(plain),
-                    Some(hash),
-                )
+                (method, Some(plain), Some(hash))
             }
         };
 
@@ -241,6 +243,16 @@ impl ClientManagementService {
         if let Some(allow) = cmd.allow_client_credentials {
             client.grant_types = grant_types_for(client.client_type, allow);
         }
+        // 認証方式の変更は confidential のみ（G3）。public は secret を持たないため `none` 固定で、
+        // 指定は黙って無視せず拒否する（「変えたつもりで変わっていない」状態を作らない）。
+        if let Some(method) = cmd.token_endpoint_auth_method {
+            if client.client_type != ClientType::Confidential {
+                return Err(ClientManagementError::Validation(MessageKey::new(
+                    "api-client-auth-method-public",
+                )));
+            }
+            client.token_endpoint_auth_method = validate_confidential_auth_method(Some(method))?;
+        }
 
         self.clients
             .update(&client)
@@ -322,6 +334,28 @@ impl ClientManagementService {
 /// `authorization_code` は全クライアント共通の基本許可。`client_credentials` は confidential かつ
 /// 管理者が明示的に有効化したときだけ足す（public client は指定されても付けない）。`refresh_token`
 /// は `offline_access` scope の同意で制御しており grant_types では絞らない（従来どおり）。
+/// confidential client のクライアント認証方式を検証する（G3）。
+///
+/// 省略時は RFC 6749 §2.3.1 が推奨する `client_secret_basic`。`none`（＝認証なし）は
+/// confidential では選べない —— 選べてしまうと secret を持ったまま誰でも `/token` を叩ける
+/// クライアントが管理画面から作れてしまう。
+fn validate_confidential_auth_method(
+    requested: Option<TokenEndpointAuthMethod>,
+) -> Result<TokenEndpointAuthMethod, ClientManagementError> {
+    match requested {
+        None => Ok(TokenEndpointAuthMethod::ClientSecretBasic),
+        Some(TokenEndpointAuthMethod::ClientSecretBasic) => {
+            Ok(TokenEndpointAuthMethod::ClientSecretBasic)
+        }
+        Some(TokenEndpointAuthMethod::ClientSecretPost) => {
+            Ok(TokenEndpointAuthMethod::ClientSecretPost)
+        }
+        Some(TokenEndpointAuthMethod::None) => Err(ClientManagementError::Validation(
+            MessageKey::new("api-client-auth-method-invalid"),
+        )),
+    }
+}
+
 fn grant_types_for(client_type: ClientType, allow_client_credentials: bool) -> Vec<String> {
     let mut grants = vec![GrantType::AuthorizationCode.as_str().to_string()];
     if allow_client_credentials && client_type == ClientType::Confidential {

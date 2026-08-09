@@ -93,6 +93,9 @@ pub struct NewClientForm {
     /// チェックボックスは「チェック時のみ送られる」ため `Option<String>` で受ける（G4）。
     #[serde(default)]
     pub allow_client_credentials: Option<String>,
+    /// クライアント認証方式（G3）。select は confidential のときだけ描画されるため任意で受ける。
+    #[serde(default)]
+    pub token_endpoint_auth_method: Option<String>,
     pub csrf_token: String,
 }
 
@@ -111,6 +114,7 @@ pub async fn create(
         scopes: form.scopes.clone(),
         client_status: "ACTIVE".to_string(),
         allow_client_credentials: form.allow_client_credentials.is_some(),
+        token_endpoint_auth_method: auth_method_or_default(&form.token_endpoint_auth_method),
     };
 
     // Messages（FluentBundle）は Send でないため、api の await をまたいで保持しない（login.rs と同じ理由）。
@@ -133,6 +137,9 @@ pub async fn create(
         "redirect_uris": parse_uris(&form.redirect_uris),
         "scopes": parse_scopes(&form.scopes),
         "allow_client_credentials": form.allow_client_credentials.is_some(),
+        // public を選んだときは select 自体が描画されないため送られない。api は未指定を
+        // 「既定のまま」と解釈する（public は常に `none`）。
+        "token_endpoint_auth_method": form.token_endpoint_auth_method,
     });
     // api のバリデーション/競合メッセージをこの画面へ出すため、決定言語を引き継ぐ（MT20）。
     let result = state
@@ -218,6 +225,9 @@ pub struct EditClientForm {
     pub client_status: String,
     #[serde(default)]
     pub allow_client_credentials: Option<String>,
+    /// クライアント認証方式（G3）。confidential のときだけ送られる。
+    #[serde(default)]
+    pub token_endpoint_auth_method: Option<String>,
     pub csrf_token: String,
 }
 
@@ -252,6 +262,9 @@ pub async fn update(
     values.redirect_uris = form.redirect_uris.clone();
     values.scopes = form.scopes.clone();
     values.client_status = form.client_status.clone();
+    if let Some(method) = form.token_endpoint_auth_method.as_deref() {
+        values.token_endpoint_auth_method = method.to_string();
+    }
 
     if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
         let messages = Messages::new(locale(&headers));
@@ -274,6 +287,7 @@ pub async fn update(
         "scopes": parse_scopes(&form.scopes),
         "client_status": form.client_status,
         "allow_client_credentials": form.allow_client_credentials.is_some(),
+        "token_endpoint_auth_method": form.token_endpoint_auth_method,
     });
     let result = state
         .api
@@ -357,6 +371,14 @@ pub async fn rotate_secret(
 
 fn parse_uris(raw: &str) -> Vec<String> {
     raw.split_whitespace().map(str::to_string).collect()
+}
+
+/// 再表示用のフォーム値。未送信（public を選んだ場合）は既定の `client_secret_basic` を出す。
+fn auth_method_or_default(raw: &Option<String>) -> String {
+    raw.as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("client_secret_basic")
+        .to_string()
 }
 
 fn parse_scopes(raw: &str) -> Vec<String> {

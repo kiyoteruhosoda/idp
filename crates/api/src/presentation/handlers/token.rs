@@ -2,6 +2,7 @@
 
 use crate::application::token::{TokenCommand, TokenError};
 use crate::domain::error::OAuthErrorCode;
+use crate::presentation::client_auth::{presented_credentials, unauthorized};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{OAuthErrorResponse, TokenRequest, TokenResponse};
 use crate::presentation::handlers::request_context;
@@ -11,11 +12,9 @@ use axum::extract::{Extension, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Form, Json};
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine;
-use percent_encoding::percent_decode_str;
 
-/// トークン発行。confidential client は `client_secret_basic`、public client は認証なし。
+/// トークン発行。confidential client は登録した方式（`client_secret_basic` / `client_secret_post`）、
+/// public client は認証なし。
 #[utoipa::path(
     post,
     path = "/{tenant_id}/token",
@@ -40,9 +39,9 @@ pub async fn token(
         state.config.trust_forwarded_headers(),
     );
 
-    let basic_credentials = match parse_basic_credentials(&headers) {
+    let credentials = match presented_credentials(&headers, body.client_id, body.client_secret) {
         Ok(v) => v,
-        Err(MalformedBasicHeader) => return malformed_basic_response(),
+        Err(_) => return unauthorized("token", "malformed Basic authorization header"),
     };
 
     let command = TokenCommand {
@@ -50,8 +49,7 @@ pub async fn token(
         code: body.code,
         redirect_uri: body.redirect_uri,
         code_verifier: body.code_verifier,
-        client_id: body.client_id,
-        basic_credentials,
+        credentials,
         refresh_token: body.refresh_token,
         scope: body.scope,
     };
@@ -92,76 +90,5 @@ fn error_response(e: TokenError) -> Response {
             .into_response(),
         OAuthErrorCode::ServerError => (StatusCode::INTERNAL_SERVER_ERROR, body).into_response(),
         _ => (StatusCode::BAD_REQUEST, body).into_response(),
-    }
-}
-
-/// `Authorization: Basic` ヘッダの形式不正。
-#[derive(Debug)]
-struct MalformedBasicHeader;
-
-fn malformed_basic_response() -> Response {
-    (
-        StatusCode::UNAUTHORIZED,
-        [(header::WWW_AUTHENTICATE, "Basic realm=\"token\"")],
-        Json(OAuthErrorResponse {
-            error: OAuthErrorCode::InvalidClient.as_str().to_string(),
-            error_description: Some("malformed Basic authorization header".to_string()),
-        }),
-    )
-        .into_response()
-}
-
-/// `Authorization: Basic` から `(client_id, client_secret)` を取り出す。
-/// RFC 6749 §2.3.1 に従い、資格情報は form-urlencoded でエンコードされている前提で
-/// パーセントデコードする。形式不正は 401 を返す。
-fn parse_basic_credentials(
-    headers: &HeaderMap,
-) -> Result<Option<(String, String)>, MalformedBasicHeader> {
-    let Some(value) = headers.get(header::AUTHORIZATION) else {
-        return Ok(None);
-    };
-    let value = value.to_str().map_err(|_| MalformedBasicHeader)?;
-    let encoded = value.strip_prefix("Basic ").ok_or(MalformedBasicHeader)?;
-    let decoded = STANDARD
-        .decode(encoded.trim())
-        .map_err(|_| MalformedBasicHeader)?;
-    let decoded = String::from_utf8(decoded).map_err(|_| MalformedBasicHeader)?;
-    let (id, secret) = decoded.split_once(':').ok_or(MalformedBasicHeader)?;
-    let id = percent_decode_str(id)
-        .decode_utf8()
-        .map_err(|_| MalformedBasicHeader)?;
-    let secret = percent_decode_str(secret)
-        .decode_utf8()
-        .map_err(|_| MalformedBasicHeader)?;
-    Ok(Some((id.into_owned(), secret.into_owned())))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use axum::http::HeaderValue;
-
-    #[test]
-    fn parses_basic_credentials_with_percent_encoding() {
-        let mut headers = HeaderMap::new();
-        // "my%3Aclient" : "s3cret%21" → ("my:client", "s3cret!")
-        let token = STANDARD.encode("my%3Aclient:s3cret%21");
-        headers.insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_str(&format!("Basic {token}")).unwrap(),
-        );
-        let parsed = parse_basic_credentials(&headers).unwrap().unwrap();
-        assert_eq!(parsed, ("my:client".to_string(), "s3cret!".to_string()));
-    }
-
-    #[test]
-    fn missing_header_is_none_and_malformed_is_error() {
-        assert!(parse_basic_credentials(&HeaderMap::new())
-            .unwrap()
-            .is_none());
-
-        let mut headers = HeaderMap::new();
-        headers.insert(header::AUTHORIZATION, HeaderValue::from_static("Basic !!!"));
-        assert!(parse_basic_credentials(&headers).is_err());
     }
 }

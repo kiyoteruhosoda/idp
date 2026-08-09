@@ -74,6 +74,9 @@ pub struct TokenRequest {
     pub redirect_uri: Option<String>,
     pub code_verifier: Option<String>,
     pub client_id: Option<String>,
+    /// `client_secret_post` のクライアント secret（RFC 6749 §2.3.1。G3）。`Authorization: Basic`
+    /// との併用は `invalid_request`。
+    pub client_secret: Option<String>,
     /// `refresh_token` grant 専用。
     pub refresh_token: Option<String>,
     /// `client_credentials` grant で要求する scope（空白区切り。G4）。
@@ -115,6 +118,10 @@ pub struct ClientRegisterRequest {
     /// confidential クライアントのみ有効。
     #[serde(default)]
     pub allow_client_credentials: Option<bool>,
+    /// クライアント認証方式（G3）。`client_secret_basic`（既定）または `client_secret_post`。
+    /// confidential クライアントのみ指定できる。
+    #[serde(default)]
+    pub token_endpoint_auth_method: Option<String>,
     /// RP-initiated logout のリダイレクト先（登録済みのもののみ許可）。
     #[serde(default)]
     pub post_logout_redirect_uris: Option<Vec<String>>,
@@ -138,6 +145,10 @@ pub struct ClientUpdateRequest {
     /// `client_credentials` grant の許可（G4）。confidential クライアントのみ有効。
     #[serde(default)]
     pub allow_client_credentials: Option<bool>,
+    /// クライアント認証方式（G3）。`client_secret_basic` または `client_secret_post`。
+    /// confidential クライアントのみ変更できる。
+    #[serde(default)]
+    pub token_endpoint_auth_method: Option<String>,
     /// `ACTIVE` または `DISABLED`。
     #[serde(default)]
     pub client_status: Option<String>,

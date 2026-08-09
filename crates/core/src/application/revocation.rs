@@ -3,9 +3,11 @@
 //! - `refresh_token`: DB の `revoked_at` を設定して失効させる。
 //! - `access_token`: JWT の jti を `revoked_access_tokens` テーブルに追加して即時失効を実現する。
 //! - RFC 7009 §2.2: 失効済み・不存在でも 200 を返す（呼び出し側は常に成功扱い）。
-//! - confidential client は client_secret_basic 認証が必要。public client は認証なし。
+//! - confidential client は認証が必要（方式はクライアントの登録値。`client_secret_basic` /
+//!   `client_secret_post`）。public client は認証なし。
 
 use crate::application::audit::{AuditService, RequestContext};
+use crate::application::client_authentication::{ClientAuthFailure, PresentedClientCredentials};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::client::Client;
 use crate::domain::clock::Clock;
@@ -17,7 +19,6 @@ use crate::domain::repositories::{
 };
 use crate::domain::revoked_access_token::RevokedAccessToken;
 use crate::domain::tenant_context::TenantContext;
-use crate::domain::values::TokenEndpointAuthMethod;
 use std::sync::Arc;
 
 /// `/revoke` のエラー（RFC 7009 §2.2.1 に準じる）。
@@ -65,14 +66,12 @@ impl RevocationService {
     }
 
     /// トークンを失効させる。RFC 7009 §2.2: 常に 200 を返す想定（エラーは client 認証失敗のみ）。
-    #[allow(clippy::too_many_arguments)]
     pub async fn revoke(
         &self,
         tenant: TenantContext,
         token: &str,
         token_type_hint: Option<&str>,
-        client_id: &str,
-        basic_credentials: Option<(&str, &str)>,
+        credentials: &PresentedClientCredentials,
         ctx: &RequestContext,
     ) -> Result<(), RevocationError> {
         if token.is_empty() {
@@ -80,10 +79,7 @@ impl RevocationService {
         }
 
         // Client 認証（フローのテナントに属する client のみ解決する）。
-        let client = match self
-            .load_client(tenant, client_id, basic_credentials, ctx)
-            .await
-        {
+        let client = match self.load_client(tenant, credentials, ctx).await {
             Ok(c) => c,
             Err(e) => return Err(e),
         };
@@ -178,13 +174,31 @@ impl RevocationService {
     }
 
     /// Client を検索し、confidential client の場合は secret を検証する。
+    ///
+    /// 照合する secret の選択（Basic か body か）は登録された `token_endpoint_auth_method` に
+    /// 従う（`client_authentication` に集約。G3）。
     async fn load_client(
         &self,
         tenant: TenantContext,
-        client_id: &str,
-        basic_credentials: Option<(&str, &str)>,
+        credentials: &PresentedClientCredentials,
         ctx: &RequestContext,
     ) -> Result<Client, RevocationError> {
+        credentials.ensure_single_method().map_err(|_| {
+            RevocationError::new(
+                OAuthErrorCode::InvalidRequest,
+                "client credentials must be presented with a single authentication method",
+            )
+        })?;
+        let client_id = credentials.resolve_client_id().map_err(|failure| {
+            RevocationError::new(
+                match failure {
+                    ClientAuthFailure::ClientIdMismatch => OAuthErrorCode::InvalidRequest,
+                    _ => OAuthErrorCode::InvalidClient,
+                },
+                "client_id is required",
+            )
+        })?;
+
         let client = self
             .clients
             .find_by_client_id(tenant.tenant_id(), client_id)
@@ -199,40 +213,11 @@ impl RevocationService {
             ));
         }
 
-        if client.token_endpoint_auth_method == TokenEndpointAuthMethod::ClientSecretBasic {
-            let (cid, secret) = match basic_credentials {
-                Some(creds) => creds,
-                None => {
-                    self.record_auth_failure(tenant, &client.client_id, ctx)
-                        .await;
-                    return Err(RevocationError::new(
-                        OAuthErrorCode::InvalidClient,
-                        "client_secret_basic authentication required",
-                    ));
-                }
-            };
-            if cid != client_id {
-                self.record_auth_failure(tenant, &client.client_id, ctx)
-                    .await;
-                return Err(RevocationError::new(
-                    OAuthErrorCode::InvalidClient,
-                    "client_id mismatch",
-                ));
-            }
-            let hash = match &client.client_secret_hash {
-                Some(h) => h,
-                None => {
-                    return Err(RevocationError::new(
-                        OAuthErrorCode::InvalidClient,
-                        "client has no secret",
-                    ))
-                }
-            };
-            let ok = self
-                .hasher
-                .verify(secret, hash)
-                .map_err(|e| RevocationError::new(OAuthErrorCode::ServerError, &e.to_string()))?;
-            if !ok {
+        let secret = match credentials.secret_for(&client) {
+            // public client は認証なしで通す（RFC 7009 §2.1）。
+            Ok(None) => return Ok(client),
+            Ok(Some(secret)) => secret,
+            Err(_) => {
                 self.record_auth_failure(tenant, &client.client_id, ctx)
                     .await;
                 return Err(RevocationError::new(
@@ -240,6 +225,27 @@ impl RevocationService {
                     "client authentication failed",
                 ));
             }
+        };
+        let hash = match &client.client_secret_hash {
+            Some(h) => h,
+            None => {
+                return Err(RevocationError::new(
+                    OAuthErrorCode::InvalidClient,
+                    "client has no secret",
+                ))
+            }
+        };
+        let ok = self
+            .hasher
+            .verify(secret, hash)
+            .map_err(|e| RevocationError::new(OAuthErrorCode::ServerError, &e.to_string()))?;
+        if !ok {
+            self.record_auth_failure(tenant, &client.client_id, ctx)
+                .await;
+            return Err(RevocationError::new(
+                OAuthErrorCode::InvalidClient,
+                "client authentication failed",
+            ));
         }
 
         Ok(client)
