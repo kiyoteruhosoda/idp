@@ -23,12 +23,13 @@ use idp_contracts::application_log::{
 use idp_contracts::auth::{
     InternalAdminAuthenticateRequest, InternalAdminAuthenticateResponse,
     InternalAdminChangePasswordRequest, InternalAdminChangePasswordResponse,
-    InternalAuthenticateRequest, InternalAuthenticateResponse, InternalAuthorizeResumeRequest,
-    InternalAuthorizeResumeResponse, InternalChangePasswordRequest, InternalChangePasswordResponse,
-    InternalConsentApproveRequest, InternalConsentApproveResponse, InternalConsentDenyRequest,
-    InternalConsentDenyResponse, InternalConsentInfoResponse, InternalLogoutRequest,
-    InternalPasskeyDeleteRequest, InternalPasskeyDeleteResponse, InternalPasskeyListRequest,
-    InternalPasskeyListResponse, InternalPasskeyLoginBeginRequest,
+    InternalAuthenticateRequest, InternalAuthenticateResponse,
+    InternalAuthorizeLoginContextRequest, InternalAuthorizeLoginContextResponse,
+    InternalAuthorizeResumeRequest, InternalAuthorizeResumeResponse, InternalChangePasswordRequest,
+    InternalChangePasswordResponse, InternalConsentApproveRequest, InternalConsentApproveResponse,
+    InternalConsentDenyRequest, InternalConsentDenyResponse, InternalConsentInfoResponse,
+    InternalLogoutRequest, InternalPasskeyDeleteRequest, InternalPasskeyDeleteResponse,
+    InternalPasskeyListRequest, InternalPasskeyListResponse, InternalPasskeyLoginBeginRequest,
     InternalPasskeyLoginBeginResponse, InternalPasskeyLoginCompleteRequest,
     InternalPasskeyLoginCompleteResponse, InternalPasskeyRegisterBeginRequest,
     InternalPasskeyRegisterBeginResponse, InternalPasskeyRegisterCompleteRequest,
@@ -193,6 +194,17 @@ impl ApiClient {
         req: &InternalAuthorizeResumeRequest,
     ) -> anyhow::Result<InternalAuthorizeResumeResponse> {
         self.post_internal("/internal/authorize/resume", correlation_id, req)
+            .await
+    }
+
+    /// ログイン画面の文脈（`POST /internal/authorize/login-context`。G12）。進行中の認可要求が
+    /// 持ち込んだ `login_hint` / `ui_locales` を `auth_session_id` から引き直す。
+    pub async fn authorize_login_context(
+        &self,
+        correlation_id: &str,
+        req: &InternalAuthorizeLoginContextRequest,
+    ) -> anyhow::Result<InternalAuthorizeLoginContextResponse> {
+        self.post_internal("/internal/authorize/login-context", correlation_id, req)
             .await
     }
 

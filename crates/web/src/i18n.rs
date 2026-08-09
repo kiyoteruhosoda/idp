@@ -31,21 +31,32 @@ impl Locale {
             return Locale::Ja;
         };
         // 品質値は見ず、先に現れた対応言語を選ぶ簡易実装。
-        for part in header.split(',') {
-            let tag = part
-                .split(';')
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_ascii_lowercase();
-            if tag == "ja" || tag.starts_with("ja-") {
-                return Locale::Ja;
-            }
-            if tag == "en" || tag.starts_with("en-") {
-                return Locale::En;
-            }
+        header
+            .split(',')
+            .find_map(|part| Locale::from_language_tag(part.split(';').next().unwrap_or("")))
+            .unwrap_or(Locale::Ja)
+    }
+
+    /// 認可要求の `ui_locales`（OIDC Core §3.1.2.1。空白区切りの BCP47 タグを RP が望む順に
+    /// 並べた値）から表示ロケールを選ぶ。対応言語が 1 つも無ければ `None`（次順位へ落とす）。
+    ///
+    /// `Accept-Language` と違い**既定値へ丸めない**。RP の要求は利用者自身の選択（`?lang=`・
+    /// ユーザー設定・Cookie）より弱く、ブラウザ言語より強い位置にあるため、非対応値を `Ja` に
+    /// 丸めるとブラウザ言語を追い越して既定を押し付けることになる。
+    pub fn from_ui_locales(value: &str) -> Option<Locale> {
+        value.split_whitespace().find_map(Locale::from_language_tag)
+    }
+
+    /// 単一の言語タグ（`ja` / `ja-JP` / `en-US`）を対応ロケールへ写す。地域コードは無視する
+    /// （`CLAUDE.md`「国際化」: 言語コードのみで判定）。非対応・不正値は `None`。
+    fn from_language_tag(tag: &str) -> Option<Locale> {
+        let tag = tag.trim().to_ascii_lowercase();
+        let language = tag.split('-').next().unwrap_or("");
+        match language {
+            "ja" => Some(Locale::Ja),
+            "en" => Some(Locale::En),
+            _ => None,
         }
-        Locale::Ja
     }
 
     /// 言語タグ（`ja` / `en`）からロケールを引く。非対応・不正値は `None`。
@@ -68,6 +79,10 @@ impl Locale {
     /// 表示言語の決定チェーン（MT20）:
     /// `?lang=` > ユーザー設定（DB）> Cookie(`lang`) > `Accept-Language` > 既定 `Ja`。
     /// 不正・非対応値は無視して次順位へフォールバックする。
+    ///
+    /// 認可要求の `ui_locales`（G12）は Cookie と `Accept-Language` の間に入るが、OIDC フロー中の
+    /// リクエストにしか存在しないため引数には取らない。[`crate::language`] の middleware が
+    /// 決定済みの言語を `lang` Cookie へ正規化したうえで本関数を呼ぶ。
     pub fn resolve(
         query_lang: Option<&str>,
         user_language: Option<&str>,
@@ -185,6 +200,21 @@ mod tests {
             Locale::resolve(Some("fr"), Some("zz"), Some("zz"), Some("fr")),
             Locale::Ja
         );
+    }
+
+    /// `ui_locales`（G12）は RP が望む順に並んだ空白区切りのタグ。先頭から順に対応言語を探し、
+    /// 地域コードは無視する。1 つも無ければ `None`（＝ブラウザ言語へ落とす。既定へ丸めない）。
+    #[test]
+    fn selects_locale_from_ui_locales() {
+        assert_eq!(Locale::from_ui_locales("en"), Some(Locale::En));
+        assert_eq!(Locale::from_ui_locales("en-GB en-US"), Some(Locale::En));
+        // 非対応言語は読み飛ばして次のタグを見る。
+        assert_eq!(Locale::from_ui_locales("fr-CA fr ja-JP"), Some(Locale::Ja));
+        // 空白の連続・前後の空白も区切りとして扱う。
+        assert_eq!(Locale::from_ui_locales("  ja   en "), Some(Locale::Ja));
+        // 対応言語が無ければ決めない（`Accept-Language` を追い越して既定 ja を押し付けない）。
+        assert_eq!(Locale::from_ui_locales("fr de zh-CN"), None);
+        assert_eq!(Locale::from_ui_locales(""), None);
     }
 
     #[test]

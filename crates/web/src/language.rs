@@ -1,8 +1,12 @@
 //! 表示言語の決定（MT20。`CLAUDE.md`「国際化」の責務分離）。
 //!
 //! **表示言語を決めるのは web** で、api は `Accept-Language` しか見ない。決定順は先勝ちで
-//! `?lang=` > ユーザー設定（DB の `users.language`）> Cookie(`lang`) > ブラウザの
-//! `Accept-Language` > 既定 `ja`。不正・非対応値は無視して次順位へ落ちる。
+//! `?lang=` > ユーザー設定（DB の `users.language`）> Cookie(`lang`) > 認可要求の `ui_locales`
+//! （G12）> ブラウザの `Accept-Language` > 既定 `ja`。不正・非対応値は無視して次順位へ落ちる。
+//!
+//! `ui_locales` が Cookie より下・ブラウザ言語より上なのは、これが **RP の希望**であって利用者
+//! 自身の選択ではないため。一度でも言語を選んだ利用者（`lang` Cookie がある）の画面を RP の
+//! 都合で切り替えないが、何も選んでいない利用者にはブラウザ既定より RP の指定を優先する。
 //!
 //! 実装は middleware 1 本に集約する。ハンドラごとに 4 つの入力を集め直すと、画面が増えるたびに
 //! 優先順位が食い違う（実際に MT20 前は画面によって `?lang=` を見る／見ないが分かれていた）。
@@ -19,6 +23,7 @@
 
 use crate::cookies;
 use crate::i18n::Locale;
+use crate::login_context::RpLoginContext;
 use crate::state::WebState;
 use axum::extract::{Request, State};
 use axum::http::header::{HeaderValue, COOKIE};
@@ -50,7 +55,8 @@ pub async fn resolve_language(
     let sso = cookies::get(request.headers(), cookies::SSO_SESSION_COOKIE);
 
     // 決定順 1: 有効な `?lang=`。2: ユーザー設定（ログイン中のみ api へ問い合わせる）。
-    // どちらも無ければ Cookie / `Accept-Language` を下流の `handlers::locale` がそのまま使う。
+    // 3: Cookie（下流の `handlers::locale` がそのまま読む）。4: 認可要求の `ui_locales`。
+    // いずれも無ければ `Accept-Language` を下流がそのまま使う。
     let decided = match explicit {
         Some(locale) => Some(locale),
         None => match &sso {
@@ -58,6 +64,7 @@ pub async fn resolve_language(
             None => None,
         },
     };
+    let decided = decided.or_else(|| requested_locale(&request));
     if let Some(locale) = decided {
         overwrite_lang_cookie(&mut request, locale);
     }
@@ -84,6 +91,27 @@ pub async fn resolve_language(
         response,
     )
         .into_response()
+}
+
+/// リクエストの `lang` Cookie が示す有効なロケール（未設定・非対応値は `None`）。
+fn cookie_locale(request: &Request) -> Option<Locale> {
+    cookies::get(request.headers(), cookies::LANG_COOKIE).and_then(|tag| Locale::from_tag(&tag))
+}
+
+/// 決定順 4: 進行中の認可要求が `ui_locales` で要求した表示ロケール（G12）。
+/// OIDC フロー外・非対応値は `None`。文脈の取得は [`crate::login_context`] の middleware が済ませてある。
+///
+/// 利用者が選んだ言語（有効な `lang` Cookie）が残っているときは決めない（決定順 3 が勝つ）。
+fn requested_locale(request: &Request) -> Option<Locale> {
+    if cookie_locale(request).is_some() {
+        return None;
+    }
+    request
+        .extensions()
+        .get::<RpLoginContext>()?
+        .ui_locales
+        .as_deref()
+        .and_then(Locale::from_ui_locales)
 }
 
 /// ログイン中ユーザーの保存済み表示言語（未設定・非対応値・取得失敗は `None`）。
@@ -212,6 +240,46 @@ mod tests {
             cookies::get(request.headers(), cookies::SSO_SESSION_COOKIE),
             Some("sess".to_string())
         );
+    }
+
+    fn request_with_ui_locales(cookies: &[&str], ui_locales: &str) -> Request {
+        let mut request = request_with_cookies(cookies);
+        request.extensions_mut().insert(RpLoginContext {
+            login_hint: None,
+            ui_locales: Some(ui_locales.to_string()),
+        });
+        request
+    }
+
+    /// 決定順 4（G12）: `ui_locales` は利用者が選んだ言語より弱く、ブラウザ言語より強い。
+    /// Cookie に有効な選択が残っている間は RP の要求で切り替えない。
+    #[test]
+    fn ui_locales_yields_to_the_language_the_user_chose() {
+        assert_eq!(
+            requested_locale(&request_with_ui_locales(&["lang=ja"], "en")),
+            None,
+            "the user's own choice wins"
+        );
+        // 保存されている値が非対応（＝選択として無効）なら RP の要求を採る。
+        assert_eq!(
+            requested_locale(&request_with_ui_locales(&["lang=fr"], "en")),
+            Some(Locale::En)
+        );
+        assert_eq!(
+            requested_locale(&request_with_ui_locales(&[], "fr en-GB")),
+            Some(Locale::En)
+        );
+        // 対応言語を含まない要求は決めない（下流が `Accept-Language` を使う）。
+        assert_eq!(requested_locale(&request_with_ui_locales(&[], "fr")), None);
+    }
+
+    /// OIDC フロー外（文脈が載っていない）リクエストでは何も決まらない。
+    #[test]
+    fn ui_locales_is_absent_outside_the_authorization_flow() {
+        assert_eq!(requested_locale(&request_with_cookies(&[])), None);
+        let mut request = request_with_cookies(&[]);
+        request.extensions_mut().insert(RpLoginContext::default());
+        assert_eq!(requested_locale(&request), None);
     }
 
     #[test]

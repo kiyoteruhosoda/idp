@@ -95,6 +95,19 @@ pub enum ResumeOutcome {
     Internal(String),
 }
 
+/// ログイン画面の文脈取得（`/internal/authorize/login-context`。G12）の結果。
+pub enum LoginContextOutcome {
+    /// 進行中の認可要求が持ち込んだ表示ヒント（いずれも未指定なら `None`）。
+    Ok {
+        login_hint: Option<String>,
+        ui_locales: Option<String>,
+    },
+    /// `auth_session_id` が無効・期限切れ（web は文脈なしで描画を続ける）。
+    SessionExpired,
+    /// 内部エラー。
+    Internal(String),
+}
+
 /// 復元した SSO セッションに対するポリシー判定の結論。
 enum RestoredPolicy {
     /// 復元してよい。
@@ -566,6 +579,40 @@ impl AuthorizeService {
                 tracing::error!(error = %e, "failed to check consent");
                 false
             }
+        }
+    }
+
+    /// ログイン画面の文脈（`/internal/authorize/login-context`。G12）。
+    ///
+    /// 認可要求が持ち込んだ `login_hint` / `ui_locales` を、進行中の `auth_session_id` から引き直す。
+    /// web は resume の 303 でこれらを手元に残せないため、画面描画のたびに取り直す口が要る。
+    ///
+    /// 返すのは**表示のためのヒントだけ**で、利用者・同意状態には触れない（`auth_session_id` は
+    /// 提示できれば認可セッションを操作できる bearer credential だが、この経路は読み出しのみ）。
+    pub async fn login_context(
+        &self,
+        tenant: TenantContext,
+        auth_session_id: &str,
+    ) -> LoginContextOutcome {
+        if auth_session_id.is_empty() {
+            return LoginContextOutcome::SessionExpired;
+        }
+        let id_hash = auth_session::id_hash(auth_session_id);
+        let session = match self
+            .auth_sessions
+            .find_by_id_hash(tenant.tenant_id(), &id_hash)
+            .await
+        {
+            Ok(Some(s)) => s,
+            Ok(None) => return LoginContextOutcome::SessionExpired,
+            Err(e) => return LoginContextOutcome::Internal(e.to_string()),
+        };
+        if session.is_expired_at(self.clock.now()) {
+            return LoginContextOutcome::SessionExpired;
+        }
+        LoginContextOutcome::Ok {
+            login_hint: session.login_hint,
+            ui_locales: session.ui_locales,
         }
     }
 }
