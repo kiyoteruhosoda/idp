@@ -44,7 +44,7 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 | 5 | AP11 | AP9 の contract フェーズ（TOTP/WebAuthn の秘密を `user_authenticators` へ集約し、`user_totp_secrets` / `user_webauthn_credentials` を撤去）（⬜未着手） | 中 | 中 | 小 | 中 |
 | 5 | AP12 | SAML 外部 IdP（AP10 は OIDC のみ実装。`external_identity_providers` の protocol 拡張が要る）（⬜未着手） | 大 | 中 | 小 | 大 |
 | 5 | G11 | web crate に統合テストが無い（`crates/web/tests/` 不在。ルータ経由の検証は `scripts/e2e.sh` 頼み）（⬜未着手） | 中 | 中 | 小 | 中 |
-| 5 | G12 | `/authorize` の任意パラメータの残り（`id_token_hint`・`response_mode=form_post`・`prompt=select_account` 未対応。`login_hint`・`ui_locales` は対応済み）（🚧進行中） | 中 | 中 | 小 | 中 |
+| 5 | G12 | `/authorize` の任意パラメータの残り（`response_mode=form_post`・`prompt=select_account` 未対応。`login_hint`・`ui_locales`・`id_token_hint` は対応済み）（🚧進行中） | 中 | 中 | 小 | 中 |
 | 3 | SEC10 | `/token`・`/introspect`・`/revoke` にレート制限が無い（Argon2 増幅型 DoS）（⬜未着手） | 小 | 小 | 中 | 小 |
 | 3 | AP6 | アカウントロックの管理者解除（仕様 §17.1・§24.6。`locked_until` を即時クリアする管理操作。現状は期限経過待ちのみ）と段階的ロック（⬜未着手） | 小 | 小 | 中 | 小 |
 | 3 | G8 | `audit_log` に絞り込み用の索引（`client_id`・`user_id`・`result`・複合 `(tenant_id, occurred_at)`）と保持期間の仕組みが無い（`log` にはある）（⬜未着手） | 小 | 中 | 小 | 小 |
@@ -205,10 +205,9 @@ web はログイン・同意・MFA・パスキー・管理コンソールとい�
 ところまで実装済み（AP3 と同じ 0028）。Discovery の広告（`response_modes_supported`・
 `prompt_values_supported`・`request_parameter_supported`・`claims_parameter_supported`・
 `acr_values_supported`・`ui_locales_supported`）も出している。`login_hint` / `ui_locales` の
-web での消費も対応済み（`CHANGELOG.md` 参照）。残っているのは:
+web での消費と `id_token_hint`（RP-initiated logout）も対応済み（`CHANGELOG.md` 参照）。
+残っているのは:
 
-- **`id_token_hint`** — `/logout`（RP-initiated logout）で未使用。`post_logout_redirect_uri` の
-  検証を id_token_hint に紐づけられない。
 - **`response_mode=form_post`** — 現状 `query` 固定。最終リダイレクトを組み立てるのは web 側の
   複数経路（resume・ログイン成功・同意承認）なので、api が「URL」ではなく「送信先 + パラメータ」を
   返す形への変更が要る。

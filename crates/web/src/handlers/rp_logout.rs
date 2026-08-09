@@ -6,7 +6,8 @@
 //! `state` 付与は api が担い、web は **SSO Cookie の破棄**と、front-channel logout がある場合の
 //! iframe ページ描画を担う。
 //!
-//! `id_token_hint` は受け付けるが現実装では検証に使わない（従来の api `/logout` と同じ挙動）。
+//! `id_token_hint` は api へそのまま転送する（G12）。署名・issuer の検証と、`aud` による
+//! `post_logout_redirect_uri` の照合・`sub` の突き合わせは api が行う（web は鍵を持たない）。
 
 use super::locale;
 use crate::client_ip::ClientIp;
@@ -38,6 +39,7 @@ pub async fn logout(
         tenant_id: Some(tenant.0.clone()),
         sso_session_id: cookies::get(&headers, cookies::SSO_SESSION_COOKIE),
         client_id: query.client_id,
+        id_token_hint: query.id_token_hint,
         post_logout_redirect_uri: query.post_logout_redirect_uri,
         state: query.state,
         ip_address: ctx.ip_address,

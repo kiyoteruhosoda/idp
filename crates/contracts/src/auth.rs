@@ -158,6 +158,11 @@ pub struct InternalRpLogoutRequest {
     /// `client_id` クエリ（`post_logout_redirect_uri` の検証に使う。任意）。
     #[serde(default)]
     pub client_id: Option<String>,
+    /// `id_token_hint` クエリ（OIDC RP-Initiated Logout 1.0 §2。G12）。api が署名・issuer を
+    /// 検証し、`aud` を `post_logout_redirect_uri` の照合先に、`sub` を「誰のログアウトか」の
+    /// 確認に使う。期限切れでも受け付ける（hint は過去に発行した ID Token であるため）。
+    #[serde(default)]
+    pub id_token_hint: Option<String>,
     /// RP が指定したログアウト後のリダイレクト先（登録済みのもののみ許可される）。
     #[serde(default)]
     pub post_logout_redirect_uri: Option<String>,

@@ -5,7 +5,7 @@
 //! 読まず、web が転送した `sso_session_id`（自ドメインの host-only Cookie 値）とクエリパラメータで
 //! 次を担う:
 //!
-//! 1. SSO セッションの特定・終了（LogoutService）と監査記録。
+//! 1. `id_token_hint` の検証（署名・issuer）と、SSO セッションの特定・終了（LogoutService）・監査記録。
 //! 2. Back-channel logout: 通知要求を永続キューへ積む（送信はワーカー。G5）。
 //! 3. `post_logout_redirect_uri` の検証と `state` 付与済みリダイレクト URL の組み立て。
 //! 4. Front-channel logout URI 群（`iss` クエリ付与済み）の列挙。
@@ -45,6 +45,7 @@ pub async fn rp_logout(
             tenant,
             req.sso_session_id.as_deref(),
             req.client_id.as_deref(),
+            req.id_token_hint.as_deref(),
             req.post_logout_redirect_uri.as_deref(),
             &ctx,
         )

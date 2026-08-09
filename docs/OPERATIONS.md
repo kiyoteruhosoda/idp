@@ -111,7 +111,10 @@ RP 側のライブラリが body に `client_id` / `client_secret` を載せる�
 
 ログアウト系 URI（`post_logout_redirect_uris` / `frontchannel_logout_uri` /
 `backchannel_logout_uri`）は `redirect_uris` と同じ制約（絶対 http(s)・フラグメント禁止・
-ワイルドカード禁止）を満たす必要がある。`backchannel_logout_uri` はさらに、ループバック・
+ワイルドカード禁止）を満たす必要がある。`post_logout_redirect_uri` へ実際に戻すには、
+ログアウト要求で **`id_token_hint`（推奨）か `client_id` のどちらか**を送り、その RP に登録済みの
+URI を指定する。`id_token_hint` は期限切れでもよいが、他テナントの ID Token・Access Token は
+受け付けない。どちらも送らない場合はテナント内のいずれかの RP に登録された URI であれば通る。`backchannel_logout_uri` はさらに、ループバック・
 プライベート・リンクローカル等のアドレスを**リテラルで**指定できない（内部サービスへ向けるときは
 ホスト名で指定する）。
 

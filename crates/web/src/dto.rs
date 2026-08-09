@@ -43,7 +43,8 @@ pub struct FormPageQuery {
 /// RP-initiated Logout のクエリ（`GET /logout`、OIDC RP-initiated Logout 1.0。ADR-0018 決定 2）。
 #[derive(Debug, Deserialize)]
 pub struct RpLogoutQuery {
-    /// 失効対象の ID Token（任意。現実装では使用しない）。
+    /// ログアウト対象を示す ID Token（任意。G12）。api が署名・issuer を検証し、
+    /// `post_logout_redirect_uri` の照合先と「誰のログアウトか」の確認に使う。
     #[serde(default)]
     pub id_token_hint: Option<String>,
     /// ログアウト後のリダイレクト先（登録済みのもののみ api が許可する）。
