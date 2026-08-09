@@ -139,6 +139,7 @@ pub async fn run() -> anyhow::Result<()> {
     }
 
     // 署名鍵自動ローテーション（K2）: バックグラウンドタスクで定期チェック。
+    // 排他制御は無い。**api を単一インスタンスで動かす前提**（README「スケール前提」・G9）。
     {
         let keys = state.keys.clone();
         let lead_days = config.key_rotation_lead_days();

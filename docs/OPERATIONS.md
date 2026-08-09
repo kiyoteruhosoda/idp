@@ -795,6 +795,10 @@ cd /opt/idp/dist   # 転送先（例）
 使う compose は同梱の `docker-compose.yml`（`build:` を持たず `image:` 参照。リポジトリ内から実行した
 場合はルートの `docker-compose.deploy.yml`）。前提: `docker`（Compose v2）と `openssl`。
 
+**api は増やさない。** `docker compose up --scale api=N`（N > 1）や、複数ホストへの api の並列配置は
+サポートしていない。レートリミッタ・キャッシュがプロセス内メモリで、署名鍵のローテーションに
+排他制御が無いため。理由と影響の一覧は README「スケール前提」を参照。web は増やしてよい。
+
 ## デプロイ先だけで取得→ビルド→デプロイしたいとき（一ホスト方式）
 
 デプロイ先で Docker が動くなら、`dist/` を転送する代わりに `build-remote.sh` 一本で
