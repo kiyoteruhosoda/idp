@@ -13,12 +13,16 @@ use crate::application::audit::RequestContext;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::application::sso_restore::SsoRestorer;
 use crate::domain::auth_session::{self, AuthSession};
+use crate::domain::authentication_policy::{
+    evaluate_policies, AuthenticationContext, DefaultPolicyEffect, PolicyDecision,
+};
 use crate::domain::client::Client;
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::error::OAuthErrorCode;
 use crate::domain::repositories::{
-    AuthSessionRepository, ClientConsentRepository, ClientRepository,
+    AuthSessionRepository, AuthenticationPolicyRepository, ClientConsentRepository,
+    ClientRepository,
 };
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::{CodeChallengeMethod, Prompt, Scope};
@@ -91,6 +95,17 @@ pub enum ResumeOutcome {
     Internal(String),
 }
 
+/// 復元した SSO セッションに対するポリシー判定の結論。
+enum RestoredPolicy {
+    /// 復元してよい。
+    Ok,
+    /// 復元は認めないが、ログインし直せば通りうる（`max_age` 超過と同じ扱い）。
+    Reauthenticate,
+    /// 拒否。ログインし直しても通らないのでフローを終える。
+    Denied,
+    Internal(String),
+}
+
 pub struct AuthorizeService {
     clients: Arc<dyn ClientRepository>,
     auth_sessions: Arc<dyn AuthSessionRepository>,
@@ -100,6 +115,11 @@ pub struct AuthorizeService {
     code_issuance: Arc<CodeIssuanceService>,
     clock: Arc<dyn Clock>,
     auth_session_ttl: Duration,
+    /// 認証ポリシー（AP2/AP3）。**SSO 復元でも評価する**ために持つ。復元は「以前の認証を
+    /// 使い回す」操作なので、認可要求ごとに変わる条件（`acr_values`・`client_ids`）や、
+    /// 復元後に変わったポリシーが効かなくなる。
+    authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
+    policy_default_effect: DefaultPolicyEffect,
 }
 
 impl AuthorizeService {
@@ -112,6 +132,8 @@ impl AuthorizeService {
         code_issuance: Arc<CodeIssuanceService>,
         clock: Arc<dyn Clock>,
         auth_session_ttl: std::time::Duration,
+        authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
+        policy_default_effect: DefaultPolicyEffect,
     ) -> Self {
         Self {
             clients,
@@ -122,6 +144,8 @@ impl AuthorizeService {
             clock,
             auth_session_ttl: Duration::from_std(auth_session_ttl)
                 .expect("auth session TTL out of range"),
+            authentication_policies,
+            policy_default_effect,
         }
     }
 
@@ -291,7 +315,40 @@ impl AuthorizeService {
                             (now - auth_time).num_seconds() > max_age as i64
                         });
 
-                        if !max_age_exceeded {
+                        // 認証ポリシー（AP2/AP3）を**この認可要求の文脈で**評価する。
+                        // 復元対象のセッションが確立されたときとは、クライアントも `acr_values` も
+                        // 違いうる。評価しないと、RP が `acr_values` で WebAuthn 必須ポリシーを
+                        // 起動しても、パスワードだけで確立された既存 SSO が黙って再利用される。
+                        // 満たさない場合は `max_age` 超過と同じ扱い（＝再認証へ落とす）にする。
+                        // 拒否ポリシーだけは再認証しても通らないので、その場でフローを終える。
+                        let policy_outcome = self
+                            .evaluate_for_restored_session(
+                                tenant,
+                                &session,
+                                user_id,
+                                &restored.authentication_methods,
+                                ctx,
+                                now,
+                            )
+                            .await;
+                        let policy_ok = match policy_outcome {
+                            RestoredPolicy::Ok => true,
+                            RestoredPolicy::Reauthenticate => false,
+                            RestoredPolicy::Denied => {
+                                let _ = self.auth_sessions.delete(&session.id_hash).await;
+                                return ResumeOutcome::ErrorRedirect {
+                                    location: error_redirect_with_state(
+                                        &session.redirect_uri,
+                                        OAuthErrorCode::AccessDenied,
+                                        "denied by authentication policy",
+                                        Some(&session.state),
+                                    ),
+                                };
+                            }
+                            RestoredPolicy::Internal(e) => return ResumeOutcome::Internal(e),
+                        };
+
+                        if !max_age_exceeded && policy_ok {
                             // 同意チェック（force_consent の場合は既存同意を無視）。
                             if !force_consent
                                 && self
@@ -393,7 +450,8 @@ impl AuthorizeService {
                             auth_session_id = rotated_id;
                             return ResumeOutcome::ConsentRequired { auth_session_id };
                         }
-                        // max_age 超過 → ログインへ（SSO は復元しない）。prompt=none なら下でエラー。
+                        // max_age 超過・ポリシー未充足 → ログインへ（SSO は復元しない）。
+                        // prompt=none なら下でエラーになる。
                     }
                     Ok(None) => {} // SSO なし・無効 → ログインへ。
                     Err(e) => {
@@ -418,6 +476,66 @@ impl AuthorizeService {
         }
 
         ResumeOutcome::LoginRequired { auth_session_id }
+    }
+
+    /// 復元した SSO セッションを、この認可要求の文脈で認証ポリシーに掛ける（AP2/AP3）。
+    ///
+    /// 判定材料は「復元セッションが記録している認証方式」（AP4）。`require_mfa` は多要素で
+    /// 確立されたセッションなら満たし、`require_specific_method` は記録された方式が要求に
+    /// 一致するかで見る。User Verification は記録に無いため、WebAuthn を含むセッションのみ
+    /// UV 済みとみなす（パスキー登録・認証は UV 必須で行っている）。
+    async fn evaluate_for_restored_session(
+        &self,
+        tenant: TenantContext,
+        session: &AuthSession,
+        user_id: uuid::Uuid,
+        methods: &[crate::domain::values::AuthenticationMethod],
+        ctx: &RequestContext,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> RestoredPolicy {
+        let policies = match self
+            .authentication_policies
+            .list_enabled_for_tenant(tenant.tenant_id())
+            .await
+        {
+            Ok(p) => p,
+            Err(e) => return RestoredPolicy::Internal(e.to_string()),
+        };
+        let requested_acr = session.requested_acr();
+        let decision = evaluate_policies(
+            &policies,
+            &AuthenticationContext {
+                client_id: Some(&session.client_id),
+                user_id,
+                ip_address: ctx.ip_address.as_deref(),
+                now,
+                requested_acr: &requested_acr,
+            },
+            self.policy_default_effect,
+        );
+        let user_verified =
+            methods.contains(&crate::domain::values::AuthenticationMethod::WebAuthn);
+        match &decision {
+            PolicyDecision::Deny { .. } => RestoredPolicy::Denied,
+            PolicyDecision::RequireMfa { .. } => {
+                if methods.iter().any(|m| m.is_second_factor()) {
+                    RestoredPolicy::Ok
+                } else {
+                    RestoredPolicy::Reauthenticate
+                }
+            }
+            PolicyDecision::RequireMethods { .. } => {
+                if decision
+                    .unmet_method_requirement(methods, user_verified)
+                    .is_none()
+                {
+                    RestoredPolicy::Ok
+                } else {
+                    RestoredPolicy::Reauthenticate
+                }
+            }
+            PolicyDecision::Allow { .. } => RestoredPolicy::Ok,
+        }
     }
 
     /// 同意チェック: ユーザーがクライアントに対してすべての scope に同意済みか確認する。

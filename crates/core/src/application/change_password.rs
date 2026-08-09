@@ -312,11 +312,25 @@ impl ChangePasswordService {
                 return ChangePasswordOutcome::MfaEnrollmentRequired;
             }
             // `require_specific_method`（AP3）。この経路が完了した時点で使った方式はパスワードだけ。
-            PolicyDecision::RequireMethods {
-                policy_code,
-                requirement,
-            } => {
-                if !requirement.satisfied_by(&[AuthenticationMethod::Password], false) {
+            PolicyDecision::RequireMethods { .. } => {
+                let used = [AuthenticationMethod::Password];
+                if let Some(unmet) = decision.unmet_method_requirement(&used, false) {
+                    // 第二要素を足せば満たせる利用者は MFA ステップへ送る（`require_mfa` と同じ扱い）。
+                    // AuthSession は `authenticated_user_id` と `password_verified_at` が設定済み
+                    // （MFA pending 相当）なので、そのまま `MfaLoginService` へ引き継げる。そちらが
+                    // 最終的な方式集合で判定し直すため、満たせない第二要素で通ることはない。
+                    let has_totp =
+                        match user_has_confirmed_totp(self.totp_secrets.as_ref(), user.id).await {
+                            Ok(v) => v,
+                            Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
+                        };
+                    if has_totp
+                        && decision.satisfied_by_adding(&used, AuthenticationMethod::Totp, false)
+                    {
+                        return ChangePasswordOutcome::MfaRequired {
+                            auth_session_id: session_id.to_string(),
+                        };
+                    }
                     self.audit
                         .record(
                             AuditEventType::LoginPolicyDenied,
@@ -325,8 +339,9 @@ impl ChangePasswordService {
                             Some(user.id),
                             Some(&client_id),
                             Some(&format!(
-                                "policy={policy_code} reason=method_required required={}",
-                                requirement.describe()
+                                "policy={} reason=method_required required={}",
+                                unmet.policy_code,
+                                unmet.requirement.describe()
                             )),
                             ctx,
                         )

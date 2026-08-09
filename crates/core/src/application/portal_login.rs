@@ -386,6 +386,25 @@ impl PortalLoginService {
             .await;
             return PortalLoginOutcome::MfaEnrollmentRequired;
         }
+        // `require_specific_method`（AP3）。ここまで来た＝この経路が完了する時点で使う方式は
+        // パスワードだけ（TOTP を持つ利用者は上の MFA ステップへ抜けており、`verify_mfa` が
+        // 最終的な方式集合で判定し直す）。満たしていなければ SSO を発行しない。
+        if let Some(unmet) =
+            policy_decision.unmet_method_requirement(&[AuthenticationMethod::Password], false)
+        {
+            self.record_policy_denied(
+                tenant_id,
+                user.id,
+                &format!(
+                    "policy={} reason=method_required required={}",
+                    unmet.policy_code,
+                    unmet.requirement.describe()
+                ),
+                ctx,
+            )
+            .await;
+            return PortalLoginOutcome::PolicyDenied;
+        }
 
         // 10. TOTP 未設定: SSO セッションを発行する。
         let sso_session_id = match self
@@ -563,6 +582,23 @@ impl PortalLoginService {
             .await;
             return PortalChangePasswordOutcome::MfaEnrollmentRequired;
         }
+        // `require_specific_method`（AP3）。この経路で確定する方式はパスワードだけ。
+        if let Some(unmet) =
+            policy_decision.unmet_method_requirement(&[AuthenticationMethod::Password], false)
+        {
+            self.record_policy_denied(
+                tenant_id,
+                user.id,
+                &format!(
+                    "policy={} reason=method_required required={}",
+                    unmet.policy_code,
+                    unmet.requirement.describe()
+                ),
+                ctx,
+            )
+            .await;
+            return PortalChangePasswordOutcome::PolicyDenied;
+        }
 
         let sso_session_id = match self
             .issue_sso(
@@ -630,9 +666,13 @@ impl PortalLoginService {
             Err(e) => return PortalMfaOutcome::Internal(e),
         };
 
-        // 4.5. 認証ポリシーの再評価（AP2）。チケット発行後にポリシーが `deny` へ変わった場合でも
+        // 4.5. 認証ポリシーの再評価（AP2/AP3）。チケット発行後にポリシーが `deny` へ変わった場合でも
         //      SSO を発行しない（チケットの寿命 5 分ぶんだけ古い判断で通してしまわないため）。
-        //      `require_mfa` はこの時点で満たされている（TOTP 検証済み）ので追加の判定は要らない。
+        //      `require_mfa` はこの時点で満たされている（第二要素を検証済み）が、
+        //      `require_specific_method` は**実際に使った第二要素**が要求と一致するかで決まるため、
+        //      ここで最終的な方式集合に対して判定する（`Ok(_)` で素通しにすると、TOTP で
+        //      WebAuthn 必須のポリシーを回避できる）。
+        let used_methods = [AuthenticationMethod::Password, second_factor];
         match self
             .evaluate_policy(tenant_id, user_id, ctx.ip_address.as_deref())
             .await
@@ -647,7 +687,23 @@ impl PortalLoginService {
                 .await;
                 return PortalMfaOutcome::PolicyDenied;
             }
-            Ok(_) => {}
+            Ok(decision) => {
+                // ポータルは WebAuthn を通らないため User Verification は未実施として扱う。
+                if let Some(unmet) = decision.unmet_method_requirement(&used_methods, false) {
+                    self.record_policy_denied(
+                        tenant_id,
+                        user_id,
+                        &format!(
+                            "policy={} reason=method_required required={}",
+                            unmet.policy_code,
+                            unmet.requirement.describe()
+                        ),
+                        ctx,
+                    )
+                    .await;
+                    return PortalMfaOutcome::PolicyDenied;
+                }
+            }
             Err(e) => return PortalMfaOutcome::Internal(e),
         }
 

@@ -408,32 +408,58 @@ pub enum PolicyDecision {
     /// MFA（追加認証）を完了しなければ認証成功にしない。
     RequireMfa { policy_code: String },
     /// 指定された方式で認証していなければ認証成功にしない（AP3。仕様 §12.2）。
+    ///
+    /// **一致した方式指定ポリシーを全件持つ。** 1 件目だけを採ると、`RequiredMethods` の
+    /// 「AND はポリシーを 2 本に分けて表す」という取り決めが壊れる（優先順位が先の 1 本さえ
+    /// 満たせば、もう 1 本の要求を無視して通れてしまう）。要求はすべて満たす必要がある。
     RequireMethods {
-        policy_code: String,
-        requirement: RequiredMethods,
+        requirements: Vec<MethodRequirement>,
     },
 }
 
+/// 一致した方式指定ポリシー 1 件（監査へどのポリシーが要求したかを残すため、コードを伴う）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MethodRequirement {
+    pub policy_code: String,
+    pub requirement: RequiredMethods,
+}
+
 impl PolicyDecision {
-    /// `require_specific_method`（AP3）が**満たされていない**場合に、そのポリシーコードと要求を返す。
+    /// `require_specific_method`（AP3）のうち**満たされていない**最初の 1 件を返す。
     ///
     /// 満たされているとき・そもそも方式指定でないときは `None`。判定をここに置くのは、
     /// ログイン経路が 7 本あり（OIDC パスワード / MFA / パスキー / 外部 IdP / 強制パスワード変更 /
     /// ポータル / 管理コンソール）、それぞれで書くと規則がずれるためである。
+    ///
+    /// 一致した要求は**全件**を検査する（1 件目だけ見ると AND の表現が壊れる）。
     pub fn unmet_method_requirement(
         &self,
         used: &[AuthenticationMethod],
         user_verified: bool,
-    ) -> Option<(&str, &RequiredMethods)> {
+    ) -> Option<&MethodRequirement> {
         match self {
-            Self::RequireMethods {
-                policy_code,
-                requirement,
-            } if !requirement.satisfied_by(used, user_verified) => {
-                Some((policy_code.as_str(), requirement))
-            }
+            Self::RequireMethods { requirements } => requirements
+                .iter()
+                .find(|m| !m.requirement.satisfied_by(used, user_verified)),
             _ => None,
         }
+    }
+
+    /// 「第二要素を 1 つ足せば満たせるか」。MFA ステップへ誘導してよいかの判定に使う。
+    ///
+    /// `require_mfa` が「認証器を持つ利用者は MFA ステップへ送り、持たない利用者だけ拒否する」
+    /// のと同じ扱いを方式指定にも与えるためのもの。ここで誘導しても、最終的な方式集合に対する
+    /// 判定は MFA 完了側でやり直されるので、満たせない第二要素で通ることはない。
+    pub fn satisfied_by_adding(
+        &self,
+        used: &[AuthenticationMethod],
+        candidate: AuthenticationMethod,
+        user_verified: bool,
+    ) -> bool {
+        let mut with_candidate = used.to_vec();
+        with_candidate.push(candidate);
+        self.unmet_method_requirement(&with_candidate, user_verified)
+            .is_none()
     }
 }
 
@@ -516,14 +542,16 @@ pub fn evaluate_policies(
     // 方式指定は MFA 要求より先に見る。`require_mfa` は「第二要素を 1 つ足せばよい」だが
     // `require_specific_method` は「その方式でなければ通さない」で、後者の方が狭い要求のため。
     // 逆順にすると、WebAuthn 必須のポリシーがある利用者が TOTP だけで通ってしまう。
-    if let Some(specific) = matched
+    let requirements: Vec<MethodRequirement> = matched
         .iter()
-        .find(|p| p.effect == PolicyEffect::RequireSpecificMethod)
-    {
-        return PolicyDecision::RequireMethods {
-            policy_code: specific.policy_code.clone(),
-            requirement: specific.effect_params.clone().unwrap_or_default(),
-        };
+        .filter(|p| p.effect == PolicyEffect::RequireSpecificMethod)
+        .map(|p| MethodRequirement {
+            policy_code: p.policy_code.clone(),
+            requirement: p.effect_params.clone().unwrap_or_default(),
+        })
+        .collect();
+    if !requirements.is_empty() {
+        return PolicyDecision::RequireMethods { requirements };
     }
     if let Some(mfa) = matched
         .iter()
@@ -728,15 +756,55 @@ mod ap3_tests {
             &ctx_with(None, at(12, 0), &[]),
             DefaultPolicyEffect::Allow,
         );
-        let PolicyDecision::RequireMethods { policy_code, .. } = &decision else {
+        let PolicyDecision::RequireMethods { requirements } = &decision else {
             panic!("expected RequireMethods, got {decision:?}");
         };
-        assert_eq!(policy_code, "specific");
+        assert_eq!(requirements.len(), 1);
+        assert_eq!(requirements[0].policy_code, "specific");
         assert!(decision
             .unmet_method_requirement(&[AuthenticationMethod::Totp], false)
             .is_some());
         assert!(decision
             .unmet_method_requirement(&[AuthenticationMethod::WebAuthn], true)
+            .is_none());
+    }
+
+    /// 一致した方式指定は**全件**を持ち、すべて満たす必要がある。1 件目だけを採ると
+    /// 「AND はポリシーを 2 本に分けて表す」という取り決めが壊れ、優先順位が先の 1 本さえ
+    /// 満たせばもう 1 本を無視して通れてしまう。
+    #[test]
+    fn every_matching_method_requirement_must_be_satisfied() {
+        let mut webauthn = policy_for_test("webauthn", 1, PolicyEffect::RequireSpecificMethod);
+        webauthn.effect_params = Some(RequiredMethods {
+            methods: vec![AuthenticationMethod::WebAuthn],
+            user_verification: false,
+        });
+        let mut totp = policy_for_test("totp", 2, PolicyEffect::RequireSpecificMethod);
+        totp.effect_params = Some(RequiredMethods {
+            methods: vec![AuthenticationMethod::Totp],
+            user_verification: false,
+        });
+        let decision = evaluate_policies(
+            &[webauthn, totp],
+            &ctx_with(None, at(12, 0), &[]),
+            DefaultPolicyEffect::Allow,
+        );
+        let PolicyDecision::RequireMethods { requirements } = &decision else {
+            panic!("expected RequireMethods, got {decision:?}");
+        };
+        assert_eq!(requirements.len(), 2, "一致した方式指定を全件持つ");
+
+        // 優先順位が先の WebAuthn だけを満たしても、TOTP の要求が残る。
+        let unmet = decision
+            .unmet_method_requirement(&[AuthenticationMethod::WebAuthn], true)
+            .expect("totp requirement is still unmet");
+        assert_eq!(unmet.policy_code, "totp");
+        // 両方を満たせば通る。
+        assert!(decision
+            .unmet_method_requirement(
+                &[AuthenticationMethod::WebAuthn, AuthenticationMethod::Totp],
+                true
+            )
             .is_none());
     }
 

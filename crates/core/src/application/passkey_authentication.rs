@@ -355,7 +355,7 @@ impl PasskeyAuthenticationService {
         // `require_specific_method`（AP3）。パスキー認証は WebAuthn かつ User Verification 済み
         // （`webauthn-rs` の検証を通っている）なので §12.2 の「WebAuthn 必須」「UV 必須」を満たす。
         // 満たさないのは「TOTP でなければ駄目」のような別方式の指定に当たった場合。
-        if let Some((policy_code, requirement)) =
+        if let Some(unmet) =
             decision.unmet_method_requirement(&[AuthenticationMethod::WebAuthn], true)
         {
             self.audit
@@ -366,8 +366,9 @@ impl PasskeyAuthenticationService {
                     Some(user_id),
                     Some(&client_id),
                     Some(&format!(
-                        "policy={policy_code} reason=method_required required={}",
-                        requirement.describe()
+                        "policy={} reason=method_required required={}",
+                        unmet.policy_code,
+                        unmet.requirement.describe()
                     )),
                     ctx,
                 )

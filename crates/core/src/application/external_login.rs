@@ -368,8 +368,24 @@ impl ExternalLoginService {
             Err(e) => return CallbackOutcome::Internal(e.to_string()),
         };
 
-        // 7. 認証ポリシー（AP2）。外部で認証したことは `deny` を免れる理由にならない。
-        //    クライアント文脈はこの経路では持たないため `client_id` は `None`。
+        // 7. 認証ポリシー（AP2/AP3）。外部で認証したことは `deny` を免れる理由にならない。
+        //
+        //    OIDC 認可フローの途中から来た場合は、その auth_session を**評価より先に**引いて
+        //    クライアントと `acr_values` を文脈に載せる。空文脈で評価すると `client_ids` や
+        //    `requested_acr` を条件に持つポリシーが一致せず、外部 IdP 経由なら条件付きの拒否・
+        //    方式指定を回避できてしまう（後段でこの auth_session を使って code を発行するので、
+        //    「クライアント文脈を持たない」わけではない）。ポータル起点なら空のままでよい。
+        let originating_session = match request.auth_session_id_hash.as_deref() {
+            Some(id_hash) => match self.auth_sessions.find_by_id_hash(tenant_id, id_hash).await {
+                Ok(session) => session,
+                Err(e) => return CallbackOutcome::Internal(e.to_string()),
+            },
+            None => None,
+        };
+        let requested_acr = originating_session
+            .as_ref()
+            .map(|s| s.requested_acr())
+            .unwrap_or_default();
         let decision = match self
             .authentication_policies
             .list_enabled_for_tenant(tenant_id)
@@ -378,13 +394,11 @@ impl ExternalLoginService {
             Ok(policies) => evaluate_policies(
                 &policies,
                 &AuthenticationContext {
-                    client_id: None,
+                    client_id: originating_session.as_ref().map(|s| s.client_id.as_str()),
                     user_id: user.id,
                     ip_address: ctx.ip_address.as_deref(),
                     now,
-                    // 外部 IdP のコールバック時点では auth_session をまだ引いていないため、
-                    // `acr_values` 条件は評価材料を持たない（＝一致しない）。
-                    requested_acr: &[],
+                    requested_acr: &requested_acr,
                 },
                 self.policy_default_effect,
             ),
@@ -409,19 +423,19 @@ impl ExternalLoginService {
                 .await;
                 return CallbackOutcome::PolicyDenied;
             }
-            PolicyDecision::RequireMethods {
-                policy_code,
-                requirement,
-            } => {
+            PolicyDecision::RequireMethods { .. } => {
                 // 外部 IdP 経由で記録される方式は `external_idp` のみ。要求と食い違えば通さない
                 // （外部側でどの認証器が使われたかは観測できないため、要求を満たしたとみなせない）。
-                if !requirement.satisfied_by(&[AuthenticationMethod::ExternalIdp], false) {
+                if let Some(unmet) =
+                    decision.unmet_method_requirement(&[AuthenticationMethod::ExternalIdp], false)
+                {
                     self.record_policy_denied(
                         tenant,
                         user.id,
                         &format!(
-                            "policy={policy_code} reason=method_required required={}",
-                            requirement.describe()
+                            "policy={} reason=method_required required={}",
+                            unmet.policy_code,
+                            unmet.requirement.describe()
                         ),
                         ctx,
                     )

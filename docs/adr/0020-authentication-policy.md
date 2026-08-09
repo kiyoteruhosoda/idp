@@ -131,10 +131,41 @@ tz データベースの同梱と更新運用が要り、「更新を怠ると�
 - 外部 IdP 経路は `[external_idp]` として判定する（外部側でどの認証器が使われたかは観測できない
   ため、外部での MFA をもって方式要求を満たしたとはみなさない。§13.3 と同じ立場）。
 
-### 9. 影響
+### 9. 復元した SSO セッションにもポリシーを掛ける
+
+`acr_values` を条件に足したことで、「RP が要求した認証コンテキスト」が評価に入るようになった。
+ところが SSO 復元（`AuthorizeService::resume` の restored 分岐）は**ポリシーを評価せずに**
+code を発行していたため、RP が `acr_values` で WebAuthn 必須ポリシーを起動しても、
+パスワードだけで確立された既存セッションが黙って再利用されてしまう。復元は「以前の認証を
+使い回す」操作なので、認可要求ごとに変わる条件（`acr_values`・`client_ids`）や、セッション確立後に
+変わったポリシーが効かなくなる。
+
+そこで復元分岐でもポリシーを評価する。判定材料は復元セッションが記録している認証方式（AP4）:
+
+- `deny` … ログインし直しても通らないので、その場で `access_denied` を RP へ返す。
+- `require_mfa` / `require_specific_method` を満たさない … **`max_age` 超過と同じ扱い**にして
+  ログイン画面へ落とす（`prompt=none` なら `login_required`）。満たせる認証をやり直せば通るため。
+- User Verification は記録に無いので、`webauthn` を含むセッションのみ UV 済みとみなす
+  （パスキーの登録・認証は UV 必須で行っている）。
+
+### 10. 判定は「SSO を発行する直前」に置く
+
+方式指定は経路ごとに書くとずれるため、`PolicyDecision::unmet_method_requirement` に集約し、
+**各経路が SSO セッションを発行する直前**で呼ぶ。ポータル（パスワードのみ／MFA 完了／強制
+パスワード変更）と管理コンソールも同じ位置に置いた。MFA 完了側で「`deny` でなければ通す」と
+書くと、TOTP で WebAuthn 必須のポリシーを回避できてしまう。
+
+第二要素を足せば満たせる利用者は、`require_mfa` と同じく MFA ステップへ誘導する
+（`PolicyDecision::satisfied_by_adding`）。誘導先で最終的な方式集合に対して判定し直すので、
+満たせない第二要素で通ることはない。
+
+### 11. 影響
 
 - マイグレーション 0028: `authentication_policies.effect_params` 追加と `effect` の CHECK 拡張、
   `auth_sessions` へ `acr_values` / `login_hint` / `ui_locales` を追加（G12 と共通）。
 - 管理 API のリクエスト・レスポンスに `effect_params` / `ip_cidrs` / `time_windows` /
   `requested_acr` が増えた（いずれも省略可、既定は空 = 制限しない）。
-- `MfaLoginService` のコンストラクタ引数が増え、`MfaLoginOutcome::PolicyDenied` が増えた。
+- `MfaLoginService` / `AuthorizeService` のコンストラクタ引数が増え、
+  `MfaLoginOutcome::PolicyDenied` が増えた。
+- 復元した SSO セッションが `deny` に当たる場合、これまで通っていた要求が `access_denied` で
+  RP へ返るようになる（従来はログイン時にしか評価されず、セッションが生きている間は素通りしていた）。

@@ -444,7 +444,7 @@ impl LoginService {
         //      ポリシーは上の MFA ステップ（`has_totp`）で満たされる経路へ入っており、そこで
         //      `MfaLoginService` が最終的な方式集合に対して再評価する。パスキーを要求する
         //      ポリシーはログイン画面のパスキーボタン（`PasskeyAuthenticationService`）が満たす。
-        if let Some((policy_code, requirement)) =
+        if let Some(unmet) =
             policy_decision.unmet_method_requirement(&[AuthenticationMethod::Password], false)
         {
             self.audit
@@ -455,8 +455,9 @@ impl LoginService {
                     Some(user.id),
                     Some(&client_id),
                     Some(&format!(
-                        "policy={policy_code} reason=method_required required={}",
-                        requirement.describe()
+                        "policy={} reason=method_required required={}",
+                        unmet.policy_code,
+                        unmet.requirement.describe()
                     )),
                     ctx,
                 )

@@ -92,7 +92,7 @@ authz="${API}/${ROOT}/authorize?response_type=code&client_id=CLIENT&redirect_uri
 # クライアントは DB へ直接投入（管理コンソール経由の作成は 4) で検証）。
 CID="e2e-cli-$(date +%s)"
 # クライアントは root テナントへ帰属させる（ADR-0009 §2。root は parent_tenant_id IS NULL の唯一の行）。
-mariadb_exec "SET @root := (SELECT id FROM tenants WHERE parent_tenant_id IS NULL); INSERT INTO clients (id,tenant_id,client_id,client_secret_hash,client_type,client_status,app_name,redirect_uris,grant_types,response_types,scopes,token_endpoint_auth_method,require_pkce) VALUES (UUID(),@root,'${CID}',NULL,'public','ACTIVE','E2E',JSON_ARRAY('${REDIRECT_URI}'),JSON_ARRAY('authorization_code'),JSON_ARRAY('code'),JSON_ARRAY('openid','profile','email'),'none',1);"
+mariadb_exec "SET @root := (SELECT id FROM tenants WHERE parent_tenant_id IS NULL); INSERT INTO clients (id,tenant_id,client_id,client_secret_hash,client_type,client_status,app_name,redirect_uris,grant_types,response_types,scopes,token_endpoint_auth_method) VALUES (UUID(),@root,'${CID}',NULL,'public','ACTIVE','E2E',JSON_ARRAY('${REDIRECT_URI}'),JSON_ARRAY('authorization_code'),JSON_ARRAY('code'),JSON_ARRAY('openid','profile','email'),'none');"
 authz="${authz/CLIENT/$CID}"
 loc="$(curl -fsS -o /dev/null -w '%{redirect_url}' "$authz")"
 # ADR-0018 決定 2: api は Set-Cookie せず、単回ハンドルを URL に載せて web の /login へ 302 する。

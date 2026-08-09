@@ -408,6 +408,8 @@ impl AppState {
             code_issuance.clone(),
             clock.clone(),
             config.auth_session_ttl(),
+            authentication_policies.clone(),
+            config.auth_policy_default_effect(),
         ));
         // SAML SP-initiated SSO。進行状態の TTL は OIDC の auth_session と同じ値を使う。
         let saml_sso = Arc::new(SamlSsoService::new(

@@ -213,23 +213,36 @@ impl AdminLoginService {
             }
             // `require_specific_method`（AP3）。管理コンソールのログインはパスワード（+ TOTP）
             // しか通らないため、それで満たせない要求は拒否する。
-            PolicyDecision::RequireMethods {
-                policy_code,
-                requirement,
-            } => {
-                if requirement.satisfied_by(&[AuthenticationMethod::Password], false) {
+            PolicyDecision::RequireMethods { .. } => {
+                let used = [AuthenticationMethod::Password];
+                let Some(unmet) = decision.unmet_method_requirement(&used, false) else {
                     return Ok(());
-                }
-                self.record_policy_denied(
-                    tenant_id,
+                };
+                // TOTP を足せば満たせる利用者は MFA ステップへ送る（`require_mfa` と同じ扱い）。
+                // 最終判定はこのメソッドが TOTP 検証後にもう一度呼ばれる経路で行われる。
+                let has_totp = match crate::application::mfa_login::user_has_confirmed_totp(
+                    self.totp_secrets.as_ref(),
                     user_id,
-                    &format!(
-                        "policy={policy_code} reason=method_required required={}",
-                        requirement.describe()
-                    ),
-                    ctx,
                 )
-                .await;
+                .await
+                {
+                    Ok(v) => v,
+                    Err(e) => return Err(AdminLoginOutcome::Internal(e.to_string())),
+                };
+                let reason = format!(
+                    "policy={} reason=method_required required={}",
+                    unmet.policy_code,
+                    unmet.requirement.describe()
+                );
+                if has_totp
+                    && decision.satisfied_by_adding(&used, AuthenticationMethod::Totp, false)
+                {
+                    self.record_policy_denied(tenant_id, user_id, &reason, ctx)
+                        .await;
+                    return Err(AdminLoginOutcome::MfaRequired);
+                }
+                self.record_policy_denied(tenant_id, user_id, &reason, ctx)
+                    .await;
                 Err(AdminLoginOutcome::PolicyDenied)
             }
         }

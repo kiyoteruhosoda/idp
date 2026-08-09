@@ -276,16 +276,14 @@ impl MfaLoginService {
             tracing::info!(policy = %policy_code, "MFA login denied by authentication policy");
             return MfaLoginOutcome::PolicyDenied;
         }
-        if let Some((policy_code, requirement)) =
-            // WebAuthn はこの経路を通らない（パスキーは `PasskeyAuthenticationService`）ため
-            // User Verification は常に未実施として扱う。
-            decision.unmet_method_requirement(&used_methods, false)
-        {
+        // WebAuthn はこの経路を通らない（パスキーは `PasskeyAuthenticationService`）ため
+        // User Verification は常に未実施として扱う。
+        if let Some(unmet) = decision.unmet_method_requirement(&used_methods, false) {
             self.record_failure(tenant_id, Some(user_id), &client_id, "method_required", ctx)
                 .await;
             tracing::info!(
-                policy = %policy_code,
-                required = %requirement.describe(),
+                policy = %unmet.policy_code,
+                required = %unmet.requirement.describe(),
                 "MFA login denied: required authentication method not used"
             );
             return MfaLoginOutcome::PolicyDenied;
