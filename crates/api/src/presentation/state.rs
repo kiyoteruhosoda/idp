@@ -30,6 +30,7 @@ use crate::application::client_status::ClientStatusService;
 use crate::application::code_issuance::CodeIssuanceService;
 use crate::application::consent::ConsentService;
 use crate::application::email_verification::EmailVerificationService;
+use crate::application::expired_record_purge::ExpiredRecordPurgeService;
 use crate::application::external_idp_management::ExternalIdpManagementService;
 use crate::application::external_login::ExternalLoginService;
 use crate::application::introspection::IntrospectionService;
@@ -186,7 +187,7 @@ pub struct AppState {
     pub step_up: Arc<StepUpService>,
     /// 認証器の統合管理（一覧・状態変更・リカバリーコード・email OTP。AP9）。
     pub authenticators: Arc<AuthenticatorManagementService>,
-    /// 認証器の登録簿（AP9）。期限切れコードの GC が直接使う。
+    /// 認証器の登録簿（AP9）。
     pub authenticator_repository: Arc<dyn crate::domain::repositories::UserAuthenticatorRepository>,
     /// 外部 IdP ログイン（AP10）。
     pub external_login: Arc<ExternalLoginService>,
@@ -195,9 +196,12 @@ pub struct AppState {
     /// 外部 IdP 設定の参照（ログイン画面のボタン用）。GC・一覧が直接使う。
     pub external_providers:
         Arc<dyn crate::domain::repositories::ExternalIdentityProviderRepository>,
-    /// 外部 IdP ログインの進行状態（AP10）。期限切れの GC が直接使う。
+    /// 外部 IdP ログインの進行状態（AP10）。
     pub external_login_requests:
         Arc<dyn crate::domain::repositories::ExternalLoginRequestRepository>,
+    /// 期限切れレコードの一括 GC（G2）。対象表の一覧は
+    /// [`crate::infrastructure::repositories::expired_records`] にある。
+    pub expired_records: Arc<ExpiredRecordPurgeService>,
     /// Back-channel logout の送信キュー（G5）。ハンドラは積むだけ、送信はワーカーが行う。
     pub backchannel_logout: Arc<BackchannelLogoutDeliveryService>,
     pub revocation: Arc<RevocationService>,
@@ -792,6 +796,15 @@ impl AppState {
             audit.clone(),
         ));
 
+        // 期限切れレコードの一括 GC（G2）。対象表の一覧は infrastructure 側に単一定義してあり、
+        // ここは組み立てて `run()` のタスクへ渡すだけ。
+        let expired_records = Arc::new(ExpiredRecordPurgeService::new(
+            crate::infrastructure::repositories::expired_records::all_expiring_record_stores(
+                pool.clone(),
+            ),
+            clock.clone(),
+        ));
+
         Self {
             pool,
             config,
@@ -845,6 +858,7 @@ impl AppState {
             saml_sso,
             restart,
             service_restart,
+            expired_records,
         }
     }
 }

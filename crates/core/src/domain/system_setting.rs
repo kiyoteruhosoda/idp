@@ -380,6 +380,20 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
                       いる場合にのみ選ぶこと）。",
     },
     SettingDefinition {
+        key: "EXPIRED_RECORD_PURGE_INTERVAL_SECS",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
+        default_value: Some("3600"),
+        description: "期限切れレコード（認可セッション・authorization code・refresh token・SSO \
+                      セッション・失効 jti・パスキーチャレンジ・各種一時トークン）を掃除する間隔（秒）。\
+                      いずれも期限を過ぎれば認証には使えないため、頻度は容量とレイテンシのための\
+                      調整値である。`0` を指定すると掃除しない（表が際限なく増えるため非推奨）。",
+    },
+    SettingDefinition {
         key: "STEP_UP_MAX_AGE_SECS",
         shared_with_web: false,
         owner: SettingOwner::DbManaged,

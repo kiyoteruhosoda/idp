@@ -150,6 +150,8 @@ pub struct Config {
     key_rotation_lead_days: u32,
     /// エラー・警告ログ（`log` テーブル）の保持日数。`0` は削除しない。
     app_log_retention_days: u32,
+    /// 期限切れレコードの一括 GC（G2）の実行間隔（秒）。`0` は掃除しない。
+    expired_record_purge_interval_secs: u64,
     /// Step-up 認証（AP5）の再確認間隔（秒）。
     step_up_max_age_secs: u64,
     /// Back-channel logout 通知の再送上限回数（G5）。
@@ -277,6 +279,8 @@ impl Config {
             key_encryption_key_is_dev,
             key_rotation_lead_days: resolver.parse("KEY_ROTATION_LEAD_DAYS", 30)?,
             app_log_retention_days: resolver.parse("APP_LOG_RETENTION_DAYS", 30)?,
+            expired_record_purge_interval_secs: resolver
+                .parse("EXPIRED_RECORD_PURGE_INTERVAL_SECS", 3_600u64)?,
             step_up_max_age_secs: resolver.parse("STEP_UP_MAX_AGE_SECS", 300u64)?,
             backchannel_logout_max_attempts: resolver
                 .parse("BACKCHANNEL_LOGOUT_MAX_ATTEMPTS", 8u32)?,
@@ -388,6 +392,11 @@ impl Config {
     /// エラー・警告ログの保持日数（`0` = 削除しない）。
     pub fn app_log_retention_days(&self) -> u32 {
         self.app_log_retention_days
+    }
+    /// 期限切れレコードの一括 GC（G2）の実行間隔。`None` は掃除しない（`0` 指定）。
+    pub fn expired_record_purge_interval(&self) -> Option<std::time::Duration> {
+        (self.expired_record_purge_interval_secs > 0)
+            .then(|| std::time::Duration::from_secs(self.expired_record_purge_interval_secs))
     }
     /// Step-up 認証（AP5）の再確認間隔（秒）。
     pub fn step_up_max_age_secs(&self) -> u64 {

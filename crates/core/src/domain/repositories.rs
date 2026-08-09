@@ -971,6 +971,21 @@ pub trait PasskeyChallengeRepository: Send + Sync {
     async fn find_by_id(&self, id: Uuid) -> Result<Option<PasskeyChallenge>>;
     /// チャレンジを消費（削除）する（complete ステップで使用後に呼ぶ）。
     async fn delete(&self, id: Uuid) -> Result<()>;
-    /// 期限切れのチャレンジをまとめて削除する（定期クリーンアップ用）。
-    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<()>;
+    /// 期限切れのチャレンジをまとめて削除し、件数を返す（G2 の一括 GC から呼ぶ）。
+    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64>;
+}
+
+/// 期限切れ行を自分で掃除できるテーブルのポート（G2）。
+///
+/// 進行状態・使い捨てトークンの表は「期限が来たら意味を失う」が、削除する主体はどのユースケースにも
+/// 属さない。表ごとに個別のバックグラウンドループを生やすと、追加のたびに掃除漏れ（＝無限に増える表）が
+/// 生まれるため、**掃除できることを 1 つのポートで表明**し、起動時に 1 本のタスクへ束ねる。
+///
+/// `revoked_access_tokens` のように照合のホットパスに載る表は、肥大がそのままレイテンシになる。
+#[async_trait]
+pub trait ExpiringRecordStore: Send + Sync {
+    /// 掃除対象の識別子（ログに出すテーブル名）。
+    fn table_name(&self) -> &'static str;
+    /// `now` 時点で期限切れの行を削除し、削除件数を返す。
+    async fn purge_expired(&self, now: DateTime<Utc>) -> Result<u64>;
 }

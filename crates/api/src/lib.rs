@@ -81,38 +81,28 @@ pub async fn run() -> anyhow::Result<()> {
         config.app_log_retention_days(),
     );
 
-    // 期限切れの一時レコードの掃除（AP9・AP10）: 使い捨てコード（email OTP）と外部 IdP ログインの
-    // 進行状態。リカバリーコードは期限を持たないため対象外（`expires_at IS NULL`）。
-    // 1 時間ごとで十分な粒度（どちらも寿命は 10 分で、放置しても認証には使えない）。
-    {
-        let authenticators = state.authenticator_repository.clone();
-        let external_requests = state.external_login_requests.clone();
+    // 期限切れレコードの一括 GC（G2）。認可セッション・authorization code・refresh token・
+    // SSO セッション・失効 jti・パスキーチャレンジ・各種一時トークンを 1 本のタスクで掃除する。
+    // 表ごとにループを生やすと追加のたびに掃除漏れが生まれるため、対象は
+    // `infrastructure::repositories::expired_records` に単一定義してある。
+    if let Some(interval) = config.expired_record_purge_interval() {
+        let purge = state.expired_records.clone();
+        tracing::info!(
+            tables = ?purge.table_names(),
+            interval_secs = interval.as_secs(),
+            "expired record purge enabled"
+        );
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(3_600)).await;
-                let now = chrono::Utc::now();
-                match authenticators.delete_expired(now).await {
-                    Ok(deleted) if deleted > 0 => {
-                        tracing::debug!(deleted, "purged expired one-time authenticator codes");
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::error!(error = %e, "expired authenticator code purge failed");
-                    }
-                }
-                // 外部 IdP ログインの進行状態（AP10）も同じ周期で掃除する。寿命は 10 分で、
-                // 完了した分は消費時に消えるため、残るのは離脱したフローだけ。
-                match external_requests.delete_expired(now).await {
-                    Ok(deleted) if deleted > 0 => {
-                        tracing::debug!(deleted, "purged expired external login requests");
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::error!(error = %e, "expired external login request purge failed");
-                    }
-                }
+                tokio::time::sleep(interval).await;
+                purge.purge_once().await;
             }
         });
+    } else {
+        tracing::warn!(
+            "expired record purge is disabled (EXPIRED_RECORD_PURGE_INTERVAL_SECS=0); \
+             flow-state and one-time token tables will grow without bound"
+        );
     }
 
     // Back-channel logout の送信ワーカー（G5）。ログアウトのハンドラは通知要求をキューへ積むだけで
