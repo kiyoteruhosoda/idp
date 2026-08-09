@@ -107,9 +107,15 @@ string_enum!(
 );
 
 string_enum!(
-    /// トークンエンドポイントのクライアント認証方式。
+    /// トークンエンドポイントのクライアント認証方式（RFC 6749 §2.3.1）。
+    ///
+    /// `client_secret_basic` は仕様が推奨する方式で、confidential クライアントの既定。
+    /// `client_secret_post`（body に `client_id` / `client_secret`）は多くの RP ライブラリ・
+    /// SaaS 連携が既定にしているため受け入れる（G3）。1 リクエストで両方を提示することは
+    /// 認められておらず（同 §2.3.1）、提示された場合は `invalid_request` で拒否する。
     TokenEndpointAuthMethod {
         ClientSecretBasic => "client_secret_basic",
+        ClientSecretPost => "client_secret_post",
         None => "none",
     }
 );

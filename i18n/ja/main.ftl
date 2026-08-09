@@ -26,6 +26,7 @@ saml-error-expired = サインイン要求の有効期限が切れました。�
 logout-title = サインアウト
 logout-in-progress-message = サインアウトしています…
 logout-done-message = サインアウトしました。
+logout-subject-mismatch-message = このサインアウト要求は、現在サインインしているアカウントとは別のアカウント宛てに発行されたものです。何も変更していません。現在のセッションを終了したい場合は、このサイトから直接サインアウトしてください。
 
 # エンドユーザー・ポータルのログイン（OIDC アプリを介さず IdP のアカウント画面へ直接サインインする）。
 portal-login-title = アカウントにサインイン
@@ -91,6 +92,7 @@ admin-client-field-status = 状態
 admin-client-field-client-credentials = サーバ間連携を許可する（client_credentials）
 admin-client-field-client-credentials-hint = 利用者を介さずクライアント自身の資格情報でアクセストークンを取得できるようにします。ID Token・Refresh Token は発行しません。confidential クライアントのみ有効です。
 admin-client-field-auth-method = トークンエンドポイント認証方式
+admin-client-field-auth-method-hint = /token・/introspect・/revoke へシークレットをどう提示するかです。client_secret_basic は Authorization ヘッダを使います（推奨）。client_secret_post は client_id と client_secret をリクエストボディに載せます。1 回の要求で両方を提示すると拒否されます。
 admin-client-field-grants = グラント種別
 admin-client-field-created = 作成日時
 admin-client-field-updated = 更新日時
@@ -508,6 +510,8 @@ api-client-scope-unsupported = スコープ「{ $value }」は対応していま
 api-client-scope-duplicate = スコープ「{ $value }」が重複しています。
 api-client-scopes-missing-openid = スコープに openid を含めてください。
 api-client-secret-public = public クライアントにはクライアントシークレットがありません。
+api-client-auth-method-invalid = クライアント認証方式が無効です。client_secret_basic または client_secret_post を指定してください。
+api-client-auth-method-public = public クライアントにはクライアント認証方式を設定できません。
 api-member-already = その利用者はすでにこのテナントのメンバーです。
 api-invitation-not-found = 指定された招待が見つかりません。
 api-invitation-invalid-or-expired = この招待は無効か有効期限が切れています。管理者に再発行を依頼してください。

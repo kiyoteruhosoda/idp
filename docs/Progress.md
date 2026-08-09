@@ -44,10 +44,9 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 | 5 | AP11 | AP9 の contract フェーズ（TOTP/WebAuthn の秘密を `user_authenticators` へ集約し、`user_totp_secrets` / `user_webauthn_credentials` を撤去）（⬜未着手） | 中 | 中 | 小 | 中 |
 | 5 | AP12 | SAML 外部 IdP（AP10 は OIDC のみ実装。`external_identity_providers` の protocol 拡張が要る）（⬜未着手） | 大 | 中 | 小 | 大 |
 | 5 | G11 | web crate に統合テストが無い（`crates/web/tests/` 不在。ルータ経由の検証は `scripts/e2e.sh` 頼み）（⬜未着手） | 中 | 中 | 小 | 中 |
-| 5 | G12 | `/authorize` の任意パラメータの残り（`id_token_hint`・`response_mode=form_post`・`prompt=select_account` 未対応。`login_hint`・`ui_locales` は対応済み）（🚧進行中） | 中 | 中 | 小 | 中 |
+| 5 | G12 | `/authorize` の任意パラメータの残り（`response_mode=form_post`・`prompt=select_account` 未対応。`login_hint`・`ui_locales`・`id_token_hint` は対応済み）（🚧進行中） | 中 | 中 | 小 | 中 |
 | 3 | SEC10 | `/token`・`/introspect`・`/revoke` にレート制限が無い（Argon2 増幅型 DoS）（⬜未着手） | 小 | 小 | 中 | 小 |
 | 3 | AP6 | アカウントロックの管理者解除（仕様 §17.1・§24.6。`locked_until` を即時クリアする管理操作。現状は期限経過待ちのみ）と段階的ロック（⬜未着手） | 小 | 小 | 中 | 小 |
-| 3 | G3 | `client_secret_post` 未対応（`client_secret_basic` / `none` のみ。RP ライブラリ既定との相互運用性）（⬜未着手） | 小 | 中 | 小 | 小 |
 | 3 | G8 | `audit_log` に絞り込み用の索引（`client_id`・`user_id`・`result`・複合 `(tenant_id, occurred_at)`）と保持期間の仕組みが無い（`log` にはある）（⬜未着手） | 小 | 中 | 小 | 小 |
 | 2 | AP13 | SMS OTP の送信経路が無い（認証方式・認証器種別としては定義済みだが、送信アダプタと登録画面が未実装）（⬜未着手） | 中 | 小 | 小 | 中 |
 | 2 | G6 | メトリクスが無い（`/metrics` 非公開。ログイン成功率・トークン発行レート・レイテンシ・DB プール枯渇を監視できない）（⬜未着手） | 中 | 中 | 小 | 小 |
@@ -159,23 +158,14 @@ web の `X-Forwarded-For` ゲート（SEC1）・CSRF 種の `__Host-` 束縛（S
 client_secret は Argon2 照合（`crates/core/src/application/token.rs`）で総当たりは非現実的だが、
 メモリハード関数の CPU/メモリ増幅型 DoS が成立する。
 
-### 機能・運用のギャップ（G3・G6〜G8・G11・G12）
+### 機能・運用のギャップ（G6〜G8・G11・G12）
 
 セキュリティ（SEC）・認証仕様（AP）とは別軸で、**IdP としての機能欠落・運用性**を対象にした
-レビューで検出した課題。G1（CORS）・G2（期限切れ GC）・G9（シングルインスタンス前提の明文化）は
-対応済み（`CHANGELOG.md` 参照）。良好な点（回帰させない）: DDD 4層と crate 境界の一致（web は
-sqlx に依存できない）、i18n の en/ja キー完全一致、設定の出所区分（`Builtin`/`EnvLocked`/
-`DbManaged`）の単一定義、テナント分離の統合テスト、ADR による設計判断の追跡可能性。
-
-#### G3. `client_secret_post` 未対応
-
-`/token` のクライアント認証は `Authorization: Basic` のみ（`crates/api/src/presentation/handlers/token.rs`、
-`TokenCommand` に `client_secret` フィールドが無い）。Discovery も
-`token_endpoint_auth_methods_supported: ["client_secret_basic", "none"]`。RFC 6749 §2.3.1 は
-`client_secret_basic` を推奨しつつ `client_secret_post` の受け入れも認めており、実際の RP
-ライブラリ・SaaS 連携には `client_secret_post` を既定にするものが多い。相互運用の実害があるわりに
-実装は body から 2 フィールドを読むだけ。対策: body での受け取りを追加し Discovery に広告する
-（Basic と body の**併用は `invalid_request`** とする）。
+レビューで検出した課題。G1（CORS）・G2（期限切れ GC）・G3（`client_secret_post`）・
+G9（シングルインスタンス前提の明文化）は対応済み（`CHANGELOG.md` 参照）。良好な点（回帰させない）:
+DDD 4層と crate 境界の一致（web は sqlx に依存できない）、i18n の en/ja キー完全一致、
+設定の出所区分（`Builtin`/`EnvLocked`/`DbManaged`）の単一定義、テナント分離の統合テスト、
+ADR による設計判断の追跡可能性。
 
 #### G6. メトリクスが無い
 
@@ -215,10 +205,9 @@ web はログイン・同意・MFA・パスキー・管理コンソールとい�
 ところまで実装済み（AP3 と同じ 0028）。Discovery の広告（`response_modes_supported`・
 `prompt_values_supported`・`request_parameter_supported`・`claims_parameter_supported`・
 `acr_values_supported`・`ui_locales_supported`）も出している。`login_hint` / `ui_locales` の
-web での消費も対応済み（`CHANGELOG.md` 参照）。残っているのは:
+web での消費と `id_token_hint`（RP-initiated logout）も対応済み（`CHANGELOG.md` 参照）。
+残っているのは:
 
-- **`id_token_hint`** — `/logout`（RP-initiated logout）で未使用。`post_logout_redirect_uri` の
-  検証を id_token_hint に紐づけられない。
 - **`response_mode=form_post`** — 現状 `query` 固定。最終リダイレクトを組み立てるのは web 側の
   複数経路（resume・ログイン成功・同意承認）なので、api が「URL」ではなく「送信先 + パラメータ」を
   返す形への変更が要る。

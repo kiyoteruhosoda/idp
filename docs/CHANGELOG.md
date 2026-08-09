@@ -1,3 +1,55 @@
+## 2026-08-09（G12: RP-initiated logout の `id_token_hint`）
+
+- **`id_token_hint` を RP-initiated logout で検証・利用するようにした（G12。OIDC RP-Initiated
+  Logout 1.0 §2）。** これまで web はクエリを受け取るだけで api へ渡しておらず、`/logout` は
+  「誰の・どの RP のログアウト要求か」を確かめる手掛かりを一つも持っていなかった。web が hint を
+  api へ転送し、api が署名（退役済みを含む署名鍵の `kid` 引き）と `iss`（要求テナントの合成
+  issuer）を検証する。
+  - **`exp` は見ない。** hint は過去に発行した ID Token を指すもので、期限切れが普通である
+    （同 §2 が明示的に許している）。代わりに `typ` が `JWT` であることを確かめ、Access Token
+    （`at+jwt`）が hint として通らないようにした。
+  - **`aud` が `post_logout_redirect_uri` の照合先になる。** 署名検証を通った hint は「本 IdP が
+    実際にその RP へ発行した ID Token」であり、自己申告の `client_id` パラメータより強い根拠に
+    なる。両方あって食い違う場合はどちらも信用しない。検証を通らない hint では**リダイレクトを
+    返さない**（確かめられない相手へブラウザを送り返さない）。`client_id` も hint も無い従来の
+    要求は、これまでどおりテナント内のいずれかの登録 URI で通す。
+  - **`sub` が現在ログイン中の利用者と違うならセッションを終了しない。** hint は「この利用者を
+    ログアウトさせたい」という指定であり、別人のセッションを落とすのは指定に反する。同じ
+    ブラウザで別の人がログインし直した後に、前の利用者ぶんのログアウト要求が届く経路が現実に
+    存在する。このとき api は通常の成功ではなく `subject_mismatch` を返し、**web は SSO Cookie も
+    破棄しない** —— DB にセッションを残したまま Cookie だけ消すと、ブラウザからそこへ戻れない
+    宙ぶらりんの状態になり、守ろうとした別利用者のログイン状態を結局は壊してしまう。
+  - 検証を通らない hint でも**セッションの終了自体は続ける**（ログアウトは冪等で、止めると
+    「ログアウトしたのにログインしたまま」という利用者側の不利益になる）。
+  - **付随して `/revoke` の種別フォールバックを直した。** `token_type_hint` を伴わない
+    access_token の失効要求が、refresh_token としての UPDATE が 0 行でも「失効させた」と
+    判定され、access_token 側の失効を一度も試さないまま 200 を返していた（RFC 7009 §2.1 は
+    hint が外れたら他の種別も試すことを求めている）。`RefreshTokenRepository::revoke` が
+    失効行数を返すようにして判定を実体に合わせた。
+
+## 2026-08-09（G3: `client_secret_post` に対応）
+
+- **トークン系エンドポイントのクライアント認証に `client_secret_post` を追加した（G3。migration 0030）。**
+  従来は `Authorization: Basic`（`client_secret_basic`）だけを受け付けていた。RFC 6749 §2.3.1 は
+  Basic を推奨しつつ body での提示も認めており、実際の RP ライブラリ・SaaS 連携には
+  `client_secret_post` を既定にするものが多い。方式が合わないだけで連携できない状態を解消した。
+  - **どちらを使うかはクライアントの登録値（`token_endpoint_auth_method`）が決める。** 両方を常時
+    受け付ける実装にはしない —— そうすると `token_endpoint_auth_method` が「設定できるが効かない
+    値」になり、Basic 前提で登録した RP の secret が body 経由でも通ってしまう。confidential
+    クライアントの登録・編集（管理 API・管理コンソール）で選べるようにし、既定は
+    `client_secret_basic` のまま。`none` は confidential では選べない（secret を持ったまま
+    認証が外れるため）。
+  - **1 リクエストで両方を提示したら `invalid_request`**（§2.3.1）。片方だけ照合すると「Basic には
+    誤った secret、body には正しい secret」のような要求で、どちらが検証されたのかリクエストから
+    決められなくなる。
+  - **`/token` だけでなく `/introspect`・`/revoke` も同じ方式**（RFC 7009 §2.1・RFC 7662 §2.1）。
+    3 経路に散っていた Basic ヘッダの復号と方式判定を、`presentation::client_auth`（取り出し）と
+    `application::client_authentication`（どの secret を照合するかの選択）へ集約した。方式を
+    増やしたときに取りこぼす経路が出ないようにするため。
+  - Discovery に `token_endpoint_auth_methods_supported` の更新と、
+    `revocation_endpoint_auth_methods_supported`・`introspection_endpoint_auth_methods_supported`
+    を追加した。
+
 ## 2026-08-09（G12: `login_hint` / `ui_locales` を web が消費する）
 
 - **認可要求の `login_hint` / `ui_locales` をログイン画面へ反映した（G12）。** どちらも

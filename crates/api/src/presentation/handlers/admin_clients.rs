@@ -7,7 +7,7 @@ use crate::application::client_management::{
     ClientManagementError, RegisterClientCommand, UpdateClientCommand,
 };
 use crate::domain::client::Client;
-use crate::domain::values::{ClientStatus, ClientType};
+use crate::domain::values::{ClientStatus, ClientType, TokenEndpointAuthMethod};
 use crate::presentation::admin::{IdpAdmin, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
@@ -53,12 +53,14 @@ pub async fn create_client(
     let client_type = ClientType::parse(&body.client_type).map_err(|_| {
         ApiError::BadRequest(ApiMessages::new(locale).get("api-client-type-invalid"))
     })?;
+    let token_endpoint_auth_method = parse_auth_method(&body.token_endpoint_auth_method, locale)?;
     let cmd = RegisterClientCommand {
         app_name: body.app_name,
         client_type,
         redirect_uris: body.redirect_uris,
         scopes: body.scopes,
         allow_client_credentials: body.allow_client_credentials.unwrap_or(false),
+        token_endpoint_auth_method,
         post_logout_redirect_uris: body.post_logout_redirect_uris.unwrap_or_default(),
         frontchannel_logout_uri: body.frontchannel_logout_uri,
         backchannel_logout_uri: body.backchannel_logout_uri,
@@ -181,6 +183,7 @@ pub async fn update_client(
         frontchannel_logout_uri: body.frontchannel_logout_uri.map(Some),
         backchannel_logout_uri: body.backchannel_logout_uri.map(Some),
         allow_client_credentials: body.allow_client_credentials,
+        token_endpoint_auth_method: parse_auth_method(&body.token_endpoint_auth_method, locale)?,
     };
 
     let client = state
@@ -254,6 +257,20 @@ pub async fn list_client_status(
             })
             .collect(),
     ))
+}
+
+/// `token_endpoint_auth_method` の文字列をパースする（G3。未指定は `None` ＝ 変更・既定のまま）。
+fn parse_auth_method(
+    raw: &Option<String>,
+    locale: ApiLocale,
+) -> Result<Option<TokenEndpointAuthMethod>, ApiError> {
+    raw.as_deref()
+        .filter(|s| !s.is_empty())
+        .map(TokenEndpointAuthMethod::parse)
+        .transpose()
+        .map_err(|_| {
+            ApiError::BadRequest(ApiMessages::new(locale).get("api-client-auth-method-invalid"))
+        })
 }
 
 fn client_response(c: &Client) -> ClientResponse {

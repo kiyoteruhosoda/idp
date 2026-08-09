@@ -197,6 +197,24 @@ pub fn decoding_key_from_public_pem(public_pem: &str) -> anyhow::Result<Decoding
         .map_err(|e| anyhow::anyhow!("build decoding key from PEM: {e}"))
 }
 
+/// 署名鍵レコード（algorithm 文字列 + 公開鍵 PEM）から検証用の `DecodingKey` と `Algorithm` を作る。
+///
+/// `decoding_key_from_public_pem` と違い ES256 の鍵も扱える。退役済みの鍵で署名された古い
+/// トークン（`id_token_hint` 等）を検証する経路は、鍵の algorithm を決め打ちにできない。
+pub fn decoding_key_for(
+    algorithm: &str,
+    public_pem: &str,
+) -> anyhow::Result<(DecodingKey, Algorithm)> {
+    let jwk = public_jwk("verify", algorithm, public_pem)?;
+    let key = decoding_key_from_jwk(&jwk)?;
+    let alg = match algorithm {
+        "RS256" => Algorithm::RS256,
+        "ES256" => Algorithm::ES256,
+        other => anyhow::bail!("unsupported algorithm for verification: {other}"),
+    };
+    Ok((key, alg))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -26,6 +26,7 @@ saml-error-expired = The sign-in request has expired. Please start over from the
 logout-title = Sign out
 logout-in-progress-message = Signing you out…
 logout-done-message = You have been signed out.
+logout-subject-mismatch-message = This sign-out request was issued for a different account than the one currently signed in, so nothing was changed. Sign out from this site directly if you want to end the current session.
 
 # End-user portal login (standalone sign-in to the IdP account page, without an OIDC app).
 portal-login-title = Sign in to your account
@@ -91,6 +92,7 @@ admin-client-field-status = Status
 admin-client-field-client-credentials = Allow server-to-server access (client_credentials)
 admin-client-field-client-credentials-hint = Lets this client obtain access tokens with its own credentials, without an end user. No ID token or refresh token is issued. Confidential clients only.
 admin-client-field-auth-method = Token endpoint auth method
+admin-client-field-auth-method-hint = How the client presents its secret to /token, /introspect and /revoke. client_secret_basic uses the Authorization header (recommended); client_secret_post puts client_id and client_secret in the request body. Presenting both in one request is rejected.
 admin-client-field-grants = Grant types
 admin-client-field-created = Created at
 admin-client-field-updated = Updated at
@@ -508,6 +510,8 @@ api-client-scope-unsupported = The scope "{ $value }" is not supported.
 api-client-scope-duplicate = The scope "{ $value }" is listed more than once.
 api-client-scopes-missing-openid = The scopes must include openid.
 api-client-secret-public = Public clients have no client secret.
+api-client-auth-method-invalid = Invalid client authentication method. Choose client_secret_basic or client_secret_post.
+api-client-auth-method-public = Public clients cannot use a client authentication method.
 api-member-already = That user is already a member of this tenant.
 api-invitation-not-found = That invitation was not found.
 api-invitation-invalid-or-expired = This invitation is invalid or has expired. Ask an administrator to issue a new one.

@@ -101,8 +101,8 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
         row.as_ref().map(map_row).transpose()
     }
 
-    async fn revoke(&self, token_hash: &str, revoked_at: DateTime<Utc>) -> Result<()> {
-        sqlx::query(
+    async fn revoke(&self, token_hash: &str, revoked_at: DateTime<Utc>) -> Result<u64> {
+        let result = sqlx::query(
             "UPDATE refresh_tokens SET revoked_at = ? \
              WHERE token_hash = ? AND revoked_at IS NULL",
         )
@@ -111,7 +111,7 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
         .execute(&self.pool)
         .await
         .map_err(repo_err)?;
-        Ok(())
+        Ok(result.rows_affected())
     }
 
     async fn revoke_family(

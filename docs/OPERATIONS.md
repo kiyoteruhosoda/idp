@@ -102,9 +102,19 @@ api・web を別プロセスで起動し、`/authorize`→web `/login`→`/token
 直接呼ぶときは、この 2 つのいずれかのオリジンのページから呼ぶ。`curl` のように両ヘッダを送らない
 クライアントは影響を受けない。
 
+confidential クライアントの認証方式は `token_endpoint_auth_method` で選ぶ（管理コンソールの
+登録・編集フォームにも項目がある）。既定は `client_secret_basic`（`Authorization: Basic` ヘッダ）で、
+RP 側のライブラリが body に `client_id` / `client_secret` を載せる実装なら `client_secret_post` を
+選ぶ。`/token`・`/introspect`・`/revoke` は登録した方式でのみ認証を受け付け、1 回の要求で両方を
+提示すると `invalid_request` になる。方式の変更で `client_secret` の値は変わらない（提示場所だけが
+変わる）。public クライアントには設定できない（常に `none`）。
+
 ログアウト系 URI（`post_logout_redirect_uris` / `frontchannel_logout_uri` /
 `backchannel_logout_uri`）は `redirect_uris` と同じ制約（絶対 http(s)・フラグメント禁止・
-ワイルドカード禁止）を満たす必要がある。`backchannel_logout_uri` はさらに、ループバック・
+ワイルドカード禁止）を満たす必要がある。`post_logout_redirect_uri` へ実際に戻すには、
+ログアウト要求で **`id_token_hint`（推奨）か `client_id` のどちらか**を送り、その RP に登録済みの
+URI を指定する。`id_token_hint` は期限切れでもよいが、他テナントの ID Token・Access Token は
+受け付けない。どちらも送らない場合はテナント内のいずれかの RP に登録された URI であれば通る。`backchannel_logout_uri` はさらに、ループバック・
 プライベート・リンクローカル等のアドレスを**リテラルで**指定できない（内部サービスへ向けるときは
 ホスト名で指定する）。
 

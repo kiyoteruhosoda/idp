@@ -650,6 +650,9 @@ impl AppState {
             users.clone(),
             clients.clone(),
             codes,
+            // `id_token_hint` の署名検証に使う（G12）。退役済みの鍵で署名された古い ID Token も
+            // hint として届くため、ACTIVE 鍵ではなく kid 引きのリポジトリを渡す。
+            signing_keys.clone(),
             audit.clone(),
             clock.clone(),
             config.issuer().to_string(),

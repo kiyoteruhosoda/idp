@@ -105,6 +105,11 @@ sqlx マイグレーション（MariaDB）を管理する。
   移送は contract フェーズ（`docs/Progress.md` AP15）へ分ける。`users.email` も取り込まない
   （取り込むと適用した瞬間からメールでログインできてしまい、認証の入り口が黙って広がる）。
   `down` は表ごと削除する（追加登録した識別子だけを失い、パスワードログインは通り続ける）。
+- `0030_client_secret_post`: `clients.token_endpoint_auth_method` の許可値へ `client_secret_post` を
+  追加する（G3。RFC 6749 §2.3.1）。CHECK 制約の張り替えのみで既存行は変更しない（expand）。
+  多くの RP ライブラリ・SaaS 連携が body での secret 提示を既定にするため、方式が合わないだけで
+  連携できない状態を解消する。`down` は残存する `client_secret_post` 行を `client_secret_basic` へ
+  倒してから旧 CHECK へ戻す（`none` へ倒すと confidential クライアントの認証が黙って外れるため）。
 
 root テナントの UUID は固定値 `00000000-0000-7000-8000-000000000001`（全環境共通・git 管理。ADR-0011）。
 管理者ログイン URL は `/00000000-0000-7000-8000-000000000001/...`。

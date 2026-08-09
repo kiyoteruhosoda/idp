@@ -810,7 +810,7 @@ mod tests {
         ) -> DomainResult<Option<RefreshToken>> {
             unreachable!()
         }
-        async fn revoke(&self, _h: &str, _now: DateTime<Utc>) -> DomainResult<()> {
+        async fn revoke(&self, _h: &str, _now: DateTime<Utc>) -> DomainResult<u64> {
             unreachable!()
         }
         async fn exists_by_parent_hash(&self, _p: &str) -> DomainResult<bool> {

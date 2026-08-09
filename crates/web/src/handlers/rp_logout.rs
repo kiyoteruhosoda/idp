@@ -6,7 +6,10 @@
 //! `state` 付与は api が担い、web は **SSO Cookie の破棄**と、front-channel logout がある場合の
 //! iframe ページ描画を担う。
 //!
-//! `id_token_hint` は受け付けるが現実装では検証に使わない（従来の api `/logout` と同じ挙動）。
+//! `id_token_hint` は api へそのまま転送する（G12）。署名・issuer の検証と、`aud` による
+//! `post_logout_redirect_uri` の照合・`sub` の突き合わせは api が行う（web は鍵を持たない）。
+//! hint が**別の利用者**を指していた場合、api は何も変更せず `SubjectMismatch` を返す。このとき
+//! web は SSO Cookie を破棄しない（破棄すると DB にだけセッションが残り、ブラウザから戻れなくなる）。
 
 use super::locale;
 use crate::client_ip::ClientIp;
@@ -38,6 +41,7 @@ pub async fn logout(
         tenant_id: Some(tenant.0.clone()),
         sso_session_id: cookies::get(&headers, cookies::SSO_SESSION_COOKIE),
         client_id: query.client_id,
+        id_token_hint: query.id_token_hint,
         post_logout_redirect_uri: query.post_logout_redirect_uri,
         state: query.state,
         ip_address: ctx.ip_address,
@@ -93,6 +97,16 @@ pub async fn logout(
                 });
                 (set_cookies.into_headers(), Html(body)).into_response()
             }
+        }
+        // `id_token_hint` が別の利用者を指していた（G12）。api は何も変更していないので、
+        // **Cookie も消さない** —— 消すと DB にセッションが生きたままブラウザから戻れなくなり、
+        // 守ろうとした別利用者のログイン状態を結局は壊してしまう。
+        InternalRpLogoutResponse::SubjectMismatch => {
+            let body = render(&MessagePage {
+                title: messages.get("logout-title"),
+                message: messages.get("logout-subject-mismatch-message"),
+            });
+            (StatusCode::BAD_REQUEST, Html(body)).into_response()
         }
         InternalRpLogoutResponse::Internal => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
