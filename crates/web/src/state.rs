@@ -32,4 +32,13 @@ impl WebState {
     pub fn set_cookies(&self) -> SetCookies {
         SetCookies::new(self.config.cookie_policy().clone())
     }
+
+    /// オリジン束縛する web ローカル Cookie（CSRF の種・MFA チケット・SAML 進行状態）の実名。
+    ///
+    /// HTTPS では `__Host-` を前置し、同一親ドメインの別サブドメインからの上書き・強制を防ぐ
+    /// （SEC5）。読み出しと発行の両方でこれを通すこと（片方だけ素の名前を使うと、値が読めずに
+    /// 毎回 CSRF 不一致になる）。
+    pub fn origin_bound_cookie(&self, base_name: &str) -> String {
+        self.config.cookie_policy().origin_bound_name(base_name)
+    }
 }

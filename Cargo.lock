@@ -1419,6 +1419,7 @@ dependencies = [
  "chrono",
  "hex",
  "hmac",
+ "http",
  "psl",
  "serde",
  "serde_json",

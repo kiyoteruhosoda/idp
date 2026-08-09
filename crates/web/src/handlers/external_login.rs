@@ -13,6 +13,7 @@
 //! ADR-0018 と同じ理由（api はブラウザ Cookie を読まない）で、`state` は外部 IdP から戻る値だけを
 //! 鍵として使う設計にしているため。
 
+use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::handlers::{forwarded_context, found, locale};
@@ -80,6 +81,7 @@ pub async fn start(
 pub async fn callback(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Query(query): Query<CallbackQuery>,
@@ -111,7 +113,7 @@ pub async fn callback(
         );
     };
 
-    let ctx = forwarded_context(&headers, &correlation);
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
     let request = InternalExternalCallbackRequest {
         tenant_id: Some(tenant.0.clone()),
         state: external_state,

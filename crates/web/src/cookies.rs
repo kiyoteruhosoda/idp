@@ -10,6 +10,12 @@
 //! - **セッション**（`sso_session_id`・`auth_session_id`）: `set_session` / `expire_session`。
 //!   旧 ADR-0012 構成でブラウザに残った `Domain` 付き Cookie の掃除（削除併送）を伴う。
 //! - **web ローカル**（`lang`・CSRF・MFA チケット）: `set_local` / `expire_local`。
+//!
+//! web ローカルのうち **CSRF の種・MFA チケット・SAML 進行状態**は名前を `__Host-` 前置にして
+//! オリジンへ束縛する（SEC5）。Cookie はサブドメイン間で分離されないため、同一親ドメインの別
+//! サブドメインを奪った攻撃者が `Domain=親` の同名 Cookie を強制でき、種を固定して CSRF トークンを
+//! 偽造できてしまう。名前の解決は `WebState::origin_bound_cookie` に集約してあり、読み出し
+//! （[`get`]）と発行（[`SetCookies::set_local`]）は必ず同じ実名を使う。
 
 use axum::http::header::{COOKIE, SET_COOKIE};
 use axum::http::{HeaderMap, HeaderName};
@@ -18,13 +24,17 @@ use axum::response::AppendHeaders;
 pub use idp_contracts::cookies::{CookiePolicy, AUTH_SESSION_COOKIE, SSO_SESSION_COOKIE};
 
 /// 管理ログインフォームの CSRF 用 Cookie（GET で発行する推測不能な乱数。同期トークンの種）。
+/// **オリジン束縛**（`WebState::origin_bound_cookie` 経由で `__Host-` 前置。SEC5）。
 pub const ADMIN_CSRF_COOKIE: &str = "admin_csrf_id";
 /// エンドユーザー・ポータルのログインフォーム CSRF 用 Cookie（`admin_csrf_id` と同じ仕組み・別名前空間）。
+/// **オリジン束縛**（SEC5）。
 pub const PORTAL_CSRF_COOKIE: &str = "portal_csrf_id";
 /// ポータルの TOTP 入力ステップで `mfa_ticket`（署名付き短命チケット）を保持する Cookie。
+/// **オリジン束縛**（SEC5）。
 pub const PORTAL_MFA_COOKIE: &str = "portal_mfa_ticket";
 /// SAML SSO の進行状態 id を保持する Cookie。SSO 未確立で `/saml/continue` から
 /// ログインへ誘導したあと、ログイン成功時にフローへ復帰するために使う（web ローカル）。
+/// **オリジン束縛**（SEC5）。
 pub const SAML_REQUEST_COOKIE: &str = "saml_request_id";
 /// 表示言語の選択を保持する Cookie（`ja` / `en`。MT15。決定チェーンの優先度3）。
 pub const LANG_COOKIE: &str = "lang";

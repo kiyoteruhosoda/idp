@@ -34,6 +34,7 @@ pub mod user_settings;
 pub mod vendor_assets;
 pub mod verify_email;
 
+use crate::client_ip::ClientIp;
 use crate::correlation::CorrelationId;
 use crate::i18n::Locale;
 use axum::http::header::{HeaderValue, ACCEPT_LANGUAGE, LOCATION, USER_AGENT};
@@ -75,18 +76,18 @@ pub(crate) struct ForwardedContext {
     pub user_agent: Option<String>,
 }
 
-/// ブラウザからのリクエストヘッダを解釈し、api へ転送する接続元情報を組み立てる。
-/// IP はリバースプロキシ配下を想定して `X-Forwarded-For` の先頭値を使う。
+/// api へ転送する接続元情報を組み立てる。
+///
+/// IP は**ここでヘッダから読まない**。`X-Forwarded-For` を信じてよいかの判定
+/// （`TRUST_FORWARDED_HEADERS`）と接続元アドレスへのフォールバックは
+/// [`crate::client_ip::resolve_client_ip`] middleware が一括で行い、結果を `Extension<ClientIp>`
+/// で渡してくる（SEC1）。ハンドラごとにヘッダを読むとゲートの掛け忘れが混ざるため。
 pub(crate) fn forwarded_context(
     headers: &HeaderMap,
     correlation: &CorrelationId,
+    client_ip: &ClientIp,
 ) -> ForwardedContext {
-    let ip_address = headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty());
+    let ip_address = client_ip.0.clone();
     let user_agent = headers
         .get(USER_AGENT)
         .and_then(|v| v.to_str().ok())

@@ -9,6 +9,7 @@
 
 pub mod admin_dto;
 pub mod api_client;
+pub mod client_ip;
 pub mod config;
 pub mod cookies;
 pub mod correlation;
@@ -82,10 +83,15 @@ pub async fn run() -> anyhow::Result<()> {
 
     tracing::info!(%addr, api_base_url, "IdP web server started");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal(restart.clone()))
-        .await
-        .context("web server error")?;
+    // `ConnectInfo` を有効にする（SEC1）。`TRUST_FORWARDED_HEADERS` が false のとき、
+    // `client_ip` middleware はここで入る TCP 接続元アドレスを採用する。
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal(restart.clone()))
+    .await
+    .context("web server error")?;
 
     if restart.was_requested() {
         tracing::info!("exiting to be restarted by the process manager");

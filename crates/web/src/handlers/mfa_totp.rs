@@ -6,6 +6,7 @@
 //! * ログイン TOTP 画面（`/mfa/totp`）: パスワード認証後に TOTP 入力を求める。
 
 use super::locale;
+use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::dto::{FormPageQuery, TotpConfirmForm};
@@ -302,11 +303,12 @@ pub async fn verify_page(
 pub async fn verify(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Form(form): Form<TotpLoginForm>,
 ) -> Response {
-    let ctx = forwarded_context(&headers, &correlation);
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
     let auth_session_id = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE);
 
     let req = InternalVerifyTotpRequest {
@@ -481,6 +483,7 @@ fn render_verify_form(
 pub async fn send_email_code(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Form(form): Form<EmailCodeForm>,
@@ -499,7 +502,7 @@ pub async fn send_email_code(
         return see_other(&format!("{}/mfa/totp?error=csrf", tenant.prefix()));
     }
 
-    let ctx = forwarded_context(&headers, &correlation);
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
     let request = idp_contracts::auth::InternalEmailOtpRequest {
         tenant_id: Some(tenant.0.clone()),
         auth_session_id: Some(auth_session_id),

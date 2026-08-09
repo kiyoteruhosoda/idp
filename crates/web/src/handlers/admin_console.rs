@@ -13,6 +13,7 @@
 
 use super::locale;
 use crate::api_client::AdminSession;
+use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::csrf::admin_csrf_token;
@@ -132,13 +133,18 @@ pub async fn login_page(
     // CSRF の種（推測不能な乱数）を Cookie とフォーム双方へ渡す。既に有効な種 Cookie があれば
     // 使い回して TTL を延長する（GET のたびに回転させると複数タブで開いた古いフォームが必ず
     // CSRF 不一致になる。種はセッション非依存の乱数であり、使い回しても保護強度は変わらない）。
-    let csrf_id = cookies::get(&headers, cookies::ADMIN_CSRF_COOKIE)
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| Uuid::new_v4().simple().to_string());
+    let csrf_id = cookies::get(
+        &headers,
+        &state.origin_bound_cookie(cookies::ADMIN_CSRF_COOKIE),
+    )
+    .filter(|s| !s.is_empty())
+    .unwrap_or_else(|| Uuid::new_v4().simple().to_string());
     let csrf = admin_csrf_token(&csrf_id, state.config.csrf_secret());
-    let set_cookies = state
-        .set_cookies()
-        .set_local(cookies::ADMIN_CSRF_COOKIE, &csrf_id, 3600);
+    let set_cookies = state.set_cookies().set_local(
+        &state.origin_bound_cookie(cookies::ADMIN_CSRF_COOKIE),
+        &csrf_id,
+        3600,
+    );
     (
         set_cookies.into_headers(),
         Html(render_login_form(
@@ -154,12 +160,16 @@ pub async fn login_page(
 pub async fn login(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> Response {
     // CSRF 検証（Cookie の種からトークンを再計算して照合）。FluentBundle は Send でないため各分岐で生成。
-    let csrf_id = cookies::get(&headers, cookies::ADMIN_CSRF_COOKIE);
+    let csrf_id = cookies::get(
+        &headers,
+        &state.origin_bound_cookie(cookies::ADMIN_CSRF_COOKIE),
+    );
     let csrf_ok = csrf_id
         .as_deref()
         .filter(|s| !s.is_empty())
@@ -176,7 +186,7 @@ pub async fn login(
     }
     let csrf = admin_csrf_token(&csrf_id.unwrap_or_default(), state.config.csrf_secret());
 
-    let ctx = forwarded_context(&headers, &correlation);
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
     let request = InternalAdminAuthenticateRequest {
         tenant_id: Some(tenant.0.clone()),
         username: form.username,
@@ -209,7 +219,7 @@ pub async fn login(
                     &sso_session_id,
                     sso_absolute_ttl_secs,
                 )
-                .expire_local(cookies::ADMIN_CSRF_COOKIE);
+                .expire_local(&state.origin_bound_cookie(cookies::ADMIN_CSRF_COOKIE));
             (set_cookies.into_headers(), found(&admin_home_path(&tenant))).into_response()
         }
         InternalAdminAuthenticateResponse::PasswordChangeRequired { username } => {
@@ -284,11 +294,15 @@ pub async fn password_change_page(Extension(tenant): Extension<WebTenant>) -> Re
 pub async fn password_change(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Form(form): Form<ForcedPasswordChangeForm>,
 ) -> Response {
-    let csrf_id = cookies::get(&headers, cookies::ADMIN_CSRF_COOKIE);
+    let csrf_id = cookies::get(
+        &headers,
+        &state.origin_bound_cookie(cookies::ADMIN_CSRF_COOKIE),
+    );
     let csrf_ok = csrf_id
         .as_deref()
         .filter(|s| !s.is_empty())
@@ -320,7 +334,7 @@ pub async fn password_change(
             .into_response();
     }
 
-    let ctx = forwarded_context(&headers, &correlation);
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
     let request = InternalAdminChangePasswordRequest {
         tenant_id: Some(tenant.0.clone()),
         username: form.username.clone(),
@@ -354,7 +368,7 @@ pub async fn password_change(
                     &sso_session_id,
                     sso_absolute_ttl_secs,
                 )
-                .expire_local(cookies::ADMIN_CSRF_COOKIE);
+                .expire_local(&state.origin_bound_cookie(cookies::ADMIN_CSRF_COOKIE));
             (set_cookies.into_headers(), found(&admin_home_path(&tenant))).into_response()
         }
         InternalAdminChangePasswordResponse::RateLimited => reshow_password_change(
@@ -431,10 +445,11 @@ pub async fn password_change(
 pub async fn logout(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
 ) -> Response {
-    let ctx = forwarded_context(&headers, &correlation);
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
     if let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) {
         let _ = state
             .api

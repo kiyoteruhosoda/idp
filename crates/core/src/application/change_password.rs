@@ -141,7 +141,8 @@ impl ChangePasswordService {
         let Some(session_id) = cmd.auth_session_id.as_deref().filter(|s| !s.is_empty()) else {
             return ChangePasswordOutcome::SessionExpired;
         };
-        let session = match self.auth_sessions.find_by_id(tenant_id, session_id).await {
+        // 認証成功時に id を再生成する（SEC7）ため mut。
+        let mut session = match self.auth_sessions.find_by_id(tenant_id, session_id).await {
             Ok(Some(s)) => s,
             Ok(None) => return ChangePasswordOutcome::SessionExpired,
             Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
@@ -315,13 +316,16 @@ impl ChangePasswordService {
         );
 
         // 8. auth_time と `sid` を設定する（パスワード変更完了時刻を認証時刻とする）。
+        //    id も再生成する（SEC7）。
+        let rotated_id = crypto::random_hex(32);
         if let Err(e) = self
             .auth_sessions
-            .set_authenticated_user(&session.id, user.id, now, Some(&sso.sid()))
+            .set_authenticated_user(&session.id, &rotated_id, user.id, now, Some(&sso.sid()))
             .await
         {
             return ChangePasswordOutcome::Internal(e.to_string());
         }
+        session.id = rotated_id;
 
         if let Err(e) = self.sso_sessions.create(&sso).await {
             return ChangePasswordOutcome::Internal(e.to_string());

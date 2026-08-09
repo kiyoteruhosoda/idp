@@ -432,7 +432,10 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "TRUST_FORWARDED_HEADERS",
-        shared_with_web: false,
+        // web も同じゲートを使う（SEC1）。ADR-0018 以降ログインの入口は web で、web が組み立てた
+        // IP がボディで api のレートリミッタ・監査ログへ渡る。web だけがヘッダを無条件に信じると
+        // api 側のゲートがログイン経路で迂回される（IP レート制限の回避・監査ログの汚染）。
+        shared_with_web: true,
         owner: SettingOwner::DbManaged,
         secret: false,
         restart_required: true,
@@ -440,7 +443,8 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         kind: SettingKind::Boolean,
         default_value: Some("false"),
         description: "リバースプロキシの `X-Forwarded-For` / `X-Forwarded-Proto` を信頼するか。\
-                      信頼できるプロキシ配下でのみ `true` にする（クライアント IP・スキーム判定に影響）。",
+                      信頼できるプロキシ配下でのみ `true` にする（クライアント IP・スキーム判定に影響）。\
+                      api と web の両方に効く。",
     },
     // api/web の security header を一致させる必要がある共有キー（MT26 / ADR-0013）。
     SettingDefinition {

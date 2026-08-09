@@ -301,7 +301,8 @@ impl PasskeyAuthenticationService {
         let Some(auth_session_id) = &challenge.auth_session_id else {
             return PasskeyAuthOutcome::Internal("no auth_session_id in challenge".to_string());
         };
-        let session = match self
+        // 認証結果の記録時に id を再生成する（SEC7）ため mut。
+        let mut session = match self
             .auth_sessions
             .find_by_id(tenant_id, auth_session_id)
             .await
@@ -362,14 +363,16 @@ impl PasskeyAuthenticationService {
             ctx.ip_address.clone(),
         );
 
-        // 10. auth_time と `sid` を設定する。
+        // 10. auth_time と `sid` を設定する（id も再生成する。SEC7）。
+        let rotated_id = crypto::random_hex(32);
         if let Err(e) = self
             .auth_sessions
-            .set_authenticated_user(&session.id, user_id, now, Some(&sso.sid()))
+            .set_authenticated_user(&session.id, &rotated_id, user_id, now, Some(&sso.sid()))
             .await
         {
             return PasskeyAuthOutcome::Internal(e.to_string());
         }
+        session.id = rotated_id;
 
         if let Err(e) = self.sso_sessions.create(&sso).await {
             return PasskeyAuthOutcome::Internal(e.to_string());

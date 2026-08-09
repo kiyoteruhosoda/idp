@@ -89,6 +89,9 @@ services:
       COOKIE_SECURE: ${COOKIE_SECURE:-}
       CSRF_SECRET: ${CSRF_SECRET:-}
       HSTS_MAX_AGE: ${HSTS_MAX_AGE:-}
+      # `X-Forwarded-For` を信頼してクライアント IP を採るか（SEC1。api と同値）。web が組み立てた
+      # IP が api のレート制限・監査ログの IP になるため、両サービスで同じ値にする。
+      TRUST_FORWARDED_HEADERS: ${TRUST_FORWARDED_HEADERS:-}
       # web 自身の公開オリジン（別ドメイン構成のみ。ADR-0012。api と同値）。
       PUBLIC_WEB_BASE_URL: ${PUBLIC_WEB_BASE_URL:-}
       COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}

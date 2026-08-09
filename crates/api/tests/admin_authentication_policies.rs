@@ -529,6 +529,13 @@ async fn require_mfa_policy_is_enforced_after_forced_password_change() {
         body["result"], "password_change_required",
         "generated password forces change: {body}"
     );
+    // パスワード検証を通った時点で `auth_session_id` は再生成される（SEC7）。以降は応答が返した
+    // 新しい値を使う（web も Cookie を差し替える）。CSRF トークンも新しい id から導出し直す。
+    let auth_session = body["auth_session_id"]
+        .as_str()
+        .expect("rotated auth_session_id")
+        .to_string();
+    let csrf = login_csrf(&auth_session, &env.csrf_secret);
 
     // 強制パスワード変更を完了しても、SSO・code は発行されず MFA 設定を要求される。
     let change_body = json!({

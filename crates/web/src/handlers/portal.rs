@@ -9,6 +9,7 @@
 //! と Cookie 組み立て・画面描画・リダイレクトのみを担う（管理コンソールのログインと同じ責務分担）。
 
 use super::locale;
+use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::csrf::portal_csrf_token;
@@ -50,14 +51,18 @@ pub async fn login_page(
     // 既に有効な種 Cookie があれば使い回して TTL を延長する。GET のたびに回転させると、複数タブで
     // ログイン画面を開いたときに古いタブのフォームが必ず CSRF 不一致になるため（種はセッション非依存の
     // 乱数であり、使い回しても保護強度は変わらない）。
-    let csrf_id = cookies::get(headers, cookies::PORTAL_CSRF_COOKIE)
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
+    let csrf_id = cookies::get(
+        headers,
+        &state.origin_bound_cookie(cookies::PORTAL_CSRF_COOKIE),
+    )
+    .filter(|s| !s.is_empty())
+    .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
     let csrf = portal_csrf_token(&csrf_id, state.config.csrf_secret());
-    let set_cookies =
-        state
-            .set_cookies()
-            .set_local(cookies::PORTAL_CSRF_COOKIE, &csrf_id, PORTAL_CSRF_TTL_SECS);
+    let set_cookies = state.set_cookies().set_local(
+        &state.origin_bound_cookie(cookies::PORTAL_CSRF_COOKIE),
+        &csrf_id,
+        PORTAL_CSRF_TTL_SECS,
+    );
     (
         set_cookies.into_headers(),
         Html(render(&PortalLogin {
@@ -75,12 +80,16 @@ pub async fn login_page(
 pub async fn login(
     state: &WebState,
     correlation: &CorrelationId,
+    client_ip: &ClientIp,
     tenant: &WebTenant,
     headers: &HeaderMap,
     form: LoginForm,
 ) -> Response {
     // CSRF 検証（Cookie の種からトークンを再計算して照合）。
-    let csrf_id = cookies::get(headers, cookies::PORTAL_CSRF_COOKIE);
+    let csrf_id = cookies::get(
+        headers,
+        &state.origin_bound_cookie(cookies::PORTAL_CSRF_COOKIE),
+    );
     let csrf_ok = csrf_id
         .as_deref()
         .filter(|s| !s.is_empty())
@@ -97,7 +106,7 @@ pub async fn login(
     }
     let csrf = portal_csrf_token(&csrf_id.unwrap_or_default(), state.config.csrf_secret());
 
-    let ctx = forwarded_context(headers, correlation);
+    let ctx = forwarded_context(headers, correlation, client_ip);
     let request = InternalPortalAuthenticateRequest {
         tenant_id: Some(tenant.0.clone()),
         username: form.username,
@@ -135,7 +144,7 @@ pub async fn login(
         InternalPortalAuthenticateResponse::MfaRequired { mfa_ticket } => {
             // `mfa_ticket` を Cookie 化して TOTP 入力画面へ。portal_csrf Cookie は MFA フォームで再利用する。
             let set_cookies = state.set_cookies().set_local(
-                cookies::PORTAL_MFA_COOKIE,
+                &state.origin_bound_cookie(cookies::PORTAL_MFA_COOKIE),
                 &mfa_ticket,
                 PORTAL_MFA_TTL_SECS,
             );
@@ -214,12 +223,16 @@ pub async fn password_change_page(Extension(tenant): Extension<WebTenant>) -> Re
 pub async fn password_change(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Form(form): Form<ForcedPasswordChangeForm>,
 ) -> Response {
     // CSRF 検証（ログイン時と同じ portal_csrf の種で照合する）。
-    let csrf_id = cookies::get(&headers, cookies::PORTAL_CSRF_COOKIE);
+    let csrf_id = cookies::get(
+        &headers,
+        &state.origin_bound_cookie(cookies::PORTAL_CSRF_COOKIE),
+    );
     let csrf_ok = csrf_id
         .as_deref()
         .filter(|s| !s.is_empty())
@@ -252,7 +265,7 @@ pub async fn password_change(
             .into_response();
     }
 
-    let ctx = forwarded_context(&headers, &correlation);
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
     let request = InternalPortalChangePasswordRequest {
         tenant_id: Some(tenant.0.clone()),
         username: form.username.clone(),
@@ -292,7 +305,7 @@ pub async fn password_change(
             // パスワード変更成功・MFA 必要（MFA ゲート）: `mfa_ticket` を Cookie 化して TOTP 入力画面へ。
             // portal_csrf Cookie は MFA フォームで再利用する（login の MfaRequired と同方式）。
             let set_cookies = state.set_cookies().set_local(
-                cookies::PORTAL_MFA_COOKIE,
+                &state.origin_bound_cookie(cookies::PORTAL_MFA_COOKIE),
                 &mfa_ticket,
                 PORTAL_MFA_TTL_SECS,
             );
@@ -362,11 +375,20 @@ pub async fn mfa_page(
     headers: HeaderMap,
 ) -> Response {
     // チケットが無ければログインからやり直し。
-    if cookies::get(&headers, cookies::PORTAL_MFA_COOKIE).is_none() {
+    if cookies::get(
+        &headers,
+        &state.origin_bound_cookie(cookies::PORTAL_MFA_COOKIE),
+    )
+    .is_none()
+    {
         return found(&format!("{}/login", tenant.prefix()));
     }
     let messages = Messages::new(locale(&headers));
-    let csrf_id = cookies::get(&headers, cookies::PORTAL_CSRF_COOKIE).unwrap_or_default();
+    let csrf_id = cookies::get(
+        &headers,
+        &state.origin_bound_cookie(cookies::PORTAL_CSRF_COOKIE),
+    )
+    .unwrap_or_default();
     let csrf = portal_csrf_token(&csrf_id, state.config.csrf_secret());
     Html(render(&PortalMfa {
         messages: &messages,
@@ -381,6 +403,7 @@ pub async fn mfa_page(
 pub async fn mfa_submit(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Form(form): Form<PortalTotpForm>,
@@ -388,7 +411,10 @@ pub async fn mfa_submit(
     // 注: `Messages`（FluentBundle）は !Send のため、api の await をまたいで保持しない
     //（各分岐で必要時に生成する）。
 
-    let csrf_id = cookies::get(&headers, cookies::PORTAL_CSRF_COOKIE);
+    let csrf_id = cookies::get(
+        &headers,
+        &state.origin_bound_cookie(cookies::PORTAL_CSRF_COOKIE),
+    );
     let csrf_ok = csrf_id
         .as_deref()
         .filter(|s| !s.is_empty())
@@ -417,11 +443,14 @@ pub async fn mfa_submit(
     }
     let csrf = portal_csrf_token(&csrf_id.unwrap_or_default(), state.config.csrf_secret());
 
-    let Some(mfa_ticket) = cookies::get(&headers, cookies::PORTAL_MFA_COOKIE) else {
+    let Some(mfa_ticket) = cookies::get(
+        &headers,
+        &state.origin_bound_cookie(cookies::PORTAL_MFA_COOKIE),
+    ) else {
         return found(&format!("{}/login", tenant.prefix()));
     };
 
-    let ctx = forwarded_context(&headers, &correlation);
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
     let request = InternalPortalMfaRequest {
         tenant_id: Some(tenant.0.clone()),
         mfa_ticket,
@@ -466,7 +495,9 @@ pub async fn mfa_submit(
         ),
         // チケット切れ・レート制限はログインからやり直させる（チケット Cookie を失効）。
         InternalPortalMfaResponse::TicketExpired | InternalPortalMfaResponse::RateLimited => {
-            let set_cookies = state.set_cookies().expire_local(cookies::PORTAL_MFA_COOKIE);
+            let set_cookies = state
+                .set_cookies()
+                .expire_local(&state.origin_bound_cookie(cookies::PORTAL_MFA_COOKIE));
             (
                 set_cookies.into_headers(),
                 found(&format!("{}/login", tenant.prefix())),
@@ -475,7 +506,9 @@ pub async fn mfa_submit(
         }
         // ポリシー拒否はチケットを失効させて終える（再試行しても結果は変わらない）。
         InternalPortalMfaResponse::PolicyDenied => {
-            let set_cookies = state.set_cookies().expire_local(cookies::PORTAL_MFA_COOKIE);
+            let set_cookies = state
+                .set_cookies()
+                .expire_local(&state.origin_bound_cookie(cookies::PORTAL_MFA_COOKIE));
             (
                 set_cookies.into_headers(),
                 message_page(
@@ -497,10 +530,11 @@ pub async fn mfa_submit(
 pub async fn logout(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
 ) -> Response {
-    let ctx = forwarded_context(&headers, &correlation);
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
     if let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) {
         let _ = state
             .api
@@ -545,8 +579,10 @@ fn sso_success_response(
         sso_session_id,
         sso_absolute_ttl_secs,
     );
+    // `expire_cookies` は素の（前置なしの）名前で受け取り、ここでオリジン束縛名へ解決する
+    // （呼び出し側 3 箇所で解決を書くと、片方だけ素の名前のまま消し忘れる。SEC5）。
     for name in expire_cookies {
-        set_cookies = set_cookies.expire_local(name);
+        set_cookies = set_cookies.expire_local(&state.origin_bound_cookie(name));
     }
     // ユーザーの DB 言語設定があれば lang Cookie に同期する（MT20: DB > Cookie）。
     if let Some(lang) = user_language.and_then(Locale::from_tag) {
@@ -556,7 +592,12 @@ fn sso_success_response(
             cookies::LANG_COOKIE_MAX_AGE_SECS,
         );
     }
-    let destination = if cookies::get(headers, cookies::SAML_REQUEST_COOKIE).is_some() {
+    let destination = if cookies::get(
+        headers,
+        &state.origin_bound_cookie(cookies::SAML_REQUEST_COOKIE),
+    )
+    .is_some()
+    {
         format!("{}/saml/continue", tenant.prefix())
     } else {
         format!("{}/settings", tenant.prefix())

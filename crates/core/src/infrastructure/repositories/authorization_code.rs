@@ -128,6 +128,25 @@ impl AuthorizationCodeRepository for SqlxAuthorizationCodeRepository {
         row.as_ref().map(map_row).transpose()
     }
 
+    async fn find_used(
+        &self,
+        tenant_id: TenantId,
+        code_hash: &str,
+    ) -> Result<Option<AuthorizationCode>> {
+        // `used_at IS NOT NULL` に限る（未消費・期限切れは「再利用」ではない。SEC8）。
+        let sql = format!(
+            "SELECT {SELECT_COLUMNS} FROM authorization_codes \
+             WHERE code_hash = ? AND tenant_id = ? AND used_at IS NOT NULL"
+        );
+        let row = sqlx::query(&sql)
+            .bind(code_hash)
+            .bind(tenant_id.to_string())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        row.as_ref().map(map_row).transpose()
+    }
+
     async fn revoke_all_active_for_user(&self, user_id: Uuid, now: DateTime<Utc>) -> Result<()> {
         sqlx::query(
             "UPDATE authorization_codes SET used_at = ? \

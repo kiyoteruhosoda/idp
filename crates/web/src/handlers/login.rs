@@ -9,6 +9,7 @@
 //! 画面文言は `fluent` の翻訳リソースで管理する（`Accept-Language` で en / ja を切替）。
 
 use super::locale;
+use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::dto::{LoginForm, LoginPageQuery};
@@ -33,6 +34,7 @@ use idp_contracts::csrf::login_csrf_token;
 pub async fn login_page(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Query(query): Query<LoginPageQuery>,
@@ -40,7 +42,15 @@ pub async fn login_page(
     // ハンドオフ受領: ハンドルを即座に `/internal/authorize/resume` で交換し（SSO 判定を含む）、
     // `auth_session_id` を自ドメインの host-only Cookie へ移して 303 で URL から除去する。
     if let Some(handle) = query.auth_session.filter(|h| !h.is_empty()) {
-        return resume_authorize_handoff(&state, &correlation, &tenant, &headers, handle).await;
+        return resume_authorize_handoff(
+            &state,
+            &correlation,
+            &client_ip,
+            &tenant,
+            &headers,
+            handle,
+        )
+        .await;
     }
 
     // PRG で戻ったときのエラーバナー（CSRF 不一致 → `?error=csrf`）。
@@ -68,11 +78,12 @@ pub async fn login_page(
 async fn resume_authorize_handoff(
     state: &WebState,
     correlation: &CorrelationId,
+    client_ip: &ClientIp,
     tenant: &WebTenant,
     headers: &HeaderMap,
     handle: String,
 ) -> Response {
-    let ctx = forwarded_context(headers, correlation);
+    let ctx = forwarded_context(headers, correlation, client_ip);
     let sso_session_id = cookies::get(headers, cookies::SSO_SESSION_COOKIE);
     let request = InternalAuthorizeResumeRequest {
         tenant_id: Some(tenant.0.clone()),
@@ -197,16 +208,17 @@ fn render_form(
 pub async fn login(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> Response {
-    let ctx = forwarded_context(&headers, &correlation);
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
     let auth_session_id = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE);
 
     // OIDC の `auth_session_id` を持たない POST はポータルログイン（クライアント非依存）として処理する。
     if auth_session_id.is_none() {
-        return portal::login(&state, &correlation, &tenant, &headers, form).await;
+        return portal::login(&state, &correlation, &client_ip, &tenant, &headers, form).await;
     }
 
     let request = InternalAuthenticateRequest {

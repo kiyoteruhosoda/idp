@@ -9,6 +9,7 @@
 //! `id_token_hint` は受け付けるが現実装では検証に使わない（従来の api `/logout` と同じ挙動）。
 
 use super::locale;
+use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::dto::RpLogoutQuery;
@@ -27,11 +28,12 @@ use idp_contracts::auth::{InternalRpLogoutRequest, InternalRpLogoutResponse};
 pub async fn logout(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Query(query): Query<RpLogoutQuery>,
 ) -> Response {
-    let ctx = forwarded_context(&headers, &correlation);
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
     let request = InternalRpLogoutRequest {
         tenant_id: Some(tenant.0.clone()),
         sso_session_id: cookies::get(&headers, cookies::SSO_SESSION_COOKIE),

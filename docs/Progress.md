@@ -37,12 +37,7 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 
 | 優先度 | ID | 課題内容 | 工数 | 影響度 | 重要度 | 難易度 |
 |---:|---|---|---:|---:|---:|---:|
-| 9 | SEC5 | CSRF double-submit の種（`admin_csrf_id`/`portal_csrf_id`）がオリジン非分離 → `__Host-` 前置（⬜未着手） | 小 | 中 | 中 | 小 |
-| 9 | SEC7 | 認証成功時に `auth_session_id` を再生成しない（`sso_session_id` は再生成済みで非対称）（⬜未着手） | 小 | 小 | 中 | 中 |
-| 9 | SEC9 | クエリ文字列（`?auth_session=`・`?code_challenge=`）が `TraceLayer` 既定スパン経由でログに出うる（⬜未着手） | 小 | 中 | 中 | 小 |
-| 8 | SEC1 | web が `X-Forwarded-For` を無条件信頼（api の `TRUST_FORWARDED_HEADERS` ゲートを迂回）→ レート制限回避・監査ログ汚染（⬜未着手） | 中 | 中 | 大 | 小 |
 | 8 | SEC6 | `auth_sessions.id` だけ DB に平文保存（他の bearer credential は全てハッシュ）（⬜未着手） | 中 | 小 | 大 | 中 |
-| 8 | SEC8 | 再利用検知時に子孫トークンファミリを失効させない（authorization code・refresh token の両方）（⬜未着手） | 中 | 小 | 大 | 中 |
 | 8 | AP3 | 認証ポリシーの条件種別を拡張する（ネットワークゾーン・国・端末・時間帯・requested_acr 等。仕様 §8）と `require_specific_method` 効果（⬜未着手） | 大 | 中 | 中 | 大 |
 | 8 | AP8 | ログイン識別子の複数化（仕様 §4。`user_login_identifiers`: 電話番号・社員番号等の種別、表示値と正規化値の分離、識別子単位の無効化）（⬜未着手） | 大 | 大 | 小 | 大 |
 | 5 | SEC13 | ログイン失敗カウンタの更新が read-modify-write で原子的でない（並行試行でロック閾値に届かないことがある。3 つのログイン経路に共通）（⬜未着手） | 中 | 中 | 中 | 小 |
@@ -130,63 +125,25 @@ OIDC 前提の列構成で、SAML の IdP メタデータ（`SingleSignOnService
 送信事業者の選定と、電話番号を PII としてどう保持するか（ログ非出力は既定として、DB では
 暗号化するか正規化値のみ持つか）は未決。
 
-### セキュリティレビュー（SEC1〜SEC13）
+### セキュリティレビュー（SEC6・SEC10・SEC12・SEC13）
 
 api / web の別サブドメイン構成を対象にした調査で検出した課題。**「api には対策があるのに web 側に無い」
 非対称**が主軸。良好な点（回帰させない）: redirect_uri/post_logout の完全一致、code の 256bit・SHA-256・
 60 秒・原子的ワンタイム、PKCE S256 の無条件強制、client_secret の Argon2 保存、sso_session_id の
-256bit・ハッシュ保存・ログイン毎の再生成、ADR-0018 の Cookie 非依存ハンドオフ（単回・60 秒・テナント固定束縛）。
-
-#### SEC1. web の `X-Forwarded-For` 無条件信頼
-
-api は `request_context()` が `trust_forwarded`（`TRUST_FORWARDED_HEADERS`、既定 false）でゲートする
-（`crates/api/src/presentation/handlers/mod.rs:58-72`。コメント「ヘッダ偽装対策; S1」）のに対し、web の
-`forwarded_context()`（`crates/web/src/handlers/mod.rs:78-83`）はゲート無しで先頭値を採用する。ADR-0018 以降
-ログインの入口は web で、web が組み立てた IP を `/internal/authenticate` ボディで api のレートリミッタ・監査へ
-渡すため、api 側ゲートがログイン経路で迂回される。攻撃者は `X-Forwarded-For` を毎回変えて IP レート制限
-（30回/5分）を回避、送らなければ IP が `None` になりレート制限自体をスキップ（`crates/core/src/application/login.rs:203`
-の `if let Some(ip)` ガード）、監査ログの IP も任意汚染できる。対策: web にも `TRUST_FORWARDED_HEADERS`
-相当のゲートと、非信頼時の `ConnectInfo` フォールバックを入れる。
-
-#### SEC5. CSRF double-submit の種がオリジン非分離
-
-`admin_csrf_id` / `portal_csrf_id`（`crates/web/src/cookies.rs:21-27`）はセッション非依存の種を置く
-double-submit。Cookie はサブドメイン間で分離されないため、同一親ドメインのサブドメインを奪った攻撃者が
-`Domain=親` の種を強制しトークンを偽造しうる。`console_csrf_token`（`sso_session_id` 由来）はこの弱点なし。
-対策: 未認証フォーム系の種に `__Host-` プレフィックスを付ける。
+256bit・ハッシュ保存・ログイン毎の再生成、ADR-0018 の Cookie 非依存ハンドオフ（単回・60 秒・テナント固定束縛）、
+web の `X-Forwarded-For` ゲート（SEC1）・CSRF 種の `__Host-` 束縛（SEC5）・`auth_session_id` の
+認証時再生成（SEC7）・再利用検知でのトークンファミリ失効（SEC8）・アクセスログのクエリ非記録（SEC9）。
 
 #### SEC6. `auth_sessions.id` だけ DB に平文保存
 
-Cookie 値がそのまま PK（`migrations/0001_baseline.up.sql:160-162, 178`、参照は `WHERE id = ?`
-`crates/core/src/infrastructure/repositories/auth_session.rs:113-123`）。同じ表の `handle_hash` すら
+Cookie 値がそのまま PK（`migrations/0001_baseline.up.sql` の `auth_sessions`、参照は `WHERE id = ?`
+`crates/core/src/infrastructure/repositories/auth_session.rs`）。同じ表の `handle_hash` すら
 SHA-256、他の bearer credential も全てハッシュ保存で非対称。DB 読取を得た者は TTL(600 秒)の間、同意待ち／
 MFA 待ちの認可セッションを乗っ取れる。対策: `handle_hash` と揃えて SHA-256 保存へ（マイグレーション必要）。
 
-#### SEC7. 認証成功時に `auth_session_id` を再生成しない
-
-`set_password_verified` / `set_authenticated_user`（`crates/core/src/infrastructure/repositories/auth_session.rs:158-194`）
-は認証前に発行した Cookie 値を使い回す。`sso_session_id` はログイン毎に再生成するのに非対称。
-`password_verified_at` / `authenticated_user_id` を初めて立てる時点で id をローテートする。
-
-#### SEC8. 再利用検知時に子孫トークンファミリを失効させない（code・refresh の両方）
-
-- **authorization code**: `crates/core/src/application/token.rs:219-235` は再利用を監査記録するだけで、
-  1 回目の交換で発行済みのアクセス／リフレッシュトークンは生かしたまま。監査 reason も
-  「not found/expired/used」を 1 文字列に丸め、真の再利用を期限切れと区別できない。
-- **refresh token**（当初の記述を訂正）: 再利用検知時（`token.rs:410-434`）に `revoke(&rt_hash, now)` で
-  **提示された（親）トークンしか失効させない**（`crates/core/src/infrastructure/repositories/refresh_token.rs:94-105`
-  は `token_hash` 完全一致の 1 行のみ更新）。そこから rotation 済みの**子トークン（子孫チェーン）は有効なまま**
-  残る。当初「refresh 側はチェーン失効を実装済み」と書いたが誤り。`revoke_all_for_user_in_tenant`
-  （`refresh_token.rs:117-`）は存在するが再利用検知経路では呼ばれない。
-- 対策: 再利用検知時に当該トークンファミリ（`parent_hash` を辿る子孫、または発行元 auth_session/user
-  単位）を一括失効させる。RFC 6819 / OAuth 2.1 の推奨に沿える。
-
-#### SEC9. クエリ文字列がログに出うる（ADR-0018 の受け入れ条件が未達）
-
-api / web とも `TraceLayer::new_for_http()`（`crates/api/src/presentation/router.rs:317`・
-`crates/web/src/router.rs:317`）の既定スパンが `uri` をクエリ込みで持つ。現状 INFO 止まりで出力されないが、
-`RUST_LOG=debug` で `/{tenant}/login?auth_session=…`・`/authorize?…code_challenge=…` が stdout に落ちる。
-対策: `make_span_with` で `uri.path()` のみを記録する。
+SEC7 で認証成功時の id 再生成（`set_authenticated_user` / `set_password_verified` が同じ UPDATE で
+id を差し替える）は入っているため、本タスクは「Cookie 値そのものを PK に置かない」ことに絞られる。
+再生成の口が 1 箇所に閉じたぶん、ハッシュ化の際に触る場所も減っている。
 
 #### SEC10. `/token`・`/introspect`・`/revoke` にレート制限が無い
 

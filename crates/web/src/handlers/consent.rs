@@ -4,6 +4,7 @@
 //! `/internal/consent-info`・`/internal/consent/approve`・`/internal/consent/deny` に委ねる。
 
 use super::locale;
+use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::dto::ConsentForm;
@@ -79,11 +80,12 @@ pub async fn consent_page(
 pub async fn consent(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Form(form): Form<ConsentForm>,
 ) -> Response {
-    let ctx = forwarded_context(&headers, &correlation);
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
 
     // CSRF チェック（FluentBundle を await 前に使わないよう先に行う）。
     let expected_csrf = consent_csrf_token(&form.auth_session_id, state.config.csrf_secret());

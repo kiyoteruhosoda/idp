@@ -37,6 +37,7 @@ fn map_row(row: &MySqlRow) -> Result<RefreshToken> {
     Ok(RefreshToken {
         token_hash: row.try_get("token_hash").map_err(repo_err)?,
         parent_hash: row.try_get("parent_hash").map_err(repo_err)?,
+        grant_hash: row.try_get("grant_hash").map_err(repo_err)?,
         tenant_id: Uuid::parse_str(&tenant_id)
             .map_err(|e| DomainError::Repository(format!("invalid UUID `{tenant_id}`: {e}")))?
             .into(),
@@ -57,12 +58,13 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
     async fn create(&self, token: &RefreshToken) -> Result<()> {
         sqlx::query(
             "INSERT INTO refresh_tokens \
-             (token_hash, parent_hash, tenant_id, user_id, client_id, scope, sid, expires_at, \
-              revoked_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             (token_hash, parent_hash, grant_hash, tenant_id, user_id, client_id, scope, sid, \
+              expires_at, revoked_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&token.token_hash)
         .bind(&token.parent_hash)
+        .bind(&token.grant_hash)
         .bind(token.tenant_id.to_string())
         .bind(token.user_id.to_string())
         .bind(&token.client_id)
@@ -82,8 +84,8 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
         token_hash: &str,
     ) -> Result<Option<RefreshToken>> {
         let row = sqlx::query(
-            "SELECT token_hash, parent_hash, tenant_id, user_id, client_id, scope, sid, \
-             expires_at, revoked_at, created_at \
+            "SELECT token_hash, parent_hash, grant_hash, tenant_id, user_id, client_id, scope, \
+             sid, expires_at, revoked_at, created_at \
              FROM refresh_tokens WHERE token_hash = ? AND tenant_id = ?",
         )
         .bind(token_hash)
@@ -105,6 +107,30 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
         .await
         .map_err(repo_err)?;
         Ok(())
+    }
+
+    async fn revoke_family(
+        &self,
+        tenant_id: TenantId,
+        family_hash: &str,
+        revoked_at: DateTime<Utc>,
+    ) -> Result<u64> {
+        // 同一グラント由来のトークンを 1 文で失効させる（SEC8）。`grant_hash` に索引があるため
+        // チェーンの深さに関係なく 1 回の UPDATE で済む。念のため提示されたトークン自身
+        //（移行前の行で `grant_hash` が NULL のまま = 家族が自分だけ）も同じ条件で拾えるよう、
+        // `token_hash` 一致も OR に含める。
+        let result = sqlx::query(
+            "UPDATE refresh_tokens SET revoked_at = ? \
+             WHERE tenant_id = ? AND (grant_hash = ? OR token_hash = ?) AND revoked_at IS NULL",
+        )
+        .bind(revoked_at.naive_utc())
+        .bind(tenant_id.to_string())
+        .bind(family_hash)
+        .bind(family_hash)
+        .execute(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        Ok(result.rows_affected())
     }
 
     async fn exists_by_parent_hash(&self, parent_hash: &str) -> Result<bool> {

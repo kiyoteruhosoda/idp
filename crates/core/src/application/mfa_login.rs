@@ -147,7 +147,8 @@ impl MfaLoginService {
         let Some(session_id) = cmd.auth_session_id.as_deref().filter(|s| !s.is_empty()) else {
             return MfaLoginOutcome::SessionExpired;
         };
-        let session = match self.auth_sessions.find_by_id(tenant_id, session_id).await {
+        // 認証成功時に id を再生成する（SEC7）ため mut。
+        let mut session = match self.auth_sessions.find_by_id(tenant_id, session_id).await {
             Ok(Some(s)) => s,
             Ok(None) => return MfaLoginOutcome::SessionExpired,
             Err(e) => return MfaLoginOutcome::Internal(e.to_string()),
@@ -245,14 +246,16 @@ impl MfaLoginService {
             ctx.ip_address.clone(),
         );
 
-        // 9. auth_time と `sid` を設定する（MFA 完了時刻を認証時刻とする）。
+        // 9. auth_time と `sid` を設定する（MFA 完了時刻を認証時刻とする）。id も再生成する（SEC7）。
+        let rotated_id = crypto::random_hex(32);
         if let Err(e) = self
             .auth_sessions
-            .set_authenticated_user(&session.id, user_id, now, Some(&sso.sid()))
+            .set_authenticated_user(&session.id, &rotated_id, user_id, now, Some(&sso.sid()))
             .await
         {
             return MfaLoginOutcome::Internal(e.to_string());
         }
+        session.id = rotated_id;
 
         if let Err(e) = self.sso_sessions.create(&sso).await {
             return MfaLoginOutcome::Internal(e.to_string());
@@ -626,12 +629,14 @@ mod tests {
         async fn set_authenticated_user(
             &self,
             id: &str,
+            new_id: &str,
             user_id: Uuid,
             auth_time: DateTime<Utc>,
             sso_sid: Option<&str>,
         ) -> DomainResult<()> {
             let mut rows = self.rows.lock().unwrap();
             if let Some(row) = rows.iter_mut().find(|s| s.id == id) {
+                row.id = new_id.to_string();
                 row.authenticated_user_id = Some(user_id);
                 row.auth_time = Some(auth_time);
                 row.sso_sid = sso_sid.map(str::to_string);
@@ -641,6 +646,7 @@ mod tests {
         async fn set_password_verified(
             &self,
             _id: &str,
+            _new_id: &str,
             _u: Uuid,
             _v: DateTime<Utc>,
         ) -> DomainResult<()> {
@@ -801,6 +807,13 @@ mod tests {
     }
     #[async_trait]
     impl crate::domain::repositories::AuthorizationCodeRepository for FakeCodes {
+        async fn find_used(
+            &self,
+            _t: TenantId,
+            _h: &str,
+        ) -> DomainResult<Option<AuthorizationCode>> {
+            unreachable!()
+        }
         async fn create(&self, c: &AuthorizationCode) -> DomainResult<()> {
             self.created.lock().unwrap().push(c.clone());
             Ok(())

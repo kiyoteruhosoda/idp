@@ -183,7 +183,9 @@ impl LoginService {
             );
             return LoginOutcome::SessionExpired;
         };
-        let session = match self.auth_sessions.find_by_id(tenant_id, session_id).await {
+        // 認証成功時に id を再生成する（SEC7）ため mut。以降 `session.id` は常に「今この
+        // ブラウザが持つべき値」を指す。
+        let mut session = match self.auth_sessions.find_by_id(tenant_id, session_id).await {
             Ok(Some(s)) => s,
             Ok(None) => {
                 tracing::warn!(
@@ -367,13 +369,15 @@ impl LoginService {
         //      （`must_change_password` は管理者による既存ユーザーのパスワード再発行でも立つため、
         //      「この状態のユーザーに MFA 判定は不要」とは限らない）。
         if user.must_change_password {
+            let rotated_id = crypto::random_hex(32);
             if let Err(e) = self
                 .auth_sessions
-                .set_password_verified(&session.id, user.id, now)
+                .set_password_verified(&session.id, &rotated_id, user.id, now)
                 .await
             {
                 return LoginOutcome::Internal(e.to_string());
             }
+            session.id = rotated_id;
             return LoginOutcome::PasswordChangeRequired {
                 auth_session_id: session.id,
             };
@@ -388,14 +392,16 @@ impl LoginService {
             Err(e) => return LoginOutcome::Internal(e.to_string()),
         };
         if has_totp {
-            // パスワード検証成功を AuthSession に記録（MFA pending 状態）。
+            // パスワード検証成功を AuthSession に記録（MFA pending 状態）。id も再生成する（SEC7）。
+            let rotated_id = crypto::random_hex(32);
             if let Err(e) = self
                 .auth_sessions
-                .set_password_verified(&session.id, user.id, now)
+                .set_password_verified(&session.id, &rotated_id, user.id, now)
                 .await
             {
                 return LoginOutcome::Internal(e.to_string());
             }
+            session.id = rotated_id;
             return LoginOutcome::MfaRequired {
                 auth_session_id: session.id,
             };
@@ -461,14 +467,16 @@ impl LoginService {
             )
             .await;
 
-        // 10. AuthSession に認証結果を記録する。
+        // 10. AuthSession に認証結果を記録する（id も再生成する。SEC7）。
+        let rotated_id = crypto::random_hex(32);
         if let Err(e) = self
             .auth_sessions
-            .set_authenticated_user(&session.id, user.id, now, Some(&sso.sid()))
+            .set_authenticated_user(&session.id, &rotated_id, user.id, now, Some(&sso.sid()))
             .await
         {
             return LoginOutcome::Internal(e.to_string());
         }
+        session.id = rotated_id;
 
         // 11. 同意チェック（`openid` は暗黙同意）。
         let scopes_needing_consent: Vec<String> = session
@@ -685,12 +693,14 @@ mod tests {
         async fn set_authenticated_user(
             &self,
             id: &str,
+            new_id: &str,
             user_id: Uuid,
             auth_time: DateTime<Utc>,
             sso_sid: Option<&str>,
         ) -> DomainResult<()> {
             let mut rows = self.rows.lock().unwrap();
             if let Some(row) = rows.iter_mut().find(|s| s.id == id) {
+                row.id = new_id.to_string();
                 row.authenticated_user_id = Some(user_id);
                 row.auth_time = Some(auth_time);
                 row.sso_sid = sso_sid.map(str::to_string);
@@ -700,11 +710,13 @@ mod tests {
         async fn set_password_verified(
             &self,
             id: &str,
+            new_id: &str,
             user_id: Uuid,
             verified_at: DateTime<Utc>,
         ) -> DomainResult<()> {
             let mut rows = self.rows.lock().unwrap();
             if let Some(row) = rows.iter_mut().find(|s| s.id == id) {
+                row.id = new_id.to_string();
                 row.authenticated_user_id = Some(user_id);
                 row.password_verified_at = Some(verified_at);
             }
@@ -881,6 +893,13 @@ mod tests {
     struct FakeCodes;
     #[async_trait]
     impl AuthorizationCodeRepository for FakeCodes {
+        async fn find_used(
+            &self,
+            _t: TenantId,
+            _h: &str,
+        ) -> DomainResult<Option<AuthorizationCode>> {
+            unreachable!()
+        }
         async fn create(&self, _c: &AuthorizationCode) -> DomainResult<()> {
             Ok(())
         }
@@ -904,6 +923,7 @@ mod tests {
     struct Harness {
         service: LoginService,
         users: Arc<FakeUsers>,
+        auth_sessions: Arc<FakeAuthSessions>,
         tenant: TenantContext,
         user_id: Uuid,
     }
@@ -968,7 +988,7 @@ mod tests {
 
         let service = LoginService::new(
             users.clone(),
-            auth_sessions,
+            auth_sessions.clone(),
             Arc::new(FakeSsoSessions),
             Arc::new(FakeConsents),
             Arc::new(FakeTotpSecrets {
@@ -993,6 +1013,7 @@ mod tests {
         Harness {
             service,
             users,
+            auth_sessions,
             tenant: TenantContext::new(tenant_id),
             user_id,
         }
@@ -1022,6 +1043,11 @@ mod tests {
         fn failed_count(&self) -> i32 {
             self.users.rows.lock().unwrap()[0].failed_login_count
         }
+
+        /// 保存されている auth_session の現在の id。
+        fn stored_session_id(&self) -> String {
+            self.auth_sessions.rows.lock().unwrap()[0].id.clone()
+        }
     }
 
     /// SEC3 の要: MFA 待ちで止まる経路では失敗カウンタを消さない。消してしまうと、パスワードを
@@ -1032,6 +1058,36 @@ mod tests {
         let h = harness(true, 4);
         assert!(matches!(h.login().await, LoginOutcome::MfaRequired { .. }));
         assert_eq!(h.failed_count(), 4, "MFA 待ちではリセットしない");
+    }
+
+    /// SEC7: パスワード検証を通した時点で `auth_session_id` を再生成する。認証前に発行した
+    /// Cookie 値をそのまま使い回すと、事前に値を仕込めた攻撃者が MFA 待ちの認可セッションへ
+    /// 相乗りできる（`sso_session_id` はログインのたびに再生成しており、非対称にしない）。
+    #[tokio::test]
+    async fn mfa_pending_login_rotates_the_auth_session_id() {
+        let h = harness(true, 0);
+        let LoginOutcome::MfaRequired { auth_session_id } = h.login().await else {
+            panic!("expected MfaRequired");
+        };
+        assert_ne!(auth_session_id, SESSION_ID, "認証前の値を使い回さない");
+        assert_eq!(
+            h.stored_session_id(),
+            auth_session_id,
+            "DB 側も新しい id に置き換わり、旧 id では引けない"
+        );
+    }
+
+    /// SEC7: 認証成立まで進む経路でも再生成する。ここは code 発行後に auth_session を削除する
+    /// ため id を直接は観測できないが、**行が消えている**ことが再生成後の id で削除できた証拠になる
+    /// （記録と削除で id がずれていれば行が残る）。
+    #[tokio::test]
+    async fn completed_login_deletes_the_session_through_the_rotated_id() {
+        let h = harness(false, 0);
+        assert!(matches!(h.login().await, LoginOutcome::Success { .. }));
+        assert!(
+            h.auth_sessions.rows.lock().unwrap().is_empty(),
+            "code 発行後に auth_session が残っている = 再生成した id で削除できていない"
+        );
     }
 
     /// 単一要素で認証が成立する経路（TOTP 未設定）は従来どおりリセットする。

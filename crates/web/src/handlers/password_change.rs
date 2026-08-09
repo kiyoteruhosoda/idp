@@ -5,6 +5,7 @@
 //! SSO 発行 → 同意/code 発行の結果（`redirect_to`）へ 302 する。
 
 use super::locale;
+use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::dto::{FormPageQuery, PasswordChangeForm};
@@ -47,11 +48,12 @@ pub async fn page(
 pub async fn submit(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Form(form): Form<PasswordChangeForm>,
 ) -> Response {
-    let ctx = forwarded_context(&headers, &correlation);
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
     let auth_session_id = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE);
 
     if form.new_password != form.new_password_confirm {

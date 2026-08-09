@@ -88,6 +88,13 @@ sqlx マイグレーション（MariaDB）を管理する。
   `(provider_id, external_subject)` と `(user_id, provider_id)` を UNIQUE）、
   `external_login_requests`（`state` のハッシュ・`nonce`・PKCE verifier を認可往復の間だけ保持）。
   `down` は 3 表を削除する（連携の対応付けを失うため、再連携が必要になる）。
+- `0025_refresh_token_grant_family`: `refresh_tokens.grant_hash`（＋索引）を追加する（SEC8）。
+  code 交換で発行した根トークンと、そこから rotation で派生した子孫が同じ値を持つ **トークン
+  ファミリの識別子**で、値は元の authorization code の SHA-256。再利用検知時にこの列 1 本で
+  ファミリごと失効させる（`parent_hash` は 1 段ずつしか辿れず、子孫を追えなかった）。
+  既存行は再帰 CTE で根から辿り、**チェーン全体を同じ家族 id で埋め戻す**（根だけ埋めると
+  移行前に rotation 済みのチェーンが分裂し、古いトークンの再生で子孫が失効しない穴が残る）。
+  `down` は列と索引を削除する（再利用検知は提示トークン 1 本の失効へ戻る）。
 
 root テナントの UUID は固定値 `00000000-0000-7000-8000-000000000001`（全環境共通・git 管理。ADR-0011）。
 管理者ログイン URL は `/00000000-0000-7000-8000-000000000001/...`。

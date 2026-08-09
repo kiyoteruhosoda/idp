@@ -395,7 +395,9 @@ pub fn build(state: AppState) -> Router {
         .merge(internal)
         .merge(SwaggerUi::new("/api/docs").url("/api/openapi.json", ApiDoc::openapi()))
         .layer(axum::middleware::from_fn(correlation::propagate))
-        .layer(TraceLayer::new_for_http())
+        // アクセススパンはパスのみを記録する（クエリ文字列に載る `code`・`code_challenge` を
+        // ログへ落とさない。SEC9）。組み立ては web と共有する。
+        .layer(TraceLayer::new_for_http().make_span_with(idp_contracts::http_trace::request_span))
         .layer(middleware::from_fn(move |req, next| {
             add_security_headers(req, next, hsts_max_age)
         }))

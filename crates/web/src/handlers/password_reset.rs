@@ -10,6 +10,7 @@
 //! 付けない（要求はメール送信のみ・実行はトークン所持が本人性の根拠であり、第三者が強制しても
 //! 得られる状態変化がない）。実体は api の `/internal/password-reset/*` に委ねる。
 
+use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::handlers::forwarded_context;
@@ -59,11 +60,12 @@ pub async fn forgot_page(headers: HeaderMap) -> Response {
 pub async fn forgot_submit(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Form(form): Form<ForgotForm>,
 ) -> Response {
-    let ctx = forwarded_context(&headers, &correlation);
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
     let request = InternalPasswordResetRequestRequest {
         tenant_id: Some(tenant.0.clone()),
         email: form.email,
@@ -133,6 +135,7 @@ pub async fn reset_page(
 pub async fn reset_submit(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Form(form): Form<ResetForm>,
@@ -149,7 +152,7 @@ pub async fn reset_submit(
             StatusCode::BAD_REQUEST,
         );
     }
-    let ctx = forwarded_context(&headers, &correlation);
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
     let request = InternalPasswordResetCompleteRequest {
         tenant_id: Some(tenant.0.clone()),
         token: form.token.clone(),

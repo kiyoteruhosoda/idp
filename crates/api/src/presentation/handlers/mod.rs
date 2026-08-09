@@ -64,12 +64,14 @@ pub(crate) fn request_context(
     trust_forwarded: bool,
 ) -> RequestContext {
     let ip_address = if trust_forwarded {
-        headers
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.split(',').next())
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
+        // 採るのは**最右**の値（信頼するプロキシが追記した接続元）。先頭はクライアントが名乗った
+        // 値でありうるため、そこを見ると偽装がそのまま通る（SEC1。導出は web と共有する）。
+        idp_contracts::forwarded::client_ip(
+            headers
+                .get_all("x-forwarded-for")
+                .iter()
+                .filter_map(|v| v.to_str().ok()),
+        )
     } else {
         None
     };

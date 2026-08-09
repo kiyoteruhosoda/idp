@@ -21,6 +21,11 @@ pub const SSO_SESSION_COOKIE: &str = "sso_session_id";
 /// `auth_session_id` Cookie（`/authorize` ハンドオフ〜 `/login` 完了の短命 Cookie）。web だけが読む。
 pub const AUTH_SESSION_COOKIE: &str = "auth_session_id";
 
+/// `__Host-` プレフィックス（RFC 6265bis §4.1.3.2）。この名前で送られた Cookie をブラウザは
+/// 「`Secure` かつ `Domain` 無しかつ `Path=/`」でしか受け付けない。結果として **発行元オリジンに
+/// 束縛**され、同一親ドメインの別サブドメイン（`Domain=親` を付けられる位置）から上書き・強制できない。
+pub const HOST_PREFIX: &str = "__Host-";
+
 /// `Cookie` ヘッダの生文字列（複数ヘッダ可）から `name` の値を取り出す。
 ///
 /// 名前は完全一致で比較する（`sso_session_id` が `x_sso_session_id` に一致しない）。値に `=` を
@@ -96,6 +101,21 @@ impl CookiePolicy {
     pub fn expire_local(&self, name: &str) -> String {
         self.set_local(name, "", 0)
     }
+
+    /// オリジン束縛が要るローカル Cookie（CSRF の種・MFA チケット・SAML 進行状態）の実名を返す
+    /// （SEC5）。`set_local` / `expire_local` が付ける属性は `__Host-` の要件（`Secure` /
+    /// `Domain` 無し / `Path=/`）をすでに満たすため、前置するのは名前だけでよい。
+    ///
+    /// **平文 HTTP（`secure == false`）では前置しない。** `__Host-` 付きの Cookie はブラウザが
+    /// `Secure` 無しでは保存を拒否するため、前置すると開発環境（`http://localhost`）で CSRF の種が
+    /// 一切保存されずログインできなくなる。本番は必ず HTTPS（`COOKIE_SECURE`）なので保護は効く。
+    pub fn origin_bound_name(&self, base_name: &str) -> String {
+        if self.secure {
+            format!("{HOST_PREFIX}{base_name}")
+        } else {
+            base_name.to_string()
+        }
+    }
 }
 
 fn build(name: &str, value: &str, max_age_secs: u64, secure: bool, domain: Option<&str>) -> String {
@@ -149,6 +169,27 @@ mod tests {
         assert_eq!(
             CookiePolicy::new(false, None).expire_local("lang"),
             "lang=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax"
+        );
+    }
+
+    #[test]
+    fn origin_bound_names_carry_the_host_prefix_over_https() {
+        // SEC5: HTTPS では `__Host-` 前置でオリジン束縛する。
+        let policy = CookiePolicy::new(true, Some("example.com"));
+        assert_eq!(
+            policy.origin_bound_name("portal_csrf_id"),
+            "__Host-portal_csrf_id"
+        );
+        // 前置した名前で発行しても、属性は `__Host-` の要件（Secure / Domain 無し / Path=/）を満たす。
+        let issued = policy.set_local(&policy.origin_bound_name("portal_csrf_id"), "seed", 900);
+        assert_eq!(
+            issued,
+            "__Host-portal_csrf_id=seed; Max-Age=900; Path=/; HttpOnly; SameSite=Lax; Secure"
+        );
+        // 平文 HTTP ではブラウザが `__Host-` を拒否するため前置しない（開発環境）。
+        assert_eq!(
+            CookiePolicy::new(false, None).origin_bound_name("portal_csrf_id"),
+            "portal_csrf_id"
         );
     }
 

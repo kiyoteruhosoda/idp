@@ -12,6 +12,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net
 axum = { version = "0.8", features = ["macros"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace"] }
+# HTTP の基本型のみ（axum 非依存）。api / web が同じ HTTP スパンを作るために contracts で使う。
+http = "1"
 sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",
