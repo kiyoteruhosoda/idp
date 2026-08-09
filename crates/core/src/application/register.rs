@@ -136,6 +136,8 @@ impl RegisterService {
         // 一意性の事前チェック（利用者向けの分かりやすいエラーのため）。一意キーは
         // `(tenant_id, email)` 等のテナント内一意（ADR-0009 §2）。最終的な一意性は
         // DB の UNIQUE 制約が保証し、競合時は create() が Conflict を返す。
+        // ログイン識別子は**解決経路と同じ引き方**で見る（AP8。`users` だけを見ると、別名として
+        // 登録済みの値を素通しにしてしまう）。
         if self
             .users
             .find_by_email(tenant_id, &email)
@@ -149,7 +151,7 @@ impl RegisterService {
         }
         if self
             .users
-            .find_by_username(tenant_id, &preferred_username)
+            .find_by_login_identifier(tenant_id, &preferred_username)
             .await
             .map_err(internal)?
             .is_some()

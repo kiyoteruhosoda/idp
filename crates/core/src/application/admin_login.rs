@@ -296,9 +296,13 @@ impl AdminLoginService {
             }
         }
 
-        // 2. ユーザー検索（ログイン識別子は preferred_username）。
+        // 2. ユーザー検索（ログイン識別子。AP8 の登録簿 → `preferred_username` の順で解決する）。
         //    認証は所属元テナント限定（ADR-0009 §8）。
-        let user = match self.users.find_by_username(tenant_id, &cmd.username).await {
+        let user = match self
+            .users
+            .find_by_login_identifier(tenant_id, &cmd.username)
+            .await
+        {
             Ok(Some(u)) => u,
             Ok(None) => {
                 self.audit
@@ -469,7 +473,11 @@ impl AdminLoginService {
             }
         }
 
-        let user = match self.users.find_by_username(tenant_id, &cmd.username).await {
+        let user = match self
+            .users
+            .find_by_login_identifier(tenant_id, &cmd.username)
+            .await
+        {
             Ok(Some(u)) => u,
             Ok(None) => return AdminLoginOutcome::InvalidCredentials,
             Err(e) => return AdminLoginOutcome::Internal(e.to_string()),

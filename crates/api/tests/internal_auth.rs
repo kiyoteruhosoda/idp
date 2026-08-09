@@ -9,32 +9,12 @@
 
 mod support;
 
-use axum::body::Body;
-use axum::http::header::CONTENT_TYPE;
-use axum::http::{Request, StatusCode};
+use axum::http::StatusCode;
 use idp_api::application::login::csrf_token;
 use serde_json::json;
-use support::{body_json, post_internal, send, CODE_CHALLENGE, REDIRECT_URI, SERVICE_TOKEN};
-
-async fn register_user(app: &axum::Router, tenant: &str, username: &str, password: &str) {
-    let payload = json!({
-        "email": format!("{username}@example.com"),
-        "preferred_username": username,
-        "password": password,
-        "name": "Internal Auth Tester",
-    });
-    let response = send(
-        app,
-        Request::builder()
-            .method("POST")
-            .uri(format!("/{tenant}/auth/register"))
-            .header(CONTENT_TYPE, "application/json")
-            .body(Body::from(payload.to_string()))
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::CREATED, "user registration");
-}
+use support::{
+    body_json, post_internal, register_user, send, CODE_CHALLENGE, REDIRECT_URI, SERVICE_TOKEN,
+};
 
 /// `/authorize` を開始して `auth_session_id` を得る（ハンドオフ → resume。ADR-0018 決定 2）。
 async fn start_authorize(app: &axum::Router, tenant: &str, client_id: &str) -> String {

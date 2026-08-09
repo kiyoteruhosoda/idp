@@ -113,7 +113,9 @@ impl UserManagementService {
         let tenant_id = tenant.tenant_id();
 
         // 一意性の事前チェック（利用者向けの分かりやすいエラー）。最終的な一意性は DB の
-        // `(tenant_id, email)` / `(tenant_id, preferred_username)` UNIQUE 制約が保証する。
+        // `(tenant_id, email)` / `(tenant_id, preferred_username)` UNIQUE 制約と、ログイン識別子の
+        // 登録簿の一意制約（AP8）が保証する。識別子側は**解決経路と同じ引き方**で見る
+        // （`users` だけを見ると、別名として登録済みの値を素通しにしてしまう）。
         if self
             .users
             .find_by_email(tenant_id, &email)
@@ -127,7 +129,7 @@ impl UserManagementService {
         }
         if self
             .users
-            .find_by_username(tenant_id, &preferred_username)
+            .find_by_login_identifier(tenant_id, &preferred_username)
             .await
             .map_err(internal)?
             .is_some()

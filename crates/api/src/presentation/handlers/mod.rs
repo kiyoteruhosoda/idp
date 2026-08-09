@@ -7,6 +7,7 @@ pub mod admin_authentication_policies;
 pub mod admin_clients;
 pub mod admin_external_idps;
 pub mod admin_invitations;
+pub mod admin_login_identifiers;
 pub mod admin_members;
 pub mod admin_permissions;
 pub mod admin_restart;

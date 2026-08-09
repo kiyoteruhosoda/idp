@@ -37,10 +37,10 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 
 | 優先度 | ID | 課題内容 | 工数 | 影響度 | 重要度 | 難易度 |
 |---:|---|---|---:|---:|---:|---:|
-| 8 | AP8 | ログイン識別子の複数化（仕様 §4。`user_login_identifiers`: 電話番号・社員番号等の種別、表示値と正規化値の分離、識別子単位の無効化）（⬜未着手） | 大 | 大 | 小 | 大 |
 | 8 | AP14 | AP3 の残り: 国・端末信頼の条件（判定材料が無いため未実装。GeoIP かプロキシ供給ヘッダの取り決めと、デバイス登録簿が前提）（⬜未着手） | 大 | 中 | 中 | 大 |
 | 5 | AP1 | 認証ポリシーの管理画面（web コンソール UI。現状は API のみ。AP3 で増えた条件・効果も対象）（⬜未着手） | 中 | 中 | 小 | 中 |
 | 5 | AP7 | パスワードポリシーの拡張（仕様 §11.2。漏えい済みパスワード検出・過去パスワード再利用禁止・有効期限。現状は最小文字数のみ）（⬜未着手） | 中 | 小 | 中 | 中 |
+| 5 | AP15 | AP8 の contract フェーズ（`users.preferred_username` を登録簿へ移し、列を撤去する。解決経路の切替 → 移送 → 撤去を独立したマイグレーションに分ける）（⬜未着手） | 中 | 中 | 小 | 中 |
 | 5 | AP11 | AP9 の contract フェーズ（TOTP/WebAuthn の秘密を `user_authenticators` へ集約し、`user_totp_secrets` / `user_webauthn_credentials` を撤去）（⬜未着手） | 中 | 中 | 小 | 中 |
 | 5 | AP12 | SAML 外部 IdP（AP10 は OIDC のみ実装。`external_identity_providers` の protocol 拡張が要る）（⬜未着手） | 大 | 中 | 小 | 大 |
 | 5 | G11 | web crate に統合テストが無い（`crates/web/tests/` 不在。ルータ経由の検証は `scripts/e2e.sh` 頼み）（⬜未着手） | 中 | 中 | 小 | 中 |
@@ -55,26 +55,52 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 
 ## 詳細
 
-### ユーザー認証・認証ポリシー仕様書の残実装（AP1・AP7・AP8・AP14）
+### ユーザー認証・認証ポリシー仕様書の残実装（AP1・AP7・AP14）
 
 ADR-0020 で認証ポリシー（deny / require_mfa / allow）・管理 API・OIDC ログインフローへの適用・
 アカウントロックの設定化を導入し、AP3 で条件種別（ネットワークゾーン・時間帯・requested_acr）と
 `require_specific_method` 効果を追加した（ADR-0020 の追補）。残りは以下。
 
 - **AP1** 管理画面（web コンソール UI）。現状は API のみ（手順は `docs/OPERATIONS.md`）。
-  AP10 の外部 IdP 設定（`/admin/external-idps`）と、AP3 で増えた条件・効果の編集 UI も対象。
+  AP10 の外部 IdP 設定（`/admin/external-idps`）・AP8 のログイン識別子
+  （`/admin/users/{user_id}/login-identifiers`）と、AP3 で増えた条件・効果の編集 UI も対象。
 - **AP7** パスワードポリシーの拡張（§11.2）。
-- **AP8** ログイン識別子の複数化（§4 `user_login_identifiers`）。`users.email` /
-  `preferred_username` 直付けからの移行（expand/contract）を伴う。
 - **AP14** AP3 の残り: 国・端末信頼の条件。**条件式ではなく判定材料が無い**のが本体で、
   国は GeoIP データベースの同梱かフロントプロキシが供給するヘッダの取り決め、端末信頼は
   デバイス登録簿（登録・識別・信頼状態）がそれぞれ前提になる。材料の無い条件を先に置くと
   「設定できるが決して一致しない条件」が管理画面に並ぶため、別タスクへ切り出した。
 
-AP2・AP3・AP4・AP5・AP9・AP10 は実装済み（`CHANGELOG.md` 参照）。AP9 の残り（contract フェーズ）と
-AP10 の残り（SAML 外部 IdP）は下記「積み残し」にある。
+AP2・AP3・AP4・AP5・AP8・AP9・AP10 は実装済み（`CHANGELOG.md` 参照）。AP8 の残り
+（contract フェーズ）・AP9 の残り（contract フェーズ）・AP10 の残り（SAML 外部 IdP）は
+下記「積み残し」にある。
 
-### 積み残し（AP9・AP10 実装からの繰り越し。AP11〜AP13）
+### 積み残し（AP8・AP9・AP10 実装からの繰り越し。AP11〜AP13・AP15）
+
+#### AP15. AP8 の contract フェーズ（主たる識別子の移送）
+
+AP8 は expand フェーズだけを入れた（ADR-0025）。`user_login_identifiers` は種別・表示値・
+正規化値・有効/無効を一元管理するが、**主たるログイン識別子は `users.preferred_username` に
+残したまま**で、登録簿には**追加の識別子だけ**が入る（写しは取らない）。解決は
+「登録簿の有効な行 → `users.preferred_username`」の順。一覧 API は主識別子を読み出し時に
+合成して返している（`id` が `null` の行）。
+
+分けた理由は移行リスク。主識別子の移送は失敗すると**誰もログインできなくなる**操作で、
+登録簿の導入と同じ回に載せない（AP9 / AP11 と同じ分け方）。
+
+contract フェーズでやること:
+
+1. `users.preferred_username` を登録簿の `username` 種別（`is_primary` 相当）へ移すマイグレーション。
+2. 解決から `users.preferred_username` へのフォールバックを外す（登録簿だけを見る）。
+   一覧 API の合成行も不要になる。
+3. `users.preferred_username` 列の撤去。ID Token の `preferred_username` クレーム・
+   利用者一覧の表示・プロフィール編集を登録簿側へ寄せる。
+
+1 と 3 の間に**両方を読める期間**を挟む（ローリングデプロイ中に古いプロセスが残るため）。
+`users.preferred_username` を読んでいる箇所（プロフィール編集・利用者検索・`/userinfo` の
+クレーム組み立て）を洗い出すのが実質の作業量になる。
+
+移送が済めば、追加識別子と主識別子の衝突を**DB の一意制約**で防げるようになる（expand の間は
+アプリ層の事前チェックしか張れず、同時実行の窓が残る。ADR-0025「残る限界」）。
 
 #### AP11. AP9 の contract フェーズ（秘密の集約）
 

@@ -4,10 +4,11 @@ use crate::presentation::correlation;
 use crate::presentation::cors;
 use crate::presentation::handlers::{
     admin, admin_application_logs, admin_audit, admin_authentication_policies, admin_clients,
-    admin_external_idps, admin_invitations, admin_members, admin_permissions, admin_restart,
-    admin_saml_service_providers, admin_signing_keys, admin_system_settings, admin_tenants,
-    admin_users, authorize, consent, discovery, health, internal_auth, internal_runtime_settings,
-    introspect, invitations, logout, mfa, passkey, register, revoke, saml_sso, token, userinfo,
+    admin_external_idps, admin_invitations, admin_login_identifiers, admin_members,
+    admin_permissions, admin_restart, admin_saml_service_providers, admin_signing_keys,
+    admin_system_settings, admin_tenants, admin_users, authorize, consent, discovery, health,
+    internal_auth, internal_runtime_settings, introspect, invitations, logout, mfa, passkey,
+    register, revoke, saml_sso, token, userinfo,
 };
 use crate::presentation::openapi::ApiDoc;
 use crate::presentation::security_headers::add_security_headers;
@@ -302,6 +303,17 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/admin/users/{user_id}/mfa-reset",
             post(admin_users::reset_user_mfa),
+        )
+        // ログイン識別子の割り当て（AP8。仕様 §4）。idp.tenant.admin 必須。
+        .route(
+            "/admin/users/{user_id}/login-identifiers",
+            get(admin_login_identifiers::list_login_identifiers)
+                .post(admin_login_identifiers::add_login_identifier),
+        )
+        .route(
+            "/admin/users/{user_id}/login-identifiers/{identifier_id}",
+            patch(admin_login_identifiers::update_login_identifier)
+                .delete(admin_login_identifiers::delete_login_identifier),
         )
         // 利用者権限の付与・剥奪・参照（A2、ADR-0006）。idp.tenant.admin 必須。
         .route(

@@ -34,6 +34,7 @@ use crate::domain::error::Result;
 use crate::domain::external_idp::{
     ExternalIdentity, ExternalIdentityProvider, ExternalLoginRequest,
 };
+use crate::domain::login_identifier::UserLoginIdentifier;
 use crate::domain::passkey_challenge::PasskeyChallenge;
 use crate::domain::password_reset::PasswordResetToken;
 use crate::domain::refresh_token::RefreshToken;
@@ -157,6 +158,22 @@ pub trait UserRepository: Send + Sync {
     async fn find_by_email(&self, tenant_id: TenantId, email: &str) -> Result<Option<User>>;
     /// 所属元が `tenant_id` のユーザーを preferred_username で検索する。
     async fn find_by_username(&self, tenant_id: TenantId, username: &str) -> Result<Option<User>>;
+    /// **ログイン欄に入力された値**からユーザーを解決する（AP8）。
+    ///
+    /// 登録簿（`user_login_identifiers`）の有効な行を種別ごとの正規化キーで引き、無ければ
+    /// `users.preferred_username` へ落とす。ログイン識別子の複数化は「入力の読み方が増える」
+    /// 変更であって「ユーザーの引き方が増える」変更ではないため、ログイン各経路には**この 1 本**
+    /// だけを見せ、どこを引いたかは実装に閉じる。
+    ///
+    /// 既定実装は `find_by_username` に委譲する（登録簿を持たないテスト用フェイクは、
+    /// 従来どおり `preferred_username` だけで解決される）。
+    async fn find_by_login_identifier(
+        &self,
+        tenant_id: TenantId,
+        input: &str,
+    ) -> Result<Option<User>> {
+        self.find_by_username(tenant_id, input.trim()).await
+    }
     /// ログイン失敗回数・ロック期限を更新する（ロックポリシー、設計仕様 §4.3）。
     ///
     /// **失敗の記録には使わない**（[`Self::record_login_failure`] を使う）。読んだ値を +1 して
@@ -216,6 +233,40 @@ pub trait UserRepository: Send + Sync {
         Err(crate::domain::error::DomainError::Repository(
             "update_profile is not supported by this repository".to_string(),
         ))
+    }
+}
+
+/// ログイン識別子の登録簿（AP8。`user_login_identifiers`）の永続化。
+///
+/// 解決（ログイン時の引き当て）は [`UserRepository::find_by_login_identifier`] にあり、ここには
+/// **管理操作**（一覧・追加・有効/無効・削除・プロフィール同期）だけを置く。読みのホットパスと
+/// 管理の書き込みで関心が違うためで、`AuditLogSink` と `AuditLogQuery` と同じ分け方をしている。
+///
+/// 既定実装は「登録簿が空」として振る舞う（登録簿を持たないテスト用フェイクのため。AP9 の
+/// [`UserAuthenticatorRepository`] と同じ方針）。
+#[async_trait]
+pub trait UserLoginIdentifierRepository: Send + Sync {
+    /// 識別子を登録する。テナント内で `(identifier_type, normalized_value)` が重複したら `Conflict`。
+    async fn create(&self, _identifier: &UserLoginIdentifier) -> Result<()> {
+        Err(crate::domain::error::DomainError::Repository(
+            "create is not supported by this repository".to_string(),
+        ))
+    }
+    /// 利用者の識別子を種別・登録順に一覧する（無効な行も含む。管理画面用）。
+    async fn list_for_user(&self, _user_id: Uuid) -> Result<Vec<UserLoginIdentifier>> {
+        Ok(Vec::new())
+    }
+    /// 内部 ID で引く（テナント境界の確認は呼び出し側が行う）。
+    async fn find_by_id(&self, _id: Uuid) -> Result<Option<UserLoginIdentifier>> {
+        Ok(None)
+    }
+    /// 有効/無効を切り替える。対象（`(id, user_id)`）が無ければ `false`。
+    async fn set_active(&self, _id: Uuid, _user_id: Uuid, _is_active: bool) -> Result<bool> {
+        Ok(false)
+    }
+    /// 識別子を削除する。対象（`(id, user_id)`）が無ければ `false`。
+    async fn delete(&self, _id: Uuid, _user_id: Uuid) -> Result<bool> {
+        Ok(false)
     }
 }
 
