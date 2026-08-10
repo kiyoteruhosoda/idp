@@ -84,7 +84,9 @@ curl -fsS -X POST "${API}/${ROOT}/auth/register" -H 'content-type: application/j
   -d "{\"email\":\"${U}@example.com\",\"preferred_username\":\"${U}\",\"password\":\"${P}\"}" >/dev/null
 # この E2E はメール検証ゲートではなく OIDC 同意・code 発行を検証するため、
 # 登録ユーザーを検証済みにして既存フローへ進める。
-mariadb_exec "UPDATE users SET email_verified=1 WHERE tenant_id='${ROOT}' AND preferred_username='${U}';" >/dev/null
+# ユーザー名の置き場所は登録簿（`user_login_identifiers`。AP15b で `users` から移した）。
+mariadb_exec "UPDATE users u JOIN user_login_identifiers p ON p.primary_of_user = u.id \
+  SET u.email_verified=1 WHERE u.tenant_id='${ROOT}' AND p.normalized_value='${U}';" >/dev/null
 pass "利用者登録"
 
 CJAR="$(mktemp)"
@@ -204,7 +206,8 @@ pass "IdP メタデータ導線（コンソールと同じ web オリジンか�
 # メンバー一覧（絞り込み）→ 権限付与。利用者検索画面は廃止したためメンバー画面が起点。
 members_html="$(curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin/members?q=${U}")"
 grep -q "/${ROOT}/admin/users/[0-9a-f-]\{36\}/permissions" <<<"$members_html" || fail "メンバー絞り込みが権限リンクを返しません"
-tid="$(mariadb_exec "SELECT id FROM users WHERE tenant_id='${ROOT}' AND preferred_username='${U}' LIMIT 1;")"
+tid="$(mariadb_exec "SELECT u.id FROM users u JOIN user_login_identifiers p ON p.primary_of_user = u.id \
+  WHERE u.tenant_id='${ROOT}' AND p.normalized_value='${U}' LIMIT 1;")"
 [[ -n "$tid" ]] || fail "対象利用者が見つかりません"
 perm_page="$(mktemp)"
 perm_status="$(curl -sS -b "$AJAR" -o "$perm_page" -w '%{http_code}' "${WEB}/${ROOT}/admin/users/${tid}/permissions")"

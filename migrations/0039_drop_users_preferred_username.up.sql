@@ -64,34 +64,74 @@ WHERE u.preferred_username IS NOT NULL
         AND x.normalized_value = LOWER(TRIM(u.preferred_username))
   );
 
--- 2. 移送できなかった利用者が残っていたら、列を落とす前に失敗する。
+-- 2. 主識別子行が**古い値のまま**の利用者を揃える。
+--
+-- 上の 2 つは「主識別子行が無い」利用者しか拾わない。0036 の backfill が行を作ったあとに、
+-- 古いプロセスがユーザー名を変更すると `users` 側だけが新しくなり、登録簿には**古い値の行が
+-- 残る**。この状態で列を落とすと、新しい名前は消え、古い名前が生き続ける（利用者は変更前の
+-- 名前でログインし、変更後の名前では入れない）。行の有無だけを見ていると素通りする。
+--
+-- 食い違ったときは **`users` 側が新しい**。両方へ書くのは新しいコードだけで、古いコードは
+-- `users` しか書かないため、ずれる原因は古いコードの書き込みに限られる。
+UPDATE user_login_identifiers p
+JOIN users u ON u.id = p.primary_of_user
+SET p.identifier_type = 'username',
+    p.display_value = u.preferred_username,
+    p.normalized_value = LOWER(TRIM(u.preferred_username)),
+    p.is_active = 1
+WHERE u.preferred_username IS NOT NULL
+  AND TRIM(u.preferred_username) <> ''
+  AND p.normalized_value <> LOWER(TRIM(u.preferred_username))
+  -- 新しい値を別の行が握っていたら揃えられない（一意制約に当たる）。下の guard が捕まえる。
+  AND NOT EXISTS (
+      SELECT 1 FROM (SELECT * FROM user_login_identifiers) x
+      WHERE x.tenant_id = u.tenant_id
+        AND x.identifier_type = 'username'
+        AND x.normalized_value = LOWER(TRIM(u.preferred_username))
+        AND x.id <> p.id
+  );
+
+-- 3. 揃えられなかった利用者が残っていたら、列を落とす前に失敗する。
+--
+-- 見るのは「行があるか」ではなく「**`users.preferred_username` と一致しているか**」である。
+-- 落としてよいのは、列の中身がすべて登録簿に写っているときだけで、次の 3 つはどれも
+-- 「その利用者だけが今までと違うユーザー名になる（あるいは入れなくなる）」を意味する。
+--
+--   * 主識別子行が無い（同じ値を他人が持っていて写せなかった）
+--   * 主識別子行はあるが別の値を指している（新しい値を他人が持っていて揃えられなかった）
+--   * `users` 側で解除されたのに主識別子行が残っている（古いコードは登録簿を消さない）
 --
 -- 制約名がそのままエラー文になる（`CONSTRAINT ... failed`）ので、何を直せばよいかが読める。
 -- 該当者は次で洗い出せる:
 --
---   SELECT u.id, u.tenant_id FROM users u
---   WHERE u.preferred_username IS NOT NULL AND TRIM(u.preferred_username) <> ''
---     AND NOT EXISTS (SELECT 1 FROM user_login_identifiers p
---                     WHERE p.user_id = u.id AND p.primary_of_user IS NOT NULL);
+--   SELECT u.id, u.tenant_id, u.preferred_username, p.display_value AS registry_value
+--   FROM users u LEFT JOIN user_login_identifiers p ON p.primary_of_user = u.id
+--   WHERE (u.preferred_username IS NOT NULL AND TRIM(u.preferred_username) <> ''
+--          AND (p.id IS NULL OR p.normalized_value <> LOWER(TRIM(u.preferred_username))))
+--      OR ((u.preferred_username IS NULL OR TRIM(u.preferred_username) = '') AND p.id IS NOT NULL);
 CREATE TABLE IF NOT EXISTS ap15b_migration_guard (
-    users_without_a_primary_login_identifier INT NOT NULL,
-    CONSTRAINT resolve_duplicate_usernames_before_dropping_the_column
-        CHECK (users_without_a_primary_login_identifier = 0)
+    users_whose_username_is_not_in_the_registry INT NOT NULL,
+    CONSTRAINT the_registry_must_match_users_preferred_username
+        CHECK (users_whose_username_is_not_in_the_registry = 0)
 );
 
-INSERT INTO ap15b_migration_guard (users_without_a_primary_login_identifier)
+INSERT INTO ap15b_migration_guard (users_whose_username_is_not_in_the_registry)
 SELECT COUNT(*)
 FROM users u
-WHERE u.preferred_username IS NOT NULL
-  AND TRIM(u.preferred_username) <> ''
-  AND NOT EXISTS (
-      SELECT 1 FROM user_login_identifiers p
-      WHERE p.user_id = u.id AND p.primary_of_user IS NOT NULL
-  );
+LEFT JOIN user_login_identifiers p ON p.primary_of_user = u.id
+WHERE (
+        u.preferred_username IS NOT NULL
+        AND TRIM(u.preferred_username) <> ''
+        AND (p.id IS NULL OR p.normalized_value <> LOWER(TRIM(u.preferred_username)))
+      )
+   OR (
+        (u.preferred_username IS NULL OR TRIM(u.preferred_username) = '')
+        AND p.id IS NOT NULL
+      );
 
 DROP TABLE ap15b_migration_guard;
 
--- 3. 列と一意制約を落とす。以後、主識別子と追加識別子の衝突は登録簿の一意制約
+-- 4. 列と一意制約を落とす。以後、主識別子と追加識別子の衝突は登録簿の一意制約
 --    （tenant × 種別 × 正規化値）が防ぐ —— expand の間はアプリ層の事前チェックしか
 --    張れず、同時実行の窓が残っていた（ADR-0025「残る限界」）。
 ALTER TABLE users

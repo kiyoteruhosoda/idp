@@ -54,13 +54,15 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 全ノードへ行き渡ってから」適用してよい（`migrations/README.md` 参照）。ローリングデプロイの
 途中で当てると、前半のコードを動かしているプロセスが MFA・ユーザー名ログインを通せなくなる。
 
-`0039` は、同じ値を他人が識別子として持っているために登録簿へ写せていない利用者が残っていると
-**失敗する**。その状態で列を落とすと当人だけがユーザー名でログインできなくなるため、意図的に
-止めてある。次で洗い出し、値の重複を解消してから再実行する。
+`0039` は、`users.preferred_username` と登録簿の主識別子が**食い違ったまま**の利用者が残っていると
+失敗する。列を落とすとその利用者だけがユーザー名でログインできなくなる（あるいは変更前の名前で
+入れてしまう）ため、意図的に止めてある。食い違いは古いプロセスが `users` 側だけを書いたときに
+生まれ、値の衝突で揃えられないものだけが残る。次で洗い出し、重複を解消してから再実行する。
 
 ```sql
-SELECT u.id, u.tenant_id FROM users u
-WHERE u.preferred_username IS NOT NULL AND TRIM(u.preferred_username) <> ''
-  AND NOT EXISTS (SELECT 1 FROM user_login_identifiers p
-                  WHERE p.user_id = u.id AND p.primary_of_user IS NOT NULL);
+SELECT u.id, u.tenant_id, u.preferred_username, p.display_value AS registry_value
+FROM users u LEFT JOIN user_login_identifiers p ON p.primary_of_user = u.id
+WHERE (u.preferred_username IS NOT NULL AND TRIM(u.preferred_username) <> ''
+       AND (p.id IS NULL OR p.normalized_value <> LOWER(TRIM(u.preferred_username))))
+   OR ((u.preferred_username IS NULL OR TRIM(u.preferred_username) = '') AND p.id IS NOT NULL);
 ```
