@@ -14,7 +14,7 @@ use crate::admin_dto::{
 use idp_contracts::admin::{
     AuthenticationPoliciesResponse, AuthenticationPolicyResponse,
     AuthenticationPolicyUpsertRequest, AvailablePermissionsResponse, ClientStatusResponse,
-    SamlServiceProviderRegisterRequest, SamlServiceProviderResponse,
+    SamlIdpMetadataImportResponse, SamlServiceProviderRegisterRequest, SamlServiceProviderResponse,
     SamlServiceProviderUpdateRequest, SamlSpMetadataImportResponse, UserPermissionsResponse,
     UserSummaryResponse, WhoamiResponse,
 };
@@ -967,6 +967,26 @@ impl ApiClient {
             correlation_id,
             sso,
             Some(body),
+        )
+        .await
+    }
+
+    /// 外部 IdP メタデータ取り込み（`POST /admin/external-idps/import-metadata`）。AP12。
+    /// 解析だけを行い、登録候補値を返す（永続化はしない）。
+    pub async fn import_external_idp_metadata(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        metadata_xml: &str,
+    ) -> Result<SamlIdpMetadataImportResponse, AdminApiError> {
+        self.admin_send(
+            Method::POST,
+            tenant_id,
+            "/admin/external-idps/import-metadata",
+            correlation_id,
+            sso,
+            Some(serde_json::json!({ "metadata_xml": metadata_xml })),
         )
         .await
     }

@@ -308,18 +308,42 @@ pub struct SystemSettingsView {
 ///
 /// `client_secret` は api が返さない（保存は暗号化、復号は外部 IdP へトークン要求を出す瞬間だけ）。
 /// 画面は「設定済みかどうか」（`has_client_secret`）だけを出す。
+///
+/// プロトコル固有の項目（OIDC のエンドポイント・SAML の SSO URL）は api では**使わない側が
+/// `null`** になる（ADR-0027）。`Option` で受けないと、SAML のプロバイダが 1 件でも登録された
+/// 時点で一覧の解析ごと失敗し、画面が開かなくなる。
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExternalIdpView {
     pub id: String,
     pub provider_code: String,
     pub display_name: String,
     pub issuer: String,
-    pub authorization_endpoint: String,
-    pub token_endpoint: String,
-    pub jwks_uri: String,
-    pub client_id: String,
+    /// `oidc` / `saml`。
+    #[serde(default = "oidc_protocol")]
+    pub protocol: String,
+    #[serde(default)]
+    pub authorization_endpoint: Option<String>,
+    #[serde(default)]
+    pub token_endpoint: Option<String>,
+    #[serde(default)]
+    pub jwks_uri: Option<String>,
+    #[serde(default)]
+    pub client_id: Option<String>,
     pub has_client_secret: bool,
+    #[serde(default)]
     pub scopes: Vec<String>,
+    /// SAML のみ。
+    #[serde(default)]
+    pub saml_sso_url: Option<String>,
+    #[serde(default)]
+    pub saml_certificates: Vec<String>,
+    #[serde(default)]
+    pub saml_name_id_format: Option<String>,
+    /// SAML のみ。外部 IdP 側へ登録すべき本 IdP の entityID と ACS URL。
+    #[serde(default)]
+    pub saml_sp_entity_id: Option<String>,
+    #[serde(default)]
+    pub saml_acs_url: Option<String>,
     pub enabled: bool,
     pub allow_auto_link: bool,
     /// 外部 IdP 側へ登録すべきコールバック URL（設定作業の手掛かり）。
@@ -328,6 +352,25 @@ pub struct ExternalIdpView {
     pub created_at: String,
     #[allow(dead_code)]
     pub updated_at: String,
+}
+
+fn oidc_protocol() -> String {
+    "oidc".to_string()
+}
+
+impl ExternalIdpView {
+    pub fn is_saml(&self) -> bool {
+        self.protocol == "saml"
+    }
+
+    /// 外部 IdP 側へ登録してもらう受け口の URL。OIDC は `redirect_uri`、SAML は ACS URL で、
+    /// 一覧では同じ列に出す（管理者にとっては「相手に貼る URL」という同じ役割）。
+    pub fn callback_url(&self) -> &str {
+        match self.saml_acs_url.as_deref() {
+            Some(acs) if self.is_saml() => acs,
+            _ => &self.redirect_uri,
+        }
+    }
 }
 
 // ── ログイン識別子（AP8 の API を AP16 で画面化する）───────────────────────────

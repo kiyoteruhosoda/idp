@@ -383,6 +383,12 @@ pub fn build(state: AppState) -> Router {
             get(admin_external_idps::list_external_idps)
                 .post(admin_external_idps::register_external_idp),
         )
+        // 外部 IdP メタデータ取り込み（解析のみ・非永続。AP12）。`{id}` より先に置く——
+        // `import-metadata` を id として解釈されると 404 になる。
+        .route(
+            "/admin/external-idps/import-metadata",
+            post(admin_external_idps::import_external_idp_metadata),
+        )
         .route(
             "/admin/external-idps/{id}",
             patch(admin_external_idps::update_external_idp)

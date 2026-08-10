@@ -86,7 +86,8 @@ pub struct GenerateSigningKeyRequest {
     pub algorithm: String,
 }
 
-/// SAML メタデータ取り込みリクエスト（SP メタデータ XML を貼り付けて登録候補値を得る）。
+/// SAML メタデータ取り込みリクエスト（メタデータ XML を貼り付けて登録候補値を得る）。
+/// SP（クライアント）側・外部 IdP 側のどちらの取り込みにも使う（入力の形は同じ `EntityDescriptor`）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SamlMetadataImportRequest {
     /// SAML メタデータ XML（`EntityDescriptor`）。
@@ -152,6 +153,22 @@ pub struct SamlSpMetadataImportResponse {
     pub name_id_format: String,
     #[serde(default)]
     pub x509_certificate: String,
+}
+
+/// 外部 SAML IdP メタデータ取り込みの応答（外部 IdP 登録フォームの初期値。AP12）。
+///
+/// `entity_id` は登録時の `issuer`（アサーションの `<Issuer>` と完全一致で照合する値）になる。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SamlIdpMetadataImportResponse {
+    #[serde(default)]
+    pub display_name: String,
+    pub entity_id: String,
+    pub sso_url: String,
+    /// 署名検証に使う証明書。**複数返る**（証明書更新期間は新旧 2 枚が同時に有効）。
+    #[serde(default)]
+    pub certificates: Vec<String>,
+    #[serde(default)]
+    pub name_id_format: String,
 }
 
 // ── 認証ポリシー（AP1。管理コンソールが `/admin/authentication-policies` を呼ぶための契約）──

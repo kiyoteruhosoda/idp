@@ -875,14 +875,26 @@ pub struct ExternalIdpsConsole<'a> {
     pub values: &'a ExternalIdpFormValues,
     pub saved: bool,
     pub deleted: bool,
+    /// メタデータ取り込みでフォームに初期値が入った直後か（AP12）。
+    pub imported: bool,
     pub error_key: Option<&'a str>,
 }
 
-/// 外部 IdP 設定フォームの値（往復用）。可変長の `scopes` は空白区切りの 1 行で扱う。
+/// 外部 IdP 設定フォームの値（往復用）。可変長の値（`scopes`・SAML の証明書）は 1 つの
+/// テキスト欄で扱う（scope は空白区切り、証明書は空行区切り）。
+///
+/// **プロトコルで使う欄が変わるが、構造体は 1 つにする。** OIDC 用と SAML 用に分けると、
+/// 取り違え（SAML を選んだのに OIDC の値が送られる）を型で防げるようにも見えるが、実際には
+/// 画面が 1 枚のフォームである以上どちらの欄も往復させる必要があり、分けると「編集中に
+/// プロトコルを切り替えた」状態を表現できなくなる。妥当な組み合わせの判断は api（`ExternalIdpConfig`）が
+/// 単一の出所として持つ。
 #[derive(Debug, Clone)]
 pub struct ExternalIdpFormValues {
     pub provider_code: String,
     pub display_name: String,
+    /// `oidc` / `saml`。登録後は変更できない（api が拒否する。既存の連携が別プロトコルの
+    /// 識別子を指したまま残るため）。
+    pub protocol: String,
     pub issuer: String,
     pub authorization_endpoint: String,
     pub token_endpoint: String,
@@ -893,8 +905,19 @@ pub struct ExternalIdpFormValues {
     /// 連携が壊れる）。
     pub has_client_secret: bool,
     pub scopes: String,
+    /// SAML: IdP の `SingleSignOnService` URL。
+    pub saml_sso_url: String,
+    /// SAML: 署名検証に使う証明書。空行区切りで複数書ける（証明書更新期間は新旧 2 枚が同時に有効）。
+    pub saml_certificates: String,
+    pub saml_name_id_format: String,
     pub enabled: bool,
     pub allow_auto_link: bool,
+}
+
+impl ExternalIdpFormValues {
+    pub fn is_saml(&self) -> bool {
+        self.protocol == "saml"
+    }
 }
 
 impl Default for ExternalIdpFormValues {
@@ -902,6 +925,7 @@ impl Default for ExternalIdpFormValues {
         Self {
             provider_code: String::new(),
             display_name: String::new(),
+            protocol: "oidc".to_string(),
             issuer: String::new(),
             authorization_endpoint: String::new(),
             token_endpoint: String::new(),
@@ -910,6 +934,9 @@ impl Default for ExternalIdpFormValues {
             has_client_secret: false,
             // OIDC の最小構成。api の既定値と同じ。
             scopes: "openid profile email".to_string(),
+            saml_sso_url: String::new(),
+            saml_certificates: String::new(),
+            saml_name_id_format: String::new(),
             enabled: true,
             // 自動連携は既定 OFF（検証済みメール一致だけで既存アカウントへ入れる設定のため）。
             allow_auto_link: false,

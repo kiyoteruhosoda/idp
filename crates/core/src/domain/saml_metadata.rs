@@ -1,10 +1,17 @@
-//! SAML メタデータ XML の解析（SP メタデータ取り込み）と生成（自身の IdP メタデータ出力）。
+//! SAML メタデータ XML の解析（SP / 外部 IdP のメタデータ取り込み）と生成（自身の IdP メタデータ出力）。
 //!
-//! - 取り込み: SP（クライアント）が公開する `EntityDescriptor`（`SPSSODescriptor`）を解析し、登録に必要な
+//! - 取り込み（SP）: SP（クライアント）が公開する `EntityDescriptor`（`SPSSODescriptor`）を解析し、登録に必要な
 //!   `entity_id` / `acs_url` / `x509_certificate` / NameID を抽出する。管理者の手入力を置き換える補助で、
 //!   検証（ACS URL のスキーム等）は登録ユースケース側（[`crate::domain::saml_service_provider`]）に委ねる。
+//! - 取り込み（外部 IdP）: 外部の SAML IdP が公開する `IDPSSODescriptor` を解析し、
+//!   `entity_id` / `sso_url` / 署名証明書を抽出する（AP12。[`crate::domain::external_idp`] の登録候補値）。
 //! - 出力: 本 IdP の `EntityDescriptor`（`IDPSSODescriptor`）を生成する。SP（クライアント）がこの IdP を
 //!   信頼するために取り込むメタデータで、`.well-known/openid-configuration` の SAML 版に相当する。
+//!
+//! **取り込みは向きを取り違えない。** SP と IdP のメタデータは同じ `EntityDescriptor` で包まれ、
+//! 中の役割記述子（`SPSSODescriptor` / `IDPSSODescriptor`）だけが違う。役割を指定せずに読むと、
+//! IdP のメタデータを SP として（あるいはその逆で）登録でき、誤りは**利用者のログイン時**まで
+//! 表に出ない。そのため解析は役割（[`Role`]）を必ず伴い、目的の記述子が無い XML は失敗させる。
 //!
 //! 名前空間の接頭辞（`md:` / `saml:` 等）は実装依存のためローカル名で判定する。属性値・要素本文の
 //! アンエスケープと、出力時の属性値エスケープは `quick-xml` に委ねる（手書きのエスケープを設けない）。
@@ -32,11 +39,96 @@ pub struct ImportedSpMetadata {
     pub display_name: Option<String>,
 }
 
+/// 外部 IdP のメタデータから取り込んだ登録候補値（AP12）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportedIdpMetadata {
+    /// IdP の entityID。アサーションの `<Issuer>` と完全一致で照合する値になる。
+    pub entity_id: String,
+    /// SingleSignOnService の URL（`AuthnRequest` の送信先）。
+    pub sso_url: String,
+    /// 署名検証に使う証明書（空白除去した base64 DER）。**複数返す**——IdP の証明書更新期間は
+    /// 新旧 2 枚が同時に有効で、メタデータにも 2 枚並ぶ。1 枚に絞ると更新のたびにログインが止まる。
+    pub certificates: Vec<String>,
+    /// `NameIDFormat`（あれば先頭）。
+    pub name_id_format: Option<String>,
+    /// `md:Organization` 由来の表示名（あれば）。
+    pub display_name: Option<String>,
+}
+
 /// 取り込み中に本文テキストを収集する対象。
 enum Capture {
     Certificate,
     DisplayName,
     NameIdFormat,
+}
+
+/// 取り込む役割記述子。SP と IdP でどの要素を読むかだけが違う。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Role {
+    Sp,
+    Idp,
+}
+
+impl Role {
+    /// 役割記述子のローカル名。
+    fn descriptor(self) -> &'static [u8] {
+        match self {
+            Self::Sp => b"SPSSODescriptor",
+            Self::Idp => b"IDPSSODescriptor",
+        }
+    }
+
+    /// エンドポイント要素のローカル名。
+    fn endpoint(self) -> &'static [u8] {
+        match self {
+            Self::Sp => b"AssertionConsumerService",
+            Self::Idp => b"SingleSignOnService",
+        }
+    }
+
+    /// 候補から使うエンドポイントを 1 件選ぶ。
+    ///
+    /// **IdP 側は HTTP-Redirect に限る。** ログイン開始は必ず HTTP-Redirect binding で
+    /// `AuthnRequest` を送る（[`crate::domain::saml_external_idp::redirect_binding_location`]）ため、
+    /// 他のバインディングのエンドポイントを取り込むと「登録は通るのに、ログインのたびに相手が
+    /// 受け付けない形式で送る」設定ができてしまう。誤りは**利用者のログイン時**まで表に出ない。
+    /// ここで落とせば、取り込んだ管理者がその場で気づける（手入力の道は残っている）。
+    ///
+    /// SP 側は POST → Redirect → 先頭の従来どおり。こちらは**相手が受け取る**側の URL で、
+    /// 本 IdP が送信方式を選べる（アサーションは POST で送る）。
+    fn pick_endpoint(self, candidates: &[(String, String)]) -> Option<String> {
+        match self {
+            Self::Sp => pick_by_binding(candidates, &[BINDING_HTTP_POST, BINDING_HTTP_REDIRECT]),
+            Self::Idp => candidates
+                .iter()
+                .find(|(binding, _)| binding == BINDING_HTTP_REDIRECT)
+                .map(|(_, location)| location.clone()),
+        }
+    }
+
+    /// エンドポイントが見つからないときのメッセージ。
+    fn missing_endpoint(self) -> &'static str {
+        match self {
+            Self::Sp => "SAML metadata is missing an SP AssertionConsumerService",
+            Self::Idp => {
+                "SAML metadata is missing an IdP SingleSignOnService with the HTTP-Redirect binding"
+            }
+        }
+    }
+}
+
+/// 役割記述子から読み取った生の値。役割ごとの型（[`ImportedSpMetadata`] / [`ImportedIdpMetadata`]）へ
+/// 詰め替える前の中間表現。
+struct ParsedEntity {
+    entity_id: String,
+    endpoint_url: String,
+    /// `use="signing"` が明示された証明書（出現順）。
+    signing_certificates: Vec<String>,
+    /// `use` の無い証明書（出現順）。SAML メタデータで `use` を書かない鍵は**署名にも暗号化にも
+    /// 使える**意味なので、署名用の候補でもある。
+    unspecified_certificates: Vec<String>,
+    name_id_format: Option<String>,
+    display_name: Option<String>,
 }
 
 /// SP（クライアント）の `EntityDescriptor`（`SPSSODescriptor`）XML を解析し、登録候補値を抽出する。
@@ -46,15 +138,60 @@ enum Capture {
 /// - ACS URL は HTTP-POST → HTTP-Redirect → 先頭、の優先順で 1 件を選ぶ（アサーションは POST 送信が基本）。
 /// - 証明書は `SPSSODescriptor` 内の署名用（`use="signing"` または `use` 無し）を優先して 1 件採用する。
 pub fn parse_sp_metadata(xml: &str) -> Result<ImportedSpMetadata> {
+    let parsed = parse_entity(xml, Role::Sp)?;
+    Ok(ImportedSpMetadata {
+        entity_id: parsed.entity_id,
+        acs_url: parsed.endpoint_url,
+        x509_certificate: parsed
+            .signing_certificates
+            .into_iter()
+            .chain(parsed.unspecified_certificates)
+            .next()
+            .unwrap_or_default(),
+        name_id_format: parsed.name_id_format,
+        display_name: parsed.display_name,
+    })
+}
+
+/// 外部 IdP の `EntityDescriptor`（`IDPSSODescriptor`）XML を解析し、登録候補値を抽出する（AP12）。
+///
+/// - `entityID` と SSO URL（`IDPSSODescriptor/SingleSignOnService`）は必須。欠落時は
+///   [`DomainError::InvalidValue`]。
+/// - SSO URL は **HTTP-Redirect binding のもの**に限る（`AuthnRequest` はその形でしか送らない）。
+///   他のバインディングしか無いメタデータは取り込まない——登録は通るのにログインのたびに
+///   相手が受け付けない形式で送る設定になり、誤りが利用者のログイン時まで表に出ない。
+/// - 証明書は署名に使える鍵を**すべて**返す。`use="signing"` の明示があるものと、`use` の無いもの
+///   （SAML メタデータでは署名にも暗号化にも使える意味）を**両方**含め、`use="encryption"` だけを
+///   除く。片方に絞ると、更新期間に相手がもう一方の鍵で署名した瞬間にログインが止まる。
+/// - 証明書が 1 枚も無い XML も**ここでは失敗にしない**。必須かどうかを決めるのは登録ユースケース
+///   （[`crate::application::external_idp_management`]）であり、取り込みは「読めたものを渡す」に徹する。
+pub fn parse_idp_metadata(xml: &str) -> Result<ImportedIdpMetadata> {
+    let parsed = parse_entity(xml, Role::Idp)?;
+    let certificates: Vec<String> = parsed
+        .signing_certificates
+        .into_iter()
+        .chain(parsed.unspecified_certificates)
+        .collect();
+    Ok(ImportedIdpMetadata {
+        entity_id: parsed.entity_id,
+        sso_url: parsed.endpoint_url,
+        certificates,
+        name_id_format: parsed.name_id_format,
+        display_name: parsed.display_name,
+    })
+}
+
+/// `EntityDescriptor` を 1 パスで読み、指定した役割の記述子の中だけを拾う。
+fn parse_entity(xml: &str, role: Role) -> Result<ParsedEntity> {
     let mut reader = Reader::from_str(xml);
 
     let mut entity_id: Option<String> = None;
-    let mut in_sp = false;
-    // (binding, location) の ACS 候補。
-    let mut acs_candidates: Vec<(String, String)> = Vec::new();
+    let mut in_role = false;
+    // (binding, location) のエンドポイント候補。
+    let mut endpoints: Vec<(String, String)> = Vec::new();
     let mut key_use: Option<String> = None;
-    let mut signing_cert: Option<String> = None;
-    let mut fallback_cert: Option<String> = None;
+    let mut signing_certificates: Vec<String> = Vec::new();
+    let mut unspecified_certificates: Vec<String> = Vec::new();
     let mut name_id_format: Option<String> = None;
     let mut display_name: Option<String> = None;
 
@@ -72,18 +209,18 @@ pub fn parse_sp_metadata(xml: &str) -> Result<ImportedSpMetadata> {
                     entity_id = attribute(&e, b"entityID");
                     in_entity = true;
                 }
-                b"SPSSODescriptor" if in_entity => in_sp = true,
-                b"KeyDescriptor" if in_entity && in_sp => key_use = attribute(&e, b"use"),
-                b"AssertionConsumerService" if in_entity && in_sp => {
-                    push_sso(&e, &mut acs_candidates)
+                name if in_entity && name == role.descriptor() => in_role = true,
+                b"KeyDescriptor" if in_entity && in_role => key_use = attribute(&e, b"use"),
+                name if in_entity && in_role && name == role.endpoint() => {
+                    push_endpoint(&e, &mut endpoints)
                 }
                 b"X509Certificate"
-                    if in_entity && in_sp && key_use.as_deref() != Some("encryption") =>
+                    if in_entity && in_role && key_use.as_deref() != Some("encryption") =>
                 {
                     capture = Some(Capture::Certificate);
                     text_buf.clear();
                 }
-                b"NameIDFormat" if in_entity && in_sp && name_id_format.is_none() => {
+                b"NameIDFormat" if in_entity && in_role && name_id_format.is_none() => {
                     capture = Some(Capture::NameIdFormat);
                     text_buf.clear();
                 }
@@ -99,9 +236,9 @@ pub fn parse_sp_metadata(xml: &str) -> Result<ImportedSpMetadata> {
                 b"EntityDescriptor" if entity_id.is_none() => {
                     entity_id = attribute(&e, b"entityID");
                 }
-                b"KeyDescriptor" if in_entity && in_sp => key_use = attribute(&e, b"use"),
-                b"AssertionConsumerService" if in_entity && in_sp => {
-                    push_sso(&e, &mut acs_candidates)
+                b"KeyDescriptor" if in_entity && in_role => key_use = attribute(&e, b"use"),
+                name if in_entity && in_role && name == role.endpoint() => {
+                    push_endpoint(&e, &mut endpoints)
                 }
                 _ => {}
             },
@@ -115,16 +252,16 @@ pub fn parse_sp_metadata(xml: &str) -> Result<ImportedSpMetadata> {
             }
             Event::End(e) => match local_end(&e) {
                 b"EntityDescriptor" if in_entity => break,
-                b"SPSSODescriptor" => in_sp = false,
+                name if name == role.descriptor() => in_role = false,
                 b"KeyDescriptor" => key_use = None,
                 b"X509Certificate" => {
                     if matches!(capture, Some(Capture::Certificate)) {
                         let normalized = strip_whitespace(&text_buf);
                         if !normalized.is_empty() {
                             if key_use.as_deref() == Some("signing") {
-                                signing_cert.get_or_insert(normalized);
+                                signing_certificates.push(normalized);
                             } else {
-                                fallback_cert.get_or_insert(normalized);
+                                unspecified_certificates.push(normalized);
                             }
                         }
                     }
@@ -158,16 +295,15 @@ pub fn parse_sp_metadata(xml: &str) -> Result<ImportedSpMetadata> {
     let entity_id = entity_id.filter(|s| !s.trim().is_empty()).ok_or_else(|| {
         DomainError::InvalidValue("SAML metadata is missing entityID".to_string())
     })?;
-    let acs_url = pick_acs_url(&acs_candidates).ok_or_else(|| {
-        DomainError::InvalidValue(
-            "SAML metadata is missing an SP AssertionConsumerService".to_string(),
-        )
-    })?;
+    let endpoint_url = role
+        .pick_endpoint(&endpoints)
+        .ok_or_else(|| DomainError::InvalidValue(role.missing_endpoint().to_string()))?;
 
-    Ok(ImportedSpMetadata {
+    Ok(ParsedEntity {
         entity_id: entity_id.trim().to_string(),
-        acs_url,
-        x509_certificate: signing_cert.or(fallback_cert).unwrap_or_default(),
+        endpoint_url,
+        signing_certificates,
+        unspecified_certificates,
         name_id_format,
         display_name,
     })
@@ -258,16 +394,11 @@ pub fn build_idp_metadata_xml(
     )
 }
 
-/// `SingleSignOnService` の Binding/Location を SSO 候補へ追加する（両方揃う場合のみ）。
-fn push_sso(e: &BytesStart, out: &mut Vec<(String, String)>) {
+/// エンドポイント要素の Binding/Location を候補へ追加する（両方揃う場合のみ）。
+fn push_endpoint(e: &BytesStart, out: &mut Vec<(String, String)>) {
     if let (Some(binding), Some(location)) = (attribute(e, b"Binding"), attribute(e, b"Location")) {
         out.push((binding, location));
     }
-}
-
-/// ACS 候補から 1 件選ぶ。HTTP-POST → HTTP-Redirect → 先頭、の優先順（アサーションは POST 送信が基本）。
-fn pick_acs_url(candidates: &[(String, String)]) -> Option<String> {
-    pick_by_binding(candidates, &[BINDING_HTTP_POST, BINDING_HTTP_REDIRECT])
 }
 
 /// `preferred` のバインディング順で URL を選び、いずれも無ければ先頭を返す。
@@ -400,6 +531,105 @@ mod tests {
     fn sp_metadata_does_not_pick_idp_sso_service() {
         // IdP メタデータ（SSO のみ・ACS 無し）を SP として取り込もうとすると失敗する。
         assert!(parse_sp_metadata(IDP_METADATA).is_err());
+    }
+
+    /// 外部 IdP のメタデータから entityID・SSO URL・署名証明書を取り込める。SSO URL は
+    /// HTTP-Redirect を優先する（`AuthnRequest` は Redirect binding で送るため）。
+    #[test]
+    fn parses_idp_entity_sso_and_signing_certificate() {
+        let parsed = parse_idp_metadata(IDP_METADATA).expect("parse");
+        assert_eq!(parsed.entity_id, "https://idp.example.test/metadata");
+        assert_eq!(parsed.sso_url, "https://idp.example.test/sso/redirect");
+        // 暗号化用の証明書は署名検証に使わないので混ぜない。
+        assert_eq!(parsed.certificates, vec!["MIIBsigningCERTdata=="]);
+        assert_eq!(parsed.display_name.as_deref(), Some("Example IdP"));
+    }
+
+    /// 証明書更新期間のメタデータには署名用が 2 枚並ぶ。**両方**取り込めないと、
+    /// 切り替わった瞬間にログインが止まる。
+    #[test]
+    fn keeps_every_signing_certificate_for_rotation() {
+        let xml = r#"<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata"
+                                       xmlns:ds="http://www.w3.org/2000/09/xmldsig#"
+                                       entityID="urn:idp">
+  <IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+    <KeyDescriptor use="signing"><ds:KeyInfo><ds:X509Data><ds:X509Certificate>CURRENT==</ds:X509Certificate></ds:X509Data></ds:KeyInfo></KeyDescriptor>
+    <KeyDescriptor use="signing"><ds:KeyInfo><ds:X509Data><ds:X509Certificate>NEXT==</ds:X509Certificate></ds:X509Data></ds:KeyInfo></KeyDescriptor>
+    <SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.test/sso"/>
+  </IDPSSODescriptor>
+</EntityDescriptor>"#;
+        let parsed = parse_idp_metadata(xml).expect("parse");
+        assert_eq!(parsed.certificates, vec!["CURRENT==", "NEXT=="]);
+    }
+
+    /// `use` の無い `KeyDescriptor` は署名にも暗号化にも使える意味なので、**署名用と並べて**返す。
+    /// 明示された署名用があるからといって落とすと、更新期間に相手が `use` 無しの鍵で署名した
+    /// 瞬間にログインが止まる。`use="encryption"` だけは除く。
+    #[test]
+    fn keeps_certificates_without_a_use_attribute_alongside_signing_ones() {
+        let xml = r#"<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata"
+                                       xmlns:ds="http://www.w3.org/2000/09/xmldsig#"
+                                       entityID="urn:idp">
+  <IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+    <KeyDescriptor use="signing"><ds:KeyInfo><ds:X509Data><ds:X509Certificate>SIGNING==</ds:X509Certificate></ds:X509Data></ds:KeyInfo></KeyDescriptor>
+    <KeyDescriptor><ds:KeyInfo><ds:X509Data><ds:X509Certificate>ANY==</ds:X509Certificate></ds:X509Data></ds:KeyInfo></KeyDescriptor>
+    <KeyDescriptor use="encryption"><ds:KeyInfo><ds:X509Data><ds:X509Certificate>ENCRYPTION==</ds:X509Certificate></ds:X509Data></ds:KeyInfo></KeyDescriptor>
+    <SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.test/sso"/>
+  </IDPSSODescriptor>
+</EntityDescriptor>"#;
+        let parsed = parse_idp_metadata(xml).expect("parse");
+        assert_eq!(parsed.certificates, vec!["SIGNING==", "ANY=="]);
+        assert_eq!(parsed.sso_url, "https://idp.test/sso");
+    }
+
+    /// **HTTP-Redirect binding の SSO しか取り込まない。** ログイン開始は必ず HTTP-Redirect で
+    /// `AuthnRequest` を送るので、他のバインディングの URL を取り込むと「登録は通るのに、
+    /// ログインのたびに相手が受け付けない形式で送る」設定ができる。取り込みの時点で落とす。
+    #[test]
+    fn only_the_http_redirect_sso_endpoint_is_imported() {
+        let with_both = r#"<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="urn:idp">
+  <IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+    <SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="https://idp.test/sso/post"/>
+    <SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.test/sso/redirect"/>
+  </IDPSSODescriptor>
+</EntityDescriptor>"#;
+        assert_eq!(
+            parse_idp_metadata(with_both).expect("parse").sso_url,
+            "https://idp.test/sso/redirect"
+        );
+
+        // POST しか無い・SOAP のような送れないバインディングしか無いメタデータは取り込まない。
+        for unusable in [
+            r#"<SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="https://idp.test/sso"/>"#,
+            r#"<SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:SOAP" Location="https://idp.test/soap"/>"#,
+        ] {
+            let xml = format!(
+                r#"<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="urn:idp">
+  <IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">{unusable}</IDPSSODescriptor>
+</EntityDescriptor>"#
+            );
+            assert!(
+                parse_idp_metadata(&xml).is_err(),
+                "a binding the login flow cannot send must not be imported: {unusable}"
+            );
+        }
+    }
+
+    /// **向きを取り違えない。** SP のメタデータを外部 IdP として取り込もうとすると失敗する
+    /// （`IDPSSODescriptor` が無い）。ここを通してしまうと、誤りはログイン時まで表に出ない。
+    #[test]
+    fn idp_metadata_does_not_accept_an_sp_descriptor() {
+        assert!(parse_idp_metadata(SP_METADATA).is_err());
+    }
+
+    #[test]
+    fn idp_metadata_without_entity_id_is_rejected() {
+        let xml = r#"<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata">
+  <IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+    <SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.test/sso"/>
+  </IDPSSODescriptor>
+</EntityDescriptor>"#;
+        assert!(parse_idp_metadata(xml).is_err());
     }
 
     #[test]

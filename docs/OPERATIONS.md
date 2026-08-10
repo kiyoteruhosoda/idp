@@ -172,15 +172,28 @@ redirect_uri は完全一致・複数登録に対応し、フラグメント／�
 ## 外部 IdP でログインできるようにしたいとき
 
 管理コンソールの**外部 IdP**（`/{tenant_id}/admin/external-idps`）で登録する（`idp.tenant.admin` 必須）。
-必要なのは相手 IdP の `issuer`・認可エンドポイント・トークンエンドポイント・JWKS URI と、
-そこで発行してもらったクライアント ID／シークレット。
+フォームの「プロトコル」で OpenID Connect と SAML 2.0 を選ぶ。
 
-- 一覧に**このテナントのリダイレクト URI** が出る。相手 IdP 側にはこの URL を登録する。
+OpenID Connect のとき必要なのは、相手 IdP の `issuer`・認可エンドポイント・トークンエンドポイント・
+JWKS URI と、そこで発行してもらったクライアント ID／シークレット。
+
+SAML 2.0 のときは、相手 IdP の entityID（`issuer` 欄）・SSO URL・署名証明書。相手の
+メタデータ XML があれば、画面上部の「SAML メタデータから読み込む」にファイルを選ぶか XML を
+貼り付けると、この 3 つがフォームに転記される（読み込むだけで登録はされない。内容を確認してから
+登録する）。
+
+- 一覧に**相手 IdP 側へ登録する URL** が出る（OIDC はコールバック URL、SAML は ACS URL と
+  SP entityID）。相手にはこの値を登録してもらう。
+- 署名証明書は**空行区切りで複数書ける**。相手が証明書を更新する期間は新旧 2 枚を並べておく
+  （1 枚しか置けないと、切り替わった瞬間にログインが止まる）。
 - クライアントシークレットは暗号化して保存し、**画面には二度と出さない**。編集時に空欄のまま
   保存すると変更されない（値を入れたときだけ置き換わる）。
+- **プロトコルは登録後に変更できない。** 切り替えるには別のプロバイダとして登録し直す
+  （既存の連携が別プロトコルの識別子を指したまま残るため）。
 - 「検証済みメール一致で既存アカウントへ連携する」は、**メールアドレスの検証を信頼できる相手
   にだけ**有効にする。信頼できない相手に許すと、相手側でメールアドレスを詐称するだけで
-  こちらの既存アカウントへ入れてしまう。
+  こちらの既存アカウントへ入れてしまう。なお SAML のアサーションはメールの検証を主張できないため、
+  この設定を有効にしても SAML では自動連携されない（事前に連携済みの利用者だけがログインできる）。
 
 ## 利用者のログイン識別子を追加したいとき
 
@@ -554,23 +567,25 @@ curl -X DELETE "https://<api>/{tenant_id}/admin/users/{user_id}/login-identifier
   `/{tenant_id}/settings/verify` へ誘導される。MFA を設定している利用者には第 2 要素での確認を求める。
   連携アプリの取り消しは対象外（取り消しても被害が広がらず、いつでもやり直せるため）。
 
-## 外部 IdP でログインさせたいとき
+## 外部 IdP を API から登録したいとき
 
-テナントごとに外部の OpenID Provider を登録すると、ログイン画面にその IdP のボタンが出る。
-現状は **OIDC のみ**（SAML の外部 IdP は未対応）。
+画面での手順は「外部 IdP でログインできるようにしたいとき」を参照。ここは同じ操作を API で
+行う場合の入口だけを示す（`idp.tenant.admin` 必須。`idp.system.admin` でも可）。
 
-1. 外部 IdP 側で本 IdP をクライアントとして登録し、`client_id` と（confidential なら）`client_secret`
-   を得る。コールバック URL は `<PUBLIC_WEB_BASE_URL>/{tenant_id}/external/{provider_code}/callback`
-   （登録後、`GET /admin/external-idps` の `redirect_uri` にも同じ値が出る）。
-2. 管理 API で登録する（`idp.tenant.admin` 必須。`idp.system.admin` でも可）。
+相手 IdP 側には、本 IdP の受け口を登録してもらう。OIDC のコールバック URL は
+`<PUBLIC_WEB_BASE_URL>/{tenant_id}/external/{provider_code}/callback`、SAML の ACS URL は
+`<PUBLIC_WEB_BASE_URL>/{tenant_id}/external/{provider_code}/saml/acs`（登録後、
+`GET /admin/external-idps` の `redirect_uri`・`saml_acs_url`・`saml_sp_entity_id` にも同じ値が出る）。
 
 ```bash
+# OIDC
 curl -sS -X POST "$ISSUER/{tenant_id}/admin/external-idps" \
   -H 'Content-Type: application/json' \
   -H "Cookie: sso_session_id=<セッションID>" \
   -d '{
     "provider_code": "corp",
     "display_name": "Corp SSO",
+    "protocol": "oidc",
     "issuer": "https://login.corp.example.com",
     "authorization_endpoint": "https://login.corp.example.com/authorize",
     "token_endpoint": "https://login.corp.example.com/token",
@@ -578,20 +593,37 @@ curl -sS -X POST "$ISSUER/{tenant_id}/admin/external-idps" \
     "client_id": "…",
     "client_secret": "…"
   }'
+
+# SAML（entityID・SSO URL・署名証明書は相手のメタデータから取り込める:
+#   POST /{tenant_id}/admin/external-idps/import-metadata -d '{"metadata_xml": "<EntityDescriptor …>"}'）
+curl -sS -X POST "$ISSUER/{tenant_id}/admin/external-idps" \
+  -H 'Content-Type: application/json' \
+  -H "Cookie: sso_session_id=<セッションID>" \
+  -d '{
+    "provider_code": "corp-saml",
+    "display_name": "Corp SAML",
+    "protocol": "saml",
+    "issuer": "https://login.corp.example.com/metadata",
+    "saml_sso_url": "https://login.corp.example.com/sso",
+    "saml_certificates": ["MIIB…"]
+  }'
 ```
 
 - 一覧: `GET /{tenant_id}/admin/external-idps`、更新: `PATCH …/{id}`、削除: `DELETE …/{id}`。
+- 更新でプロトコル固有の設定（エンドポイント・SSO URL・証明書）を変えるときは、**`protocol` を
+  一緒に送る**。送らないとその区画は変更されない（まとめて差し替える作りのため）。プロトコル
+  そのものの変更は受け付けない。
 - **`client_secret` は応答に含まれない**（暗号化保存。設定済みかは `has_client_secret` で分かる）。
   更新時に省略すれば既存値を維持し、空文字を送ると削除して public クライアント化する。
 - エンドポイントは **https のみ**・内部宛先（ループバック・プライベート・リンクローカル）は拒否する
   （本 IdP のサーバに任意の URL を叩かせないため）。
-- 利用者の同一性は外部 IdP の **`iss` + `sub`** だけで判定する（メールアドレスは同一性の根拠にしない）。
-  既定では**事前に連携済みの利用者しかログインできない**。`allow_auto_link` を有効にすると、
-  外部 IdP が `email_verified: true` を返した場合に限り同じメールアドレスの既存利用者へ自動連携する。
-  外部 IdP のメール検証を信用できるときだけ有効にする。
+- 利用者の同一性は外部 IdP の **`iss` + `sub`**（SAML では `<Issuer>` + `NameID`）だけで判定する
+  （メールアドレスは同一性の根拠にしない）。既定では**事前に連携済みの利用者しかログインできない**。
+  `allow_auto_link` を有効にすると、外部 IdP が `email_verified: true` を返した場合に限り同じメール
+  アドレスの既存利用者へ自動連携する。外部 IdP のメール検証を信用できるときだけ有効にする
+  （SAML はこの主張を持たないため自動連携は働かない）。
 - 無効化は `enabled: false`（設定は残したままボタンだけ消える）。削除すると**連携済みの対応付けも
   一緒に消える**ため、再度ログインさせるには連携をやり直す必要がある。
-- 管理画面（web コンソール UI）は未実装（`docs/Progress.md` AP1）。現状は上記 API を用いる。
 
 ## 自己登録（/auth/register）を開放したいとき
 
