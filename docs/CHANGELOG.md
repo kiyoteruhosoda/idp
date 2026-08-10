@@ -1,3 +1,16 @@
+## 2026-08-10（G12: `prompt=select_account`）
+
+- **`prompt=select_account` を受け付けるようにした（G12。OIDC Core §3.1.2.1）。** これまで
+  `Prompt::parse` は `none`/`login`/`consent` のみで、`select_account` は**未知の値として捨てられ**、
+  有効な SSO があれば黙って現在のアカウントで続いていた。要求した RP から見ると「アカウントを
+  選ばせてほしい」という指定が無言で無視される形になる。
+  - **`login` と同じ扱い（SSO 復元を止めてログイン画面へ戻す）にした。** 本 IdP はブラウザごとに
+    SSO セッションを 1 つしか持たないため、複数アカウントの一覧は出せない。ただし要求の本質は
+    「黙って現在のアカウントで続けないこと」であり、ログイン画面へ戻せば利用者は同じアカウントで
+    入り直すことも別のアカウントへ切り替えることもできる。
+  - Discovery の `prompt_values_supported` に加えた（未対応と広告したままにしない）。
+  - 残件: `response_mode=form_post`（`docs/Progress.md` G12）。
+
 ## 2026-08-10（AP1: 認証ポリシーの管理画面）
 
 - **認証ポリシーを管理コンソールから設定できるようにした（AP1。`/{tenant_id}/admin/authentication-policies`）。**

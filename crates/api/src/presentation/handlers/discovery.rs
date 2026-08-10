@@ -162,9 +162,10 @@ fn discovery_document(issuer: &str, end_session_endpoint: &str) -> Value {
         // 応答の返し方は `query` のみ（`form_post` は未実装。G12）。広告しないと、RP の
         // メタデータ検証が厳しい実装（OIDC 認定テストを含む）が既定を推測して食い違う。
         "response_modes_supported": ["query"],
-        // `prompt`（OIDC Core §3.1.2.1）。`select_account` は未対応 —— 本 IdP はブラウザごとに
-        // SSO セッションを 1 つしか持たないため「選ばせる別アカウント」が存在しない。
-        "prompt_values_supported": ["none", "login", "consent"],
+        // `prompt`（OIDC Core §3.1.2.1）。`select_account` は「現在のアカウントで黙って続けない」
+        // ＝ SSO 復元を止めてログイン画面へ戻す形で扱う（本 IdP はブラウザごとに SSO セッションを
+        // 1 つしか持たないため、複数アカウントの一覧は出せない。G12）。
+        "prompt_values_supported": ["none", "login", "consent", "select_account"],
         // `request` / `request_uri`（署名付き要求オブジェクト）と `claims` は未対応。
         // 既定は false だが、明示しておく方が RP 側の実装判断が早い。
         "request_parameter_supported": false,
@@ -228,7 +229,7 @@ mod tests {
         assert_eq!(doc["ui_locales_supported"], json!(["ja", "en"]));
         assert_eq!(
             doc["prompt_values_supported"],
-            json!(["none", "login", "consent"])
+            json!(["none", "login", "consent", "select_account"])
         );
         assert_eq!(
             doc["end_session_endpoint"],

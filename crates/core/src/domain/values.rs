@@ -153,6 +153,11 @@ string_enum!(
         None => "none",
         Login => "login",
         Consent => "consent",
+        /// 本 IdP はブラウザごとに SSO セッションを 1 つしか持たないため「選ばせる別アカウント」が
+        /// 存在しない。要求されたら **`login` と同じ扱い**（ログイン画面を必ず出す）にする。
+        /// 現在のアカウントで続けるか別のアカウントで入り直すかを利用者が選べる状態にはなる、
+        /// というのが単一セッションでの `select_account` の意味である（G12）。
+        SelectAccount => "select_account",
     }
 );
 
@@ -397,5 +402,22 @@ mod tests {
         assert!(
             !AuthenticationStrength::SingleFactor.satisfies(AuthenticationStrength::MultiFactor)
         );
+    }
+}
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::Prompt;
+
+    /// `select_account` は**既知の値**として解釈する（G12）。`parse(...).ok()` で `None` に
+    /// 落ちると「未指定」と区別できず、有効な SSO で黙って続いてしまう。
+    #[test]
+    fn select_account_is_a_known_prompt() {
+        assert_eq!(
+            Prompt::parse("select_account").ok(),
+            Some(Prompt::SelectAccount)
+        );
+        assert_eq!(Prompt::SelectAccount.as_str(), "select_account");
+        assert!(Prompt::parse("switch_user").is_err());
     }
 }

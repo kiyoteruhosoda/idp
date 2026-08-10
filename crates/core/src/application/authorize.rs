@@ -312,10 +312,17 @@ impl AuthorizeService {
         }
 
         let prompt_none = session.prompt == Some(Prompt::None);
-        let force_login = session.prompt == Some(Prompt::Login);
+        // `select_account` は `login` と同じく SSO 復元を止める（G12）。本 IdP はブラウザごとに
+        // SSO セッションを 1 つしか持たないため「選ばせる別アカウント」の一覧は出せないが、
+        // **黙って現在のアカウントで続けない**ことが要求の本質である。ログイン画面へ戻せば、
+        // 利用者は同じアカウントで入り直すことも別のアカウントへ切り替えることもできる。
+        let force_login = matches!(
+            session.prompt,
+            Some(Prompt::Login) | Some(Prompt::SelectAccount)
+        );
         let force_consent = session.prompt == Some(Prompt::Consent);
 
-        // 2. SSO 復元を試みる（`prompt=login` は常に再認証）。
+        // 2. SSO 復元を試みる（`prompt=login` / `prompt=select_account` は常に再認証）。
         if !force_login {
             if let Some(session_id) = non_empty(cmd.sso_session_id.as_deref()) {
                 match self.sso_restorer.try_resume(tenant, session_id, ctx).await {

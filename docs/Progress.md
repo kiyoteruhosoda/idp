@@ -41,7 +41,7 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 | 5 | AP15 | AP8 の contract フェーズ（`users.preferred_username` を登録簿へ移し、列を撤去する。解決経路の切替 → 移送 → 撤去を独立したマイグレーションに分ける）（⬜未着手） | 中 | 中 | 小 | 中 |
 | 5 | AP11 | AP9 の contract フェーズ（TOTP/WebAuthn の秘密を `user_authenticators` へ集約し、`user_totp_secrets` / `user_webauthn_credentials` を撤去）（⬜未着手） | 中 | 中 | 小 | 中 |
 | 5 | AP12 | SAML 外部 IdP（AP10 は OIDC のみ実装。`external_identity_providers` の protocol 拡張が要る）（⬜未着手） | 大 | 中 | 小 | 大 |
-| 5 | G12 | `/authorize` の任意パラメータの残り（`response_mode=form_post`・`prompt=select_account` 未対応。`login_hint`・`ui_locales`・`id_token_hint` は対応済み）（🚧進行中） | 中 | 中 | 小 | 中 |
+| 5 | G12 | `/authorize` の `response_mode=form_post`（`prompt=select_account` は対応済み。api が「URL」ではなく「送信先＋パラメータ」を返す形への変更が要る）（🚧進行中） | 中 | 中 | 小 | 中 |
 | 3 | AP16 | 外部 IdP 設定・ログイン識別子の管理画面（AP1 で認証ポリシーだけを入れた。両者は API のみ）（⬜未着手） | 中 | 小 | 小 | 中 |
 | 3 | SEC10 | `/token`・`/introspect`・`/revoke` にレート制限が無い（Argon2 増幅型 DoS）（⬜未着手） | 小 | 小 | 中 | 小 |
 | 3 | AP6 | アカウントロックの管理者解除（仕様 §17.1・§24.6。`locked_until` を即時クリアする管理操作。現状は期限経過待ちのみ）と段階的ロック（⬜未着手） | 小 | 小 | 中 | 小 |
@@ -195,11 +195,14 @@ ADR による設計判断の追跡可能性。
 `prompt_values_supported`・`request_parameter_supported`・`claims_parameter_supported`・
 `acr_values_supported`・`ui_locales_supported`）も出している。`login_hint` / `ui_locales` の
 web での消費と `id_token_hint`（RP-initiated logout）も対応済み（`CHANGELOG.md` 参照）。
-残っているのは:
+`prompt=select_account` も対応済み（`CHANGELOG.md` 参照）。残っているのは:
 
-- **`response_mode=form_post`** — 現状 `query` 固定。最終リダイレクトを組み立てるのは web 側の
-  複数経路（resume・ログイン成功・同意承認）なので、api が「URL」ではなく「送信先 + パラメータ」を
-  返す形への変更が要る。
-- **`prompt=select_account`** — `Prompt::parse` は none/login/consent のみ。本 IdP はブラウザごとに
-  SSO セッションを 1 つしか持たないため「選ばせる別アカウント」が存在せず、対応するなら
-  複数アカウント同時保持の設計から要る（Discovery では未対応として広告済み）。
+- **`response_mode=form_post`** — 現状 `query` 固定。認可応答を組み立てて返す経路は
+  core の 7 か所（ログイン成功・MFA・パスキー・同意承認・強制パスワード変更・外部 IdP・resume）に
+  分かれており、いずれも**完成した URL 文字列**（`location` / `redirect_to`）を web まで持ち回している。
+  form_post には「送信先 + パラメータ」の形が要るため、`redirect_uri` が元から持つクエリと
+  区別できない URL からの復元はできない（`redirect_uri` 自体がクエリを持ち得る）。
+  core の応答型・contracts の DTO・web の各分岐を通す変更が要り、影響は
+  `redirect_to` 参照だけで web に 79 か所・contracts に 18 か所ある。あわせて
+  `auth_sessions.response_mode` 列（要求時点と応答時点が別リクエストのため保存が要る）と、
+  自動送信フォームのテンプレート、Discovery の広告更新が要る。
