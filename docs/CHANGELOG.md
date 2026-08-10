@@ -1,3 +1,25 @@
+## 2026-08-10（G8: `audit_log` の絞り込み索引と保持期間）
+
+- **`audit_log` の索引を管理コンソールの絞り込みへ合わせた（G8。migration 0033）。** 索引は
+  `event_type` / `correlation_id` / `occurred_at` / `tenant_id` の**単一列 4 本**だけで、コンソールの
+  絞り込み（「テナント × 期間 × event_type × result × client_id」）と噛み合っていなかった。単一列
+  `tenant_id` ではテナント内の全期間を読んでから期間で絞ることになり、行が増え続ける表では期間検索が
+  事実上の全表走査になる。`client_id` と `user_id` には索引すら無かった。
+  - `(tenant_id, occurred_at)` を土台に、`event_type` / `result` / `client_id` / `user_id` を挟んだ
+    複合索引を張った。末尾を `occurred_at` にするのは、範囲条件（`from`/`to`）と
+    `ORDER BY occurred_at DESC` を同じ索引で賄うため。
+  - 単一列の `result` 索引は作らない（値が 2 種類しかなく選択性が無い）。`(tenant_id, result, occurred_at)`
+    が「このテナントの、失敗だけを、この期間で」というエラー絞り込みを索引だけで完結させる。
+  - 重複する単一列索引（`tenant_id`・`event_type`）は落とした。`occurred_at` 単独と `correlation_id` は
+    残す（保持期間削除と追跡はテナントを跨いで引くため）。
+- **保持期間 `AUDIT_LOG_RETENTION_DAYS` を追加した（G8）。** `log` には `APP_LOG_RETENTION_DAYS` が
+  あるのに `audit_log` には削除の仕組みが無く、際限なく伸び続けていた。
+  - **既定は `0` ＝ 削除しない。** 監査ログの保存期間は法令・契約で決まる運用側の判断であり、
+    既定値で消し始めてよいものではない。日数を設定したときだけ 1 時間ごとに削除する。
+  - 削除は 1 万行ずつのバッチで行い、消し切るまで 1 秒間隔で続ける。保持期間を後から有効化した
+    環境では対象が一度に数百万行になり得るため、無制限の `DELETE` は認可フローの `INSERT` を
+    長時間止めてしまう。
+
 ## 2026-08-10（G7: 一覧 API のページング）
 
 - **`GET /admin/clients`・`GET /admin/tenants` をページング応答にした（G7）。** どちらも `Vec` を

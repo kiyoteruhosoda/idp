@@ -81,6 +81,9 @@ pub async fn run() -> anyhow::Result<()> {
         config.app_log_retention_days(),
     );
 
+    // 監査ログの保持期間（G8）。既定は 0（削除しない）で、明示的に日数を設定したときだけ動く。
+    spawn_audit_log_purge(state.audit.clone(), config.audit_log_retention_days());
+
     // 期限切れレコードの一括 GC（G2）。認可セッション・authorization code・refresh token・
     // SSO セッション・失効 jti・パスキーチャレンジ・各種一時トークンを 1 本のタスクで掃除する。
     // 表ごとにループを生やすと追加のたびに掃除漏れが生まれるため、対象は
@@ -188,6 +191,12 @@ pub async fn run() -> anyhow::Result<()> {
 const APP_LOG_BATCH_SIZE: usize = 128;
 /// 保持期間の適用間隔。日単位の保持なので 1 時間ごとで十分。
 const APP_LOG_PURGE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3_600);
+/// 監査ログの保持期間の適用間隔（G8）。同じく日単位の保持なので 1 時間ごとで足りる。
+const AUDIT_LOG_PURGE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3_600);
+/// 保持期間削除が 1 周期で消し切れなかったときの、次のバッチまでの待ち（G8）。
+/// 初回有効化時は削除対象が数百万行になり得るため、周期を待たずに続けて消す。ただし
+/// 詰めて回すと認可フローの INSERT を圧迫するので、バッチ間に短い間隔を置く。
+const AUDIT_LOG_PURGE_BATCH_PAUSE: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// `tracing` が拾った WARN / ERROR を `log` テーブルへ書き続けるタスクを起こす。
 ///
@@ -249,6 +258,35 @@ fn spawn_application_log_purge(
             // 削除の成否はログに出さない（取り込み層が拾って自己増殖するため）。
             let _ = logs.purge_expired(retention_days).await;
             tokio::time::sleep(APP_LOG_PURGE_INTERVAL).await;
+        }
+    });
+}
+
+/// 保持期間を過ぎた監査イベントを定期的に削除するタスクを起こす（G8）。
+/// `retention_days = 0`（既定）は「削除しない」。
+///
+/// 1 周期で消し切れなかった場合は、周期を待たずに次のバッチへ進む。保持期間を後から有効化した
+/// 環境では削除対象が一度に数百万行になり得るため、1 時間に 1 バッチでは追いつかない。
+fn spawn_audit_log_purge(audit: Arc<application::audit::AuditService>, retention_days: u32) {
+    if retention_days == 0 {
+        tracing::info!("audit log retention is disabled (AUDIT_LOG_RETENTION_DAYS=0)");
+        return;
+    }
+    tracing::info!(retention_days, "audit log retention enabled");
+    tokio::spawn(async move {
+        loop {
+            match audit.purge_expired(retention_days).await {
+                // 消し切った（今回の対象は無かった）。次の周期まで待つ。
+                Ok(0) => tokio::time::sleep(AUDIT_LOG_PURGE_INTERVAL).await,
+                Ok(deleted) => {
+                    tracing::info!(deleted, "purged expired audit log rows");
+                    tokio::time::sleep(AUDIT_LOG_PURGE_BATCH_PAUSE).await;
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "audit log retention purge failed");
+                    tokio::time::sleep(AUDIT_LOG_PURGE_INTERVAL).await;
+                }
+            }
         }
     });
 }

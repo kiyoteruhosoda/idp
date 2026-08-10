@@ -639,6 +639,14 @@ pub trait SigningKeyRepository: Send + Sync {
 #[async_trait]
 pub trait AuditLogSink: Send + Sync {
     async fn record(&self, event: &AuditEvent) -> Result<()>;
+
+    /// 保持期間を過ぎた監査イベントを削除し、削除件数を返す（G8）。削除は書き込み側の関心のため
+    /// 読み取り（[`AuditLogQuery`]）ではなく本トレイトに置く。
+    ///
+    /// 既定実装は何もしない（テスト用フェイクは保持期間を持たない）。本番の sqlx 実装が上書きする。
+    async fn purge_older_than(&self, _older_than: DateTime<Utc>) -> Result<u64> {
+        Ok(0)
+    }
 }
 
 /// `audit_log` の読み取り（状況確認画面 A3）。書き込み（`AuditLogSink`）とは関心を分ける。

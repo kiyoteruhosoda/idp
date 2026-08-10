@@ -134,3 +134,8 @@ sqlx マイグレーション（MariaDB）を管理する。
 
 root テナントの UUID は固定値 `00000000-0000-7000-8000-000000000001`（全環境共通・git 管理。ADR-0011）。
 管理者ログイン URL は `/00000000-0000-7000-8000-000000000001/...`。
+
+- `0033_audit_log_indexes`: `audit_log` の索引を管理コンソールの絞り込みへ合わせる（G8）。単一列
+  `tenant_id` / `event_type` を落とし、`(tenant_id, occurred_at)` を土台に `event_type` / `result` /
+  `client_id` / `user_id` を挟んだ複合索引を張る。`occurred_at` 単独と `correlation_id` は残す
+  （前者は保持期間削除がテナント横断で引き、後者は追跡がテナント横断のため）。行データは変えない。

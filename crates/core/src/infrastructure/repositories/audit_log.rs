@@ -45,7 +45,26 @@ impl AuditLogSink for SqlxAuditLogSink {
         .map_err(|e| DomainError::Repository(e.to_string()))?;
         Ok(())
     }
+
+    async fn purge_older_than(&self, older_than: DateTime<Utc>) -> Result<u64> {
+        // 1 回の DELETE で消す上限を置く。監査ログは長期間 `AUDIT_LOG_RETENTION_DAYS = 0`
+        // （削除しない）で運用してから有効化される想定で、初回の削除対象が数百万行になり得る。
+        // 無制限の DELETE はその間ずっとロックを保持し、認可フローの INSERT を止めてしまう。
+        // 残りは次の周期が引き取る（呼び出し側は削除件数で「まだ残っている」を判断できる）。
+        let deleted = sqlx::query("DELETE FROM audit_log WHERE occurred_at < ? LIMIT ?")
+            .bind(older_than.naive_utc())
+            .bind(PURGE_BATCH_SIZE)
+            .execute(&self.pool)
+            .await
+            .map_err(repo_err)?
+            .rows_affected();
+        Ok(deleted)
+    }
 }
+
+/// 1 回の保持期間削除で消す最大行数（G8）。`audit_log_occurred_idx` を使う範囲削除のため、
+/// 1 バッチの所要時間は行数にほぼ比例する。
+const PURGE_BATCH_SIZE: i64 = 10_000;
 
 pub struct SqlxAuditLogQuery {
     pool: Db,

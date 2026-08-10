@@ -5,6 +5,7 @@
 
 use crate::domain::audit::{AuditEvent, AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
+use crate::domain::error::DomainError;
 use crate::domain::repositories::AuditLogSink;
 use crate::domain::tenant::TenantId;
 use std::sync::Arc;
@@ -73,5 +74,18 @@ impl AuditService {
                 "failed to persist audit event"
             );
         }
+    }
+
+    /// 保持期間を過ぎた監査イベントを 1 バッチ削除し、削除件数を返す（G8）。
+    /// `retention_days` が 0 のときは何もしない（＝削除しない。既定）。
+    ///
+    /// 1 回の呼び出しで消し切るとは限らない（実装側でバッチ上限を置く）。呼び出し側は
+    /// 「削除件数が 0 になるまで」で消し切りを判断する。
+    pub async fn purge_expired(&self, retention_days: u32) -> Result<u64, DomainError> {
+        if retention_days == 0 {
+            return Ok(0);
+        }
+        let cutoff = self.clock.now() - chrono::Duration::days(i64::from(retention_days));
+        self.sink.purge_older_than(cutoff).await
     }
 }

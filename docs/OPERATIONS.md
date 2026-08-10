@@ -157,6 +157,11 @@ curl -sS "$ISSUER/admin/audit-logs?event_type=token.issued&client_id=<cid>&from=
   -H "Cookie: sso_session_id=<セッションID>"
 ```
 
+保持期間は `AUDIT_LOG_RETENTION_DAYS`。**既定は `0` ＝ 削除しない**（監査ログの保存期間は法令・
+契約で決まるため、既定値で消し始めない）。日数を設定すると、それより古い行が 1 時間ごとに
+削除される。既に大量に溜まった状態で有効化した場合は 1 万行ずつ削除し、消し切るまで 1 秒間隔で
+続ける（認可フローの書き込みを長時間止めないため）。
+
 ## エラー・警告ログを確認したいとき
 
 api・web が出力した WARN / ERROR は `log` テーブルへ保存され、管理コンソールの
@@ -498,6 +503,7 @@ curl -sS -X POST "$ISSUER/{tenant_id}/admin/external-idps" \
 | `EMAIL_VERIFICATION_TTL_SECS` | `86400` | 自己登録アカウントのメール検証トークンの有効期間（SEC6b） |
 | `HSTS_MAX_AGE` | `0`（無効） | `Strict-Transport-Security` の `max-age`（秒）。**DB 上書き可**（下記） |
 | `APP_LOG_RETENTION_DAYS` | `30` | エラー・警告ログ（`log` テーブル）の保持日数。`0` = 削除しない。**DB 上書き可** |
+| `AUDIT_LOG_RETENTION_DAYS` | `0`（削除しない） | 監査ログ（`audit_log` テーブル）の保持日数。保存期間は法令・契約で決まるため既定では削除しない。**DB 上書き可** |
 | `STEP_UP_MAX_AGE_SECS` | `300` | 機微操作（パスワード変更・認証器の追加削除・セッション失効）の前に本人確認をやり直させる間隔（秒）。**DB 上書き可** |
 | `BACKCHANNEL_LOGOUT_MAX_ATTEMPTS` | `8` | Back-channel logout 通知の再送上限。指数バックオフ（30 秒 → 最大 1 時間）。**DB 上書き可** |
 | `BACKCHANNEL_LOGOUT_POLL_INTERVAL_SECS` | `15` | Back-channel logout 送信ワーカーが送信キューを見る間隔（秒）。**DB 上書き可** |

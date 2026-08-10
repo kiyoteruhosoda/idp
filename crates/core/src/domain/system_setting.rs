@@ -460,6 +460,20 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
                       いる場合にのみ選ぶこと）。",
     },
     SettingDefinition {
+        key: "AUDIT_LOG_RETENTION_DAYS",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
+        default_value: Some("0"),
+        description: "監査ログ（`audit_log` テーブル）の保持日数。これより古い行は定期的に削除する。\
+                      既定の `0` は**削除しない**。監査ログの保存期間は法令・契約で決まる運用側の \
+                      判断であり、既定値で消し始めてよいものではないため、明示的に指定したときだけ \
+                      削除する。",
+    },
+    SettingDefinition {
         key: "API_DOCS_ENABLED",
         shared_with_web: false,
         owner: SettingOwner::DbManaged,

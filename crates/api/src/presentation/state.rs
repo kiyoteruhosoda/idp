@@ -185,6 +185,9 @@ pub struct AppState {
     pub invitations: Arc<InvitationService>,
     pub member_directory: Arc<MemberDirectoryService>,
     pub audit_query: Arc<AuditQueryService>,
+    /// 監査イベントの記録と保持期間による掃除（設計仕様 §7・G8）。各ユースケースへ注入している
+    /// ものと同じ実体で、保持期間の掃除タスクがここから参照する。
+    pub audit: Arc<AuditService>,
     /// エラー・警告ログ（`log` テーブル）の取り込み・参照・掃除（CLAUDE.md「ログ」）。
     /// api 自身の `tracing` 取り込みタスク・web からの `/internal/logs`・管理画面の参照が共有する。
     pub application_logs: Arc<ApplicationLogService>,
@@ -923,6 +926,7 @@ impl AppState {
             invitations,
             member_directory,
             audit_query,
+            audit,
             application_logs,
             logout,
             account_security,

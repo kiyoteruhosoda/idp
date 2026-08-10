@@ -157,6 +157,8 @@ pub struct Config {
     key_rotation_lead_days: u32,
     /// エラー・警告ログ（`log` テーブル）の保持日数。`0` は削除しない。
     app_log_retention_days: u32,
+    /// 監査ログ（`audit_log` テーブル）の保持日数。`0`（既定）は削除しない（G8）。
+    audit_log_retention_days: u32,
     /// Swagger UI・OpenAPI 文書を配信するか（SEC12。既定 false）。
     api_docs_enabled: bool,
     /// CORS で追加許可するオリジン（カンマ区切りの生値。G1）。
@@ -304,6 +306,7 @@ impl Config {
             key_encryption_key_is_dev,
             key_rotation_lead_days: resolver.parse("KEY_ROTATION_LEAD_DAYS", 30)?,
             app_log_retention_days: resolver.parse("APP_LOG_RETENTION_DAYS", 30)?,
+            audit_log_retention_days: resolver.parse("AUDIT_LOG_RETENTION_DAYS", 0u32)?,
             api_docs_enabled: resolver.parse("API_DOCS_ENABLED", false)?,
             cors_allowed_origins: resolver.string("CORS_ALLOWED_ORIGINS", ""),
             expired_record_purge_interval_secs: resolver
@@ -431,6 +434,11 @@ impl Config {
     /// エラー・警告ログの保持日数（`0` = 削除しない）。
     pub fn app_log_retention_days(&self) -> u32 {
         self.app_log_retention_days
+    }
+    /// 監査ログの保持日数（`0` = 削除しない。G8）。既定で削除しないのは、監査ログの
+    /// 保存期間が法令・契約で決まる運用側の判断であり、既定値で消し始めてよいものではないため。
+    pub fn audit_log_retention_days(&self) -> u32 {
+        self.audit_log_retention_days
     }
     /// Swagger UI・OpenAPI 文書を配信するか（SEC12）。
     pub fn api_docs_enabled(&self) -> bool {
