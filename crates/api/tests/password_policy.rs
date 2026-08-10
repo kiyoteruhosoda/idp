@@ -56,13 +56,9 @@ async fn rejects_reused_passwords_and_prunes_history_to_the_policy_depth() {
     support::register_user(&env.app, &env.root_tenant_id, &username, p1).await;
     support::mark_email_verified(&env.pool, &env.root_tenant_id, &username).await;
 
-    let user_id: String =
-        sqlx::query_scalar("SELECT id FROM users WHERE tenant_id = ? AND preferred_username = ?")
-            .bind(&env.root_tenant_id)
-            .bind(&username)
-            .fetch_one(&env.pool)
-            .await
-            .expect("registered user");
+    let user_id = support::find_user_id_by_username(&env.pool, &env.root_tenant_id, &username)
+        .await
+        .expect("registered user");
     let sso = create_sso_session(&env.pool, &user_id).await;
 
     // 自己登録の時点で設定時刻が入っている（有効期限の起点。NULL のままだと作成時刻へ落ちる）。
@@ -159,12 +155,14 @@ async fn expired_password_sends_the_user_to_the_forced_change_form() {
     assert_eq!(body["result"], "success", "unexpected response: {body}");
 
     // 設定時刻を 31 日前へ戻すと（= 有効日数 30 を超える）、次のログインで変更を要求する。
+    let aged_user_id = support::find_user_id_by_username(&env.pool, &env.root_tenant_id, &username)
+        .await
+        .expect("registered user");
     sqlx::query(
         "UPDATE users SET password_changed_at = DATE_SUB(UTC_TIMESTAMP(6), INTERVAL 31 DAY) \
-         WHERE tenant_id = ? AND preferred_username = ?",
+         WHERE id = ?",
     )
-    .bind(&env.root_tenant_id)
-    .bind(&username)
+    .bind(&aged_user_id)
     .execute(&env.pool)
     .await
     .expect("age the password");

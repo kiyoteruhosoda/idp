@@ -195,10 +195,13 @@ pub async fn setup(test_name: &str) -> Option<TestEnv> {
 /// テストデータだけ明示的に検証済みに寄せる。
 pub async fn mark_email_verified(pool: &MySqlPool, tenant_id: &str, username: &str) {
     let result = sqlx::query(
-        "UPDATE users SET email_verified = 1 WHERE tenant_id = ? AND preferred_username = ?",
+        "UPDATE users u \
+         JOIN user_login_identifiers p ON p.primary_of_user = u.id \
+         SET u.email_verified = 1 \
+         WHERE u.tenant_id = ? AND p.normalized_value = ?",
     )
     .bind(tenant_id)
-    .bind(username)
+    .bind(username.trim().to_lowercase())
     .execute(pool)
     .await
     .expect("mark email verified");
@@ -207,6 +210,36 @@ pub async fn mark_email_verified(pool: &MySqlPool, tenant_id: &str, username: &s
         1,
         "mark one registered user verified"
     );
+}
+
+/// 主たるログイン識別子（ユーザー名）から利用者 id を引く。
+///
+/// AP15b で置き場所が `users.preferred_username` から登録簿
+/// （`user_login_identifiers.primary_of_user`）へ移ったので、テストもそちらを見る。
+pub async fn find_user_id_by_username(
+    pool: &MySqlPool,
+    tenant_id: &str,
+    username: &str,
+) -> Option<String> {
+    sqlx::query_scalar(
+        "SELECT u.id FROM users u \
+         JOIN user_login_identifiers p ON p.primary_of_user = u.id \
+         WHERE u.tenant_id = ? AND p.normalized_value = ?",
+    )
+    .bind(tenant_id)
+    .bind(username.trim().to_lowercase())
+    .fetch_optional(pool)
+    .await
+    .expect("find user by username")
+}
+
+/// 主たるログイン識別子（表示値）。未設定なら `None`。
+pub async fn primary_username(pool: &MySqlPool, user_id: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT display_value FROM user_login_identifiers WHERE primary_of_user = ?")
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await
+        .expect("read primary login identifier")
 }
 
 // ── テストデータ生成 ─────────────────────────────────────────────────────────

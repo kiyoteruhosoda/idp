@@ -40,11 +40,12 @@ pub struct AddLoginIdentifierCommand {
     pub is_active: bool,
 }
 
-/// 一覧の 1 件。登録簿の行そのものと、`users.preferred_username` から合成した主たる識別子の
-/// 両方を同じ形で表す。
+/// 一覧の 1 件。
 ///
-/// `id` が `None` の行は**保存されていない**（合成）。主識別子は expand フェーズでは
-/// `users` 側にあり、識別子単位の操作（有効/無効・削除）の対象にならない。
+/// `id` は `Option` のままにしてある。AP15b で主識別子も登録簿の行になり、合成行は無くなった
+/// ので現状は常に `Some` だが、**契約（API の応答）としては `null` を返し得る形**を保つ。
+/// 型を狭めると api・web・その先の利用者に同時配布を強いる変更になり、得られるのは
+/// 「`None` を書けない」だけである。
 #[derive(Debug, Clone)]
 pub struct LoginIdentifierEntry {
     pub id: Option<Uuid>,
@@ -52,8 +53,8 @@ pub struct LoginIdentifierEntry {
     pub display_value: String,
     pub normalized_value: String,
     pub is_active: bool,
-    /// 主たるログイン識別子か（登録簿の `is_primary` 行、または `users.preferred_username`
-    /// から合成した行）。主識別子は識別子単位の有効/無効・削除の対象にならない。
+    /// 主たるログイン識別子か（登録簿の `primary_of_user` 行）。主識別子は識別子単位の
+    /// 有効/無効・削除の対象にならない（変えるならプロフィール編集、止めるならアカウントの無効化）。
     pub is_primary: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
@@ -117,9 +118,9 @@ impl LoginIdentifierManagementService {
 
     /// 利用者のログイン識別子を一覧する（無効な行も含む）。
     ///
-    /// 先頭は `users.preferred_username` から**合成した**主たる識別子（[`LoginIdentifierEntry::id`]
-    /// が `None`）。expand フェーズでは主識別子を登録簿に持たないため、そのままでは管理画面に
-    /// 「その利用者が実際にログインに使える値」が揃わない。保存はせず、読むときにだけ足す。
+    /// **登録簿の行がすべてである**（AP15b）。主識別子も行として在るので、expand フェーズで
+    /// 足していた「`users.preferred_username` から読み出し時に合成する行」は無くなった。
+    /// ここに出る値と、ログイン欄で実際に解決される値が、同じ 1 つの表から来る。
     pub async fn list(
         &self,
         tenant: TenantContext,
@@ -131,33 +132,9 @@ impl LoginIdentifierManagementService {
             .list_for_user(user.id)
             .await
             .map_err(internal)?;
-        // AP15 の移行中: 主識別子は登録簿にも `users.preferred_username` にも在る。登録簿に
-        // 実体の行があればそれを使い、無いときだけ `users` から合成する（合成行は `id` が
-        // `None` になり、識別子単位の操作ができないことが画面から分かる）。
-        // 両方出すと同じ識別子が 2 行並ぶ。
-        let has_stored_primary = stored.iter().any(|i| i.is_primary);
-        let mut entries = Vec::with_capacity(stored.len() + 1);
-        if !has_stored_primary {
-            if let Some(primary) = user.preferred_username.as_deref().map(str::trim) {
-                if !primary.is_empty() {
-                    entries.push(LoginIdentifierEntry {
-                        id: None,
-                        identifier_type: LoginIdentifierType::Username,
-                        display_value: primary.to_string(),
-                        normalized_value: LoginIdentifierType::Username.normalize(primary),
-                        // 主識別子は識別子単位では止められない（止めるならアカウントの
-                        // 無効化、変えるならプロフィール編集）。
-                        is_active: true,
-                        is_primary: true,
-                        created_at: user.created_at,
-                        updated_at: user.updated_at,
-                    });
-                }
-            }
-        }
-        entries.extend(stored.into_iter().map(LoginIdentifierEntry::from));
-        // 主識別子を先頭に固定する（登録簿の行は追加順に並ぶため、格上げされた行は
-        // 途中に来る）。並びが移送の前後で変わると、画面の一番上が指す意味が変わってしまう。
+        let mut entries: Vec<LoginIdentifierEntry> =
+            stored.into_iter().map(LoginIdentifierEntry::from).collect();
+        // 主識別子を先頭に固定する（登録簿の行は追加順に並ぶため、格上げされた行は途中に来る）。
         entries.sort_by_key(|e| !e.is_primary);
         Ok(entries)
     }
@@ -734,9 +711,27 @@ mod tests {
         assert!(matches!(err, LoginIdentifierManagementError::Conflict(_)));
     }
 
+    /// 一覧は登録簿の行だけを出す（AP15b で合成行は無くなった）。主識別子は先頭に来る。
     #[tokio::test]
-    async fn list_synthesizes_the_primary_identifier_which_cannot_be_targeted() {
-        let (service, _) = service(vec![user(2, "alice", "alice@example.com")]);
+    async fn the_list_shows_registry_rows_with_the_primary_first() {
+        let (service, identifiers) = service(vec![user(2, "alice", "alice@example.com")]);
+        // 主識別子は登録簿の行として在る（`UserRepository` が作る。ここでは直接置く）。
+        let now = chrono::Utc::now();
+        identifiers
+            .create(&UserLoginIdentifier {
+                id: Uuid::from_u128(100),
+                tenant_id: tenant().tenant_id(),
+                user_id: Uuid::from_u128(2),
+                identifier_type: LoginIdentifierType::Username,
+                display_value: "alice".to_string(),
+                normalized_value: "alice".to_string(),
+                is_active: true,
+                is_primary: true,
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
         service
             .add(
                 tenant(),
@@ -754,10 +749,11 @@ mod tests {
 
         let entries = service.list(tenant(), Uuid::from_u128(2)).await.unwrap();
         assert_eq!(entries.len(), 2);
-        // 合成した主識別子は保存されていない（id が無いので操作の対象にならない）。
         assert!(entries[0].is_primary);
-        assert!(entries[0].id.is_none());
         assert_eq!(entries[0].normalized_value, "alice");
+        // 主識別子も保存された行なので id を持つ。識別子単位で操作できないのは
+        // リポジトリ側が弾くからであって、宛先が無いからではない。
+        assert!(entries[0].id.is_some());
         assert!(!entries[1].is_primary);
         assert!(entries[1].id.is_some());
     }

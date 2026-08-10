@@ -40,14 +40,15 @@ async fn stored_profile(
     pool: &MySqlPool,
     user_id: &str,
 ) -> (String, Option<String>, Option<String>) {
-    let row = sqlx::query("SELECT email, preferred_username, name FROM users WHERE id = ?")
+    // ユーザー名の置き場所は登録簿（AP15b）。`users` には残っていない。
+    let row = sqlx::query("SELECT email, name FROM users WHERE id = ?")
         .bind(user_id)
         .fetch_one(pool)
         .await
         .expect("load user");
     (
         row.get("email"),
-        row.get("preferred_username"),
+        support::primary_username(pool, user_id).await,
         row.get("name"),
     )
 }

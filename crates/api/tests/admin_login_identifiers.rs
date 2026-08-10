@@ -82,10 +82,7 @@ async fn audit_reasons(pool: &MySqlPool, tenant_id: &str, event_type: &str) -> V
 /// 自己登録で利用者を 1 人作り、その内部 ID を返す。
 async fn register(env: &support::TestEnv, username: &str, password: &str) -> String {
     support::register_user(&env.app, &env.root_tenant_id, username, password).await;
-    sqlx::query_scalar("SELECT id FROM users WHERE tenant_id = ? AND preferred_username = ?")
-        .bind(&env.root_tenant_id)
-        .bind(username)
-        .fetch_one(&env.pool)
+    support::find_user_id_by_username(&env.pool, &env.root_tenant_id, username)
         .await
         .expect("registered user")
 }
