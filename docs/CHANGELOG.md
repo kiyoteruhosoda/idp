@@ -1,4 +1,4 @@
-## 2026-08-10（G12: `prompt=select_account`）
+## 2026-08-10（G12: `prompt=select_account` と複数値の `prompt`）
 
 - **`prompt=select_account` を受け付けるようにした（G12。OIDC Core §3.1.2.1）。** これまで
   `Prompt::parse` は `none`/`login`/`consent` のみで、`select_account` は**未知の値として捨てられ**、
@@ -8,6 +8,11 @@
     SSO セッションを 1 つしか持たないため、複数アカウントの一覧は出せない。ただし要求の本質は
     「黙って現在のアカウントで続けないこと」であり、ログイン画面へ戻せば利用者は同じアカウントで
     入り直すことも別のアカウントへ切り替えることもできる。
+  - **`prompt` を空白区切りの集合として扱うようにした（migration 0032）。** `prompt` は単一値では
+    なく、`prompt=select_account consent` のように複数指定できる。値をひとつしか持てない形だと
+    複数指定の要求はどれかを取りこぼし、しかも取りこぼしは**無言**で起きる。DB 列も単一値の
+    CHECK 付きだったため、`select_account` 単体すら保存できなかった（保存に失敗して認可フローが
+    開始できない）。
   - Discovery の `prompt_values_supported` に加えた（未対応と広告したままにしない）。
   - 残件: `response_mode=form_post`（`docs/Progress.md` G12）。
 

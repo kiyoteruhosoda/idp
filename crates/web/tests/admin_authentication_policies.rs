@@ -14,7 +14,6 @@ use support::{body_text, get_with_cookies, location, post_form, send, setup, Web
 use wiremock::matchers::{method, path_regex};
 use wiremock::{Mock, ResponseTemplate};
 
-const DEV_CSRF_SECRET: &[u8; 32] = b"idp-dev-insecure-csrf-secret-xxx";
 const SSO: &str = "admin-session";
 
 fn cookies() -> String {
@@ -22,7 +21,7 @@ fn cookies() -> String {
 }
 
 fn csrf() -> String {
-    console_csrf_token(SSO, DEV_CSRF_SECRET)
+    console_csrf_token(SSO, support::TEST_CSRF_SECRET)
 }
 
 async fn stub_admin(env: &WebEnv) {
@@ -268,22 +267,34 @@ async fn an_unreadable_time_window_stops_the_save_and_keeps_the_edit_context() {
                 ("policy_name", "Office hours"),
                 ("priority", "10"),
                 ("effect", "deny"),
+                ("client_ids", "app-a\napp-b"),
                 ("time_windows", "mon 09:00-18:00\nnonsense"),
                 ("csrf_token", &csrf()),
             ],
         ),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::FOUND);
-    let target = location(&response);
-    assert!(target.contains("error=time-window"), "{target}");
-    assert!(
-        target.contains("edit=019f8ea8-f5dd-7fc7-ac15-a7d4337e4610"),
-        "the operator must land back on the edit form, not on an empty one: {target}"
-    );
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     assert!(
         !wrote_a_policy(&env).await,
         "nothing may be written when a condition could not be read"
+    );
+
+    // 入力は消えない。1 項目直すために全部入れ直させない。
+    let html = body_text(response).await;
+    assert!(
+        html.contains(r#"value="office-hours""#),
+        "code kept: {html}"
+    );
+    assert!(html.contains("app-a\napp-b"), "client ids kept: {html}");
+    assert!(
+        html.contains("mon 09:00-18:00\nnonsense"),
+        "the rejected time windows must stay so the operator can fix them: {html}"
+    );
+    // 編集対象を見失わない（新規作成のフォームに化けると別のポリシーが増える）。
+    assert!(
+        html.contains("/admin/authentication-policies/019f8ea8-f5dd-7fc7-ac15-a7d4337e4610/update"),
+        "the form must still target the policy being edited: {html}"
     );
 }
 
@@ -307,8 +318,7 @@ async fn a_csrf_mismatch_never_reaches_the_api() {
         ),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::FOUND);
-    assert!(location(&response).contains("error=csrf"));
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     assert!(
         created_policy_body(&env).await.is_none(),
         "a rejected form must not be forwarded"

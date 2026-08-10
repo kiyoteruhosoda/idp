@@ -17,10 +17,6 @@ use support::{
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
-/// 開発既定の CSRF 鍵（`Config` が `CSRF_SECRET` 未設定時に使う値）。フォームへ出すトークンを
-/// テスト側でも導出するために要る。
-const DEV_CSRF_SECRET: &[u8; 32] = b"idp-dev-insecure-csrf-secret-xxx";
-
 #[tokio::test]
 async fn portal_login_page_issues_a_csrf_seed_cookie_and_renders_the_form() {
     let env = setup().await;
@@ -85,7 +81,7 @@ async fn portal_login_page_reuses_an_existing_seed_so_open_tabs_keep_working() {
 async fn oidc_login_success_sets_the_sso_cookie_and_redirects_to_the_rp() {
     let env = setup().await;
     let auth_session = "a".repeat(64);
-    let csrf = login_csrf_token(&auth_session, DEV_CSRF_SECRET);
+    let csrf = login_csrf_token(&auth_session, support::TEST_CSRF_SECRET);
 
     Mock::given(method("POST"))
         .and(path("/internal/authenticate"))
@@ -135,7 +131,7 @@ async fn oidc_login_success_sets_the_sso_cookie_and_redirects_to_the_rp() {
 async fn invalid_credentials_reshow_the_form_without_issuing_a_session() {
     let env = setup().await;
     let auth_session = "b".repeat(64);
-    let csrf = login_csrf_token(&auth_session, DEV_CSRF_SECRET);
+    let csrf = login_csrf_token(&auth_session, support::TEST_CSRF_SECRET);
 
     Mock::given(method("POST"))
         .and(path("/internal/authenticate"))
@@ -206,7 +202,7 @@ async fn a_csrf_mismatch_redirects_back_to_a_fresh_form() {
 #[tokio::test]
 async fn an_unreachable_api_does_not_leak_a_panic_or_a_session() {
     let auth_session = "d".repeat(64);
-    let csrf = login_csrf_token(&auth_session, DEV_CSRF_SECRET);
+    let csrf = login_csrf_token(&auth_session, support::TEST_CSRF_SECRET);
     let prefix = support::tenant_prefix();
     let app = support::unreachable_api_app();
 

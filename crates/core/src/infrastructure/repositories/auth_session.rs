@@ -4,7 +4,7 @@ use crate::domain::auth_session::AuthSession;
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::AuthSessionRepository;
 use crate::domain::tenant::TenantId;
-use crate::domain::values::{CodeChallengeMethod, Prompt};
+use crate::domain::values::{CodeChallengeMethod, PromptSet};
 use crate::infrastructure::db::Db;
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
@@ -62,7 +62,7 @@ fn map_row(row: &MySqlRow) -> Result<AuthSession> {
         nonce: row.try_get("nonce").map_err(repo_err)?,
         code_challenge: row.try_get("code_challenge").map_err(repo_err)?,
         code_challenge_method: CodeChallengeMethod::parse(&ccm)?,
-        prompt: prompt.as_deref().map(Prompt::parse).transpose()?,
+        prompt: PromptSet::parse(prompt.as_deref().unwrap_or_default()),
         max_age: max_age.map(|v| v.max(0) as u64),
         acr_values: row.try_get("acr_values").map_err(repo_err)?,
         login_hint: row.try_get("login_hint").map_err(repo_err)?,
@@ -104,7 +104,7 @@ impl AuthSessionRepository for SqlxAuthSessionRepository {
         .bind(&session.nonce)
         .bind(&session.code_challenge)
         .bind(session.code_challenge_method.as_str())
-        .bind(session.prompt.map(|p| p.as_str()))
+        .bind(session.prompt.to_storage())
         .bind(session.max_age.map(|v| v as i64))
         .bind(&session.acr_values)
         .bind(&session.login_hint)

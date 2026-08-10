@@ -13,12 +13,21 @@
 //! （ポートが動的）ため、`API_BASE_URL` を立ててから設定を組む必要がある。環境変数はプロセス
 //! 全体で共有なので、**「立てる → 設定を組む」までを 1 つのロックで囲う**。組み上がった
 //! `Config` は自分の写しを持つので、その後で別のテストが同じ変数を書き換えても影響しない。
+//!
+//! # 秘密鍵を実行環境から受け取らない
+//!
+//! `CSRF_SECRET` は**テスト側で固定する**（[`TEST_CSRF_SECRET`]）。CI は job の環境変数として
+//! 独自の `CSRF_SECRET` を渡すため、そのまま `Config::from_env()` に拾わせるとルータは CI の鍵で
+//! トークンを検証し、テストが手元の鍵で作ったトークンと必ず食い違う —— ローカルでは通り CI だけが
+//! 落ちる、いちばん読み解きにくい形の失敗になる。同じ理由で `INTERNAL_SERVICE_TOKEN` も固定する。
 
 #![allow(dead_code)]
 
 use axum::body::Body;
 use axum::http::header::{CONTENT_TYPE, COOKIE, LOCATION, SET_COOKIE};
 use axum::http::{Method, Request, Response, StatusCode};
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine as _;
 use idp_web::config::Config;
 use idp_web::router;
 use idp_web::state::WebState;
@@ -39,6 +48,13 @@ impl WebEnv {
         format!("/{}", self.tenant)
     }
 }
+
+/// テストが使う CSRF 鍵（ちょうど 32 バイト）。フォームへ出るトークンをテスト側で導出するために、
+/// ルータと同じ値を使う必要がある。実行環境の値は使わない（モジュールコメント参照）。
+pub const TEST_CSRF_SECRET: &[u8; 32] = b"idp-web-integration-test-csrf-32";
+
+/// テストが使うサービス間トークン（長さの下限は `idp_contracts::deployment` の契約が決める）。
+pub const TEST_INTERNAL_SERVICE_TOKEN: &str = "idp-web-integration-test-service-token";
 
 /// 環境変数を書き換えて設定を組むまでの排他区間（モジュールコメント参照）。
 fn env_lock() -> &'static Mutex<()> {
@@ -71,6 +87,9 @@ fn build_app(api_base_url: &str) -> axum::Router {
     let config = {
         let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("API_BASE_URL", api_base_url);
+        // 秘密は実行環境から受け取らない（CI の値を拾うとテストの鍵と食い違う）。
+        std::env::set_var("CSRF_SECRET", STANDARD.encode(TEST_CSRF_SECRET));
+        std::env::set_var("INTERNAL_SERVICE_TOKEN", TEST_INTERNAL_SERVICE_TOKEN);
         // 開発用の既定シークレットで起動できるよう、公開オリジンはループバックのままにする
         //（本番相当のオリジンでは fail-fast する。SEC11）。
         std::env::remove_var("PUBLIC_WEB_BASE_URL");

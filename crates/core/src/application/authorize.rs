@@ -25,7 +25,7 @@ use crate::domain::repositories::{
     ClientRepository,
 };
 use crate::domain::tenant_context::TenantContext;
-use crate::domain::values::{CodeChallengeMethod, Prompt, Scope};
+use crate::domain::values::{CodeChallengeMethod, Prompt, PromptSet, Scope};
 use chrono::Duration;
 use std::sync::Arc;
 
@@ -235,7 +235,7 @@ impl AuthorizeService {
             nonce,
             code_challenge,
             code_challenge_method: CodeChallengeMethod::S256,
-            prompt: req.prompt.as_deref().and_then(|p| Prompt::parse(p).ok()),
+            prompt: PromptSet::parse(req.prompt.as_deref().unwrap_or_default()),
             max_age: req.max_age,
             acr_values: non_empty(req.acr_values.as_deref()).map(str::to_string),
             login_hint: non_empty(req.login_hint.as_deref()).map(str::to_string),
@@ -311,16 +311,14 @@ impl AuthorizeService {
             Err(e) => return ResumeOutcome::Internal(e.to_string()),
         }
 
-        let prompt_none = session.prompt == Some(Prompt::None);
+        let prompt_none = session.prompt.contains(Prompt::None);
         // `select_account` は `login` と同じく SSO 復元を止める（G12）。本 IdP はブラウザごとに
         // SSO セッションを 1 つしか持たないため「選ばせる別アカウント」の一覧は出せないが、
         // **黙って現在のアカウントで続けない**ことが要求の本質である。ログイン画面へ戻せば、
         // 利用者は同じアカウントで入り直すことも別のアカウントへ切り替えることもできる。
-        let force_login = matches!(
-            session.prompt,
-            Some(Prompt::Login) | Some(Prompt::SelectAccount)
-        );
-        let force_consent = session.prompt == Some(Prompt::Consent);
+        let force_login = session.prompt.contains(Prompt::Login)
+            || session.prompt.contains(Prompt::SelectAccount);
+        let force_consent = session.prompt.contains(Prompt::Consent);
 
         // 2. SSO 復元を試みる（`prompt=login` / `prompt=select_account` は常に再認証）。
         if !force_login {
@@ -879,7 +877,7 @@ mod tests {
             nonce: "n".to_string(),
             code_challenge: "c".to_string(),
             code_challenge_method: CodeChallengeMethod::S256,
-            prompt: None,
+            prompt: PromptSet::default(),
             max_age: None,
             handle_hash: Some("h".to_string()),
             handle_expires_at: Some(now + Duration::seconds(HANDLE_TTL_SECS)),

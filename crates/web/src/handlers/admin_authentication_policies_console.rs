@@ -30,7 +30,7 @@ use crate::state::WebState;
 use crate::templates::{render, AuthenticationPoliciesConsole, AuthenticationPolicyFormValues};
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, Path, Query, State};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 use idp_contracts::admin::{
@@ -130,9 +130,12 @@ pub async fn create(
         AdminResolution::Reject(resp) => return resp,
     }
     let base = format!("{}/admin/authentication-policies", tenant.prefix());
+    let values = values_from_form(&form);
     let body = match validate(&state, &headers, form) {
         Ok(body) => body,
-        Err(error) => return found(&format!("{base}?error={error}")),
+        // **入力を捨てない。** リダイレクトで戻すと再表示は既定値のフォームになり、1 項目直すために
+        // 全部入れ直すことになる（条件は複数行のテキスト領域で、書き直しの負担が大きい）。
+        Err(error) => return reshow(&state, &headers, &tenant, None, values, error),
     };
     let sso = crate::cookies::get(&headers, crate::cookies::SSO_SESSION_COOKIE).unwrap_or_default();
     match state
@@ -141,7 +144,8 @@ pub async fn create(
         .await
     {
         Ok(_) => found(&format!("{base}?saved=1")),
-        Err(e) => found(&format!("{base}?error={}", api_error_code(&e))),
+        Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
+        Err(e) => reshow(&state, &headers, &tenant, None, values, api_error_code(&e)),
     }
 }
 
@@ -158,10 +162,10 @@ pub async fn update(
         AdminResolution::Reject(resp) => return resp,
     }
     let base = format!("{}/admin/authentication-policies", tenant.prefix());
+    let values = values_from_form(&form);
     let body = match validate(&state, &headers, form) {
-        // 入力エラーは編集フォームへ戻す（`?edit=` を保つ。新規作成の空フォームへ落とすと
-        // 入力し直しになる）。
-        Err(error) => return found(&format!("{base}?edit={policy_id}&error={error}")),
+        // 入力エラーは**入力したまま**編集フォームを出し直す（既定値へ戻すと入力し直しになる）。
+        Err(error) => return reshow(&state, &headers, &tenant, Some(&policy_id), values, error),
         Ok(body) => body,
     };
     let sso = crate::cookies::get(&headers, crate::cookies::SSO_SESSION_COOKIE).unwrap_or_default();
@@ -171,10 +175,15 @@ pub async fn update(
         .await
     {
         Ok(_) => found(&format!("{base}?updated=1")),
-        Err(e) => found(&format!(
-            "{base}?edit={policy_id}&error={}",
-            api_error_code(&e)
-        )),
+        Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
+        Err(e) => reshow(
+            &state,
+            &headers,
+            &tenant,
+            Some(&policy_id),
+            values,
+            api_error_code(&e),
+        ),
     }
 }
 
@@ -205,6 +214,61 @@ pub async fn delete(
     {
         Ok(()) => found(&format!("{base}?deleted=1")),
         Err(e) => found(&format!("{base}?error={}", api_error_code(&e))),
+    }
+}
+
+/// 拒否された送信を、**入力したままの値で**フォームへ出し直す（422）。
+///
+/// PRG（リダイレクトして GET で再表示）にしないのは、リダイレクトでは入力値を持ち回せず、
+/// 1 項目直すために全部入れ直すことになるためである。リロードで再送信になる代わりに入力が残る
+/// —— ここは冪等な保存（全項目置換）なので、再送信の実害は「同じ内容をもう一度保存する」だけ。
+fn reshow(
+    state: &WebState,
+    headers: &HeaderMap,
+    tenant: &WebTenant,
+    editing: Option<&str>,
+    values: AuthenticationPolicyFormValues,
+    error: &'static str,
+) -> Response {
+    let messages = Messages::new(locale(headers));
+    let html = render(&AuthenticationPoliciesConsole {
+        messages: &messages,
+        tenant: &tenant.prefix(),
+        // 再表示の時点で管理者であることは確認済み（各ハンドラの入口）。表示ラベルのためだけに
+        // もう一度 api を呼ばない。
+        admin: None,
+        csrf: &csrf_from(headers, state.config.csrf_secret()),
+        default_effect: state.config.auth_policy_default_effect(),
+        saved: false,
+        updated: false,
+        deleted: false,
+        error_key: error_key_for(error),
+        editing,
+        form_open: true,
+        effect_options: EFFECT_OPTIONS,
+        method_options: AUTHENTICATION_METHOD_CODES,
+        values: &values,
+        // 一覧は出さない（拒否された入力を直すための画面で、api への往復を増やさない）。
+        policies: &[],
+    });
+    (StatusCode::UNPROCESSABLE_ENTITY, Html(html)).into_response()
+}
+
+/// 送信されたフォームを、そのまま表示値へ写す（拒否時の再表示用）。
+fn values_from_form(form: &AdminAuthenticationPolicyForm) -> AuthenticationPolicyFormValues {
+    AuthenticationPolicyFormValues {
+        policy_code: form.policy_code.clone(),
+        policy_name: form.policy_name.clone(),
+        priority: form.priority.clone(),
+        enabled: form.enabled.is_some(),
+        effect: form.effect.clone(),
+        methods: selected_methods(form),
+        user_verification: form.user_verification.is_some(),
+        client_ids: form.client_ids.clone(),
+        user_ids: form.user_ids.clone(),
+        ip_cidrs: form.ip_cidrs.clone(),
+        time_windows: form.time_windows.clone(),
+        requested_acr: form.requested_acr.clone(),
     }
 }
 

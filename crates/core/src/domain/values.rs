@@ -405,12 +405,58 @@ mod tests {
     }
 }
 
+/// 認可要求の `prompt`（**空白区切りの集合**。OIDC Core §3.1.2.1）。
+///
+/// `prompt` は単一値ではない。`prompt=select_account consent` のように「アカウントを選ばせた
+/// うえで同意も取り直す」と要求できる。値をひとつしか持てない形にすると、複数指定された要求は
+/// どれかを取りこぼす —— しかも取りこぼしは**要求が無言で無視される**形で出る（有効な SSO が
+/// あれば黙って現在のアカウントで続く）。
+///
+/// **未知の値は捨てる。** OIDC Core は未知の `prompt` 値をエラーにすることを求めておらず、
+/// 拒否すると将来値を送る RP が使えなくなる。捨てた結果が空集合なら「未指定」と同じに扱う。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PromptSet(Vec<Prompt>);
+
+impl PromptSet {
+    /// 空白区切りの生値を解釈する（重複は 1 つに畳む。順序は入力順）。
+    pub fn parse(raw: &str) -> Self {
+        let mut values = Vec::new();
+        for token in raw.split_whitespace() {
+            if let Ok(prompt) = Prompt::parse(token) {
+                if !values.contains(&prompt) {
+                    values.push(prompt);
+                }
+            }
+        }
+        Self(values)
+    }
+
+    /// DB へ保存する形（正規化した空白区切り）。空集合は `None`（＝未指定）。
+    pub fn to_storage(&self) -> Option<String> {
+        (!self.0.is_empty()).then(|| {
+            self.0
+                .iter()
+                .map(Prompt::as_str)
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+    }
+
+    pub fn contains(&self, prompt: Prompt) -> bool {
+        self.0.contains(&prompt)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod prompt_tests {
-    use super::Prompt;
+    use super::{Prompt, PromptSet};
 
-    /// `select_account` は**既知の値**として解釈する（G12）。`parse(...).ok()` で `None` に
-    /// 落ちると「未指定」と区別できず、有効な SSO で黙って続いてしまう。
+    /// `select_account` は**既知の値**として解釈する（G12）。未知の値として落ちると「未指定」と
+    /// 区別できず、有効な SSO で黙って続いてしまう。
     #[test]
     fn select_account_is_a_known_prompt() {
         assert_eq!(
@@ -419,5 +465,40 @@ mod prompt_tests {
         );
         assert_eq!(Prompt::SelectAccount.as_str(), "select_account");
         assert!(Prompt::parse("switch_user").is_err());
+    }
+
+    /// 複数指定を取りこぼさない（`select_account consent` は両方の要求）。
+    #[test]
+    fn multiple_values_are_all_kept() {
+        let set = PromptSet::parse("select_account consent");
+        assert!(set.contains(Prompt::SelectAccount));
+        assert!(set.contains(Prompt::Consent));
+        assert!(!set.contains(Prompt::Login));
+        assert_eq!(set.to_storage().as_deref(), Some("select_account consent"));
+    }
+
+    /// 未知の値は捨てるが、**同じ要求に含まれる既知の値は生かす**（未知の値ひとつで要求全体を
+    /// 落とすと、将来値を送る RP が使えなくなる）。
+    #[test]
+    fn unknown_values_are_dropped_without_losing_the_known_ones() {
+        let set = PromptSet::parse("create login");
+        assert!(set.contains(Prompt::Login));
+        assert_eq!(set.to_storage().as_deref(), Some("login"));
+
+        let only_unknown = PromptSet::parse("create");
+        assert!(only_unknown.is_empty());
+        assert_eq!(only_unknown.to_storage(), None, "unspecified is NULL");
+    }
+
+    #[test]
+    fn duplicates_and_odd_spacing_normalize() {
+        let set = PromptSet::parse("  login   login  consent ");
+        assert_eq!(set.to_storage().as_deref(), Some("login consent"));
+    }
+
+    #[test]
+    fn an_empty_request_is_an_empty_set() {
+        assert!(PromptSet::parse("").is_empty());
+        assert!(PromptSet::default().is_empty());
     }
 }
