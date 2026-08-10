@@ -193,6 +193,12 @@ pub fn build(state: AppState) -> Router {
             "/internal/logs",
             post(admin_application_logs::ingest_application_logs),
         )
+        // Prometheus メトリクス（G6）。公開面ではなく内部面に置く（誰がいつ何回失敗したかを
+        // 集約した情報であり、外から読めてよい値ではない）。プロキシ遮断 + サービストークンの二重。
+        .route(
+            "/internal/metrics",
+            get(crate::presentation::metrics::metrics_endpoint),
+        )
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             internal_auth::require_service_token,
@@ -443,6 +449,11 @@ pub fn build(state: AppState) -> Router {
             cors::apply_cors,
         ))
         .layer(axum::middleware::from_fn(correlation::propagate))
+        // エンドポイント別の所要時間（G6）。`correlation::propagate` より外側に置き、
+        // 相関 ID 付与を含めた「入口から出口まで」を測る。
+        .layer(axum::middleware::from_fn(
+            crate::presentation::metrics::track_http_metrics,
+        ))
         // アクセススパンはパスのみを記録する（クエリ文字列に載る `code`・`code_challenge` を
         // ログへ落とさない。SEC9）。組み立ては web と共有する。
         .layer(TraceLayer::new_for_http().make_span_with(idp_contracts::http_trace::request_span))

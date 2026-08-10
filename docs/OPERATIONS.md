@@ -182,6 +182,54 @@ curl -sS "$ISSUER/admin/audit-logs?event_type=token.issued&client_id=<cid>&from=
 削除される。既に大量に溜まった状態で有効化した場合は 1 万行ずつ削除し、消し切るまで 1 秒間隔で
 続ける（認可フローの書き込みを長時間止めないため）。
 
+## メトリクスを監視したいとき
+
+Prometheus 形式のメトリクスを `GET /internal/metrics` で配信する（G6）。
+
+**内部面にあり、サービストークンが要る。** `/internal/*` はリバースプロキシで外部から遮断する
+前提の面で、多層防御として `X-Internal-Auth-Token`（`INTERNAL_SERVICE_TOKEN` と同値）も必須。
+メトリクスは「誰がいつ何回失敗したか」を集約した情報であり、公開面に出す値ではない。
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: idp-api
+    metrics_path: /internal/metrics
+    static_configs:
+      - targets: ["idp-api:8080"]
+    http_headers:
+      X-Internal-Auth-Token:
+        secrets: ["<INTERNAL_SERVICE_TOKEN と同じ値>"]
+```
+
+出る値:
+
+| メトリクス | 種別 | ラベル | 主な用途 |
+|---|---|---|---|
+| `idp_audit_events_total` | counter | `event_type`・`result` | ログイン成功率・トークン発行レート・鍵ローテーションの成否 |
+| `idp_http_request_duration_seconds` | histogram | `method`・`route`・`status` | エンドポイント別のレイテンシ（p50/p95/p99） |
+| `idp_db_pool_connections` | gauge | `state`（`total` / `idle`） | sqlx コネクションプールの枯渇 |
+
+すべてに `service="api"` が付く。
+
+例:
+
+```promql
+# ログイン成功率（5 分平均）
+sum(rate(idp_audit_events_total{event_type="login.succeeded"}[5m]))
+  / sum(rate(idp_audit_events_total{event_type=~"login.(succeeded|failed)"}[5m]))
+
+# /token の p95 レイテンシ
+histogram_quantile(0.95, sum by (le) (rate(idp_http_request_duration_seconds_bucket{route="/{tenant_id}/token"}[5m])))
+
+# プール枯渇（貸出可能な接続が 0 の状態が続いている）
+idp_db_pool_connections{state="idle"} == 0
+```
+
+**ラベルにテナント ID・利用者 ID・クライアント ID は入らない。** 入れると監視側の時系列が
+利用者数に比例して増えるため、意図的に落としてある。「どのテナントで失敗したか」は監査ログ
+（`GET /admin/audit-logs`）で追う。
+
 ## エラー・警告ログを確認したいとき
 
 api・web が出力した WARN / ERROR は `log` テーブルへ保存され、管理コンソールの

@@ -140,6 +140,8 @@ pub struct AppState {
     /// 時刻の取得口（テストで固定実装に差し替える）。Presentation 層が「今」を要る場面
     /// （ロック期限の判定など）で使う。
     pub clock: Arc<dyn Clock>,
+    /// Prometheus メトリクスのレンダリング口（G6）。収集器の設置に失敗した構成では `None`。
+    pub metrics: Option<Arc<metrics_exporter_prometheus::PrometheusHandle>>,
     /// トークン系エンドポイント（`/token`・`/introspect`・`/revoke`）の負荷ゲート（SEC10）。
     /// Argon2 照合の同時実行数と送信元単位の要求数を抑える。
     pub token_endpoint_load: Arc<crate::presentation::token_endpoint_load::TokenEndpointLoadGate>,
@@ -912,6 +914,7 @@ impl AppState {
             pool,
             config,
             clock: clock.clone(),
+            metrics: crate::presentation::metrics::handle().map(Arc::new),
             token_endpoint_load,
             tenant_resolution,
             register,

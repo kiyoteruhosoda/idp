@@ -55,6 +55,19 @@ impl AuditService {
             correlation_id: ctx.correlation_id.clone(),
         };
 
+        // 監査イベントは「何が起きたか」のドメイン語彙そのものなので、メトリクスもここから
+        // 出す（G6）。ログイン成功率・トークン発行レート・鍵ローテーションの成否は、この 1 本の
+        // カウンタから導ける。計測器を各ユースケースへ散らすと、片方だけ増えて静かにずれる。
+        //
+        // ラベルは有限の enum（`event_type` / `result`）だけにする。`tenant_id`・`user_id`・
+        // `client_id` を足すと時系列が利用者数に比例して増える（`crate::metrics` 参照）。
+        metrics::counter!(
+            crate::metrics::AUDIT_EVENTS,
+            "event_type" => event.event_type.as_str(),
+            "result" => event.result.as_str(),
+        )
+        .increment(1);
+
         tracing::info!(
             target: "audit",
             event_type = event.event_type.as_str(),

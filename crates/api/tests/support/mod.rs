@@ -392,6 +392,14 @@ pub async fn send(app: &axum::Router, request: Request<Body>) -> axum::response:
     app.clone().oneshot(request).await.expect("send request")
 }
 
+/// 本文をそのまま文字列で読む（JSON でない応答—— Prometheus のテキスト形式など）。
+pub async fn body_text(response: axum::response::Response) -> String {
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read body");
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
 pub async fn body_json(response: axum::response::Response) -> Value {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await

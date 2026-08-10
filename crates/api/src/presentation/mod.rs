@@ -12,6 +12,7 @@ pub mod dto;
 pub mod error;
 pub mod handlers;
 pub mod i18n;
+pub mod metrics;
 pub mod openapi;
 pub mod origin;
 pub mod router;

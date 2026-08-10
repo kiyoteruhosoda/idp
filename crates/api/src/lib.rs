@@ -74,6 +74,10 @@ pub async fn run() -> anyhow::Result<()> {
         .await
         .context("failed to ensure an active signing key")?;
 
+    // DB コネクションプールの観測（G6）。枯渇は「何も起きていない間」にこそ見たい値なので、
+    // 使用時ではなく定期的に観測する。
+    presentation::metrics::spawn_db_pool_metrics(pool.clone());
+
     // エラー・警告ログの DB 書き込み（CLAUDE.md「ログ」）。取り込み層 → チャネル → ここ。
     spawn_application_log_writer(state.application_logs.clone(), log_receiver);
     spawn_application_log_purge(
