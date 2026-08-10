@@ -28,6 +28,7 @@ use crate::domain::authentication_policy::{
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::password::PasswordHasher;
+use crate::domain::password_policy::{password_change_required, PasswordPolicy};
 use crate::domain::rate_limit::LoginRateLimiter;
 use crate::domain::repositories::{
     AuthSessionRepository, AuthenticationPolicyRepository, ClientConsentRepository,
@@ -122,6 +123,9 @@ pub struct LoginService {
     sso_idle_ttl: Duration,
     sso_absolute_ttl: Duration,
     lockout: LockoutPolicy,
+    /// パスワードポリシー（AP7）。ここで使うのは有効期限だけで、判定は
+    /// [`password_change_required`] に寄せて変更経路と同じ規則にする。
+    password_policy: PasswordPolicy,
     policy_default_effect: DefaultPolicyEffect,
     csrf_secret: [u8; 32],
 }
@@ -143,6 +147,7 @@ impl LoginService {
         sso_idle_ttl: std::time::Duration,
         sso_absolute_ttl: std::time::Duration,
         lockout: LockoutPolicy,
+        password_policy: PasswordPolicy,
         policy_default_effect: DefaultPolicyEffect,
         csrf_secret: [u8; 32],
     ) -> Self {
@@ -162,6 +167,7 @@ impl LoginService {
             sso_absolute_ttl: Duration::from_std(sso_absolute_ttl)
                 .expect("SSO absolute TTL out of range"),
             lockout,
+            password_policy,
             policy_default_effect,
             csrf_secret,
         }
@@ -383,7 +389,9 @@ impl LoginService {
         //      TOTP の検証・ポリシーの MFA 要件は変更完了時に `ChangePasswordService` が適用する
         //      （`must_change_password` は管理者による既存ユーザーのパスワード再発行でも立つため、
         //      「この状態のユーザーに MFA 判定は不要」とは限らない）。
-        if user.must_change_password {
+        //      有効期限切れ（AP7）も同じ誘導に載せる。期限はログイン時にしか判定できず、
+        //      ここで通してしまうと次の判定機会は次回ログイン = 期限が実質効かなくなる。
+        if password_change_required(&user, &self.password_policy, now) {
             let rotated_id = crypto::random_hex(32);
             if let Err(e) = self
                 .auth_sessions
@@ -1029,6 +1037,7 @@ mod tests {
             language: None,
             password_hash: "hash:correct-password".to_string(),
             must_change_password: false,
+            password_changed_at: None,
             status: UserStatus::Active,
             failed_login_count: initial_failures,
             locked_until: None,
@@ -1093,6 +1102,7 @@ mod tests {
                 max_failed_attempts: 10,
                 lock_duration_secs: 900,
             },
+            crate::domain::password_policy::PasswordPolicy::default(),
             DefaultPolicyEffect::Allow,
             CSRF_KEY,
         );

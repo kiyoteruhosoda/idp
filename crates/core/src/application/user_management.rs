@@ -156,6 +156,7 @@ impl UserManagementService {
             language: None,
             password_hash,
             must_change_password: true,
+            password_changed_at: Some(now),
             status: UserStatus::Active,
             failed_login_count: 0,
             locked_until: None,

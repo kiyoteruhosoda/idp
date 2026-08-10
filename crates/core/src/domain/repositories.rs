@@ -538,6 +538,28 @@ pub trait PasswordResetTokenRepository: Send + Sync {
     async fn invalidate_all_for_user(&self, user_id: Uuid, now: DateTime<Utc>) -> Result<()>;
 }
 
+/// 退役したパスワードハッシュの履歴（AP7 の再利用禁止）。
+///
+/// 現行パスワードは `users.password_hash` にあるため、ここには**置き換えられたハッシュ**だけを
+/// 積む（写しを持つと更新漏れで履歴と現行がずれる）。ユーザー単位のセキュリティ操作のため
+/// tenant_id は取らない（テナント境界はユースケース側が `users.tenant_id` 照合で強制する）。
+#[async_trait]
+pub trait PasswordHistoryRepository: Send + Sync {
+    /// 退役したハッシュを 1 件積み、`retain` 件だけを残して古い行を削除する。
+    ///
+    /// 積むことと剪定することを分けないのは、片方だけが実行されると履歴が単調増加するか、
+    /// 逆に判定に要る件数を割るためである（呼び出し側に順序を守らせない）。
+    async fn push(
+        &self,
+        user_id: Uuid,
+        password_hash: &str,
+        retired_at: DateTime<Utc>,
+        retain: u32,
+    ) -> Result<()>;
+    /// 新しい順に最大 `limit` 件の退役ハッシュを返す。
+    async fn recent(&self, user_id: Uuid, limit: u32) -> Result<Vec<String>>;
+}
+
 /// メール検証トークン（SEC6b）の永続化。DB には SHA-256 hash のみ保存する。
 /// `PasswordResetTokenRepository` と同じ one-time パターン（tenant_id は取らない。テナント境界は
 /// ユースケース側が `users.tenant_id` 照合で強制する）。

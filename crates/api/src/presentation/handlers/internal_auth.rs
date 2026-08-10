@@ -38,6 +38,7 @@ use crate::application::portal_login::{
     PortalLoginOutcome, PortalMfaCommand, PortalMfaOutcome,
 };
 use crate::application::step_up::{StepUpCheckOutcome, StepUpVerifyCommand, StepUpVerifyOutcome};
+use crate::domain::password_policy::PasswordRejection;
 use crate::domain::step_up::SensitiveOperation;
 use crate::domain::user_authenticator::AuthenticatorStatus;
 use crate::presentation::correlation::CorrelationId;
@@ -67,6 +68,7 @@ use idp_contracts::auth::{
     InternalPortalChangePasswordRequest, InternalPortalChangePasswordResponse,
     InternalPortalMfaRequest, InternalPortalMfaResponse, InternalStepUpCheckRequest,
     InternalStepUpCheckResponse, InternalStepUpVerifyRequest, InternalStepUpVerifyResponse,
+    PasswordRejectionReason,
 };
 use idp_contracts::auth::{
     AuthenticatorSummaryResponse, InternalAuthenticatorStatusRequest,
@@ -207,7 +209,11 @@ pub async fn account_change_password(
         AccountPasswordOutcome::InvalidCurrentPassword => {
             InternalAccountChangePasswordResponse::InvalidCurrentPassword
         }
-        AccountPasswordOutcome::WeakPassword => InternalAccountChangePasswordResponse::WeakPassword,
+        AccountPasswordOutcome::WeakPassword(rejection) => {
+            InternalAccountChangePasswordResponse::WeakPassword {
+                reason: rejection_reason(&rejection),
+            }
+        }
         AccountPasswordOutcome::Internal(e) => {
             tracing::error!(error = %e, "account change-password failed with internal error");
             InternalAccountChangePasswordResponse::Internal
@@ -269,12 +275,28 @@ pub async fn change_password(
         ChangePasswordOutcome::InvalidCurrentPassword => {
             InternalChangePasswordResponse::InvalidCurrentPassword
         }
-        ChangePasswordOutcome::WeakPassword => InternalChangePasswordResponse::WeakPassword,
+        ChangePasswordOutcome::WeakPassword(rejection) => {
+            InternalChangePasswordResponse::WeakPassword {
+                reason: rejection_reason(&rejection),
+            }
+        }
         ChangePasswordOutcome::Internal(e) => {
             tracing::error!(error = %e, "internal change-password failed with internal error");
             InternalChangePasswordResponse::Internal
         }
     }))
+}
+
+/// Domain の拒否理由を contracts の理由コードへ写す（AP7）。
+///
+/// web は理由ごとに違う文言を出す。訳文そのものではなく**理由コード**を渡すのは、翻訳を
+/// 引くのは表示する側（web）の責務であり、api が言語を決めないためである。
+fn rejection_reason(rejection: &PasswordRejection) -> PasswordRejectionReason {
+    match rejection {
+        PasswordRejection::Strength(_) => PasswordRejectionReason::Policy,
+        PasswordRejection::Breached => PasswordRejectionReason::Breached,
+        PasswordRejection::Reused => PasswordRejectionReason::Reused,
+    }
 }
 
 /// 管理コンソール認証。CSRF は web 側で検証済み（ADR-0007 §4）。成功時は SSO セッション id を返す。
@@ -322,7 +344,7 @@ pub async fn authenticate_admin(
             InternalAdminAuthenticateResponse::MfaEnrollmentRequired
         }
         AdminLoginOutcome::MfaRequired => InternalAdminAuthenticateResponse::MfaRequired,
-        AdminLoginOutcome::WeakPassword => {
+        AdminLoginOutcome::WeakPassword(_) => {
             tracing::error!("unexpected WeakPassword outcome from admin authenticate");
             InternalAdminAuthenticateResponse::Internal
         }
@@ -491,8 +513,10 @@ pub async fn authenticate_portal_change_password(
             InternalPortalChangePasswordResponse::InvalidCredentials
         }
         PortalChangePasswordOutcome::Locked => InternalPortalChangePasswordResponse::Locked,
-        PortalChangePasswordOutcome::WeakPassword => {
-            InternalPortalChangePasswordResponse::WeakPassword
+        PortalChangePasswordOutcome::WeakPassword(rejection) => {
+            InternalPortalChangePasswordResponse::WeakPassword {
+                reason: rejection_reason(&rejection),
+            }
         }
         PortalChangePasswordOutcome::Internal(e) => {
             tracing::error!(error = %e, "internal portal change-password failed with internal error");
@@ -540,7 +564,11 @@ pub async fn admin_change_password(
         }
         AdminLoginOutcome::Locked => InternalAdminChangePasswordResponse::Locked,
         AdminLoginOutcome::Forbidden => InternalAdminChangePasswordResponse::Forbidden,
-        AdminLoginOutcome::WeakPassword => InternalAdminChangePasswordResponse::WeakPassword,
+        AdminLoginOutcome::WeakPassword(rejection) => {
+            InternalAdminChangePasswordResponse::WeakPassword {
+                reason: rejection_reason(&rejection),
+            }
+        }
         AdminLoginOutcome::PolicyDenied => InternalAdminChangePasswordResponse::PolicyDenied,
         AdminLoginOutcome::MfaEnrollmentRequired => {
             InternalAdminChangePasswordResponse::MfaEnrollmentRequired
@@ -634,7 +662,11 @@ pub async fn password_reset_complete(
         ResetPasswordOutcome::InvalidOrExpired => {
             InternalPasswordResetCompleteResponse::InvalidOrExpired
         }
-        ResetPasswordOutcome::WeakPassword => InternalPasswordResetCompleteResponse::WeakPassword,
+        ResetPasswordOutcome::WeakPassword(rejection) => {
+            InternalPasswordResetCompleteResponse::WeakPassword {
+                reason: rejection_reason(&rejection),
+            }
+        }
         ResetPasswordOutcome::Internal(e) => {
             tracing::error!(error = %e, "password reset failed with internal error");
             InternalPasswordResetCompleteResponse::Internal

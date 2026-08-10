@@ -41,6 +41,7 @@ use crate::i18n::Locale;
 use axum::http::header::{HeaderValue, ACCEPT_LANGUAGE, LOCATION, USER_AGENT};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
+use idp_contracts::auth::PasswordRejectionReason;
 
 /// 表示言語を決める（MT20）。
 ///
@@ -67,6 +68,34 @@ pub(crate) fn form_retry_error_key(error: Option<&str>) -> Option<&'static str> 
     match error {
         Some("csrf") => Some("login-error-csrf-retry"),
         _ => None,
+    }
+}
+
+/// パスワードが拒否された理由（AP7）を、画面に出す文言キーへ写す。
+///
+/// 長さ等（`Policy`）だけ画面ごとに既存のキーがあるため呼び出し側から受け取り、漏えい済み・
+/// 再利用は**全画面共通のキー**を使う。理由ごとに違う文言を出すのは、利用者が次に取るべき
+/// 行動が違うためである（伸ばす／別の値を考える）。
+pub(crate) fn password_rejection_key(
+    reason: PasswordRejectionReason,
+    policy_key: &'static str,
+) -> &'static str {
+    match reason {
+        PasswordRejectionReason::Policy => policy_key,
+        PasswordRejectionReason::Breached => "password-error-breached",
+        PasswordRejectionReason::Reused => "password-error-reused",
+    }
+}
+
+/// 上記を PRG リダイレクトの `?error=` コードへ写す（フォームを再表示せずに戻す画面用）。
+pub(crate) fn password_rejection_error_code(
+    reason: PasswordRejectionReason,
+    policy_code: &'static str,
+) -> &'static str {
+    match reason {
+        PasswordRejectionReason::Policy => policy_code,
+        PasswordRejectionReason::Breached => "breached",
+        PasswordRejectionReason::Reused => "reused",
     }
 }
 

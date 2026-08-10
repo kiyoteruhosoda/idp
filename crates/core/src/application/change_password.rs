@@ -18,6 +18,7 @@ use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authorize::code_redirect;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::application::mfa_login::user_has_confirmed_totp;
+use crate::application::password_policy::PasswordPolicyService;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session;
 use crate::domain::authentication_policy::{
@@ -25,7 +26,8 @@ use crate::domain::authentication_policy::{
 };
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
-use crate::domain::password::{validate_password_strength, PasswordHasher};
+use crate::domain::password::PasswordHasher;
+use crate::domain::password_policy::{password_change_required, PasswordRejection};
 use crate::domain::repositories::{
     AuthSessionRepository, AuthenticationPolicyRepository, ClientConsentRepository,
     SsoSessionRepository, TotpSecretRepository, UserRepository,
@@ -70,8 +72,8 @@ pub enum ChangePasswordOutcome {
     CsrfMismatch,
     /// 現行パスワードが不一致。
     InvalidCurrentPassword,
-    /// 新パスワードが強度要件を満たさない。
-    WeakPassword,
+    /// 新パスワードがポリシーを満たさない（長さ・漏えい済み・再利用。AP7）。
+    WeakPassword(PasswordRejection),
     Internal(String),
 }
 
@@ -84,6 +86,7 @@ pub struct ChangePasswordService {
     authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
     code_issuance: Arc<CodeIssuanceService>,
     hasher: Arc<dyn PasswordHasher>,
+    password_policy: Arc<PasswordPolicyService>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
     sso_idle_ttl: Duration,
@@ -103,6 +106,7 @@ impl ChangePasswordService {
         authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
         code_issuance: Arc<CodeIssuanceService>,
         hasher: Arc<dyn PasswordHasher>,
+        password_policy: Arc<PasswordPolicyService>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
         sso_idle_ttl: std::time::Duration,
@@ -119,6 +123,7 @@ impl ChangePasswordService {
             authentication_policies,
             code_issuance,
             hasher,
+            password_policy,
             audit,
             clock,
             sso_idle_ttl: Duration::from_std(sso_idle_ttl).expect("SSO idle TTL out of range"),
@@ -191,7 +196,9 @@ impl ChangePasswordService {
             Ok(None) => return ChangePasswordOutcome::SessionExpired,
             Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
         };
-        if !user.is_active() || !user.must_change_password {
+        // 変更を要求されている状態か（強制フラグ、または有効期限切れ。AP7）。
+        if !user.is_active() || !password_change_required(&user, self.password_policy.policy(), now)
+        {
             // 変更不要な状態でこのエンドポイントに来るのは想定外（多重送信等）。fail-closed。
             tracing::warn!(
                 correlation_id = %ctx.correlation_id,
@@ -223,9 +230,16 @@ impl ChangePasswordService {
             return ChangePasswordOutcome::InvalidCurrentPassword;
         }
 
-        // 6. 新パスワードの強度を検証し、ハッシュ化して保存する。
-        if validate_password_strength(&cmd.new_password).is_err() {
-            return ChangePasswordOutcome::WeakPassword;
+        // 6. 新パスワードがポリシーを満たすか検証し（長さ・漏えい済み・再利用。AP7）、
+        //    ハッシュ化して保存する。
+        match self
+            .password_policy
+            .validate(Some(user.id), Some(&user.password_hash), &cmd.new_password)
+            .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(rejection)) => return ChangePasswordOutcome::WeakPassword(rejection),
+            Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
         }
         let new_hash = match self.hasher.hash(&cmd.new_password) {
             Ok(h) => h,
@@ -234,6 +248,9 @@ impl ChangePasswordService {
         if let Err(e) = self.users.update_password(user.id, &new_hash).await {
             return ChangePasswordOutcome::Internal(e.to_string());
         }
+        self.password_policy
+            .record_change(user.id, &user.password_hash)
+            .await;
         self.audit
             .record(
                 AuditEventType::PasswordChanged,

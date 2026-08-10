@@ -37,6 +37,7 @@ pub mod member_directory;
 pub mod mfa_login;
 pub mod passkey_authentication;
 pub mod passkey_registration;
+pub mod password_policy;
 pub mod password_reset;
 pub mod permission_management;
 pub mod portal_login;

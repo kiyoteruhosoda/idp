@@ -178,13 +178,16 @@ pub async fn reset_submit(
             Some("password-reset-error-invalid"),
             StatusCode::BAD_REQUEST,
         ),
-        Ok(InternalPasswordResetCompleteResponse::WeakPassword) => reset_view(
+        Ok(InternalPasswordResetCompleteResponse::WeakPassword { reason }) => reset_view(
             &messages,
             &tenant,
             true,
             &form.token,
             false,
-            Some("password-reset-error-weak"),
+            Some(super::password_rejection_key(
+                reason,
+                "password-reset-error-weak",
+            )),
             StatusCode::BAD_REQUEST,
         ),
         Ok(InternalPasswordResetCompleteResponse::Internal) => reset_view(

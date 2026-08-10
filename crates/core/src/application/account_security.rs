@@ -441,6 +441,7 @@ mod tests {
                 language: None,
                 password_hash: String::new(),
                 must_change_password: false,
+                password_changed_at: None,
                 status: if self.active {
                     UserStatus::Active
                 } else {

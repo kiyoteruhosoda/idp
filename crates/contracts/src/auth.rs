@@ -399,6 +399,25 @@ pub struct InternalChangePasswordRequest {
     pub user_agent: Option<String>,
 }
 
+/// 新しいパスワードが受け付けられなかった理由（AP7）。
+///
+/// 「弱い」の一語にまとめないのは、利用者が次に取るべき行動が理由ごとに違うためである
+/// （長さ不足は伸ばせばよいが、漏えい・再利用は**別の値を考える**しかない）。web はこの値を
+/// 画面の文言キーへ写す。
+///
+/// 既定は `Policy`（長さ等）。理由を持たない古い応答を読んでも従来と同じ表示になる。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PasswordRejectionReason {
+    /// 長さ等、入力そのものの要件を満たさない。
+    #[default]
+    Policy,
+    /// 既知の漏えいパスワード。
+    Breached,
+    /// 現行または過去に使ったパスワードの再利用。
+    Reused,
+}
+
 /// パスワード変更 API のレスポンス。成功系は `InternalAuthenticateResponse` と同等。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
@@ -427,8 +446,11 @@ pub enum InternalChangePasswordResponse {
     CsrfMismatch,
     /// 現行パスワードが不一致。
     InvalidCurrentPassword,
-    /// 新パスワードが強度要件（最低文字数等）を満たさない。
-    WeakPassword,
+    /// 新パスワードがポリシーを満たさない（長さ・漏えい済み・再利用）。
+    WeakPassword {
+        #[serde(default)]
+        reason: PasswordRejectionReason,
+    },
     Internal,
 }
 
@@ -458,8 +480,11 @@ pub enum InternalAccountChangePasswordResponse {
     SessionExpired,
     /// 現行パスワードが不一致。
     InvalidCurrentPassword,
-    /// 新パスワードが強度要件を満たさない。
-    WeakPassword,
+    /// 新パスワードがポリシーを満たさない（長さ・漏えい済み・再利用）。
+    WeakPassword {
+        #[serde(default)]
+        reason: PasswordRejectionReason,
+    },
     Internal,
 }
 
@@ -510,7 +535,11 @@ pub enum InternalPasswordResetCompleteResponse {
     Ok,
     /// トークンが無効・期限切れ・使用済み・別テナント。
     InvalidOrExpired,
-    WeakPassword,
+    /// 新パスワードがポリシーを満たさない（長さ・漏えい済み・再利用）。
+    WeakPassword {
+        #[serde(default)]
+        reason: PasswordRejectionReason,
+    },
     Internal,
 }
 
@@ -608,7 +637,11 @@ pub enum InternalAdminChangePasswordResponse {
     InvalidCredentials,
     Locked,
     Forbidden,
-    WeakPassword,
+    /// 新パスワードがポリシーを満たさない（長さ・漏えい済み・再利用）。
+    WeakPassword {
+        #[serde(default)]
+        reason: PasswordRejectionReason,
+    },
     /// 変更は成功したが認証ポリシーにより拒否（AP2）。
     PolicyDenied,
     /// 変更は成功したが認証ポリシーが MFA を必須とし、使用可能な認証器が無い（AP2）。
@@ -713,8 +746,11 @@ pub enum InternalPortalChangePasswordResponse {
     /// 資格情報不正（利用者不存在・現行パスワード不一致・無効アカウント等を区別しない）。
     InvalidCredentials,
     Locked,
-    /// 新パスワードが強度要件を満たさない。
-    WeakPassword,
+    /// 新パスワードがポリシーを満たさない（長さ・漏えい済み・再利用）。
+    WeakPassword {
+        #[serde(default)]
+        reason: PasswordRejectionReason,
+    },
     Internal,
 }
 

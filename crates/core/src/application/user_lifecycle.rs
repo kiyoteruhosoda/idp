@@ -13,6 +13,7 @@
 //! SSO セッション・refresh token・未消費 authorization code を全失効させる。
 
 use crate::application::audit::{AuditService, RequestContext};
+use crate::application::password_policy::PasswordPolicyService;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
@@ -91,6 +92,9 @@ pub struct UserLifecycleService {
     totp_secrets: Arc<dyn TotpSecretRepository>,
     webauthn_credentials: Arc<dyn WebAuthnCredentialRepository>,
     hasher: Arc<dyn PasswordHasher>,
+    /// パスワード再発行で退役するハッシュを履歴へ積むために持つ（AP7）。積まないと、
+    /// 再発行 → 本人が変更 の直後に**再発行前のパスワードへ戻せてしまう**。
+    password_policy: Arc<PasswordPolicyService>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
 }
@@ -106,6 +110,7 @@ impl UserLifecycleService {
         totp_secrets: Arc<dyn TotpSecretRepository>,
         webauthn_credentials: Arc<dyn WebAuthnCredentialRepository>,
         hasher: Arc<dyn PasswordHasher>,
+        password_policy: Arc<PasswordPolicyService>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
     ) -> Self {
@@ -118,6 +123,7 @@ impl UserLifecycleService {
             totp_secrets,
             webauthn_credentials,
             hasher,
+            password_policy,
             audit,
             clock,
         }
@@ -452,6 +458,9 @@ impl UserLifecycleService {
             .reset_password_forced(user.id, &password_hash)
             .await
             .map_err(internal)?;
+        self.password_policy
+            .record_change(user.id, &user.password_hash)
+            .await;
         // 旧資格情報で発行済みのセッション・トークンを失効させる（fail-open にしない: 失敗はログのみ。
         // パスワードは既に更新済みで、旧パスワードでのログインはできない）。
         self.revoke_credentials(user.id).await;
@@ -951,6 +960,7 @@ mod tests {
             language: None,
             password_hash: "hash:old".to_string(),
             must_change_password: false,
+            password_changed_at: None,
             status: UserStatus::Active,
             failed_login_count: 0,
             locked_until: None,
@@ -1006,6 +1016,12 @@ mod tests {
             totp.clone(),
             passkeys.clone(),
             Arc::new(PlainHasher),
+            Arc::new(
+                crate::application::password_policy::PasswordPolicyService::length_only(
+                    Arc::new(PlainHasher),
+                    Arc::new(FixedClock(now())),
+                ),
+            ),
             audit,
             Arc::new(FixedClock(now())),
         );

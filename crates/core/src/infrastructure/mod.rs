@@ -3,6 +3,7 @@
 //! sqlx による MariaDB リポジトリ実装、JWT 署名、暗号ユーティリティ、Clock 実装などを収める。
 
 pub mod backchannel_logout;
+pub mod breached_password;
 pub mod cache;
 pub mod clock;
 pub mod crypto;

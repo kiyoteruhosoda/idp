@@ -521,6 +521,7 @@ mod tests {
             language: None,
             password_hash: "x".to_string(),
             must_change_password: false,
+            password_changed_at: None,
             status: UserStatus::Active,
             failed_login_count: 0,
             locked_until: None,

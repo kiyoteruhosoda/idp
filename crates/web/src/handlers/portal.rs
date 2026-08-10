@@ -354,13 +354,13 @@ pub async fn password_change(
             &form.username,
             "login-error-locked",
         ),
-        InternalPortalChangePasswordResponse::WeakPassword => reshow_password_change(
+        InternalPortalChangePasswordResponse::WeakPassword { reason } => reshow_password_change(
             &messages,
             &tenant.prefix(),
             StatusCode::UNPROCESSABLE_ENTITY,
             &csrf,
             &form.username,
-            "password-change-error-weak",
+            super::password_rejection_key(reason, "password-change-error-weak"),
         ),
         InternalPortalChangePasswordResponse::Internal => {
             (StatusCode::INTERNAL_SERVER_ERROR, Html(String::new())).into_response()

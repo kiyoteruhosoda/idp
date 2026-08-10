@@ -41,7 +41,11 @@ password-change-confirm-label = 新しいパスワード（確認）
 password-change-submit = パスワードを変更
 password-change-error-mismatch = 新しいパスワードと確認用の入力が一致しません。
 password-change-error-invalid-current = 現在のパスワードが正しくありません。
-password-change-error-weak = 新しいパスワードは 8 文字以上にしてください。
+password-change-error-weak = 新しいパスワードがパスワード要件を満たしていません。
+# パスワードポリシー（AP7）。文言はどのフォームから来たかに依存しないため、パスワードを設定する
+# 全画面で共有する。
+password-error-breached = このパスワードは既知の漏えいリストに含まれています。別のものを設定してください。
+password-error-reused = 以前に使ったパスワードは再利用できません。別のものを設定してください。
 
 # 管理コンソール（A2）。idp.admin 権限で保護するサーバレンダリング画面。
 admin-console-title = 管理コンソール
@@ -468,6 +472,8 @@ api-username-too-long = ログイン識別子は { $value } 文字以内で入�
 api-display-name-too-long = 表示名は { $value } 文字以内で入力してください。
 api-password-too-short = パスワードは { $value } 文字以上にしてください。
 api-password-too-long = パスワードは { $value } 文字以内にしてください。
+api-password-breached = このパスワードは既知の漏えいリストに含まれています。別のものを設定してください。
+api-password-reused = 以前に使ったパスワードは再利用できません。別のものを設定してください。
 api-field-required = 「{ $value }」を入力してください。
 api-user-identity-conflict = そのメールアドレスまたはログイン識別子は、このテナントの別の利用者が既に使っています。
 # ログイン識別子（AP8）。エラーには値そのものを含めない。

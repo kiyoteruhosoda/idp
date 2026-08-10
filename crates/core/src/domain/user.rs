@@ -42,6 +42,9 @@ pub struct User {
     pub password_hash: String,
     /// 自動生成パスワードで作成されたユーザーは初回ログイン時に変更を強制する（ADR-0009 §5）。
     pub must_change_password: bool,
+    /// 現行パスワードを設定した時刻（AP7 の有効期限が測る起点）。`None` は未記録
+    /// （列を足す前から在る利用者・旧プロセスが作った行）。[`User::password_set_at`] で読む。
+    pub password_changed_at: Option<DateTime<Utc>>,
     pub status: UserStatus,
     pub failed_login_count: i32,
     pub locked_until: Option<DateTime<Utc>>,
@@ -58,5 +61,14 @@ impl User {
     /// 指定時刻時点でロック中か。
     pub fn is_locked_at(&self, now: DateTime<Utc>) -> bool {
         matches!(self.locked_until, Some(until) if until > now)
+    }
+
+    /// 現行パスワードを設定した時刻。未記録なら**アカウント作成時刻**とみなす（AP7）。
+    ///
+    /// 未記録を「無期限」に丸めないのは、それだと列を足す前から在る利用者だけが有効期限の
+    /// 外に出てしまうためである。最も古いパスワードほど期限の対象にしたいので、判定は
+    /// 「少なくともこの時刻には存在した」という最古の根拠（作成時刻）に寄せる。
+    pub fn password_set_at(&self) -> DateTime<Utc> {
+        self.password_changed_at.unwrap_or(self.created_at)
     }
 }

@@ -24,8 +24,8 @@ impl SqlxUserRepository {
 }
 
 const SELECT_COLUMNS: &str = "id, tenant_id, sub, email, email_verified, preferred_username, \
-     name, language, password_hash, must_change_password, status, failed_login_count, locked_until, \
-     created_at, updated_at";
+     name, language, password_hash, must_change_password, password_changed_at, status, \
+     failed_login_count, locked_until, created_at, updated_at";
 
 fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
@@ -45,6 +45,8 @@ fn map_row(row: &MySqlRow) -> Result<User> {
     let sub: String = row.try_get("sub").map_err(repo_err)?;
     let status: String = row.try_get("status").map_err(repo_err)?;
     let locked_until: Option<NaiveDateTime> = row.try_get("locked_until").map_err(repo_err)?;
+    let password_changed_at: Option<NaiveDateTime> =
+        row.try_get("password_changed_at").map_err(repo_err)?;
     Ok(User {
         id: parse_uuid(&id)?,
         tenant_id: parse_uuid(&tenant_id)?.into(),
@@ -56,6 +58,7 @@ fn map_row(row: &MySqlRow) -> Result<User> {
         language: row.try_get("language").map_err(repo_err)?,
         password_hash: row.try_get("password_hash").map_err(repo_err)?,
         must_change_password: row.try_get("must_change_password").map_err(repo_err)?,
+        password_changed_at: password_changed_at.map(to_utc),
         status: UserStatus::parse(&status)?,
         failed_login_count: row.try_get("failed_login_count").map_err(repo_err)?,
         locked_until: locked_until.map(to_utc),
@@ -72,8 +75,9 @@ pub(crate) async fn insert_user<'e>(
     sqlx::query(
         "INSERT INTO users \
          (id, tenant_id, sub, email, email_verified, preferred_username, name, language, \
-          password_hash, must_change_password, status, failed_login_count, locked_until) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          password_hash, must_change_password, password_changed_at, status, failed_login_count, \
+          locked_until) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(user.id.to_string())
     .bind(user.tenant_id.to_string())
@@ -85,6 +89,7 @@ pub(crate) async fn insert_user<'e>(
     .bind(&user.language)
     .bind(&user.password_hash)
     .bind(user.must_change_password)
+    .bind(user.password_changed_at.map(|d| d.naive_utc()))
     .bind(user.status.as_str())
     .bind(user.failed_login_count)
     .bind(user.locked_until.map(|d| d.naive_utc()))
@@ -274,22 +279,30 @@ impl UserRepository for SqlxUserRepository {
     }
 
     async fn update_password(&self, id: Uuid, password_hash: &str) -> Result<()> {
-        sqlx::query("UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?")
-            .bind(password_hash)
-            .bind(id.to_string())
-            .execute(&self.pool)
-            .await
-            .map_err(repo_err)?;
+        // 設定時刻は DB の時計で入れる（`created_at` / `updated_at` と同じ扱い。AP7 の有効期限は
+        // この列を起点に測る）。
+        sqlx::query(
+            "UPDATE users SET password_hash = ?, must_change_password = 0, \
+             password_changed_at = UTC_TIMESTAMP(6) WHERE id = ?",
+        )
+        .bind(password_hash)
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(repo_err)?;
         Ok(())
     }
 
     async fn reset_password_forced(&self, id: Uuid, password_hash: &str) -> Result<()> {
-        sqlx::query("UPDATE users SET password_hash = ?, must_change_password = 1 WHERE id = ?")
-            .bind(password_hash)
-            .bind(id.to_string())
-            .execute(&self.pool)
-            .await
-            .map_err(repo_err)?;
+        sqlx::query(
+            "UPDATE users SET password_hash = ?, must_change_password = 1, \
+             password_changed_at = UTC_TIMESTAMP(6) WHERE id = ?",
+        )
+        .bind(password_hash)
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(repo_err)?;
         Ok(())
     }
 

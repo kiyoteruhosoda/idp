@@ -315,6 +315,83 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         default_value: Some("900"),
         description: "連続失敗でロックした際のロック時間（秒）。経過後は自動で再試行できる（恒久ロックはしない）。",
     },
+    // ── パスワードポリシー（AP7。仕様 §11.2）──────────────────────────────
+    // パスワードを設定する全経路（自己登録・強制変更・セルフサービス変更・リセット）へ一律に効く。
+    SettingDefinition {
+        key: "PASSWORD_MIN_LENGTH",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
+        default_value: Some("8"),
+        description: "新しいパスワードに要求する最小文字数（バイト長で判定する）。既存のパスワードは \
+                      次の変更まで再判定されない。",
+    },
+    SettingDefinition {
+        key: "PASSWORD_HISTORY_COUNT",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
+        default_value: Some("5"),
+        description: "再利用を禁じる直近パスワードの数（**現行を含む**）。`1` は現行と同じ値だけを \
+                      拒否し、`0` は履歴を見ない。退役したハッシュはこの件数だけ保持し、超えた分は \
+                      削除する。",
+    },
+    SettingDefinition {
+        key: "PASSWORD_MAX_AGE_DAYS",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
+        default_value: Some("0"),
+        description: "パスワードの有効日数。経過後は**次のログインで**パスワード変更画面へ誘導する \
+                      （ログイン自体は拒否しない）。`0` は無期限。設定時刻が未記録の利用者は \
+                      アカウント作成時刻を起点に測る。",
+    },
+    SettingDefinition {
+        key: "PASSWORD_BREACH_CHECK_ENABLED",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::Boolean,
+        default_value: Some("false"),
+        description: "漏えい済みパスワードを拒否するか。有効にすると `PASSWORD_BREACH_API_BASE_URL` \
+                      への外向き HTTPS が必要になる（送るのは SHA-1 の先頭 5 桁のみ。パスワードも \
+                      利用者も渡らない）。照合先へ到達できないときは拒否せずに通す。",
+    },
+    SettingDefinition {
+        key: "PASSWORD_BREACH_API_BASE_URL",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::Text,
+        default_value: Some(crate::domain::password_policy::DEFAULT_BREACH_API_BASE_URL),
+        description: "漏えい済みパスワードの照合先（k-匿名性のレンジ API）。`{base}/{接頭辞5桁}` を \
+                      GET する。閉じた環境では互換のミラーを立ててここを向ける。",
+    },
+    SettingDefinition {
+        key: "PASSWORD_BREACH_CHECK_TIMEOUT_SECS",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
+        default_value: Some("3"),
+        description: "漏えい照合の 1 リクエストの上限時間（秒）。超えたら拒否せずに通す（外部の \
+                      不調でパスワード変更が止まらないようにする）。",
+    },
     // 認証ポリシー（authentication_policies）が 1 件も一致しないときの既定動作（同仕様 §9.4）。
     SettingDefinition {
         key: "AUTH_POLICY_DEFAULT_EFFECT",

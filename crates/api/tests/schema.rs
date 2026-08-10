@@ -41,6 +41,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "external_login_requests",
     "saml_sso_requests",
     "user_login_identifiers",
+    "user_password_history",
 ];
 
 /// 「bearer credential を平文で置いていない」ことを列の形で固定する（SEC6）。
