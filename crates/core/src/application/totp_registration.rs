@@ -117,12 +117,13 @@ impl TotpRegistrationService {
             created_at: now,
             updated_at: now,
         };
-        self.totp_secrets.upsert(&record).await?;
-        // 登録簿へ仮登録として積む（AP9）。ここが漏れると、確認前の TOTP が一覧に出ない。
+        // **登録簿の行を先に作る。** 共有鍵の置き場所はその行なので（AP11b）、逆順にすると
+        // 載せる先が無く、鍵は行が無いまま捨てられる（そして直後に作られる行は空になる）。
         self.authenticators
             .register_totp_pending(user_id)
             .await
             .map_err(|e| TotpRegistrationError::Internal(e.to_string()))?;
+        self.totp_secrets.upsert(&record).await?;
 
         Ok(TotpSetupData {
             totp_uri,

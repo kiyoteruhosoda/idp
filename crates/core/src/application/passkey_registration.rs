@@ -56,7 +56,8 @@ pub struct CredentialInfo {
 }
 
 pub struct PasskeyRegistrationService {
-    /// 認証器の登録簿（AP9）。passkey 本体は `user_webauthn_credentials` に残し、状態を反映する。
+    /// 認証器の登録簿（AP9）。削除・一時停止で状態を動かす（行そのものは
+    /// `WebAuthnCredentialRepository` が作る。AP11b）。
     authenticators:
         Arc<crate::application::authenticator_management::AuthenticatorManagementService>,
     webauthn_credentials: Arc<dyn WebAuthnCredentialRepository>,
@@ -193,6 +194,9 @@ impl PasskeyRegistrationService {
         // チャレンジを先に削除してから登録（失敗してもチャレンジは使えなくなる）。
         let _ = self.passkey_challenges.delete(challenge_id).await;
 
+        // 登録簿へ 1 行として作る（AP11b）。公開鍵も状態も同じ行に載るので、書き込みは 1 回で
+        // 済む —— 移行中にあった「元の表へ入れてから登録簿へ積む」の 2 段構えは、片方だけ
+        // 成功した中途半端な状態を作り得た。
         self.webauthn_credentials.create(&cred).await.map_err(|e| {
             if matches!(e, DomainError::Conflict(_)) {
                 PasskeyRegistrationError::DuplicateCredential
@@ -200,12 +204,6 @@ impl PasskeyRegistrationService {
                 PasskeyRegistrationError::Internal(e.to_string())
             }
         })?;
-
-        // 登録簿へ反映する（AP9）。ここが漏れると、登録したパスキーが一覧に出ず一時停止もできない。
-        self.authenticators
-            .register_webauthn(user_id, cred_id, &cred.name)
-            .await
-            .map_err(|e| PasskeyRegistrationError::Internal(e.to_string()))?;
 
         Ok(cred_id)
     }

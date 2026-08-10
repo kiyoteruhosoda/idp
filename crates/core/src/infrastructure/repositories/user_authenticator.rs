@@ -23,8 +23,7 @@ impl SqlxUserAuthenticatorRepository {
 }
 
 const SELECT_COLUMNS: &str = "id, user_id, authenticator_type, status, label, secret_encrypted, \
-     credential_ref, target, confirmed_at, last_used_at, expires_at, revoked_at, created_at, \
-     updated_at";
+     target, confirmed_at, last_used_at, expires_at, revoked_at, created_at, updated_at";
 
 fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
@@ -51,7 +50,6 @@ fn map_row(row: &MySqlRow) -> Result<UserAuthenticator> {
     let user_id: String = row.try_get("user_id").map_err(repo_err)?;
     let authenticator_type: String = row.try_get("authenticator_type").map_err(repo_err)?;
     let status: String = row.try_get("status").map_err(repo_err)?;
-    let credential_ref: Option<String> = row.try_get("credential_ref").map_err(repo_err)?;
     Ok(UserAuthenticator {
         id: parse_uuid(&id, "id")?,
         user_id: parse_uuid(&user_id, "user_id")?,
@@ -59,9 +57,6 @@ fn map_row(row: &MySqlRow) -> Result<UserAuthenticator> {
         status: AuthenticatorStatus::parse(&status)?,
         label: row.try_get("label").map_err(repo_err)?,
         secret_encrypted: row.try_get("secret_encrypted").map_err(repo_err)?,
-        credential_ref: credential_ref
-            .map(|v| parse_uuid(&v, "credential_ref"))
-            .transpose()?,
         target: row.try_get("target").map_err(repo_err)?,
         confirmed_at: opt_time(row, "confirmed_at")?,
         last_used_at: opt_time(row, "last_used_at")?,
@@ -77,9 +72,9 @@ impl UserAuthenticatorRepository for SqlxUserAuthenticatorRepository {
     async fn create(&self, authenticator: &UserAuthenticator) -> Result<()> {
         sqlx::query(
             "INSERT INTO user_authenticators \
-             (id, user_id, authenticator_type, status, label, secret_encrypted, credential_ref, \
+             (id, user_id, authenticator_type, status, label, secret_encrypted, \
               target, confirmed_at, last_used_at, expires_at, revoked_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(authenticator.id.to_string())
         .bind(authenticator.user_id.to_string())
@@ -87,7 +82,6 @@ impl UserAuthenticatorRepository for SqlxUserAuthenticatorRepository {
         .bind(authenticator.status.as_str())
         .bind(&authenticator.label)
         .bind(&authenticator.secret_encrypted)
-        .bind(authenticator.credential_ref.map(|v| v.to_string()))
         .bind(&authenticator.target)
         .bind(authenticator.confirmed_at.map(|t| t.naive_utc()))
         .bind(authenticator.last_used_at.map(|t| t.naive_utc()))
@@ -96,7 +90,7 @@ impl UserAuthenticatorRepository for SqlxUserAuthenticatorRepository {
         .execute(&self.pool)
         .await
         .map_err(|e| {
-            // 同じ WebAuthn クレデンシャルの二重登録は一意制約で弾かれる。
+            // 同じ WebAuthn credential ID の二重登録は一意制約で弾かれる。
             if e.as_database_error()
                 .is_some_and(|d| d.is_unique_violation())
             {

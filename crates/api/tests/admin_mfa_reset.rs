@@ -20,13 +20,16 @@ use serde_json::json;
 use sqlx::{MySqlPool, Row};
 use support::{body_json, create_plain_user, create_sso_session, post, send};
 
-/// 対象ユーザーの TOTP シークレットを直接投入する（セットアップ API を通さずに「設定済み」を作る。
-/// 本テストの関心は解除であって登録フローではない）。
+/// 対象ユーザーの TOTP を直接投入する（セットアップ API を通さずに「設定済み」を作る。
+/// 本テストの関心は解除であって登録フローではない）。秘密の置き場所は認証器の登録簿
+/// （`user_authenticators`。AP11b で一本化した）。
 async fn insert_totp(pool: &MySqlPool, user_id: &str) {
     sqlx::query(
-        "INSERT INTO user_totp_secrets (user_id, secret_encrypted, confirmed_at) \
-         VALUES (?, 'test-ciphertext', UTC_TIMESTAMP(6))",
+        "INSERT INTO user_authenticators \
+         (id, user_id, authenticator_type, status, secret_encrypted, confirmed_at, created_at) \
+         VALUES (?, ?, 'totp', 'active', 'test-ciphertext', UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))",
     )
+    .bind(uuid::Uuid::now_v7().to_string())
     .bind(user_id)
     .execute(pool)
     .await
@@ -36,9 +39,11 @@ async fn insert_totp(pool: &MySqlPool, user_id: &str) {
 async fn insert_passkey(pool: &MySqlPool, user_id: &str) -> String {
     let id = uuid::Uuid::now_v7().to_string();
     sqlx::query(
-        "INSERT INTO user_webauthn_credentials \
-         (id, user_id, credential_id, passkey_json, name, created_at) \
-         VALUES (?, ?, ?, '{}', 'test device', UTC_TIMESTAMP(6))",
+        "INSERT INTO user_authenticators \
+         (id, user_id, authenticator_type, status, label, secret_encrypted, credential_id, \
+          confirmed_at, created_at) \
+         VALUES (?, ?, 'webauthn', 'active', 'test device', '{}', ?, UTC_TIMESTAMP(6), \
+                 UTC_TIMESTAMP(6))",
     )
     .bind(&id)
     .bind(user_id)
@@ -49,22 +54,28 @@ async fn insert_passkey(pool: &MySqlPool, user_id: &str) -> String {
     id
 }
 
+/// 「まだ使える」認証器の数。解除は行を消すのではなく**秘密を落として失効させる**ので、
+/// 行数ではなく秘密の有無で数える（残っていれば復旧手段として成立していない）。
+async fn count_usable(pool: &MySqlPool, user_id: &str, authenticator_type: &str) -> i64 {
+    sqlx::query(
+        "SELECT COUNT(*) AS c FROM user_authenticators \
+         WHERE user_id = ? AND authenticator_type = ? AND status <> 'revoked' \
+           AND secret_encrypted IS NOT NULL",
+    )
+    .bind(user_id)
+    .bind(authenticator_type)
+    .fetch_one(pool)
+    .await
+    .expect("count usable authenticators")
+    .get::<i64, _>("c")
+}
+
 async fn count_totp(pool: &MySqlPool, user_id: &str) -> i64 {
-    sqlx::query("SELECT COUNT(*) AS c FROM user_totp_secrets WHERE user_id = ?")
-        .bind(user_id)
-        .fetch_one(pool)
-        .await
-        .expect("count totp")
-        .get::<i64, _>("c")
+    count_usable(pool, user_id, "totp").await
 }
 
 async fn count_passkeys(pool: &MySqlPool, user_id: &str) -> i64 {
-    sqlx::query("SELECT COUNT(*) AS c FROM user_webauthn_credentials WHERE user_id = ?")
-        .bind(user_id)
-        .fetch_one(pool)
-        .await
-        .expect("count passkeys")
-        .get::<i64, _>("c")
+    count_usable(pool, user_id, "webauthn").await
 }
 
 async fn count_sso_sessions(pool: &MySqlPool, user_id: &str) -> i64 {
