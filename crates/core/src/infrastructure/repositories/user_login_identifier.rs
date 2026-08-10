@@ -21,7 +21,7 @@ impl SqlxUserLoginIdentifierRepository {
 }
 
 const SELECT_COLUMNS: &str = "id, tenant_id, user_id, identifier_type, display_value, \
-     normalized_value, is_active, created_at, updated_at";
+     normalized_value, is_active, is_primary, created_at, updated_at";
 
 fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
@@ -49,6 +49,7 @@ pub(crate) fn map_row(row: &MySqlRow) -> Result<UserLoginIdentifier> {
         display_value: row.try_get("display_value").map_err(repo_err)?,
         normalized_value: row.try_get("normalized_value").map_err(repo_err)?,
         is_active: row.try_get("is_active").map_err(repo_err)?,
+        is_primary: row.try_get("is_primary").map_err(repo_err)?,
         created_at: to_utc(row.try_get("created_at").map_err(repo_err)?),
         updated_at: to_utc(row.try_get("updated_at").map_err(repo_err)?),
     })
@@ -59,8 +60,9 @@ impl UserLoginIdentifierRepository for SqlxUserLoginIdentifierRepository {
     async fn create(&self, identifier: &UserLoginIdentifier) -> Result<()> {
         sqlx::query(
             "INSERT INTO user_login_identifiers \
-             (id, tenant_id, user_id, identifier_type, display_value, normalized_value, is_active) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+             (id, tenant_id, user_id, identifier_type, display_value, normalized_value, \
+              is_active, is_primary) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(identifier.id.to_string())
         .bind(identifier.tenant_id.to_string())
@@ -69,6 +71,7 @@ impl UserLoginIdentifierRepository for SqlxUserLoginIdentifierRepository {
         .bind(&identifier.display_value)
         .bind(&identifier.normalized_value)
         .bind(identifier.is_active)
+        .bind(identifier.is_primary)
         .execute(&self.pool)
         .await
         .map_err(|e| match &e {
@@ -104,8 +107,11 @@ impl UserLoginIdentifierRepository for SqlxUserLoginIdentifierRepository {
     }
 
     async fn set_active(&self, id: Uuid, user_id: Uuid, is_active: bool) -> Result<bool> {
+        // 主識別子は識別子単位で止められない（止めるとログインできなくなる。止めるなら
+        // アカウントの無効化を使う）。`is_primary = 0` を条件に含めて DB 側で弾く。
         let result = sqlx::query(
-            "UPDATE user_login_identifiers SET is_active = ? WHERE id = ? AND user_id = ?",
+            "UPDATE user_login_identifiers SET is_active = ? \
+             WHERE id = ? AND user_id = ? AND is_primary = 0",
         )
         .bind(is_active)
         .bind(id.to_string())
@@ -117,12 +123,15 @@ impl UserLoginIdentifierRepository for SqlxUserLoginIdentifierRepository {
     }
 
     async fn delete(&self, id: Uuid, user_id: Uuid) -> Result<bool> {
-        let result = sqlx::query("DELETE FROM user_login_identifiers WHERE id = ? AND user_id = ?")
-            .bind(id.to_string())
-            .bind(user_id.to_string())
-            .execute(&self.pool)
-            .await
-            .map_err(repo_err)?;
+        // 主識別子は識別子単位で消せない（消すとログインできなくなる。変えるならプロフィール編集）。
+        let result = sqlx::query(
+            "DELETE FROM user_login_identifiers WHERE id = ? AND user_id = ? AND is_primary = 0",
+        )
+        .bind(id.to_string())
+        .bind(user_id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(repo_err)?;
         Ok(result.rows_affected() > 0)
     }
 }

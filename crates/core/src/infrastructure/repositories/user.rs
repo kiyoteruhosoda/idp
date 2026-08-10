@@ -67,9 +67,114 @@ fn map_row(row: &MySqlRow) -> Result<User> {
     })
 }
 
+/// 主たるログイン識別子（`users.preferred_username`）を登録簿へ同期する（AP15）。
+///
+/// 移行中は**両方に在る**。登録簿だけに書くとローリングデプロイ中の古いプロセス（`users` しか
+/// 読まない）がログインさせられず、`users` だけに書くと新しいプロセスの一覧・クレームから
+/// 主識別子が消える。撤去（`users.preferred_username` を落とす）は次のリリース。
+///
+/// `preferred_username` が `None`・空のときは登録簿の主識別子行を削除する（解除）。
+///
+/// # 同じ値を他人が持っているとき
+///
+/// その値が**他人**の識別子として既に登録簿に在る場合は、登録簿を触らずに `users` 側だけを
+/// 正とする。`users.preferred_username` への一意制約は、その値が他人の**追加**識別子として
+/// 登録されている場合までは弾かないので、この状況は実際に起こりうる。
+///
+/// ここで `ON DUPLICATE KEY UPDATE` を使うと、一意キー（tenant × 種別 × 正規化値）の衝突で
+/// **他人の行が書き換わる**（`user_id` は更新されないので、他人の識別子の表示値・有効状態だけが
+/// 変わる）。それは黙って他人のログインを壊す。エラーにして操作ごと失敗させるのも過剰で、
+/// 移行前は通っていたプロフィール編集が通らなくなる。そこで migration 0036 と**同じ判断**を採る
+/// ——登録簿は諦め、その利用者は `users.preferred_username` へのフォールバックで解決され続ける
+/// （フォールバックは撤去まで残る）。
+async fn sync_primary_login_identifier<'e>(
+    executor: impl sqlx::Executor<'e, Database = sqlx::MySql> + Copy,
+    user_id: Uuid,
+    preferred_username: Option<&str>,
+) -> Result<()> {
+    use crate::domain::login_identifier::LoginIdentifierType;
+
+    let Some(value) = preferred_username.map(str::trim).filter(|v| !v.is_empty()) else {
+        sqlx::query("DELETE FROM user_login_identifiers WHERE user_id = ? AND is_primary = 1")
+            .bind(user_id.to_string())
+            .execute(executor)
+            .await
+            .map_err(repo_err)?;
+        return Ok(());
+    };
+    let normalized = LoginIdentifierType::Username.normalize(value);
+
+    // 他人が同じ値を握っているか（テナントは利用者の行から引く。呼び出し側に渡させると
+    // `users` と食い違う余地が生まれる）。
+    let taken_by_someone_else: Option<i32> = sqlx::query_scalar(
+        "SELECT 1 FROM user_login_identifiers i \
+         JOIN users u ON u.id = ? \
+         WHERE i.tenant_id = u.tenant_id AND i.identifier_type = 'username' \
+           AND i.normalized_value = ? AND i.user_id <> u.id \
+         LIMIT 1",
+    )
+    .bind(user_id.to_string())
+    .bind(&normalized)
+    .fetch_optional(executor)
+    .await
+    .map_err(repo_err)?;
+    if taken_by_someone_else.is_some() {
+        // 値そのものは PII なので出さない（`docs/CLAUDE.md`「ログ」）。
+        tracing::warn!(
+            "primary login identifier not mirrored into the registry: value already taken by another user"
+        );
+        return Ok(());
+    }
+
+    // 主識別子は 1 利用者 1 行（`primary_of_user` の UNIQUE が保証する）。既存行があれば
+    // 値を入れ替え、無ければ作る。「更新して 0 行なら INSERT」にしないのは、MariaDB の
+    // 影響行数が**変わった行**の数で、同じ値で更新すると 0 になるためである（そこで INSERT に
+    // 回ると一意制約で落ちる）。
+    let existing: Option<String> = sqlx::query_scalar(
+        "SELECT id FROM user_login_identifiers WHERE user_id = ? AND is_primary = 1",
+    )
+    .bind(user_id.to_string())
+    .fetch_optional(executor)
+    .await
+    .map_err(repo_err)?;
+
+    match existing {
+        Some(id) => {
+            sqlx::query(
+                "UPDATE user_login_identifiers \
+                 SET identifier_type = 'username', display_value = ?, normalized_value = ?, \
+                     is_active = 1 \
+                 WHERE id = ?",
+            )
+            .bind(value)
+            .bind(&normalized)
+            .bind(id)
+            .execute(executor)
+            .await
+            .map_err(repo_err)?;
+        }
+        None => {
+            sqlx::query(
+                "INSERT INTO user_login_identifiers \
+                 (id, tenant_id, user_id, identifier_type, display_value, normalized_value, \
+                  is_active, is_primary) \
+                 SELECT ?, u.tenant_id, u.id, 'username', ?, ?, 1, 1 FROM users u WHERE u.id = ?",
+            )
+            .bind(uuid::Uuid::now_v7().to_string())
+            .bind(value)
+            .bind(&normalized)
+            .bind(user_id.to_string())
+            .execute(executor)
+            .await
+            .map_err(repo_err)?;
+        }
+    }
+    Ok(())
+}
+
 /// users への INSERT（プール直接実行と provisioning トランザクションで共用する）。
 pub(crate) async fn insert_user<'e>(
-    executor: impl sqlx::Executor<'e, Database = sqlx::MySql>,
+    executor: impl sqlx::Executor<'e, Database = sqlx::MySql> + Copy,
     user: &User,
 ) -> Result<()> {
     sqlx::query(
@@ -101,6 +206,7 @@ pub(crate) async fn insert_user<'e>(
         }
         _ => DomainError::Repository(e.to_string()),
     })?;
+    sync_primary_login_identifier(executor, user.id, user.preferred_username.as_deref()).await?;
     Ok(())
 }
 
@@ -391,6 +497,9 @@ impl UserRepository for SqlxUserRepository {
                 }
                 _ => DomainError::Repository(e.to_string()),
             })?;
+        // 主識別子は移行中どちらにも在る。`users` だけ変えると、登録簿を見る経路（一覧・
+        // `preferred_username` クレーム・ログイン解決）が**古い名前**を指したままになる。
+        sync_primary_login_identifier(&self.pool, id, preferred_username).await?;
         Ok(())
     }
 }

@@ -110,12 +110,14 @@ async fn form_post_is_carried_to_the_authorization_response() {
     let handle = handoff_handle(&response);
 
     // 2. 要求は `auth_sessions` に残る（応答を組み立てるのは別リクエストのため）。
+    //    テストは同じ DB を共有し並行して走るので、**このテストが作ったクライアント**で絞る。
+    //    絞らないと隣のテストの認可セッション（`query`）を読んでしまう。
     let stored: Option<String> =
-        sqlx::query_scalar("SELECT response_mode FROM auth_sessions WHERE handle_hash IS NOT NULL")
-            .fetch_optional(&env.pool)
+        sqlx::query_scalar("SELECT response_mode FROM auth_sessions WHERE client_id = ?")
+            .bind(&client_id)
+            .fetch_one(&env.pool)
             .await
-            .expect("read auth session")
-            .flatten();
+            .expect("read auth session");
     assert_eq!(
         stored.as_deref(),
         Some("form_post"),

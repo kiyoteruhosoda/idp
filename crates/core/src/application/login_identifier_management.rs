@@ -52,7 +52,8 @@ pub struct LoginIdentifierEntry {
     pub display_value: String,
     pub normalized_value: String,
     pub is_active: bool,
-    /// `users.preferred_username` そのもの（合成行）か。
+    /// 主たるログイン識別子か（登録簿の `is_primary` 行、または `users.preferred_username`
+    /// から合成した行）。主識別子は識別子単位の有効/無効・削除の対象にならない。
     pub is_primary: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
@@ -66,7 +67,7 @@ impl From<UserLoginIdentifier> for LoginIdentifierEntry {
             display_value: v.display_value,
             normalized_value: v.normalized_value,
             is_active: v.is_active,
-            is_primary: false,
+            is_primary: v.is_primary,
             created_at: v.created_at,
             updated_at: v.updated_at,
         }
@@ -130,24 +131,34 @@ impl LoginIdentifierManagementService {
             .list_for_user(user.id)
             .await
             .map_err(internal)?;
+        // AP15 の移行中: 主識別子は登録簿にも `users.preferred_username` にも在る。登録簿に
+        // 実体の行があればそれを使い、無いときだけ `users` から合成する（合成行は `id` が
+        // `None` になり、識別子単位の操作ができないことが画面から分かる）。
+        // 両方出すと同じ識別子が 2 行並ぶ。
+        let has_stored_primary = stored.iter().any(|i| i.is_primary);
         let mut entries = Vec::with_capacity(stored.len() + 1);
-        if let Some(primary) = user.preferred_username.as_deref().map(str::trim) {
-            if !primary.is_empty() {
-                entries.push(LoginIdentifierEntry {
-                    id: None,
-                    identifier_type: LoginIdentifierType::Username,
-                    display_value: primary.to_string(),
-                    normalized_value: LoginIdentifierType::Username.normalize(primary),
-                    // 主識別子は `users` 側にあり、識別子単位では止められない（止めるなら
-                    // アカウントの無効化、変えるならプロフィール編集）。
-                    is_active: true,
-                    is_primary: true,
-                    created_at: user.created_at,
-                    updated_at: user.updated_at,
-                });
+        if !has_stored_primary {
+            if let Some(primary) = user.preferred_username.as_deref().map(str::trim) {
+                if !primary.is_empty() {
+                    entries.push(LoginIdentifierEntry {
+                        id: None,
+                        identifier_type: LoginIdentifierType::Username,
+                        display_value: primary.to_string(),
+                        normalized_value: LoginIdentifierType::Username.normalize(primary),
+                        // 主識別子は識別子単位では止められない（止めるならアカウントの
+                        // 無効化、変えるならプロフィール編集）。
+                        is_active: true,
+                        is_primary: true,
+                        created_at: user.created_at,
+                        updated_at: user.updated_at,
+                    });
+                }
             }
         }
         entries.extend(stored.into_iter().map(LoginIdentifierEntry::from));
+        // 主識別子を先頭に固定する（登録簿の行は追加順に並ぶため、格上げされた行は
+        // 途中に来る）。並びが移送の前後で変わると、画面の一番上が指す意味が変わってしまう。
+        entries.sort_by_key(|e| !e.is_primary);
         Ok(entries)
     }
 
@@ -180,6 +191,8 @@ impl LoginIdentifierManagementService {
             display_value: raw,
             normalized_value: normalized,
             is_active: cmd.is_active,
+            // 管理画面から足すのは**追加の**識別子（主識別子はプロフィール編集が持つ）。
+            is_primary: false,
             created_at: now,
             updated_at: now,
         };
