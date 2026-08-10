@@ -15,12 +15,14 @@
 //! - トークン・メールアドレスはログ・監査に出さない（PII 方針）。
 
 use crate::application::audit::{AuditService, RequestContext};
+use crate::application::password_policy::PasswordPolicyService;
 use crate::application::system_settings::SystemSettingsService;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::mailer::{Mailer, OutgoingEmail};
-use crate::domain::password::{validate_password_strength, PasswordHasher};
+use crate::domain::password::PasswordHasher;
+use crate::domain::password_policy::PasswordRejection;
 use crate::domain::password_reset::PasswordResetToken;
 use crate::domain::rate_limit::LoginRateLimiter;
 use crate::domain::repositories::{
@@ -49,8 +51,8 @@ pub enum ResetPasswordOutcome {
     Ok,
     /// トークンが無効・期限切れ・使用済み・別テナント。
     InvalidOrExpired,
-    /// 新パスワードが強度要件を満たさない。
-    WeakPassword,
+    /// 新パスワードがポリシーを満たさない（長さ・漏えい済み・再利用。AP7）。
+    WeakPassword(PasswordRejection),
     Internal(String),
 }
 
@@ -61,6 +63,7 @@ pub struct PasswordResetService {
     refresh_tokens: Arc<dyn RefreshTokenRepository>,
     codes: Arc<dyn AuthorizationCodeRepository>,
     hasher: Arc<dyn PasswordHasher>,
+    password_policy: Arc<PasswordPolicyService>,
     system_settings: Arc<SystemSettingsService>,
     mailer: Arc<dyn Mailer>,
     rate_limiter: Arc<dyn LoginRateLimiter>,
@@ -80,6 +83,7 @@ impl PasswordResetService {
         refresh_tokens: Arc<dyn RefreshTokenRepository>,
         codes: Arc<dyn AuthorizationCodeRepository>,
         hasher: Arc<dyn PasswordHasher>,
+        password_policy: Arc<PasswordPolicyService>,
         system_settings: Arc<SystemSettingsService>,
         mailer: Arc<dyn Mailer>,
         rate_limiter: Arc<dyn LoginRateLimiter>,
@@ -95,6 +99,7 @@ impl PasswordResetService {
             refresh_tokens,
             codes,
             hasher,
+            password_policy,
             system_settings,
             mailer,
             rate_limiter,
@@ -228,10 +233,12 @@ impl PasswordResetService {
         if token.is_empty() {
             return ResetPasswordOutcome::InvalidOrExpired;
         }
-        // 強度検証をトークン消費より先に行う（弱いパスワードの入力ミスで単回トークンを
-        // 無駄に消費させない）。
-        if validate_password_strength(new_password).is_err() {
-            return ResetPasswordOutcome::WeakPassword;
+        // 利用者に依らない要件（長さ・漏えい済み。AP7）をトークン消費より先に見る（入力ミスで
+        // 単回トークンを無駄に消費させない）。再利用の判定は利用者を解決した後に行う。
+        match self.password_policy.validate_input(new_password).await {
+            Ok(Ok(())) => {}
+            Ok(Err(rejection)) => return ResetPasswordOutcome::WeakPassword(rejection),
+            Err(e) => return ResetPasswordOutcome::Internal(e.to_string()),
         }
 
         let now = self.clock.now();
@@ -253,13 +260,40 @@ impl PasswordResetService {
             Err(e) => return ResetPasswordOutcome::Internal(e.to_string()),
         };
 
+        // 過去パスワードの再利用禁止（AP7）。忘失リセットは「思い出した古いパスワードへ戻す」
+        // 経路になりやすいため、変更経路と同じ規則を適用する。トークンは既に消費済みなので、
+        // 拒否された利用者は再発行からやり直すことになる。
+        match self
+            .password_policy
+            .validate_reuse(Some(user.id), Some(&user.password_hash), new_password)
+            .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(rejection)) => return ResetPasswordOutcome::WeakPassword(rejection),
+            Err(e) => return ResetPasswordOutcome::Internal(e.to_string()),
+        }
+
         let new_hash = match self.hasher.hash(new_password) {
             Ok(h) => h,
             Err(e) => return ResetPasswordOutcome::Internal(e.to_string()),
         };
-        if let Err(e) = self.users.update_password(user.id, &new_hash).await {
-            return ResetPasswordOutcome::Internal(e.to_string());
+        // 現行ハッシュを条件にした置き換え（AP7）。`false` は読んでから書くまでの間に別の要求が
+        // パスワードを変えたこと。トークンは消費済みなので、やり直すには再発行が要る。
+        match self
+            .users
+            .update_password(user.id, &user.password_hash, &new_hash)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::warn!("password reset lost a concurrent update; a new link is required");
+                return ResetPasswordOutcome::InvalidOrExpired;
+            }
+            Err(e) => return ResetPasswordOutcome::Internal(e.to_string()),
         }
+        self.password_policy
+            .record_change(user.id, &user.password_hash)
+            .await;
 
         // 全セッション・トークンの失効（fail-open にしない: 失敗はログのみ。パスワードは既に
         // 更新済みで、旧資格情報でのログインはできない）。
@@ -407,15 +441,32 @@ mod tests {
         ) -> DomainResult<()> {
             unreachable!()
         }
-        async fn update_password(&self, id: Uuid, password_hash: &str) -> DomainResult<()> {
+        async fn update_password(
+            &self,
+            id: Uuid,
+            expected: &str,
+            password_hash: &str,
+        ) -> DomainResult<bool> {
             let mut rows = self.rows.lock().unwrap();
-            if let Some(user) = rows.iter_mut().find(|u| u.id == id) {
-                user.password_hash = password_hash.to_string();
-                user.must_change_password = false;
+            // 本番実装と同じ compare-and-swap（現行ハッシュが一致するときだけ書き換える）。
+            match rows
+                .iter_mut()
+                .find(|u| u.id == id && u.password_hash == expected)
+            {
+                Some(user) => {
+                    user.password_hash = password_hash.to_string();
+                    user.must_change_password = false;
+                    Ok(true)
+                }
+                None => Ok(false),
             }
-            Ok(())
         }
-        async fn reset_password_forced(&self, _id: Uuid, _password_hash: &str) -> DomainResult<()> {
+        async fn reset_password_forced(
+            &self,
+            _id: Uuid,
+            _expected: &str,
+            _password_hash: &str,
+        ) -> DomainResult<bool> {
             unreachable!()
         }
         async fn update_status(&self, _id: Uuid, _status: UserStatus) -> DomainResult<()> {
@@ -646,6 +697,7 @@ mod tests {
             language: None,
             password_hash: "hash:old-password".to_string(),
             must_change_password: false,
+            password_changed_at: None,
             status: UserStatus::Active,
             failed_login_count: 0,
             locked_until: None,
@@ -700,6 +752,12 @@ mod tests {
             refresh.clone(),
             codes.clone(),
             Arc::new(PlainHasher),
+            Arc::new(
+                crate::application::password_policy::PasswordPolicyService::length_only(
+                    Arc::new(PlainHasher),
+                    Arc::new(FixedClock),
+                ),
+            ),
             system_settings,
             mailer.clone(),
             Arc::new(CountingLimiter {
@@ -881,7 +939,7 @@ mod tests {
             h.svc
                 .reset_password(TenantContext::new(tenant), &token, "short", &ctx())
                 .await,
-            ResetPasswordOutcome::WeakPassword
+            ResetPasswordOutcome::WeakPassword(_)
         ));
 
         // 別テナントの reset 画面へトークンを持ち込むと拒否（このとき消費される。

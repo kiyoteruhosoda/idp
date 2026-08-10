@@ -21,6 +21,7 @@ src/
     pkce.rs           # PKCE S256 検証（純粋関数）
     repositories.rs   # リポジトリトレイト（DIP 境界）
     clock.rs password.rs rate_limit.rs   # 時刻・ハッシュ・レート制限の抽象
+    password_policy.rs # パスワード要件（長さ・再利用・有効期限）と漏えい照合ポート（AP7）
     audit.rs          # 監査イベント型（設計仕様 §7）
     error.rs          # DomainError と OAuth/OIDC エラーコード
 

@@ -41,7 +41,11 @@ password-change-confirm-label = Confirm new password
 password-change-submit = Change password
 password-change-error-mismatch = The new password and confirmation do not match.
 password-change-error-invalid-current = The current password is incorrect.
-password-change-error-weak = The new password must be at least 8 characters.
+password-change-error-weak = The new password does not meet the password requirements.
+# Password policy (AP7). Shared by every screen that sets a password, because the wording does
+# not depend on which form the password came from.
+password-error-breached = This password has appeared in a known data breach. Choose a different one.
+password-error-reused = You cannot reuse a password you have used before. Choose a different one.
 
 # Admin console (A2). Server-rendered pages protected by the idp.admin permission.
 admin-console-title = Admin console
@@ -468,8 +472,11 @@ api-username-too-long = The sign-in name must be at most { $value } characters.
 api-display-name-too-long = The display name must be at most { $value } characters.
 api-password-too-short = The password must be at least { $value } characters.
 api-password-too-long = The password must be at most { $value } characters.
+api-password-breached = This password has appeared in a known data breach. Choose a different one.
+api-password-reused = You cannot reuse a password you have used before. Choose a different one.
 api-field-required = "{ $value }" is required.
 api-user-identity-conflict = That email address or sign-in name is already used by another user in this tenant.
+api-user-password-changed-concurrently = This user's password was changed by someone else while the request was being processed. Nothing was applied; try again.
 # Login identifiers (AP8). Values themselves are never echoed back in errors.
 api-login-identifier-required = Enter a value for the sign-in identifier.
 api-login-identifier-too-long = The sign-in identifier must be at most { $value } characters.

@@ -403,13 +403,13 @@ pub async fn password_change(
             &form.username,
             "admin-login-error-forbidden",
         ),
-        InternalAdminChangePasswordResponse::WeakPassword => reshow_password_change(
+        InternalAdminChangePasswordResponse::WeakPassword { reason } => reshow_password_change(
             &messages,
             &tenant.prefix(),
             StatusCode::UNPROCESSABLE_ENTITY,
             &csrf,
             &form.username,
-            "password-change-error-weak",
+            super::password_rejection_key(reason, "password-change-error-weak"),
         ),
         InternalAdminChangePasswordResponse::PolicyDenied => reshow_password_change(
             &messages,

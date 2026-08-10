@@ -27,6 +27,7 @@ pub mod message;
 pub mod outbound_uri;
 pub mod passkey_challenge;
 pub mod password;
+pub mod password_policy;
 pub mod password_reset;
 pub mod permission;
 pub mod pkce;

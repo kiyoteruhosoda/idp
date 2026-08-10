@@ -17,13 +17,15 @@
 //! （`sso_session_id` Cookie ＝ 平文、DB は SHA-256）であり、`RequirePerms<IdpAdmin>` がそのまま検証する。
 
 use crate::application::audit::{AuditService, RequestContext};
+use crate::application::password_policy::PasswordPolicyService;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::authentication_policy::{
     evaluate_policies, AuthenticationContext, DefaultPolicyEffect, PolicyDecision,
 };
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
-use crate::domain::password::{validate_password_strength, PasswordHasher};
+use crate::domain::password::PasswordHasher;
+use crate::domain::password_policy::{password_change_required, PasswordRejection};
 use crate::domain::permission;
 use crate::domain::rate_limit::LoginRateLimiter;
 use crate::domain::repositories::{
@@ -78,7 +80,8 @@ pub enum AdminLoginOutcome {
     /// 資格情報は正しいが テナント admin 権限を保有しない。
     Forbidden,
     /// 新パスワードが強度要件を満たさない（`change_password` のみ）。
-    WeakPassword,
+    /// 新パスワードがポリシーを満たさない（長さ・漏えい済み・再利用。AP7）。
+    WeakPassword(PasswordRejection),
     /// 認証ポリシーにより拒否（AP2。仕様 §7.4 `deny`）。
     PolicyDenied,
     /// 認証ポリシーが MFA を必須としたが、使用可能な認証器（確認済み TOTP）が無い（AP2）。
@@ -99,6 +102,7 @@ pub struct AdminLoginService {
     totp_secrets: Arc<dyn TotpSecretRepository>,
     authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
     hasher: Arc<dyn PasswordHasher>,
+    password_policy: Arc<PasswordPolicyService>,
     rate_limiter: Arc<dyn LoginRateLimiter>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
@@ -119,6 +123,7 @@ impl AdminLoginService {
         totp_secrets: Arc<dyn TotpSecretRepository>,
         authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
         hasher: Arc<dyn PasswordHasher>,
+        password_policy: Arc<PasswordPolicyService>,
         rate_limiter: Arc<dyn LoginRateLimiter>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
@@ -134,6 +139,7 @@ impl AdminLoginService {
             totp_secrets,
             authentication_policies,
             hasher,
+            password_policy,
             rate_limiter,
             audit,
             clock,
@@ -401,7 +407,7 @@ impl AdminLoginService {
         }
 
         // 6.5. 強制パスワード変更（ADR-0009 §5）。SSO はまだ発行せず変更画面へ誘導する。
-        if user.must_change_password {
+        if password_change_required(&user, self.password_policy.policy(), now) {
             return AdminLoginOutcome::PasswordChangeRequired {
                 username: cmd.username,
             };
@@ -494,7 +500,9 @@ impl AdminLoginService {
         // `new_password` が現行ハッシュに一致する場合は同じ変更の再送とみなし、保存をスキップして
         // 成功時と同じ後続（admin 権限確認 → SSO 発行）へ進める（照合は現行パスワードの完全な検証で、
         // 認証強度は通常ログインと等価）。
-        let duplicate_submit = if user.must_change_password {
+        // 変更を要求されている状態か（強制フラグ、または有効期限切れ。AP7）。
+        let change_required = password_change_required(&user, self.password_policy.policy(), now);
+        let duplicate_submit = if change_required {
             false
         } else {
             match self.hasher.verify(&cmd.new_password, &user.password_hash) {
@@ -502,7 +510,7 @@ impl AdminLoginService {
                 Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
             }
         };
-        if !user.must_change_password && !duplicate_submit {
+        if !change_required && !duplicate_submit {
             // 変更不要な状態でこのエンドポイントに来るのは想定外。fail-closed
             //（利用者列挙を避けるため資格情報エラーと同じ応答にする）。上の `new_password` 照合が
             // パスワードの正誤オラクルになるため、通常ログインと同じ失敗カウント・ロック判定に載せて
@@ -550,16 +558,38 @@ impl AdminLoginService {
 
         // 多重送信（変更適用済み）の場合は保存・監査をスキップし、成功時と同じ後続へ進める。
         if !duplicate_submit {
-            if validate_password_strength(&cmd.new_password).is_err() {
-                return AdminLoginOutcome::WeakPassword;
+            match self
+                .password_policy
+                .validate(Some(user.id), Some(&user.password_hash), &cmd.new_password)
+                .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(rejection)) => return AdminLoginOutcome::WeakPassword(rejection),
+                Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
             }
             let new_hash = match self.hasher.hash(&cmd.new_password) {
                 Ok(h) => h,
                 Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
             };
-            if let Err(e) = self.users.update_password(user.id, &new_hash).await {
-                return AdminLoginOutcome::Internal(e.to_string());
+            // 現行ハッシュを条件にした置き換え（AP7）。失敗カウンタは増やさない
+            // （資格情報は正しく、負けたのは競合であって推測ではない）。
+            match self
+                .users
+                .update_password(user.id, &user.password_hash, &new_hash)
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::warn!(
+                        "admin password change lost a concurrent update; asking to retry"
+                    );
+                    return AdminLoginOutcome::InvalidCredentials;
+                }
+                Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
             }
+            self.password_policy
+                .record_change(user.id, &user.password_hash)
+                .await;
             self.audit
                 .record(
                     AuditEventType::PasswordChanged,

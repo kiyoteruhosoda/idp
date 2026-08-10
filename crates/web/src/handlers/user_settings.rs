@@ -136,8 +136,9 @@ pub async fn change_password(
         InternalAccountChangePasswordResponse::InvalidCurrentPassword => {
             found(&format!("{base}?error=invalid-current{suffix}"))
         }
-        InternalAccountChangePasswordResponse::WeakPassword => {
-            found(&format!("{base}?error=weak{suffix}"))
+        InternalAccountChangePasswordResponse::WeakPassword { reason } => {
+            let code = super::password_rejection_error_code(reason, "weak");
+            found(&format!("{base}?error={code}{suffix}"))
         }
         InternalAccountChangePasswordResponse::Internal => {
             found(&format!("{base}?error=internal{suffix}"))
@@ -199,6 +200,8 @@ fn error_key_for(error: &str) -> Option<&'static str> {
         "mismatch" => Some("user-settings-error-mismatch"),
         "invalid-current" => Some("user-settings-error-invalid-current"),
         "weak" => Some("user-settings-error-weak"),
+        "breached" => Some("password-error-breached"),
+        "reused" => Some("password-error-reused"),
         "session" => Some("user-settings-error-session"),
         "internal" => Some("user-settings-error-internal"),
         "name-invalid" => Some("user-settings-error-name-invalid"),

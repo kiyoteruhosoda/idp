@@ -188,11 +188,11 @@ pub async fn submit(
                 state.config.csrf_secret(),
             )
         }
-        InternalChangePasswordResponse::WeakPassword => reshow_form(
+        InternalChangePasswordResponse::WeakPassword { reason } => reshow_form(
             &messages,
             StatusCode::UNPROCESSABLE_ENTITY,
             auth_session_id.as_deref(),
-            "password-change-error-weak",
+            super::password_rejection_key(reason, "password-change-error-weak"),
             state.config.csrf_secret(),
         ),
         InternalChangePasswordResponse::Internal => {

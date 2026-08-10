@@ -39,6 +39,9 @@ p256 = { version = "0.13", features = ["pkcs8", "pem"] }
 aes-gcm = "0.10"
 # `oid` は SAML 応答の RSA 署名（PKCS#1 v1.5 の DigestInfo 生成）に使う。
 sha2 = { version = "0.10", features = ["oid"] }
+# 漏えい済みパスワード照合（AP7）のレンジ API は SHA-1 の接頭辞で引く仕様のため使う。
+# 保存・認証には使わない（保存は argon2）。
+sha1 = "0.10"
 hmac = "0.12"
 hex = "0.4"
 base64 = "0.22"

@@ -13,6 +13,7 @@
 #![allow(dead_code)]
 
 use crate::domain::authentication_policy::{DefaultPolicyEffect, LockoutPolicy};
+use crate::domain::password_policy::{PasswordPolicy, DEFAULT_BREACH_API_BASE_URL};
 use crate::domain::system_setting::{
     requires_production_secrets, runtime_setting_definition, DefaultRisk, DeploymentState,
     DevelopmentSecrets, SettingOwner, RUNTIME_SETTING_DEFINITIONS,
@@ -138,6 +139,12 @@ pub struct Config {
     login_lockout: LockoutPolicy,
     /// 認証ポリシーが 1 件も一致しないときの既定動作（同仕様 §9.4）。
     auth_policy_default_effect: DefaultPolicyEffect,
+    /// パスワードポリシー（長さ・履歴・有効期限・漏えい確認の有無。同仕様 §11.2。AP7）。
+    password_policy: PasswordPolicy,
+    /// 漏えい済みパスワード照合の接続先（k-匿名性のレンジ API）。
+    password_breach_api_base_url: String,
+    /// 漏えい済みパスワード照合の 1 リクエストの上限時間。
+    password_breach_check_timeout: Duration,
     /// テナント解決キャッシュの TTL（ADR-0009 §7。id → tenant のホットパス）。
     tenant_cache_ttl: Duration,
     /// scope→権限解決キャッシュの TTL（ADR-0009 §7。付与・剥奪時は即時 invalidate される）。
@@ -272,6 +279,20 @@ impl Config {
                 .unwrap_or(i32::MAX),
                 lock_duration_secs: resolver.parse("LOGIN_LOCK_DURATION_SECS", 900u64)?,
             },
+            password_policy: PasswordPolicy {
+                min_length: resolver.parse("PASSWORD_MIN_LENGTH", 8usize)?,
+                // 上限はハッシュ計算量の防御（argon2 の入力長）であって運用で緩める値ではないため、
+                // 設定にせずドメインの既定値を使う。
+                max_length: crate::domain::password_policy::MAX_PASSWORD_LEN,
+                history_count: resolver.parse("PASSWORD_HISTORY_COUNT", 5u32)?,
+                max_age_days: resolver.parse("PASSWORD_MAX_AGE_DAYS", 0u32)?,
+                reject_breached: resolver.parse("PASSWORD_BREACH_CHECK_ENABLED", false)?,
+            },
+            password_breach_api_base_url: resolver
+                .string("PASSWORD_BREACH_API_BASE_URL", DEFAULT_BREACH_API_BASE_URL),
+            password_breach_check_timeout: secs(
+                resolver.parse("PASSWORD_BREACH_CHECK_TIMEOUT_SECS", 3u64)?,
+            ),
             auth_policy_default_effect: DefaultPolicyEffect::parse(
                 &resolver.string("AUTH_POLICY_DEFAULT_EFFECT", "allow"),
             )
@@ -361,6 +382,18 @@ impl Config {
     /// アカウントロックのポリシー（失敗許容回数・ロック時間。全ログイン経路へ一律適用する）。
     pub fn login_lockout(&self) -> LockoutPolicy {
         self.login_lockout
+    }
+    /// パスワードポリシー（AP7。長さ・再利用禁止の深さ・有効期限・漏えい確認の有無）。
+    pub fn password_policy(&self) -> PasswordPolicy {
+        self.password_policy
+    }
+    /// 漏えい済みパスワード照合の接続先（k-匿名性のレンジ API）。
+    pub fn password_breach_api_base_url(&self) -> &str {
+        &self.password_breach_api_base_url
+    }
+    /// 漏えい済みパスワード照合の 1 リクエストの上限時間。
+    pub fn password_breach_check_timeout(&self) -> Duration {
+        self.password_breach_check_timeout
     }
     /// 認証ポリシーが 1 件も一致しないときの既定動作（`allow` / `deny`）。
     pub fn auth_policy_default_effect(&self) -> DefaultPolicyEffect {

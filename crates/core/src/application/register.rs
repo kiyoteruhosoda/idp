@@ -9,11 +9,12 @@
 //! よるテナント内メールアドレスの列挙を試行回数の面から抑える（完全な秘匿はメール検証フローの
 //! 導入まで行わない。無効テナントでは存在確認自体ができない）。
 
+use crate::application::password_policy::PasswordPolicyService;
 use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
 use crate::domain::id_generator::IdGenerator;
 use crate::domain::message::MessageKey;
-use crate::domain::password::{validate_password_strength, PasswordHasher};
+use crate::domain::password::PasswordHasher;
 use crate::domain::rate_limit::LoginRateLimiter;
 use crate::domain::repositories::{TenantMembershipRepository, TenantRepository, UserRepository};
 use crate::domain::tenant_context::TenantContext;
@@ -65,17 +66,20 @@ pub struct RegisterService {
     memberships: Arc<dyn TenantMembershipRepository>,
     tenants: Arc<dyn TenantRepository>,
     hasher: Arc<dyn PasswordHasher>,
+    password_policy: Arc<PasswordPolicyService>,
     rate_limiter: Arc<dyn LoginRateLimiter>,
     clock: Arc<dyn Clock>,
     ids: Arc<dyn IdGenerator>,
 }
 
 impl RegisterService {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         users: Arc<dyn UserRepository>,
         memberships: Arc<dyn TenantMembershipRepository>,
         tenants: Arc<dyn TenantRepository>,
         hasher: Arc<dyn PasswordHasher>,
+        password_policy: Arc<PasswordPolicyService>,
         rate_limiter: Arc<dyn LoginRateLimiter>,
         clock: Arc<dyn Clock>,
         ids: Arc<dyn IdGenerator>,
@@ -85,6 +89,7 @@ impl RegisterService {
             memberships,
             tenants,
             hasher,
+            password_policy,
             rate_limiter,
             clock,
             ids,
@@ -123,7 +128,17 @@ impl RegisterService {
 
         let email = cmd.email.trim().to_string();
         validate_email(&email)?;
-        validate_password(&cmd.password)?;
+        // パスワードポリシー（AP7）。自己登録には現行パスワードも履歴も無いため、見るのは
+        // 長さと漏えい済みかどうかだけになる。
+        match self
+            .password_policy
+            .validate(None, None, &cmd.password)
+            .await
+            .map_err(internal)?
+        {
+            Ok(()) => {}
+            Err(rejection) => return Err(RegisterError::Validation(rejection.message_key())),
+        }
         // ログイン識別子は preferred_username。未指定なら email を既定値として採用する（ADR-0009 §8）。
         let preferred_username =
             normalize_optional(cmd.preferred_username).unwrap_or_else(|| email.clone());
@@ -174,6 +189,7 @@ impl RegisterService {
             language: None,
             password_hash,
             must_change_password: false,
+            password_changed_at: Some(now),
             status: UserStatus::Active,
             failed_login_count: 0,
             locked_until: None,
@@ -207,10 +223,6 @@ impl RegisterService {
 
 fn validate_email(email: &str) -> Result<(), RegisterError> {
     domain_validate_email(email).map_err(RegisterError::Validation)
-}
-
-fn validate_password(password: &str) -> Result<(), RegisterError> {
-    validate_password_strength(password).map_err(RegisterError::Validation)
 }
 
 fn normalize_optional(value: Option<String>) -> Option<String> {
@@ -325,10 +337,20 @@ mod tests {
         ) -> DomainResult<()> {
             unreachable!()
         }
-        async fn update_password(&self, _id: Uuid, _h: &str) -> DomainResult<()> {
+        async fn update_password(
+            &self,
+            _id: Uuid,
+            _expected: &str,
+            _password_hash: &str,
+        ) -> DomainResult<bool> {
             unreachable!()
         }
-        async fn reset_password_forced(&self, _id: Uuid, _password_hash: &str) -> DomainResult<()> {
+        async fn reset_password_forced(
+            &self,
+            _id: Uuid,
+            _expected: &str,
+            _password_hash: &str,
+        ) -> DomainResult<bool> {
             unreachable!()
         }
         async fn update_status(&self, _id: Uuid, _status: UserStatus) -> DomainResult<()> {
@@ -439,6 +461,12 @@ mod tests {
             Arc::new(FakeMemberships::default()),
             Arc::new(FakeTenants { tenant }),
             Arc::new(PlainHasher),
+            Arc::new(
+                crate::application::password_policy::PasswordPolicyService::length_only(
+                    Arc::new(PlainHasher),
+                    Arc::new(FixedClock),
+                ),
+            ),
             Arc::new(CountingLimiter {
                 limit: limiter_allowance,
                 calls: AtomicUsize::new(0),
@@ -499,11 +527,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_email_and_short_password() {
+    fn rejects_invalid_email() {
         assert!(validate_email("not-an-email").is_err());
         assert!(validate_email("a@b").is_ok());
-        assert!(validate_password("short").is_err());
-        assert!(validate_password("longenough").is_ok());
     }
 
     #[test]

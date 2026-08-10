@@ -441,6 +441,7 @@ mod tests {
                 language: None,
                 password_hash: String::new(),
                 must_change_password: false,
+                password_changed_at: None,
                 status: if self.active {
                     UserStatus::Active
                 } else {
@@ -469,10 +470,20 @@ mod tests {
         ) -> DomainResult<()> {
             unreachable!()
         }
-        async fn update_password(&self, _id: Uuid, _h: &str) -> DomainResult<()> {
+        async fn update_password(
+            &self,
+            _id: Uuid,
+            _expected: &str,
+            _password_hash: &str,
+        ) -> DomainResult<bool> {
             unreachable!()
         }
-        async fn reset_password_forced(&self, _id: Uuid, _h: &str) -> DomainResult<()> {
+        async fn reset_password_forced(
+            &self,
+            _id: Uuid,
+            _expected: &str,
+            _password_hash: &str,
+        ) -> DomainResult<bool> {
             unreachable!()
         }
         async fn update_status(&self, _id: Uuid, _s: UserStatus) -> DomainResult<()> {

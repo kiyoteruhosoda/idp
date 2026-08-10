@@ -44,6 +44,7 @@ use crate::application::member_directory::MemberDirectoryService;
 use crate::application::mfa_login::MfaLoginService;
 use crate::application::passkey_authentication::PasskeyAuthenticationService;
 use crate::application::passkey_registration::PasskeyRegistrationService;
+use crate::application::password_policy::PasswordPolicyService;
 use crate::application::password_reset::PasswordResetService;
 use crate::application::permission_management::PermissionManagementService;
 use crate::application::portal_login::PortalLoginService;
@@ -69,6 +70,7 @@ use crate::domain::id_generator::IdGenerator;
 use crate::domain::repositories::UserPermissionRepository;
 use crate::domain::tenant::{Tenant, TenantId};
 use crate::infrastructure::backchannel_logout::ReqwestBackchannelLogoutSender;
+use crate::infrastructure::breached_password::RangeApiBreachedPasswordChecker;
 use crate::infrastructure::cache::InMemoryTtlCache;
 use crate::infrastructure::db::Db;
 use crate::infrastructure::external_oidc::ReqwestExternalOidcClient;
@@ -95,6 +97,7 @@ use crate::infrastructure::repositories::external_idp::{
     SqlxExternalLoginRequestRepository,
 };
 use crate::infrastructure::repositories::passkey_challenge::SqlxPasskeyChallengeRepository;
+use crate::infrastructure::repositories::password_history::SqlxPasswordHistoryRepository;
 use crate::infrastructure::repositories::password_reset_token::SqlxPasswordResetTokenRepository;
 use crate::infrastructure::repositories::refresh_token::SqlxRefreshTokenRepository;
 use crate::infrastructure::repositories::revoked_access_token::SqlxRevokedAccessTokenRepository;
@@ -278,6 +281,39 @@ impl AppState {
         let login_identifier_repository: Arc<
             dyn crate::domain::repositories::UserLoginIdentifierRepository,
         > = Arc::new(SqlxUserLoginIdentifierRepository::new(pool.clone()));
+        // AP7: パスワードポリシー。パスワードを設定する全経路（自己登録・強制変更・セルフサービス
+        // 変更・リセット）がこの 1 本を通す。漏えい照合は既定で無効（外向き通信を前提にしない）。
+        let password_history: Arc<dyn crate::domain::repositories::PasswordHistoryRepository> =
+            Arc::new(SqlxPasswordHistoryRepository::new(pool.clone()));
+        let breach_checker: Arc<dyn crate::domain::password_policy::BreachedPasswordChecker> =
+            if config.password_policy().reject_breached {
+                match RangeApiBreachedPasswordChecker::new(
+                    config.password_breach_api_base_url(),
+                    config.password_breach_check_timeout(),
+                ) {
+                    Ok(checker) => Arc::new(checker),
+                    Err(e) => {
+                        // クライアントを組めない = 照合できない。起動は続け、漏えい確認だけを
+                        // 落とす（実装側と同じ fail-open。ここで落とすと設定ミスで IdP 全体が
+                        // 起動しなくなる）。
+                        tracing::error!(
+                            error = %e,
+                            "failed to build breached password checker; breach check is disabled"
+                        );
+                        Arc::new(crate::domain::password_policy::NoBreachCheck)
+                    }
+                }
+            } else {
+                Arc::new(crate::domain::password_policy::NoBreachCheck)
+            };
+        let password_policy = Arc::new(PasswordPolicyService::new(
+            config.password_policy(),
+            password_history,
+            breach_checker,
+            hasher.clone(),
+            clock.clone(),
+        ));
+
         let rate_limiter = Arc::new(InMemoryLoginRateLimiter::new(
             LOGIN_RATE_LIMIT_MAX_ATTEMPTS,
             chrono::Duration::minutes(LOGIN_RATE_LIMIT_WINDOW_MINUTES),
@@ -319,6 +355,7 @@ impl AppState {
             sso_sessions.clone(),
             users.clone(),
             hasher.clone(),
+            password_policy.clone(),
             audit.clone(),
             clock.clone(),
         ));
@@ -350,6 +387,7 @@ impl AppState {
             refresh_tokens.clone(),
             codes.clone(),
             hasher.clone(),
+            password_policy.clone(),
             system_settings.clone(),
             Arc::new(LettreSmtpMailer::new()),
             Arc::new(InMemoryLoginRateLimiter::new(
@@ -384,6 +422,7 @@ impl AppState {
             tenant_memberships.clone(),
             tenants.clone(),
             hasher.clone(),
+            password_policy.clone(),
             register_rate_limiter,
             clock.clone(),
             ids.clone(),
@@ -447,6 +486,7 @@ impl AppState {
             config.sso_idle_ttl(),
             config.sso_absolute_ttl(),
             config.login_lockout(),
+            config.password_policy(),
             config.auth_policy_default_effect(),
             *config.csrf_secret(),
         ));
@@ -459,6 +499,7 @@ impl AppState {
             authentication_policies.clone(),
             code_issuance.clone(),
             hasher.clone(),
+            password_policy.clone(),
             audit.clone(),
             clock.clone(),
             config.sso_idle_ttl(),
@@ -482,6 +523,7 @@ impl AppState {
             totp_secrets.clone(),
             authentication_policies.clone(),
             hasher.clone(),
+            password_policy.clone(),
             rate_limiter.clone(),
             audit.clone(),
             clock.clone(),
@@ -499,6 +541,7 @@ impl AppState {
             totp_secrets.clone(),
             authentication_policies.clone(),
             hasher.clone(),
+            password_policy.clone(),
             rate_limiter.clone(),
             audit.clone(),
             clock.clone(),
@@ -584,6 +627,7 @@ impl AppState {
             totp_secrets.clone(),
             webauthn_credentials.clone(),
             hasher.clone(),
+            password_policy.clone(),
             audit.clone(),
             clock.clone(),
         ));

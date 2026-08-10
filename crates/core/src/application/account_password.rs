@@ -6,10 +6,12 @@
 //! OIDC フローの一部ではないため code 再発行や redirect は行わない（成功後は設定画面に留まる）。
 
 use crate::application::audit::{AuditService, RequestContext};
+use crate::application::password_policy::PasswordPolicyService;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
-use crate::domain::password::{validate_password_strength, PasswordHasher};
+use crate::domain::password::PasswordHasher;
+use crate::domain::password_policy::PasswordRejection;
 use crate::domain::repositories::{SsoSessionRepository, UserRepository};
 use std::sync::Arc;
 
@@ -26,8 +28,8 @@ pub enum AccountPasswordOutcome {
     SessionExpired,
     /// 現行パスワードが不一致。
     InvalidCurrentPassword,
-    /// 新パスワードが強度要件を満たさない。
-    WeakPassword,
+    /// 新パスワードがポリシーを満たさない（長さ・漏えい済み・再利用。AP7）。
+    WeakPassword(PasswordRejection),
     Internal(String),
 }
 
@@ -35,6 +37,7 @@ pub struct AccountPasswordService {
     sso_sessions: Arc<dyn SsoSessionRepository>,
     users: Arc<dyn UserRepository>,
     hasher: Arc<dyn PasswordHasher>,
+    password_policy: Arc<PasswordPolicyService>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
 }
@@ -44,6 +47,7 @@ impl AccountPasswordService {
         sso_sessions: Arc<dyn SsoSessionRepository>,
         users: Arc<dyn UserRepository>,
         hasher: Arc<dyn PasswordHasher>,
+        password_policy: Arc<PasswordPolicyService>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
     ) -> Self {
@@ -51,6 +55,7 @@ impl AccountPasswordService {
             sso_sessions,
             users,
             hasher,
+            password_policy,
             audit,
             clock,
         }
@@ -88,17 +93,39 @@ impl AccountPasswordService {
             return AccountPasswordOutcome::InvalidCurrentPassword;
         }
 
-        // 3. 新パスワードの強度を検証し、ハッシュ化して保存する。
-        if validate_password_strength(&cmd.new_password).is_err() {
-            return AccountPasswordOutcome::WeakPassword;
+        // 3. 新パスワードがポリシーを満たすか検証し（長さ・漏えい済み・再利用。AP7）、
+        //    ハッシュ化して保存する。
+        match self
+            .password_policy
+            .validate(Some(user.id), Some(&user.password_hash), &cmd.new_password)
+            .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(rejection)) => return AccountPasswordOutcome::WeakPassword(rejection),
+            Err(e) => return AccountPasswordOutcome::Internal(e.to_string()),
         }
         let new_hash = match self.hasher.hash(&cmd.new_password) {
             Ok(h) => h,
             Err(e) => return AccountPasswordOutcome::Internal(e.to_string()),
         };
-        if let Err(e) = self.users.update_password(user.id, &new_hash).await {
-            return AccountPasswordOutcome::Internal(e.to_string());
+        // 現行ハッシュを条件にした置き換え（AP7）。`false` は読んでから書くまでの間に別の要求が
+        // パスワードを変えたことを意味する。ここで書き込むと相手の変更を消したうえ、履歴には
+        // 既に退役したハッシュを積むことになるので、やり直させる。
+        match self
+            .users
+            .update_password(user.id, &user.password_hash, &new_hash)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::warn!("password change lost a concurrent update; asking to retry");
+                return AccountPasswordOutcome::InvalidCurrentPassword;
+            }
+            Err(e) => return AccountPasswordOutcome::Internal(e.to_string()),
         }
+        self.password_policy
+            .record_change(user.id, &user.password_hash)
+            .await;
 
         self.audit
             .record(

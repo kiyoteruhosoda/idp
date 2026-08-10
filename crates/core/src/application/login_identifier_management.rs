@@ -462,11 +462,21 @@ mod tests {
         ) -> DomainResult<crate::domain::user::LoginFailureRecord> {
             unreachable!()
         }
-        async fn update_password(&self, _id: Uuid, _h: &str) -> DomainResult<()> {
-            Ok(())
+        async fn update_password(
+            &self,
+            _id: Uuid,
+            _expected: &str,
+            _password_hash: &str,
+        ) -> DomainResult<bool> {
+            Ok(true)
         }
-        async fn reset_password_forced(&self, _id: Uuid, _h: &str) -> DomainResult<()> {
-            Ok(())
+        async fn reset_password_forced(
+            &self,
+            _id: Uuid,
+            _expected: &str,
+            _password_hash: &str,
+        ) -> DomainResult<bool> {
+            Ok(true)
         }
         async fn update_status(&self, _id: Uuid, _s: UserStatus) -> DomainResult<()> {
             Ok(())
@@ -555,6 +565,7 @@ mod tests {
             language: None,
             password_hash: String::new(),
             must_change_password: false,
+            password_changed_at: None,
             status: UserStatus::Active,
             failed_login_count: 0,
             locked_until: None,

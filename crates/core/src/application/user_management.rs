@@ -156,6 +156,7 @@ impl UserManagementService {
             language: None,
             password_hash,
             must_change_password: true,
+            password_changed_at: Some(now),
             status: UserStatus::Active,
             failed_login_count: 0,
             locked_until: None,
@@ -362,10 +363,20 @@ mod tests {
         ) -> DomainResult<()> {
             unreachable!()
         }
-        async fn update_password(&self, _id: Uuid, _password_hash: &str) -> DomainResult<()> {
+        async fn update_password(
+            &self,
+            _id: Uuid,
+            _expected: &str,
+            _password_hash: &str,
+        ) -> DomainResult<bool> {
             unreachable!()
         }
-        async fn reset_password_forced(&self, _id: Uuid, _password_hash: &str) -> DomainResult<()> {
+        async fn reset_password_forced(
+            &self,
+            _id: Uuid,
+            _expected: &str,
+            _password_hash: &str,
+        ) -> DomainResult<bool> {
             unreachable!()
         }
         async fn update_status(&self, _id: Uuid, _status: UserStatus) -> DomainResult<()> {

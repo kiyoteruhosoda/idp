@@ -27,6 +27,7 @@ use crate::application::authenticator_management::{
     consume_single_use_code, is_blocked_in_registry,
 };
 use crate::application::mfa_login::user_has_confirmed_totp;
+use crate::application::password_policy::PasswordPolicyService;
 use crate::application::totp_registration::verify_totp_code;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::authentication_policy::{
@@ -34,7 +35,8 @@ use crate::domain::authentication_policy::{
 };
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
-use crate::domain::password::{validate_password_strength, PasswordHasher};
+use crate::domain::password::PasswordHasher;
+use crate::domain::password_policy::{password_change_required, PasswordRejection};
 use crate::domain::rate_limit::LoginRateLimiter;
 use crate::domain::repositories::{
     AuthenticationPolicyRepository, SsoSessionRepository, TotpSecretRepository,
@@ -138,7 +140,8 @@ pub enum PortalChangePasswordOutcome {
     /// アカウントロック中。
     Locked,
     /// 新パスワードが強度要件を満たさない。
-    WeakPassword,
+    /// 新パスワードがポリシーを満たさない（長さ・漏えい済み・再利用。AP7）。
+    WeakPassword(PasswordRejection),
     Internal(String),
 }
 
@@ -166,6 +169,7 @@ pub struct PortalLoginService {
     totp_secrets: Arc<dyn TotpSecretRepository>,
     authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
     hasher: Arc<dyn PasswordHasher>,
+    password_policy: Arc<PasswordPolicyService>,
     rate_limiter: Arc<dyn LoginRateLimiter>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
@@ -189,6 +193,7 @@ impl PortalLoginService {
         totp_secrets: Arc<dyn TotpSecretRepository>,
         authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
         hasher: Arc<dyn PasswordHasher>,
+        password_policy: Arc<PasswordPolicyService>,
         rate_limiter: Arc<dyn LoginRateLimiter>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
@@ -206,6 +211,7 @@ impl PortalLoginService {
             totp_secrets,
             authentication_policies,
             hasher,
+            password_policy,
             rate_limiter,
             audit,
             clock,
@@ -364,7 +370,7 @@ impl PortalLoginService {
 
         // 8. 強制パスワード変更（ADR-0009 §5）。SSO はまだ発行せず、強制変更フォームへ誘導する
         //    （管理コンソールと同方式。`change_password` で現行パスワードを含め再検証する）。
-        if user.must_change_password {
+        if password_change_required(&user, self.password_policy.policy(), now) {
             return PortalLoginOutcome::PasswordChangeRequired {
                 username: cmd.username,
             };
@@ -475,7 +481,9 @@ impl PortalLoginService {
         // `new_password` が現行ハッシュに一致する場合は同じ変更の再送とみなし、保存をスキップして
         // 成功時と同じ後続（メール検証 → TOTP ゲート → SSO 発行）へ進める。`new_password` の照合は
         // 現行パスワードの完全な検証であり、認証強度は通常ログインと等価（列挙も生じない）。
-        let duplicate_submit = if user.must_change_password {
+        // 変更を要求されている状態か（強制フラグ、または有効期限切れ。AP7）。
+        let change_required = password_change_required(&user, self.password_policy.policy(), now);
+        let duplicate_submit = if change_required {
             false
         } else {
             match self.hasher.verify(&cmd.new_password, &user.password_hash) {
@@ -483,7 +491,7 @@ impl PortalLoginService {
                 Err(e) => return PortalChangePasswordOutcome::Internal(e.to_string()),
             }
         };
-        if !user.must_change_password && !duplicate_submit {
+        if !change_required && !duplicate_submit {
             // 変更不要な状態でこのエンドポイントに来るのは想定外。fail-closed
             //（利用者列挙を避けるため資格情報エラーと同じ応答にする）。上の `new_password` 照合が
             // パスワードの正誤オラクルになるため、通常ログインと同じ失敗カウント・ロック判定に載せて
@@ -526,16 +534,37 @@ impl PortalLoginService {
 
         // 多重送信（変更適用済み）の場合は保存・監査をスキップし、成功時と同じ後続へ進める。
         if !duplicate_submit {
-            if validate_password_strength(&cmd.new_password).is_err() {
-                return PortalChangePasswordOutcome::WeakPassword;
+            match self
+                .password_policy
+                .validate(Some(user.id), Some(&user.password_hash), &cmd.new_password)
+                .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(rejection)) => return PortalChangePasswordOutcome::WeakPassword(rejection),
+                Err(e) => return PortalChangePasswordOutcome::Internal(e.to_string()),
             }
             let new_hash = match self.hasher.hash(&cmd.new_password) {
                 Ok(h) => h,
                 Err(e) => return PortalChangePasswordOutcome::Internal(e.to_string()),
             };
-            if let Err(e) = self.users.update_password(user.id, &new_hash).await {
-                return PortalChangePasswordOutcome::Internal(e.to_string());
+            // 現行ハッシュを条件にした置き換え（AP7。`admin_login` と同じ扱い）。
+            match self
+                .users
+                .update_password(user.id, &user.password_hash, &new_hash)
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::warn!(
+                        "portal password change lost a concurrent update; asking to retry"
+                    );
+                    return PortalChangePasswordOutcome::InvalidCredentials;
+                }
+                Err(e) => return PortalChangePasswordOutcome::Internal(e.to_string()),
             }
+            self.password_policy
+                .record_change(user.id, &user.password_hash)
+                .await;
             self.audit
                 .record(
                     AuditEventType::PasswordChanged,
