@@ -115,22 +115,25 @@ async fn admin_assigns_a_phone_identifier_that_can_then_be_used_to_sign_in() {
     let res = send(&env.app, get(&outsider_cookie, &uri)).await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
 
-    // ── 一覧には主たる識別子が合成行（id = null）として出る。登録簿には保存されていない。
+    // ── 一覧の先頭は主たる識別子。AP15 以降は登録簿にも実体の行があるので `id` が付く
+    //    （合成行が返るのは、移送前に作られた利用者だけ。`primary_login_identifier` テスト参照）。
     let res = send(&env.app, get(&admin_cookie, &uri)).await;
     assert_eq!(res.status(), StatusCode::OK);
     let listed = body_json(res).await;
     let rows = listed.as_array().expect("array");
     assert_eq!(rows.len(), 1, "{listed}");
     assert_eq!(rows[0]["is_primary"], Value::Bool(true));
-    assert_eq!(rows[0]["id"], Value::Null);
+    assert!(rows[0]["id"].is_string(), "{listed}");
     assert_eq!(rows[0]["normalized_value"], username.to_lowercase());
-    let stored: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM user_login_identifiers WHERE user_id = ?")
-            .bind(&target)
-            .fetch_one(&env.pool)
-            .await
-            .expect("count");
-    assert_eq!(stored, 0, "主識別子は登録簿に写していない");
+    let stored: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM user_login_identifiers \
+         WHERE user_id = ? AND primary_of_user IS NOT NULL",
+    )
+    .bind(&target)
+    .fetch_one(&env.pool)
+    .await
+    .expect("count");
+    assert_eq!(stored, 1, "主識別子は登録簿にも載る（移送中は両方に在る）");
 
     // ── 電話番号を追加する。表示は登録どおり、照合は正規化した値。
     let res = send(
@@ -355,8 +358,8 @@ async fn the_primary_identifier_is_not_a_registry_row_and_cannot_be_targeted() {
     let res = send(&env.app, delete(&admin_cookie, &format!("{uri}/{stray}"))).await;
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
 
-    // プロフィール編集でログイン識別子を変えると、一覧の合成行も追随する（写しではないため
-    // 同期の必要が無い ＝ 古い値が残る余地が無い）。
+    // プロフィール編集でログイン識別子を変えると、一覧も追随する（AP15 の移送中は `users` と
+    // 登録簿の両方へ書くので、古い値が片側に残らない）。
     let renamed = format!("lq{}", &unique[..10]);
     let res = send(
         &env.app,

@@ -42,3 +42,4 @@ lettre = { workspace = true }
 reqwest = { workspace = true }
 webauthn-rs = { workspace = true }
 metrics = { workspace = true }
+x509-cert = { workspace = true }
