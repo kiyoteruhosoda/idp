@@ -49,6 +49,7 @@
           <div class="d-flex flex-wrap gap-2">
             {% if m.membership_type == "HOME" %}
               <a class="btn btn-outline-secondary btn-sm" href="{{ tenant }}/admin/users/{{ m.user_id }}/permissions"><i class="fa-solid fa-user-shield me-1" aria-hidden="true"></i>{{ messages.get("admin-members-permissions-button") }}</a>
+              <a class="btn btn-outline-secondary btn-sm" href="{{ tenant }}/admin/users/{{ m.user_id }}/login-identifiers"><i class="fa-solid fa-id-card me-1" aria-hidden="true"></i>{{ messages.get("admin-members-login-identifiers-button") }}</a>
               {% if m.user_status.as_deref() == Some("DISABLED") %}
               <form method="post" action="{{ tenant }}/admin/members/{{ m.user_id }}/status" class="d-inline">
                 <input type="hidden" name="csrf_token" value="{{ csrf }}">

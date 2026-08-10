@@ -292,3 +292,54 @@ pub struct SystemSettingsView {
     #[serde(default)]
     pub runtime_settings: Vec<RuntimeSettingView>,
 }
+
+// ── 外部 IdP 設定（AP10 の API を AP16 で画面化する）─────────────────────────────
+
+/// 外部 IdP 設定の 1 件（`GET /admin/external-idps`）。
+///
+/// `client_secret` は api が返さない（保存は暗号化、復号は外部 IdP へトークン要求を出す瞬間だけ）。
+/// 画面は「設定済みかどうか」（`has_client_secret`）だけを出す。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExternalIdpView {
+    pub id: String,
+    pub provider_code: String,
+    pub display_name: String,
+    pub issuer: String,
+    pub authorization_endpoint: String,
+    pub token_endpoint: String,
+    pub jwks_uri: String,
+    pub client_id: String,
+    pub has_client_secret: bool,
+    pub scopes: Vec<String>,
+    pub enabled: bool,
+    pub allow_auto_link: bool,
+    /// 外部 IdP 側へ登録すべきコールバック URL（設定作業の手掛かり）。
+    pub redirect_uri: String,
+    #[allow(dead_code)]
+    pub created_at: String,
+    #[allow(dead_code)]
+    pub updated_at: String,
+}
+
+// ── ログイン識別子（AP8 の API を AP16 で画面化する）───────────────────────────
+
+/// 利用者のログイン識別子 1 件（`GET /admin/users/{id}/login-identifiers`）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct LoginIdentifierView {
+    /// 登録簿の行 id。`None` は主たる識別子（`users.preferred_username`）を合成した行で、
+    /// 保存されていないため識別子単位の操作ができない。
+    pub id: Option<String>,
+    pub identifier_type: String,
+    /// 登録されたままの値（表示用）。
+    pub display_value: String,
+    /// 照合キー（種別ごとの正規化を適用した値）。**両方出す**のが要点で、管理者が
+    /// 「登録した値」と「実際に一致する値」を突き合わせられないと、電話番号のように
+    /// 書き方が揺れる識別子の設定ミスに気づけない。
+    pub normalized_value: String,
+    pub is_active: bool,
+    pub is_primary: bool,
+    #[allow(dead_code)]
+    pub created_at: String,
+    #[allow(dead_code)]
+    pub updated_at: String,
+}

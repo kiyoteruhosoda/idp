@@ -55,7 +55,7 @@ pub async fn list(
         Err(AdminApiError::Unauthorized) => return redirect_to_login(&tenant),
         Err(AdminApiError::Forbidden) => return forbidden_response(&headers),
         Err(e) => {
-            tracing::error!(error = %describe(&e), "failed to load tenants");
+            tracing::error!(error = %e, "failed to load tenants");
             crate::admin_dto::TenantListView {
                 tenants: Vec::new(),
                 total: 0,
@@ -117,7 +117,7 @@ pub async fn create(
         Err(AdminApiError::Validation(_)) => return found(&format!("{base}?error=validation")),
         Err(AdminApiError::Conflict(_)) => return found(&format!("{base}?error=conflict")),
         Err(e) => {
-            tracing::error!(error = %describe(&e), "failed to create tenant");
+            tracing::error!(error = %e, "failed to create tenant");
             return found(&format!("{base}?error=internal"));
         }
     };
@@ -173,7 +173,7 @@ pub async fn update(
         Err(AdminApiError::NotFound) => found(&format!("{base}?error=notfound")),
         Err(AdminApiError::Validation(_)) => found(&format!("{base}?error=validation")),
         Err(e) => {
-            tracing::error!(error = %describe(&e), "failed to update tenant");
+            tracing::error!(error = %e, "failed to update tenant");
             found(&format!("{base}?error=internal"))
         }
     }
@@ -212,7 +212,7 @@ pub async fn delete(
         Err(AdminApiError::NotFound) => found(&format!("{base}?error=notfound")),
         Err(AdminApiError::Conflict(_)) => found(&format!("{base}?error=delete-conflict")),
         Err(e) => {
-            tracing::error!(error = %describe(&e), "failed to delete tenant");
+            tracing::error!(error = %e, "failed to delete tenant");
             found(&format!("{base}?error=internal"))
         }
     }
@@ -256,7 +256,7 @@ pub async fn reset_admin_password(
         Err(AdminApiError::NotFound) => return found(&format!("{base}?error=reset-notfound")),
         Err(AdminApiError::Validation(_)) => return found(&format!("{base}?error=validation")),
         Err(e) => {
-            tracing::error!(error = %describe(&e), "failed to reset tenant admin password");
+            tracing::error!(error = %e, "failed to reset tenant admin password");
             return found(&format!("{base}?error=internal"));
         }
     };
@@ -289,17 +289,6 @@ fn error_key_for(error: &str) -> Option<&'static str> {
 
 fn sso(headers: &HeaderMap) -> String {
     cookies::get(headers, cookies::SSO_SESSION_COOKIE).unwrap_or_default()
-}
-
-fn describe(e: &AdminApiError) -> String {
-    match e {
-        AdminApiError::Unauthorized => "unauthorized".to_string(),
-        AdminApiError::Forbidden => "forbidden".to_string(),
-        AdminApiError::NotFound => "not_found".to_string(),
-        AdminApiError::Validation(m) => format!("validation: {m}"),
-        AdminApiError::Conflict(m) => format!("conflict: {m}"),
-        AdminApiError::Transport(m) => format!("transport: {m}"),
-    }
 }
 
 #[cfg(test)]

@@ -858,6 +858,95 @@ impl ClientFormValues {
     }
 }
 
+/// 外部 IdP 設定の管理画面（`GET /{tenant_id}/admin/external-idps`。AP16。API は AP10）。
+#[derive(Template)]
+#[template(path = "console/external_idps.html")]
+pub struct ExternalIdpsConsole<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub admin: Admin<'a>,
+    pub csrf: &'a str,
+    pub providers: &'a [crate::admin_dto::ExternalIdpView],
+    /// 編集対象の id（`None` は新規登録フォーム）。
+    pub editing: Option<&'a str>,
+    /// フォームの初期値（編集時は対象の現在値、新規は既定値）。
+    pub values: &'a ExternalIdpFormValues,
+    pub saved: bool,
+    pub deleted: bool,
+    pub error_key: Option<&'a str>,
+}
+
+/// 外部 IdP 設定フォームの値（往復用）。可変長の `scopes` は空白区切りの 1 行で扱う。
+#[derive(Debug, Clone)]
+pub struct ExternalIdpFormValues {
+    pub provider_code: String,
+    pub display_name: String,
+    pub issuer: String,
+    pub authorization_endpoint: String,
+    pub token_endpoint: String,
+    pub jwks_uri: String,
+    pub client_id: String,
+    /// シークレットは api が返さないため値は持たない。**設定済みかどうか**だけを画面へ渡し、
+    /// 編集時の空欄は「変更しない」を意味する（空欄を削除と解釈すると、他の項目を直しただけで
+    /// 連携が壊れる）。
+    pub has_client_secret: bool,
+    pub scopes: String,
+    pub enabled: bool,
+    pub allow_auto_link: bool,
+}
+
+impl Default for ExternalIdpFormValues {
+    fn default() -> Self {
+        Self {
+            provider_code: String::new(),
+            display_name: String::new(),
+            issuer: String::new(),
+            authorization_endpoint: String::new(),
+            token_endpoint: String::new(),
+            jwks_uri: String::new(),
+            client_id: String::new(),
+            has_client_secret: false,
+            // OIDC の最小構成。api の既定値と同じ。
+            scopes: "openid profile email".to_string(),
+            enabled: true,
+            // 自動連携は既定 OFF（検証済みメール一致だけで既存アカウントへ入れる設定のため）。
+            allow_auto_link: false,
+        }
+    }
+}
+
+/// ログイン識別子の管理画面（`GET /{tenant_id}/admin/users/{user_id}/login-identifiers`。AP16。API は AP8）。
+#[derive(Template)]
+#[template(path = "console/login_identifiers.html")]
+pub struct LoginIdentifiersConsole<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub admin: Admin<'a>,
+    pub csrf: &'a str,
+    pub user_id: &'a str,
+    pub identifiers: &'a [LoginIdentifierRow<'a>],
+    pub type_options: &'a [LoginIdentifierTypeOption<'a>],
+    pub error_key: Option<&'a str>,
+    pub notice_key: Option<&'a str>,
+}
+
+/// 一覧の 1 行。種別の訳文はハンドラ側で解決して渡す（テンプレートで翻訳キーを組み立てない）。
+pub struct LoginIdentifierRow<'a> {
+    /// 登録簿の行 id。`None` は主たる識別子（合成行）で、識別子単位の操作ができない。
+    pub id: Option<&'a str>,
+    pub type_label: String,
+    pub display_value: &'a str,
+    pub normalized_value: &'a str,
+    pub is_active: bool,
+    pub is_primary: bool,
+}
+
+/// 追加フォームの種別プルダウンの選択肢。
+pub struct LoginIdentifierTypeOption<'a> {
+    pub code: &'a str,
+    pub label: String,
+}
+
 /// クライアント一覧（`GET /{tenant_id}/admin/clients`）。
 #[derive(Template)]
 #[template(path = "console/clients_list.html")]

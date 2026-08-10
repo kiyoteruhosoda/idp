@@ -1,0 +1,128 @@
+{% extends "console/layout.html" %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <h2 class="h4 mb-0">{{ messages.get("admin-external-idps-title") }}</h2>
+</div>
+<p class="text-muted">{{ messages.get("admin-external-idps-intro") }}</p>
+{% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
+{% if saved %}<div class="alert alert-success" role="status"><i class="fa-solid fa-circle-check me-2" aria-hidden="true"></i>{{ messages.get("admin-external-idps-saved") }}</div>{% endif %}
+{% if deleted %}<div class="alert alert-success" role="status"><i class="fa-solid fa-circle-check me-2" aria-hidden="true"></i>{{ messages.get("admin-external-idps-deleted") }}</div>{% endif %}
+
+<div class="card mb-4">
+  <div class="card-header">
+    <h3 class="h6 mb-0">{% if editing.is_some() %}{{ messages.get("admin-external-idps-form-edit") }}{% else %}{{ messages.get("admin-external-idps-form-new") }}{% endif %}</h3>
+  </div>
+  <div class="card-body">
+    <form method="post" action="{% if let Some(id) = editing %}{{ tenant }}/admin/external-idps/{{ id }}/update{% else %}{{ tenant }}/admin/external-idps{% endif %}">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <div class="row g-3">
+        <div class="col-md-4">
+          <label class="form-label" for="provider_code">{{ messages.get("admin-external-idps-field-code") }}</label>
+          {# provider_code は識別子であり、外部 IdP を指す既存の連携（external_identities）の対応付けに使う。
+             作成後に変えると連携済み利用者の紐づけが切れるため、編集時は変更させない。 #}
+          <input class="form-control" id="provider_code" name="provider_code" value="{{ values.provider_code }}" {% if editing.is_some() %}readonly{% else %}required{% endif %}>
+          <div class="form-text">{{ messages.get("admin-external-idps-field-code-hint") }}</div>
+        </div>
+        <div class="col-md-8">
+          <label class="form-label" for="display_name">{{ messages.get("admin-external-idps-field-name") }}</label>
+          <input class="form-control" id="display_name" name="display_name" value="{{ values.display_name }}" required>
+          <div class="form-text">{{ messages.get("admin-external-idps-field-name-hint") }}</div>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label" for="issuer">{{ messages.get("admin-external-idps-field-issuer") }}</label>
+          <input class="form-control" id="issuer" name="issuer" value="{{ values.issuer }}" required>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label" for="jwks_uri">{{ messages.get("admin-external-idps-field-jwks") }}</label>
+          <input class="form-control" id="jwks_uri" name="jwks_uri" value="{{ values.jwks_uri }}" required>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label" for="authorization_endpoint">{{ messages.get("admin-external-idps-field-authorization") }}</label>
+          <input class="form-control" id="authorization_endpoint" name="authorization_endpoint" value="{{ values.authorization_endpoint }}" required>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label" for="token_endpoint">{{ messages.get("admin-external-idps-field-token") }}</label>
+          <input class="form-control" id="token_endpoint" name="token_endpoint" value="{{ values.token_endpoint }}" required>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label" for="client_id">{{ messages.get("admin-external-idps-field-client-id") }}</label>
+          <input class="form-control" id="client_id" name="client_id" value="{{ values.client_id }}" required>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label" for="client_secret">{{ messages.get("admin-external-idps-field-client-secret") }}</label>
+          <input class="form-control" id="client_secret" name="client_secret" type="password" autocomplete="new-password" value="">
+          {# api はシークレットを返さないため、編集時の空欄は「変更しない」を意味する。
+             空欄を「削除」と解釈すると、他の項目を直しただけで連携が壊れる。 #}
+          <div class="form-text">{% if editing.is_some() %}{% if values.has_client_secret %}{{ messages.get("admin-external-idps-field-client-secret-set") }}{% else %}{{ messages.get("admin-external-idps-field-client-secret-unset") }}{% endif %}{% else %}{{ messages.get("admin-external-idps-field-client-secret-hint") }}{% endif %}</div>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label" for="scopes">{{ messages.get("admin-external-idps-field-scopes") }}</label>
+          <input class="form-control" id="scopes" name="scopes" value="{{ values.scopes }}">
+          <div class="form-text">{{ messages.get("admin-external-idps-field-scopes-hint") }}</div>
+        </div>
+        <div class="col-md-6 d-flex align-items-end">
+          <div>
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" id="enabled" name="enabled" value="1" {% if values.enabled %}checked{% endif %}>
+              <label class="form-check-label" for="enabled">{{ messages.get("admin-external-idps-field-enabled") }}</label>
+            </div>
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" id="allow_auto_link" name="allow_auto_link" value="1" {% if values.allow_auto_link %}checked{% endif %}>
+              <label class="form-check-label" for="allow_auto_link">{{ messages.get("admin-external-idps-field-auto-link") }}</label>
+              <div class="form-text">{{ messages.get("admin-external-idps-field-auto-link-hint") }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="mt-3 d-flex gap-2">
+        <button type="submit" class="btn btn-primary">{% if editing.is_some() %}{{ messages.get("admin-external-idps-submit-update") }}{% else %}{{ messages.get("admin-external-idps-submit-create") }}{% endif %}</button>
+        {% if editing.is_some() %}<a class="btn btn-outline-secondary" href="{{ tenant }}/admin/external-idps">{{ messages.get("admin-external-idps-cancel") }}</a>{% endif %}
+      </div>
+    </form>
+  </div>
+</div>
+
+{% if providers.is_empty() %}
+<p class="text-muted">{{ messages.get("admin-external-idps-none") }}</p>
+{% else %}
+<div class="table-responsive">
+  <table class="table table-cards table-hover align-middle">
+    <thead>
+      <tr>
+        <th>{{ messages.get("admin-external-idps-col-code") }}</th>
+        <th>{{ messages.get("admin-external-idps-col-name") }}</th>
+        <th>{{ messages.get("admin-external-idps-col-issuer") }}</th>
+        <th>{{ messages.get("admin-external-idps-col-secret") }}</th>
+        <th>{{ messages.get("admin-external-idps-col-state") }}</th>
+        <th>{{ messages.get("admin-external-idps-col-redirect") }}</th>
+        <th>{{ messages.get("admin-signing-keys-col-actions") }}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in providers %}
+      <tr>
+        <td data-label="{{ messages.get("admin-external-idps-col-code") }}"><code>{{ p.provider_code }}</code></td>
+        <td data-label="{{ messages.get("admin-external-idps-col-name") }}">{{ p.display_name }}</td>
+        <td data-label="{{ messages.get("admin-external-idps-col-issuer") }}"><span class="text-break">{{ p.issuer }}</span></td>
+        <td data-label="{{ messages.get("admin-external-idps-col-secret") }}">{% if p.has_client_secret %}<span class="badge text-bg-secondary">{{ messages.get("admin-external-idps-secret-set") }}</span>{% else %}<span class="badge text-bg-light text-dark">{{ messages.get("admin-external-idps-secret-unset") }}</span>{% endif %}</td>
+        <td data-label="{{ messages.get("admin-external-idps-col-state") }}">
+          {% if p.enabled %}<span class="badge text-bg-success">{{ messages.get("admin-external-idps-state-enabled") }}</span>{% else %}<span class="badge text-bg-secondary">{{ messages.get("admin-external-idps-state-disabled") }}</span>{% endif %}
+          {% if p.allow_auto_link %}<span class="badge text-bg-info ms-1">{{ messages.get("admin-external-idps-state-auto-link") }}</span>{% endif %}
+        </td>
+        <td data-label="{{ messages.get("admin-external-idps-col-redirect") }}"><code class="text-break">{{ p.redirect_uri }}</code></td>
+        <td data-label="{{ messages.get("admin-signing-keys-col-actions") }}">
+          <div class="d-flex flex-wrap gap-2">
+            <a class="btn btn-outline-secondary btn-sm" href="{{ tenant }}/admin/external-idps?edit={{ p.id }}"><i class="fa-solid fa-pen me-1" aria-hidden="true"></i>{{ messages.get("admin-external-idps-edit") }}</a>
+            <form method="post" action="{{ tenant }}/admin/external-idps/{{ p.id }}/delete" class="d-inline" data-confirm="{{ messages.get("admin-external-idps-delete-confirm") }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf }}">
+              <button type="submit" class="btn btn-outline-danger btn-sm"><i class="fa-solid fa-trash me-1" aria-hidden="true"></i>{{ messages.get("admin-external-idps-delete") }}</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}

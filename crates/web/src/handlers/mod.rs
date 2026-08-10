@@ -3,7 +3,9 @@
 pub mod admin_authentication_policies_console;
 pub mod admin_clients_console;
 pub mod admin_console;
+pub mod admin_external_idps_console;
 pub mod admin_invitations_console;
+pub mod admin_login_identifiers_console;
 pub mod admin_members_console;
 pub mod admin_restart_console;
 pub mod admin_saml_clients_console;

@@ -85,6 +85,23 @@ pub enum AdminApiError {
     Transport(String),
 }
 
+/// 運用ログ向けの表現（運用言語＝英語。`CLAUDE.md`「多言語化の対象範囲」）。
+///
+/// 画面へ出す文言は各ハンドラが翻訳キーから解決する。ここが返すのは**ログに出す理由**で、
+/// 各ハンドラで同じ `match` を書き直さないために型側へ置く。
+impl std::fmt::Display for AdminApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unauthorized => write!(f, "unauthorized"),
+            Self::Forbidden => write!(f, "forbidden"),
+            Self::NotFound => write!(f, "not_found"),
+            Self::Validation(m) => write!(f, "validation: {m}"),
+            Self::Conflict(m) => write!(f, "conflict: {m}"),
+            Self::Transport(m) => write!(f, "transport: {m}"),
+        }
+    }
+}
+
 /// 管理者の SSO Cookie を api の `/admin/*`（`RequirePerms<IdpAdmin>`）へ転送した結果（ADR-0007 §4）。
 pub enum AdminSession {
     /// 有効な SSO ＋ テナント admin 権限（`idp.tenant.admin`／`idp.system.admin`）保有。
@@ -888,6 +905,164 @@ impl ApiClient {
             Method::POST,
             tenant_id,
             &format!("/admin/users/{user_id}/unlock"),
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
+    // ── 外部 IdP 設定・ログイン識別子（AP16。API は AP10 / AP8）────────────────
+
+    /// 外部 IdP 設定の一覧（`GET /admin/external-idps`）。
+    pub async fn list_external_idps(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+    ) -> Result<Vec<crate::admin_dto::ExternalIdpView>, AdminApiError> {
+        self.admin_send(
+            Method::GET,
+            tenant_id,
+            "/admin/external-idps",
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
+    /// 外部 IdP 設定の作成（`POST /admin/external-idps`）。
+    pub async fn create_external_idp(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        body: serde_json::Value,
+    ) -> Result<crate::admin_dto::ExternalIdpView, AdminApiError> {
+        self.admin_send(
+            Method::POST,
+            tenant_id,
+            "/admin/external-idps",
+            correlation_id,
+            sso,
+            Some(body),
+        )
+        .await
+    }
+
+    /// 外部 IdP 設定の部分更新（`PATCH /admin/external-idps/{id}`）。
+    pub async fn update_external_idp(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        id: &str,
+        body: serde_json::Value,
+    ) -> Result<crate::admin_dto::ExternalIdpView, AdminApiError> {
+        self.admin_send(
+            Method::PATCH,
+            tenant_id,
+            &format!("/admin/external-idps/{id}"),
+            correlation_id,
+            sso,
+            Some(body),
+        )
+        .await
+    }
+
+    /// 外部 IdP 設定の削除（`DELETE /admin/external-idps/{id}`）。
+    pub async fn delete_external_idp(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        id: &str,
+    ) -> Result<(), AdminApiError> {
+        self.admin_send_no_content(
+            Method::DELETE,
+            tenant_id,
+            &format!("/admin/external-idps/{id}"),
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
+    /// 利用者のログイン識別子一覧（`GET /admin/users/{user_id}/login-identifiers`）。
+    pub async fn list_login_identifiers(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        user_id: &str,
+    ) -> Result<Vec<crate::admin_dto::LoginIdentifierView>, AdminApiError> {
+        self.admin_send(
+            Method::GET,
+            tenant_id,
+            &format!("/admin/users/{user_id}/login-identifiers"),
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
+    /// ログイン識別子の追加（`POST /admin/users/{user_id}/login-identifiers`）。
+    pub async fn add_login_identifier(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        user_id: &str,
+        body: serde_json::Value,
+    ) -> Result<crate::admin_dto::LoginIdentifierView, AdminApiError> {
+        self.admin_send(
+            Method::POST,
+            tenant_id,
+            &format!("/admin/users/{user_id}/login-identifiers"),
+            correlation_id,
+            sso,
+            Some(body),
+        )
+        .await
+    }
+
+    /// ログイン識別子の有効/無効切り替え（`PATCH .../login-identifiers/{id}`）。
+    pub async fn set_login_identifier_active(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        user_id: &str,
+        identifier_id: &str,
+        is_active: bool,
+    ) -> Result<crate::admin_dto::LoginIdentifierView, AdminApiError> {
+        self.admin_send(
+            Method::PATCH,
+            tenant_id,
+            &format!("/admin/users/{user_id}/login-identifiers/{identifier_id}"),
+            correlation_id,
+            sso,
+            Some(serde_json::json!({ "is_active": is_active })),
+        )
+        .await
+    }
+
+    /// ログイン識別子の削除（`DELETE .../login-identifiers/{id}`）。
+    pub async fn delete_login_identifier(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        user_id: &str,
+        identifier_id: &str,
+    ) -> Result<(), AdminApiError> {
+        self.admin_send_no_content(
+            Method::DELETE,
+            tenant_id,
+            &format!("/admin/users/{user_id}/login-identifiers/{identifier_id}"),
             correlation_id,
             sso,
             None,
