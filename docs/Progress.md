@@ -42,7 +42,6 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 | 5 | AP15 | AP8 の contract フェーズ（`users.preferred_username` を登録簿へ移し、列を撤去する。解決経路の切替 → 移送 → 撤去を独立したマイグレーションに分ける）（⬜未着手） | 中 | 中 | 小 | 中 |
 | 5 | AP11 | AP9 の contract フェーズ（TOTP/WebAuthn の秘密を `user_authenticators` へ集約し、`user_totp_secrets` / `user_webauthn_credentials` を撤去）（⬜未着手） | 中 | 中 | 小 | 中 |
 | 5 | AP12 | SAML 外部 IdP（AP10 は OIDC のみ実装。`external_identity_providers` の protocol 拡張が要る）（⬜未着手） | 大 | 中 | 小 | 大 |
-| 5 | G11 | web crate に統合テストが無い（`crates/web/tests/` 不在。ルータ経由の検証は `scripts/e2e.sh` 頼み）（⬜未着手） | 中 | 中 | 小 | 中 |
 | 5 | G12 | `/authorize` の任意パラメータの残り（`response_mode=form_post`・`prompt=select_account` 未対応。`login_hint`・`ui_locales`・`id_token_hint` は対応済み）（🚧進行中） | 中 | 中 | 小 | 中 |
 | 3 | SEC10 | `/token`・`/introspect`・`/revoke` にレート制限が無い（Argon2 増幅型 DoS）（⬜未着手） | 小 | 小 | 中 | 小 |
 | 3 | AP6 | アカウントロックの管理者解除（仕様 §17.1・§24.6。`locked_until` を即時クリアする管理操作。現状は期限経過待ちのみ）と段階的ロック（⬜未着手） | 小 | 小 | 中 | 小 |
@@ -156,11 +155,11 @@ web の `X-Forwarded-For` ゲート（SEC1）・CSRF 種の `__Host-` 束縛（S
 client_secret は Argon2 照合（`crates/core/src/application/token.rs`）で総当たりは非現実的だが、
 メモリハード関数の CPU/メモリ増幅型 DoS が成立する。
 
-### 機能・運用のギャップ（G6〜G8・G11・G12）
+### 機能・運用のギャップ（G6〜G8・G12）
 
 セキュリティ（SEC）・認証仕様（AP）とは別軸で、**IdP としての機能欠落・運用性**を対象にした
 レビューで検出した課題。G1（CORS）・G2（期限切れ GC）・G3（`client_secret_post`）・
-G9（シングルインスタンス前提の明文化）は対応済み（`CHANGELOG.md` 参照）。良好な点（回帰させない）:
+G9（シングルインスタンス前提の明文化）・G11（web の統合テスト）は対応済み（`CHANGELOG.md` 参照）。良好な点（回帰させない）:
 DDD 4層と crate 境界の一致（web は sqlx に依存できない）、i18n の en/ja キー完全一致、
 設定の出所区分（`Builtin`/`EnvLocked`/`DbManaged`）の単一定義、テナント分離の統合テスト、
 ADR による設計判断の追跡可能性。
@@ -187,15 +186,6 @@ ADR による設計判断の追跡可能性。
 `user_id` には索引すら無い。また `log` には `APP_LOG_RETENTION_DAYS` があるのに `audit_log` には
 保持期間の仕組みが無く、法定保存期間の設計も未定。対策: 複合索引の追加と
 `AUDIT_LOG_RETENTION_DAYS`（既定は「削除しない」）の導入。
-
-#### G11. web crate に統合テストが無い
-
-`crates/api/tests/` には統合テスト（sqlx + axum）があるのに、`crates/web/tests/` は**存在しない**。
-web はログイン・同意・MFA・パスキー・管理コンソールという**ブラウザ経路の入口全部**を持つ。
-ハンドラ内の `#[test]` はいずれも純関数・テンプレート描画の単体検証で、ルータ経由
-（Cookie・CSRF・リダイレクト・api クライアントのエラー処理）は `scripts/e2e.sh` のシェルスクリプト頼み。
-対策: `wiremock` で api をスタブし、`tower::ServiceExt::oneshot` で web ルータを叩く統合テストを
-追加する（DB 不要で CI が速い）。
 
 #### G12. `/authorize` の任意パラメータの残り
 
