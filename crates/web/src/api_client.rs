@@ -12,9 +12,11 @@ use crate::admin_dto::{
     InvitationCreatedView, MemberListView, UserCreatedView,
 };
 use idp_contracts::admin::{
-    AvailablePermissionsResponse, ClientStatusResponse, SamlServiceProviderRegisterRequest,
-    SamlServiceProviderResponse, SamlServiceProviderUpdateRequest, SamlSpMetadataImportResponse,
-    UserPermissionsResponse, UserSummaryResponse, WhoamiResponse,
+    AuthenticationPoliciesResponse, AuthenticationPolicyResponse,
+    AuthenticationPolicyUpsertRequest, AvailablePermissionsResponse, ClientStatusResponse,
+    SamlServiceProviderRegisterRequest, SamlServiceProviderResponse,
+    SamlServiceProviderUpdateRequest, SamlSpMetadataImportResponse, UserPermissionsResponse,
+    UserSummaryResponse, WhoamiResponse,
 };
 use idp_contracts::application_log::{
     ApplicationLogEntryResponse, ApplicationLogIngestRequest, ApplicationLogIngestResponse,
@@ -1093,6 +1095,84 @@ impl ApiClient {
             Method::GET,
             tenant_id,
             "/admin/saml-service-providers",
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
+    // ── 認証ポリシー（AP1。`/admin/authentication-policies`）────────────────────────
+
+    /// 認証ポリシー一覧（`GET /admin/authentication-policies`。priority 昇順・無効も含む）。
+    pub async fn list_authentication_policies(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+    ) -> Result<AuthenticationPoliciesResponse, AdminApiError> {
+        self.admin_send(
+            Method::GET,
+            tenant_id,
+            "/admin/authentication-policies",
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
+    /// 認証ポリシーの作成（`POST /admin/authentication-policies`）。
+    pub async fn create_authentication_policy(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        body: AuthenticationPolicyUpsertRequest,
+    ) -> Result<AuthenticationPolicyResponse, AdminApiError> {
+        self.admin_send(
+            Method::POST,
+            tenant_id,
+            "/admin/authentication-policies",
+            correlation_id,
+            sso,
+            Some(serde_json::to_value(body).map_err(|e| AdminApiError::Transport(e.to_string()))?),
+        )
+        .await
+    }
+
+    /// 認証ポリシーの更新（`PUT /admin/authentication-policies/{id}`。全項目置換）。
+    pub async fn update_authentication_policy(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        policy_id: &str,
+        body: AuthenticationPolicyUpsertRequest,
+    ) -> Result<AuthenticationPolicyResponse, AdminApiError> {
+        self.admin_send(
+            Method::PUT,
+            tenant_id,
+            &format!("/admin/authentication-policies/{policy_id}"),
+            correlation_id,
+            sso,
+            Some(serde_json::to_value(body).map_err(|e| AdminApiError::Transport(e.to_string()))?),
+        )
+        .await
+    }
+
+    /// 認証ポリシーの削除（`DELETE /admin/authentication-policies/{id}`）。
+    pub async fn delete_authentication_policy(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        policy_id: &str,
+    ) -> Result<(), AdminApiError> {
+        self.admin_send_no_content(
+            Method::DELETE,
+            tenant_id,
+            &format!("/admin/authentication-policies/{policy_id}"),
             correlation_id,
             sso,
             None,

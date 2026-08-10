@@ -4,7 +4,7 @@
 
 use crate::domain::crypto;
 use crate::domain::tenant::TenantId;
-use crate::domain::values::{CodeChallengeMethod, Prompt};
+use crate::domain::values::{CodeChallengeMethod, PromptSet};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
@@ -31,9 +31,9 @@ pub struct AuthSession {
     pub nonce: String,
     pub code_challenge: String,
     pub code_challenge_method: CodeChallengeMethod,
-    /// 認可リクエストの `prompt`（未指定・未知値は `None`）。SSO 判定が resume（ADR-0018 決定 2）へ
-    /// 移ったため、評価時点まで保存して持ち越す。
-    pub prompt: Option<Prompt>,
+    /// 認可リクエストの `prompt`（空白区切りの**集合**。未指定・未知値のみは空集合）。
+    /// SSO 判定が resume（ADR-0018 決定 2）へ移ったため、評価時点まで保存して持ち越す。
+    pub prompt: PromptSet,
     /// 認可リクエストの `max_age`（秒。未指定は `None`）。`prompt` と同じく resume で評価する。
     pub max_age: Option<u64>,
     /// 認可リクエストの `acr_values`（空白区切りの生値。G12）。認証ポリシーの `requested_acr`

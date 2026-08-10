@@ -51,6 +51,8 @@ pub struct Config {
     /// `COOKIE_DOMAIN` は api 側と同一値を設定する。`None` = 掃除なし（既定）。
     cookie_policy: CookiePolicy,
     auth_session_ttl_secs: u64,
+    /// 認証ポリシーの既定動作（AP1 の管理画面が表示に使う。判定は api）。
+    auth_policy_default_effect: String,
     /// HSTS `max-age`（秒）。0 = HSTS ヘッダを付与しない（api 側と同キー `HSTS_MAX_AGE`）。
     hsts_max_age: u64,
     /// リバースプロキシの `X-Forwarded-For` を信頼するか（api 側と同キー `TRUST_FORWARDED_HEADERS`。
@@ -201,6 +203,9 @@ impl Config {
             cookie_policy,
             auth_session_ttl_secs: resolver
                 .parse("AUTH_SESSION_TTL_SECS", DEFAULT_AUTH_SESSION_TTL_SECS)?,
+            // 認証ポリシーが 1 件も一致しないときの既定動作（AP1 の管理画面が表示に使う。
+            // 判定そのものは api が行う）。
+            auth_policy_default_effect: resolver.string("AUTH_POLICY_DEFAULT_EFFECT", "allow"),
             hsts_max_age: resolver.parse("HSTS_MAX_AGE", 0u64)?,
             trust_forwarded_headers: resolver.parse("TRUST_FORWARDED_HEADERS", false)?,
             log_format: parse_log_format(),
@@ -256,6 +261,10 @@ impl Config {
         &self.cookie_policy
     }
     /// `auth_session_id` Cookie の TTL（秒）。api 側の `AUTH_SESSION_TTL_SECS` と合わせる。
+    /// 認証ポリシーが 1 件も一致しないときの既定動作（`allow` / `deny`）。管理画面の表示用。
+    pub fn auth_policy_default_effect(&self) -> &str {
+        &self.auth_policy_default_effect
+    }
     pub fn auth_session_ttl_secs(&self) -> u64 {
         self.auth_session_ttl_secs
     }

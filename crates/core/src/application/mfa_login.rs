@@ -1049,7 +1049,7 @@ mod tests {
                     nonce: "nonce-1".to_string(),
                     code_challenge: "challenge".to_string(),
                     code_challenge_method: CodeChallengeMethod::S256,
-                    prompt: None,
+                    prompt: crate::domain::values::PromptSet::default(),
                     max_age: None,
                     handle_hash: None,
                     handle_expires_at: None,

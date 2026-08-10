@@ -395,7 +395,10 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     // 認証ポリシー（authentication_policies）が 1 件も一致しないときの既定動作（同仕様 §9.4）。
     SettingDefinition {
         key: "AUTH_POLICY_DEFAULT_EFFECT",
-        shared_with_web: false,
+        // 管理コンソール（AP1）が一覧の上に現在の既定動作を示すため web も読む。ポリシーの意味は
+        // この既定値と組み合わせて初めて決まる（同じ `deny` 1 件でも、既定が allow か deny かで
+        // 「その 1 件だけ止まる」のか「その 1 件以外も止まっている」のかが変わる）。
+        shared_with_web: true,
         owner: SettingOwner::DbManaged,
         secret: false,
         restart_required: true,

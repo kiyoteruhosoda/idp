@@ -478,6 +478,28 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
         query_param(error_callback, "error").as_deref(),
         Some("login_required")
     );
+
+    // `prompt=select_account`（G12）: 有効な SSO があっても**黙って現在のアカウントで続けない**。
+    // 本 IdP はブラウザごとに SSO セッションを 1 つしか持たないため複数アカウントの一覧は出せない
+    // が、ログイン画面へ戻せば同じアカウントで入り直すことも切り替えることもできる。
+    let select_account_uri = format!(
+        "{}&prompt=select_account",
+        authorize_uri(&root_tenant_id, &client_id, "state-select", "nonce-select")
+    );
+    let response = send(
+        &app,
+        Request::builder()
+            .uri(&select_account_uri)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    let handle = handoff_handle(&response);
+    let body = resume_authorize(&app, &root_tenant_id, &handle, Some(&sso_cookie)).await;
+    assert_eq!(
+        body["result"], "login_required",
+        "prompt=select_account must not resume the existing SSO session: {body}"
+    );
     assert_eq!(
         query_param(error_callback, "state").as_deref(),
         Some("state-silent")

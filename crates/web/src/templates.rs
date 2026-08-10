@@ -13,6 +13,7 @@ use crate::admin_dto::{
 };
 use crate::i18n::Messages;
 use askama::Template;
+use idp_contracts::admin::AuthenticationPolicyResponse;
 use idp_contracts::admin::{ClientStatusResponse, UserSummaryResponse};
 use idp_contracts::application_log::ApplicationLogEntryResponse;
 use idp_contracts::auth::PasskeyCredentialInfo;
@@ -1164,4 +1165,135 @@ pub struct SamlServiceProviderFormValues {
     pub name_id_format: String,
     pub x509_certificate: String,
     pub enabled: bool,
+}
+
+/// 認証ポリシー一覧・作成・編集画面（`GET /{tenant_id}/admin/authentication-policies`、AP1）。
+///
+/// 一覧と作成・編集フォームを 1 画面に載せる（`?edit={id}` で同じフォームが編集モードになる）。
+/// 更新は**全項目置換**なので、編集時はフォームに現在値をすべて出す必要がある —— 出せない項目が
+/// あると保存の瞬間にその条件が消える。可変長の条件をテキストで往復させているのはこのためで、
+/// 書式は [`crate::authentication_policy_form`] に置く。
+#[derive(Template)]
+#[template(path = "console/authentication_policies.html")]
+pub struct AuthenticationPoliciesConsole<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub admin: Admin<'a>,
+    pub csrf: &'a str,
+    /// 一致するポリシーが無いときの既定動作（`AUTH_POLICY_DEFAULT_EFFECT`）。ポリシーの意味は
+    /// この既定値と組み合わせて初めて決まるため、一覧の上に必ず出す。
+    pub default_effect: &'a str,
+    pub saved: bool,
+    pub updated: bool,
+    pub deleted: bool,
+    pub error_key: Option<&'a str>,
+    /// 編集中のポリシー ID（`None` = 新規作成）。
+    pub editing: Option<&'a str>,
+    /// フォーム区画を最初から開くか（編集・入力エラーからの再表示）。
+    pub form_open: bool,
+    pub effect_options: &'a [&'a str],
+    pub method_options: &'a [&'a str],
+    pub values: &'a AuthenticationPolicyFormValues,
+    pub policies: &'a [AuthenticationPolicyResponse],
+}
+
+impl AuthenticationPoliciesConsole<'_> {
+    /// 効果コードの翻訳キー。未知の値は素通しせずコードそのものを出す（api が新しい効果を
+    /// 足したとき、画面には出るが訳が無いと分かる形にする）。
+    pub fn effect_label(&self, effect: &str) -> &'static str {
+        match effect {
+            "allow" => "admin-auth-policy-effect-allow",
+            "deny" => "admin-auth-policy-effect-deny",
+            "require_mfa" => "admin-auth-policy-effect-require-mfa",
+            "require_specific_method" => "admin-auth-policy-effect-require-method",
+            _ => "admin-auth-policy-effect-unknown",
+        }
+    }
+
+    /// `require_specific_method` の要求内容を 1 行で示す（無ければ空文字）。
+    pub fn required_methods_summary(&self, policy: &AuthenticationPolicyResponse) -> String {
+        match &policy.effect_params {
+            Some(params) => {
+                let methods = params.methods.join(", ");
+                if params.user_verification {
+                    format!("{methods} +uv")
+                } else {
+                    methods
+                }
+            }
+            None => String::new(),
+        }
+    }
+
+    /// 一覧に出す条件の要約。**条件が 1 つも無い = 全員・全クライアントに当たる**ので、
+    /// それが一目で分かる文言を出す（空欄にすると「条件が設定されていない」と読めてしまう）。
+    pub fn condition_summary(&self, policy: &AuthenticationPolicyResponse) -> String {
+        let mut parts = Vec::new();
+        if !policy.client_ids.is_empty() {
+            parts.push(format!("client×{}", policy.client_ids.len()));
+        }
+        if !policy.user_ids.is_empty() {
+            parts.push(format!("user×{}", policy.user_ids.len()));
+        }
+        if !policy.ip_cidrs.is_empty() {
+            parts.push(format!("network×{}", policy.ip_cidrs.len()));
+        }
+        if !policy.time_windows.is_empty() {
+            parts.push(format!("time×{}", policy.time_windows.len()));
+        }
+        if !policy.requested_acr.is_empty() {
+            parts.push(format!("acr×{}", policy.requested_acr.len()));
+        }
+        if parts.is_empty() {
+            self.messages.get("admin-auth-policy-condition-any")
+        } else {
+            parts.join(" / ")
+        }
+    }
+}
+
+/// 認証ポリシーのフォーム入力値（新規作成の初期値・編集時の現在値・入力エラー時の再表示に使う）。
+pub struct AuthenticationPolicyFormValues {
+    pub policy_code: String,
+    pub policy_name: String,
+    pub priority: String,
+    pub enabled: bool,
+    pub effect: String,
+    pub methods: Vec<String>,
+    pub user_verification: bool,
+    pub client_ids: String,
+    pub user_ids: String,
+    pub ip_cidrs: String,
+    pub time_windows: String,
+    pub requested_acr: String,
+}
+
+impl Default for AuthenticationPolicyFormValues {
+    fn default() -> Self {
+        Self {
+            policy_code: String::new(),
+            policy_name: String::new(),
+            // 既定は末尾寄り（既存ポリシーの評価順を崩さない値から始める）。
+            priority: "100".to_string(),
+            enabled: true,
+            effect: "deny".to_string(),
+            methods: Vec::new(),
+            user_verification: false,
+            client_ids: String::new(),
+            user_ids: String::new(),
+            ip_cidrs: String::new(),
+            time_windows: String::new(),
+            requested_acr: String::new(),
+        }
+    }
+}
+
+impl AuthenticationPolicyFormValues {
+    pub fn is_effect(&self, effect: &str) -> bool {
+        self.effect == effect
+    }
+
+    pub fn has_method(&self, code: &str) -> bool {
+        self.methods.iter().any(|m| m == code)
+    }
 }

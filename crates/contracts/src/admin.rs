@@ -153,3 +153,112 @@ pub struct SamlSpMetadataImportResponse {
     #[serde(default)]
     pub x509_certificate: String,
 }
+
+// ── 認証ポリシー（AP1。管理コンソールが `/admin/authentication-policies` を呼ぶための契約）──
+//
+// api 側は同じ形の DTO を `presentation::dto` に持つ（そちらは `utoipa` を付けて OpenAPI に載せる
+// ため）。**2 つが食い違うと管理画面から保存できなくなる**ので、api のテスト
+// （`authentication_policy_contract_matches_the_api_dto`）が JSON を往復させて形の一致を固定する。
+
+/// 認証ポリシーの管理 API 表現（`GET /admin/authentication-policies` の要素）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthenticationPolicyResponse {
+    pub id: String,
+    pub policy_code: String,
+    pub policy_name: String,
+    /// 評価順（昇順 = 小さいほど優先）。
+    pub priority: i32,
+    pub enabled: bool,
+    /// `allow` / `deny` / `require_mfa` / `require_specific_method`。
+    pub effect: String,
+    /// `require_specific_method` の要求内容（他の効果では `None`）。
+    #[serde(default)]
+    pub effect_params: Option<RequiredMethodsPayload>,
+    /// 対象クライアント（空 = 全クライアント）。
+    #[serde(default)]
+    pub client_ids: Vec<String>,
+    /// 対象ユーザーの内部 ID（空 = 全ユーザー）。
+    #[serde(default)]
+    pub user_ids: Vec<String>,
+    /// 対象ネットワークゾーン（CIDR 表記。空 = 全ネットワーク）。
+    #[serde(default)]
+    pub ip_cidrs: Vec<String>,
+    /// 適用時間帯（空 = 常時）。
+    #[serde(default)]
+    pub time_windows: Vec<TimeWindowPayload>,
+    /// 認可要求の `acr_values` 条件（空 = 要求内容を問わない）。
+    #[serde(default)]
+    pub requested_acr: Vec<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// 認証ポリシー一覧（priority 昇順）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthenticationPoliciesResponse {
+    pub policies: Vec<AuthenticationPolicyResponse>,
+}
+
+/// 認証ポリシーの作成・更新（全項目置換）リクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthenticationPolicyUpsertRequest {
+    pub policy_code: String,
+    pub policy_name: String,
+    pub priority: i32,
+    pub enabled: bool,
+    pub effect: String,
+    #[serde(default)]
+    pub effect_params: Option<RequiredMethodsPayload>,
+    #[serde(default)]
+    pub client_ids: Vec<String>,
+    #[serde(default)]
+    pub user_ids: Vec<String>,
+    #[serde(default)]
+    pub ip_cidrs: Vec<String>,
+    #[serde(default)]
+    pub time_windows: Vec<TimeWindowPayload>,
+    #[serde(default)]
+    pub requested_acr: Vec<String>,
+}
+
+/// `require_specific_method` で指定できる認証方式のコード（表示順）。
+///
+/// 実体は api 側の `AuthenticationMethod`（保存値の文字列）で、ここはその**語彙の写し**である。
+/// web は DB にも core にも触れないため、選択肢を描くにはこの一覧が要る。食い違うと管理画面で
+/// 選んだ方式が api に弾かれるので、api のテスト（`authentication_method_codes_match_the_contract`）
+/// が enum との一致を固定する。
+pub const AUTHENTICATION_METHOD_CODES: &[&str] = &[
+    "password",
+    "totp",
+    "webauthn",
+    "recovery_code",
+    "email_otp",
+    "sms_otp",
+    "external_idp",
+];
+
+/// `require_specific_method` の要求内容。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequiredMethodsPayload {
+    /// 許可する認証方式。**いずれか 1 つ**を使っていれば満たす。
+    #[serde(default)]
+    pub methods: Vec<String>,
+    /// WebAuthn の User Verification（生体・PIN）を必須とするか。
+    #[serde(default)]
+    pub user_verification: bool,
+}
+
+/// 適用時間帯。タイムゾーンは固定 UTC オフセット（分）で表す。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimeWindowPayload {
+    /// 対象曜日（0 = 日曜 … 6 = 土曜。空 = 全曜日）。
+    #[serde(default)]
+    pub days: Vec<u8>,
+    /// 開始時刻（0 時からの分。0〜1439）。
+    pub start_minute: u16,
+    /// 終了時刻（同上。開始より小さい場合は日をまたぐ帯）。
+    pub end_minute: u16,
+    /// UTC オフセット（分。例: JST = 540）。
+    #[serde(default)]
+    pub utc_offset_minutes: i16,
+}

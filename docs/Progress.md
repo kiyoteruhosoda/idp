@@ -38,12 +38,11 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 | 優先度 | ID | 課題内容 | 工数 | 影響度 | 重要度 | 難易度 |
 |---:|---|---|---:|---:|---:|---:|
 | 8 | AP14 | AP3 の残り: 国・端末信頼の条件（判定材料が無いため未実装。GeoIP かプロキシ供給ヘッダの取り決めと、デバイス登録簿が前提）（⬜未着手） | 大 | 中 | 中 | 大 |
-| 5 | AP1 | 認証ポリシーの管理画面（web コンソール UI。現状は API のみ。AP3 で増えた条件・効果も対象）（⬜未着手） | 中 | 中 | 小 | 中 |
 | 5 | AP15 | AP8 の contract フェーズ（`users.preferred_username` を登録簿へ移し、列を撤去する。解決経路の切替 → 移送 → 撤去を独立したマイグレーションに分ける）（⬜未着手） | 中 | 中 | 小 | 中 |
 | 5 | AP11 | AP9 の contract フェーズ（TOTP/WebAuthn の秘密を `user_authenticators` へ集約し、`user_totp_secrets` / `user_webauthn_credentials` を撤去）（⬜未着手） | 中 | 中 | 小 | 中 |
 | 5 | AP12 | SAML 外部 IdP（AP10 は OIDC のみ実装。`external_identity_providers` の protocol 拡張が要る）（⬜未着手） | 大 | 中 | 小 | 大 |
-| 5 | G11 | web crate に統合テストが無い（`crates/web/tests/` 不在。ルータ経由の検証は `scripts/e2e.sh` 頼み）（⬜未着手） | 中 | 中 | 小 | 中 |
-| 5 | G12 | `/authorize` の任意パラメータの残り（`response_mode=form_post`・`prompt=select_account` 未対応。`login_hint`・`ui_locales`・`id_token_hint` は対応済み）（🚧進行中） | 中 | 中 | 小 | 中 |
+| 5 | G12 | `/authorize` の `response_mode=form_post`（`prompt=select_account` は対応済み。api が「URL」ではなく「送信先＋パラメータ」を返す形への変更が要る）（🚧進行中） | 中 | 中 | 小 | 中 |
+| 3 | AP16 | 外部 IdP 設定・ログイン識別子の管理画面（AP1 で認証ポリシーだけを入れた。両者は API のみ）（⬜未着手） | 中 | 小 | 小 | 中 |
 | 3 | SEC10 | `/token`・`/introspect`・`/revoke` にレート制限が無い（Argon2 増幅型 DoS）（⬜未着手） | 小 | 小 | 中 | 小 |
 | 3 | AP6 | アカウントロックの管理者解除（仕様 §17.1・§24.6。`locked_until` を即時クリアする管理操作。現状は期限経過待ちのみ）と段階的ロック（⬜未着手） | 小 | 小 | 中 | 小 |
 | 3 | G8 | `audit_log` に絞り込み用の索引（`client_id`・`user_id`・`result`・複合 `(tenant_id, occurred_at)`）と保持期間の仕組みが無い（`log` にはある）（⬜未着手） | 小 | 中 | 小 | 小 |
@@ -53,21 +52,22 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 
 ## 詳細
 
-### ユーザー認証・認証ポリシー仕様書の残実装（AP1・AP14）
+### ユーザー認証・認証ポリシー仕様書の残実装（AP14）
 
 ADR-0020 で認証ポリシー（deny / require_mfa / allow）・管理 API・OIDC ログインフローへの適用・
 アカウントロックの設定化を導入し、AP3 で条件種別（ネットワークゾーン・時間帯・requested_acr）と
 `require_specific_method` 効果を追加した（ADR-0020 の追補）。残りは以下。
 
-- **AP1** 管理画面（web コンソール UI）。現状は API のみ（手順は `docs/OPERATIONS.md`）。
-  AP10 の外部 IdP 設定（`/admin/external-idps`）・AP8 のログイン識別子
-  （`/admin/users/{user_id}/login-identifiers`）と、AP3 で増えた条件・効果の編集 UI も対象。
+AP1 で入れたのは**認証ポリシー**の画面である。AP10 の外部 IdP 設定（`/admin/external-idps`）と
+AP8 のログイン識別子（`/admin/users/{user_id}/login-identifiers`）の管理画面はまだ無く、API を
+直接叩く（下記バックログ AP16）。
+
 - **AP14** AP3 の残り: 国・端末信頼の条件。**条件式ではなく判定材料が無い**のが本体で、
   国は GeoIP データベースの同梱かフロントプロキシが供給するヘッダの取り決め、端末信頼は
   デバイス登録簿（登録・識別・信頼状態）がそれぞれ前提になる。材料の無い条件を先に置くと
   「設定できるが決して一致しない条件」が管理画面に並ぶため、別タスクへ切り出した。
 
-AP2・AP3・AP4・AP5・AP7・AP8・AP9・AP10 は実装済み（`CHANGELOG.md` 参照）。AP8 の残り
+AP1（認証ポリシーの管理画面）・AP2・AP3・AP4・AP5・AP7・AP8・AP9・AP10 は実装済み（`CHANGELOG.md` 参照）。AP8 の残り
 （contract フェーズ）・AP9 の残り（contract フェーズ）・AP10 の残り（SAML 外部 IdP）は
 下記「積み残し」にある。
 
@@ -156,11 +156,11 @@ web の `X-Forwarded-For` ゲート（SEC1）・CSRF 種の `__Host-` 束縛（S
 client_secret は Argon2 照合（`crates/core/src/application/token.rs`）で総当たりは非現実的だが、
 メモリハード関数の CPU/メモリ増幅型 DoS が成立する。
 
-### 機能・運用のギャップ（G6〜G8・G11・G12）
+### 機能・運用のギャップ（G6〜G8・G12）
 
 セキュリティ（SEC）・認証仕様（AP）とは別軸で、**IdP としての機能欠落・運用性**を対象にした
 レビューで検出した課題。G1（CORS）・G2（期限切れ GC）・G3（`client_secret_post`）・
-G9（シングルインスタンス前提の明文化）は対応済み（`CHANGELOG.md` 参照）。良好な点（回帰させない）:
+G9（シングルインスタンス前提の明文化）・G11（web の統合テスト）は対応済み（`CHANGELOG.md` 参照）。良好な点（回帰させない）:
 DDD 4層と crate 境界の一致（web は sqlx に依存できない）、i18n の en/ja キー完全一致、
 設定の出所区分（`Builtin`/`EnvLocked`/`DbManaged`）の単一定義、テナント分離の統合テスト、
 ADR による設計判断の追跡可能性。
@@ -188,15 +188,6 @@ ADR による設計判断の追跡可能性。
 保持期間の仕組みが無く、法定保存期間の設計も未定。対策: 複合索引の追加と
 `AUDIT_LOG_RETENTION_DAYS`（既定は「削除しない」）の導入。
 
-#### G11. web crate に統合テストが無い
-
-`crates/api/tests/` には統合テスト（sqlx + axum）があるのに、`crates/web/tests/` は**存在しない**。
-web はログイン・同意・MFA・パスキー・管理コンソールという**ブラウザ経路の入口全部**を持つ。
-ハンドラ内の `#[test]` はいずれも純関数・テンプレート描画の単体検証で、ルータ経由
-（Cookie・CSRF・リダイレクト・api クライアントのエラー処理）は `scripts/e2e.sh` のシェルスクリプト頼み。
-対策: `wiremock` で api をスタブし、`tower::ServiceExt::oneshot` で web ルータを叩く統合テストを
-追加する（DB 不要で CI が速い）。
-
 #### G12. `/authorize` の任意パラメータの残り
 
 `acr_values`・`login_hint`・`ui_locales` は `/authorize` が受け付けて `auth_sessions` へ保存する
@@ -204,11 +195,14 @@ web はログイン・同意・MFA・パスキー・管理コンソールとい�
 `prompt_values_supported`・`request_parameter_supported`・`claims_parameter_supported`・
 `acr_values_supported`・`ui_locales_supported`）も出している。`login_hint` / `ui_locales` の
 web での消費と `id_token_hint`（RP-initiated logout）も対応済み（`CHANGELOG.md` 参照）。
-残っているのは:
+`prompt=select_account` も対応済み（`CHANGELOG.md` 参照）。残っているのは:
 
-- **`response_mode=form_post`** — 現状 `query` 固定。最終リダイレクトを組み立てるのは web 側の
-  複数経路（resume・ログイン成功・同意承認）なので、api が「URL」ではなく「送信先 + パラメータ」を
-  返す形への変更が要る。
-- **`prompt=select_account`** — `Prompt::parse` は none/login/consent のみ。本 IdP はブラウザごとに
-  SSO セッションを 1 つしか持たないため「選ばせる別アカウント」が存在せず、対応するなら
-  複数アカウント同時保持の設計から要る（Discovery では未対応として広告済み）。
+- **`response_mode=form_post`** — 現状 `query` 固定。認可応答を組み立てて返す経路は
+  core の 7 か所（ログイン成功・MFA・パスキー・同意承認・強制パスワード変更・外部 IdP・resume）に
+  分かれており、いずれも**完成した URL 文字列**（`location` / `redirect_to`）を web まで持ち回している。
+  form_post には「送信先 + パラメータ」の形が要るため、`redirect_uri` が元から持つクエリと
+  区別できない URL からの復元はできない（`redirect_uri` 自体がクエリを持ち得る）。
+  core の応答型・contracts の DTO・web の各分岐を通す変更が要り、影響は
+  `redirect_to` 参照だけで web に 79 か所・contracts に 18 か所ある。あわせて
+  `auth_sessions.response_mode` 列（要求時点と応答時点が別リクエストのため保存が要る）と、
+  自動送信フォームのテンプレート、Discovery の広告更新が要る。

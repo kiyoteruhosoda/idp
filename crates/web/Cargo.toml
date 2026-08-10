@@ -41,3 +41,6 @@ url = { workspace = true }
 
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }
+# ルータ経由の統合テスト（G11）。api を HTTP でスタブし、DB 無しで Cookie・CSRF・リダイレクト・
+# api クライアントのエラー処理を検証する。
+wiremock = { workspace = true }
