@@ -29,6 +29,9 @@ async fn concurrent_failures_all_count_and_reach_the_lock_threshold() {
     let lockout = LockoutPolicy {
         max_failed_attempts: CONCURRENCY as i32,
         lock_duration_secs: 900,
+        // 段階化しない設定（上限 = 初回時間）。ここで見たいのは加算の原子性だけで、
+        // ロック時間の伸びは AP6 のテストが見る。
+        max_lock_duration_secs: 900,
     };
     let now = chrono::Utc::now();
 
@@ -87,6 +90,7 @@ async fn an_expired_lock_is_not_reported_as_locked() {
     let lockout = LockoutPolicy {
         max_failed_attempts: 1,
         lock_duration_secs: 1,
+        max_lock_duration_secs: 1,
     };
     let locked = users
         .record_login_failure(user_uuid, lockout, now)
@@ -108,6 +112,7 @@ async fn an_expired_lock_is_not_reported_as_locked() {
     let lenient = LockoutPolicy {
         max_failed_attempts: 1_000,
         lock_duration_secs: 1,
+        max_lock_duration_secs: 1,
     };
     let much_later = now + chrono::Duration::hours(2);
     let relaxed = users

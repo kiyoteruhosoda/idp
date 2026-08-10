@@ -856,6 +856,9 @@ impl PortalLoginService {
                 AuthenticationMethod::RecoveryCode,
             ),
             (AuthenticatorType::EmailOtp, AuthenticationMethod::EmailOtp),
+            // SMS OTP（AP13）。同じ「1 回きりのコード」なので同じ経路で消費する。
+            // 登録済み電話番号の行は秘密を持たないため、ここには当たらない。
+            (AuthenticatorType::SmsOtp, AuthenticationMethod::SmsOtp),
         ] {
             if consume_single_use_code(
                 self.authenticators.as_ref(),

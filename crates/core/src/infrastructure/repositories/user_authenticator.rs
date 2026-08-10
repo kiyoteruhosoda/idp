@@ -275,6 +275,69 @@ impl UserAuthenticatorRepository for SqlxUserAuthenticatorRepository {
         Ok(result.rows_affected())
     }
 
+    async fn revoke_issued_codes_of_type(
+        &self,
+        user_id: Uuid,
+        authenticator_type: AuthenticatorType,
+        at: DateTime<Utc>,
+    ) -> Result<u64> {
+        // 期限のある行だけ（＝発行済みのワンタイムコード）。寿命の無い登録行（SMS OTP の
+        // 登録済み電話番号）は残す。
+        let result = sqlx::query(
+            "UPDATE user_authenticators SET status = 'revoked', revoked_at = ? \
+             WHERE user_id = ? AND authenticator_type = ? AND status <> 'revoked' \
+               AND expires_at IS NOT NULL",
+        )
+        .bind(at.naive_utc())
+        .bind(user_id.to_string())
+        .bind(authenticator_type.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        Ok(result.rows_affected())
+    }
+
+    async fn confirm_pending(
+        &self,
+        user_id: Uuid,
+        authenticator_type: AuthenticatorType,
+        secret_hash: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<UserAuthenticator>> {
+        // 更新できた場合だけ読み直す（`consume_single_use` と同じ方式）。確認済みにした行から
+        // コードと期限を落とす: 期限が残ると GC がこの行を削除し、確認した登録が消える。
+        let claimed = sqlx::query(
+            "UPDATE user_authenticators \
+             SET status = 'active', confirmed_at = ?, secret_encrypted = NULL, expires_at = NULL \
+             WHERE user_id = ? AND authenticator_type = ? AND secret_encrypted = ? \
+               AND status = 'pending' AND (expires_at IS NULL OR expires_at > ?)",
+        )
+        .bind(now.naive_utc())
+        .bind(user_id.to_string())
+        .bind(authenticator_type.as_str())
+        .bind(secret_hash)
+        .bind(now.naive_utc())
+        .execute(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        if claimed.rows_affected() == 0 {
+            return Ok(None);
+        }
+
+        let sql = format!(
+            "SELECT {SELECT_COLUMNS} FROM user_authenticators \
+             WHERE user_id = ? AND authenticator_type = ? AND status = 'active' \
+             ORDER BY confirmed_at DESC LIMIT 1"
+        );
+        let row = sqlx::query(&sql)
+            .bind(user_id.to_string())
+            .bind(authenticator_type.as_str())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        row.as_ref().map(map_row).transpose()
+    }
+
     async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64> {
         // 期限を持つのは使い捨てのコードだけ。TOTP・WebAuthn の行は `expires_at IS NULL` なので
         // この条件には掛からない（登録簿ごと消えてしまわない）。

@@ -137,6 +137,14 @@ const PASSWORD_RESET_RATE_LIMIT_WINDOW_MINUTES: i64 = 15;
 pub struct AppState {
     pub pool: Db,
     pub config: Arc<Config>,
+    /// 時刻の取得口（テストで固定実装に差し替える）。Presentation 層が「今」を要る場面
+    /// （ロック期限の判定など）で使う。
+    pub clock: Arc<dyn Clock>,
+    /// Prometheus メトリクスのレンダリング口（G6）。収集器の設置に失敗した構成では `None`。
+    pub metrics: Option<Arc<metrics_exporter_prometheus::PrometheusHandle>>,
+    /// トークン系エンドポイント（`/token`・`/introspect`・`/revoke`）の負荷ゲート（SEC10）。
+    /// Argon2 照合の同時実行数と送信元単位の要求数を抑える。
+    pub token_endpoint_load: Arc<crate::presentation::token_endpoint_load::TokenEndpointLoadGate>,
     /// テナント解決（id → tenant）。`TenantResolver` middleware が使う（MT9 でルーターへ mount）。
     pub tenant_resolution: Arc<TenantResolutionService>,
     pub register: Arc<RegisterService>,
@@ -185,6 +193,9 @@ pub struct AppState {
     pub invitations: Arc<InvitationService>,
     pub member_directory: Arc<MemberDirectoryService>,
     pub audit_query: Arc<AuditQueryService>,
+    /// 監査イベントの記録と保持期間による掃除（設計仕様 §7・G8）。各ユースケースへ注入している
+    /// ものと同じ実体で、保持期間の掃除タスクがここから参照する。
+    pub audit: Arc<AuditService>,
     /// エラー・警告ログ（`log` テーブル）の取り込み・参照・掃除（CLAUDE.md「ログ」）。
     /// api 自身の `tracing` 取り込みタスク・web からの `/internal/logs`・管理画面の参照が共有する。
     pub application_logs: Arc<ApplicationLogService>,
@@ -345,6 +356,7 @@ impl AppState {
             users.clone(),
             system_settings.clone(),
             Arc::new(LettreSmtpMailer::new()),
+            Arc::new(crate::infrastructure::sms::HttpSmsGateway::new()),
             audit.clone(),
             clock.clone(),
             ids.clone(),
@@ -890,9 +902,21 @@ impl AppState {
             clock.clone(),
         ));
 
+        // トークン系エンドポイントの負荷ゲート（SEC10）。Argon2 照合の同時実行数と
+        // 送信元単位の要求数を抑える。
+        let token_endpoint_load = Arc::new(
+            crate::presentation::token_endpoint_load::TokenEndpointLoadGate::from_config(
+                &config,
+                clock.clone(),
+            ),
+        );
+
         Self {
             pool,
             config,
+            clock: clock.clone(),
+            metrics: crate::presentation::metrics::handle().map(Arc::new),
+            token_endpoint_load,
             tenant_resolution,
             register,
             email_verification,
@@ -923,6 +947,7 @@ impl AppState {
             invitations,
             member_directory,
             audit_query,
+            audit,
             application_logs,
             logout,
             account_security,

@@ -161,7 +161,8 @@ fn discovery_document(issuer: &str, end_session_endpoint: &str) -> Value {
         "code_challenge_methods_supported": ["S256"],
         // 応答の返し方は `query` のみ（`form_post` は未実装。G12）。広告しないと、RP の
         // メタデータ検証が厳しい実装（OIDC 認定テストを含む）が既定を推測して食い違う。
-        "response_modes_supported": ["query"],
+        // `form_post` は認可コードを URL ではなくフォーム本文で返す（G12）。
+        "response_modes_supported": ["query", "form_post"],
         // `prompt`（OIDC Core §3.1.2.1）。`select_account` は「現在のアカウントで黙って続けない」
         // ＝ SSO 復元を止めてログイン画面へ戻す形で扱う（本 IdP はブラウザごとに SSO セッションを
         // 1 つしか持たないため、複数アカウントの一覧は出せない。G12）。
@@ -223,7 +224,10 @@ mod tests {
             json!(["client_secret_basic", "client_secret_post"])
         );
         // G12: RP のメタデータ検証が見る項目を明示的に広告する。
-        assert_eq!(doc["response_modes_supported"], json!(["query"]));
+        assert_eq!(
+            doc["response_modes_supported"],
+            json!(["query", "form_post"])
+        );
         assert_eq!(doc["request_parameter_supported"], json!(false));
         assert_eq!(doc["claims_parameter_supported"], json!(false));
         assert_eq!(doc["ui_locales_supported"], json!(["ja", "en"]));

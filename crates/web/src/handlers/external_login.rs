@@ -133,12 +133,72 @@ pub async fn callback(
         }
     };
 
+    render_outcome(&state, &tenant, locale, outcome)
+}
+
+/// 外部 SAML IdP がブラウザ経由で POST してくるアサーションを受ける（ACS。AP12）。
+///
+/// 値の検証は一切しない——`SAMLResponse` の署名検証は api 側にあり、web は運ぶだけである
+/// （web は sqlx にも鍵にも触れない。ADR-0007）。
+pub async fn saml_acs(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    axum::extract::Form(form): axum::extract::Form<SamlAcsForm>,
+) -> Response {
+    let locale = locale(&headers);
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
+    let request = idp_contracts::auth::InternalExternalSamlAcsRequest {
+        tenant_id: Some(tenant.0.clone()),
+        saml_response: form.saml_response,
+        relay_state: form.relay_state.unwrap_or_default(),
+        ip_address: ctx.ip_address,
+        user_agent: ctx.user_agent,
+    };
+    let outcome = match state
+        .api
+        .external_saml_acs(&ctx.correlation_id, &request)
+        .await
+    {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::error!(error = %e, "external saml acs call to api failed");
+            return StatusCode::BAD_GATEWAY.into_response();
+        }
+    };
+    render_outcome(&state, &tenant, locale, outcome)
+}
+
+/// ACS が受け取るフォーム（HTTP-POST binding）。`RelayState` は仕様上は任意だが、本 IdP は
+/// 開始時に必ず載せる（無ければ進行状態を引けないので、その場で失敗する）。
+#[derive(Debug, serde::Deserialize)]
+pub struct SamlAcsForm {
+    #[serde(rename = "SAMLResponse")]
+    pub saml_response: String,
+    #[serde(rename = "RelayState")]
+    pub relay_state: Option<String>,
+}
+
+/// 外部 IdP からの戻り（OIDC のコールバック / SAML の ACS）を画面・リダイレクトへ落とす。
+///
+/// **プロトコルで分けない。** 「誰が認証されたか」を確かめる方法は違っても、そこから先
+/// （Cookie の発行・同意画面への誘導・失敗時の見せ方）は同じであるべきで、分けると片方だけ
+/// 直った状態が生まれる。
+fn render_outcome(
+    state: &WebState,
+    tenant: &WebTenant,
+    locale: Locale,
+    outcome: InternalExternalCallbackResponse,
+) -> Response {
     let messages = Messages::new(locale);
     match outcome {
         InternalExternalCallbackResponse::Success {
             sso_session_id,
             sso_absolute_ttl_secs,
             redirect_to,
+            form_post,
             user_language,
         } => {
             let mut set_cookies = state
@@ -162,9 +222,15 @@ pub async fn callback(
             // OIDC 認可フローの途中から来ていれば、api が組み立てた code 付き `redirect_uri` へ
             // 送る（認可要求のパラメータは api 側の auth_session にしか無いため、web では
             // 組み立てられない）。そうでなければアカウント画面へ。
+            // 認可フローの外（アカウント設定から始めた連携）は web が戻り先を決める。
+            // その場合 `form_post` は付かない（認可応答ではないため）。
             let destination =
                 redirect_to.unwrap_or_else(|| format!("{}/settings", tenant.prefix()));
-            (set_cookies.into_headers(), found(&destination)).into_response()
+            (
+                set_cookies.into_headers(),
+                crate::authorization_response::respond(&messages, &destination, form_post),
+            )
+                .into_response()
         }
         InternalExternalCallbackResponse::ConsentRequired {
             auth_session_id,

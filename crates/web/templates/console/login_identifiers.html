@@ -1,0 +1,82 @@
+{% extends "console/layout.html" %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <h2 class="h4 mb-0">{{ messages.get("admin-login-identifiers-title") }}</h2>
+  <a class="btn btn-outline-secondary" href="{{ tenant }}/admin/members"><i class="fa-solid fa-arrow-left me-2" aria-hidden="true"></i>{{ messages.get("admin-login-identifiers-back") }}</a>
+</div>
+<p class="text-muted">{{ messages.get("admin-login-identifiers-intro") }}</p>
+{% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
+{% if let Some(key) = notice_key %}<div class="alert alert-success" role="status"><i class="fa-solid fa-circle-check me-2" aria-hidden="true"></i>{{ messages.get(key) }}</div>{% endif %}
+
+<div class="card mb-4">
+  <div class="card-header"><h3 class="h6 mb-0">{{ messages.get("admin-login-identifiers-form-title") }}</h3></div>
+  <div class="card-body">
+    <form method="post" action="{{ tenant }}/admin/users/{{ user_id }}/login-identifiers">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <div class="row g-3 align-items-end">
+        <div class="col-md-4">
+          <label class="form-label" for="identifier_type">{{ messages.get("admin-login-identifiers-field-type") }}</label>
+          <select class="form-select" id="identifier_type" name="identifier_type">
+            {% for option in type_options %}
+            <option value="{{ option.code }}">{{ option.label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-md-5">
+          <label class="form-label" for="value">{{ messages.get("admin-login-identifiers-field-value") }}</label>
+          <input class="form-control" id="value" name="value" required>
+          <div class="form-text">{{ messages.get("admin-login-identifiers-field-value-hint") }}</div>
+        </div>
+        <div class="col-md-3">
+          <button type="submit" class="btn btn-primary"><i class="fa-solid fa-plus me-1" aria-hidden="true"></i>{{ messages.get("admin-login-identifiers-add") }}</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="table-responsive">
+  <table class="table table-cards table-hover align-middle">
+    <thead>
+      <tr>
+        <th>{{ messages.get("admin-login-identifiers-col-type") }}</th>
+        <th>{{ messages.get("admin-login-identifiers-col-value") }}</th>
+        <th>{{ messages.get("admin-login-identifiers-col-normalized") }}</th>
+        <th>{{ messages.get("admin-login-identifiers-col-state") }}</th>
+        <th>{{ messages.get("admin-signing-keys-col-actions") }}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for i in identifiers %}
+      <tr>
+        <td data-label="{{ messages.get("admin-login-identifiers-col-type") }}">{{ i.type_label }}</td>
+        <td data-label="{{ messages.get("admin-login-identifiers-col-value") }}">{{ i.display_value }}{% if i.is_primary %} <span class="badge text-bg-primary">{{ messages.get("admin-login-identifiers-primary") }}</span>{% endif %}</td>
+        {# 照合キーを併記する。登録した値と実際に一致する値がずれていても、片方しか見えないと
+           設定ミスに気づけない（電話番号のように書き方が揺れる識別子で起きる）。 #}
+        <td data-label="{{ messages.get("admin-login-identifiers-col-normalized") }}"><code>{{ i.normalized_value }}</code></td>
+        <td data-label="{{ messages.get("admin-login-identifiers-col-state") }}">{% if i.is_active %}<span class="badge text-bg-success">{{ messages.get("admin-login-identifiers-state-active") }}</span>{% else %}<span class="badge text-bg-secondary">{{ messages.get("admin-login-identifiers-state-inactive") }}</span>{% endif %}</td>
+        <td data-label="{{ messages.get("admin-signing-keys-col-actions") }}">
+          {# 主たる識別子は登録簿に行が無いため、ここからは操作できない（`id` も無い）。
+             変えるならプロフィール編集、止めるならアカウントの無効化（api も同じ理由で拒否する）。 #}
+          {% if let Some(id) = i.id %}
+          <div class="d-flex flex-wrap gap-2">
+            <form method="post" action="{{ tenant }}/admin/users/{{ user_id }}/login-identifiers/{{ id }}/active" class="d-inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf }}">
+              <input type="hidden" name="is_active" value="{% if i.is_active %}false{% else %}true{% endif %}">
+              <button type="submit" class="btn btn-outline-secondary btn-sm">{% if i.is_active %}<i class="fa-solid fa-pause me-1" aria-hidden="true"></i>{{ messages.get("admin-login-identifiers-disable") }}{% else %}<i class="fa-solid fa-play me-1" aria-hidden="true"></i>{{ messages.get("admin-login-identifiers-enable") }}{% endif %}</button>
+            </form>
+            <form method="post" action="{{ tenant }}/admin/users/{{ user_id }}/login-identifiers/{{ id }}/delete" class="d-inline" data-confirm="{{ messages.get("admin-login-identifiers-delete-confirm") }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf }}">
+              <button type="submit" class="btn btn-outline-danger btn-sm"><i class="fa-solid fa-trash me-1" aria-hidden="true"></i>{{ messages.get("admin-login-identifiers-delete") }}</button>
+            </form>
+          </div>
+          {% else %}
+          <span class="text-muted small">{{ messages.get("admin-login-identifiers-primary-hint") }}</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

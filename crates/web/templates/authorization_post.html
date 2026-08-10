@@ -1,0 +1,27 @@
+{#- `response_mode=form_post` の認可応答（G12）。
+
+    認可コードを URL ではなくフォーム本文で RP へ渡す。URL はブラウザの履歴・`Referer`・
+    プロキシやサーバのアクセスログに残るため、それを避けたい配置がこの形を要求する。
+    SAML の POST binding（`saml_post.html`）と同じ自動送信フォームの作りにしてある。 -#}
+{% extends "page.html" %}
+{% block title %}{{ messages.get("authorization-post-title") }}{% endblock %}
+{% block content %}
+<div class="card border-0 bg-transparent">
+  <div class="card-header text-center py-3 border-0 bg-transparent">
+    <h1 class="h4 mb-0">{{ messages.get("authorization-post-title") }}</h1>
+  </div>
+  <div class="card-body p-4 text-center">
+    <p class="mb-3">{{ messages.get("authorization-post-message") }}</p>
+    <form id="authorization-post-form" data-auto-submit method="post" action="{{ action }}">
+      {% for field in fields %}
+      <input type="hidden" name="{{ field.0 }}" value="{{ field.1 }}">
+      {% endfor %}
+      <noscript>
+        {#- JavaScript が無い環境では利用者が押す。押さない限り認可応答は送られない。 -#}
+        <button type="submit" class="btn btn-primary">{{ messages.get("authorization-post-submit") }}</button>
+      </noscript>
+    </form>
+  </div>
+</div>
+<script src="/assets/auto-submit.js?v={{ crate::templates::asset_version() }}" defer></script>
+{% endblock %}

@@ -124,6 +124,7 @@ async fn resume_authorize_handoff(
         // SSO 復元で code 発行済み。残っている古い auth_session Cookie を掃除して RP へ返す。
         InternalAuthorizeResumeResponse::Redirect {
             redirect_to,
+            form_post,
             sso_absolute_ttl_secs,
         } => (
             refresh_sso(
@@ -133,7 +134,7 @@ async fn resume_authorize_handoff(
                 sso_absolute_ttl_secs,
             )
             .into_headers(),
-            found(&redirect_to),
+            crate::authorization_response::respond(&messages, &redirect_to, form_post),
         )
             .into_response(),
         // フロー終了のエラー（prompt=none 失敗等）。RP へエラーを返す。
@@ -250,6 +251,7 @@ pub async fn login(
     match outcome {
         InternalAuthenticateResponse::Success {
             redirect_to,
+            form_post,
             sso_session_id,
             sso_absolute_ttl_secs,
             user_language,
@@ -274,7 +276,11 @@ pub async fn login(
                     cookies::LANG_COOKIE_MAX_AGE_SECS,
                 );
             }
-            (set_cookies.into_headers(), found(&redirect_to)).into_response()
+            (
+                set_cookies.into_headers(),
+                crate::authorization_response::respond(&messages, &redirect_to, form_post),
+            )
+                .into_response()
         }
         InternalAuthenticateResponse::MfaRequired { auth_session_id } => {
             // パスワード認証成功・MFA 必要: auth_session_id Cookie を維持して TOTP 入力画面へ。

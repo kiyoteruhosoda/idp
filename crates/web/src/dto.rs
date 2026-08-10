@@ -131,6 +131,15 @@ pub struct AdminSystemSettingsForm {
     pub smtp_from_address: String,
     #[serde(default)]
     pub smtp_use_tls: Option<String>,
+    /// SMS ゲートウェイ（AP13）。`sms_auth_token` が空文字なら現行のトークンを維持する。
+    #[serde(default)]
+    pub sms_gateway_url: String,
+    #[serde(default)]
+    pub sms_auth_header: String,
+    #[serde(default)]
+    pub sms_auth_token: String,
+    #[serde(default)]
+    pub sms_sender_id: String,
     pub csrf_token: String,
 }
 
@@ -185,6 +194,9 @@ pub struct TenantsQuery {
     /// 更新完了通知（Post/Redirect/Get で戻ったときに成功バナーを出す）。
     #[serde(default)]
     pub saved: Option<String>,
+    /// ページャの読み飛ばし件数。未指定は 0（G7）。
+    #[serde(default)]
+    pub offset: Option<i64>,
 }
 
 /// 子テナントの編集フォーム（`POST /{tenant_id}/admin/tenants/{child_id}/update`。MT23）。

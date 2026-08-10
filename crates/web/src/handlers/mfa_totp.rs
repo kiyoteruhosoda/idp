@@ -333,6 +333,7 @@ pub async fn verify(
     match outcome {
         InternalVerifyTotpResponse::Success {
             redirect_to,
+            form_post,
             sso_session_id,
             sso_absolute_ttl_secs,
             user_language,
@@ -356,7 +357,11 @@ pub async fn verify(
                     cookies::LANG_COOKIE_MAX_AGE_SECS,
                 );
             }
-            (set_cookies.into_headers(), found(&redirect_to)).into_response()
+            (
+                set_cookies.into_headers(),
+                crate::authorization_response::respond(&messages, &redirect_to, form_post),
+            )
+                .into_response()
         }
         InternalVerifyTotpResponse::ConsentRequired {
             auth_session_id: new_auth_session_id,
@@ -459,6 +464,9 @@ fn verify_banner_key(value: Option<&str>) -> Option<&'static str> {
     match value {
         Some("email-sent") => Some("mfa-verify-email-sent"),
         Some("email-unavailable") => Some("mfa-verify-email-unavailable"),
+        Some("sms-sent") => Some("mfa-verify-sms-sent"),
+        Some("sms-unavailable") => Some("mfa-verify-sms-unavailable"),
+        Some("sms-not-registered") => Some("mfa-verify-sms-not-registered"),
         Some("session") => Some("mfa-error-session-expired"),
         other => form_retry_error_key(other),
     }
@@ -478,6 +486,9 @@ fn render_verify_form(
         // 未設定なら送信結果として案内する（画面から設定状況を推測させない）。
         email_otp_available: true,
         email_otp_action: &format!("{tenant_prefix}/mfa/totp/email-code"),
+        // SMS も同じ理由で導線は常に出す（未設定・未登録は送信結果として案内する）。
+        // 画面から「この利用者は電話番号を登録しているか」を推測させない。
+        sms_otp_action: &format!("{tenant_prefix}/mfa/totp/sms-code"),
     })
 }
 
@@ -537,7 +548,64 @@ pub async fn send_email_code(
     see_other(&format!("{}/mfa/totp?error={error}", tenant.prefix()))
 }
 
-/// email OTP 送信フォーム（CSRF トークンのみ）。
+/// SMS OTP の送信要求（`POST /{tenant_id}/mfa/totp/sms-code`。AP13）。
+///
+/// email OTP と同じ形。登録済みの電話番号へ短命コードを送らせ、結果はバナーで返す。
+/// **未登録と未設定を別の文言で返す**のは、利用者にできること（登録する / 管理者へ聞く）が
+/// 違うためで、どちらも「送れませんでした」に丸めると詰まる。
+pub async fn send_sms_code(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Form(form): Form<EmailCodeForm>,
+) -> Response {
+    let messages_locale = locale(&headers);
+    let Some(auth_session_id) = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE) else {
+        let messages = Messages::new(messages_locale);
+        return error_page(
+            &messages,
+            StatusCode::BAD_REQUEST,
+            "mfa-error-session-expired",
+        );
+    };
+    if !idp_contracts::csrf::verify(
+        &login_csrf_token(&auth_session_id, state.config.csrf_secret()),
+        &form.csrf_token,
+    ) {
+        return see_other(&format!("{}/mfa/totp?error=csrf", tenant.prefix()));
+    }
+
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
+    let request = idp_contracts::auth::InternalSmsOtpRequest {
+        tenant_id: Some(tenant.0.clone()),
+        auth_session_id: Some(auth_session_id),
+        mfa_ticket: None,
+        ip_address: ctx.ip_address,
+        user_agent: ctx.user_agent,
+    };
+    let error = match state
+        .api
+        .account_sms_otp(&ctx.correlation_id, &request)
+        .await
+    {
+        Ok(idp_contracts::auth::InternalSmsOtpResponse::Sent) => "sms-sent",
+        Ok(idp_contracts::auth::InternalSmsOtpResponse::Unavailable) => "sms-unavailable",
+        Ok(idp_contracts::auth::InternalSmsOtpResponse::NotRegistered) => "sms-not-registered",
+        Ok(idp_contracts::auth::InternalSmsOtpResponse::SessionExpired) => "session",
+        Ok(idp_contracts::auth::InternalSmsOtpResponse::Internal) => {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "sms otp request to api failed");
+            return StatusCode::BAD_GATEWAY.into_response();
+        }
+    };
+    see_other(&format!("{}/mfa/totp?error={error}", tenant.prefix()))
+}
+
+/// email OTP / SMS OTP の送信フォーム（CSRF トークンのみ）。
 #[derive(Debug, Deserialize)]
 pub struct EmailCodeForm {
     pub csrf_token: String,

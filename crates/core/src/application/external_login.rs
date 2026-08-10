@@ -23,7 +23,7 @@
 //! 「外部で認証した」ことは `deny` を免れる理由にならない。
 
 use crate::application::audit::{AuditService, RequestContext};
-use crate::application::authorize::code_redirect;
+use crate::application::authorize::code_dispatch;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session;
@@ -32,7 +32,7 @@ use crate::domain::authentication_policy::{
 };
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
-use crate::domain::external_idp::{ExternalIdentity, ExternalLoginRequest};
+use crate::domain::external_idp::{ExternalIdentity, ExternalIdpConfig, ExternalLoginRequest};
 use crate::domain::external_oidc_port::{ExternalOidcClient, ExternalTokenRequest};
 use crate::domain::id_generator::IdGenerator;
 use crate::domain::pkce;
@@ -44,6 +44,7 @@ use crate::domain::repositories::{
 use crate::domain::sso_session::SsoSession;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::AuthenticationMethod;
+use crate::domain::{saml_external_idp, saml_response};
 use chrono::{DateTime, Duration, Utc};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use std::sync::Arc;
@@ -69,6 +70,14 @@ pub struct CallbackCommand {
     pub state: String,
     /// 認可コード。
     pub code: String,
+}
+
+/// SAML の ACS（`AssertionConsumerService`）が受け取る値。ブラウザが HTTP-POST で運んでくる。
+pub struct SamlAcsCommand {
+    /// `SAMLResponse`（base64(XML)）。**未検証**の値である。
+    pub saml_response: String,
+    /// `RelayState`（開始時に発行した `state`）。進行状態を引く鍵。
+    pub relay_state: String,
 }
 
 /// 外部 IdP ログインの完了結果。
@@ -105,8 +114,12 @@ pub enum CallbackOutcome {
 
 /// 認証成功後の戻り先。
 pub enum SuccessLocation {
-    /// OIDC 認可フローの続き（code 付きの `redirect_uri`。絶対 URL）。
-    Redirect(String),
+    /// OIDC 認可フローの続き。`location` は `query` なら code 付きの `redirect_uri`、
+    /// `form_post` ならフォームの送信先（G12。`form_post` が `Some` のとき自動送信フォームを描く）。
+    Redirect {
+        location: String,
+        form_post: Option<Vec<(String, String)>>,
+    },
     /// 認可フローの外から来た。web が自分の画面（アカウント設定）へ戻す。
     Account,
 }
@@ -197,25 +210,74 @@ impl ExternalLoginService {
         };
 
         let now = self.clock.now();
+        // `state`（SAML では `RelayState`）は両プロトコル共通。進行状態を引く鍵になる。
         let state = crypto::random_token(STATE_BYTES);
-        let nonce = crypto::random_token(STATE_BYTES);
-        // PKCE は外部 IdP が public クライアント登録でも安全に交換できるようにするため常に付ける
-        //（S256 のみ。本 IdP 自身が `/authorize` で強制しているのと同じ方針）。
-        let code_verifier = crypto::random_token(STATE_BYTES);
-        let code_challenge = pkce::s256_challenge(&code_verifier);
 
-        let code_verifier_encrypted =
-            match crypto::encrypt(code_verifier.as_bytes(), &self.key_encryption_key) {
-                Ok(v) => v,
-                Err(e) => return StartOutcome::Internal(e.to_string()),
-            };
+        // プロトコルごとに「相手へ送る URL」と「相手が返してくる値」を決める。進行状態の作り方
+        // （単回消費・TTL・呼び出し元 auth_session）は共通なので、分けるのはここだけにする。
+        let (location, echoed_value, code_verifier_encrypted) = match &provider.config {
+            ExternalIdpConfig::Oidc(oidc) => {
+                let nonce = crypto::random_token(STATE_BYTES);
+                // PKCE は外部 IdP が public クライアント登録でも安全に交換できるようにするため
+                // 常に付ける（S256 のみ。本 IdP 自身が `/authorize` で強制しているのと同じ方針）。
+                let code_verifier = crypto::random_token(STATE_BYTES);
+                let code_challenge = pkce::s256_challenge(&code_verifier);
+                let encrypted =
+                    match crypto::encrypt(code_verifier.as_bytes(), &self.key_encryption_key) {
+                        Ok(v) => v,
+                        Err(e) => return StartOutcome::Internal(e.to_string()),
+                    };
+
+                let redirect_uri = self.redirect_uri(tenant, &provider.provider_code);
+                let encode = |v: &str| utf8_percent_encode(v, NON_ALPHANUMERIC).to_string();
+                let separator = if oidc.authorization_endpoint.contains('?') {
+                    '&'
+                } else {
+                    '?'
+                };
+                let location = format!(
+                    "{}{separator}response_type=code&client_id={}&redirect_uri={}&scope={}\
+                     &state={}&nonce={}&code_challenge={}&code_challenge_method=S256",
+                    oidc.authorization_endpoint,
+                    encode(&oidc.client_id),
+                    encode(&redirect_uri),
+                    encode(&oidc.effective_scopes().join(" ")),
+                    encode(&state),
+                    encode(&nonce),
+                    encode(&code_challenge),
+                );
+                (location, nonce, Some(encrypted))
+            }
+            ExternalIdpConfig::Saml(saml) => {
+                // SAML には PKCE も `nonce` も無い。相手が返してくるのは `AuthnRequest` の `ID`
+                // （応答の `InResponseTo`）なので、それを進行状態へ保存する。
+                let request_id = saml_response::generate_saml_id();
+                let xml = saml_external_idp::build_authn_request_xml(
+                    &saml_external_idp::AuthnRequestInput {
+                        request_id: &request_id,
+                        issued_at: now,
+                        sp_entity_id: &self.saml_sp_entity_id(tenant),
+                        acs_url: &self.saml_acs_url(tenant, &provider.provider_code),
+                        sso_url: &saml.sso_url,
+                        name_id_format: &saml.name_id_format,
+                    },
+                );
+                let location =
+                    match saml_external_idp::redirect_binding_location(&saml.sso_url, &xml, &state)
+                    {
+                        Ok(v) => v,
+                        Err(e) => return StartOutcome::Internal(e.to_string()),
+                    };
+                (location, request_id, None)
+            }
+        };
 
         let request = ExternalLoginRequest {
             id: self.ids.new_id(),
             tenant_id: tenant.tenant_id(),
             provider_id: provider.id,
             state_hash: crypto::sha256_hex(&state),
-            nonce: nonce.clone(),
+            nonce: echoed_value,
             code_verifier_encrypted,
             auth_session_id_hash: auth_session_id.as_deref().map(auth_session::id_hash),
             expires_at: now + Duration::seconds(REQUEST_TTL_SECS),
@@ -225,24 +287,6 @@ impl ExternalLoginService {
             return StartOutcome::Internal(e.to_string());
         }
 
-        let redirect_uri = self.redirect_uri(tenant, &provider.provider_code);
-        let encode = |v: &str| utf8_percent_encode(v, NON_ALPHANUMERIC).to_string();
-        let separator = if provider.authorization_endpoint.contains('?') {
-            '&'
-        } else {
-            '?'
-        };
-        let location = format!(
-            "{}{separator}response_type=code&client_id={}&redirect_uri={}&scope={}\
-             &state={}&nonce={}&code_challenge={}&code_challenge_method=S256",
-            provider.authorization_endpoint,
-            encode(&provider.client_id),
-            encode(&redirect_uri),
-            encode(&provider.effective_scopes().join(" ")),
-            encode(&state),
-            encode(&nonce),
-            encode(&code_challenge),
-        );
         StartOutcome::Redirect { location }
     }
 
@@ -283,16 +327,24 @@ impl ExternalLoginService {
             Err(e) => return CallbackOutcome::Internal(e.to_string()),
         };
 
-        // 3. 秘密を復号する。
-        let code_verifier =
-            match crypto::decrypt(&request.code_verifier_encrypted, &self.key_encryption_key) {
-                Ok(bytes) => match String::from_utf8(bytes) {
-                    Ok(v) => v,
-                    Err(e) => return CallbackOutcome::Internal(e.to_string()),
-                },
+        // 3. この経路は OIDC 専用である。SAML のプロバイダで来たら受け付けない（進行状態を
+        //    取り違えた要求で、正しい経路は ACS（[`Self::saml_acs`]）にある）。
+        let Some(oidc) = provider.config.as_oidc() else {
+            return CallbackOutcome::StateExpired;
+        };
+
+        // 4. 秘密を復号する。
+        let Some(encrypted_verifier) = request.code_verifier_encrypted.as_deref() else {
+            return CallbackOutcome::StateExpired;
+        };
+        let code_verifier = match crypto::decrypt(encrypted_verifier, &self.key_encryption_key) {
+            Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(v) => v,
                 Err(e) => return CallbackOutcome::Internal(e.to_string()),
-            };
-        let client_secret = match provider.client_secret_encrypted.as_deref() {
+            },
+            Err(e) => return CallbackOutcome::Internal(e.to_string()),
+        };
+        let client_secret = match oidc.client_secret_encrypted.as_deref() {
             Some(encrypted) => match crypto::decrypt(encrypted, &self.key_encryption_key) {
                 Ok(bytes) => match String::from_utf8(bytes) {
                     Ok(v) => Some(v),
@@ -303,15 +355,15 @@ impl ExternalLoginService {
             None => None,
         };
 
-        // 4. コードを交換し、ID Token を検証する（検証はポートの実装に閉じている）。
+        // 5. コードを交換し、ID Token を検証する（検証はポートの実装に閉じている）。
         let redirect_uri = self.redirect_uri(tenant, &provider.provider_code);
         let claims = match self
             .oidc
             .exchange_code(ExternalTokenRequest {
-                token_endpoint: &provider.token_endpoint,
-                jwks_uri: &provider.jwks_uri,
+                token_endpoint: &oidc.token_endpoint,
+                jwks_uri: &oidc.jwks_uri,
                 expected_issuer: &provider.issuer,
-                client_id: &provider.client_id,
+                client_id: &oidc.client_id,
                 client_secret: client_secret.as_deref(),
                 redirect_uri: &redirect_uri,
                 code: &cmd.code,
@@ -335,6 +387,115 @@ impl ExternalLoginService {
             }
         };
 
+        self.complete(tenant, &provider, &request, claims, ctx)
+            .await
+    }
+
+    /// 外部 IdP からの SAML 応答（HTTP-POST binding の ACS）を処理する。
+    ///
+    /// `RelayState` で進行状態を単回消費し、アサーションを検証して主張を取り出したあとは、
+    /// **OIDC と同じ後半**（利用者の解決・状態確認・認証ポリシー・SSO 発行・認可フローの再開）を
+    /// 通る。プロトコルが違うのは「誰が認証されたかをどう確かめるか」までで、そこから先の
+    /// 判断は同じであるべきだからである。
+    pub async fn saml_acs(
+        &self,
+        tenant: TenantContext,
+        cmd: SamlAcsCommand,
+        ctx: &RequestContext,
+    ) -> CallbackOutcome {
+        let now = self.clock.now();
+        let tenant_id = tenant.tenant_id();
+
+        // 1. `RelayState` で進行状態を引き、**削除できた側だけ**が続行する（単回使用）。
+        let state_hash = crypto::sha256_hex(&cmd.relay_state);
+        let request = match self.requests.find_by_state(tenant_id, &state_hash).await {
+            Ok(Some(r)) => r,
+            Ok(None) => return CallbackOutcome::StateExpired,
+            Err(e) => return CallbackOutcome::Internal(e.to_string()),
+        };
+        match self.requests.consume(request.id).await {
+            Ok(true) => {}
+            Ok(false) => return CallbackOutcome::StateExpired,
+            Err(e) => return CallbackOutcome::Internal(e.to_string()),
+        }
+        if request.is_expired_at(now) {
+            return CallbackOutcome::StateExpired;
+        }
+
+        let provider = match self
+            .providers
+            .find_by_id(tenant_id, request.provider_id)
+            .await
+        {
+            Ok(Some(p)) if p.enabled => p,
+            Ok(_) => return CallbackOutcome::StateExpired,
+            Err(e) => return CallbackOutcome::Internal(e.to_string()),
+        };
+        // この経路は SAML 専用（OIDC の進行状態を持ち込ませない）。
+        let Some(saml) = provider.config.as_saml() else {
+            return CallbackOutcome::StateExpired;
+        };
+
+        // 2. 署名を検証してから主張を読む。ここを通らない値は攻撃者が書いたものと区別できない。
+        let assertion = match saml_external_idp::consume_response(
+            &cmd.saml_response,
+            &saml_external_idp::ResponseVerification {
+                expected_issuer: &provider.issuer,
+                sp_entity_id: &self.saml_sp_entity_id(tenant),
+                expected_in_response_to: &request.nonce,
+                certificates: &saml.certificates,
+                now,
+            },
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                // 外部 IdP 側の事情（証明書の更新漏れ・設定ミス）も含むため、利用者へは詳細を
+                // 返さず運用ログにだけ残す。値そのもの（NameID・メール）は PII なので出さない。
+                tracing::warn!(
+                    error = %e,
+                    provider = %provider.provider_code,
+                    "external saml assertion verification failed"
+                );
+                self.record_failure(
+                    tenant,
+                    &provider.provider_code,
+                    "assertion_verification",
+                    ctx,
+                )
+                .await;
+                return CallbackOutcome::ExternalFailure;
+            }
+        };
+
+        // 3. 以降は OIDC と同じ。`iss` + `sub` に当たるのが `Issuer` + `NameID` である。
+        //
+        //    `email_verified` は **false** にする。SAML のアサーションにはメールの所有確認を
+        //    表す標準の主張が無く、属性として運ばれてくるだけである。true にすると
+        //    `allow_auto_link` が「検証済みメール一致」の条件を満たしたことになり、メールを
+        //    名乗るだけで既存アカウントへ入れてしまう（ADR-0023）。
+        let claims = crate::domain::external_idp::ExternalClaims {
+            issuer: assertion.issuer,
+            subject: assertion.name_id,
+            email: assertion.email,
+            email_verified: false,
+            name: assertion.display_name,
+            nonce: None,
+        };
+        self.complete(tenant, &provider, &request, claims, ctx)
+            .await
+    }
+
+    /// 外部 IdP で本人確認できたあとの共通処理（プロトコルに依らない）。
+    async fn complete(
+        &self,
+        tenant: TenantContext,
+        provider: &crate::domain::external_idp::ExternalIdentityProvider,
+        request: &ExternalLoginRequest,
+        claims: crate::domain::external_idp::ExternalClaims,
+        ctx: &RequestContext,
+    ) -> CallbackOutcome {
+        let now = self.clock.now();
+        let tenant_id = tenant.tenant_id();
         // 5. `iss` + `sub` で利用者を解決する。
         let identity = match self
             .identities
@@ -346,7 +507,7 @@ impl ExternalLoginService {
         };
         let user_id = match identity.as_ref() {
             Some(existing) => existing.user_id,
-            None => match self.auto_link(tenant, &provider, &claims).await {
+            None => match self.auto_link(tenant, provider, &claims).await {
                 Ok(Some(id)) => id,
                 Ok(None) => {
                     self.record_failure(tenant, &provider.provider_code, "not_linked", ctx)
@@ -624,12 +785,12 @@ impl ExternalLoginService {
             tracing::warn!(error = %e, "failed to delete auth session after external login");
         }
 
+        let dispatch = code_dispatch(&session, &code);
         CallbackOutcome::Success {
-            location: SuccessLocation::Redirect(code_redirect(
-                &session.redirect_uri,
-                &code,
-                &session.state,
-            )),
+            location: SuccessLocation::Redirect {
+                location: dispatch.location,
+                form_post: dispatch.form_post,
+            },
             sso_session_id,
             user_language: user.language.clone(),
         }
@@ -691,6 +852,26 @@ impl ExternalLoginService {
     }
 
     /// コールバック URL（外部 IdP へ登録する `redirect_uri` と完全一致すること）。
+    /// 本 IdP の SP としての entityID（SAML の `Issuer` / `Audience`）。テナントごとに分ける
+    /// ——同じ entityID を全テナントで使うと、あるテナント向けのアサーションを別テナントの
+    /// ログインへ持ち込める。
+    fn saml_sp_entity_id(&self, tenant: TenantContext) -> String {
+        format!(
+            "{}/{}/saml/sp",
+            self.public_web_base_url,
+            tenant.tenant_id()
+        )
+    }
+
+    /// アサーションを受け取る URL（ACS）。ブラウザが POST する先なので web 側に置く。
+    fn saml_acs_url(&self, tenant: TenantContext, provider_code: &str) -> String {
+        format!(
+            "{}/{}/external/{provider_code}/saml/acs",
+            self.public_web_base_url,
+            tenant.tenant_id()
+        )
+    }
+
     fn redirect_uri(&self, tenant: TenantContext, provider_code: &str) -> String {
         format!(
             "{}/{}/external/{provider_code}/callback",

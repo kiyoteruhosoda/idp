@@ -101,6 +101,10 @@ pub fn build(state: AppState) -> Router {
             "/internal/external/callback",
             post(internal_auth::external_callback),
         )
+        .route(
+            "/internal/external/saml/acs",
+            post(internal_auth::external_saml_acs),
+        )
         // 認証器の統合管理（一覧・状態変更・リカバリーコード・email OTP。AP9）。
         .route(
             "/internal/account/authenticators",
@@ -117,6 +121,19 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/internal/account/email-otp",
             post(internal_auth::account_email_otp),
+        )
+        // SMS OTP と電話番号の登録（AP13）。送信は MFA 待ちの利用者のみ、登録は SSO セッションで。
+        .route(
+            "/internal/account/sms-otp",
+            post(internal_auth::account_sms_otp),
+        )
+        .route(
+            "/internal/account/phone/register",
+            post(internal_auth::account_phone_register),
+        )
+        .route(
+            "/internal/account/phone/confirm",
+            post(internal_auth::account_phone_confirm),
         )
         // Step-up 認証（重要操作の直前の本人確認。AP5）。
         .route(
@@ -193,6 +210,12 @@ pub fn build(state: AppState) -> Router {
             "/internal/logs",
             post(admin_application_logs::ingest_application_logs),
         )
+        // Prometheus メトリクス（G6）。公開面ではなく内部面に置く（誰がいつ何回失敗したかを
+        // 集約した情報であり、外から読めてよい値ではない）。プロキシ遮断 + サービストークンの二重。
+        .route(
+            "/internal/metrics",
+            get(crate::presentation::metrics::metrics_endpoint),
+        )
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             internal_auth::require_service_token,
@@ -204,12 +227,21 @@ pub fn build(state: AppState) -> Router {
         .route("/auth/register", post(register::register))
         .route("/auth/verify-email", post(register::verify_email))
         .route("/authorize", get(authorize::authorize))
-        .route("/token", post(token::token))
+        // トークン系 3 本（クライアント認証 = Argon2 照合を伴う）は負荷ゲートを通す（SEC10）。
+        // ルートを増やすときは、クライアント認証を伴うなら同じゲートへ載せる。
+        .merge(
+            Router::new()
+                .route("/token", post(token::token))
+                .route("/revoke", post(revoke::revoke))
+                .route("/introspect", post(introspect::introspect))
+                .route_layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    crate::presentation::token_endpoint_load::limit_token_endpoint_load,
+                )),
+        )
         .route("/userinfo", get(userinfo::userinfo))
         // `/logout`（end_session_endpoint）は web が受ける（ADR-0018 決定 2）。api はブラウザ
         // Cookie を読まないため、公開の logout ルートを持たない（処理は /internal/logout/rp）。
-        .route("/revoke", post(revoke::revoke))
-        .route("/introspect", post(introspect::introspect))
         // 管理者身元確認（idp.tenant.admin 必須。RequirePerms<IdpAdmin>）。web の管理コンソールが SSO Cookie
         // 転送で認証状態・身元を得るのに使う（ADR-0007 §4）。HTML 画面は web crate 側にある。
         .route("/admin/whoami", get(admin::whoami))
@@ -308,6 +340,11 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/admin/users/{user_id}/mfa-reset",
             post(admin_users::reset_user_mfa),
+        )
+        // アカウントロックの即時解除（AP6。仕様 §17.1・§24.6）。idp.tenant.admin 必須。
+        .route(
+            "/admin/users/{user_id}/unlock",
+            post(admin_users::unlock_user),
         )
         // ログイン識別子の割り当て（AP8。仕様 §4）。idp.tenant.admin 必須。
         .route(
@@ -429,6 +466,11 @@ pub fn build(state: AppState) -> Router {
             cors::apply_cors,
         ))
         .layer(axum::middleware::from_fn(correlation::propagate))
+        // エンドポイント別の所要時間（G6）。`correlation::propagate` より外側に置き、
+        // 相関 ID 付与を含めた「入口から出口まで」を測る。
+        .layer(axum::middleware::from_fn(
+            crate::presentation::metrics::track_http_metrics,
+        ))
         // アクセススパンはパスのみを記録する（クエリ文字列に載る `code`・`code_challenge` を
         // ログへ落とさない。SEC9）。組み立ては web と共有する。
         .layer(TraceLayer::new_for_http().make_span_with(idp_contracts::http_trace::request_span))

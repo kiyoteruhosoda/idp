@@ -39,28 +39,50 @@ pub async fn list(
         AdminResolution::Reject(resp) => return resp,
     };
     let sso = sso(&headers);
-    let tenants = match state
+    let offset = query.offset.unwrap_or(0).max(0);
+    // ページングは api（DB）側で行う（G7）。web はページ位置を引き継ぎ、前後リンクだけを組む。
+    let page = match state
         .api
-        .list_tenants(&correlation.0, &tenant.0, &sso)
+        .list_tenants(
+            &correlation.0,
+            &tenant.0,
+            &sso,
+            &crate::pagination::page_query(offset),
+        )
         .await
     {
         Ok(v) => v,
         Err(AdminApiError::Unauthorized) => return redirect_to_login(&tenant),
         Err(AdminApiError::Forbidden) => return forbidden_response(&headers),
         Err(e) => {
-            tracing::error!(error = %describe(&e), "failed to load tenants");
-            Vec::new()
+            tracing::error!(error = %e, "failed to load tenants");
+            crate::admin_dto::TenantListView {
+                tenants: Vec::new(),
+                total: 0,
+                limit: 0,
+                offset,
+            }
         }
     };
+    let links = crate::pagination::pager_links(
+        &format!("{}{TENANTS_SEGMENT}", tenant.prefix()),
+        &[],
+        offset,
+        page.limit,
+        page.total,
+    );
     let messages = Messages::new(locale(&headers));
     Html(render(&TenantsConsole {
         messages: &messages,
         tenant: &tenant.prefix(),
         admin: Some(&admin),
-        tenants: &tenants,
+        tenants: &page.tenants,
+        total: page.total,
         csrf: &console_csrf_token(&sso, state.config.csrf_secret()),
         error_key: query.error.as_deref().and_then(error_key_for),
         saved: query.saved.as_deref() == Some("tenant"),
+        prev_href: links.prev,
+        next_href: links.next,
     }))
     .into_response()
 }
@@ -95,7 +117,7 @@ pub async fn create(
         Err(AdminApiError::Validation(_)) => return found(&format!("{base}?error=validation")),
         Err(AdminApiError::Conflict(_)) => return found(&format!("{base}?error=conflict")),
         Err(e) => {
-            tracing::error!(error = %describe(&e), "failed to create tenant");
+            tracing::error!(error = %e, "failed to create tenant");
             return found(&format!("{base}?error=internal"));
         }
     };
@@ -151,7 +173,7 @@ pub async fn update(
         Err(AdminApiError::NotFound) => found(&format!("{base}?error=notfound")),
         Err(AdminApiError::Validation(_)) => found(&format!("{base}?error=validation")),
         Err(e) => {
-            tracing::error!(error = %describe(&e), "failed to update tenant");
+            tracing::error!(error = %e, "failed to update tenant");
             found(&format!("{base}?error=internal"))
         }
     }
@@ -190,7 +212,7 @@ pub async fn delete(
         Err(AdminApiError::NotFound) => found(&format!("{base}?error=notfound")),
         Err(AdminApiError::Conflict(_)) => found(&format!("{base}?error=delete-conflict")),
         Err(e) => {
-            tracing::error!(error = %describe(&e), "failed to delete tenant");
+            tracing::error!(error = %e, "failed to delete tenant");
             found(&format!("{base}?error=internal"))
         }
     }
@@ -234,7 +256,7 @@ pub async fn reset_admin_password(
         Err(AdminApiError::NotFound) => return found(&format!("{base}?error=reset-notfound")),
         Err(AdminApiError::Validation(_)) => return found(&format!("{base}?error=validation")),
         Err(e) => {
-            tracing::error!(error = %describe(&e), "failed to reset tenant admin password");
+            tracing::error!(error = %e, "failed to reset tenant admin password");
             return found(&format!("{base}?error=internal"));
         }
     };
@@ -269,17 +291,6 @@ fn sso(headers: &HeaderMap) -> String {
     cookies::get(headers, cookies::SSO_SESSION_COOKIE).unwrap_or_default()
 }
 
-fn describe(e: &AdminApiError) -> String {
-    match e {
-        AdminApiError::Unauthorized => "unauthorized".to_string(),
-        AdminApiError::Forbidden => "forbidden".to_string(),
-        AdminApiError::NotFound => "not_found".to_string(),
-        AdminApiError::Validation(m) => format!("validation: {m}"),
-        AdminApiError::Conflict(m) => format!("conflict: {m}"),
-        AdminApiError::Transport(m) => format!("transport: {m}"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,9 +304,12 @@ mod tests {
             tenant: "/00000000-0000-7000-8000-000000000001",
             admin: Some("admin-1"),
             tenants,
+            total: tenants.len() as i64,
             csrf: "csrf123",
             error_key: None,
             saved,
+            prev_href: None,
+            next_href: None,
         })
     }
 

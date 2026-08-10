@@ -79,7 +79,7 @@ pub async fn restart(
             AdminApiError::Unauthorized => redirect_to_login(&tenant),
             AdminApiError::Forbidden => forbidden_response(&headers),
             other => {
-                tracing::error!(error = %describe(&other), "failed to request an api restart");
+                tracing::error!(error = %other, "failed to request an api restart");
                 found(&format!("{base}?error=restart#runtime-settings"))
             }
         };
@@ -104,15 +104,4 @@ fn schedule_web_shutdown(restart: ServiceRestart) {
         tracing::warn!("restarting the web service after the api restart request");
         restart.request();
     });
-}
-
-fn describe(e: &AdminApiError) -> String {
-    match e {
-        AdminApiError::Unauthorized => "unauthorized".to_string(),
-        AdminApiError::Forbidden => "forbidden".to_string(),
-        AdminApiError::NotFound => "not_found".to_string(),
-        AdminApiError::Validation(m) => format!("validation: {m}"),
-        AdminApiError::Conflict(m) => format!("conflict: {m}"),
-        AdminApiError::Transport(m) => format!("transport: {m}"),
-    }
 }

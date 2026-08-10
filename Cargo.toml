@@ -55,6 +55,10 @@ psl = "2"
 quick-xml = "0.37"
 # SAML HTTP-Redirect binding の DEFLATE 展開（`SAMLRequest` = base64(raw-deflate(xml))）。
 flate2 = "1"
+# 外部 SAML IdP の署名証明書（`<ds:X509Certificate>`）から公開鍵を取り出す（AP12）。
+# 検証に使うのは SubjectPublicKeyInfo だけで、証明書チェーンの検証はしない（信頼の起点は
+# 「管理者がこの証明書を登録した」ことで、CA ではない。ADR-0027）。
+x509-cert = { version = "0.2", default-features = false, features = ["std"] }
 utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
 utoipa-swagger-ui = { version = "9", features = ["axum", "vendored"] }
 fluent = "0.17"
@@ -75,3 +79,9 @@ wiremock = "0.6"
 # danger-allow-state-serialisation: チャレンジ状態の DB 保存に必要（サーバサイドで管理するため安全）。
 # conditional-ui: discoverable credentials（ユーザー名不要のパスキーログイン）のサポート。
 webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation", "conditional-ui"] }
+# メトリクス（G6）。`metrics` は計測の facade（`tracing` と同じ位置づけ）で core・api の双方が使う。
+# 収集とレンダリングは api だけが持つ（`/metrics` を出すのは api のため）。
+# metrics-exporter-prometheus は既定でプッシュゲートウェイ・HTTP リスナを引き込むため既定機能を切り、
+# レンダリングだけを使う（配信は axum のルートで行う）。
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.18", default-features = false }

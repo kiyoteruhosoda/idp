@@ -11,7 +11,7 @@ use crate::presentation::admin::{IdpAdmin, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
     CreateUserRequest, UpdateUserProfileRequest, UpdateUserStatusRequest, UserCreatedResponse,
-    UserMfaResetResponse, UserPasswordResetResponse,
+    UserMfaResetResponse, UserPasswordResetResponse, UserUnlockResponse,
 };
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::{map_permission_management_error, request_context};
@@ -352,6 +352,48 @@ pub async fn reset_user_mfa(
         user_id: reset.user_id.to_string(),
         totp_removed: reset.totp_removed,
         passkeys_removed: reset.passkeys_removed,
+    }))
+}
+
+/// アカウントロックを即時解除する（`POST /{tenant_id}/admin/users/{user_id}/unlock`。AP6）。
+///
+/// ロック期限のクリアと失敗回数のリセットを同時に行う（片方だけだと次の 1 回で再ロックされる）。
+/// ロックされていない利用者へ実行しても成功する（冪等。`was_locked` で区別できる）。
+#[utoipa::path(
+    post,
+    path = "/{tenant_id}/admin/users/{user_id}/unlock",
+    tag = "admin",
+    params(("user_id" = String, Path, description = "対象利用者の内部 ID（UUID）")),
+    responses(
+        (status = 200, description = "解除成功（元からロックされていない場合を含む）", body = UserUnlockResponse),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
+        (status = 404, description = "不存在（所属元が他テナントの場合を含む）"),
+    )
+)]
+pub async fn unlock_user(
+    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
+    headers: HeaderMap,
+    Path((_tenant_id, user_id)): Path<(String, String)>,
+) -> Result<Json<UserUnlockResponse>, ApiError> {
+    let target = parse_user_id(&user_id, locale)?;
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
+    let was_locked = state
+        .users_lifecycle
+        .unlock_account(tenant.context(), target, admin.user_id, &ctx)
+        .await
+        .map_err(|e| map_user_lifecycle_error(e, locale))?;
+    Ok(Json(UserUnlockResponse {
+        user_id: target.to_string(),
+        was_locked,
     }))
 }
 

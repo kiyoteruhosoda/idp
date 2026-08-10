@@ -186,9 +186,11 @@ pub async fn login_complete(
     Ok(Json(match outcome {
         PasskeyAuthOutcome::Success {
             location,
+            form_post,
             sso_session_id,
         } => InternalPasskeyLoginCompleteResponse::Success {
             redirect_to: location,
+            form_post,
             sso_session_id,
             sso_absolute_ttl_secs: ttl,
         },

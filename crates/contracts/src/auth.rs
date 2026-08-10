@@ -38,12 +38,26 @@ pub struct InternalAuthorizeResumeRequest {
 /// 構成の掃除）設定中は再発行に旧 `Domain` 付き Cookie の削除が併送されるため、明示的な
 /// ログイン・ログアウトを経ない既存セッションもサイレント復元の時点で host-only へ移行し、
 /// 旧親ドメイン配下（stg 等）へ bearer credential が送信され続ける露出を閉じる。
+/// `response_mode=form_post` の認可応答で POST する hidden フィールド（G12）。
+///
+/// `None` は `query`（`redirect_to` へ 302 する）。`Some` のとき web は、`redirect_to` を
+/// action にした**自動送信フォーム**を描いてこのフィールドを POST する。
+///
+/// フィールドを URL へ畳んだ形で渡さないのは、`redirect_uri` 自身がクエリを持ち得るため
+/// 「どこまでが RP のクエリでどこからが認可応答か」を URL からは復元できないからである。
+/// この形のとき `redirect_to` には**認可応答のパラメータが載っていない**（見落とした経路が
+/// 302 しても、認可コードが履歴・`Referer` に残らない）。
+pub type FormPostFields = Vec<(String, String)>;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAuthorizeResumeResponse {
     /// SSO 有効かつ同意済み。code 発行済みの `redirect_to`（RP URL）へ 302 する。
     Redirect {
         redirect_to: String,
+        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        #[serde(default)]
+        form_post: Option<FormPostFields>,
         sso_absolute_ttl_secs: u64,
     },
     /// リクエスト続行不可（`prompt=none` で未ログイン・未同意など）。エラーコード付きの
@@ -227,6 +241,9 @@ pub enum InternalAuthenticateResponse {
     /// 認証成功かつ同意済み。`redirect_to`（code 付き RP URL）へ 302 し、`sso_session_id` を Cookie 化する。
     Success {
         redirect_to: String,
+        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        #[serde(default)]
+        form_post: Option<FormPostFields>,
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
         /// ユーザーの表示言語設定（`ja` / `en`。MT20）。None = 未設定。
@@ -354,6 +371,9 @@ pub struct InternalVerifyTotpRequest {
 pub enum InternalVerifyTotpResponse {
     Success {
         redirect_to: String,
+        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        #[serde(default)]
+        form_post: Option<FormPostFields>,
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
         /// ユーザーの表示言語設定（MT20）。web は `lang` Cookie をこの値で上書きする。
@@ -424,6 +444,9 @@ pub enum PasswordRejectionReason {
 pub enum InternalChangePasswordResponse {
     Success {
         redirect_to: String,
+        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        #[serde(default)]
+        form_post: Option<FormPostFields>,
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
     },
@@ -833,7 +856,12 @@ pub struct InternalConsentApproveRequest {
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalConsentApproveResponse {
     /// 同意付与・code 発行成功。`redirect_to`（code 付き RP URL）へ 302 する。
-    Success { redirect_to: String },
+    Success {
+        redirect_to: String,
+        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        #[serde(default)]
+        form_post: Option<FormPostFields>,
+    },
     /// AuthSession が無い・期限切れ。
     SessionExpired,
     /// api 内部エラー。
@@ -858,7 +886,13 @@ pub struct InternalConsentDenyRequest {
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalConsentDenyResponse {
     /// 拒否処理完了。`redirect_to`（`access_denied` エラー付き RP URL）へ 302 する。
-    Ok { redirect_to: String },
+    Ok {
+        redirect_to: String,
+        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        /// エラーも成功と同じ `response_mode` で返す（RP は同じ受け口で待っている）。
+        #[serde(default)]
+        form_post: Option<FormPostFields>,
+    },
     /// AuthSession が無い・期限切れ（RP へのリダイレクトができない）。
     SessionExpired,
     /// api 内部エラー。
@@ -1006,6 +1040,9 @@ pub struct InternalPasskeyLoginCompleteRequest {
 pub enum InternalPasskeyLoginCompleteResponse {
     Success {
         redirect_to: String,
+        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        #[serde(default)]
+        form_post: Option<FormPostFields>,
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
     },
@@ -1349,6 +1386,14 @@ pub enum InternalAuthenticatorsResponse {
         authenticators: Vec<AuthenticatorSummaryResponse>,
         /// 未使用のリカバリーコードの残数。
         recovery_codes_remaining: usize,
+        /// 確認済みの電話番号が登録されているか（AP13）。番号そのものは返さない
+        /// （PII を web へ持ち出さない。画面は「登録済み」か「登録する」かだけを出し分ける）。
+        #[serde(default)]
+        phone_registered: bool,
+        /// SMS ゲートウェイが設定されているか（AP13）。未設定なら登録導線を出さない
+        /// （登録できても送れない画面を並べない）。
+        #[serde(default)]
+        sms_available: bool,
     },
     SessionExpired,
     Internal,
@@ -1439,6 +1484,94 @@ pub enum InternalEmailOtpResponse {
     Internal,
 }
 
+// ── SMS OTP と電話番号の登録（AP13） ─────────────────────────────────────────
+
+/// MFA 待ちの利用者へ SMS OTP を送る要求。解決経路は email OTP と同じ。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalSmsOtpRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    /// OIDC ログインフローの `auth_session_id`（MFA 待ち状態）。
+    #[serde(default)]
+    pub auth_session_id: Option<String>,
+    /// ポータルログインの `mfa_ticket`。
+    #[serde(default)]
+    pub mfa_ticket: Option<String>,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// SMS OTP 送信 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalSmsOtpResponse {
+    /// 送信した（送信先の電話番号は返さない —— PII を web へ持ち出さない）。
+    Sent,
+    /// SMS ゲートウェイが未設定で送れない。
+    Unavailable,
+    /// 送信先の電話番号が未登録・未確認。
+    NotRegistered,
+    /// MFA 待ちの状態ではない（セッション・チケットが無効）。
+    SessionExpired,
+    Internal,
+}
+
+/// 電話番号の登録開始（確認コードの送信）。ログイン済み利用者のセルフサービス操作のため、
+/// 対象は `sso_session_id` から解決する。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalPhoneRegistrationRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+    /// 入力どおりの電話番号（正規化は api 側が行う）。
+    pub phone_number: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// 電話番号の登録開始のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalPhoneRegistrationResponse {
+    /// 確認コードを送った。
+    Sent,
+    /// 電話番号として読めない。
+    InvalidPhoneNumber,
+    /// SMS ゲートウェイが未設定で送れない。
+    Unavailable,
+    Unauthenticated,
+    Internal,
+}
+
+/// 電話番号の登録確認（送られたコードの提示）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalPhoneConfirmationRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+    pub code: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// 電話番号の登録確認のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalPhoneConfirmationResponse {
+    /// 確認できた（以後 SMS OTP が使える）。
+    Confirmed,
+    /// コードが合わない・期限切れ・確認待ちの登録が無い。
+    InvalidCode,
+    Unauthenticated,
+    Internal,
+}
+
 // ── 外部 IdP ログイン（AP10） ────────────────────────────────────────────────
 
 /// ログイン画面に並べる外部 IdP 1 件（有効なもののみ）。
@@ -1501,6 +1634,24 @@ pub struct InternalExternalCallbackRequest {
     pub user_agent: Option<String>,
 }
 
+/// 外部 SAML IdP のアサーションを受け取る API のリクエスト（AP12。ADR-0027）。
+///
+/// ブラウザが HTTP-POST binding で web の ACS へ運んできた値をそのまま api へ渡す。
+/// **どちらも未検証**である（署名を確かめるのは api 側）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalExternalSamlAcsRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    /// `SAMLResponse`（base64(XML)）。
+    pub saml_response: String,
+    /// `RelayState`（開始時に発行した値。進行状態を引く鍵）。
+    pub relay_state: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
 /// 外部 IdP からのコールバック API のレスポンス。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
@@ -1515,6 +1666,9 @@ pub enum InternalExternalCallbackResponse {
         sso_absolute_ttl_secs: u64,
         #[serde(default)]
         redirect_to: Option<String>,
+        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        #[serde(default)]
+        form_post: Option<FormPostFields>,
         #[serde(default)]
         user_language: Option<String>,
     },

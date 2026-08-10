@@ -11,15 +11,15 @@ use crate::domain::values::{ClientStatus, ClientType, TokenEndpointAuthMethod};
 use crate::presentation::admin::{IdpAdmin, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
-    ClientCreatedResponse, ClientRegisterRequest, ClientResponse, ClientSecretResponse,
-    ClientUpdateRequest,
+    ClientCreatedResponse, ClientListResponse, ClientRegisterRequest, ClientResponse,
+    ClientSecretResponse, ClientUpdateRequest, PageQueryParams,
 };
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
 use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
-use axum::extract::{Extension, Path, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 
@@ -81,13 +81,17 @@ pub async fn create_client(
     ))
 }
 
-/// 登録済みクライアントを新しい順に一覧する。
+/// 登録済みクライアントを新しい順に 1 ページ分と総件数で返す（G7）。
+///
+/// ページングは DB 側で行う。全件を返す方式は、テナント内のクライアント数に比例して
+/// 応答が膨らむため採らない（`/admin/members` と同じ方針）。
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/clients",
     tag = "admin",
+    params(PageQueryParams),
     responses(
-        (status = 200, description = "クライアント一覧", body = [ClientResponse]),
+        (status = 200, description = "クライアント一覧（1 ページ分と総件数）", body = ClientListResponse),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
     )
@@ -97,13 +101,19 @@ pub async fn list_clients(
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
-) -> Result<Json<Vec<ClientResponse>>, ApiError> {
-    let clients = state
+    Query(params): Query<PageQueryParams>,
+) -> Result<Json<ClientListResponse>, ApiError> {
+    let result = state
         .clients_admin
-        .list(tenant.context())
+        .list_page(tenant.context(), params.limit, params.offset)
         .await
         .map_err(|e| map_error(e, locale))?;
-    Ok(Json(clients.iter().map(client_response).collect()))
+    Ok(Json(ClientListResponse {
+        clients: result.page.items.iter().map(client_response).collect(),
+        total: result.page.total,
+        limit: result.applied.limit(),
+        offset: result.applied.offset(),
+    }))
 }
 
 /// 単一クライアントを取得する。

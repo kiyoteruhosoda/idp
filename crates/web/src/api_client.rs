@@ -8,7 +8,7 @@
 //! テナント id は web の経路（`crate::tenant::WebTenant`）から呼び出し側が明示的に渡す（MT13）。
 
 use crate::admin_dto::{
-    ApiErrorBody, AuditLogView, ClientCreatedView, ClientSecretView, ClientView,
+    ApiErrorBody, AuditLogView, ClientCreatedView, ClientListView, ClientSecretView, ClientView,
     InvitationCreatedView, MemberListView, UserCreatedView,
 };
 use idp_contracts::admin::{
@@ -83,6 +83,23 @@ pub enum AdminApiError {
     Conflict(String),
     /// ネットワーク/デコード/想定外ステータス。
     Transport(String),
+}
+
+/// 運用ログ向けの表現（運用言語＝英語。`CLAUDE.md`「多言語化の対象範囲」）。
+///
+/// 画面へ出す文言は各ハンドラが翻訳キーから解決する。ここが返すのは**ログに出す理由**で、
+/// 各ハンドラで同じ `match` を書き直さないために型側へ置く。
+impl std::fmt::Display for AdminApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unauthorized => write!(f, "unauthorized"),
+            Self::Forbidden => write!(f, "forbidden"),
+            Self::NotFound => write!(f, "not_found"),
+            Self::Validation(m) => write!(f, "validation: {m}"),
+            Self::Conflict(m) => write!(f, "conflict: {m}"),
+            Self::Transport(m) => write!(f, "transport: {m}"),
+        }
+    }
 }
 
 /// 管理者の SSO Cookie を api の `/admin/*`（`RequirePerms<IdpAdmin>`）へ転送した結果（ADR-0007 §4）。
@@ -568,22 +585,16 @@ impl ApiClient {
 
     // ── 管理コンソール → JSON 管理 API（`/{tenant_id}/admin/*`、SSO Cookie 転送）───────────────
 
-    /// クライアント一覧（`GET /admin/clients`）。
+    /// クライアント一覧の 1 ページ分（`GET /admin/clients`。G7）。ページングは api（DB）側で行う。
     pub async fn list_clients(
         &self,
         correlation_id: &str,
         tenant_id: &str,
         sso: &str,
-    ) -> Result<Vec<ClientView>, AdminApiError> {
-        self.admin_send(
-            Method::GET,
-            tenant_id,
-            "/admin/clients",
-            correlation_id,
-            sso,
-            None,
-        )
-        .await
+        query: &[(&str, String)],
+    ) -> Result<ClientListView, AdminApiError> {
+        self.admin_get_with_query(tenant_id, "/admin/clients", correlation_id, sso, query)
+            .await
     }
 
     /// 単一クライアント（`GET /admin/clients/{id}`）。
@@ -874,6 +885,184 @@ impl ApiClient {
             Method::POST,
             tenant_id,
             &format!("/admin/users/{user_id}/mfa-reset"),
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
+    /// アカウントロックの即時解除（`POST /admin/users/{user_id}/unlock`。AP6）。
+    /// ロック期限のクリアと失敗回数のリセットを api 側が同時に行う。
+    pub async fn unlock_user(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        user_id: &str,
+    ) -> Result<crate::admin_dto::UserUnlockView, AdminApiError> {
+        self.admin_send(
+            Method::POST,
+            tenant_id,
+            &format!("/admin/users/{user_id}/unlock"),
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
+    // ── 外部 IdP 設定・ログイン識別子（AP16。API は AP10 / AP8）────────────────
+
+    /// 外部 IdP 設定の一覧（`GET /admin/external-idps`）。
+    pub async fn list_external_idps(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+    ) -> Result<Vec<crate::admin_dto::ExternalIdpView>, AdminApiError> {
+        self.admin_send(
+            Method::GET,
+            tenant_id,
+            "/admin/external-idps",
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
+    /// 外部 IdP 設定の作成（`POST /admin/external-idps`）。
+    pub async fn create_external_idp(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        body: serde_json::Value,
+    ) -> Result<crate::admin_dto::ExternalIdpView, AdminApiError> {
+        self.admin_send(
+            Method::POST,
+            tenant_id,
+            "/admin/external-idps",
+            correlation_id,
+            sso,
+            Some(body),
+        )
+        .await
+    }
+
+    /// 外部 IdP 設定の部分更新（`PATCH /admin/external-idps/{id}`）。
+    pub async fn update_external_idp(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        id: &str,
+        body: serde_json::Value,
+    ) -> Result<crate::admin_dto::ExternalIdpView, AdminApiError> {
+        self.admin_send(
+            Method::PATCH,
+            tenant_id,
+            &format!("/admin/external-idps/{id}"),
+            correlation_id,
+            sso,
+            Some(body),
+        )
+        .await
+    }
+
+    /// 外部 IdP 設定の削除（`DELETE /admin/external-idps/{id}`）。
+    pub async fn delete_external_idp(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        id: &str,
+    ) -> Result<(), AdminApiError> {
+        self.admin_send_no_content(
+            Method::DELETE,
+            tenant_id,
+            &format!("/admin/external-idps/{id}"),
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
+    /// 利用者のログイン識別子一覧（`GET /admin/users/{user_id}/login-identifiers`）。
+    pub async fn list_login_identifiers(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        user_id: &str,
+    ) -> Result<Vec<crate::admin_dto::LoginIdentifierView>, AdminApiError> {
+        self.admin_send(
+            Method::GET,
+            tenant_id,
+            &format!("/admin/users/{user_id}/login-identifiers"),
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
+    /// ログイン識別子の追加（`POST /admin/users/{user_id}/login-identifiers`）。
+    pub async fn add_login_identifier(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        user_id: &str,
+        body: serde_json::Value,
+    ) -> Result<crate::admin_dto::LoginIdentifierView, AdminApiError> {
+        self.admin_send(
+            Method::POST,
+            tenant_id,
+            &format!("/admin/users/{user_id}/login-identifiers"),
+            correlation_id,
+            sso,
+            Some(body),
+        )
+        .await
+    }
+
+    /// ログイン識別子の有効/無効切り替え（`PATCH .../login-identifiers/{id}`）。
+    pub async fn set_login_identifier_active(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        user_id: &str,
+        identifier_id: &str,
+        is_active: bool,
+    ) -> Result<crate::admin_dto::LoginIdentifierView, AdminApiError> {
+        self.admin_send(
+            Method::PATCH,
+            tenant_id,
+            &format!("/admin/users/{user_id}/login-identifiers/{identifier_id}"),
+            correlation_id,
+            sso,
+            Some(serde_json::json!({ "is_active": is_active })),
+        )
+        .await
+    }
+
+    /// ログイン識別子の削除（`DELETE .../login-identifiers/{id}`）。
+    pub async fn delete_login_identifier(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        user_id: &str,
+        identifier_id: &str,
+    ) -> Result<(), AdminApiError> {
+        self.admin_send_no_content(
+            Method::DELETE,
+            tenant_id,
+            &format!("/admin/users/{user_id}/login-identifiers/{identifier_id}"),
             correlation_id,
             sso,
             None,
@@ -1368,6 +1557,37 @@ impl ApiClient {
         Self::handle_admin_response(response, path).await
     }
 
+    /// クエリ文字列を添えて GET する `admin_send` の亜種（一覧のページング。G7）。
+    /// パスへ文字列連結せず reqwest に組み立てさせるのは、値のパーセントエンコードを
+    /// 呼び出し側ごとに書かないため。
+    async fn admin_get_with_query<T>(
+        &self,
+        tenant_id: &str,
+        path: &str,
+        correlation_id: &str,
+        sso: &str,
+        query: &[(&str, String)],
+    ) -> Result<T, AdminApiError>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        let response = self
+            .with_language(
+                self.http
+                    .get(format!("{}/{}{}", self.base_url, tenant_id, path))
+                    .query(query)
+                    .header(REQUEST_ID_HEADER, correlation_id)
+                    .header(
+                        reqwest::header::COOKIE,
+                        format!("{SSO_SESSION_COOKIE}={sso}"),
+                    ),
+            )
+            .send()
+            .await
+            .map_err(|e| AdminApiError::Transport(e.to_string()))?;
+        Self::handle_admin_response(response, path).await
+    }
+
     /// 本文の無い成功応答（204 等）を期待する `admin_send` の亜種。
     async fn admin_send_no_content(
         &self,
@@ -1446,20 +1666,20 @@ impl ApiClient {
 
     // ── 設定画面（MT14）─────────────────────────────────────────────────────
 
-    /// 子テナント一覧（`GET /admin/tenants`。idp.system.admin 必須）。
+    /// 子テナント一覧の 1 ページ分（`GET /admin/tenants`。idp.system.admin 必須。G7）。
     pub async fn list_tenants(
         &self,
         correlation_id: &str,
         tenant_id: &str,
         sso_session_id: &str,
-    ) -> Result<Vec<crate::admin_dto::TenantView>, AdminApiError> {
-        self.admin_send(
-            Method::GET,
+        query: &[(&str, String)],
+    ) -> Result<crate::admin_dto::TenantListView, AdminApiError> {
+        self.admin_get_with_query(
             tenant_id,
             "/admin/tenants",
             correlation_id,
             sso_session_id,
-            None,
+            query,
         )
         .await
     }
@@ -1738,6 +1958,16 @@ impl ApiClient {
             .await
     }
 
+    /// 外部 SAML IdP のアサーションを api へ渡して検証させる（AP12）。
+    pub async fn external_saml_acs(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalExternalSamlAcsRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalExternalCallbackResponse> {
+        self.post_internal("/internal/external/saml/acs", correlation_id, req)
+            .await
+    }
+
     /// 登録済み認証器の一覧とリカバリーコードの残数を取得する（AP9）。
     pub async fn account_authenticators(
         &self,
@@ -1779,6 +2009,36 @@ impl ApiClient {
         req: &idp_contracts::auth::InternalEmailOtpRequest,
     ) -> anyhow::Result<idp_contracts::auth::InternalEmailOtpResponse> {
         self.post_internal("/internal/account/email-otp", correlation_id, req)
+            .await
+    }
+
+    /// MFA 待ちの利用者へ SMS OTP を送る（AP13）。
+    pub async fn account_sms_otp(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalSmsOtpRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalSmsOtpResponse> {
+        self.post_internal("/internal/account/sms-otp", correlation_id, req)
+            .await
+    }
+
+    /// 電話番号の登録開始（確認コードの送信。AP13）。
+    pub async fn account_phone_register(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalPhoneRegistrationRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalPhoneRegistrationResponse> {
+        self.post_internal("/internal/account/phone/register", correlation_id, req)
+            .await
+    }
+
+    /// 電話番号の登録確認（AP13）。
+    pub async fn account_phone_confirm(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalPhoneConfirmationRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalPhoneConfirmationResponse> {
+        self.post_internal("/internal/account/phone/confirm", correlation_id, req)
             .await
     }
 

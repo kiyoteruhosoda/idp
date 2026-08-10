@@ -78,6 +78,45 @@
   </div>
 </div>
 
+{% if sms_available %}
+<div class="card mb-4" id="phone">
+  <div class="card-header d-flex align-items-center"><i class="fa-solid fa-comment-sms me-2" aria-hidden="true"></i>{{ messages.get("authenticators-phone-heading") }}</div>
+  <div class="card-body">
+    <p class="text-muted small">{{ messages.get("authenticators-phone-help") }}</p>
+    {% if phone_registered %}
+    <p class="mb-3"><span class="badge text-bg-success"><i class="fa-solid fa-circle-check me-1" aria-hidden="true"></i>{{ messages.get("authenticators-phone-registered") }}</span></p>
+    {% endif %}
+    {% if awaiting_phone_code %}
+    {# 確認待ち。番号そのものは画面へ渡していない（PII を web へ持ち出さない）ので、
+       「送った」ことだけを伝えてコードの入力を求める。 #}
+    <form method="post" action="{{ tenant }}/settings/authenticators/phone/confirm" class="row g-2 align-items-end">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <div class="col-auto">
+        <label class="form-label" for="phone-code">{{ messages.get("authenticators-phone-code") }}</label>
+        <input class="form-control" id="phone-code" name="code" inputmode="numeric" autocomplete="one-time-code" required>
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-primary">{{ messages.get("authenticators-phone-confirm") }}</button>
+      </div>
+    </form>
+    <div class="form-text mt-2">{{ messages.get("authenticators-phone-code-help") }}</div>
+    {% else %}
+    <form method="post" action="{{ tenant }}/settings/authenticators/phone" class="row g-2 align-items-end">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <div class="col-auto">
+        <label class="form-label" for="phone-number">{{ messages.get("authenticators-phone-number") }}</label>
+        <input class="form-control" id="phone-number" name="phone_number" inputmode="tel" autocomplete="tel" placeholder="+81 90 1234 5678" required>
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-outline-primary">{% if phone_registered %}{{ messages.get("authenticators-phone-replace") }}{% else %}{{ messages.get("authenticators-phone-register") }}{% endif %}</button>
+      </div>
+    </form>
+    <div class="form-text mt-2">{{ messages.get("authenticators-phone-number-help") }}</div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
 <div class="card mb-4" id="recovery-codes">
   <div class="card-header d-flex align-items-center"><i class="fa-solid fa-life-ring me-2" aria-hidden="true"></i>{{ messages.get("authenticators-recovery-heading") }}</div>
   <div class="card-body">

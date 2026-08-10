@@ -50,6 +50,7 @@ pub async fn authorize(
         acr_values: params.acr_values,
         login_hint: params.login_hint,
         ui_locales: params.ui_locales,
+        response_mode: params.response_mode,
     };
 
     match state.authorize.authorize(tenant.context(), request).await {
@@ -105,7 +106,11 @@ pub async fn authorize_resume(
     // （ログイン成功時の発行と同じ値。旧 Domain Cookie の移行にも使われる）。
     let ttl = state.config.sso_absolute_ttl().as_secs();
     Ok(Json(match outcome {
-        ResumeOutcome::Redirect { location } => InternalAuthorizeResumeResponse::Redirect {
+        ResumeOutcome::Redirect {
+            location,
+            form_post,
+        } => InternalAuthorizeResumeResponse::Redirect {
+            form_post,
             redirect_to: location,
             sso_absolute_ttl_secs: ttl,
         },

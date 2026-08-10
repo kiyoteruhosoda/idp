@@ -29,7 +29,7 @@ use crate::application::audit::RequestContext;
 use crate::application::authenticator_management::AuthenticatorManagementError;
 use crate::application::change_password::{ChangePasswordCommand, ChangePasswordOutcome};
 use crate::application::external_login::{
-    CallbackCommand, CallbackOutcome, StartOutcome, SuccessLocation,
+    CallbackCommand, CallbackOutcome, SamlAcsCommand, StartOutcome, SuccessLocation,
 };
 use crate::application::login::{LoginCommand, LoginOutcome};
 use crate::application::password_reset::{RequestResetOutcome, ResetPasswordOutcome};
@@ -74,7 +74,10 @@ use idp_contracts::auth::{
     AuthenticatorSummaryResponse, InternalAuthenticatorStatusRequest,
     InternalAuthenticatorStatusResponse, InternalAuthenticatorsRequest,
     InternalAuthenticatorsResponse, InternalEmailOtpRequest, InternalEmailOtpResponse,
-    InternalRecoveryCodesRequest, InternalRecoveryCodesResponse,
+    InternalPhoneConfirmationRequest, InternalPhoneConfirmationResponse,
+    InternalPhoneRegistrationRequest, InternalPhoneRegistrationResponse,
+    InternalRecoveryCodesRequest, InternalRecoveryCodesResponse, InternalSmsOtpRequest,
+    InternalSmsOtpResponse,
 };
 use idp_contracts::auth::{
     ExternalIdpButton, InternalExternalCallbackRequest, InternalExternalCallbackResponse,
@@ -137,10 +140,12 @@ pub async fn authenticate(
     Ok(Json(match outcome {
         LoginOutcome::Success {
             location,
+            form_post,
             sso_session_id,
             user_language,
         } => InternalAuthenticateResponse::Success {
             redirect_to: location,
+            form_post,
             sso_session_id,
             sso_absolute_ttl_secs: ttl,
             user_language,
@@ -249,9 +254,11 @@ pub async fn change_password(
     Ok(Json(match outcome {
         ChangePasswordOutcome::Success {
             location,
+            form_post,
             sso_session_id,
         } => InternalChangePasswordResponse::Success {
             redirect_to: location,
+            form_post,
             sso_session_id,
             sso_absolute_ttl_secs: ttl,
         },
@@ -1006,7 +1013,152 @@ pub async fn account_authenticators(
             })
             .collect(),
         recovery_codes_remaining,
+        phone_registered: state
+            .authenticators
+            .has_confirmed_phone(user_id)
+            .await
+            .unwrap_or(false),
+        // ゲートウェイ未設定なら登録導線を出さない（登録できても送れない画面を並べない）。
+        sms_available: state
+            .system_settings
+            .sms_gateway()
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|g| g.is_usable()),
     }))
+}
+
+/// SMS OTP の送信（`POST /internal/account/sms-otp`。AP13）。
+///
+/// email OTP と同じく **MFA 待ちの利用者**にだけ送る（未認証の要求で SMS を撃たせない。
+/// SMS は 1 通ごとに費用が発生するので、この制限はコストの防御でもある）。
+pub async fn account_sms_otp(
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Json(req): Json<InternalSmsOtpRequest>,
+) -> Result<Json<InternalSmsOtpResponse>, Response> {
+    let ctx = RequestContext {
+        correlation_id: correlation.0,
+        ip_address: req.ip_address,
+        user_agent: req.user_agent,
+    };
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+
+    let user_id = match (req.auth_session_id.as_deref(), req.mfa_ticket.as_deref()) {
+        (Some(auth_session_id), _) if !auth_session_id.is_empty() => {
+            state
+                .mfa_login
+                .pending_mfa_user(tenant, auth_session_id)
+                .await
+        }
+        (_, Some(ticket)) if !ticket.is_empty() => {
+            state.portal_login.pending_mfa_user(tenant, ticket)
+        }
+        _ => None,
+    };
+    let Some(user_id) = user_id else {
+        return Ok(Json(InternalSmsOtpResponse::SessionExpired));
+    };
+
+    Ok(Json(
+        match state
+            .authenticators
+            .send_sms_otp(tenant.tenant_id(), user_id, &ctx)
+            .await
+        {
+            Ok(()) => InternalSmsOtpResponse::Sent,
+            Err(AuthenticatorManagementError::SmsUnavailable) => {
+                InternalSmsOtpResponse::Unavailable
+            }
+            Err(AuthenticatorManagementError::PhoneNotRegistered) => {
+                InternalSmsOtpResponse::NotRegistered
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "sms otp send failed");
+                InternalSmsOtpResponse::Internal
+            }
+        },
+    ))
+}
+
+/// 電話番号の登録開始（`POST /internal/account/phone/register`。AP13）。
+/// ログイン済み利用者のセルフサービス操作のため、対象は SSO セッションから解決する。
+pub async fn account_phone_register(
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Json(req): Json<InternalPhoneRegistrationRequest>,
+) -> Result<Json<InternalPhoneRegistrationResponse>, Response> {
+    let ctx = RequestContext {
+        correlation_id: correlation.0,
+        ip_address: req.ip_address,
+        user_agent: req.user_agent,
+    };
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let Some(user_id) = state
+        .admin_access
+        .authenticated_user(Some(&req.sso_session_id))
+        .await
+    else {
+        return Ok(Json(InternalPhoneRegistrationResponse::Unauthenticated));
+    };
+
+    Ok(Json(
+        match state
+            .authenticators
+            .start_phone_registration(tenant.tenant_id(), user_id, &req.phone_number, &ctx)
+            .await
+        {
+            Ok(()) => InternalPhoneRegistrationResponse::Sent,
+            Err(AuthenticatorManagementError::InvalidPhoneNumber) => {
+                InternalPhoneRegistrationResponse::InvalidPhoneNumber
+            }
+            Err(AuthenticatorManagementError::SmsUnavailable) => {
+                InternalPhoneRegistrationResponse::Unavailable
+            }
+            Err(e) => {
+                // 電話番号は PII なので、失敗ログにも載せない（エラー側にも含まれない）。
+                tracing::error!(error = %e, "phone registration failed");
+                InternalPhoneRegistrationResponse::Internal
+            }
+        },
+    ))
+}
+
+/// 電話番号の登録確認（`POST /internal/account/phone/confirm`。AP13）。
+pub async fn account_phone_confirm(
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Json(req): Json<InternalPhoneConfirmationRequest>,
+) -> Result<Json<InternalPhoneConfirmationResponse>, Response> {
+    let ctx = RequestContext {
+        correlation_id: correlation.0,
+        ip_address: req.ip_address,
+        user_agent: req.user_agent,
+    };
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let Some(user_id) = state
+        .admin_access
+        .authenticated_user(Some(&req.sso_session_id))
+        .await
+    else {
+        return Ok(Json(InternalPhoneConfirmationResponse::Unauthenticated));
+    };
+
+    Ok(Json(
+        match state
+            .authenticators
+            .confirm_phone_registration(tenant.tenant_id(), user_id, &req.code, &ctx)
+            .await
+        {
+            Ok(true) => InternalPhoneConfirmationResponse::Confirmed,
+            Ok(false) => InternalPhoneConfirmationResponse::InvalidCode,
+            Err(e) => {
+                tracing::error!(error = %e, "phone confirmation failed");
+                InternalPhoneConfirmationResponse::Internal
+            }
+        },
+    ))
 }
 
 /// 認証器の状態変更（`POST /internal/account/authenticators/status`。AP9）。
@@ -1230,15 +1382,24 @@ pub async fn external_callback(
                 location,
                 sso_session_id,
                 user_language,
-            } => InternalExternalCallbackResponse::Success {
-                sso_session_id,
-                sso_absolute_ttl_secs: ttl,
-                redirect_to: match location {
-                    SuccessLocation::Redirect(url) => Some(url),
-                    SuccessLocation::Account => None,
-                },
-                user_language,
-            },
+            } => {
+                // 認可フローの続きなら送信先とフォームフィールドの両方を渡す（G12）。
+                // 認可フローの外（アカウント設定から始めた連携）は戻り先を web が決める。
+                let (redirect_to, form_post) = match location {
+                    SuccessLocation::Redirect {
+                        location,
+                        form_post,
+                    } => (Some(location), form_post),
+                    SuccessLocation::Account => (None, None),
+                };
+                InternalExternalCallbackResponse::Success {
+                    sso_session_id,
+                    sso_absolute_ttl_secs: ttl,
+                    redirect_to,
+                    form_post,
+                    user_language,
+                }
+            }
             CallbackOutcome::ConsentRequired {
                 auth_session_id,
                 sso_session_id,
@@ -1262,6 +1423,78 @@ pub async fn external_callback(
     ))
 }
 
+/// 外部 SAML IdP のアサーションを受け取る（ACS。AP12）。
+///
+/// 応答の形は OIDC のコールバックと**同じ**（`InternalExternalCallbackResponse`）。プロトコルが
+/// 違うのは「誰が認証されたかをどう確かめるか」までで、そこから先の結果は同じだからである。
+pub async fn external_saml_acs(
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Json(req): Json<idp_contracts::auth::InternalExternalSamlAcsRequest>,
+) -> Result<Json<InternalExternalCallbackResponse>, Response> {
+    let ctx = RequestContext {
+        correlation_id: correlation.0,
+        ip_address: req.ip_address,
+        user_agent: req.user_agent,
+    };
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let ttl = state.config.sso_absolute_ttl().as_secs();
+    Ok(Json(
+        match state
+            .external_login
+            .saml_acs(
+                tenant,
+                SamlAcsCommand {
+                    saml_response: req.saml_response,
+                    relay_state: req.relay_state,
+                },
+                &ctx,
+            )
+            .await
+        {
+            CallbackOutcome::Success {
+                location,
+                sso_session_id,
+                user_language,
+            } => {
+                let (redirect_to, form_post) = match location {
+                    SuccessLocation::Redirect {
+                        location,
+                        form_post,
+                    } => (Some(location), form_post),
+                    SuccessLocation::Account => (None, None),
+                };
+                InternalExternalCallbackResponse::Success {
+                    sso_session_id,
+                    sso_absolute_ttl_secs: ttl,
+                    redirect_to,
+                    form_post,
+                    user_language,
+                }
+            }
+            CallbackOutcome::ConsentRequired {
+                auth_session_id,
+                sso_session_id,
+                user_language,
+            } => InternalExternalCallbackResponse::ConsentRequired {
+                auth_session_id,
+                sso_session_id,
+                sso_absolute_ttl_secs: ttl,
+                user_language,
+            },
+            CallbackOutcome::StateExpired => InternalExternalCallbackResponse::StateExpired,
+            CallbackOutcome::NotLinked => InternalExternalCallbackResponse::NotLinked,
+            CallbackOutcome::UserUnavailable => InternalExternalCallbackResponse::UserUnavailable,
+            CallbackOutcome::PolicyDenied => InternalExternalCallbackResponse::PolicyDenied,
+            CallbackOutcome::ExternalFailure => InternalExternalCallbackResponse::ExternalFailure,
+            CallbackOutcome::Internal(e) => {
+                tracing::error!(error = %e, "external saml acs failed");
+                InternalExternalCallbackResponse::Internal
+            }
+        },
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1278,6 +1511,7 @@ mod tests {
     #[test]
     fn authenticate_response_is_tagged_by_result() {
         let success = InternalAuthenticateResponse::Success {
+            form_post: None,
             redirect_to: "https://rp.example.com/cb?code=abc&state=s".to_string(),
             sso_session_id: "sso-123".to_string(),
             sso_absolute_ttl_secs: 86_400,

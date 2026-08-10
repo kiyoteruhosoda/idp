@@ -14,10 +14,13 @@ use crate::domain::crypto;
 use crate::domain::error::{DomainError, Result};
 use crate::domain::mailer::SmtpServerConfig;
 use crate::domain::repositories::SystemSettingsRepository;
+use crate::domain::sms::SmsGatewayConfig;
 use crate::domain::system_setting::{
     ensure_override_is_bootable, runtime_setting_definition, validate_public_base_url,
-    DeploymentState, SettingKind, SettingOwner, SmtpSettingsView, SystemSetting, UpdateSmtpCommand,
-    SMTP_FROM_ADDRESS, SMTP_HOST, SMTP_PASSWORD, SMTP_PORT, SMTP_USERNAME, SMTP_USE_TLS,
+    DeploymentState, SettingKind, SettingOwner, SmsSettingsView, SmtpSettingsView, SystemSetting,
+    UpdateSmsCommand, UpdateSmtpCommand, SMS_AUTH_HEADER, SMS_AUTH_TOKEN, SMS_GATEWAY_URL,
+    SMS_SENDER_ID, SMTP_FROM_ADDRESS, SMTP_HOST, SMTP_PASSWORD, SMTP_PORT, SMTP_USERNAME,
+    SMTP_USE_TLS,
 };
 use crate::domain::tenant_context::TenantContext;
 use std::collections::HashMap;
@@ -152,6 +155,93 @@ impl SystemSettingsService {
             .await;
 
         self.get_smtp().await
+    }
+
+    /// SMS 送信用にゲートウェイ接続情報（復号済みトークン込み）を返す（AP13）。**画面表示には
+    /// 使わない**（表示用は `get_sms`）。URL が未設定なら `None`（SMS 送信は無効）。
+    /// 返り値の秘匿値をログ・監査に出さないこと。
+    pub async fn sms_gateway(&self) -> Result<Option<SmsGatewayConfig>> {
+        let map = self.load_map().await?;
+        let endpoint_url = map.get(SMS_GATEWAY_URL).cloned().unwrap_or_default();
+        if endpoint_url.trim().is_empty() {
+            return Ok(None);
+        }
+        let auth_token = match map.get(SMS_AUTH_TOKEN).filter(|v| !v.is_empty()) {
+            Some(stored) => {
+                let bytes = crypto::decrypt(stored, &self.key_encryption_key)
+                    .map_err(|e| DomainError::Repository(format!("sms token decrypt: {e}")))?;
+                String::from_utf8(bytes)
+                    .map_err(|_| DomainError::Repository("sms token is not UTF-8".into()))?
+            }
+            None => String::new(),
+        };
+        Ok(Some(SmsGatewayConfig {
+            endpoint_url,
+            auth_header: map.get(SMS_AUTH_HEADER).cloned().unwrap_or_default(),
+            auth_token,
+            sender_id: map.get(SMS_SENDER_ID).cloned().unwrap_or_default(),
+        }))
+    }
+
+    /// SMS ゲートウェイ設定を取得する。トークンは平文を返さず「設定済みか否か」のみ返す。
+    pub async fn get_sms(&self) -> Result<SmsSettingsView> {
+        let map = self.load_map().await?;
+        Ok(SmsSettingsView {
+            gateway_url: map.get(SMS_GATEWAY_URL).cloned().unwrap_or_default(),
+            auth_header: map.get(SMS_AUTH_HEADER).cloned().unwrap_or_default(),
+            auth_token_set: map
+                .get(SMS_AUTH_TOKEN)
+                .map(|v| !v.is_empty())
+                .unwrap_or(false),
+            sender_id: map.get(SMS_SENDER_ID).cloned().unwrap_or_default(),
+        })
+    }
+
+    /// SMS ゲートウェイ設定を保存する。`auth_token` が `Some` のときのみトークンを暗号化して
+    /// 上書きする（`None` は現行維持、`Some("")` は消去。SMTP パスワードと同じ規則）。
+    pub async fn update_sms(
+        &self,
+        tenant: TenantContext,
+        cmd: UpdateSmsCommand,
+        actor: Uuid,
+        ctx: &RequestContext,
+    ) -> Result<SmsSettingsView> {
+        self.upsert_plain(SMS_GATEWAY_URL, cmd.gateway_url.trim())
+            .await?;
+        self.upsert_plain(SMS_AUTH_HEADER, cmd.auth_header.trim())
+            .await?;
+        self.upsert_plain(SMS_SENDER_ID, cmd.sender_id.trim())
+            .await?;
+
+        if let Some(token) = cmd.auth_token {
+            let stored = if token.is_empty() {
+                String::new()
+            } else {
+                crypto::encrypt(token.as_bytes(), &self.key_encryption_key)
+                    .map_err(|e| DomainError::Repository(format!("sms token encrypt: {e}")))?
+            };
+            self.repo
+                .upsert(&SystemSetting {
+                    key: SMS_AUTH_TOKEN.to_string(),
+                    value: stored,
+                    is_secret: true,
+                })
+                .await?;
+        }
+
+        self.audit
+            .record(
+                AuditEventType::SystemSettingsUpdated,
+                AuditResult::Success,
+                Some(tenant.tenant_id()),
+                Some(actor),
+                None,
+                Some("sms"),
+                ctx,
+            )
+            .await;
+
+        self.get_sms().await
     }
 
     /// DB に保存されているランタイム設定（`RUNTIME_SETTING_DEFINITIONS` のキー）の上書き値を返す

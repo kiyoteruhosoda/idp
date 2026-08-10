@@ -204,6 +204,11 @@ pub struct UserLoginIdentifier {
     pub normalized_value: String,
     /// `false` ならログイン欄で一致しない。
     pub is_active: bool,
+    /// 主たるログイン識別子か（AP15）。1 利用者につき 1 行まで（DB の UNIQUE で保証）。
+    ///
+    /// 主識別子は**識別子単位では変更・削除できない**（変えるならプロフィール編集、止めるなら
+    /// アカウントの無効化）。追加の識別子とは扱いが違うため、種別ではなくこの列で区別する。
+    pub is_primary: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

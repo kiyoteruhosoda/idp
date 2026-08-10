@@ -59,7 +59,23 @@
       });
       if (!completeRes.ok) throw new Error('Server error (complete)');
       const result = await completeRes.json();
-      if (result.redirect_to) {
+      if (result.redirect_to && result.form_post) {
+        // response_mode=form_post（G12）: 認可コードを URL ではなくフォーム本文で RP へ渡す。
+        // 他の経路はサーバ側で自動送信フォームを描くが、パスキーだけは応答が JSON なので
+        // ここで組み立てて送る。
+        const form = document.createElement('form');
+        form.method = 'post';
+        form.action = result.redirect_to;
+        for (const [name, value] of result.form_post) {
+          const input = document.createElement('input');
+          input.type = 'hidden';
+          input.name = name;
+          input.value = value;
+          form.appendChild(input);
+        }
+        document.body.appendChild(form);
+        form.submit();
+      } else if (result.redirect_to) {
         window.location.href = result.redirect_to;
       } else {
         // api のエラーコードを #passkey-error の data 属性（翻訳済み文言）へ写す。

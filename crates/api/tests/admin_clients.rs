@@ -146,10 +146,11 @@ async fn admin_can_manage_clients_but_others_cannot() {
     // 一覧に両クライアントが含まれる。
     let res = send(&env.app, get(&admin_cookie, &clients_uri)).await;
     assert_eq!(res.status(), StatusCode::OK);
+    // 一覧はページング付きのオブジェクト（`{clients, total, limit, offset}`）を返す（G7）。
     let list = body_json(res).await;
-    let ids: Vec<&str> = list
+    let ids: Vec<&str> = list["clients"]
         .as_array()
-        .unwrap()
+        .expect("clients array")
         .iter()
         .map(|c| c["client_id"].as_str().unwrap())
         .collect();

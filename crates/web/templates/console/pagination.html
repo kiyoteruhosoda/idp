@@ -1,0 +1,9 @@
+{#- 一覧のページャ（G7）。`prev_href` / `next_href` / `messages` を持つテンプレートから include する。 -#}
+{% if prev_href.is_some() || next_href.is_some() %}
+<nav aria-label="{{ messages.get("admin-pagination-label") }}">
+  <ul class="pagination">
+    {% if let Some(href) = prev_href %}<li class="page-item"><a class="page-link" href="{{ href }}"><i class="fa-solid fa-chevron-left me-1" aria-hidden="true"></i>{{ messages.get("admin-pagination-prev") }}</a></li>{% endif %}
+    {% if let Some(href) = next_href %}<li class="page-item"><a class="page-link" href="{{ href }}">{{ messages.get("admin-pagination-next") }}<i class="fa-solid fa-chevron-right ms-1" aria-hidden="true"></i></a></li>{% endif %}
+  </ul>
+</nav>
+{% endif %}

@@ -327,11 +327,12 @@ async fn tenant_admin_boundary_is_exact_match_and_data_is_isolated() {
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
+    // 一覧はページング付きのオブジェクト（`{clients, total, limit, offset}`）を返す（G7）。
     let b_clients = body_json(res).await;
     assert!(
-        b_clients
+        b_clients["clients"]
             .as_array()
-            .unwrap()
+            .expect("clients array")
             .iter()
             .all(|c| c["client_id"].as_str() != Some(a_client_id.as_str())),
         "tenant A's client must not appear in tenant B's list"

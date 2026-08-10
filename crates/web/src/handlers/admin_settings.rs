@@ -77,7 +77,7 @@ pub async fn page(
         Err(AdminApiError::Forbidden) => None,
         Err(AdminApiError::Unauthorized) => return redirect_to_login(&tenant),
         Err(e) => {
-            tracing::error!(error = %describe(&e), "failed to load system settings");
+            tracing::error!(error = %e, "failed to load system settings");
             None
         }
     };
@@ -213,6 +213,11 @@ pub async fn update_system(
         "smtp_password": password,
         "smtp_from_address": form.smtp_from_address,
         "smtp_use_tls": form.smtp_use_tls.is_some(),
+        // SMTP パスワードと同じ規則: 空欄は「変更しない」（キーごと落とす）。
+        "sms_gateway_url": form.sms_gateway_url,
+        "sms_auth_header": form.sms_auth_header,
+        "sms_auth_token": if form.sms_auth_token.is_empty() { None } else { Some(form.sms_auth_token) },
+        "sms_sender_id": form.sms_sender_id,
     });
     match state
         .api
@@ -281,17 +286,6 @@ fn error_key_for(error: &str) -> Option<&'static str> {
         "restart" => Some("admin-restart-error"),
         "internal" => Some("admin-error-internal"),
         _ => None,
-    }
-}
-
-fn describe(e: &AdminApiError) -> String {
-    match e {
-        AdminApiError::Unauthorized => "unauthorized".to_string(),
-        AdminApiError::Forbidden => "forbidden".to_string(),
-        AdminApiError::NotFound => "not_found".to_string(),
-        AdminApiError::Validation(m) => format!("validation: {m}"),
-        AdminApiError::Conflict(m) => format!("conflict: {m}"),
-        AdminApiError::Transport(m) => format!("transport: {m}"),
     }
 }
 

@@ -25,6 +25,12 @@
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <button type="submit" class="btn btn-link w-100">{{ messages.get("mfa-verify-email-code") }}</button>
     </form>
+    {#- SMS も導線は常に出す。未設定・未登録は送信結果として案内する（画面から
+        「この利用者は電話番号を登録しているか」を推測させない）。 -#}
+    <form method="post" action="{{ sms_otp_action }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <button type="submit" class="btn btn-link w-100">{{ messages.get("mfa-verify-sms-code") }}</button>
+    </form>
     {% endif %}
   </div>
 </div>

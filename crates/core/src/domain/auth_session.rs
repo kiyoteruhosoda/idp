@@ -34,6 +34,9 @@ pub struct AuthSession {
     /// 認可リクエストの `prompt`（空白区切りの**集合**。未指定・未知値のみは空集合）。
     /// SSO 判定が resume（ADR-0018 決定 2）へ移ったため、評価時点まで保存して持ち越す。
     pub prompt: PromptSet,
+    /// 認可応答の返し方（`response_mode`。G12）。要求は `/authorize` で来るが応答を組み立てるのは
+    /// 別のリクエストなので、ここへ持ち越す。
+    pub response_mode: crate::domain::response_mode::ResponseMode,
     /// 認可リクエストの `max_age`（秒。未指定は `None`）。`prompt` と同じく resume で評価する。
     pub max_age: Option<u64>,
     /// 認可リクエストの `acr_values`（空白区切りの生値。G12）。認証ポリシーの `requested_acr`

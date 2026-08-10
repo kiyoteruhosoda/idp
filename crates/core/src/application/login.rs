@@ -17,7 +17,7 @@
 //! パスワード検証後に評価することで、資格情報を知らない攻撃者からはポリシーの存在を観測できない。
 
 use crate::application::audit::{AuditService, RequestContext};
-use crate::application::authorize::code_redirect;
+use crate::application::authorize::code_dispatch;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::application::mfa_login::user_has_confirmed_totp;
 use crate::domain::audit::{AuditEventType, AuditResult};
@@ -64,6 +64,8 @@ pub enum LoginOutcome {
     /// 認証成功かつ同意済み。`redirect_uri?code=...&state=...` へ 302 し、SSO Cookie を発行する。
     Success {
         location: String,
+        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        form_post: Option<Vec<(String, String)>>,
         sso_session_id: String,
         /// ユーザーの表示言語設定（MT20）。web は `lang` Cookie をこの値で上書きする。
         user_language: Option<String>,
@@ -598,8 +600,10 @@ impl LoginService {
             tracing::warn!(error = %e, "failed to delete auth session after code issuance");
         }
 
+        let dispatch = code_dispatch(&session, &code);
         LoginOutcome::Success {
-            location: code_redirect(&session.redirect_uri, &code, &session.state),
+            location: dispatch.location,
+            form_post: dispatch.form_post,
             sso_session_id,
             user_language: user.language.clone(),
         }
@@ -1070,6 +1074,7 @@ mod tests {
                 code_challenge: "challenge".to_string(),
                 code_challenge_method: CodeChallengeMethod::S256,
                 prompt: crate::domain::values::PromptSet::default(),
+                response_mode: crate::domain::response_mode::ResponseMode::Query,
                 max_age: None,
                 handle_hash: None,
                 handle_expires_at: None,
@@ -1111,6 +1116,7 @@ mod tests {
             LockoutPolicy {
                 max_failed_attempts: 10,
                 lock_duration_secs: 900,
+                max_lock_duration_secs: 86_400,
             },
             crate::domain::password_policy::PasswordPolicy::default(),
             DefaultPolicyEffect::Allow,

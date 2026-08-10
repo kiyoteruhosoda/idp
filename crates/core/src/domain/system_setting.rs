@@ -32,6 +32,16 @@ pub const SMTP_PASSWORD: &str = "smtp.password";
 pub const SMTP_FROM_ADDRESS: &str = "smtp.from_address";
 pub const SMTP_USE_TLS: &str = "smtp.use_tls";
 
+// ── SMS ゲートウェイ設定キー（AP13。許可値の単一の出所）─────────────────────────
+/// 送信要求を POST する URL。空 = SMS 送信は無効。
+pub const SMS_GATEWAY_URL: &str = "sms.gateway_url";
+/// 認証ヘッダ名（例 `Authorization`）。空 = 認証ヘッダを付けない。
+pub const SMS_AUTH_HEADER: &str = "sms.auth_header";
+/// 認証ヘッダの値（秘匿値。暗号化して保存する）。
+pub const SMS_AUTH_TOKEN: &str = "sms.auth_token";
+/// 差出人表示（事業者が `sender id` / `from` として扱う値）。空 = 指定しない。
+pub const SMS_SENDER_ID: &str = "sms.sender_id";
+
 // ── ランタイム設定メタデータ（ADR-0010 / CFG1）───────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -315,6 +325,19 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         default_value: Some("900"),
         description: "連続失敗でロックした際のロック時間（秒）。経過後は自動で再試行できる（恒久ロックはしない）。",
     },
+    SettingDefinition {
+        key: "LOGIN_MAX_LOCK_DURATION_SECS",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
+        default_value: Some("86400"),
+        description: "段階的ロックの上限（秒。AP6）。ロック時間は失敗が重なるたびに \
+                      `LOGIN_LOCK_DURATION_SECS` から倍々で伸び、この値で頭打ちになる。\
+                      `LOGIN_LOCK_DURATION_SECS` 以下にすると段階化しない（従来どおりの固定時間）。",
+    },
     // ── パスワードポリシー（AP7。仕様 §11.2）──────────────────────────────
     // パスワードを設定する全経路（自己登録・強制変更・セルフサービス変更・リセット）へ一律に効く。
     SettingDefinition {
@@ -458,6 +481,58 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         description: "エラー・警告ログ（`log` テーブル）の保持日数。これより古い行は定期的に削除する。\
                       `0` を指定すると削除しない（テーブルが際限なく増えるため、外部でログを退避して \
                       いる場合にのみ選ぶこと）。",
+    },
+    SettingDefinition {
+        key: "AUDIT_LOG_RETENTION_DAYS",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
+        default_value: Some("0"),
+        description: "監査ログ（`audit_log` テーブル）の保持日数。これより古い行は定期的に削除する。\
+                      既定の `0` は**削除しない**。監査ログの保存期間は法令・契約で決まる運用側の \
+                      判断であり、既定値で消し始めてよいものではないため、明示的に指定したときだけ \
+                      削除する。",
+    },
+    SettingDefinition {
+        key: "TOKEN_ENDPOINT_MAX_CONCURRENCY",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
+        default_value: Some("8"),
+        description: "`/token`・`/introspect`・`/revoke` を同時に処理する最大数（SEC10）。この 3 つは \
+                      client_secret を Argon2id（19 MiB）で照合するため、上限がピークメモリ \
+                      （上限 × 19 MiB）と CPU を決める。溢れた要求は待たせず 503 で落とす。\
+                      `0` は無制限（メモリ増幅型 DoS に対する防御線が無くなるため非推奨）。",
+    },
+    SettingDefinition {
+        key: "TOKEN_ENDPOINT_RATE_LIMIT_MAX_REQUESTS",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
+        default_value: Some("300"),
+        description: "`/token`・`/introspect`・`/revoke` の接続元 IP 単位のレート制限（SEC10）。\
+                      単一の送信元が同時実行枠を占有して正規の RP を締め出すのを防ぐ。`0` は無効。\
+                      接続元 IP が分かるとき（`TRUST_FORWARDED_HEADERS = true`）のみ効く。",
+    },
+    SettingDefinition {
+        key: "TOKEN_ENDPOINT_RATE_LIMIT_WINDOW_SECS",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
+        default_value: Some("60"),
+        description: "`TOKEN_ENDPOINT_RATE_LIMIT_MAX_REQUESTS` を数えるウィンドウ（秒）。",
     },
     SettingDefinition {
         key: "API_DOCS_ENABLED",
@@ -957,6 +1032,26 @@ pub struct SmtpSettingsView {
     pub password_set: bool,
     pub from_address: String,
     pub use_tls: bool,
+}
+
+/// SMS ゲートウェイ設定の表示用（トークンは平文を返さず「設定済みか否か」のみ）。
+#[derive(Debug, Clone, Default)]
+pub struct SmsSettingsView {
+    pub gateway_url: String,
+    pub auth_header: String,
+    /// 認証トークンが設定済みか（平文は決して外へ出さない）。
+    pub auth_token_set: bool,
+    pub sender_id: String,
+}
+
+/// SMS ゲートウェイ設定の更新コマンド。
+/// `auth_token` は `None` = 現行を維持、`Some("")` = 消去、`Some(x)` = 設定（SMTP と同じ規則）。
+#[derive(Debug, Clone, Default)]
+pub struct UpdateSmsCommand {
+    pub gateway_url: String,
+    pub auth_header: String,
+    pub auth_token: Option<String>,
+    pub sender_id: String,
 }
 
 /// SMTP 設定の更新コマンド。`password` は `None` = 現行を維持、`Some("")` = 消去、`Some(x)` = 設定。

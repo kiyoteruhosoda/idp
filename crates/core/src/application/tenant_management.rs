@@ -23,6 +23,7 @@ use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
 use crate::domain::id_generator::IdGenerator;
 use crate::domain::message::MessageKey;
+use crate::domain::paging::{PageRequest, PagedResult};
 use crate::domain::repositories::{TenantProvisioningRepository, TenantRepository};
 use crate::domain::tenant::{Tenant, TenantId};
 use crate::domain::tenant_context::TenantContext;
@@ -33,6 +34,10 @@ use uuid::Uuid;
 
 /// 作成者（ブートストラップ管理者）へ付与する権限（scope = 新テナント。ADR-0009 §4）。
 const TENANT_ADMIN_PERMISSION: &str = "idp.tenant.admin";
+/// 子テナント一覧 1 ページの既定件数（G7）。
+pub const DEFAULT_PAGE_LIMIT: i64 = 50;
+/// 子テナント一覧 1 ページの上限件数（過大な取得を防ぐ）。
+pub const MAX_PAGE_LIMIT: i64 = 200;
 
 #[derive(Debug, Clone)]
 pub struct CreateTenantCommand {
@@ -152,6 +157,23 @@ impl TenantManagementService {
             .list_children(requesting.tenant_id())
             .await
             .map_err(|e| TenantManagementError::Internal(e.to_string()))
+    }
+
+    /// 直下の子テナントを 1 ページ分返す（G7）。`limit` / `offset` は未検証の要求値を受け取り、
+    /// 許容範囲へ収めたうえで**適用値**を結果に添える。
+    pub async fn list_children_page(
+        &self,
+        requesting: TenantContext,
+        limit: Option<i64>,
+        offset: Option<i64>,
+    ) -> Result<PagedResult<Tenant>, TenantManagementError> {
+        let request = PageRequest::clamped(limit, offset, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT);
+        let page = self
+            .tenants
+            .list_children_page(requesting.tenant_id(), request)
+            .await
+            .map_err(|e| TenantManagementError::Internal(e.to_string()))?;
+        Ok(PagedResult::new(page, request))
     }
 
     /// `requesting` テナントの直下の子テナント 1 件を取得する。他テナントの子・不存在は `NotFound`。

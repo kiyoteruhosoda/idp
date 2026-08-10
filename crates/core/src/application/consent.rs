@@ -8,7 +8,7 @@
 //! code 発行後は AuthSession を削除する（ログインフローと同じ）。
 
 use crate::application::audit::{AuditService, RequestContext};
-use crate::application::authorize::{code_redirect, error_redirect_with_state};
+use crate::application::authorize::{code_dispatch, error_dispatch};
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session;
@@ -33,9 +33,17 @@ pub struct ConsentInfo {
 
 pub enum ConsentOutcome {
     /// 同意付与・code 発行成功。`redirect_uri?code=...&state=...` へ 302。
-    Approved { location: String },
-    /// 同意拒否。`redirect_uri?error=access_denied&state=...` へ 302。
-    Denied { location: String },
+    Approved {
+        location: String,
+        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        form_post: Option<Vec<(String, String)>>,
+    },
+    /// 同意拒否。`query` なら `location` へ 302、`form_post` なら `location` へ hidden フィールドを
+    /// POST する（エラーも成功と同じ `response_mode` で返す。G12）。
+    Denied {
+        location: String,
+        form_post: Option<Vec<(String, String)>>,
+    },
     /// AuthSession が無い・期限切れ・認証済みユーザーが未設定（`/authorize` からやり直し）。
     SessionExpired,
     /// api 内部エラー。
@@ -205,8 +213,10 @@ impl ConsentService {
             tracing::warn!(error = %e, "failed to delete auth session after consent");
         }
 
+        let dispatch = code_dispatch(&session, &code);
         ConsentOutcome::Approved {
-            location: code_redirect(&session.redirect_uri, &code, &session.state),
+            location: dispatch.location,
+            form_post: dispatch.form_post,
         }
     }
 
@@ -251,13 +261,14 @@ impl ConsentService {
             tracing::warn!(error = %e, "failed to delete auth session after consent denial");
         }
 
+        let dispatch = error_dispatch(
+            &session,
+            OAuthErrorCode::AccessDenied,
+            "user denied consent",
+        );
         ConsentOutcome::Denied {
-            location: error_redirect_with_state(
-                &session.redirect_uri,
-                OAuthErrorCode::AccessDenied,
-                "user denied consent",
-                Some(&session.state),
-            ),
+            location: dispatch.location,
+            form_post: dispatch.form_post,
         }
     }
 }

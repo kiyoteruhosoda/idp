@@ -53,6 +53,9 @@ pub struct AuthorizeParams {
     /// `ui_locales` パラメータ（OIDC Core §3.1.2.1）: RP が要求する表示言語（空白区切りの
     /// BCP47 タグ。G12）。
     pub ui_locales: Option<String>,
+    /// `response_mode` パラメータ（OAuth 2.0 Multiple Response Type Encoding Practices）:
+    /// `query`（既定）または `form_post`（G12）。未知の値は `invalid_request`。
+    pub response_mode: Option<String>,
 }
 
 /// `POST /login` のフォームパラメータ（設計仕様 §4.3）。
@@ -416,6 +419,16 @@ pub struct SystemSettingsResponse {
     pub smtp_password_set: bool,
     pub smtp_from_address: String,
     pub smtp_use_tls: bool,
+    /// SMS ゲートウェイ（AP13）。送信要求を POST する URL。空 = SMS 送信は無効。
+    #[serde(default)]
+    pub sms_gateway_url: String,
+    #[serde(default)]
+    pub sms_auth_header: String,
+    /// SMS ゲートウェイの認証トークンが設定済みか（平文は返さない）。
+    #[serde(default)]
+    pub sms_auth_token_set: bool,
+    #[serde(default)]
+    pub sms_sender_id: String,
     #[serde(default)]
     pub runtime_settings: Vec<RuntimeSettingResponse>,
 }
@@ -436,6 +449,16 @@ pub struct UpdateSystemSettingsRequest {
     pub smtp_from_address: String,
     #[serde(default)]
     pub smtp_use_tls: bool,
+    /// SMS ゲートウェイ（AP13）。`sms_auth_token` は SMTP パスワードと同じ規則
+    /// （`None` = 現行維持、`Some("")` = 消去、`Some(x)` = 設定）。
+    #[serde(default)]
+    pub sms_gateway_url: String,
+    #[serde(default)]
+    pub sms_auth_header: String,
+    #[serde(default)]
+    pub sms_auth_token: Option<String>,
+    #[serde(default)]
+    pub sms_sender_id: String,
 }
 
 /// ランタイム設定の DB 上書き更新リクエスト（`PUT /{tenant_id}/admin/system-settings/runtime`）。
@@ -517,6 +540,17 @@ pub struct UpdateMemberStatusRequest {
     pub status: String,
 }
 
+/// 管理者によるアカウントロック解除レスポンス（AP6）。
+///
+/// `was_locked` は「解除前にロックが掛かっていたか」。冪等な操作のため、元からロックされて
+/// いなくても成功する。画面はこの値で「解除しました」と「元からロックされていません」を
+/// 出し分ける。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct UserUnlockResponse {
+    pub user_id: String,
+    pub was_locked: bool,
+}
+
 /// 管理者による MFA 解除レスポンス（MT21）。何を外したかだけを返し、シークレット・
 /// クレデンシャルの内容は含めない。未設定でも成功（すべて `false` / `0`）になる。
 #[derive(Debug, Serialize, ToSchema)]
@@ -553,6 +587,45 @@ pub struct MemberResponse {
     /// 利用者アカウント自体の状態（`ACTIVE` / `DISABLED` / `LOCKED`）。不存在ユーザーは `None`。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_status: Option<String>,
+    /// ログイン失敗によるロックが**今**掛かっているか（AP6）。`user_status` とは別
+    /// （ロックは `locked_until` で表され、期限切れかどうかは読んだ時点で決まる）。
+    pub locked: bool,
+}
+
+/// 一覧のページングクエリ（`GET /{tenant_id}/admin/clients`・`.../tenants`。G7）。
+///
+/// 絞り込み条件を持たない一覧で共有する。絞り込みのある一覧（members）は固有の型を持つ。
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
+pub struct PageQueryParams {
+    /// 1 ページの件数。未指定は 50、上限 200（超過分は上限へ丸める）。
+    #[serde(default)]
+    pub limit: Option<i64>,
+    /// 読み飛ばす件数。未指定は 0。
+    #[serde(default)]
+    pub offset: Option<i64>,
+}
+
+/// クライアント一覧のレスポンス（`GET /{tenant_id}/admin/clients`。G7）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ClientListResponse {
+    pub clients: Vec<ClientResponse>,
+    /// `limit` / `offset` を無視した該当総数。画面が「全 N 件」と次ページの有無を確定できる。
+    pub total: i64,
+    /// 実際に適用された値（クランプ後）。要求値をそのまま返さないのは、上限で丸めた結果を
+    /// 呼び出し側がページ送りの計算にそのまま使えるようにするため。
+    pub limit: i64,
+    pub offset: i64,
+}
+
+/// 子テナント一覧のレスポンス（`GET /{tenant_id}/admin/tenants`。G7）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TenantListResponse {
+    pub tenants: Vec<TenantResponse>,
+    /// `limit` / `offset` を無視した該当総数。
+    pub total: i64,
+    /// 実際に適用された値（クランプ後）。
+    pub limit: i64,
+    pub offset: i64,
 }
 
 /// メンバー一覧のクエリパラメータ（`GET /{tenant_id}/admin/members`。MT22）。
@@ -784,6 +857,32 @@ mod authentication_policy_contract_tests {
             assert!(
                 AuthenticationMethod::parse(code).is_ok(),
                 "unknown method code in the contract: {code}"
+            );
+        }
+    }
+
+    /// 管理コンソールが描くログイン識別子の種別プルダウンは、api の `LoginIdentifierType` の
+    /// **保存値そのもの**でなければならない（AP16。選んだ種別が api に弾かれる形にしない）。
+    #[test]
+    fn login_identifier_type_codes_match_the_contract() {
+        use crate::domain::login_identifier::LoginIdentifierType;
+
+        let expected = [
+            LoginIdentifierType::Username,
+            LoginIdentifierType::Email,
+            LoginIdentifierType::PhoneNumber,
+            LoginIdentifierType::EmployeeNumber,
+        ]
+        .map(|t| t.as_str())
+        .to_vec();
+        assert_eq!(
+            idp_contracts::admin::LOGIN_IDENTIFIER_TYPE_CODES.to_vec(),
+            expected
+        );
+        for code in idp_contracts::admin::LOGIN_IDENTIFIER_TYPE_CODES {
+            assert!(
+                LoginIdentifierType::parse(code).is_ok(),
+                "unknown login identifier type code in the contract: {code}"
             );
         }
     }

@@ -16,4 +16,5 @@ pub mod mailer;
 pub mod password;
 pub mod rate_limit;
 pub mod repositories;
+pub mod sms;
 pub mod webauthn;

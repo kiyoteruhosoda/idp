@@ -20,7 +20,7 @@ use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authenticator_management::{
     consume_single_use_code, is_blocked_in_registry,
 };
-use crate::application::authorize::code_redirect;
+use crate::application::authorize::code_dispatch;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::application::totp_registration::verify_totp_code;
 use crate::domain::audit::{AuditEventType, AuditResult};
@@ -49,6 +49,8 @@ pub enum MfaLoginOutcome {
     /// TOTP 検証成功かつ同意済み。code 付き redirect_to へ 302 する。
     Success {
         location: String,
+        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        form_post: Option<Vec<(String, String)>>,
         sso_session_id: String,
         /// ユーザーの表示言語設定（MT20）。web は `lang` Cookie をこの値で上書きする。
         user_language: Option<String>,
@@ -409,8 +411,10 @@ impl MfaLoginService {
             tracing::warn!(error = %e, "failed to delete auth session after MFA code issuance");
         }
 
+        let dispatch = code_dispatch(&session, &code);
         MfaLoginOutcome::Success {
-            location: code_redirect(&session.redirect_uri, &code, &session.state),
+            location: dispatch.location,
+            form_post: dispatch.form_post,
             sso_session_id,
             user_language: user.language.clone(),
         }
@@ -475,7 +479,7 @@ impl MfaLoginService {
             Err(e) => return Err(e.to_string()),
         }
 
-        // リカバリーコード・email OTP（いずれも 1 回きり）。消費できたら第二要素として通す。
+        // リカバリーコード・email OTP・SMS OTP（いずれも 1 回きり）。消費できたら第二要素として通す。
         let now = self.clock.now();
         for (authenticator_type, method) in [
             (
@@ -483,6 +487,9 @@ impl MfaLoginService {
                 AuthenticationMethod::RecoveryCode,
             ),
             (AuthenticatorType::EmailOtp, AuthenticationMethod::EmailOtp),
+            // SMS OTP（AP13）。同じ「1 回きりのコード」なので同じ経路で消費する。
+            // 登録済み電話番号の行は秘密を持たないため、ここには当たらない。
+            (AuthenticatorType::SmsOtp, AuthenticationMethod::SmsOtp),
         ] {
             if consume_single_use_code(
                 self.authenticators.as_ref(),
@@ -1050,6 +1057,7 @@ mod tests {
                     code_challenge: "challenge".to_string(),
                     code_challenge_method: CodeChallengeMethod::S256,
                     prompt: crate::domain::values::PromptSet::default(),
+                    response_mode: crate::domain::response_mode::ResponseMode::Query,
                     max_age: None,
                     handle_hash: None,
                     handle_expires_at: None,
@@ -1103,6 +1111,7 @@ mod tests {
                 LockoutPolicy {
                     max_failed_attempts,
                     lock_duration_secs: 900,
+                    max_lock_duration_secs: 86_400,
                 },
                 CSRF_SECRET,
                 Arc::new(FakePolicies),

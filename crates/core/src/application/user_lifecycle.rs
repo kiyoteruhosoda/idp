@@ -205,6 +205,54 @@ impl UserLifecycleService {
         Ok(())
     }
 
+    /// アカウントロックを即時解除する（AP6。仕様 §17.1・§24.6）。
+    ///
+    /// ロックは期限付き（恒久ロックはしない）ため放っておけば解けるが、段階的ロックで時間が
+    /// 伸びると「本人が打ち間違えただけなのに翌日まで入れない」が起きる。ヘルプデスクが
+    /// **待たせずに戻せる**手段が要る。
+    ///
+    /// 解除は `locked_until` のクリアと**失敗回数のリセットを必ず同時に行う**。期限だけ消すと、
+    /// 失敗回数は閾値を超えたままなので**次の 1 回の失敗で即座に再ロック**され、しかも段階的
+    /// ロックの段が 1 つ進む（前より長くなる）。解除したつもりが悪化する。
+    ///
+    /// 自分自身にも実行できる（他のライフサイクル操作の自己禁止はロックアウト防止が目的で、
+    /// ロック解除はその逆向きの操作である）。ロックされていない利用者への実行は成功として扱う
+    /// （冪等。「解除されている」という結果は同じで、失敗を返すと画面が無駄に赤くなる）。
+    ///
+    /// 戻り値は「実際にロックが掛かっていたか」。画面が「解除しました」と
+    /// 「元からロックされていません」を出し分けるために使う。
+    pub async fn unlock_account(
+        &self,
+        tenant: TenantContext,
+        target: Uuid,
+        actor: Uuid,
+        ctx: &RequestContext,
+    ) -> Result<bool, UserLifecycleError> {
+        let user = self.find_home_user(tenant, target).await?;
+        let was_locked = user.is_locked_at(self.clock.now());
+
+        self.users
+            .update_login_state(user.id, 0, None)
+            .await
+            .map_err(internal)?;
+
+        self.audit
+            .record(
+                AuditEventType::UserAccountUnlocked,
+                AuditResult::Success,
+                Some(tenant.tenant_id()),
+                Some(actor),
+                None,
+                Some(&format!(
+                    "user={} was_locked={} failed_attempts_cleared={}",
+                    user.id, was_locked, user.failed_login_count
+                )),
+                ctx,
+            )
+            .await;
+        Ok(was_locked)
+    }
+
     /// 利用者のプロフィール（メール・ログイン識別子・表示名）を編集する（MT25）。
     ///
     /// 対象は他のライフサイクル操作と同じく**所属元（HOME）が要求テナントの利用者のみ**。ただし

@@ -25,7 +25,7 @@
 <p class="text-muted">{{ messages.get("admin-members-search-none") }}</p>
 {% endif %}
 {% else %}
-<p class="text-muted small">{{ messages.get("admin-members-total") }} {{ total }}</p>
+<p class="text-muted small">{{ messages.get("admin-pagination-total") }} {{ total }}</p>
 <div class="table-responsive">
   <table class="table table-cards table-hover align-middle">
     <thead>
@@ -39,7 +39,8 @@
         <td data-label="{{ messages.get("admin-members-col-type") }}">{% if m.membership_type == "GUEST" %}<span class="badge text-bg-info">{{ m.membership_type }}</span>{% else %}<span class="badge text-bg-secondary">{{ m.membership_type }}</span>{% endif %}</td>
         <td data-label="{{ messages.get("admin-members-col-status") }}">{% if m.status == "SUSPENDED" %}<span class="badge text-bg-warning">{{ messages.get("admin-members-status-suspended") }}</span>{% else %}{{ m.status }}{% endif %}</td>
         <td data-label="{{ messages.get("admin-members-col-user-status") }}">
-          {% if m.user_status.as_deref() == Some("ACTIVE") %}<span class="badge text-bg-success">{{ messages.get("admin-members-user-status-active") }}</span>
+          {% if m.locked %}<span class="badge text-bg-warning"><i class="fa-solid fa-lock me-1" aria-hidden="true"></i>{{ messages.get("admin-members-user-status-locked") }}</span>
+          {% else if m.user_status.as_deref() == Some("ACTIVE") %}<span class="badge text-bg-success">{{ messages.get("admin-members-user-status-active") }}</span>
           {% else if m.user_status.as_deref() == Some("DISABLED") %}<span class="badge text-bg-danger">{{ messages.get("admin-members-user-status-disabled") }}</span>
           {% else if m.user_status.is_some() %}<span class="badge text-bg-warning">{{ messages.get("admin-members-user-status-locked") }}</span>
           {% else %}-{% endif %}
@@ -48,6 +49,7 @@
           <div class="d-flex flex-wrap gap-2">
             {% if m.membership_type == "HOME" %}
               <a class="btn btn-outline-secondary btn-sm" href="{{ tenant }}/admin/users/{{ m.user_id }}/permissions"><i class="fa-solid fa-user-shield me-1" aria-hidden="true"></i>{{ messages.get("admin-members-permissions-button") }}</a>
+              <a class="btn btn-outline-secondary btn-sm" href="{{ tenant }}/admin/users/{{ m.user_id }}/login-identifiers"><i class="fa-solid fa-id-card me-1" aria-hidden="true"></i>{{ messages.get("admin-members-login-identifiers-button") }}</a>
               {% if m.user_status.as_deref() == Some("DISABLED") %}
               <form method="post" action="{{ tenant }}/admin/members/{{ m.user_id }}/status" class="d-inline">
                 <input type="hidden" name="csrf_token" value="{{ csrf }}">
@@ -59,6 +61,12 @@
                 <input type="hidden" name="csrf_token" value="{{ csrf }}">
                 <input type="hidden" name="status" value="DISABLED">
                 <button type="submit" class="btn btn-outline-warning btn-sm"><i class="fa-solid fa-user-slash me-1" aria-hidden="true"></i>{{ messages.get("admin-members-disable-button") }}</button>
+              </form>
+              {% endif %}
+              {% if m.locked %}
+              <form method="post" action="{{ tenant }}/admin/members/{{ m.user_id }}/unlock" class="d-inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                <button type="submit" class="btn btn-outline-success btn-sm"><i class="fa-solid fa-lock-open me-1" aria-hidden="true"></i>{{ messages.get("admin-members-unlock-button") }}</button>
               </form>
               {% endif %}
               <form method="post" action="{{ tenant }}/admin/members/{{ m.user_id }}/reset-password" class="d-inline" data-confirm="{{ messages.get("admin-members-reset-password-confirm") }}">
@@ -100,12 +108,5 @@
   </table>
 </div>
 {% endif %}
-{% if prev_href.is_some() || next_href.is_some() %}
-<nav aria-label="{{ messages.get("admin-members-pagination-label") }}">
-  <ul class="pagination">
-    {% if let Some(href) = prev_href %}<li class="page-item"><a class="page-link" href="{{ href }}">{{ messages.get("admin-members-prev") }}</a></li>{% endif %}
-    {% if let Some(href) = next_href %}<li class="page-item"><a class="page-link" href="{{ href }}">{{ messages.get("admin-members-next") }}</a></li>{% endif %}
-  </ul>
-</nav>
-{% endif %}
+{% include "console/pagination.html" %}
 {% endblock %}

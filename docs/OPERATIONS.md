@@ -141,6 +141,79 @@ redirect_uri は完全一致・複数登録に対応し、フラグメント／�
 > 管理画面（サーバレンダリング UI）は A2 の進行に合わせて追加予定。それまでは上記 API を用いる。
 > 管理者向けの初回ログイン後の SSO セッション確立は通常の `/authorize`→`/login` フローで行う。
 
+## SMS でワンタイムコードを送れるようにしたいとき
+
+**設定画面（`/{tenant_id}/admin/settings`）の「ショートメッセージ（SMS）」で設定する**
+（`idp.system.admin` 必須）。
+
+本 IdP は SMS 事業者の SDK を持たない。設定したゲートウェイ URL へ **JSON を 1 本 POST する**
+だけで、事業者ごとの API 差異は運用側の小さな中継（関数・Webhook）が吸収する。送る形:
+
+```json
+{ "to": "+819012345678", "text": "Your verification code is 123456.", "from": "IDP" }
+```
+
+- `to` は E.164 正規化済みの番号、`from` は差出人表示（設定したときだけ載る）。
+- 認証ヘッダ（名前と値）を設定すると、その名前のヘッダに値を載せて送る。値は暗号化して保存し
+  画面には二度と出さない（空欄のまま保存すれば現行維持）。
+- **内部アドレス（localhost・私設ネットワーク）は指定できない。** 設定を書き換えられる立場から
+  内部ネットワークへ POST させないため、クライアント登録の redirect URI と同じ判定で弾く。
+- ゲートウェイ URL が空のあいだは SMS 送信は無効で、利用者の画面にも登録導線を出さない。
+
+利用者側は**設定 → 認証器**（`/{tenant_id}/settings/authenticators`）で携帯電話番号を登録し、
+届いた確認コードを入力する（登録できるのは 1 番号。登録し直すと置き換わる）。以後、MFA の
+入力画面に「SMS でコードを受け取る」が出る。
+
+- 電話番号は認証器の登録簿（`user_authenticators.target`）に持つ。メール OTP の送信先アドレスと
+  同じ扱いで、**ログ・監査・エラーには出さない**（監査には用途だけを残す）。
+- 番号の登録は機微操作として step-up（直前の本人確認）を要求する。ここが素通しだと、放置された
+  画面から第二要素の送信先を差し替えられる。
+
+## 外部 IdP でログインできるようにしたいとき
+
+管理コンソールの**外部 IdP**（`/{tenant_id}/admin/external-idps`）で登録する（`idp.tenant.admin` 必須）。
+必要なのは相手 IdP の `issuer`・認可エンドポイント・トークンエンドポイント・JWKS URI と、
+そこで発行してもらったクライアント ID／シークレット。
+
+- 一覧に**このテナントのリダイレクト URI** が出る。相手 IdP 側にはこの URL を登録する。
+- クライアントシークレットは暗号化して保存し、**画面には二度と出さない**。編集時に空欄のまま
+  保存すると変更されない（値を入れたときだけ置き換わる）。
+- 「検証済みメール一致で既存アカウントへ連携する」は、**メールアドレスの検証を信頼できる相手
+  にだけ**有効にする。信頼できない相手に許すと、相手側でメールアドレスを詐称するだけで
+  こちらの既存アカウントへ入れてしまう。
+
+## 利用者のログイン識別子を追加したいとき
+
+メンバー一覧の各利用者の「ログイン識別子」から開く
+（`/{tenant_id}/admin/users/{user_id}/login-identifiers`。`idp.tenant.admin` 必須）。
+別名のユーザー名・メールアドレス・電話番号・社員番号でログインできるようにする。
+
+- 一覧には**登録した値**と**照合キー**（実際に一致する正規化後の値）を並べて出す。書き方の違う
+  値を登録してしまった場合はここで気づける（電話番号の区切り記号など）。
+- 「主」と付いた行は主たるログイン識別子で、ここからは変更・削除できない。変えるならプロフィール
+  編集、止めるならアカウントの無効化を使う。
+- 無効化した識別子は行として残る（削除しない限り、その値が他の利用者へ移ることはない）。
+
+## ロックされたアカウントを解除したいとき
+
+管理コンソールの**メンバー一覧**（`/{tenant_id}/admin/members`）で、ロック中の利用者には
+「ロック中」バッジと**ロック解除**ボタンが出る。押すと即座に解除される（期限を待たなくてよい）。
+
+API を直接叩く場合:
+
+```bash
+curl -sS -X POST "$ISSUER/$TENANT_ID/admin/users/<user_id>/unlock" \
+  -H "Cookie: sso_session_id=<セッションID>"
+```
+
+- ロック期限のクリアと**失敗回数のリセットを同時に**行う。片方だけでは次の 1 回の失敗で
+  即座に再ロックされ、しかも段階的ロックの段が 1 つ進んで前より長くなる。
+- ロックされていない利用者に実行しても成功する（応答の `was_locked` で区別できる）。
+- 実行は `user.account_unlocked` として監査ログに残る。
+- ロック時間は失敗が重なるたびに `LOGIN_LOCK_DURATION_SECS` から倍々で伸び、
+  `LOGIN_MAX_LOCK_DURATION_SECS`（既定 24 時間）で頭打ちになる。ログイン成功で失敗回数は 0 に戻り、
+  次のロックは初回の長さからやり直しになる。
+
 ## 監査ログ／ログインログを確認したいとき
 
 管理 API（`idp.tenant.admin` 必須。`idp.system.admin` でも可）で `audit_log` を絞り込み参照する。`GET /admin/audit-logs`。
@@ -156,6 +229,59 @@ curl -sS "$ISSUER/admin/audit-logs?result=failure" \
 curl -sS "$ISSUER/admin/audit-logs?event_type=token.issued&client_id=<cid>&from=2026-07-01T00:00:00Z&to=2026-07-07T00:00:00Z&limit=100" \
   -H "Cookie: sso_session_id=<セッションID>"
 ```
+
+保持期間は `AUDIT_LOG_RETENTION_DAYS`。**既定は `0` ＝ 削除しない**（監査ログの保存期間は法令・
+契約で決まるため、既定値で消し始めない）。日数を設定すると、それより古い行が 1 時間ごとに
+削除される。既に大量に溜まった状態で有効化した場合は 1 万行ずつ削除し、消し切るまで 1 秒間隔で
+続ける（認可フローの書き込みを長時間止めないため）。
+
+## メトリクスを監視したいとき
+
+Prometheus 形式のメトリクスを `GET /internal/metrics` で配信する（G6）。
+
+**内部面にあり、サービストークンが要る。** `/internal/*` はリバースプロキシで外部から遮断する
+前提の面で、多層防御として `X-Internal-Auth-Token`（`INTERNAL_SERVICE_TOKEN` と同値）も必須。
+メトリクスは「誰がいつ何回失敗したか」を集約した情報であり、公開面に出す値ではない。
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: idp-api
+    metrics_path: /internal/metrics
+    static_configs:
+      - targets: ["idp-api:8080"]
+    http_headers:
+      X-Internal-Auth-Token:
+        secrets: ["<INTERNAL_SERVICE_TOKEN と同じ値>"]
+```
+
+出る値:
+
+| メトリクス | 種別 | ラベル | 主な用途 |
+|---|---|---|---|
+| `idp_audit_events_total` | counter | `event_type`・`result` | ログイン成功率・トークン発行レート・鍵ローテーションの成否 |
+| `idp_http_request_duration_seconds` | histogram | `method`・`route`・`status` | エンドポイント別のレイテンシ（p50/p95/p99） |
+| `idp_db_pool_connections` | gauge | `state`（`total` / `idle`） | sqlx コネクションプールの枯渇 |
+
+すべてに `service="api"` が付く。
+
+例:
+
+```promql
+# ログイン成功率（5 分平均）
+sum(rate(idp_audit_events_total{event_type="login.succeeded"}[5m]))
+  / sum(rate(idp_audit_events_total{event_type=~"login.(succeeded|failed)"}[5m]))
+
+# /token の p95 レイテンシ
+histogram_quantile(0.95, sum by (le) (rate(idp_http_request_duration_seconds_bucket{route="/{tenant_id}/token"}[5m])))
+
+# プール枯渇（貸出可能な接続が 0 の状態が続いている）
+idp_db_pool_connections{state="idle"} == 0
+```
+
+**ラベルにテナント ID・利用者 ID・クライアント ID は入らない。** 入れると監視側の時系列が
+利用者数に比例して増えるため、意図的に落としてある。「どのテナントで失敗したか」は監査ログ
+（`GET /admin/audit-logs`）で追う。
 
 ## エラー・警告ログを確認したいとき
 
@@ -498,6 +624,11 @@ curl -sS -X POST "$ISSUER/{tenant_id}/admin/external-idps" \
 | `EMAIL_VERIFICATION_TTL_SECS` | `86400` | 自己登録アカウントのメール検証トークンの有効期間（SEC6b） |
 | `HSTS_MAX_AGE` | `0`（無効） | `Strict-Transport-Security` の `max-age`（秒）。**DB 上書き可**（下記） |
 | `APP_LOG_RETENTION_DAYS` | `30` | エラー・警告ログ（`log` テーブル）の保持日数。`0` = 削除しない。**DB 上書き可** |
+| `LOGIN_MAX_LOCK_DURATION_SECS` | `86400` | 段階的ロックの上限（秒。AP6）。ロック時間は失敗が重なるたびに `LOGIN_LOCK_DURATION_SECS` から倍々で伸び、この値で頭打ちになる。`LOGIN_LOCK_DURATION_SECS` 以下にすると段階化しない。**DB 上書き可** |
+| `AUDIT_LOG_RETENTION_DAYS` | `0`（削除しない） | 監査ログ（`audit_log` テーブル）の保持日数。保存期間は法令・契約で決まるため既定では削除しない。**DB 上書き可** |
+| `TOKEN_ENDPOINT_MAX_CONCURRENCY` | `8` | `/token`・`/introspect`・`/revoke` の同時処理数の上限（SEC10）。Argon2id（19 MiB）照合のピークメモリは「上限 × 19 MiB」。溢れた要求は待たせず 503。`0` は無制限（非推奨）。**DB 上書き可** |
+| `TOKEN_ENDPOINT_RATE_LIMIT_MAX_REQUESTS` | `300` | 上記 3 本の接続元 IP 単位のレート制限（SEC10）。`0` は無効。`TRUST_FORWARDED_HEADERS=true` のときのみ効く。**DB 上書き可** |
+| `TOKEN_ENDPOINT_RATE_LIMIT_WINDOW_SECS` | `60` | 上記レート制限のウィンドウ（秒）。**DB 上書き可** |
 | `STEP_UP_MAX_AGE_SECS` | `300` | 機微操作（パスワード変更・認証器の追加削除・セッション失効）の前に本人確認をやり直させる間隔（秒）。**DB 上書き可** |
 | `BACKCHANNEL_LOGOUT_MAX_ATTEMPTS` | `8` | Back-channel logout 通知の再送上限。指数バックオフ（30 秒 → 最大 1 時間）。**DB 上書き可** |
 | `BACKCHANNEL_LOGOUT_POLL_INTERVAL_SECS` | `15` | Back-channel logout 送信ワーカーが送信キューを見る間隔（秒）。**DB 上書き可** |

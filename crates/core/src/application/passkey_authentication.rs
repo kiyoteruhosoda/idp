@@ -10,7 +10,7 @@
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authenticator_management::is_blocked_in_registry;
-use crate::application::authorize::code_redirect;
+use crate::application::authorize::code_dispatch;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session;
@@ -47,6 +47,8 @@ pub enum PasskeyAuthOutcome {
     /// 認証成功かつ同意済み。code 付き redirect_to へ 302 する。
     Success {
         location: String,
+        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        form_post: Option<Vec<(String, String)>>,
         sso_session_id: String,
     },
     /// 認証成功だが同意が必要。同意画面へ誘導する。
@@ -489,8 +491,10 @@ impl PasskeyAuthenticationService {
             tracing::warn!(error = %e, "failed to delete auth session after passkey auth");
         }
 
+        let dispatch = code_dispatch(&session, &code);
         PasskeyAuthOutcome::Success {
-            location: code_redirect(&session.redirect_uri, &code, &session.state),
+            location: dispatch.location,
+            form_post: dispatch.form_post,
             sso_session_id,
         }
     }

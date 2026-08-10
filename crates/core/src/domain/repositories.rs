@@ -35,6 +35,7 @@ use crate::domain::external_idp::{
     ExternalIdentity, ExternalIdentityProvider, ExternalLoginRequest,
 };
 use crate::domain::login_identifier::UserLoginIdentifier;
+use crate::domain::paging::{Page, PageRequest};
 use crate::domain::passkey_challenge::PasskeyChallenge;
 use crate::domain::password_reset::PasswordResetToken;
 use crate::domain::refresh_token::RefreshToken;
@@ -65,8 +66,19 @@ pub trait TenantRepository: Send + Sync {
     async fn find_by_id(&self, id: TenantId) -> Result<Option<Tenant>>;
     /// `parent_tenant_id IS NULL` の唯一の行（root）を返す。
     async fn find_root(&self) -> Result<Option<Tenant>>;
-    /// 指定テナントの直下の子テナントを一覧する（`/{tenant_id}/admin/tenants`。ADR-0009 §6）。
+    /// 指定テナントの直下の子テナントを一覧する（ADR-0009 §6）。件数の上限が無いため、
+    /// 画面へ返す経路では [`Self::list_children_page`] を使う（本メソッドは削除可否の判定など
+    /// 全件が要る内部用途に限る）。
     async fn list_children(&self, parent_id: TenantId) -> Result<Vec<Tenant>>;
+    /// 直下の子テナントを 1 ページ分と総件数で返す（`/{tenant_id}/admin/tenants`。G7）。
+    /// 既定実装は全件取得からの切り出しで、DB 側で `LIMIT`/`OFFSET` を書ける sqlx 実装が上書きする。
+    async fn list_children_page(
+        &self,
+        parent_id: TenantId,
+        page: PageRequest,
+    ) -> Result<Page<Tenant>> {
+        Ok(Page::from_all(self.list_children(parent_id).await?, page))
+    }
     /// 表示名・状態を更新する（`parent_tenant_id` の付け替えは禁止。呼び出し側が保証する）。
     async fn update(&self, tenant: &Tenant) -> Result<()>;
     /// テナントを削除する。「配下に子テナントが無く、当該テナント自身にユーザー/クライアントが
@@ -300,8 +312,15 @@ pub trait ClientRepository: Send + Sync {
     /// クライアント（RP）を新規登録する（管理 API、設計仕様 §9.3）。`client.tenant_id` の
     /// テナントへ登録し、テナント内の `client_id` 重複は `Conflict`。
     async fn create(&self, client: &Client) -> Result<()>;
-    /// 指定テナントの登録済みクライアントを新しい順に一覧する（管理画面 A3・A1）。
+    /// 指定テナントの登録済みクライアントを新しい順に**全件**一覧する。
+    /// CORS 許可オリジンの収集・バックチャネルログアウトの配信先解決など、
+    /// 全件が要る内部用途のためのメソッド。画面へ返す経路では [`Self::list_page`] を使う。
     async fn list(&self, tenant_id: TenantId) -> Result<Vec<Client>>;
+    /// 登録済みクライアントを 1 ページ分と総件数で返す（`/{tenant_id}/admin/clients`。G7）。
+    /// 既定実装は全件取得からの切り出しで、DB 側で `LIMIT`/`OFFSET` を書ける sqlx 実装が上書きする。
+    async fn list_page(&self, tenant_id: TenantId, page: PageRequest) -> Result<Page<Client>> {
+        Ok(Page::from_all(self.list(tenant_id).await?, page))
+    }
     /// 可変項目（app_name / redirect_uris / scopes / status / secret_hash 等）を更新する。
     /// `(id, tenant_id)` で対象を特定する（他テナントの行は更新できない）。対象が無い場合は `NotFound`。
     async fn update(&self, client: &Client) -> Result<()>;
@@ -620,6 +639,14 @@ pub trait SigningKeyRepository: Send + Sync {
 #[async_trait]
 pub trait AuditLogSink: Send + Sync {
     async fn record(&self, event: &AuditEvent) -> Result<()>;
+
+    /// 保持期間を過ぎた監査イベントを削除し、削除件数を返す（G8）。削除は書き込み側の関心のため
+    /// 読み取り（[`AuditLogQuery`]）ではなく本トレイトに置く。
+    ///
+    /// 既定実装は何もしない（テスト用フェイクは保持期間を持たない）。本番の sqlx 実装が上書きする。
+    async fn purge_older_than(&self, _older_than: DateTime<Utc>) -> Result<u64> {
+        Ok(0)
+    }
 }
 
 /// `audit_log` の読み取り（状況確認画面 A3）。書き込み（`AuditLogSink`）とは関心を分ける。
@@ -1004,6 +1031,33 @@ pub trait UserAuthenticatorRepository: Send + Sync {
         _at: DateTime<Utc>,
     ) -> Result<u64> {
         Ok(0)
+    }
+    /// 期限付きの行（＝発行済みのワンタイムコード）だけを失効させ、件数を返す（AP13）。
+    ///
+    /// [`Self::revoke_all_of_type`] と分けるのは、同じ種別の中に**寿命の無い登録**（SMS OTP の
+    /// 登録済み電話番号）と**寿命のあるコード**が混ざるため。新しいコードを出す前に古いコードを
+    /// 失効させたいだけなのに `revoke_all_of_type` を使うと、登録そのものが消えてしまう。
+    async fn revoke_issued_codes_of_type(
+        &self,
+        _user_id: Uuid,
+        _authenticator_type: AuthenticatorType,
+        _at: DateTime<Utc>,
+    ) -> Result<u64> {
+        Ok(0)
+    }
+    /// `pending` の行を、提示された秘密（の SHA-256）と突き合わせて**確認済み**にする（AP13）。
+    ///
+    /// 成功したら `status = active` にし、確認用コードと期限を消す。期限を消すのは、期限付きの
+    /// 行が GC（[`ExpiringRecordStore`]）の削除対象だからで、残すと確認済みの登録が消える。
+    /// 更新と読み直しを 1 文にするのは、同じコードの同時提示で二重に確認されないため。
+    async fn confirm_pending(
+        &self,
+        _user_id: Uuid,
+        _authenticator_type: AuthenticatorType,
+        _secret_hash: &str,
+        _now: DateTime<Utc>,
+    ) -> Result<Option<UserAuthenticator>> {
+        Ok(None)
     }
     /// 期限切れの使い捨て行を削除し、件数を返す（GC）。
     async fn delete_expired(&self, _now: DateTime<Utc>) -> Result<u64> {

@@ -5,6 +5,7 @@
 
 use crate::domain::audit::{AuditEvent, AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
+use crate::domain::error::DomainError;
 use crate::domain::repositories::AuditLogSink;
 use crate::domain::tenant::TenantId;
 use std::sync::Arc;
@@ -54,6 +55,19 @@ impl AuditService {
             correlation_id: ctx.correlation_id.clone(),
         };
 
+        // 監査イベントは「何が起きたか」のドメイン語彙そのものなので、メトリクスもここから
+        // 出す（G6）。ログイン成功率・トークン発行レート・鍵ローテーションの成否は、この 1 本の
+        // カウンタから導ける。計測器を各ユースケースへ散らすと、片方だけ増えて静かにずれる。
+        //
+        // ラベルは有限の enum（`event_type` / `result`）だけにする。`tenant_id`・`user_id`・
+        // `client_id` を足すと時系列が利用者数に比例して増える（`crate::metrics` 参照）。
+        metrics::counter!(
+            crate::metrics::AUDIT_EVENTS,
+            "event_type" => event.event_type.as_str(),
+            "result" => event.result.as_str(),
+        )
+        .increment(1);
+
         tracing::info!(
             target: "audit",
             event_type = event.event_type.as_str(),
@@ -73,5 +87,18 @@ impl AuditService {
                 "failed to persist audit event"
             );
         }
+    }
+
+    /// 保持期間を過ぎた監査イベントを 1 バッチ削除し、削除件数を返す（G8）。
+    /// `retention_days` が 0 のときは何もしない（＝削除しない。既定）。
+    ///
+    /// 1 回の呼び出しで消し切るとは限らない（実装側でバッチ上限を置く）。呼び出し側は
+    /// 「削除件数が 0 になるまで」で消し切りを判断する。
+    pub async fn purge_expired(&self, retention_days: u32) -> Result<u64, DomainError> {
+        if retention_days == 0 {
+            return Ok(0);
+        }
+        let cutoff = self.clock.now() - chrono::Duration::days(i64::from(retention_days));
+        self.sink.purge_older_than(cutoff).await
     }
 }

@@ -434,6 +434,8 @@ pub struct TotpVerifyTemplate<'a> {
     pub email_otp_available: bool,
     /// その導線の送信先（テナントごとに変わるため呼び出し側が組み立てる）。
     pub email_otp_action: &'a str,
+    /// SMS OTP の送信フォームの送信先（AP13）。導線は常に出し、未設定・未登録は送信結果で案内する。
+    pub sms_otp_action: &'a str,
 }
 /// RP-initiated logout の front-channel 通知ページ（`GET /{tenant_id}/logout`。ADR-0018 決定 2 で
 /// api から移設）。各 RP の `frontchannel_logout_uri` を不可視 iframe で読み込み、全 iframe の
@@ -858,6 +860,107 @@ impl ClientFormValues {
     }
 }
 
+/// 外部 IdP 設定の管理画面（`GET /{tenant_id}/admin/external-idps`。AP16。API は AP10）。
+#[derive(Template)]
+#[template(path = "console/external_idps.html")]
+pub struct ExternalIdpsConsole<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub admin: Admin<'a>,
+    pub csrf: &'a str,
+    pub providers: &'a [crate::admin_dto::ExternalIdpView],
+    /// 編集対象の id（`None` は新規登録フォーム）。
+    pub editing: Option<&'a str>,
+    /// フォームの初期値（編集時は対象の現在値、新規は既定値）。
+    pub values: &'a ExternalIdpFormValues,
+    pub saved: bool,
+    pub deleted: bool,
+    pub error_key: Option<&'a str>,
+}
+
+/// 外部 IdP 設定フォームの値（往復用）。可変長の `scopes` は空白区切りの 1 行で扱う。
+#[derive(Debug, Clone)]
+pub struct ExternalIdpFormValues {
+    pub provider_code: String,
+    pub display_name: String,
+    pub issuer: String,
+    pub authorization_endpoint: String,
+    pub token_endpoint: String,
+    pub jwks_uri: String,
+    pub client_id: String,
+    /// シークレットは api が返さないため値は持たない。**設定済みかどうか**だけを画面へ渡し、
+    /// 編集時の空欄は「変更しない」を意味する（空欄を削除と解釈すると、他の項目を直しただけで
+    /// 連携が壊れる）。
+    pub has_client_secret: bool,
+    pub scopes: String,
+    pub enabled: bool,
+    pub allow_auto_link: bool,
+}
+
+impl Default for ExternalIdpFormValues {
+    fn default() -> Self {
+        Self {
+            provider_code: String::new(),
+            display_name: String::new(),
+            issuer: String::new(),
+            authorization_endpoint: String::new(),
+            token_endpoint: String::new(),
+            jwks_uri: String::new(),
+            client_id: String::new(),
+            has_client_secret: false,
+            // OIDC の最小構成。api の既定値と同じ。
+            scopes: "openid profile email".to_string(),
+            enabled: true,
+            // 自動連携は既定 OFF（検証済みメール一致だけで既存アカウントへ入れる設定のため）。
+            allow_auto_link: false,
+        }
+    }
+}
+
+/// ログイン識別子の管理画面（`GET /{tenant_id}/admin/users/{user_id}/login-identifiers`。AP16。API は AP8）。
+#[derive(Template)]
+#[template(path = "console/login_identifiers.html")]
+pub struct LoginIdentifiersConsole<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub admin: Admin<'a>,
+    pub csrf: &'a str,
+    pub user_id: &'a str,
+    pub identifiers: &'a [LoginIdentifierRow<'a>],
+    pub type_options: &'a [LoginIdentifierTypeOption<'a>],
+    pub error_key: Option<&'a str>,
+    pub notice_key: Option<&'a str>,
+}
+
+/// 一覧の 1 行。種別の訳文はハンドラ側で解決して渡す（テンプレートで翻訳キーを組み立てない）。
+pub struct LoginIdentifierRow<'a> {
+    /// 登録簿の行 id。`None` は主たる識別子（合成行）で、識別子単位の操作ができない。
+    pub id: Option<&'a str>,
+    pub type_label: String,
+    pub display_value: &'a str,
+    pub normalized_value: &'a str,
+    pub is_active: bool,
+    pub is_primary: bool,
+}
+
+/// 追加フォームの種別プルダウンの選択肢。
+pub struct LoginIdentifierTypeOption<'a> {
+    pub code: &'a str,
+    pub label: String,
+}
+
+/// `response_mode=form_post` の認可応答ページ（G12）。認可コードを URL ではなくフォーム本文で
+/// RP へ渡す。描画の判断は [`crate::authorization_response`] に集約してある。
+#[derive(Template)]
+#[template(path = "authorization_post.html")]
+pub struct AuthorizationPost<'a> {
+    pub messages: &'a Messages,
+    /// フォームの送信先（`redirect_uri`。認可応答のパラメータは載っていない）。
+    pub action: &'a str,
+    /// hidden フィールド（`code` / `state`、またはエラー）。値はテンプレートが自動エスケープする。
+    pub fields: &'a [(String, String)],
+}
+
 /// クライアント一覧（`GET /{tenant_id}/admin/clients`）。
 #[derive(Template)]
 #[template(path = "console/clients_list.html")]
@@ -865,7 +968,13 @@ pub struct ClientsList<'a> {
     pub messages: &'a Messages,
     pub tenant: &'a str,
     pub admin: Admin<'a>,
+    /// 現在のページに含まれるクライアント（G7 でページングを導入。全件ではない）。
     pub clients: &'a [ClientView],
+    /// ページング前の総件数。「全 N 件」の表示に使う。
+    pub total: i64,
+    /// ページャの前後リンク（クエリ文字列を組み立て済み）。該当がなければ `None`。
+    pub prev_href: Option<String>,
+    pub next_href: Option<String>,
 }
 
 /// クライアント登録・編集フォーム（`is_new` で新規/編集を切り替える）。
@@ -925,11 +1034,17 @@ pub struct TenantsConsole<'a> {
     pub messages: &'a Messages,
     pub tenant: &'a str,
     pub admin: Admin<'a>,
+    /// 現在のページに含まれる子テナント（G7 でページングを導入。全件ではない）。
     pub tenants: &'a [TenantView],
+    /// ページング前の総件数。「全 N 件」の表示に使う。
+    pub total: i64,
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
     /// 更新完了通知（Post/Redirect/Get で戻ったときに成功バナーを出す。MT23）。
     pub saved: bool,
+    /// ページャの前後リンク（クエリ文字列を組み立て済み）。該当がなければ `None`。
+    pub prev_href: Option<String>,
+    pub next_href: Option<String>,
 }
 
 /// テナント切り替え画面（`GET /{tenant_id}/admin/switch-tenant`）。ログイン中ユーザーが `ACTIVE` な
@@ -1046,6 +1161,12 @@ pub struct UserAuthenticators<'a> {
     pub authenticators: &'a [AuthenticatorView],
     /// 未使用のリカバリーコードの残数。
     pub recovery_codes_remaining: usize,
+    /// SMS ゲートウェイが設定されているか（AP13）。未設定なら登録導線ごと出さない。
+    pub sms_available: bool,
+    /// 確認済みの電話番号が登録されているか（番号そのものは web へ渡さない）。
+    pub phone_registered: bool,
+    /// 確認コードの入力待ちか（登録開始の直後）。
+    pub awaiting_phone_code: bool,
     pub saved_key: Option<&'a str>,
     pub error_key: Option<&'a str>,
 }

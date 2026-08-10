@@ -6,7 +6,7 @@
 //! `client_secret` は作成・再発行時にその画面でのみ平文表示する。
 
 use super::locale;
-use crate::admin_dto::{ClientCreatedView, ClientView};
+use crate::admin_dto::{ClientCreatedView, ClientListView, ClientView};
 use crate::api_client::AdminApiError;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -21,7 +21,7 @@ use crate::templates::{
     render, ClientDetail, ClientForm, ClientFormValues, ClientSecret, ClientsList, ConsoleNotice,
 };
 use crate::tenant::WebTenant;
-use axum::extract::{Extension, Path, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
@@ -42,22 +42,40 @@ macro_rules! admin_or_return {
 
 // ── 一覧 ──────────────────────────────────────────────────────────────────────
 
+/// クライアント一覧（`GET /{tenant_id}/admin/clients`）。
+///
+/// ページングは api（DB）側で行う（G7）。web はページ位置をクエリで引き継ぎ、応答の `total` から
+/// ページャの前後リンクを組み立てるだけで、全件を受け取らない。
 pub async fn list(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
+    Query(query): Query<ListQuery>,
 ) -> Response {
     let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
+    let offset = query.offset.unwrap_or(0).max(0);
     let result = state
         .api
-        .list_clients(&correlation.0, &tenant.0, &sso(&headers))
+        .list_clients(
+            &correlation.0,
+            &tenant.0,
+            &sso(&headers),
+            &crate::pagination::page_query(offset),
+        )
         .await;
     let messages = Messages::new(locale(&headers));
     match result {
-        Ok(clients) => Html(render_list(&messages, &tenant, &admin, &clients)).into_response(),
+        Ok(page) => Html(render_list(&messages, &tenant, &admin, &page, offset)).into_response(),
         Err(e) => map_data_error(&messages, &tenant, &admin, &headers, e),
     }
+}
+
+/// クライアント一覧のクエリ。ページ位置のみを引き継ぐ（絞り込みは無い）。
+#[derive(Debug, Default, Deserialize)]
+pub struct ListQuery {
+    #[serde(default)]
+    pub offset: Option<i64>,
 }
 
 // ── 新規登録フォーム ──────────────────────────────────────────────────────────
@@ -412,13 +430,24 @@ fn render_list(
     messages: &Messages,
     tenant: &WebTenant,
     admin: &str,
-    clients: &[ClientView],
+    page: &ClientListView,
+    offset: i64,
 ) -> String {
+    let links = crate::pagination::pager_links(
+        &format!("{}{CLIENTS_SEGMENT}", tenant.prefix()),
+        &[],
+        offset,
+        page.limit,
+        page.total,
+    );
     render(&ClientsList {
         messages,
         tenant: &tenant.prefix(),
         admin: Some(admin),
-        clients,
+        clients: &page.clients,
+        total: page.total,
+        prev_href: links.prev,
+        next_href: links.next,
     })
 }
 
@@ -700,7 +729,13 @@ mod tests {
             updated_at: "2026-07-06T00:00:00Z".into(),
         };
         let tenant = WebTenant("00000000-0000-7000-8000-000000000000".to_string());
-        let html = render_list(&messages, &tenant, "admin-1", &[client]);
+        let page = ClientListView {
+            clients: vec![client],
+            total: 1,
+            limit: 50,
+            offset: 0,
+        };
+        let html = render_list(&messages, &tenant, "admin-1", &page, 0);
         // Askama は HTML を数値文字参照でエスケープする（`<` → `&#60;`）。生タグが残らないことを確認する。
         assert!(html.contains("&#60;script&#62;Evil&#60;/script&#62;"));
         assert!(!html.contains("<script>Evil"));

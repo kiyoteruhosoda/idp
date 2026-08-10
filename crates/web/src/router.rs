@@ -8,12 +8,13 @@ use crate::correlation;
 use crate::error_pages;
 use crate::handlers::{
     admin_authentication_policies_console, admin_clients_console, admin_console,
-    admin_invitations_console, admin_members_console, admin_restart_console,
-    admin_saml_clients_console, admin_settings, admin_signing_keys_console, admin_status_console,
-    admin_tenants_console, admin_users_console, authenticators, consent, console_script,
-    external_login, health, invitation_accept, locale, login, mfa_totp, page_scripts, passkey,
-    password_change, password_reset, portal, react_assets, rp_logout, saml_sso, step_up,
-    stylesheet, submit_feedback_script, user_security, user_settings, vendor_assets, verify_email,
+    admin_external_idps_console, admin_invitations_console, admin_login_identifiers_console,
+    admin_members_console, admin_restart_console, admin_saml_clients_console, admin_settings,
+    admin_signing_keys_console, admin_status_console, admin_tenants_console, admin_users_console,
+    authenticators, consent, console_script, external_login, health, invitation_accept, locale,
+    login, mfa_totp, page_scripts, passkey, password_change, password_reset, portal, react_assets,
+    rp_logout, saml_sso, step_up, stylesheet, submit_feedback_script, user_security, user_settings,
+    vendor_assets, verify_email,
 };
 use crate::i18n::Messages;
 use crate::language::resolve_language;
@@ -75,10 +76,25 @@ pub fn build(state: WebState) -> Router {
             "/external/{provider}/callback",
             get(external_login::callback),
         )
+        // SAML の ACS。外部 IdP がブラウザに POST させてくるので、GET は受けない。
+        .route(
+            "/external/{provider}/saml/acs",
+            post(external_login::saml_acs),
+        )
         // MFA 入力画面から「メールでコードを送る」（AP9）。
         .route("/mfa/totp/email-code", post(mfa_totp::send_email_code))
+        // SMS OTP の送信要求（AP13）。email OTP と同じ位置づけ。
+        .route("/mfa/totp/sms-code", post(mfa_totp::send_sms_code))
         // 認証器の管理（一覧・一時停止・失効・リカバリーコード発行。AP9）。
         .route("/settings/authenticators", get(authenticators::page))
+        .route(
+            "/settings/authenticators/phone",
+            post(authenticators::start_phone_registration),
+        )
+        .route(
+            "/settings/authenticators/phone/confirm",
+            post(authenticators::confirm_phone_registration),
+        )
         .route(
             "/settings/authenticators/status",
             post(authenticators::set_status),
@@ -163,6 +179,33 @@ pub fn build(state: WebState) -> Router {
         .route(
             "/admin/authentication-policies/{policy_id}/delete",
             post(admin_authentication_policies_console::delete),
+        )
+        // 外部 IdP 設定（AP16。API は AP10）。HTML フォームは PATCH/DELETE を送れないため、
+        // 更新・削除は専用の POST パスを経由して api の PATCH/DELETE へ変換する。
+        .route(
+            "/admin/external-idps",
+            get(admin_external_idps_console::list).post(admin_external_idps_console::create),
+        )
+        .route(
+            "/admin/external-idps/{id}/update",
+            post(admin_external_idps_console::update),
+        )
+        .route(
+            "/admin/external-idps/{id}/delete",
+            post(admin_external_idps_console::delete),
+        )
+        // ログイン識別子（AP16。API は AP8）。同じく更新・削除は専用の POST パスを経由する。
+        .route(
+            "/admin/users/{user_id}/login-identifiers",
+            get(admin_login_identifiers_console::list).post(admin_login_identifiers_console::add),
+        )
+        .route(
+            "/admin/users/{user_id}/login-identifiers/{identifier_id}/active",
+            post(admin_login_identifiers_console::set_active),
+        )
+        .route(
+            "/admin/users/{user_id}/login-identifiers/{identifier_id}/delete",
+            post(admin_login_identifiers_console::delete),
         )
         .route(
             "/admin/settings/tenant",
@@ -278,6 +321,10 @@ pub fn build(state: WebState) -> Router {
         .route(
             "/admin/members/{user_id}/reset-mfa",
             post(admin_members_console::reset_mfa),
+        )
+        .route(
+            "/admin/members/{user_id}/unlock",
+            post(admin_members_console::unlock),
         )
         // ゲストメンバーシップの一時停止・再開（MT24）。解除（削除）と違い元に戻せる。
         .route(

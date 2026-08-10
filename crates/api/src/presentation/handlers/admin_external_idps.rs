@@ -5,9 +5,10 @@
 //! 外部 IdP へトークン要求を出す瞬間だけ）。
 
 use crate::application::external_idp_management::{
-    ExternalIdpManagementError, RegisterExternalIdpCommand, UpdateExternalIdpCommand,
+    ExternalIdpConfigCommand, ExternalIdpManagementError, RegisterExternalIdpCommand,
+    UpdateExternalIdpCommand,
 };
-use crate::domain::external_idp::ExternalIdentityProvider;
+use crate::domain::external_idp::{ExternalIdentityProvider, ExternalIdpProtocol};
 use crate::presentation::admin::{IdpAdmin, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::error::ApiError;
@@ -28,13 +29,24 @@ pub struct ExternalIdpResponse {
     pub provider_code: String,
     pub display_name: String,
     pub issuer: String,
-    pub authorization_endpoint: String,
-    pub token_endpoint: String,
-    pub jwks_uri: String,
-    pub client_id: String,
-    /// シークレットを設定済みか（値は返さない）。
+    /// `oidc` / `saml`（ADR-0027）。以降の項目はプロトコルによって使う・使わないが分かれる。
+    pub protocol: String,
+    /// OIDC のみ。
+    pub authorization_endpoint: Option<String>,
+    pub token_endpoint: Option<String>,
+    pub jwks_uri: Option<String>,
+    pub client_id: Option<String>,
+    /// OIDC のみ。シークレットを設定済みか（値は返さない）。
     pub has_client_secret: bool,
     pub scopes: Vec<String>,
+    /// SAML のみ。IdP の `SingleSignOnService` URL。
+    pub saml_sso_url: Option<String>,
+    /// SAML のみ。署名検証に使う証明書（base64 DER）。秘密ではないので返す。
+    pub saml_certificates: Vec<String>,
+    pub saml_name_id_format: Option<String>,
+    /// SAML のみ。外部 IdP へ登録すべき本 IdP の entityID と ACS URL。
+    pub saml_sp_entity_id: Option<String>,
+    pub saml_acs_url: Option<String>,
     pub enabled: bool,
     pub allow_auto_link: bool,
     /// 外部 IdP へ登録すべきコールバック URL（設定作業の手掛かりとして返す）。
@@ -48,16 +60,31 @@ pub struct ExternalIdpRegisterRequest {
     pub provider_code: String,
     pub display_name: String,
     pub issuer: String,
-    pub authorization_endpoint: String,
-    pub token_endpoint: String,
-    pub jwks_uri: String,
-    pub client_id: String,
+    /// `oidc`（既定）/ `saml`。
+    #[serde(default = "default_protocol")]
+    pub protocol: String,
+    /// OIDC のとき必須。
+    #[serde(default)]
+    pub authorization_endpoint: Option<String>,
+    #[serde(default)]
+    pub token_endpoint: Option<String>,
+    #[serde(default)]
+    pub jwks_uri: Option<String>,
+    #[serde(default)]
+    pub client_id: Option<String>,
     /// 平文のクライアントシークレット（public クライアントとして登録するなら省略）。
     #[serde(default)]
     pub client_secret: Option<String>,
     /// 省略時は `openid profile email`。
     #[serde(default)]
     pub scopes: Option<Vec<String>>,
+    /// SAML のとき必須。
+    #[serde(default)]
+    pub saml_sso_url: Option<String>,
+    #[serde(default)]
+    pub saml_certificates: Option<Vec<String>>,
+    #[serde(default)]
+    pub saml_name_id_format: Option<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
     /// 検証済みメール一致で既存利用者へ自動連携するか（既定 false）。
@@ -69,6 +96,47 @@ fn default_true() -> bool {
     true
 }
 
+fn default_protocol() -> String {
+    "oidc".to_string()
+}
+
+/// 入力からプロトコル固有の設定を組み立てる。**片方のプロトコルの項目だけ**を読む——
+/// 両方読めるようにすると、OIDC の設定に SAML の欄が混ざった半端な登録ができてしまう。
+#[allow(clippy::too_many_arguments)]
+fn config_command(
+    protocol: &str,
+    authorization_endpoint: Option<String>,
+    token_endpoint: Option<String>,
+    jwks_uri: Option<String>,
+    client_id: Option<String>,
+    client_secret: Option<String>,
+    scopes: Option<Vec<String>>,
+    saml_sso_url: Option<String>,
+    saml_certificates: Option<Vec<String>>,
+    saml_name_id_format: Option<String>,
+) -> Result<ExternalIdpConfigCommand, ApiError> {
+    let required = |value: Option<String>, field: &str| {
+        value
+            .filter(|v| !v.trim().is_empty())
+            .ok_or_else(|| ApiError::BadRequest(format!("{field} is required for this protocol")))
+    };
+    match ExternalIdpProtocol::parse(protocol).map_err(|e| ApiError::BadRequest(e.to_string()))? {
+        ExternalIdpProtocol::Oidc => Ok(ExternalIdpConfigCommand::Oidc {
+            authorization_endpoint: required(authorization_endpoint, "authorization_endpoint")?,
+            token_endpoint: required(token_endpoint, "token_endpoint")?,
+            jwks_uri: required(jwks_uri, "jwks_uri")?,
+            client_id: required(client_id, "client_id")?,
+            client_secret,
+            scopes: scopes.unwrap_or_default(),
+        }),
+        ExternalIdpProtocol::Saml => Ok(ExternalIdpConfigCommand::Saml {
+            sso_url: required(saml_sso_url, "saml_sso_url")?,
+            certificates: saml_certificates.unwrap_or_default(),
+            name_id_format: saml_name_id_format,
+        }),
+    }
+}
+
 /// 部分更新。指定した項目のみ更新する。`client_secret` を空文字にすると削除（public 化）。
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct ExternalIdpUpdateRequest {
@@ -76,6 +144,9 @@ pub struct ExternalIdpUpdateRequest {
     pub display_name: Option<String>,
     #[serde(default)]
     pub issuer: Option<String>,
+    /// プロトコル固有の設定を差し替えるときだけ指定する（プロトコルそのものは変更できない）。
+    #[serde(default)]
+    pub protocol: Option<String>,
     #[serde(default)]
     pub authorization_endpoint: Option<String>,
     #[serde(default)]
@@ -88,6 +159,12 @@ pub struct ExternalIdpUpdateRequest {
     pub client_secret: Option<String>,
     #[serde(default)]
     pub scopes: Option<Vec<String>>,
+    #[serde(default)]
+    pub saml_sso_url: Option<String>,
+    #[serde(default)]
+    pub saml_certificates: Option<Vec<String>>,
+    #[serde(default)]
+    pub saml_name_id_format: Option<String>,
     #[serde(default)]
     pub enabled: Option<bool>,
     #[serde(default)]
@@ -156,12 +233,18 @@ pub async fn register_external_idp(
                 provider_code: body.provider_code,
                 display_name: body.display_name,
                 issuer: body.issuer,
-                authorization_endpoint: body.authorization_endpoint,
-                token_endpoint: body.token_endpoint,
-                jwks_uri: body.jwks_uri,
-                client_id: body.client_id,
-                client_secret: body.client_secret,
-                scopes: body.scopes.unwrap_or_default(),
+                config: config_command(
+                    &body.protocol,
+                    body.authorization_endpoint,
+                    body.token_endpoint,
+                    body.jwks_uri,
+                    body.client_id,
+                    body.client_secret,
+                    body.scopes,
+                    body.saml_sso_url,
+                    body.saml_certificates,
+                    body.saml_name_id_format,
+                )?,
                 enabled: body.enabled,
                 allow_auto_link: body.allow_auto_link,
             },
@@ -205,6 +288,23 @@ pub async fn update_external_idp(
         let trimmed = s.trim().to_string();
         (!trimmed.is_empty()).then_some(trimmed)
     });
+    // プロトコル固有の設定は**まとめて**差し替える（`protocol` を指定したときだけ）。項目ごとの
+    // 部分更新にすると、中途半端な組み合わせを作れてしまう。
+    let config = match body.protocol.as_deref() {
+        Some(protocol) => Some(config_command(
+            protocol,
+            body.authorization_endpoint,
+            body.token_endpoint,
+            body.jwks_uri,
+            body.client_id,
+            None,
+            body.scopes,
+            body.saml_sso_url,
+            body.saml_certificates,
+            body.saml_name_id_format,
+        )?),
+        None => None,
+    };
     let provider = state
         .external_idps
         .update(
@@ -213,12 +313,8 @@ pub async fn update_external_idp(
             UpdateExternalIdpCommand {
                 display_name: body.display_name,
                 issuer: body.issuer,
-                authorization_endpoint: body.authorization_endpoint,
-                token_endpoint: body.token_endpoint,
-                jwks_uri: body.jwks_uri,
-                client_id: body.client_id,
+                config,
                 client_secret,
-                scopes: body.scopes,
                 enabled: body.enabled,
                 allow_auto_link: body.allow_auto_link,
             },
@@ -269,12 +365,44 @@ fn response(state: &AppState, p: &ExternalIdentityProvider) -> ExternalIdpRespon
         provider_code: p.provider_code.clone(),
         display_name: p.display_name.clone(),
         issuer: p.issuer.clone(),
-        authorization_endpoint: p.authorization_endpoint.clone(),
-        token_endpoint: p.token_endpoint.clone(),
-        jwks_uri: p.jwks_uri.clone(),
-        client_id: p.client_id.clone(),
-        has_client_secret: p.client_secret_encrypted.is_some(),
-        scopes: p.effective_scopes(),
+        protocol: p.protocol().as_str().to_string(),
+        authorization_endpoint: p.config.as_oidc().map(|o| o.authorization_endpoint.clone()),
+        token_endpoint: p.config.as_oidc().map(|o| o.token_endpoint.clone()),
+        jwks_uri: p.config.as_oidc().map(|o| o.jwks_uri.clone()),
+        client_id: p.config.as_oidc().map(|o| o.client_id.clone()),
+        has_client_secret: p
+            .config
+            .as_oidc()
+            .is_some_and(|o| o.client_secret_encrypted.is_some()),
+        scopes: p
+            .config
+            .as_oidc()
+            .map(|o| o.effective_scopes())
+            .unwrap_or_default(),
+        saml_sso_url: p.config.as_saml().map(|s| s.sso_url.clone()),
+        saml_certificates: p
+            .config
+            .as_saml()
+            .map(|s| s.certificates.clone())
+            .unwrap_or_default(),
+        saml_name_id_format: p.config.as_saml().map(|s| s.name_id_format.clone()),
+        // SAML の設定作業に要る値（外部 IdP 側へ登録してもらう）。組み立て規則を管理者に
+        // 推測させない。
+        saml_sp_entity_id: p.config.as_saml().map(|_| {
+            format!(
+                "{}/{}/saml/sp",
+                state.config.public_web_base_url(),
+                p.tenant_id
+            )
+        }),
+        saml_acs_url: p.config.as_saml().map(|_| {
+            format!(
+                "{}/{}/external/{}/saml/acs",
+                state.config.public_web_base_url(),
+                p.tenant_id,
+                p.provider_code
+            )
+        }),
         enabled: p.enabled,
         allow_auto_link: p.allow_auto_link,
         // 外部 IdP 側に登録してもらう値。組み立て規則を管理者に推測させない。

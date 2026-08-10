@@ -9,6 +9,7 @@ use crate::domain::tenant_membership::{TenantMember, TenantMemberFilter, TenantM
 use crate::domain::values::{MembershipStatus, MembershipType, UserStatus};
 use crate::infrastructure::db::Db;
 use async_trait::async_trait;
+use chrono::TimeZone;
 use sqlx::mysql::MySqlRow;
 use sqlx::{MySql, QueryBuilder, Row};
 use uuid::Uuid;
@@ -59,6 +60,8 @@ fn map_row(row: &MySqlRow) -> Result<TenantMember> {
     let membership_type: String = row.try_get("membership_type").map_err(repo_err)?;
     let status: String = row.try_get("status").map_err(repo_err)?;
     let user_status: String = row.try_get("user_status").map_err(repo_err)?;
+    let locked_until: Option<chrono::NaiveDateTime> =
+        row.try_get("locked_until").map_err(repo_err)?;
     Ok(TenantMember {
         user_id: Uuid::parse_str(&user_id)
             .map_err(|e| DomainError::Repository(format!("invalid UUID `{user_id}`: {e}")))?,
@@ -68,6 +71,7 @@ fn map_row(row: &MySqlRow) -> Result<TenantMember> {
         status: MembershipStatus::parse(&status)?,
         // 結合は外部キー（`tenant_memberships.user_id` → `users.id`）越しのため利用者は必ず存在する。
         user_status: Some(UserStatus::parse(&user_status)?),
+        locked_until: locked_until.map(|naive| chrono::Utc.from_utc_datetime(&naive)),
     })
 }
 
@@ -86,7 +90,7 @@ impl TenantMemberQuery for SqlxTenantMemberQuery {
 
         let mut page = QueryBuilder::<MySql>::new(
             "SELECT m.user_id, m.membership_type, m.status, \
-             u.email, u.name, u.status AS user_status",
+             u.email, u.name, u.status AS user_status, u.locked_until AS locked_until",
         );
         push_conditions(&mut page, filter);
         // 並びはページ間で安定していなければならない（重複・欠落を防ぐ）。email は

@@ -93,6 +93,7 @@ pub async fn submit(
     match outcome {
         InternalChangePasswordResponse::Success {
             redirect_to,
+            form_post,
             sso_session_id,
             sso_absolute_ttl_secs,
         } => {
@@ -104,7 +105,11 @@ pub async fn submit(
                     sso_absolute_ttl_secs,
                 )
                 .expire_session(cookies::AUTH_SESSION_COOKIE);
-            (set_cookies.into_headers(), found(&redirect_to)).into_response()
+            (
+                set_cookies.into_headers(),
+                crate::authorization_response::respond(&messages, &redirect_to, form_post),
+            )
+                .into_response()
         }
         InternalChangePasswordResponse::ConsentRequired {
             auth_session_id: new_auth_session_id,

@@ -134,3 +134,48 @@ sqlx マイグレーション（MariaDB）を管理する。
 
 root テナントの UUID は固定値 `00000000-0000-7000-8000-000000000001`（全環境共通・git 管理。ADR-0011）。
 管理者ログイン URL は `/00000000-0000-7000-8000-000000000001/...`。
+
+- `0033_audit_log_indexes`: `audit_log` の索引を管理コンソールの絞り込みへ合わせる（G8）。単一列
+  `tenant_id` / `event_type` を落とし、`(tenant_id, occurred_at)` を土台に `event_type` / `result` /
+  `client_id` / `user_id` を挟んだ複合索引を張る。`occurred_at` 単独と `correlation_id` は残す
+  （前者は保持期間削除がテナント横断で引き、後者は追跡がテナント横断のため）。行データは変えない。
+
+- `0034_auth_session_response_mode`: `auth_sessions` に `response_mode` 列を追加する（G12）。
+  `response_mode=form_post` の要求は `/authorize` の時点で来るが、応答を組み立てるのは**別の
+  リクエスト**（ログイン完了・MFA 通過・同意承認・外部 IdP からの戻り）なので、その間の保存先が要る。
+  既定の `query` は保存しない（`NULL` = `query`）。`down` は列ごと落とす（進行中のフローは
+  `query` として応答が返るだけで、フロー自体は成立する）。
+
+- `0035_authenticator_secrets`: 認証器の秘密を登録簿（`user_authenticators`）へ集約する
+  （AP11。AP9 の contract フェーズ **前半**）。TOTP の共有鍵と、パスキーの `passkey_json` /
+  `credential_id` を写し、逆引き用の `credential_id` 列を足す。**元の表はまだ落とさない**
+  —— このリリースは「両方が読める期間」で、落とすのは次のリリース（このリリースが全ノードへ
+  行き渡った後）。同じリリースで落とすと、ローリングデプロイ中に残る古いプロセスが
+  MFA を通せなくなる。`down` は登録簿側の写しと `credential_id` 列を落とす（元の表は無傷）。
+
+- `0036_primary_login_identifier`: 主たるログイン識別子を登録簿（`user_login_identifiers`）へ
+  移す（AP15。AP8 の contract フェーズ **前半**）。AP8（0029）で入れたのは expand フェーズまでで、
+  主識別子は `users.preferred_username` に残り、登録簿には追加の識別子だけが入っていた。
+  「どの行が主か」を登録簿の中で表す `is_primary` 列を足し、既存の `preferred_username` を
+  そこへ写す（同じ値の行が既にあれば新設せず格上げする）。「1 利用者に主識別子は 1 行」は
+  生成列 `primary_of_user` + UNIQUE で DB に守らせる（MariaDB に部分 UNIQUE 索引は無いが、
+  UNIQUE 索引は複数の NULL を許す）。**`users.preferred_username` はまだ落とさない**
+  —— このリリースは「両方に在る期間」で、以後の更新は両方へ書き、解決は従来どおり
+  「登録簿 → `users`」の順に落ちる。撤去は次のリリース。同じ値が既に**他人**の識別子として
+  登録されている利用者だけは登録簿へ写せないが、`users` 側で解決され続けるためログインは通る
+  （撤去の前に運用で解消する必要があり、`docs/Progress.md` に残してある）。`down` は
+  **本マイグレーションが作った行だけ**（作成時刻 = 更新時刻）を消して列を落とす —— 格上げした行は
+  管理者が足した設定なので消さない。
+
+- `0037_external_idp_protocol`: 外部 IdP に SAML を足す（AP12。ADR-0027）。`protocol` 列
+  （`oidc` / `saml`。VARCHAR + CHECK）と SAML 固有の列（SSO URL・署名証明書の配列・NameID 形式）を
+  同じ表へ足し、OIDC 専用の列を NULL 可へ緩める。**JSON 列にも別表にも寄せない** —— JSON では
+  列ごとの NOT NULL・CHECK を掛けられず「SSO URL が空のまま登録された SAML プロバイダ」が
+  登録時ではなくログイン時に落ちる。別表にすると、共通項だけを読みたい一覧（ログイン画面の
+  ボタン）にまで join が掛かる。どの組み合わせが妥当かは Rust の `ExternalIdpConfig` が単一の
+  出所として持ち、リポジトリは行 → enum の変換でしか値を作らないので、`protocol = 'saml'` なのに
+  SSO URL が NULL という行は読み出しで失敗する。署名証明書を**配列**にしたのは、IdP の証明書
+  更新期間に新旧 2 枚が同時に有効になるため（1 枚しか持てないと更新のたびにログインが止まる）。
+  進行状態（`external_login_requests`）は両プロトコルで共用し、SAML には PKCE が無いので
+  `code_verifier_encrypted` を NULL 可にする。`down` は SAML の設定・進行状態を消してから
+  列を戻す（OIDC の設定は無傷）。

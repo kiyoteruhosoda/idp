@@ -82,6 +82,32 @@
         <input type="checkbox" class="form-check-input" id="smtp_use_tls" name="smtp_use_tls" value="true" {% if sys.smtp_use_tls %}checked{% endif %}>
         <label class="form-check-label" for="smtp_use_tls">{{ messages.get("admin-settings-smtp-tls") }}</label>
       </div>
+      {#- SMS ゲートウェイ（AP13）。SMTP と同じフォームで保存する（画面が 1 枚なので、
+          別々に保存させると片方だけ更新した状態が生まれる）。 -#}
+      <hr class="my-4">
+      <h3 class="h6">{{ messages.get("admin-settings-sms-heading") }}</h3>
+      <p class="text-muted small">{{ messages.get("admin-settings-sms-note") }}</p>
+      <div class="mb-3">
+        <label class="form-label" for="sms_gateway_url">{{ messages.get("admin-settings-sms-url") }}</label>
+        <input type="text" class="form-control" id="sms_gateway_url" name="sms_gateway_url" value="{{ sys.sms_gateway_url }}">
+        <div class="form-text">{{ messages.get("admin-settings-sms-url-hint") }}</div>
+      </div>
+      <div class="row g-3">
+        <div class="col-md-6">
+          <label class="form-label" for="sms_auth_header">{{ messages.get("admin-settings-sms-auth-header") }}</label>
+          <input type="text" class="form-control" id="sms_auth_header" name="sms_auth_header" value="{{ sys.sms_auth_header }}" placeholder="Authorization">
+        </div>
+        <div class="col-md-6">
+          <label class="form-label" for="sms_sender_id">{{ messages.get("admin-settings-sms-sender") }}</label>
+          <input type="text" class="form-control" id="sms_sender_id" name="sms_sender_id" value="{{ sys.sms_sender_id }}">
+        </div>
+      </div>
+      <div class="mb-3 mt-3">
+        <label class="form-label" for="sms_auth_token">{{ messages.get("admin-settings-sms-auth-token") }}</label>
+        <div class="form-text">{% if sys.sms_auth_token_set %}{{ messages.get("admin-settings-sms-auth-token-set") }}{% else %}{{ messages.get("admin-settings-sms-auth-token-unset") }}{% endif %}</div>
+        <input type="password" class="form-control" id="sms_auth_token" name="sms_auth_token" autocomplete="new-password">
+        <div class="form-text">{{ messages.get("admin-settings-sms-auth-token-hint") }}</div>
+      </div>
       <button type="submit" class="btn btn-primary">{{ messages.get("admin-settings-save") }}</button>
     </form>
   </div>

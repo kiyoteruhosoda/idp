@@ -121,10 +121,12 @@ pub async fn verify_totp(
     Ok(Json(match outcome {
         MfaLoginOutcome::Success {
             location,
+            form_post,
             sso_session_id,
             user_language,
         } => InternalVerifyTotpResponse::Success {
             redirect_to: location,
+            form_post,
             sso_session_id,
             sso_absolute_ttl_secs: ttl,
             user_language,
