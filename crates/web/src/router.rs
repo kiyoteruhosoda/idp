@@ -7,13 +7,13 @@ use crate::client_ip::resolve_client_ip;
 use crate::correlation;
 use crate::error_pages;
 use crate::handlers::{
-    admin_clients_console, admin_console, admin_invitations_console, admin_members_console,
-    admin_restart_console, admin_saml_clients_console, admin_settings, admin_signing_keys_console,
-    admin_status_console, admin_tenants_console, admin_users_console, authenticators, consent,
-    console_script, external_login, health, invitation_accept, locale, login, mfa_totp,
-    page_scripts, passkey, password_change, password_reset, portal, react_assets, rp_logout,
-    saml_sso, step_up, stylesheet, submit_feedback_script, user_security, user_settings,
-    vendor_assets, verify_email,
+    admin_authentication_policies_console, admin_clients_console, admin_console,
+    admin_invitations_console, admin_members_console, admin_restart_console,
+    admin_saml_clients_console, admin_settings, admin_signing_keys_console, admin_status_console,
+    admin_tenants_console, admin_users_console, authenticators, consent, console_script,
+    external_login, health, invitation_accept, locale, login, mfa_totp, page_scripts, passkey,
+    password_change, password_reset, portal, react_assets, rp_logout, saml_sso, step_up,
+    stylesheet, submit_feedback_script, user_security, user_settings, vendor_assets, verify_email,
 };
 use crate::i18n::Messages;
 use crate::language::resolve_language;
@@ -149,6 +149,21 @@ pub fn build(state: WebState) -> Router {
         .route("/admin/switch-tenant", get(admin_console::switch_tenant))
         // 設定画面（MT14）。テナント設定（idp.tenant.admin）＋ root のみのシステム設定区画（SMTP）。
         .route("/admin/settings", get(admin_settings::page))
+        // 認証ポリシー（AP1）。一覧・作成・編集・削除。HTML フォームは PUT/DELETE を送れないため、
+        // 更新・削除は専用の POST パスを経由して api の PUT/DELETE へ変換する。
+        .route(
+            "/admin/authentication-policies",
+            get(admin_authentication_policies_console::list)
+                .post(admin_authentication_policies_console::create),
+        )
+        .route(
+            "/admin/authentication-policies/{policy_id}/update",
+            post(admin_authentication_policies_console::update),
+        )
+        .route(
+            "/admin/authentication-policies/{policy_id}/delete",
+            post(admin_authentication_policies_console::delete),
+        )
         .route(
             "/admin/settings/tenant",
             post(admin_settings::update_tenant),

@@ -38,11 +38,11 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 | 優先度 | ID | 課題内容 | 工数 | 影響度 | 重要度 | 難易度 |
 |---:|---|---|---:|---:|---:|---:|
 | 8 | AP14 | AP3 の残り: 国・端末信頼の条件（判定材料が無いため未実装。GeoIP かプロキシ供給ヘッダの取り決めと、デバイス登録簿が前提）（⬜未着手） | 大 | 中 | 中 | 大 |
-| 5 | AP1 | 認証ポリシーの管理画面（web コンソール UI。現状は API のみ。AP3 で増えた条件・効果も対象）（⬜未着手） | 中 | 中 | 小 | 中 |
 | 5 | AP15 | AP8 の contract フェーズ（`users.preferred_username` を登録簿へ移し、列を撤去する。解決経路の切替 → 移送 → 撤去を独立したマイグレーションに分ける）（⬜未着手） | 中 | 中 | 小 | 中 |
 | 5 | AP11 | AP9 の contract フェーズ（TOTP/WebAuthn の秘密を `user_authenticators` へ集約し、`user_totp_secrets` / `user_webauthn_credentials` を撤去）（⬜未着手） | 中 | 中 | 小 | 中 |
 | 5 | AP12 | SAML 外部 IdP（AP10 は OIDC のみ実装。`external_identity_providers` の protocol 拡張が要る）（⬜未着手） | 大 | 中 | 小 | 大 |
 | 5 | G12 | `/authorize` の任意パラメータの残り（`response_mode=form_post`・`prompt=select_account` 未対応。`login_hint`・`ui_locales`・`id_token_hint` は対応済み）（🚧進行中） | 中 | 中 | 小 | 中 |
+| 3 | AP16 | 外部 IdP 設定・ログイン識別子の管理画面（AP1 で認証ポリシーだけを入れた。両者は API のみ）（⬜未着手） | 中 | 小 | 小 | 中 |
 | 3 | SEC10 | `/token`・`/introspect`・`/revoke` にレート制限が無い（Argon2 増幅型 DoS）（⬜未着手） | 小 | 小 | 中 | 小 |
 | 3 | AP6 | アカウントロックの管理者解除（仕様 §17.1・§24.6。`locked_until` を即時クリアする管理操作。現状は期限経過待ちのみ）と段階的ロック（⬜未着手） | 小 | 小 | 中 | 小 |
 | 3 | G8 | `audit_log` に絞り込み用の索引（`client_id`・`user_id`・`result`・複合 `(tenant_id, occurred_at)`）と保持期間の仕組みが無い（`log` にはある）（⬜未着手） | 小 | 中 | 小 | 小 |
@@ -52,21 +52,22 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 
 ## 詳細
 
-### ユーザー認証・認証ポリシー仕様書の残実装（AP1・AP14）
+### ユーザー認証・認証ポリシー仕様書の残実装（AP14）
 
 ADR-0020 で認証ポリシー（deny / require_mfa / allow）・管理 API・OIDC ログインフローへの適用・
 アカウントロックの設定化を導入し、AP3 で条件種別（ネットワークゾーン・時間帯・requested_acr）と
 `require_specific_method` 効果を追加した（ADR-0020 の追補）。残りは以下。
 
-- **AP1** 管理画面（web コンソール UI）。現状は API のみ（手順は `docs/OPERATIONS.md`）。
-  AP10 の外部 IdP 設定（`/admin/external-idps`）・AP8 のログイン識別子
-  （`/admin/users/{user_id}/login-identifiers`）と、AP3 で増えた条件・効果の編集 UI も対象。
+AP1 で入れたのは**認証ポリシー**の画面である。AP10 の外部 IdP 設定（`/admin/external-idps`）と
+AP8 のログイン識別子（`/admin/users/{user_id}/login-identifiers`）の管理画面はまだ無く、API を
+直接叩く（下記バックログ AP16）。
+
 - **AP14** AP3 の残り: 国・端末信頼の条件。**条件式ではなく判定材料が無い**のが本体で、
   国は GeoIP データベースの同梱かフロントプロキシが供給するヘッダの取り決め、端末信頼は
   デバイス登録簿（登録・識別・信頼状態）がそれぞれ前提になる。材料の無い条件を先に置くと
   「設定できるが決して一致しない条件」が管理画面に並ぶため、別タスクへ切り出した。
 
-AP2・AP3・AP4・AP5・AP7・AP8・AP9・AP10 は実装済み（`CHANGELOG.md` 参照）。AP8 の残り
+AP1（認証ポリシーの管理画面）・AP2・AP3・AP4・AP5・AP7・AP8・AP9・AP10 は実装済み（`CHANGELOG.md` 参照）。AP8 の残り
 （contract フェーズ）・AP9 の残り（contract フェーズ）・AP10 の残り（SAML 外部 IdP）は
 下記「積み残し」にある。
 

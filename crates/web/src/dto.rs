@@ -262,3 +262,58 @@ pub struct AdminSamlServiceProviderForm {
 pub struct AdminSamlServiceProviderDeleteForm {
     pub csrf_token: String,
 }
+
+/// 認証ポリシーの作成・編集フォーム（`POST /{tenant_id}/admin/authentication-policies`、AP1）。
+///
+/// 個数が可変の条件（対象クライアント・利用者・CIDR・`acr_values`・時間帯）は、HTML の入力欄へ
+/// 1 対 1 で置けないためテキスト領域で受ける。書式と往復は
+/// [`crate::authentication_policy_form`] に集約する。
+#[derive(Debug, Deserialize)]
+pub struct AdminAuthenticationPolicyForm {
+    pub policy_code: String,
+    pub policy_name: String,
+    pub priority: String,
+    /// チェックボックスは未チェックだと送信されないため `Option` で受ける。
+    #[serde(default)]
+    pub enabled: Option<String>,
+    pub effect: String,
+    /// `require_specific_method` で許可する認証方式（チェックボックス群）。
+    ///
+    /// 繰り返しキー（`methods=a&methods=b`）を `Vec` で受けないのは、フォームの復号に使う
+    /// `serde_urlencoded` が列（sequence）に対応しないためである。方式は閉じた語彙
+    /// （[`idp_contracts::admin::AUTHENTICATION_METHOD_CODES`]）なので、方式ごとに独立した
+    /// チェックボックスとして受ける。
+    #[serde(default)]
+    pub method_password: Option<String>,
+    #[serde(default)]
+    pub method_totp: Option<String>,
+    #[serde(default)]
+    pub method_webauthn: Option<String>,
+    #[serde(default)]
+    pub method_recovery_code: Option<String>,
+    #[serde(default)]
+    pub method_email_otp: Option<String>,
+    #[serde(default)]
+    pub method_sms_otp: Option<String>,
+    #[serde(default)]
+    pub method_external_idp: Option<String>,
+    #[serde(default)]
+    pub user_verification: Option<String>,
+    #[serde(default)]
+    pub client_ids: String,
+    #[serde(default)]
+    pub user_ids: String,
+    #[serde(default)]
+    pub ip_cidrs: String,
+    #[serde(default)]
+    pub time_windows: String,
+    #[serde(default)]
+    pub requested_acr: String,
+    pub csrf_token: String,
+}
+
+/// 認証ポリシー削除フォーム（`POST /{tenant_id}/admin/authentication-policies/{id}/delete`）。
+#[derive(Debug, Deserialize)]
+pub struct AdminAuthenticationPolicyDeleteForm {
+    pub csrf_token: String,
+}

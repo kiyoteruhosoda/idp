@@ -705,3 +705,86 @@ pub struct AuthenticationPolicyUpsertRequest {
 fn default_enabled() -> bool {
     true
 }
+
+#[cfg(test)]
+mod authentication_policy_contract_tests {
+    use super::*;
+
+    /// 管理コンソール（web）が使う `idp_contracts::admin` 側の DTO と、ここ（OpenAPI に載せる
+    /// api 側の DTO）は**同じ JSON でなければならない**。食い違うと管理画面から保存できなくなる
+    /// （web が送った形を api が復号できない）。両方を JSON で往復させて形の一致を固定する。
+    #[test]
+    fn authentication_policy_contract_matches_the_api_dto() {
+        let shared = idp_contracts::admin::AuthenticationPolicyUpsertRequest {
+            policy_code: "office-hours".to_string(),
+            policy_name: "Office hours".to_string(),
+            priority: 10,
+            enabled: true,
+            effect: "require_specific_method".to_string(),
+            effect_params: Some(idp_contracts::admin::RequiredMethodsPayload {
+                methods: vec!["webauthn".to_string()],
+                user_verification: true,
+            }),
+            client_ids: vec!["app-a".to_string()],
+            user_ids: vec!["019f8ea8-f5dd-7fc7-ac15-a7d4337e4610".to_string()],
+            ip_cidrs: vec!["10.0.0.0/8".to_string()],
+            time_windows: vec![idp_contracts::admin::TimeWindowPayload {
+                days: vec![1, 2, 3, 4, 5],
+                start_minute: 540,
+                end_minute: 1080,
+                utc_offset_minutes: 540,
+            }],
+            requested_acr: vec!["urn:example:high".to_string()],
+        };
+        let json = serde_json::to_value(&shared).expect("serialize the shared contract");
+        let api: AuthenticationPolicyUpsertRequest =
+            serde_json::from_value(json).expect("the api must accept what web sends");
+
+        assert_eq!(api.policy_code, shared.policy_code);
+        assert_eq!(api.priority, shared.priority);
+        assert_eq!(api.enabled, shared.enabled);
+        assert_eq!(api.effect, shared.effect);
+        let params = api.effect_params.expect("effect_params must survive");
+        assert_eq!(params.methods, vec!["webauthn".to_string()]);
+        assert!(params.user_verification);
+        assert_eq!(api.client_ids, shared.client_ids);
+        assert_eq!(api.user_ids, shared.user_ids);
+        assert_eq!(api.ip_cidrs, shared.ip_cidrs);
+        assert_eq!(api.requested_acr, shared.requested_acr);
+        assert_eq!(api.time_windows.len(), 1);
+        assert_eq!(api.time_windows[0].days, vec![1, 2, 3, 4, 5]);
+        assert_eq!(api.time_windows[0].start_minute, 540);
+        assert_eq!(api.time_windows[0].end_minute, 1080);
+        assert_eq!(api.time_windows[0].utc_offset_minutes, 540);
+    }
+
+    /// 管理コンソールが描く方式のチェックボックスは、api の `AuthenticationMethod` の
+    /// **保存値そのもの**でなければならない（選んだ方式が api に弾かれる形にしない）。
+    #[test]
+    fn authentication_method_codes_match_the_contract() {
+        use crate::domain::values::AuthenticationMethod;
+
+        let expected = [
+            AuthenticationMethod::Password,
+            AuthenticationMethod::Totp,
+            AuthenticationMethod::WebAuthn,
+            AuthenticationMethod::RecoveryCode,
+            AuthenticationMethod::EmailOtp,
+            AuthenticationMethod::SmsOtp,
+            AuthenticationMethod::ExternalIdp,
+        ]
+        .map(|m| m.as_str())
+        .to_vec();
+        assert_eq!(
+            idp_contracts::admin::AUTHENTICATION_METHOD_CODES.to_vec(),
+            expected
+        );
+        // 一覧に載せた各コードが実際に解釈できること（綴り間違いの検出）。
+        for code in idp_contracts::admin::AUTHENTICATION_METHOD_CODES {
+            assert!(
+                AuthenticationMethod::parse(code).is_ok(),
+                "unknown method code in the contract: {code}"
+            );
+        }
+    }
+}
