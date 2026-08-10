@@ -29,7 +29,7 @@
         <i class="fa-solid fa-cube me-2" aria-hidden="true"></i>{{ messages.get("admin-saml-client-create-title") }}
       </div>
       <div class="card-body">
-        <form method="post" action="{{ tenant }}/admin/saml-clients/import" enctype="multipart/form-data" class="mb-4" id="saml-metadata-import-form">
+        <form method="post" action="{{ tenant }}/admin/saml-clients/import" enctype="multipart/form-data" class="mb-4" id="saml-metadata-import-form" data-metadata-import>
           <input type="hidden" name="csrf_token" value="{{ csrf }}">
           <div class="mb-3">
             <label class="form-label" for="metadata_file">{{ messages.get("admin-saml-client-import-file") }}</label>

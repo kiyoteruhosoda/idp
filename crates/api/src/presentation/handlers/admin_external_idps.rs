@@ -9,6 +9,7 @@ use crate::application::external_idp_management::{
     UpdateExternalIdpCommand,
 };
 use crate::domain::external_idp::{ExternalIdentityProvider, ExternalIdpProtocol};
+use crate::domain::saml_metadata::parse_idp_metadata;
 use crate::presentation::admin::{IdpAdmin, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::error::ApiError;
@@ -18,6 +19,7 @@ use crate::presentation::tenant::ResolvedTenant;
 use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
+use idp_contracts::admin::{SamlIdpMetadataImportResponse, SamlMetadataImportRequest};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -324,6 +326,33 @@ pub async fn update_external_idp(
         .await
         .map_err(map_error)?;
     Ok(Json(response(&state, &provider)))
+}
+
+/// 外部 IdP のメタデータ XML を解析し、登録フォームの初期値を返す（AP12）。データは永続化しない。
+///
+/// entityID・SSO URL・署名証明書の貼り付けは、管理者が IdP のメタデータから 1 項目ずつ写す作業に
+/// なりやすい。証明書は base64 が数行続くため、写し間違えても**利用者のログイン時**まで表に出ない。
+///
+/// 入出力は `idp_contracts::admin` の DTO をそのまま使う（SP メタデータ取り込みと同じ）。api 側に
+/// 同じ形をもう一度定義すると、web と食い違ったときに取り込みが静かに壊れる。
+pub async fn import_external_idp_metadata(
+    RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
+    State(_state): State<AppState>,
+    Extension(_tenant): Extension<ResolvedTenant>,
+    Json(body): Json<SamlMetadataImportRequest>,
+) -> Result<Json<SamlIdpMetadataImportResponse>, ApiError> {
+    // 解析の失敗理由（entityID が無い・SSO が無い等）はそのまま返す。管理者向けの検証メッセージ
+    // なので翻訳しない（CLAUDE.md「翻訳の対象外」）。取り違え——SP のメタデータを貼った——を
+    // 「IdP の SingleSignOnService が無い」と言えるかどうかで、気づけるかが変わる。
+    let parsed =
+        parse_idp_metadata(&body.metadata_xml).map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    Ok(Json(SamlIdpMetadataImportResponse {
+        display_name: parsed.display_name.unwrap_or_default(),
+        entity_id: parsed.entity_id,
+        sso_url: parsed.sso_url,
+        certificates: parsed.certificates,
+        name_id_format: parsed.name_id_format.unwrap_or_default(),
+    }))
 }
 
 /// 外部 IdP を削除する（連携済みの利用者の対応行も FK CASCADE で消える）。

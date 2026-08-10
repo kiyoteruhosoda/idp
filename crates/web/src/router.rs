@@ -186,6 +186,11 @@ pub fn build(state: WebState) -> Router {
             "/admin/external-idps",
             get(admin_external_idps_console::list).post(admin_external_idps_console::create),
         )
+        // 外部 IdP メタデータの取り込み（AP12）。`{id}/update` と衝突しない静的パス。
+        .route(
+            "/admin/external-idps/import",
+            post(admin_external_idps_console::import_metadata),
+        )
         .route(
             "/admin/external-idps/{id}/update",
             post(admin_external_idps_console::update),

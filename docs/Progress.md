@@ -38,7 +38,6 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 | 優先度 | ID | 課題内容 | 工数 | 影響度 | 重要度 | 難易度 |
 |---:|---|---|---:|---:|---:|---:|
 | 8 | AP14 | AP3 の残り: 国・端末信頼の条件（判定材料が無いため未実装。GeoIP かプロキシ供給ヘッダの取り決めと、デバイス登録簿が前提）（⬜未着手） | 大 | 中 | 中 | 大 |
-| 3 | AP12b | AP12 の残り（管理画面の SAML 対応・IdP メタデータの取り込み・DB を使う統合テスト）（⬜未着手） | 中 | 小 | 小 | 中 |
 | 3 | AP15b | AP15 の後半（フォールバックの撤去と `users.preferred_username` 列の削除）。**前半を配布し終えてから**着手する（⬜未着手） | 小 | 中 | 小 | 小 |
 | 3 | AP11b | AP11 の後半（`user_totp_secrets` / `user_webauthn_credentials` と `credential_ref` の撤去）。**前半を配布し終えてから**着手する（⬜未着手） | 小 | 中 | 小 | 小 |
 
@@ -55,11 +54,10 @@ ADR-0020 で認証ポリシー（deny / require_mfa / allow）・管理 API・OI
   デバイス登録簿（登録・識別・信頼状態）がそれぞれ前提になる。材料の無い条件を先に置くと
   「設定できるが決して一致しない条件」が管理画面に並ぶため、別タスクへ切り出した。
 
-AP1（認証ポリシーの管理画面）・AP2〜AP11・AP13・AP15・AP16 は実装済み（`CHANGELOG.md` 参照）。
-AP12（SAML 外部 IdP）は本体を実装済み。AP11・AP15 の**後半**（撤去）と AP12 の残り
-（管理画面・メタデータ取り込み）は下記「積み残し」にある。
+AP1（認証ポリシーの管理画面）・AP2〜AP13・AP15・AP16 は実装済み（`CHANGELOG.md` 参照）。
+AP11・AP15 の**後半**（撤去）は下記「積み残し」にある。
 
-### 積み残し（expand/contract の後半と、AP12 の残り。AP15b・AP11b・AP12b）
+### 積み残し（expand/contract の後半。AP15b・AP11b）
 
 #### AP15b. AP15 の後半（フォールバックと `users.preferred_username` の撤去）
 
@@ -100,20 +98,4 @@ AP11 の前半で、TOTP の共有鍵とパスキーの秘密は登録簿（`use
 
 1. 読みのフォールバック（元の表）と、書きの二重化を外す。
 2. `user_totp_secrets` / `user_webauthn_credentials` の削除と、`credential_ref` 列の撤去。
-
-#### AP12b. AP12 の残り（管理画面と統合テスト）
-
-AP12 の本体（`protocol` 列・プロトコル固有設定の enum・`AuthnRequest` の生成・アサーションの
-署名検証・ACS エンドポイント）は実装済み（ADR-0027・`CHANGELOG.md`）。管理 API
-（`/admin/external-idps`）も `protocol=saml` を受け付ける。残りは:
-
-- **管理画面（web）の SAML 対応。** 外部 IdP の登録・更新フォームは OIDC の項目
-  （authorization_endpoint 等）だけを出す。SAML を登録するには管理 API を直接叩く。
-  `protocol` の選択と、選択に応じた項目の出し分けが要る。
-- **IdP メタデータ（`IDPSSODescriptor`）の取り込み。** `domain::saml_metadata` は SP メタデータの
-  解析と IdP メタデータの生成を持つが、**外部 IdP のメタデータを解析する**側がまだ無い。
-  entityID・SSO URL・署名証明書を貼り付けから取り込めると、管理者の手入力が減る。
-- **DB を使う統合テスト。** 署名検証と応答の解釈は単体テストで固めてある（IdP 側の生成器に
-  本物の署名を作らせて通す）が、「SAML プロバイダを登録 → start で AuthnRequest → ACS で
-  ログイン成立」までを通す統合テストがまだ無い。
 

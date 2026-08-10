@@ -20,23 +20,51 @@
   });
 })();
 
-// SAML SP メタデータの取り込みフォーム（SEC12 で `console/saml_service_providers.html` の
+// SAML メタデータの取り込みフォーム（SEC12 で `console/saml_service_providers.html` の
 // インライン script から移設）。ファイルを選んだ瞬間に取り込みを実行する（別途「取り込み」ボタンを
 // 押さなくてよい）。JS 無効時はボタン送信の従来動作にフォールバックする。
+//
+// SP（クライアント）の取り込みと外部 IdP の取り込みで同じ挙動なので、id ではなく
+// `data-metadata-import` 属性で拾う（画面が増えるたびに id を足さない）。
 (function () {
-  var fileInput = document.getElementById("metadata_file");
-  var form = document.getElementById("saml-metadata-import-form");
-  if (!fileInput || !form) {
-    return;
-  }
-  fileInput.addEventListener("change", function () {
-    if (!fileInput.files || fileInput.files.length === 0) {
+  var forms = document.querySelectorAll("form[data-metadata-import]");
+  Array.prototype.forEach.call(forms, function (form) {
+    var fileInput = form.querySelector('input[type="file"]');
+    if (!fileInput) {
       return;
     }
-    if (typeof form.requestSubmit === "function") {
-      form.requestSubmit();
-    } else {
-      form.submit();
-    }
+    fileInput.addEventListener("change", function () {
+      if (!fileInput.files || fileInput.files.length === 0) {
+        return;
+      }
+      if (typeof form.requestSubmit === "function") {
+        form.requestSubmit();
+      } else {
+        form.submit();
+      }
+    });
   });
+})();
+
+// 外部 IdP 登録フォームのプロトコル出し分け（AP12）。OIDC と SAML では必要な項目がまったく違う
+// ため、選ばれていない側の欄は隠す。**新規登録の初期状態では両方の区画がテンプレートから
+// 出ており、隠すのはここが初めて**である（サーバ側で隠すと、JS が動かない環境ではプロトコルを
+// 切り替えても欄が出てこず、SAML を登録できない）。
+//
+// **隠すだけで、name 属性は外さない。** サーバは選ばれたプロトコルの欄だけを読む（送られてきた
+// かどうかで判断しない）ので、JS が動かない環境では両方の欄が見えたまま正しく動く。ここで
+// disabled にすると、JS 無効時と有効時で送信内容が変わり、挙動の差が生まれる。
+(function () {
+  var select = document.querySelector("[data-external-idp-protocol]");
+  if (!select) {
+    return;
+  }
+  var sections = document.querySelectorAll("[data-external-idp-fields]");
+  function apply() {
+    Array.prototype.forEach.call(sections, function (section) {
+      section.hidden = section.getAttribute("data-external-idp-fields") !== select.value;
+    });
+  }
+  select.addEventListener("change", apply);
+  apply();
 })();

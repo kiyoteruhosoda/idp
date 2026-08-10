@@ -7,13 +7,40 @@
 {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
 {% if saved %}<div class="alert alert-success" role="status"><i class="fa-solid fa-circle-check me-2" aria-hidden="true"></i>{{ messages.get("admin-external-idps-saved") }}</div>{% endif %}
 {% if deleted %}<div class="alert alert-success" role="status"><i class="fa-solid fa-circle-check me-2" aria-hidden="true"></i>{{ messages.get("admin-external-idps-deleted") }}</div>{% endif %}
+{% if imported %}<div class="alert alert-info" role="status"><i class="fa-solid fa-file-import me-2" aria-hidden="true"></i>{{ messages.get("admin-external-idps-imported") }}</div>{% endif %}
+
+{# SAML の IdP メタデータ取り込み。新規登録のときだけ出す（編集中に別の IdP のメタデータで
+   フォームを上書きすると、何を保存しようとしていたのか分からなくなる）。 #}
+{% if editing.is_none() %}
+<div class="card mb-4">
+  <div class="card-header">
+    <h3 class="h6 mb-0">{{ messages.get("admin-external-idps-import-title") }}</h3>
+  </div>
+  <div class="card-body">
+    <form method="post" action="{{ tenant }}/admin/external-idps/import" enctype="multipart/form-data" id="external-idp-metadata-import-form" data-metadata-import>
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <div class="mb-3">
+        <label class="form-label" for="metadata_file">{{ messages.get("admin-external-idps-import-file") }}</label>
+        <input type="file" class="form-control" id="metadata_file" name="metadata_file" accept=".xml,application/xml,text/xml,application/samlmetadata+xml">
+        <div class="form-text">{{ messages.get("admin-external-idps-import-file-hint") }}</div>
+      </div>
+      <label class="form-label" for="metadata_xml">{{ messages.get("admin-external-idps-import-field") }}</label>
+      <textarea class="form-control font-monospace" id="metadata_xml" name="metadata_xml" rows="6" placeholder="&lt;EntityDescriptor ...&gt;&lt;IDPSSODescriptor ...&gt;"></textarea>
+      <div class="form-text">{{ messages.get("admin-external-idps-import-hint") }}</div>
+      <button type="submit" class="btn btn-outline-primary mt-2">
+        <i class="fa-solid fa-file-import me-2" aria-hidden="true"></i>{{ messages.get("admin-external-idps-import-button") }}
+      </button>
+    </form>
+  </div>
+</div>
+{% endif %}
 
 <div class="card mb-4">
   <div class="card-header">
     <h3 class="h6 mb-0">{% if editing.is_some() %}{{ messages.get("admin-external-idps-form-edit") }}{% else %}{{ messages.get("admin-external-idps-form-new") }}{% endif %}</h3>
   </div>
   <div class="card-body">
-    <form method="post" action="{% if let Some(id) = editing %}{{ tenant }}/admin/external-idps/{{ id }}/update{% else %}{{ tenant }}/admin/external-idps{% endif %}">
+    <form method="post" action="{% if let Some(id) = editing %}{{ tenant }}/admin/external-idps/{{ id }}/update{% else %}{{ tenant }}/admin/external-idps{% endif %}" data-external-idp-form>
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <div class="row g-3">
         <div class="col-md-4">
@@ -23,7 +50,19 @@
           <input class="form-control" id="provider_code" name="provider_code" value="{{ values.provider_code }}" {% if editing.is_some() %}readonly{% else %}required{% endif %}>
           <div class="form-text">{{ messages.get("admin-external-idps-field-code-hint") }}</div>
         </div>
-        <div class="col-md-8">
+        <div class="col-md-4">
+          <label class="form-label" for="protocol">{{ messages.get("admin-external-idps-field-protocol") }}</label>
+          {# 登録済みプロバイダのプロトコルは変更できない（api が拒否する。同じ provider_code のまま
+             切り替えると、既存の連携が別プロトコルの識別子を指したまま残る）。編集時は選択を固定し、
+             値は hidden で送る（disabled な select は送信されない）。 #}
+          <select class="form-select" id="protocol" name="protocol" data-external-idp-protocol {% if editing.is_some() %}disabled{% endif %}>
+            <option value="oidc" {% if !values.is_saml() %}selected{% endif %}>{{ messages.get("admin-external-idps-protocol-oidc") }}</option>
+            <option value="saml" {% if values.is_saml() %}selected{% endif %}>{{ messages.get("admin-external-idps-protocol-saml") }}</option>
+          </select>
+          {% if editing.is_some() %}<input type="hidden" name="protocol" value="{{ values.protocol }}">{% endif %}
+          <div class="form-text">{{ messages.get("admin-external-idps-field-protocol-hint") }}</div>
+        </div>
+        <div class="col-md-4">
           <label class="form-label" for="display_name">{{ messages.get("admin-external-idps-field-name") }}</label>
           <input class="form-control" id="display_name" name="display_name" value="{{ values.display_name }}" required>
           <div class="form-text">{{ messages.get("admin-external-idps-field-name-hint") }}</div>
@@ -31,22 +70,32 @@
         <div class="col-md-6">
           <label class="form-label" for="issuer">{{ messages.get("admin-external-idps-field-issuer") }}</label>
           <input class="form-control" id="issuer" name="issuer" value="{{ values.issuer }}" required>
+          <div class="form-text">{{ messages.get("admin-external-idps-field-issuer-hint") }}</div>
         </div>
+      </div>
+
+      {# OIDC 固有の項目。
+         **新規登録では両方の区画を出したまま描き、隠すのは JS に任せる。** サーバ側で選択外を
+         隠すと、JS が動かない環境ではプロトコルを切り替えても欄が出てこず、SAML を登録できない。
+         送信されるのは選んだプロトコルの側だけなので（ハンドラが振り分ける）、両方見えていても
+         結果は変わらない。編集はプロトコルが固定なので、サーバ側で隠して構わない。 #}
+      <div class="row g-3 mt-0" data-external-idp-fields="oidc" {% if editing.is_some() && values.is_saml() %}hidden{% endif %}>
+        <div class="col-12"><hr class="my-2"><h4 class="h6 text-muted">{{ messages.get("admin-external-idps-section-oidc") }}</h4></div>
         <div class="col-md-6">
           <label class="form-label" for="jwks_uri">{{ messages.get("admin-external-idps-field-jwks") }}</label>
-          <input class="form-control" id="jwks_uri" name="jwks_uri" value="{{ values.jwks_uri }}" required>
+          <input class="form-control" id="jwks_uri" name="jwks_uri" value="{{ values.jwks_uri }}">
         </div>
         <div class="col-md-6">
           <label class="form-label" for="authorization_endpoint">{{ messages.get("admin-external-idps-field-authorization") }}</label>
-          <input class="form-control" id="authorization_endpoint" name="authorization_endpoint" value="{{ values.authorization_endpoint }}" required>
+          <input class="form-control" id="authorization_endpoint" name="authorization_endpoint" value="{{ values.authorization_endpoint }}">
         </div>
         <div class="col-md-6">
           <label class="form-label" for="token_endpoint">{{ messages.get("admin-external-idps-field-token") }}</label>
-          <input class="form-control" id="token_endpoint" name="token_endpoint" value="{{ values.token_endpoint }}" required>
+          <input class="form-control" id="token_endpoint" name="token_endpoint" value="{{ values.token_endpoint }}">
         </div>
         <div class="col-md-6">
           <label class="form-label" for="client_id">{{ messages.get("admin-external-idps-field-client-id") }}</label>
-          <input class="form-control" id="client_id" name="client_id" value="{{ values.client_id }}" required>
+          <input class="form-control" id="client_id" name="client_id" value="{{ values.client_id }}">
         </div>
         <div class="col-md-6">
           <label class="form-label" for="client_secret">{{ messages.get("admin-external-idps-field-client-secret") }}</label>
@@ -60,17 +109,38 @@
           <input class="form-control" id="scopes" name="scopes" value="{{ values.scopes }}">
           <div class="form-text">{{ messages.get("admin-external-idps-field-scopes-hint") }}</div>
         </div>
-        <div class="col-md-6 d-flex align-items-end">
-          <div>
-            <div class="form-check">
-              <input class="form-check-input" type="checkbox" id="enabled" name="enabled" value="1" {% if values.enabled %}checked{% endif %}>
-              <label class="form-check-label" for="enabled">{{ messages.get("admin-external-idps-field-enabled") }}</label>
-            </div>
-            <div class="form-check">
-              <input class="form-check-input" type="checkbox" id="allow_auto_link" name="allow_auto_link" value="1" {% if values.allow_auto_link %}checked{% endif %}>
-              <label class="form-check-label" for="allow_auto_link">{{ messages.get("admin-external-idps-field-auto-link") }}</label>
-              <div class="form-text">{{ messages.get("admin-external-idps-field-auto-link-hint") }}</div>
-            </div>
+      </div>
+
+      {# SAML 固有の項目（隠す条件は上の OIDC 区画と同じ理由）。 #}
+      <div class="row g-3 mt-0" data-external-idp-fields="saml" {% if editing.is_some() && !values.is_saml() %}hidden{% endif %}>
+        <div class="col-12"><hr class="my-2"><h4 class="h6 text-muted">{{ messages.get("admin-external-idps-section-saml") }}</h4></div>
+        <div class="col-md-6">
+          <label class="form-label" for="saml_sso_url">{{ messages.get("admin-external-idps-field-saml-sso") }}</label>
+          <input class="form-control" id="saml_sso_url" name="saml_sso_url" value="{{ values.saml_sso_url }}">
+          <div class="form-text">{{ messages.get("admin-external-idps-field-saml-sso-hint") }}</div>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label" for="saml_name_id_format">{{ messages.get("admin-external-idps-field-saml-nameid") }}</label>
+          <input class="form-control" id="saml_name_id_format" name="saml_name_id_format" value="{{ values.saml_name_id_format }}">
+          <div class="form-text">{{ messages.get("admin-external-idps-field-saml-nameid-hint") }}</div>
+        </div>
+        <div class="col-12">
+          <label class="form-label" for="saml_certificates">{{ messages.get("admin-external-idps-field-saml-certificates") }}</label>
+          <textarea class="form-control font-monospace" id="saml_certificates" name="saml_certificates" rows="6">{{ values.saml_certificates }}</textarea>
+          <div class="form-text">{{ messages.get("admin-external-idps-field-saml-certificates-hint") }}</div>
+        </div>
+      </div>
+
+      <div class="row g-3 mt-0">
+        <div class="col-md-6">
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="enabled" name="enabled" value="1" {% if values.enabled %}checked{% endif %}>
+            <label class="form-check-label" for="enabled">{{ messages.get("admin-external-idps-field-enabled") }}</label>
+          </div>
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="allow_auto_link" name="allow_auto_link" value="1" {% if values.allow_auto_link %}checked{% endif %}>
+            <label class="form-check-label" for="allow_auto_link">{{ messages.get("admin-external-idps-field-auto-link") }}</label>
+            <div class="form-text">{{ messages.get("admin-external-idps-field-auto-link-hint") }}</div>
           </div>
         </div>
       </div>
@@ -91,6 +161,7 @@
       <tr>
         <th>{{ messages.get("admin-external-idps-col-code") }}</th>
         <th>{{ messages.get("admin-external-idps-col-name") }}</th>
+        <th>{{ messages.get("admin-external-idps-col-protocol") }}</th>
         <th>{{ messages.get("admin-external-idps-col-issuer") }}</th>
         <th>{{ messages.get("admin-external-idps-col-secret") }}</th>
         <th>{{ messages.get("admin-external-idps-col-state") }}</th>
@@ -103,13 +174,20 @@
       <tr>
         <td data-label="{{ messages.get("admin-external-idps-col-code") }}"><code>{{ p.provider_code }}</code></td>
         <td data-label="{{ messages.get("admin-external-idps-col-name") }}">{{ p.display_name }}</td>
+        <td data-label="{{ messages.get("admin-external-idps-col-protocol") }}">{% if p.is_saml() %}<span class="badge text-bg-primary">{{ messages.get("admin-external-idps-protocol-saml") }}</span>{% else %}<span class="badge text-bg-secondary">{{ messages.get("admin-external-idps-protocol-oidc") }}</span>{% endif %}</td>
         <td data-label="{{ messages.get("admin-external-idps-col-issuer") }}"><span class="text-break">{{ p.issuer }}</span></td>
-        <td data-label="{{ messages.get("admin-external-idps-col-secret") }}">{% if p.has_client_secret %}<span class="badge text-bg-secondary">{{ messages.get("admin-external-idps-secret-set") }}</span>{% else %}<span class="badge text-bg-light text-dark">{{ messages.get("admin-external-idps-secret-unset") }}</span>{% endif %}</td>
+        {# SAML にクライアントシークレットは無い（真正性はアサーションの署名が担保する）。
+           「未設定」と出すと設定し忘れに見えるため、そもそも該当しないことを示す。 #}
+        <td data-label="{{ messages.get("admin-external-idps-col-secret") }}">{% if p.is_saml() %}<span class="text-muted">—</span>{% else if p.has_client_secret %}<span class="badge text-bg-secondary">{{ messages.get("admin-external-idps-secret-set") }}</span>{% else %}<span class="badge text-bg-light text-dark">{{ messages.get("admin-external-idps-secret-unset") }}</span>{% endif %}</td>
         <td data-label="{{ messages.get("admin-external-idps-col-state") }}">
           {% if p.enabled %}<span class="badge text-bg-success">{{ messages.get("admin-external-idps-state-enabled") }}</span>{% else %}<span class="badge text-bg-secondary">{{ messages.get("admin-external-idps-state-disabled") }}</span>{% endif %}
           {% if p.allow_auto_link %}<span class="badge text-bg-info ms-1">{{ messages.get("admin-external-idps-state-auto-link") }}</span>{% endif %}
         </td>
-        <td data-label="{{ messages.get("admin-external-idps-col-redirect") }}"><code class="text-break">{{ p.redirect_uri }}</code></td>
+        {# 外部 IdP 側へ貼る URL。OIDC はコールバック、SAML は ACS。組み立て規則を管理者に推測させない。 #}
+        <td data-label="{{ messages.get("admin-external-idps-col-redirect") }}">
+          <code class="text-break">{{ p.callback_url() }}</code>
+          {% if let Some(entity_id) = p.saml_sp_entity_id %}<div class="form-text">{{ messages.get("admin-external-idps-sp-entity-id") }} <code class="text-break">{{ entity_id }}</code></div>{% endif %}
+        </td>
         <td data-label="{{ messages.get("admin-signing-keys-col-actions") }}">
           <div class="d-flex flex-wrap gap-2">
             <a class="btn btn-outline-secondary btn-sm" href="{{ tenant }}/admin/external-idps?edit={{ p.id }}"><i class="fa-solid fa-pen me-1" aria-hidden="true"></i>{{ messages.get("admin-external-idps-edit") }}</a>
