@@ -786,9 +786,12 @@ impl AuthenticatorManagementService {
             .list_for_user(user_id)
             .await
             .map_err(|e| AuthenticatorManagementError::Internal(e.to_string()))?;
+        // 移行中（AP11）は、呼び出し側が持っている id が登録簿の行 id か元の表の行 id かに
+        // 定まらない。どちらでも当たるようにする（どちらか片方だけ見ると、移送後に登録した
+        // パスキーを消しても登録簿に残る／その逆が起きる）。
         let Some(target) = rows
             .into_iter()
-            .find(|a| a.credential_ref == Some(credential_ref))
+            .find(|a| a.credential_ref == Some(credential_ref) || a.id == credential_ref)
         else {
             return Ok(());
         };
@@ -883,7 +886,8 @@ pub async fn is_blocked_in_registry(
         .iter()
         .filter(|a| a.authenticator_type == authenticator_type)
         .filter(|a| match credential_ref {
-            Some(reference) => a.credential_ref == Some(reference),
+            // 登録簿の行 id・元の表の行 id のどちらでも当たるようにする（AP11 の移行中）。
+            Some(reference) => a.credential_ref == Some(reference) || a.id == reference,
             None => true,
         })
         .any(|a| a.is_blocked()))
