@@ -95,11 +95,13 @@ async fn sync_primary_login_identifier<'e>(
     use crate::domain::login_identifier::LoginIdentifierType;
 
     let Some(value) = preferred_username.map(str::trim).filter(|v| !v.is_empty()) else {
-        sqlx::query("DELETE FROM user_login_identifiers WHERE user_id = ? AND is_primary = 1")
-            .bind(user_id.to_string())
-            .execute(executor)
-            .await
-            .map_err(repo_err)?;
+        sqlx::query(
+            "DELETE FROM user_login_identifiers WHERE user_id = ? AND primary_of_user IS NOT NULL",
+        )
+        .bind(user_id.to_string())
+        .execute(executor)
+        .await
+        .map_err(repo_err)?;
         return Ok(());
     };
     let normalized = LoginIdentifierType::Username.normalize(value);
@@ -131,7 +133,7 @@ async fn sync_primary_login_identifier<'e>(
     // 影響行数が**変わった行**の数で、同じ値で更新すると 0 になるためである（そこで INSERT に
     // 回ると一意制約で落ちる）。
     let existing: Option<String> = sqlx::query_scalar(
-        "SELECT id FROM user_login_identifiers WHERE user_id = ? AND is_primary = 1",
+        "SELECT id FROM user_login_identifiers WHERE user_id = ? AND primary_of_user IS NOT NULL",
     )
     .bind(user_id.to_string())
     .fetch_optional(executor)
@@ -157,8 +159,8 @@ async fn sync_primary_login_identifier<'e>(
             sqlx::query(
                 "INSERT INTO user_login_identifiers \
                  (id, tenant_id, user_id, identifier_type, display_value, normalized_value, \
-                  is_active, is_primary) \
-                 SELECT ?, u.tenant_id, u.id, 'username', ?, ?, 1, 1 FROM users u WHERE u.id = ?",
+                  is_active, primary_of_user) \
+                 SELECT ?, u.tenant_id, u.id, 'username', ?, ?, 1, u.id FROM users u WHERE u.id = ?",
             )
             .bind(uuid::Uuid::now_v7().to_string())
             .bind(value)

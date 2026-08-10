@@ -15,23 +15,28 @@
 --     ログインできる。
 --   * 次のリリース ＝ `users.preferred_username` の撤去（contract）と、フォールバック・合成行の削除。
 --
--- # `is_primary` 列
+-- # `primary_of_user` 列
 --
 -- 「どの行が主か」を登録簿の中で表せなければ、`preferred_username` クレーム・利用者一覧の表示・
 -- プロフィール編集の移送先が決まらない。追加の識別子とは扱いが違う（主識別子は識別子単位で
 -- 削除・無効化できない）ため、種別ではなくこの列で区別する。
 --
--- 「1 利用者に主識別子は 1 つ」は生成列 + UNIQUE で DB に守らせる。MariaDB に部分 UNIQUE 索引は
--- 無いが、**UNIQUE 索引は複数の NULL を許す**ので、主でない行を NULL に落とせば同じ制約になる
--- （`CLAUDE.md`「DB モデリング」の読み替えどおり）。
+-- 「1 利用者に主識別子は 1 つ」は **NULL 可の列 + UNIQUE** で DB に守らせる。MariaDB に部分
+-- UNIQUE 索引は無いが、**UNIQUE 索引は複数の NULL を許す**ので、主でない行を NULL にすれば同じ
+-- 制約になる（`CLAUDE.md`「DB モデリング」の読み替えどおり）。
+--
+-- 真偽値の `is_primary` 列を別に持たないのは、同じ事実が 2 か所になると片方だけ更新される余地が
+-- 生まれるため。「主かどうか」は `primary_of_user IS NOT NULL` で読む。値が**必ず自分の
+-- `user_id`** であることは CHECK で縛る（他人の id を入れれば他人の主識別子を奪えてしまう）。
+-- 生成列（`AS (CASE ...) VIRTUAL`）にしないのは、MariaDB 10.11 が生成列の式にこの形を許さない
+-- ため（`ER_GENERATED_COLUMN_FUNCTION_IS_NOT_ALLOWED`）。
 
 ALTER TABLE user_login_identifiers
-    ADD COLUMN is_primary TINYINT(1) NOT NULL DEFAULT 0
-        COMMENT '主たるログイン識別子か。1 は利用者につき 1 行まで（識別子単位の削除・無効化はできない）'
+    ADD COLUMN primary_of_user CHAR(36) NULL
+        COMMENT '主たるログイン識別子なら自分の user_id、そうでなければ NULL。主は利用者につき 1 行まで（識別子単位の削除・無効化はできない）'
         AFTER is_active,
-    ADD COLUMN primary_of_user CHAR(36)
-        AS (CASE WHEN is_primary = 1 THEN user_id ELSE NULL END) VIRTUAL
-        COMMENT '主識別子の一意化用（主でない行は NULL。UNIQUE は複数 NULL を許す）',
+    ADD CONSTRAINT user_login_identifiers_primary_ck
+        CHECK (primary_of_user IS NULL OR primary_of_user = user_id),
     ADD UNIQUE KEY user_login_identifiers_primary_uk (primary_of_user);
 
 -- 既に登録簿へ同じ値の行がある利用者（管理者が `preferred_username` と同じ値を追加識別子として
@@ -39,19 +44,20 @@ ALTER TABLE user_login_identifiers
 -- ぶつかる。
 UPDATE user_login_identifiers i
 JOIN users u ON u.id = i.user_id
-SET i.is_primary = 1
+SET i.primary_of_user = i.user_id
 WHERE i.identifier_type = 'username'
   AND u.preferred_username IS NOT NULL
   AND i.normalized_value = LOWER(TRIM(u.preferred_username))
   AND NOT EXISTS (
       SELECT 1 FROM (SELECT * FROM user_login_identifiers) p
-      WHERE p.user_id = i.user_id AND p.is_primary = 1
+      WHERE p.user_id = i.user_id AND p.primary_of_user IS NOT NULL
   );
 
 -- 残り（登録簿に無い主識別子）を作る。id の作り方は 0023 / 0035 と同じ理由で v4 相当
 -- （登録簿の id は時系列ソートに使わない）。
 INSERT INTO user_login_identifiers
-    (id, tenant_id, user_id, identifier_type, display_value, normalized_value, is_active, is_primary)
+    (id, tenant_id, user_id, identifier_type, display_value, normalized_value, is_active,
+     primary_of_user)
 SELECT
     LOWER(CONCAT(
         SUBSTR(HEX(RANDOM_BYTES(4)), 1, 8), '-',
@@ -66,14 +72,14 @@ SELECT
     u.preferred_username,
     LOWER(TRIM(u.preferred_username)),
     1,
-    1
+    u.id
 FROM users u
 WHERE u.preferred_username IS NOT NULL
   AND TRIM(u.preferred_username) <> ''
   -- 既に主を持つ利用者（上の UPDATE で格上げ済み）は作らない。
   AND NOT EXISTS (
       SELECT 1 FROM user_login_identifiers p
-      WHERE p.user_id = u.id AND p.is_primary = 1
+      WHERE p.user_id = u.id AND p.primary_of_user IS NOT NULL
   )
   -- 同じ値が**他人**の識別子として既に登録されている場合は作れない（一意制約）。その利用者は
   -- `users.preferred_username` で解決され続ける（フォールバックは次のリリースまで残る）ので、

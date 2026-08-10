@@ -20,8 +20,12 @@ impl SqlxUserLoginIdentifierRepository {
     }
 }
 
+/// `is_primary` は列ではなく `primary_of_user`（主なら自分の user_id、そうでなければ NULL）から
+/// 導く。同じ事実を 2 列に持つと片方だけ更新される余地が生まれるため、DB 側の単一の出所は
+/// `primary_of_user`（UNIQUE が「1 利用者 1 行」を守る）だけにしてある。
 const SELECT_COLUMNS: &str = "id, tenant_id, user_id, identifier_type, display_value, \
-     normalized_value, is_active, is_primary, created_at, updated_at";
+     normalized_value, is_active, primary_of_user IS NOT NULL AS is_primary, \
+     created_at, updated_at";
 
 fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
@@ -49,7 +53,8 @@ pub(crate) fn map_row(row: &MySqlRow) -> Result<UserLoginIdentifier> {
         display_value: row.try_get("display_value").map_err(repo_err)?,
         normalized_value: row.try_get("normalized_value").map_err(repo_err)?,
         is_active: row.try_get("is_active").map_err(repo_err)?,
-        is_primary: row.try_get("is_primary").map_err(repo_err)?,
+        // MariaDB の真偽式は 1/0 の整数で返る。
+        is_primary: row.try_get::<i64, _>("is_primary").map_err(repo_err)? != 0,
         created_at: to_utc(row.try_get("created_at").map_err(repo_err)?),
         updated_at: to_utc(row.try_get("updated_at").map_err(repo_err)?),
     })
@@ -61,7 +66,7 @@ impl UserLoginIdentifierRepository for SqlxUserLoginIdentifierRepository {
         sqlx::query(
             "INSERT INTO user_login_identifiers \
              (id, tenant_id, user_id, identifier_type, display_value, normalized_value, \
-              is_active, is_primary) \
+              is_active, primary_of_user) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(identifier.id.to_string())
@@ -71,7 +76,11 @@ impl UserLoginIdentifierRepository for SqlxUserLoginIdentifierRepository {
         .bind(&identifier.display_value)
         .bind(&identifier.normalized_value)
         .bind(identifier.is_active)
-        .bind(identifier.is_primary)
+        .bind(
+            identifier
+                .is_primary
+                .then(|| identifier.user_id.to_string()),
+        )
         .execute(&self.pool)
         .await
         .map_err(|e| match &e {
@@ -108,10 +117,10 @@ impl UserLoginIdentifierRepository for SqlxUserLoginIdentifierRepository {
 
     async fn set_active(&self, id: Uuid, user_id: Uuid, is_active: bool) -> Result<bool> {
         // 主識別子は識別子単位で止められない（止めるとログインできなくなる。止めるなら
-        // アカウントの無効化を使う）。`is_primary = 0` を条件に含めて DB 側で弾く。
+        // アカウントの無効化を使う）。条件に含めて DB 側で弾く。
         let result = sqlx::query(
             "UPDATE user_login_identifiers SET is_active = ? \
-             WHERE id = ? AND user_id = ? AND is_primary = 0",
+             WHERE id = ? AND user_id = ? AND primary_of_user IS NULL",
         )
         .bind(is_active)
         .bind(id.to_string())
@@ -125,7 +134,8 @@ impl UserLoginIdentifierRepository for SqlxUserLoginIdentifierRepository {
     async fn delete(&self, id: Uuid, user_id: Uuid) -> Result<bool> {
         // 主識別子は識別子単位で消せない（消すとログインできなくなる。変えるならプロフィール編集）。
         let result = sqlx::query(
-            "DELETE FROM user_login_identifiers WHERE id = ? AND user_id = ? AND is_primary = 0",
+            "DELETE FROM user_login_identifiers WHERE id = ? AND user_id = ? \
+             AND primary_of_user IS NULL",
         )
         .bind(id.to_string())
         .bind(user_id.to_string())

@@ -27,7 +27,7 @@ use uuid::Uuid;
 /// 登録簿に載っている主識別子（表示値）。
 async fn registry_primary(pool: &MySqlPool, user_id: Uuid) -> Option<String> {
     sqlx::query_scalar(
-        "SELECT display_value FROM user_login_identifiers WHERE user_id = ? AND is_primary = 1",
+        "SELECT display_value FROM user_login_identifiers WHERE user_id = ? AND primary_of_user IS NOT NULL",
     )
     .bind(user_id.to_string())
     .fetch_optional(pool)
@@ -212,11 +212,13 @@ async fn a_user_whose_primary_is_only_in_the_users_table_still_resolves() {
     users.create(&user).await.expect("create user");
 
     // 移送前の状態を作る（登録簿の主識別子行だけを落とす）。
-    sqlx::query("DELETE FROM user_login_identifiers WHERE user_id = ? AND is_primary = 1")
-        .bind(user.id.to_string())
-        .execute(&env.pool)
-        .await
-        .expect("drop registry primary");
+    sqlx::query(
+        "DELETE FROM user_login_identifiers WHERE user_id = ? AND primary_of_user IS NOT NULL",
+    )
+    .bind(user.id.to_string())
+    .execute(&env.pool)
+    .await
+    .expect("drop registry primary");
     assert_eq!(registry_primary(&env.pool, user.id).await, None);
 
     let resolved = users
