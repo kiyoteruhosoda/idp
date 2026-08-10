@@ -74,6 +74,9 @@ pub enum AuditEventType {
     RecoveryCodesIssued,
     RecoveryCodeUsed,
     EmailOtpSent,
+    /// SMS OTP・電話番号の登録確認コードの送信（AP13）。`reason` に用途だけを記録する
+    /// （電話番号もコードも記録しない）。
+    SmsOtpSent,
     /// 管理者による MFA（TOTP・Passkey）の解除（MT21）。本人が端末を失った場合の復旧手段。
     /// 解除した要素の種別と件数のみ記録し、シークレット・クレデンシャルは記録しない。
     UserMfaReset,
@@ -158,6 +161,7 @@ impl AuditEventType {
             Self::RecoveryCodesIssued => "recovery_codes.issued",
             Self::RecoveryCodeUsed => "recovery_code.used",
             Self::EmailOtpSent => "email_otp.sent",
+            Self::SmsOtpSent => "sms_otp.sent",
             Self::UserMfaReset => "user.mfa_reset",
             Self::UserAccountUnlocked => "user.account_unlocked",
             Self::ExternalLoginSucceeded => "external_login.succeeded",

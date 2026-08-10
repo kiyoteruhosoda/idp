@@ -289,6 +289,15 @@ pub struct SystemSettingsView {
     pub smtp_from_address: String,
     #[serde(default)]
     pub smtp_use_tls: bool,
+    /// SMS ゲートウェイ（AP13）。トークンは平文を含まず、設定済みか否か（`sms_auth_token_set`）のみ。
+    #[serde(default)]
+    pub sms_gateway_url: String,
+    #[serde(default)]
+    pub sms_auth_header: String,
+    #[serde(default)]
+    pub sms_auth_token_set: bool,
+    #[serde(default)]
+    pub sms_sender_id: String,
     #[serde(default)]
     pub runtime_settings: Vec<RuntimeSettingView>,
 }

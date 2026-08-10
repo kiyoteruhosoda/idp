@@ -32,6 +32,16 @@ pub const SMTP_PASSWORD: &str = "smtp.password";
 pub const SMTP_FROM_ADDRESS: &str = "smtp.from_address";
 pub const SMTP_USE_TLS: &str = "smtp.use_tls";
 
+// ── SMS ゲートウェイ設定キー（AP13。許可値の単一の出所）─────────────────────────
+/// 送信要求を POST する URL。空 = SMS 送信は無効。
+pub const SMS_GATEWAY_URL: &str = "sms.gateway_url";
+/// 認証ヘッダ名（例 `Authorization`）。空 = 認証ヘッダを付けない。
+pub const SMS_AUTH_HEADER: &str = "sms.auth_header";
+/// 認証ヘッダの値（秘匿値。暗号化して保存する）。
+pub const SMS_AUTH_TOKEN: &str = "sms.auth_token";
+/// 差出人表示（事業者が `sender id` / `from` として扱う値）。空 = 指定しない。
+pub const SMS_SENDER_ID: &str = "sms.sender_id";
+
 // ── ランタイム設定メタデータ（ADR-0010 / CFG1）───────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1022,6 +1032,26 @@ pub struct SmtpSettingsView {
     pub password_set: bool,
     pub from_address: String,
     pub use_tls: bool,
+}
+
+/// SMS ゲートウェイ設定の表示用（トークンは平文を返さず「設定済みか否か」のみ）。
+#[derive(Debug, Clone, Default)]
+pub struct SmsSettingsView {
+    pub gateway_url: String,
+    pub auth_header: String,
+    /// 認証トークンが設定済みか（平文は決して外へ出さない）。
+    pub auth_token_set: bool,
+    pub sender_id: String,
+}
+
+/// SMS ゲートウェイ設定の更新コマンド。
+/// `auth_token` は `None` = 現行を維持、`Some("")` = 消去、`Some(x)` = 設定（SMTP と同じ規則）。
+#[derive(Debug, Clone, Default)]
+pub struct UpdateSmsCommand {
+    pub gateway_url: String,
+    pub auth_header: String,
+    pub auth_token: Option<String>,
+    pub sender_id: String,
 }
 
 /// SMTP 設定の更新コマンド。`password` は `None` = 現行を維持、`Some("")` = 消去、`Some(x)` = 設定。

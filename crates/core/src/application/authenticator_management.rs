@@ -7,8 +7,9 @@
 //!    削除以外の答えを用意するため。
 //! 2. **リカバリーコード** — 認証器を全部失った利用者の自助手段。束（既定 10 本）で発行し、
 //!    1 本ずつ使い捨てる。平文は発行時にしか見せず、DB には SHA-256 だけ置く。
-//! 3. **email OTP** — 認証アプリを持てない利用者向けの第二要素。登録済みアドレスへ短命コードを
-//!    送り、1 回だけ使える認証器として登録簿へ積む。
+//! 3. **email OTP / SMS OTP** — 認証アプリを持てない利用者向けの第二要素。短命コードを送り、
+//!    1 回だけ使える認証器として登録簿へ積む。email は `users.email` へ送るので登録が要らないが、
+//!    SMS は送信先の電話番号を**先に登録・確認**する必要がある（AP13）。
 //!
 //! いずれも「登録簿（`user_authenticators`）」を単一の出所とし、ログイン側は種別ごとの分岐では
 //! なく登録簿の問い合わせで済むようにする。
@@ -19,8 +20,10 @@ use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::id_generator::IdGenerator;
+use crate::domain::login_identifier::LoginIdentifierType;
 use crate::domain::mailer::{Mailer, OutgoingEmail};
 use crate::domain::repositories::{UserAuthenticatorRepository, UserRepository};
+use crate::domain::sms::{OutgoingSms, SmsSender};
 use crate::domain::user_authenticator::{
     AuthenticatorStatus, AuthenticatorType, UserAuthenticator,
 };
@@ -39,6 +42,12 @@ const RECOVERY_CODE_BYTES: usize = 10;
 const EMAIL_OTP_DIGITS: u32 = 6;
 /// email OTP の有効期間。
 const EMAIL_OTP_TTL_SECS: i64 = 600;
+/// SMS OTP のコード桁数（AP13）。email OTP と揃える。
+const SMS_OTP_DIGITS: u32 = 6;
+/// SMS OTP の有効期間。email より短いのは、SMS は端末に残り続けるうえ転送もされやすいため。
+const SMS_OTP_TTL_SECS: i64 = 300;
+/// 電話番号の登録確認コードの有効期間。入力までに手間取る前提で OTP より長くする。
+const PHONE_CONFIRMATION_TTL_SECS: i64 = 900;
 
 /// 一覧に出す認証器 1 件（秘密は含めない）。
 #[derive(Debug, Clone)]
@@ -59,8 +68,22 @@ pub enum AuthenticatorManagementError {
     InvalidTransition,
     #[error("email delivery is not configured")]
     MailUnavailable,
+    /// SMS ゲートウェイが未設定（AP13）。呼び出し側は「SMS は使えない」として別の要素へ倒す。
+    #[error("sms delivery is not configured")]
+    SmsUnavailable,
+    /// SMS OTP の送信先電話番号が未登録・未確認（AP13）。
+    #[error("no confirmed phone number is registered")]
+    PhoneNotRegistered,
+    /// 電話番号として読めない入力（AP13）。
+    #[error("invalid phone number")]
+    InvalidPhoneNumber,
     #[error("internal error: {0}")]
     Internal(String),
+}
+
+/// リポジトリ由来のエラーを内部エラーへ畳む（呼び出し側へ DB の事情を漏らさない）。
+fn internal(e: crate::domain::error::DomainError) -> AuthenticatorManagementError {
+    AuthenticatorManagementError::Internal(e.to_string())
 }
 
 /// リカバリーコードの発行結果。**平文はこの戻り値でしか得られない**（DB はハッシュのみ）。
@@ -73,17 +96,21 @@ pub struct AuthenticatorManagementService {
     users: Arc<dyn UserRepository>,
     system_settings: Arc<SystemSettingsService>,
     mailer: Arc<dyn Mailer>,
+    /// SMS 送信のポート（AP13）。ゲートウェイ接続情報は送信ごとにシステム設定から取る。
+    sms: Arc<dyn SmsSender>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
     ids: Arc<dyn IdGenerator>,
 }
 
 impl AuthenticatorManagementService {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         authenticators: Arc<dyn UserAuthenticatorRepository>,
         users: Arc<dyn UserRepository>,
         system_settings: Arc<SystemSettingsService>,
         mailer: Arc<dyn Mailer>,
+        sms: Arc<dyn SmsSender>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
         ids: Arc<dyn IdGenerator>,
@@ -93,6 +120,7 @@ impl AuthenticatorManagementService {
             users,
             system_settings,
             mailer,
+            sms,
             audit,
             clock,
             ids,
@@ -116,6 +144,11 @@ impl AuthenticatorManagementService {
             .into_iter()
             .filter(|a| a.status != AuthenticatorStatus::Revoked)
             .filter(|a| a.authenticator_type != AuthenticatorType::RecoveryCode)
+            // 発行済みのワンタイムコード（秘密と期限の両方を持つ行）は認証器ではなく
+            // **送信済みのコード**である。並べると「10 分で消える認証器」が一覧に増え、
+            // しかも利用者は操作できない（AP13 で SMS OTP を足す際に email OTP でも
+            // 起きていたことが分かったので、ここで一緒に落とす）。
+            .filter(|a| !(a.secret_encrypted.is_some() && a.expires_at.is_some()))
             .map(|a| AuthenticatorSummary {
                 id: a.id,
                 authenticator_type: a.authenticator_type,
@@ -371,6 +404,257 @@ impl AuthenticatorManagementService {
             )
             .await;
         Ok(())
+    }
+
+    // ── SMS OTP（AP13）─────────────────────────────────────────────────────
+    //
+    // メール OTP と違い、SMS は**送信先を先に登録・確認**しなければならない。`users` に電話番号の
+    // 列は無く、あっても「連絡先」と「第二要素の送信先」は別物である（連絡先の変更が黙って
+    // 第二要素の送信先を変えると、乗っ取りの経路になる）。そこで登録簿（`user_authenticators`）の
+    // `sms_otp` 行そのものを登録済み電話番号として持つ:
+    //
+    // | 行 | status | target | secret_encrypted | expires_at |
+    // |---|---|---|---|---|
+    // | 確認待ちの登録 | pending | 電話番号 | 確認コードの SHA-256 | あり（放置されたら GC が消す） |
+    // | 確認済みの登録 | active | 電話番号 | NULL | **NULL**（消えない） |
+    // | 発行済みの OTP | active | 電話番号 | コードの SHA-256 | あり |
+    //
+    // 確認済みの登録から期限を落とすのが要点で、残すと GC がその行を消し、登録が黙って失われる。
+
+    /// 電話番号の登録を始める（確認コードを SMS で送る）。AP13。
+    ///
+    /// 既存の登録（確認済みを含む）は失効させる。1 利用者 1 番号にするのは、複数あると
+    /// 「どれに送ったか」が利用者からも運用からも見えなくなるため。番号を変えるときは
+    /// 登録し直す。
+    pub async fn start_phone_registration(
+        &self,
+        tenant_id: crate::domain::tenant::TenantId,
+        user_id: Uuid,
+        raw_phone: &str,
+        ctx: &RequestContext,
+    ) -> Result<(), AuthenticatorManagementError> {
+        // 書式の判定と正規化は、ログイン識別子の電話番号と同じ規則を使う（判定が 2 つあると
+        // 「登録できるのに送れない番号」が生まれる）。
+        let phone = LoginIdentifierType::PhoneNumber
+            .normalize_checked(raw_phone)
+            .map_err(|_| AuthenticatorManagementError::InvalidPhoneNumber)?;
+
+        let gateway = self.usable_sms_gateway().await?;
+
+        let now = self.clock.now();
+        // 登録し直しなので、確認済みの登録ごと入れ替える。
+        self.authenticators
+            .revoke_all_of_type(user_id, AuthenticatorType::SmsOtp, now)
+            .await
+            .map_err(internal)?;
+
+        let code = numeric_code(SMS_OTP_DIGITS);
+        let row = UserAuthenticator {
+            id: self.ids.new_id(),
+            user_id,
+            authenticator_type: AuthenticatorType::SmsOtp,
+            status: AuthenticatorStatus::Pending,
+            label: String::new(),
+            secret_encrypted: Some(crypto::sha256_hex(&code)),
+            credential_ref: None,
+            target: Some(phone.clone()),
+            confirmed_at: None,
+            last_used_at: None,
+            expires_at: Some(now + Duration::seconds(PHONE_CONFIRMATION_TTL_SECS)),
+            revoked_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+        self.authenticators.create(&row).await.map_err(internal)?;
+
+        self.send_code(&gateway, &phone, &code, PHONE_CONFIRMATION_TTL_SECS)
+            .await?;
+        self.record_sms_sent(tenant_id, user_id, "phone_confirmation", ctx)
+            .await;
+        Ok(())
+    }
+
+    /// 送られた確認コードで電話番号の登録を確定する（AP13）。成功なら `true`。
+    pub async fn confirm_phone_registration(
+        &self,
+        tenant_id: crate::domain::tenant::TenantId,
+        user_id: Uuid,
+        code: &str,
+        ctx: &RequestContext,
+    ) -> Result<bool, AuthenticatorManagementError> {
+        let normalized = code.trim().replace([' ', '-'], "");
+        if normalized.is_empty() {
+            return Ok(false);
+        }
+        let confirmed = self
+            .authenticators
+            .confirm_pending(
+                user_id,
+                AuthenticatorType::SmsOtp,
+                &crypto::sha256_hex(&normalized),
+                self.clock.now(),
+            )
+            .await
+            .map_err(internal)?
+            .is_some();
+
+        if confirmed {
+            self.audit
+                .record(
+                    AuditEventType::AuthenticatorStatusChanged,
+                    AuditResult::Success,
+                    Some(tenant_id),
+                    Some(user_id),
+                    None,
+                    // 電話番号は PII なので記録しない（種別だけ残す）。
+                    Some("type=sms_otp status=active"),
+                    ctx,
+                )
+                .await;
+        }
+        Ok(confirmed)
+    }
+
+    /// 登録済みの電話番号があるか（画面が「登録する」と「登録済み」を出し分けるために使う）。
+    /// 返すのは有無だけで、番号そのものは返さない（PII を必要以上に持ち回らない）。
+    pub async fn has_confirmed_phone(
+        &self,
+        user_id: Uuid,
+    ) -> Result<bool, AuthenticatorManagementError> {
+        Ok(self.confirmed_phone(user_id).await?.is_some())
+    }
+
+    /// SMS OTP を発行して登録済みの電話番号へ送る（AP13）。
+    pub async fn send_sms_otp(
+        &self,
+        tenant_id: crate::domain::tenant::TenantId,
+        user_id: Uuid,
+        ctx: &RequestContext,
+    ) -> Result<(), AuthenticatorManagementError> {
+        let gateway = self.usable_sms_gateway().await?;
+        let phone = self
+            .confirmed_phone(user_id)
+            .await?
+            .ok_or(AuthenticatorManagementError::PhoneNotRegistered)?;
+
+        let now = self.clock.now();
+        // 前のコードだけを失効させる。`revoke_all_of_type` を使うと登録済みの電話番号まで
+        // 消えて、次回から送れなくなる。
+        self.authenticators
+            .revoke_issued_codes_of_type(user_id, AuthenticatorType::SmsOtp, now)
+            .await
+            .map_err(internal)?;
+
+        let code = numeric_code(SMS_OTP_DIGITS);
+        let row = UserAuthenticator {
+            id: self.ids.new_id(),
+            user_id,
+            authenticator_type: AuthenticatorType::SmsOtp,
+            status: AuthenticatorStatus::Active,
+            label: String::new(),
+            secret_encrypted: Some(crypto::sha256_hex(&code)),
+            credential_ref: None,
+            target: Some(phone.clone()),
+            confirmed_at: Some(now),
+            last_used_at: None,
+            expires_at: Some(now + Duration::seconds(SMS_OTP_TTL_SECS)),
+            revoked_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+        self.authenticators.create(&row).await.map_err(internal)?;
+
+        self.send_code(&gateway, &phone, &code, SMS_OTP_TTL_SECS)
+            .await?;
+        self.record_sms_sent(tenant_id, user_id, "sms_otp", ctx)
+            .await;
+        Ok(())
+    }
+
+    /// SMS OTP を検証して消費する（1 回きり）。成功なら `true`。
+    pub async fn consume_sms_otp(
+        &self,
+        user_id: Uuid,
+        code: &str,
+    ) -> Result<bool, AuthenticatorManagementError> {
+        consume_single_use_code(
+            self.authenticators.as_ref(),
+            user_id,
+            AuthenticatorType::SmsOtp,
+            code,
+            self.clock.now(),
+        )
+        .await
+        .map_err(internal)
+    }
+
+    /// 送信可能な SMS ゲートウェイ設定。未設定なら `SmsUnavailable`。
+    async fn usable_sms_gateway(
+        &self,
+    ) -> Result<crate::domain::sms::SmsGatewayConfig, AuthenticatorManagementError> {
+        self.system_settings
+            .sms_gateway()
+            .await
+            .map_err(internal)?
+            .filter(|g| g.is_usable())
+            .ok_or(AuthenticatorManagementError::SmsUnavailable)
+    }
+
+    /// 確認済み（`active` かつ期限なし）の登録から電話番号を取り出す。
+    async fn confirmed_phone(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Option<String>, AuthenticatorManagementError> {
+        let rows = self
+            .authenticators
+            .list_usable_for_user(user_id, Some(AuthenticatorType::SmsOtp), self.clock.now())
+            .await
+            .map_err(internal)?;
+        // 発行済みコードの行も同じ種別で並ぶため、**期限の無い行**（＝登録）だけを見る。
+        Ok(rows
+            .into_iter()
+            .find(|r| r.expires_at.is_none())
+            .and_then(|r| r.target))
+    }
+
+    /// コード本文を組み立てて送る。本文は利用者向けだが、メール OTP と同じ扱いで英語にする
+    /// （送信は Application 層で完結する必要があり、訳出の口がここには無い）。
+    async fn send_code(
+        &self,
+        gateway: &crate::domain::sms::SmsGatewayConfig,
+        phone: &str,
+        code: &str,
+        ttl_secs: i64,
+    ) -> Result<(), AuthenticatorManagementError> {
+        let sms = OutgoingSms {
+            to: phone.to_string(),
+            body_text: format!(
+                "Your verification code is {code}. It expires in {} minutes.",
+                ttl_secs / 60
+            ),
+        };
+        self.sms.send(gateway, &sms).await.map_err(internal)
+    }
+
+    /// 送信の監査。**電話番号もコードも記録しない**（用途の区別だけ残す）。
+    async fn record_sms_sent(
+        &self,
+        tenant_id: crate::domain::tenant::TenantId,
+        user_id: Uuid,
+        purpose: &str,
+        ctx: &RequestContext,
+    ) {
+        self.audit
+            .record(
+                AuditEventType::SmsOtpSent,
+                AuditResult::Success,
+                Some(tenant_id),
+                Some(user_id),
+                None,
+                Some(&format!("purpose={purpose}")),
+                ctx,
+            )
+            .await;
     }
 
     /// email OTP を検証して消費する（1 回きり）。成功なら `true`。

@@ -1032,6 +1032,33 @@ pub trait UserAuthenticatorRepository: Send + Sync {
     ) -> Result<u64> {
         Ok(0)
     }
+    /// 期限付きの行（＝発行済みのワンタイムコード）だけを失効させ、件数を返す（AP13）。
+    ///
+    /// [`Self::revoke_all_of_type`] と分けるのは、同じ種別の中に**寿命の無い登録**（SMS OTP の
+    /// 登録済み電話番号）と**寿命のあるコード**が混ざるため。新しいコードを出す前に古いコードを
+    /// 失効させたいだけなのに `revoke_all_of_type` を使うと、登録そのものが消えてしまう。
+    async fn revoke_issued_codes_of_type(
+        &self,
+        _user_id: Uuid,
+        _authenticator_type: AuthenticatorType,
+        _at: DateTime<Utc>,
+    ) -> Result<u64> {
+        Ok(0)
+    }
+    /// `pending` の行を、提示された秘密（の SHA-256）と突き合わせて**確認済み**にする（AP13）。
+    ///
+    /// 成功したら `status = active` にし、確認用コードと期限を消す。期限を消すのは、期限付きの
+    /// 行が GC（[`ExpiringRecordStore`]）の削除対象だからで、残すと確認済みの登録が消える。
+    /// 更新と読み直しを 1 文にするのは、同じコードの同時提示で二重に確認されないため。
+    async fn confirm_pending(
+        &self,
+        _user_id: Uuid,
+        _authenticator_type: AuthenticatorType,
+        _secret_hash: &str,
+        _now: DateTime<Utc>,
+    ) -> Result<Option<UserAuthenticator>> {
+        Ok(None)
+    }
     /// 期限切れの使い捨て行を削除し、件数を返す（GC）。
     async fn delete_expired(&self, _now: DateTime<Utc>) -> Result<u64> {
         Ok(0)

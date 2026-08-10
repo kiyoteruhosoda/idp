@@ -78,8 +78,18 @@ pub fn build(state: WebState) -> Router {
         )
         // MFA 入力画面から「メールでコードを送る」（AP9）。
         .route("/mfa/totp/email-code", post(mfa_totp::send_email_code))
+        // SMS OTP の送信要求（AP13）。email OTP と同じ位置づけ。
+        .route("/mfa/totp/sms-code", post(mfa_totp::send_sms_code))
         // 認証器の管理（一覧・一時停止・失効・リカバリーコード発行。AP9）。
         .route("/settings/authenticators", get(authenticators::page))
+        .route(
+            "/settings/authenticators/phone",
+            post(authenticators::start_phone_registration),
+        )
+        .route(
+            "/settings/authenticators/phone/confirm",
+            post(authenticators::confirm_phone_registration),
+        )
         .route(
             "/settings/authenticators/status",
             post(authenticators::set_status),

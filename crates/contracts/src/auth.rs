@@ -1349,6 +1349,14 @@ pub enum InternalAuthenticatorsResponse {
         authenticators: Vec<AuthenticatorSummaryResponse>,
         /// 未使用のリカバリーコードの残数。
         recovery_codes_remaining: usize,
+        /// 確認済みの電話番号が登録されているか（AP13）。番号そのものは返さない
+        /// （PII を web へ持ち出さない。画面は「登録済み」か「登録する」かだけを出し分ける）。
+        #[serde(default)]
+        phone_registered: bool,
+        /// SMS ゲートウェイが設定されているか（AP13）。未設定なら登録導線を出さない
+        /// （登録できても送れない画面を並べない）。
+        #[serde(default)]
+        sms_available: bool,
     },
     SessionExpired,
     Internal,
@@ -1436,6 +1444,94 @@ pub enum InternalEmailOtpResponse {
     Unavailable,
     /// MFA 待ちの状態ではない（セッション・チケットが無効）。
     SessionExpired,
+    Internal,
+}
+
+// ── SMS OTP と電話番号の登録（AP13） ─────────────────────────────────────────
+
+/// MFA 待ちの利用者へ SMS OTP を送る要求。解決経路は email OTP と同じ。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalSmsOtpRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    /// OIDC ログインフローの `auth_session_id`（MFA 待ち状態）。
+    #[serde(default)]
+    pub auth_session_id: Option<String>,
+    /// ポータルログインの `mfa_ticket`。
+    #[serde(default)]
+    pub mfa_ticket: Option<String>,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// SMS OTP 送信 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalSmsOtpResponse {
+    /// 送信した（送信先の電話番号は返さない —— PII を web へ持ち出さない）。
+    Sent,
+    /// SMS ゲートウェイが未設定で送れない。
+    Unavailable,
+    /// 送信先の電話番号が未登録・未確認。
+    NotRegistered,
+    /// MFA 待ちの状態ではない（セッション・チケットが無効）。
+    SessionExpired,
+    Internal,
+}
+
+/// 電話番号の登録開始（確認コードの送信）。ログイン済み利用者のセルフサービス操作のため、
+/// 対象は `sso_session_id` から解決する。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalPhoneRegistrationRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+    /// 入力どおりの電話番号（正規化は api 側が行う）。
+    pub phone_number: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// 電話番号の登録開始のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalPhoneRegistrationResponse {
+    /// 確認コードを送った。
+    Sent,
+    /// 電話番号として読めない。
+    InvalidPhoneNumber,
+    /// SMS ゲートウェイが未設定で送れない。
+    Unavailable,
+    Unauthenticated,
+    Internal,
+}
+
+/// 電話番号の登録確認（送られたコードの提示）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalPhoneConfirmationRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+    pub code: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// 電話番号の登録確認のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalPhoneConfirmationResponse {
+    /// 確認できた（以後 SMS OTP が使える）。
+    Confirmed,
+    /// コードが合わない・期限切れ・確認待ちの登録が無い。
+    InvalidCode,
+    Unauthenticated,
     Internal,
 }
 

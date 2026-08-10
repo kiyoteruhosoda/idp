@@ -43,6 +43,7 @@ pub mod saml_service_provider;
 pub mod saml_sso_request;
 pub mod service_lifecycle;
 pub mod signing_key;
+pub mod sms;
 pub mod sso_session;
 pub mod step_up;
 pub mod system_setting;

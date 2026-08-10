@@ -2002,6 +2002,36 @@ impl ApiClient {
             .await
     }
 
+    /// MFA 待ちの利用者へ SMS OTP を送る（AP13）。
+    pub async fn account_sms_otp(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalSmsOtpRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalSmsOtpResponse> {
+        self.post_internal("/internal/account/sms-otp", correlation_id, req)
+            .await
+    }
+
+    /// 電話番号の登録開始（確認コードの送信。AP13）。
+    pub async fn account_phone_register(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalPhoneRegistrationRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalPhoneRegistrationResponse> {
+        self.post_internal("/internal/account/phone/register", correlation_id, req)
+            .await
+    }
+
+    /// 電話番号の登録確認（AP13）。
+    pub async fn account_phone_confirm(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalPhoneConfirmationRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalPhoneConfirmationResponse> {
+        self.post_internal("/internal/account/phone/confirm", correlation_id, req)
+            .await
+    }
+
     /// 重要操作の直前に step-up が要るかを判定する（AP5）。
     pub async fn step_up_check(
         &self,

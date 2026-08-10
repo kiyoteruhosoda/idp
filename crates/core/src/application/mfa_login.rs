@@ -475,7 +475,7 @@ impl MfaLoginService {
             Err(e) => return Err(e.to_string()),
         }
 
-        // リカバリーコード・email OTP（いずれも 1 回きり）。消費できたら第二要素として通す。
+        // リカバリーコード・email OTP・SMS OTP（いずれも 1 回きり）。消費できたら第二要素として通す。
         let now = self.clock.now();
         for (authenticator_type, method) in [
             (
@@ -483,6 +483,9 @@ impl MfaLoginService {
                 AuthenticationMethod::RecoveryCode,
             ),
             (AuthenticatorType::EmailOtp, AuthenticationMethod::EmailOtp),
+            // SMS OTP（AP13）。同じ「1 回きりのコード」なので同じ経路で消費する。
+            // 登録済み電話番号の行は秘密を持たないため、ここには当たらない。
+            (AuthenticatorType::SmsOtp, AuthenticationMethod::SmsOtp),
         ] {
             if consume_single_use_code(
                 self.authenticators.as_ref(),

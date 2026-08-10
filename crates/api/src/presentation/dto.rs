@@ -416,6 +416,16 @@ pub struct SystemSettingsResponse {
     pub smtp_password_set: bool,
     pub smtp_from_address: String,
     pub smtp_use_tls: bool,
+    /// SMS ゲートウェイ（AP13）。送信要求を POST する URL。空 = SMS 送信は無効。
+    #[serde(default)]
+    pub sms_gateway_url: String,
+    #[serde(default)]
+    pub sms_auth_header: String,
+    /// SMS ゲートウェイの認証トークンが設定済みか（平文は返さない）。
+    #[serde(default)]
+    pub sms_auth_token_set: bool,
+    #[serde(default)]
+    pub sms_sender_id: String,
     #[serde(default)]
     pub runtime_settings: Vec<RuntimeSettingResponse>,
 }
@@ -436,6 +446,16 @@ pub struct UpdateSystemSettingsRequest {
     pub smtp_from_address: String,
     #[serde(default)]
     pub smtp_use_tls: bool,
+    /// SMS ゲートウェイ（AP13）。`sms_auth_token` は SMTP パスワードと同じ規則
+    /// （`None` = 現行維持、`Some("")` = 消去、`Some(x)` = 設定）。
+    #[serde(default)]
+    pub sms_gateway_url: String,
+    #[serde(default)]
+    pub sms_auth_header: String,
+    #[serde(default)]
+    pub sms_auth_token: Option<String>,
+    #[serde(default)]
+    pub sms_sender_id: String,
 }
 
 /// ランタイム設定の DB 上書き更新リクエスト（`PUT /{tenant_id}/admin/system-settings/runtime`）。

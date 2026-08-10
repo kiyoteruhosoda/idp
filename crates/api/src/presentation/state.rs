@@ -356,6 +356,7 @@ impl AppState {
             users.clone(),
             system_settings.clone(),
             Arc::new(LettreSmtpMailer::new()),
+            Arc::new(crate::infrastructure::sms::HttpSmsGateway::new()),
             audit.clone(),
             clock.clone(),
             ids.clone(),

@@ -434,6 +434,8 @@ pub struct TotpVerifyTemplate<'a> {
     pub email_otp_available: bool,
     /// その導線の送信先（テナントごとに変わるため呼び出し側が組み立てる）。
     pub email_otp_action: &'a str,
+    /// SMS OTP の送信フォームの送信先（AP13）。導線は常に出し、未設定・未登録は送信結果で案内する。
+    pub sms_otp_action: &'a str,
 }
 /// RP-initiated logout の front-channel 通知ページ（`GET /{tenant_id}/logout`。ADR-0018 決定 2 で
 /// api から移設）。各 RP の `frontchannel_logout_uri` を不可視 iframe で読み込み、全 iframe の
@@ -1147,6 +1149,12 @@ pub struct UserAuthenticators<'a> {
     pub authenticators: &'a [AuthenticatorView],
     /// 未使用のリカバリーコードの残数。
     pub recovery_codes_remaining: usize,
+    /// SMS ゲートウェイが設定されているか（AP13）。未設定なら登録導線ごと出さない。
+    pub sms_available: bool,
+    /// 確認済みの電話番号が登録されているか（番号そのものは web へ渡さない）。
+    pub phone_registered: bool,
+    /// 確認コードの入力待ちか（登録開始の直後）。
+    pub awaiting_phone_code: bool,
     pub saved_key: Option<&'a str>,
     pub error_key: Option<&'a str>,
 }

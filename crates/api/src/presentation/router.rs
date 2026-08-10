@@ -118,6 +118,19 @@ pub fn build(state: AppState) -> Router {
             "/internal/account/email-otp",
             post(internal_auth::account_email_otp),
         )
+        // SMS OTP と電話番号の登録（AP13）。送信は MFA 待ちの利用者のみ、登録は SSO セッションで。
+        .route(
+            "/internal/account/sms-otp",
+            post(internal_auth::account_sms_otp),
+        )
+        .route(
+            "/internal/account/phone/register",
+            post(internal_auth::account_phone_register),
+        )
+        .route(
+            "/internal/account/phone/confirm",
+            post(internal_auth::account_phone_confirm),
+        )
         // Step-up 認証（重要操作の直前の本人確認。AP5）。
         .route(
             "/internal/step-up/check",

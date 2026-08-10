@@ -8,7 +8,8 @@
 use crate::config::{ResolvedSetting, SettingSafetyStatus, SettingSource};
 use crate::domain::error::DomainError;
 use crate::domain::system_setting::{
-    is_shared_with_web, DefaultRisk, SettingOwner, SmtpSettingsView, UpdateSmtpCommand,
+    is_shared_with_web, DefaultRisk, SettingOwner, SmsSettingsView, SmtpSettingsView,
+    UpdateSmsCommand, UpdateSmtpCommand,
 };
 use crate::presentation::admin::{IdpSystemAdmin, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
@@ -46,6 +47,11 @@ pub async fn get_system_settings(
         .get_smtp()
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let sms = state
+        .system_settings
+        .get_sms()
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
     let overrides = state
         .system_settings
         .runtime_overrides()
@@ -53,6 +59,7 @@ pub async fn get_system_settings(
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(to_response(
         smtp,
+        sms,
         state.config.resolved_settings(),
         &overrides,
     )))
@@ -118,6 +125,11 @@ pub async fn update_runtime_setting(
         .get_smtp()
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let sms = state
+        .system_settings
+        .get_sms()
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
     let overrides = state
         .system_settings
         .runtime_overrides()
@@ -125,6 +137,7 @@ pub async fn update_runtime_setting(
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(to_response(
         smtp,
+        sms,
         state.config.resolved_settings(),
         &overrides,
     )))
@@ -172,6 +185,23 @@ pub async fn update_system_settings(
         )
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+    // SMS ゲートウェイ（AP13）。SMTP と同じ 1 回の保存で扱う（設定画面が 1 枚のため、
+    // 別々に保存させると片方だけ更新した状態が生まれる）。
+    let sms = state
+        .system_settings
+        .update_sms(
+            tenant.context(),
+            UpdateSmsCommand {
+                gateway_url: body.sms_gateway_url,
+                auth_header: body.sms_auth_header,
+                auth_token: body.sms_auth_token,
+                sender_id: body.sms_sender_id,
+            },
+            admin.user_id,
+            &ctx,
+        )
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
     let overrides = state
         .system_settings
         .runtime_overrides()
@@ -179,6 +209,7 @@ pub async fn update_system_settings(
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(to_response(
         updated,
+        sms,
         state.config.resolved_settings(),
         &overrides,
     )))
@@ -186,6 +217,7 @@ pub async fn update_system_settings(
 
 fn to_response(
     smtp: SmtpSettingsView,
+    sms: SmsSettingsView,
     runtime: &[ResolvedSetting],
     db_overrides: &HashMap<String, String>,
 ) -> SystemSettingsResponse {
@@ -196,6 +228,10 @@ fn to_response(
         smtp_password_set: smtp.password_set,
         smtp_from_address: smtp.from_address,
         smtp_use_tls: smtp.use_tls,
+        sms_gateway_url: sms.gateway_url,
+        sms_auth_header: sms.auth_header,
+        sms_auth_token_set: sms.auth_token_set,
+        sms_sender_id: sms.sender_id,
         runtime_settings: runtime
             .iter()
             .map(|s| to_runtime_response(s, db_overrides.get(&s.key)))

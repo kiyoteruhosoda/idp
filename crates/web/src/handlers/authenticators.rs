@@ -33,6 +33,9 @@ pub struct AuthenticatorsQuery {
     pub saved: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
+    /// `confirm` のとき、電話番号の確認コード入力欄を出す（AP13）。
+    #[serde(default)]
+    pub phone: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -77,11 +80,19 @@ pub async fn page(
             return StatusCode::BAD_GATEWAY.into_response();
         }
     };
-    let (authenticators, recovery_codes_remaining) = match outcome {
+    let (authenticators, recovery_codes_remaining, phone_registered, sms_available) = match outcome
+    {
         InternalAuthenticatorsResponse::Ok {
             authenticators,
             recovery_codes_remaining,
-        } => (authenticators, recovery_codes_remaining),
+            phone_registered,
+            sms_available,
+        } => (
+            authenticators,
+            recovery_codes_remaining,
+            phone_registered,
+            sms_available,
+        ),
         InternalAuthenticatorsResponse::SessionExpired => {
             return found(&format!("{}/login", tenant.prefix()));
         }
@@ -112,6 +123,11 @@ pub async fn page(
         csrf: &csrf,
         authenticators: &views,
         recovery_codes_remaining,
+        // SMS OTP（AP13）: ゲートウェイ未設定なら導線ごと出さない（登録できても送れない
+        // 画面を並べない）。確認待ちのときだけコード入力欄を出す。
+        sms_available,
+        phone_registered,
+        awaiting_phone_code: query.phone.as_deref() == Some("confirm"),
         saved_key: query.saved.as_deref().and_then(saved_key_for),
         error_key: query.error.as_deref().and_then(error_key_for),
     }))
@@ -279,6 +295,7 @@ fn status_message_key(value: &str) -> &'static str {
 fn saved_key_for(value: &str) -> Option<&'static str> {
     match value {
         "status" => Some("authenticator-saved-status"),
+        "phone" => Some("authenticator-saved-phone"),
         _ => None,
     }
 }
@@ -288,6 +305,9 @@ fn error_key_for(value: &str) -> Option<&'static str> {
         "csrf" => Some("user-security-error-csrf"),
         "not-found" => Some("authenticator-error-not-found"),
         "transition" => Some("authenticator-error-transition"),
+        "phone-invalid" => Some("authenticator-error-phone-invalid"),
+        "phone-code" => Some("authenticator-error-phone-code"),
+        "sms-unavailable" => Some("authenticator-error-sms-unavailable"),
         _ => None,
     }
 }
@@ -311,5 +331,143 @@ mod tests {
         assert_eq!(saved_key_for("status"), Some("authenticator-saved-status"));
         assert_eq!(saved_key_for("<script>"), None);
         assert_eq!(error_key_for("anything"), None);
+    }
+}
+
+// ── 電話番号の登録（AP13）─────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct PhoneRegistrationForm {
+    pub phone_number: String,
+    pub csrf_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PhoneConfirmationForm {
+    pub code: String,
+    pub csrf_token: String,
+}
+
+/// 電話番号の登録開始（`POST /{tenant_id}/settings/authenticators/phone`）。
+///
+/// 認証器の追加は機微操作なので、状態変更と同じく step-up（直前の本人確認）を要求する。
+/// ここを素通しにすると、放置された画面から第二要素の送信先を差し替えられる。
+pub async fn start_phone_registration(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Form(form): Form<PhoneRegistrationForm>,
+) -> Response {
+    let base = format!("{}/settings/authenticators", tenant.prefix());
+    let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
+        return found(&format!("{}/login", tenant.prefix()));
+    };
+    if !idp_contracts::csrf::verify(
+        &console_csrf_token(&sso, state.config.csrf_secret()),
+        &form.csrf_token,
+    ) {
+        return see_other(&format!("{base}?error=csrf"));
+    }
+    if let Err(response) = step_up::require_step_up(
+        &state,
+        &correlation,
+        &tenant,
+        &headers,
+        step_up::MANAGE_AUTHENTICATORS,
+        &base,
+    )
+    .await
+    {
+        return response;
+    }
+
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
+    let request = idp_contracts::auth::InternalPhoneRegistrationRequest {
+        tenant_id: Some(tenant.0.clone()),
+        sso_session_id: sso,
+        phone_number: form.phone_number,
+        ip_address: ctx.ip_address,
+        user_agent: ctx.user_agent,
+    };
+    match state
+        .api
+        .account_phone_register(&ctx.correlation_id, &request)
+        .await
+    {
+        Ok(idp_contracts::auth::InternalPhoneRegistrationResponse::Sent) => {
+            see_other(&format!("{base}?phone=confirm"))
+        }
+        Ok(idp_contracts::auth::InternalPhoneRegistrationResponse::InvalidPhoneNumber) => {
+            see_other(&format!("{base}?error=phone-invalid"))
+        }
+        Ok(idp_contracts::auth::InternalPhoneRegistrationResponse::Unavailable) => {
+            see_other(&format!("{base}?error=sms-unavailable"))
+        }
+        Ok(idp_contracts::auth::InternalPhoneRegistrationResponse::Unauthenticated) => {
+            found(&format!("{}/login", tenant.prefix()))
+        }
+        Ok(idp_contracts::auth::InternalPhoneRegistrationResponse::Internal) => {
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(e) => {
+            // 電話番号は PII なので、失敗ログにも載せない（要求そのものを出さない）。
+            tracing::error!(error = %e, "phone registration call to api failed");
+            StatusCode::BAD_GATEWAY.into_response()
+        }
+    }
+}
+
+/// 電話番号の登録確認（`POST /{tenant_id}/settings/authenticators/phone/confirm`）。
+pub async fn confirm_phone_registration(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Form(form): Form<PhoneConfirmationForm>,
+) -> Response {
+    let base = format!("{}/settings/authenticators", tenant.prefix());
+    let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
+        return found(&format!("{}/login", tenant.prefix()));
+    };
+    if !idp_contracts::csrf::verify(
+        &console_csrf_token(&sso, state.config.csrf_secret()),
+        &form.csrf_token,
+    ) {
+        return see_other(&format!("{base}?error=csrf"));
+    }
+
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
+    let request = idp_contracts::auth::InternalPhoneConfirmationRequest {
+        tenant_id: Some(tenant.0.clone()),
+        sso_session_id: sso,
+        code: form.code,
+        ip_address: ctx.ip_address,
+        user_agent: ctx.user_agent,
+    };
+    match state
+        .api
+        .account_phone_confirm(&ctx.correlation_id, &request)
+        .await
+    {
+        Ok(idp_contracts::auth::InternalPhoneConfirmationResponse::Confirmed) => {
+            see_other(&format!("{base}?saved=phone"))
+        }
+        Ok(idp_contracts::auth::InternalPhoneConfirmationResponse::InvalidCode) => {
+            // 確認待ちの画面へ戻す（別のコードを打ち直せるようにする）。
+            see_other(&format!("{base}?phone=confirm&error=phone-code"))
+        }
+        Ok(idp_contracts::auth::InternalPhoneConfirmationResponse::Unauthenticated) => {
+            found(&format!("{}/login", tenant.prefix()))
+        }
+        Ok(idp_contracts::auth::InternalPhoneConfirmationResponse::Internal) => {
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "phone confirmation call to api failed");
+            StatusCode::BAD_GATEWAY.into_response()
+        }
     }
 }

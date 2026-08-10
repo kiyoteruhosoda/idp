@@ -131,6 +131,15 @@ pub struct AdminSystemSettingsForm {
     pub smtp_from_address: String,
     #[serde(default)]
     pub smtp_use_tls: Option<String>,
+    /// SMS ゲートウェイ（AP13）。`sms_auth_token` が空文字なら現行のトークンを維持する。
+    #[serde(default)]
+    pub sms_gateway_url: String,
+    #[serde(default)]
+    pub sms_auth_header: String,
+    #[serde(default)]
+    pub sms_auth_token: String,
+    #[serde(default)]
+    pub sms_sender_id: String,
     pub csrf_token: String,
 }
 

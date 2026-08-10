@@ -213,6 +213,11 @@ pub async fn update_system(
         "smtp_password": password,
         "smtp_from_address": form.smtp_from_address,
         "smtp_use_tls": form.smtp_use_tls.is_some(),
+        // SMTP パスワードと同じ規則: 空欄は「変更しない」（キーごと落とす）。
+        "sms_gateway_url": form.sms_gateway_url,
+        "sms_auth_header": form.sms_auth_header,
+        "sms_auth_token": if form.sms_auth_token.is_empty() { None } else { Some(form.sms_auth_token) },
+        "sms_sender_id": form.sms_sender_id,
     });
     match state
         .api
