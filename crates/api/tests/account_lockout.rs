@@ -16,6 +16,19 @@ use idp_api::infrastructure::repositories::user::SqlxUserRepository;
 use support::{body_json, create_plain_user, create_sso_session, post_empty, send};
 use uuid::Uuid;
 
+/// ロック期限から「何秒後か」を秒へ丸める。
+///
+/// `chrono::Utc::now()` はナノ秒精度だが、`DATETIME(6)` へ保存する時点で**マイクロ秒へ切り捨て**
+/// られる。差を `num_seconds()`（0 方向への切り捨て）で見ると、ちょうど 60 秒のはずが 59 になる。
+/// 検証したいのは「どの段が選ばれたか」なので、最も近い秒へ丸めて比べる。
+fn lock_seconds(
+    locked_until: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> i64 {
+    (locked_until - now).num_milliseconds().div_euclid(1_000)
+        + i64::from((locked_until - now).num_milliseconds().rem_euclid(1_000) >= 500)
+}
+
 /// 3 回失敗でロック、上限は初回の 4 倍（＝ 3 段）。
 fn escalating_policy() -> LockoutPolicy {
     LockoutPolicy {
@@ -55,7 +68,7 @@ async fn the_lock_window_grows_with_each_repeated_lockout() {
             .expect("record login failure");
         let locked_until = record.locked_until.expect("locked after the threshold");
         let expected_secs = policy.lock_duration_secs_for(record.failed_login_count);
-        let actual_secs = (locked_until - now).num_seconds();
+        let actual_secs = lock_seconds(locked_until, now);
         assert_eq!(
             actual_secs, expected_secs as i64,
             "step {step}: SQL の選んだ段（{actual_secs}s）がドメインの計算式（{expected_secs}s）と食い違う \
@@ -71,7 +84,7 @@ async fn the_lock_window_grows_with_each_repeated_lockout() {
         .expect("record login failure");
     let locked_until = record.locked_until.expect("locked");
     assert_eq!(
-        (locked_until - now).num_seconds(),
+        lock_seconds(locked_until, now),
         policy.max_lock_duration_secs as i64
     );
 }
@@ -140,7 +153,7 @@ async fn an_administrator_unlock_also_clears_the_failure_counter() {
         .expect("record login failure");
     let locked_until = record.locked_until.expect("locked again");
     assert_eq!(
-        (locked_until - now).num_seconds(),
+        lock_seconds(locked_until, now),
         policy.lock_duration_secs as i64,
         "解除後の再ロックは初回の長さに戻る"
     );

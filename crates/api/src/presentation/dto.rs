@@ -837,4 +837,30 @@ mod authentication_policy_contract_tests {
             );
         }
     }
+
+    /// 管理コンソールが描くログイン識別子の種別プルダウンは、api の `LoginIdentifierType` の
+    /// **保存値そのもの**でなければならない（AP16。選んだ種別が api に弾かれる形にしない）。
+    #[test]
+    fn login_identifier_type_codes_match_the_contract() {
+        use crate::domain::login_identifier::LoginIdentifierType;
+
+        let expected = [
+            LoginIdentifierType::Username,
+            LoginIdentifierType::Email,
+            LoginIdentifierType::PhoneNumber,
+            LoginIdentifierType::EmployeeNumber,
+        ]
+        .map(|t| t.as_str())
+        .to_vec();
+        assert_eq!(
+            idp_contracts::admin::LOGIN_IDENTIFIER_TYPE_CODES.to_vec(),
+            expected
+        );
+        for code in idp_contracts::admin::LOGIN_IDENTIFIER_TYPE_CODES {
+            assert!(
+                LoginIdentifierType::parse(code).is_ok(),
+                "unknown login identifier type code in the contract: {code}"
+            );
+        }
+    }
 }

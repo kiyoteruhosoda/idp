@@ -237,6 +237,15 @@ pub const AUTHENTICATION_METHOD_CODES: &[&str] = &[
     "external_idp",
 ];
 
+/// ログイン識別子の種別コード（表示順。AP8 / AP16）。
+///
+/// 実体は api 側の `LoginIdentifierType`（保存値の文字列）で、ここはその**語彙の写し**である。
+/// web は DB にも core にも触れないため、管理画面の種別プルダウンを描くにはこの一覧が要る。
+/// 食い違うと画面で選んだ種別が api に弾かれるので、api のテスト
+/// （`login_identifier_type_codes_match_the_contract`）が enum との一致を固定する。
+pub const LOGIN_IDENTIFIER_TYPE_CODES: &[&str] =
+    &["username", "email", "phone_number", "employee_number"];
+
 /// `require_specific_method` の要求内容。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequiredMethodsPayload {
