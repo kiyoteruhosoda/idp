@@ -504,6 +504,9 @@ curl -sS -X POST "$ISSUER/{tenant_id}/admin/external-idps" \
 | `HSTS_MAX_AGE` | `0`（無効） | `Strict-Transport-Security` の `max-age`（秒）。**DB 上書き可**（下記） |
 | `APP_LOG_RETENTION_DAYS` | `30` | エラー・警告ログ（`log` テーブル）の保持日数。`0` = 削除しない。**DB 上書き可** |
 | `AUDIT_LOG_RETENTION_DAYS` | `0`（削除しない） | 監査ログ（`audit_log` テーブル）の保持日数。保存期間は法令・契約で決まるため既定では削除しない。**DB 上書き可** |
+| `TOKEN_ENDPOINT_MAX_CONCURRENCY` | `8` | `/token`・`/introspect`・`/revoke` の同時処理数の上限（SEC10）。Argon2id（19 MiB）照合のピークメモリは「上限 × 19 MiB」。溢れた要求は待たせず 503。`0` は無制限（非推奨）。**DB 上書き可** |
+| `TOKEN_ENDPOINT_RATE_LIMIT_MAX_REQUESTS` | `300` | 上記 3 本の接続元 IP 単位のレート制限（SEC10）。`0` は無効。`TRUST_FORWARDED_HEADERS=true` のときのみ効く。**DB 上書き可** |
+| `TOKEN_ENDPOINT_RATE_LIMIT_WINDOW_SECS` | `60` | 上記レート制限のウィンドウ（秒）。**DB 上書き可** |
 | `STEP_UP_MAX_AGE_SECS` | `300` | 機微操作（パスワード変更・認証器の追加削除・セッション失効）の前に本人確認をやり直させる間隔（秒）。**DB 上書き可** |
 | `BACKCHANNEL_LOGOUT_MAX_ATTEMPTS` | `8` | Back-channel logout 通知の再送上限。指数バックオフ（30 秒 → 最大 1 時間）。**DB 上書き可** |
 | `BACKCHANNEL_LOGOUT_POLL_INTERVAL_SECS` | `15` | Back-channel logout 送信ワーカーが送信キューを見る間隔（秒）。**DB 上書き可** |

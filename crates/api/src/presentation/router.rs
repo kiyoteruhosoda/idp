@@ -204,12 +204,21 @@ pub fn build(state: AppState) -> Router {
         .route("/auth/register", post(register::register))
         .route("/auth/verify-email", post(register::verify_email))
         .route("/authorize", get(authorize::authorize))
-        .route("/token", post(token::token))
+        // トークン系 3 本（クライアント認証 = Argon2 照合を伴う）は負荷ゲートを通す（SEC10）。
+        // ルートを増やすときは、クライアント認証を伴うなら同じゲートへ載せる。
+        .merge(
+            Router::new()
+                .route("/token", post(token::token))
+                .route("/revoke", post(revoke::revoke))
+                .route("/introspect", post(introspect::introspect))
+                .route_layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    crate::presentation::token_endpoint_load::limit_token_endpoint_load,
+                )),
+        )
         .route("/userinfo", get(userinfo::userinfo))
         // `/logout`（end_session_endpoint）は web が受ける（ADR-0018 決定 2）。api はブラウザ
         // Cookie を読まないため、公開の logout ルートを持たない（処理は /internal/logout/rp）。
-        .route("/revoke", post(revoke::revoke))
-        .route("/introspect", post(introspect::introspect))
         // 管理者身元確認（idp.tenant.admin 必須。RequirePerms<IdpAdmin>）。web の管理コンソールが SSO Cookie
         // 転送で認証状態・身元を得るのに使う（ADR-0007 §4）。HTML 画面は web crate 側にある。
         .route("/admin/whoami", get(admin::whoami))

@@ -137,6 +137,9 @@ const PASSWORD_RESET_RATE_LIMIT_WINDOW_MINUTES: i64 = 15;
 pub struct AppState {
     pub pool: Db,
     pub config: Arc<Config>,
+    /// トークン系エンドポイント（`/token`・`/introspect`・`/revoke`）の負荷ゲート（SEC10）。
+    /// Argon2 照合の同時実行数と送信元単位の要求数を抑える。
+    pub token_endpoint_load: Arc<crate::presentation::token_endpoint_load::TokenEndpointLoadGate>,
     /// テナント解決（id → tenant）。`TenantResolver` middleware が使う（MT9 でルーターへ mount）。
     pub tenant_resolution: Arc<TenantResolutionService>,
     pub register: Arc<RegisterService>,
@@ -893,9 +896,19 @@ impl AppState {
             clock.clone(),
         ));
 
+        // トークン系エンドポイントの負荷ゲート（SEC10）。Argon2 照合の同時実行数と
+        // 送信元単位の要求数を抑える。
+        let token_endpoint_load = Arc::new(
+            crate::presentation::token_endpoint_load::TokenEndpointLoadGate::from_config(
+                &config,
+                clock.clone(),
+            ),
+        );
+
         Self {
             pool,
             config,
+            token_endpoint_load,
             tenant_resolution,
             register,
             email_verification,

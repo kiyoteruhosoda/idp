@@ -18,3 +18,4 @@ pub mod router;
 pub mod security_headers;
 pub mod state;
 pub mod tenant;
+pub mod token_endpoint_load;

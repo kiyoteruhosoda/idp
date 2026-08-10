@@ -474,6 +474,44 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
                       削除する。",
     },
     SettingDefinition {
+        key: "TOKEN_ENDPOINT_MAX_CONCURRENCY",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
+        default_value: Some("8"),
+        description: "`/token`・`/introspect`・`/revoke` を同時に処理する最大数（SEC10）。この 3 つは \
+                      client_secret を Argon2id（19 MiB）で照合するため、上限がピークメモリ \
+                      （上限 × 19 MiB）と CPU を決める。溢れた要求は待たせず 503 で落とす。\
+                      `0` は無制限（メモリ増幅型 DoS に対する防御線が無くなるため非推奨）。",
+    },
+    SettingDefinition {
+        key: "TOKEN_ENDPOINT_RATE_LIMIT_MAX_REQUESTS",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
+        default_value: Some("300"),
+        description: "`/token`・`/introspect`・`/revoke` の接続元 IP 単位のレート制限（SEC10）。\
+                      単一の送信元が同時実行枠を占有して正規の RP を締め出すのを防ぐ。`0` は無効。\
+                      接続元 IP が分かるとき（`TRUST_FORWARDED_HEADERS = true`）のみ効く。",
+    },
+    SettingDefinition {
+        key: "TOKEN_ENDPOINT_RATE_LIMIT_WINDOW_SECS",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
+        default_value: Some("60"),
+        description: "`TOKEN_ENDPOINT_RATE_LIMIT_MAX_REQUESTS` を数えるウィンドウ（秒）。",
+    },
+    SettingDefinition {
         key: "API_DOCS_ENABLED",
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
