@@ -15,6 +15,7 @@ use crate::domain::error::DomainError;
 use crate::domain::id_generator::IdGenerator;
 use crate::domain::message::MessageKey;
 use crate::domain::outbound_uri::is_internal_destination;
+use crate::domain::paging::{PageRequest, PagedResult};
 use crate::domain::password::PasswordHasher;
 use crate::domain::repositories::ClientRepository;
 use crate::domain::tenant_context::TenantContext;
@@ -26,6 +27,10 @@ use uuid::Uuid;
 const CLIENT_ID_BYTES: usize = 16;
 /// 発行する client_secret のバイト長（256bit）。
 const CLIENT_SECRET_BYTES: usize = 32;
+/// クライアント一覧 1 ページの既定件数（G7）。
+pub const DEFAULT_PAGE_LIMIT: i64 = 50;
+/// クライアント一覧 1 ページの上限件数（過大な取得を防ぐ）。
+pub const MAX_PAGE_LIMIT: i64 = 200;
 
 #[derive(Debug, Clone)]
 pub struct RegisterClientCommand {
@@ -198,6 +203,23 @@ impl ClientManagementService {
             .list(tenant.tenant_id())
             .await
             .map_err(|e| ClientManagementError::Internal(e.to_string()))
+    }
+
+    /// 登録済みクライアントを 1 ページ分返す（G7）。`limit` / `offset` は未検証の要求値を
+    /// 受け取り、許容範囲へ収めたうえで**適用値**を結果に添える。
+    pub async fn list_page(
+        &self,
+        tenant: TenantContext,
+        limit: Option<i64>,
+        offset: Option<i64>,
+    ) -> Result<PagedResult<Client>, ClientManagementError> {
+        let request = PageRequest::clamped(limit, offset, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT);
+        let page = self
+            .clients
+            .list_page(tenant.tenant_id(), request)
+            .await
+            .map_err(|e| ClientManagementError::Internal(e.to_string()))?;
+        Ok(PagedResult::new(page, request))
     }
 
     pub async fn get(

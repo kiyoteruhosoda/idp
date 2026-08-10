@@ -8,7 +8,7 @@
 //! テナント id は web の経路（`crate::tenant::WebTenant`）から呼び出し側が明示的に渡す（MT13）。
 
 use crate::admin_dto::{
-    ApiErrorBody, AuditLogView, ClientCreatedView, ClientSecretView, ClientView,
+    ApiErrorBody, AuditLogView, ClientCreatedView, ClientListView, ClientSecretView, ClientView,
     InvitationCreatedView, MemberListView, UserCreatedView,
 };
 use idp_contracts::admin::{
@@ -568,22 +568,16 @@ impl ApiClient {
 
     // ── 管理コンソール → JSON 管理 API（`/{tenant_id}/admin/*`、SSO Cookie 転送）───────────────
 
-    /// クライアント一覧（`GET /admin/clients`）。
+    /// クライアント一覧の 1 ページ分（`GET /admin/clients`。G7）。ページングは api（DB）側で行う。
     pub async fn list_clients(
         &self,
         correlation_id: &str,
         tenant_id: &str,
         sso: &str,
-    ) -> Result<Vec<ClientView>, AdminApiError> {
-        self.admin_send(
-            Method::GET,
-            tenant_id,
-            "/admin/clients",
-            correlation_id,
-            sso,
-            None,
-        )
-        .await
+        query: &[(&str, String)],
+    ) -> Result<ClientListView, AdminApiError> {
+        self.admin_get_with_query(tenant_id, "/admin/clients", correlation_id, sso, query)
+            .await
     }
 
     /// 単一クライアント（`GET /admin/clients/{id}`）。
@@ -1368,6 +1362,37 @@ impl ApiClient {
         Self::handle_admin_response(response, path).await
     }
 
+    /// クエリ文字列を添えて GET する `admin_send` の亜種（一覧のページング。G7）。
+    /// パスへ文字列連結せず reqwest に組み立てさせるのは、値のパーセントエンコードを
+    /// 呼び出し側ごとに書かないため。
+    async fn admin_get_with_query<T>(
+        &self,
+        tenant_id: &str,
+        path: &str,
+        correlation_id: &str,
+        sso: &str,
+        query: &[(&str, String)],
+    ) -> Result<T, AdminApiError>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        let response = self
+            .with_language(
+                self.http
+                    .get(format!("{}/{}{}", self.base_url, tenant_id, path))
+                    .query(query)
+                    .header(REQUEST_ID_HEADER, correlation_id)
+                    .header(
+                        reqwest::header::COOKIE,
+                        format!("{SSO_SESSION_COOKIE}={sso}"),
+                    ),
+            )
+            .send()
+            .await
+            .map_err(|e| AdminApiError::Transport(e.to_string()))?;
+        Self::handle_admin_response(response, path).await
+    }
+
     /// 本文の無い成功応答（204 等）を期待する `admin_send` の亜種。
     async fn admin_send_no_content(
         &self,
@@ -1446,20 +1471,20 @@ impl ApiClient {
 
     // ── 設定画面（MT14）─────────────────────────────────────────────────────
 
-    /// 子テナント一覧（`GET /admin/tenants`。idp.system.admin 必須）。
+    /// 子テナント一覧の 1 ページ分（`GET /admin/tenants`。idp.system.admin 必須。G7）。
     pub async fn list_tenants(
         &self,
         correlation_id: &str,
         tenant_id: &str,
         sso_session_id: &str,
-    ) -> Result<Vec<crate::admin_dto::TenantView>, AdminApiError> {
-        self.admin_send(
-            Method::GET,
+        query: &[(&str, String)],
+    ) -> Result<crate::admin_dto::TenantListView, AdminApiError> {
+        self.admin_get_with_query(
             tenant_id,
             "/admin/tenants",
             correlation_id,
             sso_session_id,
-            None,
+            query,
         )
         .await
     }

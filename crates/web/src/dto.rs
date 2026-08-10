@@ -185,6 +185,9 @@ pub struct TenantsQuery {
     /// 更新完了通知（Post/Redirect/Get で戻ったときに成功バナーを出す）。
     #[serde(default)]
     pub saved: Option<String>,
+    /// ページャの読み飛ばし件数。未指定は 0（G7）。
+    #[serde(default)]
+    pub offset: Option<i64>,
 }
 
 /// 子テナントの編集フォーム（`POST /{tenant_id}/admin/tenants/{child_id}/update`。MT23）。

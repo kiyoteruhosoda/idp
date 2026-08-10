@@ -203,10 +203,6 @@ admin-members-status-suspended = Suspended
 admin-members-delete-button = Delete
 admin-members-delete-confirm = Delete this user permanently? This cannot be undone.
 admin-members-back = Back to members
-admin-members-total = Members found:
-admin-members-pagination-label = Member list pages
-admin-members-prev = Previous
-admin-members-next = Next
 admin-invitations-title = Invite a guest
 admin-invitations-intro = Enter the internal user ID (UUID) of an existing user from another tenant. A one-time invitation token will be issued.
 admin-invitations-field-user-id = User ID (UUID)
@@ -947,3 +943,9 @@ admin-auth-policy-error-priority = The priority must be a whole number.
 admin-auth-policy-error-time-window = A time window could not be read. Use "days start-end offset", one per line.
 admin-auth-policy-error-conflict = Another policy already uses that code.
 admin-auth-policy-error-not-found = That policy no longer exists.
+
+# List pagination (G7, shared by every admin list screen)
+admin-pagination-total = Total:
+admin-pagination-label = List pages
+admin-pagination-prev = Previous
+admin-pagination-next = Next

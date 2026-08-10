@@ -17,26 +17,27 @@ use crate::domain::values::TenantStatus;
 use crate::presentation::admin::{IdpAdmin, IdpSystemAdmin, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
-    CreateTenantRequest, TenantAdminPasswordResetRequest, TenantResponse, UpdateTenantRequest,
-    UpdateTenantSettingsRequest, UserPasswordResetResponse,
+    CreateTenantRequest, PageQueryParams, TenantAdminPasswordResetRequest, TenantListResponse,
+    TenantResponse, UpdateTenantRequest, UpdateTenantSettingsRequest, UserPasswordResetResponse,
 };
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
 use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
-use axum::extract::{Extension, Path, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use uuid::Uuid;
 
-/// 直下の子テナントを一覧する。
+/// 直下の子テナントを 1 ページ分と総件数で返す（G7）。ページングは DB 側で行う。
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/tenants",
     tag = "admin",
+    params(PageQueryParams),
     responses(
-        (status = 200, description = "子テナント一覧", body = [TenantResponse]),
+        (status = 200, description = "子テナント一覧（1 ページ分と総件数）", body = TenantListResponse),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.system.admin 必須）"),
     )
@@ -46,13 +47,19 @@ pub async fn list_tenants(
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
-) -> Result<Json<Vec<TenantResponse>>, ApiError> {
-    let children = state
+    Query(params): Query<PageQueryParams>,
+) -> Result<Json<TenantListResponse>, ApiError> {
+    let result = state
         .tenants_admin
-        .list_children(tenant.context())
+        .list_children_page(tenant.context(), params.limit, params.offset)
         .await
         .map_err(|e| map_error(e, locale))?;
-    Ok(Json(children.iter().map(tenant_response).collect()))
+    Ok(Json(TenantListResponse {
+        tenants: result.page.items.iter().map(tenant_response).collect(),
+        total: result.page.total,
+        limit: result.applied.limit(),
+        offset: result.applied.offset(),
+    }))
 }
 
 /// 子テナントを作成する。作成者自身が新テナントのブートストラップ管理者（ACTIVE GUEST +

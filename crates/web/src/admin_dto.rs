@@ -24,6 +24,18 @@ pub struct ClientView {
     pub updated_at: String,
 }
 
+/// クライアント一覧の 1 ページ分（`GET /admin/clients`。G7）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ClientListView {
+    pub clients: Vec<ClientView>,
+    /// ページング前の総件数。「全 N 件」の表示と次ページの有無に使う。
+    pub total: i64,
+    /// api が実際に適用した 1 ページの件数（クランプ後）。ページ送りの刻み幅として使う。
+    pub limit: i64,
+    #[allow(dead_code)]
+    pub offset: i64,
+}
+
 /// 作成応答（`POST /admin/clients`）。`client_secret` は confidential のときのみ含まれる。
 #[derive(Debug, Clone, Deserialize)]
 pub struct ClientCreatedView {
@@ -176,6 +188,18 @@ pub struct TenantView {
     pub self_registration_enabled: bool,
     /// `ACTIVE` または `DISABLED`。
     pub status: String,
+}
+
+/// 子テナント一覧の 1 ページ分（`GET /admin/tenants`。G7）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct TenantListView {
+    pub tenants: Vec<TenantView>,
+    /// ページング前の総件数。
+    pub total: i64,
+    /// api が実際に適用した 1 ページの件数（クランプ後）。
+    pub limit: i64,
+    #[allow(dead_code)]
+    pub offset: i64,
 }
 
 /// テナント作成応答（`POST /admin/tenants`）。作成者自身がブートストラップ管理者になるため、

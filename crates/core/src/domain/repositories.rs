@@ -35,6 +35,7 @@ use crate::domain::external_idp::{
     ExternalIdentity, ExternalIdentityProvider, ExternalLoginRequest,
 };
 use crate::domain::login_identifier::UserLoginIdentifier;
+use crate::domain::paging::{Page, PageRequest};
 use crate::domain::passkey_challenge::PasskeyChallenge;
 use crate::domain::password_reset::PasswordResetToken;
 use crate::domain::refresh_token::RefreshToken;
@@ -65,8 +66,19 @@ pub trait TenantRepository: Send + Sync {
     async fn find_by_id(&self, id: TenantId) -> Result<Option<Tenant>>;
     /// `parent_tenant_id IS NULL` の唯一の行（root）を返す。
     async fn find_root(&self) -> Result<Option<Tenant>>;
-    /// 指定テナントの直下の子テナントを一覧する（`/{tenant_id}/admin/tenants`。ADR-0009 §6）。
+    /// 指定テナントの直下の子テナントを一覧する（ADR-0009 §6）。件数の上限が無いため、
+    /// 画面へ返す経路では [`Self::list_children_page`] を使う（本メソッドは削除可否の判定など
+    /// 全件が要る内部用途に限る）。
     async fn list_children(&self, parent_id: TenantId) -> Result<Vec<Tenant>>;
+    /// 直下の子テナントを 1 ページ分と総件数で返す（`/{tenant_id}/admin/tenants`。G7）。
+    /// 既定実装は全件取得からの切り出しで、DB 側で `LIMIT`/`OFFSET` を書ける sqlx 実装が上書きする。
+    async fn list_children_page(
+        &self,
+        parent_id: TenantId,
+        page: PageRequest,
+    ) -> Result<Page<Tenant>> {
+        Ok(Page::from_all(self.list_children(parent_id).await?, page))
+    }
     /// 表示名・状態を更新する（`parent_tenant_id` の付け替えは禁止。呼び出し側が保証する）。
     async fn update(&self, tenant: &Tenant) -> Result<()>;
     /// テナントを削除する。「配下に子テナントが無く、当該テナント自身にユーザー/クライアントが
@@ -300,8 +312,15 @@ pub trait ClientRepository: Send + Sync {
     /// クライアント（RP）を新規登録する（管理 API、設計仕様 §9.3）。`client.tenant_id` の
     /// テナントへ登録し、テナント内の `client_id` 重複は `Conflict`。
     async fn create(&self, client: &Client) -> Result<()>;
-    /// 指定テナントの登録済みクライアントを新しい順に一覧する（管理画面 A3・A1）。
+    /// 指定テナントの登録済みクライアントを新しい順に**全件**一覧する。
+    /// CORS 許可オリジンの収集・バックチャネルログアウトの配信先解決など、
+    /// 全件が要る内部用途のためのメソッド。画面へ返す経路では [`Self::list_page`] を使う。
     async fn list(&self, tenant_id: TenantId) -> Result<Vec<Client>>;
+    /// 登録済みクライアントを 1 ページ分と総件数で返す（`/{tenant_id}/admin/clients`。G7）。
+    /// 既定実装は全件取得からの切り出しで、DB 側で `LIMIT`/`OFFSET` を書ける sqlx 実装が上書きする。
+    async fn list_page(&self, tenant_id: TenantId, page: PageRequest) -> Result<Page<Client>> {
+        Ok(Page::from_all(self.list(tenant_id).await?, page))
+    }
     /// 可変項目（app_name / redirect_uris / scopes / status / secret_hash 等）を更新する。
     /// `(id, tenant_id)` で対象を特定する（他テナントの行は更新できない）。対象が無い場合は `NotFound`。
     async fn update(&self, client: &Client) -> Result<()>;

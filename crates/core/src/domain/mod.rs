@@ -25,6 +25,7 @@ pub mod login_identifier;
 pub mod mailer;
 pub mod message;
 pub mod outbound_uri;
+pub mod paging;
 pub mod passkey_challenge;
 pub mod password;
 pub mod password_policy;

@@ -1,3 +1,20 @@
+## 2026-08-10（G7: 一覧 API のページング）
+
+- **`GET /admin/clients`・`GET /admin/tenants` をページング応答にした（G7）。** どちらも `Vec` を
+  全件返しており、テナント内のクライアントが数百件になると管理コンソールの一覧がその数に比例して
+  重くなった（`/admin/members`・`/admin/audit-logs` には `limit`/`offset` があり非対称でもあった）。
+  - 応答を `{ clients | tenants, total, limit, offset }` に変えた。`total` を返すのは、次ページの
+    有無を**受信件数では判定できない**ため（最終ページがちょうど `limit` 件で埋まると空ページへの
+    リンクが出る）。`limit`/`offset` は要求値ではなく**実際に適用した値**を返す。
+  - ページングは DB 側（`LIMIT`/`OFFSET` + 同条件の `COUNT(*)`）で行う。並びはページ間で安定させる
+    ため副キー（`client_id` / `id`）を足した。
+  - 取得範囲の語彙を `domain::paging`（`PageRequest` / `Page` / `PagedResult`）に、web のページャ組み立てを
+    `web::pagination` に集約し、MT22 でメンバー一覧に入れた実装をそちらへ寄せた。ページャの HTML も
+    `console/pagination.html` の共有部品にした（翻訳キーも `admin-pagination-*` に一本化）。
+  - **権限一覧（`GET /admin/permissions`・利用者の保有権限）はページングしない。** どちらも
+    `permissions` マスタの語彙で件数が上限づけられ、テナントのデータ量では増えない。付与フォームの
+    選択肢を分割すると、選べない権限が出るという別の不具合になる。
+
 ## 2026-08-10（G12: `prompt=select_account` と複数値の `prompt`）
 
 - **`prompt=select_account` を受け付けるようにした（G12。OIDC Core §3.1.2.1）。** これまで

@@ -19,6 +19,7 @@ use crate::handlers::admin_console::{
 };
 use crate::handlers::found;
 use crate::i18n::Messages;
+use crate::pagination::pager_links;
 use crate::state::WebState;
 use crate::templates::{render, ConsoleNotice, MembersList, PasswordResetResult};
 use crate::tenant::WebTenant;
@@ -62,7 +63,7 @@ pub async fn list(
     let offset = query.offset.unwrap_or(0).max(0);
     // 絞り込み・ページングは api（DB）側で行う。web 側で全件を受けてから絞る方式は、
     // テナントの規模に比例して応答が膨らむため採らない（MT22）。
-    let mut params: Vec<(&str, String)> = vec![("offset", offset.to_string())];
+    let mut params = crate::pagination::page_query(offset);
     if !term.trim().is_empty() {
         params.push(("q", term.trim().to_string()));
     }
@@ -106,7 +107,13 @@ fn render_list(
     error_key: Option<&str>,
     notice_key: Option<&str>,
 ) -> String {
-    let (prev_href, next_href) = pager_links(tenant, term, offset, page);
+    let links = pager_links(
+        &format!("{}{MEMBERS_SEGMENT}", tenant.prefix()),
+        &[("q", term)],
+        offset,
+        page.limit,
+        page.total,
+    );
     render(&MembersList {
         messages,
         tenant: &tenant.prefix(),
@@ -117,50 +124,9 @@ fn render_list(
         csrf,
         error_key,
         notice_key,
-        prev_href,
-        next_href,
+        prev_href: links.prev,
+        next_href: links.next,
     })
-}
-
-/// ページャの前後リンク。次ページの有無は**総件数**で判定する（1 ページに満たない件数かどうかで
-/// 判定すると、最後のページがちょうど埋まったときに空ページへのリンクが出る）。
-fn pager_links(
-    tenant: &WebTenant,
-    term: &str,
-    offset: i64,
-    page: &MemberListView,
-) -> (Option<String>, Option<String>) {
-    // limit は api が実際に適用した値。0 以下が返ることは無いが、加算の安全側として弾く。
-    let limit = page.limit.max(1);
-    // `offset` はクエリ由来（`?offset=9223372036854775807` も来る）。素の加算は debug ビルドで
-    // オーバーフロー panic、release ビルドでは負の値へ回り込んで不正な「次へ」リンクになるため、
-    // 飽和加算にする。飽和した値は `total` 未満にならないので「次へ」は出ない（意図どおり）。
-    let next_offset = offset.saturating_add(limit);
-    let prev = (offset > 0).then(|| members_href(tenant, term, (offset - limit).max(0)));
-    let next = (next_offset < page.total).then(|| members_href(tenant, term, next_offset));
-    (prev, next)
-}
-
-fn members_href(tenant: &WebTenant, term: &str, offset: i64) -> String {
-    let mut query = format!("offset={offset}");
-    if !term.is_empty() {
-        query.push_str(&format!("&q={}", urlencode(term)));
-    }
-    format!("{}{MEMBERS_SEGMENT}?{query}", tenant.prefix())
-}
-
-/// クエリ文字列へ載せる値のパーセントエンコード（RFC 3986 の unreserved 以外を変換する）。
-fn urlencode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }
 
 #[derive(Debug, Deserialize)]
@@ -605,60 +571,28 @@ mod tests {
         assert!(!html.contains("/resume"));
     }
 
-    /// MT22: ページャは**総件数**で次ページの有無を決める。ページがちょうど埋まったかどうかで
-    /// 判定すると、最後のページが満杯のときに空ページへのリンクが出る。
+    /// 一覧のページャは共有ヘルパ（`crate::pagination`）が組み立てる。ここで確かめるのは
+    /// **メンバー一覧固有**の部分、すなわち遷移先が `/admin/members` であることと、
+    /// 絞り込み語をページ送りへ引き継ぐこと（次ページで条件が消えると別の集合になる）。
+    /// 総件数による次ページ判定とオーバーフロー対策は `crate::pagination` のテストが担う。
     #[test]
-    fn next_link_appears_only_while_rows_remain() {
-        let full = MemberListView {
-            members: vec![member("HOME")],
-            total: 2,
-            limit: 1,
-            offset: 0,
-        };
-        let (prev, next) = pager_links(&tenant(), "", 0, &full);
-        assert_eq!(prev, None, "先頭ページに「前へ」は出さない");
-        assert!(next.expect("next").ends_with("/admin/members?offset=1"));
-
-        // 最終ページ（offset + limit == total）では次ページを出さない。
-        let last = MemberListView {
-            members: vec![member("HOME")],
-            total: 2,
-            limit: 1,
-            offset: 1,
-        };
-        let (prev, next) = pager_links(&tenant(), "", 1, &last);
-        assert!(prev.expect("prev").ends_with("/admin/members?offset=0"));
-        assert_eq!(next, None);
-    }
-
-    /// `offset` はクエリ由来なので極端な値も来る。素の加算は debug ビルドでオーバーフロー panic、
-    /// release ビルドでは負の値へ回り込んで不正な「次へ」リンクを作る。
-    #[test]
-    fn huge_offset_does_not_overflow_the_next_link() {
-        let page = MemberListView {
-            members: Vec::new(),
-            total: 10,
-            limit: 50,
-            offset: i64::MAX,
-        };
-        let (prev, next) = pager_links(&tenant(), "", i64::MAX, &page);
-        assert_eq!(next, None, "範囲外なので「次へ」は出さない");
-        assert!(prev.is_some(), "先頭ではないので「前へ」は出す");
-    }
-
-    /// 絞り込み語はページ送りのリンクへ引き継ぐ（次ページで条件が消えると別の集合になる）。
-    /// クエリ文字列に載せるためパーセントエンコードする。
-    #[test]
-    fn pager_links_keep_the_search_term_encoded() {
+    fn pager_links_point_at_the_member_list_and_keep_the_search_term() {
         let page = MemberListView {
             members: vec![member("HOME")],
             total: 100,
             limit: 50,
             offset: 0,
         };
-        let (_, next) = pager_links(&tenant(), "a b&c", 0, &page);
-        let next = next.expect("next");
-        assert!(next.contains("offset=50"), "{next}");
+        let links = pager_links(
+            &format!("{}{MEMBERS_SEGMENT}", tenant().prefix()),
+            &[("q", "a b&c")],
+            0,
+            page.limit,
+            page.total,
+        );
+        assert_eq!(links.prev, None, "先頭ページに「前へ」は出さない");
+        let next = links.next.expect("next");
+        assert!(next.contains("/admin/members?offset=50"), "{next}");
         assert!(next.contains("q=a%20b%26c"), "{next}");
     }
 

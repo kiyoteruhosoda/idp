@@ -39,9 +39,16 @@ pub async fn list(
         AdminResolution::Reject(resp) => return resp,
     };
     let sso = sso(&headers);
-    let tenants = match state
+    let offset = query.offset.unwrap_or(0).max(0);
+    // ページングは api（DB）側で行う（G7）。web はページ位置を引き継ぎ、前後リンクだけを組む。
+    let page = match state
         .api
-        .list_tenants(&correlation.0, &tenant.0, &sso)
+        .list_tenants(
+            &correlation.0,
+            &tenant.0,
+            &sso,
+            &crate::pagination::page_query(offset),
+        )
         .await
     {
         Ok(v) => v,
@@ -49,18 +56,33 @@ pub async fn list(
         Err(AdminApiError::Forbidden) => return forbidden_response(&headers),
         Err(e) => {
             tracing::error!(error = %describe(&e), "failed to load tenants");
-            Vec::new()
+            crate::admin_dto::TenantListView {
+                tenants: Vec::new(),
+                total: 0,
+                limit: 0,
+                offset,
+            }
         }
     };
+    let links = crate::pagination::pager_links(
+        &format!("{}{TENANTS_SEGMENT}", tenant.prefix()),
+        &[],
+        offset,
+        page.limit,
+        page.total,
+    );
     let messages = Messages::new(locale(&headers));
     Html(render(&TenantsConsole {
         messages: &messages,
         tenant: &tenant.prefix(),
         admin: Some(&admin),
-        tenants: &tenants,
+        tenants: &page.tenants,
+        total: page.total,
         csrf: &console_csrf_token(&sso, state.config.csrf_secret()),
         error_key: query.error.as_deref().and_then(error_key_for),
         saved: query.saved.as_deref() == Some("tenant"),
+        prev_href: links.prev,
+        next_href: links.next,
     }))
     .into_response()
 }
@@ -293,9 +315,12 @@ mod tests {
             tenant: "/00000000-0000-7000-8000-000000000001",
             admin: Some("admin-1"),
             tenants,
+            total: tenants.len() as i64,
             csrf: "csrf123",
             error_key: None,
             saved,
+            prev_href: None,
+            next_href: None,
         })
     }
 

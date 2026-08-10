@@ -865,7 +865,13 @@ pub struct ClientsList<'a> {
     pub messages: &'a Messages,
     pub tenant: &'a str,
     pub admin: Admin<'a>,
+    /// 現在のページに含まれるクライアント（G7 でページングを導入。全件ではない）。
     pub clients: &'a [ClientView],
+    /// ページング前の総件数。「全 N 件」の表示に使う。
+    pub total: i64,
+    /// ページャの前後リンク（クエリ文字列を組み立て済み）。該当がなければ `None`。
+    pub prev_href: Option<String>,
+    pub next_href: Option<String>,
 }
 
 /// クライアント登録・編集フォーム（`is_new` で新規/編集を切り替える）。
@@ -925,11 +931,17 @@ pub struct TenantsConsole<'a> {
     pub messages: &'a Messages,
     pub tenant: &'a str,
     pub admin: Admin<'a>,
+    /// 現在のページに含まれる子テナント（G7 でページングを導入。全件ではない）。
     pub tenants: &'a [TenantView],
+    /// ページング前の総件数。「全 N 件」の表示に使う。
+    pub total: i64,
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
     /// 更新完了通知（Post/Redirect/Get で戻ったときに成功バナーを出す。MT23）。
     pub saved: bool,
+    /// ページャの前後リンク（クエリ文字列を組み立て済み）。該当がなければ `None`。
+    pub prev_href: Option<String>,
+    pub next_href: Option<String>,
 }
 
 /// テナント切り替え画面（`GET /{tenant_id}/admin/switch-tenant`）。ログイン中ユーザーが `ACTIVE` な

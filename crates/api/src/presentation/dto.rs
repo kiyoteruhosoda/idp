@@ -555,6 +555,42 @@ pub struct MemberResponse {
     pub user_status: Option<String>,
 }
 
+/// 一覧のページングクエリ（`GET /{tenant_id}/admin/clients`・`.../tenants`。G7）。
+///
+/// 絞り込み条件を持たない一覧で共有する。絞り込みのある一覧（members）は固有の型を持つ。
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
+pub struct PageQueryParams {
+    /// 1 ページの件数。未指定は 50、上限 200（超過分は上限へ丸める）。
+    #[serde(default)]
+    pub limit: Option<i64>,
+    /// 読み飛ばす件数。未指定は 0。
+    #[serde(default)]
+    pub offset: Option<i64>,
+}
+
+/// クライアント一覧のレスポンス（`GET /{tenant_id}/admin/clients`。G7）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ClientListResponse {
+    pub clients: Vec<ClientResponse>,
+    /// `limit` / `offset` を無視した該当総数。画面が「全 N 件」と次ページの有無を確定できる。
+    pub total: i64,
+    /// 実際に適用された値（クランプ後）。要求値をそのまま返さないのは、上限で丸めた結果を
+    /// 呼び出し側がページ送りの計算にそのまま使えるようにするため。
+    pub limit: i64,
+    pub offset: i64,
+}
+
+/// 子テナント一覧のレスポンス（`GET /{tenant_id}/admin/tenants`。G7）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TenantListResponse {
+    pub tenants: Vec<TenantResponse>,
+    /// `limit` / `offset` を無視した該当総数。
+    pub total: i64,
+    /// 実際に適用された値（クランプ後）。
+    pub limit: i64,
+    pub offset: i64,
+}
+
 /// メンバー一覧のクエリパラメータ（`GET /{tenant_id}/admin/members`。MT22）。
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct MemberListQueryParams {

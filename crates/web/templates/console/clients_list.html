@@ -7,6 +7,7 @@
 {% if clients.is_empty() %}
 <p class="text-muted">{{ messages.get("admin-clients-none") }}</p>
 {% else %}
+<p class="text-muted small">{{ messages.get("admin-pagination-total") }} {{ total }}</p>
 <div class="table-responsive">
   <table class="table table-cards table-hover align-middle">
     <thead>
@@ -20,4 +21,5 @@
   </table>
 </div>
 {% endif %}
+{% include "console/pagination.html" %}
 {% endblock %}

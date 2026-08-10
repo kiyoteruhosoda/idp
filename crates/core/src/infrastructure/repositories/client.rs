@@ -2,6 +2,7 @@
 
 use crate::domain::client::Client;
 use crate::domain::error::{DomainError, Result};
+use crate::domain::paging::{Page, PageRequest};
 use crate::domain::repositories::ClientRepository;
 use crate::domain::tenant::TenantId;
 use crate::domain::values::{ClientStatus, ClientType, TokenEndpointAuthMethod};
@@ -159,6 +160,36 @@ impl ClientRepository for SqlxClientRepository {
             .await
             .map_err(repo_err)?;
         rows.iter().map(map_row).collect()
+    }
+
+    async fn list_page(&self, tenant_id: TenantId, page: PageRequest) -> Result<Page<Client>> {
+        // 総件数は 1 ページ分と同じ条件で数える。画面の「次へ」は受信件数ではなく総件数で
+        // 判定する（最終ページがちょうど埋まると空ページへのリンクが出るため）。
+        let total: i64 = sqlx::query("SELECT COUNT(*) AS total FROM clients WHERE tenant_id = ?")
+            .bind(tenant_id.to_string())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(repo_err)?
+            .try_get("total")
+            .map_err(repo_err)?;
+
+        // 並びはページ間で安定していなければならない（重複・欠落を防ぐ）。`created_at` は
+        // 同一マイクロ秒で並び得るため、テナント内一意の `client_id` を副キーに置く。
+        let sql = format!(
+            "SELECT {SELECT_COLUMNS} FROM clients WHERE tenant_id = ? \
+             ORDER BY created_at DESC, client_id ASC LIMIT ? OFFSET ?"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(tenant_id.to_string())
+            .bind(page.limit())
+            .bind(page.offset())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        Ok(Page::new(
+            rows.iter().map(map_row).collect::<Result<Vec<_>>>()?,
+            total,
+        ))
     }
 
     async fn update(&self, client: &Client) -> Result<()> {

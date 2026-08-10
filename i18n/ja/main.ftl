@@ -203,10 +203,6 @@ admin-members-status-suspended = 一時停止中
 admin-members-delete-button = 削除
 admin-members-delete-confirm = この利用者を完全に削除しますか？この操作は取り消せません。
 admin-members-back = メンバー一覧へ戻る
-admin-members-total = 該当件数:
-admin-members-pagination-label = メンバー一覧のページ送り
-admin-members-prev = 前へ
-admin-members-next = 次へ
 admin-invitations-title = ゲストを招待
 admin-invitations-intro = 他テナント所属の既存利用者の内部 ID（UUID）を入力してください。一度限りの招待トークンが発行されます。
 admin-invitations-field-user-id = 利用者 ID（UUID）
@@ -947,3 +943,9 @@ admin-auth-policy-error-priority = 優先度は整数で入力してください
 admin-auth-policy-error-time-window = 適用時間帯を読み取れませんでした。「曜日 開始-終了 オフセット」を 1 行に 1 件で入力してください。
 admin-auth-policy-error-conflict = そのコードは別のポリシーが既に使っています。
 admin-auth-policy-error-not-found = そのポリシーは存在しません。
+
+# 一覧のページャ（G7。一覧画面で共有する）
+admin-pagination-total = 該当件数:
+admin-pagination-label = 一覧のページ送り
+admin-pagination-prev = 前へ
+admin-pagination-next = 次へ

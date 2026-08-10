@@ -1,6 +1,7 @@
 //! `TenantRepository` の sqlx 実装（ADR-0009 §1）。`is_root` は生成列のため入出力しない。
 
 use crate::domain::error::{DomainError, Result};
+use crate::domain::paging::{Page, PageRequest};
 use crate::domain::repositories::TenantRepository;
 use crate::domain::tenant::{Tenant, TenantId};
 use crate::domain::values::TenantStatus;
@@ -112,6 +113,39 @@ impl TenantRepository for SqlxTenantRepository {
             .await
             .map_err(repo_err)?;
         rows.iter().map(map_row).collect()
+    }
+
+    async fn list_children_page(
+        &self,
+        parent_id: TenantId,
+        page: PageRequest,
+    ) -> Result<Page<Tenant>> {
+        let total: i64 =
+            sqlx::query("SELECT COUNT(*) AS total FROM tenants WHERE parent_tenant_id = ?")
+                .bind(parent_id.as_uuid().to_string())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(repo_err)?
+                .try_get("total")
+                .map_err(repo_err)?;
+
+        // 並びはページ間で安定していなければならない。`created_at` は同一マイクロ秒で並び得るため、
+        // 主キーの `id` を副キーに置く。
+        let sql = format!(
+            "SELECT {SELECT_COLUMNS} FROM tenants WHERE parent_tenant_id = ? \
+             ORDER BY created_at ASC, id ASC LIMIT ? OFFSET ?"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(parent_id.as_uuid().to_string())
+            .bind(page.limit())
+            .bind(page.offset())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        Ok(Page::new(
+            rows.iter().map(map_row).collect::<Result<Vec<_>>>()?,
+            total,
+        ))
     }
 
     async fn update(&self, tenant: &Tenant) -> Result<()> {
