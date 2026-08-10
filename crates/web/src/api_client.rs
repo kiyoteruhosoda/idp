@@ -1958,6 +1958,16 @@ impl ApiClient {
             .await
     }
 
+    /// 外部 SAML IdP のアサーションを api へ渡して検証させる（AP12）。
+    pub async fn external_saml_acs(
+        &self,
+        correlation_id: &str,
+        req: &idp_contracts::auth::InternalExternalSamlAcsRequest,
+    ) -> anyhow::Result<idp_contracts::auth::InternalExternalCallbackResponse> {
+        self.post_internal("/internal/external/saml/acs", correlation_id, req)
+            .await
+    }
+
     /// 登録済み認証器の一覧とリカバリーコードの残数を取得する（AP9）。
     pub async fn account_authenticators(
         &self,

@@ -29,7 +29,7 @@ use crate::application::audit::RequestContext;
 use crate::application::authenticator_management::AuthenticatorManagementError;
 use crate::application::change_password::{ChangePasswordCommand, ChangePasswordOutcome};
 use crate::application::external_login::{
-    CallbackCommand, CallbackOutcome, StartOutcome, SuccessLocation,
+    CallbackCommand, CallbackOutcome, SamlAcsCommand, StartOutcome, SuccessLocation,
 };
 use crate::application::login::{LoginCommand, LoginOutcome};
 use crate::application::password_reset::{RequestResetOutcome, ResetPasswordOutcome};
@@ -1417,6 +1417,78 @@ pub async fn external_callback(
             CallbackOutcome::ExternalFailure => InternalExternalCallbackResponse::ExternalFailure,
             CallbackOutcome::Internal(e) => {
                 tracing::error!(error = %e, "external idp callback failed");
+                InternalExternalCallbackResponse::Internal
+            }
+        },
+    ))
+}
+
+/// 外部 SAML IdP のアサーションを受け取る（ACS。AP12）。
+///
+/// 応答の形は OIDC のコールバックと**同じ**（`InternalExternalCallbackResponse`）。プロトコルが
+/// 違うのは「誰が認証されたかをどう確かめるか」までで、そこから先の結果は同じだからである。
+pub async fn external_saml_acs(
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Json(req): Json<idp_contracts::auth::InternalExternalSamlAcsRequest>,
+) -> Result<Json<InternalExternalCallbackResponse>, Response> {
+    let ctx = RequestContext {
+        correlation_id: correlation.0,
+        ip_address: req.ip_address,
+        user_agent: req.user_agent,
+    };
+    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let ttl = state.config.sso_absolute_ttl().as_secs();
+    Ok(Json(
+        match state
+            .external_login
+            .saml_acs(
+                tenant,
+                SamlAcsCommand {
+                    saml_response: req.saml_response,
+                    relay_state: req.relay_state,
+                },
+                &ctx,
+            )
+            .await
+        {
+            CallbackOutcome::Success {
+                location,
+                sso_session_id,
+                user_language,
+            } => {
+                let (redirect_to, form_post) = match location {
+                    SuccessLocation::Redirect {
+                        location,
+                        form_post,
+                    } => (Some(location), form_post),
+                    SuccessLocation::Account => (None, None),
+                };
+                InternalExternalCallbackResponse::Success {
+                    sso_session_id,
+                    sso_absolute_ttl_secs: ttl,
+                    redirect_to,
+                    form_post,
+                    user_language,
+                }
+            }
+            CallbackOutcome::ConsentRequired {
+                auth_session_id,
+                sso_session_id,
+                user_language,
+            } => InternalExternalCallbackResponse::ConsentRequired {
+                auth_session_id,
+                sso_session_id,
+                sso_absolute_ttl_secs: ttl,
+                user_language,
+            },
+            CallbackOutcome::StateExpired => InternalExternalCallbackResponse::StateExpired,
+            CallbackOutcome::NotLinked => InternalExternalCallbackResponse::NotLinked,
+            CallbackOutcome::UserUnavailable => InternalExternalCallbackResponse::UserUnavailable,
+            CallbackOutcome::PolicyDenied => InternalExternalCallbackResponse::PolicyDenied,
+            CallbackOutcome::ExternalFailure => InternalExternalCallbackResponse::ExternalFailure,
+            CallbackOutcome::Internal(e) => {
+                tracing::error!(error = %e, "external saml acs failed");
                 InternalExternalCallbackResponse::Internal
             }
         },

@@ -166,3 +166,16 @@ root テナントの UUID は固定値 `00000000-0000-7000-8000-000000000001`（
   （撤去の前に運用で解消する必要があり、`docs/Progress.md` に残してある）。`down` は
   **本マイグレーションが作った行だけ**（作成時刻 = 更新時刻）を消して列を落とす —— 格上げした行は
   管理者が足した設定なので消さない。
+
+- `0037_external_idp_protocol`: 外部 IdP に SAML を足す（AP12。ADR-0027）。`protocol` 列
+  （`oidc` / `saml`。VARCHAR + CHECK）と SAML 固有の列（SSO URL・署名証明書の配列・NameID 形式）を
+  同じ表へ足し、OIDC 専用の列を NULL 可へ緩める。**JSON 列にも別表にも寄せない** —— JSON では
+  列ごとの NOT NULL・CHECK を掛けられず「SSO URL が空のまま登録された SAML プロバイダ」が
+  登録時ではなくログイン時に落ちる。別表にすると、共通項だけを読みたい一覧（ログイン画面の
+  ボタン）にまで join が掛かる。どの組み合わせが妥当かは Rust の `ExternalIdpConfig` が単一の
+  出所として持ち、リポジトリは行 → enum の変換でしか値を作らないので、`protocol = 'saml'` なのに
+  SSO URL が NULL という行は読み出しで失敗する。署名証明書を**配列**にしたのは、IdP の証明書
+  更新期間に新旧 2 枚が同時に有効になるため（1 枚しか持てないと更新のたびにログインが止まる）。
+  進行状態（`external_login_requests`）は両プロトコルで共用し、SAML には PKCE が無いので
+  `code_verifier_encrypted` を NULL 可にする。`down` は SAML の設定・進行状態を消してから
+  列を戻す（OIDC の設定は無傷）。

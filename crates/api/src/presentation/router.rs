@@ -101,6 +101,10 @@ pub fn build(state: AppState) -> Router {
             "/internal/external/callback",
             post(internal_auth::external_callback),
         )
+        .route(
+            "/internal/external/saml/acs",
+            post(internal_auth::external_saml_acs),
+        )
         // 認証器の統合管理（一覧・状態変更・リカバリーコード・email OTP。AP9）。
         .route(
             "/internal/account/authenticators",

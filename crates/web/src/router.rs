@@ -76,6 +76,11 @@ pub fn build(state: WebState) -> Router {
             "/external/{provider}/callback",
             get(external_login::callback),
         )
+        // SAML の ACS。外部 IdP がブラウザに POST させてくるので、GET は受けない。
+        .route(
+            "/external/{provider}/saml/acs",
+            post(external_login::saml_acs),
+        )
         // MFA 入力画面から「メールでコードを送る」（AP9）。
         .route("/mfa/totp/email-code", post(mfa_totp::send_email_code))
         // SMS OTP の送信要求（AP13）。email OTP と同じ位置づけ。

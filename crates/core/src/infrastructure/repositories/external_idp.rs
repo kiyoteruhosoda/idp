@@ -2,7 +2,8 @@
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::external_idp::{
-    ExternalIdentity, ExternalIdentityProvider, ExternalLoginRequest,
+    ExternalIdentity, ExternalIdentityProvider, ExternalIdpConfig, ExternalIdpProtocol,
+    ExternalLoginRequest, OidcProviderConfig, SamlProviderConfig,
 };
 use crate::domain::repositories::{
     ExternalIdentityProviderRepository, ExternalIdentityRepository, ExternalLoginRequestRepository,
@@ -40,28 +41,79 @@ impl SqlxExternalIdentityProviderRepository {
     }
 }
 
-const PROVIDER_COLUMNS: &str = "id, tenant_id, provider_code, display_name, issuer, \
+const PROVIDER_COLUMNS: &str = "id, tenant_id, provider_code, display_name, protocol, issuer, \
      authorization_endpoint, token_endpoint, jwks_uri, client_id, client_secret_encrypted, \
-     scopes, enabled, allow_auto_link, created_at, updated_at";
+     scopes, saml_sso_url, saml_certificates, saml_name_id_format, enabled, allow_auto_link, \
+     created_at, updated_at";
+
+/// プロトコル固有の列を enum へ組み立てる（ADR-0027）。
+///
+/// 使わない側の列は NULL なので、**どの組み合わせが妥当か**を知っているのはここだけである。
+/// `protocol = 'saml'` なのに SSO URL が NULL という行は読み出しで失敗させる——黙って既定へ
+/// 落とすと、設定の誤りがログイン時まで見えない。
+fn map_config(row: &MySqlRow) -> Result<ExternalIdpConfig> {
+    let protocol: String = row.try_get("protocol").map_err(repo_err)?;
+    match ExternalIdpProtocol::parse(&protocol)? {
+        ExternalIdpProtocol::Oidc => {
+            // MariaDB の JSON カラムは sqlx では BLOB として返るため、バイト列で受けて parse する。
+            let scopes: Vec<u8> = row.try_get("scopes").map_err(repo_err)?;
+            Ok(ExternalIdpConfig::Oidc(OidcProviderConfig {
+                authorization_endpoint: required(row, "authorization_endpoint")?,
+                token_endpoint: required(row, "token_endpoint")?,
+                jwks_uri: required(row, "jwks_uri")?,
+                client_id: required(row, "client_id")?,
+                client_secret_encrypted: row
+                    .try_get("client_secret_encrypted")
+                    .map_err(repo_err)?,
+                scopes: serde_json::from_slice(&scopes).map_err(|e| {
+                    DomainError::Repository(format!("invalid JSON in `scopes`: {e}"))
+                })?,
+            }))
+        }
+        ExternalIdpProtocol::Saml => {
+            let certificates: Option<Vec<u8>> =
+                row.try_get("saml_certificates").map_err(repo_err)?;
+            let certificates: Vec<String> = match certificates {
+                Some(raw) => serde_json::from_slice(&raw).map_err(|e| {
+                    DomainError::Repository(format!("invalid JSON in `saml_certificates`: {e}"))
+                })?,
+                None => Vec::new(),
+            };
+            Ok(ExternalIdpConfig::Saml(SamlProviderConfig {
+                sso_url: required(row, "saml_sso_url")?,
+                certificates,
+                name_id_format: row
+                    .try_get::<Option<String>, _>("saml_name_id_format")
+                    .map_err(repo_err)?
+                    .unwrap_or_else(|| {
+                        crate::domain::saml_external_idp::NAME_ID_FORMAT_UNSPECIFIED.to_string()
+                    }),
+            }))
+        }
+    }
+}
+
+/// そのプロトコルで必須の列。NULL なら行が壊れている（設定の取り違え）ので読み出しで落とす。
+fn required(row: &MySqlRow, column: &str) -> Result<String> {
+    row.try_get::<Option<String>, _>(column)
+        .map_err(repo_err)?
+        .ok_or_else(|| {
+            DomainError::Repository(format!(
+                "external identity provider row is missing `{column}` for its protocol"
+            ))
+        })
+}
 
 fn map_provider(row: &MySqlRow) -> Result<ExternalIdentityProvider> {
     let id: String = row.try_get("id").map_err(repo_err)?;
     let tenant_id: String = row.try_get("tenant_id").map_err(repo_err)?;
-    // MariaDB の JSON カラムは sqlx では BLOB として返るため、バイト列で受けて parse する。
-    let scopes: Vec<u8> = row.try_get("scopes").map_err(repo_err)?;
     Ok(ExternalIdentityProvider {
         id: parse_uuid(&id, "id")?,
         tenant_id: parse_uuid(&tenant_id, "tenant_id")?.into(),
         provider_code: row.try_get("provider_code").map_err(repo_err)?,
         display_name: row.try_get("display_name").map_err(repo_err)?,
         issuer: row.try_get("issuer").map_err(repo_err)?,
-        authorization_endpoint: row.try_get("authorization_endpoint").map_err(repo_err)?,
-        token_endpoint: row.try_get("token_endpoint").map_err(repo_err)?,
-        jwks_uri: row.try_get("jwks_uri").map_err(repo_err)?,
-        client_id: row.try_get("client_id").map_err(repo_err)?,
-        client_secret_encrypted: row.try_get("client_secret_encrypted").map_err(repo_err)?,
-        scopes: serde_json::from_slice(&scopes)
-            .map_err(|e| DomainError::Repository(format!("invalid JSON in `scopes`: {e}")))?,
+        config: map_config(row)?,
         enabled: row.try_get::<i8, _>("enabled").map_err(repo_err)? != 0,
         allow_auto_link: row.try_get::<i8, _>("allow_auto_link").map_err(repo_err)? != 0,
         created_at: to_utc(row.try_get("created_at").map_err(repo_err)?),
@@ -69,32 +121,62 @@ fn map_provider(row: &MySqlRow) -> Result<ExternalIdentityProvider> {
     })
 }
 
+/// プロトコル固有の 8 つのプレースホルダ（OIDC 4 + シークレット + scopes + SAML 3）を埋める。
+/// INSERT と UPDATE で同じ順に並べてあるので、1 か所で書ける。
+type ProviderQuery<'q> = sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments>;
+
+fn bind_config<'q>(
+    query: ProviderQuery<'q>,
+    provider: &'q ExternalIdentityProvider,
+) -> Result<ProviderQuery<'q>> {
+    Ok(match &provider.config {
+        ExternalIdpConfig::Oidc(oidc) => query
+            .bind(Some(oidc.authorization_endpoint.as_str()))
+            .bind(Some(oidc.token_endpoint.as_str()))
+            .bind(Some(oidc.jwks_uri.as_str()))
+            .bind(Some(oidc.client_id.as_str()))
+            .bind(oidc.client_secret_encrypted.as_deref())
+            .bind(Some(serde_json::to_string(&oidc.scopes).map_err(repo_err)?))
+            .bind(None::<String>)
+            .bind(None::<String>)
+            .bind(None::<String>),
+        ExternalIdpConfig::Saml(saml) => query
+            .bind(None::<String>)
+            .bind(None::<String>)
+            .bind(None::<String>)
+            .bind(None::<String>)
+            .bind(None::<String>)
+            // `scopes` は NOT NULL のまま（OIDC 用の既定値を持つ列）。SAML では空配列を置く。
+            .bind(Some("[]".to_string()))
+            .bind(Some(saml.sso_url.as_str()))
+            .bind(Some(
+                serde_json::to_string(&saml.certificates).map_err(repo_err)?,
+            ))
+            .bind(Some(saml.name_id_format.as_str())),
+    })
+}
+
 #[async_trait]
 impl ExternalIdentityProviderRepository for SqlxExternalIdentityProviderRepository {
     async fn create(&self, provider: &ExternalIdentityProvider) -> Result<()> {
-        sqlx::query(
+        let query = sqlx::query(
             "INSERT INTO external_identity_providers \
-             (id, tenant_id, provider_code, display_name, issuer, authorization_endpoint, \
-              token_endpoint, jwks_uri, client_id, client_secret_encrypted, scopes, enabled, \
-              allow_auto_link) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             (id, tenant_id, provider_code, display_name, protocol, issuer, \
+              authorization_endpoint, token_endpoint, jwks_uri, client_id, \
+              client_secret_encrypted, scopes, saml_sso_url, saml_certificates, \
+              saml_name_id_format, enabled, allow_auto_link) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(provider.id.to_string())
         .bind(provider.tenant_id.to_string())
         .bind(&provider.provider_code)
         .bind(&provider.display_name)
-        .bind(&provider.issuer)
-        .bind(&provider.authorization_endpoint)
-        .bind(&provider.token_endpoint)
-        .bind(&provider.jwks_uri)
-        .bind(&provider.client_id)
-        .bind(&provider.client_secret_encrypted)
-        .bind(serde_json::to_string(&provider.scopes).map_err(repo_err)?)
-        .bind(provider.enabled)
-        .bind(provider.allow_auto_link)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| {
+        .bind(provider.protocol().as_str())
+        .bind(&provider.issuer);
+        let query = bind_config(query, provider)?
+            .bind(provider.enabled)
+            .bind(provider.allow_auto_link);
+        query.execute(&self.pool).await.map_err(|e| {
             if e.as_database_error()
                 .is_some_and(|d| d.is_unique_violation())
             {
@@ -172,37 +254,34 @@ impl ExternalIdentityProviderRepository for SqlxExternalIdentityProviderReposito
     }
 
     async fn update(&self, provider: &ExternalIdentityProvider) -> Result<bool> {
-        let result = sqlx::query(
+        let query = sqlx::query(
             "UPDATE external_identity_providers SET \
-             provider_code = ?, display_name = ?, issuer = ?, authorization_endpoint = ?, \
-             token_endpoint = ?, jwks_uri = ?, client_id = ?, client_secret_encrypted = ?, \
-             scopes = ?, enabled = ?, allow_auto_link = ? \
+             provider_code = ?, display_name = ?, protocol = ?, issuer = ?, \
+             authorization_endpoint = ?, token_endpoint = ?, jwks_uri = ?, client_id = ?, \
+             client_secret_encrypted = ?, scopes = ?, saml_sso_url = ?, saml_certificates = ?, \
+             saml_name_id_format = ?, enabled = ?, allow_auto_link = ? \
              WHERE id = ? AND tenant_id = ?",
         )
         .bind(&provider.provider_code)
         .bind(&provider.display_name)
-        .bind(&provider.issuer)
-        .bind(&provider.authorization_endpoint)
-        .bind(&provider.token_endpoint)
-        .bind(&provider.jwks_uri)
-        .bind(&provider.client_id)
-        .bind(&provider.client_secret_encrypted)
-        .bind(serde_json::to_string(&provider.scopes).map_err(repo_err)?)
-        .bind(provider.enabled)
-        .bind(provider.allow_auto_link)
-        .bind(provider.id.to_string())
-        .bind(provider.tenant_id.to_string())
-        .execute(&self.pool)
-        .await
-        .map_err(|e| {
-            if e.as_database_error()
-                .is_some_and(|d| d.is_unique_violation())
-            {
-                DomainError::Conflict("provider code already exists".to_string())
-            } else {
-                repo_err(e)
-            }
-        })?;
+        .bind(provider.protocol().as_str())
+        .bind(&provider.issuer);
+        let result = bind_config(query, provider)?
+            .bind(provider.enabled)
+            .bind(provider.allow_auto_link)
+            .bind(provider.id.to_string())
+            .bind(provider.tenant_id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| {
+                if e.as_database_error()
+                    .is_some_and(|d| d.is_unique_violation())
+                {
+                    DomainError::Conflict("provider code already exists".to_string())
+                } else {
+                    repo_err(e)
+                }
+            })?;
         Ok(result.rows_affected() == 1)
     }
 

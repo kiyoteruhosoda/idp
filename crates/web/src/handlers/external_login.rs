@@ -133,6 +133,65 @@ pub async fn callback(
         }
     };
 
+    render_outcome(&state, &tenant, locale, outcome)
+}
+
+/// 外部 SAML IdP がブラウザ経由で POST してくるアサーションを受ける（ACS。AP12）。
+///
+/// 値の検証は一切しない——`SAMLResponse` の署名検証は api 側にあり、web は運ぶだけである
+/// （web は sqlx にも鍵にも触れない。ADR-0007）。
+pub async fn saml_acs(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    axum::extract::Form(form): axum::extract::Form<SamlAcsForm>,
+) -> Response {
+    let locale = locale(&headers);
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
+    let request = idp_contracts::auth::InternalExternalSamlAcsRequest {
+        tenant_id: Some(tenant.0.clone()),
+        saml_response: form.saml_response,
+        relay_state: form.relay_state.unwrap_or_default(),
+        ip_address: ctx.ip_address,
+        user_agent: ctx.user_agent,
+    };
+    let outcome = match state
+        .api
+        .external_saml_acs(&ctx.correlation_id, &request)
+        .await
+    {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::error!(error = %e, "external saml acs call to api failed");
+            return StatusCode::BAD_GATEWAY.into_response();
+        }
+    };
+    render_outcome(&state, &tenant, locale, outcome)
+}
+
+/// ACS が受け取るフォーム（HTTP-POST binding）。`RelayState` は仕様上は任意だが、本 IdP は
+/// 開始時に必ず載せる（無ければ進行状態を引けないので、その場で失敗する）。
+#[derive(Debug, serde::Deserialize)]
+pub struct SamlAcsForm {
+    #[serde(rename = "SAMLResponse")]
+    pub saml_response: String,
+    #[serde(rename = "RelayState")]
+    pub relay_state: Option<String>,
+}
+
+/// 外部 IdP からの戻り（OIDC のコールバック / SAML の ACS）を画面・リダイレクトへ落とす。
+///
+/// **プロトコルで分けない。** 「誰が認証されたか」を確かめる方法は違っても、そこから先
+/// （Cookie の発行・同意画面への誘導・失敗時の見せ方）は同じであるべきで、分けると片方だけ
+/// 直った状態が生まれる。
+fn render_outcome(
+    state: &WebState,
+    tenant: &WebTenant,
+    locale: Locale,
+    outcome: InternalExternalCallbackResponse,
+) -> Response {
     let messages = Messages::new(locale);
     match outcome {
         InternalExternalCallbackResponse::Success {

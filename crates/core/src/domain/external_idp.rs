@@ -19,16 +19,38 @@ use uuid::Uuid;
 /// 外部 IdP へ既定で要求する scope。
 pub const DEFAULT_SCOPES: [&str; 3] = ["openid", "profile", "email"];
 
-/// テナントに設定された外部 IdP 1 件。
+/// 外部 IdP のプロトコル（ADR-0027）。許可値の単一の出所。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExternalIdpProtocol {
+    #[default]
+    Oidc,
+    Saml,
+}
+
+impl ExternalIdpProtocol {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Oidc => "oidc",
+            Self::Saml => "saml",
+        }
+    }
+
+    /// 保存値・入力値を解釈する。未知の値は**既定へ丸めずエラー**にする。丸めると、SAML の
+    /// つもりで登録した設定が OIDC として扱われ、検証の要件ごと変わってしまう。
+    pub fn parse(raw: &str) -> Result<Self, DomainError> {
+        match raw.trim() {
+            "oidc" => Ok(Self::Oidc),
+            "saml" => Ok(Self::Saml),
+            other => Err(DomainError::InvalidValue(format!(
+                "unsupported external IdP protocol: {other}"
+            ))),
+        }
+    }
+}
+
+/// OIDC の外部 IdP 固有設定。
 #[derive(Debug, Clone)]
-pub struct ExternalIdentityProvider {
-    pub id: Uuid,
-    pub tenant_id: TenantId,
-    /// テナント内一意の識別コード（URL パスに載る）。
-    pub provider_code: String,
-    pub display_name: String,
-    /// 外部 IdP の issuer。受け取る ID Token の `iss` と完全一致すること。
-    pub issuer: String,
+pub struct OidcProviderConfig {
     pub authorization_endpoint: String,
     pub token_endpoint: String,
     pub jwks_uri: String,
@@ -36,6 +58,82 @@ pub struct ExternalIdentityProvider {
     /// クライアントシークレット（暗号文）。public クライアントとして登録した場合は `None`。
     pub client_secret_encrypted: Option<String>,
     pub scopes: Vec<String>,
+}
+
+impl OidcProviderConfig {
+    /// 認可要求に載せる scope（未設定なら既定）。`openid` は必ず含める（ID Token が要るため）。
+    pub fn effective_scopes(&self) -> Vec<String> {
+        let mut scopes: Vec<String> = if self.scopes.is_empty() {
+            DEFAULT_SCOPES.iter().map(|s| s.to_string()).collect()
+        } else {
+            self.scopes.clone()
+        };
+        if !scopes.iter().any(|s| s == "openid") {
+            scopes.insert(0, "openid".to_string());
+        }
+        scopes
+    }
+}
+
+/// SAML の外部 IdP 固有設定（SP 側。ADR-0027）。
+#[derive(Debug, Clone)]
+pub struct SamlProviderConfig {
+    /// IdP の `SingleSignOnService` URL（HTTP-Redirect binding で AuthnRequest を送る先）。
+    pub sso_url: String,
+    /// 署名検証に使う X.509 証明書（base64 DER）。**複数持てる**——IdP の証明書更新期間は
+    /// 新旧 2 枚が同時に有効で、1 枚しか持てないと更新のたびにログインが止まる。
+    pub certificates: Vec<String>,
+    /// `AuthnRequest` で要求する `NameIDFormat`。
+    pub name_id_format: String,
+}
+
+/// プロトコル固有の設定。**どの組み合わせが妥当か**をここで表す（DB は使わない列を NULL に
+/// するだけなので、妥当性の単一の出所はこの enum になる）。
+#[derive(Debug, Clone)]
+pub enum ExternalIdpConfig {
+    Oidc(OidcProviderConfig),
+    Saml(SamlProviderConfig),
+}
+
+impl ExternalIdpConfig {
+    pub fn protocol(&self) -> ExternalIdpProtocol {
+        match self {
+            Self::Oidc(_) => ExternalIdpProtocol::Oidc,
+            Self::Saml(_) => ExternalIdpProtocol::Saml,
+        }
+    }
+
+    pub fn as_oidc(&self) -> Option<&OidcProviderConfig> {
+        match self {
+            Self::Oidc(c) => Some(c),
+            Self::Saml(_) => None,
+        }
+    }
+
+    pub fn as_saml(&self) -> Option<&SamlProviderConfig> {
+        match self {
+            Self::Saml(c) => Some(c),
+            Self::Oidc(_) => None,
+        }
+    }
+}
+
+/// テナントに設定された外部 IdP 1 件。
+///
+/// `issuer` は**両プロトコル共通の信頼の起点**である（ADR-0027）。OIDC では ID Token の `iss`、
+/// SAML では Response / Assertion の `<Issuer>`（IdP の entityID）で、どちらも「その主張を
+/// 出した発行者の識別子」なので、`user_external_identities.external_issuer` は同じ形で使える。
+#[derive(Debug, Clone)]
+pub struct ExternalIdentityProvider {
+    pub id: Uuid,
+    pub tenant_id: TenantId,
+    /// テナント内一意の識別コード（URL パスに載る）。
+    pub provider_code: String,
+    pub display_name: String,
+    /// 外部 IdP の issuer（OIDC: ID Token の `iss` / SAML: IdP の entityID）。完全一致で照合する。
+    pub issuer: String,
+    /// プロトコル固有の設定。
+    pub config: ExternalIdpConfig,
     pub enabled: bool,
     /// 検証済みメール一致で既存利用者へ自動連携するか。
     pub allow_auto_link: bool,
@@ -83,17 +181,8 @@ impl ExternalIdentityProvider {
         Ok(())
     }
 
-    /// 認可要求に載せる scope（未設定なら既定）。`openid` は必ず含める（ID Token が要るため）。
-    pub fn effective_scopes(&self) -> Vec<String> {
-        let mut scopes: Vec<String> = if self.scopes.is_empty() {
-            DEFAULT_SCOPES.iter().map(|s| s.to_string()).collect()
-        } else {
-            self.scopes.clone()
-        };
-        if !scopes.iter().any(|s| s == "openid") {
-            scopes.insert(0, "openid".to_string());
-        }
-        scopes
+    pub fn protocol(&self) -> ExternalIdpProtocol {
+        self.config.protocol()
     }
 }
 
@@ -115,11 +204,14 @@ pub struct ExternalLoginRequest {
     pub id: Uuid,
     pub tenant_id: TenantId,
     pub provider_id: Uuid,
-    /// `state` の SHA-256（生値は外部 IdP から戻る値としてのみ扱う）。
+    /// `state`（SAML では `RelayState`）の SHA-256。生値は外部 IdP から戻る値としてのみ扱う。
     pub state_hash: String,
+    /// こちらが作り、相手が返してくる値。**リプレイ検出の要**である。
+    /// OIDC では ID Token の `nonce`、SAML では `AuthnRequest` の `ID`（応答の `InResponseTo` と
+    /// 照合する）。役割が同じなので 1 つの列で持つ。
     pub nonce: String,
-    /// PKCE の `code_verifier`（暗号文）。
-    pub code_verifier_encrypted: String,
+    /// PKCE の `code_verifier`（暗号文）。**SAML では `None`**（PKCE に当たるものが無い）。
+    pub code_verifier_encrypted: Option<String>,
     /// 呼び出し元の OIDC auth_session の `id_hash`（ポータル経由なら `None`）。
     /// auth_session_id は bearer credential なので、写しもハッシュで持つ（SEC6）。
     pub auth_session_id_hash: Option<String>,
@@ -149,26 +241,15 @@ pub struct ExternalClaims {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
 
-    fn provider(scopes: Vec<String>) -> ExternalIdentityProvider {
-        let now = Utc.with_ymd_and_hms(2026, 8, 1, 0, 0, 0).unwrap();
-        ExternalIdentityProvider {
-            id: Uuid::from_u128(1),
-            tenant_id: TenantId::from(Uuid::from_u128(2)),
-            provider_code: "corp".to_string(),
-            display_name: "Corp SSO".to_string(),
-            issuer: "https://idp.corp.example.com".to_string(),
+    fn provider(scopes: Vec<String>) -> OidcProviderConfig {
+        OidcProviderConfig {
             authorization_endpoint: "https://idp.corp.example.com/authorize".to_string(),
             token_endpoint: "https://idp.corp.example.com/token".to_string(),
             jwks_uri: "https://idp.corp.example.com/jwks".to_string(),
             client_id: "client".to_string(),
             client_secret_encrypted: None,
             scopes,
-            enabled: true,
-            allow_auto_link: false,
-            created_at: now,
-            updated_at: now,
         }
     }
 
@@ -218,5 +299,26 @@ mod tests {
             provider(vec!["openid".to_string(), "groups".to_string()]).effective_scopes(),
             vec!["openid", "groups"]
         );
+    }
+}
+
+#[cfg(test)]
+mod protocol_tests {
+    use super::*;
+
+    /// 未知のプロトコルは既定へ丸めずエラーにする。丸めると、SAML のつもりで登録した設定が
+    /// OIDC として扱われ、検証の要件ごと変わってしまう。
+    #[test]
+    fn unknown_protocols_are_rejected_not_defaulted() {
+        assert_eq!(
+            ExternalIdpProtocol::parse("oidc").unwrap(),
+            ExternalIdpProtocol::Oidc
+        );
+        assert_eq!(
+            ExternalIdpProtocol::parse("saml").unwrap(),
+            ExternalIdpProtocol::Saml
+        );
+        assert!(ExternalIdpProtocol::parse("ws-fed").is_err());
+        assert!(ExternalIdpProtocol::parse("").is_err());
     }
 }

@@ -1634,6 +1634,24 @@ pub struct InternalExternalCallbackRequest {
     pub user_agent: Option<String>,
 }
 
+/// 外部 SAML IdP のアサーションを受け取る API のリクエスト（AP12。ADR-0027）。
+///
+/// ブラウザが HTTP-POST binding で web の ACS へ運んできた値をそのまま api へ渡す。
+/// **どちらも未検証**である（署名を確かめるのは api 側）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalExternalSamlAcsRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    /// `SAMLResponse`（base64(XML)）。
+    pub saml_response: String,
+    /// `RelayState`（開始時に発行した値。進行状態を引く鍵）。
+    pub relay_state: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
 /// 外部 IdP からのコールバック API のレスポンス。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]

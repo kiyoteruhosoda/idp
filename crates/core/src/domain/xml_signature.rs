@@ -236,13 +236,11 @@ fn parse_signature(xml: &str, element_id: &str) -> Result<SignatureParts> {
                 state.on_end()?;
             }
             Event::End(_) => state.on_end()?,
-            Event::Text(e) => {
-                if state.capture.is_some() {
-                    let text = e
-                        .unescape()
-                        .map_err(|err| DomainError::InvalidValue(format!("bad text: {err}")))?;
-                    state.captured.push_str(&text);
-                }
+            Event::Text(e) if state.capture.is_some() => {
+                let text = e
+                    .unescape()
+                    .map_err(|err| DomainError::InvalidValue(format!("bad text: {err}")))?;
+                state.captured.push_str(&text);
             }
             _ => {}
         }
