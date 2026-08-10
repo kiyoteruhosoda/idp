@@ -182,7 +182,8 @@ impl UserRepository for SqlxUserRepository {
                  u.email AS email, u.email_verified AS email_verified, \
                  u.preferred_username AS preferred_username, u.name AS name, \
                  u.language AS language, u.password_hash AS password_hash, \
-                 u.must_change_password AS must_change_password, u.status AS status, \
+                 u.must_change_password AS must_change_password, \
+                 u.password_changed_at AS password_changed_at, u.status AS status, \
                  u.failed_login_count AS failed_login_count, u.locked_until AS locked_until, \
                  u.created_at AS created_at, u.updated_at AS updated_at \
                  FROM user_login_identifiers i \
@@ -278,32 +279,45 @@ impl UserRepository for SqlxUserRepository {
         })
     }
 
-    async fn update_password(&self, id: Uuid, password_hash: &str) -> Result<()> {
+    async fn update_password(
+        &self,
+        id: Uuid,
+        expected_current_hash: &str,
+        password_hash: &str,
+    ) -> Result<bool> {
+        // 現行ハッシュを条件に含めた compare-and-swap（トレイト定義の理由参照）。
         // 設定時刻は DB の時計で入れる（`created_at` / `updated_at` と同じ扱い。AP7 の有効期限は
         // この列を起点に測る）。
-        sqlx::query(
+        let result = sqlx::query(
             "UPDATE users SET password_hash = ?, must_change_password = 0, \
-             password_changed_at = UTC_TIMESTAMP(6) WHERE id = ?",
+             password_changed_at = UTC_TIMESTAMP(6) WHERE id = ? AND password_hash = ?",
         )
         .bind(password_hash)
         .bind(id.to_string())
+        .bind(expected_current_hash)
         .execute(&self.pool)
         .await
         .map_err(repo_err)?;
-        Ok(())
+        Ok(result.rows_affected() == 1)
     }
 
-    async fn reset_password_forced(&self, id: Uuid, password_hash: &str) -> Result<()> {
-        sqlx::query(
+    async fn reset_password_forced(
+        &self,
+        id: Uuid,
+        expected_current_hash: &str,
+        password_hash: &str,
+    ) -> Result<bool> {
+        let result = sqlx::query(
             "UPDATE users SET password_hash = ?, must_change_password = 1, \
-             password_changed_at = UTC_TIMESTAMP(6) WHERE id = ?",
+             password_changed_at = UTC_TIMESTAMP(6) WHERE id = ? AND password_hash = ?",
         )
         .bind(password_hash)
         .bind(id.to_string())
+        .bind(expected_current_hash)
         .execute(&self.pool)
         .await
         .map_err(repo_err)?;
-        Ok(())
+        Ok(result.rows_affected() == 1)
     }
 
     async fn update_status(&self, id: Uuid, status: UserStatus) -> Result<()> {

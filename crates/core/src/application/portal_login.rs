@@ -547,8 +547,20 @@ impl PortalLoginService {
                 Ok(h) => h,
                 Err(e) => return PortalChangePasswordOutcome::Internal(e.to_string()),
             };
-            if let Err(e) = self.users.update_password(user.id, &new_hash).await {
-                return PortalChangePasswordOutcome::Internal(e.to_string());
+            // 現行ハッシュを条件にした置き換え（AP7。`admin_login` と同じ扱い）。
+            match self
+                .users
+                .update_password(user.id, &user.password_hash, &new_hash)
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::warn!(
+                        "portal password change lost a concurrent update; asking to retry"
+                    );
+                    return PortalChangePasswordOutcome::InvalidCredentials;
+                }
+                Err(e) => return PortalChangePasswordOutcome::Internal(e.to_string()),
             }
             self.password_policy
                 .record_change(user.id, &user.password_hash)

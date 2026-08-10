@@ -245,8 +245,21 @@ impl ChangePasswordService {
             Ok(h) => h,
             Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
         };
-        if let Err(e) = self.users.update_password(user.id, &new_hash).await {
-            return ChangePasswordOutcome::Internal(e.to_string());
+        // 現行ハッシュを条件にした置き換え（AP7。`account_password` と同じ理由）。
+        match self
+            .users
+            .update_password(user.id, &user.password_hash, &new_hash)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::warn!(
+                    correlation_id = %ctx.correlation_id,
+                    "forced password change lost a concurrent update; asking to retry"
+                );
+                return ChangePasswordOutcome::InvalidCurrentPassword;
+            }
+            Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
         }
         self.password_policy
             .record_change(user.id, &user.password_hash)

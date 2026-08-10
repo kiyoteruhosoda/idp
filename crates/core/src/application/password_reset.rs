@@ -277,8 +277,19 @@ impl PasswordResetService {
             Ok(h) => h,
             Err(e) => return ResetPasswordOutcome::Internal(e.to_string()),
         };
-        if let Err(e) = self.users.update_password(user.id, &new_hash).await {
-            return ResetPasswordOutcome::Internal(e.to_string());
+        // 現行ハッシュを条件にした置き換え（AP7）。`false` は読んでから書くまでの間に別の要求が
+        // パスワードを変えたこと。トークンは消費済みなので、やり直すには再発行が要る。
+        match self
+            .users
+            .update_password(user.id, &user.password_hash, &new_hash)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::warn!("password reset lost a concurrent update; a new link is required");
+                return ResetPasswordOutcome::InvalidOrExpired;
+            }
+            Err(e) => return ResetPasswordOutcome::Internal(e.to_string()),
         }
         self.password_policy
             .record_change(user.id, &user.password_hash)
@@ -430,15 +441,32 @@ mod tests {
         ) -> DomainResult<()> {
             unreachable!()
         }
-        async fn update_password(&self, id: Uuid, password_hash: &str) -> DomainResult<()> {
+        async fn update_password(
+            &self,
+            id: Uuid,
+            expected: &str,
+            password_hash: &str,
+        ) -> DomainResult<bool> {
             let mut rows = self.rows.lock().unwrap();
-            if let Some(user) = rows.iter_mut().find(|u| u.id == id) {
-                user.password_hash = password_hash.to_string();
-                user.must_change_password = false;
+            // 本番実装と同じ compare-and-swap（現行ハッシュが一致するときだけ書き換える）。
+            match rows
+                .iter_mut()
+                .find(|u| u.id == id && u.password_hash == expected)
+            {
+                Some(user) => {
+                    user.password_hash = password_hash.to_string();
+                    user.must_change_password = false;
+                    Ok(true)
+                }
+                None => Ok(false),
             }
-            Ok(())
         }
-        async fn reset_password_forced(&self, _id: Uuid, _password_hash: &str) -> DomainResult<()> {
+        async fn reset_password_forced(
+            &self,
+            _id: Uuid,
+            _expected: &str,
+            _password_hash: &str,
+        ) -> DomainResult<bool> {
             unreachable!()
         }
         async fn update_status(&self, _id: Uuid, _status: UserStatus) -> DomainResult<()> {

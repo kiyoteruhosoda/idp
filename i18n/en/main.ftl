@@ -476,6 +476,7 @@ api-password-breached = This password has appeared in a known data breach. Choos
 api-password-reused = You cannot reuse a password you have used before. Choose a different one.
 api-field-required = "{ $value }" is required.
 api-user-identity-conflict = That email address or sign-in name is already used by another user in this tenant.
+api-user-password-changed-concurrently = This user's password was changed by someone else while the request was being processed. Nothing was applied; try again.
 # Login identifiers (AP8). Values themselves are never echoed back in errors.
 api-login-identifier-required = Enter a value for the sign-in identifier.
 api-login-identifier-too-long = The sign-in identifier must be at most { $value } characters.

@@ -852,10 +852,20 @@ mod tests {
             }
             Ok(())
         }
-        async fn update_password(&self, _id: Uuid, _h: &str) -> DomainResult<()> {
+        async fn update_password(
+            &self,
+            _id: Uuid,
+            _expected: &str,
+            _password_hash: &str,
+        ) -> DomainResult<bool> {
             unreachable!()
         }
-        async fn reset_password_forced(&self, _id: Uuid, _h: &str) -> DomainResult<()> {
+        async fn reset_password_forced(
+            &self,
+            _id: Uuid,
+            _expected: &str,
+            _password_hash: &str,
+        ) -> DomainResult<bool> {
             unreachable!()
         }
         async fn update_status(&self, _id: Uuid, _s: UserStatus) -> DomainResult<()> {

@@ -571,8 +571,21 @@ impl AdminLoginService {
                 Ok(h) => h,
                 Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
             };
-            if let Err(e) = self.users.update_password(user.id, &new_hash).await {
-                return AdminLoginOutcome::Internal(e.to_string());
+            // 現行ハッシュを条件にした置き換え（AP7）。失敗カウンタは増やさない
+            // （資格情報は正しく、負けたのは競合であって推測ではない）。
+            match self
+                .users
+                .update_password(user.id, &user.password_hash, &new_hash)
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::warn!(
+                        "admin password change lost a concurrent update; asking to retry"
+                    );
+                    return AdminLoginOutcome::InvalidCredentials;
+                }
+                Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
             }
             self.password_policy
                 .record_change(user.id, &user.password_hash)

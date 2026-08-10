@@ -200,10 +200,29 @@ pub trait UserRepository: Send + Sync {
         now: DateTime<Utc>,
     ) -> Result<LoginFailureRecord>;
     /// パスワードハッシュを更新し、`must_change_password` を解除する（パスワード変更、ADR-0009 §5）。
-    async fn update_password(&self, id: Uuid, password_hash: &str) -> Result<()>;
+    ///
+    /// **現行ハッシュが `expected_current_hash` のままである場合にだけ**書き換え、書き換えたら
+    /// `true` を返す。`false` は「読んでから書くまでの間に別の要求がパスワードを変えた」を意味する。
+    ///
+    /// 条件付きにするのは、履歴（AP7）が**実際に置き換えた**ハッシュでなければ意味を持たないため。
+    /// 無条件の UPDATE だと、同時に届いた 2 つの変更要求が同じ現行ハッシュを読み、後勝ちで
+    /// 上書きしたうえで**両方が同じ古いハッシュを履歴へ積む** —— 先に書かれたパスワードは現行にも
+    /// 履歴にも残らず、直後に再利用できてしまう。
+    async fn update_password(
+        &self,
+        id: Uuid,
+        expected_current_hash: &str,
+        password_hash: &str,
+    ) -> Result<bool>;
     /// パスワードハッシュを更新し、`must_change_password` を**設定**する（管理者による再発行。
-    /// 次回ログインで本人に変更させる。ADR-0009 §5）。
-    async fn reset_password_forced(&self, id: Uuid, password_hash: &str) -> Result<()>;
+    /// 次回ログインで本人に変更させる。ADR-0009 §5）。条件と戻り値は
+    /// [`Self::update_password`] と同じ。
+    async fn reset_password_forced(
+        &self,
+        id: Uuid,
+        expected_current_hash: &str,
+        password_hash: &str,
+    ) -> Result<bool>;
     /// 利用者の状態（ACTIVE / DISABLED / LOCKED）を更新する（管理者による有効化・無効化）。
     async fn update_status(&self, id: Uuid, status: UserStatus) -> Result<()>;
     /// 利用者を削除する（管理者による削除。関連行は DB の FK CASCADE / SET NULL で後始末される）。

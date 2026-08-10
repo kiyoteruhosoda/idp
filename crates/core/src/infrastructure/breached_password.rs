@@ -23,6 +23,13 @@ use crate::domain::password_policy::BreachedPasswordChecker;
 use async_trait::async_trait;
 use sha1::{Digest, Sha1};
 
+/// 照合サービスへ名乗る `User-Agent`。
+///
+/// **省略できない。** Pwned Passwords は `User-Agent` の無い要求を 403 で拒否し、reqwest は既定で
+/// このヘッダを付けない。拒否された応答は下の非成功分岐で「判定できなかった」として通されるため、
+/// 付け忘れると**有効にしたはずの漏えい確認が全件素通りになる**（しかも警告ログ以外に兆候が無い）。
+const USER_AGENT: &str = "idp-oidc-provider";
+
 pub struct RangeApiBreachedPasswordChecker {
     http: reqwest::Client,
     base_url: String,
@@ -33,6 +40,7 @@ impl RangeApiBreachedPasswordChecker {
     pub fn new(base_url: impl Into<String>, timeout: std::time::Duration) -> Result<Self> {
         let http = reqwest::Client::builder()
             .timeout(timeout)
+            .user_agent(USER_AGENT)
             .build()
             .map_err(|e| {
                 crate::domain::error::DomainError::InvalidValue(format!(

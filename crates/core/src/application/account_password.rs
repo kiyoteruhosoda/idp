@@ -108,8 +108,20 @@ impl AccountPasswordService {
             Ok(h) => h,
             Err(e) => return AccountPasswordOutcome::Internal(e.to_string()),
         };
-        if let Err(e) = self.users.update_password(user.id, &new_hash).await {
-            return AccountPasswordOutcome::Internal(e.to_string());
+        // 現行ハッシュを条件にした置き換え（AP7）。`false` は読んでから書くまでの間に別の要求が
+        // パスワードを変えたことを意味する。ここで書き込むと相手の変更を消したうえ、履歴には
+        // 既に退役したハッシュを積むことになるので、やり直させる。
+        match self
+            .users
+            .update_password(user.id, &user.password_hash, &new_hash)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::warn!("password change lost a concurrent update; asking to retry");
+                return AccountPasswordOutcome::InvalidCurrentPassword;
+            }
+            Err(e) => return AccountPasswordOutcome::Internal(e.to_string()),
         }
         self.password_policy
             .record_change(user.id, &user.password_hash)

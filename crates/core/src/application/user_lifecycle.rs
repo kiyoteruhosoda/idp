@@ -454,10 +454,18 @@ impl UserLifecycleService {
     ) -> Result<ResetUserPassword, UserLifecycleError> {
         let generated_password = crypto::random_token(GENERATED_PASSWORD_BYTES);
         let password_hash = self.hasher.hash(&generated_password).map_err(internal)?;
-        self.users
-            .reset_password_forced(user.id, &password_hash)
+        // 現行ハッシュを条件にした置き換え（AP7）。負けた場合に成功を返すと、管理者へ渡した
+        // 生成パスワードが実際には設定されていない状態になる（本人へ伝える値が嘘になる）。
+        let replaced = self
+            .users
+            .reset_password_forced(user.id, &user.password_hash, &password_hash)
             .await
             .map_err(internal)?;
+        if !replaced {
+            return Err(UserLifecycleError::Conflict(MessageKey::new(
+                "api-user-password-changed-concurrently",
+            )));
+        }
         self.password_policy
             .record_change(user.id, &user.password_hash)
             .await;
@@ -678,19 +686,32 @@ mod tests {
         ) -> DomainResult<()> {
             unreachable!()
         }
-        async fn update_password(&self, _id: Uuid, _password_hash: &str) -> DomainResult<()> {
+        async fn update_password(
+            &self,
+            _id: Uuid,
+            _expected: &str,
+            _password_hash: &str,
+        ) -> DomainResult<bool> {
             unreachable!()
         }
-        async fn reset_password_forced(&self, id: Uuid, password_hash: &str) -> DomainResult<()> {
+        async fn reset_password_forced(
+            &self,
+            id: Uuid,
+            expected: &str,
+            password_hash: &str,
+        ) -> DomainResult<bool> {
             let mut rows = self.rows.lock().unwrap();
-            let user = rows
+            // 本番実装と同じ compare-and-swap（現行ハッシュが一致するときだけ書き換える）。
+            let Some(user) = rows
                 .iter_mut()
-                .find(|u| u.id == id)
-                .ok_or_else(|| DomainError::Repository("not found".into()))?;
+                .find(|u| u.id == id && u.password_hash == expected)
+            else {
+                return Ok(false);
+            };
             user.password_hash = password_hash.to_string();
             user.must_change_password = true;
             self.forced_resets.lock().unwrap().push(id);
-            Ok(())
+            Ok(true)
         }
         async fn update_status(&self, id: Uuid, status: UserStatus) -> DomainResult<()> {
             let mut rows = self.rows.lock().unwrap();

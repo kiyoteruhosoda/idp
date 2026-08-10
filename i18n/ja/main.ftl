@@ -476,6 +476,7 @@ api-password-breached = このパスワードは既知の漏えいリストに�
 api-password-reused = 以前に使ったパスワードは再利用できません。別のものを設定してください。
 api-field-required = 「{ $value }」を入力してください。
 api-user-identity-conflict = そのメールアドレスまたはログイン識別子は、このテナントの別の利用者が既に使っています。
+api-user-password-changed-concurrently = 処理中に別の操作でこの利用者のパスワードが変更されました。今回の変更は適用していません。やり直してください。
 # ログイン識別子（AP8）。エラーには値そのものを含めない。
 api-login-identifier-required = ログイン識別子の値を入力してください。
 api-login-identifier-too-long = ログイン識別子は { $value } 文字以内で入力してください。
