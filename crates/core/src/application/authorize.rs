@@ -24,6 +24,7 @@ use crate::domain::repositories::{
     AuthSessionRepository, AuthenticationPolicyRepository, ClientConsentRepository,
     ClientRepository,
 };
+use crate::domain::response_mode::{AuthorizationResponse, ResponseMode};
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::{CodeChallengeMethod, Prompt, PromptSet, Scope};
 use chrono::Duration;
@@ -56,6 +57,10 @@ pub struct AuthorizeRequest {
     pub login_hint: Option<String>,
     /// `ui_locales` パラメータ（RP が要求する表示言語。空白区切りの BCP47 タグ。G12）。
     pub ui_locales: Option<String>,
+    /// `response_mode` パラメータ（`query`（既定）/ `form_post`。G12）。
+    /// 未知の値は既定へ丸めず `invalid_request` にする（理由は
+    /// [`crate::domain::response_mode::ResponseMode::parse`]）。
+    pub response_mode: Option<String>,
 }
 
 pub enum AuthorizeOutcome {
@@ -81,8 +86,12 @@ pub struct ResumeCommand {
 }
 
 pub enum ResumeOutcome {
-    /// SSO 復元・同意済みにより code 発行済み。`redirect_uri?code=...&state=...` へ 302。
-    Redirect { location: String },
+    /// SSO 復元・同意済みにより code 発行済み。`query` なら `location` へ 302、`form_post` なら
+    /// `location` へ hidden フィールドを POST する自動送信フォームを描く（G12）。
+    Redirect {
+        location: String,
+        form_post: Option<Vec<(String, String)>>,
+    },
     /// リクエスト続行不可（`prompt=none` で未ログイン・未同意など）。エラー付き RP URL へ 302。
     ErrorRedirect { location: String },
     /// SSO 有効だが同意が必要。web は `auth_session_id` を Cookie 化して `/consent` へ。
@@ -236,6 +245,10 @@ impl AuthorizeService {
             code_challenge,
             code_challenge_method: CodeChallengeMethod::S256,
             prompt: PromptSet::parse(req.prompt.as_deref().unwrap_or_default()),
+            // 検証済み（未知の値は上で弾いている）。未指定は既定の `query`。
+            response_mode: non_empty(req.response_mode.as_deref())
+                .and_then(|raw| ResponseMode::parse(raw).ok())
+                .unwrap_or_default(),
             max_age: req.max_age,
             acr_values: non_empty(req.acr_values.as_deref()).map(str::to_string),
             login_hint: non_empty(req.login_hint.as_deref()).map(str::to_string),
@@ -401,12 +414,10 @@ impl AuthorizeService {
                                                 "failed to delete auth session after SSO code issuance"
                                             );
                                         }
+                                        let dispatch = code_dispatch(&session, &code);
                                         ResumeOutcome::Redirect {
-                                            location: code_redirect(
-                                                &session.redirect_uri,
-                                                &code,
-                                                &session.state,
-                                            ),
+                                            location: dispatch.location,
+                                            form_post: dispatch.form_post,
                                         }
                                     }
                                     Err(e) => {
@@ -665,6 +676,15 @@ fn validate_request(
     if non_empty(req.nonce.as_deref()).is_none() {
         return Err((OAuthErrorCode::InvalidRequest, "nonce is required"));
     }
+    // `response_mode` は未指定なら `query`。指定があって解釈できない値は弾く（丸めない）。
+    if let Some(raw) = non_empty(req.response_mode.as_deref()) {
+        if ResponseMode::parse(raw).is_err() {
+            return Err((
+                OAuthErrorCode::InvalidRequest,
+                "response_mode must be `query` or `form_post`",
+            ));
+        }
+    }
     if req.code_challenge_method.as_deref() != Some(CodeChallengeMethod::S256.as_str()) {
         return Err((
             OAuthErrorCode::InvalidRequest,
@@ -717,7 +737,74 @@ fn append_query(redirect_uri: &str, pairs: &[(&str, &str)]) -> String {
     format!("{redirect_uri}{separator}{}", encoded.join("&"))
 }
 
+/// 認可応答を各ユースケースの outcome へ載せる形（G12）。
+///
+/// `location` は **`query` なら 302 先の完成 URL、`form_post` ならフォームの送信先**
+/// （＝パラメータの付かない `redirect_uri`）である。`form_post` が `Some` のとき、
+/// 呼び出し側は `location` へ hidden フィールドを POST する自動送信フォームを描く。
+///
+/// 2 つの形を 1 つの型にまとめず「URL ＋任意のフィールド」にしてあるのは、既存の経路
+/// （`query`）を触らずに済ませるため。`form_post` を見落とした経路は `location` で 302 し、
+/// RP は「コードの無い戻り」を受け取ってエラーになる——認可コードが URL に載って履歴・
+/// `Referer` に残るよりは、目に見えて失敗する方がよい。
+#[derive(Debug, Clone, Default)]
+pub struct AuthorizationDispatch {
+    pub location: String,
+    /// `form_post` のとき、POST する hidden フィールド（`code` / `state`、またはエラー）。
+    pub form_post: Option<Vec<(String, String)>>,
+}
+
+impl From<AuthorizationResponse> for AuthorizationDispatch {
+    fn from(response: AuthorizationResponse) -> Self {
+        Self {
+            location: response.location(),
+            form_post: response.is_form_post().then(|| response.parameters.clone()),
+        }
+    }
+}
+
+/// 認可成功の応答を outcome へ載せる形で返す（G12）。各ユースケースの完了点はこれを使う。
+pub fn code_dispatch(session: &AuthSession, code: &str) -> AuthorizationDispatch {
+    code_response(session, code).into()
+}
+
+/// 認可エラーの応答を outcome へ載せる形で返す（G12）。
+///
+/// エラーも**成功と同じ `response_mode`** で返す。RP は同じ受け口で待っており、成功だけ POST・
+/// 失敗だけ 302 では受け取れない（OAuth 2.0 Form Post Response Mode）。
+pub fn error_dispatch(
+    session: &AuthSession,
+    error: OAuthErrorCode,
+    description: &str,
+) -> AuthorizationDispatch {
+    AuthorizationResponse::error(
+        &session.redirect_uri,
+        error.as_str(),
+        description,
+        &session.state,
+        session.response_mode,
+    )
+    .into()
+}
+
+/// 認可成功の応答（送信先＋パラメータ）を組み立てる（G12）。
+///
+/// **URL 文字列ではなくこの形を返す**のが要点である。`response_mode=form_post` では
+/// パラメータをフォームの hidden フィールドへ載せる必要があり、完成した URL からは
+/// 「どこまでが RP のクエリでどこからが認可応答か」を復元できない（`redirect_uri` 自身が
+/// クエリを持ち得る）。呼び出し側は `query` のときだけ `location()` で URL へ畳む。
+pub fn code_response(session: &AuthSession, code: &str) -> AuthorizationResponse {
+    AuthorizationResponse::success(
+        &session.redirect_uri,
+        code,
+        &session.state,
+        session.response_mode,
+    )
+}
+
 /// `redirect_uri?code=...&state=...` を構築する（state は透過返却、設計仕様 §2.2）。
+///
+/// `response_mode` を見ないため、認可セッションが手元にある経路では [`code_response`] を使う。
 pub fn code_redirect(redirect_uri: &str, code: &str, state: &str) -> String {
     append_query(redirect_uri, &[("code", code), ("state", state)])
 }
@@ -778,6 +865,7 @@ mod tests {
             code_challenge: Some("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_string()),
             code_challenge_method: Some("S256".to_string()),
             prompt: None,
+            response_mode: None,
             max_age: None,
             acr_values: None,
             login_hint: None,
@@ -878,6 +966,7 @@ mod tests {
             code_challenge: "c".to_string(),
             code_challenge_method: CodeChallengeMethod::S256,
             prompt: PromptSet::default(),
+            response_mode: crate::domain::response_mode::ResponseMode::Query,
             max_age: None,
             handle_hash: Some("h".to_string()),
             handle_expires_at: Some(now + Duration::seconds(HANDLE_TTL_SECS)),

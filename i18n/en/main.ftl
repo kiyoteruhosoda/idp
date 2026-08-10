@@ -1062,3 +1062,8 @@ admin-settings-sms-auth-token-set = A value is set.
 admin-settings-sms-auth-token-unset = No value is set.
 admin-settings-sms-auth-token-hint = Leave empty to keep the current value. It is stored encrypted and never shown again.
 admin-settings-sms-sender = Sender ID (optional)
+
+# response_mode=form_post authorization response page (G12)
+authorization-post-title = Signing you in…
+authorization-post-message = Returning you to the application. This should only take a moment.
+authorization-post-submit = Continue

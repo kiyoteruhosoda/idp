@@ -324,6 +324,14 @@ pub struct LoginCompleteBody {
 pub struct LoginCompleteJsonResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub redirect_to: Option<String>,
+    /// `response_mode=form_post` のとき、`redirect_to` へ POST する hidden フィールド（G12）。
+    ///
+    /// パスキーのログインだけは応答が JSON（ブラウザの JS が受ける）なので、他の経路のように
+    /// サーバ側で自動送信フォームを描けない。フィールドをそのまま渡し、**JS にフォームを
+    /// 組み立てて送信させる**（`assets/passkey-login.js`）。`None` のときは従来どおり
+    /// `redirect_to` へ遷移する。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub form_post: Option<idp_contracts::auth::FormPostFields>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -359,6 +367,7 @@ pub async fn login_complete_api(
     match outcome {
         InternalPasskeyLoginCompleteResponse::Success {
             redirect_to,
+            form_post,
             sso_session_id,
             sso_absolute_ttl_secs,
         } => {
@@ -374,6 +383,7 @@ pub async fn login_complete_api(
                 set_cookies.into_headers(),
                 Json(LoginCompleteJsonResponse {
                     redirect_to: Some(redirect_to),
+                    form_post,
                     error: None,
                 }),
             )
@@ -400,6 +410,8 @@ pub async fn login_complete_api(
                 set_cookies.into_headers(),
                 Json(LoginCompleteJsonResponse {
                     redirect_to: Some(format!("{}/consent", tenant.prefix())),
+                    // 同意画面は web 自身の画面なので、認可応答の form_post は付かない。
+                    form_post: None,
                     error: None,
                 }),
             )
@@ -408,18 +420,21 @@ pub async fn login_complete_api(
         InternalPasskeyLoginCompleteResponse::ChallengeNotFound => {
             Json(LoginCompleteJsonResponse {
                 redirect_to: None,
+                form_post: None,
                 error: Some("challenge_not_found".to_string()),
             })
             .into_response()
         }
         InternalPasskeyLoginCompleteResponse::SessionExpired => Json(LoginCompleteJsonResponse {
             redirect_to: None,
+            form_post: None,
             error: Some("session_expired".to_string()),
         })
         .into_response(),
         InternalPasskeyLoginCompleteResponse::InvalidCredential => {
             Json(LoginCompleteJsonResponse {
                 redirect_to: None,
+                form_post: None,
                 error: Some("invalid_credential".to_string()),
             })
             .into_response()
@@ -427,6 +442,7 @@ pub async fn login_complete_api(
         // 認証ポリシーによる拒否。フロント側スクリプトはこのコードを翻訳キーへ写す。
         InternalPasskeyLoginCompleteResponse::PolicyDenied => Json(LoginCompleteJsonResponse {
             redirect_to: None,
+            form_post: None,
             error: Some("policy_denied".to_string()),
         })
         .into_response(),

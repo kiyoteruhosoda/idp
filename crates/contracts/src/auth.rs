@@ -38,12 +38,26 @@ pub struct InternalAuthorizeResumeRequest {
 /// 構成の掃除）設定中は再発行に旧 `Domain` 付き Cookie の削除が併送されるため、明示的な
 /// ログイン・ログアウトを経ない既存セッションもサイレント復元の時点で host-only へ移行し、
 /// 旧親ドメイン配下（stg 等）へ bearer credential が送信され続ける露出を閉じる。
+/// `response_mode=form_post` の認可応答で POST する hidden フィールド（G12）。
+///
+/// `None` は `query`（`redirect_to` へ 302 する）。`Some` のとき web は、`redirect_to` を
+/// action にした**自動送信フォーム**を描いてこのフィールドを POST する。
+///
+/// フィールドを URL へ畳んだ形で渡さないのは、`redirect_uri` 自身がクエリを持ち得るため
+/// 「どこまでが RP のクエリでどこからが認可応答か」を URL からは復元できないからである。
+/// この形のとき `redirect_to` には**認可応答のパラメータが載っていない**（見落とした経路が
+/// 302 しても、認可コードが履歴・`Referer` に残らない）。
+pub type FormPostFields = Vec<(String, String)>;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAuthorizeResumeResponse {
     /// SSO 有効かつ同意済み。code 発行済みの `redirect_to`（RP URL）へ 302 する。
     Redirect {
         redirect_to: String,
+        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        #[serde(default)]
+        form_post: Option<FormPostFields>,
         sso_absolute_ttl_secs: u64,
     },
     /// リクエスト続行不可（`prompt=none` で未ログイン・未同意など）。エラーコード付きの
@@ -227,6 +241,9 @@ pub enum InternalAuthenticateResponse {
     /// 認証成功かつ同意済み。`redirect_to`（code 付き RP URL）へ 302 し、`sso_session_id` を Cookie 化する。
     Success {
         redirect_to: String,
+        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        #[serde(default)]
+        form_post: Option<FormPostFields>,
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
         /// ユーザーの表示言語設定（`ja` / `en`。MT20）。None = 未設定。
@@ -354,6 +371,9 @@ pub struct InternalVerifyTotpRequest {
 pub enum InternalVerifyTotpResponse {
     Success {
         redirect_to: String,
+        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        #[serde(default)]
+        form_post: Option<FormPostFields>,
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
         /// ユーザーの表示言語設定（MT20）。web は `lang` Cookie をこの値で上書きする。
@@ -424,6 +444,9 @@ pub enum PasswordRejectionReason {
 pub enum InternalChangePasswordResponse {
     Success {
         redirect_to: String,
+        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        #[serde(default)]
+        form_post: Option<FormPostFields>,
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
     },
@@ -833,7 +856,12 @@ pub struct InternalConsentApproveRequest {
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalConsentApproveResponse {
     /// 同意付与・code 発行成功。`redirect_to`（code 付き RP URL）へ 302 する。
-    Success { redirect_to: String },
+    Success {
+        redirect_to: String,
+        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        #[serde(default)]
+        form_post: Option<FormPostFields>,
+    },
     /// AuthSession が無い・期限切れ。
     SessionExpired,
     /// api 内部エラー。
@@ -858,7 +886,13 @@ pub struct InternalConsentDenyRequest {
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalConsentDenyResponse {
     /// 拒否処理完了。`redirect_to`（`access_denied` エラー付き RP URL）へ 302 する。
-    Ok { redirect_to: String },
+    Ok {
+        redirect_to: String,
+        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        /// エラーも成功と同じ `response_mode` で返す（RP は同じ受け口で待っている）。
+        #[serde(default)]
+        form_post: Option<FormPostFields>,
+    },
     /// AuthSession が無い・期限切れ（RP へのリダイレクトができない）。
     SessionExpired,
     /// api 内部エラー。
@@ -1006,6 +1040,9 @@ pub struct InternalPasskeyLoginCompleteRequest {
 pub enum InternalPasskeyLoginCompleteResponse {
     Success {
         redirect_to: String,
+        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        #[serde(default)]
+        form_post: Option<FormPostFields>,
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
     },
@@ -1611,6 +1648,9 @@ pub enum InternalExternalCallbackResponse {
         sso_absolute_ttl_secs: u64,
         #[serde(default)]
         redirect_to: Option<String>,
+        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        #[serde(default)]
+        form_post: Option<FormPostFields>,
         #[serde(default)]
         user_language: Option<String>,
     },

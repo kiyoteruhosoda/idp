@@ -1062,3 +1062,8 @@ admin-settings-sms-auth-token-set = 設定済みです。
 admin-settings-sms-auth-token-unset = 未設定です。
 admin-settings-sms-auth-token-hint = 空欄のままなら変更しません。暗号化して保存し、以後は表示しません。
 admin-settings-sms-sender = 差出人表示（任意）
+
+# response_mode=form_post の認可応答ページ（G12）
+authorization-post-title = ログイン処理中…
+authorization-post-message = アプリケーションへ戻ります。すぐに切り替わります。
+authorization-post-submit = 続ける

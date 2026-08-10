@@ -140,10 +140,12 @@ pub async fn authenticate(
     Ok(Json(match outcome {
         LoginOutcome::Success {
             location,
+            form_post,
             sso_session_id,
             user_language,
         } => InternalAuthenticateResponse::Success {
             redirect_to: location,
+            form_post,
             sso_session_id,
             sso_absolute_ttl_secs: ttl,
             user_language,
@@ -252,9 +254,11 @@ pub async fn change_password(
     Ok(Json(match outcome {
         ChangePasswordOutcome::Success {
             location,
+            form_post,
             sso_session_id,
         } => InternalChangePasswordResponse::Success {
             redirect_to: location,
+            form_post,
             sso_session_id,
             sso_absolute_ttl_secs: ttl,
         },
@@ -1378,15 +1382,24 @@ pub async fn external_callback(
                 location,
                 sso_session_id,
                 user_language,
-            } => InternalExternalCallbackResponse::Success {
-                sso_session_id,
-                sso_absolute_ttl_secs: ttl,
-                redirect_to: match location {
-                    SuccessLocation::Redirect(url) => Some(url),
-                    SuccessLocation::Account => None,
-                },
-                user_language,
-            },
+            } => {
+                // 認可フローの続きなら送信先とフォームフィールドの両方を渡す（G12）。
+                // 認可フローの外（アカウント設定から始めた連携）は戻り先を web が決める。
+                let (redirect_to, form_post) = match location {
+                    SuccessLocation::Redirect {
+                        location,
+                        form_post,
+                    } => (Some(location), form_post),
+                    SuccessLocation::Account => (None, None),
+                };
+                InternalExternalCallbackResponse::Success {
+                    sso_session_id,
+                    sso_absolute_ttl_secs: ttl,
+                    redirect_to,
+                    form_post,
+                    user_language,
+                }
+            }
             CallbackOutcome::ConsentRequired {
                 auth_session_id,
                 sso_session_id,
@@ -1426,6 +1439,7 @@ mod tests {
     #[test]
     fn authenticate_response_is_tagged_by_result() {
         let success = InternalAuthenticateResponse::Success {
+            form_post: None,
             redirect_to: "https://rp.example.com/cb?code=abc&state=s".to_string(),
             sso_session_id: "sso-123".to_string(),
             sso_absolute_ttl_secs: 86_400,

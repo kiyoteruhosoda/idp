@@ -139,3 +139,9 @@ root テナントの UUID は固定値 `00000000-0000-7000-8000-000000000001`（
   `tenant_id` / `event_type` を落とし、`(tenant_id, occurred_at)` を土台に `event_type` / `result` /
   `client_id` / `user_id` を挟んだ複合索引を張る。`occurred_at` 単独と `correlation_id` は残す
   （前者は保持期間削除がテナント横断で引き、後者は追跡がテナント横断のため）。行データは変えない。
+
+- `0034_auth_session_response_mode`: `auth_sessions` に `response_mode` 列を追加する（G12）。
+  `response_mode=form_post` の要求は `/authorize` の時点で来るが、応答を組み立てるのは**別の
+  リクエスト**（ログイン完了・MFA 通過・同意承認・外部 IdP からの戻り）なので、その間の保存先が要る。
+  既定の `query` は保存しない（`NULL` = `query`）。`down` は列ごと落とす（進行中のフローは
+  `query` として応答が返るだけで、フロー自体は成立する）。

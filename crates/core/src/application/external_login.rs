@@ -23,7 +23,7 @@
 //! 「外部で認証した」ことは `deny` を免れる理由にならない。
 
 use crate::application::audit::{AuditService, RequestContext};
-use crate::application::authorize::code_redirect;
+use crate::application::authorize::code_dispatch;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session;
@@ -105,8 +105,12 @@ pub enum CallbackOutcome {
 
 /// 認証成功後の戻り先。
 pub enum SuccessLocation {
-    /// OIDC 認可フローの続き（code 付きの `redirect_uri`。絶対 URL）。
-    Redirect(String),
+    /// OIDC 認可フローの続き。`location` は `query` なら code 付きの `redirect_uri`、
+    /// `form_post` ならフォームの送信先（G12。`form_post` が `Some` のとき自動送信フォームを描く）。
+    Redirect {
+        location: String,
+        form_post: Option<Vec<(String, String)>>,
+    },
     /// 認可フローの外から来た。web が自分の画面（アカウント設定）へ戻す。
     Account,
 }
@@ -624,12 +628,12 @@ impl ExternalLoginService {
             tracing::warn!(error = %e, "failed to delete auth session after external login");
         }
 
+        let dispatch = code_dispatch(&session, &code);
         CallbackOutcome::Success {
-            location: SuccessLocation::Redirect(code_redirect(
-                &session.redirect_uri,
-                &code,
-                &session.state,
-            )),
+            location: SuccessLocation::Redirect {
+                location: dispatch.location,
+                form_post: dispatch.form_post,
+            },
             sso_session_id,
             user_language: user.language.clone(),
         }

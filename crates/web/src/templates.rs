@@ -949,6 +949,18 @@ pub struct LoginIdentifierTypeOption<'a> {
     pub label: String,
 }
 
+/// `response_mode=form_post` の認可応答ページ（G12）。認可コードを URL ではなくフォーム本文で
+/// RP へ渡す。描画の判断は [`crate::authorization_response`] に集約してある。
+#[derive(Template)]
+#[template(path = "authorization_post.html")]
+pub struct AuthorizationPost<'a> {
+    pub messages: &'a Messages,
+    /// フォームの送信先（`redirect_uri`。認可応答のパラメータは載っていない）。
+    pub action: &'a str,
+    /// hidden フィールド（`code` / `state`、またはエラー）。値はテンプレートが自動エスケープする。
+    pub fields: &'a [(String, String)],
+}
+
 /// クライアント一覧（`GET /{tenant_id}/admin/clients`）。
 #[derive(Template)]
 #[template(path = "console/clients_list.html")]

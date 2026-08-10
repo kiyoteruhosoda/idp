@@ -20,7 +20,7 @@ use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authenticator_management::{
     consume_single_use_code, is_blocked_in_registry,
 };
-use crate::application::authorize::code_redirect;
+use crate::application::authorize::code_dispatch;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::application::totp_registration::verify_totp_code;
 use crate::domain::audit::{AuditEventType, AuditResult};
@@ -49,6 +49,8 @@ pub enum MfaLoginOutcome {
     /// TOTP 検証成功かつ同意済み。code 付き redirect_to へ 302 する。
     Success {
         location: String,
+        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        form_post: Option<Vec<(String, String)>>,
         sso_session_id: String,
         /// ユーザーの表示言語設定（MT20）。web は `lang` Cookie をこの値で上書きする。
         user_language: Option<String>,
@@ -409,8 +411,10 @@ impl MfaLoginService {
             tracing::warn!(error = %e, "failed to delete auth session after MFA code issuance");
         }
 
+        let dispatch = code_dispatch(&session, &code);
         MfaLoginOutcome::Success {
-            location: code_redirect(&session.redirect_uri, &code, &session.state),
+            location: dispatch.location,
+            form_post: dispatch.form_post,
             sso_session_id,
             user_language: user.language.clone(),
         }
@@ -1053,6 +1057,7 @@ mod tests {
                     code_challenge: "challenge".to_string(),
                     code_challenge_method: CodeChallengeMethod::S256,
                     prompt: crate::domain::values::PromptSet::default(),
+                    response_mode: crate::domain::response_mode::ResponseMode::Query,
                     max_age: None,
                     handle_hash: None,
                     handle_expires_at: None,

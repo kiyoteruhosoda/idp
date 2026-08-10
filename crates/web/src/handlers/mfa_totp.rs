@@ -333,6 +333,7 @@ pub async fn verify(
     match outcome {
         InternalVerifyTotpResponse::Success {
             redirect_to,
+            form_post,
             sso_session_id,
             sso_absolute_ttl_secs,
             user_language,
@@ -356,7 +357,11 @@ pub async fn verify(
                     cookies::LANG_COOKIE_MAX_AGE_SECS,
                 );
             }
-            (set_cookies.into_headers(), found(&redirect_to)).into_response()
+            (
+                set_cookies.into_headers(),
+                crate::authorization_response::respond(&messages, &redirect_to, form_post),
+            )
+                .into_response()
         }
         InternalVerifyTotpResponse::ConsentRequired {
             auth_session_id: new_auth_session_id,

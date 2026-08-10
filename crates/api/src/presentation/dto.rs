@@ -53,6 +53,9 @@ pub struct AuthorizeParams {
     /// `ui_locales` パラメータ（OIDC Core §3.1.2.1）: RP が要求する表示言語（空白区切りの
     /// BCP47 タグ。G12）。
     pub ui_locales: Option<String>,
+    /// `response_mode` パラメータ（OAuth 2.0 Multiple Response Type Encoding Practices）:
+    /// `query`（既定）または `form_post`（G12）。未知の値は `invalid_request`。
+    pub response_mode: Option<String>,
 }
 
 /// `POST /login` のフォームパラメータ（設計仕様 §4.3）。

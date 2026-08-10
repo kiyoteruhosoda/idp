@@ -139,6 +139,7 @@ pub async fn callback(
             sso_session_id,
             sso_absolute_ttl_secs,
             redirect_to,
+            form_post,
             user_language,
         } => {
             let mut set_cookies = state
@@ -162,9 +163,15 @@ pub async fn callback(
             // OIDC 認可フローの途中から来ていれば、api が組み立てた code 付き `redirect_uri` へ
             // 送る（認可要求のパラメータは api 側の auth_session にしか無いため、web では
             // 組み立てられない）。そうでなければアカウント画面へ。
+            // 認可フローの外（アカウント設定から始めた連携）は web が戻り先を決める。
+            // その場合 `form_post` は付かない（認可応答ではないため）。
             let destination =
                 redirect_to.unwrap_or_else(|| format!("{}/settings", tenant.prefix()));
-            (set_cookies.into_headers(), found(&destination)).into_response()
+            (
+                set_cookies.into_headers(),
+                crate::authorization_response::respond(&messages, &destination, form_post),
+            )
+                .into_response()
         }
         InternalExternalCallbackResponse::ConsentRequired {
             auth_session_id,

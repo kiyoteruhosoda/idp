@@ -1,3 +1,26 @@
+## 2026-08-10（G12: `response_mode=form_post`）
+
+- **`response_mode=form_post` に対応した（G12。migration 0034）。** これまで認可応答は `query` 固定で、
+  認可コードが必ず URL に載っていた。URL はブラウザの履歴・`Referer`・プロキシやサーバのアクセス
+  ログに残るため、「秘密を URL に置かない」ことを要求する配置では使えなかった。
+  - **応答を最初から「送信先＋パラメータ」の形で組み立てるようにした。** 完成した URL からは
+    復元できない——`redirect_uri` 自身がクエリを持ち得る（`https://rp.example.com/cb?tenant=a`）ため、
+    どこまでが RP のクエリでどこからが認可応答かを URL だけでは決められない。
+  - **`form_post` のとき、`redirect_to` には認可応答のパラメータを載せない。** 見落とした経路が
+    その値で 302 しても、RP は「コードの無い戻り」を受け取ってエラーになる——認可コードが URL に
+    残るよりは、目に見えて失敗する方がよい。
+  - **判断を web の 1 か所（`authorization_response`）へ集めた。** 認可応答を返す経路はログイン・
+    MFA・パスキー・同意・強制パスワード変更・外部 IdP・resume と 7 つあり、どれか 1 つで見落とすと
+    そこだけコードが URL に載って返る（しかも成功して見える）。
+  - **未知の `response_mode` は既定へ丸めず `invalid_request` にする。** 丸めると、RP は `form_post` を
+    要求したつもりでコードが URL に載って返り、それに気づけない。
+  - エラー応答（同意拒否）も成功と同じ `response_mode` で返す（RP は同じ受け口で待っている）。
+  - 自動送信フォームのページは `no-store` / `no-referrer`（本文に認可コードが載るため）。JavaScript が
+    無い環境では利用者が押すボタンを出す。パスキーのログインだけは応答が JSON なので、フォームの
+    組み立てをブラウザ側の JS で行う。
+  - `auth_sessions.response_mode` 列を追加（要求時点と応答時点が別リクエストのため）。既定の `query` は
+    保存しない（`NULL` = `query`）。Discovery の `response_modes_supported` に `form_post` を加えた。
+
 ## 2026-08-10（AP13: SMS OTP の送信経路）
 
 - **SMS OTP を実際に使えるようにした（AP13）。** `AuthenticationMethod::SmsOtp` は AP4 / AP9 で

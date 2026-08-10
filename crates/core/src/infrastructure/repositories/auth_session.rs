@@ -23,7 +23,7 @@ impl SqlxAuthSessionRepository {
 }
 
 const SELECT_COLUMNS: &str = "id_hash, tenant_id, client_id, redirect_uri, scope, state, nonce, \
-     code_challenge, code_challenge_method, prompt, max_age, acr_values, login_hint, \
+     code_challenge, code_challenge_method, prompt, response_mode, max_age, acr_values, login_hint, \
      ui_locales, handle_hash, handle_expires_at, \
      authenticated_user_id, auth_time, password_verified_at, sso_sid, expires_at, created_at, \
      updated_at";
@@ -42,6 +42,7 @@ fn map_row(row: &MySqlRow) -> Result<AuthSession> {
     let scope: Vec<u8> = row.try_get("scope").map_err(repo_err)?;
     let ccm: String = row.try_get("code_challenge_method").map_err(repo_err)?;
     let prompt: Option<String> = row.try_get("prompt").map_err(repo_err)?;
+    let response_mode: Option<String> = row.try_get("response_mode").map_err(repo_err)?;
     let max_age: Option<i64> = row.try_get("max_age").map_err(repo_err)?;
     let handle_expires_at: Option<NaiveDateTime> =
         row.try_get("handle_expires_at").map_err(repo_err)?;
@@ -63,6 +64,9 @@ fn map_row(row: &MySqlRow) -> Result<AuthSession> {
         code_challenge: row.try_get("code_challenge").map_err(repo_err)?,
         code_challenge_method: CodeChallengeMethod::parse(&ccm)?,
         prompt: PromptSet::parse(prompt.as_deref().unwrap_or_default()),
+        response_mode: crate::domain::response_mode::ResponseMode::from_stored(
+            response_mode.as_deref(),
+        ),
         max_age: max_age.map(|v| v.max(0) as u64),
         acr_values: row.try_get("acr_values").map_err(repo_err)?,
         login_hint: row.try_get("login_hint").map_err(repo_err)?,
@@ -90,10 +94,10 @@ impl AuthSessionRepository for SqlxAuthSessionRepository {
         sqlx::query(
             "INSERT INTO auth_sessions \
              (id_hash, tenant_id, client_id, redirect_uri, scope, state, nonce, code_challenge, \
-              code_challenge_method, prompt, max_age, acr_values, login_hint, ui_locales, \
+              code_challenge_method, prompt, response_mode, max_age, acr_values, login_hint, ui_locales, \
               handle_hash, handle_expires_at, \
               authenticated_user_id, auth_time, expires_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&session.id_hash)
         .bind(session.tenant_id.to_string())
@@ -105,6 +109,7 @@ impl AuthSessionRepository for SqlxAuthSessionRepository {
         .bind(&session.code_challenge)
         .bind(session.code_challenge_method.as_str())
         .bind(session.prompt.to_storage())
+        .bind(session.response_mode.to_stored())
         .bind(session.max_age.map(|v| v as i64))
         .bind(&session.acr_values)
         .bind(&session.login_hint)

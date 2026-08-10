@@ -8,7 +8,7 @@ use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::dto::ConsentForm;
-use crate::handlers::{forwarded_context, found, see_other};
+use crate::handlers::{forwarded_context, see_other};
 use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, ConsentTemplate, MessagePage};
@@ -130,11 +130,18 @@ pub async fn consent(
         let result = state.api.consent_approve(&ctx.correlation_id, &req).await;
         let messages = Messages::new(locale(&headers));
         match result {
-            Ok(InternalConsentApproveResponse::Success { redirect_to }) => {
+            Ok(InternalConsentApproveResponse::Success {
+                redirect_to,
+                form_post,
+            }) => {
                 let set_cookies = state
                     .set_cookies()
                     .expire_session(cookies::AUTH_SESSION_COOKIE);
-                (set_cookies.into_headers(), found(&redirect_to)).into_response()
+                (
+                    set_cookies.into_headers(),
+                    crate::authorization_response::respond(&messages, &redirect_to, form_post),
+                )
+                    .into_response()
             }
             Ok(InternalConsentApproveResponse::SessionExpired) => error_page(
                 &messages,
@@ -156,11 +163,18 @@ pub async fn consent(
         let result = state.api.consent_deny(&ctx.correlation_id, &req).await;
         let messages = Messages::new(locale(&headers));
         match result {
-            Ok(InternalConsentDenyResponse::Ok { redirect_to }) => {
+            Ok(InternalConsentDenyResponse::Ok {
+                redirect_to,
+                form_post,
+            }) => {
                 let set_cookies = state
                     .set_cookies()
                     .expire_session(cookies::AUTH_SESSION_COOKIE);
-                (set_cookies.into_headers(), found(&redirect_to)).into_response()
+                (
+                    set_cookies.into_headers(),
+                    crate::authorization_response::respond(&messages, &redirect_to, form_post),
+                )
+                    .into_response()
             }
             Ok(InternalConsentDenyResponse::SessionExpired) => error_page(
                 &messages,

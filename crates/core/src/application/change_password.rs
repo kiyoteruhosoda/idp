@@ -15,7 +15,7 @@
 //! 誘導し、未設定なら単一要素での成立を拒否する（LoginService と同じ規則。仕様 §24.4）。
 
 use crate::application::audit::{AuditService, RequestContext};
-use crate::application::authorize::code_redirect;
+use crate::application::authorize::code_dispatch;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::application::mfa_login::user_has_confirmed_totp;
 use crate::application::password_policy::PasswordPolicyService;
@@ -49,6 +49,8 @@ pub enum ChangePasswordOutcome {
     /// 変更成功かつ同意済み。code 付き redirect_to へ 302 する。
     Success {
         location: String,
+        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        form_post: Option<Vec<(String, String)>>,
         sso_session_id: String,
     },
     /// 変更成功だが同意が必要。同意画面へ誘導する。
@@ -496,8 +498,10 @@ impl ChangePasswordService {
             tracing::warn!(error = %e, "failed to delete auth session after password change");
         }
 
+        let dispatch = code_dispatch(&session, &code);
         ChangePasswordOutcome::Success {
-            location: code_redirect(&session.redirect_uri, &code, &session.state),
+            location: dispatch.location,
+            form_post: dispatch.form_post,
             sso_session_id,
         }
     }

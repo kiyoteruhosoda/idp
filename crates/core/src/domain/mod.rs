@@ -35,6 +35,7 @@ pub mod pkce;
 pub mod rate_limit;
 pub mod refresh_token;
 pub mod repositories;
+pub mod response_mode;
 pub mod revoked_access_token;
 pub mod saml_authn_request;
 pub mod saml_metadata;

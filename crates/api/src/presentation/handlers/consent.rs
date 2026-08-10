@@ -58,7 +58,11 @@ pub async fn consent_approve(
         .approve(tenant, &req.auth_session_id, &ctx)
         .await;
     Ok(Json(match outcome {
-        ConsentOutcome::Approved { location } => InternalConsentApproveResponse::Success {
+        ConsentOutcome::Approved {
+            location,
+            form_post,
+        } => InternalConsentApproveResponse::Success {
+            form_post,
             redirect_to: location,
         },
         ConsentOutcome::SessionExpired => InternalConsentApproveResponse::SessionExpired,
@@ -89,8 +93,12 @@ pub async fn consent_deny(
     Ok((
         StatusCode::OK,
         Json(match outcome {
-            ConsentOutcome::Denied { location } => InternalConsentDenyResponse::Ok {
+            ConsentOutcome::Denied {
+                location,
+                form_post,
+            } => InternalConsentDenyResponse::Ok {
                 redirect_to: location,
+                form_post,
             },
             ConsentOutcome::SessionExpired => InternalConsentDenyResponse::SessionExpired,
             ConsentOutcome::Internal(e) => {
