@@ -10,7 +10,7 @@ use crate::infrastructure::db::Db;
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use sqlx::mysql::MySqlRow;
-use sqlx::Row;
+use sqlx::{MySql, QueryBuilder, Row};
 use uuid::Uuid;
 
 pub struct SqlxUserRepository {
@@ -241,19 +241,21 @@ impl UserRepository for SqlxUserRepository {
         // **代入の順序に意味がある。** MariaDB / MySQL の単一表 UPDATE は SET を左から右へ評価し、
         // 後続の式は先に更新された列の**新しい値**を見る。`locked_until` を先に置くことで、
         // その CASE の中の `failed_login_count` は更新前の値を指す（逆順にすると 2 回分進む）。
-        let locked_until = now + chrono::Duration::seconds(lockout.lock_duration_secs as i64);
-        sqlx::query(
-            "UPDATE users \
-                SET locked_until = CASE WHEN failed_login_count + 1 >= ? THEN ? ELSE locked_until END, \
-                    failed_login_count = failed_login_count + 1 \
-              WHERE id = ?",
-        )
-        .bind(lockout.max_failed_attempts)
-        .bind(locked_until.naive_utc())
-        .bind(id.to_string())
-        .execute(&self.pool)
-        .await
-        .map_err(repo_err)?;
+        //
+        // 段階的ロック（AP6）: ロック時間は失敗回数で変わるが、その回数はこの UPDATE の中に
+        // しか無い。計算式を SQL へ写すと定義が二重化するため、**段の一覧をドメインから受け取り
+        // （`escalation_ladder`）、SQL 側は該当する段を選ぶだけ**にする。段は超過の大きい順に
+        // 並んでいるので、先に一致した WHEN が最も長いロック時間になる。
+        let mut qb: QueryBuilder<MySql> = QueryBuilder::new("UPDATE users SET locked_until = CASE");
+        for (threshold, duration_secs) in lockout.escalation_ladder() {
+            qb.push(" WHEN failed_login_count + 1 >= ");
+            qb.push_bind(threshold);
+            qb.push(" THEN ");
+            qb.push_bind((now + chrono::Duration::seconds(duration_secs as i64)).naive_utc());
+        }
+        qb.push(" ELSE locked_until END, failed_login_count = failed_login_count + 1 WHERE id = ");
+        qb.push_bind(id.to_string());
+        qb.build().execute(&self.pool).await.map_err(repo_err)?;
 
         // 記録後の状態を読み直す（MariaDB の UPDATE は RETURNING を持たない）。並行する失敗が
         // 間に挟まれば、より進んだ値・より新しいロック期限が返る。どちらも「今ロックされているか」の

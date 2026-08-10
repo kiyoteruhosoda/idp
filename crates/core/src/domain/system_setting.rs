@@ -315,6 +315,19 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         default_value: Some("900"),
         description: "連続失敗でロックした際のロック時間（秒）。経過後は自動で再試行できる（恒久ロックはしない）。",
     },
+    SettingDefinition {
+        key: "LOGIN_MAX_LOCK_DURATION_SECS",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
+        default_value: Some("86400"),
+        description: "段階的ロックの上限（秒。AP6）。ロック時間は失敗が重なるたびに \
+                      `LOGIN_LOCK_DURATION_SECS` から倍々で伸び、この値で頭打ちになる。\
+                      `LOGIN_LOCK_DURATION_SECS` 以下にすると段階化しない（従来どおりの固定時間）。",
+    },
     // ── パスワードポリシー（AP7。仕様 §11.2）──────────────────────────────
     // パスワードを設定する全経路（自己登録・強制変更・セルフサービス変更・リセット）へ一律に効く。
     SettingDefinition {

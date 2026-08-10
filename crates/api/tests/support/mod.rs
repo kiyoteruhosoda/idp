@@ -421,6 +421,11 @@ pub fn post(cookie: &str, uri: &str, body: Value) -> Request<Body> {
     request(Method::POST, cookie, uri, Some(body))
 }
 
+/// 本文を取らない POST（`/unlock`・`/mfa-reset` のようなコマンド系エンドポイント）。
+pub fn post_empty(cookie: &str, uri: &str) -> Request<Body> {
+    request(Method::POST, cookie, uri, None)
+}
+
 pub fn patch(cookie: &str, uri: &str, body: Value) -> Request<Body> {
     request(Method::PATCH, cookie, uri, Some(body))
 }

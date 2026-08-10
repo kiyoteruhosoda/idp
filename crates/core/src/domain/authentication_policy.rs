@@ -490,13 +490,32 @@ impl DefaultPolicyEffect {
 /// 従来は各ログインサービスにハードコードされていた値（10 回 / 15 分）を、設定
 /// （`LOGIN_MAX_FAILED_ATTEMPTS` / `LOGIN_LOCK_DURATION_SECS`）から注入する単一の値表現に集約する。
 /// ロックはユーザー単位（仕様 §17.2）。恒久ロックは避ける（期限付きロックのみ）。
+///
+/// # 段階的ロック（AP6）
+///
+/// ロック時間は失敗が重なるほど伸びる。固定時間だと、攻撃者は「ロック時間だけ待って
+/// また閾値まで試す」を無限に繰り返せ、単位時間あたりの試行数を一定に保てる。一方で初回の
+/// ロックを長くすると、打ち間違いを重ねただけの利用者が長時間締め出される。
+/// **初回は短く、繰り返すほど長く**（`lock_duration_secs` から倍々で
+/// `max_lock_duration_secs` まで）にすることで、両者を分ける。
+///
+/// 段数の判定には `failed_login_count` をそのまま使う。この値は**ログイン成功でのみ**
+/// 0 に戻るため、ロック期限が切れた後の 1 回目の失敗は「閾値 + 1」となり自動的に次の段へ進む。
+/// 追加の状態列を持たずに段数を表現できる。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LockoutPolicy {
     /// 連続失敗の許容回数（この回数に達したらロック）。
     pub max_failed_attempts: i32,
-    /// ロック時間（秒）。
+    /// 初回のロック時間（秒）。
     pub lock_duration_secs: u64,
+    /// 段階的ロックの上限（秒）。`lock_duration_secs` 以下なら段階化は起きない（＝固定時間）。
+    pub max_lock_duration_secs: u64,
 }
+
+/// 段階的ロックの最大段数。`lock_duration_secs` の 2^ESCALATION_STEPS 倍まで伸ばせば、
+/// 既定値（15 分）でも 32 時間を超えて上限（既定 24 時間）に必ず届く。段数に上限を置くのは、
+/// 失敗回数がいくら大きくても計算が飽和したままになるようにするため。
+const ESCALATION_STEPS: u32 = 16;
 
 impl LockoutPolicy {
     /// 失敗カウントが `failed_count` に達した時点でロックすべきなら、ロック期限を返す。
@@ -505,8 +524,51 @@ impl LockoutPolicy {
         failed_count: i32,
         now: DateTime<Utc>,
     ) -> Option<DateTime<Utc>> {
-        (failed_count >= self.max_failed_attempts)
-            .then(|| now + chrono::Duration::seconds(self.lock_duration_secs as i64))
+        (failed_count >= self.max_failed_attempts).then(|| {
+            now + chrono::Duration::seconds(self.lock_duration_secs_for(failed_count) as i64)
+        })
+    }
+
+    /// 累積失敗回数 `failed_count` でロックするときのロック時間（秒）。
+    ///
+    /// 閾値ちょうどで `lock_duration_secs`、以降は 1 回失敗するごとに倍。
+    /// `max_lock_duration_secs` で頭打ちにする。
+    pub fn lock_duration_secs_for(&self, failed_count: i32) -> u64 {
+        let over = failed_count.saturating_sub(self.max_failed_attempts).max(0);
+        let step = (over as u32).min(ESCALATION_STEPS);
+        let scaled = self
+            .lock_duration_secs
+            .saturating_mul(1u64.checked_shl(step).unwrap_or(u64::MAX));
+        scaled
+            .min(self.max_lock_duration_secs)
+            // 上限が初回より短く設定されていても、初回のロック時間は必ず適用する
+            //（上限の設定ミスでロックが実質無効化されないようにする）。
+            .max(self.lock_duration_secs)
+    }
+
+    /// 段階的ロックの「段」を、閾値からの超過が大きい順に列挙する（AP6）。
+    ///
+    /// 返すのは `(この失敗回数以上ならば, ロック秒数)` の組を**降順**に並べたもの。
+    /// 失敗の記録とロック判定は 1 文の `UPDATE` で行う必要があり（SEC13。読んで書き戻すと
+    /// 並行試行を取りこぼす）、その時点の失敗回数は SQL の中にしかない。ロック時間の計算式を
+    /// SQL へ写すと定義が二重化するため、**段の一覧をドメインから渡して SQL 側は選ぶだけ**に
+    /// する（`CASE WHEN failed_login_count + 1 >= ? THEN ? ...`）。
+    ///
+    /// 上限に達した段より先は同じ値になるため列挙しない（末尾の段が「それ以上すべて」を表す）。
+    pub fn escalation_ladder(&self) -> Vec<(i32, u64)> {
+        let mut ladder: Vec<(i32, u64)> = Vec::new();
+        for step in 0..=ESCALATION_STEPS {
+            let threshold = self.max_failed_attempts.saturating_add(step as i32);
+            let duration = self.lock_duration_secs_for(threshold);
+            // 上限に達したら、それ以降の段は同じ値になるので打ち切る。
+            let capped = duration >= self.max_lock_duration_secs;
+            ladder.push((threshold, duration));
+            if capped {
+                break;
+            }
+        }
+        ladder.reverse();
+        ladder
     }
 }
 
@@ -1157,6 +1219,7 @@ mod tests {
         let policy = LockoutPolicy {
             max_failed_attempts: 5,
             lock_duration_secs: 900,
+            max_lock_duration_secs: 900,
         };
         let now = fixed_now();
         assert_eq!(policy.locked_until_after_failure(4, now), None);
@@ -1165,6 +1228,65 @@ mod tests {
             Some(now + chrono::Duration::seconds(900))
         );
         assert!(policy.locked_until_after_failure(6, now).is_some());
+    }
+
+    /// AP6: ロック時間は失敗が重なるたびに倍になり、上限で頭打ちになる。
+    #[test]
+    fn lock_duration_doubles_until_it_reaches_the_cap() {
+        let policy = LockoutPolicy {
+            max_failed_attempts: 5,
+            lock_duration_secs: 900,
+            max_lock_duration_secs: 7_200,
+        };
+        // 閾値ちょうどは初回の時間。以降 1 回失敗するごとに倍。
+        assert_eq!(policy.lock_duration_secs_for(5), 900);
+        assert_eq!(policy.lock_duration_secs_for(6), 1_800);
+        assert_eq!(policy.lock_duration_secs_for(7), 3_600);
+        assert_eq!(policy.lock_duration_secs_for(8), 7_200);
+        // 上限に達したらそれ以上は伸びない。
+        assert_eq!(policy.lock_duration_secs_for(9), 7_200);
+        assert_eq!(policy.lock_duration_secs_for(i32::MAX), 7_200);
+    }
+
+    /// 上限を初回より短く設定しても、初回のロック時間は必ず適用する（設定ミスでロックが
+    /// 実質無効化されないようにする）。
+    #[test]
+    fn a_cap_below_the_base_duration_does_not_shorten_the_first_lock() {
+        let policy = LockoutPolicy {
+            max_failed_attempts: 3,
+            lock_duration_secs: 900,
+            max_lock_duration_secs: 60,
+        };
+        assert_eq!(policy.lock_duration_secs_for(3), 900);
+        assert_eq!(policy.lock_duration_secs_for(30), 900);
+    }
+
+    /// 段の一覧は「超過が大きい順」に並ぶ。SQL の `CASE` は先に一致した WHEN を採るため、
+    /// 順序が逆だと常に初回の時間が選ばれて段階化が効かなくなる。
+    #[test]
+    fn the_escalation_ladder_is_ordered_from_the_longest_lock_down() {
+        let policy = LockoutPolicy {
+            max_failed_attempts: 5,
+            lock_duration_secs: 900,
+            max_lock_duration_secs: 3_600,
+        };
+        let ladder = policy.escalation_ladder();
+        assert_eq!(ladder, vec![(7, 3_600), (6, 1_800), (5, 900)]);
+        // 各段はドメインの計算式と一致する（SQL 側はこの一覧から選ぶだけ）。
+        for (threshold, duration) in &ladder {
+            assert_eq!(policy.lock_duration_secs_for(*threshold), *duration);
+        }
+    }
+
+    /// 段階化しない設定（上限 = 初回）は 1 段だけになる。
+    #[test]
+    fn a_fixed_duration_policy_yields_a_single_step() {
+        let policy = LockoutPolicy {
+            max_failed_attempts: 10,
+            lock_duration_secs: 900,
+            max_lock_duration_secs: 900,
+        };
+        assert_eq!(policy.escalation_ladder(), vec![(10, 900)]);
     }
 
     #[test]

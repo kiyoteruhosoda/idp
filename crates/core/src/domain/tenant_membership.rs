@@ -24,6 +24,13 @@ pub struct TenantMember {
     /// 利用者アカウント自体の状態（ACTIVE / DISABLED / LOCKED）。不存在ユーザーは `None`。
     /// 管理コンソールのメンバー一覧が無効化状態を表示するために返す。
     pub user_status: Option<UserStatus>,
+    /// ログイン失敗によるロックの期限（AP6）。`None` はロックされていない。
+    ///
+    /// `user_status` とは別に返す。ロックは `users.status` ではなく `users.locked_until` で
+    /// 表され（`status = LOCKED` は管理操作では設定できない）、しかも**期限切れかどうかは
+    /// 読んだ時点で判定する**必要がある。状態列に丸めると、期限が切れているのに
+    /// 「ロック中」と表示され続ける。
+    pub locked_until: Option<DateTime<Utc>>,
 }
 
 /// メンバー一覧の絞り込み条件（MT22）。SQL の組み立ては infrastructure が行う。

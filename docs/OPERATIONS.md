@@ -141,6 +141,26 @@ redirect_uri は完全一致・複数登録に対応し、フラグメント／�
 > 管理画面（サーバレンダリング UI）は A2 の進行に合わせて追加予定。それまでは上記 API を用いる。
 > 管理者向けの初回ログイン後の SSO セッション確立は通常の `/authorize`→`/login` フローで行う。
 
+## ロックされたアカウントを解除したいとき
+
+管理コンソールの**メンバー一覧**（`/{tenant_id}/admin/members`）で、ロック中の利用者には
+「ロック中」バッジと**ロック解除**ボタンが出る。押すと即座に解除される（期限を待たなくてよい）。
+
+API を直接叩く場合:
+
+```bash
+curl -sS -X POST "$ISSUER/$TENANT_ID/admin/users/<user_id>/unlock" \
+  -H "Cookie: sso_session_id=<セッションID>"
+```
+
+- ロック期限のクリアと**失敗回数のリセットを同時に**行う。片方だけでは次の 1 回の失敗で
+  即座に再ロックされ、しかも段階的ロックの段が 1 つ進んで前より長くなる。
+- ロックされていない利用者に実行しても成功する（応答の `was_locked` で区別できる）。
+- 実行は `user.account_unlocked` として監査ログに残る。
+- ロック時間は失敗が重なるたびに `LOGIN_LOCK_DURATION_SECS` から倍々で伸び、
+  `LOGIN_MAX_LOCK_DURATION_SECS`（既定 24 時間）で頭打ちになる。ログイン成功で失敗回数は 0 に戻り、
+  次のロックは初回の長さからやり直しになる。
+
 ## 監査ログ／ログインログを確認したいとき
 
 管理 API（`idp.tenant.admin` 必須。`idp.system.admin` でも可）で `audit_log` を絞り込み参照する。`GET /admin/audit-logs`。
@@ -503,6 +523,7 @@ curl -sS -X POST "$ISSUER/{tenant_id}/admin/external-idps" \
 | `EMAIL_VERIFICATION_TTL_SECS` | `86400` | 自己登録アカウントのメール検証トークンの有効期間（SEC6b） |
 | `HSTS_MAX_AGE` | `0`（無効） | `Strict-Transport-Security` の `max-age`（秒）。**DB 上書き可**（下記） |
 | `APP_LOG_RETENTION_DAYS` | `30` | エラー・警告ログ（`log` テーブル）の保持日数。`0` = 削除しない。**DB 上書き可** |
+| `LOGIN_MAX_LOCK_DURATION_SECS` | `86400` | 段階的ロックの上限（秒。AP6）。ロック時間は失敗が重なるたびに `LOGIN_LOCK_DURATION_SECS` から倍々で伸び、この値で頭打ちになる。`LOGIN_LOCK_DURATION_SECS` 以下にすると段階化しない。**DB 上書き可** |
 | `AUDIT_LOG_RETENTION_DAYS` | `0`（削除しない） | 監査ログ（`audit_log` テーブル）の保持日数。保存期間は法令・契約で決まるため既定では削除しない。**DB 上書き可** |
 | `TOKEN_ENDPOINT_MAX_CONCURRENCY` | `8` | `/token`・`/introspect`・`/revoke` の同時処理数の上限（SEC10）。Argon2id（19 MiB）照合のピークメモリは「上限 × 19 MiB」。溢れた要求は待たせず 503。`0` は無制限（非推奨）。**DB 上書き可** |
 | `TOKEN_ENDPOINT_RATE_LIMIT_MAX_REQUESTS` | `300` | 上記 3 本の接続元 IP 単位のレート制限（SEC10）。`0` は無効。`TRUST_FORWARDED_HEADERS=true` のときのみ効く。**DB 上書き可** |

@@ -875,6 +875,26 @@ impl ApiClient {
         .await
     }
 
+    /// アカウントロックの即時解除（`POST /admin/users/{user_id}/unlock`。AP6）。
+    /// ロック期限のクリアと失敗回数のリセットを api 側が同時に行う。
+    pub async fn unlock_user(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        user_id: &str,
+    ) -> Result<crate::admin_dto::UserUnlockView, AdminApiError> {
+        self.admin_send(
+            Method::POST,
+            tenant_id,
+            &format!("/admin/users/{user_id}/unlock"),
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
     // ── メンバー・招待（ADR-0009 §3）─────────────────────────────────────────
 
     /// メンバー一覧（`GET /admin/members`。HOME / GUEST を問わない）。絞り込み・ページングの

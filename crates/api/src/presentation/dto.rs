@@ -517,6 +517,17 @@ pub struct UpdateMemberStatusRequest {
     pub status: String,
 }
 
+/// 管理者によるアカウントロック解除レスポンス（AP6）。
+///
+/// `was_locked` は「解除前にロックが掛かっていたか」。冪等な操作のため、元からロックされて
+/// いなくても成功する。画面はこの値で「解除しました」と「元からロックされていません」を
+/// 出し分ける。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct UserUnlockResponse {
+    pub user_id: String,
+    pub was_locked: bool,
+}
+
 /// 管理者による MFA 解除レスポンス（MT21）。何を外したかだけを返し、シークレット・
 /// クレデンシャルの内容は含めない。未設定でも成功（すべて `false` / `0`）になる。
 #[derive(Debug, Serialize, ToSchema)]
@@ -553,6 +564,9 @@ pub struct MemberResponse {
     /// 利用者アカウント自体の状態（`ACTIVE` / `DISABLED` / `LOCKED`）。不存在ユーザーは `None`。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_status: Option<String>,
+    /// ログイン失敗によるロックが**今**掛かっているか（AP6）。`user_status` とは別
+    /// （ロックは `locked_until` で表され、期限切れかどうかは読んだ時点で決まる）。
+    pub locked: bool,
 }
 
 /// 一覧のページングクエリ（`GET /{tenant_id}/admin/clients`・`.../tenants`。G7）。

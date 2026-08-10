@@ -1103,6 +1103,7 @@ mod tests {
                 LockoutPolicy {
                     max_failed_attempts,
                     lock_duration_secs: 900,
+                    max_lock_duration_secs: 86_400,
                 },
                 CSRF_SECRET,
                 Arc::new(FakePolicies),

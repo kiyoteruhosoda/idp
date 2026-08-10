@@ -949,3 +949,6 @@ admin-pagination-total = 該当件数:
 admin-pagination-label = 一覧のページ送り
 admin-pagination-prev = 前へ
 admin-pagination-next = 次へ
+admin-members-unlock-button = ロック解除
+admin-members-unlock-done = アカウントロックを解除しました。利用者は再度ログインできます。
+admin-members-unlock-none = このアカウントはロックされていませんでした。変更はありません。

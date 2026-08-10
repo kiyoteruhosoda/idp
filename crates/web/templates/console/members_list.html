@@ -39,7 +39,8 @@
         <td data-label="{{ messages.get("admin-members-col-type") }}">{% if m.membership_type == "GUEST" %}<span class="badge text-bg-info">{{ m.membership_type }}</span>{% else %}<span class="badge text-bg-secondary">{{ m.membership_type }}</span>{% endif %}</td>
         <td data-label="{{ messages.get("admin-members-col-status") }}">{% if m.status == "SUSPENDED" %}<span class="badge text-bg-warning">{{ messages.get("admin-members-status-suspended") }}</span>{% else %}{{ m.status }}{% endif %}</td>
         <td data-label="{{ messages.get("admin-members-col-user-status") }}">
-          {% if m.user_status.as_deref() == Some("ACTIVE") %}<span class="badge text-bg-success">{{ messages.get("admin-members-user-status-active") }}</span>
+          {% if m.locked %}<span class="badge text-bg-warning"><i class="fa-solid fa-lock me-1" aria-hidden="true"></i>{{ messages.get("admin-members-user-status-locked") }}</span>
+          {% else if m.user_status.as_deref() == Some("ACTIVE") %}<span class="badge text-bg-success">{{ messages.get("admin-members-user-status-active") }}</span>
           {% else if m.user_status.as_deref() == Some("DISABLED") %}<span class="badge text-bg-danger">{{ messages.get("admin-members-user-status-disabled") }}</span>
           {% else if m.user_status.is_some() %}<span class="badge text-bg-warning">{{ messages.get("admin-members-user-status-locked") }}</span>
           {% else %}-{% endif %}
@@ -59,6 +60,12 @@
                 <input type="hidden" name="csrf_token" value="{{ csrf }}">
                 <input type="hidden" name="status" value="DISABLED">
                 <button type="submit" class="btn btn-outline-warning btn-sm"><i class="fa-solid fa-user-slash me-1" aria-hidden="true"></i>{{ messages.get("admin-members-disable-button") }}</button>
+              </form>
+              {% endif %}
+              {% if m.locked %}
+              <form method="post" action="{{ tenant }}/admin/members/{{ m.user_id }}/unlock" class="d-inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                <button type="submit" class="btn btn-outline-success btn-sm"><i class="fa-solid fa-lock-open me-1" aria-hidden="true"></i>{{ messages.get("admin-members-unlock-button") }}</button>
               </form>
               {% endif %}
               <form method="post" action="{{ tenant }}/admin/members/{{ m.user_id }}/reset-password" class="d-inline" data-confirm="{{ messages.get("admin-members-reset-password-confirm") }}">

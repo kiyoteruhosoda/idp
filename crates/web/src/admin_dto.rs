@@ -134,6 +134,10 @@ pub struct MemberView {
     /// 利用者アカウント自体の状態（`ACTIVE` / `DISABLED` / `LOCKED`）。不存在ユーザーは `None`。
     #[serde(default)]
     pub user_status: Option<String>,
+    /// ログイン失敗によるロックが今掛かっているか（AP6）。api が期限を判定済みの真偽値で返す
+    /// （web は時計を持たないため、期限の比較を web 側でやり直さない）。
+    #[serde(default)]
+    pub locked: bool,
 }
 
 /// メンバー一覧の 1 ページ分（`GET /admin/members`。MT22）。
@@ -165,6 +169,15 @@ pub struct UserMfaResetView {
     pub user_id: String,
     pub totp_removed: bool,
     pub passkeys_removed: u64,
+}
+
+/// 管理者によるアカウントロック解除の結果（`POST /admin/users/{id}/unlock`。AP6）。
+/// `was_locked` で「解除した」と「元からロックされていない」を出し分ける。
+#[derive(Debug, Clone, Deserialize)]
+pub struct UserUnlockView {
+    #[allow(dead_code)]
+    pub user_id: String,
+    pub was_locked: bool,
 }
 
 /// 招待作成応答（`POST /admin/invitations`）。`token` は一度限り平文で返る（ADR-0009 §3）。

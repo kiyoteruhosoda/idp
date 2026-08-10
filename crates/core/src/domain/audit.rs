@@ -77,6 +77,9 @@ pub enum AuditEventType {
     /// 管理者による MFA（TOTP・Passkey）の解除（MT21）。本人が端末を失った場合の復旧手段。
     /// 解除した要素の種別と件数のみ記録し、シークレット・クレデンシャルは記録しない。
     UserMfaReset,
+    /// 管理者によるアカウントロックの即時解除（AP6。仕様 §17.1・§24.6）。`reason` に
+    /// 解除前にロックが掛かっていたか・クリアした失敗回数を記録する。
+    UserAccountUnlocked,
     /// 外部 IdP ログイン（AP10。仕様 §13）の成否。`reason` にプロバイダコードと失敗理由を
     /// 記録する（外部 IdP のトークン・クレームは記録しない）。
     ExternalLoginSucceeded,
@@ -156,6 +159,7 @@ impl AuditEventType {
             Self::RecoveryCodeUsed => "recovery_code.used",
             Self::EmailOtpSent => "email_otp.sent",
             Self::UserMfaReset => "user.mfa_reset",
+            Self::UserAccountUnlocked => "user.account_unlocked",
             Self::ExternalLoginSucceeded => "external_login.succeeded",
             Self::ExternalLoginFailed => "external_login.failed",
             Self::ExternalIdpCreated => "external_idp.created",

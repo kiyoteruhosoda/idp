@@ -55,6 +55,7 @@ pub async fn list_members(
         .search(tenant.context(), search)
         .await
         .map_err(|e| map_error(InvitationError::Internal(e.to_string()), locale))?;
+    let now = state.clock.now();
     Ok(Json(MemberListResponse {
         members: result
             .page
@@ -67,6 +68,8 @@ pub async fn list_members(
                 membership_type: m.membership_type.as_str().to_string(),
                 status: m.status.as_str().to_string(),
                 user_status: m.user_status.map(|s| s.as_str().to_string()),
+                // 期限切れのロックは「掛かっていない」として返す（読んだ時点で判定する）。
+                locked: m.locked_until.is_some_and(|until| until > now),
             })
             .collect(),
         total: result.page.total,

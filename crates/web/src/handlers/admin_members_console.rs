@@ -366,6 +366,41 @@ pub async fn reset_mfa(
     }
 }
 
+/// アカウントロックの解除（`POST /{tenant_id}/admin/members/{user_id}/unlock`。AP6）。
+/// 段階的ロックでロック時間が伸びた利用者を、期限を待たずに戻す。秘密情報を伴わないため
+/// 一覧へ戻して完了通知を出す（Post/Redirect/Get）。
+pub async fn unlock(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Path((_, user_id)): Path<(String, String)>,
+    Form(form): Form<MemberActionForm>,
+) -> Response {
+    match resolve_admin(&state, &correlation, &tenant, &headers).await {
+        AdminResolution::Ok(_) => {}
+        AdminResolution::Reject(resp) => return resp,
+    }
+    let base = format!("{}{MEMBERS_SEGMENT}", tenant.prefix());
+    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
+        return found(&format!("{base}?error=csrf"));
+    }
+    match state
+        .api
+        .unlock_user(&correlation.0, &tenant.0, &sso(&headers), &user_id)
+        .await
+    {
+        // 元からロックされていなかった場合も成功だが、管理者には区別して伝える
+        //（「効いていない」と誤解して操作を繰り返すのを防ぐ。MFA 解除と同じ扱い）。
+        Ok(result) if !result.was_locked => found(&format!("{base}?notice=unlock-none")),
+        Ok(_) => found(&format!("{base}?notice=unlocked")),
+        Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
+        Err(AdminApiError::Forbidden) => found(&format!("{base}?error=forbidden")),
+        Err(AdminApiError::NotFound) => found(&format!("{base}?error=user-notfound")),
+        Err(_) => found(&format!("{base}?error=internal")),
+    }
+}
+
 /// 利用者の削除（`POST /{tenant_id}/admin/members/{user_id}/delete`）。
 /// 所属元（HOME）が当該テナントの利用者のみ。自分自身は削除できない。
 pub async fn delete(
@@ -397,12 +432,13 @@ pub async fn delete(
     }
 }
 
-/// メンバー一覧を絞り込み語で部分一致フィルタする（メールアドレス・氏名。大文字小文字を無視）。
-/// 空語のときは全件返す。一覧は api が全件返すため、絞り込みは web 側で行う（api 変更は不要）。
+/// Post/Redirect/Get で戻ったときに出す完了通知の翻訳キー。
 fn notice_key_for(notice: &str) -> Option<&'static str> {
     match notice {
         "mfa-reset" => Some("admin-members-mfa-reset-done"),
         "mfa-none" => Some("admin-members-mfa-reset-none"),
+        "unlocked" => Some("admin-members-unlock-done"),
+        "unlock-none" => Some("admin-members-unlock-none"),
         "member-suspended" => Some("admin-members-suspend-done"),
         "member-resumed" => Some("admin-members-resume-done"),
         _ => None,
@@ -469,6 +505,7 @@ mod tests {
             membership_type: membership_type.into(),
             status: "ACTIVE".into(),
             user_status: Some("ACTIVE".into()),
+            locked: false,
         }
     }
 
@@ -594,6 +631,26 @@ mod tests {
         let next = links.next.expect("next");
         assert!(next.contains("/admin/members?offset=50"), "{next}");
         assert!(next.contains("q=a%20b%26c"), "{next}");
+    }
+
+    /// ロック解除の導線は**ロック中の HOME 利用者にだけ**出す。常時出すと、押しても何も
+    /// 変わらない操作が並び、ロックされている利用者を見分けられなくなる（AP6）。
+    #[test]
+    fn the_unlock_action_appears_only_for_a_locked_home_member() {
+        let unlocked = render_page(&[member("HOME")], None);
+        assert!(!unlocked.contains("/unlock"), "{unlocked}");
+
+        let mut locked = member("HOME");
+        locked.locked = true;
+        let html = render_page(&[locked], None);
+        assert!(html.contains("/unlock"), "{html}");
+        assert!(html.contains(&Messages::new(Locale::Ja).get("admin-members-unlock-button")));
+
+        // ゲストの `users` レコードは所属元テナントの管理者だけが操作できる（ADR-0009 §3）。
+        let mut guest = member("GUEST");
+        guest.locked = true;
+        let guest_html = render_page(&[guest], None);
+        assert!(!guest_html.contains("/unlock"), "{guest_html}");
     }
 
     /// 解除後の完了通知は「外した」「元から無かった」を区別して出す。

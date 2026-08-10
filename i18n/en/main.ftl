@@ -949,3 +949,6 @@ admin-pagination-total = Total:
 admin-pagination-label = List pages
 admin-pagination-prev = Previous
 admin-pagination-next = Next
+admin-members-unlock-button = Unlock
+admin-members-unlock-done = The account lock was cleared. The user can sign in again.
+admin-members-unlock-none = That account was not locked. Nothing changed.

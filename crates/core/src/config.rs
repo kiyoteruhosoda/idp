@@ -287,6 +287,10 @@ impl Config {
                 )
                 .unwrap_or(i32::MAX),
                 lock_duration_secs: resolver.parse("LOGIN_LOCK_DURATION_SECS", 900u64)?,
+                // 段階的ロック（AP6）の上限。既定 24 時間。`LOGIN_LOCK_DURATION_SECS` 以下に
+                // すると段階化は起きず、従来どおりの固定時間ロックになる。
+                max_lock_duration_secs: resolver
+                    .parse("LOGIN_MAX_LOCK_DURATION_SECS", 86_400u64)?,
             },
             password_policy: PasswordPolicy {
                 min_length: resolver.parse("PASSWORD_MIN_LENGTH", 8usize)?,

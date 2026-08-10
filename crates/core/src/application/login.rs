@@ -1111,6 +1111,7 @@ mod tests {
             LockoutPolicy {
                 max_failed_attempts: 10,
                 lock_duration_secs: 900,
+                max_lock_duration_secs: 86_400,
             },
             crate::domain::password_policy::PasswordPolicy::default(),
             DefaultPolicyEffect::Allow,

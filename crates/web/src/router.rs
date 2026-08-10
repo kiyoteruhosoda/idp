@@ -279,6 +279,10 @@ pub fn build(state: WebState) -> Router {
             "/admin/members/{user_id}/reset-mfa",
             post(admin_members_console::reset_mfa),
         )
+        .route(
+            "/admin/members/{user_id}/unlock",
+            post(admin_members_console::unlock),
+        )
         // ゲストメンバーシップの一時停止・再開（MT24）。解除（削除）と違い元に戻せる。
         .route(
             "/admin/members/{user_id}/suspend",

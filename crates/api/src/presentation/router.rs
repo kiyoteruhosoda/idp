@@ -318,6 +318,11 @@ pub fn build(state: AppState) -> Router {
             "/admin/users/{user_id}/mfa-reset",
             post(admin_users::reset_user_mfa),
         )
+        // アカウントロックの即時解除（AP6。仕様 §17.1・§24.6）。idp.tenant.admin 必須。
+        .route(
+            "/admin/users/{user_id}/unlock",
+            post(admin_users::unlock_user),
+        )
         // ログイン識別子の割り当て（AP8。仕様 §4）。idp.tenant.admin 必須。
         .route(
             "/admin/users/{user_id}/login-identifiers",
