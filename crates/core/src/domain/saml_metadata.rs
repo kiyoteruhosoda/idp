@@ -86,12 +86,23 @@ impl Role {
         }
     }
 
-    /// バインディングの選好順。SP の ACS はアサーションを POST で受け、IdP へは
-    /// `AuthnRequest` を HTTP-Redirect で送る（[`crate::domain::saml_external_idp`]）。
-    fn preferred_bindings(self) -> &'static [&'static str] {
+    /// 候補から使うエンドポイントを 1 件選ぶ。
+    ///
+    /// **IdP 側は HTTP-Redirect に限る。** ログイン開始は必ず HTTP-Redirect binding で
+    /// `AuthnRequest` を送る（[`crate::domain::saml_external_idp::redirect_binding_location`]）ため、
+    /// 他のバインディングのエンドポイントを取り込むと「登録は通るのに、ログインのたびに相手が
+    /// 受け付けない形式で送る」設定ができてしまう。誤りは**利用者のログイン時**まで表に出ない。
+    /// ここで落とせば、取り込んだ管理者がその場で気づける（手入力の道は残っている）。
+    ///
+    /// SP 側は POST → Redirect → 先頭の従来どおり。こちらは**相手が受け取る**側の URL で、
+    /// 本 IdP が送信方式を選べる（アサーションは POST で送る）。
+    fn pick_endpoint(self, candidates: &[(String, String)]) -> Option<String> {
         match self {
-            Self::Sp => &[BINDING_HTTP_POST, BINDING_HTTP_REDIRECT],
-            Self::Idp => &[BINDING_HTTP_REDIRECT, BINDING_HTTP_POST],
+            Self::Sp => pick_by_binding(candidates, &[BINDING_HTTP_POST, BINDING_HTTP_REDIRECT]),
+            Self::Idp => candidates
+                .iter()
+                .find(|(binding, _)| binding == BINDING_HTTP_REDIRECT)
+                .map(|(_, location)| location.clone()),
         }
     }
 
@@ -99,7 +110,9 @@ impl Role {
     fn missing_endpoint(self) -> &'static str {
         match self {
             Self::Sp => "SAML metadata is missing an SP AssertionConsumerService",
-            Self::Idp => "SAML metadata is missing an IdP SingleSignOnService",
+            Self::Idp => {
+                "SAML metadata is missing an IdP SingleSignOnService with the HTTP-Redirect binding"
+            }
         }
     }
 }
@@ -111,7 +124,8 @@ struct ParsedEntity {
     endpoint_url: String,
     /// `use="signing"` が明示された証明書（出現順）。
     signing_certificates: Vec<String>,
-    /// `use` の無い証明書（署名にも使える）。署名用が 1 枚も無いときの代替。
+    /// `use` の無い証明書（出現順）。SAML メタデータで `use` を書かない鍵は**署名にも暗号化にも
+    /// 使える**意味なので、署名用の候補でもある。
     unspecified_certificates: Vec<String>,
     name_id_format: Option<String>,
     display_name: Option<String>,
@@ -143,19 +157,21 @@ pub fn parse_sp_metadata(xml: &str) -> Result<ImportedSpMetadata> {
 ///
 /// - `entityID` と SSO URL（`IDPSSODescriptor/SingleSignOnService`）は必須。欠落時は
 ///   [`DomainError::InvalidValue`]。
-/// - SSO URL は HTTP-Redirect → HTTP-POST → 先頭、の優先順で 1 件を選ぶ（`AuthnRequest` は
-///   HTTP-Redirect binding で送る）。
-/// - 証明書は署名用（`use="signing"`）を**すべて**返す。1 枚も無ければ `use` 無しの証明書を返す
-///   （`use` を書かないメタデータは署名にも暗号化にも使える意味になる）。
+/// - SSO URL は **HTTP-Redirect binding のもの**に限る（`AuthnRequest` はその形でしか送らない）。
+///   他のバインディングしか無いメタデータは取り込まない——登録は通るのにログインのたびに
+///   相手が受け付けない形式で送る設定になり、誤りが利用者のログイン時まで表に出ない。
+/// - 証明書は署名に使える鍵を**すべて**返す。`use="signing"` の明示があるものと、`use` の無いもの
+///   （SAML メタデータでは署名にも暗号化にも使える意味）を**両方**含め、`use="encryption"` だけを
+///   除く。片方に絞ると、更新期間に相手がもう一方の鍵で署名した瞬間にログインが止まる。
 /// - 証明書が 1 枚も無い XML も**ここでは失敗にしない**。必須かどうかを決めるのは登録ユースケース
 ///   （[`crate::application::external_idp_management`]）であり、取り込みは「読めたものを渡す」に徹する。
 pub fn parse_idp_metadata(xml: &str) -> Result<ImportedIdpMetadata> {
     let parsed = parse_entity(xml, Role::Idp)?;
-    let certificates = if parsed.signing_certificates.is_empty() {
-        parsed.unspecified_certificates
-    } else {
-        parsed.signing_certificates
-    };
+    let certificates: Vec<String> = parsed
+        .signing_certificates
+        .into_iter()
+        .chain(parsed.unspecified_certificates)
+        .collect();
     Ok(ImportedIdpMetadata {
         entity_id: parsed.entity_id,
         sso_url: parsed.endpoint_url,
@@ -279,7 +295,8 @@ fn parse_entity(xml: &str, role: Role) -> Result<ParsedEntity> {
     let entity_id = entity_id.filter(|s| !s.trim().is_empty()).ok_or_else(|| {
         DomainError::InvalidValue("SAML metadata is missing entityID".to_string())
     })?;
-    let endpoint_url = pick_by_binding(&endpoints, role.preferred_bindings())
+    let endpoint_url = role
+        .pick_endpoint(&endpoints)
         .ok_or_else(|| DomainError::InvalidValue(role.missing_endpoint().to_string()))?;
 
     Ok(ParsedEntity {
@@ -545,20 +562,57 @@ mod tests {
         assert_eq!(parsed.certificates, vec!["CURRENT==", "NEXT=="]);
     }
 
-    /// `use` の無い `KeyDescriptor` は署名にも使える意味なので、署名用が 1 枚も無ければ採用する。
+    /// `use` の無い `KeyDescriptor` は署名にも暗号化にも使える意味なので、**署名用と並べて**返す。
+    /// 明示された署名用があるからといって落とすと、更新期間に相手が `use` 無しの鍵で署名した
+    /// 瞬間にログインが止まる。`use="encryption"` だけは除く。
     #[test]
-    fn falls_back_to_certificates_without_a_use_attribute() {
+    fn keeps_certificates_without_a_use_attribute_alongside_signing_ones() {
         let xml = r#"<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata"
                                        xmlns:ds="http://www.w3.org/2000/09/xmldsig#"
                                        entityID="urn:idp">
   <IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+    <KeyDescriptor use="signing"><ds:KeyInfo><ds:X509Data><ds:X509Certificate>SIGNING==</ds:X509Certificate></ds:X509Data></ds:KeyInfo></KeyDescriptor>
     <KeyDescriptor><ds:KeyInfo><ds:X509Data><ds:X509Certificate>ANY==</ds:X509Certificate></ds:X509Data></ds:KeyInfo></KeyDescriptor>
-    <SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="https://idp.test/sso"/>
+    <KeyDescriptor use="encryption"><ds:KeyInfo><ds:X509Data><ds:X509Certificate>ENCRYPTION==</ds:X509Certificate></ds:X509Data></ds:KeyInfo></KeyDescriptor>
+    <SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.test/sso"/>
   </IDPSSODescriptor>
 </EntityDescriptor>"#;
         let parsed = parse_idp_metadata(xml).expect("parse");
-        assert_eq!(parsed.certificates, vec!["ANY=="]);
+        assert_eq!(parsed.certificates, vec!["SIGNING==", "ANY=="]);
         assert_eq!(parsed.sso_url, "https://idp.test/sso");
+    }
+
+    /// **HTTP-Redirect binding の SSO しか取り込まない。** ログイン開始は必ず HTTP-Redirect で
+    /// `AuthnRequest` を送るので、他のバインディングの URL を取り込むと「登録は通るのに、
+    /// ログインのたびに相手が受け付けない形式で送る」設定ができる。取り込みの時点で落とす。
+    #[test]
+    fn only_the_http_redirect_sso_endpoint_is_imported() {
+        let with_both = r#"<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="urn:idp">
+  <IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+    <SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="https://idp.test/sso/post"/>
+    <SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.test/sso/redirect"/>
+  </IDPSSODescriptor>
+</EntityDescriptor>"#;
+        assert_eq!(
+            parse_idp_metadata(with_both).expect("parse").sso_url,
+            "https://idp.test/sso/redirect"
+        );
+
+        // POST しか無い・SOAP のような送れないバインディングしか無いメタデータは取り込まない。
+        for unusable in [
+            r#"<SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="https://idp.test/sso"/>"#,
+            r#"<SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:SOAP" Location="https://idp.test/soap"/>"#,
+        ] {
+            let xml = format!(
+                r#"<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="urn:idp">
+  <IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">{unusable}</IDPSSODescriptor>
+</EntityDescriptor>"#
+            );
+            assert!(
+                parse_idp_metadata(&xml).is_err(),
+                "a binding the login flow cannot send must not be imported: {unusable}"
+            );
+        }
     }
 
     /// **向きを取り違えない。** SP のメタデータを外部 IdP として取り込もうとすると失敗する

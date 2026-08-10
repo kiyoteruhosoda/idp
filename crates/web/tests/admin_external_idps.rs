@@ -376,7 +376,11 @@ async fn registering_a_saml_provider_sends_only_the_saml_fields() {
                 ("client_id", "abc"),
                 ("scopes", "openid email"),
                 ("saml_sso_url", "https://idp.example.com/sso"),
-                ("saml_certificates", "MIIB\nCURRENT==\n\nMIIB\nNEXT=="),
+                // ブラウザは textarea の改行を CRLF にして送る。ここも同じ形で送る。
+                (
+                    "saml_certificates",
+                    "MIIB\r\nCURRENT==\r\n\r\nMIIB\r\nNEXT==",
+                ),
                 (
                     "saml_name_id_format",
                     "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent",

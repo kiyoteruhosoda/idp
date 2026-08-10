@@ -454,12 +454,30 @@ fn parse_scopes(raw: &str) -> Vec<String> {
 }
 
 /// 証明書欄を配列へ。**空行で区切る**——PEM の本文は行で折り返されるため、行区切りにすると
-/// 1 枚の証明書が複数枚に割れる。各証明書内の改行・空白は api 側で除去される。
+/// 1 枚の証明書が複数枚に割れる。各証明書内の改行・空白はここで畳む。
+///
+/// 区切りは `"\n\n"` の**文字列一致では判定しない**。`textarea` の値はブラウザが送信時に改行を
+/// CRLF へ正規化するため、空行は `"\r\n\r\n"` で届く。文字列一致にすると区切りが 1 つも
+/// 見つからず、全部の証明書が 1 つの base64 に繋がって**どれも読めなくなる**（複数枚を必要と
+/// する証明書更新期間に、まさに効かなくなる）。行に分けて「空白だけの行」を区切りとして扱う。
 fn parse_certificates(raw: &str) -> Vec<String> {
-    raw.split("\n\n")
-        .map(|block| block.split_whitespace().collect::<String>())
-        .filter(|block| !block.is_empty())
-        .collect()
+    // 単独の CR（改行として送るクライアントは事実上無いが、来れば区切りが消える）も改行に均す。
+    let normalized = raw.replace("\r\n", "\n").replace('\r', "\n");
+    let mut blocks = Vec::new();
+    let mut current = String::new();
+    for line in normalized.lines() {
+        if line.trim().is_empty() {
+            if !current.is_empty() {
+                blocks.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.extend(line.split_whitespace());
+        }
+    }
+    if !current.is_empty() {
+        blocks.push(current);
+    }
+    blocks
 }
 
 fn values_from(provider: &ExternalIdpView) -> ExternalIdpFormValues {
@@ -568,6 +586,22 @@ mod tests {
         );
         assert_eq!(parse_certificates("MIIB\nAAAA=="), vec!["MIIBAAAA=="]);
         assert!(parse_certificates("  \n\n  ").is_empty());
+    }
+
+    /// **ブラウザは `textarea` の改行を CRLF にして送る。** 区切りを `"\n\n"` の文字列一致で
+    /// 探すと空行が 1 つも見つからず、全部が 1 つの base64 に繋がって**どれも読めなくなる**
+    /// （複数枚を必要とする証明書更新期間に、まさに効かなくなる）。
+    #[test]
+    fn crlf_from_a_browser_still_separates_the_certificates() {
+        assert_eq!(
+            parse_certificates("MIIB\r\nAAAA==\r\n\r\nMIIC\r\nBBBB=="),
+            vec!["MIIBAAAA==", "MIICBBBB=="]
+        );
+        // 区切りの空行に空白が混ざっていても区切りとして扱う（貼り付けで紛れ込む）。
+        assert_eq!(
+            parse_certificates("MIIB\r\nAAAA==\r\n \t\r\nMIIC\r\nBBBB=="),
+            vec!["MIIBAAAA==", "MIICBBBB=="]
+        );
     }
 
     /// **選んだプロトコルの欄だけ**を送る。両方送ると api が半端な設定を作れてしまい、
