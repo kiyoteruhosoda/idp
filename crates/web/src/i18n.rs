@@ -159,6 +159,34 @@ impl Messages {
 mod tests {
     use super::*;
 
+    /// **翻訳リソースが構文エラー無しで読めること。**
+    ///
+    /// Fluent の構文エラーは読み込みを止めない —— 壊れた項目だけが落ち、画面にはキー名
+    /// （`admin-settings-sms-note` のような文字列）がそのまま出る。起動ログに ERROR は残るが、
+    /// 誰も見ていなければ気づかない。実際、本文に JSON の波括弧を書いた項目が
+    /// この形で壊れていた（波括弧は変数展開の記号なので、literal は `{"{"}` と書く）。
+    #[test]
+    fn every_bundled_translation_parses_without_errors() {
+        for locale in [Locale::En, Locale::Ja] {
+            if let Err((_, errors)) = FluentResource::try_new(locale.ftl().to_string()) {
+                panic!("{:?} has fluent syntax errors: {errors:?}", locale);
+            }
+        }
+    }
+
+    /// 波括弧を含む文言が、エスケープ後も**波括弧のまま**出る（エスケープの書き方が
+    /// 合っていることの確認。落ちていると管理者は中継に渡す JSON の形を知れない）。
+    #[test]
+    fn a_message_with_literal_braces_renders_them() {
+        for locale in [Locale::En, Locale::Ja] {
+            let rendered = Messages::new(locale).get("admin-settings-sms-note");
+            assert!(
+                rendered.contains(r#"{"to""#),
+                "{locale:?}: expected literal JSON braces, got {rendered}"
+            );
+        }
+    }
+
     #[test]
     fn selects_locale_from_accept_language() {
         assert_eq!(Locale::from_accept_language(None), Locale::Ja);
