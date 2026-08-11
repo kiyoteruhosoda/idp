@@ -558,3 +558,51 @@ async fn require_mfa_policy_is_enforced_after_forced_password_change() {
         "forced-change flow must not bypass require_mfa: {body}"
     );
 }
+
+/// **未知のキーを黙って捨てない。** 条件名のタイポや未対応の条件（`country` など）を書いた要求が
+/// 200 で返ると、その制限が掛かっていないポリシーが保存されるのに、送った側は絞ったつもりでいる
+/// —— 認証ポリシーでは「設定できたのに効いていない」が最も危ない壊れ方である（ADR-0028）。
+#[tokio::test]
+async fn an_unknown_condition_key_is_rejected_instead_of_being_dropped() {
+    let Some(env) = support::setup("auth policy unknown key").await else {
+        return;
+    };
+    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let uri = format!("/{}/admin/authentication-policies", env.root_tenant_id);
+
+    for unknown in [
+        // 未対応の条件（実装しないと決めたもの。ADR-0028）。
+        json!({"country": ["JP"]}),
+        // 実在する条件のタイポ。無視されると「全ネットワークに一致する deny」になる。
+        json!({"ip_cidr": ["10.0.0.0/8"]}),
+    ] {
+        let mut body = json!({
+            "policy_code": format!("unknown-{}", support::unique()),
+            "policy_name": "Unknown condition",
+            "priority": 10,
+            "effect": "deny",
+        });
+        for (key, value) in unknown.as_object().expect("object") {
+            body[key] = value.clone();
+        }
+        // 422（`Json` 抽出器の拒否）。近くの「effect 不正 → 400」と違うのは、あちらが
+        // 読めたうえで業務検証に落ちるのに対し、こちらは**本文が読めない**ためである。
+        let res = send(&env.app, post(&admin_cookie, &uri, body.clone())).await;
+        assert_eq!(
+            res.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "an unknown key must not be silently dropped: {body}"
+        );
+    }
+
+    // 取りこぼしが無いこと（弾かれた要求で行ができていない）。
+    let res = send(&env.app, get(&admin_cookie, &uri)).await;
+    let listed = body_json(res).await;
+    let policies = listed["policies"].as_array().expect("policies");
+    assert!(
+        !policies.iter().any(|p| p["policy_code"]
+            .as_str()
+            .is_some_and(|c| c.starts_with("unknown-"))),
+        "rejected requests must not create policies: {listed}"
+    );
+}
