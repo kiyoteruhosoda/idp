@@ -23,12 +23,35 @@ impl SqlxUserRepository {
     }
 }
 
-const SELECT_COLUMNS: &str = "id, tenant_id, sub, email, email_verified, preferred_username, \
-     name, language, password_hash, must_change_password, password_changed_at, status, \
-     failed_login_count, locked_until, created_at, updated_at";
+/// `users` の列と、**登録簿から連れてくる主たるログイン識別子**。
+///
+/// AP15b で `users.preferred_username` を撤去したので、この 1 列だけは
+/// `user_login_identifiers` の主識別子行（`primary_of_user`）から引く。JOIN ではなく相関
+/// サブクエリにするのは、主識別子を持たない利用者（管理者が作ってユーザー名を付けていない
+/// アカウント）を落とさないため —— `find_by_id` が突然 `None` を返すようになる。
+const SELECT_COLUMNS: &str = "u.id AS id, u.tenant_id AS tenant_id, u.sub AS sub, \
+     u.email AS email, u.email_verified AS email_verified, \
+     (SELECT p.display_value FROM user_login_identifiers p WHERE p.primary_of_user = u.id) \
+        AS preferred_username, \
+     u.name AS name, u.language AS language, u.password_hash AS password_hash, \
+     u.must_change_password AS must_change_password, \
+     u.password_changed_at AS password_changed_at, u.status AS status, \
+     u.failed_login_count AS failed_login_count, u.locked_until AS locked_until, \
+     u.created_at AS created_at, u.updated_at AS updated_at";
 
 fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
+}
+
+/// 登録簿の一意制約（tenant × 種別 × 正規化値）違反を `Conflict` として返す。事前チェックを
+/// すり抜けた同時実行はここで捕まる（AP15b でこの制約が主識別子にも効くようになった）。
+fn identifier_conflict(e: sqlx::Error) -> DomainError {
+    match &e {
+        sqlx::Error::Database(db) if db.is_unique_violation() => DomainError::Conflict(
+            "preferred_username is already used as a login identifier by another user".to_string(),
+        ),
+        _ => DomainError::Repository(e.to_string()),
+    }
 }
 
 fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
@@ -67,28 +90,21 @@ fn map_row(row: &MySqlRow) -> Result<User> {
     })
 }
 
-/// 主たるログイン識別子（`users.preferred_username`）を登録簿へ同期する（AP15）。
+/// 主たるログイン識別子を登録簿へ書き込む（AP15b で**唯一の置き場所**になった）。
 ///
-/// 移行中は**両方に在る**。登録簿だけに書くとローリングデプロイ中の古いプロセス（`users` しか
-/// 読まない）がログインさせられず、`users` だけに書くと新しいプロセスの一覧・クレームから
-/// 主識別子が消える。撤去（`users.preferred_username` を落とす）は次のリリース。
-///
-/// `preferred_username` が `None`・空のときは登録簿の主識別子行を削除する（解除）。
+/// `preferred_username` が `None`・空のときは主識別子行を削除する（解除）。
 ///
 /// # 同じ値を他人が持っているとき
 ///
-/// その値が**他人**の識別子として既に登録簿に在る場合は、登録簿を触らずに `users` 側だけを
-/// 正とする。`users.preferred_username` への一意制約は、その値が他人の**追加**識別子として
-/// 登録されている場合までは弾かないので、この状況は実際に起こりうる。
+/// **`Conflict` で失敗させる。** 前半（expand）の間は「登録簿を諦めて `users` 側を正とする」で
+/// 済ませていた —— どちらにも在り、`users` 側で解決され続けたからである。列を落とした今、
+/// 諦めると**そのユーザー名でログインできない利用者を黙って作る**ことになる。
 ///
-/// ここで `ON DUPLICATE KEY UPDATE` を使うと、一意キー（tenant × 種別 × 正規化値）の衝突で
-/// **他人の行が書き換わる**（`user_id` は更新されないので、他人の識別子の表示値・有効状態だけが
-/// 変わる）。それは黙って他人のログインを壊す。エラーにして操作ごと失敗させるのも過剰で、
-/// 移行前は通っていたプロフィール編集が通らなくなる。そこで migration 0036 と**同じ判断**を採る
-/// ——登録簿は諦め、その利用者は `users.preferred_username` へのフォールバックで解決され続ける
-/// （フォールバックは撤去まで残る）。
-async fn sync_primary_login_identifier<'e>(
-    executor: impl sqlx::Executor<'e, Database = sqlx::MySql> + Copy,
+/// 衝突は 2 通りの経路で当たる。他人の**追加**識別子と同じ値なら下の事前チェックが、同時実行で
+/// すり抜けたものは登録簿の一意制約（tenant × 種別 × 正規化値）が捕まえる。移送が済んだことで、
+/// ADR-0025 が「残る限界」として挙げていた同時実行の窓は DB 側で塞がった。
+async fn sync_primary_login_identifier(
+    conn: &mut sqlx::MySqlConnection,
     user_id: Uuid,
     preferred_username: Option<&str>,
 ) -> Result<()> {
@@ -99,7 +115,7 @@ async fn sync_primary_login_identifier<'e>(
             "DELETE FROM user_login_identifiers WHERE user_id = ? AND primary_of_user IS NOT NULL",
         )
         .bind(user_id.to_string())
-        .execute(executor)
+        .execute(&mut *conn)
         .await
         .map_err(repo_err)?;
         return Ok(());
@@ -117,15 +133,14 @@ async fn sync_primary_login_identifier<'e>(
     )
     .bind(user_id.to_string())
     .bind(&normalized)
-    .fetch_optional(executor)
+    .fetch_optional(&mut *conn)
     .await
     .map_err(repo_err)?;
     if taken_by_someone_else.is_some() {
-        // 値そのものは PII なので出さない（`docs/CLAUDE.md`「ログ」）。
-        tracing::warn!(
-            "primary login identifier not mirrored into the registry: value already taken by another user"
-        );
-        return Ok(());
+        // 値そのものは PII なので出さない（`CLAUDE.md`「ログ」）。
+        return Err(DomainError::Conflict(
+            "preferred_username is already used as a login identifier by another user".to_string(),
+        ));
     }
 
     // 主識別子は 1 利用者 1 行（`primary_of_user` の UNIQUE が保証する）。既存行があれば
@@ -136,7 +151,7 @@ async fn sync_primary_login_identifier<'e>(
         "SELECT id FROM user_login_identifiers WHERE user_id = ? AND primary_of_user IS NOT NULL",
     )
     .bind(user_id.to_string())
-    .fetch_optional(executor)
+    .fetch_optional(&mut *conn)
     .await
     .map_err(repo_err)?;
 
@@ -151,9 +166,9 @@ async fn sync_primary_login_identifier<'e>(
             .bind(value)
             .bind(&normalized)
             .bind(id)
-            .execute(executor)
+            .execute(&mut *conn)
             .await
-            .map_err(repo_err)?;
+            .map_err(identifier_conflict)?;
         }
         None => {
             sqlx::query(
@@ -166,32 +181,32 @@ async fn sync_primary_login_identifier<'e>(
             .bind(value)
             .bind(&normalized)
             .bind(user_id.to_string())
-            .execute(executor)
+            .execute(&mut *conn)
             .await
-            .map_err(repo_err)?;
+            .map_err(identifier_conflict)?;
         }
     }
     Ok(())
 }
 
-/// users への INSERT（プール直接実行と provisioning トランザクションで共用する）。
-pub(crate) async fn insert_user<'e>(
-    executor: impl sqlx::Executor<'e, Database = sqlx::MySql> + Copy,
-    user: &User,
-) -> Result<()> {
+/// users への INSERT と、主たるログイン識別子の登録。
+///
+/// **必ず同じトランザクションで行う。** ユーザー名が他人と衝突すると識別子の側が `Conflict` で
+/// 失敗するが（AP15b）、`users` の行だけが残ると「ログインする手段を持たない利用者」が
+/// できてしまう。呼び出し側にトランザクションを渡させるのはそのためである。
+async fn insert_user(conn: &mut sqlx::MySqlConnection, user: &User) -> Result<()> {
     sqlx::query(
         "INSERT INTO users \
-         (id, tenant_id, sub, email, email_verified, preferred_username, name, language, \
+         (id, tenant_id, sub, email, email_verified, name, language, \
           password_hash, must_change_password, password_changed_at, status, failed_login_count, \
           locked_until) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(user.id.to_string())
     .bind(user.tenant_id.to_string())
     .bind(user.sub.to_string())
     .bind(&user.email)
     .bind(user.email_verified)
-    .bind(&user.preferred_username)
     .bind(&user.name)
     .bind(&user.language)
     .bind(&user.password_hash)
@@ -200,26 +215,31 @@ pub(crate) async fn insert_user<'e>(
     .bind(user.status.as_str())
     .bind(user.failed_login_count)
     .bind(user.locked_until.map(|d| d.naive_utc()))
-    .execute(executor)
+    .execute(&mut *conn)
     .await
     .map_err(|e| match &e {
         sqlx::Error::Database(db) if db.is_unique_violation() => {
-            DomainError::Conflict("email or preferred_username already exists".to_string())
+            DomainError::Conflict("email already exists".to_string())
         }
         _ => DomainError::Repository(e.to_string()),
     })?;
-    sync_primary_login_identifier(executor, user.id, user.preferred_username.as_deref()).await?;
+    // 主たるログイン識別子の置き場所は登録簿だけである（AP15b）。値が他人と衝突していれば
+    // ここで `Conflict` になり、利用者の作成ごと失敗する。
+    sync_primary_login_identifier(conn, user.id, user.preferred_username.as_deref()).await?;
     Ok(())
 }
 
 #[async_trait]
 impl UserRepository for SqlxUserRepository {
     async fn create(&self, user: &User) -> Result<()> {
-        insert_user(&self.pool, user).await
+        let mut tx = self.pool.begin().await.map_err(repo_err)?;
+        insert_user(&mut tx, user).await?;
+        tx.commit().await.map_err(repo_err)?;
+        Ok(())
     }
 
     async fn find_by_id(&self, id: Uuid) -> Result<Option<User>> {
-        let sql = format!("SELECT {SELECT_COLUMNS} FROM users WHERE id = ?");
+        let sql = format!("SELECT {SELECT_COLUMNS} FROM users u WHERE u.id = ?");
         let row = sqlx::query(&sql)
             .bind(id.to_string())
             .fetch_optional(&self.pool)
@@ -229,7 +249,7 @@ impl UserRepository for SqlxUserRepository {
     }
 
     async fn find_by_sub(&self, sub: Uuid) -> Result<Option<User>> {
-        let sql = format!("SELECT {SELECT_COLUMNS} FROM users WHERE sub = ?");
+        let sql = format!("SELECT {SELECT_COLUMNS} FROM users u WHERE u.sub = ?");
         let row = sqlx::query(&sql)
             .bind(sub.to_string())
             .fetch_optional(&self.pool)
@@ -239,7 +259,8 @@ impl UserRepository for SqlxUserRepository {
     }
 
     async fn find_by_email(&self, tenant_id: TenantId, email: &str) -> Result<Option<User>> {
-        let sql = format!("SELECT {SELECT_COLUMNS} FROM users WHERE tenant_id = ? AND email = ?");
+        let sql =
+            format!("SELECT {SELECT_COLUMNS} FROM users u WHERE u.tenant_id = ? AND u.email = ?");
         let row = sqlx::query(&sql)
             .bind(tenant_id.to_string())
             .bind(email)
@@ -249,13 +270,22 @@ impl UserRepository for SqlxUserRepository {
         row.as_ref().map(map_row).transpose()
     }
 
+    /// 主たるログイン識別子（ユーザー名）で引く。
+    ///
+    /// 照合は登録簿の正規化値で行う（AP15b）。`users.preferred_username` の照合は照合順序
+    /// （`utf8mb4_unicode_ci`）任せで大小を無視していたが、登録簿は種別ごとの正規化を
+    /// **明示的に**持っている。同じ規則を通すために、入力もここで正規化する。
     async fn find_by_username(&self, tenant_id: TenantId, username: &str) -> Result<Option<User>> {
+        use crate::domain::login_identifier::LoginIdentifierType;
+
         let sql = format!(
-            "SELECT {SELECT_COLUMNS} FROM users WHERE tenant_id = ? AND preferred_username = ?"
+            "SELECT {SELECT_COLUMNS} FROM users u \
+             JOIN user_login_identifiers p ON p.primary_of_user = u.id \
+             WHERE u.tenant_id = ? AND p.normalized_value = ?"
         );
         let row = sqlx::query(&sql)
             .bind(tenant_id.to_string())
-            .bind(username)
+            .bind(LoginIdentifierType::Username.normalize(username))
             .fetch_optional(&self.pool)
             .await
             .map_err(repo_err)?;
@@ -275,8 +305,10 @@ impl UserRepository for SqlxUserRepository {
     /// 認証を通すより、通さない方を選ぶ（候補生成側でも起きにくくしてある。
     /// [`crate::domain::login_identifier::lookup_candidates`]）。
     ///
-    /// 一致が無ければ `users.preferred_username` へ落とす。登録簿の導入は expand フェーズで、
-    /// 主たる識別子はまだ `users` 側にあるため（migration 0029）。
+    /// **登録簿だけを見る。** 主識別子も登録簿の行になったので（AP15b）、`users` 側への
+    /// フォールバックは無い。無いことに意味がある —— フォールバックが残っていると、
+    /// 登録簿で無効化した識別子でも `users` 側で解決されて認証が通り、「止めたのに使える」
+    /// 識別子ができる。
     async fn find_by_login_identifier(
         &self,
         tenant_id: TenantId,
@@ -286,14 +318,7 @@ impl UserRepository for SqlxUserRepository {
         if !candidates.is_empty() {
             let placeholders = vec!["(?, ?)"; candidates.len()].join(", ");
             let sql = format!(
-                "SELECT DISTINCT u.id AS id, u.tenant_id AS tenant_id, u.sub AS sub, \
-                 u.email AS email, u.email_verified AS email_verified, \
-                 u.preferred_username AS preferred_username, u.name AS name, \
-                 u.language AS language, u.password_hash AS password_hash, \
-                 u.must_change_password AS must_change_password, \
-                 u.password_changed_at AS password_changed_at, u.status AS status, \
-                 u.failed_login_count AS failed_login_count, u.locked_until AS locked_until, \
-                 u.created_at AS created_at, u.updated_at AS updated_at \
+                "SELECT DISTINCT {SELECT_COLUMNS} \
                  FROM user_login_identifiers i \
                  JOIN users u ON u.id = i.user_id \
                  WHERE i.tenant_id = ? AND i.is_active = 1 \
@@ -318,7 +343,7 @@ impl UserRepository for SqlxUserRepository {
                 }
             }
         }
-        self.find_by_username(tenant_id, input.trim()).await
+        Ok(None)
     }
 
     async fn update_login_state(
@@ -485,23 +510,26 @@ impl UserRepository for SqlxUserRepository {
         preferred_username: Option<&str>,
         name: Option<&str>,
     ) -> Result<()> {
-        sqlx::query("UPDATE users SET email = ?, preferred_username = ?, name = ? WHERE id = ?")
+        // メール・表示名とユーザー名を**同じトランザクションで**更新する。ユーザー名が他人と
+        // 衝突すると識別子の側が `Conflict` になるが（AP15b）、そこで `users` の変更だけが
+        // 残ると「エラーを返したのに変更は起きている」状態を外へ見せてしまう。
+        let mut tx = self.pool.begin().await.map_err(repo_err)?;
+        sqlx::query("UPDATE users SET email = ?, name = ? WHERE id = ?")
             .bind(email)
-            .bind(preferred_username)
             .bind(name)
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(|e| match &e {
                 // 事前チェックとの競合（同時更新）は DB の UNIQUE 制約が最終的に保証する。
                 sqlx::Error::Database(db) if db.is_unique_violation() => {
-                    DomainError::Conflict("email or preferred_username already exists".to_string())
+                    DomainError::Conflict("email already exists".to_string())
                 }
                 _ => DomainError::Repository(e.to_string()),
             })?;
-        // 主識別子は移行中どちらにも在る。`users` だけ変えると、登録簿を見る経路（一覧・
-        // `preferred_username` クレーム・ログイン解決）が**古い名前**を指したままになる。
-        sync_primary_login_identifier(&self.pool, id, preferred_username).await?;
+        // ユーザー名の置き場所は登録簿だけである（AP15b）。
+        sync_primary_login_identifier(&mut tx, id, preferred_username).await?;
+        tx.commit().await.map_err(repo_err)?;
         Ok(())
     }
 }

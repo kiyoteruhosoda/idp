@@ -121,18 +121,33 @@ async fn create_login_user(stack: &Stack, password: &str) -> String {
         .expect("hash password");
     let id = uuid::Uuid::now_v7().to_string();
     sqlx::query(
-        "INSERT INTO users (id, tenant_id, sub, email, email_verified, preferred_username, \
-         password_hash, status) VALUES (?, ?, ?, ?, 1, ?, ?, 'ACTIVE')",
+        "INSERT INTO users (id, tenant_id, sub, email, email_verified, password_hash, status) \
+         VALUES (?, ?, ?, ?, 1, ?, 'ACTIVE')",
     )
     .bind(&id)
     .bind(&stack.root_tenant_id)
     .bind(uuid::Uuid::now_v7().to_string())
     .bind(format!("{username}@example.com"))
-    .bind(&username)
     .bind(&hash)
     .execute(&stack.pool)
     .await
     .expect("insert user");
+    // ユーザー名は登録簿の主識別子行として持つ（AP15b）。ここが無いとログインできない。
+    sqlx::query(
+        "INSERT INTO user_login_identifiers \
+         (id, tenant_id, user_id, identifier_type, display_value, normalized_value, is_active, \
+          primary_of_user) \
+         VALUES (?, ?, ?, 'username', ?, ?, 1, ?)",
+    )
+    .bind(uuid::Uuid::now_v7().to_string())
+    .bind(&stack.root_tenant_id)
+    .bind(&id)
+    .bind(&username)
+    .bind(username.to_lowercase())
+    .bind(&id)
+    .execute(&stack.pool)
+    .await
+    .expect("insert primary login identifier");
     sqlx::query(
         "INSERT INTO tenant_memberships (tenant_id, user_id, membership_type, status) \
          VALUES (?, ?, 'HOME', 'ACTIVE')",

@@ -25,7 +25,8 @@ sqlx マイグレーション（MariaDB）を管理する。
   `clients`（テナント内一意の `client_id`）・`permissions`・`user_permissions`（scope = `tenant_id`）・
   `auth_sessions` / `authorization_codes` / `refresh_tokens` / `client_consents`
   （`(tenant_id, client_id)` 複合外部キー）・`sso_sessions`（ホスト共有のため tenant なし）・
-  `signing_keys`・`revoked_access_tokens`・`user_totp_secrets`・`user_webauthn_credentials`・
+  `signing_keys`・`revoked_access_tokens`・`user_totp_secrets`・`user_webauthn_credentials`
+  （どちらも 0038 で削除。秘密は `user_authenticators` へ）・
   `passkey_challenges`・`audit_log`（`tenant_id` 追跡列）。
 - `0002_seed_master_data`: マスタデータ seed（冪等）。root テナント（**固定 UUID**
   `00000000-0000-7000-8000-000000000001`。全環境共通で git 管理する。ADR-0011）、
@@ -166,6 +167,26 @@ root テナントの UUID は固定値 `00000000-0000-7000-8000-000000000001`（
   （撤去の前に運用で解消する必要があり、`docs/Progress.md` に残してある）。`down` は
   **本マイグレーションが作った行だけ**（作成時刻 = 更新時刻）を消して列を落とす —— 格上げした行は
   管理者が足した設定なので消さない。
+
+- `0038_drop_legacy_authenticator_secrets`: 認証器の秘密の置き場所を登録簿へ一本化する
+  （AP11b。AP9 の contract フェーズ **後半**）。`user_totp_secrets` / `user_webauthn_credentials` と
+  `credential_ref` 列を落とす。**落とす前に 0035 と同じ取り込みをもう一度流す** —— 前半のコードで
+  登録された認証器は、登録順の都合で秘密が元の表にしか無い（パスキーは登録簿の行が出来る前に
+  UPDATE が走り、TOTP は直前の失効させられる行へ書かれる）。ここを省くと、前半の期間に MFA を
+  登録した利用者だけが通れなくなる。**適用してよいのは 0035 を含むリリースが全ノードへ行き渡って
+  から**（元の表しか読まない古いプロセスが残っていると MFA を通せなくなる）。`down` は表と列を
+  作り直し、登録簿から書き戻す（値は登録簿が最新なので完全に戻る）。
+
+- `0039_drop_users_preferred_username`: 主たるログイン識別子を登録簿だけに置く（AP15b。AP8 の
+  contract フェーズ **後半**）。`users.preferred_username` と一意索引を落とす。落とす前に
+  (1) 主識別子行の無い利用者を取り込み、(2) **行はあるが古い値を指している**利用者を `users` 側へ
+  揃える —— 0036 の backfill 後に古いプロセスが改名すると `users` だけが新しくなり、行の有無しか
+  見ていないと新しい名前が消えて古い名前が生き残る。そのうえで **`users.preferred_username` と
+  登録簿が一致しない利用者が 1 人でも残っていたら失敗させる**（CHECK 制約付きの guard 表。制約名が
+  そのままエラー文になる）。値の衝突で揃えられなかった利用者は、列を落とすとその人だけが
+  ユーザー名でログインできなくなる —— 当人以外には見えない壊れ方なので、黙って進めない。
+  重複を解消してから再実行する（guard 表は `IF NOT EXISTS` で作るので再実行できる）。**適用してよいのは 0036 を
+  含むリリースが全ノードへ行き渡ってから**。`down` は列を作り直し、登録簿の主識別子から書き戻す。
 
 - `0037_external_idp_protocol`: 外部 IdP に SAML を足す（AP12。ADR-0027）。`protocol` 列
   （`oidc` / `saml`。VARCHAR + CHECK）と SAML 固有の列（SSO URL・署名証明書の配列・NameID 形式）を

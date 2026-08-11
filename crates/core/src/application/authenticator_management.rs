@@ -252,7 +252,6 @@ impl AuthenticatorManagementService {
                 label: String::new(),
                 // 平文は返り値でしか出さない。DB はハッシュのみ（他の bearer credential と同じ）。
                 secret_encrypted: Some(crypto::sha256_hex(&code)),
-                credential_ref: None,
                 target: None,
                 confirmed_at: Some(now),
                 last_used_at: None,
@@ -360,7 +359,6 @@ impl AuthenticatorManagementService {
             status: AuthenticatorStatus::Active,
             label: String::new(),
             secret_encrypted: Some(crypto::sha256_hex(&code)),
-            credential_ref: None,
             target: Some(user.email.clone()),
             confirmed_at: Some(now),
             last_used_at: None,
@@ -456,7 +454,6 @@ impl AuthenticatorManagementService {
             status: AuthenticatorStatus::Pending,
             label: String::new(),
             secret_encrypted: Some(crypto::sha256_hex(&code)),
-            credential_ref: None,
             target: Some(phone.clone()),
             confirmed_at: None,
             last_used_at: None,
@@ -553,7 +550,6 @@ impl AuthenticatorManagementService {
             status: AuthenticatorStatus::Active,
             label: String::new(),
             secret_encrypted: Some(crypto::sha256_hex(&code)),
-            credential_ref: None,
             target: Some(phone.clone()),
             confirmed_at: Some(now),
             last_used_at: None,
@@ -696,9 +692,9 @@ impl AuthenticatorManagementService {
             authenticator_type: AuthenticatorType::Totp,
             status: AuthenticatorStatus::Pending,
             label: String::new(),
-            // TOTP のシークレットは `user_totp_secrets` にある（登録簿は状態だけを持つ）。
+            // 共有鍵はこの直後に `TotpSecretRepository::upsert` がこの行へ載せる（AP11b。
+            // 行を先に作るのはそのため —— 逆順にすると載せる先が無い）。
             secret_encrypted: None,
-            credential_ref: None,
             target: None,
             confirmed_at: None,
             last_used_at: None,
@@ -744,41 +740,14 @@ impl AuthenticatorManagementService {
             .map_err(|e| AuthenticatorManagementError::Internal(e.to_string()))
     }
 
-    /// WebAuthn クレデンシャルの登録を登録簿へ積む。
-    pub async fn register_webauthn(
-        &self,
-        user_id: Uuid,
-        credential_ref: Uuid,
-        label: &str,
-    ) -> Result<(), AuthenticatorManagementError> {
-        let now = self.clock.now();
-        let row = UserAuthenticator {
-            id: self.ids.new_id(),
-            user_id,
-            authenticator_type: AuthenticatorType::WebAuthn,
-            status: AuthenticatorStatus::Active,
-            label: label.to_string(),
-            secret_encrypted: None,
-            credential_ref: Some(credential_ref),
-            target: None,
-            confirmed_at: Some(now),
-            last_used_at: None,
-            expires_at: None,
-            revoked_at: None,
-            created_at: now,
-            updated_at: now,
-        };
-        self.authenticators
-            .create(&row)
-            .await
-            .map_err(|e| AuthenticatorManagementError::Internal(e.to_string()))
-    }
-
-    /// WebAuthn クレデンシャルの削除を登録簿へ反映する（対象が無ければ何もしない）。
+    /// WebAuthn クレデンシャルの失効を登録簿へ反映する（対象が無ければ何もしない）。
+    ///
+    /// `credential_id` は登録簿の行 id ＝ パスキー 1 本の識別子である。AP11b で元の表を落とし、
+    /// 「呼び出し側が持っている id がどちらの表のものか」という曖昧さは無くなった。
     pub async fn revoke_webauthn(
         &self,
         user_id: Uuid,
-        credential_ref: Uuid,
+        credential_id: Uuid,
     ) -> Result<(), AuthenticatorManagementError> {
         let now = self.clock.now();
         let rows = self
@@ -786,13 +755,7 @@ impl AuthenticatorManagementService {
             .list_for_user(user_id)
             .await
             .map_err(|e| AuthenticatorManagementError::Internal(e.to_string()))?;
-        // 移行中（AP11）は、呼び出し側が持っている id が登録簿の行 id か元の表の行 id かに
-        // 定まらない。どちらでも当たるようにする（どちらか片方だけ見ると、移送後に登録した
-        // パスキーを消しても登録簿に残る／その逆が起きる）。
-        let Some(target) = rows
-            .into_iter()
-            .find(|a| a.credential_ref == Some(credential_ref) || a.id == credential_ref)
-        else {
+        let Some(target) = rows.into_iter().find(|a| a.id == credential_id) else {
             return Ok(());
         };
         self.authenticators
@@ -837,7 +800,6 @@ impl AuthenticatorManagementService {
             status: AuthenticatorStatus::Active,
             label: String::new(),
             secret_encrypted: None,
-            credential_ref: None,
             target: None,
             confirmed_at: Some(now),
             last_used_at: None,
@@ -863,33 +825,27 @@ impl AuthenticatorManagementService {
 
 /// 登録簿で**止められている**認証器かを判定する（AP9。認証経路のゲート）。
 ///
-/// AP9 は expand フェーズで、秘密は今も `user_totp_secrets` / `user_webauthn_credentials` に
-/// あり、検証もそちらを読む。だが一時停止・失効は登録簿にしか書かれないため、**認証経路が
-/// 登録簿を見なければ「止めたはずの認証器で入れてしまう」**。画面が「停止中」と言っている
-/// ものは入れてはいけない。この関数がその橋渡しをする。
+/// 秘密も状態も登録簿にある（AP11b）が、秘密を引く経路（`TotpSecretRepository` /
+/// `WebAuthnCredentialRepository`）は「失効していない行」しか見ない。**一時停止**は
+/// そこを通ってしまうため、認証経路がこの判定を通らないと「画面では停止中なのに入れる」に
+/// なる。この関数がその 1 点を塞ぐ。
 ///
 /// 判定は「止められた行があるか」に限る。行が無い・`pending` の場合は既存経路の判断
-/// （`confirmed_at` の有無など）に委ねる。登録簿はこの段階では**確認済みかどうかの出所では
-/// ない**ため、ここで塞ぐと DB の一時障害で登録簿の更新だけが落ちた利用者を締め出しかねない。
-/// 契約フェーズ（AP11）で秘密ごと移したら、登録簿が唯一の出所になる。
+/// （`confirmed_at` の有無など）に委ねる。
 ///
-/// `credential_ref` を渡すと、その資格情報に対応する 1 行だけを見る（パスキーは 1 利用者に
-/// 複数あるため、1 本を止めても他の本は使える）。`None` なら同じ種別の行を見る（TOTP）。
+/// `credential_id`（登録簿の行 id）を渡すと、そのパスキー 1 本だけを見る（1 本を止めても
+/// 他の本は使える）。`None` なら同じ種別の行を見る（TOTP は 1 利用者 1 本）。
 pub async fn is_blocked_in_registry(
     repository: &dyn UserAuthenticatorRepository,
     user_id: Uuid,
     authenticator_type: AuthenticatorType,
-    credential_ref: Option<Uuid>,
+    credential_id: Option<Uuid>,
 ) -> Result<bool, crate::domain::error::DomainError> {
     let rows = repository.list_for_user(user_id).await?;
     Ok(rows
         .iter()
         .filter(|a| a.authenticator_type == authenticator_type)
-        .filter(|a| match credential_ref {
-            // 登録簿の行 id・元の表の行 id のどちらでも当たるようにする（AP11 の移行中）。
-            Some(reference) => a.credential_ref == Some(reference) || a.id == reference,
-            None => true,
-        })
+        .filter(|a| credential_id.is_none_or(|id| a.id == id))
         .any(|a| a.is_blocked()))
 }
 
@@ -985,20 +941,20 @@ mod tests {
         Uuid::from_u128(1)
     }
 
+    /// `id` は登録簿の行 id ＝ 認証器 1 本の識別子（AP11b でこれが唯一の識別子になった）。
     fn row(
         authenticator_type: AuthenticatorType,
         status: AuthenticatorStatus,
-        credential_ref: Option<Uuid>,
+        id: Option<Uuid>,
     ) -> UserAuthenticator {
         let at = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
         UserAuthenticator {
-            id: Uuid::from_u128(900),
+            id: id.unwrap_or_else(|| Uuid::from_u128(900)),
             user_id: user(),
             authenticator_type,
             status,
             label: String::new(),
             secret_encrypted: None,
-            credential_ref,
             target: None,
             confirmed_at: Some(at),
             last_used_at: None,
@@ -1009,7 +965,8 @@ mod tests {
         }
     }
 
-    /// 一時停止・失効させた TOTP は、秘密が `user_totp_secrets` に残っていても認証に使わせない。
+    /// 一時停止・失効させた TOTP は認証に使わせない。秘密を引く経路は「失効していない行」を
+    /// 見るので、**一時停止**を塞ぐのはこの判定だけである。
     #[tokio::test]
     async fn a_stopped_totp_is_blocked_even_though_its_secret_still_exists() {
         for status in [AuthenticatorStatus::Suspended, AuthenticatorStatus::Revoked] {
@@ -1037,8 +994,8 @@ mod tests {
         }
     }
 
-    /// 登録簿に行が無い場合は塞がない（確認済みかの出所は expand フェーズでは既存表のまま。
-    /// ここで塞ぐと、登録簿の更新だけが落ちた利用者を締め出す）。
+    /// 登録簿に行が無い場合は塞がない（行が無い＝そもそも認証器が無いので、秘密を引く側が
+    /// 見つけられずに終わる。ここで塞ぐ判断を重ねる必要は無い）。
     #[tokio::test]
     async fn a_missing_registry_row_does_not_block() {
         let repo = FakeRegistry(Vec::new());

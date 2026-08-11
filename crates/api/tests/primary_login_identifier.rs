@@ -1,16 +1,17 @@
-//! AP15: 主たるログイン識別子を登録簿へ移す移行（AP8 の contract フェーズ 前半）。
+//! AP15b: 主たるログイン識別子を登録簿へ移し終えた状態（AP8 の contract フェーズ 後半）。
 //!
 //! `TEST_DATABASE_URL` 設定時のみ実行:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' \
 //!     cargo test --test primary_login_identifier
 //!
-//! この移行の失敗は「利用者がユーザー名でログインできなくなる」形で出る。ここで固定するのは
-//! **移行中に両方が正しい**という一点で、具体的には:
+//! この移行の失敗は「利用者がユーザー名でログインできなくなる」形で出る。前半は「両方に在る」
+//! ことを固定していた。後半で `users.preferred_username` を落としたので、ここで固定するのは
+//! **登録簿だけで完結している**という一点である:
 //!
-//! 1. 利用者を作ると、主識別子が `users.preferred_username` と登録簿の**両方**に載る。
-//! 2. プロフィールで名前を変えると、**両方**が新しい値になる（登録簿が古い名前を指し続けない）。
+//! 1. 利用者を作ると主識別子が登録簿の行になり、その値で解決できる。
+//! 2. プロフィールで名前を変えると登録簿が追随し、古い名前では解決しない。
 //! 3. 主識別子は識別子単位で無効化・削除できない（できるとログインできなくなる）。
-//! 4. 登録簿に主識別子が無い利用者（移送前の行）も、従来どおり `users` 側で解決できる。
+//! 4. 他人が使っている値は**拒否される**（前半は諦めて `users` 側で解決し続けていた）。
 
 mod support;
 
@@ -35,14 +36,6 @@ async fn registry_primary(pool: &MySqlPool, user_id: Uuid) -> Option<String> {
     .expect("read registry")
 }
 
-async fn stored_preferred_username(pool: &MySqlPool, user_id: Uuid) -> Option<String> {
-    sqlx::query_scalar("SELECT preferred_username FROM users WHERE id = ?")
-        .bind(user_id.to_string())
-        .fetch_one(pool)
-        .await
-        .expect("read user")
-}
-
 fn new_user(tenant_id: TenantId, username: &str) -> User {
     let now = chrono::Utc::now();
     User {
@@ -65,10 +58,10 @@ fn new_user(tenant_id: TenantId, username: &str) -> User {
     }
 }
 
-/// 作成とプロフィール編集の両方で、`users` と登録簿が同じ値を指す。
+/// 作成とプロフィール編集のどちらでも、登録簿の主識別子行が「今ログインに使える値」になる。
 #[tokio::test]
-async fn the_primary_identifier_is_written_to_both_places_and_stays_in_step() {
-    let Some(env) = support::setup("ap15 primary dual write").await else {
+async fn the_primary_identifier_is_a_registry_row_that_follows_profile_edits() {
+    let Some(env) = support::setup("ap15b primary registry").await else {
         return;
     };
     let tenant_id: TenantId = Uuid::parse_str(&env.root_tenant_id).expect("uuid").into();
@@ -79,30 +72,29 @@ async fn the_primary_identifier_is_written_to_both_places_and_stays_in_step() {
     users.create(&user).await.expect("create user");
 
     assert_eq!(
-        stored_preferred_username(&env.pool, user.id)
+        registry_primary(&env.pool, user.id).await.as_deref(),
+        Some(username.as_str()),
+        "主識別子は登録簿の行として在る"
+    );
+    // 読み出した利用者にも同じ値が載る（`preferred_username` クレーム・一覧の表示はここを見る）。
+    assert_eq!(
+        users
+            .find_by_id(user.id)
             .await
+            .expect("find")
+            .expect("user")
+            .preferred_username
             .as_deref(),
         Some(username.as_str())
     );
-    assert_eq!(
-        registry_primary(&env.pool, user.id).await.as_deref(),
-        Some(username.as_str()),
-        "主識別子は登録簿にも載る（新しい経路はこちらを見る）"
-    );
 
-    // 名前を変えると両方が追随する。片方だけだと、古い名前でログインできてしまうか、
+    // 名前を変えると登録簿が追随する。追随しないと、古い名前でログインできてしまうか、
     // 新しい名前でログインできないかのどちらかになる。
     let renamed = format!("{username}-renamed");
     users
         .update_profile(user.id, &user.email, Some(&renamed), Some("Renamed"))
         .await
         .expect("update profile");
-    assert_eq!(
-        stored_preferred_username(&env.pool, user.id)
-            .await
-            .as_deref(),
-        Some(renamed.as_str())
-    );
     assert_eq!(
         registry_primary(&env.pool, user.id).await.as_deref(),
         Some(renamed.as_str()),
@@ -135,7 +127,7 @@ async fn the_primary_identifier_is_written_to_both_places_and_stays_in_step() {
 /// 主識別子は識別子単位で止められない・消せない（止めるならアカウントの無効化）。
 #[tokio::test]
 async fn the_primary_identifier_cannot_be_disabled_or_deleted_as_an_identifier() {
-    let Some(env) = support::setup("ap15 primary is protected").await else {
+    let Some(env) = support::setup("ap15b primary is protected").await else {
         return;
     };
     let tenant_id: TenantId = Uuid::parse_str(&env.root_tenant_id).expect("uuid").into();
@@ -197,37 +189,81 @@ async fn the_primary_identifier_cannot_be_disabled_or_deleted_as_an_identifier()
     assert!(identifiers.delete(extra.id, user.id).await.expect("delete"));
 }
 
-/// 登録簿に主識別子が無い利用者（移送前の行・古いプロセスが作った行）も解決できる。
-/// フォールバックは `users.preferred_username` を落とす次のリリースまで残る。
+/// 他人が既に使っている値は主識別子にできない。
+///
+/// 前半（expand）はここで諦めて `users.preferred_username` 側を正としていた。列を落とした今、
+/// 諦めると**そのユーザー名でログインできない利用者を黙って作る**ことになるので、`Conflict` で
+/// 操作ごと失敗させる。衝突の検出は DB の一意制約（tenant × 種別 × 正規化値）まで届く。
 #[tokio::test]
-async fn a_user_whose_primary_is_only_in_the_users_table_still_resolves() {
-    let Some(env) = support::setup("ap15 legacy fallback").await else {
+async fn a_value_another_user_already_owns_is_rejected() {
+    let Some(env) = support::setup("ap15b primary conflict").await else {
         return;
     };
     let tenant_id: TenantId = Uuid::parse_str(&env.root_tenant_id).expect("uuid").into();
     let users = SqlxUserRepository::new(env.pool.clone());
+    let identifiers = SqlxUserLoginIdentifierRepository::new(env.pool.clone());
 
-    let username = format!("ap15-legacy-{}", Uuid::new_v4().simple());
-    let user = new_user(tenant_id, &username);
-    users.create(&user).await.expect("create user");
-
-    // 移送前の状態を作る（登録簿の主識別子行だけを落とす）。
-    sqlx::query(
-        "DELETE FROM user_login_identifiers WHERE user_id = ? AND primary_of_user IS NOT NULL",
-    )
-    .bind(user.id.to_string())
-    .execute(&env.pool)
-    .await
-    .expect("drop registry primary");
-    assert_eq!(registry_primary(&env.pool, user.id).await, None);
-
-    let resolved = users
-        .find_by_login_identifier(tenant_id, &username)
+    let taken = format!("ap15b-taken-{}", Uuid::new_v4().simple());
+    let owner = new_user(
+        tenant_id,
+        &format!("ap15b-owner-{}", Uuid::new_v4().simple()),
+    );
+    users.create(&owner).await.expect("create owner");
+    // 所有者は**追加の**識別子としてこの値を持つ（主識別子の一意制約だけでは防げない形）。
+    let now = chrono::Utc::now();
+    identifiers
+        .create(&UserLoginIdentifier {
+            id: Uuid::now_v7(),
+            tenant_id,
+            user_id: owner.id,
+            identifier_type: LoginIdentifierType::Username,
+            display_value: taken.clone(),
+            normalized_value: LoginIdentifierType::Username.normalize(&taken),
+            is_active: true,
+            is_primary: false,
+            created_at: now,
+            updated_at: now,
+        })
         .await
-        .expect("resolve");
+        .expect("create extra identifier");
+
+    // 作成でぶつかると、利用者ごと作られない。
+    let newcomer = new_user(tenant_id, &taken);
+    let err = users
+        .create(&newcomer)
+        .await
+        .expect_err("a taken value must not become someone else's primary identifier");
+    assert!(
+        matches!(err, idp_api::domain::error::DomainError::Conflict(_)),
+        "expected a conflict, got {err:?}"
+    );
+    assert!(
+        users.find_by_id(newcomer.id).await.expect("find").is_none(),
+        "失敗した作成の残骸が残らない"
+    );
+
+    // 既存利用者の改名でも同じ。
+    let other = new_user(
+        tenant_id,
+        &format!("ap15b-other-{}", Uuid::new_v4().simple()),
+    );
+    users.create(&other).await.expect("create other");
+    let err = users
+        .update_profile(other.id, &other.email, Some(&taken), None)
+        .await
+        .expect_err("renaming onto a taken value must fail");
+    assert!(
+        matches!(err, idp_api::domain::error::DomainError::Conflict(_)),
+        "expected a conflict, got {err:?}"
+    );
+
+    // 所有者の側は無傷（黙って書き換えられていない）。
     assert_eq!(
-        resolved.map(|u| u.id),
-        Some(user.id),
-        "登録簿に無くても `users.preferred_username` で解決できる"
+        users
+            .find_by_login_identifier(tenant_id, &taken)
+            .await
+            .expect("resolve")
+            .map(|u| u.id),
+        Some(owner.id)
     );
 }

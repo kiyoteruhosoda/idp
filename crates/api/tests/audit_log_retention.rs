@@ -19,6 +19,12 @@ use sqlx::Row;
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// 保持期間の削除は**表全体**を時刻で薙ぐ（`purge_older_than(cutoff)`）。同じバイナリの
+/// テストは並行に走るため、片方が入れた「十分に古い行」をもう片方の purge が巻き込む
+/// —— 入れた直後に数えても 0 件になる。共有 DB の他バイナリは現在時刻の行しか書かないので、
+/// 直列化が要るのはこのファイルの中だけである。
+static PURGE_SERIALIZATION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// 監査イベントを 1 件、指定時刻で書き込む。`correlation_id` はテストごとに固有にして、
 /// 他のテストが書いた行と混ざらないようにする。
 async fn record_at(
@@ -59,6 +65,7 @@ async fn the_default_retention_never_deletes_anything() {
     let Some(env) = support::setup("audit log retention default").await else {
         return;
     };
+    let _serialized = PURGE_SERIALIZATION.lock().await;
     let correlation = format!("retention-default-{}", Uuid::new_v4());
     let sink = SqlxAuditLogSink::new(env.pool.clone());
     // 10 年前の行でも残る。
@@ -78,6 +85,7 @@ async fn only_rows_older_than_the_retention_window_are_deleted() {
     let Some(env) = support::setup("audit log retention window").await else {
         return;
     };
+    let _serialized = PURGE_SERIALIZATION.lock().await;
     let old = format!("retention-old-{}", Uuid::new_v4());
     let fresh = format!("retention-fresh-{}", Uuid::new_v4());
     let sink = SqlxAuditLogSink::new(env.pool.clone());

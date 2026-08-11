@@ -29,8 +29,6 @@ const EXPECTED_TABLES: &[&str] = &[
     "client_consents",
     "revoked_access_tokens",
     "signing_keys",
-    "user_totp_secrets",
-    "user_webauthn_credentials",
     "passkey_challenges",
     "audit_log",
     "log",
@@ -59,7 +57,13 @@ const HASHED_CREDENTIAL_COLUMNS: &[(&str, &str)] = &[
 
 /// contract 済み（DROP マイグレーション適用後）で存在してはならないテーブル。
 /// 追記型マイグレーションでは down で復活しうるため、up 適用後の状態を明示的に固定する。
-const DROPPED_TABLES: &[&str] = &["saml_identity_providers"];
+const DROPPED_TABLES: &[&str] = &[
+    "saml_identity_providers",
+    // 認証器の秘密は登録簿（`user_authenticators`）へ一本化した（AP11b。migration 0038）。
+    // 残っていると「どちらが本物か」が曖昧なまま読まれる余地が戻る。
+    "user_totp_secrets",
+    "user_webauthn_credentials",
+];
 
 async fn count(pool: &MySqlPool, sql: &str) -> i64 {
     sqlx::query(sql)

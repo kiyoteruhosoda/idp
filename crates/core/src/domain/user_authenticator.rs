@@ -116,10 +116,9 @@ pub struct UserAuthenticator {
     pub status: AuthenticatorStatus,
     /// 利用者が付ける表示名（未設定は空文字）。
     pub label: String,
-    /// 種別固有の秘密。リカバリーコード・email OTP のみ（いずれも SHA-256）。
+    /// 種別固有の秘密。TOTP は共有鍵（暗号文）、WebAuthn は `passkey_json`、
+    /// リカバリーコード・email OTP は SHA-256。AP11b で登録簿が唯一の置き場所になった。
     pub secret_encrypted: Option<String>,
-    /// WebAuthn クレデンシャルへの参照（`user_webauthn_credentials.id`）。
-    pub credential_ref: Option<Uuid>,
     /// email OTP の送信先。
     pub target: Option<String>,
     pub confirmed_at: Option<DateTime<Utc>>,
@@ -177,7 +176,6 @@ mod tests {
             status,
             label: String::new(),
             secret_encrypted: None,
-            credential_ref: None,
             target: None,
             confirmed_at: Some(now()),
             last_used_at: None,

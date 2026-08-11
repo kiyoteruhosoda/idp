@@ -395,14 +395,9 @@ async fn require_mfa_policy_blocks_single_factor_login_without_enrollment() {
     .await;
 
     // このユーザー限定の require_mfa ポリシーを作成する。
-    let user_id: String =
-        sqlx::query("SELECT id FROM users WHERE tenant_id = ? AND preferred_username = ?")
-            .bind(&env.root_tenant_id)
-            .bind(&username)
-            .fetch_one(&env.pool)
-            .await
-            .expect("find user")
-            .get("id");
+    let user_id = support::find_user_id_by_username(&env.pool, &env.root_tenant_id, &username)
+        .await
+        .expect("find user");
     let uri = format!("/{}/admin/authentication-policies", env.root_tenant_id);
     let code = format!("it-mfa-{}", support::unique());
     let res = send(

@@ -226,9 +226,9 @@ impl PasskeyAuthenticationService {
         let user_id = stored_cred.user_id;
         let cred_row_id = stored_cred.id;
 
-        // 登録簿でこの 1 本が止められていないかを見る（AP9）。公開鍵は
-        // `user_webauthn_credentials` に残ったままなので、ここで見ないと一時停止・失効が
-        // 効かない。パスキーは 1 利用者に複数あるため、止めた 1 本だけを塞ぐ。
+        // 登録簿でこの 1 本が止められていないかを見る（AP9）。公開鍵を引く経路は「失効して
+        // いない行」しか見ないので、**一時停止**を効かせるのはこの判定だけである。パスキーは
+        // 1 利用者に複数あるため、止めた 1 本だけを塞ぐ。
         match is_blocked_in_registry(
             self.authenticators.as_ref(),
             user_id,

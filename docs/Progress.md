@@ -37,65 +37,32 @@ Phase 計画、および ADR-0010（ゼロタッチ配置・設定値の出所�
 
 | 優先度 | ID | 課題内容 | 工数 | 影響度 | 重要度 | 難易度 |
 |---:|---|---|---:|---:|---:|---:|
-| 8 | AP14 | AP3 の残り: 国・端末信頼の条件（判定材料が無いため未実装。GeoIP かプロキシ供給ヘッダの取り決めと、デバイス登録簿が前提）（⬜未着手） | 大 | 中 | 中 | 大 |
-| 3 | AP15b | AP15 の後半（フォールバックの撤去と `users.preferred_username` 列の削除）。**前半を配布し終えてから**着手する（⬜未着手） | 小 | 中 | 小 | 小 |
-| 3 | AP11b | AP11 の後半（`user_totp_secrets` / `user_webauthn_credentials` と `credential_ref` の撤去）。**前半を配布し終えてから**着手する（⬜未着手） | 小 | 中 | 小 | 小 |
+| — | — | （空）| — | — | — | — |
 
-## 詳細
+ユーザー認証・認証ポリシー仕様書の実装（AP1〜AP16）はすべて決着した。実装したものは
+`CHANGELOG.md`、実装しないと決めたものは ADR にある。
 
-### ユーザー認証・認証ポリシー仕様書の残実装（AP14）
+- AP1〜AP13・AP15・AP16: 実装済み（`CHANGELOG.md` 参照）。
+- AP11b・AP15b（expand/contract の後半）: 撤去まで完了（migration 0038 / 0039）。
+- AP14（認証ポリシーの国・端末信頼の条件）: **実装しない**（ADR-0028）。条件式ではなく
+  判定材料が無いのが本体で、材料の無い条件を先に置くと「設定できるのに決して一致しない条件」に
+  なる。再検討の条件は ADR に書いてある。
 
-ADR-0020 で認証ポリシー（deny / require_mfa / allow）・管理 API・OIDC ログインフローへの適用・
-アカウントロックの設定化を導入し、AP3 で条件種別（ネットワークゾーン・時間帯・requested_acr）と
-`require_specific_method` 効果を追加した（ADR-0020 の追補）。残りは以下。
+## デプロイ時の注意（次のリリースまで）
 
-- **AP14** AP3 の残り: 国・端末信頼の条件。**条件式ではなく判定材料が無い**のが本体で、
-  国は GeoIP データベースの同梱かフロントプロキシが供給するヘッダの取り決め、端末信頼は
-  デバイス登録簿（登録・識別・信頼状態）がそれぞれ前提になる。材料の無い条件を先に置くと
-  「設定できるが決して一致しない条件」が管理画面に並ぶため、別タスクへ切り出した。
+`0038` / `0039` は expand/contract の **contract 側**である。どちらも「前半を含むリリースが
+全ノードへ行き渡ってから」適用してよい（`migrations/README.md` 参照）。ローリングデプロイの
+途中で当てると、前半のコードを動かしているプロセスが MFA・ユーザー名ログインを通せなくなる。
 
-AP1（認証ポリシーの管理画面）・AP2〜AP13・AP15・AP16 は実装済み（`CHANGELOG.md` 参照）。
-AP11・AP15 の**後半**（撤去）は下記「積み残し」にある。
+`0039` は、`users.preferred_username` と登録簿の主識別子が**食い違ったまま**の利用者が残っていると
+失敗する。列を落とすとその利用者だけがユーザー名でログインできなくなる（あるいは変更前の名前で
+入れてしまう）ため、意図的に止めてある。食い違いは古いプロセスが `users` 側だけを書いたときに
+生まれ、値の衝突で揃えられないものだけが残る。次で洗い出し、重複を解消してから再実行する。
 
-### 積み残し（expand/contract の後半。AP15b・AP11b）
-
-#### AP15b. AP15 の後半（フォールバックと `users.preferred_username` の撤去）
-
-AP15 の前半で、主たるログイン識別子は登録簿（`user_login_identifiers.primary_of_user`）と
-`users.preferred_username` の**両方**に載るようになった（migration 0036）。解決は従来どおり
-「登録簿の有効な行 → `users.preferred_username`」の順で、一覧 API は登録簿に主識別子が無い
-利用者にだけ合成行を返す。
-
-後半に着手できるのは、**前半が全ノードへ行き渡ってから**である（ローリングデプロイ中は
-`users` しか書かない古いプロセスが残り、先に列を落とすとログインできない利用者が出る）。
-
-やること:
-
-1. 解決から `users.preferred_username` へのフォールバックを外す（登録簿だけを見る）。
-   一覧 API の合成行も不要になる。
-2. ID Token の `preferred_username` クレーム・利用者一覧の表示・プロフィール編集を
-   登録簿側へ寄せ、`users.preferred_username` 列を撤去する。
-
-**着手前に運用で解消しておくもの**: 同じ値が既に**他人**の識別子として登録簿に在る利用者は、
-前半のマイグレーションでも実行時の同期でも登録簿へ写せていない（一意制約に当たるため。
-`users.preferred_username` 側で解決され続けている）。フォールバックを外すと、この利用者は
-ユーザー名でログインできなくなる。撤去の前に「登録簿に主識別子を持たない利用者」を洗い出し、
-値の重複を解消する必要がある。
-
-移送が済めば、追加識別子と主識別子の衝突を**DB の一意制約**で防げる（expand の間は
-アプリ層の事前チェックしか張れず、同時実行の窓が残る。ADR-0025「残る限界」）。
-
-#### AP11b. AP11 の後半（元の表の撤去）
-
-AP11 の前半で、TOTP の共有鍵とパスキーの秘密は登録簿（`user_authenticators.secret_encrypted`）と
-元の表（`user_totp_secrets` / `user_webauthn_credentials`）の**両方**に載るようになった
-（migration 0035）。読みは登録簿を先に見て無ければ元の表へ落ち、書きは両方へ行う。
-
-後半に着手できるのは、**前半が全ノードへ行き渡ってから**である（元の表しか読まない古いプロセスが
-残っている間に落とすと、MFA を通せない利用者が出る）。
-
-やること:
-
-1. 読みのフォールバック（元の表）と、書きの二重化を外す。
-2. `user_totp_secrets` / `user_webauthn_credentials` の削除と、`credential_ref` 列の撤去。
-
+```sql
+SELECT u.id, u.tenant_id, u.preferred_username, p.display_value AS registry_value
+FROM users u LEFT JOIN user_login_identifiers p ON p.primary_of_user = u.id
+WHERE (u.preferred_username IS NOT NULL AND TRIM(u.preferred_username) <> ''
+       AND (p.id IS NULL OR p.normalized_value <> LOWER(TRIM(u.preferred_username))))
+   OR ((u.preferred_username IS NULL OR TRIM(u.preferred_username) = '') AND p.id IS NOT NULL);
+```
