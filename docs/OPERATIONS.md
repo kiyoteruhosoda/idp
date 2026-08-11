@@ -30,6 +30,30 @@ DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' sqlx migrate run
 新規作成の規約は `migrations/README.md` と `.claude/skills/db-migration/` を参照。
 アプリは起動時に version を照合するだけで適用は行わない。
 
+### 撤去を伴うマイグレーション（contract）を適用するとき
+
+列・表を落とすマイグレーションは、**それを前提とするコードが全ノードへ行き渡ってから**適用する。
+ローリングデプロイの途中で当てると、古いプロセスが落とした先を読み書きして失敗する（どの
+マイグレーションがこれに当たり、何を前提とするかは `migrations/README.md` に書いてある）。
+
+適用が **guard で止まる**ことがある。データが揃っていないまま落とすと一部の利用者だけが
+ログインできなくなるため、意図的に失敗させている。エラーは制約名がそのまま出る。
+
+```
+ERROR 4025 (23000): CONSTRAINT `the_registry_must_match_users_preferred_username` failed ...
+```
+
+この場合は該当する利用者を洗い出し、値の重複を解消してから再実行する（guard 表は再実行できる）。
+
+```sql
+-- 0039: users.preferred_username と登録簿の主識別子が食い違っている利用者
+SELECT u.id, u.tenant_id, u.preferred_username, p.display_value AS registry_value
+FROM users u LEFT JOIN user_login_identifiers p ON p.primary_of_user = u.id
+WHERE (u.preferred_username IS NOT NULL AND TRIM(u.preferred_username) <> ''
+       AND (p.id IS NULL OR p.normalized_value <> LOWER(TRIM(u.preferred_username))))
+   OR ((u.preferred_username IS NULL OR TRIM(u.preferred_username) = '') AND p.id IS NOT NULL);
+```
+
 ## root テナントの UUID
 
 root テナントの UUID は**固定値** `00000000-0000-7000-8000-000000000001`（全環境共通で git 管理。ADR-0011）。
@@ -499,7 +523,6 @@ curl -X DELETE "https://<api>/{tenant_id}/admin/users/{user_id}/login-identifier
   足す。所有確認（検証メール）は行わないので、管理者がアドレスの正しさを保証する扱いになる。
 - 追加・切替・削除は `user.login_identifier_added` / `.updated` / `.removed` として監査に残る
   （残すのは**種別のみ**。電話番号・メールアドレスは PII なので値は残さない）。
-- web 管理コンソールの画面は未実装（`docs/Progress.md` AP1）。
 
 ## ゲストのアクセスを一時的に止めたいとき（MT24）
 

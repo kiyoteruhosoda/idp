@@ -82,7 +82,7 @@ sqlx マイグレーション（MariaDB）を管理する。
   フェーズ）。種別・状態（`pending`→`active`⇄`suspended`→`revoked`）・ラベル・最終使用時刻を
   一元管理する。**秘密は移送しない**（TOTP は `user_totp_secrets`、パスキーは
   `user_webauthn_credentials` に残し、`credential_ref` で対応付ける）。既存の TOTP・パスキーは
-  冪等な `INSERT ... SELECT` で backfill する。秘密の集約は contract フェーズ（`docs/Progress.md` AP11）。
+  冪等な `INSERT ... SELECT` で backfill する。秘密の集約は contract フェーズ（`0038`）。
 - `0024_external_identity_providers`: 外部 IdP 連携の 3 表を追加する（AP10）。
   `external_identity_providers`（テナントごとの外部 OpenID Provider 設定。クライアント
   シークレットは暗号化列）、`user_external_identities`（`iss` + `sub` による同一性。
@@ -103,7 +103,7 @@ sqlx マイグレーション（MariaDB）を管理する。
   ログイン識別子は `users.preferred_username` のままで、本表には追加の識別子だけを置く
   （解決は「登録簿 → `preferred_username`」の順）。写しを取ると同じ値が 2 か所にでき、同期漏れが
   そのまま「変更前の名前でログインできる」「無効化したのに認証が通る」になるため、主識別子の
-  移送は contract フェーズ（`docs/Progress.md` AP15）へ分ける。`users.email` も取り込まない
+  移送は contract フェーズ（`0039`）へ分ける。`users.email` も取り込まない
   （取り込むと適用した瞬間からメールでログインできてしまい、認証の入り口が黙って広がる）。
   `down` は表ごと削除する（追加登録した識別子だけを失い、パスワードログインは通り続ける）。
 - `0030_client_secret_post`: `clients.token_endpoint_auth_method` の許可値へ `client_secret_post` を
@@ -164,7 +164,8 @@ root テナントの UUID は固定値 `00000000-0000-7000-8000-000000000001`（
   —— このリリースは「両方に在る期間」で、以後の更新は両方へ書き、解決は従来どおり
   「登録簿 → `users`」の順に落ちる。撤去は次のリリース。同じ値が既に**他人**の識別子として
   登録されている利用者だけは登録簿へ写せないが、`users` 側で解決され続けるためログインは通る
-  （撤去の前に運用で解消する必要があり、`docs/Progress.md` に残してある）。`down` は
+  （撤去の前に運用で解消する必要がある。`0039` が guard で検出し、洗い出しの手順は
+  `docs/OPERATIONS.md`「撤去を伴うマイグレーション（contract）を適用するとき」にある）。`down` は
   **本マイグレーションが作った行だけ**（作成時刻 = 更新時刻）を消して列を落とす —— 格上げした行は
   管理者が足した設定なので消さない。
 
