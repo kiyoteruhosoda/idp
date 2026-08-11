@@ -743,7 +743,14 @@ pub struct AuthenticationPoliciesResponse {
 }
 
 /// 認証ポリシーの作成・更新（全項目置換）リクエスト。
+///
+/// **未知のキーは受け付けない。** 黙って捨てると、条件名のタイポや未対応の条件
+/// （`country` など）を書いた要求が 200 で返り、**その制限が掛かっていないポリシーが保存される**。
+/// 送った側は絞ったつもりでいる。ADR-0020 が `PolicyConditions` に `deny_unknown_fields` を
+/// 付けたのと同じ理由で、入口の DTO にも要る —— 条件はここでは平坦に並ぶので、保存形の側の
+/// 検査はリクエストには届かない（ADR-0028）。
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AuthenticationPolicyUpsertRequest {
     /// テナント内一意の識別コード（英数字と `-` `_` `.`、1〜100 文字）。
     pub policy_code: String,

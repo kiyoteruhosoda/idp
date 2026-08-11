@@ -1076,7 +1076,9 @@ mfa-verify-sms-sent = SMS でコードを送りました。上の欄に入力し
 mfa-verify-sms-unavailable = このサーバでは SMS が設定されていません。別の方法をお使いください。
 mfa-verify-sms-not-registered = このアカウントには携帯電話番号が登録されていません。別の方法をお使いください。
 admin-settings-sms-heading = ショートメッセージ（SMS）
-admin-settings-sms-note = コードは下の URL へ JSON を POST して送ります: {"to": "+81...", "text": "...", "from": "..."}。SMS 事業者と話す小さな中継を指してください。URL を空にすると SMS 送信は無効になります。
+# 波括弧は Fluent の変数展開の記号なので、そのままでは書けない（本文ごと構文エラーになり、
+# この項目が丸ごと落ちて画面にはキー名が出る）。`{"{"}` は「文字としての波括弧」を出す書き方。
+admin-settings-sms-note = コードは下の URL へ JSON を POST して送ります: {"{"}"to": "+81...", "text": "...", "from": "..."{"}"}。SMS 事業者と話す小さな中継を指してください。URL を空にすると SMS 送信は無効になります。
 admin-settings-sms-url = ゲートウェイ URL
 admin-settings-sms-url-hint = 内部アドレス（localhost・私設ネットワーク）は指定できません。
 admin-settings-sms-auth-header = 認証ヘッダ名

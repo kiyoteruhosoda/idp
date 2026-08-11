@@ -1076,7 +1076,9 @@ mfa-verify-sms-sent = We sent a code by text message. Enter it above.
 mfa-verify-sms-unavailable = Text messages are not configured on this server. Use another method.
 mfa-verify-sms-not-registered = No mobile number is registered for this account. Use another method.
 admin-settings-sms-heading = Text messages (SMS)
-admin-settings-sms-note = Codes are sent by POSTing JSON to the URL below: {"to": "+81...", "text": "...", "from": "..."}. Point it at a small relay that talks to your SMS provider. Leave the URL empty to turn text messages off.
+# Braces start a Fluent placeable, so a literal one has to be written as `{"{"}` — otherwise the
+# whole entry fails to parse and the screen shows the message key instead of the text.
+admin-settings-sms-note = Codes are sent by POSTing JSON to the URL below: {"{"}"to": "+81...", "text": "...", "from": "..."{"}"}. Point it at a small relay that talks to your SMS provider. Leave the URL empty to turn text messages off.
 admin-settings-sms-url = Gateway URL
 admin-settings-sms-url-hint = Must not point at an internal address (localhost or a private network).
 admin-settings-sms-auth-header = Authentication header name
