@@ -133,6 +133,8 @@ pub struct Config {
     invitation_ttl: Duration,
     /// パスワードリセットトークンの有効期限（MT18）。
     password_reset_ttl: Duration,
+    /// SMTP 未設定時にリセットリンクをサーバのコンソールへ出すか。
+    password_reset_console_link_enabled: bool,
     /// メール検証トークンの有効期限（SEC6b）。
     email_verification_ttl: Duration,
     /// アカウントロックのポリシー（失敗許容回数・ロック時間。ユーザー認証・認証ポリシー仕様書 §17）。
@@ -276,6 +278,8 @@ impl Config {
             clock_skew: secs(resolver.parse("CLOCK_SKEW_SECS", 60)?),
             invitation_ttl: secs(resolver.parse("INVITATION_TTL_SECS", 604_800)?),
             password_reset_ttl: secs(resolver.parse("PASSWORD_RESET_TTL_SECS", 3_600)?),
+            password_reset_console_link_enabled: resolver
+                .parse("PASSWORD_RESET_CONSOLE_LINK_ENABLED", true)?,
             email_verification_ttl: secs(resolver.parse("EMAIL_VERIFICATION_TTL_SECS", 86_400)?),
             login_lockout: LockoutPolicy {
                 // i32 に収まらない巨大値は「実質ロックしない」として i32::MAX へ飽和させる
@@ -394,6 +398,12 @@ impl Config {
     /// パスワードリセットトークンの有効期限（MT18）。
     pub fn password_reset_ttl(&self) -> Duration {
         self.password_reset_ttl
+    }
+
+    /// SMTP 未設定時に、リセットリンクをサーバのコンソール（標準出力）へ出すか。
+    /// メール配送が無い環境で、パスワードを忘れた管理者が復旧するための経路。
+    pub fn password_reset_console_link_enabled(&self) -> bool {
+        self.password_reset_console_link_enabled
     }
 
     pub fn email_verification_ttl(&self) -> Duration {

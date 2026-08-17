@@ -101,7 +101,7 @@ pub async fn list(
     Html(render(&AuthenticationPoliciesConsole {
         messages: &messages,
         tenant: &tenant.prefix(),
-        admin: Some(&admin),
+        admin: Some(admin.chrome()),
         csrf: &csrf_from(&headers, state.config.csrf_secret()),
         default_effect: state.config.auth_policy_default_effect(),
         saved: query.saved.is_some(),
@@ -423,7 +423,10 @@ mod tests {
         let console = AuthenticationPoliciesConsole {
             messages: &messages,
             tenant: "/t",
-            admin: Some("admin-1"),
+            admin: Some(crate::templates::ConsoleAdmin {
+                label: "admin-1",
+                tenant_name: Some("Acme"),
+            }),
             csrf: "csrf",
             default_effect: "allow",
             saved: false,
@@ -455,7 +458,10 @@ mod tests {
         let console = AuthenticationPoliciesConsole {
             messages: &messages,
             tenant: "/t",
-            admin: Some("admin-1"),
+            admin: Some(crate::templates::ConsoleAdmin {
+                label: "admin-1",
+                tenant_name: Some("Acme"),
+            }),
             csrf: "csrf",
             default_effect: "allow",
             saved: false,

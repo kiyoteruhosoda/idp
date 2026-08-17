@@ -105,8 +105,8 @@ impl std::fmt::Display for AdminApiError {
 /// 管理者の SSO Cookie を api の `/admin/*`（`RequirePerms<IdpAdmin>`）へ転送した結果（ADR-0007 §4）。
 pub enum AdminSession {
     /// 有効な SSO ＋ テナント admin 権限（`idp.tenant.admin`／`idp.system.admin`）保有。
-    /// 管理コンソールのヘッダに出す表示ラベル（表示名 → ログイン識別子 → 内部 ID の順で採用）を返す。
-    Authenticated(String),
+    /// 管理コンソールのヘッダに出す文脈（管理者の表示ラベルと操作中テナントの表示名）を返す。
+    Authenticated(AdminIdentity),
     /// 未認証・SSO 期限切れ（ログイン画面へ誘導する）。
     Unauthenticated,
     /// 認証済みだがテナント admin 権限なし（403 画面）。
@@ -132,13 +132,37 @@ fn admin_session_for_status(status: reqwest::StatusCode) -> AdminSession {
     }
 }
 
+/// 認証済み管理者の身元（管理コンソール共通ヘッダの表示に使う）。
+#[derive(Debug, Clone)]
+pub struct AdminIdentity {
+    /// 管理者の表示ラベル（表示名 → ログイン識別子 → 内部 ID）。
+    pub label: String,
+    /// 操作中テナントの表示名。api が返さなかった場合のみ `None`。
+    pub tenant_name: Option<String>,
+}
+
+/// whoami の応答をヘッダ表示の文脈へ写す。
+fn admin_identity(w: WhoamiResponse) -> AdminIdentity {
+    let tenant_name = non_empty(w.tenant_name.clone());
+    AdminIdentity {
+        label: admin_display_label(w),
+        tenant_name,
+    }
+}
+
 /// 管理コンソールのヘッダに出す表示ラベルを決める。表示名（`name`）→ ログイン識別子
 /// （`preferred_username`）→ 内部 ID（`user_id`）の順で、空でない最初の値を採用する。
 fn admin_display_label(w: WhoamiResponse) -> String {
-    let non_empty = |s: Option<String>| s.map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
     non_empty(w.name)
         .or_else(|| non_empty(w.preferred_username))
         .unwrap_or(w.user_id)
+}
+
+/// 空白のみの値を「未設定」として扱う。
+fn non_empty(value: Option<String>) -> Option<String> {
+    value
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
 }
 
 /// api への HTTP クライアント。`reqwest::Client` は接続プールを内包するため clone は安価。
@@ -567,7 +591,7 @@ impl ApiClient {
         };
         match response.status() {
             reqwest::StatusCode::OK => match response.json::<WhoamiResponse>().await {
-                Ok(w) => AdminSession::Authenticated(admin_display_label(w)),
+                Ok(w) => AdminSession::Authenticated(admin_identity(w)),
                 Err(e) => {
                     tracing::error!(error = %e, "failed to decode whoami response");
                     AdminSession::Error
@@ -2223,7 +2247,7 @@ impl ApiClient {
 
 #[cfg(test)]
 mod tests {
-    use super::{admin_display_label, admin_session_for_status, AdminSession};
+    use super::{admin_display_label, admin_identity, admin_session_for_status, AdminSession};
     use idp_contracts::admin::WhoamiResponse;
 
     /// whoami の非 200 応答の写像。404（api がテナントを解決できない）を `Error` に含めない
@@ -2258,6 +2282,7 @@ mod tests {
             user_id: "019f8ea9-0879-7f75-85ab-68b0571b6e7d".to_string(),
             name: name.map(str::to_string),
             preferred_username: preferred_username.map(str::to_string),
+            tenant_name: Some("Acme".to_string()),
         }
     }
 
@@ -2275,6 +2300,23 @@ mod tests {
             admin_display_label(whoami(None, None)),
             "019f8ea9-0879-7f75-85ab-68b0571b6e7d"
         );
+    }
+
+    /// ヘッダのテナント名は api の whoami 由来。返らない・空白のみのときは表示を省く
+    /// （旧 api との混在デプロイでもヘッダ以外は壊れない）。
+    #[test]
+    fn identity_carries_tenant_name_when_present() {
+        let mut w = whoami(Some("Alice"), Some("alice"));
+        assert_eq!(
+            admin_identity(w.clone()).tenant_name.as_deref(),
+            Some("Acme")
+        );
+
+        w.tenant_name = None;
+        assert_eq!(admin_identity(w.clone()).tenant_name, None);
+
+        w.tenant_name = Some("   ".to_string());
+        assert_eq!(admin_identity(w).tenant_name, None);
     }
 
     #[test]

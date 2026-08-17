@@ -10,7 +10,7 @@ use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::csrf::console_csrf_token;
 use crate::handlers::admin_console::{
-    forbidden_response, redirect_to_login, resolve_admin, AdminResolution,
+    forbidden_response, redirect_to_login, resolve_admin, AdminContext, AdminResolution,
 };
 use crate::i18n::Messages;
 use crate::state::WebState;
@@ -287,7 +287,7 @@ fn csrf_valid(headers: &HeaderMap, submitted: &str, key: &[u8]) -> bool {
 fn render_list(
     messages: &Messages,
     tenant: &WebTenant,
-    admin: &str,
+    admin: &AdminContext,
     keys: &[SigningKeyView],
     csrf: &str,
     error: Option<&str>,
@@ -295,20 +295,20 @@ fn render_list(
     render(&SigningKeysList {
         messages,
         tenant: &tenant.prefix(),
-        admin: Some(admin),
+        admin: Some(admin.chrome()),
         keys,
         csrf,
         error,
     })
 }
 
-fn not_found(messages: &Messages, tenant: &WebTenant, admin: &str) -> Response {
+fn not_found(messages: &Messages, tenant: &WebTenant, admin: &AdminContext) -> Response {
     (
         StatusCode::NOT_FOUND,
         Html(render(&ConsoleNotice {
             messages,
             tenant: &tenant.prefix(),
-            admin: Some(admin),
+            admin: Some(admin.chrome()),
             heading: Some("admin-signing-keys-not-found-title"),
             message: "admin-signing-keys-not-found-message",
             is_error: true,
@@ -322,7 +322,7 @@ fn not_found(messages: &Messages, tenant: &WebTenant, admin: &str) -> Response {
 fn map_error(
     messages: &Messages,
     tenant: &WebTenant,
-    admin: &str,
+    admin: &AdminContext,
     headers: &HeaderMap,
     e: AdminApiError,
 ) -> Response {
@@ -333,13 +333,13 @@ fn map_error(
     }
 }
 
-fn internal_error(messages: &Messages, tenant: &WebTenant, admin: &str) -> Response {
+fn internal_error(messages: &Messages, tenant: &WebTenant, admin: &AdminContext) -> Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Html(render(&ConsoleNotice {
             messages,
             tenant: &tenant.prefix(),
-            admin: Some(admin),
+            admin: Some(admin.chrome()),
             heading: None,
             message: "admin-error-internal",
             is_error: true,

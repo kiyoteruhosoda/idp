@@ -38,6 +38,12 @@ code {
   max-width: min(16rem, 45vw);
 }
 
+/* 操作中テナントの常時表示。ユーザーラベルと並ぶため、名前が長くてもナビバーを崩さない
+ * （狭い画面ではより短く切り詰めて、言語切替・ユーザーメニューを押せる幅を残す） */
+.navbar .navbar-tenant-label {
+  max-width: min(12rem, 30vw);
+}
+
 /* ドロップダウンはビューポート内に収め、長い識別子はヘッダ内で折り返す */
 .navbar .dropdown-menu {
   max-width: calc(100vw - 1rem);

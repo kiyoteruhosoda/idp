@@ -268,6 +268,22 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         description: "パスワードリセットトークンの有効期限（秒）。リセットメールのリンクが使える期間。",
     },
     SettingDefinition {
+        key: "PASSWORD_RESET_CONSOLE_LINK_ENABLED",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Review,
+        kind: SettingKind::Boolean,
+        default_value: Some("true"),
+        description: "SMTP 未設定のとき、パスワードリセットのリンクをサーバのコンソール\
+                      （標準出力。`docker logs`）へ出すか。メール配送が無い環境で、パスワードを\
+                      忘れた管理者が自力で復旧するための唯一の経路になる。リンクを見られた者は\
+                      その利用者のパスワードを再設定できるため、コンソール出力を運用者以外が\
+                      読める環境では無効にする。SMTP を設定するとメール配送が優先され、\
+                      リンクはコンソールに出ない。",
+    },
+    SettingDefinition {
         key: "EMAIL_VERIFICATION_TTL_SECS",
         shared_with_web: false,
         owner: SettingOwner::DbManaged,

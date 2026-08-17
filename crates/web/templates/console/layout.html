@@ -18,6 +18,13 @@
       <a class="navbar-brand" href="{{ tenant }}/admin">{{ messages.get("admin-console-title") }}</a>
     </div>
     <div class="d-flex align-items-center gap-2">
+      {#- 操作中テナントの常時表示。取り違えた操作を防ぐため、ログイン中は全画面のヘッダに出す
+          （名前は api の whoami 応答由来。切替画面への導線も兼ねる）。 -#}
+      {% if let Some(chrome) = admin %}{% if let Some(name) = chrome.tenant_name %}
+      <a class="navbar-tenant d-flex align-items-center text-decoration-none badge text-bg-secondary" href="{{ tenant }}/admin/switch-tenant" title="{{ messages.get("admin-current-tenant") }}: {{ name }}">
+        <i class="fa-solid fa-building me-1" aria-hidden="true"></i><span class="visually-hidden">{{ messages.get("admin-current-tenant") }}: </span><span class="text-truncate navbar-tenant-label">{{ name }}</span>
+      </a>
+      {% endif %}{% endif %}
       {#- 言語切替（MT20）。`action` を持たない GET フォームは現在のパスへ `?lang=` だけを付けて
           送信するため、レイアウトを継承する全画面で追加の受け渡し無しに機能する（絞り込み・
           ページ位置のクエリは失われる ＝ 切替後は一覧の先頭に戻る）。決定・保存は
@@ -32,11 +39,11 @@
           <li><button type="submit" class="dropdown-item" name="lang" value="en">English</button></li>
         </ul>
       </form>
-      {% if let Some(uid) = admin %}
+      {% if let Some(chrome) = admin %}
       <div class="dropdown">
-        <button type="button" class="btn btn-link nav-link dropdown-toggle d-flex align-items-center" data-bs-toggle="dropdown" aria-expanded="false"><i class="fa-solid fa-user me-1" aria-hidden="true"></i><span class="text-truncate navbar-user-label">{{ uid }}</span></button>
+        <button type="button" class="btn btn-link nav-link dropdown-toggle d-flex align-items-center" data-bs-toggle="dropdown" aria-expanded="false"><i class="fa-solid fa-user me-1" aria-hidden="true"></i><span class="text-truncate navbar-user-label">{{ chrome.label }}</span></button>
         <ul class="dropdown-menu dropdown-menu-end">
-          <li><span class="dropdown-header">{{ messages.get("admin-signed-in-as") }} {{ uid }}</span></li>
+          <li><span class="dropdown-header">{{ messages.get("admin-signed-in-as") }} {{ chrome.label }}</span></li>
           <li><a class="dropdown-item" href="{{ tenant }}/settings?from=admin">{{ messages.get("admin-profile-settings") }}</a></li>
           <li><a class="dropdown-item" href="{{ tenant }}/admin/switch-tenant">{{ messages.get("admin-switch-tenant-menu") }}</a></li>
           <li><hr class="dropdown-divider"></li>

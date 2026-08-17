@@ -17,6 +17,13 @@ pub struct WhoamiResponse {
     /// ログイン識別子（未設定なら `None`）。表示名が無いときのヘッダ表示の代替に使う。
     #[serde(default)]
     pub preferred_username: Option<String>,
+    /// 経路のテナント（`/{tenant_id}/...`）の表示名。管理コンソールの全画面ヘッダに
+    /// 「いまどのテナントを操作しているか」を出すために返す。
+    ///
+    /// 旧 api（このフィールドを返さない版）と web が混在するローリングデプロイでも
+    /// 復号に失敗しないよう `#[serde(default)]` とする（欠落時はヘッダの名前表示だけが省かれる）。
+    #[serde(default)]
+    pub tenant_name: Option<String>,
 }
 
 /// 利用者の要約（`GET /admin/users?q=` 検索・`GET /admin/users/{id}` の応答）。管理コンソールの

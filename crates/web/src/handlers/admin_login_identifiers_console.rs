@@ -116,7 +116,7 @@ pub async fn list(
     Html(render(&LoginIdentifiersConsole {
         messages: &messages,
         tenant: &tenant.prefix(),
-        admin: Some(&admin),
+        admin: Some(admin.chrome()),
         csrf: &console_csrf_token(&sso, state.config.csrf_secret()),
         user_id: &user_id,
         identifiers: &rows,

@@ -13,7 +13,7 @@ use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::csrf::console_csrf_token;
 use crate::handlers::admin_console::{
-    forbidden_response, redirect_to_login, resolve_admin, AdminResolution,
+    forbidden_response, redirect_to_login, resolve_admin, AdminContext, AdminResolution,
 };
 use crate::handlers::found;
 use crate::i18n::Messages;
@@ -59,7 +59,7 @@ pub async fn new_form(
 fn render_new_form_with_message(
     messages: &Messages,
     tenant: &WebTenant,
-    admin: &str,
+    admin: &AdminContext,
     csrf: &str,
     email: &str,
     preferred_username: &str,
@@ -69,7 +69,7 @@ fn render_new_form_with_message(
     render(&UserForm {
         messages,
         tenant: &tenant.prefix(),
-        admin: Some(admin),
+        admin: Some(admin.chrome()),
         csrf,
         error: Some(error),
         email,
@@ -128,7 +128,7 @@ pub async fn create(
         Ok(created) => Html(render(&UserCreated {
             messages: &messages,
             tenant: &tenant.prefix(),
-            admin: Some(&admin),
+            admin: Some(admin.chrome()),
             email: &form.email,
             generated_password: &created.generated_password,
         }))
@@ -203,12 +203,24 @@ pub async fn view(
             return map_data_error(&messages, &tenant, &admin, &headers, e);
         }
     };
-    let available = state
+    // 付与可能コード（`permissions` マスタ）は選択肢の出所。取得に失敗しても画面自体は描画し
+    //（保有権限の確認・剥奪は続けられる）、付与欄だけ取得失敗として伝える。
+    let (available, available_load_failed) = match state
         .api
         .available_permissions(&correlation.0, &tenant.0, &sso)
         .await
-        .map(|a| a.codes)
-        .unwrap_or_default();
+    {
+        Ok(a) => (a.codes, false),
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load grantable permission codes");
+            (Vec::new(), true)
+        }
+    };
+    // 保有済みは選択肢から除く（付与しても変化しない操作を見せない）。
+    let grantable: Vec<String> = available
+        .into_iter()
+        .filter(|code| !codes.contains(code))
+        .collect();
 
     let messages = Messages::new(locale(&headers));
     let csrf = csrf_from(&headers, state.config.csrf_secret());
@@ -219,7 +231,8 @@ pub async fn view(
         &admin,
         &user,
         &codes,
-        &available,
+        &grantable,
+        available_load_failed,
         &csrf,
         error_key,
         query.saved.as_deref() == Some("profile"),
@@ -419,10 +432,11 @@ fn csrf_valid(headers: &HeaderMap, submitted: &str, key: &[u8]) -> bool {
 fn render_permissions(
     messages: &Messages,
     tenant: &WebTenant,
-    admin: &str,
+    admin: &AdminContext,
     user: &UserSummaryResponse,
     codes: &[String],
-    available: &[String],
+    grantable: &[String],
+    available_load_failed: bool,
     csrf: &str,
     error_key: Option<&str>,
     saved: bool,
@@ -430,10 +444,11 @@ fn render_permissions(
     render(&UsersPermissions {
         messages,
         tenant: &tenant.prefix(),
-        admin: Some(admin),
+        admin: Some(admin.chrome()),
         user,
         codes,
-        available,
+        grantable,
+        available_load_failed,
         csrf,
         error_key,
         saved,
@@ -444,7 +459,7 @@ fn render_permissions(
 fn render_new_form(
     messages: &Messages,
     tenant: &WebTenant,
-    admin: &str,
+    admin: &AdminContext,
     csrf: &str,
     email: &str,
     preferred_username: &str,
@@ -455,7 +470,7 @@ fn render_new_form(
     render(&UserForm {
         messages,
         tenant: &tenant.prefix(),
-        admin: Some(admin),
+        admin: Some(admin.chrome()),
         csrf,
         error: error.as_deref(),
         email,
@@ -466,11 +481,11 @@ fn render_new_form(
 
 // ── 共通ヘルパー ──────────────────────────────────────────────────────────────
 
-fn not_found(messages: &Messages, tenant: &WebTenant, admin: &str) -> Response {
+fn not_found(messages: &Messages, tenant: &WebTenant, admin: &AdminContext) -> Response {
     let body = render(&ConsoleNotice {
         messages,
         tenant: &tenant.prefix(),
-        admin: Some(admin),
+        admin: Some(admin.chrome()),
         heading: Some(&messages.get("admin-user-not-found-title")),
         message: &messages.get("admin-user-not-found-message"),
         is_error: false,
@@ -483,7 +498,7 @@ fn not_found(messages: &Messages, tenant: &WebTenant, admin: &str) -> Response {
 fn map_data_error(
     messages: &Messages,
     tenant: &WebTenant,
-    admin: &str,
+    admin: &AdminContext,
     headers: &HeaderMap,
     e: AdminApiError,
 ) -> Response {
@@ -495,7 +510,7 @@ fn map_data_error(
             let body = render(&ConsoleNotice {
                 messages,
                 tenant: &tenant.prefix(),
-                admin: Some(admin),
+                admin: Some(admin.chrome()),
                 heading: None,
                 message: &messages.get("admin-error-internal"),
                 is_error: true,
@@ -532,30 +547,82 @@ mod tests {
         }
     }
 
-    #[test]
-    fn permissions_lists_codes_and_grant_form() {
+    fn permissions_html(grantable: &[String], available_load_failed: bool) -> String {
         let messages = Messages::new(Locale::Ja);
-        let html = render_permissions(
+        render_permissions(
             &messages,
             &tenant(),
-            "admin-1",
+            &AdminContext::for_test("admin-1", Some("Acme")),
             &user(),
             &["idp.admin".into()],
-            &["idp.admin".into(), "idp.viewer".into()],
+            grantable,
+            available_load_failed,
             "csrf123",
             None,
             false,
-        );
+        )
+    }
+
+    #[test]
+    fn permissions_lists_codes_and_grant_form() {
+        let html = permissions_html(&["idp.viewer".into()], false);
         assert!(html.contains("idp.admin"));
         assert!(html.contains("permissions/grant"));
         assert!(html.contains("permissions/revoke"));
         assert!(html.contains("name=\"csrf_token\" value=\"csrf123\""));
     }
 
+    /// 付与は自由入力ではなく選択式（打ち間違いで未知コードを送らせない）。保有済みのコードは
+    /// 選択肢に出さず、候補が尽きたらフォーム自体を出さない。
+    #[test]
+    fn grant_offers_a_select_of_grantable_codes_only() {
+        let html = permissions_html(&["idp.viewer".into()], false);
+        assert!(html.contains(r#"<select class="form-select" id="permission-code" name="permission_code" required>"#), "{html}");
+        assert!(
+            html.contains(r#"<option value="idp.viewer">idp.viewer</option>"#),
+            "{html}"
+        );
+        // 保有済み（`idp.admin`）は選択肢に出さない。
+        assert!(!html.contains(r#"<option value="idp.admin">"#), "{html}");
+        // 自由入力欄・datalist は残っていない。
+        assert!(!html.contains(r#"list="admin-permission-codes""#), "{html}");
+
+        let html = permissions_html(&[], false);
+        assert!(
+            html.contains(&Messages::new(Locale::Ja).get("admin-permissions-grant-none-left")),
+            "{html}"
+        );
+        assert!(!html.contains("permissions/grant"), "{html}");
+    }
+
+    /// 候補が取得できなかったときは「候補なし」と取り違えないよう取得失敗として伝える。
+    #[test]
+    fn grant_reports_a_failed_lookup_instead_of_showing_no_candidates() {
+        let messages = Messages::new(Locale::Ja);
+        let html = permissions_html(&[], true);
+        assert!(
+            html.contains(&messages.get("admin-permissions-grant-load-failed")),
+            "{html}"
+        );
+        assert!(
+            !html.contains(&messages.get("admin-permissions-grant-none-left")),
+            "{html}"
+        );
+    }
+
     #[test]
     fn new_form_renders_fields() {
         let messages = Messages::new(Locale::Ja);
-        let html = render_new_form(&messages, &tenant(), "admin-1", "csrf1", "", "", "", None);
+        let html = render_new_form(
+            &messages,
+            &tenant(),
+            &AdminContext::for_test("admin-1", Some("Acme")),
+            "csrf1",
+            "",
+            "",
+            "",
+            None,
+        );
         assert!(html.contains("name=\"email\""));
         assert!(html.contains("name=\"preferred_username\""));
         assert!(html.contains("name=\"csrf_token\" value=\"csrf1\""));

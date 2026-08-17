@@ -16,7 +16,7 @@ use crate::dto::{
     AdminRuntimeSettingForm, AdminSystemSettingsForm, AdminTenantSettingsForm, SettingsQuery,
 };
 use crate::handlers::admin_console::{
-    forbidden_response, redirect_to_login, resolve_admin, AdminResolution,
+    forbidden_response, redirect_to_login, resolve_admin, AdminContext, AdminResolution,
 };
 use crate::handlers::found;
 use crate::i18n::Messages;
@@ -97,7 +97,7 @@ pub async fn page(
     Html(render(&AdminSettings {
         messages: &messages,
         tenant: &tenant.prefix(),
-        admin: Some(&admin),
+        admin: Some(admin.chrome()),
         tenant_id: &tenant_view.id,
         tenant_name: &tenant_view.name,
         tenant_status: &tenant_view.status,
@@ -293,11 +293,11 @@ fn sso(headers: &HeaderMap) -> String {
     cookies::get(headers, cookies::SSO_SESSION_COOKIE).unwrap_or_default()
 }
 
-fn internal_error(messages: &Messages, tenant: &WebTenant, admin: &str) -> Response {
+fn internal_error(messages: &Messages, tenant: &WebTenant, admin: &AdminContext) -> Response {
     let body = render(&ConsoleNotice {
         messages,
         tenant: &tenant.prefix(),
-        admin: Some(admin),
+        admin: Some(admin.chrome()),
         heading: None,
         message: &messages.get("admin-error-internal"),
         is_error: true,

@@ -147,7 +147,7 @@ pub async fn list(
     Html(render(&ExternalIdpsConsole {
         messages: &messages,
         tenant: &tenant.prefix(),
-        admin: Some(&admin),
+        admin: Some(admin.chrome()),
         csrf: &console_csrf_token(&sso, state.config.csrf_secret()),
         providers: &providers,
         editing: editing_id,
@@ -236,7 +236,7 @@ pub async fn import_metadata(
     Html(render(&ExternalIdpsConsole {
         messages: &messages,
         tenant: &tenant.prefix(),
-        admin: Some(&admin),
+        admin: Some(admin.chrome()),
         csrf: &console_csrf_token(&sso, state.config.csrf_secret()),
         providers: &providers,
         editing: None,
