@@ -12,7 +12,7 @@ use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::csrf::console_csrf_token;
 use crate::handlers::admin_console::{
-    forbidden_response, redirect_to_login, resolve_admin, AdminResolution,
+    forbidden_response, redirect_to_login, resolve_admin, AdminContext, AdminResolution,
 };
 use crate::handlers::found;
 use crate::i18n::Messages;
@@ -429,7 +429,7 @@ fn csrf_valid(headers: &HeaderMap, submitted: &str, key: &[u8]) -> bool {
 fn render_list(
     messages: &Messages,
     tenant: &WebTenant,
-    admin: &str,
+    admin: &AdminContext,
     page: &ClientListView,
     offset: i64,
 ) -> String {
@@ -443,7 +443,7 @@ fn render_list(
     render(&ClientsList {
         messages,
         tenant: &tenant.prefix(),
-        admin: Some(admin),
+        admin: Some(admin.chrome()),
         clients: &page.clients,
         total: page.total,
         prev_href: links.prev,
@@ -454,7 +454,7 @@ fn render_list(
 fn render_new_form(
     messages: &Messages,
     tenant: &WebTenant,
-    admin: &str,
+    admin: &AdminContext,
     csrf: &str,
     values: &ClientFormValues,
     error_key: Option<&str>,
@@ -463,7 +463,7 @@ fn render_new_form(
     render(&ClientForm {
         messages,
         tenant: &tenant.prefix(),
-        admin: Some(admin),
+        admin: Some(admin.chrome()),
         csrf,
         error: error.as_deref(),
         heading: &messages.get("admin-clients-new"),
@@ -476,7 +476,7 @@ fn render_new_form(
 fn render_new_form_with_message(
     messages: &Messages,
     tenant: &WebTenant,
-    admin: &str,
+    admin: &AdminContext,
     csrf: &str,
     values: &ClientFormValues,
     error: &str,
@@ -484,7 +484,7 @@ fn render_new_form_with_message(
     render(&ClientForm {
         messages,
         tenant: &tenant.prefix(),
-        admin: Some(admin),
+        admin: Some(admin.chrome()),
         csrf,
         error: Some(error),
         heading: &messages.get("admin-clients-new"),
@@ -497,7 +497,7 @@ fn render_new_form_with_message(
 fn render_edit_form(
     messages: &Messages,
     tenant: &WebTenant,
-    admin: &str,
+    admin: &AdminContext,
     client: &ClientView,
     csrf: &str,
     values: &ClientFormValues,
@@ -506,7 +506,7 @@ fn render_edit_form(
     render(&ClientForm {
         messages,
         tenant: &tenant.prefix(),
-        admin: Some(admin),
+        admin: Some(admin.chrome()),
         csrf,
         error: error.as_deref(),
         heading: &format!("{}: {}", messages.get("admin-client-edit"), client.app_name),
@@ -523,14 +523,14 @@ fn render_edit_form(
 fn render_detail(
     messages: &Messages,
     tenant: &WebTenant,
-    admin: &str,
+    admin: &AdminContext,
     client: &ClientView,
     csrf: &str,
 ) -> String {
     render(&ClientDetail {
         messages,
         tenant: &tenant.prefix(),
-        admin: Some(admin),
+        admin: Some(admin.chrome()),
         client,
         csrf,
     })
@@ -539,7 +539,7 @@ fn render_detail(
 fn render_secret_result(
     messages: &Messages,
     tenant: &WebTenant,
-    admin: &str,
+    admin: &AdminContext,
     created: &ClientCreatedView,
     is_new: bool,
 ) -> String {
@@ -556,7 +556,7 @@ fn render_secret_result(
 fn render_rotated_result(
     messages: &Messages,
     tenant: &WebTenant,
-    admin: &str,
+    admin: &AdminContext,
     client: &ClientView,
     secret: &str,
 ) -> String {
@@ -573,7 +573,7 @@ fn render_rotated_result(
 fn render_secret_page(
     messages: &Messages,
     tenant: &WebTenant,
-    admin: &str,
+    admin: &AdminContext,
     client_id: &str,
     secret: Option<&str>,
     is_new: bool,
@@ -586,7 +586,7 @@ fn render_secret_page(
     render(&ClientSecret {
         messages,
         tenant: &tenant.prefix(),
-        admin: Some(admin),
+        admin: Some(admin.chrome()),
         heading: &heading,
         client_id,
         secret,
@@ -599,7 +599,7 @@ fn render_secret_page(
 fn map_data_error(
     messages: &Messages,
     tenant: &WebTenant,
-    admin: &str,
+    admin: &AdminContext,
     headers: &HeaderMap,
     e: AdminApiError,
 ) -> Response {
@@ -612,7 +612,7 @@ fn map_data_error(
             let body = render(&ConsoleNotice {
                 messages,
                 tenant: &tenant.prefix(),
-                admin: Some(admin),
+                admin: Some(admin.chrome()),
                 heading: None,
                 message: &messages.get("admin-error-internal"),
                 is_error: true,
@@ -642,7 +642,7 @@ fn bad_request_form(html: String) -> Response {
 fn bad_request_page(
     messages: &Messages,
     tenant: &WebTenant,
-    admin: &str,
+    admin: &AdminContext,
     error_key: &str,
 ) -> Response {
     bad_request_page_msg(messages, tenant, admin, &messages.get(error_key))
@@ -651,13 +651,13 @@ fn bad_request_page(
 fn bad_request_page_msg(
     messages: &Messages,
     tenant: &WebTenant,
-    admin: &str,
+    admin: &AdminContext,
     message: &str,
 ) -> Response {
     let body = render(&ConsoleNotice {
         messages,
         tenant: &tenant.prefix(),
-        admin: Some(admin),
+        admin: Some(admin.chrome()),
         heading: None,
         message,
         is_error: true,
@@ -667,11 +667,11 @@ fn bad_request_page_msg(
     (StatusCode::BAD_REQUEST, Html(body)).into_response()
 }
 
-fn not_found(messages: &Messages, tenant: &WebTenant, admin: &str) -> Response {
+fn not_found(messages: &Messages, tenant: &WebTenant, admin: &AdminContext) -> Response {
     let body = render(&ConsoleNotice {
         messages,
         tenant: &tenant.prefix(),
-        admin: Some(admin),
+        admin: Some(admin.chrome()),
         heading: Some(&messages.get("admin-client-not-found-title")),
         message: &messages.get("admin-client-not-found-message"),
         is_error: false,
@@ -735,7 +735,13 @@ mod tests {
             limit: 50,
             offset: 0,
         };
-        let html = render_list(&messages, &tenant, "admin-1", &page, 0);
+        let html = render_list(
+            &messages,
+            &tenant,
+            &AdminContext::for_test("admin-1", Some("Acme")),
+            &page,
+            0,
+        );
         // Askama は HTML を数値文字参照でエスケープする（`<` → `&#60;`）。生タグが残らないことを確認する。
         assert!(html.contains("&#60;script&#62;Evil&#60;/script&#62;"));
         assert!(!html.contains("<script>Evil"));

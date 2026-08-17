@@ -12,7 +12,7 @@
 //! Cookie 組み立て（SSO 発行・失効、CSRF 種）は web が行う。CSRF は web 内で完結する（`crate::csrf`）。
 
 use super::locale;
-use crate::api_client::AdminSession;
+use crate::api_client::{AdminIdentity, AdminSession};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -23,7 +23,8 @@ use crate::handlers::{form_retry_error_key, forwarded_context, found, see_other}
 use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{
-    render, ConsoleHome, ConsoleLogin, ForcedPasswordChange, MessagePage, SwitchTenant,
+    render, ConsoleAdmin, ConsoleHome, ConsoleLogin, ForcedPasswordChange, MessagePage,
+    SwitchTenant,
 };
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, Query, State};
@@ -45,25 +46,14 @@ pub async fn home(
     headers: HeaderMap,
 ) -> Response {
     let admin = match resolve_admin(&state, &correlation, &tenant, &headers).await {
-        AdminResolution::Ok(user_id) => user_id,
+        AdminResolution::Ok(context) => context,
         AdminResolution::Reject(resp) => return resp,
     };
-    // 現在のテナント表示名を api から取得してヘッダに出す（root は既定 `ROOT`）。取得に失敗しても
-    // ホーム自体は描画したいので、名前だけ省いてフェイルソフトする（idp.system.admin は IdpAdmin の
-    // 代替として許可されるため root 管理者でも取得できる。ADR-0009 §4）。
-    let sso = cookies::get(&headers, cookies::SSO_SESSION_COOKIE).unwrap_or_default();
-    let tenant_name = state
-        .api
-        .get_current_tenant(&correlation.0, &tenant.0, &sso)
-        .await
-        .ok()
-        .map(|t| t.name);
     let messages = Messages::new(locale(&headers));
     Html(render(&ConsoleHome {
         messages: &messages,
         tenant: &tenant.prefix(),
-        admin: Some(&admin),
-        tenant_name: tenant_name.as_deref(),
+        admin: Some(admin.chrome()),
     }))
     .into_response()
 }
@@ -78,7 +68,7 @@ pub async fn switch_tenant(
     headers: HeaderMap,
 ) -> Response {
     let admin = match resolve_admin(&state, &correlation, &tenant, &headers).await {
-        AdminResolution::Ok(user_id) => user_id,
+        AdminResolution::Ok(context) => context,
         AdminResolution::Reject(resp) => return resp,
     };
     // 所属テナント一覧を api から取得する（SSO Cookie 転送）。取得に失敗しても画面は描画し、注意文言を出す。
@@ -101,7 +91,7 @@ pub async fn switch_tenant(
     Html(render(&SwitchTenant {
         messages: &messages,
         tenant: &tenant.prefix(),
-        admin: Some(&admin),
+        admin: Some(admin.chrome()),
         tenants: &tenants,
         current_tenant_id: &tenant.0,
         load_failed,
@@ -149,6 +139,7 @@ pub async fn login_page(
         set_cookies.into_headers(),
         Html(render_login_form(
             &messages,
+            &tenant.prefix(),
             &csrf,
             form_retry_error_key(query.error.as_deref()),
         )),
@@ -236,24 +227,28 @@ pub async fn login(
         }
         InternalAdminAuthenticateResponse::RateLimited => reshow_login(
             &messages,
+            &tenant.prefix(),
             StatusCode::TOO_MANY_REQUESTS,
             &csrf,
             "login-error-rate-limited",
         ),
         InternalAdminAuthenticateResponse::InvalidCredentials => reshow_login(
             &messages,
+            &tenant.prefix(),
             StatusCode::UNAUTHORIZED,
             &csrf,
             "login-error-invalid-credentials",
         ),
         InternalAdminAuthenticateResponse::Locked => reshow_login(
             &messages,
+            &tenant.prefix(),
             StatusCode::FORBIDDEN,
             &csrf,
             "login-error-locked",
         ),
         InternalAdminAuthenticateResponse::Forbidden => reshow_login(
             &messages,
+            &tenant.prefix(),
             StatusCode::FORBIDDEN,
             &csrf,
             "admin-login-error-forbidden",
@@ -261,18 +256,21 @@ pub async fn login(
         // 認証ポリシー（AP2）。資格情報は検証済みなので、資格情報エラーとは別の文言を出す。
         InternalAdminAuthenticateResponse::PolicyDenied => reshow_login(
             &messages,
+            &tenant.prefix(),
             StatusCode::FORBIDDEN,
             &csrf,
             "login-error-policy-denied",
         ),
         InternalAdminAuthenticateResponse::MfaEnrollmentRequired => reshow_login(
             &messages,
+            &tenant.prefix(),
             StatusCode::FORBIDDEN,
             &csrf,
             "login-error-mfa-enrollment-required",
         ),
         InternalAdminAuthenticateResponse::MfaRequired => reshow_login(
             &messages,
+            &tenant.prefix(),
             StatusCode::FORBIDDEN,
             &csrf,
             "admin-login-error-mfa-required",
@@ -472,8 +470,35 @@ pub async fn logout(
 
 /// 認可済み管理者の解決結果。`Reject` は誘導/エラーの完成済み Response を持つ。
 pub(crate) enum AdminResolution {
-    Ok(String),
+    Ok(AdminContext),
     Reject(Response),
+}
+
+/// 認可済み管理者と操作中テナントの文脈。各コンソール画面がヘッダ描画のために持ち回る
+/// （`ConsoleAdmin` の所有版。テンプレートへは [`Self::chrome`] で借用として渡す）。
+pub(crate) struct AdminContext {
+    identity: AdminIdentity,
+}
+
+impl AdminContext {
+    /// 画面描画テスト用の文脈。実行時は必ず api の whoami 応答から組み立てる。
+    #[cfg(test)]
+    pub(crate) fn for_test(label: &str, tenant_name: Option<&str>) -> Self {
+        Self {
+            identity: AdminIdentity {
+                label: label.to_string(),
+                tenant_name: tenant_name.map(str::to_string),
+            },
+        }
+    }
+
+    /// 共通レイアウトのヘッダに渡す文脈（管理者ラベル＋テナント表示名）。
+    pub(crate) fn chrome(&self) -> ConsoleAdmin<'_> {
+        ConsoleAdmin {
+            label: &self.identity.label,
+            tenant_name: self.identity.tenant_name.as_deref(),
+        }
+    }
 }
 
 /// SSO Cookie を api へ転送して管理者を解決する（未認証→ログイン誘導、権限不足→403 HTML）。
@@ -502,7 +527,7 @@ fn admin_resolution(
     headers: &HeaderMap,
 ) -> AdminResolution {
     match session {
-        AdminSession::Authenticated(user_id) => AdminResolution::Ok(user_id),
+        AdminSession::Authenticated(identity) => AdminResolution::Ok(AdminContext { identity }),
         AdminSession::Unauthenticated => AdminResolution::Reject(redirect_to_login(tenant)),
         AdminSession::Forbidden => AdminResolution::Reject(forbidden_response(headers)),
         AdminSession::NotFound => {
@@ -534,10 +559,21 @@ pub(crate) fn forbidden_response(headers: &HeaderMap) -> Response {
     (StatusCode::FORBIDDEN, Html(body)).into_response()
 }
 
-fn reshow_login(messages: &Messages, status: StatusCode, csrf: &str, error_key: &str) -> Response {
+fn reshow_login(
+    messages: &Messages,
+    tenant_prefix: &str,
+    status: StatusCode,
+    csrf: &str,
+    error_key: &str,
+) -> Response {
     (
         status,
-        Html(render_login_form(messages, csrf, Some(error_key))),
+        Html(render_login_form(
+            messages,
+            tenant_prefix,
+            csrf,
+            Some(error_key),
+        )),
     )
         .into_response()
 }
@@ -564,9 +600,15 @@ fn reshow_password_change(
 }
 
 /// 管理ログインフォームの HTML をテンプレートから描画する（埋め込む値は自動 HTML エスケープされる）。
-fn render_login_form(messages: &Messages, csrf: &str, error_key: Option<&str>) -> String {
+fn render_login_form(
+    messages: &Messages,
+    tenant_prefix: &str,
+    csrf: &str,
+    error_key: Option<&str>,
+) -> String {
     render(&ConsoleLogin {
         messages,
+        tenant_prefix,
         csrf,
         error_key,
     })
@@ -598,11 +640,14 @@ mod tests {
     #[test]
     fn login_form_has_csrf_and_credential_fields() {
         let messages = Messages::new(Locale::Ja);
-        let html = render_login_form(&messages, "deadbeef", None);
+        let tenant_prefix = "/00000000-0000-7000-8000-000000000000";
+        let html = render_login_form(&messages, tenant_prefix, "deadbeef", None);
         assert!(html.contains("name=\"csrf_token\" value=\"deadbeef\""));
         assert!(html.contains("name=\"username\""));
         assert!(html.contains("name=\"password\""));
         assert!(!html.contains("role=\"alert\""));
+        // パスワードを忘れた管理者の自己復旧導線（利用者ログイン画面と同じ経路）。
+        assert!(html.contains(&format!("href=\"{tenant_prefix}/forgot-password\"")));
     }
 
     #[test]
@@ -611,8 +656,10 @@ mod tests {
         let html = render(&ConsoleHome {
             messages: &messages,
             tenant: "/00000000-0000-7000-8000-000000000000",
-            admin: Some("user-123"),
-            tenant_name: Some("ROOT"),
+            admin: Some(crate::templates::ConsoleAdmin {
+                label: "user-123",
+                tenant_name: Some("ROOT"),
+            }),
         });
         assert!(html.contains("user-123"));
         assert!(html.contains("ROOT"));

@@ -15,7 +15,7 @@ use crate::correlation::CorrelationId;
 use crate::csrf::console_csrf_token;
 use crate::dto::{MemberActionForm, MemberStatusForm};
 use crate::handlers::admin_console::{
-    forbidden_response, redirect_to_login, resolve_admin, AdminResolution,
+    forbidden_response, redirect_to_login, resolve_admin, AdminContext, AdminResolution,
 };
 use crate::handlers::found;
 use crate::i18n::Messages;
@@ -99,7 +99,7 @@ pub async fn list(
 fn render_list(
     messages: &Messages,
     tenant: &WebTenant,
-    admin: &str,
+    admin: &AdminContext,
     csrf: &str,
     page: &MemberListView,
     term: &str,
@@ -117,7 +117,7 @@ fn render_list(
     render(&MembersList {
         messages,
         tenant: &tenant.prefix(),
-        admin: Some(admin),
+        admin: Some(admin.chrome()),
         members: &page.members,
         total: page.total,
         query: term,
@@ -240,7 +240,7 @@ pub async fn reset_password(
     Html(render(&PasswordResetResult {
         messages: &messages,
         tenant: &tenant.prefix(),
-        admin: Some(&admin),
+        admin: Some(admin.chrome()),
         subject: &subject,
         generated_password: &reset.generated_password,
         back_href: &base,
@@ -473,11 +473,11 @@ fn csrf_valid(headers: &HeaderMap, submitted: &str, key: &[u8]) -> bool {
         .unwrap_or(false)
 }
 
-fn internal_error(messages: &Messages, tenant: &WebTenant, admin: &str) -> Response {
+fn internal_error(messages: &Messages, tenant: &WebTenant, admin: &AdminContext) -> Response {
     let body = render(&ConsoleNotice {
         messages,
         tenant: &tenant.prefix(),
-        admin: Some(admin),
+        admin: Some(admin.chrome()),
         heading: None,
         message: &messages.get("admin-error-internal"),
         is_error: true,
@@ -525,7 +525,7 @@ mod tests {
         super::render_list(
             &messages,
             &tenant(),
-            "admin-1",
+            &AdminContext::for_test("admin-1", Some("Acme")),
             "csrf123",
             &page(members.to_vec()),
             "",
@@ -565,7 +565,7 @@ mod tests {
         let english = super::render_list(
             &messages,
             &tenant(),
-            "admin-1",
+            &AdminContext::for_test("admin-1", Some("Acme")),
             "csrf123",
             &page(vec![member("HOME")]),
             "",

@@ -2,17 +2,28 @@
 //!
 //! ログイン画面の「パスワードをお忘れですか」から、メールアドレスを入力 → リセットリンク付き
 //! メールを受信 → リンク先で新パスワードを設定する。SMTP はシステム設定（MT14）から解決し、
-//! メール配送は MT17 の [`Mailer`] ポートを再利用する。
+//! メール配送は MT17 の [`Mailer`] ポートを再利用する。管理コンソールのログイン画面も同じ経路を
+//! 使う（管理者だけの別経路は設けない。ADR-0009 §5 の管理者による再発行は別機能）。
+//!
+//! **SMTP で送れないときはリンクをサーバのコンソール（標準出力）へ出す**。メール配送を用意して
+//! いない環境で、パスワードを忘れた管理者が自力で復旧するための経路で、運用者は `docker logs` から
+//! URL を拾う。「送れないとき」は SMTP 未設定に限らず、**SMTP 設定の読み出しに失敗したとき**
+//! （DB 障害・`KEY_ENCRYPTION_KEY` 不一致でパスワードを復号できない等）も含む —— 障害時に復旧手段
+//! まで失わないため。したがって SMTP を設定した環境でもコンソールに出ることがある。
+//! `PASSWORD_RESET_CONSOLE_LINK_ENABLED=false` で塞げる（その場合は SMTP で送れない＝機能が使えない）。
 //!
 //! セキュリティ方針:
 //! - **メールアドレスの列挙防止**: 要求はアカウントの有無・状態に関わらず同一の応答（`Accepted`）
-//!   を返す。SMTP 未設定だけは `Unavailable`（アカウント非依存の情報のため列挙にはならない）。
+//!   を返す。リンクを届ける手段が無いときだけ `Unavailable`（アカウント非依存の情報のため
+//!   列挙にはならない）。
 //! - **トークン**: 32 バイトのランダム値。保存は SHA-256 hex のみ・TTL 付き（既定 1 時間）・
 //!   単回消費。再要求時は当該ユーザーの未使用トークンを失効させる（有効リンクは常に最新の 1 本）。
 //! - **リセット成功時の全セッション失効**: 忘失リセットは資格情報漏えいの可能性を含むため、
 //!   SSO セッション・refresh token・未消費 authorization code をユーザー単位で全失効させる。
 //! - **レート制限**: IP 単位で要求回数を制限する。
-//! - トークン・メールアドレスはログ・監査に出さない（PII 方針）。
+//! - メールアドレスはログ・監査に出さない（PII 方針）。トークンも同様だが、上記のコンソール出力
+//!   だけは例外で、URL を INFO で標準出力へ出す（`log` テーブルへは WARN 以上しか取り込まれない
+//!   ため、DB・管理コンソールのログ画面には残らない）。
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::password_policy::PasswordPolicyService;
@@ -20,7 +31,7 @@ use crate::application::system_settings::SystemSettingsService;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
-use crate::domain::mailer::{Mailer, OutgoingEmail};
+use crate::domain::mailer::{Mailer, OutgoingEmail, SmtpServerConfig};
 use crate::domain::password::PasswordHasher;
 use crate::domain::password_policy::PasswordRejection;
 use crate::domain::password_reset::PasswordResetToken;
@@ -39,12 +50,24 @@ const RESET_TOKEN_BYTES: usize = 32;
 
 /// リセット要求の結果。アカウントの有無では分岐しない（列挙防止）。
 pub enum RequestResetOutcome {
-    /// 受理（アカウントが存在すればメールを送った。存在しなくても同じ応答）。
+    /// 受理（アカウントが存在すればリンクを届けた。存在しなくても同じ応答）。
     Accepted,
-    /// SMTP 未設定でメール配送不可（機能自体が利用できない。アカウント非依存）。
+    /// リンクを届ける手段が無い（SMTP で送れず、かつコンソール出力も無効）。
+    /// 機能自体が利用できない状態でアカウントに依存しないため、返しても列挙にはならない。
     Unavailable,
     /// IP 単位のレート制限超過。
     RateLimited,
+}
+
+/// リセットリンクの届け先。SMTP で送れるならメール、送れない（未設定・設定の読み出しに失敗）
+/// ならサーバのコンソール（標準出力。`docker logs` で読む）へ出す。
+///
+/// コンソール出力はメール配送を用意していない環境での復旧経路であり、リンクを読めた者は
+/// そのアカウントのパスワードを再設定できる。運用者以外がログを読める環境では
+/// `PASSWORD_RESET_CONSOLE_LINK_ENABLED=false` で塞ぐ。
+enum ResetLinkDelivery {
+    Email(SmtpServerConfig),
+    Console,
 }
 
 pub enum ResetPasswordOutcome {
@@ -72,6 +95,8 @@ pub struct PasswordResetService {
     reset_ttl: chrono::Duration,
     /// リセットリンクの土台となる公開ベース URL（web 画面。末尾スラッシュ無し）。
     console_base_url: String,
+    /// SMTP で送れないときにリンクをサーバのコンソールへ出すか。
+    console_link_enabled: bool,
 }
 
 impl PasswordResetService {
@@ -91,6 +116,7 @@ impl PasswordResetService {
         clock: Arc<dyn Clock>,
         reset_ttl: std::time::Duration,
         console_base_url: String,
+        console_link_enabled: bool,
     ) -> Self {
         Self {
             users,
@@ -107,6 +133,7 @@ impl PasswordResetService {
             clock,
             reset_ttl: chrono::Duration::from_std(reset_ttl).expect("reset TTL out of range"),
             console_base_url: console_base_url.trim_end_matches('/').to_string(),
+            console_link_enabled,
         }
     }
 
@@ -125,13 +152,24 @@ impl PasswordResetService {
             return RequestResetOutcome::RateLimited;
         }
 
-        // SMTP 未設定なら機能自体が使えない（アカウント非依存のため列挙にはならない）。
-        let server = match self.system_settings.smtp_server().await {
-            Ok(Some(server)) => server,
-            Ok(None) => return RequestResetOutcome::Unavailable,
+        // 届け先を先に決める。SMTP も コンソール出力も無ければ機能自体が使えない
+        //（アカウント非依存のため、ここで分岐しても列挙にはならない）。
+        let delivery = match self.system_settings.smtp_server().await {
+            Ok(Some(server)) => ResetLinkDelivery::Email(server),
+            Ok(None) => match self.console_link_delivery() {
+                Some(delivery) => delivery,
+                None => return RequestResetOutcome::Unavailable,
+            },
             Err(e) => {
                 tracing::warn!(error = %e, "failed to load SMTP settings for password reset");
-                return RequestResetOutcome::Unavailable;
+                // 設定を読めないだけで、コンソール経路は使える（SMTP 未設定と同じ扱いにすると
+                // 障害時に復旧手段まで失う）。**SMTP を設定済みの環境でもここを通り得る**ため、
+                // 「SMTP を設定すればコンソールには出ない」とは言えない（設定の説明・OPERATIONS
+                // にも明記する）。
+                match self.console_link_delivery() {
+                    Some(delivery) => delivery,
+                    None => return RequestResetOutcome::Unavailable,
+                }
             }
         };
 
@@ -195,29 +233,50 @@ impl PasswordResetService {
             tenant.tenant_id(),
             token
         );
-        let mail = OutgoingEmail {
-            to: user.email.clone(),
-            subject: "パスワード再設定のご案内 / Password reset".to_string(),
-            body_text: format!(
-                "パスワード再設定の要求を受け付けました。\n\
-                 次のリンクを開いて新しいパスワードを設定してください。\n\
-                 心当たりがない場合は、このメールを破棄してください。\n\
-                 \n\
-                 A password reset was requested for your account.\n\
-                 Open the link below to set a new password.\n\
-                 If you did not request this, you can safely ignore this email.\n\
-                 \n\
-                 {reset_url}\n\
-                 \n\
-                 有効期限 / Expires at: {}\n",
-                expires_at.to_rfc3339()
+        match delivery {
+            ResetLinkDelivery::Email(server) => {
+                let mail = OutgoingEmail {
+                    to: user.email.clone(),
+                    subject: "パスワード再設定のご案内 / Password reset".to_string(),
+                    body_text: format!(
+                        "パスワード再設定の要求を受け付けました。\n\
+                         次のリンクを開いて新しいパスワードを設定してください。\n\
+                         心当たりがない場合は、このメールを破棄してください。\n\
+                         \n\
+                         A password reset was requested for your account.\n\
+                         Open the link below to set a new password.\n\
+                         If you did not request this, you can safely ignore this email.\n\
+                         \n\
+                         {reset_url}\n\
+                         \n\
+                         有効期限 / Expires at: {}\n",
+                        expires_at.to_rfc3339()
+                    ),
+                };
+                if let Err(e) = self.mailer.send(&server, &mail).await {
+                    // 宛先等の PII はログに出さない。応答も Accepted のまま（列挙防止）。
+                    tracing::warn!(error = %e, "password reset email delivery failed");
+                }
+            }
+            // メール配送が無い環境の復旧経路。運用者が `docker logs` から URL を拾う。
+            //
+            // **INFO で出す**のは意図的。取り込み層は WARN 以上だけを `log` テーブルへ書くため、
+            // INFO なら URL（＝リセットトークン）が DB に残らず、管理コンソールのログ画面にも
+            // 出ない。宛先メールアドレスは出さず、監査と同じ内部 ID だけを添える。
+            ResetLinkDelivery::Console => tracing::info!(
+                user_id = %user.id,
+                expires_at = %expires_at.to_rfc3339(),
+                reset_url = %reset_url,
+                "password reset link issued to the server console because no usable SMTP configuration is available"
             ),
-        };
-        if let Err(e) = self.mailer.send(&server, &mail).await {
-            // 宛先等の PII はログに出さない。応答も Accepted のまま（列挙防止）。
-            tracing::warn!(error = %e, "password reset email delivery failed");
         }
         RequestResetOutcome::Accepted
+    }
+
+    /// SMTP で送れないときの届け先。コンソール出力が無効なら `None`（＝機能を提供できない）。
+    fn console_link_delivery(&self) -> Option<ResetLinkDelivery> {
+        self.console_link_enabled
+            .then_some(ResetLinkDelivery::Console)
     }
 
     /// トークンを消費して新パスワードを設定する。成功時は当該ユーザーの SSO セッション・
@@ -725,7 +784,16 @@ mod tests {
         sink: Arc<CapturingSink>,
     }
 
+    /// SMTP のみを設定した検証台（コンソール出力は無効）。
     fn harness(smtp_configured: bool, limiter_allowance: usize) -> Harness {
+        harness_with(smtp_configured, limiter_allowance, false)
+    }
+
+    fn harness_with(
+        smtp_configured: bool,
+        limiter_allowance: usize,
+        console_link_enabled: bool,
+    ) -> Harness {
         let users = Arc::new(FakeUsers::default());
         let tokens = Arc::new(FakeResetTokens::default());
         let sso = Arc::new(FakeSsoSessions::default());
@@ -768,6 +836,7 @@ mod tests {
             Arc::new(FixedClock),
             std::time::Duration::from_secs(3600),
             "https://idp.example.com".to_string(),
+            console_link_enabled,
         );
         Harness {
             svc,
@@ -778,6 +847,33 @@ mod tests {
             codes,
             mailer,
             sink,
+        }
+    }
+
+    /// コンソール出力（標準出力）を検証するための書き出し先。
+    #[derive(Clone, Default)]
+    struct SharedBuffer(Arc<Mutex<Vec<u8>>>);
+
+    impl SharedBuffer {
+        fn contents(&self) -> String {
+            String::from_utf8(self.0.lock().unwrap().clone()).expect("utf-8 log output")
+        }
+    }
+
+    impl std::io::Write for SharedBuffer {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedBuffer {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
         }
     }
 
@@ -831,6 +927,64 @@ mod tests {
         assert_ne!(rows[0].token_hash, token);
     }
 
+    /// SMTP が無い環境では、リセットリンクをサーバのコンソールへ出して復旧できること。
+    /// メールは送らず、トークンはハッシュのみ保存される（メール経路と同じ）。
+    #[tokio::test]
+    async fn request_prints_the_link_to_the_console_when_smtp_is_missing() {
+        let tenant: TenantId = Uuid::now_v7().into();
+        let user = Uuid::new_v4();
+        let h = harness_with(false, 100, true);
+        h.users
+            .rows
+            .lock()
+            .unwrap()
+            .push(test_user(user, tenant, "admin@example.com"));
+
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::Layer;
+
+        let logs = SharedBuffer::default();
+        let subscriber = tracing_subscriber::registry().with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(logs.clone())
+                .with_filter(tracing_subscriber::EnvFilter::new("info")),
+        );
+        let outcome = {
+            let _guard = tracing::subscriber::set_default(subscriber);
+            h.svc
+                .request_reset(TenantContext::new(tenant), "admin@example.com", &ctx())
+                .await
+        };
+        assert!(matches!(outcome, RequestResetOutcome::Accepted));
+
+        let printed = logs.contents();
+        let prefix = format!("https://idp.example.com/{tenant}/password-reset?token=");
+        assert!(printed.contains(&prefix), "{printed}");
+        // 出力は INFO。取り込み層（`telemetry::capture_filter`）は WARN 以上だけを `log` テーブルへ
+        // 書くため、リンクは DB にも管理コンソールのログ画面にも残らない。
+        assert!(printed.contains("INFO"), "{printed}");
+        // 宛先メールアドレス（PII）は出さない。
+        assert!(!printed.contains("admin@example.com"), "{printed}");
+
+        // メールは送られず、保存されるのはトークンのハッシュのみ。
+        assert!(h.mailer.sent.lock().unwrap().is_empty());
+        let token = printed
+            .split_once(&prefix)
+            .map(|(_, rest)| {
+                rest.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+                    .next()
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .expect("reset url in console output");
+        let rows = h.tokens.rows.lock().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].token_hash, crypto::sha256_hex(&token));
+    }
+
+    /// コンソール出力を無効にした運用（ログを運用者以外が読める環境）では、SMTP が無ければ
+    /// 従来どおり「利用できない」を返す。
     #[tokio::test]
     async fn request_is_unavailable_without_smtp_and_rate_limited() {
         let tenant: TenantId = Uuid::now_v7().into();

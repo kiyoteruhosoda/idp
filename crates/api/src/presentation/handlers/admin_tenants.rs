@@ -188,6 +188,9 @@ pub async fn update_tenant(
         )
         .await
         .map_err(|e| map_error(e, locale))?;
+    // 解決キャッシュには更新前の名称・状態が載っている。捨てないと、次のリクエストが TTL
+    // （TENANT_CACHE_TTL_SECS）の間だけ旧名称のヘッダ表示・旧 status での可否判定を続ける。
+    state.tenant_resolution.invalidate(updated.id);
     Ok(Json(tenant_response(&updated)))
 }
 
@@ -225,6 +228,8 @@ pub async fn delete_tenant(
         .delete_tenant(tenant.context(), child, admin.user_id, &ctx)
         .await
         .map_err(|e| map_error(e, locale))?;
+    // 削除した（＝以後解決してはならない）テナントを解決キャッシュから捨てる。
+    state.tenant_resolution.invalidate(child);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -350,6 +355,9 @@ pub async fn update_current_tenant(
         )
         .await
         .map_err(|e| map_error(e, locale))?;
+    // 解決キャッシュを捨てる。管理コンソールのヘッダは whoami（＝解決済みテナント）から表示名を
+    // 得るため、捨てないと改名直後に「本文は新名称・ヘッダは旧名称」の画面になる。
+    state.tenant_resolution.invalidate(updated.id);
     Ok(Json(tenant_response(&updated)))
 }
 

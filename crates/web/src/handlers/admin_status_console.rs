@@ -9,7 +9,7 @@ use crate::admin_dto::AuditLogView;
 use crate::api_client::AdminApiError;
 use crate::correlation::CorrelationId;
 use crate::handlers::admin_console::{
-    forbidden_response, redirect_to_login, resolve_admin, AdminResolution,
+    forbidden_response, redirect_to_login, resolve_admin, AdminContext, AdminResolution,
 };
 use crate::i18n::Messages;
 use crate::state::WebState;
@@ -212,7 +212,7 @@ fn sso(headers: &HeaderMap) -> String {
 fn render_audit(
     messages: &Messages,
     tenant: &WebTenant,
-    admin: &str,
+    admin: &AdminContext,
     form: &AuditForm,
     offset: i64,
     date_error: bool,
@@ -222,7 +222,7 @@ fn render_audit(
     render(&AuditLogs {
         messages,
         tenant: &tenant.prefix(),
-        admin: Some(admin),
+        admin: Some(admin.chrome()),
         date_error,
         event_type: form.event_type.as_deref().unwrap_or(""),
         result: form.result.as_deref().unwrap_or(""),
@@ -275,7 +275,7 @@ fn audit_query_string(tenant: &WebTenant, form: &AuditForm, offset: i64) -> Stri
 fn render_application_logs(
     messages: &Messages,
     tenant: &WebTenant,
-    admin: &str,
+    admin: &AdminContext,
     form: &ApplicationLogForm,
     offset: i64,
     date_error: bool,
@@ -285,7 +285,7 @@ fn render_application_logs(
     render(&ApplicationLogs {
         messages,
         tenant: &tenant.prefix(),
-        admin: Some(admin),
+        admin: Some(admin.chrome()),
         date_error,
         level: form.level.as_deref().unwrap_or(""),
         service: form.service.as_deref().unwrap_or(""),
@@ -341,13 +341,13 @@ fn application_log_query_string(
 fn render_status(
     messages: &Messages,
     tenant: &WebTenant,
-    admin: &str,
+    admin: &AdminContext,
     views: &[ClientStatusResponse],
 ) -> String {
     render(&ClientStatus {
         messages,
         tenant: &tenant.prefix(),
-        admin: Some(admin),
+        admin: Some(admin.chrome()),
         views,
     })
 }
@@ -367,11 +367,11 @@ fn urlencode(s: &str) -> String {
     out
 }
 
-fn internal_error(messages: &Messages, tenant: &WebTenant, admin: &str) -> Response {
+fn internal_error(messages: &Messages, tenant: &WebTenant, admin: &AdminContext) -> Response {
     let body = render(&ConsoleNotice {
         messages,
         tenant: &tenant.prefix(),
-        admin: Some(admin),
+        admin: Some(admin.chrome()),
         heading: None,
         message: &messages.get("admin-error-internal"),
         is_error: true,
@@ -411,7 +411,7 @@ mod tests {
         let html = render_audit(
             &messages,
             &tenant(),
-            "admin-1",
+            &AdminContext::for_test("admin-1", Some("Acme")),
             &AuditForm::default(),
             0,
             false,
@@ -430,7 +430,7 @@ mod tests {
         let html = render_audit(
             &messages,
             &tenant(),
-            "admin-1",
+            &AdminContext::for_test("admin-1", Some("Acme")),
             &AuditForm::default(),
             0,
             true,
@@ -471,7 +471,12 @@ mod tests {
                 last_used_at: None,
             },
         ];
-        let html = render_status(&messages, &tenant(), "admin-1", &views);
+        let html = render_status(
+            &messages,
+            &tenant(),
+            &AdminContext::for_test("admin-1", Some("Acme")),
+            &views,
+        );
         // Askama は HTML を数値文字参照でエスケープする（`<` → `&#60;`）。
         assert!(html.contains("&#60;Used&#62;"));
         assert!(html.contains("DISABLED"));
@@ -503,7 +508,7 @@ mod tests {
         let html = render_application_logs(
             &messages,
             &tenant(),
-            "admin-1",
+            &AdminContext::for_test("admin-1", Some("Acme")),
             &ApplicationLogForm::default(),
             0,
             false,
@@ -529,7 +534,7 @@ mod tests {
         let html = render_application_logs(
             &messages,
             &tenant(),
-            "admin-1",
+            &AdminContext::for_test("admin-1", Some("Acme")),
             &ApplicationLogForm::default(),
             0,
             true,

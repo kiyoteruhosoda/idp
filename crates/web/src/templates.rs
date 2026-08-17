@@ -209,10 +209,10 @@ mod tests {
             messages: &messages,
             tenant: "/t",
             admin: None,
-            tenant_name: None,
         });
         let auth = render(&ConsoleLogin {
             messages: &messages,
+            tenant_prefix: "/t",
             csrf: "csrf",
             error_key: None,
         });
@@ -244,12 +244,17 @@ mod tests {
     #[test]
     fn console_layout_offers_a_language_switcher() {
         let messages = Messages::new(Locale::Ja);
-        for admin in [Some("admin-1"), None] {
+        for admin in [
+            Some(ConsoleAdmin {
+                label: "admin-1",
+                tenant_name: None,
+            }),
+            None,
+        ] {
             let html = render(&ConsoleHome {
                 messages: &messages,
                 tenant: "/t",
                 admin,
-                tenant_name: None,
             });
             assert!(
                 html.contains(&messages.get("admin-language-switch")),
@@ -262,6 +267,40 @@ mod tests {
         }
     }
 
+    /// 操作中のテナントは管理コンソールの全画面で見えていること（共通レイアウトのヘッダに出す）。
+    /// テナントを取り違えた操作を防ぐための表示なので、ホームだけでなくレイアウト側に置く。
+    #[test]
+    fn console_layout_always_shows_the_current_tenant_for_signed_in_admins() {
+        let messages = Messages::new(Locale::Ja);
+        let html = render(&ConsoleHome {
+            messages: &messages,
+            tenant: "/t",
+            admin: Some(ConsoleAdmin {
+                label: "admin-1",
+                tenant_name: Some("Acme Inc."),
+            }),
+        });
+        assert!(html.contains("Acme Inc."), "{html}");
+        assert!(
+            html.contains(&messages.get("admin-current-tenant")),
+            "{html}"
+        );
+        // ヘッダのテナント表示はそのまま切り替え画面への導線を兼ねる。
+        assert!(html.contains(r#"href="/t/admin/switch-tenant""#), "{html}");
+
+        // 名前が取得できないとき（旧 api）は名前の表示だけを省き、画面は壊さない。
+        let html = render(&ConsoleHome {
+            messages: &messages,
+            tenant: "/t",
+            admin: Some(ConsoleAdmin {
+                label: "admin-1",
+                tenant_name: None,
+            }),
+        });
+        assert!(html.contains("admin-1"), "{html}");
+        assert!(!html.contains("navbar-tenant-label"), "{html}");
+    }
+
     /// IdP メタデータのダウンロード導線は api への直接リンクではなく、web のルートであること。
     #[test]
     fn saml_console_links_idp_metadata_on_the_web_origin() {
@@ -270,7 +309,10 @@ mod tests {
             messages: &messages,
             tenant: "/t",
             idp_metadata_url: "/t/admin/saml-clients/idp-metadata",
-            admin: Some("admin-1"),
+            admin: Some(ConsoleAdmin {
+                label: "admin-1",
+                tenant_name: None,
+            }),
             csrf: "csrf",
             saved: false,
             updated: false,
@@ -567,9 +609,22 @@ pub struct ForcedPasswordChange<'a> {
     pub error_key: Option<&'a str>,
 }
 
-/// 管理コンソール共通レイアウトのヘッダに載せる管理者識別子（未認証時は `None`）。
+/// 管理コンソール共通レイアウトのヘッダに載せる管理セッションの文脈。
+///
+/// 「いま誰として・どのテナントを操作しているか」はコンソール全画面で常に見えている必要がある
+/// （テナントを取り違えた操作を防ぐ）。両方とも api の whoami 応答から一度に得られるため、
+/// 画面ごとの追加取得はしない。
+#[derive(Debug, Clone, Copy)]
+pub struct ConsoleAdmin<'a> {
+    /// 管理者の表示ラベル（表示名 → ログイン識別子 → 内部 ID）。
+    pub label: &'a str,
+    /// 操作中テナントの表示名。api が返さなかった場合のみ `None`（名前の表示だけを省く）。
+    pub tenant_name: Option<&'a str>,
+}
+
+/// 共通レイアウトのヘッダ文脈（未認証時は `None`）。
 /// 各コンソール画面テンプレートが持ち、`console/layout.html` から参照される。
-pub type Admin<'a> = Option<&'a str>;
+pub type Admin<'a> = Option<ConsoleAdmin<'a>>;
 
 /// 管理コンソールのホーム（`GET /{tenant_id}/admin`）。
 #[derive(Template)]
@@ -579,8 +634,6 @@ pub struct ConsoleHome<'a> {
     /// `/{tenant_id}` プレフィクス（ADR-0009 §6）。
     pub tenant: &'a str,
     pub admin: Admin<'a>,
-    /// 現在のテナント表示名（root は既定 `ROOT`）。取得できなかった場合は `None`。
-    pub tenant_name: Option<&'a str>,
 }
 
 /// 管理コンソールのログイン画面（`GET /{tenant_id}/admin/login`）。共通レイアウトには載せない。
@@ -588,6 +641,8 @@ pub struct ConsoleHome<'a> {
 #[template(path = "console/login.html")]
 pub struct ConsoleLogin<'a> {
     pub messages: &'a Messages,
+    /// `/{tenant_id}` プレフィクス。パスワード忘れの導線（`/forgot-password`）の組み立てに使う。
+    pub tenant_prefix: &'a str,
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
 }
@@ -665,8 +720,13 @@ pub struct UsersPermissions<'a> {
     pub tenant: &'a str,
     pub admin: Admin<'a>,
     pub user: &'a UserSummaryResponse,
+    /// この利用者が現在保有している権限コード。
     pub codes: &'a [String],
-    pub available: &'a [String],
+    /// いま付与できる権限コード（付与可能コードから保有済みを除いたもの）。選択肢として出す。
+    pub grantable: &'a [String],
+    /// 付与可能コードの一覧を api から取得できなかったか。`true` のときは選択肢を出せないため、
+    /// 「候補が無い」との取り違えを避けて取得失敗であることを伝える。
+    pub available_load_failed: bool,
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
     /// プロフィール保存の完了通知（Post/Redirect/Get で戻ったときに成功バナーを出す。MT25）。

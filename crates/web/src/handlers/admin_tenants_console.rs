@@ -75,7 +75,7 @@ pub async fn list(
     Html(render(&TenantsConsole {
         messages: &messages,
         tenant: &tenant.prefix(),
-        admin: Some(&admin),
+        admin: Some(admin.chrome()),
         tenants: &page.tenants,
         total: page.total,
         csrf: &console_csrf_token(&sso, state.config.csrf_secret()),
@@ -125,7 +125,7 @@ pub async fn create(
     Html(render(&TenantCreated {
         messages: &messages,
         tenant: &tenant.prefix(),
-        admin: Some(&admin),
+        admin: Some(admin.chrome()),
         created: &created,
     }))
     .into_response()
@@ -264,7 +264,7 @@ pub async fn reset_admin_password(
     Html(render(&PasswordResetResult {
         messages: &messages,
         tenant: &tenant.prefix(),
-        admin: Some(&admin),
+        admin: Some(admin.chrome()),
         subject: email,
         generated_password: &reset.generated_password,
         back_href: &base,
@@ -302,7 +302,10 @@ mod tests {
         render(&TenantsConsole {
             messages: &messages,
             tenant: "/00000000-0000-7000-8000-000000000001",
-            admin: Some("admin-1"),
+            admin: Some(crate::templates::ConsoleAdmin {
+                label: "admin-1",
+                tenant_name: Some("Acme"),
+            }),
             tenants,
             total: tenants.len() as i64,
             csrf: "csrf123",

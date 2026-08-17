@@ -10,7 +10,7 @@ use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::csrf::console_csrf_token;
 use crate::handlers::admin_console::{
-    forbidden_response, redirect_to_login, resolve_admin, AdminResolution,
+    forbidden_response, redirect_to_login, resolve_admin, AdminContext, AdminResolution,
 };
 use crate::i18n::Messages;
 use crate::state::WebState;
@@ -81,7 +81,7 @@ pub async fn create(
         Ok(created) => Html(render(&InvitationCreated {
             messages: &messages,
             tenant: &tenant.prefix(),
-            admin: Some(&admin),
+            admin: Some(admin.chrome()),
             token: &created.token,
             expires_at: &created.expires_at,
             email_sent: created.email_sent,
@@ -129,7 +129,7 @@ pub async fn create(
 fn render_form(
     messages: &Messages,
     tenant: &WebTenant,
-    admin: &str,
+    admin: &AdminContext,
     csrf: &str,
     user_id: &str,
     error_key: Option<&str>,
@@ -138,7 +138,7 @@ fn render_form(
     render(&InvitationForm {
         messages,
         tenant: &tenant.prefix(),
-        admin: Some(admin),
+        admin: Some(admin.chrome()),
         csrf,
         error: error.as_deref(),
         user_id,
@@ -148,7 +148,7 @@ fn render_form(
 fn render_form_with_message(
     messages: &Messages,
     tenant: &WebTenant,
-    admin: &str,
+    admin: &AdminContext,
     csrf: &str,
     user_id: &str,
     error: &str,
@@ -156,7 +156,7 @@ fn render_form_with_message(
     render(&InvitationForm {
         messages,
         tenant: &tenant.prefix(),
-        admin: Some(admin),
+        admin: Some(admin.chrome()),
         csrf,
         error: Some(error),
         user_id,

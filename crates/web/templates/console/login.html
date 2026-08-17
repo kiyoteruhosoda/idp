@@ -18,6 +18,11 @@
         <input type="password" class="form-control" id="admin-login-password" name="password" autocomplete="current-password" required>
       </div>
       <button type="submit" class="btn btn-primary w-100">{{ messages.get("login-submit") }}</button>
+      {#- パスワードを忘れた管理者の自己復旧導線。利用者ログイン画面と同じ経路を使う
+          （SMTP 未設定時はリセット URL がサーバのコンソールへ出る）。 -#}
+      <div class="text-center mt-3">
+        <a class="text-decoration-none" href="{{ tenant_prefix }}/forgot-password">{{ messages.get("login-forgot-password") }}</a>
+      </div>
     </form>
   </div>
 </div>

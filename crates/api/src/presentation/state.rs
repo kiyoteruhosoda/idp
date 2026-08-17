@@ -410,6 +410,7 @@ impl AppState {
             clock.clone(),
             config.password_reset_ttl(),
             config.public_web_base_url().to_string(),
+            config.password_reset_console_link_enabled(),
         ));
         let keys = Arc::new(KeyService::new(
             signing_keys.clone(),
