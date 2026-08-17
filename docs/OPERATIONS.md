@@ -469,6 +469,10 @@ api の再起動が必要）。パスワードを設定する全経路（自己�
 - **SMTP が設定済みのとき**: 入力したメールアドレス宛にリセットリンクが届く。
 - **SMTP 未設定のとき**: リンクは**サーバのコンソール（標準出力）へ出る**。運用者がログから拾って
   本人へ安全な方法で渡す。
+- **SMTP 設定を読み出せないとき**（DB 障害・`KEY_ENCRYPTION_KEY` 不一致で SMTP パスワードを復号
+  できない等）も、復旧手段を残すためコンソールへ出る。つまり **SMTP を設定していてもコンソールに
+  出ることがある**（`log` に `failed to load SMTP settings for password reset` が WARN で出る）。
+  コンソール出力を許容できない環境では下記の `PASSWORD_RESET_CONSOLE_LINK_ENABLED=false` で塞ぐ。
 
 ```sh
 # Compose 環境（api のログにリセット URL が出る）
@@ -695,7 +699,7 @@ curl -sS -X POST "$ISSUER/{tenant_id}/admin/external-idps" \
 | `PUBLIC_WEB_BASE_URL` | `ISSUER` と同値 | web 画面の公開 URL。`/authorize` からのログインハンドオフと招待・リセットメールのリンクの土台。**api・web で同値必須（ENV でのみ設定可。DB 上書き不可）**。web を別オリジンへ置く構成でのみ設定 |
 | `COOKIE_DOMAIN` | 未設定（既定） | 旧 ADR-0012 構成でブラウザに残った `Domain` 付きセッション Cookie を掃除する旧 Domain 値。セッション Cookie は常に host-only で発行される（ADR-0018）。移行期間のみ設定し、掃除後は未設定へ戻す（**api・web で同値必須**） |
 | `PASSWORD_RESET_TTL_SECS` | `3600` | パスワードリセットトークンの有効期間 |
-| `PASSWORD_RESET_CONSOLE_LINK_ENABLED` | `true` | SMTP 未設定のとき、リセットリンクをサーバのコンソール（標準出力）へ出すか。メール配送が無い環境で管理者が自力復旧するための経路（上記「パスワードを忘れた利用者を復旧させたいとき」）。ログを運用者以外が読める環境では `false` にする。**DB 上書き可** |
+| `PASSWORD_RESET_CONSOLE_LINK_ENABLED` | `true` | SMTP で送れないとき（未設定、および設定を読み出せないとき）、リセットリンクをサーバのコンソール（標準出力）へ出すか。メール配送が無い環境で管理者が自力復旧するための経路（上記「パスワードを忘れた利用者を復旧させたいとき」）。ログを運用者以外が読める環境では `false` にする。**DB 上書き可** |
 | `EMAIL_VERIFICATION_TTL_SECS` | `86400` | 自己登録アカウントのメール検証トークンの有効期間（SEC6b） |
 | `HSTS_MAX_AGE` | `0`（無効） | `Strict-Transport-Security` の `max-age`（秒）。**DB 上書き可**（下記） |
 | `APP_LOG_RETENTION_DAYS` | `30` | エラー・警告ログ（`log` テーブル）の保持日数。`0` = 削除しない。**DB 上書き可** |

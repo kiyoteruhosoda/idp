@@ -133,7 +133,7 @@ pub struct Config {
     invitation_ttl: Duration,
     /// パスワードリセットトークンの有効期限（MT18）。
     password_reset_ttl: Duration,
-    /// SMTP 未設定時にリセットリンクをサーバのコンソールへ出すか。
+    /// SMTP で送れないときにリセットリンクをサーバのコンソールへ出すか。
     password_reset_console_link_enabled: bool,
     /// メール検証トークンの有効期限（SEC6b）。
     email_verification_ttl: Duration,
@@ -400,7 +400,8 @@ impl Config {
         self.password_reset_ttl
     }
 
-    /// SMTP 未設定時に、リセットリンクをサーバのコンソール（標準出力）へ出すか。
+    /// SMTP で送れない（未設定・設定の読み出しに失敗）ときに、リセットリンクをサーバの
+    /// コンソール（標準出力）へ出すか。
     /// メール配送が無い環境で、パスワードを忘れた管理者が復旧するための経路。
     pub fn password_reset_console_link_enabled(&self) -> bool {
         self.password_reset_console_link_enabled

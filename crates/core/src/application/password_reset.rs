@@ -5,10 +5,12 @@
 //! メール配送は MT17 の [`Mailer`] ポートを再利用する。管理コンソールのログイン画面も同じ経路を
 //! 使う（管理者だけの別経路は設けない。ADR-0009 §5 の管理者による再発行は別機能）。
 //!
-//! **SMTP 未設定時はリンクをサーバのコンソール（標準出力）へ出す**。メール配送を用意して
+//! **SMTP で送れないときはリンクをサーバのコンソール（標準出力）へ出す**。メール配送を用意して
 //! いない環境で、パスワードを忘れた管理者が自力で復旧するための経路で、運用者は `docker logs` から
-//! URL を拾う。`PASSWORD_RESET_CONSOLE_LINK_ENABLED=false` で塞げる（その場合は SMTP 未設定＝
-//! 機能が使えない）。
+//! URL を拾う。「送れないとき」は SMTP 未設定に限らず、**SMTP 設定の読み出しに失敗したとき**
+//! （DB 障害・`KEY_ENCRYPTION_KEY` 不一致でパスワードを復号できない等）も含む —— 障害時に復旧手段
+//! まで失わないため。したがって SMTP を設定した環境でもコンソールに出ることがある。
+//! `PASSWORD_RESET_CONSOLE_LINK_ENABLED=false` で塞げる（その場合は SMTP で送れない＝機能が使えない）。
 //!
 //! セキュリティ方針:
 //! - **メールアドレスの列挙防止**: 要求はアカウントの有無・状態に関わらず同一の応答（`Accepted`）
@@ -50,15 +52,15 @@ const RESET_TOKEN_BYTES: usize = 32;
 pub enum RequestResetOutcome {
     /// 受理（アカウントが存在すればリンクを届けた。存在しなくても同じ応答）。
     Accepted,
-    /// リンクを届ける手段が無い（SMTP 未設定、かつコンソール出力も無効）。
+    /// リンクを届ける手段が無い（SMTP で送れず、かつコンソール出力も無効）。
     /// 機能自体が利用できない状態でアカウントに依存しないため、返しても列挙にはならない。
     Unavailable,
     /// IP 単位のレート制限超過。
     RateLimited,
 }
 
-/// リセットリンクの届け先。SMTP が設定されていればメール、無ければサーバのコンソール
-/// （標準出力。`docker logs` で読む）へ出す。
+/// リセットリンクの届け先。SMTP で送れるならメール、送れない（未設定・設定の読み出しに失敗）
+/// ならサーバのコンソール（標準出力。`docker logs` で読む）へ出す。
 ///
 /// コンソール出力はメール配送を用意していない環境での復旧経路であり、リンクを読めた者は
 /// そのアカウントのパスワードを再設定できる。運用者以外がログを読める環境では
@@ -93,7 +95,7 @@ pub struct PasswordResetService {
     reset_ttl: chrono::Duration,
     /// リセットリンクの土台となる公開ベース URL（web 画面。末尾スラッシュ無し）。
     console_base_url: String,
-    /// SMTP 未設定時にリンクをサーバのコンソールへ出すか。
+    /// SMTP で送れないときにリンクをサーバのコンソールへ出すか。
     console_link_enabled: bool,
 }
 
@@ -161,7 +163,9 @@ impl PasswordResetService {
             Err(e) => {
                 tracing::warn!(error = %e, "failed to load SMTP settings for password reset");
                 // 設定を読めないだけで、コンソール経路は使える（SMTP 未設定と同じ扱いにすると
-                // 障害時に復旧手段まで失う）。
+                // 障害時に復旧手段まで失う）。**SMTP を設定済みの環境でもここを通り得る**ため、
+                // 「SMTP を設定すればコンソールには出ない」とは言えない（設定の説明・OPERATIONS
+                // にも明記する）。
                 match self.console_link_delivery() {
                     Some(delivery) => delivery,
                     None => return RequestResetOutcome::Unavailable,
@@ -263,13 +267,13 @@ impl PasswordResetService {
                 user_id = %user.id,
                 expires_at = %expires_at.to_rfc3339(),
                 reset_url = %reset_url,
-                "password reset link issued to the server console because SMTP is not configured"
+                "password reset link issued to the server console because no usable SMTP configuration is available"
             ),
         }
         RequestResetOutcome::Accepted
     }
 
-    /// SMTP が無いときの届け先。コンソール出力が無効なら `None`（＝機能を提供できない）。
+    /// SMTP で送れないときの届け先。コンソール出力が無効なら `None`（＝機能を提供できない）。
     fn console_link_delivery(&self) -> Option<ResetLinkDelivery> {
         self.console_link_enabled
             .then_some(ResetLinkDelivery::Console)

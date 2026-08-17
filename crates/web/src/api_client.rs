@@ -142,8 +142,8 @@ pub struct AdminIdentity {
 }
 
 /// whoami の応答をヘッダ表示の文脈へ写す。
-fn admin_identity(w: WhoamiResponse) -> AdminIdentity {
-    let tenant_name = non_empty(w.tenant_name.clone());
+fn admin_identity(mut w: WhoamiResponse) -> AdminIdentity {
+    let tenant_name = non_empty(w.tenant_name.take());
     AdminIdentity {
         label: admin_display_label(w),
         tenant_name,

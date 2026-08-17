@@ -276,12 +276,15 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         default_risk: DefaultRisk::Review,
         kind: SettingKind::Boolean,
         default_value: Some("true"),
-        description: "SMTP 未設定のとき、パスワードリセットのリンクをサーバのコンソール\
+        description: "SMTP で送れないとき、パスワードリセットのリンクをサーバのコンソール\
                       （標準出力。`docker logs`）へ出すか。メール配送が無い環境で、パスワードを\
                       忘れた管理者が自力で復旧するための唯一の経路になる。リンクを見られた者は\
                       その利用者のパスワードを再設定できるため、コンソール出力を運用者以外が\
-                      読める環境では無効にする。SMTP を設定するとメール配送が優先され、\
-                      リンクはコンソールに出ない。",
+                      読める環境では無効にする。SMTP を設定するとメール配送が優先されるが、\
+                      **SMTP 設定の読み出しに失敗したとき（DB 障害・KEY_ENCRYPTION_KEY 不一致で\
+                      パスワードを復号できない等）も、復旧手段を残すためコンソールへ出す**。\
+                      メール配送を設定した環境でもコンソールに出ることがあるため、\
+                      「SMTP を設定したから出ない」とは考えない。",
     },
     SettingDefinition {
         key: "EMAIL_VERIFICATION_TTL_SECS",
