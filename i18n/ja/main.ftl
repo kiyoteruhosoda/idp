@@ -422,6 +422,7 @@ forgot-password-intro = アカウントのメールアドレスを入力して�
 forgot-password-email = メールアドレス
 forgot-password-submit = 再設定リンクを送信
 forgot-password-accepted = アカウントが存在する場合、再設定用のリンクを送信しました。受信トレイを確認してください。
+forgot-password-guest-note = 他組織のアカウント（ゲスト）としてこの組織に参加している場合、パスワードはここでは再設定できません。所属元の組織で再設定してください。
 forgot-password-error-unavailable = メールによるパスワード再設定は現在利用できません。管理者にお問い合わせください。
 forgot-password-error-rate-limited = 試行回数が多すぎます。しばらく待ってからやり直してください。
 password-reset-title = 新しいパスワードの設定

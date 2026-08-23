@@ -165,7 +165,8 @@ pub async fn saml_resume(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let outcome = state
         .saml_sso
         .resume(

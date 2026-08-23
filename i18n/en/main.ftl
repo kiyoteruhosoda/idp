@@ -422,6 +422,7 @@ forgot-password-intro = Enter the email address of your account. If the account 
 forgot-password-email = Email address
 forgot-password-submit = Send reset link
 forgot-password-accepted = If the account exists, a password reset link has been sent. Check your inbox.
+forgot-password-guest-note = If you are taking part in this organization as a guest from another organization, your password cannot be reset here. Reset it with your home organization.
 forgot-password-error-unavailable = Password reset by email is not available. Contact your administrator.
 forgot-password-error-rate-limited = Too many requests. Wait a while and try again.
 password-reset-title = Set a new password

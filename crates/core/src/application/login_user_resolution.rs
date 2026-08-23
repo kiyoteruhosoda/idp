@@ -20,7 +20,11 @@
 //! 1. 要求テナントの登録簿（[`UserRepository::find_by_login_identifier`]）。
 //! 2. 空振りなら、要求テナントに ACTIVE な GUEST メンバーシップを持つ利用者を、その利用者の
 //!    所属元テナントの登録簿で解決する
-//!    （[`UserRepository::find_active_guest_by_login_identifier`]）。
+//!    （[`UserRepository::find_active_guest_by_login_identifier`]）。**所属元テナントが `DISABLED`
+//!    なら解決しない** —— 所属元の無効化はその組織の利用者を止める操作であって、参加先テナント
+//!    経由の裏口を残す意味ではない（ADR-0009 §8。同じ規則をメンバーシップ側から見たものが
+//!    [`crate::domain::repositories::TenantMembershipRepository::is_active_member`] で、パスキー
+//!    認証・SSO 復元・管理コンソールのアクセス判定はそちらを通る）。
 //!
 //! **順序に意味がある。** 1 と 2 をまとめて 1 回で引くと、同じユーザー名のゲストが参加してきた
 //! だけで「曖昧な入力」になり、そのテナントの HOME 利用者まで締め出される。所属元を先に決めれば、

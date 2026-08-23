@@ -90,7 +90,8 @@ pub async fn authorize_resume(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let outcome = state
         .authorize
         .resume(
@@ -144,7 +145,8 @@ pub async fn authorize_login_context(
     State(state): State<AppState>,
     Json(req): Json<InternalAuthorizeLoginContextRequest>,
 ) -> Result<Json<InternalAuthorizeLoginContextResponse>, Response> {
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     Ok(Json(
         match state
             .authorize
