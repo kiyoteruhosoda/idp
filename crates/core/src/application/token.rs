@@ -25,7 +25,8 @@ use crate::domain::password::PasswordHasher;
 use crate::domain::pkce;
 use crate::domain::refresh_token::RefreshToken;
 use crate::domain::repositories::{
-    AuthorizationCodeRepository, ClientRepository, RefreshTokenRepository, UserRepository,
+    AuthorizationCodeRepository, ClientRepository, RefreshTokenRepository, TenantRepository,
+    UserRepository,
 };
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::Scope;
@@ -139,6 +140,9 @@ pub struct IssuedTokens {
 pub struct TokenService {
     clients: Arc<dyn ClientRepository>,
     users: Arc<dyn UserRepository>,
+    /// 利用者の**所属元**テナントの状態を見るために持つ（ADR-0009 §8）。要求テナントの解決は
+    /// presentation（`TenantResolver`）が済ませているので、ここで見るのは所属元だけ。
+    tenants: Arc<dyn TenantRepository>,
     codes: Arc<dyn AuthorizationCodeRepository>,
     refresh_tokens: Arc<dyn RefreshTokenRepository>,
     keys: Arc<KeyService>,
@@ -158,6 +162,7 @@ impl TokenService {
     pub fn new(
         clients: Arc<dyn ClientRepository>,
         users: Arc<dyn UserRepository>,
+        tenants: Arc<dyn TenantRepository>,
         codes: Arc<dyn AuthorizationCodeRepository>,
         refresh_tokens: Arc<dyn RefreshTokenRepository>,
         keys: Arc<KeyService>,
@@ -172,6 +177,7 @@ impl TokenService {
         Self {
             clients,
             users,
+            tenants,
             codes,
             refresh_tokens,
             keys,
@@ -790,20 +796,45 @@ impl TokenService {
         }
     }
 
+    /// トークンを発行してよい利用者か（両 grant 共通。認可コード交換とリフレッシュの双方が通る）。
+    ///
+    /// 利用者自身の状態に加えて、**所属元テナントが `ACTIVE`** であることも確かめる（ADR-0009 §8）。
+    /// テナントの無効化はその組織の利用を止める操作であり、発行済みのリフレッシュトークンで
+    /// 更新し続けられては止めたことにならない。無効化したテナント自身の `/{tenant_id}/token` は
+    /// `TenantResolver` が 404 で止めるが、その利用者がゲストとして参加している**他テナントの**
+    /// `/{tenant_id}/token` は生きているため、そこを塞ぐのはこの判定だけである。
+    ///
+    /// **キャッシュを通さず毎回 DB を見る。** ここは失効に相当する判定で、無効化を即座に効かせたい
+    /// （テナント解決の TTL キャッシュに載せると、最大 TTL 分だけ更新が通ってしまう）。トークン
+    /// 発行はもともとクライアント・コード／トークン・利用者・署名鍵を読むので、主キー 1 本の追加で済む。
     async fn load_active_user(
         &self,
         user_id: uuid::Uuid,
         _ctx: &RequestContext,
     ) -> Result<crate::domain::user::User, TokenError> {
-        match self.users.find_by_id(user_id).await {
-            Ok(Some(u)) if u.is_active() => Ok(u),
-            Ok(Some(_)) => Err(TokenError::new(
+        let user = match self.users.find_by_id(user_id).await {
+            Ok(Some(u)) if u.is_active() => u,
+            Ok(Some(_)) => {
+                return Err(TokenError::new(
+                    OAuthErrorCode::InvalidGrant,
+                    "user is not active",
+                ))
+            }
+            Ok(None) => {
+                return Err(TokenError::new(
+                    OAuthErrorCode::InvalidGrant,
+                    "user no longer exists",
+                ))
+            }
+            Err(e) => return Err(internal(&e)),
+        };
+        match self.tenants.find_by_id(user.tenant_id).await {
+            Ok(Some(home)) if home.is_active() => Ok(user),
+            // 不存在（テナントごと削除された）と `DISABLED` を区別しない。RP から見ればどちらも
+            // 「この利用者ではもう発行できない」で、扱いは同じ。
+            Ok(_) => Err(TokenError::new(
                 OAuthErrorCode::InvalidGrant,
-                "user is not active",
-            )),
-            Ok(None) => Err(TokenError::new(
-                OAuthErrorCode::InvalidGrant,
-                "user no longer exists",
+                "the user's home tenant is not active",
             )),
             Err(e) => Err(internal(&e)),
         }
