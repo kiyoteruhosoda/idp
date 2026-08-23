@@ -207,3 +207,10 @@ root テナントの UUID は固定値 `00000000-0000-7000-8000-000000000001`（
   進行状態（`external_login_requests`）は両プロトコルで共用し、SAML には PKCE が無いので
   `code_verifier_encrypted` を NULL 可にする。`down` は SAML の設定・進行状態を消してから
   列を戻す（OIDC の設定は無傷）。
+
+- `0040_tenant_membership_lookup_idx`: 参加先テナントのゲストを解決する引き方（ADR-0009 §8）に
+  `tenant_memberships` の索引を合わせる。`(tenant_id, membership_type, status)` の複合索引を足す。
+  ゲスト解決は「要求テナントの ACTIVE な GUEST」から入るが、既存の索引は PK `(tenant_id, user_id)`
+  だけで、先頭列で絞れるのは当該テナントの**全**メンバーまで（HOME 行も同じ表に入る）。この経路は
+  所属元での解決が空振りしたとき ＝ 存在しないユーザー名でのログイン試行のたびに走るため、
+  索引が無いと認証のホットパスがメンバー数に比例する。`down` は索引を落とすだけ（行は変えない）。

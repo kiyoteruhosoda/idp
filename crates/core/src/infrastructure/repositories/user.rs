@@ -83,9 +83,12 @@ impl IdentifierScope {
     /// 登録簿の不変条件を明示するもので、これが無いと他テナントに登録された行でも解決されうる。
     ///
     /// `ActiveGuest` は `Home` と違い一意制約の索引（`(tenant_id, 種別, 正規化値)`）には乗らず、
-    /// 当該テナントのメンバーシップ（PK の先頭列 `tenant_id`）から利用者の識別子
-    /// （`(user_id, identifier_type)` の索引）へ辿る。所属元の解決が空振りしたときにしか走らないため、
-    /// 通常のログインはこの経路を通らない。
+    /// 当該テナントの ACTIVE な GUEST メンバーシップ
+    /// （`tenant_memberships_tenant_type_status_idx (tenant_id, membership_type, status)`。
+    /// migration 0040）から、利用者の識別子（`(user_id, identifier_type)` の索引）へ辿る。等値条件を
+    /// 索引の列順に合わせてあるので、走査はテナントのメンバー数ではなく**ゲスト数**に比例する
+    /// —— この経路は所属元での解決が空振りしたとき ＝ 存在しないユーザー名でのログイン試行の
+    /// たびに走るため、メンバー数に比例させると総当たりがそのまま負荷になる。
     fn sql(self) -> &'static str {
         match self {
             Self::Home => "WHERE i.tenant_id = ?",
