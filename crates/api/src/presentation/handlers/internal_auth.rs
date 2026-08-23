@@ -122,7 +122,8 @@ pub async fn authenticate(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let outcome = state
         .login
         .login(
@@ -236,7 +237,8 @@ pub async fn change_password(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let outcome = state
         .change_password
         .change(
@@ -317,7 +319,8 @@ pub async fn authenticate_admin(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let outcome = state
         .admin_login
         .login(
@@ -374,7 +377,8 @@ pub async fn authenticate_portal(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let outcome = state
         .portal_login
         .login(
@@ -433,7 +437,8 @@ pub async fn authenticate_portal_mfa(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let outcome = state
         .portal_login
         .verify_mfa(
@@ -478,7 +483,8 @@ pub async fn authenticate_portal_change_password(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let outcome = state
         .portal_login
         .change_password(
@@ -544,7 +550,8 @@ pub async fn admin_change_password(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let outcome = state
         .admin_login
         .change_password(
@@ -604,7 +611,8 @@ pub async fn logout(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     state
         .admin_login
         .logout(tenant, &req.sso_session_id, &ctx)
@@ -636,7 +644,8 @@ pub async fn password_reset_request(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let outcome = state
         .password_reset
         .request_reset(tenant, &req.email, &ctx)
@@ -659,7 +668,8 @@ pub async fn password_reset_complete(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let outcome = state
         .password_reset
         .reset_password(tenant, &req.token, &req.new_password, &ctx)
@@ -793,7 +803,8 @@ pub async fn account_security(
     State(state): State<AppState>,
     Json(req): Json<InternalAccountSecurityRequest>,
 ) -> Result<Json<InternalAccountSecurityResponse>, Response> {
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let outcome = state
         .account_security
         .overview(tenant, &req.sso_session_id)
@@ -846,7 +857,8 @@ pub async fn account_revoke_session(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let outcome = state
         .account_security
         .revoke_session(tenant, &req.sso_session_id, &req.session_id, &ctx)
@@ -878,7 +890,8 @@ pub async fn account_revoke_consent(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let outcome = state
         .account_security
         .revoke_consent(tenant, &req.sso_session_id, &req.client_id, &ctx)
@@ -903,7 +916,8 @@ pub async fn step_up_check(
     Json(req): Json<InternalStepUpCheckRequest>,
 ) -> Result<Json<InternalStepUpCheckResponse>, Response> {
     // テナントは必須（他の `/internal/*` と同じ fail-closed。監査のテナント記録に使う）。
-    let _tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let _tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let Some(operation) = SensitiveOperation::parse(&req.operation) else {
         return Ok(Json(InternalStepUpCheckResponse::UnknownOperation));
     };
@@ -935,7 +949,8 @@ pub async fn step_up_verify(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let Some(operation) = SensitiveOperation::parse(&req.operation) else {
         return Ok(Json(InternalStepUpVerifyResponse::UnknownOperation));
     };
@@ -972,7 +987,8 @@ pub async fn account_authenticators(
     State(state): State<AppState>,
     Json(req): Json<InternalAuthenticatorsRequest>,
 ) -> Result<Json<InternalAuthenticatorsResponse>, Response> {
-    let _tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let _tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let Some(user_id) = state
         .admin_access
         .authenticated_user(Some(&req.sso_session_id))
@@ -1043,7 +1059,8 @@ pub async fn account_sms_otp(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
 
     let user_id = match (req.auth_session_id.as_deref(), req.mfa_ticket.as_deref()) {
         (Some(auth_session_id), _) if !auth_session_id.is_empty() => {
@@ -1094,7 +1111,8 @@ pub async fn account_phone_register(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let Some(user_id) = state
         .admin_access
         .authenticated_user(Some(&req.sso_session_id))
@@ -1136,7 +1154,8 @@ pub async fn account_phone_confirm(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let Some(user_id) = state
         .admin_access
         .authenticated_user(Some(&req.sso_session_id))
@@ -1172,7 +1191,8 @@ pub async fn account_authenticator_status(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let Ok(status) = AuthenticatorStatus::parse(&req.status) else {
         return Ok(Json(InternalAuthenticatorStatusResponse::UnknownStatus));
     };
@@ -1221,7 +1241,8 @@ pub async fn account_recovery_codes(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let Some(user_id) = state
         .admin_access
         .authenticated_user(Some(&req.sso_session_id))
@@ -1262,7 +1283,8 @@ pub async fn account_email_otp(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
 
     let user_id = match (req.auth_session_id.as_deref(), req.mfa_ticket.as_deref()) {
         (Some(auth_session_id), _) if !auth_session_id.is_empty() => {
@@ -1304,7 +1326,8 @@ pub async fn external_providers(
     State(state): State<AppState>,
     Json(req): Json<InternalExternalProvidersRequest>,
 ) -> Result<Json<InternalExternalProvidersResponse>, Response> {
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     Ok(Json(
         match state
             .external_providers
@@ -1333,7 +1356,8 @@ pub async fn external_start(
     State(state): State<AppState>,
     Json(req): Json<InternalExternalStartRequest>,
 ) -> Result<Json<InternalExternalStartResponse>, Response> {
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     Ok(Json(
         match state
             .external_login
@@ -1363,7 +1387,8 @@ pub async fn external_callback(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let ttl = state.config.sso_absolute_ttl().as_secs();
     Ok(Json(
         match state
@@ -1437,7 +1462,8 @@ pub async fn external_saml_acs(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let ttl = state.config.sso_absolute_ttl().as_secs();
     Ok(Json(
         match state

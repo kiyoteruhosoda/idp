@@ -23,7 +23,8 @@ pub async fn consent_info(
     State(state): State<AppState>,
     Query(req): Query<InternalConsentInfoRequest>,
 ) -> Result<Json<InternalConsentInfoResponse>, Response> {
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     Ok(
         match state.consent.info(tenant, &req.auth_session_id).await {
             Ok(Some(info)) => Json(InternalConsentInfoResponse::Ok {
@@ -52,7 +53,8 @@ pub async fn consent_approve(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let outcome = state
         .consent
         .approve(tenant, &req.auth_session_id, &ctx)
@@ -88,7 +90,8 @@ pub async fn consent_deny(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let outcome = state.consent.deny(tenant, &req.auth_session_id, &ctx).await;
     Ok((
         StatusCode::OK,

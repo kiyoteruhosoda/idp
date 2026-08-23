@@ -109,26 +109,67 @@ async fn resolve(
 }
 
 /// 内部 API（`/internal/*`。テナントプレフィクス無し。ADR-0009 §8）のテナントを、web が DTO で送る
-/// `tenant_id` から解決する。**未指定・UUID 不正は 400 で拒否する（fail-closed）**。
+/// `tenant_id` から解決する。**未指定・UUID 不正・実在しない・`DISABLED` はすべて 400 で拒否する
+/// （fail-closed）**。
 ///
 /// かつては過渡措置として既定テナント（root）へフォールバックしていたが、web のテナント経路化
 /// （MT13）完了に伴い撤去した（SEC4）。フォールバックを残すと、web が `tenant_id` を落とした場合に
 /// 別テナントのログイン画面から root テナントに対する認証が成立してしまう（テナント混同）。
-#[allow(clippy::result_large_err)]
-pub fn require_internal_tenant(raw_tenant_id: Option<&str>) -> Result<TenantContext, Response> {
-    match raw_tenant_id.filter(|s| !s.is_empty()) {
-        Some(raw) => match uuid::Uuid::parse_str(raw) {
-            Ok(id) => Ok(TenantContext::new(id.into())),
-            Err(_) => {
-                tracing::warn!(tenant_id = raw, "invalid tenant_id in internal request");
-                Err(invalid_tenant())
-            }
-        },
+///
+/// **実在と `ACTIVE` も確かめる。** テナント経路（`/{tenant_id}/...`）は [`resolve_tenant`]
+/// middleware が `DISABLED` を 404 で止めるが、内部 API はプレフィクスを持たないためその
+/// middleware を通らない。UUID の書式だけを見ていた頃は、**無効化したテナントの利用者が
+/// `/internal/authenticate*` 経由でログインできた**（web は DB を持たず実在確認を api に委ねる
+/// 設計なので、web 側にも止める手立てが無い）。テナントの無効化はその組織の利用を止める操作で
+/// あり、内部 API はその抜け道であってはならない。
+///
+/// 解決は [`TenantResolutionService`]（TTL キャッシュ + 更新時 invalidate）を通すため、
+/// 認証のホットパスで毎回 DB を引くことにはならない。
+pub async fn require_internal_tenant(
+    tenants: &TenantResolutionService,
+    raw_tenant_id: Option<&str>,
+) -> Result<TenantContext, Response> {
+    let raw = match raw_tenant_id.filter(|s| !s.is_empty()) {
+        Some(raw) => raw,
         None => {
             tracing::warn!("missing tenant_id in internal request");
-            Err(invalid_tenant())
+            return Err(invalid_tenant());
+        }
+    };
+    let Ok(id) = uuid::Uuid::parse_str(raw) else {
+        tracing::warn!(tenant_id = raw, "invalid tenant_id in internal request");
+        return Err(invalid_tenant());
+    };
+    match tenants.resolve(id.into()).await {
+        Ok(Some(tenant)) => Ok(TenantContext::new(tenant.id)),
+        Ok(None) => {
+            // 不存在と `DISABLED` を区別しない（内部 API の利用者は web だけで、区別しても
+            // できることが増えない。区別しなければテナントの存在も漏れない）。
+            tracing::warn!(
+                tenant_id = raw,
+                "internal request for an unknown or disabled tenant"
+            );
+            Err(unavailable_tenant())
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to resolve tenant for internal request");
+            Err(error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "tenant resolution failed",
+            ))
         }
     }
+}
+
+/// 実在しない・`DISABLED` なテナントを名指した内部要求。ステータスと `error` は
+/// [`invalid_tenant`] と揃える（web の既存のエラー処理をそのまま通し、説明だけで区別する）。
+fn unavailable_tenant() -> Response {
+    error_response(
+        StatusCode::BAD_REQUEST,
+        "invalid_request",
+        "unknown or disabled tenant",
+    )
 }
 
 fn invalid_tenant() -> Response {

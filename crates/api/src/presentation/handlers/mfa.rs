@@ -104,7 +104,8 @@ pub async fn verify_totp(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let outcome = state
         .mfa_login
         .verify(

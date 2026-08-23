@@ -178,7 +178,8 @@ pub async fn login_complete(
         user_agent: req.user_agent,
     };
     let ttl = state.config.sso_absolute_ttl().as_secs();
-    let tenant = require_internal_tenant(req.tenant_id.as_deref())?;
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let outcome = state
         .passkey_authentication
         .complete(tenant, challenge_id, req.credential, &ctx)

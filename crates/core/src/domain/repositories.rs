@@ -113,8 +113,20 @@ pub trait TenantMembershipRepository: Send + Sync {
     /// メンバーシップを作成する（HOME はユーザー作成時、GUEST は招待作成時）。
     async fn create(&self, membership: &TenantMembership) -> Result<()>;
     async fn find(&self, tenant_id: TenantId, user_id: Uuid) -> Result<Option<TenantMembership>>;
-    /// ユーザーが指定テナントで `ACTIVE` なメンバーシップ（HOME または GUEST）を持つか
-    /// （OIDC フローのメンバーシップ判定。ADR-0009 §8）。
+    /// ユーザーが指定テナントで `ACTIVE` なメンバーシップ（HOME または GUEST）を持ち、かつ
+    /// **その利用者の所属元テナントが `ACTIVE`** か（OIDC フローのメンバーシップ判定。ADR-0009 §8）。
+    ///
+    /// **所属元テナントの状態を含める。** 所属元の無効化は「その組織の利用者を止める」操作であり、
+    /// 参加先テナント経由の裏口を残す意味ではない。所属元テナントを `DISABLED` にすると、そのテナント
+    /// 自身の URL は解決できなくなる（`TenantResolutionService`）が、ゲスト参加先の URL は生きている
+    /// ため、ここで見ないと「所属元は止めたのに参加先からは入れる」利用者ができる。
+    ///
+    /// これは ADR-0009 §1 の「テナントの状態は各テナント独立（親の `DISABLED` は子へ伝播しない）」と
+    /// 矛盾しない。§1 は**テナント階層（親→子）**の話で、こちらは**利用者の所属元→その利用者**の話
+    /// であり、軸が違う。
+    ///
+    /// ゲストをログイン欄の入力から引く経路（`UserRepository::find_active_guest_by_login_identifier`）は
+    /// 解決クエリの中で同じ条件を課す（メンバーシップの確認と利用者の解決が 1 本のクエリのため）。
     async fn is_active_member(&self, tenant_id: TenantId, user_id: Uuid) -> Result<bool>;
     /// ユーザーが `ACTIVE` なメンバーシップ（HOME / GUEST）を持つ全テナントを返す
     /// （テナント切り替え UI 用。ADR-0009 §3）。`tenant_memberships_user_idx` を用いる。

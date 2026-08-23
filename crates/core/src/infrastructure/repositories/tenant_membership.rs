@@ -119,9 +119,15 @@ impl TenantMembershipRepository for SqlxTenantMembershipRepository {
         rows.iter().map(map_row).collect()
     }
 
+    /// `ACTIVE` なメンバーシップに加えて、**所属元テナントが `ACTIVE`** であることを課す
+    /// （ADR-0009 §8。理由はトレイト側の doc を参照）。辿る 3 表はいずれも主キー引きで、
+    /// `tenant_memberships` の PK `(tenant_id, user_id)` → `users` の PK → `tenants` の PK と進む。
     async fn is_active_member(&self, tenant_id: TenantId, user_id: Uuid) -> Result<bool> {
         let row = sqlx::query(
-            "SELECT 1 FROM tenant_memberships WHERE tenant_id = ? AND user_id = ? AND status = 'ACTIVE'",
+            "SELECT 1 FROM tenant_memberships m \
+             JOIN users u ON u.id = m.user_id \
+             JOIN tenants home ON home.id = u.tenant_id AND home.status = 'ACTIVE' \
+             WHERE m.tenant_id = ? AND m.user_id = ? AND m.status = 'ACTIVE'",
         )
         .bind(tenant_id.as_uuid().to_string())
         .bind(user_id.to_string())

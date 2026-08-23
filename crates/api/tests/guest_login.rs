@@ -14,7 +14,10 @@
 //!    テナントのコンソールへ直接ログインできない。
 //! 2. **メンバーでないテナントからは入れない**（テナント境界。資格情報が正しくても解決しない）。
 //! 3. **停止中（SUSPENDED）のゲストは入れない**（MT24。停止はアクセスを止める手段として効く）。
-//! 4. **参加先の同名 HOME 利用者を巻き添えにしない**（解決は所属元優先。同じユーザー名のゲストが
+//! 4. **所属元テナントが DISABLED のゲストは入れない** —— 所属元の無効化はその組織の利用者を
+//!    止める操作であって、参加先テナント経由の裏口を残す意味ではない。無効化したテナント自身の
+//!    利用者も、内部 API 経由で入れない。
+//! 5. **参加先の同名 HOME 利用者を巻き添えにしない**（解決は所属元優先。同じユーザー名のゲストが
 //!    参加してきても、そのテナントの HOME 利用者は従来どおり解決される）。
 
 mod support;
@@ -23,9 +26,9 @@ use axum::http::StatusCode;
 use idp_api::application::login::csrf_token;
 use serde_json::json;
 use support::{
-    begin_login, body_json, create_sso_session, mark_email_verified, patch, post, post_internal,
-    register_user, send, setup as support_setup, unique, TestEnv, CODE_CHALLENGE, REDIRECT_URI_ENC,
-    SERVICE_TOKEN,
+    begin_login, body_json, create_sso_session, get, mark_email_verified, patch, post,
+    post_internal, register_user, send, setup as support_setup, unique, TestEnv, CODE_CHALLENGE,
+    REDIRECT_URI_ENC, SERVICE_TOKEN,
 };
 
 async fn setup() -> Option<TestEnv> {
@@ -283,7 +286,7 @@ async fn suspended_guest_cannot_sign_in_on_the_host_tenant() {
     );
 }
 
-/// 保証 4: 参加先に同じユーザー名の HOME 利用者が居ても、その HOME 利用者は従来どおり解決される
+/// 保証 5: 参加先に同じユーザー名の HOME 利用者が居ても、その HOME 利用者は従来どおり解決される
 /// （解決は所属元優先。1 回で引くと「曖昧」になって双方が締め出される）。
 #[tokio::test]
 async fn a_same_named_guest_does_not_lock_out_the_host_tenants_home_user() {
@@ -412,5 +415,110 @@ async fn guest_completes_the_authorization_flow_on_the_host_tenant() {
         response.status(),
         StatusCode::OK,
         "the code issued to a guest exchanges for tokens in the host tenant"
+    );
+}
+
+/// テナントの状態を管理 API で切り替える（root の system 管理者のみ。MT11）。
+///
+/// **SQL で直接書き換えない。** テナント解決は TTL キャッシュ越しで、無効化を反映させるには
+/// 更新時の invalidate が要る。DB だけ書き換えると、キャッシュが生きている間は「無効化したのに
+/// 解決できる」状態をテストが観測してしまい、本番の経路（管理 API → invalidate）を検証できない。
+async fn set_tenant_status(env: &TestEnv, root_cookie: &str, tenant_id: &str, status: &str) {
+    let res = send(
+        &env.app,
+        patch(
+            root_cookie,
+            &format!("/{}/admin/tenants/{tenant_id}", env.root_tenant_id),
+            json!({ "status": status }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        res.status(),
+        StatusCode::OK,
+        "set tenant {tenant_id} to {status}"
+    );
+}
+
+/// 保証 4: 所属元テナントを無効化すると、参加先テナントのログイン画面からも入れなくなる。
+///
+/// 所属元テナント自身の URL は `TenantResolutionService` が 404 で止めるが、参加先の URL は生きて
+/// いる。ここを見ないと「所属元は止めたのに参加先からは入れる」利用者ができる。復帰も確認する
+/// （無効化は可逆な操作で、`ACTIVE` へ戻せば元どおり入れる）。
+#[tokio::test]
+async fn a_guest_whose_home_tenant_is_disabled_cannot_sign_in_anywhere() {
+    let Some(env) = setup().await else { return };
+    let root_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let host = create_tenant(&env, &root_cookie, "DisabledHomeHost").await;
+    // 所属元を root にすると他テストの共有 root を止めてしまうため、専用の所属元テナントを作る。
+    let home = create_tenant(&env, &root_cookie, "DisabledHomeHome").await;
+    sqlx::query("UPDATE tenants SET self_registration_enabled = 1 WHERE id = ?")
+        .bind(&home)
+        .execute(&env.pool)
+        .await
+        .expect("enable self-registration on the home tenant");
+
+    let username = format!("dis{}", unique());
+    let password = format!("guest-password-{}", unique());
+    register_user(&env.app, &home, &username, &password).await;
+    mark_email_verified(&env.pool, &home, &username).await;
+    let user_id = support::find_user_id_by_username(&env.pool, &home, &username)
+        .await
+        .expect("registered user");
+    invite_and_accept(&env, &root_cookie, &host, &user_id).await;
+
+    assert_eq!(
+        portal_login_result(&env, &host, "203.0.113.61", &username, &password).await,
+        "success",
+        "baseline: the guest signs in on the host tenant while their home tenant is active"
+    );
+
+    set_tenant_status(&env, &root_cookie, &home, "DISABLED").await;
+
+    // パスワード経路（解決クエリの `home.status = 'ACTIVE'`）。
+    assert_eq!(
+        portal_login_result(&env, &host, "203.0.113.62", &username, &password).await,
+        "invalid_credentials",
+        "a guest whose home tenant is disabled must not sign in on the host tenant"
+    );
+    // 所属元テナント自身のログインも止まる（無効化したテナントの利用者はどこからも入れない）。
+    // 内部 API はテナントプレフィクスを持たず `TenantResolver` を通らないため、`DISABLED` の拒否は
+    // `require_internal_tenant` が担う。資格情報を見る前に 400 で落ちる。
+    let res = send(
+        &env.app,
+        post_internal(
+            "/internal/authenticate/portal",
+            Some(SERVICE_TOKEN),
+            json!({
+                "tenant_id": home,
+                "username": username,
+                "password": password,
+                "ip_address": "203.0.113.63",
+                "user_agent": "integration-test",
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        res.status(),
+        StatusCode::BAD_REQUEST,
+        "a disabled tenant must be rejected by the internal auth API before credentials are checked"
+    );
+
+    // 既存の SSO セッション経由（`is_active_member`）も止まる。管理コンソールの入口で確認する。
+    let sso = create_sso_session(&env.pool, &user_id).await;
+    let res = send(&env.app, get(&sso, &format!("/{host}/admin/whoami"))).await;
+    assert_ne!(
+        res.status(),
+        StatusCode::OK,
+        "an existing SSO session must not grant access once the home tenant is disabled"
+    );
+
+    // 復帰: 所属元を ACTIVE へ戻せば元どおり入れる。
+    set_tenant_status(&env, &root_cookie, &home, "ACTIVE").await;
+    assert_eq!(
+        portal_login_result(&env, &host, "203.0.113.64", &username, &password).await,
+        "success",
+        "re-enabling the home tenant restores access"
     );
 }

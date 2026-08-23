@@ -82,15 +82,28 @@ impl IdentifierScope {
     /// `ActiveGuest` の `i.tenant_id = u.tenant_id` は「識別子は所属元テナントに登録される」という
     /// 登録簿の不変条件を明示するもので、これが無いと他テナントに登録された行でも解決されうる。
     ///
+    /// `home.status = 'ACTIVE'`（所属元テナントが有効）も課す（ADR-0009 §8）。所属元の無効化は
+    /// 「その組織の利用者を止める」操作であり、参加先テナント経由の裏口を残す意味ではない。
+    /// `Home` 側に同じ条件が要らないのは、そちらの要求テナント＝所属元テナントであり、middleware
+    /// （`TenantResolutionService`）が `DISABLED` なら 404 で先に止めているため。同じ規則を
+    /// メンバーシップ側から見たものが `TenantMembershipRepository::is_active_member`。
+    ///
     /// `ActiveGuest` は `Home` と違い一意制約の索引（`(tenant_id, 種別, 正規化値)`）には乗らず、
-    /// 当該テナントのメンバーシップ（PK の先頭列 `tenant_id`）から利用者の識別子
-    /// （`(user_id, identifier_type)` の索引）へ辿る。所属元の解決が空振りしたときにしか走らないため、
-    /// 通常のログインはこの経路を通らない。
+    /// 当該テナントの ACTIVE な GUEST メンバーシップ
+    /// （`tenant_memberships_tenant_type_status_idx (tenant_id, membership_type, status)`。
+    /// migration 0040）から、利用者の識別子（`(user_id, identifier_type)` の索引）へ辿る。等値条件を
+    /// 索引の列順に合わせてあるので、走査はテナントのメンバー数ではなく**ゲスト数**に比例する。
+    ///
+    /// この経路が走るのは所属元での解決が空振りしたとき、つまり**参加先の画面からのゲストの
+    /// ログインすべて**と、**存在しないユーザー名でのログイン試行**のたびである。前者は通常の
+    /// ログインであり、後者は総当たりが最も送ってくる形でもあるため、どちらもメンバー数に
+    /// 比例させない。
     fn sql(self) -> &'static str {
         match self {
             Self::Home => "WHERE i.tenant_id = ?",
             Self::ActiveGuest => {
                 "JOIN tenant_memberships m ON m.user_id = u.id \
+                 JOIN tenants home ON home.id = u.tenant_id AND home.status = 'ACTIVE' \
                  WHERE m.tenant_id = ? AND m.membership_type = ? AND m.status = ? \
                    AND i.tenant_id = u.tenant_id"
             }
@@ -630,6 +643,9 @@ mod tests {
             "{sql}"
         );
         assert!(!sql.contains("tenant_memberships"), "{sql}");
+        // 所属元経路は要求テナント＝所属元テナントで、middleware が DISABLED を 404 で止めている。
+        // ここで tenants を JOIN すると、一意性チェック等の非ログイン経路にも条件が漏れる。
+        assert!(!sql.contains("JOIN tenants"), "{sql}");
         // 候補 1 件につき (?, ?) 1 組。
         assert!(sql.contains("IN ((?, ?), (?, ?)) LIMIT 2"), "{sql}");
     }
@@ -642,6 +658,12 @@ mod tests {
         let sql = login_identifier_sql(IdentifierScope::ActiveGuest, 1);
         assert!(
             sql.contains("JOIN tenant_memberships m ON m.user_id = u.id"),
+            "{sql}"
+        );
+        // 所属元テナントが DISABLED なら解決しない（ADR-0009 §8）。この JOIN が落ちると
+        // 「所属元は止めたのに参加先からは入れる」利用者ができる。
+        assert!(
+            sql.contains("JOIN tenants home ON home.id = u.tenant_id AND home.status = 'ACTIVE'"),
             "{sql}"
         );
         assert!(

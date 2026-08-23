@@ -99,9 +99,50 @@ async fn unknown_session_and_other_tenants_get_nothing() {
         &authorize_uri(&root_tenant_id, &client_id, "bob", "en"),
     )
     .await;
-    let other_tenant = uuid::Uuid::now_v7().to_string();
+
+    // 実在する別テナントからは、セッションはあっても何も読めない（auth_session の引きが
+    // テナント scope のため）。**実在する ACTIVE なテナントを使う** —— 架空の UUID では
+    // `require_internal_tenant` が先に 400 で弾き、テナント scope の検証にならない。
+    let other_tenant = insert_active_tenant(&pool, &root_tenant_id).await;
     let body = login_context(&app, &other_tenant, &auth_session).await;
     assert_eq!(body["result"], "session_expired", "{body}");
+
+    // 実在しない（あるいは無効化された）テナントは、資格情報やセッションを見る前に 400 で落ちる
+    // （内部 API はテナントプレフィクスを持たず `TenantResolver` を通らないため、
+    // `require_internal_tenant` がこの防御線を担う。ADR-0009 §7・§8）。
+    let response = send(
+        &app,
+        post_internal(
+            "/internal/authorize/login-context",
+            Some(SERVICE_TOKEN),
+            json!({
+                "tenant_id": uuid::Uuid::now_v7().to_string(),
+                "auth_session_id": auth_session,
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "an unknown tenant must be rejected before the session is looked up"
+    );
+}
+
+/// ACTIVE な子テナントを 1 つ直接作る（このテストが要るのは「実在する別テナント」だけで、
+/// 管理者・メンバーシップは要らない）。
+async fn insert_active_tenant(pool: &sqlx::MySqlPool, parent_id: &str) -> String {
+    let id = uuid::Uuid::now_v7().to_string();
+    sqlx::query(
+        "INSERT INTO tenants (id, parent_tenant_id, name, status) VALUES (?, ?, ?, 'ACTIVE')",
+    )
+    .bind(&id)
+    .bind(parent_id)
+    .bind(format!("Other {}", &id[..8]))
+    .execute(pool)
+    .await
+    .expect("insert active tenant");
+    id
 }
 
 /// `login_hint` / `ui_locales` を送らない RP では、両方とも `null` の `ok` が返る。
