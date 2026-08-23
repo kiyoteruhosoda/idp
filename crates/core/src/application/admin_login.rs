@@ -17,6 +17,7 @@
 //! （`sso_session_id` Cookie ＝ 平文、DB は SHA-256）であり、`RequirePerms<IdpAdmin>` がそのまま検証する。
 
 use crate::application::audit::{AuditService, RequestContext};
+use crate::application::login_user_resolution::resolve_login_user;
 use crate::application::password_policy::PasswordPolicyService;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::authentication_policy::{
@@ -302,13 +303,11 @@ impl AdminLoginService {
             }
         }
 
-        // 2. ユーザー検索（ログイン識別子。AP8 の登録簿 → `preferred_username` の順で解決する）。
-        //    認証は所属元テナント限定（ADR-0009 §8）。
-        let user = match self
-            .users
-            .find_by_login_identifier(tenant_id, &cmd.username)
-            .await
-        {
+        // 2. ユーザー検索（ログイン識別子。AP8 の登録簿で解決する）。対象はこのテナントの ACTIVE な
+        //    メンバー（HOME / GUEST。ADR-0009 §8。解決の規則は `login_user_resolution`）。
+        //    ゲスト管理者はここで解決される —— テナント作成者は作成先の ACTIVE GUEST になるため
+        //    （§4）、これが無いと自分が作ったテナントの管理コンソールへ直接ログインできない。
+        let user = match resolve_login_user(self.users.as_ref(), tenant_id, &cmd.username).await {
             Ok(Some(u)) => u,
             Ok(None) => {
                 self.audit
@@ -479,11 +478,7 @@ impl AdminLoginService {
             }
         }
 
-        let user = match self
-            .users
-            .find_by_login_identifier(tenant_id, &cmd.username)
-            .await
-        {
+        let user = match resolve_login_user(self.users.as_ref(), tenant_id, &cmd.username).await {
             Ok(Some(u)) => u,
             Ok(None) => return AdminLoginOutcome::InvalidCredentials,
             Err(e) => return AdminLoginOutcome::Internal(e.to_string()),

@@ -165,8 +165,7 @@ pub trait UserRepository: Send + Sync {
     async fn find_by_id(&self, id: Uuid) -> Result<Option<User>>;
     /// 外部公開識別子 `sub` で検索する（`/userinfo` で使用。グローバル一意）。
     async fn find_by_sub(&self, sub: Uuid) -> Result<Option<User>>;
-    /// 所属元が `tenant_id` のユーザーを email で検索する（一意キーは `(tenant_id, email)`。
-    /// 認証は所属元テナント限定 = ログイン画面のユーザー検索はこれを使う。ADR-0009 §8）。
+    /// 所属元が `tenant_id` のユーザーを email で検索する（一意キーは `(tenant_id, email)`）。
     async fn find_by_email(&self, tenant_id: TenantId, email: &str) -> Result<Option<User>>;
     /// 所属元が `tenant_id` のユーザーを preferred_username で検索する。
     async fn find_by_username(&self, tenant_id: TenantId, username: &str) -> Result<Option<User>>;
@@ -185,6 +184,27 @@ pub trait UserRepository: Send + Sync {
         input: &str,
     ) -> Result<Option<User>> {
         self.find_by_username(tenant_id, input.trim()).await
+    }
+    /// **参加先テナントのログイン画面**に入力された値から、そのテナントの ACTIVE な GUEST を
+    /// 解決する（ADR-0009 §8）。
+    ///
+    /// ゲストの識別子は所属元テナントの登録簿にあるため、要求テナントで登録簿を引く
+    /// [`Self::find_by_login_identifier`] には掛からない。こちらは「`tenant_id` に ACTIVE な GUEST
+    /// メンバーシップを持つ利用者の、**所属元テナントの**有効な識別子」を引く。
+    ///
+    /// 呼ぶのはログイン経路だけで、しかも**所属元での解決が空振りしたときに限る**
+    /// （[`crate::application::login_user_resolution::resolve_login_user`]）。所属元を先に決めるのは、
+    /// 同じ値の識別子を持つゲストが参加してきただけで、そのテナントの HOME 利用者が「曖昧」に
+    /// なって締め出されるのを防ぐため。
+    ///
+    /// 既定実装は `Ok(None)`（メンバーシップを持たないテスト用フェイクは、従来どおり所属元だけで
+    /// 解決される）。
+    async fn find_active_guest_by_login_identifier(
+        &self,
+        _tenant_id: TenantId,
+        _input: &str,
+    ) -> Result<Option<User>> {
+        Ok(None)
     }
     /// ログイン失敗回数・ロック期限を更新する（ロックポリシー、設計仕様 §4.3）。
     ///

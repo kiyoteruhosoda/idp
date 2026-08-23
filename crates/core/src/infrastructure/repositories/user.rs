@@ -5,7 +5,7 @@ use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::UserRepository;
 use crate::domain::tenant::TenantId;
 use crate::domain::user::{LoginFailureRecord, User};
-use crate::domain::values::UserStatus;
+use crate::domain::values::{MembershipStatus, MembershipType, UserStatus};
 use crate::infrastructure::db::Db;
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
@@ -21,6 +21,110 @@ impl SqlxUserRepository {
     pub fn new(pool: Db) -> Self {
         Self { pool }
     }
+
+    /// 登録簿（`user_login_identifiers`）を引く 2 つの解決が共有する本体（AP8、ADR-0009 §8）。
+    ///
+    /// **複数の利用者に当たったら誰も返さない。** 1 種別の中では一意制約で 1 人に決まるが、
+    /// 種別をまたぐと「ユーザー名としては A、社員番号としては B」という入力があり得る。
+    /// `LIMIT 1` でどちらかを選ぶと、どちらが返るかが索引の都合で決まってしまう。曖昧な入力で
+    /// 認証を通すより、通さない方を選ぶ（候補生成側でも起きにくくしてある。
+    /// [`crate::domain::login_identifier::lookup_candidates`]）。
+    async fn resolve_login_identifier(
+        &self,
+        scope: IdentifierScope,
+        tenant_id: TenantId,
+        input: &str,
+    ) -> Result<Option<User>> {
+        let candidates = crate::domain::login_identifier::lookup_candidates(input);
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        let sql = login_identifier_sql(scope, candidates.len());
+        let mut query = sqlx::query(&sql);
+        for bind in scope.binds(tenant_id) {
+            query = query.bind(bind);
+        }
+        for (kind, normalized) in &candidates {
+            query = query.bind(kind.as_str()).bind(normalized.clone());
+        }
+        let rows = query.fetch_all(&self.pool).await.map_err(repo_err)?;
+        match rows.len() {
+            0 => Ok(None),
+            1 => map_row(&rows[0]).map(Some),
+            _ => {
+                // 曖昧。監査には残らない経路なので、運用ログにだけ残す（値は PII のため出さない）。
+                tracing::warn!(
+                    tenant_id = %tenant_id,
+                    "login identifier resolved to multiple users; refusing to authenticate"
+                );
+                Ok(None)
+            }
+        }
+    }
+}
+
+/// 登録簿を引く範囲（ADR-0009 §8）。ログイン経路が「所属元として引くのか、参加先のゲストとして
+/// 引くのか」を選ぶ。SQL 断片を引数で渡し回さず列挙で表すことで、組み立て可能な形が 2 つに閉じる。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IdentifierScope {
+    /// 所属元テナントの登録簿（`user_login_identifiers.tenant_id` = 要求テナント）。
+    /// 一意制約と同じ `(tenant_id, 種別, 正規化値)` の索引に乗る。
+    Home,
+    /// 要求テナントに ACTIVE な GUEST として参加している利用者を、**その利用者の所属元の**
+    /// 登録簿で引く。
+    ActiveGuest,
+}
+
+impl IdentifierScope {
+    /// `FROM user_login_identifiers i JOIN users u ...` に続く JOIN と WHERE。候補の IN 句以外の
+    /// 絞り込みをここに書き、末尾は条件で終える（IN 句を ` AND` で継ぐため）。
+    ///
+    /// `ActiveGuest` の `i.tenant_id = u.tenant_id` は「識別子は所属元テナントに登録される」という
+    /// 登録簿の不変条件を明示するもので、これが無いと他テナントに登録された行でも解決されうる。
+    ///
+    /// `ActiveGuest` は `Home` と違い一意制約の索引（`(tenant_id, 種別, 正規化値)`）には乗らず、
+    /// 当該テナントのメンバーシップ（PK の先頭列 `tenant_id`）から利用者の識別子
+    /// （`(user_id, identifier_type)` の索引）へ辿る。所属元の解決が空振りしたときにしか走らないため、
+    /// 通常のログインはこの経路を通らない。
+    fn sql(self) -> &'static str {
+        match self {
+            Self::Home => "WHERE i.tenant_id = ?",
+            Self::ActiveGuest => {
+                "JOIN tenant_memberships m ON m.user_id = u.id \
+                 WHERE m.tenant_id = ? AND m.membership_type = ? AND m.status = ? \
+                   AND i.tenant_id = u.tenant_id"
+            }
+        }
+    }
+
+    /// [`Self::sql`] のプレースホルダを、候補（種別 × 正規化値）より先に埋める値。メンバーシップの
+    /// 種別・状態はリテラルを書かず Rust 側の enum から取り、許可値の単一の出所から離れないようにする。
+    fn binds(self, tenant_id: TenantId) -> Vec<String> {
+        match self {
+            Self::Home => vec![tenant_id.to_string()],
+            Self::ActiveGuest => vec![
+                tenant_id.to_string(),
+                MembershipType::Guest.as_str().to_string(),
+                MembershipStatus::Active.as_str().to_string(),
+            ],
+        }
+    }
+}
+
+/// 登録簿の解決クエリを組み立てる。外部入力は必ず bind を通り、この文字列に載るのは
+/// モジュール内のリテラルと `?` の個数だけ（DB 無しで形を検証できるよう関数に切り出す）。
+fn login_identifier_sql(scope: IdentifierScope, candidate_count: usize) -> String {
+    let placeholders = vec!["(?, ?)"; candidate_count].join(", ");
+    let scope = scope.sql();
+    format!(
+        "SELECT DISTINCT {SELECT_COLUMNS} \
+         FROM user_login_identifiers i \
+         JOIN users u ON u.id = i.user_id \
+         {scope} \
+           AND i.is_active = 1 \
+           AND (i.identifier_type, i.normalized_value) IN ({placeholders}) \
+         LIMIT 2"
+    )
 }
 
 /// `users` の列と、**登録簿から連れてくる主たるログイン識別子**。
@@ -298,12 +402,8 @@ impl UserRepository for SqlxUserRepository {
     /// 「全件読んでアプリ側で正規化して突き合わせる」方式は取らない（テナントの規模に比例して
     /// 破綻するうえ、一意性の保証が DB から離れる）。
     ///
-    /// **複数の利用者に当たったら誰も返さない。** 一意制約は `(tenant_id, identifier_type,
-    /// normalized_value)` に張ってあり、1 種別の中では 1 人に決まるが、種別をまたぐと
-    /// 「ユーザー名としては A、社員番号としては B」という入力があり得る。`LIMIT 1` で
-    /// どちらかを選ぶと、どちらが返るかが索引の都合で決まってしまう。曖昧な入力で
-    /// 認証を通すより、通さない方を選ぶ（候補生成側でも起きにくくしてある。
-    /// [`crate::domain::login_identifier::lookup_candidates`]）。
+    /// 曖昧な入力を通さない規則は [`Self::resolve_login_identifier`] に置いてあり、参加先テナントの
+    /// ゲスト解決（[`Self::find_active_guest_by_login_identifier`]）と共有する。
     ///
     /// **登録簿だけを見る。** 主識別子も登録簿の行になったので（AP15b）、`users` 側への
     /// フォールバックは無い。無いことに意味がある —— フォールバックが残っていると、
@@ -314,36 +414,19 @@ impl UserRepository for SqlxUserRepository {
         tenant_id: TenantId,
         input: &str,
     ) -> Result<Option<User>> {
-        let candidates = crate::domain::login_identifier::lookup_candidates(input);
-        if !candidates.is_empty() {
-            let placeholders = vec!["(?, ?)"; candidates.len()].join(", ");
-            let sql = format!(
-                "SELECT DISTINCT {SELECT_COLUMNS} \
-                 FROM user_login_identifiers i \
-                 JOIN users u ON u.id = i.user_id \
-                 WHERE i.tenant_id = ? AND i.is_active = 1 \
-                   AND (i.identifier_type, i.normalized_value) IN ({placeholders}) \
-                 LIMIT 2"
-            );
-            let mut query = sqlx::query(&sql).bind(tenant_id.to_string());
-            for (kind, normalized) in &candidates {
-                query = query.bind(kind.as_str()).bind(normalized.clone());
-            }
-            let rows = query.fetch_all(&self.pool).await.map_err(repo_err)?;
-            match rows.len() {
-                0 => {}
-                1 => return map_row(&rows[0]).map(Some),
-                _ => {
-                    // 曖昧。監査には残らない経路なので、運用ログにだけ残す（値は PII のため出さない）。
-                    tracing::warn!(
-                        tenant_id = %tenant_id,
-                        "login identifier resolved to multiple users; refusing to authenticate"
-                    );
-                    return Ok(None);
-                }
-            }
-        }
-        Ok(None)
+        self.resolve_login_identifier(IdentifierScope::Home, tenant_id, input)
+            .await
+    }
+
+    /// 参加先テナントの ACTIVE な GUEST を、**その利用者の所属元テナントの**登録簿で解決する
+    /// （[`IdentifierScope::ActiveGuest`]）。
+    async fn find_active_guest_by_login_identifier(
+        &self,
+        tenant_id: TenantId,
+        input: &str,
+    ) -> Result<Option<User>> {
+        self.resolve_login_identifier(IdentifierScope::ActiveGuest, tenant_id, input)
+            .await
     }
 
     async fn update_login_state(
@@ -531,5 +614,64 @@ impl UserRepository for SqlxUserRepository {
         sync_primary_login_identifier(&mut tx, id, preferred_username).await?;
         tx.commit().await.map_err(repo_err)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 所属元の解決は登録簿を要求テナントで引く（一意制約と同じキー）。
+    #[test]
+    fn home_scope_filters_the_registry_by_the_requested_tenant() {
+        let sql = login_identifier_sql(IdentifierScope::Home, 2);
+        assert!(
+            sql.contains("WHERE i.tenant_id = ? AND i.is_active = 1"),
+            "{sql}"
+        );
+        assert!(!sql.contains("tenant_memberships"), "{sql}");
+        // 候補 1 件につき (?, ?) 1 組。
+        assert!(sql.contains("IN ((?, ?), (?, ?)) LIMIT 2"), "{sql}");
+    }
+
+    /// ゲストの解決は、要求テナントの ACTIVE な GUEST を、その利用者の所属元の登録簿で引く。
+    /// `i.tenant_id = u.tenant_id` が落ちると他テナントの識別子でも解決されてしまうため、
+    /// 条件の有無をここで固定する。
+    #[test]
+    fn active_guest_scope_joins_membership_and_stays_in_the_home_registry() {
+        let sql = login_identifier_sql(IdentifierScope::ActiveGuest, 1);
+        assert!(
+            sql.contains("JOIN tenant_memberships m ON m.user_id = u.id"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("WHERE m.tenant_id = ? AND m.membership_type = ? AND m.status = ?"),
+            "{sql}"
+        );
+        assert!(sql.contains("AND i.tenant_id = u.tenant_id"), "{sql}");
+        assert!(sql.contains("AND i.is_active = 1"), "{sql}");
+        assert!(sql.contains("IN ((?, ?)) LIMIT 2"), "{sql}");
+    }
+
+    /// bind の個数が SQL のプレースホルダと一致する（ずれると照合キーがテナント ID として
+    /// 使われ、静かに誰も解決しなくなる）。
+    #[test]
+    fn scope_binds_match_the_placeholders_in_the_scope_fragment() {
+        let tenant: TenantId = uuid::Uuid::now_v7().into();
+        for (scope, expected) in [
+            (IdentifierScope::Home, 1),
+            (IdentifierScope::ActiveGuest, 3),
+        ] {
+            assert_eq!(scope.binds(tenant).len(), expected, "{scope:?}");
+            assert_eq!(scope.sql().matches('?').count(), expected, "{scope:?}");
+        }
+        assert_eq!(
+            IdentifierScope::ActiveGuest.binds(tenant),
+            vec![
+                tenant.to_string(),
+                "GUEST".to_string(),
+                "ACTIVE".to_string()
+            ]
+        );
     }
 }
