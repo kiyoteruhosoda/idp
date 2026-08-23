@@ -19,6 +19,9 @@
 //!    利用者も、内部 API 経由で入れない。
 //! 5. **参加先の同名 HOME 利用者を巻き添えにしない**（解決は所属元優先。同じユーザー名のゲストが
 //!    参加してきても、そのテナントの HOME 利用者は従来どおり解決される）。
+//! 6. **所属元テナントを無効化すると、発行済みのリフレッシュトークンも次の更新で止まる**（MT27）。
+//!    参加先の `/{tenant_id}/token` は生きているため、ここを塞がないと最長で寿命（既定 30 日）
+//!    まで更新し続けられる。
 
 mod support;
 
@@ -521,4 +524,143 @@ async fn a_guest_whose_home_tenant_is_disabled_cannot_sign_in_anywhere() {
         "success",
         "re-enabling the home tenant restores access"
     );
+}
+
+/// 保証 6: 所属元テナントを無効化すると、参加先テナントで発行済みのリフレッシュトークンも
+/// 次の更新で止まる（MT27）。
+///
+/// **無効化したテナント自身の `/{tenant_id}/token` は `TenantResolver` が 404 で止めるが、その
+/// 利用者がゲストとして参加している他テナントの `/{tenant_id}/token` は生きている。** ここを
+/// 塞がないと、ログインは止まっているのに発行済みトークンだけが寿命（既定 30 日）まで生き残る。
+#[tokio::test]
+async fn disabling_the_home_tenant_stops_refresh_tokens_issued_by_the_host_tenant() {
+    let Some(env) = setup().await else { return };
+    let root_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let host = create_tenant(&env, &root_cookie, "RefreshHost").await;
+    let home = create_tenant(&env, &root_cookie, "RefreshHome").await;
+    sqlx::query("UPDATE tenants SET self_registration_enabled = 1 WHERE id = ?")
+        .bind(&home)
+        .execute(&env.pool)
+        .await
+        .expect("enable self-registration on the home tenant");
+
+    let username = format!("rt{}", unique());
+    let password = format!("guest-password-{}", unique());
+    register_user(&env.app, &home, &username, &password).await;
+    mark_email_verified(&env.pool, &home, &username).await;
+    let user_id = support::find_user_id_by_username(&env.pool, &home, &username)
+        .await
+        .expect("registered user");
+    invite_and_accept(&env, &root_cookie, &host, &user_id).await;
+
+    // 参加先テナントの RP から、ゲストがリフレッシュトークンまで取得する。
+    let client_id =
+        support::insert_public_client(&env.pool, &host, &["openid", "offline_access"]).await;
+    let authorize_uri = format!(
+        "/{host}/authorize?response_type=code&client_id={client_id}&redirect_uri={REDIRECT_URI_ENC}\
+         &scope=openid%20offline_access&state=st&nonce=no&code_challenge={CODE_CHALLENGE}\
+         &code_challenge_method=S256"
+    )
+    .replace(char::is_whitespace, "");
+    let auth_session = begin_login(&env.app, &host, &authorize_uri).await;
+
+    let response = send(
+        &env.app,
+        post_internal(
+            "/internal/authenticate",
+            Some(SERVICE_TOKEN),
+            json!({
+                "tenant_id": host,
+                "auth_session_id": auth_session,
+                "username": username,
+                "password": password,
+                "csrf_token": csrf_token(&auth_session, &env.csrf_secret),
+                "ip_address": "203.0.113.71",
+                "user_agent": "integration-test",
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    // `offline_access` は暗黙同意の対象外なので、同意ステップを挟むことがある。
+    let callback = if body["result"] == "consent_required" {
+        let consent_session = body["auth_session_id"].as_str().expect("auth_session_id");
+        let response = send(
+            &env.app,
+            post_internal(
+                "/internal/consent/approve",
+                Some(SERVICE_TOKEN),
+                json!({ "tenant_id": host, "auth_session_id": consent_session }),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK, "consent approve");
+        body_json(response).await["redirect_to"]
+            .as_str()
+            .expect("redirect_to")
+            .to_string()
+    } else {
+        assert_eq!(body["result"], "success", "guest login: {body}");
+        body["redirect_to"]
+            .as_str()
+            .expect("redirect_to")
+            .to_string()
+    };
+    let code = support::query_param(&callback, "code").expect("authorization code");
+
+    let response = support::exchange_code(&env.app, &host, &client_id, &code).await;
+    assert_eq!(response.status(), StatusCode::OK, "guest token exchange");
+    let refresh_token = body_json(response).await["refresh_token"]
+        .as_str()
+        .expect("refresh_token (offline_access)")
+        .to_string();
+
+    // 無効化前は更新できる。
+    let response = refresh(&env, &host, &client_id, &refresh_token).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "baseline: refresh works while the home tenant is active"
+    );
+    let rotated = body_json(response).await["refresh_token"]
+        .as_str()
+        .expect("rotated refresh_token")
+        .to_string();
+
+    set_tenant_status(&env, &root_cookie, &home, "DISABLED").await;
+
+    // 所属元を止めたら、参加先で発行済みのトークンも更新できない。
+    let response = refresh(&env, &host, &client_id, &rotated).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "a refresh token must stop once the user's home tenant is disabled"
+    );
+    let body = body_json(response).await;
+    assert_eq!(body["error"], "invalid_grant", "{body}");
+}
+
+/// `refresh_token` grant を 1 回叩く（public client・PKCE なのでクライアント認証は無い）。
+async fn refresh(
+    env: &TestEnv,
+    tenant: &str,
+    client_id: &str,
+    refresh_token: &str,
+) -> axum::response::Response {
+    send(
+        &env.app,
+        axum::http::Request::builder()
+            .method("POST")
+            .uri(format!("/{tenant}/token"))
+            .header(
+                axum::http::header::CONTENT_TYPE,
+                "application/x-www-form-urlencoded",
+            )
+            .body(axum::body::Body::from(format!(
+                "grant_type=refresh_token&refresh_token={refresh_token}&client_id={client_id}"
+            )))
+            .unwrap(),
+    )
+    .await
 }

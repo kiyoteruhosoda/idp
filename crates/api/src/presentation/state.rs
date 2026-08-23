@@ -586,6 +586,7 @@ impl AppState {
         let token = Arc::new(TokenService::new(
             clients.clone(),
             users.clone(),
+            tenants.clone(),
             codes.clone(),
             refresh_tokens.clone(),
             keys.clone(),
