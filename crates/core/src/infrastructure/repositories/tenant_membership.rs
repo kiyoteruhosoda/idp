@@ -120,8 +120,8 @@ impl TenantMembershipRepository for SqlxTenantMembershipRepository {
     }
 
     /// `ACTIVE` なメンバーシップに加えて、**所属元テナントが `ACTIVE`** であることを課す
-    /// （ADR-0009 §8。理由はトレイト側の doc を参照）。3 つの JOIN はいずれも主キー引きで、
-    /// `tenant_memberships` の PK `(tenant_id, user_id)` → `users` の PK → `tenants` の PK と辿る。
+    /// （ADR-0009 §8。理由はトレイト側の doc を参照）。辿る 3 表はいずれも主キー引きで、
+    /// `tenant_memberships` の PK `(tenant_id, user_id)` → `users` の PK → `tenants` の PK と進む。
     async fn is_active_member(&self, tenant_id: TenantId, user_id: Uuid) -> Result<bool> {
         let row = sqlx::query(
             "SELECT 1 FROM tenant_memberships m \
