@@ -26,8 +26,10 @@ impl SqlxUserRepository {
     /// 登録簿（`user_login_identifiers`）を引く 2 つの解決が共有する本体（AP8、ADR-0009 §8）。
     ///
     /// **複数の利用者に当たったら誰も返さない**（[`LoginIdentifierMatch::Unresolved`] の
-    /// `Ambiguous`。「不在」とは区別する。MT25）。1 種別の中では一意制約で 1 人に決まるが、
-    /// 種別をまたぐと「ユーザー名としては A、社員番号としては B」という入力があり得る。
+    /// `Ambiguous`。「不在」とは区別する。MT25）。1 テナント内で 1 正規化値は 1 人のものだが
+    /// （migration 0041）、種別ごとに正規化が違うため 1 つの入力は複数の正規化値へ広がり、
+    /// 「ユーザー名としては A、電話番号としては B」という入力があり得る（ゲスト解決は所属元
+    /// テナントもまたぐ）。
     /// `LIMIT 1` でどちらかを選ぶと、どちらが返るかが索引の都合で決まってしまう。曖昧な入力で
     /// 認証を通すより、通さない方を選ぶ（候補生成側でも起きにくくしてある。
     /// [`crate::domain::login_identifier::lookup_candidates`]）。
@@ -71,7 +73,8 @@ impl SqlxUserRepository {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IdentifierScope {
     /// 所属元テナントの登録簿（`user_login_identifiers.tenant_id` = 要求テナント）。
-    /// 一意制約と同じ `(tenant_id, 種別, 正規化値)` の索引に乗る。
+    /// 引き方に合わせた索引 `user_login_identifiers_lookup_idx (tenant_id, 種別, 正規化値)`
+    /// に乗る（migration 0041 で一意キーから種別が外れたため、索引は別立てになった）。
     Home,
     /// 要求テナントに ACTIVE な GUEST として参加している利用者を、**その利用者の所属元の**
     /// 登録簿で引く。
@@ -91,7 +94,8 @@ impl IdentifierScope {
     /// （`TenantResolutionService`）が `DISABLED` なら 404 で先に止めているため。同じ規則を
     /// メンバーシップ側から見たものが `TenantMembershipRepository::is_active_member`。
     ///
-    /// `ActiveGuest` は `Home` と違い一意制約の索引（`(tenant_id, 種別, 正規化値)`）には乗らず、
+    /// `ActiveGuest` は `Home` と違い引き方の索引（`user_login_identifiers_lookup_idx`
+    /// = `(tenant_id, 種別, 正規化値)`）には乗らず、
     /// 当該テナントの ACTIVE な GUEST メンバーシップ
     /// （`tenant_memberships_tenant_type_status_idx (tenant_id, membership_type, status)`。
     /// migration 0040）から、利用者の識別子（`(user_id, identifier_type)` の索引）へ辿る。等値条件を
@@ -163,8 +167,9 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-/// 登録簿の一意制約（tenant × 種別 × 正規化値）違反を `Conflict` として返す。事前チェックを
-/// すり抜けた同時実行はここで捕まる（AP15b でこの制約が主識別子にも効くようになった）。
+/// 登録簿の一意制約（tenant × 正規化値。migration 0041 で種別に依存しない）違反を `Conflict`
+/// として返す。事前チェックをすり抜けた同時実行はここで捕まる
+/// （AP15b でこの制約が主識別子にも効くようになった）。
 fn identifier_conflict(e: sqlx::Error) -> DomainError {
     match &e {
         sqlx::Error::Database(db) if db.is_unique_violation() => DomainError::Conflict(
@@ -221,7 +226,7 @@ fn map_row(row: &MySqlRow) -> Result<User> {
 /// 諦めると**そのユーザー名でログインできない利用者を黙って作る**ことになる。
 ///
 /// 衝突は 2 通りの経路で当たる。他人の**追加**識別子と同じ値なら下の事前チェックが、同時実行で
-/// すり抜けたものは登録簿の一意制約（tenant × 種別 × 正規化値）が捕まえる。移送が済んだことで、
+/// すり抜けたものは登録簿の一意制約（tenant × 正規化値）が捕まえる。移送が済んだことで、
 /// ADR-0025 が「残る限界」として挙げていた同時実行の窓は DB 側で塞がった。
 async fn sync_primary_login_identifier(
     conn: &mut sqlx::MySqlConnection,
@@ -637,7 +642,7 @@ impl UserRepository for SqlxUserRepository {
 mod tests {
     use super::*;
 
-    /// 所属元の解決は登録簿を要求テナントで引く（一意制約と同じキー）。
+    /// 所属元の解決は登録簿を要求テナントで引く（`user_login_identifiers_lookup_idx` と同じキー）。
     #[test]
     fn home_scope_filters_the_registry_by_the_requested_tenant() {
         let sql = login_identifier_sql(IdentifierScope::Home, 2);

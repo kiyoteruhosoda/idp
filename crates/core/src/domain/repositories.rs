@@ -309,7 +309,8 @@ pub trait UserRepository: Send + Sync {
 /// [`UserAuthenticatorRepository`] と同じ方針）。
 #[async_trait]
 pub trait UserLoginIdentifierRepository: Send + Sync {
-    /// 識別子を登録する。テナント内で `(identifier_type, normalized_value)` が重複したら `Conflict`。
+    /// 識別子を登録する。テナント内で `normalized_value` が重複したら `Conflict`
+    /// （**種別に依存しない**。1 正規化値は 1 人のもの。migration 0041）。
     async fn create(&self, _identifier: &UserLoginIdentifier) -> Result<()> {
         Err(crate::domain::error::DomainError::Repository(
             "create is not supported by this repository".to_string(),
