@@ -15,6 +15,9 @@ path = "src/main.rs"
 
 # ADR-0007 の肝: web は DB（sqlx）/ infrastructure に依存しない。データ操作は api へ HTTP 越しに行う。
 # 依存に idp-core を含めない（sqlx を間接依存させない）ことを crate 境界で強制する。
+[lints]
+workspace = true
+
 [dependencies]
 percent-encoding = { workspace = true }
 idp-contracts = { path = "../contracts" }

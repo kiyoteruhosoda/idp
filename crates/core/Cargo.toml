@@ -9,6 +9,9 @@ license = "MIT"
 name = "idp_core"
 path = "src/lib.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 idp-contracts = { path = "../contracts" }
 tokio = { workspace = true }

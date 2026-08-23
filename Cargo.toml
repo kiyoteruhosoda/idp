@@ -2,6 +2,16 @@
 resolver = "2"
 members = ["crates/core", "crates/contracts", "crates/api", "crates/web"]
 
+# ワークスペース共通の lint 方針（各 crate は `[lints] workspace = true` で参照する）。
+#
+# `result_large_err`: axum のハンドラ・ゲートは失敗を `Response`（128 バイト）で返す。clippy 0.1.98 で
+# このしきい値（既定 128 バイト）にちょうど掛かるようになったが、ここでの `Err` は「今から返す応答」
+# そのものであり、`Box` に包んでも呼び出し側で開梱し直すだけで、`IntoResponse` を返す axum の慣用形
+# からも外れる。presentation 層の 38 か所へ個別に `#[allow]` を撒くより、方針としてここで 1 度だけ
+# 許可する（CI は `-D warnings` で回すため、許可は明示的に置く必要がある）。
+[workspace.lints.clippy]
+result_large_err = "allow"
+
 # ワークスペース共通の依存バージョン（各 crate は `workspace = true` で参照する）。
 # ADR-0007（API/Web サービス分割）: P1 で core（domain/application/infrastructure）と api（presentation +
 # バイナリ）へ分割。P3 で contracts（serde DTO 契約）と web（HTML 描画 + API クライアント）を追加した。
