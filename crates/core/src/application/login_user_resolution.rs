@@ -31,6 +31,16 @@
 //! 参加先で名前が衝突しても割を食うのはゲスト側だけで済む（ゲストは所属元テナントの画面から
 //! 従来どおり入れる）。
 //!
+//! # 曖昧な入力はそこで止める（MT25）
+//!
+//! 1 が**曖昧**（複数人に当たった）だったときに 2 へ進んではいけない。ここは以前
+//! `Option<User>` を返しており、「不在」と「曖昧」がどちらも `None` に潰れていたため、所属元で
+//! 曖昧だった入力がそのままゲスト解決へ落ちていた。なりすましは起きない（ゲストは自分の
+//! パスワードで自分として入る）が、「曖昧なら通さない」「所属元がテナント内の名前の取り合いに
+//! 勝つ」という 2 つの決めごとが、まさにそれが要る場面で破れていた。
+//!
+//! [`LoginIdentifierMatch`] が 2 つを型で分けるので、`Unresolved(NotFound)` のときだけ 2 へ進む。
+//!
 //! # ここで決めないこと
 //!
 //! 認証ポリシー（AP2）・ロック・パスワードポリシーの評価対象は変わらない。ポリシーは
@@ -41,23 +51,29 @@
 //! 掛けた条件が、ゲストにだけ素通りすることはない。
 
 use crate::domain::error::Result;
+use crate::domain::login_identifier::{LoginIdentifierMatch, UnresolvedReason};
 use crate::domain::repositories::UserRepository;
 use crate::domain::tenant::TenantId;
-use crate::domain::user::User;
 
-/// ログイン欄の入力から、`tenant_id` で認証してよい利用者を解決する。該当なし・曖昧はいずれも
-/// `None`（呼び出し側は資格情報エラーに倒し、不存在と区別させない）。
+/// ログイン欄の入力から、`tenant_id` で認証してよい利用者を解決する。
+///
+/// 解決できなかったときの応答は呼び出し側で一律に資格情報エラーへ倒すが（不存在を露呈させない）、
+/// 理由は [`UnresolvedReason`] として返す —— 監査に残す値が違う。
 pub async fn resolve_login_user(
     users: &dyn UserRepository,
     tenant_id: TenantId,
     input: &str,
-) -> Result<Option<User>> {
-    if let Some(user) = users.find_by_login_identifier(tenant_id, input).await? {
-        return Ok(Some(user));
+) -> Result<LoginIdentifierMatch> {
+    match users.find_by_login_identifier(tenant_id, input).await? {
+        // 所属元で曖昧なら、そこで止める（ゲスト解決へ落とさない）。
+        found @ (LoginIdentifierMatch::Resolved(_)
+        | LoginIdentifierMatch::Unresolved(UnresolvedReason::Ambiguous)) => Ok(found),
+        LoginIdentifierMatch::Unresolved(UnresolvedReason::NotFound) => {
+            users
+                .find_active_guest_by_login_identifier(tenant_id, input)
+                .await
+        }
     }
-    users
-        .find_active_guest_by_login_identifier(tenant_id, input)
-        .await
 }
 
 #[cfg(test)]
@@ -65,6 +81,7 @@ mod tests {
     use super::*;
     use crate::domain::error::DomainError;
     use crate::domain::user::LoginFailureRecord;
+    use crate::domain::user::User;
     use crate::domain::values::UserStatus;
     use async_trait::async_trait;
     use chrono::{DateTime, TimeZone, Utc};
@@ -98,17 +115,37 @@ mod tests {
 
     /// 所属元での解決とゲストでの解決を独立に差し替えられるフェイク。`home_fails` は
     /// リポジトリ障害の再現に使う。
-    #[derive(Default)]
+    ///
+    /// `find_by_login_identifier` の既定実装（`find_by_username` へ委譲）は「不在」しか表せない
+    /// ので、曖昧を試す回のためにこちらを直接上書きする。
     struct FakeUsers {
-        home: Option<User>,
-        guest: Option<User>,
+        home: LoginIdentifierMatch,
+        guest: LoginIdentifierMatch,
         home_fails: bool,
         guest_calls: AtomicUsize,
+    }
+
+    impl Default for FakeUsers {
+        fn default() -> Self {
+            Self {
+                home: LoginIdentifierMatch::not_found(),
+                guest: LoginIdentifierMatch::not_found(),
+                home_fails: false,
+                guest_calls: AtomicUsize::new(0),
+            }
+        }
     }
 
     #[async_trait]
     impl UserRepository for FakeUsers {
         async fn find_by_username(&self, _t: TenantId, _name: &str) -> Result<Option<User>> {
+            unreachable!("解決は find_by_login_identifier を通る")
+        }
+        async fn find_by_login_identifier(
+            &self,
+            _tenant_id: TenantId,
+            _input: &str,
+        ) -> Result<LoginIdentifierMatch> {
             if self.home_fails {
                 return Err(DomainError::Repository("db down".to_string()));
             }
@@ -118,7 +155,7 @@ mod tests {
             &self,
             _tenant_id: TenantId,
             _input: &str,
-        ) -> Result<Option<User>> {
+        ) -> Result<LoginIdentifierMatch> {
             self.guest_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.guest.clone())
         }
@@ -170,6 +207,11 @@ mod tests {
         }
     }
 
+    /// 解決された利用者 id を取り出す（曖昧・不在は `None`）。
+    fn resolved_id(m: LoginIdentifierMatch) -> Option<Uuid> {
+        m.into_user().map(|u| u.id)
+    }
+
     /// 所属元で解決できた利用者は従来どおり返り、ゲストの検索は行われない（参加してきた同名の
     /// ゲストが HOME 利用者を「曖昧」にしないための順序）。
     #[tokio::test]
@@ -177,44 +219,82 @@ mod tests {
         let tenant: TenantId = Uuid::now_v7().into();
         let home = user(tenant);
         let repo = FakeUsers {
-            home: Some(home.clone()),
-            guest: Some(user(Uuid::now_v7().into())),
+            home: LoginIdentifierMatch::Resolved(home.clone()),
+            guest: LoginIdentifierMatch::Resolved(user(Uuid::now_v7().into())),
             ..FakeUsers::default()
         };
 
         let resolved = resolve_login_user(&repo, tenant, "member").await.unwrap();
-        assert_eq!(resolved.map(|u| u.id), Some(home.id));
+        assert_eq!(resolved_id(resolved), Some(home.id));
         assert_eq!(repo.guest_calls.load(Ordering::SeqCst), 0);
     }
 
-    /// 所属元が空振りなら、当該テナントの ACTIVE な GUEST として解決する（本修正の主眼）。
+    /// 所属元が空振りなら、当該テナントの ACTIVE な GUEST として解決する。
     #[tokio::test]
     async fn falls_back_to_active_guest_of_the_requested_tenant() {
         let tenant: TenantId = Uuid::now_v7().into();
         let guest = user(Uuid::now_v7().into());
         let repo = FakeUsers {
-            guest: Some(guest.clone()),
+            guest: LoginIdentifierMatch::Resolved(guest.clone()),
             ..FakeUsers::default()
         };
 
         let resolved = resolve_login_user(&repo, tenant, "member").await.unwrap();
-        assert_eq!(resolved.map(|u| u.id), Some(guest.id));
+        assert_eq!(resolved_id(resolved), Some(guest.id));
         assert_eq!(repo.guest_calls.load(Ordering::SeqCst), 1);
     }
 
-    /// どちらでも解決できなければ `None`（呼び出し側は資格情報エラーに倒す）。
+    /// **所属元で曖昧なら、そこで止める**（MT25 の本体）。ゲスト解決へ落ちると、同じ値を持つ
+    /// ゲストが入れてしまい、「曖昧なら通さない」「所属元が名前の取り合いに勝つ」の両方が破れる。
     #[tokio::test]
-    async fn returns_none_when_neither_resolves() {
+    async fn ambiguous_home_identifier_does_not_fall_through_to_guests() {
         let tenant: TenantId = Uuid::now_v7().into();
-        let repo = FakeUsers::default();
-        assert!(resolve_login_user(&repo, tenant, "member")
-            .await
-            .unwrap()
-            .is_none());
+        let repo = FakeUsers {
+            home: LoginIdentifierMatch::ambiguous(),
+            guest: LoginIdentifierMatch::Resolved(user(Uuid::now_v7().into())),
+            ..FakeUsers::default()
+        };
+
+        let resolved = resolve_login_user(&repo, tenant, "member").await.unwrap();
+        assert!(matches!(
+            resolved,
+            LoginIdentifierMatch::Unresolved(UnresolvedReason::Ambiguous)
+        ));
+        assert_eq!(repo.guest_calls.load(Ordering::SeqCst), 0);
     }
 
-    /// リポジトリ障害は握り潰さずそのまま伝える（`None` に丸めると障害が「利用者不在」に化け、
-    /// ゲスト検索という余計な問い合わせまで走る）。
+    /// ゲスト側で曖昧だった場合も理由を保ったまま返す（同じ値を持つゲストが 2 人参加している
+    /// 状態。どちらかを選ばず拒否する）。
+    #[tokio::test]
+    async fn ambiguous_guest_identifier_is_reported_as_ambiguous() {
+        let repo = FakeUsers {
+            guest: LoginIdentifierMatch::ambiguous(),
+            ..FakeUsers::default()
+        };
+
+        let resolved = resolve_login_user(&repo, Uuid::now_v7().into(), "member")
+            .await
+            .unwrap();
+        assert!(matches!(
+            resolved,
+            LoginIdentifierMatch::Unresolved(UnresolvedReason::Ambiguous)
+        ));
+    }
+
+    /// どちらでも解決できなければ `NotFound`（呼び出し側は資格情報エラーに倒す）。
+    #[tokio::test]
+    async fn returns_not_found_when_neither_resolves() {
+        let tenant: TenantId = Uuid::now_v7().into();
+        let repo = FakeUsers::default();
+        let resolved = resolve_login_user(&repo, tenant, "member").await.unwrap();
+        assert!(matches!(
+            resolved,
+            LoginIdentifierMatch::Unresolved(UnresolvedReason::NotFound)
+        ));
+    }
+
+    /// リポジトリ障害は握り潰さずそのまま伝える（`NotFound` に丸めると障害が「利用者不在」に
+    /// 化け、ゲスト検索という余計な問い合わせまで走る）。
     #[tokio::test]
     async fn propagates_repository_errors_without_falling_back() {
         let repo = FakeUsers {

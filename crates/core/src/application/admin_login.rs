@@ -25,6 +25,7 @@ use crate::domain::authentication_policy::{
 };
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
+use crate::domain::login_identifier::LoginIdentifierMatch;
 use crate::domain::password::PasswordHasher;
 use crate::domain::password_policy::{password_change_required, PasswordRejection};
 use crate::domain::permission;
@@ -308,8 +309,9 @@ impl AdminLoginService {
         //    ゲスト管理者はここで解決される —— テナント作成者は作成先の ACTIVE GUEST になるため
         //    （§4）、これが無いと自分が作ったテナントの管理コンソールへ直接ログインできない。
         let user = match resolve_login_user(self.users.as_ref(), tenant_id, &cmd.username).await {
-            Ok(Some(u)) => u,
-            Ok(None) => {
+            Ok(LoginIdentifierMatch::Resolved(u)) => u,
+            // 不在と曖昧で応答は変えない（存在の露呈を避ける）。監査に残す理由だけを分ける。
+            Ok(LoginIdentifierMatch::Unresolved(reason)) => {
                 self.audit
                     .record(
                         AuditEventType::LoginFailed,
@@ -317,7 +319,7 @@ impl AdminLoginService {
                         Some(tenant_id),
                         None,
                         None,
-                        Some("unknown_user"),
+                        Some(reason.audit_code()),
                         ctx,
                     )
                     .await;
@@ -479,8 +481,10 @@ impl AdminLoginService {
         }
 
         let user = match resolve_login_user(self.users.as_ref(), tenant_id, &cmd.username).await {
-            Ok(Some(u)) => u,
-            Ok(None) => return AdminLoginOutcome::InvalidCredentials,
+            Ok(LoginIdentifierMatch::Resolved(u)) => u,
+            Ok(LoginIdentifierMatch::Unresolved(_)) => {
+                return AdminLoginOutcome::InvalidCredentials
+            }
             Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
         };
 

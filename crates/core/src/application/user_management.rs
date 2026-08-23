@@ -132,7 +132,7 @@ impl UserManagementService {
             .find_by_login_identifier(tenant_id, &preferred_username)
             .await
             .map_err(internal)?
-            .is_some()
+            .is_taken()
         {
             return Err(UserManagementError::Conflict(MessageKey::new(
                 "api-user-username-conflict",

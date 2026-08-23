@@ -106,14 +106,14 @@ async fn the_primary_identifier_is_a_registry_row_that_follows_profile_edits() {
         .find_by_login_identifier(tenant_id, &renamed)
         .await
         .expect("resolve");
-    assert_eq!(resolved.map(|u| u.id), Some(user.id));
+    assert_eq!(resolved.into_user().map(|u| u.id), Some(user.id));
     assert!(
-        users
+        !users
             .find_by_login_identifier(tenant_id, &username)
             .await
             .expect("resolve")
-            .is_none(),
-        "古い名前は解決しない（登録簿に残していると別人の予約を邪魔する）"
+            .is_taken(),
+        "古い名前は解決せず、予約も残さない（残っていると別人の登録を邪魔する）"
     );
 
     // 主識別子を外すと登録簿からも消える。
@@ -263,6 +263,7 @@ async fn a_value_another_user_already_owns_is_rejected() {
             .find_by_login_identifier(tenant_id, &taken)
             .await
             .expect("resolve")
+            .into_user()
             .map(|u| u.id),
         Some(owner.id)
     );

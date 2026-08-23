@@ -2,6 +2,7 @@
 
 use crate::domain::authentication_policy::LockoutPolicy;
 use crate::domain::error::{DomainError, Result};
+use crate::domain::login_identifier::LoginIdentifierMatch;
 use crate::domain::repositories::UserRepository;
 use crate::domain::tenant::TenantId;
 use crate::domain::user::{LoginFailureRecord, User};
@@ -24,7 +25,8 @@ impl SqlxUserRepository {
 
     /// 登録簿（`user_login_identifiers`）を引く 2 つの解決が共有する本体（AP8、ADR-0009 §8）。
     ///
-    /// **複数の利用者に当たったら誰も返さない。** 1 種別の中では一意制約で 1 人に決まるが、
+    /// **複数の利用者に当たったら誰も返さない**（[`LoginIdentifierMatch::Unresolved`] の
+    /// `Ambiguous`。「不在」とは区別する。MT25）。1 種別の中では一意制約で 1 人に決まるが、
     /// 種別をまたぐと「ユーザー名としては A、社員番号としては B」という入力があり得る。
     /// `LIMIT 1` でどちらかを選ぶと、どちらが返るかが索引の都合で決まってしまう。曖昧な入力で
     /// 認証を通すより、通さない方を選ぶ（候補生成側でも起きにくくしてある。
@@ -34,10 +36,10 @@ impl SqlxUserRepository {
         scope: IdentifierScope,
         tenant_id: TenantId,
         input: &str,
-    ) -> Result<Option<User>> {
+    ) -> Result<LoginIdentifierMatch> {
         let candidates = crate::domain::login_identifier::lookup_candidates(input);
         if candidates.is_empty() {
-            return Ok(None);
+            return Ok(LoginIdentifierMatch::not_found());
         }
         let sql = login_identifier_sql(scope, candidates.len());
         let mut query = sqlx::query(&sql);
@@ -49,15 +51,16 @@ impl SqlxUserRepository {
         }
         let rows = query.fetch_all(&self.pool).await.map_err(repo_err)?;
         match rows.len() {
-            0 => Ok(None),
-            1 => map_row(&rows[0]).map(Some),
+            0 => Ok(LoginIdentifierMatch::not_found()),
+            1 => map_row(&rows[0]).map(LoginIdentifierMatch::Resolved),
             _ => {
-                // 曖昧。監査には残らない経路なので、運用ログにだけ残す（値は PII のため出さない）。
+                // 曖昧。ログイン経路は監査にも残すが（`UnresolvedReason::audit_code`）、登録・改名の
+                // 空き判定はここを通っても監査に出ないため、運用ログにも残す（値は PII のため出さない）。
                 tracing::warn!(
                     tenant_id = %tenant_id,
                     "login identifier resolved to multiple users; refusing to authenticate"
                 );
-                Ok(None)
+                Ok(LoginIdentifierMatch::ambiguous())
             }
         }
     }
@@ -426,7 +429,7 @@ impl UserRepository for SqlxUserRepository {
         &self,
         tenant_id: TenantId,
         input: &str,
-    ) -> Result<Option<User>> {
+    ) -> Result<LoginIdentifierMatch> {
         self.resolve_login_identifier(IdentifierScope::Home, tenant_id, input)
             .await
     }
@@ -437,7 +440,7 @@ impl UserRepository for SqlxUserRepository {
         &self,
         tenant_id: TenantId,
         input: &str,
-    ) -> Result<Option<User>> {
+    ) -> Result<LoginIdentifierMatch> {
         self.resolve_login_identifier(IdentifierScope::ActiveGuest, tenant_id, input)
             .await
     }

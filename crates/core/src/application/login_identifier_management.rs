@@ -288,7 +288,7 @@ impl LoginIdentifierManagementService {
             .find_by_login_identifier(tenant_id, raw)
             .await
             .map_err(internal)?
-            .is_some()
+            .is_taken()
         {
             return Err(LoginIdentifierManagementError::Conflict(MessageKey::new(
                 "api-login-identifier-conflict",
@@ -491,9 +491,10 @@ mod tests {
     impl UserLoginIdentifierRepository for Identifiers {
         async fn create(&self, identifier: &UserLoginIdentifier) -> DomainResult<()> {
             let mut rows = self.rows.lock().unwrap();
+            // DB の一意キーと同じ判定にする（migration 0041 で**種別を含めない**形になった。
+            // 種別は正規化のしかたを決めるためのもので、値の持ち主を決めるものではない）。
             if rows.iter().any(|r| {
                 r.tenant_id == identifier.tenant_id
-                    && r.identifier_type == identifier.identifier_type
                     && r.normalized_value == identifier.normalized_value
             }) {
                 return Err(DomainError::Conflict("duplicate".to_string()));

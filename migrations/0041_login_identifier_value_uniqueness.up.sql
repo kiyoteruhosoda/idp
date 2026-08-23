@@ -1,0 +1,43 @@
+-- ログイン識別子の一意性を**種別非依存**にする（MT25）。
+--
+-- これまでの一意キーは `(tenant_id, identifier_type, normalized_value)` で、種別が違えば同じ値を
+-- 別人が持てた。しかしログイン欄は種別を尋ねない —— 入力は「どの種別として読んだらどうなるか」を
+-- 全種別ぶん作って引く（`domain::login_identifier::lookup_candidates`）ため、種別をまたいで同じ
+-- 正規化値が存在すると、1 つの入力が 2 人に当たる。解決側は「曖昧なら誰も返さない」で守っているが、
+-- それは**当人たちがその値でログインできなくなる**ということでもある（当人以外には見えない
+-- 壊れ方で、当人からは「正しいパスワードなのに入れない」としか見えない）。
+--
+-- 種別は**正規化のしかた**を決めるためにあり、値の持ち主を決めるためのものではない。
+-- 一意キーから種別を外し、「1 つのテナントの中で、1 つの正規化値は 1 人のもの」にする。
+--
+-- # アプリ側の規則と一致させる変更である
+--
+-- 追加時の空き判定（`application::login_identifier_management` の `ensure_available`）は、すでに
+-- **他人に解決される値も自分に解決される値も**拒んでいる。つまり「同じ値を種別違いで 2 行」は
+-- アプリでは元から作れない。作れてしまう窓は 2 つだけで、どちらも本変更で閉じる:
+--
+--   * **無効な行との種別違い**。無効な行は解決にも空き判定にも当たらないので、A の社員番号 `N` を
+--     止めている間に B がユーザー名 `N` を取れる。A の行を有効へ戻すと `N` が 2 人に当たる。
+--     本変更後は B の追加が一意制約で 409 になる（無効な行も一意に数える。行を残すのは値が
+--     別人へ移らないようにするためで、その意図は種別をまたいでも同じ）。
+--   * **同時実行**。空き判定と INSERT の間に別の追加が入る競合。DB の制約で閉じる。
+--
+-- # 索引を 2 本持つ
+--
+-- 一意キーは**不変条件**（1 値 1 人）を表し、非ユニーク索引 `..._lookup_idx` は**引き方**
+-- （`WHERE tenant_id = ? AND (identifier_type, normalized_value) IN (...)`）に合わせた経路である。
+-- 解決クエリは種別との対で引き続き引くため（入力の読み方を絞る `accepts` の判定を活かす）、
+-- 先頭 3 列が一致する索引が要る。一意キーから種別を外した分をこちらで補う。
+--
+-- # 既存データに重複があると、この ALTER は失敗する（意図的）
+--
+-- 失敗させるのは、黙って 1 行を捨てるとその利用者だけがログインできなくなるためである。
+-- 重複は次で洗い出し、どちらを残すか決めてから再実行する:
+--
+--   SELECT tenant_id, normalized_value, COUNT(*) c, GROUP_CONCAT(CONCAT(identifier_type, ':', user_id))
+--     FROM user_login_identifiers
+--    GROUP BY tenant_id, normalized_value HAVING c > 1;
+ALTER TABLE user_login_identifiers
+    ADD KEY user_login_identifiers_lookup_idx (tenant_id, identifier_type, normalized_value),
+    DROP INDEX user_login_identifiers_value_uk,
+    ADD UNIQUE KEY user_login_identifiers_value_uk (tenant_id, normalized_value);
