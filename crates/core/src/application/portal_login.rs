@@ -26,6 +26,7 @@ use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authenticator_management::{
     consume_single_use_code, is_blocked_in_registry,
 };
+use crate::application::login_user_resolution::resolve_login_user;
 use crate::application::mfa_login::user_has_confirmed_totp;
 use crate::application::password_policy::PasswordPolicyService;
 use crate::application::totp_registration::verify_totp_code;
@@ -290,13 +291,9 @@ impl PortalLoginService {
             }
         }
 
-        // 2. ユーザー検索（ログイン識別子。AP8 の登録簿 → `preferred_username` の順で解決する）。
-        //    認証は所属元テナント限定（ADR-0009 §8）。
-        let user = match self
-            .users
-            .find_by_login_identifier(tenant_id, &cmd.username)
-            .await
-        {
+        // 2. ユーザー検索（ログイン識別子。AP8 の登録簿で解決する）。対象はこのテナントの ACTIVE な
+        //    メンバー（HOME / GUEST。ADR-0009 §8。解決の規則は `login_user_resolution`）。
+        let user = match resolve_login_user(self.users.as_ref(), tenant_id, &cmd.username).await {
             Ok(Some(u)) => u,
             Ok(None) => {
                 self.record_failure(tenant_id, None, "unknown_user", ctx)
@@ -458,11 +455,7 @@ impl PortalLoginService {
             }
         }
 
-        let user = match self
-            .users
-            .find_by_login_identifier(tenant_id, &cmd.username)
-            .await
-        {
+        let user = match resolve_login_user(self.users.as_ref(), tenant_id, &cmd.username).await {
             Ok(Some(u)) => u,
             Ok(None) => return PortalChangePasswordOutcome::InvalidCredentials,
             Err(e) => return PortalChangePasswordOutcome::Internal(e.to_string()),

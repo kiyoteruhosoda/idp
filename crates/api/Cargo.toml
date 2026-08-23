@@ -13,6 +13,9 @@ path = "src/lib.rs"
 name = "idp"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 idp-core = { path = "../core" }
 idp-contracts = { path = "../contracts" }

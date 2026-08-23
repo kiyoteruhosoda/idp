@@ -9,6 +9,9 @@ license = "MIT"
 name = "idp_contracts"
 path = "src/lib.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }

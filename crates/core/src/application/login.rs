@@ -19,6 +19,7 @@
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authorize::code_dispatch;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
+use crate::application::login_user_resolution::resolve_login_user;
 use crate::application::mfa_login::user_has_confirmed_totp;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session;
@@ -256,13 +257,10 @@ impl LoginService {
             }
         }
 
-        // 4. ユーザー検索（ログイン識別子。AP8 の登録簿 → `preferred_username` の順で解決する）。
-        //    認証は所属元テナント限定 = このテナントを所属元とするユーザーのみが対象（ADR-0009 §8）。
-        let user = match self
-            .users
-            .find_by_login_identifier(tenant_id, &cmd.username)
-            .await
-        {
+        // 4. ユーザー検索（ログイン識別子。AP8 の登録簿で解決する）。対象はこのテナントの ACTIVE な
+        //    メンバー = 所属元（HOME）と、招待で参加している GUEST（ADR-0009 §8。解決の規則は
+        //    `login_user_resolution`）。
+        let user = match resolve_login_user(self.users.as_ref(), tenant_id, &cmd.username).await {
             Ok(Some(u)) => u,
             Ok(None) => {
                 self.audit

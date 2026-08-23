@@ -217,7 +217,8 @@ pub enum InternalRpLogoutResponse {
 /// api へ転送する。CSRF は `csrf_token`（`auth_session_id` 由来）を api の LoginService が検証する。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAuthenticateRequest {
-    /// フローのテナント（ADR-0009 §8）。`(tenant_id, email)` 一意化により、認証は所属元テナント限定。
+    /// フローのテナント（ADR-0009 §8）。認証の対象は当該テナントの ACTIVE なメンバー（所属元の
+    /// HOME と、招待で参加している GUEST）に限られるため、テナント指定のない認証は成立しない。
     /// **必須**。api は未指定・不正な UUID を 400 で拒否する（fail-closed。SEC4）。
     #[serde(default)]
     pub tenant_id: Option<String>,
