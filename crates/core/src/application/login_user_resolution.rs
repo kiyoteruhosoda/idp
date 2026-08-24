@@ -115,6 +115,10 @@ pub async fn resolve_login_user(
 /// 1 を先に引くのは、メール種別の識別子を持っている利用者を UPN 解釈で**別人へ振り替えない**
 /// ため。テナントの中で `alice@corp.example` を持つ人と `alice` を持つ人は別人であり得る。
 ///
+/// ただし**所属元が要求テナント自身**（ADR-0029 §4）のときは 1 を省く。この段へ来た時点で
+/// 1 段目（同じ登録簿を、メンバーシップ条件無しで引く＝ここより広い範囲）が入力そのままで
+/// 空振りしているので、同じ問い合わせは必ず空振りする。ホットパスに無駄な往復を足さない。
+///
 /// 2 は「メールでのログインはテナントが明示的に有効化したときだけ」（ADR-0025 §5）と矛盾しない。
 /// `alice@corp.example` はそのアドレスにメールが届くことを意味せず、`users.email` も引かない。
 /// 引くのは登録簿だけで、増えるのは principal ではなく**綴り方**である（パスワードは従来どおり要る）。
@@ -132,7 +136,13 @@ async fn resolve_by_domain(
         return Ok(None);
     };
 
-    for candidate in [input, local_part] {
+    // 上の doc コメント参照。所属元＝要求テナントなら入力そのままは引き直さない。
+    let candidates: &[&str] = if home_tenant_id == tenant_id {
+        &[local_part]
+    } else {
+        &[input, local_part]
+    };
+    for candidate in candidates.iter().copied() {
         let found = users
             .find_member_by_login_identifier(tenant_id, home_tenant_id, candidate)
             .await?;
@@ -588,6 +598,32 @@ mod tests {
             .unwrap();
         assert_eq!(resolved_id(resolved), Some(home_user.id));
         assert!(repo.member_lookups.lock().unwrap().is_empty());
+    }
+
+    /// 要求テナント自身がドメインを持つ場合（ADR-0029 §4）。`alice@x.example` は 1 段目で
+    /// 空振りしたあと、ローカル部の解釈で拾われる。**入力そのままは引き直さない** —— 1 段目が
+    /// 同じ登録簿をより広い条件で引いて空振りしている以上、必ず空振りするためである。
+    #[tokio::test]
+    async fn the_requesting_tenants_own_domain_only_looks_up_the_local_part() {
+        let host: TenantId = Uuid::now_v7().into();
+        let member = user(host);
+        let repo = FakeUsers {
+            by_home_tenant: vec![(
+                "alice".to_string(),
+                LoginIdentifierMatch::Resolved(member.clone()),
+            )],
+            ..FakeUsers::default()
+        };
+
+        let resolved = resolve_login_user(&repo, &domains(host), host, "alice@corp.example")
+            .await
+            .unwrap();
+        assert_eq!(resolved_id(resolved), Some(member.id));
+        assert_eq!(
+            *repo.member_lookups.lock().unwrap(),
+            vec!["alice".to_string()]
+        );
+        assert_eq!(repo.guest_calls.load(Ordering::SeqCst), 0);
     }
 
     /// リポジトリ障害は握り潰さずそのまま伝える（`NotFound` に丸めると障害が「利用者不在」に

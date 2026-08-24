@@ -736,9 +736,11 @@ mod tests {
     #[test]
     fn scope_binds_match_the_placeholders_in_the_scope_fragment() {
         let tenant: TenantId = uuid::Uuid::now_v7().into();
+        let home_tenant: TenantId = uuid::Uuid::now_v7().into();
         for (scope, expected) in [
             (IdentifierScope::Home, 1),
             (IdentifierScope::ActiveGuest, 3),
+            (IdentifierScope::MemberWithHomeTenant(home_tenant), 3),
         ] {
             assert_eq!(scope.binds(tenant).len(), expected, "{scope:?}");
             assert_eq!(scope.sql().matches('?').count(), expected, "{scope:?}");
@@ -749,6 +751,15 @@ mod tests {
                 tenant.to_string(),
                 "GUEST".to_string(),
                 "ACTIVE".to_string()
+            ]
+        );
+        // 順序が SQL の `?` の並び（m.tenant_id → m.status → u.tenant_id）と一致すること。
+        assert_eq!(
+            IdentifierScope::MemberWithHomeTenant(home_tenant).binds(tenant),
+            vec![
+                tenant.to_string(),
+                "ACTIVE".to_string(),
+                home_tenant.to_string()
             ]
         );
     }

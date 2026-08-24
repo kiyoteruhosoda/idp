@@ -1057,3 +1057,80 @@ async fn a_domain_belongs_to_exactly_one_tenant() {
 
     assign_domain(&env, &root_cookie, &second, &domain).await;
 }
+
+/// 保証 9（ADR-0029）: ドメインを割り当てたテナントでは、`ローカル部@そのドメイン` は
+/// 「ローカル部の利用者」を指す綴りでもある。**その綴りを他人の識別子として登録させない。**
+///
+/// 登録できてしまうと、参加先テナントの画面ではその綴りが唯一の入り口になり得る当人が、
+/// 突然そこから入れなくなる（横取り）。空き判定はログインの解決と同じ範囲を見る必要がある。
+#[tokio::test]
+async fn a_upn_spelling_cannot_be_taken_from_its_owner() {
+    let Some(env) = setup().await else { return };
+    let root_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let domain = format!("upn{}.example", unique());
+    let owner_name = format!("owner{}", unique());
+    let password = format!("upn-password-{}", unique());
+    let (tenant, _owner_id) =
+        tenant_with_user(&env, &root_cookie, "UpnHome", &owner_name, &password).await;
+    assign_domain(&env, &root_cookie, &tenant, &domain).await;
+
+    // 同じテナントの別人。
+    let other_name = format!("other{}", unique());
+    register_user(&env.app, &tenant, &other_name, &password).await;
+    mark_email_verified(&env.pool, &tenant, &other_name).await;
+    let other_id = support::find_user_id_by_username(&env.pool, &tenant, &other_name)
+        .await
+        .expect("registered other");
+
+    // `owner@そのドメイン` を別人の識別子にしようとすると 409。
+    let res = send(
+        &env.app,
+        post(
+            &root_cookie,
+            &format!("/{tenant}/admin/users/{other_id}/login-identifiers"),
+            json!({
+                "identifier_type": "email",
+                "value": format!("{owner_name}@{domain}")
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        res.status(),
+        StatusCode::CONFLICT,
+        "UPN 綴りは所有者のもの。他人へ足させない"
+    );
+
+    // 割り当てていないドメインなら従来どおり登録できる（判定はこのテナントのドメインに限る）。
+    let res = send(
+        &env.app,
+        post(
+            &root_cookie,
+            &format!("/{tenant}/admin/users/{other_id}/login-identifiers"),
+            json!({
+                "identifier_type": "email",
+                "value": format!("{owner_name}@elsewhere{}.example", unique())
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        res.status(),
+        StatusCode::CREATED,
+        "他所のドメインは UPN 解釈の対象外"
+    );
+
+    // 所有者は自分の UPN 綴りで従来どおり入れる。
+    assert_eq!(
+        portal_login_result(
+            &env,
+            &tenant,
+            "203.0.113.78",
+            &format!("{owner_name}@{domain}"),
+            &password
+        )
+        .await,
+        "success",
+        "所有者は UPN 綴りで入れる"
+    );
+}

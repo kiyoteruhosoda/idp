@@ -2,4 +2,4 @@
 --
 -- 表ごと落とす。解決経路は「ドメイン修飾で引く段」が空振りしたときに従来の走査へ落ちる形なので、
 -- この表が無くなっても認証は従来どおり動く（ドメイン修飾で入っていた利用者は走査側へ戻る）。
-DROP TABLE tenant_domains;
+DROP TABLE IF EXISTS tenant_domains;

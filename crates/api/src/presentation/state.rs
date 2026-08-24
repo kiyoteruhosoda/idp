@@ -656,6 +656,7 @@ impl AppState {
         let login_identifiers_admin = Arc::new(LoginIdentifierManagementService::new(
             login_identifier_repository.clone(),
             users.clone(),
+            tenant_domains.clone(),
             audit.clone(),
             clock.clone(),
             ids.clone(),
