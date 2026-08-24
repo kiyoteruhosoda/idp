@@ -40,6 +40,7 @@ use crate::domain::login_identifier::LoginIdentifierMatch;
 use crate::domain::password::PasswordHasher;
 use crate::domain::password_policy::{password_change_required, PasswordRejection};
 use crate::domain::rate_limit::LoginRateLimiter;
+use crate::domain::repositories::TenantDomainRepository;
 use crate::domain::repositories::{
     AuthenticationPolicyRepository, SsoSessionRepository, TotpSecretRepository,
     UserAuthenticatorRepository, UserRepository,
@@ -167,6 +168,9 @@ pub struct PortalLoginService {
     /// 認証器の登録簿（AP9）。リカバリーコード・email OTP の消費に使う。
     authenticators: Arc<dyn UserAuthenticatorRepository>,
     users: Arc<dyn UserRepository>,
+    /// テナントへ割り当てたドメイン（ADR-0029）。ログイン欄の入力が `local@domain` の形のとき、
+    /// 所属元テナントを 1 つに決めるために引く（`login_user_resolution`）。
+    tenant_domains: Arc<dyn TenantDomainRepository>,
     sso_sessions: Arc<dyn SsoSessionRepository>,
     totp_secrets: Arc<dyn TotpSecretRepository>,
     authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
@@ -191,6 +195,7 @@ impl PortalLoginService {
     pub fn new(
         authenticators: Arc<dyn UserAuthenticatorRepository>,
         users: Arc<dyn UserRepository>,
+        tenant_domains: Arc<dyn TenantDomainRepository>,
         sso_sessions: Arc<dyn SsoSessionRepository>,
         totp_secrets: Arc<dyn TotpSecretRepository>,
         authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
@@ -209,6 +214,7 @@ impl PortalLoginService {
         Self {
             authenticators,
             users,
+            tenant_domains,
             sso_sessions,
             totp_secrets,
             authentication_policies,
@@ -294,7 +300,14 @@ impl PortalLoginService {
 
         // 2. ユーザー検索（ログイン識別子。AP8 の登録簿で解決する）。対象はこのテナントの ACTIVE な
         //    メンバー（HOME / GUEST。ADR-0009 §8。解決の規則は `login_user_resolution`）。
-        let user = match resolve_login_user(self.users.as_ref(), tenant_id, &cmd.username).await {
+        let user = match resolve_login_user(
+            self.users.as_ref(),
+            self.tenant_domains.as_ref(),
+            tenant_id,
+            &cmd.username,
+        )
+        .await
+        {
             Ok(LoginIdentifierMatch::Resolved(u)) => u,
             // 不在と曖昧で応答は変えない（存在の露呈を避ける）。監査に残す理由だけを分ける。
             Ok(LoginIdentifierMatch::Unresolved(reason)) => {
@@ -457,7 +470,14 @@ impl PortalLoginService {
             }
         }
 
-        let user = match resolve_login_user(self.users.as_ref(), tenant_id, &cmd.username).await {
+        let user = match resolve_login_user(
+            self.users.as_ref(),
+            self.tenant_domains.as_ref(),
+            tenant_id,
+            &cmd.username,
+        )
+        .await
+        {
             Ok(LoginIdentifierMatch::Resolved(u)) => u,
             Ok(LoginIdentifierMatch::Unresolved(_)) => {
                 return PortalChangePasswordOutcome::InvalidCredentials

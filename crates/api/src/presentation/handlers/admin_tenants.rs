@@ -13,12 +13,14 @@ use crate::application::tenant_management::{
 use crate::application::user_lifecycle::UserLifecycleError;
 use crate::domain::tenant::{Tenant, TenantId};
 use crate::domain::tenant_context::TenantContext;
+use crate::domain::tenant_domain::TenantDomain;
 use crate::domain::values::TenantStatus;
 use crate::presentation::admin::{IdpAdmin, IdpSystemAdmin, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
-    CreateTenantRequest, PageQueryParams, TenantAdminPasswordResetRequest, TenantListResponse,
-    TenantResponse, UpdateTenantRequest, UpdateTenantSettingsRequest, UserPasswordResetResponse,
+    AddTenantDomainRequest, CreateTenantRequest, PageQueryParams, TenantAdminPasswordResetRequest,
+    TenantDomainResponse, TenantListResponse, TenantResponse, UpdateTenantRequest,
+    UpdateTenantSettingsRequest, UserPasswordResetResponse,
 };
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
@@ -359,6 +361,124 @@ pub async fn update_current_tenant(
     // 得るため、捨てないと改名直後に「本文は新名称・ヘッダは旧名称」の画面になる。
     state.tenant_resolution.invalidate(updated.id);
     Ok(Json(tenant_response(&updated)))
+}
+
+// ── ドメインの割り当て（ADR-0029）────────────────────────────────────────────
+//
+// 対象は**自テナントまたは直下の子**。root 自身にもドメインが要る（root の利用者は作成した
+// テナントへゲストとして入るため）ので、子だけには絞らない。判定は Application 層が行う。
+
+/// テナントに割り当てられているドメインを一覧する。
+#[utoipa::path(
+    get,
+    path = "/{tenant_id}/admin/tenants/{target_id}/domains",
+    tag = "admin",
+    responses(
+        (status = 200, description = "割り当て済みドメイン", body = Vec<TenantDomainResponse>),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.system.admin 必須）"),
+        (status = 404, description = "対象テナントが存在しない"),
+    )
+)]
+pub async fn list_tenant_domains(
+    RequirePerms(_admin, _): RequirePerms<IdpSystemAdmin>,
+    State(state): State<AppState>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
+    Path((_tenant_id, target_id)): Path<(String, String)>,
+) -> Result<Json<Vec<TenantDomainResponse>>, ApiError> {
+    let target = parse_tenant_id(&target_id, locale)?;
+    let domains = state
+        .tenants_admin
+        .list_domains(tenant.context(), target)
+        .await
+        .map_err(|e| map_error(e, locale))?;
+    Ok(Json(domains.iter().map(domain_response).collect()))
+}
+
+/// ドメインを割り当てる。すでに**どこかのテナントが**押さえていれば 409（一意性はグローバル）。
+#[utoipa::path(
+    post,
+    path = "/{tenant_id}/admin/tenants/{target_id}/domains",
+    tag = "admin",
+    request_body = AddTenantDomainRequest,
+    responses(
+        (status = 201, description = "割り当てたドメイン", body = TenantDomainResponse),
+        (status = 400, description = "ドメインとして読めない値"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.system.admin 必須）"),
+        (status = 404, description = "対象テナントが存在しない"),
+        (status = 409, description = "すでに割り当て済み（他テナントの場合も含む）"),
+    )
+)]
+#[allow(clippy::too_many_arguments)]
+pub async fn add_tenant_domain(
+    RequirePerms(admin, _): RequirePerms<IdpSystemAdmin>,
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
+    Path((_tenant_id, target_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(body): Json<AddTenantDomainRequest>,
+) -> Result<(StatusCode, Json<TenantDomainResponse>), ApiError> {
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
+    let target = parse_tenant_id(&target_id, locale)?;
+    let added = state
+        .tenants_admin
+        .add_domain(tenant.context(), target, &body.domain, admin.user_id, &ctx)
+        .await
+        .map_err(|e| map_error(e, locale))?;
+    Ok((StatusCode::CREATED, Json(domain_response(&added))))
+}
+
+/// 割り当てを解除する。
+#[utoipa::path(
+    delete,
+    path = "/{tenant_id}/admin/tenants/{target_id}/domains/{domain_id}",
+    tag = "admin",
+    responses(
+        (status = 204, description = "解除した"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.system.admin 必須）"),
+        (status = 404, description = "対象テナント、または割り当てが存在しない"),
+    )
+)]
+pub async fn remove_tenant_domain(
+    RequirePerms(admin, _): RequirePerms<IdpSystemAdmin>,
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
+    Path((_tenant_id, target_id, domain_id)): Path<(String, String, Uuid)>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
+    let target = parse_tenant_id(&target_id, locale)?;
+    state
+        .tenants_admin
+        .remove_domain(tenant.context(), target, domain_id, admin.user_id, &ctx)
+        .await
+        .map_err(|e| map_error(e, locale))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn domain_response(d: &TenantDomain) -> TenantDomainResponse {
+    TenantDomainResponse {
+        id: d.id.to_string(),
+        tenant_id: d.tenant_id.to_string(),
+        domain: d.domain.clone(),
+        created_at: d.created_at.to_rfc3339(),
+        updated_at: d.updated_at.to_rfc3339(),
+    }
 }
 
 fn tenant_response(t: &Tenant) -> TenantResponse {

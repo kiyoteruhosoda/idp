@@ -46,6 +46,7 @@ use crate::domain::signing_key::SigningKey;
 use crate::domain::sso_session::SsoSession;
 use crate::domain::system_setting::SystemSetting;
 use crate::domain::tenant::{Tenant, TenantId};
+use crate::domain::tenant_domain::TenantDomain;
 use crate::domain::tenant_membership::{TenantMemberFilter, TenantMemberPage, TenantMembership};
 use crate::domain::totp_secret::TotpSecret;
 use crate::domain::user::{LoginFailureRecord, User};
@@ -84,6 +85,52 @@ pub trait TenantRepository: Send + Sync {
     /// テナントを削除する。「配下に子テナントが無く、当該テナント自身にユーザー/クライアントが
     /// 存在しない」ことは呼び出し側が事前検証する（DB も `ON DELETE RESTRICT` で保護する）。
     async fn delete(&self, id: TenantId) -> Result<()>;
+}
+
+fn unsupported(method: &str) -> crate::domain::error::DomainError {
+    crate::domain::error::DomainError::Repository(format!(
+        "{method} is not supported by this repository"
+    ))
+}
+
+/// テナントへ排他的に割り当てたドメイン（ADR-0029）。
+///
+/// ログイン欄に `local@domain` の形で入力されたとき、ドメインから**所属元テナントを 1 つに決める**
+/// ために引く（home realm discovery。`crate::application::login_user_resolution`）。所属元が
+/// 決まれば 1 テナントの登録簿だけを引けばよく、参加中のゲストの横断走査を通らずに済む。
+#[async_trait]
+pub trait TenantDomainRepository: Send + Sync {
+    /// ドメインからそれを所有するテナントを引く（**認証のホットパス**）。
+    ///
+    /// `domain` は正規化済み（[`crate::domain::tenant_domain::normalize_domain`]）で渡す。
+    /// 一意キー `tenant_domains_domain_uk` の等値検索 1 本で、結果は高々 1 件である
+    /// （2 件当たり得るなら所属元が決まらず、この表を作った意味が無くなる）。
+    ///
+    /// **テナント解決の TTL キャッシュには載せない。** 割り当ての取り消しが最大 TTL 分効かない
+    /// 状態を作らないためで、テナントの `ACTIVE` 判定（ADR-0009 §8）と同じ扱いである。
+    ///
+    /// 既定実装は `Ok(None)`（ドメインを持たないテスト用フェイクは、従来の解決だけを通る）。
+    async fn find_tenant_by_domain(&self, _domain: &str) -> Result<Option<TenantId>> {
+        Ok(None)
+    }
+    /// テナントに割り当てられているドメインを一覧する（管理 API）。
+    ///
+    /// 以下 3 つの既定実装は**失敗を返す**（`Ok(vec![])` や `Ok(())` にしない）。ログイン経路だけを
+    /// 差し替えたいテスト用フェイクが管理操作まで黙って引き受けると、割り当てられていないのに
+    /// 成功したように見えてしまう。
+    async fn list_for_tenant(&self, _tenant_id: TenantId) -> Result<Vec<TenantDomain>> {
+        Err(unsupported("list_for_tenant"))
+    }
+    /// ドメインを割り当てる。すでに**どこかのテナントが**押さえていれば `Conflict`
+    /// （一意キーはテナントを含まない。ADR-0029 §1）。
+    async fn create(&self, _domain: &TenantDomain) -> Result<()> {
+        Err(unsupported("create"))
+    }
+    /// 割り当てを解除する。`tenant_id` と一致する行だけを消し、消えたかを返す
+    /// （他テナントのドメインを id 指定で消せないようにする）。
+    async fn delete(&self, _tenant_id: TenantId, _id: Uuid) -> Result<bool> {
+        Err(unsupported("delete"))
+    }
 }
 
 /// テナント開通（ADR-0009 §5）のトランザクション境界（unit of work）。
@@ -214,6 +261,31 @@ pub trait UserRepository: Send + Sync {
     async fn find_active_guest_by_login_identifier(
         &self,
         _tenant_id: TenantId,
+        _input: &str,
+    ) -> Result<LoginIdentifierMatch> {
+        Ok(LoginIdentifierMatch::not_found())
+    }
+    /// **所属元テナントが分かっているとき**に、そのテナントの登録簿だけを引く（ADR-0029）。
+    ///
+    /// 呼ぶのはログイン経路で、入力が `local@domain` の形をしていてそのドメインが
+    /// [`TenantDomainRepository::find_tenant_by_domain`] で 1 つのテナントに解決できたときに限る
+    /// （home realm discovery）。`home_tenant_id` はそうして決まった所属元テナントである。
+    ///
+    /// 解決の条件は [`Self::find_active_guest_by_login_identifier`] と同じ「要求テナントで ACTIVE な
+    /// メンバー ×  所属元テナントが ACTIVE」だが、**メンバーシップ種別で絞らない**（所属元が
+    /// 決まっている以上、HOME でも GUEST でも同じ扱いでよい）。要求テナント自身がドメインを持つ
+    /// 場合もこの経路を通り、その利用者は HOME メンバーとして解決される。
+    ///
+    /// **この経路では曖昧さが原理的に起きない。** 引くのは 1 テナントの登録簿だけで、その中では
+    /// 1 正規化値が 1 人のものだからである（migration 0041）。ゲストの横断走査
+    /// （[`Self::find_active_guest_by_login_identifier`]）が「同名のゲストが 2 人参加すると双方が
+    /// 締め出される」原因なので、そこを通らずに済むこと自体が本メソッドの目的である。
+    ///
+    /// 既定実装は `NotFound`（ドメインを持たないテスト用フェイクは、従来の解決だけを通る）。
+    async fn find_member_by_login_identifier(
+        &self,
+        _tenant_id: TenantId,
+        _home_tenant_id: TenantId,
         _input: &str,
     ) -> Result<LoginIdentifierMatch> {
         Ok(LoginIdentifierMatch::not_found())

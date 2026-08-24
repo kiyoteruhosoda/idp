@@ -15,10 +15,13 @@
 //! （[`crate::application::passkey_authentication`] の `ensure_active_member`）、パスワードだけが
 //! 所属元限定に残っていた。
 //!
-//! # 解決の順序（所属元 → 参加先のゲスト）
+//! # 解決の順序（所属元 → ドメインで決まった所属元 → 参加先のゲスト）
 //!
 //! 1. 要求テナントの登録簿（[`UserRepository::find_by_login_identifier`]）。
-//! 2. 空振りなら、要求テナントに ACTIVE な GUEST メンバーシップを持つ利用者を、その利用者の
+//! 2. 空振りで、入力が `local@domain` の形をしていてそのドメインが 1 つのテナントに割り当てられて
+//!    いるなら、**そのテナントの登録簿だけ**を引く（ADR-0029 の home realm discovery。
+//!    [`UserRepository::find_member_by_login_identifier`]）。
+//! 3. なお空振りなら、要求テナントに ACTIVE な GUEST メンバーシップを持つ利用者を、その利用者の
 //!    所属元テナントの登録簿で解決する
 //!    （[`UserRepository::find_active_guest_by_login_identifier`]）。**所属元テナントが `DISABLED`
 //!    なら解決しない** —— 所属元の無効化はその組織の利用者を止める操作であって、参加先テナント
@@ -26,10 +29,16 @@
 //!    [`crate::domain::repositories::TenantMembershipRepository::is_active_member`] で、パスキー
 //!    認証・SSO 復元・管理コンソールのアクセス判定はそちらを通る）。
 //!
-//! **順序に意味がある。** 1 と 2 をまとめて 1 回で引くと、同じユーザー名のゲストが参加してきた
+//! **順序に意味がある。** 1 と 3 をまとめて 1 回で引くと、同じユーザー名のゲストが参加してきた
 //! だけで「曖昧な入力」になり、そのテナントの HOME 利用者まで締め出される。所属元を先に決めれば、
 //! 参加先で名前が衝突しても割を食うのはゲスト側だけで済む（ゲストは所属元テナントの画面から
 //! 従来どおり入れる）。
+//!
+//! 2 が 3 より先なのは、ドメイン修飾された入力が「どの組織の誰か」まで言い切っているためである。
+//! 言い切っていない入力（裸のユーザー名）のための走査より precise で、しかも**曖昧さが原理的に
+//! 起きない**（引くのは 1 テナントの登録簿だけで、その中では 1 正規化値が 1 人のもの）。
+//! 3 を残すのは、裸のユーザー名と未割り当てのドメイン（`gmail.com` 等）が 2 に掛からないためで、
+//! 落とすとゲストの多くが参加先の画面から入れなくなる。**2 は加算であって置き換えではない。**
 //!
 //! # 曖昧な入力はそこで止める（MT25）
 //!
@@ -39,7 +48,9 @@
 //! パスワードで自分として入る）が、「曖昧なら通さない」「所属元がテナント内の名前の取り合いに
 //! 勝つ」という 2 つの決めごとが、まさにそれが要る場面で破れていた。
 //!
-//! [`LoginIdentifierMatch`] が 2 つを型で分けるので、`Unresolved(NotFound)` のときだけ 2 へ進む。
+//! [`LoginIdentifierMatch`] が 2 つを型で分けるので、`Unresolved(NotFound)` のときだけ次の段へ進む。
+//! これは 2 段目（ドメイン経路）についても同じで、決まった所属元テナントの中で曖昧なら走査へは
+//! 落とさない。
 //!
 //! # ここで決めないこと
 //!
@@ -52,8 +63,17 @@
 
 use crate::domain::error::Result;
 use crate::domain::login_identifier::{LoginIdentifierMatch, UnresolvedReason};
-use crate::domain::repositories::UserRepository;
+use crate::domain::repositories::{TenantDomainRepository, UserRepository};
 use crate::domain::tenant::TenantId;
+use crate::domain::tenant_domain::split_qualified_identifier;
+
+/// 次の段へ進んでよいか（＝「不在」だったか）。解決できた場合も曖昧だった場合も、そこで打ち切る。
+fn should_continue(m: &LoginIdentifierMatch) -> bool {
+    matches!(
+        m,
+        LoginIdentifierMatch::Unresolved(UnresolvedReason::NotFound)
+    )
+}
 
 /// ログイン欄の入力から、`tenant_id` で認証してよい利用者を解決する。
 ///
@@ -61,31 +81,80 @@ use crate::domain::tenant::TenantId;
 /// 理由は [`UnresolvedReason`] として返す —— 監査に残す値が違う。
 pub async fn resolve_login_user(
     users: &dyn UserRepository,
+    tenant_domains: &dyn TenantDomainRepository,
     tenant_id: TenantId,
     input: &str,
 ) -> Result<LoginIdentifierMatch> {
-    match users.find_by_login_identifier(tenant_id, input).await? {
-        // 所属元で曖昧なら、そこで止める（ゲスト解決へ落とさない）。
-        found @ (LoginIdentifierMatch::Resolved(_)
-        | LoginIdentifierMatch::Unresolved(UnresolvedReason::Ambiguous)) => Ok(found),
-        LoginIdentifierMatch::Unresolved(UnresolvedReason::NotFound) => {
-            users
-                .find_active_guest_by_login_identifier(tenant_id, input)
-                .await
+    // 1. 要求テナントの登録簿。
+    let found = users.find_by_login_identifier(tenant_id, input).await?;
+    if !should_continue(&found) {
+        return Ok(found);
+    }
+
+    // 2. ドメインで所属元テナントが決まるなら、そのテナントだけを引く。
+    if let Some(found) = resolve_by_domain(users, tenant_domains, tenant_id, input).await? {
+        return Ok(found);
+    }
+
+    // 3. 参加中のゲストを横断走査する。
+    users
+        .find_active_guest_by_login_identifier(tenant_id, input)
+        .await
+}
+
+/// ドメインから所属元テナントを決めて解決する（ADR-0029）。掛からなければ `None` を返し、
+/// 呼び出し側は次の段へ進む。
+///
+/// 決まったテナントの中を **2 通りの読み方**で引く。順序に意味がある:
+///
+/// 1. **入力そのまま**（`alice@corp.example`）。メール種別の識別子を明示的に登録している利用者に
+///    当たる。
+/// 2. **ローカル部**（`alice`）。UPN 形式の解釈で、ドメインを割り当てたこと自体が
+///    「`<識別子>@corp.example` はこのテナントの利用者を指す」という宣言にあたる。
+///
+/// 1 を先に引くのは、メール種別の識別子を持っている利用者を UPN 解釈で**別人へ振り替えない**
+/// ため。テナントの中で `alice@corp.example` を持つ人と `alice` を持つ人は別人であり得る。
+///
+/// 2 は「メールでのログインはテナントが明示的に有効化したときだけ」（ADR-0025 §5）と矛盾しない。
+/// `alice@corp.example` はそのアドレスにメールが届くことを意味せず、`users.email` も引かない。
+/// 引くのは登録簿だけで、増えるのは principal ではなく**綴り方**である（パスワードは従来どおり要る）。
+async fn resolve_by_domain(
+    users: &dyn UserRepository,
+    tenant_domains: &dyn TenantDomainRepository,
+    tenant_id: TenantId,
+    input: &str,
+) -> Result<Option<LoginIdentifierMatch>> {
+    // 形が合わない入力では DB を引きすらしない（裸のユーザー名がホットパスを増やさない）。
+    let Some((local_part, domain)) = split_qualified_identifier(input) else {
+        return Ok(None);
+    };
+    let Some(home_tenant_id) = tenant_domains.find_tenant_by_domain(&domain).await? else {
+        return Ok(None);
+    };
+
+    for candidate in [input, local_part] {
+        let found = users
+            .find_member_by_login_identifier(tenant_id, home_tenant_id, candidate)
+            .await?;
+        if !should_continue(&found) {
+            return Ok(Some(found));
         }
     }
+    Ok(None)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::error::DomainError;
+    use crate::domain::repositories::TenantDomainRepository;
     use crate::domain::user::LoginFailureRecord;
     use crate::domain::user::User;
     use crate::domain::values::UserStatus;
     use async_trait::async_trait;
     use chrono::{DateTime, TimeZone, Utc};
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
     use uuid::Uuid;
 
     fn now() -> DateTime<Utc> {
@@ -118,11 +187,16 @@ mod tests {
     ///
     /// `find_by_login_identifier` の既定実装（`find_by_username` へ委譲）は「不在」しか表せない
     /// ので、曖昧を試す回のためにこちらを直接上書きする。
+    ///
+    /// `by_home_tenant` はドメイン経路（ADR-0029）用で、「所属元テナントを固定して引いた入力 →
+    /// 結果」の対応表。入力そのままとローカル部の 2 通りで引かれることを、この表で観測できる。
     struct FakeUsers {
         home: LoginIdentifierMatch,
         guest: LoginIdentifierMatch,
+        by_home_tenant: Vec<(String, LoginIdentifierMatch)>,
         home_fails: bool,
         guest_calls: AtomicUsize,
+        member_lookups: Mutex<Vec<String>>,
     }
 
     impl Default for FakeUsers {
@@ -130,11 +204,32 @@ mod tests {
             Self {
                 home: LoginIdentifierMatch::not_found(),
                 guest: LoginIdentifierMatch::not_found(),
+                by_home_tenant: Vec::new(),
                 home_fails: false,
                 guest_calls: AtomicUsize::new(0),
+                member_lookups: Mutex::new(Vec::new()),
             }
         }
     }
+
+    /// ドメインを 1 つだけ割り当てているフェイク。
+    struct FakeDomains {
+        domain: String,
+        tenant_id: TenantId,
+    }
+
+    #[async_trait]
+    impl TenantDomainRepository for FakeDomains {
+        async fn find_tenant_by_domain(&self, domain: &str) -> Result<Option<TenantId>> {
+            Ok((domain == self.domain).then_some(self.tenant_id))
+        }
+    }
+
+    /// ドメインを 1 つも割り当てていないフェイク（既定実装のまま）。
+    struct NoDomains;
+
+    #[async_trait]
+    impl TenantDomainRepository for NoDomains {}
 
     #[async_trait]
     impl UserRepository for FakeUsers {
@@ -158,6 +253,20 @@ mod tests {
         ) -> Result<LoginIdentifierMatch> {
             self.guest_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.guest.clone())
+        }
+        async fn find_member_by_login_identifier(
+            &self,
+            _tenant_id: TenantId,
+            _home_tenant_id: TenantId,
+            input: &str,
+        ) -> Result<LoginIdentifierMatch> {
+            self.member_lookups.lock().unwrap().push(input.to_string());
+            Ok(self
+                .by_home_tenant
+                .iter()
+                .find(|(key, _)| key == input)
+                .map(|(_, m)| m.clone())
+                .unwrap_or_else(LoginIdentifierMatch::not_found))
         }
         async fn create(&self, _u: &User) -> Result<()> {
             unreachable!()
@@ -224,7 +333,9 @@ mod tests {
             ..FakeUsers::default()
         };
 
-        let resolved = resolve_login_user(&repo, tenant, "member").await.unwrap();
+        let resolved = resolve_login_user(&repo, &NoDomains, tenant, "member")
+            .await
+            .unwrap();
         assert_eq!(resolved_id(resolved), Some(home.id));
         assert_eq!(repo.guest_calls.load(Ordering::SeqCst), 0);
     }
@@ -239,7 +350,9 @@ mod tests {
             ..FakeUsers::default()
         };
 
-        let resolved = resolve_login_user(&repo, tenant, "member").await.unwrap();
+        let resolved = resolve_login_user(&repo, &NoDomains, tenant, "member")
+            .await
+            .unwrap();
         assert_eq!(resolved_id(resolved), Some(guest.id));
         assert_eq!(repo.guest_calls.load(Ordering::SeqCst), 1);
     }
@@ -255,7 +368,9 @@ mod tests {
             ..FakeUsers::default()
         };
 
-        let resolved = resolve_login_user(&repo, tenant, "member").await.unwrap();
+        let resolved = resolve_login_user(&repo, &NoDomains, tenant, "member")
+            .await
+            .unwrap();
         assert!(matches!(
             resolved,
             LoginIdentifierMatch::Unresolved(UnresolvedReason::Ambiguous)
@@ -272,7 +387,7 @@ mod tests {
             ..FakeUsers::default()
         };
 
-        let resolved = resolve_login_user(&repo, Uuid::now_v7().into(), "member")
+        let resolved = resolve_login_user(&repo, &NoDomains, Uuid::now_v7().into(), "member")
             .await
             .unwrap();
         assert!(matches!(
@@ -286,11 +401,193 @@ mod tests {
     async fn returns_not_found_when_neither_resolves() {
         let tenant: TenantId = Uuid::now_v7().into();
         let repo = FakeUsers::default();
-        let resolved = resolve_login_user(&repo, tenant, "member").await.unwrap();
+        let resolved = resolve_login_user(&repo, &NoDomains, tenant, "member")
+            .await
+            .unwrap();
         assert!(matches!(
             resolved,
             LoginIdentifierMatch::Unresolved(UnresolvedReason::NotFound)
         ));
+    }
+
+    // ── ドメイン経路（ADR-0029）─────────────────────────────────────────────
+
+    fn domains(tenant_id: TenantId) -> FakeDomains {
+        FakeDomains {
+            domain: "corp.example".to_string(),
+            tenant_id,
+        }
+    }
+
+    /// ドメイン修飾された入力は、**ゲストの横断走査を通らずに**解決される（本 ADR の主眼）。
+    /// 走査を通らないので、同名のゲストが何人参加していても互いに干渉しない。
+    #[tokio::test]
+    async fn a_domain_qualified_identifier_resolves_without_scanning_guests() {
+        let host: TenantId = Uuid::now_v7().into();
+        let home: TenantId = Uuid::now_v7().into();
+        let member = user(home);
+        let repo = FakeUsers {
+            // 走査側には別人が居る。ドメイン経路が先に決めるので、こちらは参照されない。
+            guest: LoginIdentifierMatch::Resolved(user(Uuid::now_v7().into())),
+            by_home_tenant: vec![(
+                "alice".to_string(),
+                LoginIdentifierMatch::Resolved(member.clone()),
+            )],
+            ..FakeUsers::default()
+        };
+
+        let resolved = resolve_login_user(&repo, &domains(home), host, "alice@corp.example")
+            .await
+            .unwrap();
+        assert_eq!(resolved_id(resolved), Some(member.id));
+        assert_eq!(repo.guest_calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// 決まったテナントの中は「入力そのまま → ローカル部」の順で引く。メール種別の識別子を
+    /// 明示的に登録している利用者を、UPN 解釈で別人へ振り替えないための順序。
+    #[tokio::test]
+    async fn the_full_input_wins_over_the_local_part() {
+        let host: TenantId = Uuid::now_v7().into();
+        let home: TenantId = Uuid::now_v7().into();
+        let by_email = user(home);
+        let by_username = user(home);
+        let repo = FakeUsers {
+            by_home_tenant: vec![
+                (
+                    "alice@corp.example".to_string(),
+                    LoginIdentifierMatch::Resolved(by_email.clone()),
+                ),
+                (
+                    "alice".to_string(),
+                    LoginIdentifierMatch::Resolved(by_username.clone()),
+                ),
+            ],
+            ..FakeUsers::default()
+        };
+
+        let resolved = resolve_login_user(&repo, &domains(home), host, "alice@corp.example")
+            .await
+            .unwrap();
+        assert_eq!(resolved_id(resolved), Some(by_email.id));
+        // ローカル部までは引きに行かない。
+        assert_eq!(
+            *repo.member_lookups.lock().unwrap(),
+            vec!["alice@corp.example".to_string()]
+        );
+    }
+
+    /// 入力そのままが空振りならローカル部で引く（UPN 形式。`alice@corp.example` → `alice`）。
+    #[tokio::test]
+    async fn falls_back_to_the_local_part_as_a_upn() {
+        let host: TenantId = Uuid::now_v7().into();
+        let home: TenantId = Uuid::now_v7().into();
+        let member = user(home);
+        let repo = FakeUsers {
+            by_home_tenant: vec![(
+                "alice".to_string(),
+                LoginIdentifierMatch::Resolved(member.clone()),
+            )],
+            ..FakeUsers::default()
+        };
+
+        let resolved = resolve_login_user(&repo, &domains(home), host, "alice@corp.example")
+            .await
+            .unwrap();
+        assert_eq!(resolved_id(resolved), Some(member.id));
+        assert_eq!(
+            *repo.member_lookups.lock().unwrap(),
+            vec!["alice@corp.example".to_string(), "alice".to_string()]
+        );
+    }
+
+    /// 割り当てられていないドメイン（`gmail.com` 等）は経路に掛からず、従来の走査へ落ちる。
+    /// **ドメイン経路は加算であって置き換えではない。**
+    #[tokio::test]
+    async fn an_unassigned_domain_falls_through_to_the_guest_scan() {
+        let host: TenantId = Uuid::now_v7().into();
+        let guest = user(Uuid::now_v7().into());
+        let repo = FakeUsers {
+            guest: LoginIdentifierMatch::Resolved(guest.clone()),
+            by_home_tenant: vec![(
+                "alice".to_string(),
+                LoginIdentifierMatch::Resolved(user(Uuid::now_v7().into())),
+            )],
+            ..FakeUsers::default()
+        };
+
+        let resolved = resolve_login_user(&repo, &domains(host), host, "alice@other.example")
+            .await
+            .unwrap();
+        assert_eq!(resolved_id(resolved), Some(guest.id));
+        assert_eq!(repo.guest_calls.load(Ordering::SeqCst), 1);
+        assert!(repo.member_lookups.lock().unwrap().is_empty());
+    }
+
+    /// 裸のユーザー名ではドメインを引きすらしない（認証のホットパスを増やさない）。
+    #[tokio::test]
+    async fn a_bare_identifier_never_consults_the_domain_registry() {
+        let host: TenantId = Uuid::now_v7().into();
+        let repo = FakeUsers::default();
+        struct ExplodingDomains;
+        #[async_trait]
+        impl TenantDomainRepository for ExplodingDomains {
+            async fn find_tenant_by_domain(&self, _domain: &str) -> Result<Option<TenantId>> {
+                panic!("裸の入力でドメインを引いてはいけない");
+            }
+        }
+
+        let resolved = resolve_login_user(&repo, &ExplodingDomains, host, "alice")
+            .await
+            .unwrap();
+        assert!(matches!(
+            resolved,
+            LoginIdentifierMatch::Unresolved(UnresolvedReason::NotFound)
+        ));
+    }
+
+    /// 決まったテナントの中で曖昧なら、そこで打ち切る（走査へ落とさない。MT25 と同じ規則）。
+    #[tokio::test]
+    async fn an_ambiguous_result_in_the_resolved_home_tenant_stops_the_chain() {
+        let host: TenantId = Uuid::now_v7().into();
+        let home: TenantId = Uuid::now_v7().into();
+        let repo = FakeUsers {
+            guest: LoginIdentifierMatch::Resolved(user(Uuid::now_v7().into())),
+            by_home_tenant: vec![(
+                "alice@corp.example".to_string(),
+                LoginIdentifierMatch::ambiguous(),
+            )],
+            ..FakeUsers::default()
+        };
+
+        let resolved = resolve_login_user(&repo, &domains(home), host, "alice@corp.example")
+            .await
+            .unwrap();
+        assert!(matches!(
+            resolved,
+            LoginIdentifierMatch::Unresolved(UnresolvedReason::Ambiguous)
+        ));
+        assert_eq!(repo.guest_calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// 要求テナントの登録簿で解決できるなら、ドメイン経路は走らない（段の順序）。
+    #[tokio::test]
+    async fn the_requested_tenants_registry_still_wins() {
+        let host: TenantId = Uuid::now_v7().into();
+        let home_user = user(host);
+        let repo = FakeUsers {
+            home: LoginIdentifierMatch::Resolved(home_user.clone()),
+            by_home_tenant: vec![(
+                "alice".to_string(),
+                LoginIdentifierMatch::Resolved(user(Uuid::now_v7().into())),
+            )],
+            ..FakeUsers::default()
+        };
+
+        let resolved = resolve_login_user(&repo, &domains(host), host, "alice@corp.example")
+            .await
+            .unwrap();
+        assert_eq!(resolved_id(resolved), Some(home_user.id));
+        assert!(repo.member_lookups.lock().unwrap().is_empty());
     }
 
     /// リポジトリ障害は握り潰さずそのまま伝える（`NotFound` に丸めると障害が「利用者不在」に
@@ -301,7 +598,7 @@ mod tests {
             home_fails: true,
             ..FakeUsers::default()
         };
-        let err = resolve_login_user(&repo, Uuid::now_v7().into(), "member")
+        let err = resolve_login_user(&repo, &NoDomains, Uuid::now_v7().into(), "member")
             .await
             .unwrap_err();
         assert!(matches!(err, DomainError::Repository(_)));

@@ -107,6 +107,7 @@ use crate::infrastructure::repositories::signing_key::SqlxSigningKeyRepository;
 use crate::infrastructure::repositories::sso_session::SqlxSsoSessionRepository;
 use crate::infrastructure::repositories::system_setting::SqlxSystemSettingsRepository;
 use crate::infrastructure::repositories::tenant::SqlxTenantRepository;
+use crate::infrastructure::repositories::tenant_domain::SqlxTenantDomainRepository;
 use crate::infrastructure::repositories::tenant_member_query::SqlxTenantMemberQuery;
 use crate::infrastructure::repositories::tenant_membership::SqlxTenantMembershipRepository;
 use crate::infrastructure::repositories::tenant_provisioning::SqlxTenantProvisioningRepository;
@@ -254,6 +255,8 @@ impl AppState {
     pub fn build(pool: Db, config: Arc<Config>, clock: Arc<dyn Clock>) -> Self {
         let users = Arc::new(SqlxUserRepository::new(pool.clone()));
         let tenant_memberships = Arc::new(SqlxTenantMembershipRepository::new(pool.clone()));
+        // テナントへ割り当てたドメイン（ADR-0029）。ログインの解決と管理 API が共有する。
+        let tenant_domains = Arc::new(SqlxTenantDomainRepository::new(pool.clone()));
         let clients = Arc::new(SqlxClientRepository::new(pool.clone()));
         let auth_sessions = Arc::new(SqlxAuthSessionRepository::new(pool.clone()));
         let sso_sessions = Arc::new(SqlxSsoSessionRepository::new(pool.clone()));
@@ -486,6 +489,7 @@ impl AppState {
         ));
         let login = Arc::new(LoginService::new(
             users.clone(),
+            tenant_domains.clone(),
             auth_sessions.clone(),
             sso_sessions.clone(),
             client_consents.clone(),
@@ -531,6 +535,7 @@ impl AppState {
         // 管理コンソールのログイン（ADR-0006 §6）。IP レート制限は通常ログインと同一の制限器を共有する。
         let admin_login = Arc::new(AdminLoginService::new(
             users.clone(),
+            tenant_domains.clone(),
             sso_sessions.clone(),
             user_permissions.clone(),
             totp_secrets.clone(),
@@ -550,6 +555,7 @@ impl AppState {
         let portal_login = Arc::new(PortalLoginService::new(
             authenticator_repository.clone(),
             users.clone(),
+            tenant_domains.clone(),
             sso_sessions.clone(),
             totp_secrets.clone(),
             authentication_policies.clone(),
@@ -660,6 +666,7 @@ impl AppState {
         // 新規生成テナント ID のため該当キーがキャッシュに載っていることはない。
         let tenants_admin = Arc::new(TenantManagementService::new(
             tenants.clone(),
+            tenant_domains.clone(),
             Arc::new(SqlxTenantProvisioningRepository::new(pool.clone())),
             audit.clone(),
             clock.clone(),

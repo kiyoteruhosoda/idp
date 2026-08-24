@@ -360,6 +360,24 @@ pub struct TenantResponse {
     pub updated_at: String,
 }
 
+/// テナントへ割り当てたドメイン（`/{tenant_id}/admin/tenants/{target_id}/domains`。ADR-0029）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TenantDomainResponse {
+    pub id: String,
+    pub tenant_id: String,
+    /// 正規化済みのドメイン（小文字・末尾ドットなし）。
+    pub domain: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// ドメインの割り当てリクエスト。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct AddTenantDomainRequest {
+    /// 割り当てるドメイン。正規化（小文字化・末尾ドット除去）はサーバ側で行う。
+    pub domain: String,
+}
+
 /// 設定画面の自テナント表示名更新リクエスト（`PATCH /{tenant_id}/admin/settings/tenant`。MT14）。
 /// `idp.tenant.admin` が自テナントの表示名だけを変更する（`status`・`parent_tenant_id` は不変）。
 #[derive(Debug, Deserialize, ToSchema)]

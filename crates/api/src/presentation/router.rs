@@ -15,7 +15,7 @@ use crate::presentation::security_headers::add_security_headers;
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::resolve_tenant;
 use axum::middleware;
-use axum::routing::{get, patch, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use axum::Router;
 use tower_http::trace::TraceLayer;
 use utoipa::OpenApi;
@@ -260,6 +260,18 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/admin/tenants/{child_id}/admin-password-reset",
             post(admin_tenants::reset_tenant_admin_password),
+        )
+        // テナントへのドメイン割り当て（ADR-0029。idp.system.admin 必須）。対象は**自テナントまたは
+        // 直下の子**で、root 自身にも割り当てられる（root の利用者は作成したテナントへゲストとして
+        // 入るため、ドメイン修飾で入れなければ意味がない）。ドメインの一意性はグローバルなので、
+        // 早い者勝ちにしないよう root の system 管理者だけが操作できる。
+        .route(
+            "/admin/tenants/{target_id}/domains",
+            get(admin_tenants::list_tenant_domains).post(admin_tenants::add_tenant_domain),
+        )
+        .route(
+            "/admin/tenants/{target_id}/domains/{domain_id}",
+            delete(admin_tenants::remove_tenant_domain),
         )
         // 設定画面（MT14）。テナント設定区画（自テナント表示名。idp.tenant.admin 必須）と
         // システム設定区画（SMTP 等。idp.system.admin 必須 = 実質 root のみ）。

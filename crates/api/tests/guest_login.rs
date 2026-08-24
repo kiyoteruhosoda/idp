@@ -825,3 +825,235 @@ async fn an_ambiguous_home_identifier_does_not_let_a_guest_sign_in() {
         "曖昧は unknown_user と区別して監査に残る: {reasons:?}"
     );
 }
+
+/// テナントへドメインを割り当てる（ADR-0029。`idp.system.admin` が必要なので root の cookie で呼ぶ）。
+async fn assign_domain(env: &TestEnv, root_cookie: &str, tenant_id: &str, domain: &str) {
+    let res = send(
+        &env.app,
+        post(
+            root_cookie,
+            &format!("/{}/admin/tenants/{tenant_id}/domains", env.root_tenant_id),
+            json!({ "domain": domain }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED, "assign {domain}");
+}
+
+/// テナントを 1 つ作り、自己登録を有効にして、パスワードの分かる利用者を 1 人置く。
+/// 返すのは `(tenant_id, user_id)`。
+async fn tenant_with_user(
+    env: &TestEnv,
+    root_cookie: &str,
+    name: &str,
+    username: &str,
+    password: &str,
+) -> (String, String) {
+    let tenant = create_tenant(env, root_cookie, name).await;
+    sqlx::query("UPDATE tenants SET self_registration_enabled = 1 WHERE id = ?")
+        .bind(&tenant)
+        .execute(&env.pool)
+        .await
+        .expect("enable self-registration");
+    register_user(&env.app, &tenant, username, password).await;
+    mark_email_verified(&env.pool, &tenant, username).await;
+    let user_id = support::find_user_id_by_username(&env.pool, &tenant, username)
+        .await
+        .expect("registered user");
+    (tenant, user_id)
+}
+
+/// 保証 7（MT25 / ADR-0029）: 同じユーザー名のゲストが 2 人参加すると、その名前では双方が
+/// 締め出される。**所属元テナントにドメインを割り当てると、ドメイン修飾した入力で入れる。**
+///
+/// 締め出しは、識別子の一意性が 1 テナントの中でしか担保されていないのに、参加先の画面が
+/// 解決する範囲は所属元をまたぐことから来る。ドメインは 1 つのテナントへ排他的に割り当てられる
+/// ので、`local@domain` の形の入力からは所属元テナントが 1 つに決まり、引くのはそのテナントの
+/// 登録簿だけで済む（横断走査を通らない ＝ 曖昧さが原理的に起きない）。
+///
+/// **加算であって置き換えではない**ことも確かめる —— 裸のユーザー名は従来どおり走査へ落ち、
+/// 曖昧なら拒まれる。ドメインを持たない利用者の使い勝手は変わらない。
+#[tokio::test]
+async fn a_tenant_domain_lets_a_guest_sign_in_where_the_bare_name_is_ambiguous() {
+    let Some(env) = setup().await else { return };
+    let root_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let host = create_tenant(&env, &root_cookie, "DomainHost").await;
+
+    // 同じユーザー名を持つ利用者を、別々の所属元テナントに 1 人ずつ。
+    let shared_username = format!("dup{}", unique());
+    let password_a = format!("a-password-{}", unique());
+    let password_b = format!("b-password-{}", unique());
+    let (tenant_a, user_a) = tenant_with_user(
+        &env,
+        &root_cookie,
+        "DomainHomeA",
+        &shared_username,
+        &password_a,
+    )
+    .await;
+    let (_tenant_b, user_b) = tenant_with_user(
+        &env,
+        &root_cookie,
+        "DomainHomeB",
+        &shared_username,
+        &password_b,
+    )
+    .await;
+    invite_and_accept(&env, &root_cookie, &host, &user_a).await;
+    invite_and_accept(&env, &root_cookie, &host, &user_b).await;
+
+    // ── 裸のユーザー名では双方とも入れない（走査が 2 人に当たり、fail-closed で拒む）。
+    assert_eq!(
+        portal_login_result(&env, &host, "203.0.113.71", &shared_username, &password_a).await,
+        "invalid_credentials",
+        "同名のゲストが 2 人参加すると、その名前では解決できない"
+    );
+    assert_eq!(
+        portal_login_result(&env, &host, "203.0.113.72", &shared_username, &password_b).await,
+        "invalid_credentials",
+        "締め出しは双方に効く"
+    );
+    // 所属元テナントの画面からは従来どおり入れる（締め出されるのは参加先の画面だけ）。
+    assert_eq!(
+        portal_login_result(
+            &env,
+            &tenant_a,
+            "203.0.113.73",
+            &shared_username,
+            &password_a
+        )
+        .await,
+        "success",
+        "所属元では一意なので解決する"
+    );
+
+    // ── A にドメインを割り当てると、A の利用者はドメイン修飾で参加先へ入れる。
+    let domain = format!("a{}.example", unique());
+    assign_domain(&env, &root_cookie, &tenant_a, &domain).await;
+    let qualified = format!("{shared_username}@{domain}");
+    assert_eq!(
+        portal_login_result(&env, &host, "203.0.113.74", &qualified, &password_a).await,
+        "success",
+        "ドメインで所属元が決まれば、走査を通らずに解決される"
+    );
+
+    // ── ドメインは所属元を名指しするので、同名でも B の利用者はこの綴りでは解決されない。
+    assert_eq!(
+        portal_login_result(&env, &host, "203.0.113.75", &qualified, &password_b).await,
+        "invalid_credentials",
+        "ドメインは所属元テナントを 1 つに決める"
+    );
+
+    // ── 加算であって置き換えではない: 裸のユーザー名の扱いは変わらない。
+    assert_eq!(
+        portal_login_result(&env, &host, "203.0.113.76", &shared_username, &password_a).await,
+        "invalid_credentials",
+        "裸の入力は従来どおり走査へ落ち、曖昧なら拒まれる"
+    );
+    // 割り当てられていないドメインも同じく走査へ落ちる（B の利用者は入れないまま）。
+    assert_eq!(
+        portal_login_result(
+            &env,
+            &host,
+            "203.0.113.77",
+            &format!("{shared_username}@unassigned{}.example", unique()),
+            &password_b
+        )
+        .await,
+        "invalid_credentials",
+        "未割り当てのドメインは経路に掛からない"
+    );
+}
+
+/// 保証 8（ADR-0029）: ドメインの一意性は**グローバル**で、root の system 管理者だけが割り当てる。
+#[tokio::test]
+async fn a_domain_belongs_to_exactly_one_tenant() {
+    let Some(env) = setup().await else { return };
+    let root_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let first = create_tenant(&env, &root_cookie, "DomainOwner").await;
+    let second = create_tenant(&env, &root_cookie, "DomainRival").await;
+    let domain = format!("owned{}.example", unique());
+    let uri = |t: &str| format!("/{}/admin/tenants/{t}/domains", env.root_tenant_id);
+
+    assign_domain(&env, &root_cookie, &first, &domain).await;
+
+    // 別のテナントは同じドメインを取れない（一意キーにテナントを含めない）。
+    let res = send(
+        &env.app,
+        post(&root_cookie, &uri(&second), json!({ "domain": &domain })),
+    )
+    .await;
+    assert_eq!(
+        res.status(),
+        StatusCode::CONFLICT,
+        "ドメインは 1 テナントだけのもの"
+    );
+    // 同じテナントでの重複も同じく 409。
+    let res = send(
+        &env.app,
+        post(&root_cookie, &uri(&first), json!({ "domain": &domain })),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+
+    // 大小・末尾ドットは正規化されるので、同じドメインの別綴りも取れない。
+    let res = send(
+        &env.app,
+        post(
+            &root_cookie,
+            &uri(&second),
+            json!({ "domain": format!("{}.", domain.to_uppercase()) }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CONFLICT, "正規化してから照合する");
+
+    // ドメインとして読めない値は 400（登録できると、掛からない割り当てが静かに残る）。
+    for bad in ["", "-bad.example", "日本語.example"] {
+        let res = send(
+            &env.app,
+            post(&root_cookie, &uri(&second), json!({ "domain": bad })),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{bad:?}");
+    }
+
+    // 権限のない利用者は割り当てられない（idp.system.admin は root にしか存在しない）。
+    let outsider = support::create_plain_user(&env.pool, &env.root_tenant_id).await;
+    let outsider_cookie = create_sso_session(&env.pool, &outsider).await;
+    let res = send(
+        &env.app,
+        post(
+            &outsider_cookie,
+            &uri(&first),
+            json!({ "domain": "x.example" }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+
+    // 一覧 → 解除 → 解除後は別テナントが取れる。
+    let res = send(&env.app, get(&root_cookie, &uri(&first))).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let listed = body_json(res).await;
+    let rows = listed.as_array().expect("array");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["domain"], domain);
+    let domain_id = rows[0]["id"].as_str().expect("id").to_string();
+
+    let res = send(
+        &env.app,
+        support::delete(&root_cookie, &format!("{}/{domain_id}", uri(&first))),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::NO_CONTENT);
+    // 他テナントの id 指定では消せない（先に消えているので 404）。
+    let res = send(
+        &env.app,
+        support::delete(&root_cookie, &format!("{}/{domain_id}", uri(&second))),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+
+    assign_domain(&env, &root_cookie, &second, &domain).await;
+}

@@ -68,8 +68,9 @@ impl SqlxUserRepository {
     }
 }
 
-/// 登録簿を引く範囲（ADR-0009 §8）。ログイン経路が「所属元として引くのか、参加先のゲストとして
-/// 引くのか」を選ぶ。SQL 断片を引数で渡し回さず列挙で表すことで、組み立て可能な形が 2 つに閉じる。
+/// 登録簿を引く範囲（ADR-0009 §8・ADR-0029）。ログイン経路が「所属元として引くのか、参加先の
+/// ゲストとして引くのか、ドメインで決まった所属元テナントに絞って引くのか」を選ぶ。SQL 断片を
+/// 引数で渡し回さず列挙で表すことで、組み立て可能な形がこの 3 つに閉じる。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IdentifierScope {
     /// 所属元テナントの登録簿（`user_login_identifiers.tenant_id` = 要求テナント）。
@@ -79,6 +80,14 @@ enum IdentifierScope {
     /// 要求テナントに ACTIVE な GUEST として参加している利用者を、**その利用者の所属元の**
     /// 登録簿で引く。
     ActiveGuest,
+    /// 所属元テナントが**分かっている**とき（ドメインから決まった。ADR-0029）に、そのテナントの
+    /// 登録簿だけを引く。要求テナントで ACTIVE なメンバー（HOME / GUEST を問わない）であることは
+    /// [`Self::ActiveGuest`] と同じく課す。
+    ///
+    /// **この範囲では曖昧さが原理的に起きない。** 引くのは 1 テナントの登録簿だけで、その中では
+    /// 1 正規化値が 1 人のものだからである（migration 0041）。ゲストを横断走査しないので、
+    /// 同名のゲストが何人参加していても互いに干渉しない。
+    MemberWithHomeTenant(TenantId),
 }
 
 impl IdentifierScope {
@@ -114,6 +123,15 @@ impl IdentifierScope {
                  WHERE m.tenant_id = ? AND m.membership_type = ? AND m.status = ? \
                    AND i.tenant_id = u.tenant_id"
             }
+            // 所属元が決まっているので、メンバーシップ種別では絞らない（HOME でも GUEST でもよい）。
+            // 代わりに `u.tenant_id = ?` で所属元を固定する。要求テナント自身がドメインを持つ場合も
+            // この形で足りる（そのときの所属元＝要求テナントで、HOME 側に当たる）。
+            Self::MemberWithHomeTenant(_) => {
+                "JOIN tenant_memberships m ON m.user_id = u.id \
+                 JOIN tenants home ON home.id = u.tenant_id AND home.status = 'ACTIVE' \
+                 WHERE m.tenant_id = ? AND m.status = ? \
+                   AND u.tenant_id = ? AND i.tenant_id = u.tenant_id"
+            }
         }
     }
 
@@ -126,6 +144,11 @@ impl IdentifierScope {
                 tenant_id.to_string(),
                 MembershipType::Guest.as_str().to_string(),
                 MembershipStatus::Active.as_str().to_string(),
+            ],
+            Self::MemberWithHomeTenant(home_tenant_id) => vec![
+                tenant_id.to_string(),
+                MembershipStatus::Active.as_str().to_string(),
+                home_tenant_id.to_string(),
             ],
         }
     }
@@ -457,6 +480,22 @@ impl UserRepository for SqlxUserRepository {
     ) -> Result<LoginIdentifierMatch> {
         self.resolve_login_identifier(IdentifierScope::ActiveGuest, tenant_id, input)
             .await
+    }
+
+    /// 所属元テナントが分かっているとき、そのテナントの登録簿だけを引く
+    /// （[`IdentifierScope::MemberWithHomeTenant`]。ADR-0029）。
+    async fn find_member_by_login_identifier(
+        &self,
+        tenant_id: TenantId,
+        home_tenant_id: TenantId,
+        input: &str,
+    ) -> Result<LoginIdentifierMatch> {
+        self.resolve_login_identifier(
+            IdentifierScope::MemberWithHomeTenant(home_tenant_id),
+            tenant_id,
+            input,
+        )
+        .await
     }
 
     async fn update_login_state(
