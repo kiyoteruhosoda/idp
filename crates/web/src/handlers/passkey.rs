@@ -4,7 +4,7 @@
 //! begin/complete は JSON API として提供し、ブラウザの WebAuthn JS API から呼び出す。
 //! 一覧・削除は HTML フォームで提供する。
 
-use super::locale;
+use super::{internal_call_status, locale};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -50,7 +50,7 @@ pub async fn list_page(
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "passkey list call failed");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return internal_call_status(&e).into_response();
         }
     };
     // FluentBundle は !Send なので await の後に作成する。
@@ -148,7 +148,7 @@ pub async fn register_begin_api(
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "passkey register begin failed");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return internal_call_status(&e).into_response();
         }
     };
     match result {
@@ -210,7 +210,7 @@ pub async fn register_complete_api(
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "passkey register complete failed");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return internal_call_status(&e).into_response();
         }
     };
     match result {
@@ -268,7 +268,7 @@ pub async fn delete(
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "passkey delete failed");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return internal_call_status(&e).into_response();
         }
     };
     // FluentBundle は !Send なので await の後に作成する。
@@ -305,7 +305,7 @@ pub async fn login_begin_api(
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "passkey login begin failed");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return internal_call_status(&e).into_response();
         }
     };
     Json(result).into_response()
@@ -360,7 +360,7 @@ pub async fn login_complete_api(
         Ok(o) => o,
         Err(e) => {
             tracing::error!(error = %e, "passkey login complete call failed");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return internal_call_status(&e).into_response();
         }
     };
 

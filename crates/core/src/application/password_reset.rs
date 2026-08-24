@@ -31,6 +31,7 @@ use crate::application::system_settings::SystemSettingsService;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
+use crate::domain::error::DomainError;
 use crate::domain::mailer::{Mailer, OutgoingEmail, SmtpServerConfig};
 use crate::domain::password::PasswordHasher;
 use crate::domain::password_policy::PasswordRejection;
@@ -43,6 +44,7 @@ use crate::domain::repositories::{
 #[cfg(test)]
 use crate::domain::system_setting::DeploymentState;
 use crate::domain::tenant_context::TenantContext;
+use crate::domain::user::User;
 use std::sync::Arc;
 
 /// リセットトークンのバイト長（base64url で 43 文字程度）。
@@ -137,7 +139,38 @@ impl PasswordResetService {
         }
     }
 
-    /// リセットを要求する。`tenant` はログイン画面のテナント（所属元でのメール検索に使う）。
+    /// リセット対象の利用者を、要求テナント（ログイン画面のテナント）から解決する（MT26）。
+    ///
+    /// **所属元 → 参加先のゲスト**の順で引く。ログイン欄の解決
+    /// （[`crate::application::login_user_resolution`]）と同じ順序で、ゲストが参加先テナントの
+    /// 「パスワードをお忘れですか？」からも要求できるようにするためである。ゲストは参加先の画面から
+    /// ログインできる（ADR-0009 §8）のに再設定だけ所属元限定では、行き止まりになる。
+    ///
+    /// 突き合わせるのは `users.email`（メールの届け先そのもの）で、登録簿は引かない。
+    /// メールでのログインを有効にしていないテナントでも再設定は使えなければならない（ADR-0025 §5）。
+    ///
+    /// **ドメイン経路（ADR-0029）は通さない。** ドメイン修飾から所属元を 1 つに決める利点は
+    /// 「曖昧なとき誰も返せない」を減らすことだが、ここでの応答は成否によらず常に `Accepted` で、
+    /// 曖昧なときの結果は「メールが来ない」＝解決できない場合と同じである。経路を増やして
+    /// 得られるものが無い。
+    ///
+    /// 無効（`is_active` でない）利用者は対象にしない。パスワードを設定し直せても入れないため。
+    async fn find_resettable_user(
+        &self,
+        tenant: TenantContext,
+        email: &str,
+    ) -> Result<Option<User>, DomainError> {
+        if let Some(user) = self.users.find_by_email(tenant.tenant_id(), email).await? {
+            return Ok(user.is_active().then_some(user));
+        }
+        let guest = self
+            .users
+            .find_active_guest_by_email(tenant.tenant_id(), email)
+            .await?;
+        Ok(guest.filter(User::is_active))
+    }
+
+    /// リセットを要求する。`tenant` はログイン画面のテナント（所属元・参加先のゲストの順で引く）。
     /// アカウントの有無・状態に関わらず `Accepted` を返す（列挙防止）。
     pub async fn request_reset(
         &self,
@@ -174,13 +207,9 @@ impl PasswordResetService {
         };
 
         // ここから先はアカウントの有無・状態・送信結果に関わらず Accepted（列挙防止）。
-        let user = match self
-            .users
-            .find_by_email(tenant.tenant_id(), email.trim())
-            .await
-        {
-            Ok(Some(user)) if user.is_active() => user,
-            Ok(_) => return RequestResetOutcome::Accepted,
+        let user = match self.find_resettable_user(tenant, email.trim()).await {
+            Ok(Some(user)) => user,
+            Ok(None) => return RequestResetOutcome::Accepted,
             Err(e) => {
                 tracing::warn!(error = %e, "password reset user lookup failed");
                 return RequestResetOutcome::Accepted;
@@ -227,11 +256,14 @@ impl PasswordResetService {
 
         // トークンは base64url（URL 安全）なのでそのまま連結できる。
         // 文言は MT19（API の多言語化）まで日英併記の固定文とする。
+        //
+        // **リンクは要求テナントではなく所属元テナント（`user.tenant_id`）を指す**（MT26）。
+        // 再設定の実行（[`Self::reset_password`]）は「トークンの利用者の所属元 == 要求テナント」を
+        // 要求するため、参加先テナントを指すリンクでは必ず弾かれる。所属元を指しておけば、ゲストが
+        // 参加先の画面から要求しても、そのまま再設定まで進める。
         let reset_url = format!(
             "{}/{}/password-reset?token={}",
-            self.console_base_url,
-            tenant.tenant_id(),
-            token
+            self.console_base_url, user.tenant_id, token
         );
         match delivery {
             ResetLinkDelivery::Email(server) => {

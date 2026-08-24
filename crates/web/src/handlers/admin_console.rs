@@ -11,7 +11,7 @@
 //!
 //! Cookie 組み立て（SSO 発行・失効、CSRF 種）は web が行う。CSRF は web 内で完結する（`crate::csrf`）。
 
-use super::locale;
+use super::{internal_call_status, locale};
 use crate::api_client::{AdminIdentity, AdminSession};
 use crate::client_ip::ClientIp;
 use crate::cookies;
@@ -193,7 +193,7 @@ pub async fn login(
         Ok(o) => o,
         Err(e) => {
             tracing::error!(error = %e, "admin internal authenticate call to api failed");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return internal_call_status(&e).into_response();
         }
     };
 
@@ -349,7 +349,7 @@ pub async fn password_change(
         Ok(o) => o,
         Err(e) => {
             tracing::error!(error = %e, "admin change-password call to api failed");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return internal_call_status(&e).into_response();
         }
     };
 

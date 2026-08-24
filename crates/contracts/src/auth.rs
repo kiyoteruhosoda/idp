@@ -9,6 +9,18 @@
 
 use serde::{Deserialize, Serialize};
 
+/// api が**テナントを解決できなかった**ときに `/internal/*` のエラー本文へ載せるコード（MT28）。
+///
+/// `/internal/*` はテナントプレフィクスを持たないため §7 の `TenantResolver` middleware を通らず、
+/// `tenant_id` は本文のフィールドとして届く。不存在・`DISABLED` のときは 400 で拒否するが、
+/// **他の 400（本文の不正等）と機械的に区別できる必要がある** —— web はこれだけを 404 の画面へ
+/// 倒し、それ以外は「web の実装/構成エラー」として 502 に倒すためである。説明文（人間向け）で
+/// 判別すると、文言を直した瞬間に静かに壊れる。
+///
+/// 値の一致が api と web で崩れると「不存在テナントが 502 になる」に戻るだけで気付きにくいので、
+/// `contracts` に単一定義する。
+pub const UNKNOWN_TENANT_ERROR_CODE: &str = "unknown_tenant";
+
 /// 認可フロー再開 API（`POST /internal/authorize/resume`、ADR-0018 決定 2）のリクエスト。
 ///
 /// api の `/authorize` はブラウザ Cookie を読まず、web へのリダイレクト URL に単回・短命の

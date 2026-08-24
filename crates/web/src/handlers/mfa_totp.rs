@@ -5,7 +5,7 @@
 //!   QR コード（SVG）と生シークレット（base32）を表示する。QR が使えない場合は生コードを入力する。
 //! * ログイン TOTP 画面（`/mfa/totp`）: パスワード認証後に TOTP 入力を求める。
 
-use super::locale;
+use super::{internal_call_status, locale};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -72,7 +72,7 @@ pub async fn setup_page(
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "totp setup call to api failed");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return internal_call_status(&e).into_response();
         }
     };
     // FluentBundle は !Send なので await の後に作成する。
@@ -145,7 +145,7 @@ pub async fn setup_confirm(
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "totp confirm call to api failed");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return internal_call_status(&e).into_response();
         }
     };
 
@@ -247,7 +247,7 @@ pub async fn setup_delete(
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "totp delete call to api failed");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return internal_call_status(&e).into_response();
         }
     };
     // FluentBundle は !Send なので await の後に作成する。
@@ -324,7 +324,7 @@ pub async fn verify(
         Ok(o) => o,
         Err(e) => {
             tracing::error!(error = %e, "verify_totp call to api failed");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return internal_call_status(&e).into_response();
         }
     };
 
@@ -542,7 +542,7 @@ pub async fn send_email_code(
         }
         Err(e) => {
             tracing::error!(error = %e, "email otp request to api failed");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return internal_call_status(&e).into_response();
         }
     };
     see_other(&format!("{}/mfa/totp?error={error}", tenant.prefix()))
@@ -599,7 +599,7 @@ pub async fn send_sms_code(
         }
         Err(e) => {
             tracing::error!(error = %e, "sms otp request to api failed");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return internal_call_status(&e).into_response();
         }
     };
     see_other(&format!("{}/mfa/totp?error={error}", tenant.prefix()))

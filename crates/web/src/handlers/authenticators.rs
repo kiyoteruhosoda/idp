@@ -7,6 +7,7 @@
 //! 認証器を触る操作はすべて step-up（AP5）の対象。盗まれたセッションで認証器を足されると、
 //! 以後は正規の資格情報として振る舞われてしまう。
 
+use super::internal_call_status;
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -77,7 +78,7 @@ pub async fn page(
         Ok(o) => o,
         Err(e) => {
             tracing::error!(error = %e, "authenticator list call to api failed");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return internal_call_status(&e).into_response();
         }
     };
     let (authenticators, recovery_codes_remaining, phone_registered, sms_available) = match outcome
@@ -196,7 +197,7 @@ pub async fn set_status(
         }
         Err(e) => {
             tracing::error!(error = %e, "authenticator status call to api failed");
-            StatusCode::BAD_GATEWAY.into_response()
+            internal_call_status(&e).into_response()
         }
     }
 }
@@ -257,7 +258,7 @@ pub async fn issue_recovery_codes(
         }
         Err(e) => {
             tracing::error!(error = %e, "recovery code issuance call to api failed");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return internal_call_status(&e).into_response();
         }
     };
 
@@ -414,7 +415,7 @@ pub async fn start_phone_registration(
         Err(e) => {
             // 電話番号は PII なので、失敗ログにも載せない（要求そのものを出さない）。
             tracing::error!(error = %e, "phone registration call to api failed");
-            StatusCode::BAD_GATEWAY.into_response()
+            internal_call_status(&e).into_response()
         }
     }
 }
@@ -467,7 +468,7 @@ pub async fn confirm_phone_registration(
         }
         Err(e) => {
             tracing::error!(error = %e, "phone confirmation call to api failed");
-            StatusCode::BAD_GATEWAY.into_response()
+            internal_call_status(&e).into_response()
         }
     }
 }

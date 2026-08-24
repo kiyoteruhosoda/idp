@@ -7,6 +7,7 @@
 //! 破壊的操作（セッション失効・連携解除）は POST とし、ログイン後フォーム用の同期トークン
 //! （`console_csrf_token`。SSO セッション id 由来）で保護する。
 
+use super::internal_call_status;
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -70,7 +71,7 @@ pub async fn page(
         Ok(o) => o,
         Err(e) => {
             tracing::error!(error = %e, "account security fetch call to api failed");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return internal_call_status(&e).into_response();
         }
     };
 
@@ -191,7 +192,7 @@ pub async fn revoke_session(
         }
         Err(e) => {
             tracing::error!(error = %e, "account session revoke call to api failed");
-            StatusCode::BAD_GATEWAY.into_response()
+            internal_call_status(&e).into_response()
         }
     }
 }
@@ -244,7 +245,7 @@ pub async fn revoke_consent(
         }
         Err(e) => {
             tracing::error!(error = %e, "account consent revoke call to api failed");
-            StatusCode::BAD_GATEWAY.into_response()
+            internal_call_status(&e).into_response()
         }
     }
 }

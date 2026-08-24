@@ -27,6 +27,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use idp_contracts::auth::UNKNOWN_TENANT_ERROR_CODE;
 use serde_json::json;
 use std::collections::HashMap;
 
@@ -162,12 +163,15 @@ pub async fn require_internal_tenant(
     }
 }
 
-/// 実在しない・`DISABLED` なテナントを名指した内部要求。ステータスと `error` は
-/// [`invalid_tenant`] と揃える（web の既存のエラー処理をそのまま通し、説明だけで区別する）。
+/// 実在しない・`DISABLED` なテナントを名指した内部要求 —— テナントを解決できなかった。
+///
+/// **他の 400 と区別できるコードを載せる**（`contracts` の [`UNKNOWN_TENANT_ERROR_CODE`]）。
+/// web はこれを 404 の画面へ倒し、それ以外の非 2xx は「web の実装/構成エラー」として 502 に
+/// 倒す（MT28）。説明文で判別させると、文言を直した瞬間に静かに壊れる。
 fn unavailable_tenant() -> Response {
     error_response(
         StatusCode::BAD_REQUEST,
-        "invalid_request",
+        UNKNOWN_TENANT_ERROR_CODE,
         "unknown or disabled tenant",
     )
 }

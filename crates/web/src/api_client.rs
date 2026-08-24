@@ -44,6 +44,7 @@ use idp_contracts::auth::{
     InternalSamlResumeResponse, InternalTotpConfirmRequest, InternalTotpConfirmResponse,
     InternalTotpDeleteRequest, InternalTotpDeleteResponse, InternalTotpSetupRequest,
     InternalTotpSetupResponse, InternalVerifyTotpRequest, InternalVerifyTotpResponse,
+    UNKNOWN_TENANT_ERROR_CODE,
 };
 use idp_contracts::runtime_settings::{
     SharedRuntimeSettingsResponse, SHARED_RUNTIME_SETTINGS_PATH,
@@ -67,6 +68,56 @@ pub enum VerifyEmailResult {
     Verified,
     /// トークンが無効・期限切れ・使用済み・別テナント。
     InvalidOrExpired,
+}
+
+/// `/internal/*` 呼び出しの失敗（MT28）。
+///
+/// `/internal/*` はテナントプレフィクスを持たないため api の `TenantResolver` middleware を
+/// 通らず、テナントの実在・状態は本文の `tenant_id` を見て api が判定する（ADR-0009 §8）。
+/// **その拒否だけを他の失敗と区別する。** 区別しないと、URL のテナント ID が誤っているだけの
+/// 要求まで「web の実装/構成エラー」として 502 になり、テナント経路の他の応答（404）と揃わない。
+pub enum InternalCallError {
+    /// api がテナントを解決できなかった（不存在・`DISABLED`）。呼び出し側は 404 の画面へ倒す。
+    UnknownTenant,
+    /// それ以外 —— api へ到達できない、応答を復号できない、想定外のステータス。
+    /// 利用者の入力では起こらない（web の実装/構成エラーか api の障害）ため 502 に倒す。
+    Failed(String),
+}
+
+impl InternalCallError {
+    fn failed(message: impl Into<String>) -> Self {
+        Self::Failed(message.into())
+    }
+}
+
+/// 運用ログ向けの表現（運用言語＝英語。`CLAUDE.md`「多言語化の対象範囲」）。
+impl std::fmt::Display for InternalCallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownTenant => write!(f, "unknown or disabled tenant"),
+            Self::Failed(m) => write!(f, "{m}"),
+        }
+    }
+}
+
+impl std::fmt::Debug for InternalCallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+
+impl std::error::Error for InternalCallError {}
+
+/// api のエラー本文が「テナントを解決できなかった」を表すか（MT28）。
+///
+/// 判別は `contracts` が単一定義する [`UNKNOWN_TENANT_ERROR_CODE`] との一致で行う。人間向けの
+/// 説明文を見ないのは、文言を直した瞬間に静かに壊れるためである。本文が JSON として読めない
+/// ときは「その他の失敗」に倒す（fail-safe。誤って 404 の画面を出さない）。
+fn is_unknown_tenant_error(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("error")?.as_str().map(str::to_string))
+        .is_some_and(|code| code == UNKNOWN_TENANT_ERROR_CODE)
 }
 
 /// `/admin/*` 呼び出しの失敗を web の画面挙動へ写すためのエラー（ADR-0007 §4）。
@@ -235,7 +286,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &InternalAuthorizeResumeRequest,
-    ) -> anyhow::Result<InternalAuthorizeResumeResponse> {
+    ) -> Result<InternalAuthorizeResumeResponse, InternalCallError> {
         self.post_internal("/internal/authorize/resume", correlation_id, req)
             .await
     }
@@ -246,7 +297,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &InternalAuthorizeLoginContextRequest,
-    ) -> anyhow::Result<InternalAuthorizeLoginContextResponse> {
+    ) -> Result<InternalAuthorizeLoginContextResponse, InternalCallError> {
         self.post_internal("/internal/authorize/login-context", correlation_id, req)
             .await
     }
@@ -258,7 +309,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &InternalSamlResumeRequest,
-    ) -> anyhow::Result<InternalSamlResumeResponse> {
+    ) -> Result<InternalSamlResumeResponse, InternalCallError> {
         self.post_internal("/internal/saml/resume", correlation_id, req)
             .await
     }
@@ -269,7 +320,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &InternalRpLogoutRequest,
-    ) -> anyhow::Result<InternalRpLogoutResponse> {
+    ) -> Result<InternalRpLogoutResponse, InternalCallError> {
         self.post_internal("/internal/logout/rp", correlation_id, req)
             .await
     }
@@ -279,7 +330,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &InternalAuthenticateRequest,
-    ) -> anyhow::Result<InternalAuthenticateResponse> {
+    ) -> Result<InternalAuthenticateResponse, InternalCallError> {
         self.post_internal("/internal/authenticate", correlation_id, req)
             .await
     }
@@ -289,7 +340,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &InternalChangePasswordRequest,
-    ) -> anyhow::Result<InternalChangePasswordResponse> {
+    ) -> Result<InternalChangePasswordResponse, InternalCallError> {
         self.post_internal("/internal/change-password", correlation_id, req)
             .await
     }
@@ -299,7 +350,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &InternalAdminAuthenticateRequest,
-    ) -> anyhow::Result<InternalAdminAuthenticateResponse> {
+    ) -> Result<InternalAdminAuthenticateResponse, InternalCallError> {
         self.post_internal("/internal/authenticate/admin", correlation_id, req)
             .await
     }
@@ -309,7 +360,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &InternalPortalAuthenticateRequest,
-    ) -> anyhow::Result<InternalPortalAuthenticateResponse> {
+    ) -> Result<InternalPortalAuthenticateResponse, InternalCallError> {
         self.post_internal("/internal/authenticate/portal", correlation_id, req)
             .await
     }
@@ -319,7 +370,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &InternalPortalMfaRequest,
-    ) -> anyhow::Result<InternalPortalMfaResponse> {
+    ) -> Result<InternalPortalMfaResponse, InternalCallError> {
         self.post_internal("/internal/authenticate/portal/mfa", correlation_id, req)
             .await
     }
@@ -329,7 +380,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &InternalPortalChangePasswordRequest,
-    ) -> anyhow::Result<InternalPortalChangePasswordResponse> {
+    ) -> Result<InternalPortalChangePasswordResponse, InternalCallError> {
         self.post_internal(
             "/internal/authenticate/portal/change-password",
             correlation_id,
@@ -343,7 +394,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &InternalAdminChangePasswordRequest,
-    ) -> anyhow::Result<InternalAdminChangePasswordResponse> {
+    ) -> Result<InternalAdminChangePasswordResponse, InternalCallError> {
         self.post_internal(
             "/internal/authenticate/admin/change-password",
             correlation_id,
@@ -357,7 +408,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &InternalPasswordResetRequestRequest,
-    ) -> anyhow::Result<InternalPasswordResetRequestResponse> {
+    ) -> Result<InternalPasswordResetRequestResponse, InternalCallError> {
         self.post_internal("/internal/password-reset/request", correlation_id, req)
             .await
     }
@@ -367,7 +418,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &InternalPasswordResetCompleteRequest,
-    ) -> anyhow::Result<InternalPasswordResetCompleteResponse> {
+    ) -> Result<InternalPasswordResetCompleteResponse, InternalCallError> {
         self.post_internal("/internal/password-reset/complete", correlation_id, req)
             .await
     }
@@ -423,7 +474,7 @@ impl ApiClient {
         correlation_id: &str,
         tenant_id: &str,
         auth_session_id: &str,
-    ) -> anyhow::Result<InternalConsentInfoResponse> {
+    ) -> Result<InternalConsentInfoResponse, InternalCallError> {
         let response = self
             .http
             .get(format!("{}/internal/consent-info", self.base_url))
@@ -435,11 +486,30 @@ impl ApiClient {
             ])
             .send()
             .await
-            .map_err(|e| anyhow::anyhow!("request to api /internal/consent-info failed: {e}"))?;
+            .map_err(|e| {
+                InternalCallError::failed(format!(
+                    "request to api /internal/consent-info failed: {e}"
+                ))
+            })?;
+        // `/internal/*` で唯一の GET。POST 側（`post_internal`）と同じくテナント解決の失敗を
+        // 区別する（区別しないと、この画面だけ不存在テナントで 502 のまま残る）。
+        let status = response.status();
+        if !status.is_success() {
+            if status == reqwest::StatusCode::BAD_REQUEST
+                && is_unknown_tenant_error(&response.text().await.unwrap_or_default())
+            {
+                return Err(InternalCallError::UnknownTenant);
+            }
+            return Err(InternalCallError::failed(format!(
+                "api /internal/consent-info returned unexpected status {status}"
+            )));
+        }
         response
             .json::<InternalConsentInfoResponse>()
             .await
-            .map_err(|e| anyhow::anyhow!("failed to decode consent-info response: {e}"))
+            .map_err(|e| {
+                InternalCallError::failed(format!("failed to decode consent-info response: {e}"))
+            })
     }
 
     /// 同意承認（`POST /internal/consent/approve`）。
@@ -447,7 +517,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &InternalConsentApproveRequest,
-    ) -> anyhow::Result<InternalConsentApproveResponse> {
+    ) -> Result<InternalConsentApproveResponse, InternalCallError> {
         self.post_internal("/internal/consent/approve", correlation_id, req)
             .await
     }
@@ -457,7 +527,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &InternalConsentDenyRequest,
-    ) -> anyhow::Result<InternalConsentDenyResponse> {
+    ) -> Result<InternalConsentDenyResponse, InternalCallError> {
         self.post_internal("/internal/consent/deny", correlation_id, req)
             .await
     }
@@ -467,7 +537,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &InternalTotpSetupRequest,
-    ) -> anyhow::Result<InternalTotpSetupResponse> {
+    ) -> Result<InternalTotpSetupResponse, InternalCallError> {
         self.post_internal("/internal/mfa/totp/setup", correlation_id, req)
             .await
     }
@@ -477,7 +547,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &InternalTotpConfirmRequest,
-    ) -> anyhow::Result<InternalTotpConfirmResponse> {
+    ) -> Result<InternalTotpConfirmResponse, InternalCallError> {
         self.post_internal("/internal/mfa/totp/confirm", correlation_id, req)
             .await
     }
@@ -487,7 +557,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &InternalTotpDeleteRequest,
-    ) -> anyhow::Result<InternalTotpDeleteResponse> {
+    ) -> Result<InternalTotpDeleteResponse, InternalCallError> {
         self.post_internal("/internal/mfa/totp/delete", correlation_id, req)
             .await
     }
@@ -497,7 +567,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &InternalVerifyTotpRequest,
-    ) -> anyhow::Result<InternalVerifyTotpResponse> {
+    ) -> Result<InternalVerifyTotpResponse, InternalCallError> {
         self.post_internal("/internal/mfa/totp/verify", correlation_id, req)
             .await
     }
@@ -509,7 +579,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &InternalPasskeyRegisterBeginRequest,
-    ) -> anyhow::Result<InternalPasskeyRegisterBeginResponse> {
+    ) -> Result<InternalPasskeyRegisterBeginResponse, InternalCallError> {
         self.post_internal("/internal/passkey/register/begin", correlation_id, req)
             .await
     }
@@ -519,7 +589,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &InternalPasskeyRegisterCompleteRequest,
-    ) -> anyhow::Result<InternalPasskeyRegisterCompleteResponse> {
+    ) -> Result<InternalPasskeyRegisterCompleteResponse, InternalCallError> {
         self.post_internal("/internal/passkey/register/complete", correlation_id, req)
             .await
     }
@@ -529,7 +599,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &InternalPasskeyDeleteRequest,
-    ) -> anyhow::Result<InternalPasskeyDeleteResponse> {
+    ) -> Result<InternalPasskeyDeleteResponse, InternalCallError> {
         self.post_internal("/internal/passkey/delete", correlation_id, req)
             .await
     }
@@ -539,7 +609,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &InternalPasskeyListRequest,
-    ) -> anyhow::Result<InternalPasskeyListResponse> {
+    ) -> Result<InternalPasskeyListResponse, InternalCallError> {
         self.post_internal("/internal/passkey/list", correlation_id, req)
             .await
     }
@@ -549,7 +619,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &InternalPasskeyLoginBeginRequest,
-    ) -> anyhow::Result<InternalPasskeyLoginBeginResponse> {
+    ) -> Result<InternalPasskeyLoginBeginResponse, InternalCallError> {
         self.post_internal("/internal/passkey/login/begin", correlation_id, req)
             .await
     }
@@ -559,7 +629,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &InternalPasskeyLoginCompleteRequest,
-    ) -> anyhow::Result<InternalPasskeyLoginCompleteResponse> {
+    ) -> Result<InternalPasskeyLoginCompleteResponse, InternalCallError> {
         self.post_internal("/internal/passkey/login/complete", correlation_id, req)
             .await
     }
@@ -1939,7 +2009,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &idp_contracts::auth::InternalAccountChangePasswordRequest,
-    ) -> anyhow::Result<idp_contracts::auth::InternalAccountChangePasswordResponse> {
+    ) -> Result<idp_contracts::auth::InternalAccountChangePasswordResponse, InternalCallError> {
         self.post_internal("/internal/account/change-password", correlation_id, req)
             .await
     }
@@ -1948,7 +2018,7 @@ impl ApiClient {
     pub async fn account_update_language(
         &self,
         req: &idp_contracts::auth::InternalAccountUpdateLanguageRequest,
-    ) -> anyhow::Result<idp_contracts::auth::InternalAccountUpdateLanguageResponse> {
+    ) -> Result<idp_contracts::auth::InternalAccountUpdateLanguageResponse, InternalCallError> {
         // correlation_id は不要（監査対象外）のため空文字を渡す。
         self.post_internal("/internal/account/update-language", "", req)
             .await
@@ -1958,7 +2028,7 @@ impl ApiClient {
     pub async fn account_profile(
         &self,
         req: &idp_contracts::auth::InternalAccountProfileRequest,
-    ) -> anyhow::Result<idp_contracts::auth::InternalAccountProfileResponse> {
+    ) -> Result<idp_contracts::auth::InternalAccountProfileResponse, InternalCallError> {
         self.post_internal("/internal/account/profile", "", req)
             .await
     }
@@ -1967,7 +2037,7 @@ impl ApiClient {
     pub async fn account_update_name(
         &self,
         req: &idp_contracts::auth::InternalAccountUpdateNameRequest,
-    ) -> anyhow::Result<idp_contracts::auth::InternalAccountUpdateNameResponse> {
+    ) -> Result<idp_contracts::auth::InternalAccountUpdateNameResponse, InternalCallError> {
         self.post_internal("/internal/account/update-name", "", req)
             .await
     }
@@ -1977,7 +2047,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &idp_contracts::auth::InternalExternalProvidersRequest,
-    ) -> anyhow::Result<idp_contracts::auth::InternalExternalProvidersResponse> {
+    ) -> Result<idp_contracts::auth::InternalExternalProvidersResponse, InternalCallError> {
         self.post_internal("/internal/external/providers", correlation_id, req)
             .await
     }
@@ -1987,7 +2057,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &idp_contracts::auth::InternalExternalStartRequest,
-    ) -> anyhow::Result<idp_contracts::auth::InternalExternalStartResponse> {
+    ) -> Result<idp_contracts::auth::InternalExternalStartResponse, InternalCallError> {
         self.post_internal("/internal/external/start", correlation_id, req)
             .await
     }
@@ -1997,7 +2067,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &idp_contracts::auth::InternalExternalCallbackRequest,
-    ) -> anyhow::Result<idp_contracts::auth::InternalExternalCallbackResponse> {
+    ) -> Result<idp_contracts::auth::InternalExternalCallbackResponse, InternalCallError> {
         self.post_internal("/internal/external/callback", correlation_id, req)
             .await
     }
@@ -2007,7 +2077,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &idp_contracts::auth::InternalExternalSamlAcsRequest,
-    ) -> anyhow::Result<idp_contracts::auth::InternalExternalCallbackResponse> {
+    ) -> Result<idp_contracts::auth::InternalExternalCallbackResponse, InternalCallError> {
         self.post_internal("/internal/external/saml/acs", correlation_id, req)
             .await
     }
@@ -2017,7 +2087,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &idp_contracts::auth::InternalAuthenticatorsRequest,
-    ) -> anyhow::Result<idp_contracts::auth::InternalAuthenticatorsResponse> {
+    ) -> Result<idp_contracts::auth::InternalAuthenticatorsResponse, InternalCallError> {
         self.post_internal("/internal/account/authenticators", correlation_id, req)
             .await
     }
@@ -2027,7 +2097,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &idp_contracts::auth::InternalAuthenticatorStatusRequest,
-    ) -> anyhow::Result<idp_contracts::auth::InternalAuthenticatorStatusResponse> {
+    ) -> Result<idp_contracts::auth::InternalAuthenticatorStatusResponse, InternalCallError> {
         self.post_internal(
             "/internal/account/authenticators/status",
             correlation_id,
@@ -2041,7 +2111,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &idp_contracts::auth::InternalRecoveryCodesRequest,
-    ) -> anyhow::Result<idp_contracts::auth::InternalRecoveryCodesResponse> {
+    ) -> Result<idp_contracts::auth::InternalRecoveryCodesResponse, InternalCallError> {
         self.post_internal("/internal/account/recovery-codes", correlation_id, req)
             .await
     }
@@ -2051,7 +2121,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &idp_contracts::auth::InternalEmailOtpRequest,
-    ) -> anyhow::Result<idp_contracts::auth::InternalEmailOtpResponse> {
+    ) -> Result<idp_contracts::auth::InternalEmailOtpResponse, InternalCallError> {
         self.post_internal("/internal/account/email-otp", correlation_id, req)
             .await
     }
@@ -2061,7 +2131,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &idp_contracts::auth::InternalSmsOtpRequest,
-    ) -> anyhow::Result<idp_contracts::auth::InternalSmsOtpResponse> {
+    ) -> Result<idp_contracts::auth::InternalSmsOtpResponse, InternalCallError> {
         self.post_internal("/internal/account/sms-otp", correlation_id, req)
             .await
     }
@@ -2071,7 +2141,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &idp_contracts::auth::InternalPhoneRegistrationRequest,
-    ) -> anyhow::Result<idp_contracts::auth::InternalPhoneRegistrationResponse> {
+    ) -> Result<idp_contracts::auth::InternalPhoneRegistrationResponse, InternalCallError> {
         self.post_internal("/internal/account/phone/register", correlation_id, req)
             .await
     }
@@ -2081,7 +2151,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &idp_contracts::auth::InternalPhoneConfirmationRequest,
-    ) -> anyhow::Result<idp_contracts::auth::InternalPhoneConfirmationResponse> {
+    ) -> Result<idp_contracts::auth::InternalPhoneConfirmationResponse, InternalCallError> {
         self.post_internal("/internal/account/phone/confirm", correlation_id, req)
             .await
     }
@@ -2091,7 +2161,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &idp_contracts::auth::InternalStepUpCheckRequest,
-    ) -> anyhow::Result<idp_contracts::auth::InternalStepUpCheckResponse> {
+    ) -> Result<idp_contracts::auth::InternalStepUpCheckResponse, InternalCallError> {
         self.post_internal("/internal/step-up/check", correlation_id, req)
             .await
     }
@@ -2101,7 +2171,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &idp_contracts::auth::InternalStepUpVerifyRequest,
-    ) -> anyhow::Result<idp_contracts::auth::InternalStepUpVerifyResponse> {
+    ) -> Result<idp_contracts::auth::InternalStepUpVerifyResponse, InternalCallError> {
         self.post_internal("/internal/step-up/verify", correlation_id, req)
             .await
     }
@@ -2111,7 +2181,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &idp_contracts::auth::InternalAccountSecurityRequest,
-    ) -> anyhow::Result<idp_contracts::auth::InternalAccountSecurityResponse> {
+    ) -> Result<idp_contracts::auth::InternalAccountSecurityResponse, InternalCallError> {
         self.post_internal("/internal/account/security", correlation_id, req)
             .await
     }
@@ -2121,7 +2191,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &idp_contracts::auth::InternalAccountRevokeSessionRequest,
-    ) -> anyhow::Result<idp_contracts::auth::InternalAccountRevokeSessionResponse> {
+    ) -> Result<idp_contracts::auth::InternalAccountRevokeSessionResponse, InternalCallError> {
         self.post_internal(
             "/internal/account/security/revoke-session",
             correlation_id,
@@ -2135,7 +2205,7 @@ impl ApiClient {
         &self,
         correlation_id: &str,
         req: &idp_contracts::auth::InternalAccountRevokeConsentRequest,
-    ) -> anyhow::Result<idp_contracts::auth::InternalAccountRevokeConsentResponse> {
+    ) -> Result<idp_contracts::auth::InternalAccountRevokeConsentResponse, InternalCallError> {
         self.post_internal(
             "/internal/account/security/revoke-consent",
             correlation_id,
@@ -2148,7 +2218,7 @@ impl ApiClient {
     pub async fn account_tenants(
         &self,
         req: &idp_contracts::auth::InternalAccountTenantsRequest,
-    ) -> anyhow::Result<idp_contracts::auth::InternalAccountTenantsResponse> {
+    ) -> Result<idp_contracts::auth::InternalAccountTenantsResponse, InternalCallError> {
         self.post_internal("/internal/account/tenants", "", req)
             .await
     }
@@ -2215,7 +2285,7 @@ impl ApiClient {
         path: &str,
         correlation_id: &str,
         body: &B,
-    ) -> anyhow::Result<R>
+    ) -> Result<R, InternalCallError>
     where
         B: serde::Serialize,
         R: serde::de::DeserializeOwned,
@@ -2230,18 +2300,26 @@ impl ApiClient {
             .json(body)
             .send()
             .await
-            .map_err(|e| anyhow::anyhow!("request to api {path} failed: {e}"))?;
+            .map_err(|e| InternalCallError::failed(format!("request to api {path} failed: {e}")))?;
 
         let status = response.status();
         if !status.is_success() {
+            // テナントを解決できなかった 400 だけは呼び出し側で 404 の画面へ倒せるよう区別する
+            // （MT28）。本文を読むのはこの分岐のためだけなので、失敗しても素の失敗へ倒す。
+            if status == reqwest::StatusCode::BAD_REQUEST
+                && is_unknown_tenant_error(&response.text().await.unwrap_or_default())
+            {
+                return Err(InternalCallError::UnknownTenant);
+            }
             // 内部認証の業務結果（invalid/locked 等）は 200＋result で返る。ここに来るのは
             // トークン不一致（401）やサーバ障害など、web の実装/構成エラー。
-            anyhow::bail!("api {path} returned unexpected status {status}");
+            return Err(InternalCallError::failed(format!(
+                "api {path} returned unexpected status {status}"
+            )));
         }
-        response
-            .json::<R>()
-            .await
-            .map_err(|e| anyhow::anyhow!("failed to decode api {path} response: {e}"))
+        response.json::<R>().await.map_err(|e| {
+            InternalCallError::failed(format!("failed to decode api {path} response: {e}"))
+        })
     }
 }
 
@@ -2249,6 +2327,41 @@ impl ApiClient {
 mod tests {
     use super::{admin_display_label, admin_identity, admin_session_for_status, AdminSession};
     use idp_contracts::admin::WhoamiResponse;
+
+    /// api の「テナントを解決できない」400 だけを見分ける（MT28）。判別はコードで行い、人間向けの
+    /// 説明文には依存しない。
+    #[test]
+    fn only_the_unknown_tenant_code_is_recognized() {
+        assert!(super::is_unknown_tenant_error(
+            r#"{"error":"unknown_tenant","error_description":"unknown or disabled tenant"}"#
+        ));
+        // 他の 400（本文の不正など）は「その他の失敗」＝ 502 のまま。
+        assert!(!super::is_unknown_tenant_error(
+            r#"{"error":"invalid_request","error_description":"missing or invalid tenant_id"}"#
+        ));
+        // 説明文だけが一致しても引っかからない（文言を直しても壊れない／壊さない）。
+        assert!(!super::is_unknown_tenant_error(
+            r#"{"error":"invalid_request","error_description":"unknown or disabled tenant"}"#
+        ));
+        // 本文が読めないときは fail-safe（誤って 404 の画面を出さない）。
+        for body in ["", "not json", "[]", "{}", r#"{"error":123}"#] {
+            assert!(!super::is_unknown_tenant_error(body), "{body:?}");
+        }
+    }
+
+    /// 失敗の種類が画面のステータスへ写ること（MT28）。
+    #[test]
+    fn internal_call_failures_map_to_the_intended_status() {
+        use crate::handlers::internal_call_status;
+        assert_eq!(
+            internal_call_status(&super::InternalCallError::UnknownTenant),
+            axum::http::StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            internal_call_status(&super::InternalCallError::Failed("boom".to_string())),
+            axum::http::StatusCode::BAD_GATEWAY
+        );
+    }
 
     /// whoami の非 200 応答の写像。404（api がテナントを解決できない）を `Error` に含めない
     /// ＝ 画面を 502 に倒さないことの回帰テスト。

@@ -265,6 +265,27 @@ pub trait UserRepository: Send + Sync {
     ) -> Result<LoginIdentifierMatch> {
         Ok(LoginIdentifierMatch::not_found())
     }
+    /// **参加先テナントのパスワード再設定**（`/{tenant_id}/forgot-password`）から、そのテナントの
+    /// ACTIVE な GUEST を `users.email` で引く（MT26）。
+    ///
+    /// 再設定はログインと違い**登録簿（`user_login_identifiers`）ではなく `users.email` で引く**。
+    /// メールの届け先そのものだからで、メールでのログインを有効にしていないテナントでも成り立つ
+    /// 必要がある（ADR-0025 §5）。そのため
+    /// [`Self::find_active_guest_by_login_identifier`] は使えず、この引き方が別に要る。
+    ///
+    /// 条件はゲスト解決と同じ「要求テナントの ACTIVE な GUEST × 所属元テナントが ACTIVE」。
+    /// **複数人に当たったら誰も返さない** —— `users.email` の一意性はテナント内でしか無く、所属元の
+    /// 違うゲストが同じアドレスを持ち得る。どちらへ送るか決められない以上、送らない
+    /// （応答は常に `Accepted` なので、利用者から見た振る舞いは「メールが来ない」で変わらない）。
+    ///
+    /// 既定実装は `Ok(None)`（メンバーシップを持たないテスト用フェイクは所属元だけで解決する）。
+    async fn find_active_guest_by_email(
+        &self,
+        _tenant_id: TenantId,
+        _email: &str,
+    ) -> Result<Option<User>> {
+        Ok(None)
+    }
     /// **所属元テナントが分かっているとき**に、そのテナントの登録簿だけを引く（ADR-0029）。
     ///
     /// 呼ぶのはログイン経路で、入力が `local@domain` の形をしていてそのドメインが

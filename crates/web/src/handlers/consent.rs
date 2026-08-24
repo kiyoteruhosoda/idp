@@ -3,7 +3,7 @@
 //! ADR-0007: web はフォーム描画とリダイレクトのみを担い、同意の記録・code 発行は api の
 //! `/internal/consent-info`・`/internal/consent/approve`・`/internal/consent/deny` に委ねる。
 
-use super::locale;
+use super::{internal_call_status, locale};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -71,7 +71,7 @@ pub async fn consent_page(
         ),
         Err(e) => {
             tracing::error!(error = %e, "consent_page: api call failed");
-            StatusCode::BAD_GATEWAY.into_response()
+            internal_call_status(&e).into_response()
         }
     }
 }

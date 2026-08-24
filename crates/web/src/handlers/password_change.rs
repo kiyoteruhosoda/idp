@@ -4,7 +4,7 @@
 //! 表示する。api の `POST /internal/change-password` に委ね、成功時は `LoginService` と同じ
 //! SSO 発行 → 同意/code 発行の結果（`redirect_to`）へ 302 する。
 
-use super::locale;
+use super::{internal_call_status, locale};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -85,7 +85,7 @@ pub async fn submit(
         Ok(outcome) => outcome,
         Err(e) => {
             tracing::error!(error = %e, "internal change-password call to api failed");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return internal_call_status(&e).into_response();
         }
     };
 

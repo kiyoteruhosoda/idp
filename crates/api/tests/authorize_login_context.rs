@@ -127,6 +127,13 @@ async fn unknown_session_and_other_tenants_get_nothing() {
         StatusCode::BAD_REQUEST,
         "an unknown tenant must be rejected before the session is looked up"
     );
+    // 拒否の理由は**機械的に区別できる**必要がある。web はこのコードだけを 404 の画面へ倒し、
+    // 他の非 2xx は 502 に倒す（MT28）。説明文で判別すると、文言を直した瞬間に静かに壊れる。
+    assert_eq!(
+        body_json(response).await["error"],
+        idp_contracts::auth::UNKNOWN_TENANT_ERROR_CODE,
+        "the web side distinguishes this rejection by its error code"
+    );
 }
 
 /// ACTIVE な子テナントを 1 つ直接作る（このテストが要るのは「実在する別テナント」だけで、

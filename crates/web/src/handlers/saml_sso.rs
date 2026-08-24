@@ -9,7 +9,7 @@
 //! - 認証が必要なら `saml_request_id` を host-only Cookie 化してポータルログインへ 303 する
 //!   （ログイン成功時は [`super::portal`] が本画面へ戻す）
 
-use super::locale;
+use super::{internal_call_status, locale};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -57,7 +57,7 @@ pub async fn continue_sso(
         Ok(outcome) => outcome,
         Err(e) => {
             tracing::error!(error = %e, "SAML resume call to api failed");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return internal_call_status(&e).into_response();
         }
     };
 
