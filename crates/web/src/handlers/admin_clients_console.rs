@@ -163,7 +163,7 @@ pub async fn create(
         // 「既定のまま」と解釈する（public は常に `none`）。
         "token_endpoint_auth_method": form.token_endpoint_auth_method,
         // 空欄は「未指定」として送る。空文字を送ると api は「鍵を登録した」と読んでしまう。
-        "jwks": blank_to_none(&form.jwks),
+        "jwks": jwks_for_method(&form.token_endpoint_auth_method, &form.jwks),
     });
     // api のバリデーション/競合メッセージをこの画面へ出すため、決定言語を引き継ぐ（MT20）。
     let result = state
@@ -317,7 +317,7 @@ pub async fn update(
         "client_status": form.client_status,
         "allow_client_credentials": form.allow_client_credentials.is_some(),
         "token_endpoint_auth_method": form.token_endpoint_auth_method,
-        "jwks": blank_to_none(&form.jwks),
+        "jwks": jwks_for_method(&form.token_endpoint_auth_method, &form.jwks),
     });
     let result = state
         .api
@@ -403,7 +403,6 @@ fn parse_uris(raw: &str) -> Vec<String> {
     raw.split_whitespace().map(str::to_string).collect()
 }
 
-/// 再表示用のフォーム値。未送信（public を選んだ場合）は既定の `client_secret_basic` を出す。
 /// 空欄（および空白のみ）は「未指定」として api へ送らない。空文字をそのまま送ると、api 側は
 /// 「値を指定した」と読んで検証に落ちる。
 fn blank_to_none(raw: &Option<String>) -> Option<String> {
@@ -413,6 +412,19 @@ fn blank_to_none(raw: &Option<String>) -> Option<String> {
         .map(str::to_string)
 }
 
+/// 検証鍵は `private_key_jwt` を選んでいるときだけ送る（ADR-0030）。
+///
+/// 編集フォームの入力欄には現在の鍵が入ったままなので、他の方式へ切り替える更新でそれを
+/// そのまま送ると、api は「鍵を指定した」と読んで `private_key_jwt` 以外では拒否する
+/// （＝画面からは方式を切り替えられなくなる）。方式に合わない値は送らない。
+fn jwks_for_method(method: &Option<String>, raw: &Option<String>) -> Option<String> {
+    if method.as_deref() != Some("private_key_jwt") {
+        return None;
+    }
+    blank_to_none(raw)
+}
+
+/// 再表示用のフォーム値。未送信（public を選んだ場合）は既定の `client_secret_basic` を出す。
 fn auth_method_or_default(raw: &Option<String>) -> String {
     raw.as_deref()
         .filter(|s| !s.is_empty())
@@ -706,6 +718,30 @@ fn not_found(messages: &Messages, tenant: &WebTenant, admin: &AdminContext) -> R
 mod tests {
     use super::*;
     use crate::i18n::Locale;
+
+    /// 方式を切り替える更新で、入力欄に残っている鍵を送らない（送ると api が弾く）。
+    #[test]
+    fn the_jwks_field_is_only_sent_for_private_key_jwt() {
+        let keys = Some(r#"{"keys":[]}"#.to_string());
+        assert_eq!(
+            jwks_for_method(&Some("private_key_jwt".to_string()), &keys),
+            keys
+        );
+        assert_eq!(
+            jwks_for_method(&Some("client_secret_basic".to_string()), &keys),
+            None
+        );
+        // public を選ぶと方式そのものが送られない（select が描画されない）。
+        assert_eq!(jwks_for_method(&None, &keys), None);
+        // 空欄は「未指定」。
+        assert_eq!(
+            jwks_for_method(
+                &Some("private_key_jwt".to_string()),
+                &Some("  ".to_string())
+            ),
+            None
+        );
+    }
 
     #[test]
     fn parse_uris_splits_and_drops_blanks() {

@@ -36,7 +36,7 @@ impl ClientAssertionReplayRepository for SqlxClientAssertionReplayRepository {
         tenant_id: TenantId,
         client_id: &str,
         jti: &str,
-        expires_at: DateTime<Utc>,
+        retain_until: DateTime<Utc>,
     ) -> Result<bool> {
         let result = sqlx::query(
             "INSERT INTO client_assertion_jtis (tenant_id, client_id, jti, expires_at) \
@@ -45,7 +45,9 @@ impl ClientAssertionReplayRepository for SqlxClientAssertionReplayRepository {
         .bind(tenant_id.to_string())
         .bind(client_id)
         .bind(jti)
-        .bind(expires_at.naive_utc())
+        // 列名は掃除の共通処理（`ExpiringRecordStore`）に合わせた `expires_at` だが、入れるのは
+        // assertion の `exp` ではなく「受理が止まる時刻」である（トレイトの doc 参照）。
+        .bind(retain_until.naive_utc())
         .execute(&self.pool)
         .await;
 

@@ -22,19 +22,32 @@ pub const JWT_BEARER_ASSERTION_TYPE: &str =
 /// assertion の有効期間の上限（ADR-0030 決定 5）。
 ///
 /// `exp` がこれより先を指す assertion は拒否する。再生の窓を短く保つためであると同時に、
-/// `jti` を記録しておく期間の上限でもある（記録を `exp` まで持てば再生を防げる）。
+/// `jti` を記録しておく期間の上限でもある（記録を [`VerifiedClientAssertion::replay_guard_until`]
+/// まで持てば再生を防げる）。
 pub const MAX_ASSERTION_LIFETIME: Duration = Duration::minutes(5);
 
 /// 時計ずれの許容幅。クライアントと IdP の時刻が完全に一致することは期待できない。
 const CLOCK_SKEW_LEEWAY: Duration = Duration::seconds(60);
+
+/// `jti` の長さの上限。`client_assertion_jtis.jti` の桁数に合わせる。
+///
+/// 超えるものを検証の側で弾くのは、記録の INSERT を DB エラー（＝ 500）にしないためである。
+/// 長すぎる `jti` は要求の不正であって IdP の障害ではない。
+const MAX_JTI_LENGTH: usize = 255;
 
 /// 検証を通った assertion から、再生防止に要る値だけを取り出したもの。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedClientAssertion {
     /// `jti` クレーム。`(tenant_id, client_id, jti)` で一意に記録する。
     pub jti: String,
-    /// `exp` クレーム。この時刻まで `jti` を再受理しない。
+    /// `exp` クレーム。
     pub expires_at: DateTime<Utc>,
+    /// `jti` を再受理しない時刻。**`exp` そのものではなく時計ずれの許容幅を足した値**である。
+    ///
+    /// 受理の側は `exp` を [`CLOCK_SKEW_LEEWAY`] だけ過ぎた assertion まで通すため、記録を `exp`
+    /// までしか持たないと、掃除で行が消えた後・受理が止まる前の隙間で同じ assertion をもう一度
+    /// 使えてしまう。記録は受理が止まる時刻まで残す。
+    pub replay_guard_until: DateTime<Utc>,
 }
 
 /// assertion を受け付けられない理由。文字列は監査ログの `reason` にそのまま載せる
@@ -59,6 +72,8 @@ pub enum ClientAssertionFailure {
     SubjectMismatch,
     /// `jti` が無い（本 IdP では必須）。
     MissingJti,
+    /// `jti` が長すぎる（[`MAX_JTI_LENGTH`] 超過）。
+    JtiTooLong,
 }
 
 impl ClientAssertionFailure {
@@ -73,6 +88,7 @@ impl ClientAssertionFailure {
             Self::AudienceMismatch => "assertion_audience_mismatch",
             Self::SubjectMismatch => "assertion_subject_mismatch",
             Self::MissingJti => "missing_assertion_jti",
+            Self::JtiTooLong => "assertion_jti_too_long",
         }
     }
 }
@@ -196,7 +212,9 @@ pub fn verify_client_assertion(
     if expires_at + CLOCK_SKEW_LEEWAY < now {
         return Err(ClientAssertionFailure::Expired);
     }
-    if expires_at - now > MAX_ASSERTION_LIFETIME {
+    // 上限にも時計ずれを見込む。クライアントの時計が数秒進んでいるだけで、上限ちょうどの
+    // 有効期間を持つ assertion が「長すぎる」と落ちてしまうため（期限切れ判定と同じ幅を使う）。
+    if expires_at - now > MAX_ASSERTION_LIFETIME + CLOCK_SKEW_LEEWAY {
         return Err(ClientAssertionFailure::LifetimeTooLong);
     }
 
@@ -204,8 +222,15 @@ pub fn verify_client_assertion(
         .jti
         .filter(|j| !j.is_empty())
         .ok_or(ClientAssertionFailure::MissingJti)?;
+    if jti.len() > MAX_JTI_LENGTH {
+        return Err(ClientAssertionFailure::JtiTooLong);
+    }
 
-    Ok(VerifiedClientAssertion { jti, expires_at })
+    Ok(VerifiedClientAssertion {
+        jti,
+        expires_at,
+        replay_guard_until: expires_at + CLOCK_SKEW_LEEWAY,
+    })
 }
 
 #[cfg(test)]
@@ -283,6 +308,11 @@ mod tests {
             let verified = verify(&f, &assertion(&f, valid_claims())).unwrap();
             assert_eq!(verified.jti, "jti-1");
             assert_eq!(verified.expires_at.timestamp(), now().timestamp() + 120);
+            // 再生を拒む期間は `exp` より時計ずれの許容幅ぶん長い（受理が止まる時刻まで残す）。
+            assert_eq!(
+                verified.replay_guard_until,
+                verified.expires_at + CLOCK_SKEW_LEEWAY
+            );
         }
     }
 
@@ -424,7 +454,10 @@ mod tests {
         let token = assertion(
             &f,
             TestClaims {
-                exp: now().timestamp() + MAX_ASSERTION_LIFETIME.num_seconds() + 60,
+                exp: now().timestamp()
+                    + MAX_ASSERTION_LIFETIME.num_seconds()
+                    + CLOCK_SKEW_LEEWAY.num_seconds()
+                    + 60,
                 ..valid_claims()
             },
         );
@@ -432,6 +465,43 @@ mod tests {
             verify(&f, &token),
             Err(ClientAssertionFailure::LifetimeTooLong)
         );
+    }
+
+    /// 上限ちょうどの有効期間は、クライアントの時計が少し進んでいても通る（時計ずれの許容幅）。
+    #[test]
+    fn a_cap_length_assertion_from_a_slightly_fast_clock_is_accepted() {
+        let f = fixture("RS256");
+        let token = assertion(
+            &f,
+            TestClaims {
+                exp: now().timestamp() + MAX_ASSERTION_LIFETIME.num_seconds() + 5,
+                ..valid_claims()
+            },
+        );
+        assert!(verify(&f, &token).is_ok());
+    }
+
+    /// 長すぎる `jti` は検証で弾く（記録の INSERT を DB エラーにしない）。
+    #[test]
+    fn an_overlong_jti_is_rejected() {
+        let f = fixture("RS256");
+        let token = assertion(
+            &f,
+            TestClaims {
+                jti: Some("j".repeat(MAX_JTI_LENGTH + 1)),
+                ..valid_claims()
+            },
+        );
+        assert_eq!(verify(&f, &token), Err(ClientAssertionFailure::JtiTooLong));
+
+        let at_limit = assertion(
+            &f,
+            TestClaims {
+                jti: Some("j".repeat(MAX_JTI_LENGTH)),
+                ..valid_claims()
+            },
+        );
+        assert!(verify(&f, &at_limit).is_ok());
     }
 
     #[test]

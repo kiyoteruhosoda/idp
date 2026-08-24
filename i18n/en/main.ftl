@@ -536,6 +536,7 @@ api-client-jwks-unsupported-key-type = Unsupported key type. Only RSA and EC (P-
 api-client-jwks-missing-field = A key in the JWK Set is missing its kid or its key components.
 api-client-jwks-private-key-material = The JWK Set contains private key material. Register public keys only.
 api-client-jwks-duplicate-kid = The JWK Set contains duplicate kid values.
+api-client-jwks-invalid-key-material = A key in the JWK Set could not be read. Check that the key components are base64url encoded.
 api-client-auth-method-public = Public clients cannot use a client authentication method.
 api-member-already = That user is already a member of this tenant.
 api-invitation-not-found = That invitation was not found.

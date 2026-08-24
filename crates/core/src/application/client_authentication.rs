@@ -308,13 +308,15 @@ impl ClientAuthenticator {
 
         // 署名が通ってから `jti` を記録する。順序が逆だと、署名が通らない assertion の `jti` で
         // 表を膨らませられる（外部から書き込める表になってしまう）。
+        // 記録は `exp` ではなく `replay_guard_until`（時計ずれの許容幅を足した時刻）まで残す
+        // ——「掃除で消えたが、まだ受理される」隙間を作らないため。
         let unused = self
             .assertions
             .record_if_unused(
                 tenant.tenant_id(),
                 &client.client_id,
                 &verified.jti,
-                verified.expires_at,
+                verified.replay_guard_until,
             )
             .await
             .map_err(|e| ClientAuthError::Internal(e.to_string()))?;

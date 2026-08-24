@@ -237,7 +237,12 @@ impl RevocationService {
                 ));
             }
             Err(ClientAuthError::Internal(message)) => {
-                return Err(RevocationError::new(OAuthErrorCode::ServerError, &message));
+                // 内部エラーの詳細はクライアントへ出さない（`CLAUDE.md`「国際化」の翻訳対象外）。
+                tracing::error!(error = %message, "client authentication internal error");
+                return Err(RevocationError::new(
+                    OAuthErrorCode::ServerError,
+                    "internal server error",
+                ));
             }
         }
 

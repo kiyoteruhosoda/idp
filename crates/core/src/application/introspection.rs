@@ -389,10 +389,12 @@ impl IntrospectionService {
                 ))
             }
             Err(ClientAuthError::Internal(message)) => {
+                // 内部エラーの詳細はクライアントへ出さない（`CLAUDE.md`「国際化」の翻訳対象外）。
+                tracing::error!(error = %message, "client authentication internal error");
                 return Err(IntrospectionError::new(
                     OAuthErrorCode::ServerError,
-                    &message,
-                ))
+                    "internal server error",
+                ));
             }
         }
 

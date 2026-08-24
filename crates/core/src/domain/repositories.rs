@@ -439,12 +439,16 @@ pub trait ClientAssertionReplayRepository: Send + Sync {
     ///
     /// 「確認してから書く」の 2 段階にすると、同じ assertion の同時到着が両方とも未使用と判定
     /// され得る。実装は一意制約への挿入 1 回で判定すること。
+    ///
+    /// `retain_until` は記録を残す時刻。assertion の `exp` そのものではなく、**受理が止まる時刻**
+    /// （`exp` ＋ 時計ずれの許容幅）を渡す。`exp` までしか残さないと、掃除で行が消えた後も受理は
+    /// 続く隙間ができ、そこで同じ assertion を再利用できてしまう。
     async fn record_if_unused(
         &self,
         tenant_id: TenantId,
         client_id: &str,
         jti: &str,
-        expires_at: DateTime<Utc>,
+        retain_until: DateTime<Utc>,
     ) -> Result<bool>;
 }
 

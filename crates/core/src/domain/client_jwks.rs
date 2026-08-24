@@ -10,7 +10,7 @@
 //!
 //! 鍵ローテーションはこの集合に新旧を並べることで行う（IdP 側に移行期間の概念を持たせない）。
 
-use crate::domain::jwt::{Jwk, Jwks};
+use crate::domain::jwt::{decoding_key_from_jwk, Jwk, Jwks};
 use crate::domain::message::MessageKey;
 
 /// 1 つのクライアントが登録できる鍵の本数。ローテーション（新旧の並存）に要るのは 2 本で、
@@ -44,6 +44,8 @@ pub enum ClientJwksError {
     PrivateKeyMaterial,
     /// 同じ `kid` が 2 つ以上ある。
     DuplicateKid,
+    /// 鍵成分が鍵として読めない（base64url として壊れている等）。
+    InvalidKeyMaterial,
 }
 
 impl ClientJwksError {
@@ -56,6 +58,7 @@ impl ClientJwksError {
             Self::MissingField => "api-client-jwks-missing-field",
             Self::PrivateKeyMaterial => "api-client-jwks-private-key-material",
             Self::DuplicateKid => "api-client-jwks-duplicate-kid",
+            Self::InvalidKeyMaterial => "api-client-jwks-invalid-key-material",
         })
     }
 }
@@ -183,6 +186,15 @@ fn build(submitted: SubmittedJwks) -> Result<ClientJwks, ClientJwksError> {
         .map(SubmittedJwk::normalize)
         .collect::<Result<Vec<_>, _>>()?;
 
+    // 鍵成分が実際に鍵として読めることまで登録時に確かめる。形だけ整った鍵（`n` が base64url
+    // として壊れている等）を通すと、失敗するのは `/token` の時刻になり、しかも理由が
+    // 「登録鍵が見つからない」になって、クライアントの署名の問題と切り分けられない。
+    for key in &keys {
+        if decoding_key_from_jwk(key).is_err() {
+            return Err(ClientJwksError::InvalidKeyMaterial);
+        }
+    }
+
     // `kid` が重複すると「どちらの鍵で検証したか」がリクエストからは決まらない。失効させたはずの
     // 鍵と同じ `kid` で新しい鍵を足す運用を、静かに成立させないため登録時に弾く。
     for (i, key) in keys.iter().enumerate() {
@@ -309,6 +321,23 @@ mod tests {
         assert_eq!(
             parse_registration_jwks(&format!(r#"{{"keys":[{}]}}"#, many.join(","))),
             Err(ClientJwksError::TooManyKeys)
+        );
+    }
+
+    /// 形だけ整っていて鍵として読めない値は登録時に弾く（`/token` の時刻へ持ち込まない）。
+    #[test]
+    fn keys_whose_components_are_not_readable_are_rejected() {
+        assert_eq!(
+            parse_registration_jwks(
+                r#"{"keys":[{"kty":"RSA","kid":"k1","n":"not base64!!","e":"AQAB"}]}"#
+            ),
+            Err(ClientJwksError::InvalidKeyMaterial)
+        );
+        assert_eq!(
+            parse_registration_jwks(
+                r#"{"keys":[{"kty":"EC","kid":"k1","crv":"P-256","x":"not base64!!","y":"AQAB"}]}"#
+            ),
+            Err(ClientJwksError::InvalidKeyMaterial)
         );
     }
 

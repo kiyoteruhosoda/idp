@@ -536,6 +536,7 @@ api-client-jwks-unsupported-key-type = 対応していない鍵種別です。RS
 api-client-jwks-missing-field = JWK Set の鍵に kid または鍵成分がありません。
 api-client-jwks-private-key-material = JWK Set に秘密鍵の成分が含まれています。公開鍵のみを登録してください。
 api-client-jwks-duplicate-kid = JWK Set に同じ kid の鍵が複数あります。
+api-client-jwks-invalid-key-material = JWK Set の鍵を読み取れません。鍵成分が base64url 形式か確認してください。
 api-client-auth-method-public = public クライアントにはクライアント認証方式を設定できません。
 api-member-already = その利用者はすでにこのテナントのメンバーです。
 api-invitation-not-found = 指定された招待が見つかりません。
