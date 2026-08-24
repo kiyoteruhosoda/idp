@@ -225,8 +225,9 @@ fn map_row(row: &MySqlRow) -> Result<User> {
 /// 済ませていた —— どちらにも在り、`users` 側で解決され続けたからである。列を落とした今、
 /// 諦めると**そのユーザー名でログインできない利用者を黙って作る**ことになる。
 ///
-/// 衝突は 2 通りの経路で当たる。他人の**追加**識別子と同じ値なら下の事前チェックが、同時実行で
-/// すり抜けたものは登録簿の一意制約（tenant × 正規化値）が捕まえる。移送が済んだことで、
+/// 衝突は 2 通りの経路で当たる。他人の識別子と同じ値なら下の事前チェックが（**種別を問わず**。
+/// 一意キーと同じ範囲で見る）、同時実行ですり抜けたものは登録簿の一意制約
+/// （tenant × 正規化値）が捕まえる。移送が済んだことで、
 /// ADR-0025 が「残る限界」として挙げていた同時実行の窓は DB 側で塞がった。
 async fn sync_primary_login_identifier(
     conn: &mut sqlx::MySqlConnection,
@@ -249,10 +250,18 @@ async fn sync_primary_login_identifier(
 
     // 他人が同じ値を握っているか（テナントは利用者の行から引く。呼び出し側に渡させると
     // `users` と食い違う余地が生まれる）。
+    //
+    // **種別で絞らない。** migration 0041 で一意キーから `identifier_type` が外れたので、種別で
+    // 絞ると制約より狭い判定になる —— 他人が別種別で同じ正規化値を持っていると素通りし、この
+    // 事前チェックの存在意義（「制約が弾くものを、書きに行く前に同じ範囲で見る」）が失われる。
+    // 利用者から見た応答は変わらない（素通りしても書き込みが一意制約で落ち、どちらの経路も
+    // `Conflict` になる）が、DB エラー頼みの経路をトランザクションの途中に残さない。
+    // 無効な行も見る（一意キーが `is_active` を見ないのと同じ。無効化した識別子の値は別人へ
+    // 渡さない）。条件が一意キーと同じ 2 列なので、索引もそのまま乗る。
     let taken_by_someone_else: Option<i32> = sqlx::query_scalar(
         "SELECT 1 FROM user_login_identifiers i \
          JOIN users u ON u.id = ? \
-         WHERE i.tenant_id = u.tenant_id AND i.identifier_type = 'username' \
+         WHERE i.tenant_id = u.tenant_id \
            AND i.normalized_value = ? AND i.user_id <> u.id \
          LIMIT 1",
     )

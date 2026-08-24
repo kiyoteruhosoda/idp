@@ -193,7 +193,8 @@ async fn the_primary_identifier_cannot_be_disabled_or_deleted_as_an_identifier()
 ///
 /// 前半（expand）はここで諦めて `users.preferred_username` 側を正としていた。列を落とした今、
 /// 諦めると**そのユーザー名でログインできない利用者を黙って作る**ことになるので、`Conflict` で
-/// 操作ごと失敗させる。衝突の検出は DB の一意制約（tenant × 種別 × 正規化値）まで届く。
+/// 操作ごと失敗させる。衝突の検出は DB の一意制約（tenant × 正規化値。migration 0041 で種別に
+/// 依存しない）まで届く。
 #[tokio::test]
 async fn a_value_another_user_already_owns_is_rejected() {
     let Some(env) = support::setup("ap15b primary conflict").await else {
