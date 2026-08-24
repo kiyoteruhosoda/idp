@@ -26,6 +26,7 @@
 
 use crate::domain::message::MessageKey;
 use crate::domain::tenant::TenantId;
+use crate::domain::user::User;
 use crate::domain::values::string_enum;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -156,6 +157,99 @@ impl LoginIdentifierType {
             ));
         }
         Ok(normalized)
+    }
+}
+
+/// ログイン識別子を引いた結果（MT25）。
+///
+/// **`Option<User>` にしない。** 「誰にも当たらなかった」と「複数人に当たったので誰も返さない」は
+/// 呼び出し側での扱いが違うのに、どちらも `None` に丸めると区別できなくなる。実際にこれで 2 つの
+/// 不具合が出ていた:
+///
+/// 1. 所属元で曖昧だった入力が「見つからない」と同じ扱いになり、ゲスト解決へ落ちていた
+///    （[`crate::application::login_user_resolution`]）。「曖昧なら通さない」という決めごとが、
+///    まさにそれが要る場面で破れていた。
+/// 2. 登録時の空き判定（[`Self::is_taken`] の呼び出し元）が、曖昧な値を「空き」と見ていた。
+///    すでに 2 人に当たる値へ 3 人目を足せてしまい、曖昧さが増えていく。
+///
+/// 曖昧のときに候補（利用者 id の列）を持たせないのは意図的である。持たせると呼び出し側で
+/// 「1 人目を採る」ことができてしまい、拒否する意味が無くなる。
+//
+// `Resolved` だけが大きい（`User` 1 個ぶん）が、`Box` には包まない。この値はログイン 1 回につき
+// 1 度だけ組み立てて即座に分解する短命なもので、包むと**成功するログインのたびに**確保が 1 回
+// 増える（`Option<User>` だったときと同じ大きさで、そちらは誰も問題にしていなかった）。
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum LoginIdentifierMatch {
+    /// ちょうど 1 人に当たった。
+    Resolved(User),
+    /// 誰も返せない。理由は [`UnresolvedReason`]。
+    Unresolved(UnresolvedReason),
+}
+
+/// 識別子から利用者を決められなかった理由（[`LoginIdentifierMatch::Unresolved`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnresolvedReason {
+    /// どの識別子にも当たらなかった。
+    NotFound,
+    /// 複数の利用者に当たった。テナント内の一意性は**種別非依存**（1 正規化値は 1 人のもの。
+    /// migration 0041）なので、同じ正規化値で 2 人に当たることはない。残るのは 2 つ:
+    /// 種別ごとに正規化が違うため 1 つの入力が複数の正規化値へ広がる場合（`090-123-4567` は
+    /// ユーザー名なら素のまま、電話番号なら `0901234567`）と、ゲスト解決が所属元テナントを
+    /// またぐため一意性の範囲外になる場合である（MT25。恒久策は home realm discovery で、
+    /// `docs/Progress.md` に残した）。
+    Ambiguous,
+}
+
+impl UnresolvedReason {
+    /// 監査ログに残す理由コード（言語不変の固定値）。利用者への応答は資格情報エラーで
+    /// 一律だが、運用側は「値が無い」と「値が曖昧」を区別できる必要がある —— 後者は
+    /// 利用者が正しい資格情報を出しても入れない状態であり、管理者の是正が要る。
+    pub fn audit_code(self) -> &'static str {
+        match self {
+            Self::NotFound => "unknown_user",
+            Self::Ambiguous => "ambiguous_identifier",
+        }
+    }
+}
+
+impl LoginIdentifierMatch {
+    /// 誰にも当たらなかった。
+    pub fn not_found() -> Self {
+        Self::Unresolved(UnresolvedReason::NotFound)
+    }
+
+    /// 複数人に当たった。
+    pub fn ambiguous() -> Self {
+        Self::Unresolved(UnresolvedReason::Ambiguous)
+    }
+
+    /// その値が**すでに誰かのものか**（登録・改名時の空き判定）。
+    ///
+    /// **曖昧も「使用中」に数える。** 曖昧とは「すでに複数人に当たる」ことで、空きの反対である。
+    /// ここを `Resolved` だけで見ると、曖昧な値に 3 人目を足せてしまう。
+    pub fn is_taken(&self) -> bool {
+        !matches!(self, Self::Unresolved(UnresolvedReason::NotFound))
+    }
+
+    /// 解決できた利用者。曖昧・不在はいずれも `None`。
+    ///
+    /// 理由で分岐しない呼び出し側（テスト・解決結果だけが要る箇所）のための取り出し口で、
+    /// **ログイン経路では使わない** —— そこは理由ごとに監査を残す必要がある。
+    pub fn into_user(self) -> Option<User> {
+        match self {
+            Self::Resolved(user) => Some(user),
+            Self::Unresolved(_) => None,
+        }
+    }
+}
+
+impl From<Option<User>> for LoginIdentifierMatch {
+    fn from(found: Option<User>) -> Self {
+        match found {
+            Some(user) => Self::Resolved(user),
+            None => Self::not_found(),
+        }
     }
 }
 

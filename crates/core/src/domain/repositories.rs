@@ -34,7 +34,7 @@ use crate::domain::error::Result;
 use crate::domain::external_idp::{
     ExternalIdentity, ExternalIdentityProvider, ExternalLoginRequest,
 };
-use crate::domain::login_identifier::UserLoginIdentifier;
+use crate::domain::login_identifier::{LoginIdentifierMatch, UserLoginIdentifier};
 use crate::domain::paging::{Page, PageRequest};
 use crate::domain::passkey_challenge::PasskeyChallenge;
 use crate::domain::password_reset::PasswordResetToken;
@@ -194,8 +194,8 @@ pub trait UserRepository: Send + Sync {
         &self,
         tenant_id: TenantId,
         input: &str,
-    ) -> Result<Option<User>> {
-        self.find_by_username(tenant_id, input.trim()).await
+    ) -> Result<LoginIdentifierMatch> {
+        Ok(self.find_by_username(tenant_id, input.trim()).await?.into())
     }
     /// **参加先テナントのログイン画面**に入力された値から、そのテナントの ACTIVE な GUEST を
     /// 解決する（ADR-0009 §8）。
@@ -209,14 +209,14 @@ pub trait UserRepository: Send + Sync {
     /// 同じ値の識別子を持つゲストが参加してきただけで、そのテナントの HOME 利用者が「曖昧」に
     /// なって締め出されるのを防ぐため。
     ///
-    /// 既定実装は `Ok(None)`（メンバーシップを持たないテスト用フェイクは、従来どおり所属元だけで
+    /// 既定実装は `NotFound`（メンバーシップを持たないテスト用フェイクは、従来どおり所属元だけで
     /// 解決される）。
     async fn find_active_guest_by_login_identifier(
         &self,
         _tenant_id: TenantId,
         _input: &str,
-    ) -> Result<Option<User>> {
-        Ok(None)
+    ) -> Result<LoginIdentifierMatch> {
+        Ok(LoginIdentifierMatch::not_found())
     }
     /// ログイン失敗回数・ロック期限を更新する（ロックポリシー、設計仕様 §4.3）。
     ///
@@ -309,7 +309,8 @@ pub trait UserRepository: Send + Sync {
 /// [`UserAuthenticatorRepository`] と同じ方針）。
 #[async_trait]
 pub trait UserLoginIdentifierRepository: Send + Sync {
-    /// 識別子を登録する。テナント内で `(identifier_type, normalized_value)` が重複したら `Conflict`。
+    /// 識別子を登録する。テナント内で `normalized_value` が重複したら `Conflict`
+    /// （**種別に依存しない**。1 正規化値は 1 人のもの。migration 0041）。
     async fn create(&self, _identifier: &UserLoginIdentifier) -> Result<()> {
         Err(crate::domain::error::DomainError::Repository(
             "create is not supported by this repository".to_string(),

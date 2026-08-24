@@ -106,14 +106,14 @@ async fn the_primary_identifier_is_a_registry_row_that_follows_profile_edits() {
         .find_by_login_identifier(tenant_id, &renamed)
         .await
         .expect("resolve");
-    assert_eq!(resolved.map(|u| u.id), Some(user.id));
+    assert_eq!(resolved.into_user().map(|u| u.id), Some(user.id));
     assert!(
-        users
+        !users
             .find_by_login_identifier(tenant_id, &username)
             .await
             .expect("resolve")
-            .is_none(),
-        "古い名前は解決しない（登録簿に残していると別人の予約を邪魔する）"
+            .is_taken(),
+        "古い名前は解決せず、予約も残さない（残っていると別人の登録を邪魔する）"
     );
 
     // 主識別子を外すと登録簿からも消える。
@@ -193,7 +193,8 @@ async fn the_primary_identifier_cannot_be_disabled_or_deleted_as_an_identifier()
 ///
 /// 前半（expand）はここで諦めて `users.preferred_username` 側を正としていた。列を落とした今、
 /// 諦めると**そのユーザー名でログインできない利用者を黙って作る**ことになるので、`Conflict` で
-/// 操作ごと失敗させる。衝突の検出は DB の一意制約（tenant × 種別 × 正規化値）まで届く。
+/// 操作ごと失敗させる。衝突の検出は DB の一意制約（tenant × 正規化値。migration 0041 で種別に
+/// 依存しない）まで届く。
 #[tokio::test]
 async fn a_value_another_user_already_owns_is_rejected() {
     let Some(env) = support::setup("ap15b primary conflict").await else {
@@ -263,6 +264,7 @@ async fn a_value_another_user_already_owns_is_rejected() {
             .find_by_login_identifier(tenant_id, &taken)
             .await
             .expect("resolve")
+            .into_user()
             .map(|u| u.id),
         Some(owner.id)
     );

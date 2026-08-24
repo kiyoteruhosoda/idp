@@ -36,6 +36,7 @@ use crate::domain::authentication_policy::{
 };
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
+use crate::domain::login_identifier::LoginIdentifierMatch;
 use crate::domain::password::PasswordHasher;
 use crate::domain::password_policy::{password_change_required, PasswordRejection};
 use crate::domain::rate_limit::LoginRateLimiter;
@@ -294,9 +295,10 @@ impl PortalLoginService {
         // 2. ユーザー検索（ログイン識別子。AP8 の登録簿で解決する）。対象はこのテナントの ACTIVE な
         //    メンバー（HOME / GUEST。ADR-0009 §8。解決の規則は `login_user_resolution`）。
         let user = match resolve_login_user(self.users.as_ref(), tenant_id, &cmd.username).await {
-            Ok(Some(u)) => u,
-            Ok(None) => {
-                self.record_failure(tenant_id, None, "unknown_user", ctx)
+            Ok(LoginIdentifierMatch::Resolved(u)) => u,
+            // 不在と曖昧で応答は変えない（存在の露呈を避ける）。監査に残す理由だけを分ける。
+            Ok(LoginIdentifierMatch::Unresolved(reason)) => {
+                self.record_failure(tenant_id, None, reason.audit_code(), ctx)
                     .await;
                 return PortalLoginOutcome::InvalidCredentials;
             }
@@ -456,8 +458,10 @@ impl PortalLoginService {
         }
 
         let user = match resolve_login_user(self.users.as_ref(), tenant_id, &cmd.username).await {
-            Ok(Some(u)) => u,
-            Ok(None) => return PortalChangePasswordOutcome::InvalidCredentials,
+            Ok(LoginIdentifierMatch::Resolved(u)) => u,
+            Ok(LoginIdentifierMatch::Unresolved(_)) => {
+                return PortalChangePasswordOutcome::InvalidCredentials
+            }
             Err(e) => return PortalChangePasswordOutcome::Internal(e.to_string()),
         };
 

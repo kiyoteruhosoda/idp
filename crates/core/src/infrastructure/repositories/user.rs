@@ -2,6 +2,7 @@
 
 use crate::domain::authentication_policy::LockoutPolicy;
 use crate::domain::error::{DomainError, Result};
+use crate::domain::login_identifier::LoginIdentifierMatch;
 use crate::domain::repositories::UserRepository;
 use crate::domain::tenant::TenantId;
 use crate::domain::user::{LoginFailureRecord, User};
@@ -24,8 +25,11 @@ impl SqlxUserRepository {
 
     /// 登録簿（`user_login_identifiers`）を引く 2 つの解決が共有する本体（AP8、ADR-0009 §8）。
     ///
-    /// **複数の利用者に当たったら誰も返さない。** 1 種別の中では一意制約で 1 人に決まるが、
-    /// 種別をまたぐと「ユーザー名としては A、社員番号としては B」という入力があり得る。
+    /// **複数の利用者に当たったら誰も返さない**（[`LoginIdentifierMatch::Unresolved`] の
+    /// `Ambiguous`。「不在」とは区別する。MT25）。1 テナント内で 1 正規化値は 1 人のものだが
+    /// （migration 0041）、種別ごとに正規化が違うため 1 つの入力は複数の正規化値へ広がり、
+    /// 「ユーザー名としては A、電話番号としては B」という入力があり得る（ゲスト解決は所属元
+    /// テナントもまたぐ）。
     /// `LIMIT 1` でどちらかを選ぶと、どちらが返るかが索引の都合で決まってしまう。曖昧な入力で
     /// 認証を通すより、通さない方を選ぶ（候補生成側でも起きにくくしてある。
     /// [`crate::domain::login_identifier::lookup_candidates`]）。
@@ -34,10 +38,10 @@ impl SqlxUserRepository {
         scope: IdentifierScope,
         tenant_id: TenantId,
         input: &str,
-    ) -> Result<Option<User>> {
+    ) -> Result<LoginIdentifierMatch> {
         let candidates = crate::domain::login_identifier::lookup_candidates(input);
         if candidates.is_empty() {
-            return Ok(None);
+            return Ok(LoginIdentifierMatch::not_found());
         }
         let sql = login_identifier_sql(scope, candidates.len());
         let mut query = sqlx::query(&sql);
@@ -49,15 +53,16 @@ impl SqlxUserRepository {
         }
         let rows = query.fetch_all(&self.pool).await.map_err(repo_err)?;
         match rows.len() {
-            0 => Ok(None),
-            1 => map_row(&rows[0]).map(Some),
+            0 => Ok(LoginIdentifierMatch::not_found()),
+            1 => map_row(&rows[0]).map(LoginIdentifierMatch::Resolved),
             _ => {
-                // 曖昧。監査には残らない経路なので、運用ログにだけ残す（値は PII のため出さない）。
+                // 曖昧。ログイン経路は監査にも残すが（`UnresolvedReason::audit_code`）、登録・改名の
+                // 空き判定はここを通っても監査に出ないため、運用ログにも残す（値は PII のため出さない）。
                 tracing::warn!(
                     tenant_id = %tenant_id,
                     "login identifier resolved to multiple users; refusing to authenticate"
                 );
-                Ok(None)
+                Ok(LoginIdentifierMatch::ambiguous())
             }
         }
     }
@@ -68,7 +73,8 @@ impl SqlxUserRepository {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IdentifierScope {
     /// 所属元テナントの登録簿（`user_login_identifiers.tenant_id` = 要求テナント）。
-    /// 一意制約と同じ `(tenant_id, 種別, 正規化値)` の索引に乗る。
+    /// 引き方に合わせた索引 `user_login_identifiers_lookup_idx (tenant_id, 種別, 正規化値)`
+    /// に乗る（migration 0041 で一意キーから種別が外れたため、索引は別立てになった）。
     Home,
     /// 要求テナントに ACTIVE な GUEST として参加している利用者を、**その利用者の所属元の**
     /// 登録簿で引く。
@@ -88,7 +94,8 @@ impl IdentifierScope {
     /// （`TenantResolutionService`）が `DISABLED` なら 404 で先に止めているため。同じ規則を
     /// メンバーシップ側から見たものが `TenantMembershipRepository::is_active_member`。
     ///
-    /// `ActiveGuest` は `Home` と違い一意制約の索引（`(tenant_id, 種別, 正規化値)`）には乗らず、
+    /// `ActiveGuest` は `Home` と違い引き方の索引（`user_login_identifiers_lookup_idx`
+    /// = `(tenant_id, 種別, 正規化値)`）には乗らず、
     /// 当該テナントの ACTIVE な GUEST メンバーシップ
     /// （`tenant_memberships_tenant_type_status_idx (tenant_id, membership_type, status)`。
     /// migration 0040）から、利用者の識別子（`(user_id, identifier_type)` の索引）へ辿る。等値条件を
@@ -160,8 +167,9 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-/// 登録簿の一意制約（tenant × 種別 × 正規化値）違反を `Conflict` として返す。事前チェックを
-/// すり抜けた同時実行はここで捕まる（AP15b でこの制約が主識別子にも効くようになった）。
+/// 登録簿の一意制約（tenant × 正規化値。migration 0041 で種別に依存しない）違反を `Conflict`
+/// として返す。事前チェックをすり抜けた同時実行はここで捕まる
+/// （AP15b でこの制約が主識別子にも効くようになった）。
 fn identifier_conflict(e: sqlx::Error) -> DomainError {
     match &e {
         sqlx::Error::Database(db) if db.is_unique_violation() => DomainError::Conflict(
@@ -217,8 +225,9 @@ fn map_row(row: &MySqlRow) -> Result<User> {
 /// 済ませていた —— どちらにも在り、`users` 側で解決され続けたからである。列を落とした今、
 /// 諦めると**そのユーザー名でログインできない利用者を黙って作る**ことになる。
 ///
-/// 衝突は 2 通りの経路で当たる。他人の**追加**識別子と同じ値なら下の事前チェックが、同時実行で
-/// すり抜けたものは登録簿の一意制約（tenant × 種別 × 正規化値）が捕まえる。移送が済んだことで、
+/// 衝突は 2 通りの経路で当たる。他人の識別子と同じ値なら下の事前チェックが（**種別を問わず**。
+/// 一意キーと同じ範囲で見る）、同時実行ですり抜けたものは登録簿の一意制約
+/// （tenant × 正規化値）が捕まえる。移送が済んだことで、
 /// ADR-0025 が「残る限界」として挙げていた同時実行の窓は DB 側で塞がった。
 async fn sync_primary_login_identifier(
     conn: &mut sqlx::MySqlConnection,
@@ -241,10 +250,18 @@ async fn sync_primary_login_identifier(
 
     // 他人が同じ値を握っているか（テナントは利用者の行から引く。呼び出し側に渡させると
     // `users` と食い違う余地が生まれる）。
+    //
+    // **種別で絞らない。** migration 0041 で一意キーから `identifier_type` が外れたので、種別で
+    // 絞ると制約より狭い判定になる —— 他人が別種別で同じ正規化値を持っていると素通りし、この
+    // 事前チェックの存在意義（「制約が弾くものを、書きに行く前に同じ範囲で見る」）が失われる。
+    // 利用者から見た応答は変わらない（素通りしても書き込みが一意制約で落ち、どちらの経路も
+    // `Conflict` になる）が、DB エラー頼みの経路をトランザクションの途中に残さない。
+    // 無効な行も見る（一意キーが `is_active` を見ないのと同じ。無効化した識別子の値は別人へ
+    // 渡さない）。条件が一意キーと同じ 2 列なので、索引もそのまま乗る。
     let taken_by_someone_else: Option<i32> = sqlx::query_scalar(
         "SELECT 1 FROM user_login_identifiers i \
          JOIN users u ON u.id = ? \
-         WHERE i.tenant_id = u.tenant_id AND i.identifier_type = 'username' \
+         WHERE i.tenant_id = u.tenant_id \
            AND i.normalized_value = ? AND i.user_id <> u.id \
          LIMIT 1",
     )
@@ -426,7 +443,7 @@ impl UserRepository for SqlxUserRepository {
         &self,
         tenant_id: TenantId,
         input: &str,
-    ) -> Result<Option<User>> {
+    ) -> Result<LoginIdentifierMatch> {
         self.resolve_login_identifier(IdentifierScope::Home, tenant_id, input)
             .await
     }
@@ -437,7 +454,7 @@ impl UserRepository for SqlxUserRepository {
         &self,
         tenant_id: TenantId,
         input: &str,
-    ) -> Result<Option<User>> {
+    ) -> Result<LoginIdentifierMatch> {
         self.resolve_login_identifier(IdentifierScope::ActiveGuest, tenant_id, input)
             .await
     }
@@ -634,7 +651,7 @@ impl UserRepository for SqlxUserRepository {
 mod tests {
     use super::*;
 
-    /// 所属元の解決は登録簿を要求テナントで引く（一意制約と同じキー）。
+    /// 所属元の解決は登録簿を要求テナントで引く（`user_login_identifiers_lookup_idx` と同じキー）。
     #[test]
     fn home_scope_filters_the_registry_by_the_requested_tenant() {
         let sql = login_identifier_sql(IdentifierScope::Home, 2);

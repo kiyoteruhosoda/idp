@@ -309,13 +309,14 @@ impl UserLifecycleService {
                 validate_preferred_username(value).map_err(UserLifecycleError::Validation)?;
                 // 解決経路と同じ引き方（AP8）。別名のログイン識別子（登録簿だけにある値）へ
                 // 改名すると、`users` 側の一意制約はすり抜けるのに登録簿の同期で落ちる。
-                // 自分自身の別名でも同じ衝突になるため、`is_some()` で一律に弾く。
+                // 自分自身の別名でも同じ衝突になるため、一律に弾く（曖昧な値も「使用中」。
+                // `LoginIdentifierMatch::is_taken`）。
                 if self
                     .users
                     .find_by_login_identifier(tenant_id, value)
                     .await
                     .map_err(internal)?
-                    .is_some()
+                    .is_taken()
                 {
                     return Err(UserLifecycleError::Conflict(MessageKey::new(
                         "api-user-username-conflict",

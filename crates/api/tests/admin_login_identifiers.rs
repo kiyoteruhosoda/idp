@@ -289,6 +289,49 @@ async fn rejects_values_that_are_already_usable_for_signing_in() {
     .await;
     assert_eq!(res.status(), StatusCode::CONFLICT);
 
+    // ── 種別が違っても、同じ値は別人が取れない（migration 0041）。**無効な行でも取れない。**
+    //
+    //    無効な行は解決にも空き判定にも当たらないため、ここは一意制約だけが止めている。
+    //    止めないと、無効化している間に別人が同じ値を別種別で取り、有効へ戻した瞬間に
+    //    「1 つの入力が 2 人に当たる」状態ができる —— 当人たちは正しいパスワードを出しても
+    //    入れなくなり、しかも当人以外からは見えない。
+    let reserved = format!("7{:09}", uuid::Uuid::new_v4().as_u128() % 1_000_000_000);
+    let res = send(
+        &env.app,
+        post(
+            &admin_cookie,
+            &uri,
+            json!({"identifier_type": "employee_number", "value": reserved, "is_active": false}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        res.status(),
+        StatusCode::CREATED,
+        "alice の社員番号（無効）"
+    );
+
+    let bob_id = support::find_user_id_by_username(&env.pool, &env.root_tenant_id, &bob)
+        .await
+        .expect("registered bob");
+    let res = send(
+        &env.app,
+        post(
+            &admin_cookie,
+            &format!(
+                "/{}/admin/users/{bob_id}/login-identifiers",
+                env.root_tenant_id
+            ),
+            json!({"identifier_type": "username", "value": reserved}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        res.status(),
+        StatusCode::CONFLICT,
+        "無効な行が押さえている値は、種別を変えても別人が取れない"
+    );
+
     // 書式不正は 400（登録できてしまうと「一致しない識別子」になり、理由が分からない）。
     for bad in [
         json!({"identifier_type": "phone_number", "value": "090-1234-abcd"}),

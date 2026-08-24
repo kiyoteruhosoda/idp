@@ -664,3 +664,164 @@ async fn refresh(
     )
     .await
 }
+
+/// 保証 6（MT25）: 所属元テナントで**曖昧**になった入力は、そこで解決を打ち切る。ゲスト解決へ
+/// 落として「同じ値を持つゲスト」を認証してはいけない。
+///
+/// # この状態への到達経路
+///
+/// 種別ごとに正規化が違うため、1 つの入力が**複数の正規化値**へ広がる。`090-123-4567` は
+/// ユーザー名としては `090-123-4567`、電話番号としては区切りを落とした `0901234567` である。
+/// この 2 つは別の文字列なので、値の一意制約（migration 0041。テナント内で 1 正規化値 1 人）を
+/// すり抜けて別人が持てる。
+///
+/// 追加時の空き判定は「実際のログイン経路と同じ引き方」で他人に当たる値を拒むが、**無効な行には
+/// 当たらない**（無効化した識別子は解決しない）。そこで次の順で、1 つの入力が 2 人に当たる状態を作れる:
+///
+/// 1. A に電話番号 `0901234567` を**無効な状態で**割り当てる（無効化した既存の識別子と同じ状態）。
+/// 2. B がユーザー名 `090-123-4567` を取る。A の行は無効なので空き判定に当たらず、正規化値も
+///    違うので一意制約にも当たらない。
+/// 3. A の電話番号を有効に戻す。ここで `090-123-4567` は A（電話番号）と B（ユーザー名）の
+///    両方に当たる。
+///
+/// この状態で host のログイン欄に `090-123-4567` を入れると、修正前は「所属元で曖昧」が
+/// 「所属元に不在」へ潰れてゲスト解決まで落ち、同じ値をユーザー名に持つゲストが**自分の
+/// パスワードで入れて**いた。なりすましではないが、「曖昧なら通さない」「所属元がテナント内の
+/// 名前の取り合いに勝つ」という 2 つの決めごとが同時に破れていた。
+#[tokio::test]
+async fn an_ambiguous_home_identifier_does_not_let_a_guest_sign_in() {
+    let Some(env) = setup().await else { return };
+    let root_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let host = create_tenant(&env, &root_cookie, "AmbiguousIdentifierHost").await;
+
+    // 同じ入力が 2 通りに正規化される値を選ぶ（電話番号は区切りを落とし、ユーザー名は落とさない）。
+    let digits = format!("0{:09}", uuid::Uuid::new_v4().as_u128() % 1_000_000_000);
+    let dashed = format!("{}-{}-{}", &digits[0..3], &digits[3..6], &digits[6..10]);
+
+    // host に HOME 利用者を 2 人（自己登録を一時的に許可してパスワードの分かる利用者を作る）。
+    sqlx::query("UPDATE tenants SET self_registration_enabled = 1 WHERE id = ?")
+        .bind(&host)
+        .execute(&env.pool)
+        .await
+        .expect("enable self-registration on the host tenant");
+    let alice = format!("alice{}", unique());
+    let alice_password = format!("alice-password-{}", unique());
+    register_user(&env.app, &host, &alice, &alice_password).await;
+    mark_email_verified(&env.pool, &host, &alice).await;
+    let alice_id = support::find_user_id_by_username(&env.pool, &host, &alice)
+        .await
+        .expect("registered alice");
+    let bob = format!("bob{}", unique());
+    let bob_password = format!("bob-password-{}", unique());
+    register_user(&env.app, &host, &bob, &bob_password).await;
+    mark_email_verified(&env.pool, &host, &bob).await;
+    let bob_id = support::find_user_id_by_username(&env.pool, &host, &bob)
+        .await
+        .expect("registered bob");
+
+    // 1. A の電話番号（無効）。
+    let res = send(
+        &env.app,
+        post(
+            &root_cookie,
+            &format!("/{host}/admin/users/{alice_id}/login-identifiers"),
+            json!({ "identifier_type": "phone_number", "value": digits, "is_active": false }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED, "alice の電話番号");
+    let alice_identifier = body_json(res).await["id"]
+        .as_str()
+        .expect("identifier id")
+        .to_string();
+
+    // 2. B のユーザー名（区切り付き）。A の行は無効なので空き判定に当たらない。
+    let res = send(
+        &env.app,
+        post(
+            &root_cookie,
+            &format!("/{host}/admin/users/{bob_id}/login-identifiers"),
+            json!({ "identifier_type": "username", "value": dashed }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        res.status(),
+        StatusCode::CREATED,
+        "無効な行には空き判定が当たらない（この前提が崩れたら経路ごと再検討する）"
+    );
+
+    // 3. A の電話番号を有効へ戻す。ここから `dashed` は 2 人に当たる。
+    let res = send(
+        &env.app,
+        patch(
+            &root_cookie,
+            &format!("/{host}/admin/users/{alice_id}/login-identifiers/{alice_identifier}"),
+            json!({ "is_active": true }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK, "alice の電話番号を有効化");
+
+    // 同じ値をユーザー名に持つ root 所属の利用者を host のゲストにする。
+    let guest_password = format!("guest-password-{}", unique());
+    register_user(&env.app, &env.root_tenant_id, &dashed, &guest_password).await;
+    mark_email_verified(&env.pool, &env.root_tenant_id, &dashed).await;
+    let guest_id = support::find_user_id_by_username(&env.pool, &env.root_tenant_id, &dashed)
+        .await
+        .expect("registered guest");
+    invite_and_accept(&env, &root_cookie, &host, &guest_id).await;
+
+    // ── 本体: 曖昧な入力ではゲストも解決されない。
+    assert_eq!(
+        portal_login_result(&env, &host, "203.0.113.61", &dashed, &guest_password).await,
+        "invalid_credentials",
+        "曖昧な入力がゲスト解決へ落ちてはいけない"
+    );
+    // 曖昧の当事者である HOME 利用者も、その値では入れない（「曖昧なら通さない」の一貫性）。
+    assert_eq!(
+        portal_login_result(&env, &host, "203.0.113.62", &dashed, &bob_password).await,
+        "invalid_credentials",
+        "曖昧な入力は誰にも解決しない"
+    );
+    // 拒否されるのは曖昧な入力だけで、当人たちの一意な識別子は影響を受けない。
+    assert_eq!(
+        portal_login_result(&env, &host, "203.0.113.63", &alice, &alice_password).await,
+        "success",
+        "自分の一意なユーザー名では従来どおり入れる"
+    );
+    assert_eq!(
+        portal_login_result(&env, &host, "203.0.113.64", &bob, &bob_password).await,
+        "success",
+        "自分の一意なユーザー名では従来どおり入れる"
+    );
+    // ゲストは所属元テナントでは値が一意なので、そちらからは入れる。
+    assert_eq!(
+        portal_login_result(
+            &env,
+            &env.root_tenant_id,
+            "203.0.113.65",
+            &dashed,
+            &guest_password
+        )
+        .await,
+        "success",
+        "所属元では一意なので解決する"
+    );
+
+    // ── 監査には「不在」ではなく「曖昧」として残る。管理者の是正が要る状態なので、
+    //    正しい資格情報を出しても入れない理由が読めなければならない。
+    let reasons: Vec<String> = sqlx::query_scalar(
+        "SELECT reason FROM audit_log \
+         WHERE event_type = 'login.failed' AND tenant_id = ? AND result = 'failure' \
+         ORDER BY occurred_at DESC LIMIT 20",
+    )
+    .bind(&host)
+    .fetch_all(&env.pool)
+    .await
+    .expect("audit rows");
+    assert!(
+        reasons.iter().any(|r| r == "ambiguous_identifier"),
+        "曖昧は unknown_user と区別して監査に残る: {reasons:?}"
+    );
+}

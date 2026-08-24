@@ -28,6 +28,7 @@ use crate::domain::authentication_policy::{
 };
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
+use crate::domain::login_identifier::LoginIdentifierMatch;
 use crate::domain::password::PasswordHasher;
 use crate::domain::password_policy::{password_change_required, PasswordPolicy};
 use crate::domain::rate_limit::LoginRateLimiter;
@@ -261,8 +262,9 @@ impl LoginService {
         //    メンバー = 所属元（HOME）と、招待で参加している GUEST（ADR-0009 §8。解決の規則は
         //    `login_user_resolution`）。
         let user = match resolve_login_user(self.users.as_ref(), tenant_id, &cmd.username).await {
-            Ok(Some(u)) => u,
-            Ok(None) => {
+            Ok(LoginIdentifierMatch::Resolved(u)) => u,
+            // 不在と曖昧で応答は変えない（存在の露呈を避ける）。監査に残す理由だけを分ける。
+            Ok(LoginIdentifierMatch::Unresolved(reason)) => {
                 self.audit
                     .record(
                         AuditEventType::LoginFailed,
@@ -270,7 +272,7 @@ impl LoginService {
                         Some(tenant_id),
                         None,
                         Some(&client_id),
-                        Some("unknown_user"),
+                        Some(reason.audit_code()),
                         ctx,
                     )
                     .await;
