@@ -30,6 +30,7 @@ use crate::domain::password::PasswordHasher;
 use crate::domain::password_policy::{password_change_required, PasswordRejection};
 use crate::domain::permission;
 use crate::domain::rate_limit::LoginRateLimiter;
+use crate::domain::repositories::TenantDomainRepository;
 use crate::domain::repositories::{
     AuthenticationPolicyRepository, SsoSessionRepository, TotpSecretRepository,
     UserPermissionRepository, UserRepository,
@@ -99,6 +100,9 @@ pub enum AdminLoginOutcome {
 
 pub struct AdminLoginService {
     users: Arc<dyn UserRepository>,
+    /// テナントへ割り当てたドメイン（ADR-0029）。ログイン欄の入力が `local@domain` の形のとき、
+    /// 所属元テナントを 1 つに決めるために引く（`login_user_resolution`）。
+    tenant_domains: Arc<dyn TenantDomainRepository>,
     sso_sessions: Arc<dyn SsoSessionRepository>,
     permissions: Arc<dyn UserPermissionRepository>,
     totp_secrets: Arc<dyn TotpSecretRepository>,
@@ -120,6 +124,7 @@ impl AdminLoginService {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         users: Arc<dyn UserRepository>,
+        tenant_domains: Arc<dyn TenantDomainRepository>,
         sso_sessions: Arc<dyn SsoSessionRepository>,
         permissions: Arc<dyn UserPermissionRepository>,
         totp_secrets: Arc<dyn TotpSecretRepository>,
@@ -136,6 +141,7 @@ impl AdminLoginService {
     ) -> Self {
         Self {
             users,
+            tenant_domains,
             sso_sessions,
             permissions,
             totp_secrets,
@@ -308,7 +314,14 @@ impl AdminLoginService {
         //    メンバー（HOME / GUEST。ADR-0009 §8。解決の規則は `login_user_resolution`）。
         //    ゲスト管理者はここで解決される —— テナント作成者は作成先の ACTIVE GUEST になるため
         //    （§4）、これが無いと自分が作ったテナントの管理コンソールへ直接ログインできない。
-        let user = match resolve_login_user(self.users.as_ref(), tenant_id, &cmd.username).await {
+        let user = match resolve_login_user(
+            self.users.as_ref(),
+            self.tenant_domains.as_ref(),
+            tenant_id,
+            &cmd.username,
+        )
+        .await
+        {
             Ok(LoginIdentifierMatch::Resolved(u)) => u,
             // 不在と曖昧で応答は変えない（存在の露呈を避ける）。監査に残す理由だけを分ける。
             Ok(LoginIdentifierMatch::Unresolved(reason)) => {
@@ -480,7 +493,14 @@ impl AdminLoginService {
             }
         }
 
-        let user = match resolve_login_user(self.users.as_ref(), tenant_id, &cmd.username).await {
+        let user = match resolve_login_user(
+            self.users.as_ref(),
+            self.tenant_domains.as_ref(),
+            tenant_id,
+            &cmd.username,
+        )
+        .await
+        {
             Ok(LoginIdentifierMatch::Resolved(u)) => u,
             Ok(LoginIdentifierMatch::Unresolved(_)) => {
                 return AdminLoginOutcome::InvalidCredentials

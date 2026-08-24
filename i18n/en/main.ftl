@@ -494,6 +494,11 @@ api-register-rate-limited = Too many sign-up attempts. Please wait a moment and 
 api-runtime-setting-invalid = The runtime setting could not be saved. Check the key and the value.
 api-runtime-setting-not-bootable = The value is valid, but the services could not start with it, so it was not saved. (1) An https ISSUER requires KEY_ENCRYPTION_KEY, INTERNAL_SERVICE_TOKEN and CSRF_SECRET to be set as environment variables first. (2) When COOKIE_DOMAIN is set, the ISSUER host must stay under that domain and use the same scheme as PUBLIC_WEB_BASE_URL. The exact reason is in the api log.
 api-tenant-name-empty = The tenant name must not be empty.
+# Tenant domain assignment (ADR-0029)
+api-tenant-domain-required = The domain must not be empty.
+api-tenant-domain-invalid = The domain format is invalid. Use letters, digits and hyphens; enter internationalized domains in punycode (xn--).
+api-tenant-domain-too-long = The domain must be at most { $value } characters.
+api-tenant-domain-conflict = This domain is already assigned.
 api-tenant-status-invalid = Invalid status. Choose ACTIVE or DISABLED.
 api-tenant-create-conflict = The tenant could not be created (a conflict such as a duplicate).
 api-tenant-root-cannot-delete = The root tenant cannot be deleted.

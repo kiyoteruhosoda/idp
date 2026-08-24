@@ -24,9 +24,12 @@ use crate::domain::error::DomainError;
 use crate::domain::id_generator::IdGenerator;
 use crate::domain::message::MessageKey;
 use crate::domain::paging::{PageRequest, PagedResult};
-use crate::domain::repositories::{TenantProvisioningRepository, TenantRepository};
+use crate::domain::repositories::{
+    TenantDomainRepository, TenantProvisioningRepository, TenantRepository,
+};
 use crate::domain::tenant::{Tenant, TenantId};
 use crate::domain::tenant_context::TenantContext;
+use crate::domain::tenant_domain::{validate_domain, TenantDomain};
 use crate::domain::tenant_membership::TenantMembership;
 use crate::domain::values::TenantStatus;
 use std::sync::Arc;
@@ -67,6 +70,8 @@ pub enum TenantManagementError {
 
 pub struct TenantManagementService {
     tenants: Arc<dyn TenantRepository>,
+    /// テナントへ割り当てたドメイン（ADR-0029）。ログインの解決と同じ表を管理側からも触る。
+    tenant_domains: Arc<dyn TenantDomainRepository>,
     provisioning: Arc<dyn TenantProvisioningRepository>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
@@ -76,6 +81,7 @@ pub struct TenantManagementService {
 impl TenantManagementService {
     pub fn new(
         tenants: Arc<dyn TenantRepository>,
+        tenant_domains: Arc<dyn TenantDomainRepository>,
         provisioning: Arc<dyn TenantProvisioningRepository>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
@@ -83,6 +89,7 @@ impl TenantManagementService {
     ) -> Self {
         Self {
             tenants,
+            tenant_domains,
             provisioning,
             audit,
             clock,
@@ -336,6 +343,148 @@ impl TenantManagementService {
             _ => Err(TenantManagementError::NotFound),
         }
     }
+
+    // ── ドメインの割り当て（ADR-0029）─────────────────────────────────────────
+
+    /// ドメインの操作対象は**自テナントまたは直下の子**とする。
+    ///
+    /// 子だけに限らないのは、root 自身にもドメインが要るためである（root の利用者は作成した
+    /// テナントへゲストとして入るので、ドメイン修飾で入れなければ意味がない）。root は誰の子でも
+    /// ないので `load_child` では到達できない。
+    async fn load_self_or_child(
+        &self,
+        requesting: TenantContext,
+        target_id: TenantId,
+    ) -> Result<Tenant, TenantManagementError> {
+        if target_id == requesting.tenant_id() {
+            return match self
+                .tenants
+                .find_by_id(target_id)
+                .await
+                .map_err(|e| TenantManagementError::Internal(e.to_string()))?
+            {
+                Some(tenant) => Ok(tenant),
+                None => Err(TenantManagementError::NotFound),
+            };
+        }
+        self.load_child(requesting, target_id).await
+    }
+
+    /// 割り当て済みのドメインを一覧する。
+    pub async fn list_domains(
+        &self,
+        requesting: TenantContext,
+        target_id: TenantId,
+    ) -> Result<Vec<TenantDomain>, TenantManagementError> {
+        let tenant = self.load_self_or_child(requesting, target_id).await?;
+        self.tenant_domains
+            .list_for_tenant(tenant.id)
+            .await
+            .map_err(|e| TenantManagementError::Internal(e.to_string()))
+    }
+
+    /// ドメインを割り当てる。
+    ///
+    /// 一意性は**グローバル**なので、他テナントが押さえていても `Conflict` になる。どのテナントが
+    /// 持っているかは返さない —— 他テナントの構成を、ドメインを総当たりして覗けるようにしない。
+    pub async fn add_domain(
+        &self,
+        requesting: TenantContext,
+        target_id: TenantId,
+        raw_domain: &str,
+        actor: Uuid,
+        ctx: &RequestContext,
+    ) -> Result<TenantDomain, TenantManagementError> {
+        let tenant = self.load_self_or_child(requesting, target_id).await?;
+        let domain = validate_domain(raw_domain).map_err(TenantManagementError::Validation)?;
+        let now = self.clock.now();
+        let record = TenantDomain {
+            id: self.ids.new_id(),
+            tenant_id: tenant.id,
+            domain,
+            created_at: now,
+            updated_at: now,
+        };
+        self.tenant_domains
+            .create(&record)
+            .await
+            .map_err(|e| match e {
+                DomainError::Conflict(_) => {
+                    TenantManagementError::Conflict(MessageKey::new("api-tenant-domain-conflict"))
+                }
+                other => TenantManagementError::Internal(other.to_string()),
+            })?;
+        // 監査にはドメインを残す（PII ではなく、テナントの構成そのもの）。ログインをどのテナントへ
+        // 向けるかを決める操作であり、権限付与と同じ重さで追跡できる必要がある。
+        self.record_domain_event(
+            AuditEventType::TenantDomainAdded,
+            tenant.id,
+            actor,
+            &record.domain,
+            ctx,
+        )
+        .await;
+        Ok(record)
+    }
+
+    /// 割り当てを解除する。
+    pub async fn remove_domain(
+        &self,
+        requesting: TenantContext,
+        target_id: TenantId,
+        domain_id: Uuid,
+        actor: Uuid,
+        ctx: &RequestContext,
+    ) -> Result<(), TenantManagementError> {
+        let tenant = self.load_self_or_child(requesting, target_id).await?;
+        // 監査へ残す値のため、消す前に読む（消えた後では何を解除したか分からない）。
+        let removed = self
+            .tenant_domains
+            .list_for_tenant(tenant.id)
+            .await
+            .map_err(|e| TenantManagementError::Internal(e.to_string()))?
+            .into_iter()
+            .find(|d| d.id == domain_id)
+            .ok_or(TenantManagementError::NotFound)?;
+        if !self
+            .tenant_domains
+            .delete(tenant.id, domain_id)
+            .await
+            .map_err(|e| TenantManagementError::Internal(e.to_string()))?
+        {
+            return Err(TenantManagementError::NotFound);
+        }
+        self.record_domain_event(
+            AuditEventType::TenantDomainRemoved,
+            tenant.id,
+            actor,
+            &removed.domain,
+            ctx,
+        )
+        .await;
+        Ok(())
+    }
+
+    async fn record_domain_event(
+        &self,
+        event: AuditEventType,
+        tenant_id: TenantId,
+        actor: Uuid,
+        domain: &str,
+        ctx: &RequestContext,
+    ) {
+        self.audit
+            .record(
+                event,
+                AuditResult::Success,
+                Some(tenant_id),
+                Some(actor),
+                None,
+                Some(&format!("domain={domain}")),
+                ctx,
+            )
+            .await;
+    }
 }
 
 fn validate_name(name: String) -> Result<String, TenantManagementError> {
@@ -445,6 +594,12 @@ mod tests {
 
     /// テナント開通 unit of work のフェイク。成功時は全行を「まとめて」記録し（原子性を模す）、
     /// `fail = true` なら何も書かずに失敗する（途中失敗＝全ロールバックの相当）。
+    /// ドメインを持たないテナント（既定実装のまま）。既存のテストはドメイン経路を通らない。
+    struct NoTenantDomains;
+
+    #[async_trait]
+    impl crate::domain::repositories::TenantDomainRepository for NoTenantDomains {}
+
     struct FakeProvisioning {
         tenants: Arc<FakeTenants>,
         memberships: Mutex<Vec<TenantMembership>>,
@@ -510,6 +665,7 @@ mod tests {
         });
         let svc = TenantManagementService::new(
             tenants.clone(),
+            Arc::new(NoTenantDomains),
             provisioning.clone(),
             audit,
             Arc::new(FixedClock(now())),

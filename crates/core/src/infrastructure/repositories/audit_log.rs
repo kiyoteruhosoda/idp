@@ -38,7 +38,7 @@ impl AuditLogSink for SqlxAuditLogSink {
         .bind(&event.ip_address)
         .bind(&event.user_agent)
         .bind(event.result.as_str())
-        .bind(&event.reason)
+        .bind(event.reason.as_deref().map(truncate_reason))
         .bind(&event.correlation_id)
         .execute(&self.pool)
         .await
@@ -74,6 +74,19 @@ impl SqlxAuditLogQuery {
     pub fn new(pool: Db) -> Self {
         Self { pool }
     }
+}
+
+/// `reason` の格納先カラム上限（`VARCHAR(255)`）。超過分は切り詰める。
+///
+/// `reason` には可変長の値が入る（テナントのドメインは最長 253 文字。ADR-0029）。溢れたまま
+/// bind すると strict mode の MariaDB は INSERT ごと失敗させ、**監査イベントが丸ごと落ちる** ——
+/// 呼び出し側（`AuditService::record`）はエラーログを出すだけで、操作そのものは成功しているため、
+/// 「起きたのに記録が無い」状態になる。末尾を落としてでも記録を残す。
+const REASON_MAX_LEN: usize = 255;
+
+/// 文字境界を壊さないよう `char` 単位で切る（`VARCHAR` の上限も文字数）。
+fn truncate_reason(reason: &str) -> String {
+    reason.chars().take(REASON_MAX_LEN).collect()
 }
 
 fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
@@ -175,5 +188,26 @@ impl AuditLogQuery for SqlxAuditLogQuery {
                 Ok((client_id, to_utc(last_used)))
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 上限を超える `reason` は切り詰める（溢れたまま bind すると監査イベントごと落ちる）。
+    #[test]
+    fn reason_is_truncated_to_the_column_limit() {
+        let long = "domain=".to_string() + &"a".repeat(300);
+        assert_eq!(truncate_reason(&long).chars().count(), REASON_MAX_LEN);
+        assert_eq!(
+            truncate_reason("domain=corp.example"),
+            "domain=corp.example"
+        );
+        // 文字境界を壊さない（マルチバイトでも panic しない）。
+        assert_eq!(
+            truncate_reason(&"あ".repeat(300)).chars().count(),
+            REASON_MAX_LEN
+        );
     }
 }

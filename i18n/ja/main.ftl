@@ -494,6 +494,11 @@ api-register-rate-limited = 登録の試行回数が多すぎます。しばら�
 api-runtime-setting-invalid = ランタイム設定を保存できませんでした。キーと値を確認してください。
 api-runtime-setting-not-bootable = 値の書式は正しいものの、この値ではサービスが起動できないため保存しませんでした。(1) ISSUER を https にするには、先に KEY_ENCRYPTION_KEY・INTERNAL_SERVICE_TOKEN・CSRF_SECRET を環境変数で設定してください。(2) COOKIE_DOMAIN を設定している場合、ISSUER のホストはそのドメイン配下で、PUBLIC_WEB_BASE_URL とスキーム（http/https）が一致している必要があります。具体的な理由は api のログに出ます。
 api-tenant-name-empty = テナント名を入力してください。
+# テナントへのドメイン割り当て（ADR-0029）
+api-tenant-domain-required = ドメインを入力してください。
+api-tenant-domain-invalid = ドメインの書式が正しくありません。英数字とハイフンで構成し、国際化ドメインは punycode（xn--）で入力してください。
+api-tenant-domain-too-long = ドメインは { $value } 文字以内で入力してください。
+api-tenant-domain-conflict = このドメインはすでに割り当てられています。
 api-tenant-status-invalid = 状態が無効です。ACTIVE または DISABLED を指定してください。
 api-tenant-create-conflict = テナントを作成できませんでした（重複などの競合）。
 api-tenant-root-cannot-delete = root テナントは削除できません。

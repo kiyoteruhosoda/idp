@@ -32,6 +32,7 @@ use crate::domain::login_identifier::LoginIdentifierMatch;
 use crate::domain::password::PasswordHasher;
 use crate::domain::password_policy::{password_change_required, PasswordPolicy};
 use crate::domain::rate_limit::LoginRateLimiter;
+use crate::domain::repositories::TenantDomainRepository;
 use crate::domain::repositories::{
     AuthSessionRepository, AuthenticationPolicyRepository, ClientConsentRepository,
     SsoSessionRepository, TotpSecretRepository, UserRepository,
@@ -114,6 +115,9 @@ pub enum LoginOutcome {
 
 pub struct LoginService {
     users: Arc<dyn UserRepository>,
+    /// テナントへ割り当てたドメイン（ADR-0029）。ログイン欄の入力が `local@domain` の形のとき、
+    /// 所属元テナントを 1 つに決めるために引く（`login_user_resolution`）。
+    tenant_domains: Arc<dyn TenantDomainRepository>,
     auth_sessions: Arc<dyn AuthSessionRepository>,
     sso_sessions: Arc<dyn SsoSessionRepository>,
     client_consents: Arc<dyn ClientConsentRepository>,
@@ -138,6 +142,7 @@ impl LoginService {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         users: Arc<dyn UserRepository>,
+        tenant_domains: Arc<dyn TenantDomainRepository>,
         auth_sessions: Arc<dyn AuthSessionRepository>,
         sso_sessions: Arc<dyn SsoSessionRepository>,
         client_consents: Arc<dyn ClientConsentRepository>,
@@ -157,6 +162,7 @@ impl LoginService {
     ) -> Self {
         Self {
             users,
+            tenant_domains,
             auth_sessions,
             sso_sessions,
             client_consents,
@@ -261,7 +267,14 @@ impl LoginService {
         // 4. ユーザー検索（ログイン識別子。AP8 の登録簿で解決する）。対象はこのテナントの ACTIVE な
         //    メンバー = 所属元（HOME）と、招待で参加している GUEST（ADR-0009 §8。解決の規則は
         //    `login_user_resolution`）。
-        let user = match resolve_login_user(self.users.as_ref(), tenant_id, &cmd.username).await {
+        let user = match resolve_login_user(
+            self.users.as_ref(),
+            self.tenant_domains.as_ref(),
+            tenant_id,
+            &cmd.username,
+        )
+        .await
+        {
             Ok(LoginIdentifierMatch::Resolved(u)) => u,
             // 不在と曖昧で応答は変えない（存在の露呈を避ける）。監査に残す理由だけを分ける。
             Ok(LoginIdentifierMatch::Unresolved(reason)) => {
@@ -921,6 +934,13 @@ mod tests {
     }
 
     #[derive(Default)]
+    /// ドメインを持たないテナント（ADR-0029 の経路を通らない既定）。トレイトの既定実装が
+    /// 「割り当て無し」を返すので、ログインの解決は従来の 2 段（所属元 → ゲスト走査）になる。
+    struct NoTenantDomains;
+
+    #[async_trait]
+    impl crate::domain::repositories::TenantDomainRepository for NoTenantDomains {}
+
     struct FakeSsoSessions;
     #[async_trait]
     impl SsoSessionRepository for FakeSsoSessions {
@@ -1099,6 +1119,7 @@ mod tests {
 
         let service = LoginService::new(
             users.clone(),
+            Arc::new(NoTenantDomains),
             auth_sessions.clone(),
             Arc::new(FakeSsoSessions),
             Arc::new(FakeConsents),

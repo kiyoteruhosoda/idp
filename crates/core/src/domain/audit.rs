@@ -100,6 +100,9 @@ pub enum AuditEventType {
     TenantCreated,
     TenantUpdated,
     TenantDeleted,
+    /// テナントへのドメイン割り当て（ADR-0029）。ログインをどのテナントへ向けるかを決める操作。
+    TenantDomainAdded,
+    TenantDomainRemoved,
     /// root（idp.system.admin）によるシステム設定の更新（SMTP 等。MT14）。値そのものは記録しない。
     SystemSettingsUpdated,
     /// root（idp.system.admin）による api の再起動要求（ADR-0017）。ランタイム設定の反映手段であり、
@@ -175,6 +178,8 @@ impl AuditEventType {
             Self::TenantCreated => "tenant.created",
             Self::TenantUpdated => "tenant.updated",
             Self::TenantDeleted => "tenant.deleted",
+            Self::TenantDomainAdded => "tenant.domain_added",
+            Self::TenantDomainRemoved => "tenant.domain_removed",
             Self::SystemSettingsUpdated => "system_settings.updated",
             Self::ServiceRestartRequested => "service.restart_requested",
             Self::PasswordResetRequested => "password_reset.requested",

@@ -51,6 +51,7 @@ pub mod step_up;
 pub mod system_setting;
 pub mod tenant;
 pub mod tenant_context;
+pub mod tenant_domain;
 pub mod tenant_membership;
 pub mod totp_secret;
 pub mod user;

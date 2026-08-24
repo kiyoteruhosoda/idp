@@ -24,9 +24,12 @@ use crate::domain::error::DomainError;
 use crate::domain::id_generator::IdGenerator;
 use crate::domain::login_identifier::{LoginIdentifierType, UserLoginIdentifier};
 use crate::domain::message::MessageKey;
-use crate::domain::repositories::{UserLoginIdentifierRepository, UserRepository};
+use crate::domain::repositories::{
+    TenantDomainRepository, UserLoginIdentifierRepository, UserRepository,
+};
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
+use crate::domain::tenant_domain::split_qualified_identifier;
 use crate::domain::user::User;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -94,6 +97,8 @@ fn internal(e: DomainError) -> LoginIdentifierManagementError {
 pub struct LoginIdentifierManagementService {
     identifiers: Arc<dyn UserLoginIdentifierRepository>,
     users: Arc<dyn UserRepository>,
+    /// テナントへ割り当てたドメイン（ADR-0029）。空き判定をログインの解決と同じ範囲にするために引く。
+    tenant_domains: Arc<dyn TenantDomainRepository>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
     ids: Arc<dyn IdGenerator>,
@@ -103,6 +108,7 @@ impl LoginIdentifierManagementService {
     pub fn new(
         identifiers: Arc<dyn UserLoginIdentifierRepository>,
         users: Arc<dyn UserRepository>,
+        tenant_domains: Arc<dyn TenantDomainRepository>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
         ids: Arc<dyn IdGenerator>,
@@ -110,6 +116,7 @@ impl LoginIdentifierManagementService {
         Self {
             identifiers,
             users,
+            tenant_domains,
             audit,
             clock,
             ids,
@@ -271,6 +278,9 @@ impl LoginIdentifierManagementService {
 
     /// 追加しようとしている値が、まだ誰のログインにも使われていないことを確かめる。
     ///
+    /// 判定はログインの解決（`login_user_resolution`）と**同じ範囲**を見る。ずれると「登録できたのに
+    /// 別人に解決される値」「登録できないのに誰にも当たらない値」が生まれる。
+    ///
     /// **自分自身に解決される値も拒む。** 他人に解決される値が危ないのは自明だが、自分の
     /// `users.preferred_username` と同じ値を登録簿にも足せてしまうと、その行を無効化しても
     /// `preferred_username` へのフォールバックで認証が通る ——「止めたのに使える」識別子が
@@ -282,7 +292,7 @@ impl LoginIdentifierManagementService {
         identifier_type: LoginIdentifierType,
         raw: &str,
     ) -> Result<(), LoginIdentifierManagementError> {
-        // 1. 実際のログイン経路と同じ引き方。登録簿にも `users.preferred_username` にも当たる。
+        // 1. 入力そのままで、ログインの 1 段目と同じ引き方をする。
         if self
             .users
             .find_by_login_identifier(tenant_id, raw)
@@ -294,7 +304,33 @@ impl LoginIdentifierManagementService {
                 "api-login-identifier-conflict",
             )));
         }
-        // 2. `users.email` は現状ログインの入り口ではないため 1 では当たらない。しかし他人の
+        // 2. ドメイン修飾された値は、そのドメインが**このテナントのもの**なら「ローカル部の利用者」
+        //    を指す綴りでもある（ADR-0029 の UPN 解釈）。1 は入力そのままでしか引かないので、
+        //    `alice@corp.example` を他人へ足すと、`alice` の人がその綴りで入れなくなる —— 参加先
+        //    テナントの画面ではそれが唯一の入り口になり得るので、横取りさせない。
+        //
+        //    自分自身のローカル部に当たる場合も拒む（1 と同じ理由。同じ人が同じ綴りを 2 通りで
+        //    持つと、片方を無効化しても他方で認証が通る）。
+        if let Some((local_part, domain)) = split_qualified_identifier(raw) {
+            let owner = self
+                .tenant_domains
+                .find_tenant_by_domain(&domain)
+                .await
+                .map_err(internal)?;
+            if owner == Some(tenant_id)
+                && self
+                    .users
+                    .find_by_login_identifier(tenant_id, local_part)
+                    .await
+                    .map_err(internal)?
+                    .is_taken()
+            {
+                return Err(LoginIdentifierManagementError::Conflict(MessageKey::new(
+                    "api-login-identifier-conflict",
+                )));
+            }
+        }
+        // 3. `users.email` は現状ログインの入り口ではないため 1 では当たらない。しかし他人の
         //    メールアドレスを自分のログイン識別子にできると、その人の連絡先で本人になりすませる。
         //    メール種別のときだけ、利用者表の側も見る。
         // 本人のメールアドレスを本人の識別子にするのは正当な使い方（「メールでログインしたい」）
@@ -384,6 +420,12 @@ mod tests {
             self.0
         }
     }
+
+    /// ドメインを持たないテナント（既定実装のまま）。既存のテストは UPN 解釈の判定を通らない。
+    struct NoTenantDomains;
+
+    #[async_trait]
+    impl TenantDomainRepository for NoTenantDomains {}
 
     struct FixedIds(Mutex<u128>);
     impl IdGenerator for FixedIds {
@@ -578,6 +620,7 @@ mod tests {
         let service = LoginIdentifierManagementService::new(
             identifiers.clone(),
             Arc::new(Users { rows: users }),
+            Arc::new(NoTenantDomains),
             audit,
             clock,
             Arc::new(FixedIds(Mutex::new(1000))),
