@@ -2306,14 +2306,10 @@ impl ApiClient {
         if !status.is_success() {
             // テナントを解決できなかった 400 だけは呼び出し側で 404 の画面へ倒せるよう区別する
             // （MT28）。本文を読むのはこの分岐のためだけなので、失敗しても素の失敗へ倒す。
-            if status == reqwest::StatusCode::BAD_REQUEST {
-                let body = response.text().await.unwrap_or_default();
-                if is_unknown_tenant_error(&body) {
-                    return Err(InternalCallError::UnknownTenant);
-                }
-                return Err(InternalCallError::failed(format!(
-                    "api {path} returned unexpected status {status}"
-                )));
+            if status == reqwest::StatusCode::BAD_REQUEST
+                && is_unknown_tenant_error(&response.text().await.unwrap_or_default())
+            {
+                return Err(InternalCallError::UnknownTenant);
             }
             // 内部認証の業務結果（invalid/locked 等）は 200＋result で返る。ここに来るのは
             // トークン不一致（401）やサーバ障害など、web の実装/構成エラー。

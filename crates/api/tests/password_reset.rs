@@ -58,9 +58,6 @@ async fn run_minimal_smtp_server(listener: TcpListener) -> String {
     data
 }
 
-/// メール本文からリセットトークンを取り出す。本文は日本語を含むため lettre が
-/// base64 の Content-Transfer-Encoding を選ぶ（ヘッダ後の空行以降を base64 として復号する）。
-/// 念のため quoted-printable（soft break・`=3D`）にも対応する。
 /// SMTP の宛先は**システム設定（テナント別ではない）で 1 つしかない**。設定を書き換えるテストが
 /// 並行に走ると、片方が向けた配送先へもう片方のメールが飛び、後始末（`smtp.host` を空へ戻す）が
 /// 相手の受信前に走れば、待っている側は永久に受け取れない。設定の書き換えから受信・後始末までを
@@ -93,6 +90,9 @@ fn mail_text_candidates(raw: &str) -> Vec<String> {
     candidates
 }
 
+/// メール本文からリセットトークンを取り出す。本文は日本語を含むため lettre が
+/// base64 の Content-Transfer-Encoding を選ぶ（ヘッダ後の空行以降を base64 として復号する）。
+/// 念のため quoted-printable（soft break・`=3D`）にも対応する。
 fn token_from_mail_body(raw: &str) -> String {
     let candidates = mail_text_candidates(raw);
     for text in candidates {
@@ -124,6 +124,10 @@ async fn full_reset_flow_via_email_link() {
     let Some(env) = support::setup("password reset").await else {
         return;
     };
+    // **登録より前に**取る。自己登録はメール検証通知を送るので、他方のテストが配送先を
+    // 自分のインプロセス SMTP サーバへ向けている隙にここを通ると、その通知が相手の
+    // （1 接続で終わる）サーバに食われ、相手は再設定メールを受け取れない。
+    let _smtp_guard = SMTP_SETTINGS.lock().await;
 
     // 対象ユーザーを自己登録で作成し、SSO セッションを 1 本持たせておく（失効の検証用）。
     let email = format!("reset-{}@example.com", uuid::Uuid::new_v4().simple());
@@ -149,7 +153,6 @@ async fn full_reset_flow_via_email_link() {
 
     // インプロセス SMTP サーバへ配送先を向ける。登録時のメール検証通知を拾わないよう、
     // 対象ユーザー作成後に設定する（テスト終了時に設定を空へ戻す）。
-    let _smtp_guard = SMTP_SETTINGS.lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind smtp");
     let smtp_port = listener.local_addr().unwrap().port();
     let smtp_server = tokio::spawn(run_minimal_smtp_server(listener));
@@ -254,6 +257,8 @@ async fn a_guest_can_request_a_reset_from_the_host_tenant() {
     let Some(env) = support::setup("password reset guest").await else {
         return;
     };
+    // 登録より前に取る（理由は [`full_reset_flow_via_email_link`] と同じ）。
+    let _smtp_guard = SMTP_SETTINGS.lock().await;
 
     // 所属元は root。参加先テナントとゲストメンバーシップは直接作る（検証したいのは招待フローでは
     // なく再設定の橋渡しのため）。
@@ -297,7 +302,43 @@ async fn a_guest_can_request_a_reset_from_the_host_tenant() {
     .await
     .expect("create guest membership");
 
-    let _smtp_guard = SMTP_SETTINGS.lock().await;
+    // 同じアドレスを持つ**無効な**ゲストを、別の（ACTIVE な）所属元テナントに 1 人置く。
+    // `users.email` の一意性はテナント内でしか無いので、この状況は実際に起こり得る。
+    // 曖昧さの判定が「送り先になり得る人」ではなく単なる行数で行われていると、この 1 人が居る
+    // だけで**唯一の有効なゲストに再設定メールが届かなくなる**（応答は Accepted のままなので、
+    // 誰も気付けない）。
+    let other_home = uuid::Uuid::now_v7().to_string();
+    sqlx::query(
+        "INSERT INTO tenants (id, parent_tenant_id, name, status) VALUES (?, ?, ?, 'ACTIVE')",
+    )
+    .bind(&other_home)
+    .bind(&env.root_tenant_id)
+    .bind(format!("GuestResetTwin {}", &other_home[..8]))
+    .execute(&env.pool)
+    .await
+    .expect("create the twin's home tenant");
+    let disabled_twin = uuid::Uuid::now_v7().to_string();
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, sub, email, email_verified, password_hash, status) \
+         VALUES (?, ?, ?, ?, 1, 'x', 'DISABLED')",
+    )
+    .bind(&disabled_twin)
+    .bind(&other_home)
+    .bind(uuid::Uuid::now_v7().to_string())
+    .bind(&email)
+    .execute(&env.pool)
+    .await
+    .expect("create the disabled twin");
+    sqlx::query(
+        "INSERT INTO tenant_memberships (tenant_id, user_id, membership_type, status) \
+         VALUES (?, ?, 'GUEST', 'ACTIVE')",
+    )
+    .bind(&host_tenant)
+    .bind(&disabled_twin)
+    .execute(&env.pool)
+    .await
+    .expect("create the twin's guest membership");
+
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind smtp");
     let smtp_port = listener.local_addr().unwrap().port();
     let smtp_server = tokio::spawn(run_minimal_smtp_server(listener));

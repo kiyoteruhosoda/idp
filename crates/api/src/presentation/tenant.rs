@@ -163,9 +163,7 @@ pub async fn require_internal_tenant(
     }
 }
 
-/// 実在しない・`DISABLED` なテナントを名指した内部要求。ステータスと `error` は
-/// [`invalid_tenant`] と揃える（web の既存のエラー処理をそのまま通し、説明だけで区別する）。
-/// テナントを解決できなかった（不存在・`DISABLED`）。
+/// 実在しない・`DISABLED` なテナントを名指した内部要求 —— テナントを解決できなかった。
 ///
 /// **他の 400 と区別できるコードを載せる**（`contracts` の [`UNKNOWN_TENANT_ERROR_CODE`]）。
 /// web はこれを 404 の画面へ倒し、それ以外の非 2xx は「web の実装/構成エラー」として 502 に

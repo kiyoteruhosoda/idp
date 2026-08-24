@@ -47,14 +47,6 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use idp_contracts::auth::PasswordRejectionReason;
 
-/// 表示言語を決める（MT20）。
-///
-/// 決定順（`?lang=` > ユーザー設定 > Cookie > ブラウザ言語 > 既定 `ja`）のうち上位 2 つは
-/// [`crate::language::resolve_language`] middleware が解決し、結果を**リクエストの `lang` Cookie へ
-/// 正規化して**渡してくる。したがってここでは Cookie > `Accept-Language` > 既定 `ja` を見れば足りる。
-///
-/// 優先順位の判断を middleware 1 箇所に集約するため、ハンドラは `?lang=` を自前で解釈しない
-/// （画面ごとに解釈すると、画面が増えたときに優先順位が食い違う）。
 /// `/internal/*` 呼び出しの失敗を、画面へ返すステータスコードへ写す（MT28）。
 ///
 /// **テナントを解決できなかった（URL のテナント ID が不存在・`DISABLED`）ときだけ 404。**
@@ -73,6 +65,14 @@ pub(crate) fn internal_call_status(error: &InternalCallError) -> StatusCode {
     }
 }
 
+/// 表示言語を決める（MT20）。
+///
+/// 決定順（`?lang=` > ユーザー設定 > Cookie > ブラウザ言語 > 既定 `ja`）のうち上位 2 つは
+/// [`crate::language::resolve_language`] middleware が解決し、結果を**リクエストの `lang` Cookie へ
+/// 正規化して**渡してくる。したがってここでは Cookie > `Accept-Language` > 既定 `ja` を見れば足りる。
+///
+/// 優先順位の判断を middleware 1 箇所に集約するため、ハンドラは `?lang=` を自前で解釈しない
+/// （画面ごとに解釈すると、画面が増えたときに優先順位が食い違う）。
 pub(crate) fn locale(headers: &HeaderMap) -> Locale {
     let cookie_lang = crate::cookies::get(headers, crate::cookies::LANG_COOKIE);
     Locale::resolve(

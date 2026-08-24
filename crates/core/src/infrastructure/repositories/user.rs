@@ -436,6 +436,11 @@ impl UserRepository for SqlxUserRepository {
     /// `LIMIT 2` は曖昧さの検出用。`users.email` の一意性はテナント内でしか無いので、所属元の違う
     /// ゲストが同じアドレスを持ち得る。2 件見えたら誰も返さない（どちらへ送るかを索引の都合で
     /// 決めさせない）。
+    ///
+    /// **`u.status = 'ACTIVE'` も SQL 側で課す。** 曖昧さの判定は「送り先になり得る人」の数で
+    /// 行わなければならない —— 無効・ロック中の利用者は呼び出し側（`find_resettable_user`）が
+    /// どのみち落とすので候補ではない。数えてしまうと、同じアドレスの `DISABLED` なゲストが
+    /// 1 人居るだけで、唯一の有効なゲストに再設定メールが届かなくなる。
     async fn find_active_guest_by_email(
         &self,
         tenant_id: TenantId,
@@ -445,13 +450,15 @@ impl UserRepository for SqlxUserRepository {
             "SELECT DISTINCT {SELECT_COLUMNS} FROM users u \
              JOIN tenant_memberships m ON m.user_id = u.id \
              JOIN tenants home ON home.id = u.tenant_id AND home.status = 'ACTIVE' \
-             WHERE m.tenant_id = ? AND m.membership_type = ? AND m.status = ? AND u.email = ? \
+             WHERE m.tenant_id = ? AND m.membership_type = ? AND m.status = ? \
+               AND u.status = ? AND u.email = ? \
              LIMIT 2"
         );
         let rows = sqlx::query(&sql)
             .bind(tenant_id.to_string())
             .bind(MembershipType::Guest.as_str())
             .bind(MembershipStatus::Active.as_str())
+            .bind(UserStatus::Active.as_str())
             .bind(email)
             .fetch_all(&self.pool)
             .await
