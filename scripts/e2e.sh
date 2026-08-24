@@ -31,6 +31,13 @@ CODE_CHALLENGE="E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
 CODE_VERIFIER="dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
 REDIRECT_URI="http://localhost:3000/callback"
 
+# パイプの先頭 1 行だけを取る。`head -1` を使わない —— `head` は 1 行読んだ時点で終了して
+# パイプを閉じるため、上流の grep が書き切る前だと SIGPIPE で落ち、`set -o pipefail` の下では
+# スクリプト全体が失敗する。当たるかどうかは上流の出力量とスケジューリング次第で、画面が
+# 大きいほど当たりやすい（テナント一覧は 1 テナントにつき CSRF が 3 つ出るため、テナントが
+# 増えるほど危ない）。`sed` は入力を最後まで読むので、上流が SIGPIPE を受けることがない。
+first_line() { sed -n '1p'; }
+
 pass() { printf '  \033[32mok\033[0m   %s\n' "$*"; }
 fail() { printf '  \033[31mFAIL\033[0m %s\n' "$*"; exit 1; }
 info() { printf '\033[1m%s\033[0m\n' "$*"; }
@@ -105,7 +112,7 @@ loc="$(curl -fsS -b "$CJAR" -c "$CJAR" -o /dev/null -w '%{redirect_url}' "${WEB}
 [[ "$loc" == *"/${ROOT}/login" ]] || fail "web がハンドル受領後に /login へ付け替えません（$loc）"
 pass "/authorize → web ハンドオフ → auth_session Cookie 発行・URL からハンドル除去（303）"
 
-csrf="$(curl -fsS -b "$CJAR" "${WEB}/${ROOT}/login" | grep -oE '[a-f0-9]{64}' | head -1)"
+csrf="$(curl -fsS -b "$CJAR" "${WEB}/${ROOT}/login" | grep -oE '[a-f0-9]{64}' | first_line)"
 [[ -n "$csrf" ]] || fail "web /{tenant_id}/login がフォーム（CSRF）を返しません"
 loc="$(curl -fsS -b "$CJAR" -c "$CJAR" -o /dev/null -w '%{redirect_url}' -X POST "${WEB}/${ROOT}/login" \
   -H 'content-type: application/x-www-form-urlencoded' -H 'X-Forwarded-For: 203.0.113.5' \
@@ -115,7 +122,7 @@ loc="$(curl -fsS -b "$CJAR" -c "$CJAR" -o /dev/null -w '%{redirect_url}' -X POST
 pass "web /{tenant_id}/login → api /internal/authenticate → SSO Cookie + /{tenant_id}/consent 誘導（初回は要同意）"
 
 consent_html="$(curl -fsS -b "$CJAR" "${WEB}/${ROOT}/consent")"
-ccsrf2="$(printf '%s' "$consent_html" | grep -oE 'name="csrf_token" value="[a-f0-9]{64}"' | grep -oE '[a-f0-9]{64}' | head -1)"
+ccsrf2="$(printf '%s' "$consent_html" | grep -oE 'name="csrf_token" value="[a-f0-9]{64}"' | grep -oE '[a-f0-9]{64}' | first_line)"
 csess="$(printf '%s' "$consent_html" | grep -oE 'name="auth_session_id" value="[a-f0-9]+"' | grep -oE 'value="[a-f0-9]+"' | grep -oE '[a-f0-9]+' | tail -1)"
 [[ -n "$ccsrf2" && -n "$csess" ]] || fail "同意画面がフォーム（CSRF・auth_session_id）を返しません"
 loc="$(curl -fsS -b "$CJAR" -c "$CJAR" -o /dev/null -w '%{redirect_url}' -X POST "${WEB}/${ROOT}/consent" \
@@ -138,13 +145,13 @@ AJAR="$(mktemp)"
 # E2E を再実行可能にするため、初期管理者を seed と同じ初回変更待ち状態へ戻す。
 mariadb_exec "UPDATE users SET password_hash='\$argon2id\$v=19\$m=65536,t=3,p=4\$L1NMbjFwV21BYllKWng5Ng\$zTuAfd+FBQlcvMQF9KQyUFGkk2wqYNdAadNiCwKlTnY', must_change_password=1, failed_login_count=0, locked_until=NULL WHERE tenant_id='${ROOT}' AND email='admin@example.com';" >/dev/null
 login_html="$(curl -fsS -c "$AJAR" "${WEB}/${ROOT}/admin/login")"
-acsrf="$(printf '%s' "$login_html" | grep -oE '[a-f0-9]{64}' | head -1)"
+acsrf="$(printf '%s' "$login_html" | grep -oE '[a-f0-9]{64}' | first_line)"
 admin_login_body="$(mktemp)"
 admin_loc="$(curl -fsS -b "$AJAR" -c "$AJAR" -o "$admin_login_body" -w '%{redirect_url}' -X POST "${WEB}/${ROOT}/admin/login" \
   -H 'content-type: application/x-www-form-urlencoded' \
   --data-urlencode "username=admin@example.com" --data-urlencode "password=admin@example.com" --data-urlencode "csrf_token=${acsrf}")"
 if [[ -z "$admin_loc" ]] && grep -q 'admin/password-change' "$admin_login_body"; then
-  pcsrf_admin="$(grep -oE 'name="csrf_token" value="[a-f0-9]{64}"' "$admin_login_body" | grep -oE '[a-f0-9]{64}' | head -1)"
+  pcsrf_admin="$(grep -oE 'name="csrf_token" value="[a-f0-9]{64}"' "$admin_login_body" | grep -oE '[a-f0-9]{64}' | first_line)"
   admin_loc="$(curl -fsS -b "$AJAR" -c "$AJAR" -o /dev/null -w '%{redirect_url}' -X POST "${WEB}/${ROOT}/admin/password-change" \
     -H 'content-type: application/x-www-form-urlencoded' \
     --data-urlencode "username=admin@example.com" --data-urlencode "current_password=admin@example.com" \
@@ -163,7 +170,7 @@ pass "React bundle 配信（/assets/react/app.js）"
 
 tenants_html="$(curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin/tenants")"
 grep -q 'data-react-surface="TenantRegistrationConsole"' <<<"$tenants_html" || fail "テナント登録画面が React surface を返しません"
-tcsrf="$(printf '%s' "$tenants_html" | grep -oE 'name="csrf_token" value="[a-f0-9]{64}"' | grep -oE '[a-f0-9]{64}' | head -1)"
+tcsrf="$(printf '%s' "$tenants_html" | grep -oE 'name="csrf_token" value="[a-f0-9]{64}"' | grep -oE '[a-f0-9]{64}' | first_line)"
 [[ -n "$tcsrf" ]] || fail "テナント登録画面が CSRF を返しません"
 TENANT_SUFFIX="$(date +%s)"
 TENANT_NAME="E2E Tenant ${TENANT_SUFFIX}"
@@ -196,7 +203,7 @@ pass "状況・監査画面（web→api /admin/clients/status・/admin/audit-log
 
 # SAML: api を直接露出せず、管理画面と同じ web オリジンから IdP メタデータをダウンロードする。
 saml_html="$(curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin/saml-clients")"
-metadata_href="$(grep -oE 'href="[^"]*/admin/saml-clients/idp-metadata"' <<<"$saml_html" | head -1 | sed -E 's/^href="//; s/"$//')"
+metadata_href="$(grep -oE 'href="[^"]*/admin/saml-clients/idp-metadata"' <<<"$saml_html" | first_line | sed -E 's/^href="//; s/"$//')"
 [[ "$metadata_href" == "/${ROOT}/admin/saml-clients/idp-metadata" ]] \
   || fail "IdP メタデータのリンクが web のダウンロード URL ではありません: ${metadata_href:-（リンク無し）}"
 curl -fsS -b "$AJAR" "${WEB}${metadata_href}" | grep -q "IDPSSODescriptor" \
@@ -212,7 +219,7 @@ tid="$(mariadb_exec "SELECT u.id FROM users u JOIN user_login_identifiers p ON p
 perm_page="$(mktemp)"
 perm_status="$(curl -sS -b "$AJAR" -o "$perm_page" -w '%{http_code}' "${WEB}/${ROOT}/admin/users/${tid}/permissions")"
 if [[ "$perm_status" == "200" ]]; then
-  pcsrf="$(grep -oE 'name="csrf_token" value="[a-f0-9]{64}"' "$perm_page" | grep -oE '[a-f0-9]{64}' | head -1)"
+  pcsrf="$(grep -oE 'name="csrf_token" value="[a-f0-9]{64}"' "$perm_page" | grep -oE '[a-f0-9]{64}' | first_line)"
   curl -fsS -b "$AJAR" -o /dev/null -X POST "${WEB}/${ROOT}/admin/users/${tid}/permissions/grant" \
     -H 'content-type: application/x-www-form-urlencoded' \
     --data-urlencode "permission_code=idp.tenant.admin" --data-urlencode "csrf_token=${pcsrf}"
