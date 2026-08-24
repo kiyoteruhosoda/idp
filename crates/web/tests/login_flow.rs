@@ -237,3 +237,75 @@ async fn a_non_uuid_tenant_segment_is_not_a_screen() {
     let response = send(&env.app, get("/not-a-uuid/login")).await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
+
+/// 存在しない（または `DISABLED` の）テナント ID を URL に打った送信は、**404** になる（MT28）。
+///
+/// `/internal/*` はテナントプレフィクスを持たないため api の `TenantResolver` を通らず、テナントの
+/// 実在・状態は本文の `tenant_id` を見て api が判定して 400 で拒否する。web がその 400 を他の失敗と
+/// 区別していなかった頃は、**URL のテナント ID を打ち間違えただけで素の 502** になっていた ——
+/// 利用者の入力の誤りであって、web の実装/構成エラーではない。
+#[tokio::test]
+async fn an_unknown_tenant_renders_the_404_page_instead_of_a_bad_gateway() {
+    let env = setup().await;
+    let auth_session = "d".repeat(64);
+    let csrf = login_csrf_token(&auth_session, support::TEST_CSRF_SECRET);
+
+    Mock::given(method("POST"))
+        .and(path("/internal/authenticate"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "error": idp_contracts::auth::UNKNOWN_TENANT_ERROR_CODE,
+            "error_description": "unknown or disabled tenant"
+        })))
+        .mount(&env.api)
+        .await;
+
+    let response = send(
+        &env.app,
+        post_form(
+            &format!("{}/login", env.prefix()),
+            Some(&format!("{AUTH_SESSION_COOKIE}={auth_session}")),
+            &[
+                ("username", "alice"),
+                ("password", "correct-horse-battery"),
+                ("csrf_token", &csrf),
+            ],
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    // 本文は共通のエラーページ middleware が補完する（空のまま返さない）。
+    let html = body_text(response).await;
+    assert!(html.contains("404"), "404 ページが描画されること: {html}");
+}
+
+/// api の他の失敗は従来どおり 502（web の実装/構成エラー・api 障害）。MT28 で区別したのは
+/// 「テナントを解決できない」だけで、それ以外の扱いは変えていない。
+#[tokio::test]
+async fn other_api_failures_still_render_a_bad_gateway() {
+    let env = setup().await;
+    let auth_session = "e".repeat(64);
+    let csrf = login_csrf_token(&auth_session, support::TEST_CSRF_SECRET);
+
+    Mock::given(method("POST"))
+        .and(path("/internal/authenticate"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&env.api)
+        .await;
+
+    let response = send(
+        &env.app,
+        post_form(
+            &format!("{}/login", env.prefix()),
+            Some(&format!("{AUTH_SESSION_COOKIE}={auth_session}")),
+            &[
+                ("username", "alice"),
+                ("password", "correct-horse-battery"),
+                ("csrf_token", &csrf),
+            ],
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+}

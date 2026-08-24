@@ -8,7 +8,7 @@
 //!
 //! 画面文言は `fluent` の翻訳リソースで管理する（`Accept-Language` で en / ja を切替）。
 
-use super::locale;
+use super::{internal_call_status, locale};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -104,7 +104,7 @@ async fn resume_authorize_handoff(
         Ok(outcome) => outcome,
         Err(e) => {
             tracing::error!(error = %e, "authorize resume call to api failed");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return internal_call_status(&e).into_response();
         }
     };
 
@@ -242,7 +242,7 @@ pub async fn login(
         Ok(outcome) => outcome,
         Err(e) => {
             tracing::error!(error = %e, "internal authenticate call to api failed");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return internal_call_status(&e).into_response();
         }
     };
 

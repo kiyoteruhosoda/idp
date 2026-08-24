@@ -7,6 +7,7 @@
 //! 言語設定（MT20）: `?lang=` を受けたら `lang` Cookie に保存し、ログイン中なら DB へも永続化する
 //! （`POST /internal/account/update-language`）。
 
+use super::internal_call_status;
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -17,7 +18,7 @@ use crate::state::WebState;
 use crate::templates::{render, UserSettings};
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 use idp_contracts::auth::{
@@ -123,7 +124,7 @@ pub async fn change_password(
         Ok(o) => o,
         Err(e) => {
             tracing::error!(error = %e, "account change-password call to api failed");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return internal_call_status(&e).into_response();
         }
     };
     match outcome {
@@ -170,7 +171,7 @@ pub async fn change_name(
         Ok(o) => o,
         Err(e) => {
             tracing::error!(error = %e, "account update-name call to api failed");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return internal_call_status(&e).into_response();
         }
     };
     match outcome {

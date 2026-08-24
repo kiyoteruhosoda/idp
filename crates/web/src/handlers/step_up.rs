@@ -11,6 +11,7 @@
 //! （オープンリダイレクトを作らないため）。`//evil.example.com` のような「スキームなし絶対 URL」は
 //! ブラウザが別オリジンとして解決するので、単に先頭が `/` かどうかでは足りない。
 
+use super::internal_call_status;
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -104,7 +105,7 @@ async fn evaluate(
         }
         Err(e) => {
             tracing::error!(error = %e, "step-up check call to api failed");
-            Gate::Failed(StatusCode::BAD_GATEWAY)
+            Gate::Failed(internal_call_status(&e))
         }
     }
 }
@@ -194,7 +195,7 @@ pub async fn page(
         }
         Err(e) => {
             tracing::error!(error = %e, "step-up check call to api failed");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return internal_call_status(&e).into_response();
         }
     };
 
@@ -273,7 +274,7 @@ pub async fn verify(
         }
         Err(e) => {
             tracing::error!(error = %e, "step-up verify call to api failed");
-            StatusCode::BAD_GATEWAY.into_response()
+            internal_call_status(&e).into_response()
         }
     }
 }

@@ -8,7 +8,7 @@
 //! 認証・SSO 発行・TOTP 検証は api（`/internal/authenticate/portal*`）に委ね、web は CSRF（同期トークン）
 //! と Cookie 組み立て・画面描画・リダイレクトのみを担う（管理コンソールのログインと同じ責務分担）。
 
-use super::locale;
+use super::{internal_call_status, locale};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -122,7 +122,7 @@ pub async fn login(
         Ok(o) => o,
         Err(e) => {
             tracing::error!(error = %e, "portal authenticate call to api failed");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return internal_call_status(&e).into_response();
         }
     };
 
@@ -282,7 +282,7 @@ pub async fn password_change(
         Ok(o) => o,
         Err(e) => {
             tracing::error!(error = %e, "portal change-password call to api failed");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return internal_call_status(&e).into_response();
         }
     };
 
@@ -466,7 +466,7 @@ pub async fn mfa_submit(
         Ok(o) => o,
         Err(e) => {
             tracing::error!(error = %e, "portal mfa call to api failed");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return internal_call_status(&e).into_response();
         }
     };
 

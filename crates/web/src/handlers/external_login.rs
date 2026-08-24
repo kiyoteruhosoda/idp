@@ -13,6 +13,7 @@
 //! ADR-0018 と同じ理由（api はブラウザ Cookie を読まない）で、`state` は外部 IdP から戻る値だけを
 //! 鍵として使う設計にしているため。
 
+use super::internal_call_status;
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -72,7 +73,7 @@ pub async fn start(
         }
         Err(e) => {
             tracing::error!(error = %e, "external idp start call to api failed");
-            StatusCode::BAD_GATEWAY.into_response()
+            internal_call_status(&e).into_response()
         }
     }
 }
@@ -129,7 +130,7 @@ pub async fn callback(
         Ok(o) => o,
         Err(e) => {
             tracing::error!(error = %e, "external idp callback call to api failed");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return internal_call_status(&e).into_response();
         }
     };
 
@@ -165,7 +166,7 @@ pub async fn saml_acs(
         Ok(o) => o,
         Err(e) => {
             tracing::error!(error = %e, "external saml acs call to api failed");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return internal_call_status(&e).into_response();
         }
     };
     render_outcome(&state, &tenant, locale, outcome)

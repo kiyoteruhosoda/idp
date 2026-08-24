@@ -427,6 +427,49 @@ impl UserRepository for SqlxUserRepository {
         row.as_ref().map(map_row).transpose()
     }
 
+    /// 参加先テナントの ACTIVE な GUEST を `users.email` で引く（MT26）。
+    ///
+    /// 形はゲストの識別子解決（[`IdentifierScope::ActiveGuest`]）と同じで、突き合わせ先だけが
+    /// 登録簿ではなく `users.email` になる。索引も同じ経路に乗る —— 当該テナントの ACTIVE な GUEST
+    /// メンバーシップ（`tenant_memberships_tenant_type_status_idx`。migration 0040）から利用者へ辿る。
+    ///
+    /// `LIMIT 2` は曖昧さの検出用。`users.email` の一意性はテナント内でしか無いので、所属元の違う
+    /// ゲストが同じアドレスを持ち得る。2 件見えたら誰も返さない（どちらへ送るかを索引の都合で
+    /// 決めさせない）。
+    async fn find_active_guest_by_email(
+        &self,
+        tenant_id: TenantId,
+        email: &str,
+    ) -> Result<Option<User>> {
+        let sql = format!(
+            "SELECT DISTINCT {SELECT_COLUMNS} FROM users u \
+             JOIN tenant_memberships m ON m.user_id = u.id \
+             JOIN tenants home ON home.id = u.tenant_id AND home.status = 'ACTIVE' \
+             WHERE m.tenant_id = ? AND m.membership_type = ? AND m.status = ? AND u.email = ? \
+             LIMIT 2"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(tenant_id.to_string())
+            .bind(MembershipType::Guest.as_str())
+            .bind(MembershipStatus::Active.as_str())
+            .bind(email)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        match rows.len() {
+            1 => map_row(&rows[0]).map(Some),
+            0 => Ok(None),
+            _ => {
+                // 値（メールアドレス）は PII なので出さない。
+                tracing::warn!(
+                    tenant_id = %tenant_id,
+                    "password reset email matched multiple guests; refusing to choose one"
+                );
+                Ok(None)
+            }
+        }
+    }
+
     /// 主たるログイン識別子（ユーザー名）で引く。
     ///
     /// 照合は登録簿の正規化値で行う（AP15b）。`users.preferred_username` の照合は照合順序

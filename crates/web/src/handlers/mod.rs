@@ -38,6 +38,7 @@ pub mod user_settings;
 pub mod vendor_assets;
 pub mod verify_email;
 
+use crate::api_client::InternalCallError;
 use crate::client_ip::ClientIp;
 use crate::correlation::CorrelationId;
 use crate::i18n::Locale;
@@ -54,6 +55,24 @@ use idp_contracts::auth::PasswordRejectionReason;
 ///
 /// 優先順位の判断を middleware 1 箇所に集約するため、ハンドラは `?lang=` を自前で解釈しない
 /// （画面ごとに解釈すると、画面が増えたときに優先順位が食い違う）。
+/// `/internal/*` 呼び出しの失敗を、画面へ返すステータスコードへ写す（MT28）。
+///
+/// **テナントを解決できなかった（URL のテナント ID が不存在・`DISABLED`）ときだけ 404。**
+/// テナントプレフィクス付きの他の経路（api の `TenantResolver` が返す 404）と揃える —— これは
+/// 利用者の入力の誤りであって、web の実装/構成エラーではない。区別が無かった頃は、存在しない
+/// テナント ID を打っただけでログイン送信が素の 502 になっていた。
+///
+/// それ以外は従来どおり 502（api へ到達できない・応答が壊れている・トークン不一致）。
+///
+/// 本文は共通のエラーページ middleware（[`crate::error_pages`]）が補完するので、ここは
+/// ステータスだけを決める。
+pub(crate) fn internal_call_status(error: &InternalCallError) -> StatusCode {
+    match error {
+        InternalCallError::UnknownTenant => StatusCode::NOT_FOUND,
+        InternalCallError::Failed(_) => StatusCode::BAD_GATEWAY,
+    }
+}
+
 pub(crate) fn locale(headers: &HeaderMap) -> Locale {
     let cookie_lang = crate::cookies::get(headers, crate::cookies::LANG_COOKIE);
     Locale::resolve(

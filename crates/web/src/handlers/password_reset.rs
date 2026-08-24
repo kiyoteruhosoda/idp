@@ -10,6 +10,7 @@
 //! 付けない（要求はメール送信のみ・実行はトークン所持が本人性の根拠であり、第三者が強制しても
 //! 得られる状態変化がない）。実体は api の `/internal/password-reset/*` に委ねる。
 
+use super::internal_call_status;
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -96,7 +97,12 @@ pub async fn forgot_submit(
         ),
         Err(e) => {
             tracing::error!(error = %e, "password reset request call to api failed");
-            forgot_error(&messages, "admin-error-internal", StatusCode::BAD_GATEWAY)
+            match internal_call_status(&e) {
+                // テナントを解決できないなら、この画面自体が存在しない。フォームを描き直さず
+                // 共通の 404 ページへ倒す（MT28）。
+                StatusCode::NOT_FOUND => StatusCode::NOT_FOUND.into_response(),
+                status => forgot_error(&messages, "admin-error-internal", status),
+            }
         }
     }
 }
@@ -201,15 +207,19 @@ pub async fn reset_submit(
         ),
         Err(e) => {
             tracing::error!(error = %e, "password reset complete call to api failed");
-            reset_view(
-                &messages,
-                &tenant,
-                true,
-                &form.token,
-                false,
-                Some("admin-error-internal"),
-                StatusCode::BAD_GATEWAY,
-            )
+            match internal_call_status(&e) {
+                // 同上（MT28）。
+                StatusCode::NOT_FOUND => StatusCode::NOT_FOUND.into_response(),
+                status => reset_view(
+                    &messages,
+                    &tenant,
+                    true,
+                    &form.token,
+                    false,
+                    Some("admin-error-internal"),
+                    status,
+                ),
+            }
         }
     }
 }
