@@ -1,6 +1,7 @@
 //! `ClientRepository` の sqlx 実装。配列カラム（redirect_uris 等）は JSON として入出力する。
 
 use crate::domain::client::Client;
+use crate::domain::client_jwks::ClientJwks;
 use crate::domain::error::{DomainError, Result};
 use crate::domain::paging::{Page, PageRequest};
 use crate::domain::repositories::ClientRepository;
@@ -27,7 +28,7 @@ const SELECT_COLUMNS: &str =
     "id, tenant_id, client_id, client_secret_hash, client_type, client_status, \
      app_name, redirect_uris, post_logout_redirect_uris, frontchannel_logout_uri, \
      backchannel_logout_uri, grant_types, response_types, scopes, \
-     token_endpoint_auth_method, created_at, updated_at";
+     token_endpoint_auth_method, jwks, created_at, updated_at";
 
 fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
@@ -57,6 +58,7 @@ fn map_row(row: &MySqlRow) -> Result<Client> {
     let grant_types: Vec<u8> = row.try_get("grant_types").map_err(repo_err)?;
     let response_types: Vec<u8> = row.try_get("response_types").map_err(repo_err)?;
     let scopes: Vec<u8> = row.try_get("scopes").map_err(repo_err)?;
+    let jwks: Option<Vec<u8>> = row.try_get("jwks").map_err(repo_err)?;
     Ok(Client {
         id: Uuid::parse_str(&id)
             .map_err(|e| DomainError::Repository(format!("invalid UUID `{id}`: {e}")))?,
@@ -79,9 +81,21 @@ fn map_row(row: &MySqlRow) -> Result<Client> {
         response_types: parse_json_strings(&response_types, "response_types")?,
         scopes: parse_json_strings(&scopes, "scopes")?,
         token_endpoint_auth_method: TokenEndpointAuthMethod::parse(&auth_method)?,
+        jwks: parse_client_jwks(jwks.as_deref())?,
         created_at: to_utc(row.try_get("created_at").map_err(repo_err)?),
         updated_at: to_utc(row.try_get("updated_at").map_err(repo_err)?),
     })
+}
+
+// 保存済みの JWK Set を読み戻す。保存時と同じ検証を通し、通らない値は行の読み出しごと失敗させる
+// （DB を直接編集された鍵が検証経路へ素通りしないよう fail-closed。ADR-0030 決定 3）。
+fn parse_client_jwks(raw: Option<&[u8]>) -> Result<Option<ClientJwks>> {
+    let Some(raw) = raw else { return Ok(None) };
+    let text = std::str::from_utf8(raw)
+        .map_err(|e| DomainError::Repository(format!("invalid UTF-8 in `jwks`: {e}")))?;
+    ClientJwks::from_storage(text)
+        .map(Some)
+        .map_err(|e| DomainError::Repository(format!("invalid JWK Set in `jwks`: {e:?}")))
 }
 
 // JSON カラムへ格納する文字列配列をシリアライズする。
@@ -114,8 +128,8 @@ impl ClientRepository for SqlxClientRepository {
              (id, tenant_id, client_id, client_secret_hash, client_type, client_status, app_name, \
               redirect_uris, post_logout_redirect_uris, frontchannel_logout_uri, \
               backchannel_logout_uri, grant_types, response_types, scopes, \
-              token_endpoint_auth_method) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              token_endpoint_auth_method, jwks) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(client.id.to_string())
         .bind(client.tenant_id.to_string())
@@ -139,6 +153,7 @@ impl ClientRepository for SqlxClientRepository {
         .bind(to_json(&client.response_types, "response_types")?)
         .bind(to_json(&client.scopes, "scopes")?)
         .bind(client.token_endpoint_auth_method.as_str())
+        .bind(client.jwks.as_ref().map(ClientJwks::to_storage_json))
         .execute(&self.pool)
         .await
         .map_err(|e| match &e {
@@ -201,7 +216,7 @@ impl ClientRepository for SqlxClientRepository {
              client_secret_hash = ?, client_type = ?, client_status = ?, app_name = ?, \
              redirect_uris = ?, post_logout_redirect_uris = ?, frontchannel_logout_uri = ?, \
              backchannel_logout_uri = ?, grant_types = ?, response_types = ?, scopes = ?, \
-             token_endpoint_auth_method = ? \
+             token_endpoint_auth_method = ?, jwks = ? \
              WHERE id = ? AND tenant_id = ?",
         )
         .bind(&client.client_secret_hash)
@@ -223,6 +238,7 @@ impl ClientRepository for SqlxClientRepository {
         .bind(to_json(&client.response_types, "response_types")?)
         .bind(to_json(&client.scopes, "scopes")?)
         .bind(client.token_endpoint_auth_method.as_str())
+        .bind(client.jwks.as_ref().map(ClientJwks::to_storage_json))
         .bind(client.id.to_string())
         .bind(client.tenant_id.to_string())
         .execute(&self.pool)

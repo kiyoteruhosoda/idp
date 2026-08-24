@@ -427,6 +427,31 @@ pub trait UserLoginIdentifierRepository: Send + Sync {
     }
 }
 
+/// 検証を通った client assertion の `jti` を記録し、有効期間内の再利用を拒む（ADR-0030 決定 5）。
+///
+/// 期限切れ行の掃除は本トレイトではなく共通の GC（`ExpiringRecordStore`）が行う。
+///
+/// `jti` の一意性はクライアントの中でしか要求できない（RFC 7519 §4.1.7 も発行者ごとの一意性しか
+/// 定めない）ため、鍵は `(tenant_id, client_id, jti)` の 3 つ組になる。
+#[async_trait]
+pub trait ClientAssertionReplayRepository: Send + Sync {
+    /// `jti` が未使用なら記録して `true`、既に記録済みなら `false`（＝再生）を返す。
+    ///
+    /// 「確認してから書く」の 2 段階にすると、同じ assertion の同時到着が両方とも未使用と判定
+    /// され得る。実装は一意制約への挿入 1 回で判定すること。
+    ///
+    /// `retain_until` は記録を残す時刻。assertion の `exp` そのものではなく、**受理が止まる時刻**
+    /// （`exp` ＋ 時計ずれの許容幅）を渡す。`exp` までしか残さないと、掃除で行が消えた後も受理は
+    /// 続く隙間ができ、そこで同じ assertion を再利用できてしまう。
+    async fn record_if_unused(
+        &self,
+        tenant_id: TenantId,
+        client_id: &str,
+        jti: &str,
+        retain_until: DateTime<Utc>,
+    ) -> Result<bool>;
+}
+
 #[async_trait]
 pub trait ClientRepository: Send + Sync {
     /// `client_id` はテナント内一意のため `(tenant_id, client_id)` で検索する（ADR-0009 §2）。

@@ -8,6 +8,7 @@ pub mod authorization_code;
 pub mod backchannel_logout;
 pub mod cached_user_permission;
 pub mod client;
+pub mod client_assertion;
 pub mod consent;
 pub mod email_verification_token;
 pub mod expired_records;

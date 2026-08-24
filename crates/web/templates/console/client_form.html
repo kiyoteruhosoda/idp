@@ -46,8 +46,14 @@
         <select class="form-select" id="client-auth-method" name="token_endpoint_auth_method">
           <option value="client_secret_basic"{% if values.token_endpoint_auth_method == "client_secret_basic" %} selected{% endif %}>client_secret_basic</option>
           <option value="client_secret_post"{% if values.token_endpoint_auth_method == "client_secret_post" %} selected{% endif %}>client_secret_post</option>
+          <option value="private_key_jwt"{% if values.token_endpoint_auth_method == "private_key_jwt" %} selected{% endif %}>private_key_jwt</option>
         </select>
         <div class="form-text">{{ messages.get("admin-client-field-auth-method-hint") }}</div>
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="client-jwks">{{ messages.get("admin-client-field-jwks") }}</label>
+        <textarea class="form-control font-monospace" id="client-jwks" name="jwks" rows="8" spellcheck="false">{{ values.jwks }}</textarea>
+        <div class="form-text">{{ messages.get("admin-client-field-jwks-hint") }}</div>
       </div>
       <div class="form-check mb-3">
         <input type="checkbox" class="form-check-input" id="client-allow-client-credentials" name="allow_client_credentials"{% if values.allow_client_credentials %} checked{% endif %}>

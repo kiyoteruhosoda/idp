@@ -153,11 +153,17 @@ fn discovery_document(issuer: &str, end_session_endpoint: &str) -> Value {
         "subject_types_supported": ["public"],
         "id_token_signing_alg_values_supported": ["RS256"],
         // クライアント認証（RFC 6749 §2.3.1）。`client_secret_post` は多くの RP ライブラリが
-        // 既定にするため受け入れる（G3）。どちらを使うかはクライアントの登録値が決める。
-        "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "none"],
+        // 既定にするため受け入れる（G3）。`private_key_jwt`（RFC 7523）は共有秘密を持たない機械向け
+        // （ADR-0030）。どれを使うかはクライアントの登録値が決める（併存は認めない）。
+        "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "private_key_jwt", "none"],
+        // `private_key_jwt` の assertion に使える署名アルゴリズム。広告しないと、RP・クライアント
+        // ライブラリが対応アルゴリズムを推測して食い違う。
+        "token_endpoint_auth_signing_alg_values_supported": ["RS256", "ES256"],
         // `/revoke`・`/introspect` も同じ方式（RFC 7009 §2.1・RFC 7662 §2.1）。
-        "revocation_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "none"],
-        "introspection_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
+        "revocation_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "private_key_jwt", "none"],
+        "revocation_endpoint_auth_signing_alg_values_supported": ["RS256", "ES256"],
+        "introspection_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "private_key_jwt"],
+        "introspection_endpoint_auth_signing_alg_values_supported": ["RS256", "ES256"],
         "code_challenge_methods_supported": ["S256"],
         // 応答の返し方は `query` のみ（`form_post` は未実装。G12）。広告しないと、RP の
         // メタデータ検証が厳しい実装（OIDC 認定テストを含む）が既定を推測して食い違う。
@@ -210,18 +216,37 @@ mod tests {
             "https://api.idp.example.com/.well-known/jwks.json"
         );
         assert_eq!(doc["code_challenge_methods_supported"], json!(["S256"]));
-        // G3: `client_secret_post` を広告する（`/revoke`・`/introspect` も同じ方式）。
+        // G3: `client_secret_post`、ADR-0030: `private_key_jwt` を広告する
+        // （`/revoke`・`/introspect` も同じ方式）。
         assert_eq!(
             doc["token_endpoint_auth_methods_supported"],
-            json!(["client_secret_basic", "client_secret_post", "none"])
+            json!([
+                "client_secret_basic",
+                "client_secret_post",
+                "private_key_jwt",
+                "none"
+            ])
+        );
+        assert_eq!(
+            doc["token_endpoint_auth_signing_alg_values_supported"],
+            json!(["RS256", "ES256"])
         );
         assert_eq!(
             doc["revocation_endpoint_auth_methods_supported"],
-            json!(["client_secret_basic", "client_secret_post", "none"])
+            json!([
+                "client_secret_basic",
+                "client_secret_post",
+                "private_key_jwt",
+                "none"
+            ])
         );
         assert_eq!(
             doc["introspection_endpoint_auth_methods_supported"],
-            json!(["client_secret_basic", "client_secret_post"])
+            json!([
+                "client_secret_basic",
+                "client_secret_post",
+                "private_key_jwt"
+            ])
         );
         // G12: RP のメタデータ検証が見る項目を明示的に広告する。
         assert_eq!(

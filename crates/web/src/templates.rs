@@ -889,6 +889,9 @@ pub struct ClientFormValues {
     pub allow_client_credentials: bool,
     /// クライアント認証方式（G3）。confidential のみ選択でき、public は常に `none`。
     pub token_endpoint_auth_method: String,
+    /// `private_key_jwt` の検証鍵（JWK Set の JSON。ADR-0030）。公開鍵しか含まないため、
+    /// 編集フォームへ現在値を出して差し支えない（ローテーション中の確認に要る）。
+    pub jwks: String,
 }
 
 impl ClientFormValues {
@@ -902,6 +905,7 @@ impl ClientFormValues {
             client_status: "ACTIVE".to_string(),
             allow_client_credentials: false,
             token_endpoint_auth_method: "client_secret_basic".to_string(),
+            jwks: String::new(),
         }
     }
 
@@ -916,6 +920,7 @@ impl ClientFormValues {
             // 許可の真の出所は api が返す `grant_types`（G4）。フォームはその写しを表示する。
             allow_client_credentials: c.grant_types.iter().any(|g| g == "client_credentials"),
             token_endpoint_auth_method: c.token_endpoint_auth_method.clone(),
+            jwks: c.jwks.clone().unwrap_or_default(),
         }
     }
 }

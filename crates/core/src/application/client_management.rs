@@ -10,6 +10,7 @@
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::client::Client;
+use crate::domain::client_jwks::{parse_registration_jwks, ClientJwks};
 use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
 use crate::domain::id_generator::IdGenerator;
@@ -45,6 +46,9 @@ pub struct RegisterClientCommand {
     /// confidential client のクライアント認証方式（G3）。`None` は既定の `client_secret_basic`。
     /// public client には適用しない（常に `none`）。
     pub token_endpoint_auth_method: Option<TokenEndpointAuthMethod>,
+    /// `private_key_jwt` の検証鍵（JWK Set の JSON。ADR-0030）。同方式を選ぶ場合は必須で、
+    /// それ以外の方式では指定できない。
+    pub jwks: Option<String>,
     /// RP-initiated logout 後のリダイレクト先（任意）。F4。
     pub post_logout_redirect_uris: Vec<String>,
     /// front-channel logout URI（任意）。F4。
@@ -70,6 +74,9 @@ pub struct UpdateClientCommand {
     pub allow_client_credentials: Option<bool>,
     /// クライアント認証方式の変更（G3）。confidential client のみ。
     pub token_endpoint_auth_method: Option<TokenEndpointAuthMethod>,
+    /// `private_key_jwt` の検証鍵の差し替え（ADR-0030）。鍵ローテーションはこの集合へ
+    /// 新旧を並べて行う。
+    pub jwks: Option<String>,
 }
 
 /// 登録結果。`client_secret` は confidential のときのみ平文で返る（保存はハッシュのみ）。
@@ -136,16 +143,31 @@ impl ClientManagementService {
         // public: 認証なし・secret なし。confidential: secret 発行 + 提示方式の選択（G3）。
         // PKCE（S256）は種別によらず `/authorize`・`/token` が無条件に要求する（クライアント単位の
         // 設定は持たない。SEC12 で「実際には参照されない設定」を削除した）。
-        let (auth_method, secret_plain, secret_hash) = match cmd.client_type {
-            ClientType::Public => (TokenEndpointAuthMethod::None, None, None),
+        // `private_key_jwt` は共有秘密を持たない（ADR-0030）。secret を発行しないのは、
+        // 使われない秘密を DB に置かないためであると同時に、「登録は private_key_jwt だが
+        // secret でも通る」という併存を作らないためでもある。
+        let (auth_method, secret_plain, secret_hash, jwks) = match cmd.client_type {
+            ClientType::Public => {
+                if cmd.jwks.is_some() {
+                    return Err(ClientManagementError::Validation(MessageKey::new(
+                        "api-client-jwks-not-applicable",
+                    )));
+                }
+                (TokenEndpointAuthMethod::None, None, None, None)
+            }
             ClientType::Confidential => {
                 let method = validate_confidential_auth_method(cmd.token_endpoint_auth_method)?;
-                let plain = crate::domain::crypto::random_token(CLIENT_SECRET_BYTES);
-                let hash = self
-                    .hasher
-                    .hash(&plain)
-                    .map_err(|e| ClientManagementError::Internal(e.to_string()))?;
-                (method, Some(plain), Some(hash))
+                let jwks = validate_jwks_for_method(method, cmd.jwks.as_deref())?;
+                if method == TokenEndpointAuthMethod::PrivateKeyJwt {
+                    (method, None, None, jwks)
+                } else {
+                    let plain = crate::domain::crypto::random_token(CLIENT_SECRET_BYTES);
+                    let hash = self
+                        .hasher
+                        .hash(&plain)
+                        .map_err(|e| ClientManagementError::Internal(e.to_string()))?;
+                    (method, Some(plain), Some(hash), jwks)
+                }
             }
         };
 
@@ -165,6 +187,7 @@ impl ClientManagementService {
             response_types: vec!["code".to_string()],
             scopes,
             token_endpoint_auth_method: auth_method,
+            jwks,
             post_logout_redirect_uris,
             frontchannel_logout_uri,
             backchannel_logout_uri,
@@ -239,6 +262,9 @@ impl ClientManagementService {
         ctx: &RequestContext,
     ) -> Result<Client, ClientManagementError> {
         let mut client = self.load(tenant, client_id).await?;
+        // 認証方式の**切り替え**にだけ課す前提条件（secret / 検証鍵の有無）を判定するために覚えておく。
+        // 方式を変えていない更新（app_name の修正など）で資格情報を書き換えないためでもある。
+        let method_before = client.token_endpoint_auth_method;
 
         if let Some(app_name) = cmd.app_name {
             client.app_name = validate_app_name(app_name)?;
@@ -274,6 +300,47 @@ impl ClientManagementService {
                 )));
             }
             client.token_endpoint_auth_method = validate_confidential_auth_method(Some(method))?;
+        }
+        // 検証鍵の差し替え（ADR-0030）。方式の変更と同時に指定できるよう、方式の反映後に見る。
+        if let Some(raw) = cmd.jwks.as_deref() {
+            if client.token_endpoint_auth_method != TokenEndpointAuthMethod::PrivateKeyJwt {
+                return Err(ClientManagementError::Validation(MessageKey::new(
+                    "api-client-jwks-not-applicable",
+                )));
+            }
+            client.jwks = Some(parse_jwks(raw)?);
+        }
+        let switched = client.token_endpoint_auth_method != method_before;
+        match client.token_endpoint_auth_method {
+            TokenEndpointAuthMethod::PrivateKeyJwt => {
+                // 検証鍵が無いまま `private_key_jwt` にすると、そのクライアントはどの資格情報でも
+                // 認証できなくなる。鍵は既存でも今回の指定でもよい。
+                if client.jwks.is_none() {
+                    return Err(ClientManagementError::Validation(MessageKey::new(
+                        "api-client-jwks-required",
+                    )));
+                }
+                // 切り替えた時点で、以後読まれない共有秘密を落とす。secret 方式へ戻すときは
+                // `rotate_secret` で再発行する。方式を変えていない更新では触らない
+                // （切り替えの前準備として再発行しておいた secret を、無関係な更新で消さないため）。
+                if switched {
+                    client.client_secret_hash = None;
+                }
+            }
+            // secret 方式へ切り替えるなら照合できる secret が要る。無いまま切り替えると認証
+            // できなくなるため、先に再発行（`rotate_secret`）してから切り替えてもらう。
+            TokenEndpointAuthMethod::ClientSecretBasic
+            | TokenEndpointAuthMethod::ClientSecretPost => {
+                if switched && client.client_secret_hash.is_none() {
+                    return Err(ClientManagementError::Validation(MessageKey::new(
+                        "api-client-auth-method-needs-secret",
+                    )));
+                }
+                // secret 方式では検証鍵を持たない（読まれない鍵を残さない）。
+                client.jwks = None;
+            }
+            // public（`none`）。資格情報を持たない。
+            TokenEndpointAuthMethod::None => client.jwks = None,
         }
 
         self.clients
@@ -372,10 +439,35 @@ fn validate_confidential_auth_method(
         Some(TokenEndpointAuthMethod::ClientSecretPost) => {
             Ok(TokenEndpointAuthMethod::ClientSecretPost)
         }
+        Some(TokenEndpointAuthMethod::PrivateKeyJwt) => Ok(TokenEndpointAuthMethod::PrivateKeyJwt),
         Some(TokenEndpointAuthMethod::None) => Err(ClientManagementError::Validation(
             MessageKey::new("api-client-auth-method-invalid"),
         )),
     }
+}
+
+/// 登録時の検証鍵を、選ばれた認証方式と突き合わせる（ADR-0030）。
+///
+/// `private_key_jwt` では必須、それ以外では指定を拒否する（黙って捨てると、鍵を登録したつもりの
+/// 管理者に「登録できた」と伝わってしまう）。
+fn validate_jwks_for_method(
+    method: TokenEndpointAuthMethod,
+    raw: Option<&str>,
+) -> Result<Option<ClientJwks>, ClientManagementError> {
+    match (method, raw) {
+        (TokenEndpointAuthMethod::PrivateKeyJwt, Some(raw)) => Ok(Some(parse_jwks(raw)?)),
+        (TokenEndpointAuthMethod::PrivateKeyJwt, None) => Err(ClientManagementError::Validation(
+            MessageKey::new("api-client-jwks-required"),
+        )),
+        (_, Some(_)) => Err(ClientManagementError::Validation(MessageKey::new(
+            "api-client-jwks-not-applicable",
+        ))),
+        (_, None) => Ok(None),
+    }
+}
+
+fn parse_jwks(raw: &str) -> Result<ClientJwks, ClientManagementError> {
+    parse_registration_jwks(raw).map_err(|e| ClientManagementError::Validation(e.message_key()))
 }
 
 fn grant_types_for(client_type: ClientType, allow_client_credentials: bool) -> Vec<String> {

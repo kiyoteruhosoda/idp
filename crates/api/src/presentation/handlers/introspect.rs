@@ -1,14 +1,16 @@
 //! Token イントロスペクションエンドポイント（`POST /introspect`、RFC 7662）。
 //!
 //! - confidential client のみ許可（public client は 401）。認証方式はクライアントの登録値
-//!   （`client_secret_basic` / `client_secret_post`）に従う。
+//!   （`client_secret_basic` / `client_secret_post` / `private_key_jwt`）に従う。
 //! - `token`: 対象トークン（必須）。
 //! - `token_type_hint`: `access_token` または `refresh_token`（任意）。
 //! - 無効・失効済みのトークンは `{"active": false}` を返す。
 
 use crate::application::introspection::IntrospectionError;
 use crate::domain::error::OAuthErrorCode;
-use crate::presentation::client_auth::{presented_credentials, unauthorized};
+use crate::presentation::client_auth::{
+    presented_credentials, unauthorized, BodyClientCredentials,
+};
 use crate::presentation::dto::OAuthErrorResponse;
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
@@ -26,6 +28,10 @@ pub struct IntrospectionRequest {
     pub client_id: Option<String>,
     /// `client_secret_post` のクライアント secret（G3）。
     pub client_secret: Option<String>,
+    /// `private_key_jwt` の署名済み assertion（RFC 7523 §2.2。ADR-0030）。
+    pub client_assertion: Option<String>,
+    /// `client_assertion` の種別。`urn:ietf:params:oauth:client-assertion-type:jwt-bearer` のみ。
+    pub client_assertion_type: Option<String>,
 }
 
 /// Token イントロスペクションエンドポイント（RFC 7662）。
@@ -45,7 +51,15 @@ pub async fn introspect(
     headers: HeaderMap,
     Form(body): Form<IntrospectionRequest>,
 ) -> Response {
-    let credentials = match presented_credentials(&headers, body.client_id, body.client_secret) {
+    let credentials = match presented_credentials(
+        &headers,
+        BodyClientCredentials {
+            client_id: body.client_id,
+            client_secret: body.client_secret,
+            client_assertion: body.client_assertion,
+            client_assertion_type: body.client_assertion_type,
+        },
+    ) {
         Ok(v) => v,
         Err(_) => return unauthorized("introspect", "malformed Basic authorization header"),
     };

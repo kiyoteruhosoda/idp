@@ -84,6 +84,10 @@ pub struct TokenRequest {
     pub refresh_token: Option<String>,
     /// `client_credentials` grant で要求する scope（空白区切り。G4）。
     pub scope: Option<String>,
+    /// `private_key_jwt` の署名済み assertion（RFC 7523 §2.2。ADR-0030）。
+    pub client_assertion: Option<String>,
+    /// `client_assertion` の種別。`urn:ietf:params:oauth:client-assertion-type:jwt-bearer` のみ。
+    pub client_assertion_type: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -121,8 +125,8 @@ pub struct ClientRegisterRequest {
     /// confidential クライアントのみ有効。
     #[serde(default)]
     pub allow_client_credentials: Option<bool>,
-    /// クライアント認証方式（G3）。`client_secret_basic`（既定）または `client_secret_post`。
-    /// confidential クライアントのみ指定できる。
+    /// クライアント認証方式（G3）。`client_secret_basic`（既定）・`client_secret_post`・
+    /// `private_key_jwt`（ADR-0030）。confidential クライアントのみ指定できる。
     #[serde(default)]
     pub token_endpoint_auth_method: Option<String>,
     /// RP-initiated logout のリダイレクト先（登録済みのもののみ許可）。
@@ -134,6 +138,10 @@ pub struct ClientRegisterRequest {
     /// back-channel logout URI（OIDC back-channel logout 1.0）。
     #[serde(default)]
     pub backchannel_logout_uri: Option<String>,
+    /// `private_key_jwt` の検証鍵（JWK Set の JSON 文字列。ADR-0030）。同方式では必須、
+    /// それ以外の方式では指定できない。鍵ローテーションはこの集合へ新旧を並べて行う。
+    #[serde(default)]
+    pub jwks: Option<String>,
 }
 
 /// クライアント部分更新リクエスト。指定した項目のみ更新する。
@@ -148,10 +156,14 @@ pub struct ClientUpdateRequest {
     /// `client_credentials` grant の許可（G4）。confidential クライアントのみ有効。
     #[serde(default)]
     pub allow_client_credentials: Option<bool>,
-    /// クライアント認証方式（G3）。`client_secret_basic` または `client_secret_post`。
-    /// confidential クライアントのみ変更できる。
+    /// クライアント認証方式（G3）。`client_secret_basic`・`client_secret_post`・
+    /// `private_key_jwt`（ADR-0030）。confidential クライアントのみ変更できる。
     #[serde(default)]
     pub token_endpoint_auth_method: Option<String>,
+    /// `private_key_jwt` の検証鍵の差し替え（JWK Set の JSON 文字列。ADR-0030）。
+    /// 鍵ローテーションはこの集合へ新旧を並べ、切り替え後に旧鍵を消すことで無停止に行う。
+    #[serde(default)]
+    pub jwks: Option<String>,
     /// `ACTIVE` または `DISABLED`。
     #[serde(default)]
     pub client_status: Option<String>,
@@ -260,6 +272,10 @@ pub struct ClientResponse {
     pub response_types: Vec<String>,
     pub scopes: Vec<String>,
     pub token_endpoint_auth_method: String,
+    /// `private_key_jwt` の検証鍵（JWK Set の JSON 文字列。ADR-0030）。公開鍵のみを保存するため
+    /// そのまま返す —— ローテーション中に「今どの鍵が有効か」を管理者が確認できる必要がある。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jwks: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub post_logout_redirect_uris: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

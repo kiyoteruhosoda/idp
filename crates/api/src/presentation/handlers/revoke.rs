@@ -2,13 +2,15 @@
 //!
 //! - `token`: 失効させるトークン（必須）。
 //! - `token_type_hint`: `access_token` または `refresh_token`（任意）。
-//! - confidential client は登録した方式（`client_secret_basic` / `client_secret_post`）での認証が
+//! - confidential client は登録した方式（`client_secret_basic` / `client_secret_post` / `private_key_jwt`）での認証が
 //!   必要。public client は `client_id` のみ。
 //! - RFC 7009 §2.2: トークン不存在・失効済みでも 200 を返す（エラーは client 認証失敗のみ）。
 
 use crate::application::revocation::RevocationError;
 use crate::domain::error::OAuthErrorCode;
-use crate::presentation::client_auth::{presented_credentials, unauthorized};
+use crate::presentation::client_auth::{
+    presented_credentials, unauthorized, BodyClientCredentials,
+};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::OAuthErrorResponse;
 use crate::presentation::handlers::request_context;
@@ -28,6 +30,10 @@ pub struct RevocationRequest {
     pub client_id: Option<String>,
     /// `client_secret_post` のクライアント secret（G3）。
     pub client_secret: Option<String>,
+    /// `private_key_jwt` の署名済み assertion（RFC 7523 §2.2。ADR-0030）。
+    pub client_assertion: Option<String>,
+    /// `client_assertion` の種別。`urn:ietf:params:oauth:client-assertion-type:jwt-bearer` のみ。
+    pub client_assertion_type: Option<String>,
 }
 
 /// Token 失効エンドポイント（RFC 7009）。
@@ -60,7 +66,15 @@ pub async fn revoke(
         None => return StatusCode::OK.into_response(), // token なしは 200（RFC 7009 §2.1）
     };
 
-    let credentials = match presented_credentials(&headers, body.client_id, body.client_secret) {
+    let credentials = match presented_credentials(
+        &headers,
+        BodyClientCredentials {
+            client_id: body.client_id,
+            client_secret: body.client_secret,
+            client_assertion: body.client_assertion,
+            client_assertion_type: body.client_assertion_type,
+        },
+    ) {
         Ok(v) => v,
         Err(_) => return unauthorized("revoke", "malformed Basic authorization header"),
     };

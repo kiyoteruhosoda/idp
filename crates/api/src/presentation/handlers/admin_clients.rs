@@ -61,6 +61,7 @@ pub async fn create_client(
         scopes: body.scopes,
         allow_client_credentials: body.allow_client_credentials.unwrap_or(false),
         token_endpoint_auth_method,
+        jwks: body.jwks,
         post_logout_redirect_uris: body.post_logout_redirect_uris.unwrap_or_default(),
         frontchannel_logout_uri: body.frontchannel_logout_uri,
         backchannel_logout_uri: body.backchannel_logout_uri,
@@ -194,6 +195,7 @@ pub async fn update_client(
         backchannel_logout_uri: body.backchannel_logout_uri.map(Some),
         allow_client_credentials: body.allow_client_credentials,
         token_endpoint_auth_method: parse_auth_method(&body.token_endpoint_auth_method, locale)?,
+        jwks: body.jwks,
     };
 
     let client = state
@@ -295,6 +297,9 @@ fn client_response(c: &Client) -> ClientResponse {
         response_types: c.response_types.clone(),
         scopes: c.scopes.clone(),
         token_endpoint_auth_method: c.token_endpoint_auth_method.as_str().to_string(),
+        // `private_key_jwt` の検証鍵。公開鍵しか保存していないので、そのまま返して差し支えない
+        // （管理者が「どの鍵が今有効か」をローテーション中に確認できる必要がある）。
+        jwks: c.jwks.as_ref().map(|j| j.to_storage_json()),
         post_logout_redirect_uris: c.post_logout_redirect_uris.clone(),
         frontchannel_logout_uri: c.frontchannel_logout_uri.clone(),
         backchannel_logout_uri: c.backchannel_logout_uri.clone(),

@@ -11,6 +11,8 @@ pub mod authorization_code;
 pub mod backchannel_logout;
 pub mod cache;
 pub mod client;
+pub mod client_assertion;
+pub mod client_jwks;
 pub mod clock;
 pub mod consent;
 pub mod crypto;

@@ -2,7 +2,9 @@
 
 use crate::application::token::{TokenCommand, TokenError};
 use crate::domain::error::OAuthErrorCode;
-use crate::presentation::client_auth::{presented_credentials, unauthorized};
+use crate::presentation::client_auth::{
+    presented_credentials, unauthorized, BodyClientCredentials,
+};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{OAuthErrorResponse, TokenRequest, TokenResponse};
 use crate::presentation::handlers::request_context;
@@ -39,7 +41,15 @@ pub async fn token(
         state.config.trust_forwarded_headers(),
     );
 
-    let credentials = match presented_credentials(&headers, body.client_id, body.client_secret) {
+    let credentials = match presented_credentials(
+        &headers,
+        BodyClientCredentials {
+            client_id: body.client_id,
+            client_secret: body.client_secret,
+            client_assertion: body.client_assertion,
+            client_assertion_type: body.client_assertion_type,
+        },
+    ) {
         Ok(v) => v,
         Err(_) => return unauthorized("token", "malformed Basic authorization header"),
     };

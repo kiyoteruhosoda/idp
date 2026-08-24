@@ -16,7 +16,7 @@ use rsa::{RsaPrivateKey, RsaPublicKey};
 use serde::{Deserialize, Serialize};
 
 /// JWK（RSA または EC 公開鍵）。JWKS エンドポイントの 1 要素。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Jwk {
     pub kty: String,
     #[serde(rename = "use")]

@@ -6,7 +6,9 @@
 //! - refresh_token: DB で有効性（未失効・期限内）を確認する。
 //! - 不正トークン・不存在は `{ "active": false }` を返す（エラーにしない）。
 
-use crate::application::client_authentication::PresentedClientCredentials;
+use crate::application::client_authentication::{
+    ClientAuthError, ClientAuthOutcome, ClientAuthenticator, PresentedClientCredentials,
+};
 use crate::application::token::{userinfo_audience, AccessTokenClaims};
 use crate::domain::client::Client;
 use crate::domain::clock::Clock;
@@ -14,7 +16,6 @@ use crate::domain::crypto;
 use crate::domain::error::OAuthErrorCode;
 use crate::domain::issuer::tenant_issuer;
 use crate::domain::jwt;
-use crate::domain::password::PasswordHasher;
 use crate::domain::repositories::{
     ClientRepository, RefreshTokenRepository, RevokedAccessTokenRepository, SigningKeyRepository,
     UserRepository,
@@ -87,7 +88,7 @@ pub struct IntrospectionService {
     refresh_tokens: Arc<dyn RefreshTokenRepository>,
     revoked_access_tokens: Arc<dyn RevokedAccessTokenRepository>,
     users: Arc<dyn UserRepository>,
-    hasher: Arc<dyn PasswordHasher>,
+    client_auth: Arc<ClientAuthenticator>,
     clock: Arc<dyn Clock>,
     /// 基底 issuer。検証・応答の `iss` はテナント毎に `<基底>/<tenant_id>` を合成する（ADR-0009 §6）。
     base_issuer: String,
@@ -102,7 +103,7 @@ impl IntrospectionService {
         refresh_tokens: Arc<dyn RefreshTokenRepository>,
         revoked_access_tokens: Arc<dyn RevokedAccessTokenRepository>,
         users: Arc<dyn UserRepository>,
-        hasher: Arc<dyn PasswordHasher>,
+        client_auth: Arc<ClientAuthenticator>,
         clock: Arc<dyn Clock>,
         base_issuer: String,
         clock_skew: std::time::Duration,
@@ -113,7 +114,7 @@ impl IntrospectionService {
             refresh_tokens,
             revoked_access_tokens,
             users,
-            hasher,
+            client_auth,
             clock,
             base_issuer,
             clock_skew: chrono::Duration::from_std(clock_skew).expect("clock skew out of range"),
@@ -352,7 +353,7 @@ impl IntrospectionService {
 
         let client = self
             .clients
-            .find_by_client_id(tenant.tenant_id(), client_id)
+            .find_by_client_id(tenant.tenant_id(), &client_id)
             .await
             .map_err(|e| IntrospectionError::new(OAuthErrorCode::InvalidClient, &e.to_string()))?
             .ok_or_else(|| {
@@ -366,36 +367,35 @@ impl IntrospectionService {
             ));
         }
 
-        // public client は使用不可（RFC 7662 §2.1）。`secret_for` は public を `Ok(None)` で
-        // 素通しするため、ここで先に弾く。
-        let secret = match credentials.secret_for(&client) {
-            Ok(Some(secret)) => secret,
-            Ok(None) => {
+        // 資格情報の照合は `client_authentication` へ集約してある（G3・ADR-0030）。
+        // public client は使用不可（RFC 7662 §2.1）。認証器は public を `NotRequired` で
+        // 素通しするため、ここで別に弾く。
+        match self
+            .client_auth
+            .authenticate(tenant, &client, credentials)
+            .await
+        {
+            Ok(ClientAuthOutcome::Authenticated) => {}
+            Ok(ClientAuthOutcome::NotRequired) => {
                 return Err(IntrospectionError::new(
                     OAuthErrorCode::InvalidClient,
                     "introspection requires a confidential client",
                 ))
             }
-            Err(_) => {
+            Err(ClientAuthError::Failed(_)) => {
                 return Err(IntrospectionError::new(
                     OAuthErrorCode::InvalidClient,
                     "client authentication failed",
                 ))
             }
-        };
-
-        let hash = client.client_secret_hash.as_deref().ok_or_else(|| {
-            IntrospectionError::new(OAuthErrorCode::InvalidClient, "client has no secret")
-        })?;
-        let ok = self
-            .hasher
-            .verify(secret, hash)
-            .map_err(|e| IntrospectionError::new(OAuthErrorCode::ServerError, &e.to_string()))?;
-        if !ok {
-            return Err(IntrospectionError::new(
-                OAuthErrorCode::InvalidClient,
-                "client authentication failed",
-            ));
+            Err(ClientAuthError::Internal(message)) => {
+                // 内部エラーの詳細はクライアントへ出さない（`CLAUDE.md`「国際化」の翻訳対象外）。
+                tracing::error!(error = %message, "client authentication internal error");
+                return Err(IntrospectionError::new(
+                    OAuthErrorCode::ServerError,
+                    "internal server error",
+                ));
+            }
         }
 
         Ok(client)

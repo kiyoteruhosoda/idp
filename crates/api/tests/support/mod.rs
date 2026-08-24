@@ -414,6 +414,42 @@ pub async fn insert_m2m_client_with_auth_method(
     (client_id, secret.to_string())
 }
 
+/// `private_key_jwt` の M2M クライアントを作り、`(client_id, 秘密鍵 PEM, kid)` を返す（ADR-0030）。
+///
+/// secret は発行しない（この方式のクライアントは共有秘密を持たない）。鍵ペアはテストごとに
+/// 生成し、公開鍵だけを `clients.jwks` へ登録する。
+pub async fn insert_private_key_jwt_client(
+    pool: &MySqlPool,
+    tenant_id: &str,
+    scopes: &[&str],
+) -> (String, String, String) {
+    let client_id = format!("it-pkjwt-{}", unique());
+    let kid = format!("kid-{}", unique());
+    let (private_pem, public_pem) =
+        idp_api::domain::jwt::generate_rsa_keypair().expect("generate keypair");
+    let jwk = idp_api::domain::jwt::rsa_public_jwk(&kid, &public_pem).expect("build jwk");
+    let jwks = serde_json::to_string(&idp_api::domain::jwt::Jwks { keys: vec![jwk] })
+        .expect("serialize jwks");
+    sqlx::query(
+        "INSERT INTO clients (id, tenant_id, client_id, client_secret_hash, client_type, \
+         client_status, app_name, redirect_uris, grant_types, response_types, scopes, \
+         token_endpoint_auth_method, jwks) \
+         VALUES (?, ?, ?, NULL, 'confidential', 'ACTIVE', 'Integration Machine App', ?, \
+         '[\"authorization_code\", \"client_credentials\"]', '[\"code\"]', ?, \
+         'private_key_jwt', ?)",
+    )
+    .bind(uuid::Uuid::now_v7().to_string())
+    .bind(tenant_id)
+    .bind(&client_id)
+    .bind(json!([REDIRECT_URI]).to_string())
+    .bind(json!(scopes).to_string())
+    .bind(jwks)
+    .execute(pool)
+    .await
+    .expect("insert private_key_jwt client");
+    (client_id, private_pem, kid)
+}
+
 /// ランダムな識別子片（メール・名前の一意化に使う。12 文字の hex）。
 pub fn unique() -> String {
     uuid::Uuid::new_v4().simple().to_string()[..12].to_string()
