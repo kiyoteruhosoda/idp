@@ -1,6 +1,7 @@
 //! Clients エンティティ（設計仕様 §3.2）。
 #![allow(dead_code)]
 
+use crate::domain::client_jwks::ClientJwks;
 use crate::domain::tenant::TenantId;
 use crate::domain::values::{ClientStatus, ClientType, GrantType, TokenEndpointAuthMethod};
 use chrono::{DateTime, Utc};
@@ -22,6 +23,9 @@ pub struct Client {
     pub response_types: Vec<String>,
     pub scopes: Vec<String>,
     pub token_endpoint_auth_method: TokenEndpointAuthMethod,
+    /// `private_key_jwt` の client assertion を検証する公開鍵（ADR-0030）。それ以外の方式では
+    /// `None`。検証はこの集合だけを見る（クライアントの `jwks_uri` は取りに行かない）。
+    pub jwks: Option<ClientJwks>,
     /// RP-initiated logout 後のリダイレクト先として登録済みの URI 群（F4）。
     pub post_logout_redirect_uris: Vec<String>,
     /// front-channel logout 用 iframe URI（F4）。
@@ -60,6 +64,14 @@ impl Client {
         self.grant_types.iter().any(|g| g == grant_type.as_str())
     }
 
+    /// `private_key_jwt`（署名済み assertion）で認証するクライアントか（ADR-0030）。
+    ///
+    /// public client では常に false —— 秘密鍵を秘匿できない以上、鍵ペアによる認証も成立しない。
+    pub fn uses_private_key_jwt(&self) -> bool {
+        self.client_type == ClientType::Confidential
+            && self.token_endpoint_auth_method == TokenEndpointAuthMethod::PrivateKeyJwt
+    }
+
     /// サーバ間（M2M）でのトークン取得を許可されているか（G4）。
     /// public client は資格情報を秘匿できないため、登録上許可されていても常に不可とする。
     pub fn allows_client_credentials(&self) -> bool {
@@ -88,6 +100,7 @@ mod tests {
             response_types: vec!["code".to_string()],
             scopes: vec![],
             token_endpoint_auth_method: TokenEndpointAuthMethod::ClientSecretBasic,
+            jwks: None,
             post_logout_redirect_uris: vec![],
             frontchannel_logout_uri: None,
             backchannel_logout_uri: None,

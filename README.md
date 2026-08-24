@@ -172,8 +172,12 @@ sequenceDiagram
   scope・state/nonce 必須・PKCE S256）。有効な SSO セッションがあれば再ログインなしで
   authorization code を発行し、なければログイン画面へ誘導する
 - **トークンエンドポイント** `POST /token` — クライアント認証（confidential は登録した方式＝
-  `client_secret_basic` / `client_secret_post`、public は認証なし）、authorization code の**原子的 one-time 消費**
+  `client_secret_basic` / `client_secret_post` / `private_key_jwt`、public は認証なし）、
+  authorization code の**原子的 one-time 消費**
   （再利用は `invalid_grant` として検知）、PKCE 検証、ID Token / Access Token の発行
+- **機械（人ではない呼び出し元）の認証** — CI・バッチ・サーバ間連携は `client_credentials` grant で
+  トークンを取る。資格情報には `private_key_jwt`（RFC 7523）を選べ、共有シークレットを持たずに
+  署名済み assertion だけで認証する。assertion は `jti` で 1 回きり（ADR-0030）
 - **UserInfo** `GET /userinfo` — Bearer の Access Token（`typ=at+jwt`）を検証し、
   scope に応じたクレームのみ返却（`openid`→`sub` / `email`→`email`, `email_verified` /
   `profile`→`preferred_username`, `name`）

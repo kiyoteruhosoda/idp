@@ -20,6 +20,9 @@ pub struct ClientView {
     pub response_types: Vec<String>,
     pub scopes: Vec<String>,
     pub token_endpoint_auth_method: String,
+    /// `private_key_jwt` の検証鍵（JWK Set の JSON。ADR-0030）。公開鍵のみ。
+    #[serde(default)]
+    pub jwks: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }

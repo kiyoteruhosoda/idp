@@ -88,6 +88,7 @@ mod tests {
             response_types: vec!["code".to_string()],
             scopes: vec!["openid".to_string()],
             token_endpoint_auth_method: TokenEndpointAuthMethod::None,
+            jwks: None,
             post_logout_redirect_uris: vec![],
             frontchannel_logout_uri: None,
             backchannel_logout_uri: None,

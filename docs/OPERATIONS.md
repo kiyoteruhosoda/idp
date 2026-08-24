@@ -129,9 +129,11 @@ api・web を別プロセスで起動し、`/authorize`→web `/login`→`/token
 confidential クライアントの認証方式は `token_endpoint_auth_method` で選ぶ（管理コンソールの
 登録・編集フォームにも項目がある）。既定は `client_secret_basic`（`Authorization: Basic` ヘッダ）で、
 RP 側のライブラリが body に `client_id` / `client_secret` を載せる実装なら `client_secret_post` を
-選ぶ。`/token`・`/introspect`・`/revoke` は登録した方式でのみ認証を受け付け、1 回の要求で両方を
-提示すると `invalid_request` になる。方式の変更で `client_secret` の値は変わらない（提示場所だけが
-変わる）。public クライアントには設定できない（常に `none`）。
+選ぶ。人ではない呼び出し元（CI・バッチ・サーバ間連携）には `private_key_jwt` を使う
+（次項「機械（人ではない呼び出し元）に認証させたいとき」）。`/token`・`/introspect`・`/revoke` は
+登録した方式でのみ認証を受け付け、1 回の要求で複数の方式を提示すると `invalid_request` になる。
+`client_secret_basic` と `client_secret_post` の間で方式を変えても `client_secret` の値は変わらない
+（提示場所だけが変わる）。public クライアントには設定できない（常に `none`）。
 
 ログアウト系 URI（`post_logout_redirect_uris` / `frontchannel_logout_uri` /
 `backchannel_logout_uri`）は `redirect_uris` と同じ制約（絶対 http(s)・フラグメント禁止・
@@ -164,6 +166,95 @@ redirect_uri は完全一致・複数登録に対応し、フラグメント／�
 
 > 管理画面（サーバレンダリング UI）は A2 の進行に合わせて追加予定。それまでは上記 API を用いる。
 > 管理者向けの初回ログイン後の SSO セッション確立は通常の `/authorize`→`/login` フローで行う。
+
+## 機械（人ではない呼び出し元）に認証させたいとき
+
+CI・バッチ・サーバ間連携には、利用者アカウントを共有するのではなく **confidential クライアント +
+`client_credentials` grant** を使う。資格情報には `private_key_jwt`（署名済み assertion）を選ぶ
+—— 共有シークレットを IdP 側にも設定ファイルにも置かずに済む（ADR-0030）。
+
+### 1. 鍵ペアを作る（呼び出し元の手元で）
+
+秘密鍵は呼び出し元だけが持つ。IdP へ渡すのは公開鍵だけである。
+
+```bash
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out machine.key
+openssl rsa -in machine.key -pubout -out machine.pub
+```
+
+`machine.pub` を JWK（`kty` / `kid` / `n` / `e`）へ変換し、JWK Set の形にまとめる。`kid` は
+ローテーションで新旧を見分けるための名前なので、`2026-08` のように日付を入れておくとよい。
+
+### 2. クライアントを登録する
+
+```bash
+curl -sS -X POST "$ISSUER/{tenant_id}/admin/clients" \
+  -H 'Content-Type: application/json' \
+  -H "Cookie: sso_session_id=<セッションID>" \
+  -d '{
+    "app_name": "Nightly Report Job",
+    "client_type": "confidential",
+    "redirect_uris": [],
+    "scopes": ["reports.read"],
+    "allow_client_credentials": true,
+    "token_endpoint_auth_method": "private_key_jwt",
+    "jwks": "{\"keys\":[{\"kty\":\"RSA\",\"kid\":\"2026-08\",\"n\":\"...\",\"e\":\"AQAB\"}]}"
+  }'
+```
+
+`client_secret` は発行されない（この方式のクライアントは共有秘密を持たない）。登録できる鍵は
+**公開鍵のみ**で、RSA または EC P-256、各鍵に `kid` が要る。秘密鍵成分を含む JWK は拒否する。
+
+### 3. トークンを取る
+
+呼び出し元は毎回 assertion を署名して送る。同じ assertion は 2 回使えないので、`jti` は要求ごとに
+新しくする（UUID などでよい）。
+
+| クレーム | 値 |
+|---|---|
+| `iss` / `sub` | `client_id` |
+| `aud` | `<ISSUER>/<tenant_id>/token`（`<ISSUER>/<tenant_id>` でも可） |
+| `exp` | 現在時刻 + 数分（**5 分以内**。超えると拒否される） |
+| `jti` | 要求ごとに一意な値（必須） |
+
+```bash
+curl -sS -X POST "$ISSUER/{tenant_id}/token" \
+  -d grant_type=client_credentials \
+  -d client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer \
+  --data-urlencode "client_assertion=<署名済み JWT>"
+```
+
+返るのはアクセストークンだけで、ID Token も Refresh Token も返らない（利用者が居ないため）。
+要求できる scope は登録した `scopes` の範囲内で、`offline_access` は使えない。
+
+### 4. 鍵を入れ替えたいとき（ローテーション）
+
+止めずに入れ替えられる。
+
+1. `PATCH /admin/clients/{client_id}` の `jwks` へ**新旧を並べた** JWK Set を送る。
+2. 呼び出し元の署名鍵を新しい鍵へ切り替える（この間はどちらの鍵の assertion も通る）。
+3. 落ち着いたら、`jwks` から旧鍵を外した JWK Set を再度送る。以後、旧鍵の assertion は通らない。
+
+漏洩した鍵をすぐ止めたい場合は、3 を先に行う（その鍵で署名した assertion は即座に拒否される）。
+
+### 認証が通らないときの見どころ
+
+失敗の応答は一律 `invalid_client` で、どの条件で落ちたかは明かさない。`/token` については理由が
+監査ログ（`audit_log` の `ClientAuthenticationFailed` イベントの `reason`）に残るので、そちらを見る
+（`/introspect`・`/revoke` は理由を記録しない）。
+
+| `reason` | 意味 |
+|---|---|
+| `unsupported_assertion_type` | `client_assertion_type` が `jwt-bearer` ではない |
+| `unknown_assertion_key` | ヘッダの `kid` に対応する鍵が登録されていない |
+| `invalid_assertion_signature` | 署名が登録鍵と合わない |
+| `expired_client_assertion` | `exp` が過去（時計ずれの許容は 60 秒） |
+| `assertion_lifetime_too_long` | `exp` が 5 分より先を指している |
+| `assertion_audience_mismatch` | `aud` がこのテナントを指していない |
+| `assertion_subject_mismatch` | `iss` / `sub` が `client_id` と一致しない |
+| `missing_assertion_jti` | `jti` が無い |
+| `replayed_client_assertion` | 同じ `jti` の assertion を使い回している |
+| `unsupported_auth_method` | 登録した方式と違う方式で提示した（secret を送った等） |
 
 ## SMS でワンタイムコードを送れるようにしたいとき
 

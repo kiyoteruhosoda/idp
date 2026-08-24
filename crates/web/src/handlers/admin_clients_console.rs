@@ -114,6 +114,9 @@ pub struct NewClientForm {
     /// クライアント認証方式（G3）。select は confidential のときだけ描画されるため任意で受ける。
     #[serde(default)]
     pub token_endpoint_auth_method: Option<String>,
+    /// `private_key_jwt` の検証鍵（JWK Set の JSON。ADR-0030）。同じく confidential のときだけ描画される。
+    #[serde(default)]
+    pub jwks: Option<String>,
     pub csrf_token: String,
 }
 
@@ -133,6 +136,7 @@ pub async fn create(
         client_status: "ACTIVE".to_string(),
         allow_client_credentials: form.allow_client_credentials.is_some(),
         token_endpoint_auth_method: auth_method_or_default(&form.token_endpoint_auth_method),
+        jwks: form.jwks.clone().unwrap_or_default(),
     };
 
     // Messages（FluentBundle）は Send でないため、api の await をまたいで保持しない（login.rs と同じ理由）。
@@ -158,6 +162,8 @@ pub async fn create(
         // public を選んだときは select 自体が描画されないため送られない。api は未指定を
         // 「既定のまま」と解釈する（public は常に `none`）。
         "token_endpoint_auth_method": form.token_endpoint_auth_method,
+        // 空欄は「未指定」として送る。空文字を送ると api は「鍵を登録した」と読んでしまう。
+        "jwks": blank_to_none(&form.jwks),
     });
     // api のバリデーション/競合メッセージをこの画面へ出すため、決定言語を引き継ぐ（MT20）。
     let result = state
@@ -246,6 +252,10 @@ pub struct EditClientForm {
     /// クライアント認証方式（G3）。confidential のときだけ送られる。
     #[serde(default)]
     pub token_endpoint_auth_method: Option<String>,
+    /// `private_key_jwt` の検証鍵（JWK Set の JSON。ADR-0030）。鍵ローテーションはこの欄の
+    /// 差し替えで行う。
+    #[serde(default)]
+    pub jwks: Option<String>,
     pub csrf_token: String,
 }
 
@@ -283,6 +293,7 @@ pub async fn update(
     if let Some(method) = form.token_endpoint_auth_method.as_deref() {
         values.token_endpoint_auth_method = method.to_string();
     }
+    values.jwks = form.jwks.clone().unwrap_or_default();
 
     if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
         let messages = Messages::new(locale(&headers));
@@ -306,6 +317,7 @@ pub async fn update(
         "client_status": form.client_status,
         "allow_client_credentials": form.allow_client_credentials.is_some(),
         "token_endpoint_auth_method": form.token_endpoint_auth_method,
+        "jwks": blank_to_none(&form.jwks),
     });
     let result = state
         .api
@@ -392,6 +404,15 @@ fn parse_uris(raw: &str) -> Vec<String> {
 }
 
 /// 再表示用のフォーム値。未送信（public を選んだ場合）は既定の `client_secret_basic` を出す。
+/// 空欄（および空白のみ）は「未指定」として api へ送らない。空文字をそのまま送ると、api 側は
+/// 「値を指定した」と読んで検証に落ちる。
+fn blank_to_none(raw: &Option<String>) -> Option<String> {
+    raw.as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 fn auth_method_or_default(raw: &Option<String>) -> String {
     raw.as_deref()
         .filter(|s| !s.is_empty())
@@ -725,6 +746,7 @@ mod tests {
             response_types: vec!["code".into()],
             scopes: vec!["openid".into()],
             token_endpoint_auth_method: "none".into(),
+            jwks: None,
             created_at: "2026-07-06T00:00:00Z".into(),
             updated_at: "2026-07-06T00:00:00Z".into(),
         };

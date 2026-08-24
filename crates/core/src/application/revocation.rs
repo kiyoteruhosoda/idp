@@ -7,13 +7,15 @@
 //!   `client_secret_post`）。public client は認証なし。
 
 use crate::application::audit::{AuditService, RequestContext};
-use crate::application::client_authentication::{ClientAuthFailure, PresentedClientCredentials};
+use crate::application::client_authentication::{
+    ClientAuthError, ClientAuthFailure, ClientAuthOutcome, ClientAuthenticator,
+    PresentedClientCredentials,
+};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::client::Client;
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::error::OAuthErrorCode;
-use crate::domain::password::PasswordHasher;
 use crate::domain::repositories::{
     ClientRepository, RefreshTokenRepository, RevokedAccessTokenRepository,
 };
@@ -41,7 +43,7 @@ pub struct RevocationService {
     clients: Arc<dyn ClientRepository>,
     refresh_tokens: Arc<dyn RefreshTokenRepository>,
     revoked_access_tokens: Arc<dyn RevokedAccessTokenRepository>,
-    hasher: Arc<dyn PasswordHasher>,
+    client_auth: Arc<ClientAuthenticator>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
 }
@@ -51,7 +53,7 @@ impl RevocationService {
         clients: Arc<dyn ClientRepository>,
         refresh_tokens: Arc<dyn RefreshTokenRepository>,
         revoked_access_tokens: Arc<dyn RevokedAccessTokenRepository>,
-        hasher: Arc<dyn PasswordHasher>,
+        client_auth: Arc<ClientAuthenticator>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
     ) -> Self {
@@ -59,7 +61,7 @@ impl RevocationService {
             clients,
             refresh_tokens,
             revoked_access_tokens,
-            hasher,
+            client_auth,
             audit,
             clock,
         }
@@ -206,7 +208,7 @@ impl RevocationService {
 
         let client = self
             .clients
-            .find_by_client_id(tenant.tenant_id(), client_id)
+            .find_by_client_id(tenant.tenant_id(), &client_id)
             .await
             .map_err(|e| RevocationError::new(OAuthErrorCode::ServerError, &e.to_string()))?
             .ok_or_else(|| RevocationError::new(OAuthErrorCode::InvalidClient, "unknown client"))?;
@@ -218,11 +220,15 @@ impl RevocationService {
             ));
         }
 
-        let secret = match credentials.secret_for(&client) {
+        // 資格情報の照合は `client_authentication` へ集約してある（G3・ADR-0030）。
+        match self
+            .client_auth
+            .authenticate(tenant, &client, credentials)
+            .await
+        {
             // public client は認証なしで通す（RFC 7009 §2.1）。
-            Ok(None) => return Ok(client),
-            Ok(Some(secret)) => secret,
-            Err(_) => {
+            Ok(ClientAuthOutcome::NotRequired | ClientAuthOutcome::Authenticated) => {}
+            Err(ClientAuthError::Failed(_)) => {
                 self.record_auth_failure(tenant, &client.client_id, ctx)
                     .await;
                 return Err(RevocationError::new(
@@ -230,27 +236,9 @@ impl RevocationService {
                     "client authentication failed",
                 ));
             }
-        };
-        let hash = match &client.client_secret_hash {
-            Some(h) => h,
-            None => {
-                return Err(RevocationError::new(
-                    OAuthErrorCode::InvalidClient,
-                    "client has no secret",
-                ))
+            Err(ClientAuthError::Internal(message)) => {
+                return Err(RevocationError::new(OAuthErrorCode::ServerError, &message));
             }
-        };
-        let ok = self
-            .hasher
-            .verify(secret, hash)
-            .map_err(|e| RevocationError::new(OAuthErrorCode::ServerError, &e.to_string()))?;
-        if !ok {
-            self.record_auth_failure(tenant, &client.client_id, ctx)
-                .await;
-            return Err(RevocationError::new(
-                OAuthErrorCode::InvalidClient,
-                "client authentication failed",
-            ));
         }
 
         Ok(client)

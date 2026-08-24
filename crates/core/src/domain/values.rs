@@ -116,6 +116,10 @@ string_enum!(
     TokenEndpointAuthMethod {
         ClientSecretBasic => "client_secret_basic",
         ClientSecretPost => "client_secret_post",
+        /// 機械（人ではない呼び出し元）向け。クライアントが秘密鍵で署名した JWT（client
+        /// assertion）を提示し、IdP は登録済みの公開鍵（`Client.jwks`）で検証する。秘密は
+        /// クライアント側にしか存在しない（ADR-0030。RFC 7523）。
+        PrivateKeyJwt => "private_key_jwt",
         None => "none",
     }
 );

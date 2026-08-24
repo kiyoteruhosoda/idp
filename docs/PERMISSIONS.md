@@ -11,6 +11,11 @@
 > **注意**: ここでいう権限コードは OIDC の `scope`（`openid`/`profile`/`email`。トークン claim 制御）とは
 > **別軸**である。権限コードは内部認可であり、OIDC Discovery の `scopes_supported` には載せない（ADR-0006 §7）。
 
+> **権限コードを保有できるのは利用者だけである。** 機械（`client_credentials` で認証するクライアント）は
+> `user_permissions` に行を持てないため、本 IdP の管理 API を叩くことはできない（ADR-0030 §影響）。
+> 機械が取るトークンは `sub_type=client` で、管理経路の判定（`AdminAccessService`）は SSO セッションから
+> 利用者を解決するところから始まるため、そもそも通らない。
+
 ---
 
 ## 権限コード一覧

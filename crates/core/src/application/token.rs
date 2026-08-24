@@ -12,7 +12,10 @@
 //!   取り違えないよう `sub_type` クレームで明示する。
 
 use crate::application::audit::{AuditService, RequestContext};
-use crate::application::client_authentication::{ClientAuthFailure, PresentedClientCredentials};
+use crate::application::client_authentication::{
+    ClientAuthError, ClientAuthFailure, ClientAuthOutcome, ClientAuthenticator,
+    PresentedClientCredentials,
+};
 use crate::application::key_service::KeyService;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::client::Client;
@@ -21,7 +24,6 @@ use crate::domain::crypto;
 use crate::domain::error::OAuthErrorCode;
 use crate::domain::issuer::tenant_issuer;
 use crate::domain::jwt;
-use crate::domain::password::PasswordHasher;
 use crate::domain::pkce;
 use crate::domain::refresh_token::RefreshToken;
 use crate::domain::repositories::{
@@ -146,7 +148,9 @@ pub struct TokenService {
     codes: Arc<dyn AuthorizationCodeRepository>,
     refresh_tokens: Arc<dyn RefreshTokenRepository>,
     keys: Arc<KeyService>,
-    hasher: Arc<dyn PasswordHasher>,
+    /// クライアント認証（secret 照合・assertion 検証）。方式ごとの分岐は
+    /// `client_authentication` に集約してある（ADR-0030）。
+    client_auth: Arc<ClientAuthenticator>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
     /// 基底 issuer（`https://<host>`）。`iss` はテナント毎に `<基底>/<tenant_id>` を合成する
@@ -166,7 +170,7 @@ impl TokenService {
         codes: Arc<dyn AuthorizationCodeRepository>,
         refresh_tokens: Arc<dyn RefreshTokenRepository>,
         keys: Arc<KeyService>,
-        hasher: Arc<dyn PasswordHasher>,
+        client_auth: Arc<ClientAuthenticator>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
         base_issuer: String,
@@ -181,7 +185,7 @@ impl TokenService {
             codes,
             refresh_tokens,
             keys,
-            hasher,
+            client_auth,
             audit,
             clock,
             base_issuer,
@@ -738,8 +742,8 @@ impl TokenService {
 
     /// クライアント認証（設計仕様 §4.4、RFC 6749 §2.3.1）。
     ///
-    /// 照合する secret の選択（Basic か body か）は登録された `token_endpoint_auth_method` が
-    /// 決める（`client_authentication` に集約。G3）。ここが担うのはハッシュ照合と監査記録。
+    /// 照合する資格情報の選択（Basic / body / assertion）も照合そのものも
+    /// `client_authentication` へ集約してある（G3・ADR-0030）。ここが担うのは監査記録だけ。
     async fn authenticate_client(
         &self,
         tenant: TenantContext,
@@ -747,31 +751,18 @@ impl TokenService {
         cmd: &TokenCommand,
         ctx: &RequestContext,
     ) -> Result<(), TokenError> {
-        let secret = match cmd.credentials.secret_for(client) {
-            Ok(Some(secret)) => secret,
+        match self
+            .client_auth
+            .authenticate(tenant, client, &cmd.credentials)
+            .await
+        {
             // public client（`none`）は認証なしで通す。
-            Ok(None) => return Ok(()),
-            Err(failure) => {
-                return Err(self
-                    .client_auth_failed(tenant, &client.client_id, failure.as_str(), ctx)
-                    .await)
-            }
-        };
-        let Some(secret_hash) = &client.client_secret_hash else {
-            return Err(self
-                .client_auth_failed(tenant, &client.client_id, "client_has_no_secret", ctx)
-                .await);
-        };
-        let ok = self
-            .hasher
-            .verify(secret, secret_hash)
-            .map_err(|e| internal(&e))?;
-        if !ok {
-            return Err(self
-                .client_auth_failed(tenant, &client.client_id, "invalid_client_secret", ctx)
-                .await);
+            Ok(ClientAuthOutcome::NotRequired | ClientAuthOutcome::Authenticated) => Ok(()),
+            Err(ClientAuthError::Failed(failure)) => Err(self
+                .client_auth_failed(tenant, &client.client_id, failure.as_str(), ctx)
+                .await),
+            Err(ClientAuthError::Internal(message)) => Err(internal(&message)),
         }
-        Ok(())
     }
 
     async fn load_active_client(
@@ -875,7 +866,7 @@ fn resolve_client_id(cmd: &TokenCommand) -> Result<String, TokenError> {
         )
     })?;
     match cmd.credentials.resolve_client_id() {
-        Ok(client_id) => Ok(client_id.to_string()),
+        Ok(client_id) => Ok(client_id),
         Err(ClientAuthFailure::ClientIdMismatch) => Err(TokenError::new(
             OAuthErrorCode::InvalidRequest,
             "client_id mismatch between Authorization header and body",
@@ -961,6 +952,7 @@ mod tests {
             response_types: vec!["code".to_string()],
             scopes: scopes.iter().map(|s| s.to_string()).collect(),
             token_endpoint_auth_method: TokenEndpointAuthMethod::ClientSecretBasic,
+            jwks: None,
             post_logout_redirect_uris: vec![],
             frontchannel_logout_uri: None,
             backchannel_logout_uri: None,

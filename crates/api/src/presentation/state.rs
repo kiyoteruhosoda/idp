@@ -25,6 +25,7 @@ use crate::application::backchannel_logout::{
     BackchannelLogoutDeliveryService, KeyServiceLogoutTokenSigner,
 };
 use crate::application::change_password::ChangePasswordService;
+use crate::application::client_authentication::ClientAuthenticator;
 use crate::application::client_management::ClientManagementService;
 use crate::application::client_status::ClientStatusService;
 use crate::application::code_issuance::CodeIssuanceService;
@@ -90,6 +91,7 @@ use crate::infrastructure::repositories::cached_user_permission::{
     CachedUserPermissionRepository, PermissionKey,
 };
 use crate::infrastructure::repositories::client::SqlxClientRepository;
+use crate::infrastructure::repositories::client_assertion::SqlxClientAssertionReplayRepository;
 use crate::infrastructure::repositories::consent::SqlxClientConsentRepository;
 use crate::infrastructure::repositories::email_verification_token::SqlxEmailVerificationTokenRepository;
 use crate::infrastructure::repositories::external_idp::{
@@ -589,6 +591,14 @@ impl AppState {
             Arc::new(SqlxApplicationLogQuery::new(pool.clone())),
             clock.clone(),
         ));
+        // トークン系 3 経路（`/token`・`/introspect`・`/revoke`）が共有するクライアント認証
+        // （ADR-0030）。方式ごとの分岐を 1 つの実装に閉じ込め、各サービスへ注入する。
+        let client_auth = Arc::new(ClientAuthenticator::new(
+            hasher.clone(),
+            Arc::new(SqlxClientAssertionReplayRepository::new(pool.clone())),
+            clock.clone(),
+            config.issuer().to_string(),
+        ));
         let token = Arc::new(TokenService::new(
             clients.clone(),
             users.clone(),
@@ -596,7 +606,7 @@ impl AppState {
             codes.clone(),
             refresh_tokens.clone(),
             keys.clone(),
-            hasher.clone(),
+            client_auth.clone(),
             audit.clone(),
             clock.clone(),
             config.issuer().to_string(),
@@ -803,7 +813,7 @@ impl AppState {
             clients.clone(),
             refresh_tokens.clone(),
             revoked_access_tokens.clone(),
-            hasher.clone(),
+            client_auth.clone(),
             audit.clone(),
             clock.clone(),
         ));
@@ -813,7 +823,7 @@ impl AppState {
             refresh_tokens,
             revoked_access_tokens,
             users.clone(),
-            hasher,
+            client_auth,
             clock.clone(),
             config.issuer().to_string(),
             config.clock_skew(),
