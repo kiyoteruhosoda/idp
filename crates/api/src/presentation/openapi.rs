@@ -48,6 +48,7 @@ use utoipa::{Modify, OpenApi};
         handlers::admin_clients::get_client,
         handlers::admin_clients::update_client,
         handlers::admin_clients::rotate_client_secret,
+        handlers::admin_clients::delete_client,
         handlers::admin_permissions::list_permissions,
         handlers::admin_permissions::grant_permission,
         handlers::admin_permissions::revoke_permission,

@@ -1522,7 +1522,6 @@ impl ApiClient {
         .await
     }
 
-    /// SAML SP（クライアント）削除（`DELETE /admin/saml-service-providers/{id}`）。
     /// クライアントを論理削除する（ADR-0035）。実体は残り、状態が DELETED になる。
     pub async fn delete_client(
         &self,
@@ -1542,6 +1541,7 @@ impl ApiClient {
         .await
     }
 
+    /// SAML SP（クライアント）削除（`DELETE /admin/saml-service-providers/{id}`）。
     pub async fn delete_saml_service_provider(
         &self,
         correlation_id: &str,

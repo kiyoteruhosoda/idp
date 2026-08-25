@@ -378,6 +378,23 @@ async fn a_deleted_client_disappears_from_the_console_but_stays_in_the_database(
     let client_id = created["client_id"].as_str().expect("client_id");
     let client_uri = format!("{base}/{client_id}");
 
+    // 削除は専用経路だけが行う。更新で状態を DELETED に倒せると、`client.deleted` の監査記録を
+    // 残さないまま取り消せない削除ができてしまう（ADR-0035）。
+    let res = send(
+        &env.app,
+        patch(
+            &admin_cookie,
+            &client_uri,
+            json!({ "client_status": "DELETED" }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        res.status(),
+        StatusCode::BAD_REQUEST,
+        "更新経路では削除できない"
+    );
+
     let res = send(&env.app, delete(&admin_cookie, &client_uri)).await;
     assert_eq!(res.status(), StatusCode::NO_CONTENT, "admin delete -> 204");
 

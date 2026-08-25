@@ -42,24 +42,17 @@ pub fn footer_version() -> String {
 /// origin の `max-age=0` を上書きして 4 時間キャッシュさせる）。デプロイごとに URL 自体を
 /// 変えることで、キャッシュ TTL に依存せず必ず新しいアセットを取得させる。
 ///
-/// 値は「パッケージ版[-git 版]-同梱アセットの内容ダイジェスト」。git バージョンが注入されない
-/// ビルド経路（`IDP_GIT_VERSION` 未指定の docker-compose ビルドはコンテナ内に `.git` も無く
-/// `unknown` になる）でも、アセット内容が変わればダイジェストが変わり URL が更新されるため、
-/// `immutable` キャッシュで旧アセットが固定化されない。
+/// 値は「パッケージ版-同梱アセットの内容ダイジェスト」。**git 版は載せない**（ADR-0034）。
+/// この URL は無認証のログイン画面（`page.html`）にも出るため、git 版を混ぜると稼働中の
+/// コミットを外から読めてしまい、フッタから版数を外した意味が無くなる。アセット内容が
+/// 変われば必ずダイジェストが変わるので、キャッシュバスティングには digest だけで足りる。
 /// クエリ値として安全な文字（英数・`.` `-` `_`）以外は `-` へ置換する。
 pub fn asset_version() -> &'static str {
     static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     VERSION.get_or_init(|| {
-        let git = BuildTimeVersionInfoProvider::new(app_version())
-            .version_info()
-            .git_version;
         let digest = embedded_assets_digest();
-        let raw = if git.is_empty() || git == "unknown" {
-            format!("{}-{digest:016x}", app_version())
-        } else {
-            format!("{}-{git}-{digest:016x}", app_version())
-        };
-        raw.chars()
+        format!("{}-{digest:016x}", app_version())
+            .chars()
             .map(|c| {
                 if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
                     c
@@ -1002,6 +995,10 @@ impl ClientFormValues {
     }
 
     /// 新規登録フォームの初期値（confidential・PKCE 必須・openid スコープ）。
+    ///
+    /// 認証方式の既定は `private_key_jwt`。共有シークレットは IdP 側にも保存され、クライアント側の
+    /// 設定ファイルにも置かれ、要求ごとにネットワークを流れる（ADR-0030）。**既定は、選ぶ人が
+    /// 何も考えなかったときに置かれる値**なので、そこを安全な側にしておく。
     pub fn default_new() -> Self {
         Self {
             app_name: String::new(),
@@ -1010,7 +1007,7 @@ impl ClientFormValues {
             scopes: "openid".to_string(),
             client_status: "ACTIVE".to_string(),
             usage: client_usage::USER_LOGIN.to_string(),
-            token_endpoint_auth_method: "client_secret_basic".to_string(),
+            token_endpoint_auth_method: "private_key_jwt".to_string(),
             jwks: String::new(),
         }
     }

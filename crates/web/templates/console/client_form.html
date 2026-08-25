@@ -85,9 +85,10 @@
       <div class="mb-3" data-client-form-row="auth-method">
         <label class="form-label" for="client-auth-method">{{ messages.get("admin-client-field-auth-method") }}</label>
         <select class="form-select" id="client-auth-method" name="token_endpoint_auth_method">
+          {# 推奨（private_key_jwt）を先頭に置く。共有シークレットを持たない方式が既定になるようにする。 #}
+          <option value="private_key_jwt"{% if values.token_endpoint_auth_method == "private_key_jwt" %} selected{% endif %}>private_key_jwt — {{ messages.get("admin-client-auth-method-recommended") }}</option>
           <option value="client_secret_basic"{% if values.token_endpoint_auth_method == "client_secret_basic" %} selected{% endif %}>client_secret_basic</option>
           <option value="client_secret_post"{% if values.token_endpoint_auth_method == "client_secret_post" %} selected{% endif %}>client_secret_post</option>
-          <option value="private_key_jwt"{% if values.token_endpoint_auth_method == "private_key_jwt" %} selected{% endif %}>private_key_jwt</option>
         </select>
         <div class="form-text">{{ messages.get("admin-client-field-auth-method-hint") }}</div>
       </div>

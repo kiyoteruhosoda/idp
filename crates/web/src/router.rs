@@ -266,7 +266,8 @@ pub fn build(state: WebState) -> Router {
             "/admin/clients/{client_id}/delete",
             // 論理削除（ADR-0035）。ブラウザからは POST（HTML フォームは DELETE を送れない）。
             post(admin_clients_console::delete),
-        ) // SAML SP（クライアント）一覧・追加画面。
+        )
+        // SAML SP（クライアント）一覧・追加画面。
         .route(
             "/admin/saml-clients",
             get(admin_saml_clients_console::list).post(admin_saml_clients_console::create),

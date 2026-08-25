@@ -89,9 +89,11 @@ async fn issues_an_access_token_without_an_id_token_or_refresh_token() {
     );
 }
 
-/// 要求 scope は登録 scope の部分集合に限る（`/authorize` と同じ完全一致判定）。
+/// 利用者前提の scope（`openid` / `profile` / `email`）は、登録済みでも本 grant では拒否する。
+/// 省略時は落としているのに明示要求だけ通すと、**利用者が居ないのに利用者のクレームを名乗る
+/// トークン**が出せてしまう（ADR-0033）。
 #[tokio::test]
-async fn rejects_a_scope_outside_the_registered_set() {
+async fn rejects_a_user_bound_scope_request() {
     let Some(env) = support::setup("client_credentials").await else {
         return;
     };

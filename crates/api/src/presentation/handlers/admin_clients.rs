@@ -250,6 +250,18 @@ pub async fn rotate_client_secret(
 /// 実体は残し、状態を `DELETED` にする。発行済みトークン・同意・監査ログが `client_id` で
 /// 紐づいているため、実体を消すと監査で「どのアプリだったか」を追えなくなる。使えなくなるのは
 /// 即座である（認可・トークン・introspection は `is_active()` で弾く）。
+#[utoipa::path(
+    delete,
+    path = "/{tenant_id}/admin/clients/{client_id}",
+    tag = "admin",
+    params(("client_id" = String, Path, description = "クライアント識別子")),
+    responses(
+        (status = 204, description = "論理削除した（実体は監査のため残る）"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
+        (status = 404, description = "不存在（削除済みを含む）"),
+    )
+)]
 pub async fn delete_client(
     RequirePerms(admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,

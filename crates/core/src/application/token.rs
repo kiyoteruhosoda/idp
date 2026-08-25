@@ -988,10 +988,15 @@ mod tests {
     }
 
     /// 未登録の scope は拒否する（`/authorize` と同じ完全一致判定）。
+    ///
+    /// 登録できる scope は OIDC の 4 値だけになった（ADR-0033）ので、この判定へ届くのは
+    /// 制限より前に登録された行だけである。門番は残してあるため、その姿の行が来ても弾く。
+    /// **利用者前提の scope で書くと 1 つ上の門番が先に弾き、この判定を通らない。**
     #[test]
     fn requested_scope_must_be_a_subset_of_the_registered_scopes() {
-        let client = client_with_scopes(&["openid"]);
-        let err = resolve_client_credentials_scopes(&client, Some("openid profile"))
+        // ADR-0033 より前に登録された姿（いまは登録できない）。
+        let client = client_with_scopes(&["openid", "reports.read"]);
+        let err = resolve_client_credentials_scopes(&client, Some("reports.write"))
             .expect_err("未登録 scope は拒否する");
         assert_eq!(err.code, OAuthErrorCode::InvalidScope);
     }

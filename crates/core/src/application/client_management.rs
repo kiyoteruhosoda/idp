@@ -342,6 +342,14 @@ impl ClientManagementService {
             client.scopes = validate_scopes(&scopes)?;
         }
         if let Some(status) = cmd.status {
+            // 論理削除は専用の削除経路（`delete`）だけが行う（ADR-0035）。ここを素通しすると
+            // `client.deleted` の監査記録を残さないまま、取り消せない削除ができてしまう
+            // （削除済みは `load` が落とすため、以後この更新経路にも戻ってこられない）。
+            if status == ClientStatus::Deleted {
+                return Err(ClientManagementError::Validation(MessageKey::new(
+                    "api-client-status-invalid",
+                )));
+            }
             client.client_status = status;
         }
         // 更新時も登録時と同じ検査を通す（SEC2。登録を通しても更新で差し替えられては意味がない）。
