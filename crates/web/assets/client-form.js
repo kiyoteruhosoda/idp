@@ -24,9 +24,20 @@
     var system = usage && usage.value === "system";
     show(row("redirect-uris"), !system);
     show(row("client-type"), !system);
+    // 欄を隠すだけでは選択値は送られ続ける。サーバが confidential へ寄せる値と、画面が
+    // 持っている値をここで合わせておく（食い違うと、再表示時に別の欄が消える）。
+    if (system && clientType) {
+      clientType.value = "confidential";
+    }
 
+    // 認証方式・検証鍵は confidential にしか無い（public は常に none）。
+    var confidential = !clientType || clientType.value === "confidential";
+    show(row("auth-method"), confidential);
     // 検証鍵は private_key_jwt でだけ受け付ける。他の方式で送ると api が拒否する。
-    show(row("jwks"), authMethod && authMethod.value === "private_key_jwt");
+    show(
+      row("jwks"),
+      confidential && authMethod && authMethod.value === "private_key_jwt"
+    );
   }
 
   if (usage) {

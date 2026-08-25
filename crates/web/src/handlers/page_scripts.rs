@@ -19,6 +19,7 @@ const PASSKEY_REGISTER_JS: &str = include_str!("../../assets/passkey-register.js
 const PASSWORD_VISIBILITY_JS: &str = include_str!("../../assets/password-visibility.js");
 const RP_LOGOUT_JS: &str = include_str!("../../assets/rp-logout.js");
 const AUTO_SUBMIT_JS: &str = include_str!("../../assets/auto-submit.js");
+const CLIENT_FORM_JS: &str = include_str!("../../assets/client-form.js");
 
 /// 参照 URL に `?v={asset_version}` が付きデプロイごとに変わるため長期キャッシュしてよい。
 fn javascript(body: &'static str) -> impl IntoResponse {
@@ -49,4 +50,8 @@ pub async fn rp_logout_js() -> impl IntoResponse {
 
 pub async fn auto_submit_js() -> impl IntoResponse {
     javascript(AUTO_SUBMIT_JS)
+}
+
+pub async fn client_form_js() -> impl IntoResponse {
+    javascript(CLIENT_FORM_JS)
 }

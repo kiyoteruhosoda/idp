@@ -52,7 +52,7 @@
       </div>
       {% endif %}
       {% if values.client_type == "confidential" %}
-      <div class="mb-3">
+      <div class="mb-3" data-client-form-row="auth-method">
         <label class="form-label" for="client-auth-method">{{ messages.get("admin-client-field-auth-method") }}</label>
         <select class="form-select" id="client-auth-method" name="token_endpoint_auth_method">
           <option value="client_secret_basic"{% if values.token_endpoint_auth_method == "client_secret_basic" %} selected{% endif %}>client_secret_basic</option>

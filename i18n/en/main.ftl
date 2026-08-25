@@ -509,6 +509,7 @@ api-tenant-has-dependents = This tenant still has users or clients and cannot be
 api-client-id-conflict = That client ID is already used in this tenant.
 api-client-app-name-empty = The application name must not be empty.
 api-client-redirect-uris-empty = At least one redirect URI is required, unless the client only uses the client_credentials grant.
+api-client-usage-conflict = A client cannot both sign users in and call APIs as a system. Register a separate client for each usage.
 api-client-redirect-uri-invalid = "{ $value }" is not a valid redirect URI.
 api-client-redirect-uri-duplicate = The redirect URI "{ $value }" is listed more than once.
 api-client-redirect-uri-wildcard = The redirect URI "{ $value }" must not contain a wildcard.

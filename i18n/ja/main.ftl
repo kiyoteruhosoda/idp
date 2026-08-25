@@ -509,6 +509,7 @@ api-tenant-has-dependents = 配下に利用者またはクライアントが残�
 api-client-id-conflict = そのクライアント ID はこのテナントで既に使われています。
 api-client-app-name-empty = アプリケーション名を入力してください。
 api-client-redirect-uris-empty = リダイレクト URI を 1 つ以上指定してください（client_credentials のみを使うクライアントでは省略できます）。
+api-client-usage-conflict = 1 つのクライアントに「利用者のログイン」と「システムからの API 呼び出し」を兼ねさせることはできません。用途ごとに別のクライアントを登録してください。
 api-client-redirect-uri-invalid = 「{ $value }」はリダイレクト URI として無効です。
 api-client-redirect-uri-duplicate = リダイレクト URI「{ $value }」が重複しています。
 api-client-redirect-uri-wildcard = リダイレクト URI「{ $value }」にワイルドカードは使えません。

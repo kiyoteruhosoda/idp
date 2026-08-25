@@ -223,7 +223,7 @@ JWKS=$(python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))'
 |---|---|
 | アプリ名 | システムの役割が分かる名前（例 `Nightly Report Job`） |
 | **用途** | **「システムが API を呼ぶ（利用者不在）」** |
-| スコープ | 業務権限のみ（例 `reports.read`）。`openid` は要らない |
+| スコープ | `openid`（登録時は必須。未指定・未対応値は拒否される） |
 | 認証方式 | `private_key_jwt` |
 | 検証鍵（JWKS） | 前項の `jwks.json` の中身 |
 
@@ -244,7 +244,7 @@ curl -sS -X POST "$ISSUER/$TENANT_ID/admin/clients" \
   "app_name": "Nightly Report Job",
   "client_type": "confidential",
   "redirect_uris": [],
-  "scopes": ["reports.read"],
+  "scopes": ["openid"],
   "allow_client_credentials": true,
   "token_endpoint_auth_method": "private_key_jwt",
   "jwks": $JWKS

@@ -135,6 +135,7 @@ impl ClientManagementService {
         let system_client =
             cmd.allow_client_credentials && cmd.client_type == ClientType::Confidential;
         let redirect_uris = validate_redirect_uris(&cmd.redirect_uris, system_client)?;
+        validate_single_usage(system_client, &redirect_uris)?;
         let scopes = validate_scopes(&cmd.scopes)?;
         // ログアウト系 URI も redirect URI と同じ検査を通す（SEC2）。
         let post_logout_redirect_uris =
@@ -286,7 +287,13 @@ impl ClientManagementService {
         if let Some(redirect_uris) = cmd.redirect_uris {
             client.redirect_uris =
                 validate_redirect_uris(&redirect_uris, allows_client_credentials)?;
+        } else {
+            // URI を触らない更新でも、更新後の姿で成り立つかは見る。`client_credentials` を外す
+            // だけの更新で、redirect_uri も持たない「何もできないクライアント」にしないため
+            // （grant_types が空になる）。ADR-0032 決定 2。
+            validate_redirect_uris(&client.redirect_uris, allows_client_credentials)?;
         }
+        validate_single_usage(allows_client_credentials, &client.redirect_uris)?;
         if let Some(scopes) = cmd.scopes {
             client.scopes = validate_scopes(&scopes)?;
         }
@@ -488,6 +495,23 @@ fn validate_jwks_for_method(
 
 fn parse_jwks(raw: &str) -> Result<ClientJwks, ClientManagementError> {
     parse_registration_jwks(raw).map_err(|e| ClientManagementError::Validation(e.message_key()))
+}
+
+/// 1 つのクライアントに 2 つの用途を持たせない（ADR-0032 決定 3）。
+///
+/// `client_credentials` と redirect_uri を両立させると、画面の「用途」がその状態を表せなくなり、
+/// コンソールで開いて保存しただけで片方が黙って消える。表せない状態を作らせないことで、
+/// 用途は登録内容から一意に決まる。用途ごとに分ければ、事故時の失効範囲と監査の粒度も分かれる。
+fn validate_single_usage(
+    allows_client_credentials: bool,
+    redirect_uris: &[String],
+) -> Result<(), ClientManagementError> {
+    if allows_client_credentials && !redirect_uris.is_empty() {
+        return Err(ClientManagementError::Validation(MessageKey::new(
+            "api-client-usage-conflict",
+        )));
+    }
+    Ok(())
 }
 
 fn grant_types_for(
@@ -749,6 +773,17 @@ mod tests {
         );
         // 例外は「空を許す」だけで、指定された URI の検査は緩めない。
         assert!(validate_redirect_uris(&["not-a-url".to_string()], true).is_err());
+    }
+
+    /// ADR-0032 決定 3: 1 つのクライアントに 2 つの用途を持たせない。
+    #[test]
+    fn a_client_cannot_be_both_a_login_client_and_a_system_client() {
+        let uris = vec!["https://a.example.com/cb".to_string()];
+        // 利用者ログインのみ・システム用のみは通る。
+        assert!(validate_single_usage(false, &uris).is_ok());
+        assert!(validate_single_usage(true, &[]).is_ok());
+        // 両立は拒否する —— 画面の「用途」で表せない状態を作らせない。
+        assert!(validate_single_usage(true, &uris).is_err());
     }
 
     /// grant_types は「実際にできること」から導出する（ADR-0032）。

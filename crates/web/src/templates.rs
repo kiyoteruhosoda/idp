@@ -398,7 +398,10 @@ mod tests {
         assert!(checked > 0, "expected link targets to check");
     }
 
-    /// テンプレートの `href="…"` / `action="…"` を (ファイル名, 値) で列挙する。
+    /// テンプレートの `href="…"` / `action="…"` / `src="…"` を (ファイル名, 値) で列挙する。
+    ///
+    /// `src` も見るのは、`<script src="/assets/…">` の配信ルートを足し忘れると 404 になり、
+    /// 画面は描画されたまま挙動だけが黙って消えるため（実際に `client-form.js` で起きた）。
     fn template_link_targets() -> Vec<(String, String)> {
         fn walk(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
             for entry in std::fs::read_dir(dir).expect("read templates dir") {
@@ -412,7 +415,7 @@ mod tests {
                 }
                 let name = path.display().to_string();
                 let source = std::fs::read_to_string(&path).expect("read template");
-                for attr in ["href=\"", "action=\""] {
+                for attr in ["href=\"", "action=\"", "src=\""] {
                     for after in source.split(attr).skip(1) {
                         if let Some(len) = after.find('"') {
                             out.push((name.clone(), after[..len].to_string()));

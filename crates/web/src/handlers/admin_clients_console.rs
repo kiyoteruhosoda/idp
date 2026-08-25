@@ -106,6 +106,9 @@ pub async fn new_form(
 #[derive(Debug, Deserialize)]
 pub struct NewClientForm {
     pub app_name: String,
+    /// クライアント種別。システム用では入力欄を隠すため、送られてこなくても受け取れるようにする
+    /// （`client_type_for` が confidential へ寄せる。ADR-0032）。
+    #[serde(default)]
     pub client_type: String,
     pub redirect_uris: String,
     pub scopes: String,
