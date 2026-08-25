@@ -153,7 +153,7 @@ fn discovery_document(issuer: &str, end_session_endpoint: &str) -> Value {
         "subject_types_supported": ["public"],
         "id_token_signing_alg_values_supported": ["RS256"],
         // クライアント認証（RFC 6749 §2.3.1）。`client_secret_post` は多くの RP ライブラリが
-        // 既定にするため受け入れる（G3）。`private_key_jwt`（RFC 7523）は共有秘密を持たない機械向け
+        // 既定にするため受け入れる（G3）。`private_key_jwt`（RFC 7523）は共有秘密を持たないシステム向け
         // （ADR-0030）。どれを使うかはクライアントの登録値が決める（併存は認めない）。
         "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "private_key_jwt", "none"],
         // `private_key_jwt` の assertion に使える署名アルゴリズム。広告しないと、RP・クライアント

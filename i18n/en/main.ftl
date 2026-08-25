@@ -1119,6 +1119,5 @@ authorization-post-submit = Continue
 admin-client-field-usage = Usage
 admin-client-field-usage-hint = What this client is for. The fields below change with this choice.
 admin-client-usage-user-login = Sign users in through a browser
-admin-client-usage-machine = Call APIs as a machine (no user)
-admin-client-usage-both = Both (existing setting)
+admin-client-usage-system = Call APIs as a system (no user)
 admin-client-field-type-hint = confidential keeps a secret on a server it controls; public cannot (a browser or mobile app).

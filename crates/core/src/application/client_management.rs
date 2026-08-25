@@ -130,11 +130,11 @@ impl ClientManagementService {
         ctx: &RequestContext,
     ) -> Result<RegisteredClient, ClientManagementError> {
         let app_name = validate_app_name(cmd.app_name)?;
-        // 機械（M2M）だけが redirect_uri を持たずに登録できる（ADR-0032）。ブラウザのリダイレクト先が
-        // 無い呼び出し元に、使いもしない URL を 1 つ捏造させないための例外である。
-        let machine_to_machine =
+        // システム用（利用者不在）だけが redirect_uri を持たずに登録できる（ADR-0032）。ブラウザの
+        // リダイレクト先が無い呼び出し元に、使いもしない URL を 1 つ捏造させないための例外である。
+        let system_client =
             cmd.allow_client_credentials && cmd.client_type == ClientType::Confidential;
-        let redirect_uris = validate_redirect_uris(&cmd.redirect_uris, machine_to_machine)?;
+        let redirect_uris = validate_redirect_uris(&cmd.redirect_uris, system_client)?;
         let scopes = validate_scopes(&cmd.scopes)?;
         // ログアウト系 URI も redirect URI と同じ検査を通す（SEC2）。
         let post_logout_redirect_uris =
@@ -520,11 +520,12 @@ fn validate_app_name(app_name: String) -> Result<String, ClientManagementError> 
 /// redirect URI 群を検証する。1 件以上・重複なし・各 URI が §2.3 の制約を満たすこと。
 fn validate_redirect_uris(
     uris: &[String],
-    machine_to_machine: bool,
+    system_client: bool,
 ) -> Result<Vec<String>, ClientManagementError> {
     if uris.is_empty() {
-        // M2M 以外で空を許すと、認可フローも M2M も使えない「何もできないクライアント」ができる。
-        return if machine_to_machine {
+        // システム用以外で空を許すと、認可フローも `client_credentials` も使えない
+        // 「何もできないクライアント」ができる。
+        return if system_client {
             Ok(Vec::new())
         } else {
             Err(ClientManagementError::Validation(MessageKey::new(
@@ -739,9 +740,9 @@ mod tests {
         .is_err());
     }
 
-    /// ADR-0032: 機械（M2M）はブラウザのリダイレクト先を持たないので空を許す。
+    /// ADR-0032: システム用（利用者不在）はブラウザのリダイレクト先を持たないので空を許す。
     #[test]
-    fn machine_to_machine_clients_may_omit_redirect_uris() {
+    fn system_clients_may_omit_redirect_uris() {
         assert_eq!(
             validate_redirect_uris(&[], true).expect("empty is ok"),
             Vec::<String>::new()
@@ -758,7 +759,7 @@ mod tests {
             grant_types_for(ClientType::Confidential, false, true),
             vec!["authorization_code".to_string()]
         );
-        // 機械のみ —— redirect_uri が無いので `authorization_code` は付かない。
+        // システム用のみ —— redirect_uri が無いので `authorization_code` は付かない。
         assert_eq!(
             grant_types_for(ClientType::Confidential, true, false),
             vec!["client_credentials".to_string()]
@@ -771,7 +772,7 @@ mod tests {
                 "client_credentials".to_string()
             ]
         );
-        // public は秘密を秘匿できないため、許可されていても M2M は付かない。
+        // public は秘密を秘匿できないため、許可されていても `client_credentials` は付かない。
         assert_eq!(
             grant_types_for(ClientType::Public, true, true),
             vec!["authorization_code".to_string()]

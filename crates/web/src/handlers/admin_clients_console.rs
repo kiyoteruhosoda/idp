@@ -156,8 +156,8 @@ pub async fn create(
 
     let body = json!({
         "app_name": form.app_name,
-        // 機械では client_type の select を描画しないので、値が来なくても confidential として送る
-        // （public では `client_credentials` も `private_key_jwt` も成立しない）。
+        // システム用では client_type の select を描画しないので、値が来なくても confidential
+        // として送る（public では `client_credentials` も `private_key_jwt` も成立しない）。
         "client_type": client_type_for(&form.usage, &form.client_type),
         "redirect_uris": redirect_uris_for(&form.usage, &form.redirect_uris),
         "scopes": parse_scopes(&form.scopes),
@@ -405,22 +405,23 @@ pub async fn rotate_secret(
 
 /// 用途が `client_credentials` を含むか（ADR-0032）。
 fn allows_client_credentials(usage: &str) -> bool {
-    matches!(usage, client_usage::MACHINE | client_usage::BOTH)
+    usage == client_usage::SYSTEM
 }
 
-/// 用途に応じた redirect_uri。機械は持たないので、入力欄の残骸があっても送らない
+/// 用途に応じた redirect_uri。システム用は持たないので、入力欄の残骸があっても送らない
 /// （用途を切り替えてから保存したとき、隠れた欄の値が生き残らないようにする）。
 fn redirect_uris_for(usage: &str, raw: &str) -> Vec<String> {
-    if usage == client_usage::MACHINE {
+    if usage == client_usage::SYSTEM {
         Vec::new()
     } else {
         parse_uris(raw)
     }
 }
 
-/// 用途に応じた client_type。機械では select を描画しないため、値が来なくても confidential とする。
+/// 用途に応じた client_type。システム用では select を描画しないため、値が来なくても
+/// confidential とする。
 fn client_type_for(usage: &str, raw: &str) -> String {
-    if usage == client_usage::MACHINE {
+    if usage == client_usage::SYSTEM {
         "confidential".to_string()
     } else {
         raw.to_string()
@@ -780,30 +781,26 @@ mod tests {
         assert!(!allows_client_credentials(client_usage::USER_LOGIN));
         assert_eq!(redirect_uris_for(client_usage::USER_LOGIN, uris).len(), 1);
 
-        // 機械: client_credentials を持ち、redirect_uri は持たない。
-        assert!(allows_client_credentials(client_usage::MACHINE));
-        assert!(redirect_uris_for(client_usage::MACHINE, uris).is_empty());
-
-        // 両方（既存設定）: どちらも持つ。
-        assert!(allows_client_credentials(client_usage::BOTH));
-        assert_eq!(redirect_uris_for(client_usage::BOTH, uris).len(), 1);
+        // システム用: client_credentials を持ち、redirect_uri は持たない。
+        assert!(allows_client_credentials(client_usage::SYSTEM));
+        assert!(redirect_uris_for(client_usage::SYSTEM, uris).is_empty());
     }
 
-    /// 用途を「機械」へ切り替えて保存したとき、隠れた入力欄の値を送らない。
+    /// 用途を「システム」へ切り替えて保存したとき、隠れた入力欄の値を送らない。
     /// （送ると api 側で `authorization_code` が付き、閉じたはずの経路が残る。）
     #[test]
-    fn switching_to_machine_drops_the_hidden_redirect_uris() {
+    fn switching_to_a_system_client_drops_the_hidden_redirect_uris() {
         assert!(
-            redirect_uris_for(client_usage::MACHINE, "https://leftover.example.com/cb").is_empty()
+            redirect_uris_for(client_usage::SYSTEM, "https://leftover.example.com/cb").is_empty()
         );
     }
 
-    /// 機械では client_type の select を描画しないので、値が来なくても confidential にする。
+    /// システム用では client_type の select を描画しないので、値が来なくても confidential にする。
     #[test]
-    fn machine_clients_are_always_confidential() {
-        assert_eq!(client_type_for(client_usage::MACHINE, ""), "confidential");
+    fn system_clients_are_always_confidential() {
+        assert_eq!(client_type_for(client_usage::SYSTEM, ""), "confidential");
         assert_eq!(
-            client_type_for(client_usage::MACHINE, "public"),
+            client_type_for(client_usage::SYSTEM, "public"),
             "confidential"
         );
         // 他の用途では選ばれた値をそのまま通す。

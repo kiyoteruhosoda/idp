@@ -20,10 +20,10 @@
   }
 
   function apply() {
-    // 機械（M2M）はブラウザのリダイレクト先を持たず、confidential 以外あり得ない。
-    var machine = usage && usage.value === "machine";
-    show(row("redirect-uris"), !machine);
-    show(row("client-type"), !machine);
+    // システム用はブラウザのリダイレクト先を持たず、confidential 以外あり得ない。
+    var system = usage && usage.value === "system";
+    show(row("redirect-uris"), !system);
+    show(row("client-type"), !system);
 
     // 検証鍵は private_key_jwt でだけ受け付ける。他の方式で送ると api が拒否する。
     show(row("jwks"), authMethod && authMethod.value === "private_key_jwt");

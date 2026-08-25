@@ -108,20 +108,50 @@ mod tests {
     use super::*;
     use crate::i18n::{Locale, Messages};
 
-    /// ADR-0032: 両方の grant を持つ既存クライアントを `USER_LOGIN` へ丸めない。
-    /// 丸めると、編集画面を開いて保存しただけで `client_credentials` が黙って外れる。
+    /// フォームが送る入力欄と、ハンドラが要求する項目の食い違いを検出する（ADR-0032）。
+    ///
+    /// `usage` は `NewClientForm` / `EditClientForm` の**必須**項目なので、テンプレートが描画を
+    /// やめると登録が 400 になる。実際、この欄を足したとき E2E スクリプトだけが送っておらず
+    /// CI で落ちた —— 描画側と受け取り側の対応は、遅い経路ではなくここで固定しておく。
+    #[test]
+    fn the_client_form_renders_the_controls_the_handler_requires() {
+        let messages = Messages::new(Locale::Ja);
+        let values = ClientFormValues::default_new();
+        let form = ClientForm {
+            messages: &messages,
+            tenant: "/019f6514-08ea-7138-ad71-838a7bdd3575",
+            admin: None,
+            csrf: &"0".repeat(64),
+            error: None,
+            heading: "新規クライアント",
+            action: "/x/admin/clients/new",
+            is_new: true,
+            values: &values,
+        };
+        let html = render(&form);
+        for control in [
+            r#"name="app_name""#,
+            r#"name="usage""#,
+            r#"name="client_type""#,
+            r#"name="redirect_uris""#,
+            r#"name="scopes""#,
+            r#"name="csrf_token""#,
+        ] {
+            assert!(html.contains(control), "{control} が描画されていない");
+        }
+        // 既定は利用者ログイン。用途はこの 2 つだけ。
+        assert!(html.contains(r#"value="user_login" selected"#), "{html}");
+        assert!(html.contains(r#"value="system""#), "{html}");
+    }
+
+    /// ADR-0032: 用途は `client_credentials` の有無で決まる。
     #[test]
     fn usage_reflects_what_the_client_can_actually_do() {
         let login = vec!["authorization_code".to_string()];
-        let machine = vec!["client_credentials".to_string()];
-        let both = vec![
-            "authorization_code".to_string(),
-            "client_credentials".to_string(),
-        ];
+        let system = vec!["client_credentials".to_string()];
         assert_eq!(usage_from_grant_types(&login), client_usage::USER_LOGIN);
-        assert_eq!(usage_from_grant_types(&machine), client_usage::MACHINE);
-        assert_eq!(usage_from_grant_types(&both), client_usage::BOTH);
-        // grant が 1 つも無い（あり得ないが）ときも、機械として扱わない。
+        assert_eq!(usage_from_grant_types(&system), client_usage::SYSTEM);
+        // grant が 1 つも無い（あり得ないが）ときも、システム用として扱わない。
         assert_eq!(usage_from_grant_types(&[]), client_usage::USER_LOGIN);
     }
 
@@ -921,12 +951,8 @@ pub struct ClientFormValues {
 pub mod client_usage {
     /// ブラウザで利用者をログインさせる（authorization_code）。
     pub const USER_LOGIN: &str = "user_login";
-    /// 機械が単独で API を呼ぶ（client_credentials）。redirect_uri を持たない。
-    pub const MACHINE: &str = "machine";
-    /// 両方の grant を持つ従来の設定。**新規登録では選べない**——用途ごとにクライアントを分けた
-    /// ほうが、事故時の失効範囲と監査の粒度を分離できるため。既存クライアントを開いたときに
-    /// 現状を正しく映し、保存で片方を黙って失わせないためだけに残す。
-    pub const BOTH: &str = "both";
+    /// システムが API を呼ぶ（client_credentials）。利用者が不在なので redirect_uri を持たない。
+    pub const SYSTEM: &str = "system";
 }
 
 impl ClientFormValues {
@@ -962,15 +988,12 @@ impl ClientFormValues {
 
 /// 登録済みの `grant_types` から画面上の用途を決める。
 ///
-/// 両方を持つクライアントを `USER_LOGIN` へ丸めない —— 丸めると、編集画面を開いて保存しただけで
-/// `client_credentials` が黙って外れる。実際に両方使えるものは両方として見せる。
+/// `client_credentials` を持つならシステム用。用途は 2 つしかないので、判定もこの 1 点で足りる。
 fn usage_from_grant_types(grant_types: &[String]) -> String {
-    let machine = grant_types.iter().any(|g| g == "client_credentials");
-    let login = grant_types.iter().any(|g| g == "authorization_code");
-    match (login, machine) {
-        (true, true) => client_usage::BOTH,
-        (false, true) => client_usage::MACHINE,
-        _ => client_usage::USER_LOGIN,
+    if grant_types.iter().any(|g| g == "client_credentials") {
+        client_usage::SYSTEM
+    } else {
+        client_usage::USER_LOGIN
     }
     .to_string()
 }

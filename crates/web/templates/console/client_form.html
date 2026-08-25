@@ -15,17 +15,13 @@
         <label class="form-label" for="client-usage">{{ messages.get("admin-client-field-usage") }}</label>
         <select class="form-select" id="client-usage" name="usage">
           <option value="user_login"{% if values.usage == "user_login" %} selected{% endif %}>{{ messages.get("admin-client-usage-user-login") }}</option>
-          <option value="machine"{% if values.usage == "machine" %} selected{% endif %}>{{ messages.get("admin-client-usage-machine") }}</option>
-          {# 両方の grant を持つ既存クライアントにだけ出す。新規では選ばせない。 #}
-          {% if values.usage == "both" %}
-          <option value="both" selected>{{ messages.get("admin-client-usage-both") }}</option>
-          {% endif %}
+          <option value="system"{% if values.usage == "system" %} selected{% endif %}>{{ messages.get("admin-client-usage-system") }}</option>
         </select>
         <div class="form-text">{{ messages.get("admin-client-field-usage-hint") }}</div>
       </div>
       {% if is_new %}
-      {# 機械では confidential 以外あり得ないので、そのときは欄ごと出さない。 #}
-      <div class="mb-3" data-client-form-row="client-type"{% if values.usage == "machine" %} hidden{% endif %}>
+      {# システム用では confidential 以外あり得ないので、そのときは欄ごと出さない。 #}
+      <div class="mb-3" data-client-form-row="client-type"{% if values.usage == "system" %} hidden{% endif %}>
         <label class="form-label" for="client-type">{{ messages.get("admin-client-field-type") }}</label>
         <select class="form-select" id="client-type" name="client_type">
           <option value="confidential"{% if values.client_type == "confidential" %} selected{% endif %}>confidential</option>
@@ -36,7 +32,7 @@
       {% else %}
       <p>{{ messages.get("admin-client-field-type") }}: <code>{{ values.client_type }}</code></p>
       {% endif %}
-      <div class="mb-3" data-client-form-row="redirect-uris"{% if values.usage == "machine" %} hidden{% endif %}>
+      <div class="mb-3" data-client-form-row="redirect-uris"{% if values.usage == "system" %} hidden{% endif %}>
         <label class="form-label" for="client-redirect-uris">{{ messages.get("admin-client-field-uris") }}</label>
         <textarea class="form-control" id="client-redirect-uris" name="redirect_uris" rows="4">{{ values.redirect_uris }}</textarea>
         <div class="form-text">{{ messages.get("admin-client-field-uris-hint") }}</div>
