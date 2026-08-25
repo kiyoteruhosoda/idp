@@ -616,7 +616,6 @@ pub async fn logout(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// 定数時間比較（サービストークン照合のタイミング差を避ける）。長さが異なれば即 false。
 /// パスワードリセット要求（`POST /internal/password-reset/request`。MT18）。アカウントの有無では
 /// 応答を分岐しない（列挙防止はユースケース側の責務）。
 pub async fn password_reset_request(

@@ -37,7 +37,7 @@ pub async fn internal_health(State(state): State<AppState>) -> Json<ServiceHealt
         Err(e) => {
             tracing::error!(error = %e, "health check: database unreachable");
             // 例外の原文は載せず、ログへ送る（応答は状態の要約に留める）。
-            checks.push(HealthCheck::fail("database", "DB へ到達できません"));
+            checks.push(HealthCheck::fail("database", "database unreachable"));
         }
     }
 
@@ -70,7 +70,7 @@ async fn schema_check(pool: &Db) -> HealthCheck {
                 HealthCheck::fail(
                     "schema",
                     format!(
-                        "DB が期待 version に達していません（applied={} expected={}）",
+                        "database schema is behind (applied={} expected={})",
                         fmt_version(applied),
                         fmt_version(expected)
                     ),
@@ -79,7 +79,7 @@ async fn schema_check(pool: &Db) -> HealthCheck {
         }
         Err(e) => {
             tracing::error!(error = %e, "health check: schema version unreadable");
-            HealthCheck::fail("schema", "_sqlx_migrations を読み取れません")
+            HealthCheck::fail("schema", "_sqlx_migrations is unreadable")
         }
     }
 }

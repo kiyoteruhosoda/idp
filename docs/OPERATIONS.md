@@ -1075,12 +1075,19 @@ curl -sS https://identity.nolumia.com/healthz   # → {"status":"ok","service":"
 版数・起動時刻・稼働時間・サーバー時刻・依存先の検査結果をまとめて返す。切り分けのたびに
 複数のエンドポイントを叩き回らずに済む。
 
-**プロキシ経由では 404 になる**（`docker/nginx.conf` の `location /internal/ { return 404; }`）。
-外から読ませないための遮断で、読むには Compose ネットワーク内から叩く。
+**プロキシ経由では 404 になる**（`docker/nginx.domain-split.conf`・`docker/nginx.conf` の
+どちらにも `location /internal/ { return 404; }` がある）。読むには Compose ネットワーク内から叩く。
+
+トークンはコンテナ側の環境変数を使うので、`sh -c` で実行する（ホスト側では展開されない）。
 
 ```bash
-docker compose exec web curl -sS http://api:8080/internal/health \
-  -H "x-internal-auth-token: $INTERNAL_SERVICE_TOKEN"
+# api の詳細ヘルス
+docker compose exec web sh -c \
+  'curl -sS http://api:8080/internal/health -H "x-internal-auth-token: $INTERNAL_SERVICE_TOKEN"'
+
+# web の詳細ヘルス
+docker compose exec api sh -c \
+  'curl -sS http://web:8081/internal/health -H "x-internal-auth-token: $INTERNAL_SERVICE_TOKEN"'
 ```
 
 ```json
@@ -1093,9 +1100,8 @@ docker compose exec web curl -sS http://api:8080/internal/health \
 ```
 
 - `status` は `checks` から決まる（1 つでも `fail` なら `fail`）。監視はこの 1 値を見ればよい。
-- `server_time` は**時計ずれの切り分け**に使う。`private_key_jwt` の assertion は `exp` 5 分・
-  許容 60 秒で判定するため（ADR-0030）、ずれは「理由の分からない `invalid_client`」として現れる。
-- `checks` の `detail` に内部エラーの原文は載せない。詳細は api・web のログを見る。
+- `checks` の `detail` に内部エラーの原文は載せない。原文は api・web のログを見る。
+- 設計上の理由（何をどこまで出すか・`server_time` を返す狙い）は ADR-0031 を参照。
 
 ## マイグレーション（スキーマ）の適用状態を確認したいとき
 

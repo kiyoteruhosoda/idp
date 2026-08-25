@@ -35,7 +35,7 @@ pub async fn internal_health(State(state): State<WebState>) -> Json<ServiceHealt
     let checks = vec![if state.api.is_api_reachable().await {
         HealthCheck::pass("api")
     } else {
-        HealthCheck::fail("api", "api へ到達できません")
+        HealthCheck::fail("api", "api unreachable")
     }];
 
     let provider = BuildTimeVersionInfoProvider::new(env!("CARGO_PKG_VERSION"));
