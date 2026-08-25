@@ -382,6 +382,35 @@ pub struct CsrfForm {
     pub csrf_token: String,
 }
 
+/// クライアントを論理削除する（ADR-0035）。実体は残り、一覧から消えて認可・トークンが通らなくなる。
+pub async fn delete(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Path((_, client_id)): Path<(String, String)>,
+    Form(form): Form<CsrfForm>,
+) -> Response {
+    let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
+
+    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
+        let messages = Messages::new(locale(&headers));
+        return bad_request_page(&messages, &tenant, &admin, "admin-error-csrf");
+    }
+    let result = state
+        .api
+        .for_locale(locale(&headers))
+        .delete_client(&correlation.0, &tenant.0, &sso(&headers), &client_id)
+        .await;
+    let messages = Messages::new(locale(&headers));
+    match result {
+        // 削除後は詳細ページが 404 になるので、一覧へ戻す。
+        Ok(()) => found(&format!("{}{CLIENTS_SEGMENT}", tenant.prefix())),
+        Err(AdminApiError::NotFound) => not_found(&messages, &tenant, &admin),
+        Err(e) => map_data_error(&messages, &tenant, &admin, &headers, e),
+    }
+}
+
 pub async fn rotate_secret(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,

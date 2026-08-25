@@ -41,6 +41,13 @@ impl Client {
         self.client_status == ClientStatus::Active
     }
 
+    /// 論理削除済みか（ADR-0035）。一覧・取得から外し、更新も受け付けないための判定。
+    ///
+    /// 認可・トークン経路は `is_active()` で既に拒んでいるので、この判定を足す必要は無い。
+    pub fn is_deleted(&self) -> bool {
+        self.client_status == ClientStatus::Deleted
+    }
+
     /// `redirect_uri` が登録値と完全一致するか（設計仕様 §2.3・§4.2）。
     pub fn allows_redirect_uri(&self, redirect_uri: &str) -> bool {
         self.redirect_uris.iter().any(|u| u == redirect_uri)

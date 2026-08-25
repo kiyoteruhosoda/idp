@@ -8,9 +8,12 @@
   <div class="card-body p-0">
     <dl class="row mb-0 py-2">
       <dt class="col-sm-4 px-4 py-2">{{ messages.get("admin-version-package") }}</dt>
-      <dd class="col-sm-8 px-4 py-2 mb-0"><code>{{ info.package_version }}</code></dd>
+      <dd class="col-sm-8 px-4 py-2 mb-0"><code>{{ info.display_version() }}</code></dd>
       <dt class="col-sm-4 px-4 py-2 border-top">{{ messages.get("admin-version-git") }}</dt>
-      <dd class="col-sm-8 px-4 py-2 mb-0 border-top"><code>{{ info.git_version }}</code></dd>
+      <dd class="col-sm-8 px-4 py-2 mb-0 border-top">
+        <code>{{ info.git_version }}</code>
+        {% if !info.has_git_version() %}<span class="badge text-bg-warning ms-2">{{ messages.get("admin-version-git-missing") }}</span>{% endif %}
+      </dd>
     </dl>
   </div>
 </div>

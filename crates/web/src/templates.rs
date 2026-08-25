@@ -29,14 +29,10 @@ pub fn app_version() -> &'static str {
 /// フッタに表示するバージョン表記。Git バージョン（`git describe`。ビルド時に埋め込み）が
 /// 取得できていれば `v{package} ({git})`、なければパッケージ版のみ（`v{package}`）。
 pub fn footer_version() -> String {
-    let git = BuildTimeVersionInfoProvider::new(app_version())
-        .version_info()
-        .git_version;
-    if git.is_empty() || git == "unknown" {
-        format!("v{}", app_version())
-    } else {
-        format!("v{} ({git})", app_version())
-    }
+    let info = BuildTimeVersionInfoProvider::new(app_version()).version_info();
+    // git 版が埋め込まれていない（ビルド引数の渡し忘れ）ときも `unknown` と出す。黙って省くと、
+    // 「そもそも出ない画面」なのか「渡し忘れ」なのかが運用者に区別できない。
+    format!("{} ({})", info.display_version(), info.git_version)
 }
 
 /// アセット URL に付与するキャッシュバスティング用バージョン（`/assets/app.css?v=...`）。

@@ -13,7 +13,7 @@ use axum::body::Body;
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{Request, StatusCode};
 use serde_json::json;
-use support::{body_json, create_plain_user, create_sso_session, get, patch, post, send};
+use support::{body_json, create_plain_user, create_sso_session, delete, get, patch, post, send};
 
 const REDIRECT_URI: &str = "https://app.example.com/callback";
 
@@ -347,4 +347,69 @@ async fn a_client_registered_before_the_usage_split_can_still_be_disabled() {
     )
     .await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
+/// ADR-0035: 削除は論理削除。実体は残るが、一覧から消え、管理操作も認可経路も通らなくなる。
+#[tokio::test]
+async fn a_deleted_client_disappears_from_the_console_but_stays_in_the_database() {
+    let Some(env) = support::setup("admin clients delete").await else {
+        return;
+    };
+    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let base = format!("/{}/admin/clients", env.root_tenant_id);
+
+    let created = body_json(
+        send(
+            &env.app,
+            post(
+                &admin_cookie,
+                &base,
+                json!({
+                    "app_name": "Doomed App",
+                    "client_type": "confidential",
+                    "redirect_uris": [REDIRECT_URI],
+                    "scopes": ["openid"],
+                }),
+            ),
+        )
+        .await,
+    )
+    .await;
+    let client_id = created["client_id"].as_str().expect("client_id");
+    let client_uri = format!("{base}/{client_id}");
+
+    let res = send(&env.app, delete(&admin_cookie, &client_uri)).await;
+    assert_eq!(res.status(), StatusCode::NO_CONTENT, "admin delete -> 204");
+
+    // 一覧から消える。
+    let listed = body_json(send(&env.app, get(&admin_cookie, &base)).await).await;
+    let ids: Vec<&str> = listed["clients"]
+        .as_array()
+        .expect("clients")
+        .iter()
+        .filter_map(|c| c["client_id"].as_str())
+        .collect();
+    assert!(!ids.contains(&client_id), "削除済みは一覧に出ない: {ids:?}");
+
+    // 取得・更新・再削除はいずれも 404（`load` が削除済みを「無い」ものとして扱う）。
+    for res in [
+        send(&env.app, get(&admin_cookie, &client_uri)).await,
+        send(
+            &env.app,
+            patch(&admin_cookie, &client_uri, json!({ "app_name": "Revived" })),
+        )
+        .await,
+        send(&env.app, delete(&admin_cookie, &client_uri)).await,
+    ] {
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    // **実体は残っている**（監査で client_id を引いたときに追えるようにするため）。
+    let status: String =
+        sqlx::query_scalar("SELECT client_status FROM clients WHERE client_id = ?")
+            .bind(client_id)
+            .fetch_one(&env.pool)
+            .await
+            .expect("row still exists");
+    assert_eq!(status, "DELETED");
 }

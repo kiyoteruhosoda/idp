@@ -14,6 +14,10 @@
 FROM rust:slim-bookworm AS builder
 ARG IDP_GIT_VERSION=unknown
 ENV IDP_GIT_VERSION=${IDP_GIT_VERSION}
+# ビルド番号（CI の通し番号）。コミットが同じでもビルドし直せば上がるので、「新しい成果物が
+# 配置されたか」を版数だけで判断できる。手元ビルドでは空のまま（版数に付かない）。
+ARG IDP_BUILD_NUMBER=
+ENV IDP_BUILD_NUMBER=${IDP_BUILD_NUMBER}
 WORKDIR /build
 
 RUN apt-get update \

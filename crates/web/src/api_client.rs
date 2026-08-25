@@ -1523,6 +1523,25 @@ impl ApiClient {
     }
 
     /// SAML SP（クライアント）削除（`DELETE /admin/saml-service-providers/{id}`）。
+    /// クライアントを論理削除する（ADR-0035）。実体は残り、状態が DELETED になる。
+    pub async fn delete_client(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        client_id: &str,
+    ) -> Result<(), AdminApiError> {
+        self.admin_send_no_content(
+            Method::DELETE,
+            tenant_id,
+            &format!("/admin/clients/{client_id}"),
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
     pub async fn delete_saml_service_provider(
         &self,
         correlation_id: &str,

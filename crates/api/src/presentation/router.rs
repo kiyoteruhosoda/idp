@@ -325,7 +325,10 @@ pub fn build(state: AppState) -> Router {
         )
         .route(
             "/admin/clients/{client_id}",
-            get(admin_clients::get_client).patch(admin_clients::update_client),
+            get(admin_clients::get_client)
+                .patch(admin_clients::update_client)
+                // 論理削除（ADR-0035）。実体は残し、状態を DELETED にする。
+                .delete(admin_clients::delete_client),
         )
         .route(
             "/admin/clients/{client_id}/secret",

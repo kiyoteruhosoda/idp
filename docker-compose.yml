@@ -34,7 +34,12 @@ services:
       dockerfile: Dockerfile
       target: runtime-api
       args:
+        # Compose はシェルを実行できないため、値はホストの環境変数から渡す。渡さないと
+        # `unknown` になる（`.git` は .dockerignore で除外しており、ビルド中に git は引けない）。
+        #   IDP_GIT_VERSION=$(git describe --always --dirty --tags) docker compose build
+        # デプロイ用の成果物は scripts/build.sh が自動で埋めるので、この指定は開発ビルド向け。
         IDP_GIT_VERSION: ${IDP_GIT_VERSION:-unknown}
+        IDP_BUILD_NUMBER: ${IDP_BUILD_NUMBER:-}
     environment:
       ISSUER: ${ISSUER:-http://localhost:8080}
       BIND_ADDR: 0.0.0.0:8080
@@ -103,7 +108,12 @@ services:
       dockerfile: Dockerfile
       target: runtime-web
       args:
+        # Compose はシェルを実行できないため、値はホストの環境変数から渡す。渡さないと
+        # `unknown` になる（`.git` は .dockerignore で除外しており、ビルド中に git は引けない）。
+        #   IDP_GIT_VERSION=$(git describe --always --dirty --tags) docker compose build
+        # デプロイ用の成果物は scripts/build.sh が自動で埋めるので、この指定は開発ビルド向け。
         IDP_GIT_VERSION: ${IDP_GIT_VERSION:-unknown}
+        IDP_BUILD_NUMBER: ${IDP_BUILD_NUMBER:-}
     environment:
       WEB_BIND_ADDR: 0.0.0.0:8081
       # サーバ側から api へ直結する（Compose ネットワーク内。プロキシは通さない）。
