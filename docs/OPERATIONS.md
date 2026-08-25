@@ -1053,10 +1053,49 @@ openssl rand -base64 32   # これを KEY_ENCRYPTION_KEY に設定する
 
 ## 死活・準備状態を確認したいとき
 
-api・web の各サービスが持つ（ADR-0007）。外部からはリバースプロキシ経由で到達する。
+api・web の各サービスが持つ（ADR-0007・ADR-0031）。外部からはリバースプロキシ経由で到達する。
 
-- api: `GET /healthz`（liveness）／`GET /readyz`（DB 到達＋スキーマ version 照合）。
-- web: `GET /healthz`（liveness）／`GET /readyz`（api への到達性を確認）。
+| パス | 認証 | api | web |
+|---|---|---|---|
+| `GET /healthz` | 不要 | プロセスが生きているか | 同左 |
+| `GET /readyz` | 不要 | DB 到達＋スキーマ version 照合 | api への到達性 |
+| `GET /internal/health` | **サービストークン** | 版数・稼働時間・サーバー時刻・DB とスキーマの検査 | 版数・稼働時間・サーバー時刻・api への到達性 |
+
+`/healthz` は**どちらのサービスが答えたか**を本文で名乗る。domain-split（ADR-0019）では web と api が
+別ホスト（`idp.*` / `identity.*`）なので、プロキシや DNS の向き先違いを疑うときにホスト名は
+根拠にならない。
+
+```bash
+curl -sS https://idp.nolumia.com/healthz        # → {"status":"ok","service":"web"}
+curl -sS https://identity.nolumia.com/healthz   # → {"status":"ok","service":"api"}
+```
+
+### 詳細（`/internal/health`）
+
+版数・起動時刻・稼働時間・サーバー時刻・依存先の検査結果をまとめて返す。切り分けのたびに
+複数のエンドポイントを叩き回らずに済む。
+
+**プロキシ経由では 404 になる**（`docker/nginx.conf` の `location /internal/ { return 404; }`）。
+外から読ませないための遮断で、読むには Compose ネットワーク内から叩く。
+
+```bash
+docker compose exec web curl -sS http://api:8080/internal/health \
+  -H "x-internal-auth-token: $INTERNAL_SERVICE_TOKEN"
+```
+
+```json
+{ "service": "api", "status": "pass",
+  "version": { "package_version": "0.1.0", "git_version": "abc1234" },
+  "started_at": "2026-08-25T00:00:00Z", "uptime_seconds": 3600,
+  "server_time": "2026-08-25T01:00:00Z",
+  "checks": [ { "name": "database", "status": "pass" },
+              { "name": "schema", "status": "pass", "detail": "applied=43 expected=43" } ] }
+```
+
+- `status` は `checks` から決まる（1 つでも `fail` なら `fail`）。監視はこの 1 値を見ればよい。
+- `server_time` は**時計ずれの切り分け**に使う。`private_key_jwt` の assertion は `exp` 5 分・
+  許容 60 秒で判定するため（ADR-0030）、ずれは「理由の分からない `invalid_client`」として現れる。
+- `checks` の `detail` に内部エラーの原文は載せない。詳細は api・web のログを見る。
 
 ## マイグレーション（スキーマ）の適用状態を確認したいとき
 

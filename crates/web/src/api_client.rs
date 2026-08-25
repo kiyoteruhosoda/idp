@@ -58,7 +58,7 @@ use std::collections::HashMap;
 use idp_contracts::cookies::SSO_SESSION_COOKIE;
 
 /// サービス認証トークンのヘッダ名（api 側 `require_service_token` と一致させる）。
-const SERVICE_TOKEN_HEADER: &str = "x-internal-auth-token";
+use idp_contracts::internal_auth::SERVICE_TOKEN_HEADER;
 /// correlation_id（requestId）の伝播ヘッダ名（api 側 correlation ミドルウェアと一致させる）。
 const REQUEST_ID_HEADER: &str = "x-request-id";
 

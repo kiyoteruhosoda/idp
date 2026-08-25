@@ -10,6 +10,8 @@ use std::sync::Arc;
 pub struct WebState {
     pub config: Arc<Config>,
     pub api: ApiClient,
+    /// プロセスの起動時刻。`/internal/health` が稼働時間を出すために持つ（ADR-0031）。
+    pub started_at: chrono::DateTime<chrono::Utc>,
     /// 設定画面からの再起動要求（ADR-0017）。`run()` の graceful shutdown がこの値を待つ。
     /// テストでは `build` が作った値を誰も待たないため、要求しても何も起きない。
     pub restart: ServiceRestart,
@@ -24,6 +26,7 @@ impl WebState {
         Self {
             config,
             api,
+            started_at: chrono::Utc::now(),
             restart: ServiceRestart::new(),
         }
     }

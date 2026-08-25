@@ -216,6 +216,9 @@ pub fn build(state: AppState) -> Router {
             "/internal/metrics",
             get(crate::presentation::metrics::metrics_endpoint),
         )
+        // 詳細ヘルス（ADR-0031）。版数・稼働時間・サーバー時刻・依存先の検査結果を返す。
+        // 公開面（`/healthz`・`/readyz`）はサービス名までで、詳細はここにしか出さない。
+        .route("/internal/health", get(health::internal_health))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             internal_auth::require_service_token,

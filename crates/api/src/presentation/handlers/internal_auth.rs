@@ -85,8 +85,7 @@ use idp_contracts::auth::{
     InternalExternalStartRequest, InternalExternalStartResponse,
 };
 
-/// 内部サービス認証トークンを載せるヘッダ名（小文字。`HeaderMap` は大小無視で引ける）。
-const SERVICE_TOKEN_HEADER: &str = "x-internal-auth-token";
+use idp_contracts::internal_auth::{service_token_matches, SERVICE_TOKEN_HEADER};
 
 /// `/internal/*` を保護するミドルウェア（ADR-0007 §5）。設定のサービストークンとヘッダ値を
 /// 定数時間で照合し、一致しなければ 401 で遮断する。
@@ -100,10 +99,7 @@ pub async fn require_service_token(
         .get(SERVICE_TOKEN_HEADER)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    if !constant_time_eq(
-        presented.as_bytes(),
-        state.config.internal_service_token().as_bytes(),
-    ) {
+    if !service_token_matches(presented, state.config.internal_service_token()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     next.run(request).await
@@ -621,17 +617,6 @@ pub async fn logout(
 }
 
 /// 定数時間比較（サービストークン照合のタイミング差を避ける）。長さが異なれば即 false。
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
-}
-
 /// パスワードリセット要求（`POST /internal/password-reset/request`。MT18）。アカウントの有無では
 /// 応答を分岐しない（列挙防止はユースケース側の責務）。
 pub async fn password_reset_request(
@@ -1527,11 +1512,10 @@ mod tests {
 
     #[test]
     fn constant_time_eq_matches_only_identical_bytes() {
-        assert!(constant_time_eq(b"secret-token", b"secret-token"));
-        assert!(!constant_time_eq(b"secret-token", b"secret-tokeN"));
-        assert!(!constant_time_eq(b"secret", b"secret-token"));
-        assert!(!constant_time_eq(b"", b"x"));
-        assert!(constant_time_eq(b"", b""));
+        // 照合そのものは contracts（`internal_auth`）に単一定義してある。ここでは
+        // api がその関数を通していることだけを確かめる。
+        assert!(service_token_matches("secret-token", "secret-token"));
+        assert!(!service_token_matches("secret-token", "secret-tokeN"));
     }
 
     #[test]
