@@ -185,25 +185,67 @@ openssl rsa -in machine.key -pubout -out machine.pub
 `machine.pub` を JWK（`kty` / `kid` / `n` / `e`）へ変換し、JWK Set の形にまとめる。`kid` は
 ローテーションで新旧を見分けるための名前なので、`2026-08` のように日付を入れておくとよい。
 
-### 2. クライアントを登録する
+変換は openssl の出力から組み立てられる（追加のライブラリは要らない）。次を `pub2jwk.py` として置く。
 
-```bash
-curl -sS -X POST "$ISSUER/{tenant_id}/admin/clients" \
-  -H 'Content-Type: application/json' \
-  -H "Cookie: sso_session_id=<セッションID>" \
-  -d '{
-    "app_name": "Nightly Report Job",
-    "client_type": "confidential",
-    "redirect_uris": [],
-    "scopes": ["reports.read"],
-    "allow_client_credentials": true,
-    "token_endpoint_auth_method": "private_key_jwt",
-    "jwks": "{\"keys\":[{\"kty\":\"RSA\",\"kid\":\"2026-08\",\"n\":\"...\",\"e\":\"AQAB\"}]}"
-  }'
+```python
+#!/usr/bin/env python3
+"""RSA 公開鍵を JWK Set へ変換する。
+使い方: openssl rsa -pubin -in machine.pub -text -noout | python3 pub2jwk.py <kid>"""
+import base64, json, re, sys
+
+def b64u(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+kid, text = sys.argv[1], sys.stdin.read()
+
+# Modulus は 16 進のバイト列。openssl は符号用の 00 を先頭に付けるので JWK では外す。
+mod = bytes.fromhex(re.sub(r"[\s:]", "", re.search(
+    r"Modulus:\s*\n((?:\s+[0-9a-f:]+\n)+)", text).group(1))).lstrip(b"\x00")
+e = int(re.search(r"Exponent:\s*(\d+)", text).group(1))
+
+print(json.dumps({"keys": [{"kty": "RSA", "kid": kid, "n": b64u(mod),
+                            "e": b64u(e.to_bytes((e.bit_length() + 7) // 8, "big"))}]},
+                 separators=(",", ":")))
 ```
 
-`client_secret` は発行されない（この方式のクライアントは共有秘密を持たない）。登録できる鍵は
-**公開鍵のみ**で、RSA または EC P-256、各鍵に `kid` が要る。秘密鍵成分を含む JWK は拒否する。
+```bash
+openssl rsa -pubin -in machine.pub -text -noout | python3 pub2jwk.py 2026-08 > jwks.json
+
+# 登録 API の `jwks` は JSON **文字列**で受け取る。次の 1 行で埋め込める形（エスケープ済み）にする。
+JWKS=$(python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))' < jwks.json)
+```
+
+### 2. クライアントを登録する
+
+`jwks` には前項の `$JWKS`（`jwks.json` を JSON 文字列へエスケープしたもの）をそのまま入れる。
+ヒアドキュメントの終端を引用符で囲まないことで、body の中で変数が展開される。
+
+```bash
+curl -sS -X POST "$ISSUER/$TENANT_ID/admin/clients" \
+  -H 'Content-Type: application/json' \
+  -H "Cookie: sso_session_id=<セッションID>" \
+  -d "$(cat <<JSON
+{
+  "app_name": "Nightly Report Job",
+  "client_type": "confidential",
+  "redirect_uris": [],
+  "scopes": ["reports.read"],
+  "allow_client_credentials": true,
+  "token_endpoint_auth_method": "private_key_jwt",
+  "jwks": $JWKS
+}
+JSON
+)"
+```
+
+応答の `client_id` を控える（次項の assertion の `iss` / `sub` に使う）。`client_secret` は
+発行されない（この方式のクライアントは共有秘密を持たない）。登録できる鍵は**公開鍵のみ**で、
+RSA または EC P-256、各鍵に `kid` が要る。秘密鍵成分を含む JWK は拒否する。
+
+> 画面から登録してもよい。管理コンソールの**クライアント**（`/{tenant_id}/admin/clients`）で
+> 「クライアント認証方式」に `private_key_jwt` を選ぶと「検証鍵（JWK Set）」の入力欄が使えるので、
+> そこへ `jwks.json` の中身を**そのまま**貼る（画面ではエスケープは要らない）。鍵の入れ替えも
+> 同じ欄で行う。
 
 ### 3. トークンを取る
 
@@ -217,12 +259,33 @@ curl -sS -X POST "$ISSUER/{tenant_id}/admin/clients" \
 | `exp` | 現在時刻 + 数分（**5 分以内**。超えると拒否される） |
 | `jti` | 要求ごとに一意な値（必須） |
 
+assertion の署名も openssl だけでできる。次を `sign-assertion.sh` として置く。
+
 ```bash
-curl -sS -X POST "$ISSUER/{tenant_id}/token" \
+#!/usr/bin/env bash
+# 使い方: sign-assertion.sh <秘密鍵> <kid> <client_id> <aud>
+set -euo pipefail
+KEY=$1 KID=$2 CID=$3 AUD=$4
+b64u() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+NOW=$(date +%s)
+HEADER=$(printf '{"alg":"RS256","typ":"JWT","kid":"%s"}' "$KID" | b64u)
+PAYLOAD=$(printf '{"iss":"%s","sub":"%s","aud":"%s","exp":%d,"jti":"%s"}' \
+  "$CID" "$CID" "$AUD" "$((NOW+180))" "$(openssl rand -hex 16)" | b64u)
+SIG=$(printf '%s.%s' "$HEADER" "$PAYLOAD" | openssl dgst -sha256 -sign "$KEY" -binary | b64u)
+printf '%s.%s.%s\n' "$HEADER" "$PAYLOAD" "$SIG"
+```
+
+```bash
+ASSERTION=$(bash sign-assertion.sh machine.key 2026-08 "$CLIENT_ID" "$ISSUER/$TENANT_ID/token")
+
+curl -sS -X POST "$ISSUER/$TENANT_ID/token" \
   -d grant_type=client_credentials \
   -d client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer \
-  --data-urlencode "client_assertion=<署名済み JWT>"
+  --data-urlencode "client_assertion=$ASSERTION"
 ```
+
+実運用では、この 2 つは呼び出し元の言語の JWT ライブラリ（`jose`・`PyJWT`・`nimbus-jose-jwt` 等）で
+置き換えてよい。上のスクリプトは、ライブラリを入れずに疎通を確かめたいときのためのものである。
 
 返るのはアクセストークンだけで、ID Token も Refresh Token も返らない（利用者が居ないため）。
 要求できる scope は登録した `scopes` の範囲内で、`offline_access` は使えない。
