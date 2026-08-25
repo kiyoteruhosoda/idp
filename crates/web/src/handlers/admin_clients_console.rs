@@ -354,7 +354,7 @@ pub async fn update(
             &form.scope_offline_access,
         ),
         "client_status": form.client_status,
-        "allow_client_credentials": allows_client_credentials(&form.usage),
+        "allow_client_credentials": allow_client_credentials_update(&form.usage, &client),
         "token_endpoint_auth_method": form.token_endpoint_auth_method,
         "jwks": jwks_for_method(&form.token_endpoint_auth_method, &form.jwks),
     });
@@ -441,6 +441,23 @@ pub async fn rotate_secret(
 /// 用途が `client_credentials` を含むか（ADR-0032）。
 fn allows_client_credentials(usage: &str) -> bool {
     usage == client_usage::SYSTEM
+}
+
+/// 更新で api へ送る `allow_client_credentials`。`None` は「触らない」（api は現状維持と読む）。
+///
+/// ADR-0032 より前に登録された「両方」の姿（`client_credentials` + redirect_uri）は画面の用途では
+/// 表せないため、`usage_from_registration` は利用者ログインとして表示する。その表示のまま
+/// `allow_client_credentials: false` を送ると、状態を DISABLED にするだけの保存でも
+/// `client_credentials` が黙って外れ、稼働中のサーバ間連携が止まる。api 側が既存の「両方」を
+/// 通しているのと同じ理由で、用途を変えていない保存では許可に触れない。用途を「システム」へ
+/// 明示的に切り替えた保存だけが、その姿を解消する。
+fn allow_client_credentials_update(usage: &str, client: &ClientView) -> Option<bool> {
+    let registered_both = client.grant_types.iter().any(|g| g == "client_credentials")
+        && !client.redirect_uris.is_empty();
+    if registered_both && usage != client_usage::SYSTEM {
+        return None;
+    }
+    Some(allows_client_credentials(usage))
 }
 
 /// 用途に応じた redirect_uri。システム用は持たないので、入力欄の残骸があっても送らない
@@ -843,6 +860,60 @@ mod tests {
         assert!(
             redirect_uris_for(client_usage::SYSTEM, "https://leftover.example.com/cb").is_empty()
         );
+    }
+
+    /// ADR-0032 より前に登録された「両方」のクライアントを、用途を変えずに保存しただけで
+    /// `client_credentials` が外れないこと（＝稼働中のサーバ間連携を止めない）。
+    #[test]
+    fn saving_a_legacy_dual_usage_client_does_not_drop_client_credentials() {
+        let mut client = client_view(
+            &["authorization_code", "client_credentials"],
+            &["https://a.example.com/cb"],
+        );
+        // 画面は「利用者ログイン」として表示する。そのまま保存しても許可には触れない。
+        assert_eq!(
+            allow_client_credentials_update(client_usage::USER_LOGIN, &client),
+            None
+        );
+        // 「システム」へ明示的に切り替えたときだけ、その姿を解消する。
+        assert_eq!(
+            allow_client_credentials_update(client_usage::SYSTEM, &client),
+            Some(true)
+        );
+
+        // 用途どおりに登録されたクライアントは、これまでどおり用途から決める。
+        client.grant_types = vec!["authorization_code".into()];
+        assert_eq!(
+            allow_client_credentials_update(client_usage::USER_LOGIN, &client),
+            Some(false)
+        );
+        let system = client_view(&["client_credentials"], &[]);
+        assert_eq!(
+            allow_client_credentials_update(client_usage::SYSTEM, &system),
+            Some(true)
+        );
+        assert_eq!(
+            allow_client_credentials_update(client_usage::USER_LOGIN, &system),
+            Some(false)
+        );
+    }
+
+    fn client_view(grant_types: &[&str], redirect_uris: &[&str]) -> ClientView {
+        ClientView {
+            id: "id".into(),
+            client_id: "abc123".into(),
+            client_type: "confidential".into(),
+            client_status: "ACTIVE".into(),
+            app_name: "Legacy App".into(),
+            redirect_uris: redirect_uris.iter().map(|s| s.to_string()).collect(),
+            grant_types: grant_types.iter().map(|s| s.to_string()).collect(),
+            response_types: vec!["code".into()],
+            scopes: vec!["openid".into()],
+            token_endpoint_auth_method: "client_secret_basic".into(),
+            jwks: None,
+            created_at: "2026-07-06T00:00:00Z".into(),
+            updated_at: "2026-07-06T00:00:00Z".into(),
+        }
     }
 
     /// システム用では client_type の select を描画しないので、値が来なくても confidential にする。
