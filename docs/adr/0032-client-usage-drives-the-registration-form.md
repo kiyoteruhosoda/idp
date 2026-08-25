@@ -85,6 +85,14 @@ fn grant_types_for(client_type, allow_client_credentials, has_redirect_uris) -> 
   この種のクライアントを明示的に拒否する（`authorize.rs` の既存判定）。
 - 既存クライアントの `grant_types` は変わらない。redirect_uri を持つものは
   `authorization_code` を持ち続ける。
+- **本 ADR より前に `client_credentials` を許可したクライアントは、必ず「両方」の姿
+  （`authorization_code` + `client_credentials` + redirect_uri）で保存されている。** これを
+  無条件に拒むと、状態を `DISABLED` にすることすらできなくなる（＝漏洩したクライアントを
+  止められない）ため、`update` は**この更新で新たに両立させること**だけを拒み、既にその姿の
+  ものは通す。コンソールも `client_credentials` の有無だけでは用途を決めず、redirect_uri を
+  持つものは「利用者ログイン」として開く（システム用として開くと、隠した欄の値として登録済み
+  リダイレクト先を黙って全消しする）。用途を分けるには、システム用のクライアントを別に登録して
+  切り替える。
 - コンソールのフォームで `allow_client_credentials` チェックボックスが `usage` select に変わった。
   入力欄の出し分けは自オリジンの `client-form.js` で行う（CSP が `script-src 'self'` のため
   インライン JS は使えない。SEC12）。**JS が無効でも初期状態はサーバ側の描画で正しい。**

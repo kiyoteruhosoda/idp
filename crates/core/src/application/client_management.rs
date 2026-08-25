@@ -274,6 +274,12 @@ impl ClientManagementService {
         // 認証方式の**切り替え**にだけ課す前提条件（secret / 検証鍵の有無）を判定するために覚えておく。
         // 方式を変えていない更新（app_name の修正など）で資格情報を書き換えないためでもある。
         let method_before = client.token_endpoint_auth_method;
+        // ADR-0032 より前に登録されたクライアントは `authorization_code` が無条件に付いたため、
+        // `client_credentials` を許可したものは必ず「両方」の姿で保存されている。その姿を無条件に
+        // 拒むと、状態を DISABLED にすることすらできない（＝漏洩したクライアントを止められない）。
+        // 既にそうなっているものは通し、この更新で**新たに**両立させることだけを拒む。
+        let conflicted_before =
+            client.allows_client_credentials() && !client.redirect_uris.is_empty();
 
         if let Some(app_name) = cmd.app_name {
             client.app_name = validate_app_name(app_name)?;
@@ -293,7 +299,9 @@ impl ClientManagementService {
             // （grant_types が空になる）。ADR-0032 決定 2。
             validate_redirect_uris(&client.redirect_uris, allows_client_credentials)?;
         }
-        validate_single_usage(allows_client_credentials, &client.redirect_uris)?;
+        if !conflicted_before {
+            validate_single_usage(allows_client_credentials, &client.redirect_uris)?;
+        }
         if let Some(scopes) = cmd.scopes {
             client.scopes = validate_scopes(&scopes)?;
         }

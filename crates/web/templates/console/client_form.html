@@ -15,7 +15,12 @@
         <label class="form-label" for="client-usage">{{ messages.get("admin-client-field-usage") }}</label>
         <select class="form-select" id="client-usage" name="usage">
           <option value="user_login"{% if values.usage == "user_login" %} selected{% endif %}>{{ messages.get("admin-client-usage-user-login") }}</option>
+          {# 既存の public クライアントにシステム用は選べない（種別は変更できず、public では
+             client_credentials が成立しない）。選べないものを見せると、選んだ結果が黙って
+             無視されたうえで「リダイレクト URI が必要」という無関係な検証エラーになる。 #}
+          {% if is_new || values.client_type == "confidential" %}
           <option value="system"{% if values.usage == "system" %} selected{% endif %}>{{ messages.get("admin-client-usage-system") }}</option>
+          {% endif %}
         </select>
         <div class="form-text">{{ messages.get("admin-client-field-usage-hint") }}</div>
       </div>
