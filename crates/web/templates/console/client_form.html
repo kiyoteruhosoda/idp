@@ -10,27 +10,68 @@
         <label class="form-label" for="client-app-name">{{ messages.get("admin-client-field-name") }}</label>
         <input type="text" class="form-control" id="client-app-name" name="app_name" value="{{ values.app_name }}" required>
       </div>
-      {% if is_new %}
+      {# 用途を先に決める。以降の入力欄はこの選択で変わるため、下ではなく上に置く（ADR-0032）。 #}
       <div class="mb-3">
+        <label class="form-label" for="client-usage">{{ messages.get("admin-client-field-usage") }}</label>
+        <select class="form-select" id="client-usage" name="usage">
+          <option value="user_login"{% if values.usage == "user_login" %} selected{% endif %}>{{ messages.get("admin-client-usage-user-login") }}</option>
+          {# 既存の public クライアントにシステム用は選べない（種別は変更できず、public では
+             client_credentials が成立しない）。選べないものを見せると、選んだ結果が黙って
+             無視されたうえで「リダイレクト URI が必要」という無関係な検証エラーになる。 #}
+          {% if is_new || values.client_type == "confidential" %}
+          <option value="system"{% if values.usage == "system" %} selected{% endif %}>{{ messages.get("admin-client-usage-system") }}</option>
+          {% endif %}
+        </select>
+        <div class="form-text">{{ messages.get("admin-client-field-usage-hint") }}</div>
+      </div>
+      {% if is_new %}
+      {# システム用では confidential 以外あり得ないので、そのときは欄ごと出さない。 #}
+      <div class="mb-3" data-client-form-row="client-type"{% if values.usage == "system" %} hidden{% endif %}>
         <label class="form-label" for="client-type">{{ messages.get("admin-client-field-type") }}</label>
         <select class="form-select" id="client-type" name="client_type">
           <option value="confidential"{% if values.client_type == "confidential" %} selected{% endif %}>confidential</option>
           <option value="public"{% if values.client_type == "public" %} selected{% endif %}>public</option>
         </select>
+        <div class="form-text">{{ messages.get("admin-client-field-type-hint") }}</div>
       </div>
       {% else %}
       <p>{{ messages.get("admin-client-field-type") }}: <code>{{ values.client_type }}</code></p>
       {% endif %}
-      <div class="mb-3">
+      <div class="mb-3" data-client-form-row="redirect-uris"{% if values.usage == "system" %} hidden{% endif %}>
         <label class="form-label" for="client-redirect-uris">{{ messages.get("admin-client-field-uris") }}</label>
         <textarea class="form-control" id="client-redirect-uris" name="redirect_uris" rows="4">{{ values.redirect_uris }}</textarea>
         <div class="form-text">{{ messages.get("admin-client-field-uris-hint") }}</div>
       </div>
-      <div class="mb-3">
-        <label class="form-label" for="client-scopes">{{ messages.get("admin-client-field-scopes") }}</label>
-        <input type="text" class="form-control" id="client-scopes" name="scopes" value="{{ values.scopes }}">
+      {# 受け付ける scope は OIDC の 4 値だけなので、自由入力ではなく選択にする。`openid` は
+         登録時の必須項目なので、外せないことが分かる形で出す（値はハンドラが必ず付ける）。 #}
+      <fieldset class="mb-3">
+        <legend class="form-label fs-6">{{ messages.get("admin-client-field-scopes") }}</legend>
+        <div class="form-check">
+          <input type="checkbox" class="form-check-input" id="client-scope-openid" checked disabled>
+          <label class="form-check-label" for="client-scope-openid">
+            <code>openid</code> — {{ messages.get("admin-client-scope-openid") }}
+          </label>
+        </div>
+        <div class="form-check">
+          <input type="checkbox" class="form-check-input" id="client-scope-profile" name="scope_profile"{% if values.has_scope("profile") %} checked{% endif %}>
+          <label class="form-check-label" for="client-scope-profile">
+            <code>profile</code> — {{ messages.get("admin-client-scope-profile") }}
+          </label>
+        </div>
+        <div class="form-check">
+          <input type="checkbox" class="form-check-input" id="client-scope-email" name="scope_email"{% if values.has_scope("email") %} checked{% endif %}>
+          <label class="form-check-label" for="client-scope-email">
+            <code>email</code> — {{ messages.get("admin-client-scope-email") }}
+          </label>
+        </div>
+        <div class="form-check">
+          <input type="checkbox" class="form-check-input" id="client-scope-offline-access" name="scope_offline_access"{% if values.has_scope("offline_access") %} checked{% endif %}>
+          <label class="form-check-label" for="client-scope-offline-access">
+            <code>offline_access</code> — {{ messages.get("admin-client-scope-offline-access") }}
+          </label>
+        </div>
         <div class="form-text">{{ messages.get("admin-client-field-scopes-hint") }}</div>
-      </div>
+      </fieldset>
       {% if !is_new %}
       <div class="mb-3">
         <label class="form-label" for="client-status">{{ messages.get("admin-client-field-status") }}</label>
@@ -41,7 +82,7 @@
       </div>
       {% endif %}
       {% if values.client_type == "confidential" %}
-      <div class="mb-3">
+      <div class="mb-3" data-client-form-row="auth-method">
         <label class="form-label" for="client-auth-method">{{ messages.get("admin-client-field-auth-method") }}</label>
         <select class="form-select" id="client-auth-method" name="token_endpoint_auth_method">
           <option value="client_secret_basic"{% if values.token_endpoint_auth_method == "client_secret_basic" %} selected{% endif %}>client_secret_basic</option>
@@ -50,15 +91,11 @@
         </select>
         <div class="form-text">{{ messages.get("admin-client-field-auth-method-hint") }}</div>
       </div>
-      <div class="mb-3">
+      {# 検証鍵は private_key_jwt でのみ受け付ける（他の方式で送ると api が拒否する）。 #}
+      <div class="mb-3" data-client-form-row="jwks"{% if values.token_endpoint_auth_method != "private_key_jwt" %} hidden{% endif %}>
         <label class="form-label" for="client-jwks">{{ messages.get("admin-client-field-jwks") }}</label>
         <textarea class="form-control font-monospace" id="client-jwks" name="jwks" rows="8" spellcheck="false">{{ values.jwks }}</textarea>
         <div class="form-text">{{ messages.get("admin-client-field-jwks-hint") }}</div>
-      </div>
-      <div class="form-check mb-3">
-        <input type="checkbox" class="form-check-input" id="client-allow-client-credentials" name="allow_client_credentials"{% if values.allow_client_credentials %} checked{% endif %}>
-        <label class="form-check-label" for="client-allow-client-credentials">{{ messages.get("admin-client-field-client-credentials") }}</label>
-        <div class="form-text">{{ messages.get("admin-client-field-client-credentials-hint") }}</div>
       </div>
       {% endif %}
       <div class="d-flex align-items-center gap-2">
@@ -68,4 +105,5 @@
     </form>
   </div>
 </div>
+<script src="/assets/client-form.js?v={{ crate::templates::asset_version() }}" defer></script>
 {% endblock %}

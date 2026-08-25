@@ -18,7 +18,8 @@ use crate::handlers::found;
 use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{
-    render, ClientDetail, ClientForm, ClientFormValues, ClientSecret, ClientsList, ConsoleNotice,
+    client_usage, render, ClientDetail, ClientForm, ClientFormValues, ClientSecret, ClientsList,
+    ConsoleNotice,
 };
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, Path, Query, State};
@@ -105,12 +106,23 @@ pub async fn new_form(
 #[derive(Debug, Deserialize)]
 pub struct NewClientForm {
     pub app_name: String,
+    /// クライアント種別。システム用では入力欄を隠すため、送られてこなくても受け取れるようにする
+    /// （`client_type_for` が confidential へ寄せる。ADR-0032）。
+    #[serde(default)]
     pub client_type: String,
     pub redirect_uris: String,
-    pub scopes: String,
-    /// チェックボックスは「チェック時のみ送られる」ため `Option<String>` で受ける（G4）。
+    /// scope はチェックボックスで受ける（受け付ける値が OIDC の 4 つに限られるため）。
+    /// チェックは「入れたときだけ送られる」ので `Option` で受ける。`openid` は必須なので
+    /// 入力欄を持たず、`selected_scopes` が必ず付ける。
     #[serde(default)]
-    pub allow_client_credentials: Option<String>,
+    pub scope_profile: Option<String>,
+    #[serde(default)]
+    pub scope_email: Option<String>,
+    #[serde(default)]
+    pub scope_offline_access: Option<String>,
+    /// クライアントの用途（`client_usage`。ADR-0032）。api はこの値を持たないので、web が
+    /// `redirect_uris` の有無と `allow_client_credentials` へ翻訳して送る。
+    pub usage: String,
     /// クライアント認証方式（G3）。select は confidential のときだけ描画されるため任意で受ける。
     #[serde(default)]
     pub token_endpoint_auth_method: Option<String>,
@@ -132,9 +144,14 @@ pub async fn create(
         app_name: form.app_name.clone(),
         client_type: form.client_type.clone(),
         redirect_uris: form.redirect_uris.clone(),
-        scopes: form.scopes.clone(),
+        scopes: selected_scopes(
+            &form.scope_profile,
+            &form.scope_email,
+            &form.scope_offline_access,
+        )
+        .join(" "),
         client_status: "ACTIVE".to_string(),
-        allow_client_credentials: form.allow_client_credentials.is_some(),
+        usage: form.usage.clone(),
         token_endpoint_auth_method: auth_method_or_default(&form.token_endpoint_auth_method),
         jwks: form.jwks.clone().unwrap_or_default(),
     };
@@ -155,10 +172,16 @@ pub async fn create(
 
     let body = json!({
         "app_name": form.app_name,
-        "client_type": form.client_type,
-        "redirect_uris": parse_uris(&form.redirect_uris),
-        "scopes": parse_scopes(&form.scopes),
-        "allow_client_credentials": form.allow_client_credentials.is_some(),
+        // システム用では client_type の select を描画しないので、値が来なくても confidential
+        // として送る（public では `client_credentials` も `private_key_jwt` も成立しない）。
+        "client_type": client_type_for(&form.usage, &form.client_type),
+        "redirect_uris": redirect_uris_for(&form.usage, &form.redirect_uris),
+        "scopes": selected_scopes(
+            &form.scope_profile,
+            &form.scope_email,
+            &form.scope_offline_access,
+        ),
+        "allow_client_credentials": allows_client_credentials(&form.usage),
         // public を選んだときは select 自体が描画されないため送られない。api は未指定を
         // 「既定のまま」と解釈する（public は常に `none`）。
         "token_endpoint_auth_method": form.token_endpoint_auth_method,
@@ -245,10 +268,16 @@ pub async fn edit_form(
 pub struct EditClientForm {
     pub app_name: String,
     pub redirect_uris: String,
-    pub scopes: String,
-    pub client_status: String,
+    /// scope はチェックボックスで受ける（新規登録と同じ。`openid` は必須なので欄を持たない）。
     #[serde(default)]
-    pub allow_client_credentials: Option<String>,
+    pub scope_profile: Option<String>,
+    #[serde(default)]
+    pub scope_email: Option<String>,
+    #[serde(default)]
+    pub scope_offline_access: Option<String>,
+    pub client_status: String,
+    /// クライアントの用途（`client_usage`。ADR-0032）。新規登録と同じ翻訳を通す。
+    pub usage: String,
     /// クライアント認証方式（G3）。confidential のときだけ送られる。
     #[serde(default)]
     pub token_endpoint_auth_method: Option<String>,
@@ -288,8 +317,14 @@ pub async fn update(
     let mut values = ClientFormValues::from_client(&client);
     values.app_name = form.app_name.clone();
     values.redirect_uris = form.redirect_uris.clone();
-    values.scopes = form.scopes.clone();
+    values.scopes = selected_scopes(
+        &form.scope_profile,
+        &form.scope_email,
+        &form.scope_offline_access,
+    )
+    .join(" ");
     values.client_status = form.client_status.clone();
+    values.usage = form.usage.clone();
     if let Some(method) = form.token_endpoint_auth_method.as_deref() {
         values.token_endpoint_auth_method = method.to_string();
     }
@@ -312,10 +347,14 @@ pub async fn update(
 
     let body = json!({
         "app_name": form.app_name,
-        "redirect_uris": parse_uris(&form.redirect_uris),
-        "scopes": parse_scopes(&form.scopes),
+        "redirect_uris": redirect_uris_for(&form.usage, &form.redirect_uris),
+        "scopes": selected_scopes(
+            &form.scope_profile,
+            &form.scope_email,
+            &form.scope_offline_access,
+        ),
         "client_status": form.client_status,
-        "allow_client_credentials": form.allow_client_credentials.is_some(),
+        "allow_client_credentials": allow_client_credentials_update(&form.usage, &client),
         "token_endpoint_auth_method": form.token_endpoint_auth_method,
         "jwks": jwks_for_method(&form.token_endpoint_auth_method, &form.jwks),
     });
@@ -399,6 +438,48 @@ pub async fn rotate_secret(
 
 // ── フォームの共通表現・パース ────────────────────────────────────────────────
 
+/// 用途が `client_credentials` を含むか（ADR-0032）。
+fn allows_client_credentials(usage: &str) -> bool {
+    usage == client_usage::SYSTEM
+}
+
+/// 更新で api へ送る `allow_client_credentials`。`None` は「触らない」（api は現状維持と読む）。
+///
+/// ADR-0032 より前に登録された「両方」の姿（`client_credentials` + redirect_uri）は画面の用途では
+/// 表せないため、`usage_from_registration` は利用者ログインとして表示する。その表示のまま
+/// `allow_client_credentials: false` を送ると、状態を DISABLED にするだけの保存でも
+/// `client_credentials` が黙って外れ、稼働中のサーバ間連携が止まる。api 側が既存の「両方」を
+/// 通しているのと同じ理由で、用途を変えていない保存では許可に触れない。用途を「システム」へ
+/// 明示的に切り替えた保存だけが、その姿を解消する。
+fn allow_client_credentials_update(usage: &str, client: &ClientView) -> Option<bool> {
+    let registered_both = client.grant_types.iter().any(|g| g == "client_credentials")
+        && !client.redirect_uris.is_empty();
+    if registered_both && usage != client_usage::SYSTEM {
+        return None;
+    }
+    Some(allows_client_credentials(usage))
+}
+
+/// 用途に応じた redirect_uri。システム用は持たないので、入力欄の残骸があっても送らない
+/// （用途を切り替えてから保存したとき、隠れた欄の値が生き残らないようにする）。
+fn redirect_uris_for(usage: &str, raw: &str) -> Vec<String> {
+    if usage == client_usage::SYSTEM {
+        Vec::new()
+    } else {
+        parse_uris(raw)
+    }
+}
+
+/// 用途に応じた client_type。システム用では select を描画しないため、値が来なくても
+/// confidential とする。
+fn client_type_for(usage: &str, raw: &str) -> String {
+    if usage == client_usage::SYSTEM {
+        "confidential".to_string()
+    } else {
+        raw.to_string()
+    }
+}
+
 fn parse_uris(raw: &str) -> Vec<String> {
     raw.split_whitespace().map(str::to_string).collect()
 }
@@ -432,11 +513,26 @@ fn auth_method_or_default(raw: &Option<String>) -> String {
         .to_string()
 }
 
-fn parse_scopes(raw: &str) -> Vec<String> {
-    raw.split([' ', '\t', '\n', '\r', ','])
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect()
+/// チェックされた scope を、api へ送る配列にする。
+///
+/// `openid` は登録時の必須項目（`validate_scopes`）なので、入力欄を持たず常に先頭へ付ける。
+/// 画面で外せる形にすると、外した瞬間に必ず 400 になる選択肢を見せることになる。
+fn selected_scopes(
+    profile: &Option<String>,
+    email: &Option<String>,
+    offline_access: &Option<String>,
+) -> Vec<String> {
+    let mut scopes = vec!["openid".to_string()];
+    for (checked, scope) in [
+        (profile, "profile"),
+        (email, "email"),
+        (offline_access, "offline_access"),
+    ] {
+        if checked.is_some() {
+            scopes.push(scope.to_string());
+        }
+    }
+    scopes
 }
 
 // ── CSRF ─────────────────────────────────────────────────────────────────────
@@ -743,6 +839,98 @@ mod tests {
         );
     }
 
+    /// ADR-0032: 画面の「用途」1 つを、api が持つ 2 つの値へ翻訳する。
+    #[test]
+    fn usage_maps_to_the_two_values_the_api_actually_has() {
+        let uris = "https://a.example.com/cb";
+
+        // 利用者ログイン: redirect_uri を持ち、client_credentials は無い。
+        assert!(!allows_client_credentials(client_usage::USER_LOGIN));
+        assert_eq!(redirect_uris_for(client_usage::USER_LOGIN, uris).len(), 1);
+
+        // システム用: client_credentials を持ち、redirect_uri は持たない。
+        assert!(allows_client_credentials(client_usage::SYSTEM));
+        assert!(redirect_uris_for(client_usage::SYSTEM, uris).is_empty());
+    }
+
+    /// 用途を「システム」へ切り替えて保存したとき、隠れた入力欄の値を送らない。
+    /// （送ると api 側で `authorization_code` が付き、閉じたはずの経路が残る。）
+    #[test]
+    fn switching_to_a_system_client_drops_the_hidden_redirect_uris() {
+        assert!(
+            redirect_uris_for(client_usage::SYSTEM, "https://leftover.example.com/cb").is_empty()
+        );
+    }
+
+    /// ADR-0032 より前に登録された「両方」のクライアントを、用途を変えずに保存しただけで
+    /// `client_credentials` が外れないこと（＝稼働中のサーバ間連携を止めない）。
+    #[test]
+    fn saving_a_legacy_dual_usage_client_does_not_drop_client_credentials() {
+        let mut client = client_view(
+            &["authorization_code", "client_credentials"],
+            &["https://a.example.com/cb"],
+        );
+        // 画面は「利用者ログイン」として表示する。そのまま保存しても許可には触れない。
+        assert_eq!(
+            allow_client_credentials_update(client_usage::USER_LOGIN, &client),
+            None
+        );
+        // 「システム」へ明示的に切り替えたときだけ、その姿を解消する。
+        assert_eq!(
+            allow_client_credentials_update(client_usage::SYSTEM, &client),
+            Some(true)
+        );
+
+        // 用途どおりに登録されたクライアントは、これまでどおり用途から決める。
+        client.grant_types = vec!["authorization_code".into()];
+        assert_eq!(
+            allow_client_credentials_update(client_usage::USER_LOGIN, &client),
+            Some(false)
+        );
+        let system = client_view(&["client_credentials"], &[]);
+        assert_eq!(
+            allow_client_credentials_update(client_usage::SYSTEM, &system),
+            Some(true)
+        );
+        assert_eq!(
+            allow_client_credentials_update(client_usage::USER_LOGIN, &system),
+            Some(false)
+        );
+    }
+
+    fn client_view(grant_types: &[&str], redirect_uris: &[&str]) -> ClientView {
+        ClientView {
+            id: "id".into(),
+            client_id: "abc123".into(),
+            client_type: "confidential".into(),
+            client_status: "ACTIVE".into(),
+            app_name: "Legacy App".into(),
+            redirect_uris: redirect_uris.iter().map(|s| s.to_string()).collect(),
+            grant_types: grant_types.iter().map(|s| s.to_string()).collect(),
+            response_types: vec!["code".into()],
+            scopes: vec!["openid".into()],
+            token_endpoint_auth_method: "client_secret_basic".into(),
+            jwks: None,
+            created_at: "2026-07-06T00:00:00Z".into(),
+            updated_at: "2026-07-06T00:00:00Z".into(),
+        }
+    }
+
+    /// システム用では client_type の select を描画しないので、値が来なくても confidential にする。
+    #[test]
+    fn system_clients_are_always_confidential() {
+        assert_eq!(client_type_for(client_usage::SYSTEM, ""), "confidential");
+        assert_eq!(
+            client_type_for(client_usage::SYSTEM, "public"),
+            "confidential"
+        );
+        // 他の用途では選ばれた値をそのまま通す。
+        assert_eq!(
+            client_type_for(client_usage::USER_LOGIN, "public"),
+            "public"
+        );
+    }
+
     #[test]
     fn parse_uris_splits_and_drops_blanks() {
         let raw = "https://a.example.com/cb\n  https://b.example.com/cb \n\n";
@@ -756,15 +944,19 @@ mod tests {
         assert!(parse_uris("   \n  ").is_empty());
     }
 
+    /// `openid` は入力欄を持たず常に付く。外せる形にすると、外した瞬間に必ず 400 になる
+    /// 選択肢を見せることになる（`validate_scopes` が必須としている）。
     #[test]
-    fn parse_scopes_splits_on_space_and_comma() {
+    fn openid_is_always_sent_and_the_rest_follow_the_checkboxes() {
+        let on = || Some("on".to_string());
+        assert_eq!(selected_scopes(&None, &None, &None), vec!["openid"]);
         assert_eq!(
-            parse_scopes("openid, profile  email"),
-            vec![
-                "openid".to_string(),
-                "profile".to_string(),
-                "email".to_string()
-            ]
+            selected_scopes(&on(), &on(), &on()),
+            vec!["openid", "profile", "email", "offline_access"]
+        );
+        assert_eq!(
+            selected_scopes(&None, &on(), &None),
+            vec!["openid", "email"]
         );
     }
 

@@ -130,7 +130,7 @@ confidential クライアントの認証方式は `token_endpoint_auth_method` �
 登録・編集フォームにも項目がある）。既定は `client_secret_basic`（`Authorization: Basic` ヘッダ）で、
 RP 側のライブラリが body に `client_id` / `client_secret` を載せる実装なら `client_secret_post` を
 選ぶ。人ではない呼び出し元（CI・バッチ・サーバ間連携）には `private_key_jwt` を使う
-（次項「機械（人ではない呼び出し元）に認証させたいとき」）。`/token`・`/introspect`・`/revoke` は
+（次項「システム（人ではない呼び出し元）に認証させたいとき」）。`/token`・`/introspect`・`/revoke` は
 登録した方式でのみ認証を受け付け、1 回の要求で複数の方式を提示すると `invalid_request` になる。
 `client_secret_basic` と `client_secret_post` の間で方式を変えても `client_secret` の値は変わらない
 （提示場所だけが変わる）。public クライアントには設定できない（常に `none`）。
@@ -167,7 +167,7 @@ redirect_uri は完全一致・複数登録に対応し、フラグメント／�
 > 管理画面（サーバレンダリング UI）は A2 の進行に合わせて追加予定。それまでは上記 API を用いる。
 > 管理者向けの初回ログイン後の SSO セッション確立は通常の `/authorize`→`/login` フローで行う。
 
-## 機械（人ではない呼び出し元）に認証させたいとき
+## システム（人ではない呼び出し元）に認証させたいとき
 
 CI・バッチ・サーバ間連携には、利用者アカウントを共有するのではなく **confidential クライアント +
 `client_credentials` grant** を使う。資格情報には `private_key_jwt`（署名済み assertion）を選ぶ
@@ -217,8 +217,23 @@ JWKS=$(python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))'
 
 ### 2. クライアントを登録する
 
-`jwks` には前項の `$JWKS`（`jwks.json` を JSON 文字列へエスケープしたもの）をそのまま入れる。
-ヒアドキュメントの終端を引用符で囲まないことで、body の中で変数が展開される。
+**管理コンソールから登録する場合**は、`/{tenant_id}/admin/clients/new` で次のように選ぶ。
+
+| 項目 | 値 |
+|---|---|
+| アプリ名 | システムの役割が分かる名前（例 `Nightly Report Job`） |
+| **用途** | **「システムが API を呼ぶ（利用者不在）」** |
+| スコープ | `openid` は必須のため外せない。システム用では他の 3 つ（`profile`・`email`・`offline_access`）に用は無いので、既定のまま。**業務上の権限は scope では渡さない**（アプリが `sub` = `client_id` を見て判断する。ADR-0033） |
+| 認証方式 | `private_key_jwt` |
+| 検証鍵（JWKS） | 前項の `jwks.json` の中身 |
+
+用途に「システム」を選ぶと、リダイレクト URI と client type の欄は消える（利用者が不在なので
+リダイレクト先を持たず、confidential 以外あり得ないため）。`private_key_jwt` では client secret は発行されない。
+
+**API から登録する場合**は次のとおり。`jwks` には前項の `$JWKS`（`jwks.json` を JSON 文字列へ
+エスケープしたもの）をそのまま入れる。ヒアドキュメントの終端を引用符で囲まないことで、body の
+中で変数が展開される。`redirect_uris` はシステム用では空でよい（`allow_client_credentials` が true の
+confidential クライアントに限る。ADR-0032）。
 
 ```bash
 curl -sS -X POST "$ISSUER/$TENANT_ID/admin/clients" \
@@ -229,7 +244,7 @@ curl -sS -X POST "$ISSUER/$TENANT_ID/admin/clients" \
   "app_name": "Nightly Report Job",
   "client_type": "confidential",
   "redirect_uris": [],
-  "scopes": ["reports.read"],
+  "scopes": ["openid"],
   "allow_client_credentials": true,
   "token_endpoint_auth_method": "private_key_jwt",
   "jwks": $JWKS

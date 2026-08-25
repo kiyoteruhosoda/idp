@@ -419,6 +419,7 @@ pub fn build(state: WebState) -> Router {
         )
         .route("/assets/rp-logout.js", get(page_scripts::rp_logout_js))
         .route("/assets/auto-submit.js", get(page_scripts::auto_submit_js))
+        .route("/assets/client-form.js", get(page_scripts::client_form_js))
         .route(
             "/assets/vendor/bootstrap.min.css",
             get(vendor_assets::bootstrap_css),

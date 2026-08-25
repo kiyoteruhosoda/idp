@@ -87,6 +87,15 @@ fn embedded_assets_digest() -> u64 {
         crate::handlers::vendor_assets::BOOTSTRAP_CSS,
         crate::handlers::vendor_assets::BOOTSTRAP_JS,
         crate::handlers::vendor_assets::FONTAWESOME_CSS,
+        // 画面固有スクリプト（SEC12）も `?v=` 付き・`immutable` で配信するため、内容を digest に
+        // 含める。含め忘れると、JS だけを直した配置（git 版が `unknown` のビルド）で URL が
+        // 変わらず、ブラウザが古いスクリプトを持ち続ける。
+        crate::handlers::page_scripts::PASSKEY_LOGIN_JS,
+        crate::handlers::page_scripts::PASSKEY_REGISTER_JS,
+        crate::handlers::page_scripts::PASSWORD_VISIBILITY_JS,
+        crate::handlers::page_scripts::RP_LOGOUT_JS,
+        crate::handlers::page_scripts::AUTO_SUBMIT_JS,
+        crate::handlers::page_scripts::CLIENT_FORM_JS,
     ]
     .into_iter()
     .fold(0xcbf2_9ce4_8422_2325, |hash, asset| {
@@ -107,6 +116,75 @@ fn fnv1a64(mut hash: u64, bytes: &[u8]) -> u64 {
 mod tests {
     use super::*;
     use crate::i18n::{Locale, Messages};
+
+    /// フォームが送る入力欄と、ハンドラが要求する項目の食い違いを検出する（ADR-0032）。
+    ///
+    /// `usage` は `NewClientForm` / `EditClientForm` の**必須**項目なので、テンプレートが描画を
+    /// やめると登録が 400 になる。実際、この欄を足したとき E2E スクリプトだけが送っておらず
+    /// CI で落ちた —— 描画側と受け取り側の対応は、遅い経路ではなくここで固定しておく。
+    #[test]
+    fn the_client_form_renders_the_controls_the_handler_requires() {
+        let messages = Messages::new(Locale::Ja);
+        let values = ClientFormValues::default_new();
+        let form = ClientForm {
+            messages: &messages,
+            tenant: "/019f6514-08ea-7138-ad71-838a7bdd3575",
+            admin: None,
+            csrf: &"0".repeat(64),
+            error: None,
+            heading: "新規クライアント",
+            action: "/x/admin/clients/new",
+            is_new: true,
+            values: &values,
+        };
+        let html = render(&form);
+        for control in [
+            r#"name="app_name""#,
+            r#"name="usage""#,
+            r#"name="client_type""#,
+            r#"name="redirect_uris""#,
+            r#"name="scope_profile""#,
+            r#"name="scope_email""#,
+            r#"name="scope_offline_access""#,
+            r#"name="csrf_token""#,
+        ] {
+            assert!(html.contains(control), "{control} が描画されていない");
+        }
+        // 既定は利用者ログイン。用途はこの 2 つだけ。
+        assert!(html.contains(r#"value="user_login" selected"#), "{html}");
+        assert!(html.contains(r#"value="system""#), "{html}");
+        // `openid` は外せない（入力欄を持たず、ハンドラが必ず付ける）。
+        assert!(html.contains(r#"id="client-scope-openid""#), "{html}");
+        assert!(
+            !html.contains(r#"name="scope_openid""#),
+            "openid を送信対象の入力欄にしない: {html}"
+        );
+    }
+
+    /// ADR-0032: 用途は `client_credentials` の有無で決まる。
+    #[test]
+    fn usage_reflects_what_the_client_can_actually_do() {
+        let login = vec!["authorization_code".to_string()];
+        let system = vec!["client_credentials".to_string()];
+        let uris = vec!["https://a.example.com/cb".to_string()];
+        assert_eq!(
+            usage_from_registration(&login, &uris),
+            client_usage::USER_LOGIN
+        );
+        assert_eq!(usage_from_registration(&system, &[]), client_usage::SYSTEM);
+        // grant が 1 つも無い（あり得ないが）ときも、システム用として扱わない。
+        assert_eq!(usage_from_registration(&[], &[]), client_usage::USER_LOGIN);
+        // ADR-0032 より前に登録された「両方」のクライアント。システム用と読むと redirect_uri の
+        // 欄が隠れ、保存しただけで登録済みリダイレクト先が消える。URI を残す側へ寄せる。
+        let both = vec![
+            "authorization_code".to_string(),
+            "client_credentials".to_string(),
+        ];
+        assert_eq!(
+            usage_from_registration(&both, &uris),
+            client_usage::USER_LOGIN
+        );
+    }
 
     #[test]
     fn asset_version_is_url_safe_and_non_empty() {
@@ -351,7 +429,10 @@ mod tests {
         assert!(checked > 0, "expected link targets to check");
     }
 
-    /// テンプレートの `href="…"` / `action="…"` を (ファイル名, 値) で列挙する。
+    /// テンプレートの `href="…"` / `action="…"` / `src="…"` を (ファイル名, 値) で列挙する。
+    ///
+    /// `src` も見るのは、`<script src="/assets/…">` の配信ルートを足し忘れると 404 になり、
+    /// 画面は描画されたまま挙動だけが黙って消えるため（実際に `client-form.js` で起きた）。
     fn template_link_targets() -> Vec<(String, String)> {
         fn walk(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
             for entry in std::fs::read_dir(dir).expect("read templates dir") {
@@ -365,7 +446,7 @@ mod tests {
                 }
                 let name = path.display().to_string();
                 let source = std::fs::read_to_string(&path).expect("read template");
-                for attr in ["href=\"", "action=\""] {
+                for attr in ["href=\"", "action=\"", "src=\""] {
                     for after in source.split(attr).skip(1) {
                         if let Some(len) = after.find('"') {
                             out.push((name.clone(), after[..len].to_string()));
@@ -885,8 +966,10 @@ pub struct ClientFormValues {
     pub redirect_uris: String,
     pub scopes: String,
     pub client_status: String,
-    /// サーバ間（M2M）連携で `client_credentials` grant を許可するか（G4）。
-    pub allow_client_credentials: bool,
+    /// クライアントの用途（`client_usage` のいずれか）。画面ではこれを最初に選ばせ、以降の入力欄を
+    /// 切り替える。api はこの値を持たず、`redirect_uris` の有無と `client_credentials` の可否という
+    /// 2 つの値で同じことを表す（ADR-0032）。
+    pub usage: String,
     /// クライアント認証方式（G3）。confidential のみ選択でき、public は常に `none`。
     pub token_endpoint_auth_method: String,
     /// `private_key_jwt` の検証鍵（JWK Set の JSON。ADR-0030）。公開鍵しか含まないため、
@@ -894,7 +977,28 @@ pub struct ClientFormValues {
     pub jwks: String,
 }
 
+/// クライアントの用途。コンソールの入力単位であって、api のモデルには無い（ADR-0032）。
+///
+/// 「redirect_uri を持つか」「`client_credentials` を許すか」は独立した 2 値だが、管理者が実際に
+/// 決めたいのは「何に使うクライアントか」1 つである。2 値のまま見せると、両方を空にした
+/// 何もできないクライアントや、ブラウザから使わないのに URI を捏造した登録が生まれる。
+pub mod client_usage {
+    /// ブラウザで利用者をログインさせる（authorization_code）。
+    pub const USER_LOGIN: &str = "user_login";
+    /// システムが API を呼ぶ（client_credentials）。利用者が不在なので redirect_uri を持たない。
+    pub const SYSTEM: &str = "system";
+}
+
 impl ClientFormValues {
+    /// この scope が選ばれているか（テンプレートのチェック状態）。
+    ///
+    /// 空白区切りの保持形を分解して照合する。部分一致で見ないのは、`profile` が
+    /// 将来の `profile_extended` のような値に引っかかると、選んでいない欄が
+    /// 選ばれて見えるためである。
+    pub fn has_scope(&self, scope: &str) -> bool {
+        self.scopes.split_whitespace().any(|s| s == scope)
+    }
+
     /// 新規登録フォームの初期値（confidential・PKCE 必須・openid スコープ）。
     pub fn default_new() -> Self {
         Self {
@@ -903,7 +1007,7 @@ impl ClientFormValues {
             redirect_uris: String::new(),
             scopes: "openid".to_string(),
             client_status: "ACTIVE".to_string(),
-            allow_client_credentials: false,
+            usage: client_usage::USER_LOGIN.to_string(),
             token_endpoint_auth_method: "client_secret_basic".to_string(),
             jwks: String::new(),
         }
@@ -917,12 +1021,29 @@ impl ClientFormValues {
             redirect_uris: c.redirect_uris.join("\n"),
             scopes: c.scopes.join(" "),
             client_status: c.client_status.clone(),
-            // 許可の真の出所は api が返す `grant_types`（G4）。フォームはその写しを表示する。
-            allow_client_credentials: c.grant_types.iter().any(|g| g == "client_credentials"),
+            // 用途の真の出所は api が返す登録内容（G4）。フォームはその写しを表示する。
+            usage: usage_from_registration(&c.grant_types, &c.redirect_uris),
             token_endpoint_auth_method: c.token_endpoint_auth_method.clone(),
             jwks: c.jwks.clone().unwrap_or_default(),
         }
     }
+}
+
+/// 登録済みの内容から画面上の用途を決める。
+///
+/// システム用は「`client_credentials` を持ち、かつ redirect_uri を持たない」もの。
+/// `client_credentials` の有無だけで決めないのは、ADR-0032 より前に登録されたクライアントが
+/// 「両方」の姿（`authorization_code` + `client_credentials` + redirect_uri）で保存されているため。
+/// それをシステム用と読むと、redirect_uri の欄を隠したまま保存させ、表示もしていない登録済み
+/// リダイレクト先を黙って全消しする（＝稼働中のログインが `unauthorized_client` で止まる）。
+/// 用途で表せない登録は、URI を残す側へ寄せる。
+fn usage_from_registration(grant_types: &[String], redirect_uris: &[String]) -> String {
+    if grant_types.iter().any(|g| g == "client_credentials") && redirect_uris.is_empty() {
+        client_usage::SYSTEM
+    } else {
+        client_usage::USER_LOGIN
+    }
+    .to_string()
 }
 
 /// 外部 IdP 設定の管理画面（`GET /{tenant_id}/admin/external-idps`。AP16。API は AP10）。

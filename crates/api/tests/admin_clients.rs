@@ -299,3 +299,52 @@ async fn confidential_clients_can_choose_the_client_authentication_method() {
     .await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
+
+/// ADR-0032 より前に登録されたクライアントは `authorization_code` が無条件に付いたため、
+/// `client_credentials` を許可したものは「両方」の姿で保存されている。
+/// その姿を無条件に拒むと、漏洩したクライアントを DISABLED にすることすらできなくなる。
+#[tokio::test]
+async fn a_client_registered_before_the_usage_split_can_still_be_disabled() {
+    let Some(env) = support::setup("admin clients legacy usage").await else {
+        return;
+    };
+    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    // `authorization_code` + `client_credentials` + redirect_uri を持つ旧来の姿。
+    let (client_id, _) =
+        support::insert_m2m_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
+    let client_uri = format!("/{}/admin/clients/{client_id}", env.root_tenant_id);
+
+    let res = send(
+        &env.app,
+        patch(
+            &admin_cookie,
+            &client_uri,
+            json!({ "client_status": "DISABLED" }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        res.status(),
+        StatusCode::OK,
+        "両用途を持つ既存クライアントを停止できること"
+    );
+    assert_eq!(body_json(res).await["client_status"], "DISABLED");
+
+    // 一方、これから両立させる登録は拒む（ADR-0032 決定 3）。
+    let res = send(
+        &env.app,
+        post(
+            &admin_cookie,
+            &format!("/{}/admin/clients", env.root_tenant_id),
+            json!({
+                "app_name": "Both Usages App",
+                "client_type": "confidential",
+                "redirect_uris": [REDIRECT_URI],
+                "scopes": ["openid"],
+                "allow_client_credentials": true,
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
