@@ -13,13 +13,16 @@ use crate::handlers::admin_console::{
 };
 use crate::i18n::Messages;
 use crate::state::WebState;
-use crate::templates::{render, ApplicationLogs, AuditLogs, ClientStatus, ConsoleNotice};
+use crate::templates::{
+    render, ApplicationLogs, AuditLogs, ClientStatus, ConsoleNotice, VersionTemplate,
+};
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use idp_contracts::admin::ClientStatusResponse;
 use idp_contracts::application_log::ApplicationLogEntryResponse;
+use idp_contracts::version::{BuildTimeVersionInfoProvider, VersionInfoProvider};
 use serde::Deserialize;
 
 const AUDIT_SEGMENT: &str = "/admin/audit-logs";
@@ -350,6 +353,39 @@ fn render_status(
         admin: Some(admin.chrome()),
         views,
     })
+}
+
+// ── バージョン情報 ────────────────────────────────────────────────────────────
+
+/// 稼働中のビルドと、DB へ適用済みのマイグレーションを表示する（ADR-0034）。
+///
+/// **管理コンソールの内側に置く。** 稼働中のコミットが分かると、どの既知の不具合が塞がって
+/// いないかを外から判断できるため、無認証の面には出さない。一方で「DB を直接見られない管理者が
+/// 適用状況を確認できる」ことは、この画面が作られた目的そのものなので、ログイン済みには見せる。
+///
+/// api 未到達時はスキーマ欄を「取得できません」表示にフォールバックする（fail-soft）。稼働中の
+/// ビルドは web 自身が知っているので、api が落ちていても版数は読める。
+pub async fn version(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+) -> Response {
+    let admin = match resolve_admin(&state, &correlation, &tenant, &headers).await {
+        AdminResolution::Ok(uid) => uid,
+        AdminResolution::Reject(resp) => return resp,
+    };
+    let schema = state.api.fetch_schema_version().await;
+    let messages = Messages::new(locale(&headers));
+    let provider = BuildTimeVersionInfoProvider::new(env!("CARGO_PKG_VERSION"));
+    Html(render(&VersionTemplate {
+        messages: &messages,
+        tenant: &tenant.prefix(),
+        admin: Some(admin.chrome()),
+        info: provider.version_info(),
+        schema,
+    }))
+    .into_response()
 }
 
 // ── 共通ヘルパー ──────────────────────────────────────────────────────────────

@@ -166,8 +166,11 @@ impl ClientRepository for SqlxClientRepository {
     }
 
     async fn list(&self, tenant_id: TenantId) -> Result<Vec<Client>> {
+        // 論理削除済みは一覧に出さない（ADR-0035）。認可・トークン経路は `is_active()` が
+        // 拒むので、絞り込みが要るのは「管理者に見せる一覧」だけである。
         let sql = format!(
-            "SELECT {SELECT_COLUMNS} FROM clients WHERE tenant_id = ? ORDER BY created_at DESC"
+            "SELECT {SELECT_COLUMNS} FROM clients \
+             WHERE tenant_id = ? AND client_status <> 'DELETED' ORDER BY created_at DESC"
         );
         let rows = sqlx::query(&sql)
             .bind(tenant_id.to_string())
@@ -180,7 +183,9 @@ impl ClientRepository for SqlxClientRepository {
     async fn list_page(&self, tenant_id: TenantId, page: PageRequest) -> Result<Page<Client>> {
         // 総件数は 1 ページ分と同じ条件で数える。画面の「次へ」は受信件数ではなく総件数で
         // 判定する（最終ページがちょうど埋まると空ページへのリンクが出るため）。
-        let total: i64 = sqlx::query("SELECT COUNT(*) AS total FROM clients WHERE tenant_id = ?")
+        let total: i64 = sqlx::query(
+            "SELECT COUNT(*) AS total FROM clients WHERE tenant_id = ? AND client_status <> 'DELETED'",
+        )
             .bind(tenant_id.to_string())
             .fetch_one(&self.pool)
             .await
@@ -191,7 +196,7 @@ impl ClientRepository for SqlxClientRepository {
         // 並びはページ間で安定していなければならない（重複・欠落を防ぐ）。`created_at` は
         // 同一マイクロ秒で並び得るため、テナント内一意の `client_id` を副キーに置く。
         let sql = format!(
-            "SELECT {SELECT_COLUMNS} FROM clients WHERE tenant_id = ? \
+            "SELECT {SELECT_COLUMNS} FROM clients WHERE tenant_id = ? AND client_status <> 'DELETED' \
              ORDER BY created_at DESC, client_id ASC LIMIT ? OFFSET ?"
         );
         let rows = sqlx::query(&sql)

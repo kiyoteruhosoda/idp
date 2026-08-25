@@ -245,6 +245,45 @@ pub async fn rotate_client_secret(
     }))
 }
 
+/// クライアントを論理削除する（`DELETE /admin/clients/{client_id}`。ADR-0035）。
+///
+/// 実体は残し、状態を `DELETED` にする。発行済みトークン・同意・監査ログが `client_id` で
+/// 紐づいているため、実体を消すと監査で「どのアプリだったか」を追えなくなる。使えなくなるのは
+/// 即座である（認可・トークン・introspection は `is_active()` で弾く）。
+#[utoipa::path(
+    delete,
+    path = "/{tenant_id}/admin/clients/{client_id}",
+    tag = "admin",
+    params(("client_id" = String, Path, description = "クライアント識別子")),
+    responses(
+        (status = 204, description = "論理削除した（実体は監査のため残る）"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
+        (status = 404, description = "不存在（削除済みを含む）"),
+    )
+)]
+pub async fn delete_client(
+    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
+    headers: HeaderMap,
+    Path((_tenant_id, client_id)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
+    state
+        .clients_admin
+        .delete(tenant.context(), &client_id, admin.user_id, &ctx)
+        .await
+        .map_err(|e| map_error(e, locale))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// クライアント状況一覧（`GET /admin/clients/status`）。状態・scope・最終利用時刻。管理コンソール
 /// （web）の状況画面が用いる支援 API（`idp.tenant.admin` 必須）。
 pub async fn list_client_status(

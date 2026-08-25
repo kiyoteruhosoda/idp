@@ -100,9 +100,15 @@ string_enum!(
 
 string_enum!(
     /// クライアントの状態。
+    ///
+    /// `Deleted` は論理削除（ADR-0035）。物理削除にしないのは、発行済みトークン・同意・監査ログが
+    /// `client_id` で紐づいており、実体を消すと監査で追えなくなるため。認可・トークン・
+    /// introspection は `Client::is_active()` で門番をしているので、この値を増やすだけで
+    /// **新しい絞り込みを足さずに**全経路が削除済みを拒む。
     ClientStatus {
         Active => "ACTIVE",
         Disabled => "DISABLED",
+        Deleted => "DELETED",
     }
 );
 

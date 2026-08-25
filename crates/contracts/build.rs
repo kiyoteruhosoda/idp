@@ -2,6 +2,7 @@ use std::{env, process::Command};
 
 fn main() {
     println!("cargo:rerun-if-env-changed=IDP_GIT_VERSION");
+    println!("cargo:rerun-if-env-changed=IDP_BUILD_NUMBER");
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/index");
 
@@ -11,6 +12,14 @@ fn main() {
         .unwrap_or_else(|| "unknown".to_owned());
 
     println!("cargo:rustc-env=IDP_GIT_VERSION={git_version}");
+
+    // ビルド番号（CI の通し番号）。コミットが同じでもビルドし直せば上がるので、「新しい成果物が
+    // 配置されたか」を版数だけで判断できる。手元ビルドでは付かない（空）。
+    let build_number = env::var("IDP_BUILD_NUMBER")
+        .ok()
+        .and_then(non_empty_version)
+        .unwrap_or_default();
+    println!("cargo:rustc-env=IDP_BUILD_NUMBER={build_number}");
 }
 
 trait GitVersionProvider {

@@ -28,6 +28,12 @@
     <button type="submit" class="btn btn-outline-warning"><i class="fa-solid fa-rotate me-2" aria-hidden="true"></i>{{ messages.get("admin-client-rotate-secret") }}</button>
   </form>
   {% endif %}
+  {# 論理削除（ADR-0035）。実体は残るが、このクライアントでのログイン・トークン取得は即座に
+     できなくなる。取り消せない操作なので確認を挟む。 #}
+  <form method="post" action="{{ tenant }}/admin/clients/{{ client.client_id }}/delete" class="d-inline" data-confirm="{{ messages.get("admin-client-delete-confirm") }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <button type="submit" class="btn btn-outline-danger"><i class="fa-solid fa-trash me-2" aria-hidden="true"></i>{{ messages.get("admin-client-delete") }}</button>
+  </form>
   <a class="btn btn-outline-secondary" href="{{ tenant }}/admin/clients">{{ messages.get("admin-client-back") }}</a>
 </div>
 {% endblock %}

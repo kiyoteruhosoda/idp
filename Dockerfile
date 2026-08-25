@@ -12,8 +12,6 @@
 # bookworm に固定する。rust:slim はタグ更新で trixie 等へ進み得るため、NAS 等の
 # デプロイ先で `GLIBC_2.39 not found` が発生しないようにする。
 FROM rust:slim-bookworm AS builder
-ARG IDP_GIT_VERSION=unknown
-ENV IDP_GIT_VERSION=${IDP_GIT_VERSION}
 WORKDIR /build
 
 RUN apt-get update \
@@ -41,6 +39,14 @@ RUN mkdir -p crates/core/src crates/contracts/src crates/api/src crates/web/src 
 COPY crates ./crates
 COPY i18n ./i18n
 COPY migrations ./migrations
+# 版数の埋め込みはここまで下げる。ビルドごとに変わる値（IDP_BUILD_NUMBER はコミットが同じでも
+# 上がる）を上に置くと、apt のインストール層と依存クレートのダミービルド層まで毎回作り直しになる。
+ARG IDP_GIT_VERSION=unknown
+ENV IDP_GIT_VERSION=${IDP_GIT_VERSION}
+# ビルド番号（CI の通し番号）。コミットが同じでもビルドし直せば上がるので、「新しい成果物が
+# 配置されたか」を版数だけで判断できる。手元ビルドでは空のまま（版数に付かない）。
+ARG IDP_BUILD_NUMBER=
+ENV IDP_BUILD_NUMBER=${IDP_BUILD_NUMBER}
 # COPY は元ファイルの mtime を保持するため、上のダミービルドで生成した成果物より本体ソースが
 # 古い mtime になり得る。その場合 cargo の鮮度判定（mtime ベース）が「未変更」とみなして再ビルドを
 # スキップし、ダミーの `fn main() {}`（即 exit 0・無出力）バイナリがそのまま出荷される。それを防ぐため、

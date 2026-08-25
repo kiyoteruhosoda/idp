@@ -145,6 +145,7 @@ mod tests {
         VersionInfo {
             package_version: "0.1.0",
             git_version: "abc1234",
+            build_number: "312",
         }
     }
 

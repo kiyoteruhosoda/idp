@@ -1,0 +1,48 @@
+{% extends "console/layout.html" %}
+{% block content %}
+<h2 class="h4 mb-1">{{ messages.get("admin-version-title") }}</h2>
+<p class="text-muted">{{ messages.get("admin-version-intro") }}</p>
+
+<div class="card mb-4" aria-labelledby="version-card-title">
+  <div class="card-header" id="version-card-title">IdP Web</div>
+  <div class="card-body p-0">
+    <dl class="row mb-0 py-2">
+      <dt class="col-sm-4 px-4 py-2">{{ messages.get("admin-version-package") }}</dt>
+      <dd class="col-sm-8 px-4 py-2 mb-0"><code>{{ info.display_version() }}</code></dd>
+      <dt class="col-sm-4 px-4 py-2 border-top">{{ messages.get("admin-version-git") }}</dt>
+      <dd class="col-sm-8 px-4 py-2 mb-0 border-top">
+        <code>{{ info.git_version }}</code>
+        {% if !info.has_git_version() %}<span class="badge text-bg-warning ms-2">{{ messages.get("admin-version-git-missing") }}</span>{% endif %}
+      </dd>
+    </dl>
+  </div>
+</div>
+
+<div class="card mb-4" aria-labelledby="schema-card-title">
+  <div class="card-header" id="schema-card-title">{{ messages.get("admin-version-schema") }}</div>
+  <div class="card-body p-0">
+    {% if let Some(schema) = schema %}
+    <dl class="row mb-0 py-2">
+      <dt class="col-sm-4 px-4 py-2">{{ messages.get("admin-version-schema-applied") }}</dt>
+      <dd class="col-sm-8 px-4 py-2 mb-0">
+        {% if !schema.db_readable %}<span class="text-muted">{{ messages.get("admin-version-schema-unreadable") }}</span>{% else if let Some(applied) = schema.applied %}<code>{{ applied }}</code>{% else %}<span class="text-muted">{{ messages.get("admin-version-schema-none") }}</span>{% endif %}
+      </dd>
+      <dt class="col-sm-4 px-4 py-2 border-top">{{ messages.get("admin-version-schema-expected") }}</dt>
+      <dd class="col-sm-8 px-4 py-2 mb-0 border-top">
+        {% if let Some(expected) = schema.expected %}<code>{{ expected }}</code>{% else %}<span class="text-muted">{{ messages.get("admin-version-schema-unknown") }}</span>{% endif %}
+      </dd>
+      <dt class="col-sm-4 px-4 py-2 border-top">{{ messages.get("admin-version-schema-state") }}</dt>
+      <dd class="col-sm-8 px-4 py-2 mb-0 border-top">
+        {% if !schema.db_readable %}<span class="badge text-bg-danger">{{ messages.get("admin-version-schema-state-unreadable") }}</span>{% else if schema.applied >= schema.expected %}<span class="badge text-bg-success">{{ messages.get("admin-version-schema-state-current") }}</span>{% else %}<span class="badge text-bg-warning">{{ messages.get("admin-version-schema-state-behind") }}</span>{% endif %}
+      </dd>
+    </dl>
+    {% else %}
+    <p class="mb-0 px-4 py-3 text-muted">{{ messages.get("admin-version-schema-unavailable") }}</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="alert alert-light border" aria-label="{{ messages.get("admin-version-note-label") }}">
+  <p class="mb-0 small text-muted">{{ messages.get("admin-version-note") }}</p>
+</div>
+{% endblock %}

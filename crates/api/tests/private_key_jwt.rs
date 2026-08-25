@@ -120,8 +120,7 @@ async fn issues_a_token_for_a_signed_assertion_without_any_shared_secret() {
         return;
     };
     let (client_id, private_pem, kid) =
-        support::insert_private_key_jwt_client(&env.pool, &env.root_tenant_id, &["reports.read"])
-            .await;
+        support::insert_private_key_jwt_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
 
     let spec = AssertionSpec::valid(&env, &client_id, &private_pem, &kid);
     let response = request_token(&env.app, &env.root_tenant_id, &spec.build()).await;
@@ -129,7 +128,9 @@ async fn issues_a_token_for_a_signed_assertion_without_any_shared_secret() {
 
     let tokens = body_json(response).await;
     assert_eq!(tokens["token_type"], "Bearer");
-    assert_eq!(tokens["scope"], "reports.read");
+    // 登録できる scope は OIDC の 4 値だけで、そのすべてが利用者前提か offline_access のため、
+    // このトークンに載る scope は無い（ADR-0033）。
+    assert_eq!(tokens["scope"], "");
     assert!(tokens["access_token"]
         .as_str()
         .is_some_and(|t| !t.is_empty()));
@@ -145,8 +146,7 @@ async fn the_tenant_issuer_is_also_accepted_as_the_audience() {
         return;
     };
     let (client_id, private_pem, kid) =
-        support::insert_private_key_jwt_client(&env.pool, &env.root_tenant_id, &["reports.read"])
-            .await;
+        support::insert_private_key_jwt_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
 
     let mut spec = AssertionSpec::valid(&env, &client_id, &private_pem, &kid);
     spec.audience = format!("{}/{}", env.issuer, env.root_tenant_id);
@@ -161,8 +161,7 @@ async fn the_same_assertion_cannot_be_replayed() {
         return;
     };
     let (client_id, private_pem, kid) =
-        support::insert_private_key_jwt_client(&env.pool, &env.root_tenant_id, &["reports.read"])
-            .await;
+        support::insert_private_key_jwt_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
 
     let spec = AssertionSpec::valid(&env, &client_id, &private_pem, &kid);
     let assertion = spec.build();
@@ -192,8 +191,7 @@ async fn an_assertion_signed_by_another_key_is_rejected() {
         return;
     };
     let (client_id, _private_pem, kid) =
-        support::insert_private_key_jwt_client(&env.pool, &env.root_tenant_id, &["reports.read"])
-            .await;
+        support::insert_private_key_jwt_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
     let (attacker_pem, _) = generate_rsa_keypair().expect("generate attacker key");
 
     let spec = AssertionSpec::valid(&env, &client_id, &attacker_pem, &kid);
@@ -209,8 +207,7 @@ async fn an_assertion_for_another_audience_is_rejected() {
         return;
     };
     let (client_id, private_pem, kid) =
-        support::insert_private_key_jwt_client(&env.pool, &env.root_tenant_id, &["reports.read"])
-            .await;
+        support::insert_private_key_jwt_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
 
     let mut spec = AssertionSpec::valid(&env, &client_id, &private_pem, &kid);
     spec.audience = "https://someone-else.example.com/token".to_string();
@@ -225,8 +222,7 @@ async fn expired_and_overlong_assertions_are_rejected() {
         return;
     };
     let (client_id, private_pem, kid) =
-        support::insert_private_key_jwt_client(&env.pool, &env.root_tenant_id, &["reports.read"])
-            .await;
+        support::insert_private_key_jwt_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
 
     let mut expired = AssertionSpec::valid(&env, &client_id, &private_pem, &kid);
     // 時計ずれの許容幅（60 秒）より確実に過去へ置く。
@@ -255,8 +251,7 @@ async fn an_unsupported_assertion_type_is_rejected() {
         return;
     };
     let (client_id, private_pem, kid) =
-        support::insert_private_key_jwt_client(&env.pool, &env.root_tenant_id, &["reports.read"])
-            .await;
+        support::insert_private_key_jwt_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
 
     let spec = AssertionSpec::valid(&env, &client_id, &private_pem, &kid);
     let response = request_token_with_type(
@@ -277,8 +272,7 @@ async fn a_private_key_jwt_client_cannot_authenticate_with_a_secret() {
         return;
     };
     let (client_id, _private_pem, _kid) =
-        support::insert_private_key_jwt_client(&env.pool, &env.root_tenant_id, &["reports.read"])
-            .await;
+        support::insert_private_key_jwt_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
 
     let credentials = base64::Engine::encode(
         &base64::engine::general_purpose::STANDARD,

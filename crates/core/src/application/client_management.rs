@@ -262,6 +262,42 @@ impl ClientManagementService {
         self.load(tenant, client_id).await
     }
 
+    /// クライアントを論理削除する（ADR-0035）。
+    ///
+    /// 実体は残し、状態を `DELETED` にする。発行済みの認可コード・トークン・同意・監査ログが
+    /// `client_id` で紐づいているため、実体を消すと監査で「どのアプリだったか」を追えなくなる。
+    /// **削除の目的は使えなくすることであって、記録を消すことではない。**
+    ///
+    /// 使えなくなるのは状態を変えた時点で即座である —— 認可・トークン・introspection は
+    /// `is_active()` で門番をしているので、`DELETED` は `DISABLED` と同じく弾かれる。
+    pub async fn delete(
+        &self,
+        tenant: TenantContext,
+        client_id: &str,
+        actor: Uuid,
+        ctx: &RequestContext,
+    ) -> Result<(), ClientManagementError> {
+        let mut client = self.load(tenant, client_id).await?;
+        client.client_status = ClientStatus::Deleted;
+        self.clients
+            .update(&client)
+            .await
+            .map_err(|e| ClientManagementError::Internal(e.to_string()))?;
+
+        self.audit
+            .record(
+                AuditEventType::ClientDeleted,
+                AuditResult::Success,
+                Some(tenant.tenant_id()),
+                Some(actor),
+                Some(&client.client_id),
+                None,
+                ctx,
+            )
+            .await;
+        Ok(())
+    }
+
     pub async fn update(
         &self,
         tenant: TenantContext,
@@ -306,6 +342,14 @@ impl ClientManagementService {
             client.scopes = validate_scopes(&scopes)?;
         }
         if let Some(status) = cmd.status {
+            // 論理削除は専用の削除経路（`delete`）だけが行う（ADR-0035）。ここを素通しすると
+            // `client.deleted` の監査記録を残さないまま、取り消せない削除ができてしまう
+            // （削除済みは `load` が落とすため、以後この更新経路にも戻ってこられない）。
+            if status == ClientStatus::Deleted {
+                return Err(ClientManagementError::Validation(MessageKey::new(
+                    "api-client-status-invalid",
+                )));
+            }
             client.client_status = status;
         }
         // 更新時も登録時と同じ検査を通す（SEC2。登録を通しても更新で差し替えられては意味がない）。
@@ -440,6 +484,10 @@ impl ClientManagementService {
         Ok((client, plain))
     }
 
+    /// 管理操作の対象を読む。**論理削除済みは「無い」ものとして扱う**（ADR-0035）。
+    ///
+    /// ここで一度だけ落とすことで、取得・更新・secret 再発行・削除のすべてが 404 になる。
+    /// 経路ごとに `is_deleted()` を書くと、書き忘れた経路だけ削除済みを操作できてしまう。
     async fn load(
         &self,
         tenant: TenantContext,
@@ -449,6 +497,7 @@ impl ClientManagementService {
             .find_by_client_id(tenant.tenant_id(), client_id)
             .await
             .map_err(|e| ClientManagementError::Internal(e.to_string()))?
+            .filter(|c| !c.is_deleted())
             .ok_or(ClientManagementError::NotFound)
     }
 }

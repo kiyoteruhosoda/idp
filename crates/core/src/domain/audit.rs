@@ -37,6 +37,9 @@ pub enum AuditEventType {
     ClientRegistered,
     ClientUpdated,
     ClientSecretRotated,
+    /// 管理者によるクライアントの論理削除（ADR-0035）。実体は残すので、削除後も
+    /// `client_id` から「どのアプリだったか」を追える。
+    ClientDeleted,
     /// Refresh Token の発行・使用（rotation 成功）・再利用検知（設計仕様 §9.1）。
     RefreshTokenIssued,
     RefreshTokenUsed,
@@ -141,6 +144,7 @@ impl AuditEventType {
             Self::ClientRegistered => "client.registered",
             Self::ClientUpdated => "client.updated",
             Self::ClientSecretRotated => "client.secret_rotated",
+            Self::ClientDeleted => "client.deleted",
             Self::RefreshTokenIssued => "refresh_token.issued",
             Self::RefreshTokenUsed => "refresh_token.used",
             Self::RefreshTokenReuseDetected => "refresh_token.reuse_detected",

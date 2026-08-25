@@ -271,7 +271,7 @@ async fn an_access_token_is_not_accepted_as_an_id_token_hint() {
         return;
     };
     let (client_id, secret) =
-        support::insert_m2m_client(&env.pool, &env.root_tenant_id, &["reports.read"]).await;
+        support::insert_m2m_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
     set_post_logout_uri(&env.pool, &client_id, POST_LOGOUT_URI).await;
 
     let response = send(

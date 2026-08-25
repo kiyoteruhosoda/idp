@@ -38,6 +38,8 @@ command -v docker >/dev/null 2>&1 || die "docker が見つかりません。"
 
 git_commit="$(git rev-parse HEAD 2>/dev/null || printf unknown)"
 git_version="$(git describe --always --dirty --tags 2>/dev/null || printf unknown)"
+# ビルド番号は CI の通し番号を使う（GitHub Actions なら GITHUB_RUN_NUMBER）。手元ビルドでは空。
+build_number="${IDP_BUILD_NUMBER:-${GITHUB_RUN_NUMBER:-}}"
 version="${IMAGE_TAG:-latest}"
 # IMAGE_PREFIX/IMAGE_TAG は Compose（docker-compose.deploy.yml）と共通の名前解決。通常は既定のままでよい。
 image_ref() { printf '%s/%s:%s' "${IMAGE_PREFIX:-idp}" "$1" "$version"; }
@@ -56,6 +58,7 @@ for svc in api web migrate; do
   log "イメージをビルドします: $ref（stage=${stages[$svc]}）..."
   docker build --target "${stages[$svc]}" \
     --build-arg "IDP_GIT_VERSION=${git_version}" \
+    --build-arg "IDP_BUILD_NUMBER=${build_number}" \
     --label "org.opencontainers.image.revision=${git_commit}" \
     --label "org.opencontainers.image.version=${version}" \
     -t "$ref" -f Dockerfile .
