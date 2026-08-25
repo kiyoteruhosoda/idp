@@ -210,27 +210,42 @@ print(json.dumps({"keys": [{"kty": "RSA", "kid": kid, "n": b64u(mod),
 
 ```bash
 openssl rsa -pubin -in machine.pub -text -noout | python3 pub2jwk.py 2026-08 > jwks.json
+
+# 登録 API の `jwks` は JSON **文字列**で受け取る。次の 1 行で埋め込める形（エスケープ済み）にする。
+JWKS=$(python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))' < jwks.json)
 ```
 
 ### 2. クライアントを登録する
 
+`jwks` には前項の `$JWKS`（`jwks.json` を JSON 文字列へエスケープしたもの）をそのまま入れる。
+ヒアドキュメントの終端を引用符で囲まないことで、body の中で変数が展開される。
+
 ```bash
-curl -sS -X POST "$ISSUER/{tenant_id}/admin/clients" \
+curl -sS -X POST "$ISSUER/$TENANT_ID/admin/clients" \
   -H 'Content-Type: application/json' \
   -H "Cookie: sso_session_id=<セッションID>" \
-  -d '{
-    "app_name": "Nightly Report Job",
-    "client_type": "confidential",
-    "redirect_uris": [],
-    "scopes": ["reports.read"],
-    "allow_client_credentials": true,
-    "token_endpoint_auth_method": "private_key_jwt",
-    "jwks": "{\"keys\":[{\"kty\":\"RSA\",\"kid\":\"2026-08\",\"n\":\"...\",\"e\":\"AQAB\"}]}"
-  }'
+  -d "$(cat <<JSON
+{
+  "app_name": "Nightly Report Job",
+  "client_type": "confidential",
+  "redirect_uris": [],
+  "scopes": ["reports.read"],
+  "allow_client_credentials": true,
+  "token_endpoint_auth_method": "private_key_jwt",
+  "jwks": $JWKS
+}
+JSON
+)"
 ```
 
-`client_secret` は発行されない（この方式のクライアントは共有秘密を持たない）。登録できる鍵は
-**公開鍵のみ**で、RSA または EC P-256、各鍵に `kid` が要る。秘密鍵成分を含む JWK は拒否する。
+応答の `client_id` を控える（次項の assertion の `iss` / `sub` に使う）。`client_secret` は
+発行されない（この方式のクライアントは共有秘密を持たない）。登録できる鍵は**公開鍵のみ**で、
+RSA または EC P-256、各鍵に `kid` が要る。秘密鍵成分を含む JWK は拒否する。
+
+> 画面から登録してもよい。管理コンソールの**クライアント**（`/{tenant_id}/admin/clients`）で
+> 「クライアント認証方式」に `private_key_jwt` を選ぶと「検証鍵（JWK Set）」の入力欄が使えるので、
+> そこへ `jwks.json` の中身を**そのまま**貼る（画面ではエスケープは要らない）。鍵の入れ替えも
+> 同じ欄で行う。
 
 ### 3. トークンを取る
 
@@ -255,15 +270,15 @@ b64u() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
 NOW=$(date +%s)
 HEADER=$(printf '{"alg":"RS256","typ":"JWT","kid":"%s"}' "$KID" | b64u)
 PAYLOAD=$(printf '{"iss":"%s","sub":"%s","aud":"%s","exp":%d,"jti":"%s"}' \
-  "$CID" "$CID" "$AUD" "$((NOW+180))" "$(cat /proc/sys/kernel/random/uuid)" | b64u)
+  "$CID" "$CID" "$AUD" "$((NOW+180))" "$(openssl rand -hex 16)" | b64u)
 SIG=$(printf '%s.%s' "$HEADER" "$PAYLOAD" | openssl dgst -sha256 -sign "$KEY" -binary | b64u)
 printf '%s.%s.%s\n' "$HEADER" "$PAYLOAD" "$SIG"
 ```
 
 ```bash
-ASSERTION=$(./sign-assertion.sh machine.key 2026-08 "$CLIENT_ID" "$ISSUER/$TENANT_ID/token")
+ASSERTION=$(bash sign-assertion.sh machine.key 2026-08 "$CLIENT_ID" "$ISSUER/$TENANT_ID/token")
 
-curl -sS -X POST "$ISSUER/{tenant_id}/token" \
+curl -sS -X POST "$ISSUER/$TENANT_ID/token" \
   -d grant_type=client_credentials \
   -d client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer \
   --data-urlencode "client_assertion=$ASSERTION"
