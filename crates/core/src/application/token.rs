@@ -903,6 +903,14 @@ fn resolve_client_credentials_scopes(
                     "offline_access is not available for the client_credentials grant",
                 ));
             }
+            // 利用者前提の scope は、要求されても拒む。省略時は落としているのに明示要求だけ
+            // 通すと、**利用者が居ないのに利用者のクレームを名乗るトークン**が出せてしまう。
+            if scopes.iter().any(|s| user_bound.contains(&s.as_str())) {
+                return Err(TokenError::new(
+                    OAuthErrorCode::InvalidScope,
+                    "user-bound scopes are not available for the client_credentials grant",
+                ));
+            }
             if !client.allows_scopes(&scopes) {
                 return Err(TokenError::new(
                     OAuthErrorCode::InvalidScope,
@@ -961,43 +969,53 @@ mod tests {
         }
     }
 
-    /// scope 省略時は、利用者前提の scope（openid / profile / email）と offline_access を落とす。
+    /// 登録できる scope は OIDC の 4 値だけ（`validate_scopes`）で、そのすべてが利用者前提か
+    /// `offline_access` である。したがって **`client_credentials` のトークンは scope が空**になる。
+    /// 業務上の権限はアプリが `sub`（= `client_id`）を見て判断する（ADR-0033）。
     #[test]
-    fn omitted_scope_defaults_to_the_non_user_bound_registered_scopes() {
-        let client = client_with_scopes(&[
-            "openid",
-            "profile",
-            "email",
-            "offline_access",
-            "reports.read",
-        ]);
-        assert_eq!(
-            resolve_client_credentials_scopes(&client, None).unwrap(),
-            vec!["reports.read".to_string()]
-        );
-        // 該当が無ければ空（scope 無しのトークンになる）。
-        let client = client_with_scopes(&["openid", "email"]);
+    fn client_credentials_tokens_carry_no_scope() {
+        // システム用クライアントとして登録できる最小の姿。
+        let client = client_with_scopes(&["openid"]);
+        assert!(resolve_client_credentials_scopes(&client, None)
+            .unwrap()
+            .is_empty());
+
+        // 利用者向けにも使うクライアントで登録され得る全 4 値でも同じ。
+        let client = client_with_scopes(&["openid", "profile", "email", "offline_access"]);
         assert!(resolve_client_credentials_scopes(&client, None)
             .unwrap()
             .is_empty());
     }
 
+    /// 未登録の scope は拒否する（`/authorize` と同じ完全一致判定）。
     #[test]
     fn requested_scope_must_be_a_subset_of_the_registered_scopes() {
-        let client = client_with_scopes(&["reports.read", "reports.write"]);
-        assert_eq!(
-            resolve_client_credentials_scopes(&client, Some("reports.read")).unwrap(),
-            vec!["reports.read".to_string()]
-        );
-        let err = resolve_client_credentials_scopes(&client, Some("reports.read admin.all"))
+        let client = client_with_scopes(&["openid"]);
+        let err = resolve_client_credentials_scopes(&client, Some("openid profile"))
             .expect_err("未登録 scope は拒否する");
         assert_eq!(err.code, OAuthErrorCode::InvalidScope);
+    }
+
+    /// 利用者前提の scope は、要求されても拒む。省略時は落としているのに明示要求だけ通すと、
+    /// **利用者が居ないのに利用者のクレームを名乗るトークン**が出せてしまう。
+    #[test]
+    fn user_bound_scopes_are_rejected_even_when_registered() {
+        let client = client_with_scopes(&["openid", "profile", "email"]);
+        for requested in ["openid", "profile", "email", "openid profile"] {
+            let err = resolve_client_credentials_scopes(&client, Some(requested))
+                .expect_err("利用者前提の scope は拒否する");
+            assert_eq!(
+                err.code,
+                OAuthErrorCode::InvalidScope,
+                "requested={requested}"
+            );
+        }
     }
 
     /// `offline_access` は本 grant では常に拒否する（資格情報を出し直せるため更新の必要がない）。
     #[test]
     fn offline_access_is_rejected_even_when_registered() {
-        let client = client_with_scopes(&["offline_access", "reports.read"]);
+        let client = client_with_scopes(&["openid", "offline_access"]);
         let err = resolve_client_credentials_scopes(&client, Some("offline_access"))
             .expect_err("offline_access は拒否する");
         assert_eq!(err.code, OAuthErrorCode::InvalidScope);
@@ -1006,11 +1024,10 @@ mod tests {
     /// 空文字・空白のみの scope は「省略」と同じに扱う（フォームの空欄で 400 にしない）。
     #[test]
     fn blank_scope_is_treated_as_omitted() {
-        let client = client_with_scopes(&["reports.read"]);
-        assert_eq!(
-            resolve_client_credentials_scopes(&client, Some("   ")).unwrap(),
-            vec!["reports.read".to_string()]
-        );
+        let client = client_with_scopes(&["openid"]);
+        assert!(resolve_client_credentials_scopes(&client, Some("   "))
+            .unwrap()
+            .is_empty());
     }
 
     /// `sub_type` は `client_credentials` のトークンだけが持ち、省略時は利用者主体として読む

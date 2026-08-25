@@ -1124,3 +1124,23 @@ admin-client-field-usage-hint = What this client is for. The fields below change
 admin-client-usage-user-login = Sign users in through a browser
 admin-client-usage-system = Call APIs as a system (no user)
 admin-client-field-type-hint = confidential keeps a secret on a server it controls; public cannot (a browser or mobile app).
+
+# Version page (ADR-0034; inside the admin console, sign-in required)
+admin-version-title = Version
+admin-version-intro = The running build and the migrations applied to the database.
+admin-version-package = Package version
+admin-version-git = Git version
+admin-version-schema = Database (migrations)
+admin-version-schema-applied = Applied version
+admin-version-schema-expected = Expected version (api)
+admin-version-schema-state = State
+admin-version-schema-unreadable = Database unreadable
+admin-version-schema-none = None applied
+admin-version-schema-unknown = Unknown
+admin-version-schema-state-unreadable = Database unreadable (operational failure)
+admin-version-schema-state-current = Up to date (schema matches)
+admin-version-schema-state-behind = Database is behind (migration not applied)
+admin-version-schema-unavailable = Could not read the schema state (api unreachable). The api may be down. The api refuses to start when the database is below the expected version, so check the api log for expected / applied.
+admin-version-note-label = Note
+admin-version-note = The Git version comes from git describe --always --dirty --tags at build time. Versions are sqlx migration sequence numbers. "Expected" is the highest version embedded in the running api; "applied" is the highest version present in the database.
+admin-nav-version = Version

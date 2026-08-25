@@ -1124,3 +1124,23 @@ admin-client-field-usage-hint = このクライアントを何に使うか。以
 admin-client-usage-user-login = ブラウザで利用者をログインさせる
 admin-client-usage-system = システムが API を呼ぶ（利用者不在）
 admin-client-field-type-hint = confidential は自分が管理するサーバに秘密を置ける相手、public は置けない相手（ブラウザ・モバイルアプリ）。
+
+# バージョン情報画面（ADR-0034。管理コンソール内・ログイン必須）
+admin-version-title = バージョン情報
+admin-version-intro = 稼働中のビルドと、データベースへ適用済みのマイグレーションを表示します。
+admin-version-package = パッケージ版
+admin-version-git = Git 版
+admin-version-schema = データベース（マイグレーション）
+admin-version-schema-applied = 適用済みバージョン
+admin-version-schema-expected = 期待バージョン（api）
+admin-version-schema-state = 状態
+admin-version-schema-unreadable = DB を読み取れません
+admin-version-schema-none = 未適用
+admin-version-schema-unknown = 不明
+admin-version-schema-state-unreadable = DB 読み取り不可（運用障害）
+admin-version-schema-state-current = 最新（スキーマ一致）
+admin-version-schema-state-behind = DB が遅れています（migrate 未適用）
+admin-version-schema-unavailable = スキーマの適用状態を取得できませんでした（api 未到達）。api が停止している可能性があります。DB が期待バージョン未満だと api は起動を中止するため、このときは api のログで expected / applied を確認してください。
+admin-version-note-label = 補足
+admin-version-note = Git 版はビルド時の git describe --always --dirty --tags に基づきます。バージョンは sqlx マイグレーションの通し番号です。「期待バージョン」は稼働中 api に埋め込まれた最大値、「適用済み」は DB に反映済みの最大値です。
+admin-nav-version = バージョン情報

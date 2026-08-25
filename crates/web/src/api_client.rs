@@ -2265,12 +2265,14 @@ impl ApiClient {
         }
     }
 
-    /// api の `GET /version/schema` から DB スキーマ（マイグレーション）の適用状態を取得する。
+    /// api の `GET /internal/version/schema` から DB スキーマ（マイグレーション）の適用状態を取得する。
     /// バージョン情報画面の表示用。api 未到達・デコード失敗はいずれも `None`（fail-soft。画面は
-    /// 「取得できません」を表示する）。認証不要の公開エンドポイントのためサービストークンは付けない。
+    /// 「取得できません」を表示する）。**内部面のためサービストークンを付ける**（ADR-0034 で
+    /// 公開面から移した）。
     pub async fn fetch_schema_version(&self) -> Option<SchemaVersionInfo> {
         self.http
-            .get(format!("{}/version/schema", self.base_url))
+            .get(format!("{}/internal/version/schema", self.base_url))
+            .header(SERVICE_TOKEN_HEADER, &self.service_token)
             .send()
             .await
             .ok()?

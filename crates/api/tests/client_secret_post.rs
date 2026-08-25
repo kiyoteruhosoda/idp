@@ -78,7 +78,7 @@ async fn a_client_secret_post_client_authenticates_with_body_credentials() {
     let (client_id, secret) = support::insert_m2m_client_with_auth_method(
         &env.pool,
         &env.root_tenant_id,
-        &["reports.read"],
+        &["openid"],
         POST,
     )
     .await;
@@ -101,7 +101,7 @@ async fn a_wrong_body_secret_is_rejected() {
     let (client_id, _) = support::insert_m2m_client_with_auth_method(
         &env.pool,
         &env.root_tenant_id,
-        &["reports.read"],
+        &["openid"],
         POST,
     )
     .await;
@@ -120,7 +120,7 @@ async fn a_client_secret_post_client_cannot_use_the_basic_header() {
     let (client_id, secret) = support::insert_m2m_client_with_auth_method(
         &env.pool,
         &env.root_tenant_id,
-        &["reports.read"],
+        &["openid"],
         POST,
     )
     .await;
@@ -145,7 +145,7 @@ async fn a_client_secret_basic_client_cannot_use_body_credentials() {
     let (client_id, secret) = support::insert_m2m_client_with_auth_method(
         &env.pool,
         &env.root_tenant_id,
-        &["reports.read"],
+        &["openid"],
         BASIC,
     )
     .await;
@@ -164,7 +164,7 @@ async fn presenting_both_methods_is_an_invalid_request() {
     let (client_id, secret) = support::insert_m2m_client_with_auth_method(
         &env.pool,
         &env.root_tenant_id,
-        &["reports.read"],
+        &["openid"],
         POST,
     )
     .await;
@@ -193,7 +193,7 @@ async fn introspection_and_revocation_accept_body_credentials() {
     let (client_id, secret) = support::insert_m2m_client_with_auth_method(
         &env.pool,
         &env.root_tenant_id,
-        &["reports.read"],
+        &["openid"],
         POST,
     )
     .await;

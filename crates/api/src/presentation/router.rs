@@ -219,6 +219,11 @@ pub fn build(state: AppState) -> Router {
         // 詳細ヘルス（ADR-0031）。版数・稼働時間・サーバー時刻・依存先の検査結果を返す。
         // 公開面（`/healthz`・`/readyz`）はサービス名までで、詳細はここにしか出さない。
         .route("/internal/health", get(health::internal_health))
+        // ビルド情報とスキーマ適用状態（ADR-0034）。稼働中のコミットが分かると、どの既知の
+        // 不具合が塞がっていないかを外から判断できるため、無認証では出さない。web は
+        // サービストークンを付けて呼ぶので、コンソールのバージョン画面はそのまま動く。
+        .route("/internal/version", get(health::version))
+        .route("/internal/version/schema", get(health::schema_version))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             internal_auth::require_service_token,
@@ -466,8 +471,6 @@ pub fn build(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(health::liveness))
         .route("/readyz", get(health::readiness))
-        .route("/version", get(health::version))
-        .route("/version/schema", get(health::schema_version))
         .nest("/{tenant_id}", tenant_scoped)
         .merge(internal)
         // Swagger UI と OpenAPI 文書（SEC12）。api 面は公開されるため既定では配信しない

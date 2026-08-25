@@ -59,14 +59,20 @@ async fn issues_an_access_token_without_an_id_token_or_refresh_token() {
         return;
     };
     let (client_id, secret) =
-        support::insert_m2m_client(&env.pool, &env.root_tenant_id, &["reports.read"]).await;
+        support::insert_m2m_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
 
     let response = request_token(&env.app, &env.root_tenant_id, &client_id, &secret, None).await;
     assert_eq!(response.status(), StatusCode::OK);
     let tokens = body_json(response).await;
 
     assert_eq!(tokens["token_type"], "Bearer");
-    assert_eq!(tokens["scope"], "reports.read");
+    // 登録できる scope は OIDC の 4 値だけで、そのすべてが利用者前提か offline_access のため、
+    // このトークンに載る scope は無い。業務上の権限はアプリが `sub`（= client_id）で判断する
+    // （ADR-0033）。
+    assert_eq!(
+        tokens["scope"], "",
+        "利用者が居ないトークンに scope は載らない"
+    );
     assert!(tokens["access_token"]
         .as_str()
         .is_some_and(|t| !t.is_empty()));
@@ -90,14 +96,14 @@ async fn rejects_a_scope_outside_the_registered_set() {
         return;
     };
     let (client_id, secret) =
-        support::insert_m2m_client(&env.pool, &env.root_tenant_id, &["reports.read"]).await;
+        support::insert_m2m_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
 
     let response = request_token(
         &env.app,
         &env.root_tenant_id,
         &client_id,
         &secret,
-        Some("reports.read reports.write"),
+        Some("openid profile"),
     )
     .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -113,7 +119,7 @@ async fn rejects_offline_access() {
     let (client_id, secret) = support::insert_m2m_client(
         &env.pool,
         &env.root_tenant_id,
-        &["reports.read", "offline_access"],
+        &["openid", "offline_access"],
     )
     .await;
 
@@ -176,23 +182,14 @@ async fn the_token_is_rejected_by_userinfo_but_accepted_by_introspection() {
         return;
     };
     let (client_id, secret) =
-        support::insert_m2m_client(&env.pool, &env.root_tenant_id, &["openid", "reports.read"])
-            .await;
+        support::insert_m2m_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
 
-    let tokens = body_json(
-        request_token(
-            &env.app,
-            &env.root_tenant_id,
-            &client_id,
-            &secret,
-            Some("openid reports.read"),
-        )
-        .await,
-    )
-    .await;
+    let tokens =
+        body_json(request_token(&env.app, &env.root_tenant_id, &client_id, &secret, None).await)
+            .await;
     let access_token = tokens["access_token"].as_str().expect("access token");
 
-    // /userinfo: openid scope を持っていても、利用者主体でないので 401。
+    // /userinfo: 利用者主体でないので 401（この grant のトークンは scope も持たない）。
     let response = send(
         &env.app,
         Request::builder()

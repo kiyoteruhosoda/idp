@@ -1122,20 +1122,23 @@ docker compose exec api sh -c \
 
 DB を直接参照せずに、いま DB へ適用されているマイグレーション version を確認できる。
 
-- **バージョン情報画面（web）**: ブラウザで `GET /version` を開く。「データベース（マイグレーション）」欄に
+- **バージョン情報画面（管理コンソール）**: 管理者としてログインし、`GET /{tenant_id}/admin/version` を開く
+  （コンソール下部のフッターのリンクからも入れる）。無認証では見られない（ADR-0034）。「データベース（マイグレーション）」欄に
   「適用済みバージョン」（DB の `_sqlx_migrations` 最大 version）と「期待バージョン」（稼働中 api に埋め込まれた
   最大 version）、および状態を表示する。状態は次の3つを区別する。
   - **最新（スキーマ一致）**: 適用済み ≥ 期待。
   - **DB が遅れています（migrate 未適用）**: 適用済み < 期待。
   - **DB 読み取り不可（運用障害）**: DB へ到達できても `_sqlx_migrations` を読めない（接続断・権限等。api ログにも記録）。
-- **JSON（api）**: `GET /version/schema` が `{"expected": <n>, "db_readable": <bool>, "applied": <n|null>}` を返す（認証不要）。
+- **JSON（api）**: `GET /internal/version/schema` が `{"expected": <n>, "db_readable": <bool>, "applied": <n|null>}` を返す。
+  **サービストークンが必要**で、プロキシ経由では 404（`/internal/*` の扱いは「死活・準備状態を確認したいとき」を参照）。
+  同じ内容は `GET /internal/health` の `checks[schema]` にも入っている。
 
 「適用済み < 期待」の場合は DB が古い（`migrate` 未適用）。適用手順は上記「マイグレーションを適用したいとき」
 ／デプロイ先は「マイグレーションだけを適用したいとき（デプロイ先）」を参照。
 
 > 注意（fail-fast との関係）: api は起動時に「DB が期待 version 以上」を検査し、**未満なら起動を中止**する
 > （ADR-0004。同じ理由で Compose では web も api の健全化を待つ）。したがって **DB が遅れている状態では
-> `/version` 画面・`/version/schema` 自体が配信されない**ことがある（画面は「api 未到達」を表示）。この場合は
+> スキーマ状態が取得できない**ことがある（画面は「api 未到達」を表示。版数だけは web 自身が知っているので読める）。この場合は
 > api コンテナのログに出力される `schema version` 照合行（`expected` / `applied`）で状態を確認する。本画面は
 > 主に「デプロイ後に期待 version まで適用できたか（適用済み＝期待）」の確認に用いる。
 

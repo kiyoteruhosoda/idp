@@ -354,6 +354,8 @@ pub fn build(state: WebState) -> Router {
         // エラー・警告ログ（`log` テーブル）。api 側は idp.system.admin を要求する。
         .route("/admin/logs", get(admin_status_console::application_logs))
         .route("/admin/status", get(admin_status_console::client_status))
+        // 稼働中のビルドと適用済みスキーマ（ADR-0034）。無認証の面には出さない。
+        .route("/admin/version", get(admin_status_console::version))
         // 署名鍵管理画面（K1）。
         .route("/admin/signing-keys", get(admin_signing_keys_console::list))
         .route(
@@ -387,7 +389,6 @@ pub fn build(state: WebState) -> Router {
         .route("/", get(root_entrypoint))
         .route("/healthz", get(health::liveness))
         .route("/readyz", get(health::readiness))
-        .route("/version", get(health::version))
         // 詳細ヘルス（ADR-0031）。版数・稼働時間・サーバー時刻・api への到達性を返す。
         // 公開面（`/healthz`・`/readyz`）はサービス名までで、詳細はサービストークンの内側に置く。
         .merge(
@@ -573,11 +574,11 @@ mod tests {
             .filter(|line| line.starts_with("location"))
             .collect::<Vec<_>>()
             .join("\n");
-        // 非テナントのパスは対象外。`/`・`/version`・`/assets/...` はプロキシに個別の location が
-        // あり、`/healthz`・`/readyz` は api にも同じルートがあるので catch-all で api が答えてよい。
+        // 非テナントのパスは対象外。`/`・`/assets/...` はプロキシに個別の location があり、
+        // `/healthz`・`/readyz` は api にも同じルートがあるので catch-all で api が答えてよい。
         // `/internal/health` は**外から到達させない**のが正しい（`location /internal/ { return 404; }`
         // で遮断する。ADR-0031 決定 2）。web へ流れないことが期待どおりなので対象外にする。
-        let non_tenant = ["/", "/healthz", "/readyz", "/version", "/internal/health"];
+        let non_tenant = ["/", "/healthz", "/readyz", "/internal/health"];
         let mut checked = 0;
         for route in declared_route_paths() {
             if non_tenant.contains(&route.as_str()) || route.starts_with("/assets/") {
@@ -755,7 +756,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/version")
+                    .uri("/healthz")
                     .body(Body::empty())
                     .expect("request"),
             )

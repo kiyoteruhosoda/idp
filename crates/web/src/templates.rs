@@ -654,10 +654,16 @@ pub struct ErrorPage {
     pub message: String,
 }
 
-/// バージョン情報ページ（`GET /version`）。
+/// バージョン情報ページ（`GET /{tenant_id}/admin/version`）。
+///
+/// **管理コンソールの内側にある**（ADR-0034）。稼働中のコミットが分かると、どの既知の不具合が
+/// 塞がっていないかを外から判断できるため、無認証の面には出さない。
 #[derive(Template)]
-#[template(path = "version.html")]
-pub struct VersionTemplate {
+#[template(path = "console/version.html")]
+pub struct VersionTemplate<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub admin: Admin<'a>,
     pub info: VersionInfo,
     /// DB スキーマ（マイグレーション）の適用状態。api から取得できなければ `None`（画面は
     /// 「取得できません」を表示）。web は DB を持たないため api 経由で受け取る。
