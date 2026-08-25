@@ -140,6 +140,9 @@ const PASSWORD_RESET_RATE_LIMIT_WINDOW_MINUTES: i64 = 15;
 pub struct AppState {
     pub pool: Db,
     pub config: Arc<Config>,
+    /// プロセスの起動時刻。`/internal/health` が稼働時間を出すために持つ（ADR-0031）。
+    /// 再起動が起きたかどうかは、版数だけを見ても分からない。
+    pub started_at: chrono::DateTime<chrono::Utc>,
     /// 時刻の取得口（テストで固定実装に差し替える）。Presentation 層が「今」を要る場面
     /// （ロック期限の判定など）で使う。
     pub clock: Arc<dyn Clock>,
@@ -255,6 +258,7 @@ const BACKCHANNEL_LOGOUT_BATCH_SIZE: u32 = 50;
 impl AppState {
     /// すべてのユースケースを組み立てる（トレイト越しのコンストラクタ注入）。
     pub fn build(pool: Db, config: Arc<Config>, clock: Arc<dyn Clock>) -> Self {
+        let started_at = clock.now();
         let users = Arc::new(SqlxUserRepository::new(pool.clone()));
         let tenant_memberships = Arc::new(SqlxTenantMembershipRepository::new(pool.clone()));
         // テナントへ割り当てたドメイン（ADR-0029）。ログインの解決と管理 API が共有する。
@@ -934,6 +938,7 @@ impl AppState {
         Self {
             pool,
             config,
+            started_at,
             clock: clock.clone(),
             metrics: crate::presentation::metrics::handle().map(Arc::new),
             token_endpoint_load,

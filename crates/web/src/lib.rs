@@ -20,6 +20,7 @@ pub mod dto;
 pub mod error_pages;
 pub mod handlers;
 pub mod i18n;
+mod internal_auth;
 pub mod language;
 pub mod login_context;
 pub mod pagination;

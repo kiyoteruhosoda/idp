@@ -388,6 +388,16 @@ pub fn build(state: WebState) -> Router {
         .route("/healthz", get(health::liveness))
         .route("/readyz", get(health::readiness))
         .route("/version", get(health::version))
+        // 詳細ヘルス（ADR-0031）。版数・稼働時間・サーバー時刻・api への到達性を返す。
+        // 公開面（`/healthz`・`/readyz`）はサービス名までで、詳細はサービストークンの内側に置く。
+        .merge(
+            Router::new()
+                .route("/internal/health", get(health::internal_health))
+                .route_layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    crate::internal_auth::require_service_token,
+                )),
+        )
         .route("/assets/app.css", get(stylesheet::app_css))
         .route("/assets/console.js", get(console_script::console_js))
         .route(
@@ -564,7 +574,9 @@ mod tests {
             .join("\n");
         // 非テナントのパスは対象外。`/`・`/version`・`/assets/...` はプロキシに個別の location が
         // あり、`/healthz`・`/readyz` は api にも同じルートがあるので catch-all で api が答えてよい。
-        let non_tenant = ["/", "/healthz", "/readyz", "/version"];
+        // `/internal/health` は**外から到達させない**のが正しい（`location /internal/ { return 404; }`
+        // で遮断する。ADR-0031 決定 2）。web へ流れないことが期待どおりなので対象外にする。
+        let non_tenant = ["/", "/healthz", "/readyz", "/version", "/internal/health"];
         let mut checked = 0;
         for route in declared_route_paths() {
             if non_tenant.contains(&route.as_str()) || route.starts_with("/assets/") {
@@ -581,6 +593,84 @@ mod tests {
             );
         }
         assert!(checked > 0, "expected routes to check");
+    }
+
+    /// ADR-0031 決定 1: 200 だけでは「どちらのサービスが答えたか」が分からなかった。
+    #[tokio::test]
+    async fn liveness_names_the_service_that_answered() {
+        let response = build(test_state())
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["service"], "web");
+    }
+
+    /// ADR-0031 決定 2: 詳細は内部トークンの内側にしか出さない。
+    #[tokio::test]
+    async fn the_detailed_health_is_not_readable_without_the_service_token() {
+        for header in [None, Some("wrong-token")] {
+            let mut request = Request::builder().uri("/internal/health");
+            if let Some(token) = header {
+                request = request.header(idp_contracts::internal_auth::SERVICE_TOKEN_HEADER, token);
+            }
+            let response = build(test_state())
+                .oneshot(request.body(Body::empty()).expect("request"))
+                .await
+                .expect("response");
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "token={header:?} で詳細ヘルスが読めてはならない"
+            );
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            assert!(
+                !String::from_utf8_lossy(&body).contains("git_version"),
+                "拒否応答にビルド情報を載せない"
+            );
+        }
+    }
+
+    /// トークンを付ければ、版数・稼働時間・サーバー時刻・依存先の検査結果が返る。
+    #[tokio::test]
+    async fn the_detailed_health_reports_the_service_state() {
+        let state = test_state();
+        let token = state.config.internal_service_token().to_string();
+        let response = build(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/internal/health")
+                    .header(idp_contracts::internal_auth::SERVICE_TOKEN_HEADER, token)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["service"], "web");
+        assert!(json["version"]["git_version"].is_string());
+        assert!(json["started_at"].is_string());
+        assert!(json["server_time"].is_string());
+        assert!(json["uptime_seconds"].is_number());
+        // web が見る依存先は api だけ（テストでは api が居ないので fail になる）。
+        assert_eq!(json["checks"][0]["name"], "api");
+        assert_eq!(json["status"], json["checks"][0]["status"]);
     }
 
     fn test_state() -> WebState {
