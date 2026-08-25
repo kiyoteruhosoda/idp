@@ -134,7 +134,9 @@ mod tests {
             r#"name="usage""#,
             r#"name="client_type""#,
             r#"name="redirect_uris""#,
-            r#"name="scopes""#,
+            r#"name="scope_profile""#,
+            r#"name="scope_email""#,
+            r#"name="scope_offline_access""#,
             r#"name="csrf_token""#,
         ] {
             assert!(html.contains(control), "{control} が描画されていない");
@@ -142,6 +144,12 @@ mod tests {
         // 既定は利用者ログイン。用途はこの 2 つだけ。
         assert!(html.contains(r#"value="user_login" selected"#), "{html}");
         assert!(html.contains(r#"value="system""#), "{html}");
+        // `openid` は外せない（入力欄を持たず、ハンドラが必ず付ける）。
+        assert!(html.contains(r#"id="client-scope-openid""#), "{html}");
+        assert!(
+            !html.contains(r#"name="scope_openid""#),
+            "openid を送信対象の入力欄にしない: {html}"
+        );
     }
 
     /// ADR-0032: 用途は `client_credentials` の有無で決まる。
@@ -959,6 +967,15 @@ pub mod client_usage {
 }
 
 impl ClientFormValues {
+    /// この scope が選ばれているか（テンプレートのチェック状態）。
+    ///
+    /// 空白区切りの保持形を分解して照合する。部分一致で見ないのは、`profile` が
+    /// 将来の `profile_extended` のような値に引っかかると、選んでいない欄が
+    /// 選ばれて見えるためである。
+    pub fn has_scope(&self, scope: &str) -> bool {
+        self.scopes.split_whitespace().any(|s| s == scope)
+    }
+
     /// 新規登録フォームの初期値（confidential・PKCE 必須・openid スコープ）。
     pub fn default_new() -> Self {
         Self {

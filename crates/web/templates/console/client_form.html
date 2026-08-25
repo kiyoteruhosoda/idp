@@ -37,11 +37,36 @@
         <textarea class="form-control" id="client-redirect-uris" name="redirect_uris" rows="4">{{ values.redirect_uris }}</textarea>
         <div class="form-text">{{ messages.get("admin-client-field-uris-hint") }}</div>
       </div>
-      <div class="mb-3">
-        <label class="form-label" for="client-scopes">{{ messages.get("admin-client-field-scopes") }}</label>
-        <input type="text" class="form-control" id="client-scopes" name="scopes" value="{{ values.scopes }}">
+      {# 受け付ける scope は OIDC の 4 値だけなので、自由入力ではなく選択にする。`openid` は
+         登録時の必須項目なので、外せないことが分かる形で出す（値はハンドラが必ず付ける）。 #}
+      <fieldset class="mb-3">
+        <legend class="form-label fs-6">{{ messages.get("admin-client-field-scopes") }}</legend>
+        <div class="form-check">
+          <input type="checkbox" class="form-check-input" id="client-scope-openid" checked disabled>
+          <label class="form-check-label" for="client-scope-openid">
+            <code>openid</code> — {{ messages.get("admin-client-scope-openid") }}
+          </label>
+        </div>
+        <div class="form-check">
+          <input type="checkbox" class="form-check-input" id="client-scope-profile" name="scope_profile"{% if values.has_scope("profile") %} checked{% endif %}>
+          <label class="form-check-label" for="client-scope-profile">
+            <code>profile</code> — {{ messages.get("admin-client-scope-profile") }}
+          </label>
+        </div>
+        <div class="form-check">
+          <input type="checkbox" class="form-check-input" id="client-scope-email" name="scope_email"{% if values.has_scope("email") %} checked{% endif %}>
+          <label class="form-check-label" for="client-scope-email">
+            <code>email</code> — {{ messages.get("admin-client-scope-email") }}
+          </label>
+        </div>
+        <div class="form-check">
+          <input type="checkbox" class="form-check-input" id="client-scope-offline-access" name="scope_offline_access"{% if values.has_scope("offline_access") %} checked{% endif %}>
+          <label class="form-check-label" for="client-scope-offline-access">
+            <code>offline_access</code> — {{ messages.get("admin-client-scope-offline-access") }}
+          </label>
+        </div>
         <div class="form-text">{{ messages.get("admin-client-field-scopes-hint") }}</div>
-      </div>
+      </fieldset>
       {% if !is_new %}
       <div class="mb-3">
         <label class="form-label" for="client-status">{{ messages.get("admin-client-field-status") }}</label>

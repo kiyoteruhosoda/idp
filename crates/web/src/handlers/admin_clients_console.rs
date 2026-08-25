@@ -111,7 +111,15 @@ pub struct NewClientForm {
     #[serde(default)]
     pub client_type: String,
     pub redirect_uris: String,
-    pub scopes: String,
+    /// scope はチェックボックスで受ける（受け付ける値が OIDC の 4 つに限られるため）。
+    /// チェックは「入れたときだけ送られる」ので `Option` で受ける。`openid` は必須なので
+    /// 入力欄を持たず、`selected_scopes` が必ず付ける。
+    #[serde(default)]
+    pub scope_profile: Option<String>,
+    #[serde(default)]
+    pub scope_email: Option<String>,
+    #[serde(default)]
+    pub scope_offline_access: Option<String>,
     /// クライアントの用途（`client_usage`。ADR-0032）。api はこの値を持たないので、web が
     /// `redirect_uris` の有無と `allow_client_credentials` へ翻訳して送る。
     pub usage: String,
@@ -136,7 +144,12 @@ pub async fn create(
         app_name: form.app_name.clone(),
         client_type: form.client_type.clone(),
         redirect_uris: form.redirect_uris.clone(),
-        scopes: form.scopes.clone(),
+        scopes: selected_scopes(
+            &form.scope_profile,
+            &form.scope_email,
+            &form.scope_offline_access,
+        )
+        .join(" "),
         client_status: "ACTIVE".to_string(),
         usage: form.usage.clone(),
         token_endpoint_auth_method: auth_method_or_default(&form.token_endpoint_auth_method),
@@ -163,7 +176,11 @@ pub async fn create(
         // として送る（public では `client_credentials` も `private_key_jwt` も成立しない）。
         "client_type": client_type_for(&form.usage, &form.client_type),
         "redirect_uris": redirect_uris_for(&form.usage, &form.redirect_uris),
-        "scopes": parse_scopes(&form.scopes),
+        "scopes": selected_scopes(
+            &form.scope_profile,
+            &form.scope_email,
+            &form.scope_offline_access,
+        ),
         "allow_client_credentials": allows_client_credentials(&form.usage),
         // public を選んだときは select 自体が描画されないため送られない。api は未指定を
         // 「既定のまま」と解釈する（public は常に `none`）。
@@ -251,7 +268,13 @@ pub async fn edit_form(
 pub struct EditClientForm {
     pub app_name: String,
     pub redirect_uris: String,
-    pub scopes: String,
+    /// scope はチェックボックスで受ける（新規登録と同じ。`openid` は必須なので欄を持たない）。
+    #[serde(default)]
+    pub scope_profile: Option<String>,
+    #[serde(default)]
+    pub scope_email: Option<String>,
+    #[serde(default)]
+    pub scope_offline_access: Option<String>,
     pub client_status: String,
     /// クライアントの用途（`client_usage`。ADR-0032）。新規登録と同じ翻訳を通す。
     pub usage: String,
@@ -294,7 +317,12 @@ pub async fn update(
     let mut values = ClientFormValues::from_client(&client);
     values.app_name = form.app_name.clone();
     values.redirect_uris = form.redirect_uris.clone();
-    values.scopes = form.scopes.clone();
+    values.scopes = selected_scopes(
+        &form.scope_profile,
+        &form.scope_email,
+        &form.scope_offline_access,
+    )
+    .join(" ");
     values.client_status = form.client_status.clone();
     values.usage = form.usage.clone();
     if let Some(method) = form.token_endpoint_auth_method.as_deref() {
@@ -320,7 +348,11 @@ pub async fn update(
     let body = json!({
         "app_name": form.app_name,
         "redirect_uris": redirect_uris_for(&form.usage, &form.redirect_uris),
-        "scopes": parse_scopes(&form.scopes),
+        "scopes": selected_scopes(
+            &form.scope_profile,
+            &form.scope_email,
+            &form.scope_offline_access,
+        ),
         "client_status": form.client_status,
         "allow_client_credentials": allows_client_credentials(&form.usage),
         "token_endpoint_auth_method": form.token_endpoint_auth_method,
@@ -464,11 +496,26 @@ fn auth_method_or_default(raw: &Option<String>) -> String {
         .to_string()
 }
 
-fn parse_scopes(raw: &str) -> Vec<String> {
-    raw.split([' ', '\t', '\n', '\r', ','])
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect()
+/// チェックされた scope を、api へ送る配列にする。
+///
+/// `openid` は登録時の必須項目（`validate_scopes`）なので、入力欄を持たず常に先頭へ付ける。
+/// 画面で外せる形にすると、外した瞬間に必ず 400 になる選択肢を見せることになる。
+fn selected_scopes(
+    profile: &Option<String>,
+    email: &Option<String>,
+    offline_access: &Option<String>,
+) -> Vec<String> {
+    let mut scopes = vec!["openid".to_string()];
+    for (checked, scope) in [
+        (profile, "profile"),
+        (email, "email"),
+        (offline_access, "offline_access"),
+    ] {
+        if checked.is_some() {
+            scopes.push(scope.to_string());
+        }
+    }
+    scopes
 }
 
 // ── CSRF ─────────────────────────────────────────────────────────────────────
@@ -826,15 +873,19 @@ mod tests {
         assert!(parse_uris("   \n  ").is_empty());
     }
 
+    /// `openid` は入力欄を持たず常に付く。外せる形にすると、外した瞬間に必ず 400 になる
+    /// 選択肢を見せることになる（`validate_scopes` が必須としている）。
     #[test]
-    fn parse_scopes_splits_on_space_and_comma() {
+    fn openid_is_always_sent_and_the_rest_follow_the_checkboxes() {
+        let on = || Some("on".to_string());
+        assert_eq!(selected_scopes(&None, &None, &None), vec!["openid"]);
         assert_eq!(
-            parse_scopes("openid, profile  email"),
-            vec![
-                "openid".to_string(),
-                "profile".to_string(),
-                "email".to_string()
-            ]
+            selected_scopes(&on(), &on(), &on()),
+            vec!["openid", "profile", "email", "offline_access"]
+        );
+        assert_eq!(
+            selected_scopes(&None, &on(), &None),
+            vec!["openid", "email"]
         );
     }
 

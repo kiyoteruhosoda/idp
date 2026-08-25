@@ -193,7 +193,7 @@ created="$(curl -fsS -b "$AJAR" -X POST "${WEB}/${ROOT}/admin/clients/new" \
   -H 'content-type: application/x-www-form-urlencoded' \
   --data-urlencode "app_name=E2E Console App" --data-urlencode "client_type=confidential" \
   --data-urlencode "usage=user_login" \
-  --data-urlencode "redirect_uris=${REDIRECT_URI}" --data-urlencode "scopes=openid" \
+  --data-urlencode "redirect_uris=${REDIRECT_URI}" \
   --data-urlencode "csrf_token=${ccsrf}")"
 grep -qi "secret" <<<"$created" || fail "クライアント作成で secret が表示されません"
 pass "クライアント作成（web→api POST /admin/clients、secret 一度表示）"
