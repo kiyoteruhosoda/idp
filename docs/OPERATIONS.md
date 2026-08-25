@@ -223,7 +223,7 @@ JWKS=$(python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))'
 |---|---|
 | アプリ名 | システムの役割が分かる名前（例 `Nightly Report Job`） |
 | **用途** | **「システムが API を呼ぶ（利用者不在）」** |
-| スコープ | `openid` は必須のため外せない。システム用では他の 3 つ（`profile`・`email`・`offline_access`）に用は無いので、既定のまま |
+| スコープ | `openid` は必須のため外せない。システム用では他の 3 つ（`profile`・`email`・`offline_access`）に用は無いので、既定のまま。**業務上の権限は scope では渡さない**（アプリが `sub` = `client_id` を見て判断する。ADR-0033） |
 | 認証方式 | `private_key_jwt` |
 | 検証鍵（JWKS） | 前項の `jwks.json` の中身 |
 
