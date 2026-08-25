@@ -217,8 +217,23 @@ JWKS=$(python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))'
 
 ### 2. クライアントを登録する
 
-`jwks` には前項の `$JWKS`（`jwks.json` を JSON 文字列へエスケープしたもの）をそのまま入れる。
-ヒアドキュメントの終端を引用符で囲まないことで、body の中で変数が展開される。
+**管理コンソールから登録する場合**は、`/{tenant_id}/admin/clients/new` で次のように選ぶ。
+
+| 項目 | 値 |
+|---|---|
+| アプリ名 | 機械の役割が分かる名前（例 `Nightly Report Job`） |
+| **用途** | **「機械が単独で API を呼ぶ（利用者不在）」** |
+| スコープ | 業務権限のみ（例 `reports.read`）。`openid` は要らない |
+| 認証方式 | `private_key_jwt` |
+| 検証鍵（JWKS） | 前項の `jwks.json` の中身 |
+
+用途に「機械」を選ぶと、リダイレクト URI と client type の欄は消える（機械はリダイレクト先を
+持たず、confidential 以外あり得ないため）。`private_key_jwt` では client secret は発行されない。
+
+**API から登録する場合**は次のとおり。`jwks` には前項の `$JWKS`（`jwks.json` を JSON 文字列へ
+エスケープしたもの）をそのまま入れる。ヒアドキュメントの終端を引用符で囲まないことで、body の
+中で変数が展開される。`redirect_uris` は機械では空でよい（`allow_client_credentials` が true の
+confidential クライアントに限る。ADR-0032）。
 
 ```bash
 curl -sS -X POST "$ISSUER/$TENANT_ID/admin/clients" \

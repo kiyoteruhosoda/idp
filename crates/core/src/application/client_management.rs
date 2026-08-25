@@ -130,7 +130,11 @@ impl ClientManagementService {
         ctx: &RequestContext,
     ) -> Result<RegisteredClient, ClientManagementError> {
         let app_name = validate_app_name(cmd.app_name)?;
-        let redirect_uris = validate_redirect_uris(&cmd.redirect_uris)?;
+        // 機械（M2M）だけが redirect_uri を持たずに登録できる（ADR-0032）。ブラウザのリダイレクト先が
+        // 無い呼び出し元に、使いもしない URL を 1 つ捏造させないための例外である。
+        let machine_to_machine =
+            cmd.allow_client_credentials && cmd.client_type == ClientType::Confidential;
+        let redirect_uris = validate_redirect_uris(&cmd.redirect_uris, machine_to_machine)?;
         let scopes = validate_scopes(&cmd.scopes)?;
         // ログアウト系 URI も redirect URI と同じ検査を通す（SEC2）。
         let post_logout_redirect_uris =
@@ -180,10 +184,14 @@ impl ClientManagementService {
             client_type: cmd.client_type,
             client_status: ClientStatus::Active,
             app_name,
-            redirect_uris,
             // ブラウザ経由の利用者ログインは Authorization Code Flow のみ（設計仕様 §5）。
             // `client_credentials` は M2M 用の追加許可で、confidential のみ受け付ける（G4）。
-            grant_types: grant_types_for(cmd.client_type, cmd.allow_client_credentials),
+            grant_types: grant_types_for(
+                cmd.client_type,
+                cmd.allow_client_credentials,
+                !redirect_uris.is_empty(),
+            ),
+            redirect_uris,
             response_types: vec!["code".to_string()],
             scopes,
             token_endpoint_auth_method: auth_method,
@@ -269,8 +277,15 @@ impl ClientManagementService {
         if let Some(app_name) = cmd.app_name {
             client.app_name = validate_app_name(app_name)?;
         }
+        // redirect_uri を空にできるかは `client_credentials` の可否で決まるので、更新後の姿で判定する
+        // （この更新で許可を外しつつ URI も消す、という組み合わせを通さないため）。ADR-0032。
+        let allows_client_credentials = cmd
+            .allow_client_credentials
+            .unwrap_or_else(|| client.allows_client_credentials())
+            && client.client_type == ClientType::Confidential;
         if let Some(redirect_uris) = cmd.redirect_uris {
-            client.redirect_uris = validate_redirect_uris(&redirect_uris)?;
+            client.redirect_uris =
+                validate_redirect_uris(&redirect_uris, allows_client_credentials)?;
         }
         if let Some(scopes) = cmd.scopes {
             client.scopes = validate_scopes(&scopes)?;
@@ -288,9 +303,14 @@ impl ClientManagementService {
         if let Some(uri) = cmd.backchannel_logout_uri {
             client.backchannel_logout_uri = validate_backchannel_logout_uri(uri)?;
         }
-        if let Some(allow) = cmd.allow_client_credentials {
-            client.grant_types = grant_types_for(client.client_type, allow);
-        }
+        // grant_types は登録内容から導出する値であって、独立に持つ設定ではない（ADR-0032）。
+        // 更新のたびに引き直すことで、redirect_uri を消したのに `authorization_code` が残る、
+        // といった実態と合わない組み合わせが生まれない。
+        client.grant_types = grant_types_for(
+            client.client_type,
+            allows_client_credentials,
+            !client.redirect_uris.is_empty(),
+        );
         // 認証方式の変更は confidential のみ（G3）。public は secret を持たないため `none` 固定で、
         // 指定は黙って無視せず拒否する（「変えたつもりで変わっていない」状態を作らない）。
         if let Some(method) = cmd.token_endpoint_auth_method {
@@ -470,8 +490,17 @@ fn parse_jwks(raw: &str) -> Result<ClientJwks, ClientManagementError> {
     parse_registration_jwks(raw).map_err(|e| ClientManagementError::Validation(e.message_key()))
 }
 
-fn grant_types_for(client_type: ClientType, allow_client_credentials: bool) -> Vec<String> {
-    let mut grants = vec![GrantType::AuthorizationCode.as_str().to_string()];
+fn grant_types_for(
+    client_type: ClientType,
+    allow_client_credentials: bool,
+    has_redirect_uris: bool,
+) -> Vec<String> {
+    let mut grants = Vec::new();
+    // redirect_uri を持たないクライアントで認可フローは成立しない（`/authorize` は要求された
+    // redirect_uri を登録値と突き合わせる）。付けても使えない許可が残るだけなので付けない。
+    if has_redirect_uris {
+        grants.push(GrantType::AuthorizationCode.as_str().to_string());
+    }
     if allow_client_credentials && client_type == ClientType::Confidential {
         grants.push(GrantType::ClientCredentials.as_str().to_string());
     }
@@ -489,11 +518,19 @@ fn validate_app_name(app_name: String) -> Result<String, ClientManagementError> 
 }
 
 /// redirect URI 群を検証する。1 件以上・重複なし・各 URI が §2.3 の制約を満たすこと。
-fn validate_redirect_uris(uris: &[String]) -> Result<Vec<String>, ClientManagementError> {
+fn validate_redirect_uris(
+    uris: &[String],
+    machine_to_machine: bool,
+) -> Result<Vec<String>, ClientManagementError> {
     if uris.is_empty() {
-        return Err(ClientManagementError::Validation(MessageKey::new(
-            "api-client-redirect-uris-empty",
-        )));
+        // M2M 以外で空を許すと、認可フローも M2M も使えない「何もできないクライアント」ができる。
+        return if machine_to_machine {
+            Ok(Vec::new())
+        } else {
+            Err(ClientManagementError::Validation(MessageKey::new(
+                "api-client-redirect-uris-empty",
+            )))
+        };
     }
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::with_capacity(uris.len());
@@ -690,12 +727,55 @@ mod tests {
 
     #[test]
     fn rejects_empty_and_duplicate_redirect_uris() {
-        assert!(validate_redirect_uris(&[]).is_err());
-        assert!(validate_redirect_uris(&[
-            "https://a.example.com/cb".to_string(),
-            "https://a.example.com/cb".to_string(),
-        ])
+        // 利用者ログインをするクライアントでは 1 つ以上必要（空では認可フローが成立しない）。
+        assert!(validate_redirect_uris(&[], false).is_err());
+        assert!(validate_redirect_uris(
+            &[
+                "https://a.example.com/cb".to_string(),
+                "https://a.example.com/cb".to_string(),
+            ],
+            false
+        )
         .is_err());
+    }
+
+    /// ADR-0032: 機械（M2M）はブラウザのリダイレクト先を持たないので空を許す。
+    #[test]
+    fn machine_to_machine_clients_may_omit_redirect_uris() {
+        assert_eq!(
+            validate_redirect_uris(&[], true).expect("empty is ok"),
+            Vec::<String>::new()
+        );
+        // 例外は「空を許す」だけで、指定された URI の検査は緩めない。
+        assert!(validate_redirect_uris(&["not-a-url".to_string()], true).is_err());
+    }
+
+    /// grant_types は「実際にできること」から導出する（ADR-0032）。
+    #[test]
+    fn grant_types_follow_what_the_client_can_actually_do() {
+        // 利用者ログインのみ。
+        assert_eq!(
+            grant_types_for(ClientType::Confidential, false, true),
+            vec!["authorization_code".to_string()]
+        );
+        // 機械のみ —— redirect_uri が無いので `authorization_code` は付かない。
+        assert_eq!(
+            grant_types_for(ClientType::Confidential, true, false),
+            vec!["client_credentials".to_string()]
+        );
+        // 両方。
+        assert_eq!(
+            grant_types_for(ClientType::Confidential, true, true),
+            vec![
+                "authorization_code".to_string(),
+                "client_credentials".to_string()
+            ]
+        );
+        // public は秘密を秘匿できないため、許可されていても M2M は付かない。
+        assert_eq!(
+            grant_types_for(ClientType::Public, true, true),
+            vec!["authorization_code".to_string()]
+        );
     }
 
     #[test]

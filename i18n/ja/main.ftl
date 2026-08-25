@@ -508,7 +508,7 @@ api-tenant-has-children = 配下に子テナントが残っているため削除
 api-tenant-has-dependents = 配下に利用者またはクライアントが残っているため削除できません。
 api-client-id-conflict = そのクライアント ID はこのテナントで既に使われています。
 api-client-app-name-empty = アプリケーション名を入力してください。
-api-client-redirect-uris-empty = リダイレクト URI を 1 つ以上指定してください。
+api-client-redirect-uris-empty = リダイレクト URI を 1 つ以上指定してください（client_credentials のみを使うクライアントでは省略できます）。
 api-client-redirect-uri-invalid = 「{ $value }」はリダイレクト URI として無効です。
 api-client-redirect-uri-duplicate = リダイレクト URI「{ $value }」が重複しています。
 api-client-redirect-uri-wildcard = リダイレクト URI「{ $value }」にワイルドカードは使えません。
@@ -1114,3 +1114,11 @@ admin-settings-sms-sender = 差出人表示（任意）
 authorization-post-title = ログイン処理中…
 authorization-post-message = アプリケーションへ戻ります。すぐに切り替わります。
 authorization-post-submit = 続ける
+
+# クライアントの用途（ADR-0032）
+admin-client-field-usage = 用途
+admin-client-field-usage-hint = このクライアントを何に使うか。以下の入力欄はこの選択で変わります。
+admin-client-usage-user-login = ブラウザで利用者をログインさせる
+admin-client-usage-machine = 機械が単独で API を呼ぶ（利用者不在）
+admin-client-usage-both = 両方（既存の設定）
+admin-client-field-type-hint = confidential は自分が管理するサーバに秘密を置ける相手、public は置けない相手（ブラウザ・モバイルアプリ）。

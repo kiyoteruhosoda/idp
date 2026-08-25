@@ -18,7 +18,8 @@ use crate::handlers::found;
 use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{
-    render, ClientDetail, ClientForm, ClientFormValues, ClientSecret, ClientsList, ConsoleNotice,
+    client_usage, render, ClientDetail, ClientForm, ClientFormValues, ClientSecret, ClientsList,
+    ConsoleNotice,
 };
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, Path, Query, State};
@@ -108,9 +109,9 @@ pub struct NewClientForm {
     pub client_type: String,
     pub redirect_uris: String,
     pub scopes: String,
-    /// チェックボックスは「チェック時のみ送られる」ため `Option<String>` で受ける（G4）。
-    #[serde(default)]
-    pub allow_client_credentials: Option<String>,
+    /// クライアントの用途（`client_usage`。ADR-0032）。api はこの値を持たないので、web が
+    /// `redirect_uris` の有無と `allow_client_credentials` へ翻訳して送る。
+    pub usage: String,
     /// クライアント認証方式（G3）。select は confidential のときだけ描画されるため任意で受ける。
     #[serde(default)]
     pub token_endpoint_auth_method: Option<String>,
@@ -134,7 +135,7 @@ pub async fn create(
         redirect_uris: form.redirect_uris.clone(),
         scopes: form.scopes.clone(),
         client_status: "ACTIVE".to_string(),
-        allow_client_credentials: form.allow_client_credentials.is_some(),
+        usage: form.usage.clone(),
         token_endpoint_auth_method: auth_method_or_default(&form.token_endpoint_auth_method),
         jwks: form.jwks.clone().unwrap_or_default(),
     };
@@ -155,10 +156,12 @@ pub async fn create(
 
     let body = json!({
         "app_name": form.app_name,
-        "client_type": form.client_type,
-        "redirect_uris": parse_uris(&form.redirect_uris),
+        // 機械では client_type の select を描画しないので、値が来なくても confidential として送る
+        // （public では `client_credentials` も `private_key_jwt` も成立しない）。
+        "client_type": client_type_for(&form.usage, &form.client_type),
+        "redirect_uris": redirect_uris_for(&form.usage, &form.redirect_uris),
         "scopes": parse_scopes(&form.scopes),
-        "allow_client_credentials": form.allow_client_credentials.is_some(),
+        "allow_client_credentials": allows_client_credentials(&form.usage),
         // public を選んだときは select 自体が描画されないため送られない。api は未指定を
         // 「既定のまま」と解釈する（public は常に `none`）。
         "token_endpoint_auth_method": form.token_endpoint_auth_method,
@@ -247,8 +250,8 @@ pub struct EditClientForm {
     pub redirect_uris: String,
     pub scopes: String,
     pub client_status: String,
-    #[serde(default)]
-    pub allow_client_credentials: Option<String>,
+    /// クライアントの用途（`client_usage`。ADR-0032）。新規登録と同じ翻訳を通す。
+    pub usage: String,
     /// クライアント認証方式（G3）。confidential のときだけ送られる。
     #[serde(default)]
     pub token_endpoint_auth_method: Option<String>,
@@ -290,6 +293,7 @@ pub async fn update(
     values.redirect_uris = form.redirect_uris.clone();
     values.scopes = form.scopes.clone();
     values.client_status = form.client_status.clone();
+    values.usage = form.usage.clone();
     if let Some(method) = form.token_endpoint_auth_method.as_deref() {
         values.token_endpoint_auth_method = method.to_string();
     }
@@ -312,10 +316,10 @@ pub async fn update(
 
     let body = json!({
         "app_name": form.app_name,
-        "redirect_uris": parse_uris(&form.redirect_uris),
+        "redirect_uris": redirect_uris_for(&form.usage, &form.redirect_uris),
         "scopes": parse_scopes(&form.scopes),
         "client_status": form.client_status,
-        "allow_client_credentials": form.allow_client_credentials.is_some(),
+        "allow_client_credentials": allows_client_credentials(&form.usage),
         "token_endpoint_auth_method": form.token_endpoint_auth_method,
         "jwks": jwks_for_method(&form.token_endpoint_auth_method, &form.jwks),
     });
@@ -398,6 +402,30 @@ pub async fn rotate_secret(
 }
 
 // ── フォームの共通表現・パース ────────────────────────────────────────────────
+
+/// 用途が `client_credentials` を含むか（ADR-0032）。
+fn allows_client_credentials(usage: &str) -> bool {
+    matches!(usage, client_usage::MACHINE | client_usage::BOTH)
+}
+
+/// 用途に応じた redirect_uri。機械は持たないので、入力欄の残骸があっても送らない
+/// （用途を切り替えてから保存したとき、隠れた欄の値が生き残らないようにする）。
+fn redirect_uris_for(usage: &str, raw: &str) -> Vec<String> {
+    if usage == client_usage::MACHINE {
+        Vec::new()
+    } else {
+        parse_uris(raw)
+    }
+}
+
+/// 用途に応じた client_type。機械では select を描画しないため、値が来なくても confidential とする。
+fn client_type_for(usage: &str, raw: &str) -> String {
+    if usage == client_usage::MACHINE {
+        "confidential".to_string()
+    } else {
+        raw.to_string()
+    }
+}
 
 fn parse_uris(raw: &str) -> Vec<String> {
     raw.split_whitespace().map(str::to_string).collect()
@@ -740,6 +768,48 @@ mod tests {
                 &Some("  ".to_string())
             ),
             None
+        );
+    }
+
+    /// ADR-0032: 画面の「用途」1 つを、api が持つ 2 つの値へ翻訳する。
+    #[test]
+    fn usage_maps_to_the_two_values_the_api_actually_has() {
+        let uris = "https://a.example.com/cb";
+
+        // 利用者ログイン: redirect_uri を持ち、client_credentials は無い。
+        assert!(!allows_client_credentials(client_usage::USER_LOGIN));
+        assert_eq!(redirect_uris_for(client_usage::USER_LOGIN, uris).len(), 1);
+
+        // 機械: client_credentials を持ち、redirect_uri は持たない。
+        assert!(allows_client_credentials(client_usage::MACHINE));
+        assert!(redirect_uris_for(client_usage::MACHINE, uris).is_empty());
+
+        // 両方（既存設定）: どちらも持つ。
+        assert!(allows_client_credentials(client_usage::BOTH));
+        assert_eq!(redirect_uris_for(client_usage::BOTH, uris).len(), 1);
+    }
+
+    /// 用途を「機械」へ切り替えて保存したとき、隠れた入力欄の値を送らない。
+    /// （送ると api 側で `authorization_code` が付き、閉じたはずの経路が残る。）
+    #[test]
+    fn switching_to_machine_drops_the_hidden_redirect_uris() {
+        assert!(
+            redirect_uris_for(client_usage::MACHINE, "https://leftover.example.com/cb").is_empty()
+        );
+    }
+
+    /// 機械では client_type の select を描画しないので、値が来なくても confidential にする。
+    #[test]
+    fn machine_clients_are_always_confidential() {
+        assert_eq!(client_type_for(client_usage::MACHINE, ""), "confidential");
+        assert_eq!(
+            client_type_for(client_usage::MACHINE, "public"),
+            "confidential"
+        );
+        // 他の用途では選ばれた値をそのまま通す。
+        assert_eq!(
+            client_type_for(client_usage::USER_LOGIN, "public"),
+            "public"
         );
     }
 

@@ -508,7 +508,7 @@ api-tenant-has-children = This tenant still has child tenants and cannot be dele
 api-tenant-has-dependents = This tenant still has users or clients and cannot be deleted.
 api-client-id-conflict = That client ID is already used in this tenant.
 api-client-app-name-empty = The application name must not be empty.
-api-client-redirect-uris-empty = At least one redirect URI is required.
+api-client-redirect-uris-empty = At least one redirect URI is required, unless the client only uses the client_credentials grant.
 api-client-redirect-uri-invalid = "{ $value }" is not a valid redirect URI.
 api-client-redirect-uri-duplicate = The redirect URI "{ $value }" is listed more than once.
 api-client-redirect-uri-wildcard = The redirect URI "{ $value }" must not contain a wildcard.
@@ -1114,3 +1114,11 @@ admin-settings-sms-sender = Sender ID (optional)
 authorization-post-title = Signing you in…
 authorization-post-message = Returning you to the application. This should only take a moment.
 authorization-post-submit = Continue
+
+# クライアントの用途（ADR-0032）
+admin-client-field-usage = Usage
+admin-client-field-usage-hint = What this client is for. The fields below change with this choice.
+admin-client-usage-user-login = Sign users in through a browser
+admin-client-usage-machine = Call APIs as a machine (no user)
+admin-client-usage-both = Both (existing setting)
+admin-client-field-type-hint = confidential keeps a secret on a server it controls; public cannot (a browser or mobile app).

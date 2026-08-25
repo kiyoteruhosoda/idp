@@ -108,6 +108,23 @@ mod tests {
     use super::*;
     use crate::i18n::{Locale, Messages};
 
+    /// ADR-0032: 両方の grant を持つ既存クライアントを `USER_LOGIN` へ丸めない。
+    /// 丸めると、編集画面を開いて保存しただけで `client_credentials` が黙って外れる。
+    #[test]
+    fn usage_reflects_what_the_client_can_actually_do() {
+        let login = vec!["authorization_code".to_string()];
+        let machine = vec!["client_credentials".to_string()];
+        let both = vec![
+            "authorization_code".to_string(),
+            "client_credentials".to_string(),
+        ];
+        assert_eq!(usage_from_grant_types(&login), client_usage::USER_LOGIN);
+        assert_eq!(usage_from_grant_types(&machine), client_usage::MACHINE);
+        assert_eq!(usage_from_grant_types(&both), client_usage::BOTH);
+        // grant が 1 つも無い（あり得ないが）ときも、機械として扱わない。
+        assert_eq!(usage_from_grant_types(&[]), client_usage::USER_LOGIN);
+    }
+
     #[test]
     fn asset_version_is_url_safe_and_non_empty() {
         let v = asset_version();
@@ -885,13 +902,31 @@ pub struct ClientFormValues {
     pub redirect_uris: String,
     pub scopes: String,
     pub client_status: String,
-    /// サーバ間（M2M）連携で `client_credentials` grant を許可するか（G4）。
-    pub allow_client_credentials: bool,
+    /// クライアントの用途（`client_usage` のいずれか）。画面ではこれを最初に選ばせ、以降の入力欄を
+    /// 切り替える。api はこの値を持たず、`redirect_uris` の有無と `client_credentials` の可否という
+    /// 2 つの値で同じことを表す（ADR-0032）。
+    pub usage: String,
     /// クライアント認証方式（G3）。confidential のみ選択でき、public は常に `none`。
     pub token_endpoint_auth_method: String,
     /// `private_key_jwt` の検証鍵（JWK Set の JSON。ADR-0030）。公開鍵しか含まないため、
     /// 編集フォームへ現在値を出して差し支えない（ローテーション中の確認に要る）。
     pub jwks: String,
+}
+
+/// クライアントの用途。コンソールの入力単位であって、api のモデルには無い（ADR-0032）。
+///
+/// 「redirect_uri を持つか」「`client_credentials` を許すか」は独立した 2 値だが、管理者が実際に
+/// 決めたいのは「何に使うクライアントか」1 つである。2 値のまま見せると、両方を空にした
+/// 何もできないクライアントや、ブラウザから使わないのに URI を捏造した登録が生まれる。
+pub mod client_usage {
+    /// ブラウザで利用者をログインさせる（authorization_code）。
+    pub const USER_LOGIN: &str = "user_login";
+    /// 機械が単独で API を呼ぶ（client_credentials）。redirect_uri を持たない。
+    pub const MACHINE: &str = "machine";
+    /// 両方の grant を持つ従来の設定。**新規登録では選べない**——用途ごとにクライアントを分けた
+    /// ほうが、事故時の失効範囲と監査の粒度を分離できるため。既存クライアントを開いたときに
+    /// 現状を正しく映し、保存で片方を黙って失わせないためだけに残す。
+    pub const BOTH: &str = "both";
 }
 
 impl ClientFormValues {
@@ -903,7 +938,7 @@ impl ClientFormValues {
             redirect_uris: String::new(),
             scopes: "openid".to_string(),
             client_status: "ACTIVE".to_string(),
-            allow_client_credentials: false,
+            usage: client_usage::USER_LOGIN.to_string(),
             token_endpoint_auth_method: "client_secret_basic".to_string(),
             jwks: String::new(),
         }
@@ -917,12 +952,27 @@ impl ClientFormValues {
             redirect_uris: c.redirect_uris.join("\n"),
             scopes: c.scopes.join(" "),
             client_status: c.client_status.clone(),
-            // 許可の真の出所は api が返す `grant_types`（G4）。フォームはその写しを表示する。
-            allow_client_credentials: c.grant_types.iter().any(|g| g == "client_credentials"),
+            // 用途の真の出所は api が返す `grant_types`（G4）。フォームはその写しを表示する。
+            usage: usage_from_grant_types(&c.grant_types),
             token_endpoint_auth_method: c.token_endpoint_auth_method.clone(),
             jwks: c.jwks.clone().unwrap_or_default(),
         }
     }
+}
+
+/// 登録済みの `grant_types` から画面上の用途を決める。
+///
+/// 両方を持つクライアントを `USER_LOGIN` へ丸めない —— 丸めると、編集画面を開いて保存しただけで
+/// `client_credentials` が黙って外れる。実際に両方使えるものは両方として見せる。
+fn usage_from_grant_types(grant_types: &[String]) -> String {
+    let machine = grant_types.iter().any(|g| g == "client_credentials");
+    let login = grant_types.iter().any(|g| g == "authorization_code");
+    match (login, machine) {
+        (true, true) => client_usage::BOTH,
+        (false, true) => client_usage::MACHINE,
+        _ => client_usage::USER_LOGIN,
+    }
+    .to_string()
 }
 
 /// 外部 IdP 設定の管理画面（`GET /{tenant_id}/admin/external-idps`。AP16。API は AP10）。
