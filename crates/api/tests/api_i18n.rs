@@ -160,7 +160,7 @@ async fn extractor_rejections_are_translated_too() {
     };
     let uri = format!("/{}/admin/whoami", env.root_tenant_id);
 
-    // 未認証（Cookie 無し）。
+    // 未認証（トークン無し）。
     for (header, expected) in [
         (Some("en"), "Sign-in is required."),
         (Some("ja"), "サインインが必要です。"),

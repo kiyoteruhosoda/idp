@@ -104,7 +104,7 @@ async fn admin_can_manage_authentication_policies() {
     let uri = format!("/{}/admin/authentication-policies", env.root_tenant_id);
     let code = format!("it-deny-{}", support::unique());
 
-    // 未認証（Cookie 無し）→ 401。
+    // 未認証（トークン無し）→ 401。
     let res = send(
         &env.app,
         Request::builder()

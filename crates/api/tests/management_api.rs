@@ -122,8 +122,8 @@ async fn a_system_client_operates_the_idp_within_the_permissions_it_was_granted(
         .to_string();
 
     // 読み取りは通る。
-    let users_uri = format!("/{}/admin/users?query=admin", env.root_tenant_id);
-    let res = send(&env.app, get(&machine_tok, &users_uri)).await;
+    let user_uri = format!("/{}/admin/users/{}", env.root_tenant_id, env.root_admin_id);
+    let res = send(&env.app, get(&machine_tok, &user_uri)).await;
     assert_eq!(
         res.status(),
         StatusCode::OK,
@@ -221,7 +221,7 @@ async fn a_token_minted_for_userinfo_cannot_reach_the_management_api() {
         &env.app,
         get(
             &userinfo_tok,
-            &format!("/{}/admin/users?query=admin", env.root_tenant_id),
+            &format!("/{}/admin/users/{}", env.root_tenant_id, env.root_admin_id),
         ),
     )
     .await;

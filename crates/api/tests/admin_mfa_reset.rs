@@ -114,7 +114,7 @@ async fn admin_resets_both_mfa_factors_and_revokes_sessions() {
     let bystander = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let uri = format!("/{}/admin/users/{target}/mfa-reset", env.root_tenant_id);
 
-    // ── 認可: Cookie 無しは 401、権限の無い利用者は 403。
+    // ── 認可: トークン無しは 401、権限の無い利用者は 403。
     let res = send(
         &env.app,
         support::anonymous(axum::http::Method::POST, &uri, None),

@@ -195,11 +195,28 @@ async fn the_console_sends_a_bearer_token_and_never_forwards_the_session_cookie(
     .await;
     assert_eq!(response.status(), StatusCode::OK);
 
-    let whoami = env
+    let requests = env
         .api
         .received_requests()
         .await
-        .expect("recorded requests")
+        .expect("recorded requests");
+
+    // 交換は `/internal/*` なのでサービス認証トークンが要る（付け忘れると api は 401 を返し、
+    // コンソール全体が未ログイン扱いになる）。
+    let exchange = requests
+        .iter()
+        .find(|r| r.url.path() == "/internal/admin/token")
+        .expect("the console must exchange the session for a management token");
+    assert_eq!(
+        exchange
+            .headers
+            .get("x-internal-auth-token")
+            .map(|v| v.to_str().unwrap_or_default()),
+        Some(support::TEST_INTERNAL_SERVICE_TOKEN),
+        "the exchange must carry the internal service token"
+    );
+
+    let whoami = requests
         .into_iter()
         .find(|r| r.url.path().ends_with("/admin/whoami"))
         .expect("the console must call whoami");

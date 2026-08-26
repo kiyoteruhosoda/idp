@@ -3,9 +3,10 @@
 //! `TEST_DATABASE_URL` 設定時のみ実行:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test admin_clients
 //!
-//! 認可は `RequirePerms<IdpAdmin>`（`idp.tenant.admin`。`idp.system.admin` は代替として許可）。
+//! 認可は権限コード（`idp.clients:read` / `:write`。`idp.tenant.admin`・`idp.system.admin` は
+//! 含意により許可。ADR-0037）。
 //! 初期管理者（seed で root テナントへ `idp.system.admin` 付与済み）の SSO セッションを
-//! 直接作成し、その Cookie で管理 API を叩く。権限の無い利用者は 403 になることも検証する。
+//! 直接作成し、管理トークンへ交換して管理 API を叩く。権限の無い利用者は 403 になることも検証する。
 
 mod support;
 
@@ -25,7 +26,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
     let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     let clients_uri = format!("/{}/admin/clients", env.root_tenant_id);
 
-    // 未認証（Cookie 無し）→ 401。
+    // 未認証（トークン無し）→ 401。
     let res = send(
         &env.app,
         Request::builder()

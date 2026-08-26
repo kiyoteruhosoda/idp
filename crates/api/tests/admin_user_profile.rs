@@ -64,7 +64,7 @@ async fn admin_edits_email_username_and_display_name() {
     let uri = format!("/{}/admin/users/{target}/profile", env.root_tenant_id);
     let unique = uuid::Uuid::now_v7().simple().to_string();
 
-    // ── 認可: Cookie 無しは 401、権限の無い利用者は 403。
+    // ── 認可: トークン無しは 401、権限の無い利用者は 403。
     let res = send(
         &env.app,
         support::anonymous(axum::http::Method::PATCH, &uri, Some(json!({}))),

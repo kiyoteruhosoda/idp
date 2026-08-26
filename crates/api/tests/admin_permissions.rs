@@ -3,9 +3,10 @@
 //! `TEST_DATABASE_URL` 設定時のみ実行:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test admin_permissions
 //!
-//! 認可は `RequirePerms<IdpAdmin>`（`idp.tenant.admin`。`idp.system.admin` は代替として許可）。
+//! 認可は権限コード（`idp.permissions:read` / `:write`。`idp.tenant.admin`・`idp.system.admin` は
+//! 含意により許可。ADR-0037）。
 //! 初期管理者（seed で root テナントへ `idp.system.admin` 付与済み）の SSO セッションを
-//! 直接作成し、その Cookie で管理 API を叩く。権限の無い利用者は 403 になること、
+//! 直接作成し、管理トークンへ交換して管理 API を叩く。権限の無い利用者は 403 になること、
 //! 付与・剥奪が `audit_log` に記録されることを検証する。
 
 mod support;
@@ -14,7 +15,10 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::json;
 use sqlx::{MySqlPool, Row};
-use support::{admin_token, body_json, create_plain_user, delete, get, post, send};
+use support::{
+    admin_token, body_json, create_plain_user, create_sso_session, delete, exchange_admin_token,
+    get, post, send,
+};
 
 const ADMIN_PERM: &str = "idp.tenant.admin";
 
@@ -43,7 +47,7 @@ async fn admin_can_grant_and_revoke_permissions() {
     let target = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let perms_uri = format!("/{}/admin/users/{target}/permissions", env.root_tenant_id);
 
-    // 未認証（Cookie 無し）→ 401。
+    // 未認証（トークン無し）→ 401。
     let res = send(
         &env.app,
         Request::builder()
@@ -55,8 +59,9 @@ async fn admin_can_grant_and_revoke_permissions() {
     .await;
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "no cookie -> 401");
 
-    // 権限の無い利用者 → 403。
-    let plain_token = admin_token(&env.app, &env.pool, &env.root_tenant_id, &target).await;
+    // 権限の無い利用者 → 403。SSO セッションは後で交換し直すので取っておく。
+    let target_sso = create_sso_session(&env.pool, &target).await;
+    let plain_token = exchange_admin_token(&env.app, &env.root_tenant_id, &target_sso).await;
     let res = send(&env.app, get(&plain_token, &perms_uri)).await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "no permission -> 403");
 
@@ -144,8 +149,20 @@ async fn admin_can_grant_and_revoke_permissions() {
     let granted = body_json(res).await;
     assert_eq!(granted["permission_codes"].as_array().unwrap().len(), 1);
 
-    // 付与された利用者は管理 API へアクセスできる（自分の権限一覧を取得）。
+    // 付与**前**に発行したトークンは、付与後も権限を持たないままである（ADR-0037 決定 2）。
+    // 権限の出所はトークンの `perms` クレームで、リクエスト毎に引き直さない。ここが変わったら
+    // 「トークンに権限を載せる」という決定そのものが崩れている。
     let res = send(&env.app, get(&plain_token, &perms_uri)).await;
+    assert_eq!(
+        res.status(),
+        StatusCode::FORBIDDEN,
+        "a token minted before the grant keeps the permissions it was minted with"
+    );
+
+    // 同じ SSO セッションを交換し直せば新しい権限が載る（管理コンソールがリクエスト毎に
+    // 交換しているのはこのためでもある。付与が次の操作から効く）。
+    let refreshed_token = exchange_admin_token(&env.app, &env.root_tenant_id, &target_sso).await;
+    let res = send(&env.app, get(&refreshed_token, &perms_uri)).await;
     assert_eq!(
         res.status(),
         StatusCode::OK,

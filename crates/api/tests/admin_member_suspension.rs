@@ -133,7 +133,7 @@ async fn admin_suspends_and_resumes_a_guest_without_losing_membership_or_permiss
 
     let uri = format!("/{}/admin/members/{guest}", env.root_tenant_id);
 
-    // ── 認可: Cookie 無しは 401、権限の無い利用者は 403。
+    // ── 認可: トークン無しは 401、権限の無い利用者は 403。
     let res = send(
         &env.app,
         support::anonymous(Method::PATCH, &uri, Some(json!({"status": "SUSPENDED"}))),

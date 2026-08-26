@@ -70,7 +70,7 @@ async fn member_list_pages_and_filters_on_the_server() {
     }
     let base = format!("/{}/admin/members", env.root_tenant_id);
 
-    // ── 認可: Cookie 無しは 401、権限の無い利用者は 403。
+    // ── 認可: トークン無しは 401、権限の無い利用者は 403。
     let res = send(&env.app, support::anonymous(Method::GET, &base, None)).await;
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "no cookie -> 401");
 
