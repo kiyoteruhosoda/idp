@@ -8,6 +8,7 @@
 //! 本サービスは「権限の管理（変更）」という別責務（SRP）であり、`ClientManagementService` と同じ位置づけ。
 
 use crate::application::audit::{AuditService, RequestContext};
+use crate::domain::admin_actor::AdminActor;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
@@ -123,7 +124,7 @@ impl PermissionManagementService {
         tenant: TenantContext,
         target: Uuid,
         code: &str,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<Vec<String>, PermissionManagementError> {
         let code = PermissionCode::parse(code).map_err(|_| {
@@ -143,8 +144,8 @@ impl PermissionManagementService {
                 AuditEventType::UserPermissionGranted,
                 AuditResult::Success,
                 Some(tenant.tenant_id()),
-                Some(actor),
-                None,
+                actor.user_id(),
+                actor.client_id(),
                 Some(&audit_reason(&code, target)),
                 ctx,
             )
@@ -160,7 +161,7 @@ impl PermissionManagementService {
         tenant: TenantContext,
         target: Uuid,
         code: &str,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<Vec<String>, PermissionManagementError> {
         let code = PermissionCode::parse(code).map_err(|_| {
@@ -180,8 +181,8 @@ impl PermissionManagementService {
                 AuditEventType::UserPermissionRevoked,
                 AuditResult::Success,
                 Some(tenant.tenant_id()),
-                Some(actor),
-                None,
+                actor.user_id(),
+                actor.client_id(),
                 Some(&audit_reason(&code, target)),
                 ctx,
             )
@@ -231,14 +232,22 @@ impl PermissionManagementService {
         &self,
         tenant: TenantContext,
         code: &PermissionCode,
-        actor: Uuid,
+        actor: &AdminActor,
     ) -> Result<(), PermissionManagementError> {
         if code.as_str() != permission::SYSTEM_ADMIN {
             return Ok(());
         }
+        // `idp.system.admin` はクライアントへ付与できない（ADR-0037）ので、クライアント主体は
+        // 定義上この権限を保有し得ない。**機械の資格情報から root 権限が生えないこと**が
+        // 細粒度化の前提なので、リポジトリを引くまでもなくここで落とす。
+        let Some(actor_user_id) = actor.user_id() else {
+            return Err(PermissionManagementError::Forbidden(MessageKey::new(
+                "api-permission-system-admin-forbidden",
+            )));
+        };
         match self
             .permissions
-            .has_permission(tenant.tenant_id(), actor, permission::SYSTEM_ADMIN)
+            .has_permission(tenant.tenant_id(), actor_user_id, permission::SYSTEM_ADMIN)
             .await
         {
             Ok(true) => Ok(()),
@@ -591,7 +600,13 @@ mod tests {
         let svc = service(Some(test_user(target)), perms.clone(), sink.clone());
 
         let codes = svc
-            .grant(tenant_ctx(), target, "idp.tenant.admin", actor, &ctx())
+            .grant(
+                tenant_ctx(),
+                target,
+                "idp.tenant.admin",
+                &AdminActor::User(actor),
+                &ctx(),
+            )
             .await
             .expect("grant ok");
         assert_eq!(codes, vec!["idp.tenant.admin".to_string()]);
@@ -622,7 +637,13 @@ mod tests {
         let svc = service(Some(test_user(target)), perms.clone(), sink.clone());
 
         let codes = svc
-            .revoke(tenant_ctx(), target, "idp.tenant.admin", actor, &ctx())
+            .revoke(
+                tenant_ctx(),
+                target,
+                "idp.tenant.admin",
+                &AdminActor::User(actor),
+                &ctx(),
+            )
             .await
             .expect("revoke ok");
         assert!(codes.is_empty());
@@ -641,8 +662,14 @@ mod tests {
             Arc::new(CapturingSink::default()),
         );
         assert!(matches!(
-            svc.grant(tenant_ctx(), target, "  ", Uuid::new_v4(), &ctx())
-                .await,
+            svc.grant(
+                tenant_ctx(),
+                target,
+                "  ",
+                &AdminActor::User(Uuid::new_v4()),
+                &ctx()
+            )
+            .await,
             Err(PermissionManagementError::Validation(_))
         ));
     }
@@ -658,8 +685,14 @@ mod tests {
         let svc = service(Some(test_user(target)), perms, sink.clone());
 
         assert!(matches!(
-            svc.grant(tenant_ctx(), target, "idp.unknown", Uuid::new_v4(), &ctx())
-                .await,
+            svc.grant(
+                tenant_ctx(),
+                target,
+                "idp.unknown",
+                &AdminActor::User(Uuid::new_v4()),
+                &ctx()
+            )
+            .await,
             Err(PermissionManagementError::Validation(_))
         ));
         // 失敗時は監査イベントを出さない。
@@ -743,7 +776,7 @@ mod tests {
                 tenant_ctx(),
                 Uuid::new_v4(),
                 "idp.tenant.admin",
-                Uuid::new_v4(),
+                &AdminActor::User(Uuid::new_v4()),
                 &ctx()
             )
             .await,
@@ -765,8 +798,14 @@ mod tests {
 
         // actor が idp.system.admin を保有しない → Forbidden（ADR-0009 §4）。
         assert!(matches!(
-            svc.grant(tenant_ctx(), target, "idp.system.admin", actor, &ctx())
-                .await,
+            svc.grant(
+                tenant_ctx(),
+                target,
+                "idp.system.admin",
+                &AdminActor::User(actor),
+                &ctx()
+            )
+            .await,
             Err(PermissionManagementError::Forbidden(_))
         ));
         assert!(sink.events.lock().unwrap().is_empty());
@@ -778,7 +817,13 @@ mod tests {
             .unwrap()
             .push((test_tenant(), actor, "idp.system.admin".to_string()));
         let codes = svc
-            .grant(tenant_ctx(), target, "idp.system.admin", actor, &ctx())
+            .grant(
+                tenant_ctx(),
+                target,
+                "idp.system.admin",
+                &AdminActor::User(actor),
+                &ctx(),
+            )
             .await
             .expect("grant ok");
         assert_eq!(codes, vec!["idp.system.admin".to_string()]);
@@ -801,8 +846,14 @@ mod tests {
         );
 
         assert!(matches!(
-            svc.grant(tenant_ctx(), target, "idp.tenant.admin", actor, &ctx())
-                .await,
+            svc.grant(
+                tenant_ctx(),
+                target,
+                "idp.tenant.admin",
+                &AdminActor::User(actor),
+                &ctx()
+            )
+            .await,
             Err(PermissionManagementError::NotFound)
         ));
         // 失敗時は付与も監査記録も行わない。
@@ -814,8 +865,14 @@ mod tests {
             Err(PermissionManagementError::NotFound)
         ));
         assert!(matches!(
-            svc.revoke(tenant_ctx(), target, "idp.tenant.admin", actor, &ctx())
-                .await,
+            svc.revoke(
+                tenant_ctx(),
+                target,
+                "idp.tenant.admin",
+                &AdminActor::User(actor),
+                &ctx()
+            )
+            .await,
             Err(PermissionManagementError::NotFound)
         ));
     }
@@ -843,7 +900,7 @@ mod tests {
                 tenant_ctx(),
                 target,
                 "idp.tenant.admin",
-                Uuid::new_v4(),
+                &AdminActor::User(Uuid::new_v4()),
                 &ctx()
             )
             .await,
@@ -872,7 +929,13 @@ mod tests {
         );
 
         let codes = svc
-            .grant(tenant_ctx(), target, "idp.tenant.admin", actor, &ctx())
+            .grant(
+                tenant_ctx(),
+                target,
+                "idp.tenant.admin",
+                &AdminActor::User(actor),
+                &ctx(),
+            )
             .await
             .expect("grant ok");
         assert_eq!(codes, vec!["idp.tenant.admin".to_string()]);

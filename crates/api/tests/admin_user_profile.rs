@@ -17,7 +17,7 @@ mod support;
 use axum::http::StatusCode;
 use serde_json::json;
 use sqlx::{MySqlPool, Row};
-use support::{body_json, create_plain_user, create_sso_session, patch, send};
+use support::{admin_token, body_json, create_plain_user, patch, send};
 
 /// この実行で作った対象に限定した監査行（共有テスト DB に過去実行の行が残るため）。
 async fn audit_reasons(pool: &MySqlPool, actor_id: &str, target_id: &str) -> Vec<String> {
@@ -58,7 +58,7 @@ async fn admin_edits_email_username_and_display_name() {
     let Some(env) = support::setup("admin user profile").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     let target = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let bystander = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let uri = format!("/{}/admin/users/{target}/profile", env.root_tenant_id);
@@ -72,8 +72,8 @@ async fn admin_edits_email_username_and_display_name() {
     .await;
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "no cookie -> 401");
 
-    let plain_cookie = create_sso_session(&env.pool, &bystander).await;
-    let res = send(&env.app, patch(&plain_cookie, &uri, json!({}))).await;
+    let plain_token = admin_token(&env.app, &env.pool, &env.root_tenant_id, &bystander).await;
+    let res = send(&env.app, patch(&plain_token, &uri, json!({}))).await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "no admin perm -> 403");
 
     // ── 3 項目まとめて更新。
@@ -82,7 +82,7 @@ async fn admin_edits_email_username_and_display_name() {
     let res = send(
         &env.app,
         patch(
-            &admin_cookie,
+            &admin_tok,
             &uri,
             json!({ "email": email, "preferred_username": username, "name": "Renamed User" }),
         ),
@@ -103,7 +103,7 @@ async fn admin_edits_email_username_and_display_name() {
     );
 
     // ── 部分更新: name のみ空文字 = 解除。email / preferred_username は現状維持。
-    let res = send(&env.app, patch(&admin_cookie, &uri, json!({ "name": "" }))).await;
+    let res = send(&env.app, patch(&admin_tok, &uri, json!({ "name": "" }))).await;
     assert_eq!(res.status(), StatusCode::OK);
     assert_eq!(
         stored_profile(&env.pool, &target).await,
@@ -134,7 +134,7 @@ async fn profile_edit_rejects_duplicates_and_invalid_input() {
     let Some(env) = support::setup("admin user profile guards").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     let target = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let other = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let uri = format!("/{}/admin/users/{target}/profile", env.root_tenant_id);
@@ -143,7 +143,7 @@ async fn profile_edit_rejects_duplicates_and_invalid_input() {
     // 既に使われている email は 409。
     let res = send(
         &env.app,
-        patch(&admin_cookie, &uri, json!({ "email": other_email })),
+        patch(&admin_tok, &uri, json!({ "email": other_email })),
     )
     .await;
     assert_eq!(res.status(), StatusCode::CONFLICT, "duplicate email -> 409");
@@ -154,14 +154,14 @@ async fn profile_edit_rejects_duplicates_and_invalid_input() {
         json!({ "preferred_username": "" }),
         json!({ "name": "x".repeat(256) }),
     ] {
-        let res = send(&env.app, patch(&admin_cookie, &uri, body.clone())).await;
+        let res = send(&env.app, patch(&admin_tok, &uri, body.clone())).await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST, "body={body}");
     }
 
     // 不存在・UUID 不正はいずれも 404（存在推測を防ぐ）。
     for unknown in [uuid::Uuid::now_v7().to_string(), "not-a-uuid".to_string()] {
         let uri = format!("/{}/admin/users/{unknown}/profile", env.root_tenant_id);
-        let res = send(&env.app, patch(&admin_cookie, &uri, json!({}))).await;
+        let res = send(&env.app, patch(&admin_tok, &uri, json!({}))).await;
         assert_eq!(res.status(), StatusCode::NOT_FOUND, "target={unknown}");
     }
 }
@@ -173,7 +173,7 @@ async fn admin_can_edit_their_own_profile() {
     let Some(env) = support::setup("admin self profile").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     let uri = format!(
         "/{}/admin/users/{}/profile",
         env.root_tenant_id, env.root_admin_id
@@ -181,7 +181,7 @@ async fn admin_can_edit_their_own_profile() {
 
     let res = send(
         &env.app,
-        patch(&admin_cookie, &uri, json!({ "name": "Root Operator" })),
+        patch(&admin_tok, &uri, json!({ "name": "Root Operator" })),
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK, "self edit is allowed");
@@ -192,7 +192,7 @@ async fn admin_can_edit_their_own_profile() {
     let status_uri = format!("/{}/admin/users/{}", env.root_tenant_id, env.root_admin_id);
     let res = send(
         &env.app,
-        patch(&admin_cookie, &status_uri, json!({ "status": "DISABLED" })),
+        patch(&admin_tok, &status_uri, json!({ "status": "DISABLED" })),
     )
     .await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "self disable -> 403");

@@ -25,8 +25,7 @@ use serde_json::{json, Value};
 use sqlx::MySqlPool;
 use std::io::Read as _;
 use support::{
-    body_json, create_plain_user, create_sso_session, post, post_internal, send, unique,
-    SERVICE_TOKEN,
+    admin_token, body_json, create_plain_user, post, post_internal, send, unique, SERVICE_TOKEN,
 };
 
 /// テスト専用の自己署名証明書と鍵（`domain::saml_external_idp` の単体テストと同じ実物）。
@@ -90,14 +89,14 @@ struct StartedLogin {
 /// SAML の外部 IdP を管理 API で登録し、`(id, provider_code, issuer)` を返す。
 async fn register_saml_provider(
     env: &support::TestEnv,
-    admin_cookie: &str,
+    admin_tok: &str,
 ) -> (String, String, String) {
     let provider_code = format!("saml-{}", unique());
     let issuer = format!("https://idp.corp.example.com/{provider_code}");
     let res = send(
         &env.app,
         post(
-            admin_cookie,
+            admin_tok,
             &format!("/{}/admin/external-idps", env.root_tenant_id),
             json!({
                 "provider_code": provider_code,
@@ -257,8 +256,8 @@ async fn a_registered_saml_provider_signs_a_user_in_end_to_end() {
     let Some(env) = support::setup("external saml login").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
-    let (provider_id, provider_code, issuer) = register_saml_provider(&env, &admin_cookie).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+    let (provider_id, provider_code, issuer) = register_saml_provider(&env, &admin_tok).await;
 
     let user_id = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let name_id = format!("external-{}", unique());
@@ -287,8 +286,8 @@ async fn a_replayed_assertion_does_not_sign_anyone_in_twice() {
     let Some(env) = support::setup("external saml replay").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
-    let (provider_id, provider_code, issuer) = register_saml_provider(&env, &admin_cookie).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+    let (provider_id, provider_code, issuer) = register_saml_provider(&env, &admin_tok).await;
     let user_id = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let name_id = format!("external-{}", unique());
     link_identity(&env.pool, &user_id, &provider_id, &issuer, &name_id).await;
@@ -311,8 +310,8 @@ async fn a_tampered_assertion_is_rejected_by_the_registered_certificate() {
     let Some(env) = support::setup("external saml tampered").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
-    let (provider_id, provider_code, issuer) = register_saml_provider(&env, &admin_cookie).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+    let (provider_id, provider_code, issuer) = register_saml_provider(&env, &admin_tok).await;
     let user_id = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let name_id = format!("external-{}", unique());
     link_identity(&env.pool, &user_id, &provider_id, &issuer, &name_id).await;
@@ -334,8 +333,8 @@ async fn an_unlinked_name_id_does_not_sign_anyone_in() {
     let Some(env) = support::setup("external saml unlinked").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
-    let (_provider_id, provider_code, issuer) = register_saml_provider(&env, &admin_cookie).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+    let (_provider_id, provider_code, issuer) = register_saml_provider(&env, &admin_tok).await;
 
     let started = start_login(&env, &provider_code).await;
     let response = signed_response(
@@ -381,18 +380,18 @@ async fn importing_idp_metadata_extracts_the_registration_values_without_saving(
 
     // 権限の無い利用者 → 403。
     let plain_user_id = create_plain_user(&env.pool, &env.root_tenant_id).await;
-    let plain_cookie = create_sso_session(&env.pool, &plain_user_id).await;
+    let plain_token = admin_token(&env.app, &env.pool, &env.root_tenant_id, &plain_user_id).await;
     let res = send(
         &env.app,
-        post(&plain_cookie, &uri, json!({ "metadata_xml": metadata })),
+        post(&plain_token, &uri, json!({ "metadata_xml": metadata })),
     )
     .await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "no perms -> 403");
 
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     let res = send(
         &env.app,
-        post(&admin_cookie, &uri, json!({ "metadata_xml": metadata })),
+        post(&admin_tok, &uri, json!({ "metadata_xml": metadata })),
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
@@ -425,7 +424,7 @@ async fn importing_idp_metadata_extracts_the_registration_values_without_saving(
 </EntityDescriptor>"#;
     let res = send(
         &env.app,
-        post(&admin_cookie, &uri, json!({ "metadata_xml": sp_metadata })),
+        post(&admin_tok, &uri, json!({ "metadata_xml": sp_metadata })),
     )
     .await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST, "SP metadata -> 400");

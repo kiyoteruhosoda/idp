@@ -8,7 +8,7 @@ use crate::application::client_management::{
 };
 use crate::domain::client::Client;
 use crate::domain::values::{ClientStatus, ClientType, TokenEndpointAuthMethod};
-use crate::presentation::admin::{IdpAdmin, RequirePerms};
+use crate::presentation::admin::{ClientsRead, ClientsWrite, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
     ClientCreatedResponse, ClientListResponse, ClientRegisterRequest, ClientResponse,
@@ -37,7 +37,7 @@ use axum::Json;
     )
 )]
 pub async fn create_client(
-    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(admin, _): RequirePerms<ClientsWrite>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
@@ -69,7 +69,7 @@ pub async fn create_client(
 
     let registered = state
         .clients_admin
-        .register(tenant.context(), cmd, admin.user_id, &ctx)
+        .register(tenant.context(), cmd, &admin.actor, &ctx)
         .await
         .map_err(|e| map_error(e, locale))?;
 
@@ -98,7 +98,7 @@ pub async fn create_client(
     )
 )]
 pub async fn list_clients(
-    RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(_admin, _): RequirePerms<ClientsRead>,
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
@@ -131,7 +131,7 @@ pub async fn list_clients(
     )
 )]
 pub async fn get_client(
-    RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(_admin, _): RequirePerms<ClientsRead>,
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
@@ -163,7 +163,7 @@ pub async fn get_client(
 )]
 #[allow(clippy::too_many_arguments)]
 pub async fn update_client(
-    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(admin, _): RequirePerms<ClientsWrite>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
@@ -200,7 +200,7 @@ pub async fn update_client(
 
     let client = state
         .clients_admin
-        .update(tenant.context(), &client_id, cmd, admin.user_id, &ctx)
+        .update(tenant.context(), &client_id, cmd, &admin.actor, &ctx)
         .await
         .map_err(|e| map_error(e, locale))?;
     Ok(Json(client_response(&client)))
@@ -221,7 +221,7 @@ pub async fn update_client(
     )
 )]
 pub async fn rotate_client_secret(
-    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(admin, _): RequirePerms<ClientsWrite>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
@@ -236,7 +236,7 @@ pub async fn rotate_client_secret(
     );
     let (client, secret) = state
         .clients_admin
-        .rotate_secret(tenant.context(), &client_id, admin.user_id, &ctx)
+        .rotate_secret(tenant.context(), &client_id, &admin.actor, &ctx)
         .await
         .map_err(|e| map_error(e, locale))?;
     Ok(Json(ClientSecretResponse {
@@ -263,7 +263,7 @@ pub async fn rotate_client_secret(
     )
 )]
 pub async fn delete_client(
-    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(admin, _): RequirePerms<ClientsWrite>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
@@ -278,7 +278,7 @@ pub async fn delete_client(
     );
     state
         .clients_admin
-        .delete(tenant.context(), &client_id, admin.user_id, &ctx)
+        .delete(tenant.context(), &client_id, &admin.actor, &ctx)
         .await
         .map_err(|e| map_error(e, locale))?;
     Ok(StatusCode::NO_CONTENT)
@@ -287,7 +287,7 @@ pub async fn delete_client(
 /// クライアント状況一覧（`GET /admin/clients/status`）。状態・scope・最終利用時刻。管理コンソール
 /// （web）の状況画面が用いる支援 API（`idp.tenant.admin` 必須）。
 pub async fn list_client_status(
-    RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(_admin, _): RequirePerms<ClientsRead>,
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
 ) -> Result<Json<Vec<idp_contracts::admin::ClientStatusResponse>>, ApiError> {

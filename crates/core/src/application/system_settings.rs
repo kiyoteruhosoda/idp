@@ -8,6 +8,7 @@
 //! 設定値の消費側（MT17 招待メール・MT18 パスワードリセット）は本サービスの `get_smtp` を通す。
 
 use crate::application::audit::{AuditService, RequestContext};
+use crate::domain::admin_actor::AdminActor;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
@@ -25,7 +26,6 @@ use crate::domain::system_setting::{
 use crate::domain::tenant_context::TenantContext;
 use std::collections::HashMap;
 use std::sync::Arc;
-use uuid::Uuid;
 
 pub struct SystemSettingsService {
     repo: Arc<dyn SystemSettingsRepository>,
@@ -111,7 +111,7 @@ impl SystemSettingsService {
         &self,
         tenant: TenantContext,
         cmd: UpdateSmtpCommand,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<SmtpSettingsView> {
         self.upsert_plain(SMTP_HOST, &cmd.host).await?;
@@ -147,8 +147,8 @@ impl SystemSettingsService {
                 AuditEventType::SystemSettingsUpdated,
                 AuditResult::Success,
                 Some(tenant.tenant_id()),
-                Some(actor),
-                None,
+                actor.user_id(),
+                actor.client_id(),
                 Some("smtp"),
                 ctx,
             )
@@ -203,7 +203,7 @@ impl SystemSettingsService {
         &self,
         tenant: TenantContext,
         cmd: UpdateSmsCommand,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<SmsSettingsView> {
         self.upsert_plain(SMS_GATEWAY_URL, cmd.gateway_url.trim())
@@ -234,8 +234,8 @@ impl SystemSettingsService {
                 AuditEventType::SystemSettingsUpdated,
                 AuditResult::Success,
                 Some(tenant.tenant_id()),
-                Some(actor),
-                None,
+                actor.user_id(),
+                actor.client_id(),
                 Some("sms"),
                 ctx,
             )
@@ -267,7 +267,7 @@ impl SystemSettingsService {
         tenant: TenantContext,
         key: &str,
         value: Option<String>,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<()> {
         let def = runtime_setting_definition(key).ok_or_else(|| {
@@ -317,8 +317,8 @@ impl SystemSettingsService {
                 AuditEventType::SystemSettingsUpdated,
                 AuditResult::Success,
                 Some(tenant.tenant_id()),
-                Some(actor),
-                None,
+                actor.user_id(),
+                actor.client_id(),
                 // 値そのものは記録しない（キーと設定/解除の別のみ）。
                 Some(&format!(
                     "runtime {key} {}",

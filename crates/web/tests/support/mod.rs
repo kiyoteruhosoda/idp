@@ -33,7 +33,8 @@ use idp_web::router;
 use idp_web::state::WebState;
 use std::sync::{Arc, Mutex, OnceLock};
 use tower::ServiceExt;
-use wiremock::MockServer;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// api のスタブと、それを向いた web ルータ。
 pub struct WebEnv {
@@ -63,15 +64,50 @@ fn env_lock() -> &'static Mutex<()> {
 }
 
 /// api のスタブを起動し、そこを向いた web ルータを組む。
+///
+/// 管理トークンの交換（`POST /internal/admin/token`。ADR-0037）は**既定で成功を返す**ように
+/// 積んでおく。web は管理 API を呼ぶ前に必ずここを通るため、各テストに積ませると全テストが
+/// 同じ 1 行を書くことになる。交換の失敗（未ログイン）を見たいテストは
+/// [`mount_unauthenticated_management_token`] で上書きする。
 pub async fn setup() -> WebEnv {
     let api = MockServer::start().await;
     let uri = api.uri();
     let app = build_app(&uri);
-    WebEnv {
+    let env = WebEnv {
         app,
         api,
         tenant: uuid::Uuid::now_v7().to_string(),
-    }
+    };
+    Mock::given(method("POST"))
+        .and(path("/internal/admin/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "test-management-token",
+            "token_type": "Bearer",
+            "expires_in": 300,
+            "permission_codes": ["idp.tenant.admin"],
+            "name": "Admin",
+            "preferred_username": "admin",
+        })))
+        // 既定は最も低い優先度にしておき、テストが上書きできるようにする（wiremock は
+        // 優先度が同じなら**先に積んだ方**が勝つため、上書きは優先度で表す必要がある）。
+        .with_priority(10)
+        .mount(&env.api)
+        .await;
+    env
+}
+
+/// 管理トークンの交換が 401 を返す（＝未ログイン）スタブを積む。
+///
+/// `setup()` の既定スタブ（優先度 10）より高い優先度で積むことで上書きする。
+pub async fn mount_unauthenticated_management_token(env: &WebEnv) {
+    Mock::given(method("POST"))
+        .and(path("/internal/admin/token"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+            "error": "unauthorized"
+        })))
+        .with_priority(1)
+        .mount(&env.api)
+        .await;
 }
 
 /// **誰も listen していない**宛先を向いた web ルータ（api 障害の検証用）。

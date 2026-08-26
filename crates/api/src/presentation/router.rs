@@ -3,12 +3,13 @@
 use crate::presentation::correlation;
 use crate::presentation::cors;
 use crate::presentation::handlers::{
-    admin, admin_application_logs, admin_audit, admin_authentication_policies, admin_clients,
-    admin_external_idps, admin_invitations, admin_login_identifiers, admin_members,
-    admin_permissions, admin_restart, admin_saml_service_providers, admin_signing_keys,
-    admin_system_settings, admin_tenants, admin_users, authorize, consent, discovery, health,
-    internal_auth, internal_runtime_settings, introspect, invitations, logout, mfa, passkey,
-    register, revoke, saml_sso, token, userinfo,
+    admin, admin_application_logs, admin_audit, admin_authentication_policies,
+    admin_client_permissions, admin_clients, admin_external_idps, admin_invitations,
+    admin_login_identifiers, admin_members, admin_permissions, admin_restart,
+    admin_saml_service_providers, admin_signing_keys, admin_system_settings, admin_tenants,
+    admin_users, authorize, consent, discovery, health, internal_admin_token, internal_auth,
+    internal_runtime_settings, introspect, invitations, logout, mfa, passkey, register, revoke,
+    saml_sso, token, userinfo,
 };
 use crate::presentation::openapi::ApiDoc;
 use crate::presentation::security_headers::add_security_headers;
@@ -42,6 +43,12 @@ pub fn build(state: AppState) -> Router {
         .route("/internal/saml/resume", post(saml_sso::saml_resume))
         // RP-initiated logout（end_session_endpoint は web。api は失効・通知・URL 組み立てを担う）。
         .route("/internal/logout/rp", post(logout::rp_logout))
+        // 管理コンソールの SSO セッション → 管理トークンの交換（ADR-0037）。api の `/admin/*` は
+        // Bearer しか受け付けないため、web はデータ操作の前に必ずここを通る。
+        .route(
+            "/internal/admin/token",
+            post(internal_admin_token::issue_management_token),
+        )
         .route("/internal/authenticate", post(internal_auth::authenticate))
         .route(
             "/internal/authenticate/admin",
@@ -250,8 +257,8 @@ pub fn build(state: AppState) -> Router {
         .route("/userinfo", get(userinfo::userinfo))
         // `/logout`（end_session_endpoint）は web が受ける（ADR-0018 決定 2）。api はブラウザ
         // Cookie を読まないため、公開の logout ルートを持たない（処理は /internal/logout/rp）。
-        // 管理者身元確認（idp.tenant.admin 必須。RequirePerms<IdpAdmin>）。web の管理コンソールが SSO Cookie
-        // 転送で認証状態・身元を得るのに使う（ADR-0007 §4）。HTML 画面は web crate 側にある。
+        // 管理者身元確認（idp.tenant.admin 必須。RequirePerms<IdpAdmin>）。web の管理コンソールが
+        // 管理トークンで認証状態・身元を得るのに使う（ADR-0007 §4 / ADR-0037）。HTML 画面は web crate 側。
         .route("/admin/whoami", get(admin::whoami))
         // テナント作成・管理（ADR-0009 §5・§6）。idp.system.admin 必須（実質 root のみ）。
         .route(
@@ -281,8 +288,8 @@ pub fn build(state: AppState) -> Router {
             "/admin/tenants/{target_id}/domains/{domain_id}",
             delete(admin_tenants::remove_tenant_domain),
         )
-        // 設定画面（MT14）。テナント設定区画（自テナント表示名。idp.tenant.admin 必須）と
-        // システム設定区画（SMTP 等。idp.system.admin 必須 = 実質 root のみ）。
+        // 設定画面（MT14）。テナント設定区画（自テナント表示名。idp.tenant-settings:read / :write）と
+        // システム設定区画（SMTP 等。idp.system.admin 必須 = 実質 root のみ。細粒度へは分割しない）。
         .route(
             "/admin/settings/tenant",
             get(admin_tenants::get_current_tenant).patch(admin_tenants::update_current_tenant),
@@ -299,7 +306,7 @@ pub fn build(state: AppState) -> Router {
         )
         // 保存したランタイム設定を反映するための api 再起動（idp.system.admin 必須。ADR-0017）。
         .route("/admin/restart", post(admin_restart::restart_service))
-        // メンバー・招待（ADR-0009 §3・§6）。idp.tenant.admin 必須。
+        // メンバー・招待（ADR-0009 §3・§6）。idp.members:read / idp.members:write 必須。
         .route("/admin/members", get(admin_members::list_members))
         // ゲストメンバーシップの解除（DELETE）と一時停止・再開（PATCH。MT24）。
         .route(
@@ -313,7 +320,7 @@ pub fn build(state: AppState) -> Router {
         )
         // 招待の承諾（管理 API ではない。ログイン済み利用者本人が用いる。ADR-0009 §3）。
         .route("/invitations/accept", post(invitations::accept_invitation))
-        // クライアント（RP）登録・管理 API（A1、設計仕様 §9.3）。idp.tenant.admin 必須。
+        // クライアント（RP）登録・管理 API（A1、設計仕様 §9.3）。idp.clients:read / idp.clients:write 必須。
         .route(
             "/admin/clients",
             post(admin_clients::create_client).get(admin_clients::list_clients),
@@ -334,7 +341,20 @@ pub fn build(state: AppState) -> Router {
             "/admin/clients/{client_id}/secret",
             post(admin_clients::rotate_client_secret),
         )
-        // 付与可能な権限コード（マスタ）と利用者検索・取得（管理コンソール支援 API）。idp.tenant.admin 必須。
+        // システム用クライアントへの管理権限の付与・剥奪（ADR-0037）。ここで付けた権限コードが
+        // `client_credentials`（`resource={issuer}/admin`）で得る管理トークンの `perms` になる。
+        // idp.clients:read / idp.clients:write 必須。
+        .route(
+            "/admin/clients/{client_id}/permissions",
+            get(admin_client_permissions::list_client_permissions)
+                .post(admin_client_permissions::grant_client_permission),
+        )
+        .route(
+            "/admin/clients/{client_id}/permissions/{permission_code}",
+            delete(admin_client_permissions::revoke_client_permission),
+        )
+        // 付与可能な権限コード（マスタ）と利用者検索・取得（管理コンソール支援 API）。
+        // idp.permissions:read / idp.users:* 必須（ADR-0037）。
         .route(
             "/admin/permissions",
             get(admin_permissions::list_available_permissions),
@@ -343,14 +363,14 @@ pub fn build(state: AppState) -> Router {
             "/admin/users",
             post(admin_users::create_user).get(admin_users::search_user),
         )
-        // 利用者の取得・状態変更（有効化・無効化）・削除。idp.tenant.admin 必須。
+        // 利用者の取得・状態変更（有効化・無効化）・削除。idp.users:read / idp.users:write 必須。
         .route(
             "/admin/users/{user_id}",
             get(admin_users::get_user)
                 .patch(admin_users::update_user_status)
                 .delete(admin_users::delete_user),
         )
-        // 利用者のパスワード再発行（must_change_password 付き自動生成）。idp.tenant.admin 必須。
+        // 利用者のパスワード再発行（must_change_password 付き自動生成）。idp.users:write 必須。
         .route(
             "/admin/users/{user_id}/profile",
             patch(admin_users::update_user_profile),
@@ -359,17 +379,17 @@ pub fn build(state: AppState) -> Router {
             "/admin/users/{user_id}/password-reset",
             post(admin_users::reset_user_password),
         )
-        // 利用者の MFA（TOTP・Passkey）解除（端末紛失時の復旧。MT21）。idp.tenant.admin 必須。
+        // 利用者の MFA（TOTP・Passkey）解除（端末紛失時の復旧。MT21）。idp.users:write 必須。
         .route(
             "/admin/users/{user_id}/mfa-reset",
             post(admin_users::reset_user_mfa),
         )
-        // アカウントロックの即時解除（AP6。仕様 §17.1・§24.6）。idp.tenant.admin 必須。
+        // アカウントロックの即時解除（AP6。仕様 §17.1・§24.6）。idp.users:write 必須。
         .route(
             "/admin/users/{user_id}/unlock",
             post(admin_users::unlock_user),
         )
-        // ログイン識別子の割り当て（AP8。仕様 §4）。idp.tenant.admin 必須。
+        // ログイン識別子の割り当て（AP8。仕様 §4）。idp.users:read / idp.users:write 必須。
         .route(
             "/admin/users/{user_id}/login-identifiers",
             get(admin_login_identifiers::list_login_identifiers)
@@ -380,7 +400,7 @@ pub fn build(state: AppState) -> Router {
             patch(admin_login_identifiers::update_login_identifier)
                 .delete(admin_login_identifiers::delete_login_identifier),
         )
-        // 利用者権限の付与・剥奪・参照（A2、ADR-0006）。idp.tenant.admin 必須。
+        // 利用者権限の付与・剥奪・参照（A2、ADR-0006）。idp.permissions:read / :write 必須。
         .route(
             "/admin/users/{user_id}/permissions",
             get(admin_permissions::list_permissions).post(admin_permissions::grant_permission),
@@ -389,7 +409,7 @@ pub fn build(state: AppState) -> Router {
             "/admin/users/{user_id}/permissions/{permission_code}",
             axum::routing::delete(admin_permissions::revoke_permission),
         )
-        // 認証ポリシーの管理（ユーザー認証・認証ポリシー仕様書 §7）。idp.tenant.admin 必須。
+        // 認証ポリシーの管理（ユーザー認証・認証ポリシー仕様書 §7）。idp.authentication-policies:* 必須。
         .route(
             "/admin/authentication-policies",
             get(admin_authentication_policies::list_authentication_policies)
@@ -400,7 +420,7 @@ pub fn build(state: AppState) -> Router {
             put(admin_authentication_policies::update_authentication_policy)
                 .delete(admin_authentication_policies::delete_authentication_policy),
         )
-        // 外部 IdP 設定（AP10）。idp.tenant.admin 必須。クライアントシークレットは書き込み専用。
+        // 外部 IdP 設定（AP10）。idp.external-idps:read / :write 必須。クライアントシークレットは書き込み専用。
         .route(
             "/admin/external-idps",
             get(admin_external_idps::list_external_idps)
@@ -417,29 +437,29 @@ pub fn build(state: AppState) -> Router {
             patch(admin_external_idps::update_external_idp)
                 .delete(admin_external_idps::delete_external_idp),
         )
-        // 監査ログ参照（A3、設計仕様 §7）。idp.tenant.admin 必須。
+        // 監査ログ参照（A3、設計仕様 §7）。idp.audit:read 必須。
         .route("/admin/audit-logs", get(admin_audit::list_audit_logs))
         // エラー・警告ログ参照（`log` テーブル）。テナント横断の運用情報のため idp.system.admin 必須。
         .route(
             "/admin/logs",
             get(admin_application_logs::list_application_logs),
         )
-        // SAML SP（クライアント）登録。idp.tenant.admin 必須。
+        // SAML SP（クライアント）登録。idp.saml-service-providers:read / :write 必須。
         .route(
             "/admin/saml-service-providers",
             get(admin_saml_service_providers::list).post(admin_saml_service_providers::register),
         )
-        // SP メタデータ取り込み（解析のみ・非永続）。idp.tenant.admin 必須。
+        // SP メタデータ取り込み（解析のみ・非永続）。idp.saml-service-providers:write 必須。
         .route(
             "/admin/saml-service-providers/import-metadata",
             post(admin_saml_service_providers::import_metadata),
         )
-        // SP の更新・削除。idp.tenant.admin 必須。
+        // SP の更新・削除。idp.saml-service-providers:write 必須。
         .route(
             "/admin/saml-service-providers/{id}",
             put(admin_saml_service_providers::update).delete(admin_saml_service_providers::delete),
         )
-        // 署名鍵管理 API（K1）。idp.tenant.admin 必須。
+        // 署名鍵管理 API（K1）。idp.keys:read / idp.keys:write 必須。
         .route(
             "/admin/signing-keys",
             get(admin_signing_keys::list_keys).post(admin_signing_keys::generate_key),

@@ -295,3 +295,34 @@ pub struct TimeWindowPayload {
     #[serde(default)]
     pub utc_offset_minutes: i16,
 }
+
+/// 管理トークン交換の要求（`POST /internal/admin/token`。ADR-0037）。
+///
+/// 管理コンソール（web）は SSO セッション Cookie の値をここへ渡し、api の管理 API を呼ぶための
+/// アクセストークンを受け取る。**Cookie そのものを api の管理 API へ転送する経路は無い。**
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManagementTokenRequest {
+    /// 操作対象テナント（`/internal/*` はパスにテナントを持たないため DTO で渡す）。
+    pub tenant_id: String,
+    /// SSO セッション Cookie の平文値。
+    pub sso_session_id: String,
+}
+
+/// 管理トークン交換の応答。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManagementTokenResponse {
+    pub access_token: String,
+    pub token_type: String,
+    pub expires_in: u64,
+    /// 発行時点で主体が保有していた権限コード。コンソールが画面・操作の出し分けに使う。
+    pub permission_codes: Vec<String>,
+    pub name: Option<String>,
+    pub preferred_username: Option<String>,
+}
+
+/// クライアントの保有権限コード一覧（`GET/POST/DELETE /admin/clients/{client_id}/permissions`）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientPermissionsResponse {
+    pub client_id: String,
+    pub permission_codes: Vec<String>,
+}

@@ -19,17 +19,22 @@ use axum::http::header::CONTENT_TYPE;
 use axum::http::{Request, StatusCode};
 use serde_json::json;
 use sqlx::Row;
-use support::{body_json, create_sso_session, get as send_get, post as admin_post, send};
+use support::{
+    body_json, create_sso_session, exchange_admin_token, get as send_get, post as admin_post, send,
+};
 
 #[tokio::test]
 async fn root_system_admin_creates_tenant_and_becomes_bootstrap_admin() {
     let Some(env) = support::setup("admin tenants").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    // 管理トークンはテナント毎（`iss`/`aud` が per-tenant issuer。ADR-0037）。同じ SSO
+    // セッションから、操作するテナントごとに交換する。
+    let admin_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = exchange_admin_token(&env.app, &env.root_tenant_id, &admin_sso).await;
     let tenants_uri = format!("/{}/admin/tenants", env.root_tenant_id);
 
-    // 未認証（Cookie 無し）→ 401。
+    // 未認証（トークン無し）→ 401。
     let res = send(
         &env.app,
         Request::builder()
@@ -45,7 +50,7 @@ async fn root_system_admin_creates_tenant_and_becomes_bootstrap_admin() {
     // system.admin による作成 → 201・作成したテナントを返す（平文パスワードは返さない）。
     let res = send(
         &env.app,
-        admin_post(&admin_cookie, &tenants_uri, json!({ "name": "Acme Inc" })),
+        admin_post(&admin_tok, &tenants_uri, json!({ "name": "Acme Inc" })),
     )
     .await;
     assert_eq!(res.status(), StatusCode::CREATED, "create -> 201");
@@ -112,10 +117,12 @@ async fn root_system_admin_creates_tenant_and_becomes_bootstrap_admin() {
     .get::<i64, _>("c");
     assert_eq!(created_events, 1, "tenant.created audit recorded");
 
-    // 作成者は新テナントの管理 API を操作できる（ブートストラップ管理者。自身の SSO セッションのまま）。
+    // 作成者は新テナントの管理 API を操作できる（ブートストラップ管理者。同じ SSO セッションを
+    // 新テナント向けの管理トークンへ交換し直す）。
+    let new_tenant_tok = exchange_admin_token(&env.app, &new_tenant_id, &admin_sso).await;
     let res = send(
         &env.app,
-        send_get(&admin_cookie, &format!("/{new_tenant_id}/admin/members")),
+        send_get(&new_tenant_tok, &format!("/{new_tenant_id}/admin/members")),
     )
     .await;
     assert_eq!(
@@ -129,7 +136,7 @@ async fn root_system_admin_creates_tenant_and_becomes_bootstrap_admin() {
     let res = send(
         &env.app,
         admin_post(
-            &admin_cookie,
+            &new_tenant_tok,
             &format!("/{new_tenant_id}/admin/tenants"),
             json!({ "name": "Sub" }),
         ),

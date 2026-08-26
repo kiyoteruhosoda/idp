@@ -1,3 +1,36 @@
+## 2026-08-26（4）（IdP 自身を操作する API と権限セット）
+
+- **IdP 自身を操作する管理 API を、人も機械も同じアクセストークンで認可するようにした（ADR-0037）。**
+  `/{tenant_id}/admin/*` の資格情報は `Authorization: Bearer` だけになった。管理コンソール（web）は
+  SSO セッションを `POST /internal/admin/token` で管理トークンへ交換してから api を呼ぶ（画面の
+  ハンドラは変更なし）。システム（CI・バッチ・AI エージェント）は `client_credentials` に
+  `resource={issuer}/{tenant_id}/admin` を添えて同じトークンを得る。**これまで機械から IdP を操作する
+  手段は無かった**（ADR-0030・ADR-0032 で取れるトークンには呼べる API が 1 本も無かった）。
+- **[破壊的変更] api の `/admin/*` は SSO セッション Cookie を受け付けなくなった。** Cookie を転送して
+  管理 API を叩いていた呼び出し元は、管理トークンへの交換が要る。ブラウザ経路の CSRF は従来どおり
+  web が同期トークンで扱う（Bearer は ambient ではないため、api の管理面から CSRF の論点は消えた）。
+- **権限セットをリソース × 読み書きの粒度へ広げた（19 コードを追加）。** `idp.users:read` /
+  `idp.users:write`・`idp.clients:*`・`idp.members:*`・`idp.permissions:*`・`idp.audit:read`・
+  `idp.keys:*`・`idp.tenant-settings:*`・`idp.authentication-policies:*`・`idp.external-idps:*`・
+  `idp.saml-service-providers:*`。含意（`idp.system.admin` ⊃ 全部、`idp.tenant.admin` ⊃ 細粒度、
+  `:write` ⊃ `:read`）は Rust 側が単一の出所として持つ。**既存の付与行は書き換えていない**ので、
+  今の管理者は今までどおり全部通る。テナントの作成・削除、システム設定、再起動、テナント横断の
+  ログ参照は分割せず `idp.system.admin` のままにした。
+- **システム用クライアントへ管理権限を付与できるようにした**（`client_permissions` テーブルと
+  `/{tenant_id}/admin/clients/{client_id}/permissions`）。**包括的な管理権限
+  （`idp.tenant.admin` / `idp.system.admin`）はクライアントへ付与できない**（DB の CHECK 制約と
+  アプリ層の二重防御）。機械の資格情報は人のものより寿命が長く失効の導線も弱いため、
+  「とりあえず上位コードを付ける」を塞いで細粒度コードを選ばせる。
+- 権限コードは OIDC の `scope` ではなく `perms` クレームで運び、`aud` を管理 API
+  （`{issuer}/{tenant_id}/admin`）に固定した。外部アプリ向けのトークンへ権限コードが流れ込まない
+  という ADR-0033 の決定はこれで保たれる。宛先は RFC 8707 の `resource` で呼び出し側が明示する
+  （権限を 1 つ付けた途端にトークンの `aud` が変わる、という壊し方をしないため）。
+- 管理操作の実行主体を `AdminActor`（利用者 or クライアント）で表すようにした。監査ログは元から
+  `user_id` / `client_id` の 2 列を持つのでスキーマ変更は無い。操作対象がクライアントの記録では
+  実行主体を `reason` の `actor_client=` に残す。
+- 設定 `MANAGEMENT_TOKEN_TTL_SECS`（既定 300 秒）を追加。管理コンソールはリクエスト毎に交換する
+  （キャッシュしない）ので、セッション失効・権限剥奪・ゲストの一時停止が即座に効く。
+
 ## 2026-08-26（3）（クライアント認証方式の既定を private_key_jwt に統一）
 
 - **[破壊的変更] `POST /{tenant_id}/admin/clients` で `token_endpoint_auth_method` を省略した

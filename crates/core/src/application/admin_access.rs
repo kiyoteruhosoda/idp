@@ -1,22 +1,22 @@
-//! 管理機能のアクセス制御ユースケース（ADR-0006 §5）。
+//! 管理機能のアクセス制御ユースケース（ADR-0006 §5 / ADR-0037）。
 //!
-//! SSO セッション Cookie の値から利用者を解決し、必要な**権限コード**を保有するかを判定する。
-//! CLAUDE.md「権限管理」に従い、検証は本 Application 層で行い、Presentation には**結果（可否）のみ**
-//! 渡す（Presentation は `RequirePerms` extractor で本サービスを呼ぶ）。
+//! SSO セッション Cookie の値から利用者を解決し、**要求テナントで保有する権限コード**を返す。
+//! CLAUDE.md「権限管理」に従い、権限の解決は本 Application 層で行い、Presentation には結果のみ
+//! 渡す。ADR-0037 以降、管理 API の認可判定そのものは管理トークン（`ManagementTokenService`）が
+//! 担い、本サービスは**その原資となる権限コードの解決**を担当する。
 //!
-//! 判定は 2 段構えで、**要求テナントで `ACTIVE` なメンバーシップを持つこと**（MT24）と
-//! **要求権限を要求テナント scope で保有すること**の両方を要求する。前者が必要なのは、ゲストの
+//! 解決は 2 段構えで、**要求テナントで `ACTIVE` なメンバーシップを持つこと**（MT24）と
+//! **要求テナントを scope として保有する権限コード**の両方を見る。前者が必要なのは、ゲストの
 //! 一時停止（`SUSPENDED`）が権限行を残す可逆な操作であり、権限だけを見る判定では停止が効かないため。
+//! 停止中は「権限コード 0 件」として解決する（＝管理トークンは出るが何も通らない）。
 //!
-//! 権限は「要求テナントを scope に持つか」の**完全一致**で判定する（ADR-0009 §4）。
-//! `idp.system.admin` は root scope でしか存在できず（DB CHECK ＋アプリ層の二重防御）、
-//! root テナント自身のテナント管理を含むため、要求権限に加えて常に代替として許可する。
+//! 権限は「要求テナントを scope に持つか」の**完全一致**で取得する（ADR-0009 §4）。コード同士の
+//! 含意（`idp.tenant.admin` が細粒度コードを含む等）は `domain::permission` が単一の出所として持つ。
 //!
 //! OIDC scope（claim 制御）とは別軸の判定であり、Discovery の `scopes_supported` には出さない。
 
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
-use crate::domain::permission;
 use crate::domain::repositories::{
     SsoSessionRepository, TenantMembershipRepository, UserPermissionRepository, UserRepository,
 };
@@ -25,28 +25,18 @@ use crate::domain::user::User;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// 管理機能へのアクセス判定結果。Presentation へは可否のみを渡す（内部理由は漏らさない）。
-#[derive(Debug, PartialEq, Eq)]
-pub enum AdminAccess {
-    /// 認可済み。管理対象の操作を行ってよい。
-    Granted(AuthorizedAdmin),
-    /// 有効な SSO セッションが無い（未ログイン・期限切れ・不明セッション）→ 401 相当。
-    Unauthenticated,
-    /// ログイン済みだが必要権限を保有しない → 403 相当。
-    Forbidden,
-}
-
-/// 認可された管理利用者（Presentation ハンドラへ注入される最小限の身元）。
+/// SSO セッションから解決した「主体 + 要求テナントで保有する権限コード」（ADR-0037）。
 ///
-/// `name`・`preferred_username` は管理コンソールのヘッダ表示（`GET /admin/whoami`）に使う。
-/// セッション解決時にユーザー行を読み込む過程で得られるため、追加のクエリは発生しない。
+/// 管理トークンの発行原資。権限コードが空でも返る（＝ログイン済みだが権限が無い）。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AuthorizedAdmin {
+pub struct ManagementGrant {
     pub user_id: Uuid,
-    /// 表示名（未設定なら `None`）。
+    /// 表示名（未設定なら `None`）。管理コンソールのヘッダ表示に使う。
     pub name: Option<String>,
     /// ログイン識別子（未設定なら `None`）。
     pub preferred_username: Option<String>,
+    /// 要求テナントを scope として保有する権限コード（順序は不定。不保有なら空）。
+    pub permission_codes: Vec<String>,
 }
 
 pub struct AdminAccessService {
@@ -74,60 +64,53 @@ impl AdminAccessService {
         }
     }
 
-    /// SSO セッション Cookie の値（平文 session_id）と必要権限コードから可否を判定する。
+    /// SSO セッション Cookie の値（平文 session_id）から、主体と要求テナントでの保有権限を解決する。
     ///
-    /// 権限は「要求テナント（`tenant`）を scope に持つか」の完全一致で判定する（ADR-0009 §4）。
-    /// リポジトリ障害時は `Unauthenticated` に倒す（fail-closed）。認証・認可の失敗理由は
-    /// 呼び出し側へ細分化して返さない（列挙は 401/403 の 2 値のみ）。
-    pub async fn authorize(
+    /// セッションが無効・利用者が無効・リポジトリ障害はいずれも `None`（fail-closed = 未認証扱い）。
+    /// **メンバーシップが `ACTIVE` でない場合や権限を 1 つも持たない場合は `Some`（権限コードは空）**
+    /// を返す。「未認証」と「権限不足」は呼び出し側が 401 / 403 へ writeし分ける必要があり、
+    /// ここで両者を潰すと管理コンソールがログイン画面へ戻す判断をできなくなる。
+    pub async fn resolve_session_grant(
         &self,
         tenant: TenantContext,
         sso_session_id: Option<&str>,
-        required_permission: &str,
-    ) -> AdminAccess {
-        let user = match self.resolve_session_user(sso_session_id).await {
-            Some(user) => user,
-            None => return AdminAccess::Unauthenticated,
-        };
-        let user_id = user.id;
+    ) -> Option<ManagementGrant> {
+        let user = self.resolve_session_user(sso_session_id).await?;
         let tenant_id = tenant.tenant_id();
 
         // 要求テナントで **ACTIVE なメンバーシップ**を持つこと（MT24）。権限行だけを見ると、
         // ゲストを一時停止（`SUSPENDED`）しても権限行が残るため管理操作が通ってしまう。
         // 一時停止は可逆であることが要件で権限行を消せないので、停止の実効性はこの判定が担う。
-        // 解除（行の削除）に対する二重防御にもなる（権限の後始末が漏れてもアクセスは止まる）。
-        match self.memberships.is_active_member(tenant_id, user_id).await {
-            Ok(true) => {}
-            Ok(false) => return AdminAccess::Forbidden,
+        let active_member = match self.memberships.is_active_member(tenant_id, user.id).await {
+            Ok(active) => active,
             Err(e) => {
                 tracing::error!(error = %e, "failed to check tenant membership for admin access");
-                return AdminAccess::Forbidden;
+                false
             }
-        }
-
-        // 要求権限、または idp.system.admin（root scope のみ存在。root 自身の管理を含む）の
-        // いずれかを、要求テナントを scope として保有するか（完全一致）。
-        let codes: &[&str] = if required_permission == permission::SYSTEM_ADMIN {
-            &[permission::SYSTEM_ADMIN]
-        } else {
-            &[required_permission, permission::SYSTEM_ADMIN]
         };
-        match self
-            .permissions
-            .has_any_permission(tenant_id, user_id, codes)
-            .await
-        {
-            Ok(true) => AdminAccess::Granted(AuthorizedAdmin {
-                user_id,
-                name: user.name.clone(),
-                preferred_username: user.preferred_username.clone(),
-            }),
-            Ok(false) => AdminAccess::Forbidden,
-            Err(e) => {
-                tracing::error!(error = %e, "failed to check permission for admin access");
-                AdminAccess::Forbidden
+
+        let permission_codes = if active_member {
+            match self
+                .permissions
+                .list_codes_for_user(tenant_id, user.id)
+                .await
+            {
+                Ok(codes) => codes,
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to load permissions for admin access");
+                    Vec::new()
+                }
             }
-        }
+        } else {
+            Vec::new()
+        };
+
+        Some(ManagementGrant {
+            user_id: user.id,
+            name: user.name.clone(),
+            preferred_username: user.preferred_username.clone(),
+            permission_codes,
+        })
     }
 
     /// SSO セッション Cookie から認証済み利用者の内部 ID を解決する（権限は問わない）。
@@ -452,11 +435,11 @@ mod tests {
         )
     }
 
-    /// MT24: 権限を持っていても、要求テナントで ACTIVE なメンバーシップが無ければ拒否する。
-    /// ゲストの一時停止（`SUSPENDED`）は権限行を残す可逆な操作なので、ここで止まらないと
-    /// 停止したゲストが管理操作を続けられてしまう。
+    /// MT24: 権限を持っていても、要求テナントで ACTIVE なメンバーシップが無ければ権限は 0 件。
+    /// ゲストの一時停止（`SUSPENDED`）は権限行を残す可逆な操作なので、ここで落とさないと
+    /// 停止したゲストが管理トークンで操作を続けられてしまう。
     #[tokio::test]
-    async fn denies_when_membership_is_not_active_even_with_the_permission() {
+    async fn resolves_no_permissions_when_membership_is_not_active() {
         let uid = Uuid::new_v4();
         let tenant: TenantId = Uuid::now_v7().into();
         let svc = service_with_membership(
@@ -465,15 +448,16 @@ mod tests {
             vec![(tenant, uid, ADMIN_PERM.to_string())],
             false,
         );
-        assert_eq!(
-            svc.authorize(TenantContext::new(tenant), Some("sid"), ADMIN_PERM)
-                .await,
-            AdminAccess::Forbidden
-        );
+        let grant = svc
+            .resolve_session_grant(TenantContext::new(tenant), Some("sid"))
+            .await
+            .expect("session is valid, so the principal resolves");
+        assert_eq!(grant.user_id, uid);
+        assert!(grant.permission_codes.is_empty());
     }
 
     #[tokio::test]
-    async fn grants_when_session_valid_and_permission_held() {
+    async fn resolves_the_permissions_held_for_the_requested_tenant() {
         let uid = Uuid::new_v4();
         let tenant: TenantId = Uuid::now_v7().into();
         let svc = service(
@@ -481,35 +465,18 @@ mod tests {
             Some(test_user(uid, tenant, UserStatus::Active)),
             vec![(tenant, uid, ADMIN_PERM.to_string())],
         );
+        let grant = svc
+            .resolve_session_grant(TenantContext::new(tenant), Some("sid"))
+            .await
+            .unwrap();
         assert_eq!(
-            svc.authorize(TenantContext::new(tenant), Some("sid"), ADMIN_PERM)
-                .await,
-            AdminAccess::Granted(AuthorizedAdmin {
+            grant,
+            ManagementGrant {
                 user_id: uid,
                 name: Some("Administrator".to_string()),
                 preferred_username: Some("admin".to_string()),
-            })
-        );
-    }
-
-    #[tokio::test]
-    async fn grants_when_system_admin_held_for_the_tenant() {
-        // idp.system.admin（scope = root）は root テナント自身の管理を含む（ADR-0009 §4）。
-        let uid = Uuid::new_v4();
-        let root: TenantId = Uuid::now_v7().into();
-        let svc = service(
-            Some(test_session("sid", uid, true)),
-            Some(test_user(uid, root, UserStatus::Active)),
-            vec![(root, uid, permission::SYSTEM_ADMIN.to_string())],
-        );
-        assert_eq!(
-            svc.authorize(TenantContext::new(root), Some("sid"), ADMIN_PERM)
-                .await,
-            AdminAccess::Granted(AuthorizedAdmin {
-                user_id: uid,
-                name: Some("Administrator".to_string()),
-                preferred_username: Some("admin".to_string()),
-            })
+                permission_codes: vec![ADMIN_PERM.to_string()],
+            }
         );
     }
 
@@ -517,16 +484,14 @@ mod tests {
     async fn unauthenticated_when_no_cookie() {
         let tenant: TenantId = Uuid::now_v7().into();
         let svc = service(None, None, vec![]);
-        assert_eq!(
-            svc.authorize(TenantContext::new(tenant), None, ADMIN_PERM)
-                .await,
-            AdminAccess::Unauthenticated
-        );
-        assert_eq!(
-            svc.authorize(TenantContext::new(tenant), Some(""), ADMIN_PERM)
-                .await,
-            AdminAccess::Unauthenticated
-        );
+        assert!(svc
+            .resolve_session_grant(TenantContext::new(tenant), None)
+            .await
+            .is_none());
+        assert!(svc
+            .resolve_session_grant(TenantContext::new(tenant), Some(""))
+            .await
+            .is_none());
     }
 
     #[tokio::test]
@@ -539,11 +504,10 @@ mod tests {
             Some(test_user(uid, tenant, UserStatus::Active)),
             vec![(tenant, uid, ADMIN_PERM.to_string())],
         );
-        assert_eq!(
-            svc.authorize(TenantContext::new(tenant), Some("sid"), ADMIN_PERM)
-                .await,
-            AdminAccess::Unauthenticated
-        );
+        assert!(svc
+            .resolve_session_grant(TenantContext::new(tenant), Some("sid"))
+            .await
+            .is_none());
 
         // 期限切れセッション。
         let svc = service(
@@ -551,11 +515,10 @@ mod tests {
             Some(test_user(uid, tenant, UserStatus::Active)),
             vec![(tenant, uid, ADMIN_PERM.to_string())],
         );
-        assert_eq!(
-            svc.authorize(TenantContext::new(tenant), Some("sid"), ADMIN_PERM)
-                .await,
-            AdminAccess::Unauthenticated
-        );
+        assert!(svc
+            .resolve_session_grant(TenantContext::new(tenant), Some("sid"))
+            .await
+            .is_none());
     }
 
     #[tokio::test]
@@ -567,39 +530,27 @@ mod tests {
             Some(test_user(uid, tenant, UserStatus::Disabled)),
             vec![(tenant, uid, ADMIN_PERM.to_string())],
         );
-        assert_eq!(
-            svc.authorize(TenantContext::new(tenant), Some("sid"), ADMIN_PERM)
-                .await,
-            AdminAccess::Unauthenticated
-        );
+        assert!(svc
+            .resolve_session_grant(TenantContext::new(tenant), Some("sid"))
+            .await
+            .is_none());
     }
 
+    /// 他テナント scope の権限は要求テナントでは 1 件も解決しない（ADR-0009 §4 の完全一致）。
     #[tokio::test]
-    async fn forbidden_when_permission_missing_or_scoped_to_another_tenant() {
+    async fn permissions_scoped_to_another_tenant_do_not_resolve() {
         let uid = Uuid::new_v4();
         let tenant: TenantId = Uuid::now_v7().into();
-        let svc = service(
-            Some(test_session("sid", uid, true)),
-            Some(test_user(uid, tenant, UserStatus::Active)),
-            vec![], // 権限なし
-        );
-        assert_eq!(
-            svc.authorize(TenantContext::new(tenant), Some("sid"), ADMIN_PERM)
-                .await,
-            AdminAccess::Forbidden
-        );
-
-        // 他テナント scope の権限では完全一致せず 403（ADR-0009 §4）。
         let other: TenantId = Uuid::now_v7().into();
         let svc = service(
             Some(test_session("sid", uid, true)),
             Some(test_user(uid, other, UserStatus::Active)),
             vec![(other, uid, ADMIN_PERM.to_string())],
         );
-        assert_eq!(
-            svc.authorize(TenantContext::new(tenant), Some("sid"), ADMIN_PERM)
-                .await,
-            AdminAccess::Forbidden
-        );
+        let grant = svc
+            .resolve_session_grant(TenantContext::new(tenant), Some("sid"))
+            .await
+            .unwrap();
+        assert!(grant.permission_codes.is_empty());
     }
 }

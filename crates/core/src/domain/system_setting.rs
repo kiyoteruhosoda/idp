@@ -212,6 +212,17 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         description: "アクセストークンの有効期限（秒）。API 呼び出しに使うトークンの寿命。",
     },
     SettingDefinition {
+        key: "MANAGEMENT_TOKEN_TTL_SECS",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
+        default_value: Some("300"),
+        description: "管理 API のアクセストークンの有効期限（秒）。IdP 自身を操作するトークンの寿命で、通常のアクセストークンより短く保つ。",
+    },
+    SettingDefinition {
         key: "ID_TOKEN_TTL_SECS",
         shared_with_web: false,
         owner: SettingOwner::DbManaged,

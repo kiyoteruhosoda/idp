@@ -28,7 +28,7 @@ use idp_api::domain::clock::Clock;
 use idp_api::presentation::{router, state::AppState};
 use serde_json::{json, Value};
 use std::sync::Arc;
-use support::{body_json, create_plain_user, create_sso_session, get, post, put, send};
+use support::{admin_token, body_json, create_plain_user, get, post, put, send};
 
 async fn start_api(pool: &sqlx::MySqlPool) -> axum::Router {
     let db_settings = idp_api::load_db_managed_settings(pool)
@@ -61,11 +61,11 @@ async fn issuer_is_editable_from_the_settings_screen_but_rejects_broken_values()
         return;
     };
     let pool = env.pool.clone();
-    let admin_cookie = create_sso_session(&pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &pool, &env.root_tenant_id, &env.root_admin_id).await;
     let app = start_api(&pool).await;
 
     // 1. 画面から編集できるキーとして出る（ENV 管理のままだと行は出るのに保存できない）。
-    let item = runtime_setting(&app, &admin_cookie, &env.root_tenant_id, "ISSUER").await;
+    let item = runtime_setting(&app, &admin_tok, &env.root_tenant_id, "ISSUER").await;
     assert_eq!(item["owner"], "DB_MANAGED", "{item}");
     assert_eq!(item["editable"], true, "{item}");
     assert_eq!(item["restart_required"], true, "{item}");
@@ -79,7 +79,7 @@ async fn issuer_is_editable_from_the_settings_screen_but_rejects_broken_values()
         let response = send(
             &app,
             put(
-                &admin_cookie,
+                &admin_tok,
                 &format!("/{}/admin/system-settings/runtime", env.root_tenant_id),
                 json!({ "key": "ISSUER", "value": broken }),
             ),
@@ -91,7 +91,7 @@ async fn issuer_is_editable_from_the_settings_screen_but_rejects_broken_values()
             "`{broken}` must be rejected"
         );
     }
-    let item = runtime_setting(&app, &admin_cookie, &env.root_tenant_id, "ISSUER").await;
+    let item = runtime_setting(&app, &admin_tok, &env.root_tenant_id, "ISSUER").await;
     assert!(
         item["db_value"].is_null(),
         "拒否した値は保存されない: {item}"
@@ -109,8 +109,8 @@ async fn restarting_requires_the_system_admin_and_is_audited() {
 
     // 権限なしの一般利用者は要求できない（プロセスを落とす操作なので root 限定）。
     let plain_user_id = create_plain_user(&pool, &env.root_tenant_id).await;
-    let plain_cookie = create_sso_session(&pool, &plain_user_id).await;
-    let response = send(&app, post(&plain_cookie, &path, json!({}))).await;
+    let plain_token = admin_token(&env.app, &pool, &env.root_tenant_id, &plain_user_id).await;
+    let response = send(&app, post(&plain_token, &path, json!({}))).await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
     // 未認証も同様。
@@ -118,8 +118,8 @@ async fn restarting_requires_the_system_admin_and_is_audited() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
     // root の system 管理者なら受理される（停止は応答後なので 202 が返る）。
-    let admin_cookie = create_sso_session(&pool, &env.root_admin_id).await;
-    let response = send(&app, post(&admin_cookie, &path, json!({}))).await;
+    let admin_tok = admin_token(&env.app, &pool, &env.root_tenant_id, &env.root_admin_id).await;
+    let response = send(&app, post(&admin_tok, &path, json!({}))).await;
     assert_eq!(response.status(), StatusCode::ACCEPTED);
     let body = body_json(response).await;
     assert_eq!(body["service"], "api");

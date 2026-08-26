@@ -8,6 +8,7 @@
 //! 要求 scope の部分集合判定に用いる `Clients.scopes` は、対応する OIDC scope の集合に限定する。
 
 use crate::application::audit::{AuditService, RequestContext};
+use crate::domain::admin_actor::AdminActor;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::client::Client;
 use crate::domain::client_jwks::{parse_registration_jwks, ClientJwks};
@@ -22,7 +23,6 @@ use crate::domain::repositories::ClientRepository;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::{ClientStatus, ClientType, GrantType, Scope, TokenEndpointAuthMethod};
 use std::sync::Arc;
-use uuid::Uuid;
 
 /// 発行する client_id のバイト長（小文字 16 進で 2 倍の文字数になる）。
 const CLIENT_ID_BYTES: usize = 16;
@@ -127,7 +127,7 @@ impl ClientManagementService {
         &self,
         tenant: TenantContext,
         cmd: RegisterClientCommand,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<RegisteredClient, ClientManagementError> {
         let app_name = validate_app_name(cmd.app_name)?;
@@ -226,9 +226,9 @@ impl ClientManagementService {
                 AuditEventType::ClientRegistered,
                 AuditResult::Success,
                 Some(tenant.tenant_id()),
-                Some(actor),
+                actor.user_id(),
                 Some(&client.client_id),
-                None,
+                actor.audit_note().as_deref(),
                 ctx,
             )
             .await;
@@ -283,7 +283,7 @@ impl ClientManagementService {
         &self,
         tenant: TenantContext,
         client_id: &str,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<(), ClientManagementError> {
         let mut client = self.load(tenant, client_id).await?;
@@ -298,9 +298,9 @@ impl ClientManagementService {
                 AuditEventType::ClientDeleted,
                 AuditResult::Success,
                 Some(tenant.tenant_id()),
-                Some(actor),
+                actor.user_id(),
                 Some(&client.client_id),
-                None,
+                actor.audit_note().as_deref(),
                 ctx,
             )
             .await;
@@ -312,7 +312,7 @@ impl ClientManagementService {
         tenant: TenantContext,
         client_id: &str,
         cmd: UpdateClientCommand,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<Client, ClientManagementError> {
         let mut client = self.load(tenant, client_id).await?;
@@ -441,9 +441,9 @@ impl ClientManagementService {
                 AuditEventType::ClientUpdated,
                 AuditResult::Success,
                 Some(tenant.tenant_id()),
-                Some(actor),
+                actor.user_id(),
                 Some(&client.client_id),
-                None,
+                actor.audit_note().as_deref(),
                 ctx,
             )
             .await;
@@ -456,7 +456,7 @@ impl ClientManagementService {
         &self,
         tenant: TenantContext,
         client_id: &str,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<(Client, String), ClientManagementError> {
         let mut client = self.load(tenant, client_id).await?;
@@ -483,9 +483,9 @@ impl ClientManagementService {
                 AuditEventType::ClientSecretRotated,
                 AuditResult::Success,
                 Some(tenant.tenant_id()),
-                Some(actor),
+                actor.user_id(),
                 Some(&client.client_id),
-                None,
+                actor.audit_note().as_deref(),
                 ctx,
             )
             .await;

@@ -13,7 +13,7 @@ use axum::http::StatusCode;
 use idp_api::domain::authentication_policy::LockoutPolicy;
 use idp_api::domain::repositories::UserRepository;
 use idp_api::infrastructure::repositories::user::SqlxUserRepository;
-use support::{body_json, create_plain_user, create_sso_session, post_empty, send};
+use support::{admin_token, body_json, create_plain_user, post_empty, send};
 use uuid::Uuid;
 
 /// ロック期限から「何秒後か」を秒へ丸める。
@@ -97,7 +97,7 @@ async fn an_administrator_unlock_also_clears_the_failure_counter() {
         return;
     };
     let (app, pool, root_tenant_id) = (&env.app, &env.pool, &env.root_tenant_id);
-    let admin_cookie = create_sso_session(pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, pool, &env.root_tenant_id, &env.root_admin_id).await;
     let user_id = create_plain_user(pool, root_tenant_id).await;
     let user_uuid = Uuid::parse_str(&user_id).expect("user id is a UUID");
 
@@ -120,7 +120,7 @@ async fn an_administrator_unlock_also_clears_the_failure_counter() {
     let res = send(
         app,
         post_empty(
-            &admin_cookie,
+            &admin_tok,
             &format!("/{root_tenant_id}/admin/users/{user_id}/unlock"),
         ),
     )
@@ -166,13 +166,13 @@ async fn unlocking_an_account_that_is_not_locked_succeeds_and_says_so() {
         return;
     };
     let (app, pool, root_tenant_id) = (&env.app, &env.pool, &env.root_tenant_id);
-    let admin_cookie = create_sso_session(pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, pool, &env.root_tenant_id, &env.root_admin_id).await;
     let user_id = create_plain_user(pool, root_tenant_id).await;
 
     let res = send(
         app,
         post_empty(
-            &admin_cookie,
+            &admin_tok,
             &format!("/{root_tenant_id}/admin/users/{user_id}/unlock"),
         ),
     )

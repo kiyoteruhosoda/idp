@@ -35,6 +35,8 @@ pub enum OAuthErrorCode {
     ConsentRequired,
     /// `prompt=none` でインタラクションが必要な場合（OIDC Core 3.1.2.6）。
     InteractionRequired,
+    /// 要求された `resource`（RFC 8707 §2）が不正・未知・許可されていない場合。
+    InvalidTarget,
 }
 
 impl OAuthErrorCode {
@@ -52,6 +54,7 @@ impl OAuthErrorCode {
             Self::LoginRequired => "login_required",
             Self::ConsentRequired => "consent_required",
             Self::InteractionRequired => "interaction_required",
+            Self::InvalidTarget => "invalid_target",
         }
     }
 }

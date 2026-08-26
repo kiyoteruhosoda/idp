@@ -18,6 +18,7 @@
 //! 他テナントの子は不存在として扱う）。root テナントはアプリ層で削除を禁止する（§1）。
 
 use crate::application::audit::{AuditService, RequestContext};
+use crate::domain::admin_actor::AdminActor;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
@@ -105,10 +106,21 @@ impl TenantManagementService {
         &self,
         requesting: TenantContext,
         cmd: CreateTenantCommand,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<Tenant, TenantManagementError> {
         let name = validate_name(cmd.name)?;
+
+        // 作成者は新テナントのブートストラップ管理者になる（下記）。クライアント主体には
+        // メンバーシップも `idp.tenant.admin` も持たせられないため、作成した瞬間に**誰も
+        // 管理者が居ないテナント**ができてしまう。そうなる前に断る。
+        // （`idp.system.admin` はクライアントへ付与できないので実際には到達しないが、
+        //  「到達しないから書かない」にすると、将来この前提が変わったときに静かに壊れる。）
+        let Some(bootstrap_admin) = actor.user_id() else {
+            return Err(TenantManagementError::Forbidden(MessageKey::new(
+                "api-tenant-create-requires-user-actor",
+            )));
+        };
 
         let now = self.clock.now();
         let tenant = Tenant {
@@ -123,7 +135,7 @@ impl TenantManagementService {
         };
 
         // 作成者を新テナントのブートストラップ管理者にする（ACTIVE GUEST。所属元は親テナントのまま）。
-        let membership = TenantMembership::new_active_guest(tenant.id, actor, now);
+        let membership = TenantMembership::new_active_guest(tenant.id, bootstrap_admin, now);
 
         // テナント・作成者メンバーシップ・idp.tenant.admin 付与を原子的に永続化する（§4）。
         // 権限付与はキャッシュ付きリポジトリを経由しないが、テナント ID は今生成したものであり、
@@ -145,9 +157,12 @@ impl TenantManagementService {
                 AuditEventType::TenantCreated,
                 AuditResult::Success,
                 Some(tenant.id),
-                Some(actor),
-                None,
-                Some(&format!("tenant={} bootstrap_admin={}", tenant.id, actor)),
+                actor.user_id(),
+                actor.client_id(),
+                Some(&format!(
+                    "tenant={} bootstrap_admin={}",
+                    tenant.id, bootstrap_admin
+                )),
                 ctx,
             )
             .await;
@@ -198,7 +213,7 @@ impl TenantManagementService {
         requesting: TenantContext,
         child_id: TenantId,
         cmd: UpdateTenantCommand,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<Tenant, TenantManagementError> {
         let mut tenant = self.load_child(requesting, child_id).await?;
@@ -218,8 +233,8 @@ impl TenantManagementService {
                 AuditEventType::TenantUpdated,
                 AuditResult::Success,
                 Some(tenant.id),
-                Some(actor),
-                None,
+                actor.user_id(),
+                actor.client_id(),
                 Some(&format!("tenant={}", tenant.id)),
                 ctx,
             )
@@ -249,7 +264,7 @@ impl TenantManagementService {
         current: TenantContext,
         name: String,
         self_registration_enabled: Option<bool>,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<Tenant, TenantManagementError> {
         let mut tenant = self.get_current(current).await?;
@@ -266,8 +281,8 @@ impl TenantManagementService {
                 AuditEventType::TenantUpdated,
                 AuditResult::Success,
                 Some(tenant.id),
-                Some(actor),
-                None,
+                actor.user_id(),
+                actor.client_id(),
                 Some(&format!("tenant={} (self settings)", tenant.id)),
                 ctx,
             )
@@ -281,7 +296,7 @@ impl TenantManagementService {
         &self,
         requesting: TenantContext,
         child_id: TenantId,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<(), TenantManagementError> {
         let tenant = self.load_child(requesting, child_id).await?;
@@ -317,8 +332,8 @@ impl TenantManagementService {
                 AuditEventType::TenantDeleted,
                 AuditResult::Success,
                 Some(tenant.id),
-                Some(actor),
-                None,
+                actor.user_id(),
+                actor.client_id(),
                 Some(&format!("tenant={}", tenant.id)),
                 ctx,
             )
@@ -392,7 +407,7 @@ impl TenantManagementService {
         requesting: TenantContext,
         target_id: TenantId,
         raw_domain: &str,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<TenantDomain, TenantManagementError> {
         let tenant = self.load_self_or_child(requesting, target_id).await?;
@@ -433,7 +448,7 @@ impl TenantManagementService {
         requesting: TenantContext,
         target_id: TenantId,
         domain_id: Uuid,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<(), TenantManagementError> {
         let tenant = self.load_self_or_child(requesting, target_id).await?;
@@ -469,7 +484,7 @@ impl TenantManagementService {
         &self,
         event: AuditEventType,
         tenant_id: TenantId,
-        actor: Uuid,
+        actor: &AdminActor,
         domain: &str,
         ctx: &RequestContext,
     ) {
@@ -478,8 +493,8 @@ impl TenantManagementService {
                 event,
                 AuditResult::Success,
                 Some(tenant_id),
-                Some(actor),
-                None,
+                actor.user_id(),
+                actor.client_id(),
                 Some(&format!("domain={domain}")),
                 ctx,
             )
@@ -695,7 +710,7 @@ mod tests {
                 CreateTenantCommand {
                     name: "  Acme  ".to_string(),
                 },
-                actor,
+                &AdminActor::User(actor),
                 &ctx(),
             )
             .await
@@ -736,7 +751,7 @@ mod tests {
                 CreateTenantCommand {
                     name: "Acme".to_string(),
                 },
-                Uuid::new_v4(),
+                &AdminActor::User(Uuid::new_v4()),
                 &ctx(),
             )
             .await;
@@ -759,7 +774,7 @@ mod tests {
                     CreateTenantCommand {
                         name: "   ".to_string(),
                     },
-                    Uuid::new_v4(),
+                    &AdminActor::User(Uuid::new_v4()),
                     &ctx()
                 )
                 .await,
@@ -777,7 +792,7 @@ mod tests {
                 CreateTenantCommand {
                     name: "Child".to_string(),
                 },
-                Uuid::new_v4(),
+                &AdminActor::User(Uuid::new_v4()),
                 &ctx(),
             )
             .await
@@ -807,7 +822,7 @@ mod tests {
                     name: Some("Renamed".to_string()),
                     status: Some(TenantStatus::Disabled),
                 },
-                Uuid::new_v4(),
+                &AdminActor::User(Uuid::new_v4()),
                 &ctx(),
             )
             .await
@@ -817,7 +832,7 @@ mod tests {
 
         // 削除できる（子・ユーザーは fake では検査しないが list_children は空）。
         h.svc
-            .delete_tenant(root(), child_id, Uuid::new_v4(), &ctx())
+            .delete_tenant(root(), child_id, &AdminActor::User(Uuid::new_v4()), &ctx())
             .await
             .expect("deleted");
         assert!(h
@@ -839,7 +854,7 @@ mod tests {
                 CreateTenantCommand {
                     name: "Parent".to_string(),
                 },
-                Uuid::new_v4(),
+                &AdminActor::User(Uuid::new_v4()),
                 &ctx(),
             )
             .await
@@ -851,7 +866,7 @@ mod tests {
                 CreateTenantCommand {
                     name: "Grandchild".to_string(),
                 },
-                Uuid::new_v4(),
+                &AdminActor::User(Uuid::new_v4()),
                 &ctx(),
             )
             .await
@@ -859,7 +874,7 @@ mod tests {
 
         assert!(matches!(
             h.svc
-                .delete_tenant(root(), parent.id, Uuid::new_v4(), &ctx())
+                .delete_tenant(root(), parent.id, &AdminActor::User(Uuid::new_v4()), &ctx())
                 .await,
             Err(TenantManagementError::Conflict(_))
         ));

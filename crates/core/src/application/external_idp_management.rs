@@ -11,6 +11,7 @@
 //! 任意の URL を叩かせる（SSRF の）踏み台になる。
 
 use crate::application::audit::{AuditService, RequestContext};
+use crate::domain::admin_actor::AdminActor;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
@@ -146,7 +147,7 @@ impl ExternalIdpManagementService {
         &self,
         tenant: TenantContext,
         cmd: RegisterExternalIdpCommand,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<ExternalIdentityProvider, ExternalIdpManagementError> {
         ExternalIdentityProvider::validate_code(&cmd.provider_code)?;
@@ -173,8 +174,8 @@ impl ExternalIdpManagementService {
                 AuditEventType::ExternalIdpCreated,
                 AuditResult::Success,
                 Some(tenant.tenant_id()),
-                Some(actor),
-                None,
+                actor.user_id(),
+                actor.client_id(),
                 Some(&format!("provider={}", provider.provider_code)),
                 ctx,
             )
@@ -187,7 +188,7 @@ impl ExternalIdpManagementService {
         tenant: TenantContext,
         id: Uuid,
         cmd: UpdateExternalIdpCommand,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<ExternalIdentityProvider, ExternalIdpManagementError> {
         let mut provider = self
@@ -233,8 +234,8 @@ impl ExternalIdpManagementService {
                 AuditEventType::ExternalIdpUpdated,
                 AuditResult::Success,
                 Some(tenant.tenant_id()),
-                Some(actor),
-                None,
+                actor.user_id(),
+                actor.client_id(),
                 Some(&format!("provider={}", provider.provider_code)),
                 ctx,
             )
@@ -246,7 +247,7 @@ impl ExternalIdpManagementService {
         &self,
         tenant: TenantContext,
         id: Uuid,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<(), ExternalIdpManagementError> {
         let provider = self
@@ -262,8 +263,8 @@ impl ExternalIdpManagementService {
                 AuditEventType::ExternalIdpDeleted,
                 AuditResult::Success,
                 Some(tenant.tenant_id()),
-                Some(actor),
-                None,
+                actor.user_id(),
+                actor.client_id(),
                 Some(&format!("provider={}", provider.provider_code)),
                 ctx,
             )

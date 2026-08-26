@@ -29,9 +29,9 @@ use axum::http::StatusCode;
 use idp_api::application::login::csrf_token;
 use serde_json::json;
 use support::{
-    begin_login, body_json, create_sso_session, get, mark_email_verified, patch, post,
-    post_internal, register_user, send, setup as support_setup, unique, TestEnv, CODE_CHALLENGE,
-    REDIRECT_URI_ENC, SERVICE_TOKEN,
+    begin_login, body_json, cookie_post, create_sso_session, exchange_admin_token, get,
+    mark_email_verified, patch, post, post_internal, register_user, send, setup as support_setup,
+    unique, TestEnv, CODE_CHALLENGE, REDIRECT_URI_ENC, SERVICE_TOKEN,
 };
 
 async fn setup() -> Option<TestEnv> {
@@ -52,11 +52,16 @@ async fn create_home_user(env: &TestEnv) -> (String, String, String) {
 }
 
 /// root がテナントを作成し、その ID を返す（作成者は当該テナントの ACTIVE GUEST 管理者になる）。
-async fn create_tenant(env: &TestEnv, root_cookie: &str, name: &str) -> String {
+/// SSO セッションを、指定テナント向けの管理トークンへ交換する（ADR-0037）。
+async fn tok(env: &TestEnv, sso: &str, tenant_id: &str) -> String {
+    exchange_admin_token(&env.app, tenant_id, sso).await
+}
+
+async fn create_tenant(env: &TestEnv, root_sso: &str, name: &str) -> String {
     let res = send(
         &env.app,
         post(
-            root_cookie,
+            &tok(env, root_sso, &env.root_tenant_id).await,
             &format!("/{}/admin/tenants", env.root_tenant_id),
             json!({ "name": name }),
         ),
@@ -86,11 +91,11 @@ async fn invite_and_accept(env: &TestEnv, admin_cookie: &str, tenant_id: &str, u
         .expect("token")
         .to_string();
 
-    let guest_cookie = create_sso_session(&env.pool, user_id).await;
+    let guest_sso = create_sso_session(&env.pool, user_id).await;
     let res = send(
         &env.app,
-        post(
-            &guest_cookie,
+        cookie_post(
+            &guest_sso,
             &format!("/{tenant_id}/invitations/accept"),
             json!({ "token": token }),
         ),
@@ -175,11 +180,11 @@ async fn login_result(
 #[tokio::test]
 async fn guest_signs_in_from_the_host_tenant_portal() {
     let Some(env) = setup().await else { return };
-    let root_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
-    let host = create_tenant(&env, &root_cookie, "GuestPortalHost").await;
-    let stranger = create_tenant(&env, &root_cookie, "GuestPortalStranger").await;
+    let root_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let host = create_tenant(&env, &root_sso, "GuestPortalHost").await;
+    let stranger = create_tenant(&env, &root_sso, "GuestPortalStranger").await;
     let (user_id, username, password) = create_home_user(&env).await;
-    invite_and_accept(&env, &root_cookie, &host, &user_id).await;
+    invite_and_accept(&env, &root_sso, &host, &user_id).await;
 
     assert_eq!(
         portal_login_result(&env, &host, "203.0.113.11", &username, &password).await,
@@ -212,10 +217,10 @@ async fn guest_signs_in_from_the_host_tenant_portal() {
 #[tokio::test]
 async fn guest_admin_signs_in_to_the_host_tenant_console() {
     let Some(env) = setup().await else { return };
-    let root_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
-    let host = create_tenant(&env, &root_cookie, "GuestConsoleHost").await;
+    let root_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let host = create_tenant(&env, &root_sso, "GuestConsoleHost").await;
     let (user_id, username, password) = create_home_user(&env).await;
-    invite_and_accept(&env, &root_cookie, &host, &user_id).await;
+    invite_and_accept(&env, &root_sso, &host, &user_id).await;
 
     // 権限が無いうちは「利用者は特定できたが管理者ではない」= forbidden（解決自体は成功している）。
     assert_eq!(
@@ -227,7 +232,7 @@ async fn guest_admin_signs_in_to_the_host_tenant_console() {
     let res = send(
         &env.app,
         post(
-            &root_cookie,
+            &tok(&env, &root_sso, &host).await,
             &format!("/{host}/admin/users/{user_id}/permissions"),
             json!({ "permission_code": "idp.tenant.admin" }),
         ),
@@ -247,10 +252,10 @@ async fn guest_admin_signs_in_to_the_host_tenant_console() {
 #[tokio::test]
 async fn suspended_guest_cannot_sign_in_on_the_host_tenant() {
     let Some(env) = setup().await else { return };
-    let root_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
-    let host = create_tenant(&env, &root_cookie, "GuestSuspendHost").await;
+    let root_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let host = create_tenant(&env, &root_sso, "GuestSuspendHost").await;
     let (user_id, username, password) = create_home_user(&env).await;
-    invite_and_accept(&env, &root_cookie, &host, &user_id).await;
+    invite_and_accept(&env, &root_sso, &host, &user_id).await;
 
     assert_eq!(
         portal_login_result(&env, &host, "203.0.113.31", &username, &password).await,
@@ -261,7 +266,7 @@ async fn suspended_guest_cannot_sign_in_on_the_host_tenant() {
     let res = send(
         &env.app,
         patch(
-            &root_cookie,
+            &tok(&env, &root_sso, &host).await,
             &format!("/{host}/admin/members/{user_id}"),
             json!({ "status": "SUSPENDED" }),
         ),
@@ -294,8 +299,8 @@ async fn suspended_guest_cannot_sign_in_on_the_host_tenant() {
 #[tokio::test]
 async fn a_same_named_guest_does_not_lock_out_the_host_tenants_home_user() {
     let Some(env) = setup().await else { return };
-    let root_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
-    let host = create_tenant(&env, &root_cookie, "GuestClashHost").await;
+    let root_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let host = create_tenant(&env, &root_sso, "GuestClashHost").await;
 
     // host 側の HOME 利用者（自己登録を一時的に許可して、パスワードの分かる利用者を作る）。
     sqlx::query("UPDATE tenants SET self_registration_enabled = 1 WHERE id = ?")
@@ -322,7 +327,7 @@ async fn a_same_named_guest_does_not_lock_out_the_host_tenants_home_user() {
         support::find_user_id_by_username(&env.pool, &env.root_tenant_id, &shared_username)
             .await
             .expect("registered guest");
-    invite_and_accept(&env, &root_cookie, &host, &guest_id).await;
+    invite_and_accept(&env, &root_sso, &host, &guest_id).await;
 
     // host の HOME 利用者は自分のパスワードで入れる。
     assert_eq!(
@@ -373,10 +378,10 @@ async fn a_same_named_guest_does_not_lock_out_the_host_tenants_home_user() {
 #[tokio::test]
 async fn guest_completes_the_authorization_flow_on_the_host_tenant() {
     let Some(env) = setup().await else { return };
-    let root_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
-    let host = create_tenant(&env, &root_cookie, "GuestAuthorizeHost").await;
+    let root_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let host = create_tenant(&env, &root_sso, "GuestAuthorizeHost").await;
     let (user_id, username, password) = create_home_user(&env).await;
-    invite_and_accept(&env, &root_cookie, &host, &user_id).await;
+    invite_and_accept(&env, &root_sso, &host, &user_id).await;
 
     // 参加先テナントの RP。`openid` のみなので同意ステップは挟まらない。
     let client_id = support::insert_public_client(&env.pool, &host, &["openid"]).await;
@@ -426,11 +431,11 @@ async fn guest_completes_the_authorization_flow_on_the_host_tenant() {
 /// **SQL で直接書き換えない。** テナント解決は TTL キャッシュ越しで、無効化を反映させるには
 /// 更新時の invalidate が要る。DB だけ書き換えると、キャッシュが生きている間は「無効化したのに
 /// 解決できる」状態をテストが観測してしまい、本番の経路（管理 API → invalidate）を検証できない。
-async fn set_tenant_status(env: &TestEnv, root_cookie: &str, tenant_id: &str, status: &str) {
+async fn set_tenant_status(env: &TestEnv, root_sso: &str, tenant_id: &str, status: &str) {
     let res = send(
         &env.app,
         patch(
-            root_cookie,
+            &tok(env, root_sso, &env.root_tenant_id).await,
             &format!("/{}/admin/tenants/{tenant_id}", env.root_tenant_id),
             json!({ "status": status }),
         ),
@@ -451,10 +456,10 @@ async fn set_tenant_status(env: &TestEnv, root_cookie: &str, tenant_id: &str, st
 #[tokio::test]
 async fn a_guest_whose_home_tenant_is_disabled_cannot_sign_in_anywhere() {
     let Some(env) = setup().await else { return };
-    let root_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
-    let host = create_tenant(&env, &root_cookie, "DisabledHomeHost").await;
+    let root_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let host = create_tenant(&env, &root_sso, "DisabledHomeHost").await;
     // 所属元を root にすると他テストの共有 root を止めてしまうため、専用の所属元テナントを作る。
-    let home = create_tenant(&env, &root_cookie, "DisabledHomeHome").await;
+    let home = create_tenant(&env, &root_sso, "DisabledHomeHome").await;
     sqlx::query("UPDATE tenants SET self_registration_enabled = 1 WHERE id = ?")
         .bind(&home)
         .execute(&env.pool)
@@ -468,7 +473,7 @@ async fn a_guest_whose_home_tenant_is_disabled_cannot_sign_in_anywhere() {
     let user_id = support::find_user_id_by_username(&env.pool, &home, &username)
         .await
         .expect("registered user");
-    invite_and_accept(&env, &root_cookie, &host, &user_id).await;
+    invite_and_accept(&env, &root_sso, &host, &user_id).await;
 
     assert_eq!(
         portal_login_result(&env, &host, "203.0.113.61", &username, &password).await,
@@ -476,7 +481,7 @@ async fn a_guest_whose_home_tenant_is_disabled_cannot_sign_in_anywhere() {
         "baseline: the guest signs in on the host tenant while their home tenant is active"
     );
 
-    set_tenant_status(&env, &root_cookie, &home, "DISABLED").await;
+    set_tenant_status(&env, &root_sso, &home, "DISABLED").await;
 
     // パスワード経路（解決クエリの `home.status = 'ACTIVE'`）。
     assert_eq!(
@@ -509,16 +514,37 @@ async fn a_guest_whose_home_tenant_is_disabled_cannot_sign_in_anywhere() {
     );
 
     // 既存の SSO セッション経由（`is_active_member`）も止まる。管理コンソールの入口で確認する。
+    // 管理トークンへの交換が拒まれるか、交換できても権限が 0 件で whoami が通らないかの
+    // いずれか（どちらで止まるかは実装の詳細で、要件は「入れないこと」。ADR-0037）。
     let sso = create_sso_session(&env.pool, &user_id).await;
-    let res = send(&env.app, get(&sso, &format!("/{host}/admin/whoami"))).await;
-    assert_ne!(
-        res.status(),
-        StatusCode::OK,
+    let exchanged = send(
+        &env.app,
+        post_internal(
+            "/internal/admin/token",
+            Some(SERVICE_TOKEN),
+            json!({ "tenant_id": host, "sso_session_id": sso }),
+        ),
+    )
+    .await;
+    let denied = if exchanged.status() == StatusCode::OK {
+        let token = body_json(exchanged).await["access_token"]
+            .as_str()
+            .expect("access_token")
+            .to_string();
+        send(&env.app, get(&token, &format!("/{host}/admin/whoami")))
+            .await
+            .status()
+            != StatusCode::OK
+    } else {
+        true
+    };
+    assert!(
+        denied,
         "an existing SSO session must not grant access once the home tenant is disabled"
     );
 
     // 復帰: 所属元を ACTIVE へ戻せば元どおり入れる。
-    set_tenant_status(&env, &root_cookie, &home, "ACTIVE").await;
+    set_tenant_status(&env, &root_sso, &home, "ACTIVE").await;
     assert_eq!(
         portal_login_result(&env, &host, "203.0.113.64", &username, &password).await,
         "success",
@@ -535,9 +561,9 @@ async fn a_guest_whose_home_tenant_is_disabled_cannot_sign_in_anywhere() {
 #[tokio::test]
 async fn disabling_the_home_tenant_stops_refresh_tokens_issued_by_the_host_tenant() {
     let Some(env) = setup().await else { return };
-    let root_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
-    let host = create_tenant(&env, &root_cookie, "RefreshHost").await;
-    let home = create_tenant(&env, &root_cookie, "RefreshHome").await;
+    let root_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let host = create_tenant(&env, &root_sso, "RefreshHost").await;
+    let home = create_tenant(&env, &root_sso, "RefreshHome").await;
     sqlx::query("UPDATE tenants SET self_registration_enabled = 1 WHERE id = ?")
         .bind(&home)
         .execute(&env.pool)
@@ -551,7 +577,7 @@ async fn disabling_the_home_tenant_stops_refresh_tokens_issued_by_the_host_tenan
     let user_id = support::find_user_id_by_username(&env.pool, &home, &username)
         .await
         .expect("registered user");
-    invite_and_accept(&env, &root_cookie, &host, &user_id).await;
+    invite_and_accept(&env, &root_sso, &host, &user_id).await;
 
     // 参加先テナントの RP から、ゲストがリフレッシュトークンまで取得する。
     let client_id =
@@ -628,7 +654,7 @@ async fn disabling_the_home_tenant_stops_refresh_tokens_issued_by_the_host_tenan
         .expect("rotated refresh_token")
         .to_string();
 
-    set_tenant_status(&env, &root_cookie, &home, "DISABLED").await;
+    set_tenant_status(&env, &root_sso, &home, "DISABLED").await;
 
     // 所属元を止めたら、参加先で発行済みのトークンも更新できない。
     let response = refresh(&env, &host, &client_id, &rotated).await;
@@ -691,8 +717,8 @@ async fn refresh(
 #[tokio::test]
 async fn an_ambiguous_home_identifier_does_not_let_a_guest_sign_in() {
     let Some(env) = setup().await else { return };
-    let root_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
-    let host = create_tenant(&env, &root_cookie, "AmbiguousIdentifierHost").await;
+    let root_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let host = create_tenant(&env, &root_sso, "AmbiguousIdentifierHost").await;
 
     // 同じ入力が 2 通りに正規化される値を選ぶ（電話番号は区切りを落とし、ユーザー名は落とさない）。
     let digits = format!("0{:09}", uuid::Uuid::new_v4().as_u128() % 1_000_000_000);
@@ -723,7 +749,7 @@ async fn an_ambiguous_home_identifier_does_not_let_a_guest_sign_in() {
     let res = send(
         &env.app,
         post(
-            &root_cookie,
+            &tok(&env, &root_sso, &host).await,
             &format!("/{host}/admin/users/{alice_id}/login-identifiers"),
             json!({ "identifier_type": "phone_number", "value": digits, "is_active": false }),
         ),
@@ -739,7 +765,7 @@ async fn an_ambiguous_home_identifier_does_not_let_a_guest_sign_in() {
     let res = send(
         &env.app,
         post(
-            &root_cookie,
+            &tok(&env, &root_sso, &host).await,
             &format!("/{host}/admin/users/{bob_id}/login-identifiers"),
             json!({ "identifier_type": "username", "value": dashed }),
         ),
@@ -755,7 +781,7 @@ async fn an_ambiguous_home_identifier_does_not_let_a_guest_sign_in() {
     let res = send(
         &env.app,
         patch(
-            &root_cookie,
+            &tok(&env, &root_sso, &host).await,
             &format!("/{host}/admin/users/{alice_id}/login-identifiers/{alice_identifier}"),
             json!({ "is_active": true }),
         ),
@@ -770,7 +796,7 @@ async fn an_ambiguous_home_identifier_does_not_let_a_guest_sign_in() {
     let guest_id = support::find_user_id_by_username(&env.pool, &env.root_tenant_id, &dashed)
         .await
         .expect("registered guest");
-    invite_and_accept(&env, &root_cookie, &host, &guest_id).await;
+    invite_and_accept(&env, &root_sso, &host, &guest_id).await;
 
     // ── 本体: 曖昧な入力ではゲストも解決されない。
     assert_eq!(
@@ -826,12 +852,12 @@ async fn an_ambiguous_home_identifier_does_not_let_a_guest_sign_in() {
     );
 }
 
-/// テナントへドメインを割り当てる（ADR-0029。`idp.system.admin` が必要なので root の cookie で呼ぶ）。
-async fn assign_domain(env: &TestEnv, root_cookie: &str, tenant_id: &str, domain: &str) {
+/// テナントへドメインを割り当てる（ADR-0029。`idp.system.admin` が必要なので root の管理トークンで呼ぶ）。
+async fn assign_domain(env: &TestEnv, root_sso: &str, tenant_id: &str, domain: &str) {
     let res = send(
         &env.app,
         post(
-            root_cookie,
+            &tok(env, root_sso, &env.root_tenant_id).await,
             &format!("/{}/admin/tenants/{tenant_id}/domains", env.root_tenant_id),
             json!({ "domain": domain }),
         ),
@@ -844,12 +870,12 @@ async fn assign_domain(env: &TestEnv, root_cookie: &str, tenant_id: &str, domain
 /// 返すのは `(tenant_id, user_id)`。
 async fn tenant_with_user(
     env: &TestEnv,
-    root_cookie: &str,
+    root_sso: &str,
     name: &str,
     username: &str,
     password: &str,
 ) -> (String, String) {
-    let tenant = create_tenant(env, root_cookie, name).await;
+    let tenant = create_tenant(env, root_sso, name).await;
     sqlx::query("UPDATE tenants SET self_registration_enabled = 1 WHERE id = ?")
         .bind(&tenant)
         .execute(&env.pool)
@@ -876,8 +902,8 @@ async fn tenant_with_user(
 #[tokio::test]
 async fn a_tenant_domain_lets_a_guest_sign_in_where_the_bare_name_is_ambiguous() {
     let Some(env) = setup().await else { return };
-    let root_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
-    let host = create_tenant(&env, &root_cookie, "DomainHost").await;
+    let root_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let host = create_tenant(&env, &root_sso, "DomainHost").await;
 
     // 同じユーザー名を持つ利用者を、別々の所属元テナントに 1 人ずつ。
     let shared_username = format!("dup{}", unique());
@@ -885,7 +911,7 @@ async fn a_tenant_domain_lets_a_guest_sign_in_where_the_bare_name_is_ambiguous()
     let password_b = format!("b-password-{}", unique());
     let (tenant_a, user_a) = tenant_with_user(
         &env,
-        &root_cookie,
+        &root_sso,
         "DomainHomeA",
         &shared_username,
         &password_a,
@@ -893,14 +919,14 @@ async fn a_tenant_domain_lets_a_guest_sign_in_where_the_bare_name_is_ambiguous()
     .await;
     let (_tenant_b, user_b) = tenant_with_user(
         &env,
-        &root_cookie,
+        &root_sso,
         "DomainHomeB",
         &shared_username,
         &password_b,
     )
     .await;
-    invite_and_accept(&env, &root_cookie, &host, &user_a).await;
-    invite_and_accept(&env, &root_cookie, &host, &user_b).await;
+    invite_and_accept(&env, &root_sso, &host, &user_a).await;
+    invite_and_accept(&env, &root_sso, &host, &user_b).await;
 
     // ── 裸のユーザー名では双方とも入れない（走査が 2 人に当たり、fail-closed で拒む）。
     assert_eq!(
@@ -929,7 +955,7 @@ async fn a_tenant_domain_lets_a_guest_sign_in_where_the_bare_name_is_ambiguous()
 
     // ── A にドメインを割り当てると、A の利用者はドメイン修飾で参加先へ入れる。
     let domain = format!("a{}.example", unique());
-    assign_domain(&env, &root_cookie, &tenant_a, &domain).await;
+    assign_domain(&env, &root_sso, &tenant_a, &domain).await;
     let qualified = format!("{shared_username}@{domain}");
     assert_eq!(
         portal_login_result(&env, &host, "203.0.113.74", &qualified, &password_a).await,
@@ -969,18 +995,21 @@ async fn a_tenant_domain_lets_a_guest_sign_in_where_the_bare_name_is_ambiguous()
 #[tokio::test]
 async fn a_domain_belongs_to_exactly_one_tenant() {
     let Some(env) = setup().await else { return };
-    let root_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
-    let first = create_tenant(&env, &root_cookie, "DomainOwner").await;
-    let second = create_tenant(&env, &root_cookie, "DomainRival").await;
+    let root_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let first = create_tenant(&env, &root_sso, "DomainOwner").await;
+    let second = create_tenant(&env, &root_sso, "DomainRival").await;
     let domain = format!("owned{}.example", unique());
     let uri = |t: &str| format!("/{}/admin/tenants/{t}/domains", env.root_tenant_id);
+    // ドメイン割り当ては root テナントのパスで行う（`idp.system.admin` は root scope のみ）。
+    // 対象テナントはパスの後段に入るだけなので、管理トークンは root のもの 1 本で足りる。
+    let root_tok = tok(&env, &root_sso, &env.root_tenant_id).await;
 
-    assign_domain(&env, &root_cookie, &first, &domain).await;
+    assign_domain(&env, &root_sso, &first, &domain).await;
 
     // 別のテナントは同じドメインを取れない（一意キーにテナントを含めない）。
     let res = send(
         &env.app,
-        post(&root_cookie, &uri(&second), json!({ "domain": &domain })),
+        post(&root_tok, &uri(&second), json!({ "domain": &domain })),
     )
     .await;
     assert_eq!(
@@ -991,7 +1020,7 @@ async fn a_domain_belongs_to_exactly_one_tenant() {
     // 同じテナントでの重複も同じく 409。
     let res = send(
         &env.app,
-        post(&root_cookie, &uri(&first), json!({ "domain": &domain })),
+        post(&root_tok, &uri(&first), json!({ "domain": &domain })),
     )
     .await;
     assert_eq!(res.status(), StatusCode::CONFLICT);
@@ -1000,7 +1029,7 @@ async fn a_domain_belongs_to_exactly_one_tenant() {
     let res = send(
         &env.app,
         post(
-            &root_cookie,
+            &root_tok,
             &uri(&second),
             json!({ "domain": format!("{}.", domain.to_uppercase()) }),
         ),
@@ -1012,7 +1041,7 @@ async fn a_domain_belongs_to_exactly_one_tenant() {
     for bad in ["", "-bad.example", "日本語.example"] {
         let res = send(
             &env.app,
-            post(&root_cookie, &uri(&second), json!({ "domain": bad })),
+            post(&root_tok, &uri(&second), json!({ "domain": bad })),
         )
         .await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{bad:?}");
@@ -1020,11 +1049,11 @@ async fn a_domain_belongs_to_exactly_one_tenant() {
 
     // 権限のない利用者は割り当てられない（idp.system.admin は root にしか存在しない）。
     let outsider = support::create_plain_user(&env.pool, &env.root_tenant_id).await;
-    let outsider_cookie = create_sso_session(&env.pool, &outsider).await;
+    let outsider_sso = create_sso_session(&env.pool, &outsider).await;
     let res = send(
         &env.app,
         post(
-            &outsider_cookie,
+            &tok(&env, &outsider_sso, &env.root_tenant_id).await,
             &uri(&first),
             json!({ "domain": "x.example" }),
         ),
@@ -1033,7 +1062,7 @@ async fn a_domain_belongs_to_exactly_one_tenant() {
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
 
     // 一覧 → 解除 → 解除後は別テナントが取れる。
-    let res = send(&env.app, get(&root_cookie, &uri(&first))).await;
+    let res = send(&env.app, get(&root_tok, &uri(&first))).await;
     assert_eq!(res.status(), StatusCode::OK);
     let listed = body_json(res).await;
     let rows = listed.as_array().expect("array");
@@ -1043,19 +1072,19 @@ async fn a_domain_belongs_to_exactly_one_tenant() {
 
     let res = send(
         &env.app,
-        support::delete(&root_cookie, &format!("{}/{domain_id}", uri(&first))),
+        support::delete(&root_tok, &format!("{}/{domain_id}", uri(&first))),
     )
     .await;
     assert_eq!(res.status(), StatusCode::NO_CONTENT);
     // 他テナントの id 指定では消せない（先に消えているので 404）。
     let res = send(
         &env.app,
-        support::delete(&root_cookie, &format!("{}/{domain_id}", uri(&second))),
+        support::delete(&root_tok, &format!("{}/{domain_id}", uri(&second))),
     )
     .await;
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
 
-    assign_domain(&env, &root_cookie, &second, &domain).await;
+    assign_domain(&env, &root_sso, &second, &domain).await;
 }
 
 /// 保証 9（ADR-0029）: ドメインを割り当てたテナントでは、`ローカル部@そのドメイン` は
@@ -1066,13 +1095,13 @@ async fn a_domain_belongs_to_exactly_one_tenant() {
 #[tokio::test]
 async fn a_upn_spelling_cannot_be_taken_from_its_owner() {
     let Some(env) = setup().await else { return };
-    let root_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let root_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
     let domain = format!("upn{}.example", unique());
     let owner_name = format!("owner{}", unique());
     let password = format!("upn-password-{}", unique());
     let (tenant, _owner_id) =
-        tenant_with_user(&env, &root_cookie, "UpnHome", &owner_name, &password).await;
-    assign_domain(&env, &root_cookie, &tenant, &domain).await;
+        tenant_with_user(&env, &root_sso, "UpnHome", &owner_name, &password).await;
+    assign_domain(&env, &root_sso, &tenant, &domain).await;
 
     // 同じテナントの別人。
     let other_name = format!("other{}", unique());
@@ -1086,7 +1115,7 @@ async fn a_upn_spelling_cannot_be_taken_from_its_owner() {
     let res = send(
         &env.app,
         post(
-            &root_cookie,
+            &tok(&env, &root_sso, &tenant).await,
             &format!("/{tenant}/admin/users/{other_id}/login-identifiers"),
             json!({
                 "identifier_type": "email",
@@ -1105,7 +1134,7 @@ async fn a_upn_spelling_cannot_be_taken_from_its_owner() {
     let res = send(
         &env.app,
         post(
-            &root_cookie,
+            &tok(&env, &root_sso, &tenant).await,
             &format!("/{tenant}/admin/users/{other_id}/login-identifiers"),
             json!({
                 "identifier_type": "email",

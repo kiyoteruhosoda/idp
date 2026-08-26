@@ -13,7 +13,7 @@ use axum::body::Body;
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{Request, StatusCode};
 use serde_json::json;
-use support::{body_json, create_plain_user, create_sso_session, delete, get, patch, post, send};
+use support::{admin_token, body_json, create_plain_user, delete, get, patch, post, send};
 
 const REDIRECT_URI: &str = "https://app.example.com/callback";
 
@@ -22,7 +22,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
     let Some(env) = support::setup("admin clients").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     let clients_uri = format!("/{}/admin/clients", env.root_tenant_id);
 
     // 未認証（Cookie 無し）→ 401。
@@ -40,11 +40,11 @@ async fn admin_can_manage_clients_but_others_cannot() {
 
     // 権限の無い利用者 → 403。
     let plain_user_id = create_plain_user(&env.pool, &env.root_tenant_id).await;
-    let plain_cookie = create_sso_session(&env.pool, &plain_user_id).await;
+    let plain_token = admin_token(&env.app, &env.pool, &env.root_tenant_id, &plain_user_id).await;
     let res = send(
         &env.app,
         post(
-            &plain_cookie,
+            &plain_token,
             &clients_uri,
             json!({
                 "app_name": "X",
@@ -61,7 +61,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &clients_uri,
             json!({
                 "app_name": "Bad",
@@ -78,7 +78,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &clients_uri,
             json!({
                 "app_name": "Public App",
@@ -102,7 +102,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &format!("{clients_uri}/{public_client_id}/secret"),
             json!({}),
         ),
@@ -119,7 +119,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &clients_uri,
             json!({
                 "app_name": "Confidential App",
@@ -146,7 +146,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
     assert_eq!(created["token_endpoint_auth_method"], "client_secret_basic");
 
     // 一覧に両クライアントが含まれる。
-    let res = send(&env.app, get(&admin_cookie, &clients_uri)).await;
+    let res = send(&env.app, get(&admin_tok, &clients_uri)).await;
     assert_eq!(res.status(), StatusCode::OK);
     // 一覧はページング付きのオブジェクト（`{clients, total, limit, offset}`）を返す（G7）。
     let list = body_json(res).await;
@@ -163,7 +163,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
     let res = send(
         &env.app,
         patch(
-            &admin_cookie,
+            &admin_tok,
             &format!("{clients_uri}/{public_client_id}"),
             json!({ "client_status": "DISABLED" }),
         ),
@@ -176,7 +176,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &format!("{clients_uri}/{conf_client_id}/secret"),
             json!({}),
         ),
@@ -193,7 +193,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
     // 不存在の取得 → 404。
     let res = send(
         &env.app,
-        get(&admin_cookie, &format!("{clients_uri}/does-not-exist")),
+        get(&admin_tok, &format!("{clients_uri}/does-not-exist")),
     )
     .await;
     assert_eq!(res.status(), StatusCode::NOT_FOUND, "missing client -> 404");
@@ -206,14 +206,14 @@ async fn confidential_clients_can_choose_the_client_authentication_method() {
     let Some(env) = support::setup("admin clients auth method").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     let clients_uri = format!("/{}/admin/clients", env.root_tenant_id);
 
     // 登録時に client_secret_post を選べる。
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &clients_uri,
             json!({
                 "app_name": "Post Auth App",
@@ -234,7 +234,7 @@ async fn confidential_clients_can_choose_the_client_authentication_method() {
     let res = send(
         &env.app,
         patch(
-            &admin_cookie,
+            &admin_tok,
             &format!("{clients_uri}/{client_id}"),
             json!({ "token_endpoint_auth_method": "client_secret_basic" }),
         ),
@@ -250,7 +250,7 @@ async fn confidential_clients_can_choose_the_client_authentication_method() {
     let res = send(
         &env.app,
         patch(
-            &admin_cookie,
+            &admin_tok,
             &format!("{clients_uri}/{client_id}"),
             json!({ "token_endpoint_auth_method": "none" }),
         ),
@@ -262,7 +262,7 @@ async fn confidential_clients_can_choose_the_client_authentication_method() {
     let res = send(
         &env.app,
         patch(
-            &admin_cookie,
+            &admin_tok,
             &format!("{clients_uri}/{client_id}"),
             json!({ "token_endpoint_auth_method": "private_key_jwt" }),
         ),
@@ -274,7 +274,7 @@ async fn confidential_clients_can_choose_the_client_authentication_method() {
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &clients_uri,
             json!({
                 "app_name": "Public App",
@@ -293,7 +293,7 @@ async fn confidential_clients_can_choose_the_client_authentication_method() {
     let res = send(
         &env.app,
         patch(
-            &admin_cookie,
+            &admin_tok,
             &format!("{clients_uri}/{public_client_id}"),
             json!({ "token_endpoint_auth_method": "client_secret_post" }),
         ),
@@ -310,7 +310,7 @@ async fn a_client_registered_before_the_usage_split_can_still_be_disabled() {
     let Some(env) = support::setup("admin clients legacy usage").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     // `authorization_code` + `client_credentials` + redirect_uri を持つ旧来の姿。
     let (client_id, _) =
         support::insert_m2m_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
@@ -319,7 +319,7 @@ async fn a_client_registered_before_the_usage_split_can_still_be_disabled() {
     let res = send(
         &env.app,
         patch(
-            &admin_cookie,
+            &admin_tok,
             &client_uri,
             json!({ "client_status": "DISABLED" }),
         ),
@@ -336,7 +336,7 @@ async fn a_client_registered_before_the_usage_split_can_still_be_disabled() {
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &format!("/{}/admin/clients", env.root_tenant_id),
             json!({
                 "app_name": "Both Usages App",
@@ -358,14 +358,14 @@ async fn a_deleted_client_disappears_from_the_console_but_stays_in_the_database(
     let Some(env) = support::setup("admin clients delete").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     let base = format!("/{}/admin/clients", env.root_tenant_id);
 
     let created = body_json(
         send(
             &env.app,
             post(
-                &admin_cookie,
+                &admin_tok,
                 &base,
                 json!({
                     "app_name": "Doomed App",
@@ -387,7 +387,7 @@ async fn a_deleted_client_disappears_from_the_console_but_stays_in_the_database(
     let res = send(
         &env.app,
         patch(
-            &admin_cookie,
+            &admin_tok,
             &client_uri,
             json!({ "client_status": "DELETED" }),
         ),
@@ -399,11 +399,11 @@ async fn a_deleted_client_disappears_from_the_console_but_stays_in_the_database(
         "更新経路では削除できない"
     );
 
-    let res = send(&env.app, delete(&admin_cookie, &client_uri)).await;
+    let res = send(&env.app, delete(&admin_tok, &client_uri)).await;
     assert_eq!(res.status(), StatusCode::NO_CONTENT, "admin delete -> 204");
 
     // 一覧から消える。
-    let listed = body_json(send(&env.app, get(&admin_cookie, &base)).await).await;
+    let listed = body_json(send(&env.app, get(&admin_tok, &base)).await).await;
     let ids: Vec<&str> = listed["clients"]
         .as_array()
         .expect("clients")
@@ -414,13 +414,13 @@ async fn a_deleted_client_disappears_from_the_console_but_stays_in_the_database(
 
     // 取得・更新・再削除はいずれも 404（`load` が削除済みを「無い」ものとして扱う）。
     for res in [
-        send(&env.app, get(&admin_cookie, &client_uri)).await,
+        send(&env.app, get(&admin_tok, &client_uri)).await,
         send(
             &env.app,
-            patch(&admin_cookie, &client_uri, json!({ "app_name": "Revived" })),
+            patch(&admin_tok, &client_uri, json!({ "app_name": "Revived" })),
         )
         .await,
-        send(&env.app, delete(&admin_cookie, &client_uri)).await,
+        send(&env.app, delete(&admin_tok, &client_uri)).await,
     ] {
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
@@ -445,7 +445,7 @@ async fn omitting_the_authentication_method_registers_a_private_key_jwt_client()
     let Some(env) = support::setup("admin clients default auth method").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     let clients_uri = format!("/{}/admin/clients", env.root_tenant_id);
 
     // 方式も検証鍵も無い登録は拒む。既定が `private_key_jwt` である以上、通せば「どの資格情報でも
@@ -453,7 +453,7 @@ async fn omitting_the_authentication_method_registers_a_private_key_jwt_client()
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &clients_uri,
             json!({
                 "app_name": "No Method App",
@@ -480,7 +480,7 @@ async fn omitting_the_authentication_method_registers_a_private_key_jwt_client()
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &clients_uri,
             json!({
                 "app_name": "Default Method App",

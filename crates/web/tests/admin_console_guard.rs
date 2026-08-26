@@ -163,3 +163,94 @@ async fn liveness_is_answered_without_touching_the_api() {
         "liveness must not depend on the api being up"
     );
 }
+
+/// ADR-0037: web は SSO Cookie を api の管理 API へ**転送しない**。必ず管理トークンへ交換し、
+/// `Authorization: Bearer` で呼ぶ。
+///
+/// 転送に戻ると api 側は Cookie を資格情報として読まないので全部 401 になる——つまり壊れれば
+/// 気づく。ここで押さえたいのはその一段手前、**Cookie が api へ漏れていないこと**である。
+/// 漏れていても動いてしまうため、動作確認では検出できない。
+#[tokio::test]
+async fn the_console_sends_a_bearer_token_and_never_forwards_the_session_cookie() {
+    let env = setup().await;
+    stub_whoami(
+        &env,
+        200,
+        Some(json!({
+            "user_id": "00000000-0000-7000-8000-000000000001",
+            "name": "Admin",
+            "preferred_username": "admin",
+            "tenant_name": "Root",
+        })),
+    )
+    .await;
+
+    let response = send(
+        &env.app,
+        get_with_cookies(
+            &format!("{}/admin", env.prefix()),
+            &format!("{SSO_SESSION_COOKIE}=live-session"),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let whoami = env
+        .api
+        .received_requests()
+        .await
+        .expect("recorded requests")
+        .into_iter()
+        .find(|r| r.url.path().ends_with("/admin/whoami"))
+        .expect("the console must call whoami");
+
+    assert_eq!(
+        whoami
+            .headers
+            .get(axum::http::header::AUTHORIZATION)
+            .map(|v| v.to_str().unwrap_or_default()),
+        Some("Bearer test-management-token"),
+        "the admin API must be called with the exchanged management token"
+    );
+    assert!(
+        whoami.headers.get(axum::http::header::COOKIE).is_none(),
+        "the browser session cookie must not reach the api"
+    );
+}
+
+/// 交換が 401（セッションが無効）なら、api の管理 API を呼ぶ前にログイン画面へ戻す。
+#[tokio::test]
+async fn a_rejected_token_exchange_sends_you_to_the_admin_login() {
+    let env = setup().await;
+    support::mount_unauthenticated_management_token(&env).await;
+    // whoami は 200 を返す形にしておく（交換で止まるので呼ばれないことを併せて確かめる）。
+    stub_whoami(
+        &env,
+        200,
+        Some(json!({ "user_id": "00000000-0000-7000-8000-000000000001" })),
+    )
+    .await;
+
+    let response = send(
+        &env.app,
+        get_with_cookies(
+            &format!("{}/admin", env.prefix()),
+            &format!("{SSO_SESSION_COOKIE}=stale-session"),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FOUND);
+    assert_eq!(location(&response), format!("{}/admin/login", env.prefix()));
+
+    let called_whoami = env
+        .api
+        .received_requests()
+        .await
+        .expect("recorded requests")
+        .into_iter()
+        .any(|r| r.url.path().ends_with("/admin/whoami"));
+    assert!(
+        !called_whoami,
+        "a failed exchange must stop before the admin API is called"
+    );
+}

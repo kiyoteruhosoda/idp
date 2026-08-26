@@ -23,7 +23,7 @@ use axum::http::{Method, StatusCode};
 use serde_json::{json, Value};
 use sqlx::{MySqlPool, Row};
 use support::{
-    body_json, create_sso_session, delete, get, patch, post, post_internal, send, SERVICE_TOKEN,
+    admin_token, body_json, delete, get, patch, post, post_internal, send, SERVICE_TOKEN,
 };
 
 /// 管理コンソールのログイン経路（`/internal/authenticate/admin`）で解決を確かめる。
@@ -92,7 +92,7 @@ async fn admin_assigns_a_phone_identifier_that_can_then_be_used_to_sign_in() {
     let Some(env) = support::setup("admin login identifiers").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
 
     let unique = uuid::Uuid::now_v7().simple().to_string();
     let username = format!("li{}", &unique[..10]);
@@ -108,13 +108,13 @@ async fn admin_assigns_a_phone_identifier_that_can_then_be_used_to_sign_in() {
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 
     let outsider = support::create_plain_user(&env.pool, &env.root_tenant_id).await;
-    let outsider_cookie = create_sso_session(&env.pool, &outsider).await;
-    let res = send(&env.app, get(&outsider_cookie, &uri)).await;
+    let outsider_token = admin_token(&env.app, &env.pool, &env.root_tenant_id, &outsider).await;
+    let res = send(&env.app, get(&outsider_token, &uri)).await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
 
     // ── 一覧の先頭は主たる識別子。AP15 以降は登録簿にも実体の行があるので `id` が付く
     //    （合成行が返るのは、移送前に作られた利用者だけ。`primary_login_identifier` テスト参照）。
-    let res = send(&env.app, get(&admin_cookie, &uri)).await;
+    let res = send(&env.app, get(&admin_tok, &uri)).await;
     assert_eq!(res.status(), StatusCode::OK);
     let listed = body_json(res).await;
     let rows = listed.as_array().expect("array");
@@ -136,7 +136,7 @@ async fn admin_assigns_a_phone_identifier_that_can_then_be_used_to_sign_in() {
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &uri,
             json!({"identifier_type": "phone_number", "value": "090-1234-5678"}),
         ),
@@ -181,7 +181,7 @@ async fn admin_assigns_a_phone_identifier_that_can_then_be_used_to_sign_in() {
     let item_uri = format!("{uri}/{identifier_id}");
     let res = send(
         &env.app,
-        patch(&admin_cookie, &item_uri, json!({"is_active": false})),
+        patch(&admin_tok, &item_uri, json!({"is_active": false})),
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
@@ -203,7 +203,7 @@ async fn admin_assigns_a_phone_identifier_that_can_then_be_used_to_sign_in() {
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &format!(
                 "/{}/admin/users/{other}/login-identifiers",
                 env.root_tenant_id
@@ -228,9 +228,9 @@ async fn admin_assigns_a_phone_identifier_that_can_then_be_used_to_sign_in() {
     );
 
     // ── 削除できる（無効化した行も消せる）。
-    let res = send(&env.app, delete(&admin_cookie, &item_uri)).await;
+    let res = send(&env.app, delete(&admin_tok, &item_uri)).await;
     assert_eq!(res.status(), StatusCode::NO_CONTENT);
-    let res = send(&env.app, delete(&admin_cookie, &item_uri)).await;
+    let res = send(&env.app, delete(&admin_tok, &item_uri)).await;
     assert_eq!(res.status(), StatusCode::NOT_FOUND, "二度目は 404");
 }
 
@@ -239,7 +239,7 @@ async fn rejects_values_that_are_already_usable_for_signing_in() {
     let Some(env) = support::setup("login identifier conflicts").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
 
     let unique = uuid::Uuid::now_v7().simple().to_string();
     let alice = format!("la{}", &unique[..10]);
@@ -256,7 +256,7 @@ async fn rejects_values_that_are_already_usable_for_signing_in() {
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &uri,
             json!({"identifier_type": "username", "value": bob.to_uppercase()}),
         ),
@@ -268,7 +268,7 @@ async fn rejects_values_that_are_already_usable_for_signing_in() {
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &uri,
             json!({"identifier_type": "email", "value": format!("{bob}@example.com")}),
         ),
@@ -281,7 +281,7 @@ async fn rejects_values_that_are_already_usable_for_signing_in() {
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &uri,
             json!({"identifier_type": "username", "value": alice.to_uppercase()}),
         ),
@@ -299,7 +299,7 @@ async fn rejects_values_that_are_already_usable_for_signing_in() {
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &uri,
             json!({"identifier_type": "employee_number", "value": reserved, "is_active": false}),
         ),
@@ -317,7 +317,7 @@ async fn rejects_values_that_are_already_usable_for_signing_in() {
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &format!(
                 "/{}/admin/users/{bob_id}/login-identifiers",
                 env.root_tenant_id
@@ -338,7 +338,7 @@ async fn rejects_values_that_are_already_usable_for_signing_in() {
         json!({"identifier_type": "employee_number", "value": "A 1234"}),
         json!({"identifier_type": "not-a-type", "value": "x"}),
     ] {
-        let res = send(&env.app, post(&admin_cookie, &uri, bad.clone())).await;
+        let res = send(&env.app, post(&admin_tok, &uri, bad.clone())).await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{bad}");
     }
 
@@ -346,7 +346,7 @@ async fn rejects_values_that_are_already_usable_for_signing_in() {
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &uri,
             json!({"identifier_type": "email", "value": format!("{alice}@example.com")}),
         ),
@@ -372,7 +372,7 @@ async fn the_primary_identifier_is_not_a_registry_row_and_cannot_be_targeted() {
     let Some(env) = support::setup("login identifier primary").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
 
     let unique = uuid::Uuid::now_v7().simple().to_string();
     let username = format!("lp{}", &unique[..10]);
@@ -388,14 +388,14 @@ async fn the_primary_identifier_is_not_a_registry_row_and_cannot_be_targeted() {
     let res = send(
         &env.app,
         patch(
-            &admin_cookie,
+            &admin_tok,
             &format!("{uri}/{stray}"),
             json!({"is_active": false}),
         ),
     )
     .await;
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
-    let res = send(&env.app, delete(&admin_cookie, &format!("{uri}/{stray}"))).await;
+    let res = send(&env.app, delete(&admin_tok, &format!("{uri}/{stray}"))).await;
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
 
     // プロフィール編集でログイン識別子を変えると、一覧も追随する（AP15 の移送中は `users` と
@@ -404,7 +404,7 @@ async fn the_primary_identifier_is_not_a_registry_row_and_cannot_be_targeted() {
     let res = send(
         &env.app,
         patch(
-            &admin_cookie,
+            &admin_tok,
             &format!("/{}/admin/users/{target}/profile", env.root_tenant_id),
             json!({"preferred_username": renamed}),
         ),
@@ -412,7 +412,7 @@ async fn the_primary_identifier_is_not_a_registry_row_and_cannot_be_targeted() {
     .await;
     assert_eq!(res.status(), StatusCode::OK);
 
-    let listed = body_json(send(&env.app, get(&admin_cookie, &uri)).await).await;
+    let listed = body_json(send(&env.app, get(&admin_tok, &uri)).await).await;
     let rows = listed.as_array().expect("array");
     assert_eq!(rows.len(), 1, "{listed}");
     assert_eq!(rows[0]["is_primary"], Value::Bool(true));

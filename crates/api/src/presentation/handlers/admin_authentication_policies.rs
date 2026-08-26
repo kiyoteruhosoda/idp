@@ -10,7 +10,9 @@ use crate::application::authentication_policy_management::{
 };
 use crate::domain::authentication_policy::{AuthenticationPolicy, RequiredMethods, TimeWindow};
 use crate::domain::values::AuthenticationMethod;
-use crate::presentation::admin::{IdpAdmin, RequirePerms};
+use crate::presentation::admin::{
+    AuthenticationPoliciesRead, AuthenticationPoliciesWrite, RequirePerms,
+};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
     AuthenticationPoliciesResponse, AuthenticationPolicyResponse,
@@ -38,7 +40,7 @@ use uuid::Uuid;
     )
 )]
 pub async fn list_authentication_policies(
-    RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(_admin, _): RequirePerms<AuthenticationPoliciesRead>,
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
@@ -68,7 +70,7 @@ pub async fn list_authentication_policies(
     )
 )]
 pub async fn create_authentication_policy(
-    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(admin, _): RequirePerms<AuthenticationPoliciesWrite>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
@@ -84,7 +86,7 @@ pub async fn create_authentication_policy(
     );
     let policy = state
         .authentication_policies_admin
-        .create(tenant.context(), draft, admin.user_id, &ctx)
+        .create(tenant.context(), draft, &admin.actor, &ctx)
         .await
         .map_err(|e| map_error(e, locale))?;
     Ok(Json(to_response(&policy)))
@@ -108,7 +110,7 @@ pub async fn create_authentication_policy(
 )]
 #[allow(clippy::too_many_arguments)]
 pub async fn update_authentication_policy(
-    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(admin, _): RequirePerms<AuthenticationPoliciesWrite>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
@@ -126,7 +128,7 @@ pub async fn update_authentication_policy(
     );
     let policy = state
         .authentication_policies_admin
-        .update(tenant.context(), id, draft, admin.user_id, &ctx)
+        .update(tenant.context(), id, draft, &admin.actor, &ctx)
         .await
         .map_err(|e| map_error(e, locale))?;
     Ok(Json(to_response(&policy)))
@@ -146,7 +148,7 @@ pub async fn update_authentication_policy(
     )
 )]
 pub async fn delete_authentication_policy(
-    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(admin, _): RequirePerms<AuthenticationPoliciesWrite>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
@@ -162,7 +164,7 @@ pub async fn delete_authentication_policy(
     );
     state
         .authentication_policies_admin
-        .delete(tenant.context(), id, admin.user_id, &ctx)
+        .delete(tenant.context(), id, &admin.actor, &ctx)
         .await
         .map_err(|e| map_error(e, locale))?;
     Ok(axum::http::StatusCode::NO_CONTENT)

@@ -6,7 +6,9 @@ use crate::application::saml_service_provider_management::{
 };
 use crate::domain::saml_metadata::parse_sp_metadata;
 use crate::domain::saml_service_provider::SamlServiceProvider;
-use crate::presentation::admin::{IdpAdmin, RequirePerms};
+use crate::presentation::admin::{
+    RequirePerms, SamlServiceProvidersRead, SamlServiceProvidersWrite,
+};
 use crate::presentation::error::ApiError;
 use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
@@ -21,7 +23,7 @@ use idp_contracts::admin::{
 use uuid::Uuid;
 
 pub async fn register(
-    RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(_admin, _): RequirePerms<SamlServiceProvidersWrite>,
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
@@ -45,7 +47,7 @@ pub async fn register(
 
 /// 既存 SP を更新する（テナント境界内の `id` のみ）。
 pub async fn update(
-    RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(_admin, _): RequirePerms<SamlServiceProvidersWrite>,
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
@@ -72,7 +74,7 @@ pub async fn update(
 
 /// SP を削除する（テナント境界内の `id` のみ）。成功時 204。
 pub async fn delete(
-    RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(_admin, _): RequirePerms<SamlServiceProvidersWrite>,
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
@@ -88,7 +90,7 @@ pub async fn delete(
 }
 
 pub async fn list(
-    RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(_admin, _): RequirePerms<SamlServiceProvidersRead>,
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
@@ -103,7 +105,7 @@ pub async fn list(
 
 /// SP メタデータ XML を解析し、登録フォームの初期値を返す。データは永続化しない。
 pub async fn import_metadata(
-    RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(_admin, _): RequirePerms<SamlServiceProvidersWrite>,
     State(_state): State<AppState>,
     Extension(_tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,

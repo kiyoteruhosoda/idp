@@ -15,7 +15,9 @@ use crate::domain::tenant::{Tenant, TenantId};
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::tenant_domain::TenantDomain;
 use crate::domain::values::TenantStatus;
-use crate::presentation::admin::{IdpAdmin, IdpSystemAdmin, RequirePerms};
+use crate::presentation::admin::{
+    IdpSystemAdmin, RequirePerms, TenantSettingsRead, TenantSettingsWrite,
+};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
     AddTenantDomainRequest, CreateTenantRequest, PageQueryParams, TenantAdminPasswordResetRequest,
@@ -99,7 +101,7 @@ pub async fn create_tenant(
         .create_tenant(
             tenant.context(),
             CreateTenantCommand { name: body.name },
-            admin.user_id,
+            &admin.actor,
             &ctx,
         )
         .await
@@ -185,7 +187,7 @@ pub async fn update_tenant(
                 name: body.name,
                 status,
             },
-            admin.user_id,
+            &admin.actor,
             &ctx,
         )
         .await
@@ -227,7 +229,7 @@ pub async fn delete_tenant(
     );
     state
         .tenants_admin
-        .delete_tenant(tenant.context(), child, admin.user_id, &ctx)
+        .delete_tenant(tenant.context(), child, &admin.actor, &ctx)
         .await
         .map_err(|e| map_error(e, locale))?;
     // 削除した（＝以後解決してはならない）テナントを解決キャッシュから捨てる。
@@ -283,7 +285,7 @@ pub async fn reset_tenant_admin_password(
         .reset_password_by_email(
             TenantContext::new(child_tenant.id),
             &body.email,
-            admin.user_id,
+            &admin.actor,
             &ctx,
         )
         .await
@@ -306,7 +308,7 @@ pub async fn reset_tenant_admin_password(
     )
 )]
 pub async fn get_current_tenant(
-    RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(_admin, _): RequirePerms<TenantSettingsRead>,
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
@@ -333,7 +335,7 @@ pub async fn get_current_tenant(
     )
 )]
 pub async fn update_current_tenant(
-    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(admin, _): RequirePerms<TenantSettingsWrite>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
@@ -352,7 +354,7 @@ pub async fn update_current_tenant(
             tenant.context(),
             body.name,
             body.self_registration_enabled,
-            admin.user_id,
+            &admin.actor,
             &ctx,
         )
         .await
@@ -430,7 +432,7 @@ pub async fn add_tenant_domain(
     let target = parse_tenant_id(&target_id, locale)?;
     let added = state
         .tenants_admin
-        .add_domain(tenant.context(), target, &body.domain, admin.user_id, &ctx)
+        .add_domain(tenant.context(), target, &body.domain, &admin.actor, &ctx)
         .await
         .map_err(|e| map_error(e, locale))?;
     Ok((StatusCode::CREATED, Json(domain_response(&added))))
@@ -465,7 +467,7 @@ pub async fn remove_tenant_domain(
     let target = parse_tenant_id(&target_id, locale)?;
     state
         .tenants_admin
-        .remove_domain(tenant.context(), target, domain_id, admin.user_id, &ctx)
+        .remove_domain(tenant.context(), target, domain_id, &admin.actor, &ctx)
         .await
         .map_err(|e| map_error(e, locale))?;
     Ok(StatusCode::NO_CONTENT)

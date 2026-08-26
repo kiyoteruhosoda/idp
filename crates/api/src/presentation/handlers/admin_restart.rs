@@ -47,7 +47,7 @@ pub async fn restart_service(
     tracing::warn!("restart requested from the admin console");
     state
         .service_restart
-        .request(tenant.context(), admin.user_id, "api", &ctx)
+        .request(tenant.context(), &admin.actor, "api", &ctx)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 

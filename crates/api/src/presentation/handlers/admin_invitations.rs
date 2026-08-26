@@ -6,7 +6,7 @@
 //! 別途通知し、被招待者は所属元テナントでログイン済みのセッションで `/invitations/accept` に提示する。
 
 use crate::application::invitation::InvitationError;
-use crate::presentation::admin::{IdpAdmin, RequirePerms};
+use crate::presentation::admin::{MembersWrite, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{CreateInvitationRequest, InvitationCreatedResponse};
 use crate::presentation::error::ApiError;
@@ -35,7 +35,7 @@ use uuid::Uuid;
     )
 )]
 pub async fn create_invitation(
-    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(admin, _): RequirePerms<MembersWrite>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
@@ -52,7 +52,7 @@ pub async fn create_invitation(
     );
     let created = state
         .invitations
-        .create_invitation(tenant.context(), target, admin.user_id, &ctx)
+        .create_invitation(tenant.context(), target, &admin.actor, &ctx)
         .await
         .map_err(|e| map_error(e, locale))?;
     Ok((

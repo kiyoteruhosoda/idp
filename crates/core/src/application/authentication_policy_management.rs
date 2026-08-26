@@ -9,6 +9,7 @@
 //! ドメインの純粋関数（`evaluate_policies`）で行う。本サービスは規則の管理のみを担う（SRP）。
 
 use crate::application::audit::{AuditService, RequestContext};
+use crate::domain::admin_actor::AdminActor;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::authentication_policy::{
     AuthenticationPolicy, PolicyConditions, PolicyEffect, RequiredMethods, TimeWindow,
@@ -96,7 +97,7 @@ impl AuthenticationPolicyManagementService {
         &self,
         tenant: TenantContext,
         draft: AuthenticationPolicyDraft,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> PolicyResult<AuthenticationPolicy> {
         let now = self.clock.now();
@@ -125,7 +126,7 @@ impl AuthenticationPolicyManagementService {
         tenant: TenantContext,
         id: Uuid,
         draft: AuthenticationPolicyDraft,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> PolicyResult<AuthenticationPolicy> {
         let now = self.clock.now();
@@ -163,7 +164,7 @@ impl AuthenticationPolicyManagementService {
         &self,
         tenant: TenantContext,
         id: Uuid,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> PolicyResult<()> {
         let existing = self
@@ -195,7 +196,7 @@ impl AuthenticationPolicyManagementService {
         &self,
         event: AuditEventType,
         tenant: TenantContext,
-        actor: Uuid,
+        actor: &AdminActor,
         policy_code: &str,
         ctx: &RequestContext,
     ) {
@@ -204,8 +205,8 @@ impl AuthenticationPolicyManagementService {
                 event,
                 AuditResult::Success,
                 Some(tenant.tenant_id()),
-                Some(actor),
-                None,
+                actor.user_id(),
+                actor.client_id(),
                 Some(&format!("policy={policy_code}")),
                 ctx,
             )
@@ -482,7 +483,12 @@ mod tests {
         let svc = service(policies.clone(), sink.clone());
 
         let created = svc
-            .create(tenant_ctx(), draft("deny-legacy"), Uuid::new_v4(), &ctx())
+            .create(
+                tenant_ctx(),
+                draft("deny-legacy"),
+                &AdminActor::User(Uuid::new_v4()),
+                &ctx(),
+            )
             .await
             .expect("create ok");
         assert_eq!(created.tenant_id, test_tenant());
@@ -550,7 +556,8 @@ mod tests {
             },
         ] {
             assert!(matches!(
-                svc.create(tenant_ctx(), bad, Uuid::new_v4(), &ctx()).await,
+                svc.create(tenant_ctx(), bad, &AdminActor::User(Uuid::new_v4()), &ctx())
+                    .await,
                 Err(AuthenticationPolicyManagementError::Validation(_))
             ));
         }
@@ -564,12 +571,22 @@ mod tests {
         let sink = Arc::new(CapturingSink::default());
         let svc = service(policies, sink);
 
-        svc.create(tenant_ctx(), draft("dup"), Uuid::new_v4(), &ctx())
-            .await
-            .expect("first create ok");
+        svc.create(
+            tenant_ctx(),
+            draft("dup"),
+            &AdminActor::User(Uuid::new_v4()),
+            &ctx(),
+        )
+        .await
+        .expect("first create ok");
         assert!(matches!(
-            svc.create(tenant_ctx(), draft("dup"), Uuid::new_v4(), &ctx())
-                .await,
+            svc.create(
+                tenant_ctx(),
+                draft("dup"),
+                &AdminActor::User(Uuid::new_v4()),
+                &ctx()
+            )
+            .await,
             Err(AuthenticationPolicyManagementError::Conflict(_))
         ));
     }
@@ -581,7 +598,12 @@ mod tests {
         let svc = service(policies, sink.clone());
 
         let created = svc
-            .create(tenant_ctx(), draft("mfa-admins"), Uuid::new_v4(), &ctx())
+            .create(
+                tenant_ctx(),
+                draft("mfa-admins"),
+                &AdminActor::User(Uuid::new_v4()),
+                &ctx(),
+            )
             .await
             .expect("create ok");
         let mut updated_draft = draft("mfa-admins");
@@ -593,7 +615,7 @@ mod tests {
                 tenant_ctx(),
                 created.id,
                 updated_draft,
-                Uuid::new_v4(),
+                &AdminActor::User(Uuid::new_v4()),
                 &ctx(),
             )
             .await
@@ -617,17 +639,29 @@ mod tests {
         let svc = service(policies, sink);
 
         let created = svc
-            .create(tenant_ctx(), draft("scoped"), Uuid::new_v4(), &ctx())
+            .create(
+                tenant_ctx(),
+                draft("scoped"),
+                &AdminActor::User(Uuid::new_v4()),
+                &ctx(),
+            )
             .await
             .expect("create ok");
         let other = TenantContext::new(TenantId::from(Uuid::now_v7()));
         assert!(matches!(
-            svc.update(other, created.id, draft("scoped"), Uuid::new_v4(), &ctx())
-                .await,
+            svc.update(
+                other,
+                created.id,
+                draft("scoped"),
+                &AdminActor::User(Uuid::new_v4()),
+                &ctx()
+            )
+            .await,
             Err(AuthenticationPolicyManagementError::NotFound)
         ));
         assert!(matches!(
-            svc.delete(other, created.id, Uuid::new_v4(), &ctx()).await,
+            svc.delete(other, created.id, &AdminActor::User(Uuid::new_v4()), &ctx())
+                .await,
             Err(AuthenticationPolicyManagementError::NotFound)
         ));
     }
@@ -639,12 +673,22 @@ mod tests {
         let svc = service(policies.clone(), sink.clone());
 
         let created = svc
-            .create(tenant_ctx(), draft("temp"), Uuid::new_v4(), &ctx())
+            .create(
+                tenant_ctx(),
+                draft("temp"),
+                &AdminActor::User(Uuid::new_v4()),
+                &ctx(),
+            )
             .await
             .expect("create ok");
-        svc.delete(tenant_ctx(), created.id, Uuid::new_v4(), &ctx())
-            .await
-            .expect("delete ok");
+        svc.delete(
+            tenant_ctx(),
+            created.id,
+            &AdminActor::User(Uuid::new_v4()),
+            &ctx(),
+        )
+        .await
+        .expect("delete ok");
         assert!(policies.rows.lock().unwrap().is_empty());
         assert_eq!(
             sink.events.lock().unwrap().last().unwrap().event_type,
@@ -662,12 +706,17 @@ mod tests {
         low.priority = 100;
         let mut high = draft("high");
         high.priority = 1;
-        svc.create(tenant_ctx(), low, Uuid::new_v4(), &ctx())
+        svc.create(tenant_ctx(), low, &AdminActor::User(Uuid::new_v4()), &ctx())
             .await
             .expect("ok");
-        svc.create(tenant_ctx(), high, Uuid::new_v4(), &ctx())
-            .await
-            .expect("ok");
+        svc.create(
+            tenant_ctx(),
+            high,
+            &AdminActor::User(Uuid::new_v4()),
+            &ctx(),
+        )
+        .await
+        .expect("ok");
         let listed = svc.list(tenant_ctx()).await.expect("list ok");
         assert_eq!(
             listed

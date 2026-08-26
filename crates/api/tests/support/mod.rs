@@ -12,7 +12,7 @@
 #![allow(dead_code)]
 
 use axum::body::Body;
-use axum::http::header::{CONTENT_TYPE, COOKIE, LOCATION, SET_COOKIE};
+use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, COOKIE, LOCATION, SET_COOKIE};
 use axum::http::{Method, Request};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use idp_api::config::Config;
@@ -263,6 +263,52 @@ pub async fn create_sso_session(pool: &MySqlPool, user_id: &str) -> String {
     session_id
 }
 
+/// SSO セッションを作り、`POST /internal/admin/token` で**管理トークン**へ交換して返す
+/// （ADR-0037）。管理コンソール（web）がリクエスト毎に行う交換を、テストでも同じ経路で通す。
+///
+/// トークンは `tenant_id` に紐づく（`iss` / `aud` が per-tenant issuer）。同じ利用者でも
+/// テナントが違えば別のトークンが要る。
+pub async fn admin_token(
+    app: &axum::Router,
+    pool: &MySqlPool,
+    tenant_id: &str,
+    user_id: &str,
+) -> String {
+    let sso = create_sso_session(pool, user_id).await;
+    exchange_admin_token(app, tenant_id, &sso).await
+}
+
+/// 既存の SSO セッション（平文 session_id）を管理トークンへ交換する。
+///
+/// 交換自体の失敗（401 等）を検証したいテストは `post_internal` を直接使う。ここは
+/// 「交換できる前提」の呼び出し側向けで、失敗したら panic する。
+pub async fn exchange_admin_token(
+    app: &axum::Router,
+    tenant_id: &str,
+    sso_session_id: &str,
+) -> String {
+    let response = send(
+        app,
+        post_internal(
+            "/internal/admin/token",
+            Some(SERVICE_TOKEN),
+            serde_json::json!({ "tenant_id": tenant_id, "sso_session_id": sso_session_id }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::OK,
+        "management token exchange failed"
+    );
+    body_json(response)
+        .await
+        .get("access_token")
+        .and_then(Value::as_str)
+        .expect("access_token in the exchange response")
+        .to_string()
+}
+
 /// 権限を持たない利用者を指定テナントへ直接作成し、その内部 ID を返す。
 /// 自己登録 API（`POST /{tenant}/auth/register`）で利用者を 1 人作る。
 ///
@@ -488,12 +534,16 @@ pub async fn body_json(response: axum::response::Response) -> Value {
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
 }
 
-/// SSO Cookie 付きのリクエストを組み立てる（JSON ボディは `Some` のときのみ付与）。
-pub fn request(method: Method, cookie: &str, uri: &str, body: Option<Value>) -> Request<Body> {
+/// 管理トークン付きのリクエストを組み立てる（JSON ボディは `Some` のときのみ付与）。
+///
+/// 管理 API の資格情報は Bearer だけである（ADR-0037）。`token` は [`admin_token`] が
+/// `POST /internal/admin/token` から得たもので、**テナント毎に別のトークン**になる
+/// （`iss` / `aud` が per-tenant issuer で固定されるため、他テナントのパスへ持ち込むと 401）。
+pub fn request(method: Method, token: &str, uri: &str, body: Option<Value>) -> Request<Body> {
     let mut builder = Request::builder()
         .method(method)
         .uri(uri)
-        .header(COOKIE, format!("sso_session_id={cookie}"));
+        .header(AUTHORIZATION, format!("Bearer {token}"));
     if body.is_some() {
         builder = builder.header(CONTENT_TYPE, "application/json");
     }
@@ -502,29 +552,56 @@ pub fn request(method: Method, cookie: &str, uri: &str, body: Option<Value>) -> 
         .unwrap()
 }
 
-pub fn get(cookie: &str, uri: &str) -> Request<Body> {
-    request(Method::GET, cookie, uri, None)
+pub fn get(token: &str, uri: &str) -> Request<Body> {
+    request(Method::GET, token, uri, None)
 }
 
-pub fn post(cookie: &str, uri: &str, body: Value) -> Request<Body> {
-    request(Method::POST, cookie, uri, Some(body))
+pub fn post(token: &str, uri: &str, body: Value) -> Request<Body> {
+    request(Method::POST, token, uri, Some(body))
 }
 
 /// 本文を取らない POST（`/unlock`・`/mfa-reset` のようなコマンド系エンドポイント）。
-pub fn post_empty(cookie: &str, uri: &str) -> Request<Body> {
-    request(Method::POST, cookie, uri, None)
+pub fn post_empty(token: &str, uri: &str) -> Request<Body> {
+    request(Method::POST, token, uri, None)
 }
 
-pub fn patch(cookie: &str, uri: &str, body: Value) -> Request<Body> {
-    request(Method::PATCH, cookie, uri, Some(body))
+pub fn patch(token: &str, uri: &str, body: Value) -> Request<Body> {
+    request(Method::PATCH, token, uri, Some(body))
 }
 
-pub fn put(cookie: &str, uri: &str, body: Value) -> Request<Body> {
-    request(Method::PUT, cookie, uri, Some(body))
+pub fn put(token: &str, uri: &str, body: Value) -> Request<Body> {
+    request(Method::PUT, token, uri, Some(body))
 }
 
-pub fn delete(cookie: &str, uri: &str) -> Request<Body> {
-    request(Method::DELETE, cookie, uri, None)
+pub fn delete(token: &str, uri: &str) -> Request<Body> {
+    request(Method::DELETE, token, uri, None)
+}
+
+/// SSO Cookie を資格情報にするリクエスト（`AuthenticatedUser` の経路。招待の承諾）。
+///
+/// 管理 API は Bearer だけを見る（ADR-0037）が、招待の承諾は「ログイン済みであること」だけを
+/// 要求するブラウザ経路で、資格情報は今も Cookie である。両者を別のヘルパにしておくことで、
+/// テストがどちらの経路を叩いているかがコードから読める。
+pub fn cookie_request(
+    method: Method,
+    sso_session_id: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(COOKIE, format!("sso_session_id={sso_session_id}"));
+    if body.is_some() {
+        builder = builder.header(CONTENT_TYPE, "application/json");
+    }
+    builder
+        .body(body.map_or(Body::empty(), |b| Body::from(b.to_string())))
+        .unwrap()
+}
+
+pub fn cookie_post(sso_session_id: &str, uri: &str, body: Value) -> Request<Body> {
+    cookie_request(Method::POST, sso_session_id, uri, Some(body))
 }
 
 /// Cookie 無し・SSO 不要のリクエスト（未認証 401 の検証等に使う）。

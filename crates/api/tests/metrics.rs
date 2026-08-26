@@ -15,7 +15,7 @@ mod support;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use support::{body_text, create_sso_session, get, send, SERVICE_TOKEN, SERVICE_TOKEN_HEADER};
+use support::{admin_token, body_text, get, send, SERVICE_TOKEN, SERVICE_TOKEN_HEADER};
 
 const METRICS_PATH: &str = "/internal/metrics";
 
@@ -64,13 +64,13 @@ async fn audit_events_and_request_durations_are_recorded() {
     let Some(env) = support::setup("metrics recording").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
 
     // 監査イベントを発生させる（client.registered / result=success）。
     let res = send(
         &env.app,
         support::post(
-            &admin_cookie,
+            &admin_tok,
             &format!("/{}/admin/clients", env.root_tenant_id),
             serde_json::json!({
                 "app_name": "Metrics Probe",
@@ -87,7 +87,7 @@ async fn audit_events_and_request_durations_are_recorded() {
     let res = send(
         &env.app,
         get(
-            &admin_cookie,
+            &admin_tok,
             &format!("/{}/admin/clients", env.root_tenant_id),
         ),
     )
@@ -123,13 +123,13 @@ async fn labels_never_carry_unbounded_values() {
     let Some(env) = support::setup("metrics cardinality").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
 
     // テナント ID をパスに含む要求を出す（雛形へ畳まれることの確認）。
     let res = send(
         &env.app,
         get(
-            &admin_cookie,
+            &admin_tok,
             &format!("/{}/admin/clients", env.root_tenant_id),
         ),
     )
