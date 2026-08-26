@@ -39,10 +39,10 @@ async fn start_api(pool: &sqlx::MySqlPool) -> axum::Router {
     router::build(AppState::build(pool.clone(), Arc::new(config), clock))
 }
 
-async fn runtime_setting(app: &axum::Router, cookie: &str, tenant_id: &str, key: &str) -> Value {
+async fn runtime_setting(app: &axum::Router, token: &str, tenant_id: &str, key: &str) -> Value {
     let response = send(
         app,
-        get(cookie, &format!("/{tenant_id}/admin/system-settings")),
+        get(token, &format!("/{tenant_id}/admin/system-settings")),
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK, "system settings");

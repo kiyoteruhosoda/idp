@@ -75,11 +75,11 @@ async fn create_tenant(env: &TestEnv, root_sso: &str, name: &str) -> String {
 }
 
 /// `user_id` を `tenant_id` の ACTIVE な GUEST にする（招待の作成 → 本人による承諾）。
-async fn invite_and_accept(env: &TestEnv, admin_cookie: &str, tenant_id: &str, user_id: &str) {
+async fn invite_and_accept(env: &TestEnv, admin_sso: &str, tenant_id: &str, user_id: &str) {
     let res = send(
         &env.app,
         post(
-            admin_cookie,
+            &tok(env, admin_sso, tenant_id).await,
             &format!("/{tenant_id}/admin/invitations"),
             json!({ "user_id": user_id }),
         ),

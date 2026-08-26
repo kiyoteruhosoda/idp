@@ -147,10 +147,10 @@ async fn non_system_admin_cannot_read_application_logs() {
     };
     // 権限を持たない利用者は 403（`idp.system.admin` 必須。テナント横断の運用情報のため）。
     let user_id = create_plain_user(&env.pool, &env.root_tenant_id).await;
-    let cookie = admin_token(&env.app, &env.pool, &env.root_tenant_id, &user_id).await;
+    let plain_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &user_id).await;
     let res = send(
         &env.app,
-        get(&cookie, &format!("/{}/admin/logs", env.root_tenant_id)),
+        get(&plain_tok, &format!("/{}/admin/logs", env.root_tenant_id)),
     )
     .await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
