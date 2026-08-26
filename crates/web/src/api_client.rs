@@ -780,6 +780,26 @@ impl ApiClient {
         .await
     }
 
+    /// クライアントへ**付与できる**権限コードの一覧（`GET /admin/permissions?grantable_to=client`）。
+    ///
+    /// 絞り込みは api が `domain::permission::is_grantable_to_client` で行う。web が同じ判定を
+    /// 持たないのは、マスタが増えたときに片方だけ古くなるのを避けるためである（ADR-0037）。
+    pub async fn client_grantable_permissions(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+    ) -> Result<AvailablePermissionsResponse, AdminApiError> {
+        self.admin_get_with_query(
+            tenant_id,
+            "/admin/permissions",
+            correlation_id,
+            sso,
+            &[("grantable_to", "client".to_string())],
+        )
+        .await
+    }
+
     /// クライアントの保有管理権限の一覧（`GET /admin/clients/{id}/permissions`。ADR-0037）。
     pub async fn list_client_permissions(
         &self,

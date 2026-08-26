@@ -140,6 +140,10 @@ admin-permissions-grant-none-left = This user already has every grantable permis
 admin-permissions-grant-load-failed = Could not load the grantable permission codes. Reload the page and try again.
 admin-permissions-grant-button = Grant
 admin-permissions-revoke-button = Revoke
+admin-client-permissions-title = Management permissions
+admin-client-permissions-hint = Permissions this client uses to call the IdP's own management API. Add the management API resource to the token request and the codes granted here are carried by the management token. See the operations guide for the exact steps.
+admin-client-permissions-none = This client holds no management permissions.
+admin-client-permissions-grant-none-left = This client already holds every permission that can be granted to a client.
 admin-permission-error-unknown = Unknown permission code. Choose one of the available codes.
 
 # Paged user list (MT22). Search and paging happen server-side.

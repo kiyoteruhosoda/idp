@@ -1213,6 +1213,22 @@ pub struct ClientDetail<'a> {
     pub admin: Admin<'a>,
     pub client: &'a ClientView,
     pub csrf: &'a str,
+    /// このクライアントが現在保有している管理権限コード（ADR-0037）。
+    pub permission_codes: &'a [String],
+    /// いま付与できる権限コード（クライアントへ付与可能なコードから保有済みを除いたもの）。
+    pub grantable_permissions: &'a [String],
+    /// 付与可能コードを api から取得できなかったか。`true` のときは選択肢を出せないため、
+    /// 「候補が無い」との取り違えを避けて取得失敗であることを伝える。
+    pub permissions_load_failed: bool,
+    /// 管理権限の区画を出すか。**システム用クライアント（`client_credentials` が使える）か、
+    /// 既に権限を保有している場合だけ**出す。ブラウザログイン用クライアントに付けても
+    /// 管理トークンを取る手段が無く、効かない操作を見せることになる（ADR-0037）。
+    pub shows_permissions: bool,
+    /// 付与フォームを出すか。**システム用クライアントのときだけ** true。剥奪（`shows_permissions`）
+    /// と分けるのは、権限が残っているだけのブラウザログイン用クライアントに対して、効かない権限を
+    /// 新たに足せてしまうのを防ぐため（ADR-0037）。
+    pub shows_grant_form: bool,
+    pub error_key: Option<&'a str>,
 }
 
 /// secret 表示画面（作成直後・再発行直後。`secret` が `None` なら public で秘密なし）。

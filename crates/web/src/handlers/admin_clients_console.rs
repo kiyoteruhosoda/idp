@@ -218,20 +218,199 @@ pub async fn detail(
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Path((_, client_id)): Path<(String, String)>,
+    Query(query): Query<DetailQuery>,
 ) -> Response {
     let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
-    let result = state
+    let sso = sso(&headers);
+    // `Messages`（fluent バンドル）は Send ではないので、**すべての await を終えてから**組み立てる。
+    // await を跨いで持つとハンドラの future が Send でなくなり、axum の `Handler` を満たさない。
+    let client = match state
         .api
-        .get_client(&correlation.0, &tenant.0, &sso(&headers), &client_id)
-        .await;
+        .get_client(&correlation.0, &tenant.0, &sso, &client_id)
+        .await
+    {
+        Ok(client) => Some(client),
+        Err(AdminApiError::NotFound) => None,
+        Err(e) => {
+            let messages = Messages::new(locale(&headers));
+            return map_data_error(&messages, &tenant, &admin, &headers, e);
+        }
+    };
+    let Some(client) = client else {
+        let messages = Messages::new(locale(&headers));
+        return not_found(&messages, &tenant, &admin);
+    };
+
+    // 管理権限（ADR-0037）。保有コードの取得に失敗したら画面ごと失敗させる —— 一覧が空なのか
+    // 読めなかったのかを取り違えると、「付いているはずの権限が無い」と誤って再付与しかねない。
+    let permission_codes = match state
+        .api
+        .list_client_permissions(&correlation.0, &tenant.0, &sso, &client_id)
+        .await
+    {
+        Ok(p) => p.permission_codes,
+        Err(e) => {
+            let messages = Messages::new(locale(&headers));
+            return map_data_error(&messages, &tenant, &admin, &headers, e);
+        }
+    };
+    // 付与候補は「クライアントへ付与できるコード」（絞り込みは api 側。ADR-0037）。付与フォームを
+    // 出すのはシステム用クライアントだけなので、それ以外では候補を引かない（効かない付与を
+    // 見せないだけでなく、管理トークン交換 1 往復を丸ごと省ける）。取得に失敗しても画面は描く
+    // （保有権限の確認・剥奪は続けられる）。
+    let (grantable_source, permissions_load_failed) = if is_system_client(&client) {
+        match state
+            .api
+            .client_grantable_permissions(&correlation.0, &tenant.0, &sso)
+            .await
+        {
+            Ok(a) => (a.codes, false),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load client-grantable permission codes");
+                (Vec::new(), true)
+            }
+        }
+    } else {
+        (Vec::new(), false)
+    };
+    // 保有済みは選択肢から除く（付与しても変化しない操作を見せない）。
+    let grantable: Vec<String> = grantable_source
+        .into_iter()
+        .filter(|code| !permission_codes.contains(code))
+        .collect();
+
     let messages = Messages::new(locale(&headers));
     let csrf = csrf_from(&headers, state.config.csrf_secret());
+    Html(render_detail(
+        &messages,
+        &tenant,
+        &admin,
+        &client,
+        &csrf,
+        &permission_codes,
+        &grantable,
+        permissions_load_failed,
+        query.error.as_deref().and_then(permission_error_key),
+    ))
+    .into_response()
+}
+
+/// 詳細画面のクエリ。付与・剥奪の Post/Redirect/Get で戻ってきたときのエラー種別を運ぶ。
+#[derive(Debug, Deserialize)]
+pub struct DetailQuery {
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+fn permission_error_key(error: &str) -> Option<&'static str> {
+    match error {
+        "csrf" => Some("admin-error-csrf"),
+        "code" => Some("api-client-permission-not-grantable"),
+        "notfound" => Some("admin-client-not-found-message"),
+        "internal" => Some("admin-error-internal"),
+        _ => None,
+    }
+}
+
+// ── 管理権限の付与・剥奪（ADR-0037。Post/Redirect/Get）──────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct PermissionForm {
+    pub permission_code: String,
+    pub csrf_token: String,
+}
+
+pub async fn grant_permission(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Path((_, client_id)): Path<(String, String)>,
+    Form(form): Form<PermissionForm>,
+) -> Response {
+    apply_permission_change(
+        &state,
+        &correlation,
+        &tenant,
+        &headers,
+        &client_id,
+        &form,
+        true,
+    )
+    .await
+}
+
+pub async fn revoke_permission(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Path((_, client_id)): Path<(String, String)>,
+    Form(form): Form<PermissionForm>,
+) -> Response {
+    apply_permission_change(
+        &state,
+        &correlation,
+        &tenant,
+        &headers,
+        &client_id,
+        &form,
+        false,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn apply_permission_change(
+    state: &WebState,
+    correlation: &CorrelationId,
+    tenant: &WebTenant,
+    headers: &HeaderMap,
+    client_id: &str,
+    form: &PermissionForm,
+    grant: bool,
+) -> Response {
+    match resolve_admin(state, correlation, tenant, headers).await {
+        AdminResolution::Ok(_) => {}
+        AdminResolution::Reject(resp) => return resp,
+    }
+    let base = format!("{}{CLIENTS_SEGMENT}/{client_id}", tenant.prefix());
+    if !csrf_valid(headers, &form.csrf_token, state.config.csrf_secret()) {
+        return found(&format!("{base}?error=csrf"));
+    }
+    let sso = sso(headers);
+    let result = if grant {
+        state
+            .api
+            .grant_client_permission(
+                &correlation.0,
+                &tenant.0,
+                &sso,
+                client_id,
+                &form.permission_code,
+            )
+            .await
+    } else {
+        state
+            .api
+            .revoke_client_permission(
+                &correlation.0,
+                &tenant.0,
+                &sso,
+                client_id,
+                &form.permission_code,
+            )
+            .await
+    };
     match result {
-        Ok(client) => {
-            Html(render_detail(&messages, &tenant, &admin, &client, &csrf)).into_response()
-        }
-        Err(AdminApiError::NotFound) => not_found(&messages, &tenant, &admin),
-        Err(e) => map_data_error(&messages, &tenant, &admin, &headers, e),
+        Ok(_) => found(&base),
+        Err(AdminApiError::Unauthorized) => redirect_to_login(tenant),
+        Err(AdminApiError::Forbidden) => forbidden_response(headers),
+        // 包括的な管理権限・未知のコードはここに来る（画面の選択肢からは出ないが、
+        // 直接 POST された場合に api が拒む。ADR-0037）。
+        Err(AdminApiError::Validation(_)) => found(&format!("{base}?error=code")),
+        Err(AdminApiError::NotFound) => found(&format!("{base}?error=notfound")),
+        Err(_) => found(&format!("{base}?error=internal")),
     }
 }
 
@@ -701,12 +880,17 @@ fn render_edit_form(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_detail(
     messages: &Messages,
     tenant: &WebTenant,
     admin: &AdminContext,
     client: &ClientView,
     csrf: &str,
+    permission_codes: &[String],
+    grantable_permissions: &[String],
+    permissions_load_failed: bool,
+    error_key: Option<&'static str>,
 ) -> String {
     render(&ClientDetail {
         messages,
@@ -714,7 +898,25 @@ fn render_detail(
         admin: Some(admin.chrome()),
         client,
         csrf,
+        permission_codes,
+        grantable_permissions,
+        permissions_load_failed,
+        // 管理トークンを取れるのはシステム用クライアントだけ（ADR-0037）。それ以外に付けても
+        // 効かないので区画ごと出さない。ただし既に保有していれば、剥奪できるよう出す。
+        shows_permissions: is_system_client(client) || !permission_codes.is_empty(),
+        // 付与フォームは剥奪と違い、システム用クライアントにしか出さない。用途を変えた後などに
+        // 権限が残っているだけのブラウザログイン用クライアントへ、効かない権限を足させない。
+        shows_grant_form: is_system_client(client),
+        error_key,
     })
+}
+
+/// システム用クライアント（`client_credentials` を使える）か。管理トークン（`resource={issuer}/
+/// {tenant_id}/admin`）を取れるのはこの種別だけなので、管理権限が実際に効くのもここに限る
+/// （ADR-0037）。api 側が public クライアントに `client_credentials` を持たせないため、
+/// grant_types の有無だけで判定できる。
+fn is_system_client(client: &ClientView) -> bool {
+    client.grant_types.iter().any(|g| g == "client_credentials")
 }
 
 fn render_secret_result(
@@ -1057,5 +1259,105 @@ mod tests {
         // Askama は HTML を数値文字参照でエスケープする（`<` → `&#60;`）。生タグが残らないことを確認する。
         assert!(html.contains("&#60;script&#62;Evil&#60;/script&#62;"));
         assert!(!html.contains("<script>Evil"));
+    }
+
+    // ── 管理権限の区画（ADR-0037）─────────────────────────────────────────────
+
+    fn detail_html(
+        grant_types: &[&str],
+        held: &[&str],
+        grantable: &[&str],
+        load_failed: bool,
+    ) -> String {
+        let held: Vec<String> = held.iter().map(|s| s.to_string()).collect();
+        let grantable: Vec<String> = grantable.iter().map(|s| s.to_string()).collect();
+        render_detail(
+            &Messages::new(Locale::Ja),
+            &WebTenant("t".into()),
+            &AdminContext::for_test("admin", Some("Root")),
+            &client_view(grant_types, &[]),
+            "csrf-token",
+            &held,
+            &grantable,
+            load_failed,
+            None,
+        )
+    }
+
+    /// システム用クライアント（`client_credentials`）にだけ管理権限の区画を出し、
+    /// 保有コードと付与フォームを描く。
+    #[test]
+    fn a_system_client_gets_the_management_permission_section() {
+        let html = detail_html(
+            &["client_credentials"],
+            &["idp.users:read"],
+            &["idp.audit:read"],
+            false,
+        );
+        assert!(html.contains("idp.users:read"), "{html}");
+        assert!(html.contains("permissions/revoke"), "{html}");
+        assert!(html.contains("permissions/grant"), "{html}");
+        assert!(html.contains("idp.audit:read"), "{html}");
+    }
+
+    /// ブラウザログイン用クライアントには出さない。管理トークンを取る手段が無いので、
+    /// 付けても効かない操作を見せることになる。
+    #[test]
+    fn a_browser_client_does_not_get_the_section() {
+        let html = detail_html(&["authorization_code"], &[], &["idp.audit:read"], false);
+        assert!(!html.contains("permissions/grant"), "{html}");
+        assert!(!html.contains("permissions/revoke"), "{html}");
+    }
+
+    /// ただし既に保有していれば出す —— 出さないと剥奪する導線が無くなる
+    /// （用途を変えた後などに残り得る）。
+    #[test]
+    fn a_browser_client_that_still_holds_codes_can_revoke_them() {
+        let html = detail_html(&["authorization_code"], &["idp.users:read"], &[], false);
+        assert!(html.contains("permissions/revoke"), "{html}");
+        assert!(html.contains("idp.users:read"), "{html}");
+    }
+
+    /// 剥奪の導線を出しても、付与フォームまでは出さない。ブラウザログイン用クライアントは
+    /// 管理トークンを取れないので、新たに付けた権限は永久に効かない（ADR-0037）。
+    #[test]
+    fn a_browser_client_holding_codes_still_cannot_be_granted_more() {
+        let html = detail_html(
+            &["authorization_code"],
+            &["idp.users:read"],
+            &["idp.audit:read"],
+            false,
+        );
+        assert!(html.contains("permissions/revoke"), "{html}");
+        assert!(!html.contains("permissions/grant"), "{html}");
+        assert!(!html.contains("idp.audit:read"), "{html}");
+    }
+
+    /// 候補の取得に失敗したときは「候補が無い」と取り違えさせない。
+    #[test]
+    fn a_failed_candidate_load_is_reported_as_a_failure_not_as_an_empty_list() {
+        let messages = Messages::new(Locale::Ja);
+        let html = detail_html(&["client_credentials"], &[], &[], true);
+        assert!(
+            html.contains(&messages.get("admin-permissions-grant-load-failed")),
+            "{html}"
+        );
+        assert!(
+            !html.contains(&messages.get("admin-client-permissions-grant-none-left")),
+            "{html}"
+        );
+        assert!(!html.contains("permissions/grant"), "{html}");
+    }
+
+    /// 付与できるコードが残っていないときは、そう伝える（空の select を出さない）。
+    #[test]
+    fn nothing_left_to_grant_is_stated_plainly() {
+        let messages = Messages::new(Locale::Ja);
+        let html = detail_html(&["client_credentials"], &["idp.users:read"], &[], false);
+        assert!(
+            html.contains(&messages.get("admin-client-permissions-grant-none-left")),
+            "{html}"
+        );
+        assert!(!html.contains("permissions/grant"), "{html}");
     }
 }

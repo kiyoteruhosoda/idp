@@ -404,3 +404,58 @@ async fn fine_grained_codes_bound_a_user_while_tenant_admin_still_implies_everyt
     .await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
 }
+
+/// 付与候補の絞り込みは api が行う（`?grantable_to=client`。ADR-0037）。
+///
+/// web は core に依存しないので、この判定を web 側にも書くと**マスタが増えたときに片方だけ
+/// 古くなる**。管理コンソールの選択肢がこの応答そのものなので、包括コードが混ざれば画面から
+/// 「付けられない権限」を選べてしまう。
+#[tokio::test]
+async fn the_grantable_to_client_filter_removes_the_blanket_admin_codes() {
+    let Some(env) = support::setup("management api grantable filter").await else {
+        return;
+    };
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+    let uri = format!("/{}/admin/permissions", env.root_tenant_id);
+
+    // 絞り込み無しはマスタ全件（包括コードを含む）。
+    let res = send(&env.app, get(&admin_tok, &uri)).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let all = body_json(res).await;
+    let all: Vec<String> = serde_json::from_value(all["codes"].clone()).expect("codes");
+    assert!(all.iter().any(|c| c == "idp.tenant.admin"));
+    assert!(all.iter().any(|c| c == "idp.system.admin"));
+    assert!(all.iter().any(|c| c == "idp.users:read"));
+
+    // `grantable_to=client` は包括コードだけを落とし、細粒度コードは残す。
+    let res = send(
+        &env.app,
+        get(&admin_tok, &format!("{uri}?grantable_to=client")),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let filtered = body_json(res).await;
+    let filtered: Vec<String> = serde_json::from_value(filtered["codes"].clone()).expect("codes");
+    assert!(
+        !filtered.iter().any(|c| c == "idp.tenant.admin"),
+        "blanket tenant admin must not be offered as a client grant"
+    );
+    assert!(
+        !filtered.iter().any(|c| c == "idp.system.admin"),
+        "blanket system admin must not be offered as a client grant"
+    );
+    assert!(filtered.iter().any(|c| c == "idp.users:read"));
+    assert_eq!(filtered.len(), all.len() - 2);
+
+    // 未知の値は絞り込まない（支援 API なので綴り違いを 400 にはしない）。
+    let res = send(
+        &env.app,
+        get(&admin_tok, &format!("{uri}?grantable_to=nonsense")),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let unfiltered = body_json(res).await;
+    let unfiltered: Vec<String> =
+        serde_json::from_value(unfiltered["codes"].clone()).expect("codes");
+    assert_eq!(unfiltered.len(), all.len());
+}

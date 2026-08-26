@@ -5,6 +5,7 @@
 //! （`user_permission.granted` / `.revoked`）。判定は Application 層（`PermissionManagementService`）
 //! が行い、本ハンドラは HTTP への写像のみを担う。
 
+use crate::domain::permission;
 use crate::presentation::admin::{PermissionsRead, PermissionsWrite, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{GrantPermissionRequest, UserPermissionsResponse};
@@ -13,26 +14,47 @@ use crate::presentation::handlers::{map_permission_management_error, request_con
 use crate::presentation::i18n::ApiLocale;
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
-use axum::extract::{Extension, Path, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::HeaderMap;
 use axum::Json;
 use uuid::Uuid;
 
 /// 付与可能な権限コード（`permissions` マスタ）を一覧する（`GET /admin/permissions`）。
 /// 管理コンソール（web）の付与フォームの選択肢に使う支援 API。
+///
+/// `?grantable_to=client` を付けると、**クライアントへ付与できるコードだけ**へ絞る（ADR-0037）。
+/// 絞り込みを api で行うのは、判定（`domain::permission::is_grantable_to_client`）の出所を
+/// core に一本化するためである。web は core に依存しない（crate 境界で強制。ADR-0007）ので、
+/// web 側で同じ判定を書くと**マスタが増えたときに片方だけ古くなる**。
 pub async fn list_available_permissions(
     RequirePerms(_admin, _): RequirePerms<PermissionsRead>,
     State(state): State<AppState>,
     locale: ApiLocale,
+    Query(query): Query<AvailablePermissionsQuery>,
 ) -> Result<Json<idp_contracts::admin::AvailablePermissionsResponse>, ApiError> {
-    let codes = state
+    let mut codes = state
         .permissions_admin
         .available_codes()
         .await
         .map_err(|e| map_permission_management_error(e, locale))?;
+    if query.grantable_to.as_deref() == Some(GRANTABLE_TO_CLIENT) {
+        codes.retain(|code| permission::is_grantable_to_client(code));
+    }
     Ok(Json(idp_contracts::admin::AvailablePermissionsResponse {
         codes,
     }))
+}
+
+/// `grantable_to` の唯一の許可値。未知の値は絞り込まない（＝全件）——ここで 400 にしないのは、
+/// 支援 API であり、綴りを誤っても「候補が多すぎる」に留まって害が無いためである。
+const GRANTABLE_TO_CLIENT: &str = "client";
+
+/// `GET /admin/permissions` のクエリ。
+#[derive(Debug, serde::Deserialize)]
+pub struct AvailablePermissionsQuery {
+    /// `client` を指定すると、クライアントへ付与できるコードだけを返す。
+    #[serde(default)]
+    pub grantable_to: Option<String>,
 }
 
 /// 対象利用者が保有する権限コードを一覧する。
