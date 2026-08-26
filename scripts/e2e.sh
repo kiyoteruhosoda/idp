@@ -228,8 +228,20 @@ if [[ "$perm_status" == "200" ]]; then
     -H 'content-type: application/x-www-form-urlencoded' \
     --data-urlencode "permission_code=idp.tenant.admin" --data-urlencode "csrf_token=${pcsrf}"
 else
-  # 画面描画が失敗する環境でも、同じ SSO Cookie で api の管理 JSON API 経路を検証する。
-  curl -fsS -b "$AJAR" -o /dev/null -X POST "${API}/${ROOT}/admin/users/${tid}/permissions" \
+  # 画面描画が失敗する環境でも、api の管理 JSON API 経路を直接検証する。
+  #
+  # 管理 API は Bearer だけを受け付ける（ADR-0037）。Cookie をそのまま転送する経路はもう無いので、
+  # **web と同じ手順**で SSO セッションを管理トークンへ交換してから呼ぶ。この分岐が web の経路の
+  # 代役である以上、認可のやり方まで web と同じでなければ代役にならない。
+  sso="$(awk '$6 == "sso_session_id" { print $7 }' "$AJAR" | first_line)"
+  [[ -n "$sso" ]] || fail "SSO セッション Cookie が取れません"
+  mtok="$(curl -fsS -X POST "${API_INTERNAL}/internal/admin/token" \
+    -H "x-internal-auth-token: ${TOKEN}" -H 'content-type: application/json' \
+    -d "{\"tenant_id\":\"${ROOT}\",\"sso_session_id\":\"${sso}\"}" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')"
+  [[ -n "$mtok" ]] || fail "管理トークンへの交換に失敗しました"
+  curl -fsS -H "authorization: Bearer ${mtok}" -o /dev/null \
+    -X POST "${API}/${ROOT}/admin/users/${tid}/permissions" \
     -H 'content-type: application/json' \
     -d '{"permission_code":"idp.tenant.admin"}'
 fi
