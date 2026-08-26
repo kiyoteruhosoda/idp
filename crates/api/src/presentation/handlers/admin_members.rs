@@ -8,7 +8,7 @@
 use crate::application::invitation::InvitationError;
 use crate::application::member_directory::MemberSearchParams;
 use crate::domain::values::MembershipStatus;
-use crate::presentation::admin::{IdpAdmin, RequirePerms};
+use crate::presentation::admin::{MembersRead, MembersWrite, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
     MemberListQueryParams, MemberListResponse, MemberResponse, UpdateMemberStatusRequest,
@@ -39,7 +39,7 @@ use uuid::Uuid;
     )
 )]
 pub async fn list_members(
-    RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(_admin, _): RequirePerms<MembersRead>,
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
@@ -94,7 +94,7 @@ pub async fn list_members(
     )
 )]
 pub async fn revoke_member(
-    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(admin, _): RequirePerms<MembersWrite>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
@@ -111,7 +111,7 @@ pub async fn revoke_member(
     );
     state
         .invitations
-        .revoke_membership(tenant.context(), target, admin.user_id, &ctx)
+        .revoke_membership(tenant.context(), target, &admin.actor, &ctx)
         .await
         .map_err(|e| map_error(e, locale))?;
     Ok(StatusCode::NO_CONTENT)
@@ -138,7 +138,7 @@ pub async fn revoke_member(
 )]
 #[allow(clippy::too_many_arguments)]
 pub async fn update_member_status(
-    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(admin, _): RequirePerms<MembersWrite>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
@@ -166,13 +166,13 @@ pub async fn update_member_status(
         MembershipStatus::Suspended => {
             state
                 .invitations
-                .suspend_membership(tenant.context(), target, admin.user_id, &ctx)
+                .suspend_membership(tenant.context(), target, &admin.actor, &ctx)
                 .await
         }
         _ => {
             state
                 .invitations
-                .resume_membership(tenant.context(), target, admin.user_id, &ctx)
+                .resume_membership(tenant.context(), target, &admin.actor, &ctx)
                 .await
         }
     };

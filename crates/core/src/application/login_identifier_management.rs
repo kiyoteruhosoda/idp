@@ -18,6 +18,7 @@
 //! 利用者本人が自分で足せる導線は用意しない。
 
 use crate::application::audit::{AuditService, RequestContext};
+use crate::domain::admin_actor::AdminActor;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
@@ -152,7 +153,7 @@ impl LoginIdentifierManagementService {
         tenant: TenantContext,
         target: Uuid,
         cmd: AddLoginIdentifierCommand,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<UserLoginIdentifier, LoginIdentifierManagementError> {
         let user = self.find_home_user(tenant, target).await?;
@@ -211,7 +212,7 @@ impl LoginIdentifierManagementService {
         target: Uuid,
         identifier_id: Uuid,
         is_active: bool,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<UserLoginIdentifier, LoginIdentifierManagementError> {
         let user = self.find_home_user(tenant, target).await?;
@@ -252,7 +253,7 @@ impl LoginIdentifierManagementService {
         tenant: TenantContext,
         target: Uuid,
         identifier_id: Uuid,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<(), LoginIdentifierManagementError> {
         let user = self.find_home_user(tenant, target).await?;
@@ -384,7 +385,7 @@ impl LoginIdentifierManagementService {
         &self,
         event_type: AuditEventType,
         tenant_id: TenantId,
-        actor: Uuid,
+        actor: &AdminActor,
         reason: &str,
         ctx: &RequestContext,
     ) {
@@ -393,8 +394,8 @@ impl LoginIdentifierManagementService {
                 event_type,
                 AuditResult::Success,
                 Some(tenant_id),
-                Some(actor),
-                None,
+                actor.user_id(),
+                actor.client_id(),
                 Some(reason),
                 ctx,
             )
@@ -648,7 +649,7 @@ mod tests {
                     value: "090-1234-5678".to_string(),
                     is_active: true,
                 },
-                Uuid::from_u128(9),
+                &AdminActor::User(Uuid::from_u128(9)),
                 &ctx(),
             )
             .await
@@ -674,7 +675,7 @@ mod tests {
                     value: "BOB".to_string(),
                     is_active: true,
                 },
-                Uuid::from_u128(9),
+                &AdminActor::User(Uuid::from_u128(9)),
                 &ctx(),
             )
             .await
@@ -697,7 +698,7 @@ mod tests {
                     value: "Bob@Example.com".to_string(),
                     is_active: true,
                 },
-                Uuid::from_u128(9),
+                &AdminActor::User(Uuid::from_u128(9)),
                 &ctx(),
             )
             .await
@@ -717,7 +718,7 @@ mod tests {
                     value: "E-1001".to_string(),
                     is_active: true,
                 },
-                Uuid::from_u128(9),
+                &AdminActor::User(Uuid::from_u128(9)),
                 &ctx(),
             )
             .await
@@ -728,7 +729,7 @@ mod tests {
                 Uuid::from_u128(2),
                 added.id,
                 false,
-                Uuid::from_u128(9),
+                &AdminActor::User(Uuid::from_u128(9)),
                 &ctx(),
             )
             .await
@@ -751,7 +752,7 @@ mod tests {
                     value: "Alice".to_string(),
                     is_active: true,
                 },
-                Uuid::from_u128(9),
+                &AdminActor::User(Uuid::from_u128(9)),
                 &ctx(),
             )
             .await
@@ -789,7 +790,7 @@ mod tests {
                     value: "E-1001".to_string(),
                     is_active: true,
                 },
-                Uuid::from_u128(9),
+                &AdminActor::User(Uuid::from_u128(9)),
                 &ctx(),
             )
             .await

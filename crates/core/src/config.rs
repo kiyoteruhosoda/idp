@@ -126,6 +126,7 @@ pub struct Config {
     sso_idle_ttl: Duration,
     sso_absolute_ttl: Duration,
     access_token_ttl: Duration,
+    management_token_ttl: Duration,
     id_token_ttl: Duration,
     refresh_token_ttl: Duration,
     clock_skew: Duration,
@@ -272,6 +273,7 @@ impl Config {
             sso_idle_ttl: secs(resolver.parse("SSO_IDLE_TTL_SECS", 28_800)?),
             sso_absolute_ttl: secs(resolver.parse("SSO_ABSOLUTE_TTL_SECS", 86_400)?),
             access_token_ttl: secs(resolver.parse("ACCESS_TOKEN_TTL_SECS", 900)?),
+            management_token_ttl: secs(resolver.parse("MANAGEMENT_TOKEN_TTL_SECS", 300)?),
             id_token_ttl: secs(resolver.parse("ID_TOKEN_TTL_SECS", 3_600)?),
             // Refresh Token は既定 30 日（offline_access scope で発行。rotation あり）。
             refresh_token_ttl: secs(resolver.parse("REFRESH_TOKEN_TTL_SECS", 2_592_000)?),
@@ -381,6 +383,12 @@ impl Config {
     }
     pub fn access_token_ttl(&self) -> Duration {
         self.access_token_ttl
+    }
+    /// 管理 API のアクセストークンの有効期限（ADR-0037）。通常のアクセストークンより短く保つ:
+    /// 管理コンソールはリクエストの度に SSO セッションから交換するため寿命が要らず、システム用
+    /// クライアントにとっては「無効化してから実際に止まるまで」の上限になる。
+    pub fn management_token_ttl(&self) -> Duration {
+        self.management_token_ttl
     }
     pub fn id_token_ttl(&self) -> Duration {
         self.id_token_ttl

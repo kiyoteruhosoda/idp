@@ -15,15 +15,15 @@
 mod support;
 
 use axum::body::Body;
-use axum::http::header::{CONTENT_TYPE, COOKIE};
+use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, COOKIE};
 use axum::http::{Method, Request, StatusCode};
 use serde_json::{json, Value};
-use support::{body_json, create_sso_session, send};
+use support::{admin_token, body_json, send};
 
-/// `Accept-Language` を付けたリクエストを組み立てる（`None` はヘッダ無し）。
+/// `Accept-Language` を付けた管理 API リクエストを組み立てる（`None` はヘッダ無し）。
 fn request(
     method: Method,
-    cookie: &str,
+    token: &str,
     uri: &str,
     accept_language: Option<&str>,
     body: Option<Value>,
@@ -31,7 +31,7 @@ fn request(
     let mut builder = Request::builder()
         .method(method)
         .uri(uri)
-        .header(COOKIE, format!("sso_session_id={cookie}"));
+        .header(AUTHORIZATION, format!("Bearer {token}"));
     if let Some(lang) = accept_language {
         builder = builder.header("accept-language", lang);
     }
@@ -48,7 +48,7 @@ async fn error_messages_follow_accept_language_while_codes_stay_invariant() {
     let Some(env) = support::setup("api i18n").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     // 不明な利用者への操作 → 404（メッセージは `api-user-not-found`）。
     let uri = format!(
         "/{}/admin/users/{}",
@@ -68,7 +68,7 @@ async fn error_messages_follow_accept_language_while_codes_stay_invariant() {
     for (header, expect_ja) in cases {
         let res = send(
             &env.app,
-            request(Method::GET, &admin_cookie, &uri, header, None),
+            request(Method::GET, &admin_tok, &uri, header, None),
         )
         .await;
         assert_eq!(res.status(), StatusCode::NOT_FOUND, "header={header:?}");
@@ -84,12 +84,14 @@ async fn error_messages_follow_accept_language_while_codes_stay_invariant() {
     }
 
     // Cookie で言語を渡しても API は見ない（表示言語の決定は web の責務。CLAUDE.md「国際化」）。
+    // 資格情報は Bearer なので、ここでの Cookie は `lang` を運ぶためだけに付ける。
     let res = send(
         &env.app,
         Request::builder()
             .method(Method::GET)
             .uri(&uri)
-            .header(COOKIE, format!("sso_session_id={admin_cookie}; lang=en"))
+            .header(AUTHORIZATION, format!("Bearer {admin_tok}"))
+            .header(COOKIE, "lang=en")
             .body(Body::empty())
             .unwrap(),
     )
@@ -107,7 +109,7 @@ async fn validation_errors_from_the_domain_are_translated_with_their_value() {
     let Some(env) = support::setup("api i18n validation").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     let uri = format!("/{}/admin/clients", env.root_tenant_id);
     let body = json!({
         "app_name": "X",
@@ -120,7 +122,7 @@ async fn validation_errors_from_the_domain_are_translated_with_their_value() {
         &env.app,
         request(
             Method::POST,
-            &admin_cookie,
+            &admin_tok,
             &uri,
             Some("en"),
             Some(body.clone()),
@@ -140,7 +142,7 @@ async fn validation_errors_from_the_domain_are_translated_with_their_value() {
     // 同じ入力を ja で送ると日本語になる（コードは同じ）。
     let res = send(
         &env.app,
-        request(Method::POST, &admin_cookie, &uri, Some("ja"), Some(body)),
+        request(Method::POST, &admin_tok, &uri, Some("ja"), Some(body)),
     )
     .await;
     let response = body_json(res).await;
@@ -158,7 +160,7 @@ async fn extractor_rejections_are_translated_too() {
     };
     let uri = format!("/{}/admin/whoami", env.root_tenant_id);
 
-    // 未認証（Cookie 無し）。
+    // 未認証（トークン無し）。
     for (header, expected) in [
         (Some("en"), "Sign-in is required."),
         (Some("ja"), "サインインが必要です。"),
@@ -177,14 +179,14 @@ async fn extractor_rejections_are_translated_too() {
 
     // 権限不足（ログイン済みだが idp.tenant.admin なし）。
     let plain = support::create_plain_user(&env.pool, &env.root_tenant_id).await;
-    let cookie = create_sso_session(&env.pool, &plain).await;
+    let plain_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &plain).await;
     for (header, expected) in [
         ("en", "You do not have permission to perform this action."),
         ("ja", "この操作を行う権限がありません。"),
     ] {
         let res = send(
             &env.app,
-            request(Method::GET, &cookie, &uri, Some(header), None),
+            request(Method::GET, &plain_tok, &uri, Some(header), None),
         )
         .await;
         assert_eq!(res.status(), StatusCode::FORBIDDEN);

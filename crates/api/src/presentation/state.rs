@@ -27,6 +27,7 @@ use crate::application::backchannel_logout::{
 use crate::application::change_password::ChangePasswordService;
 use crate::application::client_authentication::ClientAuthenticator;
 use crate::application::client_management::ClientManagementService;
+use crate::application::client_permission_management::ClientPermissionManagementService;
 use crate::application::client_status::ClientStatusService;
 use crate::application::code_issuance::CodeIssuanceService;
 use crate::application::consent::ConsentService;
@@ -41,6 +42,7 @@ use crate::application::key_service::KeyService;
 use crate::application::login::LoginService;
 use crate::application::login_identifier_management::LoginIdentifierManagementService;
 use crate::application::logout::LogoutService;
+use crate::application::management_token::ManagementTokenService;
 use crate::application::member_directory::MemberDirectoryService;
 use crate::application::mfa_login::MfaLoginService;
 use crate::application::passkey_authentication::PasskeyAuthenticationService;
@@ -92,6 +94,7 @@ use crate::infrastructure::repositories::cached_user_permission::{
 };
 use crate::infrastructure::repositories::client::SqlxClientRepository;
 use crate::infrastructure::repositories::client_assertion::SqlxClientAssertionReplayRepository;
+use crate::infrastructure::repositories::client_permission::SqlxClientPermissionRepository;
 use crate::infrastructure::repositories::consent::SqlxClientConsentRepository;
 use crate::infrastructure::repositories::email_verification_token::SqlxEmailVerificationTokenRepository;
 use crate::infrastructure::repositories::external_idp::{
@@ -166,6 +169,10 @@ pub struct AppState {
     pub userinfo: Arc<UserInfoService>,
     pub keys: Arc<KeyService>,
     pub admin_access: Arc<AdminAccessService>,
+    /// 管理 API の認可（ADR-0037）。`RequirePerms` が呼ぶ判定と、SSO セッション → 管理トークンの交換。
+    pub management_tokens: Arc<ManagementTokenService>,
+    /// クライアントへの管理権限の付与・剥奪（`/admin/clients/{client_id}/permissions`）。
+    pub client_permissions_admin: Arc<ClientPermissionManagementService>,
     pub admin_login: Arc<AdminLoginService>,
     /// エンドユーザー・ポータルの直接ログイン（クライアント非依存。TOTP を尊重して SSO を直接発行する）。
     pub portal_login: Arc<PortalLoginService>,
@@ -603,18 +610,24 @@ impl AppState {
             clock.clone(),
             config.issuer().to_string(),
         ));
+        // システム用クライアントが保有する管理 API の権限（ADR-0037）。`client_credentials` に
+        // `resource` で管理 API を要求されたときにだけ引く。
+        let client_permissions: Arc<dyn crate::domain::repositories::ClientPermissionRepository> =
+            Arc::new(SqlxClientPermissionRepository::new(pool.clone()));
         let token = Arc::new(TokenService::new(
             clients.clone(),
             users.clone(),
             tenants.clone(),
             codes.clone(),
             refresh_tokens.clone(),
+            client_permissions.clone(),
             keys.clone(),
             client_auth.clone(),
             audit.clone(),
             clock.clone(),
             config.issuer().to_string(),
             config.access_token_ttl(),
+            config.management_token_ttl(),
             config.id_token_ttl(),
             config.refresh_token_ttl(),
         ));
@@ -713,6 +726,26 @@ impl AppState {
             users.clone(),
             user_permissions,
             tenant_memberships.clone(),
+            clock.clone(),
+        ));
+        // 管理 API の認可（ADR-0037）。`RequirePerms` の判定と、管理コンソールの
+        // 「SSO セッション → 管理トークン」交換の双方をここが担う。
+        let management_tokens = Arc::new(ManagementTokenService::new(
+            admin_access.clone(),
+            keys.clone(),
+            signing_keys.clone(),
+            users.clone(),
+            clients.clone(),
+            revoked_access_tokens.clone(),
+            clock.clone(),
+            config.issuer().to_string(),
+            config.management_token_ttl(),
+            config.clock_skew(),
+        ));
+        let client_permissions_admin = Arc::new(ClientPermissionManagementService::new(
+            clients.clone(),
+            client_permissions,
+            audit.clone(),
             clock.clone(),
         ));
 
@@ -953,6 +986,8 @@ impl AppState {
             userinfo,
             keys,
             admin_access,
+            management_tokens,
+            client_permissions_admin,
             admin_login,
             portal_login,
             clients_admin,

@@ -5,7 +5,7 @@
 //! （`user_permission.granted` / `.revoked`）。判定は Application 層（`PermissionManagementService`）
 //! が行い、本ハンドラは HTTP への写像のみを担う。
 
-use crate::presentation::admin::{IdpAdmin, RequirePerms};
+use crate::presentation::admin::{PermissionsRead, PermissionsWrite, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{GrantPermissionRequest, UserPermissionsResponse};
 use crate::presentation::error::ApiError;
@@ -21,7 +21,7 @@ use uuid::Uuid;
 /// 付与可能な権限コード（`permissions` マスタ）を一覧する（`GET /admin/permissions`）。
 /// 管理コンソール（web）の付与フォームの選択肢に使う支援 API。
 pub async fn list_available_permissions(
-    RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(_admin, _): RequirePerms<PermissionsRead>,
     State(state): State<AppState>,
     locale: ApiLocale,
 ) -> Result<Json<idp_contracts::admin::AvailablePermissionsResponse>, ApiError> {
@@ -50,7 +50,7 @@ pub async fn list_available_permissions(
     )
 )]
 pub async fn list_permissions(
-    RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(_admin, _): RequirePerms<PermissionsRead>,
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
@@ -86,7 +86,7 @@ pub async fn list_permissions(
 )]
 #[allow(clippy::too_many_arguments)]
 pub async fn grant_permission(
-    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(admin, _): RequirePerms<PermissionsWrite>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
@@ -107,7 +107,7 @@ pub async fn grant_permission(
             tenant.context(),
             target,
             &body.permission_code,
-            admin.user_id,
+            &admin.actor,
             &ctx,
         )
         .await
@@ -136,7 +136,7 @@ pub async fn grant_permission(
     )
 )]
 pub async fn revoke_permission(
-    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(admin, _): RequirePerms<PermissionsWrite>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
@@ -156,7 +156,7 @@ pub async fn revoke_permission(
             tenant.context(),
             target,
             &permission_code,
-            admin.user_id,
+            &admin.actor,
             &ctx,
         )
         .await

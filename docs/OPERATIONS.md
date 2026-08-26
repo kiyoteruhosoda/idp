@@ -328,7 +328,89 @@ curl -sS -X POST "$ISSUER/$TENANT_ID/token" \
 返るのはアクセストークンだけで、ID Token も Refresh Token も返らない（利用者が居ないため）。
 要求できる scope は登録した `scopes` の範囲内で、`offline_access` は使えない。
 
-### 4. 鍵を入れ替えたいとき（ローテーション）
+### 4. この IdP 自身を操作させたいとき（管理 API）
+
+利用者・クライアント・監査ログといった **IdP 自身の管理操作**をシステムから行わせる場合は、
+そのクライアントへ**管理権限コード**を付与し、トークン要求に `resource` を添える（ADR-0037）。
+
+#### 4-1. 権限を付ける
+
+管理コンソールを操作できる管理者（`idp.clients:write` 保有者）が付ける。
+
+```bash
+curl -sS -X POST "$API_BASE_URL/$TENANT_ID/admin/clients/$CLIENT_ID/permissions" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"permission_code": "idp.users:read"}'
+```
+
+付与できるのは細粒度コードだけである。**`idp.tenant.admin` / `idp.system.admin` は付与できない**
+（400）。必要な操作に対応するコードを選ぶ:
+
+| リソース | 読み取り | 変更 |
+|---|---|---|
+| 利用者（ログイン識別子・パスワード再発行・MFA 解除を含む） | `idp.users:read` | `idp.users:write` |
+| クライアント（RP。secret 再発行・権限付与を含む） | `idp.clients:read` | `idp.clients:write` |
+| メンバー・招待 | `idp.members:read` | `idp.members:write` |
+| 権限の付与状況 | `idp.permissions:read` | `idp.permissions:write` |
+| 監査ログ | `idp.audit:read` | — |
+| 署名鍵 | `idp.keys:read` | `idp.keys:write` |
+| 自テナントの設定 | `idp.tenant-settings:read` | `idp.tenant-settings:write` |
+| 認証ポリシー | `idp.authentication-policies:read` | `idp.authentication-policies:write` |
+| 外部 IdP | `idp.external-idps:read` | `idp.external-idps:write` |
+| SAML SP | `idp.saml-service-providers:read` | `idp.saml-service-providers:write` |
+
+`:write` は同じリソースの `:read` を含む。**テナントの作成・削除、システム設定、再起動、
+テナント横断のログ参照は分割していない**（`idp.system.admin` が必要で、クライアントには渡せない）。
+
+一覧・剥奪:
+
+```bash
+curl -sS "$API_BASE_URL/$TENANT_ID/admin/clients/$CLIENT_ID/permissions" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+curl -sS -X DELETE \
+  "$API_BASE_URL/$TENANT_ID/admin/clients/$CLIENT_ID/permissions/idp.users:read" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+#### 4-2. 管理トークンを取る
+
+`resource` に `{issuer}/{tenant_id}/admin` を指定する。**省略すると管理 API では使えない
+トークン**（`aud` が `/userinfo`）が返り、管理 API は 401 を返す。
+
+```bash
+ASSERTION=$(bash sign-assertion.sh machine.key 2026-08 "$CLIENT_ID" "$ISSUER/$TENANT_ID/token")
+
+TOKEN=$(curl -sS -X POST "$ISSUER/$TENANT_ID/token" \
+  -d grant_type=client_credentials \
+  -d client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer \
+  --data-urlencode "client_assertion=$ASSERTION" \
+  --data-urlencode "resource=$ISSUER/$TENANT_ID/admin" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
+```
+
+#### 4-3. 管理 API を呼ぶ
+
+```bash
+curl -sS "$ISSUER/$TENANT_ID/admin/users?query=alice" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+エンドポイントの一覧と要求形式は OpenAPI（`/api/openapi.json`・Swagger UI）を見る。
+
+#### うまくいかないときの見どころ
+
+| 症状 | 原因 |
+|---|---|
+| `/token` が `invalid_target` | 権限を 1 つも付けていない、または `resource` がこの IdP の管理 API を指していない |
+| 管理 API が 401 | `resource` を付けずに取ったトークン／別テナント向けのトークン／期限切れ（既定 300 秒。`MANAGEMENT_TOKEN_TTL_SECS`） |
+| 管理 API が 403 | そのエンドポイントに対応する権限コードを持っていない |
+
+トークンはテナント毎である。複数テナントを操作するなら、テナントごとに取り直す。
+クライアントを無効化・削除すると、発行済みトークンも**次のリクエストで**通らなくなる。
+
+### 5. 鍵を入れ替えたいとき（ローテーション）
 
 止めずに入れ替えられる。
 
@@ -957,6 +1039,7 @@ curl -sS -X POST "$ISSUER/{tenant_id}/admin/external-idps" \
 | `SSO_IDLE_TTL_SECS` | `28800` | SSO idle タイムアウト（8h） |
 | `SSO_ABSOLUTE_TTL_SECS` | `86400` | SSO absolute タイムアウト（24h） |
 | `ACCESS_TOKEN_TTL_SECS` | `900` | Access Token 有効期間 |
+| `MANAGEMENT_TOKEN_TTL_SECS` | `300` | 管理 API のアクセストークンの有効期間（ADR-0037）。管理コンソールは毎回取り直すので短くてよい |
 | `ID_TOKEN_TTL_SECS` | `3600` | ID Token 有効期間 |
 | `CLOCK_SKEW_SECS` | `60` | JWT 検証時のクロックスキュー許容 |
 | `PUBLIC_WEB_BASE_URL` | `ISSUER` と同値 | web 画面の公開 URL。`/authorize` からのログインハンドオフと招待・リセットメールのリンクの土台。**api・web で同値必須（ENV でのみ設定可。DB 上書き不可）**。web を別オリジンへ置く構成でのみ設定 |

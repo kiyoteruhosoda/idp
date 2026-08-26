@@ -885,6 +885,24 @@ pub trait UserPermissionRepository: Send + Sync {
     ) -> Result<Vec<String>>;
 }
 
+/// クライアント（システム用クライアント）が保有する権限の永続化（ADR-0037）。
+///
+/// scope 引数を取らないのは、`clients.id` が既に所属テナントを決めているためである
+/// （`clients.tenant_id`）。「クライアントの所属テナント」と「権限の scope」が食い違う状態を
+/// そもそも表現できないようにしてある（`client_permissions` に scope 列は無い）。
+#[async_trait]
+pub trait ClientPermissionRepository: Send + Sync {
+    /// 当該クライアントが保有する権限コード一覧を返す（順序は不定。不保有なら空）。
+    async fn list_codes_for_client(&self, client_row_id: Uuid) -> Result<Vec<String>>;
+    /// 権限を付与する（冪等: 既存付与は `granted_at` を保持する）。
+    /// `code` は `permissions` マスタに存在し、かつクライアントへ付与可能であること
+    /// （`domain::permission::is_grantable_to_client`。DB 側の CHECK 制約と二重に効く）。
+    async fn grant(&self, client_row_id: Uuid, code: &str, granted_at: DateTime<Utc>)
+        -> Result<()>;
+    /// 権限を剥奪する（不存在でもエラーにしない）。
+    async fn revoke(&self, client_row_id: Uuid, code: &str) -> Result<()>;
+}
+
 /// Refresh Token の永続化（設計仕様 §9.1）。DB には SHA-256 hash を保存する。
 #[async_trait]
 pub trait RefreshTokenRepository: Send + Sync {

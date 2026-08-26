@@ -30,20 +30,30 @@ use axum::http::{Request, StatusCode};
 use serde_json::json;
 use sqlx::Row;
 use support::{
-    authorize_uri_openid_only as authorize_uri, body_json, create_sso_session, delete,
-    exchange_code, get, post, query_param, send, setup as support_setup, unique, TestEnv,
-    REDIRECT_URI,
+    authorize_uri_openid_only as authorize_uri, body_json, cookie_post, create_sso_session, delete,
+    exchange_admin_token, exchange_code, get, post, query_param, send, setup as support_setup,
+    unique, TestEnv, REDIRECT_URI,
 };
 
 async fn setup() -> Option<TestEnv> {
     support_setup("tenant isolation").await
 }
 
+/// SSO セッションを、指定テナント向けの管理トークンへ交換する（ADR-0037）。
+///
+/// 管理トークンは `iss` / `aud` が per-tenant issuer に固定されるため、テナントを跨いで
+/// 使い回せない。本テストの主題（テナント境界）そのものなので、交換は都度その場で行う。
+async fn tok(env: &TestEnv, sso: &str, tenant_id: &str) -> String {
+    exchange_admin_token(&env.app, tenant_id, sso).await
+}
+
 /// API 経由で作成したテナントと、その正式な HOME 管理者。
 struct CreatedTenant {
     id: String,
     admin_id: String,
-    admin_cookie: String,
+    /// HOME 管理者の SSO セッション（平文 session_id）。管理 API を叩くときは、操作対象の
+    /// テナント向けの管理トークンへ [`tok`] で交換する（管理トークンはテナント毎。ADR-0037）。
+    admin_sso: String,
 }
 
 /// テナント作成のブートストラップフローを実行し、正式な HOME 管理者を用意する（ADR-0009 §4）。手順:
@@ -54,12 +64,12 @@ struct CreatedTenant {
 /// 返す `admin_id`/`admin_cookie` はこの HOME 管理者のもの。作成者（root）はこの時点でも当該テナントの
 /// ゲスト管理者のまま残る（各テストは HOME 管理者の Cookie で内部を操作する。root の離脱は
 /// [`root_leaves_tenant`] を明示的に呼ぶテストでのみ行い、共有 root 行に対する DELETE 競合を避ける）。
-async fn create_tenant(env: &TestEnv, root_cookie: &str, name: &str) -> CreatedTenant {
+async fn create_tenant(env: &TestEnv, root_sso: &str, name: &str) -> CreatedTenant {
     // 1. root がテナントを作成（root が ACTIVE GUEST + idp.tenant.admin を得る）。
     let res = send(
         &env.app,
         post(
-            root_cookie,
+            &tok(env, root_sso, &env.root_tenant_id).await,
             &format!("/{}/admin/tenants", env.root_tenant_id),
             json!({ "name": name }),
         ),
@@ -76,7 +86,7 @@ async fn create_tenant(env: &TestEnv, root_cookie: &str, name: &str) -> CreatedT
     let res = send(
         &env.app,
         post(
-            root_cookie,
+            &tok(env, root_sso, &id).await,
             &format!("/{id}/admin/users"),
             json!({ "email": admin_email }),
         ),
@@ -92,7 +102,7 @@ async fn create_tenant(env: &TestEnv, root_cookie: &str, name: &str) -> CreatedT
     let res = send(
         &env.app,
         post(
-            root_cookie,
+            &tok(env, root_sso, &id).await,
             &format!("/{id}/admin/users/{admin_id}/permissions"),
             json!({ "permission_code": "idp.tenant.admin" }),
         ),
@@ -100,21 +110,21 @@ async fn create_tenant(env: &TestEnv, root_cookie: &str, name: &str) -> CreatedT
     .await;
     assert_eq!(res.status(), StatusCode::OK, "grant idp.tenant.admin");
 
-    let admin_cookie = create_sso_session(&env.pool, &admin_id).await;
+    let admin_sso = create_sso_session(&env.pool, &admin_id).await;
     CreatedTenant {
         id,
         admin_id,
-        admin_cookie,
+        admin_sso,
     }
 }
 
 /// 作成者（root）が自身のゲストメンバーシップを解除して当該テナントから離脱する（解除時に当該テナント
 /// scope の権限行も後始末される。ADR-0009 §3・§4）。離脱後は root は当該テナント内部を操作できない。
-async fn root_leaves_tenant(env: &TestEnv, root_cookie: &str, tenant_id: &str) {
+async fn root_leaves_tenant(env: &TestEnv, root_sso: &str, tenant_id: &str) {
     let res = send(
         &env.app,
         delete(
-            root_cookie,
+            &tok(env, root_sso, tenant_id).await,
             &format!("/{tenant_id}/admin/members/{}", env.root_admin_id),
         ),
     )
@@ -127,12 +137,12 @@ async fn root_leaves_tenant(env: &TestEnv, root_cookie: &str, tenant_id: &str) {
 }
 
 /// テナント管理者として利用者を作成し `(user_id, email)` を返す。
-async fn create_user(env: &TestEnv, admin_cookie: &str, tenant_id: &str) -> (String, String) {
+async fn create_user(env: &TestEnv, admin_sso: &str, tenant_id: &str) -> (String, String) {
     let email = format!("user-{}@example.com", unique());
     let res = send(
         &env.app,
         post(
-            admin_cookie,
+            &tok(env, admin_sso, tenant_id).await,
             &format!("/{tenant_id}/admin/users"),
             json!({ "email": email }),
         ),
@@ -157,29 +167,44 @@ async fn insert_public_client(pool: &sqlx::MySqlPool, tenant_id: &str) -> String
 #[tokio::test]
 async fn root_can_create_but_cannot_operate_inside_created_tenant() {
     let Some(env) = setup().await else { return };
-    let root_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
-    let tenant = create_tenant(&env, &root_cookie, "Inner").await;
+    let root_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let tenant = create_tenant(&env, &root_sso, "Inner").await;
     // ブートストラップ完了後、作成者（root）は自身のゲストメンバーシップを解除して離脱する。
-    root_leaves_tenant(&env, &root_cookie, &tenant.id).await;
+    root_leaves_tenant(&env, &root_sso, &tenant.id).await;
 
     // 離脱後の root の system 管理者は、作成した子テナントの管理 API へ一切アクセスできない（§4・§9）。
     let forbidden_requests = vec![
-        get(&root_cookie, &format!("/{}/admin/whoami", tenant.id)),
-        get(&root_cookie, &format!("/{}/admin/members", tenant.id)),
-        get(&root_cookie, &format!("/{}/admin/clients", tenant.id)),
-        get(&root_cookie, &format!("/{}/admin/audit-logs", tenant.id)),
         get(
-            &root_cookie,
+            &tok(&env, &root_sso, &tenant.id).await,
+            &format!("/{}/admin/whoami", tenant.id),
+        ),
+        get(
+            &tok(&env, &root_sso, &tenant.id).await,
+            &format!("/{}/admin/members", tenant.id),
+        ),
+        get(
+            &tok(&env, &root_sso, &tenant.id).await,
+            &format!("/{}/admin/clients", tenant.id),
+        ),
+        get(
+            &tok(&env, &root_sso, &tenant.id).await,
+            &format!("/{}/admin/audit-logs", tenant.id),
+        ),
+        get(
+            &tok(&env, &root_sso, &tenant.id).await,
             &format!("/{}/admin/settings/tenant", tenant.id),
         ),
-        get(&root_cookie, &format!("/{}/admin/signing-keys", tenant.id)),
+        get(
+            &tok(&env, &root_sso, &tenant.id).await,
+            &format!("/{}/admin/signing-keys", tenant.id),
+        ),
         post(
-            &root_cookie,
+            &tok(&env, &root_sso, &tenant.id).await,
             &format!("/{}/admin/users", tenant.id),
             json!({ "email": "intruder@example.com" }),
         ),
         post(
-            &root_cookie,
+            &tok(&env, &root_sso, &tenant.id).await,
             &format!("/{}/admin/clients", tenant.id),
             json!({
                 "app_name": "X",
@@ -189,17 +214,17 @@ async fn root_can_create_but_cannot_operate_inside_created_tenant() {
             }),
         ),
         post(
-            &root_cookie,
+            &tok(&env, &root_sso, &tenant.id).await,
             &format!("/{}/admin/invitations", tenant.id),
             json!({ "user_id": env.root_admin_id }),
         ),
         delete(
-            &root_cookie,
+            &tok(&env, &root_sso, &tenant.id).await,
             &format!("/{}/admin/members/{}", tenant.id, tenant.admin_id),
         ),
         // 子テナント側でのテナント作成も root にはできない（system.admin の scope は root のみ）。
         post(
-            &root_cookie,
+            &tok(&env, &root_sso, &tenant.id).await,
             &format!("/{}/admin/tenants", tenant.id),
             json!({ "name": "Grand" }),
         ),
@@ -218,7 +243,7 @@ async fn root_can_create_but_cannot_operate_inside_created_tenant() {
     let res = send(
         &env.app,
         get(
-            &tenant.admin_cookie,
+            &tok(&env, &tenant.admin_sso, &tenant.id).await,
             &format!("/{}/admin/whoami", tenant.id),
         ),
     )
@@ -234,7 +259,7 @@ async fn root_can_create_but_cannot_operate_inside_created_tenant() {
     let res = send(
         &env.app,
         get(
-            &root_cookie,
+            &tok(&env, &root_sso, &env.root_tenant_id).await,
             &format!("/{}/admin/system-settings", env.root_tenant_id),
         ),
     )
@@ -243,7 +268,7 @@ async fn root_can_create_but_cannot_operate_inside_created_tenant() {
     let res = send(
         &env.app,
         get(
-            &tenant.admin_cookie,
+            &tok(&env, &tenant.admin_sso, &tenant.id).await,
             &format!("/{}/admin/system-settings", tenant.id),
         ),
     )
@@ -260,34 +285,43 @@ async fn root_can_create_but_cannot_operate_inside_created_tenant() {
 #[tokio::test]
 async fn tenant_admin_boundary_is_exact_match_and_data_is_isolated() {
     let Some(env) = setup().await else { return };
-    let root_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
-    let a = create_tenant(&env, &root_cookie, "AlphaCo").await;
-    let b = create_tenant(&env, &root_cookie, "BravoCo").await;
+    let root_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let a = create_tenant(&env, &root_sso, "AlphaCo").await;
+    let b = create_tenant(&env, &root_sso, "BravoCo").await;
 
     // A の管理者は B・root の管理 API に一切アクセスできない（完全一致。祖先・兄弟は無関係。§4）。
     let cross_tenant_requests = vec![
-        get(&a.admin_cookie, &format!("/{}/admin/whoami", b.id)),
-        get(&a.admin_cookie, &format!("/{}/admin/members", b.id)),
-        get(&a.admin_cookie, &format!("/{}/admin/clients", b.id)),
         get(
-            &a.admin_cookie,
+            &tok(&env, &a.admin_sso, &b.id).await,
+            &format!("/{}/admin/whoami", b.id),
+        ),
+        get(
+            &tok(&env, &a.admin_sso, &b.id).await,
+            &format!("/{}/admin/members", b.id),
+        ),
+        get(
+            &tok(&env, &a.admin_sso, &b.id).await,
+            &format!("/{}/admin/clients", b.id),
+        ),
+        get(
+            &tok(&env, &a.admin_sso, &env.root_tenant_id).await,
             &format!("/{}/admin/whoami", env.root_tenant_id),
         ),
         get(
-            &a.admin_cookie,
+            &tok(&env, &a.admin_sso, &env.root_tenant_id).await,
             &format!("/{}/admin/tenants", env.root_tenant_id),
         ),
         post(
-            &a.admin_cookie,
+            &tok(&env, &a.admin_sso, &env.root_tenant_id).await,
             &format!("/{}/admin/tenants", env.root_tenant_id),
             json!({ "name": "Rogue" }),
         ),
         delete(
-            &a.admin_cookie,
+            &tok(&env, &a.admin_sso, &env.root_tenant_id).await,
             &format!("/{}/admin/tenants/{}", env.root_tenant_id, b.id),
         ),
         get(
-            &a.admin_cookie,
+            &tok(&env, &a.admin_sso, &env.root_tenant_id).await,
             &format!("/{}/admin/system-settings", env.root_tenant_id),
         ),
     ];
@@ -305,7 +339,7 @@ async fn tenant_admin_boundary_is_exact_match_and_data_is_isolated() {
     let res = send(
         &env.app,
         post(
-            &a.admin_cookie,
+            &tok(&env, &a.admin_sso, &a.id).await,
             &format!("/{}/admin/clients", a.id),
             json!({
                 "app_name": "Alpha App",
@@ -323,7 +357,10 @@ async fn tenant_admin_boundary_is_exact_match_and_data_is_isolated() {
         .to_string();
     let res = send(
         &env.app,
-        get(&b.admin_cookie, &format!("/{}/admin/clients", b.id)),
+        get(
+            &tok(&env, &b.admin_sso, &b.id).await,
+            &format!("/{}/admin/clients", b.id),
+        ),
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
@@ -341,7 +378,7 @@ async fn tenant_admin_boundary_is_exact_match_and_data_is_isolated() {
     let res = send(
         &env.app,
         get(
-            &b.admin_cookie,
+            &tok(&env, &b.admin_sso, &b.id).await,
             &format!("/{}/admin/clients/{a_client_id}", b.id),
         ),
     )
@@ -353,11 +390,11 @@ async fn tenant_admin_boundary_is_exact_match_and_data_is_isolated() {
     );
 
     // データ分離: A の利用者は B から検索・取得できない（不存在と同じ 404。§8）。
-    let (a_user_id, a_user_email) = create_user(&env, &a.admin_cookie, &a.id).await;
+    let (a_user_id, a_user_email) = create_user(&env, &a.admin_sso, &a.id).await;
     let res = send(
         &env.app,
         get(
-            &b.admin_cookie,
+            &tok(&env, &b.admin_sso, &b.id).await,
             &format!("/{}/admin/users?q={a_user_email}", b.id),
         ),
     )
@@ -370,7 +407,7 @@ async fn tenant_admin_boundary_is_exact_match_and_data_is_isolated() {
     let res = send(
         &env.app,
         get(
-            &b.admin_cookie,
+            &tok(&env, &b.admin_sso, &b.id).await,
             &format!("/{}/admin/users/{a_user_id}", b.id),
         ),
     )
@@ -384,7 +421,7 @@ async fn tenant_admin_boundary_is_exact_match_and_data_is_isolated() {
     let res = send(
         &env.app,
         post(
-            &b.admin_cookie,
+            &tok(&env, &b.admin_sso, &b.id).await,
             &format!("/{}/admin/users/{a_user_id}/permissions", b.id),
             json!({ "permission_code": "idp.tenant.admin" }),
         ),
@@ -400,7 +437,7 @@ async fn tenant_admin_boundary_is_exact_match_and_data_is_isolated() {
     let res = send(
         &env.app,
         post(
-            &a.admin_cookie,
+            &tok(&env, &a.admin_sso, &a.id).await,
             &format!("/{}/admin/users/{a_user_id}/permissions", a.id),
             json!({ "permission_code": "idp.system.admin" }),
         ),
@@ -429,7 +466,7 @@ async fn tenant_admin_boundary_is_exact_match_and_data_is_isolated() {
     let res = send(
         &env.app,
         delete(
-            &root_cookie,
+            &tok(&env, &root_sso, &env.root_tenant_id).await,
             &format!("/{}/admin/tenants/{}", env.root_tenant_id, a.id),
         ),
     )
@@ -447,19 +484,19 @@ async fn tenant_admin_boundary_is_exact_match_and_data_is_isolated() {
 #[tokio::test]
 async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions() {
     let Some(env) = setup().await else { return };
-    let root_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
-    let host = create_tenant(&env, &root_cookie, "HostCo").await;
-    let home = create_tenant(&env, &root_cookie, "HomeCo").await;
+    let root_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let host = create_tenant(&env, &root_sso, "HostCo").await;
+    let home = create_tenant(&env, &root_sso, "HomeCo").await;
 
     // ゲスト候補は所属元（home）テナントの利用者。
-    let (guest_id, guest_email) = create_user(&env, &home.admin_cookie, &home.id).await;
-    let guest_cookie = create_sso_session(&env.pool, &guest_id).await;
+    let (guest_id, guest_email) = create_user(&env, &home.admin_sso, &home.id).await;
+    let guest_sso = create_sso_session(&env.pool, &guest_id).await;
 
     // host の管理者が招待を作成 → トークンは応答で一度だけ返り、監査ログに漏れない（§3）。
     let res = send(
         &env.app,
         post(
-            &host.admin_cookie,
+            &tok(&env, &host.admin_sso, &host.id).await,
             &format!("/{}/admin/invitations", host.id),
             json!({ "user_id": guest_id }),
         ),
@@ -481,7 +518,7 @@ async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions()
     let accept_uri = format!("/{}/invitations/accept", host.id);
     let res = send(
         &env.app,
-        post(&host.admin_cookie, &accept_uri, json!({ "token": token })),
+        cookie_post(&host.admin_sso, &accept_uri, json!({ "token": token })),
     )
     .await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "non-invitee -> 403");
@@ -489,8 +526,8 @@ async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions()
     // 承諾は当該テナントの経路のみ（別テナントの accept へ提示 → 400）。
     let res = send(
         &env.app,
-        post(
-            &guest_cookie,
+        cookie_post(
+            &guest_sso,
             &format!("/{}/invitations/accept", home.id),
             json!({ "token": token }),
         ),
@@ -501,7 +538,7 @@ async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions()
     // 本人 + 正しいテナント → 204。メンバーシップが ACTIVE / GUEST になる。
     let res = send(
         &env.app,
-        post(&guest_cookie, &accept_uri, json!({ "token": token })),
+        cookie_post(&guest_sso, &accept_uri, json!({ "token": token })),
     )
     .await;
     assert_eq!(res.status(), StatusCode::NO_CONTENT, "accept -> 204");
@@ -518,7 +555,7 @@ async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions()
     // トークンの再利用（リプレイ）は不可。
     let res = send(
         &env.app,
-        post(&guest_cookie, &accept_uri, json!({ "token": token })),
+        cookie_post(&guest_sso, &accept_uri, json!({ "token": token })),
     )
     .await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST, "token replay -> 400");
@@ -526,7 +563,10 @@ async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions()
     // ゲストはメンバー一覧に GUEST として現れる。
     let res = send(
         &env.app,
-        get(&host.admin_cookie, &format!("/{}/admin/members", host.id)),
+        get(
+            &tok(&env, &host.admin_sso, &host.id).await,
+            &format!("/{}/admin/members", host.id),
+        ),
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
@@ -544,7 +584,7 @@ async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions()
     let res = send(
         &env.app,
         get(
-            &host.admin_cookie,
+            &tok(&env, &host.admin_sso, &host.id).await,
             &format!("/{}/admin/users/{guest_id}", host.id),
         ),
     )
@@ -557,7 +597,7 @@ async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions()
     let res = send(
         &env.app,
         get(
-            &host.admin_cookie,
+            &tok(&env, &host.admin_sso, &host.id).await,
             &format!("/{}/admin/users?q={guest_email}", host.id),
         ),
     )
@@ -571,7 +611,10 @@ async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions()
     // メンバーシップだけでは管理 API に触れない（権限なし → 403）。
     let res = send(
         &env.app,
-        get(&guest_cookie, &format!("/{}/admin/whoami", host.id)),
+        get(
+            &tok(&env, &guest_sso, &host.id).await,
+            &format!("/{}/admin/whoami", host.id),
+        ),
     )
     .await;
     assert_eq!(
@@ -584,7 +627,7 @@ async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions()
     let res = send(
         &env.app,
         delete(
-            &host.admin_cookie,
+            &tok(&env, &host.admin_sso, &host.id).await,
             &format!("/{}/admin/members/{}", host.id, host.admin_id),
         ),
     )
@@ -606,7 +649,7 @@ async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions()
     let res = send(
         &env.app,
         delete(
-            &host.admin_cookie,
+            &tok(&env, &host.admin_sso, &host.id).await,
             &format!("/{}/admin/members/{guest_id}", host.id),
         ),
     )
@@ -654,14 +697,14 @@ async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions()
 #[tokio::test]
 async fn oidc_flow_enforces_membership_and_per_tenant_issuer() {
     let Some(env) = setup().await else { return };
-    let root_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
-    let a = create_tenant(&env, &root_cookie, "OidcA").await;
-    let b = create_tenant(&env, &root_cookie, "OidcB").await;
+    let root_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let a = create_tenant(&env, &root_sso, "OidcA").await;
+    let b = create_tenant(&env, &root_sso, "OidcB").await;
     let client_a = insert_public_client(&env.pool, &a.id).await;
     let client_b = insert_public_client(&env.pool, &b.id).await;
 
     // テナント A の利用者（HOME メンバーシップ付き）と、その SSO セッション。
-    let (user_a, _) = create_user(&env, &a.admin_cookie, &a.id).await;
+    let (user_a, _) = create_user(&env, &a.admin_sso, &a.id).await;
     let sso_cookie = create_sso_session(&env.pool, &user_a).await;
 
     // メンバーシップのないテナント B のフローでは未認証扱い（code は出ずログインへ。§8）。
@@ -747,7 +790,7 @@ async fn oidc_flow_enforces_membership_and_per_tenant_issuer() {
     let res = send(
         &env.app,
         post(
-            &b.admin_cookie,
+            &tok(&env, &b.admin_sso, &b.id).await,
             &format!("/{}/admin/invitations", b.id),
             json!({ "user_id": user_a }),
         ),
@@ -757,7 +800,7 @@ async fn oidc_flow_enforces_membership_and_per_tenant_issuer() {
     let token = body_json(res).await["token"].as_str().unwrap().to_string();
     let res = send(
         &env.app,
-        post(
+        cookie_post(
             &sso_cookie,
             &format!("/{}/invitations/accept", b.id),
             json!({ "token": token }),

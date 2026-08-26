@@ -7,7 +7,7 @@ use crate::application::user_lifecycle::{UpdateUserProfileCommand, UserLifecycle
 use crate::application::user_management::{CreateUserCommand, UserManagementError};
 use crate::domain::user::User;
 use crate::domain::values::UserStatus;
-use crate::presentation::admin::{IdpAdmin, RequirePerms};
+use crate::presentation::admin::{RequirePerms, UsersRead, UsersWrite};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
     CreateUserRequest, UpdateUserProfileRequest, UpdateUserStatusRequest, UserCreatedResponse,
@@ -47,7 +47,7 @@ pub struct UserSearchQuery {
     )
 )]
 pub async fn create_user(
-    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(admin, _): RequirePerms<UsersWrite>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
@@ -69,7 +69,7 @@ pub async fn create_user(
                 preferred_username: body.preferred_username,
                 name: body.name,
             },
-            admin.user_id,
+            &admin.actor,
             &ctx,
         )
         .await
@@ -86,7 +86,7 @@ pub async fn create_user(
 
 /// メール／ユーザー名で利用者を検索する（`GET /admin/users?q=`）。該当なしは 404。
 pub async fn search_user(
-    RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(_admin, _): RequirePerms<UsersRead>,
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
@@ -113,7 +113,7 @@ pub async fn search_user(
 
 /// 内部 ID（UUID）で利用者を取得する（`GET /admin/users/{user_id}`）。
 pub async fn get_user(
-    RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(_admin, _): RequirePerms<UsersRead>,
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
@@ -147,7 +147,7 @@ pub async fn get_user(
 )]
 #[allow(clippy::too_many_arguments)]
 pub async fn update_user_status(
-    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(admin, _): RequirePerms<UsersWrite>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
@@ -167,7 +167,7 @@ pub async fn update_user_status(
     );
     state
         .users_lifecycle
-        .set_status(tenant.context(), target, status, admin.user_id, &ctx)
+        .set_status(tenant.context(), target, status, &admin.actor, &ctx)
         .await
         .map_err(|e| map_user_lifecycle_error(e, locale))?;
     let user = state
@@ -201,7 +201,7 @@ pub async fn update_user_status(
 )]
 #[allow(clippy::too_many_arguments)]
 pub async fn update_user_profile(
-    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(admin, _): RequirePerms<UsersWrite>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
@@ -226,7 +226,7 @@ pub async fn update_user_profile(
                 preferred_username: body.preferred_username,
                 name: body.name,
             },
-            admin.user_id,
+            &admin.actor,
             &ctx,
         )
         .await
@@ -249,7 +249,7 @@ pub async fn update_user_profile(
     )
 )]
 pub async fn delete_user(
-    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(admin, _): RequirePerms<UsersWrite>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
@@ -265,7 +265,7 @@ pub async fn delete_user(
     );
     state
         .users_lifecycle
-        .delete_user(tenant.context(), target, admin.user_id, &ctx)
+        .delete_user(tenant.context(), target, &admin.actor, &ctx)
         .await
         .map_err(|e| map_user_lifecycle_error(e, locale))?;
     Ok(StatusCode::NO_CONTENT)
@@ -287,7 +287,7 @@ pub async fn delete_user(
     )
 )]
 pub async fn reset_user_password(
-    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(admin, _): RequirePerms<UsersWrite>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
@@ -303,7 +303,7 @@ pub async fn reset_user_password(
     );
     let reset = state
         .users_lifecycle
-        .reset_password(tenant.context(), target, admin.user_id, &ctx)
+        .reset_password(tenant.context(), target, &admin.actor, &ctx)
         .await
         .map_err(|e| map_user_lifecycle_error(e, locale))?;
     Ok(Json(UserPasswordResetResponse {
@@ -329,7 +329,7 @@ pub async fn reset_user_password(
     )
 )]
 pub async fn reset_user_mfa(
-    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(admin, _): RequirePerms<UsersWrite>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
@@ -345,7 +345,7 @@ pub async fn reset_user_mfa(
     );
     let reset = state
         .users_lifecycle
-        .reset_mfa(tenant.context(), target, admin.user_id, &ctx)
+        .reset_mfa(tenant.context(), target, &admin.actor, &ctx)
         .await
         .map_err(|e| map_user_lifecycle_error(e, locale))?;
     Ok(Json(UserMfaResetResponse {
@@ -372,7 +372,7 @@ pub async fn reset_user_mfa(
     )
 )]
 pub async fn unlock_user(
-    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(admin, _): RequirePerms<UsersWrite>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
@@ -388,7 +388,7 @@ pub async fn unlock_user(
     );
     let was_locked = state
         .users_lifecycle
-        .unlock_account(tenant.context(), target, admin.user_id, &ctx)
+        .unlock_account(tenant.context(), target, &admin.actor, &ctx)
         .await
         .map_err(|e| map_user_lifecycle_error(e, locale))?;
     Ok(Json(UserUnlockResponse {

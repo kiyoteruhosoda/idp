@@ -13,7 +13,8 @@ use crate::admin_dto::{
 };
 use idp_contracts::admin::{
     AuthenticationPoliciesResponse, AuthenticationPolicyResponse,
-    AuthenticationPolicyUpsertRequest, AvailablePermissionsResponse, ClientStatusResponse,
+    AuthenticationPolicyUpsertRequest, AvailablePermissionsResponse, ClientPermissionsResponse,
+    ClientStatusResponse, ManagementTokenRequest, ManagementTokenResponse,
     SamlIdpMetadataImportResponse, SamlServiceProviderRegisterRequest, SamlServiceProviderResponse,
     SamlServiceProviderUpdateRequest, SamlSpMetadataImportResponse, UserPermissionsResponse,
     UserSummaryResponse, WhoamiResponse,
@@ -52,10 +53,6 @@ use idp_contracts::runtime_settings::{
 use idp_contracts::version::SchemaVersionInfo;
 use reqwest::Method;
 use std::collections::HashMap;
-
-/// SSO セッション Cookie 名。api へ転送する `Cookie` ヘッダの組み立てに使う（名前の契約は
-/// `idp_contracts::cookies` に単一定義してあり、ここで再定義しない）。
-use idp_contracts::cookies::SSO_SESSION_COOKIE;
 
 /// サービス認証トークンのヘッダ名（api 側 `require_service_token` と一致させる）。
 use idp_contracts::internal_auth::SERVICE_TOKEN_HEADER;
@@ -634,22 +631,34 @@ impl ApiClient {
             .await
     }
 
-    /// 管理者の SSO Cookie を api の `GET /{tenant_id}/admin/whoami` へ転送し、認証状態と身元を得る
-    /// （ADR-0007 §4・ADR-0009 §6）。
+    /// 管理者の SSO セッションを管理トークンへ交換し、api の `GET /{tenant_id}/admin/whoami` で
+    /// 認証状態と身元を得る（ADR-0007 §4・ADR-0009 §6・ADR-0037）。
+    ///
+    /// 交換で 401 なら未ログイン（`Unauthenticated`）。交換は通るが whoami が 403 なら
+    /// 「ログイン済みだが管理者ではない」で、この 2 つを分けられることがトークン交換を
+    /// リクエスト毎に行う理由でもある。
     pub async fn admin_whoami(
         &self,
         correlation_id: &str,
         tenant_id: &str,
         sso_session_id: &str,
     ) -> AdminSession {
+        let token = match self
+            .management_token(correlation_id, tenant_id, sso_session_id)
+            .await
+        {
+            Ok(token) => token.access_token,
+            Err(AdminApiError::Unauthorized) => return AdminSession::Unauthenticated,
+            Err(e) => {
+                tracing::error!(error = %e, "management token exchange for whoami failed");
+                return AdminSession::Error;
+            }
+        };
         let response = match self
             .http
             .get(format!("{}/{}/admin/whoami", self.base_url, tenant_id))
             .header(REQUEST_ID_HEADER, correlation_id)
-            .header(
-                reqwest::header::COOKIE,
-                format!("{SSO_SESSION_COOKIE}={sso_session_id}"),
-            )
+            .bearer_auth(token)
             .send()
             .await
         {
@@ -677,7 +686,10 @@ impl ApiClient {
         }
     }
 
-    // ── 管理コンソール → JSON 管理 API（`/{tenant_id}/admin/*`、SSO Cookie 転送）───────────────
+    // ── 管理コンソール → JSON 管理 API（`/{tenant_id}/admin/*`、管理トークン。ADR-0037）─────────
+    //
+    // 各メソッドが受け取る `sso` は SSO セッション Cookie の値だが、api へ転送するのはトークンで
+    // あって Cookie ではない。`admin_send` 系が `management_token` で交換してから Bearer で送る。
 
     /// クライアント一覧の 1 ページ分（`GET /admin/clients`。G7）。ページングは api（DB）側で行う。
     pub async fn list_clients(
@@ -761,6 +773,66 @@ impl ApiClient {
             Method::POST,
             tenant_id,
             &format!("/admin/clients/{client_id}/secret"),
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
+    /// クライアントの保有管理権限の一覧（`GET /admin/clients/{id}/permissions`。ADR-0037）。
+    pub async fn list_client_permissions(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        client_id: &str,
+    ) -> Result<ClientPermissionsResponse, AdminApiError> {
+        self.admin_send(
+            Method::GET,
+            tenant_id,
+            &format!("/admin/clients/{client_id}/permissions"),
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
+    /// クライアントへの管理権限付与（`POST /admin/clients/{id}/permissions`）。
+    pub async fn grant_client_permission(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        client_id: &str,
+        code: &str,
+    ) -> Result<ClientPermissionsResponse, AdminApiError> {
+        self.admin_send(
+            Method::POST,
+            tenant_id,
+            &format!("/admin/clients/{client_id}/permissions"),
+            correlation_id,
+            sso,
+            Some(serde_json::json!({ "permission_code": code })),
+        )
+        .await
+    }
+
+    /// クライアントからの管理権限剥奪（`DELETE /admin/clients/{id}/permissions/{code}`）。
+    pub async fn revoke_client_permission(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        client_id: &str,
+        code: &str,
+    ) -> Result<ClientPermissionsResponse, AdminApiError> {
+        // 権限コードの `:` はパスセグメントにそのまま置ける（RFC 3986 の pchar）。
+        self.admin_send(
+            Method::DELETE,
+            tenant_id,
+            &format!("/admin/clients/{client_id}/permissions/{code}"),
             correlation_id,
             sso,
             None,
@@ -1201,9 +1273,10 @@ impl ApiClient {
                     .get(format!("{}/{}/admin/members", self.base_url, tenant_id))
                     .query(query)
                     .header(REQUEST_ID_HEADER, correlation_id)
-                    .header(
-                        reqwest::header::COOKIE,
-                        format!("{SSO_SESSION_COOKIE}={sso}"),
+                    .bearer_auth(
+                        self.management_token(correlation_id, tenant_id, sso)
+                            .await?
+                            .access_token,
                     ),
             )
             .send()
@@ -1307,9 +1380,10 @@ impl ApiClient {
                     .get(format!("{}/{}/admin/audit-logs", self.base_url, tenant_id))
                     .query(query)
                     .header(REQUEST_ID_HEADER, correlation_id)
-                    .header(
-                        reqwest::header::COOKIE,
-                        format!("{SSO_SESSION_COOKIE}={sso}"),
+                    .bearer_auth(
+                        self.management_token(correlation_id, tenant_id, sso)
+                            .await?
+                            .access_token,
                     ),
             )
             .send()
@@ -1333,9 +1407,10 @@ impl ApiClient {
                     .get(format!("{}/{}/admin/logs", self.base_url, tenant_id))
                     .query(query)
                     .header(REQUEST_ID_HEADER, correlation_id)
-                    .header(
-                        reqwest::header::COOKIE,
-                        format!("{SSO_SESSION_COOKIE}={sso}"),
+                    .bearer_auth(
+                        self.management_token(correlation_id, tenant_id, sso)
+                            .await?
+                            .access_token,
                     ),
             )
             .send()
@@ -1656,9 +1731,48 @@ impl ApiClient {
         .await
     }
 
-    /// `/{tenant_id}/admin/*`（`RequirePerms<IdpAdmin>`）への共通呼び出し。管理者の SSO Cookie と
-    /// correlation_id を転送し、api のステータスを web の [`AdminApiError`] へ写す。成功時は本文を
-    /// `T` へデコードする。
+    /// SSO セッションを api の管理トークンへ交換する（`POST /internal/admin/token`。ADR-0037）。
+    ///
+    /// **管理 API を呼ぶ前に毎回交換する。** キャッシュしないのは、セッション失効・権限剥奪・
+    /// ゲストの一時停止をトークンの寿命だけ遅らせないためである。管理コンソールの流量は少なく、
+    /// 1 往復増える代わりに「無効化したのにまだ操作できる」窓が無くなる。
+    async fn management_token(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+    ) -> Result<ManagementTokenResponse, AdminApiError> {
+        let response = self
+            .with_language(
+                self.http
+                    .post(format!("{}/internal/admin/token", self.base_url))
+                    .header(SERVICE_TOKEN_HEADER, &self.service_token)
+                    .header(REQUEST_ID_HEADER, correlation_id),
+            )
+            .json(&ManagementTokenRequest {
+                tenant_id: tenant_id.to_string(),
+                sso_session_id: sso.to_string(),
+            })
+            .send()
+            .await
+            .map_err(|e| AdminApiError::Transport(e.to_string()))?;
+        match response.status() {
+            reqwest::StatusCode::OK => response
+                .json::<ManagementTokenResponse>()
+                .await
+                .map_err(|e| AdminApiError::Transport(e.to_string())),
+            // セッションが無効 = 未ログイン。呼び出し側はログイン画面へ倒す。
+            reqwest::StatusCode::UNAUTHORIZED => Err(AdminApiError::Unauthorized),
+            other => Err(AdminApiError::Transport(format!(
+                "management token exchange returned {other}"
+            ))),
+        }
+    }
+
+    /// `/{tenant_id}/admin/*`（`RequirePerms`）への共通呼び出し。受け取った SSO セッションを
+    /// [`Self::management_token`] で管理トークンへ交換し、Bearer と correlation_id を添えて呼ぶ
+    /// （Cookie は転送しない。ADR-0037）。api のステータスは web の [`AdminApiError`] へ写し、
+    /// 成功時は本文を `T` へデコードする。
     async fn admin_send<T>(
         &self,
         method: Method,
@@ -1675,9 +1789,10 @@ impl ApiClient {
             self.http
                 .request(method, format!("{}/{}{}", self.base_url, tenant_id, path))
                 .header(REQUEST_ID_HEADER, correlation_id)
-                .header(
-                    reqwest::header::COOKIE,
-                    format!("{SSO_SESSION_COOKIE}={sso}"),
+                .bearer_auth(
+                    self.management_token(correlation_id, tenant_id, sso)
+                        .await?
+                        .access_token,
                 ),
         );
         if let Some(json) = body {
@@ -1710,9 +1825,10 @@ impl ApiClient {
                     .get(format!("{}/{}{}", self.base_url, tenant_id, path))
                     .query(query)
                     .header(REQUEST_ID_HEADER, correlation_id)
-                    .header(
-                        reqwest::header::COOKIE,
-                        format!("{SSO_SESSION_COOKIE}={sso}"),
+                    .bearer_auth(
+                        self.management_token(correlation_id, tenant_id, sso)
+                            .await?
+                            .access_token,
                     ),
             )
             .send()
@@ -1735,9 +1851,10 @@ impl ApiClient {
             self.http
                 .request(method, format!("{}/{}{}", self.base_url, tenant_id, path))
                 .header(REQUEST_ID_HEADER, correlation_id)
-                .header(
-                    reqwest::header::COOKIE,
-                    format!("{SSO_SESSION_COOKIE}={sso}"),
+                .bearer_auth(
+                    self.management_token(correlation_id, tenant_id, sso)
+                        .await?
+                        .access_token,
                 ),
         );
         if let Some(json) = body {

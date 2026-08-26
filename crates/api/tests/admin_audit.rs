@@ -11,7 +11,7 @@ mod support;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::json;
-use support::{body_json, create_plain_user, create_sso_session, get, post, send};
+use support::{admin_token, body_json, create_plain_user, get, post, send};
 
 const REDIRECT_URI: &str = "https://app.example.com/callback";
 
@@ -21,13 +21,13 @@ async fn admin_can_query_audit_logs_with_filters() {
         return;
     };
     let (app, pool, root_tenant_id) = (&env.app, &env.pool, &env.root_tenant_id);
-    let admin_cookie = create_sso_session(pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, pool, &env.root_tenant_id, &env.root_admin_id).await;
 
     // 監査イベントを発生させる: クライアント登録（client.registered / result=success）。
     let res = send(
         app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &format!("/{root_tenant_id}/admin/clients"),
             json!({
                 "app_name": "Audit Probe",
@@ -48,7 +48,7 @@ async fn admin_can_query_audit_logs_with_filters() {
     let res = send(
         app,
         get(
-            &admin_cookie,
+            &admin_tok,
             &format!("/{root_tenant_id}/admin/audit-logs?event_type=client.registered"),
         ),
     )
@@ -89,7 +89,7 @@ async fn admin_can_query_audit_logs_with_filters() {
     let res = send(
         app,
         get(
-            &admin_cookie,
+            &admin_tok,
             &format!(
                 "/{root_tenant_id}/admin/audit-logs?event_type=client.registered&result=failure"
             ),
@@ -103,7 +103,7 @@ async fn admin_can_query_audit_logs_with_filters() {
     let res = send(
         app,
         get(
-            &admin_cookie,
+            &admin_tok,
             &format!("/{root_tenant_id}/admin/audit-logs?from=not-a-date"),
         ),
     )
@@ -124,13 +124,10 @@ async fn admin_can_query_audit_logs_with_filters() {
 
     // 権限の無い利用者 → 403。
     let plain_user_id = create_plain_user(pool, root_tenant_id).await;
-    let plain_cookie = create_sso_session(pool, &plain_user_id).await;
+    let plain_token = admin_token(&env.app, pool, &env.root_tenant_id, &plain_user_id).await;
     let res = send(
         app,
-        get(
-            &plain_cookie,
-            &format!("/{root_tenant_id}/admin/audit-logs"),
-        ),
+        get(&plain_token, &format!("/{root_tenant_id}/admin/audit-logs")),
     )
     .await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN);

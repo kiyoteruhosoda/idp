@@ -10,9 +10,7 @@ mod support;
 
 use axum::http::StatusCode;
 use serde_json::{json, Value};
-use support::{
-    body_json, create_plain_user, create_sso_session, get, post_internal, send, SERVICE_TOKEN,
-};
+use support::{admin_token, body_json, create_plain_user, get, post_internal, send, SERVICE_TOKEN};
 
 /// 取り込み用のレコード 1 件。`correlation_id` で後から特定できるようにする。
 fn record(level: &str, service: &str, target: &str, correlation_id: &str) -> Value {
@@ -44,7 +42,7 @@ async fn ingested_logs_are_queryable_with_filters() {
         return;
     };
     let (app, pool, root_tenant_id) = (&env.app, &env.pool, &env.root_tenant_id);
-    let admin_cookie = create_sso_session(pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, pool, &env.root_tenant_id, &env.root_admin_id).await;
     let correlation_id = format!("it-applog-{}", uuid::Uuid::now_v7().simple());
 
     let res = ingest(
@@ -70,7 +68,7 @@ async fn ingested_logs_are_queryable_with_filters() {
     let res = send(
         app,
         get(
-            &admin_cookie,
+            &admin_tok,
             &format!("/{root_tenant_id}/admin/logs?correlation_id={correlation_id}"),
         ),
     )
@@ -89,7 +87,7 @@ async fn ingested_logs_are_queryable_with_filters() {
     let res = send(
         app,
         get(
-            &admin_cookie,
+            &admin_tok,
             &format!("/{root_tenant_id}/admin/logs?correlation_id={correlation_id}&level=ERROR"),
         ),
     )
@@ -104,7 +102,7 @@ async fn ingested_logs_are_queryable_with_filters() {
     let res = send(
         app,
         get(
-            &admin_cookie,
+            &admin_tok,
             &format!("/{root_tenant_id}/admin/logs?correlation_id={correlation_id}&target=idp_api"),
         ),
     )
@@ -116,7 +114,7 @@ async fn ingested_logs_are_queryable_with_filters() {
     let res = send(
         app,
         get(
-            &admin_cookie,
+            &admin_tok,
             &format!("/{root_tenant_id}/admin/logs?correlation_id={correlation_id}&service=web"),
         ),
     )
@@ -130,11 +128,11 @@ async fn invalid_datetime_filter_is_rejected() {
     let Some(env) = support::setup("application logs datetime").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     let res = send(
         &env.app,
         get(
-            &admin_cookie,
+            &admin_tok,
             &format!("/{}/admin/logs?from=not-a-date", env.root_tenant_id),
         ),
     )
@@ -149,10 +147,10 @@ async fn non_system_admin_cannot_read_application_logs() {
     };
     // 権限を持たない利用者は 403（`idp.system.admin` 必須。テナント横断の運用情報のため）。
     let user_id = create_plain_user(&env.pool, &env.root_tenant_id).await;
-    let cookie = create_sso_session(&env.pool, &user_id).await;
+    let plain_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &user_id).await;
     let res = send(
         &env.app,
-        get(&cookie, &format!("/{}/admin/logs", env.root_tenant_id)),
+        get(&plain_tok, &format!("/{}/admin/logs", env.root_tenant_id)),
     )
     .await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN);

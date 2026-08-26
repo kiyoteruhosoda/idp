@@ -18,7 +18,7 @@ mod support;
 use axum::http::StatusCode;
 use serde_json::json;
 use sqlx::{MySqlPool, Row};
-use support::{body_json, create_plain_user, create_sso_session, post, send};
+use support::{admin_token, body_json, create_plain_user, post, send};
 
 /// 対象ユーザーの TOTP を直接投入する（セットアップ API を通さずに「設定済み」を作る。
 /// 本テストの関心は解除であって登録フローではない）。秘密の置き場所は認証器の登録簿
@@ -109,12 +109,12 @@ async fn admin_resets_both_mfa_factors_and_revokes_sessions() {
     let Some(env) = support::setup("admin mfa reset").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     let target = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let bystander = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let uri = format!("/{}/admin/users/{target}/mfa-reset", env.root_tenant_id);
 
-    // ── 認可: Cookie 無しは 401、権限の無い利用者は 403。
+    // ── 認可: トークン無しは 401、権限の無い利用者は 403。
     let res = send(
         &env.app,
         support::anonymous(axum::http::Method::POST, &uri, None),
@@ -122,8 +122,8 @@ async fn admin_resets_both_mfa_factors_and_revokes_sessions() {
     .await;
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "no cookie -> 401");
 
-    let plain_cookie = create_sso_session(&env.pool, &bystander).await;
-    let res = send(&env.app, post(&plain_cookie, &uri, json!({}))).await;
+    let plain_token = admin_token(&env.app, &env.pool, &env.root_tenant_id, &bystander).await;
+    let res = send(&env.app, post(&plain_token, &uri, json!({}))).await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "no admin perm -> 403");
 
     // ── 対象に TOTP と Passkey 2 件、無関係な利用者にも Passkey を 1 件用意する。
@@ -132,10 +132,10 @@ async fn admin_resets_both_mfa_factors_and_revokes_sessions() {
     insert_passkey(&env.pool, &target).await;
     insert_passkey(&env.pool, &bystander).await;
     // 紛失端末が握っている想定の SSO セッション。
-    create_sso_session(&env.pool, &target).await;
+    admin_token(&env.app, &env.pool, &env.root_tenant_id, &target).await;
     assert!(count_sso_sessions(&env.pool, &target).await > 0);
 
-    let res = send(&env.app, post(&admin_cookie, &uri, json!({}))).await;
+    let res = send(&env.app, post(&admin_tok, &uri, json!({}))).await;
     assert_eq!(res.status(), StatusCode::OK, "admin can reset mfa");
     let body = body_json(res).await;
     assert_eq!(body["user_id"], target);
@@ -165,7 +165,7 @@ async fn admin_resets_both_mfa_factors_and_revokes_sessions() {
     );
 
     // ── 2 回目は「何も外さなかった」で成功する（管理者は設定の有無を知らずに操作する）。
-    let res = send(&env.app, post(&admin_cookie, &uri, json!({}))).await;
+    let res = send(&env.app, post(&admin_tok, &uri, json!({}))).await;
     assert_eq!(res.status(), StatusCode::OK);
     let body = body_json(res).await;
     assert_eq!(body["totp_removed"], false);
@@ -177,20 +177,20 @@ async fn mfa_reset_rejects_self_and_unknown_users() {
     let Some(env) = support::setup("admin mfa reset guards").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
 
     // 自分自身は解除できない（セルフサービスを使う。誤操作によるロックアウト防止）。
     let self_uri = format!(
         "/{}/admin/users/{}/mfa-reset",
         env.root_tenant_id, env.root_admin_id
     );
-    let res = send(&env.app, post(&admin_cookie, &self_uri, json!({}))).await;
+    let res = send(&env.app, post(&admin_tok, &self_uri, json!({}))).await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "self -> 403");
 
     // 不存在・UUID 不正はいずれも 404（存在推測を防ぐ）。
     for target in [uuid::Uuid::now_v7().to_string(), "not-a-uuid".to_string()] {
         let uri = format!("/{}/admin/users/{target}/mfa-reset", env.root_tenant_id);
-        let res = send(&env.app, post(&admin_cookie, &uri, json!({}))).await;
+        let res = send(&env.app, post(&admin_tok, &uri, json!({}))).await;
         assert_eq!(res.status(), StatusCode::NOT_FOUND, "target={target}");
     }
 }

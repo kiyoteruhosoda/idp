@@ -5,13 +5,13 @@
 //! 認可済みとして扱う（他の管理ユースケースと同じ方針）。
 
 use crate::application::audit::{AuditService, RequestContext};
+use crate::domain::admin_actor::AdminActor;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::error::Result;
 use crate::domain::service_lifecycle::ServiceRestarter;
 use crate::domain::tenant_context::TenantContext;
 use std::sync::Arc;
 use std::time::Duration;
-use uuid::Uuid;
 
 /// 受理を返してから停止するまでの猶予。
 ///
@@ -36,7 +36,7 @@ impl ServiceRestartService {
     pub async fn request(
         &self,
         tenant: TenantContext,
-        actor: Uuid,
+        actor: &AdminActor,
         service: &str,
         ctx: &RequestContext,
     ) -> Result<()> {
@@ -45,8 +45,8 @@ impl ServiceRestartService {
                 AuditEventType::ServiceRestartRequested,
                 AuditResult::Success,
                 Some(tenant.tenant_id()),
-                Some(actor),
-                None,
+                actor.user_id(),
+                actor.client_id(),
                 Some(service),
                 ctx,
             )

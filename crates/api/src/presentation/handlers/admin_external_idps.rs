@@ -10,7 +10,7 @@ use crate::application::external_idp_management::{
 };
 use crate::domain::external_idp::{ExternalIdentityProvider, ExternalIdpProtocol};
 use crate::domain::saml_metadata::parse_idp_metadata;
-use crate::presentation::admin::{IdpAdmin, RequirePerms};
+use crate::presentation::admin::{ExternalIdpsRead, ExternalIdpsWrite, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
@@ -185,7 +185,7 @@ pub struct ExternalIdpUpdateRequest {
     )
 )]
 pub async fn list_external_idps(
-    RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(_admin, _): RequirePerms<ExternalIdpsRead>,
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
 ) -> Result<Json<Vec<ExternalIdpResponse>>, ApiError> {
@@ -215,7 +215,7 @@ pub async fn list_external_idps(
     )
 )]
 pub async fn register_external_idp(
-    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(admin, _): RequirePerms<ExternalIdpsWrite>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
@@ -250,7 +250,7 @@ pub async fn register_external_idp(
                 enabled: body.enabled,
                 allow_auto_link: body.allow_auto_link,
             },
-            admin.user_id,
+            &admin.actor,
             &ctx,
         )
         .await
@@ -271,7 +271,7 @@ pub async fn register_external_idp(
     )
 )]
 pub async fn update_external_idp(
-    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(admin, _): RequirePerms<ExternalIdpsWrite>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
@@ -320,7 +320,7 @@ pub async fn update_external_idp(
                 enabled: body.enabled,
                 allow_auto_link: body.allow_auto_link,
             },
-            admin.user_id,
+            &admin.actor,
             &ctx,
         )
         .await
@@ -336,7 +336,7 @@ pub async fn update_external_idp(
 /// 入出力は `idp_contracts::admin` の DTO をそのまま使う（SP メタデータ取り込みと同じ）。api 側に
 /// 同じ形をもう一度定義すると、web と食い違ったときに取り込みが静かに壊れる。
 pub async fn import_external_idp_metadata(
-    RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(_admin, _): RequirePerms<ExternalIdpsWrite>,
     State(_state): State<AppState>,
     Extension(_tenant): Extension<ResolvedTenant>,
     Json(body): Json<SamlMetadataImportRequest>,
@@ -367,7 +367,7 @@ pub async fn import_external_idp_metadata(
     )
 )]
 pub async fn delete_external_idp(
-    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(admin, _): RequirePerms<ExternalIdpsWrite>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
@@ -382,7 +382,7 @@ pub async fn delete_external_idp(
     let id = Uuid::parse_str(&id).map_err(|_| ApiError::NotFound("not found".to_string()))?;
     state
         .external_idps
-        .delete(tenant.context(), id, admin.user_id, &ctx)
+        .delete(tenant.context(), id, &admin.actor, &ctx)
         .await
         .map_err(map_error)?;
     Ok(StatusCode::NO_CONTENT)

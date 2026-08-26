@@ -62,6 +62,7 @@ pub async fn token(
         credentials,
         refresh_token: body.refresh_token,
         scope: body.scope,
+        resource: body.resource,
     };
 
     match state.token.exchange(tenant.context(), command, &ctx).await {

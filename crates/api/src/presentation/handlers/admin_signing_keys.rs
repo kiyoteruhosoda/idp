@@ -6,7 +6,7 @@
 use crate::application::key_service::KeyManagementError;
 use crate::domain::signing_key::SigningKey;
 use crate::domain::values::SigningAlgorithm;
-use crate::presentation::admin::{IdpAdmin, RequirePerms};
+use crate::presentation::admin::{KeysRead, KeysWrite, RequirePerms};
 use crate::presentation::dto::{GenerateSigningKeyRequest, SigningKeyResponse};
 use crate::presentation::error::ApiError;
 use crate::presentation::i18n::{ApiLocale, ApiMessages};
@@ -27,7 +27,7 @@ use axum::Json;
     )
 )]
 pub async fn list_keys(
-    RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(_admin, _): RequirePerms<KeysRead>,
     State(state): State<AppState>,
     locale: ApiLocale,
 ) -> Result<Json<Vec<SigningKeyResponse>>, ApiError> {
@@ -53,7 +53,7 @@ pub async fn list_keys(
     )
 )]
 pub async fn generate_key(
-    RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(_admin, _): RequirePerms<KeysWrite>,
     State(state): State<AppState>,
     locale: ApiLocale,
     Json(body): Json<GenerateSigningKeyRequest>,
@@ -84,7 +84,7 @@ pub async fn generate_key(
     )
 )]
 pub async fn retire_key(
-    RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(_admin, _): RequirePerms<KeysWrite>,
     State(state): State<AppState>,
     locale: ApiLocale,
     // 先頭のパスセグメントは `{tenant_id}`。署名鍵はテナント横断（グローバル）だが、管理ルートは
@@ -114,7 +114,7 @@ pub async fn retire_key(
     )
 )]
 pub async fn delete_key(
-    RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(_admin, _): RequirePerms<KeysWrite>,
     State(state): State<AppState>,
     locale: ApiLocale,
     Path((_tenant_id, kid)): Path<(String, String)>,

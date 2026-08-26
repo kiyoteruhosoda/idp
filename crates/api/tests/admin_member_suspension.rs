@@ -19,7 +19,7 @@ mod support;
 use axum::http::{Method, StatusCode};
 use serde_json::json;
 use sqlx::{MySqlPool, Row};
-use support::{create_plain_user, create_sso_session, patch, send};
+use support::{admin_token, create_plain_user, patch, send};
 
 /// 当該テナントの GUEST メンバーシップ（`ACTIVE`）を直接作る（招待フローは別テストの関心事）。
 async fn insert_active_guest(pool: &MySqlPool, tenant_id: &str, user_id: &str) {
@@ -117,7 +117,7 @@ async fn admin_suspends_and_resumes_a_guest_without_losing_membership_or_permiss
     let Some(env) = support::setup("admin member suspension").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     // ゲストは**別テナント所属**（所属元 = home_tenant）で root に GUEST 参加している、という
     // 実運用の形にする。`create_plain_user` は指定テナントに HOME メンバーシップを作るため、
     // 所属元を別テナントにしないと root の GUEST 行と主キー衝突する。
@@ -133,7 +133,7 @@ async fn admin_suspends_and_resumes_a_guest_without_losing_membership_or_permiss
 
     let uri = format!("/{}/admin/members/{guest}", env.root_tenant_id);
 
-    // ── 認可: Cookie 無しは 401、権限の無い利用者は 403。
+    // ── 認可: トークン無しは 401、権限の無い利用者は 403。
     let res = send(
         &env.app,
         support::anonymous(Method::PATCH, &uri, Some(json!({"status": "SUSPENDED"}))),
@@ -142,10 +142,10 @@ async fn admin_suspends_and_resumes_a_guest_without_losing_membership_or_permiss
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "no cookie -> 401");
 
     let plain = create_plain_user(&env.pool, &env.root_tenant_id).await;
-    let plain_cookie = create_sso_session(&env.pool, &plain).await;
+    let plain_token = admin_token(&env.app, &env.pool, &env.root_tenant_id, &plain).await;
     let res = send(
         &env.app,
-        patch(&plain_cookie, &uri, json!({"status": "SUSPENDED"})),
+        patch(&plain_token, &uri, json!({"status": "SUSPENDED"})),
     )
     .await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "no admin perm -> 403");
@@ -163,14 +163,14 @@ async fn admin_suspends_and_resumes_a_guest_without_losing_membership_or_permiss
 
     // ── 不正な status は 400（INVITED は招待フローが管理する状態のため直接は設定させない）。
     for bad in ["INVITED", "nonsense", ""] {
-        let res = send(&env.app, patch(&admin_cookie, &uri, json!({"status": bad}))).await;
+        let res = send(&env.app, patch(&admin_tok, &uri, json!({"status": bad}))).await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST, "status={bad}");
     }
 
     // ── 停止。
     let res = send(
         &env.app,
-        patch(&admin_cookie, &uri, json!({"status": "SUSPENDED"})),
+        patch(&admin_tok, &uri, json!({"status": "SUSPENDED"})),
     )
     .await;
     assert_eq!(res.status(), StatusCode::NO_CONTENT, "suspend");
@@ -200,7 +200,7 @@ async fn admin_suspends_and_resumes_a_guest_without_losing_membership_or_permiss
     // ── 二重停止は 403（遷移できない状態）。
     let res = send(
         &env.app,
-        patch(&admin_cookie, &uri, json!({"status": "SUSPENDED"})),
+        patch(&admin_tok, &uri, json!({"status": "SUSPENDED"})),
     )
     .await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "double suspend");
@@ -208,7 +208,7 @@ async fn admin_suspends_and_resumes_a_guest_without_losing_membership_or_permiss
     // ── 再開。権限はそのままなので停止前の状態へ戻る。
     let res = send(
         &env.app,
-        patch(&admin_cookie, &uri, json!({"status": "ACTIVE"})),
+        patch(&admin_tok, &uri, json!({"status": "ACTIVE"})),
     )
     .await;
     assert_eq!(res.status(), StatusCode::NO_CONTENT, "resume");
@@ -228,7 +228,7 @@ async fn admin_suspends_and_resumes_a_guest_without_losing_membership_or_permiss
     // ── 未停止の再開は 403。
     let res = send(
         &env.app,
-        patch(&admin_cookie, &uri, json!({"status": "ACTIVE"})),
+        patch(&admin_tok, &uri, json!({"status": "ACTIVE"})),
     )
     .await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "resume when active");
@@ -239,7 +239,7 @@ async fn home_membership_cannot_be_suspended() {
     let Some(env) = support::setup("admin member suspension home").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     // create_plain_user は HOME メンバーシップ付きで作られる。
     let home_user = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let uri = format!("/{}/admin/members/{home_user}", env.root_tenant_id);
@@ -247,7 +247,7 @@ async fn home_membership_cannot_be_suspended() {
     // HOME は所属元そのもので、停止するとログインする先が無くなる（アカウント無効化を使う）。
     let res = send(
         &env.app,
-        patch(&admin_cookie, &uri, json!({"status": "SUSPENDED"})),
+        patch(&admin_tok, &uri, json!({"status": "SUSPENDED"})),
     )
     .await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "home -> 403");
@@ -262,7 +262,7 @@ async fn home_membership_cannot_be_suspended() {
     let res = send(
         &env.app,
         patch(
-            &admin_cookie,
+            &admin_tok,
             &format!("/{}/admin/members/{unknown}", env.root_tenant_id),
             json!({"status": "SUSPENDED"}),
         ),

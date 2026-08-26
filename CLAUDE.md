@@ -145,11 +145,23 @@ i18n/                 # fluent 翻訳（.ftl）。api から ../../i18n で埋�
 
 ## 権限管理
 
-- 認可は **ロールではなく scope（権限コード値）** で行う。ロール名での分岐禁止。
-- OIDC の `scope`（`openid` / `profile` / `email`）は、発行トークンと `/userinfo` の返却クレームを制御する。要求 scope は必ず `Clients.scopes` の部分集合であること。
-- 保護エンドポイントには scope 検証を行う axum extractor（例：`RequirePerms("scope_name")`）を付与する。
-- 権限の検証は Application 層で行い、Presentation 層には結果のみ渡す。
-- JWT 発行時の scope は保有権限の範囲内で指定。未指定・空 = 権限なし。
+**権限コードと OIDC scope は別軸**である（ADR-0033）。混ぜない。
+
+| | 実体 | 値 | 用途 |
+|---|---|---|---|
+| 権限コード | `permissions` マスタ（`domain::permission`） | `idp.tenant.admin`・`idp.users:read` 等。**運用で増える** | **この IdP 自身の API 認可**（`RequirePerms`） |
+| OIDC scope | `domain::values::Scope` | 4 値固定（仕様で決まっている） | ID トークン・`/userinfo` のクレーム制御 |
+
+- 認可は **ロールではなく権限コード**で行う。ロール名での分岐禁止。
+- OIDC の `scope`（`openid` / `profile` / `email` / `offline_access`）は、発行トークンと `/userinfo` の返却クレームを制御する。要求 scope は必ず `Clients.scopes` の部分集合であること。**業務上の権限を scope として配ることはしない**（リソースサーバは `sub` / `client_id` で判断する。ADR-0033）。
+- 保護エンドポイントには権限コードを検証する axum extractor（`RequirePerms<UsersRead>` のようにマーカ型で指定）を付与する。文字列で権限を渡して実行時解決しない（「動的呼び出しの制限」参照）。
+- 管理 API（`/{tenant_id}/admin/*`）の資格情報は **`Authorization: Bearer` の管理トークンだけ**（ADR-0037）。Cookie は読まない。管理コンソール（web）は SSO セッションを `POST /internal/admin/token` で交換し、システム用クライアントは `client_credentials` + `resource={issuer}/{tenant_id}/admin` で得る。
+- 権限コードの**含意関係**（`idp.system.admin` ⊃ 全部、`idp.tenant.admin` ⊃ 細粒度コード、`:write` ⊃ `:read`）は `domain::permission::implies` を単一の出所とする。DB に含意表を持たせない。
+- 権限は「要求テナントを scope に持つか」の**完全一致**で解決する（ADR-0009 §4）。
+- 権限の検証は Application 層で行い、Presentation 層には結果（可否）のみ渡す。
+- 管理トークンの `perms` クレームは `aud` が管理 API のトークンにしか載せない。未指定・空 = 権限なし。
+- **クライアントへ包括的な管理権限（`idp.system.admin` / `idp.tenant.admin`）を付与しない**（DB の CHECK 制約 + アプリ層の二重防御。ADR-0037）。
+- 管理操作の実行主体は `domain::admin_actor::AdminActor`（利用者 or クライアント）で表す。監査ログの `user_id` / `client_id` 列への写像は同型が持つ。
 
 ---
 

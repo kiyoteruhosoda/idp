@@ -11,6 +11,7 @@
 //! には結果のみ返す（`CLAUDE.md`「権限管理」）。
 
 use crate::application::audit::{AuditService, RequestContext};
+use crate::domain::admin_actor::AdminActor;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
@@ -176,7 +177,7 @@ impl UserManagementService {
         &self,
         tenant: TenantContext,
         cmd: CreateUserCommand,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<CreatedUser, UserManagementError> {
         let tenant_id = tenant.tenant_id();
@@ -208,8 +209,8 @@ impl UserManagementService {
                 AuditEventType::UserCreated,
                 AuditResult::Success,
                 Some(tenant_id),
-                Some(actor),
-                None,
+                actor.user_id(),
+                actor.client_id(),
                 Some(&format!("user={}", user.id)),
                 ctx,
             )
@@ -471,7 +472,7 @@ mod tests {
                     preferred_username: Some("newbie".to_string()),
                     name: None,
                 },
-                Uuid::new_v4(),
+                &AdminActor::User(Uuid::new_v4()),
                 &ctx(),
             )
             .await
@@ -519,12 +520,22 @@ mod tests {
             preferred_username: None,
             name: None,
         };
-        svc.create_user(TenantContext::new(tenant), cmd(), Uuid::new_v4(), &ctx())
-            .await
-            .expect("first ok");
+        svc.create_user(
+            TenantContext::new(tenant),
+            cmd(),
+            &AdminActor::User(Uuid::new_v4()),
+            &ctx(),
+        )
+        .await
+        .expect("first ok");
         assert!(matches!(
-            svc.create_user(TenantContext::new(tenant), cmd(), Uuid::new_v4(), &ctx())
-                .await,
+            svc.create_user(
+                TenantContext::new(tenant),
+                cmd(),
+                &AdminActor::User(Uuid::new_v4()),
+                &ctx()
+            )
+            .await,
             Err(UserManagementError::Conflict(_))
         ));
     }
@@ -545,7 +556,7 @@ mod tests {
                     preferred_username: None,
                     name: None,
                 },
-                Uuid::new_v4(),
+                &AdminActor::User(Uuid::new_v4()),
                 &ctx()
             )
             .await,

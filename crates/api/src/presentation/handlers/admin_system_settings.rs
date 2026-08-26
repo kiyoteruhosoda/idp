@@ -96,7 +96,7 @@ pub async fn update_runtime_setting(
     );
     state
         .system_settings
-        .update_runtime_setting(tenant.context(), &body.key, body.value, admin.user_id, &ctx)
+        .update_runtime_setting(tenant.context(), &body.key, body.value, &admin.actor, &ctx)
         .await
         .map_err(|e| match e {
             // ランタイム設定の値の書式違反（キー未知・パース不能）。運用者向けの管理 API であり、
@@ -180,7 +180,7 @@ pub async fn update_system_settings(
                 from_address: body.smtp_from_address,
                 use_tls: body.smtp_use_tls,
             },
-            admin.user_id,
+            &admin.actor,
             &ctx,
         )
         .await
@@ -197,7 +197,7 @@ pub async fn update_system_settings(
                 auth_token: body.sms_auth_token,
                 sender_id: body.sms_sender_id,
             },
-            admin.user_id,
+            &admin.actor,
             &ctx,
         )
         .await

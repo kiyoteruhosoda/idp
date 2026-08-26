@@ -3,9 +3,10 @@
 //! `TEST_DATABASE_URL` 設定時のみ実行:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test admin_permissions
 //!
-//! 認可は `RequirePerms<IdpAdmin>`（`idp.tenant.admin`。`idp.system.admin` は代替として許可）。
+//! 認可は権限コード（`idp.permissions:read` / `:write`。`idp.tenant.admin`・`idp.system.admin` は
+//! 含意により許可。ADR-0037）。
 //! 初期管理者（seed で root テナントへ `idp.system.admin` 付与済み）の SSO セッションを
-//! 直接作成し、その Cookie で管理 API を叩く。権限の無い利用者は 403 になること、
+//! 直接作成し、管理トークンへ交換して管理 API を叩く。権限の無い利用者は 403 になること、
 //! 付与・剥奪が `audit_log` に記録されることを検証する。
 
 mod support;
@@ -14,7 +15,10 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::json;
 use sqlx::{MySqlPool, Row};
-use support::{body_json, create_plain_user, create_sso_session, delete, get, post, send};
+use support::{
+    admin_token, body_json, create_plain_user, create_sso_session, delete, exchange_admin_token,
+    get, post, send,
+};
 
 const ADMIN_PERM: &str = "idp.tenant.admin";
 
@@ -39,11 +43,11 @@ async fn admin_can_grant_and_revoke_permissions() {
     let Some(env) = support::setup("admin permissions").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     let target = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let perms_uri = format!("/{}/admin/users/{target}/permissions", env.root_tenant_id);
 
-    // 未認証（Cookie 無し）→ 401。
+    // 未認証（トークン無し）→ 401。
     let res = send(
         &env.app,
         Request::builder()
@@ -55,16 +59,17 @@ async fn admin_can_grant_and_revoke_permissions() {
     .await;
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "no cookie -> 401");
 
-    // 権限の無い利用者 → 403。
-    let plain_cookie = create_sso_session(&env.pool, &target).await;
-    let res = send(&env.app, get(&plain_cookie, &perms_uri)).await;
+    // 権限の無い利用者 → 403。SSO セッションは後で交換し直すので取っておく。
+    let target_sso = create_sso_session(&env.pool, &target).await;
+    let plain_token = exchange_admin_token(&env.app, &env.root_tenant_id, &target_sso).await;
+    let res = send(&env.app, get(&plain_token, &perms_uri)).await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "no permission -> 403");
 
     // user_id が UUID でない → 400。
     let res = send(
         &env.app,
         get(
-            &admin_cookie,
+            &admin_tok,
             &format!("/{}/admin/users/not-a-uuid/permissions", env.root_tenant_id),
         ),
     )
@@ -76,7 +81,7 @@ async fn admin_can_grant_and_revoke_permissions() {
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &format!("/{}/admin/users/{ghost}/permissions", env.root_tenant_id),
             json!({ "permission_code": ADMIN_PERM }),
         ),
@@ -88,7 +93,7 @@ async fn admin_can_grant_and_revoke_permissions() {
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &perms_uri,
             json!({ "permission_code": "idp.does-not-exist" }),
         ),
@@ -97,7 +102,7 @@ async fn admin_can_grant_and_revoke_permissions() {
     assert_eq!(res.status(), StatusCode::BAD_REQUEST, "unknown code -> 400");
 
     // 初期状態: 権限なし。
-    let res = send(&env.app, get(&admin_cookie, &perms_uri)).await;
+    let res = send(&env.app, get(&admin_tok, &perms_uri)).await;
     assert_eq!(res.status(), StatusCode::OK);
     let listed = body_json(res).await;
     assert!(listed["permission_codes"].as_array().unwrap().is_empty());
@@ -106,7 +111,7 @@ async fn admin_can_grant_and_revoke_permissions() {
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &perms_uri,
             json!({ "permission_code": ADMIN_PERM }),
         ),
@@ -134,7 +139,7 @@ async fn admin_can_grant_and_revoke_permissions() {
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &perms_uri,
             json!({ "permission_code": ADMIN_PERM }),
         ),
@@ -144,8 +149,20 @@ async fn admin_can_grant_and_revoke_permissions() {
     let granted = body_json(res).await;
     assert_eq!(granted["permission_codes"].as_array().unwrap().len(), 1);
 
-    // 付与された利用者は管理 API へアクセスできる（自分の権限一覧を取得）。
-    let res = send(&env.app, get(&plain_cookie, &perms_uri)).await;
+    // 付与**前**に発行したトークンは、付与後も権限を持たないままである（ADR-0037 決定 2）。
+    // 権限の出所はトークンの `perms` クレームで、リクエスト毎に引き直さない。ここが変わったら
+    // 「トークンに権限を載せる」という決定そのものが崩れている。
+    let res = send(&env.app, get(&plain_token, &perms_uri)).await;
+    assert_eq!(
+        res.status(),
+        StatusCode::FORBIDDEN,
+        "a token minted before the grant keeps the permissions it was minted with"
+    );
+
+    // 同じ SSO セッションを交換し直せば新しい権限が載る（管理コンソールがリクエスト毎に
+    // 交換しているのはこのためでもある。付与が次の操作から効く）。
+    let refreshed_token = exchange_admin_token(&env.app, &env.root_tenant_id, &target_sso).await;
+    let res = send(&env.app, get(&refreshed_token, &perms_uri)).await;
     assert_eq!(
         res.status(),
         StatusCode::OK,
@@ -155,7 +172,7 @@ async fn admin_can_grant_and_revoke_permissions() {
     // 剥奪 → 200・一覧空・監査 revoked 記録。
     let res = send(
         &env.app,
-        delete(&admin_cookie, &format!("{perms_uri}/{ADMIN_PERM}")),
+        delete(&admin_tok, &format!("{perms_uri}/{ADMIN_PERM}")),
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK, "revoke -> 200");
@@ -176,7 +193,7 @@ async fn admin_can_grant_and_revoke_permissions() {
     // 剥奪は冪等（未保有でも 200）。
     let res = send(
         &env.app,
-        delete(&admin_cookie, &format!("{perms_uri}/{ADMIN_PERM}")),
+        delete(&admin_tok, &format!("{perms_uri}/{ADMIN_PERM}")),
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK, "revoke again -> 200");

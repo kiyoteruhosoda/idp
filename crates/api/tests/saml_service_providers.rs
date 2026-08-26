@@ -8,7 +8,7 @@ mod support;
 
 use axum::http::StatusCode;
 use serde_json::json;
-use support::{body_json, create_plain_user, create_sso_session, delete, get, post, put, send};
+use support::{admin_token, body_json, create_plain_user, delete, get, post, put, send};
 
 const SP_METADATA: &str = r#"<?xml version="1.0"?>
 <md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata"
@@ -30,15 +30,15 @@ async fn admin_can_register_and_list_saml_clients_but_others_cannot() {
         return;
     };
     let uri = format!("/{}/admin/saml-service-providers", env.root_tenant_id);
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
 
     // 権限の無い利用者 → 403。
     let plain_user_id = create_plain_user(&env.pool, &env.root_tenant_id).await;
-    let plain_cookie = create_sso_session(&env.pool, &plain_user_id).await;
+    let plain_token = admin_token(&env.app, &env.pool, &env.root_tenant_id, &plain_user_id).await;
     let res = send(
         &env.app,
         post(
-            &plain_cookie,
+            &plain_token,
             &uri,
             json!({
                 "display_name": "App",
@@ -55,7 +55,7 @@ async fn admin_can_register_and_list_saml_clients_but_others_cannot() {
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &uri,
             json!({
                 "display_name": "Example SP",
@@ -78,7 +78,7 @@ async fn admin_can_register_and_list_saml_clients_but_others_cannot() {
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &uri,
             json!({
                 "display_name": "Bad",
@@ -96,7 +96,7 @@ async fn admin_can_register_and_list_saml_clients_but_others_cannot() {
     );
 
     // 一覧に登録済みが含まれる。
-    let res = send(&env.app, get(&admin_cookie, &uri)).await;
+    let res = send(&env.app, get(&admin_tok, &uri)).await;
     assert_eq!(res.status(), StatusCode::OK);
     let list = body_json(res).await;
     let entities: Vec<&str> = list
@@ -117,13 +117,13 @@ async fn admin_can_update_and_delete_saml_client() {
         return;
     };
     let base = format!("/{}/admin/saml-service-providers", env.root_tenant_id);
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
 
     // 登録して id を得る。
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &base,
             json!({
                 "display_name": "Editable SP",
@@ -143,7 +143,7 @@ async fn admin_can_update_and_delete_saml_client() {
     let res = send(
         &env.app,
         put(
-            &admin_cookie,
+            &admin_tok,
             &item_uri,
             json!({
                 "display_name": "Renamed SP",
@@ -167,7 +167,7 @@ async fn admin_can_update_and_delete_saml_client() {
     let res = send(
         &env.app,
         put(
-            &admin_cookie,
+            &admin_tok,
             &item_uri,
             json!({
                 "display_name": "Renamed SP",
@@ -186,8 +186,8 @@ async fn admin_can_update_and_delete_saml_client() {
 
     // 権限の無い利用者は削除できない → 403。
     let plain_user_id = create_plain_user(&env.pool, &env.root_tenant_id).await;
-    let plain_cookie = create_sso_session(&env.pool, &plain_user_id).await;
-    let res = send(&env.app, delete(&plain_cookie, &item_uri)).await;
+    let plain_token = admin_token(&env.app, &env.pool, &env.root_tenant_id, &plain_user_id).await;
+    let res = send(&env.app, delete(&plain_token, &item_uri)).await;
     assert_eq!(
         res.status(),
         StatusCode::FORBIDDEN,
@@ -195,16 +195,16 @@ async fn admin_can_update_and_delete_saml_client() {
     );
 
     // 管理者は削除できる → 204。
-    let res = send(&env.app, delete(&admin_cookie, &item_uri)).await;
+    let res = send(&env.app, delete(&admin_tok, &item_uri)).await;
     assert_eq!(res.status(), StatusCode::NO_CONTENT, "admin delete -> 204");
 
     // 二重削除・存在しない id は 404。
-    let res = send(&env.app, delete(&admin_cookie, &item_uri)).await;
+    let res = send(&env.app, delete(&admin_tok, &item_uri)).await;
     assert_eq!(res.status(), StatusCode::NOT_FOUND, "delete missing -> 404");
     let res = send(
         &env.app,
         put(
-            &admin_cookie,
+            &admin_tok,
             &item_uri,
             json!({
                 "display_name": "X",
@@ -218,7 +218,7 @@ async fn admin_can_update_and_delete_saml_client() {
     assert_eq!(res.status(), StatusCode::NOT_FOUND, "update missing -> 404");
 
     // 一覧に含まれない。
-    let res = send(&env.app, get(&admin_cookie, &base)).await;
+    let res = send(&env.app, get(&admin_tok, &base)).await;
     let list = body_json(res).await;
     let entities: Vec<&str> = list
         .as_array()
@@ -241,11 +241,11 @@ async fn admin_can_import_sp_metadata() {
         "/{}/admin/saml-service-providers/import-metadata",
         env.root_tenant_id
     );
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
 
     let res = send(
         &env.app,
-        post(&admin_cookie, &uri, json!({ "metadata_xml": SP_METADATA })),
+        post(&admin_tok, &uri, json!({ "metadata_xml": SP_METADATA })),
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK, "admin import -> 200");
@@ -262,7 +262,7 @@ async fn admin_can_import_sp_metadata() {
 </EntityDescriptor>"#;
     let res = send(
         &env.app,
-        post(&admin_cookie, &uri, json!({ "metadata_xml": idp_only })),
+        post(&admin_tok, &uri, json!({ "metadata_xml": idp_only })),
     )
     .await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST, "idp metadata -> 400");

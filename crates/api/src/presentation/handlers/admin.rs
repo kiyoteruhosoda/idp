@@ -21,7 +21,13 @@ pub async fn whoami(
     Extension(tenant): Extension<ResolvedTenant>,
 ) -> Response {
     Json(WhoamiResponse {
-        user_id: admin.user_id.to_string(),
+        // 管理コンソールは人がログインして使う画面なので、ここに来る主体は利用者である
+        // （システム用クライアントは `idp.tenant.admin` を保有できない。ADR-0037）。
+        user_id: admin
+            .actor
+            .user_id()
+            .map(|id| id.to_string())
+            .unwrap_or_default(),
         name: admin.name,
         preferred_username: admin.preferred_username,
         tenant_name: Some(tenant.tenant().name.clone()),

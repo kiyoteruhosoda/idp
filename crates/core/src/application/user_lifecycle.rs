@@ -14,6 +14,7 @@
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::password_policy::PasswordPolicyService;
+use crate::domain::admin_actor::AdminActor;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
@@ -134,7 +135,7 @@ impl UserLifecycleService {
         &self,
         tenant: TenantContext,
         target: Uuid,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<ResetUserPassword, UserLifecycleError> {
         let user = self.find_home_user(tenant, target).await?;
@@ -148,7 +149,7 @@ impl UserLifecycleService {
         &self,
         tenant: TenantContext,
         email: &str,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<ResetUserPassword, UserLifecycleError> {
         let email = email.trim();
@@ -174,7 +175,7 @@ impl UserLifecycleService {
         tenant: TenantContext,
         target: Uuid,
         status: UserStatus,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<(), UserLifecycleError> {
         if status == UserStatus::Locked {
@@ -196,8 +197,8 @@ impl UserLifecycleService {
                 AuditEventType::UserStatusChanged,
                 AuditResult::Success,
                 Some(tenant.tenant_id()),
-                Some(actor),
-                None,
+                actor.user_id(),
+                actor.client_id(),
                 Some(&format!("user={} status={}", user.id, status.as_str())),
                 ctx,
             )
@@ -225,7 +226,7 @@ impl UserLifecycleService {
         &self,
         tenant: TenantContext,
         target: Uuid,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<bool, UserLifecycleError> {
         let user = self.find_home_user(tenant, target).await?;
@@ -241,8 +242,8 @@ impl UserLifecycleService {
                 AuditEventType::UserAccountUnlocked,
                 AuditResult::Success,
                 Some(tenant.tenant_id()),
-                Some(actor),
-                None,
+                actor.user_id(),
+                actor.client_id(),
                 Some(&format!(
                     "user={} was_locked={} failed_attempts_cleared={}",
                     user.id, was_locked, user.failed_login_count
@@ -271,7 +272,7 @@ impl UserLifecycleService {
         tenant: TenantContext,
         target: Uuid,
         cmd: UpdateUserProfileCommand,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<User, UserLifecycleError> {
         let user = self.find_home_user(tenant, target).await?;
@@ -368,8 +369,8 @@ impl UserLifecycleService {
                 AuditEventType::UserProfileUpdated,
                 AuditResult::Success,
                 Some(tenant_id),
-                Some(actor),
-                None,
+                actor.user_id(),
+                actor.client_id(),
                 Some(&format!("user={} fields={}", user.id, changed.join(","))),
                 ctx,
             )
@@ -389,7 +390,7 @@ impl UserLifecycleService {
         &self,
         tenant: TenantContext,
         target: Uuid,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<(), UserLifecycleError> {
         let user = self.find_home_user(tenant, target).await?;
@@ -400,8 +401,8 @@ impl UserLifecycleService {
                 AuditEventType::UserDeleted,
                 AuditResult::Success,
                 Some(tenant.tenant_id()),
-                Some(actor),
-                None,
+                actor.user_id(),
+                actor.client_id(),
                 Some(&format!("user={}", user.id)),
                 ctx,
             )
@@ -429,7 +430,7 @@ impl UserLifecycleService {
         &self,
         tenant: TenantContext,
         target: Uuid,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<MfaReset, UserLifecycleError> {
         let user = self.find_home_user(tenant, target).await?;
@@ -475,8 +476,8 @@ impl UserLifecycleService {
                 AuditEventType::UserMfaReset,
                 AuditResult::Success,
                 Some(tenant.tenant_id()),
-                Some(actor),
-                None,
+                actor.user_id(),
+                actor.client_id(),
                 Some(&format!(
                     "user={} totp={} passkeys={}",
                     user.id,
@@ -498,7 +499,7 @@ impl UserLifecycleService {
         &self,
         tenant: TenantContext,
         user: &User,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<ResetUserPassword, UserLifecycleError> {
         let generated_password = crypto::random_token(GENERATED_PASSWORD_BYTES);
@@ -527,8 +528,8 @@ impl UserLifecycleService {
                 AuditEventType::UserPasswordReset,
                 AuditResult::Success,
                 Some(tenant.tenant_id()),
-                Some(actor),
-                None,
+                actor.user_id(),
+                actor.client_id(),
                 Some(&format!("user={}", user.id)),
                 ctx,
             )
@@ -552,8 +553,12 @@ impl UserLifecycleService {
         }
     }
 
-    fn ensure_not_self(&self, target: Uuid, actor: Uuid) -> Result<(), UserLifecycleError> {
-        if target == actor {
+    /// 自分自身への操作（無効化・削除・パスワード再発行等）を拒む。
+    ///
+    /// クライアント主体は利用者ではないので、どの利用者とも一致しない（＝常に通す）。機械が
+    /// 「自分を無効化して詰む」経路は存在しない。
+    fn ensure_not_self(&self, target: Uuid, actor: &AdminActor) -> Result<(), UserLifecycleError> {
+        if actor.user_id() == Some(target) {
             return Err(UserLifecycleError::Forbidden(MessageKey::new(
                 "api-user-self-operation-forbidden",
             )));
@@ -1116,7 +1121,12 @@ mod tests {
 
         let reset = f
             .svc
-            .reset_password(TenantContext::new(tenant), target, Uuid::now_v7(), &ctx())
+            .reset_password(
+                TenantContext::new(tenant),
+                target,
+                &AdminActor::User(Uuid::now_v7()),
+                &ctx(),
+            )
             .await
             .expect("reset");
 
@@ -1152,7 +1162,7 @@ mod tests {
             .reset_password_by_email(
                 TenantContext::new(tenant),
                 &format!("{target}@example.com"),
-                Uuid::now_v7(),
+                &AdminActor::User(Uuid::now_v7()),
                 &ctx(),
             )
             .await
@@ -1171,7 +1181,12 @@ mod tests {
         // テナント越し: 不存在と同じ NotFound。
         assert!(matches!(
             f.svc
-                .reset_password(TenantContext::new(tenant), target, Uuid::now_v7(), &ctx())
+                .reset_password(
+                    TenantContext::new(tenant),
+                    target,
+                    &AdminActor::User(Uuid::now_v7()),
+                    &ctx()
+                )
                 .await,
             Err(UserLifecycleError::NotFound)
         ));
@@ -1181,7 +1196,12 @@ mod tests {
         f.users.create(&user(own, tenant)).await.unwrap();
         assert!(matches!(
             f.svc
-                .delete_user(TenantContext::new(tenant), own, own, &ctx())
+                .delete_user(
+                    TenantContext::new(tenant),
+                    own,
+                    &AdminActor::User(own),
+                    &ctx()
+                )
                 .await,
             Err(UserLifecycleError::Forbidden(_))
         ));
@@ -1199,7 +1219,7 @@ mod tests {
                 TenantContext::new(tenant),
                 target,
                 UserStatus::Disabled,
-                Uuid::now_v7(),
+                &AdminActor::User(Uuid::now_v7()),
                 &ctx(),
             )
             .await
@@ -1213,7 +1233,7 @@ mod tests {
                 TenantContext::new(tenant),
                 target,
                 UserStatus::Active,
-                Uuid::now_v7(),
+                &AdminActor::User(Uuid::now_v7()),
                 &ctx(),
             )
             .await
@@ -1234,7 +1254,7 @@ mod tests {
                     TenantContext::new(tenant),
                     target,
                     UserStatus::Locked,
-                    Uuid::now_v7(),
+                    &AdminActor::User(Uuid::now_v7()),
                     &ctx(),
                 )
                 .await,
@@ -1260,7 +1280,12 @@ mod tests {
 
         let reset = f
             .svc
-            .reset_mfa(TenantContext::new(tenant), target, Uuid::now_v7(), &ctx())
+            .reset_mfa(
+                TenantContext::new(tenant),
+                target,
+                &AdminActor::User(Uuid::now_v7()),
+                &ctx(),
+            )
             .await
             .expect("reset mfa");
 
@@ -1302,7 +1327,12 @@ mod tests {
 
         let reset = f
             .svc
-            .reset_mfa(TenantContext::new(tenant), target, Uuid::now_v7(), &ctx())
+            .reset_mfa(
+                TenantContext::new(tenant),
+                target,
+                &AdminActor::User(Uuid::now_v7()),
+                &ctx(),
+            )
             .await
             .expect("reset mfa");
         assert!(!reset.totp_removed);
@@ -1325,7 +1355,12 @@ mod tests {
 
         let err = f
             .svc
-            .reset_mfa(TenantContext::new(tenant), target, Uuid::now_v7(), &ctx())
+            .reset_mfa(
+                TenantContext::new(tenant),
+                target,
+                &AdminActor::User(Uuid::now_v7()),
+                &ctx(),
+            )
             .await
             .expect_err("revocation failure must fail the reset");
         assert!(matches!(err, UserLifecycleError::Internal(_)), "{err:?}");
@@ -1339,7 +1374,12 @@ mod tests {
         *f.sso.fail_revoke.lock().unwrap() = false;
         let reset = f
             .svc
-            .reset_mfa(TenantContext::new(tenant), target, Uuid::now_v7(), &ctx())
+            .reset_mfa(
+                TenantContext::new(tenant),
+                target,
+                &AdminActor::User(Uuid::now_v7()),
+                &ctx(),
+            )
             .await
             .expect("retry succeeds");
         assert!(!reset.totp_removed);
@@ -1360,7 +1400,12 @@ mod tests {
         f.users.create(&user(foreign, other)).await.unwrap();
         assert!(matches!(
             f.svc
-                .reset_mfa(TenantContext::new(tenant), foreign, Uuid::now_v7(), &ctx())
+                .reset_mfa(
+                    TenantContext::new(tenant),
+                    foreign,
+                    &AdminActor::User(Uuid::now_v7()),
+                    &ctx()
+                )
                 .await,
             Err(UserLifecycleError::NotFound)
         ));
@@ -1369,7 +1414,12 @@ mod tests {
         f.users.create(&user(own, tenant)).await.unwrap();
         assert!(matches!(
             f.svc
-                .reset_mfa(TenantContext::new(tenant), own, own, &ctx())
+                .reset_mfa(
+                    TenantContext::new(tenant),
+                    own,
+                    &AdminActor::User(own),
+                    &ctx()
+                )
                 .await,
             Err(UserLifecycleError::Forbidden(_))
         ));
@@ -1383,7 +1433,12 @@ mod tests {
         f.users.create(&user(target, tenant)).await.unwrap();
 
         f.svc
-            .delete_user(TenantContext::new(tenant), target, Uuid::now_v7(), &ctx())
+            .delete_user(
+                TenantContext::new(tenant),
+                target,
+                &AdminActor::User(Uuid::now_v7()),
+                &ctx(),
+            )
             .await
             .expect("delete");
         assert!(f.users.rows.lock().unwrap().is_empty());
@@ -1413,7 +1468,7 @@ mod tests {
                     preferred_username: Some("renamed".into()),
                     name: Some("Renamed User".into()),
                 },
-                Uuid::now_v7(),
+                &AdminActor::User(Uuid::now_v7()),
                 &ctx(),
             )
             .await
@@ -1461,7 +1516,7 @@ mod tests {
                     name: Some("   ".into()),
                     ..Default::default()
                 },
-                Uuid::now_v7(),
+                &AdminActor::User(Uuid::now_v7()),
                 &ctx(),
             )
             .await
@@ -1493,7 +1548,7 @@ mod tests {
                     email: Some(existing.email.clone()),
                     ..Default::default()
                 },
-                Uuid::now_v7(),
+                &AdminActor::User(Uuid::now_v7()),
                 &ctx(),
             )
             .await
@@ -1521,7 +1576,7 @@ mod tests {
                         email: Some("taken@example.com".into()),
                         ..Default::default()
                     },
-                    Uuid::now_v7(),
+                    &AdminActor::User(Uuid::now_v7()),
                     &ctx(),
                 )
                 .await,
@@ -1536,7 +1591,7 @@ mod tests {
                         preferred_username: Some("taken".into()),
                         ..Default::default()
                     },
-                    Uuid::now_v7(),
+                    &AdminActor::User(Uuid::now_v7()),
                     &ctx(),
                 )
                 .await,
@@ -1560,7 +1615,7 @@ mod tests {
                     TenantContext::new(tenant),
                     target,
                     cmd,
-                    Uuid::now_v7(),
+                    &AdminActor::User(Uuid::now_v7()),
                     &ctx(),
                 )
                 .await
@@ -1613,7 +1668,7 @@ mod tests {
                     name: Some("My Name".into()),
                     ..Default::default()
                 },
-                me,
+                &AdminActor::User(me),
                 &ctx(),
             )
             .await
@@ -1628,7 +1683,7 @@ mod tests {
                         name: Some("Hijack".into()),
                         ..Default::default()
                     },
-                    Uuid::now_v7(),
+                    &AdminActor::User(Uuid::now_v7()),
                     &ctx(),
                 )
                 .await,

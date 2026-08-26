@@ -19,8 +19,8 @@ use axum::http::{Request, StatusCode};
 use serde_json::{json, Value};
 use sqlx::{MySqlPool, Row};
 use support::{
-    authorize_uri_openid_only, begin_login, body_json, create_plain_user, create_sso_session,
-    delete, get, post, put, send, SERVICE_TOKEN, SERVICE_TOKEN_HEADER,
+    admin_token, authorize_uri_openid_only, begin_login, body_json, create_plain_user, delete, get,
+    post, put, send, SERVICE_TOKEN, SERVICE_TOKEN_HEADER,
 };
 
 fn login_csrf(auth_session: &str, csrf_secret: &[u8; 32]) -> String {
@@ -100,11 +100,11 @@ async fn admin_can_manage_authentication_policies() {
     let Some(env) = support::setup("authentication policies CRUD").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     let uri = format!("/{}/admin/authentication-policies", env.root_tenant_id);
     let code = format!("it-deny-{}", support::unique());
 
-    // 未認証（Cookie 無し）→ 401。
+    // 未認証（トークン無し）→ 401。
     let res = send(
         &env.app,
         Request::builder()
@@ -118,15 +118,15 @@ async fn admin_can_manage_authentication_policies() {
 
     // 権限の無い利用者 → 403。
     let plain = create_plain_user(&env.pool, &env.root_tenant_id).await;
-    let plain_cookie = create_sso_session(&env.pool, &plain).await;
-    let res = send(&env.app, get(&plain_cookie, &uri)).await;
+    let plain_token = admin_token(&env.app, &env.pool, &env.root_tenant_id, &plain).await;
+    let res = send(&env.app, get(&plain_token, &uri)).await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "no permission -> 403");
 
     // effect 不正 → 400。
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &uri,
             json!({
                 "policy_code": code,
@@ -143,7 +143,7 @@ async fn admin_can_manage_authentication_policies() {
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &uri,
             json!({
                 "policy_code": code,
@@ -174,7 +174,7 @@ async fn admin_can_manage_authentication_policies() {
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &uri,
             json!({
                 "policy_code": code,
@@ -188,7 +188,7 @@ async fn admin_can_manage_authentication_policies() {
     assert_eq!(res.status(), StatusCode::CONFLICT, "duplicate code -> 409");
 
     // 一覧に載る。
-    let res = send(&env.app, get(&admin_cookie, &uri)).await;
+    let res = send(&env.app, get(&admin_tok, &uri)).await;
     assert_eq!(res.status(), StatusCode::OK);
     let listed = body_json(res).await;
     assert!(
@@ -204,7 +204,7 @@ async fn admin_can_manage_authentication_policies() {
     let res = send(
         &env.app,
         put(
-            &admin_cookie,
+            &admin_tok,
             &format!("{uri}/{policy_id}"),
             json!({
                 "policy_code": code,
@@ -236,7 +236,7 @@ async fn admin_can_manage_authentication_policies() {
     let res = send(
         &env.app,
         put(
-            &admin_cookie,
+            &admin_tok,
             &format!("{uri}/{ghost}"),
             json!({
                 "policy_code": "ghost",
@@ -250,13 +250,9 @@ async fn admin_can_manage_authentication_policies() {
     assert_eq!(res.status(), StatusCode::NOT_FOUND, "unknown id -> 404");
 
     // 削除 → 204・一覧から消える・監査記録。
-    let res = send(
-        &env.app,
-        delete(&admin_cookie, &format!("{uri}/{policy_id}")),
-    )
-    .await;
+    let res = send(&env.app, delete(&admin_tok, &format!("{uri}/{policy_id}"))).await;
     assert_eq!(res.status(), StatusCode::NO_CONTENT, "delete -> 204");
-    let res = send(&env.app, get(&admin_cookie, &uri)).await;
+    let res = send(&env.app, get(&admin_tok, &uri)).await;
     let listed = body_json(res).await;
     assert!(
         !listed["policies"]
@@ -282,7 +278,7 @@ async fn deny_policy_blocks_password_login_until_disabled() {
     let Some(env) = support::setup("deny policy blocks login").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     let client_id =
         support::insert_public_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
     let username = format!("policy-user-{}", support::unique());
@@ -302,7 +298,7 @@ async fn deny_policy_blocks_password_login_until_disabled() {
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &uri,
             json!({
                 "policy_code": code,
@@ -343,7 +339,7 @@ async fn deny_policy_blocks_password_login_until_disabled() {
     let res = send(
         &env.app,
         put(
-            &admin_cookie,
+            &admin_tok,
             &format!("{uri}/{policy_id}"),
             json!({
                 "policy_code": code,
@@ -380,7 +376,7 @@ async fn require_mfa_policy_blocks_single_factor_login_without_enrollment() {
     let Some(env) = support::setup("require_mfa policy").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     let client_id =
         support::insert_public_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
     let username = format!("mfa-user-{}", support::unique());
@@ -403,7 +399,7 @@ async fn require_mfa_policy_blocks_single_factor_login_without_enrollment() {
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &uri,
             json!({
                 "policy_code": code,
@@ -463,7 +459,7 @@ async fn require_mfa_policy_is_enforced_after_forced_password_change() {
     let Some(env) = support::setup("require_mfa after forced change").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     let client_id =
         support::insert_public_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
 
@@ -472,7 +468,7 @@ async fn require_mfa_policy_is_enforced_after_forced_password_change() {
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &format!("/{}/admin/users", env.root_tenant_id),
             json!({
                 "email": format!("{username}@example.com"),
@@ -493,7 +489,7 @@ async fn require_mfa_policy_is_enforced_after_forced_password_change() {
     let res = send(
         &env.app,
         post(
-            &admin_cookie,
+            &admin_tok,
             &format!("/{}/admin/authentication-policies", env.root_tenant_id),
             json!({
                 "policy_code": format!("it-forced-mfa-{}", support::unique()),
@@ -567,7 +563,7 @@ async fn an_unknown_condition_key_is_rejected_instead_of_being_dropped() {
     let Some(env) = support::setup("auth policy unknown key").await else {
         return;
     };
-    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     let uri = format!("/{}/admin/authentication-policies", env.root_tenant_id);
 
     for unknown in [
@@ -587,7 +583,7 @@ async fn an_unknown_condition_key_is_rejected_instead_of_being_dropped() {
         }
         // 422（`Json` 抽出器の拒否）。近くの「effect 不正 → 400」と違うのは、あちらが
         // 読めたうえで業務検証に落ちるのに対し、こちらは**本文が読めない**ためである。
-        let res = send(&env.app, post(&admin_cookie, &uri, body.clone())).await;
+        let res = send(&env.app, post(&admin_tok, &uri, body.clone())).await;
         assert_eq!(
             res.status(),
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -596,7 +592,7 @@ async fn an_unknown_condition_key_is_rejected_instead_of_being_dropped() {
     }
 
     // 取りこぼしが無いこと（弾かれた要求で行ができていない）。
-    let res = send(&env.app, get(&admin_cookie, &uri)).await;
+    let res = send(&env.app, get(&admin_tok, &uri)).await;
     let listed = body_json(res).await;
     let policies = listed["policies"].as_array().expect("policies");
     assert!(

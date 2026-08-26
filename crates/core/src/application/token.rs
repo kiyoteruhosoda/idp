@@ -27,8 +27,8 @@ use crate::domain::jwt;
 use crate::domain::pkce;
 use crate::domain::refresh_token::RefreshToken;
 use crate::domain::repositories::{
-    AuthorizationCodeRepository, ClientRepository, RefreshTokenRepository, TenantRepository,
-    UserRepository,
+    AuthorizationCodeRepository, ClientPermissionRepository, ClientRepository,
+    RefreshTokenRepository, TenantRepository, UserRepository,
 };
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::Scope;
@@ -82,6 +82,16 @@ pub struct AccessTokenClaims {
     /// [`SUBJECT_TYPE_CLIENT`] を持つ。省略 = エンドユーザー主体。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sub_type: Option<String>,
+    /// この IdP 自身の管理 API に対する権限コード（空白区切り。ADR-0037）。
+    ///
+    /// **`aud` が [`management_audience`] のトークンにしか載せない。** 権限コードはこの IdP の
+    /// API を守るためのものであって、他のリソースサーバの権限体系ではない（ADR-0033）。`aud` を
+    /// 管理 API に固定することで、外部アプリ向けのトークンへ権限コードが流れ込む経路が無くなる。
+    ///
+    /// OIDC の `scope` と分けるのも同じ理由である。`scope` は ID クレームの制御に使う値で、
+    /// RP がその内容に依存し得る。混ぜると管理権限が RP の認可判断へ漏れる。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub perms: Option<String>,
 }
 
 impl AccessTokenClaims {
@@ -94,6 +104,15 @@ impl AccessTokenClaims {
 /// `/userinfo` 用 Access Token の `aud` を構築する（issuer は末尾スラッシュ無し）。
 pub fn userinfo_audience(issuer: &str) -> String {
     format!("{issuer}/userinfo")
+}
+
+/// この IdP 自身の管理 API 用 Access Token の `aud` を構築する（ADR-0037）。
+///
+/// `/userinfo` 向けと別の値にすることが要である。同じ `aud` にすると、RP が利用者ログインで
+/// 受け取ったトークンをそのまま管理 API へ持ち込めてしまう（`perms` が空なので通らないとはいえ、
+/// 「audience が合っている」という前提を管理面と共有すべきではない）。
+pub fn management_audience(issuer: &str) -> String {
+    format!("{issuer}/admin")
 }
 
 #[derive(Debug, Default)]
@@ -110,6 +129,13 @@ pub struct TokenCommand {
     /// `client_credentials` grant で要求する scope（空白区切り）。省略時はクライアントの登録 scope
     /// から既定集合を導く（G4）。
     pub scope: Option<String>,
+    /// 要求するリソース指標（RFC 8707 `resource`。ADR-0037）。
+    ///
+    /// この IdP の管理 API を呼ぶシステム用クライアントは、`{issuer}/admin` を指定して
+    /// 管理トークンを受け取る。省略時は従来どおり `/userinfo` 向けのトークンを発行する。
+    /// **どちらを欲しいのかを呼び出し側に書かせる**のは、クライアントの登録権限から発行内容を
+    /// 暗黙に切り替えると、権限を 1 つ付けた途端にトークンの `aud` が変わってしまうためである。
+    pub resource: Option<String>,
 }
 
 /// トークンエンドポイントのエラー（RFC 6749 §5.2 形式で返す）。
@@ -147,6 +173,9 @@ pub struct TokenService {
     tenants: Arc<dyn TenantRepository>,
     codes: Arc<dyn AuthorizationCodeRepository>,
     refresh_tokens: Arc<dyn RefreshTokenRepository>,
+    /// システム用クライアントが保有する管理 API の権限コード（ADR-0037）。`resource` に管理 API を
+    /// 指定された `client_credentials` でのみ引く。
+    client_permissions: Arc<dyn ClientPermissionRepository>,
     keys: Arc<KeyService>,
     /// クライアント認証（secret 照合・assertion 検証）。方式ごとの分岐は
     /// `client_authentication` に集約してある（ADR-0030）。
@@ -157,6 +186,9 @@ pub struct TokenService {
     /// （ADR-0009 §6。`domain::issuer::tenant_issuer`）。
     base_issuer: String,
     access_token_ttl: std::time::Duration,
+    /// 管理 API 向けアクセストークン（`resource={issuer}/admin`）の寿命（ADR-0037）。
+    /// 通常のアクセストークンより短く保つ。
+    management_token_ttl: std::time::Duration,
     id_token_ttl: std::time::Duration,
     refresh_token_ttl: std::time::Duration,
 }
@@ -169,12 +201,14 @@ impl TokenService {
         tenants: Arc<dyn TenantRepository>,
         codes: Arc<dyn AuthorizationCodeRepository>,
         refresh_tokens: Arc<dyn RefreshTokenRepository>,
+        client_permissions: Arc<dyn ClientPermissionRepository>,
         keys: Arc<KeyService>,
         client_auth: Arc<ClientAuthenticator>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
         base_issuer: String,
         access_token_ttl: std::time::Duration,
+        management_token_ttl: std::time::Duration,
         id_token_ttl: std::time::Duration,
         refresh_token_ttl: std::time::Duration,
     ) -> Self {
@@ -184,12 +218,14 @@ impl TokenService {
             tenants,
             codes,
             refresh_tokens,
+            client_permissions,
             keys,
             client_auth,
             audit,
             clock,
             base_issuer,
             access_token_ttl,
+            management_token_ttl,
             id_token_ttl,
             refresh_token_ttl,
         }
@@ -201,6 +237,21 @@ impl TokenService {
         cmd: TokenCommand,
         ctx: &RequestContext,
     ) -> Result<IssuedTokens, TokenError> {
+        // `resource`（RFC 8707）を解釈するのは `client_credentials` だけである（ADR-0037）。
+        // 利用者を認証した grant で管理トークンを出すことは無いので、黙って無視すると
+        // 「管理トークンを頼んだのに `/userinfo` 用が返り、管理 API で 401 になる」という、
+        // 原因が要求側から見えない失敗になる。要求の時点で断る。
+        if cmd
+            .resource
+            .as_deref()
+            .is_some_and(|r| !r.trim().is_empty())
+            && cmd.grant_type.as_deref() != Some("client_credentials")
+        {
+            return Err(TokenError::new(
+                OAuthErrorCode::InvalidTarget,
+                "the `resource` parameter is only supported for the client_credentials grant",
+            ));
+        }
         match cmd.grant_type.as_deref() {
             Some("authorization_code") => self.exchange_code(tenant, cmd, ctx).await,
             Some("refresh_token") => self.exchange_refresh_token(tenant, cmd, ctx).await,
@@ -375,6 +426,8 @@ impl TokenService {
             iat,
             jti: Uuid::new_v4().to_string(),
             sub_type: None,
+            // 利用者ログインのトークンは管理 API 向けではない（ADR-0037）。
+            perms: None,
         };
         let id_token = self.sign_id_token(&id_claims).await?;
         let access_token = self.sign_access_token(&access_claims).await?;
@@ -571,6 +624,8 @@ impl TokenService {
             iat,
             jti: Uuid::new_v4().to_string(),
             sub_type: None,
+            // 利用者ログインのトークンは管理 API 向けではない（ADR-0037）。
+            perms: None,
         };
         let id_token = self.sign_id_token(&id_claims).await?;
         let access_token = self.sign_access_token(&access_claims).await?;
@@ -680,21 +735,68 @@ impl TokenService {
         let scopes = resolve_client_credentials_scopes(&client, cmd.scope.as_deref())?;
         let scope_str = scopes.join(" ");
 
-        // 4. Access Token を発行する（ID Token・Refresh Token は出さない）。
+        // 4. 宛先（`resource`）の決定（RFC 8707。ADR-0037）。この IdP 自身の管理 API を要求された
+        //    場合だけ、クライアントが保有する権限コードを `perms` に載せた管理トークンを出す。
         let now = self.clock.now();
         let iat = now.timestamp();
         let issuer = tenant_issuer(&self.base_issuer, tenant_id);
+        let management_aud = management_audience(&issuer);
+        // 管理トークンは通常のアクセストークンより短命にする（ADR-0037 決定 2）。`perms` は
+        // トークンから読むため、この寿命が「権限を剥奪してから実際に効くまで」の上限になる。
+        let (audience, perms, ttl) = match cmd.resource.as_deref().map(str::trim) {
+            None | Some("") => (userinfo_audience(&issuer), None, self.access_token_ttl),
+            Some(requested) if requested == management_aud => {
+                let codes = self
+                    .client_permissions
+                    .list_codes_for_client(client.id)
+                    .await
+                    .map_err(|e| internal(&e))?;
+                // 権限が 1 つも無いクライアントへ管理トークンを出さない。出しても全部 403 になる
+                // トークンであり、「取れたのに何も通らない」という最も追いにくい失敗を生む。
+                if codes.is_empty() {
+                    self.audit
+                        .record(
+                            AuditEventType::ClientAuthenticationFailed,
+                            AuditResult::Failure,
+                            Some(tenant_id),
+                            None,
+                            Some(&client_id),
+                            Some("no_management_permissions"),
+                            ctx,
+                        )
+                        .await;
+                    return Err(TokenError::new(
+                        OAuthErrorCode::InvalidTarget,
+                        "client holds no management permissions for the requested resource",
+                    ));
+                }
+                (
+                    management_aud,
+                    Some(codes.join(" ")),
+                    self.management_token_ttl,
+                )
+            }
+            Some(_) => {
+                return Err(TokenError::new(
+                    OAuthErrorCode::InvalidTarget,
+                    "the requested resource is not served by this authorization server",
+                ))
+            }
+        };
+
+        // 5. Access Token を発行する（ID Token・Refresh Token は出さない）。
         let access_claims = AccessTokenClaims {
             iss: issuer.clone(),
             // 利用者不在のため主体はクライアント自身（RFC 6749 §4.4 の運用慣行）。
             sub: client.client_id.clone(),
-            aud: userinfo_audience(&issuer),
+            aud: audience,
             client_id: client.client_id.clone(),
             scope: scope_str.clone(),
-            exp: iat + self.access_token_ttl.as_secs() as i64,
+            exp: iat + ttl.as_secs() as i64,
             iat,
             jti: Uuid::new_v4().to_string(),
             sub_type: Some(SUBJECT_TYPE_CLIENT.to_string()),
+            perms,
         };
         let access_token = self.sign_access_token(&access_claims).await?;
 
@@ -714,7 +816,7 @@ impl TokenService {
         Ok(IssuedTokens {
             access_token,
             id_token: None,
-            expires_in: self.access_token_ttl.as_secs(),
+            expires_in: ttl.as_secs(),
             scope: scope_str,
             refresh_token: None,
         })
@@ -1049,6 +1151,7 @@ mod tests {
             iat: 0,
             jti: "j".to_string(),
             sub_type: Some(SUBJECT_TYPE_CLIENT.to_string()),
+            perms: None,
         };
         assert!(claims.subject_is_client());
         claims.sub_type = None;

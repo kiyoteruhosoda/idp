@@ -6,7 +6,7 @@
 use crate::application::audit_query::AuditQueryParams;
 use crate::domain::audit::AuditLogEntry;
 use crate::domain::message::MessageKey;
-use crate::presentation::admin::{IdpAdmin, RequirePerms};
+use crate::presentation::admin::{AuditRead, RequirePerms};
 use crate::presentation::dto::{AuditLogEntryResponse, AuditLogQueryParams};
 use crate::presentation::error::ApiError;
 use crate::presentation::i18n::{ApiLocale, ApiMessages};
@@ -30,7 +30,7 @@ use chrono::{DateTime, Utc};
     )
 )]
 pub async fn list_audit_logs(
-    RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(_admin, _): RequirePerms<AuditRead>,
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,

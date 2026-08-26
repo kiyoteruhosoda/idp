@@ -84,6 +84,9 @@ pub struct TokenRequest {
     pub refresh_token: Option<String>,
     /// `client_credentials` grant で要求する scope（空白区切り。G4）。
     pub scope: Option<String>,
+    /// 要求するリソース指標（RFC 8707 `resource`。ADR-0037）。この IdP 自身の管理 API を呼ぶ
+    /// システム用クライアントは `{issuer}/admin` を指定して管理トークンを受け取る。
+    pub resource: Option<String>,
     /// `private_key_jwt` の署名済み assertion（RFC 7523 §2.2。ADR-0030）。
     pub client_assertion: Option<String>,
     /// `client_assertion` の種別。`urn:ietf:params:oauth:client-assertion-type:jwt-bearer` のみ。
@@ -242,6 +245,13 @@ pub struct ApplicationLogQueryString {
     pub limit: Option<i64>,
     #[serde(default)]
     pub offset: Option<i64>,
+}
+
+/// クライアントへの管理権限付与の要求（`POST /admin/clients/{client_id}/permissions`。ADR-0037）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct GrantClientPermissionRequest {
+    /// 付与する権限コード（細粒度コードのみ。`idp.tenant.admin` / `idp.system.admin` は不可）。
+    pub permission_code: String,
 }
 
 /// 利用者への権限付与リクエスト（管理 API、A2・ADR-0006）。

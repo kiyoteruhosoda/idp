@@ -11,7 +11,7 @@ use crate::application::login_identifier_management::{
     AddLoginIdentifierCommand, LoginIdentifierEntry, LoginIdentifierManagementError,
 };
 use crate::domain::login_identifier::{LoginIdentifierType, UserLoginIdentifier};
-use crate::presentation::admin::{IdpAdmin, RequirePerms};
+use crate::presentation::admin::{RequirePerms, UsersRead, UsersWrite};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
@@ -96,7 +96,7 @@ pub struct LoginIdentifierUpdateRequest {
     )
 )]
 pub async fn list_login_identifiers(
-    RequirePerms(_admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(_admin, _): RequirePerms<UsersRead>,
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
@@ -128,7 +128,7 @@ pub async fn list_login_identifiers(
 )]
 #[allow(clippy::too_many_arguments)]
 pub async fn add_login_identifier(
-    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(admin, _): RequirePerms<UsersWrite>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
@@ -156,7 +156,7 @@ pub async fn add_login_identifier(
                 value: body.value,
                 is_active: body.is_active,
             },
-            admin.user_id,
+            &admin.actor,
             &ctx,
         )
         .await
@@ -178,7 +178,7 @@ pub async fn add_login_identifier(
 )]
 #[allow(clippy::too_many_arguments)]
 pub async fn update_login_identifier(
-    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(admin, _): RequirePerms<UsersWrite>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
@@ -199,7 +199,7 @@ pub async fn update_login_identifier(
             user_id,
             identifier_id,
             body.is_active,
-            admin.user_id,
+            &admin.actor,
             &ctx,
         )
         .await
@@ -219,7 +219,7 @@ pub async fn update_login_identifier(
     )
 )]
 pub async fn delete_login_identifier(
-    RequirePerms(admin, _): RequirePerms<IdpAdmin>,
+    RequirePerms(admin, _): RequirePerms<UsersWrite>,
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
@@ -234,13 +234,7 @@ pub async fn delete_login_identifier(
     );
     state
         .login_identifiers_admin
-        .remove(
-            tenant.context(),
-            user_id,
-            identifier_id,
-            admin.user_id,
-            &ctx,
-        )
+        .remove(tenant.context(), user_id, identifier_id, &admin.actor, &ctx)
         .await
         .map_err(|e| map_error(e, locale))?;
     Ok(StatusCode::NO_CONTENT)

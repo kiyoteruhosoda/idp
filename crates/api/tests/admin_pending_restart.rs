@@ -27,7 +27,7 @@ use idp_api::domain::clock::Clock;
 use idp_api::presentation::{router, state::AppState};
 use serde_json::Value;
 use std::sync::Arc;
-use support::{body_json, create_sso_session, get, send};
+use support::{admin_token, body_json, get, send};
 
 /// 本テスト専用のキー（`DB_MANAGED` / 非 secret / `restart_required`。web とは共有しない）。
 const KEY: &str = "TENANT_CACHE_TTL_SECS";
@@ -69,10 +69,10 @@ async fn start_api(pool: &sqlx::MySqlPool) -> axum::Router {
 }
 
 /// 設定画面が読む応答から、対象キーの 1 件を取り出す。
-async fn runtime_setting(app: &axum::Router, cookie: &str, tenant_id: &str, key: &str) -> Value {
+async fn runtime_setting(app: &axum::Router, token: &str, tenant_id: &str, key: &str) -> Value {
     let response = send(
         app,
-        get(cookie, &format!("/{tenant_id}/admin/system-settings")),
+        get(token, &format!("/{tenant_id}/admin/system-settings")),
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK, "system settings");
@@ -92,12 +92,12 @@ async fn saved_settings_are_reported_as_pending_until_the_api_restarts() {
         return;
     };
     let pool = env.pool.clone();
-    let admin_cookie = create_sso_session(&pool, &env.root_admin_id).await;
+    let admin_tok = admin_token(&env.app, &pool, &env.root_tenant_id, &env.root_admin_id).await;
 
     // ── 1. 上書きを保存した状態で api を「起動」する → 反映済み。
     upsert_setting(&pool, KEY, "120").await;
     let app = start_api(&pool).await;
-    let item = runtime_setting(&app, &admin_cookie, &env.root_tenant_id, KEY).await;
+    let item = runtime_setting(&app, &admin_tok, &env.root_tenant_id, KEY).await;
     assert_eq!(item["source"], "DB");
     assert_eq!(item["value"], "120");
     assert_eq!(item["db_value"], "120");
@@ -108,7 +108,7 @@ async fn saved_settings_are_reported_as_pending_until_the_api_restarts() {
 
     // ── 2. 保存値を変える（api は再起動していない）→ 未反映。
     upsert_setting(&pool, KEY, "300").await;
-    let item = runtime_setting(&app, &admin_cookie, &env.root_tenant_id, KEY).await;
+    let item = runtime_setting(&app, &admin_tok, &env.root_tenant_id, KEY).await;
     assert_eq!(item["value"], "120", "稼働中の api は起動時の値のまま");
     assert_eq!(item["db_value"], "300", "保存値は新しい");
     assert_eq!(
@@ -118,7 +118,7 @@ async fn saved_settings_are_reported_as_pending_until_the_api_restarts() {
 
     // ── 3. 上書きを解除する → **これも未反映**（まだ既定値に戻っていない）。
     delete_setting(&pool, KEY).await;
-    let item = runtime_setting(&app, &admin_cookie, &env.root_tenant_id, KEY).await;
+    let item = runtime_setting(&app, &admin_tok, &env.root_tenant_id, KEY).await;
     assert!(item["db_value"].is_null(), "保存値は無くなった: {item}");
     assert_eq!(item["value"], "120", "稼働中の api は起動時の値のまま");
     assert_eq!(
@@ -128,14 +128,14 @@ async fn saved_settings_are_reported_as_pending_until_the_api_restarts() {
 
     // ── 4. 再起動すると解消する。
     let restarted = start_api(&pool).await;
-    let item = runtime_setting(&restarted, &admin_cookie, &env.root_tenant_id, KEY).await;
+    let item = runtime_setting(&restarted, &admin_tok, &env.root_tenant_id, KEY).await;
     assert_ne!(item["source"], "DB", "DB 上書きは解除済み: {item}");
     assert_eq!(item["pending_restart"], false, "再起動で解消する: {item}");
 
     // ── 5. 共有キーは「web の再起動も要る」ことが応答から分かる（値は書き換えない）。
-    let shared = runtime_setting(&restarted, &admin_cookie, &env.root_tenant_id, SHARED_KEY).await;
+    let shared = runtime_setting(&restarted, &admin_tok, &env.root_tenant_id, SHARED_KEY).await;
     assert_eq!(shared["shared_with_web"], true, "{shared}");
-    let own = runtime_setting(&restarted, &admin_cookie, &env.root_tenant_id, KEY).await;
+    let own = runtime_setting(&restarted, &admin_tok, &env.root_tenant_id, KEY).await;
     assert_eq!(own["shared_with_web"], false, "{own}");
 
     // ── 6. 出所区分が `DbManaged` から `EnvLocked` へ変わったキーの残存行は未反映にしない。
@@ -143,7 +143,7 @@ async fn saved_settings_are_reported_as_pending_until_the_api_restarts() {
     // **再起動しても消えない**警告が出続ける。しかも `editable` が false で画面から消せない。
     upsert_setting(&pool, ENV_LOCKED_KEY, "https://legacy.example.com").await;
     let legacy = start_api(&pool).await;
-    let item = runtime_setting(&legacy, &admin_cookie, &env.root_tenant_id, ENV_LOCKED_KEY).await;
+    let item = runtime_setting(&legacy, &admin_tok, &env.root_tenant_id, ENV_LOCKED_KEY).await;
     assert_ne!(item["source"], "DB", "EnvLocked は DB を参照しない: {item}");
     assert_eq!(
         item["editable"], false,

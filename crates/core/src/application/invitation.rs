@@ -16,6 +16,7 @@
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::system_settings::SystemSettingsService;
+use crate::domain::admin_actor::AdminActor;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
@@ -118,7 +119,7 @@ impl InvitationService {
         &self,
         host: TenantContext,
         target_user_id: Uuid,
-        invited_by: Uuid,
+        invited_by: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<CreatedInvitation, InvitationError> {
         let host_id = host.tenant_id();
@@ -146,7 +147,9 @@ impl InvitationService {
             user_id: target_user_id,
             membership_type: MembershipType::Guest,
             status: MembershipStatus::Invited,
-            invited_by: Some(invited_by),
+            // `tenant_memberships.invited_by` は利用者 ID の列なので、機械が招待した場合は
+            // 記録先が無い（誰が招待したかは監査ログの `reason` の `actor_client=` に残る）。
+            invited_by: invited_by.user_id(),
             invitation_token_hash: Some(crypto::sha256_hex(&token)),
             invitation_expires_at: Some(expires_at),
             created_at: now,
@@ -163,8 +166,8 @@ impl InvitationService {
                 AuditEventType::TenantInvitationCreated,
                 AuditResult::Success,
                 Some(host_id),
-                Some(invited_by),
-                None,
+                invited_by.user_id(),
+                invited_by.client_id(),
                 Some(&format!("invitee={target_user_id}")),
                 ctx,
             )
@@ -312,7 +315,7 @@ impl InvitationService {
         &self,
         host: TenantContext,
         target_user_id: Uuid,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<(), InvitationError> {
         let host_id = host.tenant_id();
@@ -342,8 +345,8 @@ impl InvitationService {
                 AuditEventType::TenantMembershipSuspended,
                 AuditResult::Success,
                 Some(host_id),
-                Some(actor),
-                None,
+                actor.user_id(),
+                actor.client_id(),
                 Some(&format!("member={target_user_id}")),
                 ctx,
             )
@@ -357,7 +360,7 @@ impl InvitationService {
         &self,
         host: TenantContext,
         target_user_id: Uuid,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<(), InvitationError> {
         let host_id = host.tenant_id();
@@ -378,8 +381,8 @@ impl InvitationService {
                 AuditEventType::TenantMembershipResumed,
                 AuditResult::Success,
                 Some(host_id),
-                Some(actor),
-                None,
+                actor.user_id(),
+                actor.client_id(),
                 Some(&format!("member={target_user_id}")),
                 ctx,
             )
@@ -410,7 +413,7 @@ impl InvitationService {
         &self,
         host: TenantContext,
         target_user_id: Uuid,
-        actor: Uuid,
+        actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<(), InvitationError> {
         let host_id = host.tenant_id();
@@ -438,8 +441,8 @@ impl InvitationService {
                 AuditEventType::TenantMembershipRevoked,
                 AuditResult::Success,
                 Some(host_id),
-                Some(actor),
-                None,
+                actor.user_id(),
+                actor.client_id(),
                 Some(&format!("member={target_user_id}")),
                 ctx,
             )
@@ -925,7 +928,12 @@ mod tests {
         );
 
         let created = svc
-            .create_invitation(TenantContext::new(host), guest, admin, &ctx())
+            .create_invitation(
+                TenantContext::new(host),
+                guest,
+                &AdminActor::User(admin),
+                &ctx(),
+            )
             .await
             .expect("invitation created");
         assert!(!created.token.is_empty());
@@ -986,7 +994,12 @@ mod tests {
         );
 
         let created = svc
-            .create_invitation(TenantContext::new(host), guest, Uuid::new_v4(), &ctx())
+            .create_invitation(
+                TenantContext::new(host),
+                guest,
+                &AdminActor::User(Uuid::new_v4()),
+                &ctx(),
+            )
             .await
             .expect("created");
         assert!(created.email_sent);
@@ -1034,7 +1047,12 @@ mod tests {
         );
 
         let created = svc
-            .create_invitation(TenantContext::new(host), guest, Uuid::new_v4(), &ctx())
+            .create_invitation(
+                TenantContext::new(host),
+                guest,
+                &AdminActor::User(Uuid::new_v4()),
+                &ctx(),
+            )
             .await
             .expect("created");
         // 招待は成立し、メールは送られない（トークンの手動伝達）。
@@ -1063,7 +1081,12 @@ mod tests {
         );
 
         let created = svc
-            .create_invitation(TenantContext::new(host), guest, Uuid::new_v4(), &ctx())
+            .create_invitation(
+                TenantContext::new(host),
+                guest,
+                &AdminActor::User(Uuid::new_v4()),
+                &ctx(),
+            )
             .await
             .expect("created despite mail failure");
         // best-effort: 送信失敗でも招待（INVITED 行）は残り、email_sent = false で報告する。
@@ -1089,8 +1112,13 @@ mod tests {
             Arc::new(CapturingSink::default()),
         );
         assert!(matches!(
-            svc.create_invitation(TenantContext::new(host), guest, Uuid::new_v4(), &ctx())
-                .await,
+            svc.create_invitation(
+                TenantContext::new(host),
+                guest,
+                &AdminActor::User(Uuid::new_v4()),
+                &ctx()
+            )
+            .await,
             Err(InvitationError::AlreadyMember)
         ));
     }
@@ -1108,7 +1136,7 @@ mod tests {
             svc.create_invitation(
                 TenantContext::new(host),
                 Uuid::new_v4(),
-                Uuid::new_v4(),
+                &AdminActor::User(Uuid::new_v4()),
                 &ctx()
             )
             .await,
@@ -1129,7 +1157,12 @@ mod tests {
             Arc::new(CapturingSink::default()),
         );
         let created = svc
-            .create_invitation(TenantContext::new(host), guest, Uuid::new_v4(), &ctx())
+            .create_invitation(
+                TenantContext::new(host),
+                guest,
+                &AdminActor::User(Uuid::new_v4()),
+                &ctx(),
+            )
             .await
             .unwrap();
 
@@ -1186,7 +1219,12 @@ mod tests {
             "https://idp.example.com".to_string(),
         );
         let created = svc
-            .create_invitation(TenantContext::new(host), guest, Uuid::new_v4(), &ctx())
+            .create_invitation(
+                TenantContext::new(host),
+                guest,
+                &AdminActor::User(Uuid::new_v4()),
+                &ctx(),
+            )
             .await
             .unwrap();
         // expires_at == now（`> now` ではない）→ 期限切れ扱い。
@@ -1234,9 +1272,14 @@ mod tests {
             Arc::new(CapturingSink::default()),
         );
 
-        svc.revoke_membership(TenantContext::new(host), guest, Uuid::new_v4(), &ctx())
-            .await
-            .expect("revoked");
+        svc.revoke_membership(
+            TenantContext::new(host),
+            guest,
+            &AdminActor::User(Uuid::new_v4()),
+            &ctx(),
+        )
+        .await
+        .expect("revoked");
         assert!(memberships.rows.lock().unwrap().is_empty());
         // host scope の権限は消え、other scope は残る。
         let remaining = permissions.granted.lock().unwrap().clone();
@@ -1277,8 +1320,13 @@ mod tests {
         );
 
         assert!(matches!(
-            svc.revoke_membership(TenantContext::new(host), guest, Uuid::new_v4(), &ctx())
-                .await,
+            svc.revoke_membership(
+                TenantContext::new(host),
+                guest,
+                &AdminActor::User(Uuid::new_v4()),
+                &ctx()
+            )
+            .await,
             Err(InvitationError::Internal(_))
         ));
         // メンバーシップは削除されない（権限が残る限りメンバーでもあり続ける）。
@@ -1302,8 +1350,13 @@ mod tests {
             Arc::new(CapturingSink::default()),
         );
         assert!(matches!(
-            svc.revoke_membership(TenantContext::new(host), user, Uuid::new_v4(), &ctx())
-                .await,
+            svc.revoke_membership(
+                TenantContext::new(host),
+                user,
+                &AdminActor::User(Uuid::new_v4()),
+                &ctx()
+            )
+            .await,
             Err(InvitationError::Forbidden(_))
         ));
         // HOME は残る。
@@ -1341,9 +1394,14 @@ mod tests {
             refresh_tokens.clone(),
         );
 
-        svc.suspend_membership(TenantContext::new(host), guest, Uuid::new_v4(), &ctx())
-            .await
-            .expect("suspend");
+        svc.suspend_membership(
+            TenantContext::new(host),
+            guest,
+            &AdminActor::User(Uuid::new_v4()),
+            &ctx(),
+        )
+        .await
+        .expect("suspend");
 
         let row = memberships.rows.lock().unwrap()[0].clone();
         assert!(row.is_suspended());
@@ -1359,9 +1417,14 @@ mod tests {
         );
 
         // 再開すると ACTIVE へ戻り、権限もそのまま。
-        svc.resume_membership(TenantContext::new(host), guest, Uuid::new_v4(), &ctx())
-            .await
-            .expect("resume");
+        svc.resume_membership(
+            TenantContext::new(host),
+            guest,
+            &AdminActor::User(Uuid::new_v4()),
+            &ctx(),
+        )
+        .await
+        .expect("resume");
         assert!(memberships.rows.lock().unwrap()[0].is_active());
         assert_eq!(permissions.granted.lock().unwrap().len(), 1);
         assert_eq!(
@@ -1391,14 +1454,24 @@ mod tests {
 
         // HOME は停止できない（所属元を止めるとログイン先が無くなる）。
         assert!(matches!(
-            svc.suspend_membership(TenantContext::new(host), user, Uuid::new_v4(), &ctx())
-                .await,
+            svc.suspend_membership(
+                TenantContext::new(host),
+                user,
+                &AdminActor::User(Uuid::new_v4()),
+                &ctx()
+            )
+            .await,
             Err(InvitationError::Forbidden(_))
         ));
         // ACTIVE を再開しようとしても拒否。
         assert!(matches!(
-            svc.resume_membership(TenantContext::new(host), user, Uuid::new_v4(), &ctx())
-                .await,
+            svc.resume_membership(
+                TenantContext::new(host),
+                user,
+                &AdminActor::User(Uuid::new_v4()),
+                &ctx()
+            )
+            .await,
             Err(InvitationError::Forbidden(_))
         ));
         // メンバーシップが無ければ NotFound（テナント越しの存在推測を防ぐ）。
@@ -1406,7 +1479,7 @@ mod tests {
             svc.suspend_membership(
                 TenantContext::new(Uuid::now_v7().into()),
                 user,
-                Uuid::new_v4(),
+                &AdminActor::User(Uuid::new_v4()),
                 &ctx()
             )
             .await,
@@ -1426,8 +1499,13 @@ mod tests {
             updated_at: now(),
         });
         assert!(matches!(
-            svc.suspend_membership(TenantContext::new(host), invited, Uuid::new_v4(), &ctx())
-                .await,
+            svc.suspend_membership(
+                TenantContext::new(host),
+                invited,
+                &AdminActor::User(Uuid::new_v4()),
+                &ctx()
+            )
+            .await,
             Err(InvitationError::Forbidden(_))
         ));
         let _ = home;
@@ -1460,8 +1538,13 @@ mod tests {
         );
 
         assert!(matches!(
-            svc.suspend_membership(TenantContext::new(host), guest, Uuid::new_v4(), &ctx())
-                .await,
+            svc.suspend_membership(
+                TenantContext::new(host),
+                guest,
+                &AdminActor::User(Uuid::new_v4()),
+                &ctx()
+            )
+            .await,
             Err(InvitationError::Internal(_))
         ));
         // 失敗したときは監査へ成功を残さない。

@@ -33,6 +33,11 @@ pub enum AuditEventType {
     /// 管理者による利用者権限の付与／剥奪（ADR-0006、設計仕様 §7）。
     UserPermissionGranted,
     UserPermissionRevoked,
+    /// 管理者によるシステム用クライアントへの管理権限の付与／剥奪（ADR-0037）。
+    /// `client_id` 列は**操作対象**のクライアント、実行主体は `user_id` 列（人）か
+    /// `reason` の `actor_client=`（機械）に出る。
+    ClientPermissionGranted,
+    ClientPermissionRevoked,
     /// 管理者によるクライアント（RP）の登録・更新・シークレット再発行（設計仕様 §9.3・§7）。
     ClientRegistered,
     ClientUpdated,
@@ -141,6 +146,8 @@ impl AuditEventType {
             Self::SamlResponseIssued => "saml_response.issued",
             Self::UserPermissionGranted => "user_permission.granted",
             Self::UserPermissionRevoked => "user_permission.revoked",
+            Self::ClientPermissionGranted => "client_permission.granted",
+            Self::ClientPermissionRevoked => "client_permission.revoked",
             Self::ClientRegistered => "client.registered",
             Self::ClientUpdated => "client.updated",
             Self::ClientSecretRotated => "client.secret_rotated",
