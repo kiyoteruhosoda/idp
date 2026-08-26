@@ -189,11 +189,14 @@ NEW_TENANT_ID="$(mariadb_exec "SELECT id FROM tenants WHERE parent_tenant_id='${
 pass "テナント登録画面（React surface）→ web→api POST /admin/tenants → 作成者がブートストラップ管理者（DB 反映）"
 
 ccsrf="$(curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin/clients/new" | grep -oE 'name="csrf_token" value="[a-f0-9]{64}"' | grep -oE '[a-f0-9]{64}')"
+# 認証方式の既定は private_key_jwt（ADR-0036）。ここでは secret の一度表示を確かめるので、
+# client_secret_basic を明示して登録する。
 created="$(curl -fsS -b "$AJAR" -X POST "${WEB}/${ROOT}/admin/clients/new" \
   -H 'content-type: application/x-www-form-urlencoded' \
   --data-urlencode "app_name=E2E Console App" --data-urlencode "client_type=confidential" \
   --data-urlencode "usage=user_login" \
   --data-urlencode "redirect_uris=${REDIRECT_URI}" \
+  --data-urlencode "token_endpoint_auth_method=client_secret_basic" \
   --data-urlencode "csrf_token=${ccsrf}")"
 grep -qi "secret" <<<"$created" || fail "クライアント作成で secret が表示されません"
 pass "クライアント作成（web→api POST /admin/clients、secret 一度表示）"

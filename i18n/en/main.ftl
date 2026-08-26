@@ -532,6 +532,7 @@ api-client-scope-duplicate = The scope "{ $value }" is listed more than once.
 api-client-scopes-missing-openid = The scopes must include openid.
 api-client-secret-public = Public clients have no client secret.
 api-client-auth-method-invalid = Invalid client authentication method. Choose client_secret_basic, client_secret_post or private_key_jwt.
+api-client-auth-method-unspecified = token_endpoint_auth_method defaults to private_key_jwt, which needs a JWK Set. Register a JWK Set, or state token_endpoint_auth_method explicitly.
 api-client-auth-method-needs-secret = This client has no client_secret. Rotate the secret before switching to a client_secret authentication method.
 api-client-jwks-required = A JWK Set is required for private_key_jwt authentication.
 api-client-jwks-not-applicable = A JWK Set can only be registered for private_key_jwt authentication.

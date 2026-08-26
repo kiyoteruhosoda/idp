@@ -81,8 +81,11 @@
         </select>
       </div>
       {% endif %}
-      {% if values.client_type == "confidential" %}
-      <div class="mb-3" data-client-form-row="auth-method">
+      {# 新規登録では public を選んでいる間も DOM に置いておく（描画をやめると JS で
+         confidential へ戻しても欄が現れず、方式を送らない登録になる。ADR-0036 以降、それは 400）。
+         編集では public に方式を送ると api が拒むので、従来どおり描画しない。 #}
+      {% if is_new || values.client_type == "confidential" %}
+      <div class="mb-3" data-client-form-row="auth-method"{% if values.client_type != "confidential" %} hidden{% endif %}>
         <label class="form-label" for="client-auth-method">{{ messages.get("admin-client-field-auth-method") }}</label>
         <select class="form-select" id="client-auth-method" name="token_endpoint_auth_method">
           {# 推奨（private_key_jwt）を先頭に置く。共有シークレットを持たない方式が既定になるようにする。 #}
@@ -93,7 +96,7 @@
         <div class="form-text">{{ messages.get("admin-client-field-auth-method-hint") }}</div>
       </div>
       {# 検証鍵は private_key_jwt でのみ受け付ける（他の方式で送ると api が拒否する）。 #}
-      <div class="mb-3" data-client-form-row="jwks"{% if values.token_endpoint_auth_method != "private_key_jwt" %} hidden{% endif %}>
+      <div class="mb-3" data-client-form-row="jwks"{% if values.client_type != "confidential" || values.token_endpoint_auth_method != "private_key_jwt" %} hidden{% endif %}>
         <label class="form-label" for="client-jwks">{{ messages.get("admin-client-field-jwks") }}</label>
         <textarea class="form-control font-monospace" id="client-jwks" name="jwks" rows="8" spellcheck="false">{{ values.jwks }}</textarea>
         <div class="form-text">{{ messages.get("admin-client-field-jwks-hint") }}</div>

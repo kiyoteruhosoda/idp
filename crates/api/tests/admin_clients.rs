@@ -115,6 +115,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
     );
 
     // confidential クライアント登録 → 201・secret 平文あり。
+    // 既定は `private_key_jwt`（ADR-0036）なので、secret を受け取るには方式を明示する。
     let res = send(
         &env.app,
         post(
@@ -125,6 +126,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
                 "client_type": "confidential",
                 "redirect_uris": [REDIRECT_URI],
                 "scopes": ["openid"],
+                "token_endpoint_auth_method": "client_secret_basic",
             }),
         ),
     )
@@ -342,6 +344,7 @@ async fn a_client_registered_before_the_usage_split_can_still_be_disabled() {
                 "redirect_uris": [REDIRECT_URI],
                 "scopes": ["openid"],
                 "allow_client_credentials": true,
+                "token_endpoint_auth_method": "client_secret_basic",
             }),
         ),
     )
@@ -369,6 +372,7 @@ async fn a_deleted_client_disappears_from_the_console_but_stays_in_the_database(
                     "client_type": "confidential",
                     "redirect_uris": [REDIRECT_URI],
                     "scopes": ["openid"],
+                    "token_endpoint_auth_method": "client_secret_basic",
                 }),
             ),
         )
@@ -429,4 +433,71 @@ async fn a_deleted_client_disappears_from_the_console_but_stays_in_the_database(
             .await
             .expect("row still exists");
     assert_eq!(status, "DELETED");
+}
+
+/// ADR-0036: 認証方式を省略した登録は `private_key_jwt` になる。
+///
+/// OIDC Registration 1.0 の既定（`client_secret_basic`）から意図的に外している。既定は「選ぶ人が
+/// 何も書かなかったとき」に置かれる値なので、共有秘密ではなく公開鍵のほうへ倒す。弱いほうを
+/// 選ぶときだけ明示させる。
+#[tokio::test]
+async fn omitting_the_authentication_method_registers_a_private_key_jwt_client() {
+    let Some(env) = support::setup("admin clients default auth method").await else {
+        return;
+    };
+    let admin_cookie = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let clients_uri = format!("/{}/admin/clients", env.root_tenant_id);
+
+    // 方式も検証鍵も無い登録は拒む。既定が `private_key_jwt` である以上、通せば「どの資格情報でも
+    // 認証できないクライアント」ができてしまう。
+    let res = send(
+        &env.app,
+        post(
+            &admin_cookie,
+            &clients_uri,
+            json!({
+                "app_name": "No Method App",
+                "client_type": "confidential",
+                "redirect_uris": [REDIRECT_URI],
+                "scopes": ["openid"],
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    // 本文は既定が何かまで伝える。「検証鍵が必要」だけでは、`private_key_jwt` と書いた覚えの
+    // 無い呼び出し元に理由が伝わらない。
+    let message = body_json(res).await["message"]
+        .as_str()
+        .expect("message")
+        .to_string();
+    assert!(
+        message.contains("token_endpoint_auth_method") && message.contains("private_key_jwt"),
+        "既定と省略された項目名が本文に出ていない: {message}"
+    );
+
+    // 検証鍵だけを送れば、方式を書かなくても `private_key_jwt` として登録できる。
+    let res = send(
+        &env.app,
+        post(
+            &admin_cookie,
+            &clients_uri,
+            json!({
+                "app_name": "Default Method App",
+                "client_type": "confidential",
+                "redirect_uris": [REDIRECT_URI],
+                "scopes": ["openid"],
+                "jwks": support::sample_client_jwks(),
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let created = body_json(res).await;
+    assert_eq!(created["token_endpoint_auth_method"], "private_key_jwt");
+    // この方式のクライアントは共有秘密を持たない（ADR-0030）。
+    assert!(
+        created["client_secret"].is_null(),
+        "private_key_jwt で secret が発行されている: {created}"
+    );
 }

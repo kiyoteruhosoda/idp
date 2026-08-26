@@ -43,8 +43,9 @@ pub struct RegisterClientCommand {
     /// サーバ間（M2M）連携で `client_credentials` grant を使えるようにするか（G4。既定 false）。
     /// public client は資格情報を秘匿できないため、指定されても無効のまま登録する。
     pub allow_client_credentials: bool,
-    /// confidential client のクライアント認証方式（G3）。`None` は既定の `client_secret_basic`。
-    /// public client には適用しない（常に `none`）。
+    /// confidential client のクライアント認証方式（G3）。`None` は既定の `private_key_jwt`
+    /// （ADR-0036）。ただし `jwks` も `None` の要求は「認証手段を持たないクライアント」に
+    /// なるため、既定へ落とさず 400 で止める。public client には適用しない（常に `none`）。
     pub token_endpoint_auth_method: Option<TokenEndpointAuthMethod>,
     /// `private_key_jwt` の検証鍵（JWK Set の JSON。ADR-0030）。同方式を選ぶ場合は必須で、
     /// それ以外の方式では指定できない。
@@ -161,6 +162,14 @@ impl ClientManagementService {
                 (TokenEndpointAuthMethod::None, None, None, None)
             }
             ClientType::Confidential => {
+                // 方式も検証鍵も無い要求は、既定の `private_key_jwt` では認証手段を持たない
+                // クライアントになる。ここで「検証鍵が必要」とだけ返すと、`private_key_jwt` と
+                // 書いた覚えの無い呼び出し元には理由が伝わらないので、既定を含めて返す（ADR-0036）。
+                if cmd.token_endpoint_auth_method.is_none() && cmd.jwks.is_none() {
+                    return Err(ClientManagementError::Validation(MessageKey::new(
+                        "api-client-auth-method-unspecified",
+                    )));
+                }
                 let method = validate_confidential_auth_method(cmd.token_endpoint_auth_method)?;
                 let jwks = validate_jwks_for_method(method, cmd.jwks.as_deref())?;
                 if method == TokenEndpointAuthMethod::PrivateKeyJwt {
@@ -502,21 +511,18 @@ impl ClientManagementService {
     }
 }
 
-/// クライアントへ付与する grant_type の集合を決める（G4）。
-///
-/// `authorization_code` は全クライアント共通の基本許可。`client_credentials` は confidential かつ
-/// 管理者が明示的に有効化したときだけ足す（public client は指定されても付けない）。`refresh_token`
-/// は `offline_access` scope の同意で制御しており grant_types では絞らない（従来どおり）。
 /// confidential client のクライアント認証方式を検証する（G3）。
 ///
-/// 省略時は RFC 6749 §2.3.1 が推奨する `client_secret_basic`。`none`（＝認証なし）は
-/// confidential では選べない —— 選べてしまうと secret を持ったまま誰でも `/token` を叩ける
-/// クライアントが管理画面から作れてしまう。
+/// 省略時は `private_key_jwt`（ADR-0036）。OIDC Registration 1.0 の既定は `client_secret_basic`
+/// だが、そちらに倒すと「方式を書かなかった登録」が黙って共有秘密のクライアントになる。強いほうを
+/// 既定にし、弱いほうを選ぶときだけ明示させる。`none`（＝認証なし）は confidential では選べない
+/// —— 選べてしまうと secret を持ったまま誰でも `/token` を叩けるクライアントが管理画面から
+/// 作れてしまう。
 fn validate_confidential_auth_method(
     requested: Option<TokenEndpointAuthMethod>,
 ) -> Result<TokenEndpointAuthMethod, ClientManagementError> {
     match requested {
-        None => Ok(TokenEndpointAuthMethod::ClientSecretBasic),
+        None => Ok(TokenEndpointAuthMethod::PrivateKeyJwt),
         Some(TokenEndpointAuthMethod::ClientSecretBasic) => {
             Ok(TokenEndpointAuthMethod::ClientSecretBasic)
         }
@@ -571,6 +577,11 @@ fn validate_single_usage(
     Ok(())
 }
 
+/// クライアントへ付与する grant_type の集合を決める（G4）。
+///
+/// `authorization_code` は全クライアント共通の基本許可。`client_credentials` は confidential かつ
+/// 管理者が明示的に有効化したときだけ足す（public client は指定されても付けない）。`refresh_token`
+/// は `offline_access` scope の同意で制御しており grant_types では絞らない（従来どおり）。
 fn grant_types_for(
     client_type: ClientType,
     allow_client_credentials: bool,

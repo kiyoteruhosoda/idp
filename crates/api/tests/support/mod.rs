@@ -450,6 +450,18 @@ pub async fn insert_private_key_jwt_client(
     (client_id, private_pem, kid)
 }
 
+/// 登録 API へ渡せる検証鍵（JWK Set の JSON 文字列）を 1 つ作る。
+///
+/// `insert_private_key_jwt_client` は DB へ直接入れる版。こちらは `POST /admin/clients` の
+/// `jwks` フィールドに載せて、登録経路そのものを通すために使う。
+pub fn sample_client_jwks() -> String {
+    let kid = format!("kid-{}", unique());
+    let (_private_pem, public_pem) =
+        idp_api::domain::jwt::generate_rsa_keypair().expect("generate keypair");
+    let jwk = idp_api::domain::jwt::rsa_public_jwk(&kid, &public_pem).expect("build jwk");
+    serde_json::to_string(&idp_api::domain::jwt::Jwks { keys: vec![jwk] }).expect("serialize jwks")
+}
+
 /// ランダムな識別子片（メール・名前の一意化に使う。12 文字の hex）。
 pub fn unique() -> String {
     uuid::Uuid::new_v4().simple().to_string()[..12].to_string()

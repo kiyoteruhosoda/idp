@@ -125,8 +125,9 @@ pub struct ClientRegisterRequest {
     /// confidential クライアントのみ有効。
     #[serde(default)]
     pub allow_client_credentials: Option<bool>,
-    /// クライアント認証方式（G3）。`client_secret_basic`（既定）・`client_secret_post`・
-    /// `private_key_jwt`（ADR-0030）。confidential クライアントのみ指定できる。
+    /// クライアント認証方式（G3）。`private_key_jwt`（既定。ADR-0030 / ADR-0036）・
+    /// `client_secret_basic`・`client_secret_post`。confidential クライアントのみ指定できる。
+    /// 省略した場合は `private_key_jwt` として扱うため `jwks` が要る。
     #[serde(default)]
     pub token_endpoint_auth_method: Option<String>,
     /// RP-initiated logout のリダイレクト先（登録済みのもののみ許可）。
