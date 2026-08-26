@@ -534,11 +534,14 @@ fn jwks_for_method(method: &Option<String>, raw: &Option<String>) -> Option<Stri
     blank_to_none(raw)
 }
 
-/// 再表示用のフォーム値。未送信（public を選んだ場合）は既定の `client_secret_basic` を出す。
+/// 入力エラーで新規登録フォームを描き直すときの認証方式。
+///
+/// select が描画されない用途（public）では値が送られてこない。既定は新規フォームの初期選択
+/// （`ClientFormValues::default_new`）・api の省略時（ADR-0036）と同じ `private_key_jwt` に揃える。
 fn auth_method_or_default(raw: &Option<String>) -> String {
     raw.as_deref()
         .filter(|s| !s.is_empty())
-        .unwrap_or("client_secret_basic")
+        .unwrap_or("private_key_jwt")
         .to_string()
 }
 

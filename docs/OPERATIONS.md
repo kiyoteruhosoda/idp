@@ -127,10 +127,11 @@ api・web を別プロセスで起動し、`/authorize`→web `/login`→`/token
 クライアントは影響を受けない。
 
 confidential クライアントの認証方式は `token_endpoint_auth_method` で選ぶ（管理コンソールの
-登録・編集フォームにも項目がある）。既定は `client_secret_basic`（`Authorization: Basic` ヘッダ）で、
-RP 側のライブラリが body に `client_id` / `client_secret` を載せる実装なら `client_secret_post` を
-選ぶ。人ではない呼び出し元（CI・バッチ・サーバ間連携）には `private_key_jwt` を使う
-（次項「システム（人ではない呼び出し元）に認証させたいとき」）。`/token`・`/introspect`・`/revoke` は
+登録・編集フォームにも項目がある）。**既定は `private_key_jwt`**（ADR-0036）で、人ではない
+呼び出し元（CI・バッチ・サーバ間連携）にはこれを使う（下記「システム（人ではない呼び出し元）に
+認証させたいとき」）。共有シークレットを使うなら `client_secret_basic`（`Authorization: Basic`
+ヘッダ）か、RP 側のライブラリが body に `client_id` / `client_secret` を載せる実装なら
+`client_secret_post` を**明示的に指定する**。`/token`・`/introspect`・`/revoke` は
 登録した方式でのみ認証を受け付け、1 回の要求で複数の方式を提示すると `invalid_request` になる。
 `client_secret_basic` と `client_secret_post` の間で方式を変えても `client_secret` の値は変わらない
 （提示場所だけが変わる）。public クライアントには設定できない（常に `none`）。
@@ -144,6 +145,9 @@ URI を指定する。`id_token_hint` は期限切れでもよいが、他テナ
 プライベート・リンクローカル等のアドレスを**リテラルで**指定できない（内部サービスへ向けるときは
 ホスト名で指定する）。
 
+次の例は共有シークレットのクライアントを作る。`token_endpoint_auth_method` を省略すると
+`private_key_jwt` になり、`jwks` も無ければ 400 になる。
+
 ```bash
 # 有効な SSO セッションの Cookie を付けて呼ぶ（ブラウザのセッションでも可）。
 curl -sS -X POST "$ISSUER/admin/clients" \
@@ -153,12 +157,17 @@ curl -sS -X POST "$ISSUER/admin/clients" \
     "app_name": "My App",
     "client_type": "confidential",
     "redirect_uris": ["https://app.example.com/callback"],
-    "scopes": ["openid", "profile", "email"]
+    "scopes": ["openid", "profile", "email"],
+    "token_endpoint_auth_method": "client_secret_basic"
   }'
 ```
 
+公開鍵方式（`private_key_jwt`）で登録する手順は「システム（人ではない呼び出し元）に
+認証させたいとき」を参照。
+
 - 一覧: `GET /admin/clients`、取得: `GET /admin/clients/{client_id}`
 - 更新（app_name / redirect_uris / scopes / status）: `PATCH /admin/clients/{client_id}`
+  （省略した項目は「変更しない」。既定に戻すのではない）
 - シークレット再発行（confidential のみ）: `POST /admin/clients/{client_id}/secret`
 
 redirect_uri は完全一致・複数登録に対応し、フラグメント／ワイルドカードは拒否する。要求 scope は
@@ -238,7 +247,7 @@ JWKS=$(python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))'
 | アプリ名 | システムの役割が分かる名前（例 `Nightly Report Job`） |
 | **用途** | **「システムが API を呼ぶ（利用者不在）」** |
 | スコープ | `openid` は必須のため外せない。システム用では他の 3 つ（`profile`・`email`・`offline_access`）に用は無いので、既定のまま。**業務上の権限は scope では渡さない**（アプリが `sub` = `client_id` を見て判断する。ADR-0033） |
-| 認証方式 | `private_key_jwt` |
+| 認証方式 | `private_key_jwt`（初期選択のまま） |
 | 検証鍵（JWKS） | 前項の `jwks.json` の中身 |
 
 用途に「システム」を選ぶと、リダイレクト URI と client type の欄は消える（利用者が不在なので

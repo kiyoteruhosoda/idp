@@ -532,6 +532,7 @@ api-client-scope-duplicate = スコープ「{ $value }」が重複していま�
 api-client-scopes-missing-openid = スコープに openid を含めてください。
 api-client-secret-public = public クライアントにはクライアントシークレットがありません。
 api-client-auth-method-invalid = クライアント認証方式が無効です。client_secret_basic・client_secret_post・private_key_jwt のいずれかを指定してください。
+api-client-auth-method-unspecified = token_endpoint_auth_method を省略すると private_key_jwt になり、JWK Set（検証鍵）が必要です。jwks を指定するか、token_endpoint_auth_method を明示してください。
 api-client-auth-method-needs-secret = このクライアントには client_secret がありません。client_secret 方式へ切り替える前に secret を再発行してください。
 api-client-jwks-required = private_key_jwt 認証には JWK Set（検証鍵）が必要です。
 api-client-jwks-not-applicable = JWK Set を登録できるのは private_key_jwt 認証のクライアントだけです。
