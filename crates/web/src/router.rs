@@ -258,6 +258,16 @@ pub fn build(state: WebState) -> Router {
             "/admin/clients/{client_id}/edit",
             get(admin_clients_console::edit_form).post(admin_clients_console::update),
         )
+        // 管理権限の付与・剥奪（ADR-0037）。区画は詳細画面にあり、ここは実行だけを受ける
+        // （Post/Redirect/Get で詳細へ戻る）。
+        .route(
+            "/admin/clients/{client_id}/permissions/grant",
+            post(admin_clients_console::grant_permission),
+        )
+        .route(
+            "/admin/clients/{client_id}/permissions/revoke",
+            post(admin_clients_console::revoke_permission),
+        )
         .route(
             "/admin/clients/{client_id}/rotate-secret",
             post(admin_clients_console::rotate_secret),

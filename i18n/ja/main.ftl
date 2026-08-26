@@ -140,6 +140,10 @@ admin-permissions-grant-none-left = この利用者は付与できる権限を�
 admin-permissions-grant-load-failed = 付与可能な権限コードを取得できませんでした。画面を再読み込みしてください。
 admin-permissions-grant-button = 付与
 admin-permissions-revoke-button = 剥奪
+admin-client-permissions-title = 管理権限
+admin-client-permissions-hint = このクライアントが IdP 自身の管理 API を呼ぶための権限です。トークン要求に管理 API の resource を添えると、ここで付与したコードが管理トークンに載ります。手順は運用手順書を参照してください。
+admin-client-permissions-none = このクライアントは管理権限を保有していません。
+admin-client-permissions-grant-none-left = このクライアントは付与できる管理権限をすべて保有しています。
 admin-permission-error-unknown = 未知の権限コードです。付与可能なコードから選んでください。
 
 # ページング付き利用者一覧（MT22）。絞り込み・ページングはサーバ側で行う。

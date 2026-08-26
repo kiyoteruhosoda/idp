@@ -1,6 +1,7 @@
 {% extends "console/layout.html" %}
 {% block content %}
 <h2 class="h4 mb-3">{{ client.app_name }}</h2>
+{% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
 <div class="card mb-3">
   <div class="card-body">
     <dl class="row mb-0">
@@ -20,6 +21,62 @@
     </dl>
   </div>
 </div>
+{#- 管理権限（ADR-0037）。システム用クライアント（`client_credentials`）が IdP 自身の管理 API を
+    呼ぶための権限。ブラウザログイン用クライアントには管理トークンを取る手段が無いので出さない
+    （ただし既に保有していれば、剥奪できるよう区画を出す）。 -#}
+{% if shows_permissions %}
+<h3 class="h5 mb-3">{{ messages.get("admin-client-permissions-title") }}</h3>
+<p class="text-muted small">{{ messages.get("admin-client-permissions-hint") }}</p>
+{% if permission_codes.is_empty() %}
+<p class="text-muted">{{ messages.get("admin-client-permissions-none") }}</p>
+{% else %}
+<div class="table-responsive mb-4">
+  <table class="table table-cards table-hover align-middle">
+    <tbody>
+      {% for code in permission_codes %}
+      <tr>
+        <td data-label="{{ messages.get("admin-client-permissions-title") }}"><code>{{ code }}</code></td>
+        <td class="text-end">
+          <form method="post" action="{{ tenant }}/admin/clients/{{ client.client_id }}/permissions/revoke" class="d-inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}">
+            <input type="hidden" name="permission_code" value="{{ code }}">
+            <button type="submit" class="btn btn-outline-danger btn-sm">{{ messages.get("admin-permissions-revoke-button") }}</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{#- 付与はシステム用クライアントにだけ。ブラウザログイン用クライアントは管理トークンを取れないので、
+    保有分の剥奪だけを見せて新たな付与は見せない。 -#}
+{% if shows_grant_form %}
+<div class="card mb-4">
+  <div class="card-body">
+    {#- 選択肢は api が絞った「クライアントへ付与できるコード」。包括的な管理権限
+        （idp.tenant.admin / idp.system.admin）はそもそも候補に出ない。 -#}
+    {% if permissions_load_failed %}
+    <div class="alert alert-warning mb-0" role="alert">{{ messages.get("admin-permissions-grant-load-failed") }}</div>
+    {% else if grantable_permissions.is_empty() %}
+    <p class="text-muted mb-0">{{ messages.get("admin-client-permissions-grant-none-left") }}</p>
+    {% else %}
+    <form method="post" action="{{ tenant }}/admin/clients/{{ client.client_id }}/permissions/grant">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <div class="mb-3">
+        <label class="form-label" for="client-permission-code">{{ messages.get("admin-permissions-grant-label") }}</label>
+        <select class="form-select" id="client-permission-code" name="permission_code" required>
+          <option value="" selected disabled>{{ messages.get("admin-permissions-grant-placeholder") }}</option>
+          {% for code in grantable_permissions %}<option value="{{ code }}">{{ code }}</option>{% endfor %}
+        </select>
+      </div>
+      <button type="submit" class="btn btn-primary">{{ messages.get("admin-permissions-grant-button") }}</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+{% endif %}
 <div class="d-flex flex-wrap align-items-center gap-2">
   <a class="btn btn-outline-primary" href="{{ tenant }}/admin/clients/{{ client.client_id }}/edit"><i class="fa-solid fa-pen me-2" aria-hidden="true"></i>{{ messages.get("admin-client-edit") }}</a>
   {% if client.client_type == "confidential" %}
