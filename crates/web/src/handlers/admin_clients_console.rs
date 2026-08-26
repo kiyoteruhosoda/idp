@@ -170,11 +170,12 @@ pub async fn create(
         ));
     }
 
+    // システム用では client_type の select を描画しないので、値が来なくても confidential
+    // として送る（public では `client_credentials` も `private_key_jwt` も成立しない）。
+    let client_type = client_type_for(&form.usage, &form.client_type);
     let body = json!({
         "app_name": form.app_name,
-        // システム用では client_type の select を描画しないので、値が来なくても confidential
-        // として送る（public では `client_credentials` も `private_key_jwt` も成立しない）。
-        "client_type": client_type_for(&form.usage, &form.client_type),
+        "client_type": client_type,
         "redirect_uris": redirect_uris_for(&form.usage, &form.redirect_uris),
         "scopes": selected_scopes(
             &form.scope_profile,
@@ -182,11 +183,12 @@ pub async fn create(
             &form.scope_offline_access,
         ),
         "allow_client_credentials": allows_client_credentials(&form.usage),
-        // public を選んだときは select 自体が描画されないため送られない。api は未指定を
-        // 「既定のまま」と解釈する（public は常に `none`）。
+        // 新規フォームは public を選んでいる間も方式・検証鍵の欄を DOM に残す（隠すだけ）。
+        // 隠れた欄も値は送信されるので、public では検証鍵を落としてから api へ渡す —— public に
+        // 鍵を送ると「この方式では登録できない」で拒まれる。方式のほうは api が public では
+        // 読まない（常に `none`）ため、そのまま渡してよい。
         "token_endpoint_auth_method": form.token_endpoint_auth_method,
-        // 空欄は「未指定」として送る。空文字を送ると api は「鍵を登録した」と読んでしまう。
-        "jwks": jwks_for_method(&form.token_endpoint_auth_method, &form.jwks),
+        "jwks": jwks_for_new_client(&client_type, &form.token_endpoint_auth_method, &form.jwks),
     });
     // api のバリデーション/競合メッセージをこの画面へ出すため、決定言語を引き継ぐ（MT20）。
     let result = state
@@ -534,10 +536,28 @@ fn jwks_for_method(method: &Option<String>, raw: &Option<String>) -> Option<Stri
     blank_to_none(raw)
 }
 
+/// 新規登録で api へ送る検証鍵。
+///
+/// `jwks_for_method` に client type の判定を足したもの。新規フォームは public を選んでいる間も
+/// 検証鍵の欄を DOM に残す（描画をやめると、JS で confidential へ戻したときに欄が現れない）ため、
+/// public のまま送信されてきた値をここで落とす。編集フォームは public に方式・鍵の欄を出さないので
+/// この判定は要らない（client type は登録後に変えられない）。
+fn jwks_for_new_client(
+    client_type: &str,
+    method: &Option<String>,
+    raw: &Option<String>,
+) -> Option<String> {
+    if client_type != "confidential" {
+        return None;
+    }
+    jwks_for_method(method, raw)
+}
+
 /// 入力エラーで新規登録フォームを描き直すときの認証方式。
 ///
-/// select が描画されない用途（public）では値が送られてこない。既定は新規フォームの初期選択
-/// （`ClientFormValues::default_new`）・api の省略時（ADR-0036）と同じ `private_key_jwt` に揃える。
+/// 新規フォームの select は常に描画されるので通常は値が届くが、届かなかったときは新規フォームの
+/// 初期選択（`ClientFormValues::default_new`）・api の省略時（ADR-0036）と同じ `private_key_jwt`
+/// に揃える。3 か所が別々の既定を持つと、画面の初期表示と再描画で選択が変わる。
 fn auth_method_or_default(raw: &Option<String>) -> String {
     raw.as_deref()
         .filter(|s| !s.is_empty())
@@ -859,7 +879,7 @@ mod tests {
             jwks_for_method(&Some("client_secret_basic".to_string()), &keys),
             None
         );
-        // public を選ぶと方式そのものが送られない（select が描画されない）。
+        // 編集フォームで public のクライアントを開くと、方式そのものが送られない。
         assert_eq!(jwks_for_method(&None, &keys), None);
         // 空欄は「未指定」。
         assert_eq!(
@@ -869,6 +889,16 @@ mod tests {
             ),
             None
         );
+    }
+
+    /// 新規登録では public を選んでいる間も検証鍵の欄が DOM に残る（隠れているだけ）。
+    /// 鍵を書いてから public へ切り替えた入力を、そのまま api へ送らない。
+    #[test]
+    fn a_new_public_client_never_carries_a_jwks() {
+        let keys = Some(r#"{"keys":[]}"#.to_string());
+        let method = Some("private_key_jwt".to_string());
+        assert_eq!(jwks_for_new_client("public", &method, &keys), None);
+        assert_eq!(jwks_for_new_client("confidential", &method, &keys), keys);
     }
 
     /// ADR-0032: 画面の「用途」1 つを、api が持つ 2 つの値へ翻訳する。

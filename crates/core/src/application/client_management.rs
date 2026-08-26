@@ -43,8 +43,9 @@ pub struct RegisterClientCommand {
     /// サーバ間（M2M）連携で `client_credentials` grant を使えるようにするか（G4。既定 false）。
     /// public client は資格情報を秘匿できないため、指定されても無効のまま登録する。
     pub allow_client_credentials: bool,
-    /// confidential client のクライアント認証方式（G3）。`None` は既定の `client_secret_basic`。
-    /// public client には適用しない（常に `none`）。
+    /// confidential client のクライアント認証方式（G3）。`None` は既定の `private_key_jwt`
+    /// （ADR-0036）。ただし `jwks` も `None` の要求は「認証手段を持たないクライアント」に
+    /// なるため、既定へ落とさず 400 で止める。public client には適用しない（常に `none`）。
     pub token_endpoint_auth_method: Option<TokenEndpointAuthMethod>,
     /// `private_key_jwt` の検証鍵（JWK Set の JSON。ADR-0030）。同方式を選ぶ場合は必須で、
     /// それ以外の方式では指定できない。

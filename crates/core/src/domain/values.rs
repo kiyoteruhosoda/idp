@@ -115,7 +115,9 @@ string_enum!(
 string_enum!(
     /// トークンエンドポイントのクライアント認証方式（RFC 6749 §2.3.1）。
     ///
-    /// `client_secret_basic` は仕様が推奨する方式で、confidential クライアントの既定。
+    /// confidential クライアントの既定は `private_key_jwt`（ADR-0036。仕様の既定である
+    /// `client_secret_basic` から意図的に外している）。`client_secret_basic` は RFC 6749 が
+    /// 推奨する共有秘密の提示方式で、明示的に選んだときだけ使う。
     /// `client_secret_post`（body に `client_id` / `client_secret`）は多くの RP ライブラリ・
     /// SaaS 連携が既定にしているため受け入れる（G3）。1 リクエストで両方を提示することは
     /// 認められておらず（同 §2.3.1）、提示された場合は `invalid_request` で拒否する。

@@ -150,7 +150,7 @@ URI を指定する。`id_token_hint` は期限切れでもよいが、他テナ
 
 ```bash
 # 有効な SSO セッションの Cookie を付けて呼ぶ（ブラウザのセッションでも可）。
-curl -sS -X POST "$ISSUER/admin/clients" \
+curl -sS -X POST "$ISSUER/$TENANT_ID/admin/clients" \
   -H 'Content-Type: application/json' \
   -H "Cookie: sso_session_id=<セッションID>" \
   -d '{
