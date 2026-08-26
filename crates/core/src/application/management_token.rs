@@ -34,7 +34,7 @@ use crate::domain::repositories::{
 };
 use crate::domain::tenant_context::TenantContext;
 use chrono::Duration;
-use jsonwebtoken::{Algorithm, Validation};
+use jsonwebtoken::Validation;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 use uuid::Uuid;
@@ -252,17 +252,7 @@ impl ManagementTokenService {
             .await
             .map_err(|_| "signing key lookup failed")?
             .ok_or("unknown signing key")?;
-        let decoding_key = jwt::decoding_key_from_public_pem(&key.public_key)
-            .map_err(|_| "unusable public key")?;
-
-        // exp / aud は Clock トレイト経由の時刻で自前検証する（テストで時刻固定するため）。
-        let mut validation = Validation::new(Algorithm::RS256);
-        validation.validate_exp = false;
-        validation.validate_aud = false;
-        validation.required_spec_claims.clear();
-        let data = jsonwebtoken::decode::<AccessTokenClaims>(token, &decoding_key, &validation)
-            .map_err(|_| "signature verification failed")?;
-        let claims = data.claims;
+        let claims = decode_signed_claims(&key.algorithm, &key.public_key, token)?;
 
         let expected_issuer = tenant_issuer(&self.base_issuer, tenant.tenant_id());
         if claims.iss != expected_issuer {
@@ -328,5 +318,126 @@ impl ManagementTokenService {
                 None
             }
         }
+    }
+}
+
+/// 署名を検証してクレームを取り出す（`verify` から切り出した純粋部分）。
+///
+/// **鍵の algorithm で検証する**ことがこの関数の要である。署名は `jwt::sign` が鍵の algorithm
+/// （RS256 / ES256）で行うため、ここを片方に決め打ちすると、もう一方の鍵を ACTIVE にした瞬間に
+/// **すべての管理 API が 401** になる —— 鍵を戻すための `/admin/signing-keys` にも入れなくなるので、
+/// 運用から復旧できない。サービス本体から切り出してあるのは、この対応関係を鍵の種類ごとに
+/// テストできるようにするためである。
+fn decode_signed_claims(
+    key_algorithm: &str,
+    public_pem: &str,
+    token: &str,
+) -> Result<AccessTokenClaims, &'static str> {
+    let (decoding_key, algorithm) =
+        jwt::decoding_key_for(key_algorithm, public_pem).map_err(|_| "unusable public key")?;
+
+    // exp / aud は Clock トレイト経由の時刻で自前検証する（テストで時刻固定するため）。
+    let mut validation = Validation::new(algorithm);
+    validation.validate_exp = false;
+    validation.validate_aud = false;
+    validation.required_spec_claims.clear();
+    jsonwebtoken::decode::<AccessTokenClaims>(token, &decoding_key, &validation)
+        .map(|data| data.claims)
+        .map_err(|_| "signature verification failed")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::jwt::{generate_ec_keypair, generate_rsa_keypair};
+
+    fn management_claims() -> AccessTokenClaims {
+        AccessTokenClaims {
+            iss: "https://idp.example.com/t".to_string(),
+            sub: "svc".to_string(),
+            aud: "https://idp.example.com/t/admin".to_string(),
+            client_id: "svc".to_string(),
+            scope: String::new(),
+            exp: 9_999_999_999,
+            iat: 0,
+            jti: "j".to_string(),
+            sub_type: Some(SUBJECT_TYPE_CLIENT.to_string()),
+            perms: Some("idp.users:read".to_string()),
+        }
+    }
+
+    /// 署名に使える鍵の種類はどれも検証できること。
+    ///
+    /// `signing_keys.algorithm` は `RS256` / `ES256` の 2 値（DB の CHECK 制約）で、どちらも
+    /// `POST /admin/signing-keys` から ACTIVE にできる。検証側が片方を決め打ちしていると、
+    /// もう一方へ切り替えた瞬間に管理 API が全滅し、鍵を戻す操作にも入れなくなる。
+    #[test]
+    fn every_supported_signing_algorithm_round_trips() {
+        for (algorithm, (private_pem, public_pem)) in [
+            ("RS256", generate_rsa_keypair().unwrap()),
+            ("ES256", generate_ec_keypair().unwrap()),
+        ] {
+            let token = jwt::sign(
+                &private_pem,
+                "kid-1",
+                "at+jwt",
+                algorithm,
+                &management_claims(),
+            )
+            .unwrap_or_else(|e| panic!("sign with {algorithm}: {e}"));
+            let claims = decode_signed_claims(algorithm, &public_pem, &token)
+                .unwrap_or_else(|e| panic!("verify {algorithm}: {e}"));
+            assert_eq!(claims.perms.as_deref(), Some("idp.users:read"));
+            assert!(claims.subject_is_client());
+        }
+    }
+
+    /// 別の鍵で署名されたトークンは通さない（同じ algorithm でも）。
+    #[test]
+    fn a_token_signed_by_another_key_is_rejected() {
+        let (private_pem, _) = generate_rsa_keypair().unwrap();
+        let (_, other_public_pem) = generate_rsa_keypair().unwrap();
+        let token = jwt::sign(
+            &private_pem,
+            "kid-1",
+            "at+jwt",
+            "RS256",
+            &management_claims(),
+        )
+        .unwrap();
+        assert_eq!(
+            decode_signed_claims("RS256", &other_public_pem, &token).err(),
+            Some("signature verification failed")
+        );
+    }
+
+    /// 鍵の algorithm とトークンの `alg` が食い違うものは通さない
+    /// （`alg` を差し替えて検証を迂回する古典的な攻撃を、鍵側の algorithm で閉じる）。
+    #[test]
+    fn an_algorithm_mismatch_is_rejected() {
+        let (rsa_private, _) = generate_rsa_keypair().unwrap();
+        let (_, ec_public) = generate_ec_keypair().unwrap();
+        let token = jwt::sign(
+            &rsa_private,
+            "kid-1",
+            "at+jwt",
+            "RS256",
+            &management_claims(),
+        )
+        .unwrap();
+        assert!(decode_signed_claims("ES256", &ec_public, &token).is_err());
+    }
+
+    #[test]
+    fn the_management_audience_is_distinct_from_userinfo() {
+        let issuer = "https://idp.example.com/t";
+        assert_eq!(
+            management_audience(issuer),
+            "https://idp.example.com/t/admin"
+        );
+        assert_ne!(
+            management_audience(issuer),
+            crate::application::token::userinfo_audience(issuer)
+        );
     }
 }

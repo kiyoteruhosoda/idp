@@ -20,6 +20,11 @@ use base64::Engine as _;
 use serde_json::json;
 use support::{admin_token, body_json, delete, get, post, send};
 
+/// `MANAGEMENT_TOKEN_TTL_SECS` の既定（`domain::system_setting` の定義と対）。
+const MANAGEMENT_TOKEN_TTL_SECS: u64 = 300;
+/// `ACCESS_TOKEN_TTL_SECS` の既定。
+const ACCESS_TOKEN_TTL_SECS: u64 = 900;
+
 fn basic(client_id: &str, secret: &str) -> String {
     format!(
         "Basic {}",
@@ -116,7 +121,16 @@ async fn a_system_client_operates_the_idp_within_the_permissions_it_was_granted(
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
-    let machine_tok = body_json(res).await["access_token"]
+    let issued = body_json(res).await;
+    // 管理トークンは通常のアクセストークンより短命（ADR-0037 決定 2）。`perms` はトークンから
+    // 読むので、この寿命がそのまま「権限を剥奪してから実際に効くまで」の上限になる。既定の
+    // ACCESS_TOKEN_TTL_SECS（900）が使われていると、剥奪が 3 倍長く効かないまま残る。
+    assert_eq!(
+        issued["expires_in"].as_u64(),
+        Some(MANAGEMENT_TOKEN_TTL_SECS),
+        "a management token must use MANAGEMENT_TOKEN_TTL_SECS, not ACCESS_TOKEN_TTL_SECS"
+    );
+    let machine_tok = issued["access_token"]
         .as_str()
         .expect("access_token")
         .to_string();
@@ -209,10 +223,17 @@ async fn a_token_minted_for_userinfo_cannot_reach_the_management_api() {
     .await;
     assert_eq!(res.status(), StatusCode::OK);
 
-    // `resource` 無し → `aud` は `/userinfo`。
+    // `resource` 無し → `aud` は `/userinfo`。寿命も通常のアクセストークンのまま
+    // （管理トークンの短い寿命を、関係の無いトークンにまで広げない）。
     let res = request_token(&env.app, &env.root_tenant_id, &client_id, &secret, None).await;
     assert_eq!(res.status(), StatusCode::OK);
-    let userinfo_tok = body_json(res).await["access_token"]
+    let issued = body_json(res).await;
+    assert_eq!(
+        issued["expires_in"].as_u64(),
+        Some(ACCESS_TOKEN_TTL_SECS),
+        "a userinfo-audience token keeps the ordinary access token lifetime"
+    );
+    let userinfo_tok = issued["access_token"]
         .as_str()
         .expect("access_token")
         .to_string();

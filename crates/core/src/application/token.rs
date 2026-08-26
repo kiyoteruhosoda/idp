@@ -186,6 +186,9 @@ pub struct TokenService {
     /// （ADR-0009 §6。`domain::issuer::tenant_issuer`）。
     base_issuer: String,
     access_token_ttl: std::time::Duration,
+    /// 管理 API 向けアクセストークン（`resource={issuer}/admin`）の寿命（ADR-0037）。
+    /// 通常のアクセストークンより短く保つ。
+    management_token_ttl: std::time::Duration,
     id_token_ttl: std::time::Duration,
     refresh_token_ttl: std::time::Duration,
 }
@@ -205,6 +208,7 @@ impl TokenService {
         clock: Arc<dyn Clock>,
         base_issuer: String,
         access_token_ttl: std::time::Duration,
+        management_token_ttl: std::time::Duration,
         id_token_ttl: std::time::Duration,
         refresh_token_ttl: std::time::Duration,
     ) -> Self {
@@ -221,6 +225,7 @@ impl TokenService {
             clock,
             base_issuer,
             access_token_ttl,
+            management_token_ttl,
             id_token_ttl,
             refresh_token_ttl,
         }
@@ -736,8 +741,10 @@ impl TokenService {
         let iat = now.timestamp();
         let issuer = tenant_issuer(&self.base_issuer, tenant_id);
         let management_aud = management_audience(&issuer);
-        let (audience, perms) = match cmd.resource.as_deref().map(str::trim) {
-            None | Some("") => (userinfo_audience(&issuer), None),
+        // 管理トークンは通常のアクセストークンより短命にする（ADR-0037 決定 2）。`perms` は
+        // トークンから読むため、この寿命が「権限を剥奪してから実際に効くまで」の上限になる。
+        let (audience, perms, ttl) = match cmd.resource.as_deref().map(str::trim) {
+            None | Some("") => (userinfo_audience(&issuer), None, self.access_token_ttl),
             Some(requested) if requested == management_aud => {
                 let codes = self
                     .client_permissions
@@ -763,7 +770,11 @@ impl TokenService {
                         "client holds no management permissions for the requested resource",
                     ));
                 }
-                (management_aud, Some(codes.join(" ")))
+                (
+                    management_aud,
+                    Some(codes.join(" ")),
+                    self.management_token_ttl,
+                )
             }
             Some(_) => {
                 return Err(TokenError::new(
@@ -781,7 +792,7 @@ impl TokenService {
             aud: audience,
             client_id: client.client_id.clone(),
             scope: scope_str.clone(),
-            exp: iat + self.access_token_ttl.as_secs() as i64,
+            exp: iat + ttl.as_secs() as i64,
             iat,
             jti: Uuid::new_v4().to_string(),
             sub_type: Some(SUBJECT_TYPE_CLIENT.to_string()),
@@ -805,7 +816,7 @@ impl TokenService {
         Ok(IssuedTokens {
             access_token,
             id_token: None,
-            expires_in: self.access_token_ttl.as_secs(),
+            expires_in: ttl.as_secs(),
             scope: scope_str,
             refresh_token: None,
         })

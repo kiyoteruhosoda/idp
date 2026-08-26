@@ -627,6 +627,7 @@ impl AppState {
             clock.clone(),
             config.issuer().to_string(),
             config.access_token_ttl(),
+            config.management_token_ttl(),
             config.id_token_ttl(),
             config.refresh_token_ttl(),
         ));

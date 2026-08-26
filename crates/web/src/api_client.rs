@@ -1731,9 +1731,6 @@ impl ApiClient {
         .await
     }
 
-    /// `/{tenant_id}/admin/*`（`RequirePerms<IdpAdmin>`）への共通呼び出し。管理者の SSO Cookie と
-    /// correlation_id を転送し、api のステータスを web の [`AdminApiError`] へ写す。成功時は本文を
-    /// `T` へデコードする。
     /// SSO セッションを api の管理トークンへ交換する（`POST /internal/admin/token`。ADR-0037）。
     ///
     /// **管理 API を呼ぶ前に毎回交換する。** キャッシュしないのは、セッション失効・権限剥奪・
@@ -1772,6 +1769,10 @@ impl ApiClient {
         }
     }
 
+    /// `/{tenant_id}/admin/*`（`RequirePerms`）への共通呼び出し。受け取った SSO セッションを
+    /// [`Self::management_token`] で管理トークンへ交換し、Bearer と correlation_id を添えて呼ぶ
+    /// （Cookie は転送しない。ADR-0037）。api のステータスは web の [`AdminApiError`] へ写し、
+    /// 成功時は本文を `T` へデコードする。
     async fn admin_send<T>(
         &self,
         method: Method,
