@@ -8,23 +8,39 @@
 //! PATCH/DELETE を送れないため、更新・削除は専用の POST パス（`/{id}/update`・`/{id}/delete`）を
 //! 経由して api の PATCH/DELETE へ変換する（認証ポリシー画面と同じ方式）。
 //!
+//! # プロトコルは登録の入口で決める
+//!
+//! 外部 IdP は OIDC と SAML の 2 種類あり（ADR-0027）、必要な項目がまったく違う。かつては 1 枚の
+//! フォームに両方の区画を並べ、選択に応じて JS で隠していたが、**画面から「いま何を登録して
+//! いるのか」が読み取れなかった**（埋めるべき欄と、埋めなくてよい欄が同居する）。
+//!
+//! いまはプロトコルを先に選ばせ、以降はそのプロトコルの画面だけを見せる。
+//!
+//! | 画面 | 役割 |
+//! |---|---|
+//! | `GET /admin/external-idps` | 一覧のみ（登録フォームは置かない） |
+//! | `GET /admin/external-idps/new` | プロトコルの選択 |
+//! | `GET /admin/external-idps/new/oidc` ・ `.../new/saml` | そのプロトコルの登録フォーム |
+//! | `GET /admin/external-idps/{id}/edit` | 編集フォーム（プロトコルは登録済みの値で固定） |
+//!
+//! SAML だけメタデータの取り込みを持つ。IdP メタデータ XML は SAML の相互運用の仕組みで、OIDC に
+//! 相当するものは discovery ドキュメントだが未対応のため、OIDC は手動入力だけになる。
+//!
+//! この形にしたことで、**サーバが描くのは選ばれたプロトコルの欄だけ**になり、出し分けの JS が
+//! 要らなくなった（JS が動かない環境でも両方のプロトコルを登録できる）。
+//!
+//! 登録済みプロバイダの**プロトコルは変更できない**（api が拒否する。同じ `provider_code` のまま
+//! 切り替えると、既存の連携が別プロトコルの識別子を指したまま残る）。フォームには選択肢を置かず、
+//! 値は hidden で持ち回る。
+//!
+//! `protocol` は更新でも必ず送る。api の部分更新はプロトコル固有の設定を**まとめて**差し替える
+//! 作りで、`protocol` を省くとエンドポイントの変更が黙って無視される。
+//!
 //! # クライアントシークレットの扱い
 //!
 //! api はシークレットを**返さない**（保存は暗号化、復号は外部 IdP へトークン要求を出す瞬間だけ）。
 //! したがって編集フォームに現在値を出せない。空欄は「変更しない」を意味させ、リクエストから
 //! `client_secret` を落とす。空欄を「削除」と解釈すると、表示名を直しただけで連携が壊れる。
-//!
-//! # プロトコル（OIDC / SAML）の出し分け（AP12）
-//!
-//! 外部 IdP は OIDC と SAML の 2 種類あり（ADR-0027）、必要な項目がまったく違う。画面は 1 枚の
-//! フォームで両方を扱い、**選んだプロトコルの欄だけ**を api へ送る。両方の欄を常に送ると、api が
-//! 「片方だけ埋まった半端な設定」を作れてしまい、誤りがログイン時まで表に出ない。
-//!
-//! 登録済みプロバイダの**プロトコルは変更できない**（api が拒否する。同じ `provider_code` のまま
-//! 切り替えると、既存の連携が別プロトコルの識別子を指したまま残る）。編集時は選択を固定する。
-//!
-//! `protocol` は更新でも必ず送る。api の部分更新はプロトコル固有の設定を**まとめて**差し替える
-//! 作りで、`protocol` を省くとエンドポイントの変更が黙って無視される。
 
 use super::locale;
 use crate::admin_dto::ExternalIdpView;
@@ -35,7 +51,10 @@ use crate::handlers::admin_console::{redirect_to_login, resolve_admin, AdminReso
 use crate::handlers::found;
 use crate::i18n::Messages;
 use crate::state::WebState;
-use crate::templates::{render, ExternalIdpFormValues, ExternalIdpsConsole};
+use crate::templates::{
+    render, ExternalIdpFormPage, ExternalIdpFormValues, ExternalIdpProtocolChoice,
+    ExternalIdpsConsole,
+};
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, Multipart, Path, Query, State};
 use axum::http::HeaderMap;
@@ -46,15 +65,20 @@ use serde_json::{json, Value};
 
 const SEGMENT: &str = "/admin/external-idps";
 
+/// 一覧の状態（Post/Redirect/Get で持ち回る結果表示）。
 #[derive(Debug, Default, Deserialize)]
 pub struct ViewQuery {
-    /// 編集対象の外部 IdP id（指定時はフォームが編集モードで開く）。
-    #[serde(default)]
-    pub edit: Option<String>,
     #[serde(default)]
     pub saved: Option<String>,
     #[serde(default)]
     pub deleted: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// フォーム画面の状態（登録・更新の失敗理由だけ）。
+#[derive(Debug, Default, Deserialize)]
+pub struct FormQuery {
     #[serde(default)]
     pub error: Option<String>,
 }
@@ -83,8 +107,13 @@ pub struct ExternalIdpForm {
     pub client_id: String,
     #[serde(default)]
     pub client_secret: String,
+    /// 要求する scope。よく使う 2 つはチェックボックス、それ以外は `scopes_extra` で受ける。
     #[serde(default)]
-    pub scopes: String,
+    pub scope_profile: Option<String>,
+    #[serde(default)]
+    pub scope_email: Option<String>,
+    #[serde(default)]
+    pub scopes_extra: String,
     #[serde(default)]
     pub saml_sso_url: String,
     #[serde(default)]
@@ -115,7 +144,7 @@ pub async fn list(
         AdminResolution::Reject(resp) => return resp,
     };
     let sso = sso(&headers);
-    let (providers, mut error_key) = match state
+    let (providers, error_key) = match state
         .api
         .list_external_idps(&correlation.0, &tenant.0, &sso)
         .await
@@ -129,20 +158,6 @@ pub async fn list(
         }
     };
 
-    // 編集モード: 一覧から対象を引いてフォームの初期値にする（api への追加の往復は要らない）。
-    let editing = query.edit.as_deref().filter(|id| !id.is_empty());
-    let (editing_id, values) = match editing {
-        Some(id) => match providers.iter().find(|p| p.id == id) {
-            Some(provider) => (Some(provider.id.as_str()), values_from(provider)),
-            None => {
-                // 一覧に無い id（削除済み・別テナント）。新規登録のフォームへ落として理由を出す。
-                error_key = error_key.or(Some("admin-external-idps-error-not-found"));
-                (None, ExternalIdpFormValues::default())
-            }
-        },
-        None => (None, ExternalIdpFormValues::default()),
-    };
-
     let messages = Messages::new(locale(&headers));
     Html(render(&ExternalIdpsConsole {
         messages: &messages,
@@ -150,17 +165,139 @@ pub async fn list(
         admin: Some(admin.chrome()),
         csrf: &console_csrf_token(&sso, state.config.csrf_secret()),
         providers: &providers,
-        editing: editing_id,
-        values: &values,
         saved: query.saved.is_some(),
         deleted: query.deleted.is_some(),
-        imported: false,
         error_key,
     }))
     .into_response()
 }
 
-/// 外部 IdP のメタデータを取り込み、登録フォームに初期値を反映して再描画する（AP12）。
+/// 登録するプロトコルを選ぶ画面（`GET /admin/external-idps/new`）。
+pub async fn choose_protocol(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+) -> Response {
+    let admin = match resolve_admin(&state, &correlation, &tenant, &headers).await {
+        AdminResolution::Ok(uid) => uid,
+        AdminResolution::Reject(resp) => return resp,
+    };
+    let messages = Messages::new(locale(&headers));
+    Html(render(&ExternalIdpProtocolChoice {
+        messages: &messages,
+        tenant: &tenant.prefix(),
+        admin: Some(admin.chrome()),
+    }))
+    .into_response()
+}
+
+/// OIDC の登録フォーム（`GET /admin/external-idps/new/oidc`）。
+pub async fn new_oidc_form(
+    state: State<WebState>,
+    correlation: Extension<CorrelationId>,
+    tenant: Extension<WebTenant>,
+    headers: HeaderMap,
+    query: Query<FormQuery>,
+) -> Response {
+    new_form(state, correlation, tenant, headers, query, "oidc").await
+}
+
+/// SAML の登録フォーム（`GET /admin/external-idps/new/saml`）。メタデータの取り込みもここに出る。
+pub async fn new_saml_form(
+    state: State<WebState>,
+    correlation: Extension<CorrelationId>,
+    tenant: Extension<WebTenant>,
+    headers: HeaderMap,
+    query: Query<FormQuery>,
+) -> Response {
+    new_form(state, correlation, tenant, headers, query, "saml").await
+}
+
+/// 登録フォーム。プロトコルは**経路が決める**——パスパラメータで受けて解釈すると、綴りの誤った
+/// URL を既定のプロトコルへ丸めるかどうかの判断がここに生まれる。ルータに 2 本並べておけば、
+/// 知らない綴りはそのまま 404 になる。
+async fn new_form(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Query(query): Query<FormQuery>,
+    protocol: &str,
+) -> Response {
+    let admin = match resolve_admin(&state, &correlation, &tenant, &headers).await {
+        AdminResolution::Ok(uid) => uid,
+        AdminResolution::Reject(resp) => return resp,
+    };
+    let values = ExternalIdpFormValues {
+        protocol: protocol.to_string(),
+        ..ExternalIdpFormValues::default()
+    };
+    let messages = Messages::new(locale(&headers));
+    Html(render(&ExternalIdpFormPage {
+        messages: &messages,
+        tenant: &tenant.prefix(),
+        admin: Some(admin.chrome()),
+        csrf: &console_csrf_token(&sso(&headers), state.config.csrf_secret()),
+        editing: None,
+        values: &values,
+        imported: false,
+        error_key: query.error.as_deref().and_then(error_key_for),
+    }))
+    .into_response()
+}
+
+/// 編集フォーム（`GET /admin/external-idps/{id}/edit`）。
+///
+/// 初期値は一覧から引く（api への追加の往復は要らない）。一覧に無い id（削除済み・別テナント）は
+/// 一覧へ戻して理由を出す —— 空のフォームを出すと、編集のつもりで新規登録することになる。
+pub async fn edit_form(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Path((_tenant_id, id)): Path<(String, String)>,
+    Query(query): Query<FormQuery>,
+) -> Response {
+    let admin = match resolve_admin(&state, &correlation, &tenant, &headers).await {
+        AdminResolution::Ok(uid) => uid,
+        AdminResolution::Reject(resp) => return resp,
+    };
+    let base = format!("{}{SEGMENT}", tenant.prefix());
+    let sso = sso(&headers);
+    let providers = match state
+        .api
+        .list_external_idps(&correlation.0, &tenant.0, &sso)
+        .await
+    {
+        Ok(v) => v,
+        Err(AdminApiError::Unauthorized) => return redirect_to_login(&tenant),
+        Err(AdminApiError::Forbidden) => return found(&format!("{base}?error=forbidden")),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to load external idps");
+            return found(&format!("{base}?error=internal"));
+        }
+    };
+    let Some(provider) = providers.iter().find(|p| p.id == id) else {
+        return found(&format!("{base}?error=notfound"));
+    };
+    let values = values_from(provider);
+
+    let messages = Messages::new(locale(&headers));
+    Html(render(&ExternalIdpFormPage {
+        messages: &messages,
+        tenant: &tenant.prefix(),
+        admin: Some(admin.chrome()),
+        csrf: &console_csrf_token(&sso, state.config.csrf_secret()),
+        editing: Some(provider.id.as_str()),
+        values: &values,
+        imported: false,
+        error_key: query.error.as_deref().and_then(error_key_for),
+    }))
+    .into_response()
+}
+
+/// 外部 IdP のメタデータを取り込み、SAML の登録フォームに初期値を反映して再描画する（AP12）。
 ///
 /// 取り込みは**登録ではない**ので PRG は挟まない（管理者が値を確認してから登録する）。取り込み元は
 /// ファイルアップロード（`metadata_file`）または貼り付け（`metadata_xml`）で、ファイルを優先する
@@ -180,7 +317,7 @@ pub async fn import_metadata(
     let sso = sso(&headers);
     let upload = read_metadata_upload(multipart).await;
     if !csrf_valid(&sso, &upload.csrf_token, state.config.csrf_secret()) {
-        return found(&format!("{base}?error=csrf"));
+        return found(&format!("{base}/new/saml?error=csrf"));
     }
 
     let (values, imported, error_key) = match upload.metadata_xml() {
@@ -226,23 +363,14 @@ pub async fn import_metadata(
         },
     };
 
-    let providers = state
-        .api
-        .list_external_idps(&correlation.0, &tenant.0, &sso)
-        .await
-        .unwrap_or_default();
-
     let messages = Messages::new(locale(&headers));
-    Html(render(&ExternalIdpsConsole {
+    Html(render(&ExternalIdpFormPage {
         messages: &messages,
         tenant: &tenant.prefix(),
         admin: Some(admin.chrome()),
         csrf: &console_csrf_token(&sso, state.config.csrf_secret()),
-        providers: &providers,
         editing: None,
         values: &values,
-        saved: false,
-        deleted: false,
         imported,
         error_key,
     }))
@@ -331,9 +459,11 @@ pub async fn create(
         AdminResolution::Reject(resp) => return resp,
     }
     let base = format!("{}{SEGMENT}", tenant.prefix());
+    // 失敗したら同じプロトコルのフォームへ戻す（選び直させない）。
+    let form_url = format!("{base}/new/{}", protocol_of(&form));
     let sso = sso(&headers);
     if !csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
-        return found(&format!("{base}?error=csrf"));
+        return found(&format!("{form_url}?error=csrf"));
     }
     let mut body = common_fields(&form);
     body["provider_code"] = json!(form.provider_code.trim());
@@ -348,7 +478,7 @@ pub async fn create(
         .await
     {
         Ok(_) => found(&format!("{base}?saved=1")),
-        Err(e) => found(&format!("{base}?error={}", error_code(&e))),
+        Err(e) => found(&format!("{form_url}?error={}", error_code(&e))),
     }
 }
 
@@ -365,9 +495,10 @@ pub async fn update(
         AdminResolution::Reject(resp) => return resp,
     }
     let base = format!("{}{SEGMENT}", tenant.prefix());
+    let form_url = format!("{base}/{id}/edit");
     let sso = sso(&headers);
     if !csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
-        return found(&format!("{base}?error=csrf&edit={id}"));
+        return found(&format!("{form_url}?error=csrf"));
     }
     let mut body = common_fields(&form);
     // 編集時の空欄は「変更しない」。api の部分更新は未指定の項目に触れないので、キーごと落とす。
@@ -381,7 +512,7 @@ pub async fn update(
         .await
     {
         Ok(_) => found(&format!("{base}?saved=1")),
-        Err(e) => found(&format!("{base}?error={}&edit={id}", error_code(&e))),
+        Err(e) => found(&format!("{form_url}?error={}", error_code(&e))),
     }
 }
 
@@ -434,7 +565,7 @@ fn common_fields(form: &ExternalIdpForm) -> Value {
         body["token_endpoint"] = json!(form.token_endpoint.trim());
         body["jwks_uri"] = json!(form.jwks_uri.trim());
         body["client_id"] = json!(form.client_id.trim());
-        body["scopes"] = json!(parse_scopes(&form.scopes));
+        body["scopes"] = json!(selected_scopes(form));
     }
     body
 }
@@ -448,9 +579,31 @@ fn protocol_of(form: &ExternalIdpForm) -> &str {
     }
 }
 
-/// 空白区切りの scope 文字列を配列へ。空要素は落とす（`"openid  email "` を許す）。
-fn parse_scopes(raw: &str) -> Vec<String> {
-    raw.split_whitespace().map(str::to_string).collect()
+/// 要求する scope を組み立てる。
+///
+/// `openid` は常に先頭に付ける。外部 IdP から ID Token を受け取れなければ `iss` + `sub` が
+/// 得られず、同一性の根拠そのものが無くなる（ADR-0023）。**チェックボックスに出していない
+/// 以上、外れる余地を残してはいけない。**
+///
+/// 自由入力側に `openid` や `profile` を重ねて書かれても 1 回だけにする（重複した scope を
+/// 要求すると、相手によっては要求そのものを拒む）。
+fn selected_scopes(form: &ExternalIdpForm) -> Vec<String> {
+    let mut scopes = vec!["openid".to_string()];
+    let mut push = |scope: &str| {
+        if !scope.is_empty() && !scopes.iter().any(|s| s == scope) {
+            scopes.push(scope.to_string());
+        }
+    };
+    if form.scope_profile.is_some() {
+        push("profile");
+    }
+    if form.scope_email.is_some() {
+        push("email");
+    }
+    for scope in form.scopes_extra.split_whitespace() {
+        push(scope);
+    }
+    scopes
 }
 
 /// 証明書欄を配列へ。**空行で区切る**——PEM の本文は行で折り返されるため、行区切りにすると
@@ -548,7 +701,9 @@ mod tests {
             jwks_uri: "https://idp.example.com/jwks".into(),
             client_id: "abc".into(),
             client_secret: secret.into(),
-            scopes: "openid  email ".into(),
+            scope_profile: None,
+            scope_email: Some("1".into()),
+            scopes_extra: String::new(),
             saml_sso_url: String::new(),
             saml_certificates: String::new(),
             saml_name_id_format: String::new(),
@@ -569,11 +724,31 @@ mod tests {
         }
     }
 
-    /// 空白区切りの scope は配列になり、空要素は落ちる。
+    /// チェックした scope が配列になる。**`openid` は常に付く** —— 外部 IdP から ID Token を
+    /// 受け取れなければ `iss` + `sub` が得られず、同一性の根拠そのものが無くなる。
     #[test]
-    fn scopes_are_split_on_whitespace() {
-        assert_eq!(parse_scopes("openid  email "), vec!["openid", "email"]);
-        assert!(parse_scopes("   ").is_empty());
+    fn openid_is_always_requested_and_checked_scopes_follow() {
+        assert_eq!(selected_scopes(&form("")), vec!["openid", "email"]);
+        let none = ExternalIdpForm {
+            scope_email: None,
+            ..form("")
+        };
+        assert_eq!(selected_scopes(&none), vec!["openid"]);
+    }
+
+    /// 相手方が定義する scope は自由入力で受ける（選択肢を固定値に閉じない）。**重複は畳む** ——
+    /// 同じ scope を 2 回要求すると、相手によっては要求そのものを拒む。
+    #[test]
+    fn extra_scopes_are_appended_without_duplicating_the_checked_ones() {
+        let extra = ExternalIdpForm {
+            scope_profile: Some("1".into()),
+            scopes_extra: "  groups openid profile User.Read ".into(),
+            ..form("")
+        };
+        assert_eq!(
+            selected_scopes(&extra),
+            vec!["openid", "profile", "email", "groups", "User.Read"]
+        );
     }
 
     /// 証明書は**空行**で区切る。行区切りにすると、折り返された 1 枚の PEM 本文が
