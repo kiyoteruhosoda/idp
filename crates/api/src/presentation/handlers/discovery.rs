@@ -3,7 +3,7 @@
 
 use crate::domain::issuer::tenant_issuer;
 use crate::domain::jwt;
-use crate::domain::saml_metadata::{build_idp_metadata_xml, IdpSigningKey};
+use crate::domain::saml_metadata::{build_idp_metadata_xml, named_curve_uri, IdpSigningKey};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
 use axum::extract::{Extension, State};
@@ -74,7 +74,16 @@ pub async fn saml_idp_metadata(
 ) -> Response {
     let issuer = tenant_issuer(state.config.issuer(), tenant.id());
     let sso_url = format!("{issuer}/saml/sso");
-    let signing_keys = published_idp_signing_keys(&state).await;
+    // 鍵集合が引けないときは**メタデータを返さない**。200 で `KeyDescriptor` の無いメタデータを
+    // 返すと、そのタイミングで取り込み直した SP は検証鍵を 1 本も持たない状態になり、再取り込み
+    // まで全アサーションを弾く（この変更が無くそうとしている断絶そのもの）。
+    let signing_keys = match published_idp_signing_keys(&state).await {
+        Ok(keys) => keys,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to build SAML IdP metadata signing keys");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
     let xml = build_idp_metadata_xml(&issuer, &sso_url, &signing_keys);
     (
         [
@@ -97,15 +106,13 @@ pub async fn saml_idp_metadata(
 ///
 /// **署名中の鍵を先頭に置く。** `jwks()` の並びは公開順（新しい鍵が先）なので、そのままだと
 /// **まだ署名していない後継鍵**が先頭に来る。先頭の `KeyDescriptor` だけを読む SP の実装がある。
-async fn published_idp_signing_keys(state: &AppState) -> Vec<IdpSigningKey> {
-    let Ok(jwks) = state.keys.jwks().await else {
-        return Vec::new();
-    };
+async fn published_idp_signing_keys(state: &AppState) -> anyhow::Result<Vec<IdpSigningKey>> {
+    let jwks = state.keys.jwks().await?;
     // 署名中の鍵が引けないときは並べ替えないだけで、公開自体は続ける（検証側の鍵が
-    // 消えるほうが困る）。
-    let signing_kid = state.keys.active_signing_key().await.ok().map(|k| k.kid);
+    // 消えるほうが困る）。`kid` しか要らないので秘密鍵は復号しない。
+    let signing_kid = state.keys.signing_kid().await.ok().flatten();
     let keys = signing_key_first(jwks.keys, signing_kid.as_deref());
-    keys.iter().filter_map(jwk_to_idp_signing_key).collect()
+    Ok(keys.iter().filter_map(jwk_to_idp_signing_key).collect())
 }
 
 /// 署名中の鍵を先頭へ寄せる。**先頭の `KeyDescriptor` だけを読む SP の実装がある**ため、
@@ -116,7 +123,10 @@ async fn published_idp_signing_keys(state: &AppState) -> Vec<IdpSigningKey> {
 fn signing_key_first(mut keys: Vec<jwt::Jwk>, signing_kid: Option<&str>) -> Vec<jwt::Jwk> {
     if let Some(kid) = signing_kid {
         if let Some(at) = keys.iter().position(|k| k.kid == kid) {
-            keys.swap(0, at);
+            // 入れ替え（`swap`）ではなく前へ動かす。`swap` だと先頭に居た鍵が `at` へ飛び、
+            // 残りの公開順（新しい鍵が先）が崩れる。
+            let signing = keys.remove(at);
+            keys.insert(0, signing);
         }
     }
     keys
@@ -131,7 +141,7 @@ fn jwk_to_idp_signing_key(jwk: &jwt::Jwk) -> Option<IdpSigningKey> {
             exponent_b64: base64url_to_base64(jwk.e.as_deref()?)?,
         }),
         "EC" => {
-            let named_curve_uri = named_curve_uri(jwk.crv.as_deref()?)?;
+            let named_curve_uri = named_curve_uri(jwk.crv.as_deref()?)?.to_string();
             // XMLDSIG の ECKeyValue は非圧縮点（0x04 || X || Y）を base64 で持つ。
             let mut point = vec![0x04u8];
             point.extend_from_slice(
@@ -149,16 +159,6 @@ fn jwk_to_idp_signing_key(jwk: &jwt::Jwk) -> Option<IdpSigningKey> {
                 public_key_b64: STANDARD.encode(point),
             })
         }
-        _ => None,
-    }
-}
-
-/// JWK の `crv` を XMLDSIG11 `NamedCurve` の URN へ変換する（MVP は P-256 のみ）。
-fn named_curve_uri(crv: &str) -> Option<String> {
-    match crv {
-        "P-256" => Some("urn:oid:1.2.840.10045.3.1.7".to_string()),
-        "P-384" => Some("urn:oid:1.3.132.0.34".to_string()),
-        "P-521" => Some("urn:oid:1.3.132.0.35".to_string()),
         _ => None,
     }
 }

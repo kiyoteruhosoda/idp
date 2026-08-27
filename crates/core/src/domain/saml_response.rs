@@ -29,7 +29,7 @@
 //! 使う —— 別々に書くと、SP が突き合わせられない形にずれ得る。
 
 use crate::domain::error::{DomainError, Result};
-use crate::domain::saml_metadata::IdpSigningKey;
+use crate::domain::saml_metadata::{IdpSigningKey, NAMED_CURVE_P256};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use chrono::{DateTime, Utc};
@@ -45,8 +45,6 @@ const ENVELOPED_SIGNATURE: &str = "http://www.w3.org/2000/09/xmldsig#enveloped-s
 const DIGEST_SHA256: &str = "http://www.w3.org/2001/04/xmlenc#sha256";
 const SIG_RSA_SHA256: &str = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256";
 const SIG_ECDSA_SHA256: &str = "http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha256";
-/// P-256 の曲線 URN（XMLDSIG11 `NamedCurve`）。SAML メタデータ側と同じ値を使う。
-const NAMED_CURVE_P256: &str = "urn:oid:1.2.840.10045.3.1.7";
 const STATUS_SUCCESS: &str = "urn:oasis:names:tc:SAML:2.0:status:Success";
 /// `AuthnContextClassRef`。SSO セッションは確立時の認証手段（パスワード・TOTP・Passkey）を保持
 /// しないため、特定の強度（例: `PasswordProtectedTransport`）を主張せず `unspecified` を用いる

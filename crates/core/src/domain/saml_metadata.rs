@@ -309,6 +309,24 @@ fn parse_entity(xml: &str, role: Role) -> Result<ParsedEntity> {
     })
 }
 
+/// P-256 の曲線 URN（XMLDSIG11 `NamedCurve`）。
+///
+/// **曲線 URN の対応表はここが唯一の出所である。** メタデータの `KeyDescriptor` と
+/// アサーションの `KeyInfo` が同じ値を出さないと、SP は両者を突き合わせられない。
+pub const NAMED_CURVE_P256: &str = "urn:oid:1.2.840.10045.3.1.7";
+const NAMED_CURVE_P384: &str = "urn:oid:1.3.132.0.34";
+const NAMED_CURVE_P521: &str = "urn:oid:1.3.132.0.35";
+
+/// JWK の `crv` を XMLDSIG11 `NamedCurve` の URN へ変換する。未対応の曲線は `None`。
+pub fn named_curve_uri(crv: &str) -> Option<&'static str> {
+    match crv {
+        "P-256" => Some(NAMED_CURVE_P256),
+        "P-384" => Some(NAMED_CURVE_P384),
+        "P-521" => Some(NAMED_CURVE_P521),
+        _ => None,
+    }
+}
+
 /// IdP の署名鍵の公開表現（XML Signature の `KeyValue`）。現状の署名鍵基盤は X.509 証明書を持たず
 /// 生の公開鍵のみのため、`RSAKeyValue`（RS256）／`ECKeyValue`（ES256）で表現する。
 pub enum IdpSigningKey {
@@ -353,10 +371,12 @@ impl IdpSigningKey {
                 named_curve_uri,
                 public_key_b64,
             } => format!(
-                r#"<ds11:ECKeyValue xmlns:ds11="http://www.w3.org/2009/xmldsig11#">
-          <ds11:NamedCurve URI="{}"></ds11:NamedCurve>
-          <ds11:PublicKey>{}</ds11:PublicKey>
-        </ds11:ECKeyValue>"#,
+                r#"<ds:KeyValue>
+          <ds11:ECKeyValue xmlns:ds11="http://www.w3.org/2009/xmldsig11#">
+            <ds11:NamedCurve URI="{}"></ds11:NamedCurve>
+            <ds11:PublicKey>{}</ds11:PublicKey>
+          </ds11:ECKeyValue>
+        </ds:KeyValue>"#,
                 escape(named_curve_uri),
                 escape(public_key_b64),
             ),
@@ -696,6 +716,9 @@ mod tests {
             std::slice::from_ref(&key),
         );
         assert!(xml.contains(r#"<md:KeyDescriptor use="signing">"#));
+        // XMLDSIG 1.1 の置き場所は `ds:KeyValue/ds11:ECKeyValue`。RSA 側と同じく `ds:KeyValue`
+        // で包まないと、`KeyInfo/KeyValue` の下だけを見る SP が EC 鍵を拾えない。
+        assert!(xml.contains("<ds:KeyValue>"));
         assert!(xml.contains("<ds11:ECKeyValue"));
         assert!(xml
             .contains(r#"<ds11:NamedCurve URI="urn:oid:1.2.840.10045.3.1.7"></ds11:NamedCurve>"#));
