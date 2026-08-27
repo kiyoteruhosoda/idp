@@ -156,9 +156,11 @@ pub async fn authorize_login_context(
             LoginContextOutcome::Ok {
                 login_hint,
                 ui_locales,
+                redirect_uri,
             } => InternalAuthorizeLoginContextResponse::Ok {
                 login_hint,
                 ui_locales,
+                redirect_uri: Some(redirect_uri),
             },
             LoginContextOutcome::SessionExpired => {
                 InternalAuthorizeLoginContextResponse::SessionExpired

@@ -33,6 +33,9 @@ use idp_contracts::auth::{
 pub struct RpLoginContext {
     pub login_hint: Option<String>,
     pub ui_locales: Option<String>,
+    /// 進行中の認可要求の `redirect_uri`。ログイン画面の CSP `form-action` に許可するオリジンの
+    /// 出所（`security_headers::csp_allowing_form_action`）。OIDC フロー外では `None`。
+    pub redirect_uri: Option<String>,
 }
 
 /// `auth_session_id` Cookie があれば認可要求の文脈を取り直して `Extension` へ載せる middleware。
@@ -90,9 +93,11 @@ async fn fetch(
         Ok(InternalAuthorizeLoginContextResponse::Ok {
             login_hint,
             ui_locales,
+            redirect_uri,
         }) => Some(RpLoginContext {
             login_hint,
             ui_locales,
+            redirect_uri,
         }),
         // 期限切れの Cookie が残っているだけ。文脈なしで描き、失効はハンドラ側の経路に任せる。
         Ok(InternalAuthorizeLoginContextResponse::SessionExpired) => None,

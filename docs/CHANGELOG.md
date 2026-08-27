@@ -1,3 +1,17 @@
+## 2026-08-27（5）（同意後に RP へ戻れない問題を直した）
+
+- **[不具合修正] 同意画面とログイン画面の CSP に、その認可要求の `redirect_uri` のオリジンを許可
+  するようにした。** **Chrome は `form-action` をフォーム送信後のリダイレクト先にも適用する**
+  （CSP3 の仕様とは異なるが長年そうなっている）。両画面の送信は RP の `redirect_uri` への 302 で
+  終わるため、既定の `form-action 'self'` のままでは**サーバは同意を記録し code も発行したのに、
+  ブラウザが RP へ戻れない**。画面にもサーバログにも異常が出ないため、原因の見えない
+  「ぐるぐる」になる（2026-08-27 に本番のログインで踏んだ）。
+- **許可するのはそのクライアントに登録済みの `redirect_uri` のオリジン 1 つだけ**で、path は落とす
+  （CSP の source は path を持てない）。SAML の ACS へ POST するページが既に同じ形を採っており
+  （`handlers::saml_sso`）、OIDC 側だけ漏れていた。
+- `InternalConsentInfoResponse::Ok` と `InternalAuthorizeLoginContextResponse::Ok` に
+  `redirect_uri` を追加した（内部 API。web が CSP を組み立てるための値）。
+
 ## 2026-08-27（4）（外部 IdP の登録もプロトコルを入口で選ばせる）
 
 - **外部 IdP の登録画面を、プロトコルを選ぶところから始める形に変えた（ADR-0027 Revised）。**

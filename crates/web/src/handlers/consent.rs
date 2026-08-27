@@ -53,16 +53,20 @@ pub async fn consent_page(
             client_name,
             client_id: _,
             requested_scopes,
+            redirect_uri,
         }) => {
             let csrf = consent_csrf_token(&session_id, state.config.csrf_secret());
-            Html(render(&ConsentTemplate {
+            let body = render(&ConsentTemplate {
                 messages: &messages,
                 csrf: &csrf,
                 auth_session_id: &session_id,
                 client_name: &client_name,
                 requested_scopes: &requested_scopes,
-            }))
-            .into_response()
+            });
+            // 同意の送信は RP の `redirect_uri` への 302 で終わる。Chrome は `form-action` を
+            // 送信後のリダイレクト先にも適用するので、そのオリジンだけ許可する（SEC3）。
+            // ここを外すと、同意も code 発行も成功したままブラウザが RP へ戻れない。
+            crate::security_headers::html_with_form_action_csp(&redirect_uri, body)
         }
         Ok(InternalConsentInfoResponse::SessionExpired) => error_page(
             &messages,

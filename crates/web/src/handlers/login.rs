@@ -65,15 +65,21 @@ pub async fn login_page(
         return portal::login_page(&state, &correlation, &tenant, &headers, error_key).await;
     };
     let messages = Messages::new(locale(&headers));
-    Html(render_form(
+    let body = render_form(
         &messages,
         &tenant.prefix(),
         &login_csrf_token(&auth_session_id, state.config.csrf_secret()),
         error_key,
         // 認可要求の `login_hint` をユーザー名欄へ入れる（G12）。空文字は初期値にしない。
         rp_context.login_hint.as_deref().filter(|h| !h.is_empty()),
-    ))
-    .into_response()
+    );
+    // SSO と同意が揃っていれば、ログインフォームの送信はそのまま RP へリダイレクトして終わる。
+    // Chrome は `form-action` を送信後のリダイレクト先にも適用するので、その RP のオリジンだけ
+    // 許可する（SEC3。同意画面と同じ事情）。
+    crate::security_headers::html_with_form_action_csp(
+        rp_context.redirect_uri.as_deref().unwrap_or_default(),
+        body,
+    )
 }
 
 /// `/authorize` ハンドオフの再開（ADR-0018 決定 2）。web が自ドメインの `sso_session_id` を読み、
