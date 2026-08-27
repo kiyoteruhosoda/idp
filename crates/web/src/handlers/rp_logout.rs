@@ -117,14 +117,9 @@ pub async fn logout(
 fn frontchannel_csp(frontchannel_uris: &[String]) -> String {
     let mut origins: Vec<String> = frontchannel_uris
         .iter()
-        .filter_map(|uri| {
-            let parsed = url::Url::parse(uri).ok()?;
-            let host = parsed.host_str()?;
-            match parsed.port() {
-                Some(port) => Some(format!("{}://{host}:{port}", parsed.scheme())),
-                None => Some(format!("{}://{host}", parsed.scheme())),
-            }
-        })
+        .map(|uri| crate::security_headers::origin_of(uri))
+        // 解釈できない URI は許可を足さない（fail-closed）。
+        .filter(|origin| !origin.is_empty())
         .collect();
     origins.sort();
     origins.dedup();

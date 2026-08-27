@@ -32,6 +32,7 @@ pub async fn consent_info(
                 client_name: info.client_name,
                 client_id: info.client_id,
                 requested_scopes: info.requested_scopes,
+                redirect_uri: Some(info.redirect_uri),
             }),
             Ok(None) => Json(InternalConsentInfoResponse::SessionExpired),
             Err(e) => {

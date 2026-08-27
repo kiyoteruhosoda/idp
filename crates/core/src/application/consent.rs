@@ -29,6 +29,12 @@ pub struct ConsentInfo {
     pub client_id: String,
     /// 同意を求めるスコープ（`openid` は除く）。
     pub requested_scopes: Vec<String>,
+    /// この認可要求の `redirect_uri`（登録済みの値と完全一致したもの）。
+    ///
+    /// web が同意画面の CSP `form-action` に許可するオリジンの出所。同意フォームの送信は
+    /// RP へのリダイレクトで終わり、Chrome は `form-action` をフォーム送信後のリダイレクト先にも
+    /// 適用するため、ここを渡さないとブラウザが RP へ戻れない。
+    pub redirect_uri: String,
 }
 
 pub enum ConsentOutcome {
@@ -125,6 +131,7 @@ impl ConsentService {
             client_name,
             client_id: session.client_id,
             requested_scopes,
+            redirect_uri: session.redirect_uri,
         }))
     }
 

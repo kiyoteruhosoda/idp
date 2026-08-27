@@ -114,6 +114,13 @@ pub enum InternalAuthorizeLoginContextResponse {
         login_hint: Option<String>,
         /// `ui_locales`（空白区切りの BCP47 タグ。未指定は `None`）。
         ui_locales: Option<String>,
+        /// この認可要求の `redirect_uri`（登録済みの値と完全一致したもの）。
+        ///
+        /// **web が CSP の `form-action` に許可するオリジンの出所である。** ログインフォームの
+        /// 送信は、SSO と同意が揃っていればそのまま RP へリダイレクトする。Chrome は
+        /// `form-action` をフォーム送信後のリダイレクト先にも適用するため、RP のオリジンを
+        /// 許可しないとその遷移が遮断される（SAML の ACS と同じ事情。`handlers::saml_sso`）。
+        redirect_uri: Option<String>,
     },
     /// `auth_session_id` が無効・期限切れ（web は文脈なしで描画を続ける）。
     SessionExpired,
@@ -846,6 +853,18 @@ pub enum InternalConsentInfoResponse {
         client_id: String,
         /// 同意を求めるスコープ（`openid` は除く）。
         requested_scopes: Vec<String>,
+        /// この認可要求の `redirect_uri`（登録済みの値と完全一致したもの）。
+        ///
+        /// **web が CSP の `form-action` に許可するオリジンの出所である。** 同意フォームの送信は
+        /// RP へのリダイレクトで終わり、Chrome は `form-action` をフォーム送信後のリダイレクト先にも
+        /// 適用する。許可しないと、同意は記録されコードも発行されたのにブラウザが RP へ戻れない。
+        ///
+        /// **`Option` なのは配信順への耐性のためである。** api と web は別コンテナで、入れ替えの
+        /// 数秒間は「新しい web ＋ 古い api」が成立し得る。必須にすると、その窓で本応答の
+        /// デシリアライズが失敗し**同意画面ごと落ちる**。`None` のときは許可を足さない（＝この不具合が
+        /// 直る前の状態に戻るだけ）に留める。姉妹の `InternalAuthorizeLoginContextResponse::Ok` も同じ。
+        #[serde(default)]
+        redirect_uri: Option<String>,
     },
     /// AuthSession が無い・期限切れ・認証済みユーザー未設定（`/authorize` からやり直し）。
     SessionExpired,
