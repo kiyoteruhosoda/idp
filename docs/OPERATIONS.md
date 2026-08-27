@@ -245,13 +245,14 @@ JWKS=$(python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))'
 | 項目 | 値 |
 |---|---|
 | アプリ名 | システムの役割が分かる名前（例 `Nightly Report Job`） |
-| **用途** | **「システムが API を呼ぶ（利用者不在）」** |
+| **用途** | **「システムが API を呼ぶ（利用者不在）」**（初期選択のまま） |
 | スコープ | `openid` は必須のため外せない。システム用では他の 3 つ（`profile`・`email`・`offline_access`）に用は無いので、既定のまま。**業務上の権限は scope では渡さない**（アプリが `sub` = `client_id` を見て判断する。ADR-0033） |
 | 認証方式 | `private_key_jwt`（初期選択のまま） |
 | 検証鍵（JWKS） | 前項の `jwks.json` の中身 |
 
-用途に「システム」を選ぶと、リダイレクト URI と client type の欄は消える（利用者が不在なので
-リダイレクト先を持たず、confidential 以外あり得ないため）。`private_key_jwt` では client secret は発行されない。
+用途が「システム」のとき、リダイレクト URI と client type の欄は出ない（利用者が不在なので
+リダイレクト先を持たず、confidential 以外あり得ないため）。ブラウザログイン用の RP を登録する
+ときは、用途を「ブラウザで利用者をログインさせる」へ選び直すと両方の欄が現れる。`private_key_jwt` では client secret は発行されない。
 
 **API から登録する場合**は次のとおり。`jwks` には前項の `$JWKS`（`jwks.json` を JSON 文字列へ
 エスケープしたもの）をそのまま入れる。ヒアドキュメントの終端を引用符で囲まないことで、body の

@@ -139,9 +139,17 @@ mod tests {
         ] {
             assert!(html.contains(control), "{control} が描画されていない");
         }
-        // 既定は利用者ログイン。用途はこの 2 つだけ。
-        assert!(html.contains(r#"value="user_login" selected"#), "{html}");
-        assert!(html.contains(r#"value="system""#), "{html}");
+        // 既定はシステム用（ADR-0038）。用途はこの 2 つだけ。
+        assert!(html.contains(r#"value="system" selected"#), "{html}");
+        assert!(html.contains(r#"value="user_login""#), "{html}");
+        // 既定がシステム用なので、リダイレクト URI と client type の欄は初期状態で隠れている
+        // （JS が無くてもこの形で出る）。
+        for row in [
+            r#"data-client-form-row="redirect-uris" hidden"#,
+            r#"data-client-form-row="client-type" hidden"#,
+        ] {
+            assert!(html.contains(row), "{row} が隠れていない: {html}");
+        }
         // `openid` は外せない（入力欄を持たず、ハンドラが必ず付ける）。
         assert!(html.contains(r#"id="client-scope-openid""#), "{html}");
         assert!(
@@ -996,6 +1004,10 @@ impl ClientFormValues {
 
     /// 新規登録フォームの初期値（confidential・PKCE 必須・openid スコープ）。
     ///
+    /// 用途の既定はシステム用（`client_credentials`。ADR-0038）。ブラウザ経路を持たないぶん
+    /// 露出が小さく、選び違えたときも登録済みリダイレクト先という**取り違えると危ない値**を
+    /// 持たない。用途を変えれば入力欄は追随するので、既定は狭いほうへ置く。
+    ///
     /// 認証方式の既定は `private_key_jwt`。共有シークレットは IdP 側にも保存され、クライアント側の
     /// 設定ファイルにも置かれ、要求ごとにネットワークを流れる（ADR-0030）。**既定は、選ぶ人が
     /// 何も考えなかったときに置かれる値**なので、そこを安全な側にしておく。
@@ -1006,7 +1018,7 @@ impl ClientFormValues {
             redirect_uris: String::new(),
             scopes: "openid".to_string(),
             client_status: "ACTIVE".to_string(),
-            usage: client_usage::USER_LOGIN.to_string(),
+            usage: client_usage::SYSTEM.to_string(),
             token_endpoint_auth_method: "private_key_jwt".to_string(),
             jwks: String::new(),
         }
