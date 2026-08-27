@@ -101,12 +101,23 @@ async fn fetch(
         }),
         // 期限切れの Cookie が残っているだけ。文脈なしで描き、失効はハンドラ側の経路に任せる。
         Ok(InternalAuthorizeLoginContextResponse::SessionExpired) => None,
+        // 文脈なしで描き続けるのは意図した挙動だが、**代償が login_hint の欠落だけではなくなった**。
+        // `redirect_uri` が取れないとログイン画面の CSP に RP のオリジンを足せず、ログイン成功後の
+        // RP への遷移がブラウザに遮断される（SEC3）。画面にもサーバログにも異常が出ない止まり方に
+        // なるので、ここで結果まで名指しして記録する。
         Ok(InternalAuthorizeLoginContextResponse::Internal) => {
-            tracing::warn!("api could not read the authorization request context");
+            tracing::warn!(
+                consequence = "login page falls back to the default CSP; the redirect to the RP will be blocked",
+                "api could not read the authorization request context"
+            );
             None
         }
         Err(e) => {
-            tracing::warn!(error = %e, "could not read the authorization request context");
+            tracing::warn!(
+                error = %e,
+                consequence = "login page falls back to the default CSP; the redirect to the RP will be blocked",
+                "could not read the authorization request context"
+            );
             None
         }
     }

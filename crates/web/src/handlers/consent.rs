@@ -66,7 +66,12 @@ pub async fn consent_page(
             // 同意の送信は RP の `redirect_uri` への 302 で終わる。Chrome は `form-action` を
             // 送信後のリダイレクト先にも適用するので、そのオリジンだけ許可する（SEC3）。
             // ここを外すと、同意も code 発行も成功したままブラウザが RP へ戻れない。
-            crate::security_headers::html_with_form_action_csp(&redirect_uri, body)
+            // `None` は古い api（入れ替え中の数秒）。許可を足さずに描く —— 遷移は遮断されるが、
+            // 同意画面そのものは出る。
+            crate::security_headers::html_with_form_action_csp(
+                redirect_uri.as_deref().unwrap_or_default(),
+                body,
+            )
         }
         Ok(InternalConsentInfoResponse::SessionExpired) => error_page(
             &messages,

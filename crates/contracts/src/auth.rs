@@ -858,7 +858,13 @@ pub enum InternalConsentInfoResponse {
         /// **web が CSP の `form-action` に許可するオリジンの出所である。** 同意フォームの送信は
         /// RP へのリダイレクトで終わり、Chrome は `form-action` をフォーム送信後のリダイレクト先にも
         /// 適用する。許可しないと、同意は記録されコードも発行されたのにブラウザが RP へ戻れない。
-        redirect_uri: String,
+        ///
+        /// **`Option` なのは配信順への耐性のためである。** api と web は別コンテナで、入れ替えの
+        /// 数秒間は「新しい web ＋ 古い api」が成立し得る。必須にすると、その窓で本応答の
+        /// デシリアライズが失敗し**同意画面ごと落ちる**。`None` のときは許可を足さない（＝この不具合が
+        /// 直る前の状態に戻るだけ）に留める。姉妹の `InternalAuthorizeLoginContextResponse::Ok` も同じ。
+        #[serde(default)]
+        redirect_uri: Option<String>,
     },
     /// AuthSession が無い・期限切れ・認証済みユーザー未設定（`/authorize` からやり直し）。
     SessionExpired,
