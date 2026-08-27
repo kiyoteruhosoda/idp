@@ -15,9 +15,21 @@
 //! 直列化したもの（= SP が C14N した結果と一致する形）へ署名する。
 //!
 //! 署名鍵は OIDC の ID Token と同じ ACTIVE 署名鍵を使う（RS256 → rsa-sha256、ES256 →
-//! ecdsa-sha256）。`KeyInfo` は含めない（SP は取り込んだ IdP メタデータの鍵で検証する）。
+//! ecdsa-sha256）。
+//!
+//! # `KeyInfo` は載せる（2026-08-28）
+//!
+//! **どの鍵で署名したかを、アサーション自身が名乗る。** ADR-0039 でメタデータが複数の
+//! `KeyDescriptor` を並べるようになったため、名乗らないと SP は「どれで検証すべきか」を
+//! 総当たりか先頭かで推測するしかない。SAML には JWT の `kid` にあたる標準の印が無いので、
+//! `KeyInfo/KeyValue` がその役目を果たす（Entra ID なども同じ形を採る）。
+//!
+//! **`KeyInfo` は `SignedInfo` の外**（署名対象ではない）なので、載せても署名計算は変わらない。
+//! 値の描画はメタデータと同じ [`crate::domain::saml_metadata::IdpSigningKey::to_key_value`] を
+//! 使う —— 別々に書くと、SP が突き合わせられない形にずれ得る。
 
 use crate::domain::error::{DomainError, Result};
+use crate::domain::saml_metadata::IdpSigningKey;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use chrono::{DateTime, Utc};
@@ -33,6 +45,8 @@ const ENVELOPED_SIGNATURE: &str = "http://www.w3.org/2000/09/xmldsig#enveloped-s
 const DIGEST_SHA256: &str = "http://www.w3.org/2001/04/xmlenc#sha256";
 const SIG_RSA_SHA256: &str = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256";
 const SIG_ECDSA_SHA256: &str = "http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha256";
+/// P-256 の曲線 URN（XMLDSIG11 `NamedCurve`）。SAML メタデータ側と同じ値を使う。
+const NAMED_CURVE_P256: &str = "urn:oid:1.2.840.10045.3.1.7";
 const STATUS_SUCCESS: &str = "urn:oasis:names:tc:SAML:2.0:status:Success";
 /// `AuthnContextClassRef`。SSO セッションは確立時の認証手段（パスワード・TOTP・Passkey）を保持
 /// しないため、特定の強度（例: `PasswordProtectedTransport`）を主張せず `unspecified` を用いる
@@ -98,6 +112,28 @@ impl SamlSigner {
         match self {
             Self::Rsa(_) => SIG_RSA_SHA256,
             Self::P256(_) => SIG_ECDSA_SHA256,
+        }
+    }
+
+    /// 署名に使う鍵の公開値（`KeyInfo/KeyValue` に載せる形）。メタデータの `KeyDescriptor` と
+    /// 同じ表現なので、SP は両者を突き合わせられる。
+    fn public_key(&self) -> IdpSigningKey {
+        match self {
+            Self::Rsa(key) => {
+                use rsa::traits::PublicKeyParts;
+                IdpSigningKey::Rsa {
+                    modulus_b64: STANDARD.encode(key.n().to_bytes_be()),
+                    exponent_b64: STANDARD.encode(key.e().to_bytes_be()),
+                }
+            }
+            Self::P256(key) => {
+                // XMLDSIG の ECKeyValue は非圧縮点（0x04 || X || Y）を base64 で持つ。
+                let point = key.verifying_key().to_encoded_point(false);
+                IdpSigningKey::Ec {
+                    named_curve_uri: NAMED_CURVE_P256.to_string(),
+                    public_key_b64: STANDARD.encode(point.as_bytes()),
+                }
+            }
         }
     }
 
@@ -246,10 +282,14 @@ fn build_signature(
         "<ds:SignedInfo>",
         1,
     );
+    // KeyInfo は SignedInfo の外なので、署名計算には影響しない（XMLDSIG のスキーマ順は
+    // SignedInfo → SignatureValue → KeyInfo）。
+    let key_value = signer.public_key().to_key_value();
     Ok(format!(
         "<ds:Signature xmlns:ds=\"{NS_XMLDSIG}\">\
 {signed_info_embedded}\
 <ds:SignatureValue>{signature_value}</ds:SignatureValue>\
+<ds:KeyInfo>{key_value}</ds:KeyInfo>\
 </ds:Signature>"
     ))
 }
@@ -369,6 +409,48 @@ mod tests {
         );
         // 未署名 Assertion と同一バイト列である（差し込みが他の部分を変えない）。
         assert_eq!(without_signature, build_assertion(&input));
+    }
+
+    /// アサーションが「どの鍵で署名したか」を名乗る（2026-08-28）。
+    ///
+    /// ADR-0039 でメタデータが複数の `KeyDescriptor` を並べるようになったため、名乗らないと
+    /// SP は総当たりか先頭かで推測するしかない。**メタデータの `KeyDescriptor` と同じ表現**で
+    /// あることが要点で、ここがずれると SP は突き合わせられない。
+    #[test]
+    fn the_assertion_names_the_key_it_was_signed_with() {
+        let (signer, public) = rsa_signer();
+        let xml = build_signed_response_xml(&test_input(), &signer).expect("build");
+
+        let key_info = extract(&xml, "<ds:KeyInfo>", "</ds:KeyInfo>");
+        assert!(key_info.contains("<ds:RSAKeyValue>"), "{xml}");
+
+        // 署名に使った鍵そのものが載っていること（別の鍵を名乗らない）。
+        use rsa::traits::PublicKeyParts;
+        let modulus = STANDARD.encode(public.n().to_bytes_be());
+        assert!(
+            key_info.contains(&format!("<ds:Modulus>{modulus}</ds:Modulus>")),
+            "{key_info}"
+        );
+
+        // メタデータ側と同じ描画であること（SP はこの 2 つを突き合わせる）。
+        let published = crate::domain::saml_metadata::IdpSigningKey::Rsa {
+            modulus_b64: modulus,
+            exponent_b64: STANDARD.encode(public.e().to_bytes_be()),
+        };
+        assert!(key_info.contains(&published.to_key_value()), "{key_info}");
+    }
+
+    /// `KeyInfo` は `SignedInfo` の外なので、載せても署名対象は変わらない。
+    #[test]
+    fn adding_key_info_does_not_change_what_is_signed() {
+        let (signer, _) = rsa_signer();
+        let xml = build_signed_response_xml(&test_input(), &signer).expect("build");
+        let signed_info = extract(&xml, "<ds:SignedInfo>", "</ds:SignedInfo>");
+        assert!(!signed_info.contains("KeyInfo"), "{signed_info}");
+        // スキーマ順は SignedInfo → SignatureValue → KeyInfo。
+        let sv = xml.find("<ds:SignatureValue>").expect("SignatureValue");
+        let ki = xml.find("<ds:KeyInfo>").expect("KeyInfo");
+        assert!(sv < ki, "{xml}");
     }
 
     #[test]

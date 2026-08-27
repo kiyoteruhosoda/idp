@@ -326,9 +326,16 @@ pub enum IdpSigningKey {
 }
 
 impl IdpSigningKey {
-    /// 署名用 `KeyDescriptor` の XML 片を生成する。
-    fn to_key_descriptor(&self) -> String {
-        let key_value = match self {
+    /// 公開鍵そのものの XML 片（`KeyValue`）を生成する。
+    ///
+    /// **メタデータの `KeyDescriptor` と、アサーションの `KeyInfo` で同じものを使う。** 別々に
+    /// 書くと、SP が「メタデータで受け取った鍵」と「アサーションが名乗る鍵」を突き合わせられなく
+    /// なる形にいつでもずれ得る。
+    ///
+    /// 空要素タグ（`<e/>`）を使わないのは、`saml_response` が排他的正準形で XML を組み立てる
+    /// 規則に合わせるため（この片はそちらへも埋め込まれる）。
+    pub(crate) fn to_key_value(&self) -> String {
+        match self {
             IdpSigningKey::Rsa {
                 modulus_b64,
                 exponent_b64,
@@ -347,13 +354,18 @@ impl IdpSigningKey {
                 public_key_b64,
             } => format!(
                 r#"<ds11:ECKeyValue xmlns:ds11="http://www.w3.org/2009/xmldsig11#">
-          <ds11:NamedCurve URI="{}"/>
+          <ds11:NamedCurve URI="{}"></ds11:NamedCurve>
           <ds11:PublicKey>{}</ds11:PublicKey>
         </ds11:ECKeyValue>"#,
                 escape(named_curve_uri),
                 escape(public_key_b64),
             ),
-        };
+        }
+    }
+
+    /// 署名用 `KeyDescriptor` の XML 片を生成する。
+    fn to_key_descriptor(&self) -> String {
+        let key_value = self.to_key_value();
         format!(
             r#"
     <md:KeyDescriptor use="signing">
@@ -685,7 +697,8 @@ mod tests {
         );
         assert!(xml.contains(r#"<md:KeyDescriptor use="signing">"#));
         assert!(xml.contains("<ds11:ECKeyValue"));
-        assert!(xml.contains(r#"<ds11:NamedCurve URI="urn:oid:1.2.840.10045.3.1.7"/>"#));
+        assert!(xml
+            .contains(r#"<ds11:NamedCurve URI="urn:oid:1.2.840.10045.3.1.7"></ds11:NamedCurve>"#));
         assert!(xml.contains("<ds11:PublicKey>BParbitraryPoint==</ds11:PublicKey>"));
         assert!(!xml.contains("RSAKeyValue"));
         let mut reader = Reader::from_str(&xml);
