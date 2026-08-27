@@ -111,24 +111,14 @@ pub async fn continue_sso(
 }
 
 /// SP の ACS へフォーム送信するための CSP。既定 CSP（`form-action 'self'`）のままでは外部
-/// オリジンへの POST がブラウザに遮断されるため、ACS のオリジンだけを追加で許可する
-/// （それ以外は `security_headers::CONTENT_SECURITY_POLICY` と同じ方針）。
+/// オリジンへの POST がブラウザに遮断されるため、ACS のオリジンだけを追加で許可する。
+///
+/// 組み立ては [`crate::security_headers::form_action_csp_for`] に委ねる。ここで方針を書き写して
+/// いたときは既定 CSP と別々に育ってしまい、SEC12 で `script-src` から外したはずの
+/// `'unsafe-inline'` がこのページにだけ残っていた（`saml_post.html` のスクリプトは
+/// `/assets/auto-submit.js` の外部参照で、インラインは使っていない）。
 fn acs_form_action_csp(acs_url: &str) -> String {
-    let origin = url::Url::parse(acs_url)
-        .ok()
-        .and_then(|parsed| {
-            let host = parsed.host_str()?.to_string();
-            Some(match parsed.port() {
-                Some(port) => format!("{}://{host}:{port}", parsed.scheme()),
-                None => format!("{}://{host}", parsed.scheme()),
-            })
-        })
-        .unwrap_or_default();
-    format!(
-        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; \
-         img-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self' {origin}; \
-         frame-ancestors 'none'"
-    )
+    crate::security_headers::form_action_csp_for(acs_url)
 }
 
 fn expired_page(messages: &Messages) -> Response {

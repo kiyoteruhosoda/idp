@@ -32,6 +32,11 @@ pub fn respond(
 ///
 /// **キャッシュを禁止する。** 本文に認可コードが載るため、共有プロキシやブラウザの戻る操作で
 /// 再表示されると、コードが本来より長く手の届く場所に残る。
+///
+/// **`form-action` に RP のオリジンを許可する。** このページのフォームは `redirect_uri` へ直接
+/// POST する。既定の CSP（`form-action 'self'`）のままでは、Chrome の挙動とは関係なく **仕様
+/// どおり全ブラウザで送信が遮断され**、認可コードは発行済みなのに RP へ届かない
+/// （SAML の POST binding が同じ形を採っている。`handlers::saml_sso`）。
 fn form_post_page(messages: &Messages, action: &str, fields: &[(String, String)]) -> Response {
     let html = render(&AuthorizationPost {
         messages,
@@ -45,6 +50,10 @@ fn form_post_page(messages: &Messages, action: &str, fields: &[(String, String)]
             // 認可コードを載せたページから RP へ遷移するので、`Referer` も出さない。
             (header::REFERRER_POLICY, "no-referrer"),
         ],
+        [(
+            header::CONTENT_SECURITY_POLICY,
+            crate::security_headers::form_action_csp_for(action),
+        )],
         Html(html),
     )
         .into_response()
@@ -110,6 +119,28 @@ mod tests {
         assert!(html.contains("the-code"), "{html}");
         assert!(html.contains(r#"name="state""#), "{html}");
         assert!(html.contains("data-auto-submit"), "{html}");
+    }
+
+    /// 自動送信フォームは `redirect_uri` へ直接 POST する。既定の `form-action 'self'` のままだと
+    /// **全ブラウザが仕様どおり遮断する**（コードは発行済みなのに RP へ届かない）。
+    #[tokio::test]
+    async fn form_post_mode_allows_the_relying_party_origin_as_a_form_action() {
+        let messages = Messages::new(Locale::Ja);
+        let response = respond(
+            &messages,
+            "https://rp.example.com/cb",
+            Some(vec![("code".to_string(), "the-code".to_string())]),
+        );
+        let csp = response
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            csp.contains("form-action 'self' https://rp.example.com;"),
+            "{csp}"
+        );
     }
 
     /// フィールドの値は RP 由来（`state`）を含むため、テンプレートのエスケープに委ねる。

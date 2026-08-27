@@ -67,13 +67,21 @@ pub fn origin_of(url: &str) -> String {
         .unwrap_or_default()
 }
 
+/// フォーム送信の遷移先 URL から、そのオリジンだけを `form-action` に許可した CSP を組み立てる。
+///
+/// 送信先を URL で持っている呼び出し側（RP の `redirect_uri`・SAML の ACS URL）はこれを使う。
+/// 解釈できない URL は既定の CSP のまま（許可を足さない。fail-closed）。
+pub fn form_action_csp_for(url: &str) -> String {
+    csp_allowing_form_action(&origin_of(url))
+}
+
 /// フォーム送信の遷移先が外部オリジンになる HTML 応答を、その許可を足した CSP で返す。
 ///
 /// middleware はハンドラが設定済みの CSP を尊重するので、ここで差し替えたものがそのまま出る。
 /// `redirect_uri` が解釈できないときは既定の CSP のまま返す（許可を足さない。fail-closed）。
 pub fn html_with_form_action_csp(redirect_uri: &str, body: String) -> Response {
     use axum::response::{Html, IntoResponse};
-    let csp = csp_allowing_form_action(&origin_of(redirect_uri));
+    let csp = form_action_csp_for(redirect_uri);
     match HeaderValue::from_str(&csp) {
         Ok(value) => (
             [(axum::http::header::CONTENT_SECURITY_POLICY, value)],

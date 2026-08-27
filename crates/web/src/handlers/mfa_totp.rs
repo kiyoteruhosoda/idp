@@ -13,6 +13,7 @@ use crate::dto::{FormPageQuery, TotpConfirmForm};
 use crate::handlers::step_up::{self, MANAGE_AUTHENTICATORS};
 use crate::handlers::{form_retry_error_key, forwarded_context, found, see_other};
 use crate::i18n::Messages;
+use crate::login_context::RpLoginContext;
 use crate::state::WebState;
 use crate::templates::{render, MessagePage, TotpSetupTemplate, TotpVerifyTemplate};
 use crate::tenant::WebTenant;
@@ -278,6 +279,7 @@ pub async fn setup_delete(
 pub async fn verify_page(
     State(state): State<WebState>,
     Extension(tenant): Extension<WebTenant>,
+    Extension(rp_context): Extension<RpLoginContext>,
     Query(query): Query<FormPageQuery>,
     headers: HeaderMap,
 ) -> Response {
@@ -289,14 +291,19 @@ pub async fn verify_page(
             "mfa-error-session-expired",
         );
     };
-    Html(render_verify_form(
+    let body = render_verify_form(
         &messages,
         &login_csrf_token(&auth_session_id, state.config.csrf_secret()),
         // 送信結果の案内も同じ `?error=` に載せる（PRG のため）。
         verify_banner_key(query.error.as_deref()),
         &tenant.prefix(),
-    ))
-    .into_response()
+    );
+    // 同意が要らなければ TOTP の送信はそのまま RP へリダイレクトして終わる。ログイン画面と
+    // 同じく RP のオリジンだけ `form-action` に許可する（SEC3）。
+    crate::security_headers::html_with_form_action_csp(
+        rp_context.redirect_uri.as_deref().unwrap_or_default(),
+        body,
+    )
 }
 
 /// TOTP 入力処理（`POST /mfa/totp`）。コードを検証し、成功時に SSO Cookie を発行してリダイレクトする。
@@ -305,6 +312,7 @@ pub async fn verify(
     Extension(correlation): Extension<CorrelationId>,
     Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
+    Extension(rp_context): Extension<RpLoginContext>,
     headers: HeaderMap,
     Form(form): Form<TotpLoginForm>,
 ) -> Response {
@@ -393,6 +401,7 @@ pub async fn verify(
             "mfa-error-invalid-code",
             state.config.csrf_secret(),
             &tenant.prefix(),
+            rp_context.redirect_uri.as_deref().unwrap_or_default(),
         ),
         // レート制限・ロックはフォームを出しても再試行できないため、案内だけのページにする（SEC3）。
         InternalVerifyTotpResponse::RateLimited => error_page(
@@ -611,6 +620,8 @@ pub struct EmailCodeForm {
     pub csrf_token: String,
 }
 
+/// **CSP は初回描画と同じものを付ける。** 既定のままにすると、コードを打ち間違えて出し直された
+/// フォームからの再送信だけが RP へ戻れなくなる。
 fn reshow_verify_form(
     messages: &Messages,
     status: StatusCode,
@@ -618,16 +629,20 @@ fn reshow_verify_form(
     error_key: &str,
     csrf_secret: &[u8],
     tenant_prefix: &str,
+    redirect_uri: &str,
 ) -> Response {
     match auth_session_id {
         Some(id) => (
             status,
-            Html(render_verify_form(
-                messages,
-                &login_csrf_token(id, csrf_secret),
-                Some(error_key),
-                tenant_prefix,
-            )),
+            crate::security_headers::html_with_form_action_csp(
+                redirect_uri,
+                render_verify_form(
+                    messages,
+                    &login_csrf_token(id, csrf_secret),
+                    Some(error_key),
+                    tenant_prefix,
+                ),
+            ),
         )
             .into_response(),
         None => error_page(

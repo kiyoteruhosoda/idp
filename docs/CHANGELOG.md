@@ -11,6 +11,14 @@
   （`handlers::saml_sso`）、OIDC 側だけ漏れていた。
 - `InternalConsentInfoResponse::Ok` と `InternalAuthorizeLoginContextResponse::Ok` に
   `redirect_uri` を追加した（内部 API。web が CSP を組み立てるための値）。
+- **同じ許可を、RP へ送信して終わる残りの画面にも付けた。** ログイン・TOTP 入力・強制パスワード
+  変更の**エラー再表示**（1 回打ち間違えた利用者だけが無言で止まる）、TOTP 入力画面と強制パスワード
+  変更画面の初回描画、そして `response_mode=form_post` の自動送信ページ。form_post のページは
+  `redirect_uri` へ**直接 POST** するため、Chrome の挙動とは無関係に**仕様どおり全ブラウザで**
+  遮断されていた。
+- CSP の組み立ては `security_headers::form_action_csp_for` に集約し、SAML の ACS ページと
+  RP-initiated logout が持っていた写しを畳んだ。写しの側には SEC12 で外したはずの
+  `script-src 'unsafe-inline'` が残っていたため、これも解消した。
 
 ## 2026-08-27（4）（外部 IdP の登録もプロトコルを入口で選ばせる）
 
