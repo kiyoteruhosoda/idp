@@ -4,7 +4,7 @@
 //! 生成アルゴリズムは `RS256`（RSA-2048）または `ES256`（NIST P-256）。
 
 use crate::application::key_service::KeyManagementError;
-use crate::domain::signing_key::SigningKey;
+use crate::domain::signing_key::{current_signer_at, SigningKey};
 use crate::domain::values::SigningAlgorithm;
 use crate::presentation::admin::{KeysRead, KeysWrite, RequirePerms};
 use crate::presentation::dto::{GenerateSigningKeyRequest, SigningKeyResponse};
@@ -36,7 +36,15 @@ pub async fn list_keys(
         .list_keys()
         .await
         .map_err(|e| map_error(e, locale))?;
-    Ok(Json(keys.iter().map(key_response).collect()))
+    // 「どれが署名しているか」は `status` からは読めない（ACTIVE が複数あり得る）。判定は
+    // `current_signer_at` —— 署名鍵を選ぶのと同じ規則を使い、画面の表示と実際をずらさない。
+    let now = state.clock.now();
+    let signer = current_signer_at(&keys, now).map(|key| key.kid.clone());
+    Ok(Json(
+        keys.iter()
+            .map(|key| key_response(key, signer.as_deref(), now))
+            .collect(),
+    ))
 }
 
 /// 指定アルゴリズムの新規署名鍵を生成して ACTIVE で登録する。
@@ -61,12 +69,25 @@ pub async fn generate_key(
     let algorithm = SigningAlgorithm::parse(&body.algorithm)
         .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get("api-invalid-request")))?;
 
+    // 既定は「公開だけ先にして、署名は猶予のあとから」。`activate_immediately` はその猶予を
+    // 捨てる指定で、鍵の危殆化のように待てないときだけ使う。
+    let publish_lead = if body.activate_immediately {
+        chrono::Duration::zero()
+    } else {
+        chrono::Duration::hours(state.config.key_rotation_publish_lead_hours() as i64)
+    };
     let key = state
         .keys
-        .generate_key(algorithm)
+        .generate_key(algorithm, publish_lead)
         .await
         .map_err(|e| map_error(e, locale))?;
-    Ok((StatusCode::CREATED, Json(key_response(&key))))
+    // 生成直後に署名するのは、猶予を置かなかったときだけ。既定では公開のみで、まだ旧鍵が署名する。
+    let now = state.clock.now();
+    let signer_kid = key.is_usable_for_signing_at(now).then(|| key.kid.clone());
+    Ok((
+        StatusCode::CREATED,
+        Json(key_response(&key, signer_kid.as_deref(), now)),
+    ))
 }
 
 /// 指定 kid の署名鍵を RETIRED に変更する（ACTIVE → RETIRED）。
@@ -77,7 +98,7 @@ pub async fn generate_key(
     params(("kid" = String, Path, description = "署名鍵 ID（kid）")),
     responses(
         (status = 204, description = "退役完了"),
-        (status = 400, description = "既に RETIRED"),
+        (status = 400, description = "既に RETIRED、または最後の署名可能な鍵"),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
         (status = 404, description = "不存在"),
@@ -127,7 +148,11 @@ pub async fn delete_key(
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn key_response(k: &SigningKey) -> SigningKeyResponse {
+fn key_response(
+    k: &SigningKey,
+    signer_kid: Option<&str>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> SigningKeyResponse {
     SigningKeyResponse {
         kid: k.kid.clone(),
         algorithm: k.algorithm.clone(),
@@ -135,6 +160,8 @@ fn key_response(k: &SigningKey) -> SigningKeyResponse {
         not_before: k.not_before.to_rfc3339(),
         not_after: k.not_after.to_rfc3339(),
         created_at: k.created_at.to_rfc3339(),
+        is_current_signer: signer_kid == Some(k.kid.as_str()),
+        is_pending: k.is_pending_at(now),
     }
 }
 

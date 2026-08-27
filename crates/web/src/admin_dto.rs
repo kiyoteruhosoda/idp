@@ -96,6 +96,14 @@ pub struct SigningKeyView {
     pub not_before: String,
     pub not_after: String,
     pub created_at: String,
+    /// いま署名に使われている鍵か。**`status` からは読めない** —— ACTIVE は複数あり得て、署名するのは
+    /// 1 本だけである。どれかを決める規則は core にあり、web からは引けないので api が判定して返す。
+    /// 古い api（この項目を返さない）でも画面を壊さないよう、既定は `false`。
+    #[serde(default)]
+    pub is_current_signer: bool,
+    /// 公開済みだが、まだ署名には使われていない鍵か（`not_before` が未来）。
+    #[serde(default)]
+    pub is_pending: bool,
 }
 
 /// SAML SP（クライアント）の公開表現（`GET /admin/saml-service-providers` の応答要素）。

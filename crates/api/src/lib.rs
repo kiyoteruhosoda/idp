@@ -150,11 +150,12 @@ pub async fn run() -> anyhow::Result<()> {
     {
         let keys = state.keys.clone();
         let lead_days = config.key_rotation_lead_days();
+        let publish_lead_hours = config.key_rotation_publish_lead_hours();
         tokio::spawn(async move {
             // 起動直後は 1 分待ってから最初のチェック（DB 起動完了を待つ余裕を持たせる）。
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
             loop {
-                if let Err(e) = keys.rotate_if_needed(lead_days).await {
+                if let Err(e) = keys.rotate_if_needed(lead_days, publish_lead_hours).await {
                     tracing::error!(error = %e, "signing key rotation check failed");
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(3_600)).await;

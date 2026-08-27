@@ -158,6 +158,7 @@ pub struct Config {
     key_encryption_key_is_dev: bool,
     /// 署名鍵ローテーション: `not_after` のこの日数前に新鍵を生成して旧鍵を退役させる（K2）。
     key_rotation_lead_days: u32,
+    key_rotation_publish_lead_hours: u32,
     /// エラー・警告ログ（`log` テーブル）の保持日数。`0` は削除しない。
     app_log_retention_days: u32,
     /// 監査ログ（`audit_log` テーブル）の保持日数。`0`（既定）は削除しない（G8）。
@@ -322,6 +323,8 @@ impl Config {
             key_encryption_key,
             key_encryption_key_is_dev,
             key_rotation_lead_days: resolver.parse("KEY_ROTATION_LEAD_DAYS", 30)?,
+            key_rotation_publish_lead_hours: resolver
+                .parse("KEY_ROTATION_PUBLISH_LEAD_HOURS", 24)?,
             app_log_retention_days: resolver.parse("APP_LOG_RETENTION_DAYS", 30)?,
             audit_log_retention_days: resolver.parse("AUDIT_LOG_RETENTION_DAYS", 0u32)?,
             token_endpoint_max_concurrency: resolver
@@ -466,6 +469,11 @@ impl Config {
     /// 署名鍵ローテーション: `not_after` のこの日数前に次期鍵を生成して旧鍵を退役させる（K2）。
     pub fn key_rotation_lead_days(&self) -> u32 {
         self.key_rotation_lead_days
+    }
+
+    /// 後継鍵を JWKS へ公開してから署名に使い始めるまでの時間。
+    pub fn key_rotation_publish_lead_hours(&self) -> u32 {
+        self.key_rotation_publish_lead_hours
     }
     /// エラー・警告ログの保持日数（`0` = 削除しない）。
     pub fn app_log_retention_days(&self) -> u32 {

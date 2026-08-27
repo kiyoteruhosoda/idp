@@ -1701,6 +1701,7 @@ impl ApiClient {
         tenant_id: &str,
         sso: &str,
         algorithm: &str,
+        activate_immediately: bool,
     ) -> Result<crate::admin_dto::SigningKeyView, AdminApiError> {
         self.admin_send(
             Method::POST,
@@ -1708,7 +1709,10 @@ impl ApiClient {
             "/admin/signing-keys",
             correlation_id,
             sso,
-            Some(serde_json::json!({ "algorithm": algorithm })),
+            Some(serde_json::json!({
+                "algorithm": algorithm,
+                "activate_immediately": activate_immediately,
+            })),
         )
         .await
     }
