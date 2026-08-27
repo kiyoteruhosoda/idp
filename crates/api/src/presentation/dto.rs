@@ -637,9 +637,9 @@ pub struct MemberResponse {
     pub locked: bool,
 }
 
-/// 一覧のページングクエリ（`GET /{tenant_id}/admin/clients`・`.../tenants`。G7）。
+/// 一覧のページングクエリ（`GET /{tenant_id}/admin/tenants` ほか。G7）。
 ///
-/// 絞り込み条件を持たない一覧で共有する。絞り込みのある一覧（members）は固有の型を持つ。
+/// 絞り込み条件を持たない一覧で共有する。絞り込みのある一覧（clients・members）は固有の型を持つ。
 #[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct PageQueryParams {
     /// 1 ページの件数。未指定は 50、上限 200（超過分は上限へ丸める）。
@@ -648,6 +648,26 @@ pub struct PageQueryParams {
     /// 読み飛ばす件数。未指定は 0。
     #[serde(default)]
     pub offset: Option<i64>,
+}
+
+/// クライアント一覧のクエリ（`GET /{tenant_id}/admin/clients`）。ページングに絞り込みを重ねる。
+///
+/// `grant_type` は管理コンソールの一覧を「連携先」と「サービスアカウント」へ分けるためのもの
+/// （ADR-0038）。**用途そのものは受け取らない** —— 用途は api のモデルには無く、web が
+/// `redirect_uris` の有無と `client_credentials` の可否へ翻訳する語彙である（ADR-0032）。
+/// `authorization_code` と `client_credentials` は 1 つのクライアントに同居しないので
+/// （ADR-0032 Revised）、grant 1 つで排他に分かれる。
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
+pub struct ClientListQueryParams {
+    /// 1 ページの件数。未指定は 50、上限 200（超過分は上限へ丸める）。
+    #[serde(default)]
+    pub limit: Option<i64>,
+    /// 読み飛ばす件数。未指定は 0。
+    #[serde(default)]
+    pub offset: Option<i64>,
+    /// 絞り込む grant（`authorization_code` / `client_credentials`）。未指定なら絞り込まない。
+    #[serde(default)]
+    pub grant_type: Option<String>,
 }
 
 /// クライアント一覧のレスポンス（`GET /{tenant_id}/admin/clients`。G7）。

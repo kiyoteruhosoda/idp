@@ -125,6 +125,7 @@ mod tests {
             action: "/x/admin/clients/new",
             is_new: true,
             values: &values,
+            list_href: "/x/admin/clients".to_string(),
         };
         let html = render(&form);
         for control in [
@@ -139,9 +140,18 @@ mod tests {
         ] {
             assert!(html.contains(control), "{control} が描画されていない");
         }
-        // 既定は利用者ログイン。用途はこの 2 つだけ。
-        assert!(html.contains(r#"value="user_login" selected"#), "{html}");
-        assert!(html.contains(r#"value="system""#), "{html}");
+        // 用途は入口が決めるので、フォームは選択肢を出さず hidden で持ち回る（ADR-0038）。
+        // `usage` は handler の必須項目なので、hidden が消えると登録が 400 になる。
+        assert!(
+            html.contains(
+                r#"<input type="hidden" id="client-usage" name="usage" value="user_login">"#
+            ),
+            "{html}"
+        );
+        assert!(
+            !html.contains(r#"<select class="form-select" id="client-usage""#),
+            "用途の select は出さない: {html}"
+        );
         // `openid` は外せない（入力欄を持たず、ハンドラが必ず付ける）。
         assert!(html.contains(r#"id="client-scope-openid""#), "{html}");
         assert!(
@@ -1181,6 +1191,13 @@ pub struct ClientsList<'a> {
     pub messages: &'a Messages,
     pub tenant: &'a str,
     pub admin: Admin<'a>,
+    /// 一覧の見出し。連携先（OIDC）とサービスアカウントで同じテンプレートを使い分ける（ADR-0038）。
+    pub title: String,
+    /// 「新規登録」ボタンの文言と遷移先。用途はこの入口で決まる。
+    pub new_label: String,
+    pub new_href: String,
+    /// 1 件も無いときの文言。系統によって「まだ登録されていない」の意味が違う。
+    pub none_label: String,
     /// 現在のページに含まれるクライアント（G7 でページングを導入。全件ではない）。
     pub clients: &'a [ClientView],
     /// ページング前の総件数。「全 N 件」の表示に使う。
@@ -1203,6 +1220,8 @@ pub struct ClientForm<'a> {
     pub action: &'a str,
     pub is_new: bool,
     pub values: &'a ClientFormValues,
+    /// 戻り先の一覧（ADR-0038 でクライアント一覧が系統ごとに分かれたため、固定にできない）。
+    pub list_href: String,
 }
 
 /// クライアント詳細（`GET /{tenant_id}/admin/clients/{id}`）。
@@ -1230,6 +1249,8 @@ pub struct ClientDetail<'a> {
     /// 新たに足せてしまうのを防ぐため（ADR-0037）。
     pub shows_grant_form: bool,
     pub error_key: Option<&'a str>,
+    /// 戻り先の一覧（ADR-0038）。登録内容から決まる系統の一覧へ戻す。
+    pub list_href: String,
 }
 
 /// secret 表示画面（作成直後・再発行直後。`secret` が `None` なら public で秘密なし）。
@@ -1242,6 +1263,8 @@ pub struct ClientSecret<'a> {
     pub heading: &'a str,
     pub client_id: &'a str,
     pub secret: Option<&'a str>,
+    /// 戻り先の一覧（ADR-0038）。
+    pub list_href: String,
 }
 
 /// 署名鍵一覧・管理画面（`GET /{tenant_id}/admin/signing-keys`、K1）。

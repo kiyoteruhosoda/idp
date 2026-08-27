@@ -91,6 +91,6 @@
     <input type="hidden" name="csrf_token" value="{{ csrf }}">
     <button type="submit" class="btn btn-outline-danger"><i class="fa-solid fa-trash me-2" aria-hidden="true"></i>{{ messages.get("admin-client-delete") }}</button>
   </form>
-  <a class="btn btn-outline-secondary" href="{{ tenant }}/admin/clients">{{ messages.get("admin-client-back") }}</a>
+  <a class="btn btn-outline-secondary" href="{{ list_href }}">{{ messages.get("admin-client-back") }}</a>
 </div>
 {% endblock %}

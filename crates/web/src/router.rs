@@ -246,6 +246,17 @@ pub fn build(state: WebState) -> Router {
         )
         // クライアント（RP）管理画面。静的セグメント（new）は動的 {client_id} より優先。
         .route("/admin/clients", get(admin_clients_console::list))
+        // サービスアカウント（機械の主体）の一覧と登録（ADR-0038）。詳細・編集・削除は
+        // `/admin/clients/{client_id}` を共有する（分けるのは「何を登録する場所か」だけ）。
+        .route(
+            "/admin/service-accounts",
+            get(admin_clients_console::list_service_accounts),
+        )
+        .route(
+            "/admin/service-accounts/new",
+            get(admin_clients_console::new_service_account_form)
+                .post(admin_clients_console::create),
+        )
         .route(
             "/admin/clients/new",
             get(admin_clients_console::new_form).post(admin_clients_console::create),

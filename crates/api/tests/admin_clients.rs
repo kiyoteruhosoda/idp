@@ -303,6 +303,91 @@ async fn confidential_clients_can_choose_the_client_authentication_method() {
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
 
+/// `?grant_type=` で一覧を系統ごとに分ける（ADR-0038）。
+///
+/// **絞り込みはページングと同じ層で行う必要がある。** web が 1 ページ受け取ってから間引くと、
+/// `total` もページャも実際の件数と合わなくなる。ここでは、返る中身と `total` の両方が
+/// 絞り込み後の値になっていることを見る。
+#[tokio::test]
+async fn the_client_list_can_be_split_by_grant_type() {
+    let Some(env) = support::setup("admin clients grant filter").await else {
+        return;
+    };
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+    let clients_uri = format!("/{}/admin/clients", env.root_tenant_id);
+
+    // 連携先（redirect_uri を持つ）とサービスアカウント（持たない）を 1 つずつ。
+    for body in [
+        json!({
+            "app_name": "Relying Party App",
+            "client_type": "confidential",
+            "redirect_uris": [REDIRECT_URI],
+            "scopes": ["openid"],
+            "token_endpoint_auth_method": "client_secret_basic",
+        }),
+        json!({
+            "app_name": "Service Account App",
+            "client_type": "confidential",
+            "redirect_uris": [],
+            "scopes": ["openid"],
+            "allow_client_credentials": true,
+            "token_endpoint_auth_method": "client_secret_basic",
+        }),
+    ] {
+        let res = send(&env.app, post(&admin_tok, &clients_uri, body)).await;
+        assert_eq!(res.status(), StatusCode::CREATED);
+    }
+
+    let names_for = |uri: String| {
+        let app = env.app.clone();
+        let tok = admin_tok.clone();
+        async move {
+            let res = send(&app, get(&tok, &uri)).await;
+            assert_eq!(res.status(), StatusCode::OK);
+            let body = body_json(res).await;
+            let names: Vec<String> = body["clients"]
+                .as_array()
+                .expect("clients")
+                .iter()
+                .map(|c| c["app_name"].as_str().unwrap_or_default().to_string())
+                .collect();
+            (names, body["total"].as_i64().expect("total"))
+        }
+    };
+
+    let (all, all_total) = names_for(clients_uri.clone()).await;
+    assert!(all.iter().any(|n| n == "Relying Party App"));
+    assert!(all.iter().any(|n| n == "Service Account App"));
+
+    let (rps, rp_total) = names_for(format!("{clients_uri}?grant_type=authorization_code")).await;
+    assert!(rps.iter().any(|n| n == "Relying Party App"));
+    assert!(
+        !rps.iter().any(|n| n == "Service Account App"),
+        "連携先の一覧にサービスアカウントが混ざってはならない"
+    );
+
+    let (sas, sa_total) = names_for(format!("{clients_uri}?grant_type=client_credentials")).await;
+    assert!(sas.iter().any(|n| n == "Service Account App"));
+    assert!(!sas.iter().any(|n| n == "Relying Party App"));
+
+    // total も絞り込み後の値であること（ページャがこの値で「次へ」を出す）。
+    assert_eq!(rp_total as usize, rps.len());
+    assert_eq!(sa_total as usize, sas.len());
+    assert_eq!(
+        rp_total + sa_total,
+        all_total,
+        "両立は作れないので排他に分かれる"
+    );
+
+    // 未知の値は黙って無視せず 400。無視すると、絞り込みの失敗が画面上は成功に見える。
+    let res = send(
+        &env.app,
+        get(&admin_tok, &format!("{clients_uri}?grant_type=nonsense")),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
 /// 「両方」の姿（`authorization_code` + `client_credentials` + redirect_uri）は、登録でも更新でも拒む
 /// （ADR-0032 決定 3・Revised）。
 ///

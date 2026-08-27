@@ -7,12 +7,12 @@ use crate::application::client_management::{
     ClientManagementError, RegisterClientCommand, UpdateClientCommand,
 };
 use crate::domain::client::Client;
-use crate::domain::values::{ClientStatus, ClientType, TokenEndpointAuthMethod};
+use crate::domain::values::{ClientStatus, ClientType, GrantType, TokenEndpointAuthMethod};
 use crate::presentation::admin::{ClientsRead, ClientsWrite, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
-    ClientCreatedResponse, ClientListResponse, ClientRegisterRequest, ClientResponse,
-    ClientSecretResponse, ClientUpdateRequest, PageQueryParams,
+    ClientCreatedResponse, ClientListQueryParams, ClientListResponse, ClientRegisterRequest,
+    ClientResponse, ClientSecretResponse, ClientUpdateRequest,
 };
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
@@ -82,6 +82,24 @@ pub async fn create_client(
     ))
 }
 
+/// `?grant_type=` の解釈（ADR-0038）。
+///
+/// **未知の値は 400 で断る。** ADR-0037 の `?grantable_to=` は綴り違いを「絞り込まない」に倒したが、
+/// あちらは選択肢を狭めるだけの支援 API なので害が無かった。こちらを黙って無視すると、
+/// 「連携先」の一覧にサービスアカウントが混ざったまま表示される —— **絞り込みの失敗が
+/// 画面上は成功に見える**。
+fn parse_grant_type_filter(
+    raw: Option<&str>,
+    locale: ApiLocale,
+) -> Result<Option<GrantType>, ApiError> {
+    let Some(raw) = raw.map(str::trim).filter(|v| !v.is_empty()) else {
+        return Ok(None);
+    };
+    GrantType::parse(raw).map(Some).map_err(|_| {
+        ApiError::BadRequest(ApiMessages::new(locale).get("api-client-grant-type-unknown"))
+    })
+}
+
 /// 登録済みクライアントを新しい順に 1 ページ分と総件数で返す（G7）。
 ///
 /// ページングは DB 側で行う。全件を返す方式は、テナント内のクライアント数に比例して
@@ -90,7 +108,7 @@ pub async fn create_client(
     get,
     path = "/{tenant_id}/admin/clients",
     tag = "admin",
-    params(PageQueryParams),
+    params(ClientListQueryParams),
     responses(
         (status = 200, description = "クライアント一覧（1 ページ分と総件数）", body = ClientListResponse),
         (status = 401, description = "未認証"),
@@ -102,11 +120,12 @@ pub async fn list_clients(
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
-    Query(params): Query<PageQueryParams>,
+    Query(params): Query<ClientListQueryParams>,
 ) -> Result<Json<ClientListResponse>, ApiError> {
+    let grant_type = parse_grant_type_filter(params.grant_type.as_deref(), locale)?;
     let result = state
         .clients_admin
-        .list_page(tenant.context(), params.limit, params.offset)
+        .list_page(tenant.context(), grant_type, params.limit, params.offset)
         .await
         .map_err(|e| map_error(e, locale))?;
     Ok(Json(ClientListResponse {
