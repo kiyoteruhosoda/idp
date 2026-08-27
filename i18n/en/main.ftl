@@ -145,6 +145,7 @@ admin-client-permissions-hint = Permissions this client uses to call the IdP's o
 admin-client-permissions-none = This client holds no management permissions.
 admin-client-permissions-grant-none-left = This client already holds every permission that can be granted to a client.
 admin-permission-error-unknown = Unknown permission code. Choose one of the available codes.
+admin-permission-error-forbidden = Only a user who holds idp.system.admin can grant or revoke it, and that permission exists only in the root tenant.
 
 # Paged user list (MT22). Search and paging happen server-side.
 admin-users-list-title = Users

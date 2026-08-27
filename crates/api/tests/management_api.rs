@@ -18,7 +18,7 @@ use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
 use axum::http::{Request, StatusCode};
 use base64::Engine as _;
 use serde_json::json;
-use support::{admin_token, body_json, delete, get, post, send};
+use support::{admin_token, body_json, delete, get, post, send, unique};
 
 /// `MANAGEMENT_TOKEN_TTL_SECS` の既定（`domain::system_setting` の定義と対）。
 const MANAGEMENT_TOKEN_TTL_SECS: u64 = 300;
@@ -458,4 +458,88 @@ async fn the_grantable_to_client_filter_removes_the_blanket_admin_codes() {
     let unfiltered: Vec<String> =
         serde_json::from_value(unfiltered["codes"].clone()).expect("codes");
     assert_eq!(unfiltered.len(), all.len());
+}
+
+
+/// 非 root テナントでは `idp.system.admin` を**付与できない**ので、付与候補にも出さない。
+///
+/// この権限は root scope でしか存在できず（`user_permissions_system_admin_scope_chk`。ADR-0009 §4）、
+/// 実行者が誰であっても非 root では付与が通らない。候補に残すと、管理コンソールの付与フォームに
+/// **選べるのに必ず 403 になる選択肢**が並ぶ（ADR-0032「選べないものを見せない」）。
+///
+/// 検証は 2 段で、候補から消えていることと、**api を直接叩けば依然 403 であること**の両方を見る。
+/// 前者だけだと、画面から消しただけで api を緩めた変更を通してしまう。
+#[tokio::test]
+async fn system_admin_is_neither_offered_nor_grantable_outside_the_root_tenant() {
+    let Some(env) = support::setup("management api system admin scope").await else {
+        return;
+    };
+    let root_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+
+    // root が子テナントを作る。作成者 root はその子テナントの ACTIVE GUEST 管理者として残る
+    // （ADR-0009 §4 のブートストラップ）ので、以降は「ゲスト管理者」としての操作になる。
+    let res = send(
+        &env.app,
+        post(
+            &root_tok,
+            &format!("/{}/admin/tenants", env.root_tenant_id),
+            json!({ "name": format!("SystemAdminScope{}", unique()) }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED, "create child tenant");
+    let child = body_json(res).await["id"]
+        .as_str()
+        .expect("tenant id")
+        .to_string();
+    let guest_tok = admin_token(&env.app, &env.pool, &child, &env.root_admin_id).await;
+
+    // 1. 付与候補に idp.system.admin が出ない（root テナントでは出る。上のテストが押さえている）。
+    let res = send(
+        &env.app,
+        get(&guest_tok, &format!("/{child}/admin/permissions")),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let codes = body_json(res).await;
+    let codes: Vec<String> = serde_json::from_value(codes["codes"].clone()).expect("codes");
+    assert!(
+        !codes.iter().any(|c| c == "idp.system.admin"),
+        "system admin must not be offered outside the root tenant"
+    );
+    assert!(
+        codes.iter().any(|c| c == "idp.tenant.admin"),
+        "tenant admin remains grantable in a child tenant"
+    );
+
+    // 2. 候補から消しただけで api を緩めていないこと。
+    let res = send(
+        &env.app,
+        post(
+            &guest_tok,
+            &format!("/{child}/admin/users"),
+            json!({ "email": format!("scope-{}@example.com", unique()) }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED, "create target user");
+    let target = body_json(res).await["user_id"]
+        .as_str()
+        .expect("user id")
+        .to_string();
+
+    let res = send(
+        &env.app,
+        post(
+            &guest_tok,
+            &format!("/{child}/admin/users/{target}/permissions"),
+            json!({ "permission_code": "idp.system.admin" }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        res.status(),
+        StatusCode::FORBIDDEN,
+        "granting system admin outside root must stay refused"
+    );
 }

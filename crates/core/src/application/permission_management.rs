@@ -245,6 +245,11 @@ impl PermissionManagementService {
                 "api-permission-system-admin-forbidden",
             )));
         };
+        // scope は**要求テナント**で引く（祖先・root へフォールバックしない。ADR-0009 §4）。
+        // `idp.system.admin` は root scope でしか存在できないので、非 root テナントではこの判定は
+        // 常に false になる —— それが意図した結果である。非 root で付与を許しても、DB の CHECK 制約
+        // `user_permissions_system_admin_scope_chk` が行の挿入を拒む。付与フォームの選択肢は
+        // `permission::is_grantable_in_tenant` が先に落とすので、ここへ来るのは API 直叩きだけである。
         match self
             .permissions
             .has_permission(tenant.tenant_id(), actor_user_id, permission::SYSTEM_ADMIN)

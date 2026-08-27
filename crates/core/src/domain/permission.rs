@@ -113,6 +113,16 @@ pub fn is_grantable_to_client(code: &str) -> bool {
     code != SYSTEM_ADMIN && code != TENANT_ADMIN
 }
 
+/// 要求テナントで**そもそも付与し得る**コードか（ADR-0009 §4）。
+///
+/// `idp.system.admin` は root scope でしか存在できない（DB の CHECK 制約
+/// `user_permissions_system_admin_scope_chk` とアプリ層の二重防御）。したがって非 root テナントでは、
+/// 実行者が誰であっても付与できない。**選べないものを見せない**（ADR-0032）ため、付与フォームの
+/// 選択肢はこの判定で落とす。落とさないと、選べるのに必ず 403 になる選択肢が残る。
+pub fn is_grantable_in_tenant(code: &str, tenant_is_root: bool) -> bool {
+    code != SYSTEM_ADMIN || tenant_is_root
+}
+
 /// 名前空間付き権限コード（例: `idp.tenant.admin`, `idp.clients:read`）。
 ///
 /// 許可値の単一出所は `permissions` マスタテーブル（seed マイグレーション）であり、
@@ -215,6 +225,23 @@ mod tests {
         assert!(!is_grantable_to_client(TENANT_ADMIN));
         for code in TENANT_MANAGEMENT_CODES {
             assert!(is_grantable_to_client(code));
+        }
+    }
+
+    #[test]
+    fn system_admin_is_not_grantable_outside_the_root_tenant() {
+        // 非 root では CHECK 制約が行の存在自体を拒むので、選択肢に出してはならない。
+        assert!(!is_grantable_in_tenant(SYSTEM_ADMIN, false));
+        assert!(is_grantable_in_tenant(SYSTEM_ADMIN, true));
+    }
+
+    #[test]
+    fn every_other_code_is_grantable_in_any_tenant() {
+        assert!(is_grantable_in_tenant(TENANT_ADMIN, false));
+        assert!(is_grantable_in_tenant(TENANT_ADMIN, true));
+        for code in TENANT_MANAGEMENT_CODES {
+            assert!(is_grantable_in_tenant(code, false));
+            assert!(is_grantable_in_tenant(code, true));
         }
     }
 }

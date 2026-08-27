@@ -145,6 +145,7 @@ admin-client-permissions-hint = このクライアントが IdP 自身の管理 
 admin-client-permissions-none = このクライアントは管理権限を保有していません。
 admin-client-permissions-grant-none-left = このクライアントは付与できる管理権限をすべて保有しています。
 admin-permission-error-unknown = 未知の権限コードです。付与可能なコードから選んでください。
+admin-permission-error-forbidden = idp.system.admin の付与・剥奪は、idp.system.admin を保有する利用者のみが行えます。この権限は root テナントでしか保有できません。
 
 # ページング付き利用者一覧（MT22）。絞り込み・ページングはサーバ側で行う。
 admin-users-list-title = 利用者

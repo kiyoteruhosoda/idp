@@ -22,13 +22,18 @@ use uuid::Uuid;
 /// 付与可能な権限コード（`permissions` マスタ）を一覧する（`GET /admin/permissions`）。
 /// 管理コンソール（web）の付与フォームの選択肢に使う支援 API。
 ///
-/// `?grantable_to=client` を付けると、**クライアントへ付与できるコードだけ**へ絞る（ADR-0037）。
-/// 絞り込みを api で行うのは、判定（`domain::permission::is_grantable_to_client`）の出所を
-/// core に一本化するためである。web は core に依存しない（crate 境界で強制。ADR-0007）ので、
-/// web 側で同じ判定を書くと**マスタが増えたときに片方だけ古くなる**。
+/// **要求テナントで付与し得ないコードは常に落とす。** `idp.system.admin` は root scope でしか
+/// 存在できない（ADR-0009 §4）ため、非 root テナントで返すと「選べるのに必ず 403 になる選択肢」に
+/// なる。ADR-0032 の「選べないものを見せない」をここでも適用する。
+///
+/// `?grantable_to=client` を付けると、さらに**クライアントへ付与できるコードだけ**へ絞る（ADR-0037）。
+/// 絞り込みを api で行うのは、判定（`domain::permission` の各関数）の出所を core に一本化するため
+/// である。web は core に依存しない（crate 境界で強制。ADR-0007）ので、web 側で同じ判定を書くと
+/// **マスタが増えたときに片方だけ古くなる**。
 pub async fn list_available_permissions(
     RequirePerms(_admin, _): RequirePerms<PermissionsRead>,
     State(state): State<AppState>,
+    Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
     Query(query): Query<AvailablePermissionsQuery>,
 ) -> Result<Json<idp_contracts::admin::AvailablePermissionsResponse>, ApiError> {
@@ -37,6 +42,8 @@ pub async fn list_available_permissions(
         .available_codes()
         .await
         .map_err(|e| map_permission_management_error(e, locale))?;
+    let tenant_is_root = tenant.tenant().is_root();
+    codes.retain(|code| permission::is_grantable_in_tenant(code, tenant_is_root));
     if query.grantable_to.as_deref() == Some(GRANTABLE_TO_CLIENT) {
         codes.retain(|code| permission::is_grantable_to_client(code));
     }
