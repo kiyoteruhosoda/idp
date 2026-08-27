@@ -59,6 +59,11 @@ pub async fn list(
 #[derive(Deserialize)]
 pub struct GenerateKeyForm {
     pub algorithm: String,
+    /// 猶予を置かず、すぐ署名に使い始める指定。チェックボックスは「チェック時のみ送られる」ため
+    /// `Option<String>` で受ける。**既定（未チェック）が通常の入れ替え**で、鍵は JWKS へ公開
+    /// されるだけ。署名を引き継ぐのは `KEY_ROTATION_PUBLISH_LEAD_HOURS` 後になる。
+    #[serde(default)]
+    pub activate_immediately: Option<String>,
     pub csrf_token: String,
 }
 
@@ -95,7 +100,13 @@ pub async fn generate(
     let result = state
         .api
         .for_locale(locale(&headers))
-        .generate_signing_key(&correlation.0, &tenant.0, &sso, &form.algorithm)
+        .generate_signing_key(
+            &correlation.0,
+            &tenant.0,
+            &sso,
+            &form.algorithm,
+            form.activate_immediately.is_some(),
+        )
         .await;
     match result {
         Ok(_) => {

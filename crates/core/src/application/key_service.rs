@@ -5,7 +5,7 @@ use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
 use crate::domain::message::MessageKey;
 use crate::domain::repositories::SigningKeyRepository;
-use crate::domain::signing_key::SigningKey;
+use crate::domain::signing_key::{current_signer_at, SigningKey};
 use crate::domain::values::{SigningAlgorithm, SigningKeyStatus};
 use crate::domain::{crypto, jwt};
 use chrono::Duration;
@@ -60,7 +60,11 @@ impl KeyService {
         if self.find_active_key().await?.is_some() {
             return Ok(());
         }
-        let key = self.new_key_material(SigningAlgorithm::Rs256).await?;
+        // ブートストラップは**猶予を置かない**。まだ RP が 1 つも居らず、配る先の JWKS キャッシュも
+        // 存在しないので、待つ意味が無い（待つと起動直後にトークンを発行できない）。
+        let key = self
+            .new_key_material(SigningAlgorithm::Rs256, Duration::zero())
+            .await?;
         let inserted = self
             .repo
             .insert_if_no_active(&key)
@@ -106,44 +110,103 @@ impl KeyService {
 
     // ── 自動ローテーション（K2）─────────────────────────────────────────────────
 
-    /// 現行 ACTIVE 鍵の `not_after` まで `lead_days` 日を切っていれば新鍵を生成して旧鍵を退役させる。
+    /// 鍵の入れ替えを進める（冪等。バックグラウンドタスクから定期的に呼ぶ）。
     ///
-    /// バックグラウンドタスクから定期的に呼び出す。冪等。
-    /// - ACTIVE 鍵が無い場合は `ensure_active_key()` を呼んで鍵を補充する。
-    /// - ACTIVE 鍵の残余期間が `lead_days` 以上あれば何もしない。
-    /// - `lead_days` 日を切っていれば新鍵（ACTIVE）を生成し、旧鍵を RETIRED に変更する。
-    pub async fn rotate_if_needed(&self, lead_days: u32) -> anyhow::Result<()> {
+    /// **入れ替えは 3 段で進む。** 1 回の呼び出しで全部やろうとすると、公開と署名開始が同時に
+    /// なってしまい、JWKS をキャッシュしている RP の検証が落ちる。
+    ///
+    /// 1. 現行鍵の `not_after` まで `lead_days` 日を切ったら、**後継鍵を公開する**
+    ///    （`not_before` は `publish_lead_hours` 後）。JWKS には即座に載るが、署名はまだ旧鍵。
+    /// 2. `not_before` が来ると、署名は後継鍵へ自動的に移る（`current_signer_at` の規則）。
+    ///    ここに呼び出しは要らない。
+    /// 3. 引き継ぎ後の呼び出しで、**追い越された ACTIVE 鍵を退役させる**。
+    ///
+    /// 退役を 3 段目に置くのが要点である。公開と同時に旧鍵を退役させると、`not_before` が来るまで
+    /// 署名できる鍵が 1 本も無くなる。
+    ///
+    /// ACTIVE 鍵が 1 本も無い場合は補充する（管理者が最後の鍵を退役させた場合など）。
+    pub async fn rotate_if_needed(
+        &self,
+        lead_days: u32,
+        publish_lead_hours: u32,
+    ) -> anyhow::Result<()> {
         let now = self.clock.now();
-        let Some(active) = self.find_active_key().await? else {
-            tracing::warn!("no active signing key found during rotation check; bootstrapping");
-            self.generate_key_internal(SigningAlgorithm::Rs256).await?;
+        // 一覧を 1 回引いて、現行鍵・後継鍵・追い越された鍵をまとめて判断する。
+        let keys = self
+            .repo
+            .list_all()
+            .await
+            .map_err(|e| anyhow::anyhow!("list signing keys: {e}"))?;
+
+        let Some(active) = current_signer_at(&keys, now).cloned() else {
+            // **直前に使っていた鍵のアルゴリズムを引き継ぐ。** 決め打ちにすると、ES256 で運用して
+            // いた環境がこの経路を通っただけで黙って RS256 へ戻る（画面では ES256 も選べる）。
+            let algorithm = keys
+                .first()
+                .and_then(|key| SigningAlgorithm::parse(&key.algorithm).ok())
+                .unwrap_or(SigningAlgorithm::Rs256);
+            tracing::warn!(
+                algorithm = %algorithm.as_str(),
+                "no usable signing key found during rotation check; bootstrapping"
+            );
+            self.generate_key_internal(algorithm, Duration::zero())
+                .await?;
             return Ok(());
         };
 
-        let remaining = active.not_after - now;
-        let lead = chrono::Duration::days(lead_days as i64);
-        if remaining > lead {
+        // 3 段目: 現行鍵に追い越された ACTIVE 鍵を退役させる。`not_before` が未来の後継鍵は
+        // 対象にしない（まだ出番が来ていないだけで、追い越されたわけではない）。
+        for key in keys
+            .iter()
+            .filter(|key| key.status == SigningKeyStatus::Active)
+            .filter(|key| key.kid != active.kid && key.not_before <= now)
+        {
+            self.repo
+                .update_status(&key.kid, SigningKeyStatus::Retired)
+                .await
+                .map_err(|e| anyhow::anyhow!("retire superseded key {}: {e}", key.kid))?;
+            tracing::info!(
+                kid = %key.kid,
+                superseded_by = %active.kid,
+                "retired signing key superseded by the current signer"
+            );
+        }
+
+        // 1 段目: 後継鍵が既に公開されていれば、あとは `not_before` を待つだけ。
+        if let Some(pending) = keys.iter().find(|key| key.is_pending_at(now)) {
+            tracing::debug!(
+                kid = %pending.kid,
+                signs_from = %pending.not_before,
+                "a successor signing key is already published; waiting for its not_before"
+            );
             return Ok(());
         }
+
+        let remaining = active.not_after - now;
+        if remaining > Duration::days(lead_days as i64) {
+            return Ok(());
+        }
+
+        // **署名を引き継ぐのは現行鍵が切れる前でなければならない。** `publish_lead_hours` が
+        // `lead_days` より長い設定でも、現行鍵の `not_after` を越えないところで頭打ちにする
+        // （越えると、切れた瞬間から `not_before` までのあいだ署名できる鍵が無くなる）。
+        let signs_from = std::cmp::min(
+            now + Duration::hours(publish_lead_hours as i64),
+            active.not_after,
+        );
 
         tracing::info!(
             kid = %active.kid,
             not_after = %active.not_after,
             remaining_hours = remaining.num_hours(),
-            "signing key approaching expiry; rotating"
+            signs_from = %signs_from,
+            "signing key approaching expiry; publishing a successor"
         );
 
-        // 同じアルゴリズムで新鍵を生成する。
         let algorithm = SigningAlgorithm::parse(&active.algorithm)
             .map_err(|e| anyhow::anyhow!("unknown algorithm on active key: {e}"))?;
-        self.generate_key_internal(algorithm).await?;
-
-        // 旧鍵を RETIRED に変更する（新鍵生成後に行うことで signing 空白期間を排除）。
-        self.repo
-            .update_status(&active.kid, SigningKeyStatus::Retired)
-            .await
-            .map_err(|e| anyhow::anyhow!("retire old key {}: {e}", active.kid))?;
-        tracing::info!(kid = %active.kid, "retired old signing key after rotation");
+        self.generate_key_internal(algorithm, signs_from - now)
+            .await?;
 
         Ok(())
     }
@@ -159,28 +222,51 @@ impl KeyService {
     }
 
     /// 指定アルゴリズムの新規鍵を生成して ACTIVE で登録する。
+    ///
+    /// `publish_lead` を置くと、鍵は JWKS に即座に載るが署名には使われない（`not_before` が
+    /// その分だけ未来になる）。**通常の入れ替えはこちら** —— RP が新しい `kid` を取り込む猶予に
+    /// なる。`Duration::zero()` は「いますぐ署名に使う」で、鍵の危殆化のように猶予を置く余裕が
+    /// ないときに限って使う。
     pub async fn generate_key(
         &self,
         algorithm: SigningAlgorithm,
+        publish_lead: Duration,
     ) -> Result<SigningKey, KeyManagementError> {
-        self.generate_key_internal(algorithm)
+        self.generate_key_internal(algorithm, publish_lead)
             .await
             .map_err(|e| KeyManagementError::Internal(e.to_string()))
     }
 
     /// 指定 kid の ACTIVE 鍵を RETIRED に変更する。
-    /// ACTIVE 鍵が他に存在しなくなる場合でも呼び出し側の責任で行う（管理者操作）。
+    ///
+    /// **最後の署名可能な鍵は退役させない。** 退役させるとその瞬間からトークンを発行できなくなり、
+    /// `rotate_if_needed` による補充は次回の確認まで走らない（既定 1 時間おき）。1 クリックで
+    /// トークン発行を止められる導線を残さない。公開済みの後継鍵があっても、`not_before` が
+    /// 来ていなければ「署名可能」には数えない。
     pub async fn retire_key(&self, kid: &str) -> Result<(), KeyManagementError> {
-        let key = self
+        let keys = self
             .repo
-            .find_by_kid(kid)
+            .list_all()
             .await
-            .map_err(|e| KeyManagementError::Internal(e.to_string()))?
+            .map_err(|e| KeyManagementError::Internal(e.to_string()))?;
+        let key = keys
+            .iter()
+            .find(|key| key.kid == kid)
             .ok_or_else(|| KeyManagementError::NotFound(kid.to_string()))?;
 
         if key.status == SigningKeyStatus::Retired {
             return Err(KeyManagementError::Validation(MessageKey::new(
                 "api-signing-key-retire-failed",
+            )));
+        }
+
+        let now = self.clock.now();
+        let another_key_can_sign = keys
+            .iter()
+            .any(|other| other.kid != kid && other.is_usable_for_signing_at(now));
+        if !another_key_can_sign {
+            return Err(KeyManagementError::Validation(MessageKey::new(
+                "api-signing-key-retire-last-active",
             )));
         }
 
@@ -226,13 +312,19 @@ impl KeyService {
     async fn generate_key_internal(
         &self,
         algorithm: SigningAlgorithm,
+        publish_lead: Duration,
     ) -> anyhow::Result<SigningKey> {
-        let key = self.new_key_material(algorithm).await?;
+        let key = self.new_key_material(algorithm, publish_lead).await?;
         self.repo
             .insert(&key)
             .await
             .map_err(|e| anyhow::anyhow!("insert signing key: {e}"))?;
-        tracing::info!(kid = %key.kid, algorithm = %algorithm.as_str(), "generated new signing key");
+        tracing::info!(
+            kid = %key.kid,
+            algorithm = %algorithm.as_str(),
+            signs_from = %key.not_before,
+            "generated new signing key"
+        );
         Ok(key)
     }
 
@@ -240,9 +332,16 @@ impl KeyService {
     ///
     /// 鍵ペア生成は blocking プールへ退避する（下記 `generate_keypair`）。秘密鍵の暗号化（AES-GCM）は
     /// 短時間で終わるためそのまま実行する。
-    async fn new_key_material(&self, algorithm: SigningAlgorithm) -> anyhow::Result<SigningKey> {
+    async fn new_key_material(
+        &self,
+        algorithm: SigningAlgorithm,
+        publish_lead: Duration,
+    ) -> anyhow::Result<SigningKey> {
         let (private_pem, public_pem) = generate_keypair(algorithm).await?;
         let now = self.clock.now();
+        // 署名を始める時刻。**有効期間はここから数える** —— `now` から数えると、猶予を置いた分
+        // だけ実際に使える期間が短くなる。
+        let not_before = now + publish_lead.max(Duration::zero());
         let alg_tag = algorithm.as_str().to_lowercase().replace("256", "");
         let kid = format!(
             "{}-{}-{}",
@@ -259,8 +358,8 @@ impl KeyService {
             public_key: public_pem,
             private_key_encrypted,
             status: SigningKeyStatus::Active,
-            not_before: now,
-            not_after: now + Duration::days(KEY_VALIDITY_DAYS),
+            not_before,
+            not_after: not_before + Duration::days(KEY_VALIDITY_DAYS),
             created_at: now,
             updated_at: now,
         })
@@ -287,8 +386,376 @@ async fn generate_keypair(algorithm: SigningAlgorithm) -> anyhow::Result<(String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::clock::Clock;
+    use crate::domain::error::Result as RepoResult;
+    use chrono::{DateTime, Utc};
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
     use tokio::sync::Notify;
+
+    /// 進められる時計（`rotate_if_needed` は「いつ呼ばれたか」で挙動が変わるため）。
+    struct TestClock(Mutex<DateTime<Utc>>);
+
+    impl TestClock {
+        fn at(rfc3339: &str) -> Arc<Self> {
+            Arc::new(Self(Mutex::new(parse(rfc3339))))
+        }
+        fn advance(&self, by: Duration) {
+            let mut now = self.0.lock().unwrap();
+            *now += by;
+        }
+    }
+
+    impl Clock for TestClock {
+        fn now(&self) -> DateTime<Utc> {
+            *self.0.lock().unwrap()
+        }
+    }
+
+    fn parse(rfc3339: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(rfc3339)
+            .expect("valid timestamp")
+            .with_timezone(&Utc)
+    }
+
+    /// メモリ上の署名鍵リポジトリ。`find_active` は本番の SQL と**同じ規則**で選ぶ
+    /// （`current_signer_at`）。ここを別の規則で書くと、テストが通っても本番と挙動が違う。
+    #[derive(Default)]
+    struct FakeRepo(Mutex<Vec<SigningKey>>);
+
+    impl FakeRepo {
+        fn with(keys: Vec<SigningKey>) -> Arc<Self> {
+            Arc::new(Self(Mutex::new(keys)))
+        }
+        fn snapshot(&self) -> Vec<SigningKey> {
+            self.0.lock().unwrap().clone()
+        }
+        fn get(&self, kid: &str) -> SigningKey {
+            self.snapshot()
+                .into_iter()
+                .find(|key| key.kid == kid)
+                .expect("key exists")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SigningKeyRepository for FakeRepo {
+        async fn insert(&self, key: &SigningKey) -> RepoResult<()> {
+            self.0.lock().unwrap().insert(0, key.clone());
+            Ok(())
+        }
+        async fn insert_if_no_active(&self, key: &SigningKey) -> RepoResult<bool> {
+            let mut keys = self.0.lock().unwrap();
+            if keys.iter().any(|k| k.status == SigningKeyStatus::Active) {
+                return Ok(false);
+            }
+            keys.insert(0, key.clone());
+            Ok(true)
+        }
+        async fn find_active(&self) -> RepoResult<Option<SigningKey>> {
+            unreachable!("rotate_if_needed reads the whole list")
+        }
+        async fn list_published(&self) -> RepoResult<Vec<SigningKey>> {
+            unreachable!("not exercised by these tests")
+        }
+        async fn find_by_kid(&self, kid: &str) -> RepoResult<Option<SigningKey>> {
+            Ok(self.snapshot().into_iter().find(|key| key.kid == kid))
+        }
+        async fn list_all(&self) -> RepoResult<Vec<SigningKey>> {
+            // 本番と同じく作成日時の降順。
+            let mut keys = self.snapshot();
+            keys.sort_by_key(|key| std::cmp::Reverse(key.created_at));
+            Ok(keys)
+        }
+        async fn update_status(&self, kid: &str, status: SigningKeyStatus) -> RepoResult<()> {
+            let mut keys = self.0.lock().unwrap();
+            match keys.iter_mut().find(|key| key.kid == kid) {
+                Some(key) => {
+                    key.status = status;
+                    Ok(())
+                }
+                None => Err(DomainError::NotFound),
+            }
+        }
+        async fn delete(&self, kid: &str) -> RepoResult<()> {
+            self.0.lock().unwrap().retain(|key| key.kid != kid);
+            Ok(())
+        }
+    }
+
+    /// 既存鍵の見立て。**ES256 を使う** —— RSA の鍵生成はテストには重い。
+    fn existing(
+        kid: &str,
+        status: SigningKeyStatus,
+        not_before: &str,
+        not_after: &str,
+    ) -> SigningKey {
+        SigningKey {
+            kid: kid.to_string(),
+            algorithm: "ES256".to_string(),
+            public_key: String::new(),
+            private_key_encrypted: String::new(),
+            status,
+            not_before: parse(not_before),
+            not_after: parse(not_after),
+            created_at: parse(not_before),
+            updated_at: parse(not_before),
+        }
+    }
+
+    fn service(repo: Arc<FakeRepo>, clock: Arc<TestClock>) -> KeyService {
+        KeyService::new(repo, clock, [7u8; 32])
+    }
+
+    const LEAD_DAYS: u32 = 30;
+    const PUBLISH_LEAD_HOURS: u32 = 24;
+
+    /// 1 段目: 期限が近づいたら**後継鍵を公開するだけ**。旧鍵はまだ署名を続け、退役もしない。
+    ///
+    /// ここで旧鍵を退役させると、後継鍵の `not_before` が来るまで署名できる鍵が無くなる。
+    /// 公開と署名開始を同時にすると、JWKS をキャッシュしている RP の検証が落ちる。
+    #[tokio::test]
+    async fn a_key_near_expiry_gets_a_successor_that_is_published_but_not_signing() {
+        let clock = TestClock::at("2026-08-27T00:00:00Z");
+        let repo = FakeRepo::with(vec![existing(
+            "old",
+            SigningKeyStatus::Active,
+            "2025-09-01T00:00:00Z",
+            "2026-09-06T00:00:00Z", // 残り 10 日 < lead 30 日
+        )]);
+        service(repo.clone(), clock.clone())
+            .rotate_if_needed(LEAD_DAYS, PUBLISH_LEAD_HOURS)
+            .await
+            .expect("rotate");
+
+        let keys = repo.snapshot();
+        assert_eq!(keys.len(), 2, "a successor must be published");
+        let now = clock.now();
+        let successor = keys.iter().find(|key| key.kid != "old").expect("successor");
+        assert!(
+            successor.is_pending_at(now),
+            "the successor must not sign yet"
+        );
+        assert_eq!(successor.not_before, now + Duration::hours(24));
+        // 署名は旧鍵のまま。退役もしていない。
+        assert_eq!(
+            current_signer_at(&keys, now).map(|key| key.kid.as_str()),
+            Some("old")
+        );
+        assert_eq!(repo.get("old").status, SigningKeyStatus::Active);
+        // アルゴリズムは引き継ぐ。
+        assert_eq!(successor.algorithm, "ES256");
+    }
+
+    /// 待っているあいだに呼ばれても、後継鍵を作り直さない（冪等）。作り直すと、待ち時間が
+    /// いつまでも終わらない。
+    #[tokio::test]
+    async fn a_waiting_successor_is_not_generated_again() {
+        let clock = TestClock::at("2026-08-27T00:00:00Z");
+        let repo = FakeRepo::with(vec![existing(
+            "old",
+            SigningKeyStatus::Active,
+            "2025-09-01T00:00:00Z",
+            "2026-09-06T00:00:00Z",
+        )]);
+        let keys = service(repo.clone(), clock.clone());
+        keys.rotate_if_needed(LEAD_DAYS, PUBLISH_LEAD_HOURS)
+            .await
+            .expect("rotate");
+        clock.advance(Duration::hours(1));
+        keys.rotate_if_needed(LEAD_DAYS, PUBLISH_LEAD_HOURS)
+            .await
+            .expect("rotate again");
+        assert_eq!(repo.snapshot().len(), 2);
+    }
+
+    /// 2 段目と 3 段目: `not_before` を過ぎると署名が移り、**その後の呼び出しで**旧鍵が退役する。
+    #[tokio::test]
+    async fn the_old_key_is_retired_only_after_the_successor_takes_over() {
+        let clock = TestClock::at("2026-08-27T00:00:00Z");
+        let repo = FakeRepo::with(vec![existing(
+            "old",
+            SigningKeyStatus::Active,
+            "2025-09-01T00:00:00Z",
+            "2026-09-06T00:00:00Z",
+        )]);
+        let keys = service(repo.clone(), clock.clone());
+        keys.rotate_if_needed(LEAD_DAYS, PUBLISH_LEAD_HOURS)
+            .await
+            .expect("rotate");
+
+        clock.advance(Duration::hours(25));
+        let now = clock.now();
+        // 呼び出しを待たずに署名は移っている（選ぶ規則が `not_before` を見るため）。
+        let successor_kid = repo
+            .snapshot()
+            .into_iter()
+            .find(|key| key.kid != "old")
+            .expect("successor")
+            .kid;
+        assert_eq!(
+            current_signer_at(&repo.snapshot(), now).map(|key| key.kid.clone()),
+            Some(successor_kid.clone())
+        );
+
+        keys.rotate_if_needed(LEAD_DAYS, PUBLISH_LEAD_HOURS)
+            .await
+            .expect("rotate");
+        assert_eq!(repo.get("old").status, SigningKeyStatus::Retired);
+        assert_eq!(repo.get(&successor_kid).status, SigningKeyStatus::Active);
+        // 退役しても JWKS からは消えない（`not_after` までは検証に使える）。
+        assert!(repo.get("old").not_after > now);
+    }
+
+    /// 手動生成で ACTIVE が 2 本になっても、追い越された側は次の確認で退役する。放置すると
+    /// 「どちらが署名しているか分からない ACTIVE が 2 本」という状態が最長 1 年残る。
+    #[tokio::test]
+    async fn an_active_key_overtaken_by_a_newer_one_is_retired() {
+        let clock = TestClock::at("2026-08-27T00:00:00Z");
+        let repo = FakeRepo::with(vec![
+            existing(
+                "older",
+                SigningKeyStatus::Active,
+                "2026-01-01T00:00:00Z",
+                "2027-01-01T00:00:00Z",
+            ),
+            existing(
+                "newer",
+                SigningKeyStatus::Active,
+                "2026-08-26T00:00:00Z",
+                "2027-08-26T00:00:00Z",
+            ),
+        ]);
+        service(repo.clone(), clock.clone())
+            .rotate_if_needed(LEAD_DAYS, PUBLISH_LEAD_HOURS)
+            .await
+            .expect("rotate");
+        assert_eq!(repo.get("older").status, SigningKeyStatus::Retired);
+        assert_eq!(repo.get("newer").status, SigningKeyStatus::Active);
+        assert_eq!(repo.snapshot().len(), 2, "no new key is needed here");
+    }
+
+    /// 猶予が現行鍵の残余期間より長くても、**引き継ぎは現行鍵が切れる前**に起きる。
+    /// 越えさせると、切れた瞬間から `not_before` までのあいだ署名できる鍵が無くなる。
+    #[tokio::test]
+    async fn the_publish_lead_never_pushes_the_handover_past_the_current_key_expiry() {
+        let clock = TestClock::at("2026-08-27T00:00:00Z");
+        let expiry = "2026-09-06T00:00:00Z"; // 残り 10 日 = 240 時間
+        let repo = FakeRepo::with(vec![existing(
+            "old",
+            SigningKeyStatus::Active,
+            "2025-09-01T00:00:00Z",
+            expiry,
+        )]);
+        service(repo.clone(), clock.clone())
+            .rotate_if_needed(LEAD_DAYS, 1_000)
+            .await
+            .expect("rotate");
+
+        let successor = repo
+            .snapshot()
+            .into_iter()
+            .find(|key| key.kid != "old")
+            .expect("successor");
+        assert_eq!(successor.not_before, parse(expiry));
+    }
+
+    /// 署名できる鍵が 1 本も無いときは補充する。**アルゴリズムは直前の鍵から引き継ぐ** ——
+    /// 決め打ちにすると、ES256 で運用していた環境がこの経路を通っただけで RS256 へ戻る。
+    #[tokio::test]
+    async fn bootstrapping_after_the_last_key_was_retired_keeps_the_algorithm() {
+        let clock = TestClock::at("2026-08-27T00:00:00Z");
+        let repo = FakeRepo::with(vec![existing(
+            "retired",
+            SigningKeyStatus::Retired,
+            "2026-01-01T00:00:00Z",
+            "2027-01-01T00:00:00Z",
+        )]);
+        service(repo.clone(), clock.clone())
+            .rotate_if_needed(LEAD_DAYS, PUBLISH_LEAD_HOURS)
+            .await
+            .expect("rotate");
+
+        let now = clock.now();
+        let fresh = repo
+            .snapshot()
+            .into_iter()
+            .find(|key| key.kid != "retired")
+            .expect("a replacement key");
+        assert_eq!(fresh.algorithm, "ES256");
+        // 補充は猶予を置かない（置くと、そのあいだトークンを発行できない）。
+        assert!(fresh.is_usable_for_signing_at(now));
+    }
+
+    /// **最後の署名可能な鍵は退役させない。** 退役させるとトークン発行が止まり、補充は次回の
+    /// ローテーション確認（既定 1 時間おき）まで走らない。
+    #[tokio::test]
+    async fn the_last_key_that_can_sign_cannot_be_retired() {
+        let clock = TestClock::at("2026-08-27T00:00:00Z");
+        let repo = FakeRepo::with(vec![existing(
+            "only",
+            SigningKeyStatus::Active,
+            "2026-01-01T00:00:00Z",
+            "2027-01-01T00:00:00Z",
+        )]);
+        let err = service(repo.clone(), clock)
+            .retire_key("only")
+            .await
+            .expect_err("retiring the last usable key must be refused");
+        assert!(matches!(err, KeyManagementError::Validation(_)), "{err:?}");
+        assert_eq!(repo.get("only").status, SigningKeyStatus::Active);
+    }
+
+    /// 公開しただけの後継鍵は「署名可能」に数えない。数えると、`not_before` が来るまでのあいだ
+    /// 現行鍵を退役させられてしまい、署名鍵が無い時間が生まれる。
+    #[tokio::test]
+    async fn a_successor_that_is_only_published_does_not_unlock_retiring_the_current_key() {
+        let clock = TestClock::at("2026-08-27T00:00:00Z");
+        let repo = FakeRepo::with(vec![
+            existing(
+                "current",
+                SigningKeyStatus::Active,
+                "2026-01-01T00:00:00Z",
+                "2027-01-01T00:00:00Z",
+            ),
+            existing(
+                "successor",
+                SigningKeyStatus::Active,
+                "2026-08-28T00:00:00Z", // まだ来ていない
+                "2027-08-28T00:00:00Z",
+            ),
+        ]);
+        let err = service(repo.clone(), clock)
+            .retire_key("current")
+            .await
+            .expect_err("must be refused while the successor is still pending");
+        assert!(matches!(err, KeyManagementError::Validation(_)), "{err:?}");
+    }
+
+    /// 引き継ぎが済んでいれば退役できる。
+    #[tokio::test]
+    async fn a_superseded_key_can_be_retired_by_hand() {
+        let clock = TestClock::at("2026-08-27T00:00:00Z");
+        let repo = FakeRepo::with(vec![
+            existing(
+                "old",
+                SigningKeyStatus::Active,
+                "2026-01-01T00:00:00Z",
+                "2027-01-01T00:00:00Z",
+            ),
+            existing(
+                "new",
+                SigningKeyStatus::Active,
+                "2026-08-26T00:00:00Z",
+                "2027-08-26T00:00:00Z",
+            ),
+        ]);
+        service(repo.clone(), clock)
+            .retire_key("old")
+            .await
+            .expect("retiring a superseded key is allowed");
+        assert_eq!(repo.get("old").status, SigningKeyStatus::Retired);
+    }
 
     /// 鍵生成中もランタイムが他タスクを進められることの回帰テスト（DB 不要）。
     ///

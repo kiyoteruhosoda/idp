@@ -341,6 +341,12 @@ pub struct SigningKeyResponse {
     pub not_after: String,
     /// RFC3339 文字列。
     pub created_at: String,
+    /// **いま署名に使われている鍵か。** `status` だけでは分からない —— ACTIVE が複数あるとき
+    /// 署名するのは 1 本だけで、どれかは `not_before` が決める。
+    pub is_current_signer: bool,
+    /// **公開済みだが、まだ署名には使われていない鍵か**（`not_before` が未来）。入れ替えの途中で
+    /// この状態を通る。JWKS には載っているので、RP は先に取り込める。
+    pub is_pending: bool,
 }
 
 /// 新規署名鍵の生成リクエスト（`POST /admin/signing-keys`）。
@@ -348,6 +354,12 @@ pub struct SigningKeyResponse {
 pub struct GenerateSigningKeyRequest {
     /// `RS256` または `ES256`。
     pub algorithm: String,
+    /// **いますぐ署名に使い始めるか。** 既定の `false` では、鍵は JWKS へ公開されるだけで、
+    /// 署名に使い始めるのは `KEY_ROTATION_PUBLISH_LEAD_HOURS` 後になる（JWKS をキャッシュして
+    /// いる RP が新しい kid を取り込む猶予）。`true` は鍵の危殆化のように猶予を置く余裕が
+    /// ないとき用で、キャッシュを持つ RP の検証が一時的に落ちうる。
+    #[serde(default)]
+    pub activate_immediately: bool,
 }
 
 // --- テナント管理（ADR-0009 §5・§6。`idp.system.admin` 必須） --------------------------------

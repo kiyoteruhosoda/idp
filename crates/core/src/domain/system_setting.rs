@@ -497,7 +497,20 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::UnsignedInteger,
         default_value: Some("30"),
-        description: "署名鍵ローテーションの先行日数。`not_after` のこの日数前に次期鍵を生成し旧鍵を退役させる。",
+        description: "署名鍵ローテーションの先行日数。`not_after` のこの日数前に後継鍵を公開する。",
+    },
+    SettingDefinition {
+        key: "KEY_ROTATION_PUBLISH_LEAD_HOURS",
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
+        default_value: Some("24"),
+        description: "後継鍵を JWKS へ公開してから署名に使い始めるまでの時間。\
+                      JWKS をキャッシュしている RP が新しい kid を取り込む猶予。\
+                      0 にすると公開と同時に署名へ切り替わる（キャッシュを持つ RP の検証が落ちうる）。",
     },
     SettingDefinition {
         key: "APP_LOG_RETENTION_DAYS",

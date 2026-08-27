@@ -25,7 +25,19 @@
       <tr>
         <td data-label="{{ messages.get("admin-signing-keys-col-kid") }}"><code>{{ key.kid }}</code></td>
         <td data-label="{{ messages.get("admin-signing-keys-col-alg") }}">{{ key.algorithm }}</td>
-        <td data-label="{{ messages.get("admin-signing-keys-col-status") }}">{% if key.status == "ACTIVE" %}<span class="badge text-bg-success">{{ key.status }}</span>{% else %}<span class="badge text-bg-secondary">{{ key.status }}</span>{% endif %}</td>
+        {# 状態は 3 通りに読み替えて出す。ACTIVE のバッジだけでは、複数 ACTIVE のときに
+           **どれが実際に署名しているのか**が画面から分からない（署名するのは 1 本だけ）。 #}
+        <td data-label="{{ messages.get("admin-signing-keys-col-status") }}">
+          {%- if key.is_current_signer -%}
+          <span class="badge text-bg-success"><i class="fa-solid fa-pen-nib me-1" aria-hidden="true"></i>{{ messages.get("admin-signing-keys-state-signing") }}</span>
+          {%- else if key.is_pending -%}
+          <span class="badge text-bg-info"><i class="fa-solid fa-hourglass-half me-1" aria-hidden="true"></i>{{ messages.get("admin-signing-keys-state-pending") }}</span>
+          {%- else if key.status == "ACTIVE" -%}
+          <span class="badge text-bg-secondary">{{ messages.get("admin-signing-keys-state-standby") }}</span>
+          {%- else -%}
+          <span class="badge text-bg-light text-dark">{{ messages.get("admin-signing-keys-state-retired") }}</span>
+          {%- endif -%}
+        </td>
         <td data-label="{{ messages.get("admin-signing-keys-col-not-before") }}">{{ key.not_before }}</td>
         <td data-label="{{ messages.get("admin-signing-keys-col-not-after") }}">{{ key.not_after }}</td>
         <td data-label="{{ messages.get("admin-signing-keys-col-created") }}">{{ key.created_at }}</td>
@@ -54,17 +66,28 @@
 <h3 class="h5 mb-3">{{ messages.get("admin-signing-keys-generate-heading") }}</h3>
 <div class="card">
   <div class="card-body">
-    <form method="post" action="{{ tenant }}/admin/signing-keys/generate" class="row g-2 align-items-end">
+    <p class="text-muted">{{ messages.get("admin-signing-keys-generate-intro") }}</p>
+    <form method="post" action="{{ tenant }}/admin/signing-keys/generate">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
-      <div class="col-auto">
-        <label class="form-label" for="signing-key-algorithm">{{ messages.get("admin-signing-keys-alg-label") }}</label>
-        <select class="form-select" id="signing-key-algorithm" name="algorithm">
-          <option value="RS256">RS256 (RSA-2048)</option>
-          <option value="ES256">ES256 (NIST P-256)</option>
-        </select>
+      <div class="row g-2 align-items-end">
+        <div class="col-auto">
+          <label class="form-label" for="signing-key-algorithm">{{ messages.get("admin-signing-keys-alg-label") }}</label>
+          <select class="form-select" id="signing-key-algorithm" name="algorithm">
+            <option value="RS256">RS256 (RSA-2048)</option>
+            <option value="ES256">ES256 (NIST P-256)</option>
+          </select>
+        </div>
+        <div class="col-auto">
+          <button type="submit" class="btn btn-primary"><i class="fa-solid fa-key me-2" aria-hidden="true"></i>{{ messages.get("admin-signing-keys-generate-button") }}</button>
+        </div>
       </div>
-      <div class="col-auto">
-        <button type="submit" class="btn btn-primary"><i class="fa-solid fa-key me-2" aria-hidden="true"></i>{{ messages.get("admin-signing-keys-generate-button") }}</button>
+      {# 猶予を捨てる指定。既定（チェック無し）が通常の入れ替えで、こちらは鍵の危殆化のように
+         待てないときだけ。チェックを既定にすると、JWKS をキャッシュしている RP の検証が
+         毎回の鍵生成で落ちる。 #}
+      <div class="form-check mt-3">
+        <input class="form-check-input" type="checkbox" id="signing-key-activate-immediately" name="activate_immediately" value="1">
+        <label class="form-check-label" for="signing-key-activate-immediately">{{ messages.get("admin-signing-keys-activate-now") }}</label>
+        <div class="form-text">{{ messages.get("admin-signing-keys-activate-now-hint") }}</div>
       </div>
     </form>
   </div>
