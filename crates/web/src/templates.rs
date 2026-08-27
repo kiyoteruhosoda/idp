@@ -163,8 +163,8 @@ mod tests {
         assert_eq!(usage_from_registration(&system, &[]), client_usage::SYSTEM);
         // grant が 1 つも無い（あり得ないが）ときも、システム用として扱わない。
         assert_eq!(usage_from_registration(&[], &[]), client_usage::USER_LOGIN);
-        // ADR-0032 より前に登録された「両方」のクライアント。システム用と読むと redirect_uri の
-        // 欄が隠れ、保存しただけで登録済みリダイレクト先が消える。URI を残す側へ寄せる。
+        // 「両方」の姿（api は作らせない）。システム用と読むと redirect_uri の欄が隠れ、
+        // 保存しただけで登録済みリダイレクト先が消える。URI を残す側へ寄せる。
         let both = vec![
             "authorization_code".to_string(),
             "client_credentials".to_string(),
@@ -1031,11 +1031,12 @@ impl ClientFormValues {
 /// 登録済みの内容から画面上の用途を決める。
 ///
 /// システム用は「`client_credentials` を持ち、かつ redirect_uri を持たない」もの。
-/// `client_credentials` の有無だけで決めないのは、ADR-0032 より前に登録されたクライアントが
-/// 「両方」の姿（`authorization_code` + `client_credentials` + redirect_uri）で保存されているため。
-/// それをシステム用と読むと、redirect_uri の欄を隠したまま保存させ、表示もしていない登録済み
+/// `client_credentials` の有無だけで決めないのは、**用途で表せない登録を URI を残す側へ寄せる**ため。
+/// 「両方」の姿（`authorization_code` + `client_credentials` + redirect_uri）は api が登録・更新の
+/// どちらでも拒むので作れないが（ADR-0032 Revised）、DB を直接触るなどして存在した場合に
+/// システム用と読むと、redirect_uri の欄を隠したまま保存させ、表示もしていない登録済み
 /// リダイレクト先を黙って全消しする（＝稼働中のログインが `unauthorized_client` で止まる）。
-/// 用途で表せない登録は、URI を残す側へ寄せる。
+/// この読みなら、保存しても api が `api-client-usage-conflict` で断るだけで済む。
 fn usage_from_registration(grant_types: &[String], redirect_uris: &[String]) -> String {
     if grant_types.iter().any(|g| g == "client_credentials") && redirect_uris.is_empty() {
         client_usage::SYSTEM

@@ -303,20 +303,26 @@ async fn confidential_clients_can_choose_the_client_authentication_method() {
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
 
-/// ADR-0032 より前に登録されたクライアントは `authorization_code` が無条件に付いたため、
-/// `client_credentials` を許可したものは「両方」の姿で保存されている。
-/// その姿を無条件に拒むと、漏洩したクライアントを DISABLED にすることすらできなくなる。
+/// 「両方」の姿（`authorization_code` + `client_credentials` + redirect_uri）は、登録でも更新でも拒む
+/// （ADR-0032 決定 3・Revised）。
+///
+/// ADR-0032 は当初 `update` に猶予を置いていた——その姿で保存された既存行を無条件に拒むと、
+/// 漏洩したクライアントを DISABLED にすることすらできなくなるため。2026-08-27 に猶予を外したのは、
+/// **`delete` がこの検証を通らない**からである。DB を直接触るなどしてその姿の行が生まれても、
+/// 論理削除で必ず止められる（ADR-0035。DELETED は `is_active()` が false なので認可・トークン経路も
+/// 通らない）。止める手段が残っていることが猶予を外す条件なので、ここで一緒に検証する。
 #[tokio::test]
-async fn a_client_registered_before_the_usage_split_can_still_be_disabled() {
-    let Some(env) = support::setup("admin clients legacy usage").await else {
+async fn a_dual_usage_client_is_refused_on_update_but_can_still_be_stopped() {
+    let Some(env) = support::setup("admin clients dual usage").await else {
         return;
     };
     let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
-    // `authorization_code` + `client_credentials` + redirect_uri を持つ旧来の姿。
+    // api では作れない姿なので、DB へ直接入れる。
     let (client_id, _) =
         support::insert_m2m_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
     let client_uri = format!("/{}/admin/clients/{client_id}", env.root_tenant_id);
 
+    // 更新は拒む（猶予を外した本体）。
     let res = send(
         &env.app,
         patch(
@@ -328,12 +334,19 @@ async fn a_client_registered_before_the_usage_split_can_still_be_disabled() {
     .await;
     assert_eq!(
         res.status(),
-        StatusCode::OK,
-        "両用途を持つ既存クライアントを停止できること"
+        StatusCode::BAD_REQUEST,
+        "両用途の姿を温存する更新は通さない"
     );
-    assert_eq!(body_json(res).await["client_status"], "DISABLED");
 
-    // 一方、これから両立させる登録は拒む（ADR-0032 決定 3）。
+    // それでも止められること。ここが通らなくなったら猶予を戻す必要がある。
+    let res = send(&env.app, delete(&admin_tok, &client_uri)).await;
+    assert_eq!(
+        res.status(),
+        StatusCode::NO_CONTENT,
+        "論理削除は用途の検証を通らないので、必ず止められる"
+    );
+
+    // これから両立させる登録も拒む。
     let res = send(
         &env.app,
         post(

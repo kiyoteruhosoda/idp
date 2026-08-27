@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-08-25
+- **Revised**: 2026-08-27 — 「影響」に置いた `update` の猶予条項を削除した。下記『猶予条項の削除』を参照。
 - 関連: `docs/adr/0030-machine-authentication-private-key-jwt.md`（システムの認証）、
   `docs/OIDC_INPUT.md` §5（Authorization Code Flow）、G3・G4
 
@@ -86,13 +87,13 @@ fn grant_types_for(client_type, allow_client_credentials, has_redirect_uris) -> 
 - 既存クライアントの `grant_types` は変わらない。redirect_uri を持つものは
   `authorization_code` を持ち続ける。
 - **本 ADR より前に `client_credentials` を許可したクライアントは、必ず「両方」の姿
-  （`authorization_code` + `client_credentials` + redirect_uri）で保存されている。** これを
-  無条件に拒むと、状態を `DISABLED` にすることすらできなくなる（＝漏洩したクライアントを
-  止められない）ため、`update` は**この更新で新たに両立させること**だけを拒み、既にその姿の
-  ものは通す。コンソールも `client_credentials` の有無だけでは用途を決めず、redirect_uri を
-  持つものは「利用者ログイン」として開く（システム用として開くと、隠した欄の値として登録済み
-  リダイレクト先を黙って全消しする）。用途を分けるには、システム用のクライアントを別に登録して
-  切り替える。
+  （`authorization_code` + `client_credentials` + redirect_uri）で保存されている。**
+  当初はこれを無条件に拒むと状態を `DISABLED` にすることすらできなくなると考え、`update` は
+  **この更新で新たに両立させること**だけを拒んでいた。2026-08-27 にこの猶予は削除した
+  （下記『猶予条項の削除』）。コンソールは `client_credentials` の有無だけでは用途を決めず、
+  redirect_uri を持つものは「利用者ログイン」として開く（システム用として開くと、隠した欄の値
+  として登録済みリダイレクト先を黙って全消しする）。この読みは猶予の削除後も残す —— 表せない
+  登録は、URI を残す側へ寄せたほうが被害が小さい。
 - コンソールのフォームで `allow_client_credentials` チェックボックスが `usage` select に変わった。
   入力欄の出し分けは自オリジンの `client-form.js` で行う（CSP が `script-src 'self'` のため
   インライン JS は使えない。SEC12）。**JS が無効でも初期状態はサーバ側の描画で正しい。**
@@ -106,3 +107,35 @@ fn grant_types_for(client_type, allow_client_credentials, has_redirect_uris) -> 
   登録済みリダイレクト先として残る。認可フローの入口を開けたままにする点は何も解決しない。
 - **用途を 3 択（ログイン／システム／両方）にする。** 1 クライアントに 2 用途を持たせる登録を
   勧めることになる。用途ごとに分ける。
+
+---
+
+## 猶予条項の削除（2026-08-27）
+
+「影響」に置いた `update` の猶予——**既に「両方」の姿で保存された行は更新を通す**——を削除した。
+登録・更新のどちらでも無条件に拒む。
+
+### なぜ外せるのか
+
+猶予を置いた理由は「無条件に拒むと漏洩したクライアントを止められない」だったが、これは**誤りだった**。
+`delete`（ADR-0035 の論理削除）は `validate_single_usage` を通らない。したがってその姿の行が
+どこから生まれても、論理削除で必ず止められる（`DELETED` は `is_active()` が false なので、
+認可・トークン経路も管理操作も通らない）。**止める手段は `DISABLED` だけではなかった。**
+
+対象の行が実在しないことも確認した（2026-08-27、prod・stg の `clients` 全件）。prod は 3 件で
+いずれも単一用途、stg は 0 件である。
+
+### なぜ残さないのか
+
+猶予は `update` の判定を「更新後の姿」だけでなく「更新前の姿」にも依存させる。同じ入力が、
+相手の現在値によって通ったり通らなかったりする分岐が残り続ける。ADR-0032 の趣旨は
+**表せない状態を作らせない**ことなので、その状態を通す経路を条件付きで残すのは筋が悪い。
+
+web 側の `allow_client_credentials_update` が返していた `None`（＝許可に触らない）も同時に削除した。
+両立が作れない以上、`allow_client_credentials` は画面の用途から一意に決まる。
+
+### 戻すべき条件
+
+`delete` が用途の検証を通るようになったら、この削除は成り立たない。その組み合わせは
+`a_dual_usage_client_is_refused_on_update_but_can_still_be_stopped`（`crates/api/tests/admin_clients.rs`）が
+検証している。
