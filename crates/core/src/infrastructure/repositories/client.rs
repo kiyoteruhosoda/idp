@@ -6,7 +6,7 @@ use crate::domain::error::{DomainError, Result};
 use crate::domain::paging::{Page, PageRequest};
 use crate::domain::repositories::ClientRepository;
 use crate::domain::tenant::TenantId;
-use crate::domain::values::{ClientStatus, ClientType, TokenEndpointAuthMethod};
+use crate::domain::values::{ClientStatus, ClientType, GrantType, TokenEndpointAuthMethod};
 use crate::infrastructure::db::Db;
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
@@ -180,13 +180,31 @@ impl ClientRepository for SqlxClientRepository {
         rows.iter().map(map_row).collect()
     }
 
-    async fn list_page(&self, tenant_id: TenantId, page: PageRequest) -> Result<Page<Client>> {
+    async fn list_page(
+        &self,
+        tenant_id: TenantId,
+        grant_type: Option<GrantType>,
+        page: PageRequest,
+    ) -> Result<Page<Client>> {
+        // `grant_types` は JSON 配列（longtext）なので、要素の照合は `JSON_CONTAINS` で行う。
+        // LIKE で部分一致を見ると `authorization_code` が `client_credentials` を含まない代わりに、
+        // 将来 `authorization_code_jwt` のような値が増えたときに巻き込む。
+        let grant_predicate = match grant_type {
+            Some(_) => " AND JSON_CONTAINS(grant_types, JSON_QUOTE(?))",
+            None => "",
+        };
+
         // 総件数は 1 ページ分と同じ条件で数える。画面の「次へ」は受信件数ではなく総件数で
         // 判定する（最終ページがちょうど埋まると空ページへのリンクが出るため）。
-        let total: i64 = sqlx::query(
-            "SELECT COUNT(*) AS total FROM clients WHERE tenant_id = ? AND client_status <> 'DELETED'",
-        )
-            .bind(tenant_id.to_string())
+        let count_sql = format!(
+            "SELECT COUNT(*) AS total FROM clients \
+             WHERE tenant_id = ? AND client_status <> 'DELETED'{grant_predicate}"
+        );
+        let mut count_query = sqlx::query(&count_sql).bind(tenant_id.to_string());
+        if let Some(grant) = grant_type {
+            count_query = count_query.bind(grant.as_str());
+        }
+        let total: i64 = count_query
             .fetch_one(&self.pool)
             .await
             .map_err(repo_err)?
@@ -196,11 +214,15 @@ impl ClientRepository for SqlxClientRepository {
         // 並びはページ間で安定していなければならない（重複・欠落を防ぐ）。`created_at` は
         // 同一マイクロ秒で並び得るため、テナント内一意の `client_id` を副キーに置く。
         let sql = format!(
-            "SELECT {SELECT_COLUMNS} FROM clients WHERE tenant_id = ? AND client_status <> 'DELETED' \
+            "SELECT {SELECT_COLUMNS} FROM clients \
+             WHERE tenant_id = ? AND client_status <> 'DELETED'{grant_predicate} \
              ORDER BY created_at DESC, client_id ASC LIMIT ? OFFSET ?"
         );
-        let rows = sqlx::query(&sql)
-            .bind(tenant_id.to_string())
+        let mut rows_query = sqlx::query(&sql).bind(tenant_id.to_string());
+        if let Some(grant) = grant_type {
+            rows_query = rows_query.bind(grant.as_str());
+        }
+        let rows = rows_query
             .bind(page.limit())
             .bind(page.offset())
             .fetch_all(&self.pool)

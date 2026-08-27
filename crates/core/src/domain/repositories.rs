@@ -53,7 +53,9 @@ use crate::domain::user::{LoginFailureRecord, User};
 use crate::domain::user_authenticator::{
     AuthenticatorStatus, AuthenticatorType, UserAuthenticator,
 };
-use crate::domain::values::{AuthenticationMethod, MembershipStatus, SigningKeyStatus, UserStatus};
+use crate::domain::values::{
+    AuthenticationMethod, GrantType, MembershipStatus, SigningKeyStatus, UserStatus,
+};
 use crate::domain::webauthn_credential::WebAuthnCredential;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -469,8 +471,26 @@ pub trait ClientRepository: Send + Sync {
     async fn list(&self, tenant_id: TenantId) -> Result<Vec<Client>>;
     /// 登録済みクライアントを 1 ページ分と総件数で返す（`/{tenant_id}/admin/clients`。G7）。
     /// 既定実装は全件取得からの切り出しで、DB 側で `LIMIT`/`OFFSET` を書ける sqlx 実装が上書きする。
-    async fn list_page(&self, tenant_id: TenantId, page: PageRequest) -> Result<Page<Client>> {
-        Ok(Page::from_all(self.list(tenant_id).await?, page))
+    /// 1 ページ分と総件数を返す。`grant_type` を渡すと、その grant を登録済みのクライアントだけに
+    /// 絞る（ADR-0038。管理コンソールの「連携先」と「サービスアカウント」の一覧がこれで分かれる）。
+    ///
+    /// **絞り込みはページングと同じ層で行う必要がある。** 呼び出し側が 1 ページを受け取ってから
+    /// 間引くと、`total` もページャも実際の件数と合わなくなる。
+    async fn list_page(
+        &self,
+        tenant_id: TenantId,
+        grant_type: Option<GrantType>,
+        page: PageRequest,
+    ) -> Result<Page<Client>> {
+        let all = self.list(tenant_id).await?;
+        let filtered = match grant_type {
+            Some(grant) => all
+                .into_iter()
+                .filter(|c| c.allows_grant_type(grant))
+                .collect(),
+            None => all,
+        };
+        Ok(Page::from_all(filtered, page))
     }
     /// 可変項目（app_name / redirect_uris / scopes / status / secret_hash 等）を更新する。
     /// `(id, tenant_id)` で対象を特定する（他テナントの行は更新できない）。対象が無い場合は `NotFound`。

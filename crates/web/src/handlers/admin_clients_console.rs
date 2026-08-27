@@ -30,6 +30,86 @@ use serde::Deserialize;
 use serde_json::json;
 
 const CLIENTS_SEGMENT: &str = "/admin/clients";
+const SERVICE_ACCOUNTS_SEGMENT: &str = "/admin/service-accounts";
+
+/// 一覧の系統（ADR-0038）。**同じ `clients` テーブルの行を、用途で 2 つの画面へ振り分ける。**
+///
+/// 詳細・編集・削除の経路は `/admin/clients/{client_id}` のまま共有する。分けるのは
+/// 「何を登録する場所か」であって、登録済みの 1 件の扱いではない。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ClientKind {
+    /// 連携先（OIDC の RP）。`authorization_code` を持つ。
+    RelyingParty,
+    /// サービスアカウント（機械の主体）。`client_credentials` を持つ。
+    ServiceAccount,
+}
+
+impl ClientKind {
+    /// api の一覧へ渡す絞り込み。両立は作れないので（ADR-0032 Revised）grant 1 つで排他に分かれる。
+    fn grant_type(self) -> &'static str {
+        match self {
+            Self::RelyingParty => "authorization_code",
+            Self::ServiceAccount => "client_credentials",
+        }
+    }
+
+    fn segment(self) -> &'static str {
+        match self {
+            Self::RelyingParty => CLIENTS_SEGMENT,
+            Self::ServiceAccount => SERVICE_ACCOUNTS_SEGMENT,
+        }
+    }
+
+    fn usage(self) -> &'static str {
+        match self {
+            Self::RelyingParty => client_usage::USER_LOGIN,
+            Self::ServiceAccount => client_usage::SYSTEM,
+        }
+    }
+
+    fn title_key(self) -> &'static str {
+        match self {
+            Self::RelyingParty => "admin-clients-title",
+            Self::ServiceAccount => "admin-service-accounts-title",
+        }
+    }
+
+    fn new_key(self) -> &'static str {
+        match self {
+            Self::RelyingParty => "admin-clients-new",
+            Self::ServiceAccount => "admin-service-accounts-new",
+        }
+    }
+
+    fn none_key(self) -> &'static str {
+        match self {
+            Self::RelyingParty => "admin-clients-none",
+            Self::ServiceAccount => "admin-service-accounts-none",
+        }
+    }
+
+    /// 登録済みクライアントがどちらの系統に属するか。判定は `client_credentials` の有無だけで足りる。
+    fn of(client: &ClientView) -> Self {
+        if is_system_client(client) {
+            Self::ServiceAccount
+        } else {
+            Self::RelyingParty
+        }
+    }
+
+    /// 用途の文字列（フォームの hidden 値）からの逆引き。未知の値は連携先へ倒す。
+    fn from_usage(usage: &str) -> Self {
+        if usage == client_usage::SYSTEM {
+            Self::ServiceAccount
+        } else {
+            Self::RelyingParty
+        }
+    }
+
+    fn list_href(self, tenant: &WebTenant) -> String {
+        format!("{}{}", tenant.prefix(), self.segment())
+    }
+}
 
 /// 各ハンドラ冒頭の共通前処理: 管理者を解決し、user_id を返すか誘導 Response を返す。
 macro_rules! admin_or_return {
@@ -47,7 +127,48 @@ macro_rules! admin_or_return {
 ///
 /// ページングは api（DB）側で行う（G7）。web はページ位置をクエリで引き継ぎ、応答の `total` から
 /// ページャの前後リンクを組み立てるだけで、全件を受け取らない。
+/// 連携先（OIDC の RP）の一覧（`/admin/clients`）。
 pub async fn list(
+    state: State<WebState>,
+    correlation: Extension<CorrelationId>,
+    tenant: Extension<WebTenant>,
+    headers: HeaderMap,
+    query: Query<ListQuery>,
+) -> Response {
+    list_of_kind(
+        ClientKind::RelyingParty,
+        state,
+        correlation,
+        tenant,
+        headers,
+        query,
+    )
+    .await
+}
+
+/// サービスアカウント（機械の主体）の一覧（`/admin/service-accounts`）。
+pub async fn list_service_accounts(
+    state: State<WebState>,
+    correlation: Extension<CorrelationId>,
+    tenant: Extension<WebTenant>,
+    headers: HeaderMap,
+    query: Query<ListQuery>,
+) -> Response {
+    list_of_kind(
+        ClientKind::ServiceAccount,
+        state,
+        correlation,
+        tenant,
+        headers,
+        query,
+    )
+    .await
+}
+
+/// **絞り込みは api へ渡す。** 1 ページ受け取ってから web で間引くと、総件数もページャも
+/// 実際の件数と合わなくなる（ADR-0038）。
+async fn list_of_kind(
+    kind: ClientKind,
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
@@ -56,18 +177,17 @@ pub async fn list(
 ) -> Response {
     let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
     let offset = query.offset.unwrap_or(0).max(0);
+    let mut page_query = crate::pagination::page_query(offset);
+    page_query.push(("grant_type", kind.grant_type().to_string()));
     let result = state
         .api
-        .list_clients(
-            &correlation.0,
-            &tenant.0,
-            &sso(&headers),
-            &crate::pagination::page_query(offset),
-        )
+        .list_clients(&correlation.0, &tenant.0, &sso(&headers), &page_query)
         .await;
     let messages = Messages::new(locale(&headers));
     match result {
-        Ok(page) => Html(render_list(&messages, &tenant, &admin, &page, offset)).into_response(),
+        Ok(page) => {
+            Html(render_list(kind, &messages, &tenant, &admin, &page, offset)).into_response()
+        }
         Err(e) => map_data_error(&messages, &tenant, &admin, &headers, e),
     }
 }
@@ -81,7 +201,43 @@ pub struct ListQuery {
 
 // ── 新規登録フォーム ──────────────────────────────────────────────────────────
 
+/// 連携先の新規登録フォーム（`/admin/clients/new`）。
 pub async fn new_form(
+    state: State<WebState>,
+    correlation: Extension<CorrelationId>,
+    tenant: Extension<WebTenant>,
+    headers: HeaderMap,
+) -> Response {
+    new_form_of_kind(
+        ClientKind::RelyingParty,
+        state,
+        correlation,
+        tenant,
+        headers,
+    )
+    .await
+}
+
+/// サービスアカウントの新規登録フォーム（`/admin/service-accounts/new`）。
+pub async fn new_service_account_form(
+    state: State<WebState>,
+    correlation: Extension<CorrelationId>,
+    tenant: Extension<WebTenant>,
+    headers: HeaderMap,
+) -> Response {
+    new_form_of_kind(
+        ClientKind::ServiceAccount,
+        state,
+        correlation,
+        tenant,
+        headers,
+    )
+    .await
+}
+
+/// **用途は入口が決める**（ADR-0038）。フォームは選ばせず、hidden で持ち回る。
+async fn new_form_of_kind(
+    kind: ClientKind,
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
@@ -90,13 +246,10 @@ pub async fn new_form(
     let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
     let messages = Messages::new(locale(&headers));
     let csrf = csrf_from(&headers, state.config.csrf_secret());
+    let mut values = ClientFormValues::default_new();
+    values.usage = kind.usage().to_string();
     Html(render_new_form(
-        &messages,
-        &tenant,
-        &admin,
-        &csrf,
-        &ClientFormValues::default_new(),
-        None,
+        &messages, &tenant, &admin, &csrf, &values, None,
     ))
     .into_response()
 }
@@ -779,6 +932,7 @@ fn csrf_valid(headers: &HeaderMap, submitted: &str, key: &[u8]) -> bool {
 // ── レンダリング ──────────────────────────────────────────────────────────────
 
 fn render_list(
+    kind: ClientKind,
     messages: &Messages,
     tenant: &WebTenant,
     admin: &AdminContext,
@@ -786,7 +940,7 @@ fn render_list(
     offset: i64,
 ) -> String {
     let links = crate::pagination::pager_links(
-        &format!("{}{CLIENTS_SEGMENT}", tenant.prefix()),
+        &kind.list_href(tenant),
         &[],
         offset,
         page.limit,
@@ -796,6 +950,10 @@ fn render_list(
         messages,
         tenant: &tenant.prefix(),
         admin: Some(admin.chrome()),
+        title: messages.get(kind.title_key()),
+        new_label: messages.get(kind.new_key()),
+        new_href: format!("{}/new", kind.list_href(tenant)),
+        none_label: messages.get(kind.none_key()),
         clients: &page.clients,
         total: page.total,
         prev_href: links.prev,
@@ -818,10 +976,14 @@ fn render_new_form(
         admin: Some(admin.chrome()),
         csrf,
         error: error.as_deref(),
-        heading: &messages.get("admin-clients-new"),
-        action: &format!("{}{CLIENTS_SEGMENT}/new", tenant.prefix()),
+        heading: &messages.get(ClientKind::from_usage(&values.usage).new_key()),
+        action: &format!(
+            "{}/new",
+            ClientKind::from_usage(&values.usage).list_href(tenant)
+        ),
         is_new: true,
         values,
+        list_href: ClientKind::from_usage(&values.usage).list_href(tenant),
     })
 }
 
@@ -839,10 +1001,14 @@ fn render_new_form_with_message(
         admin: Some(admin.chrome()),
         csrf,
         error: Some(error),
-        heading: &messages.get("admin-clients-new"),
-        action: &format!("{}{CLIENTS_SEGMENT}/new", tenant.prefix()),
+        heading: &messages.get(ClientKind::from_usage(&values.usage).new_key()),
+        action: &format!(
+            "{}/new",
+            ClientKind::from_usage(&values.usage).list_href(tenant)
+        ),
         is_new: true,
         values,
+        list_href: ClientKind::from_usage(&values.usage).list_href(tenant),
     })
 }
 
@@ -869,6 +1035,7 @@ fn render_edit_form(
         ),
         is_new: false,
         values,
+        list_href: ClientKind::of(client).list_href(tenant),
     })
 }
 
@@ -900,6 +1067,7 @@ fn render_detail(
         // 権限が残っているだけのブラウザログイン用クライアントへ、効かない権限を足させない。
         shows_grant_form: is_system_client(client),
         error_key,
+        list_href: ClientKind::of(client).list_href(tenant),
     })
 }
 
@@ -919,6 +1087,7 @@ fn render_secret_result(
     is_new: bool,
 ) -> String {
     render_secret_page(
+        ClientKind::of(&created.client),
         messages,
         tenant,
         admin,
@@ -936,6 +1105,7 @@ fn render_rotated_result(
     secret: &str,
 ) -> String {
     render_secret_page(
+        ClientKind::of(client),
         messages,
         tenant,
         admin,
@@ -946,6 +1116,7 @@ fn render_rotated_result(
 }
 
 fn render_secret_page(
+    kind: ClientKind,
     messages: &Messages,
     tenant: &WebTenant,
     admin: &AdminContext,
@@ -965,6 +1136,7 @@ fn render_secret_page(
         heading: &heading,
         client_id,
         secret,
+        list_href: kind.list_href(tenant),
     })
 }
 
@@ -1118,6 +1290,37 @@ mod tests {
         );
     }
 
+    /// 一覧の系統と、登録済みクライアントの振り分け（ADR-0038）。
+    ///
+    /// 絞り込みは api へ渡す grant で行う。ここが入れ替わると、連携先の一覧に
+    /// サービスアカウントが並ぶ。
+    #[test]
+    fn each_list_filters_by_the_grant_that_defines_it() {
+        assert_eq!(ClientKind::RelyingParty.grant_type(), "authorization_code");
+        assert_eq!(
+            ClientKind::ServiceAccount.grant_type(),
+            "client_credentials"
+        );
+
+        // 登録済みの 1 件は client_credentials の有無だけで系統が決まる。
+        let rp = client_view(&["authorization_code"], &["https://a.example.com/cb"]);
+        let sa = client_view(&["client_credentials"], &[]);
+        assert!(ClientKind::of(&rp) == ClientKind::RelyingParty);
+        assert!(ClientKind::of(&sa) == ClientKind::ServiceAccount);
+    }
+
+    /// 新規登録フォームの用途は入口が決める（ADR-0038）。フォームには選択肢を出さない。
+    #[test]
+    fn the_entry_point_decides_the_usage_of_a_new_client() {
+        assert_eq!(ClientKind::RelyingParty.usage(), client_usage::USER_LOGIN);
+        assert_eq!(ClientKind::ServiceAccount.usage(), client_usage::SYSTEM);
+        // hidden で持ち回った用途から、同じ系統へ戻れること（戻り先・action の出所）。
+        assert!(ClientKind::from_usage(client_usage::SYSTEM) == ClientKind::ServiceAccount);
+        assert!(ClientKind::from_usage(client_usage::USER_LOGIN) == ClientKind::RelyingParty);
+        // 未知の値は連携先へ倒す（redirect_uri の欄を消さない側）。
+        assert!(ClientKind::from_usage("nonsense") == ClientKind::RelyingParty);
+    }
+
     /// 用途から `allow_client_credentials` が一意に決まること（ADR-0032 Revised）。
     ///
     /// 猶予条項を外す前は、既に「両方」の姿で保存されたクライアントに限り `None`（＝触らない）を
@@ -1217,6 +1420,7 @@ mod tests {
             offset: 0,
         };
         let html = render_list(
+            ClientKind::RelyingParty,
             &messages,
             &tenant,
             &AdminContext::for_test("admin-1", Some("Acme")),

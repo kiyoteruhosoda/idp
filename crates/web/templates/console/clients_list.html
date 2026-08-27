@@ -1,11 +1,11 @@
 {% extends "console/layout.html" %}
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
-  <h2 class="h4 mb-0">{{ messages.get("admin-clients-title") }}</h2>
-  <a class="btn btn-primary" href="{{ tenant }}/admin/clients/new"><i class="fa-solid fa-plus me-2" aria-hidden="true"></i>{{ messages.get("admin-clients-new") }}</a>
+  <h2 class="h4 mb-0">{{ title }}</h2>
+  <a class="btn btn-primary" href="{{ new_href }}"><i class="fa-solid fa-plus me-2" aria-hidden="true"></i>{{ new_label }}</a>
 </div>
 {% if clients.is_empty() %}
-<p class="text-muted">{{ messages.get("admin-clients-none") }}</p>
+<p class="text-muted">{{ none_label }}</p>
 {% else %}
 <p class="text-muted small">{{ messages.get("admin-pagination-total") }} {{ total }}</p>
 <div class="table-responsive">

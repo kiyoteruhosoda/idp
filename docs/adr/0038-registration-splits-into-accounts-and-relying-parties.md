@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-08-27
+- **Revised**: 2026-08-27（実装時）— 決定 4 に例外を 1 つ足した。一覧の絞り込みだけは api 側に置く。
 - 関連: `docs/adr/0009-multi-tenant-architecture.md` §3（メンバーシップ）、
   `docs/adr/0027-saml-external-idp.md`（外部 IdP のプロトコル欄）、
   `docs/adr/0030-machine-authentication-private-key-jwt.md`（システムの認証）、
@@ -77,6 +78,20 @@ api は `redirect_uris` の有無と `client_credentials` の可否という 2 �
 したがって変更は `crates/web` の router・templates・`i18n/*/main.ftl`・コンソールホームのナビに
 閉じる。テーブルは 1 つも変わらない。
 
+**例外は一覧の絞り込みだけである。** `GET /{tenant_id}/admin/clients` は api 側でページングするため、
+web が 1 ページ受け取ってから間引くと `total` もページャも実際の件数と合わなくなる。**絞り込みは
+ページングと同じ層に置くしかない。** そこで `?grant_type=authorization_code|client_credentials` を
+足した。
+
+これは**モデルの追加ではなくクエリの追加**である。api は用途を受け取らない —— 受け取るのは
+OAuth 2.0 の grant 名で、`authorization_code` と `client_credentials` が 1 つのクライアントに
+同居しない（ADR-0032 Revised）ことから排他に分かれる。判定の出所を core に置くのは
+ADR-0037 が `?grantable_to=client` で採った形と同じである。
+
+**未知の値は 400 で断る**（`?grantable_to=` の「絞り込まない」とは違う）。あちらは選択肢を狭める
+だけの支援 API だったが、こちらを黙って無視すると連携先の一覧にサービスアカウントが混ざったまま
+表示される —— **絞り込みの失敗が画面上は成功に見える**。
+
 ### 5. 行がどちらの画面に出るかは `redirect_uris` の有無で決まる
 
 `clients` テーブルは再編後も 2 つの画面にまたがる。OAuth 2.0 では RP も機械も同じ `client_id` と
@@ -95,6 +110,12 @@ api は `redirect_uris` の有無と `client_credentials` の可否という 2 �
 - **SAML SP の登録が「連携先」の下に入る。** テーブルは `saml_service_providers` のままで、
   一覧と導線だけを束ねる。プロトコルは登録後に変更できない（外部 IdP の既存の扱いに揃える）。
 - **移行作業は無い。** 既存の行はそのまま、どちらの画面に出るかが決まる。
+- **登録フォームから「用途」の select が消えた。** 用途は入口（連携先の登録 / サービスアカウントの
+  登録）が決め、`usage` は hidden で持ち回る。用途を変えるには、その系統で登録し直す
+  （ADR-0032 決定 3 の「用途ごとに分ける」と同じ結論）。
+- **詳細・編集・削除の経路は `/admin/clients/{client_id}` を共有する。** 分けたのは
+  「何を登録する場所か」であって、登録済みの 1 件の扱いではない。戻り先の一覧だけ、
+  登録内容から決まる系統へ向ける。
 
 ## 却下した案
 

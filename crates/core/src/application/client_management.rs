@@ -248,16 +248,23 @@ impl ClientManagementService {
 
     /// 登録済みクライアントを 1 ページ分返す（G7）。`limit` / `offset` は未検証の要求値を
     /// 受け取り、許容範囲へ収めたうえで**適用値**を結果に添える。
+    /// 1 ページ分と総件数を返す。`grant_type` はコンソールの一覧を「連携先」と
+    /// 「サービスアカウント」へ分けるための絞り込み（ADR-0038）。
+    ///
+    /// 用途そのものを引数にしないのは、ADR-0032 の「用途は api のモデルには無い」を保つため。
+    /// `authorization_code` と `client_credentials` は 1 つのクライアントに同居しないので
+    /// （ADR-0032 Revised）、grant 1 つで排他に分かれる。
     pub async fn list_page(
         &self,
         tenant: TenantContext,
+        grant_type: Option<GrantType>,
         limit: Option<i64>,
         offset: Option<i64>,
     ) -> Result<PagedResult<Client>, ClientManagementError> {
         let request = PageRequest::clamped(limit, offset, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT);
         let page = self
             .clients
-            .list_page(tenant.tenant_id(), request)
+            .list_page(tenant.tenant_id(), grant_type, request)
             .await
             .map_err(|e| ClientManagementError::Internal(e.to_string()))?;
         Ok(PagedResult::new(page, request))

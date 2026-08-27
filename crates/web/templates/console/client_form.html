@@ -10,19 +10,14 @@
         <label class="form-label" for="client-app-name">{{ messages.get("admin-client-field-name") }}</label>
         <input type="text" class="form-control" id="client-app-name" name="app_name" value="{{ values.app_name }}" required>
       </div>
-      {# 用途を先に決める。以降の入力欄はこの選択で変わるため、下ではなく上に置く（ADR-0032）。 #}
+      {# 用途は入口（連携先の登録 / サービスアカウントの登録）で決まる。ここでは選ばせず、
+         何を登録しているのかだけを示す（ADR-0038）。id は client-form.js が読むので変えない。
+         用途を変えるには、その系統でクライアントを登録し直す（ADR-0032 の「用途ごとに分ける」）。 #}
+      <input type="hidden" id="client-usage" name="usage" value="{{ values.usage }}">
       <div class="mb-3">
-        <label class="form-label" for="client-usage">{{ messages.get("admin-client-field-usage") }}</label>
-        <select class="form-select" id="client-usage" name="usage">
-          <option value="user_login"{% if values.usage == "user_login" %} selected{% endif %}>{{ messages.get("admin-client-usage-user-login") }}</option>
-          {# 既存の public クライアントにシステム用は選べない（種別は変更できず、public では
-             client_credentials が成立しない）。選べないものを見せると、選んだ結果が黙って
-             無視されたうえで「リダイレクト URI が必要」という無関係な検証エラーになる。 #}
-          {% if is_new || values.client_type == "confidential" %}
-          <option value="system"{% if values.usage == "system" %} selected{% endif %}>{{ messages.get("admin-client-usage-system") }}</option>
-          {% endif %}
-        </select>
-        <div class="form-text">{{ messages.get("admin-client-field-usage-hint") }}</div>
+        <div class="form-label">{{ messages.get("admin-client-field-usage") }}</div>
+        <p class="mb-1">{% if values.usage == "system" %}{{ messages.get("admin-client-usage-system") }}{% else %}{{ messages.get("admin-client-usage-user-login") }}{% endif %}</p>
+        <div class="form-text">{{ messages.get("admin-client-field-usage-fixed-hint") }}</div>
       </div>
       {% if is_new %}
       {# システム用では confidential 以外あり得ないので、そのときは欄ごと出さない。 #}
@@ -104,7 +99,7 @@
       {% endif %}
       <div class="d-flex align-items-center gap-2">
         <button type="submit" class="btn btn-primary">{{ messages.get("admin-form-save") }}</button>
-        <a class="btn btn-outline-secondary" href="{{ tenant }}/admin/clients">{{ messages.get("admin-form-cancel") }}</a>
+        <a class="btn btn-outline-secondary" href="{{ list_href }}">{{ messages.get("admin-form-cancel") }}</a>
       </div>
     </form>
   </div>
