@@ -49,3 +49,41 @@ async fn idp_metadata_is_public_and_tenant_scoped() {
     );
     assert!(xml.contains("<ds:RSAKeyValue>"));
 }
+
+/// 公開中の鍵をすべて `KeyDescriptor` として並べる（ADR-0039 / T33）。
+///
+/// ADR-0039 は「公開してから署名」で JWKS 側の断絶を無くしたが、SAML のメタデータは
+/// `KeyDescriptor` を 1 本しか出していなかった。**SP からは署名が切り替わる瞬間に証明書が
+/// 入れ替わって見え、取り込み直すまで検証が落ちる。**
+///
+/// JWKS と同じ集合になっていること（＝どちらか片方だけ古くならないこと）を見る。
+#[tokio::test]
+async fn idp_metadata_publishes_every_key_the_jwks_does() {
+    let Some(env) = support::setup("saml idp metadata key window").await else {
+        return;
+    };
+
+    let jwks_uri = format!("/{}/.well-known/jwks.json", env.root_tenant_id);
+    let response = send(&env.app, anonymous(Method::GET, &jwks_uri, None)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let jwks: serde_json::Value = serde_json::from_slice(&bytes).expect("jwks json");
+    let published = jwks["keys"].as_array().expect("keys").len();
+    assert!(published >= 1, "少なくとも 1 本は公開されている");
+
+    let uri = format!("/{}/saml/metadata", env.root_tenant_id);
+    let response = send(&env.app, anonymous(Method::GET, &uri, None)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let xml = String::from_utf8(bytes.to_vec()).expect("utf8");
+
+    let descriptors = xml.matches("<md:KeyDescriptor use=\"signing\">").count();
+    assert_eq!(
+        descriptors, published,
+        "JWKS と同じ本数を並べること（JWKS {published} 本 / metadata {descriptors} 本）: {xml}"
+    );
+}

@@ -2,6 +2,7 @@
 //! JWKS（`GET /.well-known/jwks.json`）（設計仕様 §4.5 / §4.6）。
 
 use crate::domain::issuer::tenant_issuer;
+use crate::domain::jwt;
 use crate::domain::saml_metadata::{build_idp_metadata_xml, IdpSigningKey};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
@@ -73,8 +74,8 @@ pub async fn saml_idp_metadata(
 ) -> Response {
     let issuer = tenant_issuer(state.config.issuer(), tenant.id());
     let sso_url = format!("{issuer}/saml/sso");
-    let signing_key = active_idp_signing_key(&state).await;
-    let xml = build_idp_metadata_xml(&issuer, &sso_url, signing_key.as_ref());
+    let signing_keys = published_idp_signing_keys(&state).await;
+    let xml = build_idp_metadata_xml(&issuer, &sso_url, &signing_keys);
     (
         [
             (header::CONTENT_TYPE, "application/xml; charset=utf-8"),
@@ -88,12 +89,42 @@ pub async fn saml_idp_metadata(
         .into_response()
 }
 
-/// ACTIVE 署名鍵の公開値を SAML `KeyValue` 用に取り出す。RSA は `RSAKeyValue`（modulus/exponent）、
-/// EC は `ECKeyValue`（NamedCurve URI と非圧縮点）へ変換する。取得できない場合は `None`（KeyDescriptor 省略）。
-async fn active_idp_signing_key(state: &AppState) -> Option<IdpSigningKey> {
-    let kid = state.keys.active_signing_key().await.ok()?.kid;
-    let jwks = state.keys.jwks().await.ok()?;
-    let jwk = jwks.keys.into_iter().find(|k| k.kid == kid)?;
+/// 公開中の署名鍵を SAML の `KeyDescriptor` 用へ変換する（ADR-0039）。
+///
+/// **JWKS と同じ集合を出す。** `jwks()` は公開中の鍵（署名中・まだ署名しない後継・有効期間内の
+/// 退役）をすべて返すので、それをそのまま並べれば OIDC 側と SAML 側で見えるものが揃う。1 本しか
+/// 出さないと、署名の切り替わりで SP の検証が落ちる。
+///
+/// **署名中の鍵を先頭に置く。** `jwks()` の並びは公開順（新しい鍵が先）なので、そのままだと
+/// **まだ署名していない後継鍵**が先頭に来る。先頭の `KeyDescriptor` だけを読む SP の実装がある。
+async fn published_idp_signing_keys(state: &AppState) -> Vec<IdpSigningKey> {
+    let Ok(jwks) = state.keys.jwks().await else {
+        return Vec::new();
+    };
+    // 署名中の鍵が引けないときは並べ替えないだけで、公開自体は続ける（検証側の鍵が
+    // 消えるほうが困る）。
+    let signing_kid = state.keys.active_signing_key().await.ok().map(|k| k.kid);
+    let keys = signing_key_first(jwks.keys, signing_kid.as_deref());
+    keys.iter().filter_map(jwk_to_idp_signing_key).collect()
+}
+
+/// 署名中の鍵を先頭へ寄せる。**先頭の `KeyDescriptor` だけを読む SP の実装がある**ため、
+/// 公開順（新しい鍵が先）のままだと、まだ署名していない後継鍵を掴ませることになる。
+///
+/// `signing_kid` が無い・見つからないときは並べ替えない（公開自体は続ける。検証側の鍵が
+/// 消えるほうが困る）。
+fn signing_key_first(mut keys: Vec<jwt::Jwk>, signing_kid: Option<&str>) -> Vec<jwt::Jwk> {
+    if let Some(kid) = signing_kid {
+        if let Some(at) = keys.iter().position(|k| k.kid == kid) {
+            keys.swap(0, at);
+        }
+    }
+    keys
+}
+
+/// 1 本の JWK を SAML `KeyValue` 用の表現へ変換する。RSA は `RSAKeyValue`（modulus/exponent）、
+/// EC は `ECKeyValue`（NamedCurve URI と非圧縮点）。解釈できない鍵は `None`（その鍵だけ落とす）。
+fn jwk_to_idp_signing_key(jwk: &jwt::Jwk) -> Option<IdpSigningKey> {
     match jwk.kty.as_str() {
         "RSA" => Some(IdpSigningKey::Rsa {
             modulus_b64: base64url_to_base64(jwk.n.as_deref()?)?,
@@ -198,6 +229,54 @@ fn discovery_document(issuer: &str, end_session_endpoint: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn jwk(kid: &str) -> jwt::Jwk {
+        jwt::Jwk {
+            kty: "RSA".to_string(),
+            use_: "sig".to_string(),
+            kid: kid.to_string(),
+            alg: "RS256".to_string(),
+            n: None,
+            e: None,
+            crv: None,
+            x: None,
+            y: None,
+        }
+    }
+
+    fn kids(keys: &[jwt::Jwk]) -> Vec<&str> {
+        keys.iter().map(|k| k.kid.as_str()).collect()
+    }
+
+    /// 公開順は新しい鍵が先なので、ADR-0039 の「公開してから署名」では**まだ署名していない
+    /// 後継鍵**が先頭に来る。先頭の `KeyDescriptor` だけを読む SP に、それを掴ませない。
+    #[test]
+    fn the_signing_key_comes_first_even_when_a_successor_is_newer() {
+        let keys = vec![jwk("successor"), jwk("signing"), jwk("retired")];
+        assert_eq!(
+            kids(&signing_key_first(keys, Some("signing"))),
+            ["signing", "successor", "retired"]
+        );
+    }
+
+    /// 既に先頭なら並びは変わらない。
+    #[test]
+    fn an_already_leading_signing_key_is_left_alone() {
+        let keys = vec![jwk("signing"), jwk("retired")];
+        assert_eq!(
+            kids(&signing_key_first(keys, Some("signing"))),
+            ["signing", "retired"]
+        );
+    }
+
+    /// 署名中の鍵が引けない・公開集合に無いときは、並べ替えないだけで公開は続ける
+    /// （検証に使える鍵がメタデータから消えるほうが困る）。
+    #[test]
+    fn an_unknown_signing_kid_leaves_the_published_set_intact() {
+        let keys = vec![jwk("a"), jwk("b")];
+        assert_eq!(kids(&signing_key_first(keys.clone(), None)), ["a", "b"]);
+        assert_eq!(kids(&signing_key_first(keys, Some("gone"))), ["a", "b"]);
+    }
 
     #[test]
     fn discovery_endpoints_derive_from_issuer() {

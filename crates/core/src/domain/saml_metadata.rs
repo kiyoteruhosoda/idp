@@ -368,18 +368,30 @@ impl IdpSigningKey {
 /// 本 IdP の SAML `EntityDescriptor`（`IDPSSODescriptor`）XML を生成する。
 ///
 /// `entity_id` は IdP のエンティティ ID（テナント issuer を用いる）、`sso_url` は SingleSignOnService の
-/// URL。`signing_key` があれば署名用 `KeyDescriptor`（`RSAKeyValue`/`ECKeyValue`）を含める。SP
-/// （クライアント）はこの metadata を取り込んで本 IdP を信頼する。
+/// URL。SP（クライアント）はこの metadata を取り込んで本 IdP を信頼する。
+///
+/// # 公開中の鍵をすべて並べる（ADR-0039）
+///
+/// `signing_keys` には**公開中の鍵をすべて**渡す（署名中の鍵と、まだ署名しない後継鍵、および
+/// 有効期間内の退役鍵）。SAML 2.0 のメタデータは `use="signing"` の `KeyDescriptor` を複数持てる。
+/// 1 本しか出さないと、署名が切り替わる瞬間に SP から見える証明書が入れ替わり、**取り込み直すまで
+/// 検証が落ちる** —— ADR-0039 が JWKS 側で無くした断絶が、SAML 側にだけ残る。
+///
+/// **並び順は呼び出し側の責務で、署名中の鍵を先頭にする。** SP の実装には先頭の
+/// `KeyDescriptor` だけを読むものがあり、公開順（新しい鍵が先）のまま渡すと**まだ署名していない
+/// 後継鍵**を掴ませることになる。
 pub fn build_idp_metadata_xml(
     entity_id: &str,
     sso_url: &str,
-    signing_key: Option<&IdpSigningKey>,
+    signing_keys: &[IdpSigningKey],
 ) -> String {
     let entity_id = escape(entity_id);
     let sso_url = escape(sso_url);
-    let key_descriptor = signing_key
+    let key_descriptor = signing_keys
+        .iter()
         .map(IdpSigningKey::to_key_descriptor)
-        .unwrap_or_default();
+        .collect::<Vec<_>>()
+        .join("");
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="{entity_id}">
@@ -641,7 +653,7 @@ mod tests {
         let xml = build_idp_metadata_xml(
             "https://idp.example.com/tenant-1",
             "https://idp.example.com/tenant-1/saml/sso?x=1&y=2",
-            Some(&key),
+            std::slice::from_ref(&key),
         );
         assert!(xml.contains(r#"entityID="https://idp.example.com/tenant-1""#));
         // IdP メタデータ（IDPSSODescriptor）であり、SP メタデータではない。
@@ -666,7 +678,11 @@ mod tests {
             named_curve_uri: "urn:oid:1.2.840.10045.3.1.7".to_string(),
             public_key_b64: "BParbitraryPoint==".to_string(),
         };
-        let xml = build_idp_metadata_xml("urn:idp", "https://idp.test/sso", Some(&key));
+        let xml = build_idp_metadata_xml(
+            "urn:idp",
+            "https://idp.test/sso",
+            std::slice::from_ref(&key),
+        );
         assert!(xml.contains(r#"<md:KeyDescriptor use="signing">"#));
         assert!(xml.contains("<ds11:ECKeyValue"));
         assert!(xml.contains(r#"<ds11:NamedCurve URI="urn:oid:1.2.840.10045.3.1.7"/>"#));
@@ -678,9 +694,39 @@ mod tests {
 
     #[test]
     fn build_idp_metadata_omits_key_descriptor_when_no_signing_key() {
-        let xml = build_idp_metadata_xml("urn:idp", "https://idp.test/sso", None);
+        let xml = build_idp_metadata_xml("urn:idp", "https://idp.test/sso", &[]);
         assert!(xml.contains("IDPSSODescriptor"));
         assert!(!xml.contains("KeyDescriptor"));
+        let mut reader = Reader::from_str(&xml);
+        while !matches!(reader.read_event().expect("well-formed"), Event::Eof) {}
+    }
+
+    /// 公開中の鍵をすべて並べる（ADR-0039 / T33）。
+    ///
+    /// 1 本しか出さないと、署名が切り替わる瞬間に SP から見える証明書が入れ替わり、取り込み直す
+    /// まで検証が落ちる。ADR-0039 が JWKS 側で無くした断絶を、SAML 側にも無くすための本体。
+    #[test]
+    fn build_idp_metadata_lists_every_published_key_in_order() {
+        let signing = IdpSigningKey::Rsa {
+            modulus_b64: "AAAAsigning==".to_string(),
+            exponent_b64: "AQAB".to_string(),
+        };
+        let successor = IdpSigningKey::Rsa {
+            modulus_b64: "BBBBsuccessor==".to_string(),
+            exponent_b64: "AQAB".to_string(),
+        };
+        let xml = build_idp_metadata_xml("urn:idp", "https://idp.test/sso", &[signing, successor]);
+
+        assert_eq!(
+            xml.matches(r#"<md:KeyDescriptor use="signing">"#).count(),
+            2
+        );
+        // 渡された順にそのまま並ぶ（先頭の KeyDescriptor だけを読む SP があるため、
+        // 「署名中の鍵を先頭に」は呼び出し側が守る責務であり、ここは並べ替えない）。
+        let first = xml.find("AAAAsigning==").expect("signing key present");
+        let second = xml.find("BBBBsuccessor==").expect("successor present");
+        assert!(first < second, "渡した順序が保たれること: {xml}");
+
         let mut reader = Reader::from_str(&xml);
         while !matches!(reader.read_event().expect("well-formed"), Event::Eof) {}
     }
