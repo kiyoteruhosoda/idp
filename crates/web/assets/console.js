@@ -46,25 +46,5 @@
   });
 })();
 
-// 外部 IdP 登録フォームのプロトコル出し分け（AP12）。OIDC と SAML では必要な項目がまったく違う
-// ため、選ばれていない側の欄は隠す。**新規登録の初期状態では両方の区画がテンプレートから
-// 出ており、隠すのはここが初めて**である（サーバ側で隠すと、JS が動かない環境ではプロトコルを
-// 切り替えても欄が出てこず、SAML を登録できない）。
-//
-// **隠すだけで、name 属性は外さない。** サーバは選ばれたプロトコルの欄だけを読む（送られてきた
-// かどうかで判断しない）ので、JS が動かない環境では両方の欄が見えたまま正しく動く。ここで
-// disabled にすると、JS 無効時と有効時で送信内容が変わり、挙動の差が生まれる。
-(function () {
-  var select = document.querySelector("[data-external-idp-protocol]");
-  if (!select) {
-    return;
-  }
-  var sections = document.querySelectorAll("[data-external-idp-fields]");
-  function apply() {
-    Array.prototype.forEach.call(sections, function (section) {
-      section.hidden = section.getAttribute("data-external-idp-fields") !== select.value;
-    });
-  }
-  select.addEventListener("change", apply);
-  apply();
-})();
+// 外部 IdP 登録フォームのプロトコル出し分けは JS から外した。プロトコルは画面に入る前に決まり
+// （URL か登録済みの値）、サーバが選ばれた側の欄だけを描くので、隠すものが無い。

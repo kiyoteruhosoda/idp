@@ -186,6 +186,26 @@ pub fn build(state: WebState) -> Router {
             "/admin/external-idps",
             get(admin_external_idps_console::list).post(admin_external_idps_console::create),
         )
+        // 登録はプロトコルを選ぶところから始める。1 枚のフォームに OIDC と SAML の欄を並べると、
+        // 埋めるべき欄と埋めなくてよい欄が同居して読み取れない。
+        .route(
+            "/admin/external-idps/new",
+            get(admin_external_idps_console::choose_protocol),
+        )
+        // プロトコルごとに別のパスにする。「登録できるのはこの 2 つ」を経路が表すので、綴りの
+        // 誤った URL は 404 になる（既定のプロトコルへ黙って落ちない）。
+        .route(
+            "/admin/external-idps/new/oidc",
+            get(admin_external_idps_console::new_oidc_form),
+        )
+        .route(
+            "/admin/external-idps/new/saml",
+            get(admin_external_idps_console::new_saml_form),
+        )
+        .route(
+            "/admin/external-idps/{id}/edit",
+            get(admin_external_idps_console::edit_form),
+        )
         // 外部 IdP メタデータの取り込み（AP12）。`{id}/update` と衝突しない静的パス。
         .route(
             "/admin/external-idps/import",

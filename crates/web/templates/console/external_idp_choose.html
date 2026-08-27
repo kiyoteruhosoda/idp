@@ -1,0 +1,40 @@
+{% extends "console/layout.html" %}
+{% block content %}
+{# 登録の入口。プロトコルを先に決めてもらう —— OIDC と SAML は「同じものの設定違い」ではなく、
+   相手から何を受け取り、何で真正性を確かめるかが別である。1 枚のフォームに両方を並べると、
+   埋めるべき欄と埋めなくてよい欄の区別が画面から読み取れない。 #}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <h2 class="h4 mb-0">{{ messages.get("admin-external-idps-choose-title") }}</h2>
+  <a class="btn btn-outline-secondary" href="{{ tenant }}/admin/external-idps">{{ messages.get("admin-external-idps-back") }}</a>
+</div>
+<p class="text-muted">{{ messages.get("admin-external-idps-choose-intro") }}</p>
+
+<div class="row g-3">
+  <div class="col-md-6">
+    <div class="card h-100">
+      <div class="card-body d-flex flex-column">
+        <h3 class="h5"><i class="fa-solid fa-id-badge me-2" aria-hidden="true"></i>{{ messages.get("admin-external-idps-protocol-oidc") }}</h3>
+        <p class="text-muted flex-grow-1">{{ messages.get("admin-external-idps-choose-oidc-desc") }}</p>
+        <div>
+          <a class="btn btn-primary" href="{{ tenant }}/admin/external-idps/new/oidc">{{ messages.get("admin-external-idps-choose-select") }}</a>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="card h-100">
+      <div class="card-body d-flex flex-column">
+        <h3 class="h5"><i class="fa-solid fa-file-shield me-2" aria-hidden="true"></i>{{ messages.get("admin-external-idps-protocol-saml") }}</h3>
+        <p class="text-muted flex-grow-1">{{ messages.get("admin-external-idps-choose-saml-desc") }}</p>
+        <div>
+          <a class="btn btn-primary" href="{{ tenant }}/admin/external-idps/new/saml">{{ messages.get("admin-external-idps-choose-select") }}</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{# プロトコルは登録後に変えられない（api が拒否する。同じ provider_code のまま切り替えると、
+   既存の連携が別プロトコルの識別子を指したまま残る）。選ぶ前にそう言っておく。 #}
+<p class="text-muted small mt-3">{{ messages.get("admin-external-idps-field-protocol-hint") }}</p>
+{% endblock %}

@@ -215,7 +215,7 @@ async fn an_empty_secret_field_leaves_the_stored_secret_alone() {
                 ("jwks_uri", "https://idp.example.com/jwks"),
                 ("client_id", "abc"),
                 ("client_secret", ""),
-                ("scopes", "openid email"),
+                ("scope_email", "1"),
                 ("enabled", "1"),
                 ("csrf_token", &csrf()),
             ],
@@ -262,7 +262,6 @@ async fn a_filled_secret_field_replaces_the_stored_secret() {
                 ("jwks_uri", "https://idp.example.com/jwks"),
                 ("client_id", "abc"),
                 ("client_secret", "new-secret"),
-                ("scopes", "openid"),
                 ("enabled", "1"),
                 ("csrf_token", &csrf()),
             ],
@@ -298,7 +297,6 @@ async fn a_bad_csrf_token_never_reaches_the_api() {
                 ("jwks_uri", "https://evil.example.com/j"),
                 ("client_id", "abc"),
                 ("client_secret", ""),
-                ("scopes", "openid"),
                 ("csrf_token", "wrong"),
             ],
         ),
@@ -374,7 +372,7 @@ async fn registering_a_saml_provider_sends_only_the_saml_fields() {
                     "https://idp.example.com/authorize",
                 ),
                 ("client_id", "abc"),
-                ("scopes", "openid email"),
+                ("scope_email", "1"),
                 ("saml_sso_url", "https://idp.example.com/sso"),
                 // ブラウザは textarea の改行を CRLF にして送る。ここも同じ形で送る。
                 (
@@ -435,7 +433,6 @@ async fn an_update_carries_the_protocol_so_endpoint_edits_are_not_silently_dropp
                 ("jwks_uri", "https://idp.example.com/jwks"),
                 ("client_id", "abc"),
                 ("client_secret", ""),
-                ("scopes", "openid"),
                 ("enabled", "1"),
                 ("csrf_token", &csrf()),
             ],
@@ -532,16 +529,15 @@ async fn a_bad_csrf_token_never_reaches_the_import_endpoint() {
     );
 }
 
-/// 新規登録のフォームは**両方のプロトコルの欄を出す**。選択外を隠すのは JS の仕事で、サーバ側で
-/// 隠すと JS が動かない環境ではプロトコルを切り替えても欄が出てこず、SAML を登録できない。
-/// 編集はプロトコルが固定なので、選択外の欄はサーバ側で隠す。
+/// **一覧に登録フォームは無い。** 登録は「プロトコルを選ぶ」から始まる —— OIDC と SAML の欄を
+/// 1 枚に並べると、埋めるべき欄と埋めなくてよい欄が同居して読み取れない。
 #[tokio::test]
-async fn the_registration_form_exposes_both_protocols_but_editing_pins_one() {
+async fn the_list_offers_registration_without_showing_a_form() {
     let env = setup().await;
     stub_admin(&env).await;
-    stub_list(&env, json!([sample_saml_provider()])).await;
+    stub_list(&env, json!([sample_provider()])).await;
 
-    let new_form = body_text(
+    let html = body_text(
         send(
             &env.app,
             get_with_cookies(&format!("{}/admin/external-idps", env.prefix()), &cookies()),
@@ -550,21 +546,139 @@ async fn the_registration_form_exposes_both_protocols_but_editing_pins_one() {
     )
     .await;
     assert!(
-        new_form.contains(r#"data-external-idp-fields="oidc" >"#)
-            || new_form.contains(r#"data-external-idp-fields="oidc">"#),
-        "the OIDC section must not be hidden on the registration form: {new_form}"
+        html.contains(&format!(
+            r#"href="{}/admin/external-idps/new""#,
+            env.prefix()
+        )),
+        "the list must lead to the protocol choice: {html}"
     );
     assert!(
-        !new_form.contains(r#"data-external-idp-fields="saml" hidden"#),
-        "the SAML section must not be hidden on the registration form: {new_form}"
+        !html.contains(r#"name="provider_code""#),
+        "the list must not carry a registration form: {html}"
+    );
+    // 編集も専用ページへ向かう（一覧に開くフォームが無いため）。
+    assert!(
+        html.contains(&format!(
+            r#"href="{}/admin/external-idps/{PROVIDER_ID}/edit""#,
+            env.prefix()
+        )),
+        "{html}"
+    );
+}
+
+/// 選択画面は 2 つのプロトコルへ分岐するだけ。
+#[tokio::test]
+async fn the_entry_point_offers_exactly_the_two_protocols() {
+    let env = setup().await;
+    stub_admin(&env).await;
+
+    let html = body_text(
+        send(
+            &env.app,
+            get_with_cookies(
+                &format!("{}/admin/external-idps/new", env.prefix()),
+                &cookies(),
+            ),
+        )
+        .await,
+    )
+    .await;
+    for protocol in ["oidc", "saml"] {
+        assert!(
+            html.contains(&format!(
+                r#"href="{}/admin/external-idps/new/{protocol}""#,
+                env.prefix()
+            )),
+            "the {protocol} entry point is missing: {html}"
+        );
+    }
+}
+
+/// **OIDC のフォームに SAML の欄は出ない**（逆も同じ）。プロトコルは経路が決めており、
+/// 出し分けの JS は要らない —— JS が動かない環境でも、見えている欄がそのまま送る欄になる。
+///
+/// メタデータの取り込みは SAML にだけ出す。OIDC の discovery は未対応で、取り込む先が無い。
+#[tokio::test]
+async fn each_protocol_form_shows_only_its_own_fields() {
+    let env = setup().await;
+    stub_admin(&env).await;
+
+    let oidc = body_text(
+        send(
+            &env.app,
+            get_with_cookies(
+                &format!("{}/admin/external-idps/new/oidc", env.prefix()),
+                &cookies(),
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert!(oidc.contains(r#"name="jwks_uri""#), "{oidc}");
+    assert!(oidc.contains(r#"name="protocol" value="oidc""#), "{oidc}");
+    assert!(
+        !oidc.contains(r#"name="saml_sso_url""#),
+        "SAML fields must not appear on the OIDC form: {oidc}"
+    );
+    assert!(
+        !oidc.contains(r#"name="metadata_xml""#),
+        "OIDC has no metadata to import: {oidc}"
     );
 
-    let edit_form = body_text(
+    let saml = body_text(
+        send(
+            &env.app,
+            get_with_cookies(
+                &format!("{}/admin/external-idps/new/saml", env.prefix()),
+                &cookies(),
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert!(saml.contains(r#"name="saml_sso_url""#), "{saml}");
+    assert!(saml.contains(r#"name="protocol" value="saml""#), "{saml}");
+    assert!(saml.contains(r#"name="metadata_xml""#), "{saml}");
+    assert!(
+        !saml.contains(r#"name="jwks_uri""#),
+        "OIDC fields must not appear on the SAML form: {saml}"
+    );
+    // scope は OIDC にしか無い（SAML アサーションに scope は無い）。
+    assert!(!saml.contains(r#"name="scope_email""#), "{saml}");
+}
+
+/// 綴りの違うプロトコルは 404。既定へ丸めると、URL を直打ちした人が意図と違うプロトコルの
+/// フォームを埋めることになる。
+#[tokio::test]
+async fn an_unknown_protocol_is_not_rounded_to_a_default() {
+    let env = setup().await;
+    stub_admin(&env).await;
+
+    let response = send(
+        &env.app,
+        get_with_cookies(
+            &format!("{}/admin/external-idps/new/ws-fed", env.prefix()),
+            &cookies(),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+/// 編集はプロトコルが固定で、メタデータの取り込みは出さない（編集中に別の IdP のメタデータで
+/// 上書きすると、何を保存しようとしていたのか分からなくなる）。
+#[tokio::test]
+async fn editing_pins_the_protocol_and_does_not_offer_metadata_import() {
+    let env = setup().await;
+    stub_admin(&env).await;
+    stub_list(&env, json!([sample_saml_provider()])).await;
+
+    let html = body_text(
         send(
             &env.app,
             get_with_cookies(
                 &format!(
-                    "{}/admin/external-idps?edit={SAML_PROVIDER_ID}",
+                    "{}/admin/external-idps/{SAML_PROVIDER_ID}/edit",
                     env.prefix()
                 ),
                 &cookies(),
@@ -573,18 +687,163 @@ async fn the_registration_form_exposes_both_protocols_but_editing_pins_one() {
         .await,
     )
     .await;
-    assert!(
-        edit_form.contains(r#"data-external-idp-fields="oidc" hidden"#),
-        "editing a SAML provider must not offer the OIDC fields: {edit_form}"
-    );
     // プロトコルは変更できない（api も拒否する）。値は hidden で送る。
+    assert!(html.contains(r#"name="protocol" value="saml""#), "{html}");
     assert!(
-        edit_form.contains(r#"name="protocol" value="saml""#),
-        "{edit_form}"
+        !html.contains(r#"name="jwks_uri""#),
+        "editing a SAML provider must not offer the OIDC fields: {html}"
+    );
+    assert!(
+        !html.contains(r#"name="metadata_xml""#),
+        "editing must not offer to overwrite the form from another provider's metadata: {html}"
     );
     // 保存済みの証明書は空行区切りで戻り、追記・差し替えができる。
+    assert!(html.contains("MIIBCURRENT==\n\nMIIBNEXT=="), "{html}");
+}
+
+/// 一覧に無い id（削除済み・別テナント）の編集は一覧へ戻す。空のフォームを出すと、編集の
+/// つもりで新規登録することになる。
+#[tokio::test]
+async fn editing_an_unknown_provider_returns_to_the_list() {
+    let env = setup().await;
+    stub_admin(&env).await;
+    stub_list(&env, json!([])).await;
+
+    let response = send(
+        &env.app,
+        get_with_cookies(
+            &format!("{}/admin/external-idps/{PROVIDER_ID}/edit", env.prefix()),
+            &cookies(),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FOUND);
+    assert_eq!(
+        response
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok()),
+        Some(format!("{}/admin/external-idps?error=notfound", env.prefix()).as_str())
+    );
+}
+
+/// **要求する scope は選択で入れる。** 保存済みの値はチェック状態に戻り、相手方が独自に定義した
+/// scope は自由入力側へ回る —— 選択肢を固定値に閉じると、`groups` のような相手固有の scope が
+/// 編集のたびに落ちる。
+#[tokio::test]
+async fn saved_scopes_come_back_as_checkboxes_and_provider_specific_ones_stay_editable() {
+    let env = setup().await;
+    stub_admin(&env).await;
+    let mut provider = sample_provider();
+    provider["scopes"] = json!(["openid", "email", "groups"]);
+    stub_list(&env, json!([provider])).await;
+
+    let html = body_text(
+        send(
+            &env.app,
+            get_with_cookies(
+                &format!("{}/admin/external-idps/{PROVIDER_ID}/edit", env.prefix()),
+                &cookies(),
+            ),
+        )
+        .await,
+    )
+    .await;
     assert!(
-        edit_form.contains("MIIBCURRENT==\n\nMIIBNEXT=="),
-        "{edit_form}"
+        html.contains(r#"name="scope_email" checked"#),
+        "a saved scope must come back checked: {html}"
+    );
+    assert!(
+        !html.contains(r#"name="scope_profile" checked"#),
+        "a scope that was not saved must not look selected: {html}"
+    );
+    // 相手固有の scope は自由入力へ。`openid` は必ず付くので、ここには出さない。
+    assert!(
+        html.contains(r#"id="scopes_extra" name="scopes_extra" value="groups""#),
+        "{html}"
+    );
+}
+
+/// 知らないプロトコルで登録が失敗したら、**一覧へ落とす**。`protocol` はフォームから来る値で、
+/// ハンドラは未知の綴りを丸めずに api へ通す（判断を 1 か所に寄せるため）。それをそのまま
+/// リダイレクト先の経路へ差し込むと、行き先の無い URL や `?` で壊れたクエリを Location に
+/// 載せることになる。
+#[tokio::test]
+async fn a_failed_registration_with_an_unknown_protocol_falls_back_to_the_list() {
+    let env = setup().await;
+    stub_admin(&env).await;
+    stub_list(&env, json!([])).await;
+    Mock::given(method("POST"))
+        .and(path_regex(r"^/[^/]+/admin/external-idps$"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({"error": "invalid"})))
+        .mount(&env.api)
+        .await;
+
+    let response = send(
+        &env.app,
+        post_form(
+            &format!("{}/admin/external-idps", env.prefix()),
+            Some(&cookies()),
+            &[
+                ("provider_code", "corp"),
+                ("display_name", "Corp"),
+                ("protocol", "ws-fed?x=1"),
+                ("issuer", "https://idp.example.com"),
+                ("csrf_token", &csrf()),
+            ],
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FOUND);
+    assert_eq!(
+        response
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok()),
+        Some(format!("{}/admin/external-idps?error=validation", env.prefix()).as_str())
+    );
+}
+
+/// 登録に失敗したら、同じプロトコルのフォームへ戻す（プロトコルを選び直させない）。
+#[tokio::test]
+async fn a_failed_registration_returns_to_the_form_for_the_same_protocol() {
+    let env = setup().await;
+    stub_admin(&env).await;
+    stub_list(&env, json!([])).await;
+    Mock::given(method("POST"))
+        .and(path_regex(r"^/[^/]+/admin/external-idps$"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({"error": "invalid"})))
+        .mount(&env.api)
+        .await;
+
+    let response = send(
+        &env.app,
+        post_form(
+            &format!("{}/admin/external-idps", env.prefix()),
+            Some(&cookies()),
+            &[
+                ("provider_code", "corp-saml"),
+                ("display_name", "Corp SAML"),
+                ("protocol", "saml"),
+                ("issuer", "urn:idp:corp"),
+                ("saml_sso_url", "not-a-url"),
+                ("csrf_token", &csrf()),
+            ],
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FOUND);
+    assert_eq!(
+        response
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok()),
+        Some(
+            format!(
+                "{}/admin/external-idps/new/saml?error=validation",
+                env.prefix()
+            )
+            .as_str()
+        )
     );
 }

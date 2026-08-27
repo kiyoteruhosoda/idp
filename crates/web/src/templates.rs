@@ -1056,7 +1056,11 @@ fn usage_from_registration(grant_types: &[String], redirect_uris: &[String]) -> 
     .to_string()
 }
 
-/// 外部 IdP 設定の管理画面（`GET /{tenant_id}/admin/external-idps`。AP16。API は AP10）。
+/// 外部 IdP の一覧（`GET /{tenant_id}/admin/external-idps`。AP16。API は AP10）。
+///
+/// **登録フォームはこの画面に置かない。** プロトコル（OIDC / SAML）で必要な項目がまったく違い、
+/// 1 枚のフォームに両方を並べると「いま何を登録しているのか」が読み取れない。入口でプロトコルを
+/// 選ばせ、以降はそのプロトコルの画面だけを見せる（ADR-0038 が用途で登録を分けたのと同じ形）。
 #[derive(Template)]
 #[template(path = "console/external_idps.html")]
 pub struct ExternalIdpsConsole<'a> {
@@ -1065,25 +1069,50 @@ pub struct ExternalIdpsConsole<'a> {
     pub admin: Admin<'a>,
     pub csrf: &'a str,
     pub providers: &'a [crate::admin_dto::ExternalIdpView],
-    /// 編集対象の id（`None` は新規登録フォーム）。
+    pub saved: bool,
+    pub deleted: bool,
+    pub error_key: Option<&'a str>,
+}
+
+/// 登録するプロトコルの選択（`GET /{tenant_id}/admin/external-idps/new`）。
+///
+/// ここが登録の入口である。OIDC と SAML は「同じものの設定違い」ではなく、相手から何を受け取り
+/// 何で真正性を確かめるかが別なので、先に決めてもらう。
+#[derive(Template)]
+#[template(path = "console/external_idp_choose.html")]
+pub struct ExternalIdpProtocolChoice<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub admin: Admin<'a>,
+}
+
+/// 外部 IdP の登録・編集フォーム（`GET /{tenant_id}/admin/external-idps/new/{protocol}` および
+/// `GET /{tenant_id}/admin/external-idps/{id}/edit`）。
+///
+/// **プロトコルは画面に入る前に決まっている。** 新規は URL が、編集は登録済みの値が決めるため、
+/// フォームの中に選択肢は無い（登録後のプロトコル変更は api も拒否する）。
+#[derive(Template)]
+#[template(path = "console/external_idp_form.html")]
+pub struct ExternalIdpFormPage<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub admin: Admin<'a>,
+    pub csrf: &'a str,
+    /// 編集対象の id（`None` は新規登録）。
     pub editing: Option<&'a str>,
     /// フォームの初期値（編集時は対象の現在値、新規は既定値）。
     pub values: &'a ExternalIdpFormValues,
-    pub saved: bool,
-    pub deleted: bool,
     /// メタデータ取り込みでフォームに初期値が入った直後か（AP12）。
     pub imported: bool,
     pub error_key: Option<&'a str>,
 }
 
 /// 外部 IdP 設定フォームの値（往復用）。可変長の値（`scopes`・SAML の証明書）は 1 つの
-/// テキスト欄で扱う（scope は空白区切り、証明書は空行区切り）。
+/// 文字列で保持する（scope は空白区切り、証明書は空行区切り）。
 ///
-/// **プロトコルで使う欄が変わるが、構造体は 1 つにする。** OIDC 用と SAML 用に分けると、
-/// 取り違え（SAML を選んだのに OIDC の値が送られる）を型で防げるようにも見えるが、実際には
-/// 画面が 1 枚のフォームである以上どちらの欄も往復させる必要があり、分けると「編集中に
-/// プロトコルを切り替えた」状態を表現できなくなる。妥当な組み合わせの判断は api（`ExternalIdpConfig`）が
-/// 単一の出所として持つ。
+/// **プロトコルで使う欄が変わるが、構造体は 1 つにする。** OIDC 用と SAML 用に分けても、
+/// 画面が持ち回る値の形は変わらない（プロトコルは画面に入る前に決まっており、取り違えは
+/// 起きない）。妥当な組み合わせの判断は api（`ExternalIdpConfig`）が単一の出所として持つ。
 #[derive(Debug, Clone)]
 pub struct ExternalIdpFormValues {
     pub provider_code: String,
@@ -1110,9 +1139,39 @@ pub struct ExternalIdpFormValues {
     pub allow_auto_link: bool,
 }
 
+/// チェックボックスで選ばせる scope。`openid` は ID Token を得るために必ず要る（外せない）ので
+/// 含めない —— 選べない項目を選択肢に並べると、外せるように見える。
+///
+/// **ここだけを増やしても選択肢は増えない。** チェックボックスの `name`（`scope_*`）は
+/// `console/external_idp_form.html` に、送信値の組み立ては
+/// `handlers::admin_external_idps_console::selected_scopes` にそれぞれ直接書いてある。片方だけ
+/// 足すと、その scope は自由入力欄から除かれるのにチェックボックスも無い状態になり、**保存の
+/// たびに黙って落ちる**。増やすときは 3 か所を揃える。
+pub const EXTERNAL_IDP_OPTIONAL_SCOPES: [&str; 2] = ["profile", "email"];
+
 impl ExternalIdpFormValues {
     pub fn is_saml(&self) -> bool {
         self.protocol == "saml"
+    }
+
+    /// この scope が選ばれているか（テンプレートのチェック状態）。空白区切りの保持形を分解して
+    /// 照合する。部分一致で見ないのは、`email` が相手方の `email_verified` のような値に
+    /// 引っかかると、選んでいない欄が選ばれて見えるためである。
+    pub fn has_scope(&self, scope: &str) -> bool {
+        self.scopes.split_whitespace().any(|s| s == scope)
+    }
+
+    /// チェックボックスに無い scope（空白区切り）。
+    ///
+    /// **外部 IdP へ要求する scope は相手が定義する**ので、選択肢を固定値に閉じてはいけない
+    /// （`groups`・`User.Read` のような相手固有の値がある）。よく使う 2 つをチェックボックスに
+    /// 出し、それ以外はこの欄で受ける。`openid` は常に付くので、ここには出さない。
+    pub fn extra_scopes(&self) -> String {
+        self.scopes
+            .split_whitespace()
+            .filter(|s| *s != "openid" && !EXTERNAL_IDP_OPTIONAL_SCOPES.contains(s))
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
 
