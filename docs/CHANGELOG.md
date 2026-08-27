@@ -11,9 +11,14 @@
   「この画面を見る権限が無い」ではない。汎用の 403 ページではなく権限画面のエラー欄
   （`admin-permission-error-forbidden`）へ戻す。実際にゲスト管理者がこれを踏み、原因が画面から
   読み取れなかった。
-- **api の判定は緩めていない。** `ensure_system_admin_change_allowed` は要求テナント scope で引き続き
-  実行者の `idp.system.admin` を確かめる（非 root では常に false になるのが意図した結果である、と
-  コメントで固定した）。候補から消しただけで api が通るようになっていないことを統合テストで押さえる。
+- **`ensure_system_admin_change_allowed` の判定を 2 段に分けた。** 「要求テナントが root か」と
+  「実行者が **root scope の** `idp.system.admin` を保有するか」は別の問いである。従来は後者を
+  要求テナント scope で引き、非 root では常に false になることに依存していた（結果は正しいが、
+  問いとしては誤っている）。**実行者の保有だけを root scope で引くように変えると、root の system
+  管理者が非 root テナントで判定を通過し、DB の CHECK 制約違反（500）まで進む。** テナントの判定を
+  先に置き、非 root は `api-permission-system-admin-root-only` で断る。
+- **api の判定は緩めていない。** 候補から消しただけで api が通るようになっていないことを
+  統合テストで押さえる。
 
 ## 2026-08-26（5）（クライアントの管理権限を管理コンソールから操作できるようにした）
 

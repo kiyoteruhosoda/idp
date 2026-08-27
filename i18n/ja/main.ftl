@@ -501,6 +501,7 @@ api-user-status-invalid = 状態が無効です。ACTIVE または DISABLED を�
 api-user-status-locked-forbidden = LOCKED は管理者が設定できません（ログイン失敗の連続で自動的に設定されます）。
 api-user-self-operation-forbidden = 自分自身のアカウントに対しては実行できません。
 api-permission-system-admin-forbidden = idp.system.admin の付与・剥奪は、idp.system.admin を保有する利用者のみが行えます。
+api-permission-system-admin-root-only = idp.system.admin は root テナントでのみ保有できる権限です。このテナントでは付与・剥奪できません。
 api-client-permission-not-grantable = この権限コードはクライアントへ付与できません。システム用クライアントに付与できるのは細粒度の管理権限（idp.<リソース>:read / :write）のみです。
 api-permission-code-required = 権限コードを指定してください。
 api-tenant-create-requires-user-actor = テナントの作成にはログイン中の管理者が必要です（作成者が新しいテナントの最初の管理者になるため）。

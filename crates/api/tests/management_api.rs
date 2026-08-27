@@ -460,7 +460,6 @@ async fn the_grantable_to_client_filter_removes_the_blanket_admin_codes() {
     assert_eq!(unfiltered.len(), all.len());
 }
 
-
 /// 非 root テナントでは `idp.system.admin` を**付与できない**ので、付与候補にも出さない。
 ///
 /// この権限は root scope でしか存在できず（`user_permissions_system_admin_scope_chk`。ADR-0009 §4）、

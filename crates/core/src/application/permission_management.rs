@@ -15,7 +15,7 @@ use crate::domain::error::DomainError;
 use crate::domain::message::MessageKey;
 use crate::domain::permission::{self, PermissionCode};
 use crate::domain::repositories::{
-    TenantMembershipRepository, UserPermissionRepository, UserRepository,
+    TenantMembershipRepository, TenantRepository, UserPermissionRepository, UserRepository,
 };
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::user::User;
@@ -39,6 +39,9 @@ pub struct PermissionManagementService {
     users: Arc<dyn UserRepository>,
     memberships: Arc<dyn TenantMembershipRepository>,
     permissions: Arc<dyn UserPermissionRepository>,
+    /// root テナントの解決に使う。`idp.system.admin` は root scope でしか存在できないため、
+    /// 実行者の保有確認は**要求テナントではなく root scope** で引く必要がある（ADR-0009 §4）。
+    tenants: Arc<dyn TenantRepository>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
 }
@@ -48,6 +51,7 @@ impl PermissionManagementService {
         users: Arc<dyn UserRepository>,
         memberships: Arc<dyn TenantMembershipRepository>,
         permissions: Arc<dyn UserPermissionRepository>,
+        tenants: Arc<dyn TenantRepository>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
     ) -> Self {
@@ -55,6 +59,7 @@ impl PermissionManagementService {
             users,
             memberships,
             permissions,
+            tenants,
             audit,
             clock,
         }
@@ -245,14 +250,32 @@ impl PermissionManagementService {
                 "api-permission-system-admin-forbidden",
             )));
         };
-        // scope は**要求テナント**で引く（祖先・root へフォールバックしない。ADR-0009 §4）。
-        // `idp.system.admin` は root scope でしか存在できないので、非 root テナントではこの判定は
-        // 常に false になる —— それが意図した結果である。非 root で付与を許しても、DB の CHECK 制約
-        // `user_permissions_system_admin_scope_chk` が行の挿入を拒む。付与フォームの選択肢は
-        // `permission::is_grantable_in_tenant` が先に落とすので、ここへ来るのは API 直叩きだけである。
+
+        let root = self
+            .tenants
+            .find_root()
+            .await
+            .map_err(|e| PermissionManagementError::Internal(e.to_string()))?
+            .ok_or_else(|| PermissionManagementError::Internal("root tenant not found".into()))?;
+
+        // 1. この権限は root scope でしか存在できない（CHECK 制約
+        //    `user_permissions_system_admin_scope_chk`。ADR-0009 §4）。非 root テナントでの付与は
+        //    行の挿入自体が通らないので、実行者の資格を見るまでもなく断る。**ここを実行者の判定に
+        //    任せると、root の system 管理者が非 root テナントで判定を通過し、DB 制約違反の 500 に
+        //    落ちる。** 付与フォームの選択肢は `permission::is_grantable_in_tenant` が先に落とすので、
+        //    ここへ来るのは API 直叩きだけである。
+        if tenant.tenant_id() != root.id {
+            return Err(PermissionManagementError::Forbidden(MessageKey::new(
+                "api-permission-system-admin-root-only",
+            )));
+        }
+
+        // 2. 実行者が **root scope の** `idp.system.admin` を保有すること。「実行者が system 管理者か」
+        //    は root scope の事実であり、要求テナントで引くのは（1 の判定を通った時点で結果は同じでも）
+        //    問いとして誤っている。
         match self
             .permissions
-            .has_permission(tenant.tenant_id(), actor_user_id, permission::SYSTEM_ADMIN)
+            .has_permission(root.id, actor_user_id, permission::SYSTEM_ADMIN)
             .await
         {
             Ok(true) => Ok(()),
@@ -285,10 +308,10 @@ mod tests {
     use crate::domain::audit::AuditEvent;
     use crate::domain::error::Result as DomainResult;
     use crate::domain::repositories::AuditLogSink;
-    use crate::domain::tenant::TenantId;
+    use crate::domain::tenant::{Tenant, TenantId};
     use crate::domain::tenant_membership::TenantMembership;
     use crate::domain::user::User;
-    use crate::domain::values::UserStatus;
+    use crate::domain::values::{TenantStatus, UserStatus};
     use async_trait::async_trait;
     use chrono::{DateTime, TimeZone, Utc};
     use std::sync::Mutex;
@@ -310,6 +333,48 @@ mod tests {
     impl Clock for FixedClock {
         fn now(&self) -> DateTime<Utc> {
             self.0
+        }
+    }
+
+    /// `find_root` だけを答えるテナントリポジトリ。root は [`test_tenant`] とする——各テストは
+    /// このテナントを要求テナントとして渡すので、既定では「root テナントでの操作」になる。
+    struct FakeTenants;
+
+    fn root_tenant() -> Tenant {
+        Tenant {
+            id: test_tenant(),
+            parent_tenant_id: None,
+            name: "root".to_string(),
+            status: TenantStatus::Active,
+            self_registration_enabled: false,
+            created_at: fixed_now(),
+            updated_at: fixed_now(),
+        }
+    }
+
+    fn not_needed(method: &str) -> DomainError {
+        DomainError::Repository(format!("{method} is not used by these tests"))
+    }
+
+    #[async_trait]
+    impl TenantRepository for FakeTenants {
+        async fn create(&self, _t: &Tenant) -> DomainResult<()> {
+            Err(not_needed("create"))
+        }
+        async fn find_by_id(&self, id: TenantId) -> DomainResult<Option<Tenant>> {
+            Ok((id == test_tenant()).then(root_tenant))
+        }
+        async fn find_root(&self) -> DomainResult<Option<Tenant>> {
+            Ok(Some(root_tenant()))
+        }
+        async fn list_children(&self, _parent_id: TenantId) -> DomainResult<Vec<Tenant>> {
+            Ok(Vec::new())
+        }
+        async fn update(&self, _t: &Tenant) -> DomainResult<()> {
+            Err(not_needed("update"))
+        }
+        async fn delete(&self, _id: TenantId) -> DomainResult<()> {
+            Err(not_needed("delete"))
         }
     }
 
@@ -573,6 +638,7 @@ mod tests {
             Arc::new(FakeUsers { user }),
             memberships,
             perms,
+            Arc::new(FakeTenants),
             audit,
             Arc::new(FixedClock(fixed_now())),
         )
@@ -791,6 +857,46 @@ mod tests {
             svc.list(tenant_ctx(), Uuid::new_v4()).await,
             Err(PermissionManagementError::NotFound)
         ));
+    }
+
+    /// `idp.system.admin` は root scope でしか存在できない（ADR-0009 §4）。したがって非 root テナントでは、
+    /// **実行者が root の system 管理者であっても**付与できない。
+    ///
+    /// ここを実行者の保有判定だけに任せると、root scope で引いた結果が true になって判定を通過し、
+    /// DB の CHECK 制約違反（500）まで進んでしまう。テナントの判定は実行者の判定より前に置く。
+    #[tokio::test]
+    async fn system_admin_cannot_be_granted_outside_the_root_tenant() {
+        let target = Uuid::new_v4();
+        let actor = Uuid::new_v4();
+        let child = TenantId::from(Uuid::from_u128(0x0197_0000_0000_7000_8000_0000_0000_0002));
+        let perms = Arc::new(FakePermissions::default());
+        let sink = Arc::new(CapturingSink::default());
+        // 実行者は root scope で idp.system.admin を保有している。
+        perms
+            .granted
+            .lock()
+            .unwrap()
+            .push((test_tenant(), actor, "idp.system.admin".to_string()));
+        // 対象は子テナントの ACTIVE メンバー（`ensure_user_in_tenant` は通す）。
+        let svc = service_with(
+            Some(test_user(target)),
+            Arc::new(FakeMemberships::with_active(vec![(child, target)])),
+            perms,
+            sink.clone(),
+        );
+
+        assert!(matches!(
+            svc.grant(
+                TenantContext::new(child),
+                target,
+                "idp.system.admin",
+                &AdminActor::User(actor),
+                &ctx()
+            )
+            .await,
+            Err(PermissionManagementError::Forbidden(_))
+        ));
+        assert!(sink.events.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
