@@ -1141,6 +1141,12 @@ pub struct ExternalIdpFormValues {
 
 /// チェックボックスで選ばせる scope。`openid` は ID Token を得るために必ず要る（外せない）ので
 /// 含めない —— 選べない項目を選択肢に並べると、外せるように見える。
+///
+/// **ここだけを増やしても選択肢は増えない。** チェックボックスの `name`（`scope_*`）は
+/// `console/external_idp_form.html` に、送信値の組み立ては
+/// `handlers::admin_external_idps_console::selected_scopes` にそれぞれ直接書いてある。片方だけ
+/// 足すと、その scope は自由入力欄から除かれるのにチェックボックスも無い状態になり、**保存の
+/// たびに黙って落ちる**。増やすときは 3 か所を揃える。
 pub const EXTERNAL_IDP_OPTIONAL_SCOPES: [&str; 2] = ["profile", "email"];
 
 impl ExternalIdpFormValues {

@@ -459,8 +459,16 @@ pub async fn create(
         AdminResolution::Reject(resp) => return resp,
     }
     let base = format!("{}{SEGMENT}", tenant.prefix());
-    // 失敗したら同じプロトコルのフォームへ戻す（選び直させない）。
-    let form_url = format!("{base}/new/{}", protocol_of(&form));
+    // 失敗したら同じプロトコルのフォームへ戻す（選び直させない）。**戻る先はルータにある 2 本に
+    // 限る** —— `protocol` はフォームから来る値で、`protocol_of` は未知の綴りを丸めずに通す
+    // （api に判断させるため）。それをそのままリダイレクト先の経路に差し込むと、行き先の無い
+    // URL（404）や `?` `#` で壊れたクエリを Location に載せることになる。知らないプロトコルは
+    // 出す先が無いので、理由を表示できる一覧へ落とす。
+    let form_url = match protocol_of(&form) {
+        "saml" => format!("{base}/new/saml"),
+        "oidc" => format!("{base}/new/oidc"),
+        _ => base.clone(),
+    };
     let sso = sso(&headers);
     if !csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{form_url}?error=csrf"));
@@ -590,7 +598,7 @@ fn protocol_of(form: &ExternalIdpForm) -> &str {
 fn selected_scopes(form: &ExternalIdpForm) -> Vec<String> {
     let mut scopes = vec!["openid".to_string()];
     let mut push = |scope: &str| {
-        if !scope.is_empty() && !scopes.iter().any(|s| s == scope) {
+        if !scopes.iter().any(|s| s == scope) {
             scopes.push(scope.to_string());
         }
     };

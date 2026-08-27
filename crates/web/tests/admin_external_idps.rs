@@ -764,6 +764,46 @@ async fn saved_scopes_come_back_as_checkboxes_and_provider_specific_ones_stay_ed
     );
 }
 
+/// 知らないプロトコルで登録が失敗したら、**一覧へ落とす**。`protocol` はフォームから来る値で、
+/// ハンドラは未知の綴りを丸めずに api へ通す（判断を 1 か所に寄せるため）。それをそのまま
+/// リダイレクト先の経路へ差し込むと、行き先の無い URL や `?` で壊れたクエリを Location に
+/// 載せることになる。
+#[tokio::test]
+async fn a_failed_registration_with_an_unknown_protocol_falls_back_to_the_list() {
+    let env = setup().await;
+    stub_admin(&env).await;
+    stub_list(&env, json!([])).await;
+    Mock::given(method("POST"))
+        .and(path_regex(r"^/[^/]+/admin/external-idps$"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({"error": "invalid"})))
+        .mount(&env.api)
+        .await;
+
+    let response = send(
+        &env.app,
+        post_form(
+            &format!("{}/admin/external-idps", env.prefix()),
+            Some(&cookies()),
+            &[
+                ("provider_code", "corp"),
+                ("display_name", "Corp"),
+                ("protocol", "ws-fed?x=1"),
+                ("issuer", "https://idp.example.com"),
+                ("csrf_token", &csrf()),
+            ],
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FOUND);
+    assert_eq!(
+        response
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok()),
+        Some(format!("{}/admin/external-idps?error=validation", env.prefix()).as_str())
+    );
+}
+
 /// 登録に失敗したら、同じプロトコルのフォームへ戻す（プロトコルを選び直させない）。
 #[tokio::test]
 async fn a_failed_registration_returns_to_the_form_for_the_same_protocol() {

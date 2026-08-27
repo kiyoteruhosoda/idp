@@ -55,7 +55,7 @@
     </h3>
   </div>
   <div class="card-body">
-    <form method="post" action="{% if let Some(id) = editing %}{{ tenant }}/admin/external-idps/{{ id }}/update{% else %}{{ tenant }}/admin/external-idps{% endif %}" data-external-idp-form>
+    <form method="post" action="{% if let Some(id) = editing %}{{ tenant }}/admin/external-idps/{{ id }}/update{% else %}{{ tenant }}/admin/external-idps{% endif %}">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <input type="hidden" name="protocol" value="{{ values.protocol }}">
       <div class="row g-3">
