@@ -319,12 +319,6 @@ impl ClientManagementService {
         // 認証方式の**切り替え**にだけ課す前提条件（secret / 検証鍵の有無）を判定するために覚えておく。
         // 方式を変えていない更新（app_name の修正など）で資格情報を書き換えないためでもある。
         let method_before = client.token_endpoint_auth_method;
-        // ADR-0032 より前に登録されたクライアントは `authorization_code` が無条件に付いたため、
-        // `client_credentials` を許可したものは必ず「両方」の姿で保存されている。その姿を無条件に
-        // 拒むと、状態を DISABLED にすることすらできない（＝漏洩したクライアントを止められない）。
-        // 既にそうなっているものは通し、この更新で**新たに**両立させることだけを拒む。
-        let conflicted_before =
-            client.allows_client_credentials() && !client.redirect_uris.is_empty();
 
         if let Some(app_name) = cmd.app_name {
             client.app_name = validate_app_name(app_name)?;
@@ -344,9 +338,7 @@ impl ClientManagementService {
             // （grant_types が空になる）。ADR-0032 決定 2。
             validate_redirect_uris(&client.redirect_uris, allows_client_credentials)?;
         }
-        if !conflicted_before {
-            validate_single_usage(allows_client_credentials, &client.redirect_uris)?;
-        }
+        validate_single_usage(allows_client_credentials, &client.redirect_uris)?;
         if let Some(scopes) = cmd.scopes {
             client.scopes = validate_scopes(&scopes)?;
         }
@@ -565,6 +557,11 @@ fn parse_jwks(raw: &str) -> Result<ClientJwks, ClientManagementError> {
 /// `client_credentials` と redirect_uri を両立させると、画面の「用途」がその状態を表せなくなり、
 /// コンソールで開いて保存しただけで片方が黙って消える。表せない状態を作らせないことで、
 /// 用途は登録内容から一意に決まる。用途ごとに分ければ、事故時の失効範囲と監査の粒度も分かれる。
+///
+/// **登録・更新のどちらでも無条件に拒む。** ADR-0032 は「既に両立している行は更新を通す」という
+/// 猶予を `update` に置いていたが（漏洩したクライアントを DISABLED にできなくなるため）、
+/// 対象の行が prod・stg のどちらにも存在しないことを確認したうえで 2026-08-27 に削除した
+/// （ADR-0032 Revised）。猶予を残すと、判定が「今の姿」にも依存し続ける。
 fn validate_single_usage(
     allows_client_credentials: bool,
     redirect_uris: &[String],
