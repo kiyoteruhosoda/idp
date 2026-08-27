@@ -69,7 +69,7 @@
     <p class="text-muted">{{ messages.get("admin-signing-keys-generate-intro") }}</p>
     <form method="post" action="{{ tenant }}/admin/signing-keys/generate">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
-      <div class="row g-2 align-items-end">
+      <div class="row g-2">
         <div class="col-auto">
           <label class="form-label" for="signing-key-algorithm">{{ messages.get("admin-signing-keys-alg-label") }}</label>
           <select class="form-select" id="signing-key-algorithm" name="algorithm">
@@ -77,18 +77,17 @@
             <option value="ES256">ES256 (NIST P-256)</option>
           </select>
         </div>
-        <div class="col-auto">
-          <button type="submit" class="btn btn-primary"><i class="fa-solid fa-key me-2" aria-hidden="true"></i>{{ messages.get("admin-signing-keys-generate-button") }}</button>
-        </div>
       </div>
       {# 猶予を捨てる指定。既定（チェック無し）が通常の入れ替えで、こちらは鍵の危殆化のように
          待てないときだけ。チェックを既定にすると、JWKS をキャッシュしている RP の検証が
-         毎回の鍵生成で落ちる。 #}
+         毎回の鍵生成で落ちる。**送信ボタンより前に置く** —— あとに置くと、押す前に選択肢が
+         目に入らない。 #}
       <div class="form-check mt-3">
         <input class="form-check-input" type="checkbox" id="signing-key-activate-immediately" name="activate_immediately" value="1">
         <label class="form-check-label" for="signing-key-activate-immediately">{{ messages.get("admin-signing-keys-activate-now") }}</label>
         <div class="form-text">{{ messages.get("admin-signing-keys-activate-now-hint") }}</div>
       </div>
+      <button type="submit" class="btn btn-primary mt-3"><i class="fa-solid fa-key me-2" aria-hidden="true"></i>{{ messages.get("admin-signing-keys-generate-button") }}</button>
     </form>
   </div>
 </div>
