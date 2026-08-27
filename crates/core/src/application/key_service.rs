@@ -51,20 +51,33 @@ impl KeyService {
         }
     }
 
-    /// ACTIVE 鍵が無ければ RSA 鍵ペアを生成し、秘密鍵を暗号化して永続化する（冪等）。
+    /// **いま署名できる鍵**が無ければ鍵ペアを生成し、秘密鍵を暗号化して永続化する（冪等）。
+    ///
+    /// 判定は `current_signer_at` —— 「ACTIVE 行があるか」ではない。公開しただけの後継鍵
+    /// （`not_before` が未来）や期限切れのまま ACTIVE で残った鍵は署名できないので、
+    /// それしか無い状態はブートストラップが要る状態である。
     ///
     /// 挿入は `insert_if_no_active`（repository の排他区間）で行い、複数インスタンスの同時起動
-    /// （ローリングデプロイ・並列テスト）でも ACTIVE 鍵が重複生成されない（SEC5）。
+    /// （ローリングデプロイ・並列テスト）でも鍵が重複生成されない（SEC5）。
     /// 排他区間で負けた側は生成済みの鍵材料を破棄して成功扱いにする。
     pub async fn ensure_active_key(&self) -> anyhow::Result<()> {
-        if self.find_active_key().await?.is_some() {
+        let keys = self
+            .repo
+            .list_all()
+            .await
+            .map_err(|e| anyhow::anyhow!("list signing keys: {e}"))?;
+        if current_signer_at(&keys, self.clock.now()).is_some() {
             return Ok(());
         }
-        // ブートストラップは**猶予を置かない**。まだ RP が 1 つも居らず、配る先の JWKS キャッシュも
-        // 存在しないので、待つ意味が無い（待つと起動直後にトークンを発行できない）。
-        let key = self
-            .new_key_material(SigningAlgorithm::Rs256, Duration::zero())
-            .await?;
+        // **直前に使っていた鍵のアルゴリズムを引き継ぐ**（`rotate_if_needed` の補充と同じ規則）。
+        // 決め打ちにすると、ES256 で運用していた環境がこの経路を通っただけで黙って RS256 へ戻る。
+        let algorithm = keys
+            .first()
+            .and_then(|key| SigningAlgorithm::parse(&key.algorithm).ok())
+            .unwrap_or(SigningAlgorithm::Rs256);
+        // ブートストラップは**猶予を置かない**。署名できる鍵が 1 本も無い状態なので、待つと
+        // そのあいだトークンを発行できない。
+        let key = self.new_key_material(algorithm, Duration::zero()).await?;
         let inserted = self
             .repo
             .insert_if_no_active(&key)
@@ -232,6 +245,10 @@ impl KeyService {
         algorithm: SigningAlgorithm,
         publish_lead: Duration,
     ) -> Result<SigningKey, KeyManagementError> {
+        let publish_lead = self
+            .capped_publish_lead(publish_lead)
+            .await
+            .map_err(|e| KeyManagementError::Internal(e.to_string()))?;
         self.generate_key_internal(algorithm, publish_lead)
             .await
             .map_err(|e| KeyManagementError::Internal(e.to_string()))
@@ -307,6 +324,29 @@ impl KeyService {
             .find_active()
             .await
             .map_err(|e| anyhow::anyhow!("find active key: {e}"))
+    }
+
+    /// 公開から署名開始までの猶予を、**署名できる鍵が途切れない範囲**へ丸める。
+    ///
+    /// `rotate_if_needed` が自動生成でやっている頭打ちと同じ規則を、手動生成にも効かせる。
+    /// - 現行鍵の `not_after` を越えない。越えると、現行鍵が切れてから `not_before` までのあいだ
+    ///   署名できる鍵が 1 本も無くなる。
+    /// - いま署名できる鍵が無いなら猶予は置かない。待つ相手（署名を続ける旧鍵）が居らず、
+    ///   猶予のあいだトークンを発行できなくなるだけである。
+    async fn capped_publish_lead(&self, publish_lead: Duration) -> anyhow::Result<Duration> {
+        if publish_lead <= Duration::zero() {
+            return Ok(Duration::zero());
+        }
+        let keys = self
+            .repo
+            .list_all()
+            .await
+            .map_err(|e| anyhow::anyhow!("list signing keys: {e}"))?;
+        let now = self.clock.now();
+        let Some(active) = current_signer_at(&keys, now) else {
+            return Ok(Duration::zero());
+        };
+        Ok(std::cmp::min(publish_lead, active.not_after - now))
     }
 
     async fn generate_key_internal(
@@ -444,13 +484,10 @@ mod tests {
             self.0.lock().unwrap().insert(0, key.clone());
             Ok(())
         }
-        async fn insert_if_no_active(&self, key: &SigningKey) -> RepoResult<bool> {
-            let mut keys = self.0.lock().unwrap();
-            if keys.iter().any(|k| k.status == SigningKeyStatus::Active) {
-                return Ok(false);
-            }
-            keys.insert(0, key.clone());
-            Ok(true)
+        async fn insert_if_no_active(&self, _key: &SigningKey) -> RepoResult<bool> {
+            // 本番の条件は `find_active` と同じ（ACTIVE かつ有効期間内）で、時刻は SQL 側の
+            // `UTC_TIMESTAMP(6)` に依る。ここに近似を書くと本番とずれるので、使わない。
+            unreachable!("not exercised by these tests")
         }
         async fn find_active(&self) -> RepoResult<Option<SigningKey>> {
             unreachable!("rotate_if_needed reads the whole list")
@@ -755,6 +792,45 @@ mod tests {
             .await
             .expect("retiring a superseded key is allowed");
         assert_eq!(repo.get("old").status, SigningKeyStatus::Retired);
+    }
+
+    /// **手動生成の猶予も現行鍵が切れる前で頭打ちにする。** 越えさせると、現行鍵が切れてから
+    /// `not_before` までのあいだ署名できる鍵が 1 本も無くなる（`rotate_if_needed` は公開済みの
+    /// 後継鍵を見つけて待つだけなので、この穴は次の確認では埋まらない）。
+    #[tokio::test]
+    async fn a_hand_generated_key_never_starts_signing_after_the_current_key_expires() {
+        let clock = TestClock::at("2026-08-27T00:00:00Z");
+        let expiry = "2026-08-27T02:00:00Z"; // 残り 2 時間 < 猶予 24 時間
+        let repo = FakeRepo::with(vec![existing(
+            "current",
+            SigningKeyStatus::Active,
+            "2025-09-01T00:00:00Z",
+            expiry,
+        )]);
+        let key = service(repo.clone(), clock)
+            .generate_key(SigningAlgorithm::Es256, Duration::hours(24))
+            .await
+            .expect("generate");
+        assert_eq!(key.not_before, parse(expiry));
+    }
+
+    /// 署名できる鍵が 1 本も無いところへ手動生成したら、猶予は置かない。待つ相手（署名を続ける
+    /// 旧鍵）が居らず、猶予のあいだトークンを発行できなくなるだけである。
+    #[tokio::test]
+    async fn a_hand_generated_key_skips_the_grace_when_nothing_can_sign() {
+        let clock = TestClock::at("2026-08-27T00:00:00Z");
+        let repo = FakeRepo::with(vec![existing(
+            "retired",
+            SigningKeyStatus::Retired,
+            "2026-01-01T00:00:00Z",
+            "2027-01-01T00:00:00Z",
+        )]);
+        let now = clock.now();
+        let key = service(repo.clone(), clock)
+            .generate_key(SigningAlgorithm::Es256, Duration::hours(24))
+            .await
+            .expect("generate");
+        assert!(key.is_usable_for_signing_at(now));
     }
 
     /// 鍵生成中もランタイムが他タスクを進められることの回帰テスト（DB 不要）。

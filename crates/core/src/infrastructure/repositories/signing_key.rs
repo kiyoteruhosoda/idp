@@ -83,11 +83,17 @@ impl SigningKeyRepository for SqlxSigningKeyRepository {
         }
         // ロック保持中に再確認 → 無ければ挿入。エラーでも必ず RELEASE_LOCK を試みる。
         let result: Result<bool> = async {
-            let active: Option<i64> =
-                sqlx::query_scalar("SELECT 1 FROM signing_keys WHERE status = 'ACTIVE' LIMIT 1")
-                    .fetch_optional(&mut *conn)
-                    .await
-                    .map_err(repo_err)?;
+            // 条件は `find_active` と同じ（= いま署名できる鍵があるか）。単に ACTIVE 行の
+            // 有無を見ると、公開しただけの後継鍵（`not_before` が未来）や期限切れのまま
+            // ACTIVE で残った鍵が「鍵はある」と読まれ、署名できないまま起動してしまう。
+            let active: Option<i64> = sqlx::query_scalar(
+                "SELECT 1 FROM signing_keys \
+                 WHERE status = 'ACTIVE' AND not_before <= UTC_TIMESTAMP(6) AND not_after > UTC_TIMESTAMP(6) \
+                 LIMIT 1",
+            )
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(repo_err)?;
             if active.is_some() {
                 return Ok(false);
             }
