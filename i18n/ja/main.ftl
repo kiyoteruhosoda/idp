@@ -145,6 +145,7 @@ admin-client-permissions-hint = このクライアントが IdP 自身の管理 
 admin-client-permissions-none = このクライアントは管理権限を保有していません。
 admin-client-permissions-grant-none-left = このクライアントは付与できる管理権限をすべて保有しています。
 admin-permission-error-unknown = 未知の権限コードです。付与可能なコードから選んでください。
+admin-permission-error-forbidden = idp.system.admin の付与・剥奪は、idp.system.admin を保有する利用者のみが行えます。この権限は root テナントでしか保有できません。
 
 # ページング付き利用者一覧（MT22）。絞り込み・ページングはサーバ側で行う。
 admin-users-list-title = 利用者
@@ -500,6 +501,7 @@ api-user-status-invalid = 状態が無効です。ACTIVE または DISABLED を�
 api-user-status-locked-forbidden = LOCKED は管理者が設定できません（ログイン失敗の連続で自動的に設定されます）。
 api-user-self-operation-forbidden = 自分自身のアカウントに対しては実行できません。
 api-permission-system-admin-forbidden = idp.system.admin の付与・剥奪は、idp.system.admin を保有する利用者のみが行えます。
+api-permission-system-admin-root-only = idp.system.admin は root テナントでのみ保有できる権限です。このテナントでは付与・剥奪できません。
 api-client-permission-not-grantable = この権限コードはクライアントへ付与できません。システム用クライアントに付与できるのは細粒度の管理権限（idp.<リソース>:read / :write）のみです。
 api-permission-code-required = 権限コードを指定してください。
 api-tenant-create-requires-user-actor = テナントの作成にはログイン中の管理者が必要です（作成者が新しいテナントの最初の管理者になるため）。

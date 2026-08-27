@@ -389,7 +389,10 @@ async fn apply_change(
     match result {
         Ok(_) => found(&base),
         Err(AdminApiError::Unauthorized) => redirect_to_login(tenant),
-        Err(AdminApiError::Forbidden) => forbidden_response(headers),
+        // 403 は「この画面を見る権限が無い」ではなく「**この付与・剥奪は許されない**」である
+        // （画面自体は `resolve_admin` を通っている）。403 ページへ倒すと原因が
+        // 「ページを表示する権限がありません」に化けるので、権限画面のエラー欄へ戻す。
+        Err(AdminApiError::Forbidden) => found(&format!("{base}?error=forbidden")),
         Err(AdminApiError::Validation(_)) => found(&format!("{base}?error=code")),
         Err(AdminApiError::NotFound) => found(&format!("{base}?error=notfound")),
         Err(_) => found(&format!("{base}?error=internal")),
@@ -400,6 +403,7 @@ fn error_key_for(error: &str) -> Option<&'static str> {
     match error {
         "csrf" => Some("admin-error-csrf"),
         "code" => Some("admin-permission-error-unknown"),
+        "forbidden" => Some("admin-permission-error-forbidden"),
         "notfound" => Some("admin-user-not-found-message"),
         "profile-invalid" => Some("admin-users-profile-error-invalid"),
         "profile-conflict" => Some("admin-users-profile-error-conflict"),

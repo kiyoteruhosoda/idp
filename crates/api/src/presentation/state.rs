@@ -643,6 +643,7 @@ impl AppState {
             users.clone(),
             tenant_memberships.clone(),
             user_permissions.clone(),
+            tenants.clone(),
             audit.clone(),
             clock.clone(),
         ));

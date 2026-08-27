@@ -145,6 +145,7 @@ admin-client-permissions-hint = Permissions this client uses to call the IdP's o
 admin-client-permissions-none = This client holds no management permissions.
 admin-client-permissions-grant-none-left = This client already holds every permission that can be granted to a client.
 admin-permission-error-unknown = Unknown permission code. Choose one of the available codes.
+admin-permission-error-forbidden = Only a user who holds idp.system.admin can grant or revoke it, and that permission exists only in the root tenant.
 
 # Paged user list (MT22). Search and paging happen server-side.
 admin-users-list-title = Users
@@ -500,6 +501,7 @@ api-user-status-invalid = Invalid status. Choose ACTIVE or DISABLED.
 api-user-status-locked-forbidden = LOCKED cannot be set by an administrator. It is set automatically after repeated sign-in failures.
 api-user-self-operation-forbidden = You cannot perform this operation on your own account.
 api-permission-system-admin-forbidden = Only holders of idp.system.admin can grant or revoke idp.system.admin.
+api-permission-system-admin-root-only = idp.system.admin exists only in the root tenant, so it cannot be granted or revoked here.
 api-client-permission-not-grantable = This permission code cannot be granted to a client. System clients can only hold fine-grained management permissions (idp.<resource>:read / :write).
 api-permission-code-required = A permission code is required.
 api-tenant-create-requires-user-actor = Creating a tenant requires a signed-in administrator, because the creator becomes the new tenant's first administrator.
