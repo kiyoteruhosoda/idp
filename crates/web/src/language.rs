@@ -247,6 +247,7 @@ mod tests {
         request.extensions_mut().insert(RpLoginContext {
             login_hint: None,
             ui_locales: Some(ui_locales.to_string()),
+            redirect_uri: None,
         });
         request
     }

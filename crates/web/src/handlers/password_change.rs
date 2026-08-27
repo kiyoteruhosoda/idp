@@ -11,6 +11,7 @@ use crate::correlation::CorrelationId;
 use crate::dto::{FormPageQuery, PasswordChangeForm};
 use crate::handlers::{form_retry_error_key, forwarded_context, found, see_other};
 use crate::i18n::Messages;
+use crate::login_context::RpLoginContext;
 use crate::state::WebState;
 use crate::templates::{render, MessagePage, PasswordChangeTemplate};
 use crate::tenant::WebTenant;
@@ -25,6 +26,7 @@ use idp_contracts::csrf::login_csrf_token;
 /// `?error=csrf` は CSRF 不一致の POST から PRG で戻ったときのエラーバナー表示。
 pub async fn page(
     State(state): State<WebState>,
+    Extension(rp_context): Extension<RpLoginContext>,
     Query(query): Query<FormPageQuery>,
     headers: HeaderMap,
 ) -> Response {
@@ -36,12 +38,17 @@ pub async fn page(
             "login-error-session-expired",
         );
     };
-    Html(render_form(
+    let body = render_form(
         &messages,
         &login_csrf_token(&auth_session_id, state.config.csrf_secret()),
         form_retry_error_key(query.error.as_deref()),
-    ))
-    .into_response()
+    );
+    // 同意が要らなければこのフォームの送信はそのまま RP へリダイレクトして終わる。ログイン画面と
+    // 同じく RP のオリジンだけ `form-action` に許可する（SEC3）。
+    crate::security_headers::html_with_form_action_csp(
+        rp_context.redirect_uri.as_deref().unwrap_or_default(),
+        body,
+    )
 }
 
 /// パスワード変更を実行する。成功時は `LoginService` と同じ SSO Cookie 発行 → `redirect_to` へ 302 する。
@@ -50,11 +57,14 @@ pub async fn submit(
     Extension(correlation): Extension<CorrelationId>,
     Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
+    Extension(rp_context): Extension<RpLoginContext>,
     headers: HeaderMap,
     Form(form): Form<PasswordChangeForm>,
 ) -> Response {
     let ctx = forwarded_context(&headers, &correlation, &client_ip);
     let auth_session_id = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE);
+    // 再表示するフォームにも初回描画と同じ `form-action` の許可を付ける。
+    let rp_redirect_uri = rp_context.redirect_uri.as_deref().unwrap_or_default();
 
     if form.new_password != form.new_password_confirm {
         let messages = Messages::new(locale(&headers));
@@ -64,6 +74,7 @@ pub async fn submit(
             auth_session_id.as_deref(),
             "password-change-error-mismatch",
             state.config.csrf_secret(),
+            rp_redirect_uri,
         );
     }
 
@@ -191,6 +202,7 @@ pub async fn submit(
                 auth_session_id.as_deref(),
                 "password-change-error-invalid-current",
                 state.config.csrf_secret(),
+                rp_redirect_uri,
             )
         }
         InternalChangePasswordResponse::WeakPassword { reason } => reshow_form(
@@ -199,6 +211,7 @@ pub async fn submit(
             auth_session_id.as_deref(),
             super::password_rejection_key(reason, "password-change-error-weak"),
             state.config.csrf_secret(),
+            rp_redirect_uri,
         ),
         InternalChangePasswordResponse::Internal => {
             (StatusCode::INTERNAL_SERVER_ERROR, Html(String::new())).into_response()
@@ -215,21 +228,28 @@ fn render_form(messages: &Messages, csrf: &str, error_key: Option<&str>) -> Stri
 }
 
 /// エラー付きでフォームを再表示する（AuthSession はまだ有効なため再入力できる）。
+///
+/// **CSP は初回描画と同じものを付ける。** 既定のままにすると、一度弾かれて出し直された
+/// フォームからの再送信だけが RP へ戻れなくなる。
 fn reshow_form(
     messages: &Messages,
     status: StatusCode,
     auth_session_id: Option<&str>,
     error_key: &str,
     csrf_secret: &[u8],
+    redirect_uri: &str,
 ) -> Response {
     match auth_session_id {
         Some(id) => (
             status,
-            Html(render_form(
-                messages,
-                &login_csrf_token(id, csrf_secret),
-                Some(error_key),
-            )),
+            crate::security_headers::html_with_form_action_csp(
+                redirect_uri,
+                render_form(
+                    messages,
+                    &login_csrf_token(id, csrf_secret),
+                    Some(error_key),
+                ),
+            ),
         )
             .into_response(),
         None => error_page(

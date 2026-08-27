@@ -110,6 +110,10 @@ pub enum LoginContextOutcome {
     Ok {
         login_hint: Option<String>,
         ui_locales: Option<String>,
+        /// この認可要求の `redirect_uri`。web がログイン画面の CSP `form-action` に許可する
+        /// オリジンの出所（SSO と同意が揃っていれば、ログインフォームの送信はそのまま RP へ
+        /// リダイレクトするため）。
+        redirect_uri: String,
     },
     /// `auth_session_id` が無効・期限切れ（web は文脈なしで描画を続ける）。
     SessionExpired,
@@ -629,6 +633,7 @@ impl AuthorizeService {
         LoginContextOutcome::Ok {
             login_hint: session.login_hint,
             ui_locales: session.ui_locales,
+            redirect_uri: session.redirect_uri,
         }
     }
 }
