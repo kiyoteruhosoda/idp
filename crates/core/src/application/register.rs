@@ -187,6 +187,7 @@ impl RegisterService {
             preferred_username: Some(preferred_username),
             name,
             language: None,
+            theme: None,
             password_hash,
             must_change_password: false,
             password_changed_at: Some(now),

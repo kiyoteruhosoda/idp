@@ -362,7 +362,7 @@ pub async fn verify(
                 set_cookies = set_cookies.set_local(
                     cookies::LANG_COOKIE,
                     lang.as_tag(),
-                    cookies::LANG_COOKIE_MAX_AGE_SECS,
+                    cookies::PREFERENCE_COOKIE_MAX_AGE_SECS,
                 );
             }
             (

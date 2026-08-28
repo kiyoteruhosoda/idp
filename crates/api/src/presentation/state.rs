@@ -13,6 +13,7 @@ use crate::application::account_password::AccountPasswordService;
 use crate::application::account_profile::AccountProfileService;
 use crate::application::account_security::AccountSecurityService;
 use crate::application::account_tenants::AccountTenantsService;
+use crate::application::account_theme::AccountThemeService;
 use crate::application::admin_access::AdminAccessService;
 use crate::application::admin_login::AdminLoginService;
 use crate::application::application_log::ApplicationLogService;
@@ -196,6 +197,7 @@ pub struct AppState {
     pub account_password: Arc<AccountPasswordService>,
     /// セルフサービスの表示言語変更（ログイン済みユーザーの設定画面。MT20）。
     pub account_language: Arc<AccountLanguageService>,
+    pub account_theme: Arc<AccountThemeService>,
     /// セルフサービスの表示名（プロフィール）取得・更新（ログイン済みユーザーの設定画面）。
     pub account_profile: Arc<AccountProfileService>,
     /// ログイン中ユーザーの所属テナント列挙（テナント切り替え UI）。
@@ -393,6 +395,12 @@ impl AppState {
             users.clone(),
             clock.clone(),
         ));
+        // セルフサービスの配色変更（ログイン済みユーザー）。
+        let account_theme = Arc::new(AccountThemeService::new(
+            sso_sessions.clone(),
+            users.clone(),
+            clock.clone(),
+        ));
         // セルフサービスの表示名（プロフィール）取得・更新（ログイン済みユーザー）。
         let account_profile = Arc::new(AccountProfileService::new(
             sso_sessions.clone(),
@@ -477,6 +485,17 @@ impl AppState {
             clock.clone(),
             config.sso_idle_ttl(),
         ));
+        // テナント解決（ADR-0009 §7）: id → tenant のホットパスを TTL キャッシュ + 更新時 invalidation で
+        // 抑える。MT9 で `TenantResolver` middleware がこのサービスをルーターへ mount する。
+        // `AuthorizeService`（ログイン画面のテナント表示名）も同じキャッシュに相乗りするため、
+        // 依存する側より先に組み立てる。
+        let tenant_cache: Arc<dyn Cache<TenantId, Tenant>> = Arc::new(InMemoryTtlCache::new(
+            chrono_from_std(config.tenant_cache_ttl()),
+            clock.clone(),
+        ));
+        let tenant_resolution =
+            Arc::new(TenantResolutionService::new(tenants.clone(), tenant_cache));
+
         let authorize = Arc::new(AuthorizeService::new(
             clients.clone(),
             auth_sessions.clone(),
@@ -487,6 +506,7 @@ impl AppState {
             config.auth_session_ttl(),
             authentication_policies.clone(),
             config.auth_policy_default_effect(),
+            tenant_resolution.clone(),
         ));
         // SAML SP-initiated SSO。進行状態の TTL は OIDC の auth_session と同じ値を使う。
         let saml_sso = Arc::new(SamlSsoService::new(
@@ -750,14 +770,6 @@ impl AppState {
             clock.clone(),
         ));
 
-        // テナント解決（ADR-0009 §7）: id → tenant のホットパスを TTL キャッシュ + 更新時 invalidation で
-        // 抑える。MT9 で `TenantResolver` middleware がこのサービスをルーターへ mount する。
-        let tenant_cache: Arc<dyn Cache<TenantId, Tenant>> = Arc::new(InMemoryTtlCache::new(
-            chrono_from_std(config.tenant_cache_ttl()),
-            clock.clone(),
-        ));
-        let tenant_resolution = Arc::new(TenantResolutionService::new(tenants, tenant_cache));
-
         // F4: Logout（RP-initiated / front-channel / back-channel）。
         let logout = Arc::new(LogoutService::new(
             sso_sessions.clone(),
@@ -1002,6 +1014,7 @@ impl AppState {
             system_settings,
             account_password,
             account_language,
+            account_theme,
             account_profile,
             account_tenants,
             password_reset,

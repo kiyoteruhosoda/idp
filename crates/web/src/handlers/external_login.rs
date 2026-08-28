@@ -217,7 +217,7 @@ fn render_outcome(
                 set_cookies = set_cookies.set_local(
                     cookies::LANG_COOKIE,
                     lang.as_tag(),
-                    cookies::LANG_COOKIE_MAX_AGE_SECS,
+                    cookies::PREFERENCE_COOKIE_MAX_AGE_SECS,
                 );
             }
             // OIDC 認可フローの途中から来ていれば、api が組み立てた code 付き `redirect_uri` へ
@@ -255,7 +255,7 @@ fn render_outcome(
                 set_cookies = set_cookies.set_local(
                     cookies::LANG_COOKIE,
                     lang.as_tag(),
-                    cookies::LANG_COOKIE_MAX_AGE_SECS,
+                    cookies::PREFERENCE_COOKIE_MAX_AGE_SECS,
                 );
             }
             (

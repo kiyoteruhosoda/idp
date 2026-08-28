@@ -72,6 +72,10 @@ pub async fn login_page(
         error_key,
         // 認可要求の `login_hint` をユーザー名欄へ入れる（G12）。空文字は初期値にしない。
         rp_context.login_hint.as_deref().filter(|h| !h.is_empty()),
+        // どのアプリのどの組織へ入るのかを画面に出す。api が登録済みの値から引いた表示名で、
+        // 引けなければ出さない（空文字も出さない）。
+        display_name(rp_context.client_name.as_deref()),
+        display_name(rp_context.tenant_name.as_deref()),
     );
     // SSO と同意が揃っていれば、ログインフォームの送信はそのまま RP へリダイレクトして終わる。
     // Chrome は `form-action` を送信後のリダイレクト先にも適用するので、その RP のオリジンだけ
@@ -207,6 +211,8 @@ fn render_form(
     csrf: &str,
     error_key: Option<&str>,
     login_hint: Option<&str>,
+    client_name: Option<&str>,
+    tenant_name: Option<&str>,
 ) -> String {
     render(&LoginTemplate {
         messages,
@@ -214,6 +220,8 @@ fn render_form(
         csrf,
         error_key,
         login_hint,
+        client_name,
+        tenant_name,
     })
 }
 
@@ -255,8 +263,6 @@ pub async fn login(
 
     // FluentBundle は Send でないため、await をまたがないようここで生成する。
     let messages = Messages::new(locale(&headers));
-    // 再表示するフォームにも初回描画と同じ `form-action` の許可を付ける。
-    let rp_redirect_uri = rp_context.redirect_uri.as_deref().unwrap_or_default();
     match outcome {
         InternalAuthenticateResponse::Success {
             redirect_to,
@@ -282,7 +288,7 @@ pub async fn login(
                 set_cookies = set_cookies.set_local(
                     cookies::LANG_COOKIE,
                     lang.as_tag(),
-                    cookies::LANG_COOKIE_MAX_AGE_SECS,
+                    cookies::PREFERENCE_COOKIE_MAX_AGE_SECS,
                 );
             }
             (
@@ -356,7 +362,7 @@ pub async fn login(
             auth_session_id.as_deref(),
             "login-error-invalid-credentials",
             state.config.csrf_secret(),
-            rp_redirect_uri,
+            &rp_context,
         ),
         InternalAuthenticateResponse::Locked => reshow_form(
             &messages,
@@ -365,7 +371,7 @@ pub async fn login(
             auth_session_id.as_deref(),
             "login-error-locked",
             state.config.csrf_secret(),
-            rp_redirect_uri,
+            &rp_context,
         ),
         // 自己登録アカウントのメール未検証（SEC6b）。確認リンクを踏むよう案内する。
         InternalAuthenticateResponse::EmailVerificationRequired => error_page(
@@ -381,7 +387,7 @@ pub async fn login(
             auth_session_id.as_deref(),
             "login-error-policy-denied",
             state.config.csrf_secret(),
-            rp_redirect_uri,
+            &rp_context,
         ),
         // ポリシーが MFA 必須だが認証器（TOTP）が未設定。ポータルで設定するよう案内する。
         InternalAuthenticateResponse::MfaEnrollmentRequired => error_page(
@@ -421,6 +427,12 @@ pub async fn login(
     }
 }
 
+/// 画面へ出す表示名を選ぶ。空白だけの名前は「無い」と同じに扱う（登録時に空文字が入っていても
+/// 見出しが空欄になったり、名乗りが消えたりしないため）。
+fn display_name(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|v| !v.is_empty())
+}
+
 /// エラー付きでフォームを再表示する（AuthSession はまだ有効なため再入力できる）。
 ///
 /// **CSP は初回描画と同じものを付ける。** ここを既定のままにすると、打ち間違えて出し直された
@@ -433,13 +445,13 @@ fn reshow_form(
     auth_session_id: Option<&str>,
     error_key: &str,
     csrf_secret: &[u8],
-    redirect_uri: &str,
+    rp_context: &RpLoginContext,
 ) -> Response {
     match auth_session_id {
         Some(id) => (
             status,
             crate::security_headers::html_with_form_action_csp(
-                redirect_uri,
+                rp_context.redirect_uri.as_deref().unwrap_or_default(),
                 render_form(
                     messages,
                     tenant_prefix,
@@ -448,6 +460,10 @@ fn reshow_form(
                     // 再表示では `login_hint` を入れ直さない（利用者が別の識別子を入れて失敗した
                     // 場合に、RP の指定へ黙って戻すと入力し直しに気付けない）。
                     None,
+                    // 見出しと名乗りは初回描画と同じにする。打ち間違えた画面だけ「どこへ
+                    // サインインするのか」が消えると、やり直す利用者ほど手がかりを失う。
+                    display_name(rp_context.client_name.as_deref()),
+                    display_name(rp_context.tenant_name.as_deref()),
                 ),
             ),
         )

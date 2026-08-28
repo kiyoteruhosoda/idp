@@ -35,7 +35,7 @@
         <td data-label="{{ messages.get("admin-external-idps-col-issuer") }}"><span class="text-break">{{ p.issuer }}</span></td>
         {# SAML にクライアントシークレットは無い（真正性はアサーションの署名が担保する）。
            「未設定」と出すと設定し忘れに見えるため、そもそも該当しないことを示す。 #}
-        <td data-label="{{ messages.get("admin-external-idps-col-secret") }}">{% if p.is_saml() %}<span class="text-muted">—</span>{% else if p.has_client_secret %}<span class="badge text-bg-secondary">{{ messages.get("admin-external-idps-secret-set") }}</span>{% else %}<span class="badge text-bg-light text-dark">{{ messages.get("admin-external-idps-secret-unset") }}</span>{% endif %}</td>
+        <td data-label="{{ messages.get("admin-external-idps-col-secret") }}">{% if p.is_saml() %}<span class="text-muted">—</span>{% else if p.has_client_secret %}<span class="badge text-bg-secondary">{{ messages.get("admin-external-idps-secret-set") }}</span>{% else %}<span class="badge bg-secondary-subtle text-secondary-emphasis">{{ messages.get("admin-external-idps-secret-unset") }}</span>{% endif %}</td>
         <td data-label="{{ messages.get("admin-external-idps-col-state") }}">
           {% if p.enabled %}<span class="badge text-bg-success">{{ messages.get("admin-external-idps-state-enabled") }}</span>{% else %}<span class="badge text-bg-secondary">{{ messages.get("admin-external-idps-state-disabled") }}</span>{% endif %}
           {% if p.allow_auto_link %}<span class="badge text-bg-info ms-1">{{ messages.get("admin-external-idps-state-auto-link") }}</span>{% endif %}

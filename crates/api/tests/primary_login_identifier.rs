@@ -47,6 +47,7 @@ fn new_user(tenant_id: TenantId, username: &str) -> User {
         preferred_username: Some(username.to_string()),
         name: None,
         language: None,
+        theme: None,
         password_hash: "x".to_string(),
         must_change_password: false,
         password_changed_at: None,

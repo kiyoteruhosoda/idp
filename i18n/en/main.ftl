@@ -1,5 +1,7 @@
 # Login screen messages (English is the source of truth; keys are shared across locales).
 login-title = Sign in
+# Heading used when the requesting application is known ($client is its registered name).
+login-title-for-client = Sign in to { $client }
 login-username = Username
 login-password = Password
 login-forgot-password = Forgot your password?
@@ -373,8 +375,9 @@ passkey-register-intro = Use a passkey to sign in without a password using your 
 passkey-register-name-label = Passkey name
 passkey-register-name-placeholder = e.g. MacBook Touch ID
 passkey-register-button = Add passkey
-passkey-register-success = Passkey registered successfully!
+passkey-register-success = Passkey registered successfully
 passkey-back-to-list = Back to passkey list
+nav-home = Go to account home
 passkey-retry = Try again
 passkey-delete-button = Delete
 passkey-delete-confirm = Are you sure you want to delete this passkey?
@@ -432,6 +435,11 @@ user-settings-password-submit = Change password
 user-settings-password-saved = Your password has been changed.
 user-settings-language-heading = Language
 user-settings-language-current = Current language
+user-settings-theme-heading = Appearance
+user-settings-theme-current = Current appearance
+user-settings-theme-system = Match my device
+user-settings-theme-light = Light
+user-settings-theme-dark = Dark
 user-settings-mfa-heading = Multi-factor authentication
 user-settings-mfa-totp = Set up an authenticator app (TOTP)
 user-settings-mfa-passkey = Manage passkeys
@@ -682,6 +690,8 @@ user-settings-nav-label = Account setting categories
 user-settings-security-heading = Security
 user-settings-language-help = Your selection is saved to a cookie and, when signed in, to your user profile.
 user-settings-language-submit = Save language
+user-settings-theme-help = Your appearance choice is saved in a cookie and, while signed in, in your account settings.
+user-settings-theme-submit = Save appearance
 user-settings-password-help = Confirm your current password before changing it.
 user-settings-mfa-help = Add or manage authenticator apps and passkeys.
 

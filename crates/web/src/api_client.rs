@@ -187,14 +187,36 @@ pub struct AdminIdentity {
     pub label: String,
     /// 操作中テナントの表示名。api が返さなかった場合のみ `None`。
     pub tenant_name: Option<String>,
+    /// この管理者がこのテナントで行使できる権限コード（api が含意を展開済み）。
+    /// メニューの出し分けに使う。**認可ではない**（実際の可否は api が毎回判定する）。
+    permissions: Vec<String>,
+}
+
+impl AdminIdentity {
+    /// 共通レイアウトへ渡すための借用。判定そのものは
+    /// [`crate::templates::ConsoleAdmin::can`] が single source として持つ。
+    pub fn permissions(&self) -> &[String] {
+        &self.permissions
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(label: &str, tenant_name: Option<&str>) -> Self {
+        Self {
+            label: label.to_string(),
+            tenant_name: tenant_name.map(str::to_string),
+            permissions: Vec::new(),
+        }
+    }
 }
 
 /// whoami の応答をヘッダ表示の文脈へ写す。
 fn admin_identity(mut w: WhoamiResponse) -> AdminIdentity {
     let tenant_name = non_empty(w.tenant_name.take());
+    let permissions = std::mem::take(&mut w.permissions);
     AdminIdentity {
         label: admin_display_label(w),
         tenant_name,
+        permissions,
     }
 }
 
@@ -2184,6 +2206,16 @@ impl ApiClient {
             .await
     }
 
+    /// ログイン済みユーザーの配色設定（`users.theme`）を更新する。
+    pub async fn account_update_theme(
+        &self,
+        req: &idp_contracts::auth::InternalAccountUpdateThemeRequest,
+    ) -> Result<idp_contracts::auth::InternalAccountUpdateThemeResponse, InternalCallError> {
+        // correlation_id は不要（監査対象外）のため空文字を渡す。
+        self.post_internal("/internal/account/update-theme", "", req)
+            .await
+    }
+
     /// セルフサービスのプロフィール（表示名等）を取得する（設定画面のプリフィル用）。
     pub async fn account_profile(
         &self,
@@ -2558,6 +2590,7 @@ mod tests {
             name: name.map(str::to_string),
             preferred_username: preferred_username.map(str::to_string),
             tenant_name: Some("Acme".to_string()),
+            permissions: Vec::new(),
         }
     }
 

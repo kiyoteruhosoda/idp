@@ -106,6 +106,7 @@ pub struct InternalAuthorizeLoginContextRequest {
 ///
 /// 認可要求が持ち込んだ**表示上のヒントだけ**を返す（利用者・資格情報・同意状態は含めない）。
 /// `login_hint` は RP が指定した任意の文字列であり、実在するアカウントを意味しない。
+/// `client_name` / `tenant_name` は IdP が登録済みの値から引いた表示名で、RP の申告ではない。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAuthorizeLoginContextResponse {
@@ -121,6 +122,19 @@ pub enum InternalAuthorizeLoginContextResponse {
         /// `form-action` をフォーム送信後のリダイレクト先にも適用するため、RP のオリジンを
         /// 許可しないとその遷移が遮断される（SAML の ACS と同じ事情。`handlers::saml_sso`）。
         redirect_uri: Option<String>,
+        /// 認可要求を出したクライアントの表示名。ログイン画面の見出し
+        /// （「〇〇 にログイン」）に使う。
+        ///
+        /// **`Option` かつ `#[serde(default)]` なのは配信順への耐性のためである**
+        /// （`InternalConsentInfoResponse::Ok` の `redirect_uri` と同じ事情。api と web の
+        /// 入れ替えの数秒間は「新しい web ＋ 古い api」が成立し得る）。`None` のときは
+        /// 表示名を出さない（＝この画面が変わる前の見出しに戻るだけ）。
+        #[serde(default)]
+        client_name: Option<String>,
+        /// フローのテナントの表示名。ログイン画面のナビバーに出す。`None` のときは既定の
+        /// `IdP` を出す（`client_name` と同じく配信順への耐性のため `Option`）。
+        #[serde(default)]
+        tenant_name: Option<String>,
     },
     /// `auth_session_id` が無効・期限切れ（web は文脈なしで描画を続ける）。
     SessionExpired,
@@ -1119,6 +1133,30 @@ pub enum InternalAccountUpdateLanguageResponse {
     Internal,
 }
 
+/// セルフサービスの配色更新 API（`POST /internal/account/update-theme`）のリクエスト。
+///
+/// ログイン済みユーザーが SSO セッション経由で自分の `users.theme` を更新する。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAccountUpdateThemeRequest {
+    /// SSO セッション Cookie の生値（web が転送）。
+    pub sso_session_id: String,
+    /// 設定する配色（`light` / `dark` / `system`）。
+    pub theme: String,
+}
+
+/// セルフサービスの配色更新 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAccountUpdateThemeResponse {
+    Ok,
+    /// SSO セッションが無い・期限切れ。
+    SessionExpired,
+    /// 指定した配色が非対応。
+    InvalidTheme,
+    /// api 内部エラー。
+    Internal,
+}
+
 /// セルフサービスのプロフィール取得 API（`POST /internal/account/profile`）のリクエスト。
 ///
 /// 設定画面が現在の表示名などを再表示（プリフィル）するために、SSO セッション経由で本人の
@@ -1144,6 +1182,10 @@ pub enum InternalAccountProfileResponse {
         /// Cookie より優先する（MT20。`CLAUDE.md`「国際化」の優先順 2 位）。
         #[serde(default)]
         language: Option<String>,
+        /// 保存済みの配色（`light` / `dark` / `system`。未設定なら `None`）。言語と同じく
+        /// Cookie より優先する。旧 api と混在しても復号に失敗しないよう `#[serde(default)]`。
+        #[serde(default)]
+        theme: Option<String>,
     },
     /// SSO セッションが無い・期限切れ。
     SessionExpired,

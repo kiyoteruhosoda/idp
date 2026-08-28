@@ -59,6 +59,10 @@ pub struct AuthorizedPrincipal {
     pub name: Option<String>,
     /// ログイン識別子（クライアント主体では `None`）。
     pub preferred_username: Option<String>,
+    /// この主体が管理トークンで提示した**保有**権限コード（`perms` クレームそのまま。含意は
+    /// 展開していない）。認可の判定はここに来るまでに済んでおり、以降の用途は「画面に何を出すか」
+    /// のような表示上の出し分けに限る。
+    pub permission_codes: Vec<String>,
 }
 
 /// SSO セッションから発行した管理トークン。
@@ -181,13 +185,8 @@ impl ManagementTokenService {
             None => return ManagementAccess::Unauthenticated,
         };
 
-        let held: Vec<&str> = claims
-            .perms
-            .as_deref()
-            .unwrap_or_default()
-            .split_whitespace()
-            .collect();
-        if permission::satisfies(&held, required_permission) {
+        let held = &principal.permission_codes;
+        if permission::satisfies(held, required_permission) {
             ManagementAccess::Granted(principal)
         } else {
             ManagementAccess::Forbidden
@@ -276,6 +275,17 @@ impl ManagementTokenService {
         Ok(claims)
     }
 
+    /// `perms` クレーム（空白区切り）を保有コードの並びへ写す。
+    fn held_codes(claims: &AccessTokenClaims) -> Vec<String> {
+        claims
+            .perms
+            .as_deref()
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(str::to_string)
+            .collect()
+    }
+
     /// トークンの `sub` から主体を解決し、まだ使える状態かを確かめる（fail-closed）。
     async fn resolve_principal(
         &self,
@@ -302,6 +312,7 @@ impl ManagementTokenService {
                 },
                 name: Some(client.app_name),
                 preferred_username: None,
+                permission_codes: Self::held_codes(claims),
             });
         }
 
@@ -311,6 +322,7 @@ impl ManagementTokenService {
                 actor: AdminActor::User(user.id),
                 name: user.name,
                 preferred_username: user.preferred_username,
+                permission_codes: Self::held_codes(claims),
             }),
             Ok(_) => None,
             Err(e) => {

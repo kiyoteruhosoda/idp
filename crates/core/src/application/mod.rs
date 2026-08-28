@@ -7,6 +7,7 @@ pub mod account_password;
 pub mod account_profile;
 pub mod account_security;
 pub mod account_tenants;
+pub mod account_theme;
 pub mod admin_access;
 pub mod admin_login;
 pub mod application_log;

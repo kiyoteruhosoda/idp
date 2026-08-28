@@ -63,6 +63,31 @@
   </div>
 </div>
 
+<div class="card mb-4 user-settings-theme" id="theme">
+  <div class="card-header d-flex align-items-center"><i class="fa-solid fa-circle-half-stroke me-2" aria-hidden="true"></i>{{ messages.get("user-settings-theme-heading") }}</div>
+  <div class="card-body">
+    <p class="text-muted small">{{ messages.get("user-settings-theme-help") }}</p>
+    {#- 言語セレクタと同じ形（`?theme=` を付けて自分自身へ GET）。解釈・保存は
+        `display_preferences` middleware が全画面共通で行うため、専用の POST 経路は要らない。 -#}
+    <form method="get" action="{{ tenant }}/settings" class="row g-2 align-items-end">
+      {% if from_admin %}<input type="hidden" name="from" value="admin">{% endif %}
+      <div class="col-auto">
+        {#- `id` は card の `id="theme"`（ページ内アンカー）と衝突させない。同じ `id` が 2 つあると
+            `<label for>` が先に現れる card の側に結び付き、ラベルがセレクトを指さなくなる。 -#}
+        <label class="form-label" for="theme-select">{{ messages.get("user-settings-theme-current") }}</label>
+        <select class="form-select" id="theme-select" name="theme">
+          <option value="system" {% if current_theme == "system" %}selected{% endif %}>{{ messages.get("user-settings-theme-system") }}</option>
+          <option value="light" {% if current_theme == "light" %}selected{% endif %}>{{ messages.get("user-settings-theme-light") }}</option>
+          <option value="dark" {% if current_theme == "dark" %}selected{% endif %}>{{ messages.get("user-settings-theme-dark") }}</option>
+        </select>
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-primary">{{ messages.get("user-settings-theme-submit") }}</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <div class="card mb-4 user-settings-password" id="security">
   <div class="card-header d-flex align-items-center"><i class="fa-solid fa-lock me-2" aria-hidden="true"></i>{{ messages.get("user-settings-security-heading") }}</div>
   <div class="card-body">

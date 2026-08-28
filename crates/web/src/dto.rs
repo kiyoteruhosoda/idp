@@ -164,11 +164,16 @@ pub struct AccountNameForm {
     pub from: Option<String>,
 }
 
-/// 設定画面の GET クエリ（言語一時切替・保存/エラーバナー表示・遷移元の引き継ぎ）。
+/// 設定画面の GET クエリ（言語・配色の一時切替・保存/エラーバナー表示・遷移元の引き継ぎ）。
 #[derive(Debug, Default, Deserialize)]
 pub struct SettingsQuery {
     #[serde(default)]
     pub lang: Option<String>,
+    /// 配色の選択（`?theme=`）。保存は middleware が行うが、**この画面はセレクタの選択状態を
+    /// 描くために自分でも読む**（DB への保存は応答の後、Cookie の書き換えは応答の中で起きるため、
+    /// 保存直後のこのリクエストでは古い値しか手元に無い）。
+    #[serde(default)]
+    pub theme: Option<String>,
     #[serde(default)]
     pub saved: Option<String>,
     #[serde(default)]

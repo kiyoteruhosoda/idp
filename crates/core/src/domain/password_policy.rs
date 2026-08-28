@@ -207,6 +207,7 @@ mod tests {
             preferred_username: None,
             name: None,
             language: None,
+            theme: None,
             password_hash: "hash".to_string(),
             must_change_password: must_change,
             password_changed_at,

@@ -6,9 +6,10 @@
 //! `/internal/authorize/login-context` から取り直し、`Extension` で下流へ渡す。
 //!
 //! middleware に置くのは、消費者が 2 つに分かれるためである。`ui_locales` は表示言語の決定
-//! （[`crate::language`]）が、`login_hint` はログイン画面のハンドラが使う。ハンドラ側で取ると、
-//! 言語決定より後になって「画面は英語、文言は日本語」のような食い違いが起きるか、同じ文脈を
-//! 2 度取りに行くことになる。取得は 1 回にし、決定順の判断は [`crate::language`] に残す。
+//! （[`crate::display_preferences`]）が、`login_hint` と表示名（クライアント名・テナント名）はログイン画面の
+//! ハンドラが使う。ハンドラ側で取ると、言語決定より後になって「画面は英語、文言は日本語」のような
+//! 食い違いが起きるか、同じ文脈を 2 度取りに行くことになる。取得は 1 回にし、決定順の判断は
+//! [`crate::display_preferences`] に残す。
 //!
 //! 費用は **OIDC フロー中の画面表示ごとに api への 1 リクエスト**（ローカルホップ）。
 //! `auth_session_id` Cookie はログイン・同意・MFA・強制パスワード変更の間しか存在しないため、
@@ -36,11 +37,16 @@ pub struct RpLoginContext {
     /// 進行中の認可要求の `redirect_uri`。ログイン画面の CSP `form-action` に許可するオリジンの
     /// 出所（`security_headers::csp_allowing_form_action`）。OIDC フロー外では `None`。
     pub redirect_uri: Option<String>,
+    /// 認可要求を出したクライアントの表示名（api が登録済みの `Clients.app_name` から引いた値。
+    /// **RP の申告ではない**）。ログイン画面の見出しに出し、どのアプリへ入るのかを示す。
+    pub client_name: Option<String>,
+    /// フローのテナントの表示名。ログイン画面のナビバーに出し、どの組織のアカウントで入るのかを示す。
+    pub tenant_name: Option<String>,
 }
 
 /// `auth_session_id` Cookie があれば認可要求の文脈を取り直して `Extension` へ載せる middleware。
 ///
-/// [`crate::tenant::capture_tenant`] より内側・[`crate::language::resolve_language`] より外側に
+/// [`crate::tenant::capture_tenant`] より内側・[`crate::display_preferences::resolve_display_preferences`] より外側に
 /// 置く（テナントが要り、言語決定が結果を読むため）。
 /// 文脈が無い（OIDC フロー外・取得失敗）ときも空の値を載せる。下流は常に
 /// `Extension<RpLoginContext>` で受け取れる。
@@ -94,10 +100,14 @@ async fn fetch(
             login_hint,
             ui_locales,
             redirect_uri,
+            client_name,
+            tenant_name,
         }) => Some(RpLoginContext {
             login_hint,
             ui_locales,
             redirect_uri,
+            client_name,
+            tenant_name,
         }),
         // 期限切れの Cookie が残っているだけ。文脈なしで描き、失効はハンドラ側の経路に任せる。
         Ok(InternalAuthorizeLoginContextResponse::SessionExpired) => None,

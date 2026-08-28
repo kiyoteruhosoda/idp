@@ -1,5 +1,7 @@
 # ログイン画面の文言（キーは en/main.ftl と共通。日本語訳は手動で追記する）。
 login-title = サインイン
+# 認可要求を出したアプリの名前が分かるときの見出し（$client は登録済みの表示名）。
+login-title-for-client = { $client } にサインイン
 login-username = ユーザー名
 login-password = パスワード
 login-forgot-password = パスワードをお忘れですか？
@@ -373,8 +375,9 @@ passkey-register-intro = デバイスの生体認証またはセキュリティ�
 passkey-register-name-label = パスキーの名前
 passkey-register-name-placeholder = 例: MacBook Touch ID
 passkey-register-button = パスキーを追加
-passkey-register-success = パスキーを登録しました！
+passkey-register-success = パスキーを登録しました
 passkey-back-to-list = パスキー一覧に戻る
+nav-home = アカウントのホームへ
 passkey-retry = 再試行
 passkey-delete-button = 削除
 passkey-delete-confirm = このパスキーを削除してもよいですか？
@@ -432,6 +435,11 @@ user-settings-password-submit = パスワードを変更
 user-settings-password-saved = パスワードを変更しました。
 user-settings-language-heading = 言語
 user-settings-language-current = 現在の言語
+user-settings-theme-heading = 配色
+user-settings-theme-current = 現在の配色
+user-settings-theme-system = 端末の設定に合わせる
+user-settings-theme-light = ライト
+user-settings-theme-dark = ダーク
 user-settings-mfa-heading = 多要素認証
 user-settings-mfa-totp = 認証アプリ（TOTP）を設定する
 user-settings-mfa-passkey = パスキーを管理する
@@ -682,6 +690,8 @@ user-settings-nav-label = アカウント設定カテゴリ
 user-settings-security-heading = セキュリティ
 user-settings-language-help = 表示言語を選ぶと Cookie とログイン中のユーザー設定に保存されます。
 user-settings-language-submit = 言語を保存
+user-settings-theme-help = 画面の配色を選ぶと Cookie とログイン中のユーザー設定に保存されます。
+user-settings-theme-submit = 配色を保存
 user-settings-password-help = 現在のパスワードを確認して新しいパスワードへ変更します。
 user-settings-mfa-help = 認証アプリやパスキーを追加・管理します。
 

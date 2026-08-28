@@ -22,6 +22,7 @@ use crate::application::account_security::{
     RevokeConsentOutcome, RevokeSessionOutcome, SecurityOverviewOutcome,
 };
 use crate::application::account_tenants::ListTenantsOutcome;
+use crate::application::account_theme::{UpdateThemeCommand, UpdateThemeOutcome};
 use crate::application::admin_login::{
     AdminChangePasswordCommand, AdminLoginCommand, AdminLoginOutcome,
 };
@@ -58,7 +59,8 @@ use idp_contracts::auth::{
     InternalAccountSecurityRequest, InternalAccountSecurityResponse, InternalAccountTenantsRequest,
     InternalAccountTenantsResponse, InternalAccountUpdateLanguageRequest,
     InternalAccountUpdateLanguageResponse, InternalAccountUpdateNameRequest,
-    InternalAccountUpdateNameResponse, InternalAdminAuthenticateRequest,
+    InternalAccountUpdateNameResponse, InternalAccountUpdateThemeRequest,
+    InternalAccountUpdateThemeResponse, InternalAdminAuthenticateRequest,
     InternalAdminAuthenticateResponse, InternalAdminChangePasswordRequest,
     InternalAdminChangePasswordResponse, InternalAuthenticateRequest, InternalAuthenticateResponse,
     InternalChangePasswordRequest, InternalChangePasswordResponse, InternalLogoutRequest,
@@ -703,6 +705,30 @@ pub async fn account_update_language(
     })
 }
 
+/// セルフサービスの配色変更（`POST /internal/account/update-theme`）。
+/// ログイン済みユーザーが SSO セッション経由で自分の配色設定を更新する。
+pub async fn account_update_theme(
+    State(state): State<AppState>,
+    Json(req): Json<InternalAccountUpdateThemeRequest>,
+) -> Json<InternalAccountUpdateThemeResponse> {
+    let outcome = state
+        .account_theme
+        .update(UpdateThemeCommand {
+            sso_session_id: req.sso_session_id,
+            theme: req.theme,
+        })
+        .await;
+    Json(match outcome {
+        UpdateThemeOutcome::Ok => InternalAccountUpdateThemeResponse::Ok,
+        UpdateThemeOutcome::SessionExpired => InternalAccountUpdateThemeResponse::SessionExpired,
+        UpdateThemeOutcome::InvalidTheme => InternalAccountUpdateThemeResponse::InvalidTheme,
+        UpdateThemeOutcome::Internal(e) => {
+            tracing::error!(error = %e, "account update-theme failed with internal error");
+            InternalAccountUpdateThemeResponse::Internal
+        }
+    })
+}
+
 /// セルフサービスのプロフィール取得（`POST /internal/account/profile`）。設定画面が表示名等を
 /// 再表示するために SSO セッション経由で本人のプロフィールを取得する（副作用なし）。
 pub async fn account_profile(
@@ -716,11 +742,13 @@ pub async fn account_profile(
             preferred_username,
             email,
             language,
+            theme,
         } => InternalAccountProfileResponse::Ok {
             name,
             preferred_username,
             email,
             language,
+            theme,
         },
         ProfileOutcome::SessionExpired => InternalAccountProfileResponse::SessionExpired,
         ProfileOutcome::Internal(e) => {

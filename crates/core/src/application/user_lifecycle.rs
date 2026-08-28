@@ -1033,6 +1033,7 @@ mod tests {
             preferred_username: None,
             name: None,
             language: None,
+            theme: None,
             password_hash: "hash:old".to_string(),
             must_change_password: false,
             password_changed_at: None,

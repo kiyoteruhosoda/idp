@@ -155,6 +155,7 @@ impl UserManagementService {
             preferred_username: Some(preferred_username),
             name,
             language: None,
+            theme: None,
             password_hash,
             must_change_password: true,
             password_changed_at: Some(now),

@@ -12,6 +12,7 @@
 use crate::application::audit::RequestContext;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::application::sso_restore::SsoRestorer;
+use crate::application::tenant_resolution::TenantResolutionService;
 use crate::domain::auth_session::{self, AuthSession};
 use crate::domain::authentication_policy::{
     evaluate_policies, AuthenticationContext, DefaultPolicyEffect, PolicyDecision,
@@ -114,6 +115,13 @@ pub enum LoginContextOutcome {
         /// オリジンの出所（SSO と同意が揃っていれば、ログインフォームの送信はそのまま RP へ
         /// リダイレクトするため）。
         redirect_uri: String,
+        /// 認可要求を出したクライアントの表示名（`Clients.app_name`）。ログイン画面が
+        /// 「どのアプリへログインするのか」を示すために使う。表示名が引けないときは `None`
+        /// （`client_id` は**出さない**。利用者に意味が無く、画面を汚すだけのため）。
+        client_name: Option<String>,
+        /// フローのテナントの表示名（`Tenants.name`）。同じ IdP が複数の組織を受け持つため、
+        /// 「どの組織のアカウントで入るのか」を示すために使う。引けないときは `None`。
+        tenant_name: Option<String>,
     },
     /// `auth_session_id` が無効・期限切れ（web は文脈なしで描画を続ける）。
     SessionExpired,
@@ -146,6 +154,10 @@ pub struct AuthorizeService {
     /// 復元後に変わったポリシーが効かなくなる。
     authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
     policy_default_effect: DefaultPolicyEffect,
+    /// ログイン画面へ出すテナント表示名の引き当て先（`login_context` でのみ使う）。
+    /// リポジトリを直に持たず解決サービスを通すのは、同じ行を同じリクエストの入口
+    /// （`TenantResolver`）が既に引いており、その TTL キャッシュに相乗りするためである。
+    tenants: Arc<TenantResolutionService>,
 }
 
 impl AuthorizeService {
@@ -160,6 +172,7 @@ impl AuthorizeService {
         auth_session_ttl: std::time::Duration,
         authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
         policy_default_effect: DefaultPolicyEffect,
+        tenants: Arc<TenantResolutionService>,
     ) -> Self {
         Self {
             clients,
@@ -172,6 +185,7 @@ impl AuthorizeService {
                 .expect("auth session TTL out of range"),
             authentication_policies,
             policy_default_effect,
+            tenants,
         }
     }
 
@@ -607,6 +621,10 @@ impl AuthorizeService {
     /// 認可要求が持ち込んだ `login_hint` / `ui_locales` を、進行中の `auth_session_id` から引き直す。
     /// web は resume の 303 でこれらを手元に残せないため、画面描画のたびに取り直す口が要る。
     ///
+    /// あわせて、ログイン画面が「どこへログインするのか」を示すための表示名
+    /// （クライアントの `app_name`・テナントの `name`）も返す。これは画面が持ち得ない情報で、
+    /// 無いと利用者はどのアプリのどの組織へ入るのか分からないまま資格情報を入力することになる。
+    ///
     /// 返すのは**表示のためのヒントだけ**で、利用者・同意状態には触れない（`auth_session_id` は
     /// 提示できれば認可セッションを操作できる bearer credential だが、この経路は読み出しのみ）。
     pub async fn login_context(
@@ -630,10 +648,32 @@ impl AuthorizeService {
         if session.is_expired_at(self.clock.now()) {
             return LoginContextOutcome::SessionExpired;
         }
+        // 表示名は「あれば出す」だけの飾りで、引けなくてもログインは続けられなければならない。
+        // 取得に失敗しても文脈全体を落とさず、その欄だけ空にする。
+        let client_name = match self
+            .clients
+            .find_by_client_id(tenant.tenant_id(), &session.client_id)
+            .await
+        {
+            Ok(client) => client.map(|c| c.app_name),
+            Err(e) => {
+                tracing::warn!(error = %e, "could not read the client name for the login page");
+                None
+            }
+        };
+        let tenant_name = match self.tenants.resolve(tenant.tenant_id()).await {
+            Ok(t) => t.map(|t| t.name),
+            Err(e) => {
+                tracing::warn!(error = %e, "could not read the tenant name for the login page");
+                None
+            }
+        };
         LoginContextOutcome::Ok {
             login_hint: session.login_hint,
             ui_locales: session.ui_locales,
             redirect_uri: session.redirect_uri,
+            client_name,
+            tenant_name,
         }
     }
 }

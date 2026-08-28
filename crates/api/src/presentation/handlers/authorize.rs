@@ -141,6 +141,7 @@ pub async fn authorize_resume(
 ///
 /// 認可要求が持ち込んだ `login_hint` / `ui_locales` を、web が持つ `auth_session_id` から引き直す。
 /// web は resume の 303 でこれらを手元に残せないため、ログイン画面の描画のたびにここで取り直す。
+/// あわせて、画面が「どこへログインするのか」を示すための表示名（クライアント名・テナント名）を返す。
 pub async fn authorize_login_context(
     State(state): State<AppState>,
     Json(req): Json<InternalAuthorizeLoginContextRequest>,
@@ -157,10 +158,14 @@ pub async fn authorize_login_context(
                 login_hint,
                 ui_locales,
                 redirect_uri,
+                client_name,
+                tenant_name,
             } => InternalAuthorizeLoginContextResponse::Ok {
                 login_hint,
                 ui_locales,
                 redirect_uri: Some(redirect_uri),
+                client_name,
+                tenant_name,
             },
             LoginContextOutcome::SessionExpired => {
                 InternalAuthorizeLoginContextResponse::SessionExpired

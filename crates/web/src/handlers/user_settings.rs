@@ -17,6 +17,7 @@ use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, UserSettings};
 use crate::tenant::WebTenant;
+use crate::theme::Theme;
 use axum::extract::{Extension, Query, State};
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Response};
@@ -29,9 +30,10 @@ use idp_contracts::auth::{
 
 /// 設定画面（`GET /{tenant_id}/settings`）。
 ///
-/// `?lang=` の解釈・`lang` Cookie の保存・ユーザー設定（DB）への永続化は
-/// [`crate::language::resolve_language`] middleware が全画面共通で行う（MT20）。ここは決定済みの
-/// 言語で描画するだけで、言語セレクタは `?lang=` を付けた同一 URL へのリンクとして機能する。
+/// `?lang=` / `?theme=` の解釈・Cookie の保存・ユーザー設定（DB）への永続化は
+/// [`crate::display_preferences::resolve_display_preferences`] middleware が全画面共通で行う
+/// （MT20）。ここは決定済みの値で描画するだけで、セレクタは `?lang=` / `?theme=` を付けた
+/// 同一 URL へのリンクとして機能する。
 pub async fn page(
     State(state): State<WebState>,
     Extension(tenant): Extension<WebTenant>,
@@ -43,7 +45,7 @@ pub async fn page(
 
     // 表示名・ログイン識別子のプリフィル値を api から取得する（Messages は !Send のため await より先に）。
     // 未ログイン・取得失敗時は空文字で描画する（フェイルソフト）。
-    let (current_name, preferred_username) =
+    let (current_name, preferred_username, stored_theme) =
         match cookies::get(&headers, cookies::SSO_SESSION_COOKIE) {
             Some(sso) => {
                 let req = InternalAccountProfileRequest {
@@ -53,20 +55,35 @@ pub async fn page(
                     Ok(InternalAccountProfileResponse::Ok {
                         name,
                         preferred_username,
+                        theme,
                         ..
                     }) => (
                         name.unwrap_or_default(),
                         preferred_username.unwrap_or_default(),
+                        theme,
                     ),
-                    Ok(_) => (String::new(), String::new()),
+                    Ok(_) => (String::new(), String::new(), None),
                     Err(e) => {
                         tracing::error!(error = %e, "account profile fetch call to api failed");
-                        (String::new(), String::new())
+                        (String::new(), String::new(), None)
                     }
                 }
             }
-            None => (String::new(), String::new()),
+            None => (String::new(), String::new(), None),
         };
+    // 決定順は middleware と同じ（`?theme=` > ユーザー設定 > Cookie）。**`?theme=` を自分でも
+    // 読む**のが要点で、保存は応答より後（DB）・応答の中（Cookie）に起きるため、保存直後の
+    // このリクエストでは api も Cookie もまだ古い値を返す。読まないと「保存したのに
+    // セレクタは元のまま」に見える（画面の配色だけが変わる）。
+    // 未選択（`?theme=` も DB も Cookie も無い）は「OS に合わせる」を選択済みとして見せる ——
+    // セレクタに「未選択」という選択肢は無く、実際の見え方も OS 追従だからである。
+    let current_theme = query
+        .theme
+        .as_deref()
+        .and_then(Theme::from_tag)
+        .or_else(|| stored_theme.as_deref().and_then(Theme::from_tag))
+        .or_else(|| cookies::get(&headers, cookies::THEME_COOKIE).and_then(|t| Theme::from_tag(&t)))
+        .unwrap_or(Theme::System);
 
     // Messages は FluentBundle を含み !Send のため、await をまたがないよう先にレンダリングして解放する。
     let body = {
@@ -75,6 +92,7 @@ pub async fn page(
             messages: &messages,
             tenant: &tenant.prefix(),
             current_lang: locale.as_tag(),
+            current_theme: current_theme.as_tag(),
             current_name: &current_name,
             preferred_username: &preferred_username,
             saved_key: query.saved.as_deref().and_then(saved_key_for),
@@ -221,6 +239,7 @@ mod tests {
             messages: &messages,
             tenant: "/00000000-0000-7000-8000-000000000000",
             current_lang: "ja",
+            current_theme: "system",
             current_name: "",
             preferred_username: "",
             saved_key: None,
@@ -229,15 +248,48 @@ mod tests {
         })
     }
 
+    /// 配色セレクタは保存済みの値を選択状態で出す（保存したのに戻って見ると既定に見える、を防ぐ）。
+    #[test]
+    fn the_appearance_selector_shows_the_saved_choice() {
+        let messages = Messages::new(Locale::Ja);
+        let render_with = |current_theme| {
+            render(&UserSettings {
+                messages: &messages,
+                tenant: "/t",
+                current_lang: "ja",
+                current_theme,
+                current_name: "",
+                preferred_username: "",
+                saved_key: None,
+                error_key: None,
+                from_admin: false,
+            })
+        };
+
+        let html = render_with("dark");
+        assert!(html.contains(r#"<option value="dark" selected>"#), "{html}");
+        assert!(
+            !html.contains(r#"<option value="light" selected>"#),
+            "{html}"
+        );
+
+        // 未選択は「端末の設定に合わせる」として見せる（実際の見え方と一致させる）。
+        let html = render_with("system");
+        assert!(
+            html.contains(r#"<option value="system" selected>"#),
+            "{html}"
+        );
+    }
+
     #[test]
     fn back_link_to_admin_console_is_shown_only_when_opened_from_admin() {
         let html = render_settings(true);
         assert!(html.contains("/00000000-0000-7000-8000-000000000000/admin\""));
-        // フォーム送信（表示名・言語・パスワード）でも管理コンソール文脈を hidden で引き継ぐ。
+        // フォーム送信（表示名・言語・配色・パスワード）でも管理コンソール文脈を hidden で引き継ぐ。
         assert_eq!(
             html.matches(r#"<input type="hidden" name="from" value="admin">"#)
                 .count(),
-            3
+            4
         );
 
         let html = render_settings(false);

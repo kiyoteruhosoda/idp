@@ -18,6 +18,8 @@ pub enum ProfileOutcome {
         email: String,
         /// 保存済みの表示言語（`users.language`。未設定なら `None`）。MT20。
         language: Option<String>,
+        /// 保存済みの配色（`users.theme`。未設定なら `None`）。web が画面へ適用する。
+        theme: Option<String>,
     },
     /// SSO セッションが無い・期限切れ。
     SessionExpired,
@@ -67,6 +69,7 @@ impl AccountProfileService {
                 preferred_username: user.preferred_username,
                 email: user.email,
                 language: user.language,
+                theme: user.theme,
             },
             Ok(None) => ProfileOutcome::SessionExpired,
             Err(e) => ProfileOutcome::Internal(e),

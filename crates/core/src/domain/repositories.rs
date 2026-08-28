@@ -370,6 +370,13 @@ pub trait UserRepository: Send + Sync {
     async fn mark_email_verified(&self, id: Uuid) -> Result<()>;
     /// 表示言語設定を更新する（MT20。`None` で設定解除）。
     async fn update_language(&self, id: Uuid, language: Option<&str>) -> Result<()>;
+    /// 配色設定を更新する（`light` / `dark` / `system`。`None` で設定解除）。
+    /// 既定実装は未対応エラー（本番の sqlx 実装のみが上書きする。テスト用フェイクは呼ばれない）。
+    async fn update_theme(&self, _id: Uuid, _theme: Option<&str>) -> Result<()> {
+        Err(crate::domain::error::DomainError::Repository(
+            "update_theme is not supported by this repository".to_string(),
+        ))
+    }
     /// 表示名（`users.name`）を更新する（セルフサービス。`None` で表示名を解除＝`NULL`）。
     /// 既定実装は未対応エラー（本番の sqlx 実装のみが上書きする。テスト用フェイクは呼ばれない）。
     async fn update_name(&self, _id: Uuid, _name: Option<&str>) -> Result<()> {

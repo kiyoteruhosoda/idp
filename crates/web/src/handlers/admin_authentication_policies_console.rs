@@ -426,6 +426,7 @@ mod tests {
             admin: Some(crate::templates::ConsoleAdmin {
                 label: "admin-1",
                 tenant_name: Some("Acme"),
+                permissions: &[],
             }),
             csrf: "csrf",
             default_effect: "allow",
@@ -461,6 +462,7 @@ mod tests {
             admin: Some(crate::templates::ConsoleAdmin {
                 label: "admin-1",
                 tenant_name: Some("Acme"),
+                permissions: &[],
             }),
             csrf: "csrf",
             default_effect: "allow",

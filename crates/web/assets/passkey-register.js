@@ -7,8 +7,26 @@
   const nameInput = document.getElementById('passkey-name');
   if (!root || !btnRegister || !btnRetry || !nameInput) { return; }
   const tenantPrefix = root.dataset.tenantPrefix || '';
+  // 印が付かなくても登録そのものは通す（`button-pending.js` の読み込み順が崩れたとき）。
+  const pending = window.idpButtonPending || { mark: function () {}, clear: function () {} };
 
+  // 押してから WebAuthn のダイアログが出るまでにはサーバ往復があり、その間ボタンは何も変わらない。
+  // 押した直後に処理中の印を付け、結果が出たところで外す。**本人確認画面へ送る経路では付けたまま
+  // にする** —— 遷移の直前に押せる見た目へ戻すと、一瞬ちらついたうえに押せてしまう。
   async function doRegister() {
+    pending.mark(btnRegister);
+    try {
+      if (await register()) { return; }
+    } catch (e) {
+      // fetch の失敗（オフライン・api 停止）はここへ来る。捕まえないと Promise が
+      // 拒否されたまま終わり、ボタンが回りっぱなしで固まる。
+      showError(e.message || 'Registration failed');
+    }
+    pending.clear(btnRegister);
+  }
+
+  // 登録を進める。本人確認画面へ遷移したときだけ true を返す（呼び出し元が印の扱いを変える）。
+  async function register() {
     document.getElementById('step-begin').style.display = '';
     document.getElementById('step-success').style.display = 'none';
     document.getElementById('step-error').style.display = 'none';
@@ -23,8 +41,8 @@
     });
     // 本人確認が切れていたらサーバが誘導先を返す（403）。fetch はリダイレクトを黙って追って
     // しまうため、遷移はここで行う。
-    if (beginRes.status === 403 && await goToStepUp(beginRes)) { return; }
-    if (!beginRes.ok) { return showError('Server error (begin)'); }
+    if (beginRes.status === 403 && await goToStepUp(beginRes)) { return true; }
+    if (!beginRes.ok) { showError('Server error (begin)'); return false; }
     const { challenge_id, options } = await beginRes.json();
 
     // 2. Browser authenticator
@@ -38,7 +56,7 @@
         options.publicKey.excludeCredentials = options.publicKey.excludeCredentials.map(c => ({ ...c, id: fromB64(c.id) }));
       }
       credential = await navigator.credentials.create(options);
-    } catch (e) { return showError(e.message || 'Authenticator error'); }
+    } catch (e) { showError(e.message || 'Authenticator error'); return false; }
 
     // 3. complete
     const toB64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
@@ -60,8 +78,8 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ challenge_id, name, credential: credJson })
     });
-    if (completeRes.status === 403 && await goToStepUp(completeRes)) { return; }
-    if (!completeRes.ok) { return showError('Server error (complete)'); }
+    if (completeRes.status === 403 && await goToStepUp(completeRes)) { return true; }
+    if (!completeRes.ok) { showError('Server error (complete)'); return false; }
     const result = await completeRes.json();
     if (result.result === 'ok') {
       document.getElementById('step-begin').style.display = 'none';
@@ -69,6 +87,7 @@
     } else {
       showError(result.result || 'Registration failed');
     }
+    return false;
   }
 
   // step-up が要求されたら本人確認画面へ送る。遷移できたときだけ true を返す。

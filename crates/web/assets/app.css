@@ -146,18 +146,18 @@ code {
   }
 }
 
-/* 送信中の目印（submit-feedback.js）。押した瞬間にボタンの幅が変わると、隣のボタン
+/* 処理中の目印（button-pending.js）。押した瞬間にボタンの幅が変わると、隣のボタン
  * （同意画面の承認／拒否など）が動いて押し間違いの元になる。ラベルは場所を占めたまま
  * 隠し、スピナーをその上に重ねる。 */
 button[aria-busy='true'] {
   position: relative;
 }
 
-button[aria-busy='true'] .js-submit-label {
+button[aria-busy='true'] .js-pending-label {
   visibility: hidden;
 }
 
-.js-submit-spinner {
+.js-pending-spinner {
   position: absolute;
   top: 50%;
   left: 50%;
