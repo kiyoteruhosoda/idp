@@ -108,11 +108,21 @@ pub async fn saml_idp_metadata(
 /// **まだ署名していない後継鍵**が先頭に来る。先頭の `KeyDescriptor` だけを読む SP の実装がある。
 async fn published_idp_signing_keys(state: &AppState) -> anyhow::Result<Vec<IdpSigningKey>> {
     let jwks = state.keys.jwks().await?;
+    let published = jwks.keys.len();
     // 署名中の鍵が引けないときは並べ替えないだけで、公開自体は続ける（検証側の鍵が
     // 消えるほうが困る）。`kid` しか要らないので秘密鍵は復号しない。
     let signing_kid = state.keys.signing_kid().await.ok().flatten();
     let keys = signing_key_first(jwks.keys, signing_kid.as_deref());
-    Ok(keys.iter().filter_map(jwk_to_idp_signing_key).collect())
+    let converted: Vec<IdpSigningKey> = keys.iter().filter_map(jwk_to_idp_signing_key).collect();
+    // 1 本も変換できなかったときも**メタデータを返さない**。解釈できない鍵は 1 本ずつ落とすが、
+    // 全滅したまま 200 を返すと `KeyDescriptor` の無いメタデータが出て行き、`jwks()` が失敗した
+    // ときと同じ断絶（取り込み直した SP が検証鍵を 1 本も持たない）になる。
+    if published > 0 && converted.is_empty() {
+        anyhow::bail!(
+            "none of the {published} published keys could be rendered as a KeyDescriptor"
+        );
+    }
+    Ok(converted)
 }
 
 /// 署名中の鍵を先頭へ寄せる。**先頭の `KeyDescriptor` だけを読む SP の実装がある**ため、
