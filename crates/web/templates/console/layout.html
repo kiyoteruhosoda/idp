@@ -13,7 +13,8 @@
 <title>{{ messages.get("admin-console-title") }}</title>
 </head>
 <body class="d-flex flex-column min-vh-100">
-<nav class="navbar bg-body-tertiary border-bottom">
+{#- 操作中テナントの色。取り違えた操作を防ぐため、名前と同じく全画面のヘッダに出す。 -#}
+<nav class="navbar bg-body-tertiary border-bottom"{% if let Some(chrome) = admin %}{% if let Some(accent) = chrome.accent_color %} style="--idp-accent: {{ accent }}"{% endif %}{% endif %}>
   <div class="container-fluid">
     <div class="d-flex align-items-center">
       {% if admin.is_some() %}

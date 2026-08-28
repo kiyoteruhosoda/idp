@@ -306,6 +306,7 @@ mod tests {
                 label: "admin-1",
                 tenant_name: Some("Acme"),
                 permissions: &[],
+                accent_color: None,
             }),
             tenants,
             total: tenants.len() as i64,
@@ -321,6 +322,7 @@ mod tests {
         TenantView {
             id: "019f6514-08ea-7138-ad71-838a7bdd3575".into(),
             name: "Child".into(),
+            accent_color: None,
             self_registration_enabled: false,
             status: status.into(),
         }

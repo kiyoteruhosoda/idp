@@ -415,6 +415,9 @@ admin-settings-tenant-heading = Tenant settings
 admin-settings-tenant-id = Tenant ID
 admin-settings-tenant-status = Status
 admin-settings-tenant-name = Display name
+admin-settings-tenant-accent = Accent colour
+admin-settings-tenant-accent-unset = No accent colour
+admin-settings-tenant-accent-hint = The colour appears as a band along the top of the header. It marks which tenant you are in; light and dark stay a per-user setting.
 admin-settings-system-heading = System settings (SMTP)
 admin-settings-system-note = These settings apply to the whole IdP and are only editable by the root system administrator.
 admin-settings-smtp-host = SMTP host
@@ -532,6 +535,7 @@ api-register-rate-limited = Too many sign-up attempts. Please wait a moment and 
 api-runtime-setting-invalid = The runtime setting could not be saved. Check the key and the value.
 api-runtime-setting-not-bootable = The value is valid, but the services could not start with it, so it was not saved. (1) An https ISSUER requires KEY_ENCRYPTION_KEY, INTERNAL_SERVICE_TOKEN and CSRF_SECRET to be set as environment variables first. (2) When COOKIE_DOMAIN is set, the ISSUER host must stay under that domain and use the same scheme as PUBLIC_WEB_BASE_URL. The exact reason is in the api log.
 api-tenant-name-empty = The tenant name must not be empty.
+api-tenant-accent-color-invalid = The accent colour must be in #rrggbb form.
 # Tenant domain assignment (ADR-0029)
 api-tenant-domain-required = The domain must not be empty.
 api-tenant-domain-invalid = The domain format is invalid. Use letters, digits and hyphens; enter internationalized domains in punycode (xn--).

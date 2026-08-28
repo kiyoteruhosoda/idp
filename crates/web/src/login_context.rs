@@ -42,6 +42,8 @@ pub struct RpLoginContext {
     pub client_name: Option<String>,
     /// フローのテナントの表示名。ログイン画面のナビバーに出し、どの組織のアカウントで入るのかを示す。
     pub tenant_name: Option<String>,
+    /// フローのテナントのアクセント色（`#rrggbb`）。文字を読まずにテナントを見分けるために使う。
+    pub tenant_accent_color: Option<String>,
 }
 
 /// `auth_session_id` Cookie があれば認可要求の文脈を取り直して `Extension` へ載せる middleware。
@@ -102,12 +104,14 @@ async fn fetch(
             redirect_uri,
             client_name,
             tenant_name,
+            tenant_accent_color,
         }) => Some(RpLoginContext {
             login_hint,
             ui_locales,
             redirect_uri,
             client_name,
             tenant_name,
+            tenant_accent_color,
         }),
         // 期限切れの Cookie が残っているだけ。文脈なしで描き、失効はハンドラ側の経路に任せる。
         Ok(InternalAuthorizeLoginContextResponse::SessionExpired) => None,

@@ -321,7 +321,8 @@ pub async fn get_current_tenant(
     Ok(Json(tenant_response(&current)))
 }
 
-/// 設定画面のテナント設定区画: 自テナントの表示名を更新する（`idp.tenant.admin` 必須。MT14）。
+/// 設定画面のテナント設定区画: 自テナントの表示名・アクセント色を更新する
+/// （`idp.tenant.admin` 必須。MT14）。
 #[utoipa::path(
     patch,
     path = "/{tenant_id}/admin/settings/tenant",
@@ -353,6 +354,7 @@ pub async fn update_current_tenant(
         .update_current_settings(
             tenant.context(),
             body.name,
+            body.accent_color,
             body.self_registration_enabled,
             &admin.actor,
             &ctx,
@@ -488,6 +490,7 @@ fn tenant_response(t: &Tenant) -> TenantResponse {
         id: t.id.to_string(),
         parent_tenant_id: t.parent_tenant_id.map(|p| p.to_string()),
         name: t.name.clone(),
+        accent_color: t.accent_color.as_ref().map(|c| c.as_str().to_string()),
         status: t.status.as_str().to_string(),
         self_registration_enabled: t.self_registration_enabled,
         created_at: t.created_at.to_rfc3339(),

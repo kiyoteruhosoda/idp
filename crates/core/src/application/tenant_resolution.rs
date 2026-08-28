@@ -84,6 +84,7 @@ mod tests {
             id,
             parent_tenant_id: Some(Uuid::now_v7().into()),
             name: "Acme".to_string(),
+            accent_color: None,
             status,
             self_registration_enabled: false,
             created_at: now(),

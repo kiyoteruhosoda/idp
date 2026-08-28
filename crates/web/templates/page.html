@@ -13,7 +13,8 @@
 <title>{% block title %}IdP{% endblock %}</title>
 </head>
 <body class="d-flex flex-column min-vh-100">
-<nav class="navbar bg-body-tertiary border-bottom">
+{#- テナント色の帯。色を持つ画面（ログイン）だけが `accent` を上書きする（`app.css`）。 -#}
+<nav class="navbar bg-body-tertiary border-bottom"{% block accent %}{% endblock %}>
   <div class="container-fluid">
     {#- 左上の名乗り。既定は動かない文字だけにしておく（ログイン・同意のように、
         フローの途中で外へ出す動線を置いてはいけない画面があるため）。ホームへ戻す

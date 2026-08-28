@@ -248,6 +248,7 @@ mod tests {
                 login_hint,
                 client_name: None,
                 tenant_name: None,
+                accent_color: None,
             })
         };
 
@@ -279,6 +280,66 @@ mod tests {
         );
     }
 
+    /// テナントのアクセント色は、ログイン画面と管理コンソールの**両方**のヘッダに出す
+    /// （どちらも「いまどのテナントか」を取り違えると困る画面）。未設定なら属性ごと出さない。
+    #[test]
+    fn the_tenant_accent_colour_reaches_both_headers() {
+        let messages = Messages::new(Locale::Ja);
+        let login = |accent| {
+            render(&LoginTemplate {
+                messages: &messages,
+                tenant_prefix: "/t",
+                csrf: "csrf-token",
+                error_key: None,
+                login_hint: None,
+                client_name: None,
+                tenant_name: Some("Acme Corp"),
+                accent_color: accent,
+            })
+        };
+        let console = |accent| {
+            render(&ConsoleHome {
+                messages: &messages,
+                tenant: "/t",
+                admin: Some(ConsoleAdmin {
+                    label: "admin",
+                    tenant_name: Some("Acme Corp"),
+                    permissions: &[],
+                    accent_color: accent,
+                }),
+            })
+        };
+
+        for html in [login(Some("#a1b2c3")), console(Some("#a1b2c3"))] {
+            assert!(html.contains(r#"style="--idp-accent: #a1b2c3""#), "{html}");
+        }
+        // 未設定なら属性を置かない。`app.css` が `transparent` へ落とすので、色を持たない
+        // テナントでもヘッダの高さは変わらない。
+        for html in [login(None), console(None)] {
+            assert!(!html.contains("--idp-accent"), "{html}");
+        }
+    }
+
+    /// 色は `style` 属性へ入るため、属性を閉じて別の宣言を足す値が通らないことを確かめる。
+    /// **`domain::tenant::AccentColor` が書式を保証しているので本来ここへ届かない**が、
+    /// 検証を通さない経路が将来増えたときにテンプレート側でも止まることを固定する。
+    #[test]
+    fn the_accent_colour_cannot_break_out_of_the_style_attribute() {
+        let messages = Messages::new(Locale::Ja);
+        let html = render(&ConsoleHome {
+            messages: &messages,
+            tenant: "/t",
+            admin: Some(ConsoleAdmin {
+                label: "admin",
+                tenant_name: None,
+                permissions: &[],
+                accent_color: Some(r#"#000" onmouseover="alert(1)"#),
+            }),
+        });
+        assert!(!html.contains(r#"onmouseover="alert(1)"#), "{html}");
+        assert!(html.contains("&#34;"), "the quote is escaped: {html}");
+    }
+
     /// `idp.system.admin` を要する画面（エラー警告ログ・テナント管理）は、その権限を持たない
     /// 管理者のメニューに出さない。出していた頃は押すと api が 403 を返す行き止まりだった。
     #[test]
@@ -292,6 +353,7 @@ mod tests {
                     label: "admin",
                     tenant_name: Some("Acme"),
                     permissions,
+                    accent_color: None,
                 }),
             })
         };
@@ -328,6 +390,7 @@ mod tests {
                 login_hint: None,
                 client_name,
                 tenant_name,
+                accent_color: None,
             })
         };
 
@@ -452,6 +515,7 @@ mod tests {
                 label: "admin-1",
                 tenant_name: None,
                 permissions: &[],
+                accent_color: None,
             }),
             None,
         ] {
@@ -483,6 +547,7 @@ mod tests {
                 label: "admin-1",
                 tenant_name: Some("Acme Inc."),
                 permissions: &[],
+                accent_color: None,
             }),
         });
         assert!(html.contains("Acme Inc."), "{html}");
@@ -501,6 +566,7 @@ mod tests {
                 label: "admin-1",
                 tenant_name: None,
                 permissions: &[],
+                accent_color: None,
             }),
         });
         assert!(html.contains("admin-1"), "{html}");
@@ -519,6 +585,7 @@ mod tests {
                 label: "admin-1",
                 tenant_name: None,
                 permissions: &[],
+                accent_color: None,
             }),
             csrf: "csrf",
             saved: false,
@@ -716,6 +783,8 @@ pub struct LoginTemplate<'a> {
     pub client_name: Option<&'a str>,
     /// フローのテナントの表示名。ナビバーの名乗りに出す。`None` なら `IdP` を出す。
     pub tenant_name: Option<&'a str>,
+    /// フローのテナントのアクセント色（`#rrggbb`）。`None` なら色を付けない。
+    pub accent_color: Option<&'a str>,
 }
 
 /// エンドユーザー・ポータルのログイン画面（`GET /{tenant_id}/login`。OIDC の `auth_session` を持たない
@@ -843,6 +912,8 @@ pub struct ConsoleAdmin<'a> {
     pub tenant_name: Option<&'a str>,
     /// この管理者が行使できる権限コード（api が含意を展開済み）。メニューの出し分けに使う。
     pub permissions: &'a [String],
+    /// 操作中テナントのアクセント色（`#rrggbb`）。未設定なら `None`（既定色のまま）。
+    pub accent_color: Option<&'a str>,
 }
 
 impl ConsoleAdmin<'_> {
@@ -1545,6 +1616,9 @@ pub struct AdminSettings<'a> {
     pub admin: Admin<'a>,
     pub tenant_id: &'a str,
     pub tenant_name: &'a str,
+    /// テナントのアクセント色（`#rrggbb`）。未設定なら `None`（色の欄は既定値を出し、
+    /// 「色を使わない」にチェックを入れた状態で描く）。
+    pub tenant_accent_color: Option<&'a str>,
     pub tenant_status: &'a str,
     /// 自己登録（/auth/register）の許可トグル（SEC6）。
     pub tenant_self_registration: bool,

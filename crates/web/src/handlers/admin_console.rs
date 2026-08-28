@@ -495,6 +495,7 @@ impl AdminContext {
             label: &self.identity.label,
             tenant_name: self.identity.tenant_name.as_deref(),
             permissions: self.identity.permissions(),
+            accent_color: self.identity.accent_color.as_deref(),
         }
     }
 }
@@ -658,6 +659,7 @@ mod tests {
                 label: "user-123",
                 tenant_name: Some("ROOT"),
                 permissions: &[],
+                accent_color: None,
             }),
         });
         assert!(html.contains("user-123"));

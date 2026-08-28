@@ -172,3 +172,15 @@ button[aria-busy='true'] .js-pending-label {
     min-height: 100dvh !important;
   }
 }
+
+/* テナントのアクセント色（`--idp-accent`）。「いまどのテナントにいるか」を文字を読まずに
+ * 示すための帯で、ヘッダの上端にだけ出す。
+ *
+ * **クラスではなく変数の有無で効かせる。** 未設定のときは `transparent` に落ちるので、色を
+ * 持たないテナントでも枠の高さが変わらない（設定した瞬間にヘッダが 4px ずれるのを避ける）。
+ *
+ * 地の明暗（ライト/ダーク）には手を出さない。配色は利用者の設定、この帯はテナントの識別と、
+ * 役割を分けている。 */
+.navbar {
+  border-top: 4px solid var(--idp-accent, transparent);
+}

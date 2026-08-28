@@ -345,6 +345,7 @@ mod tests {
             id: test_tenant(),
             parent_tenant_id: None,
             name: "root".to_string(),
+            accent_color: None,
             status: TenantStatus::Active,
             self_registration_enabled: false,
             created_at: fixed_now(),

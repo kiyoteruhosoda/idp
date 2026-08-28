@@ -160,12 +160,14 @@ pub async fn authorize_login_context(
                 redirect_uri,
                 client_name,
                 tenant_name,
+                tenant_accent_color,
             } => InternalAuthorizeLoginContextResponse::Ok {
                 login_hint,
                 ui_locales,
                 redirect_uri: Some(redirect_uri),
                 client_name,
                 tenant_name,
+                tenant_accent_color,
             },
             LoginContextOutcome::SessionExpired => {
                 InternalAuthorizeLoginContextResponse::SessionExpired

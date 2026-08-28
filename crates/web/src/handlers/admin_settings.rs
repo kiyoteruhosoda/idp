@@ -100,6 +100,7 @@ pub async fn page(
         admin: Some(admin.chrome()),
         tenant_id: &tenant_view.id,
         tenant_name: &tenant_view.name,
+        tenant_accent_color: tenant_view.accent_color.as_deref(),
         tenant_status: &tenant_view.status,
         tenant_self_registration: tenant_view.self_registration_enabled,
         csrf: &console_csrf_token(&sso, state.config.csrf_secret()),
@@ -130,7 +131,7 @@ async fn stale_web_shared_settings(state: &WebState) -> Vec<String> {
     }
 }
 
-/// テナント表示名の更新（`POST /{tenant_id}/admin/settings/tenant`）。
+/// テナント表示名・アクセント色の更新（`POST /{tenant_id}/admin/settings/tenant`）。
 pub async fn update_tenant(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -157,6 +158,13 @@ pub async fn update_tenant(
             &tenant.0,
             &sso,
             form.name.trim(),
+            // 「色を使わない」が選ばれていれば空文字＝解除。`<input type="color">` は空を
+            // 送れない（未選択でも `#000000` を送る）ので、解除は別のチェックで表す。
+            if form.accent_color_unset.is_some() {
+                ""
+            } else {
+                form.accent_color.as_deref().unwrap_or("").trim()
+            },
             form.self_registration_enabled.is_some(),
         )
         .await

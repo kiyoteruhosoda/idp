@@ -169,6 +169,7 @@ async fn provisioning_rolls_back_all_rows_when_a_step_fails() {
         id: TenantId::from(uuid::Uuid::now_v7()),
         parent_tenant_id: Some(parent),
         name: "Rollback Probe".to_string(),
+        accent_color: None,
         status: TenantStatus::Active,
         self_registration_enabled: false,
         created_at: now,

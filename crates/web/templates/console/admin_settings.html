@@ -36,6 +36,19 @@
         <label class="form-label" for="tenant_name">{{ messages.get("admin-settings-tenant-name") }}</label>
         <input type="text" class="form-control" id="tenant_name" name="name" value="{{ tenant_name }}" required maxlength="255">
       </div>
+      <div class="mb-3">
+        <label class="form-label" for="accent_color">{{ messages.get("admin-settings-tenant-accent") }}</label>
+        <div class="d-flex align-items-center gap-3">
+          {#- `<input type="color">` は空を送れない（未選択でも `#000000` を送る）ので、
+              「使わない」は併設のチェックで表す。 -#}
+          <input type="color" class="form-control form-control-color" id="accent_color" name="accent_color" value="{% if let Some(accent) = tenant_accent_color %}{{ accent }}{% else %}#6c757d{% endif %}">
+          <div class="form-check mb-0">
+            <input type="checkbox" class="form-check-input" id="accent_color_unset" name="accent_color_unset" {% if tenant_accent_color.is_none() %}checked{% endif %}>
+            <label class="form-check-label" for="accent_color_unset">{{ messages.get("admin-settings-tenant-accent-unset") }}</label>
+          </div>
+        </div>
+        <div class="form-text">{{ messages.get("admin-settings-tenant-accent-hint") }}</div>
+      </div>
       <div class="form-check mb-3">
         <input type="checkbox" class="form-check-input" id="self_registration_enabled" name="self_registration_enabled" {% if tenant_self_registration %}checked{% endif %}>
         <label class="form-check-label" for="self_registration_enabled">{{ messages.get("admin-settings-self-registration") }}</label>

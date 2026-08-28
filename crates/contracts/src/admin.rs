@@ -35,6 +35,14 @@ pub struct WhoamiResponse {
     /// 「絞り込みができない」として扱い、メニューを隠しすぎないこと。
     #[serde(default)]
     pub permissions: Vec<String>,
+    /// 経路のテナントのアクセント色（`#rrggbb`。未設定なら `None`）。管理コンソールが
+    /// 「いまどのテナントを操作しているか」を色でも示すために使う（表示名と同じ理由で
+    /// 全画面のヘッダに要るため、whoami に相乗りさせる）。
+    ///
+    /// 旧 api と混在するローリングデプロイでも復号に失敗しないよう `#[serde(default)]`
+    /// （欠落時は色が付かないだけ）。
+    #[serde(default)]
+    pub tenant_accent_color: Option<String>,
 }
 
 /// 利用者の要約（`GET /admin/users?q=` 検索・`GET /admin/users/{id}` の応答）。管理コンソールの

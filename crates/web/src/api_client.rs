@@ -190,6 +190,8 @@ pub struct AdminIdentity {
     /// この管理者がこのテナントで行使できる権限コード（api が含意を展開済み）。
     /// メニューの出し分けに使う。**認可ではない**（実際の可否は api が毎回判定する）。
     permissions: Vec<String>,
+    /// 操作中テナントのアクセント色（`#rrggbb`）。未設定・旧 api では `None`。
+    pub accent_color: Option<String>,
 }
 
 impl AdminIdentity {
@@ -205,6 +207,7 @@ impl AdminIdentity {
             label: label.to_string(),
             tenant_name: tenant_name.map(str::to_string),
             permissions: Vec::new(),
+            accent_color: None,
         }
     }
 }
@@ -213,10 +216,12 @@ impl AdminIdentity {
 fn admin_identity(mut w: WhoamiResponse) -> AdminIdentity {
     let tenant_name = non_empty(w.tenant_name.take());
     let permissions = std::mem::take(&mut w.permissions);
+    let accent_color = non_empty(w.tenant_accent_color.take());
     AdminIdentity {
         label: admin_display_label(w),
         tenant_name,
         permissions,
+        accent_color,
     }
 }
 
@@ -2089,6 +2094,7 @@ impl ApiClient {
         tenant_id: &str,
         sso: &str,
         name: &str,
+        accent_color: &str,
         self_registration_enabled: bool,
     ) -> Result<crate::admin_dto::TenantView, AdminApiError> {
         self.admin_send(
@@ -2099,6 +2105,9 @@ impl ApiClient {
             sso,
             Some(serde_json::json!({
                 "name": name,
+                // 空文字は api 側で「色を外す」として扱う（省略＝現状維持と区別する）。
+                // この画面は色の欄を必ず持つので、常に送ってよい。
+                "accent_color": accent_color,
                 "self_registration_enabled": self_registration_enabled,
             })),
         )
@@ -2591,6 +2600,7 @@ mod tests {
             preferred_username: preferred_username.map(str::to_string),
             tenant_name: Some("Acme".to_string()),
             permissions: Vec::new(),
+            tenant_accent_color: None,
         }
     }
 

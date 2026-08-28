@@ -3,6 +3,11 @@
 {#- どの組織のアカウントで入るのか。同じ IdP が複数テナントを受け持つので、既定の `IdP` では
     利用者に何も伝わらない。リンクにはしない（認可フローの途中で外へ出さないため）。 -#}
 {% block brand %}<span class="navbar-brand mb-0 h1">{% if let Some(tenant) = tenant_name %}{{ tenant }}{% else %}IdP{% endif %}</span>{% endblock %}
+{#- テナントの色。値は `#rrggbb` に正規化済み（`domain::tenant::AccentColor`）で、
+    テンプレートが属性値としてエスケープする。未設定なら属性ごと出さない ——
+    CSS 側は `var(--idp-accent, transparent)` なので、未設定なら帯が見えないだけになる
+    （クラスの出し分けが要らず、`class` 属性を二重に書かずに済む）。 -#}
+{% block accent %}{% if let Some(accent) = accent_color %} style="--idp-accent: {{ accent }}"{% endif %}{% endblock %}
 {% block content %}
 <div class="card border-0 bg-transparent">
   <div class="card-header text-center py-3 border-0 bg-transparent">

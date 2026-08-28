@@ -207,6 +207,9 @@ pub struct InvitationCreatedView {
 pub struct TenantView {
     pub id: String,
     pub name: String,
+    /// アクセント色（`#rrggbb`）。未設定なら `None`（api が省略する）。
+    #[serde(default)]
+    pub accent_color: Option<String>,
     /// 自己登録（`/auth/register`）を許可するか（SEC6。既定は無効）。
     #[serde(default)]
     pub self_registration_enabled: bool,

@@ -245,6 +245,7 @@ mod tests {
             id,
             parent_tenant_id: None,
             name: "root".to_string(),
+            accent_color: None,
             status,
             self_registration_enabled: false,
             created_at: t,

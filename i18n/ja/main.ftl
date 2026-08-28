@@ -415,6 +415,9 @@ admin-settings-tenant-heading = テナント設定
 admin-settings-tenant-id = テナント ID
 admin-settings-tenant-status = 状態
 admin-settings-tenant-name = 表示名
+admin-settings-tenant-accent = アクセント色
+admin-settings-tenant-accent-unset = 色を使わない
+admin-settings-tenant-accent-hint = 選んだ色はヘッダー上端の帯に出ます。テナントを取り違えないための目印で、画面の明暗（ライト／ダーク）は利用者ごとの設定のままです。
 admin-settings-system-heading = システム設定（SMTP）
 admin-settings-system-note = これらの設定は IdP 全体に適用され、root システム管理者のみが変更できます。
 admin-settings-smtp-host = SMTP ホスト
@@ -532,6 +535,7 @@ api-register-rate-limited = 登録の試行回数が多すぎます。しばら�
 api-runtime-setting-invalid = ランタイム設定を保存できませんでした。キーと値を確認してください。
 api-runtime-setting-not-bootable = 値の書式は正しいものの、この値ではサービスが起動できないため保存しませんでした。(1) ISSUER を https にするには、先に KEY_ENCRYPTION_KEY・INTERNAL_SERVICE_TOKEN・CSRF_SECRET を環境変数で設定してください。(2) COOKIE_DOMAIN を設定している場合、ISSUER のホストはそのドメイン配下で、PUBLIC_WEB_BASE_URL とスキーム（http/https）が一致している必要があります。具体的な理由は api のログに出ます。
 api-tenant-name-empty = テナント名を入力してください。
+api-tenant-accent-color-invalid = アクセント色は #rrggbb の形式で指定してください。
 # テナントへのドメイン割り当て（ADR-0029）
 api-tenant-domain-required = ドメインを入力してください。
 api-tenant-domain-invalid = ドメインの書式が正しくありません。英数字とハイフンで構成し、国際化ドメインは punycode（xn--）で入力してください。

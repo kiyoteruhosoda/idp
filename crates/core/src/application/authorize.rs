@@ -122,6 +122,9 @@ pub enum LoginContextOutcome {
         /// フローのテナントの表示名（`Tenants.name`）。同じ IdP が複数の組織を受け持つため、
         /// 「どの組織のアカウントで入るのか」を示すために使う。引けないときは `None`。
         tenant_name: Option<String>,
+        /// フローのテナントのアクセント色（`Tenants.accent_color`）。文字を読まずに
+        /// テナントを見分けるために使う。未設定・引けないときは `None`。
+        tenant_accent_color: Option<String>,
     },
     /// `auth_session_id` が無効・期限切れ（web は文脈なしで描画を続ける）。
     SessionExpired,
@@ -661,19 +664,22 @@ impl AuthorizeService {
                 None
             }
         };
-        let tenant_name = match self.tenants.resolve(tenant.tenant_id()).await {
-            Ok(t) => t.map(|t| t.name),
-            Err(e) => {
-                tracing::warn!(error = %e, "could not read the tenant name for the login page");
-                None
-            }
-        };
+        let (tenant_name, tenant_accent_color) =
+            match self.tenants.resolve(tenant.tenant_id()).await {
+                Ok(Some(t)) => (Some(t.name), t.accent_color.map(|c| c.as_str().to_string())),
+                Ok(None) => (None, None),
+                Err(e) => {
+                    tracing::warn!(error = %e, "could not read the tenant for the login page");
+                    (None, None)
+                }
+            };
         LoginContextOutcome::Ok {
             login_hint: session.login_hint,
             ui_locales: session.ui_locales,
             redirect_uri: session.redirect_uri,
             client_name,
             tenant_name,
+            tenant_accent_color,
         }
     }
 }

@@ -37,6 +37,11 @@ pub async fn whoami(
         preferred_username: admin.preferred_username,
         tenant_name: Some(tenant.tenant().name.clone()),
         permissions,
+        tenant_accent_color: tenant
+            .tenant()
+            .accent_color
+            .as_ref()
+            .map(|c| c.as_str().to_string()),
     })
     .into_response()
 }

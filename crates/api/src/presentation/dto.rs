@@ -391,6 +391,10 @@ pub struct TenantResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_tenant_id: Option<String>,
     pub name: String,
+    /// アクセント色（`#rrggbb`）。未設定なら `None`。画面が「どのテナントにいるか」を色で
+    /// 示すために使う表示専用の値。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accent_color: Option<String>,
     /// `ACTIVE` または `DISABLED`。
     pub status: String,
     /// 自己登録（`/auth/register`）を許可するか（SEC6。既定は無効）。
@@ -422,6 +426,10 @@ pub struct AddTenantDomainRequest {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateTenantSettingsRequest {
     pub name: String,
+    /// アクセント色（`#rrggbb`）。**省略は現状維持、空文字は解除**。この 2 つを分けないと、
+    /// 色の欄を持たない画面からの更新が色を消す。
+    #[serde(default)]
+    pub accent_color: Option<String>,
     /// 自己登録トグル（SEC6）。省略時は現状維持。
     #[serde(default)]
     pub self_registration_enabled: Option<bool>,

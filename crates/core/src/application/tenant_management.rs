@@ -28,7 +28,7 @@ use crate::domain::paging::{PageRequest, PagedResult};
 use crate::domain::repositories::{
     TenantDomainRepository, TenantProvisioningRepository, TenantRepository,
 };
-use crate::domain::tenant::{Tenant, TenantId};
+use crate::domain::tenant::{AccentColor, Tenant, TenantId};
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::tenant_domain::{validate_domain, TenantDomain};
 use crate::domain::tenant_membership::TenantMembership;
@@ -127,6 +127,8 @@ impl TenantManagementService {
             id: TenantId::from(self.ids.new_id()),
             parent_tenant_id: Some(requesting.tenant_id()),
             name,
+            // 色は作成時には決めない（テナント管理者が設定画面で選ぶ）。
+            accent_color: None,
             status: TenantStatus::Active,
             // 自己登録は既定で無効（fail-closed。SEC6。有効化はテナント管理者が設定画面から行う）。
             self_registration_enabled: false,
@@ -263,12 +265,19 @@ impl TenantManagementService {
         &self,
         current: TenantContext,
         name: String,
+        accent_color: Option<String>,
         self_registration_enabled: Option<bool>,
         actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<Tenant, TenantManagementError> {
         let mut tenant = self.get_current(current).await?;
         tenant.name = validate_name(name)?;
+        // 未指定（`None`）は「触らない」、空文字は「色を外す」。この 2 つを同じにすると、
+        // 色の欄を持たない画面からの更新が色を消してしまう。
+        if let Some(raw) = accent_color {
+            tenant.accent_color =
+                AccentColor::parse(&raw).map_err(TenantManagementError::Validation)?;
+        }
         if let Some(enabled) = self_registration_enabled {
             tenant.self_registration_enabled = enabled;
         }

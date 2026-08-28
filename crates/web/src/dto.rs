@@ -108,6 +108,13 @@ pub struct ForcedPasswordChangeForm {
 #[derive(Debug, Deserialize)]
 pub struct AdminTenantSettingsForm {
     pub name: String,
+    /// アクセント色（`#rrggbb`）。`<input type="color">` は常に値を送るため、色を外すのは
+    /// 併設のチェックボックス（`accent_color_unset`）で表す。
+    #[serde(default)]
+    pub accent_color: Option<String>,
+    /// 「色を使わない」チェック（チェック時のみ送られる）。
+    #[serde(default)]
+    pub accent_color_unset: Option<String>,
     /// 自己登録トグル（SEC6）。チェックボックスはチェック時のみ送られる（`Some(_)` = 有効）。
     #[serde(default)]
     pub self_registration_enabled: Option<String>,

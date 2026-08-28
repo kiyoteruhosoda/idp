@@ -3,7 +3,7 @@
 use crate::domain::error::{DomainError, Result};
 use crate::domain::paging::{Page, PageRequest};
 use crate::domain::repositories::TenantRepository;
-use crate::domain::tenant::{Tenant, TenantId};
+use crate::domain::tenant::{AccentColor, Tenant, TenantId};
 use crate::domain::values::TenantStatus;
 use crate::infrastructure::db::Db;
 use async_trait::async_trait;
@@ -22,7 +22,8 @@ impl SqlxTenantRepository {
 }
 
 const SELECT_COLUMNS: &str =
-    "id, parent_tenant_id, name, status, self_registration_enabled, created_at, updated_at";
+    "id, parent_tenant_id, name, accent_color, status, self_registration_enabled, \
+     created_at, updated_at";
 
 fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
@@ -42,10 +43,16 @@ fn map_row(row: &MySqlRow) -> Result<Tenant> {
     let id: String = row.try_get("id").map_err(repo_err)?;
     let parent: Option<String> = row.try_get("parent_tenant_id").map_err(repo_err)?;
     let status: String = row.try_get("status").map_err(repo_err)?;
+    let accent_color: Option<String> = row.try_get("accent_color").map_err(repo_err)?;
     Ok(Tenant {
         id: parse_id(&id)?,
         parent_tenant_id: parent.map(|p| parse_id(&p)).transpose()?,
         name: row.try_get("name").map_err(repo_err)?,
+        // 書式が壊れた行（手で入れた値・DB の CHECK をすり抜けた過去の値）は「未設定」として
+        // 読む。ここで行ごと落とすと、色の書き間違いでテナントが引けなくなる。
+        accent_color: accent_color
+            .as_deref()
+            .and_then(|raw| AccentColor::parse(raw).ok().flatten()),
         status: TenantStatus::parse(&status)?,
         self_registration_enabled: row.try_get("self_registration_enabled").map_err(repo_err)?,
         created_at: to_utc(row.try_get("created_at").map_err(repo_err)?),
@@ -59,12 +66,14 @@ pub(crate) async fn insert_tenant<'e>(
     tenant: &Tenant,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO tenants (id, parent_tenant_id, name, status, self_registration_enabled) \
-         VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO tenants \
+         (id, parent_tenant_id, name, accent_color, status, self_registration_enabled) \
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(tenant.id.as_uuid().to_string())
     .bind(tenant.parent_tenant_id.map(|p| p.as_uuid().to_string()))
     .bind(&tenant.name)
+    .bind(tenant.accent_color.as_ref().map(AccentColor::as_str))
     .bind(tenant.status.as_str())
     .bind(tenant.self_registration_enabled)
     .execute(executor)
@@ -150,9 +159,11 @@ impl TenantRepository for SqlxTenantRepository {
 
     async fn update(&self, tenant: &Tenant) -> Result<()> {
         sqlx::query(
-            "UPDATE tenants SET name = ?, status = ?, self_registration_enabled = ? WHERE id = ?",
+            "UPDATE tenants SET name = ?, accent_color = ?, status = ?, \
+             self_registration_enabled = ? WHERE id = ?",
         )
         .bind(&tenant.name)
+        .bind(tenant.accent_color.as_ref().map(AccentColor::as_str))
         .bind(tenant.status.as_str())
         .bind(tenant.self_registration_enabled)
         .bind(tenant.id.as_uuid().to_string())

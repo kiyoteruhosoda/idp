@@ -70,12 +70,7 @@ pub async fn login_page(
         &tenant.prefix(),
         &login_csrf_token(&auth_session_id, state.config.csrf_secret()),
         error_key,
-        // 認可要求の `login_hint` をユーザー名欄へ入れる（G12）。空文字は初期値にしない。
-        rp_context.login_hint.as_deref().filter(|h| !h.is_empty()),
-        // どのアプリのどの組織へ入るのかを画面に出す。api が登録済みの値から引いた表示名で、
-        // 引けなければ出さない（空文字も出さない）。
-        display_name(rp_context.client_name.as_deref()),
-        display_name(rp_context.tenant_name.as_deref()),
+        rp_chrome(&rp_context),
     );
     // SSO と同意が揃っていれば、ログインフォームの送信はそのまま RP へリダイレクトして終わる。
     // Chrome は `form-action` を送信後のリダイレクト先にも適用するので、その RP のオリジンだけ
@@ -203,6 +198,34 @@ async fn resume_authorize_handoff(
     }
 }
 
+/// 進行中の認可要求からログイン画面が受け取る表示値。**入力欄の外側**（見出し・名乗り・色）と
+/// ユーザー名欄の初期値をまとめて運ぶ。
+///
+/// 1 つにまとめているのは、4 つとも出所が [`RpLoginContext`] ひとつで、描画の 2 経路
+/// （初回・エラー再表示）で同じ組を渡すためである。バラで並べると、片方の経路にだけ足し忘れて
+/// 「打ち間違えた画面だけ手がかりが消える」形の崩れ方をする。
+#[derive(Debug, Default, Clone, Copy)]
+struct RpChrome<'a> {
+    /// 認可要求の `login_hint`。ユーザー名欄の初期値にするだけの表示上のヒント。
+    login_hint: Option<&'a str>,
+    client_name: Option<&'a str>,
+    tenant_name: Option<&'a str>,
+    accent_color: Option<&'a str>,
+}
+
+/// 認可要求の文脈から表示値を取り出す。空文字・空白のみは「無い」として扱う。
+fn rp_chrome(context: &RpLoginContext) -> RpChrome<'_> {
+    RpChrome {
+        // 認可要求の `login_hint` をユーザー名欄へ入れる（G12）。空文字は初期値にしない。
+        login_hint: context.login_hint.as_deref().filter(|h| !h.is_empty()),
+        // どのアプリのどの組織へ入るのかを画面に出す。api が登録済みの値から引いた表示名で、
+        // 引けなければ出さない。
+        client_name: display_name(context.client_name.as_deref()),
+        tenant_name: display_name(context.tenant_name.as_deref()),
+        accent_color: context.tenant_accent_color.as_deref(),
+    }
+}
+
 /// ログインフォームの HTML をテンプレートから描画する。埋め込む値（翻訳文言・CSRF トークン）は
 /// テンプレート側で自動 HTML エスケープされる。
 fn render_form(
@@ -210,18 +233,17 @@ fn render_form(
     tenant_prefix: &str,
     csrf: &str,
     error_key: Option<&str>,
-    login_hint: Option<&str>,
-    client_name: Option<&str>,
-    tenant_name: Option<&str>,
+    chrome: RpChrome<'_>,
 ) -> String {
     render(&LoginTemplate {
         messages,
         tenant_prefix,
         csrf,
         error_key,
-        login_hint,
-        client_name,
-        tenant_name,
+        login_hint: chrome.login_hint,
+        client_name: chrome.client_name,
+        tenant_name: chrome.tenant_name,
+        accent_color: chrome.accent_color,
     })
 }
 
@@ -457,13 +479,14 @@ fn reshow_form(
                     tenant_prefix,
                     &login_csrf_token(id, csrf_secret),
                     Some(error_key),
-                    // 再表示では `login_hint` を入れ直さない（利用者が別の識別子を入れて失敗した
-                    // 場合に、RP の指定へ黙って戻すと入力し直しに気付けない）。
-                    None,
-                    // 見出しと名乗りは初回描画と同じにする。打ち間違えた画面だけ「どこへ
+                    // 見出し・名乗り・色は初回描画と同じにする。打ち間違えた画面だけ「どこへ
                     // サインインするのか」が消えると、やり直す利用者ほど手がかりを失う。
-                    display_name(rp_context.client_name.as_deref()),
-                    display_name(rp_context.tenant_name.as_deref()),
+                    // `login_hint` だけは入れ直さない（利用者が別の識別子を入れて失敗した
+                    // 場合に、RP の指定へ黙って戻すと入力し直しに気付けない）。
+                    RpChrome {
+                        login_hint: None,
+                        ..rp_chrome(rp_context)
+                    },
                 ),
             ),
         )

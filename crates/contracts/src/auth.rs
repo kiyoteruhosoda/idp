@@ -135,6 +135,10 @@ pub enum InternalAuthorizeLoginContextResponse {
         /// `IdP` を出す（`client_name` と同じく配信順への耐性のため `Option`）。
         #[serde(default)]
         tenant_name: Option<String>,
+        /// フローのテナントのアクセント色（`#rrggbb`）。ログイン画面をテナントの色で
+        /// 縁取るために使う。`None` なら色を付けない。
+        #[serde(default)]
+        tenant_accent_color: Option<String>,
     },
     /// `auth_session_id` が無効・期限切れ（web は文脈なしで描画を続ける）。
     SessionExpired,
