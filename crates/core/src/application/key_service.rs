@@ -107,6 +107,12 @@ impl KeyService {
         })
     }
 
+    /// いま署名に使っている鍵の `kid`。**秘密鍵を復号しない**ので、公開エンドポイント
+    /// （SAML メタデータ）から `kid` だけが要るときはこちらを使う。
+    pub async fn signing_kid(&self) -> anyhow::Result<Option<String>> {
+        Ok(self.find_active_key().await?.map(|key| key.kid))
+    }
+
     /// JWKS（ACTIVE + RETIRED のうち not_after が未来のもの）を構築する。
     pub async fn jwks(&self) -> anyhow::Result<jwt::Jwks> {
         let keys = self

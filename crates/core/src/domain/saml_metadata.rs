@@ -309,6 +309,24 @@ fn parse_entity(xml: &str, role: Role) -> Result<ParsedEntity> {
     })
 }
 
+/// P-256 の曲線 URN（XMLDSIG11 `NamedCurve`）。
+///
+/// **曲線 URN の対応表はここが唯一の出所である。** メタデータの `KeyDescriptor` と
+/// アサーションの `KeyInfo` が同じ値を出さないと、SP は両者を突き合わせられない。
+pub const NAMED_CURVE_P256: &str = "urn:oid:1.2.840.10045.3.1.7";
+const NAMED_CURVE_P384: &str = "urn:oid:1.3.132.0.34";
+const NAMED_CURVE_P521: &str = "urn:oid:1.3.132.0.35";
+
+/// JWK の `crv` を XMLDSIG11 `NamedCurve` の URN へ変換する。未対応の曲線は `None`。
+pub fn named_curve_uri(crv: &str) -> Option<&'static str> {
+    match crv {
+        "P-256" => Some(NAMED_CURVE_P256),
+        "P-384" => Some(NAMED_CURVE_P384),
+        "P-521" => Some(NAMED_CURVE_P521),
+        _ => None,
+    }
+}
+
 /// IdP の署名鍵の公開表現（XML Signature の `KeyValue`）。現状の署名鍵基盤は X.509 証明書を持たず
 /// 生の公開鍵のみのため、`RSAKeyValue`（RS256）／`ECKeyValue`（ES256）で表現する。
 pub enum IdpSigningKey {
@@ -326,9 +344,16 @@ pub enum IdpSigningKey {
 }
 
 impl IdpSigningKey {
-    /// 署名用 `KeyDescriptor` の XML 片を生成する。
-    fn to_key_descriptor(&self) -> String {
-        let key_value = match self {
+    /// 公開鍵そのものの XML 片（`KeyValue`）を生成する。
+    ///
+    /// **メタデータの `KeyDescriptor` と、アサーションの `KeyInfo` で同じものを使う。** 別々に
+    /// 書くと、SP が「メタデータで受け取った鍵」と「アサーションが名乗る鍵」を突き合わせられなく
+    /// なる形にいつでもずれ得る。
+    ///
+    /// 空要素タグ（`<e/>`）を使わないのは、`saml_response` が排他的正準形で XML を組み立てる
+    /// 規則に合わせるため（この片はそちらへも埋め込まれる）。
+    pub(crate) fn to_key_value(&self) -> String {
+        match self {
             IdpSigningKey::Rsa {
                 modulus_b64,
                 exponent_b64,
@@ -346,14 +371,21 @@ impl IdpSigningKey {
                 named_curve_uri,
                 public_key_b64,
             } => format!(
-                r#"<ds11:ECKeyValue xmlns:ds11="http://www.w3.org/2009/xmldsig11#">
-          <ds11:NamedCurve URI="{}"/>
-          <ds11:PublicKey>{}</ds11:PublicKey>
-        </ds11:ECKeyValue>"#,
+                r#"<ds:KeyValue>
+          <ds11:ECKeyValue xmlns:ds11="http://www.w3.org/2009/xmldsig11#">
+            <ds11:NamedCurve URI="{}"></ds11:NamedCurve>
+            <ds11:PublicKey>{}</ds11:PublicKey>
+          </ds11:ECKeyValue>
+        </ds:KeyValue>"#,
                 escape(named_curve_uri),
                 escape(public_key_b64),
             ),
-        };
+        }
+    }
+
+    /// 署名用 `KeyDescriptor` の XML 片を生成する。
+    fn to_key_descriptor(&self) -> String {
+        let key_value = self.to_key_value();
         format!(
             r#"
     <md:KeyDescriptor use="signing">
@@ -368,18 +400,30 @@ impl IdpSigningKey {
 /// 本 IdP の SAML `EntityDescriptor`（`IDPSSODescriptor`）XML を生成する。
 ///
 /// `entity_id` は IdP のエンティティ ID（テナント issuer を用いる）、`sso_url` は SingleSignOnService の
-/// URL。`signing_key` があれば署名用 `KeyDescriptor`（`RSAKeyValue`/`ECKeyValue`）を含める。SP
-/// （クライアント）はこの metadata を取り込んで本 IdP を信頼する。
+/// URL。SP（クライアント）はこの metadata を取り込んで本 IdP を信頼する。
+///
+/// # 公開中の鍵をすべて並べる（ADR-0039）
+///
+/// `signing_keys` には**公開中の鍵をすべて**渡す（署名中の鍵と、まだ署名しない後継鍵、および
+/// 有効期間内の退役鍵）。SAML 2.0 のメタデータは `use="signing"` の `KeyDescriptor` を複数持てる。
+/// 1 本しか出さないと、署名が切り替わる瞬間に SP から見える証明書が入れ替わり、**取り込み直すまで
+/// 検証が落ちる** —— ADR-0039 が JWKS 側で無くした断絶が、SAML 側にだけ残る。
+///
+/// **並び順は呼び出し側の責務で、署名中の鍵を先頭にする。** SP の実装には先頭の
+/// `KeyDescriptor` だけを読むものがあり、公開順（新しい鍵が先）のまま渡すと**まだ署名していない
+/// 後継鍵**を掴ませることになる。
 pub fn build_idp_metadata_xml(
     entity_id: &str,
     sso_url: &str,
-    signing_key: Option<&IdpSigningKey>,
+    signing_keys: &[IdpSigningKey],
 ) -> String {
     let entity_id = escape(entity_id);
     let sso_url = escape(sso_url);
-    let key_descriptor = signing_key
+    let key_descriptor = signing_keys
+        .iter()
         .map(IdpSigningKey::to_key_descriptor)
-        .unwrap_or_default();
+        .collect::<Vec<_>>()
+        .join("");
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="{entity_id}">
@@ -641,7 +685,7 @@ mod tests {
         let xml = build_idp_metadata_xml(
             "https://idp.example.com/tenant-1",
             "https://idp.example.com/tenant-1/saml/sso?x=1&y=2",
-            Some(&key),
+            std::slice::from_ref(&key),
         );
         assert!(xml.contains(r#"entityID="https://idp.example.com/tenant-1""#));
         // IdP メタデータ（IDPSSODescriptor）であり、SP メタデータではない。
@@ -666,10 +710,18 @@ mod tests {
             named_curve_uri: "urn:oid:1.2.840.10045.3.1.7".to_string(),
             public_key_b64: "BParbitraryPoint==".to_string(),
         };
-        let xml = build_idp_metadata_xml("urn:idp", "https://idp.test/sso", Some(&key));
+        let xml = build_idp_metadata_xml(
+            "urn:idp",
+            "https://idp.test/sso",
+            std::slice::from_ref(&key),
+        );
         assert!(xml.contains(r#"<md:KeyDescriptor use="signing">"#));
+        // XMLDSIG 1.1 の置き場所は `ds:KeyValue/ds11:ECKeyValue`。RSA 側と同じく `ds:KeyValue`
+        // で包まないと、`KeyInfo/KeyValue` の下だけを見る SP が EC 鍵を拾えない。
+        assert!(xml.contains("<ds:KeyValue>"));
         assert!(xml.contains("<ds11:ECKeyValue"));
-        assert!(xml.contains(r#"<ds11:NamedCurve URI="urn:oid:1.2.840.10045.3.1.7"/>"#));
+        assert!(xml
+            .contains(r#"<ds11:NamedCurve URI="urn:oid:1.2.840.10045.3.1.7"></ds11:NamedCurve>"#));
         assert!(xml.contains("<ds11:PublicKey>BParbitraryPoint==</ds11:PublicKey>"));
         assert!(!xml.contains("RSAKeyValue"));
         let mut reader = Reader::from_str(&xml);
@@ -678,9 +730,39 @@ mod tests {
 
     #[test]
     fn build_idp_metadata_omits_key_descriptor_when_no_signing_key() {
-        let xml = build_idp_metadata_xml("urn:idp", "https://idp.test/sso", None);
+        let xml = build_idp_metadata_xml("urn:idp", "https://idp.test/sso", &[]);
         assert!(xml.contains("IDPSSODescriptor"));
         assert!(!xml.contains("KeyDescriptor"));
+        let mut reader = Reader::from_str(&xml);
+        while !matches!(reader.read_event().expect("well-formed"), Event::Eof) {}
+    }
+
+    /// 公開中の鍵をすべて並べる（ADR-0039 / T33）。
+    ///
+    /// 1 本しか出さないと、署名が切り替わる瞬間に SP から見える証明書が入れ替わり、取り込み直す
+    /// まで検証が落ちる。ADR-0039 が JWKS 側で無くした断絶を、SAML 側にも無くすための本体。
+    #[test]
+    fn build_idp_metadata_lists_every_published_key_in_order() {
+        let signing = IdpSigningKey::Rsa {
+            modulus_b64: "AAAAsigning==".to_string(),
+            exponent_b64: "AQAB".to_string(),
+        };
+        let successor = IdpSigningKey::Rsa {
+            modulus_b64: "BBBBsuccessor==".to_string(),
+            exponent_b64: "AQAB".to_string(),
+        };
+        let xml = build_idp_metadata_xml("urn:idp", "https://idp.test/sso", &[signing, successor]);
+
+        assert_eq!(
+            xml.matches(r#"<md:KeyDescriptor use="signing">"#).count(),
+            2
+        );
+        // 渡された順にそのまま並ぶ（先頭の KeyDescriptor だけを読む SP があるため、
+        // 「署名中の鍵を先頭に」は呼び出し側が守る責務であり、ここは並べ替えない）。
+        let first = xml.find("AAAAsigning==").expect("signing key present");
+        let second = xml.find("BBBBsuccessor==").expect("successor present");
+        assert!(first < second, "渡した順序が保たれること: {xml}");
+
         let mut reader = Reader::from_str(&xml);
         while !matches!(reader.read_event().expect("well-formed"), Event::Eof) {}
     }
