@@ -12,6 +12,7 @@
 use crate::application::audit::RequestContext;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
 use crate::application::sso_restore::SsoRestorer;
+use crate::application::tenant_resolution::TenantResolutionService;
 use crate::domain::auth_session::{self, AuthSession};
 use crate::domain::authentication_policy::{
     evaluate_policies, AuthenticationContext, DefaultPolicyEffect, PolicyDecision,
@@ -22,7 +23,7 @@ use crate::domain::crypto;
 use crate::domain::error::OAuthErrorCode;
 use crate::domain::repositories::{
     AuthSessionRepository, AuthenticationPolicyRepository, ClientConsentRepository,
-    ClientRepository, TenantRepository,
+    ClientRepository,
 };
 use crate::domain::response_mode::{AuthorizationResponse, ResponseMode};
 use crate::domain::tenant_context::TenantContext;
@@ -154,7 +155,9 @@ pub struct AuthorizeService {
     authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
     policy_default_effect: DefaultPolicyEffect,
     /// ログイン画面へ出すテナント表示名の引き当て先（`login_context` でのみ使う）。
-    tenants: Arc<dyn TenantRepository>,
+    /// リポジトリを直に持たず解決サービスを通すのは、同じ行を同じリクエストの入口
+    /// （`TenantResolver`）が既に引いており、その TTL キャッシュに相乗りするためである。
+    tenants: Arc<TenantResolutionService>,
 }
 
 impl AuthorizeService {
@@ -169,7 +172,7 @@ impl AuthorizeService {
         auth_session_ttl: std::time::Duration,
         authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
         policy_default_effect: DefaultPolicyEffect,
-        tenants: Arc<dyn TenantRepository>,
+        tenants: Arc<TenantResolutionService>,
     ) -> Self {
         Self {
             clients,
@@ -658,7 +661,7 @@ impl AuthorizeService {
                 None
             }
         };
-        let tenant_name = match self.tenants.find_by_id(tenant.tenant_id()).await {
+        let tenant_name = match self.tenants.resolve(tenant.tenant_id()).await {
             Ok(t) => t.map(|t| t.name),
             Err(e) => {
                 tracing::warn!(error = %e, "could not read the tenant name for the login page");

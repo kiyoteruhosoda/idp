@@ -424,7 +424,7 @@ pub fn build(state: WebState) -> Router {
             resolve_display_preferences,
         ))
         // 認可要求が持ち込む文脈（`login_hint` / `ui_locales`。G12）の取り直し。言語決定が
-        // `ui_locales` を読むため、`resolve_language` より外側（＝先に走る）に置く。
+        // `ui_locales` を読むため、`resolve_display_preferences` より外側（＝先に走る）に置く。
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             load_rp_login_context,

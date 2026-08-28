@@ -846,8 +846,12 @@ pub struct ConsoleAdmin<'a> {
 }
 
 impl ConsoleAdmin<'_> {
-    /// 指定の権限を要する画面へのリンクを出すか（詳細は
-    /// [`crate::api_client::AdminIdentity::can`]。空一覧は「絞り込めない」で `true`）。
+    /// 指定の権限を要する画面へのリンクを出すか（メニューを出すかの判定）。
+    ///
+    /// **一覧が空のときは `true` を返す。** 空になるのは api が古くこのフィールドを返さないとき
+    /// （ローリングデプロイの数秒間）で、そこを「権限なし」と読むとメニューがごっそり消える。
+    /// 管理コンソールに入れている時点で最低でも `idp.tenant.admin` は保有しており、空は
+    /// 「絞り込めない」を意味する。押した先で api が 403 を返すのは従来どおり。
     pub fn can(&self, permission_code: &str) -> bool {
         self.permissions.is_empty() || self.permissions.iter().any(|code| code == permission_code)
     }

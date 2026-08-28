@@ -32,7 +32,7 @@
       {#- 言語切替（MT20）。`action` を持たない GET フォームは現在のパスへ `?lang=` だけを付けて
           送信するため、レイアウトを継承する全画面で追加の受け渡し無しに機能する（絞り込み・
           ページ位置のクエリは失われる ＝ 切替後は一覧の先頭に戻る）。決定・保存は
-          `language::resolve_language` middleware が行う。 -#}
+          `display_preferences::resolve_display_preferences` middleware が行う。 -#}
       <form method="get" class="dropdown">
         <button type="button" class="btn btn-link nav-link dropdown-toggle d-flex align-items-center" data-bs-toggle="dropdown" aria-expanded="false">
           <i class="fa-solid fa-language me-1" aria-hidden="true"></i><span class="visually-hidden">{{ messages.get("admin-language-switch") }}</span><span aria-hidden="true">{{ messages.get("admin-language-current-label") }}</span>
