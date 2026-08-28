@@ -305,6 +305,7 @@ mod tests {
             admin: Some(crate::templates::ConsoleAdmin {
                 label: "admin-1",
                 tenant_name: Some("Acme"),
+                permissions: &[],
             }),
             tenants,
             total: tenants.len() as i64,

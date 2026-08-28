@@ -86,6 +86,11 @@ pub fn build(state: AppState) -> Router {
             "/internal/account/update-language",
             post(internal_auth::account_update_language),
         )
+        // セルフサービスの配色変更（ログイン済みユーザーの設定画面）。
+        .route(
+            "/internal/account/update-theme",
+            post(internal_auth::account_update_theme),
+        )
         // セルフサービスのプロフィール取得・表示名更新（ログイン済みユーザーの設定画面）。
         .route(
             "/internal/account/profile",

@@ -3,13 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+{#- 配色は最初の描画より前に確定させる（`assets/theme.js`）。`defer` を付けず、スタイルシートより
+    先に置く —— 遅らせると白い画面が描かれてから黒へ塗り替わる。 -#}
+<script src="/assets/theme.js?v={{ crate::templates::asset_version() }}"></script>
+<meta name="color-scheme" content="light dark">
 <link rel="stylesheet" href="/assets/vendor/bootstrap.min.css?v={{ crate::templates::asset_version() }}">
 <link rel="stylesheet" href="/assets/vendor/fontawesome/css/all.min.css?v={{ crate::templates::asset_version() }}">
 <link rel="stylesheet" href="/assets/app.css?v={{ crate::templates::asset_version() }}">
 <title>{{ messages.get("admin-console-title") }}</title>
 </head>
 <body class="d-flex flex-column min-vh-100">
-<nav class="navbar bg-light border-bottom">
+<nav class="navbar bg-body-tertiary border-bottom">
   <div class="container-fluid">
     <div class="d-flex align-items-center">
       {% if admin.is_some() %}
@@ -59,8 +63,8 @@
   </div>
 </nav>
 <div class="d-flex flex-grow-1">
-  {% if admin.is_some() %}
-  <div class="offcanvas-md offcanvas-start bg-light border-end app-sidebar" tabindex="-1" id="console-sidebar" aria-labelledby="console-sidebar-title">
+  {% if let Some(chrome) = admin %}
+  <div class="offcanvas-md offcanvas-start bg-body-tertiary border-end app-sidebar" tabindex="-1" id="console-sidebar" aria-labelledby="console-sidebar-title">
     <div class="offcanvas-header d-md-none">
       <h5 class="offcanvas-title" id="console-sidebar-title">{{ messages.get("admin-console-title") }}</h5>
       <button type="button" class="btn-close" data-bs-dismiss="offcanvas" data-bs-target="#console-sidebar" aria-label="Close"></button>
@@ -72,7 +76,9 @@
         <span class="text-muted text-uppercase fw-bold px-2 mt-3 mb-1 small sidebar-category-header">{{ messages.get("admin-home-group-operations") }}</span>
         <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/status"><i class="fa-solid fa-heart-pulse me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-status") }}</span></a>
         <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/audit-logs"><i class="fa-solid fa-file-lines me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-audit") }}</span></a>
-        <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/logs"><i class="fa-solid fa-triangle-exclamation me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-applog") }}</span></a>
+        {#- エラー警告ログは `idp.system.admin` 必須（`api::handlers::admin_application_logs`）。
+            権限が無い管理者にも出していたため、押すと 403 になる行き止まりだった。 -#}
+        {% if chrome.can("idp.system.admin") %}<a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/logs"><i class="fa-solid fa-triangle-exclamation me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-applog") }}</span></a>{% endif %}
 
         <span class="text-muted text-uppercase fw-bold px-2 mt-3 mb-1 small sidebar-category-header">{{ messages.get("admin-home-group-access") }}</span>
         <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/members"><i class="fa-solid fa-address-book me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-members") }}</span></a>
@@ -86,7 +92,8 @@
 
         <span class="text-muted text-uppercase fw-bold px-2 mt-3 mb-1 small sidebar-category-header">{{ messages.get("admin-home-group-settings") }}</span>
         <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/settings"><i class="fa-solid fa-gear me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-settings") }}</span></a>
-        <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/tenants"><i class="fa-solid fa-building me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-tenants") }}</span></a>
+        {#- テナント管理も同じく `idp.system.admin` 必須（`api::handlers::admin_tenants`）。 -#}
+        {% if chrome.can("idp.system.admin") %}<a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/tenants"><i class="fa-solid fa-building me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-tenants") }}</span></a>{% endif %}
       </nav>
     </div>
   </div>
@@ -98,6 +105,7 @@
 {% include "console/footer.html" %}
 <script src="/assets/vendor/bootstrap.bundle.min.js?v={{ crate::templates::asset_version() }}"></script>
 <script src="/assets/console.js?v={{ crate::templates::asset_version() }}"></script>
+<script src="/assets/button-pending.js?v={{ crate::templates::asset_version() }}"></script>
 <!-- 送信中の目印は console.js（確認ダイアログ）より後に読み込む。取り消された送信へ
      印を付けないため、リスナの登録順に依存する（submit-feedback.js のコメント参照）。 -->
 <script src="/assets/submit-feedback.js?v={{ crate::templates::asset_version() }}"></script>

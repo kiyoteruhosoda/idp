@@ -338,6 +338,7 @@ mod tests {
             preferred_username: Some("admin".to_string()),
             name: Some("Administrator".to_string()),
             language: None,
+            theme: None,
             password_hash: "x".to_string(),
             must_change_password: false,
             password_changed_at: None,

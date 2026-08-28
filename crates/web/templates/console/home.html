@@ -14,7 +14,8 @@
       <div class="list-group list-group-flush">
         <a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/status"><div class="fw-semibold">{{ messages.get("admin-nav-status") }}</div><small class="text-muted">{{ messages.get("admin-nav-status-desc") }}</small></a>
         <a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/audit-logs"><div class="fw-semibold">{{ messages.get("admin-nav-audit") }}</div><small class="text-muted">{{ messages.get("admin-nav-audit-desc") }}</small></a>
-        <a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/logs"><div class="fw-semibold">{{ messages.get("admin-nav-applog") }}</div><small class="text-muted">{{ messages.get("admin-nav-applog-desc") }}</small></a>
+        {#- サイドバーと同じ条件で出す（`idp.system.admin` 必須の画面）。 -#}
+        {% if let Some(chrome) = admin %}{% if chrome.can("idp.system.admin") %}<a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/logs"><div class="fw-semibold">{{ messages.get("admin-nav-applog") }}</div><small class="text-muted">{{ messages.get("admin-nav-applog-desc") }}</small></a>{% endif %}{% endif %}
       </div>
     </div>
   </div>
@@ -49,7 +50,7 @@
       <div class="card-body pb-0"><p class="text-muted small">{{ messages.get("admin-home-group-settings-desc") }}</p></div>
       <div class="list-group list-group-flush">
         <a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/settings"><div class="fw-semibold">{{ messages.get("admin-nav-settings") }}</div><small class="text-muted">{{ messages.get("admin-nav-settings-desc") }}</small></a>
-        <a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/tenants"><div class="fw-semibold">{{ messages.get("admin-nav-tenants") }}</div><small class="text-muted">{{ messages.get("admin-nav-tenants-desc") }}</small></a>
+        {% if let Some(chrome) = admin %}{% if chrome.can("idp.system.admin") %}<a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/tenants"><div class="fw-semibold">{{ messages.get("admin-nav-tenants") }}</div><small class="text-muted">{{ messages.get("admin-nav-tenants-desc") }}</small></a>{% endif %}{% endif %}
       </div>
     </div>
   </div>

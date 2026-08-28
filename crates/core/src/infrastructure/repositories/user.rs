@@ -180,7 +180,8 @@ const SELECT_COLUMNS: &str = "u.id AS id, u.tenant_id AS tenant_id, u.sub AS sub
      u.email AS email, u.email_verified AS email_verified, \
      (SELECT p.display_value FROM user_login_identifiers p WHERE p.primary_of_user = u.id) \
         AS preferred_username, \
-     u.name AS name, u.language AS language, u.password_hash AS password_hash, \
+     u.name AS name, u.language AS language, u.theme AS theme, \
+     u.password_hash AS password_hash, \
      u.must_change_password AS must_change_password, \
      u.password_changed_at AS password_changed_at, u.status AS status, \
      u.failed_login_count AS failed_login_count, u.locked_until AS locked_until, \
@@ -227,6 +228,7 @@ fn map_row(row: &MySqlRow) -> Result<User> {
         preferred_username: row.try_get("preferred_username").map_err(repo_err)?,
         name: row.try_get("name").map_err(repo_err)?,
         language: row.try_get("language").map_err(repo_err)?,
+        theme: row.try_get("theme").map_err(repo_err)?,
         password_hash: row.try_get("password_hash").map_err(repo_err)?,
         must_change_password: row.try_get("must_change_password").map_err(repo_err)?,
         password_changed_at: password_changed_at.map(to_utc),
@@ -354,10 +356,10 @@ async fn sync_primary_login_identifier(
 async fn insert_user(conn: &mut sqlx::MySqlConnection, user: &User) -> Result<()> {
     sqlx::query(
         "INSERT INTO users \
-         (id, tenant_id, sub, email, email_verified, name, language, \
+         (id, tenant_id, sub, email, email_verified, name, language, theme, \
           password_hash, must_change_password, password_changed_at, status, failed_login_count, \
           locked_until) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(user.id.to_string())
     .bind(user.tenant_id.to_string())
@@ -366,6 +368,7 @@ async fn insert_user(conn: &mut sqlx::MySqlConnection, user: &User) -> Result<()
     .bind(user.email_verified)
     .bind(&user.name)
     .bind(&user.language)
+    .bind(&user.theme)
     .bind(&user.password_hash)
     .bind(user.must_change_password)
     .bind(user.password_changed_at.map(|d| d.naive_utc()))
@@ -688,6 +691,15 @@ impl UserRepository for SqlxUserRepository {
     async fn update_language(&self, id: Uuid, language: Option<&str>) -> Result<()> {
         sqlx::query("UPDATE users SET language = ? WHERE id = ?")
             .bind(language)
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        Ok(())
+    }
+    async fn update_theme(&self, id: Uuid, theme: Option<&str>) -> Result<()> {
+        sqlx::query("UPDATE users SET theme = ? WHERE id = ?")
+            .bind(theme)
             .bind(id.to_string())
             .execute(&self.pool)
             .await

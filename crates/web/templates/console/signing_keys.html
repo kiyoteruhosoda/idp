@@ -35,7 +35,7 @@
           {%- else if key.status == "ACTIVE" -%}
           <span class="badge text-bg-secondary">{{ messages.get("admin-signing-keys-state-standby") }}</span>
           {%- else -%}
-          <span class="badge text-bg-light text-dark">{{ messages.get("admin-signing-keys-state-retired") }}</span>
+          <span class="badge bg-secondary-subtle text-secondary-emphasis">{{ messages.get("admin-signing-keys-state-retired") }}</span>
           {%- endif -%}
         </td>
         <td data-label="{{ messages.get("admin-signing-keys-col-not-before") }}">{{ key.not_before }}</td>

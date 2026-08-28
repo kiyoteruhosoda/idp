@@ -485,10 +485,7 @@ impl AdminContext {
     #[cfg(test)]
     pub(crate) fn for_test(label: &str, tenant_name: Option<&str>) -> Self {
         Self {
-            identity: AdminIdentity {
-                label: label.to_string(),
-                tenant_name: tenant_name.map(str::to_string),
-            },
+            identity: AdminIdentity::for_test(label, tenant_name),
         }
     }
 
@@ -497,6 +494,7 @@ impl AdminContext {
         ConsoleAdmin {
             label: &self.identity.label,
             tenant_name: self.identity.tenant_name.as_deref(),
+            permissions: self.identity.permissions(),
         }
     }
 }
@@ -659,6 +657,7 @@ mod tests {
             admin: Some(crate::templates::ConsoleAdmin {
                 label: "user-123",
                 tenant_name: Some("ROOT"),
+                permissions: &[],
             }),
         });
         assert!(html.contains("user-123"));

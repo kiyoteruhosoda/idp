@@ -246,6 +246,8 @@ mod tests {
                 csrf: "csrf-token",
                 error_key: None,
                 login_hint,
+                client_name: None,
+                tenant_name: None,
             })
         };
 
@@ -275,6 +277,105 @@ mod tests {
             !tag.contains(r#"onfocus=""#),
             "but never as an attribute: {html}"
         );
+    }
+
+    /// `idp.system.admin` を要する画面（エラー警告ログ・テナント管理）は、その権限を持たない
+    /// 管理者のメニューに出さない。出していた頃は押すと api が 403 を返す行き止まりだった。
+    #[test]
+    fn the_console_hides_the_screens_this_admin_cannot_open() {
+        let messages = Messages::new(Locale::Ja);
+        let render_as = |permissions: &[String]| {
+            render(&ConsoleHome {
+                messages: &messages,
+                tenant: "/t",
+                admin: Some(ConsoleAdmin {
+                    label: "admin",
+                    tenant_name: Some("Acme"),
+                    permissions,
+                }),
+            })
+        };
+
+        let tenant_admin = render_as(&["idp.members:read".to_string()]);
+        assert!(!tenant_admin.contains("/t/admin/logs"), "{tenant_admin}");
+        assert!(!tenant_admin.contains("/t/admin/tenants"), "{tenant_admin}");
+        // 権限に関わらず開ける画面は残る（隠しすぎていないことの確認）。
+        assert!(tenant_admin.contains("/t/admin/members"), "{tenant_admin}");
+
+        let system_admin = render_as(&["idp.system.admin".to_string()]);
+        assert!(system_admin.contains("/t/admin/logs"), "{system_admin}");
+        assert!(system_admin.contains("/t/admin/tenants"), "{system_admin}");
+
+        // 一覧が空なのは「api が古くて絞り込めない」場合なので、従来どおり全部出す
+        // （権限なしと読んでメニューを消すと、新旧が混在する数秒間だけ画面が別物になる）。
+        let unknown = render_as(&[]);
+        assert!(unknown.contains("/t/admin/logs"), "{unknown}");
+        assert!(unknown.contains("/t/admin/tenants"), "{unknown}");
+    }
+
+    /// SSO で飛ばされてきた利用者は「どこへサインインするのか」を画面からしか知れない。
+    /// 見出しにアプリ名を、左上の名乗りにテナント名を出す。**引けなかったときは既定へ戻る**
+    /// （api が古い・表示名が空、のどちらでもフォームは出し続ける）。
+    #[test]
+    fn the_login_form_names_the_application_and_the_tenant() {
+        let messages = Messages::new(Locale::Ja);
+        let render_with = |client_name, tenant_name| {
+            render(&LoginTemplate {
+                messages: &messages,
+                tenant_prefix: "/t",
+                csrf: "csrf-token",
+                error_key: None,
+                login_hint: None,
+                client_name,
+                tenant_name,
+            })
+        };
+
+        let html = render_with(Some("PhotoNest"), Some("Acme Corp"));
+        assert!(html.contains("PhotoNest にサインイン"), "{html}");
+        assert!(
+            html.contains(r#"<span class="navbar-brand mb-0 h1">Acme Corp</span>"#),
+            "{html}"
+        );
+
+        // 名前が無いときは、名乗りも見出しも変更前の既定に戻る。
+        let html = render_with(None, None);
+        assert!(
+            html.contains(r#"<span class="navbar-brand mb-0 h1">IdP</span>"#),
+            "{html}"
+        );
+        assert!(html.contains(">サインイン<"), "{html}");
+
+        // 表示名は登録値なので RP の申告ではないが、管理画面から任意の文字列が入る。
+        // テンプレートのエスケープを通ることを確かめる。
+        let html = render_with(Some("<script>alert(1)</script>"), None);
+        assert!(!html.contains("<script>alert(1)</script>"), "{html}");
+        assert!(html.contains("&#60;script&#62;"), "{html}");
+    }
+
+    /// パスキーの画面は画面内に戻る導線を持たない枝葉なので、左上の名乗りをアカウントの
+    /// ホームへのリンクにする（行き止まりを作らない）。
+    #[test]
+    fn the_passkey_screens_offer_a_way_back_from_the_navbar() {
+        let messages = Messages::new(Locale::Ja);
+        let list = render(&PasskeyListTemplate {
+            messages: &messages,
+            tenant_prefix: "/t",
+            credentials: &[],
+        });
+        let register = render(&PasskeyRegisterTemplate {
+            messages: &messages,
+            tenant_prefix: "/t",
+            error_key: None,
+        });
+        for html in [&list, &register] {
+            assert!(
+                html.contains(
+                    r#"<a class="navbar-brand mb-0 h1 text-decoration-none" href="/t/settings""#
+                ),
+                "{html}"
+            );
+        }
     }
 
     /// アセット参照はデプロイごとに URL が変わるよう `?v={asset_version}` を必ず付ける
@@ -313,6 +414,31 @@ mod tests {
             console.find("/assets/console.js") < console.find("/assets/submit-feedback.js"),
             "submit-feedback.js must load after console.js: {console}"
         );
+        // 印を付ける DOM 操作は共有なので、それを呼ぶスクリプトより先に読み込む。
+        for html in [&console, &auth] {
+            assert!(html.contains(&format!("/assets/button-pending.js?v={v}")));
+            assert!(
+                html.find("/assets/button-pending.js") < html.find("/assets/submit-feedback.js"),
+                "button-pending.js must load first: {html}"
+            );
+        }
+        // 配色は最初の描画より前に確定させる必要があるため、スタイルシートより先に読み込む。
+        for html in [&console, &auth] {
+            assert!(html.contains(&format!("/assets/theme.js?v={v}")));
+            assert!(
+                html.find("/assets/theme.js") < html.find("/assets/vendor/bootstrap.min.css"),
+                "theme.js must load before the stylesheet: {html}"
+            );
+            // `defer` を付けると、白い画面が描かれてから黒へ塗り替わる。
+            let tag_start = html
+                .find("/assets/theme.js")
+                .expect("theme.js is referenced");
+            let tag_end = tag_start + html[tag_start..].find('>').expect("tag end");
+            assert!(
+                !html[tag_start..tag_end].contains("defer"),
+                "theme.js must not be deferred: {html}"
+            );
+        }
     }
 
     /// MT20: 管理コンソールの共通レイアウトに言語切替 UI がある（未ログイン画面にも出す。
@@ -325,6 +451,7 @@ mod tests {
             Some(ConsoleAdmin {
                 label: "admin-1",
                 tenant_name: None,
+                permissions: &[],
             }),
             None,
         ] {
@@ -355,6 +482,7 @@ mod tests {
             admin: Some(ConsoleAdmin {
                 label: "admin-1",
                 tenant_name: Some("Acme Inc."),
+                permissions: &[],
             }),
         });
         assert!(html.contains("Acme Inc."), "{html}");
@@ -372,6 +500,7 @@ mod tests {
             admin: Some(ConsoleAdmin {
                 label: "admin-1",
                 tenant_name: None,
+                permissions: &[],
             }),
         });
         assert!(html.contains("admin-1"), "{html}");
@@ -389,6 +518,7 @@ mod tests {
             admin: Some(ConsoleAdmin {
                 label: "admin-1",
                 tenant_name: None,
+                permissions: &[],
             }),
             csrf: "csrf",
             saved: false,
@@ -581,6 +711,11 @@ pub struct LoginTemplate<'a> {
     /// 認可要求の `login_hint`（G12）。ログイン欄の初期値にするだけの**表示上のヒント**で、
     /// 実在するアカウントを意味しない（RP が指定した任意の文字列。テンプレートがエスケープする）。
     pub login_hint: Option<&'a str>,
+    /// 認可要求を出したクライアントの表示名（api が登録済みの値から引いたもの）。見出しを
+    /// 「〇〇 にサインイン」にする。`None` なら既定の見出しを出す。
+    pub client_name: Option<&'a str>,
+    /// フローのテナントの表示名。ナビバーの名乗りに出す。`None` なら `IdP` を出す。
+    pub tenant_name: Option<&'a str>,
 }
 
 /// エンドユーザー・ポータルのログイン画面（`GET /{tenant_id}/login`。OIDC の `auth_session` を持たない
@@ -706,6 +841,16 @@ pub struct ConsoleAdmin<'a> {
     pub label: &'a str,
     /// 操作中テナントの表示名。api が返さなかった場合のみ `None`（名前の表示だけを省く）。
     pub tenant_name: Option<&'a str>,
+    /// この管理者が行使できる権限コード（api が含意を展開済み）。メニューの出し分けに使う。
+    pub permissions: &'a [String],
+}
+
+impl ConsoleAdmin<'_> {
+    /// 指定の権限を要する画面へのリンクを出すか（詳細は
+    /// [`crate::api_client::AdminIdentity::can`]。空一覧は「絞り込めない」で `true`）。
+    pub fn can(&self, permission_code: &str) -> bool {
+        self.permissions.is_empty() || self.permissions.iter().any(|code| code == permission_code)
+    }
 }
 
 /// 共通レイアウトのヘッダ文脈（未認証時は `None`）。
@@ -1434,6 +1579,8 @@ pub struct UserSettings<'a> {
     pub tenant: &'a str,
     /// 現在の表示言語（`ja` / `en`）。言語セレクタの初期選択に使う。
     pub current_lang: &'a str,
+    /// 現在の配色（`light` / `dark` / `system`）。配色セレクタの初期選択に使う。
+    pub current_theme: &'a str,
     /// 現在の表示名（プリフィル用。未設定なら空文字）。
     pub current_name: &'a str,
     /// ログイン識別子（表示のみ・変更不可。未設定なら空文字）。

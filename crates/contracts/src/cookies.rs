@@ -97,6 +97,17 @@ impl CookiePolicy {
         build(name, value, max_age_secs, self.secure, None)
     }
 
+    /// 画面のスクリプトから読める表示設定 Cookie を発行する `Set-Cookie` 値（`HttpOnly` を付けない）。
+    ///
+    /// **`HttpOnly` を外すのはこの用途に限る。** 配色は最初の描画より前に確定していないと画面が
+    /// 白から黒へちらつくため、`<head>` の同期スクリプトが自分で読む必要がある。運べるのは
+    /// `light` / `dark` / `system` のいずれかで、盗まれて困る値も、書き換えられて権限が動く値も
+    /// 含まない（配色が変わるだけで、サーバは何の判断にも使わない）。資格情報・セッション識別子を
+    /// この関数で発行しないこと。
+    pub fn set_preference(&self, name: &str, value: &str, max_age_secs: u64) -> String {
+        build_preference(name, value, max_age_secs, self.secure)
+    }
+
     /// サービスローカル Cookie を失効させる `Set-Cookie` 値。
     pub fn expire_local(&self, name: &str) -> String {
         self.set_local(name, "", 0)
@@ -116,6 +127,15 @@ impl CookiePolicy {
             base_name.to_string()
         }
     }
+}
+
+/// スクリプトから読める Cookie（`HttpOnly` 無し）。属性は [`build`] と揃える。
+fn build_preference(name: &str, value: &str, max_age_secs: u64, secure: bool) -> String {
+    let mut cookie = format!("{name}={value}; Max-Age={max_age_secs}; Path=/; SameSite=Lax");
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie
 }
 
 fn build(name: &str, value: &str, max_age_secs: u64, secure: bool, domain: Option<&str>) -> String {

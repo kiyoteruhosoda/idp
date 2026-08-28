@@ -38,8 +38,11 @@ pub const PORTAL_MFA_COOKIE: &str = "portal_mfa_ticket";
 pub const SAML_REQUEST_COOKIE: &str = "saml_request_id";
 /// 表示言語の選択を保持する Cookie（`ja` / `en`。MT15。決定チェーンの優先度3）。
 pub const LANG_COOKIE: &str = "lang";
-/// 言語 Cookie の保持期間（既定 1 年）。UI 設定のため長命にする。
-pub const LANG_COOKIE_MAX_AGE_SECS: u64 = 31_536_000;
+/// 表示設定 Cookie（言語・配色）の保持期間（既定 1 年）。UI 設定のため長命にする。
+pub const PREFERENCE_COOKIE_MAX_AGE_SECS: u64 = 31_536_000;
+/// 配色の選択を保持する Cookie（`light` / `dark` / `system`）。**`HttpOnly` を付けない**
+/// （`assets/theme.js` が最初の描画より前に読む。理由は `idp_contracts::cookies::set_preference`）。
+pub const THEME_COOKIE: &str = "theme";
 
 /// リクエストの `Cookie` ヘッダから `name` の値を取り出す。
 pub fn get(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -99,6 +102,16 @@ impl SetCookies {
         self
     }
 
+    /// 画面のスクリプトから読める表示設定 Cookie を発行する（配色。`HttpOnly` 無し）。
+    #[must_use]
+    pub fn set_preference(mut self, name: &str, value: &str, max_age_secs: u64) -> Self {
+        self.headers.push((
+            SET_COOKIE,
+            self.policy.set_preference(name, value, max_age_secs),
+        ));
+        self
+    }
+
     /// web ローカル Cookie を失効させる。
     #[must_use]
     pub fn expire_local(mut self, name: &str) -> Self {
@@ -155,7 +168,7 @@ mod tests {
         let set_cookies = SetCookies::new(CookiePolicy::new(true, None))
             .set_session(SSO_SESSION_COOKIE, "sess", 600)
             .expire_session(AUTH_SESSION_COOKIE)
-            .set_local(LANG_COOKIE, "ja", LANG_COOKIE_MAX_AGE_SECS);
+            .set_local(LANG_COOKIE, "ja", PREFERENCE_COOKIE_MAX_AGE_SECS);
         assert_eq!(
             values(set_cookies),
             vec![

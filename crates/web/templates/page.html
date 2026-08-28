@@ -3,18 +3,25 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+{#- 配色は最初の描画より前に確定させる（`assets/theme.js`）。`defer` を付けず、スタイルシートより
+    先に置く —— 遅らせると白い画面が描かれてから黒へ塗り替わる。 -#}
+<script src="/assets/theme.js?v={{ crate::templates::asset_version() }}"></script>
+<meta name="color-scheme" content="light dark">
 <link rel="stylesheet" href="/assets/vendor/bootstrap.min.css?v={{ crate::templates::asset_version() }}">
 <link rel="stylesheet" href="/assets/vendor/fontawesome/css/all.min.css?v={{ crate::templates::asset_version() }}">
 <link rel="stylesheet" href="/assets/app.css?v={{ crate::templates::asset_version() }}">
 <title>{% block title %}IdP{% endblock %}</title>
 </head>
 <body class="d-flex flex-column min-vh-100">
-<nav class="navbar bg-light border-bottom">
+<nav class="navbar bg-body-tertiary border-bottom">
   <div class="container-fluid">
-    <span class="navbar-brand mb-0 h1">IdP</span>
+    {#- 左上の名乗り。既定は動かない文字だけにしておく（ログイン・同意のように、
+        フローの途中で外へ出す動線を置いてはいけない画面があるため）。ホームへ戻す
+        リンクや、テナント名を出したい画面が `brand` を上書きする。 -#}
+    {% block brand %}<span class="navbar-brand mb-0 h1">IdP</span>{% endblock %}
   </div>
 </nav>
-<main class="flex-grow-1 d-flex flex-column bg-white">
+<main class="flex-grow-1 d-flex flex-column bg-body">
   <div class="container-fluid my-auto py-4 d-flex align-items-center justify-content-center auth-content">
     <div class="row w-100">
       <div class="{% block column %}col-md-6 col-lg-4 mx-auto{% endblock %}">
@@ -25,6 +32,9 @@
 </main>
 {% include "footer.html" %}
 <script src="/assets/vendor/bootstrap.bundle.min.js?v={{ crate::templates::asset_version() }}"></script>
+{#- 処理中の目印。フォーム送信（submit-feedback.js）と、fetch でサーバと話す画面
+    スクリプト（passkey-register.js）が呼ぶため、どちらよりも先に読み込む。 -#}
+<script src="/assets/button-pending.js?v={{ crate::templates::asset_version() }}"></script>
 {#- 画面固有のスクリプト。確認ダイアログ（`assets/console.js`）は送信中の目印より**先**に
     読み込む必要があるため、`submit-feedback.js` の前に置く（取り消された送信へ印を付けないため。
     `console/layout.html` と同じ順序）。 -#}

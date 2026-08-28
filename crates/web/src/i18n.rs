@@ -4,7 +4,7 @@
 //! 英語で定義し、日本語訳は `ja` リソースへ手動追記する。MVP の i18n 対象はログイン画面のみ。
 //! （ADR-0007 の P3 で i18n は web crate へ移設予定。現時点では crate ルート相対で参照する。）
 
-use fluent::{FluentBundle, FluentResource};
+use fluent::{FluentArgs, FluentBundle, FluentResource};
 use unic_langid::{langid, LanguageIdentifier};
 
 const EN_FTL: &str = include_str!(concat!(
@@ -81,7 +81,7 @@ impl Locale {
     /// 不正・非対応値は無視して次順位へフォールバックする。
     ///
     /// 認可要求の `ui_locales`（G12）は Cookie と `Accept-Language` の間に入るが、OIDC フロー中の
-    /// リクエストにしか存在しないため引数には取らない。[`crate::language`] の middleware が
+    /// リクエストにしか存在しないため引数には取らない。[`crate::display_preferences`] の middleware が
     /// 決定済みの言語を `lang` Cookie へ正規化したうえで本関数を呼ぶ。
     pub fn resolve(
         query_lang: Option<&str>,
@@ -152,6 +152,32 @@ impl Messages {
             tracing::warn!(key, ?errors, "fluent formatting errors");
         }
         value.into_owned()
+    }
+
+    /// 差し込み値を 1 つ持つメッセージ（`{ $client } にログイン` のような文言）を取得する。
+    /// 未定義キーはキー名をそのまま返す（[`Self::get`] と同じフェイルソフト）。
+    ///
+    /// 引数が 1 つに限られているのは、いま必要なのがそれだけだからである。増えたときに
+    /// 引数の集合を受ける形へ広げる（Askama のテンプレート式は配列リテラルを書けないため、
+    /// 呼び出し口の形は素直な位置引数にしておく）。
+    pub fn get_arg(&self, key: &str, arg_name: &str, value: &str) -> String {
+        let Some(message) = self.bundle.get_message(key) else {
+            tracing::warn!(key, "missing translation key");
+            return key.to_string();
+        };
+        let Some(pattern) = message.value() else {
+            return key.to_string();
+        };
+        let mut args = FluentArgs::new();
+        args.set(arg_name.to_string(), value.to_string());
+        let mut errors = Vec::new();
+        let formatted = self
+            .bundle
+            .format_pattern(pattern, Some(&args), &mut errors);
+        if !errors.is_empty() {
+            tracing::warn!(key, ?errors, "fluent formatting errors");
+        }
+        formatted.into_owned()
     }
 }
 

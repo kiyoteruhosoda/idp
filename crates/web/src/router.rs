@@ -5,6 +5,7 @@
 
 use crate::client_ip::resolve_client_ip;
 use crate::correlation;
+use crate::display_preferences::resolve_display_preferences;
 use crate::error_pages;
 use crate::handlers::{
     admin_authentication_policies_console, admin_clients_console, admin_console,
@@ -17,7 +18,6 @@ use crate::handlers::{
     vendor_assets, verify_email,
 };
 use crate::i18n::Messages;
-use crate::language::resolve_language;
 use crate::login_context::load_rp_login_context;
 use crate::security_headers::add_security_headers;
 use crate::state::WebState;
@@ -421,7 +421,7 @@ pub fn build(state: WebState) -> Router {
         // 呼ぶだけにする。
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
-            resolve_language,
+            resolve_display_preferences,
         ))
         // 認可要求が持ち込む文脈（`login_hint` / `ui_locales`。G12）の取り直し。言語決定が
         // `ui_locales` を読むため、`resolve_language` より外側（＝先に走る）に置く。
@@ -447,6 +447,11 @@ pub fn build(state: WebState) -> Router {
         )
         .route("/assets/app.css", get(stylesheet::app_css))
         .route("/assets/console.js", get(console_script::console_js))
+        .route(
+            "/assets/button-pending.js",
+            get(submit_feedback_script::button_pending_js),
+        )
+        .route("/assets/theme.js", get(submit_feedback_script::theme_js))
         .route(
             "/assets/submit-feedback.js",
             get(submit_feedback_script::submit_feedback_js),

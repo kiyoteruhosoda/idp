@@ -1,9 +1,14 @@
 {% extends "page.html" %}
 {% block title %}{{ messages.get("login-title") }}{% endblock %}
+{#- どの組織のアカウントで入るのか。同じ IdP が複数テナントを受け持つので、既定の `IdP` では
+    利用者に何も伝わらない。リンクにはしない（認可フローの途中で外へ出さないため）。 -#}
+{% block brand %}<span class="navbar-brand mb-0 h1">{% if let Some(tenant) = tenant_name %}{{ tenant }}{% else %}IdP{% endif %}</span>{% endblock %}
 {% block content %}
 <div class="card border-0 bg-transparent">
   <div class="card-header text-center py-3 border-0 bg-transparent">
-    <h1 class="h4 mb-0">{{ messages.get("login-title") }}</h1>
+    {#- どのアプリへ入るのかを見出しに出す（SSO で飛ばされてきた利用者には、これが無いと
+        目の前のフォームが何のためのものか分からない）。表示名が引けないときは既定の見出し。 -#}
+    <h1 class="h4 mb-0">{% if let Some(client) = client_name %}{{ messages.get_arg("login-title-for-client", "client", client) }}{% else %}{{ messages.get("login-title") }}{% endif %}</h1>
   </div>
   <div class="card-body p-4">
     {% if let Some(key) = error_key %}<div class="alert alert-warning" role="alert">{{ messages.get(key) }}</div>{% endif %}

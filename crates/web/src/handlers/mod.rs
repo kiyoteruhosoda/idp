@@ -68,7 +68,7 @@ pub(crate) fn internal_call_status(error: &InternalCallError) -> StatusCode {
 /// 表示言語を決める（MT20）。
 ///
 /// 決定順（`?lang=` > ユーザー設定 > Cookie > ブラウザ言語 > 既定 `ja`）のうち上位 2 つは
-/// [`crate::language::resolve_language`] middleware が解決し、結果を**リクエストの `lang` Cookie へ
+/// [`crate::display_preferences::resolve_display_preferences`] middleware が解決し、結果を**リクエストの `lang` Cookie へ
 /// 正規化して**渡してくる。したがってここでは Cookie > `Accept-Language` > 既定 `ja` を見れば足りる。
 ///
 /// 優先順位の判断を middleware 1 箇所に集約するため、ハンドラは `?lang=` を自前で解釈しない

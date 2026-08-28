@@ -24,6 +24,17 @@ pub struct WhoamiResponse {
     /// 復号に失敗しないよう `#[serde(default)]` とする（欠落時はヘッダの名前表示だけが省かれる）。
     #[serde(default)]
     pub tenant_name: Option<String>,
+    /// 呼び出し元がこのテナントで**実際に行使できる**権限コード（含意を展開済み）。
+    ///
+    /// 管理コンソールが「入れない画面へのリンクを出さない」ために使う。含意の展開を api 側で
+    /// 済ませてあるので、web は単純な包含判定だけで済む（判定の出所を core に一本化する。
+    /// `handlers::admin_permissions` の絞り込みと同じ理由）。
+    ///
+    /// 旧 api（このフィールドを返さない版）と混在するローリングデプロイでも復号に失敗しないよう
+    /// `#[serde(default)]` とする。**欠落時は空**になるため、消費側は「空＝権限なし」ではなく
+    /// 「絞り込みができない」として扱い、メニューを隠しすぎないこと。
+    #[serde(default)]
+    pub permissions: Vec<String>,
 }
 
 /// 利用者の要約（`GET /admin/users?q=` 検索・`GET /admin/users/{id}` の応答）。管理コンソールの

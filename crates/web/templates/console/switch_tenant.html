@@ -17,7 +17,7 @@
       <span class="d-flex align-items-center gap-2">
         <i class="fa-solid fa-building" aria-hidden="true"></i>
         <span class="fw-semibold">{{ t.name }}</span>
-        {% if t.membership_type == "HOME" %}<span class="badge text-bg-light">{{ messages.get("admin-switch-tenant-home") }}</span>{% else %}<span class="badge text-bg-light">{{ messages.get("admin-switch-tenant-guest") }}</span>{% endif %}
+        {% if t.membership_type == "HOME" %}<span class="badge bg-secondary-subtle text-secondary-emphasis">{{ messages.get("admin-switch-tenant-home") }}</span>{% else %}<span class="badge bg-secondary-subtle text-secondary-emphasis">{{ messages.get("admin-switch-tenant-guest") }}</span>{% endif %}
       </span>
       <span class="badge text-bg-secondary">{{ messages.get("admin-switch-tenant-current") }}</span>
     </div>
@@ -26,7 +26,7 @@
       <span class="d-flex align-items-center gap-2">
         <i class="fa-solid fa-building text-muted" aria-hidden="true"></i>
         <span class="fw-semibold">{{ t.name }}</span>
-        {% if t.membership_type == "HOME" %}<span class="badge text-bg-light">{{ messages.get("admin-switch-tenant-home") }}</span>{% else %}<span class="badge text-bg-light">{{ messages.get("admin-switch-tenant-guest") }}</span>{% endif %}
+        {% if t.membership_type == "HOME" %}<span class="badge bg-secondary-subtle text-secondary-emphasis">{{ messages.get("admin-switch-tenant-home") }}</span>{% else %}<span class="badge bg-secondary-subtle text-secondary-emphasis">{{ messages.get("admin-switch-tenant-guest") }}</span>{% endif %}
       </span>
       <span class="text-primary"><i class="fa-solid fa-arrow-right-to-bracket me-1" aria-hidden="true"></i>{{ messages.get("admin-switch-tenant-open") }}</span>
     </a>
