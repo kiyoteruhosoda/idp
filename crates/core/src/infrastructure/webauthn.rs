@@ -112,12 +112,28 @@ impl WebAuthnPort for WebAuthnService {
     /// 認証開始（discoverable credentials）: チャレンジと `DiscoverableAuthentication` を返す。
     ///
     /// 認証器がユーザーハンドルを送ってくるため、ユーザーを事前に特定する必要がない。
+    ///
+    /// **`mediation` は落とす。** `start_discoverable_authentication()` は `conditional-ui`
+    /// フィーチャ有効時に `mediation: Conditional` を載せるが、conditional は
+    /// **入力欄のオートフィルから始まるセレモニー**であり、`autocomplete` に `webauthn` を
+    /// 含む入力欄がページに要る。IdP のログイン画面はどれもボタン押下から
+    /// `navigator.credentials.get()` を呼ぶ作りで、その欄を持たない。この値を載せたままだと
+    /// **1 回目は何も起こらずに保留のまま**（ブラウザはオートフィルの選択を待ち続ける）、
+    /// 2 回目の押下で `A request is already pending` になる。
+    ///
+    /// `mediation` は `Option::is_none` でスキップ直列化されるため、`None` にすると
+    /// レスポンス JSON からフィールドごと消え、ブラウザは既定のモーダル選択 UI を出す。
+    /// オートフィル体験を足すなら、入力欄に `autocomplete="username webauthn"` を付けて
+    /// **ページ読み込み時に**別途 conditional の `get()` を張るのが筋で、ボタンの経路とは別物。
     fn begin_authentication(
         &self,
     ) -> Result<(RequestChallengeResponse, DiscoverableAuthentication), String> {
-        self.inner
+        let (mut challenge, state) = self
+            .inner
             .start_discoverable_authentication()
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        challenge.mediation = None;
+        Ok((challenge, state))
     }
 
     /// 認証完了: クレデンシャルを検証して `AuthenticationResult` を返す。
@@ -156,5 +172,26 @@ mod tests {
     fn builds_from_a_base_url_with_a_path_prefix() {
         // パス付きの公開ベース URL でも構築でき、RP ID はホスト名になる。
         let _ = WebAuthnService::new("https://idp.example.com/prefix");
+    }
+
+    /// ログイン画面へ渡す options に `mediation` を載せない。
+    ///
+    /// 載せると conditional（オートフィル）のセレモニーになり、`autocomplete` に `webauthn` を
+    /// 含む入力欄を持たない当該画面ではボタンを押しても何も起きず、2 回目で
+    /// `A request is already pending` になる。ブラウザへ出す JSON で確かめる —— 型の上では
+    /// `Option` の 1 つでも、画面の挙動を決めるのは直列化された結果だからである。
+    #[test]
+    fn the_authentication_options_do_not_ask_for_conditional_mediation() {
+        let service = WebAuthnService::new("https://idp.example.com");
+        let (challenge, _state) = service
+            .begin_authentication()
+            .expect("begin_authentication succeeds");
+        assert!(challenge.mediation.is_none());
+        let json = serde_json::to_value(&challenge).expect("serialize");
+        assert!(
+            json.get("mediation").is_none(),
+            "the options must not carry a mediation hint: {json}"
+        );
+        assert_eq!(json["publicKey"]["rpId"], "idp.example.com");
     }
 }

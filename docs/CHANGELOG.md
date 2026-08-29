@@ -1,3 +1,21 @@
+## 2026-08-29（2）（パスキーのボタンを押しても何も起きなかったのを直した）
+
+- **認証開始の options から `mediation` を落とした。** `start_discoverable_authentication()` は
+  `conditional-ui` フィーチャ有効時に `mediation: "conditional"` を載せる。conditional は
+  **入力欄のオートフィルから始まるセレモニー**で、`autocomplete` に `webauthn` を含む入力欄が
+  ページに要るが、IdP のログイン画面はどれもボタン押下から `navigator.credentials.get()` を
+  呼ぶ作りで、その欄を持たない。結果、**1 回目は何も起こらず保留のまま**（ブラウザはオート
+  フィルの選択を待ち続ける）、2 回目の押下で `A request is already pending` になっていた。
+  - **3 つのログイン画面すべてが対象**で、認可フローのログイン画面も同じ状態だった
+    （管理コンソール・ポータルへボタンを足したことで表面化した）。
+  - `mediation` は `Option::is_none` でスキップ直列化されるため、`None` にすると応答 JSON から
+    フィールドごと消え、ブラウザは既定のモーダル選択 UI を出す。
+  - 症状は「完了 API がまだ呼ばれていない」形で DB にも残っていた —— `passkey_challenges` の行が
+    消えず（完了は最初にチャレンジを削除する）、監査ログに `login.failed` も無かった。
+  - オートフィル体験を足すなら、入力欄に `autocomplete="username webauthn"` を付けて
+    **ページ読み込み時に**別途 conditional の `get()` を張る形になる。ボタンの経路とは別物で、
+    今回は入れていない。
+
 ## 2026-08-29（管理コンソールとポータルにもパスキーで入れるようにした）
 
 - **管理コンソール（`/{tenant_id}/admin/login`）とポータル（`/{tenant_id}/login`）のログインに
