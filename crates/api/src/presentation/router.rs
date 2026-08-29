@@ -210,6 +210,16 @@ pub fn build(state: AppState) -> Router {
             "/internal/passkey/login/complete",
             post(passkey::login_complete),
         )
+        // 認可フロー外の直接ログイン（管理コンソール・ポータル）。開始は上の login/begin を共有し、
+        // `auth_session_id` を渡さずに得たチャレンジをここで完了する。
+        .route(
+            "/internal/passkey/login/admin/complete",
+            post(passkey::admin_login_complete),
+        )
+        .route(
+            "/internal/passkey/login/portal/complete",
+            post(passkey::portal_login_complete),
+        )
         // web が起動時に読む共有ランタイム設定（MT26 / ADR-0013）。web は DB を持たないため、
         // api/web の両方が消費する DB 管理値（COOKIE_SECURE 等）はここが唯一の出所になる。
         .route(

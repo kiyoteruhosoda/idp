@@ -441,6 +441,89 @@ mod tests {
         }
     }
 
+    /// 3 つのログイン画面が、共有スクリプト `passkey-login.js` が必要とするフック
+    /// （ボタン・エラー領域・完了エンドポイント）を揃えて描くこと。
+    ///
+    /// スクリプトは 1 本を 3 画面で共有し、完了先だけを `data-complete-path` で受け取る。
+    /// 属性名を片方だけ変えるとボタンが黙って何もしない画面ができるため、描画側で固定する。
+    #[test]
+    fn every_login_screen_renders_the_passkey_hooks() {
+        let messages = Messages::new(Locale::Ja);
+        let admin = render(&ConsoleLogin {
+            messages: &messages,
+            tenant_prefix: "/t",
+            csrf: "csrf",
+            error_key: None,
+        });
+        let portal = render(&PortalLogin {
+            messages: &messages,
+            tenant_prefix: "/t",
+            csrf: "csrf",
+            error_key: None,
+            external_providers: &[],
+        });
+        let authorize = render(&LoginTemplate {
+            messages: &messages,
+            tenant_prefix: "/t",
+            tenant_name: None,
+            client_name: None,
+            csrf: "csrf",
+            error_key: None,
+            login_hint: None,
+        });
+        // 直接ログインは開始も専用の経路を指す（放置された認可フローの Cookie を拾わないため。
+        // ADR-0040 決定 4）。認可フローはスクリプトの既定値を使うので data 属性を持たない。
+        for (screen, html, paths) in [
+            (
+                "admin",
+                &admin,
+                Some((
+                    "/passkey/login/direct/begin",
+                    "/passkey/login/admin/complete",
+                )),
+            ),
+            (
+                "portal",
+                &portal,
+                Some((
+                    "/passkey/login/direct/begin",
+                    "/passkey/login/portal/complete",
+                )),
+            ),
+            ("authorize", &authorize, None),
+        ] {
+            assert!(
+                html.contains(r#"id="btn-passkey-login""#),
+                "{screen}: {html}"
+            );
+            assert!(html.contains(r#"id="passkey-error""#), "{screen}: {html}");
+            assert!(
+                html.contains(r#"id="passkey-error-msg""#),
+                "{screen}: {html}"
+            );
+            assert!(
+                html.contains("/assets/passkey-login.js"),
+                "{screen}: {html}"
+            );
+            match paths {
+                Some((begin_path, complete_path)) => {
+                    assert!(
+                        html.contains(&format!(r#"data-begin-path="{begin_path}""#)),
+                        "{screen}: {html}"
+                    );
+                    assert!(
+                        html.contains(&format!(r#"data-complete-path="{complete_path}""#)),
+                        "{screen}: {html}"
+                    );
+                }
+                None => {
+                    assert!(!html.contains("data-begin-path"), "{screen}: {html}");
+                    assert!(!html.contains("data-complete-path"), "{screen}: {html}");
+                }
+            }
+        }
+    }
+
     /// MT20: 管理コンソールの共通レイアウトに言語切替 UI がある（未ログイン画面にも出す。
     /// ログイン前に言語を変えられないと、読めない言語のままログインを強いられる）。
     /// `action` を持たない GET フォームなので、レイアウトを継承する全画面で現在のパスへ送信される。

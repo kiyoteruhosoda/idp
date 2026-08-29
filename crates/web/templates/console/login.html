@@ -24,7 +24,28 @@
         <a class="text-decoration-none" href="{{ tenant_prefix }}/forgot-password">{{ messages.get("login-forgot-password") }}</a>
       </div>
     </form>
+    <hr>
+    <p class="text-muted small text-center mb-3">{{ messages.get("login-passkey-or") }}</p>
+    <div class="d-grid mb-3">
+      <button type="button" class="btn btn-outline-secondary" id="btn-passkey-login"><i class="fa-solid fa-key me-2" aria-hidden="true"></i>{{ messages.get("login-passkey-button") }}</button>
+    </div>
+    {# api のエラーコード → 表示文言の対応表。属性値はテンプレートが HTML エスケープし、
+       スクリプトは dataset 経由で復号済みの文言を読む（JS 文字列への直接埋め込みを避ける）。
+       開始・完了は管理コンソール用の経路を指す（既定は認可フロー用）。開始を分けるのは、放置された
+       認可フローの Cookie を拾わないため（ADR-0040 決定 4）。 #}
+    <div id="passkey-error" style="display:none"
+         data-tenant-prefix="{{ tenant_prefix }}"
+         data-begin-path="/passkey/login/direct/begin"
+         data-complete-path="/passkey/login/admin/complete"
+         data-msg-policy-denied="{{ messages.get("login-error-policy-denied") }}"
+         data-msg-invalid-credential="{{ messages.get("login-error-passkey-invalid") }}"
+         data-msg-challenge-not-found="{{ messages.get("login-error-passkey-retry") }}"
+         data-msg-forbidden="{{ messages.get("admin-login-error-forbidden") }}"
+         data-msg-rate-limited="{{ messages.get("login-error-rate-limited") }}">
+      <p class="text-danger small text-center mb-0" role="alert" id="passkey-error-msg"></p>
+    </div>
   </div>
 </div>
+<script src="/assets/passkey-login.js?v={{ crate::templates::asset_version() }}" defer></script>
 {% include "password_visibility.html" %}
 {% endblock %}

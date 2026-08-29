@@ -643,7 +643,9 @@ mod tests {
         assert!(html.contains("name=\"csrf_token\" value=\"deadbeef\""));
         assert!(html.contains("name=\"username\""));
         assert!(html.contains("name=\"password\""));
-        assert!(!html.contains("role=\"alert\""));
+        // エラー無しなのでバナーは出ない。`role="alert"` 単体では見ない —— パスキーのエラー欄が
+        // 非表示のまま常に DOM に居るため（利用者ログイン画面と同じ作り）。
+        assert!(!html.contains("alert alert-warning"));
         // パスワードを忘れた管理者の自己復旧導線（利用者ログイン画面と同じ経路）。
         assert!(html.contains(&format!("href=\"{tenant_prefix}/forgot-password\"")));
     }

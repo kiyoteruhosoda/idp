@@ -1,8 +1,13 @@
 //! Passkey（WebAuthn）Web ハンドラ。
 //!
-//! セルフ登録（`/account/passkey/*`）とログインフロー（`/passkey/login/*`）を提供する。
+//! セルフ登録（`/account/passkey/*`）とログイン（`/passkey/login/*`）を提供する。
 //! begin/complete は JSON API として提供し、ブラウザの WebAuthn JS API から呼び出す。
 //! 一覧・削除は HTML フォームで提供する。
+//!
+//! ログインは 3 画面（OIDC 認可フロー・管理コンソール・ポータル）から呼ばれる。開始は
+//! 認可フロー用（`/passkey/login/begin`。`auth_session_id` Cookie を読む）と直接ログイン用
+//! （`/passkey/login/direct/begin`。読まない）の 2 つ、完了は画面ごとに 3 つある
+//! （発行する Cookie と遷移先が違うため）。
 
 use super::{internal_call_status, locale};
 use crate::client_ip::ClientIp;
@@ -19,11 +24,13 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Json, Response};
 use axum::Form;
 use idp_contracts::auth::{
+    InternalAdminPasskeyLoginCompleteRequest, InternalAdminPasskeyLoginCompleteResponse,
     InternalPasskeyDeleteRequest, InternalPasskeyDeleteResponse, InternalPasskeyListRequest,
     InternalPasskeyListResponse, InternalPasskeyLoginBeginRequest,
     InternalPasskeyLoginCompleteRequest, InternalPasskeyLoginCompleteResponse,
     InternalPasskeyRegisterBeginRequest, InternalPasskeyRegisterBeginResponse,
     InternalPasskeyRegisterCompleteRequest, InternalPasskeyRegisterCompleteResponse,
+    InternalPortalPasskeyLoginCompleteRequest, InternalPortalPasskeyLoginCompleteResponse,
 };
 use serde::{Deserialize, Serialize};
 
@@ -300,6 +307,29 @@ pub async fn login_begin_api(
     headers: HeaderMap,
 ) -> Response {
     let auth_session_id = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE);
+    begin(&state, &correlation, auth_session_id).await
+}
+
+/// 直接ログイン（管理コンソール・ポータル）の Passkey 認証開始 JSON API
+/// （`POST /passkey/login/direct/begin`）。
+///
+/// **認可フロー用と分けてあるのは、`auth_session_id` Cookie を読まないためである。** 別タブで
+/// 始めて放置した認可フローの Cookie が残っていると、共通の開始 API では認可フロー用の
+/// チャレンジが返ってしまい、直接ログインの完了 API が用途違いとして弾く（Cookie が期限切れに
+/// なるまで管理コンソールへ入れない）。「この画面は認可フローの続きではない」という事実を
+/// エンドポイントで表す。
+pub async fn direct_login_begin_api(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+) -> Response {
+    begin(&state, &correlation, None).await
+}
+
+async fn begin(
+    state: &WebState,
+    correlation: &CorrelationId,
+    auth_session_id: Option<String>,
+) -> Response {
     let req = InternalPasskeyLoginBeginRequest { auth_session_id };
     let result = match state.api.passkey_login_begin(&correlation.0, &req).await {
         Ok(r) => r,
@@ -452,7 +482,174 @@ pub async fn login_complete_api(
     }
 }
 
+/// 管理コンソールの Passkey ログイン完了 JSON API（`POST /{tenant_id}/passkey/login/admin/complete`）。
+///
+/// 認可フローの `login_complete_api` と違い、返す `redirect_to` は RP ではなく管理コンソールのホーム
+/// である（`form_post` も無い。RP へ返す認可応答が存在しないため）。
+pub async fn admin_login_complete_api(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Json(body): Json<LoginCompleteBody>,
+) -> Response {
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
+    let req = InternalAdminPasskeyLoginCompleteRequest {
+        tenant_id: Some(tenant.0.clone()),
+        challenge_id: body.challenge_id,
+        credential: body.credential,
+        ip_address: ctx.ip_address,
+        user_agent: ctx.user_agent,
+    };
+    let outcome = match state
+        .api
+        .passkey_login_admin_complete(&ctx.correlation_id, &req)
+        .await
+    {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::error!(error = %e, "admin passkey login complete call failed");
+            return internal_call_status(&e).into_response();
+        }
+    };
+
+    match outcome {
+        InternalAdminPasskeyLoginCompleteResponse::Success {
+            sso_session_id,
+            sso_absolute_ttl_secs,
+        } => {
+            // パスワード経路（`admin_console::login`）と同じく、SSO を立てて CSRF の種は捨てる。
+            let set_cookies = state
+                .set_cookies()
+                .set_session(
+                    cookies::SSO_SESSION_COOKIE,
+                    &sso_session_id,
+                    sso_absolute_ttl_secs,
+                )
+                .expire_local(&state.origin_bound_cookie(cookies::ADMIN_CSRF_COOKIE));
+            (
+                set_cookies.into_headers(),
+                Json(login_redirect(&super::admin_console::admin_home_path(
+                    &tenant,
+                ))),
+            )
+                .into_response()
+        }
+        InternalAdminPasskeyLoginCompleteResponse::ChallengeNotFound => {
+            Json(login_error("challenge_not_found")).into_response()
+        }
+        InternalAdminPasskeyLoginCompleteResponse::InvalidCredential => {
+            Json(login_error("invalid_credential")).into_response()
+        }
+        InternalAdminPasskeyLoginCompleteResponse::Forbidden => {
+            Json(login_error("forbidden")).into_response()
+        }
+        InternalAdminPasskeyLoginCompleteResponse::PolicyDenied => {
+            Json(login_error("policy_denied")).into_response()
+        }
+        InternalAdminPasskeyLoginCompleteResponse::RateLimited => {
+            Json(login_error("rate_limited")).into_response()
+        }
+        InternalAdminPasskeyLoginCompleteResponse::Internal => {
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// ポータルの Passkey ログイン完了 JSON API（`POST /{tenant_id}/passkey/login/portal/complete`）。
+///
+/// 遷移先と Cookie の組み立てはパスワード経路と同じ判断（SAML の続き・表示言語の同期）を通す
+/// （`portal::sso_success_parts`）。302 を返せないので、その結果を JSON の `redirect_to` に載せる。
+pub async fn portal_login_complete_api(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Json(body): Json<LoginCompleteBody>,
+) -> Response {
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
+    let req = InternalPortalPasskeyLoginCompleteRequest {
+        tenant_id: Some(tenant.0.clone()),
+        challenge_id: body.challenge_id,
+        credential: body.credential,
+        ip_address: ctx.ip_address,
+        user_agent: ctx.user_agent,
+    };
+    let outcome = match state
+        .api
+        .passkey_login_portal_complete(&ctx.correlation_id, &req)
+        .await
+    {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::error!(error = %e, "portal passkey login complete call failed");
+            return internal_call_status(&e).into_response();
+        }
+    };
+
+    match outcome {
+        InternalPortalPasskeyLoginCompleteResponse::Success {
+            sso_session_id,
+            sso_absolute_ttl_secs,
+            user_language,
+        } => {
+            let (set_cookies, destination) = super::portal::sso_success_parts(
+                &state,
+                &headers,
+                &sso_session_id,
+                sso_absolute_ttl_secs,
+                user_language.as_deref(),
+                &tenant,
+                &[cookies::PORTAL_CSRF_COOKIE],
+            );
+            (
+                set_cookies.into_headers(),
+                Json(login_redirect(&destination)),
+            )
+                .into_response()
+        }
+        InternalPortalPasskeyLoginCompleteResponse::ChallengeNotFound => {
+            Json(login_error("challenge_not_found")).into_response()
+        }
+        InternalPortalPasskeyLoginCompleteResponse::InvalidCredential => {
+            Json(login_error("invalid_credential")).into_response()
+        }
+        InternalPortalPasskeyLoginCompleteResponse::EmailVerificationRequired => {
+            Json(login_error("email_verification_required")).into_response()
+        }
+        InternalPortalPasskeyLoginCompleteResponse::PolicyDenied => {
+            Json(login_error("policy_denied")).into_response()
+        }
+        InternalPortalPasskeyLoginCompleteResponse::RateLimited => {
+            Json(login_error("rate_limited")).into_response()
+        }
+        InternalPortalPasskeyLoginCompleteResponse::Internal => {
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
 // ─── ヘルパー ─────────────────────────────────────────────────────────────────
+
+/// 直接ログイン（管理コンソール・ポータル）の成功応答。JS はこの `redirect_to` へ遷移する。
+fn login_redirect(destination: &str) -> LoginCompleteJsonResponse {
+    LoginCompleteJsonResponse {
+        redirect_to: Some(destination.to_string()),
+        form_post: None,
+        error: None,
+    }
+}
+
+/// 直接ログインの失敗応答。`code` はフロント側スクリプトが翻訳キーへ写す（文言は web が持つ）。
+fn login_error(code: &str) -> LoginCompleteJsonResponse {
+    LoginCompleteJsonResponse {
+        redirect_to: None,
+        form_post: None,
+        error: Some(code.to_string()),
+    }
+}
 
 fn error_page(messages: &Messages, status: StatusCode, error_key: &str) -> Response {
     let body = render(&MessagePage {
