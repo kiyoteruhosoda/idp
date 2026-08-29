@@ -46,6 +46,7 @@ use crate::application::logout::LogoutService;
 use crate::application::management_token::ManagementTokenService;
 use crate::application::member_directory::MemberDirectoryService;
 use crate::application::mfa_login::MfaLoginService;
+use crate::application::passkey_assertion::PasskeyAssertionService;
 use crate::application::passkey_authentication::PasskeyAuthenticationService;
 use crate::application::passkey_registration::PasskeyRegistrationService;
 use crate::application::password_policy::PasswordPolicyService;
@@ -565,9 +566,28 @@ impl AppState {
             audit.clone(),
             clock.clone(),
         ));
+        // WebAuthn の RP ID・origin は **web の公開ベース URL のホスト**から導出する（ADR-0019 決定 2。
+        // Passkey のセレモニーは web のページ上で実行されるため。`PUBLIC_WEB_BASE_URL` 未設定時は
+        // issuer に追従し、single-origin では従来と同値になる）。per-tenant のパスは渡さない —
+        // WebAuthn はプロトコル上ホスト単位であり、パスを含められないため（ADR-0009 §6）。
+        // テナント分離は「クレデンシャル ⇔ ユーザー ⇔ 所属元テナント」のアプリ層の紐付けで実現する。
+        let webauthn = Arc::new(WebAuthnService::new(config.public_web_base_url()));
+        // Passkey のセレモニー（チャレンジ発行・アサーション検証）。OIDC 認可フロー・管理コンソール・
+        // ポータルの 3 経路が同じものを使う（`application::passkey_assertion`）。
+        let passkey_assertion = Arc::new(PasskeyAssertionService::new(
+            webauthn_credentials.clone(),
+            authenticator_repository.clone(),
+            passkey_challenges.clone(),
+            users.clone(),
+            tenant_memberships.clone(),
+            webauthn.clone(),
+            audit.clone(),
+            clock.clone(),
+        ));
         // 管理コンソールのログイン（ADR-0006 §6）。IP レート制限は通常ログインと同一の制限器を共有する。
         let admin_login = Arc::new(AdminLoginService::new(
             users.clone(),
+            passkey_assertion.clone(),
             tenant_domains.clone(),
             sso_sessions.clone(),
             user_permissions.clone(),
@@ -588,6 +608,7 @@ impl AppState {
         let portal_login = Arc::new(PortalLoginService::new(
             authenticator_repository.clone(),
             users.clone(),
+            passkey_assertion.clone(),
             tenant_domains.clone(),
             sso_sessions.clone(),
             totp_secrets.clone(),
@@ -909,12 +930,6 @@ impl AppState {
             config.auth_policy_default_effect(),
         ));
 
-        // WebAuthn の RP ID・origin は **web の公開ベース URL のホスト**から導出する（ADR-0019 決定 2。
-        // Passkey のセレモニーは web のページ上で実行されるため。`PUBLIC_WEB_BASE_URL` 未設定時は
-        // issuer に追従し、single-origin では従来と同値になる）。per-tenant のパスは渡さない —
-        // WebAuthn はプロトコル上ホスト単位であり、パスを含められないため（ADR-0009 §6）。
-        // テナント分離は「クレデンシャル ⇔ ユーザー ⇔ 所属元テナント」のアプリ層の紐付けで実現する。
-        let webauthn = Arc::new(WebAuthnService::new(config.public_web_base_url()));
         let passkey_registration = Arc::new(PasskeyRegistrationService::new(
             authenticators.clone(),
             webauthn_credentials.clone(),
@@ -925,17 +940,12 @@ impl AppState {
             ids,
         ));
         let passkey_authentication = Arc::new(PasskeyAuthenticationService::new(
-            webauthn_credentials,
-            authenticator_repository.clone(),
-            passkey_challenges,
+            passkey_assertion,
             auth_sessions.clone(),
-            users.clone(),
-            tenant_memberships.clone(),
             sso_sessions.clone(),
             client_consents,
             authentication_policies.clone(),
             code_issuance,
-            webauthn,
             audit.clone(),
             clock.clone(),
             config.sso_idle_ttl(),

@@ -1049,6 +1049,9 @@ pub enum InternalPasskeyListResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalPasskeyLoginBeginRequest {
     /// OIDC フローの auth_session_id（Cookie 値）。complete で OIDC フローを継続するために必要。
+    ///
+    /// **`None` は認可フロー外の直接ログイン**（管理コンソール・ポータル）用のチャレンジになる。
+    /// チャレンジの用途はこの有無で決まり、完了 API は自分の用途と違うチャレンジを受け付けない。
     pub auth_session_id: Option<String>,
 }
 
@@ -1105,6 +1108,96 @@ pub enum InternalPasskeyLoginCompleteResponse {
     InvalidCredential,
     /// 認証ポリシーにより拒否（ユーザー認証・認証ポリシー仕様書 §7.4 `deny`）。
     PolicyDenied,
+    /// api 内部エラー。
+    Internal,
+}
+
+/// 管理コンソールの Passkey ログイン完了 API（`POST /internal/passkey/login/admin/complete`）の
+/// リクエスト。開始は 3 経路共通の `POST /internal/passkey/login/begin` を `auth_session_id`
+/// なしで呼ぶ（＝直接ログイン用のチャレンジ）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAdminPasskeyLoginCompleteRequest {
+    /// ログイン先テナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する。
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub challenge_id: String,
+    /// ブラウザの `navigator.credentials.get()` が返したオブジェクト（JSON）。
+    pub credential: serde_json::Value,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// 管理コンソールの Passkey ログイン完了 API のレスポンス。
+///
+/// パスワード経路（`InternalAdminAuthenticateResponse`）に在る `Locked` /
+/// `PasswordChangeRequired` / `MfaRequired` / `MfaEnrollmentRequired` はここには無い。パスキーは
+/// パスワードを使わず、単独で `require_mfa` を満たすためである。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAdminPasskeyLoginCompleteResponse {
+    /// 認証成功かつ テナント admin 権限を保有。`sso_session_id` を Cookie 化して管理コンソールへ。
+    Success {
+        sso_session_id: String,
+        sso_absolute_ttl_secs: u64,
+    },
+    /// チャレンジが見つからない・期限切れ・用途違い。やり直しを促す。
+    ChallengeNotFound,
+    /// クレデンシャルが無効（不存在・検証失敗・停止中・テナント非所属・アカウント無効）。
+    InvalidCredential,
+    /// パスキーは正しいが テナント admin 権限を保有しない。
+    Forbidden,
+    /// 認証ポリシーにより拒否（AP2。仕様 §7.4 `deny`）。
+    PolicyDenied,
+    /// IP 単位のレート制限超過。
+    RateLimited,
+    /// api 内部エラー。
+    Internal,
+}
+
+/// ポータルの Passkey ログイン完了 API（`POST /internal/passkey/login/portal/complete`）の
+/// リクエスト。開始は 3 経路共通の `POST /internal/passkey/login/begin` を `auth_session_id`
+/// なしで呼ぶ（＝直接ログイン用のチャレンジ）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalPortalPasskeyLoginCompleteRequest {
+    /// ログイン先テナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する。
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub challenge_id: String,
+    /// ブラウザの `navigator.credentials.get()` が返したオブジェクト（JSON）。
+    pub credential: serde_json::Value,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// ポータルの Passkey ログイン完了 API のレスポンス。
+///
+/// パスワード経路（`InternalPortalAuthenticateResponse`）に在る `MfaRequired` /
+/// `MfaEnrollmentRequired` / `Locked` / `PasswordChangeRequired` はここには無い（パスキーは
+/// 単独で `require_mfa` を満たし、パスワードを使わない）。メール未検証のゲートは残る。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalPortalPasskeyLoginCompleteResponse {
+    /// 認証成功。`sso_session_id` を Cookie 化してアカウント画面へ。
+    Success {
+        sso_session_id: String,
+        sso_absolute_ttl_secs: u64,
+        #[serde(default)]
+        user_language: Option<String>,
+    },
+    /// チャレンジが見つからない・期限切れ・用途違い。やり直しを促す。
+    ChallengeNotFound,
+    /// クレデンシャルが無効（不存在・検証失敗・停止中・テナント非所属・アカウント無効）。
+    InvalidCredential,
+    /// 自己登録アカウントのメール未検証（SEC6b）。確認リンクを踏むよう案内する。
+    EmailVerificationRequired,
+    /// 認証ポリシーにより拒否（AP2。仕様 §7.4 `deny`）。
+    PolicyDenied,
+    /// IP 単位のレート制限超過。
+    RateLimited,
     /// api 内部エラー。
     Internal,
 }

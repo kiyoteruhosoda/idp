@@ -356,6 +356,13 @@ pub async fn authenticate_admin(
             tracing::error!("unexpected WeakPassword outcome from admin authenticate");
             InternalAdminAuthenticateResponse::Internal
         }
+        // パスキー経路でしか出ない outcome（パスワード経路では到達しない）。
+        AdminLoginOutcome::PasskeyChallengeNotFound => {
+            tracing::error!(
+                "unexpected PasskeyChallengeNotFound outcome from admin password login"
+            );
+            InternalAdminAuthenticateResponse::Internal
+        }
         AdminLoginOutcome::Internal(e) => {
             tracing::error!(error = %e, "internal admin authenticate failed with internal error");
             InternalAdminAuthenticateResponse::Internal
@@ -416,6 +423,13 @@ pub async fn authenticate_portal(
             InternalPortalAuthenticateResponse::InvalidCredentials
         }
         PortalLoginOutcome::Locked => InternalPortalAuthenticateResponse::Locked,
+        // パスキー経路でしか出ない outcome（パスワード経路では到達しない）。
+        PortalLoginOutcome::PasskeyChallengeNotFound => {
+            tracing::error!(
+                "unexpected PasskeyChallengeNotFound outcome from portal password login"
+            );
+            InternalPortalAuthenticateResponse::Internal
+        }
         PortalLoginOutcome::Internal(e) => {
             tracing::error!(error = %e, "internal portal authenticate failed with internal error");
             InternalPortalAuthenticateResponse::Internal
@@ -588,6 +602,13 @@ pub async fn admin_change_password(
         AdminLoginOutcome::MfaRequired => InternalAdminChangePasswordResponse::MfaRequired,
         AdminLoginOutcome::PasswordChangeRequired { .. } => {
             tracing::error!("unexpected PasswordChangeRequired outcome from admin change-password");
+            InternalAdminChangePasswordResponse::Internal
+        }
+        // パスキー経路でしか出ない outcome（パスワード経路では到達しない）。
+        AdminLoginOutcome::PasskeyChallengeNotFound => {
+            tracing::error!(
+                "unexpected PasskeyChallengeNotFound outcome from admin change-password"
+            );
             InternalAdminChangePasswordResponse::Internal
         }
         AdminLoginOutcome::Internal(e) => {

@@ -1,17 +1,25 @@
-//! Passkey（WebAuthn discoverable credentials）認証ユースケース。
+//! Passkey（WebAuthn discoverable credentials）による **OIDC 認可フローのログイン**ユースケース。
 //!
 //! パスワード入力なしで Passkey だけでログインする。認証フロー:
 //! 1. `begin()` — discoverable チャレンジを生成して options JSON を返す。
 //! 2. `complete()` — ブラウザからのクレデンシャルを検証し、SSO セッション発行 → code 発行。
+//!
+//! セレモニーそのもの（チャレンジの発行・消費、アサーション検証、認証器登録簿の判定、テナント境界）は
+//! [`crate::application::passkey_assertion`] が持つ。本モジュールはその上に **`auth_session` の継続と
+//! authorization code の発行**を載せる層である。認可フロー外の直接ログインは
+//! [`crate::application::admin_login`]・[`crate::application::portal_login`] が同じセレモニーの上に
+//! それぞれの続きを載せる。
 //!
 //! 認証ポリシー（ユーザー認証・認証ポリシー仕様書 §7〜§9）: `deny` ポリシーはこの経路でも
 //! 拒否する（パスワード経路だけ塞いでも迂回できてしまうため）。`require_mfa` は WebAuthn が
 //! 所有＋生体/知識（User Verification）の複数要素・フィッシング耐性認証であるため満たすものと扱う。
 
 use crate::application::audit::{AuditService, RequestContext};
-use crate::application::authenticator_management::is_blocked_in_registry;
 use crate::application::authorize::code_dispatch;
 use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
+use crate::application::passkey_assertion::{
+    PasskeyAssertionError, PasskeyAssertionService, PasskeyFlow,
+};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session;
 use crate::domain::authentication_policy::{
@@ -19,28 +27,17 @@ use crate::domain::authentication_policy::{
 };
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
-use crate::domain::passkey_challenge::{PasskeyChallenge, PasskeyChallengeType};
 use crate::domain::repositories::{
     AuthSessionRepository, AuthenticationPolicyRepository, ClientConsentRepository,
-    PasskeyChallengeRepository, SsoSessionRepository, TenantMembershipRepository,
-    UserAuthenticatorRepository, UserRepository, WebAuthnCredentialRepository,
+    SsoSessionRepository,
 };
 use crate::domain::sso_session::SsoSession;
-use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
-use crate::domain::user_authenticator::AuthenticatorType;
 use crate::domain::values::AuthenticationMethod;
-use crate::domain::webauthn_port::WebAuthnPort;
 use chrono::Duration;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 use uuid::Uuid;
-use webauthn_rs::prelude::{
-    DiscoverableAuthentication, DiscoverableKey, Passkey, PublicKeyCredential,
-};
-
-/// チャレンジの有効期限（5 分）。
-const CHALLENGE_TTL: StdDuration = StdDuration::from_secs(300);
 
 #[derive(Debug)]
 pub enum PasskeyAuthOutcome {
@@ -69,18 +66,13 @@ pub enum PasskeyAuthOutcome {
 }
 
 pub struct PasskeyAuthenticationService {
-    webauthn_credentials: Arc<dyn WebAuthnCredentialRepository>,
-    /// 認証器の登録簿（AP9）。一時停止・失効はここにしか無いため、認証時に必ず見る。
-    authenticators: Arc<dyn UserAuthenticatorRepository>,
-    passkey_challenges: Arc<dyn PasskeyChallengeRepository>,
+    /// WebAuthn セレモニー（チャレンジ発行・アサーション検証）。3 つのログイン経路で共有する。
+    assertion: Arc<PasskeyAssertionService>,
     auth_sessions: Arc<dyn AuthSessionRepository>,
-    users: Arc<dyn UserRepository>,
-    memberships: Arc<dyn TenantMembershipRepository>,
     sso_sessions: Arc<dyn SsoSessionRepository>,
     client_consents: Arc<dyn ClientConsentRepository>,
     authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
     code_issuance: Arc<CodeIssuanceService>,
-    webauthn: Arc<dyn WebAuthnPort>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
     sso_idle_ttl: Duration,
@@ -91,17 +83,12 @@ pub struct PasskeyAuthenticationService {
 impl PasskeyAuthenticationService {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        webauthn_credentials: Arc<dyn WebAuthnCredentialRepository>,
-        authenticators: Arc<dyn UserAuthenticatorRepository>,
-        passkey_challenges: Arc<dyn PasskeyChallengeRepository>,
+        assertion: Arc<PasskeyAssertionService>,
         auth_sessions: Arc<dyn AuthSessionRepository>,
-        users: Arc<dyn UserRepository>,
-        memberships: Arc<dyn TenantMembershipRepository>,
         sso_sessions: Arc<dyn SsoSessionRepository>,
         client_consents: Arc<dyn ClientConsentRepository>,
         authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
         code_issuance: Arc<CodeIssuanceService>,
-        webauthn: Arc<dyn WebAuthnPort>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
         sso_idle_ttl: StdDuration,
@@ -109,17 +96,12 @@ impl PasskeyAuthenticationService {
         policy_default_effect: DefaultPolicyEffect,
     ) -> Self {
         Self {
-            webauthn_credentials,
-            authenticators,
-            passkey_challenges,
+            assertion,
             auth_sessions,
-            users,
-            memberships,
             sso_sessions,
             client_consents,
             authentication_policies,
             code_issuance,
-            webauthn,
             audit,
             clock,
             sso_idle_ttl: Duration::from_std(sso_idle_ttl).expect("SSO idle TTL out of range"),
@@ -136,35 +118,7 @@ impl PasskeyAuthenticationService {
         &self,
         auth_session_id: Option<&str>,
     ) -> Result<(Uuid, serde_json::Value), String> {
-        let now = self.clock.now();
-
-        let (crc, state) = self
-            .webauthn
-            .begin_authentication()
-            .map_err(|e| format!("begin_authentication failed: {e}"))?;
-
-        let state_json =
-            serde_json::to_string(&state).map_err(|e| format!("serialize state: {e}"))?;
-
-        let challenge_id = Uuid::new_v4();
-        let challenge = PasskeyChallenge {
-            id: challenge_id,
-            user_id: None,
-            challenge_type: PasskeyChallengeType::Authenticate,
-            state_json,
-            auth_session_id_hash: auth_session_id.map(auth_session::id_hash),
-            expires_at: now + Duration::from_std(CHALLENGE_TTL).unwrap(),
-            created_at: now,
-        };
-        self.passkey_challenges
-            .create(&challenge)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        let options_json =
-            serde_json::to_value(&crc).map_err(|e| format!("serialize options: {e}"))?;
-
-        Ok((challenge_id, options_json))
+        self.assertion.begin(auth_session_id).await
     }
 
     /// 認証完了。
@@ -178,130 +132,27 @@ impl PasskeyAuthenticationService {
         let now = self.clock.now();
         let tenant_id = tenant.tenant_id();
 
-        // 1. チャレンジを取得して消費する。
-        let challenge = match self.passkey_challenges.find_by_id(challenge_id).await {
-            Ok(Some(c)) => c,
-            Ok(None) => return PasskeyAuthOutcome::ChallengeNotFound,
-            Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
-        };
-        if challenge.expires_at <= now {
-            let _ = self.passkey_challenges.delete(challenge_id).await;
-            return PasskeyAuthOutcome::ChallengeNotFound;
-        }
-        // チャレンジを先に削除（リプレイ防止）。
-        if let Err(e) = self.passkey_challenges.delete(challenge_id).await {
-            return PasskeyAuthOutcome::Internal(e.to_string());
-        }
-
-        // 2. DiscoverableAuthentication 状態を復元する。
-        let auth_state: DiscoverableAuthentication =
-            match serde_json::from_str(&challenge.state_json) {
-                Ok(s) => s,
-                Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
-            };
-
-        // 3. ブラウザからのクレデンシャルをデシリアライズする。
-        let public_key_credential: PublicKeyCredential =
-            match serde_json::from_value(credential_value) {
-                Ok(c) => c,
-                Err(_) => return PasskeyAuthOutcome::InvalidCredential,
-            };
-
-        // 4. credential_id から登録済みクレデンシャルを引く。
-        let stored_cred = match self
-            .webauthn_credentials
-            .find_by_credential_id(public_key_credential.id.as_str())
+        // 1. WebAuthn セレモニーの検証（チャレンジ消費・登録簿の一時停止判定・署名カウンタ更新・
+        //    テナント境界）は `PasskeyAssertionService` が持つ。ここから下は OIDC フロー固有の続き。
+        let verified = match self
+            .assertion
+            .verify(
+                tenant_id,
+                challenge_id,
+                credential_value,
+                PasskeyFlow::Oidc,
+                ctx,
+            )
             .await
         {
-            Ok(Some(c)) => c,
-            Ok(None) => return PasskeyAuthOutcome::InvalidCredential,
-            Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
+            Ok(v) => v,
+            Err(e) => return e.into(),
         };
+        let user_id = verified.user_id;
 
-        let passkey: Passkey = match serde_json::from_str(&stored_cred.passkey_json) {
-            Ok(p) => p,
-            Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
-        };
-
-        let user_id = stored_cred.user_id;
-        let cred_row_id = stored_cred.id;
-
-        // 登録簿でこの 1 本が止められていないかを見る（AP9）。公開鍵を引く経路は「失効して
-        // いない行」しか見ないので、**一時停止**を効かせるのはこの判定だけである。パスキーは
-        // 1 利用者に複数あるため、止めた 1 本だけを塞ぐ。
-        match is_blocked_in_registry(
-            self.authenticators.as_ref(),
-            user_id,
-            AuthenticatorType::WebAuthn,
-            Some(cred_row_id),
-        )
-        .await
-        {
-            Ok(true) => return PasskeyAuthOutcome::InvalidCredential,
-            Ok(false) => {}
-            Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
-        }
-
-        // 5. WebAuthn 検証。
-        let dk = DiscoverableKey::from(&passkey);
-        let auth_result =
-            match self
-                .webauthn
-                .finish_authentication(&public_key_credential, auth_state, &[dk])
-            {
-                Ok(r) => r,
-                Err(_) => {
-                    self.audit
-                        .record(
-                            AuditEventType::LoginFailed,
-                            AuditResult::Failure,
-                            Some(tenant_id),
-                            Some(user_id),
-                            None,
-                            Some("invalid_passkey"),
-                            ctx,
-                        )
-                        .await;
-                    return PasskeyAuthOutcome::InvalidCredential;
-                }
-            };
-
-        // 6. sign_count を更新して passkey_json を保存する（更新があれば DB に反映する）。
-        let mut updated_passkey = passkey;
-        if updated_passkey
-            .update_credential(&auth_result)
-            .unwrap_or(false)
-        {
-            let new_json = match serde_json::to_string(&updated_passkey) {
-                Ok(j) => j,
-                Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
-            };
-            if let Err(e) = self
-                .webauthn_credentials
-                .update_passkey(cred_row_id, &new_json, now)
-                .await
-            {
-                return PasskeyAuthOutcome::Internal(e.to_string());
-            }
-        }
-
-        // 7. ユーザーの有効性と、フローのテナントへの ACTIVE メンバーシップ（HOME または GUEST）を
-        //    確認する。WebAuthn クレデンシャルはテナント列を持たずホスト単位で解決されるため、テナント
-        //    境界はこのアプリ層の紐付けで強制する（ADR-0009 §8。`authorize` の SSO 復元と同じ判定）。
-        //    非メンバー・無効・不明はいずれも `InvalidCredential` に倒す（列挙防止のため理由を分けない）。
-        if let Err(outcome) = ensure_active_member(
-            self.users.as_ref(),
-            self.memberships.as_ref(),
-            tenant_id,
-            user_id,
-        )
-        .await
-        {
-            return outcome;
-        }
-
-        // 8. AuthSession を取得して OIDC フローを継続する。
-        let Some(auth_session_id_hash) = challenge.auth_session_id_hash.as_deref() else {
+        // 2. AuthSession を取得して OIDC フローを継続する。
+        let Some(auth_session_id_hash) = verified.auth_session_id_hash.as_deref() else {
+            // `PasskeyFlow::Oidc` の検証を通った＝結合は必ずある。
             return PasskeyAuthOutcome::Internal("no auth_session_id in challenge".to_string());
         };
         let session = match self
@@ -320,8 +171,8 @@ impl PasskeyAuthenticationService {
 
         let client_id = session.client_id.clone();
 
-        // 8.5. 認証ポリシー評価（仕様 §9）。`deny` はパスキー経路でも拒否する。
-        //      `require_mfa` は WebAuthn（所有要素 + User Verification）が満たすため通過する。
+        // 3. 認証ポリシー評価（仕様 §9）。`deny` はパスキー経路でも拒否する。
+        //    `require_mfa` は WebAuthn（所有要素 + User Verification）が満たすため通過する。
         let decision = match self
             .authentication_policies
             .list_enabled_for_tenant(tenant_id)
@@ -378,7 +229,7 @@ impl PasskeyAuthenticationService {
             return PasskeyAuthOutcome::PolicyDenied;
         }
 
-        // 9. SSO セッションを組み立てる（`sid` を auth_session へ預けるため、永続化より先に作る）。
+        // 4. SSO セッションを組み立てる（`sid` を auth_session へ預けるため、永続化より先に作る）。
         let sso_session_id = crypto::random_hex(32);
         let sso = SsoSession::establish(
             crypto::sha256_hex(&sso_session_id),
@@ -391,7 +242,7 @@ impl PasskeyAuthenticationService {
             ctx.ip_address.clone(),
         );
 
-        // 10. auth_time と `sid` を設定する（id も再生成する。SEC7）。
+        // 5. auth_time と `sid` を設定する（id も再生成する。SEC7）。
         let rotated_id = crypto::random_hex(32);
         let rotated_id_hash = auth_session::id_hash(&rotated_id);
         if let Err(e) = self
@@ -434,7 +285,7 @@ impl PasskeyAuthenticationService {
             )
             .await;
 
-        // 11. 同意チェック（`openid` は暗黙同意）。
+        // 6. 同意チェック（`openid` は暗黙同意）。
         let scopes_needing_consent: Vec<String> = session
             .scope
             .iter()
@@ -462,7 +313,7 @@ impl PasskeyAuthenticationService {
             };
         }
 
-        // 12. code 発行。
+        // 7. code 発行。
         let code = match self
             .code_issuance
             .issue(
@@ -486,7 +337,7 @@ impl PasskeyAuthenticationService {
             Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
         };
 
-        // 13. AuthSession を削除する。
+        // 8. AuthSession を削除する。
         if let Err(e) = self.auth_sessions.delete(&rotated_id_hash).await {
             tracing::warn!(error = %e, "failed to delete auth session after passkey auth");
         }
@@ -500,247 +351,16 @@ impl PasskeyAuthenticationService {
     }
 }
 
-/// クレデンシャルの所有者がフローのテナントの ACTIVE メンバー（HOME または GUEST）で、かつ有効な
-/// アカウントであることを検証する。所属外・無効・不明・障害はいずれも `InvalidCredential`／`Internal`
-/// に倒す（テナント境界の強制。ADR-0009 §8）。サービス本体から切り出してユニットテスト可能にする。
-async fn ensure_active_member(
-    users: &dyn UserRepository,
-    memberships: &dyn TenantMembershipRepository,
-    tenant_id: TenantId,
-    user_id: Uuid,
-) -> Result<(), PasskeyAuthOutcome> {
-    match users.find_by_id(user_id).await {
-        Ok(Some(u)) if u.is_active() => {}
-        Ok(_) => return Err(PasskeyAuthOutcome::InvalidCredential),
-        Err(e) => return Err(PasskeyAuthOutcome::Internal(e.to_string())),
-    }
-    match memberships.is_active_member(tenant_id, user_id).await {
-        Ok(true) => Ok(()),
-        Ok(false) => Err(PasskeyAuthOutcome::InvalidCredential),
-        Err(e) => Err(PasskeyAuthOutcome::Internal(e.to_string())),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::domain::error::{DomainError, Result as DomainResult};
-    use crate::domain::tenant_membership::TenantMembership;
-    use crate::domain::user::User;
-    use crate::domain::values::UserStatus;
-    use async_trait::async_trait;
-    use chrono::{TimeZone, Utc};
-
-    fn active_user(id: Uuid, tenant_id: TenantId) -> User {
-        let t = Utc.with_ymd_and_hms(2026, 7, 17, 0, 0, 0).unwrap();
-        User {
-            id,
-            tenant_id,
-            sub: Uuid::new_v4(),
-            email: "u@example.com".to_string(),
-            email_verified: true,
-            preferred_username: None,
-            name: None,
-            language: None,
-            theme: None,
-            password_hash: "x".to_string(),
-            must_change_password: false,
-            password_changed_at: None,
-            status: UserStatus::Active,
-            failed_login_count: 0,
-            locked_until: None,
-            created_at: t,
-            updated_at: t,
-        }
-    }
-
-    /// 単一ユーザーを返すフェイク（`None` で不存在を表す）。
-    struct FakeUsers(Option<User>);
-    #[async_trait]
-    impl UserRepository for FakeUsers {
-        /// このテストはログイン失敗経路を通らない（SEC13 の検証は login / mfa_login にある）。
-        async fn record_login_failure(
-            &self,
-            _id: Uuid,
-            _lockout: crate::domain::authentication_policy::LockoutPolicy,
-            _now: chrono::DateTime<chrono::Utc>,
-        ) -> DomainResult<crate::domain::user::LoginFailureRecord> {
-            unreachable!()
-        }
-        async fn create(&self, _u: &User) -> DomainResult<()> {
-            unreachable!()
-        }
-        async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<User>> {
-            Ok(self.0.clone().filter(|u| u.id == id))
-        }
-        async fn find_by_sub(&self, _s: Uuid) -> DomainResult<Option<User>> {
-            unreachable!()
-        }
-        async fn find_by_email(&self, _t: TenantId, _e: &str) -> DomainResult<Option<User>> {
-            unreachable!()
-        }
-        async fn find_by_username(&self, _t: TenantId, _n: &str) -> DomainResult<Option<User>> {
-            unreachable!()
-        }
-        async fn update_login_state(
-            &self,
-            _id: Uuid,
-            _c: i32,
-            _l: Option<chrono::DateTime<Utc>>,
-        ) -> DomainResult<()> {
-            unreachable!()
-        }
-        async fn update_password(
-            &self,
-            _id: Uuid,
-            _expected: &str,
-            _password_hash: &str,
-        ) -> DomainResult<bool> {
-            unreachable!()
-        }
-        async fn reset_password_forced(
-            &self,
-            _id: Uuid,
-            _expected: &str,
-            _password_hash: &str,
-        ) -> DomainResult<bool> {
-            unreachable!()
-        }
-        async fn update_status(&self, _id: Uuid, _status: UserStatus) -> DomainResult<()> {
-            unreachable!()
-        }
-        async fn delete(&self, _id: Uuid) -> DomainResult<()> {
-            unreachable!()
-        }
-        async fn mark_email_verified(&self, _id: Uuid) -> DomainResult<()> {
-            unreachable!()
-        }
-        async fn update_language(&self, _id: Uuid, _l: Option<&str>) -> DomainResult<()> {
-            unreachable!()
-        }
-    }
-
-    /// 指定テナントに対する `is_active_member` の戻り値を固定するフェイク。
-    struct FakeMemberships {
-        tenant_id: TenantId,
-        is_member: DomainResult<bool>,
-    }
-    #[async_trait]
-    impl TenantMembershipRepository for FakeMemberships {
-        async fn update_status(
-            &self,
-            _t: TenantId,
-            _u: Uuid,
-            _s: crate::domain::values::MembershipStatus,
-        ) -> DomainResult<()> {
-            unreachable!()
-        }
-        async fn create(&self, _m: &TenantMembership) -> DomainResult<()> {
-            unreachable!()
-        }
-        async fn find(&self, _t: TenantId, _u: Uuid) -> DomainResult<Option<TenantMembership>> {
-            unreachable!()
-        }
-        async fn is_active_member(&self, t: TenantId, _u: Uuid) -> DomainResult<bool> {
-            assert_eq!(
-                t, self.tenant_id,
-                "membership check must use the flow tenant"
-            );
-            match &self.is_member {
-                Ok(v) => Ok(*v),
-                Err(e) => Err(DomainError::Repository(e.to_string())),
+impl From<PasskeyAssertionError> for PasskeyAuthOutcome {
+    fn from(e: PasskeyAssertionError) -> Self {
+        match e {
+            // 用途違いのチャレンジ（直接ログイン用を認可フローで完了しようとした）は、利用者から見れば
+            // 「やり直してください」でしかないため、期限切れと同じ扱いにする。
+            PasskeyAssertionError::ChallengeNotFound | PasskeyAssertionError::WrongFlow => {
+                PasskeyAuthOutcome::ChallengeNotFound
             }
+            PasskeyAssertionError::InvalidCredential => PasskeyAuthOutcome::InvalidCredential,
+            PasskeyAssertionError::Internal(msg) => PasskeyAuthOutcome::Internal(msg),
         }
-        async fn find_by_invitation_token_hash(
-            &self,
-            _h: &str,
-        ) -> DomainResult<Option<TenantMembership>> {
-            unreachable!()
-        }
-        async fn activate(&self, _t: TenantId, _u: Uuid) -> DomainResult<()> {
-            unreachable!()
-        }
-        async fn delete(&self, _t: TenantId, _u: Uuid) -> DomainResult<()> {
-            unreachable!()
-        }
-    }
-
-    fn ids() -> (Uuid, TenantId) {
-        (Uuid::new_v4(), Uuid::now_v7().into())
-    }
-
-    #[tokio::test]
-    async fn active_member_is_authorized() {
-        let (uid, tid) = ids();
-        let users = FakeUsers(Some(active_user(uid, tid)));
-        let memberships = FakeMemberships {
-            tenant_id: tid,
-            is_member: Ok(true),
-        };
-        assert!(ensure_active_member(&users, &memberships, tid, uid)
-            .await
-            .is_ok());
-    }
-
-    #[tokio::test]
-    async fn non_member_is_rejected_as_invalid_credential() {
-        // 別テナントのフローでパスキーを提示しても、当該テナントの ACTIVE メンバーでなければ拒否する
-        // （テナント分離。ADR-0009 §8）。
-        let (uid, home) = ids();
-        let other_tenant: TenantId = Uuid::now_v7().into();
-        let users = FakeUsers(Some(active_user(uid, home)));
-        let memberships = FakeMemberships {
-            tenant_id: other_tenant,
-            is_member: Ok(false),
-        };
-        let outcome = ensure_active_member(&users, &memberships, other_tenant, uid)
-            .await
-            .expect_err("non-member must be rejected");
-        assert!(matches!(outcome, PasskeyAuthOutcome::InvalidCredential));
-    }
-
-    #[tokio::test]
-    async fn inactive_user_is_rejected_without_touching_membership() {
-        let (uid, tid) = ids();
-        let mut user = active_user(uid, tid);
-        user.status = UserStatus::Disabled;
-        let users = FakeUsers(Some(user));
-        // メンバーシップ判定に到達したら panic する（無効ユーザーは先に弾く）。
-        let memberships = FakeMemberships {
-            tenant_id: tid,
-            is_member: Err(DomainError::Repository("must not be called".to_string())),
-        };
-        let outcome = ensure_active_member(&users, &memberships, tid, uid)
-            .await
-            .expect_err("inactive user must be rejected");
-        assert!(matches!(outcome, PasskeyAuthOutcome::InvalidCredential));
-    }
-
-    #[tokio::test]
-    async fn unknown_user_is_rejected() {
-        let (uid, tid) = ids();
-        let users = FakeUsers(None);
-        let memberships = FakeMemberships {
-            tenant_id: tid,
-            is_member: Ok(true),
-        };
-        let outcome = ensure_active_member(&users, &memberships, tid, uid)
-            .await
-            .expect_err("unknown user must be rejected");
-        assert!(matches!(outcome, PasskeyAuthOutcome::InvalidCredential));
-    }
-
-    #[tokio::test]
-    async fn membership_repository_error_maps_to_internal() {
-        let (uid, tid) = ids();
-        let users = FakeUsers(Some(active_user(uid, tid)));
-        let memberships = FakeMemberships {
-            tenant_id: tid,
-            is_member: Err(DomainError::Repository("db down".to_string())),
-        };
-        let outcome = ensure_active_member(&users, &memberships, tid, uid)
-            .await
-            .expect_err("repository failure must not authorize");
-        assert!(matches!(outcome, PasskeyAuthOutcome::Internal(_)));
     }
 }

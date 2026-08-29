@@ -28,6 +28,9 @@ use crate::application::authenticator_management::{
 };
 use crate::application::login_user_resolution::resolve_login_user;
 use crate::application::mfa_login::user_has_confirmed_totp;
+use crate::application::passkey_assertion::{
+    PasskeyAssertionError, PasskeyAssertionService, PasskeyFlow,
+};
 use crate::application::password_policy::PasswordPolicyService;
 use crate::application::totp_registration::verify_totp_code;
 use crate::domain::audit::{AuditEventType, AuditResult};
@@ -75,6 +78,16 @@ pub struct PortalMfaCommand {
     pub totp_code: String,
 }
 
+/// パスキー（WebAuthn）によるポータルログインのコマンド。ログイン識別子もパスワードも取らない
+/// （discoverable credential が持ち主を名乗る）。
+#[derive(Debug)]
+pub struct PortalPasskeyLoginCommand {
+    /// `POST /internal/passkey/login/begin` が返したチャレンジ ID。
+    pub challenge_id: Uuid,
+    /// ブラウザの `navigator.credentials.get()` が返したアサーション。
+    pub credential: serde_json::Value,
+}
+
 /// ポータルの強制パスワード変更（ADR-0009 §5）のコマンド。ポータルログインは `auth_session_id` の
 /// ような一時状態を持たないため、管理コンソールと同じく現行パスワードを含め毎回フルに再検証する。
 #[derive(Debug)]
@@ -108,6 +121,8 @@ pub enum PortalLoginOutcome {
     PolicyDenied,
     /// 認証ポリシーが MFA を必須としたが、使用可能な認証器（確認済み TOTP）が無い（AP2）。
     MfaEnrollmentRequired,
+    /// パスキーのチャレンジが見つからない・期限切れ・用途違い（パスキー経路のみ）。やり直しを促す。
+    PasskeyChallengeNotFound,
     /// IP 単位のレート制限超過。
     RateLimited,
     /// 資格情報不正（ユーザー不存在・パスワード不一致・無効アカウントを区別しない）。
@@ -168,6 +183,8 @@ pub struct PortalLoginService {
     /// 認証器の登録簿（AP9）。リカバリーコード・email OTP の消費に使う。
     authenticators: Arc<dyn UserAuthenticatorRepository>,
     users: Arc<dyn UserRepository>,
+    /// WebAuthn セレモニー（パスキーログイン用）。OIDC 認可フローのログインと同じものを共有する。
+    passkey_assertion: Arc<PasskeyAssertionService>,
     /// テナントへ割り当てたドメイン（ADR-0029）。ログイン欄の入力が `local@domain` の形のとき、
     /// 所属元テナントを 1 つに決めるために引く（`login_user_resolution`）。
     tenant_domains: Arc<dyn TenantDomainRepository>,
@@ -195,6 +212,7 @@ impl PortalLoginService {
     pub fn new(
         authenticators: Arc<dyn UserAuthenticatorRepository>,
         users: Arc<dyn UserRepository>,
+        passkey_assertion: Arc<PasskeyAssertionService>,
         tenant_domains: Arc<dyn TenantDomainRepository>,
         sso_sessions: Arc<dyn SsoSessionRepository>,
         totp_secrets: Arc<dyn TotpSecretRepository>,
@@ -214,6 +232,7 @@ impl PortalLoginService {
         Self {
             authenticators,
             users,
+            passkey_assertion,
             tenant_domains,
             sso_sessions,
             totp_secrets,
@@ -435,6 +454,121 @@ impl PortalLoginService {
                 tenant_id,
                 &user,
                 vec![AuthenticationMethod::Password],
+                ctx,
+                now,
+            )
+            .await
+        {
+            Ok(id) => id,
+            Err(e) => return PortalLoginOutcome::Internal(e),
+        };
+        PortalLoginOutcome::Success {
+            sso_session_id,
+            user_language: user.language.clone(),
+        }
+    }
+
+    /// パスキー（WebAuthn）によるポータルログイン。
+    ///
+    /// パスワード経路（[`Self::login`]）との違いは、OIDC 認可フローのパスキーログイン
+    /// （[`crate::application::passkey_authentication`]）と同じ規則である:
+    ///
+    /// 1. ログイン識別子の解決もロックアウトの加算も無い（総当たりの的になる秘密が無い）。
+    /// 2. **TOTP の入力ステップを踏ませない。** パスキーは所有 + User Verification の多要素・
+    ///    フィッシング耐性認証であり、`require_mfa` を満たす。TOTP 設定済みの利用者に対して
+    ///    「パスキー + TOTP」を要求しても得るものが無い。
+    /// 3. 強制パスワード変更（`must_change_password`）を見ない（パスワードを使わない経路のため）。
+    ///
+    /// **メール検証ゲート（SEC6b）は残す。** これは資格情報の強さではなく「このアカウントで
+    /// ポータルへ入ってよいか」の判定であり、認証方式を変えても外す理由が無い。
+    pub async fn login_with_passkey(
+        &self,
+        tenant: TenantContext,
+        cmd: PortalPasskeyLoginCommand,
+        ctx: &RequestContext,
+    ) -> PortalLoginOutcome {
+        let now = self.clock.now();
+        let tenant_id = tenant.tenant_id();
+
+        // 1. IP 単位のレート制限（パスワード経路と同じ順序・同じ制限）。
+        if let Some(ip) = &ctx.ip_address {
+            if !self.rate_limiter.check_and_record(ip, now) {
+                self.record_failure(tenant_id, None, "ip_rate_limited", ctx)
+                    .await;
+                return PortalLoginOutcome::RateLimited;
+            }
+        }
+
+        // 2. WebAuthn アサーションの検証。アカウントの有効性とテナント境界（ADR-0009 §8）は
+        //    ここで確認済みになる。`Direct` は認可フロー外のチャレンジであることの要求である。
+        let verified = match self
+            .passkey_assertion
+            .verify(
+                tenant_id,
+                cmd.challenge_id,
+                cmd.credential,
+                PasskeyFlow::Direct,
+                ctx,
+            )
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => return e.into(),
+        };
+        let user_id = verified.user_id;
+
+        // 3. 応答に載せる表示言語とメール検証状態のために利用者を引き直す（有効性の判定は 2. で済み）。
+        let user = match self.users.find_by_id(user_id).await {
+            Ok(Some(u)) => u,
+            Ok(None) => return PortalLoginOutcome::InvalidCredentials,
+            Err(e) => return PortalLoginOutcome::Internal(e.to_string()),
+        };
+
+        // 4. メール検証ゲート（SEC6b）。パスワード経路の 7. と同一判定。
+        if !user.email_verified {
+            self.record_failure(tenant_id, Some(user.id), "email_not_verified", ctx)
+                .await;
+            return PortalLoginOutcome::EmailVerificationRequired;
+        }
+
+        // 5. 認証ポリシー評価（AP2）。`deny` は拒否、`require_mfa` はパスキーが満たす。
+        let policy_decision = match self
+            .evaluate_policy(tenant_id, user.id, ctx.ip_address.as_deref())
+            .await
+        {
+            Ok(d) => d,
+            Err(e) => return PortalLoginOutcome::Internal(e),
+        };
+        if let PolicyDecision::Deny { policy_code } = &policy_decision {
+            self.record_policy_denied(tenant_id, user.id, &format!("policy={policy_code}"), ctx)
+                .await;
+            return PortalLoginOutcome::PolicyDenied;
+        }
+        // `require_specific_method`（AP3）。使った方式はパスキー 1 本・User Verification 済み。
+        // この経路で足せる要素はもう無いため、満たしていなければ SSO を発行せず拒否する。
+        if let Some(unmet) =
+            policy_decision.unmet_method_requirement(&[AuthenticationMethod::WebAuthn], true)
+        {
+            self.record_policy_denied(
+                tenant_id,
+                user.id,
+                &format!(
+                    "policy={} reason=method_required required={}",
+                    unmet.policy_code,
+                    unmet.requirement.describe()
+                ),
+                ctx,
+            )
+            .await;
+            return PortalLoginOutcome::PolicyDenied;
+        }
+
+        // 6. SSO セッション発行（パスワード経路と同一機構。方式だけが WebAuthn）。
+        let sso_session_id = match self
+            .issue_sso(
+                tenant_id,
+                &user,
+                vec![AuthenticationMethod::WebAuthn],
                 ctx,
                 now,
             )
@@ -1040,6 +1174,21 @@ fn ticket_signature(secret: &[u8; 32], tenant: &str, user: &str, exp: i64) -> St
     let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
     mac.update(format!("portal-mfa:{tenant}:{user}:{exp}").as_bytes());
     hex::encode(mac.finalize().into_bytes())
+}
+
+impl From<PasskeyAssertionError> for PortalLoginOutcome {
+    fn from(e: PasskeyAssertionError) -> Self {
+        match e {
+            // 用途違いのチャレンジ（認可フロー用をポータルで完了しようとした）は、利用者から見れば
+            // 「やり直してください」でしかないため、期限切れと同じ扱いにする。
+            PasskeyAssertionError::ChallengeNotFound | PasskeyAssertionError::WrongFlow => {
+                PortalLoginOutcome::PasskeyChallengeNotFound
+            }
+            // 停止中・失効・テナント非所属・アカウント無効も同じ応答にする（列挙防止）。
+            PasskeyAssertionError::InvalidCredential => PortalLoginOutcome::InvalidCredentials,
+            PasskeyAssertionError::Internal(msg) => PortalLoginOutcome::Internal(msg),
+        }
+    }
 }
 
 #[cfg(test)]

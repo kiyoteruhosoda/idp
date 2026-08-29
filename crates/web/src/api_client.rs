@@ -26,6 +26,7 @@ use idp_contracts::application_log::{
 use idp_contracts::auth::{
     InternalAdminAuthenticateRequest, InternalAdminAuthenticateResponse,
     InternalAdminChangePasswordRequest, InternalAdminChangePasswordResponse,
+    InternalAdminPasskeyLoginCompleteRequest, InternalAdminPasskeyLoginCompleteResponse,
     InternalAuthenticateRequest, InternalAuthenticateResponse,
     InternalAuthorizeLoginContextRequest, InternalAuthorizeLoginContextResponse,
     InternalAuthorizeResumeRequest, InternalAuthorizeResumeResponse, InternalChangePasswordRequest,
@@ -41,6 +42,7 @@ use idp_contracts::auth::{
     InternalPasswordResetRequestResponse, InternalPortalAuthenticateRequest,
     InternalPortalAuthenticateResponse, InternalPortalChangePasswordRequest,
     InternalPortalChangePasswordResponse, InternalPortalMfaRequest, InternalPortalMfaResponse,
+    InternalPortalPasskeyLoginCompleteRequest, InternalPortalPasskeyLoginCompleteResponse,
     InternalRpLogoutRequest, InternalRpLogoutResponse, InternalSamlResumeRequest,
     InternalSamlResumeResponse, InternalTotpConfirmRequest, InternalTotpConfirmResponse,
     InternalTotpDeleteRequest, InternalTotpDeleteResponse, InternalTotpSetupRequest,
@@ -651,6 +653,36 @@ impl ApiClient {
     ) -> Result<InternalPasskeyLoginCompleteResponse, InternalCallError> {
         self.post_internal("/internal/passkey/login/complete", correlation_id, req)
             .await
+    }
+
+    /// 管理コンソールの Passkey ログイン完了（`POST /internal/passkey/login/admin/complete`）。
+    /// 開始は共通の `passkey_login_begin` を `auth_session_id` なしで呼ぶ。
+    pub async fn passkey_login_admin_complete(
+        &self,
+        correlation_id: &str,
+        req: &InternalAdminPasskeyLoginCompleteRequest,
+    ) -> Result<InternalAdminPasskeyLoginCompleteResponse, InternalCallError> {
+        self.post_internal(
+            "/internal/passkey/login/admin/complete",
+            correlation_id,
+            req,
+        )
+        .await
+    }
+
+    /// ポータルの Passkey ログイン完了（`POST /internal/passkey/login/portal/complete`）。
+    /// 開始は共通の `passkey_login_begin` を `auth_session_id` なしで呼ぶ。
+    pub async fn passkey_login_portal_complete(
+        &self,
+        correlation_id: &str,
+        req: &InternalPortalPasskeyLoginCompleteRequest,
+    ) -> Result<InternalPortalPasskeyLoginCompleteResponse, InternalCallError> {
+        self.post_internal(
+            "/internal/passkey/login/portal/complete",
+            correlation_id,
+            req,
+        )
+        .await
     }
 
     /// 管理者の SSO セッションを管理トークンへ交換し、api の `GET /{tenant_id}/admin/whoami` で

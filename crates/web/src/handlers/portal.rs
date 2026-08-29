@@ -574,6 +574,29 @@ fn sso_success_response(
     tenant: &WebTenant,
     expire_cookies: &[&str],
 ) -> Response {
+    let (set_cookies, destination) = sso_success_parts(
+        state,
+        headers,
+        sso_session_id,
+        sso_absolute_ttl_secs,
+        user_language,
+        tenant,
+        expire_cookies,
+    );
+    (set_cookies.into_headers(), found(&destination)).into_response()
+}
+
+/// [`sso_success_response`] の中身（Cookie の組み立てと遷移先の決定）。パスキーログインだけは
+/// 応答が JSON（ブラウザの JS が受ける）で 302 を返せないため、同じ判断を共有できるよう分けてある。
+pub(crate) fn sso_success_parts(
+    state: &WebState,
+    headers: &HeaderMap,
+    sso_session_id: &str,
+    sso_absolute_ttl_secs: u64,
+    user_language: Option<&str>,
+    tenant: &WebTenant,
+    expire_cookies: &[&str],
+) -> (crate::cookies::SetCookies, String) {
     let mut set_cookies = state.set_cookies().set_session(
         cookies::SSO_SESSION_COOKIE,
         sso_session_id,
@@ -602,7 +625,7 @@ fn sso_success_response(
     } else {
         format!("{}/settings", tenant.prefix())
     };
-    (set_cookies.into_headers(), found(&destination)).into_response()
+    (set_cookies, destination)
 }
 
 fn render_login_form(

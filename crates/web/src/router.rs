@@ -147,9 +147,22 @@ pub fn build(state: WebState) -> Router {
             "/passkey/register/complete",
             post(passkey::register_complete_api),
         )
-        // Passkey 認証 JSON API（ログイン画面 JS から呼ぶ）。
+        // Passkey 認証 JSON API（3 つのログイン画面の JS から呼ぶ）。開始は「認可フローの
+        // Cookie を読むか」で 2 つ、完了は発行する Cookie と遷移先が違うので画面ごとに 3 つ。
         .route("/passkey/login/begin", post(passkey::login_begin_api))
         .route("/passkey/login/complete", post(passkey::login_complete_api))
+        .route(
+            "/passkey/login/direct/begin",
+            post(passkey::direct_login_begin_api),
+        )
+        .route(
+            "/passkey/login/admin/complete",
+            post(passkey::admin_login_complete_api),
+        )
+        .route(
+            "/passkey/login/portal/complete",
+            post(passkey::portal_login_complete_api),
+        )
         // 管理コンソール（ADR-0006 §6・ADR-0007 §4・ADR-0009 §10）。ログインはクライアント不要。
         .route(
             "/admin/login",
