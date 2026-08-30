@@ -7,11 +7,11 @@
 //! 読めないようにする（ADR-0031 決定 1）。
 
 use crate::state::WebState;
+use assay_contracts::health::{service, HealthCheck, LivenessResponse, ServiceHealth};
+use assay_contracts::version::{BuildTimeVersionInfoProvider, VersionInfoProvider};
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
-use idp_contracts::health::{service, HealthCheck, LivenessResponse, ServiceHealth};
-use idp_contracts::version::{BuildTimeVersionInfoProvider, VersionInfoProvider};
 
 // version 画面は web のビルド情報に加え、api から取得した DB スキーマの適用状態も表示する。
 

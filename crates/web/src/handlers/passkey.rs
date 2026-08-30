@@ -19,11 +19,7 @@ use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, MessagePage, PasskeyListTemplate, PasskeyRegisterTemplate};
 use crate::tenant::WebTenant;
-use axum::extract::{Extension, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::{Html, IntoResponse, Json, Response};
-use axum::Form;
-use idp_contracts::auth::{
+use assay_contracts::auth::{
     InternalAdminPasskeyLoginCompleteRequest, InternalAdminPasskeyLoginCompleteResponse,
     InternalPasskeyDeleteRequest, InternalPasskeyDeleteResponse, InternalPasskeyListRequest,
     InternalPasskeyListResponse, InternalPasskeyLoginBeginRequest,
@@ -32,6 +28,10 @@ use idp_contracts::auth::{
     InternalPasskeyRegisterCompleteRequest, InternalPasskeyRegisterCompleteResponse,
     InternalPortalPasskeyLoginCompleteRequest, InternalPortalPasskeyLoginCompleteResponse,
 };
+use axum::extract::{Extension, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{Html, IntoResponse, Json, Response};
+use axum::Form;
 use serde::{Deserialize, Serialize};
 
 // ─── 登録フロー ──────────────────────────────────────────────────────────────
@@ -361,7 +361,7 @@ pub struct LoginCompleteJsonResponse {
     /// 組み立てて送信させる**（`assets/passkey-login.js`）。`None` のときは従来どおり
     /// `redirect_to` へ遷移する。
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub form_post: Option<idp_contracts::auth::FormPostFields>,
+    pub form_post: Option<assay_contracts::auth::FormPostFields>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }

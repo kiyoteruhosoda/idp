@@ -161,7 +161,7 @@ fn client_ip(headers: &HeaderMap, trust_forwarded: bool) -> Option<String> {
     if !trust_forwarded {
         return None;
     }
-    idp_contracts::forwarded::client_ip(
+    assay_contracts::forwarded::client_ip(
         headers
             .get_all("x-forwarded-for")
             .iter()

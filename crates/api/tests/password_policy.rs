@@ -3,7 +3,7 @@
 //! `TEST_DATABASE_URL` 設定時のみ実行:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test password_policy
 //!
-//! 単体テスト（`idp_core::application::password_policy`）が見るのは判定そのもので、ここで見るのは
+//! 単体テスト（`assay_core::application::password_policy`）が見るのは判定そのもので、ここで見るのは
 //! **判定に使う材料が実際に DB へ載るか**である。履歴の行が積まれ剪定されること、パスワード設定
 //! 時刻が記録されること、そして期限切れがログインで強制変更に化けることは、フェイクの
 //! リポジトリでは確かめられない。

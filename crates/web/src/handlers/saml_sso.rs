@@ -19,11 +19,11 @@ use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, MessagePage, SamlPostPage};
 use crate::tenant::WebTenant;
+use assay_contracts::auth::{InternalSamlResumeRequest, InternalSamlResumeResponse};
 use axum::extract::{Extension, Query, State};
 use axum::http::header::CONTENT_SECURITY_POLICY;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
-use idp_contracts::auth::{InternalSamlResumeRequest, InternalSamlResumeResponse};
 
 pub async fn continue_sso(
     State(state): State<WebState>,

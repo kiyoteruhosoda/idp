@@ -19,8 +19,8 @@
 
 mod support;
 
+use assay_contracts::csrf::login_csrf_token;
 use axum::http::StatusCode;
-use idp_contracts::csrf::login_csrf_token;
 use reqwest::cookie::CookieStore as _;
 use reqwest::header::SET_COOKIE;
 use std::future::IntoFuture;
@@ -77,7 +77,7 @@ async fn start_stack(api_host: &str, web_host: &str, cookie_domain: Option<&str>
             ),
         );
         let env = support::setup("e2e_domain_split").await;
-        let web_config = idp_web::config::Config::from_env().expect("load web config");
+        let web_config = assay_web::config::Config::from_env().expect("load web config");
         std::env::remove_var("ISSUER");
         std::env::remove_var("PUBLIC_WEB_BASE_URL");
         std::env::remove_var("COOKIE_DOMAIN");
@@ -85,8 +85,8 @@ async fn start_stack(api_host: &str, web_host: &str, cookie_domain: Option<&str>
         (env?, web_config)
     };
 
-    let web_state = idp_web::state::WebState::build(Arc::new(web_config));
-    let web_app = idp_web::router::build(web_state);
+    let web_state = assay_web::state::WebState::build(Arc::new(web_config));
+    let web_app = assay_web::router::build(web_state);
     tokio::spawn(axum::serve(api_listener, env.app.clone()).into_future());
     tokio::spawn(axum::serve(web_listener, web_app).into_future());
 
@@ -114,9 +114,9 @@ fn browser(hosts: &[&str]) -> (reqwest::Client, Arc<reqwest::cookie::Jar>) {
 
 /// 検証済みメール・既知パスワードの利用者を root テナントへ直接作成し、username を返す。
 async fn create_login_user(stack: &Stack, password: &str) -> String {
-    use idp_api::domain::password::PasswordHasher as _;
+    use assay_api::domain::password::PasswordHasher as _;
     let username = format!("e2e{}", support::unique());
-    let hash = idp_api::infrastructure::password::Argon2PasswordHasher::new()
+    let hash = assay_api::infrastructure::password::Argon2PasswordHasher::new()
         .hash(password)
         .expect("hash password");
     let id = uuid::Uuid::now_v7().to_string();

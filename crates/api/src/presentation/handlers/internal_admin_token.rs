@@ -14,11 +14,11 @@
 use crate::application::management_token::ManagementTokenError;
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::require_internal_tenant;
+use assay_contracts::admin::{ManagementTokenRequest, ManagementTokenResponse};
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use idp_contracts::admin::{ManagementTokenRequest, ManagementTokenResponse};
 use serde_json::json;
 
 /// SSO セッションを管理トークンへ交換する。

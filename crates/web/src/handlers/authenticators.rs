@@ -17,15 +17,15 @@ use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, AuthenticatorView, RecoveryCodes, UserAuthenticators};
 use crate::tenant::WebTenant;
-use axum::extract::{Extension, Query, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::{Html, IntoResponse, Response};
-use axum::Form;
-use idp_contracts::auth::{
+use assay_contracts::auth::{
     InternalAuthenticatorStatusRequest, InternalAuthenticatorStatusResponse,
     InternalAuthenticatorsRequest, InternalAuthenticatorsResponse, InternalRecoveryCodesRequest,
     InternalRecoveryCodesResponse,
 };
+use axum::extract::{Extension, Query, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{Html, IntoResponse, Response};
+use axum::Form;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -148,7 +148,7 @@ pub async fn set_status(
     let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         return found(&format!("{}/login", tenant.prefix()));
     };
-    if !idp_contracts::csrf::verify(
+    if !assay_contracts::csrf::verify(
         &console_csrf_token(&sso, state.config.csrf_secret()),
         &form.csrf_token,
     ) {
@@ -218,7 +218,7 @@ pub async fn issue_recovery_codes(
     let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         return found(&format!("{}/login", tenant.prefix()));
     };
-    if !idp_contracts::csrf::verify(
+    if !assay_contracts::csrf::verify(
         &console_csrf_token(&sso, state.config.csrf_secret()),
         &form.csrf_token,
     ) {
@@ -365,7 +365,7 @@ pub async fn start_phone_registration(
     let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         return found(&format!("{}/login", tenant.prefix()));
     };
-    if !idp_contracts::csrf::verify(
+    if !assay_contracts::csrf::verify(
         &console_csrf_token(&sso, state.config.csrf_secret()),
         &form.csrf_token,
     ) {
@@ -385,7 +385,7 @@ pub async fn start_phone_registration(
     }
 
     let ctx = forwarded_context(&headers, &correlation, &client_ip);
-    let request = idp_contracts::auth::InternalPhoneRegistrationRequest {
+    let request = assay_contracts::auth::InternalPhoneRegistrationRequest {
         tenant_id: Some(tenant.0.clone()),
         sso_session_id: sso,
         phone_number: form.phone_number,
@@ -397,19 +397,19 @@ pub async fn start_phone_registration(
         .account_phone_register(&ctx.correlation_id, &request)
         .await
     {
-        Ok(idp_contracts::auth::InternalPhoneRegistrationResponse::Sent) => {
+        Ok(assay_contracts::auth::InternalPhoneRegistrationResponse::Sent) => {
             see_other(&format!("{base}?phone=confirm"))
         }
-        Ok(idp_contracts::auth::InternalPhoneRegistrationResponse::InvalidPhoneNumber) => {
+        Ok(assay_contracts::auth::InternalPhoneRegistrationResponse::InvalidPhoneNumber) => {
             see_other(&format!("{base}?error=phone-invalid"))
         }
-        Ok(idp_contracts::auth::InternalPhoneRegistrationResponse::Unavailable) => {
+        Ok(assay_contracts::auth::InternalPhoneRegistrationResponse::Unavailable) => {
             see_other(&format!("{base}?error=sms-unavailable"))
         }
-        Ok(idp_contracts::auth::InternalPhoneRegistrationResponse::Unauthenticated) => {
+        Ok(assay_contracts::auth::InternalPhoneRegistrationResponse::Unauthenticated) => {
             found(&format!("{}/login", tenant.prefix()))
         }
-        Ok(idp_contracts::auth::InternalPhoneRegistrationResponse::Internal) => {
+        Ok(assay_contracts::auth::InternalPhoneRegistrationResponse::Internal) => {
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
         Err(e) => {
@@ -433,7 +433,7 @@ pub async fn confirm_phone_registration(
     let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         return found(&format!("{}/login", tenant.prefix()));
     };
-    if !idp_contracts::csrf::verify(
+    if !assay_contracts::csrf::verify(
         &console_csrf_token(&sso, state.config.csrf_secret()),
         &form.csrf_token,
     ) {
@@ -441,7 +441,7 @@ pub async fn confirm_phone_registration(
     }
 
     let ctx = forwarded_context(&headers, &correlation, &client_ip);
-    let request = idp_contracts::auth::InternalPhoneConfirmationRequest {
+    let request = assay_contracts::auth::InternalPhoneConfirmationRequest {
         tenant_id: Some(tenant.0.clone()),
         sso_session_id: sso,
         code: form.code,
@@ -453,17 +453,17 @@ pub async fn confirm_phone_registration(
         .account_phone_confirm(&ctx.correlation_id, &request)
         .await
     {
-        Ok(idp_contracts::auth::InternalPhoneConfirmationResponse::Confirmed) => {
+        Ok(assay_contracts::auth::InternalPhoneConfirmationResponse::Confirmed) => {
             see_other(&format!("{base}?saved=phone"))
         }
-        Ok(idp_contracts::auth::InternalPhoneConfirmationResponse::InvalidCode) => {
+        Ok(assay_contracts::auth::InternalPhoneConfirmationResponse::InvalidCode) => {
             // 確認待ちの画面へ戻す（別のコードを打ち直せるようにする）。
             see_other(&format!("{base}?phone=confirm&error=phone-code"))
         }
-        Ok(idp_contracts::auth::InternalPhoneConfirmationResponse::Unauthenticated) => {
+        Ok(assay_contracts::auth::InternalPhoneConfirmationResponse::Unauthenticated) => {
             found(&format!("{}/login", tenant.prefix()))
         }
-        Ok(idp_contracts::auth::InternalPhoneConfirmationResponse::Internal) => {
+        Ok(assay_contracts::auth::InternalPhoneConfirmationResponse::Internal) => {
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
         Err(e) => {

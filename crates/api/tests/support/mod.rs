@@ -11,17 +11,17 @@
 //! - リクエストビルダとレスポンス読み取り
 #![allow(dead_code)]
 
+use assay_api::config::Config;
+use assay_api::domain::clock::Clock;
+use assay_api::domain::password::PasswordHasher as _;
+use assay_api::infrastructure::crypto;
+use assay_api::infrastructure::password::Argon2PasswordHasher;
+use assay_api::presentation::router;
+use assay_api::presentation::state::AppState;
 use axum::body::Body;
 use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, COOKIE, LOCATION, SET_COOKIE};
 use axum::http::{Method, Request};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use idp_api::config::Config;
-use idp_api::domain::clock::Clock;
-use idp_api::domain::password::PasswordHasher as _;
-use idp_api::infrastructure::crypto;
-use idp_api::infrastructure::password::Argon2PasswordHasher;
-use idp_api::presentation::router;
-use idp_api::presentation::state::AppState;
 use serde_json::{json, Value};
 use sqlx::mysql::MySqlPoolOptions;
 use sqlx::MySqlPool;
@@ -39,7 +39,7 @@ static KEY_BOOTSTRAP: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_n
 
 /// 内部認証エンドポイント（`/internal/*`）のサービストークン（ADR-0007 §5）。
 /// `setup()` が `INTERNAL_SERVICE_TOKEN` へ固定注入する。
-// 32 文字以上（`idp_contracts::deployment::INTERNAL_SERVICE_TOKEN_MIN_LEN`）。SEC11。
+// 32 文字以上（`assay_contracts::deployment::INTERNAL_SERVICE_TOKEN_MIN_LEN`）。SEC11。
 pub const SERVICE_TOKEN: &str = "test-internal-service-token-0123456789";
 pub const SERVICE_TOKEN_HEADER: &str = "x-internal-auth-token";
 
@@ -97,11 +97,11 @@ fn prepare_test_env() {
     std::env::set_var("INTERNAL_SERVICE_TOKEN", SERVICE_TOKEN);
     set_env_if_unset(
         "KEY_ENCRYPTION_KEY",
-        &STANDARD.encode(idp_api::config::DEV_KEY_ENCRYPTION_KEY),
+        &STANDARD.encode(assay_api::config::DEV_KEY_ENCRYPTION_KEY),
     );
     set_env_if_unset(
         "CSRF_SECRET",
-        &STANDARD.encode(idp_api::config::DEV_CSRF_SECRET),
+        &STANDARD.encode(assay_api::config::DEV_CSRF_SECRET),
     );
 }
 
@@ -472,9 +472,9 @@ pub async fn insert_private_key_jwt_client(
     let client_id = format!("it-pkjwt-{}", unique());
     let kid = format!("kid-{}", unique());
     let (private_pem, public_pem) =
-        idp_api::domain::jwt::generate_rsa_keypair().expect("generate keypair");
-    let jwk = idp_api::domain::jwt::rsa_public_jwk(&kid, &public_pem).expect("build jwk");
-    let jwks = serde_json::to_string(&idp_api::domain::jwt::Jwks { keys: vec![jwk] })
+        assay_api::domain::jwt::generate_rsa_keypair().expect("generate keypair");
+    let jwk = assay_api::domain::jwt::rsa_public_jwk(&kid, &public_pem).expect("build jwk");
+    let jwks = serde_json::to_string(&assay_api::domain::jwt::Jwks { keys: vec![jwk] })
         .expect("serialize jwks");
     sqlx::query(
         "INSERT INTO clients (id, tenant_id, client_id, client_secret_hash, client_type, \
@@ -503,9 +503,10 @@ pub async fn insert_private_key_jwt_client(
 pub fn sample_client_jwks() -> String {
     let kid = format!("kid-{}", unique());
     let (_private_pem, public_pem) =
-        idp_api::domain::jwt::generate_rsa_keypair().expect("generate keypair");
-    let jwk = idp_api::domain::jwt::rsa_public_jwk(&kid, &public_pem).expect("build jwk");
-    serde_json::to_string(&idp_api::domain::jwt::Jwks { keys: vec![jwk] }).expect("serialize jwks")
+        assay_api::domain::jwt::generate_rsa_keypair().expect("generate keypair");
+    let jwk = assay_api::domain::jwt::rsa_public_jwk(&kid, &public_pem).expect("build jwk");
+    serde_json::to_string(&assay_api::domain::jwt::Jwks { keys: vec![jwk] })
+        .expect("serialize jwks")
 }
 
 /// ランダムな識別子片（メール・名前の一意化に使う。12 文字の hex）。

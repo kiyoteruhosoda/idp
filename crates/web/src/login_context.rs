@@ -19,12 +19,12 @@ use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::state::WebState;
 use crate::tenant::WebTenant;
+use assay_contracts::auth::{
+    InternalAuthorizeLoginContextRequest, InternalAuthorizeLoginContextResponse,
+};
 use axum::extract::{Request, State};
 use axum::middleware::Next;
 use axum::response::Response;
-use idp_contracts::auth::{
-    InternalAuthorizeLoginContextRequest, InternalAuthorizeLoginContextResponse,
-};
 
 /// 進行中の認可要求が持ち込んだ表示ヒント。`Extension` で下流のハンドラ・middleware へ渡す。
 ///

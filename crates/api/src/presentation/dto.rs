@@ -67,7 +67,7 @@ pub struct LoginForm {
 }
 
 // 内部認証 API（`/internal/authenticate*`）の DTO は api サーバと web クライアントで共有するため
-// `idp-contracts` crate に定義する（ADR-0007 §6）。handler は `idp_contracts::auth::*` を用いる。
+// `assay-contracts` crate に定義する（ADR-0007 §6）。handler は `assay_contracts::auth::*` を用いる。
 
 /// `POST /token` のフォームパラメータ（設計仕様 §4.4・§9.1）。
 #[derive(Debug, Deserialize, ToSchema)]
@@ -232,7 +232,7 @@ pub struct ApplicationLogQueryString {
     /// `api` または `web`。
     #[serde(default)]
     pub service: Option<String>,
-    /// 出力元モジュールパスの前方一致（例 `idp_api::presentation`）。
+    /// 出力元モジュールパスの前方一致（例 `assay_api::presentation`）。
     #[serde(default)]
     pub target: Option<String>,
     #[serde(default)]
@@ -867,25 +867,25 @@ fn default_enabled() -> bool {
 mod authentication_policy_contract_tests {
     use super::*;
 
-    /// 管理コンソール（web）が使う `idp_contracts::admin` 側の DTO と、ここ（OpenAPI に載せる
+    /// 管理コンソール（web）が使う `assay_contracts::admin` 側の DTO と、ここ（OpenAPI に載せる
     /// api 側の DTO）は**同じ JSON でなければならない**。食い違うと管理画面から保存できなくなる
     /// （web が送った形を api が復号できない）。両方を JSON で往復させて形の一致を固定する。
     #[test]
     fn authentication_policy_contract_matches_the_api_dto() {
-        let shared = idp_contracts::admin::AuthenticationPolicyUpsertRequest {
+        let shared = assay_contracts::admin::AuthenticationPolicyUpsertRequest {
             policy_code: "office-hours".to_string(),
             policy_name: "Office hours".to_string(),
             priority: 10,
             enabled: true,
             effect: "require_specific_method".to_string(),
-            effect_params: Some(idp_contracts::admin::RequiredMethodsPayload {
+            effect_params: Some(assay_contracts::admin::RequiredMethodsPayload {
                 methods: vec!["webauthn".to_string()],
                 user_verification: true,
             }),
             client_ids: vec!["app-a".to_string()],
             user_ids: vec!["019f8ea8-f5dd-7fc7-ac15-a7d4337e4610".to_string()],
             ip_cidrs: vec!["10.0.0.0/8".to_string()],
-            time_windows: vec![idp_contracts::admin::TimeWindowPayload {
+            time_windows: vec![assay_contracts::admin::TimeWindowPayload {
                 days: vec![1, 2, 3, 4, 5],
                 start_minute: 540,
                 end_minute: 1080,
@@ -933,11 +933,11 @@ mod authentication_policy_contract_tests {
         .map(|m| m.as_str())
         .to_vec();
         assert_eq!(
-            idp_contracts::admin::AUTHENTICATION_METHOD_CODES.to_vec(),
+            assay_contracts::admin::AUTHENTICATION_METHOD_CODES.to_vec(),
             expected
         );
         // 一覧に載せた各コードが実際に解釈できること（綴り間違いの検出）。
-        for code in idp_contracts::admin::AUTHENTICATION_METHOD_CODES {
+        for code in assay_contracts::admin::AUTHENTICATION_METHOD_CODES {
             assert!(
                 AuthenticationMethod::parse(code).is_ok(),
                 "unknown method code in the contract: {code}"
@@ -960,10 +960,10 @@ mod authentication_policy_contract_tests {
         .map(|t| t.as_str())
         .to_vec();
         assert_eq!(
-            idp_contracts::admin::LOGIN_IDENTIFIER_TYPE_CODES.to_vec(),
+            assay_contracts::admin::LOGIN_IDENTIFIER_TYPE_CODES.to_vec(),
             expected
         );
-        for code in idp_contracts::admin::LOGIN_IDENTIFIER_TYPE_CODES {
+        for code in assay_contracts::admin::LOGIN_IDENTIFIER_TYPE_CODES {
             assert!(
                 LoginIdentifierType::parse(code).is_ok(),
                 "unknown login identifier type code in the contract: {code}"

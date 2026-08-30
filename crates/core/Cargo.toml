@@ -1,19 +1,19 @@
 [package]
-name = "idp-core"
+name = "assay-core"
 version = "0.1.0"
 edition = "2021"
 description = "OIDC IdP core: domain / application / infrastructure（DB 直結）と設定・ログ基盤"
 license = "MIT"
 
 [lib]
-name = "idp_core"
+name = "assay_core"
 path = "src/lib.rs"
 
 [lints]
 workspace = true
 
 [dependencies]
-idp-contracts = { path = "../contracts" }
+assay-contracts = { path = "../contracts" }
 tokio = { workspace = true }
 sqlx = { workspace = true }
 serde = { workspace = true }

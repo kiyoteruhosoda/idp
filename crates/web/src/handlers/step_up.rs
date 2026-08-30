@@ -21,14 +21,14 @@ use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, StepUpChallenge};
 use crate::tenant::WebTenant;
+use assay_contracts::auth::{
+    InternalStepUpCheckRequest, InternalStepUpCheckResponse, InternalStepUpVerifyRequest,
+    InternalStepUpVerifyResponse,
+};
 use axum::extract::{Extension, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::{Form, Json};
-use idp_contracts::auth::{
-    InternalStepUpCheckRequest, InternalStepUpCheckResponse, InternalStepUpVerifyRequest,
-    InternalStepUpVerifyResponse,
-};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -227,7 +227,7 @@ pub async fn verify(
     let next = safe_next(&tenant, Some(&form.next));
     let challenge = challenge_path(&tenant, &form.operation, &next);
 
-    if !idp_contracts::csrf::verify(
+    if !assay_contracts::csrf::verify(
         &console_csrf_token(&sso, state.config.csrf_secret()),
         &form.csrf_token,
     ) {

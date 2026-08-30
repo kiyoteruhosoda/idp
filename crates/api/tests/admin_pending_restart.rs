@@ -21,10 +21,10 @@
 
 mod support;
 
+use assay_api::config::Config;
+use assay_api::domain::clock::Clock;
+use assay_api::presentation::{router, state::AppState};
 use axum::http::StatusCode;
-use idp_api::config::Config;
-use idp_api::domain::clock::Clock;
-use idp_api::presentation::{router, state::AppState};
 use serde_json::Value;
 use std::sync::Arc;
 use support::{admin_token, body_json, get, send};
@@ -60,7 +60,7 @@ async fn delete_setting(pool: &sqlx::MySqlPool, key: &str) {
 /// api の起動シーケンス（DB 管理設定の読み出し → `Config` 解決 → ルータ組立）を再現する。
 /// 「起動時スナップショット」と現在の DB 値のずれを見る本テストでは、再起動を表現する要になる。
 async fn start_api(pool: &sqlx::MySqlPool) -> axum::Router {
-    let db_settings = idp_api::load_db_managed_settings(pool)
+    let db_settings = assay_api::load_db_managed_settings(pool)
         .await
         .expect("load DB-managed settings");
     let config = Config::from_env_and_db_settings(&db_settings).expect("resolve api config");

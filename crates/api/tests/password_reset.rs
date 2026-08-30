@@ -424,6 +424,6 @@ async fn an_unknown_tenant_is_rejected_with_a_distinguishable_code() {
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     assert_eq!(
         body_json(res).await["error"],
-        idp_contracts::auth::UNKNOWN_TENANT_ERROR_CODE
+        assay_contracts::auth::UNKNOWN_TENANT_ERROR_CODE
     );
 }

@@ -71,7 +71,7 @@ DB 上書きは起動時にしか読まれないので、**壊れた値を保存
 
 起動可否の判定は、起動時 fail-fast と**同じ述語・同じ関数**を使う
 （`domain::system_setting::requires_production_secrets` と
-`idp_contracts::cookie_domain::validate_cookie_domain`）。片方だけが判定規則を変えると、
+`assay_contracts::cookie_domain::validate_cookie_domain`）。片方だけが判定規則を変えると、
 保存はできるのに起動できない値がまた生まれる。
 
 `PUBLIC_WEB_BASE_URL` は「明示設定されたか」を区別して保持する（`Config::public_web_base_url_override`）。

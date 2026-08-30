@@ -822,10 +822,10 @@ pub fn validate_public_base_url(key: &str, value: &str) -> Result<(), String> {
 /// **起動時の fail-fast と、保存前の起動可否検査（[`ensure_override_is_bootable`]）が同じ判定を
 /// 使う**ようにするため、述語をここに置く。片方だけが判定規則を変えると、保存はできるのに
 /// 起動できない値が生まれる。
-/// 判定そのものは api / web 共有の契約に置く（`idp_contracts::deployment`）。web が別判定を
+/// 判定そのものは api / web 共有の契約に置く（`assay_contracts::deployment`）。web が別判定を
 /// 持つと「api は起動して web は起動しない」がおきるため。
 pub fn requires_production_secrets(issuer: &str) -> bool {
-    idp_contracts::deployment::requires_production_secrets(issuer)
+    assay_contracts::deployment::requires_production_secrets(issuer)
 }
 
 /// 起動時に使われた bootstrap secret が開発用の既定値のままか（ADR-0017）。
@@ -912,7 +912,7 @@ pub fn ensure_override_is_bootable(
             .public_web_base_url_override
             .as_deref()
             .unwrap_or(value);
-        idp_contracts::cookie_domain::validate_cookie_domain(domain, &[value, web_origin])
+        assay_contracts::cookie_domain::validate_cookie_domain(domain, &[value, web_origin])
             .map_err(|e| {
                 format!(
                     "refusing to store an ISSUER that breaks the configured COOKIE_DOMAIN; \

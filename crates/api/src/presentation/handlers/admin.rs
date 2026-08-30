@@ -9,10 +9,10 @@ use crate::domain::permission;
 use crate::presentation::admin::{IdpAdmin, RequirePerms};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
+use assay_contracts::admin::WhoamiResponse;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
-use idp_contracts::admin::WhoamiResponse;
 
 /// 認可済み管理利用者の身元と、操作中のテナントを返す（管理コンソール基盤の疎通確認用）。
 /// アクセスできること自体が「有効な SSO セッション ＋ `idp.tenant.admin` 保有」を意味する。

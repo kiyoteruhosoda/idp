@@ -24,14 +24,14 @@
 
 mod support;
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
-use idp_api::config::Config;
-use idp_api::domain::clock::Clock;
-use idp_api::presentation::{router, state::AppState};
-use idp_contracts::runtime_settings::{
+use assay_api::config::Config;
+use assay_api::domain::clock::Clock;
+use assay_api::presentation::{router, state::AppState};
+use assay_contracts::runtime_settings::{
     SharedRuntimeSettingsResponse, SHARED_RUNTIME_SETTINGS_PATH,
 };
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
 use std::collections::HashMap;
 use std::future::IntoFuture;
 use std::sync::Arc;
@@ -72,10 +72,10 @@ async fn delete_setting(pool: &sqlx::MySqlPool, key: &str) {
 }
 
 /// api の起動シーケンス（DB 管理設定の読み出し → `Config` 解決 → ルータ組立）を再現する。
-/// 本番と同じ `idp_api::load_db_managed_settings` を通すことで、「api が起動時に適用した値」と
+/// 本番と同じ `assay_api::load_db_managed_settings` を通すことで、「api が起動時に適用した値」と
 /// エンドポイントが配る値が同じであることをテストでも保証する。
 async fn start_api(pool: &sqlx::MySqlPool) -> axum::Router {
-    let db_settings = idp_api::load_db_managed_settings(pool)
+    let db_settings = assay_api::load_db_managed_settings(pool)
         .await
         .expect("load DB-managed settings");
     let config = Config::from_env_and_db_settings(&db_settings).expect("resolve api config");
@@ -149,8 +149,8 @@ async fn shared_runtime_settings_are_protected_scoped_and_reach_the_web_configur
     std::env::set_var("HSTS_MAX_AGE", "1");
     std::env::set_var("AUTH_SESSION_TTL_SECS", "60");
 
-    let bootstrap = idp_web::config::Bootstrap::from_env().expect("bootstrap web config");
-    let client = idp_web::api_client::ApiClient::new(
+    let bootstrap = assay_web::config::Bootstrap::from_env().expect("bootstrap web config");
+    let client = assay_web::api_client::ApiClient::new(
         bootstrap.api_base_url(),
         bootstrap.internal_service_token(),
     );
@@ -158,8 +158,8 @@ async fn shared_runtime_settings_are_protected_scoped_and_reach_the_web_configur
         .fetch_shared_runtime_settings()
         .await
         .expect("fetch shared runtime settings from api");
-    let web_config =
-        idp_web::config::Config::from_env_and_shared_settings(&shared).expect("resolve web config");
+    let web_config = assay_web::config::Config::from_env_and_shared_settings(&shared)
+        .expect("resolve web config");
 
     assert!(web_config.cookie_secure(), "DB value must win over ENV");
     assert_eq!(web_config.hsts_max_age(), 31_536_000);
@@ -194,7 +194,7 @@ async fn shared_runtime_settings_are_protected_scoped_and_reach_the_web_configur
         "cleared overrides must be absent, not empty: {:?}",
         body.settings
     );
-    let web_config = idp_web::config::Config::from_env_and_shared_settings(
+    let web_config = assay_web::config::Config::from_env_and_shared_settings(
         &body.settings.clone().into_iter().collect(),
     )
     .expect("resolve web config");

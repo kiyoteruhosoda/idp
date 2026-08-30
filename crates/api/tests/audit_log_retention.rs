@@ -10,11 +10,11 @@
 
 mod support;
 
+use assay_api::application::audit::AuditService;
+use assay_api::domain::audit::AuditEvent;
+use assay_api::domain::repositories::AuditLogSink;
+use assay_api::infrastructure::repositories::audit_log::SqlxAuditLogSink;
 use chrono::{Duration, Utc};
-use idp_api::application::audit::AuditService;
-use idp_api::domain::audit::AuditEvent;
-use idp_api::domain::repositories::AuditLogSink;
-use idp_api::infrastructure::repositories::audit_log::SqlxAuditLogSink;
 use sqlx::Row;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -32,7 +32,7 @@ async fn record_at(
     correlation_id: &str,
     occurred_at: chrono::DateTime<Utc>,
 ) {
-    use idp_api::domain::audit::{AuditEventType, AuditResult};
+    use assay_api::domain::audit::{AuditEventType, AuditResult};
     sink.record(&AuditEvent {
         event_type: AuditEventType::LoginSucceeded,
         occurred_at,

@@ -1,4 +1,4 @@
-//! OIDC IdP のサービス間 DTO 契約（`idp-contracts`）。
+//! OIDC IdP のサービス間 DTO 契約（`assay-contracts`）。
 //!
 //! ADR-0007（API/Web サービス分割）§6。api（サーバ）が返す JSON DTO と、web（クライアント）が
 //! 用いる型を **同一の serde 構造体**で共有し、コンパイル時に契約整合を保証する。DB・axum・sqlx へは

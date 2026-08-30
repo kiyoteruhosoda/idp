@@ -144,7 +144,7 @@ pub async fn update_tenant(
     }
     let base = format!("{}{SETTINGS_SEGMENT}", tenant.prefix());
     let sso = sso(&headers);
-    if !idp_contracts::csrf::verify(
+    if !assay_contracts::csrf::verify(
         &console_csrf_token(&sso, state.config.csrf_secret()),
         &form.csrf_token,
     ) {
@@ -183,7 +183,7 @@ pub async fn update_system(
     }
     let base = format!("{}{SETTINGS_SEGMENT}", tenant.prefix());
     let sso = sso(&headers);
-    if !idp_contracts::csrf::verify(
+    if !assay_contracts::csrf::verify(
         &console_csrf_token(&sso, state.config.csrf_secret()),
         &form.csrf_token,
     ) {
@@ -247,7 +247,7 @@ pub async fn update_runtime(
     }
     let base = format!("{}{SETTINGS_SEGMENT}", tenant.prefix());
     let sso = sso(&headers);
-    if !idp_contracts::csrf::verify(
+    if !assay_contracts::csrf::verify(
         &console_csrf_token(&sso, state.config.csrf_secret()),
         &form.csrf_token,
     ) {

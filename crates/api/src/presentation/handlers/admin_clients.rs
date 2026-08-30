@@ -309,7 +309,7 @@ pub async fn list_client_status(
     RequirePerms(_admin, _): RequirePerms<ClientsRead>,
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
-) -> Result<Json<Vec<idp_contracts::admin::ClientStatusResponse>>, ApiError> {
+) -> Result<Json<Vec<assay_contracts::admin::ClientStatusResponse>>, ApiError> {
     let views = state
         .clients_status
         .list(tenant.context())
@@ -318,7 +318,7 @@ pub async fn list_client_status(
     Ok(Json(
         views
             .iter()
-            .map(|v| idp_contracts::admin::ClientStatusResponse {
+            .map(|v| assay_contracts::admin::ClientStatusResponse {
                 client_id: v.client_id.clone(),
                 app_name: v.app_name.clone(),
                 status: v.status.as_str().to_string(),

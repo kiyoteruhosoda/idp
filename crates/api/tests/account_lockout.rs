@@ -9,10 +9,10 @@
 
 mod support;
 
+use assay_api::domain::authentication_policy::LockoutPolicy;
+use assay_api::domain::repositories::UserRepository;
+use assay_api::infrastructure::repositories::user::SqlxUserRepository;
 use axum::http::StatusCode;
-use idp_api::domain::authentication_policy::LockoutPolicy;
-use idp_api::domain::repositories::UserRepository;
-use idp_api::infrastructure::repositories::user::SqlxUserRepository;
 use support::{admin_token, body_json, create_plain_user, post_empty, send};
 use uuid::Uuid;
 

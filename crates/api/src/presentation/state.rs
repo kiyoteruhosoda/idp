@@ -867,7 +867,7 @@ impl AppState {
         ));
 
         // G5: Back-channel logout の送信キュー。ログアウトのハンドラは通知要求を積むだけで終え、
-        // 実際の HTTP 送信は `idp_api::run` が起動するワーカーが再試行付きで行う。
+        // 実際の HTTP 送信は `assay_api::run` が起動するワーカーが再試行付きで行う。
         let backchannel_logout = Arc::new(BackchannelLogoutDeliveryService::new(
             Arc::new(SqlxBackchannelLogoutDeliveryRepository::new(pool.clone())),
             Arc::new(KeyServiceLogoutTokenSigner::new(keys.clone())),

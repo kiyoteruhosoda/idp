@@ -11,9 +11,9 @@ api（DB 直結。既定 :8080）と web（HTML 画面。既定 :8081）を別�
 docker compose up -d mariadb          # MariaDB 10.11 を起動
 sqlx migrate run                       # マイグレーション適用（要 DATABASE_URL）
 # 別々のシェルで（web は api を API_BASE_URL で呼ぶ。PUBLIC_WEB_BASE_URL は両者に同値で渡す）
-PUBLIC_WEB_BASE_URL=http://localhost:8081 cargo run -p idp-api   # api 起動（既定 0.0.0.0:8080）
+PUBLIC_WEB_BASE_URL=http://localhost:8081 cargo run -p assay-api   # api 起動（既定 0.0.0.0:8080）
 PUBLIC_WEB_BASE_URL=http://localhost:8081 API_BASE_URL=http://localhost:8080 \
-  cargo run -p idp-web                                           # web 起動（既定 0.0.0.0:8081）
+  cargo run -p assay-web                                           # web 起動（既定 0.0.0.0:8081）
 ```
 
 ブラウザは通常は同梱リバースプロキシ経由で使う。ローカルで直に触る場合、ログイン画面・
@@ -660,7 +660,7 @@ curl -sS "$ISSUER/$ROOT_TENANT_ID/admin/logs?level=ERROR" \
   -H "Cookie: sso_session_id=<セッションID>"
 
 # サービス・出力元モジュール・期間で絞る（from/to は RFC3339）。
-curl -sS "$ISSUER/$ROOT_TENANT_ID/admin/logs?service=web&target=idp_web::handlers&from=2026-07-01T00:00:00Z" \
+curl -sS "$ISSUER/$ROOT_TENANT_ID/admin/logs?service=web&target=assay_web::handlers&from=2026-07-01T00:00:00Z" \
   -H "Cookie: sso_session_id=<セッションID>"
 ```
 
@@ -1106,7 +1106,7 @@ curl -sS -X POST "$ISSUER/{tenant_id}/admin/external-idps" \
 | `EXPIRED_RECORD_PURGE_INTERVAL_SECS` | `3600` | 期限切れレコード（認可セッション・authorization code・refresh token・SSO セッション・失効 jti・パスキーチャレンジ・各種一時トークン）を掃除する間隔（秒）。`0` = 掃除しない（表が際限なく増えるため非推奨）。**DB 上書き可** |
 | `CORS_ALLOWED_ORIGINS` | 空 | ブラウザからの越境アクセスを追加で許可するオリジン（カンマ区切り）。既定ではテナント内 public クライアントの `redirect_uris` から導いたオリジンのみ許可する。**DB 上書き可** |
 | `API_DOCS_ENABLED` | `false` | Swagger UI（`/api/docs`）と OpenAPI 文書（`/api/openapi.json`）を配信するか。api 面は公開されるため、有効にすると管理 API を含む全仕様が無認証で読める。開発・検証環境でのみ `true` にする。**DB 上書き可** |
-| `RUST_LOG` | `info,idp=debug` | ログフィルタ |
+| `RUST_LOG` | `info,assay=debug` | ログフィルタ |
 
 環境変数より **DB（`system_settings`）の値が優先される**（ADR-0010）。DB で変更するには root 管理者で
 `/{root_tenant_id}/admin/settings` を開き、システム設定区画のランタイム設定を編集する。
@@ -1215,7 +1215,7 @@ openssl rand -base64 32   # これを KEY_ENCRYPTION_KEY に設定する
 - OpenAPI JSON: `GET /api/openapi.json`
 - Swagger UI: `GET /api/docs`
 
-無効のまま仕様だけ見たい場合は、ローカルで `API_DOCS_ENABLED=true cargo run -p idp-api` する。
+無効のまま仕様だけ見たい場合は、ローカルで `API_DOCS_ENABLED=true cargo run -p assay-api` する。
 
 ## 死活・準備状態を確認したいとき
 
@@ -1358,8 +1358,8 @@ DB を直接参照せずに、いま DB へ適用されているマイグレー�
 
 | プロセス | 既定 listen | 変更キー |
 |---|---|---|
-| `cargo run -p idp-api`（`idp`） | `0.0.0.0:8080` | `BIND_ADDR` |
-| `cargo run -p idp-web`（`idp-web`） | `0.0.0.0:8081` | `WEB_BIND_ADDR` |
+| `cargo run -p assay-api`（`assay`） | `0.0.0.0:8080` | `BIND_ADDR` |
+| `cargo run -p assay-web`（`assay-web`） | `0.0.0.0:8081` | `WEB_BIND_ADDR` |
 | MariaDB（`docker compose up -d mariadb`） | `127.0.0.1:3306` | `MARIADB_BIND_HOST` / `MARIADB_PORT` |
 
 この場合はプロキシを立てないため、web の `API_BASE_URL` を `http://localhost:8080`（api の直アドレス）

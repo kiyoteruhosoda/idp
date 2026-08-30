@@ -20,7 +20,7 @@
 //! * 22:00-06:00 +00:00
 //! ```
 
-use idp_contracts::admin::TimeWindowPayload;
+use assay_contracts::admin::TimeWindowPayload;
 
 /// 曜日の表記（0 = 日曜 … 6 = 土曜）。API の数値表現との唯一の対応表。
 const DAY_NAMES: [&str; 7] = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
@@ -152,7 +152,7 @@ fn format_offset(minutes: i16) -> String {
 
 /// 方式ごとのチェックボックス（`Option<String>`）を、api へ送るコードの一覧へ写す。
 ///
-/// 並びは [`idp_contracts::admin::AUTHENTICATION_METHOD_CODES`] に従える（表示順と保存順を
+/// 並びは [`assay_contracts::admin::AUTHENTICATION_METHOD_CODES`] に従える（表示順と保存順を
 /// 揃え、更新のたびに順序だけが変わる差分を出さない）。
 pub fn selected_methods(form: &crate::dto::AdminAuthenticationPolicyForm) -> Vec<String> {
     [

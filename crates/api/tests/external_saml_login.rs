@@ -13,14 +13,14 @@
 
 mod support;
 
+use assay_api::domain::saml_external_idp::NAME_ID_FORMAT_UNSPECIFIED;
+use assay_api::domain::saml_response::{
+    build_signed_response_xml, generate_saml_id, SamlResponseInput, SamlSigner,
+};
 use axum::http::StatusCode;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use chrono::{Duration, Utc};
-use idp_api::domain::saml_external_idp::NAME_ID_FORMAT_UNSPECIFIED;
-use idp_api::domain::saml_response::{
-    build_signed_response_xml, generate_saml_id, SamlResponseInput, SamlSigner,
-};
 use serde_json::{json, Value};
 use sqlx::MySqlPool;
 use std::io::Read as _;
@@ -272,7 +272,9 @@ async fn a_registered_saml_provider_signs_a_user_in_end_to_end() {
     // 発行された SSO セッションは**その利用者のもの**である（誰のログインになったかを確かめる）。
     let owner: String =
         sqlx::query_scalar("SELECT user_id FROM sso_sessions WHERE session_hash = ?")
-            .bind(idp_api::infrastructure::crypto::sha256_hex(sso_session_id))
+            .bind(assay_api::infrastructure::crypto::sha256_hex(
+                sso_session_id,
+            ))
             .fetch_one(&env.pool)
             .await
             .expect("sso session row");

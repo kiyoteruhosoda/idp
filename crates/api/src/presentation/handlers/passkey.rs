@@ -15,10 +15,7 @@ use crate::application::portal_login::{PortalLoginOutcome, PortalPasskeyLoginCom
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::require_internal_tenant;
-use axum::extract::{Extension, State};
-use axum::response::Response;
-use axum::Json;
-use idp_contracts::auth::{
+use assay_contracts::auth::{
     InternalAdminPasskeyLoginCompleteRequest, InternalAdminPasskeyLoginCompleteResponse,
     InternalPasskeyDeleteRequest, InternalPasskeyDeleteResponse, InternalPasskeyListRequest,
     InternalPasskeyListResponse, InternalPasskeyLoginBeginRequest,
@@ -28,6 +25,9 @@ use idp_contracts::auth::{
     InternalPasskeyRegisterCompleteResponse, InternalPortalPasskeyLoginCompleteRequest,
     InternalPortalPasskeyLoginCompleteResponse, PasskeyCredentialInfo,
 };
+use axum::extract::{Extension, State};
+use axum::response::Response;
+use axum::Json;
 use uuid::Uuid;
 
 /// Passkey 登録開始（`POST /internal/passkey/register/begin`）。

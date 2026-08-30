@@ -24,7 +24,7 @@ use support::{
 };
 
 fn login_csrf(auth_session: &str, csrf_secret: &[u8; 32]) -> String {
-    idp_api::application::login::csrf_token(auth_session, csrf_secret)
+    assay_api::application::login::csrf_token(auth_session, csrf_secret)
 }
 
 /// api の内部認証（`POST /internal/authenticate`）で資格情報検証を駆動する。

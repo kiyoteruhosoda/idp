@@ -8,8 +8,8 @@
 
 mod support;
 
-use idp_api::application::expired_record_purge::ExpiredRecordPurgeService;
-use idp_api::infrastructure::repositories::expired_records::{
+use assay_api::application::expired_record_purge::ExpiredRecordPurgeService;
+use assay_api::infrastructure::repositories::expired_records::{
     all_expiring_record_stores, PURGED_TABLES,
 };
 use sqlx::Row;
@@ -91,7 +91,7 @@ async fn only_expired_rows_are_deleted() {
 
 /// `auth_sessions` に 1 行入れて、その `id_hash` を返す（`expires_at` は現在から `offset_secs` 秒後）。
 async fn insert_auth_session(env: &support::TestEnv, client_id: &str, offset_secs: i64) -> String {
-    let id_hash = idp_api::domain::auth_session::id_hash(&format!(
+    let id_hash = assay_api::domain::auth_session::id_hash(&format!(
         "purge-test-{}-{offset_secs}",
         uuid::Uuid::now_v7()
     ));

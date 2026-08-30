@@ -25,8 +25,8 @@
 
 mod support;
 
+use assay_api::application::login::csrf_token;
 use axum::http::StatusCode;
-use idp_api::application::login::csrf_token;
 use serde_json::json;
 use support::{
     begin_login, body_json, cookie_post, create_sso_session, exchange_admin_token, get,

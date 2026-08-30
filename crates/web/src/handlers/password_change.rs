@@ -15,12 +15,12 @@ use crate::login_context::RpLoginContext;
 use crate::state::WebState;
 use crate::templates::{render, MessagePage, PasswordChangeTemplate};
 use crate::tenant::WebTenant;
+use assay_contracts::auth::{InternalChangePasswordRequest, InternalChangePasswordResponse};
+use assay_contracts::csrf::login_csrf_token;
 use axum::extract::{Extension, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
-use idp_contracts::auth::{InternalChangePasswordRequest, InternalChangePasswordResponse};
-use idp_contracts::csrf::login_csrf_token;
 
 /// パスワード変更フォームを表示する。`auth_session_id` Cookie（パスワード検証済み状態）が必要。
 /// `?error=csrf` は CSRF 不一致の POST から PRG で戻ったときのエラーバナー表示。

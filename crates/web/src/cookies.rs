@@ -1,6 +1,6 @@
 //! Cookie の読み書き（axum アダプタ）。
 //!
-//! 名前と `Set-Cookie` 値の組み立ては api との契約のため [`idp_contracts::cookies`] に単一定義
+//! 名前と `Set-Cookie` 値の組み立ては api との契約のため [`assay_contracts::cookies`] に単一定義
 //! してある。本モジュールは `HeaderMap` からの読み出しと、応答へ載せる `Set-Cookie` ヘッダの
 //! 組み立て（[`SetCookies`]）という axum 依存の部分を担う。
 //!
@@ -21,7 +21,7 @@ use axum::http::header::{COOKIE, SET_COOKIE};
 use axum::http::{HeaderMap, HeaderName};
 use axum::response::AppendHeaders;
 
-pub use idp_contracts::cookies::{CookiePolicy, AUTH_SESSION_COOKIE, SSO_SESSION_COOKIE};
+pub use assay_contracts::cookies::{CookiePolicy, AUTH_SESSION_COOKIE, SSO_SESSION_COOKIE};
 
 /// 管理ログインフォームの CSRF 用 Cookie（GET で発行する推測不能な乱数。同期トークンの種）。
 /// **オリジン束縛**（`WebState::origin_bound_cookie` 経由で `__Host-` 前置。SEC5）。
@@ -41,12 +41,12 @@ pub const LANG_COOKIE: &str = "lang";
 /// 表示設定 Cookie（言語・配色）の保持期間（既定 1 年）。UI 設定のため長命にする。
 pub const PREFERENCE_COOKIE_MAX_AGE_SECS: u64 = 31_536_000;
 /// 配色の選択を保持する Cookie（`light` / `dark` / `system`）。**`HttpOnly` を付けない**
-/// （`assets/theme.js` が最初の描画より前に読む。理由は `idp_contracts::cookies::set_preference`）。
+/// （`assets/theme.js` が最初の描画より前に読む。理由は `assay_contracts::cookies::set_preference`）。
 pub const THEME_COOKIE: &str = "theme";
 
 /// リクエストの `Cookie` ヘッダから `name` の値を取り出す。
 pub fn get(headers: &HeaderMap, name: &str) -> Option<String> {
-    idp_contracts::cookies::read(
+    assay_contracts::cookies::read(
         headers
             .get_all(COOKIE)
             .iter()

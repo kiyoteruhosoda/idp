@@ -47,10 +47,10 @@ use std::sync::Arc;
 
 /// `auth_session_id` に紐づく CSRF トークンを導出する。
 ///
-/// 導出は web（フォーム描画）と api（検証）で一致させる必要があるため `idp-contracts` に一元化する
+/// 導出は web（フォーム描画）と api（検証）で一致させる必要があるため `assay-contracts` に一元化する
 /// （ADR-0007 §6。同期トークン方式。サーバ側の追加保存は不要）。
 pub fn csrf_token(auth_session_id: &str, key: &[u8]) -> String {
-    idp_contracts::csrf::login_csrf_token(auth_session_id, key)
+    assay_contracts::csrf::login_csrf_token(auth_session_id, key)
 }
 
 #[derive(Debug)]
@@ -228,8 +228,10 @@ impl LoginService {
 
         // 2. CSRF トークン検証。不一致は攻撃だけでなく「別タブでの新フローによる Cookie 差し替え」等の
         //    正規操作でも起こるため、監査に記録して web 側でフォーム再表示（PRG）に載せる。
-        if !idp_contracts::csrf::verify(&csrf_token(session_id, &self.csrf_secret), &cmd.csrf_token)
-        {
+        if !assay_contracts::csrf::verify(
+            &csrf_token(session_id, &self.csrf_secret),
+            &cmd.csrf_token,
+        ) {
             self.audit
                 .record(
                     AuditEventType::LoginFailed,

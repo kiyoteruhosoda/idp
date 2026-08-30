@@ -45,12 +45,7 @@ use crate::domain::user_authenticator::AuthenticatorStatus;
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::require_internal_tenant;
-use axum::extract::{Extension, Request, State};
-use axum::http::StatusCode;
-use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
-use axum::Json;
-use idp_contracts::auth::{
+use assay_contracts::auth::{
     AccountConnectedAppSummary, AccountSessionSummary, AccountTenantSummary,
     InternalAccountChangePasswordRequest, InternalAccountChangePasswordResponse,
     InternalAccountProfileRequest, InternalAccountProfileResponse,
@@ -72,7 +67,7 @@ use idp_contracts::auth::{
     InternalStepUpCheckResponse, InternalStepUpVerifyRequest, InternalStepUpVerifyResponse,
     PasswordRejectionReason,
 };
-use idp_contracts::auth::{
+use assay_contracts::auth::{
     AuthenticatorSummaryResponse, InternalAuthenticatorStatusRequest,
     InternalAuthenticatorStatusResponse, InternalAuthenticatorsRequest,
     InternalAuthenticatorsResponse, InternalEmailOtpRequest, InternalEmailOtpResponse,
@@ -81,13 +76,18 @@ use idp_contracts::auth::{
     InternalRecoveryCodesRequest, InternalRecoveryCodesResponse, InternalSmsOtpRequest,
     InternalSmsOtpResponse,
 };
-use idp_contracts::auth::{
+use assay_contracts::auth::{
     ExternalIdpButton, InternalExternalCallbackRequest, InternalExternalCallbackResponse,
     InternalExternalProvidersRequest, InternalExternalProvidersResponse,
     InternalExternalStartRequest, InternalExternalStartResponse,
 };
+use axum::extract::{Extension, Request, State};
+use axum::http::StatusCode;
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
+use axum::Json;
 
-use idp_contracts::internal_auth::{service_token_matches, SERVICE_TOKEN_HEADER};
+use assay_contracts::internal_auth::{service_token_matches, SERVICE_TOKEN_HEADER};
 
 /// `/internal/*` を保護するミドルウェア（ADR-0007 §5）。設定のサービストークンとヘッダ値を
 /// 定数時間で照合し、一致しなければ 401 で遮断する。
@@ -1488,7 +1488,7 @@ pub async fn external_callback(
 pub async fn external_saml_acs(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
-    Json(req): Json<idp_contracts::auth::InternalExternalSamlAcsRequest>,
+    Json(req): Json<assay_contracts::auth::InternalExternalSamlAcsRequest>,
 ) -> Result<Json<InternalExternalCallbackResponse>, Response> {
     let ctx = RequestContext {
         correlation_id: correlation.0,

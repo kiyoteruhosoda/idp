@@ -3,7 +3,7 @@
 //! ADR-0007: web はフォーム描画とリダイレクトのみを担い、資格情報検証・SSO/code 発行は api の
 //! `POST /internal/authenticate` に委ねる。web は接続元情報（`X-Forwarded-For` 由来 IP・User-Agent）を
 //! 転送し、成功時に api が返す `sso_session_id` を Cookie 化して `redirect_to` へ 302 する。エラーは
-//! ローカライズして再描画する。CSRF は `auth_session_id` 由来の同期トークン（`idp-contracts`）で、
+//! ローカライズして再描画する。CSRF は `auth_session_id` 由来の同期トークン（`assay-contracts`）で、
 //! api の LoginService が検証する。
 //!
 //! 画面文言は `fluent` の翻訳リソースで管理する（`Accept-Language` で en / ja を切替）。
@@ -19,15 +19,15 @@ use crate::login_context::RpLoginContext;
 use crate::state::WebState;
 use crate::templates::{render, LoginTemplate, MessagePage};
 use crate::tenant::WebTenant;
+use assay_contracts::auth::{
+    InternalAuthenticateRequest, InternalAuthenticateResponse, InternalAuthorizeResumeRequest,
+    InternalAuthorizeResumeResponse,
+};
+use assay_contracts::csrf::login_csrf_token;
 use axum::extract::{Extension, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
-use idp_contracts::auth::{
-    InternalAuthenticateRequest, InternalAuthenticateResponse, InternalAuthorizeResumeRequest,
-    InternalAuthorizeResumeResponse,
-};
-use idp_contracts::csrf::login_csrf_token;
 
 /// ログインフォームを表示する。OIDC フローは api の `/authorize` からのハンドオフ
 /// （`?auth_session=` の単回ハンドル。ADR-0018 決定 2）または host-only の `auth_session_id`

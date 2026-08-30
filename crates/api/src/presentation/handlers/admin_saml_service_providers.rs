@@ -13,13 +13,13 @@ use crate::presentation::error::ApiError;
 use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
-use axum::extract::{Extension, Path, State};
-use axum::http::StatusCode;
-use axum::Json;
-use idp_contracts::admin::{
+use assay_contracts::admin::{
     SamlMetadataImportRequest, SamlServiceProviderRegisterRequest, SamlServiceProviderResponse,
     SamlServiceProviderUpdateRequest, SamlSpMetadataImportResponse,
 };
+use axum::extract::{Extension, Path, State};
+use axum::http::StatusCode;
+use axum::Json;
 use uuid::Uuid;
 
 pub async fn register(

@@ -20,9 +20,9 @@
 use crate::config::SettingSource;
 use crate::domain::system_setting::is_shared_with_web;
 use crate::presentation::state::AppState;
+use assay_contracts::runtime_settings::SharedRuntimeSettingsResponse;
 use axum::extract::State;
 use axum::Json;
-use idp_contracts::runtime_settings::SharedRuntimeSettingsResponse;
 
 /// web と共有するランタイム設定のうち、実行中の api が起動時に DB から適用した値を返す。
 pub async fn shared_runtime_settings(

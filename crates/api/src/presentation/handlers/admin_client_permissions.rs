@@ -20,10 +20,10 @@ use crate::presentation::handlers::request_context;
 use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
+use assay_contracts::admin::ClientPermissionsResponse;
 use axum::extract::{Extension, Path, State};
 use axum::http::HeaderMap;
 use axum::Json;
-use idp_contracts::admin::ClientPermissionsResponse;
 
 /// 対象クライアントが保有する管理権限コードを一覧する。
 #[utoipa::path(

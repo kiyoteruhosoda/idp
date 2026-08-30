@@ -9,14 +9,14 @@ use crate::presentation::dto::{AuthorizeParams, OAuthErrorResponse};
 use crate::presentation::handlers::found;
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::{require_internal_tenant, ResolvedTenant};
+use assay_contracts::auth::{
+    InternalAuthorizeLoginContextRequest, InternalAuthorizeLoginContextResponse,
+    InternalAuthorizeResumeRequest, InternalAuthorizeResumeResponse,
+};
 use axum::extract::{Extension, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use idp_contracts::auth::{
-    InternalAuthorizeLoginContextRequest, InternalAuthorizeLoginContextResponse,
-    InternalAuthorizeResumeRequest, InternalAuthorizeResumeResponse,
-};
 
 /// OIDC 認可エンドポイント。ブラウザ Cookie は読み書きしない（ADR-0018 決定 2）。
 /// 検証成功時は AuthSession を作成し、単回・短命のハンドルを URL に載せて web の `/login` へ 302 する。

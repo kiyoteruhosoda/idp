@@ -10,11 +10,11 @@
 //!
 //! **`RUST_LOG` は stdout 出力だけを絞り、DB 取り込みには効かせない**（層ごとのフィルタにする）。
 //! 全体フィルタにすると `RUST_LOG=warn` のときリクエストスパン（INFO）ごと落ちて、WARN / ERROR は
-//! 拾えても `correlation_id` が失われる（api 側 `idp_core::telemetry` と同じ扱い）。
+//! 拾えても `correlation_id` が失われる（api 側 `assay_core::telemetry` と同じ扱い）。
 
 use crate::api_client::ApiClient;
 use crate::config::LogFormat;
-use idp_contracts::application_log::{
+use assay_contracts::application_log::{
     ApplicationLogCaptureLayer, ApplicationLogPayload, CapturedLogSink, SERVICE_WEB,
 };
 use std::time::Duration;
@@ -36,14 +36,14 @@ const UPLOAD_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// 送信経路自身が出すログを取り込まないための除外 target（再帰防止）。
 ///
-/// **`idp_web::api_client` 全体は除外しない。** そこには画面が使う api 呼び出しの失敗
+/// **`assay_web::api_client` 全体は除外しない。** そこには画面が使う api 呼び出しの失敗
 /// （接続不能・デコード失敗・想定外ステータス）が含まれ、運用者が最も見たいログそのものだから。
 /// ログ送信経路（`push_application_logs` とそれを回す [`spawn_forwarder`]）は**自分ではログを
 /// 出さない**（失敗は `let _ =` で捨てる）ので、除外すべきものはこのモジュールだけで足りる。
-const EXCLUDED_TARGETS: &[&str] = &["idp_web::telemetry"];
+const EXCLUDED_TARGETS: &[&str] = &["assay_web::telemetry"];
 
 /// 取り込み層に付けるフィルタ。スパンは追跡キー（`correlation_id`）を拾うため必ず通し、
-/// イベントは WARN 以上だけを通す（api 側 `idp_core::telemetry::capture_filter` と同じ）。
+/// イベントは WARN 以上だけを通す（api 側 `assay_core::telemetry::capture_filter` と同じ）。
 fn capture_filter() -> FilterFn {
     let predicate: fn(&Metadata<'_>) -> bool =
         |meta| meta.is_span() || *meta.level() <= Level::WARN;
@@ -71,7 +71,7 @@ pub struct ApplicationLogForwarder {
 /// 同じ理由で、転送タスクは `ApiClient` が組み上がってから [`spawn_forwarder`] で起こす。
 pub fn init(log_format: LogFormat) -> ApplicationLogForwarder {
     let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,idp_web=info"));
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,assay_web=info"));
 
     let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
     let mut capture = ApplicationLogCaptureLayer::new(SERVICE_WEB, ChannelSink(tx));

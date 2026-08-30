@@ -2,7 +2,7 @@
 //!
 //! web は DB を持たず、データ取得/操作はすべて api の HTTP エンドポイント越しに行う。本モジュールは
 //! その唯一の出入口。内部認証（`/internal/authenticate*`）はサービス認証トークン（`X-Internal-Auth-Token`）
-//! を付与して呼ぶ。DTO は `idp-contracts` で api と共有し、コンパイル時に契約整合を保証する。
+//! を付与して呼ぶ。DTO は `assay-contracts` で api と共有し、コンパイル時に契約整合を保証する。
 //!
 //! `/admin/*`（JSON 管理 API）はテナント経路（`/{tenant_id}/admin/*`。ADR-0009 §6）で呼ぶ。
 //! テナント id は web の経路（`crate::tenant::WebTenant`）から呼び出し側が明示的に渡す（MT13）。
@@ -11,7 +11,7 @@ use crate::admin_dto::{
     ApiErrorBody, AuditLogView, ClientCreatedView, ClientListView, ClientSecretView, ClientView,
     InvitationCreatedView, MemberListView, UserCreatedView,
 };
-use idp_contracts::admin::{
+use assay_contracts::admin::{
     AuthenticationPoliciesResponse, AuthenticationPolicyResponse,
     AuthenticationPolicyUpsertRequest, AvailablePermissionsResponse, ClientPermissionsResponse,
     ClientStatusResponse, ManagementTokenRequest, ManagementTokenResponse,
@@ -19,11 +19,11 @@ use idp_contracts::admin::{
     SamlServiceProviderUpdateRequest, SamlSpMetadataImportResponse, UserPermissionsResponse,
     UserSummaryResponse, WhoamiResponse,
 };
-use idp_contracts::application_log::{
+use assay_contracts::application_log::{
     ApplicationLogEntryResponse, ApplicationLogIngestRequest, ApplicationLogIngestResponse,
     ApplicationLogPayload,
 };
-use idp_contracts::auth::{
+use assay_contracts::auth::{
     InternalAdminAuthenticateRequest, InternalAdminAuthenticateResponse,
     InternalAdminChangePasswordRequest, InternalAdminChangePasswordResponse,
     InternalAdminPasskeyLoginCompleteRequest, InternalAdminPasskeyLoginCompleteResponse,
@@ -49,15 +49,15 @@ use idp_contracts::auth::{
     InternalTotpSetupResponse, InternalVerifyTotpRequest, InternalVerifyTotpResponse,
     UNKNOWN_TENANT_ERROR_CODE,
 };
-use idp_contracts::runtime_settings::{
+use assay_contracts::runtime_settings::{
     SharedRuntimeSettingsResponse, SHARED_RUNTIME_SETTINGS_PATH,
 };
-use idp_contracts::version::SchemaVersionInfo;
+use assay_contracts::version::SchemaVersionInfo;
 use reqwest::Method;
 use std::collections::HashMap;
 
 /// サービス認証トークンのヘッダ名（api 側 `require_service_token` と一致させる）。
-use idp_contracts::internal_auth::SERVICE_TOKEN_HEADER;
+use assay_contracts::internal_auth::SERVICE_TOKEN_HEADER;
 /// correlation_id（requestId）の伝播ヘッダ名（api 側 correlation ミドルウェアと一致させる）。
 const REQUEST_ID_HEADER: &str = "x-request-id";
 
@@ -2222,8 +2222,9 @@ impl ApiClient {
     pub async fn account_change_password(
         &self,
         correlation_id: &str,
-        req: &idp_contracts::auth::InternalAccountChangePasswordRequest,
-    ) -> Result<idp_contracts::auth::InternalAccountChangePasswordResponse, InternalCallError> {
+        req: &assay_contracts::auth::InternalAccountChangePasswordRequest,
+    ) -> Result<assay_contracts::auth::InternalAccountChangePasswordResponse, InternalCallError>
+    {
         self.post_internal("/internal/account/change-password", correlation_id, req)
             .await
     }
@@ -2231,8 +2232,9 @@ impl ApiClient {
     /// ログイン済みユーザーの表示言語を DB へ永続化する（MT20）。
     pub async fn account_update_language(
         &self,
-        req: &idp_contracts::auth::InternalAccountUpdateLanguageRequest,
-    ) -> Result<idp_contracts::auth::InternalAccountUpdateLanguageResponse, InternalCallError> {
+        req: &assay_contracts::auth::InternalAccountUpdateLanguageRequest,
+    ) -> Result<assay_contracts::auth::InternalAccountUpdateLanguageResponse, InternalCallError>
+    {
         // correlation_id は不要（監査対象外）のため空文字を渡す。
         self.post_internal("/internal/account/update-language", "", req)
             .await
@@ -2241,8 +2243,8 @@ impl ApiClient {
     /// ログイン済みユーザーの配色設定（`users.theme`）を更新する。
     pub async fn account_update_theme(
         &self,
-        req: &idp_contracts::auth::InternalAccountUpdateThemeRequest,
-    ) -> Result<idp_contracts::auth::InternalAccountUpdateThemeResponse, InternalCallError> {
+        req: &assay_contracts::auth::InternalAccountUpdateThemeRequest,
+    ) -> Result<assay_contracts::auth::InternalAccountUpdateThemeResponse, InternalCallError> {
         // correlation_id は不要（監査対象外）のため空文字を渡す。
         self.post_internal("/internal/account/update-theme", "", req)
             .await
@@ -2251,8 +2253,8 @@ impl ApiClient {
     /// セルフサービスのプロフィール（表示名等）を取得する（設定画面のプリフィル用）。
     pub async fn account_profile(
         &self,
-        req: &idp_contracts::auth::InternalAccountProfileRequest,
-    ) -> Result<idp_contracts::auth::InternalAccountProfileResponse, InternalCallError> {
+        req: &assay_contracts::auth::InternalAccountProfileRequest,
+    ) -> Result<assay_contracts::auth::InternalAccountProfileResponse, InternalCallError> {
         self.post_internal("/internal/account/profile", "", req)
             .await
     }
@@ -2260,8 +2262,8 @@ impl ApiClient {
     /// ログイン済みユーザーの表示名（`users.name`）を更新する。
     pub async fn account_update_name(
         &self,
-        req: &idp_contracts::auth::InternalAccountUpdateNameRequest,
-    ) -> Result<idp_contracts::auth::InternalAccountUpdateNameResponse, InternalCallError> {
+        req: &assay_contracts::auth::InternalAccountUpdateNameRequest,
+    ) -> Result<assay_contracts::auth::InternalAccountUpdateNameResponse, InternalCallError> {
         self.post_internal("/internal/account/update-name", "", req)
             .await
     }
@@ -2270,8 +2272,8 @@ impl ApiClient {
     pub async fn external_providers(
         &self,
         correlation_id: &str,
-        req: &idp_contracts::auth::InternalExternalProvidersRequest,
-    ) -> Result<idp_contracts::auth::InternalExternalProvidersResponse, InternalCallError> {
+        req: &assay_contracts::auth::InternalExternalProvidersRequest,
+    ) -> Result<assay_contracts::auth::InternalExternalProvidersResponse, InternalCallError> {
         self.post_internal("/internal/external/providers", correlation_id, req)
             .await
     }
@@ -2280,8 +2282,8 @@ impl ApiClient {
     pub async fn external_start(
         &self,
         correlation_id: &str,
-        req: &idp_contracts::auth::InternalExternalStartRequest,
-    ) -> Result<idp_contracts::auth::InternalExternalStartResponse, InternalCallError> {
+        req: &assay_contracts::auth::InternalExternalStartRequest,
+    ) -> Result<assay_contracts::auth::InternalExternalStartResponse, InternalCallError> {
         self.post_internal("/internal/external/start", correlation_id, req)
             .await
     }
@@ -2290,8 +2292,8 @@ impl ApiClient {
     pub async fn external_callback(
         &self,
         correlation_id: &str,
-        req: &idp_contracts::auth::InternalExternalCallbackRequest,
-    ) -> Result<idp_contracts::auth::InternalExternalCallbackResponse, InternalCallError> {
+        req: &assay_contracts::auth::InternalExternalCallbackRequest,
+    ) -> Result<assay_contracts::auth::InternalExternalCallbackResponse, InternalCallError> {
         self.post_internal("/internal/external/callback", correlation_id, req)
             .await
     }
@@ -2300,8 +2302,8 @@ impl ApiClient {
     pub async fn external_saml_acs(
         &self,
         correlation_id: &str,
-        req: &idp_contracts::auth::InternalExternalSamlAcsRequest,
-    ) -> Result<idp_contracts::auth::InternalExternalCallbackResponse, InternalCallError> {
+        req: &assay_contracts::auth::InternalExternalSamlAcsRequest,
+    ) -> Result<assay_contracts::auth::InternalExternalCallbackResponse, InternalCallError> {
         self.post_internal("/internal/external/saml/acs", correlation_id, req)
             .await
     }
@@ -2310,8 +2312,8 @@ impl ApiClient {
     pub async fn account_authenticators(
         &self,
         correlation_id: &str,
-        req: &idp_contracts::auth::InternalAuthenticatorsRequest,
-    ) -> Result<idp_contracts::auth::InternalAuthenticatorsResponse, InternalCallError> {
+        req: &assay_contracts::auth::InternalAuthenticatorsRequest,
+    ) -> Result<assay_contracts::auth::InternalAuthenticatorsResponse, InternalCallError> {
         self.post_internal("/internal/account/authenticators", correlation_id, req)
             .await
     }
@@ -2320,8 +2322,8 @@ impl ApiClient {
     pub async fn account_authenticator_status(
         &self,
         correlation_id: &str,
-        req: &idp_contracts::auth::InternalAuthenticatorStatusRequest,
-    ) -> Result<idp_contracts::auth::InternalAuthenticatorStatusResponse, InternalCallError> {
+        req: &assay_contracts::auth::InternalAuthenticatorStatusRequest,
+    ) -> Result<assay_contracts::auth::InternalAuthenticatorStatusResponse, InternalCallError> {
         self.post_internal(
             "/internal/account/authenticators/status",
             correlation_id,
@@ -2334,8 +2336,8 @@ impl ApiClient {
     pub async fn account_recovery_codes(
         &self,
         correlation_id: &str,
-        req: &idp_contracts::auth::InternalRecoveryCodesRequest,
-    ) -> Result<idp_contracts::auth::InternalRecoveryCodesResponse, InternalCallError> {
+        req: &assay_contracts::auth::InternalRecoveryCodesRequest,
+    ) -> Result<assay_contracts::auth::InternalRecoveryCodesResponse, InternalCallError> {
         self.post_internal("/internal/account/recovery-codes", correlation_id, req)
             .await
     }
@@ -2344,8 +2346,8 @@ impl ApiClient {
     pub async fn account_email_otp(
         &self,
         correlation_id: &str,
-        req: &idp_contracts::auth::InternalEmailOtpRequest,
-    ) -> Result<idp_contracts::auth::InternalEmailOtpResponse, InternalCallError> {
+        req: &assay_contracts::auth::InternalEmailOtpRequest,
+    ) -> Result<assay_contracts::auth::InternalEmailOtpResponse, InternalCallError> {
         self.post_internal("/internal/account/email-otp", correlation_id, req)
             .await
     }
@@ -2354,8 +2356,8 @@ impl ApiClient {
     pub async fn account_sms_otp(
         &self,
         correlation_id: &str,
-        req: &idp_contracts::auth::InternalSmsOtpRequest,
-    ) -> Result<idp_contracts::auth::InternalSmsOtpResponse, InternalCallError> {
+        req: &assay_contracts::auth::InternalSmsOtpRequest,
+    ) -> Result<assay_contracts::auth::InternalSmsOtpResponse, InternalCallError> {
         self.post_internal("/internal/account/sms-otp", correlation_id, req)
             .await
     }
@@ -2364,8 +2366,8 @@ impl ApiClient {
     pub async fn account_phone_register(
         &self,
         correlation_id: &str,
-        req: &idp_contracts::auth::InternalPhoneRegistrationRequest,
-    ) -> Result<idp_contracts::auth::InternalPhoneRegistrationResponse, InternalCallError> {
+        req: &assay_contracts::auth::InternalPhoneRegistrationRequest,
+    ) -> Result<assay_contracts::auth::InternalPhoneRegistrationResponse, InternalCallError> {
         self.post_internal("/internal/account/phone/register", correlation_id, req)
             .await
     }
@@ -2374,8 +2376,8 @@ impl ApiClient {
     pub async fn account_phone_confirm(
         &self,
         correlation_id: &str,
-        req: &idp_contracts::auth::InternalPhoneConfirmationRequest,
-    ) -> Result<idp_contracts::auth::InternalPhoneConfirmationResponse, InternalCallError> {
+        req: &assay_contracts::auth::InternalPhoneConfirmationRequest,
+    ) -> Result<assay_contracts::auth::InternalPhoneConfirmationResponse, InternalCallError> {
         self.post_internal("/internal/account/phone/confirm", correlation_id, req)
             .await
     }
@@ -2384,8 +2386,8 @@ impl ApiClient {
     pub async fn step_up_check(
         &self,
         correlation_id: &str,
-        req: &idp_contracts::auth::InternalStepUpCheckRequest,
-    ) -> Result<idp_contracts::auth::InternalStepUpCheckResponse, InternalCallError> {
+        req: &assay_contracts::auth::InternalStepUpCheckRequest,
+    ) -> Result<assay_contracts::auth::InternalStepUpCheckResponse, InternalCallError> {
         self.post_internal("/internal/step-up/check", correlation_id, req)
             .await
     }
@@ -2394,8 +2396,8 @@ impl ApiClient {
     pub async fn step_up_verify(
         &self,
         correlation_id: &str,
-        req: &idp_contracts::auth::InternalStepUpVerifyRequest,
-    ) -> Result<idp_contracts::auth::InternalStepUpVerifyResponse, InternalCallError> {
+        req: &assay_contracts::auth::InternalStepUpVerifyRequest,
+    ) -> Result<assay_contracts::auth::InternalStepUpVerifyResponse, InternalCallError> {
         self.post_internal("/internal/step-up/verify", correlation_id, req)
             .await
     }
@@ -2404,8 +2406,8 @@ impl ApiClient {
     pub async fn account_security(
         &self,
         correlation_id: &str,
-        req: &idp_contracts::auth::InternalAccountSecurityRequest,
-    ) -> Result<idp_contracts::auth::InternalAccountSecurityResponse, InternalCallError> {
+        req: &assay_contracts::auth::InternalAccountSecurityRequest,
+    ) -> Result<assay_contracts::auth::InternalAccountSecurityResponse, InternalCallError> {
         self.post_internal("/internal/account/security", correlation_id, req)
             .await
     }
@@ -2414,8 +2416,9 @@ impl ApiClient {
     pub async fn account_revoke_session(
         &self,
         correlation_id: &str,
-        req: &idp_contracts::auth::InternalAccountRevokeSessionRequest,
-    ) -> Result<idp_contracts::auth::InternalAccountRevokeSessionResponse, InternalCallError> {
+        req: &assay_contracts::auth::InternalAccountRevokeSessionRequest,
+    ) -> Result<assay_contracts::auth::InternalAccountRevokeSessionResponse, InternalCallError>
+    {
         self.post_internal(
             "/internal/account/security/revoke-session",
             correlation_id,
@@ -2428,8 +2431,9 @@ impl ApiClient {
     pub async fn account_revoke_consent(
         &self,
         correlation_id: &str,
-        req: &idp_contracts::auth::InternalAccountRevokeConsentRequest,
-    ) -> Result<idp_contracts::auth::InternalAccountRevokeConsentResponse, InternalCallError> {
+        req: &assay_contracts::auth::InternalAccountRevokeConsentRequest,
+    ) -> Result<assay_contracts::auth::InternalAccountRevokeConsentResponse, InternalCallError>
+    {
         self.post_internal(
             "/internal/account/security/revoke-consent",
             correlation_id,
@@ -2441,8 +2445,8 @@ impl ApiClient {
     /// ログイン中ユーザーの所属テナント（`ACTIVE`）を列挙する（テナント切り替え UI 用）。
     pub async fn account_tenants(
         &self,
-        req: &idp_contracts::auth::InternalAccountTenantsRequest,
-    ) -> Result<idp_contracts::auth::InternalAccountTenantsResponse, InternalCallError> {
+        req: &assay_contracts::auth::InternalAccountTenantsRequest,
+    ) -> Result<assay_contracts::auth::InternalAccountTenantsResponse, InternalCallError> {
         self.post_internal("/internal/account/tenants", "", req)
             .await
     }
@@ -2552,7 +2556,7 @@ impl ApiClient {
 #[cfg(test)]
 mod tests {
     use super::{admin_display_label, admin_identity, admin_session_for_status, AdminSession};
-    use idp_contracts::admin::WhoamiResponse;
+    use assay_contracts::admin::WhoamiResponse;
 
     /// api の「テナントを解決できない」400 だけを見分ける（MT28）。判別はコードで行い、人間向けの
     /// 説明文には依存しない。

@@ -23,11 +23,11 @@ use crate::application::tenant_resolution::TenantResolutionService;
 use crate::domain::tenant::{Tenant, TenantId};
 use crate::domain::tenant_context::TenantContext;
 use crate::presentation::state::AppState;
+use assay_contracts::auth::UNKNOWN_TENANT_ERROR_CODE;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use idp_contracts::auth::UNKNOWN_TENANT_ERROR_CODE;
 use serde_json::json;
 use std::collections::HashMap;
 

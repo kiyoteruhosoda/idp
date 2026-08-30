@@ -15,11 +15,11 @@
 
 mod support;
 
-use idp_api::domain::repositories::{TotpSecretRepository, WebAuthnCredentialRepository};
-use idp_api::domain::totp_secret::TotpSecret;
-use idp_api::domain::webauthn_credential::WebAuthnCredential;
-use idp_api::infrastructure::repositories::totp_secret::SqlxTotpSecretRepository;
-use idp_api::infrastructure::repositories::webauthn_credential::SqlxWebAuthnCredentialRepository;
+use assay_api::domain::repositories::{TotpSecretRepository, WebAuthnCredentialRepository};
+use assay_api::domain::totp_secret::TotpSecret;
+use assay_api::domain::webauthn_credential::WebAuthnCredential;
+use assay_api::infrastructure::repositories::totp_secret::SqlxTotpSecretRepository;
+use assay_api::infrastructure::repositories::webauthn_credential::SqlxWebAuthnCredentialRepository;
 use sqlx::MySqlPool;
 use uuid::Uuid;
 
@@ -270,7 +270,7 @@ async fn registering_the_same_credential_twice_is_rejected() {
         .await
         .expect_err("the same credential must not register twice");
     assert!(
-        matches!(err, idp_api::domain::error::DomainError::Conflict(_)),
+        matches!(err, assay_api::domain::error::DomainError::Conflict(_)),
         "expected a conflict, got {err:?}"
     );
 }

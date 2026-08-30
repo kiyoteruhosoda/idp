@@ -8,7 +8,7 @@ use sqlx::Executor;
 pub type Db = MySqlPool;
 
 /// 埋め込みマイグレーション（リポジトリルートの `migrations/`）。CI・照合で参照する。
-/// パスは crate（`idp-core`）のマニフェスト基準。ワークスペースルートの `migrations/` を指す。
+/// パスは crate（`assay-core`）のマニフェスト基準。ワークスペースルートの `migrations/` を指す。
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
 
 pub async fn connect(config: &Config) -> Result<Db, sqlx::Error> {

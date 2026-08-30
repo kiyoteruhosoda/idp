@@ -1,4 +1,4 @@
-//! OIDC IdP の Web（`idp-web`）。
+//! OIDC IdP の Web（`assay-web`）。
 //!
 //! ADR-0007（API/Web サービス分割）の web サービス。HTML 画面（ログイン画面・管理コンソール）を
 //! 描画し、データ取得/操作は api へ HTTP 越しに行う。**DB（sqlx）/ infrastructure には依存しない**

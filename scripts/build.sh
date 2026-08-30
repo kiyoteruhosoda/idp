@@ -10,7 +10,7 @@
 #   IMAGE_TAG=1.0.0 ./scripts/build.sh  # イメージタグ指定（既定 latest）
 #
 # 出力（＝デプロイバンドル）:
-#   idp-api.tar idp-web.tar idp-migrate.tar   ビルド済みイメージ
+#   assay-api.tar assay-web.tar assay-migrate.tar   ビルド済みイメージ
 #   docker-compose.yml                        デプロイ用 Compose（image: 参照のみ）
 #   docker/nginx.conf                         リバースプロキシ設定
 #   .env.example .env.staging.example .env.production.example
@@ -77,7 +77,7 @@ manifest="$out_dir/manifest.sha256"
 
 for svc in api web migrate; do
   ref="$(image_ref "$svc")"
-  out="$out_dir/idp-${svc}.tar"
+  out="$out_dir/assay-${svc}.tar"
   image_id="$(docker image inspect -f '{{.Id}}' "$ref")"
   log "保存します: $ref → $out ..."
   docker save "$ref" -o "$out"

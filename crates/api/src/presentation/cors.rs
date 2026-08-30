@@ -10,7 +10,7 @@
 //! | 経路 | 判定 |
 //! |---|---|
 //! | `/.well-known/openid-configuration`・`/.well-known/jwks.json`・`/{tenant}/saml/metadata` | 無認証で誰でも取得できる公開メタデータなので `Access-Control-Allow-Origin: *` |
-//! | `/{tenant}/token`・`/revoke`・`/introspect`・`/userinfo` | テナントの許可オリジン集合（[`idp_core::application::cors_policy`]）と完全一致したときだけ、そのオリジンを反映 |
+//! | `/{tenant}/token`・`/revoke`・`/introspect`・`/userinfo` | テナントの許可オリジン集合（[`assay_core::application::cors_policy`]）と完全一致したときだけ、そのオリジンを反映 |
 //! | それ以外（管理 API・`/internal/*`・`/authorize` のリダイレクト） | CORS ヘッダを付けない（ブラウザ JS から叩く経路ではない） |
 //!
 //! **`Access-Control-Allow-Credentials` はどの経路にも付けない。** api はブラウザ Cookie を
@@ -23,6 +23,7 @@
 //! `AllowOrigin::predicate` でも書けるが、判定に DB 参照（async）が要る。
 
 use crate::presentation::state::AppState;
+use assay_core::domain::tenant::TenantId;
 use axum::extract::{Request, State};
 use axum::http::header::{
     HeaderValue, ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS,
@@ -32,7 +33,6 @@ use axum::http::header::{
 use axum::http::{Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use idp_core::domain::tenant::TenantId;
 use uuid::Uuid;
 
 /// プリフライト結果のキャッシュ時間（秒）。許可集合は管理画面から変わりうるので短めにする。

@@ -16,10 +16,10 @@ use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
+use assay_contracts::admin::{SamlIdpMetadataImportResponse, SamlMetadataImportRequest};
 use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
-use idp_contracts::admin::{SamlIdpMetadataImportResponse, SamlMetadataImportRequest};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -333,7 +333,7 @@ pub async fn update_external_idp(
 /// entityID・SSO URL・署名証明書の貼り付けは、管理者が IdP のメタデータから 1 項目ずつ写す作業に
 /// なりやすい。証明書は base64 が数行続くため、写し間違えても**利用者のログイン時**まで表に出ない。
 ///
-/// 入出力は `idp_contracts::admin` の DTO をそのまま使う（SP メタデータ取り込みと同じ）。api 側に
+/// 入出力は `assay_contracts::admin` の DTO をそのまま使う（SP メタデータ取り込みと同じ）。api 側に
 /// 同じ形をもう一度定義すると、web と食い違ったときに取り込みが静かに壊れる。
 pub async fn import_external_idp_metadata(
     RequirePerms(_admin, _): RequirePerms<ExternalIdpsWrite>,

@@ -6,9 +6,9 @@
 
 mod support;
 
+use assay_contracts::cookies::SSO_SESSION_COOKIE;
+use assay_web::csrf::console_csrf_token;
 use axum::http::StatusCode;
-use idp_contracts::cookies::SSO_SESSION_COOKIE;
-use idp_web::csrf::console_csrf_token;
 use serde_json::{json, Value};
 use support::{body_text, get_with_cookies, location, post_form, send, setup, WebEnv};
 use wiremock::matchers::{method, path_regex};

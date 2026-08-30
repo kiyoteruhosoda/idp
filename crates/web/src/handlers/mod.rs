@@ -42,10 +42,10 @@ use crate::api_client::InternalCallError;
 use crate::client_ip::ClientIp;
 use crate::correlation::CorrelationId;
 use crate::i18n::Locale;
+use assay_contracts::auth::PasswordRejectionReason;
 use axum::http::header::{HeaderValue, ACCEPT_LANGUAGE, LOCATION, USER_AGENT};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use idp_contracts::auth::PasswordRejectionReason;
 
 /// `/internal/*` 呼び出しの失敗を、画面へ返すステータスコードへ写す（MT28）。
 ///

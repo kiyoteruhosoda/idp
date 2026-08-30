@@ -8,9 +8,9 @@
 
 mod support;
 
-use idp_api::domain::authentication_policy::LockoutPolicy;
-use idp_api::domain::repositories::UserRepository;
-use idp_api::infrastructure::repositories::user::SqlxUserRepository;
+use assay_api::domain::authentication_policy::LockoutPolicy;
+use assay_api::domain::repositories::UserRepository;
+use assay_api::infrastructure::repositories::user::SqlxUserRepository;
 use std::sync::Arc;
 use uuid::Uuid;
 

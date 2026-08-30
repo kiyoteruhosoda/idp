@@ -181,7 +181,7 @@ mod tests {
             occurred_at: Utc::now(),
             level: LogLevel::Warn,
             service: LogService::Web,
-            target: "idp_web::handlers::login".to_string(),
+            target: "assay_web::handlers::login".to_string(),
             message: "login failed".to_string(),
             correlation_id: None,
             tenant_id: None,

@@ -100,7 +100,7 @@ pub async fn create(
     };
     let base = format!("{}{TENANTS_SEGMENT}", tenant.prefix());
     let sso = sso(&headers);
-    if !idp_contracts::csrf::verify(
+    if !assay_contracts::csrf::verify(
         &console_csrf_token(&sso, state.config.csrf_secret()),
         &form.csrf_token,
     ) {
@@ -149,7 +149,7 @@ pub async fn update(
     }
     let base = format!("{}{TENANTS_SEGMENT}", tenant.prefix());
     let sso = sso(&headers);
-    if !idp_contracts::csrf::verify(
+    if !assay_contracts::csrf::verify(
         &console_csrf_token(&sso, state.config.csrf_secret()),
         &form.csrf_token,
     ) {
@@ -195,7 +195,7 @@ pub async fn delete(
     }
     let base = format!("{}{TENANTS_SEGMENT}", tenant.prefix());
     let sso = sso(&headers);
-    if !idp_contracts::csrf::verify(
+    if !assay_contracts::csrf::verify(
         &console_csrf_token(&sso, state.config.csrf_secret()),
         &form.csrf_token,
     ) {
@@ -235,7 +235,7 @@ pub async fn reset_admin_password(
     };
     let base = format!("{}{TENANTS_SEGMENT}", tenant.prefix());
     let sso = sso(&headers);
-    if !idp_contracts::csrf::verify(
+    if !assay_contracts::csrf::verify(
         &console_csrf_token(&sso, state.config.csrf_secret()),
         &form.csrf_token,
     ) {
