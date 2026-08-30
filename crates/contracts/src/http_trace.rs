@@ -1,6 +1,6 @@
 //! HTTP アクセススパンの組み立て（api ↔ web 共有。SEC9）。
 //!
-//! `TraceLayer::new_for_http()` の既定スパンは `uri` を**クエリ文字列込み**で記録する。本 IdP の
+//! `TraceLayer::new_for_http()` の既定スパンは `uri` を**クエリ文字列込み**で記録する。assay の
 //! URL には `?auth_session=`（web ハンドオフの単回ハンドル）・`?code_challenge=`・`?code=` といった
 //! 資格情報に準じる値が載るため、既定のままだと `RUST_LOG=debug` で秘密が stdout・`log` テーブルへ
 //! 落ちる（ADR-0018 の受け入れ条件）。

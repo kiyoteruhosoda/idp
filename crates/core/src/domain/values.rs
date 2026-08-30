@@ -149,14 +149,14 @@ string_enum!(
 );
 
 string_enum!(
-    /// PKCE の code_challenge_method。本 IdP は S256 のみ。
+    /// PKCE の code_challenge_method。assay は S256 のみ。
     CodeChallengeMethod {
         S256 => "S256",
     }
 );
 
 string_enum!(
-    /// 認可リクエストの `prompt`（OIDC Core §3.1.2.1 のうち本 IdP が解釈する値）。
+    /// 認可リクエストの `prompt`（OIDC Core §3.1.2.1 のうち assay が解釈する値）。
     ///
     /// SSO 判定が `/authorize` から `/internal/authorize/resume` へ移った（ADR-0018 決定 2）ため、
     /// 評価時点まで auth_session に保存して持ち越す。未指定・未知の値は保存しない
@@ -165,7 +165,7 @@ string_enum!(
         None => "none",
         Login => "login",
         Consent => "consent",
-        /// 本 IdP はブラウザごとに SSO セッションを 1 つしか持たないため「選ばせる別アカウント」が
+        /// assay はブラウザごとに SSO セッションを 1 つしか持たないため「選ばせる別アカウント」が
         /// 存在しない。要求されたら **`login` と同じ扱い**（ログイン画面を必ず出す）にする。
         /// 現在のアカウントで続けるか別のアカウントで入り直すかを利用者が選べる状態にはなる、
         /// というのが単一セッションでの `select_account` の意味である（G12）。

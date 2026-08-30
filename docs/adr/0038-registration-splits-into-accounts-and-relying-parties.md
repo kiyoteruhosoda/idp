@@ -20,7 +20,7 @@ ADR-0032 の「用途」select がその境界である。
 | ブラウザで利用者をログインさせる | `authorization_code` + redirect_uri | **ID を渡す相手**（RP） |
 | システムが API を呼ぶ（利用者不在） | `client_credentials` のみ | **名乗る主体**（機械） |
 
-前者は「この IdP を信頼するアプリ」であり、後者は「この IdP に認証される当人」である。向きが逆で、
+前者は「assay を信頼するアプリ」であり、後者は「assay に認証される当人」である。向きが逆で、
 ライフサイクルも失効の導線も違う。それが同じ画面・同じ語彙に同居しているため、
 **「クライアント登録とは何の登録なのか」を一文で言えない。**
 
@@ -40,9 +40,9 @@ ADR-0032 の「用途」select がその境界である。
 
 | 系統 | 相手は何か | 実体 |
 |---|---|---|
-| **アカウント** | この IdP へ向かって名乗る主体 | `users` + `tenant_memberships` / `clients`（redirect_uri なし） |
-| **連携先** | この IdP から ID を受け取る RP・SP | `clients`（redirect_uri あり）/ `saml_service_providers` |
-| **外部 IdP** | この IdP が名乗る側に回る相手 | `external_idps` |
+| **アカウント** | assay へ向かって名乗る主体 | `users` + `tenant_memberships` / `clients`（redirect_uri なし） |
+| **連携先** | assay から ID を受け取る RP・SP | `clients`（redirect_uri あり）/ `saml_service_providers` |
+| **外部 IdP** | assay が名乗る側に回る相手 | `external_idps` |
 
 「主体」は概念の軸名として使い、画面名には使わない。
 
@@ -126,7 +126,7 @@ ADR-0037 が `?grantable_to=client` で採った形と同じである。
 - **「種別」を api のモデルにも持たせる。** ADR-0032 が用途について却下したのと同じ理由。
   `redirect_uris` と `client_credentials` から導出できるものを二重管理すると、不整合を作れる余地が残る。
 - **外部 IdP を「連携先」に含める。** 向きが逆である。同じ画面群に置くと、
-  「この IdP が信頼する相手」と「この IdP を信頼する相手」が同じ語で並ぶ。
+  「assay が信頼する相手」と「assay を信頼する相手」が同じ語で並ぶ。
 - **SAML SP を `clients` へ統合する。** 持つ属性（entityID・ACS URL・証明書）が
   `redirect_uris` / `grant_types` / `scopes` と 1 つも重ならない。1 テーブルにすると、
   片方では必ず NULL の列が並ぶ。

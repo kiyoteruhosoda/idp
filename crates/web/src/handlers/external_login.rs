@@ -172,7 +172,7 @@ pub async fn saml_acs(
     render_outcome(&state, &tenant, locale, outcome)
 }
 
-/// ACS が受け取るフォーム（HTTP-POST binding）。`RelayState` は仕様上は任意だが、本 IdP は
+/// ACS が受け取るフォーム（HTTP-POST binding）。`RelayState` は仕様上は任意だが、assay は
 /// 開始時に必ず載せる（無ければ進行状態を引けないので、その場で失敗する）。
 #[derive(Debug, serde::Deserialize)]
 pub struct SamlAcsForm {

@@ -492,7 +492,7 @@ pub fn build(state: AppState) -> Router {
             get(discovery::openid_configuration),
         )
         .route("/.well-known/jwks.json", get(discovery::jwks))
-        // SAML IdP メタデータ出力（公開。SP がこの IdP を信頼するために取り込むメタデータ）。
+        // SAML IdP メタデータ出力（公開。SP が assay を信頼するために取り込むメタデータ）。
         .route("/saml/metadata", get(discovery::saml_idp_metadata))
         // SAML SSO エンドポイント（メタデータが広告する SingleSignOnService。Redirect / POST 両対応）。
         .route(

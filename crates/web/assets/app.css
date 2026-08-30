@@ -172,3 +172,362 @@ button[aria-busy='true'] .js-pending-label {
     min-height: 100dvh !important;
   }
 }
+
+/* ============================================================================
+ * assay の配色と印（名乗り）。
+ *
+ * 由来は試金 —— 試金石に検体を引き、既知の純度の試金針を隣に引いて色を見比べる。
+ * 合えば通す。IdP がやっていることと同じなので、画面で色が意味を持つ系統をここ 1 つに
+ * 絞る：**合ったものは金、合わなかったものは銅**、それ以外は石・紙・銀（罫と補助文言）。
+ * 状態を表す色を他に足さない。
+ *
+ * Bootstrap は外さない。5.3 の配色は CSS 変数で組まれているので、`--bs-*` を差し替える
+ * だけで表・ドロップダウン・offcanvas まで追随する（このファイルの前半が補完している
+ * サイドバー等もそのまま生きる）。
+ *
+ * ⚠ 書体は足せない。CSP が `default-src 'self'` で外部を禁じており、自オリジンへ置いても
+ * 和文は結局システムのフォントに落ちる。表情はフェイスではなく**組み**で出す：ラベルと
+ * 符牒だけを等幅の小さな字間広めに組み、角丸をほぼ落とす。
+ *
+ * ⚠ ここで定義する順序に意味がある。`:root` を先、`[data-bs-theme=dark]` を後に置く
+ * （どちらも詳細度が同じなので、後に書いた方が勝つ。逆にするとダークで明色が残る）。
+ * ========================================================================== */
+
+:root {
+  --assay-gold: #8a6116;
+  --assay-silver: #5f6a70;
+  --assay-copper: #a8391f;
+  /* エラーの地。条の色をそのまま薄く敷く */
+  --assay-copper-wash: rgba(168, 57, 31, 0.09);
+  /* 入力欄は地よりわずかに明るくして「書き込む場所」を示す */
+  --assay-field-bg: #fcfcfb;
+  /* 金のボタンだけは明暗で色を変えない。文字を石色に置けば、どちらの地でも 5:1 を超える */
+  --assay-gold-solid: #b8862b;
+  --assay-gold-hover: #a5761f;
+  --assay-gold-active: #8f6619;
+  --assay-on-gold: #12161a;
+  --assay-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+
+  /* 検定証の紙。白ではなく、わずかに緑を含む灰。
+   * ⚠ `.bg-body` `.text-muted` `a` などは 16 進ではなく **`--bs-*-rgb` の方**を読む
+   * （`rgba(var(--bs-body-bg-rgb), …)`）。片方だけ差し替えると地だけ Bootstrap の既定に
+   * 戻り、白い地に石色の文字という組み合わせになる。必ず対で置く。 */
+  --bs-body-bg: #e9ebe6;
+  --bs-body-bg-rgb: 233, 235, 230;
+  --bs-body-color: #14181a;
+  --bs-body-color-rgb: 20, 24, 26;
+  --bs-emphasis-color: #050708;
+  --bs-emphasis-color-rgb: 5, 7, 8;
+  --bs-secondary-color: #5f6a70;
+  --bs-secondary-color-rgb: 95, 106, 112;
+  --bs-secondary-bg: #dfe2dc;
+  --bs-secondary-bg-rgb: 223, 226, 220;
+  --bs-tertiary-color: #5f6a70;
+  --bs-tertiary-color-rgb: 95, 106, 112;
+  --bs-tertiary-bg: #e3e6e0;
+  --bs-tertiary-bg-rgb: 227, 230, 224;
+  --bs-border-color: #cbd0c9;
+  --bs-border-color-translucent: rgba(20, 24, 26, 0.16);
+  --bs-heading-color: #14181a;
+  --bs-link-color: #14181a;
+  --bs-link-color-rgb: 20, 24, 26;
+  --bs-link-hover-color: #8a6116;
+  --bs-link-hover-color-rgb: 138, 97, 22;
+  --bs-code-color: #5f6a70;
+  /* 意味の色（成功・失敗・注意・情報）は金や銅とは別系統に保つ。ブランドの色で状態を
+   * 表すと、金が「合った条」と「主ボタン」の二役を負って読めなくなる。塗り（バッジ）は
+   * 明暗で共通、文字は地に応じて `-text-emphasis` 側で差し替える。 */
+  --bs-primary: #b8862b;
+  --bs-primary-rgb: 184, 134, 43;
+  --bs-secondary: #5f6a70;
+  --bs-secondary-rgb: 95, 106, 112;
+  --bs-success: #2e6a4e;
+  --bs-success-rgb: 46, 106, 78;
+  --bs-danger: #a8391f;
+  --bs-danger-rgb: 168, 57, 31;
+  --bs-warning: #8a5424;
+  --bs-warning-rgb: 138, 84, 36;
+  --bs-info: #2f5c73;
+  --bs-info-rgb: 47, 92, 115;
+
+  /* 文言の色（`.text-*`・alert の文字）と、alert の地・枠 */
+  --bs-primary-text-emphasis: #8a6116;
+  --bs-secondary-text-emphasis: #5f6a70;
+  --bs-success-text-emphasis: #2c6449;
+  --bs-danger-text-emphasis: #a8391f;
+  --bs-warning-text-emphasis: #85511f;
+  --bs-info-text-emphasis: #2c5a71;
+  --bs-primary-bg-subtle: #f0e7d5;
+  --bs-secondary-bg-subtle: #e2e4df;
+  --bs-success-bg-subtle: #dfe9e3;
+  --bs-danger-bg-subtle: #f3e0da;
+  --bs-warning-bg-subtle: #efe4d7;
+  --bs-info-bg-subtle: #dee7ec;
+  --bs-primary-border-subtle: #ddcba6;
+  --bs-secondary-border-subtle: #ccd0ca;
+  --bs-success-border-subtle: #bfd4c8;
+  --bs-danger-border-subtle: #e5c3b8;
+  --bs-warning-border-subtle: #ddc8ae;
+  --bs-info-border-subtle: #bccdd7;
+  /* 角は落とす。刻印は丸みを持たない */
+  --bs-border-radius: 0.125rem;
+  --bs-border-radius-sm: 0.125rem;
+  --bs-border-radius-lg: 0.1875rem;
+}
+
+[data-bs-theme='dark'] {
+  --assay-gold: #c89a3c;
+  --assay-silver: #8c979c;
+  --assay-copper: #d9705a;
+  --assay-copper-wash: rgba(217, 112, 90, 0.14);
+  --assay-field-bg: #141a1e;
+
+  /* 試金石そのもの */
+  --bs-body-bg: #0f1417;
+  --bs-body-bg-rgb: 15, 20, 23;
+  --bs-body-color: #e4e7e4;
+  --bs-body-color-rgb: 228, 231, 228;
+  --bs-emphasis-color: #f2f3f0;
+  --bs-emphasis-color-rgb: 242, 243, 240;
+  --bs-secondary-color: #8c979c;
+  --bs-secondary-color-rgb: 140, 151, 156;
+  --bs-secondary-bg: #1a2126;
+  --bs-secondary-bg-rgb: 26, 33, 38;
+  --bs-tertiary-color: #8c979c;
+  --bs-tertiary-color-rgb: 140, 151, 156;
+  --bs-tertiary-bg: #151b1f;
+  --bs-tertiary-bg-rgb: 21, 27, 31;
+  --bs-border-color: #2a3238;
+  --bs-border-color-translucent: rgba(228, 231, 228, 0.16);
+  --bs-heading-color: #e4e7e4;
+  --bs-link-color: #e4e7e4;
+  --bs-link-color-rgb: 228, 231, 228;
+  --bs-link-hover-color: #c89a3c;
+  --bs-link-hover-color-rgb: 200, 154, 60;
+  --bs-code-color: #8c979c;
+
+  /* 塗り（バッジ）は `:root` の値をそのまま使う。石の上でも白抜きの文字が読める明度に
+   * してあるため。差し替えるのは文字と、alert の地・枠だけ。 */
+  --bs-primary-text-emphasis: #c89a3c;
+  --bs-secondary-text-emphasis: #8c979c;
+  --bs-success-text-emphasis: #79c39c;
+  --bs-danger-text-emphasis: #d9705a;
+  --bs-warning-text-emphasis: #ce9a6b;
+  --bs-info-text-emphasis: #79aec8;
+  --bs-primary-bg-subtle: #241d10;
+  --bs-secondary-bg-subtle: #1c2226;
+  --bs-success-bg-subtle: #14231c;
+  --bs-danger-bg-subtle: #2a1712;
+  --bs-warning-bg-subtle: #241a11;
+  --bs-info-bg-subtle: #14212a;
+  --bs-primary-border-subtle: #4a3c1e;
+  --bs-secondary-border-subtle: #333b40;
+  --bs-success-border-subtle: #224234;
+  --bs-danger-border-subtle: #4d2b22;
+  --bs-warning-border-subtle: #43331f;
+  --bs-info-border-subtle: #2a3f4c;
+}
+
+/* ── 印 ──────────────────────────────────────────────────────────────────
+ * 二本の条。長い金が検体、短い銀が基準の試金針で、**上端をそろえて長さだけを違える**
+ * ので「二つの物」ではなく「比べている一組」に見える。中身は `templates/assay_mark.html`。 */
+.assay-mark {
+  display: block;
+  height: 1.375rem;
+  width: auto;
+  margin-bottom: 0.85rem;
+}
+
+/* 認証系画面では、印はカードの外（page.html の桁の直下）に置く。カード内の文字は
+ * `.card-body p-4` の 1.5rem だけ内側にあるので、同じ分だけ寄せて頭をそろえる。 */
+.auth-content .assay-mark {
+  margin-left: 1.5rem;
+}
+
+.assay-mark-sample {
+  fill: var(--assay-gold);
+}
+
+.assay-mark-needle {
+  fill: var(--assay-silver);
+}
+
+/* フッターの名乗り。ログイン画面の主役はテナントなので、assay はここまで下がる */
+.assay-wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: var(--assay-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.18em;
+  color: var(--bs-secondary-color);
+}
+
+.assay-wordmark .assay-mark {
+  height: 0.8rem;
+  margin-bottom: 0;
+}
+
+/* ── 認証系画面（page.html を継承する全画面） ─────────────────────────── */
+
+/* ラベルは等幅・字間広めの小さな組みにする。試金針に刻まれた刻印の voice で、
+ * ラテン文字と数字のときだけ効く（和文は字間だけが効く）。 */
+.auth-content .form-label {
+  font-family: var(--assay-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--bs-secondary-color);
+  margin-bottom: 0.35rem;
+}
+
+/* 入力欄は**下辺だけを 2px にして条として扱う**。空なら罫の色、合わせに行くと（フォーカス）
+ * 金になる。太さを 2px にそろえてあるので、主ボタン・エラーの縦罫と同じ系統に見える。 */
+.auth-content .form-control {
+  background-color: var(--assay-field-bg);
+  border-bottom-width: 2px;
+}
+
+.auth-content .form-control:focus {
+  border-color: var(--bs-border-color);
+  border-bottom-color: var(--assay-gold);
+  background-color: var(--assay-field-bg);
+  /* Bootstrap の淡い影の代わりに輪郭を出す。キーボード操作でどこにいるかを外さない */
+  box-shadow: none;
+  outline: 2px solid var(--assay-gold);
+  outline-offset: 2px;
+}
+
+/* 「または」。もとの `<hr>` ＋ 中央文言を 1 要素に畳み、罫を左右へ振り分ける */
+.auth-or {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin: 1.35rem 0 1rem;
+  color: var(--bs-secondary-color);
+  font-family: var(--assay-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.auth-or::before,
+.auth-or::after {
+  content: '';
+  flex: 1 1 auto;
+  height: 1px;
+  background-color: var(--bs-border-color);
+}
+
+/* 合わなかったときは銅の条。塗りつぶした警告色ではなく、左に 1 本引く */
+.auth-content .alert-warning {
+  --bs-alert-bg: var(--assay-copper-wash);
+  --bs-alert-border-color: transparent;
+  --bs-alert-color: var(--bs-body-color);
+  border-left: 2px solid var(--assay-copper);
+  border-radius: 0 var(--bs-border-radius) var(--bs-border-radius) 0;
+}
+
+/* エラー画面のコード。数字は機械が付けた名前なので等幅で組む */
+.error-code {
+  font-family: var(--assay-mono);
+  font-size: 3rem;
+  line-height: 1;
+  letter-spacing: 0.06em;
+  color: var(--bs-secondary-color);
+  margin-bottom: 0.75rem;
+}
+
+/* 同意画面の明細。読める言葉を上に、実際にトークンへ載る scope 名を下の小さな等幅に置く。
+ * 利用者は上だけ読めば済み、実装者は下で照合できる（チェックマークの列は「全部に丸が
+ * 付いている」以上のことを言っていなかったので置き換えた）。 */
+.grant-list {
+  list-style: none;
+  margin: 0 0 1.25rem;
+  padding: 0;
+  border-top: 1px solid var(--bs-border-color);
+}
+
+.grant-list li {
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--bs-border-color);
+}
+
+.grant-list .grant-scope {
+  display: block;
+  margin-top: 0.15rem;
+  font-family: var(--assay-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  color: var(--bs-secondary-color);
+}
+
+/* ── 主ボタン ────────────────────────────────────────────────────────────
+ * 画面で唯一の塗り。金は「合った条」なので、押せば通る操作だけに使う。 */
+.btn-primary {
+  --bs-btn-bg: var(--assay-gold-solid);
+  --bs-btn-border-color: var(--assay-gold-solid);
+  --bs-btn-color: var(--assay-on-gold);
+  --bs-btn-hover-bg: var(--assay-gold-hover);
+  --bs-btn-hover-border-color: var(--assay-gold-hover);
+  --bs-btn-hover-color: var(--assay-on-gold);
+  --bs-btn-active-bg: var(--assay-gold-active);
+  --bs-btn-active-border-color: var(--assay-gold-active);
+  --bs-btn-active-color: var(--assay-on-gold);
+  --bs-btn-disabled-bg: var(--assay-gold-solid);
+  --bs-btn-disabled-border-color: var(--assay-gold-solid);
+  --bs-btn-disabled-color: var(--assay-on-gold);
+  --bs-btn-focus-shadow-rgb: 184, 134, 43;
+}
+
+/* 副ボタン（パスキー・拒否・確認ダイアログの取り消し）。枠だけにして、金と競わせない */
+.btn-outline-secondary {
+  --bs-btn-color: var(--bs-body-color);
+  --bs-btn-border-color: var(--bs-border-color);
+  --bs-btn-hover-bg: var(--bs-secondary-bg);
+  --bs-btn-hover-color: var(--bs-body-color);
+  --bs-btn-hover-border-color: var(--bs-border-color);
+  --bs-btn-active-bg: var(--bs-secondary-bg);
+  --bs-btn-active-color: var(--bs-body-color);
+  --bs-btn-active-border-color: var(--bs-border-color);
+  --bs-btn-disabled-color: var(--bs-secondary-color);
+  --bs-btn-disabled-border-color: var(--bs-border-color);
+}
+
+/* `.text-*` は既定では塗り（`--bs-*-rgb`）をそのまま文字色に使う。塗りはバッジ用に明度を
+ * 固定してあるので、そのままだと石の上で沈む。文字だけ `-text-emphasis` から引き直す。 */
+.text-primary {
+  color: var(--bs-primary-text-emphasis) !important;
+}
+
+.text-secondary {
+  color: var(--bs-secondary-text-emphasis) !important;
+}
+
+.text-success {
+  color: var(--bs-success-text-emphasis) !important;
+}
+
+.text-danger {
+  color: var(--bs-danger-text-emphasis) !important;
+}
+
+.text-warning {
+  color: var(--bs-warning-text-emphasis) !important;
+}
+
+.text-info {
+  color: var(--bs-info-text-emphasis) !important;
+}
+
+/* Bootstrap は `.text-bg-warning` / `.text-bg-info` の文字色を黒で焼き込んでいる。
+ * 塗りを暗い側へ寄せたので、他のバッジと同じ白抜きに戻す。金の主色だけは逆に、
+ * 明るい塗りなので石色の文字にする。 */
+.text-bg-warning,
+.text-bg-info {
+  color: #fff !important;
+}
+
+.text-bg-primary {
+  color: var(--assay-on-gold) !important;
+}

@@ -480,7 +480,7 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     );
 
     // `prompt=select_account`（G12）: 有効な SSO があっても**黙って現在のアカウントで続けない**。
-    // 本 IdP はブラウザごとに SSO セッションを 1 つしか持たないため複数アカウントの一覧は出せない
+    // assay はブラウザごとに SSO セッションを 1 つしか持たないため複数アカウントの一覧は出せない
     // が、ログイン画面へ戻せば同じアカウントで入り直すことも切り替えることもできる。
     let select_account_uri = format!(
         "{}&prompt=select_account",

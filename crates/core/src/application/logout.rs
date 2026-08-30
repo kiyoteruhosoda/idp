@@ -257,7 +257,7 @@ impl LogoutService {
         // 3. post_logout_redirect_uri の検証。
         //
         // 照合先の RP は `client_id` パラメータと `id_token_hint` の `aud` から決める（G12）。
-        // hint は署名検証を通っている（＝本 IdP が実際にその RP へ発行した ID Token である）ため、
+        // hint は署名検証を通っている（＝ assay が実際にその RP へ発行した ID Token である）ため、
         // 自己申告の `client_id` より強い根拠になる。両方あって食い違う場合はどちらも信用しない。
         let post_logout_redirect_uri = post_logout_redirect_uri
             .filter(|uri| !uri.is_empty())
@@ -307,7 +307,7 @@ impl LogoutService {
     /// 期限切れが普通である（同 §2 が明示的に許している）。代わりに次を確かめる:
     ///
     /// - `typ` が `JWT`（ID Token）であること —— Access Token（`at+jwt`）を hint として通さない。
-    /// - `kid` が本 IdP の署名鍵（退役済みを含む）であり、署名が正しいこと。
+    /// - `kid` が assay の署名鍵（退役済みを含む）であり、署名が正しいこと。
     /// - `iss` が**要求テナントの**合成 issuer と一致すること（他テナントの ID Token を
     ///   持ち込んで別テナントの利用者をログアウトさせられないようにする。ADR-0009 §6）。
     ///
@@ -325,7 +325,7 @@ impl LogoutService {
         let Ok(header) = jsonwebtoken::decode_header(hint) else {
             return IdTokenHintOutcome::Invalid;
         };
-        // `typ` は省略可（RFC 7519）だが、本 IdP が出す ID Token は必ず `JWT` を載せる。
+        // `typ` は省略可（RFC 7519）だが、assay が出す ID Token は必ず `JWT` を載せる。
         if header.typ.as_deref().is_some_and(|t| t != "JWT") {
             return IdTokenHintOutcome::Invalid;
         }

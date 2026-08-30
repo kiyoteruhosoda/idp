@@ -2,7 +2,7 @@
 {% block title %}{{ messages.get("portal-login-title") }}{% endblock %}
 {% block content %}
 <div class="card border-0 bg-transparent">
-  <div class="card-header text-center py-3 border-0 bg-transparent">
+  <div class="card-header px-4 pb-3 border-0 bg-transparent">
     <h1 class="h4 mb-1">{{ messages.get("portal-login-title") }}</h1>
     <p class="text-muted small mb-0">{{ messages.get("portal-login-lead") }}</p>
   </div>
@@ -23,8 +23,7 @@
         <a class="text-decoration-none" href="{{ tenant_prefix }}/forgot-password">{{ messages.get("login-forgot-password") }}</a>
       </div>
     </form>
-    <hr>
-    <p class="text-muted small text-center mb-3">{{ messages.get("login-passkey-or") }}</p>
+    <p class="auth-or">{{ messages.get("login-passkey-or") }}</p>
     <div class="d-grid mb-3">
       <button type="button" class="btn btn-outline-secondary btn-lg" id="btn-passkey-login"><i class="fa-solid fa-key me-2" aria-hidden="true"></i>{{ messages.get("login-passkey-button") }}</button>
     </div>
@@ -44,8 +43,7 @@
       <p class="text-danger small text-center mb-0" role="alert" id="passkey-error-msg"></p>
     </div>
     {% if !external_providers.is_empty() %}
-    <hr class="my-4">
-    <p class="text-muted small text-center">{{ messages.get("external-login-divider") }}</p>
+    <p class="auth-or">{{ messages.get("external-login-divider") }}</p>
     <div class="d-grid gap-2">
       {% for provider in external_providers %}
       {#- 開始は GET（副作用は api 側の進行状態の作成のみで、CSRF の対象になる操作ではない）。 -#}

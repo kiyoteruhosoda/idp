@@ -101,7 +101,7 @@ pub enum CallbackOutcome {
     },
     /// `state` が無効・期限切れ・二重使用（外部 IdP からやり直し）。
     StateExpired,
-    /// 外部 IdP での認証は通ったが、この IdP に対応する利用者が居ない（連携も自動連携も不成立）。
+    /// 外部 IdP での認証は通ったが、assay に対応する利用者が居ない（連携も自動連携も不成立）。
     NotLinked,
     /// 対応する利用者は居るが無効・ロック中。
     UserUnavailable,
@@ -219,7 +219,7 @@ impl ExternalLoginService {
             ExternalIdpConfig::Oidc(oidc) => {
                 let nonce = crypto::random_token(STATE_BYTES);
                 // PKCE は外部 IdP が public クライアント登録でも安全に交換できるようにするため
-                // 常に付ける（S256 のみ。本 IdP 自身が `/authorize` で強制しているのと同じ方針）。
+                // 常に付ける（S256 のみ。assay 自身が `/authorize` で強制しているのと同じ方針）。
                 let code_verifier = crypto::random_token(STATE_BYTES);
                 let code_challenge = pkce::s256_challenge(&code_verifier);
                 let encrypted =
@@ -573,7 +573,7 @@ impl ExternalLoginService {
                 return CallbackOutcome::PolicyDenied;
             }
             PolicyDecision::RequireMfa { policy_code } => {
-                // 外部 IdP での認証は本 IdP から見ると単一要素（外部側の MFA は観測できない。
+                // 外部 IdP での認証は assay から見ると単一要素（外部側の MFA は観測できない。
                 // §13.3）。MFA 必須のポリシーが掛かる利用者は、この経路では通さない。
                 self.record_policy_denied(
                     tenant,
@@ -852,7 +852,7 @@ impl ExternalLoginService {
     }
 
     /// コールバック URL（外部 IdP へ登録する `redirect_uri` と完全一致すること）。
-    /// 本 IdP の SP としての entityID（SAML の `Issuer` / `Audience`）。テナントごとに分ける
+    /// assay の SP としての entityID（SAML の `Issuer` / `Audience`）。テナントごとに分ける
     /// ——同じ entityID を全テナントで使うと、あるテナント向けのアサーションを別テナントの
     /// ログインへ持ち込める。
     fn saml_sp_entity_id(&self, tenant: TenantContext) -> String {

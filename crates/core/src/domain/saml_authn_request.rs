@@ -6,7 +6,7 @@
 //! ここではデコードと XML 解析（SP の entityID・リクエスト ID・ACS URL の抽出）のみを行い、
 //! 登録済み SP との突き合わせ・ACS URL の検証は Application 層
 //! （[`crate::application::saml_sso`]）に委ねる。署名付き AuthnRequest の署名検証は行わない
-//! （本 IdP のメタデータは `WantAuthnRequestsSigned="false"` を宣言している）。
+//! （ assay のメタデータは `WantAuthnRequestsSigned="false"` を宣言している）。
 
 use crate::domain::error::{DomainError, Result};
 use base64::engine::general_purpose::STANDARD;

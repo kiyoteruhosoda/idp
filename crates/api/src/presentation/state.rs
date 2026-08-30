@@ -324,7 +324,7 @@ impl AppState {
                     Ok(checker) => Arc::new(checker),
                     Err(e) => {
                         // クライアントを組めない = 照合できない。起動は続け、漏えい確認だけを
-                        // 落とす（実装側と同じ fail-open。ここで落とすと設定ミスで IdP 全体が
+                        // 落とす（実装側と同じ fail-open。ここで落とすと設定ミスで assay 全体が
                         // 起動しなくなる）。
                         tracing::error!(
                             error = %e,
@@ -805,7 +805,7 @@ impl AppState {
             config.issuer().to_string(),
         ));
 
-        // AP10: 外部 IdP ログイン。外部 IdP は「本 IdP がクライアントとして振る舞う」唯一の経路で、
+        // AP10: 外部 IdP ログイン。外部 IdP は「assay がクライアントとして振る舞う」唯一の経路で、
         // ID Token の検証（署名・iss・aud・exp・nonce）は `ExternalOidcClient` の実装に閉じている。
         let external_providers: Arc<
             dyn crate::domain::repositories::ExternalIdentityProviderRepository,

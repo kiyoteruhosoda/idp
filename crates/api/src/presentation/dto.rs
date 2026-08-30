@@ -84,7 +84,7 @@ pub struct TokenRequest {
     pub refresh_token: Option<String>,
     /// `client_credentials` grant で要求する scope（空白区切り。G4）。
     pub scope: Option<String>,
-    /// 要求するリソース指標（RFC 8707 `resource`。ADR-0037）。この IdP 自身の管理 API を呼ぶ
+    /// 要求するリソース指標（RFC 8707 `resource`。ADR-0037）。assay 自身の管理 API を呼ぶ
     /// システム用クライアントは `{issuer}/admin` を指定して管理トークンを受け取る。
     pub resource: Option<String>,
     /// `private_key_jwt` の署名済み assertion（RFC 7523 §2.2。ADR-0030）。

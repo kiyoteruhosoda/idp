@@ -341,7 +341,7 @@ mod tests {
         // 名前が無いときは、名乗りも見出しも変更前の既定に戻る。
         let html = render_with(None, None);
         assert!(
-            html.contains(r#"<span class="navbar-brand mb-0 h1">IdP</span>"#),
+            html.contains(r#"<span class="navbar-brand mb-0 h1">assay</span>"#),
             "{html}"
         );
         assert!(html.contains(">サインイン<"), "{html}");

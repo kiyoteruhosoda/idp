@@ -21,7 +21,7 @@
 
 use crate::domain::error::DomainError;
 
-/// 本 IdP が対応する `response_mode`。
+/// assay が対応する `response_mode`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ResponseMode {
     /// クエリ文字列に載せて 302（既定。RFC 6749 の `code` フローの標準）。

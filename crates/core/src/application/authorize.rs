@@ -343,7 +343,7 @@ impl AuthorizeService {
         }
 
         let prompt_none = session.prompt.contains(Prompt::None);
-        // `select_account` は `login` と同じく SSO 復元を止める（G12）。本 IdP はブラウザごとに
+        // `select_account` は `login` と同じく SSO 復元を止める（G12）。assay はブラウザごとに
         // SSO セッションを 1 つしか持たないため「選ばせる別アカウント」の一覧は出せないが、
         // **黙って現在のアカウントで続けない**ことが要求の本質である。ログイン画面へ戻せば、
         // 利用者は同じアカウントで入り直すことも別のアカウントへ切り替えることもできる。

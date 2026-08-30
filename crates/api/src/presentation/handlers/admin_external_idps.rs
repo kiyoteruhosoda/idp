@@ -46,7 +46,7 @@ pub struct ExternalIdpResponse {
     /// SAML のみ。署名検証に使う証明書（base64 DER）。秘密ではないので返す。
     pub saml_certificates: Vec<String>,
     pub saml_name_id_format: Option<String>,
-    /// SAML のみ。外部 IdP へ登録すべき本 IdP の entityID と ACS URL。
+    /// SAML のみ。外部 IdP へ登録すべき assay の entityID と ACS URL。
     pub saml_sp_entity_id: Option<String>,
     pub saml_acs_url: Option<String>,
     pub enabled: bool,

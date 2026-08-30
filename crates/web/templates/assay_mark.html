@@ -1,0 +1,12 @@
+{#- assay の印。試金石に引いた二本の条で、長い金が検体・短い銀が基準の試金針を指す。
+    枠を持たない版で、画面の地（ライト / ダーク）の上に直接置く。色は `app.css` の
+    `--assay-gold` / `--assay-silver` から取り、配色の切り替えに追随する。
+    枠付き版（favicon）は `assets/assay.svg`。
+
+    **読み上げには出さない。** 認証系画面では見出しの上とフッターの 2 か所に出るので、
+    両方に名前を持たせると同じ語を二度読ませることになる。名乗りはフッターの「assay」の
+    文字が担う。 -#}
+<svg class="assay-mark" viewBox="0 0 32 32" aria-hidden="true">
+  <path class="assay-mark-sample" d="M9 3 L13.6 3 L15.4 29 L12.5 29 Z"/>
+  <path class="assay-mark-needle" d="M16.6 3 L20 3 L21.3 22 L18.8 22 Z"/>
+</svg>

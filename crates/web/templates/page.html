@@ -10,7 +10,9 @@
 <link rel="stylesheet" href="/assets/vendor/bootstrap.min.css?v={{ crate::templates::asset_version() }}">
 <link rel="stylesheet" href="/assets/vendor/fontawesome/css/all.min.css?v={{ crate::templates::asset_version() }}">
 <link rel="stylesheet" href="/assets/app.css?v={{ crate::templates::asset_version() }}">
-<title>{% block title %}IdP{% endblock %}</title>
+{#- タブとアプリアイコンの印（`assets/assay.svg`）。SVG 1 枚で全サイズを賄う。 -#}
+<link rel="icon" href="/assets/assay.svg?v={{ crate::templates::asset_version() }}" type="image/svg+xml">
+<title>{% block title %}assay{% endblock %}</title>
 </head>
 <body class="d-flex flex-column min-vh-100">
 <nav class="navbar bg-body-tertiary border-bottom">
@@ -18,13 +20,16 @@
     {#- 左上の名乗り。既定は動かない文字だけにしておく（ログイン・同意のように、
         フローの途中で外へ出す動線を置いてはいけない画面があるため）。ホームへ戻す
         リンクや、テナント名を出したい画面が `brand` を上書きする。 -#}
-    {% block brand %}<span class="navbar-brand mb-0 h1">IdP</span>{% endblock %}
+    {% block brand %}<span class="navbar-brand mb-0 h1">assay</span>{% endblock %}
   </div>
 </nav>
 <main class="flex-grow-1 d-flex flex-column bg-body">
   <div class="container-fluid my-auto py-4 d-flex align-items-center justify-content-center auth-content">
     <div class="row w-100">
       <div class="{% block column %}col-md-6 col-lg-4 mx-auto{% endblock %}">
+{#- 印。ログイン画面の主役はテナント（左上の名乗り）なので、assay はここと
+    フッターに小さく出るだけにする。 -#}
+{% include "assay_mark.html" %}
 {% block content %}{% endblock %}
       </div>
     </div>

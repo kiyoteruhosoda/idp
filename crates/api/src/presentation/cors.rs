@@ -38,7 +38,7 @@ use uuid::Uuid;
 /// プリフライト結果のキャッシュ時間（秒）。許可集合は管理画面から変わりうるので短めにする。
 const PREFLIGHT_MAX_AGE_SECS: u64 = 600;
 
-/// プリフライトで許可するメソッド（本 IdP のプロトコル面は GET と POST しか使わない）。
+/// プリフライトで許可するメソッド（ assay のプロトコル面は GET と POST しか使わない）。
 const ALLOWED_METHODS: &str = "GET, POST, OPTIONS";
 
 /// リクエストの CORS 上の扱い。

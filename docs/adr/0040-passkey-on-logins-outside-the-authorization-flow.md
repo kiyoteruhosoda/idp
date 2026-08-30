@@ -12,7 +12,7 @@
 `PasskeyAuthenticationService::complete()` はチャレンジに結合した `auth_session_id` が無いと
 内部エラーで落ち、成功時は必ず authorization code を発行して RP の `redirect_uri` へ戻す。
 
-一方、この IdP には認可フロー外の直接ログインが 2 つある。**管理コンソール**
+一方、assay には認可フロー外の直接ログインが 2 つある。**管理コンソール**
 （`/{tenant_id}/admin/login`）と**ポータル**（`/{tenant_id}/login`）で、どちらも RP を介さずに
 SSO セッションを直接発行する（ADR-0006 §6）。この 2 画面にはパスキーのボタンが無く、
 利用者は「自分のアカウントにパスキーを登録したのに、IdP 自身の画面ではパスワードを打つ」

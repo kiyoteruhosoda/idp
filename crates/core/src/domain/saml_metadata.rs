@@ -5,7 +5,7 @@
 //!   検証（ACS URL のスキーム等）は登録ユースケース側（[`crate::domain::saml_service_provider`]）に委ねる。
 //! - 取り込み（外部 IdP）: 外部の SAML IdP が公開する `IDPSSODescriptor` を解析し、
 //!   `entity_id` / `sso_url` / 署名証明書を抽出する（AP12。[`crate::domain::external_idp`] の登録候補値）。
-//! - 出力: 本 IdP の `EntityDescriptor`（`IDPSSODescriptor`）を生成する。SP（クライアント）がこの IdP を
+//! - 出力: assay の `EntityDescriptor`（`IDPSSODescriptor`）を生成する。SP（クライアント）が assay を
 //!   信頼するために取り込むメタデータで、`.well-known/openid-configuration` の SAML 版に相当する。
 //!
 //! **取り込みは向きを取り違えない。** SP と IdP のメタデータは同じ `EntityDescriptor` で包まれ、
@@ -95,7 +95,7 @@ impl Role {
     /// ここで落とせば、取り込んだ管理者がその場で気づける（手入力の道は残っている）。
     ///
     /// SP 側は POST → Redirect → 先頭の従来どおり。こちらは**相手が受け取る**側の URL で、
-    /// 本 IdP が送信方式を選べる（アサーションは POST で送る）。
+    /// assay が送信方式を選べる（アサーションは POST で送る）。
     fn pick_endpoint(self, candidates: &[(String, String)]) -> Option<String> {
         match self {
             Self::Sp => pick_by_binding(candidates, &[BINDING_HTTP_POST, BINDING_HTTP_REDIRECT]),
@@ -397,10 +397,10 @@ impl IdpSigningKey {
     }
 }
 
-/// 本 IdP の SAML `EntityDescriptor`（`IDPSSODescriptor`）XML を生成する。
+/// assay の SAML `EntityDescriptor`（`IDPSSODescriptor`）XML を生成する。
 ///
 /// `entity_id` は IdP のエンティティ ID（テナント issuer を用いる）、`sso_url` は SingleSignOnService の
-/// URL。SP（クライアント）はこの metadata を取り込んで本 IdP を信頼する。
+/// URL。SP（クライアント）はこの metadata を取り込んで assay を信頼する。
 ///
 /// # 公開中の鍵をすべて並べる（ADR-0039）
 ///

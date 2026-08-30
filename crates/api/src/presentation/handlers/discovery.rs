@@ -58,7 +58,7 @@ pub async fn jwks(State(state): State<AppState>) -> Response {
 
 /// SAML IdP メタデータ（`GET /{tenant_id}/saml/metadata`）。
 ///
-/// 本 IdP を記述する `EntityDescriptor`（`IDPSSODescriptor`）を XML で返す。SP（クライアント）がこの IdP を
+/// assay を記述する `EntityDescriptor`（`IDPSSODescriptor`）を XML で返す。SP（クライアント）が assay を
 /// 信頼するために取り込む公開メタデータで、テナント issuer を entityID とし、SSO URL も issuer から導出する。
 /// 署名用 `KeyDescriptor` には ACTIVE 署名鍵（RSA）を `RSAKeyValue` で含める。広告する
 /// SingleSignOnService は [`super::saml_sso`]（`/{tenant_id}/saml/sso`）が実装する。
@@ -211,7 +211,7 @@ fn discovery_document(issuer: &str, end_session_endpoint: &str) -> Value {
         // `form_post` は認可コードを URL ではなくフォーム本文で返す（G12）。
         "response_modes_supported": ["query", "form_post"],
         // `prompt`（OIDC Core §3.1.2.1）。`select_account` は「現在のアカウントで黙って続けない」
-        // ＝ SSO 復元を止めてログイン画面へ戻す形で扱う（本 IdP はブラウザごとに SSO セッションを
+        // ＝ SSO 復元を止めてログイン画面へ戻す形で扱う（ assay はブラウザごとに SSO セッションを
         // 1 つしか持たないため、複数アカウントの一覧は出せない。G12）。
         "prompt_values_supported": ["none", "login", "consent", "select_account"],
         // `request` / `request_uri`（署名付き要求オブジェクト）と `claims` は未対応。

@@ -1,4 +1,4 @@
-//! システム設定（root/idp.system.admin が管理する IdP 全体設定。ADR-0009 §5、MT14）。
+//! システム設定（root/idp.system.admin が管理する assay 全体設定。ADR-0009 §5、MT14）。
 //!
 //! 設定値の優先順位は「組み込み既定値 < 環境変数（ENV）< DB（system_settings）」。あとから DB で上書き
 //! できるという思想で、より運用に近い層（DB）を優先する（ADR-0010 の DB_MANAGED は DB を正とする）。

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="assay">
+  <title>assay</title>
+  <!-- 試金石（黒）に引いた二本の条。長い金が検体、短い銀が基準の試金針。
+       favicon・アプリアイコン用の枠付き版で、明暗どちらのタブでも輪郭が残る。
+       枠を持たない版は `templates/assay_mark.html`（画面内・フッター用）。 -->
+  <rect x="1" y="1" width="30" height="30" rx="7" fill="#0F1417"/>
+  <path d="M10.2 6 L14.2 6 L15.9 26 L13.2 26 Z" fill="#C89A3C"/>
+  <path d="M17.2 6 L20.2 6 L21.4 20 L19.2 20 Z" fill="#8C979C"/>
+</svg>

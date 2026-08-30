@@ -18,7 +18,7 @@
 
 | | 実体 | 値 | 用途 |
 |---|---|---|---|
-| 権限コード | `PermissionCode`（`permissions` マスタ） | `idp.tenant.admin` 等。**運用で増える** | **この IdP 自身の API 認可**（`RequirePerms`） |
+| 権限コード | `PermissionCode`（`permissions` マスタ） | `idp.tenant.admin` 等。**運用で増える** | **assay 自身の API 認可**（`RequirePerms`） |
 | OIDC scope | `domain::values::Scope` | 4 値固定（仕様で決まっている） | ID トークン・`/userinfo` のクレーム制御 |
 | `clients.scopes` | DB の JSON 列 | 登録時は上の 4 値のみ | クライアントが要求できる scope の上限 |
 
@@ -38,7 +38,7 @@
 
 - **`clients.scopes` は OIDC scope 専用**とする。登録時に受け付けるのは 4 値のままでよく、
   業務スコープを登録できないのは欠落ではなく設計である。
-- **この IdP 自身の API の認可は権限コード**（`permissions` マスタ + `user_permissions`）で
+- **assay 自身の API の認可は権限コード**（`permissions` マスタ + `user_permissions`）で
   行う。こちらは運用で増える前提の**データ**であり、固定 enum ではない（ADR-0006）。
 - `CLAUDE.md`「認可はロールではなく scope（権限コード値）で行う」の "scope" は**権限コード**を
   指す。OIDC scope のことではない。
@@ -82,6 +82,6 @@ fixture は `reports.read` / `reports.write` を使っている（fixture は SQ
   権限の定義がアプリと IdP の 2 か所に分かれる。どちらが正なのかが運用で必ず問題になる。
   権限を持つのはアプリ側なので、IdP は主体の同一性（`sub` / `client_id`）を正しく渡すことに
   徹する。
-- **権限コードをアクセストークンの scope に載せる。** 権限コードはこの IdP 自身の API を守る
+- **権限コードをアクセストークンの scope に載せる。** 権限コードは assay 自身の API を守る
   ためのものであり、他のリソースサーバの権限体系ではない。混ぜると、IdP の管理権限が外部
   アプリの認可判断に流れ込む。

@@ -459,6 +459,7 @@ pub fn build(state: WebState) -> Router {
                 )),
         )
         .route("/assets/app.css", get(stylesheet::app_css))
+        .route("/assets/assay.svg", get(stylesheet::assay_svg))
         .route("/assets/console.js", get(console_script::console_js))
         .route(
             "/assets/button-pending.js",
