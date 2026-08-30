@@ -128,7 +128,7 @@ impl SubmittedJwk {
                     kty: "RSA".to_string(),
                     use_: self.use_.unwrap_or_else(|| "sig".to_string()),
                     kid,
-                    // 本 IdP が検証に使う RSA アルゴリズムは RS256 のみ（ADR-0030 決定 7）。
+                    // assay が検証に使う RSA アルゴリズムは RS256 のみ（ADR-0030 決定 7）。
                     // クライアントが別の `alg` を書いていても、検証は登録済み鍵種別から決める。
                     alg: "RS256".to_string(),
                     n: Some(n),

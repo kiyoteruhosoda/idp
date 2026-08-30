@@ -17,7 +17,7 @@
 //!
 //! # 信頼するホップは 1 段と仮定する
 //!
-//! 本 IdP の配置（`docker/nginx.conf`・`docker/nginx.domain-split.conf`）はプロキシ 1 段である。
+//! assay の配置（`docker/nginx.conf`・`docker/nginx.domain-split.conf`）はプロキシ 1 段である。
 //! 多段（CDN → プロキシ → api/web）にすると最右は「前段プロキシの IP」になり、利用者の実 IP では
 //! なくなる。**精度は落ちるが偽装はされない**方向の失敗なので、安全側として受け入れる
 //! （実 IP が要るなら CDN 側で `X-Forwarded-For` を上書きするか、段数を設定化する）。

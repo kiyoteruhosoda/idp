@@ -328,7 +328,7 @@ curl -sS -X POST "$ISSUER/$TENANT_ID/token" \
 返るのはアクセストークンだけで、ID Token も Refresh Token も返らない（利用者が居ないため）。
 要求できる scope は登録した `scopes` の範囲内で、`offline_access` は使えない。
 
-### 4. この IdP 自身を操作させたいとき（管理 API）
+### 4. assay 自身を操作させたいとき（管理 API）
 
 利用者・クライアント・監査ログといった **IdP 自身の管理操作**をシステムから行わせる場合は、
 そのクライアントへ**管理権限コード**を付与し、トークン要求に `resource` を添える（ADR-0037）。
@@ -403,7 +403,7 @@ curl -sS "$ISSUER/$TENANT_ID/admin/users?query=alice" \
 
 | 症状 | 原因 |
 |---|---|
-| `/token` が `invalid_target` | 権限を 1 つも付けていない、または `resource` がこの IdP の管理 API を指していない |
+| `/token` が `invalid_target` | 権限を 1 つも付けていない、または `resource` が assay の管理 API を指していない |
 | 管理 API が 401 | `resource` を付けずに取ったトークン／別テナント向けのトークン／期限切れ（既定 300 秒。`MANAGEMENT_TOKEN_TTL_SECS`） |
 | 管理 API が 403 | そのエンドポイントに対応する権限コードを持っていない |
 
@@ -444,7 +444,7 @@ curl -sS "$ISSUER/$TENANT_ID/admin/users?query=alice" \
 **設定画面（`/{tenant_id}/admin/settings`）の「ショートメッセージ（SMS）」で設定する**
 （`idp.system.admin` 必須）。
 
-本 IdP は SMS 事業者の SDK を持たない。設定したゲートウェイ URL へ **JSON を 1 本 POST する**
+assay は SMS 事業者の SDK を持たない。設定したゲートウェイ URL へ **JSON を 1 本 POST する**
 だけで、事業者ごとの API 差異は運用側の小さな中継（関数・Webhook）が吸収する。送る形:
 
 ```json
@@ -1008,7 +1008,7 @@ curl -X DELETE "https://<api>/{tenant_id}/admin/users/{user_id}/login-identifier
 画面での手順は「外部 IdP でログインできるようにしたいとき」を参照。ここは同じ操作を API で
 行う場合の入口だけを示す（`idp.tenant.admin` 必須。`idp.system.admin` でも可）。
 
-相手 IdP 側には、本 IdP の受け口を登録してもらう。OIDC のコールバック URL は
+相手 IdP 側には、assay の受け口を登録してもらう。OIDC のコールバック URL は
 `<PUBLIC_WEB_BASE_URL>/{tenant_id}/external/{provider_code}/callback`、SAML の ACS URL は
 `<PUBLIC_WEB_BASE_URL>/{tenant_id}/external/{provider_code}/saml/acs`（登録後、
 `GET /admin/external-idps` の `redirect_uri`・`saml_acs_url`・`saml_sp_entity_id` にも同じ値が出る）。
@@ -1052,7 +1052,7 @@ curl -sS -X POST "$ISSUER/{tenant_id}/admin/external-idps" \
 - **`client_secret` は応答に含まれない**（暗号化保存。設定済みかは `has_client_secret` で分かる）。
   更新時に省略すれば既存値を維持し、空文字を送ると削除して public クライアント化する。
 - エンドポイントは **https のみ**・内部宛先（ループバック・プライベート・リンクローカル）は拒否する
-  （本 IdP のサーバに任意の URL を叩かせないため）。
+  （ assay のサーバに任意の URL を叩かせないため）。
 - 利用者の同一性は外部 IdP の **`iss` + `sub`**（SAML では `<Issuer>` + `NameID`）だけで判定する
   （メールアドレスは同一性の根拠にしない）。既定では**事前に連携済みの利用者しかログインできない**。
   `allow_auto_link` を有効にすると、外部 IdP が `email_verified: true` を返した場合に限り同じメール

@@ -209,7 +209,7 @@ fn signed_response(
             assertion_id: &generate_saml_id(),
             issued_at: now,
             idp_entity_id: issuer,
-            // 本 IdP の SP としての entityID・ACS URL。api が組み立てる規則と一致していないと
+            // assay の SP としての entityID・ACS URL。api が組み立てる規則と一致していないと
             // `AudienceRestriction` の検査に落ちる（この一致こそがここで確かめたいこと）。
             sp_entity_id: &format!("{}/{}/saml/sp", env.public_web_base_url, env.root_tenant_id),
             acs_url: &format!(

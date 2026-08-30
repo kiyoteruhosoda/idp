@@ -1,6 +1,6 @@
 # 権限一覧（利用者権限コード）
 
-本 IdP の管理機能アクセス制御に使う**利用者権限コード（permission code）**の一覧。
+assay の管理機能アクセス制御に使う**利用者権限コード（permission code）**の一覧。
 認可は**ロールではなく scope（権限コード値）**で行う（`CLAUDE.md`「権限管理」）。
 
 - 設計判断: `docs/adr/0006-admin-permission-model.md`（権限モデル）／
@@ -12,7 +12,7 @@
 > **別軸**である。権限コードは内部認可であり、OIDC Discovery の `scopes_supported` には載せない（ADR-0006 §7）。
 
 > **権限コードを保有できるのは利用者だけである。** 機械（`client_credentials` で認証するクライアント）は
-> `user_permissions` に行を持てないため、本 IdP の管理 API を叩くことはできない（ADR-0030 §影響）。
+> `user_permissions` に行を持てないため、assay の管理 API を叩くことはできない（ADR-0030 §影響）。
 > 機械が取るトークンは `sub_type=client` で、管理経路の判定（`AdminAccessService`）は SSO セッションから
 > 利用者を解決するところから始まるため、そもそも通らない。
 

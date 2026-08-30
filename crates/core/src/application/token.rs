@@ -82,9 +82,9 @@ pub struct AccessTokenClaims {
     /// [`SUBJECT_TYPE_CLIENT`] を持つ。省略 = エンドユーザー主体。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sub_type: Option<String>,
-    /// この IdP 自身の管理 API に対する権限コード（空白区切り。ADR-0037）。
+    /// assay 自身の管理 API に対する権限コード（空白区切り。ADR-0037）。
     ///
-    /// **`aud` が [`management_audience`] のトークンにしか載せない。** 権限コードはこの IdP の
+    /// **`aud` が [`management_audience`] のトークンにしか載せない。** 権限コードは assay の
     /// API を守るためのものであって、他のリソースサーバの権限体系ではない（ADR-0033）。`aud` を
     /// 管理 API に固定することで、外部アプリ向けのトークンへ権限コードが流れ込む経路が無くなる。
     ///
@@ -106,7 +106,7 @@ pub fn userinfo_audience(issuer: &str) -> String {
     format!("{issuer}/userinfo")
 }
 
-/// この IdP 自身の管理 API 用 Access Token の `aud` を構築する（ADR-0037）。
+/// assay 自身の管理 API 用 Access Token の `aud` を構築する（ADR-0037）。
 ///
 /// `/userinfo` 向けと別の値にすることが要である。同じ `aud` にすると、RP が利用者ログインで
 /// 受け取ったトークンをそのまま管理 API へ持ち込めてしまう（`perms` が空なので通らないとはいえ、
@@ -131,7 +131,7 @@ pub struct TokenCommand {
     pub scope: Option<String>,
     /// 要求するリソース指標（RFC 8707 `resource`。ADR-0037）。
     ///
-    /// この IdP の管理 API を呼ぶシステム用クライアントは、`{issuer}/admin` を指定して
+    /// assay の管理 API を呼ぶシステム用クライアントは、`{issuer}/admin` を指定して
     /// 管理トークンを受け取る。省略時は従来どおり `/userinfo` 向けのトークンを発行する。
     /// **どちらを欲しいのかを呼び出し側に書かせる**のは、クライアントの登録権限から発行内容を
     /// 暗黙に切り替えると、権限を 1 つ付けた途端にトークンの `aud` が変わってしまうためである。
@@ -735,7 +735,7 @@ impl TokenService {
         let scopes = resolve_client_credentials_scopes(&client, cmd.scope.as_deref())?;
         let scope_str = scopes.join(" ");
 
-        // 4. 宛先（`resource`）の決定（RFC 8707。ADR-0037）。この IdP 自身の管理 API を要求された
+        // 4. 宛先（`resource`）の決定（RFC 8707。ADR-0037）。assay 自身の管理 API を要求された
         //    場合だけ、クライアントが保有する権限コードを `perms` に載せた管理トークンを出す。
         let now = self.clock.now();
         let iat = now.timestamp();

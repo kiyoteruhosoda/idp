@@ -2,7 +2,7 @@
 {% block title %}{{ messages.get("admin-login-title") }}{% endblock %}
 {% block content %}
 <div class="card border-0 bg-transparent">
-  <div class="card-header text-center py-3 border-0 bg-transparent">
+  <div class="card-header px-4 pb-3 border-0 bg-transparent">
     <h1 class="h4 mb-0">{{ messages.get("admin-login-title") }}</h1>
   </div>
   <div class="card-body p-4">
@@ -24,8 +24,7 @@
         <a class="text-decoration-none" href="{{ tenant_prefix }}/forgot-password">{{ messages.get("login-forgot-password") }}</a>
       </div>
     </form>
-    <hr>
-    <p class="text-muted small text-center mb-3">{{ messages.get("login-passkey-or") }}</p>
+    <p class="auth-or">{{ messages.get("login-passkey-or") }}</p>
     <div class="d-grid mb-3">
       <button type="button" class="btn btn-outline-secondary" id="btn-passkey-login"><i class="fa-solid fa-key me-2" aria-hidden="true"></i>{{ messages.get("login-passkey-button") }}</button>
     </div>

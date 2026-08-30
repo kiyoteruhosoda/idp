@@ -17,8 +17,8 @@
 
 ## 背景
 
-この IdP には `/{tenant_id}/admin/*` という管理 API が既にある。利用者・クライアント・
-テナント・鍵・監査ログ——運用で必要なものはほぼ揃っている。にもかかわらず、**この IdP を
+assay には `/{tenant_id}/admin/*` という管理 API が既にある。利用者・クライアント・
+テナント・鍵・監査ログ——運用で必要なものはほぼ揃っている。にもかかわらず、**assay を
 プログラムから操作する手段が無かった。**
 
 理由は 2 つある。
@@ -34,7 +34,7 @@ state.admin_access.authorize(resolved.context(), sso_session_id.as_deref(), P::C
 
 Cookie を出せるのは管理コンソール（web）だけである。ADR-0030・ADR-0032 で
 `client_credentials` と `private_key_jwt` を入れ、システム（CI・バッチ・AI エージェント）が
-`/token` を叩けるようにしたのに、**そこで得たトークンで呼べる API がこの IdP には 1 本も無かった。**
+`/token` を叩けるようにしたのに、**そこで得たトークンで呼べる API が assay には 1 本も無かった。**
 ADR-0033 が「`client_credentials` のトークンの `scope` は空になる」と結論したとおり、
 取れるトークンは `sub` を名乗る以外に使い道が無い状態だった。
 
@@ -139,7 +139,7 @@ CI に置いた鍵は誰も止めない）。**「とりあえず tenant.admin �
 ### 6. 権限コードは `perms` クレームで運び、`scope` には載せない
 
 管理トークンは `aud = {issuer}/admin`（テナント毎の issuer）に固定し、権限コードは `scope` では
-なく `perms` クレームに入れる。ADR-0033 の決定——「権限コードはこの IdP 自身の API を守るためのもので、
+なく `perms` クレームに入れる。ADR-0033 の決定——「権限コードは assay 自身の API を守るためのもので、
 他のリソースサーバの権限体系ではない」——はこの `aud` 固定で保たれる。外部アプリ向けの
 トークン（`aud = {issuer}/userinfo`）に `perms` は載らない。
 

@@ -60,7 +60,7 @@ async fn request_token(
     .await
 }
 
-/// この IdP の管理 API を指すリソース指標（`{issuer}/{tenant_id}/admin`）。
+/// assay の管理 API を指すリソース指標（`{issuer}/{tenant_id}/admin`）。
 fn management_resource(env: &support::TestEnv, tenant_id: &str) -> String {
     format!("{}/{}/admin", env.issuer, tenant_id)
 }

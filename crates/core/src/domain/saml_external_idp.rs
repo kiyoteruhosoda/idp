@@ -1,6 +1,6 @@
 //! 外部 SAML IdP を認証元として使う（SP 側。AP12。ADR-0027）。
 //!
-//! 本 IdP を SAML の **IdP として**振る舞わせる側は [`crate::domain::saml_response`] にある。
+//! assay を SAML の **IdP として**振る舞わせる側は [`crate::domain::saml_response`] にある。
 //! ここは向きが逆で、外部の SAML IdP へ利用者を送り、返ってきたアサーションを検証して
 //! 「誰が認証されたか」を取り出す。
 //!
@@ -32,7 +32,7 @@ use std::io::Write as _;
 /// 受け取る XML の上限（`saml_authn_request` と同じ理由・同じ値）。
 const MAX_XML_BYTES: usize = 512 * 1024;
 const STATUS_SUCCESS: &str = "urn:oasis:names:tc:SAML:2.0:status:Success";
-/// 時刻検証の許容ずれ。IdP と本 IdP の時計は完全には合わない。
+/// 時刻検証の許容ずれ。IdP と assay の時計は完全には合わない。
 const CLOCK_SKEW_SECS: i64 = 120;
 /// 既定の `NameIDFormat`。IdP 側の設定に合わせて上書きできる。
 pub const NAME_ID_FORMAT_UNSPECIFIED: &str =
@@ -44,7 +44,7 @@ pub struct AuthnRequestInput<'a> {
     /// 採番済みの要求 ID（`InResponseTo` の照合に使うので保存すること）。
     pub request_id: &'a str,
     pub issued_at: DateTime<Utc>,
-    /// 本 IdP の SP としての entityID。
+    /// assay の SP としての entityID。
     pub sp_entity_id: &'a str,
     /// アサーションを受け取る URL（ACS）。
     pub acs_url: &'a str,
@@ -126,7 +126,7 @@ pub struct VerifiedAssertion {
 pub struct ResponseVerification<'a> {
     /// 設定された IdP の entityID。アサーションの `Issuer` と完全一致すること。
     pub expected_issuer: &'a str,
-    /// 本 IdP の SP としての entityID。`AudienceRestriction` に含まれること。
+    /// assay の SP としての entityID。`AudienceRestriction` に含まれること。
     pub sp_entity_id: &'a str,
     /// 自分が送った `AuthnRequest` の ID。`InResponseTo` と一致すること。
     pub expected_in_response_to: &'a str,

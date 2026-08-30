@@ -66,11 +66,11 @@ pub enum ClientAssertionFailure {
     Expired,
     /// `exp` が遠すぎる（[`MAX_ASSERTION_LIFETIME`] 超過）。
     LifetimeTooLong,
-    /// `aud` がこの IdP のテナントを指していない。
+    /// `aud` が assay のテナントを指していない。
     AudienceMismatch,
     /// `iss` または `sub` がクライアント自身ではない。
     SubjectMismatch,
-    /// `jti` が無い（本 IdP では必須）。
+    /// `jti` が無い（ assay では必須）。
     MissingJti,
     /// `jti` が長すぎる（[`MAX_JTI_LENGTH`] 超過）。
     JtiTooLong,
@@ -398,7 +398,7 @@ mod tests {
         );
     }
 
-    /// 別の宛先向けに署名させた JWT を本 IdP の `/token` へ転送しても通らない。
+    /// 別の宛先向けに署名させた JWT を assay の `/token` へ転送しても通らない。
     #[test]
     fn an_assertion_for_another_audience_is_rejected() {
         let f = fixture("RS256");

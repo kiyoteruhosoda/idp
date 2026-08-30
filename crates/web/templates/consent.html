@@ -2,15 +2,18 @@
 {% block title %}{{ messages.get("consent-title") }}{% endblock %}
 {% block content %}
 <div class="card border-0 bg-transparent">
-  <div class="card-header text-center py-3 border-0 bg-transparent">
+  <div class="card-header px-4 pb-3 border-0 bg-transparent">
     <h1 class="h4 mb-0">{{ messages.get("consent-title") }}</h1>
   </div>
   <div class="card-body p-4">
     <p>{{ messages.get("consent-intro") }} <strong>{{ client_name }}</strong></p>
+    {#- 求められている範囲の明細。読める言葉を上に、実際にトークンへ載る scope 名を下へ小さく
+        置く（利用者は上だけ読めば済み、実装者は下で照合できる）。もとのチェックマークの列は
+        「全部に丸が付いている」以上のことを言っていなかった。 -#}
     {% if !requested_scopes.is_empty() %}
-    <ul class="list-group mb-3">
+    <ul class="grant-list">
       {% for scope in requested_scopes %}
-      <li class="list-group-item d-flex align-items-center"><i class="fa-solid fa-circle-check text-success me-2" aria-hidden="true"></i>{{ messages.get(&format!("consent-scope-{scope}")) }}</li>
+      <li>{{ messages.get(&format!("consent-scope-{scope}")) }}<span class="grant-scope">{{ scope }}</span></li>
       {% endfor %}
     </ul>
     {% endif %}

@@ -59,7 +59,7 @@ pub struct SamlResponseInput<'a> {
     pub assertion_id: &'a str,
     /// 発行時刻（Response / Assertion の `IssueInstant`）。
     pub issued_at: DateTime<Utc>,
-    /// 本 IdP のエンティティ ID（テナント issuer）。
+    /// assay のエンティティ ID（テナント issuer）。
     pub idp_entity_id: &'a str,
     /// 対象 SP のエンティティ ID（`Audience`）。
     pub sp_entity_id: &'a str,

@@ -14,7 +14,7 @@
 セッションといった**人向けの前提**の上に組まれており、機械がそこへ入ると必ずどれかを無効化する
 ことになる（MFA を外した「サービス用ユーザー」が典型）。
 
-本 IdP には既に `client_credentials` grant（G4）があり、利用者の居ないトークンを発行できる。
+assay には既に `client_credentials` grant（G4）があり、利用者の居ないトークンを発行できる。
 発行されるアクセストークンの `sub` はクライアント自身で、`sub_type` クレームで利用者主体の
 トークンと区別している。つまり**機械の同一性を表す主体は既に存在する**。
 
@@ -35,7 +35,7 @@
 機械のプリンシパルは **`clients` の行そのもの**とする。クライアントとは別に
 `service_accounts` テーブルを置き「クライアントは資格情報の入れ物」とする形（Google 型）は採らない。
 
-理由は同一性の軸を二重にしないため。本 IdP のトークン発行・監査・テナント境界はすべて
+理由は同一性の軸を二重にしないため。assay のトークン発行・監査・テナント境界はすべて
 `(tenant_id, client_id)` を主体として組まれている（`audit_log` の `client_id`、
 `clients_tenant_client_id_uk`、`sub_type=client` の access token）。ここへ第 2 の主体表を足すと、
 `sub` に何を入れるか・監査にどちらを記録するか・テナント移動時にどちらを追うかが、
@@ -69,7 +69,7 @@ grant_type=client_credentials
 クライアントの `jwks_uri` を取りに行く形は採らない。
 
 - トークンエンドポイントが外部 HTTP に依存すると、クライアント側のホスティング障害が
-  こちらの認証失敗になる。認証は本 IdP の可用性の内側に閉じておきたい。
+  こちらの認証失敗になる。認証は assay の可用性の内側に閉じておきたい。
 - 取得先 URL はクライアント登録者が指定する値であり、`/token` の処理中に任意 URL へ
   送信を行う経路（SSRF）を新設することになる。本リポジトリは back-channel logout の宛先で
   同じ問題を扱い、`domain/outbound_uri.rs` で内部宛先を弾いている（SEC2）。認証経路には
@@ -90,7 +90,7 @@ assertion の `kid` で鍵を選ぶ。`kid` が無い assertion は、JWKS に�
 
 ### 5. `jti` を必須とし、有効期間内の再利用を拒否する
 
-RFC 7523 §3 は `jti` による再生防止を任意（MAY）としているが、本 IdP は**必須**とする。
+RFC 7523 §3 は `jti` による再生防止を任意（MAY）としているが、assay は**必須**とする。
 `jti` を持たない assertion は拒否し、検証を通った `(tenant_id, client_id, jti)` は
 `client_assertion_jtis` へ記録して再受理しない。記録を残す期間は `exp` そのものではなく
 **受理が止まる時刻**（`exp` ＋ 時計ずれの許容幅）とする —— `exp` までしか残さないと、
@@ -110,12 +110,12 @@ OIDC Core §9 は `aud` を「トークンエンドポイントの URL」とす�
 RFC 7523 §3 は「認可サーバを識別する値」とする。実際のクライアント実装は
 issuer を入れるものとトークンエンドポイント URL を入れるものに分かれている。
 
-本 IdP は `<基底 issuer>/<tenant_id>` と `<基底 issuer>/<tenant_id>/token` の**どちらか一方を
+assay は `<基底 issuer>/<tenant_id>` と `<基底 issuer>/<tenant_id>/token` の**どちらか一方を
 含むこと**を要求する（ADR-0009 §6 の合成規則をそのまま使う）。どちらもテナントを含む値なので、
 A テナント宛の assertion を B テナントの `/token` へ持ち込むことはできない。
 
 `aud` の検査そのものは省略しない。省略すると、あるサービス向けに発行させた署名済み JWT を
-本 IdP の `/token` へ転送する経路が開く。
+assay の `/token` へ転送する経路が開く。
 
 ### 7. 署名アルゴリズムは RS256 / ES256 に限る
 
@@ -135,7 +135,7 @@ HMAC 系（`HS256`）を名乗る場合は、鍵の種別と一致しないの�
 - Discovery の `token_endpoint_auth_methods_supported` に `private_key_jwt` が、
   `token_endpoint_auth_signing_alg_values_supported` が加わる。
 - 機械が持てるのは引き続き **OIDC scope** であって**利用者権限コード**ではない。
-  `client_credentials` のトークンで本 IdP の管理 API を叩くことはできない（ADR-0006 の
+  `client_credentials` のトークンで assay の管理 API を叩くことはできない（ADR-0006 の
   権限は `user_permissions` にしか存在せず、`sub_type=client` のトークンは管理経路を通らない）。
   機械に管理操作をさせたくなった場合は別途 ADR を起こす。
 

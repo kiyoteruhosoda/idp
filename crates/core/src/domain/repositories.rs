@@ -1106,7 +1106,7 @@ pub trait ExternalIdentityProviderRepository: Send + Sync {
     async fn delete(&self, tenant_id: TenantId, id: Uuid) -> Result<bool>;
 }
 
-/// 外部 IdP 上の同一性と本 IdP 利用者の対応（AP10。仕様 §13.2）の永続化。
+/// 外部 IdP 上の同一性と assay 利用者の対応（AP10。仕様 §13.2）の永続化。
 ///
 /// 検索キーは `(provider_id, external_subject)` で、これが唯一の連携根拠。`tenant_id` を取らない
 /// のは、プロバイダ自体がテナントに属する（＝プロバイダ経由で境界が決まる）ため。
@@ -1294,9 +1294,9 @@ pub trait WebAuthnCredentialRepository: Send + Sync {
     async fn delete_all_for_user(&self, user_id: Uuid) -> Result<u64>;
 }
 
-/// システム設定（root/idp.system.admin が管理する IdP 全体設定。ADR-0009 §5、MT14）の永続化。
+/// システム設定（root/idp.system.admin が管理する assay 全体設定。ADR-0009 §5、MT14）の永続化。
 ///
-/// テナント列を持たず IdP 全体に一律適用する（root のみ管理可能。判定は Presentation の
+/// テナント列を持たず assay 全体に一律適用する（root のみ管理可能。判定は Presentation の
 /// `RequirePerms<IdpSystemAdmin>` が担う）。秘匿値の暗号化・復号は Application 層の責務で、本トレイトは
 /// 保存形式（暗号文を含む）の文字列を素通しする。
 #[async_trait]

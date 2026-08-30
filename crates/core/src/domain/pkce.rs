@@ -18,7 +18,7 @@ pub fn is_valid_code_verifier(verifier: &str) -> bool {
 
 /// `code_verifier` から S256 の `code_challenge` を作る。
 ///
-/// 本 IdP は RP としても振る舞う（外部 IdP ログイン。AP10）ため、検証側だけでなく生成側も要る。
+/// assay は RP としても振る舞う（外部 IdP ログイン。AP10）ため、検証側だけでなく生成側も要る。
 /// 検証（[`verify_s256`]）と同じ変換を 1 箇所に置き、両者がずれないようにする。
 pub fn s256_challenge(code_verifier: &str) -> String {
     let digest = Sha256::digest(code_verifier.as_bytes());

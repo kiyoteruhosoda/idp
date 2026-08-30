@@ -350,7 +350,7 @@ pub struct ExternalIdpView {
     pub saml_certificates: Vec<String>,
     #[serde(default)]
     pub saml_name_id_format: Option<String>,
-    /// SAML のみ。外部 IdP 側へ登録すべき本 IdP の entityID と ACS URL。
+    /// SAML のみ。外部 IdP 側へ登録すべき assay の entityID と ACS URL。
     #[serde(default)]
     pub saml_sp_entity_id: Option<String>,
     #[serde(default)]

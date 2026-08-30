@@ -13,7 +13,7 @@ AP10 で入れた外部 IdP は **OIDC のみ**である。`external_identity_pr
 列構成で、SAML の IdP メタデータ（`SingleSignOnService` URL・署名証明書・`NameID` 形式）を
 表現できない。
 
-本 IdP を **SAML の IdP として**振る舞わせる側（`/{tenant}/saml/metadata`・`saml_sso_requests`）は
+assay を **SAML の IdP として**振る舞わせる側（`/{tenant}/saml/metadata`・`saml_sso_requests`）は
 既に在る。ここで決めるのは**向きが逆**の話——外部の SAML IdP を利用者の認証元として使う（SP 側）。
 
 決めることは 2 つある。

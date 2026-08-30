@@ -1,10 +1,10 @@
 //! 外部 IdP 認証（AP10。ユーザー認証・認証ポリシー仕様書 §13）。
 //!
-//! 外部の OpenID Provider での認証結果を、本 IdP のログインとして引き受けるための型。
+//! 外部の OpenID Provider での認証結果を、assay のログインとして引き受けるための型。
 //!
 //! # 同一性の根拠は `iss` + `sub` だけ
 //!
-//! 外部アカウントと本 IdP の利用者を結び付ける根拠は `iss` + `sub` に限る（§13.2）。
+//! 外部アカウントと assay の利用者を結び付ける根拠は `iss` + `sub` に限る（§13.2）。
 //! メールアドレスで結び付ける設計にしないのは、外部 IdP 側でメールを変更・再利用できる場合に
 //! **別人が同じメールを名乗って既存アカウントへ入れてしまう**ため。初回だけメール一致で自動連携
 //! したい要求はあるので、それはプロバイダ単位の明示的な設定（`allow_auto_link`）にし、
@@ -165,7 +165,7 @@ impl ExternalIdentityProvider {
     /// エンドポイント URL の検証。
     ///
     /// `https` に限り、内部宛先（loopback・プライベート IP 等）を拒む。外部 IdP のエンドポイントは
-    /// 本 IdP のサーバが自ら取りに行く先なので、ここを緩めると管理 API が SSRF の踏み台になる
+    /// assay のサーバが自ら取りに行く先なので、ここを緩めると管理 API が SSRF の踏み台になる
     /// （back-channel logout URI と同じ理由。SEC2）。
     pub fn validate_endpoint(url: &str, field: &str) -> Result<(), DomainError> {
         let parsed = url::Url::parse(url.trim())
@@ -186,7 +186,7 @@ impl ExternalIdentityProvider {
     }
 }
 
-/// 外部 IdP 上の同一性と本 IdP 利用者の対応。
+/// 外部 IdP 上の同一性と assay 利用者の対応。
 #[derive(Debug, Clone)]
 pub struct ExternalIdentity {
     pub id: Uuid,

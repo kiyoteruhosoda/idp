@@ -1,6 +1,6 @@
 //! 外部 OpenID Provider との通信ポート（DIP 境界。AP10）。
 //!
-//! 本 IdP が**クライアントとして**外部 IdP を呼ぶ経路。実装（reqwest + jsonwebtoken）は
+//! assay が**クライアントとして**外部 IdP を呼ぶ経路。実装（reqwest + jsonwebtoken）は
 //! `infrastructure::external_oidc` にある。Application 層はこのトレイト越しにしか外部へ出ない
 //! ので、テストではネットワーク無しで（固定の ID Token を返す実装で）検証できる。
 //!
