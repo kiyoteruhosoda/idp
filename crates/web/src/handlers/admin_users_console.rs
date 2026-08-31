@@ -20,11 +20,11 @@ use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, ConsoleNotice, UserCreated, UserForm, UsersPermissions};
 use crate::tenant::WebTenant;
+use assay_contracts::admin::UserSummaryResponse;
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
-use idp_contracts::admin::UserSummaryResponse;
 use serde::Deserialize;
 
 const USERS_SEGMENT: &str = "/admin/users";

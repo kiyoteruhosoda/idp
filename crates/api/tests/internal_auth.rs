@@ -9,8 +9,8 @@
 
 mod support;
 
+use assay_api::application::login::csrf_token;
 use axum::http::StatusCode;
-use idp_api::application::login::csrf_token;
 use serde_json::json;
 use support::{
     body_json, post_internal, register_user, send, CODE_CHALLENGE, REDIRECT_URI, SERVICE_TOKEN,

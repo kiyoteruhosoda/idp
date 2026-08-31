@@ -19,14 +19,14 @@ use crate::i18n::{Locale, Messages};
 use crate::state::WebState;
 use crate::templates::{render, ForgotPassword, PasswordReset};
 use crate::tenant::WebTenant;
+use assay_contracts::auth::{
+    InternalPasswordResetCompleteRequest, InternalPasswordResetCompleteResponse,
+    InternalPasswordResetRequestRequest, InternalPasswordResetRequestResponse,
+};
 use axum::extract::{Extension, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
-use idp_contracts::auth::{
-    InternalPasswordResetCompleteRequest, InternalPasswordResetCompleteResponse,
-    InternalPasswordResetRequestRequest, InternalPasswordResetRequestResponse,
-};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]

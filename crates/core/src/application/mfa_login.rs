@@ -187,8 +187,8 @@ impl MfaLoginService {
         }
 
         // 3. CSRF トークン検証（login_csrf_token と同じ導出を使う）。
-        if !idp_contracts::csrf::verify(
-            &idp_contracts::csrf::login_csrf_token(session_id, &self.csrf_secret),
+        if !assay_contracts::csrf::verify(
+            &assay_contracts::csrf::login_csrf_token(session_id, &self.csrf_secret),
             &cmd.csrf_token,
         ) {
             return MfaLoginOutcome::CsrfMismatch;
@@ -1142,7 +1142,10 @@ mod tests {
                     MfaLoginCommand {
                         auth_session_id: Some(SESSION_ID.to_string()),
                         totp_code: code.to_string(),
-                        csrf_token: idp_contracts::csrf::login_csrf_token(SESSION_ID, &CSRF_SECRET),
+                        csrf_token: assay_contracts::csrf::login_csrf_token(
+                            SESSION_ID,
+                            &CSRF_SECRET,
+                        ),
                     },
                     &ctx,
                 )

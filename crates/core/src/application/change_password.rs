@@ -172,8 +172,8 @@ impl ChangePasswordService {
         }
 
         // 3. CSRF トークン検証（login_csrf_token と同じ導出を使う）。
-        if !idp_contracts::csrf::verify(
-            &idp_contracts::csrf::login_csrf_token(session_id, &self.csrf_secret),
+        if !assay_contracts::csrf::verify(
+            &assay_contracts::csrf::login_csrf_token(session_id, &self.csrf_secret),
             &cmd.csrf_token,
         ) {
             self.audit

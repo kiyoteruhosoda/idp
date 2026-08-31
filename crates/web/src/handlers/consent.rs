@@ -13,15 +13,15 @@ use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, ConsentTemplate, MessagePage};
 use crate::tenant::WebTenant;
+use assay_contracts::auth::{
+    InternalConsentApproveRequest, InternalConsentApproveResponse, InternalConsentDenyRequest,
+    InternalConsentDenyResponse, InternalConsentInfoResponse,
+};
+use assay_contracts::csrf::consent_csrf_token;
 use axum::extract::{Extension, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
-use idp_contracts::auth::{
-    InternalConsentApproveRequest, InternalConsentApproveResponse, InternalConsentDenyRequest,
-    InternalConsentDenyResponse, InternalConsentInfoResponse,
-};
-use idp_contracts::csrf::consent_csrf_token;
 
 /// 同意画面を表示する。`auth_session_id` Cookie（`/authorize` ハンドオフの受領時またはログイン成功時に
 /// web が発行した host-only Cookie。ADR-0018 決定 2）が必要。
@@ -109,7 +109,7 @@ pub async fn consent(
             "consent-error-session-expired",
         );
     };
-    if !idp_contracts::csrf::verify(&auth_session_id, &form.auth_session_id) {
+    if !assay_contracts::csrf::verify(&auth_session_id, &form.auth_session_id) {
         tracing::warn!(
             correlation_id = %ctx.correlation_id,
             "consent rejected: form auth_session_id does not match the cookie"
@@ -119,7 +119,7 @@ pub async fn consent(
 
     // CSRF チェック（FluentBundle を await 前に使わないよう先に行う）。
     let expected_csrf = consent_csrf_token(&auth_session_id, state.config.csrf_secret());
-    if !idp_contracts::csrf::verify(&expected_csrf, &form.csrf_token) {
+    if !assay_contracts::csrf::verify(&expected_csrf, &form.csrf_token) {
         // PRG: 303 で同意画面の GET へ付け替え、新しいトークンのフォームを自動で再表示する
         //（従来はエラーページを返すだけで、リロードすると POST が再送されて復帰できなかった）。
         tracing::warn!(

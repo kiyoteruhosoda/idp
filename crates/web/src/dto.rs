@@ -298,7 +298,7 @@ pub struct AdminAuthenticationPolicyForm {
     ///
     /// 繰り返しキー（`methods=a&methods=b`）を `Vec` で受けないのは、フォームの復号に使う
     /// `serde_urlencoded` が列（sequence）に対応しないためである。方式は閉じた語彙
-    /// （[`idp_contracts::admin::AUTHENTICATION_METHOD_CODES`]）なので、方式ごとに独立した
+    /// （[`assay_contracts::admin::AUTHENTICATION_METHOD_CODES`]）なので、方式ごとに独立した
     /// チェックボックスとして受ける。
     #[serde(default)]
     pub method_password: Option<String>,

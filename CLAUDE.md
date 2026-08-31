@@ -97,7 +97,7 @@ presentation＋バイナリ）へ、P3 で `contracts`（serde DTO 契約）と 
 ```
 Cargo.toml            # [workspace]（共通依存は [workspace.dependencies]）
 crates/
-  core/               # idp-core（lib=idp_core）。sqlx/DB へ依存する層を集約。api のみが使う
+  core/               # assay-core（lib=assay_core）。sqlx/DB へ依存する層を集約。api のみが使う
     src/
       config.rs       # 設定（環境変数 > DB system_settings > 既定値）
       telemetry.rs    # tracing による JSON 構造化ログ初期化
@@ -111,7 +111,7 @@ crates/
         repositories/ # sqlx による MariaDB 実装
         jwt.rs password.rs crypto.rs clock.rs db.rs
 
-  contracts/          # idp-contracts（lib=idp_contracts）。api ↔ web 共有の serde DTO。DB/axum 非依存
+  contracts/          # assay-contracts（lib=assay_contracts）。api ↔ web 共有の serde DTO。DB/axum 非依存
     src/auth.rs       # 内部認証 API（/internal/authenticate*）の DTO 契約
     src/application_log.rs # エラー・警告ログの DTO と tracing 取り込み層（api/web が同じ形で組み立てる）
     src/cookies.rs    # Cookie 名と Set-Cookie 組み立て（両サービスが読み書きする値の契約）
@@ -119,17 +119,17 @@ crates/
     src/runtime_settings.rs # api/web 共有ランタイム設定（web が起動時に api から受け取る。ADR-0013）
     # DTO だけでなく「api と web で一致していないと壊れる値・導出」もここに単一定義する
 
-  api/                # idp-api（lib=idp_api / bin=idp）。core を再エクスポートし presentation を提供
+  api/                # assay-api（lib=assay_api / bin=assay）。core を再エクスポートし presentation を提供
     src/
-      main.rs         # ブートストラップ（idp_api::run）
+      main.rs         # ブートストラップ（assay_api::run）
       lib.rs          # run()・core 再エクスポート
       presentation/   # axum ハンドラ・ルータ・DTO
         router.rs handlers/ dto.rs cookies.rs error.rs i18n.rs
     tests/            # 統合テスト（sqlx + axum）
 
-  web/                # idp-web（lib=idp_web / bin=idp-web）。HTML 描画＋API クライアント。sqlx 非依存
+  web/                # assay-web（lib=assay_web / bin=assay-web）。HTML 描画＋API クライアント。sqlx 非依存
     src/
-      main.rs         # ブートストラップ（idp_web::run）
+      main.rs         # ブートストラップ（assay_web::run）
       config.rs       # web 固有設定（API_BASE_URL・共有サービストークン等）
       api_client.rs   # api への reqwest クライアント（データ操作の唯一の出入口）
       templates.rs    # Askama テンプレート構造体（描画のコンパイル時型検証。詳細は下記「画面描画」）

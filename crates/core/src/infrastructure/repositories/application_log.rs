@@ -156,9 +156,9 @@ mod tests {
 
     #[test]
     fn escapes_like_metacharacters() {
-        assert_eq!(escape_like("idp_api"), "idp\\_api");
+        assert_eq!(escape_like("assay_api"), "assay\\_api");
         assert_eq!(escape_like("100%"), "100\\%");
         assert_eq!(escape_like("a\\b"), "a\\\\b");
-        assert_eq!(escape_like("idp::handlers"), "idp::handlers");
+        assert_eq!(escape_like("assay::handlers"), "assay::handlers");
     }
 }

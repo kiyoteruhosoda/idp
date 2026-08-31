@@ -13,11 +13,11 @@ use crate::admin_dto::{
 };
 use crate::i18n::Messages;
 use askama::Template;
-use idp_contracts::admin::AuthenticationPolicyResponse;
-use idp_contracts::admin::{ClientStatusResponse, UserSummaryResponse};
-use idp_contracts::application_log::ApplicationLogEntryResponse;
-use idp_contracts::auth::PasskeyCredentialInfo;
-use idp_contracts::version::{
+use assay_contracts::admin::AuthenticationPolicyResponse;
+use assay_contracts::admin::{ClientStatusResponse, UserSummaryResponse};
+use assay_contracts::application_log::ApplicationLogEntryResponse;
+use assay_contracts::auth::PasskeyCredentialInfo;
+use assay_contracts::version::{
     BuildTimeVersionInfoProvider, SchemaVersionInfo, VersionInfo, VersionInfoProvider,
 };
 
@@ -812,7 +812,7 @@ pub struct PortalLogin<'a> {
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
     /// 有効な外部 IdP（AP10）。空ならボタン領域ごと出さない。
-    pub external_providers: &'a [idp_contracts::auth::ExternalIdpButton],
+    pub external_providers: &'a [assay_contracts::auth::ExternalIdpButton],
 }
 
 /// ポータルの TOTP 入力画面（`GET /{tenant_id}/login/mfa`）。`mfa_ticket` Cookie を保持した状態で表示する。
@@ -1600,7 +1600,7 @@ pub struct SwitchTenant<'a> {
     pub tenant: &'a str,
     pub admin: Admin<'a>,
     /// 切り替え可能なテナント一覧。
-    pub tenants: &'a [idp_contracts::auth::AccountTenantSummary],
+    pub tenants: &'a [assay_contracts::auth::AccountTenantSummary],
     /// 現在開いているテナントの内部 ID（現在地の強調に使う）。
     pub current_tenant_id: &'a str,
     /// api からの一覧取得に失敗したか（失敗時は注意文言を表示する）。

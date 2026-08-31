@@ -404,7 +404,7 @@ ensure_images() {
     ref_key="${svc}_ref"; id_key="${svc}_image_id"
     ref="${!ref_key:-${prefix:-idp}/${svc}:${tag:-latest}}"
     expected_id="${!id_key:-}"
-    tar="$dist_dir/idp-${svc}.tar"
+    tar="$dist_dir/assay-${svc}.tar"
     actual_id="$(docker image inspect -f '{{.Id}}' "$ref" 2>/dev/null || true)"
     if [[ -z "$actual_id" || ( -n "$expected_id" && "$actual_id" != "$expected_id" ) ]]; then
       [[ -f "$tar" ]] || die "イメージ $ref がありません（$tar も無し）。build.sh が出力した dist/ を配置してください。"

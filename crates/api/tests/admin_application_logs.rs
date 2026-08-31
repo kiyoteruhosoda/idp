@@ -48,15 +48,20 @@ async fn ingested_logs_are_queryable_with_filters() {
     let res = ingest(
         app,
         json!([
-            record("ERROR", "web", "idp_web::handlers::login", &correlation_id),
+            record(
+                "ERROR",
+                "web",
+                "assay_web::handlers::login",
+                &correlation_id
+            ),
             record(
                 "WARN",
                 "api",
-                "idp_api::presentation::token",
+                "assay_api::presentation::token",
                 &correlation_id
             ),
             // 解釈できない行（INFO は記録対象外・未知サービス）は捨てられ、残りだけ書かれる。
-            record("INFO", "api", "idp_api::presentation", &correlation_id),
+            record("INFO", "api", "assay_api::presentation", &correlation_id),
             record("ERROR", "worker", "idp_worker::jobs", &correlation_id),
         ]),
     )
@@ -96,14 +101,16 @@ async fn ingested_logs_are_queryable_with_filters() {
     let entries = entries.as_array().expect("array");
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["service"], "web");
-    assert_eq!(entries[0]["target"], "idp_web::handlers::login");
+    assert_eq!(entries[0]["target"], "assay_web::handlers::login");
 
     // target は前方一致で絞り込む。
     let res = send(
         app,
         get(
             &admin_tok,
-            &format!("/{root_tenant_id}/admin/logs?correlation_id={correlation_id}&target=idp_api"),
+            &format!(
+                "/{root_tenant_id}/admin/logs?correlation_id={correlation_id}&target=assay_api"
+            ),
         ),
     )
     .await;
@@ -174,7 +181,7 @@ async fn ingest_requires_the_service_token() {
         post_internal(
             "/internal/logs",
             None,
-            json!({ "records": [record("ERROR", "web", "idp_web::x", "no-token")] }),
+            json!({ "records": [record("ERROR", "web", "assay_web::x", "no-token")] }),
         ),
     )
     .await;

@@ -8,8 +8,8 @@
 
 mod support;
 
+use assay_contracts::cookies::SSO_SESSION_COOKIE;
 use axum::http::StatusCode;
-use idp_contracts::cookies::SSO_SESSION_COOKIE;
 use serde_json::json;
 use support::{get, get_with_cookies, location, send, setup};
 use wiremock::matchers::{method, path_regex};

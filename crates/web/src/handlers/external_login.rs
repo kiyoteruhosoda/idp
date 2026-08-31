@@ -22,13 +22,13 @@ use crate::i18n::{Locale, Messages};
 use crate::state::WebState;
 use crate::templates::{render, MessagePage};
 use crate::tenant::WebTenant;
-use axum::extract::{Extension, Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::{Html, IntoResponse, Response};
-use idp_contracts::auth::{
+use assay_contracts::auth::{
     InternalExternalCallbackRequest, InternalExternalCallbackResponse,
     InternalExternalStartRequest, InternalExternalStartResponse,
 };
+use axum::extract::{Extension, Path, Query, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{Html, IntoResponse, Response};
 use serde::Deserialize;
 
 /// 外部 IdP から戻ってくるクエリ（成功時は `code` + `state`、失敗時は `error`）。
@@ -151,7 +151,7 @@ pub async fn saml_acs(
 ) -> Response {
     let locale = locale(&headers);
     let ctx = forwarded_context(&headers, &correlation, &client_ip);
-    let request = idp_contracts::auth::InternalExternalSamlAcsRequest {
+    let request = assay_contracts::auth::InternalExternalSamlAcsRequest {
         tenant_id: Some(tenant.0.clone()),
         saml_response: form.saml_response,
         relay_state: form.relay_state.unwrap_or_default(),

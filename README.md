@@ -28,9 +28,9 @@ IdP ドメインの Cookie セッションによる **SSO** を含む。
 
 同一ホストの Docker Compose 上で 4 つのサービスが動く（ADR-0007）。
 
-- **api**（`idp-api`）— OIDC protocol・JSON 管理 API・内部 API。**DB へ直結する唯一のサービス**で、
+- **api**（`assay-api`）— OIDC protocol・JSON 管理 API・内部 API。**DB へ直結する唯一のサービス**で、
   内部は DDD 4層に分かれる
-- **web**（`idp-web`）— ログイン画面・管理コンソールの HTML 描画。**sqlx を持たず**、データ操作は
+- **web**（`assay-web`）— ログイン画面・管理コンソールの HTML 描画。**sqlx を持たず**、データ操作は
   api へ HTTP 越しに行う
 - **proxy**（nginx）— **唯一の公開点**。api・web コンテナはホストへ publish しない
 - **mariadb** — 永続化。DDL・マスタデータの適用は常駐させない `migrate` ワンショットジョブが担う
@@ -55,14 +55,14 @@ graph TB
       PA["listen 8081 — api 面"]
     end
 
-    subgraph web["web : idp-web（axum + Askama。DB 非依存）"]
+    subgraph web["web : assay-web（axum + Askama。DB 非依存）"]
       direction TB
       WH["handlers・templates<br/>ログイン画面・管理コンソール"]
       WC["api_client（reqwest）"]
       WH --> WC
     end
 
-    subgraph api["api : idp-api（axum。DDD 4層）"]
+    subgraph api["api : assay-api（axum。DDD 4層）"]
       direction TB
       P["Presentation<br/>router・handlers・DTO・cookies"]
       A["Application<br/>authorize・login・token・userinfo<br/>code_issuance・audit・key_service"]
@@ -90,7 +90,7 @@ graph TB
   B -.->|"302 redirect + code"| RP
 ```
 
-`idp-contracts` クレートが api ↔ web で共有する DTO・Cookie 名・CSRF 導出・ランタイム設定を単一定義する
+`assay-contracts` クレートが api ↔ web で共有する DTO・Cookie 名・CSRF 導出・ランタイム設定を単一定義する
 （`web` は sqlx / infrastructure に依存しない。crate 境界で強制）。
 
 ### スケール前提: **api は単一インスタンスで動かす**（G9）
@@ -258,9 +258,9 @@ sequenceDiagram
 docker compose up -d mariadb   # MariaDB 10.11 を起動
 sqlx migrate run               # マイグレーション適用（要 DATABASE_URL）
 # 別々のシェルで起動する（web は api を API_BASE_URL 越しに呼ぶ）
-PUBLIC_WEB_BASE_URL=http://localhost:8081 cargo run -p idp-api   # api 起動（既定: 0.0.0.0:8080）
+PUBLIC_WEB_BASE_URL=http://localhost:8081 cargo run -p assay-api   # api 起動（既定: 0.0.0.0:8080）
 PUBLIC_WEB_BASE_URL=http://localhost:8081 API_BASE_URL=http://localhost:8080 \
-  cargo run -p idp-web                                           # web 起動（既定: 0.0.0.0:8081）
+  cargo run -p assay-web                                           # web 起動（既定: 0.0.0.0:8081）
 ```
 
 プロキシを立てないため、ログイン画面・管理コンソールは web（`:8081`）、OIDC protocol・JSON 管理 API は

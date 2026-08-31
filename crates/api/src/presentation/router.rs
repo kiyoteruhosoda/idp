@@ -223,7 +223,7 @@ pub fn build(state: AppState) -> Router {
         // web が起動時に読む共有ランタイム設定（MT26 / ADR-0013）。web は DB を持たないため、
         // api/web の両方が消費する DB 管理値（COOKIE_SECURE 等）はここが唯一の出所になる。
         .route(
-            idp_contracts::runtime_settings::SHARED_RUNTIME_SETTINGS_PATH,
+            assay_contracts::runtime_settings::SHARED_RUNTIME_SETTINGS_PATH,
             get(internal_runtime_settings::shared_runtime_settings),
         )
         // web の WARN / ERROR 取り込み（CLAUDE.md「ログ」）。web は DB を持たないため、自身の
@@ -535,7 +535,7 @@ pub fn build(state: AppState) -> Router {
         ))
         // アクセススパンはパスのみを記録する（クエリ文字列に載る `code`・`code_challenge` を
         // ログへ落とさない。SEC9）。組み立ては web と共有する。
-        .layer(TraceLayer::new_for_http().make_span_with(idp_contracts::http_trace::request_span))
+        .layer(TraceLayer::new_for_http().make_span_with(assay_contracts::http_trace::request_span))
         .layer(middleware::from_fn(move |req, next| {
             add_security_headers(req, next, hsts_max_age)
         }))

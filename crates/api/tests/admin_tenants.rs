@@ -154,11 +154,11 @@ async fn root_system_admin_creates_tenant_and_becomes_bootstrap_admin() {
 /// `permissions` マスタに無いコードで失敗させ、先行 2 INSERT が巻き戻ることを実 DB で検証する。
 #[tokio::test]
 async fn provisioning_rolls_back_all_rows_when_a_step_fails() {
-    use idp_api::domain::repositories::TenantProvisioningRepository;
-    use idp_api::domain::tenant::{Tenant, TenantId};
-    use idp_api::domain::tenant_membership::TenantMembership;
-    use idp_api::domain::values::TenantStatus;
-    use idp_api::infrastructure::repositories::tenant_provisioning::SqlxTenantProvisioningRepository;
+    use assay_api::domain::repositories::TenantProvisioningRepository;
+    use assay_api::domain::tenant::{Tenant, TenantId};
+    use assay_api::domain::tenant_membership::TenantMembership;
+    use assay_api::domain::values::TenantStatus;
+    use assay_api::infrastructure::repositories::tenant_provisioning::SqlxTenantProvisioningRepository;
 
     let Some(env) = support::setup("admin tenants rollback").await else {
         return;

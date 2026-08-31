@@ -9,14 +9,14 @@ use crate::application::totp_registration::TotpRegistrationError;
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::require_internal_tenant;
-use axum::extract::{Extension, State};
-use axum::response::Response;
-use axum::Json;
-use idp_contracts::auth::{
+use assay_contracts::auth::{
     InternalTotpConfirmRequest, InternalTotpConfirmResponse, InternalTotpDeleteRequest,
     InternalTotpDeleteResponse, InternalTotpSetupRequest, InternalTotpSetupResponse,
     InternalVerifyTotpRequest, InternalVerifyTotpResponse,
 };
+use axum::extract::{Extension, State};
+use axum::response::Response;
+use axum::Json;
 
 /// TOTP セットアップ開始（`POST /internal/mfa/totp/setup`）。
 ///

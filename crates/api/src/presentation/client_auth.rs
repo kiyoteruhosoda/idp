@@ -2,19 +2,19 @@
 //!
 //! 3 つのエンドポイントは RFC 6749 §2.3.1 の同じクライアント認証を受け付ける。`Authorization: Basic`
 //! の復号と body（`client_secret_post`・`private_key_jwt` の assertion）の読み取りをここへ集め、判定は
-//! `idp_core::application::client_authentication` が行う。
+//! `assay_core::application::client_authentication` が行う。
 //!
 //! 形式不正な Basic ヘッダは 401（`invalid_client`）で返す。ここでは**どの client か**を特定
 //! できないため監査ログは残さず、クライアントの存在が判明してからユースケース側で記録する。
 
 use crate::domain::error::OAuthErrorCode;
 use crate::presentation::dto::OAuthErrorResponse;
+use assay_core::application::client_authentication::PresentedClientCredentials;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use idp_core::application::client_authentication::PresentedClientCredentials;
 use percent_encoding::percent_decode_str;
 
 /// `Authorization: Basic` ヘッダの形式不正。

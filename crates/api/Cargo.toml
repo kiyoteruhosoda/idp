@@ -1,24 +1,24 @@
 [package]
-name = "idp-api"
+name = "assay-api"
 version = "0.1.0"
 edition = "2021"
 description = "OIDC IdP API: axum presentation（protocol + JSON 管理 + 管理コンソール）とバイナリ"
 license = "MIT"
 
 [lib]
-name = "idp_api"
+name = "assay_api"
 path = "src/lib.rs"
 
 [[bin]]
-name = "idp"
+name = "assay"
 path = "src/main.rs"
 
 [lints]
 workspace = true
 
 [dependencies]
-idp-core = { path = "../core" }
-idp-contracts = { path = "../contracts" }
+assay-core = { path = "../core" }
+assay-contracts = { path = "../contracts" }
 tokio = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }
@@ -57,5 +57,5 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 # web→api E2E テスト（ADR-0012 §7）: api/web を実サーバとして同時起動し、Cookie jar 有効の
 # クライアントで SSO Cookie の越境を実挙動で検証する。dev-dependency のため web の
 # 「sqlx 非依存」という crate 境界（ADR-0007)は侵さない。
-idp-web = { path = "../web" }
+assay-web = { path = "../web" }
 reqwest = { workspace = true, features = ["cookies"] }

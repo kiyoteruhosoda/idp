@@ -22,10 +22,10 @@ use crate::application::logout::LogoutOutcome;
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::require_internal_tenant;
+use assay_contracts::auth::{InternalRpLogoutRequest, InternalRpLogoutResponse};
 use axum::extract::{Extension, State};
 use axum::response::Response;
 use axum::Json;
-use idp_contracts::auth::{InternalRpLogoutRequest, InternalRpLogoutResponse};
 
 /// RP-initiated logout の内部エンドポイント。
 pub async fn rp_logout(

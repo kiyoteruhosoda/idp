@@ -131,7 +131,7 @@ async fn unknown_session_and_other_tenants_get_nothing() {
     // 他の非 2xx は 502 に倒す（MT28）。説明文で判別すると、文言を直した瞬間に静かに壊れる。
     assert_eq!(
         body_json(response).await["error"],
-        idp_contracts::auth::UNKNOWN_TENANT_ERROR_CODE,
+        assay_contracts::auth::UNKNOWN_TENANT_ERROR_CODE,
         "the web side distinguishes this rejection by its error code"
     );
 }

@@ -14,7 +14,7 @@
 //! 共有テーブルで、テストバイナリは並列に走る。`ISSUER` は `Config` の広範囲（Cookie の Secure 判定・
 //! 本番シークレットの fail-fast・公開 URL）に効くため、書き換えると同時実行中の別テストの `Config`
 //! まで巻き添えにする。保存経路は「不正値が弾かれること」＝ DB を変えない側で確認し、DB 上書きが
-//! `Config` へ届くことは `idp-core` の単体テスト（`config::tests::issuer_is_overridden_by_db_settings`）
+//! `Config` へ届くことは `assay-core` の単体テスト（`config::tests::issuer_is_overridden_by_db_settings`）
 //! で固定している。
 //!
 //! 再起動の要求はテスト内で `ServiceRestart` のフラグを立てるだけで、待っている `axum::serve` が
@@ -22,16 +22,16 @@
 
 mod support;
 
+use assay_api::config::Config;
+use assay_api::domain::clock::Clock;
+use assay_api::presentation::{router, state::AppState};
 use axum::http::StatusCode;
-use idp_api::config::Config;
-use idp_api::domain::clock::Clock;
-use idp_api::presentation::{router, state::AppState};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use support::{admin_token, body_json, create_plain_user, get, post, put, send};
 
 async fn start_api(pool: &sqlx::MySqlPool) -> axum::Router {
-    let db_settings = idp_api::load_db_managed_settings(pool)
+    let db_settings = assay_api::load_db_managed_settings(pool)
         .await
         .expect("load DB-managed settings");
     let config = Config::from_env_and_db_settings(&db_settings).expect("resolve api config");

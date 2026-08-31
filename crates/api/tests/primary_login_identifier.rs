@@ -15,13 +15,13 @@
 
 mod support;
 
-use idp_api::domain::login_identifier::{LoginIdentifierType, UserLoginIdentifier};
-use idp_api::domain::repositories::{UserLoginIdentifierRepository, UserRepository};
-use idp_api::domain::tenant::TenantId;
-use idp_api::domain::user::User;
-use idp_api::domain::values::UserStatus;
-use idp_api::infrastructure::repositories::user::SqlxUserRepository;
-use idp_api::infrastructure::repositories::user_login_identifier::SqlxUserLoginIdentifierRepository;
+use assay_api::domain::login_identifier::{LoginIdentifierType, UserLoginIdentifier};
+use assay_api::domain::repositories::{UserLoginIdentifierRepository, UserRepository};
+use assay_api::domain::tenant::TenantId;
+use assay_api::domain::user::User;
+use assay_api::domain::values::UserStatus;
+use assay_api::infrastructure::repositories::user::SqlxUserRepository;
+use assay_api::infrastructure::repositories::user_login_identifier::SqlxUserLoginIdentifierRepository;
 use sqlx::MySqlPool;
 use uuid::Uuid;
 
@@ -236,7 +236,7 @@ async fn a_value_another_user_already_owns_is_rejected() {
         .await
         .expect_err("a taken value must not become someone else's primary identifier");
     assert!(
-        matches!(err, idp_api::domain::error::DomainError::Conflict(_)),
+        matches!(err, assay_api::domain::error::DomainError::Conflict(_)),
         "expected a conflict, got {err:?}"
     );
     assert!(
@@ -255,7 +255,7 @@ async fn a_value_another_user_already_owns_is_rejected() {
         .await
         .expect_err("renaming onto a taken value must fail");
     assert!(
-        matches!(err, idp_api::domain::error::DomainError::Conflict(_)),
+        matches!(err, assay_api::domain::error::DomainError::Conflict(_)),
         "expected a conflict, got {err:?}"
     );
 

@@ -14,11 +14,11 @@ use crate::presentation::correlation::CorrelationId;
 use crate::presentation::handlers::{found, request_context};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::{require_internal_tenant, ResolvedTenant};
+use assay_contracts::auth::{InternalSamlResumeRequest, InternalSamlResumeResponse};
 use axum::extract::{Extension, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Form, Json};
-use idp_contracts::auth::{InternalSamlResumeRequest, InternalSamlResumeResponse};
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
 

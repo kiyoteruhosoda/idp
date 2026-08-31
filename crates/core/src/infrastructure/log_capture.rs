@@ -7,7 +7,7 @@
 //! 捨てた件数は数えておき、書き込みタスクが次のバッチと一緒に 1 行の警告として残す
 //! （「捨てた」こと自体をログに出すと再帰するので、DB 側には数だけを載せる）。
 
-use idp_contracts::application_log::{ApplicationLogPayload, CapturedLogSink};
+use assay_contracts::application_log::{ApplicationLogPayload, CapturedLogSink};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -79,7 +79,7 @@ mod tests {
             occurred_at: "2026-07-27T00:00:00Z".to_string(),
             level: "ERROR".to_string(),
             service: "api".to_string(),
-            target: "idp_api::test".to_string(),
+            target: "assay_api::test".to_string(),
             message: message.to_string(),
             correlation_id: None,
             tenant_id: None,

@@ -17,15 +17,15 @@ use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, ConnectedAppView, SecuritySessionView, UserSecurity};
 use crate::tenant::WebTenant;
-use axum::extract::{Extension, Query, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::{Html, IntoResponse, Response};
-use axum::Form;
-use idp_contracts::auth::{
+use assay_contracts::auth::{
     InternalAccountRevokeConsentRequest, InternalAccountRevokeConsentResponse,
     InternalAccountRevokeSessionRequest, InternalAccountRevokeSessionResponse,
     InternalAccountSecurityRequest, InternalAccountSecurityResponse,
 };
+use axum::extract::{Extension, Query, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{Html, IntoResponse, Response};
+use axum::Form;
 use serde::Deserialize;
 
 /// PRG 後のバナー表示に使うクエリ。
@@ -137,7 +137,7 @@ pub async fn revoke_session(
     let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         return found(&format!("{}/login", tenant.prefix()));
     };
-    if !idp_contracts::csrf::verify(
+    if !assay_contracts::csrf::verify(
         &console_csrf_token(&sso, state.config.csrf_secret()),
         &form.csrf_token,
     ) {
@@ -210,7 +210,7 @@ pub async fn revoke_consent(
     let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         return found(&format!("{}/login", tenant.prefix()));
     };
-    if !idp_contracts::csrf::verify(
+    if !assay_contracts::csrf::verify(
         &console_csrf_token(&sso, state.config.csrf_secret()),
         &form.csrf_token,
     ) {

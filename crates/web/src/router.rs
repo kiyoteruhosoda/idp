@@ -534,7 +534,7 @@ pub fn build(state: WebState) -> Router {
         .layer(axum::middleware::from_fn(error_pages::render_error_pages))
         // アクセススパンはパスのみを記録する（クエリ文字列に載る `?auth_session=` 等の単回ハンドルを
         // ログへ落とさない。SEC9）。組み立ては api と共有する。
-        .layer(TraceLayer::new_for_http().make_span_with(idp_contracts::http_trace::request_span))
+        .layer(TraceLayer::new_for_http().make_span_with(assay_contracts::http_trace::request_span))
         .layer(axum::middleware::from_fn(move |req, next| {
             add_security_headers(req, next, hsts_max_age)
         }))
@@ -689,7 +689,8 @@ mod tests {
         for header in [None, Some("wrong-token")] {
             let mut request = Request::builder().uri("/internal/health");
             if let Some(token) = header {
-                request = request.header(idp_contracts::internal_auth::SERVICE_TOKEN_HEADER, token);
+                request =
+                    request.header(assay_contracts::internal_auth::SERVICE_TOKEN_HEADER, token);
             }
             let response = build(test_state())
                 .oneshot(request.body(Body::empty()).expect("request"))
@@ -719,7 +720,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/internal/health")
-                    .header(idp_contracts::internal_auth::SERVICE_TOKEN_HEADER, token)
+                    .header(assay_contracts::internal_auth::SERVICE_TOKEN_HEADER, token)
                     .body(Body::empty())
                     .expect("request"),
             )

@@ -26,11 +26,11 @@ use crate::templates::{
     render, LoginIdentifierRow, LoginIdentifierTypeOption, LoginIdentifiersConsole,
 };
 use crate::tenant::WebTenant;
+use assay_contracts::admin::LOGIN_IDENTIFIER_TYPE_CODES;
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
-use idp_contracts::admin::LOGIN_IDENTIFIER_TYPE_CODES;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -279,7 +279,7 @@ fn sso(headers: &HeaderMap) -> String {
 }
 
 fn csrf_valid(sso: &str, submitted: &str, key: &[u8]) -> bool {
-    idp_contracts::csrf::verify(&console_csrf_token(sso, key), submitted)
+    assay_contracts::csrf::verify(&console_csrf_token(sso, key), submitted)
 }
 
 #[cfg(test)]

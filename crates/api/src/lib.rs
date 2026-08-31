@@ -1,12 +1,12 @@
-//! OIDC IdP の API（`idp-api`）。
+//! OIDC IdP の API（`assay-api`）。
 //!
 //! axum の presentation 層（OIDC protocol・JSON 管理 API・管理コンソール HTML）とバイナリ起動を担う。
-//! Domain / Application / Infrastructure・設定・ログ基盤は `idp-core` にある。
+//! Domain / Application / Infrastructure・設定・ログ基盤は `assay-core` にある。
 //!
 //! ADR-0007（API/Web サービス分割）の P1 として単一 crate を分割した。ここでは core の各モジュールを
 //! 再エクスポートし、presentation 内の `crate::domain` 等の参照と統合テストの参照経路を維持する
 //! （all-in-one を保ったまま crate 境界だけを作る段階）。web crate 化は P3 で行う。
-pub use idp_core::{application, config, domain, infrastructure, telemetry};
+pub use assay_core::{application, config, domain, infrastructure, telemetry};
 
 pub mod presentation;
 pub mod service_restart;
@@ -233,12 +233,12 @@ fn spawn_application_log_writer(
 fn dropped_notice(
     dropped: u64,
     occurred_at: String,
-) -> idp_contracts::application_log::ApplicationLogPayload {
-    idp_contracts::application_log::ApplicationLogPayload {
+) -> assay_contracts::application_log::ApplicationLogPayload {
+    assay_contracts::application_log::ApplicationLogPayload {
         occurred_at,
         level: "WARN".to_string(),
-        service: idp_contracts::application_log::SERVICE_API.to_string(),
-        target: "idp_api::log_writer".to_string(),
+        service: assay_contracts::application_log::SERVICE_API.to_string(),
+        target: "assay_api::log_writer".to_string(),
         message: format!(
             "dropped {dropped} application log record(s); the DB write queue was full"
         ),

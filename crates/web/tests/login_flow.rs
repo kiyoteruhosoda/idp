@@ -6,10 +6,10 @@
 
 mod support;
 
+use assay_contracts::cookies::{AUTH_SESSION_COOKIE, SSO_SESSION_COOKIE};
+use assay_contracts::csrf::login_csrf_token;
+use assay_web::cookies::PORTAL_CSRF_COOKIE;
 use axum::http::StatusCode;
-use idp_contracts::cookies::{AUTH_SESSION_COOKIE, SSO_SESSION_COOKIE};
-use idp_contracts::csrf::login_csrf_token;
-use idp_web::cookies::PORTAL_CSRF_COOKIE;
 use serde_json::json;
 use support::{
     body_text, get, get_with_cookies, location, post_form, send, set_cookie, set_cookie_raw, setup,
@@ -253,7 +253,7 @@ async fn an_unknown_tenant_renders_the_404_page_instead_of_a_bad_gateway() {
     Mock::given(method("POST"))
         .and(path("/internal/authenticate"))
         .respond_with(ResponseTemplate::new(400).set_body_json(json!({
-            "error": idp_contracts::auth::UNKNOWN_TENANT_ERROR_CODE,
+            "error": assay_contracts::auth::UNKNOWN_TENANT_ERROR_CODE,
             "error_description": "unknown or disabled tenant"
         })))
         .mount(&env.api)

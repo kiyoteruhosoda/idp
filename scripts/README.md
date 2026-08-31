@@ -41,7 +41,7 @@ IMAGE_TAG=1.0.0 ./scripts/build.sh  # イメージタグを指定（既定 lates
 
 ```
 dist/
-├── idp-api.tar / idp-web.tar / idp-migrate.tar   # ビルド済みイメージ
+├── assay-api.tar / assay-web.tar / assay-migrate.tar   # ビルド済みイメージ
 ├── docker-compose.yml                            # デプロイ用 Compose（image: 参照のみ）
 ├── docker-compose.domain-split.yml               # 別ドメイン公開の override（ADR-0015）
 ├── docker/nginx.conf                             # リバースプロキシ設定（単一オリジン）

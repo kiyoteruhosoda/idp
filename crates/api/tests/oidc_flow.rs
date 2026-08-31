@@ -79,7 +79,7 @@ fn basic_auth(client_id: &str, secret: &str) -> String {
 
 /// `auth_session_id` 由来のログイン CSRF トークン（web が描画し api の LoginService が検証する契約）。
 fn login_csrf(auth_session: &str, csrf_secret: &[u8; 32]) -> String {
-    idp_api::application::login::csrf_token(auth_session, csrf_secret)
+    assay_api::application::login::csrf_token(auth_session, csrf_secret)
 }
 
 /// api の内部認証（`POST /internal/authenticate`）で資格情報検証を駆動する（ログイン画面は web crate）。

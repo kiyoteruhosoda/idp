@@ -691,7 +691,7 @@ fn sso(headers: &HeaderMap) -> String {
 }
 
 fn csrf_valid(sso: &str, submitted: &str, key: &[u8]) -> bool {
-    idp_contracts::csrf::verify(&console_csrf_token(sso, key), submitted)
+    assay_contracts::csrf::verify(&console_csrf_token(sso, key), submitted)
 }
 
 #[cfg(test)]

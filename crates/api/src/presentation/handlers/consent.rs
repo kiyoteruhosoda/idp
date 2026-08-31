@@ -8,14 +8,14 @@ use crate::application::consent::ConsentOutcome;
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::require_internal_tenant;
+use assay_contracts::auth::{
+    InternalConsentApproveRequest, InternalConsentApproveResponse, InternalConsentDenyRequest,
+    InternalConsentDenyResponse, InternalConsentInfoRequest, InternalConsentInfoResponse,
+};
 use axum::extract::{Extension, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use idp_contracts::auth::{
-    InternalConsentApproveRequest, InternalConsentApproveResponse, InternalConsentDenyRequest,
-    InternalConsentDenyResponse, InternalConsentInfoRequest, InternalConsentInfoResponse,
-};
 
 /// 同意画面情報（`GET /internal/consent-info`）。
 /// `auth_session_id` の AuthSession を確認し、クライアント名・要求 scope を返す。

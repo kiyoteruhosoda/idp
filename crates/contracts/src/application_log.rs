@@ -335,17 +335,17 @@ mod tests {
     fn skips_excluded_targets() {
         let records = capture(|| {
             tracing::error!(target: "idp_excluded::sink", "must not be captured");
-            tracing::error!(target: "idp_api::token", "captured");
+            tracing::error!(target: "assay_api::token", "captured");
         });
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].target, "idp_api::token");
+        assert_eq!(records[0].target, "assay_api::token");
     }
 
     #[test]
     fn falls_back_to_target_when_event_has_no_message() {
         let records = capture(|| {
-            tracing::warn!(target: "idp_api::jobs", retries = 2);
+            tracing::warn!(target: "assay_api::jobs", retries = 2);
         });
-        assert_eq!(records[0].message, "idp_api::jobs");
+        assert_eq!(records[0].message, "assay_api::jobs");
     }
 }

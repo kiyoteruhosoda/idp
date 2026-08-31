@@ -27,15 +27,15 @@ use crate::templates::{
     SwitchTenant,
 };
 use crate::tenant::WebTenant;
-use axum::extract::{Extension, Query, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::{Html, IntoResponse, Response};
-use axum::Form;
-use idp_contracts::auth::{
+use assay_contracts::auth::{
     InternalAccountTenantsRequest, InternalAccountTenantsResponse,
     InternalAdminAuthenticateRequest, InternalAdminAuthenticateResponse,
     InternalAdminChangePasswordRequest, InternalAdminChangePasswordResponse, InternalLogoutRequest,
 };
+use axum::extract::{Extension, Query, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{Html, IntoResponse, Response};
+use axum::Form;
 use uuid::Uuid;
 
 /// 管理コンソールのホーム（`GET /{tenant_id}/admin`）。SSO を api へ転送して認可を確認する。

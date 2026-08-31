@@ -18,8 +18,8 @@ use crate::domain::system_setting::{
     requires_production_secrets, runtime_setting_definition, DefaultRisk, DeploymentState,
     DevelopmentSecrets, SettingOwner, RUNTIME_SETTING_DEFINITIONS,
 };
+use assay_contracts::cookies::CookiePolicy;
 use base64::{engine::general_purpose::STANDARD, Engine};
-use idp_contracts::cookies::CookiePolicy;
 use std::collections::HashMap;
 use std::env;
 use std::time::Duration;
@@ -246,7 +246,7 @@ impl Config {
         // 起動時に検証する（削除 Cookie がブラウザに受理されない値を弾く fail-fast）。
         let cookie_domain = match resolver.optional_string("COOKIE_DOMAIN") {
             Some(raw) => Some(
-                idp_contracts::cookie_domain::validate_cookie_domain(
+                assay_contracts::cookie_domain::validate_cookie_domain(
                     &raw,
                     &[issuer.as_str(), public_web_base_url.as_str()],
                 )
@@ -802,7 +802,7 @@ fn load_csrf_secret() -> anyhow::Result<([u8; 32], bool)> {
 
 /// `INTERNAL_SERVICE_TOKEN` の最低要件を検査する（SEC11）。判定は web と共有の契約に置く。
 fn validate_internal_service_token(value: String) -> anyhow::Result<String> {
-    idp_contracts::deployment::validate_internal_service_token(&value)
+    assay_contracts::deployment::validate_internal_service_token(&value)
         .map_err(|e| anyhow::anyhow!(e))
 }
 

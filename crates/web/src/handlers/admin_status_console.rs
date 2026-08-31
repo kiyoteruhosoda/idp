@@ -17,12 +17,12 @@ use crate::templates::{
     render, ApplicationLogs, AuditLogs, ClientStatus, ConsoleNotice, VersionTemplate,
 };
 use crate::tenant::WebTenant;
+use assay_contracts::admin::ClientStatusResponse;
+use assay_contracts::application_log::ApplicationLogEntryResponse;
+use assay_contracts::version::{BuildTimeVersionInfoProvider, VersionInfoProvider};
 use axum::extract::{Extension, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
-use idp_contracts::admin::ClientStatusResponse;
-use idp_contracts::application_log::ApplicationLogEntryResponse;
-use idp_contracts::version::{BuildTimeVersionInfoProvider, VersionInfoProvider};
 use serde::Deserialize;
 
 const AUDIT_SEGMENT: &str = "/admin/audit-logs";
@@ -530,7 +530,7 @@ mod tests {
             occurred_at: "2026-07-27T00:00:00Z".into(),
             level: level.into(),
             service: service.into(),
-            target: "idp_api::presentation::token".into(),
+            target: "assay_api::presentation::token".into(),
             message: "<script>alert(1)</script>".into(),
             correlation_id: Some("corr-1".into()),
             tenant_id: None,
@@ -583,14 +583,14 @@ mod tests {
     fn application_log_query_string_preserves_filters_and_encodes() {
         let form = ApplicationLogForm {
             level: Some("ERROR".into()),
-            target: Some("idp_api::a b".into()),
+            target: Some("assay_api::a b".into()),
             ..ApplicationLogForm::default()
         };
         let url = application_log_query_string(&tenant(), &form, 50);
         assert!(url.contains("/admin/logs?"));
         assert!(url.contains("level=ERROR"));
         // `_` は非予約文字なのでそのまま、`:` と空白はパーセントエンコードされる。
-        assert!(url.contains("target=idp_api%3A%3Aa%20b"));
+        assert!(url.contains("target=assay_api%3A%3Aa%20b"));
         assert!(url.ends_with("offset=50"));
     }
 }

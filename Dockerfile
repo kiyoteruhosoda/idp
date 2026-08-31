@@ -1,11 +1,11 @@
 # OIDC IdP（Rust）マルチステージビルド。CLAUDE.md「環境要件」準拠（rust:slim ベース）。
 #
 # ADR-0007（API/Web サービス分割）: 1 つのワークスペースから 2 つのバイナリを作る。
-#   - idp     … api サービス（OIDC protocol・JSON 管理 API・内部 API。DB 直結）→ runtime-api
-#   - idp-web … web サービス（HTML 画面・API クライアント。DB 非依存）        → runtime-web
+#   - assay   … api サービス（OIDC protocol・JSON 管理 API・内部 API。DB 直結）→ runtime-api
+#   - assay-web … web サービス（HTML 画面・API クライアント。DB 非依存）        → runtime-web
 # ビルド依存: ring（rustls）が C/アセンブラを要するため C ツールチェイン＋perl。TLS は rustls。
 #   webauthn-rs が openssl-sys（ネイティブ OpenSSL）へ依存するため libssl-dev も要する。
-# 翻訳リソース（i18n/*.ftl）は include_str! で idp-web へ埋め込むため実行イメージには同梱不要。
+# 翻訳リソース（i18n/*.ftl）は include_str! で assay-web へ埋め込むため実行イメージには同梱不要。
 
 # ---- builder ----
 # 実行ステージ（debian:bookworm-slim）と glibc ABI を揃えるため、Rust ビルダーも
@@ -31,10 +31,10 @@ RUN mkdir -p crates/core/src crates/contracts/src crates/api/src crates/web/src 
     && echo "" > crates/web/src/lib.rs \
     && echo "fn main() {}" > crates/api/src/main.rs \
     && echo "fn main() {}" > crates/web/src/main.rs \
-    && cargo build --release --locked --bin idp --bin idp-web \
+    && cargo build --release --locked --bin assay --bin assay-web \
     ; rm -rf crates/core/src crates/contracts/src crates/api/src crates/web/src
 
-# 本体をビルド。i18n（include_str! で idp-web に埋め込み）と migrations（sqlx::migrate! で idp に埋め込み）は
+# 本体をビルド。i18n（include_str! で assay-web に埋め込み）と migrations（sqlx::migrate! で assay に埋め込み）は
 # crate マニフェスト基準の相対パス（../../i18n・../../migrations）で参照するためルートへ配置する。
 COPY crates ./crates
 COPY i18n ./i18n
@@ -52,11 +52,11 @@ ENV IDP_BUILD_NUMBER=${IDP_BUILD_NUMBER}
 # スキップし、ダミーの `fn main() {}`（即 exit 0・無出力）バイナリがそのまま出荷される。それを防ぐため、
 # ワークスペース各 crate のソース mtime を更新してから再ビルドする（依存クレートのキャッシュには触れない）。
 RUN find crates -name '*.rs' -exec touch {} + \
-    && cargo build --release --locked --bin idp --bin idp-web
+    && cargo build --release --locked --bin assay --bin assay-web
 
 # ---- migrate tool builder ----
 # sqlx-cli のビルドには Rust ツールチェインと C ビルド依存が必要だが、それらを migrate 実行イメージへ
-# 持ち込むと idp-migrate.tar が肥大化する。ビルド専用ステージへ閉じ込め、実行ステージには sqlx binary と
+# 持ち込むと assay-migrate.tar が肥大化する。ビルド専用ステージへ閉じ込め、実行ステージには sqlx binary と
 # migrations だけを渡す。
 FROM rust:slim-bookworm AS migrate-tool-builder
 RUN apt-get update \
@@ -72,10 +72,10 @@ WORKDIR /migrate
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 10001 --no-create-home idp
+    && useradd --system --uid 10001 --no-create-home assay
 COPY --from=migrate-tool-builder /opt/sqlx/bin/sqlx /usr/local/bin/sqlx
 COPY migrations ./migrations
-USER idp
+USER assay
 # DATABASE_URL は実行時に注入する。
 ENTRYPOINT ["sqlx", "migrate", "run", "--source", "/migrate/migrations"]
 
@@ -85,24 +85,24 @@ FROM debian:bookworm-slim AS runtime-base
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 10001 --no-create-home idp
-USER idp
+    && useradd --system --uid 10001 --no-create-home assay
+USER assay
 
 # ---- runtime: api（OIDC protocol・JSON 管理 API・内部 API。DB 直結）----
 FROM runtime-base AS runtime-api
 WORKDIR /app
-COPY --from=builder /build/target/release/idp /usr/local/bin/idp
+COPY --from=builder /build/target/release/assay /usr/local/bin/assay
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=5 \
     CMD curl -fsS http://127.0.0.1:8080/healthz || exit 1
 # 設定はすべて環境変数から注入する（config モジュール経由。docs/OPERATIONS.md 参照）。
-ENTRYPOINT ["/usr/local/bin/idp"]
+ENTRYPOINT ["/usr/local/bin/assay"]
 
 # ---- runtime: web（HTML 画面・API クライアント。DB 非依存）----
 FROM runtime-base AS runtime-web
 WORKDIR /app
-COPY --from=builder /build/target/release/idp-web /usr/local/bin/idp-web
+COPY --from=builder /build/target/release/assay-web /usr/local/bin/assay-web
 EXPOSE 8081
 HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=5 \
     CMD curl -fsS http://127.0.0.1:8081/healthz || exit 1
-ENTRYPOINT ["/usr/local/bin/idp-web"]
+ENTRYPOINT ["/usr/local/bin/assay-web"]

@@ -47,7 +47,7 @@ use chrono::Duration;
 use std::sync::Arc;
 
 // 管理ログインフォームの CSRF 同期トークン導出（`admin_csrf_token`）は、ADR-0007 で管理コンソールを
-// web crate へ移設したのに伴い web 側（`idp-web` の `csrf` モジュール）へ移った。api（core）は保持しない。
+// web crate へ移設したのに伴い web 側（`assay-web` の `csrf` モジュール）へ移った。api（core）は保持しない。
 
 #[derive(Debug)]
 pub struct AdminLoginCommand {

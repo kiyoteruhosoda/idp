@@ -34,15 +34,15 @@ use crate::i18n::Locale;
 use crate::login_context::RpLoginContext;
 use crate::state::WebState;
 use crate::theme::Theme;
-use axum::extract::{Request, State};
-use axum::http::header::{HeaderValue, COOKIE};
-use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
-use idp_contracts::auth::{
+use assay_contracts::auth::{
     InternalAccountProfileRequest, InternalAccountProfileResponse,
     InternalAccountUpdateLanguageRequest, InternalAccountUpdateLanguageResponse,
     InternalAccountUpdateThemeRequest, InternalAccountUpdateThemeResponse,
 };
+use axum::extract::{Request, State};
+use axum::http::header::{HeaderValue, COOKIE};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
 
 /// URL クエリから 1 つのパラメータを取り出す（`?a=1&lang=en` の `lang` → `Some("en")`）。
 /// 値のデコードは行わない（言語タグ・配色ともパーセントエンコードされる文字を含まない）。

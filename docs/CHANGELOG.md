@@ -1,3 +1,25 @@
+## 2026-08-31（2）（クレート名・バイナリ名を assay に揃えた）
+
+- **`idp-{core,contracts,api,web}` → `assay-{core,contracts,api,web}`、lib 名 `idp_*` → `assay_*`、
+  バイナリ `idp` → `assay` / `idp-web` → `assay-web` に改名した。** 純粋な改名で、
+  挿入と削除が同数（146 ファイル・602 行）。Dockerfile のビルド対象・実行ユーザー・
+  `ENTRYPOINT`、`scripts/{build,deploy,test_deploy}.sh` の成果物名（`assay-{svc}.tar`）、
+  React サーフェスの npm 名も揃えた。
+  - ⚠ **`RUST_LOG` のターゲットはクレート名である。** `info,idp_web=info` は改名すると**黙って
+    効かなくなる**（フィルタが存在しないターゲットを指すだけでエラーにならない）。
+    `telemetry.rs` の既定値・`.env*.example`・compose 3 本をすべて `assay` / `assay_web` へ直した。
+    **deploy-repo の `IDP_RUST_LOG_API` / `IDP_RUST_LOG_WEB` にも同じ値が入っている**ので、
+    新しいイメージを配ったあとに合わせて直すこと（stg は `idp=debug` なので、放置すると
+    デバッグログだけが静かに止まる）。
+  - **Komodo からは見えない改名である。** Build は `--target runtime-api` / `runtime-web` と
+    `image_name` で定義されており、クレート名もバイナリ名も参照していない。ビルド名・
+    イメージ名・スタック名は**この変更では触っていない**（別作業）。
+- **`scripts/deploy.sh` のログ接頭辞 `[idp]` は残した。** `test_deploy.sh` が
+  `MARIADB_PASSWORD=idp` との衝突をわざと作って「短い秘密値をマスクしてはいけない
+  （`[idp][diagnostic]` まで消える）」ことを検証している。改名するとこのテストが空振りになる。
+- `docs/OPERATIONS.md` の Prometheus `job_name` / k8s の deployment 名は、クレートではなく
+  デプロイ側の名前なので触っていない。
+
 ## 2026-08-31（画面に名乗りと印を与え、配色を試金の一系統にそろえた）
 
 - **プロダクト名を `assay`（試金）にし、印（アイコン）を作った。** これまで画面には名乗りが
@@ -60,7 +82,6 @@
   - オートフィル体験を足すなら、入力欄に `autocomplete="username webauthn"` を付けて
     **ページ読み込み時に**別途 conditional の `get()` を張る形になる。ボタンの経路とは別物で、
     今回は入れていない。
-
 ## 2026-08-29（管理コンソールとポータルにもパスキーで入れるようにした）
 
 - **管理コンソール（`/{tenant_id}/admin/login`）とポータル（`/{tenant_id}/login`）のログインに

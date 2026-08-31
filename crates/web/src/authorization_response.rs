@@ -12,9 +12,9 @@
 
 use crate::i18n::Messages;
 use crate::templates::{render, AuthorizationPost};
+use assay_contracts::auth::FormPostFields;
 use axum::http::header;
 use axum::response::{Html, IntoResponse, Response};
-use idp_contracts::auth::FormPostFields;
 
 /// 認可応答を返す。`form_post` の有無で 302 と自動送信フォームを出し分ける。
 pub fn respond(

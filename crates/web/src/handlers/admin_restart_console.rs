@@ -62,7 +62,7 @@ pub async fn restart(
     }
     let base = format!("{}{SETTINGS_SEGMENT}", tenant.prefix());
     let sso = cookies::get(&headers, cookies::SSO_SESSION_COOKIE).unwrap_or_default();
-    if !idp_contracts::csrf::verify(
+    if !assay_contracts::csrf::verify(
         &console_csrf_token(&sso, state.config.csrf_secret()),
         &form.csrf_token,
     ) {

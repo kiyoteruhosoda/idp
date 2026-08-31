@@ -14,8 +14,8 @@ use crate::domain::application_log::{
 use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
 use crate::domain::repositories::{ApplicationLogQuery, ApplicationLogSink};
+use assay_contracts::application_log::ApplicationLogPayload;
 use chrono::{DateTime, Utc};
-use idp_contracts::application_log::ApplicationLogPayload;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -141,7 +141,7 @@ mod tests {
             occurred_at: occurred_at.to_string(),
             level: level.to_string(),
             service: service.to_string(),
-            target: "idp_api::token".to_string(),
+            target: "assay_api::token".to_string(),
             message: "boom".to_string(),
             correlation_id: Some("  ".to_string()),
             tenant_id: Some("0192f0c0-0000-7000-8000-000000000001".to_string()),

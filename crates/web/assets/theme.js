@@ -7,7 +7,7 @@
 // **`<head>` で defer 無しに読み込むこと。** 遅らせると、白い画面が描かれてから黒へ塗り替わる。
 //
 // 選択は `theme` Cookie が運ぶ（`light` / `dark` / `system`）。この Cookie だけ `HttpOnly` を
-// 付けていない（理由は `idp_contracts::cookies::set_preference`）。未設定・不正値は `system`
+// 付けていない（理由は `assay_contracts::cookies::set_preference`）。未設定・不正値は `system`
 // と同じ扱いにし、OS の設定に従う。
 (function () {
   'use strict';

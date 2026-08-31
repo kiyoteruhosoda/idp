@@ -12,12 +12,12 @@
 
 mod support;
 
+use assay_api::domain::client_assertion::JWT_BEARER_ASSERTION_TYPE;
+use assay_api::domain::jwt::{generate_rsa_keypair, sign};
 use axum::body::Body;
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{Request, StatusCode};
 use chrono::Utc;
-use idp_api::domain::client_assertion::JWT_BEARER_ASSERTION_TYPE;
-use idp_api::domain::jwt::{generate_rsa_keypair, sign};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde::Serialize;
 use serde_json::Value;

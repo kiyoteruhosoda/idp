@@ -12,7 +12,7 @@
 //! そこで api と**同じ設定キー・同じ既定値**（`TRUST_FORWARDED_HEADERS`、既定 `false`）でゲートし、
 //! 非信頼時は TCP 接続元アドレス（[`axum::extract::ConnectInfo`]）へフォールバックする。
 //! 信頼する場合でも採るのは**最右**の値（信頼するプロキシが追記した接続元）で、先頭の
-//! クライアント申告は採らない（導出は [`idp_contracts::forwarded`] に api と共有で置いてある）。
+//! クライアント申告は採らない（導出は [`assay_contracts::forwarded`] に api と共有で置いてある）。
 //! api には `ConnectInfo` 相当が無い（web からのサーバ間呼び出しなので接続元は常に web）ため、
 //! フォールバック先を持つのは web だけである。
 //!
@@ -43,8 +43,8 @@ pub async fn resolve_client_ip(
     let forwarded = trust_forwarded
         .then(|| {
             // 採るのは**最右**の値（信頼するプロキシが追記した接続元）。先頭はクライアントが
-            // 名乗った値でありうる（`idp_contracts::forwarded` のモジュールドキュメント参照）。
-            idp_contracts::forwarded::client_ip(
+            // 名乗った値でありうる（`assay_contracts::forwarded` のモジュールドキュメント参照）。
+            assay_contracts::forwarded::client_ip(
                 request
                     .headers()
                     .get_all("x-forwarded-for")

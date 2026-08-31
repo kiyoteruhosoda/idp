@@ -187,6 +187,131 @@ dependencies = [
 ]
 
 [[package]]
+name = "assay-api"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assay-contracts",
+ "assay-core",
+ "assay-web",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "dotenvy",
+ "flate2",
+ "fluent",
+ "hex",
+ "jsonwebtoken",
+ "metrics",
+ "metrics-exporter-prometheus",
+ "percent-encoding",
+ "rand 0.8.6",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "unic-langid",
+ "url",
+ "utoipa",
+ "utoipa-swagger-ui",
+ "uuid",
+]
+
+[[package]]
+name = "assay-contracts"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hex",
+ "hmac",
+ "http",
+ "psl",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
+name = "assay-core"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "argon2",
+ "assay-contracts",
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "flate2",
+ "hex",
+ "hmac",
+ "jsonwebtoken",
+ "lettre",
+ "metrics",
+ "p256",
+ "percent-encoding",
+ "quick-xml",
+ "rand 0.8.6",
+ "reqwest",
+ "rsa",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+ "totp-rs",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "webauthn-rs",
+ "x509-cert",
+]
+
+[[package]]
+name = "assay-web"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "askama",
+ "assay-contracts",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "dotenvy",
+ "fluent",
+ "hex",
+ "hmac",
+ "percent-encoding",
+ "qrcode",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "unic-langid",
+ "url",
+ "uuid",
+ "wiremock",
+]
+
+[[package]]
 name = "assert-json-diff"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1537,131 +1662,6 @@ checksum = "cb68373c0d6620ef8105e855e7745e18b0d00d3bdb07fb532e434244cdb9a714"
 dependencies = [
  "icu_normalizer",
  "icu_properties",
-]
-
-[[package]]
-name = "idp-api"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "base64 0.22.1",
- "chrono",
- "dotenvy",
- "flate2",
- "fluent",
- "hex",
- "idp-contracts",
- "idp-core",
- "idp-web",
- "jsonwebtoken",
- "metrics",
- "metrics-exporter-prometheus",
- "percent-encoding",
- "rand 0.8.6",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "sqlx",
- "thiserror 2.0.18",
- "tokio",
- "tower",
- "tower-http",
- "tracing",
- "unic-langid",
- "url",
- "utoipa",
- "utoipa-swagger-ui",
- "uuid",
-]
-
-[[package]]
-name = "idp-contracts"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "hex",
- "hmac",
- "http",
- "psl",
- "serde",
- "serde_json",
- "sha2",
- "tracing",
- "tracing-subscriber",
- "url",
-]
-
-[[package]]
-name = "idp-core"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "anyhow",
- "argon2",
- "async-trait",
- "base64 0.22.1",
- "chrono",
- "flate2",
- "hex",
- "hmac",
- "idp-contracts",
- "jsonwebtoken",
- "lettre",
- "metrics",
- "p256",
- "percent-encoding",
- "quick-xml",
- "rand 0.8.6",
- "reqwest",
- "rsa",
- "serde",
- "serde_json",
- "sha1",
- "sha2",
- "sqlx",
- "thiserror 2.0.18",
- "tokio",
- "totp-rs",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
- "webauthn-rs",
- "x509-cert",
-]
-
-[[package]]
-name = "idp-web"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "askama",
- "axum",
- "base64 0.22.1",
- "chrono",
- "dotenvy",
- "fluent",
- "hex",
- "hmac",
- "idp-contracts",
- "percent-encoding",
- "qrcode",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "unic-langid",
- "url",
- "uuid",
- "wiremock",
 ]
 
 [[package]]

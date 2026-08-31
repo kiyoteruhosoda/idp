@@ -14,12 +14,12 @@
 //! # 何を測るか
 //!
 //! - **監査イベント**（ログイン成否・トークン発行・鍵ローテーション等）: 記録は
-//!   `AuditService` の 1 か所（`idp_core::metrics::AUDIT_EVENTS`）。計測器を各ユースケースへ
+//!   `AuditService` の 1 か所（`assay_core::metrics::AUDIT_EVENTS`）。計測器を各ユースケースへ
 //!   散らさない。
 //! - **HTTP の所要時間**: 本モジュールのミドルウェア。
 //! - **DB プールの接続数**: 定期タスク（`spawn_db_pool_metrics`）。
 //!
-//! ラベルの基数を有限に保つ方針は `idp_core::metrics` に書いてある。
+//! ラベルの基数を有限に保つ方針は `assay_core::metrics` に書いてある。
 
 use crate::infrastructure::db::Db;
 use axum::extract::{MatchedPath, Request, State};
@@ -56,7 +56,7 @@ pub fn handle() -> Option<PrometheusHandle> {
                 .add_global_label("service", SERVICE)
                 .set_buckets_for_metric(
                     metrics_exporter_prometheus::Matcher::Full(
-                        idp_core::metrics::HTTP_REQUEST_DURATION.to_string(),
+                        assay_core::metrics::HTTP_REQUEST_DURATION.to_string(),
                     ),
                     DURATION_BUCKETS,
                 )
@@ -120,7 +120,7 @@ pub async fn track_http_metrics(request: Request, next: Next) -> Response {
     let elapsed = started.elapsed();
 
     metrics::histogram!(
-        idp_core::metrics::HTTP_REQUEST_DURATION,
+        assay_core::metrics::HTTP_REQUEST_DURATION,
         "method" => method.as_str().to_string(),
         "route" => route,
         "status" => response.status().as_u16().to_string(),
@@ -138,13 +138,13 @@ pub fn spawn_db_pool_metrics(pool: Db) {
     tokio::spawn(async move {
         loop {
             metrics::gauge!(
-                idp_core::metrics::DB_POOL_CONNECTIONS,
-                "state" => idp_core::metrics::DB_POOL_STATE_TOTAL,
+                assay_core::metrics::DB_POOL_CONNECTIONS,
+                "state" => assay_core::metrics::DB_POOL_STATE_TOTAL,
             )
             .set(pool.size() as f64);
             metrics::gauge!(
-                idp_core::metrics::DB_POOL_CONNECTIONS,
-                "state" => idp_core::metrics::DB_POOL_STATE_IDLE,
+                assay_core::metrics::DB_POOL_CONNECTIONS,
+                "state" => assay_core::metrics::DB_POOL_STATE_IDLE,
             )
             .set(pool.num_idle() as f64);
             tokio::time::sleep(DB_POOL_SAMPLE_INTERVAL).await;

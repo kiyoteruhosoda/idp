@@ -17,15 +17,15 @@ use crate::login_context::RpLoginContext;
 use crate::state::WebState;
 use crate::templates::{render, MessagePage, TotpSetupTemplate, TotpVerifyTemplate};
 use crate::tenant::WebTenant;
+use assay_contracts::auth::{
+    InternalTotpConfirmRequest, InternalTotpDeleteRequest, InternalTotpSetupRequest,
+    InternalVerifyTotpRequest, InternalVerifyTotpResponse,
+};
+use assay_contracts::csrf::login_csrf_token;
 use axum::extract::{Extension, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
-use idp_contracts::auth::{
-    InternalTotpConfirmRequest, InternalTotpDeleteRequest, InternalTotpSetupRequest,
-    InternalVerifyTotpRequest, InternalVerifyTotpResponse,
-};
-use idp_contracts::csrf::login_csrf_token;
 use serde::Deserialize;
 
 // ── TOTP セットアップ ────────────────────────────────────────────────────────
@@ -79,7 +79,7 @@ pub async fn setup_page(
     // FluentBundle は !Send なので await の後に作成する。
     let messages = Messages::new(locale(&headers));
 
-    use idp_contracts::auth::InternalTotpSetupResponse;
+    use assay_contracts::auth::InternalTotpSetupResponse;
     match result {
         InternalTotpSetupResponse::Ok {
             totp_uri,
@@ -151,7 +151,7 @@ pub async fn setup_confirm(
     };
 
     // InvalidCode の場合は QR を再取得するため先にもう一度 await する（Messages 取得前）。
-    use idp_contracts::auth::InternalTotpConfirmResponse;
+    use assay_contracts::auth::InternalTotpConfirmResponse;
     let refetch_qr = matches!(result, InternalTotpConfirmResponse::InvalidCode);
     let qr_data = if refetch_qr {
         let setup_req = InternalTotpSetupRequest {
@@ -175,7 +175,7 @@ pub async fn setup_confirm(
             Html(body).into_response()
         }
         InternalTotpConfirmResponse::InvalidCode => {
-            if let Some(idp_contracts::auth::InternalTotpSetupResponse::Ok {
+            if let Some(assay_contracts::auth::InternalTotpSetupResponse::Ok {
                 totp_uri,
                 secret_base32,
             }) = qr_data
@@ -254,7 +254,7 @@ pub async fn setup_delete(
     // FluentBundle は !Send なので await の後に作成する。
     let messages = Messages::new(locale(&headers));
 
-    use idp_contracts::auth::InternalTotpDeleteResponse;
+    use assay_contracts::auth::InternalTotpDeleteResponse;
     match result {
         InternalTotpDeleteResponse::Ok => {
             let body = render(&MessagePage {
@@ -523,7 +523,7 @@ pub async fn send_email_code(
         );
     };
     // CSRF は TOTP フォームと同じ同期トークン（`auth_session_id` 由来）で照合する。
-    if !idp_contracts::csrf::verify(
+    if !assay_contracts::csrf::verify(
         &login_csrf_token(&auth_session_id, state.config.csrf_secret()),
         &form.csrf_token,
     ) {
@@ -531,7 +531,7 @@ pub async fn send_email_code(
     }
 
     let ctx = forwarded_context(&headers, &correlation, &client_ip);
-    let request = idp_contracts::auth::InternalEmailOtpRequest {
+    let request = assay_contracts::auth::InternalEmailOtpRequest {
         tenant_id: Some(tenant.0.clone()),
         auth_session_id: Some(auth_session_id),
         mfa_ticket: None,
@@ -543,10 +543,10 @@ pub async fn send_email_code(
         .account_email_otp(&ctx.correlation_id, &request)
         .await
     {
-        Ok(idp_contracts::auth::InternalEmailOtpResponse::Sent) => "email-sent",
-        Ok(idp_contracts::auth::InternalEmailOtpResponse::Unavailable) => "email-unavailable",
-        Ok(idp_contracts::auth::InternalEmailOtpResponse::SessionExpired) => "session",
-        Ok(idp_contracts::auth::InternalEmailOtpResponse::Internal) => {
+        Ok(assay_contracts::auth::InternalEmailOtpResponse::Sent) => "email-sent",
+        Ok(assay_contracts::auth::InternalEmailOtpResponse::Unavailable) => "email-unavailable",
+        Ok(assay_contracts::auth::InternalEmailOtpResponse::SessionExpired) => "session",
+        Ok(assay_contracts::auth::InternalEmailOtpResponse::Internal) => {
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
         Err(e) => {
@@ -579,7 +579,7 @@ pub async fn send_sms_code(
             "mfa-error-session-expired",
         );
     };
-    if !idp_contracts::csrf::verify(
+    if !assay_contracts::csrf::verify(
         &login_csrf_token(&auth_session_id, state.config.csrf_secret()),
         &form.csrf_token,
     ) {
@@ -587,7 +587,7 @@ pub async fn send_sms_code(
     }
 
     let ctx = forwarded_context(&headers, &correlation, &client_ip);
-    let request = idp_contracts::auth::InternalSmsOtpRequest {
+    let request = assay_contracts::auth::InternalSmsOtpRequest {
         tenant_id: Some(tenant.0.clone()),
         auth_session_id: Some(auth_session_id),
         mfa_ticket: None,
@@ -599,11 +599,11 @@ pub async fn send_sms_code(
         .account_sms_otp(&ctx.correlation_id, &request)
         .await
     {
-        Ok(idp_contracts::auth::InternalSmsOtpResponse::Sent) => "sms-sent",
-        Ok(idp_contracts::auth::InternalSmsOtpResponse::Unavailable) => "sms-unavailable",
-        Ok(idp_contracts::auth::InternalSmsOtpResponse::NotRegistered) => "sms-not-registered",
-        Ok(idp_contracts::auth::InternalSmsOtpResponse::SessionExpired) => "session",
-        Ok(idp_contracts::auth::InternalSmsOtpResponse::Internal) => {
+        Ok(assay_contracts::auth::InternalSmsOtpResponse::Sent) => "sms-sent",
+        Ok(assay_contracts::auth::InternalSmsOtpResponse::Unavailable) => "sms-unavailable",
+        Ok(assay_contracts::auth::InternalSmsOtpResponse::NotRegistered) => "sms-not-registered",
+        Ok(assay_contracts::auth::InternalSmsOtpResponse::SessionExpired) => "session",
+        Ok(assay_contracts::auth::InternalSmsOtpResponse::Internal) => {
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
         Err(e) => {

@@ -11,8 +11,8 @@
 //! `CSRF_SECRET`）、api/web で一致必須の `PUBLIC_WEB_BASE_URL`・`COOKIE_DOMAIN` は ENV > 既定値のまま。
 #![allow(dead_code)]
 
+use assay_contracts::cookies::CookiePolicy;
 use base64::{engine::general_purpose::STANDARD, Engine};
-use idp_contracts::cookies::CookiePolicy;
 use std::collections::HashMap;
 use std::env;
 
@@ -99,7 +99,7 @@ impl Bootstrap {
             match env_lookup("INTERNAL_SERVICE_TOKEN") {
                 // 最低要件（長さ・プレースホルダ）は api と共有の契約で検査する（SEC11）。
                 Some(v) => (
-                    idp_contracts::deployment::validate_internal_service_token(&v)
+                    assay_contracts::deployment::validate_internal_service_token(&v)
                         .map_err(|e| anyhow::anyhow!(e))?,
                     false,
                 ),
@@ -163,7 +163,7 @@ impl Config {
         // api 側と同じ検証（親ドメイン整合・public suffix 拒否）を起動時に行う（fail-fast）。
         let cookie_domain = match env_lookup("COOKIE_DOMAIN") {
             Some(raw) => Some(
-                idp_contracts::cookie_domain::validate_cookie_domain(
+                assay_contracts::cookie_domain::validate_cookie_domain(
                     &raw,
                     &[issuer.as_str(), public_web_base_url.as_str()],
                 )
@@ -176,7 +176,7 @@ impl Config {
             match env_lookup("INTERNAL_SERVICE_TOKEN") {
                 // 最低要件（長さ・プレースホルダ）は api と共有の契約で検査する（SEC11）。
                 Some(v) => (
-                    idp_contracts::deployment::validate_internal_service_token(&v)
+                    assay_contracts::deployment::validate_internal_service_token(&v)
                         .map_err(|e| anyhow::anyhow!(e))?,
                     false,
                 ),
@@ -385,7 +385,7 @@ fn ensure_production_secrets(
 ) -> anyhow::Result<()> {
     // 判定は api と共有の契約に置く（SEC11）。https だけでなく、前段で TLS を終端して
     // http のループバック以外を公開している配置も本番扱いにする。
-    use idp_contracts::deployment::requires_production_secrets;
+    use assay_contracts::deployment::requires_production_secrets;
     let public_origin = if requires_production_secrets(issuer) {
         issuer
     } else if requires_production_secrets(public_web_base_url) {

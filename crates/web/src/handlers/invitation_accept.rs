@@ -67,7 +67,7 @@ pub async fn submit(
         return Html(render_page(&messages, false, &form.token, "", None)).into_response();
     };
     let csrf = console_csrf_token(&sso, state.config.csrf_secret());
-    if !idp_contracts::csrf::verify(&csrf, &form.csrf_token) {
+    if !assay_contracts::csrf::verify(&csrf, &form.csrf_token) {
         let messages = Messages::new(locale(&headers));
         return bad_request(render_page(
             &messages,

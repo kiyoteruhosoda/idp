@@ -36,7 +36,7 @@ pub async fn list_available_permissions(
     Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
     Query(query): Query<AvailablePermissionsQuery>,
-) -> Result<Json<idp_contracts::admin::AvailablePermissionsResponse>, ApiError> {
+) -> Result<Json<assay_contracts::admin::AvailablePermissionsResponse>, ApiError> {
     let mut codes = state
         .permissions_admin
         .available_codes()
@@ -47,7 +47,7 @@ pub async fn list_available_permissions(
     if query.grantable_to.as_deref() == Some(GRANTABLE_TO_CLIENT) {
         codes.retain(|code| permission::is_grantable_to_client(code));
     }
-    Ok(Json(idp_contracts::admin::AvailablePermissionsResponse {
+    Ok(Json(assay_contracts::admin::AvailablePermissionsResponse {
         codes,
     }))
 }

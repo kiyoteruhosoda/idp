@@ -17,12 +17,12 @@ use crate::presentation::dto::ApplicationLogQueryString;
 use crate::presentation::error::ApiError;
 use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
+use assay_contracts::application_log::{
+    ApplicationLogEntryResponse, ApplicationLogIngestRequest, ApplicationLogIngestResponse,
+};
 use axum::extract::{Query, State};
 use axum::Json;
 use chrono::{DateTime, Utc};
-use idp_contracts::application_log::{
-    ApplicationLogEntryResponse, ApplicationLogIngestRequest, ApplicationLogIngestResponse,
-};
 
 /// エラー・警告ログを条件で絞り込み、新しい順に返す。
 #[utoipa::path(

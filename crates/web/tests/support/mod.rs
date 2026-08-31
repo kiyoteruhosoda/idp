@@ -23,14 +23,14 @@
 
 #![allow(dead_code)]
 
+use assay_web::config::Config;
+use assay_web::router;
+use assay_web::state::WebState;
 use axum::body::Body;
 use axum::http::header::{CONTENT_TYPE, COOKIE, LOCATION, SET_COOKIE};
 use axum::http::{Method, Request, Response, StatusCode};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
-use idp_web::config::Config;
-use idp_web::router;
-use idp_web::state::WebState;
 use std::sync::{Arc, Mutex, OnceLock};
 use tower::ServiceExt;
 use wiremock::matchers::{method, path};
@@ -52,10 +52,10 @@ impl WebEnv {
 
 /// テストが使う CSRF 鍵（ちょうど 32 バイト）。フォームへ出るトークンをテスト側で導出するために、
 /// ルータと同じ値を使う必要がある。実行環境の値は使わない（モジュールコメント参照）。
-pub const TEST_CSRF_SECRET: &[u8; 32] = b"idp-web-integration-test-csrf-32";
+pub const TEST_CSRF_SECRET: &[u8; 32] = b"assay-web-integration-tests-csrf";
 
-/// テストが使うサービス間トークン（長さの下限は `idp_contracts::deployment` の契約が決める）。
-pub const TEST_INTERNAL_SERVICE_TOKEN: &str = "idp-web-integration-test-service-token";
+/// テストが使うサービス間トークン（長さの下限は `assay_contracts::deployment` の契約が決める）。
+pub const TEST_INTERNAL_SERVICE_TOKEN: &str = "assay-web-integration-test-service-token";
 
 /// 環境変数を書き換えて設定を組むまでの排他区間（モジュールコメント参照）。
 fn env_lock() -> &'static Mutex<()> {

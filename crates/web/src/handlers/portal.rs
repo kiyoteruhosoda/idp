@@ -19,15 +19,15 @@ use crate::i18n::{Locale, Messages};
 use crate::state::WebState;
 use crate::templates::{render, ForcedPasswordChange, MessagePage, PortalLogin, PortalMfa};
 use crate::tenant::WebTenant;
-use axum::extract::{Extension, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::{Html, IntoResponse, Response};
-use axum::Form;
-use idp_contracts::auth::{
+use assay_contracts::auth::{
     InternalPortalAuthenticateRequest, InternalPortalAuthenticateResponse,
     InternalPortalChangePasswordRequest, InternalPortalChangePasswordResponse,
     InternalPortalMfaRequest, InternalPortalMfaResponse,
 };
+use axum::extract::{Extension, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{Html, IntoResponse, Response};
+use axum::Form;
 
 /// ポータル CSRF 種 Cookie の寿命（秒）。ログイン〜TOTP 入力までを覆う。
 const PORTAL_CSRF_TTL_SECS: u64 = 900;
@@ -540,7 +540,7 @@ pub async fn logout(
             .api
             .logout(
                 &ctx.correlation_id,
-                &idp_contracts::auth::InternalLogoutRequest {
+                &assay_contracts::auth::InternalLogoutRequest {
                     tenant_id: Some(tenant.0.clone()),
                     sso_session_id: sso,
                     ip_address: ctx.ip_address,
@@ -651,12 +651,12 @@ async fn load_external_providers(
     state: &WebState,
     correlation: &CorrelationId,
     tenant: &WebTenant,
-) -> Vec<idp_contracts::auth::ExternalIdpButton> {
-    let request = idp_contracts::auth::InternalExternalProvidersRequest {
+) -> Vec<assay_contracts::auth::ExternalIdpButton> {
+    let request = assay_contracts::auth::InternalExternalProvidersRequest {
         tenant_id: Some(tenant.0.clone()),
     };
     match state.api.external_providers(&correlation.0, &request).await {
-        Ok(idp_contracts::auth::InternalExternalProvidersResponse::Ok { providers }) => providers,
+        Ok(assay_contracts::auth::InternalExternalProvidersResponse::Ok { providers }) => providers,
         Ok(_) => Vec::new(),
         Err(e) => {
             tracing::error!(error = %e, "external idp list call to api failed");

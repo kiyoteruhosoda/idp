@@ -29,14 +29,14 @@ use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, AuthenticationPoliciesConsole, AuthenticationPolicyFormValues};
 use crate::tenant::WebTenant;
+use assay_contracts::admin::{
+    AuthenticationPolicyResponse, AuthenticationPolicyUpsertRequest, RequiredMethodsPayload,
+    AUTHENTICATION_METHOD_CODES,
+};
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
-use idp_contracts::admin::{
-    AuthenticationPolicyResponse, AuthenticationPolicyUpsertRequest, RequiredMethodsPayload,
-    AUTHENTICATION_METHOD_CODES,
-};
 use serde::Deserialize;
 
 /// 選べる効果（api の `effect` 許可値。表示順）。
@@ -200,7 +200,7 @@ pub async fn delete(
         AdminResolution::Reject(resp) => return resp,
     }
     let base = format!("{}/admin/authentication-policies", tenant.prefix());
-    if !idp_contracts::csrf::verify(
+    if !assay_contracts::csrf::verify(
         &csrf_from(&headers, state.config.csrf_secret()),
         &form.csrf_token,
     ) {
@@ -280,7 +280,7 @@ fn validate(
     headers: &HeaderMap,
     form: AdminAuthenticationPolicyForm,
 ) -> Result<AuthenticationPolicyUpsertRequest, &'static str> {
-    if !idp_contracts::csrf::verify(
+    if !assay_contracts::csrf::verify(
         &csrf_from(headers, state.config.csrf_secret()),
         &form.csrf_token,
     ) {
@@ -370,7 +370,7 @@ fn csrf_from(headers: &HeaderMap, secret: &[u8; 32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use idp_contracts::admin::TimeWindowPayload;
+    use assay_contracts::admin::TimeWindowPayload;
 
     fn policy() -> AuthenticationPolicyResponse {
         AuthenticationPolicyResponse {

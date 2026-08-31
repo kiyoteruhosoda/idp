@@ -16,11 +16,13 @@ use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{render, SamlServiceProviderFormValues, SamlServiceProvidersConsole};
 use crate::tenant::WebTenant;
+use assay_contracts::admin::{
+    SamlServiceProviderRegisterRequest, SamlServiceProviderUpdateRequest,
+};
 use axum::extract::{Extension, Multipart, Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
-use idp_contracts::admin::{SamlServiceProviderRegisterRequest, SamlServiceProviderUpdateRequest};
 use serde::Deserialize;
 
 #[derive(Debug, Default, Deserialize)]
@@ -87,7 +89,7 @@ pub async fn create(
         AdminResolution::Reject(resp) => return resp,
     }
     let base = format!("{}/admin/saml-clients", tenant.prefix());
-    if !idp_contracts::csrf::verify(
+    if !assay_contracts::csrf::verify(
         &csrf_from(&headers, state.config.csrf_secret()),
         &form.csrf_token,
     ) {
@@ -284,7 +286,7 @@ pub async fn update(
         AdminResolution::Reject(resp) => return resp,
     }
     let base = format!("{}/admin/saml-clients", tenant.prefix());
-    if !idp_contracts::csrf::verify(
+    if !assay_contracts::csrf::verify(
         &csrf_from(&headers, state.config.csrf_secret()),
         &form.csrf_token,
     ) {
@@ -344,7 +346,7 @@ pub async fn delete(
         AdminResolution::Reject(resp) => return resp,
     }
     let base = format!("{}/admin/saml-clients", tenant.prefix());
-    if !idp_contracts::csrf::verify(
+    if !assay_contracts::csrf::verify(
         &csrf_from(&headers, state.config.csrf_secret()),
         &form.csrf_token,
     ) {

@@ -9,11 +9,11 @@
 
 use crate::infrastructure::db::{self, Db};
 use crate::presentation::state::AppState;
-use axum::{extract::State, http::StatusCode, Json};
-use idp_contracts::health::{service, HealthCheck, LivenessResponse, ServiceHealth};
-use idp_contracts::version::{
+use assay_contracts::health::{service, HealthCheck, LivenessResponse, ServiceHealth};
+use assay_contracts::version::{
     BuildTimeVersionInfoProvider, SchemaVersionInfo, VersionInfo, VersionInfoProvider,
 };
+use axum::{extract::State, http::StatusCode, Json};
 use serde_json::{json, Value};
 
 /// liveness: プロセスが生きていれば 200。依存先は見ない。

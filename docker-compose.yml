@@ -47,7 +47,7 @@ services:
       DATABASE_URL: mysql://${MARIADB_USER:-idp}:${MARIADB_PASSWORD:?set MARIADB_PASSWORD in .env}@mariadb:3306/${MARIADB_DATABASE:-idp}
       DB_MAX_CONNECTIONS: ${DB_MAX_CONNECTIONS:-10}
       LOG_FORMAT: ${LOG_FORMAT:-json}
-      RUST_LOG: ${RUST_LOG:-info,idp=info}
+      RUST_LOG: ${RUST_LOG:-info,assay=info}
       KEY_ENCRYPTION_KEY: ${KEY_ENCRYPTION_KEY:?set KEY_ENCRYPTION_KEY in .env}
       # web→api の /internal/* を保護する共有シークレット（ADR-0007 §5。web と同値）。
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?set INTERNAL_SERVICE_TOKEN in .env}
@@ -121,7 +121,7 @@ services:
       API_BASE_URL: http://api:8080
       ISSUER: ${ISSUER:-http://localhost:8080}
       LOG_FORMAT: ${LOG_FORMAT:-json}
-      RUST_LOG: ${RUST_LOG:-info,idp_web=info}
+      RUST_LOG: ${RUST_LOG:-info,assay_web=info}
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?set INTERNAL_SERVICE_TOKEN in .env}
       COOKIE_SECURE: ${COOKIE_SECURE:-}
       CSRF_SECRET: ${CSRF_SECRET:-}

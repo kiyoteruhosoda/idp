@@ -56,7 +56,7 @@ api と web の**両方**に置く。web 自身の状態（版数・起動時刻
 api の `/internal/health` を見ても「web が生きているか」には答えられないため。web は api を呼ぶ側と
 して既に同じトークンを持っているので、新しい秘密は増えない。
 
-応答の形は api・web で共有する（`idp_contracts::health::ServiceHealth`）。片方だけ形が違うと、
+応答の形は api・web で共有する（`assay_contracts::health::ServiceHealth`）。片方だけ形が違うと、
 監視の設定と障害時の切り分け手順が service ごとに割れる。
 
 ### 3. サーバー時刻を返す
@@ -80,7 +80,7 @@ api の `/internal/health` を見ても「web が生きているか」には答�
   前提にした監視があれば影響を受ける（ステータスコードだけを見る一般的な設定は影響なし）。
 - `/internal/health` はプロキシ経由では 404 である（決定 2）。運用者が読むには
   Compose ネットワーク内（`docker compose exec`）か、サービスのポートへ直接到達する必要がある。
-- 内部トークンのヘッダ名と定数時間照合を `idp_contracts::internal_auth` へ集約した。api と web に
+- 内部トークンのヘッダ名と定数時間照合を `assay_contracts::internal_auth` へ集約した。api と web に
   同じ定義が 2 つあり、web 側に 3 つ目を作るところだった。照合を各サービスで書き直すと
   **片方だけ定数時間でなくなる**危険がある。
 

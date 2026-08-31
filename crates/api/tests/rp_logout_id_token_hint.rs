@@ -88,7 +88,7 @@ async fn log_in(env: &TestEnv, client_id: &str, secret: &str, username: &str) ->
     let body = resume_authorize(&env.app, &env.root_tenant_id, &handle, None).await;
     assert_eq!(body["result"], "login_required");
     let auth_session = body["auth_session_id"].as_str().unwrap().to_string();
-    let csrf = idp_api::application::login::csrf_token(&auth_session, &env.csrf_secret);
+    let csrf = assay_api::application::login::csrf_token(&auth_session, &env.csrf_secret);
 
     let response = send(
         &env.app,
@@ -178,7 +178,7 @@ async fn rp_logout(env: &TestEnv, payload: Value) -> Value {
 }
 
 async fn sso_session_exists(pool: &MySqlPool, sso_cookie: &str) -> bool {
-    let hash = idp_api::infrastructure::crypto::sha256_hex(sso_cookie);
+    let hash = assay_api::infrastructure::crypto::sha256_hex(sso_cookie);
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sso_sessions WHERE session_hash = ?")
         .bind(hash)
         .fetch_one(pool)

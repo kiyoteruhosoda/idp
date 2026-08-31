@@ -18,15 +18,15 @@ use crate::state::WebState;
 use crate::templates::{render, UserSettings};
 use crate::tenant::WebTenant;
 use crate::theme::Theme;
-use axum::extract::{Extension, Query, State};
-use axum::http::HeaderMap;
-use axum::response::{Html, IntoResponse, Response};
-use axum::Form;
-use idp_contracts::auth::{
+use assay_contracts::auth::{
     InternalAccountChangePasswordRequest, InternalAccountChangePasswordResponse,
     InternalAccountProfileRequest, InternalAccountProfileResponse,
     InternalAccountUpdateNameRequest, InternalAccountUpdateNameResponse,
 };
+use axum::extract::{Extension, Query, State};
+use axum::http::HeaderMap;
+use axum::response::{Html, IntoResponse, Response};
+use axum::Form;
 
 /// 設定画面（`GET /{tenant_id}/settings`）。
 ///

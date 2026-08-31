@@ -15,7 +15,7 @@
 //! 自動で付ける）なので api 側にもオリジン検証（CSRF 対策）が必要だったが、Bearer は ambient では
 //! ないため、**管理面から CSRF の論点そのものが消える**。管理コンソール（web）は SSO セッションを
 //! `POST /internal/admin/token` で管理トークンへ交換してから api を呼ぶ。ブラウザ経路の CSRF は
-//! web が同期トークンで閉じて扱う（`idp_web::csrf`）。
+//! web が同期トークンで閉じて扱う（`assay_web::csrf`）。
 //!
 //! 権限を要求せず「ログイン済みであること」だけを要求するフロー（招待の承諾。ADR-0009 §3）には
 //! [`AuthenticatedUser`] extractor を用いる。こちらはブラウザの Cookie を直接読むため、

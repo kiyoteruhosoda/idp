@@ -2,7 +2,7 @@
 //!
 //! これらは api の OpenAPI DTO（`ClientResponse` 等）と同じ JSON 形状を web 側で受けるための
 //! 読み取り用構造体。api の管理 API は OpenAPI で公開される契約であり、web はその一消費者として
-//! 自前のビューモデルで受ける（内部認証の真の契約は `idp-contracts` に置く）。整合は E2E で検証する。
+//! 自前のビューモデルで受ける（内部認証の真の契約は `assay-contracts` に置く）。整合は E2E で検証する。
 
 use serde::Deserialize;
 

@@ -5,7 +5,7 @@
 //! 資格情報に準じる値が載るため、既定のままだと `RUST_LOG=debug` で秘密が stdout・`log` テーブルへ
 //! 落ちる（ADR-0018 の受け入れ条件）。
 //!
-//! そこで両サービスとも `make_span_with(idp_contracts::http_trace::request_span)` を使い、記録するのは
+//! そこで両サービスとも `make_span_with(assay_contracts::http_trace::request_span)` を使い、記録するのは
 //! **パスのみ**にする。api と web で別々に組み立てると片方だけ既定へ戻る事故が起きるため、
 //! cookie 名・CSRF 導出と同じく本 crate に単一定義する。
 //!
