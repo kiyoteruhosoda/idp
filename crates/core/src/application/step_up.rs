@@ -7,11 +7,24 @@
 //! SSO セッションと利用者の認証器の有無を集めて渡す係と、確認が通ったときに SSO セッションへ
 //! 記録する係を担う。
 //!
-//! # 検証の順序
+//! # 2 つの経路（パスワードとパスキー）
 //!
-//! パスワードは必ず検証する（step-up の起点は常に「本人しか知らないもの」）。第二要素は
+//! **パスワード経路** ではパスワードを必ず検証する（起点は「本人しか知らないもの」）。第二要素は
 //! 要件が多要素のときだけ追加で検証する。パスワードを飛ばして TOTP だけで通せる作りにすると、
 //! 端末を拾った攻撃者が本人確認を通せてしまう。
+//!
+//! **パスキー経路**（[`StepUpService::verify_with_passkey`]）はこの 1 回で所有要素と User
+//! Verification を満たし、かつフィッシング耐性がある。「端末を拾っただけでは通らない」という
+//! 上の要求を、知識要素を経ずに満たす唯一の方式なので、パスワードの代わりに置ける
+//! （ADR-0020 §3 / ADR-0040 決定 2 が、ログインで既にそう扱っている規則の適用範囲を広げる）。
+//!
+//! これが無いと、パスキーで入った利用者は**その先でパスキーを 1 本足すことも、失くした 1 本を
+//! 消すこともできない** —— 認証器の管理は step-up の対象で、その step-up がパスワードしか
+//! 受け付けないためである。ADR-0040 決定 3 は強制パスワード変更をパスキー経路では見ないと
+//! しており、パスワードを一度も意識していない利用者が現実に居る。
+//!
+//! パスワード固有のゲート（アカウントロック `locked_until`）はパスキー経路では見ない —— これは
+//! パスワードの総当たりへの対策で、署名鍵の総当たりには効かない（ADR-0040 決定 3 と同じ規則）。
 //!
 //! # 総当たり対策
 //!
@@ -19,14 +32,18 @@
 //! 共有する（別枠にすると、ログインで締め出された攻撃者が step-up 経由で試行を続けられる）。
 
 use crate::application::audit::{AuditService, RequestContext};
+use crate::application::authenticator_management::has_usable_passkey;
 use crate::application::mfa_login::user_has_confirmed_totp;
+use crate::application::passkey_assertion::{PasskeyAssertionError, PasskeyStepUpCeremony};
 use crate::application::totp_registration::verify_totp_code;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::password::PasswordHasher;
 use crate::domain::rate_limit::LoginRateLimiter;
-use crate::domain::repositories::{SsoSessionRepository, TotpSecretRepository, UserRepository};
+use crate::domain::repositories::{
+    SsoSessionRepository, TotpSecretRepository, UserAuthenticatorRepository, UserRepository,
+};
 use crate::domain::step_up::{
     evaluate_step_up, SensitiveOperation, StepUpDecision, StepUpRequirement,
 };
@@ -41,6 +58,9 @@ pub enum StepUpCheckOutcome {
     /// 本人確認をやり直す必要がある。`second_factor_required` が真なら TOTP まで求める。
     ChallengeRequired {
         second_factor_required: bool,
+        /// パスキーでの確認を出してよいか（**いま使える**パスキーを持っている）。持っていない
+        /// 利用者にボタンを見せると、ブラウザのダイアログが出てから失敗する。
+        passkey_available: bool,
     },
     /// SSO セッションが無い・期限切れ・利用者が無効。
     SessionExpired,
@@ -55,6 +75,17 @@ pub struct StepUpVerifyCommand {
     pub password: String,
     /// TOTP コード（第二要素を求められている場合のみ必須）。
     pub totp_code: Option<String>,
+}
+
+/// パスキーでの本人確認（AP5）。パスワード経路と違い、提示するのはアサーション 1 つだけ。
+pub struct StepUpPasskeyVerifyCommand {
+    /// SSO セッション Cookie の生値。**このセッションの利用者本人のパスキーでなければ通さない。**
+    pub sso_session_id: String,
+    pub operation: SensitiveOperation,
+    /// `begin_passkey` が返したチャレンジ ID。
+    pub challenge_id: uuid::Uuid,
+    /// ブラウザが返した `PublicKeyCredential`（JSON）。
+    pub credential: serde_json::Value,
 }
 
 pub enum StepUpVerifyOutcome {
@@ -74,6 +105,11 @@ pub struct StepUpService {
     sso_sessions: Arc<dyn SsoSessionRepository>,
     users: Arc<dyn UserRepository>,
     totp_secrets: Arc<dyn TotpSecretRepository>,
+    /// WebAuthn セレモニー。ログインの 3 経路と同じ実装を共有する（AP9 の一時停止判定・署名
+    /// カウンタの更新・テナント境界が経路ごとにずれない。ADR-0040 決定 1）。
+    passkey_ceremony: Arc<dyn PasskeyStepUpCeremony>,
+    /// 認証器の登録簿（AP9）。パスキーの導線を出してよいかの判定に使う。
+    authenticators: Arc<dyn UserAuthenticatorRepository>,
     hasher: Arc<dyn PasswordHasher>,
     rate_limiter: Arc<dyn LoginRateLimiter>,
     audit: Arc<AuditService>,
@@ -89,6 +125,8 @@ impl StepUpService {
         sso_sessions: Arc<dyn SsoSessionRepository>,
         users: Arc<dyn UserRepository>,
         totp_secrets: Arc<dyn TotpSecretRepository>,
+        passkey_ceremony: Arc<dyn PasskeyStepUpCeremony>,
+        authenticators: Arc<dyn UserAuthenticatorRepository>,
         hasher: Arc<dyn PasswordHasher>,
         rate_limiter: Arc<dyn LoginRateLimiter>,
         audit: Arc<AuditService>,
@@ -100,6 +138,8 @@ impl StepUpService {
             sso_sessions,
             users,
             totp_secrets,
+            passkey_ceremony,
+            authenticators,
             hasher,
             rate_limiter,
             audit,
@@ -136,14 +176,28 @@ impl StepUpService {
         let requirement =
             StepUpRequirement::for_operation(operation, self.max_age_secs, has_second_factor);
 
-        match evaluate_step_up(&session, session.step_up_at, requirement, now) {
+        let decision = evaluate_step_up(&session, session.step_up_at, requirement, now);
+        // 登録簿を引くのは画面を出すと決まってからにする。**ゲートは重要操作のたびに通る**ので、
+        // 満たしている場合まで毎回引くと、要らない問い合わせが操作の数だけ増える。
+        if matches!(decision, StepUpDecision::Satisfied) {
+            return StepUpCheckOutcome::Satisfied;
+        }
+        let passkey_available =
+            match has_usable_passkey(self.authenticators.as_ref(), session.user_id).await {
+                Ok(v) => v,
+                Err(e) => return StepUpCheckOutcome::Internal(e.to_string()),
+            };
+
+        match decision {
             StepUpDecision::Satisfied => StepUpCheckOutcome::Satisfied,
             StepUpDecision::ReauthenticationRequired => StepUpCheckOutcome::ChallengeRequired {
                 second_factor_required: requirement.required_strength
                     == AuthenticationStrength::MultiFactor,
+                passkey_available,
             },
             StepUpDecision::SecondFactorRequired => StepUpCheckOutcome::ChallengeRequired {
                 second_factor_required: true,
+                passkey_available,
             },
         }
     }
@@ -248,6 +302,102 @@ impl StepUpService {
         StepUpVerifyOutcome::Ok
     }
 
+    /// パスキーでの本人確認の開始（チャレンジを 1 本発行する）。
+    ///
+    /// ログイン用のチャレンジとは種別で分かれるため、**ここで出したチャレンジではログインできない**
+    /// （逆も同じ。ADR-0040 決定 4 の考え方を本人確認へ広げたもの）。
+    pub async fn begin_passkey(&self) -> Result<(uuid::Uuid, serde_json::Value), String> {
+        self.passkey_ceremony.begin().await
+    }
+
+    /// パスキーで本人確認をやり直し、通ったら SSO セッションへ記録する。
+    ///
+    /// パスワード経路との違いは 3 点。**知識要素を求めない**（パスキーが所有 + User Verification を
+    /// 1 回で満たす）、**アカウントロックを見ない**（パスワードの総当たり対策で、署名鍵には効かない。
+    /// ADR-0040 決定 3）、**第二要素の段を持たない**（`[WebAuthn]` は多要素として記録されるので、
+    /// 多要素を要求する操作もこの 1 回で満たす。ADR-0020 §3）。
+    pub async fn verify_with_passkey(
+        &self,
+        tenant: TenantContext,
+        cmd: StepUpPasskeyVerifyCommand,
+        ctx: &RequestContext,
+    ) -> StepUpVerifyOutcome {
+        let now = self.clock.now();
+        let tenant_id = tenant.tenant_id();
+
+        // 1. IP 単位のレート制限（パスワード経路と同じ枠を消費する。入口ごとに枠が違うと、
+        //    片方で締め出された攻撃者がもう片方で試行を続けられる）。
+        if let Some(ip) = &ctx.ip_address {
+            if !self.rate_limiter.check_and_record(ip, now) {
+                return StepUpVerifyOutcome::RateLimited;
+            }
+        }
+
+        // 2. セッションから本人を解決する（ロックは見ない。上記のとおり効かないため）。
+        let session_hash = crypto::sha256_hex(&cmd.sso_session_id);
+        let session = match self.sso_sessions.find_by_hash(&session_hash).await {
+            Ok(Some(s)) if s.is_valid_at(now) => s,
+            Ok(_) => return StepUpVerifyOutcome::SessionExpired,
+            Err(e) => return StepUpVerifyOutcome::Internal(e.to_string()),
+        };
+        let user = match self.users.find_by_id(session.user_id).await {
+            Ok(Some(u)) if u.is_active() => u,
+            Ok(_) => return StepUpVerifyOutcome::SessionExpired,
+            Err(e) => return StepUpVerifyOutcome::Internal(e.to_string()),
+        };
+
+        // 3. WebAuthn セレモニー（チャレンジ消費・登録簿の一時停止判定・署名カウンタ更新・
+        //    テナント境界）は 3 つのログイン経路と同じものを通す。
+        let verified = match self
+            .passkey_ceremony
+            .verify(tenant_id, cmd.challenge_id, cmd.credential, ctx)
+            .await
+        {
+            Ok(v) => v,
+            Err(PasskeyAssertionError::Internal(e)) => return StepUpVerifyOutcome::Internal(e),
+            Err(_) => {
+                self.record_failure(tenant, cmd.operation, user.id, "invalid_passkey", ctx)
+                    .await;
+                return StepUpVerifyOutcome::InvalidCredentials;
+            }
+        };
+
+        // 4. **このセッションの利用者本人か。** 検証を通っただけでは「誰かのパスキー」でしかなく、
+        //    他人のパスキーで他人のセッションを引き上げられてはならない。
+        if verified.user_id != user.id {
+            self.record_failure(tenant, cmd.operation, user.id, "other_user_passkey", ctx)
+                .await;
+            return StepUpVerifyOutcome::InvalidCredentials;
+        }
+
+        // 5. 記録する。`[WebAuthn]` は第二要素を含むため多要素として記録され、多要素を要求する
+        //    操作（認証器の管理・外部 IdP の紐付け）もこの 1 回で満たす。
+        let methods = vec![AuthenticationMethod::WebAuthn];
+        if let Err(e) = self
+            .sso_sessions
+            .record_step_up(&session_hash, &methods, now)
+            .await
+        {
+            return StepUpVerifyOutcome::Internal(e.to_string());
+        }
+
+        self.audit
+            .record(
+                AuditEventType::StepUpSucceeded,
+                AuditResult::Success,
+                Some(tenant_id),
+                Some(user.id),
+                None,
+                Some(&format!(
+                    "operation={} method=webauthn",
+                    cmd.operation.as_str()
+                )),
+                ctx,
+            )
+            .await;
+        StepUpVerifyOutcome::Ok
+    }
+
     async fn record_failure(
         &self,
         tenant: TenantContext,
@@ -273,12 +423,16 @@ impl StepUpService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::passkey_assertion::VerifiedPasskeyUser;
     use crate::domain::error::{DomainError, Result as DomainResult};
     use crate::domain::repositories::AuditLogSink;
     use crate::domain::sso_session::SsoSession;
     use crate::domain::tenant::TenantId;
     use crate::domain::totp_secret::TotpSecret;
     use crate::domain::user::User;
+    use crate::domain::user_authenticator::{
+        AuthenticatorStatus, AuthenticatorType, UserAuthenticator,
+    };
     use crate::domain::values::UserStatus;
     use async_trait::async_trait;
     use chrono::{DateTime, Duration, TimeZone, Utc};
@@ -286,6 +440,8 @@ mod tests {
     use uuid::Uuid;
 
     const COOKIE: &str = "sso-cookie";
+    /// フェイクの利用者（`FakeUsers` が返す 1 人・セッションの持ち主）。
+    const USER: Uuid = Uuid::from_u128(1);
     const KEY: [u8; 32] = [3u8; 32];
 
     fn now() -> DateTime<Utc> {
@@ -351,11 +507,16 @@ mod tests {
             methods: &[AuthenticationMethod],
             verified_at: DateTime<Utc>,
         ) -> DomainResult<()> {
+            // 実装（`SqlxSsoSessionRepository::record_step_up`）と同じ更新をする。多要素の
+            // step-up は方式・強度も書き換える —— ここを省くと「第二要素を通したのに強度が
+            // 単一のまま」という実機に無い状態でテストが回り、パスキー経路の判定が試せない。
             self.step_ups.lock().unwrap().push(methods.to_vec());
             let mut row = self.row.lock().unwrap();
             row.step_up_at = Some(verified_at);
             if AuthenticationStrength::from_methods(methods) == AuthenticationStrength::MultiFactor
             {
+                row.authentication_methods = methods.to_vec();
+                row.authentication_strength = AuthenticationStrength::MultiFactor;
                 row.mfa_completed_at = Some(verified_at);
             }
             Ok(())
@@ -476,7 +637,81 @@ mod tests {
         }
     }
 
+    /// 登録簿のパスキー行だけを持つフェイク（他の操作はこの経路を通らない）。
+    #[derive(Default)]
+    struct FakeAuthenticators {
+        passkeys: Vec<UserAuthenticator>,
+    }
+    impl FakeAuthenticators {
+        fn with_active_passkey() -> Self {
+            Self {
+                passkeys: vec![passkey_row(AuthenticatorStatus::Active)],
+            }
+        }
+    }
+    #[async_trait]
+    impl UserAuthenticatorRepository for FakeAuthenticators {
+        async fn create(&self, _a: &UserAuthenticator) -> DomainResult<()> {
+            unreachable!()
+        }
+        async fn list_for_user(&self, _user_id: Uuid) -> DomainResult<Vec<UserAuthenticator>> {
+            Ok(self.passkeys.clone())
+        }
+    }
+
+    fn passkey_row(status: AuthenticatorStatus) -> UserAuthenticator {
+        UserAuthenticator {
+            id: Uuid::from_u128(77),
+            user_id: Uuid::from_u128(1),
+            authenticator_type: AuthenticatorType::WebAuthn,
+            status,
+            label: "MacBook".to_string(),
+            secret_encrypted: Some("key".to_string()),
+            target: None,
+            confirmed_at: Some(now()),
+            last_used_at: None,
+            expires_at: None,
+            revoked_at: None,
+            created_at: now(),
+            updated_at: now(),
+        }
+    }
+
+    /// セレモニーのフェイク。返す持ち主 ID だけを差し替えられればテストとしては足りる
+    /// （アサーションの検証そのものは `passkey_assertion` の担当）。
+    struct FakeCeremony(Result<Uuid, ()>);
+    #[async_trait]
+    impl PasskeyStepUpCeremony for FakeCeremony {
+        async fn begin(&self) -> Result<(Uuid, serde_json::Value), String> {
+            Ok((Uuid::from_u128(9), serde_json::json!({})))
+        }
+        async fn verify(
+            &self,
+            _tenant_id: crate::domain::tenant::TenantId,
+            _challenge_id: Uuid,
+            _credential: serde_json::Value,
+            _ctx: &RequestContext,
+        ) -> Result<VerifiedPasskeyUser, PasskeyAssertionError> {
+            match self.0 {
+                Ok(user_id) => Ok(VerifiedPasskeyUser {
+                    user_id,
+                    auth_session_id_hash: None,
+                }),
+                Err(()) => Err(PasskeyAssertionError::InvalidCredential),
+            }
+        }
+    }
+
     fn service(session: SsoSession, has_totp: bool) -> (StepUpService, Arc<FakeSessions>) {
+        build_service(session, has_totp, FakeAuthenticators::default(), Ok(USER))
+    }
+
+    fn build_service(
+        session: SsoSession,
+        has_totp: bool,
+        authenticators: FakeAuthenticators,
+        ceremony_user: Result<Uuid, ()>,
+    ) -> (StepUpService, Arc<FakeSessions>) {
         let sessions = Arc::new(FakeSessions {
             row: Mutex::new(session),
             step_ups: Mutex::new(Vec::new()),
@@ -488,6 +723,8 @@ mod tests {
             Arc::new(FakeTotp {
                 confirmed: has_totp,
             }),
+            Arc::new(FakeCeremony(ceremony_user)),
+            Arc::new(authenticators),
             Arc::new(PlainHasher),
             Arc::new(AllowAll),
             Arc::new(AuditService::new(Arc::new(DiscardingSink), clock.clone())),
@@ -544,6 +781,7 @@ mod tests {
         );
         let StepUpCheckOutcome::ChallengeRequired {
             second_factor_required,
+            ..
         } = svc
             .check(COOKIE, SensitiveOperation::ManageAuthenticators)
             .await
@@ -577,7 +815,8 @@ mod tests {
         assert!(matches!(
             svc.check(COOKIE, SensitiveOperation::ChangePassword).await,
             StepUpCheckOutcome::ChallengeRequired {
-                second_factor_required: false
+                second_factor_required: false,
+                ..
             }
         ));
 
@@ -672,5 +911,112 @@ mod tests {
             )
             .await;
         assert!(matches!(outcome, StepUpVerifyOutcome::SessionExpired));
+    }
+
+    // ── パスキーでの本人確認（T38。ADR-0040 決定 2 の適用範囲を step-up へ広げる） ──────
+
+    /// パスキーは 1 回で多要素として記録される。**これが無いと、パスキーで入った利用者は
+    /// 認証器の管理（多要素を要求する操作）へ永久に入れない。**
+    #[tokio::test]
+    async fn a_passkey_satisfies_a_step_up_that_demands_two_factors() {
+        let (svc, sessions) = build_service(
+            session(vec![AuthenticationMethod::Password], Duration::hours(4)),
+            true,
+            FakeAuthenticators::with_active_passkey(),
+            Ok(USER),
+        );
+        // パスワードだけのセッションでは、認証器の管理は第二要素まで求められる。
+        let StepUpCheckOutcome::ChallengeRequired {
+            second_factor_required,
+            passkey_available,
+        } = svc
+            .check(COOKIE, SensitiveOperation::ManageAuthenticators)
+            .await
+        else {
+            panic!("expected a challenge");
+        };
+        assert!(second_factor_required);
+        assert!(passkey_available, "使えるパスキーがあるなら導線を出す");
+
+        let outcome = svc
+            .verify_with_passkey(tenant(), passkey_command(), &ctx())
+            .await;
+        assert!(matches!(outcome, StepUpVerifyOutcome::Ok));
+
+        // 記録された方式が第二要素を含むため、要件が多要素の操作もそのまま通る。
+        let recorded = sessions.step_ups.lock().unwrap().clone();
+        assert_eq!(recorded, vec![vec![AuthenticationMethod::WebAuthn]]);
+        assert!(matches!(
+            svc.check(COOKIE, SensitiveOperation::ManageAuthenticators)
+                .await,
+            StepUpCheckOutcome::Satisfied
+        ));
+    }
+
+    /// 他人のパスキーで他人のセッションを引き上げさせない（セレモニーは「誰のパスキーか」までしか
+    /// 答えないので、本人かどうかはこの層が見る）。
+    #[tokio::test]
+    async fn a_passkey_belonging_to_someone_else_does_not_verify_this_session() {
+        let (svc, sessions) = build_service(
+            session(vec![AuthenticationMethod::Password], Duration::hours(4)),
+            false,
+            FakeAuthenticators::with_active_passkey(),
+            Ok(Uuid::from_u128(999)),
+        );
+
+        let outcome = svc
+            .verify_with_passkey(tenant(), passkey_command(), &ctx())
+            .await;
+
+        assert!(matches!(outcome, StepUpVerifyOutcome::InvalidCredentials));
+        assert!(sessions.step_ups.lock().unwrap().is_empty());
+    }
+
+    /// 検証が通らなかったアサーションでは記録しない。
+    #[tokio::test]
+    async fn a_rejected_assertion_does_not_record_a_step_up() {
+        let (svc, sessions) = build_service(
+            session(vec![AuthenticationMethod::Password], Duration::hours(4)),
+            false,
+            FakeAuthenticators::with_active_passkey(),
+            Err(()),
+        );
+
+        let outcome = svc
+            .verify_with_passkey(tenant(), passkey_command(), &ctx())
+            .await;
+
+        assert!(matches!(outcome, StepUpVerifyOutcome::InvalidCredentials));
+        assert!(sessions.step_ups.lock().unwrap().is_empty());
+    }
+
+    /// 一時停止中のパスキーしか無い利用者には導線を出さない（押しても通らないため）。
+    #[tokio::test]
+    async fn a_suspended_passkey_does_not_offer_the_passkey_route() {
+        let (svc, _) = build_service(
+            session(vec![AuthenticationMethod::Password], Duration::hours(4)),
+            false,
+            FakeAuthenticators {
+                passkeys: vec![passkey_row(AuthenticatorStatus::Suspended)],
+            },
+            Ok(USER),
+        );
+
+        let StepUpCheckOutcome::ChallengeRequired {
+            passkey_available, ..
+        } = svc.check(COOKIE, SensitiveOperation::ChangePassword).await
+        else {
+            panic!("expected a challenge");
+        };
+        assert!(!passkey_available);
+    }
+
+    fn passkey_command() -> StepUpPasskeyVerifyCommand {
+        StepUpPasskeyVerifyCommand {
+            sso_session_id: COOKIE.to_string(),
+            operation: SensitiveOperation::ManageAuthenticators,
+            challenge_id: Uuid::from_u128(9),
+            credential: serde_json::json!({}),
+        }
     }
 }

@@ -13,8 +13,10 @@
 //!
 //! チャレンジは [`PasskeyFlow`] で用途を分ける。OIDC 経路のチャレンジは `auth_session_id` に結合して
 //! おり（[`PasskeyFlow::Oidc`]）、直接ログイン（管理コンソール・ポータル）のチャレンジは結合を持たない
-//! （[`PasskeyFlow::Direct`]）。完了時に期待するフローと一致しないチャレンジは
-//! [`PasskeyAssertionError::WrongFlow`] で弾き、経路をまたいだ使い回しを起こさせない。
+//! （[`PasskeyFlow::Direct`]）。重要操作の直前の本人確認（AP5）はどちらでもなく、種別そのもので
+//! 分ける（[`PasskeyFlow::StepUp`]）—— セッションを作らないので `auth_session_id_hash` は用途を
+//! 表せない。完了時に期待するフローと一致しないチャレンジは [`PasskeyAssertionError::WrongFlow`] で
+//! 弾き、経路をまたいだ使い回しを起こさせない。
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authenticator_management::is_blocked_in_registry;
@@ -40,13 +42,26 @@ use webauthn_rs::prelude::{
 /// チャレンジの有効期限（5 分）。
 const CHALLENGE_TTL: StdDuration = StdDuration::from_secs(300);
 
-/// パスキーで入ろうとしている経路。チャレンジの発行時と完了時で一致していなければならない。
+/// パスキーを使おうとしている経路。チャレンジの発行時と完了時で一致していなければならない。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PasskeyFlow {
     /// OIDC 認可フローの中のログイン。`auth_session_id` に結合する。
     Oidc,
     /// 認可フロー外の直接ログイン（管理コンソール・ポータル）。`auth_session_id` を持たない。
     Direct,
+    /// 重要操作の直前の本人確認（AP5）。**セッションを作らず、既にあるセッションを引き上げる。**
+    /// ログインの 2 つと `challenge_type` で分かれる。
+    StepUp,
+}
+
+impl PasskeyFlow {
+    /// この経路が発行・消費するチャレンジの種別。
+    fn challenge_type(self) -> PasskeyChallengeType {
+        match self {
+            Self::Oidc | Self::Direct => PasskeyChallengeType::Authenticate,
+            Self::StepUp => PasskeyChallengeType::StepUp,
+        }
+    }
 }
 
 /// アサーション検証の失敗。呼び出し側は自分の経路の outcome へ写す。
@@ -114,6 +129,24 @@ impl PasskeyAssertionService {
         &self,
         auth_session_id: Option<&str>,
     ) -> Result<(Uuid, serde_json::Value), String> {
+        self.begin_for(PasskeyFlow::Direct, auth_session_id).await
+    }
+
+    /// 本人確認（AP5）の開始。ログイン用のチャレンジとは種別で分かれるため、**この経路で出した
+    /// チャレンジではログインできない**（逆も同じ）。
+    ///
+    /// 返り値: `(challenge_id, options_json)`
+    pub async fn begin_step_up(&self) -> Result<(Uuid, serde_json::Value), String> {
+        self.begin_for(PasskeyFlow::StepUp, None).await
+    }
+
+    /// 用途を決めてチャレンジを 1 本作る。`Oidc` と `Direct` の別は `auth_session_id` の有無が
+    /// 表すため、ログイン経路はどちらを渡しても同じ結果になる。
+    async fn begin_for(
+        &self,
+        flow: PasskeyFlow,
+        auth_session_id: Option<&str>,
+    ) -> Result<(Uuid, serde_json::Value), String> {
         let now = self.clock.now();
 
         let (crc, state) = self
@@ -128,7 +161,7 @@ impl PasskeyAssertionService {
         let challenge = PasskeyChallenge {
             id: challenge_id,
             user_id: None,
-            challenge_type: PasskeyChallengeType::Authenticate,
+            challenge_type: flow.challenge_type(),
             state_json,
             auth_session_id_hash: auth_session_id.map(auth_session::id_hash),
             expires_at: now + Duration::from_std(CHALLENGE_TTL).unwrap(),
@@ -171,11 +204,15 @@ impl PasskeyAssertionService {
             return Err(PasskeyAssertionError::Internal(e.to_string()));
         }
 
-        // 1.5. 用途の一致を確認する。`auth_session_id_hash` の有無がそのままフローの別になる。
-        let flow_matches = match flow {
-            PasskeyFlow::Oidc => challenge.auth_session_id_hash.is_some(),
-            PasskeyFlow::Direct => challenge.auth_session_id_hash.is_none(),
-        };
+        // 1.5. 用途の一致を確認する。ログインと本人確認は `challenge_type` で分かれ、ログインの
+        //      2 経路（認可フロー・直接）は `auth_session_id_hash` の有無で分かれる。
+        let flow_matches = challenge.challenge_type == flow.challenge_type()
+            && match flow {
+                PasskeyFlow::Oidc => challenge.auth_session_id_hash.is_some(),
+                PasskeyFlow::Direct | PasskeyFlow::StepUp => {
+                    challenge.auth_session_id_hash.is_none()
+                }
+            };
         if !flow_matches {
             return Err(PasskeyAssertionError::WrongFlow);
         }
@@ -288,6 +325,54 @@ impl PasskeyAssertionService {
             user_id,
             auth_session_id_hash: challenge.auth_session_id_hash,
         })
+    }
+}
+
+/// 本人確認（AP5）がパスキーへ求めること。
+///
+/// [`StepUpService`](crate::application::step_up::StepUpService) がセレモニーの実装全体ではなく
+/// この 2 つだけを見るのは、**本人確認の判定を試すのにセレモニー一式を組ませない**ためである
+/// （クレデンシャル・チャレンジ・登録簿・テナント所属の 4 リポジトリと WebAuthn 実装）。
+/// 実装は [`PasskeyAssertionService`] 1 つで、セレモニーそのものは 3 つのログイン経路と同じ
+/// 1 か所に留まる（ADR-0040 決定 1）。
+#[async_trait::async_trait]
+pub trait PasskeyStepUpCeremony: Send + Sync {
+    /// 本人確認用のチャレンジを 1 本発行する。
+    async fn begin(&self) -> Result<(Uuid, serde_json::Value), String>;
+
+    /// アサーションを検証して持ち主を確定する。**持ち主がセッションの利用者かは呼び出し側が見る**
+    /// （セレモニーは「誰のパスキーか」までしか答えない）。
+    async fn verify(
+        &self,
+        tenant_id: TenantId,
+        challenge_id: Uuid,
+        credential: serde_json::Value,
+        ctx: &RequestContext,
+    ) -> Result<VerifiedPasskeyUser, PasskeyAssertionError>;
+}
+
+#[async_trait::async_trait]
+impl PasskeyStepUpCeremony for PasskeyAssertionService {
+    async fn begin(&self) -> Result<(Uuid, serde_json::Value), String> {
+        self.begin_step_up().await
+    }
+
+    async fn verify(
+        &self,
+        tenant_id: TenantId,
+        challenge_id: Uuid,
+        credential: serde_json::Value,
+        ctx: &RequestContext,
+    ) -> Result<VerifiedPasskeyUser, PasskeyAssertionError> {
+        PasskeyAssertionService::verify(
+            self,
+            tenant_id,
+            challenge_id,
+            credential,
+            PasskeyFlow::StepUp,
+            ctx,
+        )
+        .await
     }
 }
 

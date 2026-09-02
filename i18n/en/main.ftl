@@ -367,7 +367,6 @@ mfa-error-rate-limited = Too many attempts. Please wait a moment and try again.
 mfa-error-locked = This account is temporarily locked after repeated failed attempts. Please try again later.
 
 # ── Passkey（WebAuthn） ──────────────────────────────────────────────────────
-passkey-title = Passkeys
 passkey-list-title = Your Passkeys
 passkey-list-empty = You have no passkeys registered yet.
 passkey-register-title = Register a Passkey
@@ -381,14 +380,18 @@ nav-home = Go to account home
 passkey-retry = Try again
 passkey-delete-button = Delete
 passkey-delete-confirm = Are you sure you want to delete this passkey?
-passkey-deleted-title = Passkey deleted
 passkey-deleted-message = Your passkey has been deleted.
 passkey-last-used = Last used
 login-passkey-or = Or
 login-passkey-button = Sign in with Passkey
-passkey-error-not-signed-in = You must be signed in to manage passkeys.
-passkey-error-session-expired = Your session has expired. Please sign in again.
-passkey-error-not-found = Passkey not found.
+passkey-error-not-found = Passkey not found. It may have already been deleted.
+passkey-error-cancelled = The passkey request was cancelled or timed out. Please try again.
+passkey-error-duplicate = This authenticator is already registered as a passkey.
+passkey-error-invalid = The passkey could not be registered. Please try a different authenticator.
+passkey-error-failed = Passkey registration failed. Please try again.
+passkey-error-server = Could not reach the server. Please try again in a moment.
+passkey-suspended-help = This passkey is suspended and cannot be used to sign in. Resume it from Authenticators.
+passkey-open-authenticators = Manage authenticators (suspend / resume)
 
 # 設定画面（MT14・MT15）
 admin-nav-settings = Settings
@@ -900,6 +903,9 @@ step-up-cancel = Cancel and go back
 step-up-error-csrf = The form expired. Please try again.
 step-up-error-invalid = We could not confirm your identity. Check your password and code, then try again.
 step-up-error-second-factor = This action also requires your authenticator code.
+step-up-passkey-button = Confirm with a passkey
+step-up-passkey-help = You can confirm with a registered passkey — no password needed.
+step-up-error-passkey = We could not confirm your identity with that passkey. Try again, or confirm with your password.
 
 # 認証器の統合管理（AP9）
 authenticators-title = Authenticators

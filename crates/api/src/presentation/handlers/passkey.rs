@@ -97,8 +97,9 @@ pub async fn passkey_delete(
     Json(req): Json<InternalPasskeyDeleteRequest>,
 ) -> Json<InternalPasskeyDeleteResponse> {
     let credential_id = match req.credential_id.parse::<Uuid>() {
+        // 解釈できない id は「そんなパスキーは無い」であって内部エラーではない。
         Ok(id) => id,
-        Err(_) => return Json(InternalPasskeyDeleteResponse::Internal),
+        Err(_) => return Json(InternalPasskeyDeleteResponse::NotFound),
     };
     match state
         .passkey_registration
@@ -106,6 +107,7 @@ pub async fn passkey_delete(
         .await
     {
         Ok(()) => Json(InternalPasskeyDeleteResponse::Ok),
+        Err(PasskeyRegistrationError::NotFound) => Json(InternalPasskeyDeleteResponse::NotFound),
         Err(PasskeyRegistrationError::SessionExpired) => {
             Json(InternalPasskeyDeleteResponse::SessionExpired)
         }
@@ -130,6 +132,7 @@ pub async fn passkey_list(
                     name: c.name,
                     created_at: c.created_at.to_rfc3339(),
                     last_used_at: c.last_used_at.map(|d| d.to_rfc3339()),
+                    suspended: c.suspended,
                 })
                 .collect();
             Json(InternalPasskeyListResponse::Ok { credentials })
@@ -218,6 +221,7 @@ pub async fn login_complete(
             InternalPasskeyLoginCompleteResponse::InvalidCredential
         }
         PasskeyAuthOutcome::PolicyDenied => InternalPasskeyLoginCompleteResponse::PolicyDenied,
+        PasskeyAuthOutcome::RateLimited => InternalPasskeyLoginCompleteResponse::RateLimited,
         PasskeyAuthOutcome::Internal(e) => {
             tracing::error!(error = %e, "passkey login complete error");
             InternalPasskeyLoginCompleteResponse::Internal

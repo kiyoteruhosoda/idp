@@ -25,6 +25,34 @@
   {% endif %}
   <button type="submit" class="btn btn-primary w-100">{{ messages.get("step-up-submit") }}</button>
 </form>
+
+{% if passkey_available %}
+{#- パスキーでの確認（T38）。**使えるパスキーを持っている利用者にだけ出す** —— 持っていない人に
+    見せると、ブラウザのダイアログが出てから失敗する。ログイン画面と同じスクリプトを共有し、
+    開始・完了のパスと、完了 API へ添える値（どの操作か・終わったらどこへ戻すか）を data 属性で
+    渡す。JS が動く環境でしか使えないので、初期状態は `hidden` でスクリプトが外す。 -#}
+<div id="passkey-login" hidden>
+  <p class="auth-or">{{ messages.get("login-passkey-or") }}</p>
+  <div class="d-grid">
+    <button type="button" class="btn btn-outline-secondary" id="btn-passkey-login"><i class="fa-solid fa-key me-2" aria-hidden="true"></i>{{ messages.get("step-up-passkey-button") }}</button>
+  </div>
+  <p class="form-text text-center">{{ messages.get("step-up-passkey-help") }}</p>
+  <div id="passkey-error" style="display:none"
+       data-tenant-prefix="{{ tenant }}"
+       data-begin-path="/settings/verify/passkey/begin"
+       data-complete-path="/settings/verify/passkey/complete"
+       data-operation="{{ operation }}"
+       data-next="{{ next }}"
+       data-msg-invalid-credential="{{ messages.get("step-up-error-passkey") }}"
+       data-msg-rate-limited="{{ messages.get("login-error-rate-limited") }}"
+       data-msg-cancelled="{{ messages.get("passkey-error-cancelled") }}"
+       data-msg-server="{{ messages.get("passkey-error-server") }}">
+    <p class="text-danger small text-center mb-0" role="alert" id="passkey-error-msg"></p>
+  </div>
+</div>
+<script src="/assets/passkey-login.js?v={{ crate::templates::asset_version() }}" defer></script>
+{% endif %}
+
 <div class="mt-3 text-center">
   <a href="{{ tenant }}/settings">{{ messages.get("step-up-cancel") }}</a>
 </div>

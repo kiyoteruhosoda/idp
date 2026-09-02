@@ -1013,6 +1013,9 @@ pub struct InternalPasskeyDeleteRequest {
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalPasskeyDeleteResponse {
     Ok,
+    /// その利用者の使えるパスキーとして見つからない（既に消えている・他人の id・壊れた id）。
+    /// 画面は「消しました」と言ってはいけないので、成功と区別して返す。
+    NotFound,
     SessionExpired,
     Internal,
 }
@@ -1030,6 +1033,11 @@ pub struct PasskeyCredentialInfo {
     pub name: String,
     pub created_at: String,
     pub last_used_at: Option<String>,
+    /// 認証器の登録簿（AP9）で一時停止されている。**一覧には出るが、これではサインインできない。**
+    /// 画面がこれを出さないと、利用者は使えないパスキーを使えるものとして眺めることになる
+    /// （停止は `/{tenant_id}/settings/authenticators` から掛ける・外す）。
+    #[serde(default)]
+    pub suspended: bool,
 }
 
 /// Passkey 一覧 API のレスポンス。
@@ -1108,6 +1116,8 @@ pub enum InternalPasskeyLoginCompleteResponse {
     InvalidCredential,
     /// 認証ポリシーにより拒否（ユーザー認証・認証ポリシー仕様書 §7.4 `deny`）。
     PolicyDenied,
+    /// IP 単位のレート制限超過。直接ログインのパスキー経路と同じ枠を消費する。
+    RateLimited,
     /// api 内部エラー。
     Internal,
 }
@@ -1480,6 +1490,10 @@ pub enum InternalStepUpCheckResponse {
     /// 本人確認をやり直す必要がある。`second_factor_required` が真なら TOTP まで求める。
     ChallengeRequired {
         second_factor_required: bool,
+        /// パスキーでの確認を画面に出してよいか（**いま使える**パスキーを持っている）。
+        /// 持っていない利用者にボタンを見せると、ブラウザのダイアログが出てから失敗する。
+        #[serde(default)]
+        passkey_available: bool,
     },
     /// SSO セッションが無い・期限切れ・利用者が無効。
     SessionExpired,
@@ -1515,6 +1529,64 @@ pub enum InternalStepUpVerifyResponse {
     InvalidCredentials,
     /// 第二要素が要るのにコードが提示されていない。
     SecondFactorRequired,
+    RateLimited,
+    SessionExpired,
+    UnknownOperation,
+    Internal,
+}
+
+/// パスキーでの本人確認の開始 API（`POST /internal/step-up/passkey/begin`）のリクエスト。
+///
+/// ログインの開始（`/internal/passkey/login/begin`）と分けるのは、**用途の違うチャレンジを
+/// 出すため**である（ADR-0040 決定 4 の考え方を本人確認へ広げたもの）。ここで出したチャレンジで
+/// ログインは成立せず、その逆も通らない。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalStepUpPasskeyBeginRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+}
+
+/// パスキーでの本人確認の開始 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalStepUpPasskeyBeginResponse {
+    Ok {
+        challenge_id: String,
+        /// `navigator.credentials.get()` に渡す options（JSON）。
+        options: serde_json::Value,
+    },
+    SessionExpired,
+    Internal,
+}
+
+/// パスキーでの本人確認 API（`POST /internal/step-up/passkey/verify`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalStepUpPasskeyVerifyRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+    pub operation: String,
+    pub challenge_id: String,
+    /// ブラウザが返した `PublicKeyCredential`（JSON）。
+    pub credential: serde_json::Value,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// パスキーでの本人確認 API のレスポンス。
+///
+/// パスワード経路（[`InternalStepUpVerifyResponse`]）と違い `SecondFactorRequired` を返さない ——
+/// パスキーは 1 回で多要素を満たすため、この先に足す要素が無い（ADR-0020 §3 / ADR-0040 決定 2）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalStepUpPasskeyVerifyResponse {
+    /// 確認できた。続けて操作してよい。
+    Ok,
+    /// アサーションが無効・チャレンジが見つからない・本人のパスキーでない（理由は分けない）。
+    InvalidCredential,
     RateLimited,
     SessionExpired,
     UnknownOperation,

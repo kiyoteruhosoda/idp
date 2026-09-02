@@ -8,8 +8,18 @@
 //! 認可フロー用（`/passkey/login/begin`。`auth_session_id` Cookie を読む）と直接ログイン用
 //! （`/passkey/login/direct/begin`。読まない）の 2 つ、完了は画面ごとに 3 つある
 //! （発行する Cookie と遷移先が違うため）。
+//!
+//! # 画面の行き先
+//!
+//! HTML 経路（一覧・削除）は、**結果を伝える専用ページを作らず一覧へ戻す**（PRG）。結果は
+//! `?saved=` / `?error=` で一覧の上のバナーに出す。認証器の管理画面
+//! （`handlers::authenticators`）と同じ形である。削除の完了ページのように「戻るリンクの無い
+//! 1 枚」を挟むと、利用者はブラウザの戻るしか手が無くなる。
+//!
+//! サインインしていない・セッションが切れたときは、同じ理由でログイン画面へ送る（設定配下の
+//! 他の画面と揃える）。
 
-use super::{internal_call_status, locale};
+use super::{found, internal_call_status, locale, see_other};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -17,7 +27,7 @@ use crate::handlers::forwarded_context;
 use crate::handlers::step_up::{self, MANAGE_AUTHENTICATORS};
 use crate::i18n::Messages;
 use crate::state::WebState;
-use crate::templates::{render, MessagePage, PasskeyListTemplate, PasskeyRegisterTemplate};
+use crate::templates::{render, PasskeyListTemplate, PasskeyRegisterTemplate};
 use crate::tenant::WebTenant;
 use assay_contracts::auth::{
     InternalAdminPasskeyLoginCompleteRequest, InternalAdminPasskeyLoginCompleteResponse,
@@ -28,7 +38,7 @@ use assay_contracts::auth::{
     InternalPasskeyRegisterCompleteRequest, InternalPasskeyRegisterCompleteResponse,
     InternalPortalPasskeyLoginCompleteRequest, InternalPortalPasskeyLoginCompleteResponse,
 };
-use axum::extract::{Extension, State};
+use axum::extract::{Extension, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Json, Response};
 use axum::Form;
@@ -36,21 +46,25 @@ use serde::{Deserialize, Serialize};
 
 // ─── 登録フロー ──────────────────────────────────────────────────────────────
 
+/// 一覧のバナー表示（削除からの PRG で戻ってくる）。
+#[derive(Debug, Deserialize)]
+pub struct PasskeyListQuery {
+    #[serde(default)]
+    pub saved: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
 /// Passkey 一覧ページ（`GET /account/passkey`）。SSO Cookie が必要。
 pub async fn list_page(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
+    Query(query): Query<PasskeyListQuery>,
 ) -> Response {
     let Some(sso_session_id) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
-        // FluentBundle は !Send なので await の前に作成・消費する。
-        let messages = Messages::new(locale(&headers));
-        return error_page(
-            &messages,
-            StatusCode::UNAUTHORIZED,
-            "passkey-error-not-signed-in",
-        );
+        return found(&format!("{}/login", tenant.prefix()));
     };
     let req = InternalPasskeyListRequest { sso_session_id };
     let result = match state.api.passkey_list(&correlation.0, &req).await {
@@ -67,13 +81,11 @@ pub async fn list_page(
             messages: &messages,
             tenant_prefix: &tenant.prefix(),
             credentials: &credentials,
+            saved_key: query.saved.as_deref().and_then(saved_key_for),
+            error_key: query.error.as_deref().and_then(error_key_for),
         }))
         .into_response(),
-        InternalPasskeyListResponse::SessionExpired => error_page(
-            &messages,
-            StatusCode::UNAUTHORIZED,
-            "passkey-error-session-expired",
-        ),
+        InternalPasskeyListResponse::SessionExpired => found(&format!("{}/login", tenant.prefix())),
         InternalPasskeyListResponse::Internal => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
@@ -98,14 +110,8 @@ pub async fn register_page(
     {
         return response;
     }
+    // ここへ来た時点で step-up のゲートを通っている（SSO が無ければログイン画面へ送られている）。
     let messages = Messages::new(locale(&headers));
-    if cookies::get(&headers, cookies::SSO_SESSION_COOKIE).is_none() {
-        return error_page(
-            &messages,
-            StatusCode::UNAUTHORIZED,
-            "passkey-error-not-signed-in",
-        );
-    }
     Html(render(&PasskeyRegisterTemplate {
         messages: &messages,
         tenant_prefix: &tenant.prefix(),
@@ -258,14 +264,9 @@ pub async fn delete(
     {
         return response;
     }
+    let list = format!("{}/account/passkey", tenant.prefix());
     let Some(sso_session_id) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
-        // FluentBundle は !Send なので await の前に作成・消費する。
-        let messages = Messages::new(locale(&headers));
-        return error_page(
-            &messages,
-            StatusCode::UNAUTHORIZED,
-            "passkey-error-not-signed-in",
-        );
+        return found(&format!("{}/login", tenant.prefix()));
     };
     let req = InternalPasskeyDeleteRequest {
         sso_session_id,
@@ -278,19 +279,13 @@ pub async fn delete(
             return internal_call_status(&e).into_response();
         }
     };
-    // FluentBundle は !Send なので await の後に作成する。
-    let messages = Messages::new(locale(&headers));
     match result {
-        InternalPasskeyDeleteResponse::Ok => Html(render(&MessagePage {
-            title: messages.get("passkey-deleted-title"),
-            message: messages.get("passkey-deleted-message"),
-        }))
-        .into_response(),
-        InternalPasskeyDeleteResponse::SessionExpired => error_page(
-            &messages,
-            StatusCode::UNAUTHORIZED,
-            "passkey-error-session-expired",
-        ),
+        // 一覧へ戻して結果はバナーで伝える（残っているパスキーをその場で確かめられる）。
+        InternalPasskeyDeleteResponse::Ok => see_other(&format!("{list}?saved=deleted")),
+        InternalPasskeyDeleteResponse::NotFound => see_other(&format!("{list}?error=not-found")),
+        InternalPasskeyDeleteResponse::SessionExpired => {
+            found(&format!("{}/login", tenant.prefix()))
+        }
         InternalPasskeyDeleteResponse::Internal => {
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
@@ -476,6 +471,12 @@ pub async fn login_complete_api(
             error: Some("policy_denied".to_string()),
         })
         .into_response(),
+        InternalPasskeyLoginCompleteResponse::RateLimited => Json(LoginCompleteJsonResponse {
+            redirect_to: None,
+            form_post: None,
+            error: Some("rate_limited".to_string()),
+        })
+        .into_response(),
         InternalPasskeyLoginCompleteResponse::Internal => {
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
@@ -651,10 +652,18 @@ fn login_error(code: &str) -> LoginCompleteJsonResponse {
     }
 }
 
-fn error_page(messages: &Messages, status: StatusCode, error_key: &str) -> Response {
-    let body = render(&MessagePage {
-        title: messages.get("passkey-title"),
-        message: messages.get(error_key),
-    });
-    (status, Html(body)).into_response()
+/// 一覧のバナー（成功）。値は削除の PRG が付ける `?saved=` だけ。
+fn saved_key_for(value: &str) -> Option<&'static str> {
+    match value {
+        "deleted" => Some("passkey-deleted-message"),
+        _ => None,
+    }
+}
+
+/// 一覧のバナー（失敗）。未知の値は何も出さない（URL の文字列を画面へ出さない）。
+fn error_key_for(value: &str) -> Option<&'static str> {
+    match value {
+        "not-found" => Some("passkey-error-not-found"),
+        _ => None,
+    }
 }

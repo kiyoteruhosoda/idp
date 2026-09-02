@@ -4,12 +4,22 @@
     ホームへのリンクにして、行き止まりを作らない。 -#}
 {% block brand %}<a class="navbar-brand mb-0 h1 text-decoration-none" href="{{ tenant_prefix }}/settings" title="{{ messages.get("nav-home") }}">assay</a>{% endblock %}
 {% block column %}col-md-8 col-lg-6 mx-auto{% endblock %}
+{#- 削除の確認ダイアログは `data-confirm` + `console.js` で出す。`onclick="return confirm(...)"`
+    は CSP（`script-src 'self'`）で実行されず、**確認なしで送信される**（SEC12）。 -#}
+{% block scripts %}<script src="/assets/console.js?v={{ crate::templates::asset_version() }}"></script>{% endblock %}
 {% block content %}
+{#- 戻る導線は左上の名乗り（`brand`）に頼らない —— リンクだと見て分からない。認証器・
+    セキュリティ画面と同じ形の「戻る」を本文の先頭に置く。 -#}
+<div class="mb-3">
+  <a href="{{ tenant_prefix }}/settings"><i class="fa-solid fa-arrow-left me-2" aria-hidden="true"></i>{{ messages.get("user-security-back-settings") }}</a>
+</div>
 <div class="card border-0 bg-transparent">
   <div class="card-header text-center py-3 border-0 bg-transparent">
     <h1 class="h4 mb-0">{{ messages.get("passkey-list-title") }}</h1>
   </div>
   <div class="card-body p-4">
+    {% if let Some(key) = saved_key %}<div class="alert alert-success" role="status">{{ messages.get(key) }}</div>{% endif %}
+    {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
     {% if credentials.is_empty() %}
     <p class="text-muted text-center">{{ messages.get("passkey-list-empty") }}</p>
     {% else %}
@@ -18,11 +28,15 @@
       <li class="list-group-item d-flex justify-content-between align-items-center">
         <div>
           <i class="fa-solid fa-key me-2 text-muted" aria-hidden="true"></i><strong>{{ cred.name }}</strong>
+          {#- 一時停止中のパスキーも一覧には出る（鍵を引く経路は失効した行しか落とさない）。
+              印を付けないと、利用者は使えないパスキーを使えるものとして眺めることになる。 -#}
+          {% if cred.suspended %}<span class="badge text-bg-secondary ms-2">{{ messages.get("authenticator-status-suspended") }}</span>{% endif %}
           <div class="text-muted small">{{ cred.created_at }}{% if let Some(last) = cred.last_used_at %}（{{ messages.get("passkey-last-used") }}: {{ last }}）{% endif %}</div>
+          {% if cred.suspended %}<div class="text-muted small">{{ messages.get("passkey-suspended-help") }}</div>{% endif %}
         </div>
-        <form method="post" action="{{ tenant_prefix }}/account/passkey/delete" class="d-inline">
+        <form method="post" action="{{ tenant_prefix }}/account/passkey/delete" class="d-inline" data-confirm="{{ messages.get("passkey-delete-confirm") }}">
           <input type="hidden" name="credential_id" value="{{ cred.id }}">
-          <button type="submit" class="btn btn-outline-danger btn-sm" onclick="return confirm('{{ messages.get("passkey-delete-confirm") }}')">{{ messages.get("passkey-delete-button") }}</button>
+          <button type="submit" class="btn btn-outline-danger btn-sm">{{ messages.get("passkey-delete-button") }}</button>
         </form>
       </li>
       {% endfor %}
@@ -30,6 +44,11 @@
     {% endif %}
     <div class="d-grid">
       <a class="btn btn-primary" href="{{ tenant_prefix }}/account/passkey/register"><i class="fa-solid fa-plus me-2" aria-hidden="true"></i>{{ messages.get("passkey-register-button") }}</a>
+    </div>
+    {#- 一時停止・再開は登録簿の画面（AP9）にしかない。片方向のリンクだけだと、停止中の
+        パスキーを見た利用者が外しに行く先を持たない。 -#}
+    <div class="text-center mt-3">
+      <a class="text-decoration-none" href="{{ tenant_prefix }}/settings/authenticators">{{ messages.get("passkey-open-authenticators") }}</a>
     </div>
   </div>
 </div>

@@ -156,6 +156,15 @@ pub fn build(state: AppState) -> Router {
             "/internal/step-up/verify",
             post(internal_auth::step_up_verify),
         )
+        // 本人確認のパスキー経路（T38）。ログインの開始・完了とは用途の違うチャレンジを扱う。
+        .route(
+            "/internal/step-up/passkey/begin",
+            post(internal_auth::step_up_passkey_begin),
+        )
+        .route(
+            "/internal/step-up/passkey/verify",
+            post(internal_auth::step_up_passkey_verify),
+        )
         // セルフサービスのセキュリティ画面（セッション一覧・失効／連携アプリ解除。G10）。
         .route(
             "/internal/account/security",
