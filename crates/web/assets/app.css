@@ -124,6 +124,52 @@ code {
     color: var(--bs-secondary-color);
   }
 
+  /* カードはどこを押しても詳細へ行けるようにする。
+   *
+   * 表では名前のセルだけがリンクだが、カードでは項目名と値が縦に並ぶため、**どこが押せるのかが
+   * 画面から読めない**（2026-09-02 に指摘。カード内の別の場所を押しても何も起きない）。
+   * リンクの当たり判定をカードいっぱいへ広げ、右端に矢印を出して「押せる」ことを示す。
+   * Bootstrap の .stretched-link と同じ手だが、**カード表示のときだけ**効かせたいので自前で持つ
+   * （素の表で効かせると、position を持つ祖先まで当たり判定が広がってしまう）。 */
+  .table-cards tr:not(.collapse):has(.card-link) {
+    position: relative;
+    padding-right: 2rem;
+    cursor: pointer;
+  }
+
+  .table-cards .card-link::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+  }
+
+  /* 名前は値の並びに埋もれないよう強調する（リンクだと分かる手掛かりを 1 つ増やす） */
+  .table-cards .card-link {
+    font-weight: 600;
+  }
+
+  /* 右端の矢印。文字ではなく罫線で描く（アイコンフォントの読み込み順に依存させない） */
+  .table-cards tr:not(.collapse):has(.card-link)::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    right: 1rem;
+    width: 0.5rem;
+    height: 0.5rem;
+    margin-top: -0.25rem;
+    border-top: 2px solid var(--bs-secondary-color);
+    border-right: 2px solid var(--bs-secondary-color);
+    transform: rotate(45deg);
+  }
+
+  /* カード内の他のリンク・ボタン（操作列）は覆いより前へ出す。前に出さないと、
+   * カード全体の当たり判定に飲まれて押せなくなる。 */
+  .table-cards tr:not(.collapse) a:not(.card-link),
+  .table-cards tr:not(.collapse) button {
+    position: relative;
+    z-index: 1;
+  }
+
   /* カード内では識別子（<code>）を折り返す（横スクロール前提の nowrap を打ち消す） */
   .table-cards td code {
     white-space: normal;

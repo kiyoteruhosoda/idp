@@ -89,6 +89,9 @@ wiremock = "0.6"
 # danger-allow-state-serialisation: チャレンジ状態の DB 保存に必要（サーバサイドで管理するため安全）。
 # conditional-ui: discoverable credentials（ユーザー名不要のパスキーログイン）のサポート。
 webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation", "conditional-ui"] }
+# `ResidentKeyRequirement` は webauthn-rs の prelude に出てこないため、プロトコル型を直接引く
+# （webauthn-rs が内部で使っているものと同一のクレート・同一バージョン）。
+webauthn-rs-proto = { version = "0.5" }
 # メトリクス（G6）。`metrics` は計測の facade（`tracing` と同じ位置づけ）で core・api の双方が使う。
 # 収集とレンダリングは api だけが持つ（`/metrics` を出すのは api のため）。
 # metrics-exporter-prometheus は既定でプッシュゲートウェイ・HTTP リスナを引き込むため既定機能を切り、
