@@ -42,6 +42,8 @@ pub const EXTERNAL_IDPS_READ: &str = "idp.external-idps:read";
 pub const EXTERNAL_IDPS_WRITE: &str = "idp.external-idps:write";
 pub const SAML_SERVICE_PROVIDERS_READ: &str = "idp.saml-service-providers:read";
 pub const SAML_SERVICE_PROVIDERS_WRITE: &str = "idp.saml-service-providers:write";
+pub const RESOURCES_READ: &str = "idp.resources:read";
+pub const RESOURCES_WRITE: &str = "idp.resources:write";
 
 /// `idp.tenant.admin` が含意する細粒度コードの集合（ADR-0037）。
 ///
@@ -68,6 +70,8 @@ pub const TENANT_MANAGEMENT_CODES: &[&str] = &[
     EXTERNAL_IDPS_WRITE,
     SAML_SERVICE_PROVIDERS_READ,
     SAML_SERVICE_PROVIDERS_WRITE,
+    RESOURCES_READ,
+    RESOURCES_WRITE,
 ];
 
 /// 保有コード `held` が要求コード `required` を満たすか（含意関係。ADR-0037）。

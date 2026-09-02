@@ -91,6 +91,18 @@ string_enum!(
 );
 
 string_enum!(
+    /// 保護リソース（`aud` に入る宛名）の状態（ADR-0042）。
+    ///
+    /// `Disabled` は「登録は残すが、新しいトークンの宛先には使わせない」。行を消すと
+    /// `client_resources` の許可行も一緒に消え（ON DELETE CASCADE）、戻すときに誰へ貸していたかが
+    /// 分からなくなる。発行済みのトークンは寿命が尽きるまで有効なままである点は変わらない。
+    ResourceStatus {
+        Active => "ACTIVE",
+        Disabled => "DISABLED",
+    }
+);
+
+string_enum!(
     /// クライアント種別。
     ClientType {
         Public => "public",

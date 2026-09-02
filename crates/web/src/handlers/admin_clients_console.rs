@@ -432,6 +432,48 @@ pub async fn detail(
         .filter(|code| !permission_codes.contains(code))
         .collect();
 
+    // 貸してある宛先（ADR-0042）。保有分は**種別を問わず引く**——用途を変えて
+    // `client_credentials` を外したクライアントにも貸し出し行は残るので、種別で引かないと
+    // 区画ごと消えて取り消せなくなる（保有権限と同じ扱い）。取得に失敗しても画面は描くが、
+    // 「空」と取り違えて貸し直さないよう、失敗したことを画面に出す。
+    let (granted_resources, resources_load_failed) = match state
+        .api
+        .list_client_resources(&correlation.0, &tenant.0, &sso, &client_id)
+        .await
+    {
+        Ok(list) => (list.resources, false),
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load client resources");
+            (Vec::new(), true)
+        }
+    };
+    // 貸す候補は「登録済みで有効な宛名のうち、まだ貸していないもの」。
+    let grantable_resources: Vec<crate::admin_dto::ResourceView> =
+        if is_system_client(&client) && !resources_load_failed {
+            match state
+                .api
+                .list_resources(&correlation.0, &tenant.0, &sso)
+                .await
+            {
+                Ok(list) => list
+                    .resources
+                    .into_iter()
+                    .filter(|resource| {
+                        resource.is_active()
+                            && !granted_resources
+                                .iter()
+                                .any(|granted| granted.id == resource.id)
+                    })
+                    .collect(),
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to load registered resources");
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+
     let messages = Messages::new(locale(&headers));
     let csrf = csrf_from(&headers, state.config.csrf_secret());
     Html(render_detail(
@@ -443,6 +485,9 @@ pub async fn detail(
         &permission_codes,
         &grantable,
         permissions_load_failed,
+        &granted_resources,
+        &grantable_resources,
+        resources_load_failed,
         query.error.as_deref().and_then(permission_error_key),
     ))
     .into_response()
@@ -459,6 +504,7 @@ fn permission_error_key(error: &str) -> Option<&'static str> {
     match error {
         "csrf" => Some("admin-error-csrf"),
         "code" => Some("api-client-permission-not-grantable"),
+        "resource" => Some("api-resource-not-found"),
         "notfound" => Some("admin-client-not-found-message"),
         "internal" => Some("admin-error-internal"),
         _ => None,
@@ -563,6 +609,99 @@ async fn apply_permission_change(
         // 直接 POST された場合に api が拒む。ADR-0037）。
         Err(AdminApiError::Validation(_)) => found(&format!("{base}?error=code")),
         Err(AdminApiError::NotFound) => found(&format!("{base}?error=notfound")),
+        Err(_) => found(&format!("{base}?error=internal")),
+    }
+}
+
+// ── 宛先の貸し出し・取り消し（ADR-0042。Post/Redirect/Get）────────────────────────
+
+/// 貸すときは**名前**（`resource_uri`）、取り消すときは**行の id** を送る。api 側の形に合わせて
+/// あり、名前をパスに載せずに済む（スラッシュの percent-encode を運用に持ち込まない）。
+#[derive(Debug, Deserialize)]
+pub struct ResourceGrantForm {
+    pub resource_uri: String,
+    pub csrf_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ResourceRevokeForm {
+    pub resource_id: String,
+    pub csrf_token: String,
+}
+
+pub async fn grant_resource(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Path((_, client_id)): Path<(String, String)>,
+    Form(form): Form<ResourceGrantForm>,
+) -> Response {
+    let base = format!("{}{CLIENTS_SEGMENT}/{client_id}", tenant.prefix());
+    match resolve_admin(&state, &correlation, &tenant, &headers).await {
+        AdminResolution::Ok(_) => {}
+        AdminResolution::Reject(resp) => return resp,
+    }
+    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
+        return found(&format!("{base}?error=csrf"));
+    }
+    let sso = sso(&headers);
+    let result = state
+        .api
+        .grant_client_resource(
+            &correlation.0,
+            &tenant.0,
+            &sso,
+            &client_id,
+            form.resource_uri.trim(),
+        )
+        .await;
+    map_resource_result(&tenant, &headers, &base, result.map(|_| ()))
+}
+
+pub async fn revoke_resource(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Path((_, client_id)): Path<(String, String)>,
+    Form(form): Form<ResourceRevokeForm>,
+) -> Response {
+    let base = format!("{}{CLIENTS_SEGMENT}/{client_id}", tenant.prefix());
+    match resolve_admin(&state, &correlation, &tenant, &headers).await {
+        AdminResolution::Ok(_) => {}
+        AdminResolution::Reject(resp) => return resp,
+    }
+    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
+        return found(&format!("{base}?error=csrf"));
+    }
+    let sso = sso(&headers);
+    let result = state
+        .api
+        .revoke_client_resource(
+            &correlation.0,
+            &tenant.0,
+            &sso,
+            &client_id,
+            form.resource_id.trim(),
+        )
+        .await;
+    map_resource_result(&tenant, &headers, &base, result.map(|_| ()))
+}
+
+fn map_resource_result(
+    tenant: &WebTenant,
+    headers: &HeaderMap,
+    base: &str,
+    result: Result<(), AdminApiError>,
+) -> Response {
+    match result {
+        Ok(()) => found(base),
+        Err(AdminApiError::Unauthorized) => redirect_to_login(tenant),
+        Err(AdminApiError::Forbidden) => forbidden_response(headers),
+        // 宛名が消えた・停止された後に古い画面から押された場合はここに来る。
+        Err(AdminApiError::NotFound) => found(&format!("{base}?error=resource")),
+        Err(AdminApiError::Validation(_)) => found(&format!("{base}?error=resource")),
         Err(_) => found(&format!("{base}?error=internal")),
     }
 }
@@ -1049,6 +1188,9 @@ fn render_detail(
     permission_codes: &[String],
     grantable_permissions: &[String],
     permissions_load_failed: bool,
+    granted_resources: &[crate::admin_dto::ResourceView],
+    grantable_resources: &[crate::admin_dto::ResourceView],
+    resources_load_failed: bool,
     error_key: Option<&'static str>,
 ) -> String {
     render(&ClientDetail {
@@ -1060,6 +1202,16 @@ fn render_detail(
         permission_codes,
         grantable_permissions,
         permissions_load_failed,
+        granted_resources,
+        grantable_resources,
+        resources_load_failed,
+        // 宛先を要求できるのは `client_credentials` を使えるクライアントだけ。ただし既に
+        // 貸してあれば（または取得に失敗していれば）、取り消せるよう区画は出す。
+        shows_resources: is_system_client(client)
+            || !granted_resources.is_empty()
+            || resources_load_failed,
+        // 貸し出しフォームは、候補を引けたシステム用クライアントにだけ出す。
+        shows_resource_grant_form: is_system_client(client) && !resources_load_failed,
         // 管理トークンを取れるのはシステム用クライアントだけ（ADR-0037）。それ以外に付けても
         // 効かないので区画ごと出さない。ただし既に保有していれば、剥奪できるよう出す。
         shows_permissions: is_system_client(client) || !permission_codes.is_empty(),
@@ -1451,6 +1603,9 @@ mod tests {
             &held,
             &grantable,
             load_failed,
+            &[],
+            &[],
+            false,
             None,
         )
     }

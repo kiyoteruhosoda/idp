@@ -11,6 +11,7 @@ pub mod admin_invitations;
 pub mod admin_login_identifiers;
 pub mod admin_members;
 pub mod admin_permissions;
+pub mod admin_resources;
 pub mod admin_restart;
 pub mod admin_saml_service_providers;
 pub mod admin_signing_keys;

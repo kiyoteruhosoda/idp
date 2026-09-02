@@ -54,6 +54,7 @@ use crate::application::password_reset::PasswordResetService;
 use crate::application::permission_management::PermissionManagementService;
 use crate::application::portal_login::PortalLoginService;
 use crate::application::register::RegisterService;
+use crate::application::resource_management::ResourceManagementService;
 use crate::application::revocation::RevocationService;
 use crate::application::saml_service_provider_management::SamlServiceProviderManagementService;
 use crate::application::saml_sso::SamlSsoService;
@@ -106,6 +107,9 @@ use crate::infrastructure::repositories::external_idp::{
 use crate::infrastructure::repositories::passkey_challenge::SqlxPasskeyChallengeRepository;
 use crate::infrastructure::repositories::password_history::SqlxPasswordHistoryRepository;
 use crate::infrastructure::repositories::password_reset_token::SqlxPasswordResetTokenRepository;
+use crate::infrastructure::repositories::protected_resource::{
+    SqlxClientResourceRepository, SqlxProtectedResourceRepository,
+};
 use crate::infrastructure::repositories::refresh_token::SqlxRefreshTokenRepository;
 use crate::infrastructure::repositories::revoked_access_token::SqlxRevokedAccessTokenRepository;
 use crate::infrastructure::repositories::saml_service_provider::SqlxSamlServiceProviderRepository;
@@ -175,6 +179,8 @@ pub struct AppState {
     pub management_tokens: Arc<ManagementTokenService>,
     /// クライアントへの管理権限の付与・剥奪（`/admin/clients/{client_id}/permissions`）。
     pub client_permissions_admin: Arc<ClientPermissionManagementService>,
+    /// 保護リソース（`aud` に入る宛名）の登録と、クライアントへの貸し出し（ADR-0042）。
+    pub resources_admin: Arc<ResourceManagementService>,
     pub admin_login: Arc<AdminLoginService>,
     /// エンドユーザー・ポータルの直接ログイン（クライアント非依存。TOTP を尊重して SSO を直接発行する）。
     pub portal_login: Arc<PortalLoginService>,
@@ -655,6 +661,12 @@ impl AppState {
         // `resource` で管理 API を要求されたときにだけ引く。
         let client_permissions: Arc<dyn crate::domain::repositories::ClientPermissionRepository> =
             Arc::new(SqlxClientPermissionRepository::new(pool.clone()));
+        // トークンに刻む宛名と、その宛先を要求してよいクライアント（ADR-0042）。`resource` に
+        // assay 自身以外を指定された `client_credentials` でのみ引く。
+        let resources: Arc<dyn crate::domain::repositories::ProtectedResourceRepository> =
+            Arc::new(SqlxProtectedResourceRepository::new(pool.clone()));
+        let client_resources: Arc<dyn crate::domain::repositories::ClientResourceRepository> =
+            Arc::new(SqlxClientResourceRepository::new(pool.clone()));
         let token = Arc::new(TokenService::new(
             clients.clone(),
             users.clone(),
@@ -662,6 +674,8 @@ impl AppState {
             codes.clone(),
             refresh_tokens.clone(),
             client_permissions.clone(),
+            resources.clone(),
+            client_resources.clone(),
             keys.clone(),
             client_auth.clone(),
             audit.clone(),
@@ -789,6 +803,17 @@ impl AppState {
             client_permissions,
             audit.clone(),
             clock.clone(),
+        ));
+        // 宛名の登録と、クライアントへの貸し出し（ADR-0042）。発行側（TokenService）と同じ
+        // リポジトリ実装を共有するので、登録・剥奪の直後から発行に効く。
+        let resources_admin = Arc::new(ResourceManagementService::new(
+            resources,
+            client_resources,
+            clients.clone(),
+            audit.clone(),
+            clock.clone(),
+            ids.clone(),
+            config.issuer().to_string(),
         ));
 
         // F4: Logout（RP-initiated / front-channel / back-channel）。
@@ -1016,6 +1041,7 @@ impl AppState {
             admin_access,
             management_tokens,
             client_permissions_admin,
+            resources_admin,
             admin_login,
             portal_login,
             clients_admin,

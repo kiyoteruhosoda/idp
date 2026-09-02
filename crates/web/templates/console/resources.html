@@ -1,0 +1,84 @@
+{% extends "console/layout.html" %}
+{% block content %}
+<h2 class="h4 mb-3">{{ messages.get("admin-resources-title") }}</h2>
+<p class="text-muted">{{ messages.get("admin-resources-intro") }}</p>
+{% if let Some(err) = error %}
+<div class="alert alert-danger" role="alert">{{ messages.get(err) }}</div>
+{% endif %}
+<div class="table-responsive mb-4">
+  <table class="table table-cards table-hover align-middle">
+    <thead>
+      <tr>
+        <th>{{ messages.get("admin-resources-col-uri") }}</th>
+        <th>{{ messages.get("admin-resources-col-name") }}</th>
+        <th>{{ messages.get("admin-resources-col-status") }}</th>
+        <th>{{ messages.get("admin-resources-col-created") }}</th>
+        <th>{{ messages.get("admin-resources-col-actions") }}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% if resources.is_empty() %}
+      <tr><td colspan="5" class="text-muted">{{ messages.get("admin-resources-none") }}</td></tr>
+      {% else %}
+      {% for resource in resources %}
+      <tr>
+        <td data-label="{{ messages.get("admin-resources-col-uri") }}"><code>{{ resource.resource_uri }}</code></td>
+        <td data-label="{{ messages.get("admin-resources-col-name") }}">{{ resource.display_name }}</td>
+        <td data-label="{{ messages.get("admin-resources-col-status") }}">
+          {%- if resource.is_active() -%}
+          <span class="badge text-bg-success">{{ messages.get("admin-resources-state-active") }}</span>
+          {%- else -%}
+          <span class="badge bg-secondary-subtle text-secondary-emphasis">{{ messages.get("admin-resources-state-disabled") }}</span>
+          {%- endif -%}
+        </td>
+        <td data-label="{{ messages.get("admin-resources-col-created") }}">{{ resource.created_at }}</td>
+        <td data-label="{{ messages.get("admin-resources-col-actions") }}">
+          <form method="post" action="{{ tenant }}/admin/resources/status" class="d-inline">
+            <input type="hidden" name="resource_id" value="{{ resource.id }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}">
+            {% if resource.is_active() %}
+            <input type="hidden" name="status" value="DISABLED">
+            <button type="submit" class="btn btn-outline-warning btn-sm">{{ messages.get("admin-resources-disable") }}</button>
+            {% else %}
+            <input type="hidden" name="status" value="ACTIVE">
+            <button type="submit" class="btn btn-outline-success btn-sm">{{ messages.get("admin-resources-enable") }}</button>
+            {% endif %}
+          </form>
+          <form method="post" action="{{ tenant }}/admin/resources/delete" class="d-inline">
+            <input type="hidden" name="resource_id" value="{{ resource.id }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}">
+            <button type="submit" class="btn btn-outline-danger btn-sm">{{ messages.get("admin-resources-delete") }}</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
+<h3 class="h5 mb-3">{{ messages.get("admin-resources-register-heading") }}</h3>
+<div class="card">
+  <div class="card-body">
+    {# 宛名は「叩く先」ではないので、実在の URL である必要はない。ここで誤解されると
+       「公開ホスト名を書いて、そこへ接続すると思ってしまう」ため、例を 2 つ並べて出す。 #}
+    <p class="text-muted">{{ messages.get("admin-resources-register-intro") }}</p>
+    <form method="post" action="{{ tenant }}/admin/resources/register">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <div class="row g-2">
+        <div class="col-md-6">
+          <label class="form-label" for="resource-uri">{{ messages.get("admin-resources-uri-label") }}</label>
+          <input type="text" class="form-control" id="resource-uri" name="resource_uri" required
+                 placeholder="api://blobshare">
+          <div class="form-text">{{ messages.get("admin-resources-uri-hint") }}</div>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label" for="resource-display-name">{{ messages.get("admin-resources-name-label") }}</label>
+          <input type="text" class="form-control" id="resource-display-name" name="display_name" required>
+        </div>
+      </div>
+      <button type="submit" class="btn btn-primary mt-3"><i class="fa-solid fa-bullseye me-2" aria-hidden="true"></i>{{ messages.get("admin-resources-register-button") }}</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

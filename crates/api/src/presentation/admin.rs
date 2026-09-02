@@ -85,6 +85,10 @@ permission_markers! {
     MembersRead => permission::MEMBERS_READ;
     /// メンバーの招待・一時停止・解除。
     MembersWrite => permission::MEMBERS_WRITE;
+    /// 保護リソース（`aud` に入る宛名）と、その貸し出し先の参照（ADR-0042）。
+    ResourcesRead => permission::RESOURCES_READ;
+    /// 宛名の登録・停止・削除と、クライアントへの貸し出し・取り消し（ADR-0042）。
+    ResourcesWrite => permission::RESOURCES_WRITE;
     /// 権限付与状況の参照。
     PermissionsRead => permission::PERMISSIONS_READ;
     /// 権限の付与・剥奪。
