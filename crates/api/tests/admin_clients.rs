@@ -308,13 +308,39 @@ async fn confidential_clients_can_choose_the_client_authentication_method() {
 /// **絞り込みはページングと同じ層で行う必要がある。** web が 1 ページ受け取ってから間引くと、
 /// `total` もページャも実際の件数と合わなくなる。ここでは、返る中身と `total` の両方が
 /// 絞り込み後の値になっていることを見る。
+///
+/// ⚠ **専用のテナントを作ってその中で数える。** root テナントで数えると、同じ DB で他のテストが
+/// 作ったクライアントが積み上がり、1 ページ（50 件）に収まらなくなった時点で `total` と返却件数が
+/// 食い違って落ちる（実際に踏んだ。DB を作り直すまで再現し続ける）。テナントを分ければ件数は
+/// このテストが作った 2 件だけになり、`total` を**実数と突き合わせて**検証できる。
 #[tokio::test]
 async fn the_client_list_can_be_split_by_grant_type() {
     let Some(env) = support::setup("admin clients grant filter").await else {
         return;
     };
-    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
-    let clients_uri = format!("/{}/admin/clients", env.root_tenant_id);
+    let root_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+    let res = send(
+        &env.app,
+        post(
+            &root_tok,
+            &format!("/{}/admin/tenants", env.root_tenant_id),
+            json!({ "name": format!("grant-filter-{}", support::unique()) }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        res.status(),
+        StatusCode::CREATED,
+        "create an isolated tenant"
+    );
+    let tenant_id = body_json(res).await["id"]
+        .as_str()
+        .expect("tenant id")
+        .to_string();
+    // 作成者（root）は新テナントの ACTIVE GUEST 管理者になる（ADR-0009 §4）。管理トークンは
+    // テナント毎なので取り直す。
+    let admin_tok = admin_token(&env.app, &env.pool, &tenant_id, &env.root_admin_id).await;
+    let clients_uri = format!("/{tenant_id}/admin/clients");
 
     // 連携先（redirect_uri を持つ）とサービスアカウント（持たない）を 1 つずつ。
     for body in [
@@ -370,9 +396,11 @@ async fn the_client_list_can_be_split_by_grant_type() {
     assert!(sas.iter().any(|n| n == "Service Account App"));
     assert!(!sas.iter().any(|n| n == "Relying Party App"));
 
-    // total も絞り込み後の値であること（ページャがこの値で「次へ」を出す）。
-    assert_eq!(rp_total as usize, rps.len());
-    assert_eq!(sa_total as usize, sas.len());
+    // total も絞り込み後の値であること（ページャがこの値で「次へ」を出す）。テナントを分けて
+    // あるので、期待値は「このテストが作った 2 件」で確定する。
+    assert_eq!((all.len(), all_total), (2, 2), "作った 2 件だけが見える");
+    assert_eq!((rps.len(), rp_total), (1, 1));
+    assert_eq!((sas.len(), sa_total), (1, 1));
     assert_eq!(
         rp_total + sa_total,
         all_total,
