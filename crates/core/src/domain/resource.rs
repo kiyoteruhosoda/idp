@@ -61,7 +61,9 @@ pub fn validate_resource_uri(raw: &str) -> Result<String, MessageKey> {
     if value.is_empty() {
         return Err(MessageKey::new("api-resource-uri-required"));
     }
-    if value.len() > RESOURCE_URI_MAX_LEN {
+    // カラムは VARCHAR(255)＝**255 文字**なので、バイト数ではなく文字数で見る（`display_name`
+    // と同じ尺度。バイトで見ると非 ASCII を含む短い名前を取りこぼす）。
+    if value.chars().count() > RESOURCE_URI_MAX_LEN {
         return Err(MessageKey::with_value(
             "api-resource-uri-too-long",
             RESOURCE_URI_MAX_LEN.to_string(),

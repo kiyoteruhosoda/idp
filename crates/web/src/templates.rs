@@ -1651,6 +1651,9 @@ pub struct ClientDetail<'a> {
     pub resources_load_failed: bool,
     /// 宛先の区画を出すか。
     pub shows_resources: bool,
+    /// 貸し出しフォームを出すか。**システム用クライアントで、かつ候補を引けたときだけ** true。
+    /// 引けなかったときに出すと「貸せる宛先がありません」が出て、直上の取得失敗の警告と矛盾する。
+    pub shows_resource_grant_form: bool,
 }
 
 /// secret 表示画面（作成直後・再発行直後。`secret` が `None` なら public で秘密なし）。

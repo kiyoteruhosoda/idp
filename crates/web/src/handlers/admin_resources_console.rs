@@ -109,9 +109,9 @@ pub async fn register(
         .await;
     match result {
         Ok(_) => redirect(&tenant),
-        // 入力の誤り（絶対 URI でない・予約済み・登録済み）は api の文言をそのまま出す。
-        // web 側で判定を書き写すと、規則が 2 か所に分かれて必ず片方が古くなる。
-        Err(AdminApiError::Validation(m)) => {
+        // 入力の誤り（絶対 URI でない・予約済み＝400、既に登録済み＝409）は api の文言をそのまま
+        // 出す。web 側で判定を書き写すと、規則が 2 か所に分かれて必ず片方が古くなる。
+        Err(AdminApiError::Validation(m) | AdminApiError::Conflict(m)) => {
             reload_with_error(&state, &correlation, &tenant, &admin, &headers, &sso, &m).await
         }
         Err(e) => {

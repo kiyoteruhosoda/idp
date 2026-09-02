@@ -432,24 +432,20 @@ pub async fn detail(
         .filter(|code| !permission_codes.contains(code))
         .collect();
 
-    // 貸してある宛先（ADR-0042）。`resource` を要求できるのは `client_credentials` を使える
-    // クライアントだけなので、管理権限と同じくシステム用クライアントにだけ区画を出す。
-    // 取得に失敗しても画面は描く（権限の確認・剥奪は続けられる）——ただし「空」と取り違えると
-    // 貸し直してしまうため、失敗したことを画面に出す。
-    let (granted_resources, resources_load_failed) = if is_system_client(&client) {
-        match state
-            .api
-            .list_client_resources(&correlation.0, &tenant.0, &sso, &client_id)
-            .await
-        {
-            Ok(list) => (list.resources, false),
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to load client resources");
-                (Vec::new(), true)
-            }
+    // 貸してある宛先（ADR-0042）。保有分は**種別を問わず引く**——用途を変えて
+    // `client_credentials` を外したクライアントにも貸し出し行は残るので、種別で引かないと
+    // 区画ごと消えて取り消せなくなる（保有権限と同じ扱い）。取得に失敗しても画面は描くが、
+    // 「空」と取り違えて貸し直さないよう、失敗したことを画面に出す。
+    let (granted_resources, resources_load_failed) = match state
+        .api
+        .list_client_resources(&correlation.0, &tenant.0, &sso, &client_id)
+        .await
+    {
+        Ok(list) => (list.resources, false),
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load client resources");
+            (Vec::new(), true)
         }
-    } else {
-        (Vec::new(), false)
     };
     // 貸す候補は「登録済みで有効な宛名のうち、まだ貸していないもの」。
     let grantable_resources: Vec<crate::admin_dto::ResourceView> =
@@ -1210,8 +1206,12 @@ fn render_detail(
         grantable_resources,
         resources_load_failed,
         // 宛先を要求できるのは `client_credentials` を使えるクライアントだけ。ただし既に
-        // 貸してあれば、取り消せるよう区画は出す。
-        shows_resources: is_system_client(client) || !granted_resources.is_empty(),
+        // 貸してあれば（または取得に失敗していれば）、取り消せるよう区画は出す。
+        shows_resources: is_system_client(client)
+            || !granted_resources.is_empty()
+            || resources_load_failed,
+        // 貸し出しフォームは、候補を引けたシステム用クライアントにだけ出す。
+        shows_resource_grant_form: is_system_client(client) && !resources_load_failed,
         // 管理トークンを取れるのはシステム用クライアントだけ（ADR-0037）。それ以外に付けても
         // 効かないので区画ごと出さない。ただし既に保有していれば、剥奪できるよう出す。
         shows_permissions: is_system_client(client) || !permission_codes.is_empty(),

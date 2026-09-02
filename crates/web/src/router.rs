@@ -433,7 +433,6 @@ pub fn build(state: WebState) -> Router {
         .route("/admin/status", get(admin_status_console::client_status))
         // 稼働中のビルドと適用済みスキーマ（ADR-0034）。無認証の面には出さない。
         .route("/admin/version", get(admin_status_console::version))
-        // 署名鍵管理画面（K1）。
         // 保護リソース（`aud` に入る宛名。ADR-0042）。貸し出しはクライアント詳細にある。
         .route("/admin/resources", get(admin_resources_console::list))
         .route(
@@ -448,6 +447,7 @@ pub fn build(state: WebState) -> Router {
             "/admin/resources/delete",
             post(admin_resources_console::delete),
         )
+        // 署名鍵管理画面（K1）。
         .route("/admin/signing-keys", get(admin_signing_keys_console::list))
         .route(
             "/admin/signing-keys/generate",

@@ -793,43 +793,53 @@ impl TokenService {
             // assay が接続する先ではない。`perms` は載せない——そこで何をしてよいかは
             // リソースサーバが `client_id` で決める（ADR-0033）。
             Some(requested) => {
-                let resource = self
+                let found = self
                     .resources
                     .find_by_uri(tenant_id, requested)
                     .await
                     .map_err(|e| internal(&e))?;
                 // 「登録が無い」「停止中」「許可されていない」を**応答では区別しない**。
                 // 区別すると、総当たりで「どの宛名が登録されているか」を探れる。切り分けは監査で行う。
-                let reason = match resource.as_ref() {
-                    None => Some("unknown_resource"),
-                    Some(resource) if !resource.is_active() => Some("resource_disabled"),
+                let issuable = match found {
+                    None => Err("unknown_resource"),
+                    Some(resource) if !resource.is_active() => Err("resource_disabled"),
                     Some(resource) => {
                         let granted = self
                             .client_resources
                             .is_granted(client.id, resource.id)
                             .await
                             .map_err(|e| internal(&e))?;
-                        (!granted).then_some("resource_not_granted")
+                        if granted {
+                            Ok(resource)
+                        } else {
+                            Err("resource_not_granted")
+                        }
                     }
                 };
-                if let Some(reason) = reason {
-                    self.audit
-                        .record(
-                            AuditEventType::ClientAuthenticationFailed,
-                            AuditResult::Failure,
-                            Some(tenant_id),
-                            None,
-                            Some(&client_id),
-                            Some(reason),
-                            ctx,
-                        )
-                        .await;
-                    return Err(TokenError::new(
-                        OAuthErrorCode::InvalidTarget,
-                        "the requested resource is not served by this authorization server",
-                    ));
-                }
-                (requested.to_string(), None, self.access_token_ttl)
+                let resource = match issuable {
+                    Ok(resource) => resource,
+                    Err(reason) => {
+                        self.audit
+                            .record(
+                                AuditEventType::ClientAuthenticationFailed,
+                                AuditResult::Failure,
+                                Some(tenant_id),
+                                None,
+                                Some(&client_id),
+                                Some(reason),
+                                ctx,
+                            )
+                            .await;
+                        return Err(TokenError::new(
+                            OAuthErrorCode::InvalidTarget,
+                            "the requested resource is not served by this authorization server",
+                        ));
+                    }
+                };
+                // `aud` には**登録された文字列**を載せる（要求された綴りではない）。表の照合順序は
+                // 大小を区別しないため、`API://x` の要求でも `api://x` の行が引ける。要求をそのまま
+                // 返すと、登録値と完全一致で比べるリソースサーバ側で外れる（ADR-0042「正規化しない」）。
+                (resource.resource_uri, None, self.access_token_ttl)
             }
         };
 

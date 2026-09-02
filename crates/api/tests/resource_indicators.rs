@@ -157,6 +157,39 @@ async fn only_a_registered_and_granted_audience_reaches_the_token() {
         "a resource token must not carry perms: {claims}"
     );
 
+    // ⚠ `aud` に載るのは**登録された綴り**であること。`resources.resource_uri` の照合順序は
+    // 大小を区別しない（`utf8mb4_unicode_ci`）ので、綴りを変えた要求でも同じ行が引ける。
+    // 要求された綴りをそのまま返すと、登録値と完全一致で比べるリソースサーバ側で外れる。
+    let shouted = audience.to_uppercase();
+    assert_ne!(
+        shouted, audience,
+        "the fixture must actually differ in case"
+    );
+    let res = request_token(
+        &env.app,
+        &env.root_tenant_id,
+        &client_id,
+        &secret,
+        Some(&shouted),
+    )
+    .await;
+    assert_eq!(
+        res.status(),
+        StatusCode::OK,
+        "the row is found case-insensitively"
+    );
+    // `claims` は上で束縛済みなので、関数はパスで呼ぶ。
+    let shouted_claims = crate::claims(
+        body_json(res).await["access_token"]
+            .as_str()
+            .expect("access_token"),
+    );
+    assert_eq!(
+        shouted_claims["aud"],
+        json!(audience),
+        "aud must be the registered spelling, not the requested one"
+    );
+
     // 取り消すと、次のトークンからは出なくなる（発行済みは TTL まで有効）。
     let res = send(
         &env.app,

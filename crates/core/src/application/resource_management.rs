@@ -132,14 +132,13 @@ impl ResourceManagementService {
         ctx: &RequestContext,
     ) -> Result<ProtectedResource, ResourceManagementError> {
         let resource = self.load(tenant, id).await?;
-        let changed = self
-            .resources
+        // 戻り値の bool は「不存在」の判定に使わない。MySQL の `rows_affected` は**値が変わった行**
+        // を数えるため、既に同じ状態の行を同じ `updated_at` で更新すると 0 になり、存在する行を
+        // 404 にしてしまう。存在は直前の `load` で、消えた場合は末尾の `load` で拾う。
+        self.resources
             .set_status(tenant.tenant_id(), id, status, self.clock.now())
             .await
             .map_err(map_repo_error)?;
-        if !changed {
-            return Err(ResourceManagementError::NotFound);
-        }
 
         self.audit
             .record(
@@ -295,9 +294,13 @@ impl ResourceManagementService {
     ) -> Result<(), ResourceManagementError> {
         // テナント接頭辞を含めない基底 issuer で見る。`{base}/{他テナント}/admin` のような、
         // 別テナントの名前を騙る登録も同時に塞げる。
-        let base = self.base_issuer.trim_end_matches('/');
-        let inside_our_namespace =
-            resource_uri == base || resource_uri.starts_with(&format!("{base}/"));
+        //
+        // 比較は**大小を無視する**。URI のスキームとホストは RFC 3986 §3.1・§3.2.2 が
+        // 大小同一と定めるため、大小だけを変えた `HTTPS://…/admin` が素通りしてしまう。
+        // 予約領域を広めに取る方向の誤差なので、過剰に弾いても害はない。
+        let base = self.base_issuer.trim_end_matches('/').to_ascii_lowercase();
+        let candidate = resource_uri.to_ascii_lowercase();
+        let inside_our_namespace = candidate == base || candidate.starts_with(&format!("{base}/"));
         if inside_our_namespace {
             return Err(ResourceManagementError::Invalid(MessageKey::new(
                 "api-resource-uri-reserved",
