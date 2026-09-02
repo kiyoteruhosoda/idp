@@ -353,15 +353,93 @@ mod tests {
         assert!(html.contains("&#60;script&#62;"), "{html}");
     }
 
-    /// パスキーの画面は画面内に戻る導線を持たない枝葉なので、左上の名乗りをアカウントの
-    /// ホームへのリンクにする（行き止まりを作らない）。
+    /// **その画面で起こりうるエラーコードすべてに文言がある。** スクリプトは
+    /// `#passkey-error` の data 属性からしか文言を引かないため、属性の無いコードは既定文言へ
+    /// 静かに落ちる（利用者は何が起きたか分からないまま同じ操作を繰り返す）。応答側だけを見ても
+    /// 画面側だけを見ても気づけないので、画面ごとに並べて固定する。
     #[test]
-    fn the_passkey_screens_offer_a_way_back_from_the_navbar() {
+    fn every_login_screen_has_a_message_for_the_codes_its_route_returns() {
+        let messages = Messages::new(Locale::Ja);
+        // どの画面にも要る 2 つ（ブラウザのセレモニーの中止・サーバ不達）。
+        let shared = [
+            "data-msg-invalid-credential",
+            "data-msg-challenge-not-found",
+            "data-msg-cancelled",
+            "data-msg-server",
+            "data-msg-policy-denied",
+        ];
+
+        // OIDC 認可フロー: 同意・セッション切れ・レート制限まで返る。
+        let oidc = render(&LoginTemplate {
+            messages: &messages,
+            tenant_prefix: "/t",
+            csrf: "csrf-token",
+            error_key: None,
+            login_hint: None,
+            client_name: None,
+            tenant_name: None,
+        });
+        assert_attributes(
+            &oidc,
+            &shared,
+            &["data-msg-session-expired", "data-msg-rate-limited"],
+        );
+
+        // 管理コンソール: admin 権限が無い場合（`forbidden`）が加わる。
+        let console = render(&ConsoleLogin {
+            messages: &messages,
+            tenant_prefix: "/t",
+            csrf: "csrf-token",
+            error_key: None,
+        });
+        assert_attributes(
+            &console,
+            &shared,
+            &["data-msg-forbidden", "data-msg-rate-limited"],
+        );
+
+        // ポータル: メール検証ゲート（SEC6b）が加わる。
+        let portal = render(&PortalLogin {
+            messages: &messages,
+            tenant_prefix: "/t",
+            csrf: "csrf-token",
+            error_key: None,
+            external_providers: &[],
+        });
+        assert_attributes(
+            &portal,
+            &shared,
+            &[
+                "data-msg-email-verification-required",
+                "data-msg-rate-limited",
+            ],
+        );
+    }
+
+    fn assert_attributes(html: &str, shared: &[&str], extra: &[&str]) {
+        // 導線は `hidden` で描き、スクリプトが「この環境で WebAuthn が使える」と確かめてから
+        // 外す。**囲みの id がずれると誰にも見えなくなる**ので、対で固定する。
+        assert!(
+            html.contains(r#"<div id="passkey-login" hidden>"#),
+            "{html}"
+        );
+        for attribute in shared.iter().chain(extra) {
+            assert!(html.contains(attribute), "{attribute} missing from {html}");
+        }
+    }
+
+    /// パスキーの画面はアカウント設定から来る枝葉なので、**本文の先頭に「戻る」を置く**。
+    /// 左上の名乗りもホームへのリンクにしてあるが、それがリンクだとは見て分からないため、
+    /// 戻る導線をそちらに委ねない（行き止まりを作らない）。
+    #[test]
+    fn the_passkey_screens_offer_a_way_back_in_the_page_body() {
         let messages = Messages::new(Locale::Ja);
         let list = render(&PasskeyListTemplate {
             messages: &messages,
             tenant_prefix: "/t",
             credentials: &[],
+            saved_key: None,
+            error_key: None,
         });
         let register = render(&PasskeyRegisterTemplate {
             messages: &messages,
@@ -376,6 +454,29 @@ mod tests {
                 "{html}"
             );
         }
+        // 一覧はアカウント設定へ、登録は一覧へ戻す（1 つ上の画面を指す）。
+        assert!(html_has_link(&list, "/t/settings"), "{list}");
+        assert!(html_has_link(&register, "/t/account/passkey"), "{register}");
+    }
+
+    /// 登録が失敗しても行き止まりにしない（再試行のほかに一覧へ抜ける道を残す）。
+    #[test]
+    fn the_passkey_register_screen_can_be_left_after_a_failure() {
+        let messages = Messages::new(Locale::Ja);
+        let html = render(&PasskeyRegisterTemplate {
+            messages: &messages,
+            tenant_prefix: "/t",
+            error_key: None,
+        });
+        let error_step = html
+            .split_once(r#"<div id="step-error""#)
+            .expect("step-error block")
+            .1;
+        assert!(html_has_link(error_step, "/t/account/passkey"), "{html}");
+    }
+
+    fn html_has_link(html: &str, href: &str) -> bool {
+        html.contains(&format!(r#"href="{href}""#))
     }
 
     /// アセット参照はデプロイごとに URL が変わるよう `?v={asset_version}` を必ず付ける
@@ -1740,6 +1841,9 @@ pub struct StepUpChallenge<'a> {
     pub next: &'a str,
     /// TOTP 入力欄を出すか（要件が多要素のとき）。
     pub second_factor_required: bool,
+    /// パスキーでの確認を出すか（**いま使える**パスキーを持っている。T38）。持っていない利用者に
+    /// ボタンを見せると、ブラウザのダイアログが出てから失敗する。
+    pub passkey_available: bool,
     pub error_key: Option<&'a str>,
 }
 
@@ -1788,6 +1892,9 @@ pub struct PasskeyListTemplate<'a> {
     /// `/{tenant_id}` プレフィクス（ADR-0009 §6）。
     pub tenant_prefix: &'a str,
     pub credentials: &'a [PasskeyCredentialInfo],
+    /// 削除の PRG から戻ったときのバナー（成功・失敗）。
+    pub saved_key: Option<&'a str>,
+    pub error_key: Option<&'a str>,
 }
 
 /// Passkey 登録画面（`GET /account/passkey/register`）。WebAuthn JS フローを起動する。

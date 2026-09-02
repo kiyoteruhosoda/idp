@@ -53,6 +53,9 @@ pub struct CredentialInfo {
     pub name: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// 登録簿（AP9）で一時停止されている。鍵を引く経路は「失効していない行」しか見ないため
+    /// 停止中のパスキーもこの一覧には出る。**出るのに使えない**ので、状態を添えて返す。
+    pub suspended: bool,
 }
 
 pub struct PasskeyRegistrationService {
@@ -154,7 +157,12 @@ impl PasskeyRegistrationService {
             .await?
             .ok_or(PasskeyRegistrationError::ChallengeNotFound)?;
 
-        if challenge.expires_at <= now || challenge.user_id != Some(user_id) {
+        // 用途と持ち主が一致しないチャレンジは受け付けない（種別を見るのは、ログイン・本人確認の
+        // ために出したチャレンジをここで使わせないため。`user_id` の一致だけでは種別を跨げる）。
+        if challenge.expires_at <= now
+            || challenge.challenge_type != PasskeyChallengeType::Register
+            || challenge.user_id != Some(user_id)
+        {
             let _ = self.passkey_challenges.delete(challenge_id).await;
             return Err(PasskeyRegistrationError::ChallengeNotFound);
         }
@@ -209,12 +217,20 @@ impl PasskeyRegistrationService {
     }
 
     /// クレデンシャルを削除する。
+    ///
+    /// 削除は「消えていること」が結果なので、無い行を消しても DB は何も言わない。**先に存在と
+    /// 持ち主を確かめる**のはそのためで、これが無いと他人の id・既に消えた id・打ち間違いの
+    /// いずれでも画面が「削除しました」と答えてしまう。
     pub async fn delete(
         &self,
         sso_session_id: &str,
         credential_id: Uuid,
     ) -> Result<(), PasskeyRegistrationError> {
         let (user_id, _) = self.resolve_user(sso_session_id).await?;
+        match self.webauthn_credentials.find_by_id(credential_id).await? {
+            Some(cred) if cred.user_id == user_id => {}
+            _ => return Err(PasskeyRegistrationError::NotFound),
+        }
         self.webauthn_credentials
             .delete(credential_id, user_id)
             .await?;
@@ -226,15 +242,26 @@ impl PasskeyRegistrationService {
     }
 
     /// 登録済みクレデンシャル一覧を返す。
+    ///
+    /// 一時停止（AP9）は登録簿の `status` にしか無く、鍵を引く経路（`WebAuthnCredentialRepository`）
+    /// は失効した行しか落とさない。**停止中のパスキーもこの一覧に出る**ので、登録簿を突き合わせて
+    /// 状態を添える（1 行 = パスキー 1 本なので id で対応する。AP11b）。添えないと、画面は使えない
+    /// パスキーを使えるものとして並べる。
     pub async fn list(
         &self,
         sso_session_id: &str,
     ) -> Result<Vec<CredentialInfo>, PasskeyRegistrationError> {
         let (user_id, _) = self.resolve_user(sso_session_id).await?;
         let creds = self.webauthn_credentials.list_by_user_id(user_id).await?;
+        let suspended = self
+            .authenticators
+            .suspended_passkey_ids(user_id)
+            .await
+            .map_err(|e| PasskeyRegistrationError::Internal(e.to_string()))?;
         Ok(creds
             .into_iter()
             .map(|c| CredentialInfo {
+                suspended: suspended.contains(&c.id),
                 id: c.id,
                 name: c.name,
                 created_at: c.created_at,

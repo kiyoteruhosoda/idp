@@ -38,7 +38,9 @@ use crate::application::portal_login::{
     PortalChangePasswordCommand, PortalChangePasswordOutcome, PortalLoginCommand,
     PortalLoginOutcome, PortalMfaCommand, PortalMfaOutcome,
 };
-use crate::application::step_up::{StepUpCheckOutcome, StepUpVerifyCommand, StepUpVerifyOutcome};
+use crate::application::step_up::{
+    StepUpCheckOutcome, StepUpPasskeyVerifyCommand, StepUpVerifyCommand, StepUpVerifyOutcome,
+};
 use crate::domain::password_policy::PasswordRejection;
 use crate::domain::step_up::SensitiveOperation;
 use crate::domain::user_authenticator::AuthenticatorStatus;
@@ -64,7 +66,9 @@ use assay_contracts::auth::{
     InternalPortalAuthenticateRequest, InternalPortalAuthenticateResponse,
     InternalPortalChangePasswordRequest, InternalPortalChangePasswordResponse,
     InternalPortalMfaRequest, InternalPortalMfaResponse, InternalStepUpCheckRequest,
-    InternalStepUpCheckResponse, InternalStepUpVerifyRequest, InternalStepUpVerifyResponse,
+    InternalStepUpCheckResponse, InternalStepUpPasskeyBeginRequest,
+    InternalStepUpPasskeyBeginResponse, InternalStepUpPasskeyVerifyRequest,
+    InternalStepUpPasskeyVerifyResponse, InternalStepUpVerifyRequest, InternalStepUpVerifyResponse,
     PasswordRejectionReason,
 };
 use assay_contracts::auth::{
@@ -959,8 +963,10 @@ pub async fn step_up_check(
             StepUpCheckOutcome::Satisfied => InternalStepUpCheckResponse::Satisfied,
             StepUpCheckOutcome::ChallengeRequired {
                 second_factor_required,
+                passkey_available,
             } => InternalStepUpCheckResponse::ChallengeRequired {
                 second_factor_required,
+                passkey_available,
             },
             StepUpCheckOutcome::SessionExpired => InternalStepUpCheckResponse::SessionExpired,
             StepUpCheckOutcome::Internal(e) => {
@@ -1011,6 +1017,90 @@ pub async fn step_up_verify(
         StepUpVerifyOutcome::Internal(e) => {
             tracing::error!(error = %e, "step-up verify failed with internal error");
             InternalStepUpVerifyResponse::Internal
+        }
+    }))
+}
+
+/// パスキーでの本人確認の開始（`POST /internal/step-up/passkey/begin`。AP5・T38）。
+///
+/// ログインの開始と分けてあるのは、**用途の違うチャレンジを出すため**である。ここで出した
+/// チャレンジではログインできず、ログイン用のチャレンジでは本人確認が通らない。
+pub async fn step_up_passkey_begin(
+    State(state): State<AppState>,
+    Json(req): Json<InternalStepUpPasskeyBeginRequest>,
+) -> Result<Json<InternalStepUpPasskeyBeginResponse>, Response> {
+    let _tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
+    // 未ログインの相手にチャレンジを配らない（本人確認は「あるセッションを引き上げる」操作で、
+    // 引き上げる先が無いなら始めない）。
+    if state
+        .admin_access
+        .authenticated_user(Some(&req.sso_session_id))
+        .await
+        .is_none()
+    {
+        return Ok(Json(InternalStepUpPasskeyBeginResponse::SessionExpired));
+    }
+    Ok(Json(match state.step_up.begin_passkey().await {
+        Ok((challenge_id, options)) => InternalStepUpPasskeyBeginResponse::Ok {
+            challenge_id: challenge_id.to_string(),
+            options,
+        },
+        Err(e) => {
+            tracing::error!(error = %e, "step-up passkey begin failed");
+            InternalStepUpPasskeyBeginResponse::Internal
+        }
+    }))
+}
+
+/// パスキーでの本人確認（`POST /internal/step-up/passkey/verify`。AP5・T38）。CSRF は web 側で検証済み。
+pub async fn step_up_passkey_verify(
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Json(req): Json<InternalStepUpPasskeyVerifyRequest>,
+) -> Result<Json<InternalStepUpPasskeyVerifyResponse>, Response> {
+    let ctx = RequestContext {
+        correlation_id: correlation.0,
+        ip_address: req.ip_address,
+        user_agent: req.user_agent,
+    };
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
+    let Some(operation) = SensitiveOperation::parse(&req.operation) else {
+        return Ok(Json(InternalStepUpPasskeyVerifyResponse::UnknownOperation));
+    };
+    let Ok(challenge_id) = req.challenge_id.parse::<uuid::Uuid>() else {
+        // 解釈できない id は「そんなチャレンジは無い」であって内部エラーではない。
+        return Ok(Json(InternalStepUpPasskeyVerifyResponse::InvalidCredential));
+    };
+    let outcome = state
+        .step_up
+        .verify_with_passkey(
+            tenant,
+            StepUpPasskeyVerifyCommand {
+                sso_session_id: req.sso_session_id,
+                operation,
+                challenge_id,
+                credential: req.credential,
+            },
+            &ctx,
+        )
+        .await;
+    Ok(Json(match outcome {
+        StepUpVerifyOutcome::Ok => InternalStepUpPasskeyVerifyResponse::Ok,
+        StepUpVerifyOutcome::InvalidCredentials => {
+            InternalStepUpPasskeyVerifyResponse::InvalidCredential
+        }
+        StepUpVerifyOutcome::RateLimited => InternalStepUpPasskeyVerifyResponse::RateLimited,
+        StepUpVerifyOutcome::SessionExpired => InternalStepUpPasskeyVerifyResponse::SessionExpired,
+        // パスワード経路でしか出ない outcome（パスキーは 1 回で多要素を満たす）。
+        StepUpVerifyOutcome::SecondFactorRequired => {
+            tracing::error!("unexpected second-factor request from a passkey step-up");
+            InternalStepUpPasskeyVerifyResponse::Internal
+        }
+        StepUpVerifyOutcome::Internal(e) => {
+            tracing::error!(error = %e, "step-up passkey verify failed with internal error");
+            InternalStepUpPasskeyVerifyResponse::Internal
         }
     }))
 }

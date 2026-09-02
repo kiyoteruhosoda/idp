@@ -29,19 +29,29 @@
         <a class="text-decoration-none" href="{{ tenant_prefix }}/forgot-password">{{ messages.get("login-forgot-password") }}</a>
       </div>
     </form>
-    <p class="auth-or">{{ messages.get("login-passkey-or") }}</p>
-    <div class="d-grid mb-3">
-      <button type="button" class="btn btn-outline-secondary" id="btn-passkey-login"><i class="fa-solid fa-key me-2" aria-hidden="true"></i>{{ messages.get("login-passkey-button") }}</button>
-    </div>
-    {# api のエラーコード → 表示文言の対応表。属性値はテンプレートが HTML エスケープし、
-       スクリプトは dataset 経由で復号済みの文言を読む（JS 文字列への直接埋め込みを避ける）。 #}
-    <div id="passkey-error" style="display:none"
-         data-tenant-prefix="{{ tenant_prefix }}"
-         data-msg-policy-denied="{{ messages.get("login-error-policy-denied") }}"
-         data-msg-invalid-credential="{{ messages.get("login-error-passkey-invalid") }}"
-         data-msg-challenge-not-found="{{ messages.get("login-error-passkey-retry") }}"
-         data-msg-session-expired="{{ messages.get("login-error-session-expired") }}">
-      <p class="text-danger small text-center mb-0" role="alert" id="passkey-error-msg"></p>
+    {#- パスキーは JS（WebAuthn）が動く環境でしか使えない。初期状態は隠しておき、
+        `assets/passkey-login.js` が「この環境で使える」と確かめたときだけ出す —— 先に描いてから
+        無効化すると、押しても何も起きないボタンが一瞬見えてしまう。 -#}
+    <div id="passkey-login" hidden>
+      <p class="auth-or">{{ messages.get("login-passkey-or") }}</p>
+      <div class="d-grid mb-3">
+        <button type="button" class="btn btn-outline-secondary" id="btn-passkey-login"><i class="fa-solid fa-key me-2" aria-hidden="true"></i>{{ messages.get("login-passkey-button") }}</button>
+      </div>
+      {# api のエラーコード → 表示文言の対応表。属性値はテンプレートが HTML エスケープし、
+         スクリプトは dataset 経由で復号済みの文言を読む（JS 文字列への直接埋め込みを避ける）。
+         `cancelled` / `server` は api のコードではなく、ブラウザのセレモニーが投げた例外と
+         サーバ不達に当てる（例外の生メッセージは英語のまま出てしまうため画面に出さない）。 #}
+      <div id="passkey-error" style="display:none"
+           data-tenant-prefix="{{ tenant_prefix }}"
+           data-msg-policy-denied="{{ messages.get("login-error-policy-denied") }}"
+           data-msg-invalid-credential="{{ messages.get("login-error-passkey-invalid") }}"
+           data-msg-challenge-not-found="{{ messages.get("login-error-passkey-retry") }}"
+           data-msg-session-expired="{{ messages.get("login-error-session-expired") }}"
+           data-msg-rate-limited="{{ messages.get("login-error-rate-limited") }}"
+           data-msg-cancelled="{{ messages.get("passkey-error-cancelled") }}"
+           data-msg-server="{{ messages.get("passkey-error-server") }}">
+        <p class="text-danger small text-center mb-0" role="alert" id="passkey-error-msg"></p>
+      </div>
     </div>
   </div>
 </div>

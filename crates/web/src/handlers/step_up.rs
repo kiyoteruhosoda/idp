@@ -5,6 +5,12 @@
 //!
 //! 判定と検証は api（`/internal/step-up/*`）が行い、web は画面と `next` の安全性だけを担う。
 //!
+//! 確認の手段は 2 つある。**パスワード**（要件が多要素なら TOTP も）と**パスキー**（T38）で、
+//! 後者はパスキーで入った利用者のための経路である —— 認証器の管理は step-up の対象なので、
+//! パスワードしか受け付けないと「パスキーで入ったのにパスキーを足せない」になる。
+//! パスキー経路はブラウザの WebAuthn API を通るため JSON の 2 段構え（begin / complete）で、
+//! ログイン画面と同じ `assets/passkey-login.js` を共有する（完了先だけが違う）。
+//!
 //! # `next` の扱い
 //!
 //! `next` はブラウザから任意の値が渡る。同一オリジン内の**このテナントのパス**に限って受け付ける
@@ -22,8 +28,9 @@ use crate::state::WebState;
 use crate::templates::{render, StepUpChallenge};
 use crate::tenant::WebTenant;
 use assay_contracts::auth::{
-    InternalStepUpCheckRequest, InternalStepUpCheckResponse, InternalStepUpVerifyRequest,
-    InternalStepUpVerifyResponse,
+    InternalStepUpCheckRequest, InternalStepUpCheckResponse, InternalStepUpPasskeyBeginRequest,
+    InternalStepUpPasskeyBeginResponse, InternalStepUpPasskeyVerifyRequest,
+    InternalStepUpPasskeyVerifyResponse, InternalStepUpVerifyRequest, InternalStepUpVerifyResponse,
 };
 use axum::extract::{Extension, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -178,26 +185,28 @@ pub async fn page(
         sso_session_id: sso,
         operation: operation.clone(),
     };
-    let second_factor_required = match state.api.step_up_check(&correlation.0, &request).await {
-        Ok(InternalStepUpCheckResponse::ChallengeRequired {
-            second_factor_required,
-        }) => second_factor_required,
-        // もう満たしている（別タブで確認済み等）なら、そのまま戻す。
-        Ok(InternalStepUpCheckResponse::Satisfied) => return found(&next),
-        Ok(InternalStepUpCheckResponse::SessionExpired) => {
-            return found(&format!("{}/login", tenant.prefix()));
-        }
-        Ok(InternalStepUpCheckResponse::UnknownOperation) => {
-            return StatusCode::BAD_REQUEST.into_response();
-        }
-        Ok(InternalStepUpCheckResponse::Internal) => {
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "step-up check call to api failed");
-            return internal_call_status(&e).into_response();
-        }
-    };
+    let (second_factor_required, passkey_available) =
+        match state.api.step_up_check(&correlation.0, &request).await {
+            Ok(InternalStepUpCheckResponse::ChallengeRequired {
+                second_factor_required,
+                passkey_available,
+            }) => (second_factor_required, passkey_available),
+            // もう満たしている（別タブで確認済み等）なら、そのまま戻す。
+            Ok(InternalStepUpCheckResponse::Satisfied) => return found(&next),
+            Ok(InternalStepUpCheckResponse::SessionExpired) => {
+                return found(&format!("{}/login", tenant.prefix()));
+            }
+            Ok(InternalStepUpCheckResponse::UnknownOperation) => {
+                return StatusCode::BAD_REQUEST.into_response();
+            }
+            Ok(InternalStepUpCheckResponse::Internal) => {
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "step-up check call to api failed");
+                return internal_call_status(&e).into_response();
+            }
+        };
 
     let messages = Messages::new(locale);
     Html(render(&StepUpChallenge {
@@ -207,6 +216,7 @@ pub async fn page(
         operation: &operation,
         next: &next,
         second_factor_required,
+        passkey_available,
         error_key: query.error.as_deref().and_then(error_key_for),
     }))
     .into_response()
@@ -279,6 +289,120 @@ pub async fn verify(
     }
 }
 
+// ─── パスキーでの本人確認（T38） ─────────────────────────────────────────────
+//
+// ブラウザの WebAuthn API を通るため、フォーム送信ではなく JSON の 2 段構えになる。画面側は
+// ログイン画面と同じ `assets/passkey-login.js` を使い、開始・完了のパスだけを差し替える。
+//
+// CSRF トークンを取らないのは、ログイン・登録のパスキー JSON API と同じ理由である。JSON を
+// 受けるエンドポイントへの別オリジンからの POST はプリフライトを要し（CORS 許可は出していない）、
+// そもそも通らない。加えて完了には**その利用者の認証器が今この場で作った署名**が要る。
+
+/// パスキーでの本人確認の開始（`POST /{tenant_id}/settings/verify/passkey/begin`）。
+pub async fn passkey_begin(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let request = InternalStepUpPasskeyBeginRequest {
+        tenant_id: Some(tenant.0.clone()),
+        sso_session_id: sso,
+    };
+    match state
+        .api
+        .step_up_passkey_begin(&correlation.0, &request)
+        .await
+    {
+        Ok(response @ InternalStepUpPasskeyBeginResponse::Ok { .. }) => {
+            Json(response).into_response()
+        }
+        Ok(InternalStepUpPasskeyBeginResponse::SessionExpired) => {
+            StatusCode::UNAUTHORIZED.into_response()
+        }
+        Ok(InternalStepUpPasskeyBeginResponse::Internal) => {
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "step-up passkey begin call to api failed");
+            internal_call_status(&e).into_response()
+        }
+    }
+}
+
+/// 完了 API が受け取る本文。`operation` と `next` は画面が `#passkey-error` の data 属性で
+/// スクリプトへ渡した値がそのまま返ってくる（`next` はここで改めてこのテナントのパスに限定する ——
+/// ブラウザから来た値を信用しない）。
+#[derive(Debug, Deserialize)]
+pub struct PasskeyCompleteBody {
+    pub challenge_id: String,
+    pub credential: serde_json::Value,
+    #[serde(default)]
+    pub operation: String,
+    #[serde(default)]
+    pub next: Option<String>,
+}
+
+/// パスキーでの本人確認の完了（`POST /{tenant_id}/settings/verify/passkey/complete`）。
+///
+/// 成功時は `{ redirect_to }` を返し、スクリプトがそこへ遷移する（フォーム経路の 303 に当たる）。
+pub async fn passkey_complete(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Json(body): Json<PasskeyCompleteBody>,
+) -> Response {
+    let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let next = safe_next(&tenant, body.next.as_deref());
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
+    let request = InternalStepUpPasskeyVerifyRequest {
+        tenant_id: Some(tenant.0.clone()),
+        sso_session_id: sso,
+        operation: body.operation,
+        challenge_id: body.challenge_id,
+        credential: body.credential,
+        ip_address: ctx.ip_address,
+        user_agent: ctx.user_agent,
+    };
+    match state
+        .api
+        .step_up_passkey_verify(&ctx.correlation_id, &request)
+        .await
+    {
+        Ok(InternalStepUpPasskeyVerifyResponse::Ok) => Json(json!({ "redirect_to": next })),
+        Ok(InternalStepUpPasskeyVerifyResponse::InvalidCredential) => {
+            Json(json!({ "error": "invalid_credential" }))
+        }
+        Ok(InternalStepUpPasskeyVerifyResponse::RateLimited) => {
+            Json(json!({ "error": "rate_limited" }))
+        }
+        // 文言を出しても打つ手が無いので、ログインからやり直させる（登録画面の 401 と同じ扱い）。
+        Ok(InternalStepUpPasskeyVerifyResponse::SessionExpired) => {
+            Json(json!({ "redirect_to": format!("{}/login", tenant.prefix()) }))
+        }
+        Ok(InternalStepUpPasskeyVerifyResponse::UnknownOperation) => {
+            // 画面が渡す値なので、ここに来るのは実装の不整合。fail-closed で止める。
+            tracing::error!("step-up passkey verify rejected an unknown operation");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+        Ok(InternalStepUpPasskeyVerifyResponse::Internal) => {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "step-up passkey verify call to api failed");
+            return internal_call_status(&e).into_response();
+        }
+    }
+    .into_response()
+}
+
 /// 本人確認画面への URL を組み立てる。
 fn challenge_path(tenant: &WebTenant, operation: &str, next: &str) -> String {
     fn encode(value: &str) -> String {
@@ -303,16 +427,19 @@ fn safe_next(tenant: &WebTenant, next: Option<&str>) -> String {
         return fallback;
     };
     let prefix = tenant.prefix();
-    let looks_local = candidate.starts_with(&prefix)
-        && !candidate.starts_with("//")
-        // `\` はブラウザによって `/` として解釈されるため、同じ理由で拒否する。
-        && !candidate.contains('\\');
-    // プレフィクス一致は「別テナントの接頭辞が偶然一致する」ことを避けるため、直後が区切りか終端か
-    // まで見る（`/t1` に対する `/t123/...` を通さない）。
-    let boundary_ok = candidate.len() == prefix.len()
-        || candidate[prefix.len()..].starts_with('/')
-        || candidate[prefix.len()..].starts_with('?');
-    if looks_local && boundary_ok {
+    // 接頭辞の一致は `strip_prefix` で見る。**バイト位置で切ってはいけない** —— 接頭辞より短い
+    // `next`（`/settings` など。テナント接頭辞は UUID で 37 文字ある）や、途中が文字境界でない
+    // 値でパニックする。
+    let Some(rest) = candidate.strip_prefix(prefix.as_str()) else {
+        return fallback;
+    };
+    // `\` はブラウザによって `/` として解釈されるため、`//` と同じ理由で拒否する。
+    if candidate.starts_with("//") || candidate.contains('\\') {
+        return fallback;
+    }
+    // 「別テナントの接頭辞が偶然一致する」ことを避けるため、接頭辞の直後が区切りか終端かまで見る
+    // （`/t1` に対する `/t123/...` を通さない）。
+    if rest.is_empty() || rest.starts_with('/') || rest.starts_with('?') {
         candidate.to_string()
     } else {
         fallback
@@ -357,6 +484,18 @@ mod tests {
         assert_eq!(safe_next(&t, Some("/t123/admin")), fallback);
         assert_eq!(safe_next(&t, Some("")), fallback);
         assert_eq!(safe_next(&t, None), fallback);
+    }
+
+    /// **接頭辞より短い `next` で落ちない。** テナント接頭辞は UUID で 37 文字あるので、
+    /// `?next=/x` のような短い値はごく普通に飛んでくる（バイト位置で切ると添字が範囲外になる）。
+    #[test]
+    fn a_next_shorter_than_the_tenant_prefix_falls_back_instead_of_panicking() {
+        let t = WebTenant("00000000-0000-7000-8000-000000000001".to_string());
+        let fallback = "/00000000-0000-7000-8000-000000000001/settings";
+        assert_eq!(safe_next(&t, Some("/x")), fallback);
+        assert_eq!(safe_next(&t, Some("https://evil.example.com/")), fallback);
+        // 文字境界でない位置で切らない（マルチバイト文字を含む値）。
+        assert_eq!(safe_next(&t, Some("/日本語のパス")), fallback);
     }
 
     /// 画面 URL は operation・next をパーセントエンコードして埋め込む。

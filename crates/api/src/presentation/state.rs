@@ -847,6 +847,9 @@ impl AppState {
             sso_sessions.clone(),
             users.clone(),
             totp_secrets.clone(),
+            // 本人確認のパスキー経路（AP5・T38）。セレモニーはログインの 3 経路と同じ実装を共有する。
+            passkey_assertion.clone(),
+            authenticator_repository.clone(),
             hasher.clone(),
             rate_limiter.clone(),
             audit.clone(),
@@ -946,6 +949,8 @@ impl AppState {
             client_consents,
             authentication_policies.clone(),
             code_issuance,
+            // レート制限はログイン・直接ログインのパスキー経路と同じ枠を共有する（T39）。
+            rate_limiter.clone(),
             audit.clone(),
             clock.clone(),
             config.sso_idle_ttl(),

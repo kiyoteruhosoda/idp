@@ -28,6 +28,7 @@ use crate::domain::user_authenticator::{
     AuthenticatorStatus, AuthenticatorType, UserAuthenticator,
 };
 use chrono::{DateTime, Duration, Utc};
+use std::collections::HashSet;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -740,6 +741,16 @@ impl AuthenticatorManagementService {
             .map_err(|e| AuthenticatorManagementError::Internal(e.to_string()))
     }
 
+    /// 一時停止されているパスキーの行 id（AP9）。判定は [`suspended_passkey_ids`] が持つ。
+    pub async fn suspended_passkey_ids(
+        &self,
+        user_id: Uuid,
+    ) -> Result<HashSet<Uuid>, AuthenticatorManagementError> {
+        suspended_passkey_ids(self.authenticators.as_ref(), user_id)
+            .await
+            .map_err(|e| AuthenticatorManagementError::Internal(e.to_string()))
+    }
+
     /// WebAuthn クレデンシャルの失効を登録簿へ反映する（対象が無ければ何もしない）。
     ///
     /// `credential_id` は登録簿の行 id ＝ パスキー 1 本の識別子である。AP11b で元の表を落とし、
@@ -847,6 +858,48 @@ pub async fn is_blocked_in_registry(
         .filter(|a| a.authenticator_type == authenticator_type)
         .filter(|a| credential_id.is_none_or(|id| a.id == id))
         .any(|a| a.is_blocked()))
+}
+
+/// 一時停止されているパスキーの行 id（AP9）。
+///
+/// 停止は登録簿の `status` にしか無く、鍵を引く経路（`WebAuthnCredentialRepository`）は失効した
+/// 行しか落とさない。**停止中のパスキーも一覧には出る**ため、画面が印を付けるにはこの集合が要る。
+pub async fn suspended_passkey_ids(
+    repository: &dyn UserAuthenticatorRepository,
+    user_id: Uuid,
+) -> Result<HashSet<Uuid>, crate::domain::error::DomainError> {
+    Ok(passkey_rows(repository, user_id)
+        .await?
+        .filter(|a| a.status == AuthenticatorStatus::Suspended)
+        .map(|a| a.id)
+        .collect())
+}
+
+/// **いま使える**パスキーを 1 本以上持っているか。
+///
+/// パスキーの行は登録した瞬間から `active` で、削除は `revoked` へ、一時停止は `suspended` へ
+/// 動かす。したがって `active` の行がそのまま「押せば通るパスキー」である。本人確認（AP5）の
+/// 画面がパスキーの導線を出すかの判定に使う —— 持っていない利用者にボタンを見せると、ブラウザの
+/// ダイアログが出てから失敗する。
+pub async fn has_usable_passkey(
+    repository: &dyn UserAuthenticatorRepository,
+    user_id: Uuid,
+) -> Result<bool, crate::domain::error::DomainError> {
+    Ok(passkey_rows(repository, user_id)
+        .await?
+        .any(|a| a.status == AuthenticatorStatus::Active))
+}
+
+/// 登録簿のパスキー行（失効した行は含まない）。
+async fn passkey_rows(
+    repository: &dyn UserAuthenticatorRepository,
+    user_id: Uuid,
+) -> Result<impl Iterator<Item = UserAuthenticator>, crate::domain::error::DomainError> {
+    let rows = repository.list_for_user(user_id).await?;
+    Ok(rows.into_iter().filter(|a| {
+        a.authenticator_type == AuthenticatorType::WebAuthn
+            && a.status != AuthenticatorStatus::Revoked
+    }))
 }
 
 /// 使い捨てコード（リカバリーコード・OTP）を正規化して消費する（AP9）。

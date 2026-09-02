@@ -10,6 +10,9 @@
 //! [`crate::application::admin_login`]・[`crate::application::portal_login`] が同じセレモニーの上に
 //! それぞれの続きを載せる。
 //!
+//! レート制限は IP 単位で、パスワードログイン・直接ログインのパスキー経路と**同じ枠**を消費する
+//! （入口ごとに枠が違うと、片方で締め出された相手がもう片方で試行を続けられる）。
+//!
 //! 認証ポリシー（ユーザー認証・認証ポリシー仕様書 §7〜§9）: `deny` ポリシーはこの経路でも
 //! 拒否する（パスワード経路だけ塞いでも迂回できてしまうため）。`require_mfa` は WebAuthn が
 //! 所有＋生体/知識（User Verification）の複数要素・フィッシング耐性認証であるため満たすものと扱う。
@@ -27,6 +30,7 @@ use crate::domain::authentication_policy::{
 };
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
+use crate::domain::rate_limit::LoginRateLimiter;
 use crate::domain::repositories::{
     AuthSessionRepository, AuthenticationPolicyRepository, ClientConsentRepository,
     SsoSessionRepository,
@@ -61,6 +65,8 @@ pub enum PasskeyAuthOutcome {
     InvalidCredential,
     /// 認証ポリシーにより拒否（仕様 §7.4 `deny`）。
     PolicyDenied,
+    /// IP 単位のレート制限超過（ログイン・直接ログインと同じ枠）。
+    RateLimited,
     /// 内部エラー。
     Internal(String),
 }
@@ -73,6 +79,9 @@ pub struct PasskeyAuthenticationService {
     client_consents: Arc<dyn ClientConsentRepository>,
     authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
     code_issuance: Arc<CodeIssuanceService>,
+    /// IP 単位のレート制限。**ログイン・直接ログインのパスキー経路と同じ枠を消費する** ——
+    /// 入口ごとに枠が違うと、片方で締め出された相手がもう片方で試行を続けられる。
+    rate_limiter: Arc<dyn LoginRateLimiter>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
     sso_idle_ttl: Duration,
@@ -89,6 +98,7 @@ impl PasskeyAuthenticationService {
         client_consents: Arc<dyn ClientConsentRepository>,
         authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
         code_issuance: Arc<CodeIssuanceService>,
+        rate_limiter: Arc<dyn LoginRateLimiter>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
         sso_idle_ttl: StdDuration,
@@ -102,6 +112,7 @@ impl PasskeyAuthenticationService {
             client_consents,
             authentication_policies,
             code_issuance,
+            rate_limiter,
             audit,
             clock,
             sso_idle_ttl: Duration::from_std(sso_idle_ttl).expect("SSO idle TTL out of range"),
@@ -132,7 +143,25 @@ impl PasskeyAuthenticationService {
         let now = self.clock.now();
         let tenant_id = tenant.tenant_id();
 
-        // 1. WebAuthn セレモニーの検証（チャレンジ消費・登録簿の一時停止判定・署名カウンタ更新・
+        // 1. IP 単位のレート制限（直接ログインのパスキー経路・パスワード経路と同じ順序・同じ枠）。
+        if let Some(ip) = &ctx.ip_address {
+            if !self.rate_limiter.check_and_record(ip, now) {
+                self.audit
+                    .record(
+                        AuditEventType::LoginFailed,
+                        AuditResult::Failure,
+                        Some(tenant_id),
+                        None,
+                        None,
+                        Some("ip_rate_limited"),
+                        ctx,
+                    )
+                    .await;
+                return PasskeyAuthOutcome::RateLimited;
+            }
+        }
+
+        // 2. WebAuthn セレモニーの検証（チャレンジ消費・登録簿の一時停止判定・署名カウンタ更新・
         //    テナント境界）は `PasskeyAssertionService` が持つ。ここから下は OIDC フロー固有の続き。
         let verified = match self
             .assertion
@@ -150,7 +179,7 @@ impl PasskeyAuthenticationService {
         };
         let user_id = verified.user_id;
 
-        // 2. AuthSession を取得して OIDC フローを継続する。
+        // 3. AuthSession を取得して OIDC フローを継続する。
         let Some(auth_session_id_hash) = verified.auth_session_id_hash.as_deref() else {
             // `PasskeyFlow::Oidc` の検証を通った＝結合は必ずある。
             return PasskeyAuthOutcome::Internal("no auth_session_id in challenge".to_string());
@@ -171,7 +200,7 @@ impl PasskeyAuthenticationService {
 
         let client_id = session.client_id.clone();
 
-        // 3. 認証ポリシー評価（仕様 §9）。`deny` はパスキー経路でも拒否する。
+        // 4. 認証ポリシー評価（仕様 §9）。`deny` はパスキー経路でも拒否する。
         //    `require_mfa` は WebAuthn（所有要素 + User Verification）が満たすため通過する。
         let decision = match self
             .authentication_policies
@@ -229,7 +258,7 @@ impl PasskeyAuthenticationService {
             return PasskeyAuthOutcome::PolicyDenied;
         }
 
-        // 4. SSO セッションを組み立てる（`sid` を auth_session へ預けるため、永続化より先に作る）。
+        // 5. SSO セッションを組み立てる（`sid` を auth_session へ預けるため、永続化より先に作る）。
         let sso_session_id = crypto::random_hex(32);
         let sso = SsoSession::establish(
             crypto::sha256_hex(&sso_session_id),
@@ -242,7 +271,7 @@ impl PasskeyAuthenticationService {
             ctx.ip_address.clone(),
         );
 
-        // 5. auth_time と `sid` を設定する（id も再生成する。SEC7）。
+        // 6. auth_time と `sid` を設定する（id も再生成する。SEC7）。
         let rotated_id = crypto::random_hex(32);
         let rotated_id_hash = auth_session::id_hash(&rotated_id);
         if let Err(e) = self
@@ -285,7 +314,7 @@ impl PasskeyAuthenticationService {
             )
             .await;
 
-        // 6. 同意チェック（`openid` は暗黙同意）。
+        // 7. 同意チェック（`openid` は暗黙同意）。
         let scopes_needing_consent: Vec<String> = session
             .scope
             .iter()
@@ -313,7 +342,7 @@ impl PasskeyAuthenticationService {
             };
         }
 
-        // 7. code 発行。
+        // 8. code 発行。
         let code = match self
             .code_issuance
             .issue(
@@ -337,7 +366,7 @@ impl PasskeyAuthenticationService {
             Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
         };
 
-        // 8. AuthSession を削除する。
+        // 9. AuthSession を削除する。
         if let Err(e) = self.auth_sessions.delete(&rotated_id_hash).await {
             tracing::warn!(error = %e, "failed to delete auth session after passkey auth");
         }

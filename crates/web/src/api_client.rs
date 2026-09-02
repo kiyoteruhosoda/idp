@@ -2402,6 +2402,26 @@ impl ApiClient {
             .await
     }
 
+    /// パスキーでの本人確認を開始する（AP5・T38）。ログインの開始とは用途の違うチャレンジになる。
+    pub async fn step_up_passkey_begin(
+        &self,
+        correlation_id: &str,
+        req: &assay_contracts::auth::InternalStepUpPasskeyBeginRequest,
+    ) -> Result<assay_contracts::auth::InternalStepUpPasskeyBeginResponse, InternalCallError> {
+        self.post_internal("/internal/step-up/passkey/begin", correlation_id, req)
+            .await
+    }
+
+    /// パスキーでの本人確認を検証する（AP5・T38）。
+    pub async fn step_up_passkey_verify(
+        &self,
+        correlation_id: &str,
+        req: &assay_contracts::auth::InternalStepUpPasskeyVerifyRequest,
+    ) -> Result<assay_contracts::auth::InternalStepUpPasskeyVerifyResponse, InternalCallError> {
+        self.post_internal("/internal/step-up/passkey/verify", correlation_id, req)
+            .await
+    }
+
     /// セルフサービスのセキュリティ画面の表示内容（セッション一覧・連携済みアプリ）を取得する（G10）。
     pub async fn account_security(
         &self,

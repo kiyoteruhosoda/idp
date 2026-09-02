@@ -103,9 +103,18 @@ pub fn build(state: WebState) -> Router {
             "/settings/recovery-codes",
             post(authenticators::issue_recovery_codes),
         )
-        // Step-up 認証の本人確認画面（重要操作の直前。AP5）。
+        // Step-up 認証の本人確認画面（重要操作の直前。AP5）。パスワード（+TOTP）の POST と、
+        // パスキーの JSON 2 段構え（T38。ブラウザの WebAuthn API を通るためフォームにできない）。
         .route("/settings/verify", get(step_up::page))
         .route("/settings/verify", post(step_up::verify))
+        .route(
+            "/settings/verify/passkey/begin",
+            post(step_up::passkey_begin),
+        )
+        .route(
+            "/settings/verify/passkey/complete",
+            post(step_up::passkey_complete),
+        )
         // セルフサービスのセキュリティ画面（セッション一覧・失効／連携アプリ解除。G10）。
         .route("/settings/security", get(user_security::page))
         .route(

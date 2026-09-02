@@ -367,7 +367,6 @@ mfa-error-rate-limited = 試行回数が多すぎます。しばらく待って�
 mfa-error-locked = 認証の失敗が続いたため、このアカウントは一時的にロックされています。しばらくしてから再度お試しください。
 
 # ── Passkey（WebAuthn） ──────────────────────────────────────────────────────
-passkey-title = パスキー
 passkey-list-title = 登録済みパスキー
 passkey-list-empty = パスキーはまだ登録されていません。
 passkey-register-title = パスキーを登録する
@@ -381,14 +380,18 @@ nav-home = アカウントのホームへ
 passkey-retry = 再試行
 passkey-delete-button = 削除
 passkey-delete-confirm = このパスキーを削除してもよいですか？
-passkey-deleted-title = 削除完了
 passkey-deleted-message = パスキーを削除しました。
 passkey-last-used = 最終使用
 login-passkey-or = または
 login-passkey-button = パスキーでサインイン
-passkey-error-not-signed-in = パスキーを管理するにはサインインが必要です。
-passkey-error-session-expired = セッションの有効期限が切れました。再度サインインしてください。
-passkey-error-not-found = パスキーが見つかりません。
+passkey-error-not-found = パスキーが見つかりません。既に削除されている可能性があります。
+passkey-error-cancelled = パスキーの操作がキャンセルされたか、時間切れになりました。もう一度お試しください。
+passkey-error-duplicate = この認証器は既にパスキーとして登録されています。
+passkey-error-invalid = パスキーを登録できませんでした。別の認証器でお試しください。
+passkey-error-failed = パスキーの登録に失敗しました。もう一度お試しください。
+passkey-error-server = サーバーと通信できませんでした。時間をおいて再度お試しください。
+passkey-suspended-help = このパスキーは一時停止中のためサインインには使えません。認証器の管理から再開してください。
+passkey-open-authenticators = 認証器の管理（一時停止・再開）へ
 
 # 設定画面（MT14・MT15）
 admin-nav-settings = 設定
@@ -900,6 +903,9 @@ step-up-cancel = キャンセルして戻る
 step-up-error-csrf = フォームの有効期限が切れました。もう一度お試しください。
 step-up-error-invalid = 本人確認できませんでした。パスワードとコードを確認して、もう一度お試しください。
 step-up-error-second-factor = この操作には認証アプリのコードも必要です。
+step-up-passkey-button = パスキーで確認
+step-up-passkey-help = 登録済みのパスキーで確認できます。パスワードの入力は要りません。
+step-up-error-passkey = パスキーで本人確認できませんでした。もう一度試すか、パスワードで確認してください。
 
 # 認証器の統合管理（AP9）
 authenticators-title = 認証器
