@@ -57,9 +57,20 @@ blobshare で、機械の口（`/api/machine/objects`）は `aud` の検証を**
 4. **未登録・停止中・未許可を応答で区別しない**（すべて `invalid_target`）。区別すると、
    総当たりで「どの宛名が登録されているか」を探れる。切り分けは監査ログの `reason`
    （`unknown_resource` / `resource_disabled` / `resource_not_granted`）で行う。
-5. **`{issuer}/admin` は `resources` に載せない。** `perms` と短い TTL を持つ別物であり
-   （ADR-0037）、登録も拒む——登録できると、`perms` の付かない「管理 API 宛」のトークンを
-   誰にでも出せてしまう。`aud` だけを見る実装はそれを通す。
+5. **assay 自身の名前空間（issuer 配下）は宛名として登録できない。** `{issuer}/admin` は
+   `perms` と短い TTL を持つ別物であり（ADR-0037）、`resources` にも載せない。
+
+   ⚠ **これは多層防御であって、脆弱性を塞ぐものではない。** 仮に `{issuer}/admin` を登録できた
+   としても、(1) 発行の分岐は**管理 API の腕が表引きより先に当たる**のでその行は読まれず、
+   (2) 仮に読まれても `perms` の付かないトークンでは管理 API の `RequirePerms` が 1 つも
+   通らない（保有コードは DB ではなく `perms` クレームから読む。`management_token::held_codes`）。
+   守っているのは**分岐の順序という暗黙の前提**で、並べ替えられた瞬間に崩れる種類のものなので、
+   登録の側でも塞ぐ。`client_permissions` の包括権限を CHECK 制約とアプリ層で二重に防いでいるのと
+   同じ扱いである。
+
+   完全一致ではなく**接頭辞**で予約するのは、`{issuer}/admin/`（末尾スラッシュ）のような
+   紛らわしい名前を残さないため。エンドポイントが増えるたびに「その名前は貸してよかったか」を
+   考え直すことになる。
 6. **`resource` は引き続き `client_credentials` 専用。** 利用者を認証した grant に付けると
    `invalid_target` のまま（RFC 8707 は禁じていないが、人の代理で他 API を叩く相手が現状居ない。
    開けるなら scope の議論とセットになる）。

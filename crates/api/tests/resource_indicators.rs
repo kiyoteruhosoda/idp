@@ -287,6 +287,29 @@ async fn the_management_audience_stays_separate_from_registered_ones() {
         "the management audience must be reserved"
     );
 
+    // 完全一致だけを拒むと `…/admin/` のような紛らわしい名前が登録できてしまう。issuer 配下は
+    // 丸ごと予約する（いま実害があるからではなく、貸してよい理由が無いため）。
+    for near_miss in [
+        format!("{management_aud}/"),
+        format!("{}/{}/userinfo", env.issuer, env.root_tenant_id),
+        format!("{}/anything", env.issuer),
+    ] {
+        let res = send(
+            &env.app,
+            post(
+                &admin_tok,
+                &format!("/{}/admin/resources", env.root_tenant_id),
+                json!({ "resource_uri": near_miss, "display_name": "near miss" }),
+            ),
+        )
+        .await;
+        assert_eq!(
+            res.status(),
+            StatusCode::BAD_REQUEST,
+            "names inside our own issuer must be reserved: {near_miss}"
+        );
+    }
+
     // 従来どおり、権限を付けたクライアントには短命の管理トークンが出る。
     let res = send(
         &env.app,

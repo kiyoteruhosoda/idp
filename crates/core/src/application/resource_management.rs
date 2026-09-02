@@ -13,7 +13,6 @@ use crate::domain::client::Client;
 use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
 use crate::domain::id_generator::IdGenerator;
-use crate::domain::issuer::tenant_issuer;
 use crate::domain::message::MessageKey;
 use crate::domain::repositories::{
     ClientRepository, ClientResourceRepository, ProtectedResourceRepository,
@@ -276,22 +275,30 @@ impl ResourceManagementService {
         self.list_for_client(tenant, client_id).await
     }
 
-    /// この認可サーバ自身の `aud`（`{issuer}/userinfo`・`{issuer}/admin`）を宛名として登録させない。
+    /// **この認可サーバ自身の名前空間（issuer 配下）は貸さない。**
     ///
-    /// 登録できると、管理 API 向けのトークンを「普通の宛名」として誰にでも発行できてしまう
-    /// （`perms` は付かないが、`aud` だけを見るリソースサーバは通してしまう）。
+    /// いま assay 自身が使っている `aud` は `{issuer}/userinfo` と `{issuer}/admin` の 2 つだが、
+    /// 完全一致だけを拒むと `{issuer}/admin/`（末尾スラッシュ）のような**紛らわしい名前が登録できる**。
+    /// エンドポイントが増えるたびに「その名前は貸してよかったか」を考え直すことになるので、
+    /// 接頭辞で丸ごと予約する。
+    ///
+    /// ⚠ **これは多層防御であって、これが無いと権限が漏れるという話ではない。**
+    /// `{issuer}/admin` を登録できたとしても (1) トークン発行は管理 API の腕が先に当たるので
+    /// この表は読まれず、(2) 仮に読まれても `perms` が付かないトークンでは管理 API の
+    /// `RequirePerms` が 1 つも通らない（保有コードは `perms` クレームから読む）。
+    /// 守っているのは**発行側の分岐の順序という暗黙の前提**であり、並べ替えられた瞬間に
+    /// 崩れる種類のものなので、登録の側でも塞いでおく。
     fn ensure_not_reserved(
         &self,
-        tenant: TenantContext,
+        _tenant: TenantContext,
         resource_uri: &str,
     ) -> Result<(), ResourceManagementError> {
-        let issuer = tenant_issuer(&self.base_issuer, tenant.tenant_id());
-        let reserved = [
-            format!("{issuer}/userinfo"),
-            format!("{issuer}/admin"),
-            issuer,
-        ];
-        if reserved.iter().any(|value| value == resource_uri) {
+        // テナント接頭辞を含めない基底 issuer で見る。`{base}/{他テナント}/admin` のような、
+        // 別テナントの名前を騙る登録も同時に塞げる。
+        let base = self.base_issuer.trim_end_matches('/');
+        let inside_our_namespace =
+            resource_uri == base || resource_uri.starts_with(&format!("{base}/"));
+        if inside_our_namespace {
             return Err(ResourceManagementError::Invalid(MessageKey::new(
                 "api-resource-uri-reserved",
             )));
