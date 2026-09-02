@@ -558,6 +558,48 @@ pub struct UserCreatedResponse {
     pub generated_password: String,
 }
 
+/// 保護リソース（`aud` に入る宛名）の登録リクエスト（`POST /{tenant_id}/admin/resources`。ADR-0042）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct RegisterResourceRequest {
+    /// `aud` に入る値。絶対 URI・fragment 不可。**叩く先ではなく宛名**なので、解決できなくてよい
+    /// （`api://blobshare` のような形も登録できる）。
+    pub resource_uri: String,
+    /// 画面に出す名前。
+    pub display_name: String,
+}
+
+/// 保護リソースの状態更新リクエスト（`PATCH /{tenant_id}/admin/resources/{resource_id}`）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateResourceStatusRequest {
+    /// `ACTIVE` または `DISABLED`。
+    pub status: String,
+}
+
+/// クライアントへ宛先を許可・取り消しするリクエスト
+/// （`POST` / `DELETE /{tenant_id}/admin/clients/{client_id}/resources`）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ClientResourceRequest {
+    /// 登録済みの宛名（完全一致）。
+    pub resource_uri: String,
+}
+
+/// 保護リソースの公開表現。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ResourceResponse {
+    pub id: String,
+    pub resource_uri: String,
+    pub display_name: String,
+    pub status: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// 保護リソースの一覧（`GET /{tenant_id}/admin/resources`）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ResourceListResponse {
+    pub resources: Vec<ResourceResponse>,
+}
+
 /// 利用者の状態更新リクエスト（`PATCH /{tenant_id}/admin/users/{user_id}`）。
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateUserStatusRequest {

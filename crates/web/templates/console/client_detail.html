@@ -77,6 +77,61 @@
 </div>
 {% endif %}
 {% endif %}
+{#- 宛先（`aud` に入る名前。ADR-0042）。トークンに載るのは**宛名だけ**で、そこで何をしてよいかは
+    載らない —— 貸した先のアプリが client_id で決める。管理権限と同じく、`client_credentials` を
+    使えるクライアントにだけ出す。 -#}
+{% if shows_resources %}
+<h3 class="h5 mb-3">{{ messages.get("admin-client-resources-title") }}</h3>
+<p class="text-muted small">{{ messages.get("admin-client-resources-hint") }}</p>
+{% if resources_load_failed %}
+<div class="alert alert-warning" role="alert">{{ messages.get("admin-client-resources-load-failed") }}</div>
+{% else if granted_resources.is_empty() %}
+<p class="text-muted">{{ messages.get("admin-client-resources-none") }}</p>
+{% else %}
+<div class="table-responsive mb-4">
+  <table class="table table-cards table-hover align-middle">
+    <tbody>
+      {% for resource in granted_resources %}
+      <tr>
+        <td data-label="{{ messages.get("admin-client-resources-title") }}">
+          <code>{{ resource.resource_uri }}</code>
+          <div class="text-muted small">{{ resource.display_name }}</div>
+        </td>
+        <td class="text-end">
+          <form method="post" action="{{ tenant }}/admin/clients/{{ client.client_id }}/resources/revoke" class="d-inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}">
+            <input type="hidden" name="resource_id" value="{{ resource.id }}">
+            <button type="submit" class="btn btn-outline-danger btn-sm">{{ messages.get("admin-client-resources-revoke-button") }}</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% if shows_grant_form %}
+<div class="card mb-4">
+  <div class="card-body">
+    {% if grantable_resources.is_empty() %}
+    <p class="text-muted mb-0">{{ messages.get("admin-client-resources-grant-none-left") }}</p>
+    {% else %}
+    <form method="post" action="{{ tenant }}/admin/clients/{{ client.client_id }}/resources/grant">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <div class="mb-3">
+        <label class="form-label" for="client-resource-uri">{{ messages.get("admin-client-resources-grant-label") }}</label>
+        <select class="form-select" id="client-resource-uri" name="resource_uri" required>
+          <option value="" selected disabled>{{ messages.get("admin-client-resources-grant-placeholder") }}</option>
+          {% for resource in grantable_resources %}<option value="{{ resource.resource_uri }}">{{ resource.display_name }} — {{ resource.resource_uri }}</option>{% endfor %}
+        </select>
+      </div>
+      <button type="submit" class="btn btn-primary">{{ messages.get("admin-client-resources-grant-button") }}</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+{% endif %}
 <div class="d-flex flex-wrap align-items-center gap-2">
   <a class="btn btn-outline-primary" href="{{ tenant }}/admin/clients/{{ client.client_id }}/edit"><i class="fa-solid fa-pen me-2" aria-hidden="true"></i>{{ messages.get("admin-client-edit") }}</a>
   {% if client.client_type == "confidential" %}

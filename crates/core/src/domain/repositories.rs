@@ -38,6 +38,7 @@ use crate::domain::login_identifier::{LoginIdentifierMatch, UserLoginIdentifier}
 use crate::domain::paging::{Page, PageRequest};
 use crate::domain::passkey_challenge::PasskeyChallenge;
 use crate::domain::password_reset::PasswordResetToken;
+use crate::domain::resource::ProtectedResource;
 use crate::domain::refresh_token::RefreshToken;
 use crate::domain::revoked_access_token::RevokedAccessToken;
 use crate::domain::saml_service_provider::SamlServiceProvider;
@@ -54,7 +55,7 @@ use crate::domain::user_authenticator::{
     AuthenticatorStatus, AuthenticatorType, UserAuthenticator,
 };
 use crate::domain::values::{
-    AuthenticationMethod, GrantType, MembershipStatus, SigningKeyStatus, UserStatus,
+    AuthenticationMethod, GrantType, MembershipStatus, ResourceStatus, SigningKeyStatus, UserStatus,
 };
 use crate::domain::webauthn_credential::WebAuthnCredential;
 use async_trait::async_trait;
@@ -930,6 +931,53 @@ pub trait ClientPermissionRepository: Send + Sync {
         -> Result<()>;
     /// 権限を剥奪する（不存在でもエラーにしない）。
     async fn revoke(&self, client_row_id: Uuid, code: &str) -> Result<()>;
+}
+
+/// 保護リソース（`aud` に入る宛名）の永続化（ADR-0042）。
+#[async_trait]
+pub trait ProtectedResourceRepository: Send + Sync {
+    /// 宛名を登録する。同一テナントに同じ `resource_uri` があれば
+    /// [`DomainError::Conflict`](crate::domain::error::DomainError::Conflict)。
+    async fn create(&self, resource: &ProtectedResource) -> Result<()>;
+    /// テナント内の宛名を代理キーで引く。他テナントの行は `None`。
+    async fn find_by_id(&self, tenant_id: TenantId, id: Uuid) -> Result<Option<ProtectedResource>>;
+    /// テナント内の宛名を URI で引く（**完全一致**）。トークン発行が使う唯一の解決経路。
+    async fn find_by_uri(&self, tenant_id: TenantId, uri: &str)
+        -> Result<Option<ProtectedResource>>;
+    /// テナント内の宛名を一覧する（`resource_uri` 昇順）。
+    async fn list(&self, tenant_id: TenantId) -> Result<Vec<ProtectedResource>>;
+    /// 状態を変える。対象が無ければ `false`。
+    async fn set_status(
+        &self,
+        tenant_id: TenantId,
+        id: Uuid,
+        status: ResourceStatus,
+        updated_at: DateTime<Utc>,
+    ) -> Result<bool>;
+    /// 宛名を削除する（許可行も CASCADE で消える）。対象が無ければ `false`。
+    async fn delete(&self, tenant_id: TenantId, id: Uuid) -> Result<bool>;
+}
+
+/// クライアントへ許した宛名（`client_resources`）の永続化（ADR-0042）。
+///
+/// 権限コードの付与（`ClientPermissionRepository`）と別トレイトにするのは、**扱う値が違う**
+/// ためである。あちらはマスタ駆動の文字列コード、こちらはテナント内の行への参照で、
+/// 「未知のコード」と「他テナントの宛名」は別の失敗になる。
+#[async_trait]
+pub trait ClientResourceRepository: Send + Sync {
+    /// 当該クライアントへ許した宛名を一覧する（`resource_uri` 昇順。無ければ空）。
+    async fn list_for_client(&self, client_row_id: Uuid) -> Result<Vec<ProtectedResource>>;
+    /// 宛名を許可する（冪等: 既存の許可は `granted_at` を保持する）。
+    async fn grant(
+        &self,
+        client_row_id: Uuid,
+        resource_id: Uuid,
+        granted_at: DateTime<Utc>,
+    ) -> Result<()>;
+    /// 許可を取り消す（未許可でもエラーにしない）。
+    async fn revoke(&self, client_row_id: Uuid, resource_id: Uuid) -> Result<()>;
+    /// 当該クライアントがその宛名を要求してよいか。トークン発行が引く。
+    async fn is_granted(&self, client_row_id: Uuid, resource_id: Uuid) -> Result<bool>;
 }
 
 /// Refresh Token の永続化（設計仕様 §9.1）。DB には SHA-256 hash を保存する。

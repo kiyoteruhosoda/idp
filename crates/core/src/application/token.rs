@@ -28,7 +28,8 @@ use crate::domain::pkce;
 use crate::domain::refresh_token::RefreshToken;
 use crate::domain::repositories::{
     AuthorizationCodeRepository, ClientPermissionRepository, ClientRepository,
-    RefreshTokenRepository, TenantRepository, UserRepository,
+    ClientResourceRepository, ProtectedResourceRepository, RefreshTokenRepository,
+    TenantRepository, UserRepository,
 };
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::Scope;
@@ -176,6 +177,12 @@ pub struct TokenService {
     /// システム用クライアントが保有する管理 API の権限コード（ADR-0037）。`resource` に管理 API を
     /// 指定された `client_credentials` でのみ引く。
     client_permissions: Arc<dyn ClientPermissionRepository>,
+    /// 登録済みの宛名（`aud` に入る値。ADR-0042）。`resource` に assay 自身以外を指定された
+    /// `client_credentials` でのみ引く。
+    resources: Arc<dyn ProtectedResourceRepository>,
+    /// クライアントへ許した宛名（ADR-0042）。登録されているだけでは足りず、要求元が
+    /// その宛先を要求してよいかをここで確かめる。
+    client_resources: Arc<dyn ClientResourceRepository>,
     keys: Arc<KeyService>,
     /// クライアント認証（secret 照合・assertion 検証）。方式ごとの分岐は
     /// `client_authentication` に集約してある（ADR-0030）。
@@ -202,6 +209,8 @@ impl TokenService {
         codes: Arc<dyn AuthorizationCodeRepository>,
         refresh_tokens: Arc<dyn RefreshTokenRepository>,
         client_permissions: Arc<dyn ClientPermissionRepository>,
+        resources: Arc<dyn ProtectedResourceRepository>,
+        client_resources: Arc<dyn ClientResourceRepository>,
         keys: Arc<KeyService>,
         client_auth: Arc<ClientAuthenticator>,
         audit: Arc<AuditService>,
@@ -219,6 +228,8 @@ impl TokenService {
             codes,
             refresh_tokens,
             client_permissions,
+            resources,
+            client_resources,
             keys,
             client_auth,
             audit,
@@ -735,8 +746,10 @@ impl TokenService {
         let scopes = resolve_client_credentials_scopes(&client, cmd.scope.as_deref())?;
         let scope_str = scopes.join(" ");
 
-        // 4. 宛先（`resource`）の決定（RFC 8707。ADR-0037）。assay 自身の管理 API を要求された
-        //    場合だけ、クライアントが保有する権限コードを `perms` に載せた管理トークンを出す。
+        // 4. 宛先（`resource`）の決定（RFC 8707。ADR-0037 / ADR-0042）。assay 自身の管理 API を
+        //    要求された場合だけ、クライアントが保有する権限コードを `perms` に載せた管理トークンを
+        //    出す。それ以外は登録済みの宛名（`resources`）を引き、許可されていれば `aud` に載せる。
+        //    どちらでもなければ `invalid_target`——**この認可サーバが知らない宛先へは出さない**。
         let now = self.clock.now();
         let iat = now.timestamp();
         let issuer = tenant_issuer(&self.base_issuer, tenant_id);
@@ -776,11 +789,47 @@ impl TokenService {
                     self.management_token_ttl,
                 )
             }
-            Some(_) => {
-                return Err(TokenError::new(
-                    OAuthErrorCode::InvalidTarget,
-                    "the requested resource is not served by this authorization server",
-                ))
+            // 登録済みの宛名（ADR-0042）。ここで `aud` に載るのは**呼ばれる側の名前**で、
+            // assay が接続する先ではない。`perms` は載せない——そこで何をしてよいかは
+            // リソースサーバが `client_id` で決める（ADR-0033）。
+            Some(requested) => {
+                let resource = self
+                    .resources
+                    .find_by_uri(tenant_id, requested)
+                    .await
+                    .map_err(|e| internal(&e))?;
+                // 「登録が無い」「停止中」「許可されていない」を**応答では区別しない**。
+                // 区別すると、総当たりで「どの宛名が登録されているか」を探れる。切り分けは監査で行う。
+                let reason = match resource.as_ref() {
+                    None => Some("unknown_resource"),
+                    Some(resource) if !resource.is_active() => Some("resource_disabled"),
+                    Some(resource) => {
+                        let granted = self
+                            .client_resources
+                            .is_granted(client.id, resource.id)
+                            .await
+                            .map_err(|e| internal(&e))?;
+                        (!granted).then_some("resource_not_granted")
+                    }
+                };
+                if let Some(reason) = reason {
+                    self.audit
+                        .record(
+                            AuditEventType::ClientAuthenticationFailed,
+                            AuditResult::Failure,
+                            Some(tenant_id),
+                            None,
+                            Some(&client_id),
+                            Some(reason),
+                            ctx,
+                        )
+                        .await;
+                    return Err(TokenError::new(
+                        OAuthErrorCode::InvalidTarget,
+                        "the requested resource is not served by this authorization server",
+                    ));
+                }
+                (requested.to_string(), None, self.access_token_ttl)
             }
         };
 

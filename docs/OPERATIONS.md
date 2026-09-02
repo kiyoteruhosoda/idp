@@ -410,6 +410,52 @@ curl -sS "$ISSUER/$TENANT_ID/admin/users?query=alice" \
 トークンはテナント毎である。複数テナントを操作するなら、テナントごとに取り直す。
 クライアントを無効化・削除すると、発行済みトークンも**次のリクエストで**通らなくなる。
 
+### 4-4. 他のアプリの API を叩かせたいとき（宛名を貸す）
+
+assay 自身ではなく**他のアプリ**（blobshare・nolumiawiki など）を叩かせる場合は、そのアプリの
+**宛名**を登録し、呼び出し元のクライアントへ貸す（ADR-0042）。トークンの `aud` がその名前になり、
+受け側は「自分宛か」を判定できるようになる。
+
+⚠ **載るのは宛名だけである。**「そこで何をしてよいか」はトークンに載らない。受け側のアプリが
+`client_id` を見て決める（ADR-0033）。
+
+⚠ **宛名は接続先ではない。** 誰も叩かないので、解決できる URL である必要はない
+（`api://blobshare` でよい）。実際の呼び出し先と混同されるくらいなら、URL に見えない形を選ぶ。
+
+管理コンソールなら「宛先」画面で登録し、クライアント詳細の「許可した宛先」で貸す。API なら:
+
+```bash
+# 1. 宛名を登録する（idp.resources:write）
+curl -sS -X POST "$ISSUER/$TENANT_ID/admin/resources" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"resource_uri":"api://blobshare","display_name":"blobshare machine API"}'
+
+# 2. 呼び出し元へ貸す（貸すときは名前で指す）
+curl -sS -X POST "$ISSUER/$TENANT_ID/admin/clients/$CLIENT_ID/resources" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"resource_uri":"api://blobshare"}'
+
+# 3. 呼び出し元がトークンを取る（aud が api://blobshare になる）
+curl -sS -X POST "$ISSUER/$TENANT_ID/token" \
+  -d grant_type=client_credentials -d resource=api://blobshare \
+  -d client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer \
+  --data-urlencode "client_assertion=$ASSERTION"
+```
+
+取り消しは**行の id** で指す（`DELETE /admin/clients/{client_id}/resources/{resource_id}`）。
+一時的に止めるだけなら、宛名自体を `DISABLED` にすると貸し出しを残したまま発行を止められる
+（`PATCH /admin/resources/{resource_id}`）。
+
+⚠ **どちらも発行済みのトークンには効かない。** 効き始めるのは次の発行からで、最大でアクセス
+トークンの寿命（既定 900 秒）ぶん遅れる。急いで止めるなら、受け側のアプリでその `client_id` を
+落とすほうが速い。
+
+| 症状 | 原因 |
+|---|---|
+| `/token` が `invalid_target` | 宛名が未登録／`DISABLED`／そのクライアントへ貸していない（**応答では区別しない**。監査ログの `reason` を見る） |
+| 宛名を登録できない（400） | 絶対 URI でない・`#` を含む・assay 自身の `aud`（`{issuer}/userinfo`・`{issuer}/admin`）を指している |
+| 受け側で `aud` が合わない | 登録した文字列と完全一致で比べる。末尾の `/` の有無も別物として扱われる |
+
 ### 5. 鍵を入れ替えたいとき（ローテーション）
 
 止めずに入れ替えられる。

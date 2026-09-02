@@ -106,6 +106,32 @@ pub struct SigningKeyView {
     pub is_pending: bool,
 }
 
+/// 保護リソース（`aud` に入る宛名）の公開表現（`GET /admin/resources` の応答要素。ADR-0042）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ResourceView {
+    pub id: String,
+    /// トークンの `aud` に入る値そのもの。
+    pub resource_uri: String,
+    pub display_name: String,
+    /// `ACTIVE` / `DISABLED`。
+    pub status: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl ResourceView {
+    /// 新しいトークンの宛先に使えるか（テンプレートから状態を文字列比較させないための述語）。
+    pub fn is_active(&self) -> bool {
+        self.status == "ACTIVE"
+    }
+}
+
+/// 保護リソースの一覧応答。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ResourceListView {
+    pub resources: Vec<ResourceView>,
+}
+
 /// SAML SP（クライアント）の公開表現（`GET /admin/saml-service-providers` の応答要素）。
 #[derive(Debug, Clone, Deserialize)]
 pub struct SamlServiceProviderView {

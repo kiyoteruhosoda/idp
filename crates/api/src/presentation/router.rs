@@ -5,7 +5,7 @@ use crate::presentation::cors;
 use crate::presentation::handlers::{
     admin, admin_application_logs, admin_audit, admin_authentication_policies,
     admin_client_permissions, admin_clients, admin_external_idps, admin_invitations,
-    admin_login_identifiers, admin_members, admin_permissions, admin_restart,
+    admin_login_identifiers, admin_members, admin_permissions, admin_resources, admin_restart,
     admin_saml_service_providers, admin_signing_keys, admin_system_settings, admin_tenants,
     admin_users, authorize, consent, discovery, health, internal_admin_token, internal_auth,
     internal_runtime_settings, introspect, invitations, logout, mfa, passkey, register, revoke,
@@ -432,6 +432,26 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/admin/users/{user_id}/permissions/{permission_code}",
             axum::routing::delete(admin_permissions::revoke_permission),
+        )
+        // 保護リソース（`aud` に入る宛名）の登録・停止・削除（ADR-0042）。idp.resources:* 必須。
+        .route(
+            "/admin/resources",
+            get(admin_resources::list_resources).post(admin_resources::register_resource),
+        )
+        .route(
+            "/admin/resources/{resource_id}",
+            patch(admin_resources::update_resource_status)
+                .delete(admin_resources::delete_resource),
+        )
+        // クライアントへの宛先の貸し出し（ADR-0042）。貸すときは名前で、取り消すときは行の id で指す。
+        .route(
+            "/admin/clients/{client_id}/resources",
+            get(admin_resources::list_client_resources)
+                .post(admin_resources::grant_client_resource),
+        )
+        .route(
+            "/admin/clients/{client_id}/resources/{resource_id}",
+            axum::routing::delete(admin_resources::revoke_client_resource),
         )
         // 認証ポリシーの管理（ユーザー認証・認証ポリシー仕様書 §7）。idp.authentication-policies:* 必須。
         .route(

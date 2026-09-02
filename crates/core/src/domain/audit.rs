@@ -38,6 +38,15 @@ pub enum AuditEventType {
     /// `reason` の `actor_client=`（機械）に出る。
     ClientPermissionGranted,
     ClientPermissionRevoked,
+    /// 管理者による保護リソース（`aud` に入る宛名）の登録・更新・削除（ADR-0042）。
+    /// `reason` に `resource=<uri>` を記録する。
+    ResourceRegistered,
+    ResourceUpdated,
+    ResourceDeleted,
+    /// 管理者によるクライアントへの宛先の許可／取り消し（ADR-0042）。`client_id` 列は
+    /// **操作対象**のクライアント、`reason` に `resource=<uri>` が入る。
+    ClientResourceGranted,
+    ClientResourceRevoked,
     /// 管理者によるクライアント（RP）の登録・更新・シークレット再発行（設計仕様 §9.3・§7）。
     ClientRegistered,
     ClientUpdated,
@@ -148,6 +157,11 @@ impl AuditEventType {
             Self::UserPermissionRevoked => "user_permission.revoked",
             Self::ClientPermissionGranted => "client_permission.granted",
             Self::ClientPermissionRevoked => "client_permission.revoked",
+            Self::ResourceRegistered => "resource.registered",
+            Self::ResourceUpdated => "resource.updated",
+            Self::ResourceDeleted => "resource.deleted",
+            Self::ClientResourceGranted => "client_resource.granted",
+            Self::ClientResourceRevoked => "client_resource.revoked",
             Self::ClientRegistered => "client.registered",
             Self::ClientUpdated => "client.updated",
             Self::ClientSecretRotated => "client.secret_rotated",

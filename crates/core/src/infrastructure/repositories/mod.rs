@@ -17,6 +17,7 @@ pub mod external_idp;
 pub mod passkey_challenge;
 pub mod password_history;
 pub mod password_reset_token;
+pub mod protected_resource;
 pub mod refresh_token;
 pub mod revoked_access_token;
 pub mod saml_service_provider;

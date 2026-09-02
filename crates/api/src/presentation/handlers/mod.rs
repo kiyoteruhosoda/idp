@@ -5,6 +5,7 @@ pub mod admin_application_logs;
 pub mod admin_audit;
 pub mod admin_authentication_policies;
 pub mod admin_client_permissions;
+pub mod admin_resources;
 pub mod admin_clients;
 pub mod admin_external_idps;
 pub mod admin_invitations;

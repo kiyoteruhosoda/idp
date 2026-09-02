@@ -8,8 +8,8 @@
 //! 型検証される（sqlx のコンパイル時クエリ検証と同じ思想）。
 
 use crate::admin_dto::{
-    AuditLogView, ClientView, SamlServiceProviderView, SigningKeyView, TenantCreatedView,
-    TenantView,
+    AuditLogView, ClientView, ResourceView, SamlServiceProviderView, SigningKeyView,
+    TenantCreatedView, TenantView,
 };
 use crate::i18n::Messages;
 use askama::Template;
@@ -1643,6 +1643,14 @@ pub struct ClientDetail<'a> {
     pub error_key: Option<&'a str>,
     /// 戻り先の一覧（ADR-0038）。登録内容から決まる系統の一覧へ戻す。
     pub list_href: String,
+    /// 貸してある宛先（`aud` に入る名前。ADR-0042）。
+    pub granted_resources: &'a [ResourceView],
+    /// まだ貸していない、登録済みで有効な宛名。
+    pub grantable_resources: &'a [ResourceView],
+    /// 貸し出しの取得に失敗したか（空と取り違えると貸し直してしまうため画面に出す）。
+    pub resources_load_failed: bool,
+    /// 宛先の区画を出すか。
+    pub shows_resources: bool,
 }
 
 /// secret 表示画面（作成直後・再発行直後。`secret` が `None` なら public で秘密なし）。
@@ -1657,6 +1665,18 @@ pub struct ClientSecret<'a> {
     pub secret: Option<&'a str>,
     /// 戻り先の一覧（ADR-0038）。
     pub list_href: String,
+}
+
+/// 保護リソース（`aud` に入る宛名）の一覧・管理画面（`GET /{tenant_id}/admin/resources`。ADR-0042）。
+#[derive(Template)]
+#[template(path = "console/resources.html")]
+pub struct ResourcesList<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub admin: Option<AdminChrome<'a>>,
+    pub resources: &'a [ResourceView],
+    pub csrf: &'a str,
+    pub error: Option<&'a str>,
 }
 
 /// 署名鍵一覧・管理画面（`GET /{tenant_id}/admin/signing-keys`、K1）。
