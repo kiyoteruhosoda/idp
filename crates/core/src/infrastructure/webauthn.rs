@@ -18,6 +18,7 @@ use webauthn_rs::prelude::{
     Passkey, PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential,
     RequestChallengeResponse, Webauthn, WebauthnBuilder,
 };
+use webauthn_rs_proto::ResidentKeyRequirement;
 
 #[derive(Clone)]
 pub struct WebAuthnService {
@@ -77,7 +78,8 @@ impl WebAuthnPort for WebAuthnService {
         user_display_name: &str,
         exclude_credentials: &[Passkey],
     ) -> Result<(CreationChallengeResponse, PasskeyRegistration), String> {
-        self.inner
+        let (mut challenge, state) = self
+            .inner
             .start_passkey_registration(
                 user_id,
                 user_name,
@@ -93,7 +95,24 @@ impl WebAuthnPort for WebAuthnService {
                     )
                 },
             )
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+
+        // **discoverable（resident）な鍵を要求する。**
+        //
+        // webauthn-rs の `start_passkey_registration` は `residentKey: discouraged` を載せる
+        // （`require_resident_key(false)`）。一方こちらの認証は `start_discoverable_authentication`
+        // ——`allowCredentials` を空で出し、認証器が持ち主を名乗る形——**しか持たない**。
+        // 噛み合っていないと、**登録は成功するのにログインには一生使えない鍵**ができる。
+        // ブラウザは該当する鍵を見つけられず `NotAllowedError` を返すので、画面には
+        // 「中止されたか時間切れ」としか出ず、原因に辿り着けない（2026-09-02 に実際に踏んだ）。
+        //
+        // `mediation` を落としているのと同じく、ここも webauthn-rs が組んだ値を後から直す
+        // （`start_passkey_registration` はこの指定を引数に取らない）。
+        if let Some(selection) = challenge.public_key.authenticator_selection.as_mut() {
+            selection.resident_key = Some(ResidentKeyRequirement::Required);
+            selection.require_resident_key = true;
+        }
+        Ok((challenge, state))
     }
 
     /// 登録完了: レスポンスを検証して `Passkey` を返す。
@@ -193,5 +212,26 @@ mod tests {
             "the options must not carry a mediation hint: {json}"
         );
         assert_eq!(json["publicKey"]["rpId"], "idp.example.com");
+    }
+
+    /// 登録では **discoverable（resident）な鍵**を要求する。
+    ///
+    /// 認証は `start_discoverable_authentication`（`allowCredentials` は空）しか持たないので、
+    /// 非 discoverable な鍵を作らせると**登録できるのにログインには一生使えない**。ブラウザ側は
+    /// 該当なしを `NotAllowedError` で返すため、画面には「中止されたか時間切れ」としか出ない。
+    /// webauthn-rs の既定は `discouraged` なので、直列化された JSON で上書きを確かめる。
+    #[test]
+    fn the_registration_options_require_a_discoverable_credential() {
+        let service = WebAuthnService::new("https://idp.example.com");
+        let (challenge, _state) = service
+            .begin_registration(Uuid::new_v4(), "user@example.com", "User", &[])
+            .expect("begin_registration succeeds");
+        let json = serde_json::to_value(&challenge).expect("serialize");
+        let selection = &json["publicKey"]["authenticatorSelection"];
+        assert_eq!(
+            selection["residentKey"], "required",
+            "authentication is discoverable-only, so registration must ask for it: {json}"
+        );
+        assert_eq!(selection["requireResidentKey"], true);
     }
 }
