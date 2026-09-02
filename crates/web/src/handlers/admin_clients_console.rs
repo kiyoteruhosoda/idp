@@ -452,28 +452,31 @@ pub async fn detail(
         (Vec::new(), false)
     };
     // 貸す候補は「登録済みで有効な宛名のうち、まだ貸していないもの」。
-    let grantable_resources: Vec<crate::admin_dto::ResourceView> = if is_system_client(&client)
-        && !resources_load_failed
-    {
-        match state.api.list_resources(&correlation.0, &tenant.0, &sso).await {
-            Ok(list) => list
-                .resources
-                .into_iter()
-                .filter(|resource| {
-                    resource.is_active()
-                        && !granted_resources
-                            .iter()
-                            .any(|granted| granted.id == resource.id)
-                })
-                .collect(),
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to load registered resources");
-                Vec::new()
+    let grantable_resources: Vec<crate::admin_dto::ResourceView> =
+        if is_system_client(&client) && !resources_load_failed {
+            match state
+                .api
+                .list_resources(&correlation.0, &tenant.0, &sso)
+                .await
+            {
+                Ok(list) => list
+                    .resources
+                    .into_iter()
+                    .filter(|resource| {
+                        resource.is_active()
+                            && !granted_resources
+                                .iter()
+                                .any(|granted| granted.id == resource.id)
+                    })
+                    .collect(),
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to load registered resources");
+                    Vec::new()
+                }
             }
-        }
-    } else {
-        Vec::new()
-    };
+        } else {
+            Vec::new()
+        };
 
     let messages = Messages::new(locale(&headers));
     let csrf = csrf_from(&headers, state.config.csrf_secret());

@@ -113,6 +113,7 @@ pub async fn register_resource(
         (status = 404, description = "不存在（他テナントの宛名を含む）"),
     )
 )]
+#[allow(clippy::too_many_arguments)]
 pub async fn update_resource_status(
     RequirePerms(admin, _): RequirePerms<ResourcesWrite>,
     State(state): State<AppState>,

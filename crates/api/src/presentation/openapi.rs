@@ -5,7 +5,21 @@
 //! DTO の `ToSchema` から組み立てられる。
 
 use crate::presentation::dto::{
-    AcceptInvitationRequest, AddTenantDomainRequest, AuditLogEntryResponse, AuthenticationPoliciesResponse, AuthenticationPolicyResponse, AuthenticationPolicyUpsertRequest, ClientCreatedResponse, ClientListResponse, ClientRegisterRequest, ClientResourceRequest, ClientResponse, ClientSecretResponse, ClientUpdateRequest, CreateInvitationRequest, CreateTenantRequest, CreateUserRequest, GenerateSigningKeyRequest, GrantPermissionRequest, InvitationCreatedResponse, MemberListResponse, MemberResponse, OAuthErrorResponse, RegisterRequest, RegisterResourceRequest, RegisterResponse, ResourceListResponse, ResourceResponse, RestartServiceResponse, RuntimeSettingResponse, SigningKeyResponse, SystemSettingsResponse, TenantAdminPasswordResetRequest, TenantDomainResponse, TenantListResponse, TenantResponse, TokenRequest, TokenResponse, UpdateMemberStatusRequest, UpdateResourceStatusRequest, UpdateRuntimeSettingRequest, UpdateSystemSettingsRequest, UpdateTenantRequest, UpdateTenantSettingsRequest, UpdateUserProfileRequest, UpdateUserStatusRequest, UserCreatedResponse, UserInfoResponse, UserMfaResetResponse, UserPasswordResetResponse, UserPermissionsResponse, UserUnlockResponse, VerifyEmailRequest,
+    AcceptInvitationRequest, AddTenantDomainRequest, AuditLogEntryResponse,
+    AuthenticationPoliciesResponse, AuthenticationPolicyResponse,
+    AuthenticationPolicyUpsertRequest, ClientCreatedResponse, ClientListResponse,
+    ClientRegisterRequest, ClientResourceRequest, ClientResponse, ClientSecretResponse,
+    ClientUpdateRequest, CreateInvitationRequest, CreateTenantRequest, CreateUserRequest,
+    GenerateSigningKeyRequest, GrantPermissionRequest, InvitationCreatedResponse,
+    MemberListResponse, MemberResponse, OAuthErrorResponse, RegisterRequest,
+    RegisterResourceRequest, RegisterResponse, ResourceListResponse, ResourceResponse,
+    RestartServiceResponse, RuntimeSettingResponse, SigningKeyResponse, SystemSettingsResponse,
+    TenantAdminPasswordResetRequest, TenantDomainResponse, TenantListResponse, TenantResponse,
+    TokenRequest, TokenResponse, UpdateMemberStatusRequest, UpdateResourceStatusRequest,
+    UpdateRuntimeSettingRequest, UpdateSystemSettingsRequest, UpdateTenantRequest,
+    UpdateTenantSettingsRequest, UpdateUserProfileRequest, UpdateUserStatusRequest,
+    UserCreatedResponse, UserInfoResponse, UserMfaResetResponse, UserPasswordResetResponse,
+    UserPermissionsResponse, UserUnlockResponse, VerifyEmailRequest,
 };
 use crate::presentation::handlers;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};

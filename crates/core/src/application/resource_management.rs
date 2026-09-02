@@ -88,7 +88,8 @@ impl ResourceManagementService {
         actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<ProtectedResource, ResourceManagementError> {
-        let resource_uri = validate_resource_uri(raw_uri).map_err(ResourceManagementError::Invalid)?;
+        let resource_uri =
+            validate_resource_uri(raw_uri).map_err(ResourceManagementError::Invalid)?;
         let display_name =
             validate_display_name(raw_display_name).map_err(ResourceManagementError::Invalid)?;
         self.ensure_not_reserved(tenant, &resource_uri)?;

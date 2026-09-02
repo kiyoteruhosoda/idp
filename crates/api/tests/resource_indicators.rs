@@ -125,7 +125,11 @@ async fn only_a_registered_and_granted_audience_reaches_the_token() {
     // このクライアントへ貸す。
     let res = send(
         &env.app,
-        post(&admin_tok, &lending_uri, json!({ "resource_uri": audience })),
+        post(
+            &admin_tok,
+            &lending_uri,
+            json!({ "resource_uri": audience }),
+        ),
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK, "lend the audience");

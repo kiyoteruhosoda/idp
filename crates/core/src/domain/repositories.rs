@@ -38,8 +38,8 @@ use crate::domain::login_identifier::{LoginIdentifierMatch, UserLoginIdentifier}
 use crate::domain::paging::{Page, PageRequest};
 use crate::domain::passkey_challenge::PasskeyChallenge;
 use crate::domain::password_reset::PasswordResetToken;
-use crate::domain::resource::ProtectedResource;
 use crate::domain::refresh_token::RefreshToken;
+use crate::domain::resource::ProtectedResource;
 use crate::domain::revoked_access_token::RevokedAccessToken;
 use crate::domain::saml_service_provider::SamlServiceProvider;
 use crate::domain::saml_sso_request::SamlSsoRequest;
@@ -942,8 +942,11 @@ pub trait ProtectedResourceRepository: Send + Sync {
     /// テナント内の宛名を代理キーで引く。他テナントの行は `None`。
     async fn find_by_id(&self, tenant_id: TenantId, id: Uuid) -> Result<Option<ProtectedResource>>;
     /// テナント内の宛名を URI で引く（**完全一致**）。トークン発行が使う唯一の解決経路。
-    async fn find_by_uri(&self, tenant_id: TenantId, uri: &str)
-        -> Result<Option<ProtectedResource>>;
+    async fn find_by_uri(
+        &self,
+        tenant_id: TenantId,
+        uri: &str,
+    ) -> Result<Option<ProtectedResource>>;
     /// テナント内の宛名を一覧する（`resource_uri` 昇順）。
     async fn list(&self, tenant_id: TenantId) -> Result<Vec<ProtectedResource>>;
     /// 状態を変える。対象が無ければ `false`。

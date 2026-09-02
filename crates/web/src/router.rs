@@ -12,11 +12,10 @@ use crate::handlers::{
     admin_external_idps_console, admin_invitations_console, admin_login_identifiers_console,
     admin_members_console, admin_resources_console, admin_restart_console,
     admin_saml_clients_console, admin_settings, admin_signing_keys_console, admin_status_console,
-    admin_tenants_console, admin_users_console,
-    authenticators, consent, console_script, external_login, health, invitation_accept, locale,
-    login, mfa_totp, page_scripts, passkey, password_change, password_reset, portal, react_assets,
-    rp_logout, saml_sso, step_up, stylesheet, submit_feedback_script, user_security, user_settings,
-    vendor_assets, verify_email,
+    admin_tenants_console, admin_users_console, authenticators, consent, console_script,
+    external_login, health, invitation_accept, locale, login, mfa_totp, page_scripts, passkey,
+    password_change, password_reset, portal, react_assets, rp_logout, saml_sso, step_up,
+    stylesheet, submit_feedback_script, user_security, user_settings, vendor_assets, verify_email,
 };
 use crate::i18n::Messages;
 use crate::login_context::load_rp_login_context;

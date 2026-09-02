@@ -29,7 +29,6 @@ use crate::application::change_password::ChangePasswordService;
 use crate::application::client_authentication::ClientAuthenticator;
 use crate::application::client_management::ClientManagementService;
 use crate::application::client_permission_management::ClientPermissionManagementService;
-use crate::application::resource_management::ResourceManagementService;
 use crate::application::client_status::ClientStatusService;
 use crate::application::code_issuance::CodeIssuanceService;
 use crate::application::consent::ConsentService;
@@ -55,6 +54,7 @@ use crate::application::password_reset::PasswordResetService;
 use crate::application::permission_management::PermissionManagementService;
 use crate::application::portal_login::PortalLoginService;
 use crate::application::register::RegisterService;
+use crate::application::resource_management::ResourceManagementService;
 use crate::application::revocation::RevocationService;
 use crate::application::saml_service_provider_management::SamlServiceProviderManagementService;
 use crate::application::saml_sso::SamlSsoService;
@@ -98,9 +98,6 @@ use crate::infrastructure::repositories::cached_user_permission::{
 use crate::infrastructure::repositories::client::SqlxClientRepository;
 use crate::infrastructure::repositories::client_assertion::SqlxClientAssertionReplayRepository;
 use crate::infrastructure::repositories::client_permission::SqlxClientPermissionRepository;
-use crate::infrastructure::repositories::protected_resource::{
-    SqlxClientResourceRepository, SqlxProtectedResourceRepository,
-};
 use crate::infrastructure::repositories::consent::SqlxClientConsentRepository;
 use crate::infrastructure::repositories::email_verification_token::SqlxEmailVerificationTokenRepository;
 use crate::infrastructure::repositories::external_idp::{
@@ -110,6 +107,9 @@ use crate::infrastructure::repositories::external_idp::{
 use crate::infrastructure::repositories::passkey_challenge::SqlxPasskeyChallengeRepository;
 use crate::infrastructure::repositories::password_history::SqlxPasswordHistoryRepository;
 use crate::infrastructure::repositories::password_reset_token::SqlxPasswordResetTokenRepository;
+use crate::infrastructure::repositories::protected_resource::{
+    SqlxClientResourceRepository, SqlxProtectedResourceRepository,
+};
 use crate::infrastructure::repositories::refresh_token::SqlxRefreshTokenRepository;
 use crate::infrastructure::repositories::revoked_access_token::SqlxRevokedAccessTokenRepository;
 use crate::infrastructure::repositories::saml_service_provider::SqlxSamlServiceProviderRepository;

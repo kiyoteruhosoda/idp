@@ -440,8 +440,7 @@ pub fn build(state: AppState) -> Router {
         )
         .route(
             "/admin/resources/{resource_id}",
-            patch(admin_resources::update_resource_status)
-                .delete(admin_resources::delete_resource),
+            patch(admin_resources::update_resource_status).delete(admin_resources::delete_resource),
         )
         // クライアントへの宛先の貸し出し（ADR-0042）。貸すときは名前で、取り消すときは行の id で指す。
         .route(

@@ -1673,7 +1673,7 @@ pub struct ClientSecret<'a> {
 pub struct ResourcesList<'a> {
     pub messages: &'a Messages,
     pub tenant: &'a str,
-    pub admin: Option<AdminChrome<'a>>,
+    pub admin: Admin<'a>,
     pub resources: &'a [ResourceView],
     pub csrf: &'a str,
     pub error: Option<&'a str>,

@@ -52,9 +52,15 @@ pub async fn list(
     let messages = Messages::new(locale(&headers));
     let csrf = csrf_from(&headers, state.config.csrf_secret());
     match result {
-        Ok(list) => {
-            Html(render_list(&messages, &tenant, &admin, &list.resources, &csrf, None)).into_response()
-        }
+        Ok(list) => Html(render_list(
+            &messages,
+            &tenant,
+            &admin,
+            &list.resources,
+            &csrf,
+            None,
+        ))
+        .into_response(),
         Err(e) => map_error(&messages, &tenant, &admin, &headers, e),
     }
 }
@@ -78,7 +84,16 @@ pub async fn register(
     let sso = sso(&headers);
 
     if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
-        return reload_with_error(&state, &correlation, &tenant, &admin, &headers, &sso, "admin-error-csrf").await;
+        return reload_with_error(
+            &state,
+            &correlation,
+            &tenant,
+            &admin,
+            &headers,
+            &sso,
+            "admin-error-csrf",
+        )
+        .await;
     }
 
     let result = state
@@ -132,7 +147,16 @@ pub async fn set_status(
     let sso = sso(&headers);
 
     if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
-        return reload_with_error(&state, &correlation, &tenant, &admin, &headers, &sso, "admin-error-csrf").await;
+        return reload_with_error(
+            &state,
+            &correlation,
+            &tenant,
+            &admin,
+            &headers,
+            &sso,
+            "admin-error-csrf",
+        )
+        .await;
     }
 
     let result = state
@@ -146,7 +170,16 @@ pub async fn set_status(
             &form.status,
         )
         .await;
-    finish(&state, &correlation, &tenant, &admin, &headers, &sso, result.map(|_| ())).await
+    finish(
+        &state,
+        &correlation,
+        &tenant,
+        &admin,
+        &headers,
+        &sso,
+        result.map(|_| ()),
+    )
+    .await
 }
 
 /// 宛名を削除する（`POST /{tenant_id}/admin/resources/delete`）。
@@ -161,7 +194,16 @@ pub async fn delete(
     let sso = sso(&headers);
 
     if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
-        return reload_with_error(&state, &correlation, &tenant, &admin, &headers, &sso, "admin-error-csrf").await;
+        return reload_with_error(
+            &state,
+            &correlation,
+            &tenant,
+            &admin,
+            &headers,
+            &sso,
+            "admin-error-csrf",
+        )
+        .await;
     }
 
     let result = state
@@ -169,7 +211,16 @@ pub async fn delete(
         .for_locale(locale(&headers))
         .delete_resource(&correlation.0, &tenant.0, &sso, &form.resource_id)
         .await;
-    finish(&state, &correlation, &tenant, &admin, &headers, &sso, result).await
+    finish(
+        &state,
+        &correlation,
+        &tenant,
+        &admin,
+        &headers,
+        &sso,
+        result,
+    )
+    .await
 }
 
 // ── ヘルパー ─────────────────────────────────────────────────────────────────
