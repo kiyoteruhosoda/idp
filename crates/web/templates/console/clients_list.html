@@ -15,7 +15,7 @@
     </thead>
     <tbody>
       {% for c in clients %}
-      <tr><td data-label="{{ messages.get("admin-client-col-name") }}"><a class="text-decoration-none card-link" href="{{ tenant }}/admin/clients/{{ c.client_id }}">{{ c.app_name }}</a></td><td data-label="{{ messages.get("admin-client-col-id") }}"><code>{{ c.client_id }}</code></td><td data-label="{{ messages.get("admin-client-col-type") }}">{{ c.client_type }}</td><td data-label="{{ messages.get("admin-client-col-status") }}">{% if c.client_status == "ACTIVE" %}<span class="badge text-bg-success">{{ c.client_status }}</span>{% else %}<span class="badge text-bg-secondary">{{ c.client_status }}</span>{% endif %}</td><td data-label="{{ messages.get("admin-client-col-scopes") }}">{{ c.scopes.join(" ") }}</td></tr>
+      <tr><td data-label="{{ messages.get("admin-client-col-name") }}"><a class="text-decoration-none table-cards-link" href="{{ tenant }}/admin/clients/{{ c.client_id }}">{{ c.app_name }}</a></td><td data-label="{{ messages.get("admin-client-col-id") }}"><code>{{ c.client_id }}</code></td><td data-label="{{ messages.get("admin-client-col-type") }}">{{ c.client_type }}</td><td data-label="{{ messages.get("admin-client-col-status") }}">{% if c.client_status == "ACTIVE" %}<span class="badge text-bg-success">{{ c.client_status }}</span>{% else %}<span class="badge text-bg-secondary">{{ c.client_status }}</span>{% endif %}</td><td data-label="{{ messages.get("admin-client-col-scopes") }}">{{ c.scopes.join(" ") }}</td></tr>
       {% endfor %}
     </tbody>
   </table>
