@@ -130,42 +130,43 @@ code {
    * 画面から読めない**（2026-09-02 に指摘。カード内の別の場所を押しても何も起きない）。
    * リンクの当たり判定をカードいっぱいへ広げ、右端に矢印を出して「押せる」ことを示す。
    * Bootstrap の .stretched-link と同じ手だが、**カード表示のときだけ**効かせたいので自前で持つ
-   * （素の表で効かせると、position を持つ祖先まで当たり判定が広がってしまう）。 */
-  .table-cards tr:not(.collapse):has(.card-link) {
+   * （素の表で効かせると、position を持つ祖先まで当たり判定が広がってしまう）。
+   * 目印は .card-link ではなく .table-cards-link と呼ぶ —— .card-link は Bootstrap が
+   * `.card-body` 内のリンク用に持っており（隣接すると margin が付く）、別の意味で使うと衝突する。 */
+  .table-cards tr:not(.collapse):has(.table-cards-link) {
     position: relative;
     padding-right: 2rem;
-    cursor: pointer;
   }
 
-  .table-cards .card-link::after {
+  .table-cards .table-cards-link::after {
     content: "";
     position: absolute;
     inset: 0;
   }
 
   /* 名前は値の並びに埋もれないよう強調する（リンクだと分かる手掛かりを 1 つ増やす） */
-  .table-cards .card-link {
+  .table-cards .table-cards-link {
     font-weight: 600;
   }
 
-  /* 右端の矢印。文字ではなく罫線で描く（アイコンフォントの読み込み順に依存させない） */
-  .table-cards tr:not(.collapse):has(.card-link)::after {
-    content: "";
+  /* 右端の矢印。コンソールの他のアイコンと同じ Font Awesome で描く（layout.html が app.css より
+   * 先に読み込む）。この擬似要素は覆いより後に描かれる（＝上に乗る）ため、pointer-events を切って
+   * 当たり判定を覆いへ通す。切らないと矢印の上だけ押しても詳細へ行けない。 */
+  .table-cards tr:not(.collapse):has(.table-cards-link)::after {
+    content: "\f054";
+    font: var(--fa-font-solid);
+    font-size: 0.75rem;
     position: absolute;
     top: 50%;
     right: 1rem;
-    width: 0.5rem;
-    height: 0.5rem;
-    margin-top: -0.25rem;
-    border-top: 2px solid var(--bs-secondary-color);
-    border-right: 2px solid var(--bs-secondary-color);
-    transform: rotate(45deg);
+    transform: translateY(-50%);
+    color: var(--bs-secondary-color);
+    pointer-events: none;
   }
 
   /* カード内の他のリンク・ボタン（操作列）は覆いより前へ出す。前に出さないと、
-   * カード全体の当たり判定に飲まれて押せなくなる。 */
-  .table-cards tr:not(.collapse) a:not(.card-link),
-  .table-cards tr:not(.collapse) button {
+   * カード全体の当たり判定に飲まれて押せなくなる。覆いのある行だけが対象。 */
+  .table-cards tr:not(.collapse):has(.table-cards-link) :is(a:not(.table-cards-link), button) {
     position: relative;
     z-index: 1;
   }

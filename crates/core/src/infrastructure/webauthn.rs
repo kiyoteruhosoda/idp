@@ -106,12 +106,19 @@ impl WebAuthnPort for WebAuthnService {
         // ブラウザは該当する鍵を見つけられず `NotAllowedError` を返すので、画面には
         // 「中止されたか時間切れ」としか出ず、原因に辿り着けない（2026-09-02 に実際に踏んだ）。
         //
-        // `mediation` を落としているのと同じく、ここも webauthn-rs が組んだ値を後から直す
-        // （`start_passkey_registration` はこの指定を引数に取らない）。
-        if let Some(selection) = challenge.public_key.authenticator_selection.as_mut() {
-            selection.resident_key = Some(ResidentKeyRequirement::Required);
-            selection.require_resident_key = true;
-        }
+        // `mediation` を落としている（`begin_authentication`）のと同じく、ここも webauthn-rs が
+        // 組んだ値を後から直す（`start_passkey_registration` はこの指定を引数に取らない）。
+        //
+        // 無ければ作る。`if let Some(..)` で分岐すると、webauthn-rs が
+        // `authenticatorSelection` を載せなくなった日に**この要求だけが黙って消える**。
+        // 既定は `user_verification: Required` で、webauthn-rs が載せている値と同じ。
+        let selection = challenge
+            .public_key
+            .authenticator_selection
+            .get_or_insert_with(Default::default);
+        selection.resident_key = Some(ResidentKeyRequirement::Required);
+        selection.require_resident_key = true;
+
         Ok((challenge, state))
     }
 
@@ -214,11 +221,8 @@ mod tests {
         assert_eq!(json["publicKey"]["rpId"], "idp.example.com");
     }
 
-    /// 登録では **discoverable（resident）な鍵**を要求する。
+    /// 登録では **discoverable（resident）な鍵**を要求する（理由は `begin_registration` の注記）。
     ///
-    /// 認証は `start_discoverable_authentication`（`allowCredentials` は空）しか持たないので、
-    /// 非 discoverable な鍵を作らせると**登録できるのにログインには一生使えない**。ブラウザ側は
-    /// 該当なしを `NotAllowedError` で返すため、画面には「中止されたか時間切れ」としか出ない。
     /// webauthn-rs の既定は `discouraged` なので、直列化された JSON で上書きを確かめる。
     #[test]
     fn the_registration_options_require_a_discoverable_credential() {
