@@ -1,3 +1,13 @@
+## 2026-09-04（2）（CI の action を Node 24 で動く版に上げた）
+
+- **CI の注釈に `Node.js 20 is deprecated` が出ていた。** ランナーが Node 20 を落としたので、
+  `node20` を要求する action は Node 24 で**強制的に**動かされていた。互換のための猶予なので、
+  切れたら止まる。**チェックは緑のままで、注釈にしか出ない。**
+- `actions/checkout` `@v4` → `@v7`。これで `node20` を要求する action は無くなった
+  （`dtolnay/rust-toolchain` は composite、`Swatinem/rust-cache@v2` は元から `node24`）。
+- `checkout` v7 は `pull_request_target` / `workflow_run` での fork PR の
+  チェックアウトを塞ぐが、この CI は `push` / `pull_request` しか使っていないので影響しない。
+
 ## 2026-09-04（認証の強度を RP へ名乗れるようにした。ADR-0043）
 
 - ⚠ **`acr_values` は強制していたのに、満たしたことを RP へ返していなかった。** 認証ポリシーの
