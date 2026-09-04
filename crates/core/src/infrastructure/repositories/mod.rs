@@ -3,6 +3,7 @@
 pub mod application_log;
 pub mod audit_log;
 pub mod auth_session;
+pub(crate) mod authentication_methods_json;
 pub mod authentication_policy;
 pub mod authorization_code;
 pub mod backchannel_logout;

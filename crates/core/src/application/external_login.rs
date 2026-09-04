@@ -724,6 +724,7 @@ impl ExternalLoginService {
                 user.id,
                 now,
                 Some(&sso.sid()),
+                &sso.authentication_methods,
             )
             .await
         {
@@ -770,6 +771,7 @@ impl ExternalLoginService {
                     nonce: session.nonce.clone(),
                     auth_time: now,
                     sid: Some(sso.sid()),
+                    authentication_methods: Some(sso.authentication_methods.clone()),
                     code_challenge: session.code_challenge.clone(),
                     code_challenge_method: session.code_challenge_method,
                 },

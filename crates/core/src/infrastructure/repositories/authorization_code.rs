@@ -10,6 +10,7 @@ use crate::domain::repositories::AuthorizationCodeRepository;
 use crate::domain::tenant::TenantId;
 use crate::domain::values::CodeChallengeMethod;
 use crate::infrastructure::db::Db;
+use crate::infrastructure::repositories::authentication_methods_json;
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use sqlx::mysql::MySqlRow;
@@ -33,8 +34,8 @@ impl SqlxAuthorizationCodeRepository {
 
 const SELECT_COLUMNS: &str =
     "code_hash, tenant_id, user_id, client_id, redirect_uri, scope, nonce, \
-     auth_time, sid, code_challenge, code_challenge_method, expires_at, used_at, \
-     created_at, updated_at";
+     auth_time, sid, authentication_methods, code_challenge, code_challenge_method, \
+     expires_at, used_at, created_at, updated_at";
 
 fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
@@ -65,6 +66,9 @@ fn map_row(row: &MySqlRow) -> Result<AuthorizationCode> {
         nonce: row.try_get("nonce").map_err(repo_err)?,
         auth_time: to_utc(row.try_get("auth_time").map_err(repo_err)?),
         sid: row.try_get("sid").map_err(repo_err)?,
+        authentication_methods: authentication_methods_json::from_json_opt(
+            row.try_get("authentication_methods").map_err(repo_err)?,
+        ),
         code_challenge: row.try_get("code_challenge").map_err(repo_err)?,
         code_challenge_method: CodeChallengeMethod::parse(&ccm)?,
         expires_at: to_utc(row.try_get("expires_at").map_err(repo_err)?),
@@ -80,8 +84,8 @@ impl AuthorizationCodeRepository for SqlxAuthorizationCodeRepository {
         sqlx::query(
             "INSERT INTO authorization_codes \
              (code_hash, tenant_id, user_id, client_id, redirect_uri, scope, nonce, auth_time, \
-              sid, code_challenge, code_challenge_method, expires_at, used_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              sid, authentication_methods, code_challenge, code_challenge_method, expires_at, used_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&code.code_hash)
         .bind(code.tenant_id.to_string())
@@ -92,6 +96,11 @@ impl AuthorizationCodeRepository for SqlxAuthorizationCodeRepository {
         .bind(&code.nonce)
         .bind(code.auth_time.naive_utc())
         .bind(&code.sid)
+        .bind(
+            code.authentication_methods
+                .as_deref()
+                .map(authentication_methods_json::to_json),
+        )
         .bind(&code.code_challenge)
         .bind(code.code_challenge_method.as_str())
         .bind(code.expires_at.naive_utc())

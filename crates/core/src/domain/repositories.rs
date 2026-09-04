@@ -613,6 +613,10 @@ pub trait AuthSessionRepository: Send + Sync {
     /// id の再生成（セッション固定攻撃対策）を独立したメソッドにせず記録と 1 文にまとめてあるのは、
     /// 「認証前に発行した Cookie 値が認証後も通る瞬間」を作らないためである。`sso_session_id` は
     /// ログインのたびに再生成しており（`SsoSession::establish`）、それと非対称にしない。
+    ///
+    /// `methods` は実際に検証された認証方式（ADR-0043）。code 発行まで持ち回すために
+    /// ここで記録する ——同意画面を挟む経路では、code 発行の時点で「何で認証したか」が
+    /// 手元に残らない。
     async fn set_authenticated_user(
         &self,
         id_hash: &str,
@@ -620,6 +624,7 @@ pub trait AuthSessionRepository: Send + Sync {
         user_id: Uuid,
         auth_time: DateTime<Utc>,
         sso_sid: Option<&str>,
+        methods: &[AuthenticationMethod],
     ) -> Result<()>;
     /// パスワード検証成功後に MFA pending 状態を記録し（`password_verified_at` を設定）、
     /// **同時に id を `new_id_hash` へ再生成する**（SEC7。理由は

@@ -346,7 +346,27 @@ Location: https://client.example.com/callback?code=...&state=...
 
 #### MVPで無視するパラメータ
 
-`prompt` / `max_age` / `login_hint` / `acr_values`
+`prompt` / `max_age` / `login_hint`
+
+（`prompt` / `max_age` はその後 resume で評価するようになった。`acr_values` は下記のとおり
+予約語を解釈する。）
+
+#### `acr_values`（認証の強度の要求。ADR-0043）
+
+RP は次の**予約語**を送れる。意味は assay が定義し、**テナントによらず同じ**。
+
+| 値 | 意味 |
+|---|---|
+| `urn:assay:ac:mfa` | 多要素で認証すること。**ポリシーの有無に関わらず**要求される |
+| `urn:assay:ac:single` | 単一要素でよい（要求しない、の明示） |
+
+* 充足の判定は認証ポリシーの `require_mfa` と同じ（確認済み TOTP を経る / パスキーは満たす /
+  認証器を持たない利用者は `MfaEnrollmentRequired` で拒否）。
+* テナントの認証ポリシー（`require_mfa`）は「**RP が要求しなくても**強制する」側として残る。
+  実効要件は両者の強いほう。
+* 予約語以外の文字列は**何も強制しない**。従来どおり認証ポリシーの `requested_acr` 条件の
+  材料としてだけ使われる。
+* 結果は ID Token の `acr` で返る（下記）。RP は要求した値が返ってきたかを確かめられる。
 
 ***
 
@@ -491,11 +511,16 @@ GET /.well-known/openid-configuration
   "token_endpoint_auth_methods_supported": ["client_secret_basic", "none"],
   "code_challenge_methods_supported": ["S256"],
   "claims_supported": [
-    "sub", "iss", "aud", "exp", "iat", "auth_time", "nonce",
+    "sub", "iss", "aud", "exp", "iat", "auth_time", "nonce", "acr", "amr",
     "email", "email_verified", "preferred_username", "name"
-  ]
+  ],
+  "acr_values_supported": ["urn:assay:ac:mfa", "urn:assay:ac:single"]
 }
 ```
+
+`acr_values_supported` には**保証できる値だけ**を載せる（ADR-0043）。テナントが認証ポリシーの
+`requested_acr` 条件へ独自の文字列を書くことはできるが、assay が意味を定義していないので
+公開しないし、`acr` としても返さない。
 
 ***
 
@@ -586,7 +611,9 @@ Authorization: Bearer <access_token>
   "iat": 1710000000,
   "auth_time": 1710000000,
   "nonce": "client-generated-nonce",
-  "jti": "token-id"
+  "jti": "token-id",
+  "acr": "urn:assay:ac:single",
+  "amr": ["pwd"]
 }
 ```
 
@@ -597,6 +624,18 @@ Authorization: Bearer <access_token>
 #### 任意クレーム
 
 `email` / `email_verified` / `preferred_username` / `name`
+
+#### `acr` / `amr` 方針（ADR-0043）
+
+* **`acr` は認証の強度**（予約語 2 つのいずれか）。要求の有無に関わらず載せる ——「載っていない
+  ＝要求が届かなかった」と「載っていない＝そもそも要求していない」を RP が区別できるようにする。
+* **`amr` は実際に使われた方式**（RFC 8176。`pwd` / `otp` / `hwk` / `rba` / `fed`）。
+  **強度の判断に使ってはならない。** 外部 IdP 経由（`fed`）はその先で何が使われたかを assay も
+  知らないため、値の並びから多要素かどうかは読み取れない。用途は監査と表示。
+* SSO セッション復元の場合：**そのセッションを確立した方式**をそのまま名乗る（`auth_time` と同じ考え方）。
+* refresh grant の場合：元の認可で名乗った値を引き継ぐ（認証をやり直していないため）。
+* **どちらも「記録なし」のときは載せない。** 本クレーム導入前に発行された code / refresh token を
+  交換した場合だけ起きる。分からないものを単一要素と名乗らない。
 
 #### auth\_time 方針
 

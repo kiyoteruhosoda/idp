@@ -267,7 +267,50 @@ impl AuthenticationMethod {
             Self::Totp | Self::WebAuthn | Self::RecoveryCode | Self::EmailOtp | Self::SmsOtp
         )
     }
+
+    /// 全バリアント。方式を足したらここも足す（漏れはテストで気付ける）。
+    pub const ALL: [AuthenticationMethod; 7] = [
+        Self::Password,
+        Self::Totp,
+        Self::WebAuthn,
+        Self::RecoveryCode,
+        Self::EmailOtp,
+        Self::SmsOtp,
+        Self::ExternalIdp,
+    ];
+
+    /// 第二要素として数えられる方式の全列挙（[`Self::is_second_factor`] が真のもの）。
+    ///
+    /// 認証ポリシーの「いずれか 1 つ」（OR）へそのまま渡せる形で持つ。判定関数だけでは
+    /// 「第二要素を 1 つ足せ」という**要求**を組み立てられないため、列挙も要る。
+    /// 両者が食い違わないことはテストで確かめる。
+    pub const SECOND_FACTORS: [AuthenticationMethod; 5] = [
+        Self::Totp,
+        Self::WebAuthn,
+        Self::RecoveryCode,
+        Self::EmailOtp,
+        Self::SmsOtp,
+    ];
 }
+
+/// 認証の強度を RP と受け渡すための予約語（ADR-0043）。
+///
+/// `acr_values` として要求を受け取り、ID Token の `acr` として結果を名乗る。**assay が意味を
+/// 定義する語彙**なので、テナントごとに変えられるようにはしない。名前空間をテナントの
+/// ドメインではなく製品名で切るのもそのためである。
+///
+/// **順序を含む名前（`level1` / `level2`）にしない。** 公開した後は RP が依存するので変えられず、
+/// 後から中間の水準を挿せなくなる。
+pub const ACR_MULTI_FACTOR: &str = "urn:assay:ac:mfa";
+/// 単一要素で認証したことを表す予約語（要求として送っても何も強制しない）。
+pub const ACR_SINGLE_FACTOR: &str = "urn:assay:ac:single";
+
+/// discovery の `acr_values_supported` に載せる値。
+///
+/// **保証できる値だけを載せる。** テナントが認証ポリシーの `requested_acr` 条件へ独自の
+/// 文字列を書くことは従来どおりできるが、それは assay が意味を定義していないので公開しない
+/// （ADR-0043 決定 5）。
+pub const SUPPORTED_ACR_VALUES: [&str; 2] = [ACR_MULTI_FACTOR, ACR_SINGLE_FACTOR];
 
 string_enum!(
     /// 認証セッションの認証強度（同仕様 §14.3）。
@@ -295,6 +338,17 @@ impl AuthenticationStrength {
         match required {
             Self::SingleFactor => true,
             Self::MultiFactor => *self == Self::MultiFactor,
+        }
+    }
+
+    /// この強度を RP へ名乗るときの `acr` 値（ADR-0043）。
+    ///
+    /// 強度の 2 値はもともと内部の派生値としてあったもので、予約語はその**公開名**にすぎない。
+    /// 新しい概念を持ち込まないのが、語彙を 2 つに留められる理由である。
+    pub fn acr(&self) -> &'static str {
+        match self {
+            Self::SingleFactor => ACR_SINGLE_FACTOR,
+            Self::MultiFactor => ACR_MULTI_FACTOR,
         }
     }
 }
@@ -359,6 +413,39 @@ pub fn validate_display_name(value: &str) -> Result<(), MessageKey> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn second_factors_matches_the_predicate() {
+        // 列挙と判定関数が食い違うと、「第二要素を 1 つ足せ」という要求が実際の判定と
+        // ずれる（要求は満たせるのに強度が上がらない、あるいはその逆）。
+        let derived: Vec<AuthenticationMethod> = AuthenticationMethod::ALL
+            .into_iter()
+            .filter(|m| m.is_second_factor())
+            .collect();
+        assert_eq!(derived, AuthenticationMethod::SECOND_FACTORS.to_vec());
+    }
+
+    #[test]
+    fn acr_names_the_strength() {
+        assert_eq!(
+            AuthenticationStrength::from_methods(&[AuthenticationMethod::Password]).acr(),
+            ACR_SINGLE_FACTOR
+        );
+        assert_eq!(
+            AuthenticationStrength::from_methods(&[AuthenticationMethod::WebAuthn]).acr(),
+            ACR_MULTI_FACTOR
+        );
+        // 外部 IdP は第二要素として数えない（ADR-0008）。名乗る値もそれに従う。
+        assert_eq!(
+            AuthenticationStrength::from_methods(&[AuthenticationMethod::ExternalIdp]).acr(),
+            ACR_SINGLE_FACTOR
+        );
+        // 公開する語彙は 2 つだけ（ADR-0043 決定 5）。
+        assert_eq!(
+            SUPPORTED_ACR_VALUES.to_vec(),
+            vec![ACR_MULTI_FACTOR, ACR_SINGLE_FACTOR]
+        );
+    }
 
     #[test]
     fn parses_known_values_and_roundtrips() {

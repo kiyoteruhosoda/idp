@@ -11,7 +11,7 @@ use crate::domain::crypto;
 use crate::domain::error::DomainError;
 use crate::domain::repositories::AuthorizationCodeRepository;
 use crate::domain::tenant_context::TenantContext;
-use crate::domain::values::CodeChallengeMethod;
+use crate::domain::values::{AuthenticationMethod, CodeChallengeMethod};
 use chrono::{DateTime, Duration, Utc};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -29,6 +29,9 @@ pub struct IssueCodeCommand {
     /// 認可を与えた SSO セッションの `sid`（G5）。ID Token・logout_token が同じセッションを指す
     /// ための識別子で、`/token` は Cookie を読めないため発行時に引き継ぐ。
     pub sid: Option<String>,
+    /// この認可を与えた認証で検証された方式（ADR-0043）。ID Token の `acr` / `amr` の出所。
+    /// `None` = 記録なし（そのとき `acr` / `amr` は載らない）。
+    pub authentication_methods: Option<Vec<AuthenticationMethod>>,
     pub code_challenge: String,
     pub code_challenge_method: CodeChallengeMethod,
 }
@@ -74,6 +77,7 @@ impl CodeIssuanceService {
             nonce: cmd.nonce,
             auth_time: cmd.auth_time,
             sid: cmd.sid,
+            authentication_methods: cmd.authentication_methods,
             code_challenge: cmd.code_challenge,
             code_challenge_method: cmd.code_challenge_method,
             expires_at: now + self.ttl,

@@ -204,6 +204,9 @@ impl ConsentService {
                     // ログイン時に確立した SSO セッションの sid（G5）。同意画面を挟む経路では
                     // ここが code 発行の唯一の入手経路になる。
                     sid: session.sso_sid.clone(),
+                    // ログイン時に記録した方式（ADR-0043）。同意画面を挟むと、ここが
+                    // code 発行時に「何で認証したか」を知る唯一の経路になる。
+                    authentication_methods: session.authentication_methods.clone(),
                     code_challenge: session.code_challenge.clone(),
                     code_challenge_method: session.code_challenge_method,
                 },

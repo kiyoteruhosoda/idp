@@ -4,6 +4,7 @@
 #![allow(dead_code)]
 
 use crate::domain::tenant::TenantId;
+use crate::domain::values::AuthenticationMethod;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
@@ -26,6 +27,10 @@ pub struct RefreshToken {
     pub scope: Vec<String>,
     /// ID Token へ載せる SSO セッション識別子（G5）。rotation で引き継ぐ。
     pub sid: Option<String>,
+    /// このグラントを生んだ認証で検証された方式（ADR-0043）。`sid` と同じく rotation で
+    /// 引き継ぐ ——refresh では認証をやり直していないので、名乗る強度も変わらないため。
+    /// `None` = 記録なし（本列の導入前に発行されたトークン）。
+    pub authentication_methods: Option<Vec<AuthenticationMethod>>,
     pub expires_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
@@ -71,6 +76,7 @@ mod tests {
             client_id: "rp".to_string(),
             scope: vec!["openid".to_string()],
             sid: None,
+            authentication_methods: None,
             expires_at: now,
             revoked_at: None,
             created_at: now,
