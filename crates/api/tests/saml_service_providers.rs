@@ -31,6 +31,10 @@ async fn admin_can_register_and_list_saml_clients_but_others_cannot() {
     };
     let uri = format!("/{}/admin/saml-service-providers", env.root_tenant_id);
     let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+    // このテストは登録した SP を消さずに終わる（一覧に出ることまでが検証対象）。
+    // `entity_id` は `UNIQUE (tenant_id, entity_id)` なので、固定値だと**同じ DB への 2 回目の
+    // 実行が 409 で落ちる**。実行ごとに変える。
+    let entity_id = format!("urn:sp:example:{}", support::unique());
 
     // 権限の無い利用者 → 403。
     let plain_user_id = create_plain_user(&env.pool, &env.root_tenant_id).await;
@@ -42,7 +46,7 @@ async fn admin_can_register_and_list_saml_clients_but_others_cannot() {
             &uri,
             json!({
                 "display_name": "App",
-                "entity_id": "urn:sp:1",
+                "entity_id": format!("urn:sp:forbidden:{}", support::unique()),
                 "acs_url": "https://sp.example.test/acs",
                 "enabled": true
             }),
@@ -59,7 +63,7 @@ async fn admin_can_register_and_list_saml_clients_but_others_cannot() {
             &uri,
             json!({
                 "display_name": "Example SP",
-                "entity_id": "urn:sp:example",
+                "entity_id": &entity_id,
                 "acs_url": "https://sp.example.test/acs",
                 "enabled": true
             }),
@@ -68,7 +72,7 @@ async fn admin_can_register_and_list_saml_clients_but_others_cannot() {
     .await;
     assert_eq!(res.status(), StatusCode::CREATED, "admin create -> 201");
     let created = body_json(res).await;
-    assert_eq!(created["entity_id"], "urn:sp:example");
+    assert_eq!(created["entity_id"], entity_id.as_str());
     assert_eq!(
         created["name_id_format"],
         "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent"
@@ -82,7 +86,7 @@ async fn admin_can_register_and_list_saml_clients_but_others_cannot() {
             &uri,
             json!({
                 "display_name": "Bad",
-                "entity_id": "urn:sp:bad",
+                "entity_id": format!("urn:sp:bad:{}", support::unique()),
                 "acs_url": "http://sp.evil.test/acs",
                 "enabled": true
             }),
@@ -106,7 +110,7 @@ async fn admin_can_register_and_list_saml_clients_but_others_cannot() {
         .filter_map(|v| v["entity_id"].as_str())
         .collect();
     assert!(
-        entities.contains(&"urn:sp:example"),
+        entities.contains(&entity_id.as_str()),
         "list contains created SP"
     );
 }
@@ -118,6 +122,9 @@ async fn admin_can_update_and_delete_saml_client() {
     };
     let base = format!("/{}/admin/saml-service-providers", env.root_tenant_id);
     let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+    // 最後に削除するので固定値でも通るが、**途中で落ちると行が残り、以降このテストは
+    // 二度と通らなくなる**（失敗が次の実行の失敗を呼ぶ）。ここも実行ごとに変える。
+    let entity_id = format!("urn:sp:editable:{}", support::unique());
 
     // 登録して id を得る。
     let res = send(
@@ -127,7 +134,7 @@ async fn admin_can_update_and_delete_saml_client() {
             &base,
             json!({
                 "display_name": "Editable SP",
-                "entity_id": "urn:sp:editable",
+                "entity_id": &entity_id,
                 "acs_url": "https://sp.example.test/acs",
                 "enabled": true
             }),
@@ -147,7 +154,7 @@ async fn admin_can_update_and_delete_saml_client() {
             &item_uri,
             json!({
                 "display_name": "Renamed SP",
-                "entity_id": "urn:sp:editable",
+                "entity_id": &entity_id,
                 "acs_url": "https://sp.example.test/acs2",
                 "name_id_format": "",
                 "x509_certificate": "MIICERT==",
@@ -171,7 +178,7 @@ async fn admin_can_update_and_delete_saml_client() {
             &item_uri,
             json!({
                 "display_name": "Renamed SP",
-                "entity_id": "urn:sp:editable",
+                "entity_id": &entity_id,
                 "acs_url": "http://sp.evil.test/acs",
                 "enabled": true
             }),
@@ -208,7 +215,7 @@ async fn admin_can_update_and_delete_saml_client() {
             &item_uri,
             json!({
                 "display_name": "X",
-                "entity_id": "urn:sp:editable",
+                "entity_id": &entity_id,
                 "acs_url": "https://sp.example.test/acs",
                 "enabled": true
             }),
@@ -227,7 +234,7 @@ async fn admin_can_update_and_delete_saml_client() {
         .filter_map(|v| v["entity_id"].as_str())
         .collect();
     assert!(
-        !entities.contains(&"urn:sp:editable"),
+        !entities.contains(&entity_id.as_str()),
         "deleted SP not listed"
     );
 }
