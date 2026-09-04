@@ -289,6 +289,21 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     // per-tenant issuer（ADR-0009 §6）: 過渡期は root テナントで `<基底>/<root_uuid>` を合成する。
     let tenant_issuer = format!("{issuer}/{root_tenant_id}");
     assert_eq!(discovery["issuer"], tenant_issuer.as_str());
+    // 保証できる値だけを公開する（ADR-0043 決定 5）。RP はここを見て何を送れるかを知る。
+    assert_eq!(
+        discovery["acr_values_supported"],
+        json!(["urn:assay:ac:mfa", "urn:assay:ac:single"])
+    );
+    for claim in ["acr", "amr"] {
+        assert!(
+            discovery["claims_supported"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c == claim),
+            "claims_supported must advertise {claim}"
+        );
+    }
     assert_eq!(
         discovery["authorization_endpoint"],
         format!("{tenant_issuer}/authorize").as_str()
@@ -330,6 +345,10 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     assert_eq!(id_claims.claims["nonce"], "nonce-xyz");
     assert!(id_claims.claims["auth_time"].is_i64());
     assert_eq!(id_claims.claims["preferred_username"], username.as_str());
+    // 認証の強度と方式（ADR-0043）。パスワードだけなので単一要素を名乗る。
+    // ここが載らないと、RP は `acr_values` の要求が効いたかを確かめられない。
+    assert_eq!(id_claims.claims["acr"], "urn:assay:ac:single");
+    assert_eq!(id_claims.claims["amr"], json!(["pwd"]));
 
     // Access Token は typ=at+jwt。
     let at_header = jsonwebtoken::decode_header(&access_token).expect("access token header");
@@ -437,6 +456,9 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     let second_claims =
         jsonwebtoken::decode::<Value>(second_id_token, &decoding_key, &validation).unwrap();
     assert_eq!(second_claims.claims["nonce"], "nonce-2nd");
+    // SSO 復元でも、そのセッションを確立した方式をそのまま名乗る（作り直さない）。
+    assert_eq!(second_claims.claims["acr"], "urn:assay:ac:single");
+    assert_eq!(second_claims.claims["amr"], json!(["pwd"]));
     assert_eq!(
         second_claims.claims["auth_time"], id_claims.claims["auth_time"],
         "auth_time keeps the first login time on SSO resume"

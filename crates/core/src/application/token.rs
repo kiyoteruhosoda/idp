@@ -32,7 +32,7 @@ use crate::domain::repositories::{
     TenantRepository, UserRepository,
 };
 use crate::domain::tenant_context::TenantContext;
-use crate::domain::values::Scope;
+use crate::domain::values::{AuthenticationMethod, AuthenticationStrength, Scope};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -52,6 +52,19 @@ pub struct IdTokenClaims {
     /// 「どのセッションのログアウト通知か」を突き合わせ、セッション単位で失効できる。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sid: Option<String>,
+    /// 認証の強度（ADR-0043）。予約語 2 つのいずれか。RP は `acr_values` で要求した値と
+    /// 突き合わせて、要求が効いたかを確かめられる。
+    ///
+    /// **`None` は「分からない」であって「単一要素」ではない。** 本クレーム導入前に発行された
+    /// code / refresh token を交換した場合だけ起きる。推測して名乗らない。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acr: Option<String>,
+    /// 実際に使われた認証方式（RFC 8176。ADR-0043 決定 4）。
+    ///
+    /// **強度の判断に使わせない。** 外部 IdP 経由（`fed`）はその先で何が使われたかを assay も
+    /// 知らないため、値の並びから多要素かどうかを読み取ることはできない。判断は `acr`。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub amr: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -60,6 +73,30 @@ pub struct IdTokenClaims {
     pub preferred_username: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+}
+
+/// 記録された認証方式から ID Token の `acr` / `amr` を導く（ADR-0043）。
+///
+/// **記録が無ければどちらも載せない。** 空の記録を「単一要素で認証した」と読み替えると、
+/// 分からないものを名乗ることになる。RP は要求した `acr` が返ってこないことで気付ける。
+///
+/// `amr` は重複を畳む（`email_otp` と `sms_otp` は RFC 8176 ではどちらも `otp`）。
+fn authentication_claims(
+    methods: Option<&Vec<AuthenticationMethod>>,
+) -> (Option<String>, Option<Vec<String>>) {
+    let Some(methods) = methods.filter(|m| !m.is_empty()) else {
+        return (None, None);
+    };
+    let acr = AuthenticationStrength::from_methods(methods)
+        .acr()
+        .to_string();
+    let mut amr: Vec<String> = Vec::with_capacity(methods.len());
+    for value in methods.iter().map(|m| m.amr()) {
+        if !amr.iter().any(|v| v == value) {
+            amr.push(value.to_string());
+        }
+    }
+    (Some(acr), Some(amr))
 }
 
 /// `sub_type` クレームの値: 主体がクライアント自身（`client_credentials` grant。G4）。
@@ -410,6 +447,7 @@ impl TokenService {
         // `iss` はテナント毎に合成する（ADR-0009 §6）。発行テナント（= フローのテナント）に束縛する。
         let issuer = tenant_issuer(&self.base_issuer, tenant_id);
 
+        let (code_acr, code_amr) = authentication_claims(auth_code.authentication_methods.as_ref());
         let id_claims = IdTokenClaims {
             iss: issuer.clone(),
             sub: user.sub.to_string(),
@@ -420,6 +458,8 @@ impl TokenService {
             nonce: auth_code.nonce.clone(),
             jti: Uuid::new_v4().to_string(),
             sid: auth_code.sid.clone(),
+            acr: code_acr,
+            amr: code_amr,
             email: has(Scope::Email).then(|| user.email.clone()),
             email_verified: has(Scope::Email).then_some(user.email_verified),
             preferred_username: has(Scope::Profile)
@@ -459,6 +499,9 @@ impl TokenService {
                 scope: auth_code.scope.clone(),
                 // ID Token の `sid`（G5）。rotation でも引き継ぎ、logout_token と同じセッションを指す。
                 sid: auth_code.sid.clone(),
+                // ID Token の `acr` / `amr`（ADR-0043）。refresh では認証をやり直さないので、
+                // 名乗る強度も変わらない。`sid` と同じく rotation で引き継ぐ。
+                authentication_methods: auth_code.authentication_methods.clone(),
                 expires_at: now + chrono::Duration::from_std(self.refresh_token_ttl).unwrap(),
                 revoked_at: None,
                 created_at: now,
@@ -607,6 +650,8 @@ impl TokenService {
         let iat = now.timestamp();
         let issuer = tenant_issuer(&self.base_issuer, tenant_id);
 
+        let (refreshed_acr, refreshed_amr) =
+            authentication_claims(stored.authentication_methods.as_ref());
         let id_claims = IdTokenClaims {
             iss: issuer.clone(),
             sub: user.sub.to_string(),
@@ -618,6 +663,9 @@ impl TokenService {
             jti: Uuid::new_v4().to_string(),
             // 元の認可で確立したセッションを指し続ける（rotation で引き継いだ値。G5）。
             sid: stored.sid.clone(),
+            // 認証はやり直していないので、元の認可で名乗った強度をそのまま引き継ぐ。
+            acr: refreshed_acr,
+            amr: refreshed_amr,
             email: has(Scope::Email).then(|| user.email.clone()),
             email_verified: has(Scope::Email).then_some(user.email_verified),
             preferred_username: has(Scope::Profile)
@@ -654,6 +702,7 @@ impl TokenService {
             client_id: client_id.clone(),
             scope: stored.scope.clone(),
             sid: stored.sid.clone(),
+            authentication_methods: stored.authentication_methods.clone(),
             expires_at: stored.expires_at, // TTL は引き継ぐ（スライドさせない）
             revoked_at: None,
             created_at: now,
@@ -1104,6 +1153,56 @@ mod tests {
     use super::*;
     use crate::domain::tenant::TenantId;
     use crate::domain::values::{ClientStatus, ClientType, TokenEndpointAuthMethod};
+
+    /// ADR-0043 決定 3。記録が無いときは推測して名乗らない。
+    #[test]
+    fn no_record_means_no_acr() {
+        assert_eq!(authentication_claims(None), (None, None));
+        // 空の記録も同じ扱い（「何も検証していない」認証は無い）。
+        assert_eq!(authentication_claims(Some(&vec![])), (None, None));
+    }
+
+    #[test]
+    fn acr_and_amr_come_from_the_recorded_methods() {
+        let (acr, amr) = authentication_claims(Some(&vec![
+            AuthenticationMethod::Password,
+            AuthenticationMethod::Totp,
+        ]));
+        assert_eq!(
+            acr.as_deref(),
+            Some(crate::domain::values::ACR_MULTI_FACTOR)
+        );
+        assert_eq!(amr, Some(vec!["pwd".to_string(), "otp".to_string()]));
+
+        let (acr, amr) = authentication_claims(Some(&vec![AuthenticationMethod::Password]));
+        assert_eq!(
+            acr.as_deref(),
+            Some(crate::domain::values::ACR_SINGLE_FACTOR)
+        );
+        assert_eq!(amr, Some(vec!["pwd".to_string()]));
+    }
+
+    /// `email_otp` と `sms_otp` は RFC 8176 ではどちらも `otp`。同じ値を 2 つ並べない。
+    #[test]
+    fn amr_folds_duplicates() {
+        let (_, amr) = authentication_claims(Some(&vec![
+            AuthenticationMethod::EmailOtp,
+            AuthenticationMethod::SmsOtp,
+        ]));
+        assert_eq!(amr, Some(vec!["otp".to_string()]));
+    }
+
+    /// 外部 IdP は第二要素として数えない（ADR-0008）。`amr` に `fed` は出るが `acr` は上がらない
+    /// ——`amr` を強度の判断に使わせない理由がここに出る。
+    #[test]
+    fn an_external_idp_login_is_not_multi_factor() {
+        let (acr, amr) = authentication_claims(Some(&vec![AuthenticationMethod::ExternalIdp]));
+        assert_eq!(
+            acr.as_deref(),
+            Some(crate::domain::values::ACR_SINGLE_FACTOR)
+        );
+        assert_eq!(amr, Some(vec!["fed".to_string()]));
+    }
     use chrono::TimeZone;
 
     fn client_with_scopes(scopes: &[&str]) -> Client {

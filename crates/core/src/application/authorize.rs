@@ -277,6 +277,7 @@ impl AuthorizeService {
             auth_time: None,
             password_verified_at: None,
             sso_sid: None,
+            authentication_methods: None,
             expires_at: now + self.auth_session_ttl,
             created_at: now,
             updated_at: now,
@@ -419,6 +420,9 @@ impl AuthorizeService {
                                     nonce: session.nonce.clone(),
                                     auth_time,
                                     sid: Some(sid.clone()),
+                                    authentication_methods: Some(
+                                        restored.authentication_methods.clone(),
+                                    ),
                                     code_challenge: session.code_challenge.clone(),
                                     code_challenge_method: session.code_challenge_method,
                                 };
@@ -481,6 +485,7 @@ impl AuthorizeService {
                                     user_id,
                                     auth_time,
                                     Some(sid.as_str()),
+                                    &restored.authentication_methods,
                                 )
                                 .await
                             {
@@ -1020,6 +1025,7 @@ mod tests {
             auth_time: None,
             password_verified_at: None,
             sso_sid: None,
+            authentication_methods: None,
             expires_at: now + Duration::minutes(10),
             created_at: now,
             updated_at: now,

@@ -4,7 +4,7 @@
 
 use crate::domain::crypto;
 use crate::domain::tenant::TenantId;
-use crate::domain::values::{CodeChallengeMethod, PromptSet};
+use crate::domain::values::{AuthenticationMethod, CodeChallengeMethod, PromptSet};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
@@ -59,6 +59,10 @@ pub struct AuthSession {
     /// このフローで確立した SSO セッションの `sid`（G5）。同意画面を挟む経路では code 発行が
     /// ログインと別リクエストになり、その時点では SSO Cookie が手元に無いため、ここへ持ち回す。
     pub sso_sid: Option<String>,
+    /// このフローで実際に検証された認証方式（ADR-0043）。`sso_sid` と同じ理由でここへ持ち回す
+    /// ——同意画面を挟むと、code 発行の時点では「何で認証したか」が手元に無い。
+    /// `None` = まだ認証が完了していない（または本列の導入前の行）。
+    pub authentication_methods: Option<Vec<AuthenticationMethod>>,
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

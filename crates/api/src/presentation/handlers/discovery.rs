@@ -4,6 +4,7 @@
 use crate::domain::issuer::tenant_issuer;
 use crate::domain::jwt;
 use crate::domain::saml_metadata::{build_idp_metadata_xml, named_curve_uri, IdpSigningKey};
+use crate::domain::values::SUPPORTED_ACR_VALUES;
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
 use axum::extract::{Extension, State};
@@ -219,9 +220,11 @@ fn discovery_document(issuer: &str, end_session_endpoint: &str) -> Value {
         "request_parameter_supported": false,
         "request_uri_parameter_supported": false,
         "claims_parameter_supported": false,
-        // `acr_values` は受け付けるが**保証しない**（認証ポリシーの条件として参照するだけ。AP3）。
-        // 保証できる値が無いので空配列を出す（キー自体を出さないより意図が明確）。
-        "acr_values_supported": [],
+        // 意味を assay が定義し、**要求されたら必ず効く**予約語だけを載せる（ADR-0043）。
+        // テナントが認証ポリシーの `requested_acr` 条件へ独自の文字列を書くことは従来どおり
+        // できるが、それは assay が意味を定義していないので公開しない（保証できない値を
+        // 名乗ると、RP は効いたかどうかを確かめられないまま依存する）。
+        "acr_values_supported": SUPPORTED_ACR_VALUES,
         // ログイン画面が実際に描画できる言語（web の i18n リソースと一致させる）。
         "ui_locales_supported": ["ja", "en"],
         "frontchannel_logout_supported": true,
@@ -231,6 +234,9 @@ fn discovery_document(issuer: &str, end_session_endpoint: &str) -> Value {
         "frontchannel_logout_session_supported": false,
         "claims_supported": [
             "sub", "iss", "aud", "exp", "iat", "auth_time", "nonce", "sid",
+            // `acr` は認証の強度（ADR-0043）。`amr` は使われた方式（RFC 8176）で、
+            // **強度の判断には使えない**（`fed` の先で何が使われたかは assay も知らない）。
+            "acr", "amr",
             "email", "email_verified", "preferred_username", "name"
         ],
     })

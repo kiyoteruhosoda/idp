@@ -1,6 +1,6 @@
 # ADR-0043: 認証の強度は予約語 2 つで名乗り、ID トークンへ `acr` を載せる
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-09-04
 - 関連: `docs/adr/0020-authentication-policy.md`（認証ポリシー。AP2/AP3）、
   `docs/adr/0008-mfa-design.md`（MFA 設計・充足判定）、
@@ -102,9 +102,14 @@ ADR-0033 は「業務権限は配らない」、ADR-0042 は「トークンに�
 
 ## 帰結
 
-- **認可コードに保存先が要る。** `AuthorizationCode` は現在 `acr` に相当する値を持たず、
-  トークン発行時には認証の文脈が残っていない。`sid` を足したときと同じ形
-  （`Option<String>`、`None` = 本列の導入前の code）で列を足し、マイグレーションを 1 本足す。
+- **認可コードに保存先が要る。** `AuthorizationCode` は `acr` に相当する値を持たず、トークン
+  発行時には認証の文脈が残っていない。`sid` を足したときと同じ形（`None` = 本列の導入前の行）で
+  `auth_sessions` / `authorization_codes` / `refresh_tokens` の 3 つへ列を足す
+  （マイグレーション 0049）。`auth_sessions` が要るのは同意画面を挟む経路のため、
+  `refresh_tokens` が要るのは refresh で発行する ID Token も名乗るためである。
+- **強度の 2 値は新設ではない。** `AuthenticationStrength`（`single_factor` / `multi_factor`）が
+  既に内部の派生値としてあり、予約語はその公開名にすぎない。語彙を 2 つに留められるのは、
+  新しい概念を持ち込んでいないからである。
 - **公開契約になる。** `acr_values_supported` へ載せた値は、RP が依存した後は変えられない。
   2 値で始めるのはそのためで、増やすのは後からでもできるが減らせない。
 - **RP 側が確認して初めて効く。** assay が返すだけでは検出にならない。RP は「要求した `acr` が
@@ -112,6 +117,7 @@ ADR-0033 は「業務権限は配らない」、ADR-0042 は「トークンに�
 - **既存の RP への影響は無い。** 未知のクレームは無視され、`acr_values` を送っていない RP の
   挙動は変わらない。ポリシーの `requested_acr` 条件も従来どおり使える
   （予約語を条件に書けば「MFA を要求した RP にだけ追加の `deny` を当てる」も従来どおり）。
-- **`prompt=none` との組み合わせを決めておく。** MFA が必要でセッションが満たしていないとき、
-  `prompt=none` では再認証できないので `interaction_required` を返す（`max_age` 超過と同じ扱い）。
+- **`prompt=none` との組み合わせは既存の扱いのまま。** MFA が必要でセッションが満たしていない
+  ときは再認証へ落ち、`prompt=none` ならそこで `login_required` を返す（`max_age` 超過と同じ
+  経路。`authorize.rs` の resume が既にそうなっている）。新しい分岐は要らない。
 - `docs/OIDC_INPUT.md` に RP 向けの契約として 2 値の意味と `amr` の位置づけを書く。

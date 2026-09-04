@@ -5,6 +5,7 @@ use crate::domain::repositories::SsoSessionRepository;
 use crate::domain::sso_session::SsoSession;
 use crate::domain::values::{AuthenticationMethod, AuthenticationStrength};
 use crate::infrastructure::db::Db;
+use crate::infrastructure::repositories::authentication_methods_json;
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use sqlx::mysql::MySqlRow;
@@ -33,33 +34,6 @@ fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
     Utc.from_utc_datetime(&naive)
 }
 
-/// 認証方式の配列を JSON 文字列へ落とす（保存形式は許可値の文字列配列）。
-fn methods_to_json(methods: &[AuthenticationMethod]) -> String {
-    let values: Vec<&str> = methods.iter().map(|m| m.as_str()).collect();
-    serde_json::to_string(&values).unwrap_or_else(|_| "[]".to_string())
-}
-
-/// 保存済み JSON から認証方式の配列を復元する。
-///
-/// NULL（AP4 導入前に確立したセッション）は空配列＝「記録なし」として扱う。未知の値は無視する
-/// （将来の版で追加された方式を持つ行を、古い版のプロセスが読んでも壊れないようにする）。
-fn methods_from_json(raw: Option<Vec<u8>>) -> Vec<AuthenticationMethod> {
-    let Some(bytes) = raw else {
-        return Vec::new();
-    };
-    let values: Vec<String> = match serde_json::from_slice(&bytes) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(error = %e, "invalid JSON in sso_sessions.authentication_methods");
-            return Vec::new();
-        }
-    };
-    values
-        .iter()
-        .filter_map(|v| AuthenticationMethod::parse(v).ok())
-        .collect()
-}
-
 fn map_row(row: &MySqlRow) -> Result<SsoSession> {
     let user_id: String = row.try_get("user_id").map_err(repo_err)?;
     let strength: String = row.try_get("authentication_strength").map_err(repo_err)?;
@@ -70,7 +44,7 @@ fn map_row(row: &MySqlRow) -> Result<SsoSession> {
         auth_time: to_utc(row.try_get("auth_time").map_err(repo_err)?),
         idle_expires_at: to_utc(row.try_get("idle_expires_at").map_err(repo_err)?),
         absolute_expires_at: to_utc(row.try_get("absolute_expires_at").map_err(repo_err)?),
-        authentication_methods: methods_from_json(
+        authentication_methods: authentication_methods_json::from_json(
             row.try_get("authentication_methods").map_err(repo_err)?,
         ),
         authentication_strength: AuthenticationStrength::parse(&strength)?,
@@ -104,7 +78,9 @@ impl SsoSessionRepository for SqlxSsoSessionRepository {
         .bind(session.auth_time.naive_utc())
         .bind(session.idle_expires_at.naive_utc())
         .bind(session.absolute_expires_at.naive_utc())
-        .bind(methods_to_json(&session.authentication_methods))
+        .bind(authentication_methods_json::to_json(
+            &session.authentication_methods,
+        ))
         .bind(session.authentication_strength.as_str())
         .bind(session.mfa_completed_at.map(|t| t.naive_utc()))
         .bind(session.step_up_at.map(|t| t.naive_utc()))
@@ -160,7 +136,7 @@ impl SsoSessionRepository for SqlxSsoSessionRepository {
              SET authentication_methods = ?, authentication_strength = ?, mfa_completed_at = ? \
              WHERE session_hash = ?",
         )
-        .bind(methods_to_json(methods))
+        .bind(authentication_methods_json::to_json(methods))
         .bind(AuthenticationStrength::from_methods(methods).as_str())
         .bind(completed_at.naive_utc())
         .bind(session_hash)
@@ -188,7 +164,7 @@ impl SsoSessionRepository for SqlxSsoSessionRepository {
                      mfa_completed_at = ?, step_up_at = ? \
                  WHERE session_hash = ?",
             )
-            .bind(methods_to_json(methods))
+            .bind(authentication_methods_json::to_json(methods))
             .bind(strength.as_str())
             .bind(verified_at.naive_utc())
             .bind(verified_at.naive_utc())
@@ -247,15 +223,18 @@ mod tests {
     #[test]
     fn methods_round_trip_through_json() {
         let methods = vec![AuthenticationMethod::Password, AuthenticationMethod::Totp];
-        let json = methods_to_json(&methods);
+        let json = authentication_methods_json::to_json(&methods);
         assert_eq!(json, r#"["password","totp"]"#);
-        assert_eq!(methods_from_json(Some(json.into_bytes())), methods);
+        assert_eq!(
+            authentication_methods_json::from_json(Some(json.into_bytes())),
+            methods
+        );
     }
 
     /// AP4 導入前に確立したセッション（NULL）は「記録なし」＝空配列として読む。
     #[test]
     fn null_methods_read_as_no_record() {
-        assert!(methods_from_json(None).is_empty());
+        assert!(authentication_methods_json::from_json(None).is_empty());
     }
 
     /// 未知の方式を含む行でも、読めるものだけを拾って壊れない（前方互換）。
@@ -263,7 +242,7 @@ mod tests {
     fn unknown_methods_are_skipped() {
         let raw = br#"["password","quantum_handshake","totp"]"#.to_vec();
         assert_eq!(
-            methods_from_json(Some(raw)),
+            authentication_methods_json::from_json(Some(raw)),
             vec![AuthenticationMethod::Password, AuthenticationMethod::Totp]
         );
     }

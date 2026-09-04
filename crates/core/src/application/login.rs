@@ -550,6 +550,7 @@ impl LoginService {
                 user.id,
                 now,
                 Some(&sso.sid()),
+                &sso.authentication_methods,
             )
             .await
         {
@@ -599,6 +600,7 @@ impl LoginService {
                     nonce: session.nonce.clone(),
                     auth_time: now,
                     sid: Some(sso.sid()),
+                    authentication_methods: Some(sso.authentication_methods.clone()),
                     code_challenge: session.code_challenge.clone(),
                     code_challenge_method: session.code_challenge_method,
                 },
@@ -781,6 +783,7 @@ mod tests {
             user_id: Uuid,
             auth_time: DateTime<Utc>,
             sso_sid: Option<&str>,
+            methods: &[AuthenticationMethod],
         ) -> DomainResult<()> {
             let mut rows = self.rows.lock().unwrap();
             if let Some(row) = rows.iter_mut().find(|s| s.id_hash == id_hash) {
@@ -788,6 +791,7 @@ mod tests {
                 row.authenticated_user_id = Some(user_id);
                 row.auth_time = Some(auth_time);
                 row.sso_sid = sso_sid.map(str::to_string);
+                row.authentication_methods = Some(methods.to_vec());
             }
             Ok(())
         }
@@ -1105,6 +1109,7 @@ mod tests {
                 auth_time: None,
                 password_verified_at: None,
                 sso_sid: None,
+                authentication_methods: None,
                 expires_at: now() + Duration::seconds(600),
                 created_at: now(),
                 updated_at: now(),

@@ -4,8 +4,9 @@ use crate::domain::auth_session::AuthSession;
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::AuthSessionRepository;
 use crate::domain::tenant::TenantId;
-use crate::domain::values::{CodeChallengeMethod, PromptSet};
+use crate::domain::values::{AuthenticationMethod, CodeChallengeMethod, PromptSet};
 use crate::infrastructure::db::Db;
+use crate::infrastructure::repositories::authentication_methods_json;
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use sqlx::mysql::MySqlRow;
@@ -25,8 +26,8 @@ impl SqlxAuthSessionRepository {
 const SELECT_COLUMNS: &str = "id_hash, tenant_id, client_id, redirect_uri, scope, state, nonce, \
      code_challenge, code_challenge_method, prompt, response_mode, max_age, acr_values, login_hint, \
      ui_locales, handle_hash, handle_expires_at, \
-     authenticated_user_id, auth_time, password_verified_at, sso_sid, expires_at, created_at, \
-     updated_at";
+     authenticated_user_id, auth_time, password_verified_at, sso_sid, authentication_methods, \
+     expires_at, created_at, updated_at";
 
 fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
@@ -82,6 +83,9 @@ fn map_row(row: &MySqlRow) -> Result<AuthSession> {
         auth_time: auth_time.map(to_utc),
         password_verified_at: password_verified_at.map(to_utc),
         sso_sid: row.try_get("sso_sid").map_err(repo_err)?,
+        authentication_methods: authentication_methods_json::from_json_opt(
+            row.try_get("authentication_methods").map_err(repo_err)?,
+        ),
         expires_at: to_utc(row.try_get("expires_at").map_err(repo_err)?),
         created_at: to_utc(row.try_get("created_at").map_err(repo_err)?),
         updated_at: to_utc(row.try_get("updated_at").map_err(repo_err)?),
@@ -189,18 +193,21 @@ impl AuthSessionRepository for SqlxAuthSessionRepository {
         user_id: Uuid,
         auth_time: DateTime<Utc>,
         sso_sid: Option<&str>,
+        methods: &[AuthenticationMethod],
     ) -> Result<()> {
         // id の再生成を同じ UPDATE に含める（SEC7）。別文に分けると、認証済みフラグは立っているのに
         // 旧 id がまだ引ける瞬間ができる。
         sqlx::query(
             "UPDATE auth_sessions \
-             SET id_hash = ?, authenticated_user_id = ?, auth_time = ?, sso_sid = ? \
+             SET id_hash = ?, authenticated_user_id = ?, auth_time = ?, sso_sid = ?, \
+                 authentication_methods = ? \
              WHERE id_hash = ?",
         )
         .bind(new_id_hash)
         .bind(user_id.to_string())
         .bind(auth_time.naive_utc())
         .bind(sso_sid)
+        .bind(authentication_methods_json::to_json(methods))
         .bind(id_hash)
         .execute(&self.pool)
         .await

@@ -8,7 +8,7 @@
 
 use crate::domain::error::DomainError;
 use crate::domain::tenant::TenantId;
-use crate::domain::values::AuthenticationMethod;
+use crate::domain::values::{AuthenticationMethod, ACR_MULTI_FACTOR};
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
@@ -463,6 +463,12 @@ impl PolicyDecision {
     }
 }
 
+/// 予約語による組み込みの MFA 要求を監査へ残すときのポリシーコード（ADR-0043）。
+///
+/// テナントが定義したポリシーと**同じ欄に出る**ので、管理画面で探しても見つからない値である
+/// ことが分かる形にしておく（`policy=builtin:acr_values`）。
+pub const BUILTIN_ACR_POLICY_CODE: &str = "builtin:acr_values";
+
 /// 一致するポリシーが 1 件も無いときの既定動作（仕様 §9.4「明示的に設定する」）。
 ///
 /// 既定は `Allow`（ポリシー未設定の既存環境の挙動を変えない）。デフォルト拒否へ倒す場合は
@@ -572,6 +578,14 @@ impl LockoutPolicy {
     }
 }
 
+/// RP が予約語で MFA を要求したか（ADR-0043）。
+///
+/// 未知の文字列は無視する。テナントが `requested_acr` 条件へ独自の文字列を書く従来の使い方を
+/// 壊さないため（そちらは条件として引き続き効く）。
+fn requests_mfa(requested_acr: &[String]) -> bool {
+    requested_acr.iter().any(|v| v == ACR_MULTI_FACTOR)
+}
+
 /// 認証ポリシーを評価する（仕様 §9）。
 ///
 /// - 対象は `enabled` かつ条件一致のポリシーのみ。
@@ -580,6 +594,9 @@ impl LockoutPolicy {
 /// - 残りは `Allow`。最優先（priority 最小、同値は `policy_code` 昇順で安定）の一致を記録する。
 /// - 1 件も一致しなければ `default_effect` に従う（既定拒否時の `policy_code` は固定値
 ///   `(default)` として監査に残す）。
+/// - **RP が予約語で MFA を要求していれば、ポリシーの有無に関わらず要求する**（ADR-0043）。
+///   方式指定ポリシーと同時に一致した場合は、方式指定へ「第二要素いずれか」を足して**両方**
+///   満たさせる。
 pub fn evaluate_policies(
     policies: &[AuthenticationPolicy],
     ctx: &AuthenticationContext<'_>,
@@ -613,6 +630,18 @@ pub fn evaluate_policies(
         })
         .collect();
     if !requirements.is_empty() {
+        let mut requirements = requirements;
+        // 方式指定と予約語の要求は別軸なので、**両方**満たさせる。方式指定を返して終わりに
+        // すると、`password` だけを要求するポリシーが 1 本あるだけで RP の MFA 要求が消える。
+        if requests_mfa(ctx.requested_acr) {
+            requirements.push(MethodRequirement {
+                policy_code: BUILTIN_ACR_POLICY_CODE.to_string(),
+                requirement: RequiredMethods {
+                    methods: AuthenticationMethod::SECOND_FACTORS.to_vec(),
+                    user_verification: false,
+                },
+            });
+        }
         return PolicyDecision::RequireMethods { requirements };
     }
     if let Some(mfa) = matched
@@ -621,6 +650,14 @@ pub fn evaluate_policies(
     {
         return PolicyDecision::RequireMfa {
             policy_code: mfa.policy_code.clone(),
+        };
+    }
+    // RP が予約語で MFA を要求した場合（ADR-0043 決定 1）。**ポリシーの有無に関わらず**効かせる。
+    // ここへ書かないと、要求が効くかどうかがテナントの設定次第になり、「この値を送れば MFA になる」
+    // と公開できない（公開できない語彙は RP に伝えられない）。
+    if requests_mfa(ctx.requested_acr) {
+        return PolicyDecision::RequireMfa {
+            policy_code: BUILTIN_ACR_POLICY_CODE.to_string(),
         };
     }
     if let Some(allow) = matched.iter().find(|p| p.effect == PolicyEffect::Allow) {
@@ -883,6 +920,103 @@ mod ap3_tests {
             evaluate_policies(
                 &[specific, deny],
                 &ctx_with(None, at(12, 0), &[]),
+                DefaultPolicyEffect::Allow
+            ),
+            PolicyDecision::Deny { .. }
+        ));
+    }
+
+    /// ADR-0043 決定 1。ポリシーが 1 件も無く既定が許可でも、予約語の要求だけで MFA になる。
+    /// ここが効かないと「この値を送れば MFA になる」と公開できない。
+    #[test]
+    fn the_reserved_word_requires_mfa_without_any_policy() {
+        let requested = [ACR_MULTI_FACTOR.to_string()];
+        assert!(matches!(
+            evaluate_policies(
+                &[],
+                &AuthenticationContext {
+                    client_id: None,
+                    user_id: Uuid::nil(),
+                    ip_address: None,
+                    now: at(12, 0),
+                    requested_acr: &requested,
+                },
+                DefaultPolicyEffect::Allow
+            ),
+            PolicyDecision::RequireMfa { ref policy_code } if policy_code == BUILTIN_ACR_POLICY_CODE
+        ));
+    }
+
+    /// 知らない文字列は従来どおり「ポリシーの条件の材料」でしかない。テナントが独自の値を
+    /// 条件へ書く使い方を壊さないため。
+    #[test]
+    fn an_unknown_acr_value_requires_nothing_by_itself() {
+        let requested = ["urn:example:loa2".to_string()];
+        assert!(matches!(
+            evaluate_policies(
+                &[],
+                &AuthenticationContext {
+                    client_id: None,
+                    user_id: Uuid::nil(),
+                    ip_address: None,
+                    now: at(12, 0),
+                    requested_acr: &requested,
+                },
+                DefaultPolicyEffect::Allow
+            ),
+            PolicyDecision::Allow { .. }
+        ));
+    }
+
+    /// 方式指定ポリシーがあっても RP の要求は消えない。方式指定を返して終わりにすると、
+    /// `password` だけを要求する 1 本があるだけで MFA 要求がすり抜ける。
+    #[test]
+    fn the_reserved_word_survives_a_specific_method_policy() {
+        let mut specific = policy_for_test("pwd-only", 10, PolicyEffect::RequireSpecificMethod);
+        specific.effect_params = Some(RequiredMethods {
+            methods: vec![AuthenticationMethod::Password],
+            user_verification: false,
+        });
+        let requested = [ACR_MULTI_FACTOR.to_string()];
+        let decision = evaluate_policies(
+            &[specific],
+            &AuthenticationContext {
+                client_id: None,
+                user_id: Uuid::nil(),
+                ip_address: None,
+                now: at(12, 0),
+                requested_acr: &requested,
+            },
+            DefaultPolicyEffect::Allow,
+        );
+        // パスワードだけでは満たせない（第二要素の要求が残っている）。
+        assert!(decision
+            .unmet_method_requirement(&[AuthenticationMethod::Password], false)
+            .is_some());
+        // パスワード + TOTP なら両方満たす。
+        assert!(decision
+            .unmet_method_requirement(
+                &[AuthenticationMethod::Password, AuthenticationMethod::Totp],
+                false
+            )
+            .is_none());
+    }
+
+    /// 拒否は予約語より優先する（仕様 §9.3）。要求されたから通す、にはしない。
+    #[test]
+    fn deny_still_wins_over_the_reserved_word() {
+        let deny = policy_for_test("deny-all", 1, PolicyEffect::Deny);
+        let requested = [ACR_MULTI_FACTOR.to_string()];
+        assert!(matches!(
+            evaluate_policies(
+                &[deny],
+                &AuthenticationContext {
+                    client_id: None,
+                    user_id: Uuid::nil(),
+                    ip_address: None,
+                    now: at(12, 0),
+                    requested_acr: &requested,
+                },
                 DefaultPolicyEffect::Allow
             ),
             PolicyDecision::Deny { .. }

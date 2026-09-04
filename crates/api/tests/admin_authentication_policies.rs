@@ -10,18 +10,29 @@
 //! - `deny` ポリシーが一致するとパスワードログインが拒否され、監査に記録されること
 //! - `require_mfa` ポリシーが一致し TOTP 未設定だとログインが完了しないこと（仕様 §24.4）
 //! - 無効化されたポリシーは適用されないこと
+//! - RP が予約語 `urn:assay:ac:mfa` を要求すると、ポリシーが 1 件も無くても MFA になること（ADR-0043）
 
 mod support;
 
 use axum::body::Body;
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{Request, StatusCode};
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde_json::{json, Value};
 use sqlx::{MySqlPool, Row};
 use support::{
     admin_token, authorize_uri_openid_only, begin_login, body_json, create_plain_user, delete, get,
     post, put, send, SERVICE_TOKEN, SERVICE_TOKEN_HEADER,
 };
+
+/// `acr_values` 付きの `/authorize` URI（予約語の要求を送る RP を模す）。
+fn authorize_uri_with_acr(tenant: &str, client_id: &str, acr_values: &str) -> String {
+    format!(
+        "{}&acr_values={}",
+        authorize_uri_openid_only(tenant, client_id),
+        utf8_percent_encode(acr_values, NON_ALPHANUMERIC)
+    )
+}
 
 fn login_csrf(auth_session: &str, csrf_secret: &[u8; 32]) -> String {
     assay_api::application::login::csrf_token(auth_session, csrf_secret)
@@ -600,5 +611,64 @@ async fn an_unknown_condition_key_is_rejected_instead_of_being_dropped() {
             .as_str()
             .is_some_and(|c| c.starts_with("unknown-"))),
         "rejected requests must not create policies: {listed}"
+    );
+}
+
+/// ADR-0043 決定 1。**ポリシーを 1 件も作らずに**予約語だけで MFA になる。
+///
+/// ここが効かないと「この値を送れば MFA になる」と discovery で公開できない
+/// ——テナントが対応するポリシーを書いたときだけ効く仕様は、RP へ伝えられない。
+#[tokio::test]
+async fn the_reserved_acr_value_requires_mfa_without_a_policy() {
+    let Some(env) = support::setup("acr_values requires mfa").await else {
+        return;
+    };
+    let client_id =
+        support::insert_public_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
+    let username = format!("acr-user-{}", support::unique());
+    let password = "CorrectHorse9!";
+    register_verified_user(
+        &env.app,
+        &env.pool,
+        &env.root_tenant_id,
+        &username,
+        password,
+    )
+    .await;
+
+    // 予約語を要求すると、TOTP 未設定の利用者は単一要素で完了できない（仕様 §24.4 と同じ扱い）。
+    let uri = authorize_uri_with_acr(&env.root_tenant_id, &client_id, "urn:assay:ac:mfa");
+    let auth_session = begin_login(&env.app, &env.root_tenant_id, &uri).await;
+    let csrf = login_csrf(&auth_session, &env.csrf_secret);
+    let body = internal_authenticate(
+        &env.app,
+        &env.root_tenant_id,
+        &auth_session,
+        &username,
+        password,
+        &csrf,
+    )
+    .await;
+    assert_eq!(
+        body["result"], "mfa_enrollment_required",
+        "the reserved word must require MFA on its own: {body}"
+    );
+
+    // 知らない値は従来どおり何も強制しない（テナントが独自の文字列を条件に書く使い方を壊さない）。
+    let uri = authorize_uri_with_acr(&env.root_tenant_id, &client_id, "urn:example:loa2");
+    let auth_session = begin_login(&env.app, &env.root_tenant_id, &uri).await;
+    let csrf = login_csrf(&auth_session, &env.csrf_secret);
+    let body = internal_authenticate(
+        &env.app,
+        &env.root_tenant_id,
+        &auth_session,
+        &username,
+        password,
+        &csrf,
+    )
+    .await;
+    assert_ne!(
+        body["result"], "mfa_enrollment_required",
+        "an unknown acr value must not require anything: {body}"
     );
 }
