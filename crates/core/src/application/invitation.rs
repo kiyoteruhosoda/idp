@@ -568,6 +568,14 @@ mod tests {
     }
     #[async_trait]
     impl RefreshTokenRepository for FakeRefreshTokens {
+        async fn revoke_all_for_session(
+            &self,
+            _u: Uuid,
+            _sid: &str,
+            _at: DateTime<Utc>,
+        ) -> DomainResult<u64> {
+            unreachable!()
+        }
         async fn revoke_family(
             &self,
             _t: TenantId,

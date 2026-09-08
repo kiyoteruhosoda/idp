@@ -12,8 +12,8 @@ use crate::domain::crypto;
 use crate::domain::issuer::tenant_issuer;
 use crate::domain::jwt;
 use crate::domain::repositories::{
-    AuthorizationCodeRepository, ClientRepository, SigningKeyRepository, SsoSessionRepository,
-    UserRepository,
+    AuthorizationCodeRepository, ClientRepository, RefreshTokenRepository, SigningKeyRepository,
+    SsoSessionRepository, UserRepository,
 };
 use crate::domain::tenant_context::TenantContext;
 use jsonwebtoken::Validation;
@@ -83,6 +83,8 @@ pub struct LogoutService {
     clients: Arc<dyn ClientRepository>,
     codes: Arc<dyn AuthorizationCodeRepository>,
     signing_keys: Arc<dyn SigningKeyRepository>,
+    /// ログアウトで、そのセッション由来の refresh token も落とすために引く（ADR-0044）。
+    refresh_tokens: Arc<dyn RefreshTokenRepository>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
     /// 基底 issuer。front-channel logout の `iss` はテナント毎に合成する（ADR-0009 §6）。
@@ -97,6 +99,7 @@ impl LogoutService {
         clients: Arc<dyn ClientRepository>,
         codes: Arc<dyn AuthorizationCodeRepository>,
         signing_keys: Arc<dyn SigningKeyRepository>,
+        refresh_tokens: Arc<dyn RefreshTokenRepository>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
         base_issuer: String,
@@ -107,6 +110,7 @@ impl LogoutService {
             clients,
             codes,
             signing_keys,
+            refresh_tokens,
             audit,
             clock,
             base_issuer,
@@ -196,6 +200,30 @@ impl LogoutService {
                 // 未消費の authorization code を失効。
                 if let Err(e) = self.codes.revoke_all_active_for_user(uid, now).await {
                     tracing::warn!(error = %e, "failed to revoke active auth codes on logout");
+                }
+
+                // そのセッションから出た refresh token も失効させる（ADR-0044）。
+                //
+                // ここが無いと、back-channel logout で RP へ「このセッションは終わった」と
+                // `sid` で通知しておきながら、**同じ `sid` のトークンは受け付け続ける**という
+                // ことになる。通知を無視する RP やネイティブアプリは更新し続けられる。
+                //
+                // 落ちても止めない（fail-open）。ここは既にリダイレクト先を組み立てる段まで
+                // 来ていて、途中で投げると **Cookie を消せないまま利用者が宙に浮く**。
+                // 上の 2 つ（セッション削除・code 失効）と同じ扱いにする。
+                //
+                // `sid` は行を消す前に導出したもの（上）をそのまま使う。
+                match self
+                    .refresh_tokens
+                    .revoke_all_for_session(uid, &sid, now)
+                    .await
+                {
+                    Ok(revoked) => {
+                        tracing::info!(revoked, "revoked refresh tokens on logout");
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to revoke refresh tokens on logout");
+                    }
                 }
 
                 self.audit

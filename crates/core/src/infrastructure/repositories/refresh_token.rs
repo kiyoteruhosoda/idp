@@ -158,6 +158,27 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
         Ok(row.0 > 0)
     }
 
+    async fn revoke_all_for_session(
+        &self,
+        user_id: Uuid,
+        sid: &str,
+        revoked_at: DateTime<Utc>,
+    ) -> Result<u64> {
+        // `sid` に索引がある（0050）ので、rotation でチェーンが伸びていても 1 回の
+        // UPDATE で済む。テナントは条件に入れない（trait 側のコメント参照）。
+        let result = sqlx::query(
+            "UPDATE refresh_tokens SET revoked_at = ? \
+             WHERE user_id = ? AND sid = ? AND revoked_at IS NULL",
+        )
+        .bind(revoked_at.naive_utc())
+        .bind(user_id.to_string())
+        .bind(sid)
+        .execute(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        Ok(result.rows_affected())
+    }
+
     async fn revoke_all_for_user_in_tenant(
         &self,
         tenant_id: TenantId,
