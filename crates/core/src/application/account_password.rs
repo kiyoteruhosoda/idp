@@ -12,7 +12,9 @@ use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::password::PasswordHasher;
 use crate::domain::password_policy::PasswordRejection;
-use crate::domain::repositories::{SsoSessionRepository, UserRepository};
+use crate::domain::repositories::{
+    AuthorizationCodeRepository, RefreshTokenRepository, SsoSessionRepository, UserRepository,
+};
 use std::sync::Arc;
 
 pub struct AccountPasswordCommand {
@@ -36,6 +38,9 @@ pub enum AccountPasswordOutcome {
 pub struct AccountPasswordService {
     sso_sessions: Arc<dyn SsoSessionRepository>,
     users: Arc<dyn UserRepository>,
+    /// 変更後に他端末ぶんを落とすために引く（ADR-0045）。
+    refresh_tokens: Arc<dyn RefreshTokenRepository>,
+    codes: Arc<dyn AuthorizationCodeRepository>,
     hasher: Arc<dyn PasswordHasher>,
     password_policy: Arc<PasswordPolicyService>,
     audit: Arc<AuditService>,
@@ -43,9 +48,13 @@ pub struct AccountPasswordService {
 }
 
 impl AccountPasswordService {
+    // 依存の注入で、束ねると却って読めなくなる（`LogoutService::new` と同じ扱い）。
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         sso_sessions: Arc<dyn SsoSessionRepository>,
         users: Arc<dyn UserRepository>,
+        refresh_tokens: Arc<dyn RefreshTokenRepository>,
+        codes: Arc<dyn AuthorizationCodeRepository>,
         hasher: Arc<dyn PasswordHasher>,
         password_policy: Arc<PasswordPolicyService>,
         audit: Arc<AuditService>,
@@ -54,6 +63,8 @@ impl AccountPasswordService {
         Self {
             sso_sessions,
             users,
+            refresh_tokens,
+            codes,
             hasher,
             password_policy,
             audit,
@@ -126,6 +137,41 @@ impl AccountPasswordService {
         self.password_policy
             .record_change(user.id, &user.password_hash)
             .await;
+
+        // 4. 変えたら、他の端末とアプリを切る（ADR-0045）。
+        //
+        // ここが無いと、リンク経由のリセット（`password_reset`。全部落として画面も
+        // 「既存のセッションはすべてサインアウトされています」と明言する）と食い違う。
+        // 「漏れたかもしれないから変える」という動機の人にとって、**変えたのに前の
+        // パスワードで入られた側が居座り続ける**のは、この操作の意味を失わせる。
+        //
+        // **今のセッションだけは残す。** `delete_all_for_user` を呼ぶと変えた本人が
+        // その場で締め出される。リセット経路が全部消してよいのは、あれが「忘れた人」の
+        // 経路で手元にセッションが無いからで、ここは事情が違う。
+        //
+        // refresh token は**残さず全部落とす**。SSO セッションと違い、これはアプリが
+        // 持っている合鍵で、パスワードを変えた以上は取り直させてよい。手元のセッションが
+        // 生きているので取り直しは SSO で素通りする。
+        //
+        // 失敗しても止めない（fail-open）。**パスワードは既に変わっており**、旧パスワードでの
+        // ログインはもうできない。ここで `Internal` を返すと「変わっていない」と読める応答に
+        // なる。リセット経路も同じ判断で警告ログに留めている。
+        match self
+            .sso_sessions
+            .delete_all_for_user_except(user.id, &session_hash)
+            .await
+        {
+            Ok(count) => tracing::info!(sessions = count, "signed out other sessions"),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to sign out other sessions after password change")
+            }
+        }
+        if let Err(e) = self.refresh_tokens.revoke_all_for_user(user.id, now).await {
+            tracing::warn!(error = %e, "failed to revoke refresh tokens after password change");
+        }
+        if let Err(e) = self.codes.revoke_all_active_for_user(user.id, now).await {
+            tracing::warn!(error = %e, "failed to revoke authorization codes after password change");
+        }
 
         self.audit
             .record(

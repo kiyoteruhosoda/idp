@@ -203,6 +203,21 @@ impl SsoSessionRepository for SqlxSsoSessionRepository {
         Ok(())
     }
 
+    async fn delete_all_for_user_except(
+        &self,
+        user_id: Uuid,
+        keep_session_hash: &str,
+    ) -> Result<u64> {
+        let result =
+            sqlx::query("DELETE FROM sso_sessions WHERE user_id = ? AND session_hash <> ?")
+                .bind(user_id.to_string())
+                .bind(keep_session_hash)
+                .execute(&self.pool)
+                .await
+                .map_err(repo_err)?;
+        Ok(result.rows_affected())
+    }
+
     async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64> {
         let result = sqlx::query(
             "DELETE FROM sso_sessions WHERE idle_expires_at <= ? OR absolute_expires_at <= ?",
