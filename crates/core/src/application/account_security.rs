@@ -29,6 +29,7 @@ use crate::domain::repositories::{
     ClientConsentRepository, ClientRepository, RefreshTokenRepository, SsoSessionRepository,
     UserRepository,
 };
+use crate::domain::sso_session;
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::AuthenticationStrength;
@@ -232,6 +233,26 @@ impl AccountSecurityService {
         if let Err(e) = self.sso_sessions.delete(&target.session_hash).await {
             return RevokeSessionOutcome::Internal(e.to_string());
         }
+
+        // そのセッションから出た refresh token も落とす（ADR-0044）。
+        //
+        // ここを飛ばすと、画面は「この端末をアカウントからログアウトしました」と言うのに、
+        // その端末のアプリは**更新が通り続ける**（アクセストークンは 15 分で切れるが、
+        // リフレッシュが止まらないので窓が閉じない）。セッションの行を消すだけでは
+        // ログアウトになっていない。
+        //
+        // **失敗したら断る**（fail-closed）。ここで黙って成功を返すと、
+        // 「切ったつもりで切れていない」という一番まずい結果を画面が肯定してしまう。
+        let sid = sso_session::sid_of(&target.session_hash);
+        let revoked = match self
+            .refresh_tokens
+            .revoke_all_for_session(user_id, &sid, now)
+            .await
+        {
+            Ok(count) => count,
+            Err(e) => return RevokeSessionOutcome::Internal(e.to_string()),
+        };
+
         self.audit
             .record(
                 AuditEventType::SsoSessionTerminated,
@@ -239,7 +260,7 @@ impl AccountSecurityService {
                 Some(tenant.tenant_id()),
                 Some(user_id),
                 None,
-                Some("self_service_revoke"),
+                Some(&format!("self_service_revoke refresh_tokens={revoked}")),
                 ctx,
             )
             .await;
@@ -558,6 +579,10 @@ mod tests {
         /// 失効を要求された `(テナント, 利用者, クライアント)`。連携解除がクライアント単位に
         /// 絞られているかを見るため、クライアントまで記録する。
         revoked: Mutex<Vec<(TenantId, Uuid, String)>>,
+        /// セッション単位で失効を要求された `(利用者, sid)`（ADR-0044）。
+        revoked_sessions: Mutex<Vec<(Uuid, String)>>,
+        /// セッション単位の失効を失敗させる（fail-closed を確かめるため）。
+        fail_session_revoke: bool,
     }
     #[async_trait]
     impl RefreshTokenRepository for FakeRefreshTokens {
@@ -583,6 +608,21 @@ mod tests {
         }
         async fn revoke_all_for_user(&self, _u: Uuid, _at: DateTime<Utc>) -> DomainResult<()> {
             unreachable!()
+        }
+        async fn revoke_all_for_session(
+            &self,
+            u: Uuid,
+            sid: &str,
+            _at: DateTime<Utc>,
+        ) -> DomainResult<u64> {
+            if self.fail_session_revoke {
+                return Err(crate::domain::error::DomainError::Repository("boom".into()));
+            }
+            self.revoked_sessions
+                .lock()
+                .unwrap()
+                .push((u, sid.to_string()));
+            Ok(1)
         }
         async fn revoke_all_for_user_in_tenant(
             &self,
@@ -622,9 +662,17 @@ mod tests {
     }
 
     fn harness(active_user: bool) -> Harness {
+        harness_with(active_user, false)
+    }
+
+    /// `fail_session_revoke` はセッション単位の失効を失敗させる（fail-closed の確認用）。
+    fn harness_with(active_user: bool, fail_session_revoke: bool) -> Harness {
         let sessions = Arc::new(FakeSsoSessions::default());
         let consents = Arc::new(FakeConsents::default());
-        let refresh_tokens = Arc::new(FakeRefreshTokens::default());
+        let refresh_tokens = Arc::new(FakeRefreshTokens {
+            fail_session_revoke,
+            ..Default::default()
+        });
         let clock: Arc<dyn Clock> = Arc::new(FixedClock);
         let service = AccountSecurityService::new(
             sessions.clone(),
@@ -724,6 +772,69 @@ mod tests {
         let rows = h.sessions.rows.lock().unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].session_hash, crypto::sha256_hex("current-cookie"));
+    }
+
+    /// セッションを切ったら、そのセッションから出た refresh token も落とす（ADR-0044）。
+    ///
+    /// ここが抜けていると、画面は「この端末をログアウトしました」と言うのに、その端末の
+    /// アプリは更新が通り続ける（アクセストークンは 15 分で切れるが、リフレッシュが
+    /// 止まらないので窓が閉じない）。行を消すだけではログアウトになっていない。
+    #[tokio::test]
+    async fn revoking_a_session_also_revokes_its_refresh_tokens() {
+        let h = harness(true);
+        h.sessions.rows.lock().unwrap().extend([
+            session("current-cookie", vec![AuthenticationMethod::Password], true),
+            session("other-cookie", vec![AuthenticationMethod::Password], true),
+        ]);
+        let other = session("other-cookie", vec![AuthenticationMethod::Password], true);
+
+        assert!(matches!(
+            h.service
+                .revoke_session(
+                    TenantContext::new(tenant_id()),
+                    "current-cookie",
+                    &other.display_id(),
+                    &ctx()
+                )
+                .await,
+            RevokeSessionOutcome::Ok
+        ));
+
+        // **切ったセッションの sid** で失効させていること。表示用 ID や現在のセッションの
+        // sid で呼んでいたら、消したのと別のものを落としている。
+        let revoked = h.refresh_tokens.revoked_sessions.lock().unwrap();
+        assert_eq!(revoked.len(), 1);
+        assert_eq!(revoked[0].1, other.sid());
+        assert_ne!(
+            revoked[0].1,
+            session("current-cookie", vec![AuthenticationMethod::Password], true).sid(),
+        );
+    }
+
+    /// トークンを落とせなかったら、切れたことにしない（fail-closed）。
+    ///
+    /// ここで成功を返すと「切ったつもりで切れていない」を画面が肯定してしまう。
+    #[tokio::test]
+    async fn a_failed_token_revocation_fails_the_whole_request() {
+        let h = harness_with(true, true);
+        h.sessions.rows.lock().unwrap().extend([
+            session("current-cookie", vec![AuthenticationMethod::Password], true),
+            session("other-cookie", vec![AuthenticationMethod::Password], true),
+        ]);
+        let other_id =
+            session("other-cookie", vec![AuthenticationMethod::Password], true).display_id();
+
+        assert!(matches!(
+            h.service
+                .revoke_session(
+                    TenantContext::new(tenant_id()),
+                    "current-cookie",
+                    &other_id,
+                    &ctx()
+                )
+                .await,
+            RevokeSessionOutcome::Internal(_)
+        ));
     }
 
     /// 今使っているセッションはこの画面からは切らせない（ログアウト導線へ回す）。

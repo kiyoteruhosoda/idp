@@ -825,6 +825,8 @@ impl AppState {
             // `id_token_hint` の署名検証に使う（G12）。退役済みの鍵で署名された古い ID Token も
             // hint として届くため、ACTIVE 鍵ではなく kid 引きのリポジトリを渡す。
             signing_keys.clone(),
+            // ログアウトしたセッションから出た refresh token を落とすために引く（ADR-0044）。
+            refresh_tokens.clone(),
             audit.clone(),
             clock.clone(),
             config.issuer().to_string(),

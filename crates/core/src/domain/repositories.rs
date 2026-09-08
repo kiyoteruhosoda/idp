@@ -1024,6 +1024,25 @@ pub trait RefreshTokenRepository: Send + Sync {
     ) -> Result<u64>;
     /// 指定ユーザーの全 Refresh Token を失効させる（ユーザー単位の全セッション無効化、F5）。
     async fn revoke_all_for_user(&self, user_id: Uuid, revoked_at: DateTime<Utc>) -> Result<()>;
+
+    /// **1 つの SSO セッション**から生まれた Refresh Token を失効させる（ADR-0044）。
+    /// 失効させた行数を返す（監査に載せる）。
+    ///
+    /// `sid` は [`sid_of`](crate::domain::sso_session::sid_of) が `session_hash` から
+    /// 導出する値で、発行時に持ち回り rotation でも引き継がれる。つまり「その端末の
+    /// そのログイン」から出たトークンだけを指す。
+    ///
+    /// **テナントで絞らない。** `SsoSession` はテナントを持たない（利用者単位）ので、
+    /// 1 つのセッションが複数テナントのクライアントを認可し得る。テナントを条件へ足すと
+    /// **取りこぼす**——そして取りこぼしたトークンは、切ったはずのセッションを指したまま
+    /// 更新が通り続ける。`user_id` との組で絞れば十分に安全である。
+    async fn revoke_all_for_session(
+        &self,
+        user_id: Uuid,
+        sid: &str,
+        revoked_at: DateTime<Utc>,
+    ) -> Result<u64>;
+
     /// 指定テナントで発行済みの refresh token をまとめて失効させる（ゲストの一時停止。MT24）。
     ///
     /// ユーザー単位の全失効（[`revoke_all_for_user`](Self::revoke_all_for_user)）と違い、**他テナントでの
