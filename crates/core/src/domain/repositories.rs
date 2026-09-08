@@ -712,6 +712,22 @@ pub trait SsoSessionRepository: Send + Sync {
     async fn delete(&self, session_hash: &str) -> Result<()>;
     /// 指定ユーザーの全 SSO セッションを削除する（ユーザー単位の全セッション無効化、F5）。
     async fn delete_all_for_user(&self, user_id: Uuid) -> Result<()>;
+
+    /// **1 つを残して**指定ユーザーの SSO セッションを削除し、削除件数を返す（ADR-0045）。
+    ///
+    /// 自分でパスワードを変えたときに使う。[`delete_all_for_user`](Self::delete_all_for_user)
+    /// だと**変えた本人がその場で締め出される**。リセットのリンク経由（`password_reset`）が
+    /// 全部消してよいのは、あれが「パスワードを忘れた人」の経路で、そもそも手元にセッションが
+    /// 無いからである。同じ扱いにはできない。
+    ///
+    /// 既定実装は未対応エラー（本番の sqlx 実装のみが上書きする）。
+    async fn delete_all_for_user_except(
+        &self,
+        _user_id: Uuid,
+        _keep_session_hash: &str,
+    ) -> Result<u64> {
+        Err(unsupported("delete_all_for_user_except"))
+    }
     /// 期限切れ（idle または absolute 超過）のセッションをまとめて削除し、削除件数を返す（GC）。
     /// 既定実装は何もしない（テスト用フェイクは呼ばれない）。
     async fn delete_expired(&self, _now: DateTime<Utc>) -> Result<u64> {

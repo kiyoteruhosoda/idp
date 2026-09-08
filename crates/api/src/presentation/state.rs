@@ -391,6 +391,9 @@ impl AppState {
         let account_password = Arc::new(AccountPasswordService::new(
             sso_sessions.clone(),
             users.clone(),
+            // 変更後に他端末ぶんの refresh token と未消費の code を落とす（ADR-0045）。
+            refresh_tokens.clone(),
+            codes.clone(),
             hasher.clone(),
             password_policy.clone(),
             audit.clone(),

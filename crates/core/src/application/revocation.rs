@@ -92,12 +92,16 @@ impl RevocationService {
         match token_type_hint {
             Some("access_token") => {
                 if !self.try_revoke_access_token(token, now).await {
-                    let _ = self.try_revoke_refresh_token(token, now, &client).await;
+                    self.try_revoke_refresh_token(tenant, token, now, &client)
+                        .await?;
                 }
             }
             _ => {
                 // hint なし or "refresh_token": refresh_token から試みる。
-                if !self.try_revoke_refresh_token(token, now, &client).await {
+                if !self
+                    .try_revoke_refresh_token(tenant, token, now, &client)
+                    .await?
+                {
                     let _ = self.try_revoke_access_token(token, now).await;
                 }
             }
@@ -118,24 +122,59 @@ impl RevocationService {
         Ok(())
     }
 
-    /// refresh_token の失効を試みる。失効させたら `true`。
+    /// refresh_token の失効を試みる。失効させたら `Ok(true)`。
     ///
-    /// **該当行が無かった場合は `false`**。ここで `true` を返すと、`token_type_hint` を伴わない
+    /// **該当行が無かった場合は `Ok(false)`**。ここで `true` を返すと、`token_type_hint` を伴わない
     /// access_token の失効要求が「refresh_token として失効済み」と誤判定され、access_token 側の
     /// 失効が一度も試されないまま 200 が返る（RFC 7009 §2.1 は hint が外れたら他の種別も試すことを
     /// 求めている）。
+    ///
+    /// **持ち主のクライアントでなければ断る**（ADR-0046。RFC 7009 §2.1）。以前はここが
+    /// `_client` として捨てられており、認証さえ通れば**他のクライアントに発行されたトークンでも
+    /// 消せた**。リポジトリ側も `token_hash` だけで消す作りなので、この層で確かめるほかない。
+    ///
+    /// 不存在と持ち主違いを分けるのは意図的である。**不存在は 200**（RFC 7009 §2.2:
+    /// 無効なトークンはエラーにしない）、**持ち主違いは `unauthorized_client`**（§2.1:
+    /// 検証に失敗したら要求を拒み、その旨を伝える）。
     async fn try_revoke_refresh_token(
         &self,
+        tenant: TenantContext,
         token: &str,
         now: chrono::DateTime<chrono::Utc>,
-        _client: &Client,
-    ) -> bool {
+        client: &Client,
+    ) -> Result<bool, RevocationError> {
         let hash = crypto::sha256_hex(token);
+        // 失効させる前に持ち主を確かめる。`find_by_hash` は発行テナントも見るので、
+        // 他テナント発行のトークンはここで `None` に落ちる（＝不存在と同じ扱い）。
+        let stored = match self
+            .refresh_tokens
+            .find_by_hash(tenant.tenant_id(), &hash)
+            .await
+        {
+            Ok(Some(t)) => t,
+            // 見つからない＝refresh_token ではない（access_token かもしれない）。
+            Ok(None) => return Ok(false),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to look up refresh token for revocation");
+                return Ok(false);
+            }
+        };
+        if stored.client_id != client.client_id {
+            tracing::warn!(
+                client_id = %client.client_id,
+                "refresh token revocation refused: the token was issued to another client"
+            );
+            return Err(RevocationError::new(
+                OAuthErrorCode::UnauthorizedClient,
+                "the token was not issued to this client",
+            ));
+        }
+
         match self.refresh_tokens.revoke(&hash, now).await {
-            Ok(revoked) => revoked > 0,
+            Ok(revoked) => Ok(revoked > 0),
             Err(e) => {
                 tracing::warn!(error = %e, "failed to revoke refresh token");
-                false
+                Ok(false)
             }
         }
     }
