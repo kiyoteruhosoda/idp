@@ -127,7 +127,7 @@
   <p class="text-muted">{{ messages.get("admin-auth-policy-empty") }}</p>
   {% else %}
   <div class="table-responsive">
-    <table class="table table-sm align-middle">
+    <table class="table table-sm align-middle table-cards">
       <thead>
         <tr>
           <th scope="col">{{ messages.get("admin-auth-policy-priority") }}</th>
@@ -142,24 +142,24 @@
       <tbody>
         {% for policy in policies %}
         <tr>
-          <td>{{ policy.priority }}</td>
-          <td><code>{{ policy.policy_code }}</code></td>
-          <td>{{ policy.policy_name }}</td>
-          <td>
+          <td data-label="{{ messages.get("admin-auth-policy-priority") }}">{{ policy.priority }}</td>
+          <td data-label="{{ messages.get("admin-auth-policy-code") }}"><code>{{ policy.policy_code }}</code></td>
+          <td data-label="{{ messages.get("admin-auth-policy-name") }}">{{ policy.policy_name }}</td>
+          <td data-label="{{ messages.get("admin-auth-policy-effect") }}">
             <span class="badge text-bg-secondary">{{ messages.get(self.effect_label(policy.effect.as_str())) }}</span>
             {% if !self.required_methods_summary(policy).is_empty() %}
             <div class="small text-muted font-monospace">{{ self.required_methods_summary(policy) }}</div>
             {% endif %}
           </td>
-          <td class="small text-muted">{{ self.condition_summary(policy) }}</td>
-          <td>
+          <td class="small text-muted" data-label="{{ messages.get("admin-auth-policy-conditions") }}">{{ self.condition_summary(policy) }}</td>
+          <td data-label="{{ messages.get("admin-auth-policy-enabled") }}">
             {% if policy.enabled %}
             <span class="badge text-bg-success">{{ messages.get("admin-auth-policy-state-enabled") }}</span>
             {% else %}
             <span class="badge text-bg-secondary">{{ messages.get("admin-auth-policy-state-disabled") }}</span>
             {% endif %}
           </td>
-          <td class="text-end text-nowrap">
+          <td class="text-end">
             <a class="btn btn-sm btn-outline-secondary" href="{{ tenant }}/admin/authentication-policies?edit={{ policy.id }}">{{ messages.get("admin-auth-policy-edit") }}</a>
             <form method="post" action="{{ tenant }}/admin/authentication-policies/{{ policy.id }}/delete" class="d-inline">
               <input type="hidden" name="csrf_token" value="{{ csrf }}">

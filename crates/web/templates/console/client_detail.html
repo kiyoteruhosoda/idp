@@ -11,13 +11,13 @@
       <dt class="col-sm-3">{{ messages.get("admin-client-field-auth-method") }}</dt><dd class="col-sm-9">{{ client.token_endpoint_auth_method }}</dd>
       {% if client.token_endpoint_auth_method == "private_key_jwt" %}
       <dt class="col-sm-3">{{ messages.get("admin-client-field-jwks") }}</dt>
-      <dd class="col-sm-9"><pre class="mb-0 small text-break">{{ client.jwks.as_deref().unwrap_or("") }}</pre></dd>
+      <dd class="col-sm-9"><pre class="mb-0 small pre-wrap">{{ client.jwks.as_deref().unwrap_or("") }}</pre></dd>
       {% endif %}
       <dt class="col-sm-3">{{ messages.get("admin-client-field-uris") }}</dt><dd class="col-sm-9">{% if client.redirect_uris.is_empty() %}-{% else %}<ul class="list-unstyled mb-0">{% for u in client.redirect_uris %}<li><code>{{ u }}</code></li>{% endfor %}</ul>{% endif %}</dd>
       <dt class="col-sm-3">{{ messages.get("admin-client-col-scopes") }}</dt><dd class="col-sm-9">{{ client.scopes.join(" ") }}</dd>
       <dt class="col-sm-3">{{ messages.get("admin-client-field-grants") }}</dt><dd class="col-sm-9">{{ client.grant_types.join(" ") }}</dd>
-      <dt class="col-sm-3">{{ messages.get("admin-client-field-created") }}</dt><dd class="col-sm-9">{{ client.created_at }}</dd>
-      <dt class="col-sm-3">{{ messages.get("admin-client-field-updated") }}</dt><dd class="col-sm-9">{{ client.updated_at }}</dd>
+      <dt class="col-sm-3">{{ messages.get("admin-client-field-created") }}</dt><dd class="col-sm-9"><time class="local-time" datetime="{{ client.created_at }}">{{ crate::templates::utc_short(client.created_at.as_str()) }}</time></dd>
+      <dt class="col-sm-3">{{ messages.get("admin-client-field-updated") }}</dt><dd class="col-sm-9"><time class="local-time" datetime="{{ client.updated_at }}">{{ crate::templates::utc_short(client.updated_at.as_str()) }}</time></dd>
     </dl>
   </div>
 </div>

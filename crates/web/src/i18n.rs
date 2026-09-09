@@ -119,6 +119,10 @@ impl Locale {
 /// ログイン画面 1 回のレンダリング用メッセージ辞書。
 pub struct Messages {
     bundle: FluentBundle<FluentResource>,
+    /// 決定済みの表示言語。`<html lang>` に出し、ブラウザ側の日時整形にも使う
+    /// （ADR-0048）。閲覧者のブラウザ言語ではなく**この画面の言語**で描くため、
+    /// 訳文と同じ出所から取る。
+    locale: Locale,
 }
 
 impl Messages {
@@ -134,7 +138,12 @@ impl Messages {
         if let Err(errors) = bundle.add_resource(resource) {
             tracing::error!(?errors, "failed to add fluent resource");
         }
-        Self { bundle }
+        Self { bundle, locale }
+    }
+
+    /// 表示言語のタグ（`ja` / `en`）。`<html lang>` に出す。
+    pub fn lang(&self) -> &'static str {
+        self.locale.as_tag()
     }
 
     /// 翻訳キーからメッセージを取得する。未定義キーはキー名をそのまま返す（フェイルソフト）。

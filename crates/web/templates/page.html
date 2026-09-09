@@ -45,6 +45,9 @@
     `console/layout.html` と同じ順序）。 -#}
 {% block scripts %}{% endblock %}
 <script src="/assets/submit-feedback.js?v={{ crate::templates::asset_version() }}"></script>
+{#- 時刻を閲覧者のタイムゾーンで描き直す（ADR-0048）。差し替え前でも読める値が
+    入っているので、後回しでよい（defer）。 -#}
+<script src="/assets/local-time.js?v={{ crate::templates::asset_version() }}" defer></script>
 {% include "react_bootstrap.html" %}
 </body>
 </html>

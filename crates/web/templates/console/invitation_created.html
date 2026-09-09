@@ -11,7 +11,7 @@
   <div class="card-body">
     <dl class="row mb-0">
       <dt class="col-sm-3">{{ messages.get("admin-invitations-token-label") }}</dt><dd class="col-sm-9"><code>{{ token }}</code></dd>
-      <dt class="col-sm-3">{{ messages.get("admin-invitations-expires-label") }}</dt><dd class="col-sm-9">{{ expires_at }}</dd>
+      <dt class="col-sm-3">{{ messages.get("admin-invitations-expires-label") }}</dt><dd class="col-sm-9"><time class="local-time" datetime="{{ expires_at }}">{{ crate::templates::utc_short(expires_at) }}</time></dd>
     </dl>
   </div>
 </div>

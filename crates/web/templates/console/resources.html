@@ -31,7 +31,7 @@
           <span class="badge bg-secondary-subtle text-secondary-emphasis">{{ messages.get("admin-resources-state-disabled") }}</span>
           {%- endif -%}
         </td>
-        <td data-label="{{ messages.get("admin-resources-col-created") }}">{{ resource.created_at }}</td>
+        <td data-label="{{ messages.get("admin-resources-col-created") }}"><time class="local-time" datetime="{{ resource.created_at }}">{{ crate::templates::utc_short(resource.created_at.as_str()) }}</time></td>
         <td data-label="{{ messages.get("admin-resources-col-actions") }}">
           <form method="post" action="{{ tenant }}/admin/resources/status" class="d-inline">
             <input type="hidden" name="resource_id" value="{{ resource.id }}">

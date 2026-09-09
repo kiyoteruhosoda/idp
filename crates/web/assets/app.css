@@ -70,6 +70,18 @@ code {
   word-break: normal;
 }
 
+/* 折り返さない塊（JWKS の JSON・traceback）を狭い画面でも読めるようにする。
+ *
+ * `<pre>` は既定が `white-space: pre` で、**行の途中では絶対に折り返さない**。JWKS は 1 行の
+ * JSON なので、そのままだと画面の外へ伸びて横スクロールになる（カード表示にした表の外側で
+ * 起きるため、表の対策では防げない）。かといって Bootstrap の `.text-wrap`
+ * （`white-space: normal`）を当てると**改行が消える** —— traceback は行が意味を持つので、
+ * 1 段落に潰れると読めない。改行は保ったまま長い行だけ折る `pre-wrap` を使う。 */
+.pre-wrap {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* 一覧テーブルは狭い画面（<768px）ではカード表示へ変形する。
  * PC（>=768px）は従来どおりの表。モバイルでは見出し行（thead）を隠し、1 行を
  * 「項目名（各セルの data-label）＋値」を縦積みしたカードに組み替える（横スクロールを不要にする）。

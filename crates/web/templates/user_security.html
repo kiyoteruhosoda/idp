@@ -23,7 +23,7 @@
     <p class="text-muted mb-0">{{ messages.get("user-security-sessions-empty") }}</p>
     {% else %}
     <div class="table-responsive">
-      <table class="table align-middle">
+      <table class="table align-middle table-cards">
         <thead>
           <tr>
             <th scope="col">{{ messages.get("user-security-session-device") }}</th>
@@ -36,14 +36,14 @@
         <tbody>
           {% for session in sessions %}
           <tr>
-            <td>
+            <td data-label="{{ messages.get("user-security-session-device") }}">
               <span class="d-block text-break">{{ session.user_agent }}</span>
               {% if session.current %}<span class="badge text-bg-primary">{{ messages.get("user-security-session-current") }}</span>{% endif %}
               {% if session.multi_factor %}<span class="badge text-bg-success">{{ messages.get("user-security-session-mfa") }}</span>{% endif %}
             </td>
-            <td>{{ session.ip_address }}</td>
-            <td>{{ session.auth_time }}</td>
-            <td>{{ session.absolute_expires_at }}</td>
+            <td data-label="{{ messages.get("user-security-session-ip") }}">{{ session.ip_address }}</td>
+            <td data-label="{{ messages.get("user-security-session-auth-time") }}"><time class="local-time" datetime="{{ session.auth_time }}">{{ crate::templates::utc_short(session.auth_time.as_str()) }}</time></td>
+            <td data-label="{{ messages.get("user-security-session-expires") }}"><time class="local-time" datetime="{{ session.absolute_expires_at }}">{{ crate::templates::utc_short(session.absolute_expires_at.as_str()) }}</time></td>
             <td class="text-end">
               {% if !session.current %}
               <form method="post" action="{{ tenant }}/settings/security/revoke-session" data-confirm="{{ messages.get("user-security-session-revoke-confirm") }}">
@@ -70,7 +70,7 @@
     <p class="text-muted mb-0">{{ messages.get("user-security-apps-empty") }}</p>
     {% else %}
     <div class="table-responsive">
-      <table class="table align-middle">
+      <table class="table align-middle table-cards">
         <thead>
           <tr>
             <th scope="col">{{ messages.get("user-security-app-name") }}</th>
@@ -82,9 +82,9 @@
         <tbody>
           {% for app in connected_apps %}
           <tr>
-            <td class="text-break">{{ app.app_name }}</td>
-            <td><code>{{ app.scopes }}</code></td>
-            <td>{{ app.granted_at }}</td>
+            <td class="text-break" data-label="{{ messages.get("user-security-app-name") }}">{{ app.app_name }}</td>
+            <td data-label="{{ messages.get("user-security-app-scopes") }}"><code>{{ app.scopes }}</code></td>
+            <td data-label="{{ messages.get("user-security-app-granted-at") }}"><time class="local-time" datetime="{{ app.granted_at }}">{{ crate::templates::utc_short(app.granted_at.as_str()) }}</time></td>
             <td class="text-end">
               <form method="post" action="{{ tenant }}/settings/security/revoke-consent" data-confirm="{{ messages.get("user-security-app-revoke-confirm") }}">
                 <input type="hidden" name="csrf_token" value="{{ csrf }}">

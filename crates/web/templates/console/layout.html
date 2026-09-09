@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="{{ messages.lang() }}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -110,6 +110,7 @@
 <script src="/assets/button-pending.js?v={{ crate::templates::asset_version() }}"></script>
 <!-- 送信中の目印は console.js（確認ダイアログ）より後に読み込む。取り消された送信へ
      印を付けないため、リスナの登録順に依存する（submit-feedback.js のコメント参照）。 -->
+<script src="/assets/local-time.js?v={{ crate::templates::asset_version() }}" defer></script>
 <script src="/assets/submit-feedback.js?v={{ crate::templates::asset_version() }}"></script>
 {% include "react_bootstrap.html" %}
 </body>
