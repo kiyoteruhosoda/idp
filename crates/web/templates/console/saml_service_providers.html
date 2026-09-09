@@ -106,7 +106,7 @@
               <td data-label="{{ messages.get("admin-saml-client-col-status") }}">
                 {% if p.enabled %}<span class="badge text-bg-success">{{ messages.get("admin-saml-client-enabled-on") }}</span>{% else %}<span class="badge text-bg-secondary">{{ messages.get("admin-saml-client-enabled-off") }}</span>{% endif %}
               </td>
-              <td class="text-end text-nowrap" data-label="{{ messages.get("admin-saml-client-col-actions") }}">
+              <td class="text-end" data-label="{{ messages.get("admin-saml-client-col-actions") }}">
                 <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#saml-client-edit-{{ p.id }}" aria-controls="saml-client-edit-{{ p.id }}" aria-expanded="false">
                   <i class="fa-solid fa-pen me-1" aria-hidden="true"></i>{{ messages.get("admin-saml-client-edit") }}
                 </button>

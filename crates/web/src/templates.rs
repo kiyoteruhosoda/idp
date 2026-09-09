@@ -35,6 +35,28 @@ pub fn footer_version() -> String {
     format!("{} ({})", info.display_version(), info.git_version)
 }
 
+/// 画面へ出す時刻の**スクリプト無しの控え**を作る（ADR-0048）。
+///
+/// api は RFC 3339 の UTC 文字列（`2026-09-09T11:20:04.512345Z`）を返す。これをそのまま
+/// 出すと、桁が長いだけでなく**閲覧者の時刻でもない**。実際に、狭い画面では秒より後ろが
+/// 切り落とされて「いつなのか」だけが読めない状態になっていた。
+///
+/// ここが返すのは `2026-09-09 11:20 UTC` の形。ブラウザが動いていれば
+/// `assets/local-time.js` が閲覧者のタイムゾーンの表記へ差し替えるので、これは
+/// **JavaScript が動かなかったときに残る値**である。UTC と明示するのは、差し替えが
+/// 起きなかったときに 9 時間ずれた時刻を黙って見せないため。
+///
+/// 解釈できない値はそのまま返す（表示を欠かすより、生の値でも出したほうが手掛かりになる）。
+pub fn utc_short(value: &str) -> String {
+    match chrono::DateTime::parse_from_rfc3339(value) {
+        Ok(t) => t
+            .with_timezone(&chrono::Utc)
+            .format("%Y-%m-%d %H:%M UTC")
+            .to_string(),
+        Err(_) => value.to_string(),
+    }
+}
+
 /// アセット URL に付与するキャッシュバスティング用バージョン（`/assets/app.css?v=...`）。
 ///
 /// アセットはバイナリ同梱でデプロイ単位でしか変わらないが、URL が安定だと中間キャッシュ
@@ -85,6 +107,7 @@ fn embedded_assets_digest() -> u64 {
         crate::handlers::page_scripts::RP_LOGOUT_JS,
         crate::handlers::page_scripts::AUTO_SUBMIT_JS,
         crate::handlers::page_scripts::CLIENT_FORM_JS,
+        crate::handlers::page_scripts::LOCAL_TIME_JS,
     ]
     .into_iter()
     .fold(0xcbf2_9ce4_8422_2325, |hash, asset| {
@@ -477,6 +500,92 @@ mod tests {
 
     fn html_has_link(html: &str, href: &str) -> bool {
         html.contains(&format!(r#"href="{href}""#))
+    }
+
+    /// 表は狭い画面でカードへ組み替える（ADR-0048）。**すべての表**が対象で、外すと
+    /// その画面だけ列が潰れる —— 実際に、セキュリティ画面の 2 つの表が `.table-cards` を
+    /// 持たないまま出ていて、スマートフォンでアプリ名が 1 文字ずつ縦に割れ、時刻は右端で
+    /// 切れていた。新しい表を足したときに同じことが起きないよう、テンプレートを直接見る。
+    #[test]
+    fn every_table_collapses_into_cards_on_narrow_screens() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("templates");
+        let mut offenders = Vec::new();
+        let mut checked = 0usize;
+        let mut stack = vec![root];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("read templates dir") {
+                let path = entry.expect("dir entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("html") {
+                    continue;
+                }
+                let html = std::fs::read_to_string(&path).expect("read template");
+                for tag in html.match_indices("<table") {
+                    checked += 1;
+                    let rest = &html[tag.0..];
+                    let end = rest.find('>').unwrap_or(rest.len());
+                    if !rest[..end].contains("table-cards") {
+                        offenders.push(format!("{}: {}", path.display(), &rest[..end]));
+                    }
+                }
+            }
+        }
+        assert!(checked > 0, "no tables found — did the templates move?");
+        assert!(
+            offenders.is_empty(),
+            "these tables would squeeze on a phone (add .table-cards and data-label to each cell): {offenders:#?}"
+        );
+    }
+
+    /// 時刻は機械が読む値（`datetime`）と人が読む値（要素の中身）を分けて出す（ADR-0048）。
+    /// 中身は JavaScript が閲覧者のタイムゾーンへ差し替えるが、差し替わらなくても読める形で
+    /// 出しておく —— RFC 3339 のマイクロ秒付き文字列は、そのままでは日時として読めない。
+    #[test]
+    fn timestamps_carry_a_machine_value_and_a_readable_one() {
+        let messages = Messages::new(Locale::Ja);
+        let sessions = [SecuritySessionView {
+            id: "s1".to_string(),
+            current: false,
+            multi_factor: false,
+            auth_time: "2026-09-09T11:20:04.512345Z".to_string(),
+            user_agent: "UA".to_string(),
+            ip_address: "203.0.113.1".to_string(),
+            absolute_expires_at: "2026-09-09T19:20:04.512345Z".to_string(),
+        }];
+        let html = render(&UserSecurity {
+            messages: &messages,
+            tenant: "/t",
+            csrf: "csrf",
+            sessions: &sessions,
+            connected_apps: &[],
+            saved_key: None,
+            error_key: None,
+        });
+        assert!(
+            html.contains(r#"<time class="local-time" datetime="2026-09-09T11:20:04.512345Z">2026-09-09 11:20 UTC</time>"#),
+            "{html}"
+        );
+        // 生の RFC 3339 が本文へ出ていない（出ていると、差し替え前の画面が読めない）。
+        assert!(!html.contains(">2026-09-09T11:20:04.512345Z<"), "{html}");
+    }
+
+    /// 解釈できない値は落とさずそのまま出す（表示を欠かすより手掛かりを残す）。
+    #[test]
+    fn an_unparsable_timestamp_is_left_alone() {
+        assert_eq!(
+            utc_short("2026-09-09T11:20:04.512345Z"),
+            "2026-09-09 11:20 UTC"
+        );
+        assert_eq!(utc_short("never"), "never");
+        assert_eq!(utc_short(""), "");
+        // オフセット付きでも UTC へ直して出す（api は Z で返すが、値の出所を 1 つに縛らない）。
+        assert_eq!(
+            utc_short("2026-09-09T20:20:04+09:00"),
+            "2026-09-09 11:20 UTC"
+        );
     }
 
     /// アセット参照はデプロイごとに URL が変わるよう `?v={asset_version}` を必ず付ける

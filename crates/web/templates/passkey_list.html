@@ -31,7 +31,7 @@
           {#- 一時停止中のパスキーも一覧には出る（鍵を引く経路は失効した行しか落とさない）。
               印を付けないと、利用者は使えないパスキーを使えるものとして眺めることになる。 -#}
           {% if cred.suspended %}<span class="badge text-bg-secondary ms-2">{{ messages.get("authenticator-status-suspended") }}</span>{% endif %}
-          <div class="text-muted small">{{ cred.created_at }}{% if let Some(last) = cred.last_used_at %}（{{ messages.get("passkey-last-used") }}: {{ last }}）{% endif %}</div>
+          <div class="text-muted small"><time class="local-time" datetime="{{ cred.created_at }}">{{ crate::templates::utc_short(cred.created_at.as_str()) }}</time>{% if let Some(last) = cred.last_used_at %}（{{ messages.get("passkey-last-used") }}: {{ last }}）{% endif %}</div>
           {% if cred.suspended %}<div class="text-muted small">{{ messages.get("passkey-suspended-help") }}</div>{% endif %}
         </div>
         <form method="post" action="{{ tenant_prefix }}/account/passkey/delete" class="d-inline" data-confirm="{{ messages.get("passkey-delete-confirm") }}">

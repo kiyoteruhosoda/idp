@@ -61,7 +61,7 @@
     <tbody>
       {% for e in entries %}
       <tr>
-        <td data-label="{{ messages.get("admin-audit-col-time") }}">{{ e.occurred_at }}</td>
+        <td data-label="{{ messages.get("admin-audit-col-time") }}"><time class="local-time" datetime="{{ e.occurred_at }}">{{ crate::templates::utc_short(e.occurred_at.as_str()) }}</time></td>
         <td data-label="{{ messages.get("admin-applog-col-level") }}">{% if e.level == "ERROR" %}<span class="badge text-bg-danger level-error">{{ e.level }}</span>{% else %}<span class="badge text-bg-warning level-warn">{{ e.level }}</span>{% endif %}</td>
         <td data-label="{{ messages.get("admin-applog-col-service") }}">{{ e.service }}</td>
         <td data-label="{{ messages.get("admin-applog-col-target") }}"><code>{{ e.target }}</code></td>
@@ -70,7 +70,7 @@
           {% if let Some(traceback) = e.traceback %}
           <details class="mt-1">
             <summary class="text-muted small">{{ messages.get("admin-applog-col-traceback") }}</summary>
-            <pre class="small mb-0 mt-1 text-break text-wrap">{{ traceback }}</pre>
+            <pre class="small mb-0 mt-1 pre-wrap">{{ traceback }}</pre>
           </details>
           {% endif %}
         </td>

@@ -38,9 +38,9 @@
           <span class="badge bg-secondary-subtle text-secondary-emphasis">{{ messages.get("admin-signing-keys-state-retired") }}</span>
           {%- endif -%}
         </td>
-        <td data-label="{{ messages.get("admin-signing-keys-col-not-before") }}">{{ key.not_before }}</td>
-        <td data-label="{{ messages.get("admin-signing-keys-col-not-after") }}">{{ key.not_after }}</td>
-        <td data-label="{{ messages.get("admin-signing-keys-col-created") }}">{{ key.created_at }}</td>
+        <td data-label="{{ messages.get("admin-signing-keys-col-not-before") }}"><time class="local-time" datetime="{{ key.not_before }}">{{ crate::templates::utc_short(key.not_before.as_str()) }}</time></td>
+        <td data-label="{{ messages.get("admin-signing-keys-col-not-after") }}"><time class="local-time" datetime="{{ key.not_after }}">{{ crate::templates::utc_short(key.not_after.as_str()) }}</time></td>
+        <td data-label="{{ messages.get("admin-signing-keys-col-created") }}"><time class="local-time" datetime="{{ key.created_at }}">{{ crate::templates::utc_short(key.created_at.as_str()) }}</time></td>
         <td data-label="{{ messages.get("admin-signing-keys-col-actions") }}">
           {% if key.status == "ACTIVE" %}
           <form method="post" action="{{ tenant }}/admin/signing-keys/retire" class="d-inline">
