@@ -1132,6 +1132,26 @@ impl ApiClient {
         .await
     }
 
+    /// 利用者へ発行済み refresh token の一括失効（`POST /admin/users/{user_id}/token-reissue`。
+    /// ADR-0047）。落とした本数が返る（0 も成功）。
+    pub async fn reissue_user_tokens(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        user_id: &str,
+    ) -> Result<crate::admin_dto::UserTokenReissueView, AdminApiError> {
+        self.admin_send(
+            Method::POST,
+            tenant_id,
+            &format!("/admin/users/{user_id}/token-reissue"),
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
     /// アカウントロックの即時解除（`POST /admin/users/{user_id}/unlock`。AP6）。
     /// ロック期限のクリアと失敗回数のリセットを api 側が同時に行う。
     pub async fn unlock_user(
@@ -2596,6 +2616,21 @@ impl ApiClient {
     {
         self.post_internal(
             "/internal/account/security/revoke-consent",
+            correlation_id,
+            req,
+        )
+        .await
+    }
+
+    /// 発行済みトークンを再発行させる（本人。ADR-0047）。
+    pub async fn account_reissue_tokens(
+        &self,
+        correlation_id: &str,
+        req: &assay_contracts::auth::InternalAccountReissueTokensRequest,
+    ) -> Result<assay_contracts::auth::InternalAccountReissueTokensResponse, InternalCallError>
+    {
+        self.post_internal(
+            "/internal/account/security/reissue-tokens",
             correlation_id,
             req,
         )

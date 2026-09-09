@@ -1,5 +1,5 @@
 //! 管理者による利用者ライフサイクル操作（無効化・有効化・削除・パスワード再発行・MFA 解除・
-//! プロフィール編集。ADR-0009 §5・MT21・MT25）。
+//! トークン再発行・プロフィール編集。ADR-0009 §5・MT21・MT25・ADR-0047）。
 //!
 //! 操作対象は**所属元（HOME）が要求テナントの利用者のみ**（`users.tenant_id` 照合。ゲストの
 //! `users` レコードは所属元テナントの管理者だけが操作できる。§3）。自分自身への操作は禁止する
@@ -52,6 +52,14 @@ pub struct MfaReset {
     pub totp_removed: bool,
     /// 削除した Passkey（WebAuthn クレデンシャル）の件数。
     pub passkeys_removed: u64,
+}
+
+/// トークン再発行の結果（ADR-0047）。`revoked` は落とした本数で、**0 も成功**
+/// （生きているトークンが無かった）。管理者へ「対象がありませんでした」を出し分けるために返す。
+#[derive(Debug)]
+pub struct TokenReissue {
+    pub user_id: Uuid,
+    pub revoked: u64,
 }
 
 /// プロフィール編集の指示（MT25）。`None` のフィールドは変更しない（部分更新）。
@@ -204,6 +212,53 @@ impl UserLifecycleService {
             )
             .await;
         Ok(())
+    }
+
+    /// 利用者へ発行済みの refresh token をまとめて失効させる（画面上は「トークンの再発行」。
+    /// ADR-0047）。本人がセキュリティ画面から押すのと同じ操作を、管理者が対象を指定して行う。
+    ///
+    /// **落とすのはトークンだけ**で、セッションにも認証器にも触れない。「アプリへ配った鍵が
+    /// 漏れたかもしれない」に対して、無効化（＝業務を止める）やパスワード再発行（＝本人に
+    /// 再設定を強いる）まで持ち出さずに済む一段を用意する。端末ごと切りたいなら無効化を、
+    /// 端末を失ったなら MFA 解除を使う。
+    ///
+    /// **自分自身にも実行できる。** 他のライフサイクル操作の自己禁止は誤操作によるロックアウト
+    /// 防止が目的だが、この操作はブラウザのログイン状態を残すので締め出しにならない
+    /// （ロック解除と同じ扱い）。
+    ///
+    /// **失効に失敗したら成功を返さない**（fail-closed）。パスワード再発行や無効化と違い、
+    /// ここには「資格情報が変わっている」「アカウントが無効」という別の防御線が無い。失効が
+    /// 唯一の結果である以上、それが漏れたなら操作は失敗である（MFA 解除と同じ基準）。
+    pub async fn reissue_tokens(
+        &self,
+        tenant: TenantContext,
+        target: Uuid,
+        actor: &AdminActor,
+        ctx: &RequestContext,
+    ) -> Result<TokenReissue, UserLifecycleError> {
+        let user = self.find_home_user(tenant, target).await?;
+        let revoked = self
+            .refresh_tokens
+            .revoke_all_for_user(user.id, self.clock.now())
+            .await
+            .map_err(internal)?;
+
+        // 監査には対象と本数のみ。トークンの値もハッシュも記録しない。
+        self.audit
+            .record(
+                AuditEventType::RefreshTokenRevoked,
+                AuditResult::Success,
+                Some(tenant.tenant_id()),
+                actor.user_id(),
+                actor.client_id(),
+                Some(&format!("user={} refresh_tokens={revoked}", user.id)),
+                ctx,
+            )
+            .await;
+        Ok(TokenReissue {
+            user_id: user.id,
+            revoked,
+        })
     }
 
     /// アカウントロックを即時解除する（AP6。仕様 §17.1・§24.6）。
@@ -577,8 +632,11 @@ impl UserLifecycleService {
         if let Err(e) = self.sso_sessions.delete_all_for_user(user_id).await {
             tracing::warn!(error = %e, "failed to revoke SSO sessions in user lifecycle operation");
         }
-        if let Err(e) = self.refresh_tokens.revoke_all_for_user(user_id, now).await {
-            tracing::warn!(error = %e, "failed to revoke refresh tokens in user lifecycle operation");
+        match self.refresh_tokens.revoke_all_for_user(user_id, now).await {
+            Ok(count) => tracing::info!(refresh_tokens = count, "revoked refresh tokens"),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to revoke refresh tokens in user lifecycle operation")
+            }
         }
         if let Err(e) = self.codes.revoke_all_active_for_user(user_id, now).await {
             tracing::warn!(error = %e, "failed to revoke authorization codes in user lifecycle operation");
@@ -603,7 +661,10 @@ impl UserLifecycleService {
         );
         remember(
             "refresh_token",
-            self.refresh_tokens.revoke_all_for_user(user_id, now).await,
+            self.refresh_tokens
+                .revoke_all_for_user(user_id, now)
+                .await
+                .map(|_| ()),
         );
         remember(
             "authorization_code",
@@ -912,9 +973,9 @@ mod tests {
             &self,
             user_id: Uuid,
             _now: DateTime<Utc>,
-        ) -> DomainResult<()> {
+        ) -> DomainResult<u64> {
             self.revoked_users.lock().unwrap().push(user_id);
-            Ok(())
+            Ok(1)
         }
         async fn revoke_all_for_user_and_client(
             &self,
@@ -1698,5 +1759,84 @@ mod tests {
                 .await,
             Err(UserLifecycleError::NotFound)
         ));
+    }
+
+    /// 管理者のトークン再発行は**トークンだけ**を落とす（ADR-0047）。
+    ///
+    /// セッションまで切ると業務が止まり、無効化やパスワード再発行と区別が付かなくなる。
+    /// 「配った鍵だけ入れ替える」一段として置いている以上、他へ波及させない。
+    #[tokio::test]
+    async fn reissuing_tokens_revokes_tokens_only() {
+        let tenant: TenantId = Uuid::now_v7().into();
+        let f = fixture();
+        let target = Uuid::now_v7();
+        f.users.create(&user(target, tenant)).await.unwrap();
+
+        let result = f
+            .svc
+            .reissue_tokens(
+                TenantContext::new(tenant),
+                target,
+                &AdminActor::User(Uuid::now_v7()),
+                &ctx(),
+            )
+            .await
+            .expect("reissue");
+
+        assert_eq!(result.user_id, target);
+        assert_eq!(result.revoked, 1);
+        assert_eq!(*f.refresh.revoked_users.lock().unwrap(), vec![target]);
+        assert!(f.sso.revoked_users.lock().unwrap().is_empty());
+        assert!(f.codes.revoked_users.lock().unwrap().is_empty());
+
+        let events = f.sink.events.lock().unwrap();
+        assert_eq!(events[0].event_type, AuditEventType::RefreshTokenRevoked);
+        assert!(events[0]
+            .reason
+            .as_deref()
+            .is_some_and(|r| r.contains("refresh_tokens=1")));
+    }
+
+    /// 自分自身にも実行できる（無効化・削除と違い、これは締め出しにならない）。
+    #[tokio::test]
+    async fn reissuing_your_own_tokens_is_allowed() {
+        let tenant: TenantId = Uuid::now_v7().into();
+        let f = fixture();
+        let target = Uuid::now_v7();
+        f.users.create(&user(target, tenant)).await.unwrap();
+
+        assert!(f
+            .svc
+            .reissue_tokens(
+                TenantContext::new(tenant),
+                target,
+                &AdminActor::User(target),
+                &ctx(),
+            )
+            .await
+            .is_ok());
+    }
+
+    /// 所属元が別テナントの利用者には届かない（他のライフサイクル操作と同じ判定）。
+    #[tokio::test]
+    async fn reissuing_tokens_for_another_tenants_user_is_not_found() {
+        let tenant: TenantId = Uuid::now_v7().into();
+        let other: TenantId = Uuid::now_v7().into();
+        let f = fixture();
+        let target = Uuid::now_v7();
+        f.users.create(&user(target, other)).await.unwrap();
+
+        assert!(matches!(
+            f.svc
+                .reissue_tokens(
+                    TenantContext::new(tenant),
+                    target,
+                    &AdminActor::User(Uuid::now_v7()),
+                    &ctx(),
+                )
+                .await,
+            Err(UserLifecycleError::NotFound)
+        ));
+        assert!(f.refresh.revoked_users.lock().unwrap().is_empty());
     }
 }

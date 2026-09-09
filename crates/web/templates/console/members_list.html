@@ -79,6 +79,10 @@
                 <input type="hidden" name="email" value="{{ m.email.as_deref().unwrap_or("") }}">
                 <button type="submit" class="btn btn-outline-secondary btn-sm"><i class="fa-solid fa-mobile-screen-button me-1" aria-hidden="true"></i>{{ messages.get("admin-members-reset-mfa-button") }}</button>
               </form>
+              <form method="post" action="{{ tenant }}/admin/members/{{ m.user_id }}/reissue-tokens" class="d-inline" data-confirm="{{ messages.get("admin-members-token-reissue-confirm") }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                <button type="submit" class="btn btn-outline-secondary btn-sm"><i class="fa-solid fa-rotate me-1" aria-hidden="true"></i>{{ messages.get("admin-members-token-reissue-button") }}</button>
+              </form>
               <form method="post" action="{{ tenant }}/admin/members/{{ m.user_id }}/delete" class="d-inline" data-confirm="{{ messages.get("admin-members-delete-confirm") }}">
                 <input type="hidden" name="csrf_token" value="{{ csrf }}">
                 <button type="submit" class="btn btn-outline-danger btn-sm"><i class="fa-solid fa-trash me-1" aria-hidden="true"></i>{{ messages.get("admin-members-delete-button") }}</button>

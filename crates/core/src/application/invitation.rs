@@ -603,7 +603,7 @@ mod tests {
         async fn exists_by_parent_hash(&self, _p: &str) -> DomainResult<bool> {
             unreachable!()
         }
-        async fn revoke_all_for_user(&self, _u: Uuid, _now: DateTime<Utc>) -> DomainResult<()> {
+        async fn revoke_all_for_user(&self, _u: Uuid, _now: DateTime<Utc>) -> DomainResult<u64> {
             // ゲストの停止はテナント単位で失効させる（ユーザー全体を巻き込まない）。
             unreachable!()
         }

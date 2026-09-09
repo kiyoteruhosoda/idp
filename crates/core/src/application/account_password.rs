@@ -166,8 +166,11 @@ impl AccountPasswordService {
                 tracing::warn!(error = %e, "failed to sign out other sessions after password change")
             }
         }
-        if let Err(e) = self.refresh_tokens.revoke_all_for_user(user.id, now).await {
-            tracing::warn!(error = %e, "failed to revoke refresh tokens after password change");
+        match self.refresh_tokens.revoke_all_for_user(user.id, now).await {
+            Ok(count) => tracing::info!(refresh_tokens = count, "revoked refresh tokens"),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to revoke refresh tokens after password change")
+            }
         }
         if let Err(e) = self.codes.revoke_all_active_for_user(user.id, now).await {
             tracing::warn!(error = %e, "failed to revoke authorization codes after password change");

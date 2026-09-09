@@ -208,6 +208,15 @@ pub struct UserMfaResetView {
     pub passkeys_removed: u64,
 }
 
+/// 管理者によるトークン再発行の結果（`POST /admin/users/{id}/token-reissue`。ADR-0047）。
+/// `revoked` で「落とした」と「対象が無かった」を出し分ける。
+#[derive(Debug, Clone, Deserialize)]
+pub struct UserTokenReissueView {
+    #[allow(dead_code)]
+    pub user_id: String,
+    pub revoked: u64,
+}
+
 /// 管理者によるアカウントロック解除の結果（`POST /admin/users/{id}/unlock`。AP6）。
 /// `was_locked` で「解除した」と「元からロックされていない」を出し分ける。
 #[derive(Debug, Clone, Deserialize)]

@@ -11,7 +11,7 @@ use crate::presentation::admin::{RequirePerms, UsersRead, UsersWrite};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
     CreateUserRequest, UpdateUserProfileRequest, UpdateUserStatusRequest, UserCreatedResponse,
-    UserMfaResetResponse, UserPasswordResetResponse, UserUnlockResponse,
+    UserMfaResetResponse, UserPasswordResetResponse, UserTokenReissueResponse, UserUnlockResponse,
 };
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::{map_permission_management_error, request_context};
@@ -352,6 +352,50 @@ pub async fn reset_user_mfa(
         user_id: reset.user_id.to_string(),
         totp_removed: reset.totp_removed,
         passkeys_removed: reset.passkeys_removed,
+    }))
+}
+
+/// 利用者へ発行済みの refresh token をまとめて失効させる
+/// （`POST /{tenant_id}/admin/users/{user_id}/token-reissue`。ADR-0047）。
+///
+/// 本人がセキュリティ画面から押すのと同じ操作を、管理者が対象を指定して行う。落とすのは
+/// トークンだけで、セッション・認証器・パスワードには触れない。アプリは次の更新で SSO 越しに
+/// 取り直すため、多くの利用者には何も起きない。自分自身にも実行できる（締め出しにならない）。
+#[utoipa::path(
+    post,
+    path = "/{tenant_id}/admin/users/{user_id}/token-reissue",
+    tag = "admin",
+    params(("user_id" = String, Path, description = "対象利用者の内部 ID（UUID）")),
+    responses(
+        (status = 200, description = "失効成功（対象が 0 件の場合を含む）", body = UserTokenReissueResponse),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.users:write 必須）"),
+        (status = 404, description = "不存在（所属元が他テナントの場合を含む）"),
+    )
+)]
+pub async fn reissue_user_tokens(
+    RequirePerms(admin, _): RequirePerms<UsersWrite>,
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
+    headers: HeaderMap,
+    Path((_tenant_id, user_id)): Path<(String, String)>,
+) -> Result<Json<UserTokenReissueResponse>, ApiError> {
+    let target = parse_user_id(&user_id, locale)?;
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
+    let reissue = state
+        .users_lifecycle
+        .reissue_tokens(tenant.context(), target, &admin.actor, &ctx)
+        .await
+        .map_err(|e| map_user_lifecycle_error(e, locale))?;
+    Ok(Json(UserTokenReissueResponse {
+        user_id: reissue.user_id.to_string(),
+        revoked: reissue.revoked,
     }))
 }
 

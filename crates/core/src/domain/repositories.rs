@@ -1039,7 +1039,13 @@ pub trait RefreshTokenRepository: Send + Sync {
         revoked_at: DateTime<Utc>,
     ) -> Result<u64>;
     /// 指定ユーザーの全 Refresh Token を失効させる（ユーザー単位の全セッション無効化、F5）。
-    async fn revoke_all_for_user(&self, user_id: Uuid, revoked_at: DateTime<Utc>) -> Result<()>;
+    /// 失効させた行数を返す（監査と画面に載せる。ADR-0047 の再発行は「対象が 0 件だった」を
+    /// 「効いていない」と誤解させないため、件数を利用者・管理者へそのまま見せる）。
+    ///
+    /// **テナントで絞らない。** refresh token は利用者の資格情報で、1 人が複数テナントの
+    /// アプリを認可し得る（`revoke_all_for_session` と同じ理由）。テナント単位で落としたい
+    /// 場合は [`revoke_all_for_user_in_tenant`](Self::revoke_all_for_user_in_tenant) を使う。
+    async fn revoke_all_for_user(&self, user_id: Uuid, revoked_at: DateTime<Utc>) -> Result<u64>;
 
     /// **1 つの SSO セッション**から生まれた Refresh Token を失効させる（ADR-0044）。
     /// 失効させた行数を返す（監査に載せる）。

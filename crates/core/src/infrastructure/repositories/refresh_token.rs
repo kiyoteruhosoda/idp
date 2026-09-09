@@ -219,8 +219,8 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
         Ok(())
     }
 
-    async fn revoke_all_for_user(&self, user_id: Uuid, revoked_at: DateTime<Utc>) -> Result<()> {
-        sqlx::query(
+    async fn revoke_all_for_user(&self, user_id: Uuid, revoked_at: DateTime<Utc>) -> Result<u64> {
+        let result = sqlx::query(
             "UPDATE refresh_tokens SET revoked_at = ? \
              WHERE user_id = ? AND revoked_at IS NULL",
         )
@@ -229,6 +229,6 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
         .execute(&self.pool)
         .await
         .map_err(repo_err)?;
-        Ok(())
+        Ok(result.rows_affected())
     }
 }

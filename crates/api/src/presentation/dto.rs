@@ -661,6 +661,16 @@ pub struct UserMfaResetResponse {
     pub passkeys_removed: u64,
 }
 
+/// 管理者によるトークン再発行レスポンス（ADR-0047）。落とした本数だけを返し、トークンの値も
+/// ハッシュも含めない。生きているトークンが無くても成功（`revoked = 0`）で、画面はこれを
+/// 「対象がありませんでした」と出し分ける。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct UserTokenReissueResponse {
+    pub user_id: String,
+    /// 失効させた refresh token の本数。
+    pub revoked: u64,
+}
+
 /// 子テナント管理者のパスワード再発行リクエスト
 /// （`POST /{tenant_id}/admin/tenants/{child_id}/admin-password-reset`）。
 #[derive(Debug, Deserialize, ToSchema)]

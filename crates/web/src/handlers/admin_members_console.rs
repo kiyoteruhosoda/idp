@@ -366,6 +366,43 @@ pub async fn reset_mfa(
     }
 }
 
+/// 利用者のトークン再発行（`POST /{tenant_id}/admin/members/{user_id}/reissue-tokens`。ADR-0047）。
+///
+/// 発行済みの refresh token をまとめて失効させ、アプリに取り直させる。落とすのはトークンだけで、
+/// 無効化（業務が止まる）やパスワード再発行（本人に再設定を強いる）まで持ち出さずに済む一段。
+/// 秘密情報を伴わないため結果画面は出さず、一覧へ戻して完了通知を出す（Post/Redirect/Get）。
+pub async fn reissue_tokens(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Path((_, user_id)): Path<(String, String)>,
+    Form(form): Form<MemberActionForm>,
+) -> Response {
+    match resolve_admin(&state, &correlation, &tenant, &headers).await {
+        AdminResolution::Ok(_) => {}
+        AdminResolution::Reject(resp) => return resp,
+    }
+    let base = format!("{}{MEMBERS_SEGMENT}", tenant.prefix());
+    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
+        return found(&format!("{base}?error=csrf"));
+    }
+    match state
+        .api
+        .reissue_user_tokens(&correlation.0, &tenant.0, &sso(&headers), &user_id)
+        .await
+    {
+        // 落とすものが無かった場合も成功だが、管理者には区別して伝える（「効いていない」と
+        // 誤解して操作を繰り返すのを防ぐ。MFA 解除・ロック解除と同じ扱い）。
+        Ok(result) if result.revoked == 0 => found(&format!("{base}?notice=tokens-none")),
+        Ok(_) => found(&format!("{base}?notice=tokens-reissued")),
+        Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
+        Err(AdminApiError::Forbidden) => found(&format!("{base}?error=forbidden")),
+        Err(AdminApiError::NotFound) => found(&format!("{base}?error=user-notfound")),
+        Err(_) => found(&format!("{base}?error=internal")),
+    }
+}
+
 /// アカウントロックの解除（`POST /{tenant_id}/admin/members/{user_id}/unlock`。AP6）。
 /// 段階的ロックでロック時間が伸びた利用者を、期限を待たずに戻す。秘密情報を伴わないため
 /// 一覧へ戻して完了通知を出す（Post/Redirect/Get）。
@@ -437,6 +474,8 @@ fn notice_key_for(notice: &str) -> Option<&'static str> {
     match notice {
         "mfa-reset" => Some("admin-members-mfa-reset-done"),
         "mfa-none" => Some("admin-members-mfa-reset-none"),
+        "tokens-reissued" => Some("admin-members-token-reissue-done"),
+        "tokens-none" => Some("admin-members-token-reissue-none"),
         "unlocked" => Some("admin-members-unlock-done"),
         "unlock-none" => Some("admin-members-unlock-none"),
         "member-suspended" => Some("admin-members-suspend-done"),
@@ -545,6 +584,17 @@ mod tests {
 
         let guest = render_page(&[member("GUEST")], None);
         assert!(!guest.contains("/reset-mfa"), "{guest}");
+    }
+
+    /// ADR-0047: トークン再発行も所属元（HOME）の利用者にだけ出す（api は他テナントの利用者へ
+    /// 404 を返すため、ゲストに出すと押せないボタンになる）。
+    #[test]
+    fn token_reissue_button_is_shown_for_home_members_only() {
+        let home = render_page(&[member("HOME")], None);
+        assert!(home.contains("/reissue-tokens"), "{home}");
+
+        let guest = render_page(&[member("GUEST")], None);
+        assert!(!guest.contains("/reissue-tokens"), "{guest}");
     }
 
     /// 確認ダイアログの文言は `data-confirm` 属性で渡す（インライン JS の文字列へ埋め込まない）。
