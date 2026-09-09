@@ -55,9 +55,12 @@ pub enum AuditEventType {
     /// `client_id` から「どのアプリだったか」を追える。
     ClientDeleted,
     /// Refresh Token の発行・使用（rotation 成功）・再利用検知（設計仕様 §9.1）。
+    /// `RefreshTokenRevoked` は利用者自身がセキュリティ画面から発行済みトークンを
+    /// まとめて落としたとき（ADR-0047）。`client_id` 列は空（対象が 1 つに定まらない）。
     RefreshTokenIssued,
     RefreshTokenUsed,
     RefreshTokenReuseDetected,
+    RefreshTokenRevoked,
     /// 同意の付与・取り消し（F3: Consent）。`ConsentRevoked` は利用者自身による連携解除（G10）。
     ConsentGranted,
     ConsentDenied,
@@ -169,6 +172,7 @@ impl AuditEventType {
             Self::RefreshTokenIssued => "refresh_token.issued",
             Self::RefreshTokenUsed => "refresh_token.used",
             Self::RefreshTokenReuseDetected => "refresh_token.reuse_detected",
+            Self::RefreshTokenRevoked => "refresh_token.revoked",
             Self::ConsentGranted => "consent.granted",
             Self::ConsentDenied => "consent.denied",
             Self::ConsentRevoked => "consent.revoked",

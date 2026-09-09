@@ -125,6 +125,10 @@ pub fn build(state: WebState) -> Router {
             "/settings/security/revoke-consent",
             post(user_security::revoke_consent),
         )
+        .route(
+            "/settings/security/reissue-tokens",
+            post(user_security::reissue_tokens),
+        )
         // 招待承諾画面（ADR-0009 §3・MT17）。招待メールのリンクから開く。SSO 認証が必要。
         .route(
             "/invitations/accept",
@@ -407,6 +411,11 @@ pub fn build(state: WebState) -> Router {
         .route(
             "/admin/members/{user_id}/unlock",
             post(admin_members_console::unlock),
+        )
+        // 発行済みトークンの再発行（管理者が対象を指定する。ADR-0047）。
+        .route(
+            "/admin/members/{user_id}/reissue-tokens",
+            post(admin_members_console::reissue_tokens),
         )
         // ゲストメンバーシップの一時停止・再開（MT24）。解除（削除）と違い元に戻せる。
         .route(
@@ -994,6 +1003,7 @@ mod tests {
             format!("/{tenant}/admin/members/{id}/status"),
             format!("/{tenant}/admin/members/{id}/reset-password"),
             format!("/{tenant}/admin/members/{id}/reset-mfa"),
+            format!("/{tenant}/admin/members/{id}/reissue-tokens"),
             format!("/{tenant}/admin/members/{id}/suspend"),
             format!("/{tenant}/admin/members/{id}/resume"),
             format!("/{tenant}/admin/members/{id}/delete"),

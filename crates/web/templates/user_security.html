@@ -100,4 +100,14 @@
     {% endif %}
   </div>
 </div>
+<div class="card mb-4" id="tokens">
+  <div class="card-header d-flex align-items-center"><i class="fa-solid fa-rotate me-2" aria-hidden="true"></i>{{ messages.get("user-security-tokens-heading") }}</div>
+  <div class="card-body">
+    <p class="text-muted small">{{ messages.get("user-security-tokens-help") }}</p>
+    <form method="post" action="{{ tenant }}/settings/security/reissue-tokens" data-confirm="{{ messages.get("user-security-tokens-reissue-confirm") }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <button type="submit" class="btn btn-outline-primary"><i class="fa-solid fa-rotate me-1" aria-hidden="true"></i>{{ messages.get("user-security-tokens-reissue") }}</button>
+    </form>
+  </div>
+</div>
 {% endblock %}

@@ -391,7 +391,12 @@ impl PasswordResetService {
         if let Err(e) = self.sso_sessions.delete_all_for_user(user.id).await {
             tracing::warn!(error = %e, "failed to revoke SSO sessions after password reset");
         }
-        if let Err(e) = self.refresh_tokens.revoke_all_for_user(user.id, now).await {
+        if let Err(e) = self
+            .refresh_tokens
+            .revoke_all_for_user(user.id, now)
+            .await
+            .map(|_| ())
+        {
             tracing::warn!(error = %e, "failed to revoke refresh tokens after password reset");
         }
         if let Err(e) = self.codes.revoke_all_active_for_user(user.id, now).await {
@@ -680,9 +685,9 @@ mod tests {
         async fn exists_by_parent_hash(&self, _h: &str) -> DomainResult<bool> {
             unreachable!()
         }
-        async fn revoke_all_for_user(&self, user_id: Uuid, _t: DateTime<Utc>) -> DomainResult<()> {
+        async fn revoke_all_for_user(&self, user_id: Uuid, _t: DateTime<Utc>) -> DomainResult<u64> {
             self.revoked_users.lock().unwrap().push(user_id);
-            Ok(())
+            Ok(1)
         }
         async fn revoke_all_for_user_and_client(
             &self,

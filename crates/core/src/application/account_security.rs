@@ -1,11 +1,14 @@
 //! 利用者セルフサービスのセキュリティ画面（G10）。
 //!
-//! 一般的な IdP が持つのに assay に無かった 2 つを扱う:
+//! 一般的な IdP が持つのに assay に無かった 3 つを扱う:
 //!
 //! - **ログイン中セッションの一覧・失効**。端末を紛失した利用者が、管理者を介さずに他端末の
 //!   セッションを切れるようにする（これまでは今のセッションをログアウトすることしかできなかった）。
 //! - **連携済みアプリ（consent）の確認・取り消し**。一度同意すると利用者側から解除できず、
 //!   `ClientConsentRepository::revoke` / `list_for_user` は実装済みなのに呼び出し元が無かった。
+//! - **発行済みトークンの再発行**（ADR-0047）。アプリが預かっている合鍵だけを入れ替える。
+//!   連携も端末も切らずに「配ってしまったかもしれない鍵」を無効化する経路で、これまでは
+//!   パスワードを変えるか、アプリを 1 つずつ解除するしかなかった。
 //!
 //! # セッションの指し方
 //!
@@ -93,6 +96,17 @@ pub enum RevokeSessionOutcome {
 pub enum RevokeConsentOutcome {
     /// 取り消した（冪等: 同意が無かった場合も含む）。
     Ok,
+    SessionExpired,
+    Internal(String),
+}
+
+pub enum ReissueTokensOutcome {
+    /// 失効させた。`revoked` は落とした本数で、**0 も成功**（生きているトークンが無かった）。
+    /// 画面はこれを「対象がありませんでした」と出し分ける——同じ「完了しました」だけを返すと、
+    /// 効いていないのか元から無いのかが利用者に分からない。
+    Ok {
+        revoked: u64,
+    },
     SessionExpired,
     Internal(String),
 }
@@ -314,6 +328,61 @@ impl AccountSecurityService {
             )
             .await;
         RevokeConsentOutcome::Ok
+    }
+
+    /// 当人へ発行済みの refresh token をすべて失効させる（画面上は「トークンの再発行」。ADR-0047）。
+    ///
+    /// 実体は [`RefreshTokenRepository::revoke_all_for_user`] の 1 回で、**セッションにも同意にも
+    /// 触れない**。アプリが預かっている合鍵だけを入れ替える操作なので、ブラウザのログイン状態は
+    /// そのまま残り、各アプリは次の更新で SSO 越しに取り直す（利用者から見れば、多くのアプリは
+    /// 何も起きない）。端末を切りたい人にはセッションの失効が、アプリを外したい人には連携解除が
+    /// 既にある。この操作はその 2 つのどちらでもない——**誰にも気付かれずに配られたかもしれない
+    /// 鍵を、心当たりが無いまま無効化する**ためのものである。
+    ///
+    /// **テナントで絞らない。** refresh token は利用者の資格情報で、`sso_sessions` と同じく
+    /// 1 人が複数テナントのアプリを認可し得る（ADR-0044 決定 3 と同じ理由）。画面の「連携済み
+    /// アプリ」が現在のテナントぶんしか出ないからといってそこへ揃えると、**見えていないテナントの
+    /// 鍵だけが生き残る**。取りこぼした鍵は「入れ替えたつもり」を裏切るが、余分に落とした鍵は
+    /// 黙って取り直されるだけで済む。
+    ///
+    /// **未消費の authorization code には触れない。** code は数十秒で切れるうえ、いま別タブで
+    /// 進行中のログインを巻き添えにする。落としても、生きたセッションを持つ側は押した直後に
+    /// 新しい code を取れるので、この操作が守りたいものを守れない（守るのはセッションの失効の役目）。
+    ///
+    /// **失敗したら断る**（fail-closed）。画面は残っていて押し直せる。ここで成功を返すと
+    /// 「入れ替えたつもりで古い鍵が生きている」という一番まずい結果を画面が肯定してしまう
+    /// （ADR-0044 のセルフサービス失効と同じ基準）。
+    pub async fn reissue_tokens(
+        &self,
+        tenant: TenantContext,
+        sso_session_id: &str,
+        ctx: &RequestContext,
+    ) -> ReissueTokensOutcome {
+        let now = self.clock.now();
+        let current_hash = crypto::sha256_hex(sso_session_id);
+        let user_id = match self.resolve_active_user_id(&current_hash, now).await {
+            Ok(Some(id)) => id,
+            Ok(None) => return ReissueTokensOutcome::SessionExpired,
+            Err(e) => return ReissueTokensOutcome::Internal(e),
+        };
+
+        let revoked = match self.refresh_tokens.revoke_all_for_user(user_id, now).await {
+            Ok(count) => count,
+            Err(e) => return ReissueTokensOutcome::Internal(e.to_string()),
+        };
+
+        self.audit
+            .record(
+                AuditEventType::RefreshTokenRevoked,
+                AuditResult::Success,
+                Some(tenant.tenant_id()),
+                Some(user_id),
+                None,
+                Some(&format!("self_service_reissue refresh_tokens={revoked}")),
+                ctx,
+            )
+            .await;
+        ReissueTokensOutcome::Ok { revoked }
     }
 
     /// SSO セッションから本人を解決する。セッション無効・ユーザー不在・無効化済みは `Ok(None)`
@@ -574,6 +643,13 @@ mod tests {
         }
     }
 
+    /// リポジトリを失敗させる箇所（fail-closed の確認用）。
+    #[derive(Default, Clone, Copy)]
+    struct Failures {
+        session_revoke: bool,
+        user_revoke: bool,
+    }
+
     #[derive(Default)]
     struct FakeRefreshTokens {
         /// 失効を要求された `(テナント, 利用者, クライアント)`。連携解除がクライアント単位に
@@ -581,8 +657,9 @@ mod tests {
         revoked: Mutex<Vec<(TenantId, Uuid, String)>>,
         /// セッション単位で失効を要求された `(利用者, sid)`（ADR-0044）。
         revoked_sessions: Mutex<Vec<(Uuid, String)>>,
-        /// セッション単位の失効を失敗させる（fail-closed を確かめるため）。
-        fail_session_revoke: bool,
+        /// 利用者単位で失効を要求された利用者（ADR-0047 のトークン再発行）。
+        revoked_users: Mutex<Vec<Uuid>>,
+        failures: Failures,
     }
     #[async_trait]
     impl RefreshTokenRepository for FakeRefreshTokens {
@@ -606,8 +683,12 @@ mod tests {
         async fn exists_by_parent_hash(&self, _h: &str) -> DomainResult<bool> {
             unreachable!()
         }
-        async fn revoke_all_for_user(&self, _u: Uuid, _at: DateTime<Utc>) -> DomainResult<()> {
-            unreachable!()
+        async fn revoke_all_for_user(&self, u: Uuid, _at: DateTime<Utc>) -> DomainResult<u64> {
+            if self.failures.user_revoke {
+                return Err(crate::domain::error::DomainError::Repository("boom".into()));
+            }
+            self.revoked_users.lock().unwrap().push(u);
+            Ok(3)
         }
         async fn revoke_all_for_session(
             &self,
@@ -615,7 +696,7 @@ mod tests {
             sid: &str,
             _at: DateTime<Utc>,
         ) -> DomainResult<u64> {
-            if self.fail_session_revoke {
+            if self.failures.session_revoke {
                 return Err(crate::domain::error::DomainError::Repository("boom".into()));
             }
             self.revoked_sessions
@@ -662,15 +743,14 @@ mod tests {
     }
 
     fn harness(active_user: bool) -> Harness {
-        harness_with(active_user, false)
+        harness_with(active_user, Failures::default())
     }
 
-    /// `fail_session_revoke` はセッション単位の失効を失敗させる（fail-closed の確認用）。
-    fn harness_with(active_user: bool, fail_session_revoke: bool) -> Harness {
+    fn harness_with(active_user: bool, failures: Failures) -> Harness {
         let sessions = Arc::new(FakeSsoSessions::default());
         let consents = Arc::new(FakeConsents::default());
         let refresh_tokens = Arc::new(FakeRefreshTokens {
-            fail_session_revoke,
+            failures,
             ..Default::default()
         });
         let clock: Arc<dyn Clock> = Arc::new(FixedClock);
@@ -816,7 +896,13 @@ mod tests {
     /// ここで成功を返すと「切ったつもりで切れていない」を画面が肯定してしまう。
     #[tokio::test]
     async fn a_failed_token_revocation_fails_the_whole_request() {
-        let h = harness_with(true, true);
+        let h = harness_with(
+            true,
+            Failures {
+                session_revoke: true,
+                ..Default::default()
+            },
+        );
         h.sessions.rows.lock().unwrap().extend([
             session("current-cookie", vec![AuthenticationMethod::Password], true),
             session("other-cookie", vec![AuthenticationMethod::Password], true),
@@ -941,5 +1027,89 @@ mod tests {
                 .await,
             SecurityOverviewOutcome::SessionExpired
         ));
+    }
+
+    /// トークンの再発行は、当人のトークンを全部落として**それ以外に触らない**（ADR-0047）。
+    ///
+    /// セッションまで消えると「アプリの鍵を入れ替えたい」だけの利用者が締め出され、同意まで
+    /// 消えると次のログインで同意画面が出る。どちらもこの操作が約束していないことである。
+    #[tokio::test]
+    async fn reissuing_tokens_touches_only_the_tokens() {
+        let h = harness(true);
+        h.sessions.rows.lock().unwrap().extend([
+            session("current-cookie", vec![AuthenticationMethod::Password], true),
+            session("other-cookie", vec![AuthenticationMethod::Password], true),
+        ]);
+        h.consents.rows.lock().unwrap().push(ClientConsent {
+            user_id: user_id(),
+            tenant_id: tenant_id(),
+            client_id: "app-a".to_string(),
+            scopes: vec!["openid".to_string()],
+            granted_at: now(),
+            updated_at: now(),
+        });
+
+        assert!(matches!(
+            h.service
+                .reissue_tokens(TenantContext::new(tenant_id()), "current-cookie", &ctx())
+                .await,
+            // 落とした本数がそのまま返る（画面が「対象なし」を出し分けるため）。
+            ReissueTokensOutcome::Ok { revoked: 3 }
+        ));
+
+        // 落とすのは利用者単位で 1 回。クライアント単位・セッション単位の失効は使わない
+        // （テナントやセッションで絞ると、見えていないぶんの鍵が生き残る）。
+        assert_eq!(
+            *h.refresh_tokens.revoked_users.lock().unwrap(),
+            vec![user_id()]
+        );
+        assert!(h.refresh_tokens.revoked.lock().unwrap().is_empty());
+        assert!(h.refresh_tokens.revoked_sessions.lock().unwrap().is_empty());
+        // 端末も連携も残る。
+        assert_eq!(h.sessions.rows.lock().unwrap().len(), 2);
+        assert_eq!(h.consents.rows.lock().unwrap().len(), 1);
+    }
+
+    /// 落とせなかったら成功と言わない（fail-closed）。画面は残っていて押し直せる。
+    #[tokio::test]
+    async fn a_failed_reissue_is_not_reported_as_success() {
+        let h = harness_with(
+            true,
+            Failures {
+                user_revoke: true,
+                ..Default::default()
+            },
+        );
+        h.sessions.rows.lock().unwrap().push(session(
+            "current-cookie",
+            vec![AuthenticationMethod::Password],
+            true,
+        ));
+
+        assert!(matches!(
+            h.service
+                .reissue_tokens(TenantContext::new(tenant_id()), "current-cookie", &ctx())
+                .await,
+            ReissueTokensOutcome::Internal(_)
+        ));
+    }
+
+    /// 無効化された利用者には再発行もさせない（画面表示・失効と同じ判定）。
+    #[tokio::test]
+    async fn a_disabled_user_cannot_reissue_tokens() {
+        let h = harness(false);
+        h.sessions.rows.lock().unwrap().push(session(
+            "current-cookie",
+            vec![AuthenticationMethod::Password],
+            true,
+        ));
+
+        assert!(matches!(
+            h.service
+                .reissue_tokens(TenantContext::new(tenant_id()), "current-cookie", &ctx())
+                .await,
+            ReissueTokensOutcome::SessionExpired
+        ));
+        assert!(h.refresh_tokens.revoked_users.lock().unwrap().is_empty());
     }
 }

@@ -19,7 +19,7 @@ use crate::application::account_language::{UpdateLanguageCommand, UpdateLanguage
 use crate::application::account_password::{AccountPasswordCommand, AccountPasswordOutcome};
 use crate::application::account_profile::{ProfileOutcome, UpdateNameCommand, UpdateNameOutcome};
 use crate::application::account_security::{
-    RevokeConsentOutcome, RevokeSessionOutcome, SecurityOverviewOutcome,
+    ReissueTokensOutcome, RevokeConsentOutcome, RevokeSessionOutcome, SecurityOverviewOutcome,
 };
 use crate::application::account_tenants::ListTenantsOutcome;
 use crate::application::account_theme::{UpdateThemeCommand, UpdateThemeOutcome};
@@ -51,6 +51,7 @@ use assay_contracts::auth::{
     AccountConnectedAppSummary, AccountSessionSummary, AccountTenantSummary,
     InternalAccountChangePasswordRequest, InternalAccountChangePasswordResponse,
     InternalAccountProfileRequest, InternalAccountProfileResponse,
+    InternalAccountReissueTokensRequest, InternalAccountReissueTokensResponse,
     InternalAccountRevokeConsentRequest, InternalAccountRevokeConsentResponse,
     InternalAccountRevokeSessionRequest, InternalAccountRevokeSessionResponse,
     InternalAccountSecurityRequest, InternalAccountSecurityResponse, InternalAccountTenantsRequest,
@@ -941,6 +942,40 @@ pub async fn account_revoke_consent(
         RevokeConsentOutcome::Internal(e) => {
             tracing::error!(error = %e, "account consent revocation failed with internal error");
             InternalAccountRevokeConsentResponse::Internal
+        }
+    }))
+}
+
+/// 発行済みトークンの再発行（`POST /internal/account/security/reissue-tokens`。ADR-0047）。
+///
+/// 当人の refresh token を全部失効させる。セッションにも同意にも触れないので、アプリは
+/// 次の更新で SSO 越しに取り直す。
+pub async fn account_reissue_tokens(
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Json(req): Json<InternalAccountReissueTokensRequest>,
+) -> Result<Json<InternalAccountReissueTokensResponse>, Response> {
+    let ctx = RequestContext {
+        correlation_id: correlation.0,
+        ip_address: req.ip_address,
+        user_agent: req.user_agent,
+    };
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
+    let outcome = state
+        .account_security
+        .reissue_tokens(tenant, &req.sso_session_id, &ctx)
+        .await;
+    Ok(Json(match outcome {
+        ReissueTokensOutcome::Ok { revoked } => {
+            InternalAccountReissueTokensResponse::Ok { revoked }
+        }
+        ReissueTokensOutcome::SessionExpired => {
+            InternalAccountReissueTokensResponse::SessionExpired
+        }
+        ReissueTokensOutcome::Internal(e) => {
+            tracing::error!(error = %e, "account token reissue failed with internal error");
+            InternalAccountReissueTokensResponse::Internal
         }
     }))
 }

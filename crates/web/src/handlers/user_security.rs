@@ -1,6 +1,7 @@
 //! 利用者セルフサービスのセキュリティ画面（web。`/{tenant_id}/settings/security`。G10）。
 //!
-//! ログイン中のセッション一覧・失効と、連携済みアプリ（consent）の確認・取り消しを提供する。
+//! ログイン中のセッション一覧・失効、連携済みアプリ（consent）の確認・取り消し、発行済み
+//! トークンの再発行（ADR-0047）を提供する。
 //! 判定と永続化は api（`/internal/account/security*`）に委ね、web は CSRF 検証・画面描画・
 //! リダイレクトのみを担う（設定画面 `user_settings` と同じ責務分担）。
 //!
@@ -18,6 +19,7 @@ use crate::state::WebState;
 use crate::templates::{render, ConnectedAppView, SecuritySessionView, UserSecurity};
 use crate::tenant::WebTenant;
 use assay_contracts::auth::{
+    InternalAccountReissueTokensRequest, InternalAccountReissueTokensResponse,
     InternalAccountRevokeConsentRequest, InternalAccountRevokeConsentResponse,
     InternalAccountRevokeSessionRequest, InternalAccountRevokeSessionResponse,
     InternalAccountSecurityRequest, InternalAccountSecurityResponse,
@@ -46,6 +48,12 @@ pub struct RevokeSessionForm {
 #[derive(Debug, Deserialize)]
 pub struct RevokeConsentForm {
     pub client_id: String,
+    pub csrf_token: String,
+}
+
+/// トークンの再発行は対象を選ばない（当人ぶんを全部落とす）ので CSRF トークンだけを受ける。
+#[derive(Debug, Deserialize)]
+pub struct ReissueTokensForm {
     pub csrf_token: String,
 }
 
@@ -250,11 +258,75 @@ pub async fn revoke_consent(
     }
 }
 
+/// 発行済みトークンの再発行（`POST /{tenant_id}/settings/security/reissue-tokens`。ADR-0047）。
+///
+/// **step-up は要求しない。** セッションの失効に本人確認を挟むのは、セッションを盗んだ側が
+/// 本人の端末を先に切って締め出せるためだが、この操作は端末を切らない（誰も締め出されず、
+/// アプリは黙って取り直す）。安全側へ倒すための操作に本人確認の壁を置くと、心当たりがある
+/// 利用者ほど押せなくなる。
+pub async fn reissue_tokens(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Form(form): Form<ReissueTokensForm>,
+) -> Response {
+    let base = format!("{}/settings/security", tenant.prefix());
+    let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
+        return found(&format!("{}/login", tenant.prefix()));
+    };
+    if !assay_contracts::csrf::verify(
+        &console_csrf_token(&sso, state.config.csrf_secret()),
+        &form.csrf_token,
+    ) {
+        tracing::warn!(
+            correlation_id = %correlation.0,
+            "security token reissue rejected: csrf token mismatch"
+        );
+        return see_other(&format!("{base}?error=csrf"));
+    }
+
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
+    let request = InternalAccountReissueTokensRequest {
+        tenant_id: Some(tenant.0.clone()),
+        sso_session_id: sso,
+        ip_address: ctx.ip_address,
+        user_agent: ctx.user_agent,
+    };
+    match state
+        .api
+        .account_reissue_tokens(&ctx.correlation_id, &request)
+        .await
+    {
+        // 0 件も成功だが、利用者には区別して伝える（同じ「完了しました」だけを返すと、
+        // 効いていないのか元から無いのかが分からない。管理コンソールの MFA 解除と同じ扱い）。
+        Ok(InternalAccountReissueTokensResponse::Ok { revoked: 0 }) => {
+            see_other(&format!("{base}?saved=tokens-none"))
+        }
+        Ok(InternalAccountReissueTokensResponse::Ok { .. }) => {
+            see_other(&format!("{base}?saved=tokens-reissued"))
+        }
+        Ok(InternalAccountReissueTokensResponse::SessionExpired) => {
+            found(&format!("{}/login", tenant.prefix()))
+        }
+        Ok(InternalAccountReissueTokensResponse::Internal) => {
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "account token reissue call to api failed");
+            internal_call_status(&e).into_response()
+        }
+    }
+}
+
 /// PRG のクエリ値を翻訳キーへ写す（未知の値は表示しない ＝ 任意文字列を画面へ出させない）。
 fn saved_key_for(value: &str) -> Option<&'static str> {
     match value {
         "session-revoked" => Some("user-security-saved-session-revoked"),
         "consent-revoked" => Some("user-security-saved-consent-revoked"),
+        "tokens-reissued" => Some("user-security-saved-tokens-reissued"),
+        "tokens-none" => Some("user-security-saved-tokens-none"),
         _ => None,
     }
 }
@@ -279,6 +351,10 @@ mod tests {
         assert_eq!(
             saved_key_for("session-revoked"),
             Some("user-security-saved-session-revoked")
+        );
+        assert_eq!(
+            saved_key_for("tokens-none"),
+            Some("user-security-saved-tokens-none")
         );
         assert_eq!(saved_key_for("<script>"), None);
         assert_eq!(error_key_for("csrf"), Some("user-security-error-csrf"));

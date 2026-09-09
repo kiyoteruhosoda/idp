@@ -1466,6 +1466,30 @@ pub enum InternalAccountRevokeConsentResponse {
     Internal,
 }
 
+/// トークン再発行 API（`POST /internal/account/security/reissue-tokens`。ADR-0047）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAccountReissueTokensRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// トークン再発行 API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAccountReissueTokensResponse {
+    /// 失効させた。`revoked` は落とした本数で、**0 も成功**（生きているトークンが無かった）。
+    Ok {
+        revoked: u64,
+    },
+    SessionExpired,
+    Internal,
+}
+
 // ── Step-up 認証（AP5） ──────────────────────────────────────────────────────
 
 /// Step-up の判定・検証 API が扱う重要操作。値は `domain::step_up::SensitiveOperation` の

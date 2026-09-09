@@ -178,6 +178,11 @@ pub fn build(state: AppState) -> Router {
             "/internal/account/security/revoke-consent",
             post(internal_auth::account_revoke_consent),
         )
+        // 発行済みトークンの再発行（本人。ADR-0047）。
+        .route(
+            "/internal/account/security/reissue-tokens",
+            post(internal_auth::account_reissue_tokens),
+        )
         // ログイン中ユーザーの所属テナント列挙（テナント切り替え UI）。
         .route(
             "/internal/account/tenants",
@@ -407,6 +412,11 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/admin/users/{user_id}/mfa-reset",
             post(admin_users::reset_user_mfa),
+        )
+        // 発行済み refresh token の一括失効（管理者。ADR-0047）。idp.users:write 必須。
+        .route(
+            "/admin/users/{user_id}/token-reissue",
+            post(admin_users::reissue_user_tokens),
         )
         // アカウントロックの即時解除（AP6。仕様 §17.1・§24.6）。idp.users:write 必須。
         .route(
