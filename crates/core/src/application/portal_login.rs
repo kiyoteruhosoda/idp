@@ -330,6 +330,9 @@ impl PortalLoginService {
             Ok(LoginIdentifierMatch::Resolved(u)) => u,
             // 不在と曖昧で応答は変えない（存在の露呈を避ける）。監査に残す理由だけを分ける。
             Ok(LoginIdentifierMatch::Unresolved(reason)) => {
+                // 実在利用者と同じ argon2 検証を 1 回消費し、応答時間で利用者の有無を
+                // 推し量れないようにする（列挙対策）。
+                crate::domain::password::verify_against_dummy(self.hasher.as_ref(), &cmd.password);
                 self.record_failure(tenant_id, None, reason.audit_code(), ctx)
                     .await;
                 return PortalLoginOutcome::InvalidCredentials;
@@ -614,7 +617,13 @@ impl PortalLoginService {
         {
             Ok(LoginIdentifierMatch::Resolved(u)) => u,
             Ok(LoginIdentifierMatch::Unresolved(_)) => {
-                return PortalChangePasswordOutcome::InvalidCredentials
+                // 実在利用者と同じ argon2 検証を 1 回消費し、応答時間で利用者の有無を
+                // 推し量れないようにする（列挙対策）。
+                crate::domain::password::verify_against_dummy(
+                    self.hasher.as_ref(),
+                    &cmd.current_password,
+                );
+                return PortalChangePasswordOutcome::InvalidCredentials;
             }
             Err(e) => return PortalChangePasswordOutcome::Internal(e.to_string()),
         };
@@ -993,8 +1002,16 @@ impl PortalLoginService {
             Ok(Some(record)) if record.is_confirmed() && !totp_blocked => {
                 let secret = crypto::decrypt(&record.secret_encrypted, &self.key_encryption_key)
                     .map_err(|e| e.to_string())?;
-                if verify_totp_code(&secret, code).map_err(|e| e.to_string())? {
-                    return Ok(Some(AuthenticationMethod::Totp));
+                if let Some(step) = verify_totp_code(&secret, code).map_err(|e| e.to_string())? {
+                    // 受理したステップを記録できたときだけ通す（同じ・古いコードの再利用を拒否）。
+                    let recorded = self
+                        .totp_secrets
+                        .record_totp_step_if_newer(user_id, step as i64, self.clock.now())
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if recorded {
+                        return Ok(Some(AuthenticationMethod::Totp));
+                    }
                 }
             }
             Ok(_) => {}

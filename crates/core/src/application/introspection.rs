@@ -21,7 +21,7 @@ use crate::domain::repositories::{
     UserRepository,
 };
 use crate::domain::tenant_context::TenantContext;
-use jsonwebtoken::{Algorithm, Validation};
+use jsonwebtoken::Validation;
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -189,12 +189,15 @@ impl IntrospectionService {
             Ok(Some(k)) => k,
             _ => return IntrospectionResponse::inactive(),
         };
-        let decoding_key = match jwt::decoding_key_from_public_pem(&key.public_key) {
+        // 検証アルゴリズムは署名鍵の algorithm（RS256 / ES256）で決める。RS256 決め打ちだと
+        // ES256 鍵を ACTIVE にした環境の at+jwt が常に inactive 判定になる（/userinfo と同方針）。
+        let (decoding_key, algorithm) = match jwt::decoding_key_for(&key.algorithm, &key.public_key)
+        {
             Ok(k) => k,
             Err(_) => return IntrospectionResponse::inactive(),
         };
 
-        let mut validation = Validation::new(Algorithm::RS256);
+        let mut validation = Validation::new(algorithm);
         validation.validate_exp = false;
         validation.validate_aud = false;
         validation.required_spec_claims.clear();

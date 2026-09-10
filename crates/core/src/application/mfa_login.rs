@@ -473,8 +473,17 @@ impl MfaLoginService {
             Ok(Some(record)) if record.is_confirmed() && !totp_blocked => {
                 let secret = crypto::decrypt(&record.secret_encrypted, &self.key_encryption_key)
                     .map_err(|e| e.to_string())?;
-                if verify_totp_code(&secret, code).map_err(|e| e.to_string())? {
-                    return Ok(Some(AuthenticationMethod::Totp));
+                if let Some(step) = verify_totp_code(&secret, code).map_err(|e| e.to_string())? {
+                    // 受理したステップを記録できたときだけ通す。記録できない＝同じ（か古い）
+                    // コードの再利用なので、正しい 6 桁でも第二要素としては認めない（リプレイ対策）。
+                    let recorded = self
+                        .totp_secrets
+                        .record_totp_step_if_newer(user_id, step as i64, self.clock.now())
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if recorded {
+                        return Ok(Some(AuthenticationMethod::Totp));
+                    }
                 }
             }
             Ok(_) => {}
