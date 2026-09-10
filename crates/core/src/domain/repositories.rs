@@ -1172,6 +1172,22 @@ pub trait TotpSecretRepository: Send + Sync {
     async fn confirm(&self, user_id: Uuid, confirmed_at: DateTime<Utc>) -> Result<()>;
     /// ユーザーの TOTP シークレットを削除する（冪等: 不存在でもエラーにしない）。
     async fn delete(&self, user_id: Uuid) -> Result<()>;
+
+    /// 受理した TOTP の time-step を記録する。**記録済みのステップより新しいときだけ**書き込み、
+    /// 書き込めたら `true`、既に同じか新しいステップが記録済みなら `false` を返す（リプレイ検出。
+    /// RFC 6238 §5.2）。判定と書き込みは 1 文で原子的に行い、同じコードで競合する 2 つのリクエストの
+    /// うち一方だけを通す。
+    ///
+    /// 既定実装は常に `true`（記録せず素通し）。TOTP のリプレイ防止が要るのは実 DB 実装だけで、
+    /// テスト用のフェイクはこのガードを持つ必要が無い。
+    async fn record_totp_step_if_newer(
+        &self,
+        _user_id: Uuid,
+        _step: i64,
+        _at: DateTime<Utc>,
+    ) -> Result<bool> {
+        Ok(true)
+    }
 }
 
 /// 外部 IdP 設定（AP10。仕様 §13）の永続化。テナント境界は `tenant_id` で強制する。

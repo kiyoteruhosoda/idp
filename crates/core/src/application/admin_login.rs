@@ -364,6 +364,12 @@ impl AdminLoginService {
             Ok(LoginIdentifierMatch::Resolved(u)) => u,
             // 不在と曖昧で応答は変えない（存在の露呈を避ける）。監査に残す理由だけを分ける。
             Ok(LoginIdentifierMatch::Unresolved(reason)) => {
+                // 実在利用者と同じ argon2 検証を 1 回消費し、応答時間で利用者の有無を
+                // 推し量れないようにする（列挙対策）。
+                crate::domain::password::verify_against_dummy(
+                    self.hasher.as_ref(),
+                    &cmd.password,
+                );
                 self.audit
                     .record(
                         AuditEventType::LoginFailed,
@@ -691,7 +697,13 @@ impl AdminLoginService {
         {
             Ok(LoginIdentifierMatch::Resolved(u)) => u,
             Ok(LoginIdentifierMatch::Unresolved(_)) => {
-                return AdminLoginOutcome::InvalidCredentials
+                // 実在利用者と同じ argon2 検証を 1 回消費し、応答時間で利用者の有無を
+                // 推し量れないようにする（列挙対策）。
+                crate::domain::password::verify_against_dummy(
+                    self.hasher.as_ref(),
+                    &cmd.current_password,
+                );
+                return AdminLoginOutcome::InvalidCredentials;
             }
             Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
         };

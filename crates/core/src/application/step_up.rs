@@ -267,11 +267,23 @@ impl StepUpService {
                 Ok(b) => b,
                 Err(e) => return StepUpVerifyOutcome::Internal(e.to_string()),
             };
-            let code_ok = match verify_totp_code(&secret, code) {
+            let matched_step = match verify_totp_code(&secret, code) {
                 Ok(v) => v,
                 Err(e) => return StepUpVerifyOutcome::Internal(e.to_string()),
             };
-            if !code_ok {
+            // ステップを記録できたときだけ受理する（同じ・古いコードの再利用を拒否。リプレイ対策）。
+            let accepted = match matched_step {
+                Some(step) => match self
+                    .totp_secrets
+                    .record_totp_step_if_newer(user.id, step as i64, now)
+                    .await
+                {
+                    Ok(recorded) => recorded,
+                    Err(e) => return StepUpVerifyOutcome::Internal(e.to_string()),
+                },
+                None => false,
+            };
+            if !accepted {
                 self.record_failure(tenant, cmd.operation, user.id, "invalid_totp", ctx)
                     .await;
                 return StepUpVerifyOutcome::InvalidCredentials;

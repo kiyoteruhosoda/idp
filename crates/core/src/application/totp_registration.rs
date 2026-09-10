@@ -153,11 +153,16 @@ impl TotpRegistrationService {
         let secret_bytes = crypto::decrypt(&record.secret_encrypted, &self.key_encryption_key)
             .map_err(|e| TotpRegistrationError::Internal(e.to_string()))?;
 
-        if !verify_totp_code(&secret_bytes, code)? {
+        let Some(step) = verify_totp_code(&secret_bytes, code)? else {
             return Err(TotpRegistrationError::InvalidCode);
-        }
+        };
 
         let now = self.clock.now();
+        // 確認に使ったコードのステップを記録しておき、同じコードを直後のログインで再利用できない
+        // ようにする（登録→初回ログインの窓を跨いだリプレイを塞ぐ。RFC 6238 §5.2）。
+        self.totp_secrets
+            .record_totp_step_if_newer(user_id, step as i64, now)
+            .await?;
         self.totp_secrets.confirm(user_id, now).await?;
         self.authenticators
             .activate_totp(user_id)
@@ -229,19 +234,99 @@ fn build_totp_uri(
     Ok(totp.get_url())
 }
 
-/// TOTP コードを検証する。`true` なら有効。
-pub fn verify_totp_code(secret_bytes: &[u8], code: &str) -> Result<bool, TotpRegistrationError> {
-    // アカウント名は検証に不要（issuer も同様）。空文字で構わない。
+/// TOTP コードを検証し、一致した **time-step**（unix 秒 / `TOTP_STEP`）を返す。`None` なら無効。
+///
+/// 単なる真偽ではなくステップを返すのは、受理したコードの**再利用**（リプレイ）を防ぐためである
+/// （RFC 6238 §5.2）。呼び出し側は返ったステップを記録し、同じか古いステップのコードを再受理
+/// しない（`TotpSecretRepository::record_totp_step_if_newer`）。skew を許すため、現在ステップの
+/// 前後 `TOTP_SKEW` 個を新しい側から順に照合し、最初に一致したステップを返す。
+///
+/// 時刻は `totp-rs` の `check_current` と同じく実時刻（`SystemTime`）を使う。TOTP は元々実時刻に
+/// 束縛される要素で、ステップの算出も同じ時計に合わせる（この 1 か所に集約する）。
+pub fn verify_totp_code(secret_bytes: &[u8], code: &str) -> Result<Option<u64>, TotpRegistrationError> {
+    // skew はここで自前に扱うため、TOTP 自体は skew=0 で作る（`check` に厳密なステップを問う）。
     let totp = TOTP::new(
         Algorithm::SHA1,
         TOTP_DIGITS,
-        TOTP_SKEW,
+        0,
         TOTP_STEP,
         secret_bytes.to_vec(),
         None,
         String::new(),
     )
     .map_err(|e| TotpRegistrationError::Internal(format!("failed to build TOTP: {e}")))?;
-    totp.check_current(code)
-        .map_err(|e| TotpRegistrationError::Internal(format!("TOTP check failed: {e}")))
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| TotpRegistrationError::Internal(format!("system clock before epoch: {e}")))?
+        .as_secs();
+    let base = (now_secs / TOTP_STEP) as i64;
+    let skew = TOTP_SKEW as i64;
+    // 新しいステップを優先して返す（同じコードが窓内の複数ステップに現れることは無いが、順序を
+    // 決めておくと記録するステップが一意になる）。
+    for delta in (-skew..=skew).rev() {
+        let step = base + delta;
+        if step < 0 {
+            continue;
+        }
+        let time = (step as u64) * TOTP_STEP;
+        // `check` は skew=0 のこの TOTP では `time` のステップだけを（定数時間比較で）照合する。
+        if totp.check(code, time) {
+            return Ok(Some(step as u64));
+        }
+    }
+    Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 現在有効なコードを実時刻で生成する（`verify_totp_code` と同じパラメータ）。
+    fn current_code(secret: &[u8]) -> (String, u64) {
+        let totp = TOTP::new(
+            Algorithm::SHA1,
+            TOTP_DIGITS,
+            0,
+            TOTP_STEP,
+            secret.to_vec(),
+            None,
+            String::new(),
+        )
+        .unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        (totp.generate(now), now / TOTP_STEP)
+    }
+
+    #[test]
+    fn a_valid_code_returns_the_matching_step() {
+        let secret = [7u8; SECRET_BYTES];
+        let (code, step) = current_code(&secret);
+        assert_eq!(verify_totp_code(&secret, &code).unwrap(), Some(step));
+    }
+
+    #[test]
+    fn a_wrong_code_returns_none() {
+        let secret = [7u8; SECRET_BYTES];
+        // 現在の正しいコードとは必ず異なる 6 桁を作る（末尾桁をずらす）。
+        let (code, _) = current_code(&secret);
+        let last: u32 = code[5..6].parse().unwrap();
+        let tampered = format!("{}{}", &code[..5], (last + 1) % 10);
+        assert_eq!(verify_totp_code(&secret, &tampered).unwrap(), None);
+    }
+
+    /// 返るステップは「今の time-step」であること（記録・再利用判定の基準になる値）。
+    #[test]
+    fn the_returned_step_is_the_current_time_step() {
+        let secret = [42u8; SECRET_BYTES];
+        let (code, step) = current_code(&secret);
+        let matched = verify_totp_code(&secret, &code).unwrap().unwrap();
+        // 生成と検証の間に境界を跨ぐと 1 ずれ得るため、±1 を許容する。
+        assert!(
+            matched == step || matched == step + 1 || matched + 1 == step,
+            "matched={matched} step={step}"
+        );
+    }
 }

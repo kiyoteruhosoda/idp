@@ -123,4 +123,32 @@ impl TotpSecretRepository for SqlxTotpSecretRepository {
         .map_err(repo_err)?;
         Ok(())
     }
+
+    /// 受理した time-step を記録する。**記録済みより新しいときだけ**更新し、更新できたら `true`。
+    ///
+    /// `totp_last_used_step < ?` を WHERE に含めることで、判定と書き込みを 1 文の原子的操作にする。
+    /// 同じコード（同じステップ）で競合した 2 つのリクエストのうち、先に UPDATE した一方だけが
+    /// `rows_affected == 1` になり、もう一方は `0`（＝リプレイ）になる。NULL（未記録）は
+    /// `COALESCE` で -1 とみなし、初回は必ず記録できるようにする。
+    async fn record_totp_step_if_newer(
+        &self,
+        user_id: Uuid,
+        step: i64,
+        at: DateTime<Utc>,
+    ) -> Result<bool> {
+        let result = sqlx::query(
+            "UPDATE user_authenticators \
+             SET totp_last_used_step = ?, last_used_at = ? \
+             WHERE user_id = ? AND authenticator_type = 'totp' AND status <> 'revoked' \
+               AND COALESCE(totp_last_used_step, -1) < ?",
+        )
+        .bind(step)
+        .bind(at.naive_utc())
+        .bind(user_id.to_string())
+        .bind(step)
+        .execute(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        Ok(result.rows_affected() > 0)
+    }
 }

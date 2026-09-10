@@ -12,7 +12,7 @@ use crate::domain::repositories::{
 };
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::Scope;
-use jsonwebtoken::{Algorithm, Validation};
+use jsonwebtoken::Validation;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -141,11 +141,15 @@ impl UserInfoService {
             .await
             .map_err(|e| UserInfoError::Internal(e.to_string()))?
             .ok_or(UserInfoError::InvalidToken("unknown signing key"))?;
-        let decoding_key = jwt::decoding_key_from_public_pem(&key.public_key)
+        // 検証アルゴリズムは**署名鍵の algorithm**（RS256 / ES256）で決める。ここを RS256 に
+        // 決め打ちにすると、ES256 鍵を ACTIVE にした環境で発行された at+jwt が /userinfo で
+        // すべて弾かれる（管理コンソールは ES256 も選べ、`token::sign_access_token` は鍵の
+        // algorithm で署名するため）。管理トークン検証（`management_token`）と同じ扱いに揃える。
+        let (decoding_key, algorithm) = jwt::decoding_key_for(&key.algorithm, &key.public_key)
             .map_err(|e| UserInfoError::Internal(e.to_string()))?;
 
         // exp / aud は Clock トレイト経由の時刻で自前検証する（テストで時刻固定するため）。
-        let mut validation = Validation::new(Algorithm::RS256);
+        let mut validation = Validation::new(algorithm);
         validation.validate_exp = false;
         validation.validate_aud = false;
         validation.required_spec_claims.clear();
