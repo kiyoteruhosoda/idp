@@ -23,11 +23,7 @@ pub trait PasswordHasher: Send + Sync {
 pub fn verify_against_dummy(hasher: &dyn PasswordHasher, presented_password: &str) {
     use std::sync::OnceLock;
     static DUMMY_HASH: OnceLock<Option<String>> = OnceLock::new();
-    let dummy = DUMMY_HASH.get_or_init(|| {
-        hasher
-            .hash("timing-equalizer.not-a-credential")
-            .ok()
-    });
+    let dummy = DUMMY_HASH.get_or_init(|| hasher.hash("timing-equalizer.not-a-credential").ok());
     if let Some(hash) = dummy {
         // 結果は使わない。実在利用者の `verify` と同じ argon2 計算を消費することだけが目的。
         let _ = hasher.verify(presented_password, hash);

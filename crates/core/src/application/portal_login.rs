@@ -332,10 +332,7 @@ impl PortalLoginService {
             Ok(LoginIdentifierMatch::Unresolved(reason)) => {
                 // 実在利用者と同じ argon2 検証を 1 回消費し、応答時間で利用者の有無を
                 // 推し量れないようにする（列挙対策）。
-                crate::domain::password::verify_against_dummy(
-                    self.hasher.as_ref(),
-                    &cmd.password,
-                );
+                crate::domain::password::verify_against_dummy(self.hasher.as_ref(), &cmd.password);
                 self.record_failure(tenant_id, None, reason.audit_code(), ctx)
                     .await;
                 return PortalLoginOutcome::InvalidCredentials;

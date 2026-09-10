@@ -243,7 +243,10 @@ fn build_totp_uri(
 ///
 /// 時刻は `totp-rs` の `check_current` と同じく実時刻（`SystemTime`）を使う。TOTP は元々実時刻に
 /// 束縛される要素で、ステップの算出も同じ時計に合わせる（この 1 か所に集約する）。
-pub fn verify_totp_code(secret_bytes: &[u8], code: &str) -> Result<Option<u64>, TotpRegistrationError> {
+pub fn verify_totp_code(
+    secret_bytes: &[u8],
+    code: &str,
+) -> Result<Option<u64>, TotpRegistrationError> {
     // skew はここで自前に扱うため、TOTP 自体は skew=0 で作る（`check` に厳密なステップを問う）。
     let totp = TOTP::new(
         Algorithm::SHA1,
