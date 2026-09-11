@@ -70,12 +70,25 @@ pass "api /healthz=200・web /readyz=200（web→api 到達）"
 # DB クライアント（docker(idp-test-db) 優先、無ければローカル mariadb/mysql）と root テナント UUID を
 # 先に解決する。api の OIDC/管理エンドポイントは /{tenant_id}/... 配下（ADR-0009 §6・MT9）のため、
 # ダイレクト呼び出しの URL に root テナント UUID を前置する（root は parent_tenant_id IS NULL の唯一の行）。
+# DB クライアントの宛先は `TEST_DATABASE_URL` から取る。
+# ⚠ **127.0.0.1 を直書きしない。** DB が同じホストに居るとは限らない ——
+#   CI をコンテナの中で走らせると、DB はサービス名（`mariadb:3306`）で届く。
+#   直書きのままだと、接続文字列を渡しているのにクライアントだけ別の宛先を
+#   見にいき、**「root テナントが解決できません（seed 未実行？）」という
+#   見当違いの失敗**になる（2026-09-11 に forge へ移して判明）。
+db_authority="${DB_URL#*://}"        # user:pass@host:port/db
+db_authority="${db_authority##*@}"   # host:port/db（合言葉に @ が入っていても最後で切る）
+db_authority="${db_authority%%/*}"   # host:port
+db_host="${db_authority%%:*}"
+db_port="${db_authority#*:}"
+[ "$db_port" = "$db_host" ] && db_port=3306   # ポート省略時
+
 if command -v docker >/dev/null 2>&1 && docker exec idp-test-db true 2>/dev/null; then
   mariadb_exec() { docker exec idp-test-db mariadb -uidp -pidp idp -N -e "$1" 2>/dev/null; }
 elif command -v mariadb >/dev/null 2>&1; then
-  mariadb_exec() { mariadb -h127.0.0.1 -uidp -pidp idp -N -e "$1" 2>/dev/null; }
+  mariadb_exec() { mariadb -h"$db_host" -P"$db_port" -uidp -pidp idp -N -e "$1" 2>/dev/null; }
 elif command -v mysql >/dev/null 2>&1; then
-  mariadb_exec() { mysql -h127.0.0.1 -uidp -pidp idp -N -e "$1" 2>/dev/null; }
+  mariadb_exec() { mysql -h"$db_host" -P"$db_port" -uidp -pidp idp -N -e "$1" 2>/dev/null; }
 else
   fail "テスト用クライアントの投入に docker(idp-test-db) またはローカルの mariadb/mysql クライアントが必要です"
 fi
