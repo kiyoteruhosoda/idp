@@ -93,7 +93,10 @@ db_authority="${db_authority##*@}"   # host:port/db（合言葉に @ が入っ�
 db_authority="${db_authority%%/*}"   # host:port
 db_host="${db_authority%%:*}"
 db_port="${db_authority#*:}"
-[ "$db_port" = "$db_host" ] && db_port=3306   # ポート省略時
+# ⚠ **`[ … ] && …` を終端に置かない。** 条件が偽だと行全体が 1 を返し、
+#   `set -e` がそこでスクリプトを終わらせる ——**何も言わずに止まる**ので、
+#   直前のステップ（api の起動）が失敗したように見える（2026-09-11 に実測）。
+if [ "$db_port" = "$db_host" ]; then db_port=3306; fi   # ポート省略時
 
 if command -v docker >/dev/null 2>&1 && docker exec idp-test-db true 2>/dev/null; then
   mariadb_exec() { docker exec idp-test-db mariadb -uidp -pidp idp -N -e "$1" 2>/dev/null; }
