@@ -83,6 +83,18 @@ pass "api /healthz=200・web /readyz=200（web→api 到達）"
 # 先に解決する。api の OIDC/管理エンドポイントは /{tenant_id}/... 配下（ADR-0009 §6・MT9）のため、
 # ダイレクト呼び出しの URL に root テナント UUID を前置する（root は parent_tenant_id IS NULL の唯一の行）。
 # DB クライアントの宛先は `TEST_DATABASE_URL` から取る。
+#
+# ⚠ **`--skip-ssl` を付ける。** MariaDB のクライアントは **11.4 から既定で TLS を
+#   要求する**ようになった ——テスト用の DB（10.11）は TLS を提供しないので、
+#   新しいクライアントだと `ERROR 2026 (HY000): TLS/SSL error: SSL is required,
+#   but the server does not support it` で繋がらない。⚠ **GitHub の
+#   `ubuntu-latest` に入っていたのは古いクライアント**なので、この既定の差は
+#   移すまで見えなかった（2026-09-11 に実測。クライアントは 11.8.6）。
+#   ⚠ ここが見るのは資格情報が `idp/idp` の**捨てて良いテスト DB** だけである。
+#
+# ⚠ **`2>/dev/null` で握らない。** 握ると `set -e` が無言でスクリプトを終わらせ、
+#   **直前のステップ（api の起動）が失敗したように見える** ——上の TLS の件は、
+#   これのせいで原因に辿り着くまで 3 回走らせることになった。
 # ⚠ **127.0.0.1 を直書きしない。** DB が同じホストに居るとは限らない ——
 #   CI をコンテナの中で走らせると、DB はサービス名（`mariadb:3306`）で届く。
 #   直書きのままだと、接続文字列を渡しているのにクライアントだけ別の宛先を
@@ -101,9 +113,9 @@ if [ "$db_port" = "$db_host" ]; then db_port=3306; fi   # ポート省略時
 if command -v docker >/dev/null 2>&1 && docker exec idp-test-db true 2>/dev/null; then
   mariadb_exec() { docker exec idp-test-db mariadb -uidp -pidp idp -N -e "$1" 2>/dev/null; }
 elif command -v mariadb >/dev/null 2>&1; then
-  mariadb_exec() { mariadb -h"$db_host" -P"$db_port" -uidp -pidp idp -N -e "$1" 2>/dev/null; }
+  mariadb_exec() { mariadb --skip-ssl -h"$db_host" -P"$db_port" -uidp -pidp idp -N -e "$1"; }
 elif command -v mysql >/dev/null 2>&1; then
-  mariadb_exec() { mysql -h"$db_host" -P"$db_port" -uidp -pidp idp -N -e "$1" 2>/dev/null; }
+  mariadb_exec() { mysql --skip-ssl -h"$db_host" -P"$db_port" -uidp -pidp idp -N -e "$1"; }
 else
   fail "テスト用クライアントの投入に docker(idp-test-db) またはローカルの mariadb/mysql クライアントが必要です"
 fi
