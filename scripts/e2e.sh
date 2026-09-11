@@ -50,13 +50,25 @@ trap cleanup EXIT
 info "1) ビルド"
 cargo build -q --bin assay --bin assay-web
 
+# 焼いた実行ファイルの置き場。
+# ⚠ **`./target` を決め打ちしない。** cargo は `CARGO_TARGET_DIR` が在れば
+#   そちらへ出す ——CI で中間物をボリュームへ逃がすとここが動く。
+#   直書きのままだと `No such file or directory` のあと
+#   **「api が起動しません」という見当違いの失敗**になる（2026-09-11 に実測。
+#   ビルドは成功しているので、ログを見ても原因に辿り着きにくい）。
+target_dir="${CARGO_TARGET_DIR:-$repo_root/target}"
+for bin in assay assay-web; do
+  [ -x "$target_dir/debug/$bin" ] ||
+    fail "$target_dir/debug/$bin が無い（CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-（未設定）}）"
+done
+
 info "2) api・web 起動（api=${API_ADDR} / web=${WEB_ADDR}、共有 INTERNAL_SERVICE_TOKEN）"
 DATABASE_URL="$DB_URL" ISSUER="$API" BIND_ADDR="$API_ADDR" INTERNAL_SERVICE_TOKEN="$TOKEN" \
-  RUST_LOG=error ./target/debug/assay &
+  RUST_LOG=error "$target_dir/debug/assay" &
 api_pid=$!
 API_BASE_URL="$API_INTERNAL" WEB_BIND_ADDR="$WEB_ADDR" INTERNAL_SERVICE_TOKEN="$TOKEN" ISSUER="$API" \
   NO_PROXY="localhost,127.0.0.1,::1,${NO_PROXY:-}" no_proxy="localhost,127.0.0.1,::1,${no_proxy:-}" \
-  RUST_LOG=error ./target/debug/assay-web &
+  RUST_LOG=error "$target_dir/debug/assay-web" &
 web_pid=$!
 
 for _ in $(seq 1 30); do
@@ -70,12 +82,40 @@ pass "api /healthz=200・web /readyz=200（web→api 到達）"
 # DB クライアント（docker(idp-test-db) 優先、無ければローカル mariadb/mysql）と root テナント UUID を
 # 先に解決する。api の OIDC/管理エンドポイントは /{tenant_id}/... 配下（ADR-0009 §6・MT9）のため、
 # ダイレクト呼び出しの URL に root テナント UUID を前置する（root は parent_tenant_id IS NULL の唯一の行）。
+# DB クライアントの宛先は `TEST_DATABASE_URL` から取る。
+#
+# ⚠ **`--skip-ssl` を付ける。** MariaDB のクライアントは **11.4 から既定で TLS を
+#   要求する**ようになった ——テスト用の DB（10.11）は TLS を提供しないので、
+#   新しいクライアントだと `ERROR 2026 (HY000): TLS/SSL error: SSL is required,
+#   but the server does not support it` で繋がらない。⚠ **GitHub の
+#   `ubuntu-latest` に入っていたのは古いクライアント**なので、この既定の差は
+#   移すまで見えなかった（2026-09-11 に実測。クライアントは 11.8.6）。
+#   ⚠ ここが見るのは資格情報が `idp/idp` の**捨てて良いテスト DB** だけである。
+#
+# ⚠ **`2>/dev/null` で握らない。** 握ると `set -e` が無言でスクリプトを終わらせ、
+#   **直前のステップ（api の起動）が失敗したように見える** ——上の TLS の件は、
+#   これのせいで原因に辿り着くまで 3 回走らせることになった。
+# ⚠ **127.0.0.1 を直書きしない。** DB が同じホストに居るとは限らない ——
+#   CI をコンテナの中で走らせると、DB はサービス名（`mariadb:3306`）で届く。
+#   直書きのままだと、接続文字列を渡しているのにクライアントだけ別の宛先を
+#   見にいき、**「root テナントが解決できません（seed 未実行？）」という
+#   見当違いの失敗**になる（2026-09-11 に forge へ移して判明）。
+db_authority="${DB_URL#*://}"        # user:pass@host:port/db
+db_authority="${db_authority##*@}"   # host:port/db（合言葉に @ が入っていても最後で切る）
+db_authority="${db_authority%%/*}"   # host:port
+db_host="${db_authority%%:*}"
+db_port="${db_authority#*:}"
+# ⚠ **`[ … ] && …` を終端に置かない。** 条件が偽だと行全体が 1 を返し、
+#   `set -e` がそこでスクリプトを終わらせる ——**何も言わずに止まる**ので、
+#   直前のステップ（api の起動）が失敗したように見える（2026-09-11 に実測）。
+if [ "$db_port" = "$db_host" ]; then db_port=3306; fi   # ポート省略時
+
 if command -v docker >/dev/null 2>&1 && docker exec idp-test-db true 2>/dev/null; then
   mariadb_exec() { docker exec idp-test-db mariadb -uidp -pidp idp -N -e "$1" 2>/dev/null; }
 elif command -v mariadb >/dev/null 2>&1; then
-  mariadb_exec() { mariadb -h127.0.0.1 -uidp -pidp idp -N -e "$1" 2>/dev/null; }
+  mariadb_exec() { mariadb --skip-ssl -h"$db_host" -P"$db_port" -uidp -pidp idp -N -e "$1"; }
 elif command -v mysql >/dev/null 2>&1; then
-  mariadb_exec() { mysql -h127.0.0.1 -uidp -pidp idp -N -e "$1" 2>/dev/null; }
+  mariadb_exec() { mysql --skip-ssl -h"$db_host" -P"$db_port" -uidp -pidp idp -N -e "$1"; }
 else
   fail "テスト用クライアントの投入に docker(idp-test-db) またはローカルの mariadb/mysql クライアントが必要です"
 fi

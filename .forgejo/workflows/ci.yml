@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  # ⚠ **枝への push では走らせない**（forge へ移したとき変えた）。素の `push:` は
+  #   全部の枝を拾うので、PR を開いている枝では **push と pull_request で
+  #   同じコミットを 2 回**組むことになる。GitHub の台は要るだけ増えるので
+  #   誰も困らなかったが、⚠ **セルフホストは 3 台しかなく、しかも 2 本が
+  #   同じ `target/` を取り合って後から来たほうが cargo のロックで止まる**
+  #   （2026-09-11 に実測。1 本が 200% CPU、もう 1 本が 0.5% で待っていた）。
+  push:
+    branches: [main]
+  pull_request:
+
+# ⚠ **同じ枝で 2 本走らせない。** `target/` を名前付きボリュームで共有している
+#   ので、並ぶと後から来たほうが cargo のロック待ちで時間切れになる。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: Rust
+    # ⚠ **docker を使わない関門はこちらの台**（docker.sock を渡さない）。
+    runs-on: [self-hosted, nolumialab]
+    # ⚠ 既定は 6 時間。ぶら下がったジョブが台を食い潰すので上限を置く。
+    timeout-minutes: 60
+    # ⚠ **ジョブそのものをこのイメージの中で走らせる**（forge へ移したとき変えた）。
+    #   GitHub では `dtolnay/rust-toolchain@stable` が毎回 rustup で取り直し、
+    #   `Swatinem/rust-cache@v2` が中間物を持ち回っていた。
+    #   ⚠ **`Swatinem/rust-cache` は act_runner では効かない** ——中身は
+    #   `actions/cache` で、キャッシュ置き場はランナーのコンテナの IP で待って
+    #   おり、ジョブのコンテナからは経路が無い。そこで**イメージに toolchain を
+    #   焼き、中間物は名前付きボリューム**へ置く（定義は deploy-repo の
+    #   `host/services/builders/ci-rust/`、許可は台の `valid_volumes`）。
+    # ⚠ **digest で固定する。** タグのままだと、焼き直した日に
+    #   「昨日は通ったものが通らない」が起きて原因を追えない。
+    container:
+      image: hub.nolumia.com:5000/builder/ci-rust@sha256:0426a6e4c6df636c1cde73a651fa5c6c66a403df7b434ccb1370a061dcb1fb37
+      # ⚠ **`target/` は上限なく育つ。** 2026-09-11 の初回で **29GB**（依存が
+      #   変わるたびに古い成果物が積み上がり、cargo は自分では掃除しない）。
+      #   nolumialab の空きは 348GB あるので当面は保つが、**減らないもの**である
+      #   ことは覚えておくこと ——効かなくなったら
+      #   `docker volume rm rust-target-cache-idp-ci` で捨ててよい（次回が遅くなるだけ）。
+      options: >-
+        -v rust-cargo-registry:/cache/cargo
+        -v rust-target-cache-idp-ci:/cache/target
+    services:
+      mariadb:
+        image: mariadb:10.11
+        env:
+          MARIADB_DATABASE: idp
+          MARIADB_USER: idp
+          MARIADB_PASSWORD: idp
+          MARIADB_ROOT_PASSWORD: root
+        # ⚠ **`ports:` を書かない**（forge へ移したとき外した）。GitHub の台では
+        #   サービスをホストへ出して `127.0.0.1:3306` で触っていたが、ここでは
+        #   ジョブもコンテナの中に居るので**同じネットワークの `mariadb:3306`**
+        #   で届く。出すと**ホストの 3306 を占有し、2 本同時に走れなくなる**。
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
+    env:
+      # ⚠ **`127.0.0.1` ではない**（上の注記）。
+      DATABASE_URL: mysql://idp:idp@mariadb:3306/idp
+      TEST_DATABASE_URL: mysql://idp:idp@mariadb:3306/idp
+      # 中間物と取得物をボリュームへ逃がす（ワークスペースは毎回消えるため）。
+      CARGO_HOME: /cache/cargo
+      CARGO_TARGET_DIR: /cache/target
+      # 32 文字以上（`assay_contracts::deployment::INTERNAL_SERVICE_TOKEN_MIN_LEN`）。SEC11。
+      INTERNAL_SERVICE_TOKEN: ci-internal-service-token-0123456789
+      KEY_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      CSRF_SECRET: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      MARIADB_PASSWORD: idp
+      MARIADB_ROOT_PASSWORD: root
+    steps:
+      - uses: actions/checkout@v7
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Unit and DB integration tests
+        run: cargo test --workspace --locked
+      - name: Shell deployment tests
+        run: ./scripts/test_deploy.sh
+      - name: Remote build/deploy script tests
+        run: ./scripts/test_build_remote.sh
+      - name: E2E
+        run: ./scripts/e2e.sh
+
+  bundle:
+    name: Deploy bundle
+    # ⚠ **この関門だけ台が違う。** `docker build` をするので、ジョブのイメージに
+    #   docker が入っている台へ回す。⚠ ここへ来たジョブは**ホスト root 相当**
+    #   になる（socket を持つため）。
+    runs-on: [self-hosted, nolumialab-docker]
+    timeout-minutes: 45
+    container:
+      image: hub.nolumia.com:5000/builder/ci-docker@sha256:ae7a7f551dcb94a0c803680b2be76289ecaa49b603b5b24f8c283e16cec9c737
+    # ⚠ **`docker compose config` は値を解決するので、秘密の「形」が要る。**
+    #   GitHub では 1 つのジョブが全部やっていて、`test` 側に置いた env が
+    #   そのまま効いていた ——**割った側でここが抜けると
+    #   `required variable ... is missing a value` で落ちる**（2026-09-11 に実測）。
+    #   ⚠ 中身は捨て値でよい（ここでは何も起動しない）。
+    env:
+      MARIADB_PASSWORD: idp
+      MARIADB_ROOT_PASSWORD: root
+      INTERNAL_SERVICE_TOKEN: ci-internal-service-token-0123456789
+      KEY_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      CSRF_SECRET: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+    steps:
+      - uses: actions/checkout@v7
+
+      # ⚠ **docker の設定ディレクトリを、このジョブ専用の書ける場所へ向ける。**
+      #   ランナーはホストの `/root/.docker` を**読み取り専用**で mount している。
+      #   既定のままだと docker が `~/.docker` を作れずに落ち、しかも Node は
+      #   読み取り専用を **ENOENT**（「そんなファイルは無い」）として報せるので、
+      #   ログを読んでも原因に辿り着けない。
+      # ⚠ **ジョブの `env:` では書けない。** そこで使える文脈に `runner` は無く、
+      #   `${{ runner.temp }}` と書くと**ワークフローの読み込みごと失敗する**。
+      - name: docker の設定ディレクトリを用意する
+        run: |
+          mkdir -p "$RUNNER_TEMP/docker"
+          echo "DOCKER_CONFIG=$RUNNER_TEMP/docker" >> "$GITHUB_ENV"
+
+      - name: Docker build and deploy bundle
+        run: ./scripts/build.sh
+
+      # ⚠ **`config` は組み立てるだけで mount しない。** 相対パスの bind mount が
+      #   18 か所あるが、ここで空のディレクトリが生えることはない（生えるのは
+      #   `up` したとき）。
+      # ⚠ **`--quiet` にしない理由**: ここは構文だけでなく**解決後の値**を見たいが、
+      #   出力はファイルへ落として画面に出さない ——`docker compose config` は
+      #   秘密を平文で展開する。
+      - name: Compose config
+        run: |
+          docker compose -f docker-compose.yml config >/tmp/compose.yml
+          docker compose -f docker-compose.deploy.yml config >/tmp/compose.deploy.yml
+
+      # ランナーは docker-out-of-docker（ホストのデーモンをそのまま使う）なので、
+      # 焼いたイメージはジョブが終わってもホストに残り続ける。ここで片付ける。
+      - name: 後始末（焼いたイメージを消す）
+        if: always()
+        run: |
+          docker image rm -f idp/api:latest idp/web:latest idp/migrate:latest || true
