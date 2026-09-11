@@ -50,13 +50,25 @@ trap cleanup EXIT
 info "1) ビルド"
 cargo build -q --bin assay --bin assay-web
 
+# 焼いた実行ファイルの置き場。
+# ⚠ **`./target` を決め打ちしない。** cargo は `CARGO_TARGET_DIR` が在れば
+#   そちらへ出す ——CI で中間物をボリュームへ逃がすとここが動く。
+#   直書きのままだと `No such file or directory` のあと
+#   **「api が起動しません」という見当違いの失敗**になる（2026-09-11 に実測。
+#   ビルドは成功しているので、ログを見ても原因に辿り着きにくい）。
+target_dir="${CARGO_TARGET_DIR:-$repo_root/target}"
+for bin in assay assay-web; do
+  [ -x "$target_dir/debug/$bin" ] ||
+    fail "$target_dir/debug/$bin が無い（CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-（未設定）}）"
+done
+
 info "2) api・web 起動（api=${API_ADDR} / web=${WEB_ADDR}、共有 INTERNAL_SERVICE_TOKEN）"
 DATABASE_URL="$DB_URL" ISSUER="$API" BIND_ADDR="$API_ADDR" INTERNAL_SERVICE_TOKEN="$TOKEN" \
-  RUST_LOG=error ./target/debug/assay &
+  RUST_LOG=error "$target_dir/debug/assay" &
 api_pid=$!
 API_BASE_URL="$API_INTERNAL" WEB_BIND_ADDR="$WEB_ADDR" INTERNAL_SERVICE_TOKEN="$TOKEN" ISSUER="$API" \
   NO_PROXY="localhost,127.0.0.1,::1,${NO_PROXY:-}" no_proxy="localhost,127.0.0.1,::1,${no_proxy:-}" \
-  RUST_LOG=error ./target/debug/assay-web &
+  RUST_LOG=error "$target_dir/debug/assay-web" &
 web_pid=$!
 
 for _ in $(seq 1 30); do
