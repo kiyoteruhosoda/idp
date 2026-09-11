@@ -57,6 +57,14 @@ fn authorize_uri(tenant: &str, client_id: &str, state: &str, nonce: &str) -> Str
     authorize_uri_with_scope(tenant, client_id, "openid profile email", state, nonce)
 }
 
+/// ⚠ **`nonce` を送らない**認可要求（ADR-0049）。Forgejo のような、仕様どおり
+/// 省略してくる相手を模す。**`state` と PKCE は送る。**
+fn authorize_uri_without_nonce(tenant: &str, client_id: &str, state: &str) -> String {
+    format!(
+        "/{tenant}/authorize?response_type=code&client_id={client_id}&redirect_uri={REDIRECT_URI_ENC}&scope=openid&state={state}&code_challenge={CODE_CHALLENGE}&code_challenge_method=S256"
+    )
+}
+
 fn authorize_uri_with_scope(
     tenant: &str,
     client_id: &str,
@@ -939,4 +947,79 @@ async fn login_lockout_after_repeated_failures() {
     // 監査ログ: login.failed が 10 件以上、login.locked が 2 件以上（ロック時 + ロック中の試行）。
     assert!(audit_count(&pool, &client_id, "login.failed").await >= 10);
     assert!(audit_count(&pool, &client_id, "login.locked").await >= 2);
+}
+
+/// ⚠ **`nonce` が無くても認可は始まる**（ADR-0049。OIDC Core 3.1.2.1 で code flow の
+/// `nonce` は任意）。
+///
+/// ⚠ **必須をやめた理由は、仕様どおりの相手を弾いていたから** ——Forgejo は
+/// `nonce` を送らない（未実装）ので、ログイン画面にすら着けなかった。
+/// **`state` と PKCE(S256) は必須のまま**である。
+#[tokio::test]
+async fn authorize_without_nonce_is_accepted() {
+    let Some(env) = support::setup("authorize without nonce").await else {
+        return;
+    };
+    let support::TestEnv {
+        app,
+        pool,
+        root_tenant_id,
+        ..
+    } = env;
+    let client_id = insert_public_client(&pool, &root_tenant_id).await;
+
+    let response = send(
+        &app,
+        Request::builder()
+            .uri(authorize_uri_without_nonce(
+                &root_tenant_id,
+                &client_id,
+                "state-no-nonce",
+            ))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+
+    // ⚠ **弾かれず、ログイン画面へのハンドオフまで進む。**
+    assert_eq!(response.status(), StatusCode::FOUND);
+    assert!(
+        location(&response).contains("/login?auth_session="),
+        "handoff URL: {}",
+        location(&response)
+    );
+
+    // ⚠ **`state` は必須のまま。** 不正な要求は**クライアントへ差し戻す**
+    //   （302 で `redirect_uri` へ `error=` を載せる）ので、**行き先で見分ける**
+    //   ——ログイン画面へのハンドオフではないこと。
+    let without_state = format!(
+        "/{root_tenant_id}/authorize?response_type=code&client_id={client_id}&redirect_uri={REDIRECT_URI_ENC}&scope=openid&code_challenge={CODE_CHALLENGE}&code_challenge_method=S256"
+    );
+    let response = send(
+        &app,
+        Request::builder()
+            .uri(without_state)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    let back = location(&response);
+    assert!(back.contains("error=invalid_request"), "location: {back}");
+    assert!(!back.contains("/login?auth_session="), "location: {back}");
+
+    // ⚠ **PKCE も必須のまま。**
+    let without_pkce = format!(
+        "/{root_tenant_id}/authorize?response_type=code&client_id={client_id}&redirect_uri={REDIRECT_URI_ENC}&scope=openid&state=s"
+    );
+    let response = send(
+        &app,
+        Request::builder()
+            .uri(without_pkce)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    let back = location(&response);
+    assert!(back.contains("error=invalid_request"), "location: {back}");
+    assert!(!back.contains("/login?auth_session="), "location: {back}");
 }

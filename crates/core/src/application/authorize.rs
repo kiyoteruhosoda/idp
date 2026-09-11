@@ -241,7 +241,9 @@ impl AuthorizeService {
             .map(str::to_string)
             .collect();
         let state = state.expect("state validated above").to_string();
-        let nonce = req.nonce.clone().expect("nonce validated above");
+        // ⚠ **`nonce` は任意**（ADR-0049）。無いときは空文字で持ち回り、
+        //   id_token では**クレームごと出さない**（`token.rs` の `skip_serializing_if`）。
+        let nonce = req.nonce.clone().unwrap_or_default();
         let code_challenge = req.code_challenge.clone().expect("validated above");
 
         // 3. AuthSession を作成し、単回ハンドルを発行して web へハンドオフする（ADR-0018 決定 2）。
@@ -723,9 +725,19 @@ fn validate_request(
     if non_empty(req.state.as_deref()).is_none() {
         return Err((OAuthErrorCode::InvalidRequest, "state is required"));
     }
-    if non_empty(req.nonce.as_deref()).is_none() {
-        return Err((OAuthErrorCode::InvalidRequest, "nonce is required"));
-    }
+    // `nonce` は**任意**（OIDC Core 3.1.2.1。必須なのは implicit / hybrid で、
+    // このサーバは `response_type=code` しか受けない）。
+    //
+    // ⚠ **2026-09-10 に必須化をやめた**（ADR-0049）。方針として必須にしていたが、
+    // **仕様どおりに送ってくる相手を弾いていた** ——Forgejo は `nonce` を送らない
+    // （未実装。forgejo/forgejo#186）ので、ログイン画面にすら着けなかった。
+    //
+    // ⚠ **`state` と PKCE(S256) は必須のまま**である。コード奪取と CSRF の防御は
+    // そちらが持っており、`nonce` が主に効くのは id_token のリプレイ
+    // （implicit）である。
+    //
+    // ⚠ **送ってきた相手には、これまでどおり id_token へ載せて返す**
+    // （`token.rs`。無いときは**クレームごと出さない** ——空文字を載せない）。
     // `response_mode` は未指定なら `query`。指定があって解釈できない値は弾く（丸めない）。
     if let Some(raw) = non_empty(req.response_mode.as_deref()) {
         if ResponseMode::parse(raw).is_err() {
@@ -961,12 +973,15 @@ mod tests {
             OAuthErrorCode::InvalidRequest
         );
 
+        // ⚠ **`nonce` は任意である**（ADR-0049）。無くても空でも通る
+        //   ——必須なのは implicit / hybrid で、このサーバは code しか受けない。
+        let mut req = valid_request();
+        req.nonce = None;
+        assert!(validate_request(&req, &client).is_ok());
+
         let mut req = valid_request();
         req.nonce = Some(String::new());
-        assert_eq!(
-            validate_request(&req, &client).unwrap_err().0,
-            OAuthErrorCode::InvalidRequest
-        );
+        assert!(validate_request(&req, &client).is_ok());
 
         let mut req = valid_request();
         req.code_challenge_method = Some("plain".to_string());

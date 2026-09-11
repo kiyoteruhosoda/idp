@@ -46,6 +46,10 @@ pub struct IdTokenClaims {
     pub exp: i64,
     pub iat: i64,
     pub auth_time: i64,
+    /// 認可要求に `nonce` があったときだけ載せる（OIDC Core 2「無ければ載せるべきでない」）。
+    /// ⚠ **空文字を載せない** ——`nonce` を送っていない相手に `""` を返すと、
+    /// 厳しく検証する実装が「一致しない」と読む。
+    #[serde(skip_serializing_if = "String::is_empty", default)]
     pub nonce: String,
     pub jti: String,
     /// SSO セッション識別子（OIDC Back-Channel Logout 1.0 §2.1。G5）。RP はこの値で

@@ -32,7 +32,8 @@
 * Authorization Code Flow のみ対応
 * PKCE は public / confidential を問わず必須
 * `code_challenge_method=plain` は許可しない
-* `state` / `nonce` は OIDC 仕様上は任意だが、本IdPではポリシーとして必須化
+* `state` は OIDC 仕様上は任意だが、本IdPではポリシーとして必須化
+* ⚠ **`nonce` は任意**（2026-09-10 に必須化をやめた。ADR-0049） ——仕様どおり省略してくるクライアントを弾いていたため。送られてきたときは従来どおり id_token へ載せ、無いときは**クレームごと出さない**
 * `state` はIdPでは検証せず、認可レスポンスで透過的に返却
 * authorization code は一度のみ利用可、DBに平文保存しない
 * client secret はハッシュ化保存
