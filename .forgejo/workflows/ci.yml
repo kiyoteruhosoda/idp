@@ -86,6 +86,17 @@ jobs:
     timeout-minutes: 45
     container:
       image: hub.nolumia.com:5000/builder/ci-docker@sha256:ae7a7f551dcb94a0c803680b2be76289ecaa49b603b5b24f8c283e16cec9c737
+    # ⚠ **`docker compose config` は値を解決するので、秘密の「形」が要る。**
+    #   GitHub では 1 つのジョブが全部やっていて、`test` 側に置いた env が
+    #   そのまま効いていた ——**割った側でここが抜けると
+    #   `required variable ... is missing a value` で落ちる**（2026-09-11 に実測）。
+    #   ⚠ 中身は捨て値でよい（ここでは何も起動しない）。
+    env:
+      MARIADB_PASSWORD: idp
+      MARIADB_ROOT_PASSWORD: root
+      INTERNAL_SERVICE_TOKEN: ci-internal-service-token-0123456789
+      KEY_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      CSRF_SECRET: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
     steps:
       - uses: actions/checkout@v7
 
@@ -120,4 +131,4 @@ jobs:
       - name: 後始末（焼いたイメージを消す）
         if: always()
         run: |
-          docker image rm -f idp/assay-api:latest idp/assay-web:latest idp/assay-migrate:latest || true
+          docker image rm -f idp/api:latest idp/web:latest idp/migrate:latest || true
