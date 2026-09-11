@@ -35,7 +35,7 @@ jobs:
     # ⚠ **digest で固定する。** タグのままだと、焼き直した日に
     #   「昨日は通ったものが通らない」が起きて原因を追えない。
     container:
-      image: hub.nolumia.com:5000/builder/ci-rust@sha256:19d5dc0836dc053d6e3f9879f4cbf194112c7b3c516f2b970af1e8756f55deb5
+      image: hub.nolumia.com:5000/builder/ci-rust@sha256:0426a6e4c6df636c1cde73a651fa5c6c66a403df7b434ccb1370a061dcb1fb37
       options: >-
         -v rust-cargo-registry:/cache/cargo
         -v rust-target-cache-idp-ci:/cache/target
