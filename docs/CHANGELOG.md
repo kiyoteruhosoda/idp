@@ -1,3 +1,18 @@
+## 2026-09-10（`nonce` を仕様どおり任意に戻した。ADR-0049）
+
+- ⚠ **`/authorize` の `nonce` 必須をやめた。** OIDC Core 3.1.2.1 では
+  コードフローの `nonce` は任意で、**必須なのは implicit / hybrid**（このサーバは
+  `response_type=code` しか受けない）。⚠ **仕様どおり省略してくる相手を弾いていた**
+  ——Forgejo を繋ごうとして `error=invalid_request&error_description=nonce+is+required`
+  で**ログイン画面にすら着けなかった**（Forgejo 側は設定で足せない。未実装）。
+- ⚠ **`state` と PKCE(S256) は必須のまま。** 緩めたのは `nonce` だけで、
+  コード奪取と CSRF の防御は落ちていない。
+- ⚠ **id_token に `"nonce": ""` を載せなくなった**（無いときはクレームごと出さない。
+  OIDC Core 2）。⚠ **refresh grant の id_token にも効く** ——そちらは以前から
+  空文字を載せていた。
+- ⚠ **下流に `expect("nonce validated above")` が残っていた。** 必須をやめるとそこで
+  落ちる。**DB 込みの統合テストで捕まえた**（単体だけでは通ってしまう）。
+
 ## 2026-09-10（セキュリティ監査の指摘 3 件を修正）
 
 - **TOTP コードのリプレイを塞いだ（migration 0051）。** これまで TOTP は検証（skew=1・step=30 秒）を
