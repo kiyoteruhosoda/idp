@@ -115,6 +115,10 @@ permission_markers! {
     SamlServiceProvidersRead => permission::SAML_SERVICE_PROVIDERS_READ;
     /// SAML SP の登録・更新・削除。
     SamlServiceProvidersWrite => permission::SAML_SERVICE_PROVIDERS_WRITE;
+    /// メール送信（SMTP）設定の参照（ADR-0051）。⚠ root テナントでしか保有できない。
+    SmtpRead => permission::SMTP_READ;
+    /// メール送信（SMTP）設定の変更（ADR-0051）。⚠ root テナントでしか保有できない。
+    SmtpWrite => permission::SMTP_WRITE;
 }
 
 /// 権限 `P` を満たす認可済み管理主体を表す extractor。

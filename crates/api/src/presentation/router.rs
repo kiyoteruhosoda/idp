@@ -329,6 +329,13 @@ pub fn build(state: AppState) -> Router {
                 .put(admin_system_settings::update_system_settings),
         )
         // ランタイム設定の DB 上書き（DB_MANAGED キーのみ。idp.system.admin 必須）。
+        // SMTP だけの口（ADR-0051）。保護は `idp.smtp:read` / `:write` で、システム設定の
+        // 本体（上の 1 本）とは別の権限。⚠ **root テナントでのみ通る。**
+        .route(
+            "/admin/system-settings/smtp",
+            get(admin_system_settings::get_smtp_settings)
+                .put(admin_system_settings::update_smtp_settings),
+        )
         .route(
             "/admin/system-settings/runtime",
             axum::routing::put(admin_system_settings::update_runtime_setting),

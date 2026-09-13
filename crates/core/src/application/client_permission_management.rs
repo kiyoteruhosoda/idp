@@ -65,9 +65,14 @@ impl ClientPermissionManagementService {
     }
 
     /// 権限コードを付与する（冪等）。付与後の保有コード一覧を返す。
+    ///
+    /// `tenant_is_root` は**要求テナントが root か**。システム全体に効くコード
+    /// （`permission::ROOT_SCOPED_CODES`。ADR-0051）を、テナントの中から配らせないために要る。
+    /// 真偽値で受けるのは、この層がテナントの表を引かない（引くと境界が増える）ためである。
     pub async fn grant(
         &self,
         tenant: TenantContext,
+        tenant_is_root: bool,
         client_id: &str,
         raw_code: &str,
         actor: &AdminActor,
@@ -79,6 +84,15 @@ impl ClientPermissionManagementService {
         // 包括的な管理権限はクライアントへ付与しない（DB の CHECK 制約と二重防御）。
         // ここで落とすのは、DB 制約違反を利用者向けの文言に翻訳するためでもある。
         if !permission::is_grantable_to_client(code.as_str()) {
+            return Err(ClientPermissionError::Invalid(MessageKey::new(
+                "api-client-permission-not-grantable",
+            )));
+        }
+
+        // システム全体に効くコードは root テナントの中でしか配れない（ADR-0051）。
+        // ⚠ **`is_grantable_to_client` とは別の軸である。** あちらは「機械に渡してよい粒度か」、
+        //   こちらは「そのテナントに、その範囲の権限が存在し得るか」を見ている。
+        if !permission::is_grantable_in_tenant(code.as_str(), tenant_is_root) {
             return Err(ClientPermissionError::Invalid(MessageKey::new(
                 "api-client-permission-not-grantable",
             )));

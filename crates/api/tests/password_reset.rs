@@ -62,6 +62,11 @@ async fn run_minimal_smtp_server(listener: TcpListener) -> String {
 /// 並行に走ると、片方が向けた配送先へもう片方のメールが飛び、後始末（`smtp.host` を空へ戻す）が
 /// 相手の受信前に走れば、待っている側は永久に受け取れない。設定の書き換えから受信・後始末までを
 /// 直列化する。
+///
+/// ⚠ **この Mutex はこのバイナリの中しか直列化しない。** テストバイナリは別プロセスとして並行に
+/// 走るため、同じ設定を触る他のバイナリ（`admin_smtp_settings`）とは
+/// [`support::SmtpSettingsLock`]（DB の助言ロック）で揃える。2 つ要るのは、プロセス内では
+/// こちらのほうが軽く、プロセスを跨ぐにはあちらしか効かないためである。
 static SMTP_SETTINGS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// SMTP で受け取った生データから、リンクを読める本文テキストを取り出す。
@@ -128,6 +133,7 @@ async fn full_reset_flow_via_email_link() {
     // 自分のインプロセス SMTP サーバへ向けている隙にここを通ると、その通知が相手の
     // （1 接続で終わる）サーバに食われ、相手は再設定メールを受け取れない。
     let _smtp_guard = SMTP_SETTINGS.lock().await;
+    let smtp_lock = support::SmtpSettingsLock::acquire(&env.pool).await;
 
     // 対象ユーザーを自己登録で作成し、SSO セッションを 1 本持たせておく（失効の検証用）。
     let email = format!("reset-{}@example.com", uuid::Uuid::new_v4().simple());
@@ -242,6 +248,7 @@ async fn full_reset_flow_via_email_link() {
     // 後片付け: SMTP 設定を空へ戻す（他テストへ配送先を残さない）。
     upsert_setting(&env.pool, "smtp.host", "").await;
     upsert_setting(&env.pool, "smtp.from_address", "").await;
+    smtp_lock.release().await;
 }
 
 /// 参加先テナントにゲストとして参加している利用者が、その画面から再設定を要求できる（MT26）。
@@ -259,6 +266,7 @@ async fn a_guest_can_request_a_reset_from_the_host_tenant() {
     };
     // 登録より前に取る（理由は [`full_reset_flow_via_email_link`] と同じ）。
     let _smtp_guard = SMTP_SETTINGS.lock().await;
+    let smtp_lock = support::SmtpSettingsLock::acquire(&env.pool).await;
 
     // 所属元は root。参加先テナントとゲストメンバーシップは直接作る（検証したいのは招待フローでは
     // なく再設定の橋渡しのため）。
@@ -398,6 +406,7 @@ async fn a_guest_can_request_a_reset_from_the_host_tenant() {
     assert_eq!(body_json(res).await["result"], "ok");
 
     upsert_setting(&env.pool, "smtp.host", "").await;
+    smtp_lock.release().await;
 }
 
 /// テナントを解決できない要求は、**機械的に区別できるコード**で 400 になる（MT28）。

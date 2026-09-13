@@ -77,7 +77,19 @@ assay の管理機能アクセス制御に使う**利用者権限コード（per
 | 機能 | 概要 |
 |---|---|
 | テナント管理（`/{tenant_id}/admin/tenants...`） | テナントの作成・一覧・取得・更新・削除。実質 root だけがテナントを作成できる |
-| システム設定（`/{tenant_id}/admin/system-settings...`） | システム設定の閲覧・変更 |
+| システム設定（`/{tenant_id}/admin/system-settings...`） | システム設定の閲覧・変更。⚠ **SMTP だけは細粒度コードでも通る**（下表。ADR-0051） |
+
+### root scope でしか保有できない細粒度コード（ADR-0051）
+
+`system_settings` はテナント列を持たないシステム全体の表である。テナントの中で配れるようにすると、
+そのテナントの管理者が全テナントのメール経路を変えられるため、`idp.tenant.admin` は**含意しない**
+（`TENANT_MANAGEMENT_CODES` に入っていない）。付与は root テナントの中でだけ通り、エンドポイント側でも
+要求テナントが root であることを課す（二重防御）。
+
+| 機能 | 概要 |
+|---|---|
+| SMTP 設定の参照（`GET /{tenant_id}/admin/system-settings/smtp`） | `idp.smtp:read`。**パスワードの平文は返さない**（設定済みか否かのみ） |
+| SMTP 設定の変更（`PUT /{tenant_id}/admin/system-settings/smtp`） | `idp.smtp:write`（`:read` を含意）。SMS・ランタイム設定・再起動には届かない |
 
 - テナント作成時に、**作成者自身**を新テナントのブートストラップ管理者として登録する（ACTIVE な
   GUEST メンバーシップ＋新テナント scope の `idp.tenant.admin`。ADR-0009 §5）。作成者は自身の SSO
