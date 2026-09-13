@@ -25,6 +25,7 @@ impl SqlxUserLoginIdentifierRepository {
 /// `primary_of_user`（UNIQUE が「1 利用者 1 行」を守る）だけにしてある。
 const SELECT_COLUMNS: &str = "id, tenant_id, user_id, identifier_type, display_value, \
      normalized_value, is_active, primary_of_user IS NOT NULL AS is_primary, \
+     primary_email_of_user IS NOT NULL AS is_primary_email, \
      created_at, updated_at";
 
 fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
@@ -55,6 +56,10 @@ pub(crate) fn map_row(row: &MySqlRow) -> Result<UserLoginIdentifier> {
         is_active: row.try_get("is_active").map_err(repo_err)?,
         // MariaDB の真偽式は 1/0 の整数で返る。
         is_primary: row.try_get::<i64, _>("is_primary").map_err(repo_err)? != 0,
+        is_primary_email: row
+            .try_get::<i64, _>("is_primary_email")
+            .map_err(repo_err)?
+            != 0,
         created_at: to_utc(row.try_get("created_at").map_err(repo_err)?),
         updated_at: to_utc(row.try_get("updated_at").map_err(repo_err)?),
     })
@@ -117,10 +122,12 @@ impl UserLoginIdentifierRepository for SqlxUserLoginIdentifierRepository {
 
     async fn set_active(&self, id: Uuid, user_id: Uuid, is_active: bool) -> Result<bool> {
         // 主識別子は識別子単位で止められない（止めるとログインできなくなる。止めるなら
-        // アカウントの無効化を使う）。条件に含めて DB 側で弾く。
+        // アカウントの無効化を使う）。条件に含めて DB 側で弾く。主メール行も同じ扱い
+        // （`users.email` の写しなので、ここで止めると通知の宛先と入り口が割れる。ADR-0050）。
         let result = sqlx::query(
             "UPDATE user_login_identifiers SET is_active = ? \
-             WHERE id = ? AND user_id = ? AND primary_of_user IS NULL",
+             WHERE id = ? AND user_id = ? \
+               AND primary_of_user IS NULL AND primary_email_of_user IS NULL",
         )
         .bind(is_active)
         .bind(id.to_string())
@@ -133,9 +140,10 @@ impl UserLoginIdentifierRepository for SqlxUserLoginIdentifierRepository {
 
     async fn delete(&self, id: Uuid, user_id: Uuid) -> Result<bool> {
         // 主識別子は識別子単位で消せない（消すとログインできなくなる。変えるならプロフィール編集）。
+        // 主メール行も同じ（消すと `users.email` と登録簿が割れる。ADR-0050）。
         let result = sqlx::query(
             "DELETE FROM user_login_identifiers WHERE id = ? AND user_id = ? \
-             AND primary_of_user IS NULL",
+             AND primary_of_user IS NULL AND primary_email_of_user IS NULL",
         )
         .bind(id.to_string())
         .bind(user_id.to_string())

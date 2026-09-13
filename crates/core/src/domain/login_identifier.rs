@@ -303,6 +303,12 @@ pub struct UserLoginIdentifier {
     /// 主識別子は**識別子単位では変更・削除できない**（変えるならプロフィール編集、止めるなら
     /// アカウントの無効化）。追加の識別子とは扱いが違うため、種別ではなくこの列で区別する。
     pub is_primary: bool,
+    /// 主メールアドレスの行か（ADR-0050）。`users.email` の写しであり、`is_primary` と同じ理由で
+    /// 識別子単位では変更・削除できない。
+    ///
+    /// `is_primary` と別の列なのは、**同じ行が両方であることは無い**ため（同じ正規化値の行は
+    /// 1 本しか作れないので、ユーザー名とメールが同じ値の利用者には主メール行が無い。決定 6）。
+    pub is_primary_email: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

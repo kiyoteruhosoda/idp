@@ -241,6 +241,8 @@ admin-invitations-expires-label = 有効期限
 admin-invitations-error-notfound = 該当する利用者が見つかりません。
 admin-settings-self-registration = 利用者のセルフ登録を許可する
 admin-settings-self-registration-hint = 有効にすると、利用者がサインアップ画面から自分でアカウントを作成できます。無効（既定）の間は、アカウントは管理者による作成または招待経由でのみ作られます。
+admin-settings-email-login = メールアドレスでのログインを許可する
+admin-settings-email-login-hint = 有効にすると、ログイン欄にメールアドレスを入力してもログインできます。無効（既定）の間は、ユーザー名など他の識別子だけが一致します。この設定に関わらず、メールアドレスはテナント内で一意に保たれます。
 admin-invitations-email-sent = 承諾リンクを記載した招待メールを次の宛先へ送信しました
 admin-invitations-email-not-sent = 招待メールは送信されていません（SMTP 未設定または送信失敗）。トークンを安全な方法で被招待者へ伝えてください。
 
@@ -1131,6 +1133,7 @@ admin-login-identifiers-col-value = 値
 admin-login-identifiers-col-normalized = 照合キー
 admin-login-identifiers-col-state = 状態
 admin-login-identifiers-primary = 主
+admin-login-identifiers-primary-email = 主メール
 admin-login-identifiers-primary-hint = 変更はプロフィール編集から、停止はアカウントの無効化で行います。
 admin-login-identifiers-state-active = 有効
 admin-login-identifiers-state-inactive = 無効

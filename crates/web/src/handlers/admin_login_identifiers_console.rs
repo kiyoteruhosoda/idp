@@ -110,6 +110,7 @@ pub async fn list(
             normalized_value: &i.normalized_value,
             is_active: i.is_active,
             is_primary: i.is_primary,
+            is_primary_email: i.is_primary_email,
         })
         .collect();
 

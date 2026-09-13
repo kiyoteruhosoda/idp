@@ -2282,6 +2282,7 @@ impl ApiClient {
         sso: &str,
         name: &str,
         self_registration_enabled: bool,
+        email_login_enabled: bool,
     ) -> Result<crate::admin_dto::TenantView, AdminApiError> {
         self.admin_send(
             Method::PATCH,
@@ -2292,6 +2293,7 @@ impl ApiClient {
             Some(serde_json::json!({
                 "name": name,
                 "self_registration_enabled": self_registration_enabled,
+                "email_login_enabled": email_login_enabled,
             })),
         )
         .await

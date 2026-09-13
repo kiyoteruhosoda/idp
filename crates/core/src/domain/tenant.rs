@@ -46,6 +46,11 @@ pub struct Tenant {
     pub status: TenantStatus,
     /// 自己登録（`/auth/register`）を許可するか。既定は無効（fail-closed。SEC6）。
     pub self_registration_enabled: bool,
+    /// `email` 種別のログイン識別子を解決に参加させるか。既定は無効（fail-closed。ADR-0050）。
+    ///
+    /// 主メール行は移行で全利用者ぶん作られる（一意性のため）が、**このスイッチが入るまで
+    /// ログイン欄では一致しない**。行の有無と入り口の広さを別々のつまみにしてある。
+    pub email_login_enabled: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -73,6 +78,7 @@ mod tests {
             name: "Acme".to_string(),
             status: TenantStatus::Active,
             self_registration_enabled: false,
+            email_login_enabled: false,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

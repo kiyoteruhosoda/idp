@@ -41,6 +41,11 @@
         <label class="form-check-label" for="self_registration_enabled">{{ messages.get("admin-settings-self-registration") }}</label>
         <div class="form-text">{{ messages.get("admin-settings-self-registration-hint") }}</div>
       </div>
+      <div class="form-check mb-3">
+        <input type="checkbox" class="form-check-input" id="email_login_enabled" name="email_login_enabled" {% if tenant_email_login %}checked{% endif %}>
+        <label class="form-check-label" for="email_login_enabled">{{ messages.get("admin-settings-email-login") }}</label>
+        <div class="form-text">{{ messages.get("admin-settings-email-login-hint") }}</div>
+      </div>
       <button type="submit" class="btn btn-primary">{{ messages.get("admin-settings-save") }}</button>
     </form>
   </div>

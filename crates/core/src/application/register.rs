@@ -450,6 +450,7 @@ mod tests {
             name: "Root".to_string(),
             status: TenantStatus::Active,
             self_registration_enabled,
+            email_login_enabled: false,
             created_at: now(),
             updated_at: now(),
         }

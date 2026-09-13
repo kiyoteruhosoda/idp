@@ -111,6 +111,9 @@ pub struct AdminTenantSettingsForm {
     /// 自己登録トグル（SEC6）。チェックボックスはチェック時のみ送られる（`Some(_)` = 有効）。
     #[serde(default)]
     pub self_registration_enabled: Option<String>,
+    /// メールでのログインのトグル（ADR-0050）。同じくチェック時のみ送られる。
+    #[serde(default)]
+    pub email_login_enabled: Option<String>,
     pub csrf_token: String,
 }
 

@@ -60,6 +60,8 @@ pub struct LoginIdentifierEntry {
     /// 主たるログイン識別子か（登録簿の `primary_of_user` 行）。主識別子は識別子単位の
     /// 有効/無効・削除の対象にならない（変えるならプロフィール編集、止めるならアカウントの無効化）。
     pub is_primary: bool,
+    /// 主メールアドレスの行か（ADR-0050）。主識別子と同じく個別の操作の対象にならない。
+    pub is_primary_email: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -73,6 +75,7 @@ impl From<UserLoginIdentifier> for LoginIdentifierEntry {
             normalized_value: v.normalized_value,
             is_active: v.is_active,
             is_primary: v.is_primary,
+            is_primary_email: v.is_primary_email,
             created_at: v.created_at,
             updated_at: v.updated_at,
         }
@@ -142,8 +145,9 @@ impl LoginIdentifierManagementService {
             .map_err(internal)?;
         let mut entries: Vec<LoginIdentifierEntry> =
             stored.into_iter().map(LoginIdentifierEntry::from).collect();
-        // 主識別子を先頭に固定する（登録簿の行は追加順に並ぶため、格上げされた行は途中に来る）。
-        entries.sort_by_key(|e| !e.is_primary);
+        // 主識別子・主メールを先頭に固定する（登録簿の行は追加順に並ぶため、格上げされた行は
+        // 途中に来る）。個別に操作できない 2 行を上に集めることで、下の行だけが操作対象になる。
+        entries.sort_by_key(|e| (!e.is_primary, !e.is_primary_email));
         Ok(entries)
     }
 
@@ -178,6 +182,7 @@ impl LoginIdentifierManagementService {
             is_active: cmd.is_active,
             // 管理画面から足すのは**追加の**識別子（主識別子はプロフィール編集が持つ）。
             is_primary: false,
+            is_primary_email: false,
             created_at: now,
             updated_at: now,
         };
@@ -777,6 +782,7 @@ mod tests {
                 normalized_value: "alice".to_string(),
                 is_active: true,
                 is_primary: true,
+                is_primary_email: false,
                 created_at: now,
                 updated_at: now,
             })

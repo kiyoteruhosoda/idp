@@ -257,6 +257,108 @@ mod tests {
         assert!(!html.contains("/admin/logout"), "{html}");
     }
 
+    /// 個別に操作できない行（主識別子・主メール）には、操作ボタンを出さない。
+    ///
+    /// ⚠ **行の有無で判定しない。** AP15b で主識別子も登録簿の行になり `id` が必ず付くように
+    /// なったので、`id` だけで出し分けると **押しても必ず失敗するボタン**が並ぶ（api は
+    /// `primary_of_user IS NULL` / `primary_email_of_user IS NULL` を条件に弾く）。
+    #[test]
+    fn rows_that_cannot_be_operated_on_show_no_buttons() {
+        let messages = Messages::new(Locale::Ja);
+        let render_row = |is_primary: bool, is_primary_email: bool| {
+            render(&LoginIdentifiersConsole {
+                messages: &messages,
+                tenant: "/t",
+                admin: Some(ConsoleAdmin {
+                    label: "admin",
+                    tenant_name: Some("Acme"),
+                    permissions: &["idp.tenant.admin".to_string()],
+                }),
+                csrf: "csrf-token",
+                user_id: "11111111-1111-1111-1111-111111111111",
+                identifiers: &[LoginIdentifierRow {
+                    id: Some("22222222-2222-2222-2222-222222222222"),
+                    type_label: "メールアドレス".to_string(),
+                    display_value: "u@example.com",
+                    normalized_value: "u@example.com",
+                    is_active: true,
+                    is_primary,
+                    is_primary_email,
+                }],
+                type_options: &[],
+                error_key: None,
+                notice_key: None,
+            })
+        };
+
+        let ordinary = render_row(false, false);
+        assert!(ordinary.contains("/active"), "{ordinary}");
+        assert!(ordinary.contains("/delete"), "{ordinary}");
+
+        for (is_primary, is_primary_email) in [(true, false), (false, true)] {
+            let html = render_row(is_primary, is_primary_email);
+            assert!(!html.contains("/active"), "{html}");
+            assert!(!html.contains("/delete"), "{html}");
+            assert!(
+                html.contains(&messages.get("admin-login-identifiers-primary-hint")),
+                "{html}"
+            );
+        }
+
+        // 主メールの行は、主識別子とは別の見出しで示す（どちらなのか読めないと直し方が分からない）。
+        let primary_email = render_row(false, true);
+        assert!(
+            primary_email.contains(&messages.get("admin-login-identifiers-primary-email")),
+            "{primary_email}"
+        );
+    }
+
+    /// テナント設定にメールログインのトグルを出し、現在の状態を反映する（ADR-0050 決定 3）。
+    #[test]
+    fn the_tenant_settings_show_the_email_login_toggle() {
+        let messages = Messages::new(Locale::Ja);
+        let render_with = |enabled: bool| {
+            render(&AdminSettings {
+                messages: &messages,
+                tenant: "/t",
+                admin: Some(ConsoleAdmin {
+                    label: "admin",
+                    tenant_name: Some("Acme"),
+                    permissions: &["idp.tenant.admin".to_string()],
+                }),
+                tenant_id: "00000000-0000-7000-8000-000000000000",
+                tenant_name: "Acme",
+                tenant_status: "ACTIVE",
+                tenant_self_registration: false,
+                tenant_email_login: enabled,
+                csrf: "csrf-token",
+                saved: false,
+                error_key: None,
+                system: None,
+                pending_api_keys: &[],
+                stale_web_keys: &[],
+            })
+        };
+
+        let off = render_with(false);
+        assert!(off.contains("name=\"email_login_enabled\""), "{off}");
+        assert!(
+            off.contains(&messages.get("admin-settings-email-login")),
+            "{off}"
+        );
+
+        /// トグルの `<input>` タグだけを切り出す（自己登録のトグルと取り違えないため）。
+        fn toggle_input(html: &str) -> String {
+            let start = html.find(r#"id="email_login_enabled""#).expect("toggle");
+            let end = html[start..].find('>').expect("tag end");
+            html[start..start + end].to_string()
+        }
+
+        assert!(!toggle_input(&off).contains("checked"), "{off}");
+        let on = render_with(true);
+        assert!(toggle_input(&on).contains("checked"), "{on}");
+    }
+
     /// ログイン画面は認可要求の `login_hint` をユーザー名欄の初期値にする（G12）。値は RP が
     /// 指定した任意の文字列なので、属性値として HTML エスケープされていることまで確かめる。
     #[test]
@@ -1665,6 +1767,8 @@ pub struct LoginIdentifierRow<'a> {
     pub normalized_value: &'a str,
     pub is_active: bool,
     pub is_primary: bool,
+    /// 主メールアドレスの行か（ADR-0050）。主識別子と同じく、個別の操作の対象にならない。
+    pub is_primary_email: bool,
 }
 
 /// 追加フォームの種別プルダウンの選択肢。
@@ -1864,6 +1968,8 @@ pub struct AdminSettings<'a> {
     pub tenant_status: &'a str,
     /// 自己登録（/auth/register）の許可トグル（SEC6）。
     pub tenant_self_registration: bool,
+    /// メールアドレスでのログインのトグルの状態（ADR-0050）。
+    pub tenant_email_login: bool,
     pub csrf: &'a str,
     /// 保存成功のバナー表示。
     pub saved: bool,

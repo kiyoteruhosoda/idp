@@ -322,6 +322,7 @@ mod tests {
             id: "019f6514-08ea-7138-ad71-838a7bdd3575".into(),
             name: "Child".into(),
             self_registration_enabled: false,
+            email_login_enabled: false,
             status: status.into(),
         }
     }

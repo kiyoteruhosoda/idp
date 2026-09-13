@@ -179,6 +179,7 @@ async fn the_primary_identifier_cannot_be_disabled_or_deleted_as_an_identifier()
         normalized_value: LoginIdentifierType::Username.normalize(&extra_value),
         is_active: true,
         is_primary: false,
+        is_primary_email: false,
         created_at: now,
         updated_at: now,
     };
@@ -223,6 +224,7 @@ async fn a_value_another_user_already_owns_is_rejected() {
             normalized_value: LoginIdentifierType::Username.normalize(&taken),
             is_active: true,
             is_primary: false,
+            is_primary_email: false,
             created_at: now,
             updated_at: now,
         })

@@ -241,6 +241,8 @@ admin-invitations-expires-label = Expires at
 admin-invitations-error-notfound = No such user was found.
 admin-settings-self-registration = Allow user self sign-up
 admin-settings-self-registration-hint = When enabled, users can create their own accounts at the sign-up page. When disabled (default), accounts can only be created by an administrator or through an invitation.
+admin-settings-email-login = Allow signing in with an email address
+admin-settings-email-login-hint = When enabled, users can type their email address in the sign-in field. When disabled (default), only other identifiers such as the username match. Email addresses stay unique within the tenant either way.
 admin-invitations-email-sent = An invitation email with the acceptance link was sent to
 admin-invitations-email-not-sent = No invitation email was sent (SMTP is not configured or delivery failed). Share the token with the invited user through a secure channel.
 
@@ -1131,6 +1133,7 @@ admin-login-identifiers-col-value = Value
 admin-login-identifiers-col-normalized = Matching key
 admin-login-identifiers-col-state = State
 admin-login-identifiers-primary = Primary
+admin-login-identifiers-primary-email = Primary email
 admin-login-identifiers-primary-hint = Change it from the profile, or disable the account to stop it.
 admin-login-identifiers-state-active = Active
 admin-login-identifiers-state-inactive = Disabled

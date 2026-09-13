@@ -248,6 +248,9 @@ pub struct TenantView {
     /// 自己登録（`/auth/register`）を許可するか（SEC6。既定は無効）。
     #[serde(default)]
     pub self_registration_enabled: bool,
+    /// メールアドレスでのログインを許可するか（ADR-0050。既定は無効）。
+    #[serde(default)]
+    pub email_login_enabled: bool,
     /// `ACTIVE` または `DISABLED`。
     pub status: String,
 }
@@ -439,6 +442,9 @@ pub struct LoginIdentifierView {
     pub normalized_value: String,
     pub is_active: bool,
     pub is_primary: bool,
+    /// 主メールアドレスの行か（ADR-0050）。個別の有効/無効・削除の対象にならない。
+    #[serde(default)]
+    pub is_primary_email: bool,
     #[allow(dead_code)]
     pub created_at: String,
     #[allow(dead_code)]
