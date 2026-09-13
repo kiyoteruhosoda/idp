@@ -245,6 +245,18 @@ pub async fn primary_username(pool: &MySqlPool, user_id: &str) -> Option<String>
         .expect("read primary login identifier")
 }
 
+/// 主メール行の表示値（ADR-0050）。`None` は行が無い —— 同じ値を本人が別の行
+/// （多くはユーザー名）で持っているときは主メール行を作らない（決定 6）。
+pub async fn primary_email(pool: &MySqlPool, user_id: &str) -> Option<String> {
+    sqlx::query_scalar(
+        "SELECT display_value FROM user_login_identifiers WHERE primary_email_of_user = ?",
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+    .expect("read primary email identifier")
+}
+
 // ── テストデータ生成 ─────────────────────────────────────────────────────────
 
 /// 指定ユーザーの有効な SSO セッションを作成し、Cookie 用の平文 session_id を返す。

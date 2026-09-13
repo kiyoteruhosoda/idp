@@ -157,6 +157,67 @@ async fn member_list_pages_and_filters_on_the_server() {
 
 /// `%` / `_` は `LIKE` のワイルドカードなので、エスケープしないと検索語が意図しない広い一致になる
 /// （`%` 単独なら全件一致）。
+/// 一覧はユーザー名（主たるログイン識別子）を載せ、その値でも絞り込める。
+///
+/// ⚠ **ユーザー名は `users` に無い**（migration 0039 で撤去）。登録簿の主識別子行から
+/// 相関サブクエリで引いている。
+///
+/// ⚠ **JOIN にしてはいけない。** ユーザー名を持たない利用者（管理画面から付けずに作られた
+/// アカウント）が**一覧から丸ごと消える**。消えると、その人は管理画面から操作できなくなる
+/// —— 見えないので探しようがない。ここはその 1 点を守るためのテストでもある。
+#[tokio::test]
+async fn the_list_carries_the_login_identifier_and_can_filter_on_it() {
+    let Some(env) = support::setup("member list login identifier").await else {
+        return;
+    };
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+    let base = format!("/{}/admin/members", env.root_tenant_id);
+    let unique = uuid::Uuid::now_v7().simple().to_string();
+    let marker = format!("mlid{}", &unique[..8]);
+
+    // ユーザー名を持つ利用者（プロフィール編集で主識別子の行が作られる）。
+    let named = insert_marked_user(&env.pool, &env.root_tenant_id, &marker, 1).await;
+    let username = format!("{marker}-login");
+    let res = send(
+        &env.app,
+        support::patch(
+            &admin_tok,
+            &format!("/{}/admin/users/{named}/profile", env.root_tenant_id),
+            serde_json::json!({ "preferred_username": username }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    // ユーザー名を持たない利用者（SQL で直接作るので登録簿に行が無い）。
+    let nameless = insert_marked_user(&env.pool, &env.root_tenant_id, &marker, 2).await;
+
+    // ── メールで絞ると 2 人とも出る。ユーザー名の無いほうは `preferred_username` が省略される。
+    let body =
+        body_json(send(&env.app, get(&admin_tok, &format!("{base}?q={marker}"))).await).await;
+    assert_eq!(body["total"], 2, "{body}");
+    let members = body["members"].as_array().expect("members");
+    let named_row = members
+        .iter()
+        .find(|m| m["user_id"] == Value::String(named.clone()))
+        .expect("named member is listed");
+    assert_eq!(named_row["preferred_username"], username);
+    let nameless_row = members
+        .iter()
+        .find(|m| m["user_id"] == Value::String(nameless.clone()))
+        .expect("ユーザー名の無い利用者も一覧に出る（JOIN にすると消える）");
+    assert!(
+        nameless_row["preferred_username"].is_null(),
+        "{nameless_row}"
+    );
+
+    // ── ユーザー名でも絞り込める（一覧に出ている値で引けないと「見えているのに探せない」）。
+    let body =
+        body_json(send(&env.app, get(&admin_tok, &format!("{base}?q={username}"))).await).await;
+    assert_eq!(body["total"], 1, "{body}");
+    assert_eq!(body["members"][0]["user_id"], Value::String(named));
+}
+
 #[tokio::test]
 async fn like_wildcards_in_the_search_term_are_escaped() {
     let Some(env) = support::setup("admin members list wildcards").await else {

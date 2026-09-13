@@ -296,6 +296,68 @@ async fn suspended_guest_cannot_sign_in_on_the_host_tenant() {
 
 /// 保証 5: 参加先に同じユーザー名の HOME 利用者が居ても、その HOME 利用者は従来どおり解決される
 /// （解決は所属元優先。1 回で引くと「曖昧」になって双方が締め出される）。
+/// メールでのログインは**所属元テナント**のスイッチで決まる（ADR-0050 決定 3）。
+///
+/// ゲストは参加先の画面からログインするが、識別子が載っているのは所属元の登録簿である。
+/// 参加先のスイッチで所属元の入り口が開いたり閉じたりすると、**自分の設定していない
+/// テナントの都合で自分のログイン手段が変わる**。見るのは識別子のあるテナントだけにしてある。
+#[tokio::test]
+async fn email_login_follows_the_home_tenant_switch_not_the_host() {
+    let Some(env) = setup().await else { return };
+    let root_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let host = create_tenant(&env, &root_sso, "EmailSwitchHost").await;
+
+    // root 所属の利用者を host のゲストにする。
+    let username = format!("es{}", unique());
+    let password = format!("guest-password-{}", unique());
+    register_user(&env.app, &env.root_tenant_id, &username, &password).await;
+    mark_email_verified(&env.pool, &env.root_tenant_id, &username).await;
+    let guest_id = support::find_user_id_by_username(&env.pool, &env.root_tenant_id, &username)
+        .await
+        .expect("registered guest");
+    invite_and_accept(&env, &root_sso, &host, &guest_id).await;
+    let email = format!("{username}@example.com");
+
+    let set_switch = |tenant: String, on: bool| {
+        let pool = env.pool.clone();
+        async move {
+            sqlx::query("UPDATE tenants SET email_login_enabled = ? WHERE id = ?")
+                .bind(on)
+                .bind(tenant)
+                .execute(&pool)
+                .await
+                .expect("toggle email login");
+        }
+    };
+
+    // ⚠ 既定に頼らず両方を明示的に切る（テナントは他のテストと共有で、DB は実行をまたぐ）。
+    set_switch(env.root_tenant_id.clone(), false).await;
+    set_switch(host.clone(), false).await;
+    assert_eq!(
+        portal_login_result(&env, &host, "203.0.113.61", &email, &password).await,
+        "invalid_credentials",
+        "どちらも切っていればメールでは入れない"
+    );
+
+    // 参加先（host）だけ入れても変わらない。
+    set_switch(host.clone(), true).await;
+    let with_host_only = portal_login_result(&env, &host, "203.0.113.62", &email, &password).await;
+
+    // 所属元（root）を入れると入れる。
+    set_switch(env.root_tenant_id.clone(), true).await;
+    let with_home = portal_login_result(&env, &host, "203.0.113.63", &email, &password).await;
+
+    // 共有テナントなので必ず戻す。
+    set_switch(env.root_tenant_id.clone(), false).await;
+    set_switch(host, false).await;
+
+    assert_eq!(
+        with_host_only, "invalid_credentials",
+        "参加先のスイッチでは所属元の入り口は開かない"
+    );
+    assert_eq!(with_home, "success", "所属元のスイッチで開く");
+}
+
 #[tokio::test]
 async fn a_same_named_guest_does_not_lock_out_the_host_tenants_home_user() {
     let Some(env) = setup().await else { return };
