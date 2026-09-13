@@ -156,6 +156,11 @@ impl IdentifierScope {
 
 /// 登録簿の解決クエリを組み立てる。外部入力は必ず bind を通り、この文字列に載るのは
 /// モジュール内のリテラルと `?` の個数だけ（DB 無しで形を検証できるよう関数に切り出す）。
+/// 解決のクエリ。
+///
+/// `email` 種別だけは**識別子が載っているテナント**（＝利用者の所属元）のスイッチを見る
+/// （ADR-0050 決定 3）。要求元テナントを見ないのは、ゲストとして参加している先の設定で
+/// 所属元の入り口が開いたり閉じたりしないようにするためである。
 fn login_identifier_sql(scope: IdentifierScope, candidate_count: usize) -> String {
     let placeholders = vec!["(?, ?)"; candidate_count].join(", ");
     let scope = scope.sql();
@@ -165,6 +170,9 @@ fn login_identifier_sql(scope: IdentifierScope, candidate_count: usize) -> Strin
          JOIN users u ON u.id = i.user_id \
          {scope} \
            AND i.is_active = 1 \
+           AND (i.identifier_type <> 'email' OR EXISTS ( \
+                 SELECT 1 FROM tenants et \
+                  WHERE et.id = i.tenant_id AND et.email_login_enabled = 1)) \
            AND (i.identifier_type, i.normalized_value) IN ({placeholders}) \
          LIMIT 2"
     )
@@ -348,6 +356,141 @@ async fn sync_primary_login_identifier(
     Ok(())
 }
 
+/// 主メールアドレスを登録簿へ書き込む（ADR-0050 決定 1）。
+///
+/// `users.email` は NOT NULL・空を許さないので、ユーザー名と違って「解除」の経路は無い。
+///
+/// # 同じ値を**自分**が別の行で持っているとき
+///
+/// **主メール行を作らない**（ADR-0050 決定 6）。ユーザー名を指定せずに作った利用者は
+/// ユーザー名がメールアドレスの文字列になっており（`unwrap_or_else(|| email.clone())`）、
+/// 同じ正規化値で 2 行目を作ると一意制約（0041）に当たる。その値は既にその人のものとして
+/// 登録簿が守っているので、行を増やす意味が無い。
+///
+/// このとき**既にある主メール行は消す**。消さないと、メールを変更して元の値へ戻したときに
+/// 古い行が居座り、`users.email` と登録簿が割れる。
+///
+/// # 同じ値を**他人**が持っているとき
+///
+/// `Conflict` で失敗させる。判定は一意キーと同じ範囲（テナント × 正規化値。**種別で絞らない**）
+/// で行う —— 絞ると制約より狭い判定になり、他人が別種別で同じ値を持っていると素通りする。
+async fn sync_primary_email_identifier(
+    conn: &mut sqlx::MySqlConnection,
+    user_id: Uuid,
+    email: &str,
+) -> Result<()> {
+    use crate::domain::login_identifier::LoginIdentifierType;
+
+    let value = email.trim();
+    if value.is_empty() {
+        // `users.email` は NOT NULL。ここへ来るのは呼び出し側の組み立て誤りなので、
+        // 黙って無視せず、行を触らずに返す（INSERT 側が一意制約より先に落ちる）。
+        return Ok(());
+    }
+    let normalized = LoginIdentifierType::Email.normalize(value);
+
+    // 他人が同じ正規化値を握っているか（テナントは利用者の行から引く）。
+    let taken_by_someone_else: Option<i32> = sqlx::query_scalar(
+        "SELECT 1 FROM user_login_identifiers i \
+         JOIN users u ON u.id = ? \
+         WHERE i.tenant_id = u.tenant_id \
+           AND i.normalized_value = ? AND i.user_id <> u.id \
+         LIMIT 1",
+    )
+    .bind(user_id.to_string())
+    .bind(&normalized)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(repo_err)?;
+    if taken_by_someone_else.is_some() {
+        // 値そのものは PII なので出さない（`CLAUDE.md`「ログ」）。
+        return Err(DomainError::Conflict(
+            "email is already used as a login identifier by another user".to_string(),
+        ));
+    }
+
+    let existing: Option<String> = sqlx::query_scalar(
+        "SELECT id FROM user_login_identifiers \
+         WHERE user_id = ? AND primary_email_of_user IS NOT NULL",
+    )
+    .bind(user_id.to_string())
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(repo_err)?;
+
+    // 自分の別の行（主メール行以外。多くはユーザー名）が同じ値を持っているか。
+    let held_by_self_elsewhere: Option<i32> = sqlx::query_scalar(
+        "SELECT 1 FROM user_login_identifiers i \
+         JOIN users u ON u.id = ? \
+         WHERE i.tenant_id = u.tenant_id \
+           AND i.normalized_value = ? AND i.user_id = u.id \
+           AND i.primary_email_of_user IS NULL \
+         LIMIT 1",
+    )
+    .bind(user_id.to_string())
+    .bind(&normalized)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(repo_err)?;
+
+    if held_by_self_elsewhere.is_some() {
+        if let Some(id) = existing {
+            sqlx::query("DELETE FROM user_login_identifiers WHERE id = ?")
+                .bind(id)
+                .execute(&mut *conn)
+                .await
+                .map_err(repo_err)?;
+        }
+        return Ok(());
+    }
+
+    match existing {
+        Some(id) => {
+            sqlx::query(
+                "UPDATE user_login_identifiers \
+                 SET identifier_type = 'email', display_value = ?, normalized_value = ?, \
+                     is_active = 1 \
+                 WHERE id = ?",
+            )
+            .bind(value)
+            .bind(&normalized)
+            .bind(id)
+            .execute(&mut *conn)
+            .await
+            .map_err(identifier_conflict)?;
+        }
+        None => {
+            // テナントは利用者の行から引く（呼び出し側に渡させると `users` と食い違う余地が
+            // 生まれる）。ただし **`INSERT ... SELECT` にはしない** —— 参照元の `users` の行へ
+            // 共有ロックが掛かり、同じ利用者を更新する他のトランザクションとデッドロックし得る。
+            // 主識別子の同期と合わせて 1 つの作成で 2 回掛かるため、こちらは値を読んでから
+            // 束縛して入れる（読みは consistent read でロックを取らない）。
+            let tenant_id: String = sqlx::query_scalar("SELECT tenant_id FROM users WHERE id = ?")
+                .bind(user_id.to_string())
+                .fetch_optional(&mut *conn)
+                .await
+                .map_err(repo_err)?
+                .ok_or_else(|| DomainError::Repository("user not found".to_string()))?;
+            sqlx::query(
+                "INSERT INTO user_login_identifiers \
+                 (id, tenant_id, user_id, identifier_type, display_value, normalized_value, \
+                  is_active, primary_email_of_user) \
+                 VALUES (?, ?, ?, 'email', ?, ?, 1, ?)",
+            )
+            .bind(uuid::Uuid::now_v7().to_string())
+            .bind(tenant_id)
+            .bind(user_id.to_string())
+            .bind(value)
+            .bind(&normalized)
+            .bind(user_id.to_string())
+            .execute(&mut *conn)
+            .await
+            .map_err(identifier_conflict)?;
+        }
+    }
+    Ok(())
+}
+
 /// users への INSERT と、主たるログイン識別子の登録。
 ///
 /// **必ず同じトランザクションで行う。** ユーザー名が他人と衝突すると識別子の側が `Conflict` で
@@ -386,6 +529,10 @@ async fn insert_user(conn: &mut sqlx::MySqlConnection, user: &User) -> Result<()
     // 主たるログイン識別子の置き場所は登録簿だけである（AP15b）。値が他人と衝突していれば
     // ここで `Conflict` になり、利用者の作成ごと失敗する。
     sync_primary_login_identifier(conn, user.id, user.preferred_username.as_deref()).await?;
+    // メールアドレスも登録簿が正本の一意性に載せる（ADR-0050）。ユーザー名と同じ理由で
+    // 同じトランザクションに置く —— `users` の行だけが残ると、そのメールを他人が
+    // ログイン識別子として取れてしまう。
+    sync_primary_email_identifier(conn, user.id, &user.email).await?;
     Ok(())
 }
 
@@ -743,6 +890,9 @@ impl UserRepository for SqlxUserRepository {
             })?;
         // ユーザー名の置き場所は登録簿だけである（AP15b）。
         sync_primary_login_identifier(&mut tx, id, preferred_username).await?;
+        // 主メール行も同じトランザクションで追随させる（ADR-0050）。ここで同期しないと、
+        // 変更前のアドレスが登録簿に居座り、変更後のアドレスは誰のものでもない状態になる。
+        sync_primary_email_identifier(&mut tx, id, email).await?;
         tx.commit().await.map_err(repo_err)?;
         Ok(())
     }

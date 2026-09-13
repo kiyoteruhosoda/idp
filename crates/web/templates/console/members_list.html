@@ -29,12 +29,13 @@
 <div class="table-responsive">
   <table class="table table-cards table-hover align-middle">
     <thead>
-      <tr><th>{{ messages.get("admin-user-col-email") }}</th><th>{{ messages.get("admin-users-field-name") }}</th><th>{{ messages.get("admin-members-col-type") }}</th><th>{{ messages.get("admin-members-col-status") }}</th><th>{{ messages.get("admin-members-col-user-status") }}</th><th>{{ messages.get("admin-signing-keys-col-actions") }}</th></tr>
+      <tr><th>{{ messages.get("admin-user-col-email") }}</th><th>{{ messages.get("admin-user-col-username") }}</th><th>{{ messages.get("admin-users-field-name") }}</th><th>{{ messages.get("admin-members-col-type") }}</th><th>{{ messages.get("admin-members-col-status") }}</th><th>{{ messages.get("admin-members-col-user-status") }}</th><th>{{ messages.get("admin-signing-keys-col-actions") }}</th></tr>
     </thead>
     <tbody>
       {% for m in members %}
       <tr>
         <td data-label="{{ messages.get("admin-user-col-email") }}">{% if m.membership_type == "HOME" %}<a href="{{ tenant }}/admin/users/{{ m.user_id }}/permissions">{{ m.email.as_deref().unwrap_or("-") }}</a>{% else %}{{ m.email.as_deref().unwrap_or("-") }}{% endif %}</td>
+        <td data-label="{{ messages.get("admin-user-col-username") }}">{{ m.preferred_username.as_deref().unwrap_or("-") }}</td>
         <td data-label="{{ messages.get("admin-users-field-name") }}">{{ m.name.as_deref().unwrap_or("-") }}</td>
         <td data-label="{{ messages.get("admin-members-col-type") }}">{% if m.membership_type == "GUEST" %}<span class="badge text-bg-info">{{ m.membership_type }}</span>{% else %}<span class="badge text-bg-secondary">{{ m.membership_type }}</span>{% endif %}</td>
         <td data-label="{{ messages.get("admin-members-col-status") }}">{% if m.status == "SUSPENDED" %}<span class="badge text-bg-warning">{{ messages.get("admin-members-status-suspended") }}</span>{% else %}{{ m.status }}{% endif %}</td>

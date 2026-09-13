@@ -102,6 +102,7 @@ pub async fn page(
         tenant_name: &tenant_view.name,
         tenant_status: &tenant_view.status,
         tenant_self_registration: tenant_view.self_registration_enabled,
+        tenant_email_login: tenant_view.email_login_enabled,
         csrf: &console_csrf_token(&sso, state.config.csrf_secret()),
         saved: query.saved.is_some(),
         error_key: query.error.as_deref().and_then(error_key_for),
@@ -158,6 +159,7 @@ pub async fn update_tenant(
             &sso,
             form.name.trim(),
             form.self_registration_enabled.is_some(),
+            form.email_login_enabled.is_some(),
         )
         .await
     {

@@ -112,16 +112,19 @@ async fn admin_assigns_a_phone_identifier_that_can_then_be_used_to_sign_in() {
     let res = send(&env.app, get(&outsider_token, &uri)).await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
 
-    // ── 一覧の先頭は主たる識別子。AP15 以降は登録簿にも実体の行があるので `id` が付く
-    //    （合成行が返るのは、移送前に作られた利用者だけ。`primary_login_identifier` テスト参照）。
+    // ── 一覧の先頭は主たる識別子、次が主メール（ADR-0050）。AP15 以降は登録簿にも実体の行が
+    //    あるので `id` が付く（合成行が返るのは、移送前に作られた利用者だけ。
+    //    `primary_login_identifier` テスト参照）。
     let res = send(&env.app, get(&admin_tok, &uri)).await;
     assert_eq!(res.status(), StatusCode::OK);
     let listed = body_json(res).await;
     let rows = listed.as_array().expect("array");
-    assert_eq!(rows.len(), 1, "{listed}");
+    assert_eq!(rows.len(), 2, "{listed}");
     assert_eq!(rows[0]["is_primary"], Value::Bool(true));
     assert!(rows[0]["id"].is_string(), "{listed}");
     assert_eq!(rows[0]["normalized_value"], username.to_lowercase());
+    assert_eq!(rows[1]["is_primary_email"], Value::Bool(true));
+    assert_eq!(rows[1]["identifier_type"], "email");
     let stored: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM user_login_identifiers \
          WHERE user_id = ? AND primary_of_user IS NOT NULL",
@@ -342,7 +345,8 @@ async fn rejects_values_that_are_already_usable_for_signing_in() {
         assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{bad}");
     }
 
-    // 自分のメールアドレスは正当な用途（「メールでログインしたい」）なので通る。
+    // 自分のメールアドレスも拒否する。ADR-0050 以降、`users.email` は**主メール行として
+    // 登録簿に在る**ので、同じ値をもう 1 行足すのは重複である（以前はここが 201 だった）。
     let res = send(
         &env.app,
         post(
@@ -352,7 +356,30 @@ async fn rejects_values_that_are_already_usable_for_signing_in() {
         ),
     )
     .await;
-    assert_eq!(res.status(), StatusCode::CREATED);
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+
+    // ── メールでのログインはテナントのスイッチが決める（ADR-0050 決定 3）。
+    //
+    //    行は移行・作成時から在るが、スイッチが入るまでログイン欄では一致しない。
+    //    「一意性は常に効く／入り口はテナントが開ける」を分けてあることの確認である。
+    //
+    //    ⚠ **既定に頼らず、両方の状態を明示的に作る。** テナントは他のテストと共有で、DB は
+    //    実行をまたいで使い回される。切ってから確かめないと、前の実行が入れたままのスイッチで
+    //    「入っていない側」の検証が素通りする（実際にそれで 2 回目が落ちた）。
+    let set_email_login = |on: bool| {
+        let pool = env.pool.clone();
+        let tenant = env.root_tenant_id.clone();
+        async move {
+            sqlx::query("UPDATE tenants SET email_login_enabled = ? WHERE id = ?")
+                .bind(on)
+                .bind(tenant)
+                .execute(&pool)
+                .await
+                .expect("toggle email login");
+        }
+    };
+
+    set_email_login(false).await;
     assert_eq!(
         admin_login_result(
             &env.app,
@@ -362,8 +389,24 @@ async fn rejects_values_that_are_already_usable_for_signing_in() {
             password
         )
         .await,
-        "forbidden",
-        "メールで利用者が特定できる"
+        "invalid_credentials",
+        "スイッチが入るまではメールで利用者を特定できない"
+    );
+
+    set_email_login(true).await;
+    let with_switch_on = admin_login_result(
+        &env.app,
+        &env.root_tenant_id,
+        IP_CONFLICT,
+        &format!("{alice}@example.com"),
+        password,
+    )
+    .await;
+    // 共有テナントなので、確かめたら必ず戻す（次のテスト・次の実行へ持ち越さない）。
+    set_email_login(false).await;
+    assert_eq!(
+        with_switch_on, "forbidden",
+        "スイッチを入れるとメールで利用者が特定できる（この利用者は管理権限を持たない）"
     );
 }
 
@@ -414,7 +457,11 @@ async fn the_primary_identifier_is_not_a_registry_row_and_cannot_be_targeted() {
 
     let listed = body_json(send(&env.app, get(&admin_tok, &uri)).await).await;
     let rows = listed.as_array().expect("array");
-    assert_eq!(rows.len(), 1, "{listed}");
+    assert_eq!(rows.len(), 2, "{listed}");
     assert_eq!(rows[0]["is_primary"], Value::Bool(true));
     assert_eq!(rows[0]["normalized_value"], renamed.to_lowercase());
+    // 改名はユーザー名の行だけを動かす。主メール行はメールアドレスの写しなので、
+    // プロフィール編集でメールを変えていない以上そのままである（ADR-0050）。
+    assert_eq!(rows[1]["is_primary_email"], Value::Bool(true));
+    assert_eq!(rows[1]["identifier_type"], "email");
 }

@@ -86,6 +86,7 @@ mod tests {
             name: "Acme".to_string(),
             status,
             self_registration_enabled: false,
+            email_login_enabled: false,
             created_at: now(),
             updated_at: now(),
         }

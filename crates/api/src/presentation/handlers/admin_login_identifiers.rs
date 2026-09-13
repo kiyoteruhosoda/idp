@@ -40,6 +40,8 @@ pub struct LoginIdentifierResponse {
     /// 主たるログイン識別子か。`true` の行は識別子単位では変更・削除できない
     /// （変えるならプロフィール編集、止めるならアカウントの無効化）。
     pub is_primary: bool,
+    /// 主メールアドレスの行か（ADR-0050）。主識別子と同じく個別の操作の対象にならない。
+    pub is_primary_email: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -53,6 +55,7 @@ impl From<LoginIdentifierEntry> for LoginIdentifierResponse {
             normalized_value: v.normalized_value,
             is_active: v.is_active,
             is_primary: v.is_primary,
+            is_primary_email: v.is_primary_email,
             created_at: v.created_at.to_rfc3339(),
             updated_at: v.updated_at.to_rfc3339(),
         }

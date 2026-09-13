@@ -395,6 +395,8 @@ pub struct TenantResponse {
     pub status: String,
     /// 自己登録（`/auth/register`）を許可するか（SEC6。既定は無効）。
     pub self_registration_enabled: bool,
+    /// メールアドレスでのログインを許可するか（ADR-0050。既定は無効）。
+    pub email_login_enabled: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -425,6 +427,9 @@ pub struct UpdateTenantSettingsRequest {
     /// 自己登録トグル（SEC6）。省略時は現状維持。
     #[serde(default)]
     pub self_registration_enabled: Option<bool>,
+    /// メールアドレスでのログインのトグル（ADR-0050）。省略時は現状維持。
+    #[serde(default)]
+    pub email_login_enabled: Option<bool>,
 }
 
 // --- システム設定（SMTP 等。root/idp.system.admin のみ。MT14） -----------------------------
@@ -687,6 +692,9 @@ pub struct MemberResponse {
     pub user_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+    /// 主たるログイン識別子（ユーザー名）。付けずに作られたアカウントは省略される。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preferred_username: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// `HOME` または `GUEST`。

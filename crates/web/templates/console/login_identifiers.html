@@ -50,15 +50,17 @@
       {% for i in identifiers %}
       <tr>
         <td data-label="{{ messages.get("admin-login-identifiers-col-type") }}">{{ i.type_label }}</td>
-        <td data-label="{{ messages.get("admin-login-identifiers-col-value") }}">{{ i.display_value }}{% if i.is_primary %} <span class="badge text-bg-primary">{{ messages.get("admin-login-identifiers-primary") }}</span>{% endif %}</td>
+        <td data-label="{{ messages.get("admin-login-identifiers-col-value") }}">{{ i.display_value }}{% if i.is_primary %} <span class="badge text-bg-primary">{{ messages.get("admin-login-identifiers-primary") }}</span>{% endif %}{% if i.is_primary_email %} <span class="badge text-bg-primary">{{ messages.get("admin-login-identifiers-primary-email") }}</span>{% endif %}</td>
         {# 照合キーを併記する。登録した値と実際に一致する値がずれていても、片方しか見えないと
            設定ミスに気づけない（電話番号のように書き方が揺れる識別子で起きる）。 #}
         <td data-label="{{ messages.get("admin-login-identifiers-col-normalized") }}"><code>{{ i.normalized_value }}</code></td>
         <td data-label="{{ messages.get("admin-login-identifiers-col-state") }}">{% if i.is_active %}<span class="badge text-bg-success">{{ messages.get("admin-login-identifiers-state-active") }}</span>{% else %}<span class="badge text-bg-secondary">{{ messages.get("admin-login-identifiers-state-inactive") }}</span>{% endif %}</td>
         <td data-label="{{ messages.get("admin-signing-keys-col-actions") }}">
-          {# 主たる識別子は登録簿に行が無いため、ここからは操作できない（`id` も無い）。
-             変えるならプロフィール編集、止めるならアカウントの無効化（api も同じ理由で拒否する）。 #}
-          {% if let Some(id) = i.id %}
+          {# 主たる識別子と主メールは、ここからは操作できない。変えるならプロフィール編集、
+             止めるならアカウントの無効化（api も同じ理由で拒否する）。
+             ⚠ **行の有無ではなく役割で判定する。** AP15b で主識別子も登録簿の行になったので
+             `id` は常に在り、`id` だけで出し分けると押しても必ず失敗するボタンが並ぶ。 #}
+          {% if !i.is_primary && !i.is_primary_email %}{% if let Some(id) = i.id %}
           <div class="d-flex flex-wrap gap-2">
             <form method="post" action="{{ tenant }}/admin/users/{{ user_id }}/login-identifiers/{{ id }}/active" class="d-inline">
               <input type="hidden" name="csrf_token" value="{{ csrf }}">
@@ -70,7 +72,7 @@
               <button type="submit" class="btn btn-outline-danger btn-sm"><i class="fa-solid fa-trash me-1" aria-hidden="true"></i>{{ messages.get("admin-login-identifiers-delete") }}</button>
             </form>
           </div>
-          {% else %}
+          {% endif %}{% else %}
           <span class="text-muted small">{{ messages.get("admin-login-identifiers-primary-hint") }}</span>
           {% endif %}
         </td>

@@ -247,6 +247,7 @@ mod tests {
             name: "root".to_string(),
             status,
             self_registration_enabled: false,
+            email_login_enabled: false,
             created_at: t,
             updated_at: t,
         }

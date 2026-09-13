@@ -354,6 +354,7 @@ pub async fn update_current_tenant(
             tenant.context(),
             body.name,
             body.self_registration_enabled,
+            body.email_login_enabled,
             &admin.actor,
             &ctx,
         )
@@ -490,6 +491,7 @@ fn tenant_response(t: &Tenant) -> TenantResponse {
         name: t.name.clone(),
         status: t.status.as_str().to_string(),
         self_registration_enabled: t.self_registration_enabled,
+        email_login_enabled: t.email_login_enabled,
         created_at: t.created_at.to_rfc3339(),
         updated_at: t.updated_at.to_rfc3339(),
     }

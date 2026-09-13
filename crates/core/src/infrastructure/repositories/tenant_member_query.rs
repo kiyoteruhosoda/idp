@@ -50,8 +50,14 @@ fn push_conditions<'a>(builder: &mut QueryBuilder<'a, MySql>, filter: &'a Tenant
         builder.push(" AND (u.email LIKE ");
         builder.push_bind(pattern.clone());
         builder.push(" ESCAPE '!' OR u.name LIKE ");
+        builder.push_bind(pattern.clone());
+        // ユーザー名は `users` に無い（AP15b で撤去済み）。一覧に出す値と同じ経路で引く。
+        builder.push(
+            " ESCAPE '!' OR EXISTS (SELECT 1 FROM user_login_identifiers p \
+                       WHERE p.primary_of_user = u.id AND p.display_value LIKE ",
+        );
         builder.push_bind(pattern);
-        builder.push(" ESCAPE '!')");
+        builder.push(" ESCAPE '!'))");
     }
 }
 
@@ -66,6 +72,7 @@ fn map_row(row: &MySqlRow) -> Result<TenantMember> {
         user_id: Uuid::parse_str(&user_id)
             .map_err(|e| DomainError::Repository(format!("invalid UUID `{user_id}`: {e}")))?,
         email: row.try_get("email").map_err(repo_err)?,
+        preferred_username: row.try_get("preferred_username").map_err(repo_err)?,
         name: row.try_get("name").map_err(repo_err)?,
         membership_type: MembershipType::parse(&membership_type)?,
         status: MembershipStatus::parse(&status)?,
@@ -90,7 +97,9 @@ impl TenantMemberQuery for SqlxTenantMemberQuery {
 
         let mut page = QueryBuilder::<MySql>::new(
             "SELECT m.user_id, m.membership_type, m.status, \
-             u.email, u.name, u.status AS user_status, u.locked_until AS locked_until",
+             u.email, u.name, u.status AS user_status, u.locked_until AS locked_until, \
+             (SELECT p.display_value FROM user_login_identifiers p \
+                WHERE p.primary_of_user = u.id) AS preferred_username",
         );
         push_conditions(&mut page, filter);
         // 並びはページ間で安定していなければならない（重複・欠落を防ぐ）。email は

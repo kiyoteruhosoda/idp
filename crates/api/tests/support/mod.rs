@@ -193,18 +193,21 @@ pub async fn setup(test_name: &str) -> Option<TestEnv> {
 /// 登録 API で作った利用者をメール検証済みにする。
 /// OIDC / internal auth の既存フロー検証ではメール検証ゲートではなく同意・CSRF・token 発行を検証したいため、
 /// テストデータだけ明示的に検証済みに寄せる。
+///
+/// ⚠ **引いてから主キーで更新する（JOIN した UPDATE にしない）。** 結合したまま更新すると、
+/// この UPDATE が `user_login_identifiers_primary_uk` を走査して共有ロックを取りながら
+/// `users` の行の排他ロックを待つ。同時に走る登録は逆の順（`users` の行を握ったまま
+/// 登録簿へ INSERT する）で進むため、**並列実行でデッドロックする**（実測。登録が 500 を返す）。
+/// 2 文に分けると、どちらの文も 1 つの表しか触らないので循環が作れない。
 pub async fn mark_email_verified(pool: &MySqlPool, tenant_id: &str, username: &str) {
-    let result = sqlx::query(
-        "UPDATE users u \
-         JOIN user_login_identifiers p ON p.primary_of_user = u.id \
-         SET u.email_verified = 1 \
-         WHERE u.tenant_id = ? AND p.normalized_value = ?",
-    )
-    .bind(tenant_id)
-    .bind(username.trim().to_lowercase())
-    .execute(pool)
-    .await
-    .expect("mark email verified");
+    let user_id = find_user_id_by_username(pool, tenant_id, username)
+        .await
+        .expect("registered user");
+    let result = sqlx::query("UPDATE users SET email_verified = 1 WHERE id = ?")
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .expect("mark email verified");
     assert_eq!(
         result.rows_affected(),
         1,
