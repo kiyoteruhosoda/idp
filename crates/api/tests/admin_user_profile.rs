@@ -129,6 +129,144 @@ async fn admin_edits_email_username_and_display_name() {
     );
 }
 
+/// メールアドレスを変えると主メール行が追随する（ADR-0050 決定 1）。
+///
+/// 追随しないと `users.email` と登録簿が割れ、変更前のアドレスが登録簿に居座る
+/// （その値は誰も取れないのに誰のものでもない）。
+///
+/// **同じ値をユーザー名として持たせたときに行が消えることまで確かめる**（決定 6）。
+/// 同じ正規化値の行は 1 本しか作れないので、そこでは主メール行を作らないと決めてある。
+/// 消し損ねると、メールを戻したときに古い行が残って `users.email` と食い違う。
+#[tokio::test]
+async fn changing_the_email_moves_the_primary_email_row() {
+    let Some(env) = support::setup("primary email follows the profile").await else {
+        return;
+    };
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+    let target = create_plain_user(&env.pool, &env.root_tenant_id).await;
+    let uri = format!("/{}/admin/users/{target}/profile", env.root_tenant_id);
+    let unique = uuid::Uuid::now_v7().simple().to_string();
+    let first = format!("pe1-{unique}@example.com");
+    let second = format!("pe2-{unique}@example.com");
+    // ⚠ ユーザー名を**メールの書式**にしておく。利用者をユーザー名の指定なしで作ると
+    //   ユーザー名にはメールアドレスがそのまま入る（ADR-0009 §8）ので、この形は実在する。
+    let username = format!("pe-{unique}@example.com");
+
+    // ── 行が無いところから作られる（SQL で直接作った利用者は登録簿に行を持たない）。
+    let res = send(
+        &env.app,
+        patch(
+            &admin_tok,
+            &uri,
+            json!({ "email": first, "preferred_username": username }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        support::primary_email(&env.pool, &target).await,
+        Some(first)
+    );
+
+    // ── 変更で追随する（更新の分岐）。
+    let res = send(
+        &env.app,
+        patch(&admin_tok, &uri, json!({ "email": second })),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        support::primary_email(&env.pool, &target).await,
+        Some(second)
+    );
+
+    // ── メールを**自分のユーザー名と同じ値**にすると、主メール行は消える（決定 6）。
+    //    同じ正規化値の行は 1 本しか作れないので、ユーザー名の行が既にその値を握っている
+    //    ときは主メール行を作らない。消し損ねると `users.email` と登録簿が食い違う。
+    let res = send(
+        &env.app,
+        patch(&admin_tok, &uri, json!({ "email": username })),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        support::primary_email(&env.pool, &target).await,
+        None,
+        "同じ値の行は 1 本だけ。ユーザー名の行が持っているので主メール行は作らない"
+    );
+    assert_eq!(
+        support::primary_username(&env.pool, &target).await,
+        Some(username),
+        "ユーザー名の行は残る"
+    );
+
+    // ── メールを別の値へ戻すと、主メール行がまた作られる。
+    let third = format!("pe3-{unique}@example.com");
+    let res = send(&env.app, patch(&admin_tok, &uri, json!({ "email": third }))).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        support::primary_email(&env.pool, &target).await,
+        Some(third)
+    );
+}
+
+/// **他人がログイン識別子として持っている値へは、メールアドレスを変更できない**
+/// （ADR-0050 決定 1。要件「メールアドレスは一意にしたい」の核心）。
+///
+/// ⚠ この向きが今まで素通りだった。`update_profile` が見ていたのは `users` 側の一意制約
+/// （`(tenant_id, email)`）だけで、登録簿を見ていなかったため、**B がユーザー名や別名の
+/// メールとして持っている値を A のメールにできた**。メールでのログインを許すと、
+/// そのとき 1 つの入力が 2 人に当たる。
+#[tokio::test]
+async fn an_email_held_by_another_user_as_an_identifier_is_rejected() {
+    let Some(env) = support::setup("primary email uniqueness").await else {
+        return;
+    };
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+    let unique = uuid::Uuid::now_v7().simple().to_string();
+    let alice = create_plain_user(&env.pool, &env.root_tenant_id).await;
+    let bob = create_plain_user(&env.pool, &env.root_tenant_id).await;
+
+    // bob に別名のメールアドレスを足す（bob の `users.email` とは別の値）。
+    let alias = format!("alias-{unique}@example.com");
+    let res = send(
+        &env.app,
+        support::post(
+            &admin_tok,
+            &format!(
+                "/{}/admin/users/{bob}/login-identifiers",
+                env.root_tenant_id
+            ),
+            json!({"identifier_type": "email", "value": alias}),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    // alice のメールをその値へ変えようとすると 409。
+    let res = send(
+        &env.app,
+        patch(
+            &admin_tok,
+            &format!("/{}/admin/users/{alice}/profile", env.root_tenant_id),
+            json!({ "email": alias }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        res.status(),
+        StatusCode::CONFLICT,
+        "他人の識別子と同じ値はメールにできない"
+    );
+
+    // 断ったあとに `users` 側だけが書き換わっていないこと（同じトランザクションで失敗する）。
+    let (stored_email, _, _) = stored_profile(&env.pool, &alice).await;
+    assert_ne!(
+        stored_email, alias,
+        "断ったのに users 側だけ変わってはいけない"
+    );
+}
+
 #[tokio::test]
 async fn profile_edit_rejects_duplicates_and_invalid_input() {
     let Some(env) = support::setup("admin user profile guards").await else {

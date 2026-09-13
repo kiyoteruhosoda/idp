@@ -411,7 +411,7 @@ async fn rejects_values_that_are_already_usable_for_signing_in() {
 }
 
 #[tokio::test]
-async fn the_primary_identifier_is_not_a_registry_row_and_cannot_be_targeted() {
+async fn the_primary_rows_cannot_be_targeted_even_by_their_real_id() {
     let Some(env) = support::setup("login identifier primary").await else {
         return;
     };
@@ -425,8 +425,7 @@ async fn the_primary_identifier_is_not_a_registry_row_and_cannot_be_targeted() {
         env.root_tenant_id
     );
 
-    // 合成行には id が無いため、そもそも PATCH/DELETE の宛先を作れない。存在しない id を
-    // 指しても 404 で、主識別子が識別子単位の操作で動くことはない。
+    // 存在しない id は 404。
     let stray = uuid::Uuid::now_v7();
     let res = send(
         &env.app,
@@ -440,6 +439,32 @@ async fn the_primary_identifier_is_not_a_registry_row_and_cannot_be_targeted() {
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
     let res = send(&env.app, delete(&admin_tok, &format!("{uri}/{stray}"))).await;
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
+
+    // ── ⚠ **実在する id で撃つ。** AP15b で主識別子も登録簿の行になり `id` が付いたので、
+    //    「合成行には id が無いから宛先を作れない」はもう成り立たない。守っているのは
+    //    リポジトリの条件（`primary_of_user IS NULL` / `primary_email_of_user IS NULL`）
+    //    だけで、そこを撃たないとこのテストは**通る理由が違ってしまう**。
+    let listed = body_json(send(&env.app, get(&admin_tok, &uri)).await).await;
+    let rows = listed.as_array().expect("array");
+    for key in ["is_primary", "is_primary_email"] {
+        let row = rows
+            .iter()
+            .find(|r| r[key] == Value::Bool(true))
+            .unwrap_or_else(|| panic!("no row with {key}: {listed}"));
+        let id = row["id"].as_str().expect("real id");
+        let res = send(
+            &env.app,
+            patch(
+                &admin_tok,
+                &format!("{uri}/{id}"),
+                json!({"is_active": false}),
+            ),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND, "{key} は止められない");
+        let res = send(&env.app, delete(&admin_tok, &format!("{uri}/{id}"))).await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND, "{key} は消せない");
+    }
 
     // プロフィール編集でログイン識別子を変えると、一覧も追随する（AP15 の移送中は `users` と
     // 登録簿の両方へ書くので、古い値が片側に残らない）。
