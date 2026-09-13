@@ -540,6 +540,7 @@ mod tests {
         MemberView {
             user_id: "11111111-1111-1111-1111-111111111111".into(),
             email: Some("u@example.com".into()),
+            preferred_username: Some("u".into()),
             name: None,
             membership_type: membership_type.into(),
             status: "ACTIVE".into(),
@@ -701,6 +702,25 @@ mod tests {
         guest.locked = true;
         let guest_html = render_page(&[guest], None);
         assert!(!guest_html.contains("/unlock"), "{guest_html}");
+    }
+
+    /// 一覧はユーザー名（主たるログイン識別子）を出す。
+    ///
+    /// メールアドレスと表示名だけでは、**利用者が「入れない」と言ってきたときに何を打って
+    /// もらえばよいのかが分からない**。付いていない利用者は `-` で、空欄との区別を残す。
+    #[test]
+    fn the_list_shows_the_login_identifier() {
+        let html = render_page(&[member("HOME")], None);
+        assert!(
+            html.contains(&Messages::new(Locale::Ja).get("admin-user-col-username")),
+            "{html}"
+        );
+        assert!(html.contains(">u</td>"), "{html}");
+
+        let mut nameless = member("HOME");
+        nameless.preferred_username = None;
+        let nameless_html = render_page(&[nameless], None);
+        assert!(nameless_html.contains(">-</td>"), "{nameless_html}");
     }
 
     /// 解除後の完了通知は「外した」「元から無かった」を区別して出す。

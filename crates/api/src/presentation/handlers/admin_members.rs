@@ -64,6 +64,7 @@ pub async fn list_members(
             .map(|m| MemberResponse {
                 user_id: m.user_id.to_string(),
                 email: m.email,
+                preferred_username: m.preferred_username,
                 name: m.name,
                 membership_type: m.membership_type.as_str().to_string(),
                 status: m.status.as_str().to_string(),

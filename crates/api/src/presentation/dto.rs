@@ -687,6 +687,9 @@ pub struct MemberResponse {
     pub user_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+    /// 主たるログイン識別子（ユーザー名）。付けずに作られたアカウントは省略される。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preferred_username: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// `HOME` または `GUEST`。

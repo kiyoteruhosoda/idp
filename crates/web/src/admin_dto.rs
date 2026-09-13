@@ -162,6 +162,9 @@ pub struct MemberView {
     pub user_id: String,
     #[serde(default)]
     pub email: Option<String>,
+    /// 主たるログイン識別子（ユーザー名）。api が省略したときは `None`。
+    #[serde(default)]
+    pub preferred_username: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
     /// `HOME` または `GUEST`。

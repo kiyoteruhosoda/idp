@@ -18,6 +18,12 @@ use uuid::Uuid;
 pub struct TenantMember {
     pub user_id: Uuid,
     pub email: Option<String>,
+    /// 主たるログイン識別子（ユーザー名。AP15b 以降は登録簿の `primary_of_user` 行が正本）。
+    ///
+    /// 表示値（`display_value`）をそのまま返す。照合に使う正規化値ではないのは、一覧は
+    /// **利用者が登録したままの綴りで読めなければならない**ためである（ADR-0025）。
+    /// 主識別子を持たない利用者（ユーザー名を付けずに作られたアカウント）は `None`。
+    pub preferred_username: Option<String>,
     pub name: Option<String>,
     pub membership_type: MembershipType,
     pub status: MembershipStatus,
@@ -36,7 +42,9 @@ pub struct TenantMember {
 /// メンバー一覧の絞り込み条件（MT22）。SQL の組み立ては infrastructure が行う。
 ///
 /// テナント越しの閲覧を防ぐため `tenant_id` は必須（`Option` にしない）。`search` はメール
-/// アドレス・氏名の**部分一致**で、正規化（trim・空を `None`）は Application 層が済ませてから渡す。
+/// アドレス・氏名・**ユーザー名**の部分一致で、正規化（trim・空を `None`）は Application 層が
+/// 済ませてから渡す。ユーザー名を対象に含めるのは、一覧に出ている値で引けないと
+/// 「見えているのに探せない」列になるためである。
 #[derive(Debug, Clone)]
 pub struct TenantMemberFilter {
     pub tenant_id: TenantId,
