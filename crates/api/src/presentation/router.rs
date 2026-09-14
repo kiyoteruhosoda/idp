@@ -441,6 +441,11 @@ pub fn build(state: AppState) -> Router {
             patch(admin_login_identifiers::update_login_identifier)
                 .delete(admin_login_identifiers::delete_login_identifier),
         )
+        // 別名のメールを主メールへ昇格させる（ADR-0052）。入れ替えなので項目の更新ではない。
+        .route(
+            "/admin/users/{user_id}/login-identifiers/{identifier_id}/primary-email",
+            post(admin_login_identifiers::promote_primary_email),
+        )
         // 利用者権限の付与・剥奪・参照（A2、ADR-0006）。idp.permissions:read / :write 必須。
         .route(
             "/admin/users/{user_id}/permissions",

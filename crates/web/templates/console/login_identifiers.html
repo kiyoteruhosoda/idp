@@ -62,6 +62,15 @@
              `id` は常に在り、`id` だけで出し分けると押しても必ず失敗するボタンが並ぶ。 #}
           {% if !i.is_primary && !i.is_primary_email %}{% if let Some(id) = i.id %}
           <div class="d-flex flex-wrap gap-2">
+            {# 主メールへの昇格はメール種別の行にだけ出す。昇格は入れ替えで、いまの主メール行が
+               降格して普通の別名になる（ADR-0052）。通知の宛先も一緒に動くので確認を挟む。
+               ⚠ **訳文ではなく種別コードで判定する。** 訳で見ると言語を変えたとたんに消える。 #}
+            {% if i.identifier_type == "email" %}
+            <form method="post" action="{{ tenant }}/admin/users/{{ user_id }}/login-identifiers/{{ id }}/primary-email" class="d-inline" data-confirm="{{ messages.get("admin-login-identifiers-promote-email-confirm") }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf }}">
+              <button type="submit" class="btn btn-outline-primary btn-sm"><i class="fa-solid fa-envelope-circle-check me-1" aria-hidden="true"></i>{{ messages.get("admin-login-identifiers-promote-email") }}</button>
+            </form>
+            {% endif %}
             <form method="post" action="{{ tenant }}/admin/users/{{ user_id }}/login-identifiers/{{ id }}/active" class="d-inline">
               <input type="hidden" name="csrf_token" value="{{ csrf }}">
               <input type="hidden" name="is_active" value="{% if i.is_active %}false{% else %}true{% endif %}">

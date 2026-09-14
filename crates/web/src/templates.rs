@@ -278,6 +278,7 @@ mod tests {
                 user_id: "11111111-1111-1111-1111-111111111111",
                 identifiers: &[LoginIdentifierRow {
                     id: Some("22222222-2222-2222-2222-222222222222"),
+                    identifier_type: "email",
                     type_label: "メールアドレス".to_string(),
                     display_value: "u@example.com",
                     normalized_value: "u@example.com",
@@ -310,6 +311,59 @@ mod tests {
         assert!(
             primary_email.contains(&messages.get("admin-login-identifiers-primary-email")),
             "{primary_email}"
+        );
+    }
+
+    /// 主メールへの昇格は**メール種別の行にだけ**出す（ADR-0052）。電話番号や社員番号に出すと、
+    /// 押しても必ず失敗するボタンが並ぶ（api が種別を見て弾く）。
+    #[test]
+    fn only_email_rows_offer_the_promotion_to_primary_email() {
+        let messages = Messages::new(Locale::Ja);
+        let render_row = |identifier_type: &str, is_primary_email: bool| {
+            render(&LoginIdentifiersConsole {
+                messages: &messages,
+                tenant: "/t",
+                admin: Some(ConsoleAdmin {
+                    label: "admin",
+                    tenant_name: Some("Acme"),
+                    permissions: &["idp.tenant.admin".to_string()],
+                }),
+                csrf: "csrf-token",
+                user_id: "11111111-1111-1111-1111-111111111111",
+                identifiers: &[LoginIdentifierRow {
+                    id: Some("22222222-2222-2222-2222-222222222222"),
+                    identifier_type,
+                    type_label: "種別".to_string(),
+                    display_value: "u@example.com",
+                    normalized_value: "u@example.com",
+                    is_active: true,
+                    is_primary: false,
+                    is_primary_email,
+                }],
+                type_options: &[],
+                error_key: None,
+                notice_key: None,
+            })
+        };
+
+        let alias_email = render_row("email", false);
+        assert!(alias_email.contains("/primary-email"), "{alias_email}");
+        assert!(
+            alias_email.contains(&messages.get("admin-login-identifiers-promote-email")),
+            "{alias_email}"
+        );
+
+        // 別の種別には出さない。
+        for other in ["username", "phone_number", "employee_number"] {
+            let html = render_row(other, false);
+            assert!(!html.contains("/primary-email"), "{other}: {html}");
+        }
+
+        // すでに主メールの行は、そもそも操作の対象外（昇格ボタンも出ない）。
+        let already_primary = render_row("email", true);
+        assert!(
+            !already_primary.contains("/primary-email"),
+            "{already_primary}"
         );
     }
 
@@ -1762,6 +1816,9 @@ pub struct LoginIdentifiersConsole<'a> {
 pub struct LoginIdentifierRow<'a> {
     /// 登録簿の行 id。`None` は主たる識別子（合成行）で、識別子単位の操作ができない。
     pub id: Option<&'a str>,
+    /// 種別コード（`email` 等）。訳文と別に持つのは、主メールへの昇格ボタンを**メール種別の
+    /// 行にだけ**出すため。訳文で判定すると、言語を変えたとたんにボタンが消える。
+    pub identifier_type: &'a str,
     pub type_label: String,
     pub display_value: &'a str,
     pub normalized_value: &'a str,

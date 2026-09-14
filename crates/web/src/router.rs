@@ -259,6 +259,10 @@ pub fn build(state: WebState) -> Router {
             post(admin_login_identifiers_console::delete),
         )
         .route(
+            "/admin/users/{user_id}/login-identifiers/{identifier_id}/primary-email",
+            post(admin_login_identifiers_console::promote_primary_email),
+        )
+        .route(
             "/admin/settings/tenant",
             post(admin_settings::update_tenant),
         )

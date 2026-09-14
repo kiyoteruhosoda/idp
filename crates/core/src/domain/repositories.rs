@@ -400,6 +400,21 @@ pub trait UserRepository: Send + Sync {
             "update_profile is not supported by this repository".to_string(),
         ))
     }
+    /// 登録簿にある別名のメール行を**主メール行へ昇格**させる（ADR-0052）。
+    ///
+    /// 昇格は入れ替えであり、`users.email` の差し替え・いまの主メール行の降格・選んだ行の昇格の
+    /// 3 つを**同じトランザクション**で行う。途中で落ちると主メール行が 0 本（宛先を失う）か
+    /// 2 本（`primary_email_of_user` の UNIQUE が防ぐので書き込みが落ちる）になる。
+    ///
+    /// 対象が見つからない・その利用者のものでない・メール種別でない・主たるログイン識別子である
+    /// ときは `false`（何も書かずに戻る）。
+    ///
+    /// 既定実装は未対応エラー（`update_profile` と同じ方針。本番の sqlx 実装のみが上書きする）。
+    async fn promote_primary_email(&self, _user_id: Uuid, _identifier_id: Uuid) -> Result<bool> {
+        Err(crate::domain::error::DomainError::Repository(
+            "promote_primary_email is not supported by this repository".to_string(),
+        ))
+    }
 }
 
 /// ログイン識別子の登録簿（AP8。`user_login_identifiers`）の永続化。
