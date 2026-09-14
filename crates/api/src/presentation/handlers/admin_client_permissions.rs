@@ -92,6 +92,7 @@ pub async fn grant_client_permission(
         .client_permissions_admin
         .grant(
             tenant.context(),
+            tenant.tenant().is_root(),
             &client_id,
             &body.permission_code,
             &admin.actor,

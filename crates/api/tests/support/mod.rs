@@ -25,6 +25,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::{json, Value};
 use sqlx::mysql::MySqlPoolOptions;
 use sqlx::MySqlPool;
+use sqlx::Row as _;
 use std::sync::Arc;
 use tower::ServiceExt;
 
@@ -188,6 +189,82 @@ pub async fn setup(test_name: &str) -> Option<TestEnv> {
         root_admin_id,
         csrf_secret,
     })
+}
+
+/// SMTP 設定（`system_settings` の `smtp.*`）を触るテストを**バイナリを跨いで**直列化する助言ロック。
+///
+/// 宛先はテナント別ではなくシステムに 1 組しか無い。設定を書き換えるテストが並行に走ると、
+/// 片方が向けた配送先へもう片方のメールが飛び、待っている側は永久に受け取れない。
+///
+/// ⚠ **プロセス内の `Mutex` では足りない。** `cargo test` はテストバイナリを**別プロセスとして
+/// 並行に**走らせるため、`password_reset` の中だけで直列化しても、別のバイナリ
+/// （`admin_smtp_settings`）が同じ設定を書き換えれば同じことが起きる（2026-09-13 に実際に踏んだ）。
+/// DB の助言ロックは接続＝セッション単位なので、プロセスを跨いで効く。
+///
+/// ⚠ **`Drop` では解放しない**（解放は非同期のため）。`release()` を呼ぶこと。呼ばずに panic した
+/// 場合も、プロセスが終われば接続が閉じて解放される（他バイナリはそれまで待つ）。
+pub struct SmtpSettingsLock {
+    conn: sqlx::pool::PoolConnection<sqlx::MySql>,
+}
+
+impl SmtpSettingsLock {
+    /// 取れるまで待つ（上限 60 秒）。
+    pub async fn acquire(pool: &MySqlPool) -> Self {
+        let mut conn = pool
+            .acquire()
+            .await
+            .expect("acquire connection for smtp lock");
+        let got =
+            sqlx::query_scalar::<_, Option<i64>>("SELECT GET_LOCK('assay_test_smtp_settings', 60)")
+                .fetch_one(&mut *conn)
+                .await
+                .expect("get smtp settings lock")
+                .unwrap_or(0);
+        assert_eq!(got, 1, "timed out waiting for the smtp settings lock");
+        Self { conn }
+    }
+
+    pub async fn release(mut self) {
+        let _ = sqlx::query("SELECT RELEASE_LOCK('assay_test_smtp_settings')")
+            .execute(&mut *self.conn)
+            .await;
+    }
+}
+
+/// `smtp.*` の行をそのまま控える（暗号文のパスワードも含め、値を解釈せずに戻せる形で持つ）。
+pub async fn snapshot_smtp_settings(pool: &MySqlPool) -> Vec<(String, String, bool)> {
+    sqlx::query("SELECT setting_key, setting_value, is_secret FROM system_settings WHERE setting_key LIKE 'smtp.%'")
+        .fetch_all(pool)
+        .await
+        .expect("snapshot smtp settings")
+        .into_iter()
+        .map(|row| {
+            (
+                row.get::<String, _>("setting_key"),
+                row.get::<String, _>("setting_value"),
+                row.get::<bool, _>("is_secret"),
+            )
+        })
+        .collect()
+}
+
+/// [`snapshot_smtp_settings`] で控えた状態へ戻す（控えに無い行は消す）。
+pub async fn restore_smtp_settings(pool: &MySqlPool, snapshot: &[(String, String, bool)]) {
+    sqlx::query("DELETE FROM system_settings WHERE setting_key LIKE 'smtp.%'")
+        .execute(pool)
+        .await
+        .expect("clear smtp settings");
+    for (key, value, is_secret) in snapshot {
+        sqlx::query(
+            "INSERT INTO system_settings (setting_key, setting_value, is_secret) VALUES (?, ?, ?)",
+        )
+        .bind(key)
+        .bind(value)
+        .bind(is_secret)
+        .execute(pool)
+        .await
+        .expect("restore smtp setting");
+    }
 }
 
 /// 登録 API で作った利用者をメール検証済みにする。

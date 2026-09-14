@@ -44,6 +44,21 @@ pub const SAML_SERVICE_PROVIDERS_READ: &str = "idp.saml-service-providers:read";
 pub const SAML_SERVICE_PROVIDERS_WRITE: &str = "idp.saml-service-providers:write";
 pub const RESOURCES_READ: &str = "idp.resources:read";
 pub const RESOURCES_WRITE: &str = "idp.resources:write";
+/// メール送信（SMTP）設定の参照。**システム全体の設定**なので root scope でしか持てない。
+pub const SMTP_READ: &str = "idp.smtp:read";
+/// メール送信（SMTP）設定の変更。**システム全体の設定**なので root scope でしか持てない。
+pub const SMTP_WRITE: &str = "idp.smtp:write";
+
+/// root scope でしか保有できない細粒度コード（ADR-0051）。
+///
+/// `system_settings` はテナント列を持たない**システム全体**の表である。ここを触れるコードを
+/// テナントの中で配れるようにすると、あるテナントの管理者が（機械を経由して）**全テナントの
+/// メール経路**を変えられる ——`idp.tenant.admin` では届かないものへ、その配下の細粒度コードで
+/// 届いてしまう。したがって [`TENANT_MANAGEMENT_CODES`] には入れず、付与の可否をテナントで縛る。
+///
+/// `idp.system.admin` と同じ制限だが、こちらは**分割された 1 枚**である点が違う
+/// ——再起動もテナント作成も含まない。
+pub const ROOT_SCOPED_CODES: &[&str] = &[SMTP_READ, SMTP_WRITE];
 
 /// `idp.tenant.admin` が含意する細粒度コードの集合（ADR-0037）。
 ///
@@ -120,11 +135,15 @@ pub fn is_grantable_to_client(code: &str) -> bool {
 /// 要求テナントで**そもそも付与し得る**コードか（ADR-0009 §4）。
 ///
 /// `idp.system.admin` は root scope でしか存在できない（DB の CHECK 制約
-/// `user_permissions_system_admin_scope_chk` とアプリ層の二重防御）。したがって非 root テナントでは、
-/// 実行者が誰であっても付与できない。**選べないものを見せない**（ADR-0032）ため、付与フォームの
+/// `user_permissions_system_admin_scope_chk` とアプリ層の二重防御）。[`ROOT_SCOPED_CODES`] も
+/// 同じ理由で root に限る（システム全体の設定を、テナントの中から触らせない。ADR-0051）。
+/// したがって非 root テナントでは、実行者が誰であっても付与できない。**選べないものを見せない**（ADR-0032）ため、付与フォームの
 /// 選択肢はこの判定で落とす。落とさないと、選べるのに必ず 403 になる選択肢が残る。
 pub fn is_grantable_in_tenant(code: &str, tenant_is_root: bool) -> bool {
-    code != SYSTEM_ADMIN || tenant_is_root
+    if tenant_is_root {
+        return true;
+    }
+    code != SYSTEM_ADMIN && !ROOT_SCOPED_CODES.contains(&code)
 }
 
 /// 名前空間付き権限コード（例: `idp.tenant.admin`, `idp.clients:read`）。
@@ -191,6 +210,33 @@ mod tests {
     }
 
     /// 既存の `idp.tenant.admin` 保有者は、細粒度化後も管理 API を今までどおり通る。
+    #[test]
+    fn smtp_codes_are_not_reachable_from_tenant_admin() {
+        // ⚠ **テナント管理者からは届かない。** 届くようにすると、テナントの中の人が
+        //   システム全体のメール経路を変えられる（ADR-0051）。
+        assert!(!implies(TENANT_ADMIN, SMTP_READ));
+        assert!(!implies(TENANT_ADMIN, SMTP_WRITE));
+        assert!(!TENANT_MANAGEMENT_CODES.contains(&SMTP_READ));
+        assert!(!TENANT_MANAGEMENT_CODES.contains(&SMTP_WRITE));
+        // system 管理者からは届く（含意の 2 番）。書きは読みを含む（4 番）。
+        assert!(implies(SYSTEM_ADMIN, SMTP_WRITE));
+        assert!(implies(SMTP_WRITE, SMTP_READ));
+        assert!(!implies(SMTP_READ, SMTP_WRITE));
+    }
+
+    #[test]
+    fn smtp_codes_are_grantable_only_in_the_root_tenant() {
+        for code in ROOT_SCOPED_CODES {
+            assert!(is_grantable_in_tenant(code, true), "{code}");
+            assert!(!is_grantable_in_tenant(code, false), "{code}");
+            // ⚠ **クライアントには配れる。** 機械から入れるための口である以上ここは開ける
+            //   （root テナントのクライアントに限られる）。
+            assert!(is_grantable_to_client(code), "{code}");
+        }
+        // 既存の細粒度コードはテナントの中でも配れる（縛りを広げていない）。
+        assert!(is_grantable_in_tenant(USERS_WRITE, false));
+    }
+
     #[test]
     fn tenant_admin_implies_every_tenant_management_code() {
         for code in TENANT_MANAGEMENT_CODES {

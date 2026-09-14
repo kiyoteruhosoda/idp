@@ -497,6 +497,43 @@ pub struct SystemSettingsResponse {
 
 /// システム設定の更新リクエスト（`PUT /{tenant_id}/admin/system-settings`）。`smtp_password` は
 /// `None`（未指定）= 現行維持、`Some("")` = 消去、`Some(x)` = 設定（暗号化して保存する）。
+/// SMTP 設定だけの表現（`GET/PUT /{tenant_id}/admin/system-settings/smtp`。ADR-0051）。
+///
+/// システム設定全体（[`SystemSettingsResponse`]）と**別の型にする**。機械へ開ける範囲を
+/// 型で示すためで、SMS やランタイム設定が載った型を使い回すと「返さないことになっている」
+/// 項目が、将来その型へ足された拍子に一緒に出ていく。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SmtpSettingsResponse {
+    pub smtp_host: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub smtp_port: Option<u16>,
+    pub smtp_username: String,
+    /// SMTP パスワードが設定済みか（**平文は返さない**）。
+    pub smtp_password_set: bool,
+    pub smtp_from_address: String,
+    pub smtp_use_tls: bool,
+}
+
+/// SMTP 設定の更新要求。
+///
+/// `smtp_password` は 3 値で扱う（システム設定の画面と同じ規則）:
+/// `None` = 現行維持 / `Some("")` = 消去 / `Some(x)` = 設定。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateSmtpSettingsRequest {
+    #[serde(default)]
+    pub smtp_host: String,
+    #[serde(default)]
+    pub smtp_port: Option<u16>,
+    #[serde(default)]
+    pub smtp_username: String,
+    #[serde(default)]
+    pub smtp_password: Option<String>,
+    #[serde(default)]
+    pub smtp_from_address: String,
+    #[serde(default)]
+    pub smtp_use_tls: bool,
+}
+
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateSystemSettingsRequest {
     #[serde(default)]

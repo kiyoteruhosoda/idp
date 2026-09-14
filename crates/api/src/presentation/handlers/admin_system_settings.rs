@@ -11,11 +11,11 @@ use crate::domain::system_setting::{
     is_shared_with_web, DefaultRisk, SettingOwner, SmsSettingsView, SmtpSettingsView,
     UpdateSmsCommand, UpdateSmtpCommand,
 };
-use crate::presentation::admin::{IdpSystemAdmin, RequirePerms};
+use crate::presentation::admin::{IdpSystemAdmin, RequirePerms, SmtpRead, SmtpWrite};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
-    RuntimeSettingResponse, SystemSettingsResponse, UpdateRuntimeSettingRequest,
-    UpdateSystemSettingsRequest,
+    RuntimeSettingResponse, SmtpSettingsResponse, SystemSettingsResponse,
+    UpdateRuntimeSettingRequest, UpdateSmtpSettingsRequest, UpdateSystemSettingsRequest,
 };
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
@@ -213,6 +213,110 @@ pub async fn update_system_settings(
         state.config.resolved_settings(),
         &overrides,
     )))
+}
+
+/// SMTP 設定だけを参照する（`GET /{tenant_id}/admin/system-settings/smtp`。ADR-0051）。
+///
+/// 保護は `idp.smtp:read`。**パスワードの平文は返さない**（設定済みか否かのみ）。
+#[utoipa::path(
+    get,
+    path = "/{tenant_id}/admin/system-settings/smtp",
+    tag = "admin",
+    responses(
+        (status = 200, description = "SMTP 設定（パスワードは設定有無のみ）", body = SmtpSettingsResponse),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.smtp:read 必須。root テナントのみ）"),
+    )
+)]
+pub async fn get_smtp_settings(
+    RequirePerms(_admin, _): RequirePerms<SmtpRead>,
+    State(state): State<AppState>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
+) -> Result<Json<SmtpSettingsResponse>, ApiError> {
+    require_root_tenant(&tenant, locale)?;
+    let smtp = state
+        .system_settings
+        .get_smtp()
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(Json(to_smtp_response(smtp)))
+}
+
+/// SMTP 設定だけを更新する（`PUT /{tenant_id}/admin/system-settings/smtp`。ADR-0051）。
+///
+/// 保護は `idp.smtp:write`。SMS・ランタイム設定には触れない ——機械へ開けるのはメールの経路だけ
+/// である、という範囲を**型と経路の両方**で示す。`smtp_password` を省略したときは現行維持。
+#[utoipa::path(
+    put,
+    path = "/{tenant_id}/admin/system-settings/smtp",
+    tag = "admin",
+    request_body = UpdateSmtpSettingsRequest,
+    responses(
+        (status = 200, description = "更新後の SMTP 設定", body = SmtpSettingsResponse),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.smtp:write 必須。root テナントのみ）"),
+    )
+)]
+pub async fn update_smtp_settings(
+    RequirePerms(admin, _): RequirePerms<SmtpWrite>,
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
+    headers: HeaderMap,
+    Json(body): Json<UpdateSmtpSettingsRequest>,
+) -> Result<Json<SmtpSettingsResponse>, ApiError> {
+    require_root_tenant(&tenant, locale)?;
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
+    let updated = state
+        .system_settings
+        .update_smtp(
+            tenant.context(),
+            UpdateSmtpCommand {
+                host: body.smtp_host,
+                port: body.smtp_port,
+                username: body.smtp_username,
+                password: body.smtp_password,
+                from_address: body.smtp_from_address,
+                use_tls: body.smtp_use_tls,
+            },
+            &admin.actor,
+            &ctx,
+        )
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(Json(to_smtp_response(updated)))
+}
+
+/// 要求テナントが root であることを課す（ADR-0051）。
+///
+/// ⚠ **権限の判定だけでは足りない。** `idp.smtp:*` を root 以外で配れないようにしてあるのは
+/// 付与の側（`is_grantable_in_tenant`）で、**既に配られてしまった行**や、将来テナントを
+/// 増やしたときの取りこぼしまでは面倒を見ない。`system_settings` がテナント横断の表である以上、
+/// 使う側でも同じ条件を課す（二重防御。ADR-0037 §5 と同じ考え方）。
+fn require_root_tenant(tenant: &ResolvedTenant, locale: ApiLocale) -> Result<(), ApiError> {
+    if tenant.tenant().is_root() {
+        return Ok(());
+    }
+    Err(ApiError::Forbidden(
+        ApiMessages::new(locale).get("api-permission-insufficient"),
+    ))
+}
+
+fn to_smtp_response(smtp: SmtpSettingsView) -> SmtpSettingsResponse {
+    SmtpSettingsResponse {
+        smtp_host: smtp.host,
+        smtp_port: smtp.port,
+        smtp_username: smtp.username,
+        smtp_password_set: smtp.password_set,
+        smtp_from_address: smtp.from_address,
+        smtp_use_tls: smtp.use_tls,
+    }
 }
 
 fn to_response(
