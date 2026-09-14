@@ -93,6 +93,7 @@ use utoipa::{Modify, OpenApi};
         handlers::admin_login_identifiers::add_login_identifier,
         handlers::admin_login_identifiers::update_login_identifier,
         handlers::admin_login_identifiers::delete_login_identifier,
+        handlers::admin_login_identifiers::promote_primary_email,
         handlers::admin_members::list_members,
         handlers::admin_members::revoke_member,
         handlers::admin_members::update_member_status,

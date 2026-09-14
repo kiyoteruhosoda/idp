@@ -88,6 +88,10 @@ pub enum AuditEventType {
     UserLoginIdentifierAdded,
     UserLoginIdentifierUpdated,
     UserLoginIdentifierRemoved,
+    /// 管理者による主メールアドレスの付け替え（ADR-0052）。`users.email` ＝通知の宛先が動く
+    /// 操作なので、識別子の追加・切替とは別の種別にしてある。`reason` には**どこから昇格した
+    /// か**だけを記録する（アドレスは PII なので値は記録しない）。
+    UserPrimaryEmailChanged,
     /// 認証器（AP9。仕様 §5）の状態変更・リカバリーコードの発行と使用・email OTP の送信。
     /// `reason` に種別・件数・残数を記録する（コード・シークレットそのものは記録しない）。
     AuthenticatorStatusChanged,
@@ -189,6 +193,7 @@ impl AuditEventType {
             Self::UserLoginIdentifierAdded => "user.login_identifier_added",
             Self::UserLoginIdentifierUpdated => "user.login_identifier_updated",
             Self::UserLoginIdentifierRemoved => "user.login_identifier_removed",
+            Self::UserPrimaryEmailChanged => "user.primary_email_changed",
             Self::AuthenticatorStatusChanged => "authenticator.status_changed",
             Self::RecoveryCodesIssued => "recovery_codes.issued",
             Self::RecoveryCodeUsed => "recovery_code.used",

@@ -282,6 +282,60 @@ impl LoginIdentifierManagementService {
         Ok(())
     }
 
+    /// 別名のメールアドレスを主メールへ昇格させる（ADR-0052）。
+    ///
+    /// 昇格は**入れ替え**である。いまの主メール行が降格して普通の別名になり、選んだ行が
+    /// `users.email` の写し ——すなわち通知の宛先（ADR-0050 決定 4）—— になる。
+    ///
+    /// 対象はメール種別の行だけである。電話番号や社員番号を主メールにできてしまうと、
+    /// `users.email` にメールでない文字列が入り、パスワードリセットの宛先がそこになる。
+    ///
+    /// 押した行がすでに主メールでも拒まない。画面を開いたまま二度押すのはありふれた操作で、
+    /// 結果（その行が主メール）は同じである。
+    pub async fn promote_email(
+        &self,
+        tenant: TenantContext,
+        target: Uuid,
+        identifier_id: Uuid,
+        actor: &AdminActor,
+        ctx: &RequestContext,
+    ) -> Result<UserLoginIdentifier, LoginIdentifierManagementError> {
+        let user = self.find_home_user(tenant, target).await?;
+        let identifier = self.find_owned(user.id, identifier_id).await?;
+        if identifier.identifier_type != LoginIdentifierType::Email {
+            return Err(LoginIdentifierManagementError::Validation(MessageKey::new(
+                "api-login-identifier-not-email",
+            )));
+        }
+        if !self
+            .users
+            .promote_primary_email(user.id, identifier.id)
+            .await
+            .map_err(|e| match e {
+                DomainError::Conflict(_) => LoginIdentifierManagementError::Conflict(
+                    MessageKey::new("api-login-identifier-conflict"),
+                ),
+                other => internal(other),
+            })?
+        {
+            return Err(LoginIdentifierManagementError::NotFound);
+        }
+        self.record(
+            AuditEventType::UserPrimaryEmailChanged,
+            tenant.tenant_id(),
+            actor,
+            "source=login_identifier",
+            ctx,
+        )
+        .await;
+        Ok(UserLoginIdentifier {
+            is_active: true,
+            is_primary_email: true,
+            updated_at: self.clock.now(),
+            ..identifier
+        })
+    }
+
     /// 追加しようとしている値が、まだ誰のログインにも使われていないことを確かめる。
     ///
     /// 判定はログインの解決（`login_user_resolution`）と**同じ範囲**を見る。ずれると「登録できたのに
@@ -452,6 +506,10 @@ mod tests {
 
     struct Users {
         rows: Vec<User>,
+        /// `promote_primary_email` に渡った `(利用者, 識別子)`。入れ替えそのものは DB の
+        /// トランザクション（`SqlxUserRepository`）が持つので、ここでは**正しい行で呼ばれたか**
+        /// だけを見る。
+        promoted: Mutex<Vec<(Uuid, Uuid)>>,
     }
 
     #[async_trait]
@@ -527,6 +585,14 @@ mod tests {
         }
         async fn update_language(&self, _id: Uuid, _l: Option<&str>) -> DomainResult<()> {
             Ok(())
+        }
+        async fn promote_primary_email(
+            &self,
+            user_id: Uuid,
+            identifier_id: Uuid,
+        ) -> DomainResult<bool> {
+            self.promoted.lock().unwrap().push((user_id, identifier_id));
+            Ok(true)
         }
     }
 
@@ -618,21 +684,31 @@ mod tests {
         }
     }
 
-    fn service(users: Vec<User>) -> (LoginIdentifierManagementService, Arc<Identifiers>) {
+    fn service(
+        users: Vec<User>,
+    ) -> (
+        LoginIdentifierManagementService,
+        Arc<Identifiers>,
+        Arc<Users>,
+    ) {
         let clock = Arc::new(FixedClock(
             Utc.with_ymd_and_hms(2026, 1, 2, 0, 0, 0).unwrap(),
         ));
         let identifiers = Arc::new(Identifiers::default());
+        let users = Arc::new(Users {
+            rows: users,
+            promoted: Mutex::new(Vec::new()),
+        });
         let audit = Arc::new(AuditService::new(Arc::new(DiscardingSink), clock.clone()));
         let service = LoginIdentifierManagementService::new(
             identifiers.clone(),
-            Arc::new(Users { rows: users }),
+            users.clone(),
             Arc::new(NoTenantDomains),
             audit,
             clock,
             Arc::new(FixedIds(Mutex::new(1000))),
         );
-        (service, identifiers)
+        (service, identifiers, users)
     }
 
     fn ctx() -> RequestContext {
@@ -645,7 +721,7 @@ mod tests {
 
     #[tokio::test]
     async fn adds_a_phone_identifier_and_normalizes_it() {
-        let (service, _) = service(vec![user(2, "alice", "alice@example.com")]);
+        let (service, _, _) = service(vec![user(2, "alice", "alice@example.com")]);
         let added = service
             .add(
                 tenant(),
@@ -668,7 +744,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_a_value_that_resolves_to_another_user() {
         // bob の `preferred_username` を alice の識別子にはできない（ログイン時に別人が返る）。
-        let (service, _) = service(vec![
+        let (service, _, _) = service(vec![
             user(2, "alice", "alice@example.com"),
             user(3, "bob", "bob@example.com"),
         ]);
@@ -691,7 +767,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_another_users_email_even_though_email_is_not_a_login_route() {
-        let (service, _) = service(vec![
+        let (service, _, _) = service(vec![
             user(2, "alice", "alice@example.com"),
             user(3, "bob", "bob@example.com"),
         ]);
@@ -714,7 +790,7 @@ mod tests {
 
     #[tokio::test]
     async fn deactivating_keeps_the_row_so_nobody_else_can_claim_it() {
-        let (service, repo) = service(vec![user(2, "alice", "alice@example.com")]);
+        let (service, repo, _) = service(vec![user(2, "alice", "alice@example.com")]);
         let added = service
             .add(
                 tenant(),
@@ -748,7 +824,7 @@ mod tests {
     async fn rejects_a_value_that_already_resolves_to_the_user_themselves() {
         // 自分の `preferred_username` を登録簿にも足せてしまうと、その行を無効化しても
         // `users` へのフォールバックで認証が通る（「止めたのに使える」識別子）。
-        let (service, _) = service(vec![user(2, "alice", "alice@example.com")]);
+        let (service, _, _) = service(vec![user(2, "alice", "alice@example.com")]);
         let err = service
             .add(
                 tenant(),
@@ -769,7 +845,7 @@ mod tests {
     /// 一覧は登録簿の行だけを出す（AP15b で合成行は無くなった）。主識別子は先頭に来る。
     #[tokio::test]
     async fn the_list_shows_registry_rows_with_the_primary_first() {
-        let (service, identifiers) = service(vec![user(2, "alice", "alice@example.com")]);
+        let (service, identifiers, _) = service(vec![user(2, "alice", "alice@example.com")]);
         // 主識別子は登録簿の行として在る（`UserRepository` が作る。ここでは直接置く）。
         let now = chrono::Utc::now();
         identifiers
@@ -814,11 +890,120 @@ mod tests {
         assert!(entries[1].id.is_some());
     }
 
+    /// 昇格はメール種別の行にだけ効く。電話番号を主メールにできてしまうと、`users.email` に
+    /// メールでない文字列が入り、パスワードリセットの宛先がそこになる。
+    #[tokio::test]
+    async fn only_an_email_identifier_can_become_the_primary_email() {
+        let (service, _, users) = service(vec![user(2, "alice", "alice@example.com")]);
+        let phone = service
+            .add(
+                tenant(),
+                Uuid::from_u128(2),
+                AddLoginIdentifierCommand {
+                    identifier_type: LoginIdentifierType::PhoneNumber,
+                    value: "090-1234-5678".to_string(),
+                    is_active: true,
+                },
+                &AdminActor::User(Uuid::from_u128(9)),
+                &ctx(),
+            )
+            .await
+            .unwrap();
+        let err = service
+            .promote_email(
+                tenant(),
+                Uuid::from_u128(2),
+                phone.id,
+                &AdminActor::User(Uuid::from_u128(9)),
+                &ctx(),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LoginIdentifierManagementError::Validation(_)));
+        // 拒否したのだから、入れ替えは 1 度も呼ばれていない。
+        assert!(users.promoted.lock().unwrap().is_empty());
+    }
+
+    /// 昇格した行は**有効**で返る。主メール行は識別子単位で有効化できない（リポジトリが弾く）ので、
+    /// 無効なまま昇格させると二度と有効にできない行が通知の宛先になる。
+    #[tokio::test]
+    async fn promoting_an_alias_email_returns_it_as_the_active_primary_email() {
+        let (service, _, users) = service(vec![user(2, "alice", "alice@example.com")]);
+        let alias = service
+            .add(
+                tenant(),
+                Uuid::from_u128(2),
+                AddLoginIdentifierCommand {
+                    identifier_type: LoginIdentifierType::Email,
+                    value: "Alice@Work.example".to_string(),
+                    is_active: false,
+                },
+                &AdminActor::User(Uuid::from_u128(9)),
+                &ctx(),
+            )
+            .await
+            .unwrap();
+        assert!(!alias.is_active);
+
+        let promoted = service
+            .promote_email(
+                tenant(),
+                Uuid::from_u128(2),
+                alias.id,
+                &AdminActor::User(Uuid::from_u128(9)),
+                &ctx(),
+            )
+            .await
+            .unwrap();
+        assert!(promoted.is_primary_email);
+        assert!(promoted.is_active);
+        assert_eq!(promoted.display_value, "Alice@Work.example");
+        assert_eq!(
+            users.promoted.lock().unwrap().as_slice(),
+            [(Uuid::from_u128(2), alias.id)]
+        );
+    }
+
+    /// 他人の行は昇格できない（`find_owned` が所有者を見る）。
+    #[tokio::test]
+    async fn cannot_promote_an_identifier_that_belongs_to_someone_else() {
+        let (service, _, users) = service(vec![
+            user(2, "alice", "alice@example.com"),
+            user(3, "bob", "bob@example.com"),
+        ]);
+        let bobs = service
+            .add(
+                tenant(),
+                Uuid::from_u128(3),
+                AddLoginIdentifierCommand {
+                    identifier_type: LoginIdentifierType::Email,
+                    value: "bob@work.example".to_string(),
+                    is_active: true,
+                },
+                &AdminActor::User(Uuid::from_u128(9)),
+                &ctx(),
+            )
+            .await
+            .unwrap();
+        let err = service
+            .promote_email(
+                tenant(),
+                Uuid::from_u128(2),
+                bobs.id,
+                &AdminActor::User(Uuid::from_u128(9)),
+                &ctx(),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LoginIdentifierManagementError::NotFound));
+        assert!(users.promoted.lock().unwrap().is_empty());
+    }
+
     #[tokio::test]
     async fn does_not_touch_users_from_another_tenant() {
         let mut outsider = user(3, "carol", "carol@example.com");
         outsider.tenant_id = TenantId::from(Uuid::from_u128(2));
-        let (service, _) = service(vec![outsider]);
+        let (service, _, _) = service(vec![outsider]);
         let err = service
             .list(tenant(), Uuid::from_u128(3))
             .await

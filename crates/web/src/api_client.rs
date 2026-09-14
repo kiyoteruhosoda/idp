@@ -1330,6 +1330,26 @@ impl ApiClient {
         .await
     }
 
+    /// 別名のメールを主メールへ昇格（`POST .../login-identifiers/{id}/primary-email`。ADR-0052）。
+    pub async fn promote_primary_email(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        user_id: &str,
+        identifier_id: &str,
+    ) -> Result<crate::admin_dto::LoginIdentifierView, AdminApiError> {
+        self.admin_send(
+            Method::POST,
+            tenant_id,
+            &format!("/admin/users/{user_id}/login-identifiers/{identifier_id}/primary-email"),
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
     /// ログイン識別子の削除（`DELETE .../login-identifiers/{id}`）。
     pub async fn delete_login_identifier(
         &self,

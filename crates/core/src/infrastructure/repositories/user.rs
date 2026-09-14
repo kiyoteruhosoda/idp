@@ -896,6 +896,93 @@ impl UserRepository for SqlxUserRepository {
         tx.commit().await.map_err(repo_err)?;
         Ok(())
     }
+
+    /// 別名のメール行を主メール行へ昇格させる（ADR-0052）。
+    ///
+    /// # 書く順番
+    ///
+    /// **降格 → 昇格 → `users.email`** の順に書く。`primary_email_of_user` は UNIQUE なので、
+    /// 先に昇格させると一瞬でも 2 行が主メールになり、書き込みが落ちる。
+    ///
+    /// 対象が在るかは**書く前**に確かめる。先に降格させてから対象が無いと分かると、
+    /// ロールバックするまでの間その利用者は主メール行を持たない状態になる。
+    ///
+    /// # 値は登録簿から読み直す
+    ///
+    /// `users.email` に入れる文字列は呼び出し側から渡させず、同じトランザクションの中で
+    /// 対象行の `display_value` を読む。渡させると、画面に出ていた値と実際に昇格する行が
+    /// 食い違ったとき、`users.email` と登録簿が割れたまま成功してしまう。
+    ///
+    /// # 昇格した行は必ず有効にする
+    ///
+    /// 主メール行は識別子単位で有効/無効を切り替えられない（`set_active` が除外する）。無効な
+    /// まま昇格させると、二度と有効にできない行が通知の宛先になる。ADR-0050 決定 2 の
+    /// 「主メールは基本的に有効」もこれと同じ理由である。
+    ///
+    /// # `email_verified` は触らない
+    ///
+    /// 管理者によるメール変更（MT25）が検証済みを維持するのと同じ扱いにする（ADR-0050 で
+    /// 識別子としてのメールに所有確認を課さないと決めたのと揃える）。
+    async fn promote_primary_email(&self, user_id: Uuid, identifier_id: Uuid) -> Result<bool> {
+        let mut tx = self.pool.begin().await.map_err(repo_err)?;
+
+        // 1. 昇格させる行を確かめ、`users.email` に入れる値を読む。条件は「その利用者の・
+        //    メール種別の・主たるログイン識別子でない行」。アプリ層でも同じことを確かめているが、
+        //    判定と書き込みの間に開く窓はここで閉じる（`FOR UPDATE` で行を押さえる ——
+        //    押さえないと、読んだ `display_value` と実際に昇格する行の値がずれ得る）。
+        let display_value: Option<String> = sqlx::query_scalar(
+            "SELECT display_value FROM user_login_identifiers \
+             WHERE id = ? AND user_id = ? AND identifier_type = 'email' \
+               AND primary_of_user IS NULL \
+             FOR UPDATE",
+        )
+        .bind(identifier_id.to_string())
+        .bind(user_id.to_string())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(repo_err)?;
+        let Some(display_value) = display_value else {
+            return Ok(false);
+        };
+
+        // 2. いまの主メール行を降格させる（無いこともある。ADR-0050 決定 6）。
+        sqlx::query(
+            "UPDATE user_login_identifiers SET primary_email_of_user = NULL \
+             WHERE user_id = ? AND primary_email_of_user IS NOT NULL",
+        )
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(repo_err)?;
+
+        // 3. 選んだ行を昇格させる。
+        sqlx::query(
+            "UPDATE user_login_identifiers \
+             SET primary_email_of_user = user_id, is_active = 1 WHERE id = ?",
+        )
+        .bind(identifier_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(repo_err)?;
+
+        // 4. `users.email` を昇格した行の写しにする（ADR-0050 決定 4。通知の宛先も一緒に動く）。
+        sqlx::query("UPDATE users SET email = ? WHERE id = ?")
+            .bind(&display_value)
+            .bind(user_id.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| match &e {
+                // 登録簿の一意性（0041）が効いている限り他人の `users.email` とは衝突しないが、
+                // 判定を 2 か所に割らない（`update_profile` と同じ扱いにする）。
+                sqlx::Error::Database(db) if db.is_unique_violation() => {
+                    DomainError::Conflict("email already exists".to_string())
+                }
+                _ => DomainError::Repository(e.to_string()),
+            })?;
+
+        tx.commit().await.map_err(repo_err)?;
+        Ok(true)
+    }
 }
 
 #[cfg(test)]

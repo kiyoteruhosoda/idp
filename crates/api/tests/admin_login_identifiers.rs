@@ -23,7 +23,8 @@ use axum::http::{Method, StatusCode};
 use serde_json::{json, Value};
 use sqlx::{MySqlPool, Row};
 use support::{
-    admin_token, body_json, delete, get, patch, post, post_internal, send, SERVICE_TOKEN,
+    admin_token, body_json, delete, get, patch, post, post_empty, post_internal, send,
+    SERVICE_TOKEN,
 };
 
 /// 管理コンソールのログイン経路（`/internal/authenticate/admin`）で解決を確かめる。
@@ -489,4 +490,150 @@ async fn the_primary_rows_cannot_be_targeted_even_by_their_real_id() {
     // プロフィール編集でメールを変えていない以上そのままである（ADR-0050）。
     assert_eq!(rows[1]["is_primary_email"], Value::Bool(true));
     assert_eq!(rows[1]["identifier_type"], "email");
+}
+
+/// 別名のメールを主メールへ昇格させる（ADR-0052）。
+///
+/// 見るのは「入れ替わること」そのものより、**入れ替えが 1 つの取引として成立すること**である
+/// ——`users.email`（＝通知の宛先）と登録簿の主メール行が、同時に同じ値を指しているか。
+#[tokio::test]
+async fn promoting_an_alias_email_swaps_the_primary_email() {
+    let Some(env) = support::setup("login identifier promote email").await else {
+        return;
+    };
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+
+    let unique = uuid::Uuid::now_v7().simple().to_string();
+    let username = format!("lm{}", &unique[..10]);
+    let target = register(&env, &username, "correct-horse-battery").await;
+    let uri = format!(
+        "/{}/admin/users/{target}/login-identifiers",
+        env.root_tenant_id
+    );
+    let original = format!("{username}@example.com");
+    let alias = format!("{username}-alt@example.com");
+    assert_eq!(
+        support::primary_email(&env.pool, &target).await.as_deref(),
+        Some(original.as_str())
+    );
+
+    // ── 別名を**無効なまま**足す。昇格したら有効になっていなければならない ——主メール行は
+    //    識別子単位で有効化できないので、無効なまま昇格すると二度と有効にできない行が
+    //    通知の宛先になる。
+    let res = send(
+        &env.app,
+        post(
+            &admin_tok,
+            &uri,
+            json!({"identifier_type": "email", "value": alias, "is_active": false}),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let added = body_json(res).await;
+    let alias_id = added["id"].as_str().expect("id").to_string();
+    assert_eq!(added["is_active"], Value::Bool(false));
+    assert_eq!(added["is_primary_email"], Value::Bool(false));
+
+    // ── メール以外は昇格できない（`users.email` にメールでない文字列が入ると、
+    //    パスワードリセットの宛先がそこになる）。
+    //
+    //    ⚠ **値は毎回ちがうものにする。** テナントは他のテストと共有で、DB は実行をまたいで
+    //    使い回される。固定値だと他のテストが先に押さえていて、追加が 409 で落ちる。
+    let employee_number = format!("E{:09}", uuid::Uuid::new_v4().as_u128() % 1_000_000_000);
+    let res = send(
+        &env.app,
+        post(
+            &admin_tok,
+            &uri,
+            json!({"identifier_type": "employee_number", "value": employee_number}),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let employee_id = body_json(res).await["id"].as_str().expect("id").to_string();
+    let res = send(
+        &env.app,
+        post_empty(&admin_tok, &format!("{uri}/{employee_id}/primary-email")),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+    // 存在しない行も 404（降格だけが先に走って宛先を失う、ということが起きない）。
+    let stray = uuid::Uuid::now_v7();
+    let res = send(
+        &env.app,
+        post_empty(&admin_tok, &format!("{uri}/{stray}/primary-email")),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        support::primary_email(&env.pool, &target).await.as_deref(),
+        Some(original.as_str()),
+        "失敗した昇格が主メール行を消していない"
+    );
+
+    // ── 昇格する。
+    let res = send(
+        &env.app,
+        post_empty(&admin_tok, &format!("{uri}/{alias_id}/primary-email")),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let promoted = body_json(res).await;
+    assert_eq!(promoted["is_primary_email"], Value::Bool(true));
+    assert_eq!(promoted["is_active"], Value::Bool(true), "{promoted}");
+    assert_eq!(promoted["display_value"], alias);
+
+    // 登録簿と `users.email` が同じ値を指している。片方だけ動くと、入り口と宛先が割れる。
+    assert_eq!(
+        support::primary_email(&env.pool, &target).await.as_deref(),
+        Some(alias.as_str())
+    );
+    let stored_email: String = sqlx::query_scalar("SELECT email FROM users WHERE id = ?")
+        .bind(&target)
+        .fetch_one(&env.pool)
+        .await
+        .expect("users.email");
+    assert_eq!(stored_email, alias);
+
+    // ── もとの主メールは**別名として残る**（消さない。消すと同じ値を他人が取れてしまう）。
+    let listed = body_json(send(&env.app, get(&admin_tok, &uri)).await).await;
+    let rows = listed.as_array().expect("array");
+    let demoted = rows
+        .iter()
+        .find(|r| r["display_value"] == Value::String(original.clone()))
+        .unwrap_or_else(|| panic!("もとの主メールの行が消えた: {listed}"));
+    assert_eq!(demoted["is_primary_email"], Value::Bool(false), "{listed}");
+    assert_eq!(demoted["identifier_type"], "email");
+    let primary_rows = rows
+        .iter()
+        .filter(|r| r["is_primary_email"] == Value::Bool(true))
+        .count();
+    assert_eq!(primary_rows, 1, "主メールは 1 行だけ: {listed}");
+
+    // ── 二度押しても壊れない（画面を開いたままの操作はありふれている）。
+    let res = send(
+        &env.app,
+        post_empty(&admin_tok, &format!("{uri}/{alias_id}/primary-email")),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        support::primary_email(&env.pool, &target).await.as_deref(),
+        Some(alias.as_str())
+    );
+
+    // ── 監査には昇格したことだけが残り、アドレスは残らない。
+    let reasons = audit_reasons(&env.pool, &env.root_tenant_id, "user.primary_email_changed").await;
+    assert!(
+        reasons
+            .iter()
+            .any(|r| r.contains("source=login_identifier")),
+        "{reasons:?}"
+    );
+    assert!(
+        !reasons.iter().any(|r| r.contains(&username)),
+        "監査にアドレスが残っている: {reasons:?}"
+    );
 }

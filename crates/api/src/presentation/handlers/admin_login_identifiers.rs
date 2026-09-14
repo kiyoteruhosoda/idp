@@ -210,6 +210,45 @@ pub async fn update_login_identifier(
     Ok(Json(updated.into()))
 }
 
+/// 別名のメールアドレスを主メールへ昇格させる（ADR-0052）。
+///
+/// **`PATCH` の項目にしない。** 昇格は「この行の値を `true` にする」のではなく、いまの主メール行の
+/// 降格と選んだ行の昇格の**入れ替え**である。項目として書けるようにすると `is_primary_email: false`
+/// （＝誰も主メールでない状態）が要求として書けてしまい、それは受け付けられない。
+#[utoipa::path(
+    post,
+    path = "/{tenant_id}/admin/users/{user_id}/login-identifiers/{identifier_id}/primary-email",
+    tag = "admin",
+    responses(
+        (status = 200, description = "昇格後の識別子", body = LoginIdentifierResponse),
+        (status = 400, description = "メール種別の識別子ではない"),
+        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
+        (status = 404, description = "利用者・識別子が見つからない"),
+        (status = 409, description = "そのアドレスは既に他の利用者のものになっている"),
+    )
+)]
+pub async fn promote_primary_email(
+    RequirePerms(admin, _): RequirePerms<UsersWrite>,
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
+    Path((_tenant_id, user_id, identifier_id)): Path<(String, Uuid, Uuid)>,
+    headers: HeaderMap,
+) -> Result<Json<LoginIdentifierResponse>, ApiError> {
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
+    let promoted = state
+        .login_identifiers_admin
+        .promote_email(tenant.context(), user_id, identifier_id, &admin.actor, &ctx)
+        .await
+        .map_err(|e| map_error(e, locale))?;
+    Ok(Json(promoted.into()))
+}
+
 /// 識別子を削除する。主たるログイン識別子（`is_primary`）は登録簿に無いため対象にならない。
 #[utoipa::path(
     delete,

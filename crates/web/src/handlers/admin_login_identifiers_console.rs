@@ -62,6 +62,12 @@ pub struct DeleteForm {
     pub csrf_token: String,
 }
 
+/// 昇格は対象の行 id だけで決まるので、CSRF トークン以外に運ぶ値が無い。
+#[derive(Debug, Deserialize)]
+pub struct PromotePrimaryEmailForm {
+    pub csrf_token: String,
+}
+
 pub async fn list(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -105,6 +111,7 @@ pub async fn list(
         .iter()
         .map(|i| LoginIdentifierRow {
             id: i.id.as_deref(),
+            identifier_type: &i.identifier_type,
             type_label: type_label(&messages, &i.identifier_type),
             display_value: &i.display_value,
             normalized_value: &i.normalized_value,
@@ -196,6 +203,37 @@ pub async fn set_active(
     }
 }
 
+/// 別名のメールを主メールへ昇格させる（ADR-0052）。
+///
+/// 押せるのはメール種別で、まだ主メールでない行だけ（テンプレート側で出し分ける）。api も同じ
+/// 条件を持っているので、古い画面から押されても入れ替わらない。
+pub async fn promote_primary_email(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Path((_tenant_id, user_id, identifier_id)): Path<(String, String, String)>,
+    Form(form): Form<PromotePrimaryEmailForm>,
+) -> Response {
+    match resolve_admin(&state, &correlation, &tenant, &headers).await {
+        AdminResolution::Ok(_) => {}
+        AdminResolution::Reject(resp) => return resp,
+    }
+    let base = base_path(&tenant, &user_id);
+    let sso = sso(&headers);
+    if !csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
+        return found(&format!("{base}?error=csrf"));
+    }
+    match state
+        .api
+        .promote_primary_email(&correlation.0, &tenant.0, &sso, &user_id, &identifier_id)
+        .await
+    {
+        Ok(_) => found(&format!("{base}?notice=primary-email")),
+        Err(e) => found(&format!("{base}?error={}", error_code(&e))),
+    }
+}
+
 pub async fn delete(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -271,6 +309,7 @@ fn notice_key_for(notice: &str) -> Option<&'static str> {
         "enabled" => Some("admin-login-identifiers-enabled-done"),
         "disabled" => Some("admin-login-identifiers-disabled-done"),
         "deleted" => Some("admin-login-identifiers-deleted"),
+        "primary-email" => Some("admin-login-identifiers-primary-email-done"),
         _ => None,
     }
 }
