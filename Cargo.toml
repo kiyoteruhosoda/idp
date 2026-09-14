@@ -21,10 +21,10 @@ result_large_err = "allow"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "time"] }
 axum = { version = "0.8", features = ["macros"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["trace"] }
+tower-http = { version = "0.7", features = ["trace"] }
 # HTTP の基本型のみ（axum 非依存）。api / web が同じ HTTP スパンを作るために contracts で使う。
 http = "1"
-sqlx = { version = "0.8", default-features = false, features = [
+sqlx = { version = "0.9", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",
     "mysql",
@@ -45,30 +45,30 @@ dotenvy = "0.15"
 async-trait = "0.1"
 jsonwebtoken = "9"
 rsa = { version = "0.9", features = ["pem"] }
-p256 = { version = "0.13", features = ["pkcs8", "pem"] }
-aes-gcm = "0.10"
+p256 = { version = "0.14", features = ["pkcs8", "pem"] }
+aes-gcm = "0.11"
 # `oid` は SAML 応答の RSA 署名（PKCS#1 v1.5 の DigestInfo 生成）に使う。
-sha2 = { version = "0.10", features = ["oid"] }
+sha2 = { version = "0.11", features = ["oid"] }
 # 漏えい済みパスワード照合（AP7）のレンジ API は SHA-1 の接頭辞で引く仕様のため使う。
 # 保存・認証には使わない（保存は argon2）。
-sha1 = "0.10"
-hmac = "0.12"
+sha1 = "0.11"
+hmac = "0.13"
 hex = "0.4"
-base64 = "0.22"
-rand = "0.8"
-argon2 = "0.5"
+base64 = "0.23"
+rand = "0.10"
+argon2 = "0.6"
 url = "2"
 percent-encoding = "2"
 # COOKIE_DOMAIN の起動時検証（public suffix 拒否。ADR-0012 §Consequences）。
 psl = "2"
 # SAML メタデータの XML 解析（外部 IdP メタデータ取り込み）・XML 生成（自身の SP メタデータ出力）。
-quick-xml = "0.37"
+quick-xml = "0.42"
 # SAML HTTP-Redirect binding の DEFLATE 展開（`SAMLRequest` = base64(raw-deflate(xml))）。
 flate2 = "1"
 # 外部 SAML IdP の署名証明書（`<ds:X509Certificate>`）から公開鍵を取り出す（AP12）。
 # 検証に使うのは SubjectPublicKeyInfo だけで、証明書チェーンの検証はしない（信頼の起点は
 # 「管理者がこの証明書を登録した」ことで、CA ではない。ADR-0027）。
-x509-cert = { version = "0.2", default-features = false, features = ["std"] }
+x509-cert = { version = "0.3", default-features = false, features = ["std"] }
 utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
 utoipa-swagger-ui = { version = "9", features = ["axum", "vendored"] }
 fluent = "0.17"
@@ -76,7 +76,7 @@ unic-langid = { version = "0.9", features = ["macros"] }
 # web crate のサーバレンダリング用テンプレート（コンパイル時型検証・HTML 自動エスケープ）。
 askama = "0.16"
 # web crate の API クライアント（core/sqlx へ依存させないための HTTP 越しアクセス）。TLS は rustls。
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-tls"] }
 # TOTP（RFC 6238）の生成・検証（MFA 自己登録）。
 totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
 # QR コードを SVG として生成（TOTP セットアップ画面で埋め込む）。
