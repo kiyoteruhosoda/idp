@@ -54,6 +54,7 @@ pub mod saml_sso;
 pub mod service_restart;
 pub mod sso_restore;
 pub mod step_up;
+pub mod stop_announcement;
 pub mod system_settings;
 pub mod tenant_management;
 pub mod tenant_resolution;
