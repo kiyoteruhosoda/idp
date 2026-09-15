@@ -103,7 +103,10 @@ pub async fn detail(
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
-    Path(user_id): Path<String>,
+    // ⚠ **経路には `{tenant_id}` と `{user_id}` の 2 つがある。** 1 つだけで受けると
+    //   `WrongNumberOfParameters` で弾かれ、ハンドラへ入る前に 500 になる
+    //   （同じファイルの他のハンドラも 2 つで受けている）。
+    Path((_, user_id)): Path<(String, String)>,
     Query(query): Query<ViewQuery>,
 ) -> Response {
     let admin = match resolve_admin(&state, &correlation, &tenant, &headers).await {
