@@ -1454,6 +1454,82 @@ impl ConsoleNavGroup {
 /// ⚠ **画面を足したらここへ足す。** `crates/web/src/router.rs` の `/admin/*` と突き合わせる
 /// テストが `console_menu_covers_every_admin_screen` にある。
 pub const CONSOLE_NAV: &[ConsoleNavGroup] = &[
+    // ⚠ **並びは「何を管理するか」が先、「何が起きたか」が後。** 運用・監査を先頭に置いていた頃は、
+    //    管理しに来た人が毎回それを読み飛ばしていた。
+    ConsoleNavGroup {
+        label: "admin-home-group-access",
+        description: "admin-home-group-access-desc",
+        icon: "fa-users",
+        items: &[
+            ConsoleNavItem {
+                path: "/admin/members",
+                icon: "fa-address-book",
+                label: "admin-nav-members",
+                description: "admin-nav-members-desc",
+                requires: None,
+            },
+            ConsoleNavItem {
+                path: "/admin/service-accounts",
+                icon: "fa-robot",
+                label: "admin-nav-service-accounts",
+                description: "admin-nav-service-accounts-desc",
+                requires: None,
+            },
+            // ⚠ **外部 IdP と認証ポリシーは「入ってくる側」。** 連携先（assay が ID を渡す相手）と
+            //    同じ箱に入れていた頃は、向きが逆のものが混ざっていて探しても見つからなかった。
+            //    認証ポリシーは「誰がどの要素でログインできるか」で、中身はアカウントの話である。
+            ConsoleNavItem {
+                path: "/admin/external-idps",
+                icon: "fa-right-to-bracket",
+                label: "admin-nav-external-idps",
+                description: "admin-nav-external-idps-desc",
+                requires: None,
+            },
+            ConsoleNavItem {
+                path: "/admin/authentication-policies",
+                icon: "fa-shield-halved",
+                label: "admin-nav-auth-policies",
+                description: "admin-nav-auth-policies-desc",
+                requires: None,
+            },
+        ],
+    },
+    // 「出ていく側」——assay が ID を渡す相手と、相手がそれを検証するための鍵。
+    ConsoleNavGroup {
+        label: "admin-home-group-integration",
+        description: "admin-home-group-integration-desc",
+        icon: "fa-cubes",
+        items: &[
+            ConsoleNavItem {
+                path: "/admin/clients",
+                icon: "fa-cubes",
+                label: "admin-nav-clients",
+                description: "admin-nav-clients-desc",
+                requires: None,
+            },
+            ConsoleNavItem {
+                path: "/admin/saml-clients",
+                icon: "fa-cube",
+                label: "admin-nav-saml-clients",
+                description: "admin-nav-saml-clients-desc",
+                requires: None,
+            },
+            ConsoleNavItem {
+                path: "/admin/resources",
+                icon: "fa-bullseye",
+                label: "admin-nav-resources",
+                description: "admin-nav-resources-desc",
+                requires: None,
+            },
+            ConsoleNavItem {
+                path: "/admin/signing-keys",
+                icon: "fa-key",
+                label: "admin-nav-signing-keys",
+                description: "admin-nav-signing-keys-desc",
+                requires: None,
+            },
+        ],
+    },
     ConsoleNavGroup {
         label: "admin-home-group-operations",
         description: "admin-home-group-operations-desc",
@@ -1481,76 +1557,6 @@ pub const CONSOLE_NAV: &[ConsoleNavGroup] = &[
                 label: "admin-nav-applog",
                 description: "admin-nav-applog-desc",
                 requires: Some("idp.system.admin"),
-            },
-        ],
-    },
-    ConsoleNavGroup {
-        label: "admin-home-group-access",
-        description: "admin-home-group-access-desc",
-        icon: "fa-users",
-        items: &[
-            ConsoleNavItem {
-                path: "/admin/members",
-                icon: "fa-address-book",
-                label: "admin-nav-members",
-                description: "admin-nav-members-desc",
-                requires: None,
-            },
-            ConsoleNavItem {
-                path: "/admin/service-accounts",
-                icon: "fa-robot",
-                label: "admin-nav-service-accounts",
-                description: "admin-nav-service-accounts-desc",
-                requires: None,
-            },
-        ],
-    },
-    ConsoleNavGroup {
-        label: "admin-home-group-integration",
-        description: "admin-home-group-integration-desc",
-        icon: "fa-cubes",
-        items: &[
-            ConsoleNavItem {
-                path: "/admin/clients",
-                icon: "fa-cubes",
-                label: "admin-nav-clients",
-                description: "admin-nav-clients-desc",
-                requires: None,
-            },
-            ConsoleNavItem {
-                path: "/admin/resources",
-                icon: "fa-bullseye",
-                label: "admin-nav-resources",
-                description: "admin-nav-resources-desc",
-                requires: None,
-            },
-            ConsoleNavItem {
-                path: "/admin/signing-keys",
-                icon: "fa-key",
-                label: "admin-nav-signing-keys",
-                description: "admin-nav-signing-keys-desc",
-                requires: None,
-            },
-            ConsoleNavItem {
-                path: "/admin/saml-clients",
-                icon: "fa-cube",
-                label: "admin-nav-saml-clients",
-                description: "admin-nav-saml-clients-desc",
-                requires: None,
-            },
-            ConsoleNavItem {
-                path: "/admin/external-idps",
-                icon: "fa-right-to-bracket",
-                label: "admin-nav-external-idps",
-                description: "admin-nav-external-idps-desc",
-                requires: None,
-            },
-            ConsoleNavItem {
-                path: "/admin/authentication-policies",
-                icon: "fa-shield-halved",
-                label: "admin-nav-auth-policies",
-                description: "admin-nav-auth-policies-desc",
-                requires: None,
             },
         ],
     },
