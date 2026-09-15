@@ -129,6 +129,73 @@ mod tests {
     use super::*;
     use crate::i18n::{Locale, Messages};
 
+    /// サイドバーとホームが、メニューを自前で並べていないこと。
+    ///
+    /// ⚠ **これが破られた状態が実際に続いていた** ——サイドバーにだけ「外部 IdP」が、ホームに
+    /// だけ「認証ポリシー」が載っており、どちらも相手の部分集合にならないので利用者からは
+    /// 「省略」とも読めなかった。両方が [`CONSOLE_NAV`] から描いている限り、ずれは**書けない**。
+    /// 直に `href` を書いた瞬間にここで落ちる。
+    #[test]
+    fn the_console_menu_is_the_only_place_that_lists_admin_screens() {
+        // ホーム自身へのリンク（サイドバー先頭の「コンソールのトップ」）だけは定義の外に在る。
+        const ALLOWED: &str = "{{ tenant }}/admin\"";
+        for (name, source) in [
+            (
+                "layout.html",
+                include_str!("../templates/console/layout.html"),
+            ),
+            ("home.html", include_str!("../templates/console/home.html")),
+        ] {
+            for (n, line) in source.lines().enumerate() {
+                if !line.contains("{{ tenant }}/admin") || line.contains(ALLOWED) {
+                    continue;
+                }
+                // 認証まわり（ログアウト・テナント切替）はメニューではなくヘッダの操作。
+                if line.contains("/admin/logout") || line.contains("/admin/switch-tenant") {
+                    continue;
+                }
+                panic!(
+                    "{name}:{} がメニューを直に書いている。CONSOLE_NAV へ足すこと: {}",
+                    n + 1,
+                    line.trim()
+                );
+            }
+        }
+    }
+
+    /// メニューの翻訳キーが両言語に在ること。
+    ///
+    /// ⚠ **説明のキーだけが抜けている状態が実在した** ——「外部 IdP」はサイドバーにしか無く、
+    /// サイドバーは説明を出さないので `-desc` を誰も定義していなかった。ホームへ載せた途端に
+    /// キー名がそのまま画面へ出る（`Messages::get` は見つからないキーをそのまま返す）。
+    #[test]
+    fn every_menu_entry_has_both_a_name_and_a_description() {
+        for locale in [Locale::Ja, Locale::En] {
+            let messages = Messages::new(locale);
+            for group in CONSOLE_NAV {
+                for key in [group.label, group.description] {
+                    assert_ne!(messages.get(key), key, "{key} の訳が無い（{locale:?}）");
+                }
+                for item in group.items {
+                    for key in [item.label, item.description] {
+                        assert_ne!(messages.get(key), key, "{key} の訳が無い（{locale:?}）");
+                    }
+                }
+            }
+        }
+    }
+
+    /// まとまりと行き先が重複していないこと（同じ画面を 2 か所へ置かない）。
+    #[test]
+    fn the_console_menu_lists_each_screen_once() {
+        let mut seen = std::collections::BTreeSet::new();
+        for group in CONSOLE_NAV {
+            for item in group.items {
+                assert!(seen.insert(item.path), "{} が 2 回載っている", item.path);
+            }
+        }
+    }
+
     /// フォームが送る入力欄と、ハンドラが要求する項目の食い違いを検出する（ADR-0032）。
     ///
     /// `usage` は `NewClientForm` / `EditClientForm` の**必須**項目なので、テンプレートが描画を
@@ -456,6 +523,38 @@ mod tests {
             !tag.contains(r#"onfocus=""#),
             "but never as an attribute: {html}"
         );
+    }
+
+    /// サイドバーとホームが**同じ行き先を挙げる**こと（利用者が最初に気付いた症状）。
+    ///
+    /// ⚠ 以前はサイドバーにだけ `/admin/external-idps` が、ホームにだけ
+    /// `/admin/authentication-policies` が在った。どちらも相手の部分集合にならないため、
+    /// 「片方は省略している」とも読めない見え方になっていた。ホームは共通レイアウト
+    /// （＝サイドバー）を含めて描かれるので、**1 回の描画で両方を数えられる**。
+    #[test]
+    fn the_sidebar_and_the_home_cards_offer_the_same_screens() {
+        let messages = Messages::new(Locale::Ja);
+        let html = render(&ConsoleHome {
+            messages: &messages,
+            tenant: "/t",
+            admin: Some(ConsoleAdmin {
+                label: "admin",
+                tenant_name: Some("Acme"),
+                permissions: &["idp.system.admin".to_string()],
+            }),
+        });
+
+        for group in CONSOLE_NAV {
+            for item in group.items {
+                let href = format!("\"/t{}\"", item.path);
+                assert_eq!(
+                    html.matches(&href).count(),
+                    2,
+                    "{} はサイドバーとホームの両方にちょうど 1 つずつ要る",
+                    item.path
+                );
+            }
+        }
     }
 
     /// `idp.system.admin` を要する画面（エラー警告ログ・テナント管理）は、その権限を持たない
@@ -1305,6 +1404,179 @@ impl ConsoleAdmin<'_> {
         self.permissions.is_empty() || self.permissions.iter().any(|code| code == permission_code)
     }
 }
+
+/// 管理コンソールのメニュー 1 項目。
+///
+/// サイドバー（`console/layout.html`）とホームのカード（`console/home.html`）は**同じものを
+/// 別の形で見せている**。⚠ **両方を手で書くと必ずずれる** ——実際、サイドバーには「外部 IdP」
+/// だけが、ホームには「認証ポリシー」だけが載っている状態が続いていた。どちらも相手の部分集合に
+/// ならないので、利用者からは「省略」とも読めず違和感だけが残る。定義をここ 1 か所に置き、
+/// 両方をここから描くことで、ずれを**書けなくする**。
+#[derive(Debug, Clone, Copy)]
+pub struct ConsoleNavItem {
+    /// `{{ tenant }}` に続くパス（先頭の `/` を含む）。
+    pub path: &'static str,
+    /// Font Awesome のクラス名（`fa-solid` は付けない）。
+    pub icon: &'static str,
+    /// 表示名の翻訳キー。
+    pub label: &'static str,
+    /// 1 行の説明の翻訳キー。⚠ **ホームでしか出さない** ——サイドバーは行き先を選ぶ場所で、
+    /// 説明を並べると縦に伸びて選びにくくなる。
+    pub description: &'static str,
+    /// この画面を出すのに要る権限コード。`None` = 管理コンソールに入れる全員へ出す。
+    pub requires: Option<&'static str>,
+}
+
+/// メニューのまとまり（サイドバーの見出し ＝ ホームのカード 1 枚）。
+#[derive(Debug, Clone, Copy)]
+pub struct ConsoleNavGroup {
+    pub label: &'static str,
+    /// まとまりの説明の翻訳キー。⚠ **ホームでは見出しの副題として出す** ——項目リストの中へ
+    /// 置くと、字下げも幅も項目と同じになり「押せない 1 行目」に見える。
+    pub description: &'static str,
+    pub icon: &'static str,
+    pub items: &'static [ConsoleNavItem],
+}
+
+impl ConsoleNavGroup {
+    /// この管理者に見える項目だけを返す。空になったまとまりはホーム側で丸ごと省く。
+    pub fn visible_items(&self, admin: &ConsoleAdmin<'_>) -> Vec<ConsoleNavItem> {
+        self.items
+            .iter()
+            .filter(|item| item.requires.is_none_or(|code| admin.can(code)))
+            .copied()
+            .collect()
+    }
+}
+
+/// 管理コンソールのメニュー定義（サイドバーとホームの唯一の出所）。
+///
+/// ⚠ **画面を足したらここへ足す。** `crates/web/src/router.rs` の `/admin/*` と突き合わせる
+/// テストが `console_menu_covers_every_admin_screen` にある。
+pub const CONSOLE_NAV: &[ConsoleNavGroup] = &[
+    ConsoleNavGroup {
+        label: "admin-home-group-operations",
+        description: "admin-home-group-operations-desc",
+        icon: "fa-heart-pulse",
+        items: &[
+            ConsoleNavItem {
+                path: "/admin/status",
+                icon: "fa-heart-pulse",
+                label: "admin-nav-status",
+                description: "admin-nav-status-desc",
+                requires: None,
+            },
+            ConsoleNavItem {
+                path: "/admin/audit-logs",
+                icon: "fa-file-lines",
+                label: "admin-nav-audit",
+                description: "admin-nav-audit-desc",
+                requires: None,
+            },
+            // エラー警告ログは `idp.system.admin` 必須（`api::handlers::admin_application_logs`）。
+            // 権限が無い管理者に出すと、押した先が 403 の行き止まりになる。
+            ConsoleNavItem {
+                path: "/admin/logs",
+                icon: "fa-triangle-exclamation",
+                label: "admin-nav-applog",
+                description: "admin-nav-applog-desc",
+                requires: Some("idp.system.admin"),
+            },
+        ],
+    },
+    ConsoleNavGroup {
+        label: "admin-home-group-access",
+        description: "admin-home-group-access-desc",
+        icon: "fa-users",
+        items: &[
+            ConsoleNavItem {
+                path: "/admin/members",
+                icon: "fa-address-book",
+                label: "admin-nav-members",
+                description: "admin-nav-members-desc",
+                requires: None,
+            },
+            ConsoleNavItem {
+                path: "/admin/service-accounts",
+                icon: "fa-robot",
+                label: "admin-nav-service-accounts",
+                description: "admin-nav-service-accounts-desc",
+                requires: None,
+            },
+        ],
+    },
+    ConsoleNavGroup {
+        label: "admin-home-group-integration",
+        description: "admin-home-group-integration-desc",
+        icon: "fa-cubes",
+        items: &[
+            ConsoleNavItem {
+                path: "/admin/clients",
+                icon: "fa-cubes",
+                label: "admin-nav-clients",
+                description: "admin-nav-clients-desc",
+                requires: None,
+            },
+            ConsoleNavItem {
+                path: "/admin/resources",
+                icon: "fa-bullseye",
+                label: "admin-nav-resources",
+                description: "admin-nav-resources-desc",
+                requires: None,
+            },
+            ConsoleNavItem {
+                path: "/admin/signing-keys",
+                icon: "fa-key",
+                label: "admin-nav-signing-keys",
+                description: "admin-nav-signing-keys-desc",
+                requires: None,
+            },
+            ConsoleNavItem {
+                path: "/admin/saml-clients",
+                icon: "fa-cube",
+                label: "admin-nav-saml-clients",
+                description: "admin-nav-saml-clients-desc",
+                requires: None,
+            },
+            ConsoleNavItem {
+                path: "/admin/external-idps",
+                icon: "fa-right-to-bracket",
+                label: "admin-nav-external-idps",
+                description: "admin-nav-external-idps-desc",
+                requires: None,
+            },
+            ConsoleNavItem {
+                path: "/admin/authentication-policies",
+                icon: "fa-shield-halved",
+                label: "admin-nav-auth-policies",
+                description: "admin-nav-auth-policies-desc",
+                requires: None,
+            },
+        ],
+    },
+    ConsoleNavGroup {
+        label: "admin-home-group-settings",
+        description: "admin-home-group-settings-desc",
+        icon: "fa-gear",
+        items: &[
+            ConsoleNavItem {
+                path: "/admin/settings",
+                icon: "fa-gear",
+                label: "admin-nav-settings",
+                description: "admin-nav-settings-desc",
+                requires: None,
+            },
+            // テナント管理も `idp.system.admin` 必須（`api::handlers::admin_tenants`）。
+            ConsoleNavItem {
+                path: "/admin/tenants",
+                icon: "fa-building",
+                label: "admin-nav-tenants",
+                description: "admin-nav-tenants-desc",
+                requires: Some("idp.system.admin"),
+            },
+        ],
+    },
+];
 
 /// 共通レイアウトのヘッダ文脈（未認証時は `None`）。
 /// 各コンソール画面テンプレートが持ち、`console/layout.html` から参照される。

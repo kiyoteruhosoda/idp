@@ -1037,6 +1037,7 @@ admin-members-unlock-none = このアカウントはロックされていませ�
 
 # 外部 IdP 設定・ログイン識別子の管理画面（AP16）
 admin-nav-external-idps = 外部 IdP
+admin-nav-external-idps-desc = 他の IdP でログインできるようにする
 admin-members-login-identifiers-button = ログイン識別子
 admin-external-idps-title = 外部 IdP
 admin-external-idps-intro = 外部の OpenID Provider（OIDC）または SAML IdP でログインできるようにします。クライアントシークレットは暗号化して保存し、以後は表示しません。

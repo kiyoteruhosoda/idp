@@ -71,31 +71,21 @@
       <button type="button" class="btn-close" data-bs-dismiss="offcanvas" data-bs-target="#console-sidebar" aria-label="Close"></button>
     </div>
     <div class="offcanvas-body p-3 d-md-flex flex-column">
+      {#- ホームのカードと同じ定義（`templates::CONSOLE_NAV`）から描く。⚠ **両方を手で書かない**
+          ——書いていた頃は、ここにだけ「外部 IdP」が、ホームにだけ「認証ポリシー」が載っていた。
+          ⚠ **ここに説明は出さない。** サイドバーは行き先を選ぶ場所で、1 行ずつ説明を足すと
+          縦に伸びて選びにくくなる（説明が要る人はホームを見る）。 -#}
       <nav class="nav flex-column">
         <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin"><i class="fa-solid fa-house me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-home") }}</span></a>
-
-        <span class="text-muted text-uppercase fw-bold px-2 mt-3 mb-1 small sidebar-category-header">{{ messages.get("admin-home-group-operations") }}</span>
-        <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/status"><i class="fa-solid fa-heart-pulse me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-status") }}</span></a>
-        <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/audit-logs"><i class="fa-solid fa-file-lines me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-audit") }}</span></a>
-        {#- エラー警告ログは `idp.system.admin` 必須（`api::handlers::admin_application_logs`）。
-            権限が無い管理者にも出していたため、押すと 403 になる行き止まりだった。 -#}
-        {% if chrome.can("idp.system.admin") %}<a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/logs"><i class="fa-solid fa-triangle-exclamation me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-applog") }}</span></a>{% endif %}
-
-        <span class="text-muted text-uppercase fw-bold px-2 mt-3 mb-1 small sidebar-category-header">{{ messages.get("admin-home-group-access") }}</span>
-        <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/members"><i class="fa-solid fa-address-book me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-members") }}</span></a>
-        <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/service-accounts"><i class="fa-solid fa-robot me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-service-accounts") }}</span></a>
-
-        <span class="text-muted text-uppercase fw-bold px-2 mt-3 mb-1 small sidebar-category-header">{{ messages.get("admin-home-group-integration") }}</span>
-        <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/clients"><i class="fa-solid fa-cubes me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-clients") }}</span></a>
-        <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/resources"><i class="fa-solid fa-bullseye me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-resources") }}</span></a>
-        <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/signing-keys"><i class="fa-solid fa-key me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-signing-keys") }}</span></a>
-        <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/saml-clients"><i class="fa-solid fa-cube me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-saml-clients") }}</span></a>
-        <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/external-idps"><i class="fa-solid fa-right-to-bracket me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-external-idps") }}</span></a>
-
-        <span class="text-muted text-uppercase fw-bold px-2 mt-3 mb-1 small sidebar-category-header">{{ messages.get("admin-home-group-settings") }}</span>
-        <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/settings"><i class="fa-solid fa-gear me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-settings") }}</span></a>
-        {#- テナント管理も同じく `idp.system.admin` 必須（`api::handlers::admin_tenants`）。 -#}
-        {% if chrome.can("idp.system.admin") %}<a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin/tenants"><i class="fa-solid fa-building me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-tenants") }}</span></a>{% endif %}
+        {% for group in crate::templates::CONSOLE_NAV %}
+        {%- let items = group.visible_items(chrome) -%}
+        {% if !items.is_empty() %}
+        <span class="text-muted text-uppercase fw-bold px-2 mt-3 mb-1 small sidebar-category-header">{{ messages.get(group.label) }}</span>
+        {% for item in items %}
+        <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}{{ item.path }}"><i class="fa-solid {{ item.icon }} me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get(item.label) }}</span></a>
+        {% endfor %}
+        {% endif %}
+        {% endfor %}
       </nav>
     </div>
   </div>
