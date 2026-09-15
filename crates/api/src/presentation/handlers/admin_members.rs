@@ -46,7 +46,10 @@ pub async fn get_member(
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
-    Path(user_id): Path<Uuid>,
+    // ⚠ **経路には `{tenant_id}` と `{user_id}` の 2 つがある。** `Path<Uuid>` の 1 つだけで
+    //   受けると**先頭のテナント ID を取ってしまい**、必ず「メンバーではない」になる
+    //   （同じ経路の `revoke_member` / `update_member_status` も 2 つで受けている）。
+    Path((_tenant_id, user_id)): Path<(String, Uuid)>,
 ) -> Result<Json<MemberResponse>, ApiError> {
     let found = state
         .member_directory
