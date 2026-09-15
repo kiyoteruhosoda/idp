@@ -317,3 +317,55 @@ async fn list_covers_memberships_not_home_users() {
     assert_eq!(body["total"], 2);
     assert_eq!(body["members"][1]["status"], "INVITED");
 }
+
+/// メンバー 1 人を名指しで引く（`GET /{tenant_id}/admin/members/{user_id}`）。
+///
+/// ⚠ **一覧から探させないための口。** 一覧はページングされているので、目的の 1 人が何ページ目に
+/// 居るかは呼び出し側には分からない。要求テナントに所属していなければ 404（他テナントのメンバーの
+/// 存在を推測させない）。
+#[tokio::test]
+async fn one_member_can_be_fetched_by_id() {
+    let Some(env) = support::setup("member detail").await else {
+        return;
+    };
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+    let marker = format!("detail-{}", uuid::Uuid::now_v7().simple());
+    let user_id = insert_marked_user(&env.pool, &env.root_tenant_id, &marker, 1).await;
+    let path = format!("/{}/admin/members/{}", env.root_tenant_id, user_id);
+
+    // 認可（一覧と同じ関門）。
+    let res = send(&env.app, support::anonymous(Method::GET, &path, None)).await;
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "no token -> 401");
+
+    let res = send(&env.app, get(&admin_tok, &path)).await;
+    assert_eq!(res.status(), StatusCode::OK, "member detail -> 200");
+    let body: Value = body_json(res).await;
+    assert_eq!(body["user_id"], user_id);
+    assert_eq!(body["email"], format!("{marker}-01@example.com"));
+    assert_eq!(body["membership_type"], "HOME");
+    assert_eq!(body["status"], "ACTIVE");
+
+    // メンバーではない利用者は 404（存在するかどうかを漏らさない）。
+    // ⚠ `create_plain_user` は HOME メンバーシップまで作るので使えない。**行だけ**を入れる。
+    let stranger = uuid::Uuid::now_v7().to_string();
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, sub, email, email_verified, password_hash, status) \
+         VALUES (?, ?, ?, ?, 1, 'x', 'ACTIVE')",
+    )
+    .bind(&stranger)
+    .bind(&env.root_tenant_id)
+    .bind(uuid::Uuid::now_v7().to_string())
+    .bind(format!("{marker}-stranger@example.com"))
+    .execute(&env.pool)
+    .await
+    .expect("insert non-member user");
+    let res = send(
+        &env.app,
+        get(
+            &admin_tok,
+            &format!("/{}/admin/members/{}", env.root_tenant_id, stranger),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND, "not a member -> 404");
+}

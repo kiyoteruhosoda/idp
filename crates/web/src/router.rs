@@ -396,6 +396,11 @@ pub fn build(state: WebState) -> Router {
         // メンバー（HOME/GUEST）一覧・ゲスト解除（ADR-0009 §3）と、所属元（HOME）利用者の
         // 無効化・有効化・パスワード再発行・削除（ADR-0009 §5）。
         .route("/admin/members", get(admin_members_console::list))
+        // メンバー 1 人の画面（操作はここに集める。一覧は探す場所）。
+        .route(
+            "/admin/members/{user_id}",
+            get(admin_members_console::detail),
+        )
         .route(
             "/admin/members/{user_id}/revoke",
             post(admin_members_console::revoke),

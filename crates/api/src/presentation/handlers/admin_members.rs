@@ -23,6 +23,58 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use uuid::Uuid;
 
+/// メンバー 1 人を名指しで引く（`GET /{tenant_id}/admin/members/{user_id}`）。
+///
+/// メンバーの詳細画面のためにある。⚠ **一覧を引いて呼び出し側で探させない** ——一覧は
+/// ページングされているので、目的の 1 人が何ページ目に居るかは呼び出し側には分からない。
+///
+/// 要求テナントに所属していなければ 404（他テナントのメンバーの存在を推測させない）。
+#[utoipa::path(
+    get,
+    path = "/{tenant_id}/admin/members/{user_id}",
+    tag = "admin",
+    params(("user_id" = String, Path, description = "対象利用者の内部 ID（UUID）")),
+    responses(
+        (status = 200, description = "メンバー 1 人", body = MemberResponse),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.members:read 必須）"),
+        (status = 404, description = "このテナントのメンバーではない"),
+    )
+)]
+pub async fn get_member(
+    RequirePerms(_admin, _): RequirePerms<MembersRead>,
+    State(state): State<AppState>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
+    // ⚠ **経路には `{tenant_id}` と `{user_id}` の 2 つがある。** `Path<Uuid>` の 1 つだけで
+    //   受けると**先頭のテナント ID を取ってしまい**、必ず「メンバーではない」になる
+    //   （同じ経路の `revoke_member` / `update_member_status` も 2 つで受けている）。
+    Path((_tenant_id, user_id)): Path<(String, Uuid)>,
+) -> Result<Json<MemberResponse>, ApiError> {
+    let found = state
+        .member_directory
+        .find(tenant.context(), user_id)
+        .await
+        .map_err(|e| map_error(InvitationError::Internal(e.to_string()), locale))?;
+    let now = state.clock.now();
+    match found {
+        Some(m) => Ok(Json(MemberResponse {
+            user_id: m.user_id.to_string(),
+            email: m.email,
+            preferred_username: m.preferred_username,
+            name: m.name,
+            membership_type: m.membership_type.as_str().to_string(),
+            status: m.status.as_str().to_string(),
+            user_status: m.user_status.map(|s| s.as_str().to_string()),
+            // 期限切れのロックは「掛かっていない」として返す（読んだ時点で判定する）。
+            locked: m.locked_until.is_some_and(|until| until > now),
+        })),
+        None => Err(ApiError::NotFound(
+            ApiMessages::new(locale).get("api-user-not-found"),
+        )),
+    }
+}
+
 /// 当該テナントのメンバー（HOME / GUEST）を一覧する（MT22 でページング・絞り込みを追加）。
 ///
 /// 絞り込み・並び替え・ページングはすべて DB 側で行う。全件を返して呼び出し側で絞る方式は、

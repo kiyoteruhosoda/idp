@@ -48,6 +48,9 @@ pub struct TenantMember {
 #[derive(Debug, Clone)]
 pub struct TenantMemberFilter {
     pub tenant_id: TenantId,
+    /// 1 人を名指しで引くとき（メンバーの詳細画面）。⚠ **`search` と併用しない**
+    /// ——名指しは完全一致で、部分一致の絞り込みとは別の問い。
+    pub user_id: Option<uuid::Uuid>,
     pub search: Option<String>,
     pub limit: i64,
     pub offset: i64,

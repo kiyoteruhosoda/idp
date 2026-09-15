@@ -347,7 +347,8 @@ pub fn build(state: AppState) -> Router {
         // ゲストメンバーシップの解除（DELETE）と一時停止・再開（PATCH。MT24）。
         .route(
             "/admin/members/{user_id}",
-            axum::routing::delete(admin_members::revoke_member)
+            get(admin_members::get_member)
+                .delete(admin_members::revoke_member)
                 .patch(admin_members::update_member_status),
         )
         .route(

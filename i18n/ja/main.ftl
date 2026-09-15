@@ -186,9 +186,19 @@ admin-users-profile-error-conflict = そのメールアドレスまたはログ�
 
 # メンバー（HOME/GUEST）・ゲスト招待（ADR-0009 §3）。
 admin-members-title = メンバー
+admin-member-detail-manage = 管理
+admin-member-detail-back = メンバー一覧へ戻る
+admin-member-detail-basics = 基本情報
+admin-member-detail-group-view = 見る
+admin-member-detail-group-view-desc = 別の画面へ移ります。
+admin-member-detail-group-fix = 直す
+admin-member-detail-group-fix-desc = 入れなくなった人を戻します。やり直せます。
+admin-member-detail-group-danger = 戻せない操作
+admin-member-detail-group-danger-desc = 取り消せません。実行する前に相手を確かめてください。
+admin-member-detail-not-found = このテナントのメンバーではありません。
 admin-members-none = メンバーはまだいません。
 admin-members-col-type = 種別
-admin-members-col-status = 状態
+admin-members-col-status = メンバーシップ
 admin-members-revoke-confirm = このゲストをテナントから解除しますか？
 admin-members-revoke-button = 解除
 admin-members-error-home = このテナントの HOME メンバーは解除できません。

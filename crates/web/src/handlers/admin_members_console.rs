@@ -21,7 +21,7 @@ use crate::handlers::found;
 use crate::i18n::Messages;
 use crate::pagination::pager_links;
 use crate::state::WebState;
-use crate::templates::{render, ConsoleNotice, MembersList, PasswordResetResult};
+use crate::templates::{render, ConsoleNotice, MemberDetail, MembersList, PasswordResetResult};
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -90,6 +90,53 @@ pub async fn list(
         .into_response(),
         Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
         Err(AdminApiError::Forbidden) => forbidden_response(&headers),
+        Err(_) => internal_error(&messages, &tenant, &admin),
+    }
+}
+
+/// メンバー 1 人の画面（`GET /{tenant_id}/admin/members/{user_id}`）。
+///
+/// ⚠ **一覧は探す場所、ここは操作する場所**と分ける。一覧の 1 セルへ 7 つのボタンを並べて
+/// いた頃は、操作列 168px にボタンが縦 7 段に積まれ、幅の広いものは右端で切れていた。
+pub async fn detail(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    // ⚠ **経路には `{tenant_id}` と `{user_id}` の 2 つがある。** 1 つだけで受けると
+    //   `WrongNumberOfParameters` で弾かれ、ハンドラへ入る前に 500 になる
+    //   （同じファイルの他のハンドラも 2 つで受けている）。
+    Path((_, user_id)): Path<(String, String)>,
+    Query(query): Query<ViewQuery>,
+) -> Response {
+    let admin = match resolve_admin(&state, &correlation, &tenant, &headers).await {
+        AdminResolution::Ok(uid) => uid,
+        AdminResolution::Reject(resp) => return resp,
+    };
+    // ⚠ `Messages` は `Send` ではないので、`await` をまたいで持たない（api 呼び出しの後に作る）。
+    let result = state
+        .api
+        .get_member(&correlation.0, &tenant.0, &sso(&headers), &user_id)
+        .await;
+    let messages = Messages::new(locale(&headers));
+    match result {
+        Ok(member) => Html(render(&MemberDetail {
+            messages: &messages,
+            tenant: &tenant.prefix(),
+            admin: Some(admin.chrome()),
+            member: &member,
+            csrf: &csrf_from(&headers, state.config.csrf_secret()),
+            error_key: query.error.as_deref().and_then(error_key_for),
+            notice_key: query.notice.as_deref().and_then(notice_key_for),
+        }))
+        .into_response(),
+        Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
+        Err(AdminApiError::Forbidden) => forbidden_response(&headers),
+        // 他テナントのメンバーの存在を推測させないため、不存在も 404 のまま一覧へ戻す。
+        Err(AdminApiError::NotFound) => found(&format!(
+            "{}{MEMBERS_SEGMENT}?error=notfound",
+            tenant.prefix()
+        )),
         Err(_) => internal_error(&messages, &tenant, &admin),
     }
 }
@@ -575,15 +622,69 @@ mod tests {
         )
     }
 
+    /// 1 人の画面を描く。⚠ **操作の有無を確かめる場所は一覧ではなくこちら**
+    /// （一覧は探す場所になったため）。
+    fn render_detail(m: &MemberView) -> String {
+        render_detail_in(Locale::Ja, m)
+    }
+
+    fn render_detail_in(locale: Locale, m: &MemberView) -> String {
+        let messages = Messages::new(locale);
+        render(&crate::templates::MemberDetail {
+            messages: &messages,
+            tenant: &tenant().prefix(),
+            admin: Some(AdminContext::for_test("admin-1", Some("Acme")).chrome()),
+            member: m,
+            csrf: "csrf123",
+            error_key: None,
+            notice_key: None,
+        })
+    }
+
+    /// ⚠ **一覧に操作を戻さない。** 7 つのボタンを 1 セルへ並べていた頃は、操作列 168px に
+    /// ボタンが縦 7 段に積まれ、幅の広いものは右端で切れていた。一覧に出てよいのは
+    /// 1 人の画面への導線だけで、破壊的な口（削除・解除）は決して並べない。
+    #[test]
+    fn the_list_carries_no_actions_only_a_way_into_each_member() {
+        let html = render_page(&[member("HOME"), member("GUEST")], None);
+        // ⚠ 部分一致で見ない ——`/status` はサイドバーの `/admin/status`（クライアント状況）にも
+        //   当たる。メンバー配下の口だけを数える。
+        let uid = member("HOME").user_id;
+        for action in [
+            "reset-mfa",
+            "reset-password",
+            "reissue-tokens",
+            "unlock",
+            "delete",
+            "revoke",
+            "suspend",
+            "resume",
+            "status",
+        ] {
+            let path = format!("/admin/members/{uid}/{action}");
+            assert!(!html.contains(&path), "一覧に {path} が残っている: {html}");
+        }
+        // 一覧にも検索フォームとログアウト（レイアウト）は在ってよい。禁じるのは
+        // **メンバー宛の送信口**だけ。
+        assert!(
+            !html.contains("action=\"/00000000-0000-7000-8000-000000000000/admin/members/"),
+            "一覧にメンバー宛の送信口が残っている: {html}"
+        );
+        assert!(
+            html.contains("/admin/members/11111111-1111-1111-1111-111111111111"),
+            "1 人の画面への導線が要る: {html}"
+        );
+    }
+
     /// MT21: 所属元（HOME）の利用者にだけ MFA 解除ボタンを出す。ゲストは所属元テナントの管理者が
     /// 操作する対象で、こちらからは（api も 404 を返すため）出してはいけない。
     #[test]
     fn mfa_reset_button_is_shown_for_home_members_only() {
-        let home = render_page(&[member("HOME")], None);
+        let home = render_detail(&member("HOME"));
         assert!(home.contains("/reset-mfa"), "{home}");
         assert!(home.contains("name=\"csrf_token\" value=\"csrf123\""));
 
-        let guest = render_page(&[member("GUEST")], None);
+        let guest = render_detail(&member("GUEST"));
         assert!(!guest.contains("/reset-mfa"), "{guest}");
     }
 
@@ -591,10 +692,10 @@ mod tests {
     /// 404 を返すため、ゲストに出すと押せないボタンになる）。
     #[test]
     fn token_reissue_button_is_shown_for_home_members_only() {
-        let home = render_page(&[member("HOME")], None);
+        let home = render_detail(&member("HOME"));
         assert!(home.contains("/reissue-tokens"), "{home}");
 
-        let guest = render_page(&[member("GUEST")], None);
+        let guest = render_detail(&member("GUEST"));
         assert!(!guest.contains("/reissue-tokens"), "{guest}");
     }
 
@@ -606,24 +707,14 @@ mod tests {
     /// 属性値として渡せば HTML エスケープがそのまま正しい防御になる。
     #[test]
     fn confirmation_text_is_passed_as_an_attribute_not_inline_javascript() {
-        let html = render_page(&[member("HOME")], None);
+        let html = render_detail(&member("HOME"));
         assert!(!html.contains("onsubmit="), "no inline handlers: {html}");
         assert!(html.contains("data-confirm="));
 
         // アポストロフィを含む文言（英語ロケール）でも属性として正しくエスケープされ、
         // 生の `'` が属性値を終端しない。
+        let english = render_detail_in(Locale::En, &member("HOME"));
         let messages = Messages::new(Locale::En);
-        let english = super::render_list(
-            &messages,
-            &tenant(),
-            &AdminContext::for_test("admin-1", Some("Acme")),
-            "csrf123",
-            &page(vec![member("HOME")]),
-            "",
-            0,
-            None,
-            None,
-        );
         let confirm = messages.get("admin-members-reset-mfa-confirm");
         assert!(confirm.contains('\''), "fixture must contain an apostrophe");
         assert!(english.contains("&#39;"), "apostrophe must be escaped");
@@ -634,27 +725,29 @@ mod tests {
     /// （停止中に「一時停止」を出すと押しても 403 になるだけで、操作できるように見えてしまう）。
     #[test]
     fn suspend_and_resume_buttons_follow_the_membership_state() {
-        let active_guest = render_page(&[member("GUEST")], None);
+        let active_guest = render_detail(&member("GUEST"));
         assert!(active_guest.contains("/suspend"), "{active_guest}");
         assert!(!active_guest.contains("/resume"));
 
         let mut suspended = member("GUEST");
         suspended.status = "SUSPENDED".into();
-        let html = render_page(&[suspended], None);
+        let html = render_detail(&suspended);
         assert!(html.contains("/resume"), "{html}");
         assert!(!html.contains("/suspend"));
-        // 停止中であることが一覧で分かる。
-        assert!(html.contains(&Messages::new(Locale::Ja).get("admin-members-status-suspended")));
+
+        // 停止中であることは**一覧で**分かる（探す場所に状態が要る）。
+        let listed = render_page(&[suspended], None);
+        assert!(listed.contains(&Messages::new(Locale::Ja).get("admin-members-status-suspended")));
 
         // HOME は停止できない（api も 403 を返す）ので導線を出さない。
-        let home = render_page(&[member("HOME")], None);
+        let home = render_detail(&member("HOME"));
         assert!(!home.contains("/suspend"));
         assert!(!home.contains("/resume"));
 
         // 招待中（未承諾）はまだアクセスが無いため停止対象にならない。
         let mut invited = member("GUEST");
         invited.status = "INVITED".into();
-        let html = render_page(&[invited], None);
+        let html = render_detail(&invited);
         assert!(!html.contains("/suspend"), "{html}");
         assert!(!html.contains("/resume"));
     }
@@ -688,19 +781,23 @@ mod tests {
     /// 変わらない操作が並び、ロックされている利用者を見分けられなくなる（AP6）。
     #[test]
     fn the_unlock_action_appears_only_for_a_locked_home_member() {
-        let unlocked = render_page(&[member("HOME")], None);
+        let unlocked = render_detail(&member("HOME"));
         assert!(!unlocked.contains("/unlock"), "{unlocked}");
 
         let mut locked = member("HOME");
         locked.locked = true;
-        let html = render_page(&[locked], None);
+        let html = render_detail(&locked);
         assert!(html.contains("/unlock"), "{html}");
         assert!(html.contains(&Messages::new(Locale::Ja).get("admin-members-unlock-button")));
+
+        // ロック中であることは**一覧でも**分かる（誰が入れないのかを探す場所）。
+        let listed = render_page(&[locked], None);
+        assert!(listed.contains(&Messages::new(Locale::Ja).get("admin-members-user-status-locked")));
 
         // ゲストの `users` レコードは所属元テナントの管理者だけが操作できる（ADR-0009 §3）。
         let mut guest = member("GUEST");
         guest.locked = true;
-        let guest_html = render_page(&[guest], None);
+        let guest_html = render_detail(&guest);
         assert!(!guest_html.contains("/unlock"), "{guest_html}");
     }
 

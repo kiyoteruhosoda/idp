@@ -9,7 +9,7 @@
 
 use crate::admin_dto::{
     ApiErrorBody, AuditLogView, ClientCreatedView, ClientListView, ClientSecretView, ClientView,
-    InvitationCreatedView, MemberListView, UserCreatedView,
+    InvitationCreatedView, MemberListView, MemberView, UserCreatedView,
 };
 use assay_contracts::admin::{
     AuthenticationPoliciesResponse, AuthenticationPolicyResponse,
@@ -1397,6 +1397,37 @@ impl ApiClient {
             .await
             .map_err(|e| AdminApiError::Transport(e.to_string()))?;
         Self::handle_admin_response(response, "/admin/members").await
+    }
+
+    /// メンバー 1 人（`GET /admin/members/{user_id}`）。詳細画面のために引く。
+    ///
+    /// ⚠ **一覧から探さない。** 一覧はページングされているので、目的の 1 人が何ページ目に
+    /// 居るかはこちらには分からない。
+    pub async fn get_member(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        user_id: &str,
+    ) -> Result<MemberView, AdminApiError> {
+        let response = self
+            .with_language(
+                self.http
+                    .get(format!(
+                        "{}/{}/admin/members/{}",
+                        self.base_url, tenant_id, user_id
+                    ))
+                    .header(REQUEST_ID_HEADER, correlation_id)
+                    .bearer_auth(
+                        self.management_token(correlation_id, tenant_id, sso)
+                            .await?
+                            .access_token,
+                    ),
+            )
+            .send()
+            .await
+            .map_err(|e| AdminApiError::Transport(e.to_string()))?;
+        Self::handle_admin_response(response, "/admin/members/{user_id}").await
     }
 
     /// ゲストメンバーシップの一時停止・再開（`PATCH /admin/members/{user_id}`。MT24）。

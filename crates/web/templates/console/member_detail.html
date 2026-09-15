@@ -1,0 +1,132 @@
+{% extends "console/layout.html" %}
+{% block content %}
+{#- 一覧の 1 セルへ 7 つのボタンを並べていた頃の置き換え（操作列 168px にボタンが縦 7 段、
+    幅の広いものは右端で切れていた）。⚠ **一覧は探す場所、ここは操作する場所**と分ける。 -#}
+<p class="mb-2"><a href="{{ tenant }}/admin/members"><i class="fa-solid fa-arrow-left me-1" aria-hidden="true"></i>{{ messages.get("admin-member-detail-back") }}</a></p>
+<h2 class="h4 mb-3">{{ member.email.as_deref().unwrap_or(member.preferred_username.as_deref().unwrap_or("-")) }}</h2>
+{% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
+{% if let Some(key) = notice_key %}<div class="alert alert-success" role="status"><i class="fa-solid fa-circle-check me-2" aria-hidden="true"></i>{{ messages.get(key) }}</div>{% endif %}
+
+<div class="card mb-4">
+  <div class="card-header fw-semibold">{{ messages.get("admin-member-detail-basics") }}</div>
+  <dl class="row row-cols-1 row-cols-sm-2 g-0 mb-0 p-3">
+    <div class="col mb-2"><dt class="small text-muted fw-semibold">{{ messages.get("admin-user-col-username") }}</dt><dd class="mb-0">{{ member.preferred_username.as_deref().unwrap_or("-") }}</dd></div>
+    <div class="col mb-2"><dt class="small text-muted fw-semibold">{{ messages.get("admin-users-field-name") }}</dt><dd class="mb-0">{{ member.name.as_deref().unwrap_or("-") }}</dd></div>
+    <div class="col mb-2"><dt class="small text-muted fw-semibold">{{ messages.get("admin-members-col-type") }}</dt>
+      <dd class="mb-0">{% if member.membership_type == "GUEST" %}<span class="badge text-bg-info">{{ member.membership_type }}</span>{% else %}<span class="badge text-bg-secondary">{{ member.membership_type }}</span>{% endif %}</dd></div>
+    <div class="col mb-2"><dt class="small text-muted fw-semibold">{{ messages.get("admin-members-col-status") }}</dt>
+      <dd class="mb-0">{% if member.status == "SUSPENDED" %}<span class="badge text-bg-warning">{{ messages.get("admin-members-status-suspended") }}</span>{% else %}{{ member.status }}{% endif %}</dd></div>
+    <div class="col mb-2"><dt class="small text-muted fw-semibold">{{ messages.get("admin-members-col-user-status") }}</dt>
+      <dd class="mb-0">
+        {% if member.locked %}<span class="badge text-bg-warning"><i class="fa-solid fa-lock me-1" aria-hidden="true"></i>{{ messages.get("admin-members-user-status-locked") }}</span>
+        {% else if member.user_status.as_deref() == Some("ACTIVE") %}<span class="badge text-bg-success">{{ messages.get("admin-members-user-status-active") }}</span>
+        {% else if member.user_status.as_deref() == Some("DISABLED") %}<span class="badge text-bg-danger">{{ messages.get("admin-members-user-status-disabled") }}</span>
+        {% else if member.user_status.is_some() %}<span class="badge text-bg-warning">{{ messages.get("admin-members-user-status-locked") }}</span>
+        {% else %}-{% endif %}
+      </dd></div>
+  </dl>
+</div>
+
+{% if member.membership_type == "HOME" %}
+<div class="card mb-3">
+  <div class="card-header">
+    <div class="fw-semibold">{{ messages.get("admin-member-detail-group-view") }}</div>
+    <p class="text-muted small mb-0 mt-1">{{ messages.get("admin-member-detail-group-view-desc") }}</p>
+  </div>
+  <div class="card-body d-flex flex-wrap gap-2">
+    <a class="btn btn-outline-secondary" href="{{ tenant }}/admin/users/{{ member.user_id }}/permissions"><i class="fa-solid fa-user-shield me-1" aria-hidden="true"></i>{{ messages.get("admin-members-permissions-button") }}</a>
+    <a class="btn btn-outline-secondary" href="{{ tenant }}/admin/users/{{ member.user_id }}/login-identifiers"><i class="fa-solid fa-id-card me-1" aria-hidden="true"></i>{{ messages.get("admin-members-login-identifiers-button") }}</a>
+  </div>
+</div>
+
+<div class="card mb-3">
+  <div class="card-header">
+    <div class="fw-semibold">{{ messages.get("admin-member-detail-group-fix") }}</div>
+    <p class="text-muted small mb-0 mt-1">{{ messages.get("admin-member-detail-group-fix-desc") }}</p>
+  </div>
+  <div class="card-body d-flex flex-wrap gap-2">
+    {% if member.user_status.as_deref() == Some("DISABLED") %}
+    <form method="post" action="{{ tenant }}/admin/members/{{ member.user_id }}/status">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <input type="hidden" name="status" value="ACTIVE">
+      <button type="submit" class="btn btn-outline-success"><i class="fa-solid fa-user-check me-1" aria-hidden="true"></i>{{ messages.get("admin-members-enable-button") }}</button>
+    </form>
+    {% else %}
+    <form method="post" action="{{ tenant }}/admin/members/{{ member.user_id }}/status" data-confirm="{{ messages.get("admin-members-disable-confirm") }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <input type="hidden" name="status" value="DISABLED">
+      <button type="submit" class="btn btn-outline-warning"><i class="fa-solid fa-user-slash me-1" aria-hidden="true"></i>{{ messages.get("admin-members-disable-button") }}</button>
+    </form>
+    {% endif %}
+    {% if member.locked %}
+    <form method="post" action="{{ tenant }}/admin/members/{{ member.user_id }}/unlock">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <button type="submit" class="btn btn-outline-success"><i class="fa-solid fa-lock-open me-1" aria-hidden="true"></i>{{ messages.get("admin-members-unlock-button") }}</button>
+    </form>
+    {% endif %}
+    <form method="post" action="{{ tenant }}/admin/members/{{ member.user_id }}/reset-password" data-confirm="{{ messages.get("admin-members-reset-password-confirm") }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <input type="hidden" name="email" value="{{ member.email.as_deref().unwrap_or("") }}">
+      <button type="submit" class="btn btn-outline-secondary"><i class="fa-solid fa-key me-1" aria-hidden="true"></i>{{ messages.get("admin-members-reset-password-button") }}</button>
+    </form>
+    <form method="post" action="{{ tenant }}/admin/members/{{ member.user_id }}/reset-mfa" data-confirm="{{ messages.get("admin-members-reset-mfa-confirm") }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <input type="hidden" name="email" value="{{ member.email.as_deref().unwrap_or("") }}">
+      <button type="submit" class="btn btn-outline-secondary"><i class="fa-solid fa-mobile-screen-button me-1" aria-hidden="true"></i>{{ messages.get("admin-members-reset-mfa-button") }}</button>
+    </form>
+    <form method="post" action="{{ tenant }}/admin/members/{{ member.user_id }}/reissue-tokens" data-confirm="{{ messages.get("admin-members-token-reissue-confirm") }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <button type="submit" class="btn btn-outline-secondary"><i class="fa-solid fa-rotate me-1" aria-hidden="true"></i>{{ messages.get("admin-members-token-reissue-button") }}</button>
+    </form>
+  </div>
+</div>
+
+{#- ⚠ **戻せない操作は枠を分ける。** 一覧では削除が「権限を見る」と同じ大きさで並んでいた。 -#}
+<div class="card border-danger">
+  <div class="card-header border-danger">
+    <div class="fw-semibold text-danger"><i class="fa-solid fa-triangle-exclamation me-1" aria-hidden="true"></i>{{ messages.get("admin-member-detail-group-danger") }}</div>
+    <p class="text-muted small mb-0 mt-1">{{ messages.get("admin-member-detail-group-danger-desc") }}</p>
+  </div>
+  <div class="card-body">
+    <form method="post" action="{{ tenant }}/admin/members/{{ member.user_id }}/delete" data-confirm="{{ messages.get("admin-members-delete-confirm") }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <button type="submit" class="btn btn-outline-danger"><i class="fa-solid fa-trash me-1" aria-hidden="true"></i>{{ messages.get("admin-members-delete-button") }}</button>
+    </form>
+  </div>
+</div>
+{% else %}
+{#- ゲストに対してできるのはメンバーシップの停止・再開・解除だけ（HOME の利用者そのものは
+    所属元テナントの管理者しか触れない。ADR-0009 §3）。 -#}
+<div class="card mb-3">
+  <div class="card-header">
+    <div class="fw-semibold">{{ messages.get("admin-member-detail-group-fix") }}</div>
+    <p class="text-muted small mb-0 mt-1">{{ messages.get("admin-member-detail-group-fix-desc") }}</p>
+  </div>
+  <div class="card-body d-flex flex-wrap gap-2">
+    {% if member.status == "SUSPENDED" %}
+    <form method="post" action="{{ tenant }}/admin/members/{{ member.user_id }}/resume" data-confirm="{{ messages.get("admin-members-resume-confirm") }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <button type="submit" class="btn btn-outline-success"><i class="fa-solid fa-play me-1" aria-hidden="true"></i>{{ messages.get("admin-members-resume-button") }}</button>
+    </form>
+    {% else if member.status == "ACTIVE" %}
+    <form method="post" action="{{ tenant }}/admin/members/{{ member.user_id }}/suspend" data-confirm="{{ messages.get("admin-members-suspend-confirm") }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <button type="submit" class="btn btn-outline-warning"><i class="fa-solid fa-pause me-1" aria-hidden="true"></i>{{ messages.get("admin-members-suspend-button") }}</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+<div class="card border-danger">
+  <div class="card-header border-danger">
+    <div class="fw-semibold text-danger"><i class="fa-solid fa-triangle-exclamation me-1" aria-hidden="true"></i>{{ messages.get("admin-member-detail-group-danger") }}</div>
+    <p class="text-muted small mb-0 mt-1">{{ messages.get("admin-member-detail-group-danger-desc") }}</p>
+  </div>
+  <div class="card-body">
+    <form method="post" action="{{ tenant }}/admin/members/{{ member.user_id }}/revoke" data-confirm="{{ messages.get("admin-members-revoke-confirm") }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <button type="submit" class="btn btn-outline-danger">{{ messages.get("admin-members-revoke-button") }}</button>
+    </form>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

@@ -45,6 +45,11 @@ fn push_conditions<'a>(builder: &mut QueryBuilder<'a, MySql>, filter: &'a Tenant
     builder
         .push(" FROM tenant_memberships m JOIN users u ON u.id = m.user_id WHERE m.tenant_id = ");
     builder.push_bind(filter.tenant_id.to_string());
+    // 名指し（詳細画面）。完全一致なので `search` の部分一致とは併用しない。
+    if let Some(user_id) = filter.user_id {
+        builder.push(" AND m.user_id = ");
+        builder.push_bind(user_id.to_string());
+    }
     if let Some(search) = filter.search.as_deref() {
         let pattern = format!("%{}%", escape_like(search));
         builder.push(" AND (u.email LIKE ");

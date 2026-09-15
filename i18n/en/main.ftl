@@ -186,9 +186,19 @@ admin-users-profile-error-conflict = That email address or sign-in name is alrea
 
 # Members (HOME/GUEST) and guest invitations (ADR-0009 §3).
 admin-members-title = Members
+admin-member-detail-manage = Manage
+admin-member-detail-back = Back to members
+admin-member-detail-basics = Details
+admin-member-detail-group-view = View
+admin-member-detail-group-view-desc = Opens another screen.
+admin-member-detail-group-fix = Fix
+admin-member-detail-group-fix-desc = Get someone back in. You can redo these.
+admin-member-detail-group-danger = Cannot be undone
+admin-member-detail-group-danger-desc = There is no undo. Check who this is first.
+admin-member-detail-not-found = This person is not a member of this tenant.
 admin-members-none = No members yet.
 admin-members-col-type = Type
-admin-members-col-status = Status
+admin-members-col-status = Membership
 admin-members-revoke-confirm = Remove this guest from the tenant?
 admin-members-revoke-button = Remove
 admin-members-error-home = The home member of this tenant cannot be removed.
