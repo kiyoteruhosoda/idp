@@ -8,7 +8,7 @@
 //! 破壊的操作（セッション失効・連携解除）は POST とし、ログイン後フォーム用の同期トークン
 //! （`console_csrf_token`。SSO セッション id 由来）で保護する。
 
-use super::internal_call_status;
+use super::{api_internal_error, internal_call_status};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -92,7 +92,7 @@ pub async fn page(
             return found(&format!("{}/login", tenant.prefix()));
         }
         InternalAccountSecurityResponse::Internal => {
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            return api_internal_error("account_security");
         }
     };
 

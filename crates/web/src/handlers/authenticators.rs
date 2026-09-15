@@ -7,7 +7,7 @@
 //! 認証器を触る操作はすべて step-up（AP5）の対象。盗まれたセッションで認証器を足されると、
 //! 以後は正規の資格情報として振る舞われてしまう。
 
-use super::internal_call_status;
+use super::{api_internal_error, internal_call_status};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -98,7 +98,7 @@ pub async fn page(
             return found(&format!("{}/login", tenant.prefix()));
         }
         InternalAuthenticatorsResponse::Internal => {
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            return api_internal_error("authenticators");
         }
     };
 
@@ -410,7 +410,7 @@ pub async fn start_phone_registration(
             found(&format!("{}/login", tenant.prefix()))
         }
         Ok(assay_contracts::auth::InternalPhoneRegistrationResponse::Internal) => {
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            api_internal_error("phone_registration")
         }
         Err(e) => {
             // 電話番号は PII なので、失敗ログにも載せない（要求そのものを出さない）。

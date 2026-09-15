@@ -11,7 +11,7 @@
 //! hint が**別の利用者**を指していた場合、api は何も変更せず `SubjectMismatch` を返す。このとき
 //! web は SSO Cookie を破棄しない（破棄すると DB にだけセッションが残り、ブラウザから戻れなくなる）。
 
-use super::{internal_call_status, locale};
+use super::{api_internal_error, internal_call_status, locale};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -108,7 +108,7 @@ pub async fn logout(
             });
             (StatusCode::BAD_REQUEST, Html(body)).into_response()
         }
-        InternalRpLogoutResponse::Internal => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        InternalRpLogoutResponse::Internal => api_internal_error("rp_logout"),
     }
 }
 

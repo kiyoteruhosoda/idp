@@ -13,7 +13,7 @@
 //! ADR-0018 と同じ理由（api はブラウザ Cookie を読まない）で、`state` は外部 IdP から戻る値だけを
 //! 鍵として使う設計にしているため。
 
-use super::internal_call_status;
+use super::{api_internal_error, internal_call_status};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -289,9 +289,7 @@ fn render_outcome(
             "external-login-error-failed",
             StatusCode::BAD_GATEWAY,
         ),
-        InternalExternalCallbackResponse::Internal => {
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        }
+        InternalExternalCallbackResponse::Internal => api_internal_error("external_callback"),
     }
 }
 

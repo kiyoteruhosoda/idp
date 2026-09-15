@@ -66,6 +66,20 @@ pub(crate) fn internal_call_status(error: &InternalCallError) -> StatusCode {
     }
 }
 
+/// api が業務結果として「内部エラー」を返したときの 500 応答。
+///
+/// **必ず 1 行残す。** api に届いた要求が落ちたときは api 側にも記録が出るが、web のログに
+/// tower_http の「response failed 500」しか無いと、**どの内部呼び出しで落ちたのか**が分からず、
+/// 調査の取っかかりが無い。2026-09-15 の TOTP 登録の 500 がまさにこれで、画面の症状から
+/// 原因の関数へ辿り着くまでに丸ごと時間を溶かした。
+///
+/// `call` には呼んだ内部 API を表す短い識別子を渡す（`totp_setup` など）。人間向けの説明は
+/// 書かない —— 文言を直すたびに grep が壊れる。
+pub(crate) fn api_internal_error(call: &'static str) -> Response {
+    tracing::error!(call, "api reported an internal error");
+    StatusCode::INTERNAL_SERVER_ERROR.into_response()
+}
+
 /// 表示言語を決める（MT20）。
 ///
 /// 決定順（`?lang=` > ユーザー設定 > Cookie > ブラウザ言語 > 既定 `ja`）のうち上位 2 つは
@@ -172,5 +186,107 @@ pub(crate) fn see_other(location: &str) -> Response {
             tracing::error!(error = %e, "redirect location is not a valid header value");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use tracing::field::{Field, Visit};
+    use tracing::subscriber::with_default;
+    use tracing::{Event, Level, Subscriber};
+    use tracing_subscriber::layer::{Context, Layer};
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::registry::LookupSpan;
+
+    /// ERROR イベントの `call` フィールドを集める層。
+    #[derive(Clone, Default)]
+    struct CallCollector(Arc<Mutex<Vec<String>>>);
+
+    impl<S> Layer<S> for CallCollector
+    where
+        S: Subscriber + for<'a> LookupSpan<'a>,
+    {
+        fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+            if *event.metadata().level() != Level::ERROR {
+                return;
+            }
+            struct Grab<'a>(&'a mut Option<String>);
+            impl Visit for Grab<'_> {
+                fn record_debug(&mut self, _f: &Field, _v: &dyn std::fmt::Debug) {}
+                fn record_str(&mut self, f: &Field, v: &str) {
+                    if f.name() == "call" {
+                        *self.0 = Some(v.to_string());
+                    }
+                }
+            }
+            let mut call = None;
+            event.record(&mut Grab(&mut call));
+            if let Some(call) = call {
+                self.0.lock().expect("collector").push(call);
+            }
+        }
+    }
+
+    /// **500 を黙って返さない。** api が内部エラーを返したとき、web のログに残るのが
+    /// tower_http の「response failed 500」だけだと、どの内部呼び出しで落ちたのかが分からず、
+    /// 画面の症状から原因へ辿る手がかりが無くなる（2026-09-15 の TOTP 登録の 500）。
+    #[test]
+    fn reporting_an_api_internal_error_names_the_failing_call() {
+        let collector = CallCollector::default();
+        let subscriber = tracing_subscriber::registry().with(collector.clone());
+
+        let response = with_default(subscriber, || api_internal_error("totp_setup"));
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let calls = collector.0.lock().expect("collector").clone();
+        assert_eq!(calls, vec!["totp_setup".to_string()]);
+    }
+
+    /// **黙って 500 を返す分岐を増やさない歯止め。**
+    ///
+    /// api の `Internal` を 500 に写す箇所は 27 か所あり、どこもログを出していなかった。
+    /// 1 箇所ずつ直しても、次に増えた分岐でまた同じ穴が開く。ソースを読んで検査するのは
+    /// ルート一覧（`router::declared_route_paths`）と同じ理由 —— 実物と別の一覧が
+    /// 食い違わないようにするため。
+    #[test]
+    fn every_internal_result_that_becomes_a_500_says_which_call_failed() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/handlers");
+        let mut offenders = Vec::new();
+        let mut checked = 0usize;
+        for entry in std::fs::read_dir(&dir).expect("read handlers dir") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("read handler source");
+            // 試験専用コード（この検査自身が持つ文字列を含む）は対象外。`router.rs` の
+            // ルート一覧の検査と同じ切り方。
+            let source = source.split("#[cfg(test)]").next().unwrap_or_default();
+            let lines: Vec<&str> = source.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                if !(line.contains("Response::Internal") && line.contains("=>")) {
+                    continue;
+                }
+                let window = lines[i..lines.len().min(i + 5)].join("\n");
+                if !window.contains("INTERNAL_SERVER_ERROR")
+                    && !window.contains("api_internal_error")
+                {
+                    // 500 以外へ倒している分岐（JSON 経路など）は対象外。
+                    continue;
+                }
+                checked += 1;
+                if !window.contains("api_internal_error") && !window.contains("tracing::error!") {
+                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+                    offenders.push(format!("{name}:{}", i + 1));
+                }
+            }
+        }
+        assert!(checked > 20, "検査対象を見失っている（{checked} 箇所）");
+        assert!(
+            offenders.is_empty(),
+            "api の内部エラーを黙って 500 にしている箇所がある（`api_internal_error` を通すこと）: {offenders:?}"
+        );
     }
 }

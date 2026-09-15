@@ -8,7 +8,7 @@
 //! 認証・SSO 発行・TOTP 検証は api（`/internal/authenticate/portal*`）に委ね、web は CSRF（同期トークン）
 //! と Cookie 組み立て・画面描画・リダイレクトのみを担う（管理コンソールのログインと同じ責務分担）。
 
-use super::{internal_call_status, locale};
+use super::{api_internal_error, internal_call_status, locale};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -205,9 +205,7 @@ pub async fn login(
             "login-error-mfa-enrollment-required",
             StatusCode::FORBIDDEN,
         ),
-        InternalPortalAuthenticateResponse::Internal => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Html(String::new())).into_response()
-        }
+        InternalPortalAuthenticateResponse::Internal => api_internal_error("portal_authenticate"),
     }
 }
 
@@ -363,7 +361,7 @@ pub async fn password_change(
             super::password_rejection_key(reason, "password-change-error-weak"),
         ),
         InternalPortalChangePasswordResponse::Internal => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Html(String::new())).into_response()
+            api_internal_error("portal_change_password")
         }
     }
 }
@@ -519,9 +517,7 @@ pub async fn mfa_submit(
             )
                 .into_response()
         }
-        InternalPortalMfaResponse::Internal => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Html(String::new())).into_response()
-        }
+        InternalPortalMfaResponse::Internal => api_internal_error("portal_mfa"),
     }
 }
 
