@@ -1742,6 +1742,27 @@ pub struct MembersList<'a> {
     pub next_href: Option<String>,
 }
 
+/// メンバー 1 人の画面（`GET /{tenant_id}/admin/members/{user_id}`）。
+///
+/// ⚠ **一覧は「探す・状態を見る」だけにし、操作はここへ集める。** 一覧の 1 セルへ 7 つの
+/// ボタンを並べていた頃は、操作列 168px にボタンが縦 7 段に積まれ、幅の広いものは右端で
+/// 切れていた（行の高さ 282px）。**7 つを 1 セルに収める前提そのものが無理だった。**
+///
+/// ここでは操作を重さで 3 段に分ける ——見る（移動するだけ）／直す（やり直せる）／
+/// ⚠ **戻せない**（削除・解除）。一覧では全部が同じ大きさの並びで、
+/// 「権限を見る」と「削除」が同じ重さに見えていた。
+#[derive(Template)]
+#[template(path = "console/member_detail.html")]
+pub struct MemberDetail<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub admin: Admin<'a>,
+    pub member: &'a crate::admin_dto::MemberView,
+    pub csrf: &'a str,
+    pub error_key: Option<&'a str>,
+    pub notice_key: Option<&'a str>,
+}
+
 /// 管理者によるパスワード再発行の結果画面（一度限りの生成パスワード表示。ADR-0009 §5）。
 /// メンバー一覧（HOME 利用者）とテナント管理（子テナント管理者）の双方から使う。
 #[derive(Template)]

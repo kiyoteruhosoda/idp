@@ -9,7 +9,7 @@
 use crate::domain::error::DomainError;
 use crate::domain::repositories::TenantMemberQuery;
 use crate::domain::tenant_context::TenantContext;
-use crate::domain::tenant_membership::{TenantMemberFilter, TenantMemberPage};
+use crate::domain::tenant_membership::{TenantMember, TenantMemberFilter, TenantMemberPage};
 use std::sync::Arc;
 
 /// 1 ページの既定件数。
@@ -53,6 +53,7 @@ impl MemberDirectoryService {
     ) -> Result<MemberSearchResult, DomainError> {
         let filter = TenantMemberFilter {
             tenant_id: tenant.tenant_id(),
+            user_id: None,
             search: normalize(params.search),
             limit: clamp_limit(params.limit),
             offset: params.offset.unwrap_or(0).max(0),
@@ -63,6 +64,31 @@ impl MemberDirectoryService {
             limit: filter.limit,
             offset: filter.offset,
         })
+    }
+
+    /// 1 人を名指しで引く（メンバーの詳細画面）。要求テナントに所属していなければ `None`。
+    ///
+    /// ⚠ **一覧を引いてから web 側で探させない。** メンバーはページングされているので、
+    /// 目的の 1 人が何ページ目に居るかは呼び出し側には分からない。
+    pub async fn find(
+        &self,
+        tenant: TenantContext,
+        user_id: uuid::Uuid,
+    ) -> Result<Option<TenantMember>, DomainError> {
+        let filter = TenantMemberFilter {
+            tenant_id: tenant.tenant_id(),
+            user_id: Some(user_id),
+            search: None,
+            limit: 1,
+            offset: 0,
+        };
+        Ok(self
+            .members
+            .search(&filter)
+            .await?
+            .members
+            .into_iter()
+            .next())
     }
 }
 
