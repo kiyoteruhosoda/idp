@@ -1037,6 +1037,7 @@ admin-members-unlock-none = That account was not locked. Nothing changed.
 
 # External IdP and login identifier admin screens (AP16)
 admin-nav-external-idps = External IdPs
+admin-nav-external-idps-desc = Let people sign in with another identity provider
 admin-members-login-identifiers-button = Login identifiers
 admin-external-idps-title = External identity providers
 admin-external-idps-intro = Let people sign in with an external OpenID Provider (OIDC) or SAML identity provider. The client secret is stored encrypted and is never shown again.
