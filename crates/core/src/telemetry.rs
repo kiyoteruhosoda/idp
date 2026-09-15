@@ -94,4 +94,82 @@ mod tests {
         assert_eq!(batch[0].message, "boom");
         assert_eq!(batch[0].correlation_id.as_deref(), Some("corr-1"));
     }
+
+    /// stdout へ書いた内容を検証するための書き出し先。
+    #[derive(Clone, Default)]
+    struct SharedBuffer(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl SharedBuffer {
+        fn contents(&self) -> String {
+            String::from_utf8_lossy(&self.0.lock().expect("buffer")).into_owned()
+        }
+    }
+
+    impl std::io::Write for SharedBuffer {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("buffer").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedBuffer {
+        type Writer = SharedBuffer;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// **本番と同じ層の重ね方・同じ `RUST_LOG`** で、アプリのコードが出す ERROR が
+    /// stdout と DB 取り込みの両方へ届くこと。
+    ///
+    /// 層ごとのフィルタを重ねた構成は、片方のフィルタが callsite の `Interest` を
+    /// 決めてしまってもう片方を巻き込む形の取りこぼしが起きうる。既存の試験は層を 1 枚ずつ
+    /// しか見ておらず、`init()` と同じ形は誰も通していなかった。
+    #[tokio::test]
+    async fn an_application_error_reaches_both_stdout_and_the_capture_sink() {
+        let (sink, mut receiver) = log_capture::channel();
+        let capture = ApplicationLogCaptureLayer::new(SERVICE_API, sink);
+        let buffer = SharedBuffer::default();
+        let subscriber = tracing_subscriber::registry()
+            .with(capture.with_filter(capture_filter()))
+            .with(
+                fmt::layer()
+                    .json()
+                    .flatten_event(true)
+                    .with_writer(buffer.clone())
+                    // 本番 (`idp-env` の `RUST_LOG_API`) と同じ値。
+                    .with_filter(EnvFilter::new("info,assay=info")),
+            );
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("http_request", correlation_id = "corr-1");
+            let _guard = span.enter();
+            tracing::info!(target: "assay_api", "IdP server started");
+            tracing::error!(
+                target: "assay_api::presentation::handlers::mfa",
+                error = "internal error: failed to build TOTP",
+                "totp setup internal error"
+            );
+        });
+
+        let stdout = buffer.contents();
+        assert!(
+            stdout.contains("IdP server started"),
+            "起動ログが出ていないなら試験の組み方が違う: {stdout}"
+        );
+        assert!(
+            stdout.contains("totp setup internal error"),
+            "アプリのエラーが stdout に出ていない: {stdout}"
+        );
+
+        let batch = receiver.recv_batch(10).await.expect("batch");
+        let messages: Vec<_> = batch.iter().map(|r| r.message.as_str()).collect();
+        assert!(
+            messages.contains(&"totp setup internal error"),
+            "アプリのエラーが log テーブルへ渡っていない: {messages:?}"
+        );
+    }
 }

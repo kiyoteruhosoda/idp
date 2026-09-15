@@ -3,7 +3,7 @@
 //! ADR-0007: web はフォーム描画とリダイレクトのみを担い、同意の記録・code 発行は api の
 //! `/internal/consent-info`・`/internal/consent/approve`・`/internal/consent/deny` に委ねる。
 
-use super::{internal_call_status, locale};
+use super::{api_internal_error, internal_call_status, locale};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -158,7 +158,7 @@ pub async fn consent(
                 "consent-error-session-expired",
             ),
             Ok(InternalConsentApproveResponse::Internal) | Err(_) => {
-                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                api_internal_error("consent_approve")
             }
         }
     } else {
@@ -191,7 +191,7 @@ pub async fn consent(
                 "consent-error-session-expired",
             ),
             Ok(InternalConsentDenyResponse::Internal) | Err(_) => {
-                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                api_internal_error("consent_deny")
             }
         }
     }

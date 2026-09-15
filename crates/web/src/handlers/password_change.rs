@@ -4,7 +4,7 @@
 //! 表示する。api の `POST /internal/change-password` に委ね、成功時は `LoginService` と同じ
 //! SSO 発行 → 同意/code 発行の結果（`redirect_to`）へ 302 する。
 
-use super::{internal_call_status, locale};
+use super::{api_internal_error, internal_call_status, locale};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -213,9 +213,7 @@ pub async fn submit(
             state.config.csrf_secret(),
             rp_redirect_uri,
         ),
-        InternalChangePasswordResponse::Internal => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Html(String::new())).into_response()
-        }
+        InternalChangePasswordResponse::Internal => api_internal_error("change_password"),
     }
 }
 

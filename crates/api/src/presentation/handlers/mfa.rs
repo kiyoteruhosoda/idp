@@ -25,11 +25,7 @@ pub async fn setup_totp(
     State(state): State<AppState>,
     Json(req): Json<InternalTotpSetupRequest>,
 ) -> Json<InternalTotpSetupResponse> {
-    match state
-        .totp_registration
-        .setup(&req.sso_session_id, &req.account_name)
-        .await
-    {
+    match state.totp_registration.setup(&req.sso_session_id).await {
         Ok(data) => Json(InternalTotpSetupResponse::Ok {
             totp_uri: data.totp_uri,
             secret_base32: data.secret_base32,

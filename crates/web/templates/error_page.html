@@ -6,6 +6,9 @@
     <p class="error-code">{{ code }}</p>
     <h1 class="h4 mb-3">{{ title }}</h1>
     <p class="mb-0 text-muted">{{ message }}</p>
+{%- if !back_href.is_empty() %}
+    <p class="mt-4 mb-0"><a class="btn btn-outline-secondary" href="{{ back_href }}">{{ back_label }}</a></p>
+{%- endif %}
   </div>
 </div>
 {% endblock %}

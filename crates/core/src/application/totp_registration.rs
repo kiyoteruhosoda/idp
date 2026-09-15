@@ -12,7 +12,7 @@ use crate::application::authenticator_management::AuthenticatorManagementService
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::error::DomainError;
-use crate::domain::repositories::{SsoSessionRepository, TotpSecretRepository};
+use crate::domain::repositories::{SsoSessionRepository, TotpSecretRepository, UserRepository};
 use crate::domain::totp_secret::TotpSecret;
 use std::sync::Arc;
 use totp_rs::{Algorithm, Secret, TOTP};
@@ -60,16 +60,24 @@ pub struct TotpRegistrationService {
     authenticators: Arc<AuthenticatorManagementService>,
     totp_secrets: Arc<dyn TotpSecretRepository>,
     sso_sessions: Arc<dyn SsoSessionRepository>,
+    /// QR に載せる宛名（利用者名）を引くため。認証アプリの一覧で「どのアカウントか」を
+    /// 見分ける唯一の手がかりなので、空のまま出すわけにはいかない。
+    users: Arc<dyn UserRepository>,
     key_encryption_key: [u8; 32],
-    issuer: String,
+    /// **認証アプリの画面に出る見出し**。OIDC の issuer URL とは別物で、`:` を含められない
+    /// （[`totp_issuer_label`] 参照）。導けなければ `None`（見出し無しの URI になる）。
+    totp_issuer: Option<String>,
     clock: Arc<dyn Clock>,
 }
 
 impl TotpRegistrationService {
+    /// `issuer` には OIDC の issuer（URL）をそのまま渡してよい。**見出しへの変換はここで行う**
+    /// —— 呼び出し側に任せると、渡し忘れた 1 箇所で登録が丸ごと失敗する（実際そうなっていた）。
     pub fn new(
         authenticators: Arc<AuthenticatorManagementService>,
         totp_secrets: Arc<dyn TotpSecretRepository>,
         sso_sessions: Arc<dyn SsoSessionRepository>,
+        users: Arc<dyn UserRepository>,
         key_encryption_key: [u8; 32],
         issuer: impl Into<String>,
         clock: Arc<dyn Clock>,
@@ -78,8 +86,9 @@ impl TotpRegistrationService {
             authenticators,
             totp_secrets,
             sso_sessions,
+            users,
             key_encryption_key,
-            issuer: issuer.into(),
+            totp_issuer: totp_issuer_label(&issuer.into()),
             clock,
         }
     }
@@ -91,9 +100,9 @@ impl TotpRegistrationService {
     pub async fn setup(
         &self,
         sso_session_id: &str,
-        account_name: &str,
     ) -> Result<TotpSetupData, TotpRegistrationError> {
         let user_id = self.resolve_user(sso_session_id).await?;
+        let account_name = self.account_name(user_id).await?;
 
         // すでに有効な TOTP が設定済みなら拒否する。
         if let Some(existing) = self.totp_secrets.find_by_user_id(user_id).await? {
@@ -105,7 +114,7 @@ impl TotpRegistrationService {
         // 新しいシークレットを生成する。
         let secret_bytes = generate_secret();
         let secret_base32 = to_base32(&secret_bytes);
-        let totp_uri = build_totp_uri(&secret_bytes, account_name, &self.issuer)?;
+        let totp_uri = build_totp_uri(&secret_bytes, &account_name, self.totp_issuer.as_deref())?;
         let secret_encrypted = crypto::encrypt(&secret_bytes, &self.key_encryption_key)
             .map_err(|e| TotpRegistrationError::Internal(e.to_string()))?;
 
@@ -196,6 +205,37 @@ impl TotpRegistrationService {
         }
         Ok(session.user_id)
     }
+
+    /// QR に載せる宛名。認証アプリはこれを一覧に出すので、利用者が自分の口座だと分かる値にする。
+    /// `preferred_username` が無ければメールへ落とす。`:` は URI の区切りなので取り除く。
+    async fn account_name(&self, user_id: Uuid) -> Result<String, TotpRegistrationError> {
+        let user = self
+            .users
+            .find_by_id(user_id)
+            .await?
+            .ok_or(TotpRegistrationError::SessionExpired)?;
+        let name = user
+            .preferred_username
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or(user.email);
+        Ok(name.replace(':', ""))
+    }
+}
+
+/// OIDC の issuer から、認証アプリに出す見出しを導く。
+///
+/// `otpauth://totp/{issuer}:{account}` の区切りが `:` なので、**issuer に `:` を含められない**
+/// （totp-rs は弾く）。`https://identity.example.com` のような URL をそのまま渡すと、TOTP の
+/// 登録が毎回失敗する。ホスト名だけを採り、スキーム・資格情報・ポート・パスは落とす。
+/// 見出しとして使える文字が残らなければ `None`（見出し無しでも登録自体は成立する）。
+fn totp_issuer_label(issuer: &str) -> Option<String> {
+    let after_scheme = issuer.split_once("://").map_or(issuer, |(_, rest)| rest);
+    let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
+    // `user:pass@host` の資格情報部を落としてからポートを落とす（順序を逆にすると
+    // 資格情報の `:` をポート区切りと取り違える）。
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let host = host.split(':').next().unwrap_or("").trim();
+    (!host.is_empty()).then(|| host.to_string())
 }
 
 // --- TOTP ユーティリティ ---
@@ -219,7 +259,7 @@ pub fn to_base32(bytes: &[u8]) -> String {
 fn build_totp_uri(
     secret_bytes: &[u8],
     account_name: &str,
-    issuer: &str,
+    issuer: Option<&str>,
 ) -> Result<String, TotpRegistrationError> {
     let totp = TOTP::new(
         Algorithm::SHA1,
@@ -227,7 +267,7 @@ fn build_totp_uri(
         TOTP_SKEW,
         TOTP_STEP,
         secret_bytes.to_vec(),
-        Some(issuer.to_string()),
+        issuer.map(str::to_string),
         account_name.to_string(),
     )
     .map_err(|e| TotpRegistrationError::Internal(format!("failed to build TOTP: {e}")))?;
@@ -283,6 +323,59 @@ pub fn verify_totp_code(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **OIDC の issuer をそのまま渡しても URI が組めること。** ここが壊れると TOTP の登録は
+    /// 画面から一切できなくなる（api が internal を返し、web が 500 を出す）。実際にそうなっていた。
+    #[test]
+    fn an_issuer_url_still_produces_a_usable_uri() {
+        let uri = build_totp_uri(
+            &[7u8; SECRET_BYTES],
+            "kyon",
+            totp_issuer_label("https://identity.nolumia.com").as_deref(),
+        )
+        .expect("build uri");
+        assert!(uri.starts_with("otpauth://totp/"), "{uri}");
+        assert!(uri.contains("identity.nolumia.com"), "{uri}");
+        assert!(uri.contains("kyon"), "{uri}");
+    }
+
+    /// 見出しはホスト名だけ。スキーム・資格情報・ポート・パスは落とす（`:` が残ると弾かれる）。
+    #[test]
+    fn the_issuer_label_keeps_only_the_host() {
+        assert_eq!(
+            totp_issuer_label("https://identity.nolumia.com").as_deref(),
+            Some("identity.nolumia.com")
+        );
+        assert_eq!(
+            totp_issuer_label("http://localhost:8080").as_deref(),
+            Some("localhost")
+        );
+        assert_eq!(
+            totp_issuer_label("https://u:p@idp.example.com:8443/realms/x").as_deref(),
+            Some("idp.example.com")
+        );
+        // 既に見出しの形なら そのまま。
+        assert_eq!(totp_issuer_label("assay").as_deref(), Some("assay"));
+        // 何も残らなければ見出し無し（登録自体は成立させる）。
+        assert_eq!(totp_issuer_label("https://"), None);
+        assert_eq!(totp_issuer_label(""), None);
+    }
+
+    /// 導いた見出しは必ず totp-rs に受け入れられる（`:` が残っていない）。
+    #[test]
+    fn every_derived_label_is_accepted() {
+        for issuer in [
+            "https://identity.nolumia.com",
+            "http://localhost:8080",
+            "https://u:p@idp.example.com:8443/realms/x",
+            "assay",
+            "https://",
+        ] {
+            let label = totp_issuer_label(issuer);
+            build_totp_uri(&[1u8; SECRET_BYTES], "someone", label.as_deref())
+                .unwrap_or_else(|e| panic!("issuer={issuer:?} label={label:?}: {e}"));
+        }
+    }
 
     /// 現在有効なコードを実時刻で生成する（`verify_totp_code` と同じパラメータ）。
     fn current_code(secret: &[u8]) -> (String, u64) {

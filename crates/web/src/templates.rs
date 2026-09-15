@@ -1334,6 +1334,11 @@ pub struct ErrorPage {
     pub code: String,
     pub title: String,
     pub message: String,
+    /// 戻り先の URL。**空文字はリンクを出さない**（テナントを特定できない経路・戻り先が今いる
+    /// 場所と同じ場合）。エラー画面に出口が無いと、利用者はブラウザの戻る以外に手が無くなる。
+    pub back_href: String,
+    /// 戻り先の見出し（翻訳済み）。`back_href` が空のときは使われない。
+    pub back_label: String,
 }
 
 /// バージョン情報ページ（`GET /{tenant_id}/admin/version`）。

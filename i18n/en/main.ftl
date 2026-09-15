@@ -800,6 +800,10 @@ error-4xx-message = There was a problem with this request. Please check the addr
 error-5xx-title = Server error
 error-5xx-message = The server could not complete this request. Please try again later.
 
+# Way out of an error page (see back_link in error_pages.rs). Shown only when the tenant is known.
+error-back-to-settings = Back to account settings
+error-back-to-console = Back to the admin console
+
 error-400-title = Bad request
 error-400-message = The request could not be understood. Please check your input and try again.
 error-401-title = Sign-in required

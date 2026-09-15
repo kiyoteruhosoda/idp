@@ -800,6 +800,10 @@ error-4xx-message = リクエストに問題がありました。アドレスを
 error-5xx-title = サーバーエラー
 error-5xx-message = サーバーがこのリクエストを完了できませんでした。時間をおいて再度お試しください。
 
+# Way out of an error page (see back_link in error_pages.rs). Shown only when the tenant is known.
+error-back-to-settings = アカウント設定へ戻る
+error-back-to-console = 管理コンソールへ戻る
+
 error-400-title = 不正なリクエストです
 error-400-message = リクエストの内容を解釈できませんでした。入力内容を確認して再度お試しください。
 error-401-title = サインインが必要です

@@ -9,7 +9,7 @@
 //! - 認証が必要なら `saml_request_id` を host-only Cookie 化してポータルログインへ 303 する
 //!   （ログイン成功時は [`super::portal`] が本画面へ戻す）
 
-use super::{internal_call_status, locale};
+use super::{api_internal_error, internal_call_status, locale};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -106,7 +106,7 @@ pub async fn continue_sso(
                 .expire_local(&state.origin_bound_cookie(cookies::SAML_REQUEST_COOKIE));
             (set_cookies.into_headers(), expired_page(&messages)).into_response()
         }
-        InternalSamlResumeResponse::Internal => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        InternalSamlResumeResponse::Internal => api_internal_error("saml_resume"),
     }
 }
 

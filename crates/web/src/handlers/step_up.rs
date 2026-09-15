@@ -17,7 +17,7 @@
 //! （オープンリダイレクトを作らないため）。`//evil.example.com` のような「スキームなし絶対 URL」は
 //! ブラウザが別オリジンとして解決するので、単に先頭が `/` かどうかでは足りない。
 
-use super::internal_call_status;
+use super::{api_internal_error, internal_call_status};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -108,6 +108,9 @@ async fn evaluate(
             Gate::Failed(StatusCode::INTERNAL_SERVER_ERROR)
         }
         Ok(InternalStepUpCheckResponse::Internal) => {
+            // ここは**ゲートの入口**で、落ちると画面が丸ごと 500 になる。どの呼び出しで
+            // 止まったかを残さないと、利用者から見えるのは素の 500 だけになる。
+            tracing::error!(call = "step_up_check", "api reported an internal error");
             Gate::Failed(StatusCode::INTERNAL_SERVER_ERROR)
         }
         Err(e) => {
@@ -200,7 +203,7 @@ pub async fn page(
                 return StatusCode::BAD_REQUEST.into_response();
             }
             Ok(InternalStepUpCheckResponse::Internal) => {
-                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                return api_internal_error("step_up_check");
             }
             Err(e) => {
                 tracing::error!(error = %e, "step-up check call to api failed");
@@ -279,9 +282,7 @@ pub async fn verify(
         Ok(InternalStepUpVerifyResponse::UnknownOperation) => {
             StatusCode::BAD_REQUEST.into_response()
         }
-        Ok(InternalStepUpVerifyResponse::Internal) => {
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        }
+        Ok(InternalStepUpVerifyResponse::Internal) => api_internal_error("step_up_verify"),
         Err(e) => {
             tracing::error!(error = %e, "step-up verify call to api failed");
             internal_call_status(&e).into_response()
@@ -324,7 +325,7 @@ pub async fn passkey_begin(
             StatusCode::UNAUTHORIZED.into_response()
         }
         Ok(InternalStepUpPasskeyBeginResponse::Internal) => {
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            api_internal_error("step_up_passkey_begin")
         }
         Err(e) => {
             tracing::error!(error = %e, "step-up passkey begin call to api failed");
@@ -393,7 +394,7 @@ pub async fn passkey_complete(
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
         Ok(InternalStepUpPasskeyVerifyResponse::Internal) => {
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            return api_internal_error("step_up_passkey_verify")
         }
         Err(e) => {
             tracing::error!(error = %e, "step-up passkey verify call to api failed");

@@ -5,7 +5,7 @@
 //!   QR コード（SVG）と生シークレット（base32）を表示する。QR が使えない場合は生コードを入力する。
 //! * ログイン TOTP 画面（`/mfa/totp`）: パスワード認証後に TOTP 入力を求める。
 
-use super::{internal_call_status, locale};
+use super::{api_internal_error, internal_call_status, locale};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -63,11 +63,9 @@ pub async fn setup_page(
         );
     };
 
-    // ユーザー名は SSO から特定できないため、メールは取得が複雑になる。
-    // API に account_name は表示目的のみなので空文字でも機能する。
+    // 認証アプリに出す宛名は api が SSO セッションの利用者から引く（web は利用者名を知らない）。
     let req = InternalTotpSetupRequest {
         sso_session_id: sso_session_id.clone(),
-        account_name: String::new(),
     };
     let result = match state.api.totp_setup(&correlation.0, &req).await {
         Ok(r) => r,
@@ -104,7 +102,7 @@ pub async fn setup_page(
             StatusCode::UNAUTHORIZED,
             "mfa-error-session-expired",
         ),
-        InternalTotpSetupResponse::Internal => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        InternalTotpSetupResponse::Internal => api_internal_error("totp_setup"),
     }
 }
 
@@ -156,7 +154,6 @@ pub async fn setup_confirm(
     let qr_data = if refetch_qr {
         let setup_req = InternalTotpSetupRequest {
             sso_session_id: sso_session_id.clone(),
-            account_name: String::new(),
         };
         state.api.totp_setup(&correlation.0, &setup_req).await.ok()
     } else {
@@ -210,7 +207,7 @@ pub async fn setup_confirm(
             StatusCode::CONFLICT,
             "mfa-error-already-configured",
         ),
-        InternalTotpConfirmResponse::Internal => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        InternalTotpConfirmResponse::Internal => api_internal_error("totp_confirm"),
     }
 }
 
@@ -268,7 +265,7 @@ pub async fn setup_delete(
             StatusCode::UNAUTHORIZED,
             "mfa-error-session-expired",
         ),
-        InternalTotpDeleteResponse::Internal => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        InternalTotpDeleteResponse::Internal => api_internal_error("totp_delete"),
     }
 }
 
@@ -437,9 +434,7 @@ pub async fn verify(
                 "mfa-error-session-expired",
             )
         }
-        InternalVerifyTotpResponse::Internal => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Html(String::new())).into_response()
-        }
+        InternalVerifyTotpResponse::Internal => api_internal_error("verify_totp"),
     }
 }
 
