@@ -461,6 +461,25 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         description: "認証ポリシーが 1 件も一致しない場合の既定動作（`allow` / `deny`）。`deny` にすると\
                       許可ポリシーを明示したクライアント・ユーザーしかログインできなくなるため注意。",
     },
+    // アプリの割り当て判定をどこまでやるか（ADR-0054 の段階導入）。
+    SettingDefinition {
+        key: "APPLICATION_ASSIGNMENT_ENFORCEMENT",
+        // 管理コンソールがアプリ一覧の上に「いまは記録するだけ」を示すため web も読む。
+        // 割り当てのモード（全員 / 個別）はこの値と組み合わせて初めて効き、同じ「個別」でも
+        // 記録するだけの間は誰も断られない。
+        shared_with_web: true,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Review,
+        kind: SettingKind::Text,
+        default_value: Some("record_only"),
+        description: "アプリの利用者割り当ての判定をどこまでやるか（`record_only` / `enforce`）。\
+                      `record_only` は判定を走らせるが断らず、「割り当てが無いのに来た人」を監査ログ\
+                      （`application.access_denied` の成功行）へ残す。**移行の漏れが無いことを\
+                      ログで確かめてから** `enforce` にすること。⚠ `enforce` にした瞬間、名簿に\
+                      載っていない利用者は「個別」のアプリへ入れなくなる。",
+    },
     // api と web の Cookie 属性を一致させる必要がある共有キー（MT26 / ADR-0013）。DB 値は両サービスが
     // 同じ経路（api の /internal/runtime-settings）から受け取るため、DB 管理でも属性がずれない。
     // 未設定時の既定は各サービスが**自分の公開オリジンのスキーム**から導く（ADR-0012 §2）。

@@ -103,6 +103,46 @@ string_enum!(
 );
 
 string_enum!(
+    /// アプリの状態（ADR-0054）。
+    ///
+    /// `Disabled` は「登録を残したまま利用だけを止める」。アプリを止めると、ぶら下がる binding が
+    /// OIDC でも SAML でも一緒に止まる ——プロトコルごとに止め方を覚えなくてよいことが、
+    /// アプリという段を置いた見返りの 1 つである。
+    ApplicationStatus {
+        Active => "ACTIVE",
+        Disabled => "DISABLED",
+    }
+);
+
+string_enum!(
+    /// アプリを誰が使ってよいか（ADR-0054 の決定 3）。
+    ///
+    /// `Everyone` は**そのテナントの中だけ**を指す（他テナントの利用者は含まない）。
+    /// 既定は `Individual`。既定を `Everyone` にすると、絞り忘れたアプリが全員に開いたままになり、
+    /// **開いていることに誰も気付かない**。
+    ///
+    /// ⚠ `Individual` で名簿が空は「全員」ではなく「誰も入れない」。取り違えると全断になる。
+    AssignmentMode {
+        Everyone => "EVERYONE",
+        Individual => "INDIVIDUAL",
+    }
+);
+
+string_enum!(
+    /// 割り当ての判定をどこまでやるか（ADR-0054 の段階導入）。
+    ///
+    /// `RecordOnly` は判定を走らせるが**断らない**。「割り当てが無いのに来た人」が監査ログに
+    /// 溜まるので、移行の漏れはここで全部出る。ログが静かになってから `Enforce` へ切り替える。
+    ///
+    /// ⚠ 切り替えを設定にしてあるのは、**戻すのにデプロイを要らなくする**ためである
+    /// （反映には再起動が要る。他のランタイム設定と同じ）。
+    AssignmentEnforcement {
+        RecordOnly => "record_only",
+        Enforce => "enforce",
+    }
+);
+
+string_enum!(
     /// クライアント種別。
     ClientType {
         Public => "public",

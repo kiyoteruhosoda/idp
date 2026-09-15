@@ -19,7 +19,7 @@
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authorize::code_dispatch;
-use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
+use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
 use crate::application::passkey_assertion::{
     PasskeyAssertionError, PasskeyAssertionService, PasskeyFlow,
 };
@@ -64,6 +64,14 @@ pub enum PasskeyAuthOutcome {
     /// クレデンシャルが無効。
     InvalidCredential,
     /// 認証ポリシーにより拒否（仕様 §7.4 `deny`）。
+    /// 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
+    /// SSO セッションは発行する（assay には入れている）ので、他のアプリへはそのまま進める。
+    ApplicationNotPermitted {
+        /// 画面に出すアプリ名。どのアプリで断られたかが分からないと、次に誰へ頼めばよいかを
+        /// 利用者が決められない。
+        application_name: String,
+        sso_session_id: String,
+    },
     PolicyDenied,
     /// IP 単位のレート制限超過（ログイン・直接ログインと同じ枠）。
     RateLimited,
@@ -364,7 +372,14 @@ impl PasskeyAuthenticationService {
             )
             .await
         {
-            Ok(c) => c,
+            Ok(CodeIssuance::Issued(code)) => code,
+            // 認証は通っているが、このアプリの利用が許可されていない（ADR-0054）。RP へは戻さない。
+            Ok(CodeIssuance::ApplicationDenied { application_name }) => {
+                return PasskeyAuthOutcome::ApplicationNotPermitted {
+                    application_name,
+                    sso_session_id,
+                }
+            }
             Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
         };
 

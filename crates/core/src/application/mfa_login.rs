@@ -21,7 +21,7 @@ use crate::application::authenticator_management::{
     consume_single_use_code, is_blocked_in_registry,
 };
 use crate::application::authorize::code_dispatch;
-use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
+use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
 use crate::application::totp_registration::verify_totp_code;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session;
@@ -72,6 +72,14 @@ pub enum MfaLoginOutcome {
     Locked,
     /// 認証ポリシーにより拒否された（AP2/AP3）。第二要素まで通っていても、`deny` に
     /// 変わった場合や `require_specific_method` を満たさない方式だった場合はここへ来る。
+    /// 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
+    /// SSO セッションは発行する（assay には入れている）ので、他のアプリへはそのまま進める。
+    ApplicationNotPermitted {
+        /// 画面に出すアプリ名。どのアプリで断られたかが分からないと、次に誰へ頼めばよいかを
+        /// 利用者が決められない。
+        application_name: String,
+        sso_session_id: String,
+    },
     PolicyDenied,
     /// 内部エラー。
     Internal(String),
@@ -404,7 +412,14 @@ impl MfaLoginService {
             )
             .await
         {
-            Ok(c) => c,
+            Ok(CodeIssuance::Issued(code)) => code,
+            // 認証は通っているが、このアプリの利用が許可されていない（ADR-0054）。RP へは戻さない。
+            Ok(CodeIssuance::ApplicationDenied { application_name }) => {
+                return MfaLoginOutcome::ApplicationNotPermitted {
+                    application_name,
+                    sso_session_id,
+                }
+            }
             Err(e) => return MfaLoginOutcome::Internal(e.to_string()),
         };
 
@@ -1101,6 +1116,9 @@ mod tests {
             let sso_sessions = Arc::new(FakeSsoSessions::default());
             let code_issuance = Arc::new(CodeIssuanceService::new(
                 Arc::new(FakeCodes::default()),
+                crate::application::application_access::test_support::allow_everything(
+                    audit.clone(),
+                ),
                 audit.clone(),
                 clock.clone(),
                 std::time::Duration::from_secs(60),

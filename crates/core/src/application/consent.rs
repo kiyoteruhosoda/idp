@@ -9,7 +9,7 @@
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authorize::{code_dispatch, error_dispatch};
-use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
+use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session;
 use crate::domain::clock::Clock;
@@ -49,6 +49,12 @@ pub enum ConsentOutcome {
     Denied {
         location: String,
         form_post: Option<Vec<(String, String)>>,
+    },
+    /// 同意は付与できたが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
+    /// SSO Cookie はこの経路へ来る前に発行済みなので、ここでは画面を出すだけでよい。
+    ApplicationNotPermitted {
+        /// 画面に出すアプリ名。
+        application_name: String,
     },
     /// AuthSession が無い・期限切れ・認証済みユーザーが未設定（`/authorize` からやり直し）。
     SessionExpired,
@@ -214,7 +220,11 @@ impl ConsentService {
             )
             .await
         {
-            Ok(code) => code,
+            Ok(CodeIssuance::Issued(code)) => code,
+            // 同意は通っているが、このアプリの利用が許可されていない（ADR-0054）。RP へは戻さない。
+            Ok(CodeIssuance::ApplicationDenied { application_name }) => {
+                return ConsentOutcome::ApplicationNotPermitted { application_name }
+            }
             Err(e) => return ConsentOutcome::Internal(e.to_string()),
         };
 

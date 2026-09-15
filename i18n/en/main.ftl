@@ -15,8 +15,16 @@ login-error-csrf-retry = The form had expired, so a fresh one has been loaded. P
 login-error-rate-limited = Too many attempts. Please wait a moment and try again.
 login-error-policy-denied = Sign-in was blocked by your organization's authentication policy. Please contact your administrator.
 login-error-mfa-enrollment-required = Your organization requires multi-factor authentication. Please set up an authenticator app from your account settings before signing in.
+login-error-application-not-permitted = You signed in successfully, but you are not allowed to use this app. Ask your administrator for access.
 login-error-passkey-invalid = This passkey could not be verified. Please try again or sign in with your password.
 login-error-passkey-retry = The sign-in attempt has expired. Please try again.
+
+# Shown when the signed-in user is not assigned to the application (ADR-0054). The check runs
+# after authentication, so whoever reaches this page did sign in successfully. Say that first.
+application-not-permitted-title = You are not allowed to use this app
+application-not-permitted-signed-in = You signed in successfully, but you are not allowed to use { $application }.
+application-not-permitted-next-step = To use { $application }, ask your administrator for access.
+application-not-permitted-back = Go to your account
 
 # SAML SSO continue page (auto-POST of the signed SAMLResponse to the SP's ACS).
 saml-continue-title = Signing in to the application

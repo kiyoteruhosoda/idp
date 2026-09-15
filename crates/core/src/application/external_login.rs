@@ -24,7 +24,7 @@
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authorize::code_dispatch;
-use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
+use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session;
 use crate::domain::authentication_policy::{
@@ -96,6 +96,15 @@ pub enum CallbackOutcome {
     /// （他のログイン経路と同じ扱い。外部で認証したことは同意の代わりにならない）。
     ConsentRequired {
         auth_session_id: String,
+        sso_session_id: String,
+        user_language: Option<String>,
+    },
+    /// 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
+    /// SSO セッションは発行する（assay には入れている）ので、他のアプリへはそのまま進める。
+    ApplicationNotPermitted {
+        /// 画面に出すアプリ名。どのアプリで断られたかが分からないと、次に誰へ頼めばよいかを
+        /// 利用者が決められない。
+        application_name: String,
         sso_session_id: String,
         user_language: Option<String>,
     },
@@ -779,7 +788,15 @@ impl ExternalLoginService {
             )
             .await
         {
-            Ok(c) => c,
+            Ok(CodeIssuance::Issued(code)) => code,
+            // 認証は通っているが、このアプリの利用が許可されていない（ADR-0054）。RP へは戻さない。
+            Ok(CodeIssuance::ApplicationDenied { application_name }) => {
+                return CallbackOutcome::ApplicationNotPermitted {
+                    application_name,
+                    sso_session_id,
+                    user_language: user.language.clone(),
+                }
+            }
             Err(e) => return CallbackOutcome::Internal(e.to_string()),
         };
 

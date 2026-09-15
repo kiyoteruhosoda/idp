@@ -9,6 +9,7 @@
 
 pub mod admin_dto;
 pub mod api_client;
+pub mod application_denied;
 pub mod authentication_policy_form;
 pub mod authorization_response;
 pub mod client_ip;

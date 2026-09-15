@@ -10,7 +10,7 @@
 //! それ以外のエラーは `redirect_uri` にエラーコードを付与して返す。
 
 use crate::application::audit::RequestContext;
-use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
+use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
 use crate::application::sso_restore::SsoRestorer;
 use crate::application::tenant_resolution::TenantResolutionService;
 use crate::domain::auth_session::{self, AuthSession};
@@ -99,6 +99,12 @@ pub enum ResumeOutcome {
     ConsentRequired { auth_session_id: String },
     /// 認証が必要。web は `auth_session_id` を Cookie 化してログインフォームを表示する。
     LoginRequired { auth_session_id: String },
+    /// SSO は復元できたが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
+    /// SSO Cookie は既に手元にあるので、ここでは画面を出すだけでよい。
+    ApplicationNotPermitted {
+        /// 画面に出すアプリ名。
+        application_name: String,
+    },
     /// ハンドルが無効・期限切れ・使用済み（`/authorize` からやり直し）。
     ExpiredHandle,
     /// 内部エラー（RP へのリダイレクトも組み立てられない段階での失敗）。
@@ -429,7 +435,12 @@ impl AuthorizeService {
                                     code_challenge_method: session.code_challenge_method,
                                 };
                                 return match self.code_issuance.issue(cmd, ctx).await {
-                                    Ok(code) => {
+                                    // 復元した SSO は通っているが、このアプリの利用が許可されて
+                                    // いない（ADR-0054）。RP へは戻さない。
+                                    Ok(CodeIssuance::ApplicationDenied { application_name }) => {
+                                        ResumeOutcome::ApplicationNotPermitted { application_name }
+                                    }
+                                    Ok(CodeIssuance::Issued(code)) => {
                                         if let Err(e) =
                                             self.auth_sessions.delete(&session.id_hash).await
                                         {

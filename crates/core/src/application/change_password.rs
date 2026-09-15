@@ -16,7 +16,7 @@
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authorize::code_dispatch;
-use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
+use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
 use crate::application::mfa_login::user_has_confirmed_totp;
 use crate::application::password_policy::PasswordPolicyService;
 use crate::domain::audit::{AuditEventType, AuditResult};
@@ -64,6 +64,14 @@ pub enum ChangePasswordOutcome {
         auth_session_id: String,
     },
     /// 変更は成功したが認証ポリシーによりログインを拒否（仕様 §7.4 `deny`）。SSO は発行しない。
+    /// 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
+    /// SSO セッションは発行する（assay には入れている）ので、他のアプリへはそのまま進める。
+    ApplicationNotPermitted {
+        /// 画面に出すアプリ名。どのアプリで断られたかが分からないと、次に誰へ頼めばよいかを
+        /// 利用者が決められない。
+        application_name: String,
+        sso_session_id: String,
+    },
     PolicyDenied,
     /// 変更は成功したが認証ポリシーが MFA を必須とし、使用可能な認証器（確認済み TOTP）が無い。
     /// ポータルから MFA を設定するよう案内する。SSO は発行しない。
@@ -491,7 +499,14 @@ impl ChangePasswordService {
             )
             .await
         {
-            Ok(c) => c,
+            Ok(CodeIssuance::Issued(code)) => code,
+            // 認証は通っているが、このアプリの利用が許可されていない（ADR-0054）。RP へは戻さない。
+            Ok(CodeIssuance::ApplicationDenied { application_name }) => {
+                return ChangePasswordOutcome::ApplicationNotPermitted {
+                    application_name,
+                    sso_session_id,
+                }
+            }
             Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
         };
 

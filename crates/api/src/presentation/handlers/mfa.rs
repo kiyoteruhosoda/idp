@@ -142,6 +142,14 @@ pub async fn verify_totp(
         MfaLoginOutcome::RateLimited => InternalVerifyTotpResponse::RateLimited,
         MfaLoginOutcome::Locked => InternalVerifyTotpResponse::Locked,
         MfaLoginOutcome::PolicyDenied => InternalVerifyTotpResponse::PolicyDenied,
+        MfaLoginOutcome::ApplicationNotPermitted {
+            application_name,
+            sso_session_id,
+        } => InternalVerifyTotpResponse::ApplicationNotPermitted {
+            application_name,
+            sso_session_id,
+            sso_absolute_ttl_secs: ttl,
+        },
         MfaLoginOutcome::Internal(e) => {
             tracing::error!(error = %e, "mfa verify internal error");
             InternalVerifyTotpResponse::Internal

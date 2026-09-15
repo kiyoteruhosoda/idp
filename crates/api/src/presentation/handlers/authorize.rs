@@ -129,6 +129,9 @@ pub async fn authorize_resume(
         ResumeOutcome::LoginRequired { auth_session_id } => {
             InternalAuthorizeResumeResponse::LoginRequired { auth_session_id }
         }
+        ResumeOutcome::ApplicationNotPermitted { application_name } => {
+            InternalAuthorizeResumeResponse::ApplicationNotPermitted { application_name }
+        }
         ResumeOutcome::ExpiredHandle => InternalAuthorizeResumeResponse::ExpiredHandle,
         ResumeOutcome::Internal(e) => {
             tracing::error!(error = %e, "authorize resume failed with internal error");

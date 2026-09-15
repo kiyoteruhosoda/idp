@@ -1,0 +1,18 @@
+{% extends "page.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+<div class="card border-0 bg-transparent">
+  <div class="card-header text-center py-3 border-0 bg-transparent">
+    <h1 class="h4 mb-0">{{ title }}</h1>
+  </div>
+  <div class="card-body p-4">
+    {#- 「入れたのに弾かれた」に見える画面なので、まず**サインインは通っている**ことを言う。
+        ここを省くと、利用者は資格情報を疑って何度もやり直すことになる。 -#}
+    <p class="mb-3">{{ signed_in }}</p>
+    <p class="mb-0">{{ next_step }}</p>
+{%- if !back_href.is_empty() %}
+    <p class="mt-4 mb-0 text-center"><a class="btn btn-outline-secondary" href="{{ back_href }}">{{ back_label }}</a></p>
+{%- endif %}
+  </div>
+</div>
+{% endblock %}

@@ -172,6 +172,15 @@ async fn resume_authorize_handoff(
             see_other(&format!("{}/consent", tenant.prefix())),
         )
             .into_response(),
+        // SSO は復元できたが、このアプリの利用が許可されていない（ADR-0054）。RP へは戻さない。
+        InternalAuthorizeResumeResponse::ApplicationNotPermitted { application_name } => (
+            state
+                .set_cookies()
+                .expire_session(cookies::AUTH_SESSION_COOKIE)
+                .into_headers(),
+            crate::application_denied::page(&messages, &tenant.prefix(), &application_name),
+        )
+            .into_response(),
         InternalAuthorizeResumeResponse::LoginRequired { auth_session_id } => (
             state
                 .set_cookies()
@@ -377,6 +386,25 @@ pub async fn login(
             StatusCode::FORBIDDEN,
             "login-error-email-not-verified",
         ),
+        // 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。SSO Cookie は発行する
+        // ——assay には入れているので、他のアプリへはそのまま進める。
+        InternalAuthenticateResponse::ApplicationNotPermitted {
+            application_name,
+            sso_session_id,
+            sso_absolute_ttl_secs,
+        } => (
+            state
+                .set_cookies()
+                .set_session(
+                    cookies::SSO_SESSION_COOKIE,
+                    &sso_session_id,
+                    sso_absolute_ttl_secs,
+                )
+                .expire_session(cookies::AUTH_SESSION_COOKIE)
+                .into_headers(),
+            crate::application_denied::page(&messages, &tenant.prefix(), &application_name),
+        )
+            .into_response(),
         // 認証ポリシーによる拒否。資格情報は検証済みのため、資格情報エラーとは別の文言で表示する。
         InternalAuthenticateResponse::PolicyDenied => reshow_form(
             &messages,

@@ -18,6 +18,7 @@ use crate::domain::system_setting::{
     requires_production_secrets, runtime_setting_definition, DefaultRisk, DeploymentState,
     DevelopmentSecrets, SettingOwner, RUNTIME_SETTING_DEFINITIONS,
 };
+use crate::domain::values::AssignmentEnforcement;
 use assay_contracts::cookies::CookiePolicy;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use std::collections::HashMap;
@@ -142,6 +143,7 @@ pub struct Config {
     login_lockout: LockoutPolicy,
     /// 認証ポリシーが 1 件も一致しないときの既定動作（同仕様 §9.4）。
     auth_policy_default_effect: DefaultPolicyEffect,
+    application_assignment_enforcement: AssignmentEnforcement,
     /// パスワードポリシー（長さ・履歴・有効期限・漏えい確認の有無。同仕様 §11.2。AP7）。
     password_policy: PasswordPolicy,
     /// 漏えい済みパスワード照合の接続先（k-匿名性のレンジ API）。
@@ -317,6 +319,12 @@ impl Config {
                 &resolver.string("AUTH_POLICY_DEFAULT_EFFECT", "allow"),
             )
             .map_err(|e| anyhow::anyhow!("invalid value for AUTH_POLICY_DEFAULT_EFFECT: {e}"))?,
+            application_assignment_enforcement: AssignmentEnforcement::parse(
+                &resolver.string("APPLICATION_ASSIGNMENT_ENFORCEMENT", "record_only"),
+            )
+            .map_err(|e| {
+                anyhow::anyhow!("invalid value for APPLICATION_ASSIGNMENT_ENFORCEMENT: {e}")
+            })?,
             tenant_cache_ttl: secs(resolver.parse("TENANT_CACHE_TTL_SECS", 60)?),
             permission_cache_ttl: secs(resolver.parse("PERMISSION_CACHE_TTL_SECS", 60)?),
             cookie_policy,
@@ -440,6 +448,10 @@ impl Config {
     /// 認証ポリシーが 1 件も一致しないときの既定動作（`allow` / `deny`）。
     pub fn auth_policy_default_effect(&self) -> DefaultPolicyEffect {
         self.auth_policy_default_effect
+    }
+    /// アプリの割り当て判定をどこまでやるか（ADR-0054。既定は「記録するだけ」）。
+    pub fn application_assignment_enforcement(&self) -> AssignmentEnforcement {
+        self.application_assignment_enforcement
     }
     /// テナント解決キャッシュ（id → tenant）の TTL（ADR-0009 §7）。
     pub fn tenant_cache_ttl(&self) -> Duration {

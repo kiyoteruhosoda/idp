@@ -172,6 +172,14 @@ pub async fn authenticate(
             InternalAuthenticateResponse::EmailVerificationRequired
         }
         LoginOutcome::PolicyDenied => InternalAuthenticateResponse::PolicyDenied,
+        LoginOutcome::ApplicationNotPermitted {
+            application_name,
+            sso_session_id,
+        } => InternalAuthenticateResponse::ApplicationNotPermitted {
+            application_name,
+            sso_session_id,
+            sso_absolute_ttl_secs: ttl,
+        },
         LoginOutcome::MfaEnrollmentRequired => InternalAuthenticateResponse::MfaEnrollmentRequired,
         LoginOutcome::SessionExpired => InternalAuthenticateResponse::SessionExpired,
         LoginOutcome::CsrfMismatch => InternalAuthenticateResponse::CsrfMismatch,
@@ -279,6 +287,14 @@ pub async fn change_password(
             InternalChangePasswordResponse::MfaRequired { auth_session_id }
         }
         ChangePasswordOutcome::PolicyDenied => InternalChangePasswordResponse::PolicyDenied,
+        ChangePasswordOutcome::ApplicationNotPermitted {
+            application_name,
+            sso_session_id,
+        } => InternalChangePasswordResponse::ApplicationNotPermitted {
+            application_name,
+            sso_session_id,
+            sso_absolute_ttl_secs: ttl,
+        },
         ChangePasswordOutcome::MfaEnrollmentRequired => {
             InternalChangePasswordResponse::MfaEnrollmentRequired
         }
@@ -1597,6 +1613,16 @@ pub async fn external_callback(
             CallbackOutcome::NotLinked => InternalExternalCallbackResponse::NotLinked,
             CallbackOutcome::UserUnavailable => InternalExternalCallbackResponse::UserUnavailable,
             CallbackOutcome::PolicyDenied => InternalExternalCallbackResponse::PolicyDenied,
+            CallbackOutcome::ApplicationNotPermitted {
+                application_name,
+                sso_session_id,
+                user_language,
+            } => InternalExternalCallbackResponse::ApplicationNotPermitted {
+                application_name,
+                sso_session_id,
+                sso_absolute_ttl_secs: ttl,
+                user_language,
+            },
             CallbackOutcome::ExternalFailure => InternalExternalCallbackResponse::ExternalFailure,
             CallbackOutcome::Internal(e) => {
                 tracing::error!(error = %e, "external idp callback failed");
@@ -1670,6 +1696,16 @@ pub async fn external_saml_acs(
             CallbackOutcome::NotLinked => InternalExternalCallbackResponse::NotLinked,
             CallbackOutcome::UserUnavailable => InternalExternalCallbackResponse::UserUnavailable,
             CallbackOutcome::PolicyDenied => InternalExternalCallbackResponse::PolicyDenied,
+            CallbackOutcome::ApplicationNotPermitted {
+                application_name,
+                sso_session_id,
+                user_language,
+            } => InternalExternalCallbackResponse::ApplicationNotPermitted {
+                application_name,
+                sso_session_id,
+                sso_absolute_ttl_secs: ttl,
+                user_language,
+            },
             CallbackOutcome::ExternalFailure => InternalExternalCallbackResponse::ExternalFailure,
             CallbackOutcome::Internal(e) => {
                 tracing::error!(error = %e, "external saml acs failed");

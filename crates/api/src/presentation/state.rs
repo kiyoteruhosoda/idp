@@ -16,6 +16,7 @@ use crate::application::account_tenants::AccountTenantsService;
 use crate::application::account_theme::AccountThemeService;
 use crate::application::admin_access::AdminAccessService;
 use crate::application::admin_login::AdminLoginService;
+use crate::application::application_access::ApplicationAccessService;
 use crate::application::application_log::ApplicationLogService;
 use crate::application::audit::AuditService;
 use crate::application::audit_query::AuditQueryService;
@@ -85,6 +86,7 @@ use crate::infrastructure::id_generator::UuidV7Generator;
 use crate::infrastructure::mailer::LettreSmtpMailer;
 use crate::infrastructure::password::Argon2PasswordHasher;
 use crate::infrastructure::rate_limit::InMemoryLoginRateLimiter;
+use crate::infrastructure::repositories::application::SqlxApplicationRepository;
 use crate::infrastructure::repositories::application_log::{
     SqlxApplicationLogQuery, SqlxApplicationLogSink,
 };
@@ -452,8 +454,18 @@ impl AppState {
             clock.clone(),
             *config.key_encryption_key(),
         ));
+        // アプリ（ADR-0054）。「どの利用者がどのアプリを使ってよいか」の単一の出所で、
+        // code 発行の門（`CodeIssuanceService`）と認証ポリシーの宛先解決の両方が引く。
+        let applications: Arc<dyn crate::domain::repositories::ApplicationRepository> =
+            Arc::new(SqlxApplicationRepository::new(pool.clone()));
+        let application_access = Arc::new(ApplicationAccessService::new(
+            applications.clone(),
+            audit.clone(),
+            config.application_assignment_enforcement(),
+        ));
         let code_issuance = Arc::new(CodeIssuanceService::new(
             codes.clone(),
+            application_access.clone(),
             audit.clone(),
             clock.clone(),
             config.authorization_code_ttl(),

@@ -10,6 +10,7 @@ pub mod account_tenants;
 pub mod account_theme;
 pub mod admin_access;
 pub mod admin_login;
+pub mod application_access;
 pub mod application_log;
 pub mod audit;
 pub mod audit_query;

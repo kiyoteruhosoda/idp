@@ -462,6 +462,39 @@ pub async fn login_complete_api(
             })
             .into_response()
         }
+        // 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。
+        //
+        // この経路だけは応答が JSON（ブラウザの JS が受ける）なので、他の 6 経路のような
+        // 断りの**ページ**を返せない。文言はログイン画面に出す ——どのアプリの話かは、その画面の
+        // 見出し（`login-title-for-client`）が既に示している。
+        // SSO Cookie は発行する（assay には入れているので、他のアプリへはそのまま進める）。
+        InternalPasskeyLoginCompleteResponse::ApplicationNotPermitted {
+            application_name,
+            sso_session_id,
+            sso_absolute_ttl_secs,
+        } => {
+            tracing::info!(
+                application = %application_name,
+                "passkey login blocked: the user is not assigned to the application"
+            );
+            (
+                state
+                    .set_cookies()
+                    .set_session(
+                        cookies::SSO_SESSION_COOKIE,
+                        &sso_session_id,
+                        sso_absolute_ttl_secs,
+                    )
+                    .expire_session(cookies::AUTH_SESSION_COOKIE)
+                    .into_headers(),
+                Json(LoginCompleteJsonResponse {
+                    redirect_to: None,
+                    form_post: None,
+                    error: Some("application_not_permitted".to_string()),
+                }),
+            )
+                .into_response()
+        }
         // 認証ポリシーによる拒否。フロント側スクリプトはこのコードを翻訳キーへ写す。
         InternalPasskeyLoginCompleteResponse::PolicyDenied => Json(LoginCompleteJsonResponse {
             redirect_to: None,

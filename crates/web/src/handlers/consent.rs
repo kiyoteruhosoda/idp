@@ -152,6 +152,16 @@ pub async fn consent(
                 )
                     .into_response()
             }
+            // 同意は付与できたが、このアプリの利用が許可されていない（ADR-0054）。
+            // auth_session Cookie は畳んで、assay の画面で断る。
+            Ok(InternalConsentApproveResponse::ApplicationNotPermitted { application_name }) => (
+                state
+                    .set_cookies()
+                    .expire_session(cookies::AUTH_SESSION_COOKIE)
+                    .into_headers(),
+                crate::application_denied::page(&messages, &tenant.prefix(), &application_name),
+            )
+                .into_response(),
             Ok(InternalConsentApproveResponse::SessionExpired) => error_page(
                 &messages,
                 StatusCode::BAD_REQUEST,

@@ -1322,6 +1322,24 @@ pub struct MessagePage {
     pub message: String,
 }
 
+/// アプリの利用が許可されていない画面（ADR-0054 の決定 2）。
+///
+/// ⚠ **理由を伏せない。** 判定は認証の後に行われるので、隠しても総当たりの手掛かりにはならない。
+/// 黙って弾くと利用者からは障害と区別が付かず、資格情報を疑って何度もやり直すことになる。
+/// だから「サインインは通っている」「どのアプリで断られたか」「次に誰へ頼めばよいか」の 3 つを出す。
+#[derive(Template)]
+#[template(path = "application_not_permitted.html")]
+pub struct ApplicationNotPermittedPage {
+    pub title: String,
+    /// 「サインインはできましたが、〇〇 の利用は許可されていません」。
+    pub signed_in: String,
+    /// 「利用するには管理者に頼んでください」。
+    pub next_step: String,
+    /// 戻り先。**空文字はリンクを出さない**（テナントを特定できない経路）。
+    pub back_href: String,
+    pub back_label: String,
+}
+
 /// HTTP エラーページ（全ステータスコード対応。403 / 404 / 500 等）。ステータスコードを大きく表示し、
 /// タイトルと説明文を添える。テナント文脈を持たない未マッチ経路（fallback）でも描画できるよう、
 /// 翻訳済みの文字列だけを受け取る（`Messages` へは依存しない）。
