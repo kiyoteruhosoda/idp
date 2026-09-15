@@ -2,12 +2,12 @@
 //! UUID は CHAR(36) 正準文字列で入出力する。
 
 use crate::domain::application::{
-    Application, ApplicationAssignment, ApplicationBinding, BindingTarget,
+    Application, ApplicationAssignment, ApplicationBinding, AssignedUser, BindingTarget,
 };
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::ApplicationRepository;
 use crate::domain::tenant::TenantId;
-use crate::domain::values::{ApplicationStatus, AssignmentMode};
+use crate::domain::values::{ApplicationStatus, AssignmentMode, UserStatus};
 use crate::infrastructure::db::Db;
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
@@ -99,15 +99,18 @@ fn map_binding(row: &MySqlRow) -> Result<ApplicationBinding> {
     })
 }
 
-fn map_assignment(row: &MySqlRow) -> Result<ApplicationAssignment> {
-    let application_id: String = row.try_get("application_id").map_err(repo_err)?;
+fn map_assigned_user(row: &MySqlRow) -> Result<AssignedUser> {
     let user_id: String = row.try_get("user_id").map_err(repo_err)?;
-    let assigned_by: Option<String> = row.try_get("assigned_by").map_err(repo_err)?;
-    Ok(ApplicationAssignment {
-        application_id: parse_uuid(&application_id)?,
+    let sub: String = row.try_get("sub").map_err(repo_err)?;
+    let status: String = row.try_get("status").map_err(repo_err)?;
+    Ok(AssignedUser {
         user_id: parse_uuid(&user_id)?,
+        sub: parse_uuid(&sub)?,
+        email: row.try_get("email").map_err(repo_err)?,
+        name: row.try_get("name").map_err(repo_err)?,
+        status: UserStatus::parse(&status)
+            .map_err(|_| DomainError::Repository(format!("invalid user status `{status}`")))?,
         assigned_at: to_utc(row.try_get("assigned_at").map_err(repo_err)?),
-        assigned_by: assigned_by.as_deref().map(parse_uuid).transpose()?,
     })
 }
 
@@ -301,16 +304,17 @@ impl ApplicationRepository for SqlxApplicationRepository {
         Ok(row.is_some())
     }
 
-    async fn list_assignments(&self, application_id: Uuid) -> Result<Vec<ApplicationAssignment>> {
+    async fn list_assigned_users(&self, application_id: Uuid) -> Result<Vec<AssignedUser>> {
         let rows = sqlx::query(
-            "SELECT application_id, user_id, assigned_at, assigned_by \
-             FROM application_assignments WHERE application_id = ? ORDER BY assigned_at, user_id",
+            "SELECT a.user_id, u.sub, u.email, u.name, u.status, a.assigned_at \
+             FROM application_assignments a JOIN users u ON u.id = a.user_id \
+             WHERE a.application_id = ? ORDER BY u.email, a.user_id",
         )
         .bind(application_id.to_string())
         .fetch_all(&self.pool)
         .await
         .map_err(repo_err)?;
-        rows.iter().map(map_assignment).collect()
+        rows.iter().map(map_assigned_user).collect()
     }
 
     async fn count_assignments(&self, application_id: Uuid) -> Result<i64> {

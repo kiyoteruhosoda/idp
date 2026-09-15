@@ -18,7 +18,7 @@
 
 use crate::domain::message::MessageKey;
 use crate::domain::tenant::TenantId;
-use crate::domain::values::{ApplicationStatus, AssignmentMode};
+use crate::domain::values::{ApplicationStatus, AssignmentMode, UserStatus};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
@@ -167,6 +167,25 @@ pub struct ApplicationAssignment {
     pub assigned_at: DateTime<Utc>,
     /// 割り当てた管理者（監査のための出所）。移行・機械経由は `None`。
     pub assigned_by: Option<Uuid>,
+}
+
+/// 割り当てられた利用者 1 行（管理 API と画面が読む読み取りモデル）。
+///
+/// 割り当ての行（[`ApplicationAssignment`]）と分けてあるのは、**問いが違う**ためである。
+/// あちらは「誰に割り当てたか」を書くための値で、こちらは「誰が割り当てられているか」を
+/// 人が読むための値 ——名前もメールも `users` にしか無いので、1 回の問い合わせで一緒に読む
+/// （1 件ずつ利用者を引き直すと、名簿の長さだけ往復が増える）。
+#[derive(Debug, Clone)]
+pub struct AssignedUser {
+    pub user_id: Uuid,
+    /// トークンの主体識別子。RP 側の名簿と突き合わせるときの鍵（ADR-0049）。
+    pub sub: Uuid,
+    pub email: String,
+    pub name: Option<String>,
+    /// 利用者アカウント自体の状態。⚠ **止まっている利用者の割り当ては残る** ——復帰したときに
+    /// 名簿を作り直さずに済むようにするためで、入れるかどうかは利用者の状態が別に決める。
+    pub status: UserStatus,
+    pub assigned_at: DateTime<Utc>,
 }
 
 #[cfg(test)]

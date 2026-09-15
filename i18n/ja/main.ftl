@@ -1243,6 +1243,16 @@ admin-version-schema-state-behind = DB が遅れています（migrate 未適用
 admin-version-schema-unavailable = スキーマの適用状態を取得できませんでした（api 未到達）。api が停止している可能性があります。DB が期待バージョン未満だと api は起動を中止するため、このときは api のログで expected / applied を確認してください。
 admin-version-note-label = 補足
 admin-version-note = Git 版はビルド時の git describe --always --dirty --tags に基づきます。バージョンは sqlx マイグレーションの通し番号です。「期待バージョン」は稼働中 api に埋め込まれた最大値、「適用済み」は DB に反映済みの最大値です。
+# アプリ（ADR-0054）
+api-application-not-found = アプリが見つかりません。
+api-application-name-required = アプリの名前を入力してください。
+api-application-name-too-long = アプリの名前は { $value } 文字以内で入力してください。
+api-application-invalid = アプリの設定が不正です。
+api-application-status-invalid = 状態は ACTIVE または DISABLED を指定してください。
+api-application-assignment-mode-invalid = 利用できる人は EVERYONE または INDIVIDUAL を指定してください。
+api-application-binding-target-required = 繋ぐ相手として client_id か service_provider_id のどちらか一方を指定してください。
+api-application-binding-conflict = その連携先は既に別のアプリに繋がっています。
+
 # 保護リソース（`aud` に入る宛名。ADR-0042）
 api-resource-not-found = 宛先が見つかりません。
 api-resource-uri-required = 宛先の名前を入力してください。
@@ -1254,6 +1264,60 @@ api-resource-uri-conflict = その宛先は既に登録されています。
 api-resource-display-name-required = 表示名を入力してください。
 api-resource-display-name-too-long = 表示名は { $value } 文字以内で入力してください。
 api-resource-status-invalid = 状態は ACTIVE または DISABLED を指定してください。
+
+# アプリ（ADR-0054）
+admin-nav-applications = アプリ
+admin-nav-applications-desc = 認証方法と利用ユーザーの割り当て
+admin-applications-title = アプリ
+admin-applications-intro = 利用者から見た 1 つのアプリです。OIDC や SAML の登録は、そのアプリがどう繋がるかを表します。誰が使ってよいかは、ここで決めます。
+admin-applications-record-only = いまは記録するだけの段階です。割り当てが無い利用者も入れますが、監査ログに残ります。ログに出なくなってから、断る設定へ切り替えてください。
+admin-applications-col-name = アプリ
+admin-applications-col-bindings = 認証方法
+admin-applications-col-who = 利用できる人
+admin-applications-col-status = 状態
+admin-applications-col-actions = 操作
+admin-applications-none = アプリはまだありません。
+admin-applications-bindings-none = 繋がっている認証方法はありません。
+admin-applications-who-everyone = 全員
+admin-applications-who-individual = 個別
+admin-applications-state-active = 有効
+admin-applications-state-disabled = 無効
+admin-applications-nobody = 誰も入れません
+admin-applications-nobody-hint = 個別に設定されていますが、割り当てられた利用者が 1 人もいません。
+admin-applications-open = 開く
+admin-applications-back = アプリの一覧へ
+admin-applications-create-heading = アプリを登録する
+admin-applications-create-intro = 名前を付けて登録し、そのあとで認証方法を繋ぎます。
+admin-applications-name-label = アプリの名前
+admin-applications-who-label = 利用できる人
+admin-applications-who-hint = 「全員」はこのテナントの利用者すべてを指します。他のテナントの利用者は含みません。
+admin-applications-assign-self = 自分を割り当てる
+admin-applications-create-button = 登録する
+admin-applications-settings-heading = 設定
+admin-applications-save = 保存する
+admin-applications-confirm-empty = 割り当てられた利用者が 1 人もいません。このまま「個別」で保存すると、誰もこのアプリを使えなくなります。保存しますか？
+admin-applications-current-heading = いま入れている人
+admin-applications-current-intro = 「個別」へ切り替えると、ここに出ている人のうち割り当てた人だけが使えるようになります。切り替える前に名簿へ写してください。
+admin-applications-current-none = いま入れる利用者はいません。
+admin-applications-current-truncated = 人数が多いため、すべては表示していません。
+admin-applications-copy-to-roster = 名簿へ追加
+admin-applications-roster-heading = 利用ユーザー
+admin-applications-roster-intro = 使ってよいかどうかだけを決めます。アプリの中で何をしてよいかは、アプリ側が決めます。
+admin-applications-roster-none = 割り当てられた利用者はいません。
+admin-applications-roster-col-user = 利用者
+admin-applications-roster-col-since = 割り当てた日時
+admin-applications-unassign = 外す
+admin-applications-assign-label = 利用者を割り当てる
+admin-applications-assign-button = 割り当てる
+admin-applications-assign-hint = 利用者 ID はメンバーの画面で確認できます。
+admin-applications-bindings-heading = 認証方法
+admin-applications-bindings-intro = このアプリが繋がる先です。OIDC と SAML の両方を繋ぐこともできます。
+admin-applications-binding-gone = 連携先が見つかりません
+admin-applications-unbind = 外す
+admin-applications-bind-protocol = プロトコル
+admin-applications-bind-target = 連携先
+admin-applications-bind-button = 繋ぐ
+admin-applications-bind-hint = OIDC はクライアント ID、SAML は SP の内部 ID を入力します。
 
 # 保護リソース（`aud` に入る宛名。ADR-0042）
 admin-nav-resources = 宛先

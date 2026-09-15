@@ -197,7 +197,7 @@ pub mod test_support {
     //! 実装をここに 1 つだけ置き、各テストが自前の空実装を書き写さないようにする。
 
     use super::*;
-    use crate::domain::application::{ApplicationAssignment, ApplicationBinding};
+    use crate::domain::application::{ApplicationAssignment, ApplicationBinding, AssignedUser};
     use crate::domain::error::Result;
     use crate::domain::values::{ApplicationStatus, AssignmentMode};
     use async_trait::async_trait;
@@ -257,10 +257,7 @@ pub mod test_support {
         async fn is_assigned(&self, _application_id: Uuid, _user_id: Uuid) -> Result<bool> {
             Ok(false)
         }
-        async fn list_assignments(
-            &self,
-            _application_id: Uuid,
-        ) -> Result<Vec<ApplicationAssignment>> {
+        async fn list_assigned_users(&self, _application_id: Uuid) -> Result<Vec<AssignedUser>> {
             Ok(Vec::new())
         }
         async fn count_assignments(&self, _application_id: Uuid) -> Result<i64> {
@@ -288,7 +285,7 @@ pub mod test_support {
 mod tests {
     use super::test_support::NoApplications;
     use super::*;
-    use crate::domain::application::{ApplicationAssignment, ApplicationBinding};
+    use crate::domain::application::{ApplicationAssignment, ApplicationBinding, AssignedUser};
     use crate::domain::audit::AuditEvent;
     use crate::domain::clock::Clock;
     use crate::domain::error::Result;
@@ -375,10 +372,7 @@ mod tests {
         async fn is_assigned(&self, _application_id: Uuid, _user_id: Uuid) -> Result<bool> {
             Ok(self.assigned)
         }
-        async fn list_assignments(
-            &self,
-            _application_id: Uuid,
-        ) -> Result<Vec<ApplicationAssignment>> {
+        async fn list_assigned_users(&self, _application_id: Uuid) -> Result<Vec<AssignedUser>> {
             Ok(Vec::new())
         }
         async fn count_assignments(&self, _application_id: Uuid) -> Result<i64> {

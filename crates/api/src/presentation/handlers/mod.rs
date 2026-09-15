@@ -2,6 +2,7 @@
 
 pub mod admin;
 pub mod admin_application_logs;
+pub mod admin_applications;
 pub mod admin_audit;
 pub mod admin_authentication_policies;
 pub mod admin_client_permissions;

@@ -8,14 +8,15 @@ use crate::correlation;
 use crate::display_preferences::resolve_display_preferences;
 use crate::error_pages;
 use crate::handlers::{
-    admin_authentication_policies_console, admin_clients_console, admin_console,
-    admin_external_idps_console, admin_invitations_console, admin_login_identifiers_console,
-    admin_members_console, admin_resources_console, admin_restart_console,
-    admin_saml_clients_console, admin_settings, admin_signing_keys_console, admin_status_console,
-    admin_tenants_console, admin_users_console, authenticators, consent, console_script,
-    external_login, health, invitation_accept, locale, login, mfa_totp, page_scripts, passkey,
-    password_change, password_reset, portal, react_assets, rp_logout, saml_sso, step_up,
-    stylesheet, submit_feedback_script, user_security, user_settings, vendor_assets, verify_email,
+    admin_applications_console, admin_authentication_policies_console, admin_clients_console,
+    admin_console, admin_external_idps_console, admin_invitations_console,
+    admin_login_identifiers_console, admin_members_console, admin_resources_console,
+    admin_restart_console, admin_saml_clients_console, admin_settings, admin_signing_keys_console,
+    admin_status_console, admin_tenants_console, admin_users_console, authenticators, consent,
+    console_script, external_login, health, invitation_accept, locale, login, mfa_totp,
+    page_scripts, passkey, password_change, password_reset, portal, react_assets, rp_logout,
+    saml_sso, step_up, stylesheet, submit_feedback_script, user_security, user_settings,
+    vendor_assets, verify_email,
 };
 use crate::i18n::Messages;
 use crate::login_context::load_rp_login_context;
@@ -451,6 +452,37 @@ pub fn build(state: WebState) -> Router {
         .route("/admin/status", get(admin_status_console::client_status))
         // 稼働中のビルドと適用済みスキーマ（ADR-0034）。無認証の面には出さない。
         .route("/admin/version", get(admin_status_console::version))
+        // アプリ（ADR-0054）。認証方法（OIDC / SAML）と利用者の割り当ては、この段にぶら下がる。
+        // ⚠ **ここが締め出しの復旧経路**（決定 4 の手順 4）。一覧 → 1 件 → 割り当て、で終わる。
+        .route("/admin/applications", get(admin_applications_console::list))
+        .route(
+            "/admin/applications/create",
+            post(admin_applications_console::create),
+        )
+        .route(
+            "/admin/applications/{application_id}",
+            get(admin_applications_console::detail),
+        )
+        .route(
+            "/admin/applications/{application_id}/update",
+            post(admin_applications_console::update),
+        )
+        .route(
+            "/admin/applications/{application_id}/bind",
+            post(admin_applications_console::bind),
+        )
+        .route(
+            "/admin/applications/{application_id}/unbind",
+            post(admin_applications_console::unbind),
+        )
+        .route(
+            "/admin/applications/{application_id}/assign",
+            post(admin_applications_console::assign),
+        )
+        .route(
+            "/admin/applications/{application_id}/unassign",
+            post(admin_applications_console::unassign),
+        )
         // 保護リソース（`aud` に入る宛名。ADR-0042）。貸し出しはクライアント詳細にある。
         .route("/admin/resources", get(admin_resources_console::list))
         .route(

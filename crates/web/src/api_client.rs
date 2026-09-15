@@ -1898,6 +1898,224 @@ impl ApiClient {
         .await
     }
 
+    /// アプリを一覧する（`GET /admin/applications`。ADR-0054）。
+    pub async fn list_applications(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+    ) -> Result<crate::admin_dto::ApplicationListView, AdminApiError> {
+        self.admin_send(
+            Method::GET,
+            tenant_id,
+            "/admin/applications",
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
+    /// アプリ 1 件の詳細を引く（`GET /admin/applications/{id}`）。
+    pub async fn get_application(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        application_id: &str,
+    ) -> Result<crate::admin_dto::ApplicationDetailView, AdminApiError> {
+        self.admin_send(
+            Method::GET,
+            tenant_id,
+            &format!("/admin/applications/{application_id}"),
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
+    /// アプリを登録する（`POST /admin/applications`）。
+    ///
+    /// `assign_creator` は「自分を割り当てる」。⚠ **「個別」で作った直後は誰も入れない**ので、
+    /// 画面は初めからチェックしておく。
+    pub async fn create_application(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        display_name: &str,
+        assignment_mode: &str,
+        assign_creator: bool,
+    ) -> Result<crate::admin_dto::ApplicationView, AdminApiError> {
+        self.admin_send(
+            Method::POST,
+            tenant_id,
+            "/admin/applications",
+            correlation_id,
+            sso,
+            Some(serde_json::json!({
+                "display_name": display_name,
+                "assignment_mode": assignment_mode,
+                "assign_creator": assign_creator,
+            })),
+        )
+        .await
+    }
+
+    /// アプリを更新する（`PUT /admin/applications/{id}`）。3 つの値は必ず揃えて送る。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_application(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        application_id: &str,
+        display_name: &str,
+        status: &str,
+        assignment_mode: &str,
+    ) -> Result<crate::admin_dto::ApplicationView, AdminApiError> {
+        self.admin_send(
+            Method::PUT,
+            tenant_id,
+            &format!("/admin/applications/{application_id}"),
+            correlation_id,
+            sso,
+            Some(serde_json::json!({
+                "display_name": display_name,
+                "status": status,
+                "assignment_mode": assignment_mode,
+            })),
+        )
+        .await
+    }
+
+    /// アプリを削除する（`DELETE /admin/applications/{id}`）。RP の登録は消えない。
+    pub async fn delete_application(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        application_id: &str,
+    ) -> Result<(), AdminApiError> {
+        self.admin_send_no_content(
+            Method::DELETE,
+            tenant_id,
+            &format!("/admin/applications/{application_id}"),
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
+    /// 認証方法を繋ぐ（`POST /admin/applications/{id}/bindings`）。
+    /// `client_id` と `service_provider_id` はどちらか一方だけを渡す。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn add_application_binding(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        application_id: &str,
+        client_id: Option<&str>,
+        service_provider_id: Option<&str>,
+    ) -> Result<crate::admin_dto::ApplicationView, AdminApiError> {
+        self.admin_send(
+            Method::POST,
+            tenant_id,
+            &format!("/admin/applications/{application_id}/bindings"),
+            correlation_id,
+            sso,
+            Some(serde_json::json!({
+                "client_id": client_id,
+                "service_provider_id": service_provider_id,
+            })),
+        )
+        .await
+    }
+
+    /// 認証方法を外す（`DELETE /admin/applications/{id}/bindings/{binding_id}`）。
+    pub async fn remove_application_binding(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        application_id: &str,
+        binding_id: &str,
+    ) -> Result<(), AdminApiError> {
+        self.admin_send_no_content(
+            Method::DELETE,
+            tenant_id,
+            &format!("/admin/applications/{application_id}/bindings/{binding_id}"),
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
+    /// 利用者を割り当てる（`POST /admin/applications/{id}/assignments`。冪等）。
+    pub async fn assign_application_user(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        application_id: &str,
+        user_id: &str,
+    ) -> Result<crate::admin_dto::ApplicationDetailView, AdminApiError> {
+        self.admin_send(
+            Method::POST,
+            tenant_id,
+            &format!("/admin/applications/{application_id}/assignments"),
+            correlation_id,
+            sso,
+            Some(serde_json::json!({ "user_id": user_id })),
+        )
+        .await
+    }
+
+    /// 割り当てを外す（`DELETE /admin/applications/{id}/assignments/{user_id}`）。
+    pub async fn unassign_application_user(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        application_id: &str,
+        user_id: &str,
+    ) -> Result<(), AdminApiError> {
+        self.admin_send_no_content(
+            Method::DELETE,
+            tenant_id,
+            &format!("/admin/applications/{application_id}/assignments/{user_id}"),
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
+    /// 「いま入れている人」を引く（`GET /admin/applications/{id}/current-users`）。
+    ///
+    /// 「全員」から「個別」へ倒す前の写し元。⚠ **これを出さずに切り替えさせない。**
+    pub async fn application_current_users(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        application_id: &str,
+    ) -> Result<crate::admin_dto::ApplicationCurrentUsersView, AdminApiError> {
+        self.admin_send(
+            Method::GET,
+            tenant_id,
+            &format!("/admin/applications/{application_id}/current-users"),
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
     /// 宛名を登録する（`POST /admin/resources`）。
     pub async fn register_resource(
         &self,

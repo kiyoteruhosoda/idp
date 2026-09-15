@@ -14,7 +14,21 @@
       return;
     }
     var message = form.getAttribute('data-confirm');
-    if (message && !window.confirm(message)) {
+    if (!message) {
+      return;
+    }
+    // 選んだ値によってだけ確認したい場合は `data-confirm-if="<name>=<値>"` を添える。
+    // （例: 利用できる人を「個別」へ倒すときだけ、名簿が空であることを確かめる）。
+    // 当たらない値を選んでいるときに毎回ダイアログを出すと、読まずに OK を押すようになる。
+    var condition = form.getAttribute('data-confirm-if');
+    if (condition) {
+      var separator = condition.indexOf('=');
+      var field = form.elements[condition.slice(0, separator)];
+      if (!field || field.value !== condition.slice(separator + 1)) {
+        return;
+      }
+    }
+    if (!window.confirm(message)) {
       event.preventDefault();
     }
   });

@@ -600,6 +600,134 @@ pub struct UserCreatedResponse {
     pub generated_password: String,
 }
 
+/// アプリの登録リクエスト（`POST /{tenant_id}/admin/applications`。ADR-0054）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateApplicationRequest {
+    /// 画面と拒否メッセージに出す名前。
+    pub display_name: String,
+    /// `EVERYONE`（テナントの利用者は誰でも）または `INDIVIDUAL`（割り当てられた利用者だけ）。
+    /// ⚠ **省略時は `INDIVIDUAL`。** 絞り忘れたアプリが全員に開いたままになるのを防ぐ。
+    #[serde(default)]
+    pub assignment_mode: Option<String>,
+    /// 作った本人を同時に割り当てるか。⚠ **画面では初めからチェックしておく**
+    /// ——「個別」で作った直後は誰も入れないので、作った本人が締め出される形にしない。
+    /// 既定は `true`（機械が作るときは割り当てる相手が居ないので何も起きない）。
+    #[serde(default = "default_enabled")]
+    pub assign_creator: bool,
+}
+
+/// アプリの更新リクエスト（`PUT /{tenant_id}/admin/applications/{application_id}`）。
+///
+/// **部分更新にしない。** 3 つの値はどれも「誰が入れるか」を決めるので、省略を「変えない」と
+/// 読むと、画面の古い表示のまま送った要求が意図せず片方だけを書き換える。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateApplicationRequest {
+    pub display_name: String,
+    /// `ACTIVE` または `DISABLED`。
+    pub status: String,
+    /// `EVERYONE` または `INDIVIDUAL`。
+    pub assignment_mode: String,
+}
+
+/// アプリへ認証方法を繋ぐリクエスト（`POST /{tenant_id}/admin/applications/{application_id}/bindings`）。
+///
+/// どちらか一方だけを載せる。`client_id` は OIDC の RP（テナント内一意の文字列）、
+/// `service_provider_id` は SAML SP の内部 ID。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateApplicationBindingRequest {
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub service_provider_id: Option<String>,
+}
+
+/// 利用者をアプリへ割り当てるリクエスト
+/// （`POST /{tenant_id}/admin/applications/{application_id}/assignments`）。
+///
+/// ⚠ **ロールは載らない**（ADR-0054 の決定 1）。載るのは「使ってよい」の 1 ビットだけである。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateApplicationAssignmentRequest {
+    /// 割り当てる利用者の内部 ID。要求テナントのメンバーであること。
+    pub user_id: String,
+}
+
+/// アプリの公開表現。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ApplicationResponse {
+    pub id: String,
+    pub display_name: String,
+    pub status: String,
+    pub assignment_mode: String,
+    /// 繋がっている認証方法。
+    pub bindings: Vec<ApplicationBindingResponse>,
+    /// 割り当て人数。`EVERYONE` のときは行が無いので 0。
+    pub assigned_count: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// binding 1 本の公開表現。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ApplicationBindingResponse {
+    pub id: String,
+    /// `oidc` または `saml`。
+    pub protocol: String,
+    /// OIDC なら `client_id`、SAML なら `entity_id`。相手が消えていれば `null`。
+    pub identifier: Option<String>,
+    /// 相手の登録名。
+    pub display_name: Option<String>,
+}
+
+/// アプリの一覧（`GET /{tenant_id}/admin/applications`）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ApplicationListResponse {
+    pub applications: Vec<ApplicationResponse>,
+    /// いま判定が断るところまで来ているか（`record_only` / `enforce`）。
+    /// ⚠ 画面は「記録するだけ」の間、割り当てがまだ効いていないことを示すために読む。
+    pub enforcement: String,
+}
+
+/// アプリの詳細（`GET /{tenant_id}/admin/applications/{application_id}`）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ApplicationDetailResponse {
+    #[serde(flatten)]
+    pub application: ApplicationResponse,
+    pub assigned: Vec<ApplicationAssignmentResponse>,
+}
+
+/// 割り当てられた利用者 1 行。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ApplicationAssignmentResponse {
+    pub user_id: String,
+    /// トークンの主体識別子。RP 側の名簿と突き合わせるときの鍵。
+    pub sub: String,
+    pub email: String,
+    pub name: Option<String>,
+    /// 利用者アカウント自体の状態（`ACTIVE` / `DISABLED` / `LOCKED`）。
+    pub status: String,
+    pub assigned_at: String,
+}
+
+/// 「いま入れている人」
+/// （`GET /{tenant_id}/admin/applications/{application_id}/current-users`）。
+///
+/// 「全員」から「個別」へ倒す前に、そのまま名簿へ写すための一覧である。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ApplicationCurrentUsersResponse {
+    pub users: Vec<ApplicationCurrentUserResponse>,
+    /// 全体の人数（上限で切る前）。
+    pub total: i64,
+    /// 上限で打ち切ったか。⚠ **真なら「全員は出せていない」ことを画面が言うこと。**
+    pub truncated: bool,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ApplicationCurrentUserResponse {
+    pub user_id: String,
+    pub email: Option<String>,
+    pub name: Option<String>,
+}
+
 /// 保護リソース（`aud` に入る宛名）の登録リクエスト（`POST /{tenant_id}/admin/resources`。ADR-0042）。
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct RegisterResourceRequest {

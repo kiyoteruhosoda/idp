@@ -106,6 +106,126 @@ pub struct SigningKeyView {
     pub is_pending: bool,
 }
 
+/// アプリの公開表現（`GET /admin/applications` の応答要素。ADR-0054）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApplicationView {
+    pub id: String,
+    pub display_name: String,
+    /// `ACTIVE` / `DISABLED`。
+    pub status: String,
+    /// `EVERYONE` / `INDIVIDUAL`。
+    pub assignment_mode: String,
+    #[serde(default)]
+    pub bindings: Vec<ApplicationBindingView>,
+    #[serde(default)]
+    pub assigned_count: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl ApplicationView {
+    /// 使える状態か（テンプレートから状態を文字列比較させないための述語）。
+    pub fn is_active(&self) -> bool {
+        self.status == "ACTIVE"
+    }
+
+    /// 割り当てられた利用者だけが使えるか。
+    pub fn is_individual(&self) -> bool {
+        self.assignment_mode == "INDIVIDUAL"
+    }
+
+    /// ⚠ **誰も入れない状態**（「個別」なのに名簿が空）。
+    /// 「全員」と取り違えると全断になるので、一覧で目立たせる。
+    pub fn admits_nobody(&self) -> bool {
+        self.is_active() && self.is_individual() && self.assigned_count == 0
+    }
+}
+
+/// binding 1 本の公開表現。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApplicationBindingView {
+    pub id: String,
+    /// `oidc` / `saml`。
+    pub protocol: String,
+    /// OIDC なら `client_id`、SAML なら `entity_id`。相手が消えていれば `None`。
+    #[serde(default)]
+    pub identifier: Option<String>,
+    #[serde(default)]
+    pub display_name: Option<String>,
+}
+
+impl ApplicationBindingView {
+    pub fn is_oidc(&self) -> bool {
+        self.protocol == "oidc"
+    }
+}
+
+/// アプリの一覧応答。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApplicationListView {
+    pub applications: Vec<ApplicationView>,
+    /// `record_only` / `enforce`。
+    #[serde(default)]
+    pub enforcement: String,
+}
+
+impl ApplicationListView {
+    /// 判定がまだ断るところまで来ていないか（＝割り当てが効いていない）。
+    pub fn is_record_only(&self) -> bool {
+        self.enforcement != "enforce"
+    }
+}
+
+/// アプリの詳細応答（一覧の 1 件 ＋ 名簿）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApplicationDetailView {
+    #[serde(flatten)]
+    pub application: ApplicationView,
+    #[serde(default)]
+    pub assigned: Vec<ApplicationAssignmentView>,
+}
+
+/// 割り当てられた利用者 1 行。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApplicationAssignmentView {
+    pub user_id: String,
+    pub sub: String,
+    pub email: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    /// 利用者アカウント自体の状態（`ACTIVE` / `DISABLED` / `LOCKED`）。
+    pub status: String,
+    pub assigned_at: String,
+}
+
+impl ApplicationAssignmentView {
+    /// 利用者アカウント自体が止まっているか。⚠ 割り当ては残るので、名簿では別に示す。
+    pub fn is_user_active(&self) -> bool {
+        self.status == "ACTIVE"
+    }
+}
+
+/// 「いま入れている人」の応答（「全員」→「個別」へ倒す前の写し元）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApplicationCurrentUsersView {
+    #[serde(default)]
+    pub users: Vec<ApplicationCurrentUserView>,
+    #[serde(default)]
+    pub total: i64,
+    /// ⚠ 真なら「全員は出せていない」。画面がそのまま言うこと。
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApplicationCurrentUserView {
+    pub user_id: String,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
 /// 保護リソース（`aud` に入る宛名）の公開表現（`GET /admin/resources` の応答要素。ADR-0042）。
 #[derive(Debug, Clone, Deserialize)]
 pub struct ResourceView {

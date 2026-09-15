@@ -1243,6 +1243,16 @@ admin-version-schema-state-behind = Database is behind (migration not applied)
 admin-version-schema-unavailable = Could not read the schema state (api unreachable). The api may be down. The api refuses to start when the database is below the expected version, so check the api log for expected / applied.
 admin-version-note-label = Note
 admin-version-note = The Git version comes from git describe --always --dirty --tags at build time. Versions are sqlx migration sequence numbers. "Expected" is the highest version embedded in the running api; "applied" is the highest version present in the database.
+# Applications (ADR-0054)
+api-application-not-found = Application not found.
+api-application-name-required = Enter the application name.
+api-application-name-too-long = The application name must be at most { $value } characters.
+api-application-invalid = The application settings are not valid.
+api-application-status-invalid = The status must be ACTIVE or DISABLED.
+api-application-assignment-mode-invalid = Who can use it must be EVERYONE or INDIVIDUAL.
+api-application-binding-target-required = Specify exactly one of client_id or service_provider_id.
+api-application-binding-conflict = That connection is already bound to another application.
+
 # Protected resources (the audience of a token; ADR-0042)
 api-resource-not-found = Resource not found.
 api-resource-uri-required = Enter the resource name.
@@ -1254,6 +1264,60 @@ api-resource-uri-conflict = That resource is already registered.
 api-resource-display-name-required = Enter the display name.
 api-resource-display-name-too-long = The display name must be at most { $value } characters.
 api-resource-status-invalid = The status must be ACTIVE or DISABLED.
+
+# Applications (ADR-0054)
+admin-nav-applications = Applications
+admin-nav-applications-desc = Sign-in methods and who may use them
+admin-applications-title = Applications
+admin-applications-intro = An application is one app as your users see it. An OIDC or SAML registration only describes how that app connects. Who may use it is decided here.
+admin-applications-record-only = Assignments are being recorded but not enforced yet. Users without an assignment can still get in, and each one is written to the audit log. Switch to enforcing once the log stays quiet.
+admin-applications-col-name = Application
+admin-applications-col-bindings = Sign-in methods
+admin-applications-col-who = Who can use it
+admin-applications-col-status = Status
+admin-applications-col-actions = Actions
+admin-applications-none = No applications yet.
+admin-applications-bindings-none = No sign-in methods are connected.
+admin-applications-who-everyone = Everyone
+admin-applications-who-individual = Selected users
+admin-applications-state-active = Active
+admin-applications-state-disabled = Disabled
+admin-applications-nobody = Nobody can use it
+admin-applications-nobody-hint = It is set to selected users, but nobody is assigned.
+admin-applications-open = Open
+admin-applications-back = Back to applications
+admin-applications-create-heading = Add an application
+admin-applications-create-intro = Give it a name, then connect a sign-in method.
+admin-applications-name-label = Application name
+admin-applications-who-label = Who can use it
+admin-applications-who-hint = "Everyone" means every user in this tenant. Users from other tenants are never included.
+admin-applications-assign-self = Assign myself
+admin-applications-create-button = Add
+admin-applications-settings-heading = Settings
+admin-applications-save = Save
+admin-applications-confirm-empty = Nobody is assigned. Saving this as "selected users" means nobody will be able to use this application. Save anyway?
+admin-applications-current-heading = Who can get in today
+admin-applications-current-intro = After switching to selected users, only the people you assign will be able to get in. Copy them to the roster before you switch.
+admin-applications-current-none = Nobody can get in today.
+admin-applications-current-truncated = There are too many people to show them all.
+admin-applications-copy-to-roster = Add to roster
+admin-applications-roster-heading = Assigned users
+admin-applications-roster-intro = This decides only whether someone may use the app. What they may do inside it is the app's own decision.
+admin-applications-roster-none = Nobody is assigned.
+admin-applications-roster-col-user = User
+admin-applications-roster-col-since = Assigned
+admin-applications-unassign = Remove
+admin-applications-assign-label = Assign a user
+admin-applications-assign-button = Assign
+admin-applications-assign-hint = You can find a user ID on the members screen.
+admin-applications-bindings-heading = Sign-in methods
+admin-applications-bindings-intro = How this application connects. It can have both OIDC and SAML.
+admin-applications-binding-gone = The connection no longer exists
+admin-applications-unbind = Remove
+admin-applications-bind-protocol = Protocol
+admin-applications-bind-target = Connection
+admin-applications-bind-button = Connect
+admin-applications-bind-hint = For OIDC enter the client ID; for SAML enter the service provider's internal ID.
 
 # Protected resources (the audience of a token; ADR-0042)
 admin-nav-resources = Audiences

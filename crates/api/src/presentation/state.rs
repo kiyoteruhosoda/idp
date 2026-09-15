@@ -18,6 +18,7 @@ use crate::application::admin_access::AdminAccessService;
 use crate::application::admin_login::AdminLoginService;
 use crate::application::application_access::ApplicationAccessService;
 use crate::application::application_log::ApplicationLogService;
+use crate::application::application_management::ApplicationManagementService;
 use crate::application::audit::AuditService;
 use crate::application::audit_query::AuditQueryService;
 use crate::application::authentication_policy_management::AuthenticationPolicyManagementService;
@@ -184,6 +185,8 @@ pub struct AppState {
     pub client_permissions_admin: Arc<ClientPermissionManagementService>,
     /// 保護リソース（`aud` に入る宛名）の登録と、クライアントへの貸し出し（ADR-0042）。
     pub resources_admin: Arc<ResourceManagementService>,
+    /// アプリ（ADR-0054）の登録・binding・利用者の割り当て。
+    pub applications_admin: Arc<ApplicationManagementService>,
     pub admin_login: Arc<AdminLoginService>,
     /// エンドユーザー・ポータルの直接ログイン（クライアント非依存。TOTP を尊重して SSO を直接発行する）。
     pub portal_login: Arc<PortalLoginService>,
@@ -360,7 +363,7 @@ impl AppState {
 
         let audit = Arc::new(AuditService::new(audit_sink, clock.clone()));
         let saml_service_providers = Arc::new(SamlServiceProviderManagementService::new(
-            saml_service_provider_repo,
+            saml_service_provider_repo.clone(),
             ids.clone(),
             clock.clone(),
         ));
@@ -840,6 +843,17 @@ impl AppState {
             audit.clone(),
             clock.clone(),
         ));
+        // アプリの管理（ADR-0054）。判定側（`ApplicationAccessService`）と同じリポジトリ実装を
+        // 共有するので、割り当ての追加・削除は次の code 発行から効く。
+        let applications_admin = Arc::new(ApplicationManagementService::new(
+            applications.clone(),
+            clients.clone(),
+            saml_service_provider_repo.clone(),
+            Arc::new(SqlxTenantMemberQuery::new(pool.clone())),
+            audit.clone(),
+            clock.clone(),
+            ids.clone(),
+        ));
         // 宛名の登録と、クライアントへの貸し出し（ADR-0042）。発行側（TokenService）と同じ
         // リポジトリ実装を共有するので、登録・剥奪の直後から発行に効く。
         let resources_admin = Arc::new(ResourceManagementService::new(
@@ -1068,6 +1082,7 @@ impl AppState {
             management_tokens,
             client_permissions_admin,
             resources_admin,
+            applications_admin,
             admin_login,
             portal_login,
             clients_admin,

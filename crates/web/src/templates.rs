@@ -8,8 +8,9 @@
 //! 型検証される（sqlx のコンパイル時クエリ検証と同じ思想）。
 
 use crate::admin_dto::{
-    AuditLogView, ClientView, ResourceView, SamlServiceProviderView, SigningKeyView,
-    TenantCreatedView, TenantView,
+    ApplicationAssignmentView, ApplicationCurrentUserView, ApplicationView, AuditLogView,
+    ClientView, ResourceView, SamlServiceProviderView, SigningKeyView, TenantCreatedView,
+    TenantView,
 };
 use crate::i18n::Messages;
 use askama::Template;
@@ -1523,6 +1524,15 @@ pub const CONSOLE_NAV: &[ConsoleNavGroup] = &[
         description: "admin-home-group-integration-desc",
         icon: "fa-cubes",
         items: &[
+            // ⚠ **アプリを先頭に置く。** 「連携先」（OIDC / SAML）は、そのアプリが**どう繋がるか**
+            //    でしかない（ADR-0054）。誰が使ってよいかを決めに来た人が最初に着くのはここ。
+            ConsoleNavItem {
+                path: "/admin/applications",
+                icon: "fa-layer-group",
+                label: "admin-nav-applications",
+                description: "admin-nav-applications-desc",
+                requires: None,
+            },
             ConsoleNavItem {
                 path: "/admin/clients",
                 icon: "fa-cubes",
@@ -2260,6 +2270,41 @@ pub struct ClientSecret<'a> {
     pub secret: Option<&'a str>,
     /// 戻り先の一覧（ADR-0038）。
     pub list_href: String,
+}
+
+/// アプリの一覧・登録画面（`GET /{tenant_id}/admin/applications`。ADR-0054）。
+#[derive(Template)]
+#[template(path = "console/applications.html")]
+pub struct ApplicationsList<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub admin: Admin<'a>,
+    pub applications: &'a [ApplicationView],
+    /// 判定がまだ「記録するだけ」か。⚠ **真なら、割り当てはまだ誰も断っていない。**
+    /// これを出さないと、名簿を整えた人が「もう効いている」と思い込む。
+    pub record_only: bool,
+    pub csrf: &'a str,
+    pub error: Option<&'a str>,
+}
+
+/// アプリ 1 件の画面（`GET /{tenant_id}/admin/applications/{id}`。ADR-0054）。
+#[derive(Template)]
+#[template(path = "console/application_detail.html")]
+pub struct ApplicationDetail<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub admin: Admin<'a>,
+    pub application: &'a ApplicationView,
+    pub assigned: &'a [ApplicationAssignmentView],
+    /// 「全員」のときに出す、**いま入れている人**（そのまま名簿へ写せる）。
+    /// 「個別」のときは空。
+    pub current_users: &'a [ApplicationCurrentUserView],
+    /// 「いま入れている人」を上限で打ち切ったか。⚠ 真なら画面がそう言う。
+    pub current_users_truncated: bool,
+    pub current_users_total: i64,
+    pub record_only: bool,
+    pub csrf: &'a str,
+    pub error: Option<&'a str>,
 }
 
 /// 保護リソース（`aud` に入る宛名）の一覧・管理画面（`GET /{tenant_id}/admin/resources`。ADR-0042）。

@@ -19,7 +19,9 @@
 //! - **テナント列を持たないテーブル**（署名鍵・jti 失効リスト・TOTP・WebAuthn・チャレンジ）。
 #![allow(dead_code)]
 
-use crate::domain::application::{Application, ApplicationAssignment, ApplicationBinding};
+use crate::domain::application::{
+    Application, ApplicationAssignment, ApplicationBinding, AssignedUser,
+};
 use crate::domain::application_log::{
     ApplicationLogEntry, ApplicationLogFilter, ApplicationLogRecord,
 };
@@ -1022,8 +1024,9 @@ pub trait ApplicationRepository: Send + Sync {
 
     /// この利用者にこのアプリの割り当てがあるか（判定のホットパス）。
     async fn is_assigned(&self, application_id: Uuid, user_id: Uuid) -> Result<bool>;
-    /// アプリの割り当てを一覧する（`assigned_at` 昇順）。
-    async fn list_assignments(&self, application_id: Uuid) -> Result<Vec<ApplicationAssignment>>;
+    /// アプリに割り当てられた利用者を一覧する（メールの昇順）。**利用者の情報ごと 1 回で読む**
+    /// ——1 件ずつ引き直すと、名簿の長さだけ往復が増える。
+    async fn list_assigned_users(&self, application_id: Uuid) -> Result<Vec<AssignedUser>>;
     /// 割り当ての件数を返す（一覧画面が人数だけを欲しいとき。全件を読まない）。
     async fn count_assignments(&self, application_id: Uuid) -> Result<i64>;
     /// 割り当てを足す（冪等: 既存の割り当ては `assigned_at` を保持する）。
