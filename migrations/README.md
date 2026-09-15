@@ -256,3 +256,23 @@ root テナントの UUID は固定値 `00000000-0000-7000-8000-000000000001`（
   `down` は残存する `private_key_jwt` 行を `client_secret_basic` へ倒して列と表を落とすが、
   **倒したクライアントは認証が通らなくなる**（照合できる secret を持たないため）。巻き戻す場合は
   secret の再発行と RP 側への配布が別途要る（洗い出しのクエリは down の冒頭コメントに置いた）。
+
+- `0054_applications`: **アプリ**という段を足す（ADR-0054）。`applications`（表示名・状態・割り当て
+  モード）・`application_bindings`（アプリ ↔ `clients` / `saml_service_providers`）・
+  `application_assignments`（アプリ × 利用者）。⚠ **割り当てにロールの列を持たせない** ——載るのは
+  「使ってよいか」の 1 ビットだけで、アプリの中で何をしてよいかは RP が持つ（ADR-0033 / ADR-0049 の
+  I6）。既存の `clients` はそれぞれ**アプリ 1 件 ＋ OIDC binding 1 件**へ開き、生成する行の `id` には
+  元の `clients.id` をそのまま使う（UUIDv7 のままで、移行が決定的・冪等になり、どの client から
+  開いたかを列を足さずに追える）。⚠ 割り当てモードは既定の `INDIVIDUAL` で入るが、この時点では
+  判定がどこにも入っていないので誰も締め出されない。SAML の SP は本番に 0 件なので移すものが無い。
+  `down` は 3 表と権限コードを落とす（**割り当ての行は復元できない**ので、流すのは配る前に限る）。
+
+- `0055_policy_conditions_target_applications`: 認証ポリシーの適用条件を `client_ids` から
+  `application_ids` へ寄せる（ADR-0054 の決定 5）。寄せない限り **SAML のアプリはポリシーの外に
+  残り、MFA を要求できない**。列は増やさず JSON のキーを置き換える。⚠ **件数を保ったまま写す**
+  ——LEFT JOIN で欠けを埋め、解決できない相手には nil UUID を入れる。INNER JOIN にすると
+  「解決できない `client_id` だけを持つ条件」が空配列になり、**「何にも一致しない」が
+  「すべてに一致する」へ意味ごと反転する**（空 = 制限しない、なので）。本番の
+  `authentication_policies` は 1 行だけで `client_ids` を使っている行が無いため、実際に写る行は無い。
+  `down` は逆向きに戻すが、**完全には戻らない**（OIDC の binding を 2 本持つアプリは `client_id` が
+  2 つに増え、SAML だけのアプリは戻せる相手を持たない）。

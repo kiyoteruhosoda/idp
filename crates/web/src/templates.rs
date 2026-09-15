@@ -2664,8 +2664,8 @@ impl AuthenticationPoliciesConsole<'_> {
     /// それが一目で分かる文言を出す（空欄にすると「条件が設定されていない」と読めてしまう）。
     pub fn condition_summary(&self, policy: &AuthenticationPolicyResponse) -> String {
         let mut parts = Vec::new();
-        if !policy.client_ids.is_empty() {
-            parts.push(format!("client×{}", policy.client_ids.len()));
+        if !policy.application_ids.is_empty() {
+            parts.push(format!("app×{}", policy.application_ids.len()));
         }
         if !policy.user_ids.is_empty() {
             parts.push(format!("user×{}", policy.user_ids.len()));
@@ -2696,7 +2696,8 @@ pub struct AuthenticationPolicyFormValues {
     pub effect: String,
     pub methods: Vec<String>,
     pub user_verification: bool,
-    pub client_ids: String,
+    /// 対象アプリの内部 ID（改行区切り）。
+    pub application_ids: String,
     pub user_ids: String,
     pub ip_cidrs: String,
     pub time_windows: String,
@@ -2714,7 +2715,7 @@ impl Default for AuthenticationPolicyFormValues {
             effect: "deny".to_string(),
             methods: Vec::new(),
             user_verification: false,
-            client_ids: String::new(),
+            application_ids: String::new(),
             user_ids: String::new(),
             ip_cidrs: String::new(),
             time_windows: String::new(),

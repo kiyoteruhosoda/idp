@@ -45,7 +45,7 @@ fn sample_policy() -> Value {
         "enabled": true,
         "effect": "require_specific_method",
         "effect_params": { "methods": ["webauthn"], "user_verification": true },
-        "client_ids": ["app-a", "app-b"],
+        "application_ids": ["01990000-0000-7000-8000-00000000000a", "01990000-0000-7000-8000-00000000000b"],
         "user_ids": [],
         "ip_cidrs": ["10.0.0.0/8"],
         "time_windows": [
@@ -176,7 +176,10 @@ async fn creating_a_policy_sends_the_conditions_the_operator_typed() {
                 ("effect", "require_specific_method"),
                 ("method_webauthn", "1"),
                 ("user_verification", "1"),
-                ("client_ids", "app-a\napp-b"),
+                (
+                    "application_ids",
+                    "01990000-0000-7000-8000-00000000000a\n01990000-0000-7000-8000-00000000000b",
+                ),
                 ("user_ids", ""),
                 ("ip_cidrs", "10.0.0.0/8"),
                 ("time_windows", "mon,tue,wed,thu,fri 09:00-18:00 +09:00"),
@@ -203,7 +206,13 @@ async fn creating_a_policy_sends_the_conditions_the_operator_typed() {
     assert_eq!(body["effect"], "require_specific_method");
     assert_eq!(body["effect_params"]["methods"], json!(["webauthn"]));
     assert_eq!(body["effect_params"]["user_verification"], true);
-    assert_eq!(body["client_ids"], json!(["app-a", "app-b"]));
+    assert_eq!(
+        body["application_ids"],
+        json!([
+            "01990000-0000-7000-8000-00000000000a",
+            "01990000-0000-7000-8000-00000000000b"
+        ])
+    );
     assert_eq!(body["ip_cidrs"], json!(["10.0.0.0/8"]));
     assert_eq!(body["time_windows"][0]["days"], json!([1, 2, 3, 4, 5]));
     assert_eq!(body["time_windows"][0]["start_minute"], 540);
@@ -267,7 +276,10 @@ async fn an_unreadable_time_window_stops_the_save_and_keeps_the_edit_context() {
                 ("policy_name", "Office hours"),
                 ("priority", "10"),
                 ("effect", "deny"),
-                ("client_ids", "app-a\napp-b"),
+                (
+                    "application_ids",
+                    "01990000-0000-7000-8000-00000000000a\n01990000-0000-7000-8000-00000000000b",
+                ),
                 ("time_windows", "mon 09:00-18:00\nnonsense"),
                 ("csrf_token", &csrf()),
             ],

@@ -209,9 +209,9 @@ pub struct AuthenticationPolicyResponse {
     /// `require_specific_method` の要求内容（他の効果では `None`）。
     #[serde(default)]
     pub effect_params: Option<RequiredMethodsPayload>,
-    /// 対象クライアント（空 = 全クライアント）。
+    /// 対象アプリの内部 ID（空 = 全アプリ。ADR-0054 の決定 5）。
     #[serde(default)]
-    pub client_ids: Vec<String>,
+    pub application_ids: Vec<String>,
     /// 対象ユーザーの内部 ID（空 = 全ユーザー）。
     #[serde(default)]
     pub user_ids: Vec<String>,
@@ -244,8 +244,9 @@ pub struct AuthenticationPolicyUpsertRequest {
     pub effect: String,
     #[serde(default)]
     pub effect_params: Option<RequiredMethodsPayload>,
+    /// 対象アプリの内部 ID（空 = 全アプリ。ADR-0054 の決定 5）。
     #[serde(default)]
-    pub client_ids: Vec<String>,
+    pub application_ids: Vec<String>,
     #[serde(default)]
     pub user_ids: Vec<String>,
     #[serde(default)]

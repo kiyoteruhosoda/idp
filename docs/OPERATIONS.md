@@ -785,10 +785,10 @@ Swagger UI `/api/docs` を参照）。
 curl -b "sso_session_id=<管理者セッション>" \
   https://<api>/{tenant_id}/admin/authentication-policies
 
-# 例: 特定クライアントのログインを拒否する
+# 例: 特定アプリのログインを拒否する（アプリの id は /admin/applications で引く）
 curl -b "sso_session_id=<管理者セッション>" -H 'Content-Type: application/json' \
   -d '{"policy_code":"deny-legacy","policy_name":"Deny legacy app","priority":1,
-       "effect":"deny","client_ids":["legacy-app"]}' \
+       "effect":"deny","application_ids":["<アプリのUUID>"]}' \
   https://<api>/{tenant_id}/admin/authentication-policies
 
 # 例: 特定ユーザーに MFA を必須にする（TOTP 未設定のユーザーはログイン不可になる）
@@ -798,12 +798,34 @@ curl -b "sso_session_id=<管理者セッション>" -H 'Content-Type: applicatio
   https://<api>/{tenant_id}/admin/authentication-policies
 ```
 
-- 条件（`client_ids` / `user_ids`）は空 = 制限しない、複数条件は AND。`deny` は常に他へ優先する。
+- 条件（`application_ids` / `user_ids`）は空 = 制限しない、複数条件は AND。`deny` は常に他へ優先する。
 - 一致するポリシーが無いときの既定動作はランタイム設定 `AUTH_POLICY_DEFAULT_EFFECT`
   （既定 `allow`。`deny` にすると許可ポリシーを明示した対象しかログインできない）。
 - アカウントロックの閾値はランタイム設定 `LOGIN_MAX_FAILED_ATTEMPTS`（既定 10 回）・
   `LOGIN_LOCK_DURATION_SECS`（既定 900 秒）で調整する（設定手順は「ランタイム設定を DB で
   変更したいとき」参照。反映には再起動が必要）。
+
+## アプリの利用者を絞りたいとき（ADR-0054）
+
+**アプリ**は利用者から見た 1 つのアプリで、OIDC の連携先や SAML の SP は「そのアプリがどう繋がるか」
+を表す。誰が使ってよいかはアプリの段で決める。画面は管理コンソールの **アプリ**（`/admin/applications`）。
+
+1. アプリを開く。「利用できる人」を **個別** にする。
+2. ⚠ **「全員」から倒すときは、画面に出ている「いま入れている人」を先に名簿へ写す。**
+   空の名簿のまま保存すると、そのアプリは**誰も使えなくなる**（保存時に確認が出る）。
+3. 名簿から外した利用者は、**次に認可を取りに来たとき**から入れなくなる（発行済みのトークン・
+   セッションには効かない）。すぐ止めたいなら利用者かアプリ自体を停止する。
+
+締め出してしまったときは、同じ画面で利用者 ID を貼って「割り当てる」だけで戻る。
+
+- ⚠ **判定は既定では「記録するだけ」**（`APPLICATION_ASSIGNMENT_ENFORCEMENT` = `record_only`）。
+  この間、割り当てが無い利用者も入れるが、監査ログに `application.access_denied`（成功行）が残る。
+  **その行が数日出なくなってから** `enforce` へ切り替える（設定手順は「ランタイム設定を DB で
+  変更したいとき」参照。反映には再起動が必要）。
+- 漏れの確認:
+  `SELECT reason, COUNT(*) FROM audit_log WHERE event_type='application.access_denied' GROUP BY reason;`
+- 新しく登録した連携先（`authorization_code`）は、登録と同時にアプリとして開かれる（「個別」・
+  登録した本人が名簿に入る）。サービスアカウントには入る利用者が居ないのでアプリは作られない。
 
 ## パスワードの要件を強くしたいとき（AP7）
 

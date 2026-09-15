@@ -16,6 +16,7 @@
 //! 失敗カウンタのリセットは **TOTP 成功時にここで**行う。`LoginService` はパスワード成功だけでは
 //! リセットしない（そこで消すと、再ログインを挟むだけでロックを回避できる）。
 
+use crate::application::application_access::ApplicationAccessService;
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authenticator_management::{
     consume_single_use_code, is_blocked_in_registry,
@@ -113,6 +114,9 @@ pub struct MfaLoginService {
     /// パスワード段階（`LoginService`）だけで判定すると、`require_specific_method` を課された
     /// 利用者が「TOTP を登録しているから MFA へ進む」経路で判定を素通りしてしまう。
     authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
+    /// 認証ポリシーの宛先（`conditions.application_ids`）を解決する（ADR-0054）。
+    /// フローが持っているのは `client_id` だけなので、アプリへの読み替えをここで挟む。
+    applications: Arc<ApplicationAccessService>,
     policy_default_effect: DefaultPolicyEffect,
 }
 
@@ -135,6 +139,7 @@ impl MfaLoginService {
         lockout: LockoutPolicy,
         csrf_secret: [u8; 32],
         authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
+        applications: Arc<ApplicationAccessService>,
         policy_default_effect: DefaultPolicyEffect,
     ) -> Self {
         Self {
@@ -155,6 +160,7 @@ impl MfaLoginService {
             lockout,
             csrf_secret,
             authentication_policies,
+            applications,
             policy_default_effect,
         }
     }
@@ -262,6 +268,17 @@ impl MfaLoginService {
         //      この時点で判定する。パスワード段階で判定すると、TOTP 登録済みというだけで
         //      「WebAuthn 必須」のポリシーを迂回できてしまう。
         let used_methods = [AuthenticationMethod::Password, second_factor];
+        // 認証ポリシーの宛先はアプリ（ADR-0054 の決定 5）。フローが持っているのは `client_id`
+        // だけなので、ここでアプリへ読み替える。まだアプリへ繋がっていない client は `None` で、
+        // `application_ids` を持つポリシーは一致しない。
+        let application_id = match self
+            .applications
+            .policy_target_for_oidc_client(tenant_id, &client_id)
+            .await
+        {
+            Ok(id) => id,
+            Err(e) => return MfaLoginOutcome::Internal(e.to_string()),
+        };
         let decision = match self
             .authentication_policies
             .list_enabled_for_tenant(tenant_id)
@@ -270,7 +287,7 @@ impl MfaLoginService {
             Ok(policies) => evaluate_policies(
                 &policies,
                 &AuthenticationContext {
-                    client_id: Some(&client_id),
+                    application_id,
                     user_id,
                     ip_address: ctx.ip_address.as_deref(),
                     now,
@@ -1136,7 +1153,7 @@ mod tests {
                     allowed: rate_limit_allowed,
                     calls: Mutex::new(0),
                 }),
-                audit,
+                audit.clone(),
                 clock,
                 TEST_KEY,
                 std::time::Duration::from_secs(3600),
@@ -1148,6 +1165,9 @@ mod tests {
                 },
                 CSRF_SECRET,
                 Arc::new(FakePolicies),
+                crate::application::application_access::test_support::allow_everything(
+                    audit.clone(),
+                ),
                 DefaultPolicyEffect::Allow,
             );
 

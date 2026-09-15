@@ -22,6 +22,7 @@
 //! 外部 IdP で本人確認できても、テナントの認証ポリシー（AP2/AP4）は同じように適用する。
 //! 「外部で認証した」ことは `deny` を免れる理由にならない。
 
+use crate::application::application_access::ApplicationAccessService;
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authorize::code_dispatch;
 use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
@@ -144,6 +145,9 @@ pub struct ExternalLoginService {
     client_consents: Arc<dyn ClientConsentRepository>,
     code_issuance: Arc<CodeIssuanceService>,
     authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
+    /// 認証ポリシーの宛先（`conditions.application_ids`）を解決する（ADR-0054）。
+    /// フローが持っているのは `client_id` だけなので、アプリへの読み替えをここで挟む。
+    applications: Arc<ApplicationAccessService>,
     oidc: Arc<dyn ExternalOidcClient>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
@@ -168,6 +172,7 @@ impl ExternalLoginService {
         client_consents: Arc<dyn ClientConsentRepository>,
         code_issuance: Arc<CodeIssuanceService>,
         authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
+        applications: Arc<ApplicationAccessService>,
         oidc: Arc<dyn ExternalOidcClient>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
@@ -188,6 +193,7 @@ impl ExternalLoginService {
             client_consents,
             code_issuance,
             authentication_policies,
+            applications,
             oidc,
             audit,
             clock,
@@ -541,7 +547,7 @@ impl ExternalLoginService {
         // 7. 認証ポリシー（AP2/AP3）。外部で認証したことは `deny` を免れる理由にならない。
         //
         //    OIDC 認可フローの途中から来た場合は、その auth_session を**評価より先に**引いて
-        //    クライアントと `acr_values` を文脈に載せる。空文脈で評価すると `client_ids` や
+        //    アプリと `acr_values` を文脈に載せる。空文脈で評価すると `application_ids` や
         //    `requested_acr` を条件に持つポリシーが一致せず、外部 IdP 経由なら条件付きの拒否・
         //    方式指定を回避できてしまう（後段でこの auth_session を使って code を発行するので、
         //    「クライアント文脈を持たない」わけではない）。ポータル起点なら空のままでよい。
@@ -556,6 +562,19 @@ impl ExternalLoginService {
             .as_ref()
             .map(|s| s.requested_acr())
             .unwrap_or_default();
+        // 認証ポリシーの宛先はアプリ（ADR-0054 の決定 5）。認可フローの外（アカウント設定から
+        // 始めた連携）には client が無いので `None`。
+        let application_id = match originating_session.as_ref() {
+            Some(session) => match self
+                .applications
+                .policy_target_for_oidc_client(tenant_id, &session.client_id)
+                .await
+            {
+                Ok(id) => id,
+                Err(e) => return CallbackOutcome::Internal(e.to_string()),
+            },
+            None => None,
+        };
         let decision = match self
             .authentication_policies
             .list_enabled_for_tenant(tenant_id)
@@ -564,7 +583,7 @@ impl ExternalLoginService {
             Ok(policies) => evaluate_policies(
                 &policies,
                 &AuthenticationContext {
-                    client_id: originating_session.as_ref().map(|s| s.client_id.as_str()),
+                    application_id,
                     user_id: user.id,
                     ip_address: ctx.ip_address.as_deref(),
                     now,

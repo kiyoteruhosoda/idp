@@ -15,6 +15,11 @@
 mod support;
 
 use axum::body::Body;
+
+/// 実在しないアプリの id。条件の往復（保存 → 読み出し → 置換）だけを見るテストで使う
+/// ——存在確認は行われないので、実在させる必要は無い。
+const LEGACY_APPLICATION_ID: &str = "01990000-0000-7000-8000-00000000beef";
+
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{Request, StatusCode};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
@@ -161,7 +166,7 @@ async fn admin_can_manage_authentication_policies() {
                 "policy_name": "Deny legacy client",
                 "priority": 10,
                 "effect": "deny",
-                "client_ids": ["legacy-app"],
+                "application_ids": [LEGACY_APPLICATION_ID],
             }),
         ),
     )
@@ -231,7 +236,7 @@ async fn admin_can_manage_authentication_policies() {
     let updated = body_json(res).await;
     assert_eq!(updated["effect"], "require_mfa");
     assert_eq!(updated["enabled"], false);
-    assert_eq!(updated["client_ids"], json!([]), "conditions replaced");
+    assert_eq!(updated["application_ids"], json!([]), "conditions replaced");
     assert_eq!(
         audit_count(
             &env.pool,
@@ -292,6 +297,10 @@ async fn deny_policy_blocks_password_login_until_disabled() {
     let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     let client_id =
         support::insert_public_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
+    // ポリシーの宛先はアプリ（ADR-0054 の決定 5）。直接入れた client にはアプリが付かないので、
+    // 移行と同じ形（アプリ 1 件 ＋ OIDC binding 1 件）へ開いてから id を使う。
+    let application_id =
+        support::open_client_as_application(&env.pool, &env.root_tenant_id, &client_id).await;
     let username = format!("policy-user-{}", support::unique());
     let password = "CorrectHorse9!";
     register_verified_user(
@@ -303,7 +312,7 @@ async fn deny_policy_blocks_password_login_until_disabled() {
     )
     .await;
 
-    // 対象クライアント限定の deny ポリシーを作成する。
+    // 対象アプリ限定の deny ポリシーを作成する。
     let uri = format!("/{}/admin/authentication-policies", env.root_tenant_id);
     let code = format!("it-deny-login-{}", support::unique());
     let res = send(
@@ -316,7 +325,7 @@ async fn deny_policy_blocks_password_login_until_disabled() {
                 "policy_name": "Deny this client",
                 "priority": 1,
                 "effect": "deny",
-                "client_ids": [client_id],
+                "application_ids": [application_id],
             }),
         ),
     )
@@ -358,7 +367,7 @@ async fn deny_policy_blocks_password_login_until_disabled() {
                 "priority": 1,
                 "enabled": false,
                 "effect": "deny",
-                "client_ids": [client_id],
+                "application_ids": [application_id],
             }),
         ),
     )

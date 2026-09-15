@@ -16,6 +16,7 @@
 //! TOTP 未設定なら拒否（`MfaEnrollmentRequired`）・設定済みなら既存の MFA ステップへ倒す。
 //! パスワード検証後に評価することで、資格情報を知らない攻撃者からはポリシーの存在を観測できない。
 
+use crate::application::application_access::ApplicationAccessService;
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authorize::code_dispatch;
 use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
@@ -131,6 +132,9 @@ pub struct LoginService {
     client_consents: Arc<dyn ClientConsentRepository>,
     totp_secrets: Arc<dyn TotpSecretRepository>,
     authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
+    /// 認証ポリシーの宛先（`conditions.application_ids`）を解決する（ADR-0054）。
+    /// フローが持っているのは `client_id` だけなので、アプリへの読み替えをここで挟む。
+    applications: Arc<ApplicationAccessService>,
     code_issuance: Arc<CodeIssuanceService>,
     hasher: Arc<dyn PasswordHasher>,
     rate_limiter: Arc<dyn LoginRateLimiter>,
@@ -156,6 +160,7 @@ impl LoginService {
         client_consents: Arc<dyn ClientConsentRepository>,
         totp_secrets: Arc<dyn TotpSecretRepository>,
         authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
+        applications: Arc<ApplicationAccessService>,
         code_issuance: Arc<CodeIssuanceService>,
         hasher: Arc<dyn PasswordHasher>,
         rate_limiter: Arc<dyn LoginRateLimiter>,
@@ -176,6 +181,7 @@ impl LoginService {
             client_consents,
             totp_secrets,
             authentication_policies,
+            applications,
             code_issuance,
             hasher,
             rate_limiter,
@@ -379,6 +385,17 @@ impl LoginService {
         //      `deny` は即拒否。`require_mfa` は後段の MFA 判定（9.）で強制する。
         // 認可要求の `acr_values`（AP3 の `requested_acr` 条件が参照する）。
         let requested_acr = session.requested_acr();
+        // 認証ポリシーの宛先はアプリ（ADR-0054 の決定 5）。フローが持っているのは `client_id`
+        // だけなので、ここでアプリへ読み替える。まだアプリへ繋がっていない client は `None` で、
+        // `application_ids` を持つポリシーは一致しない。
+        let application_id = match self
+            .applications
+            .policy_target_for_oidc_client(tenant_id, &client_id)
+            .await
+        {
+            Ok(id) => id,
+            Err(e) => return LoginOutcome::Internal(e.to_string()),
+        };
         let policy_decision = match self
             .authentication_policies
             .list_enabled_for_tenant(tenant_id)
@@ -387,7 +404,7 @@ impl LoginService {
             Ok(policies) => evaluate_policies(
                 &policies,
                 &AuthenticationContext {
-                    client_id: Some(&client_id),
+                    application_id,
                     user_id: user.id,
                     ip_address: ctx.ip_address.as_deref(),
                     now,
@@ -1154,6 +1171,7 @@ mod tests {
                 confirmed: has_totp,
             }),
             Arc::new(FakePolicies),
+            crate::application::application_access::test_support::allow_everything(audit.clone()),
             code_issuance,
             Arc::new(PlainHasher),
             Arc::new(AllowAll),

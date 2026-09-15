@@ -267,7 +267,7 @@ impl PortalLoginService {
         Ok(evaluate_policies(
             &policies,
             &AuthenticationContext {
-                client_id: None,
+                application_id: None,
                 user_id,
                 ip_address,
                 now: self.clock.now(),

@@ -163,7 +163,7 @@ impl TimeWindow {
 /// ポリシーの適用条件（仕様 §8。JSON カラムに保存する）。
 ///
 /// 各条件は **空 = 制限しない（全てに一致）**、非空 = いずれかに一致で成立。複数の条件は AND。
-/// ユーザー特定前に評価できる条件（`client_ids`）とユーザー特定後にのみ評価できる条件
+/// ユーザー特定前に評価できる条件（`application_ids`）とユーザー特定後にのみ評価できる条件
 /// （`user_ids`）が混在するため、評価はユーザー特定後に行う（仕様 §9.1）。
 ///
 /// **評価材料が無い条件は「一致しない」に倒す。** 例えば `ip_cidrs` を持つポリシーは、接続元 IP を
@@ -174,9 +174,13 @@ impl TimeWindow {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyConditions {
-    /// 対象クライアント（OAuth/OIDC の `client_id`）。空 = 全クライアント。
+    /// 対象アプリ（`applications.id`）。空 = 全アプリ。
+    ///
+    /// ⚠ **クライアントではなくアプリを指す**（ADR-0054 の決定 5）。`client_ids` のままだと
+    /// SAML のアプリがポリシーの外に残り、MFA を要求できない。`service_provider_ids` を
+    /// 並べる案を取らないのは、プロトコルが増えるたびに条件が増えるためである。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub client_ids: Vec<String>,
+    pub application_ids: Vec<Uuid>,
     /// 対象ユーザー（内部ユーザー ID）。空 = 全ユーザー。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub user_ids: Vec<Uuid>,
@@ -205,10 +209,13 @@ impl PolicyConditions {
 
     /// 認証コンテキストに一致するか（空の条件は常に一致）。
     pub fn matches(&self, ctx: &AuthenticationContext) -> bool {
-        let client_ok = self.client_ids.is_empty()
+        // アプリを解決できない文脈（ポータル・管理コンソール、binding がまだ無い client）では
+        // `application_ids` を持つポリシーは一致しない ——評価材料が無い条件は「一致しない」に
+        // 倒す、という本モジュールの規則どおり。
+        let application_ok = self.application_ids.is_empty()
             || ctx
-                .client_id
-                .is_some_and(|c| self.client_ids.iter().any(|allowed| allowed == c));
+                .application_id
+                .is_some_and(|id| self.application_ids.contains(&id));
         let user_ok = self.user_ids.is_empty() || self.user_ids.contains(&ctx.user_id);
         let network_ok = self.ip_cidrs.is_empty() || self.matches_network(ctx.ip_address);
         let time_ok =
@@ -218,7 +225,7 @@ impl PolicyConditions {
                 .requested_acr
                 .iter()
                 .any(|requested| self.requested_acr.iter().any(|v| v == requested));
-        client_ok && user_ok && network_ok && time_ok && acr_ok
+        application_ok && user_ok && network_ok && time_ok && acr_ok
     }
 
     fn matches_network(&self, ip_address: Option<&str>) -> bool {
@@ -296,8 +303,9 @@ fn prefix_matches(network: &[u8], addr: &[u8], prefix_len: u8) -> bool {
 /// ポリシー評価の入力（認証コンテキスト。仕様 §9.1「ユーザー特定後」時点の情報）。
 #[derive(Debug, Clone, Copy)]
 pub struct AuthenticationContext<'a> {
-    /// フローのクライアント（ポータルログイン等、クライアント非依存の経路では `None`）。
-    pub client_id: Option<&'a str>,
+    /// フローのアプリ（ADR-0054）。ポータルログイン等のアプリ非依存の経路と、まだアプリへ
+    /// 繋がっていない client では `None`。
+    pub application_id: Option<Uuid>,
     /// 特定済みユーザーの内部 ID。
     pub user_id: Uuid,
     /// 接続元 IP（`TRUST_FORWARDED_HEADERS` の判定を通った値。取れない場合は `None`）。
@@ -309,10 +317,10 @@ pub struct AuthenticationContext<'a> {
 }
 
 impl<'a> AuthenticationContext<'a> {
-    /// クライアント・ネットワーク・時刻・acr を持たない最小の文脈（ポータル/管理コンソール等）。
+    /// アプリ・ネットワーク・時刻・acr を持たない最小の文脈（ポータル/管理コンソール等）。
     pub fn for_user(user_id: Uuid, now: DateTime<Utc>) -> Self {
         Self {
-            client_id: None,
+            application_id: None,
             user_id,
             ip_address: None,
             now,
@@ -691,7 +699,7 @@ mod ap3_tests {
         acr: &'static [String],
     ) -> AuthenticationContext<'static> {
         AuthenticationContext {
-            client_id: None,
+            application_id: None,
             user_id: Uuid::nil(),
             ip_address: ip,
             now,
@@ -935,7 +943,7 @@ mod ap3_tests {
             evaluate_policies(
                 &[],
                 &AuthenticationContext {
-                    client_id: None,
+                    application_id: None,
                     user_id: Uuid::nil(),
                     ip_address: None,
                     now: at(12, 0),
@@ -956,7 +964,7 @@ mod ap3_tests {
             evaluate_policies(
                 &[],
                 &AuthenticationContext {
-                    client_id: None,
+                    application_id: None,
                     user_id: Uuid::nil(),
                     ip_address: None,
                     now: at(12, 0),
@@ -981,7 +989,7 @@ mod ap3_tests {
         let decision = evaluate_policies(
             &[specific],
             &AuthenticationContext {
-                client_id: None,
+                application_id: None,
                 user_id: Uuid::nil(),
                 ip_address: None,
                 now: at(12, 0),
@@ -1011,7 +1019,7 @@ mod ap3_tests {
             evaluate_policies(
                 &[deny],
                 &AuthenticationContext {
-                    client_id: None,
+                    application_id: None,
                     user_id: Uuid::nil(),
                     ip_address: None,
                     now: at(12, 0),
@@ -1098,9 +1106,19 @@ mod tests {
         }
     }
 
-    fn ctx(user_id: Uuid, client_id: Option<&str>) -> AuthenticationContext<'_> {
+    /// 条件に使うアプリ（テスト用の固定値）。
+    fn an_application() -> Uuid {
+        Uuid::from_u128(0x0199_0000_0000_7000_8000_0000_0000_0001)
+    }
+
+    /// 上とは別のアプリ。
+    fn another_application() -> Uuid {
+        Uuid::from_u128(0x0199_0000_0000_7000_8000_0000_0000_0002)
+    }
+
+    fn ctx(user_id: Uuid, application_id: Option<Uuid>) -> AuthenticationContext<'static> {
         AuthenticationContext {
-            client_id,
+            application_id,
             user_id,
             ip_address: None,
             now: fixed_now(),
@@ -1135,7 +1153,11 @@ mod tests {
             PolicyConditions::default(),
         );
         assert_eq!(
-            evaluate_policies(&[p], &ctx(user, Some("app")), DefaultPolicyEffect::Allow),
+            evaluate_policies(
+                &[p],
+                &ctx(user, Some(an_application())),
+                DefaultPolicyEffect::Allow
+            ),
             PolicyDecision::RequireMfa {
                 policy_code: "all".to_string()
             }
@@ -1219,23 +1241,23 @@ mod tests {
     }
 
     #[test]
-    fn client_condition_limits_scope() {
+    fn an_application_condition_limits_scope() {
         let user = Uuid::new_v4();
         let p = policy(
             "deny-legacy",
             1,
             PolicyEffect::Deny,
             PolicyConditions {
-                client_ids: vec!["legacy-app".to_string()],
+                application_ids: vec![an_application()],
                 user_ids: vec![],
                 ..Default::default()
             },
         );
-        // 対象クライアントのみ拒否。
+        // 対象アプリのみ拒否。
         assert!(matches!(
             evaluate_policies(
                 std::slice::from_ref(&p),
-                &ctx(user, Some("legacy-app")),
+                &ctx(user, Some(an_application())),
                 DefaultPolicyEffect::Allow
             ),
             PolicyDecision::Deny { .. }
@@ -1244,7 +1266,7 @@ mod tests {
         assert!(matches!(
             evaluate_policies(
                 std::slice::from_ref(&p),
-                &ctx(user, Some("other-app")),
+                &ctx(user, Some(another_application())),
                 DefaultPolicyEffect::Allow
             ),
             PolicyDecision::Allow { .. }
@@ -1268,7 +1290,7 @@ mod tests {
             1,
             PolicyEffect::RequireMfa,
             PolicyConditions {
-                client_ids: vec!["app".to_string()],
+                application_ids: vec![an_application()],
                 user_ids: vec![target],
                 ..Default::default()
             },
@@ -1277,7 +1299,7 @@ mod tests {
         assert!(matches!(
             evaluate_policies(
                 std::slice::from_ref(&p),
-                &ctx(target, Some("app")),
+                &ctx(target, Some(an_application())),
                 DefaultPolicyEffect::Allow
             ),
             PolicyDecision::RequireMfa { .. }
@@ -1286,7 +1308,7 @@ mod tests {
         assert!(matches!(
             evaluate_policies(
                 std::slice::from_ref(&p),
-                &ctx(other, Some("app")),
+                &ctx(other, Some(an_application())),
                 DefaultPolicyEffect::Allow
             ),
             PolicyDecision::Allow { .. }
@@ -1294,7 +1316,7 @@ mod tests {
         assert!(matches!(
             evaluate_policies(
                 std::slice::from_ref(&p),
-                &ctx(target, Some("another")),
+                &ctx(target, Some(another_application())),
                 DefaultPolicyEffect::Allow
             ),
             PolicyDecision::Allow { .. }
@@ -1427,7 +1449,7 @@ mod tests {
     fn conditions_serde_round_trip() {
         let user = Uuid::new_v4();
         let conditions = PolicyConditions {
-            client_ids: vec!["app".to_string()],
+            application_ids: vec![an_application()],
             user_ids: vec![user],
             ..Default::default()
         };

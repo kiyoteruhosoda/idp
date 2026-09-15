@@ -531,6 +531,7 @@ impl AppState {
             clock.clone(),
             config.auth_session_ttl(),
             authentication_policies.clone(),
+            application_access.clone(),
             config.auth_policy_default_effect(),
             tenant_resolution.clone(),
         ));
@@ -554,6 +555,7 @@ impl AppState {
             client_consents.clone(),
             totp_secrets.clone(),
             authentication_policies.clone(),
+            application_access.clone(),
             code_issuance.clone(),
             hasher.clone(),
             rate_limiter.clone(),
@@ -573,6 +575,7 @@ impl AppState {
             client_consents.clone(),
             totp_secrets.clone(),
             authentication_policies.clone(),
+            application_access.clone(),
             code_issuance.clone(),
             hasher.clone(),
             password_policy.clone(),
@@ -652,6 +655,7 @@ impl AppState {
         ));
         let clients_admin = Arc::new(ClientManagementService::new(
             clients.clone(),
+            applications.clone(),
             hasher.clone(),
             audit.clone(),
             clock.clone(),
@@ -900,6 +904,7 @@ impl AppState {
             client_consents.clone(),
             code_issuance.clone(),
             authentication_policies.clone(),
+            application_access.clone(),
             Arc::new(ReqwestExternalOidcClient::new()),
             audit.clone(),
             clock.clone(),
@@ -995,6 +1000,7 @@ impl AppState {
             config.login_lockout(),
             *config.csrf_secret(),
             authentication_policies.clone(),
+            application_access.clone(),
             config.auth_policy_default_effect(),
         ));
 
@@ -1013,6 +1019,7 @@ impl AppState {
             sso_sessions.clone(),
             client_consents,
             authentication_policies.clone(),
+            application_access.clone(),
             code_issuance,
             // レート制限はログイン・直接ログインのパスキー経路と同じ枠を共有する（T39）。
             rate_limiter.clone(),

@@ -997,8 +997,8 @@ pub struct AuthenticationPolicyResponse {
     pub effect: String,
     /// `require_specific_method` の要求内容（他の効果では `null`。AP3）。
     pub effect_params: Option<RequiredMethodsDto>,
-    /// 対象クライアント（空 = 全クライアント）。
-    pub client_ids: Vec<String>,
+    /// 対象アプリの内部 ID（空 = 全アプリ。ADR-0054 の決定 5）。
+    pub application_ids: Vec<String>,
     /// 対象ユーザーの内部 ID（空 = 全ユーザー）。
     pub user_ids: Vec<String>,
     /// 対象ネットワークゾーン（CIDR 表記。空 = 全ネットワーク。AP3）。
@@ -1067,9 +1067,9 @@ pub struct AuthenticationPolicyUpsertRequest {
     /// `require_specific_method` の要求内容（他の効果で指定するとエラー。AP3）。
     #[serde(default)]
     pub effect_params: Option<RequiredMethodsDto>,
-    /// 対象クライアント（省略・空 = 全クライアント）。
+    /// 対象アプリの内部 ID（UUID。省略・空 = 全アプリ。ADR-0054 の決定 5）。
     #[serde(default)]
-    pub client_ids: Vec<String>,
+    pub application_ids: Vec<String>,
     /// 対象ユーザーの内部 ID（UUID。省略・空 = 全ユーザー）。
     #[serde(default)]
     pub user_ids: Vec<String>,
@@ -1107,7 +1107,7 @@ mod authentication_policy_contract_tests {
                 methods: vec!["webauthn".to_string()],
                 user_verification: true,
             }),
-            client_ids: vec!["app-a".to_string()],
+            application_ids: vec!["01990000-0000-7000-8000-000000000001".to_string()],
             user_ids: vec!["019f8ea8-f5dd-7fc7-ac15-a7d4337e4610".to_string()],
             ip_cidrs: vec!["10.0.0.0/8".to_string()],
             time_windows: vec![assay_contracts::admin::TimeWindowPayload {
@@ -1129,7 +1129,7 @@ mod authentication_policy_contract_tests {
         let params = api.effect_params.expect("effect_params must survive");
         assert_eq!(params.methods, vec!["webauthn".to_string()]);
         assert!(params.user_verification);
-        assert_eq!(api.client_ids, shared.client_ids);
+        assert_eq!(api.application_ids, shared.application_ids);
         assert_eq!(api.user_ids, shared.user_ids);
         assert_eq!(api.ip_cidrs, shared.ip_cidrs);
         assert_eq!(api.requested_acr, shared.requested_acr);

@@ -9,6 +9,7 @@
 //! エラー方針: `client_id` / `redirect_uri` が無効な場合はリダイレクトせず、
 //! それ以外のエラーは `redirect_uri` にエラーコードを付与して返す。
 
+use crate::application::application_access::ApplicationAccessService;
 use crate::application::audit::RequestContext;
 use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
 use crate::application::sso_restore::SsoRestorer;
@@ -159,6 +160,9 @@ pub struct AuthorizeService {
     /// 使い回す」操作なので、認可要求ごとに変わる条件（`acr_values`・`client_ids`）や、
     /// 復元後に変わったポリシーが効かなくなる。
     authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
+    /// 認証ポリシーの宛先（`conditions.application_ids`）を解決する（ADR-0054）。
+    /// フローが持っているのは `client_id` だけなので、アプリへの読み替えをここで挟む。
+    applications: Arc<ApplicationAccessService>,
     policy_default_effect: DefaultPolicyEffect,
     /// ログイン画面へ出すテナント表示名の引き当て先（`login_context` でのみ使う）。
     /// リポジトリを直に持たず解決サービスを通すのは、同じ行を同じリクエストの入口
@@ -177,6 +181,7 @@ impl AuthorizeService {
         clock: Arc<dyn Clock>,
         auth_session_ttl: std::time::Duration,
         authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
+        applications: Arc<ApplicationAccessService>,
         policy_default_effect: DefaultPolicyEffect,
         tenants: Arc<TenantResolutionService>,
     ) -> Self {
@@ -190,6 +195,7 @@ impl AuthorizeService {
             auth_session_ttl: Duration::from_std(auth_session_ttl)
                 .expect("auth session TTL out of range"),
             authentication_policies,
+            applications,
             policy_default_effect,
             tenants,
         }
@@ -567,10 +573,19 @@ impl AuthorizeService {
             Err(e) => return RestoredPolicy::Internal(e.to_string()),
         };
         let requested_acr = session.requested_acr();
+        // 認証ポリシーの宛先はアプリ（ADR-0054 の決定 5）。
+        let application_id = match self
+            .applications
+            .policy_target_for_oidc_client(tenant.tenant_id(), &session.client_id)
+            .await
+        {
+            Ok(id) => id,
+            Err(e) => return RestoredPolicy::Internal(e.to_string()),
+        };
         let decision = evaluate_policies(
             &policies,
             &AuthenticationContext {
-                client_id: Some(&session.client_id),
+                application_id,
                 user_id,
                 ip_address: ctx.ip_address.as_deref(),
                 now,
