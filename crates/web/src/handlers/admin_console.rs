@@ -529,7 +529,7 @@ fn admin_resolution(
         AdminSession::Unauthenticated => AdminResolution::Reject(redirect_to_login(tenant)),
         AdminSession::Forbidden => AdminResolution::Reject(forbidden_response(headers)),
         AdminSession::NotFound => {
-            AdminResolution::Reject(error_pages::page(StatusCode::NOT_FOUND, headers))
+            AdminResolution::Reject(error_pages::page(StatusCode::NOT_FOUND, headers, None))
         }
         AdminSession::Error => {
             AdminResolution::Reject((StatusCode::BAD_GATEWAY, Html(String::new())).into_response())

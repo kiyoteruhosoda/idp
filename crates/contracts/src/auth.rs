@@ -325,9 +325,10 @@ pub enum InternalAuthenticateResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalTotpSetupRequest {
     /// SSO セッション Cookie の生値（web が転送）。
+    ///
+    /// 認証アプリに出す宛名は**受け取る側（api）がこのセッションの利用者から引く**。web は
+    /// 利用者名を知らないため、以前はここへ空文字を渡していて、QR の宛名が空のまま出ていた。
     pub sso_session_id: String,
-    /// 認証アプリに表示するアカウント名（通常はメールアドレスまたはユーザー名）。
-    pub account_name: String,
 }
 
 /// TOTP セットアップ開始 API のレスポンス。

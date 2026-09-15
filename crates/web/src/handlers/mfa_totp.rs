@@ -63,11 +63,9 @@ pub async fn setup_page(
         );
     };
 
-    // ユーザー名は SSO から特定できないため、メールは取得が複雑になる。
-    // API に account_name は表示目的のみなので空文字でも機能する。
+    // 認証アプリに出す宛名は api が SSO セッションの利用者から引く（web は利用者名を知らない）。
     let req = InternalTotpSetupRequest {
         sso_session_id: sso_session_id.clone(),
-        account_name: String::new(),
     };
     let result = match state.api.totp_setup(&correlation.0, &req).await {
         Ok(r) => r,
@@ -156,7 +154,6 @@ pub async fn setup_confirm(
     let qr_data = if refetch_qr {
         let setup_req = InternalTotpSetupRequest {
             sso_session_id: sso_session_id.clone(),
-            account_name: String::new(),
         };
         state.api.totp_setup(&correlation.0, &setup_req).await.ok()
     } else {
