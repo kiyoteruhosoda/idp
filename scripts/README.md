@@ -26,8 +26,12 @@
 | `build-remote.sh` | **デプロイ先（一ホスト方式・git あり）**: git 取得 → 自己更新 → `build.sh` → `deploy.sh` を 1 本で実行。dist/ の転送が不要 |
 | `build-remote-container.sh` | **デプロイ先（一ホスト方式・git 無し）**: dev コンテナ内で `git pull` → `build.sh` → 生成 `dist/` を取り込み → `deploy.sh` を 1 本で実行。Synology 等 git 非搭載向け（旧 `pick.sh` を統合） |
 | `e2e.sh` | web→api の疎通 E2E（api・web を実プロセス起動して HTTP で検証） |
-| `test_deploy.sh` | `deploy.sh` の CLI/エラー処理をスタブ docker で検証（CI 用） |
+| `test_deploy.sh` | `deploy.sh` の CLI/エラー処理をスタブ docker で検証（CI 用）。同時に何本流してもよい（中間出力は実行ごとの作業場所に置き、成功したら消す。失敗したら残して場所を出す） |
 | `test_build_remote.sh` | `build-remote.sh` の取得・自己更新・委譲をスタブで検証（CI 用） |
+
+一時ファイル・中間出力は `mktemp` / `mktemp -d` で**実行ごとに**作る。同じ容れ物で別々の作業が同時に
+スクリプトを流すので、固定の `/tmp/<名前>` は互いの出力を踏む。`scripts/*.sh` に固定の `/tmp/` を書くと
+CI の `No fixed /tmp paths in scripts` で落ちる。
 
 ## build.sh — ビルド（ビルド側・起動しない）
 
