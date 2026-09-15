@@ -33,8 +33,14 @@ SET p.conditions = JSON_SET(
                          JSON_EXTRACT(p.conditions, '$.client_ids'),
                          '$[*]' COLUMNS (client_id VARCHAR(255) PATH '$')
                      ) AS jt
+                -- ⚠ `COLLATE` を明示する。`JSON_TABLE` が作る列は**接続の既定の照合順序**を持つが、
+                -- `clients.client_id` は表の定義どおり `utf8mb4_unicode_ci` である。DB を既定の
+                -- 照合順序で作った環境（CI の mariadb イメージ等）では、この 2 つの比較が
+                -- `Illegal mix of collations`（1267）で落ちる ——**DB をどう作ったかで移行の
+                -- 成否が変わる**ので、比較する側で揃える。
                 LEFT JOIN clients c
-                       ON c.tenant_id = p.tenant_id AND c.client_id = jt.client_id
+                       ON c.tenant_id = p.tenant_id
+                      AND c.client_id = jt.client_id COLLATE utf8mb4_unicode_ci
                 LEFT JOIN application_bindings b
                        ON b.client_id = c.id
             ),

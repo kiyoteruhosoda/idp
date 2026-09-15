@@ -14,8 +14,10 @@ SET p.conditions = JSON_SET(
                          JSON_EXTRACT(p.conditions, '$.application_ids'),
                          '$[*]' COLUMNS (application_id VARCHAR(36) PATH '$')
                      ) AS jt
+                -- `COLLATE` を明示する理由は `up` と同じ（`JSON_TABLE` の列は接続の既定を持つ）。
                 LEFT JOIN application_bindings b
-                       ON b.application_id = jt.application_id AND b.protocol = 'oidc'
+                       ON b.application_id = jt.application_id COLLATE utf8mb4_unicode_ci
+                      AND b.protocol = 'oidc'
                 LEFT JOIN clients c
                        ON c.id = b.client_id
             ),
