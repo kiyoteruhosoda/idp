@@ -175,7 +175,9 @@ impl TenantRepository for SqlxTenantRepository {
             .await
             .map_err(|e| match &e {
                 sqlx::Error::Database(db) if db.is_foreign_key_violation() => {
-                    DomainError::Conflict("tenant has child tenants, users, or clients".to_string())
+                    DomainError::Conflict(
+                        "tenant has child tenants, users, clients, or applications".to_string(),
+                    )
                 }
                 _ => DomainError::Repository(e.to_string()),
             })?;

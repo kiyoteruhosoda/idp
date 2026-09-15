@@ -32,6 +32,8 @@ CREATE TABLE applications (
     KEY applications_tenant_idx (tenant_id, display_name),
     CONSTRAINT applications_status_chk CHECK (status IN ('ACTIVE', 'DISABLED')),
     CONSTRAINT applications_assignment_mode_chk CHECK (assignment_mode IN ('EVERYONE', 'INDIVIDUAL')),
+    -- `clients` と同じ RESTRICT。テナントを消す前に中身を空にする、という既存の手順を
+    -- アプリだけ例外にしない（消えたテナントのアプリだけが残る形も作らない）。
     CONSTRAINT applications_tenant_fk FOREIGN KEY (tenant_id)
         REFERENCES tenants (id) ON DELETE RESTRICT
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
