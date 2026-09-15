@@ -649,10 +649,10 @@ admin-current-tenant = 現在のテナント
 admin-home-groups-label = 種別ごとの管理メニュー
 admin-home-group-operations = 運用・監査
 admin-home-group-operations-desc = 稼働状況とログを確認します。
-admin-home-group-access = アカウント
-admin-home-group-access-desc = assay に名乗る主体を管理します。人（利用者・メンバー）と、機械（サービスアカウント）です。
+admin-home-group-access = アカウントとサインイン
+admin-home-group-access-desc = 誰が assay に入れるか、どうやって入るかを決めます。
 admin-home-group-integration = 連携先・鍵管理
-admin-home-group-integration-desc = assay から ID を受け取るアプリと、署名鍵を管理します。
+admin-home-group-integration-desc = assay が ID を渡す相手と、相手がそれを検証するための鍵です。
 admin-home-group-settings = システム・テナント設定
 admin-home-group-settings-desc = テナント、登録、配信設定を調整します。
 admin-nav-status-desc = クライアントの稼働状態を確認
@@ -1041,6 +1041,7 @@ admin-members-unlock-none = このアカウントはロックされていませ�
 
 # 外部 IdP 設定・ログイン識別子の管理画面（AP16）
 admin-nav-external-idps = 外部 IdP
+admin-nav-external-idps-desc = 他の IdP でログインできるようにする
 admin-members-login-identifiers-button = ログイン識別子
 admin-external-idps-title = 外部 IdP
 admin-external-idps-intro = 外部の OpenID Provider（OIDC）または SAML IdP でログインできるようにします。クライアントシークレットは暗号化して保存し、以後は表示しません。

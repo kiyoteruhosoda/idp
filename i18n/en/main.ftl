@@ -649,10 +649,10 @@ admin-current-tenant = Current tenant
 admin-home-groups-label = Administration menu grouped by category
 admin-home-group-operations = Operations and audit
 admin-home-group-operations-desc = Review runtime status and logs.
-admin-home-group-access = Accounts
-admin-home-group-access-desc = Manage who authenticates to assay: people (users and members) and machines (service accounts).
+admin-home-group-access = Accounts and sign-in
+admin-home-group-access-desc = Decide who can get into assay, and how they get in.
 admin-home-group-integration = Relying parties and keys
-admin-home-group-integration-desc = Manage the apps that receive identities from assay, and the signing keys.
+admin-home-group-integration-desc = The apps assay hands identities to, and the keys they verify them with.
 admin-home-group-settings = System and tenant settings
 admin-home-group-settings-desc = Adjust tenant, registration, and delivery settings.
 admin-nav-status-desc = Check client runtime status
@@ -1041,6 +1041,7 @@ admin-members-unlock-none = That account was not locked. Nothing changed.
 
 # External IdP and login identifier admin screens (AP16)
 admin-nav-external-idps = External IdPs
+admin-nav-external-idps-desc = Let people sign in with another identity provider
 admin-members-login-identifiers-button = Login identifiers
 admin-external-idps-title = External identity providers
 admin-external-idps-intro = Let people sign in with an external OpenID Provider (OIDC) or SAML identity provider. The client secret is stored encrypted and is never shown again.

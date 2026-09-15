@@ -6,54 +6,38 @@
   <p class="text-muted mb-0">{{ messages.get("admin-home-intro") }}</p>
 </div>
 
-<div class="row g-3" aria-label="{{ messages.get("admin-home-groups-label") }}">
-  <div class="col-md-6">
-    <div class="card h-100">
-      <div class="card-header d-flex align-items-center"><i class="fa-solid fa-heart-pulse me-2" aria-hidden="true"></i>{{ messages.get("admin-home-group-operations") }}</div>
-      <div class="card-body pb-0"><p class="text-muted small">{{ messages.get("admin-home-group-operations-desc") }}</p></div>
-      <div class="list-group list-group-flush">
-        <a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/status"><div class="fw-semibold">{{ messages.get("admin-nav-status") }}</div><small class="text-muted">{{ messages.get("admin-nav-status-desc") }}</small></a>
-        <a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/audit-logs"><div class="fw-semibold">{{ messages.get("admin-nav-audit") }}</div><small class="text-muted">{{ messages.get("admin-nav-audit-desc") }}</small></a>
-        {#- サイドバーと同じ条件で出す（`idp.system.admin` 必須の画面）。 -#}
-        {% if let Some(chrome) = admin %}{% if chrome.can("idp.system.admin") %}<a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/logs"><div class="fw-semibold">{{ messages.get("admin-nav-applog") }}</div><small class="text-muted">{{ messages.get("admin-nav-applog-desc") }}</small></a>{% endif %}{% endif %}
-      </div>
-    </div>
-  </div>
+{#- サイドバーと同じ定義（`templates::CONSOLE_NAV`）から描く。⚠ **両方を手で書かない**
+    ——書いていた頃は、サイドバーにだけ「外部 IdP」が、ここにだけ「認証ポリシー」が載っていた。
+    どちらも相手の部分集合にならないので、利用者からは「省略」とも読めない。
 
+    ⚠ **`h-100` を付けない。** まとまりごとの項目数が 1〜6 とばらつくため、高さを揃えると
+    伸びたぶんの余白を `card-body` が吸い、**項目 1 つのカードでその項目が底へ押し出される**
+    （説明が主役で行き先がおまけに見える）。高さは中身なりでよい。 -#}
+<div class="row g-3 align-items-start" aria-label="{{ messages.get("admin-home-groups-label") }}">
+  {% if let Some(chrome) = admin %}
+  {% for group in crate::templates::CONSOLE_NAV %}
+  {%- let items = group.visible_items(chrome) -%}
+  {% if !items.is_empty() %}
   <div class="col-md-6">
-    <div class="card h-100">
-      <div class="card-header d-flex align-items-center"><i class="fa-solid fa-users me-2" aria-hidden="true"></i>{{ messages.get("admin-home-group-access") }}</div>
-      <div class="card-body pb-0"><p class="text-muted small">{{ messages.get("admin-home-group-access-desc") }}</p></div>
+    <div class="card">
+      {#- 説明は**見出しの副題**として置く。⚠ リストの中へ入れると字下げも幅も項目と同じになり、
+          「押せない 1 行目」に見える。 -#}
+      <div class="card-header">
+        <div class="d-flex align-items-center fw-semibold"><i class="fa-solid {{ group.icon }} me-2" aria-hidden="true"></i>{{ messages.get(group.label) }}</div>
+        <p class="text-muted small mb-0 mt-1">{{ messages.get(group.description) }}</p>
+      </div>
       <div class="list-group list-group-flush">
-        <a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/members"><div class="fw-semibold">{{ messages.get("admin-nav-members") }}</div><small class="text-muted">{{ messages.get("admin-nav-members-desc") }}</small></a>
-        <a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/service-accounts"><div class="fw-semibold">{{ messages.get("admin-nav-service-accounts") }}</div><small class="text-muted">{{ messages.get("admin-nav-service-accounts-desc") }}</small></a>
+        {% for item in items %}
+        <a class="list-group-item list-group-item-action" href="{{ tenant }}{{ item.path }}">
+          <div class="fw-semibold">{{ messages.get(item.label) }}</div>
+          <small class="text-muted">{{ messages.get(item.description) }}</small>
+        </a>
+        {% endfor %}
       </div>
     </div>
   </div>
-
-  <div class="col-md-6">
-    <div class="card h-100">
-      <div class="card-header d-flex align-items-center"><i class="fa-solid fa-cubes me-2" aria-hidden="true"></i>{{ messages.get("admin-home-group-integration") }}</div>
-      <div class="card-body pb-0"><p class="text-muted small">{{ messages.get("admin-home-group-integration-desc") }}</p></div>
-      <div class="list-group list-group-flush">
-        <a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/clients"><div class="fw-semibold">{{ messages.get("admin-nav-clients") }}</div><small class="text-muted">{{ messages.get("admin-nav-clients-desc") }}</small></a>
-        <a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/resources"><div class="fw-semibold">{{ messages.get("admin-nav-resources") }}</div><small class="text-muted">{{ messages.get("admin-nav-resources-desc") }}</small></a>
-        <a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/signing-keys"><div class="fw-semibold">{{ messages.get("admin-nav-signing-keys") }}</div><small class="text-muted">{{ messages.get("admin-nav-signing-keys-desc") }}</small></a>
-        <a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/saml-clients"><div class="fw-semibold">{{ messages.get("admin-nav-saml-clients") }}</div><small class="text-muted">{{ messages.get("admin-nav-saml-clients-desc") }}</small></a>
-        <a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/authentication-policies"><div class="fw-semibold">{{ messages.get("admin-nav-auth-policies") }}</div><small class="text-muted">{{ messages.get("admin-nav-auth-policies-desc") }}</small></a>
-      </div>
-    </div>
-  </div>
-
-  <div class="col-md-6">
-    <div class="card h-100">
-      <div class="card-header d-flex align-items-center"><i class="fa-solid fa-gear me-2" aria-hidden="true"></i>{{ messages.get("admin-home-group-settings") }}</div>
-      <div class="card-body pb-0"><p class="text-muted small">{{ messages.get("admin-home-group-settings-desc") }}</p></div>
-      <div class="list-group list-group-flush">
-        <a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/settings"><div class="fw-semibold">{{ messages.get("admin-nav-settings") }}</div><small class="text-muted">{{ messages.get("admin-nav-settings-desc") }}</small></a>
-        {% if let Some(chrome) = admin %}{% if chrome.can("idp.system.admin") %}<a class="list-group-item list-group-item-action" href="{{ tenant }}/admin/tenants"><div class="fw-semibold">{{ messages.get("admin-nav-tenants") }}</div><small class="text-muted">{{ messages.get("admin-nav-tenants-desc") }}</small></a>{% endif %}{% endif %}
-      </div>
-    </div>
-  </div>
+  {% endif %}
+  {% endfor %}
+  {% endif %}
 </div>
 {% endblock %}
