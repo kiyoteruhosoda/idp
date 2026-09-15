@@ -827,6 +827,61 @@ curl -b "sso_session_id=<管理者セッション>" -H 'Content-Type: applicatio
 - 新しく登録した連携先（`authorization_code`）は、登録と同時にアプリとして開かれる（「個別」・
   登録した本人が名簿に入る）。サービスアカウントには入る利用者が居ないのでアプリは作られない。
 
+## アプリの名簿を作りたいとき（ADR-0054 の決定 4）
+
+**「全員」から「個別」へ倒すとき**と、**移行で入ったアプリ（名簿が空）を埋めるとき**の手順。
+⚠ **記憶や台帳から作らない。** 実際に入れる人を data から集める。
+
+### 1. いま assay で入ったことがある人（RP の `federated_identities`）
+
+RP の DB を**読むだけ**。アプリごとに 1 回ずつ。`subject` が assay の `users.sub` に当たる。
+
+```sql
+-- RP 側（例。テーブル名・列名は RP によって違う）
+SELECT subject FROM federated_identities WHERE issuer = '<そのテナントの issuer>';
+```
+
+```sql
+-- assay 側（上の subject を貼る）
+SELECT id, email FROM users WHERE sub IN ('<subject>', ...);
+```
+
+### 2. ⚠ まだ結び付いていないが入れるはずの人（ここが漏れやすい）
+
+RP の**有効なローカル利用者**のうち、assay 側に対応する利用者が居るもの。突き合わせはメール
+アドレスで行う（RP によって列名が違う。SSO の作りが 2 通りあるため、写しを持つ列も違う）。
+1 の結果との**和**を取る。
+
+### 3. 入れる
+
+```sql
+INSERT INTO application_assignments (application_id, user_id, assigned_at, assigned_by)
+VALUES ('<アプリのUUID>', '<利用者のUUID>', UTC_TIMESTAMP(6), NULL)
+ON DUPLICATE KEY UPDATE application_id = application_id;   -- 冪等。既存の割り当ては触らない
+```
+
+画面から入れるなら **アプリ** → 対象のアプリ → 「利用者を割り当てる」。
+
+### 4. ⚠ 漏れを監査ログで潰してから切り替える
+
+判定が `record_only` の間、**割り当てが無いのに来た人**は監査に残る。ここに出た人が 1・2 で
+拾えなかった漏れである。
+
+```sql
+SELECT result, reason, COUNT(*) AS hits, MAX(occurred_at) AS last_seen
+  FROM audit_log
+ WHERE event_type = 'application.access_denied'
+ GROUP BY result, reason ORDER BY hits DESC;
+```
+
+`reason` は `application=<id> reason=not_assigned enforcement=record_only` の形。⚠ **`result` が
+`success` の行は「通したが割り当てが無かった」**（＝漏れ）、`failure` は「実際に断った」。
+この行が数日ぶん出なくなってから `APPLICATION_ASSIGNMENT_ENFORCEMENT=enforce` へ切り替える
+（設定手順は「ランタイム設定を DB で変更したいとき」参照。反映には再起動が必要）。
+
+⚠ **切り替える前に、割り当てを足す操作が数秒で終わることを確かめておく**（締め出したときの
+復旧経路）。アプリの画面で利用者 ID を貼って「割り当てる」だけで戻る。
+
 ## パスワードの要件を強くしたいとき（AP7）
 
 すべてランタイム設定で調整する（設定手順は「ランタイム設定を DB で変更したいとき」参照。反映には

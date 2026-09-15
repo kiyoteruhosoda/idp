@@ -693,6 +693,10 @@ pub struct ApplicationDetailResponse {
     #[serde(flatten)]
     pub application: ApplicationResponse,
     pub assigned: Vec<ApplicationAssignmentResponse>,
+    /// いま判定が断るところまで来ているか（`record_only` / `enforce`）。
+    /// 一覧と同じものを添えるのは、**画面が「効いていない」を出すためだけに一覧を引き直さない**
+    /// ようにするためである。
+    pub enforcement: String,
 }
 
 /// 割り当てられた利用者 1 行。

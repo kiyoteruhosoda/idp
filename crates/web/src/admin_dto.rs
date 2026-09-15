@@ -183,6 +183,16 @@ pub struct ApplicationDetailView {
     pub application: ApplicationView,
     #[serde(default)]
     pub assigned: Vec<ApplicationAssignmentView>,
+    /// `record_only` / `enforce`。
+    #[serde(default)]
+    pub enforcement: String,
+}
+
+impl ApplicationDetailView {
+    /// 判定がまだ断るところまで来ていないか（＝割り当てが効いていない）。
+    pub fn is_record_only(&self) -> bool {
+        self.enforcement != "enforce"
+    }
 }
 
 /// 割り当てられた利用者 1 行。

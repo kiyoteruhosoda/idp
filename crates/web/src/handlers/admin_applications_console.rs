@@ -489,15 +489,6 @@ async fn render_detail(
             .await
             .ok()
     };
-    // いまの判定の段階は一覧の応答にしか載らない。⚠ 失敗しても画面は出す（既定は安全側の
-    // 「記録するだけ」に倒す ——効いていないものを「効いている」と言わない）。
-    let record_only = state
-        .api
-        .list_applications(&correlation.0, &tenant.0, &sso)
-        .await
-        .map(|list| list.is_record_only())
-        .unwrap_or(true);
-
     // Messages は await の後に作る（non-Send のため await をまたがない）。
     let messages = Messages::new(locale(headers));
     let csrf = csrf_from(headers, state.config.csrf_secret());
@@ -515,7 +506,7 @@ async fn render_detail(
             .unwrap_or(&no_users),
         current_users_truncated: current.as_ref().map(|c| c.truncated).unwrap_or(false),
         current_users_total: current.as_ref().map(|c| c.total).unwrap_or(0),
-        record_only,
+        record_only: detail.is_record_only(),
         csrf: &csrf,
         error,
     });

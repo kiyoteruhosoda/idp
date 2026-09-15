@@ -14,6 +14,7 @@ use crate::domain::application::{
     BindingTarget,
 };
 use crate::domain::audit::{AuditEventType, AuditResult};
+use crate::domain::client::Client;
 use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
 use crate::domain::id_generator::IdGenerator;
@@ -132,9 +133,18 @@ impl ApplicationManagementService {
             .list(tenant.tenant_id())
             .await
             .map_err(map_repo_error)?;
+        // クライアントは**1 回だけ**読む。binding ごとに引き直すと、アプリ数 × クライアント数の
+        // 走査になる（アプリが増えるほど二乗で効いてくる）。
+        let clients = self
+            .clients
+            .list(tenant.tenant_id())
+            .await
+            .map_err(map_repo_error)?;
         let mut summaries = Vec::with_capacity(applications.len());
         for application in applications {
-            let bindings = self.summarize_bindings(tenant, application.id).await?;
+            let bindings = self
+                .summarize_bindings(tenant, application.id, &clients)
+                .await?;
             let assigned_count = self
                 .applications
                 .count_assignments(application.id)
@@ -156,7 +166,12 @@ impl ApplicationManagementService {
         id: Uuid,
     ) -> Result<ApplicationDetail, ApplicationManagementError> {
         let application = self.load(tenant, id).await?;
-        let bindings = self.summarize_bindings(tenant, id).await?;
+        let clients = self
+            .clients
+            .list(tenant.tenant_id())
+            .await
+            .map_err(map_repo_error)?;
+        let bindings = self.summarize_bindings(tenant, id, &clients).await?;
         let assigned = self
             .applications
             .list_assigned_users(id)
@@ -538,10 +553,13 @@ impl ApplicationManagementService {
         Ok(binding)
     }
 
+    /// binding を画面に出す形へ広げる。`clients` は呼び出し側が 1 回だけ読んだ一覧
+    /// （`clients.id` から名前を引くだけなので、binding ごとに読み直さない）。
     async fn summarize_bindings(
         &self,
         tenant: TenantContext,
         application_id: Uuid,
+        clients: &[Client],
     ) -> Result<Vec<BindingSummary>, ApplicationManagementError> {
         let bindings = self
             .applications
@@ -551,14 +569,10 @@ impl ApplicationManagementService {
         let mut summaries = Vec::with_capacity(bindings.len());
         for binding in bindings {
             let (identifier, display_name) = match binding.target {
-                BindingTarget::Oidc { client_row_id } => self
-                    .clients
-                    .list(tenant.tenant_id())
-                    .await
-                    .map_err(map_repo_error)?
-                    .into_iter()
+                BindingTarget::Oidc { client_row_id } => clients
+                    .iter()
                     .find(|c| c.id == client_row_id)
-                    .map(|c| (Some(c.client_id), Some(c.app_name)))
+                    .map(|c| (Some(c.client_id.clone()), Some(c.app_name.clone())))
                     .unwrap_or((None, None)),
                 BindingTarget::Saml {
                     service_provider_id,

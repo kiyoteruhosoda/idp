@@ -88,7 +88,7 @@ pub async fn get_application(
         .detail(tenant.context(), id)
         .await
         .map_err(|e| map_error(e, locale))?;
-    Ok(Json(to_detail(&detail)))
+    Ok(Json(to_detail(&detail, &state)))
 }
 
 /// アプリを登録する（`POST /{tenant_id}/admin/applications`）。
@@ -143,7 +143,10 @@ pub async fn create_application(
         .detail(tenant.context(), application.id)
         .await
         .map_err(|e| map_error(e, locale))?;
-    Ok((StatusCode::CREATED, Json(to_detail(&detail).application)))
+    Ok((
+        StatusCode::CREATED,
+        Json(to_detail(&detail, &state).application),
+    ))
 }
 
 /// アプリを更新する（`PUT /{tenant_id}/admin/applications/{application_id}`）。
@@ -198,7 +201,7 @@ pub async fn update_application(
         .detail(tenant.context(), id)
         .await
         .map_err(|e| map_error(e, locale))?;
-    Ok(Json(to_detail(&detail).application))
+    Ok(Json(to_detail(&detail, &state).application))
 }
 
 /// アプリを削除する（`DELETE /{tenant_id}/admin/applications/{application_id}`）。
@@ -316,7 +319,7 @@ pub async fn add_binding(
         .detail(tenant.context(), id)
         .await
         .map_err(|e| map_error(e, locale))?;
-    Ok(Json(to_detail(&detail).application))
+    Ok(Json(to_detail(&detail, &state).application))
 }
 
 /// 認証方法を外す
@@ -403,7 +406,7 @@ pub async fn assign_user(
         .detail(tenant.context(), id)
         .await
         .map_err(|e| map_error(e, locale))?;
-    Ok(Json(to_detail(&detail)))
+    Ok(Json(to_detail(&detail, &state)))
 }
 
 /// 割り当てを外す
@@ -534,7 +537,7 @@ fn to_response(summary: &ApplicationSummary) -> ApplicationResponse {
     }
 }
 
-fn to_detail(detail: &ApplicationDetail) -> ApplicationDetailResponse {
+fn to_detail(detail: &ApplicationDetail, state: &AppState) -> ApplicationDetailResponse {
     let summary = ApplicationSummary {
         application: detail.application.clone(),
         bindings: detail
@@ -552,6 +555,11 @@ fn to_detail(detail: &ApplicationDetail) -> ApplicationDetailResponse {
     };
     ApplicationDetailResponse {
         application: to_response(&summary),
+        enforcement: state
+            .config
+            .application_assignment_enforcement()
+            .as_str()
+            .to_string(),
         assigned: detail
             .assigned
             .iter()

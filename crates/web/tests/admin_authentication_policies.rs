@@ -140,7 +140,10 @@ async fn editing_prefills_every_condition_so_a_save_cannot_silently_drop_one() {
 
     assert!(html.contains(r#"value="office-hours""#), "code: {html}");
     assert!(html.contains(r#"value="10""#), "priority: {html}");
-    assert!(html.contains("app-a\napp-b"), "client ids: {html}");
+    assert!(
+        html.contains("01990000-0000-7000-8000-00000000000a\n01990000-0000-7000-8000-00000000000b"),
+        "application ids: {html}"
+    );
     assert!(html.contains("10.0.0.0/8"), "cidrs: {html}");
     assert!(
         html.contains("mon,tue,wed,thu,fri 09:00-18:00 +09:00"),
@@ -298,7 +301,10 @@ async fn an_unreadable_time_window_stops_the_save_and_keeps_the_edit_context() {
         html.contains(r#"value="office-hours""#),
         "code kept: {html}"
     );
-    assert!(html.contains("app-a\napp-b"), "client ids kept: {html}");
+    assert!(
+        html.contains("01990000-0000-7000-8000-00000000000a\n01990000-0000-7000-8000-00000000000b"),
+        "application ids kept: {html}"
+    );
     assert!(
         html.contains("mon 09:00-18:00\nnonsense"),
         "the rejected time windows must stay so the operator can fix them: {html}"
