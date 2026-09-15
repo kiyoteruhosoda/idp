@@ -13,6 +13,7 @@
 docs/
 ├── ARCHITECTURE.md   # 設計・レイヤー構成・命名規則（DDDの実装パターン解説）
 ├── OPERATIONS.md     # 手順書（下記「ドキュメントの役割分担」参照）
+├── RP_INTEGRATION.md # assay につなぐアプリ（RP）の作り方（ADR-0049 の適用手順）
 ├── Progress.md       # 進行中・未着手タスクのみ
 ├── CHANGELOG.md      # 完了した重要な変更の要約
 ├── adr/              # 設計判断（ADR。NNNN-*.md 形式）
@@ -33,12 +34,13 @@ docs/
 | ドキュメント | 役割 | 書くこと | 書かないこと |
 |---|---|---|---|
 | `docs/OPERATIONS.md` | 手順書 | 「〇〇したいとき、〇〇する」という操作手順・コマンドのみ | なぜそうなっているか、過去に何が起きたか、内部の仕組み、API仕様 |
+| `docs/RP_INTEGRATION.md` | RP 向けガイド | assay につなぐ側が守ること（鍵・往復・acr・写し・停止の伝播） | assay 内部の設計（ARCHITECTURE へ）、判断の根拠（ADR-0049 へ） |
 | `docs/ARCHITECTURE.md` | 設計ガイド | レイヤー構成・命名規則・DDDパターンの解説 | 個別機能の操作手順、環境変数の一覧（OPERATIONS.md へ） |
 | 各クレート／モジュールの README | 仕様書 | コード・設定が**現在どう動くか**（現状の挙動・制約・注意点） | 「以前は〜だったが」「原因は〜だった」という過去の不具合の経緯 |
 | `docs/CHANGELOG.md` | 変更履歴 | 完了した重要な変更の要約（バグ修正・機能追加・破壊的変更を問わない。1〜数行） | 詳しい経緯・調査過程（history へ） |
 | `docs/history/` | 経緯の詳細記録 | 要約だけでは伝わらない、規模の大きい変更の背景・原因・調査過程 | 軽微な進捗（Progress で管理） |
 
-迷ったら「これは手順か（OPERATIONS）」「設計の解説か（ARCHITECTURE）」
+迷ったら「これは手順か（OPERATIONS）」「設計の解説か（ARCHITECTURE）」「つなぐ側の話か（RP_INTEGRATION）」
 「現在の仕様か（README）」「短い要約か（CHANGELOG）」「経緯まで残すべき規模か（history）」で判断する。
 同じ内容を複数箇所に重複して書かない。
 
