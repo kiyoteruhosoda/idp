@@ -1,7 +1,8 @@
 # ADR-0024: `sid` は発行経路を辿って運び、ログアウト通知は署名済みトークンを保存しないキューで再送する
 
 - 日付: 2026-08-08
-- 状態: 採用
+- 状態: 採用（⚠ ログアウトで通知を積むことは ADR-0055 で廃止。`sid` の運搬と配送キューは存続し、
+  キューは管理者の停止の通知（ADR-0053）が使う）
 - 関連: ADR-0018（Cookie 非依存の api/web ハンドオフ）、OpenID Back-Channel Logout 1.0 §2.1、
   `migrations/0021_backchannel_logout_deliveries.up.sql`
 
