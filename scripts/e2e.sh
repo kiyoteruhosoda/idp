@@ -254,12 +254,17 @@ curl -fsS -b "$AJAR" "${WEB}${metadata_href}" | grep -q "IDPSSODescriptor" \
   || fail "IdP メタデータを web のダウンロード URL から取得できません"
 pass "IdP メタデータ導線（コンソールと同じ web オリジンからダウンロード）"
 
-# メンバー一覧（絞り込み）→ 権限付与。利用者検索画面は廃止したためメンバー画面が起点。
+# メンバー一覧（絞り込み）→ 1 人の画面 → 権限付与。利用者検索画面は廃止したためメンバー画面が起点。
+# ⚠ **一覧には操作を置かない**（操作列 168px に 7 つのボタンを並べて崩れていた）。権限への
+#   リンクは 1 人の画面にあるので、ここも 2 段で辿る。
 members_html="$(curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin/members?q=${U}")"
-grep -q "/${ROOT}/admin/users/[0-9a-f-]\{36\}/permissions" <<<"$members_html" || fail "メンバー絞り込みが権限リンクを返しません"
+grep -q "/${ROOT}/admin/members/[0-9a-f-]\{36\}" <<<"$members_html" || fail "メンバー絞り込みが 1 人の画面への導線を返しません"
 tid="$(mariadb_exec "SELECT u.id FROM users u JOIN user_login_identifiers p ON p.primary_of_user = u.id \
   WHERE u.tenant_id='${ROOT}' AND p.normalized_value='${U}' LIMIT 1;")"
 [[ -n "$tid" ]] || fail "対象利用者が見つかりません"
+member_html="$(curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin/members/${tid}")"
+grep -q "/${ROOT}/admin/users/${tid}/permissions" <<<"$member_html" || fail "メンバーの画面が権限リンクを返しません"
+grep -q "/${ROOT}/admin/members/${tid}/reset-mfa" <<<"$member_html" || fail "メンバーの画面に MFA 解除がありません"
 perm_page="$(mktemp)"
 perm_status="$(curl -sS -b "$AJAR" -o "$perm_page" -w '%{http_code}' "${WEB}/${ROOT}/admin/users/${tid}/permissions")"
 if [[ "$perm_status" == "200" ]]; then

@@ -95,6 +95,7 @@ use utoipa::{Modify, OpenApi};
         handlers::admin_login_identifiers::delete_login_identifier,
         handlers::admin_login_identifiers::promote_primary_email,
         handlers::admin_members::list_members,
+        handlers::admin_members::get_member,
         handlers::admin_members::revoke_member,
         handlers::admin_members::update_member_status,
         handlers::admin_invitations::create_invitation,
