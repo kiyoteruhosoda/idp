@@ -14,6 +14,7 @@
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::password_policy::PasswordPolicyService;
+use crate::application::stop_announcement::SessionStopAnnouncer;
 use crate::domain::admin_actor::AdminActor;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
@@ -105,6 +106,8 @@ pub struct UserLifecycleService {
     /// 再発行 → 本人が変更 の直後に**再発行前のパスワードへ戻せてしまう**。
     password_policy: Arc<PasswordPolicyService>,
     audit: Arc<AuditService>,
+    /// 失効させたことを RP へ伝える（ADR-0049 I7）。assay の中だけで消しても RP は気付けない。
+    stop_announcement: Arc<dyn SessionStopAnnouncer>,
     clock: Arc<dyn Clock>,
 }
 
@@ -121,6 +124,7 @@ impl UserLifecycleService {
         hasher: Arc<dyn PasswordHasher>,
         password_policy: Arc<PasswordPolicyService>,
         audit: Arc<AuditService>,
+        stop_announcement: Arc<dyn SessionStopAnnouncer>,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
@@ -134,6 +138,7 @@ impl UserLifecycleService {
             hasher,
             password_policy,
             audit,
+            stop_announcement,
             clock,
         }
     }
@@ -198,7 +203,7 @@ impl UserLifecycleService {
             .await
             .map_err(internal)?;
         if status == UserStatus::Disabled {
-            self.revoke_credentials(user.id).await;
+            self.revoke_credentials(&user).await;
         }
         self.audit
             .record(
@@ -523,7 +528,7 @@ impl UserLifecycleService {
         }
 
         // 失効できなければ成功を返さない（紛失端末のセッションが生き残る）。監査も記録しない。
-        self.revoke_credentials_strict(user.id).await?;
+        self.revoke_credentials_strict(&user).await?;
 
         // 監査には対象と外した要素の粒度のみ記録する（シークレット・クレデンシャルは出さない）。
         self.audit
@@ -576,7 +581,7 @@ impl UserLifecycleService {
             .await;
         // 旧資格情報で発行済みのセッション・トークンを失効させる（fail-open にしない: 失敗はログのみ。
         // パスワードは既に更新済みで、旧パスワードでのログインはできない）。
-        self.revoke_credentials(user.id).await;
+        self.revoke_credentials(user).await;
         // 監査には内部 ID のみ記録する（生成パスワードは出さない。§5）。
         self.audit
             .record(
@@ -627,7 +632,8 @@ impl UserLifecycleService {
     /// 「アカウントが無効」という別の防御線が残るため、一過性の DB エラーで操作全体を失敗させる
     /// 方が運用上の害が大きい。失効が唯一の防御線になる MFA 解除では
     /// [`revoke_credentials_strict`](Self::revoke_credentials_strict) を使う。
-    async fn revoke_credentials(&self, user_id: Uuid) {
+    async fn revoke_credentials(&self, user: &User) {
+        let user_id = user.id;
         let now = self.clock.now();
         if let Err(e) = self.sso_sessions.delete_all_for_user(user_id).await {
             tracing::warn!(error = %e, "failed to revoke SSO sessions in user lifecycle operation");
@@ -641,12 +647,16 @@ impl UserLifecycleService {
         if let Err(e) = self.codes.revoke_all_active_for_user(user_id, now).await {
             tracing::warn!(error = %e, "failed to revoke authorization codes in user lifecycle operation");
         }
+        self.stop_announcement
+            .announce_all_sessions_ended(user.tenant_id, user.sub)
+            .await;
     }
 
     /// 資格情報を失効させ、**1 つでも失敗したら呼び出し元へ伝える**（fail-closed）。
     ///
     /// 途中で失敗しても残りは試みる（部分的にでも失効させた方が安全側）。返すのは最初のエラー。
-    async fn revoke_credentials_strict(&self, user_id: Uuid) -> Result<(), UserLifecycleError> {
+    async fn revoke_credentials_strict(&self, user: &User) -> Result<(), UserLifecycleError> {
+        let user_id = user.id;
         let now = self.clock.now();
         let mut first_error = None;
         let mut remember = |label: &str, result: crate::domain::error::Result<()>| {
@@ -672,7 +682,14 @@ impl UserLifecycleService {
         );
         match first_error {
             Some(e) => Err(e),
-            None => Ok(()),
+            None => {
+                // 失効しきった場合だけ知らせる。失敗した状態で「止まった」と伝えると、RP 側は
+                // 閉じたのに assay 側にはセッションが残る（食い違いが後から追えなくなる）。
+                self.stop_announcement
+                    .announce_all_sessions_ended(user.tenant_id, user.sub)
+                    .await;
+                Ok(())
+            }
         }
     }
 }
@@ -1140,7 +1157,22 @@ mod tests {
         totp: Arc<FakeTotpSecrets>,
         passkeys: Arc<FakeWebAuthnCredentials>,
         sink: Arc<CapturingSink>,
+        announcer: Arc<RecordingAnnouncer>,
         svc: UserLifecycleService,
+    }
+
+    /// 「止めたことを RP へ伝えたか」だけを見る。実際の配送は
+    /// `StopAnnouncementService` の責務で、ここでは呼ばれた事実を記録する。
+    #[derive(Default)]
+    struct RecordingAnnouncer {
+        announced: std::sync::Mutex<Vec<(TenantId, Uuid)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::application::stop_announcement::SessionStopAnnouncer for RecordingAnnouncer {
+        async fn announce_all_sessions_ended(&self, tenant_id: TenantId, subject: Uuid) {
+            self.announced.lock().unwrap().push((tenant_id, subject));
+        }
     }
 
     fn fixture() -> Fixture {
@@ -1152,6 +1184,7 @@ mod tests {
         let passkeys = Arc::new(FakeWebAuthnCredentials::default());
         let sink = Arc::new(CapturingSink::default());
         let audit = Arc::new(AuditService::new(sink.clone(), Arc::new(FixedClock(now()))));
+        let announcer = Arc::new(RecordingAnnouncer::default());
         let svc = UserLifecycleService::new(
             Arc::new(FakeAuthenticators::default()),
             users.clone(),
@@ -1168,9 +1201,11 @@ mod tests {
                 ),
             ),
             audit,
+            announcer.clone(),
             Arc::new(FixedClock(now())),
         );
         Fixture {
+            announcer,
             users,
             sso,
             refresh,
@@ -1310,6 +1345,79 @@ mod tests {
             .expect("enable");
         assert_eq!(f.users.rows.lock().unwrap()[0].status, UserStatus::Active);
         assert_eq!(f.sso.revoked_users.lock().unwrap().len(), 1);
+    }
+
+    /// ADR-0049 I7: 止めたことは RP まで届かせる。
+    ///
+    /// ⚠ assay 側でセッションを消すだけでは、RP は自分が発行したトークンで動き続ける。
+    /// 止める理由が「乗っ取られた」である以上、ここが伝わらないと止めた意味が無い。
+    #[tokio::test]
+    async fn telling_the_relying_parties_is_part_of_disabling_a_user() {
+        let tenant: TenantId = Uuid::now_v7().into();
+        let f = fixture();
+        let target = Uuid::now_v7();
+        let row = user(target, tenant);
+        let sub = row.sub;
+        f.users.create(&row).await.unwrap();
+
+        f.svc
+            .set_status(
+                TenantContext::new(tenant),
+                target,
+                UserStatus::Disabled,
+                &AdminActor::User(Uuid::now_v7()),
+                &ctx(),
+            )
+            .await
+            .expect("disable");
+
+        // 名乗るのは内部 ID ではなく `sub`。RP が知っているのはこちらだけ。
+        assert_eq!(*f.announcer.announced.lock().unwrap(), vec![(tenant, sub)]);
+    }
+
+    /// 再有効化は誰にも知らせない（失効させていないため）。
+    #[tokio::test]
+    async fn re_enabling_a_user_announces_nothing() {
+        let tenant: TenantId = Uuid::now_v7().into();
+        let f = fixture();
+        let target = Uuid::now_v7();
+        f.users.create(&user(target, tenant)).await.unwrap();
+
+        f.svc
+            .set_status(
+                TenantContext::new(tenant),
+                target,
+                UserStatus::Active,
+                &AdminActor::User(Uuid::now_v7()),
+                &ctx(),
+            )
+            .await
+            .expect("enable");
+
+        assert!(f.announcer.announced.lock().unwrap().is_empty());
+    }
+
+    /// パスワード再発行と MFA 解除も「そのセッションはもう使えない」なので同じ扱いにする。
+    #[tokio::test]
+    async fn resetting_a_password_also_reaches_the_relying_parties() {
+        let tenant: TenantId = Uuid::now_v7().into();
+        let f = fixture();
+        let target = Uuid::now_v7();
+        let row = user(target, tenant);
+        let sub = row.sub;
+        f.users.create(&row).await.unwrap();
+
+        f.svc
+            .reset_password(
+                TenantContext::new(tenant),
+                target,
+                &AdminActor::User(Uuid::now_v7()),
+                &ctx(),
+            )
+            .await
+            .expect("reset");
+
+        assert_eq!(*f.announcer.announced.lock().unwrap(), vec![(tenant, sub)]);
     }
 
     #[tokio::test]

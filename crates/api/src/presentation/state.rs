@@ -61,6 +61,7 @@ use crate::application::saml_sso::SamlSsoService;
 use crate::application::service_restart::ServiceRestartService;
 use crate::application::sso_restore::SsoRestorer;
 use crate::application::step_up::StepUpService;
+use crate::application::stop_announcement::StopAnnouncementService;
 use crate::application::system_settings::SystemSettingsService;
 use crate::application::tenant_management::TenantManagementService;
 use crate::application::tenant_resolution::TenantResolutionService;
@@ -722,6 +723,25 @@ impl AppState {
             clock.clone(),
             ids.clone(),
         ));
+        // G5: Back-channel logout の送信キュー。ログアウトのハンドラは通知要求を積むだけで終え、
+        // 実際の HTTP 送信は `assay_api::run` が起動するワーカーが再試行付きで行う。
+        let backchannel_logout = Arc::new(BackchannelLogoutDeliveryService::new(
+            Arc::new(SqlxBackchannelLogoutDeliveryRepository::new(pool.clone())),
+            Arc::new(KeyServiceLogoutTokenSigner::new(keys.clone())),
+            Arc::new(ReqwestBackchannelLogoutSender::new()),
+            ids.clone(),
+            clock.clone(),
+            config.issuer().to_string(),
+            config.backchannel_logout_max_attempts() as i32,
+            BACKCHANNEL_LOGOUT_BATCH_SIZE,
+        ));
+
+        // ADR-0049 I7: 失効させたことを RP へ伝える出口。⚠ assay の中で消すだけでは RP 側の
+        // ログイン状態は残るため、管理操作はここを通して back-channel logout を積む。
+        let stop_announcement = Arc::new(StopAnnouncementService::new(
+            clients.clone(),
+            backchannel_logout.clone(),
+        ));
         // 管理者による利用者ライフサイクル操作（ADR-0009 §5・MT21）。パスワード再発行・無効化・
         // MFA 解除時は当該利用者のセッション・トークンを失効させる。
         let users_lifecycle = Arc::new(UserLifecycleService::new(
@@ -735,6 +755,7 @@ impl AppState {
             hasher.clone(),
             password_policy.clone(),
             audit.clone(),
+            stop_announcement.clone(),
             clock.clone(),
         ));
         // 管理者によるログイン識別子の割り当て（AP8。仕様 §4）。電話番号・社員番号のような
@@ -897,19 +918,6 @@ impl AppState {
             refresh_tokens.clone(),
             audit.clone(),
             clock.clone(),
-        ));
-
-        // G5: Back-channel logout の送信キュー。ログアウトのハンドラは通知要求を積むだけで終え、
-        // 実際の HTTP 送信は `assay_api::run` が起動するワーカーが再試行付きで行う。
-        let backchannel_logout = Arc::new(BackchannelLogoutDeliveryService::new(
-            Arc::new(SqlxBackchannelLogoutDeliveryRepository::new(pool.clone())),
-            Arc::new(KeyServiceLogoutTokenSigner::new(keys.clone())),
-            Arc::new(ReqwestBackchannelLogoutSender::new()),
-            ids.clone(),
-            clock.clone(),
-            config.issuer().to_string(),
-            config.backchannel_logout_max_attempts() as i32,
-            BACKCHANNEL_LOGOUT_BATCH_SIZE,
         ));
 
         // F5: Token 管理（revocation / introspection）。
