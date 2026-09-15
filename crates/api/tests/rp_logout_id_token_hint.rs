@@ -9,6 +9,8 @@
 //! - 署名・issuer が確かめられない hint では**リダイレクトを返さない**こと（確かめられない相手へ
 //!   ブラウザを送り返さない）。セッションの終了自体は続けること（ログアウトは冪等）。
 //! - hint の `sub` が現在ログイン中の利用者と違うなら、そのセッションを**終了しない**こと。
+//! - ログアウトしても back-channel logout の通知を**積まない**こと（ADR-0055。RP へ知らせるのは
+//!   管理者が利用者を止めたときだけ）。
 
 mod support;
 
@@ -441,4 +443,64 @@ async fn a_request_without_any_hint_keeps_the_previous_behaviour() {
 
     let redirect = result["redirect_to"].as_str().expect("redirect_to");
     assert!(redirect.starts_with(POST_LOGOUT_URI), "{redirect}");
+}
+
+/// クライアントへ `backchannel_logout_uri` を設定する（support の挿入ヘルパーは持たない）。
+async fn set_backchannel_logout_uri(pool: &MySqlPool, client_id: &str, uri: &str) {
+    sqlx::query("UPDATE clients SET backchannel_logout_uri = ? WHERE client_id = ?")
+        .bind(uri)
+        .bind(client_id)
+        .execute(pool)
+        .await
+        .expect("set backchannel_logout_uri");
+}
+
+async fn deliveries_for(pool: &MySqlPool, client_id: &str) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM backchannel_logout_deliveries WHERE client_id = ?")
+        .bind(client_id)
+        .fetch_one(pool)
+        .await
+        .expect("count back-channel logout deliveries")
+}
+
+/// ⚠ **ログアウトしても RP へは知らせない**（ADR-0055）。
+///
+/// SSO セッションは複数の RP で共有されている。1 つの RP からのサインアウトで、受け口を登録した
+/// 他の RP のセッションまで閉じてはならない。RP へ知らせるのは管理者が止めたときだけ（ADR-0053）。
+#[tokio::test]
+async fn logging_out_does_not_notify_the_relying_parties() {
+    let Some(env) = support::setup("rp logout id_token_hint").await else {
+        return;
+    };
+    let (client_id, secret) =
+        support::insert_confidential_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
+    set_backchannel_logout_uri(
+        &env.pool,
+        &client_id,
+        "https://app.example.com/backchannel-logout",
+    )
+    .await;
+
+    let session = log_in(&env, &client_id, &secret, &unique_username()).await;
+
+    let result = rp_logout(
+        &env,
+        json!({
+            "tenant_id": env.root_tenant_id,
+            "sso_session_id": session.sso_cookie,
+            "id_token_hint": session.id_token,
+        }),
+    )
+    .await;
+
+    assert_eq!(result["result"], "ok");
+    assert!(
+        !sso_session_exists(&env.pool, &session.sso_cookie).await,
+        "the sso session must still be terminated"
+    );
+    assert_eq!(
+        deliveries_for(&env.pool, &client_id).await,
+        0,
+        "a logout must not enqueue back-channel notifications"
+    );
 }

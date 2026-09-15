@@ -2,8 +2,9 @@
 //!
 //! OIDC RP-initiated Logout 1.0 spec に基づき、SSO セッションを終了し
 //! `sso_session.terminated` 監査イベントを記録する。
-//! back-channel / front-channel の通知に必要な情報を返すが、
-//! 実際の HTTP 送信は Presentation 層（ハンドラ）が行う。
+//! front-channel の通知に必要な情報を返す（描画は web が行う）。
+//! ⚠ back-channel logout の通知は出さない（ADR-0055）。RP へ知らせるのは管理者が利用者を止めたとき
+//! だけで、それは `stop_announcement` の仕事である（ADR-0053）。
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::audit::{AuditEventType, AuditResult};
@@ -20,13 +21,6 @@ use jsonwebtoken::Validation;
 use serde::Deserialize;
 use std::sync::Arc;
 use uuid::Uuid;
-
-/// back-channel logout 通知先の 1 クライアント。
-#[derive(Debug, Clone)]
-pub struct BackchannelTarget {
-    pub client_id: String,
-    pub backchannel_logout_uri: String,
-}
 
 /// `id_token_hint` から取り出した検証済みの手掛かり（G12。OIDC RP-Initiated Logout 1.0 §2）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,17 +54,10 @@ pub enum LogoutOutcome {
     SubjectMismatch,
 }
 
-/// RP-initiated logout の結果。Presentation がこれを元に通知とリダイレクトを実施する。
+/// RP-initiated logout の結果。Presentation がこれを元に front-channel の通知とリダイレクトを実施する。
 pub struct LogoutResult {
-    /// ログアウトしたユーザーの `sub`（back-channel logout token に使用）。
-    pub user_sub: Option<String>,
     /// ログアウトしたユーザーの内部 ID（監査用）。
     pub user_id: Option<Uuid>,
-    /// 終了した SSO セッションの `sid`（G5）。logout_token へ載せ、RP がセッション単位で失効できる
-    /// ようにする。セッションを特定できなかった場合は `None`（RP は `sub` 単位の失効へ落ちる）。
-    pub sid: Option<String>,
-    /// back-channel logout 通知先（`backchannel_logout_uri` を持つ全クライアント）。
-    pub backchannel_targets: Vec<BackchannelTarget>,
     /// front-channel logout URI 群（`frontchannel_logout_uri` を持つ全クライアント）。
     pub frontchannel_uris: Vec<String>,
     /// 検証済みの post-logout redirect URI（未指定または検証失敗の場合は `None`）。
@@ -140,111 +127,106 @@ impl LogoutService {
         let hint = self.verify_id_token_hint(tenant, id_token_hint).await;
 
         // 2. SSO セッションの特定と終了。
-        let (user_id, user_sub, sid) =
-            if let Some(session_id) = sso_session_id.filter(|s| !s.is_empty()) {
-                let hash = crypto::sha256_hex(session_id);
-                let session = match self.sso_sessions.find_by_hash(&hash).await {
-                    Ok(Some(s)) => s,
-                    _ => {
-                        // セッション不明または DB エラー → ログアウト済み扱いで続行。
-                        return LogoutOutcome::Completed(LogoutResult {
-                            user_sub: None,
-                            user_id: None,
-                            sid: None,
-                            backchannel_targets: vec![],
-                            frontchannel_uris: vec![],
-                            post_logout_redirect_uri: None,
-                        });
-                    }
-                };
-                let uid = session.user_id;
-                // `sid` は行を消す前に導出する（削除後は `session_hash` しか手元に残らないため、
-                // 導出関数は行ではなくハッシュを受ける形にしてある）。
-                let sid = session.sid();
-
-                // ユーザーの sub を取得（logout token・`id_token_hint` との突き合わせに使う）。
-                let sub = match self.users.find_by_id(uid).await {
-                    Ok(Some(u)) => Some(u.sub.to_string()),
-                    _ => None,
-                };
-
-                // `id_token_hint` の `sub` が今ログインしている利用者と**一致しない限り終了しない**
-                // （G12）。hint は「この利用者をログアウトさせたい」という RP の指定であり、別人の
-                // セッションを落とすのは指定に反する。同じブラウザを共有していて別の人がログイン
-                // し直した後に、前の利用者ぶんのログアウト要求が届く経路が現実に存在する。
-                // 利用者行を読めず `sub` が引けなかった場合も一致を確認できないため終了しない
-                // （hint を送っていない要求は従来どおり無条件に終了する）。
-                if let IdTokenHintOutcome::Verified(verified) = &hint {
-                    if sub.as_deref() != Some(verified.subject.as_str()) {
-                        self.audit
-                            .record(
-                                AuditEventType::SsoSessionTerminated,
-                                AuditResult::Failure,
-                                Some(tenant.tenant_id()),
-                                Some(uid),
-                                Some(&verified.client_id),
-                                Some("id_token_hint_subject_mismatch"),
-                                ctx,
-                            )
-                            .await;
-                        // Cookie も消させない（消すと DB にだけ生きたセッションが残る）。
-                        return LogoutOutcome::SubjectMismatch;
-                    }
+        let user_id = if let Some(session_id) = sso_session_id.filter(|s| !s.is_empty()) {
+            let hash = crypto::sha256_hex(session_id);
+            let session = match self.sso_sessions.find_by_hash(&hash).await {
+                Ok(Some(s)) => s,
+                _ => {
+                    // セッション不明または DB エラー → ログアウト済み扱いで続行。
+                    return LogoutOutcome::Completed(LogoutResult {
+                        user_id: None,
+                        frontchannel_uris: vec![],
+                        post_logout_redirect_uri: None,
+                    });
                 }
+            };
+            let uid = session.user_id;
+            // `sid` は行を消す前に導出する（削除後は `session_hash` しか手元に残らないため、
+            // 導出関数は行ではなくハッシュを受ける形にしてある）。
+            let sid = session.sid();
 
-                // SSO セッション削除。
-                if let Err(e) = self.sso_sessions.delete(&hash).await {
-                    tracing::warn!(error = %e, "failed to delete sso session on logout");
-                }
-
-                // 未消費の authorization code を失効。
-                if let Err(e) = self.codes.revoke_all_active_for_user(uid, now).await {
-                    tracing::warn!(error = %e, "failed to revoke active auth codes on logout");
-                }
-
-                // そのセッションから出た refresh token も失効させる（ADR-0044）。
-                //
-                // ここが無いと、back-channel logout で RP へ「このセッションは終わった」と
-                // `sid` で通知しておきながら、**同じ `sid` のトークンは受け付け続ける**という
-                // ことになる。通知を無視する RP やネイティブアプリは更新し続けられる。
-                //
-                // 落ちても止めない（fail-open）。ここは既にリダイレクト先を組み立てる段まで
-                // 来ていて、途中で投げると **Cookie を消せないまま利用者が宙に浮く**。
-                // 上の 2 つ（セッション削除・code 失効）と同じ扱いにする。
-                //
-                // `sid` は行を消す前に導出したもの（上）をそのまま使う。
-                match self
-                    .refresh_tokens
-                    .revoke_all_for_session(uid, &sid, now)
-                    .await
-                {
-                    Ok(revoked) => {
-                        tracing::info!(revoked, "revoked refresh tokens on logout");
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "failed to revoke refresh tokens on logout");
-                    }
-                }
-
-                self.audit
-                    .record(
-                        AuditEventType::SsoSessionTerminated,
-                        AuditResult::Success,
-                        Some(tenant.tenant_id()),
-                        Some(uid),
-                        None,
-                        Some("rp_initiated_logout"),
-                        ctx,
-                    )
-                    .await;
-
-                (Some(uid), sub, Some(sid))
-            } else {
-                (None, None, None)
+            // ユーザーの sub を取得（`id_token_hint` との突き合わせに使う）。
+            let sub = match self.users.find_by_id(uid).await {
+                Ok(Some(u)) => Some(u.sub.to_string()),
+                _ => None,
             };
 
-        // 2. テナントの全クライアントを取得して logout endpoint を持つものを収集
-        //    （logout 通知・redirect 検証はフローのテナント内に限る）。
+            // `id_token_hint` の `sub` が今ログインしている利用者と**一致しない限り終了しない**
+            // （G12）。hint は「この利用者をログアウトさせたい」という RP の指定であり、別人の
+            // セッションを落とすのは指定に反する。同じブラウザを共有していて別の人がログイン
+            // し直した後に、前の利用者ぶんのログアウト要求が届く経路が現実に存在する。
+            // 利用者行を読めず `sub` が引けなかった場合も一致を確認できないため終了しない
+            // （hint を送っていない要求は従来どおり無条件に終了する）。
+            if let IdTokenHintOutcome::Verified(verified) = &hint {
+                if sub.as_deref() != Some(verified.subject.as_str()) {
+                    self.audit
+                        .record(
+                            AuditEventType::SsoSessionTerminated,
+                            AuditResult::Failure,
+                            Some(tenant.tenant_id()),
+                            Some(uid),
+                            Some(&verified.client_id),
+                            Some("id_token_hint_subject_mismatch"),
+                            ctx,
+                        )
+                        .await;
+                    // Cookie も消させない（消すと DB にだけ生きたセッションが残る）。
+                    return LogoutOutcome::SubjectMismatch;
+                }
+            }
+
+            // SSO セッション削除。
+            if let Err(e) = self.sso_sessions.delete(&hash).await {
+                tracing::warn!(error = %e, "failed to delete sso session on logout");
+            }
+
+            // 未消費の authorization code を失効。
+            if let Err(e) = self.codes.revoke_all_active_for_user(uid, now).await {
+                tracing::warn!(error = %e, "failed to revoke active auth codes on logout");
+            }
+
+            // そのセッションから出た refresh token も失効させる（ADR-0044）。
+            //
+            // ここが無いと、SSO セッションは終えたのに**同じ `sid` のトークンは受け付け
+            // 続ける**ことになり、そのセッションで入った RP やネイティブアプリは更新し続けられる。
+            //
+            // 落ちても止めない（fail-open）。ここは既にリダイレクト先を組み立てる段まで
+            // 来ていて、途中で投げると **Cookie を消せないまま利用者が宙に浮く**。
+            // 上の 2 つ（セッション削除・code 失効）と同じ扱いにする。
+            //
+            // `sid` は行を消す前に導出したもの（上）をそのまま使う。
+            match self
+                .refresh_tokens
+                .revoke_all_for_session(uid, &sid, now)
+                .await
+            {
+                Ok(revoked) => {
+                    tracing::info!(revoked, "revoked refresh tokens on logout");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to revoke refresh tokens on logout");
+                }
+            }
+
+            self.audit
+                .record(
+                    AuditEventType::SsoSessionTerminated,
+                    AuditResult::Success,
+                    Some(tenant.tenant_id()),
+                    Some(uid),
+                    None,
+                    Some("rp_initiated_logout"),
+                    ctx,
+                )
+                .await;
+
+            Some(uid)
+        } else {
+            None
+        };
+
+        // 2. テナントの全クライアントを取得して front-channel logout の URI を収集する
+        //    （front-channel の通知・redirect 検証はフローのテナント内に限る）。
         let clients = match self.clients.list(tenant.tenant_id()).await {
             Ok(c) => c,
             Err(e) => {
@@ -252,18 +234,6 @@ impl LogoutService {
                 vec![]
             }
         };
-
-        let backchannel_targets: Vec<BackchannelTarget> = clients
-            .iter()
-            .filter_map(|c| {
-                c.backchannel_logout_uri
-                    .as_ref()
-                    .map(|uri| BackchannelTarget {
-                        client_id: c.client_id.clone(),
-                        backchannel_logout_uri: uri.clone(),
-                    })
-            })
-            .collect();
 
         let issuer = tenant_issuer(&self.base_issuer, tenant.tenant_id());
         let frontchannel_uris: Vec<String> = clients
@@ -320,10 +290,7 @@ impl LogoutService {
 
         let _ = user_id; // suppress unused warning
         LogoutOutcome::Completed(LogoutResult {
-            user_sub,
             user_id,
-            sid,
-            backchannel_targets,
             frontchannel_uris,
             post_logout_redirect_uri,
         })
