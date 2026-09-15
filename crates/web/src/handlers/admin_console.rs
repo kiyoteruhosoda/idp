@@ -11,7 +11,7 @@
 //!
 //! Cookie 組み立て（SSO 発行・失効、CSRF 種）は web が行う。CSRF は web 内で完結する（`crate::csrf`）。
 
-use super::{internal_call_status, locale};
+use super::{api_internal_error, internal_call_status, locale};
 use crate::api_client::{AdminIdentity, AdminSession};
 use crate::client_ip::ClientIp;
 use crate::cookies;
@@ -275,9 +275,7 @@ pub async fn login(
             &csrf,
             "admin-login-error-mfa-required",
         ),
-        InternalAdminAuthenticateResponse::Internal => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Html(String::new())).into_response()
-        }
+        InternalAdminAuthenticateResponse::Internal => api_internal_error("admin_authenticate"),
     }
 }
 
@@ -434,7 +432,7 @@ pub async fn password_change(
             "admin-login-error-mfa-required",
         ),
         InternalAdminChangePasswordResponse::Internal => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Html(String::new())).into_response()
+            api_internal_error("admin_change_password")
         }
     }
 }
@@ -529,7 +527,7 @@ fn admin_resolution(
         AdminSession::Unauthenticated => AdminResolution::Reject(redirect_to_login(tenant)),
         AdminSession::Forbidden => AdminResolution::Reject(forbidden_response(headers)),
         AdminSession::NotFound => {
-            AdminResolution::Reject(error_pages::page(StatusCode::NOT_FOUND, headers))
+            AdminResolution::Reject(error_pages::page(StatusCode::NOT_FOUND, headers, None))
         }
         AdminSession::Error => {
             AdminResolution::Reject((StatusCode::BAD_GATEWAY, Html(String::new())).into_response())

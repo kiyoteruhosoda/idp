@@ -20,6 +20,7 @@ use crate::templates::{render, ErrorPage};
 use axum::body::Body;
 use axum::extract::Request;
 use axum::http::header::{HeaderValue, CONTENT_LENGTH, CONTENT_TYPE};
+use axum::http::Uri;
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
@@ -57,26 +58,73 @@ fn message_keys(status: StatusCode) -> (String, String) {
     )
 }
 
+/// エラー画面から戻れる先。
+///
+/// **エラー画面には出口を置く。** 置かないと、リンクを踏んだ先で失敗した利用者は
+/// ブラウザの戻る以外に手が無くなる（左上の名乗りもリンクではない）。
+struct BackLink {
+    href: String,
+    label_key: &'static str,
+}
+
+/// 要求されたパスから戻り先を決める。
+///
+/// テナント接頭辞（UUID）が取れたときだけ出す。管理コンソール配下はコンソールのホームへ、
+/// それ以外はアカウント設定へ戻す。**今いる場所と同じなら出さない** —— 同じ場所へ戻しても
+/// また同じエラーになるだけで、出口には見えて実際は行き止まりになる。
+fn back_link(path: &str) -> Option<BackLink> {
+    let mut segments = path.split('/').skip(1);
+    let tenant = segments.next()?;
+    if uuid::Uuid::parse_str(tenant).is_err() {
+        return None;
+    }
+    let (suffix, label_key) = match segments.next() {
+        Some("admin") => ("/admin", "error-back-to-console"),
+        _ => ("/settings", "error-back-to-settings"),
+    };
+    let href = format!("/{tenant}{suffix}");
+    (href.trim_end_matches('/') != path.trim_end_matches('/'))
+        .then_some(BackLink { href, label_key })
+}
+
 /// エラーページの HTML を描画する。
-fn render_page(status: StatusCode, locale: Locale) -> String {
+fn render_page(status: StatusCode, locale: Locale, back: Option<BackLink>) -> String {
     let messages = Messages::new(locale);
     let (title_key, message_key) = message_keys(status);
+    let (back_href, back_label) = match back {
+        Some(link) => (link.href, messages.get(link.label_key)),
+        None => (String::new(), String::new()),
+    };
     render(&ErrorPage {
         code: status.as_u16().to_string(),
         title: messages.get(&title_key),
         message: messages.get(&message_key),
+        back_href,
+        back_label,
     })
 }
 
 /// ハンドラから直接エラーページを返すための応答組み立て（表示言語はリクエストヘッダから決める）。
-pub(crate) fn page(status: StatusCode, headers: &HeaderMap) -> Response {
-    let html = render_page(status, crate::handlers::locale(headers));
+///
+/// 戻り先は呼び出し側が渡す。パスから機械的に導かない —— 「そのテナントが存在しない」ような
+/// 404 では、導いた戻り先も同じ理由で開けない。
+pub(crate) fn page(status: StatusCode, headers: &HeaderMap, back: Option<&str>) -> Response {
+    let back = back.map(|href| BackLink {
+        href: href.to_string(),
+        label_key: "error-back-to-settings",
+    });
+    let html = render_page(status, crate::handlers::locale(headers), back);
     (status, Html(html)).into_response()
 }
 
 /// どのルートにも一致しなかったリクエストへ返す 404 ページ（`Router::fallback`）。
-pub(crate) async fn fallback(headers: HeaderMap) -> Response {
-    page(StatusCode::NOT_FOUND, &headers)
+pub(crate) async fn fallback(uri: Uri, headers: HeaderMap) -> Response {
+    let html = render_page(
+        StatusCode::NOT_FOUND,
+        crate::handlers::locale(&headers),
+        back_link(uri.path()),
+    );
+    (StatusCode::NOT_FOUND, Html(html)).into_response()
 }
 
 /// エラー応答（4xx / 5xx）の本文が空・またはプレーンテキストのとき、共通のエラーページへ差し替える。
@@ -90,8 +138,9 @@ pub async fn render_error_pages(request: Request, next: Next) -> Response {
         .is_some_and(|value| value.starts_with("application/json"));
     // HEAD には本文を付けられない。
     let is_head = request.method() == Method::HEAD;
-    // `next.run` で request を消費するため、表示言語の判定材料は先に取り出しておく。
+    // `next.run` で request を消費するため、表示言語と戻り先の判定材料は先に取り出しておく。
     let locale = crate::handlers::locale(request.headers());
+    let back = back_link(request.uri().path());
 
     let response = next.run(request).await;
 
@@ -99,7 +148,7 @@ pub async fn render_error_pages(request: Request, next: Next) -> Response {
     if is_json_request || is_head || !(status.is_client_error() || status.is_server_error()) {
         return response;
     }
-    replace_placeholder_body(response, status, locale).await
+    replace_placeholder_body(response, status, locale, back).await
 }
 
 /// 本文が「空」または `text/plain` のときだけエラーページへ差し替える。それ以外（ハンドラが描画した
@@ -108,6 +157,7 @@ async fn replace_placeholder_body(
     response: Response,
     status: StatusCode,
     locale: Locale,
+    back: Option<BackLink>,
 ) -> Response {
     let is_plain_text = response
         .headers()
@@ -135,7 +185,7 @@ async fn replace_placeholder_body(
     );
     // 本文長が変わるため、元の Content-Length は捨てて再計算させる。
     parts.headers.remove(CONTENT_LENGTH);
-    Response::from_parts(parts, Body::from(render_page(status, locale)))
+    Response::from_parts(parts, Body::from(render_page(status, locale, back)))
 }
 
 #[cfg(test)]
@@ -330,5 +380,65 @@ mod tests {
         let (status, body) = request("GET", "/ok", None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, "fine");
+    }
+
+    /// テナントが分かるときは戻り先を出す。分からないときは出さない（行き先が無い）。
+    #[test]
+    fn the_way_out_is_offered_only_when_the_tenant_is_known() {
+        let t = "01a00dfe-bffb-7f23-88b5-8bbef50d23f0";
+        let link = back_link(&format!("/{t}/account/mfa/totp/setup")).expect("link");
+        assert_eq!(link.href, format!("/{t}/settings"));
+        assert_eq!(link.label_key, "error-back-to-settings");
+
+        let link = back_link(&format!("/{t}/admin/clients/new")).expect("link");
+        assert_eq!(link.href, format!("/{t}/admin"));
+        assert_eq!(link.label_key, "error-back-to-console");
+
+        // テナント接頭辞が無い経路（資産・ルート）には戻り先が無い。
+        assert!(back_link("/assets/app.css").is_none());
+        assert!(back_link("/").is_none());
+        assert!(back_link("/healthz").is_none());
+    }
+
+    /// **今いる場所へは戻さない。** 設定画面自身が失敗したときに同じ URL を出すと、
+    /// 押してもまた同じエラーになるだけで、出口に見えて行き止まりになる。
+    #[test]
+    fn it_does_not_offer_a_link_back_to_the_failing_page_itself() {
+        let t = "01a00dfe-bffb-7f23-88b5-8bbef50d23f0";
+        assert!(back_link(&format!("/{t}/settings")).is_none());
+        assert!(back_link(&format!("/{t}/settings/")).is_none());
+        assert!(back_link(&format!("/{t}/admin")).is_none());
+    }
+
+    /// 本文の無い 500 を差し替えたページに、戻り先のリンクが載ること。
+    #[tokio::test]
+    async fn a_replaced_error_page_carries_the_way_out() {
+        let t = "01a00dfe-bffb-7f23-88b5-8bbef50d23f0";
+        let app = Router::new().route(
+            &format!("/{t}/account/mfa/totp/setup"),
+            get(|| async { StatusCode::INTERNAL_SERVER_ERROR }),
+        );
+        let app = app.layer(axum::middleware::from_fn(render_error_pages));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/{t}/account/mfa/totp/setup"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = String::from_utf8_lossy(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .into_owned();
+        assert!(
+            body.contains(&format!(r#"href="/{t}/settings""#)),
+            "戻り先のリンクが無い: {body}"
+        );
     }
 }

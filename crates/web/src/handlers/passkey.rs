@@ -19,7 +19,7 @@
 //! サインインしていない・セッションが切れたときは、同じ理由でログイン画面へ送る（設定配下の
 //! 他の画面と揃える）。
 
-use super::{found, internal_call_status, locale, see_other};
+use super::{api_internal_error, found, internal_call_status, locale, see_other};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -86,7 +86,7 @@ pub async fn list_page(
         }))
         .into_response(),
         InternalPasskeyListResponse::SessionExpired => found(&format!("{}/login", tenant.prefix())),
-        InternalPasskeyListResponse::Internal => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        InternalPasskeyListResponse::Internal => api_internal_error("passkey_list"),
     }
 }
 
@@ -170,7 +170,7 @@ pub async fn register_begin_api(
             StatusCode::UNAUTHORIZED.into_response()
         }
         InternalPasskeyRegisterBeginResponse::Internal => {
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            api_internal_error("passkey_register_begin")
         }
     }
 }
@@ -228,7 +228,7 @@ pub async fn register_complete_api(
     };
     match result {
         InternalPasskeyRegisterCompleteResponse::Internal => {
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            api_internal_error("passkey_register_complete")
         }
         InternalPasskeyRegisterCompleteResponse::SessionExpired => {
             StatusCode::UNAUTHORIZED.into_response()
@@ -286,9 +286,7 @@ pub async fn delete(
         InternalPasskeyDeleteResponse::SessionExpired => {
             found(&format!("{}/login", tenant.prefix()))
         }
-        InternalPasskeyDeleteResponse::Internal => {
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        }
+        InternalPasskeyDeleteResponse::Internal => api_internal_error("passkey_delete"),
     }
 }
 
@@ -478,7 +476,7 @@ pub async fn login_complete_api(
         })
         .into_response(),
         InternalPasskeyLoginCompleteResponse::Internal => {
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            api_internal_error("passkey_login_complete")
         }
     }
 }
@@ -553,7 +551,7 @@ pub async fn admin_login_complete_api(
             Json(login_error("rate_limited")).into_response()
         }
         InternalAdminPasskeyLoginCompleteResponse::Internal => {
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            api_internal_error("admin_passkey_login_complete")
         }
     }
 }
@@ -627,7 +625,7 @@ pub async fn portal_login_complete_api(
             Json(login_error("rate_limited")).into_response()
         }
         InternalPortalPasskeyLoginCompleteResponse::Internal => {
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            api_internal_error("portal_passkey_login_complete")
         }
     }
 }

@@ -8,7 +8,7 @@
 //!
 //! 画面文言は `fluent` の翻訳リソースで管理する（`Accept-Language` で en / ja を切替）。
 
-use super::{internal_call_status, locale};
+use super::{api_internal_error, internal_call_status, locale};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -197,9 +197,7 @@ async fn resume_authorize_handoff(
                 )
             }
         }
-        InternalAuthorizeResumeResponse::Internal => {
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        }
+        InternalAuthorizeResumeResponse::Internal => api_internal_error("authorize_resume"),
     }
 }
 
@@ -421,9 +419,7 @@ pub async fn login(
             )
                 .into_response()
         }
-        InternalAuthenticateResponse::Internal => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Html(String::new())).into_response()
-        }
+        InternalAuthenticateResponse::Internal => api_internal_error("authenticate"),
     }
 }
 

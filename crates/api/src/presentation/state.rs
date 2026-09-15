@@ -945,6 +945,7 @@ impl AppState {
             authenticators.clone(),
             totp_secrets.clone(),
             sso_sessions.clone(),
+            users.clone(),
             *config.key_encryption_key(),
             config.issuer().to_string(),
             clock.clone(),
