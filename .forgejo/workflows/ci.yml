@@ -11,8 +11,10 @@ on:
     branches: [main]
   pull_request:
 
-# ⚠ **同じ枝で 2 本走らせない。** `target/` を名前付きボリュームで共有している
-#   ので、並ぶと後から来たほうが cargo のロック待ちで時間切れになる。
+# ⚠ **同じ枝で 2 本走らせない。** 古いコミットの結果を待っても意味が無いので取り消す。
+# ⚠ **別の枝どうしの取り合いはここでは防いでいない**（group が枝ごとのため）。
+#   `target/` を共有する別の PR や main のジョブとは並んで走る ——守っているのは
+#   下の `scripts/with-target-lock.sh`（`target/` そのものに掛けるロック）である。
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -89,16 +91,24 @@ jobs:
           fi
       - name: Format
         run: cargo fmt --all -- --check
+      - name: Target lock tests
+        run: ./scripts/test_with_target_lock.sh
+      # ⚠ **`target/` を使う段は必ず `scripts/with-target-lock.sh` を通す。**
+      #   `target/` は PR をまたいで共有しているので、素の cargo だと別のジョブに
+      #   組んだ実行ファイルを消され、試験の中身は ok のまま赤になる
+      #   （2026-09-16 に 5 回。症状と理由はスクリプトの冒頭）。
+      #   ⚠ ロックは段ごとに解ける ——前の段が組んだものを次の段で当てにしない。
+      #   ⚠ 待っている時間も `timeout-minutes` に数えられる。
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: ./scripts/with-target-lock.sh cargo clippy --workspace --all-targets -- -D warnings
       - name: Unit and DB integration tests
-        run: cargo test --workspace --locked
+        run: ./scripts/with-target-lock.sh cargo test --workspace --locked
       - name: Shell deployment tests
         run: ./scripts/test_deploy.sh
       - name: Remote build/deploy script tests
         run: ./scripts/test_build_remote.sh
       - name: E2E
-        run: ./scripts/e2e.sh
+        run: ./scripts/with-target-lock.sh ./scripts/e2e.sh
 
   bundle:
     name: Deploy bundle
