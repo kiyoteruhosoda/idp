@@ -76,6 +76,17 @@ jobs:
       MARIADB_ROOT_PASSWORD: root
     steps:
       - uses: actions/checkout@v7
+      # ⚠ **scripts/ に固定の `/tmp/<名前>` を書かない。** 手元では別々のセッションが
+      #   同じ容れ物で同時にスクリプトを流すので、固定の道は互いの中間出力を踏み、
+      #   毎回違う行で落ちる（https://task.nolumia.com/tasks/86）。⚠ CI は 1 本ずつ
+      #   走るので**試験では捕まらない** ——ここで字面を止める。作業場所は `mktemp -d`。
+      #   ⚠ 行頭の `#`（説明）は除く ——禁じているものを注記で名指しできなくなるため。
+      - name: No fixed /tmp paths in scripts
+        run: |
+          if grep -nE '(^|[^A-Za-z0-9_])/tmp/' scripts/*.sh | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#'; then
+            echo "scripts/ に固定の /tmp が残っています。mktemp -d で実行ごとの作業場所を作ってください。" >&2
+            exit 1
+          fi
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy

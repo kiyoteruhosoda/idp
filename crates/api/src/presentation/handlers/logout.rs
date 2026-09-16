@@ -6,18 +6,17 @@
 //! 次を担う:
 //!
 //! 1. `id_token_hint` の検証（署名・issuer）と、SSO セッションの特定・終了（LogoutService）・監査記録。
-//! 2. Back-channel logout: 通知要求を永続キューへ積む（送信はワーカー。G5）。
-//! 3. `post_logout_redirect_uri` の検証と `state` 付与済みリダイレクト URL の組み立て。
-//! 4. Front-channel logout URI 群（`iss` クエリ付与済み）の列挙。
+//! 2. `post_logout_redirect_uri` の検証と `state` 付与済みリダイレクト URL の組み立て。
+//! 3. Front-channel logout URI 群（`iss` クエリ付与済み）の列挙。
 //!
 //! SSO Cookie の破棄と front-channel iframe ページの描画は web が行う。
 //!
-//! 通知の送信をこのリクエスト内で行わないのは意図的（G5）。従来は `tokio::spawn` で撃ちっぱなしに
-//! していたため、非 2xx もプロセス再起動も黙って通知を失っていた。要求を行として残し、再試行付きの
-//! ワーカー（`BackchannelLogoutDeliveryService`）に送信させる。
+//! ⚠ **back-channel logout の通知は積まない**（ADR-0055）。SSO セッションは同じ利用者の複数の RP で
+//! 共有されており、1 つの RP からのサインアウトで他の RP のセッションまで閉じるのは、利用者が
+//! 頼んでいない副作用になる。RP へ知らせるのは、管理者が利用者を止めたときだけである
+//! （`stop_announcement`。ADR-0053）。
 
 use crate::application::audit::RequestContext;
-use crate::application::backchannel_logout::LogoutNotification;
 use crate::application::logout::LogoutOutcome;
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::state::AppState;
@@ -55,40 +54,11 @@ pub async fn rp_logout(
     {
         LogoutOutcome::Completed(result) => result,
         // `id_token_hint` が別の利用者を指していた（G12）。セッションは残したままなので、
-        // 通知もリダイレクトも起こさず、Cookie を消さないことだけを web へ伝える。
+        // リダイレクトを起こさず、Cookie を消さないことだけを web へ伝える。
         LogoutOutcome::SubjectMismatch => {
             return Ok(Json(InternalRpLogoutResponse::SubjectMismatch))
         }
     };
-
-    // Back-channel logout: 通知要求をキューへ積む（送信はワーカー。G5）。ここで HTTP を打つと、
-    // 落ちている RP のタイムアウトぶんだけ利用者のログアウト応答が遅れる。
-    if !result.backchannel_targets.is_empty() {
-        if let Some(user_sub) = result.user_sub.as_deref() {
-            let notifications: Vec<LogoutNotification> = result
-                .backchannel_targets
-                .iter()
-                .map(|t| LogoutNotification {
-                    client_id: t.client_id.clone(),
-                    backchannel_logout_uri: t.backchannel_logout_uri.clone(),
-                })
-                .collect();
-            if let Err(e) = state
-                .backchannel_logout
-                .enqueue(
-                    tenant.tenant_id(),
-                    user_sub,
-                    result.sid.as_deref(),
-                    &notifications,
-                )
-                .await
-            {
-                // 積めなかった通知は復旧できない。ログアウト自体は成立しているので応答は返すが、
-                // RP 側にセッションが残るため ERROR として残す。
-                tracing::error!(error = %e, "failed to enqueue back-channel logout notifications");
-            }
-        }
-    }
 
     // 検証済み post_logout_redirect_uri へ state パラメータを透過的に付与する。
     let redirect_to = result.post_logout_redirect_uri.map(|uri| {

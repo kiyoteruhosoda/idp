@@ -1489,8 +1489,16 @@ impl ApiClient {
         .await
     }
 
-    /// 招待の承諾（`POST /{tenant_id}/invitations/accept`）。被招待者本人の SSO Cookie を転送する
-    /// （管理 API ではないが、Cookie 転送・エラー写像は同じ共通処理を使う）。
+    /// 招待の承諾（`POST /{tenant_id}/invitations/accept`）。被招待者本人の SSO Cookie を**そのまま
+    /// 転送する**。
+    ///
+    /// ⚠ **管理 API の共通処理（`admin_send_*`）を使ってはいけない。** あちらは SSO セッションを
+    /// `POST /internal/admin/token` で**その テナントの管理トークンへ交換してから**呼ぶ。
+    /// ⚠ **被招待者はまだそのテナントのメンバーではないので、交換は必ず失敗する**（401）。
+    /// 承諾はメンバーになるための操作なので、メンバーであることを前提にできない。
+    ///
+    /// api 側の口は Cookie を資格情報として受ける（`AuthenticatedUser`。権限は要求しない。
+    /// ADR-0009 §3）。成功は 204。
     pub async fn accept_invitation(
         &self,
         correlation_id: &str,
@@ -1498,15 +1506,40 @@ impl ApiClient {
         sso: &str,
         token: &str,
     ) -> Result<(), AdminApiError> {
-        self.admin_send_no_content(
-            Method::POST,
-            tenant_id,
-            "/invitations/accept",
-            correlation_id,
-            sso,
-            Some(serde_json::json!({ "token": token })),
-        )
-        .await
+        let response = self
+            .with_language(
+                self.http
+                    .post(format!(
+                        "{}/{}/invitations/accept",
+                        self.base_url, tenant_id
+                    ))
+                    .header(REQUEST_ID_HEADER, correlation_id)
+                    .header(
+                        reqwest::header::COOKIE,
+                        format!("{}={}", assay_contracts::cookies::SSO_SESSION_COOKIE, sso),
+                    ),
+            )
+            .json(&serde_json::json!({ "token": token }))
+            .send()
+            .await
+            .map_err(|e| AdminApiError::Transport(e.to_string()))?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let message = response
+            .json::<ApiErrorBody>()
+            .await
+            .map(|b| b.message)
+            .unwrap_or_default();
+        Err(match status {
+            reqwest::StatusCode::UNAUTHORIZED => AdminApiError::Unauthorized,
+            reqwest::StatusCode::FORBIDDEN => AdminApiError::Forbidden,
+            reqwest::StatusCode::NOT_FOUND => AdminApiError::NotFound,
+            reqwest::StatusCode::BAD_REQUEST => AdminApiError::Validation(message),
+            reqwest::StatusCode::CONFLICT => AdminApiError::Conflict(message),
+            other => AdminApiError::Transport(format!("unexpected status {other}")),
+        })
     }
 
     // ── 状況確認（監査ログ・クライアント状況）─────────────────────────────────
