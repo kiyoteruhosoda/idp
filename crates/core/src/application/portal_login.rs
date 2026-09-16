@@ -32,15 +32,14 @@ use crate::application::passkey_assertion::{
     PasskeyAssertionError, PasskeyAssertionService, PasskeyFlow,
 };
 use crate::application::password_policy::PasswordPolicyService;
-use crate::application::tenant_settings::TenantSettingsService;
 use crate::application::totp_registration::verify_totp_code;
-use crate::domain::access_decision_settings::AccessDecisionSettings;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::authentication_policy::{
     evaluate_policies, AuthenticationContext, PolicyDecision,
 };
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
+use crate::domain::effective_tenant_settings::EffectiveTenantSettings;
 use crate::domain::login_identifier::LoginIdentifierMatch;
 use crate::domain::password::PasswordHasher;
 use crate::domain::password_policy::{password_change_required, PasswordRejection};
@@ -207,10 +206,9 @@ pub struct PortalLoginService {
     key_encryption_key: [u8; 32],
     /// `mfa_ticket` の署名鍵。CSRF 秘密鍵を流用する（用途はプレフィクスで名前空間分離）。
     ticket_secret: [u8; 32],
-    /// テナントが上書きできる設定の解決（ADR-0058）。参照のたびに引く。
-    settings: Arc<TenantSettingsService>,
-    /// 一致するポリシーが無い場合の既定動作（AP2）。テナントの値を参照のたびに引く（ADR-0058 §4）。
-    access_settings: Arc<dyn AccessDecisionSettings>,
+    /// テナントが上書きできる設定（ADR-0058）。参照のたびに引く。一致するポリシーが無い場合の
+    /// 既定動作（AP2・§4）もここから引く。
+    settings: Arc<dyn EffectiveTenantSettings>,
 }
 
 impl PortalLoginService {
@@ -230,8 +228,7 @@ impl PortalLoginService {
         clock: Arc<dyn Clock>,
         key_encryption_key: [u8; 32],
         ticket_secret: [u8; 32],
-        settings: Arc<TenantSettingsService>,
-        access_settings: Arc<dyn AccessDecisionSettings>,
+        settings: Arc<dyn EffectiveTenantSettings>,
     ) -> Self {
         Self {
             authenticators,
@@ -249,7 +246,6 @@ impl PortalLoginService {
             key_encryption_key,
             ticket_secret,
             settings,
-            access_settings,
         }
     }
 
@@ -261,7 +257,7 @@ impl PortalLoginService {
         ip_address: Option<&str>,
     ) -> Result<PolicyDecision, String> {
         let default_effect = self
-            .access_settings
+            .settings
             .policy_default_effect(tenant_id)
             .await
             .map_err(|e| e.to_string())?;

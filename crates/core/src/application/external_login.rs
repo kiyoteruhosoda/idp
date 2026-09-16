@@ -26,8 +26,6 @@ use crate::application::application_access::ApplicationAccessService;
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authorize::code_dispatch;
 use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
-use crate::application::tenant_settings::TenantSettingsService;
-use crate::domain::access_decision_settings::AccessDecisionSettings;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session;
 use crate::domain::authentication_policy::{
@@ -35,6 +33,7 @@ use crate::domain::authentication_policy::{
 };
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
+use crate::domain::effective_tenant_settings::EffectiveTenantSettings;
 use crate::domain::external_idp::{ExternalIdentity, ExternalIdpConfig, ExternalLoginRequest};
 use crate::domain::external_oidc_port::{ExternalOidcClient, ExternalTokenRequest};
 use crate::domain::id_generator::IdGenerator;
@@ -163,10 +162,9 @@ pub struct ExternalLoginService {
     key_encryption_key: [u8; 32],
     /// コールバックを受ける web の公開ベース URL（`{base}/{tenant}/external/{code}/callback`）。
     public_web_base_url: String,
-    /// テナントが上書きできる設定の解決（ADR-0058）。参照のたびに引く。
-    settings: Arc<TenantSettingsService>,
-    /// 一致するポリシーが無い場合の既定動作（AP2）。テナントの値を参照のたびに引く（ADR-0058 §4）。
-    access_settings: Arc<dyn AccessDecisionSettings>,
+    /// テナントが上書きできる設定（ADR-0058）。参照のたびに引く。一致するポリシーが無い場合の
+    /// 既定動作（AP2・§4）もここから引く。
+    settings: Arc<dyn EffectiveTenantSettings>,
 }
 
 impl ExternalLoginService {
@@ -188,8 +186,7 @@ impl ExternalLoginService {
         ids: Arc<dyn IdGenerator>,
         key_encryption_key: [u8; 32],
         public_web_base_url: String,
-        settings: Arc<TenantSettingsService>,
-        access_settings: Arc<dyn AccessDecisionSettings>,
+        settings: Arc<dyn EffectiveTenantSettings>,
     ) -> Self {
         Self {
             providers,
@@ -209,7 +206,6 @@ impl ExternalLoginService {
             key_encryption_key,
             public_web_base_url,
             settings,
-            access_settings,
         }
     }
 
@@ -581,7 +577,7 @@ impl ExternalLoginService {
             },
             None => None,
         };
-        let default_effect = match self.access_settings.policy_default_effect(tenant_id).await {
+        let default_effect = match self.settings.policy_default_effect(tenant_id).await {
             Ok(effect) => effect,
             Err(e) => return CallbackOutcome::Internal(e.to_string()),
         };

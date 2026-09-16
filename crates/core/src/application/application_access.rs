@@ -13,13 +13,13 @@
 //! ⚠ **切り替えはコードではなく設定で行う。** 入れ替えにすると、戻すのにデプロイが要る。
 //!
 //! 設定は**テナントが決める**（ADR-0058 §4）。名簿が整ったテナントから `enforce` へ倒せる。
-//! ⚠ 値は参照のたびにテナントについて引く（[`AccessDecisionSettings`]）。起動時の `Config` を
+//! ⚠ 値は参照のたびにテナントについて引く（[`EffectiveTenantSettings`]）。起動時の `Config` を
 //! 読むと、全テナントが全体の値で動く。
 
 use crate::application::audit::{AuditService, RequestContext};
-use crate::domain::access_decision_settings::AccessDecisionSettings;
 use crate::domain::application::{Application, ApplicationAccess};
 use crate::domain::audit::{AuditEventType, AuditResult};
+use crate::domain::effective_tenant_settings::EffectiveTenantSettings;
 use crate::domain::error::DomainError;
 use crate::domain::repositories::ApplicationRepository;
 use crate::domain::tenant::TenantId;
@@ -48,14 +48,14 @@ impl ApplicationGate {
 pub struct ApplicationAccessService {
     applications: Arc<dyn ApplicationRepository>,
     audit: Arc<AuditService>,
-    settings: Arc<dyn AccessDecisionSettings>,
+    settings: Arc<dyn EffectiveTenantSettings>,
 }
 
 impl ApplicationAccessService {
     pub fn new(
         applications: Arc<dyn ApplicationRepository>,
         audit: Arc<AuditService>,
-        settings: Arc<dyn AccessDecisionSettings>,
+        settings: Arc<dyn EffectiveTenantSettings>,
     ) -> Self {
         Self {
             applications,
@@ -317,13 +317,10 @@ pub mod test_support {
         Arc::new(ApplicationAccessService::new(
             Arc::new(NoApplications),
             audit,
-            Arc::new(
-                crate::application::access_decision_settings::test_support::FixedAccessDecisionSettings {
-                    policy_default_effect:
-                        crate::domain::authentication_policy::DefaultPolicyEffect::Allow,
-                    assignment_enforcement: AssignmentEnforcement::Enforce,
-                },
-            ),
+            crate::application::tenant_settings::testing::tenant_settings_with_global(&[(
+                crate::domain::effective_tenant_settings::APPLICATION_ASSIGNMENT_ENFORCEMENT,
+                "enforce",
+            )]),
         ))
     }
 }
@@ -332,17 +329,16 @@ pub mod test_support {
 mod tests {
     use super::test_support::NoApplications;
     use super::*;
-    use crate::application::access_decision_settings::test_support::{
-        tenant_settings, FixedAccessDecisionSettings,
+    use crate::application::tenant_settings::testing::{
+        tenant_settings as settings_fixture, tenant_settings_with_global,
     };
-    use crate::domain::access_decision_settings::APPLICATION_ASSIGNMENT_ENFORCEMENT;
     use crate::domain::application::{
         ApplicationAssignment, ApplicationBinding, AssignedPrincipal, AssignedServiceAccount,
         AssignedUser, BindingTarget,
     };
     use crate::domain::audit::AuditEvent;
-    use crate::domain::authentication_policy::DefaultPolicyEffect;
     use crate::domain::clock::Clock;
+    use crate::domain::effective_tenant_settings::APPLICATION_ASSIGNMENT_ENFORCEMENT;
     use crate::domain::error::Result;
     use crate::domain::repositories::AuditLogSink;
     use crate::domain::values::{ApplicationStatus, AssignmentMode};
@@ -483,16 +479,30 @@ mod tests {
     ) -> (ApplicationAccessService, Arc<RecordingSink>) {
         service_with_settings(
             repo,
-            Arc::new(FixedAccessDecisionSettings {
-                policy_default_effect: DefaultPolicyEffect::Allow,
-                assignment_enforcement: enforcement,
-            }),
+            tenant_settings_with_global(&[(
+                APPLICATION_ASSIGNMENT_ENFORCEMENT,
+                enforcement.as_str(),
+            )]),
         )
+    }
+
+    /// 本物の解決（テナントの行 > 組み込み既定）を、指定したテナントの行だけで組み立てる。
+    ///
+    /// ⚠ テナントごとに違う値を試すときはこちらを使う。全体の値だけを入れた解決器では「全体の値を
+    /// 読んでいても通ってしまう」試験になる。
+    fn tenant_settings(
+        rows: &[(TenantId, &str, &str)],
+    ) -> Arc<crate::application::tenant_settings::TenantSettingsService> {
+        let fixture = settings_fixture();
+        for (tenant_id, key, value) in rows {
+            fixture.set_tenant(*tenant_id, key, value);
+        }
+        fixture.service
     }
 
     fn service_with_settings(
         repo: Arc<dyn ApplicationRepository>,
-        settings: Arc<dyn AccessDecisionSettings>,
+        settings: Arc<dyn EffectiveTenantSettings>,
     ) -> (ApplicationAccessService, Arc<RecordingSink>) {
         let sink = Arc::new(RecordingSink::default());
         let audit = Arc::new(AuditService::new(sink.clone(), Arc::new(FixedClock)));

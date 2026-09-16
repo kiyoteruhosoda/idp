@@ -8,8 +8,8 @@
 use crate::application::authentication_policy_management::{
     AuthenticationPolicyDraft, AuthenticationPolicyManagementError,
 };
-use crate::domain::access_decision_settings::AccessDecisionSettings;
 use crate::domain::authentication_policy::{AuthenticationPolicy, RequiredMethods, TimeWindow};
+use crate::domain::effective_tenant_settings::EffectiveTenantSettings;
 use crate::domain::values::AuthenticationMethod;
 use crate::presentation::admin::{
     AuthenticationPoliciesRead, AuthenticationPoliciesWrite, RequirePerms,

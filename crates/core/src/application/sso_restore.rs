@@ -6,10 +6,10 @@
 //! 検証し、成功時は idle 期限を延長して `sso_session.resumed` を監査記録する。
 
 use crate::application::audit::{AuditService, RequestContext};
-use crate::application::tenant_settings::TenantSettingsService;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
+use crate::domain::effective_tenant_settings::EffectiveTenantSettings;
 use crate::domain::error::DomainError;
 use crate::domain::repositories::{
     SsoSessionRepository, TenantMembershipRepository, UserRepository,
@@ -46,7 +46,7 @@ pub struct SsoRestorer {
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
     /// テナントが上書きできる設定の解決（ADR-0058）。参照のたびに引く。
-    settings: Arc<TenantSettingsService>,
+    settings: Arc<dyn EffectiveTenantSettings>,
 }
 
 impl SsoRestorer {
@@ -56,7 +56,7 @@ impl SsoRestorer {
         memberships: Arc<dyn TenantMembershipRepository>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
-        settings: Arc<TenantSettingsService>,
+        settings: Arc<dyn EffectiveTenantSettings>,
     ) -> Self {
         Self {
             sso_sessions,

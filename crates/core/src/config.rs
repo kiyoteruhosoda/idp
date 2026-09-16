@@ -387,7 +387,7 @@ impl Config {
     /// 認証ポリシーが 1 件も一致しないときの既定動作（`allow` / `deny`）の**全体の値**。
     ///
     /// ⚠ **判定に使わない。** テナントが決めるキーで（ADR-0058 §4）、判定する側は
-    /// `AccessDecisionSettings` からテナントの値を引く。ここを読むと、その経路だけ全体の値で動く。
+    /// `EffectiveTenantSettings` からテナントの値を引く。ここを読むと、その経路だけ全体の値で動く。
     /// 残してあるのは、起動時に値の形を検証するためと、既定値の突き合わせの試験のためである。
     pub fn auth_policy_default_effect(&self) -> DefaultPolicyEffect {
         self.auth_policy_default_effect

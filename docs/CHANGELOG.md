@@ -1,3 +1,19 @@
+## 2026-09-16（13）（テナント設定を読む口を 1 本にする）
+
+- **テナントが上書きできる値を読む口を、domain のトレイト `EffectiveTenantSettings` 1 本にした**（#115）。
+  ADR-0058 の実装で、判定の既定 2 キー（`AccessDecisionSettings`。#22）とパスワード・ロックアウト・SSO・
+  step-up など（`TenantSettingsService` の具象。#24）が別々に足され、認証の 7 経路（OIDC のログイン・MFA・
+  パスキー・外部 IdP・パスワード変更・管理コンソール・ポータル）が同じ解決器を 2 本の口で受け取っていた。
+- 寄せた先はトレイトの側。CLAUDE.md の DIP（application は domain のトレイトに依存する）に沿わせるため、
+  `AccessDecisionSettings` を型付きの読み出し 10 本を持つ `EffectiveTenantSettings` へ広げ、
+  `TenantSettingsService` はその実装にした。`SsoSessionLifetime` は domain へ移した。
+  値を読むユースケース（上の 7 経路に加え、認可・アプリの門・パスワードポリシー・再設定・メール検証・招待・
+  SSO 復元・step-up）はすべてトレイトだけを持つ。具象を持つのは `AppState` の管理の口（一覧・書き込み・
+  キャッシュの無効化）だけ。
+- 配線（`state.rs`）は解決器を 1 回だけ渡す形にした。試験の固定値の実装（`FixedAccessDecisionSettings`）は
+  消し、本物の解決器に行を入れて組み立てる形へ揃えた。⚠ **挙動は変えていない**（キー・解決順・既定値・
+  型に合わない保存値をエラーにする扱いはそのまま）。
+
 ## 2026-09-16（12）（設定画面の絞り込み）
 
 - **設定画面に「絞り込む」を付けた**（ユーザーの要望）。名前・キー・説明の文字で、テナントの設定と
