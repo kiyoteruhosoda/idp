@@ -18,6 +18,7 @@ pub mod admin_saml_service_providers;
 pub mod admin_signing_keys;
 pub mod admin_system_settings;
 pub mod admin_tenant_settings;
+pub mod admin_tenant_smtp;
 pub mod admin_tenants;
 pub mod admin_users;
 pub mod authorize;

@@ -521,6 +521,25 @@ pub struct SmtpSettingsResponse {
     pub smtp_use_tls: bool,
 }
 
+/// テナントの SMTP 設定の表現（`GET/PUT/DELETE /{tenant_id}/admin/settings/smtp`。ADR-0058 §8）。
+///
+/// 全体の SMTP（[`SmtpSettingsResponse`]）と同じ項目に、`inherited` を足す。⚠ **テナントが経路を
+/// 持っていないとき、全体の値は返さない**（項目は空）。テナントの管理者に全体の経路の宛先や
+/// 利用者名を見せる理由が無い。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TenantSmtpSettingsResponse {
+    /// `true` = このテナントは経路を持たず、全体の経路でメールを送る。
+    pub inherited: bool,
+    pub smtp_host: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub smtp_port: Option<u16>,
+    pub smtp_username: String,
+    /// SMTP パスワードが設定済みか（**平文は返さない**）。
+    pub smtp_password_set: bool,
+    pub smtp_from_address: String,
+    pub smtp_use_tls: bool,
+}
+
 /// SMTP 設定の更新要求。
 ///
 /// `smtp_password` は 3 値で扱う（システム設定の画面と同じ規則）:

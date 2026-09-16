@@ -331,19 +331,21 @@ impl AuthenticatorManagementService {
         user_id: Uuid,
         ctx: &RequestContext,
     ) -> Result<(), AuthenticatorManagementError> {
-        let server = self
-            .system_settings
-            .smtp_server()
-            .await
-            .map_err(|e| AuthenticatorManagementError::Internal(e.to_string()))?
-            .ok_or(AuthenticatorManagementError::MailUnavailable)?;
-
         let user = self
             .users
             .find_by_id(user_id)
             .await
             .map_err(|e| AuthenticatorManagementError::Internal(e.to_string()))?
             .ok_or(AuthenticatorManagementError::NotFound)?;
+
+        // 認証器は利用者の持ち物で、管理するのは所属元テナントである（ADR-0009）。コードも
+        // 所属元の経路で送る（ADR-0058 §8）。ログイン画面のテナント（ゲスト参加先）では決めない。
+        let server = self
+            .system_settings
+            .smtp_server_for(user.tenant_id)
+            .await
+            .map_err(|e| AuthenticatorManagementError::Internal(e.to_string()))?
+            .ok_or(AuthenticatorManagementError::MailUnavailable)?;
 
         let now = self.clock.now();
         // 前のコードは必ず失効させる。同時に複数のコードが有効だと、総当たりの成功率が本数倍になる。
