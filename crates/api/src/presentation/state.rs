@@ -168,6 +168,9 @@ pub struct AppState {
     pub token_endpoint_load: Arc<crate::presentation::token_endpoint_load::TokenEndpointLoadGate>,
     /// テナント解決（id → tenant）。`TenantResolver` middleware が使う（MT9 でルーターへ mount）。
     pub tenant_resolution: Arc<TenantResolutionService>,
+    /// テナント設定の解決（ADR-0058。テナントの行 > 全体の行 > 環境変数 > 組み込み既定）。
+    /// ⚠ この段ではまだ誰も読まない（受け皿だけ。消費側の作り替えは別のリリースで入る）。
+    pub tenant_settings: Arc<crate::application::tenant_settings::TenantSettingsService>,
     pub register: Arc<RegisterService>,
     /// 自己登録アカウントのメール検証（確認リンク送出・消費。SEC6b）。
     pub email_verification: Arc<EmailVerificationService>,
@@ -526,6 +529,37 @@ impl AppState {
         ));
         let tenant_resolution =
             Arc::new(TenantResolutionService::new(tenants.clone(), tenant_cache));
+        // テナント設定の解決（ADR-0058）。テナントの行と全体の行は参照のたびに引き、テナント解決と
+        // 同じ寿命の TTL キャッシュで抑える。⚠ キャッシュの寿命そのものをテナントの設定にしない
+        // （テナントが自分の解決を止められてしまう）。環境変数 → 組み込み既定の層は実行中に変わらない
+        // ので、ここで 1 回だけ作って渡す。
+        let tenant_settings_fallback =
+            crate::domain::system_setting::tenant_overridable_setting_keys()
+                .filter_map(|key| {
+                    config
+                        .value_without_db(key)
+                        .map(|value| (key.to_string(), value))
+                })
+                .collect();
+        let tenant_settings = Arc::new(
+            crate::application::tenant_settings::TenantSettingsService::new(
+                Arc::new(
+                    crate::infrastructure::repositories::tenant_setting::SqlxTenantSettingsRepository::new(
+                        pool.clone(),
+                    ),
+                ),
+                Arc::new(SqlxSystemSettingsRepository::new(pool.clone())),
+                tenant_settings_fallback,
+                Arc::new(InMemoryTtlCache::new(
+                    chrono_from_std(config.tenant_cache_ttl()),
+                    clock.clone(),
+                )),
+                Arc::new(InMemoryTtlCache::new(
+                    chrono_from_std(config.tenant_cache_ttl()),
+                    clock.clone(),
+                )),
+            ),
+        );
 
         let authorize = Arc::new(AuthorizeService::new(
             clients.clone(),
@@ -1087,6 +1121,7 @@ impl AppState {
             metrics: crate::presentation::metrics::handle().map(Arc::new),
             token_endpoint_load,
             tenant_resolution,
+            tenant_settings,
             register,
             email_verification,
             authorize,

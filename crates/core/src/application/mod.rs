@@ -61,6 +61,7 @@ pub mod stop_announcement;
 pub mod system_settings;
 pub mod tenant_management;
 pub mod tenant_resolution;
+pub mod tenant_settings;
 pub mod token;
 pub mod totp_registration;
 pub mod user_lifecycle;
