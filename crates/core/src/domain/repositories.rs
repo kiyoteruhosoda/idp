@@ -19,6 +19,9 @@
 //! - **テナント列を持たないテーブル**（署名鍵・jti 失効リスト・TOTP・WebAuthn・チャレンジ）。
 #![allow(dead_code)]
 
+use crate::domain::application::{
+    Application, ApplicationAssignment, ApplicationBinding, AssignedUser,
+};
 use crate::domain::application_log::{
     ApplicationLogEntry, ApplicationLogFilter, ApplicationLogRecord,
 };
@@ -55,7 +58,8 @@ use crate::domain::user_authenticator::{
     AuthenticatorStatus, AuthenticatorType, UserAuthenticator,
 };
 use crate::domain::values::{
-    AuthenticationMethod, GrantType, MembershipStatus, ResourceStatus, SigningKeyStatus, UserStatus,
+    ApplicationStatus, AssignmentMode, AuthenticationMethod, GrantType, MembershipStatus,
+    ResourceStatus, SigningKeyStatus, UserStatus,
 };
 use crate::domain::webauthn_credential::WebAuthnCredential;
 use async_trait::async_trait;
@@ -967,6 +971,68 @@ pub trait ClientPermissionRepository: Send + Sync {
         -> Result<()>;
     /// 権限を剥奪する（不存在でもエラーにしない）。
     async fn revoke(&self, client_row_id: Uuid, code: &str) -> Result<()>;
+}
+
+/// アプリ（`applications`）・その binding・割り当ての永続化（ADR-0054）。
+///
+/// 3 つの表を 1 つのトレイトに収めるのは、**アプリを外して binding だけが残る**ような中途半端な
+/// 状態を作らないためである。binding も割り当ても、アプリを識別できないと意味を持たない。
+#[async_trait]
+pub trait ApplicationRepository: Send + Sync {
+    /// アプリを登録する。
+    async fn create(&self, application: &Application) -> Result<()>;
+    /// テナント内のアプリを代理キーで引く。他テナントの行は `None`。
+    async fn find_by_id(&self, tenant_id: TenantId, id: Uuid) -> Result<Option<Application>>;
+    /// **OIDC の `client_id` からアプリを引く**（判定のホットパス）。
+    ///
+    /// 認可フローが持っているのは `clients.client_id`（テナント内一意の文字列）だけなので、
+    /// 代理キーへの読み替えまで含めてここで閉じる。binding が無い client は `None`
+    /// ——移行前・移行漏れと「割り当てが無い」を呼び出し側で区別できるようにする。
+    async fn find_by_oidc_client_id(
+        &self,
+        tenant_id: TenantId,
+        client_id: &str,
+    ) -> Result<Option<Application>>;
+    /// SAML の `entity_id` からアプリを引く（OIDC 側と対になる解決経路）。
+    async fn find_by_saml_entity_id(
+        &self,
+        tenant_id: TenantId,
+        entity_id: &str,
+    ) -> Result<Option<Application>>;
+    /// テナント内のアプリを一覧する（`display_name` 昇順）。
+    async fn list(&self, tenant_id: TenantId) -> Result<Vec<Application>>;
+    /// 表示名・状態・割り当てモードを更新する。対象が無ければ `false`。
+    async fn update(
+        &self,
+        tenant_id: TenantId,
+        id: Uuid,
+        display_name: &str,
+        status: ApplicationStatus,
+        assignment_mode: AssignmentMode,
+        updated_at: DateTime<Utc>,
+    ) -> Result<bool>;
+    /// アプリを削除する（binding・割り当ては CASCADE で消える）。対象が無ければ `false`。
+    async fn delete(&self, tenant_id: TenantId, id: Uuid) -> Result<bool>;
+
+    /// アプリの binding を一覧する（登録順）。
+    async fn list_bindings(&self, application_id: Uuid) -> Result<Vec<ApplicationBinding>>;
+    /// binding を足す。相手が既に別のアプリへ繋がっていれば
+    /// [`DomainError::Conflict`](crate::domain::error::DomainError::Conflict)。
+    async fn add_binding(&self, binding: &ApplicationBinding) -> Result<()>;
+    /// binding を外す（アプリ境界内。対象が無ければ `false`）。
+    async fn remove_binding(&self, application_id: Uuid, binding_id: Uuid) -> Result<bool>;
+
+    /// この利用者にこのアプリの割り当てがあるか（判定のホットパス）。
+    async fn is_assigned(&self, application_id: Uuid, user_id: Uuid) -> Result<bool>;
+    /// アプリに割り当てられた利用者を一覧する（メールの昇順）。**利用者の情報ごと 1 回で読む**
+    /// ——1 件ずつ引き直すと、名簿の長さだけ往復が増える。
+    async fn list_assigned_users(&self, application_id: Uuid) -> Result<Vec<AssignedUser>>;
+    /// 割り当ての件数を返す（一覧画面が人数だけを欲しいとき。全件を読まない）。
+    async fn count_assignments(&self, application_id: Uuid) -> Result<i64>;
+    /// 割り当てを足す（冪等: 既存の割り当ては `assigned_at` を保持する）。
+    async fn assign(&self, assignment: &ApplicationAssignment) -> Result<()>;
+    /// 割り当てを外す（未割り当てでもエラーにしない）。
+    async fn unassign(&self, application_id: Uuid, user_id: Uuid) -> Result<()>;
 }
 
 /// 保護リソース（`aud` に入る宛名）の永続化（ADR-0042）。

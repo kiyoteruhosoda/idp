@@ -264,7 +264,7 @@ fn values_from_form(form: &AdminAuthenticationPolicyForm) -> AuthenticationPolic
         effect: form.effect.clone(),
         methods: selected_methods(form),
         user_verification: form.user_verification.is_some(),
-        client_ids: form.client_ids.clone(),
+        application_ids: form.application_ids.clone(),
         user_ids: form.user_ids.clone(),
         ip_cidrs: form.ip_cidrs.clone(),
         time_windows: form.time_windows.clone(),
@@ -307,7 +307,7 @@ fn validate(
         enabled: form.enabled.is_some(),
         effect: form.effect,
         effect_params,
-        client_ids: parse_list(&form.client_ids),
+        application_ids: parse_list(&form.application_ids),
         user_ids: parse_list(&form.user_ids),
         ip_cidrs: parse_list(&form.ip_cidrs),
         time_windows,
@@ -329,7 +329,7 @@ fn values_from(policy: &AuthenticationPolicyResponse) -> AuthenticationPolicyFor
         effect: policy.effect.clone(),
         methods,
         user_verification,
-        client_ids: format_list(&policy.client_ids),
+        application_ids: format_list(&policy.application_ids),
         user_ids: format_list(&policy.user_ids),
         ip_cidrs: format_list(&policy.ip_cidrs),
         time_windows: format_time_windows(&policy.time_windows),
@@ -384,7 +384,10 @@ mod tests {
                 methods: vec!["webauthn".to_string()],
                 user_verification: true,
             }),
-            client_ids: vec!["app-a".to_string(), "app-b".to_string()],
+            application_ids: vec![
+                "01990000-0000-7000-8000-000000000001".to_string(),
+                "01990000-0000-7000-8000-000000000002".to_string(),
+            ],
             user_ids: Vec::new(),
             ip_cidrs: vec!["10.0.0.0/8".to_string()],
             time_windows: vec![TimeWindowPayload {
@@ -409,7 +412,10 @@ mod tests {
         assert_eq!(values.effect, "require_specific_method");
         assert!(values.has_method("webauthn"));
         assert!(values.user_verification);
-        assert_eq!(values.client_ids, "app-a\napp-b");
+        assert_eq!(
+            values.application_ids,
+            "01990000-0000-7000-8000-000000000001\n01990000-0000-7000-8000-000000000002"
+        );
         assert_eq!(values.ip_cidrs, "10.0.0.0/8");
         assert_eq!(
             values.time_windows,
@@ -478,7 +484,7 @@ mod tests {
             policies: &[],
         };
         let mut bare = policy();
-        bare.client_ids.clear();
+        bare.application_ids.clear();
         bare.ip_cidrs.clear();
         bare.time_windows.clear();
         assert_eq!(
@@ -487,7 +493,7 @@ mod tests {
         );
         assert_eq!(
             console.condition_summary(&policy()),
-            "client×2 / network×1 / time×1"
+            "app×2 / network×1 / time×1"
         );
     }
 }

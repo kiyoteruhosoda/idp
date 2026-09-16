@@ -25,6 +25,8 @@ pub const ACTION_WRITE: &str = "write";
 
 pub const USERS_READ: &str = "idp.users:read";
 pub const USERS_WRITE: &str = "idp.users:write";
+pub const APPLICATIONS_READ: &str = "idp.applications:read";
+pub const APPLICATIONS_WRITE: &str = "idp.applications:write";
 pub const CLIENTS_READ: &str = "idp.clients:read";
 pub const CLIENTS_WRITE: &str = "idp.clients:write";
 pub const MEMBERS_READ: &str = "idp.members:read";
@@ -68,6 +70,8 @@ pub const ROOT_SCOPED_CODES: &[&str] = &[SMTP_READ, SMTP_WRITE];
 pub const TENANT_MANAGEMENT_CODES: &[&str] = &[
     USERS_READ,
     USERS_WRITE,
+    APPLICATIONS_READ,
+    APPLICATIONS_WRITE,
     CLIENTS_READ,
     CLIENTS_WRITE,
     MEMBERS_READ,

@@ -1,0 +1,188 @@
+{% extends "console/layout.html" %}
+{% block content %}
+<p class="mb-2"><a href="{{ tenant }}/admin/applications"><i class="fa-solid fa-arrow-left me-2" aria-hidden="true"></i>{{ messages.get("admin-applications-back") }}</a></p>
+<h2 class="h4 mb-3">{{ application.display_name }}</h2>
+{% if record_only %}
+<div class="alert alert-info" role="alert">
+  <i class="fa-solid fa-circle-info me-2" aria-hidden="true"></i>{{ messages.get("admin-applications-record-only") }}
+</div>
+{% endif %}
+{% if let Some(err) = error %}
+<div class="alert alert-danger" role="alert">{{ messages.get(err) }}</div>
+{% endif %}
+
+{# ── 設定 ───────────────────────────────────────────────────────────────── #}
+<div class="card mb-4">
+  <div class="card-body">
+    <h3 class="h5 mb-3">{{ messages.get("admin-applications-settings-heading") }}</h3>
+    {#- ⚠ 「個別」で名簿が空は「全員」ではなく「誰も入れない」。取り違えると全断になるので、
+        その値を選んでいるときだけ確認を挟む（`data-confirm-if`。console.js）。 -#}
+    <form method="post" action="{{ tenant }}/admin/applications/{{ application.id }}/update"
+          {% if application.assigned_count == 0 %}data-confirm="{{ messages.get("admin-applications-confirm-empty") }}" data-confirm-if="assignment_mode=INDIVIDUAL"{% endif %}>
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <div class="row g-2">
+        <div class="col-md-5">
+          <label class="form-label" for="display-name">{{ messages.get("admin-applications-name-label") }}</label>
+          <input type="text" class="form-control" id="display-name" name="display_name" value="{{ application.display_name }}" required>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label" for="status">{{ messages.get("admin-applications-col-status") }}</label>
+          <select class="form-select" id="status" name="status">
+            <option value="ACTIVE" {% if application.is_active() %}selected{% endif %}>{{ messages.get("admin-applications-state-active") }}</option>
+            <option value="DISABLED" {% if !application.is_active() %}selected{% endif %}>{{ messages.get("admin-applications-state-disabled") }}</option>
+          </select>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label" for="assignment-mode">{{ messages.get("admin-applications-who-label") }}</label>
+          <select class="form-select" id="assignment-mode" name="assignment_mode">
+            <option value="INDIVIDUAL" {% if application.is_individual() %}selected{% endif %}>{{ messages.get("admin-applications-who-individual") }}</option>
+            <option value="EVERYONE" {% if !application.is_individual() %}selected{% endif %}>{{ messages.get("admin-applications-who-everyone") }}</option>
+          </select>
+        </div>
+      </div>
+      {#- ⚠ 「個別」で名簿が空は「全員」ではなく「誰も入れない」。保存の前に確認を挟む。
+          確認は data 属性から読む（`confirm-submit.js`。文言を JS へ直接埋め込まない）。 -#}
+      <button type="submit" class="btn btn-primary mt-3">{{ messages.get("admin-applications-save") }}</button>
+    </form>
+  </div>
+</div>
+
+{% if !application.is_individual() %}
+{# ── 「全員」のときだけ: いま入れている人 ─────────────────────────────────── #}
+<div class="card mb-4">
+  <div class="card-body">
+    <h3 class="h5 mb-1">{{ messages.get("admin-applications-current-heading") }}</h3>
+    {#- ⚠ 「全員」から「個別」へ倒すときの写し元。これを出さずに切り替えさせると、
+        空の名簿で保存した瞬間に全員が入れなくなる。 -#}
+    <p class="text-muted">{{ messages.get("admin-applications-current-intro") }}</p>
+    {% if current_users_truncated %}
+    <div class="alert alert-warning" role="alert">{{ messages.get("admin-applications-current-truncated") }}</div>
+    {% endif %}
+    {% if current_users.is_empty() %}
+    <p class="text-muted mb-0">{{ messages.get("admin-applications-current-none") }}</p>
+    {% else %}
+    <p class="text-muted">{{ current_users_total }}</p>
+    <ul class="list-group list-group-flush">
+      {% for user in current_users %}
+      <li class="list-group-item d-flex justify-content-between align-items-center">
+        <span>
+          {%- if let Some(email) = user.email -%}{{ email }}{%- else -%}<code>{{ user.user_id }}</code>{%- endif -%}
+          {%- if let Some(name) = user.name %} <span class="text-muted">{{ name }}</span>{% endif -%}
+        </span>
+        <form method="post" action="{{ tenant }}/admin/applications/{{ application.id }}/assign" class="d-inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf }}">
+          <input type="hidden" name="user_id" value="{{ user.user_id }}">
+          <button type="submit" class="btn btn-outline-primary btn-sm">{{ messages.get("admin-applications-copy-to-roster") }}</button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{# ── 利用ユーザー ─────────────────────────────────────────────────────────── #}
+<div class="card mb-4">
+  <div class="card-body">
+    <h3 class="h5 mb-1">{{ messages.get("admin-applications-roster-heading") }}</h3>
+    {#- ⚠ 割り当てにロールは無い（ADR-0054 の決定 1）。載るのは「使ってよい」の 1 ビットだけ。 -#}
+    <p class="text-muted">{{ messages.get("admin-applications-roster-intro") }}</p>
+    {% if assigned.is_empty() %}
+    <p class="text-muted">{{ messages.get("admin-applications-roster-none") }}</p>
+    {% else %}
+    <div class="table-responsive">
+      <table class="table table-cards align-middle">
+        <thead>
+          <tr>
+            <th>{{ messages.get("admin-applications-roster-col-user") }}</th>
+            <th>{{ messages.get("admin-applications-roster-col-since") }}</th>
+            <th>{{ messages.get("admin-applications-col-actions") }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for user in assigned %}
+          <tr>
+            <td data-label="{{ messages.get("admin-applications-roster-col-user") }}">
+              {{ user.email }}
+              {%- if let Some(name) = user.name %} <span class="text-muted">{{ name }}</span>{% endif -%}
+              {#- 利用者アカウント自体が止まっている場合。割り当ては残るので、名簿では別に示す。 -#}
+              {%- if !user.is_user_active() %}
+              <span class="badge bg-secondary-subtle text-secondary-emphasis ms-1">{{ user.status }}</span>
+              {%- endif -%}
+            </td>
+            <td data-label="{{ messages.get("admin-applications-roster-col-since") }}"><time class="local-time" datetime="{{ user.assigned_at }}">{{ crate::templates::utc_short(user.assigned_at.as_str()) }}</time></td>
+            <td data-label="{{ messages.get("admin-applications-col-actions") }}">
+              <form method="post" action="{{ tenant }}/admin/applications/{{ application.id }}/unassign" class="d-inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                <input type="hidden" name="user_id" value="{{ user.user_id }}">
+                <button type="submit" class="btn btn-outline-danger btn-sm">{{ messages.get("admin-applications-unassign") }}</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+    <form method="post" action="{{ tenant }}/admin/applications/{{ application.id }}/assign" class="mt-3">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <label class="form-label" for="assign-user-id">{{ messages.get("admin-applications-assign-label") }}</label>
+      <div class="input-group">
+        <input type="text" class="form-control font-monospace" id="assign-user-id" name="user_id" required
+               placeholder="00000000-0000-7000-8000-000000000000">
+        <button type="submit" class="btn btn-primary">{{ messages.get("admin-applications-assign-button") }}</button>
+      </div>
+      <div class="form-text">{{ messages.get("admin-applications-assign-hint") }}</div>
+    </form>
+  </div>
+</div>
+
+{# ── 認証方法 ─────────────────────────────────────────────────────────────── #}
+<div class="card">
+  <div class="card-body">
+    <h3 class="h5 mb-1">{{ messages.get("admin-applications-bindings-heading") }}</h3>
+    <p class="text-muted">{{ messages.get("admin-applications-bindings-intro") }}</p>
+    {% if application.bindings.is_empty() %}
+    <p class="text-muted">{{ messages.get("admin-applications-bindings-none") }}</p>
+    {% else %}
+    <ul class="list-group list-group-flush mb-3">
+      {% for binding in application.bindings %}
+      <li class="list-group-item d-flex justify-content-between align-items-center">
+        <span>
+          <span class="badge bg-secondary-subtle text-secondary-emphasis me-2">{{ binding.protocol }}</span>
+          {%- if let Some(identifier) = binding.identifier -%}<code>{{ identifier }}</code>{%- else -%}<span class="text-muted">{{ messages.get("admin-applications-binding-gone") }}</span>{%- endif -%}
+          {%- if let Some(name) = binding.display_name %} <span class="text-muted">{{ name }}</span>{% endif -%}
+        </span>
+        <form method="post" action="{{ tenant }}/admin/applications/{{ application.id }}/unbind" class="d-inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf }}">
+          <input type="hidden" name="binding_id" value="{{ binding.id }}">
+          <button type="submit" class="btn btn-outline-danger btn-sm">{{ messages.get("admin-applications-unbind") }}</button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    <form method="post" action="{{ tenant }}/admin/applications/{{ application.id }}/bind">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <div class="row g-2">
+        <div class="col-md-4">
+          <label class="form-label" for="bind-protocol">{{ messages.get("admin-applications-bind-protocol") }}</label>
+          <select class="form-select" id="bind-protocol" name="protocol">
+            <option value="oidc" selected>OIDC</option>
+            <option value="saml">SAML</option>
+          </select>
+        </div>
+        <div class="col-md-8">
+          <label class="form-label" for="bind-target">{{ messages.get("admin-applications-bind-target") }}</label>
+          <div class="input-group">
+            <input type="text" class="form-control font-monospace" id="bind-target" name="target" required>
+            <button type="submit" class="btn btn-primary">{{ messages.get("admin-applications-bind-button") }}</button>
+          </div>
+          <div class="form-text">{{ messages.get("admin-applications-bind-hint") }}</div>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

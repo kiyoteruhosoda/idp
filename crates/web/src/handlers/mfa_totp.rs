@@ -409,6 +409,25 @@ pub async fn verify(
         InternalVerifyTotpResponse::Locked => {
             error_page(&messages, StatusCode::FORBIDDEN, "mfa-error-locked")
         }
+        // 第二要素まで通ったが、このアプリの利用が許可されていない（ADR-0054）。
+        // SSO Cookie は発行する（assay には入れている）。
+        InternalVerifyTotpResponse::ApplicationNotPermitted {
+            application_name,
+            sso_session_id,
+            sso_absolute_ttl_secs,
+        } => (
+            state
+                .set_cookies()
+                .set_session(
+                    cookies::SSO_SESSION_COOKIE,
+                    &sso_session_id,
+                    sso_absolute_ttl_secs,
+                )
+                .expire_session(cookies::AUTH_SESSION_COOKIE)
+                .into_headers(),
+            crate::application_denied::page(&messages, &tenant.prefix(), &application_name),
+        )
+            .into_response(),
         InternalVerifyTotpResponse::PolicyDenied => error_page(
             &messages,
             StatusCode::FORBIDDEN,

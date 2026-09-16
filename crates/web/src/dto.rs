@@ -319,8 +319,9 @@ pub struct AdminAuthenticationPolicyForm {
     pub method_external_idp: Option<String>,
     #[serde(default)]
     pub user_verification: Option<String>,
+    /// 対象アプリの内部 ID（改行区切り。空 = 全アプリ。ADR-0054 の決定 5）。
     #[serde(default)]
-    pub client_ids: String,
+    pub application_ids: String,
     #[serde(default)]
     pub user_ids: String,
     #[serde(default)]

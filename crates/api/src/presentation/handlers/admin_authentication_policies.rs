@@ -182,7 +182,12 @@ fn to_response(policy: &AuthenticationPolicy) -> AuthenticationPolicyResponse {
             methods: p.methods.iter().map(|m| m.as_str().to_string()).collect(),
             user_verification: p.user_verification,
         }),
-        client_ids: policy.conditions.client_ids.clone(),
+        application_ids: policy
+            .conditions
+            .application_ids
+            .iter()
+            .map(|a| a.to_string())
+            .collect(),
         user_ids: policy
             .conditions
             .user_ids
@@ -207,14 +212,19 @@ fn to_response(policy: &AuthenticationPolicy) -> AuthenticationPolicyResponse {
     }
 }
 
-/// リクエスト DTO を Application 層の入力へ変換する（`user_ids` の UUID 形式のみここで検証する。
-/// 意味的な検証は Application 層）。
+/// リクエスト DTO を Application 層の入力へ変換する（`application_ids` / `user_ids` の UUID 形式
+/// のみここで検証する。意味的な検証は Application 層）。
 fn parse_draft(
     body: AuthenticationPolicyUpsertRequest,
     locale: ApiLocale,
 ) -> Result<AuthenticationPolicyDraft, ApiError> {
     let user_ids = body
         .user_ids
+        .iter()
+        .map(|raw| parse_uuid(raw, locale))
+        .collect::<Result<Vec<_>, _>>()?;
+    let application_ids = body
+        .application_ids
         .iter()
         .map(|raw| parse_uuid(raw, locale))
         .collect::<Result<Vec<_>, _>>()?;
@@ -246,7 +256,7 @@ fn parse_draft(
         enabled: body.enabled,
         effect: body.effect,
         effect_params,
-        client_ids: body.client_ids,
+        application_ids,
         user_ids,
         ip_cidrs: body.ip_cidrs,
         time_windows: body

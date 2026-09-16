@@ -17,9 +17,10 @@
 //! 拒否する（パスワード経路だけ塞いでも迂回できてしまうため）。`require_mfa` は WebAuthn が
 //! 所有＋生体/知識（User Verification）の複数要素・フィッシング耐性認証であるため満たすものと扱う。
 
+use crate::application::application_access::ApplicationAccessService;
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authorize::code_dispatch;
-use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
+use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
 use crate::application::passkey_assertion::{
     PasskeyAssertionError, PasskeyAssertionService, PasskeyFlow,
 };
@@ -64,6 +65,14 @@ pub enum PasskeyAuthOutcome {
     /// クレデンシャルが無効。
     InvalidCredential,
     /// 認証ポリシーにより拒否（仕様 §7.4 `deny`）。
+    /// 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
+    /// SSO セッションは発行する（assay には入れている）ので、他のアプリへはそのまま進める。
+    ApplicationNotPermitted {
+        /// 画面に出すアプリ名。どのアプリで断られたかが分からないと、次に誰へ頼めばよいかを
+        /// 利用者が決められない。
+        application_name: String,
+        sso_session_id: String,
+    },
     PolicyDenied,
     /// IP 単位のレート制限超過（ログイン・直接ログインと同じ枠）。
     RateLimited,
@@ -78,6 +87,9 @@ pub struct PasskeyAuthenticationService {
     sso_sessions: Arc<dyn SsoSessionRepository>,
     client_consents: Arc<dyn ClientConsentRepository>,
     authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
+    /// 認証ポリシーの宛先（`conditions.application_ids`）を解決する（ADR-0054）。
+    /// フローが持っているのは `client_id` だけなので、アプリへの読み替えをここで挟む。
+    applications: Arc<ApplicationAccessService>,
     code_issuance: Arc<CodeIssuanceService>,
     /// IP 単位のレート制限。**ログイン・直接ログインのパスキー経路と同じ枠を消費する** ——
     /// 入口ごとに枠が違うと、片方で締め出された相手がもう片方で試行を続けられる。
@@ -97,6 +109,7 @@ impl PasskeyAuthenticationService {
         sso_sessions: Arc<dyn SsoSessionRepository>,
         client_consents: Arc<dyn ClientConsentRepository>,
         authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
+        applications: Arc<ApplicationAccessService>,
         code_issuance: Arc<CodeIssuanceService>,
         rate_limiter: Arc<dyn LoginRateLimiter>,
         audit: Arc<AuditService>,
@@ -111,6 +124,7 @@ impl PasskeyAuthenticationService {
             sso_sessions,
             client_consents,
             authentication_policies,
+            applications,
             code_issuance,
             rate_limiter,
             audit,
@@ -202,6 +216,17 @@ impl PasskeyAuthenticationService {
 
         // 4. 認証ポリシー評価（仕様 §9）。`deny` はパスキー経路でも拒否する。
         //    `require_mfa` は WebAuthn（所有要素 + User Verification）が満たすため通過する。
+        // 認証ポリシーの宛先はアプリ（ADR-0054 の決定 5）。フローが持っているのは `client_id`
+        // だけなので、ここでアプリへ読み替える。まだアプリへ繋がっていない client は `None` で、
+        // `application_ids` を持つポリシーは一致しない。
+        let application_id = match self
+            .applications
+            .policy_target_for_oidc_client(tenant_id, &client_id)
+            .await
+        {
+            Ok(id) => id,
+            Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
+        };
         let decision = match self
             .authentication_policies
             .list_enabled_for_tenant(tenant_id)
@@ -210,7 +235,7 @@ impl PasskeyAuthenticationService {
             Ok(policies) => evaluate_policies(
                 &policies,
                 &AuthenticationContext {
-                    client_id: Some(&client_id),
+                    application_id,
                     user_id,
                     ip_address: ctx.ip_address.as_deref(),
                     now,
@@ -364,7 +389,14 @@ impl PasskeyAuthenticationService {
             )
             .await
         {
-            Ok(c) => c,
+            Ok(CodeIssuance::Issued(code)) => code,
+            // 認証は通っているが、このアプリの利用が許可されていない（ADR-0054）。RP へは戻さない。
+            Ok(CodeIssuance::ApplicationDenied { application_name }) => {
+                return PasskeyAuthOutcome::ApplicationNotPermitted {
+                    application_name,
+                    sso_session_id,
+                }
+            }
             Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
         };
 

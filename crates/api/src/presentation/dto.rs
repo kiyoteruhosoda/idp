@@ -600,6 +600,138 @@ pub struct UserCreatedResponse {
     pub generated_password: String,
 }
 
+/// アプリの登録リクエスト（`POST /{tenant_id}/admin/applications`。ADR-0054）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateApplicationRequest {
+    /// 画面と拒否メッセージに出す名前。
+    pub display_name: String,
+    /// `EVERYONE`（テナントの利用者は誰でも）または `INDIVIDUAL`（割り当てられた利用者だけ）。
+    /// ⚠ **省略時は `INDIVIDUAL`。** 絞り忘れたアプリが全員に開いたままになるのを防ぐ。
+    #[serde(default)]
+    pub assignment_mode: Option<String>,
+    /// 作った本人を同時に割り当てるか。⚠ **画面では初めからチェックしておく**
+    /// ——「個別」で作った直後は誰も入れないので、作った本人が締め出される形にしない。
+    /// 既定は `true`（機械が作るときは割り当てる相手が居ないので何も起きない）。
+    #[serde(default = "default_enabled")]
+    pub assign_creator: bool,
+}
+
+/// アプリの更新リクエスト（`PUT /{tenant_id}/admin/applications/{application_id}`）。
+///
+/// **部分更新にしない。** 3 つの値はどれも「誰が入れるか」を決めるので、省略を「変えない」と
+/// 読むと、画面の古い表示のまま送った要求が意図せず片方だけを書き換える。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateApplicationRequest {
+    pub display_name: String,
+    /// `ACTIVE` または `DISABLED`。
+    pub status: String,
+    /// `EVERYONE` または `INDIVIDUAL`。
+    pub assignment_mode: String,
+}
+
+/// アプリへ認証方法を繋ぐリクエスト（`POST /{tenant_id}/admin/applications/{application_id}/bindings`）。
+///
+/// どちらか一方だけを載せる。`client_id` は OIDC の RP（テナント内一意の文字列）、
+/// `service_provider_id` は SAML SP の内部 ID。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateApplicationBindingRequest {
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub service_provider_id: Option<String>,
+}
+
+/// 利用者をアプリへ割り当てるリクエスト
+/// （`POST /{tenant_id}/admin/applications/{application_id}/assignments`）。
+///
+/// ⚠ **ロールは載らない**（ADR-0054 の決定 1）。載るのは「使ってよい」の 1 ビットだけである。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateApplicationAssignmentRequest {
+    /// 割り当てる利用者の内部 ID。要求テナントのメンバーであること。
+    pub user_id: String,
+}
+
+/// アプリの公開表現。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ApplicationResponse {
+    pub id: String,
+    pub display_name: String,
+    pub status: String,
+    pub assignment_mode: String,
+    /// 繋がっている認証方法。
+    pub bindings: Vec<ApplicationBindingResponse>,
+    /// 割り当て人数。`EVERYONE` のときは行が無いので 0。
+    pub assigned_count: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// binding 1 本の公開表現。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ApplicationBindingResponse {
+    pub id: String,
+    /// `oidc` または `saml`。
+    pub protocol: String,
+    /// OIDC なら `client_id`、SAML なら `entity_id`。相手が消えていれば `null`。
+    pub identifier: Option<String>,
+    /// 相手の登録名。
+    pub display_name: Option<String>,
+}
+
+/// アプリの一覧（`GET /{tenant_id}/admin/applications`）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ApplicationListResponse {
+    pub applications: Vec<ApplicationResponse>,
+    /// いま判定が断るところまで来ているか（`record_only` / `enforce`）。
+    /// ⚠ 画面は「記録するだけ」の間、割り当てがまだ効いていないことを示すために読む。
+    pub enforcement: String,
+}
+
+/// アプリの詳細（`GET /{tenant_id}/admin/applications/{application_id}`）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ApplicationDetailResponse {
+    #[serde(flatten)]
+    pub application: ApplicationResponse,
+    pub assigned: Vec<ApplicationAssignmentResponse>,
+    /// いま判定が断るところまで来ているか（`record_only` / `enforce`）。
+    /// 一覧と同じものを添えるのは、**画面が「効いていない」を出すためだけに一覧を引き直さない**
+    /// ようにするためである。
+    pub enforcement: String,
+}
+
+/// 割り当てられた利用者 1 行。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ApplicationAssignmentResponse {
+    pub user_id: String,
+    /// トークンの主体識別子。RP 側の名簿と突き合わせるときの鍵。
+    pub sub: String,
+    pub email: String,
+    pub name: Option<String>,
+    /// 利用者アカウント自体の状態（`ACTIVE` / `DISABLED` / `LOCKED`）。
+    pub status: String,
+    pub assigned_at: String,
+}
+
+/// 「いま入れている人」
+/// （`GET /{tenant_id}/admin/applications/{application_id}/current-users`）。
+///
+/// 「全員」から「個別」へ倒す前に、そのまま名簿へ写すための一覧である。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ApplicationCurrentUsersResponse {
+    pub users: Vec<ApplicationCurrentUserResponse>,
+    /// 全体の人数（上限で切る前）。
+    pub total: i64,
+    /// 上限で打ち切ったか。⚠ **真なら「全員は出せていない」ことを画面が言うこと。**
+    pub truncated: bool,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ApplicationCurrentUserResponse {
+    pub user_id: String,
+    pub email: Option<String>,
+    pub name: Option<String>,
+}
+
 /// 保護リソース（`aud` に入る宛名）の登録リクエスト（`POST /{tenant_id}/admin/resources`。ADR-0042）。
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct RegisterResourceRequest {
@@ -869,8 +1001,8 @@ pub struct AuthenticationPolicyResponse {
     pub effect: String,
     /// `require_specific_method` の要求内容（他の効果では `null`。AP3）。
     pub effect_params: Option<RequiredMethodsDto>,
-    /// 対象クライアント（空 = 全クライアント）。
-    pub client_ids: Vec<String>,
+    /// 対象アプリの内部 ID（空 = 全アプリ。ADR-0054 の決定 5）。
+    pub application_ids: Vec<String>,
     /// 対象ユーザーの内部 ID（空 = 全ユーザー）。
     pub user_ids: Vec<String>,
     /// 対象ネットワークゾーン（CIDR 表記。空 = 全ネットワーク。AP3）。
@@ -939,9 +1071,9 @@ pub struct AuthenticationPolicyUpsertRequest {
     /// `require_specific_method` の要求内容（他の効果で指定するとエラー。AP3）。
     #[serde(default)]
     pub effect_params: Option<RequiredMethodsDto>,
-    /// 対象クライアント（省略・空 = 全クライアント）。
+    /// 対象アプリの内部 ID（UUID。省略・空 = 全アプリ。ADR-0054 の決定 5）。
     #[serde(default)]
-    pub client_ids: Vec<String>,
+    pub application_ids: Vec<String>,
     /// 対象ユーザーの内部 ID（UUID。省略・空 = 全ユーザー）。
     #[serde(default)]
     pub user_ids: Vec<String>,
@@ -979,7 +1111,7 @@ mod authentication_policy_contract_tests {
                 methods: vec!["webauthn".to_string()],
                 user_verification: true,
             }),
-            client_ids: vec!["app-a".to_string()],
+            application_ids: vec!["01990000-0000-7000-8000-000000000001".to_string()],
             user_ids: vec!["019f8ea8-f5dd-7fc7-ac15-a7d4337e4610".to_string()],
             ip_cidrs: vec!["10.0.0.0/8".to_string()],
             time_windows: vec![assay_contracts::admin::TimeWindowPayload {
@@ -1001,7 +1133,7 @@ mod authentication_policy_contract_tests {
         let params = api.effect_params.expect("effect_params must survive");
         assert_eq!(params.methods, vec!["webauthn".to_string()]);
         assert!(params.user_verification);
-        assert_eq!(api.client_ids, shared.client_ids);
+        assert_eq!(api.application_ids, shared.application_ids);
         assert_eq!(api.user_ids, shared.user_ids);
         assert_eq!(api.ip_cidrs, shared.ip_cidrs);
         assert_eq!(api.requested_acr, shared.requested_acr);

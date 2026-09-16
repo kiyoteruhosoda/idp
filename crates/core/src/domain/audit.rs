@@ -47,6 +47,23 @@ pub enum AuditEventType {
     /// **操作対象**のクライアント、`reason` に `resource=<uri>` が入る。
     ClientResourceGranted,
     ClientResourceRevoked,
+    /// 管理者によるアプリ（`applications`）の登録・更新・削除（ADR-0054）。`reason` に
+    /// `application=<id>` を記録する。表示名は変わり得るので id で残す。
+    ApplicationRegistered,
+    ApplicationUpdated,
+    ApplicationDeleted,
+    /// 管理者によるアプリ ↔ 認証方法（binding）の追加・削除（ADR-0054）。
+    ApplicationBindingAdded,
+    ApplicationBindingRemoved,
+    /// 管理者による利用者の割り当て・解除（ADR-0054）。`user_id` 列は**操作対象**の利用者、
+    /// 実行主体は `reason` の `actor=` に出る。
+    ApplicationAssigned,
+    ApplicationUnassigned,
+    /// 割り当てが無い利用者がアプリへ来た（ADR-0054 の判定）。`result` が
+    /// [`AuditResult::Failure`] なら実際に断り、[`AuditResult::Success`] なら
+    /// **記録するだけの期間に通した**（＝移行の漏れ）。この 2 つを 1 つの種別で出すのは、
+    /// 切り替えの前後を同じ問い合わせで数えられるようにするためである。
+    ApplicationAccessDenied,
     /// 管理者によるクライアント（RP）の登録・更新・シークレット再発行（設計仕様 §9.3・§7）。
     ClientRegistered,
     ClientUpdated,
@@ -169,6 +186,14 @@ impl AuditEventType {
             Self::ResourceDeleted => "resource.deleted",
             Self::ClientResourceGranted => "client_resource.granted",
             Self::ClientResourceRevoked => "client_resource.revoked",
+            Self::ApplicationRegistered => "application.registered",
+            Self::ApplicationUpdated => "application.updated",
+            Self::ApplicationDeleted => "application.deleted",
+            Self::ApplicationBindingAdded => "application_binding.added",
+            Self::ApplicationBindingRemoved => "application_binding.removed",
+            Self::ApplicationAssigned => "application.assigned",
+            Self::ApplicationUnassigned => "application.unassigned",
+            Self::ApplicationAccessDenied => "application.access_denied",
             Self::ClientRegistered => "client.registered",
             Self::ClientUpdated => "client.updated",
             Self::ClientSecretRotated => "client.secret_rotated",

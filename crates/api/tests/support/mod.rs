@@ -479,6 +479,47 @@ pub async fn insert_public_client(pool: &MySqlPool, tenant_id: &str, scopes: &[&
     client_id
 }
 
+/// 直接登録した client を**アプリ 1 件 ＋ OIDC binding 1 件**として開き、アプリの id を返す
+/// （ADR-0054）。移行（`0054_applications`）と、管理 API 経由の登録がするのと同じ形。
+///
+/// `insert_*_client` は表へ直接入れる（サービスを通さない）ので、アプリは付いてこない。認証
+/// ポリシーの `application_ids` を試すテストは、ここで明示的に開いてから id を使う。
+pub async fn open_client_as_application(
+    pool: &MySqlPool,
+    tenant_id: &str,
+    client_id: &str,
+) -> String {
+    let client_row_id: String =
+        sqlx::query_scalar("SELECT id FROM clients WHERE tenant_id = ? AND client_id = ?")
+            .bind(tenant_id)
+            .bind(client_id)
+            .fetch_one(pool)
+            .await
+            .expect("the client must exist");
+    let application_id = uuid::Uuid::now_v7().to_string();
+    sqlx::query(
+        "INSERT INTO applications (id, tenant_id, display_name, status, assignment_mode) \
+         VALUES (?, ?, ?, 'ACTIVE', 'EVERYONE')",
+    )
+    .bind(&application_id)
+    .bind(tenant_id)
+    .bind(format!("app for {client_id}"))
+    .execute(pool)
+    .await
+    .expect("insert application");
+    sqlx::query(
+        "INSERT INTO application_bindings (id, application_id, protocol, client_id) \
+         VALUES (?, ?, 'oidc', ?)",
+    )
+    .bind(uuid::Uuid::now_v7().to_string())
+    .bind(&application_id)
+    .bind(&client_row_id)
+    .execute(pool)
+    .await
+    .expect("insert application binding");
+    application_id
+}
+
 /// 一意な confidential client を指定テナントへ直接登録して `(client_id, client_secret)` を返す。
 pub async fn insert_confidential_client(
     pool: &MySqlPool,

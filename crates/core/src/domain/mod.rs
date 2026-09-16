@@ -4,6 +4,7 @@
 //! トレイト（リポジトリ等の DIP 境界）を実装する。ここには sqlx/axum など具体技術を持ち込まない。
 
 pub mod admin_actor;
+pub mod application;
 pub mod application_log;
 pub mod audit;
 pub mod auth_session;

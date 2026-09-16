@@ -3,7 +3,7 @@
 use crate::presentation::correlation;
 use crate::presentation::cors;
 use crate::presentation::handlers::{
-    admin, admin_application_logs, admin_audit, admin_authentication_policies,
+    admin, admin_application_logs, admin_applications, admin_audit, admin_authentication_policies,
     admin_client_permissions, admin_clients, admin_external_idps, admin_invitations,
     admin_login_identifiers, admin_members, admin_permissions, admin_resources, admin_restart,
     admin_saml_service_providers, admin_signing_keys, admin_system_settings, admin_tenants,
@@ -455,6 +455,39 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/admin/users/{user_id}/permissions/{permission_code}",
             axum::routing::delete(admin_permissions::revoke_permission),
+        )
+        // アプリ（ADR-0054）。認証方法（OIDC / SAML）と利用者の割り当ては、この段にぶら下がる。
+        // idp.applications:* 必須。
+        .route(
+            "/admin/applications",
+            get(admin_applications::list_applications).post(admin_applications::create_application),
+        )
+        .route(
+            "/admin/applications/{application_id}",
+            get(admin_applications::get_application)
+                .put(admin_applications::update_application)
+                .delete(admin_applications::delete_application),
+        )
+        .route(
+            "/admin/applications/{application_id}/bindings",
+            axum::routing::post(admin_applications::add_binding),
+        )
+        .route(
+            "/admin/applications/{application_id}/bindings/{binding_id}",
+            axum::routing::delete(admin_applications::remove_binding),
+        )
+        .route(
+            "/admin/applications/{application_id}/assignments",
+            axum::routing::post(admin_applications::assign_user),
+        )
+        .route(
+            "/admin/applications/{application_id}/assignments/{user_id}",
+            axum::routing::delete(admin_applications::unassign_user),
+        )
+        // 「全員」を「個別」へ倒す前に、いま入れている人を写すための一覧。
+        .route(
+            "/admin/applications/{application_id}/current-users",
+            get(admin_applications::current_users),
         )
         // 保護リソース（`aud` に入る宛名）の登録・停止・削除（ADR-0042）。idp.resources:* 必須。
         .route(

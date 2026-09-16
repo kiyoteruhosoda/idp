@@ -1,5 +1,6 @@
 //! web のハンドラ。
 
+pub mod admin_applications_console;
 pub mod admin_authentication_policies_console;
 pub mod admin_clients_console;
 pub mod admin_console;

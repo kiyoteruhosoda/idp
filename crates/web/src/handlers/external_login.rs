@@ -279,6 +279,34 @@ fn render_outcome(
             "login-error-invalid-credentials",
             StatusCode::FORBIDDEN,
         ),
+        // 外部 IdP での認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。
+        InternalExternalCallbackResponse::ApplicationNotPermitted {
+            application_name,
+            sso_session_id,
+            sso_absolute_ttl_secs,
+            user_language,
+        } => {
+            let mut set_cookies = state
+                .set_cookies()
+                .set_session(
+                    cookies::SSO_SESSION_COOKIE,
+                    &sso_session_id,
+                    sso_absolute_ttl_secs,
+                )
+                .expire_session(cookies::AUTH_SESSION_COOKIE);
+            if let Some(lang) = user_language.as_deref().and_then(Locale::from_tag) {
+                set_cookies = set_cookies.set_local(
+                    cookies::LANG_COOKIE,
+                    lang.as_tag(),
+                    cookies::PREFERENCE_COOKIE_MAX_AGE_SECS,
+                );
+            }
+            (
+                set_cookies.into_headers(),
+                crate::application_denied::page(&messages, &tenant.prefix(), &application_name),
+            )
+                .into_response()
+        }
         InternalExternalCallbackResponse::PolicyDenied => message_page(
             &messages,
             "login-error-policy-denied",

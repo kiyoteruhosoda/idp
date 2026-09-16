@@ -14,9 +14,10 @@
 //! 「変更後に MFA 判定は不要」とは限らない。`require_mfa` 一致時は TOTP 設定済みなら MFA ステップへ
 //! 誘導し、未設定なら単一要素での成立を拒否する（LoginService と同じ規則。仕様 §24.4）。
 
+use crate::application::application_access::ApplicationAccessService;
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authorize::code_dispatch;
-use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
+use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
 use crate::application::mfa_login::user_has_confirmed_totp;
 use crate::application::password_policy::PasswordPolicyService;
 use crate::domain::audit::{AuditEventType, AuditResult};
@@ -64,6 +65,14 @@ pub enum ChangePasswordOutcome {
         auth_session_id: String,
     },
     /// 変更は成功したが認証ポリシーによりログインを拒否（仕様 §7.4 `deny`）。SSO は発行しない。
+    /// 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
+    /// SSO セッションは発行する（assay には入れている）ので、他のアプリへはそのまま進める。
+    ApplicationNotPermitted {
+        /// 画面に出すアプリ名。どのアプリで断られたかが分からないと、次に誰へ頼めばよいかを
+        /// 利用者が決められない。
+        application_name: String,
+        sso_session_id: String,
+    },
     PolicyDenied,
     /// 変更は成功したが認証ポリシーが MFA を必須とし、使用可能な認証器（確認済み TOTP）が無い。
     /// ポータルから MFA を設定するよう案内する。SSO は発行しない。
@@ -86,6 +95,9 @@ pub struct ChangePasswordService {
     client_consents: Arc<dyn ClientConsentRepository>,
     totp_secrets: Arc<dyn TotpSecretRepository>,
     authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
+    /// 認証ポリシーの宛先（`conditions.application_ids`）を解決する（ADR-0054）。
+    /// フローが持っているのは `client_id` だけなので、アプリへの読み替えをここで挟む。
+    applications: Arc<ApplicationAccessService>,
     code_issuance: Arc<CodeIssuanceService>,
     hasher: Arc<dyn PasswordHasher>,
     password_policy: Arc<PasswordPolicyService>,
@@ -106,6 +118,7 @@ impl ChangePasswordService {
         client_consents: Arc<dyn ClientConsentRepository>,
         totp_secrets: Arc<dyn TotpSecretRepository>,
         authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
+        applications: Arc<ApplicationAccessService>,
         code_issuance: Arc<CodeIssuanceService>,
         hasher: Arc<dyn PasswordHasher>,
         password_policy: Arc<PasswordPolicyService>,
@@ -123,6 +136,7 @@ impl ChangePasswordService {
             client_consents,
             totp_secrets,
             authentication_policies,
+            applications,
             code_issuance,
             hasher,
             password_policy,
@@ -284,6 +298,17 @@ impl ChangePasswordService {
         //      パスワード変更自体は本人のセルフサービスとして完了させ、セッション発行のみをゲートする。
         // 認可要求の `acr_values`（AP3 の `requested_acr` 条件が参照する）。
         let requested_acr = session.requested_acr();
+        // 認証ポリシーの宛先はアプリ（ADR-0054 の決定 5）。フローが持っているのは `client_id`
+        // だけなので、ここでアプリへ読み替える。まだアプリへ繋がっていない client は `None` で、
+        // `application_ids` を持つポリシーは一致しない。
+        let application_id = match self
+            .applications
+            .policy_target_for_oidc_client(tenant_id, &client_id)
+            .await
+        {
+            Ok(id) => id,
+            Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
+        };
         let decision = match self
             .authentication_policies
             .list_enabled_for_tenant(tenant_id)
@@ -292,7 +317,7 @@ impl ChangePasswordService {
             Ok(policies) => evaluate_policies(
                 &policies,
                 &AuthenticationContext {
-                    client_id: Some(&client_id),
+                    application_id,
                     user_id: user.id,
                     ip_address: ctx.ip_address.as_deref(),
                     now,
@@ -491,7 +516,14 @@ impl ChangePasswordService {
             )
             .await
         {
-            Ok(c) => c,
+            Ok(CodeIssuance::Issued(code)) => code,
+            // 認証は通っているが、このアプリの利用が許可されていない（ADR-0054）。RP へは戻さない。
+            Ok(CodeIssuance::ApplicationDenied { application_name }) => {
+                return ChangePasswordOutcome::ApplicationNotPermitted {
+                    application_name,
+                    sso_session_id,
+                }
+            }
             Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
         };
 

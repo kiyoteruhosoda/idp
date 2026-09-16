@@ -77,6 +77,10 @@ permission_markers! {
     UsersRead => permission::USERS_READ;
     /// 利用者の作成・更新・削除・パスワード再発行・MFA 解除・ロック解除・ログイン識別子。
     UsersWrite => permission::USERS_WRITE;
+    /// アプリ（ADR-0054）の参照。binding と割り当ての一覧を含む。
+    ApplicationsRead => permission::APPLICATIONS_READ;
+    /// アプリの登録・更新・削除、binding の追加と削除、利用者の割り当てと解除。
+    ApplicationsWrite => permission::APPLICATIONS_WRITE;
     /// クライアント（RP）の参照。
     ClientsRead => permission::CLIENTS_READ;
     /// クライアント（RP）の作成・更新・削除・secret 再発行・権限付与。

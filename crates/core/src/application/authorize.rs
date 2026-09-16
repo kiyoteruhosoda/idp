@@ -9,8 +9,9 @@
 //! エラー方針: `client_id` / `redirect_uri` が無効な場合はリダイレクトせず、
 //! それ以外のエラーは `redirect_uri` にエラーコードを付与して返す。
 
+use crate::application::application_access::ApplicationAccessService;
 use crate::application::audit::RequestContext;
-use crate::application::code_issuance::{CodeIssuanceService, IssueCodeCommand};
+use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
 use crate::application::sso_restore::SsoRestorer;
 use crate::application::tenant_resolution::TenantResolutionService;
 use crate::domain::auth_session::{self, AuthSession};
@@ -99,6 +100,12 @@ pub enum ResumeOutcome {
     ConsentRequired { auth_session_id: String },
     /// 認証が必要。web は `auth_session_id` を Cookie 化してログインフォームを表示する。
     LoginRequired { auth_session_id: String },
+    /// SSO は復元できたが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
+    /// SSO Cookie は既に手元にあるので、ここでは画面を出すだけでよい。
+    ApplicationNotPermitted {
+        /// 画面に出すアプリ名。
+        application_name: String,
+    },
     /// ハンドルが無効・期限切れ・使用済み（`/authorize` からやり直し）。
     ExpiredHandle,
     /// 内部エラー（RP へのリダイレクトも組み立てられない段階での失敗）。
@@ -153,6 +160,9 @@ pub struct AuthorizeService {
     /// 使い回す」操作なので、認可要求ごとに変わる条件（`acr_values`・`client_ids`）や、
     /// 復元後に変わったポリシーが効かなくなる。
     authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
+    /// 認証ポリシーの宛先（`conditions.application_ids`）を解決する（ADR-0054）。
+    /// フローが持っているのは `client_id` だけなので、アプリへの読み替えをここで挟む。
+    applications: Arc<ApplicationAccessService>,
     policy_default_effect: DefaultPolicyEffect,
     /// ログイン画面へ出すテナント表示名の引き当て先（`login_context` でのみ使う）。
     /// リポジトリを直に持たず解決サービスを通すのは、同じ行を同じリクエストの入口
@@ -171,6 +181,7 @@ impl AuthorizeService {
         clock: Arc<dyn Clock>,
         auth_session_ttl: std::time::Duration,
         authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
+        applications: Arc<ApplicationAccessService>,
         policy_default_effect: DefaultPolicyEffect,
         tenants: Arc<TenantResolutionService>,
     ) -> Self {
@@ -184,6 +195,7 @@ impl AuthorizeService {
             auth_session_ttl: Duration::from_std(auth_session_ttl)
                 .expect("auth session TTL out of range"),
             authentication_policies,
+            applications,
             policy_default_effect,
             tenants,
         }
@@ -429,7 +441,12 @@ impl AuthorizeService {
                                     code_challenge_method: session.code_challenge_method,
                                 };
                                 return match self.code_issuance.issue(cmd, ctx).await {
-                                    Ok(code) => {
+                                    // 復元した SSO は通っているが、このアプリの利用が許可されて
+                                    // いない（ADR-0054）。RP へは戻さない。
+                                    Ok(CodeIssuance::ApplicationDenied { application_name }) => {
+                                        ResumeOutcome::ApplicationNotPermitted { application_name }
+                                    }
+                                    Ok(CodeIssuance::Issued(code)) => {
                                         if let Err(e) =
                                             self.auth_sessions.delete(&session.id_hash).await
                                         {
@@ -556,10 +573,19 @@ impl AuthorizeService {
             Err(e) => return RestoredPolicy::Internal(e.to_string()),
         };
         let requested_acr = session.requested_acr();
+        // 認証ポリシーの宛先はアプリ（ADR-0054 の決定 5）。
+        let application_id = match self
+            .applications
+            .policy_target_for_oidc_client(tenant.tenant_id(), &session.client_id)
+            .await
+        {
+            Ok(id) => id,
+            Err(e) => return RestoredPolicy::Internal(e.to_string()),
+        };
         let decision = evaluate_policies(
             &policies,
             &AuthenticationContext {
-                client_id: Some(&session.client_id),
+                application_id,
                 user_id,
                 ip_address: ctx.ip_address.as_deref(),
                 now,

@@ -68,6 +68,9 @@ pub async fn consent_approve(
             form_post,
             redirect_to: location,
         },
+        ConsentOutcome::ApplicationNotPermitted { application_name } => {
+            InternalConsentApproveResponse::ApplicationNotPermitted { application_name }
+        }
         ConsentOutcome::SessionExpired => InternalConsentApproveResponse::SessionExpired,
         ConsentOutcome::Internal(e) => {
             tracing::error!(error = %e, "consent_approve: internal error");
@@ -104,6 +107,8 @@ pub async fn consent_deny(
                 redirect_to: location,
                 form_post,
             },
+            // deny エンドポイントでは判定まで進まない（code を発行しない）。
+            ConsentOutcome::ApplicationNotPermitted { .. } => InternalConsentDenyResponse::Internal,
             ConsentOutcome::SessionExpired => InternalConsentDenyResponse::SessionExpired,
             ConsentOutcome::Internal(e) => {
                 tracing::error!(error = %e, "consent_deny: internal error");

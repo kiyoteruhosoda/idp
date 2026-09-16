@@ -206,7 +206,7 @@ impl AdminLoginService {
         let decision = evaluate_policies(
             &policies,
             &AuthenticationContext {
-                client_id: None,
+                application_id: None,
                 user_id,
                 ip_address: ctx.ip_address.as_deref(),
                 now: self.clock.now(),

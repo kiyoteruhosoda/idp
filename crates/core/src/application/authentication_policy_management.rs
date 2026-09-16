@@ -23,7 +23,7 @@ use crate::domain::tenant_context::TenantContext;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// 条件リスト（client_ids / user_ids）の 1 ポリシーあたりの上限。評価はログインのホットパスで
+/// 条件リスト（application_ids / user_ids）の 1 ポリシーあたりの上限。評価はログインのホットパスで
 /// 全件走査するため、無制限の肥大化を防ぐ。
 const MAX_CONDITION_ENTRIES: usize = 100;
 
@@ -52,7 +52,8 @@ pub struct AuthenticationPolicyDraft {
     pub effect: String,
     /// `require_specific_method` の要求内容（他の効果では `None`。AP3）。
     pub effect_params: Option<RequiredMethods>,
-    pub client_ids: Vec<String>,
+    /// 対象アプリ（`applications.id`。ADR-0054 の決定 5）。空 = 全アプリ。
+    pub application_ids: Vec<Uuid>,
     pub user_ids: Vec<Uuid>,
     /// ネットワークゾーン（CIDR 表記。AP3）。
     pub ip_cidrs: Vec<String>,
@@ -241,15 +242,11 @@ fn validated(
             ))
         },
     )?;
-    if draft.client_ids.len() > MAX_CONDITION_ENTRIES
+    if draft.application_ids.len() > MAX_CONDITION_ENTRIES
         || draft.user_ids.len() > MAX_CONDITION_ENTRIES
         || draft.ip_cidrs.len() > MAX_CONDITION_ENTRIES
         || draft.time_windows.len() > MAX_CONDITION_ENTRIES
         || draft.requested_acr.len() > MAX_CONDITION_ENTRIES
-        || draft
-            .client_ids
-            .iter()
-            .any(|c| c.trim().is_empty() || c.len() > 255)
         || draft
             .requested_acr
             .iter()
@@ -260,7 +257,7 @@ fn validated(
         ));
     }
     let conditions = PolicyConditions {
-        client_ids: draft.client_ids,
+        application_ids: draft.application_ids,
         user_ids: draft.user_ids,
         ip_cidrs: draft.ip_cidrs,
         time_windows: draft.time_windows,
@@ -331,7 +328,7 @@ mod tests {
             priority: 10,
             enabled: true,
             effect: "deny".to_string(),
-            client_ids: vec!["legacy-app".to_string()],
+            application_ids: vec![Uuid::from_u128(0x0199_0000_0000_7000_8000_0000_0000_0001)],
             user_ids: vec![],
         }
     }
@@ -494,8 +491,8 @@ mod tests {
         assert_eq!(created.tenant_id, test_tenant());
         assert_eq!(created.effect, PolicyEffect::Deny);
         assert_eq!(
-            created.conditions.client_ids,
-            vec!["legacy-app".to_string()]
+            created.conditions.application_ids,
+            vec![Uuid::from_u128(0x0199_0000_0000_7000_8000_0000_0000_0001)]
         );
 
         let events = sink.events.lock().unwrap();
@@ -543,7 +540,7 @@ mod tests {
                 ip_cidrs: Vec::new(),
                 time_windows: Vec::new(),
                 requested_acr: Vec::new(),
-                client_ids: vec!["".to_string()],
+                application_ids: vec![Uuid::nil(); MAX_CONDITION_ENTRIES + 1],
                 ..draft("x")
             },
             AuthenticationPolicyDraft {

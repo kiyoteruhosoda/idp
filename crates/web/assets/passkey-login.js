@@ -139,6 +139,9 @@
       // 対応表に無いコード（その画面では起こらないエラー）は既定文言に落ちる。
       fail({
         'policy_denied': messages.msgPolicyDenied,
+        // 割り当てが無い（ADR-0054）。**認証は通っている**ので、資格情報の失敗と同じ
+        // 文言にしない。どのアプリの話かはこの画面の見出しが示している。
+        'application_not_permitted': messages.msgApplicationNotPermitted,
         'invalid_credential': messages.msgInvalidCredential,
         'challenge_not_found': messages.msgChallengeNotFound,
         'session_expired': messages.msgSessionExpired,

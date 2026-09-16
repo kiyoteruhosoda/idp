@@ -16,7 +16,9 @@ use crate::application::account_tenants::AccountTenantsService;
 use crate::application::account_theme::AccountThemeService;
 use crate::application::admin_access::AdminAccessService;
 use crate::application::admin_login::AdminLoginService;
+use crate::application::application_access::ApplicationAccessService;
 use crate::application::application_log::ApplicationLogService;
+use crate::application::application_management::ApplicationManagementService;
 use crate::application::audit::AuditService;
 use crate::application::audit_query::AuditQueryService;
 use crate::application::authentication_policy_management::AuthenticationPolicyManagementService;
@@ -85,6 +87,7 @@ use crate::infrastructure::id_generator::UuidV7Generator;
 use crate::infrastructure::mailer::LettreSmtpMailer;
 use crate::infrastructure::password::Argon2PasswordHasher;
 use crate::infrastructure::rate_limit::InMemoryLoginRateLimiter;
+use crate::infrastructure::repositories::application::SqlxApplicationRepository;
 use crate::infrastructure::repositories::application_log::{
     SqlxApplicationLogQuery, SqlxApplicationLogSink,
 };
@@ -182,6 +185,8 @@ pub struct AppState {
     pub client_permissions_admin: Arc<ClientPermissionManagementService>,
     /// 保護リソース（`aud` に入る宛名）の登録と、クライアントへの貸し出し（ADR-0042）。
     pub resources_admin: Arc<ResourceManagementService>,
+    /// アプリ（ADR-0054）の登録・binding・利用者の割り当て。
+    pub applications_admin: Arc<ApplicationManagementService>,
     pub admin_login: Arc<AdminLoginService>,
     /// エンドユーザー・ポータルの直接ログイン（クライアント非依存。TOTP を尊重して SSO を直接発行する）。
     pub portal_login: Arc<PortalLoginService>,
@@ -358,7 +363,7 @@ impl AppState {
 
         let audit = Arc::new(AuditService::new(audit_sink, clock.clone()));
         let saml_service_providers = Arc::new(SamlServiceProviderManagementService::new(
-            saml_service_provider_repo,
+            saml_service_provider_repo.clone(),
             ids.clone(),
             clock.clone(),
         ));
@@ -452,8 +457,18 @@ impl AppState {
             clock.clone(),
             *config.key_encryption_key(),
         ));
+        // アプリ（ADR-0054）。「どの利用者がどのアプリを使ってよいか」の単一の出所で、
+        // code 発行の門（`CodeIssuanceService`）と認証ポリシーの宛先解決の両方が引く。
+        let applications: Arc<dyn crate::domain::repositories::ApplicationRepository> =
+            Arc::new(SqlxApplicationRepository::new(pool.clone()));
+        let application_access = Arc::new(ApplicationAccessService::new(
+            applications.clone(),
+            audit.clone(),
+            config.application_assignment_enforcement(),
+        ));
         let code_issuance = Arc::new(CodeIssuanceService::new(
             codes.clone(),
+            application_access.clone(),
             audit.clone(),
             clock.clone(),
             config.authorization_code_ttl(),
@@ -516,6 +531,7 @@ impl AppState {
             clock.clone(),
             config.auth_session_ttl(),
             authentication_policies.clone(),
+            application_access.clone(),
             config.auth_policy_default_effect(),
             tenant_resolution.clone(),
         ));
@@ -539,6 +555,7 @@ impl AppState {
             client_consents.clone(),
             totp_secrets.clone(),
             authentication_policies.clone(),
+            application_access.clone(),
             code_issuance.clone(),
             hasher.clone(),
             rate_limiter.clone(),
@@ -558,6 +575,7 @@ impl AppState {
             client_consents.clone(),
             totp_secrets.clone(),
             authentication_policies.clone(),
+            application_access.clone(),
             code_issuance.clone(),
             hasher.clone(),
             password_policy.clone(),
@@ -637,6 +655,7 @@ impl AppState {
         ));
         let clients_admin = Arc::new(ClientManagementService::new(
             clients.clone(),
+            applications.clone(),
             hasher.clone(),
             audit.clone(),
             clock.clone(),
@@ -828,6 +847,17 @@ impl AppState {
             audit.clone(),
             clock.clone(),
         ));
+        // アプリの管理（ADR-0054）。判定側（`ApplicationAccessService`）と同じリポジトリ実装を
+        // 共有するので、割り当ての追加・削除は次の code 発行から効く。
+        let applications_admin = Arc::new(ApplicationManagementService::new(
+            applications.clone(),
+            clients.clone(),
+            saml_service_provider_repo.clone(),
+            Arc::new(SqlxTenantMemberQuery::new(pool.clone())),
+            audit.clone(),
+            clock.clone(),
+            ids.clone(),
+        ));
         // 宛名の登録と、クライアントへの貸し出し（ADR-0042）。発行側（TokenService）と同じ
         // リポジトリ実装を共有するので、登録・剥奪の直後から発行に効く。
         let resources_admin = Arc::new(ResourceManagementService::new(
@@ -874,6 +904,7 @@ impl AppState {
             client_consents.clone(),
             code_issuance.clone(),
             authentication_policies.clone(),
+            application_access.clone(),
             Arc::new(ReqwestExternalOidcClient::new()),
             audit.clone(),
             clock.clone(),
@@ -969,6 +1000,7 @@ impl AppState {
             config.login_lockout(),
             *config.csrf_secret(),
             authentication_policies.clone(),
+            application_access.clone(),
             config.auth_policy_default_effect(),
         ));
 
@@ -987,6 +1019,7 @@ impl AppState {
             sso_sessions.clone(),
             client_consents,
             authentication_policies.clone(),
+            application_access.clone(),
             code_issuance,
             // レート制限はログイン・直接ログインのパスキー経路と同じ枠を共有する（T39）。
             rate_limiter.clone(),
@@ -1056,6 +1089,7 @@ impl AppState {
             management_tokens,
             client_permissions_admin,
             resources_admin,
+            applications_admin,
             admin_login,
             portal_login,
             clients_admin,

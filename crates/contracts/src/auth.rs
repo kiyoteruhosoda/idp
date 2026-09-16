@@ -82,6 +82,10 @@ pub enum InternalAuthorizeResumeResponse {
     },
     /// 認証が必要。web は `auth_session_id` を host-only Cookie 化してログインフォームを表示する。
     LoginRequired { auth_session_id: String },
+    /// 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
+    /// web は assay の画面で断る ——利用者から見れば「入れたのに弾かれた」ので、認証は通っている
+    /// という事実と、アプリ名と、管理者へ頼む導線を出す。
+    ApplicationNotPermitted { application_name: String },
     /// ハンドルが無効・期限切れ・使用済み（`/authorize` からやり直し）。
     ExpiredHandle,
     /// api 内部エラー。
@@ -304,6 +308,14 @@ pub enum InternalAuthenticateResponse {
     /// 認証ポリシーにより拒否（ユーザー認証・認証ポリシー仕様書 §7.4 `deny`）。
     /// web は「組織のポリシーで拒否された」旨を表示する（資格情報は検証済みのため列挙リスクは無い）。
     PolicyDenied,
+    /// 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
+    /// web は assay の画面で断る ——利用者から見れば「入れたのに弾かれた」ので、認証は通っている
+    /// という事実と、アプリ名と、管理者へ頼む導線を出す。
+    ApplicationNotPermitted {
+        application_name: String,
+        sso_session_id: String,
+        sso_absolute_ttl_secs: u64,
+    },
     /// 認証ポリシーが MFA を必須としたが、使用可能な認証器（確認済み TOTP）が無い。
     /// web はポータルから MFA を設定するよう案内する。
     MfaEnrollmentRequired,
@@ -430,6 +442,14 @@ pub enum InternalVerifyTotpResponse {
     /// 認証ポリシーにより拒否された（AP2/AP3）。第二要素まで通っていても、`deny` へ変わった場合や
     /// `require_specific_method` を満たさない方式だった場合はここへ来る。
     PolicyDenied,
+    /// 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
+    /// web は assay の画面で断る ——利用者から見れば「入れたのに弾かれた」ので、認証は通っている
+    /// という事実と、アプリ名と、管理者へ頼む導線を出す。
+    ApplicationNotPermitted {
+        application_name: String,
+        sso_session_id: String,
+        sso_absolute_ttl_secs: u64,
+    },
     Internal,
 }
 
@@ -497,6 +517,14 @@ pub enum InternalChangePasswordResponse {
     },
     /// 変更は成功したが認証ポリシーによりログインを拒否（仕様 §7.4 `deny`）。
     PolicyDenied,
+    /// 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
+    /// web は assay の画面で断る ——利用者から見れば「入れたのに弾かれた」ので、認証は通っている
+    /// という事実と、アプリ名と、管理者へ頼む導線を出す。
+    ApplicationNotPermitted {
+        application_name: String,
+        sso_session_id: String,
+        sso_absolute_ttl_secs: u64,
+    },
     /// 変更は成功したが認証ポリシーが MFA を必須とし、使用可能な認証器（確認済み TOTP）が無い。
     /// web はポータルから MFA を設定するよう案内する。
     MfaEnrollmentRequired,
@@ -909,6 +937,10 @@ pub enum InternalConsentApproveResponse {
         #[serde(default)]
         form_post: Option<FormPostFields>,
     },
+    /// 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
+    /// web は assay の画面で断る ——利用者から見れば「入れたのに弾かれた」ので、認証は通っている
+    /// という事実と、アプリ名と、管理者へ頼む導線を出す。
+    ApplicationNotPermitted { application_name: String },
     /// AuthSession が無い・期限切れ。
     SessionExpired,
     /// api 内部エラー。
@@ -1117,6 +1149,14 @@ pub enum InternalPasskeyLoginCompleteResponse {
     InvalidCredential,
     /// 認証ポリシーにより拒否（ユーザー認証・認証ポリシー仕様書 §7.4 `deny`）。
     PolicyDenied,
+    /// 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
+    /// web は assay の画面で断る ——利用者から見れば「入れたのに弾かれた」ので、認証は通っている
+    /// という事実と、アプリ名と、管理者へ頼む導線を出す。
+    ApplicationNotPermitted {
+        application_name: String,
+        sso_session_id: String,
+        sso_absolute_ttl_secs: u64,
+    },
     /// IP 単位のレート制限超過。直接ログインのパスキー経路と同じ枠を消費する。
     RateLimited,
     /// api 内部エラー。
@@ -1952,6 +1992,16 @@ pub enum InternalExternalCallbackResponse {
     UserUnavailable,
     /// 認証ポリシーによる拒否。
     PolicyDenied,
+    /// 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
+    /// web は assay の画面で断る ——利用者から見れば「入れたのに弾かれた」ので、認証は通っている
+    /// という事実と、アプリ名と、管理者へ頼む導線を出す。
+    ApplicationNotPermitted {
+        application_name: String,
+        sso_session_id: String,
+        sso_absolute_ttl_secs: u64,
+        #[serde(default)]
+        user_language: Option<String>,
+    },
     /// 外部 IdP との通信・トークン検証に失敗した。
     ExternalFailure,
     Internal,

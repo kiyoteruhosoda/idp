@@ -8,8 +8,9 @@
 //! 型検証される（sqlx のコンパイル時クエリ検証と同じ思想）。
 
 use crate::admin_dto::{
-    AuditLogView, ClientView, ResourceView, SamlServiceProviderView, SigningKeyView,
-    TenantCreatedView, TenantView,
+    ApplicationAssignmentView, ApplicationCurrentUserView, ApplicationView, AuditLogView,
+    ClientView, ResourceView, SamlServiceProviderView, SigningKeyView, TenantCreatedView,
+    TenantView,
 };
 use crate::i18n::Messages;
 use askama::Template;
@@ -1322,6 +1323,24 @@ pub struct MessagePage {
     pub message: String,
 }
 
+/// アプリの利用が許可されていない画面（ADR-0054 の決定 2）。
+///
+/// ⚠ **理由を伏せない。** 判定は認証の後に行われるので、隠しても総当たりの手掛かりにはならない。
+/// 黙って弾くと利用者からは障害と区別が付かず、資格情報を疑って何度もやり直すことになる。
+/// だから「サインインは通っている」「どのアプリで断られたか」「次に誰へ頼めばよいか」の 3 つを出す。
+#[derive(Template)]
+#[template(path = "application_not_permitted.html")]
+pub struct ApplicationNotPermittedPage {
+    pub title: String,
+    /// 「サインインはできましたが、〇〇 の利用は許可されていません」。
+    pub signed_in: String,
+    /// 「利用するには管理者に頼んでください」。
+    pub next_step: String,
+    /// 戻り先。**空文字はリンクを出さない**（テナントを特定できない経路）。
+    pub back_href: String,
+    pub back_label: String,
+}
+
 /// HTTP エラーページ（全ステータスコード対応。403 / 404 / 500 等）。ステータスコードを大きく表示し、
 /// タイトルと説明文を添える。テナント文脈を持たない未マッチ経路（fallback）でも描画できるよう、
 /// 翻訳済みの文字列だけを受け取る（`Messages` へは依存しない）。
@@ -1505,6 +1524,15 @@ pub const CONSOLE_NAV: &[ConsoleNavGroup] = &[
         description: "admin-home-group-integration-desc",
         icon: "fa-cubes",
         items: &[
+            // ⚠ **アプリを先頭に置く。** 「連携先」（OIDC / SAML）は、そのアプリが**どう繋がるか**
+            //    でしかない（ADR-0054）。誰が使ってよいかを決めに来た人が最初に着くのはここ。
+            ConsoleNavItem {
+                path: "/admin/applications",
+                icon: "fa-layer-group",
+                label: "admin-nav-applications",
+                description: "admin-nav-applications-desc",
+                requires: None,
+            },
             ConsoleNavItem {
                 path: "/admin/clients",
                 icon: "fa-cubes",
@@ -2244,6 +2272,41 @@ pub struct ClientSecret<'a> {
     pub list_href: String,
 }
 
+/// アプリの一覧・登録画面（`GET /{tenant_id}/admin/applications`。ADR-0054）。
+#[derive(Template)]
+#[template(path = "console/applications.html")]
+pub struct ApplicationsList<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub admin: Admin<'a>,
+    pub applications: &'a [ApplicationView],
+    /// 判定がまだ「記録するだけ」か。⚠ **真なら、割り当てはまだ誰も断っていない。**
+    /// これを出さないと、名簿を整えた人が「もう効いている」と思い込む。
+    pub record_only: bool,
+    pub csrf: &'a str,
+    pub error: Option<&'a str>,
+}
+
+/// アプリ 1 件の画面（`GET /{tenant_id}/admin/applications/{id}`。ADR-0054）。
+#[derive(Template)]
+#[template(path = "console/application_detail.html")]
+pub struct ApplicationDetail<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub admin: Admin<'a>,
+    pub application: &'a ApplicationView,
+    pub assigned: &'a [ApplicationAssignmentView],
+    /// 「全員」のときに出す、**いま入れている人**（そのまま名簿へ写せる）。
+    /// 「個別」のときは空。
+    pub current_users: &'a [ApplicationCurrentUserView],
+    /// 「いま入れている人」を上限で打ち切ったか。⚠ 真なら画面がそう言う。
+    pub current_users_truncated: bool,
+    pub current_users_total: i64,
+    pub record_only: bool,
+    pub csrf: &'a str,
+    pub error: Option<&'a str>,
+}
+
 /// 保護リソース（`aud` に入る宛名）の一覧・管理画面（`GET /{tenant_id}/admin/resources`。ADR-0042）。
 #[derive(Template)]
 #[template(path = "console/resources.html")]
@@ -2601,8 +2664,8 @@ impl AuthenticationPoliciesConsole<'_> {
     /// それが一目で分かる文言を出す（空欄にすると「条件が設定されていない」と読めてしまう）。
     pub fn condition_summary(&self, policy: &AuthenticationPolicyResponse) -> String {
         let mut parts = Vec::new();
-        if !policy.client_ids.is_empty() {
-            parts.push(format!("client×{}", policy.client_ids.len()));
+        if !policy.application_ids.is_empty() {
+            parts.push(format!("app×{}", policy.application_ids.len()));
         }
         if !policy.user_ids.is_empty() {
             parts.push(format!("user×{}", policy.user_ids.len()));
@@ -2633,7 +2696,8 @@ pub struct AuthenticationPolicyFormValues {
     pub effect: String,
     pub methods: Vec<String>,
     pub user_verification: bool,
-    pub client_ids: String,
+    /// 対象アプリの内部 ID（改行区切り）。
+    pub application_ids: String,
     pub user_ids: String,
     pub ip_cidrs: String,
     pub time_windows: String,
@@ -2651,7 +2715,7 @@ impl Default for AuthenticationPolicyFormValues {
             effect: "deny".to_string(),
             methods: Vec::new(),
             user_verification: false,
-            client_ids: String::new(),
+            application_ids: String::new(),
             user_ids: String::new(),
             ip_cidrs: String::new(),
             time_windows: String::new(),

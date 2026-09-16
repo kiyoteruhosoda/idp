@@ -221,6 +221,14 @@ pub async fn login_complete(
             InternalPasskeyLoginCompleteResponse::InvalidCredential
         }
         PasskeyAuthOutcome::PolicyDenied => InternalPasskeyLoginCompleteResponse::PolicyDenied,
+        PasskeyAuthOutcome::ApplicationNotPermitted {
+            application_name,
+            sso_session_id,
+        } => InternalPasskeyLoginCompleteResponse::ApplicationNotPermitted {
+            application_name,
+            sso_session_id,
+            sso_absolute_ttl_secs: ttl,
+        },
         PasskeyAuthOutcome::RateLimited => InternalPasskeyLoginCompleteResponse::RateLimited,
         PasskeyAuthOutcome::Internal(e) => {
             tracing::error!(error = %e, "passkey login complete error");

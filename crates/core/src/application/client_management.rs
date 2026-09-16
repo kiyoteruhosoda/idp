@@ -9,6 +9,9 @@
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::admin_actor::AdminActor;
+use crate::domain::application::{
+    Application, ApplicationAssignment, ApplicationBinding, BindingTarget,
+};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::client::Client;
 use crate::domain::client_jwks::{parse_registration_jwks, ClientJwks};
@@ -19,9 +22,12 @@ use crate::domain::message::MessageKey;
 use crate::domain::outbound_uri::is_internal_destination;
 use crate::domain::paging::{PageRequest, PagedResult};
 use crate::domain::password::PasswordHasher;
-use crate::domain::repositories::ClientRepository;
+use crate::domain::repositories::{ApplicationRepository, ClientRepository};
 use crate::domain::tenant_context::TenantContext;
-use crate::domain::values::{ClientStatus, ClientType, GrantType, Scope, TokenEndpointAuthMethod};
+use crate::domain::values::{
+    ApplicationStatus, AssignmentMode, ClientStatus, ClientType, GrantType, Scope,
+    TokenEndpointAuthMethod,
+};
 use std::sync::Arc;
 
 /// 発行する client_id のバイト長（小文字 16 進で 2 倍の文字数になる）。
@@ -100,6 +106,8 @@ pub enum ClientManagementError {
 
 pub struct ClientManagementService {
     clients: Arc<dyn ClientRepository>,
+    /// 登録した RP をアプリへ開くために使う（ADR-0054）。
+    applications: Arc<dyn ApplicationRepository>,
     hasher: Arc<dyn PasswordHasher>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
@@ -109,6 +117,7 @@ pub struct ClientManagementService {
 impl ClientManagementService {
     pub fn new(
         clients: Arc<dyn ClientRepository>,
+        applications: Arc<dyn ApplicationRepository>,
         hasher: Arc<dyn PasswordHasher>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
@@ -116,6 +125,7 @@ impl ClientManagementService {
     ) -> Self {
         Self {
             clients,
+            applications,
             hasher,
             audit,
             clock,
@@ -233,10 +243,95 @@ impl ClientManagementService {
             )
             .await;
 
+        self.open_as_application(tenant, &client, actor, ctx).await;
+
         Ok(RegisteredClient {
             client,
             client_secret: secret_plain,
         })
+    }
+
+    /// 登録した RP を**アプリ 1 件 ＋ OIDC binding 1 件**として開く（ADR-0054）。移行
+    /// （`0054_applications`）が既存の 23 件へしたことと、同じ形を新しい RP にもする。
+    ///
+    /// ⚠ **開かないと、その RP は「誰が使ってよいか」の外に落ちる。** 判定はアプリを持たない
+    /// client を素通しするので、登録しただけの RP は**全員に開いたまま**になり、しかも
+    /// 開いていることが画面のどこにも出ない ——ADR-0054 が既定を「個別」にしてまで避けた形である。
+    ///
+    /// 開くのは**利用者がブラウザで入る RP だけ**。`client_credentials` のサービスアカウント
+    /// （ADR-0038）には入る利用者が居らず、判定も走らない ——空の名簿を持つアプリが並ぶだけになる。
+    ///
+    /// ⚠ **失敗しても登録は成功として返す。** client は既に作られていて、ここで失敗を返すと
+    /// 「エラーなのに RP は存在する」になる。アプリは画面から後で作れる。
+    async fn open_as_application(
+        &self,
+        tenant: TenantContext,
+        client: &Client,
+        actor: &AdminActor,
+        ctx: &RequestContext,
+    ) {
+        if !client.allows_grant_type(GrantType::AuthorizationCode) {
+            return;
+        }
+        let now = self.clock.now();
+        let application = Application {
+            id: self.ids.new_id(),
+            tenant_id: tenant.tenant_id(),
+            display_name: client.app_name.clone(),
+            status: ApplicationStatus::Active,
+            // ⚠ 既定は「個別」（ADR-0054 の決定 3）。絞り忘れが全員に開いたままにならないようにする。
+            assignment_mode: AssignmentMode::Individual,
+            created_at: now,
+            updated_at: now,
+        };
+        if let Err(e) = self.applications.create(&application).await {
+            tracing::error!(error = %e, client_id = %client.client_id,
+                "failed to open the registered client as an application");
+            return;
+        }
+        if let Err(e) = self
+            .applications
+            .add_binding(&ApplicationBinding {
+                id: self.ids.new_id(),
+                application_id: application.id,
+                target: BindingTarget::Oidc {
+                    client_row_id: client.id,
+                },
+                created_at: now,
+            })
+            .await
+        {
+            tracing::error!(error = %e, client_id = %client.client_id,
+                "failed to bind the registered client to its application");
+            return;
+        }
+        // 作った本人を割り当てる。⚠ ここを落とすと、登録した直後は**誰も入れない**アプリになる。
+        // 機械が登録したときは割り当てる相手が居ないので何もしない（名簿は画面から足す）。
+        if let Some(user_id) = actor.user_id() {
+            if let Err(e) = self
+                .applications
+                .assign(&ApplicationAssignment {
+                    application_id: application.id,
+                    user_id,
+                    assigned_at: now,
+                    assigned_by: Some(user_id),
+                })
+                .await
+            {
+                tracing::error!(error = %e, "failed to assign the creator to the new application");
+            }
+        }
+        self.audit
+            .record(
+                AuditEventType::ApplicationRegistered,
+                AuditResult::Success,
+                Some(tenant.tenant_id()),
+                actor.user_id(),
+                Some(&client.client_id),
+                Some(&format!("application={}", application.id)),
+                ctx,
+            )
+            .await;
     }
 
     pub async fn list(&self, tenant: TenantContext) -> Result<Vec<Client>, ClientManagementError> {
