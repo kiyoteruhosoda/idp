@@ -53,6 +53,7 @@ use crate::domain::system_setting::SystemSetting;
 use crate::domain::tenant::{Tenant, TenantId};
 use crate::domain::tenant_domain::TenantDomain;
 use crate::domain::tenant_membership::{TenantMemberFilter, TenantMemberPage, TenantMembership};
+use crate::domain::tenant_setting::TenantSetting;
 use crate::domain::totp_secret::TotpSecret;
 use crate::domain::user::{LoginFailureRecord, User};
 use crate::domain::user_authenticator::{
@@ -1550,6 +1551,21 @@ pub trait SystemSettingsRepository: Send + Sync {
     async fn load_all(&self) -> Result<Vec<SystemSetting>>;
     /// 設定を UPSERT する（キー単位。`is_secret` も保存する）。
     async fn upsert(&self, setting: &SystemSetting) -> Result<()>;
+}
+
+/// テナント設定（ADR-0058）の永続化。
+///
+/// ⚠ **テナントに行が無いことが「全体に従う」である。** 既定値の写しを作らない ——本トレイトに
+/// 「全テナントへ既定を配る」口を足さないこと。秘匿値の暗号化・復号は Application 層の責務で、
+/// 保存形式（暗号文を含む）の文字列を素通しする（`SystemSettingsRepository` と同じ）。
+#[async_trait]
+pub trait TenantSettingsRepository: Send + Sync {
+    /// そのテナントの上書きをすべて返す（値は保存形式のまま）。行が無ければ空。
+    async fn load_for_tenant(&self, tenant_id: TenantId) -> Result<Vec<TenantSetting>>;
+    /// 上書きを UPSERT する（`(tenant_id, key)` 単位。`is_secret` も保存する）。
+    async fn upsert(&self, setting: &TenantSetting) -> Result<()>;
+    /// 上書きを消す（＝全体に従う状態へ戻す）。不存在は冪等に無視する。
+    async fn delete(&self, tenant_id: TenantId, key: &str) -> Result<()>;
 }
 
 /// Passkey チャレンジ一時テーブル（WebAuthn の begin → complete 中間状態）。

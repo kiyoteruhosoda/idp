@@ -577,7 +577,7 @@ impl UserLifecycleService {
             )));
         }
         self.password_policy
-            .record_change(user.id, &user.password_hash)
+            .record_change(user.tenant_id, user.id, &user.password_hash)
             .await;
         // 旧資格情報で発行済みのセッション・トークンを失効させる（fail-open にしない: 失敗はログのみ。
         // パスワードは既に更新済みで、旧パスワードでのログインはできない）。
@@ -1195,7 +1195,11 @@ mod tests {
             passkeys.clone(),
             Arc::new(PlainHasher),
             Arc::new(
-                crate::application::password_policy::PasswordPolicyService::length_only(
+                crate::application::password_policy::PasswordPolicyService::without_history(
+                    crate::application::tenant_settings::testing::tenant_settings_with_global(&[(
+                        "PASSWORD_HISTORY_COUNT",
+                        "0",
+                    )]),
                     Arc::new(PlainHasher),
                     Arc::new(FixedClock(now())),
                 ),

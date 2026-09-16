@@ -3,6 +3,7 @@
 //! 依存方向は Presentation → Application → Domain。Infrastructure は本層で定義する
 //! トレイト（リポジトリ等の DIP 境界）を実装する。ここには sqlx/axum など具体技術を持ち込まない。
 
+pub mod access_decision_settings;
 pub mod admin_actor;
 pub mod application;
 pub mod application_log;
@@ -58,6 +59,7 @@ pub mod tenant;
 pub mod tenant_context;
 pub mod tenant_domain;
 pub mod tenant_membership;
+pub mod tenant_setting;
 pub mod totp_secret;
 pub mod user;
 pub mod user_authenticator;

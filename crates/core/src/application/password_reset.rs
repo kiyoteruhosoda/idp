@@ -28,6 +28,7 @@
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::password_policy::PasswordPolicyService;
 use crate::application::system_settings::SystemSettingsService;
+use crate::application::tenant_settings::TenantSettingsService;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
@@ -43,6 +44,7 @@ use crate::domain::repositories::{
 };
 #[cfg(test)]
 use crate::domain::system_setting::DeploymentState;
+use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::user::User;
 use std::sync::Arc;
@@ -94,11 +96,10 @@ pub struct PasswordResetService {
     rate_limiter: Arc<dyn LoginRateLimiter>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
-    reset_ttl: chrono::Duration,
+    /// テナントが上書きできる設定の解決（ADR-0058）。参照のたびに引く。
+    settings: Arc<TenantSettingsService>,
     /// リセットリンクの土台となる公開ベース URL（web 画面。末尾スラッシュ無し）。
     console_base_url: String,
-    /// SMTP で送れないときにリンクをサーバのコンソールへ出すか。
-    console_link_enabled: bool,
 }
 
 impl PasswordResetService {
@@ -116,9 +117,8 @@ impl PasswordResetService {
         rate_limiter: Arc<dyn LoginRateLimiter>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
-        reset_ttl: std::time::Duration,
+        settings: Arc<TenantSettingsService>,
         console_base_url: String,
-        console_link_enabled: bool,
     ) -> Self {
         Self {
             users,
@@ -133,9 +133,8 @@ impl PasswordResetService {
             rate_limiter,
             audit,
             clock,
-            reset_ttl: chrono::Duration::from_std(reset_ttl).expect("reset TTL out of range"),
+            settings,
             console_base_url: console_base_url.trim_end_matches('/').to_string(),
-            console_link_enabled,
         }
     }
 
@@ -186,10 +185,11 @@ impl PasswordResetService {
         }
 
         // 届け先を先に決める。SMTP も コンソール出力も無ければ機能自体が使えない
-        //（アカウント非依存のため、ここで分岐しても列挙にはならない）。
+        //（アカウント非依存のため、ここで分岐しても列挙にはならない）。コンソール出力の可否は
+        // 利用者を解決する前なので**要求テナント**の値で見る（所属元の値は解決後にもう一度見る）。
         let delivery = match self.system_settings.smtp_server().await {
             Ok(Some(server)) => ResetLinkDelivery::Email(server),
-            Ok(None) => match self.console_link_delivery() {
+            Ok(None) => match self.console_link_delivery(tenant.tenant_id()).await {
                 Some(delivery) => delivery,
                 None => return RequestResetOutcome::Unavailable,
             },
@@ -199,7 +199,7 @@ impl PasswordResetService {
                 // 障害時に復旧手段まで失う）。**SMTP を設定済みの環境でもここを通り得る**ため、
                 // 「SMTP を設定すればコンソールには出ない」とは言えない（設定の説明・OPERATIONS
                 // にも明記する）。
-                match self.console_link_delivery() {
+                match self.console_link_delivery(tenant.tenant_id()).await {
                     Some(delivery) => delivery,
                     None => return RequestResetOutcome::Unavailable,
                 }
@@ -216,6 +216,38 @@ impl PasswordResetService {
             }
         };
 
+        // リンクは所属元テナントを指し、再設定も所属元でしか通らない（MT26）ので、所属元の値で決める
+        // （ADR-0058）。ゲストが参加先の画面から要求した場合、上で見た要求テナントの可否に加えて
+        // 所属元でもコンソール出力が許されていなければ出さない（どちらかが塞いだら塞ぐ）。
+        if matches!(delivery, ResetLinkDelivery::Console) && user.tenant_id != tenant.tenant_id() {
+            match self
+                .settings
+                .password_reset_console_link_enabled(user.tenant_id)
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::info!(
+                        user_id = %user.id,
+                        "password reset link was not issued: the user's home tenant does not allow console links"
+                    );
+                    return RequestResetOutcome::Accepted;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to resolve the password reset console link setting");
+                    return RequestResetOutcome::Accepted;
+                }
+            }
+        }
+        // 旧トークンを失効させる前に引く（引けずに終わったとき、有効なリンクが 1 本も無くならないように）。
+        let reset_ttl = match self.settings.password_reset_ttl(user.tenant_id).await {
+            Ok(ttl) => ttl,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to resolve the password reset TTL");
+                return RequestResetOutcome::Accepted;
+            }
+        };
+
         let now = self.clock.now();
         // 再要求時は旧トークンを失効させ、有効なリセットリンクを常に最新の 1 本にする。
         if let Err(e) = self
@@ -228,7 +260,7 @@ impl PasswordResetService {
         }
 
         let token = crypto::random_token(RESET_TOKEN_BYTES);
-        let expires_at = now + self.reset_ttl;
+        let expires_at = now + reset_ttl;
         let record = PasswordResetToken {
             token_hash: crypto::sha256_hex(&token),
             user_id: user.id,
@@ -306,9 +338,20 @@ impl PasswordResetService {
     }
 
     /// SMTP で送れないときの届け先。コンソール出力が無効なら `None`（＝機能を提供できない）。
-    fn console_link_delivery(&self) -> Option<ResetLinkDelivery> {
-        self.console_link_enabled
-            .then_some(ResetLinkDelivery::Console)
+    ///
+    /// 設定を読めなければ `None` に倒す（塞ぐ側へ落とす。リンクを読めた者はパスワードを再設定できる）。
+    async fn console_link_delivery(&self, tenant_id: TenantId) -> Option<ResetLinkDelivery> {
+        match self
+            .settings
+            .password_reset_console_link_enabled(tenant_id)
+            .await
+        {
+            Ok(enabled) => enabled.then_some(ResetLinkDelivery::Console),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to resolve the password reset console link setting");
+                None
+            }
+        }
     }
 
     /// トークンを消費して新パスワードを設定する。成功時は当該ユーザーの SSO セッション・
@@ -326,7 +369,13 @@ impl PasswordResetService {
         }
         // 利用者に依らない要件（長さ・漏えい済み。AP7）をトークン消費より先に見る（入力ミスで
         // 単回トークンを無駄に消費させない）。再利用の判定は利用者を解決した後に行う。
-        match self.password_policy.validate_input(new_password).await {
+        // 要求テナントはこの後で所属元と一致することを確かめる（一致しなければトークンを返さない）ので、
+        // ここで見るのは所属元のポリシーである。
+        match self
+            .password_policy
+            .validate_input(tenant.tenant_id(), new_password)
+            .await
+        {
             Ok(Ok(())) => {}
             Ok(Err(rejection)) => return ResetPasswordOutcome::WeakPassword(rejection),
             Err(e) => return ResetPasswordOutcome::Internal(e.to_string()),
@@ -356,7 +405,12 @@ impl PasswordResetService {
         // 拒否された利用者は再発行からやり直すことになる。
         match self
             .password_policy
-            .validate_reuse(Some(user.id), Some(&user.password_hash), new_password)
+            .validate_reuse(
+                user.tenant_id,
+                Some(user.id),
+                Some(&user.password_hash),
+                new_password,
+            )
             .await
         {
             Ok(Ok(())) => {}
@@ -383,7 +437,7 @@ impl PasswordResetService {
             Err(e) => return ResetPasswordOutcome::Internal(e.to_string()),
         }
         self.password_policy
-            .record_change(user.id, &user.password_hash)
+            .record_change(user.tenant_id, user.id, &user.password_hash)
             .await;
 
         // 全セッション・トークンの失効（fail-open にしない: 失敗はログのみ。パスワードは既に
@@ -428,7 +482,6 @@ mod tests {
     use crate::domain::repositories::{AuditLogSink, SystemSettingsRepository};
     use crate::domain::sso_session::SsoSession;
     use crate::domain::system_setting::SystemSetting;
-    use crate::domain::tenant::TenantId;
     use crate::domain::user::User;
     use crate::domain::values::UserStatus;
     use async_trait::async_trait;
@@ -828,6 +881,7 @@ mod tests {
         codes: Arc<FakeCodes>,
         mailer: Arc<FakeMailer>,
         sink: Arc<CapturingSink>,
+        settings: crate::application::tenant_settings::testing::TenantSettingsFixture,
     }
 
     /// SMTP のみを設定した検証台（コンソール出力は無効）。
@@ -847,6 +901,14 @@ mod tests {
         let codes = Arc::new(FakeCodes::default());
         let mailer = Arc::new(FakeMailer::default());
         let sink = Arc::new(CapturingSink::default());
+        // 全体の値。テナントの行は各試験が `settings` へ直接入れる。
+        let settings = crate::application::tenant_settings::testing::tenant_settings();
+        settings.set_global("PASSWORD_HISTORY_COUNT", "0");
+        settings.set_global("PASSWORD_RESET_TTL_SECS", "3600");
+        settings.set_global(
+            "PASSWORD_RESET_CONSOLE_LINK_ENABLED",
+            &console_link_enabled.to_string(),
+        );
         let settings_repo = Arc::new(FakeSettingsRepo::default());
         if smtp_configured {
             smtp_settings(&settings_repo);
@@ -867,7 +929,8 @@ mod tests {
             codes.clone(),
             Arc::new(PlainHasher),
             Arc::new(
-                crate::application::password_policy::PasswordPolicyService::length_only(
+                crate::application::password_policy::PasswordPolicyService::without_history(
+                    settings.service.clone(),
                     Arc::new(PlainHasher),
                     Arc::new(FixedClock),
                 ),
@@ -880,9 +943,8 @@ mod tests {
             }),
             audit,
             Arc::new(FixedClock),
-            std::time::Duration::from_secs(3600),
+            settings.service.clone(),
             "https://idp.example.com".to_string(),
-            console_link_enabled,
         );
         Harness {
             svc,
@@ -893,6 +955,7 @@ mod tests {
             codes,
             mailer,
             sink,
+            settings,
         }
     }
 
@@ -921,6 +984,29 @@ mod tests {
         fn make_writer(&'a self) -> Self::Writer {
             self.clone()
         }
+    }
+
+    /// コンソール出力（INFO 以上）を拾いながら `future` を走らせる。
+    ///
+    /// ⚠ **コンソールへリンクを出す経路を通す試験は、必ずこれで包む。** 購読者の無いスレッドが同じ
+    /// `tracing::info!` を先に踏むと、並行に走る別の試験の中でもその呼び出しが「誰も聞いていない」と
+    /// キャッシュされ、出力を拾えなくなる（手元では通り、CI でだけ落ちる）。
+    async fn capture_console<F: std::future::Future>(future: F) -> (F::Output, String) {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::Layer;
+
+        let logs = SharedBuffer::default();
+        let subscriber = tracing_subscriber::registry().with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(logs.clone())
+                .with_filter(tracing_subscriber::EnvFilter::new("info")),
+        );
+        let output = {
+            let _guard = tracing::subscriber::set_default(subscriber);
+            future.await
+        };
+        (output, logs.contents())
     }
 
     /// 送信メール本文からリセットトークンを取り出す（`token=` 以降を行末まで）。
@@ -986,25 +1072,14 @@ mod tests {
             .unwrap()
             .push(test_user(user, tenant, "admin@example.com"));
 
-        use tracing_subscriber::layer::SubscriberExt;
-        use tracing_subscriber::Layer;
-
-        let logs = SharedBuffer::default();
-        let subscriber = tracing_subscriber::registry().with(
-            tracing_subscriber::fmt::layer()
-                .with_ansi(false)
-                .with_writer(logs.clone())
-                .with_filter(tracing_subscriber::EnvFilter::new("info")),
-        );
-        let outcome = {
-            let _guard = tracing::subscriber::set_default(subscriber);
-            h.svc
-                .request_reset(TenantContext::new(tenant), "admin@example.com", &ctx())
-                .await
-        };
+        let (outcome, printed) = capture_console(h.svc.request_reset(
+            TenantContext::new(tenant),
+            "admin@example.com",
+            &ctx(),
+        ))
+        .await;
         assert!(matches!(outcome, RequestResetOutcome::Accepted));
 
-        let printed = logs.contents();
         let prefix = format!("https://idp.example.com/{tenant}/password-reset?token=");
         assert!(printed.contains(&prefix), "{printed}");
         // 出力は INFO。取り込み層（`telemetry::capture_filter`）は WARN 以上だけを `log` テーブルへ
@@ -1205,6 +1280,84 @@ mod tests {
                 )
                 .await,
             ResetPasswordOutcome::Ok
+        ));
+    }
+
+    /// リンクの有効期間は利用者の所属元テナントの値。⚠ 2 テナントで確かめる ——行のあるテナントは
+    /// その値、行の無いテナントは全体（1 時間）に従う。
+    #[tokio::test]
+    async fn the_link_lifetime_follows_the_home_tenant() {
+        let short: TenantId = Uuid::now_v7().into();
+        let follower: TenantId = Uuid::now_v7().into();
+        let h = harness(true, 100);
+        h.settings
+            .set_tenant(short, "PASSWORD_RESET_TTL_SECS", "600");
+        h.users.rows.lock().unwrap().extend([
+            test_user(Uuid::new_v4(), short, "short@example.com"),
+            test_user(Uuid::new_v4(), follower, "follower@example.com"),
+        ]);
+
+        for (tenant, email) in [
+            (short, "short@example.com"),
+            (follower, "follower@example.com"),
+        ] {
+            assert!(matches!(
+                h.svc
+                    .request_reset(TenantContext::new(tenant), email, &ctx())
+                    .await,
+                RequestResetOutcome::Accepted
+            ));
+        }
+        let rows = h.tokens.rows.lock().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0].expires_at,
+            FixedClock.now() + chrono::Duration::seconds(600)
+        );
+        assert_eq!(
+            rows[1].expires_at,
+            FixedClock.now() + chrono::Duration::seconds(3600)
+        );
+    }
+
+    /// コンソール出力の可否もテナントごと。全体で塞いであっても、許したテナントでは使え、
+    /// 行の無いテナントは全体に従って使えない（アカウントに依らない `Unavailable`）。
+    #[tokio::test]
+    async fn the_console_link_is_decided_per_tenant() {
+        let allows: TenantId = Uuid::now_v7().into();
+        let follower: TenantId = Uuid::now_v7().into();
+        let h = harness_with(false, 100, false);
+        h.settings
+            .set_tenant(allows, "PASSWORD_RESET_CONSOLE_LINK_ENABLED", "true");
+        h.users
+            .rows
+            .lock()
+            .unwrap()
+            .push(test_user(Uuid::new_v4(), allows, "a@example.com"));
+
+        let (outcome, printed) = capture_console(h.svc.request_reset(
+            TenantContext::new(allows),
+            "a@example.com",
+            &ctx(),
+        ))
+        .await;
+        assert!(matches!(outcome, RequestResetOutcome::Accepted));
+        assert_eq!(
+            h.tokens.rows.lock().unwrap().len(),
+            1,
+            "the link was issued"
+        );
+        assert!(
+            printed.contains(&format!(
+                "https://idp.example.com/{allows}/password-reset?token="
+            )),
+            "{printed}"
+        );
+        assert!(matches!(
+            h.svc
+                .request_reset(TenantContext::new(follower), "a@example.com", &ctx())
+                .await,
+            RequestResetOutcome::Unavailable
         ));
     }
 }

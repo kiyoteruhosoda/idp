@@ -35,6 +35,7 @@ use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authenticator_management::has_usable_passkey;
 use crate::application::mfa_login::user_has_confirmed_totp;
 use crate::application::passkey_assertion::{PasskeyAssertionError, PasskeyStepUpCeremony};
+use crate::application::tenant_settings::TenantSettingsService;
 use crate::application::totp_registration::verify_totp_code;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
@@ -115,8 +116,8 @@ pub struct StepUpService {
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
     key_encryption_key: [u8; 32],
-    /// 直近の本人確認からこの秒数を超えたら再確認を求める（設定注入）。
-    max_age_secs: u64,
+    /// テナントが上書きできる設定の解決（ADR-0058）。参照のたびに引く。
+    settings: Arc<TenantSettingsService>,
 }
 
 impl StepUpService {
@@ -132,7 +133,7 @@ impl StepUpService {
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
         key_encryption_key: [u8; 32],
-        max_age_secs: u64,
+        settings: Arc<TenantSettingsService>,
     ) -> Self {
         Self {
             sso_sessions,
@@ -145,7 +146,7 @@ impl StepUpService {
             audit,
             clock,
             key_encryption_key,
-            max_age_secs,
+            settings,
         }
     }
 
@@ -162,11 +163,16 @@ impl StepUpService {
             Ok(_) => return StepUpCheckOutcome::SessionExpired,
             Err(e) => return StepUpCheckOutcome::Internal(e.to_string()),
         };
-        match self.users.find_by_id(session.user_id).await {
-            Ok(Some(u)) if u.is_active() => {}
+        let home_tenant_id = match self.users.find_by_id(session.user_id).await {
+            Ok(Some(u)) if u.is_active() => u.tenant_id,
             Ok(_) => return StepUpCheckOutcome::SessionExpired,
             Err(e) => return StepUpCheckOutcome::Internal(e.to_string()),
-        }
+        };
+        // 再確認の間隔は利用者の所属元テナントの値（`verify` と同じテナント。ADR-0058）。
+        let max_age_secs = match self.settings.step_up_max_age_secs(home_tenant_id).await {
+            Ok(secs) => secs,
+            Err(e) => return StepUpCheckOutcome::Internal(e.to_string()),
+        };
 
         let has_second_factor =
             match user_has_confirmed_totp(self.totp_secrets.as_ref(), session.user_id).await {
@@ -174,7 +180,7 @@ impl StepUpService {
                 Err(e) => return StepUpCheckOutcome::Internal(e.to_string()),
             };
         let requirement =
-            StepUpRequirement::for_operation(operation, self.max_age_secs, has_second_factor);
+            StepUpRequirement::for_operation(operation, max_age_secs, has_second_factor);
 
         let decision = evaluate_step_up(&session, session.step_up_at, requirement, now);
         // 登録簿を引くのは画面を出すと決まってからにする。**ゲートは重要操作のたびに通る**ので、
@@ -249,8 +255,13 @@ impl StepUpService {
                 Ok(v) => v,
                 Err(e) => return StepUpVerifyOutcome::Internal(e.to_string()),
             };
+        // 再確認の間隔は利用者の所属元テナントの値（`check` と同じテナント。ADR-0058）。
+        let max_age_secs = match self.settings.step_up_max_age_secs(user.tenant_id).await {
+            Ok(secs) => secs,
+            Err(e) => return StepUpVerifyOutcome::Internal(e.to_string()),
+        };
         let requirement =
-            StepUpRequirement::for_operation(cmd.operation, self.max_age_secs, has_second_factor);
+            StepUpRequirement::for_operation(cmd.operation, max_age_secs, has_second_factor);
         let mut methods = vec![AuthenticationMethod::Password];
 
         if requirement.required_strength == AuthenticationStrength::MultiFactor {
@@ -699,7 +710,7 @@ mod tests {
         }
         async fn verify(
             &self,
-            _tenant_id: crate::domain::tenant::TenantId,
+            tenant_id: crate::domain::tenant::TenantId,
             _challenge_id: Uuid,
             _credential: serde_json::Value,
             _ctx: &RequestContext,
@@ -707,6 +718,7 @@ mod tests {
             match self.0 {
                 Ok(user_id) => Ok(VerifiedPasskeyUser {
                     user_id,
+                    home_tenant_id: tenant_id,
                     auth_session_id_hash: None,
                 }),
                 Err(()) => Err(PasskeyAssertionError::InvalidCredential),
@@ -723,6 +735,22 @@ mod tests {
         has_totp: bool,
         authenticators: FakeAuthenticators,
         ceremony_user: Result<Uuid, ()>,
+    ) -> (StepUpService, Arc<FakeSessions>) {
+        build_service_with(
+            session,
+            has_totp,
+            authenticators,
+            ceremony_user,
+            crate::application::tenant_settings::testing::tenant_settings().service,
+        )
+    }
+
+    fn build_service_with(
+        session: SsoSession,
+        has_totp: bool,
+        authenticators: FakeAuthenticators,
+        ceremony_user: Result<Uuid, ()>,
+        settings: Arc<TenantSettingsService>,
     ) -> (StepUpService, Arc<FakeSessions>) {
         let sessions = Arc::new(FakeSessions {
             row: Mutex::new(session),
@@ -742,7 +770,7 @@ mod tests {
             Arc::new(AuditService::new(Arc::new(DiscardingSink), clock.clone())),
             clock,
             KEY,
-            300,
+            settings,
         );
         (service, sessions)
     }
@@ -1030,5 +1058,45 @@ mod tests {
             challenge_id: Uuid::from_u128(9),
             credential: serde_json::json!({}),
         }
+    }
+
+    /// 再確認の間隔は利用者の**所属元**テナントの値で測る。10 分前に本人確認したセッションは、
+    /// 所属元が 1 時間と決めていれば満たし、行が無ければ全体（5 分）に従って再確認を求める。
+    /// ⚠ 別のテナントの行は効かない（1 テナントだけの試験は全体の値を読んでいても通ってしまう）。
+    #[tokio::test]
+    async fn the_step_up_window_is_the_home_tenant_value() {
+        let home = TenantId::from(Uuid::from_u128(9));
+        let other = TenantId::from(Uuid::from_u128(10));
+        let aged = || session(vec![AuthenticationMethod::Password], Duration::minutes(10));
+
+        let fixture = crate::application::tenant_settings::testing::tenant_settings();
+        fixture.set_global("STEP_UP_MAX_AGE_SECS", "300");
+        fixture.set_tenant(home, "STEP_UP_MAX_AGE_SECS", "3600");
+        let (svc, _) = build_service_with(
+            aged(),
+            false,
+            FakeAuthenticators::default(),
+            Ok(USER),
+            fixture.service,
+        );
+        assert!(matches!(
+            svc.check(COOKIE, SensitiveOperation::ChangePassword).await,
+            StepUpCheckOutcome::Satisfied
+        ));
+
+        let fixture = crate::application::tenant_settings::testing::tenant_settings();
+        fixture.set_global("STEP_UP_MAX_AGE_SECS", "300");
+        fixture.set_tenant(other, "STEP_UP_MAX_AGE_SECS", "3600");
+        let (svc, _) = build_service_with(
+            aged(),
+            false,
+            FakeAuthenticators::default(),
+            Ok(USER),
+            fixture.service,
+        );
+        assert!(matches!(
+            svc.check(COOKIE, SensitiveOperation::ChangePassword).await,
+            StepUpCheckOutcome::ChallengeRequired { .. }
+        ));
     }
 }

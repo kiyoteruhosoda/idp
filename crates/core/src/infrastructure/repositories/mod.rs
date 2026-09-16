@@ -33,6 +33,7 @@ pub mod tenant_domain;
 pub mod tenant_member_query;
 pub mod tenant_membership;
 pub mod tenant_provisioning;
+pub mod tenant_setting;
 pub mod totp_secret;
 pub mod user;
 pub mod user_authenticator;

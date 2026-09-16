@@ -777,8 +777,9 @@ Swagger UI `/api/docs` を参照）。
 - 適用時間帯は 1 行 1 帯で `曜日 開始-終了 オフセット`（例 `mon,tue,wed,thu,fri 09:00-18:00 +09:00`）。
   曜日の `*` は全曜日、オフセット省略時は `+00:00`。**1 行でも読めないと保存自体を拒否する**
   （読めた行だけ保存すると、書いたはずの条件が黙って消えるため）。
-- 一覧の上に出る「どのポリシーにも一致しないときの動作」は `AUTH_POLICY_DEFAULT_EFFECT` の現在値。
-  同じ `deny` 1 件でも、既定が `allow` か `deny` かで意味が変わるため必ず併せて見る。
+- 一覧の上に出る「どのポリシーにも一致しないときの動作」は、**そのテナントの**
+  `AUTH_POLICY_DEFAULT_EFFECT`。同じ `deny` 1 件でも、既定が `allow` か `deny` かで意味が変わるため
+  必ず併せて見る。
 
 ```bash
 # 一覧
@@ -801,9 +802,10 @@ curl -b "sso_session_id=<管理者セッション>" -H 'Content-Type: applicatio
 - 条件（`application_ids` / `user_ids`）は空 = 制限しない、複数条件は AND。`deny` は常に他へ優先する。
 - 一致するポリシーが無いときの既定動作はランタイム設定 `AUTH_POLICY_DEFAULT_EFFECT`
   （既定 `allow`。`deny` にすると許可ポリシーを明示した対象しかログインできない）。
+  **テナントごとに決まる**（テナントに値が無ければ全体の値）。**再起動は要らない**（最大 60 秒で効く）。
 - アカウントロックの閾値はランタイム設定 `LOGIN_MAX_FAILED_ATTEMPTS`（既定 10 回）・
   `LOGIN_LOCK_DURATION_SECS`（既定 900 秒）で調整する（設定手順は「ランタイム設定を DB で
-  変更したいとき」参照。反映には再起動が必要）。
+  変更したいとき」参照。再起動は要らない）。
 
 ## アプリの利用者を絞りたいとき（ADR-0054）
 
@@ -821,7 +823,8 @@ curl -b "sso_session_id=<管理者セッション>" -H 'Content-Type: applicatio
 - ⚠ **判定は既定では「記録するだけ」**（`APPLICATION_ASSIGNMENT_ENFORCEMENT` = `record_only`）。
   この間、割り当てが無い利用者も入れるが、監査ログに `application.access_denied`（成功行）が残る。
   **その行が数日出なくなってから** `enforce` へ切り替える（設定手順は「ランタイム設定を DB で
-  変更したいとき」参照。反映には再起動が必要）。
+  変更したいとき」参照）。**テナントごとに決まり**（テナントに値が無ければ全体の値）、
+  **再起動は要らない**（最大 60 秒で効く）。アプリ一覧の上の表示もそのテナントの値である。
 - 漏れの確認:
   `SELECT reason, COUNT(*) FROM audit_log WHERE event_type='application.access_denied' GROUP BY reason;`
 - 新しく登録した連携先（`authorization_code`）は、登録と同時にアプリとして開かれる（「個別」・
@@ -893,15 +896,17 @@ SELECT result, reason, COUNT(*) AS hits, MAX(occurred_at) AS last_seen
 `reason` は `application=<id> reason=not_assigned enforcement=record_only` の形。⚠ **`result` が
 `success` の行は「通したが割り当てが無かった」**（＝漏れ）、`failure` は「実際に断った」。
 この行が数日ぶん出なくなってから `APPLICATION_ASSIGNMENT_ENFORCEMENT=enforce` へ切り替える
-（設定手順は「ランタイム設定を DB で変更したいとき」参照。反映には再起動が必要）。
+（設定手順は「ランタイム設定を DB で変更したいとき」参照。再起動は要らない。最大 60 秒で効く）。
+監査の行はテナントごとに数える（`WHERE tenant_id = '<テナントの UUID>'` を足す）。
 
 ⚠ **切り替える前に、割り当てを足す操作が数秒で終わることを確かめておく**（締め出したときの
 復旧経路）。アプリの画面で利用者 ID を貼って「割り当てる」だけで戻る。
 
 ## パスワードの要件を強くしたいとき（AP7）
 
-すべてランタイム設定で調整する（設定手順は「ランタイム設定を DB で変更したいとき」参照。反映には
-api の再起動が必要）。パスワードを設定する全経路（自己登録・強制変更・セルフサービス変更・
+すべてランタイム設定で調整する（設定手順は「ランタイム設定を DB で変更したいとき」参照。
+`PASSWORD_BREACH_API_BASE_URL`・`PASSWORD_BREACH_CHECK_TIMEOUT_SECS` だけは api の再起動が必要で、
+ほかは再起動なしで効く）。パスワードを設定する全経路（自己登録・強制変更・セルフサービス変更・
 パスワードリセット）に一律で効く。
 
 | キー | 既定 | 内容 |
@@ -1281,6 +1286,20 @@ curl -sS -X POST "$ISSUER/{tenant_id}/admin/external-idps" \
    web を忘れた状態も、この警告に「web に未反映」として出る。
 
 - 上書きを**解除**した場合も再起動するまでは戻らない（未反映として警告に出る）。
+- 次の 14 項目は**再起動しなくても次の要求から効く**（手順 3・4 は要らない。「保存済み・未反映」も
+  付かない）: パスワードポリシー（`PASSWORD_MIN_LENGTH` / `PASSWORD_HISTORY_COUNT` /
+  `PASSWORD_MAX_AGE_DAYS` / `PASSWORD_BREACH_CHECK_ENABLED`）、ロックアウト（`LOGIN_MAX_FAILED_ATTEMPTS` /
+  `LOGIN_LOCK_DURATION_SECS` / `LOGIN_MAX_LOCK_DURATION_SECS`）、`SSO_IDLE_TTL_SECS` /
+  `SSO_ABSOLUTE_TTL_SECS` / `STEP_UP_MAX_AGE_SECS`、`INVITATION_TTL_SECS` / `PASSWORD_RESET_TTL_SECS` /
+  `EMAIL_VERIFICATION_TTL_SECS` / `PASSWORD_RESET_CONSOLE_LINK_ENABLED`。
+  - 発行済みの招待・再設定リンク・検証リンクと、SSO セッションの絶対期限は変わらない（新しく発行する
+    ものから効く）。SSO セッションの idle 期限だけは、次に復元したときに新しい値で延長される。
+  - 利用者ごとに効くのは**所属元テナント**の値である（ゲストが参加先から入っても、所属元の値）。
+  - 一覧に出る「現在値」は起動時の値のままである。効いている全体の値は、保存した値（空なら環境変数・既定値）で読む。
+- 例外: `AUTH_POLICY_DEFAULT_EFFECT`・`APPLICATION_ASSIGNMENT_ENFORCEMENT` は**再起動を待たずに効く**
+  （テナントごとに参照のたびに引く。ADR-0058）。保存した api では即時、ほかの api のプロセスでは
+  最大 60 秒で効く。この 2 つは「保存済み・未反映」バッジが付かない。⚠ ただし一覧に出る「現在値」は
+  起動時の値のままなので、効いている値は認証ポリシー／アプリの画面の上に出る表示で確かめる。
 - `ISSUER`・`COOKIE_SECURE`・`HSTS_MAX_AGE`・`AUTH_SESSION_TTL_SECS` は api と web の**両方**が使う
   （ADR-0013・ADR-0017）。web は起動時に api から値を受け取るため、**api → web の順に両方を再起動する**。
   api を再起動するまでは保存した値は誰にも反映されない（web が先に再起動しても、api が配るのは

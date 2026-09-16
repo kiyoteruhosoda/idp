@@ -11,8 +11,13 @@
 //! いきなり断らない。まず `record_only` で本番へ出し、「割り当てが無いのに来た人」を監査ログへ
 //! 溜める（移行の漏れはここで全部出る）。ログが静かになってから `enforce` へ切り替える。
 //! ⚠ **切り替えはコードではなく設定で行う。** 入れ替えにすると、戻すのにデプロイが要る。
+//!
+//! 設定は**テナントが決める**（ADR-0058 §4）。名簿が整ったテナントから `enforce` へ倒せる。
+//! ⚠ 値は参照のたびにテナントについて引く（[`AccessDecisionSettings`]）。起動時の `Config` を
+//! 読むと、全テナントが全体の値で動く。
 
 use crate::application::audit::{AuditService, RequestContext};
+use crate::domain::access_decision_settings::AccessDecisionSettings;
 use crate::domain::application::{Application, ApplicationAccess};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::error::DomainError;
@@ -43,25 +48,20 @@ impl ApplicationGate {
 pub struct ApplicationAccessService {
     applications: Arc<dyn ApplicationRepository>,
     audit: Arc<AuditService>,
-    enforcement: AssignmentEnforcement,
+    settings: Arc<dyn AccessDecisionSettings>,
 }
 
 impl ApplicationAccessService {
     pub fn new(
         applications: Arc<dyn ApplicationRepository>,
         audit: Arc<AuditService>,
-        enforcement: AssignmentEnforcement,
+        settings: Arc<dyn AccessDecisionSettings>,
     ) -> Self {
         Self {
             applications,
             audit,
-            enforcement,
+            settings,
         }
-    }
-
-    /// いま断る設定になっているか（画面が「記録するだけ」の状態を示すために読む）。
-    pub fn enforcement(&self) -> AssignmentEnforcement {
-        self.enforcement
     }
 
     /// OIDC の `client_id` からアプリを解決する。
@@ -147,9 +147,23 @@ impl ApplicationAccessService {
             return ApplicationGate::Allowed;
         }
 
+        // 設定は断る場面になってから引く（素通りする大半の要求で問い合わせを増やさない）。
+        // 引けないときは「記録するだけ」に倒す ——上の問い合わせの失敗と同じく、門番が落ちたときに
+        // 全員を締め出さない。
+        let enforcement = match self.settings.assignment_enforcement(tenant_id).await {
+            Ok(enforcement) => enforcement,
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "failed to resolve APPLICATION_ASSIGNMENT_ENFORCEMENT; recording only"
+                );
+                AssignmentEnforcement::RecordOnly
+            }
+        };
+
         // `record_only` は成功（＝通した）として残す。切り替えの前後を同じ問い合わせで数えたいので、
         // 種別は分けず `result` で分ける。
-        let enforced = self.enforcement == AssignmentEnforcement::Enforce;
+        let enforced = enforcement == AssignmentEnforcement::Enforce;
         self.audit
             .record(
                 AuditEventType::ApplicationAccessDenied,
@@ -165,7 +179,7 @@ impl ApplicationAccessService {
                     "application={} reason={} enforcement={}",
                     application.id,
                     access.reason(),
-                    self.enforcement.as_str()
+                    enforcement.as_str()
                 )),
                 ctx,
             )
@@ -285,7 +299,13 @@ pub mod test_support {
         Arc::new(ApplicationAccessService::new(
             Arc::new(NoApplications),
             audit,
-            AssignmentEnforcement::Enforce,
+            Arc::new(
+                crate::application::access_decision_settings::test_support::FixedAccessDecisionSettings {
+                    policy_default_effect:
+                        crate::domain::authentication_policy::DefaultPolicyEffect::Allow,
+                    assignment_enforcement: AssignmentEnforcement::Enforce,
+                },
+            ),
         ))
     }
 }
@@ -294,10 +314,15 @@ pub mod test_support {
 mod tests {
     use super::test_support::NoApplications;
     use super::*;
+    use crate::application::access_decision_settings::test_support::{
+        tenant_settings, FixedAccessDecisionSettings,
+    };
+    use crate::domain::access_decision_settings::APPLICATION_ASSIGNMENT_ENFORCEMENT;
     use crate::domain::application::{
         ApplicationAssignment, ApplicationBinding, AssignedUser, BindingTarget,
     };
     use crate::domain::audit::AuditEvent;
+    use crate::domain::authentication_policy::DefaultPolicyEffect;
     use crate::domain::clock::Clock;
     use crate::domain::error::Result;
     use crate::domain::repositories::AuditLogSink;
@@ -420,12 +445,22 @@ mod tests {
         repo: Arc<dyn ApplicationRepository>,
         enforcement: AssignmentEnforcement,
     ) -> (ApplicationAccessService, Arc<RecordingSink>) {
+        service_with_settings(
+            repo,
+            Arc::new(FixedAccessDecisionSettings {
+                policy_default_effect: DefaultPolicyEffect::Allow,
+                assignment_enforcement: enforcement,
+            }),
+        )
+    }
+
+    fn service_with_settings(
+        repo: Arc<dyn ApplicationRepository>,
+        settings: Arc<dyn AccessDecisionSettings>,
+    ) -> (ApplicationAccessService, Arc<RecordingSink>) {
         let sink = Arc::new(RecordingSink::default());
         let audit = Arc::new(AuditService::new(sink.clone(), Arc::new(FixedClock)));
-        (
-            ApplicationAccessService::new(repo, audit, enforcement),
-            sink,
-        )
+        (ApplicationAccessService::new(repo, audit, settings), sink)
     }
 
     fn ctx() -> RequestContext {
@@ -544,6 +579,76 @@ mod tests {
             )
             .await;
         assert_eq!(gate, ApplicationGate::Allowed);
+    }
+
+    /// 断るかどうかはテナントが決める（ADR-0058 §4）。2 テナントで違う値を入れ、同じ「割り当ての
+    /// 無い人」がそれぞれのテナントの値で扱われること ——1 テナントだけだと、全体の値を読んでいても
+    /// 通ってしまう。
+    #[tokio::test]
+    async fn each_tenant_decides_whether_to_enforce() {
+        let enforcing = TenantId::from(Uuid::from_u128(10));
+        let recording = TenantId::from(Uuid::from_u128(11));
+        let repo = Arc::new(OneIndividualApplication {
+            application: application(AssignmentMode::Individual, ApplicationStatus::Active),
+            assigned: false,
+        });
+        let (svc, sink) = service_with_settings(
+            repo,
+            tenant_settings(&[
+                (enforcing, APPLICATION_ASSIGNMENT_ENFORCEMENT, "enforce"),
+                (recording, APPLICATION_ASSIGNMENT_ENFORCEMENT, "record_only"),
+            ]),
+        );
+        let user = Uuid::from_u128(3);
+
+        let denied = svc.check(enforcing, "client-a", user, &ctx()).await;
+        assert!(matches!(denied, ApplicationGate::Denied { .. }));
+        let allowed = svc.check(recording, "client-a", user, &ctx()).await;
+        assert_eq!(allowed, ApplicationGate::Allowed);
+
+        let events = sink.events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].tenant_id, Some(enforcing));
+        assert_eq!(events[0].result, AuditResult::Failure);
+        assert_eq!(events[1].tenant_id, Some(recording));
+        assert_eq!(events[1].result, AuditResult::Success);
+    }
+
+    /// 行の無いテナントは既定の「記録するだけ」。⚠ 名簿の無いまま断る側へ倒れると全員が締め出される。
+    #[tokio::test]
+    async fn a_tenant_without_a_row_only_records() {
+        let repo = Arc::new(OneIndividualApplication {
+            application: application(AssignmentMode::Individual, ApplicationStatus::Active),
+            assigned: false,
+        });
+        let (svc, sink) = service_with_settings(repo, tenant_settings(&[]));
+        let gate = svc
+            .check(
+                TenantId::from(Uuid::from_u128(2)),
+                "client-a",
+                Uuid::from_u128(3),
+                &ctx(),
+            )
+            .await;
+        assert_eq!(gate, ApplicationGate::Allowed);
+        assert_eq!(sink.events.lock().unwrap()[0].result, AuditResult::Success);
+    }
+
+    /// 設定が引けない（保存値が壊れている）ときも締め出さない。記録だけ残して通す。
+    #[tokio::test]
+    async fn an_unreadable_setting_records_instead_of_locking_everyone_out() {
+        let t = TenantId::from(Uuid::from_u128(2));
+        let repo = Arc::new(OneIndividualApplication {
+            application: application(AssignmentMode::Individual, ApplicationStatus::Active),
+            assigned: false,
+        });
+        let (svc, sink) = service_with_settings(
+            repo,
+            tenant_settings(&[(t, APPLICATION_ASSIGNMENT_ENFORCEMENT, "enforce-ish")]),
+        );
+        let gate = svc.check(t, "client-a", Uuid::from_u128(3), &ctx()).await;
+        assert_eq!(gate, ApplicationGate::Allowed);
+        assert_eq!(sink.events.lock().unwrap()[0].result, AuditResult::Success);
     }
 
     /// 止めたアプリは、割り当てのモードに関わらず通さない。

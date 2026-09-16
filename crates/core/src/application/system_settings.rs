@@ -17,8 +17,8 @@ use crate::domain::mailer::SmtpServerConfig;
 use crate::domain::repositories::SystemSettingsRepository;
 use crate::domain::sms::SmsGatewayConfig;
 use crate::domain::system_setting::{
-    ensure_override_is_bootable, runtime_setting_definition, validate_public_base_url,
-    DeploymentState, SettingKind, SettingOwner, SmsSettingsView, SmtpSettingsView, SystemSetting,
+    ensure_override_is_bootable, runtime_setting_definition, validate_setting_value,
+    DeploymentState, SettingOwner, SmsSettingsView, SmtpSettingsView, SystemSetting,
     UpdateSmsCommand, UpdateSmtpCommand, SMS_AUTH_HEADER, SMS_AUTH_TOKEN, SMS_GATEWAY_URL,
     SMS_SENDER_ID, SMTP_FROM_ADDRESS, SMTP_HOST, SMTP_PASSWORD, SMTP_PORT, SMTP_USERNAME,
     SMTP_USE_TLS,
@@ -280,30 +280,9 @@ impl SystemSettingsService {
         }
         let value = value.map(|v| v.trim().to_string()).unwrap_or_default();
         if !value.is_empty() {
-            match def.kind {
-                SettingKind::UnsignedInteger => {
-                    // `Config` 側の最小の消費型（`KEY_ROTATION_LEAD_DAYS` 等の u32）でも起動時に
-                    // 必ずパースできるよう、u32 の範囲で検証する（範囲外を保存すると再起動が
-                    // 構成エラーで失敗するため）。
-                    value.parse::<u32>().map_err(|_| {
-                        DomainError::InvalidValue(format!(
-                            "setting {key} must be a non-negative integer (max {})",
-                            u32::MAX
-                        ))
-                    })?;
-                }
-                SettingKind::Boolean => {
-                    if value != "true" && value != "false" {
-                        return Err(DomainError::InvalidValue(format!(
-                            "setting {key} must be true or false"
-                        )));
-                    }
-                }
-                SettingKind::Text => {}
-                SettingKind::PublicBaseUrl => {
-                    validate_public_base_url(key, &value).map_err(DomainError::InvalidValue)?;
-                }
-            }
+            // 書式の検査はテナント設定（ADR-0058）と同じ関数を通す。片方だけ規則を変えると、
+            // 全体には保存できるのにテナントには保存できない値が生まれる。
+            validate_setting_value(def, &value).map_err(DomainError::InvalidValue)?;
             // 書式が正しくても、その値では次回起動できないことがある（https ISSUER × 開発用既定
             // secret）。保存してしまうと再起動で api・web ごと落ちて画面から直せなくなるため、
             // 「値の書式」ではなく「配置状態との衝突」として 409 相当で返す（ADR-0017）。

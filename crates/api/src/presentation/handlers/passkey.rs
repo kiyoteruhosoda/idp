@@ -187,7 +187,6 @@ pub async fn login_complete(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let ttl = state.config.sso_absolute_ttl().as_secs();
     let tenant =
         require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let outcome = state
@@ -199,19 +198,21 @@ pub async fn login_complete(
             location,
             form_post,
             sso_session_id,
+            sso_absolute_ttl_secs,
         } => InternalPasskeyLoginCompleteResponse::Success {
             redirect_to: location,
             form_post,
             sso_session_id,
-            sso_absolute_ttl_secs: ttl,
+            sso_absolute_ttl_secs,
         },
         PasskeyAuthOutcome::ConsentRequired {
             auth_session_id,
             sso_session_id,
+            sso_absolute_ttl_secs,
         } => InternalPasskeyLoginCompleteResponse::ConsentRequired {
             auth_session_id,
             sso_session_id,
-            sso_absolute_ttl_secs: ttl,
+            sso_absolute_ttl_secs,
         },
         PasskeyAuthOutcome::ChallengeNotFound => {
             InternalPasskeyLoginCompleteResponse::ChallengeNotFound
@@ -224,10 +225,11 @@ pub async fn login_complete(
         PasskeyAuthOutcome::ApplicationNotPermitted {
             application_name,
             sso_session_id,
+            sso_absolute_ttl_secs,
         } => InternalPasskeyLoginCompleteResponse::ApplicationNotPermitted {
             application_name,
             sso_session_id,
-            sso_absolute_ttl_secs: ttl,
+            sso_absolute_ttl_secs,
         },
         PasskeyAuthOutcome::RateLimited => InternalPasskeyLoginCompleteResponse::RateLimited,
         PasskeyAuthOutcome::Internal(e) => {
@@ -260,7 +262,6 @@ pub async fn admin_login_complete(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let ttl = state.config.sso_absolute_ttl().as_secs();
     let tenant =
         require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let outcome = state
@@ -275,12 +276,13 @@ pub async fn admin_login_complete(
         )
         .await;
     Ok(Json(match outcome {
-        AdminLoginOutcome::Success { sso_session_id } => {
-            InternalAdminPasskeyLoginCompleteResponse::Success {
-                sso_session_id,
-                sso_absolute_ttl_secs: ttl,
-            }
-        }
+        AdminLoginOutcome::Success {
+            sso_session_id,
+            sso_absolute_ttl_secs,
+        } => InternalAdminPasskeyLoginCompleteResponse::Success {
+            sso_session_id,
+            sso_absolute_ttl_secs,
+        },
         AdminLoginOutcome::PasskeyChallengeNotFound => {
             InternalAdminPasskeyLoginCompleteResponse::ChallengeNotFound
         }
@@ -323,7 +325,6 @@ pub async fn portal_login_complete(
         ip_address: req.ip_address,
         user_agent: req.user_agent,
     };
-    let ttl = state.config.sso_absolute_ttl().as_secs();
     let tenant =
         require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let outcome = state
@@ -341,9 +342,10 @@ pub async fn portal_login_complete(
         PortalLoginOutcome::Success {
             sso_session_id,
             user_language,
+            sso_absolute_ttl_secs,
         } => InternalPortalPasskeyLoginCompleteResponse::Success {
             sso_session_id,
-            sso_absolute_ttl_secs: ttl,
+            sso_absolute_ttl_secs,
             user_language,
         },
         PortalLoginOutcome::PasskeyChallengeNotFound => {

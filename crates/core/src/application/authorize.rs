@@ -14,9 +14,10 @@ use crate::application::audit::RequestContext;
 use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
 use crate::application::sso_restore::SsoRestorer;
 use crate::application::tenant_resolution::TenantResolutionService;
+use crate::domain::access_decision_settings::AccessDecisionSettings;
 use crate::domain::auth_session::{self, AuthSession};
 use crate::domain::authentication_policy::{
-    evaluate_policies, AuthenticationContext, DefaultPolicyEffect, PolicyDecision,
+    evaluate_policies, AuthenticationContext, PolicyDecision,
 };
 use crate::domain::client::Client;
 use crate::domain::clock::Clock;
@@ -93,11 +94,18 @@ pub enum ResumeOutcome {
     Redirect {
         location: String,
         form_post: Option<Vec<(String, String)>>,
+        /// 復元した SSO セッションの絶対期限までの長さ（秒）。web が Cookie を発行し直すときの
+        /// `Max-Age`（ADR-0058）。
+        sso_absolute_ttl_secs: u64,
     },
     /// リクエスト続行不可（`prompt=none` で未ログイン・未同意など）。エラー付き RP URL へ 302。
     ErrorRedirect { location: String },
     /// SSO 有効だが同意が必要。web は `auth_session_id` を Cookie 化して `/consent` へ。
-    ConsentRequired { auth_session_id: String },
+    ConsentRequired {
+        auth_session_id: String,
+        /// `Redirect` と同じ（復元した SSO セッションの絶対期限までの長さ）。
+        sso_absolute_ttl_secs: u64,
+    },
     /// 認証が必要。web は `auth_session_id` を Cookie 化してログインフォームを表示する。
     LoginRequired { auth_session_id: String },
     /// SSO は復元できたが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
@@ -163,7 +171,8 @@ pub struct AuthorizeService {
     /// 認証ポリシーの宛先（`conditions.application_ids`）を解決する（ADR-0054）。
     /// フローが持っているのは `client_id` だけなので、アプリへの読み替えをここで挟む。
     applications: Arc<ApplicationAccessService>,
-    policy_default_effect: DefaultPolicyEffect,
+    /// 一致するポリシーが無い場合の既定動作（AP2）。テナントの値を参照のたびに引く（ADR-0058 §4）。
+    access_settings: Arc<dyn AccessDecisionSettings>,
     /// ログイン画面へ出すテナント表示名の引き当て先（`login_context` でのみ使う）。
     /// リポジトリを直に持たず解決サービスを通すのは、同じ行を同じリクエストの入口
     /// （`TenantResolver`）が既に引いており、その TTL キャッシュに相乗りするためである。
@@ -182,7 +191,7 @@ impl AuthorizeService {
         auth_session_ttl: std::time::Duration,
         authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
         applications: Arc<ApplicationAccessService>,
-        policy_default_effect: DefaultPolicyEffect,
+        access_settings: Arc<dyn AccessDecisionSettings>,
         tenants: Arc<TenantResolutionService>,
     ) -> Self {
         Self {
@@ -196,7 +205,7 @@ impl AuthorizeService {
                 .expect("auth session TTL out of range"),
             authentication_policies,
             applications,
-            policy_default_effect,
+            access_settings,
             tenants,
         }
     }
@@ -459,6 +468,7 @@ impl AuthorizeService {
                                         ResumeOutcome::Redirect {
                                             location: dispatch.location,
                                             form_post: dispatch.form_post,
+                                            sso_absolute_ttl_secs: restored.absolute_ttl_secs,
                                         }
                                     }
                                     Err(e) => {
@@ -519,7 +529,10 @@ impl AuthorizeService {
                                 };
                             }
                             auth_session_id = rotated_id;
-                            return ResumeOutcome::ConsentRequired { auth_session_id };
+                            return ResumeOutcome::ConsentRequired {
+                                auth_session_id,
+                                sso_absolute_ttl_secs: restored.absolute_ttl_secs,
+                            };
                         }
                         // max_age 超過・ポリシー未充足 → ログインへ（SSO は復元しない）。
                         // prompt=none なら下でエラーになる。
@@ -564,6 +577,14 @@ impl AuthorizeService {
         ctx: &RequestContext,
         now: chrono::DateTime<chrono::Utc>,
     ) -> RestoredPolicy {
+        let default_effect = match self
+            .access_settings
+            .policy_default_effect(tenant.tenant_id())
+            .await
+        {
+            Ok(effect) => effect,
+            Err(e) => return RestoredPolicy::Internal(e.to_string()),
+        };
         let policies = match self
             .authentication_policies
             .list_enabled_for_tenant(tenant.tenant_id())
@@ -591,7 +612,7 @@ impl AuthorizeService {
                 now,
                 requested_acr: &requested_acr,
             },
-            self.policy_default_effect,
+            default_effect,
         );
         let user_verified =
             methods.contains(&crate::domain::values::AuthenticationMethod::WebAuthn);

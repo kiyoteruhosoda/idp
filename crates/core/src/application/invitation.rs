@@ -16,6 +16,7 @@
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::system_settings::SystemSettingsService;
+use crate::application::tenant_settings::TenantSettingsService;
 use crate::domain::admin_actor::AdminActor;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
@@ -78,7 +79,8 @@ pub struct InvitationService {
     mailer: Arc<dyn Mailer>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
-    invitation_ttl: chrono::Duration,
+    /// テナントが上書きできる設定の解決（ADR-0058）。参照のたびに引く。
+    settings: Arc<TenantSettingsService>,
     /// 承諾リンクの土台となる公開ベース URL（web 画面。末尾スラッシュ無し）。
     console_base_url: String,
 }
@@ -94,7 +96,7 @@ impl InvitationService {
         mailer: Arc<dyn Mailer>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
-        invitation_ttl: std::time::Duration,
+        settings: Arc<TenantSettingsService>,
         console_base_url: String,
     ) -> Self {
         Self {
@@ -106,8 +108,7 @@ impl InvitationService {
             mailer,
             audit,
             clock,
-            invitation_ttl: chrono::Duration::from_std(invitation_ttl)
-                .expect("invitation TTL out of range"),
+            settings,
             console_base_url: console_base_url.trim_end_matches('/').to_string(),
         }
     }
@@ -141,7 +142,14 @@ impl InvitationService {
 
         let now = self.clock.now();
         let token = crypto::random_token(INVITATION_TOKEN_BYTES);
-        let expires_at = now + self.invitation_ttl;
+        // 有効期間は招待した参加先テナントの値（招待は参加先のメンバーシップ行。ADR-0058）。
+        // 承諾側は保存した `expires_at` を見るので、発行と検証で値が食い違うことはない。
+        let invitation_ttl = self
+            .settings
+            .invitation_ttl(host_id)
+            .await
+            .map_err(|e| InvitationError::Internal(e.to_string()))?;
+        let expires_at = now + invitation_ttl;
         let membership = TenantMembership {
             tenant_id: host_id,
             user_id: target_user_id,
@@ -899,7 +907,10 @@ mod tests {
             mailer,
             audit,
             Arc::new(FixedClock(now())),
-            std::time::Duration::from_secs(3600),
+            crate::application::tenant_settings::testing::tenant_settings_with_global(&[(
+                "INVITATION_TTL_SECS",
+                "3600",
+            )]),
             "https://idp.example.com".to_string(),
         )
     }
@@ -1224,7 +1235,13 @@ mod tests {
             Arc::new(FakeMailer::default()),
             audit,
             Arc::new(FixedClock(now())),
-            std::time::Duration::from_secs(0),
+            // 全体は 1 時間のまま、招待した参加先だけが 0 秒と決めている（期限の値は参加先のもの）。
+            {
+                let settings = crate::application::tenant_settings::testing::tenant_settings();
+                settings.set_global("INVITATION_TTL_SECS", "3600");
+                settings.set_tenant(host, "INVITATION_TTL_SECS", "0");
+                settings.service
+            },
             "https://idp.example.com".to_string(),
         );
         let created = svc

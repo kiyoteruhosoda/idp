@@ -71,9 +71,28 @@ pub enum SettingKind {
     PublicBaseUrl,
 }
 
+/// 設定の単位 ——IdP 全体で 1 つか、テナントが上書きできるか（ADR-0058 §3）。
+///
+/// 出所（[`SettingOwner`]）とは**直交する軸**である。出所は「値がどこから来るか」、単位は
+/// 「誰の判断か」を表す。判定は 1 つだけで、⚠ **「IdP 全体に 1 つ無いと壊れるか」**（壊れないなら
+/// 降ろす）。「root が握っていたいか」で分けない。
+///
+/// 定義の必須項目にしてあるので、キーを足す人は必ずどちらかを選ぶことになる ——黙って全体のまま
+/// 増えていく形を作らない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingScope {
+    /// IdP 全体で 1 つ。テナントは変えられない（発行者・Cookie・配置・プロセスの振る舞い、
+    /// トークンの寿命。ADR-0058 §5・§7）。
+    Global,
+    /// テナントが上書きできる。⚠ **テナントに行が無いことが「全体に従う」である**（ADR-0058 §2）。
+    TenantOverridable,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SettingDefinition {
     pub key: &'static str,
+    /// 単位（ADR-0058 §3）。テナントの表（`tenant_settings`）に書けるのは `TenantOverridable` だけ。
+    pub scope: SettingScope,
     pub owner: SettingOwner,
     /// api と web の**両方**が消費する値か（MT26 / ADR-0013）。web は DB を持たないため、
     /// `true` かつ `DbManaged` のキーは起動時に api の `/internal/runtime-settings` から
@@ -94,6 +113,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     // `COOKIE_DOMAIN` の検証に使う）。ADR-0017 で `EnvLocked` から DB 管理へ移した。
     SettingDefinition {
         key: "ISSUER",
+        scope: SettingScope::Global,
         shared_with_web: true,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -110,6 +130,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "BIND_ADDR",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::EnvLocked,
         secret: false,
@@ -121,6 +142,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "DATABASE_URL",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::EnvLocked,
         secret: true,
@@ -132,6 +154,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "DB_MAX_CONNECTIONS",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::EnvLocked,
         secret: false,
@@ -143,6 +166,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "LOG_FORMAT",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::EnvLocked,
         secret: false,
@@ -156,6 +180,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     // 取得して解決するため DB 管理できる。反映には api・web 双方の再起動が必要。
     SettingDefinition {
         key: "AUTH_SESSION_TTL_SECS",
+        scope: SettingScope::Global,
         shared_with_web: true,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -169,6 +194,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "AUTHORIZATION_CODE_TTL_SECS",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -180,10 +206,11 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "SSO_IDLE_TTL_SECS",
+        scope: SettingScope::TenantOverridable,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::UnsignedInteger,
         default_value: Some("28800"),
@@ -191,10 +218,11 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "SSO_ABSOLUTE_TTL_SECS",
+        scope: SettingScope::TenantOverridable,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::UnsignedInteger,
         default_value: Some("86400"),
@@ -202,6 +230,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "ACCESS_TOKEN_TTL_SECS",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -213,6 +242,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "MANAGEMENT_TOKEN_TTL_SECS",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -224,6 +254,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "ID_TOKEN_TTL_SECS",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -235,6 +266,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "REFRESH_TOKEN_TTL_SECS",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -247,6 +279,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "CLOCK_SKEW_SECS",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -258,10 +291,11 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "INVITATION_TTL_SECS",
+        scope: SettingScope::TenantOverridable,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::UnsignedInteger,
         default_value: Some("604800"),
@@ -269,10 +303,11 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "PASSWORD_RESET_TTL_SECS",
+        scope: SettingScope::TenantOverridable,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::UnsignedInteger,
         default_value: Some("3600"),
@@ -280,10 +315,11 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "PASSWORD_RESET_CONSOLE_LINK_ENABLED",
+        scope: SettingScope::TenantOverridable,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Review,
         kind: SettingKind::Boolean,
         default_value: Some("true"),
@@ -299,10 +335,11 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "EMAIL_VERIFICATION_TTL_SECS",
+        scope: SettingScope::TenantOverridable,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::UnsignedInteger,
         default_value: Some("86400"),
@@ -310,6 +347,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "TENANT_CACHE_TTL_SECS",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -321,6 +359,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "PERMISSION_CACHE_TTL_SECS",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -335,10 +374,11 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     // 管理コンソールログインの全経路へ一律に適用する。
     SettingDefinition {
         key: "LOGIN_MAX_FAILED_ATTEMPTS",
+        scope: SettingScope::TenantOverridable,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::UnsignedInteger,
         default_value: Some("10"),
@@ -346,10 +386,11 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "LOGIN_LOCK_DURATION_SECS",
+        scope: SettingScope::TenantOverridable,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::UnsignedInteger,
         default_value: Some("900"),
@@ -357,10 +398,11 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "LOGIN_MAX_LOCK_DURATION_SECS",
+        scope: SettingScope::TenantOverridable,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::UnsignedInteger,
         default_value: Some("86400"),
@@ -372,10 +414,11 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     // パスワードを設定する全経路（自己登録・強制変更・セルフサービス変更・リセット）へ一律に効く。
     SettingDefinition {
         key: "PASSWORD_MIN_LENGTH",
+        scope: SettingScope::TenantOverridable,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::UnsignedInteger,
         default_value: Some("8"),
@@ -384,10 +427,11 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "PASSWORD_HISTORY_COUNT",
+        scope: SettingScope::TenantOverridable,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::UnsignedInteger,
         default_value: Some("5"),
@@ -397,10 +441,11 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "PASSWORD_MAX_AGE_DAYS",
+        scope: SettingScope::TenantOverridable,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::UnsignedInteger,
         default_value: Some("0"),
@@ -410,10 +455,11 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "PASSWORD_BREACH_CHECK_ENABLED",
+        scope: SettingScope::TenantOverridable,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::Boolean,
         default_value: Some("false"),
@@ -423,6 +469,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "PASSWORD_BREACH_API_BASE_URL",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -435,6 +482,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "PASSWORD_BREACH_CHECK_TIMEOUT_SECS",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -448,13 +496,14 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     // 認証ポリシー（authentication_policies）が 1 件も一致しないときの既定動作（同仕様 §9.4）。
     SettingDefinition {
         key: "AUTH_POLICY_DEFAULT_EFFECT",
-        // 管理コンソール（AP1）が一覧の上に現在の既定動作を示すため web も読む。ポリシーの意味は
-        // この既定値と組み合わせて初めて決まる（同じ `deny` 1 件でも、既定が allow か deny かで
-        // 「その 1 件だけ止まる」のか「その 1 件以外も止まっている」のかが変わる）。
-        shared_with_web: true,
+        // テナントが決める（ADR-0058 §4）。判定は api が参照のたびにテナントの値を引く。
+        scope: SettingScope::TenantOverridable,
+        // ⚠ web へは配らない（ADR-0058 §10）。管理コンソール（AP1）が一覧の上に既定動作を示すときも、
+        // api の一覧の応答に載せたテナントの値を描く。起動時スナップショットではテナント別に表せない。
+        shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Review,
         kind: SettingKind::Text,
         default_value: Some("allow"),
@@ -464,13 +513,14 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     // アプリの割り当て判定をどこまでやるか（ADR-0054 の段階導入）。
     SettingDefinition {
         key: "APPLICATION_ASSIGNMENT_ENFORCEMENT",
-        // 管理コンソールがアプリ一覧の上に「いまは記録するだけ」を示すため web も読む。
-        // 割り当てのモード（全員 / 個別）はこの値と組み合わせて初めて効き、同じ「個別」でも
-        // 記録するだけの間は誰も断られない。
-        shared_with_web: true,
+        // テナントが決める（ADR-0058 §4）。名簿が整ったテナントから `enforce` へ倒せる。
+        scope: SettingScope::TenantOverridable,
+        // web へは配らない（web のコードは一度も読んでいなかった。ADR-0058 §10）。アプリ一覧の
+        // 「いまは記録するだけ」は api の応答（`enforcement`）に載ったテナントの値で描く。
+        shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Review,
         kind: SettingKind::Text,
         default_value: Some("record_only"),
@@ -485,6 +535,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     // 未設定時の既定は各サービスが**自分の公開オリジンのスキーム**から導く（ADR-0012 §2）。
     SettingDefinition {
         key: "COOKIE_SECURE",
+        scope: SettingScope::Global,
         shared_with_web: true,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -497,6 +548,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "KEY_ENCRYPTION_KEY",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::EnvLocked,
         secret: true,
@@ -509,6 +561,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "KEY_ROTATION_LEAD_DAYS",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -520,6 +573,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "KEY_ROTATION_PUBLISH_LEAD_HOURS",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -533,6 +587,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "APP_LOG_RETENTION_DAYS",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -546,6 +601,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "AUDIT_LOG_RETENTION_DAYS",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -560,6 +616,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "TOKEN_ENDPOINT_MAX_CONCURRENCY",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -574,6 +631,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "TOKEN_ENDPOINT_RATE_LIMIT_MAX_REQUESTS",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -587,6 +645,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "TOKEN_ENDPOINT_RATE_LIMIT_WINDOW_SECS",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -598,6 +657,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "API_DOCS_ENABLED",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -612,6 +672,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "CORS_ALLOWED_ORIGINS",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -628,6 +689,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "EXPIRED_RECORD_PURGE_INTERVAL_SECS",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -642,10 +704,11 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "STEP_UP_MAX_AGE_SECS",
+        scope: SettingScope::TenantOverridable,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::UnsignedInteger,
         default_value: Some("300"),
@@ -656,6 +719,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "BACKCHANNEL_LOGOUT_MAX_ATTEMPTS",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -669,6 +733,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "BACKCHANNEL_LOGOUT_POLL_INTERVAL_SECS",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -681,6 +746,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "BACKCHANNEL_LOGOUT_RETENTION_DAYS",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -693,6 +759,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "TRUST_FORWARDED_HEADERS",
+        scope: SettingScope::Global,
         // web も同じゲートを使う（SEC1）。ADR-0018 以降ログインの入口は web で、web が組み立てた
         // IP がボディで api のレートリミッタ・監査ログへ渡る。web だけがヘッダを無条件に信じると
         // api 側のゲートがログイン経路で迂回される（IP レート制限の回避・監査ログの汚染）。
@@ -710,6 +777,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     // api/web の security header を一致させる必要がある共有キー（MT26 / ADR-0013）。
     SettingDefinition {
         key: "HSTS_MAX_AGE",
+        scope: SettingScope::Global,
         shared_with_web: true,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -722,6 +790,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "INTERNAL_SERVICE_TOKEN",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::EnvLocked,
         secret: true,
@@ -733,6 +802,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     },
     SettingDefinition {
         key: "CSRF_SECRET",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::EnvLocked,
         secret: true,
@@ -746,6 +816,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     // 絶対 URL 生成に使う）で同一値必須のため EnvLocked（ADR-0012 §2。DbManaged から変更）。
     SettingDefinition {
         key: "PUBLIC_WEB_BASE_URL",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::EnvLocked,
         secret: false,
@@ -762,6 +833,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     // api/web の Cookie 掃除挙動を一致させる必要があるため EnvLocked（ADR-0012 §2）。
     SettingDefinition {
         key: "COOKIE_DOMAIN",
+        scope: SettingScope::Global,
         shared_with_web: false,
         owner: SettingOwner::EnvLocked,
         secret: false,
@@ -798,6 +870,52 @@ pub fn is_shared_with_web(key: &str) -> bool {
     runtime_setting_definition(key)
         .map(|def| def.shared_with_web && !def.secret)
         .unwrap_or(false)
+}
+
+/// テナントが上書きできるキーの一覧（ADR-0058 §3）。
+pub fn tenant_overridable_setting_keys() -> impl Iterator<Item = &'static str> {
+    RUNTIME_SETTING_DEFINITIONS
+        .iter()
+        .filter(|def| def.scope == SettingScope::TenantOverridable)
+        .map(|def| def.key)
+}
+
+/// 指定キーをテナントが上書きできるか。⚠ 定義に無いキーは `false`（綴り違いを通さない）。
+pub fn is_tenant_overridable(key: &str) -> bool {
+    runtime_setting_definition(key)
+        .map(|def| def.scope == SettingScope::TenantOverridable)
+        .unwrap_or(false)
+}
+
+/// 保存しようとしている値が、そのキーの型（[`SettingKind`]）として妥当かを検証する。
+///
+/// 全体（`system_settings`）とテナント（`tenant_settings`。ADR-0058）の**両方の保存がここを通る**。
+/// 片方だけ規則を変えると、全体には保存できるのにテナントには保存できない値が生まれる。
+///
+/// 空文字列は「上書きの解除」として呼び出し側が扱うので、ここへは渡さない。
+pub fn validate_setting_value(def: &SettingDefinition, value: &str) -> Result<(), String> {
+    let key = def.key;
+    match def.kind {
+        SettingKind::UnsignedInteger => {
+            // `Config` 側の最小の消費型（`KEY_ROTATION_LEAD_DAYS` 等の u32）でも必ずパースできるよう、
+            // u32 の範囲で検証する（範囲外を保存すると再起動が構成エラーで失敗するため）。
+            value.parse::<u32>().map(|_| ()).map_err(|_| {
+                format!(
+                    "setting {key} must be a non-negative integer (max {})",
+                    u32::MAX
+                )
+            })
+        }
+        SettingKind::Boolean => {
+            if value == "true" || value == "false" {
+                Ok(())
+            } else {
+                Err(format!("setting {key} must be true or false"))
+            }
+        }
+        SettingKind::Text => Ok(()),
+        SettingKind::PublicBaseUrl => validate_public_base_url(key, value),
+    }
 }
 
 /// 公開ベース URL（[`SettingKind::PublicBaseUrl`]）として妥当かを検証する。
@@ -950,6 +1068,111 @@ mod tests {
 
     /// web と共有するキーは DB 上書きを受け付けられなければ意味が無い（`EnvLocked` のまま
     /// `shared_with_web` を立てると、api は DB 値を無視するのに web へは配れる、という不整合になる）。
+    #[test]
+    fn tenant_overridable_keys_are_db_managed_and_not_secret() {
+        // テナントが上書きできるなら、全体の値も画面から変えられるべきである。`EnvLocked` を降ろすと
+        // 「全体は ENV でしか変えられないのに、テナントは画面で変えられる」という逆転が起きる。
+        // secret は復号の口が別に要る（ADR-0058 §8 の SMTP）。
+        for key in tenant_overridable_setting_keys() {
+            let def = runtime_setting_definition(key).unwrap();
+            assert_eq!(def.owner, SettingOwner::DbManaged, "{key}");
+            assert!(!def.secret, "{key}");
+        }
+    }
+
+    /// テナントが上書きできるキーは参照のたびに引く（ADR-0058 §9）ので、再起動なしで効く。
+    /// ⚠ ここを true に戻すと、設定画面は「再起動待ち」を出し続ける（実際には効いているのに）。
+    /// 逆に、再起動しないと効かないキーがあるなら、その消費側はまだ `Config` を読んでいる。
+    #[test]
+    fn tenant_overridable_keys_take_effect_without_a_restart() {
+        for key in tenant_overridable_setting_keys() {
+            let def = runtime_setting_definition(key).unwrap();
+            assert!(!def.restart_required, "{key}");
+        }
+    }
+
+    /// ⚠ テナントが上書きできるキーを web へ配らない（ADR-0058 §10）。web が受け取るのは api の
+    /// 起動時スナップショット 1 本で（ADR-0013）、テナントごとに違う値はそこに表せない。
+    #[test]
+    fn tenant_overridable_keys_are_not_shared_with_web() {
+        for key in tenant_overridable_setting_keys() {
+            assert!(!is_shared_with_web(key), "{key}");
+        }
+    }
+
+    /// ⚠ トークンの寿命はテナントが変えられない（ADR-0058 §7）。300 秒は「権限を剥奪してから
+    /// 効くまでの上限」の根拠であり（ADR-0056）、緩める口を作らない。
+    #[test]
+    fn token_lifetimes_stay_with_the_whole_idp() {
+        for key in [
+            "ACCESS_TOKEN_TTL_SECS",
+            "ID_TOKEN_TTL_SECS",
+            "REFRESH_TOKEN_TTL_SECS",
+            "MANAGEMENT_TOKEN_TTL_SECS",
+            "AUTHORIZATION_CODE_TTL_SECS",
+        ] {
+            assert!(!is_tenant_overridable(key), "{key}");
+        }
+    }
+
+    /// 降ろすと壊れるキーは全体のまま（ADR-0058 §5）。発行と失効で同じ値であることが安全の根拠に
+    /// なっているもの、テナントを解決する前に要るもの、api と web で揃っていないと静かに壊れるもの。
+    /// ⚠ テナント解決のキャッシュの寿命をテナントの設定にすると、テナントが自分の解決を止められる。
+    #[test]
+    fn keys_that_break_when_split_stay_with_the_whole_idp() {
+        for key in [
+            "ISSUER",
+            "COOKIE_SECURE",
+            "COOKIE_DOMAIN",
+            "HSTS_MAX_AGE",
+            "PUBLIC_WEB_BASE_URL",
+            "AUTH_SESSION_TTL_SECS",
+            "TENANT_CACHE_TTL_SECS",
+            "DATABASE_URL",
+            "KEY_ENCRYPTION_KEY",
+        ] {
+            assert!(!is_tenant_overridable(key), "{key}");
+        }
+    }
+
+    /// 判定そのものを決める 2 キーはテナントが決め、参照のたびに引く（ADR-0058 §4・§9）。
+    /// `restart_required` を立てたままにすると、画面は「再起動が要る」と言うのに実際は再起動を
+    /// 待たずに効く ——運用者が値を変えてから再起動までの間を「まだ効いていない」と誤読する。
+    #[test]
+    fn decision_keys_are_decided_by_the_tenant_without_a_restart() {
+        for key in [
+            "AUTH_POLICY_DEFAULT_EFFECT",
+            "APPLICATION_ASSIGNMENT_ENFORCEMENT",
+        ] {
+            let def = runtime_setting_definition(key).unwrap();
+            assert_eq!(def.scope, SettingScope::TenantOverridable, "{key}");
+            assert!(!def.shared_with_web, "{key}");
+            assert!(!def.restart_required, "{key}");
+        }
+    }
+
+    /// 定義に無いキーは上書きできない（綴り違いを「黙って無視される行」にしない）。
+    #[test]
+    fn unknown_keys_are_not_tenant_overridable() {
+        assert!(!is_tenant_overridable("PASSWORD_MIN_LENGHT"));
+    }
+
+    #[test]
+    fn setting_values_are_checked_against_their_kind() {
+        let integer = runtime_setting_definition("PASSWORD_MIN_LENGTH").unwrap();
+        assert!(validate_setting_value(integer, "12").is_ok());
+        assert!(validate_setting_value(integer, "-1").is_err());
+        assert!(validate_setting_value(integer, "twelve").is_err());
+
+        let boolean = runtime_setting_definition("PASSWORD_BREACH_CHECK_ENABLED").unwrap();
+        assert!(validate_setting_value(boolean, "true").is_ok());
+        assert!(validate_setting_value(boolean, "yes").is_err());
+
+        let url = runtime_setting_definition("ISSUER").unwrap();
+        assert!(validate_setting_value(url, "https://idp.example.com").is_ok());
+        assert!(validate_setting_value(url, "idp.example.com").is_err());
+    }
+
     #[test]
     fn shared_with_web_keys_are_db_managed_and_not_secret() {
         for def in RUNTIME_SETTING_DEFINITIONS

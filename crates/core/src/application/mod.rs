@@ -2,6 +2,7 @@
 //!
 //! ドメイン層のトレイトを介して Infrastructure に依存する（具象に直接依存しない）。
 
+pub mod access_decision_settings;
 pub mod account_language;
 pub mod account_password;
 pub mod account_profile;
@@ -61,6 +62,7 @@ pub mod stop_announcement;
 pub mod system_settings;
 pub mod tenant_management;
 pub mod tenant_resolution;
+pub mod tenant_settings;
 pub mod token;
 pub mod totp_registration;
 pub mod user_lifecycle;
