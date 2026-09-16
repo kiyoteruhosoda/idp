@@ -85,7 +85,8 @@ impl EmailVerificationService {
         ctx: &RequestContext,
     ) -> bool {
         // SMTP 未設定なら送れない（アカウントは作成済み。検証は後追いで行える）。
-        let server = match self.system_settings.smtp_server().await {
+        // 送るのは検証するテナントの経路（ADR-0058 §8。持っていなければ全体の経路）。
+        let server = match self.system_settings.smtp_server_for(tenant_id).await {
             Ok(Some(server)) => server,
             Ok(None) => return false,
             Err(e) => {
@@ -479,6 +480,7 @@ mod tests {
         let audit = Arc::new(AuditService::new(sink.clone(), Arc::new(FixedClock)));
         let system_settings = Arc::new(SystemSettingsService::new(
             settings_repo,
+            Arc::new(crate::application::system_settings::NoTenantSettings),
             TEST_KEY,
             DeploymentState::default(),
             audit.clone(),

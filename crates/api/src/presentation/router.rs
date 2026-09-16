@@ -7,9 +7,9 @@ use crate::presentation::handlers::{
     admin_client_permissions, admin_clients, admin_external_idps, admin_invitations,
     admin_login_identifiers, admin_members, admin_permissions, admin_resources, admin_restart,
     admin_saml_service_providers, admin_signing_keys, admin_system_settings, admin_tenant_settings,
-    admin_tenants, admin_users, authorize, consent, discovery, health, internal_admin_token,
-    internal_auth, internal_runtime_settings, introspect, invitations, logout, mfa, passkey,
-    register, revoke, saml_sso, token, userinfo,
+    admin_tenant_smtp, admin_tenants, admin_users, authorize, consent, discovery, health,
+    internal_admin_token, internal_auth, internal_runtime_settings, introspect, invitations,
+    logout, mfa, passkey, register, revoke, saml_sso, token, userinfo,
 };
 use crate::presentation::openapi::ApiDoc;
 use crate::presentation::security_headers::add_security_headers;
@@ -339,8 +339,15 @@ pub fn build(state: AppState) -> Router {
                 .put(admin_system_settings::update_system_settings),
         )
         // ランタイム設定の DB 上書き（DB_MANAGED キーのみ。idp.system.admin 必須）。
-        // SMTP だけの口（ADR-0051）。保護は `idp.smtp:read` / `:write` で、システム設定の
+        // 全体の SMTP だけの口（ADR-0051）。保護は `idp.smtp:read` / `:write` で、システム設定の
         // 本体（上の 1 本）とは別の権限。⚠ **root テナントでのみ通る。**
+        // テナント自身の経路は `/admin/settings/smtp`（ADR-0058 §8。同じ権限・どのテナントでも通る）。
+        .route(
+            "/admin/settings/smtp",
+            get(admin_tenant_smtp::get_tenant_smtp)
+                .put(admin_tenant_smtp::update_tenant_smtp)
+                .delete(admin_tenant_smtp::clear_tenant_smtp),
+        )
         .route(
             "/admin/system-settings/smtp",
             get(admin_system_settings::get_smtp_settings)
