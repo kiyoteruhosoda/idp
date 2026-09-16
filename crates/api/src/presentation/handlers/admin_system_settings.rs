@@ -5,16 +5,17 @@
 //! 管理者だけになる（ADR-0009 §4）。SMTP パスワードは暗号化して保存し、参照時は平文を返さない
 //! （設定済みか否かのみ）。
 
+use crate::application::tenant_settings::TenantSettingAdoption;
 use crate::config::{ResolvedSetting, SettingSafetyStatus, SettingSource};
 use crate::domain::error::DomainError;
 use crate::domain::system_setting::{
-    is_shared_with_web, DefaultRisk, SettingOwner, SmsSettingsView, SmtpSettingsView,
-    UpdateSmsCommand, UpdateSmtpCommand,
+    is_shared_with_web, is_tenant_overridable, DefaultRisk, SettingOwner, SmsSettingsView,
+    SmtpSettingsView, UpdateSmsCommand, UpdateSmtpCommand,
 };
 use crate::presentation::admin::{IdpSystemAdmin, RequirePerms, SmtpRead, SmtpWrite};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
-    RuntimeSettingResponse, SmtpSettingsResponse, SystemSettingsResponse,
+    RuntimeSettingResponse, SmtpSettingsResponse, SystemSettingsResponse, TenantOverrideResponse,
     UpdateRuntimeSettingRequest, UpdateSmtpSettingsRequest, UpdateSystemSettingsRequest,
 };
 use crate::presentation::error::ApiError;
@@ -57,11 +58,13 @@ pub async fn get_system_settings(
         .runtime_overrides()
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let adoption = tenant_adoption(&state).await?;
     Ok(Json(to_response(
         smtp,
         sms,
         state.config.resolved_settings(),
         &overrides,
+        &adoption,
     )))
 }
 
@@ -138,11 +141,13 @@ pub async fn update_runtime_setting(
         .runtime_overrides()
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let adoption = tenant_adoption(&state).await?;
     Ok(Json(to_response(
         smtp,
         sms,
         state.config.resolved_settings(),
         &overrides,
+        &adoption,
     )))
 }
 
@@ -210,11 +215,13 @@ pub async fn update_system_settings(
         .runtime_overrides()
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let adoption = tenant_adoption(&state).await?;
     Ok(Json(to_response(
         updated,
         sms,
         state.config.resolved_settings(),
         &overrides,
+        &adoption,
     )))
 }
 
@@ -322,11 +329,25 @@ fn to_smtp_response(smtp: SmtpSettingsView) -> SmtpSettingsResponse {
     }
 }
 
+/// テナントが上書きできる各キーについて、従っているテナントの件数と外れているテナント（ADR-0058 §6）。
+///
+/// ⚠ テナントをまたいで読む。`idp.system.admin` の口（本モジュールの全体設定）からだけ呼ぶ。
+async fn tenant_adoption(
+    state: &AppState,
+) -> Result<HashMap<&'static str, TenantSettingAdoption>, ApiError> {
+    state
+        .tenant_settings
+        .adoption_across_tenants()
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))
+}
+
 fn to_response(
     smtp: SmtpSettingsView,
     sms: SmsSettingsView,
     runtime: &[ResolvedSetting],
     db_overrides: &HashMap<String, String>,
+    adoption: &HashMap<&'static str, TenantSettingAdoption>,
 ) -> SystemSettingsResponse {
     SystemSettingsResponse {
         smtp_host: smtp.host,
@@ -341,7 +362,7 @@ fn to_response(
         sms_sender_id: sms.sender_id,
         runtime_settings: runtime
             .iter()
-            .map(|s| to_runtime_response(s, db_overrides.get(&s.key)))
+            .map(|s| to_runtime_response(s, db_overrides.get(&s.key), adoption.get(s.key.as_str())))
             .collect(),
     }
 }
@@ -349,6 +370,7 @@ fn to_response(
 fn to_runtime_response(
     setting: &ResolvedSetting,
     db_value: Option<&String>,
+    adoption: Option<&TenantSettingAdoption>,
 ) -> RuntimeSettingResponse {
     RuntimeSettingResponse {
         key: setting.key.clone(),
@@ -391,5 +413,19 @@ fn to_runtime_response(
         // `ResolvedSetting::is_pending_restart` が単一の出所（上書きの解除も未反映に含む）。
         pending_restart: setting.is_pending_restart(db_value.map(String::as_str)),
         shared_with_web: is_shared_with_web(&setting.key),
+        tenant_overridable: is_tenant_overridable(&setting.key),
+        tenants_following: adoption.map(|a| a.following),
+        tenants_overriding: adoption
+            .map(|a| {
+                a.overriding
+                    .iter()
+                    .map(|entry| TenantOverrideResponse {
+                        tenant_id: entry.tenant_id.to_string(),
+                        tenant_name: entry.tenant_name.clone(),
+                        value: entry.value.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
     }
 }

@@ -51,6 +51,73 @@
   </div>
 </div>
 
+
+{#- テナントの設定値（ADR-0058）。項目は api が返す定義から並べる（web は項目を知らない）。
+    ⚠ 値だけを見せない: 「全体の値に従っている」か「このテナントで決めた」かと、全体の値を必ず並べる。
+    「全体の値に戻す」は行を消す操作で、同じ値を書き込むのとは違う（以後は全体の変更に追随する）。 -#}
+{% if let Some(values) = tenant_settings %}
+<div class="card mb-4 admin-settings-tenant-values" id="tenant-values">
+  <div class="card-header d-flex align-items-center"><i class="fa-solid fa-sliders me-2" aria-hidden="true"></i>{{ messages.get("admin-tenant-values-heading") }}</div>
+  <div class="card-body">
+    <p class="text-muted small">{{ messages.get("admin-tenant-values-lead") }}</p>
+    <ul class="list-group list-group-flush">
+      {% for item in values.settings %}
+      <li class="list-group-item px-0 py-3" id="tenant-value-{{ item.key }}">
+        <div class="d-flex flex-wrap align-items-center gap-2 mb-1">
+          <span class="fw-semibold">{{ self.setting_label(item.key) }}</span>
+          {% if item.is_tenant_override() %}
+          <span class="badge text-bg-primary">{{ messages.get("admin-tenant-values-origin-override") }}</span>
+          {% else %}
+          <span class="badge text-bg-secondary">{{ messages.get("admin-tenant-values-origin-inherited") }}</span>
+          {% endif %}
+        </div>
+        <div class="small text-muted"><code>{{ item.key }}</code></div>
+        {% if !item.description.is_empty() %}<div class="small text-muted mt-1">{{ item.description }}</div>{% endif %}
+        <dl class="row small mt-2 mb-2">
+          <dt class="col-5 col-sm-3">{{ messages.get("admin-tenant-values-current") }}</dt>
+          <dd class="col-7 col-sm-9 mb-1"><code>{{ self.value_label(item, item.value) }}</code></dd>
+          <dt class="col-5 col-sm-3">{{ messages.get("admin-tenant-values-whole") }}</dt>
+          <dd class="col-7 col-sm-9 mb-0"><code>{{ self.value_label(item, item.whole_idp_value) }}</code></dd>
+        </dl>
+        <form method="post" action="{{ tenant }}/admin/settings/tenant/keys" class="d-flex flex-wrap gap-2 align-items-center">
+          <input type="hidden" name="csrf_token" value="{{ csrf }}">
+          <input type="hidden" name="key" value="{{ item.key }}">
+          <label class="visually-hidden" for="tenant-value-input-{{ item.key }}">{{ self.setting_label(item.key) }}</label>
+          {% if item.kind == "BOOLEAN" %}
+          <select class="form-select form-select-sm w-auto" id="tenant-value-input-{{ item.key }}" name="value">
+            <option value="true" {% if item.value == "true" %}selected{% endif %}>{{ messages.get("admin-tenant-values-true") }}</option>
+            <option value="false" {% if item.value == "false" %}selected{% endif %}>{{ messages.get("admin-tenant-values-false") }}</option>
+          </select>
+          {% else if item.kind == "CHOICE" %}
+          <select class="form-select form-select-sm w-auto" id="tenant-value-input-{{ item.key }}" name="value">
+            {% for choice in item.choices %}
+            <option value="{{ choice.value }}" {% if item.value == choice.value %}selected{% endif %}>{{ choice.value }}{% if choice.locks_out %}（{{ messages.get("admin-tenant-values-choice-locks-out") }}）{% endif %}</option>
+            {% endfor %}
+          </select>
+          {% else if item.kind == "UNSIGNED_INTEGER" %}
+          <input type="number" class="form-control form-control-sm w-auto" id="tenant-value-input-{{ item.key }}" name="value" min="0" inputmode="numeric" value="{{ item.value }}" required>
+          {% else %}
+          <input type="text" class="form-control form-control-sm w-auto" id="tenant-value-input-{{ item.key }}" name="value" value="{{ item.value }}" required>
+          {% endif %}
+          <button type="submit" class="btn btn-sm btn-primary">{{ messages.get("admin-tenant-values-save") }}</button>
+        </form>
+        {% if item.is_tenant_override() %}
+        <form method="post" action="{{ tenant }}/admin/settings/tenant/keys/clear" class="mt-2">
+          <input type="hidden" name="csrf_token" value="{{ csrf }}">
+          <input type="hidden" name="key" value="{{ item.key }}">
+          <button type="submit" class="btn btn-sm btn-outline-secondary">{{ messages.get("admin-tenant-values-clear") }}</button>
+          <div class="form-text">{{ messages.get("admin-tenant-values-clear-hint") }}</div>
+        </form>
+        {% else %}
+        <div class="form-text">{{ messages.get("admin-tenant-values-inherited-hint") }}</div>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+{% endif %}
+
 {% if let Some(sys) = system %}
 <div class="card mb-4 admin-settings-system" id="system-settings">
   <div class="card-header d-flex align-items-center"><i class="fa-solid fa-envelope me-2" aria-hidden="true"></i>{{ messages.get("admin-settings-system-heading") }}</div>
@@ -139,6 +206,26 @@
               {% if !item.description.is_empty() %}<div class="text-muted small mt-1">{{ item.description }}</div>{% endif %}
               {% if item.restart_required %}<div class="form-text">{% if item.shared_with_web %}{{ messages.get("admin-settings-runtime-restart-required-both") }}{% else %}{{ messages.get("admin-settings-runtime-restart-required") }}{% endif %}</div>{% endif %}
               {% if item.pending_restart %}<div class="mt-1"><span class="badge text-bg-warning">{{ messages.get("admin-settings-runtime-pending") }}</span></div>{% endif %}
+              {#- テナントが上書きできるキー（ADR-0058 §6）。全体の値は既定であって下限ではないので干渉は
+                  しないが、変更の影響範囲（従っているテナント・外れているテナント）は見えるようにする。 -#}
+              {% if item.tenant_overridable %}
+              <div class="small mt-2 admin-settings-runtime-tenants">
+                <span class="badge text-bg-info">{{ messages.get("admin-settings-runtime-tenant-overridable") }}</span>
+                {% if let Some(following) = item.tenants_following %}
+                <div class="mt-1">{{ messages.get_arg("admin-settings-runtime-tenants-following", "count", following.to_string().as_str()) }}</div>
+                {% endif %}
+                {% if !item.tenants_overriding.is_empty() %}
+                <details class="mt-1">
+                  <summary>{{ messages.get_arg("admin-settings-runtime-tenants-overriding", "count", item.tenants_overriding.len().to_string().as_str()) }}</summary>
+                  <ul class="mb-0 ps-3">
+                    {% for other in item.tenants_overriding %}
+                    <li>{{ other.tenant_name }}: <code>{{ other.value }}</code></li>
+                    {% endfor %}
+                  </ul>
+                </details>
+                {% endif %}
+              </div>
+              {% endif %}
             </td>
             <td data-label="{{ messages.get("admin-settings-runtime-col-value") }}">
               {% if item.secret %}

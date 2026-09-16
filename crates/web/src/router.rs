@@ -267,6 +267,15 @@ pub fn build(state: WebState) -> Router {
             "/admin/settings/tenant",
             post(admin_settings::update_tenant),
         )
+        // テナントの設定値（ADR-0058）。
+        .route(
+            "/admin/settings/tenant/keys",
+            post(admin_settings::update_tenant_setting),
+        )
+        .route(
+            "/admin/settings/tenant/keys/clear",
+            post(admin_settings::clear_tenant_setting),
+        )
         .route(
             "/admin/system-settings",
             post(admin_settings::update_system),

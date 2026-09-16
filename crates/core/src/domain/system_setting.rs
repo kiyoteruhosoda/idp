@@ -69,6 +69,33 @@ pub enum SettingKind {
     Text,
     /// サービスの公開ベース URL（`ISSUER` 等）。スキームとホストを持つ絶対 URL であること。
     PublicBaseUrl,
+    /// 決まった値の中から 1 つ選ぶ。選択肢に無い値は保存の時点で断る（保存できても次の起動で
+    /// `Config` が落ちるため）。
+    Choice(&'static [SettingChoice]),
+}
+
+/// [`SettingKind::Choice`] の選択肢 1 つ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SettingChoice {
+    pub value: &'static str,
+    /// この値にすると、そのテナント（全体なら全テナント）の利用者を締め出し得るか。
+    ///
+    /// `true` の値へ倒すときは**保存の前に確認を挟む**（ADR-0058。#63 と同じ轍を踏まない）。
+    /// 確認の要否はキー名で分岐させず、ここだけを見て決める ——キーを足す人が選択肢を書いた時点で、
+    /// 画面と API の確認が付いてくる。
+    pub locks_out: bool,
+}
+
+impl SettingDefinition {
+    /// `value` へ変えるとき、保存の前に確認を挟むべきか（定義の [`SettingChoice::locks_out`] だけで決める）。
+    pub fn needs_confirmation(&self, value: &str) -> bool {
+        match self.kind {
+            SettingKind::Choice(choices) => choices
+                .iter()
+                .any(|choice| choice.value == value && choice.locks_out),
+            _ => false,
+        }
+    }
 }
 
 /// 設定の単位 ——IdP 全体で 1 つか、テナントが上書きできるか（ADR-0058 §3）。
@@ -505,7 +532,10 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         secret: false,
         restart_required: false,
         default_risk: DefaultRisk::Review,
-        kind: SettingKind::Text,
+        kind: SettingKind::Choice(&[
+            SettingChoice { value: "allow", locks_out: false },
+            SettingChoice { value: "deny", locks_out: true },
+        ]),
         default_value: Some("allow"),
         description: "認証ポリシーが 1 件も一致しない場合の既定動作（`allow` / `deny`）。`deny` にすると\
                       許可ポリシーを明示したクライアント・ユーザーしかログインできなくなるため注意。",
@@ -522,7 +552,10 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         secret: false,
         restart_required: false,
         default_risk: DefaultRisk::Review,
-        kind: SettingKind::Text,
+        kind: SettingKind::Choice(&[
+            SettingChoice { value: "record_only", locks_out: false },
+            SettingChoice { value: "enforce", locks_out: true },
+        ]),
         default_value: Some("record_only"),
         description: "アプリの利用者割り当ての判定をどこまでやるか（`record_only` / `enforce`）。\
                       `record_only` は判定を走らせるが断らず、「割り当てが無いのに来た人」を監査ログ\
@@ -915,6 +948,17 @@ pub fn validate_setting_value(def: &SettingDefinition, value: &str) -> Result<()
         }
         SettingKind::Text => Ok(()),
         SettingKind::PublicBaseUrl => validate_public_base_url(key, value),
+        SettingKind::Choice(choices) => {
+            if choices.iter().any(|choice| choice.value == value) {
+                Ok(())
+            } else {
+                let allowed: Vec<&str> = choices.iter().map(|choice| choice.value).collect();
+                Err(format!(
+                    "setting {key} must be one of: {}",
+                    allowed.join(", ")
+                ))
+            }
+        }
     }
 }
 
@@ -1171,6 +1215,45 @@ mod tests {
         let url = runtime_setting_definition("ISSUER").unwrap();
         assert!(validate_setting_value(url, "https://idp.example.com").is_ok());
         assert!(validate_setting_value(url, "idp.example.com").is_err());
+
+        // 選択肢に無い値は保存させない（保存できても次の起動で `Config` が落ちる）。
+        let choice = runtime_setting_definition("AUTH_POLICY_DEFAULT_EFFECT").unwrap();
+        assert!(validate_setting_value(choice, "deny").is_ok());
+        assert!(validate_setting_value(choice, "denyy").is_err());
+    }
+
+    /// 締め出し得る値（ポリシーの既定を deny・割り当てを enforce）は、定義の側から確認の要否が
+    /// 読める。キー名で分岐させないので、キーの単位を変えても確認は付いてくる。
+    #[test]
+    fn values_that_can_lock_people_out_need_confirmation() {
+        let effect = runtime_setting_definition("AUTH_POLICY_DEFAULT_EFFECT").unwrap();
+        assert!(effect.needs_confirmation("deny"));
+        assert!(!effect.needs_confirmation("allow"));
+
+        let enforcement = runtime_setting_definition("APPLICATION_ASSIGNMENT_ENFORCEMENT").unwrap();
+        assert!(enforcement.needs_confirmation("enforce"));
+        assert!(!enforcement.needs_confirmation("record_only"));
+
+        // 選択肢でないキーは確認を挟まない。
+        let integer = runtime_setting_definition("PASSWORD_MIN_LENGTH").unwrap();
+        assert!(!integer.needs_confirmation("0"));
+    }
+
+    /// 選択肢を持つキーの既定値は、選択肢の 1 つで、しかも締め出さない側であること。
+    #[test]
+    fn choice_defaults_are_safe_choices() {
+        for def in RUNTIME_SETTING_DEFINITIONS {
+            let SettingKind::Choice(choices) = def.kind else {
+                continue;
+            };
+            let default = def.default_value.expect("a choice needs a default");
+            assert!(
+                choices.iter().any(|c| c.value == default),
+                "{}: default {default} is not a choice",
+                def.key
+            );
+            assert!(!def.needs_confirmation(default), "{}", def.key);
+        }
     }
 
     #[test]

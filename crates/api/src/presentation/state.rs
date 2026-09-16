@@ -331,6 +331,8 @@ impl AppState {
         let login_identifier_repository: Arc<
             dyn crate::domain::repositories::UserLoginIdentifierRepository,
         > = Arc::new(SqlxUserLoginIdentifierRepository::new(pool.clone()));
+        // 監査はテナント設定の書き込み（#111）も使うので、テナント設定より先に組み立てる。
+        let audit = Arc::new(AuditService::new(audit_sink, clock.clone()));
         // テナント設定の解決（ADR-0058）。テナントの行と全体の行は参照のたびに引き、テナント解決と
         // 同じ寿命の TTL キャッシュで抑える。⚠ キャッシュの寿命そのものをテナントの設定にしない
         // （テナントが自分の解決を止められてしまう）。環境変数 → 組み込み既定の層は実行中に変わらない
@@ -362,6 +364,7 @@ impl AppState {
                     chrono_from_std(config.tenant_cache_ttl()),
                     clock.clone(),
                 )),
+                audit.clone(),
             ),
         );
 
@@ -401,7 +404,6 @@ impl AppState {
             chrono::Duration::minutes(LOGIN_RATE_LIMIT_WINDOW_MINUTES),
         ));
 
-        let audit = Arc::new(AuditService::new(audit_sink, clock.clone()));
         let saml_service_providers = Arc::new(SamlServiceProviderManagementService::new(
             saml_service_provider_repo.clone(),
             ids.clone(),
