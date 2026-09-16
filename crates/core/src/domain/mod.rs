@@ -58,6 +58,7 @@ pub mod tenant;
 pub mod tenant_context;
 pub mod tenant_domain;
 pub mod tenant_membership;
+pub mod tenant_setting;
 pub mod totp_secret;
 pub mod user;
 pub mod user_authenticator;

@@ -43,6 +43,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "user_password_history",
     "tenant_domains",
     "client_assertion_jtis",
+    "tenant_settings",
 ];
 
 /// 「bearer credential を平文で置いていない」ことを列の形で固定する（SEC6）。

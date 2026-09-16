@@ -596,6 +596,23 @@ impl Config {
     pub fn resolved_settings(&self) -> &[ResolvedSetting] {
         &self.resolved_settings
     }
+
+    /// 全体の値のうち **DB の層を除いたもの**（環境変数 → 組み込み既定）を返す（ADR-0058）。
+    ///
+    /// テナント設定の解決は「テナントの行 → `system_settings` の行 → ここ」の順に落ちる。
+    /// ⚠ **DB の層を起動時のスナップショット（[`Self::resolved_settings`]）から採らない。**
+    /// スナップショットは DB 由来の値と環境変数由来の値を区別せずに持つので、全体の上書きを消した
+    /// とき、再起動するまで消したはずの値へ落ち続ける。テナントへ降ろしたキーは参照のたびに引く
+    /// （ADR-0058 §9）ので、全体の層も同じ速さで追随させる。
+    ///
+    /// 定義に無いキーと secret のキーは `None`（平文を外へ出さない）。
+    pub fn value_without_db(&self, key: &str) -> Option<String> {
+        let def = runtime_setting_definition(key)?;
+        if def.secret {
+            return None;
+        }
+        env_lookup(key).or_else(|| def.default_value.map(str::to_string))
+    }
 }
 
 struct ConfigResolver<'a> {
@@ -1320,5 +1337,82 @@ mod tests {
         let v: bool = env_parse(key, true).unwrap();
         assert!(v);
         std::env::remove_var(key);
+    }
+
+    /// テナントへ降ろしたキーの組み込み既定は **2 か所に書かれている** ——定義の `default_value`
+    /// （テナント設定の解決が最後に落ちる先。ADR-0058）と、`from_env_and_db_settings` の既定の引数。
+    /// ⚠ ずれると、**行の無いテナントだけが全体と違う値で動く**（しかも画面上は既定に見える）。
+    #[test]
+    fn tenant_overridable_defaults_match_the_config_defaults() {
+        let _env = env_guard();
+        let keys: Vec<&str> =
+            crate::domain::system_setting::tenant_overridable_setting_keys().collect();
+        for key in &keys {
+            std::env::remove_var(key);
+        }
+        let config = Config::from_env_and_db_settings(&HashMap::new()).unwrap();
+        let password = config.password_policy();
+        let lockout = config.login_lockout();
+        let from_config: HashMap<&str, String> = HashMap::from([
+            ("PASSWORD_MIN_LENGTH", password.min_length.to_string()),
+            ("PASSWORD_HISTORY_COUNT", password.history_count.to_string()),
+            ("PASSWORD_MAX_AGE_DAYS", password.max_age_days.to_string()),
+            (
+                "PASSWORD_BREACH_CHECK_ENABLED",
+                password.reject_breached.to_string(),
+            ),
+            (
+                "LOGIN_MAX_FAILED_ATTEMPTS",
+                lockout.max_failed_attempts.to_string(),
+            ),
+            (
+                "LOGIN_LOCK_DURATION_SECS",
+                lockout.lock_duration_secs.to_string(),
+            ),
+            (
+                "LOGIN_MAX_LOCK_DURATION_SECS",
+                lockout.max_lock_duration_secs.to_string(),
+            ),
+            (
+                "SSO_IDLE_TTL_SECS",
+                config.sso_idle_ttl().as_secs().to_string(),
+            ),
+            (
+                "SSO_ABSOLUTE_TTL_SECS",
+                config.sso_absolute_ttl().as_secs().to_string(),
+            ),
+            (
+                "STEP_UP_MAX_AGE_SECS",
+                config.step_up_max_age_secs().to_string(),
+            ),
+            (
+                "INVITATION_TTL_SECS",
+                config.invitation_ttl().as_secs().to_string(),
+            ),
+            (
+                "PASSWORD_RESET_TTL_SECS",
+                config.password_reset_ttl().as_secs().to_string(),
+            ),
+            (
+                "EMAIL_VERIFICATION_TTL_SECS",
+                config.email_verification_ttl().as_secs().to_string(),
+            ),
+            (
+                "PASSWORD_RESET_CONSOLE_LINK_ENABLED",
+                config.password_reset_console_link_enabled().to_string(),
+            ),
+        ]);
+        assert_eq!(
+            keys.len(),
+            from_config.len(),
+            "every tenant-overridable key needs a row in this test"
+        );
+        for key in keys {
+            assert_eq!(
+                config.value_without_db(key).as_deref(),
+                from_config.get(key).map(String::as_str),
+                "{key}"
+            );
+        }
     }
 }
