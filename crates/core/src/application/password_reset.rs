@@ -986,6 +986,29 @@ mod tests {
         }
     }
 
+    /// コンソール出力（INFO 以上）を拾いながら `future` を走らせる。
+    ///
+    /// ⚠ **コンソールへリンクを出す経路を通す試験は、必ずこれで包む。** 購読者の無いスレッドが同じ
+    /// `tracing::info!` を先に踏むと、並行に走る別の試験の中でもその呼び出しが「誰も聞いていない」と
+    /// キャッシュされ、出力を拾えなくなる（手元では通り、CI でだけ落ちる）。
+    async fn capture_console<F: std::future::Future>(future: F) -> (F::Output, String) {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::Layer;
+
+        let logs = SharedBuffer::default();
+        let subscriber = tracing_subscriber::registry().with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(logs.clone())
+                .with_filter(tracing_subscriber::EnvFilter::new("info")),
+        );
+        let output = {
+            let _guard = tracing::subscriber::set_default(subscriber);
+            future.await
+        };
+        (output, logs.contents())
+    }
+
     /// 送信メール本文からリセットトークンを取り出す（`token=` 以降を行末まで）。
     fn token_from_mail(mail: &OutgoingEmail) -> String {
         let body = &mail.body_text;
@@ -1049,25 +1072,14 @@ mod tests {
             .unwrap()
             .push(test_user(user, tenant, "admin@example.com"));
 
-        use tracing_subscriber::layer::SubscriberExt;
-        use tracing_subscriber::Layer;
-
-        let logs = SharedBuffer::default();
-        let subscriber = tracing_subscriber::registry().with(
-            tracing_subscriber::fmt::layer()
-                .with_ansi(false)
-                .with_writer(logs.clone())
-                .with_filter(tracing_subscriber::EnvFilter::new("info")),
-        );
-        let outcome = {
-            let _guard = tracing::subscriber::set_default(subscriber);
-            h.svc
-                .request_reset(TenantContext::new(tenant), "admin@example.com", &ctx())
-                .await
-        };
+        let (outcome, printed) = capture_console(h.svc.request_reset(
+            TenantContext::new(tenant),
+            "admin@example.com",
+            &ctx(),
+        ))
+        .await;
         assert!(matches!(outcome, RequestResetOutcome::Accepted));
 
-        let printed = logs.contents();
         let prefix = format!("https://idp.example.com/{tenant}/password-reset?token=");
         assert!(printed.contains(&prefix), "{printed}");
         // 出力は INFO。取り込み層（`telemetry::capture_filter`）は WARN 以上だけを `log` テーブルへ
@@ -1323,16 +1335,23 @@ mod tests {
             .unwrap()
             .push(test_user(Uuid::new_v4(), allows, "a@example.com"));
 
-        assert!(matches!(
-            h.svc
-                .request_reset(TenantContext::new(allows), "a@example.com", &ctx())
-                .await,
-            RequestResetOutcome::Accepted
-        ));
+        let (outcome, printed) = capture_console(h.svc.request_reset(
+            TenantContext::new(allows),
+            "a@example.com",
+            &ctx(),
+        ))
+        .await;
+        assert!(matches!(outcome, RequestResetOutcome::Accepted));
         assert_eq!(
             h.tokens.rows.lock().unwrap().len(),
             1,
             "the link was issued"
+        );
+        assert!(
+            printed.contains(&format!(
+                "https://idp.example.com/{allows}/password-reset?token="
+            )),
+            "{printed}"
         );
         assert!(matches!(
             h.svc
