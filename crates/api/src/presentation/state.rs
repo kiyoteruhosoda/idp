@@ -19,6 +19,7 @@ use crate::application::admin_login::AdminLoginService;
 use crate::application::application_access::ApplicationAccessService;
 use crate::application::application_log::ApplicationLogService;
 use crate::application::application_management::ApplicationManagementService;
+use crate::application::application_user_directory::ApplicationUserDirectoryService;
 use crate::application::audit::AuditService;
 use crate::application::audit_query::AuditQueryService;
 use crate::application::authentication_policy_management::AuthenticationPolicyManagementService;
@@ -91,6 +92,7 @@ use crate::infrastructure::repositories::application::SqlxApplicationRepository;
 use crate::infrastructure::repositories::application_log::{
     SqlxApplicationLogQuery, SqlxApplicationLogSink,
 };
+use crate::infrastructure::repositories::application_user_query::SqlxApplicationUserQuery;
 use crate::infrastructure::repositories::audit_log::{SqlxAuditLogQuery, SqlxAuditLogSink};
 use crate::infrastructure::repositories::auth_session::SqlxAuthSessionRepository;
 use crate::infrastructure::repositories::authentication_policy::SqlxAuthenticationPolicyRepository;
@@ -187,6 +189,9 @@ pub struct AppState {
     pub resources_admin: Arc<ResourceManagementService>,
     /// アプリ（ADR-0054）の登録・binding・利用者の割り当て。
     pub applications_admin: Arc<ApplicationManagementService>,
+    /// アプリの名簿の照会（ADR-0057）。RP の定期照合が読む読み取り専用の経路で、割り当ての変更
+    /// （`applications_admin`）とは関心を分ける。
+    pub application_users: Arc<ApplicationUserDirectoryService>,
     pub admin_login: Arc<AdminLoginService>,
     /// エンドユーザー・ポータルの直接ログイン（クライアント非依存。TOTP を尊重して SSO を直接発行する）。
     pub portal_login: Arc<PortalLoginService>,
@@ -858,6 +863,12 @@ impl AppState {
             clock.clone(),
             ids.clone(),
         ));
+        // アプリの名簿の照会（ADR-0057）。判定（`ApplicationAccessService`）と同じアプリの
+        // 解決経路（`find_by_oidc_client_id`）を通るので、名簿と入口が食い違わない。
+        let application_users = Arc::new(ApplicationUserDirectoryService::new(
+            applications.clone(),
+            Arc::new(SqlxApplicationUserQuery::new(pool.clone())),
+        ));
         // 宛名の登録と、クライアントへの貸し出し（ADR-0042）。発行側（TokenService）と同じ
         // リポジトリ実装を共有するので、登録・剥奪の直後から発行に効く。
         let resources_admin = Arc::new(ResourceManagementService::new(
@@ -1090,6 +1101,7 @@ impl AppState {
             client_permissions_admin,
             resources_admin,
             applications_admin,
+            application_users,
             admin_login,
             portal_login,
             clients_admin,

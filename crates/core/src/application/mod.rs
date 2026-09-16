@@ -13,6 +13,7 @@ pub mod admin_login;
 pub mod application_access;
 pub mod application_log;
 pub mod application_management;
+pub mod application_user_directory;
 pub mod audit;
 pub mod audit_query;
 pub mod authentication_policy_management;

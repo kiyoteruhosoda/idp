@@ -1252,6 +1252,9 @@ api-application-status-invalid = The status must be ACTIVE or DISABLED.
 api-application-assignment-mode-invalid = Who can use it must be EVERYONE or INDIVIDUAL.
 api-application-binding-target-required = Specify exactly one of client_id or service_provider_id.
 api-application-binding-conflict = That connection is already bound to another application.
+api-application-not-bound = No application is bound to that client_id.
+api-application-users-sub-invalid = Each sub must be a UUID.
+api-application-users-too-many-subs = At most { $value } subs can be looked up at once.
 
 # Protected resources (the audience of a token; ADR-0042)
 api-resource-not-found = Resource not found.

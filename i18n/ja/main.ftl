@@ -1252,6 +1252,9 @@ api-application-status-invalid = 状態は ACTIVE または DISABLED を指定�
 api-application-assignment-mode-invalid = 利用できる人は EVERYONE または INDIVIDUAL を指定してください。
 api-application-binding-target-required = 繋ぐ相手として client_id か service_provider_id のどちらか一方を指定してください。
 api-application-binding-conflict = その連携先は既に別のアプリに繋がっています。
+api-application-not-bound = その client_id に対応するアプリがありません。
+api-application-users-sub-invalid = 照会する sub は UUID で指定してください。
+api-application-users-too-many-subs = 一度に照会できる sub は { $value } 件までです。
 
 # 保護リソース（`aud` に入る宛名。ADR-0042）
 api-resource-not-found = 宛先が見つかりません。

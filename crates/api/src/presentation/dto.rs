@@ -732,6 +732,47 @@ pub struct ApplicationCurrentUserResponse {
     pub name: Option<String>,
 }
 
+/// 名簿の照会クエリ（`GET /{tenant_id}/admin/applications/oidc/{client_id}/users`。ADR-0057）。
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
+pub struct ApplicationUserQueryParams {
+    /// 1 ページの件数。未指定は 50、上限 200（超過分は上限へ丸める）。
+    #[serde(default)]
+    pub limit: Option<i64>,
+    /// 読み飛ばす件数。未指定は 0。
+    #[serde(default)]
+    pub offset: Option<i64>,
+    /// 消息を聞きたい `sub`（カンマ区切り。⚠ 一度に 100 件まで）。
+    ///
+    /// ⚠ **`unknown`（＝消えた）が返るのは、これを指定したときだけ**である ——消えた人は、
+    /// いない以上、候補の一覧には現れない。未指定なら、このアプリの候補を 1 ページ分返す。
+    #[serde(default)]
+    pub subs: Option<String>,
+}
+
+/// 名簿の 1 行（ADR-0057）。
+///
+/// ⚠ **載るのは `sub` と状態だけである。** 属性の写しはログインのたびに渡っているので、ここは
+/// 棚卸しの口であって属性を配る口ではない。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ApplicationUserResponse {
+    /// トークンの主体識別子。RP の名簿（`federated_identities`）と突き合わせる鍵。
+    pub sub: String,
+    /// `allowed` = いま使ってよい / `blocked` = assay に居るが使えない（⚠ **結び付きは残す**） /
+    /// `unknown` = このテナントの利用者ではない（＝消えた。結び付きごと落としてよい）。
+    pub state: String,
+}
+
+/// 名簿の照会結果（`GET /{tenant_id}/admin/applications/oidc/{client_id}/users`）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ApplicationUserListResponse {
+    pub users: Vec<ApplicationUserResponse>,
+    /// `limit` / `offset` を無視した該当総数。
+    pub total: i64,
+    /// 実際に適用された値（クランプ後）。
+    pub limit: i64,
+    pub offset: i64,
+}
+
 /// 保護リソース（`aud` に入る宛名）の登録リクエスト（`POST /{tenant_id}/admin/resources`。ADR-0042）。
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct RegisterResourceRequest {

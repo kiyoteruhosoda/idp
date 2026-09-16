@@ -489,6 +489,13 @@ pub fn build(state: AppState) -> Router {
             "/admin/applications/{application_id}/current-users",
             get(admin_applications::current_users),
         )
+        // RP の定期照合が読む名簿（ADR-0057）。⚠ **OIDC の `client_id` で指す**
+        // ——RP が既に持っている唯一の値であり、アプリの内部 ID を持たせると、作り直した日に
+        // 古い ID のまま静かに別の名簿を読むことになる。
+        .route(
+            "/admin/applications/oidc/{client_id}/users",
+            get(admin_applications::application_users),
+        )
         // 保護リソース（`aud` に入る宛名）の登録・停止・削除（ADR-0042）。idp.resources:* 必須。
         .route(
             "/admin/resources",
