@@ -113,9 +113,7 @@ use crate::infrastructure::repositories::external_idp::{
 use crate::infrastructure::repositories::passkey_challenge::SqlxPasskeyChallengeRepository;
 use crate::infrastructure::repositories::password_history::SqlxPasswordHistoryRepository;
 use crate::infrastructure::repositories::password_reset_token::SqlxPasswordResetTokenRepository;
-use crate::infrastructure::repositories::protected_resource::{
-    SqlxClientResourceRepository, SqlxProtectedResourceRepository,
-};
+use crate::infrastructure::repositories::protected_resource::SqlxProtectedResourceRepository;
 use crate::infrastructure::repositories::refresh_token::SqlxRefreshTokenRepository;
 use crate::infrastructure::repositories::revoked_access_token::SqlxRevokedAccessTokenRepository;
 use crate::infrastructure::repositories::saml_service_provider::SqlxSamlServiceProviderRepository;
@@ -726,8 +724,6 @@ impl AppState {
         // assay 自身以外を指定された `client_credentials` でのみ引く。
         let resources: Arc<dyn crate::domain::repositories::ProtectedResourceRepository> =
             Arc::new(SqlxProtectedResourceRepository::new(pool.clone()));
-        let client_resources: Arc<dyn crate::domain::repositories::ClientResourceRepository> =
-            Arc::new(SqlxClientResourceRepository::new(pool.clone()));
         let token = Arc::new(TokenService::new(
             clients.clone(),
             users.clone(),
@@ -736,7 +732,6 @@ impl AppState {
             refresh_tokens.clone(),
             client_permissions.clone(),
             resources.clone(),
-            client_resources.clone(),
             applications.clone(),
             keys.clone(),
             client_auth.clone(),
@@ -908,8 +903,6 @@ impl AppState {
         // リポジトリ実装を共有するので、登録・剥奪の直後から発行に効く。
         let resources_admin = Arc::new(ResourceManagementService::new(
             resources,
-            client_resources,
-            clients.clone(),
             audit.clone(),
             clock.clone(),
             ids.clone(),

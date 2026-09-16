@@ -1,8 +1,8 @@
-//! `ProtectedResourceRepository` / `ClientResourceRepository` の sqlx 実装（ADR-0042）。
+//! `ProtectedResourceRepository` の sqlx 実装（ADR-0042）。
 //! UUID は CHAR(36) 正準文字列で入出力する。
 
 use crate::domain::error::{DomainError, Result};
-use crate::domain::repositories::{ClientResourceRepository, ProtectedResourceRepository};
+use crate::domain::repositories::ProtectedResourceRepository;
 use crate::domain::resource::ProtectedResource;
 use crate::domain::tenant::TenantId;
 use crate::domain::values::ResourceStatus;
@@ -18,16 +18,6 @@ pub struct SqlxProtectedResourceRepository {
 }
 
 impl SqlxProtectedResourceRepository {
-    pub fn new(pool: Db) -> Self {
-        Self { pool }
-    }
-}
-
-pub struct SqlxClientResourceRepository {
-    pool: Db,
-}
-
-impl SqlxClientResourceRepository {
     pub fn new(pool: Db) -> Self {
         Self { pool }
     }
@@ -161,73 +151,5 @@ impl ProtectedResourceRepository for SqlxProtectedResourceRepository {
             .await
             .map_err(repo_err)?;
         Ok(result.rows_affected() > 0)
-    }
-}
-
-#[async_trait]
-impl ClientResourceRepository for SqlxClientResourceRepository {
-    async fn list_for_client(&self, client_row_id: Uuid) -> Result<Vec<ProtectedResource>> {
-        let rows = sqlx::query(&format!(
-            "SELECT {} FROM resources r \
-             JOIN client_resources cr ON cr.resource_id = r.id \
-             WHERE cr.client_id = ? ORDER BY r.resource_uri",
-            SELECT_COLUMNS
-                .split(", ")
-                .map(|c| format!("r.{c}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ))
-        .bind(client_row_id.to_string())
-        .fetch_all(&self.pool)
-        .await
-        .map_err(repo_err)?;
-        rows.iter().map(map_row).collect()
-    }
-
-    async fn grant(
-        &self,
-        client_row_id: Uuid,
-        resource_id: Uuid,
-        granted_at: DateTime<Utc>,
-    ) -> Result<()> {
-        sqlx::query(
-            "INSERT INTO client_resources (client_id, resource_id, granted_at) \
-             VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE client_id = client_id",
-        )
-        .bind(client_row_id.to_string())
-        .bind(resource_id.to_string())
-        .bind(granted_at)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| match &e {
-            // 存在しないクライアント・宛名（FK 違反）は入力の誤り。
-            sqlx::Error::Database(db) if db.is_foreign_key_violation() => {
-                DomainError::InvalidValue("unknown client or resource".to_string())
-            }
-            _ => DomainError::Repository(e.to_string()),
-        })?;
-        Ok(())
-    }
-
-    async fn revoke(&self, client_row_id: Uuid, resource_id: Uuid) -> Result<()> {
-        sqlx::query("DELETE FROM client_resources WHERE client_id = ? AND resource_id = ?")
-            .bind(client_row_id.to_string())
-            .bind(resource_id.to_string())
-            .execute(&self.pool)
-            .await
-            .map_err(repo_err)?;
-        Ok(())
-    }
-
-    async fn is_granted(&self, client_row_id: Uuid, resource_id: Uuid) -> Result<bool> {
-        let found: Option<i64> = sqlx::query_scalar(
-            "SELECT 1 FROM client_resources WHERE client_id = ? AND resource_id = ?",
-        )
-        .bind(client_row_id.to_string())
-        .bind(resource_id.to_string())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(repo_err)?;
-        Ok(found.is_some())
     }
 }

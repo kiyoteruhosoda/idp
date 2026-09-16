@@ -2093,27 +2093,38 @@ impl ApiClient {
         .await
     }
 
-    /// 利用者を割り当てる（`POST /admin/applications/{id}/assignments`。冪等）。
-    pub async fn assign_application_user(
+    /// 主体を割り当てる（`POST /admin/applications/{id}/assignments`。冪等。ADR-0059）。
+    ///
+    /// `kind` は `user`（相手は `user_id`）か `service_account`（相手は `client_id`）。知らない種類は
+    /// api が 400 で断る。
+    pub async fn assign_application_principal(
         &self,
         correlation_id: &str,
         tenant_id: &str,
         sso: &str,
         application_id: &str,
-        user_id: &str,
+        kind: &str,
+        target: &str,
     ) -> Result<crate::admin_dto::ApplicationDetailView, AdminApiError> {
+        let field = if kind == "service_account" {
+            "client_id"
+        } else {
+            "user_id"
+        };
+        let mut body = serde_json::json!({ "kind": kind });
+        body[field] = serde_json::Value::String(target.to_string());
         self.admin_send(
             Method::POST,
             tenant_id,
             &format!("/admin/applications/{application_id}/assignments"),
             correlation_id,
             sso,
-            Some(serde_json::json!({ "user_id": user_id })),
+            Some(body),
         )
         .await
     }
 
-    /// 割り当てを外す（`DELETE /admin/applications/{id}/assignments/{user_id}`）。
+    /// 人の割り当てを外す（`DELETE /admin/applications/{id}/assignments/users/{user_id}`）。
     pub async fn unassign_application_user(
         &self,
         correlation_id: &str,
@@ -2125,7 +2136,30 @@ impl ApiClient {
         self.admin_send_no_content(
             Method::DELETE,
             tenant_id,
-            &format!("/admin/applications/{application_id}/assignments/{user_id}"),
+            &format!("/admin/applications/{application_id}/assignments/users/{user_id}"),
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
+    /// サービスアカウントの割り当てを外す
+    /// （`DELETE /admin/applications/{id}/assignments/service-accounts/{client_id}`）。
+    pub async fn unassign_application_service_account(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        application_id: &str,
+        client_id: &str,
+    ) -> Result<(), AdminApiError> {
+        self.admin_send_no_content(
+            Method::DELETE,
+            tenant_id,
+            &format!(
+                "/admin/applications/{application_id}/assignments/service-accounts/{client_id}"
+            ),
             correlation_id,
             sso,
             None,
@@ -2197,7 +2231,7 @@ impl ApiClient {
         .await
     }
 
-    /// 宛名を削除する（`DELETE /admin/resources/{id}`）。貸し出しも一緒に消える。
+    /// 宛名を削除する（`DELETE /admin/resources/{id}`）。アプリの名乗りも一緒に消える。
     pub async fn delete_resource(
         &self,
         correlation_id: &str,
@@ -2209,66 +2243,6 @@ impl ApiClient {
             Method::DELETE,
             tenant_id,
             &format!("/admin/resources/{resource_id}"),
-            correlation_id,
-            sso,
-            None,
-        )
-        .await
-    }
-
-    /// クライアントへ許した宛名を一覧する（`GET /admin/clients/{id}/resources`）。
-    pub async fn list_client_resources(
-        &self,
-        correlation_id: &str,
-        tenant_id: &str,
-        sso: &str,
-        client_id: &str,
-    ) -> Result<crate::admin_dto::ResourceListView, AdminApiError> {
-        self.admin_send(
-            Method::GET,
-            tenant_id,
-            &format!("/admin/clients/{client_id}/resources"),
-            correlation_id,
-            sso,
-            None,
-        )
-        .await
-    }
-
-    /// クライアントへ宛名を許可する（`POST /admin/clients/{id}/resources`）。名前で指す。
-    pub async fn grant_client_resource(
-        &self,
-        correlation_id: &str,
-        tenant_id: &str,
-        sso: &str,
-        client_id: &str,
-        resource_uri: &str,
-    ) -> Result<crate::admin_dto::ResourceListView, AdminApiError> {
-        self.admin_send(
-            Method::POST,
-            tenant_id,
-            &format!("/admin/clients/{client_id}/resources"),
-            correlation_id,
-            sso,
-            Some(serde_json::json!({ "resource_uri": resource_uri })),
-        )
-        .await
-    }
-
-    /// クライアントの許可を取り消す（`DELETE /admin/clients/{id}/resources/{resource_id}`）。
-    /// 取り消しは**行の id** で指す（名前をパスに載せるとスラッシュの encode が要る）。
-    pub async fn revoke_client_resource(
-        &self,
-        correlation_id: &str,
-        tenant_id: &str,
-        sso: &str,
-        client_id: &str,
-        resource_id: &str,
-    ) -> Result<crate::admin_dto::ResourceListView, AdminApiError> {
-        self.admin_send(
-            Method::DELETE,
-            tenant_id,
-            &format!("/admin/clients/{client_id}/resources/{resource_id}"),
             correlation_id,
             sso,
             None,

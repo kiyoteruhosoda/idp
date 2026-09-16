@@ -348,15 +348,6 @@ pub fn build(state: WebState) -> Router {
             "/admin/clients/{client_id}/permissions/revoke",
             post(admin_clients_console::revoke_permission),
         )
-        // 宛先（`aud` に入る名前）の貸し出し・取り消し（ADR-0042）。同じく詳細画面の区画から。
-        .route(
-            "/admin/clients/{client_id}/resources/grant",
-            post(admin_clients_console::grant_resource),
-        )
-        .route(
-            "/admin/clients/{client_id}/resources/revoke",
-            post(admin_clients_console::revoke_resource),
-        )
         .route(
             "/admin/clients/{client_id}/rotate-secret",
             post(admin_clients_console::rotate_secret),

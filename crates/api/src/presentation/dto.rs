@@ -737,14 +737,25 @@ pub struct CreateApplicationBindingRequest {
     pub resource_uri: Option<String>,
 }
 
-/// 利用者をアプリへ割り当てるリクエスト
-/// （`POST /{tenant_id}/admin/applications/{application_id}/assignments`）。
+/// アプリを使う主体を割り当てるリクエスト
+/// （`POST /{tenant_id}/admin/applications/{application_id}/assignments`。ADR-0059 の決定 5）。
+///
+/// | `kind` | 相手を指す欄 | 割り当ての意味 |
+/// |---|---|---|
+/// | `user` | `user_id`（利用者の内部 ID。要求テナントのメンバー） | ログインしてよい |
+/// | `service_account` | `client_id`（`client_credentials` だけの client） | このアプリの宛名のトークンを取ってよい |
 ///
 /// ⚠ **ロールは載らない**（ADR-0054 の決定 1）。載るのは「使ってよい」の 1 ビットだけである。
+/// ⚠ 「全員（`EVERYONE`）」に含まれるのは人だけで、サービスアカウントは必ず個別に割り当てる。
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateApplicationAssignmentRequest {
-    /// 割り当てる利用者の内部 ID。要求テナントのメンバーであること。
-    pub user_id: String,
+    /// `user` / `service_account`。⚠ 省略は 400（既定の種類を置かない）。
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub user_id: Option<String>,
+    #[serde(default)]
+    pub client_id: Option<String>,
 }
 
 /// アプリの公開表現。
@@ -756,7 +767,7 @@ pub struct ApplicationResponse {
     pub assignment_mode: String,
     /// このアプリの名乗り（ログイン用 client・SAML SP・サービスアカウント・宛名）。
     pub bindings: Vec<ApplicationBindingResponse>,
-    /// 割り当て人数。`EVERYONE` のときは行が無いので 0。
+    /// 人の割り当て人数（サービスアカウントは数えない）。`EVERYONE` のときは行が無いので 0。
     pub assigned_count: i64,
     pub created_at: String,
     pub updated_at: String,
@@ -789,7 +800,10 @@ pub struct ApplicationListResponse {
 pub struct ApplicationDetailResponse {
     #[serde(flatten)]
     pub application: ApplicationResponse,
+    /// 割り当てられた人。
     pub assigned: Vec<ApplicationAssignmentResponse>,
+    /// 割り当てられたサービスアカウント（このアプリの宛名のトークンを取ってよい。ADR-0059）。
+    pub assigned_service_accounts: Vec<ApplicationServiceAccountAssignmentResponse>,
     /// いま判定が断るところまで来ているか（`record_only` / `enforce`）。
     /// 一覧と同じものを添えるのは、**画面が「効いていない」を出すためだけに一覧を引き直さない**
     /// ようにするためである。
@@ -805,6 +819,17 @@ pub struct ApplicationAssignmentResponse {
     pub email: String,
     pub name: Option<String>,
     /// 利用者アカウント自体の状態（`ACTIVE` / `DISABLED` / `LOCKED`）。
+    pub status: String,
+    pub assigned_at: String,
+}
+
+/// 割り当てられたサービスアカウント 1 行。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ApplicationServiceAccountAssignmentResponse {
+    pub client_id: String,
+    /// クライアントの登録名。
+    pub app_name: String,
+    /// クライアントの状態（`ACTIVE` / `DISABLED` / `DELETED`）。
     pub status: String,
     pub assigned_at: String,
 }
@@ -885,14 +910,6 @@ pub struct RegisterResourceRequest {
 pub struct UpdateResourceStatusRequest {
     /// `ACTIVE` または `DISABLED`。
     pub status: String,
-}
-
-/// クライアントへ宛先を許可・取り消しするリクエスト
-/// （`POST` / `DELETE /{tenant_id}/admin/clients/{client_id}/resources`）。
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct ClientResourceRequest {
-    /// 登録済みの宛名（完全一致）。
-    pub resource_uri: String,
 }
 
 /// 保護リソースの公開表現。

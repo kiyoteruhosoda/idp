@@ -82,19 +82,25 @@
 </div>
 {% endif %}
 
-{# ── 利用ユーザー ─────────────────────────────────────────────────────────── #}
+{# ── このアプリを使う主体（人・サービスアカウント。ADR-0059） ─────────────────── #}
 <div class="card mb-4">
   <div class="card-body">
     <h3 class="h5 mb-1">{{ messages.get("admin-applications-roster-heading") }}</h3>
     {#- ⚠ 割り当てにロールは無い（ADR-0054 の決定 1）。載るのは「使ってよい」の 1 ビットだけ。 -#}
     <p class="text-muted">{{ messages.get("admin-applications-roster-intro") }}</p>
-    {% if assigned.is_empty() %}
+    {#- ⚠ 種類で振る舞いが違う 4 点のうち、画面で間違えやすい 2 つをここで言う。 -#}
+    <ul class="small text-muted ps-3">
+      <li>{{ messages.get("admin-applications-principal-note-everyone") }}</li>
+      <li>{{ messages.get("admin-applications-principal-note-service-account") }}</li>
+    </ul>
+    {% if assigned.is_empty() && assigned_service_accounts.is_empty() %}
     <p class="text-muted">{{ messages.get("admin-applications-roster-none") }}</p>
     {% else %}
     <div class="table-responsive">
       <table class="table table-cards align-middle">
         <thead>
           <tr>
+            <th>{{ messages.get("admin-applications-roster-col-kind") }}</th>
             <th>{{ messages.get("admin-applications-roster-col-user") }}</th>
             <th>{{ messages.get("admin-applications-roster-col-since") }}</th>
             <th>{{ messages.get("admin-applications-col-actions") }}</th>
@@ -103,7 +109,11 @@
         <tbody>
           {% for user in assigned %}
           <tr>
-            <td data-label="{{ messages.get("admin-applications-roster-col-user") }}">
+            {#- ⚠ アイコンだけにしない。種類の文字を必ず並べる（読み上げでも見分けられるように。ADR-0048）。 -#}
+            <td data-label="{{ messages.get("admin-applications-roster-col-kind") }}" class="text-nowrap">
+              <i class="fa-solid fa-user me-1" aria-hidden="true"></i>{{ messages.get("admin-applications-principal-user") }}
+            </td>
+            <td data-label="{{ messages.get("admin-applications-roster-col-user") }}" class="text-break">
               {{ user.email }}
               {%- if let Some(name) = user.name %} <span class="text-muted">{{ name }}</span>{% endif -%}
               {#- 利用者アカウント自体が止まっている場合。割り当ては残るので、名簿では別に示す。 -#}
@@ -115,7 +125,30 @@
             <td data-label="{{ messages.get("admin-applications-col-actions") }}">
               <form method="post" action="{{ tenant }}/admin/applications/{{ application.id }}/unassign" class="d-inline">
                 <input type="hidden" name="csrf_token" value="{{ csrf }}">
-                <input type="hidden" name="user_id" value="{{ user.user_id }}">
+                <input type="hidden" name="kind" value="user">
+                <input type="hidden" name="target" value="{{ user.user_id }}">
+                <button type="submit" class="btn btn-outline-danger btn-sm">{{ messages.get("admin-applications-unassign") }}</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+          {% for account in assigned_service_accounts %}
+          <tr>
+            <td data-label="{{ messages.get("admin-applications-roster-col-kind") }}" class="text-nowrap">
+              <i class="fa-solid fa-server me-1" aria-hidden="true"></i>{{ messages.get("admin-applications-principal-service-account") }}
+            </td>
+            <td data-label="{{ messages.get("admin-applications-roster-col-user") }}" class="text-break">
+              <code>{{ account.client_id }}</code> <span class="text-muted">{{ account.app_name }}</span>
+              {%- if !account.is_client_active() %}
+              <span class="badge bg-secondary-subtle text-secondary-emphasis ms-1">{{ account.status }}</span>
+              {%- endif -%}
+            </td>
+            <td data-label="{{ messages.get("admin-applications-roster-col-since") }}"><time class="local-time" datetime="{{ account.assigned_at }}">{{ crate::templates::utc_short(account.assigned_at.as_str()) }}</time></td>
+            <td data-label="{{ messages.get("admin-applications-col-actions") }}">
+              <form method="post" action="{{ tenant }}/admin/applications/{{ application.id }}/unassign" class="d-inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                <input type="hidden" name="kind" value="service_account">
+                <input type="hidden" name="target" value="{{ account.client_id }}">
                 <button type="submit" class="btn btn-outline-danger btn-sm">{{ messages.get("admin-applications-unassign") }}</button>
               </form>
             </td>
@@ -125,16 +158,30 @@
       </table>
     </div>
     {% endif %}
-    <form method="post" action="{{ tenant }}/admin/applications/{{ application.id }}/assign" class="mt-3">
-      <input type="hidden" name="csrf_token" value="{{ csrf }}">
-      <label class="form-label" for="assign-user-id">{{ messages.get("admin-applications-assign-label") }}</label>
-      <div class="input-group">
-        <input type="text" class="form-control font-monospace" id="assign-user-id" name="user_id" required
-               placeholder="00000000-0000-7000-8000-000000000000">
-        <button type="submit" class="btn btn-primary">{{ messages.get("admin-applications-assign-button") }}</button>
-      </div>
-      <div class="form-text">{{ messages.get("admin-applications-assign-hint") }}</div>
-    </form>
+    {#- 追加の入口は 1 つ。押した先で人かサービスアカウントかを選ぶ。 -#}
+    <details class="mt-3">
+      <summary class="btn btn-primary"><i class="fa-solid fa-plus me-2" aria-hidden="true"></i>{{ messages.get("admin-applications-assign-open") }}</summary>
+      <form method="post" action="{{ tenant }}/admin/applications/{{ application.id }}/assign" class="mt-3">
+        <input type="hidden" name="csrf_token" value="{{ csrf }}">
+        <fieldset class="mb-2">
+          <legend class="form-label fs-6">{{ messages.get("admin-applications-assign-kind") }}</legend>
+          <div class="form-check form-check-inline">
+            <input class="form-check-input" type="radio" name="kind" id="assign-kind-user" value="user" checked>
+            <label class="form-check-label" for="assign-kind-user"><i class="fa-solid fa-user me-1" aria-hidden="true"></i>{{ messages.get("admin-applications-principal-user") }}</label>
+          </div>
+          <div class="form-check form-check-inline">
+            <input class="form-check-input" type="radio" name="kind" id="assign-kind-service-account" value="service_account">
+            <label class="form-check-label" for="assign-kind-service-account"><i class="fa-solid fa-server me-1" aria-hidden="true"></i>{{ messages.get("admin-applications-principal-service-account-long") }}</label>
+          </div>
+        </fieldset>
+        <label class="form-label" for="assign-target">{{ messages.get("admin-applications-assign-label") }}</label>
+        <div class="input-group">
+          <input type="text" class="form-control font-monospace" id="assign-target" name="target" required>
+          <button type="submit" class="btn btn-primary">{{ messages.get("admin-applications-assign-button") }}</button>
+        </div>
+        <div class="form-text">{{ messages.get("admin-applications-assign-hint") }}</div>
+      </form>
+    </details>
   </div>
 </div>
 

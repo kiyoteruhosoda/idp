@@ -2,12 +2,13 @@
 //! UUID は CHAR(36) 正準文字列で入出力する。
 
 use crate::domain::application::{
-    Application, ApplicationAssignment, ApplicationBinding, AssignedUser, BindingTarget,
+    Application, ApplicationAssignment, ApplicationBinding, AssignedPrincipal,
+    AssignedServiceAccount, AssignedUser, BindingTarget,
 };
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::ApplicationRepository;
 use crate::domain::tenant::TenantId;
-use crate::domain::values::{ApplicationStatus, AssignmentMode, UserStatus};
+use crate::domain::values::{ApplicationStatus, AssignmentMode, ClientStatus, UserStatus};
 use crate::infrastructure::db::Db;
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
@@ -126,6 +127,19 @@ fn map_assigned_user(row: &MySqlRow) -> Result<AssignedUser> {
         name: row.try_get("name").map_err(repo_err)?,
         status: UserStatus::parse(&status)
             .map_err(|_| DomainError::Repository(format!("invalid user status `{status}`")))?,
+        assigned_at: to_utc(row.try_get("assigned_at").map_err(repo_err)?),
+    })
+}
+
+fn map_assigned_service_account(row: &MySqlRow) -> Result<AssignedServiceAccount> {
+    let client_row_id: String = row.try_get("client_row_id").map_err(repo_err)?;
+    let status: String = row.try_get("client_status").map_err(repo_err)?;
+    Ok(AssignedServiceAccount {
+        client_row_id: parse_uuid(&client_row_id)?,
+        client_id: row.try_get("client_id").map_err(repo_err)?,
+        app_name: row.try_get("app_name").map_err(repo_err)?,
+        client_status: ClientStatus::parse(&status)
+            .map_err(|_| DomainError::Repository(format!("invalid client status `{status}`")))?,
         assigned_at: to_utc(row.try_get("assigned_at").map_err(repo_err)?),
     })
 }
@@ -340,12 +354,32 @@ impl ApplicationRepository for SqlxApplicationRepository {
         Ok(result.rows_affected() > 0)
     }
 
+    /// ⚠ 種類で絞らなくても人の行だけに当たる（サービスアカウントの行は `user_id` が NULL）が、
+    /// 読み手が「サービスアカウントも数えているのでは」と疑わずに済むよう、種類を明示する。
     async fn is_assigned(&self, application_id: Uuid, user_id: Uuid) -> Result<bool> {
         let row = sqlx::query(
-            "SELECT 1 FROM application_assignments WHERE application_id = ? AND user_id = ?",
+            "SELECT 1 FROM application_assignments \
+             WHERE application_id = ? AND kind = 'USER' AND user_id = ?",
         )
         .bind(application_id.to_string())
         .bind(user_id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        Ok(row.is_some())
+    }
+
+    async fn is_service_account_assigned(
+        &self,
+        application_id: Uuid,
+        client_row_id: Uuid,
+    ) -> Result<bool> {
+        let row = sqlx::query(
+            "SELECT 1 FROM application_assignments \
+             WHERE application_id = ? AND kind = 'SERVICE_ACCOUNT' AND client_id = ?",
+        )
+        .bind(application_id.to_string())
+        .bind(client_row_id.to_string())
         .fetch_optional(&self.pool)
         .await
         .map_err(repo_err)?;
@@ -356,7 +390,7 @@ impl ApplicationRepository for SqlxApplicationRepository {
         let rows = sqlx::query(
             "SELECT a.user_id, u.sub, u.email, u.name, u.status, a.assigned_at \
              FROM application_assignments a JOIN users u ON u.id = a.user_id \
-             WHERE a.application_id = ? ORDER BY u.email, a.user_id",
+             WHERE a.application_id = ? AND a.kind = 'USER' ORDER BY u.email, a.user_id",
         )
         .bind(application_id.to_string())
         .fetch_all(&self.pool)
@@ -365,9 +399,26 @@ impl ApplicationRepository for SqlxApplicationRepository {
         rows.iter().map(map_assigned_user).collect()
     }
 
+    async fn list_assigned_service_accounts(
+        &self,
+        application_id: Uuid,
+    ) -> Result<Vec<AssignedServiceAccount>> {
+        let rows = sqlx::query(
+            "SELECT c.id AS client_row_id, c.client_id, c.app_name, c.client_status, a.assigned_at \
+             FROM application_assignments a JOIN clients c ON c.id = a.client_id \
+             WHERE a.application_id = ? AND a.kind = 'SERVICE_ACCOUNT' ORDER BY c.client_id",
+        )
+        .bind(application_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        rows.iter().map(map_assigned_service_account).collect()
+    }
+
     async fn count_assignments(&self, application_id: Uuid) -> Result<i64> {
         let row = sqlx::query(
-            "SELECT COUNT(*) AS assigned FROM application_assignments WHERE application_id = ?",
+            "SELECT COUNT(*) AS assigned FROM application_assignments \
+             WHERE application_id = ? AND kind = 'USER'",
         )
         .bind(application_id.to_string())
         .fetch_one(&self.pool)
@@ -376,16 +427,25 @@ impl ApplicationRepository for SqlxApplicationRepository {
         row.try_get("assigned").map_err(repo_err)
     }
 
-    /// 冪等（既存の割り当ては `assigned_at` も `assigned_by` も保持する）。割り当て直しで
+    /// 冪等（既存の割り当ては `id`・`assigned_at`・`assigned_by` を保持する）。割り当て直しで
     /// 「いつから使えるのか」が書き換わると、監査でさかのぼれなくなる。
     async fn assign(&self, assignment: &ApplicationAssignment) -> Result<()> {
         sqlx::query(
             "INSERT INTO application_assignments \
-             (application_id, user_id, assigned_at, assigned_by) VALUES (?, ?, ?, ?) \
+             (id, application_id, kind, user_id, client_id, assigned_at, assigned_by) \
+             VALUES (?, ?, ?, ?, ?, ?, ?) \
              ON DUPLICATE KEY UPDATE application_id = application_id",
         )
+        .bind(assignment.id.to_string())
         .bind(assignment.application_id.to_string())
-        .bind(assignment.user_id.to_string())
+        .bind(assignment.principal.kind())
+        .bind(assignment.principal.user_id().map(|id| id.to_string()))
+        .bind(
+            assignment
+                .principal
+                .client_row_id()
+                .map(|id| id.to_string()),
+        )
         .bind(assignment.assigned_at)
         .bind(assignment.assigned_by.map(|id| id.to_string()))
         .execute(&self.pool)
@@ -394,13 +454,21 @@ impl ApplicationRepository for SqlxApplicationRepository {
         Ok(())
     }
 
-    async fn unassign(&self, application_id: Uuid, user_id: Uuid) -> Result<()> {
-        sqlx::query("DELETE FROM application_assignments WHERE application_id = ? AND user_id = ?")
-            .bind(application_id.to_string())
-            .bind(user_id.to_string())
-            .execute(&self.pool)
-            .await
-            .map_err(repo_err)?;
+    async fn unassign(&self, application_id: Uuid, principal: AssignedPrincipal) -> Result<()> {
+        let (column, id) = match principal {
+            AssignedPrincipal::User { user_id } => ("user_id", user_id),
+            AssignedPrincipal::ServiceAccount { client_row_id } => ("client_id", client_row_id),
+        };
+        sqlx::query(&format!(
+            "DELETE FROM application_assignments \
+             WHERE application_id = ? AND kind = ? AND {column} = ?"
+        ))
+        .bind(application_id.to_string())
+        .bind(principal.kind())
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(repo_err)?;
         Ok(())
     }
 }

@@ -8,9 +8,9 @@
 //! 型検証される（sqlx のコンパイル時クエリ検証と同じ思想）。
 
 use crate::admin_dto::{
-    ApplicationAssignmentView, ApplicationCurrentUserView, ApplicationView, AuditLogView,
-    ClientView, ResourceView, SamlServiceProviderView, SigningKeyView, TenantCreatedView,
-    TenantView,
+    ApplicationAssignmentView, ApplicationCurrentUserView, ApplicationServiceAccountAssignmentView,
+    ApplicationView, AuditLogView, ClientView, ResourceView, SamlServiceProviderView,
+    SigningKeyView, TenantCreatedView, TenantView,
 };
 use crate::i18n::Messages;
 use askama::Template;
@@ -2574,17 +2574,9 @@ pub struct ClientDetail<'a> {
     pub error_key: Option<&'a str>,
     /// 戻り先の一覧（ADR-0038）。登録内容から決まる系統の一覧へ戻す。
     pub list_href: String,
-    /// 貸してある宛先（`aud` に入る名前。ADR-0042）。
-    pub granted_resources: &'a [ResourceView],
-    /// まだ貸していない、登録済みで有効な宛名。
-    pub grantable_resources: &'a [ResourceView],
-    /// 貸し出しの取得に失敗したか（空と取り違えると貸し直してしまうため画面に出す）。
-    pub resources_load_failed: bool,
-    /// 宛先の区画を出すか。
+    /// 宛先（`aud`）の案内を出すか。**システム用クライアントのときだけ**。どの宛名のトークンを
+    /// 取ってよいかは、宛名を名乗るアプリの「使う主体」で決める（ADR-0059 の決定 6）。
     pub shows_resources: bool,
-    /// 貸し出しフォームを出すか。**システム用クライアントで、かつ候補を引けたときだけ** true。
-    /// 引けなかったときに出すと「貸せる宛先がありません」が出て、直上の取得失敗の警告と矛盾する。
-    pub shows_resource_grant_form: bool,
 }
 
 /// secret 表示画面（作成直後・再発行直後。`secret` が `None` なら public で秘密なし）。
@@ -2625,6 +2617,8 @@ pub struct ApplicationDetail<'a> {
     pub admin: Admin<'a>,
     pub application: &'a ApplicationView,
     pub assigned: &'a [ApplicationAssignmentView],
+    /// 割り当てられたサービスアカウント（ADR-0059）。人と同じ一覧に種類を添えて並べる。
+    pub assigned_service_accounts: &'a [ApplicationServiceAccountAssignmentView],
     /// 「全員」のときに出す、**いま入れている人**（そのまま名簿へ写せる）。
     /// 「個別」のときは空。
     pub current_users: &'a [ApplicationCurrentUserView],

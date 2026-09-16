@@ -11,6 +11,7 @@
 //! - 他のアプリの名簿は読めない
 //! - 旧口 `/admin/applications/oidc/{client_id}/users` は無い
 //! - 「個別」の候補＝割り当てのある人。⚠ 止まっているアカウントは消えずに `blocked` で出る
+//! - ⚠ **サービスアカウントの割り当ては名簿に載らない**
 //! - 「全員」の候補＝テナントのメンバー
 //! - ⚠ **止めたアプリは「空」ではなく「全員 `blocked`」**（「引けなかった」と取り違えさせない）
 //! - ⚠ **`subs` を渡したときだけ `unknown`（消えた）が返る**。聞いた `sub` は必ず 1 行で返る
@@ -51,12 +52,16 @@ async fn set_application_status(pool: &MySqlPool, application_id: &str, status: 
 }
 
 async fn assign(pool: &MySqlPool, application_id: &str, user_id: &str) {
-    sqlx::query("INSERT INTO application_assignments (application_id, user_id) VALUES (?, ?)")
-        .bind(application_id)
-        .bind(user_id)
-        .execute(pool)
-        .await
-        .expect("assign user");
+    sqlx::query(
+        "INSERT INTO application_assignments (id, application_id, kind, user_id) \
+         VALUES (?, ?, 'USER', ?)",
+    )
+    .bind(uuid::Uuid::now_v7().to_string())
+    .bind(application_id)
+    .bind(user_id)
+    .execute(pool)
+    .await
+    .expect("assign user");
 }
 
 async fn disable_user(pool: &MySqlPool, user_id: &str) {
@@ -375,6 +380,45 @@ async fn individual_mode_lists_the_assigned_and_marks_stopped_accounts() {
         Some("unknown"),
         "assay に居ない＝消えた（結び付きごと落としてよい）"
     );
+}
+
+/// ⚠ **名簿に載るのは人だけ**（ADR-0059 の決定 5）。サービスアカウントの割り当ては候補にも件数にも
+/// 入らない ——RP はローカル口座と突き合わせるので、口座の無い相手が混ざると照合が崩れる。
+#[tokio::test]
+async fn service_account_assignments_are_not_part_of_the_roster() {
+    let Some(env) = support::setup("application users no service accounts").await else {
+        return;
+    };
+    let (application_id, token) = application_with_service_account(&env).await;
+    set_mode(&env.pool, &application_id, "INDIVIDUAL").await;
+    let user = create_plain_user(&env.pool, &env.root_tenant_id).await;
+    assign(&env.pool, &application_id, &user).await;
+    let (other_service_account, _) = insert_service_account(&env.pool, &env.root_tenant_id).await;
+    let row_id = client_row_id(&env.pool, &env.root_tenant_id, &other_service_account).await;
+    sqlx::query(
+        "INSERT INTO application_assignments (id, application_id, kind, client_id) \
+         VALUES (?, ?, 'SERVICE_ACCOUNT', ?)",
+    )
+    .bind(uuid::Uuid::now_v7().to_string())
+    .bind(&application_id)
+    .bind(&row_id)
+    .execute(&env.pool)
+    .await
+    .expect("assign service account");
+
+    let body = body_json(
+        send(
+            &env.app,
+            get(
+                &token,
+                &format!("{}?limit=200", roster_uri(&env.root_tenant_id)),
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(body["total"], 1, "only the person is a candidate: {body}");
+    assert_eq!(body["users"].as_array().unwrap().len(), 1);
 }
 
 /// 「全員」の候補はテナントのメンバー。⚠ **返る形は「個別」と同じ**（RP はモードを知らない）。

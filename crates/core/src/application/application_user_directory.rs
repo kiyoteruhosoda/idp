@@ -198,7 +198,8 @@ impl ApplicationUserDirectoryService {
 mod tests {
     use super::*;
     use crate::domain::application::{
-        ApplicationAssignment, ApplicationBinding, ApplicationUserFacts, AssignedUser,
+        ApplicationAssignment, ApplicationBinding, ApplicationUserFacts, AssignedPrincipal,
+        AssignedServiceAccount, AssignedUser,
     };
     use crate::domain::error::Result as DomainResult;
     use crate::domain::repositories::SubjectFacts;
@@ -307,6 +308,15 @@ mod tests {
         async fn is_assigned(&self, _a: Uuid, _u: Uuid) -> DomainResult<bool> {
             Ok(false)
         }
+        async fn is_service_account_assigned(&self, _a: Uuid, _c: Uuid) -> DomainResult<bool> {
+            Ok(false)
+        }
+        async fn list_assigned_service_accounts(
+            &self,
+            _a: Uuid,
+        ) -> DomainResult<Vec<AssignedServiceAccount>> {
+            Ok(Vec::new())
+        }
         async fn list_assigned_users(&self, _a: Uuid) -> DomainResult<Vec<AssignedUser>> {
             Ok(Vec::new())
         }
@@ -316,7 +326,7 @@ mod tests {
         async fn assign(&self, _a: &ApplicationAssignment) -> DomainResult<()> {
             Ok(())
         }
-        async fn unassign(&self, _a: Uuid, _u: Uuid) -> DomainResult<()> {
+        async fn unassign(&self, _a: Uuid, _p: AssignedPrincipal) -> DomainResult<()> {
             Ok(())
         }
     }

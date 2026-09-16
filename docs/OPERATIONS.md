@@ -410,19 +410,22 @@ curl -sS "$ISSUER/$TENANT_ID/admin/users?query=alice" \
 トークンはテナント毎である。複数テナントを操作するなら、テナントごとに取り直す。
 クライアントを無効化・削除すると、発行済みトークンも**次のリクエストで**通らなくなる。
 
-### 4-4. 他のアプリの API を叩かせたいとき（宛名を貸す）
+### 4-4. 他のアプリの API を叩かせたいとき（宛名とサービスアカウントの割り当て）
 
 assay 自身ではなく**他のアプリ**（blobshare・nolumiawiki など）を叩かせる場合は、そのアプリの
-**宛名**を登録し、呼び出し元のクライアントへ貸す（ADR-0042）。トークンの `aud` がその名前になり、
-受け側は「自分宛か」を判定できるようになる。
+**宛名**を登録して**アプリの名乗り**にし、呼び出し元のサービスアカウントを**そのアプリに割り当てる**
+（ADR-0059）。トークンの `aud` がその名前になり、受け側は「自分宛か」を判定できるようになる。
 
 ⚠ **載るのは宛名だけである。**「そこで何をしてよいか」はトークンに載らない。受け側のアプリが
 `client_id` を見て決める（ADR-0033）。
 
 ⚠ **宛名は接続先ではない。** 誰も叩かないので、解決できる URL である必要はない
-（`api://blobshare` でよい）。実際の呼び出し先と混同されるくらいなら、URL に見えない形を選ぶ。
+（`api://blobshare` でよい）。
 
-管理コンソールなら「宛先」画面で登録し、クライアント詳細の「許可した宛先」で貸す。API なら:
+⚠ **「全員」のアプリでも、サービスアカウントは個別に割り当てる。**「全員」に含まれるのは人だけ。
+
+管理コンソールなら「宛先」画面で登録し、アプリの詳細の「このアプリの名乗り」で「API の宛名」として
+結び付け、「このアプリを使う主体」でサービスアカウントを追加する。API なら:
 
 ```bash
 # 1. 宛名を登録する（idp.resources:write）
@@ -430,31 +433,54 @@ curl -sS -X POST "$ISSUER/$TENANT_ID/admin/resources" \
   -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
   -d '{"resource_uri":"api://blobshare","display_name":"blobshare machine API"}'
 
-# 2. 呼び出し元へ貸す（貸すときは名前で指す）
-curl -sS -X POST "$ISSUER/$TENANT_ID/admin/clients/$CLIENT_ID/resources" \
+# 2. 宛名をアプリの名乗りにする（idp.applications:write）
+curl -sS -X POST "$ISSUER/$TENANT_ID/admin/applications/$APPLICATION_ID/bindings" \
   -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"resource_uri":"api://blobshare"}'
+  -d '{"kind":"resource","resource_uri":"api://blobshare"}'
 
-# 3. 呼び出し元がトークンを取る（aud が api://blobshare になる）
+# 3. 呼び出し元のサービスアカウントをそのアプリに割り当てる
+curl -sS -X POST "$ISSUER/$TENANT_ID/admin/applications/$APPLICATION_ID/assignments" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"kind":"service_account","client_id":"'"$CLIENT_ID"'"}'
+
+# 4. 呼び出し元がトークンを取る（aud が api://blobshare になる）
 curl -sS -X POST "$ISSUER/$TENANT_ID/token" \
   -d grant_type=client_credentials -d resource=api://blobshare \
   -d client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer \
   --data-urlencode "client_assertion=$ASSERTION"
 ```
 
-取り消しは**行の id** で指す（`DELETE /admin/clients/{client_id}/resources/{resource_id}`）。
-一時的に止めるだけなら、宛名自体を `DISABLED` にすると貸し出しを残したまま発行を止められる
-（`PATCH /admin/resources/{resource_id}`）。
+外すときは `DELETE /admin/applications/{application_id}/assignments/service-accounts/{client_id}`。
+一時的に止めるだけなら、宛名を `DISABLED` にする（`PATCH /admin/resources/{resource_id}`）か、
+アプリを止める。どちらも名乗りと割り当てを残したまま発行を止められる。
 
-⚠ **どちらも発行済みのトークンには効かない。** 効き始めるのは次の発行からで、最大でアクセス
+⚠ **どれも発行済みのトークンには効かない。** 効き始めるのは次の発行からで、最大でアクセス
 トークンの寿命（既定 900 秒）ぶん遅れる。急いで止めるなら、受け側のアプリでその `client_id` を
 落とすほうが速い。
 
 | 症状 | 原因 |
 |---|---|
-| `/token` が `invalid_target` | 宛名が未登録／`DISABLED`／そのクライアントへ貸していない（**応答では区別しない**。監査ログの `reason` を見る） |
+| `/token` が `invalid_target` | 宛名が未登録／`DISABLED`／どのアプリの名乗りでもない／アプリが止まっている／サービスアカウントがそのアプリに割り当てられていない（**応答では区別しない**。監査ログの `reason` を見る） |
+| 割り当てが 400 | `client_credentials` だけのクライアントではない（ログイン用を兼ねる client はサービスアカウントとして割り当てられない） |
 | 宛名を登録できない（400） | 絶対 URI でない・`#` を含む・assay 自身の `aud`（`{issuer}/userinfo`・`{issuer}/admin`）を指している |
 | 受け側で `aud` が合わない | 登録した文字列と完全一致で比べる。末尾の `/` の有無も別物として扱われる |
+
+### 4-5. 移行 0059 を当てる前に（宛名の貸し出しを割り当てへ写す）
+
+0059 は、これまでの貸し出し（`client_resources`）を「宛名を名乗るアプリへのサービスアカウントの割り当て」
+へ写す。⚠ **どのアプリの名乗りでもない宛名の貸し出しが残っていると、移行は何も変えずに止まる。**
+当てる前に次を流し、行が出たら、その宛名を本来のアプリの「このアプリの名乗り」へ結び付けてから当てる。
+
+```sql
+SELECT r.resource_uri, c.client_id
+  FROM client_resources cr
+  JOIN resources r ON r.id = cr.resource_id
+  JOIN clients c ON c.id = cr.client_id
+  LEFT JOIN application_bindings b ON b.kind = 'resource' AND b.resource_id = cr.resource_id
+ WHERE b.id IS NULL;
+```
+
+貸し出し先が `authorization_code` も持つ client の場合も止まる（サービスアカウントとして割り当てられないため）。
 
 ### 5. 鍵を入れ替えたいとき（ローテーション）
 
@@ -873,13 +899,16 @@ RP の**有効なローカル利用者**のうち、assay 側に対応する利�
 
 ### 3. 入れる
 
-```sql
-INSERT INTO application_assignments (application_id, user_id, assigned_at, assigned_by)
-VALUES ('<アプリのUUID>', '<利用者のUUID>', UTC_TIMESTAMP(6), NULL)
-ON DUPLICATE KEY UPDATE application_id = application_id;   -- 冪等。既存の割り当ては触らない
+API で入れる（冪等。既存の割り当ては触らない。`idp.applications:write`）:
+
+```bash
+curl -sS -X POST "$ISSUER/$TENANT_ID/admin/applications/$APPLICATION_ID/assignments" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"kind":"user","user_id":"<利用者のUUID>"}'
 ```
 
-画面から入れるなら **アプリ** → 対象のアプリ → 「利用者を割り当てる」。
+画面から入れるなら **アプリ** → 対象のアプリ → 「このアプリを使う主体」→「追加する」→「人」。
+⚠ SQL で直接入れない（割り当ての行は `id`（UUIDv7）と種類を持つ。0059 以降）。
 
 ### 4. ⚠ 漏れを監査ログで潰してから切り替える
 

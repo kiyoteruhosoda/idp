@@ -10,7 +10,7 @@
 
 use crate::application::application_management::{
     ApplicationDetail, ApplicationManagementError, ApplicationSummary, CurrentUsers,
-    NewApplication, NewBinding,
+    NewApplication, NewAssignment, NewBinding,
 };
 use crate::application::application_user_directory::{
     ApplicationUserDirectoryError, RosterQuery, MAX_SUBJECTS,
@@ -25,9 +25,9 @@ use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
     ApplicationAssignmentResponse, ApplicationBindingResponse, ApplicationCurrentUserResponse,
     ApplicationCurrentUsersResponse, ApplicationDetailResponse, ApplicationListResponse,
-    ApplicationResponse, ApplicationUserListResponse, ApplicationUserQueryParams,
-    ApplicationUserResponse, CreateApplicationAssignmentRequest, CreateApplicationBindingRequest,
-    CreateApplicationRequest, UpdateApplicationRequest,
+    ApplicationResponse, ApplicationServiceAccountAssignmentResponse, ApplicationUserListResponse,
+    ApplicationUserQueryParams, ApplicationUserResponse, CreateApplicationAssignmentRequest,
+    CreateApplicationBindingRequest, CreateApplicationRequest, UpdateApplicationRequest,
 };
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
@@ -378,8 +378,8 @@ pub async fn remove_binding(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// 利用者を割り当てる
-/// （`POST /{tenant_id}/admin/applications/{application_id}/assignments`。冪等）。
+/// 主体を割り当てる
+/// （`POST /{tenant_id}/admin/applications/{application_id}/assignments`。冪等。ADR-0059）。
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/applications/{application_id}/assignments",
@@ -388,9 +388,10 @@ pub async fn remove_binding(
     request_body = CreateApplicationAssignmentRequest,
     responses(
         (status = 200, description = "割り当て後の詳細", body = ApplicationDetailResponse),
+        (status = 400, description = "種類が不正・相手の欄が無い・サービスアカウントでない client"),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.applications:write 必須）"),
-        (status = 404, description = "アプリ・利用者が不存在（他テナントの利用者を含む）"),
+        (status = 404, description = "アプリ・利用者・client が不存在（他テナントを含む）"),
     )
 )]
 #[allow(clippy::too_many_arguments)]
@@ -405,7 +406,7 @@ pub async fn assign_user(
     Json(body): Json<CreateApplicationAssignmentRequest>,
 ) -> Result<Json<ApplicationDetailResponse>, ApiError> {
     let id = parse_id(&application_id, locale)?;
-    let user_id = parse_user_id(&body.user_id, locale)?;
+    let request = parse_assignment_request(&body, locale)?;
     let ctx = request_context(
         &headers,
         &correlation,
@@ -413,7 +414,7 @@ pub async fn assign_user(
     );
     state
         .applications_admin
-        .assign(tenant.context(), id, user_id, &admin.actor, &ctx)
+        .assign(tenant.context(), id, request, &admin.actor, &ctx)
         .await
         .map_err(|e| map_error(e, locale))?;
     let detail = state
@@ -425,11 +426,44 @@ pub async fn assign_user(
     Ok(Json(to_detail(&detail, enforcement)))
 }
 
-/// 割り当てを外す
-/// （`DELETE /{tenant_id}/admin/applications/{application_id}/assignments/{user_id}`）。
+/// 要求を種類と相手へ読む。⚠ 種類に対応する欄だけを読む（別の欄の値へ読み替えない）。
+fn parse_assignment_request(
+    body: &CreateApplicationAssignmentRequest,
+    locale: ApiLocale,
+) -> Result<NewAssignment, ApiError> {
+    let present = |value: &Option<String>| {
+        value
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let required = || {
+        ApiError::BadRequest(
+            ApiMessages::new(locale).get("api-application-assignment-target-required"),
+        )
+    };
+    match body.kind.trim() {
+        "user" => {
+            let raw = present(&body.user_id).ok_or_else(required)?;
+            Ok(NewAssignment::User {
+                user_id: parse_user_id(&raw, locale)?,
+            })
+        }
+        "service_account" => Ok(NewAssignment::ServiceAccount {
+            client_id: present(&body.client_id).ok_or_else(required)?,
+        }),
+        _ => Err(ApiError::BadRequest(
+            ApiMessages::new(locale).get("api-application-assignment-kind-invalid"),
+        )),
+    }
+}
+
+/// 人の割り当てを外す
+/// （`DELETE /{tenant_id}/admin/applications/{application_id}/assignments/users/{user_id}`）。
 #[utoipa::path(
     delete,
-    path = "/{tenant_id}/admin/applications/{application_id}/assignments/{user_id}",
+    path = "/{tenant_id}/admin/applications/{application_id}/assignments/users/{user_id}",
     tag = "admin",
     params(
         ("application_id" = String, Path, description = "アプリの内部 ID"),
@@ -460,7 +494,47 @@ pub async fn unassign_user(
     );
     state
         .applications_admin
-        .unassign(tenant.context(), id, user, &admin.actor, &ctx)
+        .unassign_user(tenant.context(), id, user, &admin.actor, &ctx)
+        .await
+        .map_err(|e| map_error(e, locale))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// サービスアカウントの割り当てを外す
+/// （`DELETE /{tenant_id}/admin/applications/{application_id}/assignments/service-accounts/{client_id}`）。
+#[utoipa::path(
+    delete,
+    path = "/{tenant_id}/admin/applications/{application_id}/assignments/service-accounts/{client_id}",
+    tag = "admin",
+    params(
+        ("application_id" = String, Path, description = "アプリの内部 ID"),
+        ("client_id" = String, Path, description = "サービスアカウントの client_id"),
+    ),
+    responses(
+        (status = 204, description = "削除成功（未割り当てでも成功）"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.applications:write 必須）"),
+        (status = 404, description = "アプリ・client が不存在"),
+    )
+)]
+pub async fn unassign_service_account(
+    RequirePerms(admin, _): RequirePerms<ApplicationsWrite>,
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
+    headers: HeaderMap,
+    Path((_tenant_id, application_id, client_id)): Path<(String, String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let id = parse_id(&application_id, locale)?;
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
+    state
+        .applications_admin
+        .unassign_service_account(tenant.context(), id, &client_id, &admin.actor, &ctx)
         .await
         .map_err(|e| map_error(e, locale))?;
     Ok(StatusCode::NO_CONTENT)
@@ -593,6 +667,16 @@ fn to_detail(detail: &ApplicationDetail, enforcement: String) -> ApplicationDeta
                 email: a.email.clone(),
                 name: a.name.clone(),
                 status: a.status.as_str().to_string(),
+                assigned_at: a.assigned_at.to_rfc3339(),
+            })
+            .collect(),
+        assigned_service_accounts: detail
+            .assigned_service_accounts
+            .iter()
+            .map(|a| ApplicationServiceAccountAssignmentResponse {
+                client_id: a.client_id.clone(),
+                app_name: a.app_name.clone(),
+                status: a.client_status.as_str().to_string(),
                 assigned_at: a.assigned_at.to_rfc3339(),
             })
             .collect(),

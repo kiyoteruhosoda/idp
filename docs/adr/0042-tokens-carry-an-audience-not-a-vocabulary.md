@@ -1,6 +1,6 @@
 # ADR-0042: トークンには宛名だけを刻む（リソース指標）
 
-- Status: Accepted
+- Status: Accepted（決定 2・3 のうち「クライアントへの貸し出し」は ADR-0059 の決定 6 で置き換え）
 - Date: 2026-09-02
 - 関連: `docs/adr/0033-resource-server-authorization-belongs-to-the-application.md`（業務権限は配らない）、
   `docs/adr/0037-management-api-access-tokens-and-permission-set.md`（管理 API のトークン）、
@@ -50,6 +50,11 @@ blobshare で、機械の口（`/api/machine/objects`）は `aud` の検証を**
 
 1. **`resources`（宛名の登録簿）を足す。** 1 行が「この認可サーバが `aud` に載せてよい名前」。
    テナント内で一意。`ACTIVE` / `DISABLED` を持ち、停止すると新しいトークンの宛先に使えなくなる。
+> ⚠ **決定 2・3 は ADR-0059 で置き換えた。** 宛名はアプリの名乗り（`application_bindings` の
+> `resource`）になり、「どのサービスアカウントが取ってよいか」はそのアプリへの割り当てで決まる。
+> `client_resources` は移行 0059 で割り当てへ写して消した。監査ログの `reason` も
+> `resource_not_bound_to_an_application` / `application_disabled` / `service_account_not_assigned` に変わった。
+
 2. **`client_resources`（クライアント × 宛名）を足す。** 「どのクライアントがどの宛先を要求して
    よいか」。**語彙の列は持たない。**
 3. **`client_credentials` の `resource` を表引きにする。** 登録済みかつ当該クライアントへ

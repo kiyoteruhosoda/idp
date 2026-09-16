@@ -4,7 +4,9 @@
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test resource_indicators
 //!
 //! 検証の要:
-//! - 登録され、かつ**そのクライアントへ貸してある**宛名だけが `aud` に載ること。
+//! - 登録され、**あるアプリの名乗り**であり、要求元のサービスアカウントが**そのアプリに割り当て
+//!   られている**宛名だけが `aud` に載ること（ADR-0059 の決定 6）。
+//! - ⚠ 「全員（`EVERYONE`）」のアプリでも、サービスアカウントは個別に割り当てない限り取れないこと。
 //! - 未登録・停止中・未許可を**応答で区別しない**こと（区別すると登録の有無を総当たりで探れる）。
 //! - 宛名のトークンに `perms` が載らないこと。何をしてよいかはリソースサーバが決める（ADR-0033）。
 //! - 管理 API 向けのトークン（ADR-0037）が従来どおりであること。
@@ -16,7 +18,7 @@ use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
 use axum::http::{Request, StatusCode};
 use base64::Engine as _;
 use serde_json::{json, Value};
-use support::{admin_token, body_json, delete, post, send, unique};
+use support::{admin_token, body_json, delete, post, put, send, unique};
 
 /// `ACCESS_TOKEN_TTL_SECS` の既定。宛名のトークンは通常のアクセストークンと同じ寿命で出る。
 const ACCESS_TOKEN_TTL_SECS: u64 = 900;
@@ -66,83 +68,155 @@ fn claims(access_token: &str) -> Value {
     serde_json::from_slice(&decoded).expect("claims json")
 }
 
-#[tokio::test]
-async fn only_a_registered_and_granted_audience_reaches_the_token() {
-    let Some(env) = support::setup("resource indicators").await else {
-        return;
-    };
-    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
-    let (client_id, secret) =
-        support::insert_m2m_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
-    let audience = format!("api://wiki-{}", unique());
-    let resources_uri = format!("/{}/admin/resources", env.root_tenant_id);
-    let lending_uri = format!(
-        "/{}/admin/clients/{client_id}/resources",
-        env.root_tenant_id
-    );
-
-    // 登録前は断る。
-    let res = request_token(
-        &env.app,
-        &env.root_tenant_id,
-        &client_id,
-        &secret,
-        Some(&audience),
+/// アプリを「個別」で作り、その id を返す。
+async fn create_application(app: &axum::Router, admin_tok: &str, tenant_id: &str) -> String {
+    let res = send(
+        app,
+        post(
+            admin_tok,
+            &format!("/{tenant_id}/admin/applications"),
+            json!({ "display_name": format!("wiki-{}", unique()), "assign_creator": false }),
+        ),
     )
     .await;
-    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(body_json(res).await["error"], "invalid_target");
+    assert_eq!(res.status(), StatusCode::CREATED, "create application");
+    body_json(res).await["id"].as_str().unwrap().to_string()
+}
 
-    // 宛名を登録する。
+/// 宛名を登録して、その id を返す。
+async fn register_resource(
+    app: &axum::Router,
+    admin_tok: &str,
+    tenant_id: &str,
+    audience: &str,
+) -> String {
     let res = send(
-        &env.app,
+        app,
         post(
-            &admin_tok,
-            &resources_uri,
-            json!({ "resource_uri": audience, "display_name": "wiki machine API" }),
+            admin_tok,
+            &format!("/{tenant_id}/admin/resources"),
+            json!({ "resource_uri": audience, "display_name": "machine API" }),
         ),
     )
     .await;
     assert_eq!(res.status(), StatusCode::CREATED, "register the audience");
-    let resource_id = body_json(res).await["id"].as_str().unwrap().to_string();
+    body_json(res).await["id"].as_str().unwrap().to_string()
+}
 
-    // 登録しただけでは出ない。**貸してあることまで**が条件である。
-    let res = request_token(
-        &env.app,
-        &env.root_tenant_id,
-        &client_id,
-        &secret,
-        Some(&audience),
-    )
-    .await;
+#[tokio::test]
+async fn only_an_audience_of_an_application_the_service_account_is_assigned_to_reaches_the_token() {
+    let Some(env) = support::setup("resource indicators").await else {
+        return;
+    };
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+    let (client_id, secret) = support::insert_service_account(&env.pool, &env.root_tenant_id).await;
+    let audience = format!("api://wiki-{}", unique());
+    let token = |resource: String| {
+        let app = env.app.clone();
+        let tenant = env.root_tenant_id.clone();
+        let client_id = client_id.clone();
+        let secret = secret.clone();
+        async move { request_token(&app, &tenant, &client_id, &secret, Some(&resource)).await }
+    };
+
+    // 登録前は断る。
+    let res = token(audience.clone()).await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(res).await["error"], "invalid_target");
+
+    register_resource(&env.app, &admin_tok, &env.root_tenant_id, &audience).await;
+
+    // 登録しただけでは出ない（どのアプリの宛名でもない）。
+    let res = token(audience.clone()).await;
     assert_eq!(
         res.status(),
         StatusCode::BAD_REQUEST,
-        "registered but not granted must not be issued"
+        "a name that belongs to no application must not be issued"
     );
     assert_eq!(body_json(res).await["error"], "invalid_target");
 
-    // このクライアントへ貸す。
+    // アプリの名乗りにしても、割り当てが無ければ出ない。
+    let application_id = create_application(&env.app, &admin_tok, &env.root_tenant_id).await;
+    let detail_uri = format!(
+        "/{}/admin/applications/{application_id}",
+        env.root_tenant_id
+    );
     let res = send(
         &env.app,
         post(
             &admin_tok,
-            &lending_uri,
-            json!({ "resource_uri": audience }),
+            &format!("{detail_uri}/bindings"),
+            json!({ "kind": "resource", "resource_uri": audience }),
         ),
     )
     .await;
-    assert_eq!(res.status(), StatusCode::OK, "lend the audience");
+    assert_eq!(
+        res.status(),
+        StatusCode::OK,
+        "bind the name to the application"
+    );
+    let res = token(audience.clone()).await;
+    assert_eq!(
+        res.status(),
+        StatusCode::BAD_REQUEST,
+        "bound but not assigned must not be issued"
+    );
 
-    // 宛名が `aud` に載る。
-    let res = request_token(
+    // ⚠ 「全員」に含まれるのは人だけ。サービスアカウントには効かない。
+    let set_mode = |mode: &'static str| {
+        let app = env.app.clone();
+        let admin_tok = admin_tok.clone();
+        let detail_uri = detail_uri.clone();
+        async move {
+            let detail = body_json(send(&app, support::get(&admin_tok, &detail_uri)).await).await;
+            let res = send(
+                &app,
+                put(
+                    &admin_tok,
+                    &detail_uri,
+                    json!({
+                        "display_name": detail["display_name"],
+                        "status": "ACTIVE",
+                        "assignment_mode": mode,
+                    }),
+                ),
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::OK, "set mode {mode}");
+        }
+    };
+    set_mode("EVERYONE").await;
+    let res = token(audience.clone()).await;
+    assert_eq!(
+        res.status(),
+        StatusCode::BAD_REQUEST,
+        "EVERYONE means people only; a service account still needs its own assignment"
+    );
+    set_mode("INDIVIDUAL").await;
+
+    // 割り当てると、宛名が `aud` に載る。
+    let res = send(
         &env.app,
-        &env.root_tenant_id,
-        &client_id,
-        &secret,
-        Some(&audience),
+        post(
+            &admin_tok,
+            &format!("{detail_uri}/assignments"),
+            json!({ "kind": "service_account", "client_id": client_id }),
+        ),
     )
     .await;
+    assert_eq!(res.status(), StatusCode::OK, "assign the service account");
+    let assigned = body_json(res).await;
+    assert_eq!(
+        assigned["assigned_service_accounts"][0]["client_id"],
+        json!(client_id),
+        "{assigned}"
+    );
+    assert_eq!(
+        assigned["assigned_count"], 0,
+        "service accounts are not counted as people"
+    );
+
+    let res = token(audience.clone()).await;
     assert_eq!(res.status(), StatusCode::OK);
     let issued = body_json(res).await;
     assert_eq!(issued["expires_in"].as_u64(), Some(ACCESS_TOKEN_TTL_SECS));
@@ -165,14 +239,7 @@ async fn only_a_registered_and_granted_audience_reaches_the_token() {
         shouted, audience,
         "the fixture must actually differ in case"
     );
-    let res = request_token(
-        &env.app,
-        &env.root_tenant_id,
-        &client_id,
-        &secret,
-        Some(&shouted),
-    )
-    .await;
+    let res = token(shouted).await;
     assert_eq!(
         res.status(),
         StatusCode::OK,
@@ -190,59 +257,127 @@ async fn only_a_registered_and_granted_audience_reaches_the_token() {
         "aud must be the registered spelling, not the requested one"
     );
 
-    // 取り消すと、次のトークンからは出なくなる（発行済みは TTL まで有効）。
+    // 止めたアプリの宛名は出ない。
+    let detail = body_json(send(&env.app, support::get(&admin_tok, &detail_uri)).await).await;
     let res = send(
         &env.app,
-        delete(&admin_tok, &format!("{lending_uri}/{resource_id}")),
-    )
-    .await;
-    assert_eq!(res.status(), StatusCode::OK, "revoke the lending");
-    let res = request_token(
-        &env.app,
-        &env.root_tenant_id,
-        &client_id,
-        &secret,
-        Some(&audience),
-    )
-    .await;
-    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(body_json(res).await["error"], "invalid_target");
-}
-
-#[tokio::test]
-async fn a_disabled_audience_stops_new_tokens_without_losing_the_lending() {
-    let Some(env) = support::setup("resource indicators disabled").await else {
-        return;
-    };
-    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
-    let (client_id, secret) =
-        support::insert_m2m_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
-    let audience = format!("api://blob-{}", unique());
-
-    let res = send(
-        &env.app,
-        post(
+        put(
             &admin_tok,
-            &format!("/{}/admin/resources", env.root_tenant_id),
-            json!({ "resource_uri": audience, "display_name": "blob machine API" }),
-        ),
-    )
-    .await;
-    assert_eq!(res.status(), StatusCode::CREATED);
-    let resource_id = body_json(res).await["id"].as_str().unwrap().to_string();
-    let res = send(
-        &env.app,
-        post(
-            &admin_tok,
-            &format!(
-                "/{}/admin/clients/{client_id}/resources",
-                env.root_tenant_id
-            ),
-            json!({ "resource_uri": audience }),
+            &detail_uri,
+            json!({
+                "display_name": detail["display_name"],
+                "status": "DISABLED",
+                "assignment_mode": "INDIVIDUAL",
+            }),
         ),
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
+    let res = token(audience.clone()).await;
+    assert_eq!(
+        res.status(),
+        StatusCode::BAD_REQUEST,
+        "a disabled application's names must not be issued"
+    );
+    set_mode("INDIVIDUAL").await;
+    assert_eq!(token(audience.clone()).await.status(), StatusCode::OK);
+
+    // 割り当てを外すと、次のトークンからは出なくなる（発行済みは TTL まで有効）。
+    let res = send(
+        &env.app,
+        delete(
+            &admin_tok,
+            &format!("{detail_uri}/assignments/service-accounts/{client_id}"),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::NO_CONTENT, "unassign");
+    let res = token(audience).await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(res).await["error"], "invalid_target");
+}
+
+/// ⚠ サービスアカウントとして割り当てられるのは `client_credentials` だけの client。
+#[tokio::test]
+async fn only_a_service_account_can_be_assigned_as_one() {
+    let Some(env) = support::setup("resource indicators not a service account").await else {
+        return;
+    };
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+    let application_id = create_application(&env.app, &admin_tok, &env.root_tenant_id).await;
+    let assignments_uri = format!(
+        "/{}/admin/applications/{application_id}/assignments",
+        env.root_tenant_id
+    );
+    // `authorization_code` も持つ client（ログインに使える）。
+    let (mixed, _) = support::insert_m2m_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
+    let res = send(
+        &env.app,
+        post(
+            &admin_tok,
+            &assignments_uri,
+            json!({ "kind": "service_account", "client_id": mixed }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+    // 種類を指さない・種類に合わない欄だけの要求も 400。
+    let (service_account, _) =
+        support::insert_service_account(&env.pool, &env.root_tenant_id).await;
+    let res = send(
+        &env.app,
+        post(
+            &admin_tok,
+            &assignments_uri,
+            json!({ "client_id": service_account }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST, "no kind");
+    let res = send(
+        &env.app,
+        post(
+            &admin_tok,
+            &assignments_uri,
+            json!({ "kind": "user", "client_id": service_account }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        res.status(),
+        StatusCode::BAD_REQUEST,
+        "wrong field for the kind"
+    );
+}
+
+#[tokio::test]
+async fn a_disabled_audience_stops_new_tokens_without_losing_the_assignment() {
+    let Some(env) = support::setup("resource indicators disabled").await else {
+        return;
+    };
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+    let (client_id, secret) = support::insert_service_account(&env.pool, &env.root_tenant_id).await;
+    let audience = format!("api://blob-{}", unique());
+    let resource_id = register_resource(&env.app, &admin_tok, &env.root_tenant_id, &audience).await;
+    let application_id = create_application(&env.app, &admin_tok, &env.root_tenant_id).await;
+    let detail_uri = format!(
+        "/{}/admin/applications/{application_id}",
+        env.root_tenant_id
+    );
+    for (uri, body) in [
+        (
+            format!("{detail_uri}/bindings"),
+            json!({ "kind": "resource", "resource_uri": audience }),
+        ),
+        (
+            format!("{detail_uri}/assignments"),
+            json!({ "kind": "service_account", "client_id": client_id }),
+        ),
+    ] {
+        let res = send(&env.app, post(&admin_tok, &uri, body)).await;
+        assert_eq!(res.status(), StatusCode::OK, "{uri}");
+    }
 
     // 停止する。
     let res = send(
@@ -271,7 +406,7 @@ async fn a_disabled_audience_stops_new_tokens_without_losing_the_lending() {
         "a disabled audience must not be issued"
     );
 
-    // 貸し出しは消えていない——再開すればそのまま出る（停止は削除の代わりに使える）。
+    // 名乗りと割り当ては消えていない——再開すればそのまま出る（停止は削除の代わりに使える）。
     let res = send(
         &env.app,
         support::patch(

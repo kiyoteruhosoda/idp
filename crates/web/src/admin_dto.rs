@@ -197,6 +197,9 @@ pub struct ApplicationDetailView {
     pub application: ApplicationView,
     #[serde(default)]
     pub assigned: Vec<ApplicationAssignmentView>,
+    /// 割り当てられたサービスアカウント（ADR-0059）。古い api は返さないので既定は空。
+    #[serde(default)]
+    pub assigned_service_accounts: Vec<ApplicationServiceAccountAssignmentView>,
     /// `record_only` / `enforce`。
     #[serde(default)]
     pub enforcement: String,
@@ -225,6 +228,23 @@ pub struct ApplicationAssignmentView {
 impl ApplicationAssignmentView {
     /// 利用者アカウント自体が止まっているか。⚠ 割り当ては残るので、名簿では別に示す。
     pub fn is_user_active(&self) -> bool {
+        self.status == "ACTIVE"
+    }
+}
+
+/// 割り当てられたサービスアカウント 1 行。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApplicationServiceAccountAssignmentView {
+    pub client_id: String,
+    pub app_name: String,
+    /// クライアントの状態（`ACTIVE` / `DISABLED` / `DELETED`）。
+    pub status: String,
+    pub assigned_at: String,
+}
+
+impl ApplicationServiceAccountAssignmentView {
+    /// クライアントが動いているか。⚠ 割り当ては残るので、一覧では別に示す。
+    pub fn is_client_active(&self) -> bool {
         self.status == "ACTIVE"
     }
 }

@@ -29,8 +29,8 @@ use crate::domain::pkce;
 use crate::domain::refresh_token::RefreshToken;
 use crate::domain::repositories::{
     ApplicationRepository, AuthorizationCodeRepository, ClientPermissionRepository,
-    ClientRepository, ClientResourceRepository, ProtectedResourceRepository,
-    RefreshTokenRepository, TenantRepository, UserRepository,
+    ClientRepository, ProtectedResourceRepository, RefreshTokenRepository, TenantRepository,
+    UserRepository,
 };
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::{AuthenticationMethod, AuthenticationStrength, Scope};
@@ -222,11 +222,9 @@ pub struct TokenService {
     /// 登録済みの宛名（`aud` に入る値。ADR-0042）。`resource` に assay 自身以外を指定された
     /// `client_credentials` でのみ引く。
     resources: Arc<dyn ProtectedResourceRepository>,
-    /// クライアントへ許した宛名（ADR-0042）。登録されているだけでは足りず、要求元が
-    /// その宛先を要求してよいかをここで確かめる。
-    client_resources: Arc<dyn ClientResourceRepository>,
-    /// アプリとその名乗り（ADR-0059）。管理 API のトークンを、権限コードを持たないサービスアカウント
-    /// へも出してよいか（＝あるアプリの名乗りか）を引く。
+    /// アプリとその名乗り・割り当て（ADR-0059）。管理 API のトークンを権限コードを持たない
+    /// サービスアカウントへも出してよいか（＝あるアプリの名乗りか）と、宛名のトークンを出してよいか
+    /// （＝宛名のアプリに割り当てられているか）を引く。
     applications: Arc<dyn ApplicationRepository>,
     keys: Arc<KeyService>,
     /// クライアント認証（secret 照合・assertion 検証）。方式ごとの分岐は
@@ -255,7 +253,6 @@ impl TokenService {
         refresh_tokens: Arc<dyn RefreshTokenRepository>,
         client_permissions: Arc<dyn ClientPermissionRepository>,
         resources: Arc<dyn ProtectedResourceRepository>,
-        client_resources: Arc<dyn ClientResourceRepository>,
         applications: Arc<dyn ApplicationRepository>,
         keys: Arc<KeyService>,
         client_auth: Arc<ClientAuthenticator>,
@@ -275,7 +272,6 @@ impl TokenService {
             refresh_tokens,
             client_permissions,
             resources,
-            client_resources,
             applications,
             keys,
             client_auth,
@@ -876,21 +872,42 @@ impl TokenService {
                     .map_err(|e| internal(&e))?;
                 // 「登録が無い」「停止中」「許可されていない」を**応答では区別しない**。
                 // 区別すると、総当たりで「どの宛名が登録されているか」を探れる。切り分けは監査で行う。
+                //
+                // 出してよいのは、宛名が有効で、**あるアプリの `resource` の名乗り**であり、そのアプリが
+                // 有効で、要求元のサービスアカウントが**そのアプリに割り当てられている**ときだけ
+                // （ADR-0059 の決定 6）。「どのサービスアカウントがこの API を使ってよいか」は、
+                // アプリの「使う主体」に並ぶ。
                 let issuable = match found {
                     None => Err("unknown_resource"),
                     Some(resource) if !resource.is_active() => Err("resource_disabled"),
-                    Some(resource) => {
-                        let granted = self
-                            .client_resources
-                            .is_granted(client.id, resource.id)
-                            .await
-                            .map_err(|e| internal(&e))?;
-                        if granted {
-                            Ok(resource)
-                        } else {
-                            Err("resource_not_granted")
+                    Some(resource) => match self
+                        .applications
+                        .find_by_binding_target(
+                            tenant_id,
+                            BindingTarget::Resource {
+                                resource_id: resource.id,
+                            },
+                        )
+                        .await
+                        .map_err(|e| internal(&e))?
+                    {
+                        None => Err("resource_not_bound_to_an_application"),
+                        Some(application) if !application.is_active() => {
+                            Err("application_disabled")
                         }
-                    }
+                        Some(application) => {
+                            let assigned = self
+                                .applications
+                                .is_service_account_assigned(application.id, client.id)
+                                .await
+                                .map_err(|e| internal(&e))?;
+                            if assigned {
+                                Ok(resource)
+                            } else {
+                                Err("service_account_not_assigned")
+                            }
+                        }
+                    },
                 };
                 let resource = match issuable {
                     Ok(resource) => resource,

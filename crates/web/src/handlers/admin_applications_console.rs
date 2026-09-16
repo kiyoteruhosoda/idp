@@ -1,6 +1,7 @@
 //! アプリの管理コンソール画面（`/{tenant_id}/admin/applications`。ADR-0054）。
 //!
-//! 一覧・登録・設定変更・名乗り（binding）の付け外し・利用者の割り当てを提供する。操作の実体は
+//! 一覧・登録・設定変更・名乗り（binding）の付け外し・使う主体（人・サービスアカウント）の
+//! 割り当てを提供する。操作の実体は
 //! api の `/admin/applications/*` に SSO Cookie 転送で委譲する（web は sqlx に触らない。ADR-0007）。
 //!
 //! ⚠ **この画面が締め出しの復旧経路である**（ADR-0054 の決定 4 の手順 4）。割り当てを足す操作が
@@ -311,19 +312,29 @@ pub async fn unbind(
 }
 
 #[derive(Deserialize)]
-pub struct UserIdForm {
-    pub user_id: String,
+pub struct AssignForm {
+    /// `user` / `service_account`。「いま入れている人」から写すときは `user` を送る。
+    #[serde(default = "user_kind")]
+    pub kind: String,
+    /// 人なら利用者 ID、サービスアカウントならクライアント ID。
+    pub target: String,
     pub csrf_token: String,
 }
 
-/// 利用者を割り当てる（`POST /{tenant_id}/admin/applications/{id}/assign`）。
+fn user_kind() -> String {
+    "user".to_string()
+}
+
+/// 使う主体を足す（`POST /{tenant_id}/admin/applications/{id}/assign`。ADR-0059）。
+///
+/// 入口は 1 つで、押した先で「人 / サービスアカウント」を選ぶ。種類の検証は api がする。
 pub async fn assign(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Path((_tenant_id, application_id)): Path<(String, String)>,
-    Form(form): Form<UserIdForm>,
+    Form(form): Form<AssignForm>,
 ) -> Response {
     let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
     let sso = sso(&headers);
@@ -342,12 +353,13 @@ pub async fn assign(
     let result = state
         .api
         .for_locale(locale(&headers))
-        .assign_application_user(
+        .assign_application_principal(
             &correlation.0,
             &tenant.0,
             &sso,
             &application_id,
-            form.user_id.trim(),
+            form.kind.trim(),
+            form.target.trim(),
         )
         .await;
     finish(
@@ -362,14 +374,23 @@ pub async fn assign(
     .await
 }
 
-/// 割り当てを外す（`POST /{tenant_id}/admin/applications/{id}/unassign`）。
+#[derive(Deserialize)]
+pub struct UnassignForm {
+    /// `user` / `service_account`（行ごとに種類が決まっている）。
+    pub kind: String,
+    /// 人なら利用者 ID、サービスアカウントならクライアント ID。
+    pub target: String,
+    pub csrf_token: String,
+}
+
+/// 使う主体を外す（`POST /{tenant_id}/admin/applications/{id}/unassign`）。行の種類に応じた api へ送る。
 pub async fn unassign(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Path((_tenant_id, application_id)): Path<(String, String)>,
-    Form(form): Form<UserIdForm>,
+    Form(form): Form<UnassignForm>,
 ) -> Response {
     let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
     let sso = sso(&headers);
@@ -385,17 +406,29 @@ pub async fn unassign(
         )
         .await;
     }
-    let result = state
-        .api
-        .for_locale(locale(&headers))
-        .unassign_application_user(
-            &correlation.0,
-            &tenant.0,
-            &sso,
-            &application_id,
-            form.user_id.trim(),
-        )
-        .await;
+    let api = state.api.for_locale(locale(&headers));
+    let result = match form.kind.trim() {
+        "service_account" => {
+            api.unassign_application_service_account(
+                &correlation.0,
+                &tenant.0,
+                &sso,
+                &application_id,
+                form.target.trim(),
+            )
+            .await
+        }
+        _ => {
+            api.unassign_application_user(
+                &correlation.0,
+                &tenant.0,
+                &sso,
+                &application_id,
+                form.target.trim(),
+            )
+            .await
+        }
+    };
     finish(
         &state,
         &correlation,
@@ -495,6 +528,7 @@ async fn render_detail(
         admin: Some(admin.chrome()),
         application: &detail.application,
         assigned: &detail.assigned,
+        assigned_service_accounts: &detail.assigned_service_accounts,
         current_users: current
             .as_ref()
             .map(|c| c.users.as_slice())
@@ -619,4 +653,75 @@ fn internal_error(messages: &Messages, tenant: &WebTenant, admin: &AdminContext)
         })),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::admin_dto::{
+        ApplicationAssignmentView, ApplicationServiceAccountAssignmentView, ApplicationView,
+    };
+    use crate::handlers::admin_console::AdminContext;
+    use crate::i18n::{Locale, Messages};
+    use crate::templates::{render, ApplicationDetail};
+
+    fn application() -> ApplicationView {
+        ApplicationView {
+            id: "app-1".into(),
+            display_name: "wiki".into(),
+            status: "ACTIVE".into(),
+            assignment_mode: "INDIVIDUAL".into(),
+            bindings: Vec::new(),
+            assigned_count: 1,
+            created_at: "2026-09-16T00:00:00Z".into(),
+            updated_at: "2026-09-16T00:00:00Z".into(),
+        }
+    }
+
+    /// 「このアプリを使う主体」は人とサービスアカウントを 1 つの一覧に並べ、⚠ **アイコンだけにせず
+    /// 種類の文字を必ず添える**（読み上げでも見分けられるように。ADR-0048 / ADR-0059）。
+    /// 外す操作は行の種類に応じた値を送る。
+    #[test]
+    fn people_and_service_accounts_share_one_list_with_their_kind_spelled_out() {
+        let messages = Messages::new(Locale::Ja);
+        let admin = AdminContext::for_test("admin", Some("Root"));
+        let assigned = vec![ApplicationAssignmentView {
+            user_id: "user-1".into(),
+            sub: "sub-1".into(),
+            email: "alice@example.com".into(),
+            name: None,
+            status: "ACTIVE".into(),
+            assigned_at: "2026-09-16T00:00:00Z".into(),
+        }];
+        let accounts = vec![ApplicationServiceAccountAssignmentView {
+            client_id: "wiki-machine".into(),
+            app_name: "wiki machine".into(),
+            status: "ACTIVE".into(),
+            assigned_at: "2026-09-16T00:00:00Z".into(),
+        }];
+        let html = render(&ApplicationDetail {
+            messages: &messages,
+            tenant: "/t",
+            admin: Some(admin.chrome()),
+            application: &application(),
+            assigned: &assigned,
+            assigned_service_accounts: &accounts,
+            current_users: &[],
+            current_users_truncated: false,
+            current_users_total: 0,
+            record_only: false,
+            csrf: "csrf",
+            error: None,
+        });
+
+        assert!(html.contains("このアプリを使う主体"));
+        assert!(html.contains(r#"<i class="fa-solid fa-user me-1" aria-hidden="true"></i>人"#));
+        assert!(
+            html.contains(r#"<i class="fa-solid fa-server me-1" aria-hidden="true"></i>サービス"#)
+        );
+        assert!(html.contains("alice@example.com"));
+        assert!(html.contains("wiki-machine"));
+        assert!(html.contains(r#"name="kind" value="service_account""#));
+        assert!(html.contains(r#"name="target" value="wiki-machine""#));
+        assert!(html.contains("「全員」に含まれるのは人だけです"));
+    }
 }
