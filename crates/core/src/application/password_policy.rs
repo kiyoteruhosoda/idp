@@ -16,12 +16,12 @@
 //!
 //! # どのテナントのポリシーか（ADR-0058）
 //!
-//! ポリシーは参照のたびに [`TenantSettingsService`] から引く。渡すのは**利用者の所属元テナント**
+//! ポリシーは参照のたびに [`EffectiveTenantSettings`] から引く。渡すのは**利用者の所属元テナント**
 //! である ——パスワードは利用者の行にあり、所属元だけが管理する（ADR-0009 §2）。ゲストが参加先の
 //! 画面からパスワードを変えても、効くのは所属元のポリシーである。
 
-use crate::application::tenant_settings::TenantSettingsService;
 use crate::domain::clock::Clock;
+use crate::domain::effective_tenant_settings::EffectiveTenantSettings;
 use crate::domain::error::Result;
 use crate::domain::password::PasswordHasher;
 use crate::domain::password_policy::{BreachedPasswordChecker, PasswordPolicy, PasswordRejection};
@@ -53,7 +53,7 @@ impl PasswordHistoryRepository for NoPasswordHistory {
 }
 
 pub struct PasswordPolicyService {
-    settings: Arc<TenantSettingsService>,
+    settings: Arc<dyn EffectiveTenantSettings>,
     history: Arc<dyn PasswordHistoryRepository>,
     breach_checker: Arc<dyn BreachedPasswordChecker>,
     hasher: Arc<dyn PasswordHasher>,
@@ -62,7 +62,7 @@ pub struct PasswordPolicyService {
 
 impl PasswordPolicyService {
     pub fn new(
-        settings: Arc<TenantSettingsService>,
+        settings: Arc<dyn EffectiveTenantSettings>,
         history: Arc<dyn PasswordHistoryRepository>,
         breach_checker: Arc<dyn BreachedPasswordChecker>,
         hasher: Arc<dyn PasswordHasher>,
@@ -80,7 +80,7 @@ impl PasswordPolicyService {
     /// 履歴・漏えい確認を持たない構成（他のサービスの試験の土台）。長さなどの値は `settings` から引く。
     #[cfg(test)]
     pub fn without_history(
-        settings: Arc<TenantSettingsService>,
+        settings: Arc<dyn EffectiveTenantSettings>,
         hasher: Arc<dyn PasswordHasher>,
         clock: Arc<dyn Clock>,
     ) -> Self {
@@ -315,7 +315,7 @@ mod tests {
     }
 
     fn build_with(
-        settings: Arc<TenantSettingsService>,
+        settings: Arc<dyn EffectiveTenantSettings>,
         breached: bool,
     ) -> (PasswordPolicyService, Arc<FakeHistory>) {
         let history = Arc::new(FakeHistory::default());

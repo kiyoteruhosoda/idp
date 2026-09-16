@@ -168,6 +168,8 @@ pub struct AppState {
     pub tenant_resolution: Arc<TenantResolutionService>,
     /// テナント設定の解決（ADR-0058。テナントの行 > 全体の行 > 環境変数 > 組み込み既定）。
     /// ⚠ テナントが上書きできるキーを `Config` から読まない（`Config` はもう持っていない）。
+    /// ここで具象を持つのは管理の口（一覧・書き込み・キャッシュの無効化）のため。値を読む
+    /// ユースケースには `EffectiveTenantSettings` として渡す。
     pub tenant_settings: Arc<crate::application::tenant_settings::TenantSettingsService>,
     pub register: Arc<RegisterService>,
     /// 自己登録アカウントのメール検証（確認リンク送出・消費。SEC6b）。
@@ -337,6 +339,8 @@ impl AppState {
         // ので、ここで 1 回だけ作って渡す。
         // パスワードポリシー・認証ポリシーの既定動作・アプリ割り当ての強制もここから引く（ADR-0058 §4）
         // ので、判定する側（パスワードポリシー・アプリの門・認証の各経路）より先に組み立てる。
+        // 読む側へは domain のトレイト `EffectiveTenantSettings` として**1 本だけ**渡す（同じ解決器を
+        // 別の口で 2 回渡さない）。具象のまま持つのは `AppState` の管理の口（一覧・書き込み・無効化）だけ。
         let tenant_settings_fallback =
             crate::domain::system_setting::tenant_overridable_setting_keys()
                 .filter_map(|key| {
@@ -606,7 +610,6 @@ impl AppState {
             audit.clone(),
             clock.clone(),
             tenant_settings.clone(),
-            tenant_settings.clone(),
             *config.csrf_secret(),
         ));
         let change_password = Arc::new(ChangePasswordService::new(
@@ -622,7 +625,6 @@ impl AppState {
             password_policy.clone(),
             audit.clone(),
             clock.clone(),
-            tenant_settings.clone(),
             tenant_settings.clone(),
             *config.csrf_secret(),
         ));
@@ -667,7 +669,6 @@ impl AppState {
             audit.clone(),
             clock.clone(),
             tenant_settings.clone(),
-            tenant_settings.clone(),
         ));
         // エンドユーザー・ポータルの直接ログイン。admin_login と同機構（クライアント非依存の SSO 直接発行）
         // だが admin 権限を要求せず、TOTP（MFA）を尊重する。`mfa_ticket` の署名鍵は CSRF 秘密鍵を流用する。
@@ -686,7 +687,6 @@ impl AppState {
             clock.clone(),
             *config.key_encryption_key(),
             *config.csrf_secret(),
-            tenant_settings.clone(),
             tenant_settings.clone(),
         ));
         let clients_admin = Arc::new(ClientManagementService::new(
@@ -951,7 +951,6 @@ impl AppState {
             *config.key_encryption_key(),
             config.public_web_base_url().to_string(),
             tenant_settings.clone(),
-            tenant_settings.clone(),
         ));
         let external_idps = Arc::new(ExternalIdpManagementService::new(
             external_providers.clone(),
@@ -1037,7 +1036,6 @@ impl AppState {
             *config.csrf_secret(),
             authentication_policies.clone(),
             application_access.clone(),
-            tenant_settings.clone(),
         ));
 
         let passkey_registration = Arc::new(PasskeyRegistrationService::new(
@@ -1061,7 +1059,6 @@ impl AppState {
             rate_limiter.clone(),
             audit.clone(),
             clock.clone(),
-            tenant_settings.clone(),
             tenant_settings.clone(),
         ));
         // 設定画面からの再起動（ADR-0017）。signal 自体は `run()` の graceful shutdown へ、

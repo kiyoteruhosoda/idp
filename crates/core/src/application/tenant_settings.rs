@@ -25,7 +25,7 @@
 //!
 //! # どのテナントの値で動くか（ADR-0058 §13）
 //!
-//! 消費側は下の型付きの口（[`TenantSettingsService::password_policy`] など）から引く。渡す
+//! 消費側は domain のトレイト [`EffectiveTenantSettings`]（実装は下の型付きの口）から引く。渡す
 //! テナントは次のとおりで、⚠ **発行と検証で必ず同じテナントを渡す**（片方だけ違うと、発行した
 //! 直後に切れているリンクやセッションが出る）。
 //!
@@ -39,8 +39,12 @@
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::admin_actor::AdminActor;
 use crate::domain::audit::{AuditEventType, AuditResult};
-use crate::domain::authentication_policy::LockoutPolicy;
+use crate::domain::authentication_policy::{DefaultPolicyEffect, LockoutPolicy};
 use crate::domain::cache::Cache;
+use crate::domain::effective_tenant_settings::{
+    EffectiveTenantSettings, SsoSessionLifetime, APPLICATION_ASSIGNMENT_ENFORCEMENT,
+    AUTH_POLICY_DEFAULT_EFFECT,
+};
 use crate::domain::error::{DomainError, Result};
 use crate::domain::password_policy::{PasswordPolicy, MAX_PASSWORD_LEN};
 use crate::domain::repositories::{SystemSettingsRepository, TenantSettingsRepository};
@@ -51,6 +55,8 @@ use crate::domain::system_setting::{
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::tenant_setting::{TenantOverrideEntry, TenantSetting};
+use crate::domain::values::AssignmentEnforcement;
+use async_trait::async_trait;
 use chrono::Duration;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -346,17 +352,14 @@ impl TenantSettingsService {
     }
 }
 
-/// SSO セッションの寿命（`SSO_IDLE_TTL_SECS` / `SSO_ABSOLUTE_TTL_SECS`）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SsoSessionLifetime {
-    pub idle: Duration,
-    pub absolute: Duration,
-}
-
 /// 型付きの口。消費側はキーの綴りと型変換をここに任せる（呼び出し側で `parse` を書かせない）。
-impl TenantSettingsService {
+///
+/// 読む側は [`EffectiveTenantSettings`]（domain のトレイト）だけを持つ。この実装を具象のまま
+/// 渡さない（ADR-0058。口を 2 本にしない）。
+#[async_trait]
+impl EffectiveTenantSettings for TenantSettingsService {
     /// パスワードポリシー（`PASSWORD_*`）。渡すのは利用者の**所属元**テナント。
-    pub async fn password_policy(&self, tenant_id: TenantId) -> Result<PasswordPolicy> {
+    async fn password_policy(&self, tenant_id: TenantId) -> Result<PasswordPolicy> {
         Ok(PasswordPolicy {
             min_length: self.parse(tenant_id, "PASSWORD_MIN_LENGTH").await?,
             // 上限はハッシュ計算量の防御（argon2 の入力長）であって運用で緩める値ではないため、
@@ -371,7 +374,7 @@ impl TenantSettingsService {
     }
 
     /// ロックアウト（`LOGIN_*`）。渡すのは利用者の**所属元**テナント。
-    pub async fn login_lockout(&self, tenant_id: TenantId) -> Result<LockoutPolicy> {
+    async fn login_lockout(&self, tenant_id: TenantId) -> Result<LockoutPolicy> {
         let max_failed_attempts: u32 = self.parse(tenant_id, "LOGIN_MAX_FAILED_ATTEMPTS").await?;
         Ok(LockoutPolicy {
             // i32 に収まらない巨大値は「実質ロックしない」として i32::MAX へ飽和させる
@@ -385,7 +388,7 @@ impl TenantSettingsService {
     }
 
     /// SSO セッションの寿命。渡すのは利用者の**所属元**テナント（確立と idle 延長の両方で）。
-    pub async fn sso_session_lifetime(&self, tenant_id: TenantId) -> Result<SsoSessionLifetime> {
+    async fn sso_session_lifetime(&self, tenant_id: TenantId) -> Result<SsoSessionLifetime> {
         Ok(SsoSessionLifetime {
             idle: self.seconds(tenant_id, "SSO_IDLE_TTL_SECS").await?,
             absolute: self.seconds(tenant_id, "SSO_ABSOLUTE_TTL_SECS").await?,
@@ -393,31 +396,49 @@ impl TenantSettingsService {
     }
 
     /// step-up（重要操作の直前の本人確認）の有効秒数。渡すのは利用者の**所属元**テナント。
-    pub async fn step_up_max_age_secs(&self, tenant_id: TenantId) -> Result<u64> {
+    async fn step_up_max_age_secs(&self, tenant_id: TenantId) -> Result<u64> {
         self.parse(tenant_id, "STEP_UP_MAX_AGE_SECS").await
     }
 
     /// 招待リンクの有効期間。渡すのは招待した**参加先**テナント。
-    pub async fn invitation_ttl(&self, tenant_id: TenantId) -> Result<Duration> {
+    async fn invitation_ttl(&self, tenant_id: TenantId) -> Result<Duration> {
         self.seconds(tenant_id, "INVITATION_TTL_SECS").await
     }
 
     /// パスワード再設定リンクの有効期間。渡すのは利用者の**所属元**テナント。
-    pub async fn password_reset_ttl(&self, tenant_id: TenantId) -> Result<Duration> {
+    async fn password_reset_ttl(&self, tenant_id: TenantId) -> Result<Duration> {
         self.seconds(tenant_id, "PASSWORD_RESET_TTL_SECS").await
     }
 
     /// SMTP で送れないとき、再設定リンクをサーバのコンソールへ出してよいか。
-    pub async fn password_reset_console_link_enabled(&self, tenant_id: TenantId) -> Result<bool> {
+    async fn password_reset_console_link_enabled(&self, tenant_id: TenantId) -> Result<bool> {
         self.parse(tenant_id, "PASSWORD_RESET_CONSOLE_LINK_ENABLED")
             .await
     }
 
     /// メール検証リンクの有効期間。渡すのは利用者の**所属元**テナント。
-    pub async fn email_verification_ttl(&self, tenant_id: TenantId) -> Result<Duration> {
+    async fn email_verification_ttl(&self, tenant_id: TenantId) -> Result<Duration> {
         self.seconds(tenant_id, "EMAIL_VERIFICATION_TTL_SECS").await
     }
 
+    /// 認証ポリシーの既定動作。渡すのは判定しているテナント。
+    async fn policy_default_effect(&self, tenant_id: TenantId) -> Result<DefaultPolicyEffect> {
+        let resolved = self.resolve(tenant_id, AUTH_POLICY_DEFAULT_EFFECT).await?;
+        DefaultPolicyEffect::parse(&resolved.value)
+            .map_err(|e| unparsable(AUTH_POLICY_DEFAULT_EFFECT, e))
+    }
+
+    /// アプリ割り当ての強制。渡すのは判定しているテナント。
+    async fn assignment_enforcement(&self, tenant_id: TenantId) -> Result<AssignmentEnforcement> {
+        let resolved = self
+            .resolve(tenant_id, APPLICATION_ASSIGNMENT_ENFORCEMENT)
+            .await?;
+        AssignmentEnforcement::parse(&resolved.value)
+            .map_err(|e| unparsable(APPLICATION_ASSIGNMENT_ENFORCEMENT, e))
+    }
+}
+
+impl TenantSettingsService {
     async fn seconds(&self, tenant_id: TenantId, key: &str) -> Result<Duration> {
         let secs: u64 = self.parse(tenant_id, key).await?;
         i64::try_from(secs)
@@ -425,6 +446,11 @@ impl TenantSettingsService {
             .and_then(Duration::try_seconds)
             .ok_or_else(|| DomainError::InvalidValue(format!("{key} is out of range: {secs}")))
     }
+}
+
+/// 保存値が型に合わない。⚠ 全体へ黙って落とさない（[`TenantSettingsService::parse`] と同じ扱い）。
+fn unparsable(key: &str, error: DomainError) -> DomainError {
+    DomainError::InvalidValue(format!("stored value for {key} cannot be parsed: {error}"))
 }
 
 /// テナントが上書きできる（秘匿値でない）キーの定義。並びは定義の順。
@@ -1261,5 +1287,61 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, DomainError::InvalidValue(_)));
+    }
+
+    /// 判定の既定 2 キー（ADR-0058 §4・§10）。2 テナントで違う値を入れ、互いの値が混ざらないこと。
+    /// 行の無いテナントは既定に従う。
+    #[tokio::test]
+    async fn each_tenant_gets_its_own_decision_defaults() {
+        let (strict, lenient, untouched) = (tenant(), tenant(), tenant());
+        let fixture = super::testing::tenant_settings();
+        fixture.set_tenant(strict, AUTH_POLICY_DEFAULT_EFFECT, "deny");
+        fixture.set_tenant(strict, APPLICATION_ASSIGNMENT_ENFORCEMENT, "enforce");
+        fixture.set_tenant(lenient, AUTH_POLICY_DEFAULT_EFFECT, "allow");
+        fixture.set_tenant(lenient, APPLICATION_ASSIGNMENT_ENFORCEMENT, "record_only");
+        let settings = fixture.service;
+
+        assert_eq!(
+            settings.policy_default_effect(strict).await.unwrap(),
+            DefaultPolicyEffect::Deny
+        );
+        assert_eq!(
+            settings.assignment_enforcement(strict).await.unwrap(),
+            AssignmentEnforcement::Enforce
+        );
+        assert_eq!(
+            settings.policy_default_effect(lenient).await.unwrap(),
+            DefaultPolicyEffect::Allow
+        );
+        assert_eq!(
+            settings.assignment_enforcement(lenient).await.unwrap(),
+            AssignmentEnforcement::RecordOnly
+        );
+        // 行が無ければ既定（allow / record_only）。⚠ 既定が enforce だと名簿の無い全員が締め出される。
+        assert_eq!(
+            settings.policy_default_effect(untouched).await.unwrap(),
+            DefaultPolicyEffect::Allow
+        );
+        assert_eq!(
+            settings.assignment_enforcement(untouched).await.unwrap(),
+            AssignmentEnforcement::RecordOnly
+        );
+    }
+
+    /// 判定の既定 2 キーでも、型に合わない保存値は既定へ黙って落とさずにエラーにする。
+    #[tokio::test]
+    async fn an_unparsable_decision_default_is_an_error() {
+        let t = tenant();
+        let fixture = super::testing::tenant_settings();
+        fixture.set_tenant(t, AUTH_POLICY_DEFAULT_EFFECT, "maybe");
+        fixture.set_tenant(t, APPLICATION_ASSIGNMENT_ENFORCEMENT, "sometimes");
+        assert!(matches!(
+            fixture.service.policy_default_effect(t).await,
+            Err(DomainError::InvalidValue(_))
+        ));
+        assert!(matches!(
+            fixture.service.assignment_enforcement(t).await,
+            Err(DomainError::InvalidValue(_))
+        ));
     }
 }

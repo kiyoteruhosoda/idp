@@ -15,7 +15,7 @@ use crate::application::application_management::{
 use crate::application::application_user_directory::{
     ApplicationUserDirectoryError, RosterQuery, MAX_SUBJECTS,
 };
-use crate::domain::access_decision_settings::AccessDecisionSettings;
+use crate::domain::effective_tenant_settings::EffectiveTenantSettings;
 use crate::domain::message::MessageKey;
 use crate::domain::values::{ApplicationStatus, AssignmentMode};
 use crate::presentation::admin::{

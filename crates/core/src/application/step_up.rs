@@ -35,11 +35,11 @@ use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authenticator_management::has_usable_passkey;
 use crate::application::mfa_login::user_has_confirmed_totp;
 use crate::application::passkey_assertion::{PasskeyAssertionError, PasskeyStepUpCeremony};
-use crate::application::tenant_settings::TenantSettingsService;
 use crate::application::totp_registration::verify_totp_code;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
+use crate::domain::effective_tenant_settings::EffectiveTenantSettings;
 use crate::domain::password::PasswordHasher;
 use crate::domain::rate_limit::LoginRateLimiter;
 use crate::domain::repositories::{
@@ -117,7 +117,7 @@ pub struct StepUpService {
     clock: Arc<dyn Clock>,
     key_encryption_key: [u8; 32],
     /// テナントが上書きできる設定の解決（ADR-0058）。参照のたびに引く。
-    settings: Arc<TenantSettingsService>,
+    settings: Arc<dyn EffectiveTenantSettings>,
 }
 
 impl StepUpService {
@@ -133,7 +133,7 @@ impl StepUpService {
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
         key_encryption_key: [u8; 32],
-        settings: Arc<TenantSettingsService>,
+        settings: Arc<dyn EffectiveTenantSettings>,
     ) -> Self {
         Self {
             sso_sessions,
@@ -750,7 +750,7 @@ mod tests {
         has_totp: bool,
         authenticators: FakeAuthenticators,
         ceremony_user: Result<Uuid, ()>,
-        settings: Arc<TenantSettingsService>,
+        settings: Arc<dyn EffectiveTenantSettings>,
     ) -> (StepUpService, Arc<FakeSessions>) {
         let sessions = Arc::new(FakeSessions {
             row: Mutex::new(session),

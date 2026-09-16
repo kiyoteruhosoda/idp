@@ -14,7 +14,6 @@ use crate::application::audit::RequestContext;
 use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
 use crate::application::sso_restore::SsoRestorer;
 use crate::application::tenant_resolution::TenantResolutionService;
-use crate::domain::access_decision_settings::AccessDecisionSettings;
 use crate::domain::auth_session::{self, AuthSession};
 use crate::domain::authentication_policy::{
     evaluate_policies, AuthenticationContext, PolicyDecision,
@@ -22,6 +21,7 @@ use crate::domain::authentication_policy::{
 use crate::domain::client::Client;
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
+use crate::domain::effective_tenant_settings::EffectiveTenantSettings;
 use crate::domain::error::OAuthErrorCode;
 use crate::domain::repositories::{
     AuthSessionRepository, AuthenticationPolicyRepository, ClientConsentRepository,
@@ -172,7 +172,7 @@ pub struct AuthorizeService {
     /// フローが持っているのは `client_id` だけなので、アプリへの読み替えをここで挟む。
     applications: Arc<ApplicationAccessService>,
     /// 一致するポリシーが無い場合の既定動作（AP2）。テナントの値を参照のたびに引く（ADR-0058 §4）。
-    access_settings: Arc<dyn AccessDecisionSettings>,
+    settings: Arc<dyn EffectiveTenantSettings>,
     /// ログイン画面へ出すテナント表示名の引き当て先（`login_context` でのみ使う）。
     /// リポジトリを直に持たず解決サービスを通すのは、同じ行を同じリクエストの入口
     /// （`TenantResolver`）が既に引いており、その TTL キャッシュに相乗りするためである。
@@ -191,7 +191,7 @@ impl AuthorizeService {
         auth_session_ttl: std::time::Duration,
         authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
         applications: Arc<ApplicationAccessService>,
-        access_settings: Arc<dyn AccessDecisionSettings>,
+        settings: Arc<dyn EffectiveTenantSettings>,
         tenants: Arc<TenantResolutionService>,
     ) -> Self {
         Self {
@@ -205,7 +205,7 @@ impl AuthorizeService {
                 .expect("auth session TTL out of range"),
             authentication_policies,
             applications,
-            access_settings,
+            settings,
             tenants,
         }
     }
@@ -578,7 +578,7 @@ impl AuthorizeService {
         now: chrono::DateTime<chrono::Utc>,
     ) -> RestoredPolicy {
         let default_effect = match self
-            .access_settings
+            .settings
             .policy_default_effect(tenant.tenant_id())
             .await
         {
