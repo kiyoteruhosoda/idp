@@ -43,10 +43,6 @@ pub enum AuditEventType {
     ResourceRegistered,
     ResourceUpdated,
     ResourceDeleted,
-    /// 管理者によるクライアントへの宛先の許可／取り消し（ADR-0042）。`client_id` 列は
-    /// **操作対象**のクライアント、`reason` に `resource=<uri>` が入る。
-    ClientResourceGranted,
-    ClientResourceRevoked,
     /// 管理者によるアプリ（`applications`）の登録・更新・削除（ADR-0054）。`reason` に
     /// `application=<id>` を記録する。表示名は変わり得るので id で残す。
     ApplicationRegistered,
@@ -55,7 +51,8 @@ pub enum AuditEventType {
     /// 管理者によるアプリ ↔ 認証方法（binding）の追加・削除（ADR-0054）。
     ApplicationBindingAdded,
     ApplicationBindingRemoved,
-    /// 管理者による利用者の割り当て・解除（ADR-0054）。`user_id` 列は**操作対象**の利用者、
+    /// 管理者による主体（人・サービスアカウント）の割り当て・解除（ADR-0054 / ADR-0059）。
+    /// `user_id` 列（人）か `client_id` 列（サービスアカウント）が**操作対象**の主体、
     /// 実行主体は `reason` の `actor=` に出る。
     ApplicationAssigned,
     ApplicationUnassigned,
@@ -184,8 +181,6 @@ impl AuditEventType {
             Self::ResourceRegistered => "resource.registered",
             Self::ResourceUpdated => "resource.updated",
             Self::ResourceDeleted => "resource.deleted",
-            Self::ClientResourceGranted => "client_resource.granted",
-            Self::ClientResourceRevoked => "client_resource.revoked",
             Self::ApplicationRegistered => "application.registered",
             Self::ApplicationUpdated => "application.updated",
             Self::ApplicationDeleted => "application.deleted",

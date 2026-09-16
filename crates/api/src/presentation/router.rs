@@ -481,9 +481,14 @@ pub fn build(state: AppState) -> Router {
             "/admin/applications/{application_id}/assignments",
             axum::routing::post(admin_applications::assign_user),
         )
+        // 割り当ては人とサービスアカウントの 2 種類（ADR-0059）。外すときは種類ごとの鍵で指す。
         .route(
-            "/admin/applications/{application_id}/assignments/{user_id}",
+            "/admin/applications/{application_id}/assignments/users/{user_id}",
             axum::routing::delete(admin_applications::unassign_user),
+        )
+        .route(
+            "/admin/applications/{application_id}/assignments/service-accounts/{client_id}",
+            axum::routing::delete(admin_applications::unassign_service_account),
         )
         // 「全員」を「個別」へ倒す前に、いま入れている人を写すための一覧。
         .route(
@@ -505,16 +510,6 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/admin/resources/{resource_id}",
             patch(admin_resources::update_resource_status).delete(admin_resources::delete_resource),
-        )
-        // クライアントへの宛先の貸し出し（ADR-0042）。貸すときは名前で、取り消すときは行の id で指す。
-        .route(
-            "/admin/clients/{client_id}/resources",
-            get(admin_resources::list_client_resources)
-                .post(admin_resources::grant_client_resource),
-        )
-        .route(
-            "/admin/clients/{client_id}/resources/{resource_id}",
-            axum::routing::delete(admin_resources::revoke_client_resource),
         )
         // 認証ポリシーの管理（ユーザー認証・認証ポリシー仕様書 §7）。idp.authentication-policies:* 必須。
         .route(

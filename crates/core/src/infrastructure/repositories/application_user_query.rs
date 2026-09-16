@@ -103,7 +103,9 @@ impl ApplicationUserQuery for SqlxApplicationUserQuery {
         page: PageRequest,
     ) -> Result<Page<SubjectFacts>> {
         let total: i64 = sqlx::query(
-            "SELECT COUNT(*) AS total FROM application_assignments WHERE application_id = ?",
+            // ⚠ 名簿に載るのは人だけ（ADR-0059 の決定 5）。サービスアカウントの割り当てを数えない。
+            "SELECT COUNT(*) AS total FROM application_assignments \
+             WHERE application_id = ? AND kind = 'USER'",
         )
         .bind(application_id.to_string())
         .fetch_one(&self.pool)
@@ -119,7 +121,7 @@ impl ApplicationUserQuery for SqlxApplicationUserQuery {
             "SELECT u.sub, u.status AS user_status, m.status AS membership_status \
              FROM application_assignments a JOIN users u ON u.id = a.user_id \
              LEFT JOIN tenant_memberships m ON m.user_id = u.id AND m.tenant_id = ? \
-             WHERE a.application_id = ? ORDER BY u.sub ASC LIMIT ? OFFSET ?",
+             WHERE a.application_id = ? AND a.kind = 'USER' ORDER BY u.sub ASC LIMIT ? OFFSET ?",
         )
         .bind(tenant_id.to_string())
         .bind(application_id.to_string())
@@ -154,7 +156,8 @@ impl ApplicationUserQuery for SqlxApplicationUserQuery {
         );
         builder.push_bind(tenant_id.to_string());
         builder.push(
-            " LEFT JOIN application_assignments a ON a.user_id = u.id AND a.application_id = ",
+            " LEFT JOIN application_assignments a ON a.kind = 'USER' AND a.user_id = u.id \
+             AND a.application_id = ",
         );
         builder.push_bind(application_id.to_string());
         builder.push(" WHERE u.sub IN (");

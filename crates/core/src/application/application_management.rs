@@ -10,8 +10,8 @@
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::admin_actor::AdminActor;
 use crate::domain::application::{
-    validate_display_name, Application, ApplicationAssignment, ApplicationBinding, AssignedUser,
-    BindingTarget,
+    validate_display_name, Application, ApplicationAssignment, ApplicationBinding,
+    AssignedPrincipal, AssignedServiceAccount, AssignedUser, BindingTarget,
 };
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::client::Client;
@@ -82,11 +82,22 @@ pub enum NewBinding {
     Resource { resource_uri: String },
 }
 
-/// アプリの詳細（binding と名簿）。
+/// アプリの詳細（名乗りと、使う主体）。
 pub struct ApplicationDetail {
     pub application: Application,
     pub bindings: Vec<BindingSummary>,
+    /// 割り当てられた人。
     pub assigned: Vec<AssignedUser>,
+    /// 割り当てられたサービスアカウント（ADR-0059 の決定 5）。
+    pub assigned_service_accounts: Vec<AssignedServiceAccount>,
+}
+
+/// 割り当てたい主体（管理 API の要求を解釈したもの。ADR-0059 の決定 5）。
+///
+/// 人は内部 ID、サービスアカウントは `client_id`（人が知っている値）で指す。
+pub enum NewAssignment {
+    User { user_id: Uuid },
+    ServiceAccount { client_id: String },
 }
 
 /// 「いま入れている人」——`EVERYONE` を `INDIVIDUAL` へ倒す前に写す元。
@@ -197,10 +208,16 @@ impl ApplicationManagementService {
             .list_assigned_users(id)
             .await
             .map_err(map_repo_error)?;
+        let assigned_service_accounts = self
+            .applications
+            .list_assigned_service_accounts(id)
+            .await
+            .map_err(map_repo_error)?;
         Ok(ApplicationDetail {
             application,
             bindings,
             assigned,
+            assigned_service_accounts,
         })
     }
 
@@ -243,8 +260,14 @@ impl ApplicationManagementService {
         // できる。人ではない実行主体（機械）には割り当てる相手が居ないので何もしない。
         if input.assign_creator {
             if let Some(user_id) = actor.user_id() {
-                self.assign(tenant, application.id, user_id, actor, ctx)
-                    .await?;
+                self.assign(
+                    tenant,
+                    application.id,
+                    NewAssignment::User { user_id },
+                    actor,
+                    ctx,
+                )
+                .await?;
             }
         }
         Ok(application)
@@ -449,24 +472,47 @@ impl ApplicationManagementService {
         Ok(())
     }
 
-    /// 利用者を割り当てる（冪等）。
+    /// 主体を割り当てる（冪等。ADR-0059 の決定 5）。
+    ///
+    /// - 人: ⚠ **要求テナントのメンバーであること。** 他テナントの利用者 id を持ち込ませない
+    /// - サービスアカウント: ⚠ **`client_credentials` だけの client であること。** ログイン用の client を
+    ///   割り当てても何も起きない（宛名のトークンは `client_credentials` でしか取れない）うえ、画面に
+    ///   「使える」ように見える
     pub async fn assign(
         &self,
         tenant: TenantContext,
         id: Uuid,
-        user_id: Uuid,
+        request: NewAssignment,
         actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<(), ApplicationManagementError> {
         let application = self.load(tenant, id).await?;
-        // ⚠ **要求テナントのメンバーであることを確かめる。** アプリはテナントの中のものなので、
-        // 他テナントの利用者 id を持ち込んで名簿へ入れられてはいけない。
-        self.require_member(tenant, user_id).await?;
+        let (principal, audit_client_id) = match request {
+            NewAssignment::User { user_id } => {
+                self.require_member(tenant, user_id).await?;
+                (AssignedPrincipal::User { user_id }, None)
+            }
+            NewAssignment::ServiceAccount { client_id } => {
+                let client = self.load_client(tenant, &client_id).await?;
+                if !client.is_service_account() {
+                    return Err(ApplicationManagementError::Invalid(MessageKey::new(
+                        "api-application-assignment-needs-service-account",
+                    )));
+                }
+                (
+                    AssignedPrincipal::ServiceAccount {
+                        client_row_id: client.id,
+                    },
+                    Some(client.client_id),
+                )
+            }
+        };
 
         self.applications
             .assign(&ApplicationAssignment {
+                id: self.ids.new_id(),
                 application_id: id,
-                user_id,
+                principal,
                 assigned_at: self.clock.now(),
                 assigned_by: actor.user_id(),
             })
@@ -478,9 +524,9 @@ impl ApplicationManagementService {
                 AuditEventType::ApplicationAssigned,
                 AuditResult::Success,
                 Some(tenant.tenant_id()),
-                // `user_id` 列は**操作対象**の利用者。実行主体は理由欄へ回す。
-                Some(user_id),
-                None,
+                // `user_id` / `client_id` 列は**操作対象**の主体。実行主体は理由欄へ回す。
+                principal.user_id(),
+                audit_client_id.as_deref(),
                 Some(&audit_reason(&application, actor)),
                 ctx,
             )
@@ -488,8 +534,8 @@ impl ApplicationManagementService {
         Ok(())
     }
 
-    /// 割り当てを外す（未割り当てでもエラーにしない）。
-    pub async fn unassign(
+    /// 人の割り当てを外す（未割り当てでもエラーにしない）。
+    pub async fn unassign_user(
         &self,
         tenant: TenantContext,
         id: Uuid,
@@ -499,10 +545,9 @@ impl ApplicationManagementService {
     ) -> Result<(), ApplicationManagementError> {
         let application = self.load(tenant, id).await?;
         self.applications
-            .unassign(id, user_id)
+            .unassign(id, AssignedPrincipal::User { user_id })
             .await
             .map_err(map_repo_error)?;
-
         self.audit
             .record(
                 AuditEventType::ApplicationUnassigned,
@@ -510,6 +555,50 @@ impl ApplicationManagementService {
                 Some(tenant.tenant_id()),
                 Some(user_id),
                 None,
+                Some(&audit_reason(&application, actor)),
+                ctx,
+            )
+            .await;
+        Ok(())
+    }
+
+    /// サービスアカウントの割り当てを外す（未割り当てでもエラーにしない）。
+    ///
+    /// ⚠ 論理削除済みの client も外せる（消した client の割り当てが画面に残り続けないように）。
+    pub async fn unassign_service_account(
+        &self,
+        tenant: TenantContext,
+        id: Uuid,
+        client_id: &str,
+        actor: &AdminActor,
+        ctx: &RequestContext,
+    ) -> Result<(), ApplicationManagementError> {
+        let application = self.load(tenant, id).await?;
+        let client = match self
+            .clients
+            .find_by_client_id(tenant.tenant_id(), client_id.trim())
+            .await
+        {
+            Ok(Some(client)) => client,
+            Ok(None) => return Err(ApplicationManagementError::NotFound),
+            Err(e) => return Err(ApplicationManagementError::Internal(e.to_string())),
+        };
+        self.applications
+            .unassign(
+                id,
+                AssignedPrincipal::ServiceAccount {
+                    client_row_id: client.id,
+                },
+            )
+            .await
+            .map_err(map_repo_error)?;
+        self.audit
+            .record(
+                AuditEventType::ApplicationUnassigned,
+                AuditResult::Success,
+                Some(tenant.tenant_id()),
+                None,
+                Some(&client.client_id),
                 Some(&audit_reason(&application, actor)),
                 ctx,
             )

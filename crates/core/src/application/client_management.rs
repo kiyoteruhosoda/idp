@@ -10,7 +10,7 @@
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::admin_actor::AdminActor;
 use crate::domain::application::{
-    Application, ApplicationAssignment, ApplicationBinding, BindingTarget,
+    Application, ApplicationAssignment, ApplicationBinding, AssignedPrincipal, BindingTarget,
 };
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::client::Client;
@@ -311,8 +311,9 @@ impl ClientManagementService {
             if let Err(e) = self
                 .applications
                 .assign(&ApplicationAssignment {
+                    id: self.ids.new_id(),
                     application_id: application.id,
-                    user_id,
+                    principal: AssignedPrincipal::User { user_id },
                     assigned_at: now,
                     assigned_by: Some(user_id),
                 })

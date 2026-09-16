@@ -134,7 +134,7 @@ async fn admin_can_manage_applications_but_others_cannot() {
             post(
                 &admin_tok,
                 &format!("{detail_uri}/assignments"),
-                json!({ "user_id": member_id }),
+                json!({ "kind": "user", "user_id": member_id }),
             ),
         )
         .await,
@@ -143,7 +143,10 @@ async fn admin_can_manage_applications_but_others_cannot() {
     assert_eq!(assigned["assigned"].as_array().unwrap().len(), 2);
     let res = send(
         &env.app,
-        delete(&admin_tok, &format!("{detail_uri}/assignments/{member_id}")),
+        delete(
+            &admin_tok,
+            &format!("{detail_uri}/assignments/users/{member_id}"),
+        ),
     )
     .await;
     assert_eq!(res.status(), StatusCode::NO_CONTENT, "unassign -> 204");

@@ -20,8 +20,8 @@
 #![allow(dead_code)]
 
 use crate::domain::application::{
-    Application, ApplicationAssignment, ApplicationBinding, ApplicationUserFacts, AssignedUser,
-    BindingTarget,
+    Application, ApplicationAssignment, ApplicationBinding, ApplicationUserFacts,
+    AssignedPrincipal, AssignedServiceAccount, AssignedUser, BindingTarget,
 };
 use crate::domain::application_log::{
     ApplicationLogEntry, ApplicationLogFilter, ApplicationLogRecord,
@@ -1034,17 +1034,30 @@ pub trait ApplicationRepository: Send + Sync {
     /// binding を外す（アプリ境界内。対象が無ければ `false`）。
     async fn remove_binding(&self, application_id: Uuid, binding_id: Uuid) -> Result<bool>;
 
-    /// この利用者にこのアプリの割り当てがあるか（判定のホットパス）。
+    /// この**人**にこのアプリの割り当てがあるか（判定のホットパス）。
     async fn is_assigned(&self, application_id: Uuid, user_id: Uuid) -> Result<bool>;
-    /// アプリに割り当てられた利用者を一覧する（メールの昇順）。**利用者の情報ごと 1 回で読む**
+    /// この**サービスアカウント**にこのアプリの割り当てがあるか（宛名のトークン発行。ADR-0059 の決定 6）。
+    async fn is_service_account_assigned(
+        &self,
+        application_id: Uuid,
+        client_row_id: Uuid,
+    ) -> Result<bool>;
+    /// アプリに割り当てられた**人**を一覧する（メールの昇順）。**利用者の情報ごと 1 回で読む**
     /// ——1 件ずつ引き直すと、名簿の長さだけ往復が増える。
     async fn list_assigned_users(&self, application_id: Uuid) -> Result<Vec<AssignedUser>>;
-    /// 割り当ての件数を返す（一覧画面が人数だけを欲しいとき。全件を読まない）。
+    /// アプリに割り当てられた**サービスアカウント**を一覧する（`client_id` の昇順）。
+    async fn list_assigned_service_accounts(
+        &self,
+        application_id: Uuid,
+    ) -> Result<Vec<AssignedServiceAccount>>;
+    /// **人**の割り当ての件数を返す（一覧画面が人数だけを欲しいとき。全件を読まない）。
+    ///
+    /// ⚠ サービスアカウントを数えない。この件数は「個別なのに誰も入れない」の判定に使う。
     async fn count_assignments(&self, application_id: Uuid) -> Result<i64>;
-    /// 割り当てを足す（冪等: 既存の割り当ては `assigned_at` を保持する）。
+    /// 割り当てを足す（冪等: 既存の割り当ては `id`・`assigned_at` を保持する）。
     async fn assign(&self, assignment: &ApplicationAssignment) -> Result<()>;
     /// 割り当てを外す（未割り当てでもエラーにしない）。
-    async fn unassign(&self, application_id: Uuid, user_id: Uuid) -> Result<()>;
+    async fn unassign(&self, application_id: Uuid, principal: AssignedPrincipal) -> Result<()>;
 }
 
 /// `sub` と、その人について読んだ事実（ADR-0057）。
@@ -1113,28 +1126,6 @@ pub trait ProtectedResourceRepository: Send + Sync {
     ) -> Result<bool>;
     /// 宛名を削除する（許可行も CASCADE で消える）。対象が無ければ `false`。
     async fn delete(&self, tenant_id: TenantId, id: Uuid) -> Result<bool>;
-}
-
-/// クライアントへ許した宛名（`client_resources`）の永続化（ADR-0042）。
-///
-/// 権限コードの付与（`ClientPermissionRepository`）と別トレイトにするのは、**扱う値が違う**
-/// ためである。あちらはマスタ駆動の文字列コード、こちらはテナント内の行への参照で、
-/// 「未知のコード」と「他テナントの宛名」は別の失敗になる。
-#[async_trait]
-pub trait ClientResourceRepository: Send + Sync {
-    /// 当該クライアントへ許した宛名を一覧する（`resource_uri` 昇順。無ければ空）。
-    async fn list_for_client(&self, client_row_id: Uuid) -> Result<Vec<ProtectedResource>>;
-    /// 宛名を許可する（冪等: 既存の許可は `granted_at` を保持する）。
-    async fn grant(
-        &self,
-        client_row_id: Uuid,
-        resource_id: Uuid,
-        granted_at: DateTime<Utc>,
-    ) -> Result<()>;
-    /// 許可を取り消す（未許可でもエラーにしない）。
-    async fn revoke(&self, client_row_id: Uuid, resource_id: Uuid) -> Result<()>;
-    /// 当該クライアントがその宛名を要求してよいか。トークン発行が引く。
-    async fn is_granted(&self, client_row_id: Uuid, resource_id: Uuid) -> Result<bool>;
 }
 
 /// Refresh Token の永続化（設計仕様 §9.1）。DB には SHA-256 hash を保存する。

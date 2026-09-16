@@ -1,4 +1,7 @@
-//! 保護リソース（`aud` に入る宛名）の登録・停止・削除と、クライアントへの許可（ADR-0042）。
+//! 保護リソース（`aud` に入る宛名）の登録・停止・削除（ADR-0042）。
+//!
+//! 「どのサービスアカウントがこの宛名のトークンを取ってよいか」は、ここでは持たない。宛名をアプリの
+//! 名乗りとして結び付け、そのアプリにサービスアカウントを割り当てる（ADR-0059 の決定 6）。
 //!
 //! 権限コードの付与（`client_permission_management`）と別サービスにするのは、**判定の材料が違う**
 //! ためである。あちらは「クライアントへ付与してよいコードか」を静的に判断できるが、こちらは
@@ -9,14 +12,11 @@
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::admin_actor::AdminActor;
 use crate::domain::audit::{AuditEventType, AuditResult};
-use crate::domain::client::Client;
 use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
 use crate::domain::id_generator::IdGenerator;
 use crate::domain::message::MessageKey;
-use crate::domain::repositories::{
-    ClientRepository, ClientResourceRepository, ProtectedResourceRepository,
-};
+use crate::domain::repositories::ProtectedResourceRepository;
 use crate::domain::resource::{validate_display_name, validate_resource_uri, ProtectedResource};
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::ResourceStatus;
@@ -25,7 +25,7 @@ use uuid::Uuid;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ResourceManagementError {
-    /// 宛名・クライアントが要求テナントに存在しない（削除済みのクライアントを含む）。
+    /// 宛名が要求テナントに存在しない。
     NotFound,
     /// 入力が不正（空・絶対 URI でない・fragment 付き・予約済みの宛名）。
     Invalid(MessageKey),
@@ -36,8 +36,6 @@ pub enum ResourceManagementError {
 
 pub struct ResourceManagementService {
     resources: Arc<dyn ProtectedResourceRepository>,
-    client_resources: Arc<dyn ClientResourceRepository>,
-    clients: Arc<dyn ClientRepository>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
     ids: Arc<dyn IdGenerator>,
@@ -49,8 +47,6 @@ impl ResourceManagementService {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         resources: Arc<dyn ProtectedResourceRepository>,
-        client_resources: Arc<dyn ClientResourceRepository>,
-        clients: Arc<dyn ClientRepository>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
         ids: Arc<dyn IdGenerator>,
@@ -58,8 +54,6 @@ impl ResourceManagementService {
     ) -> Self {
         Self {
             resources,
-            client_resources,
-            clients,
             audit,
             clock,
             ids,
@@ -158,7 +152,7 @@ impl ResourceManagementService {
         self.load(tenant, id).await
     }
 
-    /// 宛名を削除する。許可行（`client_resources`）も一緒に消える。
+    /// 宛名を削除する。アプリの名乗り（`application_bindings`）も一緒に消える。
     ///
     /// **発行済みのトークンは失効しない。** `aud` は署名済みのクレームで、寿命が尽きるまで
     /// リソースサーバから見て有効なままである。急いで止めたいときは、受け側でその `client_id` を
@@ -192,86 +186,6 @@ impl ResourceManagementService {
             )
             .await;
         Ok(())
-    }
-
-    /// クライアントへ許した宛名を一覧する。
-    pub async fn list_for_client(
-        &self,
-        tenant: TenantContext,
-        client_id: &str,
-    ) -> Result<Vec<ProtectedResource>, ResourceManagementError> {
-        let client = self.load_client(tenant, client_id).await?;
-        self.client_resources
-            .list_for_client(client.id)
-            .await
-            .map_err(map_repo_error)
-    }
-
-    /// クライアントへ宛名を許可する（冪等）。許可後の一覧を返す。
-    pub async fn grant(
-        &self,
-        tenant: TenantContext,
-        client_id: &str,
-        raw_uri: &str,
-        actor: &AdminActor,
-        ctx: &RequestContext,
-    ) -> Result<Vec<ProtectedResource>, ResourceManagementError> {
-        let client = self.load_client(tenant, client_id).await?;
-        let resource = self.load_by_uri(tenant, raw_uri).await?;
-
-        self.client_resources
-            .grant(client.id, resource.id, self.clock.now())
-            .await
-            .map_err(map_repo_error)?;
-
-        self.audit
-            .record(
-                AuditEventType::ClientResourceGranted,
-                AuditResult::Success,
-                Some(tenant.tenant_id()),
-                actor.user_id(),
-                // `client_id` 列は操作対象のクライアント。実行主体が機械のときは理由欄へ回す。
-                Some(&client.client_id),
-                Some(&audit_reason(&resource.resource_uri, actor)),
-                ctx,
-            )
-            .await;
-        self.list_for_client(tenant, client_id).await
-    }
-
-    /// クライアントの許可を取り消す（未許可でもエラーにしない）。取り消し後の一覧を返す。
-    ///
-    /// 貸すときは**名前**（`resource_uri`）で、取り消すときは**行の id** で指すのは、
-    /// 宛名の登録（名前で作り、id で消す）と同じ形に揃えるため。名前を URL のパスに載せると
-    /// スラッシュの percent-encode が要り、取り消しという後戻りできない操作で綴りを誤りやすい。
-    pub async fn revoke(
-        &self,
-        tenant: TenantContext,
-        client_id: &str,
-        resource_id: Uuid,
-        actor: &AdminActor,
-        ctx: &RequestContext,
-    ) -> Result<Vec<ProtectedResource>, ResourceManagementError> {
-        let client = self.load_client(tenant, client_id).await?;
-        let resource = self.load(tenant, resource_id).await?;
-
-        self.client_resources
-            .revoke(client.id, resource.id)
-            .await
-            .map_err(map_repo_error)?;
-
-        self.audit
-            .record(
-                AuditEventType::ClientResourceRevoked,
-                AuditResult::Success,
-                Some(tenant.tenant_id()),
-                actor.user_id(),
-                Some(&client.client_id),
-                Some(&audit_reason(&resource.resource_uri, actor)),
-                ctx,
-            )
-            .await;
-        self.list_for_client(tenant, client_id).await
     }
 
     /// **この認可サーバ自身の名前空間（issuer 配下）は貸さない。**
@@ -317,38 +231,6 @@ impl ResourceManagementService {
         match self.resources.find_by_id(tenant.tenant_id(), id).await {
             Ok(Some(resource)) => Ok(resource),
             Ok(None) => Err(ResourceManagementError::NotFound),
-            Err(e) => Err(ResourceManagementError::Internal(e.to_string())),
-        }
-    }
-
-    async fn load_by_uri(
-        &self,
-        tenant: TenantContext,
-        raw_uri: &str,
-    ) -> Result<ProtectedResource, ResourceManagementError> {
-        let uri = raw_uri.trim();
-        match self.resources.find_by_uri(tenant.tenant_id(), uri).await {
-            Ok(Some(resource)) => Ok(resource),
-            Ok(None) => Err(ResourceManagementError::NotFound),
-            Err(e) => Err(ResourceManagementError::Internal(e.to_string())),
-        }
-    }
-
-    /// 要求テナント内で有効なクライアントを解決する。他テナントの `client_id` は解決しない。
-    async fn load_client(
-        &self,
-        tenant: TenantContext,
-        client_id: &str,
-    ) -> Result<Client, ResourceManagementError> {
-        match self
-            .clients
-            .find_by_client_id(tenant.tenant_id(), client_id)
-            .await
-        {
-            // 論理削除済み（ADR-0035）は「無い」として扱う。消したはずのクライアントに
-            // 宛先を貸せると、復活したときに知らない宛名を持っている。
-            Ok(Some(client)) if !client.is_deleted() => Ok(client),
-            Ok(_) => Err(ResourceManagementError::NotFound),
             Err(e) => Err(ResourceManagementError::Internal(e.to_string())),
         }
     }

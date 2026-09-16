@@ -15,8 +15,7 @@ use crate::domain::values::ResourceStatus;
 use crate::presentation::admin::{RequirePerms, ResourcesRead, ResourcesWrite};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
-    ClientResourceRequest, RegisterResourceRequest, ResourceListResponse, ResourceResponse,
-    UpdateResourceStatusRequest,
+    RegisterResourceRequest, ResourceListResponse, ResourceResponse, UpdateResourceStatusRequest,
 };
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
@@ -175,121 +174,6 @@ pub async fn delete_resource(
         .await
         .map_err(|e| map_error(e, locale))?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-/// クライアントへ許した宛名を一覧する（`GET /{tenant_id}/admin/clients/{client_id}/resources`）。
-#[utoipa::path(
-    get,
-    path = "/{tenant_id}/admin/clients/{client_id}/resources",
-    tag = "admin",
-    params(("client_id" = String, Path, description = "対象クライアントの client_id")),
-    responses(
-        (status = 200, description = "許可済みの宛名一覧", body = ResourceListResponse),
-        (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.resources:read 必須）"),
-        (status = 404, description = "対象クライアントが不存在"),
-    )
-)]
-pub async fn list_client_resources(
-    RequirePerms(_admin, _): RequirePerms<ResourcesRead>,
-    State(state): State<AppState>,
-    Extension(tenant): Extension<ResolvedTenant>,
-    locale: ApiLocale,
-    Path((_tenant_id, client_id)): Path<(String, String)>,
-) -> Result<Json<ResourceListResponse>, ApiError> {
-    let resources = state
-        .resources_admin
-        .list_for_client(tenant.context(), &client_id)
-        .await
-        .map_err(|e| map_error(e, locale))?;
-    Ok(Json(to_list(resources)))
-}
-
-/// クライアントへ宛名を許可する（冪等。`POST /{tenant_id}/admin/clients/{client_id}/resources`）。
-///
-/// 貸すときは**名前**で指す。運用で書く値は登録した宛名そのもので、内部 ID ではないからである。
-#[utoipa::path(
-    post,
-    path = "/{tenant_id}/admin/clients/{client_id}/resources",
-    tag = "admin",
-    params(("client_id" = String, Path, description = "対象クライアントの client_id")),
-    request_body = ClientResourceRequest,
-    responses(
-        (status = 200, description = "許可後の宛名一覧", body = ResourceListResponse),
-        (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.resources:write 必須）"),
-        (status = 404, description = "クライアントまたは宛名が不存在"),
-    )
-)]
-#[allow(clippy::too_many_arguments)]
-pub async fn grant_client_resource(
-    RequirePerms(admin, _): RequirePerms<ResourcesWrite>,
-    State(state): State<AppState>,
-    Extension(correlation): Extension<CorrelationId>,
-    Extension(tenant): Extension<ResolvedTenant>,
-    locale: ApiLocale,
-    headers: HeaderMap,
-    Path((_tenant_id, client_id)): Path<(String, String)>,
-    Json(body): Json<ClientResourceRequest>,
-) -> Result<Json<ResourceListResponse>, ApiError> {
-    let ctx = request_context(
-        &headers,
-        &correlation,
-        state.config.trust_forwarded_headers(),
-    );
-    let resources = state
-        .resources_admin
-        .grant(
-            tenant.context(),
-            &client_id,
-            &body.resource_uri,
-            &admin.actor,
-            &ctx,
-        )
-        .await
-        .map_err(|e| map_error(e, locale))?;
-    Ok(Json(to_list(resources)))
-}
-
-/// クライアントの許可を取り消す
-/// （`DELETE /{tenant_id}/admin/clients/{client_id}/resources/{resource_id}`）。
-#[utoipa::path(
-    delete,
-    path = "/{tenant_id}/admin/clients/{client_id}/resources/{resource_id}",
-    tag = "admin",
-    params(
-        ("client_id" = String, Path, description = "対象クライアントの client_id"),
-        ("resource_id" = String, Path, description = "取り消す宛名の内部 ID（UUID）"),
-    ),
-    responses(
-        (status = 200, description = "取り消し後の宛名一覧", body = ResourceListResponse),
-        (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.resources:write 必須）"),
-        (status = 404, description = "クライアントまたは宛名が不存在"),
-    )
-)]
-#[allow(clippy::too_many_arguments)]
-pub async fn revoke_client_resource(
-    RequirePerms(admin, _): RequirePerms<ResourcesWrite>,
-    State(state): State<AppState>,
-    Extension(correlation): Extension<CorrelationId>,
-    Extension(tenant): Extension<ResolvedTenant>,
-    locale: ApiLocale,
-    headers: HeaderMap,
-    Path((_tenant_id, client_id, resource_id)): Path<(String, String, String)>,
-) -> Result<Json<ResourceListResponse>, ApiError> {
-    let id = parse_resource_id(&resource_id, locale)?;
-    let ctx = request_context(
-        &headers,
-        &correlation,
-        state.config.trust_forwarded_headers(),
-    );
-    let resources = state
-        .resources_admin
-        .revoke(tenant.context(), &client_id, id, &admin.actor, &ctx)
-        .await
-        .map_err(|e| map_error(e, locale))?;
-    Ok(Json(to_list(resources)))
 }
 
 fn parse_resource_id(raw: &str, locale: ApiLocale) -> Result<Uuid, ApiError> {

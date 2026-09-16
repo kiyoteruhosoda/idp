@@ -285,3 +285,12 @@ root テナントの UUID は固定値 `00000000-0000-7000-8000-000000000001`（
   （何も変える前に止まる）。どのアプリの名乗りにするかは推測しない。`down` は `service_account` /
   `resource` の名乗りを消して列を戻し、サービスアカウントのアプリを 0054 と同じ形で作り直す。
 
+- `0058_application_assignment_principals`: アプリを使う主体を人（`USER`）とサービスアカウント
+  （`SERVICE_ACCOUNT`）の 2 種類にし、`client_resources` を割り当てへ写して落とす（ADR-0059 の決定 5・6）。
+  `application_assignments` の主キーを `(application_id, user_id)` から代理キー `id` へ移し
+  （サービスアカウントの行は `user_id` が NULL）、種類ごとの UNIQUE を置く。既存行の `id` は
+  `assigned_at` と `(application_id, user_id)` のハッシュから UUIDv7 の形で決定的に作る（流し直しても同じ値）。
+  ⚠ **どのアプリの名乗りでもない宛名の貸し出し、またはサービスアカウントでない client への貸し出しがあれば、
+  冒頭の `SIGNAL` で何も変える前に止まる**（確認の SELECT は OPERATIONS.md 4-5）。`down` は
+  サービスアカウントの割り当てを「アプリが名乗る宛名」ごとの貸し出しへ戻し、主キーを元へ戻す。
+

@@ -18,7 +18,7 @@
 
 use crate::domain::message::MessageKey;
 use crate::domain::tenant::TenantId;
-use crate::domain::values::{ApplicationStatus, AssignmentMode, UserStatus};
+use crate::domain::values::{ApplicationStatus, AssignmentMode, ClientStatus, UserStatus};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
@@ -172,16 +172,71 @@ pub struct ApplicationBinding {
     pub created_at: DateTime<Utc>,
 }
 
-/// アプリ × 利用者（`application_assignments` テーブル）。
+/// アプリを使ってよい主体（ADR-0059 の決定 5）。
+///
+/// ⚠ 種類で振る舞いが違う:
+///
+/// - 「全員（`EVERYONE`）」に含まれるのは**人だけ**。サービスアカウントは必ず個別に割り当てる
+/// - 人の割り当て = ログインしてよい（code の発行時の判定が見るのは人だけ）
+/// - サービスアカウントの割り当て = そのアプリの宛名（`resource` の名乗り）宛のトークンを取ってよい
+/// - 名簿（self）に載るのは人だけ
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssignedPrincipal {
+    /// 人（`users.id`）。
+    User { user_id: Uuid },
+    /// サービスアカウント（`client_credentials` だけの `clients.id`）。
+    ServiceAccount { client_row_id: Uuid },
+}
+
+impl AssignedPrincipal {
+    /// DB の `kind` 列に入る値。許可値の単一の出所は本 enum。
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::User { .. } => "USER",
+            Self::ServiceAccount { .. } => "SERVICE_ACCOUNT",
+        }
+    }
+
+    /// 人なら `users.id`。
+    pub fn user_id(&self) -> Option<Uuid> {
+        match self {
+            Self::User { user_id } => Some(*user_id),
+            Self::ServiceAccount { .. } => None,
+        }
+    }
+
+    /// サービスアカウントなら `clients.id`。
+    pub fn client_row_id(&self) -> Option<Uuid> {
+        match self {
+            Self::User { .. } => None,
+            Self::ServiceAccount { client_row_id } => Some(*client_row_id),
+        }
+    }
+}
+
+/// アプリ × 主体（`application_assignments` テーブル）。
 ///
 /// ⚠ ロールを持たない。ここに載るのは「使ってよいか」の 1 ビットだけである。
 #[derive(Debug, Clone)]
 pub struct ApplicationAssignment {
+    pub id: Uuid,
     pub application_id: Uuid,
-    pub user_id: Uuid,
+    pub principal: AssignedPrincipal,
     pub assigned_at: DateTime<Utc>,
     /// 割り当てた管理者（監査のための出所）。移行・機械経由は `None`。
     pub assigned_by: Option<Uuid>,
+}
+
+/// 割り当てられたサービスアカウント 1 行（管理 API と画面が読む読み取りモデル）。
+#[derive(Debug, Clone)]
+pub struct AssignedServiceAccount {
+    pub client_row_id: Uuid,
+    /// 発行された `client_id`（人が見分ける値）。
+    pub client_id: String,
+    /// クライアントの登録名。
+    pub app_name: String,
+    pub client_status: ClientStatus,
+    pub assigned_at: DateTime<Utc>,
 }
 
 /// 割り当てられた利用者 1 行（管理 API と画面が読む読み取りモデル）。

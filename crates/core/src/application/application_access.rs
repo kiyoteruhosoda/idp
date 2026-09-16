@@ -212,7 +212,8 @@ pub mod test_support {
 
     use super::*;
     use crate::domain::application::{
-        ApplicationAssignment, ApplicationBinding, AssignedUser, BindingTarget,
+        ApplicationAssignment, ApplicationBinding, AssignedPrincipal, AssignedServiceAccount,
+        AssignedUser, BindingTarget,
     };
     use crate::domain::error::Result;
     use crate::domain::values::{ApplicationStatus, AssignmentMode};
@@ -280,6 +281,19 @@ pub mod test_support {
         async fn is_assigned(&self, _application_id: Uuid, _user_id: Uuid) -> Result<bool> {
             Ok(false)
         }
+        async fn is_service_account_assigned(
+            &self,
+            _application_id: Uuid,
+            _client_row_id: Uuid,
+        ) -> Result<bool> {
+            Ok(false)
+        }
+        async fn list_assigned_service_accounts(
+            &self,
+            _application_id: Uuid,
+        ) -> Result<Vec<AssignedServiceAccount>> {
+            Ok(Vec::new())
+        }
         async fn list_assigned_users(&self, _application_id: Uuid) -> Result<Vec<AssignedUser>> {
             Ok(Vec::new())
         }
@@ -289,7 +303,11 @@ pub mod test_support {
         async fn assign(&self, _assignment: &ApplicationAssignment) -> Result<()> {
             Ok(())
         }
-        async fn unassign(&self, _application_id: Uuid, _user_id: Uuid) -> Result<()> {
+        async fn unassign(
+            &self,
+            _application_id: Uuid,
+            _principal: AssignedPrincipal,
+        ) -> Result<()> {
             Ok(())
         }
     }
@@ -319,7 +337,8 @@ mod tests {
     };
     use crate::domain::access_decision_settings::APPLICATION_ASSIGNMENT_ENFORCEMENT;
     use crate::domain::application::{
-        ApplicationAssignment, ApplicationBinding, AssignedUser, BindingTarget,
+        ApplicationAssignment, ApplicationBinding, AssignedPrincipal, AssignedServiceAccount,
+        AssignedUser, BindingTarget,
     };
     use crate::domain::audit::AuditEvent;
     use crate::domain::authentication_policy::DefaultPolicyEffect;
@@ -415,6 +434,19 @@ mod tests {
         async fn is_assigned(&self, _application_id: Uuid, _user_id: Uuid) -> Result<bool> {
             Ok(self.assigned)
         }
+        async fn is_service_account_assigned(
+            &self,
+            _application_id: Uuid,
+            _client_row_id: Uuid,
+        ) -> Result<bool> {
+            Ok(false)
+        }
+        async fn list_assigned_service_accounts(
+            &self,
+            _application_id: Uuid,
+        ) -> Result<Vec<AssignedServiceAccount>> {
+            Ok(Vec::new())
+        }
         async fn list_assigned_users(&self, _application_id: Uuid) -> Result<Vec<AssignedUser>> {
             Ok(Vec::new())
         }
@@ -424,7 +456,11 @@ mod tests {
         async fn assign(&self, _assignment: &ApplicationAssignment) -> Result<()> {
             Ok(())
         }
-        async fn unassign(&self, _application_id: Uuid, _user_id: Uuid) -> Result<()> {
+        async fn unassign(
+            &self,
+            _application_id: Uuid,
+            _principal: AssignedPrincipal,
+        ) -> Result<()> {
             Ok(())
         }
     }
