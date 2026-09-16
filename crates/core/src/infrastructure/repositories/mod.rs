@@ -2,6 +2,7 @@
 
 pub mod application;
 pub mod application_log;
+pub mod application_user_query;
 pub mod audit_log;
 pub mod auth_session;
 pub(crate) mod authentication_methods_json;

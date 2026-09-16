@@ -20,7 +20,7 @@
 #![allow(dead_code)]
 
 use crate::domain::application::{
-    Application, ApplicationAssignment, ApplicationBinding, AssignedUser,
+    Application, ApplicationAssignment, ApplicationBinding, ApplicationUserFacts, AssignedUser,
 };
 use crate::domain::application_log::{
     ApplicationLogEntry, ApplicationLogFilter, ApplicationLogRecord,
@@ -1033,6 +1033,46 @@ pub trait ApplicationRepository: Send + Sync {
     async fn assign(&self, assignment: &ApplicationAssignment) -> Result<()>;
     /// 割り当てを外す（未割り当てでもエラーにしない）。
     async fn unassign(&self, application_id: Uuid, user_id: Uuid) -> Result<()>;
+}
+
+/// `sub` と、その人について読んだ事実（ADR-0057）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubjectFacts {
+    pub sub: Uuid,
+    pub facts: ApplicationUserFacts,
+}
+
+/// 名簿の照会（読み取りモデル。ADR-0057）。書き込み（[`ApplicationRepository`]）とは関心を分ける
+/// （[`AuditLogSink`] と [`AuditLogQuery`] と同じ分け方）。
+///
+/// ⚠ **ここは可否を判断しない。** 返すのは事実だけで、「使ってよいか」は
+/// [`Application::roster_state`](crate::domain::application::Application::roster_state) が決める。
+/// SQL 側にも規則を書くと規則が 2 か所になり、判定（code の発行地点）と名簿が食い違う。
+///
+/// 並びは `sub` の昇順に固定する（全テナントで一意なので、ページ間で重複・欠落が起きない）。
+#[async_trait]
+pub trait ApplicationUserQuery: Send + Sync {
+    /// 「全員」のアプリの候補 ＝ テナントのメンバー。
+    async fn list_tenant_members(
+        &self,
+        tenant_id: TenantId,
+        page: PageRequest,
+    ) -> Result<Page<SubjectFacts>>;
+    /// 「個別」のアプリの候補 ＝ 割り当てのある利用者。
+    async fn list_assigned(
+        &self,
+        tenant_id: TenantId,
+        application_id: Uuid,
+        page: PageRequest,
+    ) -> Result<Page<SubjectFacts>>;
+    /// 指定された `sub` の事実。⚠ **要求テナントに居ない `sub` は行を返さない**
+    /// ——呼び出し側が「消えた」（`unknown`）として扱う。
+    async fn facts_for_subs(
+        &self,
+        tenant_id: TenantId,
+        application_id: Uuid,
+        subs: &[Uuid],
+    ) -> Result<Vec<SubjectFacts>>;
 }
 
 /// 保護リソース（`aud` に入る宛名）の永続化（ADR-0042）。

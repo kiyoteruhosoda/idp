@@ -11,13 +11,18 @@
 use crate::application::application_management::{
     ApplicationDetail, ApplicationManagementError, ApplicationSummary, CurrentUsers, NewApplication,
 };
+use crate::application::application_user_directory::{
+    ApplicationUserDirectoryError, RosterQuery, MAX_SUBJECTS,
+};
+use crate::domain::message::MessageKey;
 use crate::domain::values::{ApplicationStatus, AssignmentMode};
 use crate::presentation::admin::{ApplicationsRead, ApplicationsWrite, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
     ApplicationAssignmentResponse, ApplicationBindingResponse, ApplicationCurrentUserResponse,
     ApplicationCurrentUsersResponse, ApplicationDetailResponse, ApplicationListResponse,
-    ApplicationResponse, CreateApplicationAssignmentRequest, CreateApplicationBindingRequest,
+    ApplicationResponse, ApplicationUserListResponse, ApplicationUserQueryParams,
+    ApplicationUserResponse, CreateApplicationAssignmentRequest, CreateApplicationBindingRequest,
     CreateApplicationRequest, UpdateApplicationRequest,
 };
 use crate::presentation::error::ApiError;
@@ -25,7 +30,7 @@ use crate::presentation::handlers::request_context;
 use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
-use axum::extract::{Extension, Path, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use uuid::Uuid;
@@ -588,6 +593,106 @@ fn to_current_users(users: CurrentUsers) -> ApplicationCurrentUsersResponse {
             .collect(),
         total: users.total,
         truncated: users.truncated,
+    }
+}
+
+/// アプリの名簿を引く
+/// （`GET /{tenant_id}/admin/applications/oidc/{client_id}/users`。ADR-0057）。
+///
+/// RP の定期照合（ADR-0049 の I7）が読む口である。⚠ **宛先は OIDC の `client_id`**
+/// ——RP が既に持っている唯一の値で、アプリの内部 ID を持たせると、作り直した日に古い ID のまま
+/// 静かに別の名簿を読むことになる。
+///
+/// ⚠ **`subs` を指定したときだけ `unknown`（消えた）が返る。** 消えた人は、いない以上、候補の
+/// 一覧には現れない。
+#[utoipa::path(
+    get,
+    path = "/{tenant_id}/admin/applications/oidc/{client_id}/users",
+    tag = "admin",
+    params(
+        ("client_id" = String, Path, description = "OIDC の client_id"),
+        ApplicationUserQueryParams,
+    ),
+    responses(
+        (status = 200, description = "名簿", body = ApplicationUserListResponse),
+        (status = 400, description = "sub の指定が不正、または多すぎる"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.applications:read 必須）"),
+        (status = 404, description = "その client_id に対応するアプリが無い"),
+    )
+)]
+pub async fn application_users(
+    RequirePerms(_admin, _): RequirePerms<ApplicationsRead>,
+    State(state): State<AppState>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
+    Path((_tenant_id, client_id)): Path<(String, String)>,
+    Query(params): Query<ApplicationUserQueryParams>,
+) -> Result<Json<ApplicationUserListResponse>, ApiError> {
+    let query = match params.subs.as_deref() {
+        Some(raw) => RosterQuery::Subjects(parse_subs(raw, locale)?),
+        None => RosterQuery::Page,
+    };
+    let result = state
+        .application_users
+        .for_oidc_client(
+            tenant.context(),
+            &client_id,
+            query,
+            params.limit,
+            params.offset,
+        )
+        .await
+        .map_err(|e| map_directory_error(e, locale))?;
+    Ok(Json(ApplicationUserListResponse {
+        users: result
+            .page
+            .items
+            .iter()
+            .map(|user| ApplicationUserResponse {
+                sub: user.sub.to_string(),
+                state: user.state.as_str().to_string(),
+            })
+            .collect(),
+        total: result.page.total,
+        // 要求値ではなくクランプ後の値を返す（他の一覧と同じ。呼び出し側がページ送りに使える）。
+        limit: result.applied.limit(),
+        offset: result.applied.offset(),
+    }))
+}
+
+/// カンマ区切りの `sub` を読む。
+///
+/// ⚠ **1 つでも読めなければ断る。** 読めたものだけで答えると、綴りを 1 文字間違えた `sub` が
+/// 黙って「消えた」に化け、RP がその人の結び付きを落とす。
+fn parse_subs(raw: &str, locale: ApiLocale) -> Result<Vec<Uuid>, ApiError> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            Uuid::parse_str(value).map_err(|_| {
+                ApiError::BadRequest(
+                    ApiMessages::new(locale).get("api-application-users-sub-invalid"),
+                )
+            })
+        })
+        .collect()
+}
+
+fn map_directory_error(e: ApplicationUserDirectoryError, locale: ApiLocale) -> ApiError {
+    let msgs = ApiMessages::new(locale);
+    match e {
+        // ⚠ 空の名簿ではなく 404。空を返すと RP は全員を止める（ADR-0057）。
+        ApplicationUserDirectoryError::NotBound => {
+            ApiError::NotFound(msgs.get("api-application-not-bound"))
+        }
+        ApplicationUserDirectoryError::TooManySubjects => {
+            ApiError::BadRequest(msgs.get_message(&MessageKey::with_value(
+                "api-application-users-too-many-subs",
+                MAX_SUBJECTS.to_string(),
+            )))
+        }
+        ApplicationUserDirectoryError::Internal(m) => ApiError::Internal(m),
     }
 }
 

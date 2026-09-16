@@ -188,6 +188,79 @@ pub struct AssignedUser {
     pub assigned_at: DateTime<Utc>,
 }
 
+/// 名簿の 1 行（ADR-0057）。RP の定期照合が読む読み取りモデル。
+///
+/// ⚠ **載るのは `sub` と状態だけである。** 属性の写しはログインのたびに渡っているので
+/// （ADR-0049 の I5）、ここは棚卸しの口であって属性を配る口ではない。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplicationUser {
+    /// トークンの主体識別子。RP の名簿（`federated_identities`）と突き合わせる鍵。
+    pub sub: Uuid,
+    pub state: ApplicationUserState,
+}
+
+/// 「この人はいまこのアプリを使ってよいか」——**RP が取る行動**で 3 つに分ける（ADR-0057）。
+///
+/// ⚠ **理由を細かく返さない。** 「割り当てが無い」と「アカウントが止まっている」を分けると
+/// 割り当てのモードが RP に漏れる（ADR-0054「RP にモードを知らせない」）うえ、⚠ **RP の行動は
+/// どちらも同じ**である ——入れない・結び付きは残す。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplicationUserState {
+    /// いま使ってよい。
+    Allowed,
+    /// assay に居るが、いまは使えない。⚠ **結び付きは残す**（戻る可能性がある）。
+    Blocked,
+    /// このテナントの利用者ではない（＝消えた）。結び付きごと落としてよい。
+    Unknown,
+}
+
+impl ApplicationUserState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Allowed => "allowed",
+            Self::Blocked => "blocked",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// 名簿を組み立てるために DB から読む**事実**（判断はしない。ADR-0057 の決定 4）。
+///
+/// 可否は [`Application::admits`] が決める ——判定（code 発行地点）と一覧が別々の規則を持つと、
+/// ⚠ **「名簿に居るのに入れない」「居ないのに入れる」**が起きる。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApplicationUserFacts {
+    /// 利用者アカウント自体の状態。
+    pub user_status: UserStatus,
+    /// 要求テナントでのメンバーシップが**参加中**か。
+    pub active_member: bool,
+    /// このアプリの割り当て行があるか。
+    pub assigned: bool,
+}
+
+impl Application {
+    /// 事実から名簿の状態を決める（ADR-0057）。
+    ///
+    /// ⚠ **判定に無い条件を足さない。** `INDIVIDUAL` でメンバーシップを見ないのは
+    /// [`Self::admits`] がそうだからで、一覧だけが厳しいと「名簿に居ないのに入れる」側へずれる。
+    /// `EVERYONE` がメンバーシップを見るのは、「全員」がテナントの中だけを指すためである
+    /// （ADR-0054）。
+    pub fn roster_state(&self, facts: ApplicationUserFacts) -> ApplicationUserState {
+        // 止まっている利用者はそもそもログインできない。割り当ての有無より先に効く。
+        if facts.user_status != UserStatus::Active {
+            return ApplicationUserState::Blocked;
+        }
+        if self.assignment_mode == AssignmentMode::Everyone && !facts.active_member {
+            return ApplicationUserState::Blocked;
+        }
+        if self.admits(facts.assigned).is_allowed() {
+            ApplicationUserState::Allowed
+        } else {
+            ApplicationUserState::Blocked
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

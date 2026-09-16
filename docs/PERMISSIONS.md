@@ -11,10 +11,14 @@ assay の管理機能アクセス制御に使う**利用者権限コード（per
 > **注意**: ここでいう権限コードは OIDC の `scope`（`openid`/`profile`/`email`。トークン claim 制御）とは
 > **別軸**である。権限コードは内部認可であり、OIDC Discovery の `scopes_supported` には載せない（ADR-0006 §7）。
 
-> **権限コードを保有できるのは利用者だけである。** 機械（`client_credentials` で認証するクライアント）は
-> `user_permissions` に行を持てないため、assay の管理 API を叩くことはできない（ADR-0030 §影響）。
-> 機械が取るトークンは `sub_type=client` で、管理経路の判定（`AdminAccessService`）は SSO セッションから
-> 利用者を解決するところから始まるため、そもそも通らない。
+> **包括的な管理権限（`idp.system.admin` / `idp.tenant.admin`）を保有できるのは利用者だけである。**
+> 機械（`client_credentials` で認証するクライアント）は `client_permissions` に**細粒度コード**を持てて、
+> 管理 API を叩ける（ADR-0037）。⚠ **包括コードだけは持てない** ——DB の CHECK 制約
+> （`client_permissions_no_blanket_admin_chk`）・ドメイン（`permission::is_grantable_to_client`）・
+> アプリ層の 3 か所で拒む。機械の資格情報は人のものより長く生き、失効の導線も弱いためである。
+> 機械が取る管理トークンは `sub_type=client` で、判定は `ManagementTokenService::authorize` が
+> 保有コードの完全一致・含意で行う（管理コンソールが通る `AdminAccessService` の SSO セッション
+> 経路とは別である）。
 
 ---
 
