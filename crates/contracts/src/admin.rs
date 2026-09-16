@@ -232,6 +232,10 @@ pub struct AuthenticationPolicyResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthenticationPoliciesResponse {
     pub policies: Vec<AuthenticationPolicyResponse>,
+    /// どのポリシーにも一致しないときの既定動作（`allow` / `deny`）。**このテナントの値**
+    /// （ADR-0058 §4）。ポリシーの意味はこの値と組み合わせて初めて決まるので、一覧と同じ応答に載せる
+    /// ——web はこれを描くだけで、自分では値を持たない（ADR-0058 §10）。
+    pub default_effect: String,
 }
 
 /// 認証ポリシーの作成・更新（全項目置換）リクエスト。

@@ -777,8 +777,9 @@ Swagger UI `/api/docs` を参照）。
 - 適用時間帯は 1 行 1 帯で `曜日 開始-終了 オフセット`（例 `mon,tue,wed,thu,fri 09:00-18:00 +09:00`）。
   曜日の `*` は全曜日、オフセット省略時は `+00:00`。**1 行でも読めないと保存自体を拒否する**
   （読めた行だけ保存すると、書いたはずの条件が黙って消えるため）。
-- 一覧の上に出る「どのポリシーにも一致しないときの動作」は `AUTH_POLICY_DEFAULT_EFFECT` の現在値。
-  同じ `deny` 1 件でも、既定が `allow` か `deny` かで意味が変わるため必ず併せて見る。
+- 一覧の上に出る「どのポリシーにも一致しないときの動作」は、**そのテナントの**
+  `AUTH_POLICY_DEFAULT_EFFECT`。同じ `deny` 1 件でも、既定が `allow` か `deny` かで意味が変わるため
+  必ず併せて見る。
 
 ```bash
 # 一覧
@@ -801,6 +802,7 @@ curl -b "sso_session_id=<管理者セッション>" -H 'Content-Type: applicatio
 - 条件（`application_ids` / `user_ids`）は空 = 制限しない、複数条件は AND。`deny` は常に他へ優先する。
 - 一致するポリシーが無いときの既定動作はランタイム設定 `AUTH_POLICY_DEFAULT_EFFECT`
   （既定 `allow`。`deny` にすると許可ポリシーを明示した対象しかログインできない）。
+  **テナントごとに決まる**（テナントに値が無ければ全体の値）。**再起動は要らない**（最大 60 秒で効く）。
 - アカウントロックの閾値はランタイム設定 `LOGIN_MAX_FAILED_ATTEMPTS`（既定 10 回）・
   `LOGIN_LOCK_DURATION_SECS`（既定 900 秒）で調整する（設定手順は「ランタイム設定を DB で
   変更したいとき」参照。反映には再起動が必要）。
@@ -821,7 +823,8 @@ curl -b "sso_session_id=<管理者セッション>" -H 'Content-Type: applicatio
 - ⚠ **判定は既定では「記録するだけ」**（`APPLICATION_ASSIGNMENT_ENFORCEMENT` = `record_only`）。
   この間、割り当てが無い利用者も入れるが、監査ログに `application.access_denied`（成功行）が残る。
   **その行が数日出なくなってから** `enforce` へ切り替える（設定手順は「ランタイム設定を DB で
-  変更したいとき」参照。反映には再起動が必要）。
+  変更したいとき」参照）。**テナントごとに決まり**（テナントに値が無ければ全体の値）、
+  **再起動は要らない**（最大 60 秒で効く）。アプリ一覧の上の表示もそのテナントの値である。
 - 漏れの確認:
   `SELECT reason, COUNT(*) FROM audit_log WHERE event_type='application.access_denied' GROUP BY reason;`
 - 新しく登録した連携先（`authorization_code`）は、登録と同時にアプリとして開かれる（「個別」・
@@ -877,7 +880,8 @@ SELECT result, reason, COUNT(*) AS hits, MAX(occurred_at) AS last_seen
 `reason` は `application=<id> reason=not_assigned enforcement=record_only` の形。⚠ **`result` が
 `success` の行は「通したが割り当てが無かった」**（＝漏れ）、`failure` は「実際に断った」。
 この行が数日ぶん出なくなってから `APPLICATION_ASSIGNMENT_ENFORCEMENT=enforce` へ切り替える
-（設定手順は「ランタイム設定を DB で変更したいとき」参照。反映には再起動が必要）。
+（設定手順は「ランタイム設定を DB で変更したいとき」参照。再起動は要らない。最大 60 秒で効く）。
+監査の行はテナントごとに数える（`WHERE tenant_id = '<テナントの UUID>'` を足す）。
 
 ⚠ **切り替える前に、割り当てを足す操作が数秒で終わることを確かめておく**（締め出したときの
 復旧経路）。アプリの画面で利用者 ID を貼って「割り当てる」だけで戻る。
@@ -1265,6 +1269,10 @@ curl -sS -X POST "$ISSUER/{tenant_id}/admin/external-idps" \
    web を忘れた状態も、この警告に「web に未反映」として出る。
 
 - 上書きを**解除**した場合も再起動するまでは戻らない（未反映として警告に出る）。
+- 例外: `AUTH_POLICY_DEFAULT_EFFECT`・`APPLICATION_ASSIGNMENT_ENFORCEMENT` は**再起動を待たずに効く**
+  （テナントごとに参照のたびに引く。ADR-0058）。保存した api では即時、ほかの api のプロセスでは
+  最大 60 秒で効く。この 2 つは「保存済み・未反映」バッジが付かない。⚠ ただし一覧に出る「現在値」は
+  起動時の値のままなので、効いている値は認証ポリシー／アプリの画面の上に出る表示で確かめる。
 - `ISSUER`・`COOKIE_SECURE`・`HSTS_MAX_AGE`・`AUTH_SESSION_TTL_SECS` は api と web の**両方**が使う
   （ADR-0013・ADR-0017）。web は起動時に api から値を受け取るため、**api → web の順に両方を再起動する**。
   api を再起動するまでは保存した値は誰にも反映されない（web が先に再起動しても、api が配るのは

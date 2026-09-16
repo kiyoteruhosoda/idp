@@ -14,6 +14,7 @@ use crate::application::application_management::{
 use crate::application::application_user_directory::{
     ApplicationUserDirectoryError, RosterQuery, MAX_SUBJECTS,
 };
+use crate::domain::access_decision_settings::AccessDecisionSettings;
 use crate::domain::message::MessageKey;
 use crate::domain::values::{ApplicationStatus, AssignmentMode};
 use crate::presentation::admin::{ApplicationsRead, ApplicationsWrite, RequirePerms};
@@ -59,11 +60,7 @@ pub async fn list_applications(
         .map_err(|e| map_error(e, locale))?;
     Ok(Json(ApplicationListResponse {
         applications: applications.iter().map(to_response).collect(),
-        enforcement: state
-            .config
-            .application_assignment_enforcement()
-            .as_str()
-            .to_string(),
+        enforcement: assignment_enforcement(&state, &tenant).await?,
     }))
 }
 
@@ -93,7 +90,8 @@ pub async fn get_application(
         .detail(tenant.context(), id)
         .await
         .map_err(|e| map_error(e, locale))?;
-    Ok(Json(to_detail(&detail, &state)))
+    let enforcement = assignment_enforcement(&state, &tenant).await?;
+    Ok(Json(to_detail(&detail, enforcement)))
 }
 
 /// アプリを登録する（`POST /{tenant_id}/admin/applications`）。
@@ -148,10 +146,7 @@ pub async fn create_application(
         .detail(tenant.context(), application.id)
         .await
         .map_err(|e| map_error(e, locale))?;
-    Ok((
-        StatusCode::CREATED,
-        Json(to_detail(&detail, &state).application),
-    ))
+    Ok((StatusCode::CREATED, Json(to_application_response(&detail))))
 }
 
 /// アプリを更新する（`PUT /{tenant_id}/admin/applications/{application_id}`）。
@@ -206,7 +201,7 @@ pub async fn update_application(
         .detail(tenant.context(), id)
         .await
         .map_err(|e| map_error(e, locale))?;
-    Ok(Json(to_detail(&detail, &state).application))
+    Ok(Json(to_application_response(&detail)))
 }
 
 /// アプリを削除する（`DELETE /{tenant_id}/admin/applications/{application_id}`）。
@@ -324,7 +319,7 @@ pub async fn add_binding(
         .detail(tenant.context(), id)
         .await
         .map_err(|e| map_error(e, locale))?;
-    Ok(Json(to_detail(&detail, &state).application))
+    Ok(Json(to_application_response(&detail)))
 }
 
 /// 認証方法を外す
@@ -411,7 +406,8 @@ pub async fn assign_user(
         .detail(tenant.context(), id)
         .await
         .map_err(|e| map_error(e, locale))?;
-    Ok(Json(to_detail(&detail, &state)))
+    let enforcement = assignment_enforcement(&state, &tenant).await?;
+    Ok(Json(to_detail(&detail, enforcement)))
 }
 
 /// 割り当てを外す
@@ -542,7 +538,23 @@ fn to_response(summary: &ApplicationSummary) -> ApplicationResponse {
     }
 }
 
-fn to_detail(detail: &ApplicationDetail, state: &AppState) -> ApplicationDetailResponse {
+/// そのテナントでアプリの割り当てを断るか（`record_only` / `enforce`）。
+///
+/// 画面が「いまは記録するだけ」を示すために応答へ載せる。⚠ **テナントの値を載せる**（ADR-0058 §4）。
+/// 判定（`ApplicationAccessService`）と同じ口から引くので、表示と判定は食い違わない。
+async fn assignment_enforcement(
+    state: &AppState,
+    tenant: &ResolvedTenant,
+) -> Result<String, ApiError> {
+    state
+        .tenant_settings
+        .assignment_enforcement(tenant.context().tenant_id())
+        .await
+        .map(|enforcement| enforcement.as_str().to_string())
+        .map_err(|e| ApiError::Internal(e.to_string()))
+}
+
+fn to_application_response(detail: &ApplicationDetail) -> ApplicationResponse {
     let summary = ApplicationSummary {
         application: detail.application.clone(),
         bindings: detail
@@ -558,13 +570,13 @@ fn to_detail(detail: &ApplicationDetail, state: &AppState) -> ApplicationDetailR
             .collect(),
         assigned_count: detail.assigned.len() as i64,
     };
+    to_response(&summary)
+}
+
+fn to_detail(detail: &ApplicationDetail, enforcement: String) -> ApplicationDetailResponse {
     ApplicationDetailResponse {
-        application: to_response(&summary),
-        enforcement: state
-            .config
-            .application_assignment_enforcement()
-            .as_str()
-            .to_string(),
+        application: to_application_response(detail),
+        enforcement,
         assigned: detail
             .assigned
             .iter()

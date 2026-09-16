@@ -12,9 +12,11 @@
     </button>
   </div>
 
+  {% if let Some(effect) = default_effect %}
   <div class="alert alert-secondary" role="note">
-    {{ messages.get("admin-auth-policy-default-effect") }} <code>{{ default_effect }}</code>
+    {{ messages.get("admin-auth-policy-default-effect") }} <code>{{ effect }}</code>
   </div>
+  {% endif %}
 
   {% if saved %}<div class="alert alert-success" role="status">{{ messages.get("admin-auth-policy-saved") }}</div>{% endif %}
   {% if updated %}<div class="alert alert-success" role="status">{{ messages.get("admin-auth-policy-updated") }}</div>{% endif %}

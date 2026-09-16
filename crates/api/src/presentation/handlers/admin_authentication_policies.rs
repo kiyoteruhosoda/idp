@@ -8,6 +8,7 @@
 use crate::application::authentication_policy_management::{
     AuthenticationPolicyDraft, AuthenticationPolicyManagementError,
 };
+use crate::domain::access_decision_settings::AccessDecisionSettings;
 use crate::domain::authentication_policy::{AuthenticationPolicy, RequiredMethods, TimeWindow};
 use crate::domain::values::AuthenticationMethod;
 use crate::presentation::admin::{
@@ -50,8 +51,16 @@ pub async fn list_authentication_policies(
         .list(tenant.context())
         .await
         .map_err(|e| map_error(e, locale))?;
+    // 既定動作はテナントの値（ADR-0058 §4）。判定する認証の各経路と同じ口から引くので、画面の表示と
+    // 実際の判定は食い違わない。
+    let default_effect = state
+        .tenant_settings
+        .policy_default_effect(tenant.context().tenant_id())
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(AuthenticationPoliciesResponse {
         policies: policies.iter().map(to_response).collect(),
+        default_effect: default_effect.as_str().to_string(),
     }))
 }
 
