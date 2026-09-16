@@ -81,6 +81,9 @@ pub enum PasskeyAssertionError {
 #[derive(Debug)]
 pub struct VerifiedPasskeyUser {
     pub user_id: Uuid,
+    /// 利用者の所属元テナント。SSO セッションの寿命はこのテナントの値で決まる（ADR-0058）ので、
+    /// 呼び出し側に利用者を引き直させない。
+    pub home_tenant_id: TenantId,
     /// OIDC 経路のチャレンジが持つ `auth_sessions.id_hash`（`Direct` では常に `None`）。
     pub auth_session_id_hash: Option<String>,
 }
@@ -313,7 +316,7 @@ impl PasskeyAssertionService {
         //    確認する。WebAuthn クレデンシャルはテナント列を持たずホスト単位で解決されるため、テナント
         //    境界はこのアプリ層の紐付けで強制する（ADR-0009 §8。`authorize` の SSO 復元と同じ判定）。
         //    非メンバー・無効・不明はいずれも `InvalidCredential` に倒す（列挙防止のため理由を分けない）。
-        ensure_active_member(
+        let home_tenant_id = ensure_active_member(
             self.users.as_ref(),
             self.memberships.as_ref(),
             tenant_id,
@@ -323,6 +326,7 @@ impl PasskeyAssertionService {
 
         Ok(VerifiedPasskeyUser {
             user_id,
+            home_tenant_id,
             auth_session_id_hash: challenge.auth_session_id_hash,
         })
     }
@@ -384,14 +388,14 @@ async fn ensure_active_member(
     memberships: &dyn TenantMembershipRepository,
     tenant_id: TenantId,
     user_id: Uuid,
-) -> Result<(), PasskeyAssertionError> {
-    match users.find_by_id(user_id).await {
-        Ok(Some(u)) if u.is_active() => {}
+) -> Result<TenantId, PasskeyAssertionError> {
+    let home_tenant_id = match users.find_by_id(user_id).await {
+        Ok(Some(u)) if u.is_active() => u.tenant_id,
         Ok(_) => return Err(PasskeyAssertionError::InvalidCredential),
         Err(e) => return Err(PasskeyAssertionError::Internal(e.to_string())),
-    }
+    };
     match memberships.is_active_member(tenant_id, user_id).await {
-        Ok(true) => Ok(()),
+        Ok(true) => Ok(home_tenant_id),
         Ok(false) => Err(PasskeyAssertionError::InvalidCredential),
         Err(e) => Err(PasskeyAssertionError::Internal(e.to_string())),
     }

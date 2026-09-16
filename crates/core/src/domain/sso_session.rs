@@ -73,6 +73,14 @@ impl SsoSession {
         }
     }
 
+    /// 確立時に決めた絶対期限までの長さ（秒）。web が SSO Cookie の `Max-Age` に使う。
+    ///
+    /// 寿命の設定はテナントごとに違う（ADR-0058）ので、Cookie 側で設定を引き直さず、**確立した
+    /// セッションそのもの**から取る（引き直すと、値を変えた瞬間に Cookie とセッションがずれる）。
+    pub fn absolute_ttl_secs(&self) -> u64 {
+        u64::try_from((self.absolute_expires_at - self.created_at).num_seconds()).unwrap_or(0)
+    }
+
     /// 指定時刻時点で有効か（idle・absolute の双方が未超過）。
     pub fn is_valid_at(&self, now: DateTime<Utc>) -> bool {
         self.idle_expires_at > now && self.absolute_expires_at > now

@@ -20,6 +20,7 @@ use crate::application::authorize::code_dispatch;
 use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
 use crate::application::mfa_login::user_has_confirmed_totp;
 use crate::application::password_policy::PasswordPolicyService;
+use crate::application::tenant_settings::TenantSettingsService;
 use crate::domain::access_decision_settings::AccessDecisionSettings;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session;
@@ -37,7 +38,6 @@ use crate::domain::repositories::{
 use crate::domain::sso_session::SsoSession;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::AuthenticationMethod;
-use chrono::Duration;
 use std::sync::Arc;
 
 pub struct ChangePasswordCommand {
@@ -54,11 +54,15 @@ pub enum ChangePasswordOutcome {
         /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
         form_post: Option<Vec<(String, String)>>,
         sso_session_id: String,
+        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        sso_absolute_ttl_secs: u64,
     },
     /// 変更成功だが同意が必要。同意画面へ誘導する。
     ConsentRequired {
         auth_session_id: String,
         sso_session_id: String,
+        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        sso_absolute_ttl_secs: u64,
     },
     /// 変更成功だが認証ポリシーが MFA を必須とし、TOTP 設定済み。TOTP 入力画面へ誘導する
     /// （`auth_session_id` Cookie は維持。SSO はまだ発行しない）。
@@ -73,6 +77,8 @@ pub enum ChangePasswordOutcome {
         /// 利用者が決められない。
         application_name: String,
         sso_session_id: String,
+        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        sso_absolute_ttl_secs: u64,
     },
     PolicyDenied,
     /// 変更は成功したが認証ポリシーが MFA を必須とし、使用可能な認証器（確認済み TOTP）が無い。
@@ -104,8 +110,8 @@ pub struct ChangePasswordService {
     password_policy: Arc<PasswordPolicyService>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
-    sso_idle_ttl: Duration,
-    sso_absolute_ttl: Duration,
+    /// テナントが上書きできる設定の解決（ADR-0058）。参照のたびに引く。
+    settings: Arc<TenantSettingsService>,
     /// 一致するポリシーが無い場合の既定動作（AP2）。テナントの値を参照のたびに引く（ADR-0058 §4）。
     access_settings: Arc<dyn AccessDecisionSettings>,
     csrf_secret: [u8; 32],
@@ -126,8 +132,7 @@ impl ChangePasswordService {
         password_policy: Arc<PasswordPolicyService>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
-        sso_idle_ttl: std::time::Duration,
-        sso_absolute_ttl: std::time::Duration,
+        settings: Arc<TenantSettingsService>,
         access_settings: Arc<dyn AccessDecisionSettings>,
         csrf_secret: [u8; 32],
     ) -> Self {
@@ -144,9 +149,7 @@ impl ChangePasswordService {
             password_policy,
             audit,
             clock,
-            sso_idle_ttl: Duration::from_std(sso_idle_ttl).expect("SSO idle TTL out of range"),
-            sso_absolute_ttl: Duration::from_std(sso_absolute_ttl)
-                .expect("SSO absolute TTL out of range"),
+            settings,
             access_settings,
             csrf_secret,
         }
@@ -214,9 +217,13 @@ impl ChangePasswordService {
             Ok(None) => return ChangePasswordOutcome::SessionExpired,
             Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
         };
-        // 変更を要求されている状態か（強制フラグ、または有効期限切れ。AP7）。
-        if !user.is_active() || !password_change_required(&user, self.password_policy.policy(), now)
-        {
+        // 変更を要求されている状態か（強制フラグ、または有効期限切れ。AP7）。有効期限は利用者の
+        // 所属元テナントのポリシーで測る（ADR-0058）。
+        let password_policy = match self.password_policy.policy(user.tenant_id).await {
+            Ok(policy) => policy,
+            Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
+        };
+        if !user.is_active() || !password_change_required(&user, &password_policy, now) {
             // 変更不要な状態でこのエンドポイントに来るのは想定外（多重送信等）。fail-closed。
             tracing::warn!(
                 correlation_id = %ctx.correlation_id,
@@ -252,7 +259,12 @@ impl ChangePasswordService {
         //    ハッシュ化して保存する。
         match self
             .password_policy
-            .validate(Some(user.id), Some(&user.password_hash), &cmd.new_password)
+            .validate(
+                user.tenant_id,
+                Some(user.id),
+                Some(&user.password_hash),
+                &cmd.new_password,
+            )
             .await
         {
             Ok(Ok(())) => {}
@@ -280,7 +292,7 @@ impl ChangePasswordService {
             Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
         }
         self.password_policy
-            .record_change(user.id, &user.password_hash)
+            .record_change(user.tenant_id, user.id, &user.password_hash)
             .await;
         self.audit
             .record(
@@ -416,13 +428,18 @@ impl ChangePasswordService {
         }
 
         // 7. SSO セッションを組み立てる（`sid` を auth_session へ預けるため、永続化より先に作る）。
+        //    寿命は利用者の所属元テナントの値（SSO セッションは全テナントで共有されるため。ADR-0058）。
+        let lifetime = match self.settings.sso_session_lifetime(user.tenant_id).await {
+            Ok(lifetime) => lifetime,
+            Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
+        };
         let sso_session_id = crypto::random_hex(32);
         let sso = SsoSession::establish(
             crypto::sha256_hex(&sso_session_id),
             user.id,
             now,
-            self.sso_idle_ttl,
-            self.sso_absolute_ttl,
+            lifetime.idle,
+            lifetime.absolute,
             vec![AuthenticationMethod::Password],
             ctx.user_agent.clone(),
             ctx.ip_address.clone(),
@@ -498,6 +515,7 @@ impl ChangePasswordService {
             return ChangePasswordOutcome::ConsentRequired {
                 auth_session_id: rotated_id,
                 sso_session_id,
+                sso_absolute_ttl_secs: sso.absolute_ttl_secs(),
             };
         }
 
@@ -528,6 +546,7 @@ impl ChangePasswordService {
                 return ChangePasswordOutcome::ApplicationNotPermitted {
                     application_name,
                     sso_session_id,
+                    sso_absolute_ttl_secs: sso.absolute_ttl_secs(),
                 }
             }
             Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
@@ -543,6 +562,7 @@ impl ChangePasswordService {
             location: dispatch.location,
             form_post: dispatch.form_post,
             sso_session_id,
+            sso_absolute_ttl_secs: sso.absolute_ttl_secs(),
         }
     }
 }

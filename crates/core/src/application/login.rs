@@ -5,7 +5,7 @@
 //! → AuthSession 削除。同意未完なら `/consent` へ誘導する（F3）。
 //!
 //! ロックポリシー: username 単位で連続 `LOGIN_MAX_FAILED_ATTEMPTS` 回失敗 →
-//! `LOGIN_LOCK_DURATION_SECS` 秒ロック（設定注入。既定 10 回 / 15 分）。IP 単位のレート制限。
+//! `LOGIN_LOCK_DURATION_SECS` 秒ロック（利用者の所属元テナントの値。既定 10 回 / 15 分）。IP 単位のレート制限。
 //! 失敗カウンタのリセット（`failed_login_count = 0` / `locked_until = NULL`）は、**認証が最後まで
 //! 通った時点**でのみ行う。MFA 待ちで返す経路ではリセットせず、TOTP 成功時に
 //! [`crate::application::mfa_login::MfaLoginService`] が行う（SEC3。パスワード成功のたびに消すと、
@@ -22,17 +22,18 @@ use crate::application::authorize::code_dispatch;
 use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
 use crate::application::login_user_resolution::resolve_login_user;
 use crate::application::mfa_login::user_has_confirmed_totp;
+use crate::application::tenant_settings::TenantSettingsService;
 use crate::domain::access_decision_settings::AccessDecisionSettings;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session;
 use crate::domain::authentication_policy::{
-    evaluate_policies, AuthenticationContext, LockoutPolicy, PolicyDecision,
+    evaluate_policies, AuthenticationContext, PolicyDecision,
 };
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::login_identifier::LoginIdentifierMatch;
 use crate::domain::password::PasswordHasher;
-use crate::domain::password_policy::{password_change_required, PasswordPolicy};
+use crate::domain::password_policy::password_change_required;
 use crate::domain::rate_limit::LoginRateLimiter;
 use crate::domain::repositories::TenantDomainRepository;
 use crate::domain::repositories::{
@@ -44,7 +45,6 @@ use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::user::User;
 use crate::domain::values::AuthenticationMethod;
-use chrono::Duration;
 use std::sync::Arc;
 
 /// `auth_session_id` に紐づく CSRF トークンを導出する。
@@ -72,6 +72,8 @@ pub enum LoginOutcome {
         /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
         form_post: Option<Vec<(String, String)>>,
         sso_session_id: String,
+        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        sso_absolute_ttl_secs: u64,
         /// ユーザーの表示言語設定（MT20）。web は `lang` Cookie をこの値で上書きする。
         user_language: Option<String>,
     },
@@ -80,6 +82,8 @@ pub enum LoginOutcome {
     ConsentRequired {
         auth_session_id: String,
         sso_session_id: String,
+        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        sso_absolute_ttl_secs: u64,
     },
     /// パスワード認証成功だが MFA（TOTP）が設定済み。TOTP 入力画面へ誘導する。
     /// `auth_session_id` Cookie はそのまま維持し、SSO Cookie はまだ発行しない。
@@ -106,6 +110,8 @@ pub enum LoginOutcome {
         /// 利用者が決められない。
         application_name: String,
         sso_session_id: String,
+        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        sso_absolute_ttl_secs: u64,
     },
     /// 認証ポリシーが MFA を必須としたが、ユーザーに使用可能な認証器（確認済み TOTP）が無い。
     /// ポータルから MFA を設定するよう案内する。SSO Cookie は発行しない。
@@ -141,12 +147,8 @@ pub struct LoginService {
     rate_limiter: Arc<dyn LoginRateLimiter>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
-    sso_idle_ttl: Duration,
-    sso_absolute_ttl: Duration,
-    lockout: LockoutPolicy,
-    /// パスワードポリシー（AP7）。ここで使うのは有効期限だけで、判定は
-    /// [`password_change_required`] に寄せて変更経路と同じ規則にする。
-    password_policy: PasswordPolicy,
+    /// テナントが上書きできる設定の解決（ADR-0058）。参照のたびに引く。
+    settings: Arc<TenantSettingsService>,
     /// 一致するポリシーが無い場合の既定動作（AP2）。テナントの値を参照のたびに引く（ADR-0058 §4）。
     access_settings: Arc<dyn AccessDecisionSettings>,
     csrf_secret: [u8; 32],
@@ -168,10 +170,7 @@ impl LoginService {
         rate_limiter: Arc<dyn LoginRateLimiter>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
-        sso_idle_ttl: std::time::Duration,
-        sso_absolute_ttl: std::time::Duration,
-        lockout: LockoutPolicy,
-        password_policy: PasswordPolicy,
+        settings: Arc<TenantSettingsService>,
         access_settings: Arc<dyn AccessDecisionSettings>,
         csrf_secret: [u8; 32],
     ) -> Self {
@@ -189,11 +188,7 @@ impl LoginService {
             rate_limiter,
             audit,
             clock,
-            sso_idle_ttl: Duration::from_std(sso_idle_ttl).expect("SSO idle TTL out of range"),
-            sso_absolute_ttl: Duration::from_std(sso_absolute_ttl)
-                .expect("SSO absolute TTL out of range"),
-            lockout,
-            password_policy,
+            settings,
             access_settings,
             csrf_secret,
         }
@@ -442,7 +437,12 @@ impl LoginService {
         //      「この状態のユーザーに MFA 判定は不要」とは限らない）。
         //      有効期限切れ（AP7）も同じ誘導に載せる。期限はログイン時にしか判定できず、
         //      ここで通してしまうと次の判定機会は次回ログイン = 期限が実質効かなくなる。
-        if password_change_required(&user, &self.password_policy, now) {
+        // ポリシーは利用者の所属元テナントの値（ADR-0058。パスワードは所属元が管理する）。
+        let password_policy = match self.settings.password_policy(user.tenant_id).await {
+            Ok(policy) => policy,
+            Err(e) => return LoginOutcome::Internal(e.to_string()),
+        };
+        if password_change_required(&user, &password_policy, now) {
             let rotated_id = crypto::random_hex(32);
             if let Err(e) = self
                 .auth_sessions
@@ -537,13 +537,18 @@ impl LoginService {
         }
 
         // 10. SSO セッション発行（Cookie には session_id、DB には SHA-256 ハッシュ）。
+        //     寿命は利用者の所属元テナントの値（SSO セッションは全テナントで共有されるため。ADR-0058）。
+        let lifetime = match self.settings.sso_session_lifetime(user.tenant_id).await {
+            Ok(lifetime) => lifetime,
+            Err(e) => return LoginOutcome::Internal(e.to_string()),
+        };
         let sso_session_id = crypto::random_hex(32);
         let sso = SsoSession::establish(
             crypto::sha256_hex(&sso_session_id),
             user.id,
             now,
-            self.sso_idle_ttl,
-            self.sso_absolute_ttl,
+            lifetime.idle,
+            lifetime.absolute,
             vec![AuthenticationMethod::Password],
             ctx.user_agent.clone(),
             ctx.ip_address.clone(),
@@ -618,6 +623,7 @@ impl LoginService {
             return LoginOutcome::ConsentRequired {
                 auth_session_id: rotated_id,
                 sso_session_id,
+                sso_absolute_ttl_secs: sso.absolute_ttl_secs(),
             };
         }
 
@@ -648,6 +654,7 @@ impl LoginService {
                 return LoginOutcome::ApplicationNotPermitted {
                     application_name,
                     sso_session_id,
+                    sso_absolute_ttl_secs: sso.absolute_ttl_secs(),
                 }
             }
             Err(e) => return LoginOutcome::Internal(e.to_string()),
@@ -663,6 +670,7 @@ impl LoginService {
             location: dispatch.location,
             form_post: dispatch.form_post,
             sso_session_id,
+            sso_absolute_ttl_secs: sso.absolute_ttl_secs(),
             user_language: user.language.clone(),
         }
     }
@@ -676,12 +684,13 @@ impl LoginService {
         ctx: &RequestContext,
     ) -> LoginOutcome {
         let now = self.clock.now();
+        // 閾値は利用者の所属元テナントの値（ロックの状態は利用者の行にある。ADR-0058）。
+        let lockout = match self.settings.login_lockout(user.tenant_id).await {
+            Ok(lockout) => lockout,
+            Err(e) => return LoginOutcome::Internal(e.to_string()),
+        };
         // 加算とロック判定は 1 文の UPDATE に閉じる（SEC13）。
-        let failure = match self
-            .users
-            .record_login_failure(user.id, self.lockout, now)
-            .await
-        {
+        let failure = match self.users.record_login_failure(user.id, lockout, now).await {
             Ok(f) => f,
             Err(e) => return LoginOutcome::Internal(e.to_string()),
         };
@@ -719,6 +728,7 @@ impl LoginService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Duration;
 
     #[test]
     fn csrf_token_is_deterministic_and_session_bound() {
@@ -1183,14 +1193,7 @@ mod tests {
             Arc::new(AllowAll),
             audit,
             clock,
-            std::time::Duration::from_secs(3600),
-            std::time::Duration::from_secs(28800),
-            LockoutPolicy {
-                max_failed_attempts: 10,
-                lock_duration_secs: 900,
-                max_lock_duration_secs: 86_400,
-            },
-            crate::domain::password_policy::PasswordPolicy::default(),
+            crate::application::tenant_settings::testing::tenant_settings().service,
             crate::application::access_decision_settings::test_support::policy_default(
                 crate::domain::authentication_policy::DefaultPolicyEffect::Allow,
             ),

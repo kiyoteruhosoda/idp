@@ -23,12 +23,13 @@ use crate::application::authenticator_management::{
 };
 use crate::application::authorize::code_dispatch;
 use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
+use crate::application::tenant_settings::TenantSettingsService;
 use crate::application::totp_registration::verify_totp_code;
 use crate::domain::access_decision_settings::AccessDecisionSettings;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session;
 use crate::domain::authentication_policy::{
-    evaluate_policies, AuthenticationContext, LockoutPolicy, PolicyDecision,
+    evaluate_policies, AuthenticationContext, PolicyDecision,
 };
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
@@ -43,7 +44,6 @@ use crate::domain::tenant_context::TenantContext;
 use crate::domain::user::User;
 use crate::domain::user_authenticator::AuthenticatorType;
 use crate::domain::values::AuthenticationMethod;
-use chrono::Duration;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -54,6 +54,8 @@ pub enum MfaLoginOutcome {
         /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
         form_post: Option<Vec<(String, String)>>,
         sso_session_id: String,
+        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        sso_absolute_ttl_secs: u64,
         /// ユーザーの表示言語設定（MT20）。web は `lang` Cookie をこの値で上書きする。
         user_language: Option<String>,
     },
@@ -61,6 +63,8 @@ pub enum MfaLoginOutcome {
     ConsentRequired {
         auth_session_id: String,
         sso_session_id: String,
+        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        sso_absolute_ttl_secs: u64,
     },
     /// AuthSession が無い・期限切れ・MFA pending 状態でない（`/authorize` からやり直し）。
     SessionExpired,
@@ -81,6 +85,8 @@ pub enum MfaLoginOutcome {
         /// 利用者が決められない。
         application_name: String,
         sso_session_id: String,
+        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        sso_absolute_ttl_secs: u64,
     },
     PolicyDenied,
     /// 内部エラー。
@@ -107,9 +113,8 @@ pub struct MfaLoginService {
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
     key_encryption_key: [u8; 32],
-    sso_idle_ttl: Duration,
-    sso_absolute_ttl: Duration,
-    lockout: LockoutPolicy,
+    /// テナントが上書きできる設定の解決（ADR-0058）。参照のたびに引く。
+    settings: Arc<TenantSettingsService>,
     csrf_secret: [u8; 32],
     /// 認証ポリシー（AP2/AP3）。第二要素まで揃った**最終的な方式集合**に対して再評価するために持つ。
     /// パスワード段階（`LoginService`）だけで判定すると、`require_specific_method` を課された
@@ -136,9 +141,7 @@ impl MfaLoginService {
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
         key_encryption_key: [u8; 32],
-        sso_idle_ttl: std::time::Duration,
-        sso_absolute_ttl: std::time::Duration,
-        lockout: LockoutPolicy,
+        settings: Arc<TenantSettingsService>,
         csrf_secret: [u8; 32],
         authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
         applications: Arc<ApplicationAccessService>,
@@ -156,10 +159,7 @@ impl MfaLoginService {
             audit,
             clock,
             key_encryption_key,
-            sso_idle_ttl: Duration::from_std(sso_idle_ttl).expect("SSO idle TTL out of range"),
-            sso_absolute_ttl: Duration::from_std(sso_absolute_ttl)
-                .expect("SSO absolute TTL out of range"),
-            lockout,
+            settings,
             csrf_secret,
             authentication_policies,
             applications,
@@ -330,13 +330,18 @@ impl MfaLoginService {
         }
 
         // 8. SSO セッションを組み立てる（`sid` を auth_session へ預けるため、永続化より先に作る）。
+        //    寿命は利用者の所属元テナントの値（SSO セッションは全テナントで共有されるため。ADR-0058）。
+        let lifetime = match self.settings.sso_session_lifetime(user.tenant_id).await {
+            Ok(lifetime) => lifetime,
+            Err(e) => return MfaLoginOutcome::Internal(e.to_string()),
+        };
         let sso_session_id = crypto::random_hex(32);
         let sso = SsoSession::establish(
             crypto::sha256_hex(&sso_session_id),
             user_id,
             now,
-            self.sso_idle_ttl,
-            self.sso_absolute_ttl,
+            lifetime.idle,
+            lifetime.absolute,
             vec![AuthenticationMethod::Password, second_factor],
             ctx.user_agent.clone(),
             ctx.ip_address.clone(),
@@ -411,6 +416,7 @@ impl MfaLoginService {
             return MfaLoginOutcome::ConsentRequired {
                 auth_session_id: rotated_id,
                 sso_session_id,
+                sso_absolute_ttl_secs: sso.absolute_ttl_secs(),
             };
         }
 
@@ -441,6 +447,7 @@ impl MfaLoginService {
                 return MfaLoginOutcome::ApplicationNotPermitted {
                     application_name,
                     sso_session_id,
+                    sso_absolute_ttl_secs: sso.absolute_ttl_secs(),
                 }
             }
             Err(e) => return MfaLoginOutcome::Internal(e.to_string()),
@@ -456,6 +463,7 @@ impl MfaLoginService {
             location: dispatch.location,
             form_post: dispatch.form_post,
             sso_session_id,
+            sso_absolute_ttl_secs: sso.absolute_ttl_secs(),
             user_language: user.language.clone(),
         }
     }
@@ -579,12 +587,14 @@ impl MfaLoginService {
         now: chrono::DateTime<chrono::Utc>,
         ctx: &RequestContext,
     ) -> MfaLoginOutcome {
+        // 閾値は利用者の所属元テナントの値（パスワード認証と同じテナントの値でないと、カウンタを
+        // 共有していても閾値が食い違う。ADR-0058）。
+        let lockout = match self.settings.login_lockout(user.tenant_id).await {
+            Ok(lockout) => lockout,
+            Err(e) => return MfaLoginOutcome::Internal(e.to_string()),
+        };
         // 加算とロック判定は 1 文の UPDATE に閉じる（SEC13）。
-        let failure = match self
-            .users
-            .record_login_failure(user.id, self.lockout, now)
-            .await
-        {
+        let failure = match self.users.record_login_failure(user.id, lockout, now).await {
             Ok(f) => f,
             Err(e) => return MfaLoginOutcome::Internal(e.to_string()),
         };
@@ -673,6 +683,7 @@ mod tests {
     use crate::domain::totp_secret::TotpSecret;
     use crate::domain::values::{CodeChallengeMethod, UserStatus};
     use async_trait::async_trait;
+    use chrono::Duration;
     use chrono::{DateTime, TimeZone, Utc};
     use std::sync::Mutex;
 
@@ -1067,9 +1078,32 @@ mod tests {
         user_id: Uuid,
     }
 
+    /// 全体の既定。テナントの行が効いているかを見分けるため、試験で使う値と重ならないようにする。
+    const GLOBAL_MAX_FAILED_ATTEMPTS: &str = "50";
+
     impl Harness {
+        /// 利用者の所属元テナントに `LOGIN_MAX_FAILED_ATTEMPTS` の行を入れる（全体は 50 のまま）。
         fn new(rate_limit_allowed: usize, max_failed_attempts: i32) -> Self {
+            Self::with_settings(rate_limit_allowed, |settings, home| {
+                settings.set_tenant(
+                    home,
+                    "LOGIN_MAX_FAILED_ATTEMPTS",
+                    &max_failed_attempts.to_string(),
+                );
+            })
+        }
+
+        fn with_settings(
+            rate_limit_allowed: usize,
+            configure: impl FnOnce(
+                &crate::application::tenant_settings::testing::TenantSettingsFixture,
+                TenantId,
+            ),
+        ) -> Self {
             let tenant_id: TenantId = Uuid::now_v7().into();
+            let settings = crate::application::tenant_settings::testing::tenant_settings();
+            settings.set_global("LOGIN_MAX_FAILED_ATTEMPTS", GLOBAL_MAX_FAILED_ATTEMPTS);
+            configure(&settings, tenant_id);
             let tenant = TenantContext::new(tenant_id);
             let user_id = Uuid::now_v7();
 
@@ -1162,13 +1196,7 @@ mod tests {
                 audit.clone(),
                 clock,
                 TEST_KEY,
-                std::time::Duration::from_secs(3600),
-                std::time::Duration::from_secs(28800),
-                LockoutPolicy {
-                    max_failed_attempts,
-                    lock_duration_secs: 900,
-                    max_lock_duration_secs: 86_400,
-                },
+                settings.service.clone(),
                 CSRF_SECRET,
                 Arc::new(FakePolicies),
                 crate::application::application_access::test_support::allow_everything(
@@ -1315,5 +1343,39 @@ mod tests {
         assert!(h.user().locked_until.is_none());
         assert_eq!(h.sso_sessions.created.lock().unwrap().len(), 1);
         assert_eq!(h.user_id, h.sso_sessions.created.lock().unwrap()[0].user_id);
+    }
+
+    /// ⚠ 「行が無い＝全体に従う」。テナントに行が無ければ全体の閾値（ここでは 2）でロックする。
+    #[tokio::test]
+    async fn a_home_tenant_without_a_row_locks_at_the_global_threshold() {
+        let h = Harness::with_settings(100, |settings, _home| {
+            settings.set_global("LOGIN_MAX_FAILED_ATTEMPTS", "2");
+        });
+        assert!(matches!(
+            h.verify("000000").await,
+            MfaLoginOutcome::InvalidCode
+        ));
+        assert!(matches!(h.verify("000000").await, MfaLoginOutcome::Locked));
+    }
+
+    /// SSO セッションの寿命は利用者の所属元テナントの値で決まる（全体の値ではない）。
+    #[tokio::test]
+    async fn the_sso_session_lives_as_long_as_the_home_tenant_says() {
+        let h = Harness::with_settings(100, |settings, home| {
+            settings.set_global("SSO_IDLE_TTL_SECS", "28800");
+            settings.set_global("SSO_ABSOLUTE_TTL_SECS", "86400");
+            settings.set_tenant(home, "SSO_IDLE_TTL_SECS", "600");
+            settings.set_tenant(home, "SSO_ABSOLUTE_TTL_SECS", "1200");
+        });
+        assert!(matches!(
+            h.verify(&current_totp_code()).await,
+            MfaLoginOutcome::Success { .. }
+        ));
+        let created = h.sso_sessions.created.lock().unwrap();
+        assert_eq!(created[0].idle_expires_at, now() + Duration::seconds(600));
+        assert_eq!(
+            created[0].absolute_expires_at,
+            now() + Duration::seconds(1200)
+        );
     }
 }

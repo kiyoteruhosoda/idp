@@ -32,6 +32,7 @@ use crate::application::passkey_assertion::{
     PasskeyAssertionError, PasskeyAssertionService, PasskeyFlow,
 };
 use crate::application::password_policy::PasswordPolicyService;
+use crate::application::tenant_settings::TenantSettingsService;
 use crate::application::totp_registration::verify_totp_code;
 use crate::domain::access_decision_settings::AccessDecisionSettings;
 use crate::domain::audit::{AuditEventType, AuditResult};
@@ -55,7 +56,7 @@ use crate::domain::tenant_context::TenantContext;
 use crate::domain::user::User;
 use crate::domain::user_authenticator::AuthenticatorType;
 use crate::domain::values::AuthenticationMethod;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use std::sync::Arc;
@@ -104,6 +105,8 @@ pub enum PortalLoginOutcome {
     /// 認証成功（TOTP 未設定）。SSO Cookie を発行してアカウント画面へ 302 する。
     Success {
         sso_session_id: String,
+        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        sso_absolute_ttl_secs: u64,
         user_language: Option<String>,
     },
     /// パスワード認証成功だが TOTP が必要。`mfa_ticket` を Cookie 化して TOTP 入力画面へ誘導する。
@@ -138,6 +141,8 @@ pub enum PortalChangePasswordOutcome {
     /// 変更成功（TOTP 未設定）。SSO Cookie を発行してアカウント画面へ 302 する。
     Success {
         sso_session_id: String,
+        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        sso_absolute_ttl_secs: u64,
         user_language: Option<String>,
     },
     /// パスワード変更は成功したが TOTP が必要（`login()` と同じ MFA ゲート）。`mfa_ticket` を Cookie 化して
@@ -168,6 +173,8 @@ pub enum PortalChangePasswordOutcome {
 pub enum PortalMfaOutcome {
     Success {
         sso_session_id: String,
+        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        sso_absolute_ttl_secs: u64,
         user_language: Option<String>,
     },
     /// TOTP コード不正（チケットが有効なら再試行できる）。
@@ -200,10 +207,8 @@ pub struct PortalLoginService {
     key_encryption_key: [u8; 32],
     /// `mfa_ticket` の署名鍵。CSRF 秘密鍵を流用する（用途はプレフィクスで名前空間分離）。
     ticket_secret: [u8; 32],
-    sso_idle_ttl: Duration,
-    sso_absolute_ttl: Duration,
-    /// アカウントロックのポリシー（設定注入。通常ログイン `login.rs` と同じ値を使う）。
-    lockout: crate::domain::authentication_policy::LockoutPolicy,
+    /// テナントが上書きできる設定の解決（ADR-0058）。参照のたびに引く。
+    settings: Arc<TenantSettingsService>,
     /// 一致するポリシーが無い場合の既定動作（AP2）。テナントの値を参照のたびに引く（ADR-0058 §4）。
     access_settings: Arc<dyn AccessDecisionSettings>,
 }
@@ -225,9 +230,7 @@ impl PortalLoginService {
         clock: Arc<dyn Clock>,
         key_encryption_key: [u8; 32],
         ticket_secret: [u8; 32],
-        sso_idle_ttl: std::time::Duration,
-        sso_absolute_ttl: std::time::Duration,
-        lockout: crate::domain::authentication_policy::LockoutPolicy,
+        settings: Arc<TenantSettingsService>,
         access_settings: Arc<dyn AccessDecisionSettings>,
     ) -> Self {
         Self {
@@ -245,10 +248,7 @@ impl PortalLoginService {
             clock,
             key_encryption_key,
             ticket_secret,
-            sso_idle_ttl: Duration::from_std(sso_idle_ttl).expect("SSO idle TTL out of range"),
-            sso_absolute_ttl: Duration::from_std(sso_absolute_ttl)
-                .expect("SSO absolute TTL out of range"),
-            lockout,
+            settings,
             access_settings,
         }
     }
@@ -410,7 +410,12 @@ impl PortalLoginService {
 
         // 8. 強制パスワード変更（ADR-0009 §5）。SSO はまだ発行せず、強制変更フォームへ誘導する
         //    （管理コンソールと同方式。`change_password` で現行パスワードを含め再検証する）。
-        if password_change_required(&user, self.password_policy.policy(), now) {
+        //    有効期限は利用者の所属元テナントのポリシーで測る（ADR-0058）。
+        let password_policy = match self.password_policy.policy(user.tenant_id).await {
+            Ok(policy) => policy,
+            Err(e) => return PortalLoginOutcome::Internal(e.to_string()),
+        };
+        if password_change_required(&user, &password_policy, now) {
             return PortalLoginOutcome::PasswordChangeRequired {
                 username: cmd.username,
             };
@@ -458,7 +463,7 @@ impl PortalLoginService {
         }
 
         // 10. TOTP 未設定: SSO セッションを発行する。
-        let sso_session_id = match self
+        let (sso_session_id, sso_absolute_ttl_secs) = match self
             .issue_sso(
                 tenant_id,
                 &user,
@@ -473,6 +478,7 @@ impl PortalLoginService {
         };
         PortalLoginOutcome::Success {
             sso_session_id,
+            sso_absolute_ttl_secs,
             user_language: user.language.clone(),
         }
     }
@@ -573,7 +579,7 @@ impl PortalLoginService {
         }
 
         // 6. SSO セッション発行（パスワード経路と同一機構。方式だけが WebAuthn）。
-        let sso_session_id = match self
+        let (sso_session_id, sso_absolute_ttl_secs) = match self
             .issue_sso(
                 tenant_id,
                 &user,
@@ -588,6 +594,7 @@ impl PortalLoginService {
         };
         PortalLoginOutcome::Success {
             sso_session_id,
+            sso_absolute_ttl_secs,
             user_language: user.language.clone(),
         }
     }
@@ -648,7 +655,11 @@ impl PortalLoginService {
         // 成功時と同じ後続（メール検証 → TOTP ゲート → SSO 発行）へ進める。`new_password` の照合は
         // 現行パスワードの完全な検証であり、認証強度は通常ログインと等価（列挙も生じない）。
         // 変更を要求されている状態か（強制フラグ、または有効期限切れ。AP7）。
-        let change_required = password_change_required(&user, self.password_policy.policy(), now);
+        let password_policy = match self.password_policy.policy(user.tenant_id).await {
+            Ok(policy) => policy,
+            Err(e) => return PortalChangePasswordOutcome::Internal(e.to_string()),
+        };
+        let change_required = password_change_required(&user, &password_policy, now);
         let duplicate_submit = if change_required {
             false
         } else {
@@ -702,7 +713,12 @@ impl PortalLoginService {
         if !duplicate_submit {
             match self
                 .password_policy
-                .validate(Some(user.id), Some(&user.password_hash), &cmd.new_password)
+                .validate(
+                    user.tenant_id,
+                    Some(user.id),
+                    Some(&user.password_hash),
+                    &cmd.new_password,
+                )
                 .await
             {
                 Ok(Ok(())) => {}
@@ -729,7 +745,7 @@ impl PortalLoginService {
                 Err(e) => return PortalChangePasswordOutcome::Internal(e.to_string()),
             }
             self.password_policy
-                .record_change(user.id, &user.password_hash)
+                .record_change(user.tenant_id, user.id, &user.password_hash)
                 .await;
             self.audit
                 .record(
@@ -804,7 +820,7 @@ impl PortalLoginService {
             return PortalChangePasswordOutcome::PolicyDenied;
         }
 
-        let sso_session_id = match self
+        let (sso_session_id, sso_absolute_ttl_secs) = match self
             .issue_sso(
                 tenant_id,
                 &user,
@@ -819,6 +835,7 @@ impl PortalLoginService {
         };
         PortalChangePasswordOutcome::Success {
             sso_session_id,
+            sso_absolute_ttl_secs,
             user_language: user.language.clone(),
         }
     }
@@ -912,7 +929,7 @@ impl PortalLoginService {
         }
 
         // 5. SSO セッションを発行する。
-        let sso_session_id = match self
+        let (sso_session_id, sso_absolute_ttl_secs) = match self
             .issue_sso(
                 tenant_id,
                 &user,
@@ -927,6 +944,7 @@ impl PortalLoginService {
         };
         PortalMfaOutcome::Success {
             sso_session_id,
+            sso_absolute_ttl_secs,
             user_language: user.language.clone(),
         }
     }
@@ -939,14 +957,20 @@ impl PortalLoginService {
         methods: Vec<AuthenticationMethod>,
         ctx: &RequestContext,
         now: DateTime<Utc>,
-    ) -> Result<String, String> {
+    ) -> Result<(String, u64), String> {
+        // 寿命は利用者の所属元テナントの値（SSO セッションは全テナントで共有されるため。ADR-0058）。
+        let lifetime = self
+            .settings
+            .sso_session_lifetime(user.tenant_id)
+            .await
+            .map_err(|e| e.to_string())?;
         let sso_session_id = crypto::random_hex(32);
         let sso = SsoSession::establish(
             crypto::sha256_hex(&sso_session_id),
             user.id,
             now,
-            self.sso_idle_ttl,
-            self.sso_absolute_ttl,
+            lifetime.idle,
+            lifetime.absolute,
             methods,
             ctx.user_agent.clone(),
             ctx.ip_address.clone(),
@@ -976,7 +1000,7 @@ impl PortalLoginService {
                 ctx,
             )
             .await;
-        Ok(sso_session_id)
+        Ok((sso_session_id, sso.absolute_ttl_secs()))
     }
 
     /// `mfa_ticket` から MFA 待ちの利用者を解決する（AP9。email OTP の送信先を決めるために使う）。
@@ -1077,12 +1101,13 @@ impl PortalLoginService {
         ctx: &RequestContext,
     ) -> PortalChangePasswordOutcome {
         let now = self.clock.now();
+        // 閾値は利用者の所属元テナントの値（ロックの状態は利用者の行にある。ADR-0058）。
+        let lockout = match self.settings.login_lockout(user.tenant_id).await {
+            Ok(lockout) => lockout,
+            Err(e) => return PortalChangePasswordOutcome::Internal(e.to_string()),
+        };
         // 加算とロック判定は 1 文の UPDATE に閉じる（SEC13）。
-        let failure = match self
-            .users
-            .record_login_failure(user.id, self.lockout, now)
-            .await
-        {
+        let failure = match self.users.record_login_failure(user.id, lockout, now).await {
             Ok(f) => f,
             Err(e) => return PortalChangePasswordOutcome::Internal(e.to_string()),
         };
@@ -1113,12 +1138,13 @@ impl PortalLoginService {
         ctx: &RequestContext,
     ) -> PortalLoginOutcome {
         let now = self.clock.now();
+        // 閾値は利用者の所属元テナントの値（ロックの状態は利用者の行にある。ADR-0058）。
+        let lockout = match self.settings.login_lockout(user.tenant_id).await {
+            Ok(lockout) => lockout,
+            Err(e) => return PortalLoginOutcome::Internal(e.to_string()),
+        };
         // 加算とロック判定は 1 文の UPDATE に閉じる（SEC13）。
-        let failure = match self
-            .users
-            .record_login_failure(user.id, self.lockout, now)
-            .await
-        {
+        let failure = match self.users.record_login_failure(user.id, lockout, now).await {
             Ok(f) => f,
             Err(e) => return PortalLoginOutcome::Internal(e.to_string()),
         };

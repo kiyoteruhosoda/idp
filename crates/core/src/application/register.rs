@@ -129,10 +129,11 @@ impl RegisterService {
         let email = cmd.email.trim().to_string();
         validate_email(&email)?;
         // パスワードポリシー（AP7）。自己登録には現行パスワードも履歴も無いため、見るのは
-        // 長さと漏えい済みかどうかだけになる。
+        // 長さと漏えい済みかどうかだけになる。登録先のテナントがそのまま所属元になるので、
+        // そのテナントのポリシーで見る（ADR-0058）。
         match self
             .password_policy
-            .validate(None, None, &cmd.password)
+            .validate(tenant.tenant_id(), None, None, &cmd.password)
             .await
             .map_err(internal)?
         {
@@ -464,7 +465,11 @@ mod tests {
             Arc::new(FakeTenants { tenant }),
             Arc::new(PlainHasher),
             Arc::new(
-                crate::application::password_policy::PasswordPolicyService::length_only(
+                crate::application::password_policy::PasswordPolicyService::without_history(
+                    crate::application::tenant_settings::testing::tenant_settings_with_global(&[(
+                        "PASSWORD_HISTORY_COUNT",
+                        "0",
+                    )]),
                     Arc::new(PlainHasher),
                     Arc::new(FixedClock),
                 ),

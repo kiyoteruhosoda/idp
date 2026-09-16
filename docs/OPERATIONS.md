@@ -805,7 +805,7 @@ curl -b "sso_session_id=<管理者セッション>" -H 'Content-Type: applicatio
   **テナントごとに決まる**（テナントに値が無ければ全体の値）。**再起動は要らない**（最大 60 秒で効く）。
 - アカウントロックの閾値はランタイム設定 `LOGIN_MAX_FAILED_ATTEMPTS`（既定 10 回）・
   `LOGIN_LOCK_DURATION_SECS`（既定 900 秒）で調整する（設定手順は「ランタイム設定を DB で
-  変更したいとき」参照。反映には再起動が必要）。
+  変更したいとき」参照。再起動は要らない）。
 
 ## アプリの利用者を絞りたいとき（ADR-0054）
 
@@ -888,8 +888,9 @@ SELECT result, reason, COUNT(*) AS hits, MAX(occurred_at) AS last_seen
 
 ## パスワードの要件を強くしたいとき（AP7）
 
-すべてランタイム設定で調整する（設定手順は「ランタイム設定を DB で変更したいとき」参照。反映には
-api の再起動が必要）。パスワードを設定する全経路（自己登録・強制変更・セルフサービス変更・
+すべてランタイム設定で調整する（設定手順は「ランタイム設定を DB で変更したいとき」参照。
+`PASSWORD_BREACH_API_BASE_URL`・`PASSWORD_BREACH_CHECK_TIMEOUT_SECS` だけは api の再起動が必要で、
+ほかは再起動なしで効く）。パスワードを設定する全経路（自己登録・強制変更・セルフサービス変更・
 パスワードリセット）に一律で効く。
 
 | キー | 既定 | 内容 |
@@ -1269,6 +1270,16 @@ curl -sS -X POST "$ISSUER/{tenant_id}/admin/external-idps" \
    web を忘れた状態も、この警告に「web に未反映」として出る。
 
 - 上書きを**解除**した場合も再起動するまでは戻らない（未反映として警告に出る）。
+- 次の 14 項目は**再起動しなくても次の要求から効く**（手順 3・4 は要らない。「保存済み・未反映」も
+  付かない）: パスワードポリシー（`PASSWORD_MIN_LENGTH` / `PASSWORD_HISTORY_COUNT` /
+  `PASSWORD_MAX_AGE_DAYS` / `PASSWORD_BREACH_CHECK_ENABLED`）、ロックアウト（`LOGIN_MAX_FAILED_ATTEMPTS` /
+  `LOGIN_LOCK_DURATION_SECS` / `LOGIN_MAX_LOCK_DURATION_SECS`）、`SSO_IDLE_TTL_SECS` /
+  `SSO_ABSOLUTE_TTL_SECS` / `STEP_UP_MAX_AGE_SECS`、`INVITATION_TTL_SECS` / `PASSWORD_RESET_TTL_SECS` /
+  `EMAIL_VERIFICATION_TTL_SECS` / `PASSWORD_RESET_CONSOLE_LINK_ENABLED`。
+  - 発行済みの招待・再設定リンク・検証リンクと、SSO セッションの絶対期限は変わらない（新しく発行する
+    ものから効く）。SSO セッションの idle 期限だけは、次に復元したときに新しい値で延長される。
+  - 利用者ごとに効くのは**所属元テナント**の値である（ゲストが参加先から入っても、所属元の値）。
+  - 一覧に出る「現在値」は起動時の値のままである。効いている全体の値は、保存した値（空なら環境変数・既定値）で読む。
 - 例外: `AUTH_POLICY_DEFAULT_EFFECT`・`APPLICATION_ASSIGNMENT_ENFORCEMENT` は**再起動を待たずに効く**
   （テナントごとに参照のたびに引く。ADR-0058）。保存した api では即時、ほかの api のプロセスでは
   最大 60 秒で効く。この 2 つは「保存済み・未反映」バッジが付かない。⚠ ただし一覧に出る「現在値」は

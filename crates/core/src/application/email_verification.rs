@@ -13,6 +13,7 @@
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::system_settings::SystemSettingsService;
+use crate::application::tenant_settings::TenantSettingsService;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
@@ -44,7 +45,8 @@ pub struct EmailVerificationService {
     mailer: Arc<dyn Mailer>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
-    verification_ttl: chrono::Duration,
+    /// テナントが上書きできる設定の解決（ADR-0058）。参照のたびに引く。
+    settings: Arc<TenantSettingsService>,
     /// 検証リンクの土台となる公開ベース URL（web 画面。末尾スラッシュ無し）。
     console_base_url: String,
 }
@@ -58,7 +60,7 @@ impl EmailVerificationService {
         mailer: Arc<dyn Mailer>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
-        verification_ttl: std::time::Duration,
+        settings: Arc<TenantSettingsService>,
         console_base_url: String,
     ) -> Self {
         Self {
@@ -68,8 +70,7 @@ impl EmailVerificationService {
             mailer,
             audit,
             clock,
-            verification_ttl: chrono::Duration::from_std(verification_ttl)
-                .expect("verification TTL out of range"),
+            settings,
             console_base_url: console_base_url.trim_end_matches('/').to_string(),
         }
     }
@@ -93,6 +94,16 @@ impl EmailVerificationService {
             }
         };
 
+        // 有効期間は利用者の所属元テナントの値（`tenant_id` は登録したテナント＝所属元で、リンクも
+        // ここを指す。ADR-0058）。消費側は保存した `expires_at` を見る。
+        // 旧トークンを失効させる前に引く（引けずに終わったとき、有効なリンクが 1 本も無くならないように）。
+        let verification_ttl = match self.settings.email_verification_ttl(tenant_id).await {
+            Ok(ttl) => ttl,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to resolve the email verification TTL");
+                return false;
+            }
+        };
         let now = self.clock.now();
         // 再送時は旧トークンを失効させ、有効な検証リンクを常に最新の 1 本にする。
         if let Err(e) = self.tokens.invalidate_all_for_user(user_id, now).await {
@@ -101,7 +112,7 @@ impl EmailVerificationService {
         }
 
         let token = crypto::random_token(VERIFICATION_TOKEN_BYTES);
-        let expires_at = now + self.verification_ttl;
+        let expires_at = now + verification_ttl;
         let record = EmailVerificationToken {
             token_hash: crypto::sha256_hex(&token),
             user_id,
@@ -480,7 +491,7 @@ mod tests {
             mailer.clone(),
             audit,
             Arc::new(FixedClock),
-            std::time::Duration::from_secs(86_400),
+            crate::application::tenant_settings::testing::tenant_settings().service,
             "https://idp.example.com".to_string(),
         );
         Harness {

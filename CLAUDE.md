@@ -225,6 +225,8 @@ std::env::var("ISSUER")?;
 
 1. `domain/system_setting.rs` — `RUNTIME_SETTING_DEFINITIONS` に定義（出所区分・既定値・型・**用途の説明**）を追加
 2. `src/config.rs` — 設定項目（getter）と読み込みロジックを追加
+   （⚠ `scope: TenantOverridable` のキーは `Config` に持たない。`application/tenant_settings.rs` の
+   `TenantSettingsService` に型付きの口を足し、消費側は参照のたびにそこから引く。ADR-0058）
 3. DB 上書き対応が必要なら `owner: DbManaged` とする（`EnvLocked` は DB を無視して ENV > 既定値）
 4. web も読むキーなら `shared_with_web: true` とし、`crates/web/src/config.rs` で
    `SharedSettingResolver` 経由に読む（エンドポイント・API クライアントの変更は不要）

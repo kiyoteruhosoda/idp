@@ -108,7 +108,12 @@ impl AccountPasswordService {
         //    ハッシュ化して保存する。
         match self
             .password_policy
-            .validate(Some(user.id), Some(&user.password_hash), &cmd.new_password)
+            .validate(
+                user.tenant_id,
+                Some(user.id),
+                Some(&user.password_hash),
+                &cmd.new_password,
+            )
             .await
         {
             Ok(Ok(())) => {}
@@ -135,7 +140,7 @@ impl AccountPasswordService {
             Err(e) => return AccountPasswordOutcome::Internal(e.to_string()),
         }
         self.password_policy
-            .record_change(user.id, &user.password_hash)
+            .record_change(user.tenant_id, user.id, &user.password_hash)
             .await;
 
         // 4. 変えたら、他の端末とアプリを切る（ADR-0045）。

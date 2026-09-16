@@ -6,6 +6,7 @@
 //! 検証し、成功時は idle 期限を延長して `sso_session.resumed` を監査記録する。
 
 use crate::application::audit::{AuditService, RequestContext};
+use crate::application::tenant_settings::TenantSettingsService;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
@@ -15,7 +16,7 @@ use crate::domain::repositories::{
 };
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::{AuthenticationMethod, AuthenticationStrength};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -33,6 +34,9 @@ pub struct RestoredSso {
     pub authentication_strength: AuthenticationStrength,
     /// 第二要素の検証完了時刻（AP4）。MFA 経過時間による再認証（§18.2）の判定材料。
     pub mfa_completed_at: Option<DateTime<Utc>>,
+    /// 確立時に決めた絶対期限までの長さ（秒）。web が Cookie を発行し直すときの `Max-Age`
+    /// （ログイン時の発行と同じ値。ADR-0058）。
+    pub absolute_ttl_secs: u64,
 }
 
 pub struct SsoRestorer {
@@ -41,7 +45,8 @@ pub struct SsoRestorer {
     memberships: Arc<dyn TenantMembershipRepository>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
-    sso_idle_ttl: Duration,
+    /// テナントが上書きできる設定の解決（ADR-0058）。参照のたびに引く。
+    settings: Arc<TenantSettingsService>,
 }
 
 impl SsoRestorer {
@@ -51,7 +56,7 @@ impl SsoRestorer {
         memberships: Arc<dyn TenantMembershipRepository>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
-        sso_idle_ttl: std::time::Duration,
+        settings: Arc<TenantSettingsService>,
     ) -> Self {
         Self {
             sso_sessions,
@@ -59,7 +64,7 @@ impl SsoRestorer {
             memberships,
             audit,
             clock,
-            sso_idle_ttl: Duration::from_std(sso_idle_ttl).expect("SSO idle TTL out of range"),
+            settings,
         }
     }
 
@@ -94,10 +99,10 @@ impl SsoRestorer {
         }
 
         // ユーザーが無効化されていれば SSO 復元しない（再ログインで検出させる）。
-        match self.users.find_by_id(session.user_id).await? {
-            Some(user) if user.is_active() && !user.is_locked_at(now) => {}
+        let home_tenant_id = match self.users.find_by_id(session.user_id).await? {
+            Some(user) if user.is_active() && !user.is_locked_at(now) => user.tenant_id,
             _ => return Ok(None),
-        }
+        };
 
         // メンバーシップ判定（ADR-0009 §8）: SSO セッションはホスト単位で共有されるため、
         // ユーザーが**要求テナントの ACTIVE メンバーシップ（HOME または GUEST）を持つこと**を検証する。
@@ -112,8 +117,11 @@ impl SsoRestorer {
         }
 
         // idle 期限を更新（absolute は変更しない）。auth_time は初回ログイン時刻を維持する。
+        // ⚠ 延長幅は**確立したときと同じ**利用者の所属元テナントの値で決める（ADR-0058）。復元した
+        // 画面のテナント（ゲストなら参加先）で決めると、確立と延長で寿命が食い違う。
+        let lifetime = self.settings.sso_session_lifetime(home_tenant_id).await?;
         self.sso_sessions
-            .extend_idle(&session_hash, now + self.sso_idle_ttl)
+            .extend_idle(&session_hash, now + lifetime.idle)
             .await?;
         self.audit
             .record(
@@ -127,6 +135,7 @@ impl SsoRestorer {
             )
             .await;
 
+        let absolute_ttl_secs = session.absolute_ttl_secs();
         Ok(Some(RestoredSso {
             user_id: session.user_id,
             auth_time: session.auth_time,
@@ -134,6 +143,7 @@ impl SsoRestorer {
             authentication_methods: session.authentication_methods,
             authentication_strength: session.authentication_strength,
             mfa_completed_at: session.mfa_completed_at,
+            absolute_ttl_secs,
         }))
     }
 }
