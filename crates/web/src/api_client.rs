@@ -2640,6 +2640,62 @@ impl ApiClient {
         .await
     }
 
+    /// テナント自身のメールの経路（`GET /admin/settings/smtp`。idp.smtp:read。ADR-0058 §8）。
+    /// 権限が無いと `Forbidden`（web はその区画を非表示にする）。
+    pub async fn get_tenant_smtp(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+    ) -> Result<crate::admin_dto::TenantSmtpView, AdminApiError> {
+        self.admin_send(
+            Method::GET,
+            tenant_id,
+            "/admin/settings/smtp",
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
+    /// テナント自身のメールの経路を保存する（`PUT /admin/settings/smtp`。idp.smtp:write）。
+    pub async fn update_tenant_smtp(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        body: serde_json::Value,
+    ) -> Result<crate::admin_dto::TenantSmtpView, AdminApiError> {
+        self.admin_send(
+            Method::PUT,
+            tenant_id,
+            "/admin/settings/smtp",
+            correlation_id,
+            sso,
+            Some(body),
+        )
+        .await
+    }
+
+    /// テナントのメールの経路を消して全体の経路へ戻す（`DELETE /admin/settings/smtp`。idp.smtp:write）。
+    pub async fn clear_tenant_smtp(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+    ) -> Result<crate::admin_dto::TenantSmtpView, AdminApiError> {
+        self.admin_send(
+            Method::DELETE,
+            tenant_id,
+            "/admin/settings/smtp",
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
     /// システム設定取得（`GET /admin/system-settings`。idp.system.admin 必須 = 実質 root のみ）。
     /// root でないと `Forbidden` が返る（web はその区画を非表示にする）。
     pub async fn get_system_settings(

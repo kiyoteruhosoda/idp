@@ -276,6 +276,15 @@ pub fn build(state: WebState) -> Router {
             "/admin/settings/tenant/keys/clear",
             post(admin_settings::clear_tenant_setting),
         )
+        // テナント自身のメールの経路（ADR-0058 §8）。
+        .route(
+            "/admin/settings/smtp",
+            post(admin_settings::update_tenant_smtp),
+        )
+        .route(
+            "/admin/settings/smtp/clear",
+            post(admin_settings::clear_tenant_smtp),
+        )
         .route(
             "/admin/system-settings",
             post(admin_settings::update_system),

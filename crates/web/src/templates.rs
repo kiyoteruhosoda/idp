@@ -461,6 +461,7 @@ mod tests {
                 saved: false,
                 error_key: None,
                 tenant_settings: None,
+                tenant_smtp: None,
                 system: None,
                 pending_api_keys: &[],
                 stale_web_keys: &[],
@@ -526,10 +527,82 @@ mod tests {
             saved: false,
             error_key: None,
             tenant_settings,
+            tenant_smtp: None,
             system,
             pending_api_keys: &[],
             stale_web_keys: &[],
         })
+    }
+
+    fn render_with_tenant_smtp(
+        messages: &Messages,
+        tenant_smtp: Option<&crate::admin_dto::TenantSmtpView>,
+    ) -> String {
+        render(&AdminSettings {
+            messages,
+            tenant: "/t",
+            admin: Some(ConsoleAdmin {
+                label: "admin",
+                tenant_name: Some("Acme"),
+                permissions: &["idp.smtp:write".to_string()],
+            }),
+            tenant_id: "00000000-0000-7000-8000-000000000000",
+            tenant_name: "Acme",
+            tenant_status: "ACTIVE",
+            tenant_self_registration: false,
+            tenant_email_login: false,
+            csrf: "csrf-token",
+            saved: false,
+            error_key: None,
+            tenant_settings: None,
+            tenant_smtp,
+            system: None,
+            pending_api_keys: &[],
+            stale_web_keys: &[],
+        })
+    }
+
+    /// テナントのメールの経路（ADR-0058 §8）。権限が無ければ区画ごと出さない。全体に従っているときは
+    /// その旨を出し、「全体の経路に戻す」は出さない。⚠ パスワードは値を描かない（設定の有無だけ）。
+    #[test]
+    fn the_tenant_mail_route_section_follows_its_origin() {
+        let messages = Messages::new(Locale::Ja);
+
+        let hidden = render_with_tenant_smtp(&messages, None);
+        assert!(!hidden.contains("id=\"tenant-smtp\""), "{hidden}");
+
+        let inherited = crate::admin_dto::TenantSmtpView {
+            inherited: true,
+            ..Default::default()
+        };
+        let html = render_with_tenant_smtp(&messages, Some(&inherited));
+        assert!(html.contains("id=\"tenant-smtp\""), "{html}");
+        assert!(
+            html.contains(&messages.get("admin-tenant-smtp-inherited")),
+            "{html}"
+        );
+        assert!(!html.contains("/admin/settings/smtp/clear"), "{html}");
+
+        let own = crate::admin_dto::TenantSmtpView {
+            inherited: false,
+            smtp_host: "smtp.tenant.example".into(),
+            smtp_port: Some(587),
+            smtp_username: "tenant-user".into(),
+            smtp_password_set: true,
+            smtp_from_address: "noreply@tenant.example".into(),
+            smtp_use_tls: true,
+        };
+        let html = render_with_tenant_smtp(&messages, Some(&own));
+        assert!(
+            html.contains(&messages.get("admin-tenant-smtp-own")),
+            "{html}"
+        );
+        assert!(html.contains("value=\"smtp.tenant.example\""), "{html}");
+        assert!(html.contains("/admin/settings/smtp/clear"), "{html}");
+        assert!(
+            html.contains(&messages.get("admin-settings-smtp-password-set")),
+            "{html}"
+        );
     }
 
     /// 1 項目ぶんの `<li>` を切り出す（項目ごとの表示を他の項目と混ぜずに確かめる）。
@@ -2650,6 +2723,8 @@ pub struct AdminSettings<'a> {
     pub error_key: Option<&'a str>,
     /// テナントの設定値（ADR-0058）。`idp.tenant-settings:read` が無ければ `None`（区画を出さない）。
     pub tenant_settings: Option<&'a crate::admin_dto::TenantSettingsListView>,
+    /// テナント自身のメールの経路（ADR-0058 §8）。`idp.smtp:read` が無ければ `None`（区画を出さない）。
+    pub tenant_smtp: Option<&'a crate::admin_dto::TenantSmtpView>,
     /// root のみ `Some`。SMTP 設定区画を描画する。
     pub system: Option<&'a crate::admin_dto::SystemSettingsView>,
     /// 保存済みだが api へ未反映のキー名（MT27）。空なら未反映なし。
