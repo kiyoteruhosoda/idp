@@ -169,7 +169,7 @@ pub struct AppState {
     /// テナント解決（id → tenant）。`TenantResolver` middleware が使う（MT9 でルーターへ mount）。
     pub tenant_resolution: Arc<TenantResolutionService>,
     /// テナント設定の解決（ADR-0058。テナントの行 > 全体の行 > 環境変数 > 組み込み既定）。
-    /// ⚠ この段ではまだ誰も読まない（受け皿だけ。消費側の作り替えは別のリリースで入る）。
+    /// ⚠ テナントが上書きできるキーを `Config` から読まない（`Config` はもう持っていない）。
     pub tenant_settings: Arc<crate::application::tenant_settings::TenantSettingsService>,
     pub register: Arc<RegisterService>,
     /// 自己登録アカウントのメール検証（確認リンク送出・消費。SEC6b）。
@@ -331,33 +331,63 @@ impl AppState {
         let login_identifier_repository: Arc<
             dyn crate::domain::repositories::UserLoginIdentifierRepository,
         > = Arc::new(SqlxUserLoginIdentifierRepository::new(pool.clone()));
+        // テナント設定の解決（ADR-0058）。テナントの行と全体の行は参照のたびに引き、テナント解決と
+        // 同じ寿命の TTL キャッシュで抑える。⚠ キャッシュの寿命そのものをテナントの設定にしない
+        // （テナントが自分の解決を止められてしまう）。環境変数 → 組み込み既定の層は実行中に変わらない
+        // ので、ここで 1 回だけ作って渡す。
+        let tenant_settings_fallback =
+            crate::domain::system_setting::tenant_overridable_setting_keys()
+                .filter_map(|key| {
+                    config
+                        .value_without_db(key)
+                        .map(|value| (key.to_string(), value))
+                })
+                .collect();
+        let tenant_settings = Arc::new(
+            crate::application::tenant_settings::TenantSettingsService::new(
+                Arc::new(
+                    crate::infrastructure::repositories::tenant_setting::SqlxTenantSettingsRepository::new(
+                        pool.clone(),
+                    ),
+                ),
+                Arc::new(SqlxSystemSettingsRepository::new(pool.clone())),
+                tenant_settings_fallback,
+                Arc::new(InMemoryTtlCache::new(
+                    chrono_from_std(config.tenant_cache_ttl()),
+                    clock.clone(),
+                )),
+                Arc::new(InMemoryTtlCache::new(
+                    chrono_from_std(config.tenant_cache_ttl()),
+                    clock.clone(),
+                )),
+            ),
+        );
+
         // AP7: パスワードポリシー。パスワードを設定する全経路（自己登録・強制変更・セルフサービス
         // 変更・リセット）がこの 1 本を通す。漏えい照合は既定で無効（外向き通信を前提にしない）。
         let password_history: Arc<dyn crate::domain::repositories::PasswordHistoryRepository> =
             Arc::new(SqlxPasswordHistoryRepository::new(pool.clone()));
+        // 漏えい照合を使うかはテナントごとに決まる（`PASSWORD_BREACH_CHECK_ENABLED`。ADR-0058）ので、
+        // 照合器は常に組んでおく。外向きの通信は、照合を有効にしたテナントの検証でしか起きない。
         let breach_checker: Arc<dyn crate::domain::password_policy::BreachedPasswordChecker> =
-            if config.password_policy().reject_breached {
-                match RangeApiBreachedPasswordChecker::new(
-                    config.password_breach_api_base_url(),
-                    config.password_breach_check_timeout(),
-                ) {
-                    Ok(checker) => Arc::new(checker),
-                    Err(e) => {
-                        // クライアントを組めない = 照合できない。起動は続け、漏えい確認だけを
-                        // 落とす（実装側と同じ fail-open。ここで落とすと設定ミスで assay 全体が
-                        // 起動しなくなる）。
-                        tracing::error!(
-                            error = %e,
-                            "failed to build breached password checker; breach check is disabled"
-                        );
-                        Arc::new(crate::domain::password_policy::NoBreachCheck)
-                    }
+            match RangeApiBreachedPasswordChecker::new(
+                config.password_breach_api_base_url(),
+                config.password_breach_check_timeout(),
+            ) {
+                Ok(checker) => Arc::new(checker),
+                Err(e) => {
+                    // クライアントを組めない = 照合できない。起動は続け、漏えい確認だけを
+                    // 落とす（実装側と同じ fail-open。ここで落とすと設定ミスで assay 全体が
+                    // 起動しなくなる）。
+                    tracing::error!(
+                        error = %e,
+                        "failed to build breached password checker; breach check is disabled"
+                    );
+                    Arc::new(crate::domain::password_policy::NoBreachCheck)
                 }
-            } else {
-                Arc::new(crate::domain::password_policy::NoBreachCheck)
             };
         let password_policy = Arc::new(PasswordPolicyService::new(
-            config.password_policy(),
+            tenant_settings.clone(),
             password_history,
             breach_checker,
             hasher.clone(),
@@ -456,9 +486,8 @@ impl AppState {
             )),
             audit.clone(),
             clock.clone(),
-            config.password_reset_ttl(),
+            tenant_settings.clone(),
             config.public_web_base_url().to_string(),
-            config.password_reset_console_link_enabled(),
         ));
         let keys = Arc::new(KeyService::new(
             signing_keys.clone(),
@@ -507,7 +536,7 @@ impl AppState {
             Arc::new(LettreSmtpMailer::new()),
             audit.clone(),
             clock.clone(),
-            config.email_verification_ttl(),
+            tenant_settings.clone(),
             config.public_web_base_url().to_string(),
         ));
         // SSO 復元の共通判定（OIDC authorize と SAML SSO が共有する）。
@@ -517,7 +546,7 @@ impl AppState {
             tenant_memberships.clone(),
             audit.clone(),
             clock.clone(),
-            config.sso_idle_ttl(),
+            tenant_settings.clone(),
         ));
         // テナント解決（ADR-0009 §7）: id → tenant のホットパスを TTL キャッシュ + 更新時 invalidation で
         // 抑える。MT9 で `TenantResolver` middleware がこのサービスをルーターへ mount する。
@@ -529,38 +558,6 @@ impl AppState {
         ));
         let tenant_resolution =
             Arc::new(TenantResolutionService::new(tenants.clone(), tenant_cache));
-        // テナント設定の解決（ADR-0058）。テナントの行と全体の行は参照のたびに引き、テナント解決と
-        // 同じ寿命の TTL キャッシュで抑える。⚠ キャッシュの寿命そのものをテナントの設定にしない
-        // （テナントが自分の解決を止められてしまう）。環境変数 → 組み込み既定の層は実行中に変わらない
-        // ので、ここで 1 回だけ作って渡す。
-        let tenant_settings_fallback =
-            crate::domain::system_setting::tenant_overridable_setting_keys()
-                .filter_map(|key| {
-                    config
-                        .value_without_db(key)
-                        .map(|value| (key.to_string(), value))
-                })
-                .collect();
-        let tenant_settings = Arc::new(
-            crate::application::tenant_settings::TenantSettingsService::new(
-                Arc::new(
-                    crate::infrastructure::repositories::tenant_setting::SqlxTenantSettingsRepository::new(
-                        pool.clone(),
-                    ),
-                ),
-                Arc::new(SqlxSystemSettingsRepository::new(pool.clone())),
-                tenant_settings_fallback,
-                Arc::new(InMemoryTtlCache::new(
-                    chrono_from_std(config.tenant_cache_ttl()),
-                    clock.clone(),
-                )),
-                Arc::new(InMemoryTtlCache::new(
-                    chrono_from_std(config.tenant_cache_ttl()),
-                    clock.clone(),
-                )),
-            ),
-        );
-
         let authorize = Arc::new(AuthorizeService::new(
             clients.clone(),
             auth_sessions.clone(),
@@ -600,10 +597,7 @@ impl AppState {
             rate_limiter.clone(),
             audit.clone(),
             clock.clone(),
-            config.sso_idle_ttl(),
-            config.sso_absolute_ttl(),
-            config.login_lockout(),
-            config.password_policy(),
+            tenant_settings.clone(),
             config.auth_policy_default_effect(),
             *config.csrf_secret(),
         ));
@@ -620,8 +614,7 @@ impl AppState {
             password_policy.clone(),
             audit.clone(),
             clock.clone(),
-            config.sso_idle_ttl(),
-            config.sso_absolute_ttl(),
+            tenant_settings.clone(),
             config.auth_policy_default_effect(),
             *config.csrf_secret(),
         ));
@@ -665,9 +658,7 @@ impl AppState {
             rate_limiter.clone(),
             audit.clone(),
             clock.clone(),
-            config.sso_idle_ttl(),
-            config.sso_absolute_ttl(),
-            config.login_lockout(),
+            tenant_settings.clone(),
             config.auth_policy_default_effect(),
         ));
         // エンドユーザー・ポータルの直接ログイン。admin_login と同機構（クライアント非依存の SSO 直接発行）
@@ -687,9 +678,7 @@ impl AppState {
             clock.clone(),
             *config.key_encryption_key(),
             *config.csrf_secret(),
-            config.sso_idle_ttl(),
-            config.sso_absolute_ttl(),
-            config.login_lockout(),
+            tenant_settings.clone(),
             config.auth_policy_default_effect(),
         ));
         let clients_admin = Arc::new(ClientManagementService::new(
@@ -851,7 +840,7 @@ impl AppState {
             Arc::new(LettreSmtpMailer::new()),
             audit.clone(),
             clock.clone(),
-            config.invitation_ttl(),
+            tenant_settings.clone(),
             config.public_web_base_url().to_string(),
         ));
         // メンバー一覧の参照（MT22）。絞り込み・ページングを DB 側で行う読み取り専用の経路で、
@@ -956,8 +945,7 @@ impl AppState {
             ids.clone(),
             *config.key_encryption_key(),
             config.public_web_base_url().to_string(),
-            config.sso_idle_ttl(),
-            config.sso_absolute_ttl(),
+            tenant_settings.clone(),
             config.auth_policy_default_effect(),
         ));
         let external_idps = Arc::new(ExternalIdpManagementService::new(
@@ -982,7 +970,7 @@ impl AppState {
             audit.clone(),
             clock.clone(),
             *config.key_encryption_key(),
-            config.step_up_max_age_secs(),
+            tenant_settings.clone(),
         ));
 
         // G10: セルフサービスのセキュリティ画面。
@@ -1040,9 +1028,7 @@ impl AppState {
             audit.clone(),
             clock.clone(),
             *config.key_encryption_key(),
-            config.sso_idle_ttl(),
-            config.sso_absolute_ttl(),
-            config.login_lockout(),
+            tenant_settings.clone(),
             *config.csrf_secret(),
             authentication_policies.clone(),
             application_access.clone(),
@@ -1070,8 +1056,7 @@ impl AppState {
             rate_limiter.clone(),
             audit.clone(),
             clock.clone(),
-            config.sso_idle_ttl(),
-            config.sso_absolute_ttl(),
+            tenant_settings.clone(),
             config.auth_policy_default_effect(),
         ));
         // 設定画面からの再起動（ADR-0017）。signal 自体は `run()` の graceful shutdown へ、

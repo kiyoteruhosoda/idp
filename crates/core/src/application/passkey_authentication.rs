@@ -24,6 +24,7 @@ use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, Issue
 use crate::application::passkey_assertion::{
     PasskeyAssertionError, PasskeyAssertionService, PasskeyFlow,
 };
+use crate::application::tenant_settings::TenantSettingsService;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session;
 use crate::domain::authentication_policy::{
@@ -39,9 +40,7 @@ use crate::domain::repositories::{
 use crate::domain::sso_session::SsoSession;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::AuthenticationMethod;
-use chrono::Duration;
 use std::sync::Arc;
-use std::time::Duration as StdDuration;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -52,11 +51,15 @@ pub enum PasskeyAuthOutcome {
         /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
         form_post: Option<Vec<(String, String)>>,
         sso_session_id: String,
+        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        sso_absolute_ttl_secs: u64,
     },
     /// 認証成功だが同意が必要。同意画面へ誘導する。
     ConsentRequired {
         auth_session_id: String,
         sso_session_id: String,
+        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        sso_absolute_ttl_secs: u64,
     },
     /// チャレンジが見つからない・期限切れ。
     ChallengeNotFound,
@@ -72,6 +75,8 @@ pub enum PasskeyAuthOutcome {
         /// 利用者が決められない。
         application_name: String,
         sso_session_id: String,
+        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        sso_absolute_ttl_secs: u64,
     },
     PolicyDenied,
     /// IP 単位のレート制限超過（ログイン・直接ログインと同じ枠）。
@@ -96,8 +101,8 @@ pub struct PasskeyAuthenticationService {
     rate_limiter: Arc<dyn LoginRateLimiter>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
-    sso_idle_ttl: Duration,
-    sso_absolute_ttl: Duration,
+    /// テナントが上書きできる設定の解決（ADR-0058）。参照のたびに引く。
+    settings: Arc<TenantSettingsService>,
     policy_default_effect: DefaultPolicyEffect,
 }
 
@@ -114,8 +119,7 @@ impl PasskeyAuthenticationService {
         rate_limiter: Arc<dyn LoginRateLimiter>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
-        sso_idle_ttl: StdDuration,
-        sso_absolute_ttl: StdDuration,
+        settings: Arc<TenantSettingsService>,
         policy_default_effect: DefaultPolicyEffect,
     ) -> Self {
         Self {
@@ -129,9 +133,7 @@ impl PasskeyAuthenticationService {
             rate_limiter,
             audit,
             clock,
-            sso_idle_ttl: Duration::from_std(sso_idle_ttl).expect("SSO idle TTL out of range"),
-            sso_absolute_ttl: Duration::from_std(sso_absolute_ttl)
-                .expect("SSO absolute TTL out of range"),
+            settings,
             policy_default_effect,
         }
     }
@@ -284,13 +286,22 @@ impl PasskeyAuthenticationService {
         }
 
         // 5. SSO セッションを組み立てる（`sid` を auth_session へ預けるため、永続化より先に作る）。
+        //    寿命は利用者の所属元テナントの値（SSO セッションは全テナントで共有されるため。ADR-0058）。
+        let lifetime = match self
+            .settings
+            .sso_session_lifetime(verified.home_tenant_id)
+            .await
+        {
+            Ok(lifetime) => lifetime,
+            Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
+        };
         let sso_session_id = crypto::random_hex(32);
         let sso = SsoSession::establish(
             crypto::sha256_hex(&sso_session_id),
             user_id,
             now,
-            self.sso_idle_ttl,
-            self.sso_absolute_ttl,
+            lifetime.idle,
+            lifetime.absolute,
             vec![AuthenticationMethod::WebAuthn],
             ctx.user_agent.clone(),
             ctx.ip_address.clone(),
@@ -365,6 +376,7 @@ impl PasskeyAuthenticationService {
             return PasskeyAuthOutcome::ConsentRequired {
                 auth_session_id: rotated_id,
                 sso_session_id,
+                sso_absolute_ttl_secs: sso.absolute_ttl_secs(),
             };
         }
 
@@ -395,6 +407,7 @@ impl PasskeyAuthenticationService {
                 return PasskeyAuthOutcome::ApplicationNotPermitted {
                     application_name,
                     sso_session_id,
+                    sso_absolute_ttl_secs: sso.absolute_ttl_secs(),
                 }
             }
             Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
@@ -410,6 +423,7 @@ impl PasskeyAuthenticationService {
             location: dispatch.location,
             form_post: dispatch.form_post,
             sso_session_id,
+            sso_absolute_ttl_secs: sso.absolute_ttl_secs(),
         }
     }
 }

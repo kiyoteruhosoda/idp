@@ -22,12 +22,28 @@
 //! 通してしまうと、呼び出し側は「テナントの値で動いている」と誤解したまま全体の値を使う。
 //! 逆に、⚠ **テナントが上書きできるキーを `Config` から直接読む箇所を残さない**（そこだけ全体の
 //! 値で動き、しかも静かに間違える）。
+//!
+//! # どのテナントの値で動くか（ADR-0058 §13）
+//!
+//! 消費側は下の型付きの口（[`TenantSettingsService::password_policy`] など）から引く。渡す
+//! テナントは次のとおりで、⚠ **発行と検証で必ず同じテナントを渡す**（片方だけ違うと、発行した
+//! 直後に切れているリンクやセッションが出る）。
+//!
+//! | まとまり | 渡すテナント | 理由 |
+//! |---|---|---|
+//! | パスワードポリシー・ロックアウト | 利用者の**所属元** | 資格情報とロックの状態は利用者の行にあり、所属元だけが管理する（ADR-0009 §2） |
+//! | SSO セッションの寿命・step-up の間隔 | 利用者の**所属元** | SSO セッションはホスト単位で全テナントに共有され、テナント列を持たない |
+//! | パスワード再設定・メール検証のリンク | 利用者の**所属元** | リンクは所属元を指し、消費も所属元でしか通らない（MT26） |
+//! | 招待のリンク | 招待した**参加先** | 招待は参加先のメンバーシップ行である |
 
+use crate::domain::authentication_policy::LockoutPolicy;
 use crate::domain::cache::Cache;
 use crate::domain::error::{DomainError, Result};
+use crate::domain::password_policy::{PasswordPolicy, MAX_PASSWORD_LEN};
 use crate::domain::repositories::{SystemSettingsRepository, TenantSettingsRepository};
 use crate::domain::system_setting::{runtime_setting_definition, SettingDefinition, SettingScope};
 use crate::domain::tenant::TenantId;
+use chrono::Duration;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -162,6 +178,87 @@ impl TenantSettingsService {
     }
 }
 
+/// SSO セッションの寿命（`SSO_IDLE_TTL_SECS` / `SSO_ABSOLUTE_TTL_SECS`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SsoSessionLifetime {
+    pub idle: Duration,
+    pub absolute: Duration,
+}
+
+/// 型付きの口。消費側はキーの綴りと型変換をここに任せる（呼び出し側で `parse` を書かせない）。
+impl TenantSettingsService {
+    /// パスワードポリシー（`PASSWORD_*`）。渡すのは利用者の**所属元**テナント。
+    pub async fn password_policy(&self, tenant_id: TenantId) -> Result<PasswordPolicy> {
+        Ok(PasswordPolicy {
+            min_length: self.parse(tenant_id, "PASSWORD_MIN_LENGTH").await?,
+            // 上限はハッシュ計算量の防御（argon2 の入力長）であって運用で緩める値ではないため、
+            // 設定にせずドメインの既定値を使う。
+            max_length: MAX_PASSWORD_LEN,
+            history_count: self.parse(tenant_id, "PASSWORD_HISTORY_COUNT").await?,
+            max_age_days: self.parse(tenant_id, "PASSWORD_MAX_AGE_DAYS").await?,
+            reject_breached: self
+                .parse(tenant_id, "PASSWORD_BREACH_CHECK_ENABLED")
+                .await?,
+        })
+    }
+
+    /// ロックアウト（`LOGIN_*`）。渡すのは利用者の**所属元**テナント。
+    pub async fn login_lockout(&self, tenant_id: TenantId) -> Result<LockoutPolicy> {
+        let max_failed_attempts: u32 = self.parse(tenant_id, "LOGIN_MAX_FAILED_ATTEMPTS").await?;
+        Ok(LockoutPolicy {
+            // i32 に収まらない巨大値は「実質ロックしない」として i32::MAX へ飽和させる
+            // （`as` キャストだと負数へラップし、初回失敗で即ロックという逆の挙動になる）。
+            max_failed_attempts: i32::try_from(max_failed_attempts).unwrap_or(i32::MAX),
+            lock_duration_secs: self.parse(tenant_id, "LOGIN_LOCK_DURATION_SECS").await?,
+            max_lock_duration_secs: self
+                .parse(tenant_id, "LOGIN_MAX_LOCK_DURATION_SECS")
+                .await?,
+        })
+    }
+
+    /// SSO セッションの寿命。渡すのは利用者の**所属元**テナント（確立と idle 延長の両方で）。
+    pub async fn sso_session_lifetime(&self, tenant_id: TenantId) -> Result<SsoSessionLifetime> {
+        Ok(SsoSessionLifetime {
+            idle: self.seconds(tenant_id, "SSO_IDLE_TTL_SECS").await?,
+            absolute: self.seconds(tenant_id, "SSO_ABSOLUTE_TTL_SECS").await?,
+        })
+    }
+
+    /// step-up（重要操作の直前の本人確認）の有効秒数。渡すのは利用者の**所属元**テナント。
+    pub async fn step_up_max_age_secs(&self, tenant_id: TenantId) -> Result<u64> {
+        self.parse(tenant_id, "STEP_UP_MAX_AGE_SECS").await
+    }
+
+    /// 招待リンクの有効期間。渡すのは招待した**参加先**テナント。
+    pub async fn invitation_ttl(&self, tenant_id: TenantId) -> Result<Duration> {
+        self.seconds(tenant_id, "INVITATION_TTL_SECS").await
+    }
+
+    /// パスワード再設定リンクの有効期間。渡すのは利用者の**所属元**テナント。
+    pub async fn password_reset_ttl(&self, tenant_id: TenantId) -> Result<Duration> {
+        self.seconds(tenant_id, "PASSWORD_RESET_TTL_SECS").await
+    }
+
+    /// SMTP で送れないとき、再設定リンクをサーバのコンソールへ出してよいか。
+    pub async fn password_reset_console_link_enabled(&self, tenant_id: TenantId) -> Result<bool> {
+        self.parse(tenant_id, "PASSWORD_RESET_CONSOLE_LINK_ENABLED")
+            .await
+    }
+
+    /// メール検証リンクの有効期間。渡すのは利用者の**所属元**テナント。
+    pub async fn email_verification_ttl(&self, tenant_id: TenantId) -> Result<Duration> {
+        self.seconds(tenant_id, "EMAIL_VERIFICATION_TTL_SECS").await
+    }
+
+    async fn seconds(&self, tenant_id: TenantId, key: &str) -> Result<Duration> {
+        let secs: u64 = self.parse(tenant_id, key).await?;
+        i64::try_from(secs)
+            .ok()
+            .and_then(Duration::try_seconds)
+            .ok_or_else(|| DomainError::InvalidValue(format!("{key} is out of range: {secs}")))
+    }
+}
+
 /// テナントが上書きできるキーの定義を返す。そうでなければ断る。
 fn overridable_definition(key: &str) -> Result<&'static SettingDefinition> {
     let def = runtime_setting_definition(key)
@@ -180,34 +277,26 @@ fn overridable_definition(key: &str) -> Result<&'static SettingDefinition> {
     Ok(def)
 }
 
+/// 消費側の単体試験が使う土台（ADR-0058）。
+///
+/// ⚠ **試験では行を repository へ直接入れる。** 書き込みの口（#111）はこのサービスに持たせない。
 #[cfg(test)]
-mod tests {
+pub(crate) mod testing {
     use super::*;
-    use crate::domain::clock::Clock;
-    use crate::domain::system_setting::SystemSetting;
+    use crate::domain::system_setting::{tenant_overridable_setting_keys, SystemSetting};
     use crate::domain::tenant_setting::TenantSetting;
-    use crate::infrastructure::cache::InMemoryTtlCache;
     use async_trait::async_trait;
-    use chrono::{DateTime, Duration, TimeZone, Utc};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
-    use uuid::Uuid;
-
-    struct FixedClock(DateTime<Utc>);
-    impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
-            self.0
-        }
-    }
 
     #[derive(Default)]
-    struct FakeTenantSettings {
-        rows: Mutex<Vec<TenantSetting>>,
-        loads: AtomicUsize,
+    pub struct FakeTenantSettings {
+        pub rows: Mutex<Vec<TenantSetting>>,
+        pub loads: AtomicUsize,
     }
 
     impl FakeTenantSettings {
-        fn put(&self, tenant_id: TenantId, key: &str, value: &str) {
+        pub fn put(&self, tenant_id: TenantId, key: &str, value: &str) {
             let mut rows = self.rows.lock().unwrap();
             rows.retain(|row| !(row.tenant_id == tenant_id && row.key == key));
             rows.push(TenantSetting {
@@ -246,8 +335,8 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct FakeSystemSettings {
-        rows: Mutex<Vec<SystemSetting>>,
+    pub struct FakeSystemSettings {
+        pub rows: Mutex<Vec<SystemSetting>>,
     }
 
     #[async_trait]
@@ -260,6 +349,95 @@ mod tests {
             rows.retain(|row| row.key != setting.key);
             rows.push(setting.clone());
             Ok(())
+        }
+    }
+
+    /// 何も覚えないキャッシュ。試験の途中で行を足しても次の参照で必ず見える。
+    pub struct NoCache;
+
+    impl<K, V> Cache<K, V> for NoCache {
+        fn get(&self, _key: &K) -> Option<V> {
+            None
+        }
+        fn insert(&self, _key: K, _value: V) {}
+        fn invalidate(&self, _key: &K) {}
+    }
+
+    /// 行の無い状態（＝全テナントが組み込み既定に従う）の解決器と、行を入れるための repository。
+    pub struct TenantSettingsFixture {
+        pub service: Arc<TenantSettingsService>,
+        pub tenants: Arc<FakeTenantSettings>,
+        pub system: Arc<FakeSystemSettings>,
+    }
+
+    impl TenantSettingsFixture {
+        /// そのテナントの行を入れる（テナントの上書き）。
+        pub fn set_tenant(&self, tenant_id: TenantId, key: &str, value: &str) {
+            self.tenants.put(tenant_id, key, value);
+        }
+
+        /// 全体の行を入れる（`system_settings`）。
+        pub fn set_global(&self, key: &str, value: &str) {
+            let mut rows = self.system.rows.lock().unwrap();
+            rows.retain(|row| row.key != key);
+            rows.push(SystemSetting {
+                key: key.to_string(),
+                value: value.to_string(),
+                is_secret: false,
+            });
+        }
+    }
+
+    /// 組み込み既定（定義の `default_value`）を最後の層にした解決器。
+    pub fn tenant_settings() -> TenantSettingsFixture {
+        let fallback = tenant_overridable_setting_keys()
+            .filter_map(|key| {
+                runtime_setting_definition(key)
+                    .and_then(|def| def.default_value)
+                    .map(|value| (key.to_string(), value.to_string()))
+            })
+            .collect();
+        let tenants = Arc::new(FakeTenantSettings::default());
+        let system = Arc::new(FakeSystemSettings::default());
+        let service = Arc::new(TenantSettingsService::new(
+            tenants.clone(),
+            system.clone(),
+            fallback,
+            Arc::new(NoCache),
+            Arc::new(NoCache),
+        ));
+        TenantSettingsFixture {
+            service,
+            tenants,
+            system,
+        }
+    }
+
+    /// 組み込み既定から一部のキーだけ全体の値を変えた解決器（従来 `Config` で値を注入していた試験用）。
+    pub fn tenant_settings_with_global(values: &[(&str, &str)]) -> Arc<TenantSettingsService> {
+        let fixture = tenant_settings();
+        for (key, value) in values {
+            fixture.set_global(key, value);
+        }
+        fixture.service
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testing::{FakeSystemSettings, FakeTenantSettings};
+    use super::*;
+    use crate::domain::clock::Clock;
+    use crate::domain::system_setting::SystemSetting;
+    use crate::infrastructure::cache::InMemoryTtlCache;
+    use chrono::{DateTime, Duration, TimeZone, Utc};
+    use std::sync::atomic::Ordering;
+    use uuid::Uuid;
+
+    struct FixedClock(DateTime<Utc>);
+    impl Clock for FixedClock {
+        fn now(&self) -> DateTime<Utc> {
+            self.0
         }
     }
 
@@ -480,5 +658,73 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, DomainError::InvalidValue(_)));
+    }
+
+    /// 型付きの口も 2 テナントで確かめる。行のあるテナントはその値、行の無いテナントは全体に従う。
+    #[tokio::test]
+    async fn typed_readers_resolve_each_tenant_separately() {
+        let fixture = super::testing::tenant_settings();
+        let (a, b) = (tenant(), tenant());
+        fixture.set_global("SSO_ABSOLUTE_TTL_SECS", "7200");
+        fixture.set_global("LOGIN_MAX_FAILED_ATTEMPTS", "7");
+        fixture.set_tenant(a, "SSO_ABSOLUTE_TTL_SECS", "600");
+        fixture.set_tenant(a, "LOGIN_MAX_FAILED_ATTEMPTS", "3");
+        fixture.set_tenant(a, "PASSWORD_BREACH_CHECK_ENABLED", "true");
+        let service = &fixture.service;
+
+        assert_eq!(
+            service.sso_session_lifetime(a).await.unwrap().absolute,
+            Duration::seconds(600)
+        );
+        assert_eq!(
+            service.sso_session_lifetime(b).await.unwrap().absolute,
+            Duration::seconds(7200)
+        );
+        assert_eq!(
+            service.login_lockout(a).await.unwrap().max_failed_attempts,
+            3
+        );
+        assert_eq!(
+            service.login_lockout(b).await.unwrap().max_failed_attempts,
+            7
+        );
+        assert!(service.password_policy(a).await.unwrap().reject_breached);
+        assert!(!service.password_policy(b).await.unwrap().reject_breached);
+    }
+
+    /// 組み込み既定だけで全部の口が引ける（定義の `default_value` の綴りと型が口と合っている）。
+    #[tokio::test]
+    async fn every_typed_reader_works_on_the_builtin_defaults() {
+        let fixture = super::testing::tenant_settings();
+        let service = &fixture.service;
+        let t = tenant();
+        service.password_policy(t).await.unwrap();
+        service.login_lockout(t).await.unwrap();
+        service.sso_session_lifetime(t).await.unwrap();
+        service.step_up_max_age_secs(t).await.unwrap();
+        service.invitation_ttl(t).await.unwrap();
+        service.password_reset_ttl(t).await.unwrap();
+        service
+            .password_reset_console_link_enabled(t)
+            .await
+            .unwrap();
+        service.email_verification_ttl(t).await.unwrap();
+    }
+
+    /// i32 に収まらない失敗回数は負数へラップさせず i32::MAX へ飽和させる（初回失敗で即ロックしない）。
+    #[tokio::test]
+    async fn a_huge_failure_threshold_saturates_instead_of_wrapping() {
+        let fixture = super::testing::tenant_settings();
+        let t = tenant();
+        fixture.set_tenant(t, "LOGIN_MAX_FAILED_ATTEMPTS", &u32::MAX.to_string());
+        assert_eq!(
+            fixture
+                .service
+                .login_lockout(t)
+                .await
+                .unwrap()
+                .max_failed_attempts,
+            i32::MAX
+        );
     }
 }

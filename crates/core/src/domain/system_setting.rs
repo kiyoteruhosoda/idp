@@ -210,7 +210,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::UnsignedInteger,
         default_value: Some("28800"),
@@ -222,7 +222,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::UnsignedInteger,
         default_value: Some("86400"),
@@ -295,7 +295,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::UnsignedInteger,
         default_value: Some("604800"),
@@ -307,7 +307,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::UnsignedInteger,
         default_value: Some("3600"),
@@ -319,7 +319,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Review,
         kind: SettingKind::Boolean,
         default_value: Some("true"),
@@ -339,7 +339,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::UnsignedInteger,
         default_value: Some("86400"),
@@ -378,7 +378,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::UnsignedInteger,
         default_value: Some("10"),
@@ -390,7 +390,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::UnsignedInteger,
         default_value: Some("900"),
@@ -402,7 +402,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::UnsignedInteger,
         default_value: Some("86400"),
@@ -418,7 +418,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::UnsignedInteger,
         default_value: Some("8"),
@@ -431,7 +431,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::UnsignedInteger,
         default_value: Some("5"),
@@ -445,7 +445,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::UnsignedInteger,
         default_value: Some("0"),
@@ -459,7 +459,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::Boolean,
         default_value: Some("false"),
@@ -708,7 +708,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::UnsignedInteger,
         default_value: Some("300"),
@@ -1077,6 +1077,17 @@ mod tests {
             let def = runtime_setting_definition(key).unwrap();
             assert_eq!(def.owner, SettingOwner::DbManaged, "{key}");
             assert!(!def.secret, "{key}");
+        }
+    }
+
+    /// テナントが上書きできるキーは参照のたびに引く（ADR-0058 §9）ので、再起動なしで効く。
+    /// ⚠ ここを true に戻すと、設定画面は「再起動待ち」を出し続ける（実際には効いているのに）。
+    /// 逆に、再起動しないと効かないキーがあるなら、その消費側はまだ `Config` を読んでいる。
+    #[test]
+    fn tenant_overridable_keys_take_effect_without_a_restart() {
+        for key in tenant_overridable_setting_keys() {
+            let def = runtime_setting_definition(key).unwrap();
+            assert!(!def.restart_required, "{key}");
         }
     }
 

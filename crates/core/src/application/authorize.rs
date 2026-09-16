@@ -93,11 +93,18 @@ pub enum ResumeOutcome {
     Redirect {
         location: String,
         form_post: Option<Vec<(String, String)>>,
+        /// 復元した SSO セッションの絶対期限までの長さ（秒）。web が Cookie を発行し直すときの
+        /// `Max-Age`（ADR-0058）。
+        sso_absolute_ttl_secs: u64,
     },
     /// リクエスト続行不可（`prompt=none` で未ログイン・未同意など）。エラー付き RP URL へ 302。
     ErrorRedirect { location: String },
     /// SSO 有効だが同意が必要。web は `auth_session_id` を Cookie 化して `/consent` へ。
-    ConsentRequired { auth_session_id: String },
+    ConsentRequired {
+        auth_session_id: String,
+        /// `Redirect` と同じ（復元した SSO セッションの絶対期限までの長さ）。
+        sso_absolute_ttl_secs: u64,
+    },
     /// 認証が必要。web は `auth_session_id` を Cookie 化してログインフォームを表示する。
     LoginRequired { auth_session_id: String },
     /// SSO は復元できたが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
@@ -459,6 +466,7 @@ impl AuthorizeService {
                                         ResumeOutcome::Redirect {
                                             location: dispatch.location,
                                             form_post: dispatch.form_post,
+                                            sso_absolute_ttl_secs: restored.absolute_ttl_secs,
                                         }
                                     }
                                     Err(e) => {
@@ -519,7 +527,10 @@ impl AuthorizeService {
                                 };
                             }
                             auth_session_id = rotated_id;
-                            return ResumeOutcome::ConsentRequired { auth_session_id };
+                            return ResumeOutcome::ConsentRequired {
+                                auth_session_id,
+                                sso_absolute_ttl_secs: restored.absolute_ttl_secs,
+                            };
                         }
                         // max_age 超過・ポリシー未充足 → ログインへ（SSO は復元しない）。
                         // prompt=none なら下でエラーになる。

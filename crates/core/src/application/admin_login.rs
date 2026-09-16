@@ -22,6 +22,7 @@ use crate::application::passkey_assertion::{
     PasskeyAssertionError, PasskeyAssertionService, PasskeyFlow,
 };
 use crate::application::password_policy::PasswordPolicyService;
+use crate::application::tenant_settings::TenantSettingsService;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::authentication_policy::{
     evaluate_policies, AuthenticationContext, DefaultPolicyEffect, PolicyDecision,
@@ -43,7 +44,6 @@ use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::user::User;
 use crate::domain::values::AuthenticationMethod;
-use chrono::Duration;
 use std::sync::Arc;
 
 // 管理ログインフォームの CSRF 同期トークン導出（`admin_csrf_token`）は、ADR-0007 で管理コンソールを
@@ -81,6 +81,8 @@ pub enum AdminLoginOutcome {
     /// 認証成功かつ `idp.tenant.admin` 保有。SSO Cookie を発行して管理コンソールへ 302 する。
     Success {
         sso_session_id: String,
+        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        sso_absolute_ttl_secs: u64,
     },
     /// 認証成功・管理権限保有だが `must_change_password`（ADR-0009 §5）。パスワード変更画面へ誘導する。
     /// SSO はまだ発行しない（変更完了までは他の操作を許可しない）。
@@ -129,10 +131,8 @@ pub struct AdminLoginService {
     rate_limiter: Arc<dyn LoginRateLimiter>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
-    sso_idle_ttl: Duration,
-    sso_absolute_ttl: Duration,
-    /// アカウントロックのポリシー（設定注入。通常ログイン `login.rs` と同じ値を使う）。
-    lockout: crate::domain::authentication_policy::LockoutPolicy,
+    /// テナントが上書きできる設定の解決（ADR-0058）。参照のたびに引く。
+    settings: Arc<TenantSettingsService>,
     /// 一致するポリシーが無い場合の既定動作（AP2。`login.rs` と同じ設定値を使う）。
     policy_default_effect: DefaultPolicyEffect,
 }
@@ -152,9 +152,7 @@ impl AdminLoginService {
         rate_limiter: Arc<dyn LoginRateLimiter>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
-        sso_idle_ttl: std::time::Duration,
-        sso_absolute_ttl: std::time::Duration,
-        lockout: crate::domain::authentication_policy::LockoutPolicy,
+        settings: Arc<TenantSettingsService>,
         policy_default_effect: DefaultPolicyEffect,
     ) -> Self {
         Self {
@@ -170,10 +168,7 @@ impl AdminLoginService {
             rate_limiter,
             audit,
             clock,
-            sso_idle_ttl: Duration::from_std(sso_idle_ttl).expect("SSO idle TTL out of range"),
-            sso_absolute_ttl: Duration::from_std(sso_absolute_ttl)
-                .expect("SSO absolute TTL out of range"),
-            lockout,
+            settings,
             policy_default_effect,
         }
     }
@@ -472,7 +467,12 @@ impl AdminLoginService {
         }
 
         // 6.5. 強制パスワード変更（ADR-0009 §5）。SSO はまだ発行せず変更画面へ誘導する。
-        if password_change_required(&user, self.password_policy.policy(), now) {
+        //      有効期限は利用者の所属元テナントのポリシーで測る（ADR-0058）。
+        let password_policy = match self.password_policy.policy(user.tenant_id).await {
+            Ok(policy) => policy,
+            Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
+        };
+        if password_change_required(&user, &password_policy, now) {
             return AdminLoginOutcome::PasswordChangeRequired {
                 username: cmd.username,
             };
@@ -490,13 +490,17 @@ impl AdminLoginService {
             .issue_sso(
                 tenant_id,
                 user.id,
+                user.tenant_id,
                 vec![AuthenticationMethod::Password],
                 ctx,
                 now,
             )
             .await
         {
-            Ok(sso_session_id) => AdminLoginOutcome::Success { sso_session_id },
+            Ok((sso_session_id, sso_absolute_ttl_secs)) => AdminLoginOutcome::Success {
+                sso_session_id,
+                sso_absolute_ttl_secs,
+            },
             Err(e) => AdminLoginOutcome::Internal(e),
         }
     }
@@ -606,34 +610,47 @@ impl AdminLoginService {
             .issue_sso(
                 tenant_id,
                 user_id,
+                verified.home_tenant_id,
                 vec![AuthenticationMethod::WebAuthn],
                 ctx,
                 now,
             )
             .await
         {
-            Ok(sso_session_id) => AdminLoginOutcome::Success { sso_session_id },
+            Ok((sso_session_id, sso_absolute_ttl_secs)) => AdminLoginOutcome::Success {
+                sso_session_id,
+                sso_absolute_ttl_secs,
+            },
             Err(e) => AdminLoginOutcome::Internal(e),
         }
     }
 
     /// SSO セッションを発行して監査へ記録する（Cookie には session_id、DB には SHA-256 ハッシュ。
     /// `login.rs` と同一機構）。パスワード・強制パスワード変更・パスキーの 3 経路で共有する。
+    ///
+    /// 寿命は利用者の**所属元**テナント（`home_tenant_id`）の値で決める。SSO セッションは全テナントで
+    /// 共有されるので、ログインした画面のテナントでは決めない（ADR-0058）。
     async fn issue_sso(
         &self,
         tenant_id: TenantId,
         user_id: uuid::Uuid,
+        home_tenant_id: TenantId,
         methods: Vec<AuthenticationMethod>,
         ctx: &RequestContext,
         now: chrono::DateTime<chrono::Utc>,
-    ) -> Result<String, String> {
+    ) -> Result<(String, u64), String> {
+        let lifetime = self
+            .settings
+            .sso_session_lifetime(home_tenant_id)
+            .await
+            .map_err(|e| e.to_string())?;
         let sso_session_id = crypto::random_hex(32);
         let sso = SsoSession::establish(
             crypto::sha256_hex(&sso_session_id),
             user_id,
             now,
-            self.sso_idle_ttl,
-            self.sso_absolute_ttl,
+            lifetime.idle,
+            lifetime.absolute,
             methods,
             ctx.user_agent.clone(),
             ctx.ip_address.clone(),
@@ -663,7 +680,7 @@ impl AdminLoginService {
                 ctx,
             )
             .await;
-        Ok(sso_session_id)
+        Ok((sso_session_id, sso.absolute_ttl_secs()))
     }
 
     /// 強制パスワード変更（ADR-0009 §5）。管理ログインを現行パスワードを含めフルに再検証し、成功時に
@@ -717,7 +734,11 @@ impl AdminLoginService {
         // 成功時と同じ後続（admin 権限確認 → SSO 発行）へ進める（照合は現行パスワードの完全な検証で、
         // 認証強度は通常ログインと等価）。
         // 変更を要求されている状態か（強制フラグ、または有効期限切れ。AP7）。
-        let change_required = password_change_required(&user, self.password_policy.policy(), now);
+        let password_policy = match self.password_policy.policy(user.tenant_id).await {
+            Ok(policy) => policy,
+            Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
+        };
+        let change_required = password_change_required(&user, &password_policy, now);
         let duplicate_submit = if change_required {
             false
         } else {
@@ -785,7 +806,12 @@ impl AdminLoginService {
         if !duplicate_submit {
             match self
                 .password_policy
-                .validate(Some(user.id), Some(&user.password_hash), &cmd.new_password)
+                .validate(
+                    user.tenant_id,
+                    Some(user.id),
+                    Some(&user.password_hash),
+                    &cmd.new_password,
+                )
                 .await
             {
                 Ok(Ok(())) => {}
@@ -813,7 +839,7 @@ impl AdminLoginService {
                 Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
             }
             self.password_policy
-                .record_change(user.id, &user.password_hash)
+                .record_change(user.tenant_id, user.id, &user.password_hash)
                 .await;
             self.audit
                 .record(
@@ -838,13 +864,17 @@ impl AdminLoginService {
             .issue_sso(
                 tenant_id,
                 user.id,
+                user.tenant_id,
                 vec![AuthenticationMethod::Password],
                 ctx,
                 now,
             )
             .await
         {
-            Ok(sso_session_id) => AdminLoginOutcome::Success { sso_session_id },
+            Ok((sso_session_id, sso_absolute_ttl_secs)) => AdminLoginOutcome::Success {
+                sso_session_id,
+                sso_absolute_ttl_secs,
+            },
             Err(e) => AdminLoginOutcome::Internal(e),
         }
     }
@@ -887,12 +917,13 @@ impl AdminLoginService {
         ctx: &RequestContext,
     ) -> AdminLoginOutcome {
         let now = self.clock.now();
+        // 閾値は利用者の所属元テナントの値（ロックの状態は利用者の行にある。ADR-0058）。
+        let lockout = match self.settings.login_lockout(user.tenant_id).await {
+            Ok(lockout) => lockout,
+            Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
+        };
         // 加算とロック判定は 1 文の UPDATE に閉じる（SEC13）。
-        let failure = match self
-            .users
-            .record_login_failure(user.id, self.lockout, now)
-            .await
-        {
+        let failure = match self.users.record_login_failure(user.id, lockout, now).await {
             Ok(f) => f,
             Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
         };

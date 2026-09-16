@@ -140,27 +140,28 @@ pub async fn authenticate(
             &ctx,
         )
         .await;
-    let ttl = state.config.sso_absolute_ttl().as_secs();
     Ok(Json(match outcome {
         LoginOutcome::Success {
             location,
             form_post,
             sso_session_id,
             user_language,
+            sso_absolute_ttl_secs,
         } => InternalAuthenticateResponse::Success {
             redirect_to: location,
             form_post,
             sso_session_id,
-            sso_absolute_ttl_secs: ttl,
+            sso_absolute_ttl_secs,
             user_language,
         },
         LoginOutcome::ConsentRequired {
             auth_session_id,
             sso_session_id,
+            sso_absolute_ttl_secs,
         } => InternalAuthenticateResponse::ConsentRequired {
             auth_session_id,
             sso_session_id,
-            sso_absolute_ttl_secs: ttl,
+            sso_absolute_ttl_secs,
         },
         LoginOutcome::MfaRequired { auth_session_id } => {
             InternalAuthenticateResponse::MfaRequired { auth_session_id }
@@ -175,10 +176,11 @@ pub async fn authenticate(
         LoginOutcome::ApplicationNotPermitted {
             application_name,
             sso_session_id,
+            sso_absolute_ttl_secs,
         } => InternalAuthenticateResponse::ApplicationNotPermitted {
             application_name,
             sso_session_id,
-            sso_absolute_ttl_secs: ttl,
+            sso_absolute_ttl_secs,
         },
         LoginOutcome::MfaEnrollmentRequired => InternalAuthenticateResponse::MfaEnrollmentRequired,
         LoginOutcome::SessionExpired => InternalAuthenticateResponse::SessionExpired,
@@ -263,25 +265,26 @@ pub async fn change_password(
             &ctx,
         )
         .await;
-    let ttl = state.config.sso_absolute_ttl().as_secs();
     Ok(Json(match outcome {
         ChangePasswordOutcome::Success {
             location,
             form_post,
             sso_session_id,
+            sso_absolute_ttl_secs,
         } => InternalChangePasswordResponse::Success {
             redirect_to: location,
             form_post,
             sso_session_id,
-            sso_absolute_ttl_secs: ttl,
+            sso_absolute_ttl_secs,
         },
         ChangePasswordOutcome::ConsentRequired {
             auth_session_id,
             sso_session_id,
+            sso_absolute_ttl_secs,
         } => InternalChangePasswordResponse::ConsentRequired {
             auth_session_id,
             sso_session_id,
-            sso_absolute_ttl_secs: ttl,
+            sso_absolute_ttl_secs,
         },
         ChangePasswordOutcome::MfaRequired { auth_session_id } => {
             InternalChangePasswordResponse::MfaRequired { auth_session_id }
@@ -290,10 +293,11 @@ pub async fn change_password(
         ChangePasswordOutcome::ApplicationNotPermitted {
             application_name,
             sso_session_id,
+            sso_absolute_ttl_secs,
         } => InternalChangePasswordResponse::ApplicationNotPermitted {
             application_name,
             sso_session_id,
-            sso_absolute_ttl_secs: ttl,
+            sso_absolute_ttl_secs,
         },
         ChangePasswordOutcome::MfaEnrollmentRequired => {
             InternalChangePasswordResponse::MfaEnrollmentRequired
@@ -351,14 +355,14 @@ pub async fn authenticate_admin(
             &ctx,
         )
         .await;
-    let ttl = state.config.sso_absolute_ttl().as_secs();
     Ok(Json(match outcome {
-        AdminLoginOutcome::Success { sso_session_id } => {
-            InternalAdminAuthenticateResponse::Success {
-                sso_session_id,
-                sso_absolute_ttl_secs: ttl,
-            }
-        }
+        AdminLoginOutcome::Success {
+            sso_session_id,
+            sso_absolute_ttl_secs,
+        } => InternalAdminAuthenticateResponse::Success {
+            sso_session_id,
+            sso_absolute_ttl_secs,
+        },
         AdminLoginOutcome::RateLimited => InternalAdminAuthenticateResponse::RateLimited,
         AdminLoginOutcome::InvalidCredentials => {
             InternalAdminAuthenticateResponse::InvalidCredentials
@@ -416,14 +420,14 @@ pub async fn authenticate_portal(
             &ctx,
         )
         .await;
-    let ttl = state.config.sso_absolute_ttl().as_secs();
     Ok(Json(match outcome {
         PortalLoginOutcome::Success {
             sso_session_id,
             user_language,
+            sso_absolute_ttl_secs,
         } => InternalPortalAuthenticateResponse::Success {
             sso_session_id,
-            sso_absolute_ttl_secs: ttl,
+            sso_absolute_ttl_secs,
             user_language,
         },
         PortalLoginOutcome::MfaRequired { mfa_ticket } => {
@@ -483,14 +487,14 @@ pub async fn authenticate_portal_mfa(
             &ctx,
         )
         .await;
-    let ttl = state.config.sso_absolute_ttl().as_secs();
     Ok(Json(match outcome {
         PortalMfaOutcome::Success {
             sso_session_id,
             user_language,
+            sso_absolute_ttl_secs,
         } => InternalPortalMfaResponse::Success {
             sso_session_id,
-            sso_absolute_ttl_secs: ttl,
+            sso_absolute_ttl_secs,
             user_language,
         },
         PortalMfaOutcome::InvalidCode => InternalPortalMfaResponse::InvalidCode,
@@ -530,14 +534,14 @@ pub async fn authenticate_portal_change_password(
             &ctx,
         )
         .await;
-    let ttl = state.config.sso_absolute_ttl().as_secs();
     Ok(Json(match outcome {
         PortalChangePasswordOutcome::Success {
             sso_session_id,
             user_language,
+            sso_absolute_ttl_secs,
         } => InternalPortalChangePasswordResponse::Success {
             sso_session_id,
-            sso_absolute_ttl_secs: ttl,
+            sso_absolute_ttl_secs,
             user_language,
         },
         PortalChangePasswordOutcome::MfaRequired { mfa_ticket } => {
@@ -597,14 +601,14 @@ pub async fn admin_change_password(
             &ctx,
         )
         .await;
-    let ttl = state.config.sso_absolute_ttl().as_secs();
     Ok(Json(match outcome {
-        AdminLoginOutcome::Success { sso_session_id } => {
-            InternalAdminChangePasswordResponse::Success {
-                sso_session_id,
-                sso_absolute_ttl_secs: ttl,
-            }
-        }
+        AdminLoginOutcome::Success {
+            sso_session_id,
+            sso_absolute_ttl_secs,
+        } => InternalAdminChangePasswordResponse::Success {
+            sso_session_id,
+            sso_absolute_ttl_secs,
+        },
         AdminLoginOutcome::RateLimited => InternalAdminChangePasswordResponse::RateLimited,
         AdminLoginOutcome::InvalidCredentials => {
             InternalAdminChangePasswordResponse::InvalidCredentials
@@ -1563,7 +1567,6 @@ pub async fn external_callback(
     };
     let tenant =
         require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
-    let ttl = state.config.sso_absolute_ttl().as_secs();
     Ok(Json(
         match state
             .external_login
@@ -1581,6 +1584,7 @@ pub async fn external_callback(
                 location,
                 sso_session_id,
                 user_language,
+                sso_absolute_ttl_secs,
             } => {
                 // 認可フローの続きなら送信先とフォームフィールドの両方を渡す（G12）。
                 // 認可フローの外（アカウント設定から始めた連携）は戻り先を web が決める。
@@ -1593,7 +1597,7 @@ pub async fn external_callback(
                 };
                 InternalExternalCallbackResponse::Success {
                     sso_session_id,
-                    sso_absolute_ttl_secs: ttl,
+                    sso_absolute_ttl_secs,
                     redirect_to,
                     form_post,
                     user_language,
@@ -1603,10 +1607,11 @@ pub async fn external_callback(
                 auth_session_id,
                 sso_session_id,
                 user_language,
+                sso_absolute_ttl_secs,
             } => InternalExternalCallbackResponse::ConsentRequired {
                 auth_session_id,
                 sso_session_id,
-                sso_absolute_ttl_secs: ttl,
+                sso_absolute_ttl_secs,
                 user_language,
             },
             CallbackOutcome::StateExpired => InternalExternalCallbackResponse::StateExpired,
@@ -1617,10 +1622,11 @@ pub async fn external_callback(
                 application_name,
                 sso_session_id,
                 user_language,
+                sso_absolute_ttl_secs,
             } => InternalExternalCallbackResponse::ApplicationNotPermitted {
                 application_name,
                 sso_session_id,
-                sso_absolute_ttl_secs: ttl,
+                sso_absolute_ttl_secs,
                 user_language,
             },
             CallbackOutcome::ExternalFailure => InternalExternalCallbackResponse::ExternalFailure,
@@ -1648,7 +1654,6 @@ pub async fn external_saml_acs(
     };
     let tenant =
         require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
-    let ttl = state.config.sso_absolute_ttl().as_secs();
     Ok(Json(
         match state
             .external_login
@@ -1666,6 +1671,7 @@ pub async fn external_saml_acs(
                 location,
                 sso_session_id,
                 user_language,
+                sso_absolute_ttl_secs,
             } => {
                 let (redirect_to, form_post) = match location {
                     SuccessLocation::Redirect {
@@ -1676,7 +1682,7 @@ pub async fn external_saml_acs(
                 };
                 InternalExternalCallbackResponse::Success {
                     sso_session_id,
-                    sso_absolute_ttl_secs: ttl,
+                    sso_absolute_ttl_secs,
                     redirect_to,
                     form_post,
                     user_language,
@@ -1686,10 +1692,11 @@ pub async fn external_saml_acs(
                 auth_session_id,
                 sso_session_id,
                 user_language,
+                sso_absolute_ttl_secs,
             } => InternalExternalCallbackResponse::ConsentRequired {
                 auth_session_id,
                 sso_session_id,
-                sso_absolute_ttl_secs: ttl,
+                sso_absolute_ttl_secs,
                 user_language,
             },
             CallbackOutcome::StateExpired => InternalExternalCallbackResponse::StateExpired,
@@ -1700,10 +1707,11 @@ pub async fn external_saml_acs(
                 application_name,
                 sso_session_id,
                 user_language,
+                sso_absolute_ttl_secs,
             } => InternalExternalCallbackResponse::ApplicationNotPermitted {
                 application_name,
                 sso_session_id,
-                sso_absolute_ttl_secs: ttl,
+                sso_absolute_ttl_secs,
                 user_language,
             },
             CallbackOutcome::ExternalFailure => InternalExternalCallbackResponse::ExternalFailure,

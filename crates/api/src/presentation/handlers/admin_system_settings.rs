@@ -120,6 +120,9 @@ pub async fn update_runtime_setting(
             }
             other => ApiError::Internal(other.to_string()),
         })?;
+    // テナントに行の無いテナントは全体の値に従う（ADR-0058）。全体の行はキャッシュしているので、
+    // 捨てておかないと、再起動なしで効くはずのキーが TTL の間だけ古い値で動く。
+    state.tenant_settings.invalidate_global();
     let smtp = state
         .system_settings
         .get_smtp()

@@ -8,15 +8,22 @@
 //! 復号に必要な bootstrap 系、api/web で値を一致させたいキー）は DB を参照せず ENV > 既定値 で解決する
 //! （ADR-0010）。`Builtin` は常に既定値。
 //!
+//! ⚠ **テナントが上書きできるキー（ADR-0058）は `Config` に持たない。** 値はテナントごとに違い、
+//! 起動時に 1 つ解決して配る形では表せないので、消費側は
+//! [`crate::application::tenant_settings::TenantSettingsService`] から参照のたびに引く。
+//! ここで行うのは、起動時に型の合わない値で止めること（[`Self::from_env_and_db_settings`]）と、
+//! 解決の最後の層（環境変数 → 組み込み既定）を渡すこと（[`Self::value_without_db`]）だけである。
+//!
 //! 一部の getter（各種 TTL・クロックスキュー）は後続フェーズ（T2〜）で使用するため、
 //! 現時点では未使用でも保持する。
 #![allow(dead_code)]
 
-use crate::domain::authentication_policy::{DefaultPolicyEffect, LockoutPolicy};
-use crate::domain::password_policy::{PasswordPolicy, DEFAULT_BREACH_API_BASE_URL};
+use crate::domain::authentication_policy::DefaultPolicyEffect;
+use crate::domain::password_policy::DEFAULT_BREACH_API_BASE_URL;
 use crate::domain::system_setting::{
-    requires_production_secrets, runtime_setting_definition, DefaultRisk, DeploymentState,
-    DevelopmentSecrets, SettingOwner, RUNTIME_SETTING_DEFINITIONS,
+    requires_production_secrets, runtime_setting_definition, tenant_overridable_setting_keys,
+    validate_setting_value, DefaultRisk, DeploymentState, DevelopmentSecrets, SettingOwner,
+    RUNTIME_SETTING_DEFINITIONS,
 };
 use crate::domain::values::AssignmentEnforcement;
 use assay_contracts::cookies::CookiePolicy;
@@ -124,28 +131,14 @@ pub struct Config {
     log_format: LogFormat,
     auth_session_ttl: Duration,
     authorization_code_ttl: Duration,
-    sso_idle_ttl: Duration,
-    sso_absolute_ttl: Duration,
     access_token_ttl: Duration,
     management_token_ttl: Duration,
     id_token_ttl: Duration,
     refresh_token_ttl: Duration,
     clock_skew: Duration,
-    /// ゲスト招待トークンの有効期限（ADR-0009 §3）。
-    invitation_ttl: Duration,
-    /// パスワードリセットトークンの有効期限（MT18）。
-    password_reset_ttl: Duration,
-    /// SMTP で送れないときにリセットリンクをサーバのコンソールへ出すか。
-    password_reset_console_link_enabled: bool,
-    /// メール検証トークンの有効期限（SEC6b）。
-    email_verification_ttl: Duration,
-    /// アカウントロックのポリシー（失敗許容回数・ロック時間。ユーザー認証・認証ポリシー仕様書 §17）。
-    login_lockout: LockoutPolicy,
     /// 認証ポリシーが 1 件も一致しないときの既定動作（同仕様 §9.4）。
     auth_policy_default_effect: DefaultPolicyEffect,
     application_assignment_enforcement: AssignmentEnforcement,
-    /// パスワードポリシー（長さ・履歴・有効期限・漏えい確認の有無。同仕様 §11.2。AP7）。
-    password_policy: PasswordPolicy,
     /// 漏えい済みパスワード照合の接続先（k-匿名性のレンジ API）。
     password_breach_api_base_url: String,
     /// 漏えい済みパスワード照合の 1 リクエストの上限時間。
@@ -178,8 +171,6 @@ pub struct Config {
     cors_allowed_origins: String,
     /// 期限切れレコードの一括 GC（G2）の実行間隔（秒）。`0` は掃除しない。
     expired_record_purge_interval_secs: u64,
-    /// Step-up 認証（AP5）の再確認間隔（秒）。
-    step_up_max_age_secs: u64,
     /// Back-channel logout 通知の再送上限回数（G5）。
     backchannel_logout_max_attempts: u32,
     /// Back-channel logout 送信ワーカーのポーリング間隔（秒。G5）。
@@ -257,6 +248,18 @@ impl Config {
             None => None,
         };
         let cookie_policy = CookiePolicy::new(cookie_secure, cookie_domain.as_deref());
+        // テナントが上書きできるキーは `Config` に持たない（ADR-0058）が、型の合わない全体の値
+        // （環境変数・`system_settings`）での起動は今までどおりここで止める。止めないと、壊れた値が
+        // 最初に参照された要求で初めて失敗し、しかもテナントに行が無い全員が同時に落ちる。
+        for key in tenant_overridable_setting_keys() {
+            if let (Some(def), Some(value)) = (
+                runtime_setting_definition(key),
+                resolver.optional_string(key),
+            ) {
+                validate_setting_value(def, &value)
+                    .map_err(|e| anyhow::anyhow!("invalid value for {key}: {e}"))?;
+            }
+        }
 
         Ok(Self {
             issuer,
@@ -273,43 +276,12 @@ impl Config {
             },
             auth_session_ttl: secs(resolver.parse("AUTH_SESSION_TTL_SECS", 600)?),
             authorization_code_ttl: secs(resolver.parse("AUTHORIZATION_CODE_TTL_SECS", 60)?),
-            sso_idle_ttl: secs(resolver.parse("SSO_IDLE_TTL_SECS", 28_800)?),
-            sso_absolute_ttl: secs(resolver.parse("SSO_ABSOLUTE_TTL_SECS", 86_400)?),
             access_token_ttl: secs(resolver.parse("ACCESS_TOKEN_TTL_SECS", 900)?),
             management_token_ttl: secs(resolver.parse("MANAGEMENT_TOKEN_TTL_SECS", 300)?),
             id_token_ttl: secs(resolver.parse("ID_TOKEN_TTL_SECS", 3_600)?),
             // Refresh Token は既定 30 日（offline_access scope で発行。rotation あり）。
             refresh_token_ttl: secs(resolver.parse("REFRESH_TOKEN_TTL_SECS", 2_592_000)?),
             clock_skew: secs(resolver.parse("CLOCK_SKEW_SECS", 60)?),
-            invitation_ttl: secs(resolver.parse("INVITATION_TTL_SECS", 604_800)?),
-            password_reset_ttl: secs(resolver.parse("PASSWORD_RESET_TTL_SECS", 3_600)?),
-            password_reset_console_link_enabled: resolver
-                .parse("PASSWORD_RESET_CONSOLE_LINK_ENABLED", true)?,
-            email_verification_ttl: secs(resolver.parse("EMAIL_VERIFICATION_TTL_SECS", 86_400)?),
-            login_lockout: LockoutPolicy {
-                // i32 に収まらない巨大値は「実質ロックしない」として i32::MAX へ飽和させる
-                //（`as` キャストだと負数へラップし、初回失敗で即ロックという逆の挙動になる。
-                //  DB 保存値で起動を失敗させるとロックアウト設定の修正自体ができなくなるため
-                //  fail-fast にはしない）。
-                max_failed_attempts: i32::try_from(
-                    resolver.parse("LOGIN_MAX_FAILED_ATTEMPTS", 10u32)?,
-                )
-                .unwrap_or(i32::MAX),
-                lock_duration_secs: resolver.parse("LOGIN_LOCK_DURATION_SECS", 900u64)?,
-                // 段階的ロック（AP6）の上限。既定 24 時間。`LOGIN_LOCK_DURATION_SECS` 以下に
-                // すると段階化は起きず、従来どおりの固定時間ロックになる。
-                max_lock_duration_secs: resolver
-                    .parse("LOGIN_MAX_LOCK_DURATION_SECS", 86_400u64)?,
-            },
-            password_policy: PasswordPolicy {
-                min_length: resolver.parse("PASSWORD_MIN_LENGTH", 8usize)?,
-                // 上限はハッシュ計算量の防御（argon2 の入力長）であって運用で緩める値ではないため、
-                // 設定にせずドメインの既定値を使う。
-                max_length: crate::domain::password_policy::MAX_PASSWORD_LEN,
-                history_count: resolver.parse("PASSWORD_HISTORY_COUNT", 5u32)?,
-                max_age_days: resolver.parse("PASSWORD_MAX_AGE_DAYS", 0u32)?,
-                reject_breached: resolver.parse("PASSWORD_BREACH_CHECK_ENABLED", false)?,
-            },
             password_breach_api_base_url: resolver
                 .string("PASSWORD_BREACH_API_BASE_URL", DEFAULT_BREACH_API_BASE_URL),
             password_breach_check_timeout: secs(
@@ -345,7 +317,6 @@ impl Config {
             cors_allowed_origins: resolver.string("CORS_ALLOWED_ORIGINS", ""),
             expired_record_purge_interval_secs: resolver
                 .parse("EXPIRED_RECORD_PURGE_INTERVAL_SECS", 3_600u64)?,
-            step_up_max_age_secs: resolver.parse("STEP_UP_MAX_AGE_SECS", 300u64)?,
             backchannel_logout_max_attempts: resolver
                 .parse("BACKCHANNEL_LOGOUT_MAX_ATTEMPTS", 8u32)?,
             backchannel_logout_poll_interval_secs: resolver
@@ -386,12 +357,6 @@ impl Config {
     pub fn authorization_code_ttl(&self) -> Duration {
         self.authorization_code_ttl
     }
-    pub fn sso_idle_ttl(&self) -> Duration {
-        self.sso_idle_ttl
-    }
-    pub fn sso_absolute_ttl(&self) -> Duration {
-        self.sso_absolute_ttl
-    }
     pub fn access_token_ttl(&self) -> Duration {
         self.access_token_ttl
     }
@@ -410,33 +375,7 @@ impl Config {
     pub fn clock_skew(&self) -> Duration {
         self.clock_skew
     }
-    /// ゲスト招待トークンの有効期限（ADR-0009 §3）。
-    pub fn invitation_ttl(&self) -> Duration {
-        self.invitation_ttl
-    }
-    /// パスワードリセットトークンの有効期限（MT18）。
-    pub fn password_reset_ttl(&self) -> Duration {
-        self.password_reset_ttl
-    }
 
-    /// SMTP で送れない（未設定・設定の読み出しに失敗）ときに、リセットリンクをサーバの
-    /// コンソール（標準出力）へ出すか。
-    /// メール配送が無い環境で、パスワードを忘れた管理者が復旧するための経路。
-    pub fn password_reset_console_link_enabled(&self) -> bool {
-        self.password_reset_console_link_enabled
-    }
-
-    pub fn email_verification_ttl(&self) -> Duration {
-        self.email_verification_ttl
-    }
-    /// アカウントロックのポリシー（失敗許容回数・ロック時間。全ログイン経路へ一律適用する）。
-    pub fn login_lockout(&self) -> LockoutPolicy {
-        self.login_lockout
-    }
-    /// パスワードポリシー（AP7。長さ・再利用禁止の深さ・有効期限・漏えい確認の有無）。
-    pub fn password_policy(&self) -> PasswordPolicy {
-        self.password_policy
-    }
     /// 漏えい済みパスワード照合の接続先（k-匿名性のレンジ API）。
     pub fn password_breach_api_base_url(&self) -> &str {
         &self.password_breach_api_base_url
@@ -523,10 +462,6 @@ impl Config {
     pub fn expired_record_purge_interval(&self) -> Option<std::time::Duration> {
         (self.expired_record_purge_interval_secs > 0)
             .then(|| std::time::Duration::from_secs(self.expired_record_purge_interval_secs))
-    }
-    /// Step-up 認証（AP5）の再確認間隔（秒）。
-    pub fn step_up_max_age_secs(&self) -> u64 {
-        self.step_up_max_age_secs
     }
     /// Back-channel logout 通知の再送上限回数（G5）。
     pub fn backchannel_logout_max_attempts(&self) -> u32 {
@@ -1303,24 +1238,6 @@ mod tests {
         assert_eq!(setting.source, SettingSource::Builtin);
     }
 
-    /// レビュー修正の回帰テスト: `LOGIN_MAX_FAILED_ATTEMPTS` の i32 超過値は負数へラップさせず
-    /// i32::MAX へ飽和させる（ラップすると初回失敗で即ロックという逆の挙動になる）。
-    #[test]
-    fn oversized_lockout_threshold_saturates_instead_of_wrapping() {
-        let _env = env_guard();
-        std::env::remove_var("LOGIN_MAX_FAILED_ATTEMPTS");
-        let db = HashMap::from([(
-            "LOGIN_MAX_FAILED_ATTEMPTS".to_string(),
-            u32::MAX.to_string(),
-        )]);
-        let config = Config::from_env_and_db_settings(&db).unwrap();
-        assert_eq!(config.login_lockout().max_failed_attempts, i32::MAX);
-        // 通常値はそのまま。
-        let db = HashMap::from([("LOGIN_MAX_FAILED_ATTEMPTS".to_string(), "5".to_string())]);
-        let config = Config::from_env_and_db_settings(&db).unwrap();
-        assert_eq!(config.login_lockout().max_failed_attempts, 5);
-    }
-
     #[test]
     fn env_parse_falls_back_to_default_when_unset() {
         // 未設定キーは既定値を返す。
@@ -1339,80 +1256,65 @@ mod tests {
         std::env::remove_var(key);
     }
 
-    /// テナントへ降ろしたキーの組み込み既定は **2 か所に書かれている** ——定義の `default_value`
-    /// （テナント設定の解決が最後に落ちる先。ADR-0058）と、`from_env_and_db_settings` の既定の引数。
-    /// ⚠ ずれると、**行の無いテナントだけが全体と違う値で動く**（しかも画面上は既定に見える）。
+    /// テナントへ降ろしたキーの組み込み既定は定義の `default_value` **1 か所だけ**にある（`Config` は
+    /// もう持たない）。⚠ 欠けていると、行の無いテナントの参照が空文字列の変換で失敗する。
     #[test]
-    fn tenant_overridable_defaults_match_the_config_defaults() {
+    fn every_tenant_overridable_key_has_a_builtin_default() {
         let _env = env_guard();
-        let keys: Vec<&str> =
-            crate::domain::system_setting::tenant_overridable_setting_keys().collect();
-        for key in &keys {
-            std::env::remove_var(key);
-        }
         let config = Config::from_env_and_db_settings(&HashMap::new()).unwrap();
-        let password = config.password_policy();
-        let lockout = config.login_lockout();
-        let from_config: HashMap<&str, String> = HashMap::from([
-            ("PASSWORD_MIN_LENGTH", password.min_length.to_string()),
-            ("PASSWORD_HISTORY_COUNT", password.history_count.to_string()),
-            ("PASSWORD_MAX_AGE_DAYS", password.max_age_days.to_string()),
-            (
-                "PASSWORD_BREACH_CHECK_ENABLED",
-                password.reject_breached.to_string(),
-            ),
-            (
-                "LOGIN_MAX_FAILED_ATTEMPTS",
-                lockout.max_failed_attempts.to_string(),
-            ),
-            (
-                "LOGIN_LOCK_DURATION_SECS",
-                lockout.lock_duration_secs.to_string(),
-            ),
-            (
-                "LOGIN_MAX_LOCK_DURATION_SECS",
-                lockout.max_lock_duration_secs.to_string(),
-            ),
-            (
-                "SSO_IDLE_TTL_SECS",
-                config.sso_idle_ttl().as_secs().to_string(),
-            ),
-            (
-                "SSO_ABSOLUTE_TTL_SECS",
-                config.sso_absolute_ttl().as_secs().to_string(),
-            ),
-            (
-                "STEP_UP_MAX_AGE_SECS",
-                config.step_up_max_age_secs().to_string(),
-            ),
-            (
-                "INVITATION_TTL_SECS",
-                config.invitation_ttl().as_secs().to_string(),
-            ),
-            (
-                "PASSWORD_RESET_TTL_SECS",
-                config.password_reset_ttl().as_secs().to_string(),
-            ),
-            (
-                "EMAIL_VERIFICATION_TTL_SECS",
-                config.email_verification_ttl().as_secs().to_string(),
-            ),
-            (
-                "PASSWORD_RESET_CONSOLE_LINK_ENABLED",
-                config.password_reset_console_link_enabled().to_string(),
-            ),
-        ]);
+        for key in tenant_overridable_setting_keys() {
+            std::env::remove_var(key);
+            let value = config
+                .value_without_db(key)
+                .unwrap_or_else(|| panic!("{key} has no builtin default"));
+            let def = runtime_setting_definition(key).unwrap();
+            assert_eq!(validate_setting_value(def, &value), Ok(()), "{key}");
+        }
+    }
+
+    /// 組み込み既定は降ろす前の `Config` と同じ値である（⚠ ずれると、行の無い全テナントの挙動が
+    /// 黙って変わる。ADR-0058 §12「挙動は 1 つも変わらない」）。
+    #[test]
+    fn tenant_overridable_defaults_are_the_values_config_used_to_have() {
+        let _env = env_guard();
+        let config = Config::from_env_and_db_settings(&HashMap::new()).unwrap();
+        let expected = [
+            ("PASSWORD_MIN_LENGTH", "8"),
+            ("PASSWORD_HISTORY_COUNT", "5"),
+            ("PASSWORD_MAX_AGE_DAYS", "0"),
+            ("PASSWORD_BREACH_CHECK_ENABLED", "false"),
+            ("LOGIN_MAX_FAILED_ATTEMPTS", "10"),
+            ("LOGIN_LOCK_DURATION_SECS", "900"),
+            ("LOGIN_MAX_LOCK_DURATION_SECS", "86400"),
+            ("SSO_IDLE_TTL_SECS", "28800"),
+            ("SSO_ABSOLUTE_TTL_SECS", "86400"),
+            ("STEP_UP_MAX_AGE_SECS", "300"),
+            ("INVITATION_TTL_SECS", "604800"),
+            ("PASSWORD_RESET_TTL_SECS", "3600"),
+            ("EMAIL_VERIFICATION_TTL_SECS", "86400"),
+            ("PASSWORD_RESET_CONSOLE_LINK_ENABLED", "true"),
+        ];
         assert_eq!(
-            keys.len(),
-            from_config.len(),
+            tenant_overridable_setting_keys().count(),
+            expected.len(),
             "every tenant-overridable key needs a row in this test"
         );
-        for key in keys {
+        for (key, value) in expected {
+            std::env::remove_var(key);
             assert_eq!(
                 config.value_without_db(key).as_deref(),
-                from_config.get(key).map(String::as_str),
+                Some(value),
                 "{key}"
             );
         }
+    }
+
+    /// 型の合わない全体の値では今までどおり起動しない（`Config` に持たなくなっても fail-fast は残す）。
+    #[test]
+    fn an_unparsable_global_value_for_a_tenant_key_still_fails_startup() {
+        let _env = env_guard();
+        std::env::remove_var("SSO_IDLE_TTL_SECS");
+        let db = HashMap::from([("SSO_IDLE_TTL_SECS".to_string(), "eight hours".to_string())]);
+        assert!(Config::from_env_and_db_settings(&db).is_err());
     }
 }

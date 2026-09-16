@@ -26,6 +26,7 @@ use crate::application::application_access::ApplicationAccessService;
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authorize::code_dispatch;
 use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
+use crate::application::tenant_settings::TenantSettingsService;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session;
 use crate::domain::authentication_policy::{
@@ -91,6 +92,8 @@ pub enum CallbackOutcome {
     Success {
         location: SuccessLocation,
         sso_session_id: String,
+        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        sso_absolute_ttl_secs: u64,
         user_language: Option<String>,
     },
     /// 外部 IdP での認証は通ったが、RP への同意がまだ。同意画面へ誘導する
@@ -98,6 +101,8 @@ pub enum CallbackOutcome {
     ConsentRequired {
         auth_session_id: String,
         sso_session_id: String,
+        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        sso_absolute_ttl_secs: u64,
         user_language: Option<String>,
     },
     /// 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
@@ -107,6 +112,8 @@ pub enum CallbackOutcome {
         /// 利用者が決められない。
         application_name: String,
         sso_session_id: String,
+        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        sso_absolute_ttl_secs: u64,
         user_language: Option<String>,
     },
     /// `state` が無効・期限切れ・二重使用（外部 IdP からやり直し）。
@@ -155,8 +162,8 @@ pub struct ExternalLoginService {
     key_encryption_key: [u8; 32],
     /// コールバックを受ける web の公開ベース URL（`{base}/{tenant}/external/{code}/callback`）。
     public_web_base_url: String,
-    sso_idle_ttl: Duration,
-    sso_absolute_ttl: Duration,
+    /// テナントが上書きできる設定の解決（ADR-0058）。参照のたびに引く。
+    settings: Arc<TenantSettingsService>,
     policy_default_effect: DefaultPolicyEffect,
 }
 
@@ -179,8 +186,7 @@ impl ExternalLoginService {
         ids: Arc<dyn IdGenerator>,
         key_encryption_key: [u8; 32],
         public_web_base_url: String,
-        sso_idle_ttl: std::time::Duration,
-        sso_absolute_ttl: std::time::Duration,
+        settings: Arc<TenantSettingsService>,
         policy_default_effect: DefaultPolicyEffect,
     ) -> Self {
         Self {
@@ -200,9 +206,7 @@ impl ExternalLoginService {
             ids,
             key_encryption_key,
             public_web_base_url,
-            sso_idle_ttl: Duration::from_std(sso_idle_ttl).expect("SSO idle TTL out of range"),
-            sso_absolute_ttl: Duration::from_std(sso_absolute_ttl)
-                .expect("SSO absolute TTL out of range"),
+            settings,
             policy_default_effect,
         }
     }
@@ -642,13 +646,18 @@ impl ExternalLoginService {
         }
 
         // 9. SSO セッションを発行する。
+        //    寿命は利用者の所属元テナントの値（SSO セッションは全テナントで共有されるため。ADR-0058）。
+        let lifetime = match self.settings.sso_session_lifetime(user.tenant_id).await {
+            Ok(lifetime) => lifetime,
+            Err(e) => return CallbackOutcome::Internal(e.to_string()),
+        };
         let sso_session_id = crypto::random_hex(32);
         let sso = SsoSession::establish(
             crypto::sha256_hex(&sso_session_id),
             user.id,
             now,
-            self.sso_idle_ttl,
-            self.sso_absolute_ttl,
+            lifetime.idle,
+            lifetime.absolute,
             vec![AuthenticationMethod::ExternalIdp],
             ctx.user_agent.clone(),
             ctx.ip_address.clone(),
@@ -687,6 +696,7 @@ impl ExternalLoginService {
             return CallbackOutcome::Success {
                 location: SuccessLocation::Account,
                 sso_session_id,
+                sso_absolute_ttl_secs: sso.absolute_ttl_secs(),
                 user_language: user.language.clone(),
             };
         };
@@ -734,6 +744,7 @@ impl ExternalLoginService {
                 return CallbackOutcome::Success {
                     location: SuccessLocation::Account,
                     sso_session_id,
+                    sso_absolute_ttl_secs: sso.absolute_ttl_secs(),
                     user_language: user.language.clone(),
                 };
             }
@@ -783,6 +794,7 @@ impl ExternalLoginService {
             return CallbackOutcome::ConsentRequired {
                 auth_session_id: rotated_id,
                 sso_session_id,
+                sso_absolute_ttl_secs: sso.absolute_ttl_secs(),
                 user_language: user.language.clone(),
             };
         }
@@ -813,6 +825,7 @@ impl ExternalLoginService {
                 return CallbackOutcome::ApplicationNotPermitted {
                     application_name,
                     sso_session_id,
+                    sso_absolute_ttl_secs: sso.absolute_ttl_secs(),
                     user_language: user.language.clone(),
                 }
             }
@@ -830,6 +843,7 @@ impl ExternalLoginService {
                 form_post: dispatch.form_post,
             },
             sso_session_id,
+            sso_absolute_ttl_secs: sso.absolute_ttl_secs(),
             user_language: user.language.clone(),
         }
     }

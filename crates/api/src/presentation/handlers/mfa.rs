@@ -114,27 +114,28 @@ pub async fn verify_totp(
             &ctx,
         )
         .await;
-    let ttl = state.config.sso_absolute_ttl().as_secs();
     Ok(Json(match outcome {
         MfaLoginOutcome::Success {
             location,
             form_post,
             sso_session_id,
             user_language,
+            sso_absolute_ttl_secs,
         } => InternalVerifyTotpResponse::Success {
             redirect_to: location,
             form_post,
             sso_session_id,
-            sso_absolute_ttl_secs: ttl,
+            sso_absolute_ttl_secs,
             user_language,
         },
         MfaLoginOutcome::ConsentRequired {
             auth_session_id,
             sso_session_id,
+            sso_absolute_ttl_secs,
         } => InternalVerifyTotpResponse::ConsentRequired {
             auth_session_id,
             sso_session_id,
-            sso_absolute_ttl_secs: ttl,
+            sso_absolute_ttl_secs,
         },
         MfaLoginOutcome::SessionExpired => InternalVerifyTotpResponse::SessionExpired,
         MfaLoginOutcome::CsrfMismatch => InternalVerifyTotpResponse::CsrfMismatch,
@@ -145,10 +146,11 @@ pub async fn verify_totp(
         MfaLoginOutcome::ApplicationNotPermitted {
             application_name,
             sso_session_id,
+            sso_absolute_ttl_secs,
         } => InternalVerifyTotpResponse::ApplicationNotPermitted {
             application_name,
             sso_session_id,
-            sso_absolute_ttl_secs: ttl,
+            sso_absolute_ttl_secs,
         },
         MfaLoginOutcome::Internal(e) => {
             tracing::error!(error = %e, "mfa verify internal error");
