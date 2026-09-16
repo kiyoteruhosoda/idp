@@ -403,6 +403,7 @@ curl -sS "$ISSUER/$TENANT_ID/admin/users?query=alice" \
 
 | 症状 | 原因 |
 |---|---|
+| `/token` が `unauthorized_client`（監査の `reason` が `own_application_disabled`） | そのサービスアカウントを名乗りにしているアプリが止まっている（ADR-0060）。アプリを `ACTIVE` に戻すか、名乗りが誤っているなら外す |
 | `/token` が `invalid_target` | 権限を 1 つも付けていない、または `resource` が assay の管理 API を指していない |
 | 管理 API が 401 | `resource` を付けずに取ったトークン／別テナント向けのトークン／期限切れ（既定 300 秒。`MANAGEMENT_TOKEN_TTL_SECS`） |
 | 管理 API が 403 | そのエンドポイントに対応する権限コードを持っていない |
@@ -867,6 +868,10 @@ RP が名簿（`/admin/applications/self/users`）を読めるようにすると
    - API の宛名: 登録済みの宛名（`aud` に入る値）
 3. ⚠ 「既に ○○ に結び付いています」と出たら、○○ の詳細から先に外す（1 つの相手は 1 つのアプリにだけ属する）
 4. ⚠ **名簿を読むサービスアカウントに `idp.applications:read` を付けない。** 結び付けだけで読める
+5. ⚠ **サービスアカウントの名乗りにするのは、そのアプリ自身のサーバが使う口だけ。** アプリを止めると
+   名乗りのサービスアカウントも止まる（既定のトークンと他のアプリの宛名のトークンが出なくなる。
+   名簿を読む管理トークンだけは権限コード無しで出る。ADR-0060）。呼ぶ側（CI・ランナー・運用の道具）を
+   名乗りにすると、止めたときに巻き添えになる。呼ぶ側は「このアプリを使う主体」に足す
 
 - 移行 0058 を当てる前の確認（サービスアカウントのアプリに、消えて困るものが付いていないか）:
   `SELECT a.display_name, (SELECT COUNT(*) FROM application_assignments x WHERE x.application_id=a.id) AS assigned FROM applications a JOIN application_bindings b ON b.application_id=a.id JOIN clients c ON c.id=b.client_id WHERE JSON_CONTAINS(c.grant_types,'"client_credentials"') AND NOT JSON_CONTAINS(c.grant_types,'"authorization_code"');`

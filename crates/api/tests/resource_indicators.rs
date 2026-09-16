@@ -510,3 +510,184 @@ async fn the_management_audience_stays_separate_from_registered_ones() {
     assert_eq!(claims["aud"], json!(management_aud));
     assert_eq!(claims["perms"], json!("idp.users:read"));
 }
+
+/// アプリの状態を倒す（表示名・割り当てのモードは今の値のまま）。
+async fn set_application_status(
+    app: &axum::Router,
+    admin_tok: &str,
+    detail_uri: &str,
+    status: &str,
+) {
+    let detail = body_json(send(app, support::get(admin_tok, detail_uri)).await).await;
+    let res = send(
+        app,
+        put(
+            admin_tok,
+            detail_uri,
+            json!({
+                "display_name": detail["display_name"],
+                "status": status,
+                "assignment_mode": detail["assignment_mode"],
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK, "set status {status}");
+}
+
+/// ⚠ **アプリを止めると、その名乗りのサービスアカウントも止まる**（ADR-0060）。
+///
+/// - 既定のトークンも、**他のアプリの宛名**のトークンも出ない（`unauthorized_client`）
+/// - ⚠ **管理トークンは出るが、権限コードは載らない。** 通るのは自分の名簿（self）だけで、
+///   名簿は「全員 `blocked`」と答える ——ここを塞ぐと RP は止まったことを定期照合で知れない
+/// - 名乗り・割り当て・権限コードは消えない。再開すればそのまま戻る
+#[tokio::test]
+async fn disabling_an_application_stops_the_service_account_it_is_named_by() {
+    let Some(env) = support::setup("resource indicators own application disabled").await else {
+        return;
+    };
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+    let (client_id, secret) = support::insert_service_account(&env.pool, &env.root_tenant_id).await;
+    let row_id: String =
+        sqlx::query_scalar("SELECT id FROM clients WHERE tenant_id = ? AND client_id = ?")
+            .bind(&env.root_tenant_id)
+            .bind(&client_id)
+            .fetch_one(&env.pool)
+            .await
+            .expect("the service account must exist");
+    sqlx::query("INSERT INTO client_permissions (client_id, permission_code) VALUES (?, ?)")
+        .bind(&row_id)
+        .bind("idp.applications:read")
+        .execute(&env.pool)
+        .await
+        .expect("grant permission");
+
+    // 名乗りのアプリ（mp3play にあたる）。
+    let own_id = create_application(&env.app, &admin_tok, &env.root_tenant_id).await;
+    let own_uri = format!("/{}/admin/applications/{own_id}", env.root_tenant_id);
+    let res = send(
+        &env.app,
+        post(
+            &admin_tok,
+            &format!("{own_uri}/bindings"),
+            json!({ "kind": "service_account", "client_id": client_id }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK, "bind the service account");
+
+    // 使う側のアプリ（blobshare にあたる）。サービスアカウントは使う主体として割り当ててある。
+    let audience = format!("api://blob-{}", unique());
+    register_resource(&env.app, &admin_tok, &env.root_tenant_id, &audience).await;
+    let other_id = create_application(&env.app, &admin_tok, &env.root_tenant_id).await;
+    let other_uri = format!("/{}/admin/applications/{other_id}", env.root_tenant_id);
+    for (uri, body) in [
+        (
+            format!("{other_uri}/bindings"),
+            json!({ "kind": "resource", "resource_uri": audience }),
+        ),
+        (
+            format!("{other_uri}/assignments"),
+            json!({ "kind": "service_account", "client_id": client_id }),
+        ),
+    ] {
+        let res = send(&env.app, post(&admin_tok, &uri, body)).await;
+        assert_eq!(res.status(), StatusCode::OK, "{uri}");
+    }
+
+    let applications_uri = format!("/{}/admin/applications", env.root_tenant_id);
+    let roster_uri = format!("/{}/admin/applications/self/users", env.root_tenant_id);
+    let management_token = || async {
+        let res = support::request_management_token(
+            &env.app,
+            &env.issuer,
+            &env.root_tenant_id,
+            &client_id,
+            &secret,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK, "management token");
+        body_json(res).await["access_token"]
+            .as_str()
+            .expect("access_token")
+            .to_string()
+    };
+
+    // 動いているあいだは、どれも出る。
+    let res = request_token(&env.app, &env.root_tenant_id, &client_id, &secret, None).await;
+    assert_eq!(res.status(), StatusCode::OK, "default token while active");
+    let res = request_token(
+        &env.app,
+        &env.root_tenant_id,
+        &client_id,
+        &secret,
+        Some(&audience),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK, "resource token while active");
+    let token = management_token().await;
+    assert_eq!(claims(&token)["perms"], json!("idp.applications:read"));
+    let res = send(&env.app, support::get(&token, &applications_uri)).await;
+    assert_eq!(
+        res.status(),
+        StatusCode::OK,
+        "permission works while active"
+    );
+
+    // 名乗りのアプリを止める。
+    set_application_status(&env.app, &admin_tok, &own_uri, "DISABLED").await;
+
+    let res = request_token(&env.app, &env.root_tenant_id, &client_id, &secret, None).await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST, "default token");
+    assert_eq!(body_json(res).await["error"], "unauthorized_client");
+    let res = request_token(
+        &env.app,
+        &env.root_tenant_id,
+        &client_id,
+        &secret,
+        Some(&audience),
+    )
+    .await;
+    assert_eq!(
+        res.status(),
+        StatusCode::BAD_REQUEST,
+        "another application's audience must not be issued to a stopped application's account"
+    );
+    assert_eq!(body_json(res).await["error"], "unauthorized_client");
+
+    let token = management_token().await;
+    assert!(
+        claims(&token)["perms"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty(),
+        "no permission codes for a stopped application's account: {}",
+        claims(&token)
+    );
+    let res = send(&env.app, support::get(&token, &applications_uri)).await;
+    assert_eq!(
+        res.status(),
+        StatusCode::FORBIDDEN,
+        "tenant-wide permissions are suspended"
+    );
+    let res = send(&env.app, support::get(&token, &roster_uri)).await;
+    assert_eq!(
+        res.status(),
+        StatusCode::OK,
+        "the roster stays readable so the RP learns that everyone is blocked"
+    );
+
+    // 再開すれば、名乗り・割り当て・権限コードはそのまま戻る。
+    set_application_status(&env.app, &admin_tok, &own_uri, "ACTIVE").await;
+    let res = request_token(
+        &env.app,
+        &env.root_tenant_id,
+        &client_id,
+        &secret,
+        Some(&audience),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK, "re-enabling restores issuing");
+    let token = management_token().await;
+    assert_eq!(claims(&token)["perms"], json!("idp.applications:read"));
+}

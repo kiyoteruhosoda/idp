@@ -801,7 +801,26 @@ impl TokenService {
         let scopes = resolve_client_credentials_scopes(&client, cmd.scope.as_deref())?;
         let scope_str = scopes.join(" ");
 
-        // 4. 宛先（`resource`）の決定（RFC 8707。ADR-0037 / ADR-0042）。assay 自身の管理 API を
+        // 4. このサービスアカウントが名乗りになっているアプリ（ADR-0059 の決定 1）。
+        //    ⚠ **アプリを止めたら、その名乗りのサービスアカウントも止まる**（ADR-0060）。止めたアプリの
+        //    サーバが、他のアプリの API や assay を自分の名前で叩き続けないようにする。
+        //    ⚠ ただし**自分の名簿（self）を読む管理トークンだけは出す。** 名簿は止めたアプリに
+        //    「全員 `blocked`」と答える口で、ここを塞ぐと RP は止まったことを定期照合で知れない。
+        let own_application = self
+            .applications
+            .find_by_binding_target(
+                tenant_id,
+                BindingTarget::ServiceAccount {
+                    client_row_id: client.id,
+                },
+            )
+            .await
+            .map_err(|e| internal(&e))?;
+        let own_application_disabled = own_application
+            .as_ref()
+            .is_some_and(|application| !application.is_active());
+
+        // 5. 宛先（`resource`）の決定（RFC 8707。ADR-0037 / ADR-0042）。assay 自身の管理 API を
         //    要求された場合だけ、クライアントが保有する権限コードを `perms` に載せた管理トークンを
         //    出す。それ以外は登録済みの宛名（`resources`）を引き、許可されていれば `aud` に載せる。
         //    どちらでもなければ `invalid_target`——**この認可サーバが知らない宛先へは出さない**。
@@ -811,14 +830,36 @@ impl TokenService {
         let management_aud = management_audience(&issuer);
         // 管理トークンは通常のアクセストークンより短命にする（ADR-0037 決定 2）。`perms` は
         // トークンから読むため、この寿命が「権限を剥奪してから実際に効くまで」の上限になる。
-        let (audience, perms, ttl) = match cmd.resource.as_deref().map(str::trim) {
+        let requested_resource = cmd.resource.as_deref().map(str::trim);
+        if own_application_disabled && requested_resource != Some(management_aud.as_str()) {
+            self.audit
+                .record(
+                    AuditEventType::ClientAuthenticationFailed,
+                    AuditResult::Failure,
+                    Some(tenant_id),
+                    None,
+                    Some(&client_id),
+                    Some("own_application_disabled"),
+                    ctx,
+                )
+                .await;
+            return Err(TokenError::new(
+                OAuthErrorCode::UnauthorizedClient,
+                "the application this service account belongs to is disabled",
+            ));
+        }
+        let (audience, perms, ttl) = match requested_resource {
             None | Some("") => (userinfo_audience(&issuer), None, self.access_token_ttl),
             Some(requested) if requested == management_aud => {
-                let codes = self
-                    .client_permissions
-                    .list_codes_for_client(client.id)
-                    .await
-                    .map_err(|e| internal(&e))?;
+                // 止めたアプリの名乗りには、権限コードを持っていても載せない。通るのは名簿（self）だけ。
+                let codes = if own_application_disabled {
+                    Vec::new()
+                } else {
+                    self.client_permissions
+                        .list_codes_for_client(client.id)
+                        .await
+                        .map_err(|e| internal(&e))?
+                };
                 // 管理トークンを出してよいのは、(1) 権限コードを 1 つ以上持つ client か、
                 // (2) **あるアプリの名乗り（サービスアカウント）として結び付いた** client である
                 // （ADR-0059）。(2) の `perms` は空のままで、通るのは名乗りで決まる口
@@ -826,19 +867,7 @@ impl TokenService {
                 //
                 // どちらでもない client へは出さない。出しても全部 403 になるトークンであり、
                 // 「取れたのに何も通らない」という最も追いにくい失敗を生む。
-                let bound_as_service_account = codes.is_empty()
-                    && self
-                        .applications
-                        .find_by_binding_target(
-                            tenant_id,
-                            BindingTarget::ServiceAccount {
-                                client_row_id: client.id,
-                            },
-                        )
-                        .await
-                        .map_err(|e| internal(&e))?
-                        .is_some();
-                if codes.is_empty() && !bound_as_service_account {
+                if codes.is_empty() && own_application.is_none() {
                     self.audit
                         .record(
                             AuditEventType::ClientAuthenticationFailed,
@@ -936,7 +965,7 @@ impl TokenService {
             }
         };
 
-        // 5. Access Token を発行する（ID Token・Refresh Token は出さない）。
+        // 6. Access Token を発行する（ID Token・Refresh Token は出さない）。
         let access_claims = AccessTokenClaims {
             iss: issuer.clone(),
             // 利用者不在のため主体はクライアント自身（RFC 6749 §4.4 の運用慣行）。
