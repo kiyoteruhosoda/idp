@@ -8,9 +8,10 @@
 //!   触れないまま、メールの経路だけを入れられること。この口が無いと SMTP パスワードは
 //!   人が画面へ手で貼るしかない。
 //! - **パスワードの平文が返らない**こと。設定済みか否かだけを返す。
-//! - `idp.tenant.admin` からは届かないこと。届くと、テナントの中の人がシステム全体の
+//! - `idp.tenant.admin` からは届かないこと。届くと、root のテナント管理者が全体の
 //!   メール経路を変えられる。
-//! - root 以外のテナントでは、そもそもこのコードを**配れない**こと。
+//! - root 以外のテナントでも配れるが（ADR-0058 §8）、届くのは**そのテナントの経路だけ**で、
+//!   全体の経路の口は root でなければ 403 のままであること。
 
 mod support;
 
@@ -186,9 +187,102 @@ async fn a_tenant_admin_cannot_reach_the_smtp_settings() {
     );
 }
 
+/// ADR-0058 §8: テナントの中でも `idp.smtp:*` を配れる。届くのは**そのテナントの経路だけ**で、
+/// 全体の経路の口は root でなければ 403 のまま。経路を持たないテナントの応答に全体の値は出ない。
 #[tokio::test]
-async fn the_smtp_code_cannot_be_granted_outside_the_root_tenant() {
-    let Some(env) = support::setup("smtp grant scope").await else {
+async fn a_child_tenant_machine_sets_only_its_own_mail_route() {
+    let Some(env) = support::setup("smtp tenant route").await else {
+        return;
+    };
+    let admin_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let root_tok = exchange_admin_token(&env.app, &env.root_tenant_id, &admin_sso).await;
+    let res = send(
+        &env.app,
+        post(
+            &root_tok,
+            &format!("/{}/admin/tenants", env.root_tenant_id),
+            json!({ "name": format!("child-{}", unique()) }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED, "create a child tenant");
+    let child = body_json(res).await["id"]
+        .as_str()
+        .expect("tenant id")
+        .to_string();
+    let child_tok = exchange_admin_token(&env.app, &child, &admin_sso).await;
+    let (client_id, secret) = support::insert_m2m_client(&env.pool, &child, &["openid"]).await;
+
+    let res = send(
+        &env.app,
+        post(
+            &child_tok,
+            &format!("/{child}/admin/clients/{client_id}/permissions"),
+            json!({ "permission_code": "idp.smtp:write" }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        res.status(),
+        StatusCode::OK,
+        "the SMTP code is grantable inside a tenant (ADR-0058 §8)"
+    );
+    let machine_tok = machine_token(&env, &child, &client_id, &secret).await;
+    let own_uri = format!("/{child}/admin/settings/smtp");
+
+    // 経路を持たないうちは全体に従う。⚠ 全体の値はテナントへ見せない（項目は空）。
+    let res = send(&env.app, get(&machine_tok, &own_uri)).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let before = body_json(res).await;
+    assert_eq!(before["inherited"], json!(true));
+    assert_eq!(before["smtp_host"], json!(""));
+
+    let host = format!("smtp-{}.tenant.example", unique());
+    let res = send(
+        &env.app,
+        put(
+            &machine_tok,
+            &own_uri,
+            json!({
+                "smtp_host": host,
+                "smtp_port": 587,
+                "smtp_username": "tenant-user",
+                "smtp_password": "tenant-secret",
+                "smtp_from_address": "noreply@tenant.example",
+                "smtp_use_tls": true,
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK, "a tenant sets its own route");
+    let updated = body_json(res).await;
+    assert_eq!(updated["inherited"], json!(false));
+    assert_eq!(updated["smtp_host"], json!(host));
+    assert_eq!(updated["smtp_password_set"], json!(true));
+    assert!(
+        updated.get("smtp_password").is_none(),
+        "the plaintext password must never come back: {updated}"
+    );
+
+    // ⚠ 全体の経路の口には届かない（使う側の root の関門）。
+    let whole_uri = format!("/{child}/admin/system-settings/smtp");
+    let res = send(&env.app, get(&machine_tok, &whole_uri)).await;
+    assert_eq!(
+        res.status(),
+        StatusCode::FORBIDDEN,
+        "a tenant-scoped SMTP code must not reach the whole-IdP route"
+    );
+
+    // 消すと全体に従う状態へ戻る。
+    let res = send(&env.app, support::delete(&machine_tok, &own_uri)).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(body_json(res).await["inherited"], json!(true));
+}
+
+/// ⚠ `idp.tenant.admin` はテナントの経路にも届かない（付与は明示の 1 枚）。
+#[tokio::test]
+async fn a_tenant_admin_does_not_reach_its_own_mail_route_without_the_code() {
+    let Some(env) = support::setup("smtp tenant admin").await else {
         return;
     };
     let admin_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
@@ -209,39 +303,29 @@ async fn the_smtp_code_cannot_be_granted_outside_the_root_tenant() {
         .expect("tenant id")
         .to_string();
 
-    // 作成者は新テナントのブートストラップ管理者（ADR-0009 §5）。そのテナントの
-    // トークンへ交換して、その中からクライアントへ配ろうとする。
+    // 作成者は新テナントのブートストラップ管理者（ADR-0009 §5）＝ `idp.tenant.admin` を持つ。
+    // ⚠ `idp.system.admin` は root の scope にしか無いので、子テナントのトークンには載らない。
     let child_tok = exchange_admin_token(&env.app, &child, &admin_sso).await;
-    let (client_id, _secret) = support::insert_m2m_client(&env.pool, &child, &["openid"]).await;
+    let own_uri = format!("/{child}/admin/settings/smtp");
 
-    let res = send(
-        &env.app,
-        post(
-            &child_tok,
-            &format!("/{child}/admin/clients/{client_id}/permissions"),
-            json!({ "permission_code": "idp.smtp:write" }),
-        ),
-    )
-    .await;
+    let res = send(&env.app, get(&child_tok, &own_uri)).await;
     assert_eq!(
         res.status(),
-        StatusCode::BAD_REQUEST,
-        "a system-wide code must not be grantable inside a tenant"
+        StatusCode::FORBIDDEN,
+        "idp.tenant.admin must not imply idp.smtp:read"
     );
-
-    // 同じ経路でも、テナントの中で意味を持つコードは今までどおり配れる（縛りを広げていない）。
     let res = send(
         &env.app,
-        post(
+        put(
             &child_tok,
-            &format!("/{child}/admin/clients/{client_id}/permissions"),
-            json!({ "permission_code": "idp.users:read" }),
+            &own_uri,
+            json!({ "smtp_host": "smtp.example.com", "smtp_from_address": "a@example.com" }),
         ),
     )
     .await;
     assert_eq!(
         res.status(),
-        StatusCode::OK,
-        "fine-grained tenant codes still work"
+        StatusCode::FORBIDDEN,
+        "idp.tenant.admin must not imply idp.smtp:write"
     );
 }

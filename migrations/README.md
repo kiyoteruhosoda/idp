@@ -284,7 +284,7 @@ root テナントの UUID は固定値 `00000000-0000-7000-8000-000000000001`（
   認証ポリシーから参照されている・他の名乗りも持っている行があれば、`SIGNAL` で移行を止める**
   （何も変える前に止まる）。どのアプリの名乗りにするかは推測しない。`down` は `service_account` /
   `resource` の名乗りを消して列を戻し、サービスアカウントのアプリを 0054 と同じ形で作り直す。
-  ⚠ 番号は 0057 を空けてある（同時に開いている SMTP の PR が `0057_smtp_permissions_per_tenant` を使うため）。
+
 
 - `0059_application_assignment_principals`: アプリを使う主体を人（`USER`）とサービスアカウント
   （`SERVICE_ACCOUNT`）の 2 種類にし、`client_resources` を割り当てへ写して落とす（ADR-0059 の決定 5・6）。

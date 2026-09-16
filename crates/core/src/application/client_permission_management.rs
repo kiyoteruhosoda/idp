@@ -66,8 +66,8 @@ impl ClientPermissionManagementService {
 
     /// 権限コードを付与する（冪等）。付与後の保有コード一覧を返す。
     ///
-    /// `tenant_is_root` は**要求テナントが root か**。システム全体に効くコード
-    /// （`permission::ROOT_SCOPED_CODES`。ADR-0051）を、テナントの中から配らせないために要る。
+    /// `tenant_is_root` は**要求テナントが root か**。root の中にしか存在し得ないコードを、
+    /// テナントの中から配らせないために要る（`permission::is_grantable_in_tenant`）。
     /// 真偽値で受けるのは、この層がテナントの表を引かない（引くと境界が増える）ためである。
     pub async fn grant(
         &self,
@@ -89,7 +89,7 @@ impl ClientPermissionManagementService {
             )));
         }
 
-        // システム全体に効くコードは root テナントの中でしか配れない（ADR-0051）。
+        // root の中にしか存在し得ないコードは、テナントの中から配らせない（ADR-0009 §4）。
         // ⚠ **`is_grantable_to_client` とは別の軸である。** あちらは「機械に渡してよい粒度か」、
         //   こちらは「そのテナントに、その範囲の権限が存在し得るか」を見ている。
         if !permission::is_grantable_in_tenant(code.as_str(), tenant_is_root) {
