@@ -25,10 +25,11 @@ use crate::application::authorize::code_dispatch;
 use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
 use crate::application::tenant_settings::TenantSettingsService;
 use crate::application::totp_registration::verify_totp_code;
+use crate::domain::access_decision_settings::AccessDecisionSettings;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session;
 use crate::domain::authentication_policy::{
-    evaluate_policies, AuthenticationContext, DefaultPolicyEffect, PolicyDecision,
+    evaluate_policies, AuthenticationContext, PolicyDecision,
 };
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
@@ -122,7 +123,8 @@ pub struct MfaLoginService {
     /// 認証ポリシーの宛先（`conditions.application_ids`）を解決する（ADR-0054）。
     /// フローが持っているのは `client_id` だけなので、アプリへの読み替えをここで挟む。
     applications: Arc<ApplicationAccessService>,
-    policy_default_effect: DefaultPolicyEffect,
+    /// 一致するポリシーが無い場合の既定動作（AP2）。テナントの値を参照のたびに引く（ADR-0058 §4）。
+    access_settings: Arc<dyn AccessDecisionSettings>,
 }
 
 impl MfaLoginService {
@@ -143,7 +145,7 @@ impl MfaLoginService {
         csrf_secret: [u8; 32],
         authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
         applications: Arc<ApplicationAccessService>,
-        policy_default_effect: DefaultPolicyEffect,
+        access_settings: Arc<dyn AccessDecisionSettings>,
     ) -> Self {
         Self {
             authenticators,
@@ -161,7 +163,7 @@ impl MfaLoginService {
             csrf_secret,
             authentication_policies,
             applications,
-            policy_default_effect,
+            access_settings,
         }
     }
 
@@ -279,6 +281,10 @@ impl MfaLoginService {
             Ok(id) => id,
             Err(e) => return MfaLoginOutcome::Internal(e.to_string()),
         };
+        let default_effect = match self.access_settings.policy_default_effect(tenant_id).await {
+            Ok(effect) => effect,
+            Err(e) => return MfaLoginOutcome::Internal(e.to_string()),
+        };
         let decision = match self
             .authentication_policies
             .list_enabled_for_tenant(tenant_id)
@@ -293,7 +299,7 @@ impl MfaLoginService {
                     now,
                     requested_acr: &session.requested_acr(),
                 },
-                self.policy_default_effect,
+                default_effect,
             ),
             Err(e) => return MfaLoginOutcome::Internal(e.to_string()),
         };
@@ -1196,7 +1202,9 @@ mod tests {
                 crate::application::application_access::test_support::allow_everything(
                     audit.clone(),
                 ),
-                DefaultPolicyEffect::Allow,
+                crate::application::access_decision_settings::test_support::policy_default(
+                    crate::domain::authentication_policy::DefaultPolicyEffect::Allow,
+                ),
             );
 
             Self {

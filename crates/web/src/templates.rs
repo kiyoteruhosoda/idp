@@ -2616,8 +2616,12 @@ pub struct AuthenticationPoliciesConsole<'a> {
     pub admin: Admin<'a>,
     pub csrf: &'a str,
     /// 一致するポリシーが無いときの既定動作（`AUTH_POLICY_DEFAULT_EFFECT`）。ポリシーの意味は
-    /// この既定値と組み合わせて初めて決まるため、一覧の上に必ず出す。
-    pub default_effect: &'a str,
+    /// この既定値と組み合わせて初めて決まるため、一覧を出すときは必ず上に出す。
+    ///
+    /// ⚠ **api の一覧の応答に載ったテナントの値を描く**（ADR-0058 §10）。web は値を持たない ——
+    /// 起動時スナップショットから出すと、全テナントに全体の値が表示される。一覧を引けなかったとき
+    /// （入力エラーの再表示・api の失敗）は `None` で、推測の値を出さない。
+    pub default_effect: Option<&'a str>,
     pub saved: bool,
     pub updated: bool,
     pub deleted: bool,

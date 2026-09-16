@@ -384,11 +384,17 @@ impl Config {
     pub fn password_breach_check_timeout(&self) -> Duration {
         self.password_breach_check_timeout
     }
-    /// 認証ポリシーが 1 件も一致しないときの既定動作（`allow` / `deny`）。
+    /// 認証ポリシーが 1 件も一致しないときの既定動作（`allow` / `deny`）の**全体の値**。
+    ///
+    /// ⚠ **判定に使わない。** テナントが決めるキーで（ADR-0058 §4）、判定する側は
+    /// `AccessDecisionSettings` からテナントの値を引く。ここを読むと、その経路だけ全体の値で動く。
+    /// 残してあるのは、起動時に値の形を検証するためと、既定値の突き合わせの試験のためである。
     pub fn auth_policy_default_effect(&self) -> DefaultPolicyEffect {
         self.auth_policy_default_effect
     }
-    /// アプリの割り当て判定をどこまでやるか（ADR-0054。既定は「記録するだけ」）。
+    /// アプリの割り当て判定をどこまでやるか（ADR-0054。既定は「記録するだけ」）の**全体の値**。
+    ///
+    /// ⚠ **判定に使わない**（`auth_policy_default_effect` と同じ理由。ADR-0058 §4）。
     pub fn application_assignment_enforcement(&self) -> AssignmentEnforcement {
         self.application_assignment_enforcement
     }
@@ -1293,6 +1299,8 @@ mod tests {
             ("PASSWORD_RESET_TTL_SECS", "3600"),
             ("EMAIL_VERIFICATION_TTL_SECS", "86400"),
             ("PASSWORD_RESET_CONSOLE_LINK_ENABLED", "true"),
+            ("AUTH_POLICY_DEFAULT_EFFECT", "allow"),
+            ("APPLICATION_ASSIGNMENT_ENFORCEMENT", "record_only"),
         ];
         assert_eq!(
             tenant_overridable_setting_keys().count(),

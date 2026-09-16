@@ -23,10 +23,11 @@ use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, Issue
 use crate::application::login_user_resolution::resolve_login_user;
 use crate::application::mfa_login::user_has_confirmed_totp;
 use crate::application::tenant_settings::TenantSettingsService;
+use crate::domain::access_decision_settings::AccessDecisionSettings;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session;
 use crate::domain::authentication_policy::{
-    evaluate_policies, AuthenticationContext, DefaultPolicyEffect, PolicyDecision,
+    evaluate_policies, AuthenticationContext, PolicyDecision,
 };
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
@@ -148,7 +149,8 @@ pub struct LoginService {
     clock: Arc<dyn Clock>,
     /// テナントが上書きできる設定の解決（ADR-0058）。参照のたびに引く。
     settings: Arc<TenantSettingsService>,
-    policy_default_effect: DefaultPolicyEffect,
+    /// 一致するポリシーが無い場合の既定動作（AP2）。テナントの値を参照のたびに引く（ADR-0058 §4）。
+    access_settings: Arc<dyn AccessDecisionSettings>,
     csrf_secret: [u8; 32],
 }
 
@@ -169,7 +171,7 @@ impl LoginService {
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
         settings: Arc<TenantSettingsService>,
-        policy_default_effect: DefaultPolicyEffect,
+        access_settings: Arc<dyn AccessDecisionSettings>,
         csrf_secret: [u8; 32],
     ) -> Self {
         Self {
@@ -187,7 +189,7 @@ impl LoginService {
             audit,
             clock,
             settings,
-            policy_default_effect,
+            access_settings,
             csrf_secret,
         }
     }
@@ -391,6 +393,10 @@ impl LoginService {
             Ok(id) => id,
             Err(e) => return LoginOutcome::Internal(e.to_string()),
         };
+        let default_effect = match self.access_settings.policy_default_effect(tenant_id).await {
+            Ok(effect) => effect,
+            Err(e) => return LoginOutcome::Internal(e.to_string()),
+        };
         let policy_decision = match self
             .authentication_policies
             .list_enabled_for_tenant(tenant_id)
@@ -405,7 +411,7 @@ impl LoginService {
                     now,
                     requested_acr: &requested_acr,
                 },
-                self.policy_default_effect,
+                default_effect,
             ),
             Err(e) => return LoginOutcome::Internal(e.to_string()),
         };
@@ -1188,7 +1194,9 @@ mod tests {
             audit,
             clock,
             crate::application::tenant_settings::testing::tenant_settings().service,
-            DefaultPolicyEffect::Allow,
+            crate::application::access_decision_settings::test_support::policy_default(
+                crate::domain::authentication_policy::DefaultPolicyEffect::Allow,
+            ),
             CSRF_KEY,
         );
 

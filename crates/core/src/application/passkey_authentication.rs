@@ -25,10 +25,11 @@ use crate::application::passkey_assertion::{
     PasskeyAssertionError, PasskeyAssertionService, PasskeyFlow,
 };
 use crate::application::tenant_settings::TenantSettingsService;
+use crate::domain::access_decision_settings::AccessDecisionSettings;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session;
 use crate::domain::authentication_policy::{
-    evaluate_policies, AuthenticationContext, DefaultPolicyEffect, PolicyDecision,
+    evaluate_policies, AuthenticationContext, PolicyDecision,
 };
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
@@ -103,7 +104,8 @@ pub struct PasskeyAuthenticationService {
     clock: Arc<dyn Clock>,
     /// テナントが上書きできる設定の解決（ADR-0058）。参照のたびに引く。
     settings: Arc<TenantSettingsService>,
-    policy_default_effect: DefaultPolicyEffect,
+    /// 一致するポリシーが無い場合の既定動作（AP2）。テナントの値を参照のたびに引く（ADR-0058 §4）。
+    access_settings: Arc<dyn AccessDecisionSettings>,
 }
 
 impl PasskeyAuthenticationService {
@@ -120,7 +122,7 @@ impl PasskeyAuthenticationService {
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
         settings: Arc<TenantSettingsService>,
-        policy_default_effect: DefaultPolicyEffect,
+        access_settings: Arc<dyn AccessDecisionSettings>,
     ) -> Self {
         Self {
             assertion,
@@ -134,7 +136,7 @@ impl PasskeyAuthenticationService {
             audit,
             clock,
             settings,
-            policy_default_effect,
+            access_settings,
         }
     }
 
@@ -229,6 +231,10 @@ impl PasskeyAuthenticationService {
             Ok(id) => id,
             Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
         };
+        let default_effect = match self.access_settings.policy_default_effect(tenant_id).await {
+            Ok(effect) => effect,
+            Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
+        };
         let decision = match self
             .authentication_policies
             .list_enabled_for_tenant(tenant_id)
@@ -243,7 +249,7 @@ impl PasskeyAuthenticationService {
                     now,
                     requested_acr: &session.requested_acr(),
                 },
-                self.policy_default_effect,
+                default_effect,
             ),
             Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
         };

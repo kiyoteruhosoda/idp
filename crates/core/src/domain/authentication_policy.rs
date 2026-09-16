@@ -488,6 +488,13 @@ pub enum DefaultPolicyEffect {
 }
 
 impl DefaultPolicyEffect {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::Deny => "deny",
+        }
+    }
+
     pub fn parse(s: &str) -> Result<Self, DomainError> {
         match s {
             "allow" => Ok(Self::Allow),

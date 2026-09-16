@@ -496,14 +496,14 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     // 認証ポリシー（authentication_policies）が 1 件も一致しないときの既定動作（同仕様 §9.4）。
     SettingDefinition {
         key: "AUTH_POLICY_DEFAULT_EFFECT",
-        scope: SettingScope::Global,
-        // 管理コンソール（AP1）が一覧の上に現在の既定動作を示すため web も読む。ポリシーの意味は
-        // この既定値と組み合わせて初めて決まる（同じ `deny` 1 件でも、既定が allow か deny かで
-        // 「その 1 件だけ止まる」のか「その 1 件以外も止まっている」のかが変わる）。
-        shared_with_web: true,
+        // テナントが決める（ADR-0058 §4）。判定は api が参照のたびにテナントの値を引く。
+        scope: SettingScope::TenantOverridable,
+        // ⚠ web へは配らない（ADR-0058 §10）。管理コンソール（AP1）が一覧の上に既定動作を示すときも、
+        // api の一覧の応答に載せたテナントの値を描く。起動時スナップショットではテナント別に表せない。
+        shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Review,
         kind: SettingKind::Text,
         default_value: Some("allow"),
@@ -513,14 +513,14 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     // アプリの割り当て判定をどこまでやるか（ADR-0054 の段階導入）。
     SettingDefinition {
         key: "APPLICATION_ASSIGNMENT_ENFORCEMENT",
-        scope: SettingScope::Global,
-        // 管理コンソールがアプリ一覧の上に「いまは記録するだけ」を示すため web も読む。
-        // 割り当てのモード（全員 / 個別）はこの値と組み合わせて初めて効き、同じ「個別」でも
-        // 記録するだけの間は誰も断られない。
-        shared_with_web: true,
+        // テナントが決める（ADR-0058 §4）。名簿が整ったテナントから `enforce` へ倒せる。
+        scope: SettingScope::TenantOverridable,
+        // web へは配らない（web のコードは一度も読んでいなかった。ADR-0058 §10）。アプリ一覧の
+        // 「いまは記録するだけ」は api の応答（`enforcement`）に載ったテナントの値で描く。
+        shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
-        restart_required: true,
+        restart_required: false,
         default_risk: DefaultRisk::Review,
         kind: SettingKind::Text,
         default_value: Some("record_only"),
@@ -1132,6 +1132,22 @@ mod tests {
             "KEY_ENCRYPTION_KEY",
         ] {
             assert!(!is_tenant_overridable(key), "{key}");
+        }
+    }
+
+    /// 判定そのものを決める 2 キーはテナントが決め、参照のたびに引く（ADR-0058 §4・§9）。
+    /// `restart_required` を立てたままにすると、画面は「再起動が要る」と言うのに実際は再起動を
+    /// 待たずに効く ——運用者が値を変えてから再起動までの間を「まだ効いていない」と誤読する。
+    #[test]
+    fn decision_keys_are_decided_by_the_tenant_without_a_restart() {
+        for key in [
+            "AUTH_POLICY_DEFAULT_EFFECT",
+            "APPLICATION_ASSIGNMENT_ENFORCEMENT",
+        ] {
+            let def = runtime_setting_definition(key).unwrap();
+            assert_eq!(def.scope, SettingScope::TenantOverridable, "{key}");
+            assert!(!def.shared_with_web, "{key}");
+            assert!(!def.restart_required, "{key}");
         }
     }
 

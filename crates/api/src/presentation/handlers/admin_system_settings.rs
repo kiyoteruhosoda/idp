@@ -120,8 +120,8 @@ pub async fn update_runtime_setting(
             }
             other => ApiError::Internal(other.to_string()),
         })?;
-    // テナントに行の無いテナントは全体の値に従う（ADR-0058）。全体の行はキャッシュしているので、
-    // 捨てておかないと、再起動なしで効くはずのキーが TTL の間だけ古い値で動く。
+    // テナントが上書きできるキーは再起動を待たずに参照のたびに引く（ADR-0058 §9）。全体の行の
+    // キャッシュをここで捨てないと、テナント解決のキャッシュの寿命ぶん古い値で判定が続く。
     state.tenant_settings.invalidate_global();
     let smtp = state
         .system_settings

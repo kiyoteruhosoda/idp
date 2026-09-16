@@ -73,14 +73,15 @@ pub async fn list(
         .api
         .list_authentication_policies(&correlation.0, &tenant.0, &sso)
         .await;
-    let (policies, mut error_key) = match result {
+    let (policies, default_effect, mut error_key) = match result {
         Ok(response) => (
             response.policies,
+            Some(response.default_effect),
             query.error.as_deref().and_then(error_key_for),
         ),
         Err(AdminApiError::Unauthorized) => return redirect_to_login(&tenant),
-        Err(AdminApiError::Forbidden) => (Vec::new(), Some("admin-settings-error-forbidden")),
-        Err(_) => (Vec::new(), Some("admin-error-internal")),
+        Err(AdminApiError::Forbidden) => (Vec::new(), None, Some("admin-settings-error-forbidden")),
+        Err(_) => (Vec::new(), None, Some("admin-error-internal")),
     };
 
     // 編集モード: 一覧から対象を引いてフォームの初期値にする（api への追加の往復は要らない）。
@@ -103,7 +104,8 @@ pub async fn list(
         tenant: &tenant.prefix(),
         admin: Some(admin.chrome()),
         csrf: &csrf_from(&headers, state.config.csrf_secret()),
-        default_effect: state.config.auth_policy_default_effect(),
+        // テナントの値（api の応答）。web の設定からは出さない（ADR-0058 §10）。
+        default_effect: default_effect.as_deref(),
         saved: query.saved.is_some(),
         updated: query.updated.is_some(),
         deleted: query.deleted.is_some(),
@@ -238,7 +240,8 @@ fn reshow(
         // もう一度 api を呼ばない。
         admin: None,
         csrf: &csrf_from(headers, state.config.csrf_secret()),
-        default_effect: state.config.auth_policy_default_effect(),
+        // 一覧を出さない画面なので既定動作も出さない（値を得るためだけに api を呼ばない）。
+        default_effect: None,
         saved: false,
         updated: false,
         deleted: false,
@@ -435,7 +438,7 @@ mod tests {
                 permissions: &[],
             }),
             csrf: "csrf",
-            default_effect: "allow",
+            default_effect: Some("allow"),
             saved: false,
             updated: false,
             deleted: false,
@@ -471,7 +474,7 @@ mod tests {
                 permissions: &[],
             }),
             csrf: "csrf",
-            default_effect: "allow",
+            default_effect: Some("allow"),
             saved: false,
             updated: false,
             deleted: false,
