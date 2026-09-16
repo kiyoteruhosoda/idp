@@ -14,7 +14,8 @@ use crate::correlation::CorrelationId;
 use crate::csrf::console_csrf_token;
 use crate::dto::{
     AdminRuntimeSettingForm, AdminSystemSettingsForm, AdminTenantSettingClearForm,
-    AdminTenantSettingForm, AdminTenantSettingsForm, SettingsQuery,
+    AdminTenantSettingForm, AdminTenantSettingsForm, AdminTenantSmtpClearForm, AdminTenantSmtpForm,
+    SettingsQuery,
 };
 use crate::handlers::admin_console::{
     forbidden_response, redirect_to_login, resolve_admin, AdminContext, AdminResolution,
@@ -57,6 +58,11 @@ pub async fn page(
         .api
         .list_tenant_settings(&correlation.0, &tenant.0, &sso)
         .await;
+    // テナント自身のメールの経路（ADR-0058 §8）。`idp.smtp:read` が無ければ 403 で、区画を出さない。
+    let tenant_smtp_result = state
+        .api
+        .get_tenant_smtp(&correlation.0, &tenant.0, &sso)
+        .await;
     // システム設定区画は root（idp.system.admin）のみ。403 は「root ではない」ことを意味するので非表示にする。
     let system_result = state
         .api
@@ -86,6 +92,16 @@ pub async fn page(
         Err(AdminApiError::Unauthorized) => return redirect_to_login(&tenant),
         Err(e) => {
             tracing::error!(error = %e, "failed to load tenant settings");
+            None
+        }
+    };
+
+    let tenant_smtp = match tenant_smtp_result {
+        Ok(view) => Some(view),
+        Err(AdminApiError::Forbidden) => None,
+        Err(AdminApiError::Unauthorized) => return redirect_to_login(&tenant),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to load tenant SMTP settings");
             None
         }
     };
@@ -125,6 +141,7 @@ pub async fn page(
         saved: query.saved.is_some(),
         error_key: query.error.as_deref().and_then(error_key_for),
         tenant_settings: tenant_settings.as_ref(),
+        tenant_smtp: tenant_smtp.as_ref(),
         system: system.as_ref(),
         pending_api_keys: &pending_api_keys,
         stale_web_keys: &stale_web_keys,
@@ -290,6 +307,107 @@ pub async fn clear_tenant_setting(
     }
 }
 
+/// テナント自身のメールの経路を保存する（`POST /{tenant_id}/admin/settings/smtp`。ADR-0058 §8）。
+///
+/// パスワード欄が空なら現行維持。消すのは「パスワードを消す」を付けたときだけ。
+/// 経路を決める項目がすべて空になれば、api が行ごと消して全体の経路へ戻す。
+pub async fn update_tenant_smtp(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Form(form): Form<AdminTenantSmtpForm>,
+) -> Response {
+    match resolve_admin(&state, &correlation, &tenant, &headers).await {
+        AdminResolution::Ok(_) => {}
+        AdminResolution::Reject(resp) => return resp,
+    }
+    let base = format!("{}{SETTINGS_SEGMENT}", tenant.prefix());
+    let sso = sso(&headers);
+    if !assay_contracts::csrf::verify(
+        &console_csrf_token(&sso, state.config.csrf_secret()),
+        &form.csrf_token,
+    ) {
+        return found(&format!("{base}?error=csrf#tenant-smtp"));
+    }
+    let port: Option<u16> = {
+        let trimmed = form.smtp_port.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            match trimmed.parse::<u16>() {
+                Ok(p) => Some(p),
+                Err(_) => return found(&format!("{base}?error=validation#tenant-smtp")),
+            }
+        }
+    };
+    let password = tenant_smtp_password(form.smtp_password, form.smtp_password_clear.is_some());
+    let body = serde_json::json!({
+        "smtp_host": form.smtp_host,
+        "smtp_port": port,
+        "smtp_username": form.smtp_username,
+        "smtp_password": password,
+        "smtp_from_address": form.smtp_from_address,
+        "smtp_use_tls": form.smtp_use_tls.is_some(),
+    });
+    match state
+        .api
+        .update_tenant_smtp(&correlation.0, &tenant.0, &sso, body)
+        .await
+    {
+        Ok(_) => found(&format!("{base}?saved=1#tenant-smtp")),
+        Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
+        Err(AdminApiError::Forbidden) => found(&format!("{base}?error=forbidden#tenant-smtp")),
+        Err(AdminApiError::Validation(_)) => found(&format!("{base}?error=validation#tenant-smtp")),
+        Err(_) => found(&format!("{base}?error=internal#tenant-smtp")),
+    }
+}
+
+/// フォームのパスワード欄を api へ送る値にする。`None` = 現行維持 / `Some("")` = 消去 / `Some(x)` = 設定。
+///
+/// ⚠ 「消す」が付いていれば、欄に何か入っていても消す（取り違えた入力を黙って保存しない）。
+fn tenant_smtp_password(input: String, clear: bool) -> Option<String> {
+    if clear {
+        Some(String::new())
+    } else if input.is_empty() {
+        None
+    } else {
+        Some(input)
+    }
+}
+
+/// テナントのメールの経路を消して全体の経路へ戻す（`POST /{tenant_id}/admin/settings/smtp/clear`）。
+pub async fn clear_tenant_smtp(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Form(form): Form<AdminTenantSmtpClearForm>,
+) -> Response {
+    match resolve_admin(&state, &correlation, &tenant, &headers).await {
+        AdminResolution::Ok(_) => {}
+        AdminResolution::Reject(resp) => return resp,
+    }
+    let base = format!("{}{SETTINGS_SEGMENT}", tenant.prefix());
+    let sso = sso(&headers);
+    if !assay_contracts::csrf::verify(
+        &console_csrf_token(&sso, state.config.csrf_secret()),
+        &form.csrf_token,
+    ) {
+        return found(&format!("{base}?error=csrf#tenant-smtp"));
+    }
+    match state
+        .api
+        .clear_tenant_smtp(&correlation.0, &tenant.0, &sso)
+        .await
+    {
+        Ok(_) => found(&format!("{base}?saved=1#tenant-smtp")),
+        Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
+        Err(AdminApiError::Forbidden) => found(&format!("{base}?error=forbidden#tenant-smtp")),
+        Err(_) => found(&format!("{base}?error=internal#tenant-smtp")),
+    }
+}
+
 /// システム設定（SMTP）の更新（`POST /{tenant_id}/admin/system-settings`）。
 pub async fn update_system(
     State(state): State<WebState>,
@@ -427,4 +545,28 @@ fn internal_error(messages: &Messages, tenant: &WebTenant, admin: &AdminContext)
         back_label: "",
     });
     (StatusCode::INTERNAL_SERVER_ERROR, Html(body)).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tenant_smtp_password;
+
+    /// 空欄は現行維持、「消す」は消去。⚠ 他の項目だけを直して保存しても、パスワードは消えない。
+    #[test]
+    fn the_tenant_smtp_password_field_keeps_clears_or_sets() {
+        assert_eq!(tenant_smtp_password(String::new(), false), None);
+        assert_eq!(
+            tenant_smtp_password("s3cret".into(), false),
+            Some("s3cret".into())
+        );
+        assert_eq!(
+            tenant_smtp_password(String::new(), true),
+            Some(String::new())
+        );
+        // 「消す」が付いていれば、欄に何か入っていても消す。
+        assert_eq!(
+            tenant_smtp_password("typo".into(), true),
+            Some(String::new())
+        );
+    }
 }
