@@ -118,6 +118,71 @@
 </div>
 {% endif %}
 
+{#- テナント自身のメールの経路（ADR-0058 §8）。`idp.smtp:read` が無ければ区画ごと出さない。
+    ⚠ 全体に従っているとき、api は全体の宛先・利用者名を返さない（テナントへ見せない）ので、欄は空で出る。
+    ⚠ 経路は塊で使われる。欠けた項目が全体の値で埋まることは無い。 -#}
+{% if let Some(smtp) = tenant_smtp %}
+<div class="card mb-4 admin-settings-tenant-smtp" id="tenant-smtp">
+  <div class="card-header d-flex align-items-center"><i class="fa-solid fa-envelope me-2" aria-hidden="true"></i>{{ messages.get("admin-tenant-smtp-heading") }}</div>
+  <div class="card-body">
+    <p class="mb-2">
+      {% if smtp.inherited %}
+      <span class="badge text-bg-secondary">{{ messages.get("admin-tenant-smtp-inherited") }}</span>
+      {% else %}
+      <span class="badge text-bg-primary">{{ messages.get("admin-tenant-smtp-own") }}</span>
+      {% endif %}
+    </p>
+    <p class="text-muted small">{{ messages.get("admin-tenant-smtp-lead") }}</p>
+    <form method="post" action="{{ tenant }}/admin/settings/smtp">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <div class="row g-3 mb-3">
+        <div class="col-sm-8">
+          <label class="form-label" for="tenant_smtp_host">{{ messages.get("admin-settings-smtp-host") }}</label>
+          <input type="text" class="form-control" id="tenant_smtp_host" name="smtp_host" value="{{ smtp.smtp_host }}">
+        </div>
+        <div class="col-sm-4">
+          <label class="form-label" for="tenant_smtp_port">{{ messages.get("admin-settings-smtp-port") }}</label>
+          <input type="number" class="form-control" id="tenant_smtp_port" name="smtp_port" min="1" max="65535"
+                 value="{% if let Some(p) = smtp.smtp_port %}{{ p }}{% endif %}">
+        </div>
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="tenant_smtp_username">{{ messages.get("admin-settings-smtp-username") }}</label>
+        <input type="text" class="form-control" id="tenant_smtp_username" name="smtp_username" value="{{ smtp.smtp_username }}">
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="tenant_smtp_password">{{ messages.get("admin-settings-smtp-password") }}</label>
+        <div class="form-text">{% if smtp.smtp_password_set %}{{ messages.get("admin-settings-smtp-password-set") }}{% else %}{{ messages.get("admin-settings-smtp-password-unset") }}{% endif %}</div>
+        <input type="password" class="form-control" id="tenant_smtp_password" name="smtp_password" autocomplete="new-password">
+        <div class="form-text">{{ messages.get("admin-settings-smtp-password-hint") }}</div>
+        {% if smtp.smtp_password_set %}
+        <div class="form-check mt-1">
+          <input type="checkbox" class="form-check-input" id="tenant_smtp_password_clear" name="smtp_password_clear" value="true">
+          <label class="form-check-label" for="tenant_smtp_password_clear">{{ messages.get("admin-tenant-smtp-password-clear") }}</label>
+        </div>
+        {% endif %}
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="tenant_smtp_from_address">{{ messages.get("admin-settings-smtp-from") }}</label>
+        <input type="text" class="form-control" id="tenant_smtp_from_address" name="smtp_from_address" value="{{ smtp.smtp_from_address }}">
+      </div>
+      <div class="form-check mb-3">
+        <input type="checkbox" class="form-check-input" id="tenant_smtp_use_tls" name="smtp_use_tls" value="true" {% if smtp.smtp_use_tls %}checked{% endif %}>
+        <label class="form-check-label" for="tenant_smtp_use_tls">{{ messages.get("admin-settings-smtp-tls") }}</label>
+      </div>
+      <button type="submit" class="btn btn-primary">{{ messages.get("admin-tenant-smtp-save") }}</button>
+    </form>
+    {% if !smtp.inherited %}
+    <form method="post" action="{{ tenant }}/admin/settings/smtp/clear" class="mt-3">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <button type="submit" class="btn btn-outline-secondary">{{ messages.get("admin-tenant-smtp-clear") }}</button>
+      <div class="form-text">{{ messages.get("admin-tenant-smtp-clear-hint") }}</div>
+    </form>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
 {% if let Some(sys) = system %}
 <div class="card mb-4 admin-settings-system" id="system-settings">
   <div class="card-header d-flex align-items-center"><i class="fa-solid fa-envelope me-2" aria-hidden="true"></i>{{ messages.get("admin-settings-system-heading") }}</div>

@@ -488,6 +488,28 @@ pub struct TenantOverrideView {
     pub value: String,
 }
 
+/// テナント自身のメールの経路（`GET/PUT/DELETE /admin/settings/smtp`。ADR-0058 §8）。
+///
+/// `inherited` が true のときは全体の経路で送られている。⚠ そのとき api は項目を空で返す
+/// （全体の宛先・利用者名はテナントへ見せない）。パスワードは設定の有無だけ。
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct TenantSmtpView {
+    #[serde(default)]
+    pub inherited: bool,
+    #[serde(default)]
+    pub smtp_host: String,
+    #[serde(default)]
+    pub smtp_port: Option<u16>,
+    #[serde(default)]
+    pub smtp_username: String,
+    #[serde(default)]
+    pub smtp_password_set: bool,
+    #[serde(default)]
+    pub smtp_from_address: String,
+    #[serde(default)]
+    pub smtp_use_tls: bool,
+}
+
 /// テナントの設定値の一覧（`GET /admin/settings/tenant/keys`。ADR-0058）。
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct TenantSettingsListView {

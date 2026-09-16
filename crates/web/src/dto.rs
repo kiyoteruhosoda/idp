@@ -276,6 +276,36 @@ pub struct AdminTenantSettingClearForm {
     pub csrf_token: String,
 }
 
+/// テナント自身のメールの経路のフォーム（`POST /{tenant_id}/admin/settings/smtp`。ADR-0058 §8）。
+///
+/// `smtp_password` が空なら現行のパスワードを維持する（全体の画面と同じ規則）。消すときは
+/// `smtp_password_clear` を付ける ——空欄を「消す」に読むと、パスワードを入れ直さずに他の項目を
+/// 直しただけで消えてしまう。
+#[derive(Debug, Deserialize)]
+pub struct AdminTenantSmtpForm {
+    #[serde(default)]
+    pub smtp_host: String,
+    #[serde(default)]
+    pub smtp_port: String,
+    #[serde(default)]
+    pub smtp_username: String,
+    #[serde(default)]
+    pub smtp_password: String,
+    #[serde(default)]
+    pub smtp_password_clear: Option<String>,
+    #[serde(default)]
+    pub smtp_from_address: String,
+    #[serde(default)]
+    pub smtp_use_tls: Option<String>,
+    pub csrf_token: String,
+}
+
+/// テナントのメールの経路を消して全体の経路へ戻すフォーム（`POST /{tenant_id}/admin/settings/smtp/clear`）。
+#[derive(Debug, Deserialize)]
+pub struct AdminTenantSmtpClearForm {
+    pub csrf_token: String,
+}
+
 /// api・web の再起動フォーム（`POST /{tenant_id}/admin/restart`。ADR-0017）。
 #[derive(Debug, Deserialize)]
 pub struct AdminRestartForm {
