@@ -277,11 +277,12 @@ root テナントの UUID は固定値 `00000000-0000-7000-8000-000000000001`（
   `down` は逆向きに戻すが、**完全には戻らない**（OIDC の binding を 2 本持つアプリは `client_id` が
   2 つに増え、SAML だけのアプリは戻せる相手を持たない）。
 
-- `0057_application_identities`: アプリの名乗り（`application_bindings`）を 4 種類へ広げる（ADR-0059）。
+- `0058_application_identities`: アプリの名乗り（`application_bindings`）を 4 種類へ広げる（ADR-0059）。
   `protocol` 列を `kind` へ改め、`service_account`（`client_credentials` だけの client）と `resource`
   （宛名。`resource_id` 列と UNIQUE を足す）を加える。1 つの相手は 1 つのアプリにだけ属する。
   あわせて、0054 がサービスアカウントに作った「自分だけのアプリ」を消す。⚠ **割り当てがある・
   認証ポリシーから参照されている・他の名乗りも持っている行があれば、`SIGNAL` で移行を止める**
   （何も変える前に止まる）。どのアプリの名乗りにするかは推測しない。`down` は `service_account` /
   `resource` の名乗りを消して列を戻し、サービスアカウントのアプリを 0054 と同じ形で作り直す。
+  ⚠ 番号は 0057 を空けてある（同時に開いている SMTP の PR が `0057_smtp_permissions_per_tenant` を使うため）。
 

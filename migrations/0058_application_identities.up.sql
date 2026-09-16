@@ -40,11 +40,11 @@
 -- 対象の特定は `grant_types` で行う。ADR-0032 Revised により `authorization_code` と
 -- `client_credentials` は同居しないが、古い登録が両方を持っていてもサービスアカウントとは
 -- 扱わない（利用者が入ってくる相手のアプリを消さない）。
-CREATE TEMPORARY TABLE migration_0057_service_account_applications (
+CREATE TEMPORARY TABLE migration_0058_service_account_applications (
     application_id CHAR(36) NOT NULL PRIMARY KEY
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
 
-INSERT INTO migration_0057_service_account_applications (application_id)
+INSERT INTO migration_0058_service_account_applications (application_id)
 SELECT DISTINCT b.application_id
 FROM application_bindings b
 JOIN clients c ON c.id = b.client_id
@@ -55,15 +55,15 @@ WHERE b.protocol = 'oidc'
 BEGIN NOT ATOMIC
     IF EXISTS (
         SELECT 1
-        FROM migration_0057_service_account_applications t
+        FROM migration_0058_service_account_applications t
         JOIN application_assignments x ON x.application_id = t.application_id
     ) THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT =
-            '0057: a service-account application has assignments; move them to the real application first';
+            '0058: a service-account application has assignments; move them to the real application first';
     END IF;
     IF EXISTS (
         SELECT 1
-        FROM migration_0057_service_account_applications t
+        FROM migration_0058_service_account_applications t
         JOIN application_bindings b ON b.application_id = t.application_id
         LEFT JOIN clients c ON c.id = b.client_id
         WHERE NOT (
@@ -74,11 +74,11 @@ BEGIN NOT ATOMIC
         )
     ) THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT =
-            '0057: a service-account application also has other bindings; unbind them first';
+            '0058: a service-account application also has other bindings; unbind them first';
     END IF;
     IF EXISTS (
         SELECT 1
-        FROM migration_0057_service_account_applications t
+        FROM migration_0058_service_account_applications t
         JOIN authentication_policies p
           ON JSON_CONTAINS(
                  JSON_EXTRACT(p.conditions, '$.application_ids'),
@@ -86,15 +86,15 @@ BEGIN NOT ATOMIC
              )
     ) THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT =
-            '0057: a service-account application is referenced by an authentication policy';
+            '0058: a service-account application is referenced by an authentication policy';
     END IF;
 END;
 
 -- 名乗り（binding）は CASCADE で一緒に消える。
 DELETE a FROM applications a
-JOIN migration_0057_service_account_applications t ON t.application_id = a.id;
+JOIN migration_0058_service_account_applications t ON t.application_id = a.id;
 
-DROP TEMPORARY TABLE migration_0057_service_account_applications;
+DROP TEMPORARY TABLE migration_0058_service_account_applications;
 
 -- ---------------------------------------------------------------------------
 -- 2) 名乗りを 4 種類へ広げる

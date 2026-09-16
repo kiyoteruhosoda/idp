@@ -469,6 +469,66 @@ pub struct RuntimeSettingView {
     /// web も消費するキーか（ADR-0013）。反映に api と web の両方の再起動が要る。
     #[serde(default)]
     pub shared_with_web: bool,
+    /// テナントが上書きできるキーか（ADR-0058）。
+    #[serde(default)]
+    pub tenant_overridable: bool,
+    /// 全体の値に従っているテナントの件数（テナントが上書きできるキーのみ）。
+    #[serde(default)]
+    pub tenants_following: Option<u64>,
+    /// 既定から外れているテナント（テナントが上書きできるキーのみ）。
+    #[serde(default)]
+    pub tenants_overriding: Vec<TenantOverrideView>,
+}
+
+/// 全体の設定画面に出す「既定から外れているテナント」1 件（ADR-0058 §6）。
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct TenantOverrideView {
+    pub tenant_id: String,
+    pub tenant_name: String,
+    pub value: String,
+}
+
+/// テナントの設定値の一覧（`GET /admin/settings/tenant/keys`。ADR-0058）。
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct TenantSettingsListView {
+    #[serde(default)]
+    pub settings: Vec<TenantSettingView>,
+}
+
+/// テナントの設定 1 項目。項目の並びも入力欄の形も api が返す定義から決める（web は項目を知らない）。
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct TenantSettingView {
+    pub key: String,
+    #[serde(default)]
+    pub description: String,
+    /// `UNSIGNED_INTEGER` / `BOOLEAN` / `TEXT` / `PUBLIC_BASE_URL` / `CHOICE`。
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub choices: Vec<SettingChoiceView>,
+    #[serde(default)]
+    pub value: String,
+    /// `TENANT_OVERRIDE`（このテナントで決めた）/ `INHERITED`（全体に従っている）。
+    #[serde(default)]
+    pub origin: String,
+    /// 全体の値（上書きを消すとこの値に戻る）。
+    #[serde(default)]
+    pub whole_idp_value: String,
+}
+
+impl TenantSettingView {
+    /// このテナントで決めた値か（`false` = 全体に従っている）。
+    pub fn is_tenant_override(&self) -> bool {
+        self.origin == "TENANT_OVERRIDE"
+    }
+}
+
+/// 選択肢 1 つ。`locks_out` の値へ変えるときは保存の前に確認を挟む。
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct SettingChoiceView {
+    pub value: String,
+    #[serde(default)]
+    pub locks_out: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -842,7 +842,7 @@ RP が名簿（`/admin/applications/self/users`）を読めるようにすると
 3. ⚠ 「既に ○○ に結び付いています」と出たら、○○ の詳細から先に外す（1 つの相手は 1 つのアプリにだけ属する）
 4. ⚠ **名簿を読むサービスアカウントに `idp.applications:read` を付けない。** 結び付けだけで読める
 
-- 移行 0057 を当てる前の確認（サービスアカウントのアプリに、消えて困るものが付いていないか）:
+- 移行 0058 を当てる前の確認（サービスアカウントのアプリに、消えて困るものが付いていないか）:
   `SELECT a.display_name, (SELECT COUNT(*) FROM application_assignments x WHERE x.application_id=a.id) AS assigned FROM applications a JOIN application_bindings b ON b.application_id=a.id JOIN clients c ON c.id=b.client_id WHERE JSON_CONTAINS(c.grant_types,'"client_credentials"') AND NOT JSON_CONTAINS(c.grant_types,'"authorization_code"');`
   `assigned` が 0 でない行があると移行は止まる（割り当てを本来のアプリへ移してから当て直す）
 

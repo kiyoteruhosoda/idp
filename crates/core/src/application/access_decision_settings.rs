@@ -112,6 +112,12 @@ pub mod test_support {
                 .retain(|row| !(row.tenant_id == tenant_id && row.key == key));
             Ok(())
         }
+        async fn list_overrides_across_tenants(
+            &self,
+        ) -> Result<crate::domain::tenant_setting::TenantOverridesAcrossTenants> {
+            // 判定の試験はテナントをまたいで読まない。
+            Ok(Default::default())
+        }
     }
 
     struct NoSystemSettings;
@@ -162,6 +168,7 @@ pub mod test_support {
                 Duration::seconds(60),
                 clock,
             )),
+            crate::application::tenant_settings::testing::audit(Default::default()),
         ))
     }
 }
