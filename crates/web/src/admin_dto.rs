@@ -141,13 +141,14 @@ impl ApplicationView {
     }
 }
 
-/// binding 1 本の公開表現。
+/// 名乗り 1 本の公開表現（ADR-0059）。
 #[derive(Debug, Clone, Deserialize)]
 pub struct ApplicationBindingView {
     pub id: String,
-    /// `oidc` / `saml`。
-    pub protocol: String,
-    /// OIDC なら `client_id`、SAML なら `entity_id`。相手が消えていれば `None`。
+    /// `oidc` / `saml` / `service_account` / `resource`。
+    pub kind: String,
+    /// ログイン用・サービスアカウントなら `client_id`、SAML なら `entity_id`、宛名なら
+    /// `resource_uri`。相手が消えていれば `None`。
     #[serde(default)]
     pub identifier: Option<String>,
     #[serde(default)]
@@ -155,8 +156,21 @@ pub struct ApplicationBindingView {
 }
 
 impl ApplicationBindingView {
-    pub fn is_oidc(&self) -> bool {
-        self.protocol == "oidc"
+    /// 種類の表示名の翻訳キー（テンプレートから種類を文字列比較させないため）。
+    /// 知らない種類は綴りのまま出す（新しい api と古い web の組み合わせでも画面を壊さない）。
+    pub fn kind_label_key(&self) -> &str {
+        match self.kind.as_str() {
+            "oidc" => "admin-applications-kind-oidc",
+            "saml" => "admin-applications-kind-saml",
+            "service_account" => "admin-applications-kind-service-account",
+            "resource" => "admin-applications-kind-resource",
+            other => other,
+        }
+    }
+
+    /// サービスアカウントの名乗りか（サーバーのアイコンを出す）。
+    pub fn is_service_account(&self) -> bool {
+        self.kind == "service_account"
     }
 }
 

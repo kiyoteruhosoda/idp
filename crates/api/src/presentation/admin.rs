@@ -169,6 +169,44 @@ where
     }
 }
 
+/// 有効な管理トークンを提示した主体（**権限コードは問わない**）を表す extractor（ADR-0059）。
+///
+/// 認可を権限コードではなく主体そのもので決める口（名簿の self：呼んできたサービスアカウントが
+/// どのアプリの名乗りか）に置く。⚠ **抽出できただけで何かを許さない** ——ハンドラ（の先の
+/// Application 層）が主体を見て 403 を決める。拒否はトークンが無効なときの 401 だけ。
+pub struct ManagementPrincipal(pub AuthorizedPrincipal);
+
+impl FromRequestParts<AppState> for ManagementPrincipal {
+    type Rejection = Response;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let Some(resolved) = parts.extensions.get::<ResolvedTenant>() else {
+            tracing::error!(
+                "ManagementPrincipal used on a route without the tenant resolver middleware"
+            );
+            return Err(error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
+                "tenant context missing",
+            ));
+        };
+        let token = bearer_token(parts);
+        match state
+            .management_tokens
+            .authenticate(resolved.context(), token.as_deref())
+            .await
+        {
+            ManagementAccess::Granted(principal) => Ok(ManagementPrincipal(principal)),
+            ManagementAccess::Unauthenticated | ManagementAccess::Forbidden => {
+                Err(unauthorized(parts))
+            }
+        }
+    }
+}
+
 /// `Authorization: Bearer <token>` を取り出す（スキーム名は大小無視。RFC 6750 §2.1）。
 fn bearer_token(parts: &Parts) -> Option<String> {
     let raw = parts.headers.get(AUTHORIZATION)?.to_str().ok()?;

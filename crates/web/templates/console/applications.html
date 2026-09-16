@@ -37,7 +37,7 @@
           <span class="text-muted">{{ messages.get("admin-applications-bindings-none") }}</span>
           {%- else -%}
           {%- for binding in application.bindings -%}
-          <span class="badge bg-secondary-subtle text-secondary-emphasis me-1">{{ binding.protocol }}</span>
+          <span class="badge bg-secondary-subtle text-secondary-emphasis me-1">{{ messages.get(binding.kind_label_key()) }}</span>
           {%- endfor -%}
           {%- endif -%}
         </td>

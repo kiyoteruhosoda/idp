@@ -711,16 +711,30 @@ pub struct UpdateApplicationRequest {
     pub assignment_mode: String,
 }
 
-/// アプリへ認証方法を繋ぐリクエスト（`POST /{tenant_id}/admin/applications/{application_id}/bindings`）。
+/// アプリに名乗りを足すリクエスト（`POST /{tenant_id}/admin/applications/{application_id}/bindings`。
+/// ADR-0059）。
 ///
-/// どちらか一方だけを載せる。`client_id` は OIDC の RP（テナント内一意の文字列）、
-/// `service_provider_id` は SAML SP の内部 ID。
+/// `kind` で種類を決め、種類ごとに決まった 1 つの欄で相手を指す:
+///
+/// | `kind` | 相手を指す欄 | 相手の条件 |
+/// |---|---|---|
+/// | `oidc` | `client_id` | ログイン用（`authorization_code`）の client |
+/// | `saml` | `service_provider_id` | SAML SP の内部 ID |
+/// | `service_account` | `client_id` | サービスアカウント（`client_credentials` だけの client） |
+/// | `resource` | `resource_uri` | 登録済みの宛名（`aud`） |
+///
+/// ⚠ 1 つの相手は 1 つのアプリにだけ属する。別のアプリの名乗りなら 409（そのアプリ名を返す）。
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateApplicationBindingRequest {
+    /// `oidc` / `saml` / `service_account` / `resource`。⚠ 省略は 400（既定の種類を置かない）。
+    #[serde(default)]
+    pub kind: String,
     #[serde(default)]
     pub client_id: Option<String>,
     #[serde(default)]
     pub service_provider_id: Option<String>,
+    #[serde(default)]
+    pub resource_uri: Option<String>,
 }
 
 /// 利用者をアプリへ割り当てるリクエスト
@@ -740,7 +754,7 @@ pub struct ApplicationResponse {
     pub display_name: String,
     pub status: String,
     pub assignment_mode: String,
-    /// 繋がっている認証方法。
+    /// このアプリの名乗り（ログイン用 client・SAML SP・サービスアカウント・宛名）。
     pub bindings: Vec<ApplicationBindingResponse>,
     /// 割り当て人数。`EVERYONE` のときは行が無いので 0。
     pub assigned_count: i64,
@@ -748,13 +762,14 @@ pub struct ApplicationResponse {
     pub updated_at: String,
 }
 
-/// binding 1 本の公開表現。
+/// 名乗り 1 本の公開表現。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ApplicationBindingResponse {
     pub id: String,
-    /// `oidc` または `saml`。
-    pub protocol: String,
-    /// OIDC なら `client_id`、SAML なら `entity_id`。相手が消えていれば `null`。
+    /// `oidc` / `saml` / `service_account` / `resource`。
+    pub kind: String,
+    /// ログイン用・サービスアカウントなら `client_id`、SAML なら `entity_id`、宛名なら
+    /// `resource_uri`。相手が消えていれば `null`。
     pub identifier: Option<String>,
     /// 相手の登録名。
     pub display_name: Option<String>,
@@ -814,7 +829,7 @@ pub struct ApplicationCurrentUserResponse {
     pub name: Option<String>,
 }
 
-/// 名簿の照会クエリ（`GET /{tenant_id}/admin/applications/oidc/{client_id}/users`。ADR-0057）。
+/// 名簿の照会クエリ（`GET /{tenant_id}/admin/applications/self/users`。ADR-0057 / ADR-0059）。
 #[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct ApplicationUserQueryParams {
     /// 1 ページの件数。未指定は 50、上限 200（超過分は上限へ丸める）。
@@ -844,7 +859,7 @@ pub struct ApplicationUserResponse {
     pub state: String,
 }
 
-/// 名簿の照会結果（`GET /{tenant_id}/admin/applications/oidc/{client_id}/users`）。
+/// 名簿の照会結果（`GET /{tenant_id}/admin/applications/self/users`）。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ApplicationUserListResponse {
     pub users: Vec<ApplicationUserResponse>,

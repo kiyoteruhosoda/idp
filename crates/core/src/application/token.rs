@@ -17,6 +17,7 @@ use crate::application::client_authentication::{
     PresentedClientCredentials,
 };
 use crate::application::key_service::KeyService;
+use crate::domain::application::BindingTarget;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::client::Client;
 use crate::domain::clock::Clock;
@@ -27,9 +28,9 @@ use crate::domain::jwt;
 use crate::domain::pkce;
 use crate::domain::refresh_token::RefreshToken;
 use crate::domain::repositories::{
-    AuthorizationCodeRepository, ClientPermissionRepository, ClientRepository,
-    ClientResourceRepository, ProtectedResourceRepository, RefreshTokenRepository,
-    TenantRepository, UserRepository,
+    ApplicationRepository, AuthorizationCodeRepository, ClientPermissionRepository,
+    ClientRepository, ClientResourceRepository, ProtectedResourceRepository,
+    RefreshTokenRepository, TenantRepository, UserRepository,
 };
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::{AuthenticationMethod, AuthenticationStrength, Scope};
@@ -224,6 +225,9 @@ pub struct TokenService {
     /// クライアントへ許した宛名（ADR-0042）。登録されているだけでは足りず、要求元が
     /// その宛先を要求してよいかをここで確かめる。
     client_resources: Arc<dyn ClientResourceRepository>,
+    /// アプリとその名乗り（ADR-0059）。管理 API のトークンを、権限コードを持たないサービスアカウント
+    /// へも出してよいか（＝あるアプリの名乗りか）を引く。
+    applications: Arc<dyn ApplicationRepository>,
     keys: Arc<KeyService>,
     /// クライアント認証（secret 照合・assertion 検証）。方式ごとの分岐は
     /// `client_authentication` に集約してある（ADR-0030）。
@@ -252,6 +256,7 @@ impl TokenService {
         client_permissions: Arc<dyn ClientPermissionRepository>,
         resources: Arc<dyn ProtectedResourceRepository>,
         client_resources: Arc<dyn ClientResourceRepository>,
+        applications: Arc<dyn ApplicationRepository>,
         keys: Arc<KeyService>,
         client_auth: Arc<ClientAuthenticator>,
         audit: Arc<AuditService>,
@@ -271,6 +276,7 @@ impl TokenService {
             client_permissions,
             resources,
             client_resources,
+            applications,
             keys,
             client_auth,
             audit,
@@ -817,9 +823,26 @@ impl TokenService {
                     .list_codes_for_client(client.id)
                     .await
                     .map_err(|e| internal(&e))?;
-                // 権限が 1 つも無いクライアントへ管理トークンを出さない。出しても全部 403 になる
-                // トークンであり、「取れたのに何も通らない」という最も追いにくい失敗を生む。
-                if codes.is_empty() {
+                // 管理トークンを出してよいのは、(1) 権限コードを 1 つ以上持つ client か、
+                // (2) **あるアプリの名乗り（サービスアカウント）として結び付いた** client である
+                // （ADR-0059）。(2) の `perms` は空のままで、通るのは名乗りで決まる口
+                // （`/admin/applications/self/users`）だけ ——テナント全体の権限は増えない。
+                //
+                // どちらでもない client へは出さない。出しても全部 403 になるトークンであり、
+                // 「取れたのに何も通らない」という最も追いにくい失敗を生む。
+                let bound_as_service_account = codes.is_empty()
+                    && self
+                        .applications
+                        .find_by_binding_target(
+                            tenant_id,
+                            BindingTarget::ServiceAccount {
+                                client_row_id: client.id,
+                            },
+                        )
+                        .await
+                        .map_err(|e| internal(&e))?
+                        .is_some();
+                if codes.is_empty() && !bound_as_service_account {
                     self.audit
                         .record(
                             AuditEventType::ClientAuthenticationFailed,

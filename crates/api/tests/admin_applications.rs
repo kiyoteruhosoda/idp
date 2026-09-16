@@ -71,14 +71,14 @@ async fn admin_can_manage_applications_but_others_cannot() {
         post(
             &admin_tok,
             &format!("{detail_uri}/bindings"),
-            json!({ "client_id": client_id }),
+            json!({ "kind": "oidc", "client_id": client_id }),
         ),
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK, "bind -> 200");
     let bound = body_json(res).await;
     assert_eq!(bound["bindings"].as_array().unwrap().len(), 1);
-    assert_eq!(bound["bindings"][0]["protocol"], "oidc");
+    assert_eq!(bound["bindings"][0]["kind"], "oidc");
     assert_eq!(bound["bindings"][0]["identifier"], json!(client_id));
 
     // ⚠ 1 つの連携先は 1 つのアプリにしか属さない。2 つ目のアプリへ繋ごうとすると 409。
@@ -100,7 +100,7 @@ async fn admin_can_manage_applications_but_others_cannot() {
         post(
             &admin_tok,
             &format!("{uri}/{other_id}/bindings"),
-            json!({ "client_id": client_id }),
+            json!({ "kind": "oidc", "client_id": client_id }),
         ),
     )
     .await;
@@ -109,8 +109,16 @@ async fn admin_can_manage_applications_but_others_cannot() {
         StatusCode::CONFLICT,
         "a client belongs to one application"
     );
+    let refusal = body_json(res).await;
+    assert!(
+        refusal["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains(&name),
+        "the refusal names the application that owns it: {refusal}"
+    );
 
-    // ⚠ どちらの相手も指さない要求は 400（どのプロトコルで繋ぐのかが決まらない）。
+    // ⚠ 種類を指さない要求は 400（既定の種類を置かない）。
     let res = send(
         &env.app,
         post(&admin_tok, &format!("{detail_uri}/bindings"), json!({})),
@@ -299,5 +307,199 @@ async fn a_service_account_does_not_get_an_application() {
             .iter()
             .any(|a| a["display_name"] == json!(app_name)),
         "a service account has no users to admit: {listed}"
+    );
+}
+
+/// 名乗りの種類と相手の性質を突き合わせる（ADR-0059）。
+///
+/// - サービスアカウントとして結び付けられるのは `client_credentials` だけの client
+/// - ログイン用として結び付けられるのは `authorization_code` の client
+/// - 宛名は URI で指す。どれも 1 つのアプリにだけ属する
+#[tokio::test]
+async fn binding_kinds_must_match_what_the_target_is() {
+    let Some(env) = support::setup("application binding kinds").await else {
+        return;
+    };
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+    let uri = format!("/{}/admin/applications", env.root_tenant_id);
+    let create = |name: String| {
+        let admin_tok = admin_tok.clone();
+        let uri = uri.clone();
+        let app = env.app.clone();
+        async move {
+            body_json(
+                send(
+                    &app,
+                    post(&admin_tok, &uri, json!({ "display_name": name })),
+                )
+                .await,
+            )
+            .await["id"]
+                .as_str()
+                .expect("id")
+                .to_string()
+        }
+    };
+    let application_id = create(format!("wiki-{}", support::unique())).await;
+    let bindings_uri = format!("{uri}/{application_id}/bindings");
+
+    let (service_account, _) =
+        support::insert_service_account(&env.pool, &env.root_tenant_id).await;
+    let login_client =
+        support::insert_public_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
+
+    // ⚠ ログイン用の client をサービスアカウントとして結び付けない（利用者のトークンで self が読める）。
+    let res = send(
+        &env.app,
+        post(
+            &admin_tok,
+            &bindings_uri,
+            json!({ "kind": "service_account", "client_id": login_client }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        res.status(),
+        StatusCode::BAD_REQUEST,
+        "login client as a service account"
+    );
+
+    // ⚠ サービスアカウントをログイン用として結び付けない（ログインの判定から外れる）。
+    let res = send(
+        &env.app,
+        post(
+            &admin_tok,
+            &bindings_uri,
+            json!({ "kind": "oidc", "client_id": service_account }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        res.status(),
+        StatusCode::BAD_REQUEST,
+        "service account as a login"
+    );
+
+    let res = send(
+        &env.app,
+        post(
+            &admin_tok,
+            &bindings_uri,
+            json!({ "kind": "service_account", "client_id": service_account }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK, "service account -> 200");
+    let bound = body_json(res).await;
+    assert!(
+        bound["bindings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b["kind"] == "service_account" && b["identifier"] == json!(service_account)),
+        "{bound}"
+    );
+
+    // 同じアプリへもう一度は冪等。別のアプリへは 409。
+    let res = send(
+        &env.app,
+        post(
+            &admin_tok,
+            &bindings_uri,
+            json!({ "kind": "service_account", "client_id": service_account }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        res.status(),
+        StatusCode::OK,
+        "same application -> idempotent"
+    );
+    let other_id = create(format!("other-{}", support::unique())).await;
+    let res = send(
+        &env.app,
+        post(
+            &admin_tok,
+            &format!("{uri}/{other_id}/bindings"),
+            json!({ "kind": "service_account", "client_id": service_account }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        res.status(),
+        StatusCode::CONFLICT,
+        "a service account belongs to one application"
+    );
+
+    // 宛名は URI で指す。
+    let resource_uri = format!("https://api-{}.example.com", support::unique());
+    let res = send(
+        &env.app,
+        post(
+            &admin_tok,
+            &format!("/{}/admin/resources", env.root_tenant_id),
+            json!({ "resource_uri": resource_uri, "display_name": "wiki API" }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED, "register resource");
+    let res = send(
+        &env.app,
+        post(
+            &admin_tok,
+            &bindings_uri,
+            json!({ "kind": "resource", "resource_uri": resource_uri }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK, "resource -> 200");
+    let bound = body_json(res).await;
+    assert!(
+        bound["bindings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b["kind"] == "resource" && b["identifier"] == json!(resource_uri)),
+        "{bound}"
+    );
+    let res = send(
+        &env.app,
+        post(
+            &admin_tok,
+            &format!("{uri}/{other_id}/bindings"),
+            json!({ "kind": "resource", "resource_uri": resource_uri }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        res.status(),
+        StatusCode::CONFLICT,
+        "a resource belongs to one application"
+    );
+
+    // 知らない種類・種類に合わない欄だけの要求は 400。
+    let res = send(
+        &env.app,
+        post(
+            &admin_tok,
+            &bindings_uri,
+            json!({ "kind": "machine", "client_id": service_account }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST, "unknown kind");
+    let res = send(
+        &env.app,
+        post(
+            &admin_tok,
+            &bindings_uri,
+            json!({ "kind": "resource", "client_id": service_account }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        res.status(),
+        StatusCode::BAD_REQUEST,
+        "wrong field for the kind"
     );
 }
