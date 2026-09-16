@@ -467,6 +467,13 @@ pub struct RuntimeSettingResponse {
     pub pending_restart: bool,
     /// web も消費するキーか（ADR-0013）。`true` のキーは反映に **api と web の両方**の再起動が要る。
     pub shared_with_web: bool,
+    /// テナントが上書きできるキーか（ADR-0058 §3）。
+    pub tenant_overridable: bool,
+    /// 全体の値に従っているテナントの件数（テナントが上書きできるキーのみ）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenants_following: Option<u64>,
+    /// 既定から外れているテナント（テナントが上書きできるキーのみ。干渉はしないが見えなくはしない）。
+    pub tenants_overriding: Vec<TenantOverrideResponse>,
 }
 
 /// システム設定の公開表現（`GET/PUT /{tenant_id}/admin/system-settings`）。SMTP パスワードは
@@ -567,6 +574,62 @@ pub struct UpdateRuntimeSettingRequest {
     pub key: String,
     #[serde(default)]
     pub value: Option<String>,
+}
+
+// --- テナントの設定値（ADR-0058。`idp.tenant-settings:read` / `:write`） -------------------------
+
+/// テナントが上書きできる設定の一覧（`GET /{tenant_id}/admin/settings/tenant/keys`）。
+///
+/// 項目はキー定義（`scope = TenantOverridable`）から導く。⚠ **キーを足すたびにこの型へ項目を
+/// 書き足さない** ——画面は `kind` と `choices` を見て入力欄を選ぶ。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TenantSettingsListResponse {
+    pub settings: Vec<TenantSettingResponse>,
+}
+
+/// テナントの設定 1 項目。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TenantSettingResponse {
+    pub key: String,
+    /// 何に使う設定か（運用者向けの一文。運用言語）。
+    pub description: String,
+    /// 値の型: `UNSIGNED_INTEGER` / `BOOLEAN` / `TEXT` / `PUBLIC_BASE_URL` / `CHOICE`。
+    pub kind: String,
+    /// `kind = CHOICE` のときの選択肢（それ以外は空）。
+    pub choices: Vec<SettingChoiceResponse>,
+    /// このテナントで効いている値。
+    pub value: String,
+    /// 値の出どころ: `TENANT_OVERRIDE`（このテナントで決めた）/ `INHERITED`（全体に従っている）。
+    pub origin: String,
+    /// 全体の値。上書きを消すとこの値に戻る（上書きしている項目でも返す）。
+    pub whole_idp_value: String,
+}
+
+/// 選択肢 1 つ。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SettingChoiceResponse {
+    pub value: String,
+    /// この値にすると利用者を締め出し得るか。`true` の値へ変えるには `confirmed: true` が要る。
+    pub locks_out: bool,
+}
+
+/// テナントの設定値の更新（`PUT /{tenant_id}/admin/settings/tenant/keys/{key}`）。
+///
+/// 全体に戻すのは `DELETE` で行う（空の値は受けない）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateTenantSettingRequest {
+    pub value: String,
+    /// 締め出し得る値（選択肢の `locks_out`）へ変えることを確認済みか。無いと 409 を返す。
+    #[serde(default)]
+    pub confirmed: bool,
+}
+
+/// 全体の設定画面に出す「既定から外れているテナント」1 件（ADR-0058 §6）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TenantOverrideResponse {
+    pub tenant_id: String,
+    pub tenant_name: String,
+    pub value: String,
 }
 
 /// 再起動要求の受理応答（`POST /{tenant_id}/admin/restart`。ADR-0017）。

@@ -143,6 +143,9 @@ pub enum AuditEventType {
     TenantDomainRemoved,
     /// root（idp.system.admin）によるシステム設定の更新（SMTP 等。MT14）。値そのものは記録しない。
     SystemSettingsUpdated,
+    /// テナント管理者によるテナントの設定値の上書き・解除（ADR-0058）。値そのものは記録せず、
+    /// `reason` にキーと設定/解除の別だけを残す（`SystemSettingsUpdated` と同じ）。
+    TenantSettingsUpdated,
     /// root（idp.system.admin）による api の再起動要求（ADR-0017）。ランタイム設定の反映手段であり、
     /// 稼働中の全リクエストを打ち切る操作なので必ず監査へ残す。
     ServiceRestartRequested,
@@ -235,6 +238,7 @@ impl AuditEventType {
             Self::TenantDomainAdded => "tenant.domain_added",
             Self::TenantDomainRemoved => "tenant.domain_removed",
             Self::SystemSettingsUpdated => "system_settings.updated",
+            Self::TenantSettingsUpdated => "tenant_settings.updated",
             Self::ServiceRestartRequested => "service.restart_requested",
             Self::PasswordResetRequested => "password_reset.requested",
             Self::PasswordResetCompleted => "password_reset.completed",

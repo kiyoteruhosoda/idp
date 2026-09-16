@@ -53,7 +53,7 @@ use crate::domain::system_setting::SystemSetting;
 use crate::domain::tenant::{Tenant, TenantId};
 use crate::domain::tenant_domain::TenantDomain;
 use crate::domain::tenant_membership::{TenantMemberFilter, TenantMemberPage, TenantMembership};
-use crate::domain::tenant_setting::TenantSetting;
+use crate::domain::tenant_setting::{TenantOverridesAcrossTenants, TenantSetting};
 use crate::domain::totp_secret::TotpSecret;
 use crate::domain::user::{LoginFailureRecord, User};
 use crate::domain::user_authenticator::{
@@ -1557,6 +1557,10 @@ pub trait TenantSettingsRepository: Send + Sync {
     async fn upsert(&self, setting: &TenantSetting) -> Result<()>;
     /// 上書きを消す（＝全体に従う状態へ戻す）。不存在は冪等に無視する。
     async fn delete(&self, tenant_id: TenantId, key: &str) -> Result<()>;
+    /// ⚠ **テナントをまたいで読む唯一の口。** 全体の設定画面（`idp.system.admin`）が「既定から
+    /// 外れているテナント」と「従っているテナントの件数」を出すためだけに使う（ADR-0058 §6）。
+    /// 秘匿値と空の行は含めない。
+    async fn list_overrides_across_tenants(&self) -> Result<TenantOverridesAcrossTenants>;
 }
 
 /// Passkey チャレンジ一時テーブル（WebAuthn の begin → complete 中間状態）。

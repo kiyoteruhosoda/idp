@@ -20,3 +20,24 @@ pub struct TenantSetting {
     /// `true` のとき `value` は暗号文（AES-256-GCM の base64）。
     pub is_secret: bool,
 }
+
+/// 全テナントを横断した上書き 1 件（全体の設定画面が「既定から外れているテナント」を出すために読む）。
+///
+/// ⚠ 秘匿値は含めない（リポジトリの時点で落とす）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TenantOverrideEntry {
+    pub tenant_id: TenantId,
+    pub tenant_name: String,
+    pub key: String,
+    pub value: String,
+}
+
+/// 全テナントを横断した上書きの状況。「従っているテナントの件数」は
+/// `tenant_count` から、そのキーを上書きしているテナントの数を引いて出す。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TenantOverridesAcrossTenants {
+    /// テナントの総数（root を含む）。
+    pub tenant_count: u64,
+    /// 空でない、秘匿値でない上書きの全件。
+    pub overrides: Vec<TenantOverrideEntry>,
+}

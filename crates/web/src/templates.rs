@@ -128,6 +128,10 @@ fn fnv1a64(mut hash: u64, bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::admin_dto::{
+        RuntimeSettingView, SettingChoiceView, SystemSettingsView, TenantOverrideView,
+        TenantSettingView, TenantSettingsListView,
+    };
     use crate::i18n::{Locale, Messages};
 
     /// サイドバーとホームが、メニューを自前で並べていないこと。
@@ -456,6 +460,7 @@ mod tests {
                 csrf: "csrf-token",
                 saved: false,
                 error_key: None,
+                tenant_settings: None,
                 system: None,
                 pending_api_keys: &[],
                 stale_web_keys: &[],
@@ -479,6 +484,257 @@ mod tests {
         assert!(!toggle_input(&off).contains("checked"), "{off}");
         let on = render_with(true);
         assert!(toggle_input(&on).contains("checked"), "{on}");
+    }
+
+    fn tenant_setting(
+        key: &str,
+        kind: &str,
+        value: &str,
+        origin: &str,
+        whole: &str,
+    ) -> TenantSettingView {
+        TenantSettingView {
+            key: key.to_string(),
+            description: format!("{key} の説明"),
+            kind: kind.to_string(),
+            choices: Vec::new(),
+            value: value.to_string(),
+            origin: origin.to_string(),
+            whole_idp_value: whole.to_string(),
+        }
+    }
+
+    fn render_settings_page(
+        messages: &Messages,
+        tenant_settings: Option<&TenantSettingsListView>,
+        system: Option<&SystemSettingsView>,
+    ) -> String {
+        render(&AdminSettings {
+            messages,
+            tenant: "/t",
+            admin: Some(ConsoleAdmin {
+                label: "admin",
+                tenant_name: Some("Acme"),
+                permissions: &["idp.tenant.admin".to_string()],
+            }),
+            tenant_id: "00000000-0000-7000-8000-000000000000",
+            tenant_name: "Acme",
+            tenant_status: "ACTIVE",
+            tenant_self_registration: false,
+            tenant_email_login: false,
+            csrf: "csrf-token",
+            saved: false,
+            error_key: None,
+            tenant_settings,
+            system,
+            pending_api_keys: &[],
+            stale_web_keys: &[],
+        })
+    }
+
+    /// 1 項目ぶんの `<li>` を切り出す（項目ごとの表示を他の項目と混ぜずに確かめる）。
+    fn tenant_value_item(html: &str, key: &str) -> String {
+        let marker = format!("id=\"tenant-value-{key}\"");
+        let start = html
+            .find(&marker)
+            .unwrap_or_else(|| panic!("{key}: {html}"));
+        let end = html[start..].find("</li>").expect("item end");
+        html[start..start + end].to_string()
+    }
+
+    /// ⚠ 値だけを見せない（ADR-0058 §6）。「全体に従っている」か「このテナントで決めた」かと、
+    /// 全体の値を必ず並べる。「全体の値に戻す」は、このテナントで決めた項目にだけ出す。
+    #[test]
+    fn tenant_values_show_where_each_value_comes_from_and_the_whole_idp_value() {
+        let messages = Messages::new(Locale::Ja);
+        let list = TenantSettingsListView {
+            settings: vec![
+                tenant_setting(
+                    "PASSWORD_MIN_LENGTH",
+                    "UNSIGNED_INTEGER",
+                    "16",
+                    "TENANT_OVERRIDE",
+                    "8",
+                ),
+                tenant_setting(
+                    "LOGIN_MAX_FAILED_ATTEMPTS",
+                    "UNSIGNED_INTEGER",
+                    "10",
+                    "INHERITED",
+                    "10",
+                ),
+                tenant_setting(
+                    "PASSWORD_BREACH_CHECK_ENABLED",
+                    "BOOLEAN",
+                    "false",
+                    "INHERITED",
+                    "false",
+                ),
+                tenant_setting("A_KEY_WITHOUT_A_LABEL", "TEXT", "x", "INHERITED", "x"),
+            ],
+        };
+        let html = render_settings_page(&messages, Some(&list), None);
+
+        let overridden = tenant_value_item(&html, "PASSWORD_MIN_LENGTH");
+        assert!(
+            overridden.contains(&messages.get("admin-tenant-values-origin-override")),
+            "{overridden}"
+        );
+        assert!(overridden.contains(&messages.get("admin-tenant-setting-PASSWORD_MIN_LENGTH")));
+        assert!(overridden.contains("<code>16</code>"), "{overridden}");
+        assert!(
+            overridden.contains("<code>8</code>"),
+            "whole-IdP value: {overridden}"
+        );
+        assert!(
+            overridden.contains("/admin/settings/tenant/keys/clear"),
+            "{overridden}"
+        );
+
+        let inherited = tenant_value_item(&html, "LOGIN_MAX_FAILED_ATTEMPTS");
+        assert!(
+            inherited.contains(&messages.get("admin-tenant-values-origin-inherited")),
+            "{inherited}"
+        );
+        assert!(!inherited.contains(&messages.get("admin-tenant-values-origin-override")));
+        assert!(
+            !inherited.contains("/admin/settings/tenant/keys/clear"),
+            "{inherited}"
+        );
+        assert!(inherited.contains("type=\"number\""), "{inherited}");
+
+        let boolean = tenant_value_item(&html, "PASSWORD_BREACH_CHECK_ENABLED");
+        assert!(boolean.contains("<select"), "{boolean}");
+        assert!(boolean.contains(&format!(
+            "<code>{}</code>",
+            messages.get("admin-tenant-values-false")
+        )));
+
+        // 訳の無いキーでも項目ごと消さず、キーそのものを見出しにする。
+        let unlabeled = tenant_value_item(&html, "A_KEY_WITHOUT_A_LABEL");
+        assert!(unlabeled.contains("A_KEY_WITHOUT_A_LABEL"), "{unlabeled}");
+        assert!(
+            !unlabeled.contains("admin-tenant-setting-A_KEY"),
+            "{unlabeled}"
+        );
+    }
+
+    /// 読めない（`None`）ときは区画ごと出さない。
+    #[test]
+    fn tenant_values_are_hidden_without_the_read_permission() {
+        let messages = Messages::new(Locale::Ja);
+        let html = render_settings_page(&messages, None, None);
+        assert!(!html.contains("id=\"tenant-values\""), "{html}");
+    }
+
+    /// 締め出し得る選択肢は、選ぶ前から「保存前に確認あり」と読める。
+    #[test]
+    fn choices_that_can_lock_people_out_are_marked() {
+        let messages = Messages::new(Locale::Ja);
+        let mut item = tenant_setting(
+            "AUTH_POLICY_DEFAULT_EFFECT",
+            "CHOICE",
+            "allow",
+            "INHERITED",
+            "allow",
+        );
+        item.choices = vec![
+            SettingChoiceView {
+                value: "allow".to_string(),
+                locks_out: false,
+            },
+            SettingChoiceView {
+                value: "deny".to_string(),
+                locks_out: true,
+            },
+        ];
+        let list = TenantSettingsListView {
+            settings: vec![item],
+        };
+        let html = tenant_value_item(
+            &render_settings_page(&messages, Some(&list), None),
+            "AUTH_POLICY_DEFAULT_EFFECT",
+        );
+        let note = messages.get("admin-tenant-values-choice-locks-out");
+        assert!(html.contains(&format!("deny（{note}）")), "{html}");
+        assert!(!html.contains(&format!("allow（{note}）")), "{html}");
+    }
+
+    /// 全体の設定画面は、テナントが上書きできるキーについて「従っている件数」と「外れているテナント」を出す。
+    #[test]
+    fn whole_idp_settings_show_how_tenants_follow_each_overridable_key() {
+        let messages = Messages::new(Locale::Ja);
+        let system = SystemSettingsView {
+            smtp_host: String::new(),
+            smtp_port: None,
+            smtp_username: String::new(),
+            smtp_password_set: false,
+            smtp_from_address: String::new(),
+            smtp_use_tls: false,
+            sms_gateway_url: String::new(),
+            sms_auth_header: String::new(),
+            sms_auth_token_set: false,
+            sms_sender_id: String::new(),
+            runtime_settings: vec![
+                RuntimeSettingView {
+                    key: "LOGIN_LOCK_DURATION_SECS".to_string(),
+                    tenant_overridable: true,
+                    tenants_following: Some(3),
+                    tenants_overriding: vec![TenantOverrideView {
+                        tenant_id: "t-1".to_string(),
+                        tenant_name: "Branch Office".to_string(),
+                        value: "1234".to_string(),
+                    }],
+                    ..Default::default()
+                },
+                RuntimeSettingView {
+                    key: "ACCESS_TOKEN_TTL_SECS".to_string(),
+                    ..Default::default()
+                },
+            ],
+        };
+        let html = render_settings_page(&messages, None, Some(&system));
+        assert!(
+            html.contains(&messages.get_arg(
+                "admin-settings-runtime-tenants-following",
+                "count",
+                "3"
+            )),
+            "{html}"
+        );
+        assert!(html.contains(&messages.get_arg(
+            "admin-settings-runtime-tenants-overriding",
+            "count",
+            "1"
+        )));
+        assert!(html.contains("Branch Office: <code>1234</code>"), "{html}");
+        // テナントが変えられないキーには出さない。
+        assert_eq!(
+            html.matches(&messages.get("admin-settings-runtime-tenant-overridable"))
+                .count(),
+            1
+        );
+    }
+
+    /// 確認画面は `confirmed` を付けて同じ値を送り直す。
+    #[test]
+    fn the_confirmation_page_resends_the_value_with_confirmed() {
+        let messages = Messages::new(Locale::Ja);
+        let html = render(&AdminTenantSettingConfirm {
+            messages: &messages,
+            tenant: "/t",
+            admin: None,
+            csrf: "csrf-token",
+            key: "APPLICATION_ASSIGNMENT_ENFORCEMENT",
+            label: "label",
+            description: "",
+            current_value: Some("record_only"),
+            value: "enforce",
+        });
+        assert!(html.contains("name=\"confirmed\" value=\"1\""), "{html}");
+        assert!(html.contains("name=\"value\" value=\"enforce\""), "{html}");
+        assert!(html.contains("<code>record_only</code>"), "{html}");
+        assert!(html.contains(&messages.get("admin-tenant-value-confirm-lead")));
     }
 
     /// ログイン画面は認可要求の `login_hint` をユーザー名欄の初期値にする（G12）。値は RP が
@@ -2392,12 +2648,63 @@ pub struct AdminSettings<'a> {
     /// 保存成功のバナー表示。
     pub saved: bool,
     pub error_key: Option<&'a str>,
+    /// テナントの設定値（ADR-0058）。`idp.tenant-settings:read` が無ければ `None`（区画を出さない）。
+    pub tenant_settings: Option<&'a crate::admin_dto::TenantSettingsListView>,
     /// root のみ `Some`。SMTP 設定区画を描画する。
     pub system: Option<&'a crate::admin_dto::SystemSettingsView>,
     /// 保存済みだが api へ未反映のキー名（MT27）。空なら未反映なし。
     pub pending_api_keys: &'a [String],
     /// api は反映済みだが web が古い共有キー名（MT27）。api だけを再起動した状態で残る。
     pub stale_web_keys: &'a [String],
+}
+
+impl AdminSettings<'_> {
+    /// 設定キーの表示名。訳が無いキー（定義に足したばかりのキー）はキーそのものを出す
+    /// ——項目は api の定義から並ぶので、訳の書き足し忘れで項目ごと消える形にはしない。
+    pub fn setting_label(&self, key: &str) -> String {
+        setting_label(self.messages, key)
+    }
+
+    /// 値の表示。真偽値だけは「有効 / 無効」で読ませる（それ以外は保存形式のまま）。
+    pub fn value_label(&self, item: &crate::admin_dto::TenantSettingView, value: &str) -> String {
+        if item.kind == "BOOLEAN" {
+            match value {
+                "true" => return self.messages.get("admin-tenant-values-true"),
+                "false" => return self.messages.get("admin-tenant-values-false"),
+                _ => {}
+            }
+        }
+        value.to_string()
+    }
+}
+
+/// 設定キーの表示名（`admin-tenant-setting-<KEY>`）。訳が無ければキーそのもの。
+pub fn setting_label(messages: &Messages, key: &str) -> String {
+    let id = format!("admin-tenant-setting-{key}");
+    let label = messages.get(&id);
+    if label == id {
+        key.to_string()
+    } else {
+        label
+    }
+}
+
+/// 締め出し得る値へ変える前の確認画面（`POST /{tenant_id}/admin/settings/tenant/keys` で api が
+/// 409 を返したとき。ADR-0058）。
+#[derive(Template)]
+#[template(path = "console/admin_tenant_setting_confirm.html")]
+pub struct AdminTenantSettingConfirm<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub admin: Admin<'a>,
+    pub csrf: &'a str,
+    pub key: &'a str,
+    pub label: &'a str,
+    pub description: &'a str,
+    /// いまこのテナントで効いている値（一覧を引けなかったときは `None`）。
+    pub current_value: Option<&'a str>,
+    /// 変更後の値。
+    pub value: &'a str,
 }
 
 /// 再起動中の待機画面（`POST /{tenant_id}/admin/restart` の応答。ADR-0017）。

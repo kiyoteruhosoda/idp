@@ -29,7 +29,7 @@ BEGIN NOT ATOMIC
         WHERE b.id IS NULL
     ) THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT =
-            '0058: a lent resource is not bound to any application; bind it as the application''s resource first';
+            '0059: a lent resource is not bound to any application; bind it as the application''s resource first';
     END IF;
     IF EXISTS (
         SELECT 1
@@ -41,7 +41,7 @@ BEGIN NOT ATOMIC
         )
     ) THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT =
-            '0058: a resource is lent to a client that is not a service account';
+            '0059: a resource is lent to a client that is not a service account';
     END IF;
 END;
 
@@ -71,12 +71,12 @@ SET id = LOWER(CONCAT(
     '-',
     SUBSTR(LPAD(HEX(CAST(FLOOR(UNIX_TIMESTAMP(assigned_at) * 1000) AS UNSIGNED)), 12, '0'), 9, 4),
     '-7',
-    SUBSTR(SHA2(CONCAT('0058:', application_id, ':', user_id), 256), 1, 3),
+    SUBSTR(SHA2(CONCAT('0059:', application_id, ':', user_id), 256), 1, 3),
     '-',
-    HEX(8 | (CONV(SUBSTR(SHA2(CONCAT('0058:', application_id, ':', user_id), 256), 4, 1), 16, 10) & 3)),
-    SUBSTR(SHA2(CONCAT('0058:', application_id, ':', user_id), 256), 5, 3),
+    HEX(8 | (CONV(SUBSTR(SHA2(CONCAT('0059:', application_id, ':', user_id), 256), 4, 1), 16, 10) & 3)),
+    SUBSTR(SHA2(CONCAT('0059:', application_id, ':', user_id), 256), 5, 3),
     '-',
-    SUBSTR(SHA2(CONCAT('0058:', application_id, ':', user_id), 256), 8, 12)))
+    SUBSTR(SHA2(CONCAT('0059:', application_id, ':', user_id), 256), 8, 12)))
 WHERE id IS NULL;
 
 ALTER TABLE application_assignments
@@ -126,7 +126,7 @@ FROM (
         grouped.client_id,
         grouped.granted_at,
         LPAD(HEX(CAST(FLOOR(UNIX_TIMESTAMP(grouped.granted_at) * 1000) AS UNSIGNED)), 12, '0') AS ts_hex,
-        SHA2(CONCAT('0058:', grouped.application_id, ':', grouped.client_id), 256) AS rand_hex
+        SHA2(CONCAT('0059:', grouped.application_id, ':', grouped.client_id), 256) AS rand_hex
     FROM (
         SELECT b.application_id, cr.client_id, MIN(cr.granted_at) AS granted_at
         FROM client_resources cr

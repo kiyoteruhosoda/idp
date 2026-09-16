@@ -2580,6 +2580,66 @@ impl ApiClient {
         .await
     }
 
+    /// テナントの設定値の一覧（`GET /admin/settings/tenant/keys`。idp.tenant-settings:read。ADR-0058）。
+    pub async fn list_tenant_settings(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+    ) -> Result<crate::admin_dto::TenantSettingsListView, AdminApiError> {
+        self.admin_send(
+            Method::GET,
+            tenant_id,
+            "/admin/settings/tenant/keys",
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
+    /// テナントの値を決める（`PUT /admin/settings/tenant/keys/{key}`。idp.tenant-settings:write）。
+    ///
+    /// 締め出し得る値で `confirmed` が無いと `Conflict`（409）が返る。
+    pub async fn set_tenant_setting(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        key: &str,
+        value: &str,
+        confirmed: bool,
+    ) -> Result<crate::admin_dto::TenantSettingsListView, AdminApiError> {
+        self.admin_send(
+            Method::PUT,
+            tenant_id,
+            &tenant_setting_path(key),
+            correlation_id,
+            sso,
+            Some(serde_json::json!({ "value": value, "confirmed": confirmed })),
+        )
+        .await
+    }
+
+    /// テナントの上書きを消す（`DELETE /admin/settings/tenant/keys/{key}`。idp.tenant-settings:write）。
+    pub async fn clear_tenant_setting(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        key: &str,
+    ) -> Result<crate::admin_dto::TenantSettingsListView, AdminApiError> {
+        self.admin_send(
+            Method::DELETE,
+            tenant_id,
+            &tenant_setting_path(key),
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
     /// システム設定取得（`GET /admin/system-settings`。idp.system.admin 必須 = 実質 root のみ）。
     /// root でないと `Forbidden` が返る（web はその区画を非表示にする）。
     pub async fn get_system_settings(
@@ -3029,6 +3089,22 @@ impl ApiClient {
             InternalCallError::failed(format!("failed to decode api {path} response: {e}"))
         })
     }
+}
+
+/// 経路の 1 区切りとして符号化する文字（英数字と `-` `.` `_` `~` 以外）。設定キーの `_` は
+/// そのまま残す（`%5F` にすると、ログや記録された要求の経路でキーが読めなくなる）。
+const PATH_SEGMENT: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
+
+/// テナントの設定 1 項目の経路。キーはフォームから来るので、経路の区切りを混ぜないよう符号化する。
+fn tenant_setting_path(key: &str) -> String {
+    format!(
+        "/admin/settings/tenant/keys/{}",
+        percent_encoding::utf8_percent_encode(key, PATH_SEGMENT)
+    )
 }
 
 #[cfg(test)]

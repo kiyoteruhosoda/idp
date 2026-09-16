@@ -13,7 +13,8 @@ use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::csrf::console_csrf_token;
 use crate::dto::{
-    AdminRuntimeSettingForm, AdminSystemSettingsForm, AdminTenantSettingsForm, SettingsQuery,
+    AdminRuntimeSettingForm, AdminSystemSettingsForm, AdminTenantSettingClearForm,
+    AdminTenantSettingForm, AdminTenantSettingsForm, SettingsQuery,
 };
 use crate::handlers::admin_console::{
     forbidden_response, redirect_to_login, resolve_admin, AdminContext, AdminResolution,
@@ -21,7 +22,9 @@ use crate::handlers::admin_console::{
 use crate::handlers::found;
 use crate::i18n::Messages;
 use crate::state::WebState;
-use crate::templates::{render, AdminSettings, ConsoleNotice};
+use crate::templates::{
+    render, setting_label, AdminSettings, AdminTenantSettingConfirm, ConsoleNotice,
+};
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -49,6 +52,11 @@ pub async fn page(
         .api
         .get_current_tenant(&correlation.0, &tenant.0, &sso)
         .await;
+    // テナントの設定値（ADR-0058）。読めない（403）なら区画を出さない。
+    let tenant_settings_result = state
+        .api
+        .list_tenant_settings(&correlation.0, &tenant.0, &sso)
+        .await;
     // システム設定区画は root（idp.system.admin）のみ。403 は「root ではない」ことを意味するので非表示にする。
     let system_result = state
         .api
@@ -70,6 +78,16 @@ pub async fn page(
         Err(AdminApiError::Unauthorized) => return redirect_to_login(&tenant),
         Err(AdminApiError::Forbidden) => return forbidden_response(&headers),
         Err(_) => return internal_error(&messages, &tenant, &admin),
+    };
+
+    let tenant_settings = match tenant_settings_result {
+        Ok(list) => Some(list),
+        Err(AdminApiError::Forbidden) => None,
+        Err(AdminApiError::Unauthorized) => return redirect_to_login(&tenant),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to load tenant settings");
+            None
+        }
     };
 
     let system = match system_result {
@@ -106,6 +124,7 @@ pub async fn page(
         csrf: &console_csrf_token(&sso, state.config.csrf_secret()),
         saved: query.saved.is_some(),
         error_key: query.error.as_deref().and_then(error_key_for),
+        tenant_settings: tenant_settings.as_ref(),
         system: system.as_ref(),
         pending_api_keys: &pending_api_keys,
         stale_web_keys: &stale_web_keys,
@@ -168,6 +187,106 @@ pub async fn update_tenant(
         Err(AdminApiError::Forbidden) => found(&format!("{base}?error=forbidden")),
         Err(AdminApiError::Validation(_)) => found(&format!("{base}?error=validation")),
         Err(_) => found(&format!("{base}?error=internal")),
+    }
+}
+
+/// テナントの値を決める（`POST /{tenant_id}/admin/settings/tenant/keys`。ADR-0058）。
+///
+/// ⚠ 締め出し得る値（api が 409 を返す）は保存せず、確認画面を挟む。確認画面から
+/// `confirmed` を付けて送り直したときだけ保存される（判定は api の定義が唯一の出所）。
+pub async fn update_tenant_setting(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Form(form): Form<AdminTenantSettingForm>,
+) -> Response {
+    let admin = match resolve_admin(&state, &correlation, &tenant, &headers).await {
+        AdminResolution::Ok(admin) => admin,
+        AdminResolution::Reject(resp) => return resp,
+    };
+    let base = format!("{}{SETTINGS_SEGMENT}", tenant.prefix());
+    let sso = sso(&headers);
+    let csrf = console_csrf_token(&sso, state.config.csrf_secret());
+    if !assay_contracts::csrf::verify(&csrf, &form.csrf_token) {
+        return found(&format!("{base}?error=csrf"));
+    }
+    let key = form.key.trim();
+    let value = form.value.trim();
+    let confirmed = form.confirmed.is_some();
+    match state
+        .api
+        .set_tenant_setting(&correlation.0, &tenant.0, &sso, key, value, confirmed)
+        .await
+    {
+        Ok(_) => found(&format!("{base}?saved=1#tenant-values")),
+        Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
+        Err(AdminApiError::Forbidden) => found(&format!("{base}?error=forbidden#tenant-values")),
+        Err(AdminApiError::Validation(_)) => found(&format!(
+            "{base}?error=tenant-value-validation#tenant-values"
+        )),
+        // 確認が要る値。いま効いている値と説明を並べるために一覧を引き直す（引けなくても確認は出す）。
+        Err(AdminApiError::Conflict(_)) if !confirmed => {
+            let current = state
+                .api
+                .list_tenant_settings(&correlation.0, &tenant.0, &sso)
+                .await
+                .ok()
+                .and_then(|list| list.settings.into_iter().find(|item| item.key == key));
+            let messages = Messages::new(locale(&headers));
+            let label = setting_label(&messages, key);
+            Html(render(&AdminTenantSettingConfirm {
+                messages: &messages,
+                tenant: &tenant.prefix(),
+                admin: Some(admin.chrome()),
+                csrf: &csrf,
+                key,
+                label: &label,
+                description: current
+                    .as_ref()
+                    .map(|item| item.description.as_str())
+                    .unwrap_or_default(),
+                current_value: current.as_ref().map(|item| item.value.as_str()),
+                value,
+            }))
+            .into_response()
+        }
+        Err(_) => found(&format!("{base}?error=internal#tenant-values")),
+    }
+}
+
+/// テナントの上書きを消して全体の値に戻す（`POST /{tenant_id}/admin/settings/tenant/keys/clear`）。
+pub async fn clear_tenant_setting(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Form(form): Form<AdminTenantSettingClearForm>,
+) -> Response {
+    match resolve_admin(&state, &correlation, &tenant, &headers).await {
+        AdminResolution::Ok(_) => {}
+        AdminResolution::Reject(resp) => return resp,
+    }
+    let base = format!("{}{SETTINGS_SEGMENT}", tenant.prefix());
+    let sso = sso(&headers);
+    if !assay_contracts::csrf::verify(
+        &console_csrf_token(&sso, state.config.csrf_secret()),
+        &form.csrf_token,
+    ) {
+        return found(&format!("{base}?error=csrf"));
+    }
+    match state
+        .api
+        .clear_tenant_setting(&correlation.0, &tenant.0, &sso, form.key.trim())
+        .await
+    {
+        Ok(_) => found(&format!("{base}?saved=1#tenant-values")),
+        Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
+        Err(AdminApiError::Forbidden) => found(&format!("{base}?error=forbidden#tenant-values")),
+        Err(AdminApiError::Validation(_)) => found(&format!(
+            "{base}?error=tenant-value-validation#tenant-values"
+        )),
+        Err(_) => found(&format!("{base}?error=internal#tenant-values")),
     }
 }
 
@@ -282,6 +401,7 @@ fn error_key_for(error: &str) -> Option<&'static str> {
         "forbidden" => Some("admin-settings-error-forbidden"),
         "validation" => Some("admin-settings-error-validation"),
         "runtime-validation" => Some("admin-settings-error-runtime-validation"),
+        "tenant-value-validation" => Some("admin-settings-error-tenant-value-validation"),
         // 書式は正しいが、その値では起動できない（ADR-0017）。書式エラーと同じ文言にすると
         // 運用者は URL を疑い続けて、実際に足りない secret に辿り着けない。
         "runtime-not-bootable" => Some("admin-settings-error-runtime-not-bootable"),

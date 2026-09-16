@@ -52,7 +52,7 @@ blobshare で、機械の口（`/api/machine/objects`）は `aud` の検証を**
    テナント内で一意。`ACTIVE` / `DISABLED` を持ち、停止すると新しいトークンの宛先に使えなくなる。
 > ⚠ **決定 2・3 は ADR-0059 で置き換えた。** 宛名はアプリの名乗り（`application_bindings` の
 > `resource`）になり、「どのサービスアカウントが取ってよいか」はそのアプリへの割り当てで決まる。
-> `client_resources` は移行 0058 で割り当てへ写して消した。監査ログの `reason` も
+> `client_resources` は移行 0059 で割り当てへ写して消した。監査ログの `reason` も
 > `resource_not_bound_to_an_application` / `application_disabled` / `service_account_not_assigned` に変わった。
 
 2. **`client_resources`（クライアント × 宛名）を足す。** 「どのクライアントがどの宛先を要求して

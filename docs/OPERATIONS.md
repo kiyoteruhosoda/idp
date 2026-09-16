@@ -465,9 +465,9 @@ curl -sS -X POST "$ISSUER/$TENANT_ID/token" \
 | 宛名を登録できない（400） | 絶対 URI でない・`#` を含む・assay 自身の `aud`（`{issuer}/userinfo`・`{issuer}/admin`）を指している |
 | 受け側で `aud` が合わない | 登録した文字列と完全一致で比べる。末尾の `/` の有無も別物として扱われる |
 
-### 4-5. 移行 0058 を当てる前に（宛名の貸し出しを割り当てへ写す）
+### 4-5. 移行 0059 を当てる前に（宛名の貸し出しを割り当てへ写す）
 
-0058 は、これまでの貸し出し（`client_resources`）を「宛名を名乗るアプリへのサービスアカウントの割り当て」
+0059 は、これまでの貸し出し（`client_resources`）を「宛名を名乗るアプリへのサービスアカウントの割り当て」
 へ写す。⚠ **どのアプリの名乗りでもない宛名の貸し出しが残っていると、移行は何も変えずに止まる。**
 当てる前に次を流し、行が出たら、その宛名を本来のアプリの「このアプリの名乗り」へ結び付けてから当てる。
 
@@ -868,7 +868,7 @@ RP が名簿（`/admin/applications/self/users`）を読めるようにすると
 3. ⚠ 「既に ○○ に結び付いています」と出たら、○○ の詳細から先に外す（1 つの相手は 1 つのアプリにだけ属する）
 4. ⚠ **名簿を読むサービスアカウントに `idp.applications:read` を付けない。** 結び付けだけで読める
 
-- 移行 0057 を当てる前の確認（サービスアカウントのアプリに、消えて困るものが付いていないか）:
+- 移行 0058 を当てる前の確認（サービスアカウントのアプリに、消えて困るものが付いていないか）:
   `SELECT a.display_name, (SELECT COUNT(*) FROM application_assignments x WHERE x.application_id=a.id) AS assigned FROM applications a JOIN application_bindings b ON b.application_id=a.id JOIN clients c ON c.id=b.client_id WHERE JSON_CONTAINS(c.grant_types,'"client_credentials"') AND NOT JSON_CONTAINS(c.grant_types,'"authorization_code"');`
   `assigned` が 0 でない行があると移行は止まる（割り当てを本来のアプリへ移してから当て直す）
 
@@ -908,7 +908,7 @@ curl -sS -X POST "$ISSUER/$TENANT_ID/admin/applications/$APPLICATION_ID/assignme
 ```
 
 画面から入れるなら **アプリ** → 対象のアプリ → 「このアプリを使う主体」→「追加する」→「人」。
-⚠ SQL で直接入れない（割り当ての行は `id`（UUIDv7）と種類を持つ。0058 以降）。
+⚠ SQL で直接入れない（割り当ての行は `id`（UUIDv7）と種類を持つ。0059 以降）。
 
 ### 4. ⚠ 漏れを監査ログで潰してから切り替える
 
