@@ -28,6 +28,7 @@ pub mod pagination;
 pub mod router;
 pub mod security_headers;
 pub mod service_restart;
+pub mod settings_filter;
 pub mod state;
 pub mod telemetry;
 pub mod templates;
