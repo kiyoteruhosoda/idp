@@ -187,7 +187,13 @@ impl PasswordResetService {
         // 届け先を先に決める。SMTP も コンソール出力も無ければ機能自体が使えない
         //（アカウント非依存のため、ここで分岐しても列挙にはならない）。コンソール出力の可否は
         // 利用者を解決する前なので**要求テナント**の値で見る（所属元の値は解決後にもう一度見る）。
-        let delivery = match self.system_settings.smtp_server().await {
+        // ⚠ メールの経路も**ログイン画面のテナント**で決める（ADR-0058 §8）。利用者を引いてから
+        //   所属元で決めると、「使えない / 受け付けた」の違いから利用者の有無が漏れる。
+        let delivery = match self
+            .system_settings
+            .smtp_server_for(tenant.tenant_id())
+            .await
+        {
             Ok(Some(server)) => ResetLinkDelivery::Email(server),
             Ok(None) => match self.console_link_delivery(tenant.tenant_id()).await {
                 Some(delivery) => delivery,
@@ -916,6 +922,7 @@ mod tests {
         let audit = Arc::new(AuditService::new(sink.clone(), Arc::new(FixedClock)));
         let system_settings = Arc::new(SystemSettingsService::new(
             settings_repo,
+            Arc::new(crate::application::system_settings::NoTenantSettings),
             TEST_KEY,
             DeploymentState::default(),
             audit.clone(),

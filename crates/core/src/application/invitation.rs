@@ -205,7 +205,8 @@ impl InvitationService {
         token: &str,
         expires_at: DateTime<Utc>,
     ) -> bool {
-        let server = match self.system_settings.smtp_server().await {
+        // 招待は招待するテナントの名前で届く（ADR-0058 §8）。
+        let server = match self.system_settings.smtp_server_for(host_id).await {
             Ok(Some(server)) => server,
             Ok(None) => return false,
             Err(e) => {
@@ -893,6 +894,7 @@ mod tests {
         let audit = Arc::new(AuditService::new(sink, Arc::new(FixedClock(now()))));
         let system_settings = Arc::new(SystemSettingsService::new(
             settings,
+            Arc::new(crate::application::system_settings::NoTenantSettings),
             TEST_KEY,
             DeploymentState::default(),
             audit.clone(),
@@ -1219,6 +1221,7 @@ mod tests {
         ));
         let system_settings = Arc::new(SystemSettingsService::new(
             Arc::new(FakeSettingsRepo::default()),
+            Arc::new(crate::application::system_settings::NoTenantSettings),
             TEST_KEY,
             DeploymentState::default(),
             audit.clone(),

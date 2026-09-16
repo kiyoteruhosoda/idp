@@ -1,7 +1,12 @@
 # ADR-0051: システム設定のうち SMTP だけは機械から入れられるようにする
 
-- Status: Accepted
+- Status: Accepted（⚠ **§3 は ADR-0058 §8 で覆した**）
 - Date: 2026-09-13
+- Revised: 2026-09-16 —— §3「この 2 つは root scope でしか持てない」を ADR-0058 §8 で覆した。根拠だった
+  「`system_settings` はテナント列を持たない全体の表」が、テナントごとの経路（`tenant_settings`）で消えた
+  ためである。`idp.smtp:*` はどのテナントでも付与でき、届くのは scope のテナントの経路だけになった。
+  ⚠ **全体の経路の口が root でなければ 403 を返すこと**と、**`idp.tenant.admin` が含意しないこと**は
+  変えていない。§1・§2 もそのまま
 - 関連: `docs/adr/0037-management-api-access-tokens-and-permission-set.md` §4・§5（細粒度の権限セット。
   **本 ADR は §4 に例外を 1 つ足す**）、`docs/adr/0009-multi-tenant-architecture.md` §4（scope）、
   `docs/adr/0014-runtime-setting-rollout.md`（設定は画面から変える）、migration 0053

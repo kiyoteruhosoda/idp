@@ -81,19 +81,21 @@ assay の管理機能アクセス制御に使う**利用者権限コード（per
 | 機能 | 概要 |
 |---|---|
 | テナント管理（`/{tenant_id}/admin/tenants...`） | テナントの作成・一覧・取得・更新・削除。実質 root だけがテナントを作成できる |
-| システム設定（`/{tenant_id}/admin/system-settings...`） | システム設定の閲覧・変更。⚠ **SMTP だけは細粒度コードでも通る**（下表。ADR-0051） |
+| システム設定（`/{tenant_id}/admin/system-settings...`） | システム設定の閲覧・変更。⚠ **SMTP だけは細粒度コードでも通る**（下表。ADR-0051・ADR-0058 §8） |
 
-### root scope でしか保有できない細粒度コード（ADR-0051）
+### メールの経路（SMTP）の細粒度コード（ADR-0051・ADR-0058 §8）
 
-`system_settings` はテナント列を持たないシステム全体の表である。テナントの中で配れるようにすると、
-そのテナントの管理者が全テナントのメール経路を変えられるため、`idp.tenant.admin` は**含意しない**
-（`TENANT_MANAGEMENT_CODES` に入っていない）。付与は root テナントの中でだけ通り、エンドポイント側でも
-要求テナントが root であることを課す（二重防御）。
+`idp.smtp:read` / `idp.smtp:write` は**どのテナントでも付与できる**（ADR-0058 §8 で ADR-0051 §3 の
+「root scope でしか持てない」を覆した）。届くのは **scope のテナントのメールの経路だけ**である。
+⚠ `idp.tenant.admin` は**含意しない**（`TENANT_MANAGEMENT_CODES` に入っていない）——含意させると、
+root のテナント管理者が全体の経路へ届く。付与は明示の 1 枚とする。
 
 | 機能 | 概要 |
 |---|---|
-| SMTP 設定の参照（`GET /{tenant_id}/admin/system-settings/smtp`） | `idp.smtp:read`。**パスワードの平文は返さない**（設定済みか否かのみ） |
-| SMTP 設定の変更（`PUT /{tenant_id}/admin/system-settings/smtp`） | `idp.smtp:write`（`:read` を含意）。SMS・ランタイム設定・再起動には届かない |
+| テナントの経路の参照（`GET /{tenant_id}/admin/settings/smtp`） | `idp.smtp:read`。経路を持たなければ `inherited: true` で項目は空（**全体の値は見せない**）。パスワードの平文は返さない |
+| テナントの経路の変更・解除（`PUT` / `DELETE /{tenant_id}/admin/settings/smtp`） | `idp.smtp:write`。⚠ 経路は**塊**で解決し、欠けた項目を全体の値で埋めない（埋めると全体のパスワードがテナントのサーバへ送られる） |
+| 全体の経路の参照（`GET /{tenant_id}/admin/system-settings/smtp`） | `idp.smtp:read`。⚠ **要求テナントが root でなければ 403**（テナントの中で配られたコードが全体へ届かないよう、使う側で止める） |
+| 全体の経路の変更（`PUT /{tenant_id}/admin/system-settings/smtp`） | `idp.smtp:write`（`:read` を含意）。root のみ。SMS・ランタイム設定・再起動には届かない |
 
 - テナント作成時に、**作成者自身**を新テナントのブートストラップ管理者として登録する（ACTIVE な
   GUEST メンバーシップ＋新テナント scope の `idp.tenant.admin`。ADR-0009 §5）。作成者は自身の SSO

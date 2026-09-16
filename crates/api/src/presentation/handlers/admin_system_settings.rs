@@ -303,12 +303,12 @@ pub async fn update_smtp_settings(
     Ok(Json(to_smtp_response(updated)))
 }
 
-/// 要求テナントが root であることを課す（ADR-0051）。
+/// 要求テナントが root であることを課す（ADR-0051。ADR-0058 §8 でも維持）。
 ///
-/// ⚠ **権限の判定だけでは足りない。** `idp.smtp:*` を root 以外で配れないようにしてあるのは
-/// 付与の側（`is_grantable_in_tenant`）で、**既に配られてしまった行**や、将来テナントを
-/// 増やしたときの取りこぼしまでは面倒を見ない。`system_settings` がテナント横断の表である以上、
-/// 使う側でも同じ条件を課す（二重防御。ADR-0037 §5 と同じ考え方）。
+/// ⚠ **この口の守りはここだけである。** ADR-0058 §8 で `idp.smtp:*` はどのテナントでも配れる
+/// ようになった（テナント自身の経路は `/admin/settings/smtp`）。したがって権限の判定だけでは、
+/// テナントの中で配られた `idp.smtp:write` が**全体の経路**へ届いてしまう。`system_settings` が
+/// テナント横断の表である以上、使う側で root を課す。
 fn require_root_tenant(tenant: &ResolvedTenant, locale: ApiLocale) -> Result<(), ApiError> {
     if tenant.tenant().is_root() {
         return Ok(());
