@@ -120,6 +120,9 @@ pub async fn update_runtime_setting(
             }
             other => ApiError::Internal(other.to_string()),
         })?;
+    // テナントが上書きできるキーは再起動を待たずに参照のたびに引く（ADR-0058 §9）。全体の行の
+    // キャッシュをここで捨てないと、テナント解決のキャッシュの寿命ぶん古い値で判定が続く。
+    state.tenant_settings.invalidate_global();
     let smtp = state
         .system_settings
         .get_smtp()

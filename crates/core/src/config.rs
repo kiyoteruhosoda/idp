@@ -445,11 +445,17 @@ impl Config {
     pub fn password_breach_check_timeout(&self) -> Duration {
         self.password_breach_check_timeout
     }
-    /// 認証ポリシーが 1 件も一致しないときの既定動作（`allow` / `deny`）。
+    /// 認証ポリシーが 1 件も一致しないときの既定動作（`allow` / `deny`）の**全体の値**。
+    ///
+    /// ⚠ **判定に使わない。** テナントが決めるキーで（ADR-0058 §4）、判定する側は
+    /// `AccessDecisionSettings` からテナントの値を引く。ここを読むと、その経路だけ全体の値で動く。
+    /// 残してあるのは、起動時に値の形を検証するためと、既定値の突き合わせの試験のためである。
     pub fn auth_policy_default_effect(&self) -> DefaultPolicyEffect {
         self.auth_policy_default_effect
     }
-    /// アプリの割り当て判定をどこまでやるか（ADR-0054。既定は「記録するだけ」）。
+    /// アプリの割り当て判定をどこまでやるか（ADR-0054。既定は「記録するだけ」）の**全体の値**。
+    ///
+    /// ⚠ **判定に使わない**（`auth_policy_default_effect` と同じ理由。ADR-0058 §4）。
     pub fn application_assignment_enforcement(&self) -> AssignmentEnforcement {
         self.application_assignment_enforcement
     }
@@ -1400,6 +1406,17 @@ mod tests {
             (
                 "PASSWORD_RESET_CONSOLE_LINK_ENABLED",
                 config.password_reset_console_link_enabled().to_string(),
+            ),
+            (
+                "AUTH_POLICY_DEFAULT_EFFECT",
+                config.auth_policy_default_effect().as_str().to_string(),
+            ),
+            (
+                "APPLICATION_ASSIGNMENT_ENFORCEMENT",
+                config
+                    .application_assignment_enforcement()
+                    .as_str()
+                    .to_string(),
             ),
         ]);
         assert_eq!(

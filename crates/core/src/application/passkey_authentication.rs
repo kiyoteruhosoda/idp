@@ -24,10 +24,11 @@ use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, Issue
 use crate::application::passkey_assertion::{
     PasskeyAssertionError, PasskeyAssertionService, PasskeyFlow,
 };
+use crate::domain::access_decision_settings::AccessDecisionSettings;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session;
 use crate::domain::authentication_policy::{
-    evaluate_policies, AuthenticationContext, DefaultPolicyEffect, PolicyDecision,
+    evaluate_policies, AuthenticationContext, PolicyDecision,
 };
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
@@ -98,7 +99,8 @@ pub struct PasskeyAuthenticationService {
     clock: Arc<dyn Clock>,
     sso_idle_ttl: Duration,
     sso_absolute_ttl: Duration,
-    policy_default_effect: DefaultPolicyEffect,
+    /// 一致するポリシーが無い場合の既定動作（AP2）。テナントの値を参照のたびに引く（ADR-0058 §4）。
+    access_settings: Arc<dyn AccessDecisionSettings>,
 }
 
 impl PasskeyAuthenticationService {
@@ -116,7 +118,7 @@ impl PasskeyAuthenticationService {
         clock: Arc<dyn Clock>,
         sso_idle_ttl: StdDuration,
         sso_absolute_ttl: StdDuration,
-        policy_default_effect: DefaultPolicyEffect,
+        access_settings: Arc<dyn AccessDecisionSettings>,
     ) -> Self {
         Self {
             assertion,
@@ -132,7 +134,7 @@ impl PasskeyAuthenticationService {
             sso_idle_ttl: Duration::from_std(sso_idle_ttl).expect("SSO idle TTL out of range"),
             sso_absolute_ttl: Duration::from_std(sso_absolute_ttl)
                 .expect("SSO absolute TTL out of range"),
-            policy_default_effect,
+            access_settings,
         }
     }
 
@@ -227,6 +229,10 @@ impl PasskeyAuthenticationService {
             Ok(id) => id,
             Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
         };
+        let default_effect = match self.access_settings.policy_default_effect(tenant_id).await {
+            Ok(effect) => effect,
+            Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
+        };
         let decision = match self
             .authentication_policies
             .list_enabled_for_tenant(tenant_id)
@@ -241,7 +247,7 @@ impl PasskeyAuthenticationService {
                     now,
                     requested_acr: &session.requested_acr(),
                 },
-                self.policy_default_effect,
+                default_effect,
             ),
             Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
         };

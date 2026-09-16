@@ -11,7 +11,7 @@ use assay_web::csrf::console_csrf_token;
 use axum::http::StatusCode;
 use serde_json::{json, Value};
 use support::{body_text, get_with_cookies, location, post_form, send, setup, WebEnv};
-use wiremock::matchers::{method, path_regex};
+use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, ResponseTemplate};
 
 const SSO: &str = "admin-session";
@@ -90,32 +90,87 @@ async fn wrote_a_policy(env: &WebEnv) -> bool {
 async fn stub_list(env: &WebEnv, policies: Value) {
     Mock::given(method("GET"))
         .and(path_regex(r"^/[^/]+/admin/authentication-policies$"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "policies": policies })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({ "policies": policies, "default_effect": "allow" })),
+        )
         .mount(&env.api)
         .await;
 }
 
-#[tokio::test]
-async fn the_list_shows_the_default_effect_because_a_policy_alone_does_not_decide_anything() {
-    let env = setup().await;
-    stub_admin(&env).await;
-    stub_list(&env, json!([])).await;
+/// そのテナントの一覧だけを、指定した既定動作で返す。
+async fn stub_list_for_tenant(env: &WebEnv, tenant: &str, default_effect: &str) {
+    Mock::given(method("GET"))
+        .and(path(format!("/{tenant}/admin/authentication-policies")))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({ "policies": [], "default_effect": default_effect })),
+        )
+        .mount(&env.api)
+        .await;
+}
 
+async fn list_page(env: &WebEnv, tenant: &str) -> String {
     let response = send(
         &env.app,
         get_with_cookies(
-            &format!("{}/admin/authentication-policies", env.prefix()),
+            &format!("/{tenant}/admin/authentication-policies"),
             &cookies(),
         ),
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let html = body_text(response).await;
-    // 既定動作が見えないと、同じ「deny 1 件」でも意味が読めない。
+    body_text(response).await
+}
+
+/// 既定動作が見えないと、同じ「deny 1 件」でも意味が読めない。
+///
+/// ⚠ 既定動作は**テナントが決める**（ADR-0058 §4）ので、web は自分の設定ではなく api の応答に
+/// 載ったそのテナントの値を描く。2 テナントで違う値を返し、それぞれの画面にそれぞれの値が出ることを
+/// 確かめる ——1 テナントだけだと、web が起動時の全体の値（既定 `allow`）を出していても通ってしまう。
+#[tokio::test]
+async fn the_list_shows_the_tenants_own_default_effect_because_a_policy_alone_does_not_decide_anything(
+) {
+    let env = setup().await;
+    stub_admin(&env).await;
+    let strict = env.tenant.clone();
+    let lenient = uuid::Uuid::now_v7().to_string();
+    stub_list_for_tenant(&env, &strict, "deny").await;
+    stub_list_for_tenant(&env, &lenient, "allow").await;
+
+    let html = list_page(&env, &strict).await;
+    assert!(html.contains("<code>deny</code>"), "strict tenant: {html}");
+    assert!(
+        !html.contains("<code>allow</code>"),
+        "strict tenant: {html}"
+    );
+
+    let html = list_page(&env, &lenient).await;
     assert!(
         html.contains("<code>allow</code>"),
-        "default effect: {html}"
+        "lenient tenant: {html}"
     );
+    assert!(
+        !html.contains("<code>deny</code>"),
+        "lenient tenant: {html}"
+    );
+}
+
+/// 一覧を引けなかったときは既定動作を出さない（推測の値を出すと、そのテナントの実際の値と
+/// 食い違っていても気付けない）。
+#[tokio::test]
+async fn the_default_effect_is_not_guessed_when_the_list_fails() {
+    let env = setup().await;
+    stub_admin(&env).await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/[^/]+/admin/authentication-policies$"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&env.api)
+        .await;
+
+    let html = list_page(&env, &env.tenant).await;
+    assert!(!html.contains("<code>allow</code>"), "{html}");
+    assert!(!html.contains("<code>deny</code>"), "{html}");
 }
 
 #[tokio::test]

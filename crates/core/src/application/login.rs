@@ -22,10 +22,11 @@ use crate::application::authorize::code_dispatch;
 use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
 use crate::application::login_user_resolution::resolve_login_user;
 use crate::application::mfa_login::user_has_confirmed_totp;
+use crate::domain::access_decision_settings::AccessDecisionSettings;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session;
 use crate::domain::authentication_policy::{
-    evaluate_policies, AuthenticationContext, DefaultPolicyEffect, LockoutPolicy, PolicyDecision,
+    evaluate_policies, AuthenticationContext, LockoutPolicy, PolicyDecision,
 };
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
@@ -146,7 +147,8 @@ pub struct LoginService {
     /// パスワードポリシー（AP7）。ここで使うのは有効期限だけで、判定は
     /// [`password_change_required`] に寄せて変更経路と同じ規則にする。
     password_policy: PasswordPolicy,
-    policy_default_effect: DefaultPolicyEffect,
+    /// 一致するポリシーが無い場合の既定動作（AP2）。テナントの値を参照のたびに引く（ADR-0058 §4）。
+    access_settings: Arc<dyn AccessDecisionSettings>,
     csrf_secret: [u8; 32],
 }
 
@@ -170,7 +172,7 @@ impl LoginService {
         sso_absolute_ttl: std::time::Duration,
         lockout: LockoutPolicy,
         password_policy: PasswordPolicy,
-        policy_default_effect: DefaultPolicyEffect,
+        access_settings: Arc<dyn AccessDecisionSettings>,
         csrf_secret: [u8; 32],
     ) -> Self {
         Self {
@@ -192,7 +194,7 @@ impl LoginService {
                 .expect("SSO absolute TTL out of range"),
             lockout,
             password_policy,
-            policy_default_effect,
+            access_settings,
             csrf_secret,
         }
     }
@@ -396,6 +398,10 @@ impl LoginService {
             Ok(id) => id,
             Err(e) => return LoginOutcome::Internal(e.to_string()),
         };
+        let default_effect = match self.access_settings.policy_default_effect(tenant_id).await {
+            Ok(effect) => effect,
+            Err(e) => return LoginOutcome::Internal(e.to_string()),
+        };
         let policy_decision = match self
             .authentication_policies
             .list_enabled_for_tenant(tenant_id)
@@ -410,7 +416,7 @@ impl LoginService {
                     now,
                     requested_acr: &requested_acr,
                 },
-                self.policy_default_effect,
+                default_effect,
             ),
             Err(e) => return LoginOutcome::Internal(e.to_string()),
         };
@@ -1185,7 +1191,9 @@ mod tests {
                 max_lock_duration_secs: 86_400,
             },
             crate::domain::password_policy::PasswordPolicy::default(),
-            DefaultPolicyEffect::Allow,
+            crate::application::access_decision_settings::test_support::policy_default(
+                crate::domain::authentication_policy::DefaultPolicyEffect::Allow,
+            ),
             CSRF_KEY,
         );
 
