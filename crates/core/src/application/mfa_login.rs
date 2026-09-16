@@ -23,9 +23,7 @@ use crate::application::authenticator_management::{
 };
 use crate::application::authorize::code_dispatch;
 use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
-use crate::application::tenant_settings::TenantSettingsService;
 use crate::application::totp_registration::verify_totp_code;
-use crate::domain::access_decision_settings::AccessDecisionSettings;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session;
 use crate::domain::authentication_policy::{
@@ -33,6 +31,7 @@ use crate::domain::authentication_policy::{
 };
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
+use crate::domain::effective_tenant_settings::EffectiveTenantSettings;
 use crate::domain::rate_limit::LoginRateLimiter;
 use crate::domain::repositories::{
     AuthSessionRepository, AuthenticationPolicyRepository, ClientConsentRepository,
@@ -113,8 +112,9 @@ pub struct MfaLoginService {
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
     key_encryption_key: [u8; 32],
-    /// テナントが上書きできる設定の解決（ADR-0058）。参照のたびに引く。
-    settings: Arc<TenantSettingsService>,
+    /// テナントが上書きできる設定（ADR-0058）。参照のたびに引く。一致するポリシーが無い場合の
+    /// 既定動作（AP2・§4）もここから引く。
+    settings: Arc<dyn EffectiveTenantSettings>,
     csrf_secret: [u8; 32],
     /// 認証ポリシー（AP2/AP3）。第二要素まで揃った**最終的な方式集合**に対して再評価するために持つ。
     /// パスワード段階（`LoginService`）だけで判定すると、`require_specific_method` を課された
@@ -123,8 +123,6 @@ pub struct MfaLoginService {
     /// 認証ポリシーの宛先（`conditions.application_ids`）を解決する（ADR-0054）。
     /// フローが持っているのは `client_id` だけなので、アプリへの読み替えをここで挟む。
     applications: Arc<ApplicationAccessService>,
-    /// 一致するポリシーが無い場合の既定動作（AP2）。テナントの値を参照のたびに引く（ADR-0058 §4）。
-    access_settings: Arc<dyn AccessDecisionSettings>,
 }
 
 impl MfaLoginService {
@@ -141,11 +139,10 @@ impl MfaLoginService {
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
         key_encryption_key: [u8; 32],
-        settings: Arc<TenantSettingsService>,
+        settings: Arc<dyn EffectiveTenantSettings>,
         csrf_secret: [u8; 32],
         authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
         applications: Arc<ApplicationAccessService>,
-        access_settings: Arc<dyn AccessDecisionSettings>,
     ) -> Self {
         Self {
             authenticators,
@@ -163,7 +160,6 @@ impl MfaLoginService {
             csrf_secret,
             authentication_policies,
             applications,
-            access_settings,
         }
     }
 
@@ -281,7 +277,7 @@ impl MfaLoginService {
             Ok(id) => id,
             Err(e) => return MfaLoginOutcome::Internal(e.to_string()),
         };
-        let default_effect = match self.access_settings.policy_default_effect(tenant_id).await {
+        let default_effect = match self.settings.policy_default_effect(tenant_id).await {
             Ok(effect) => effect,
             Err(e) => return MfaLoginOutcome::Internal(e.to_string()),
         };
@@ -1201,9 +1197,6 @@ mod tests {
                 Arc::new(FakePolicies),
                 crate::application::application_access::test_support::allow_everything(
                     audit.clone(),
-                ),
-                crate::application::access_decision_settings::test_support::policy_default(
-                    crate::domain::authentication_policy::DefaultPolicyEffect::Allow,
                 ),
             );
 

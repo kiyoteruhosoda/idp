@@ -16,11 +16,11 @@
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::system_settings::SystemSettingsService;
-use crate::application::tenant_settings::TenantSettingsService;
 use crate::domain::admin_actor::AdminActor;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
+use crate::domain::effective_tenant_settings::EffectiveTenantSettings;
 use crate::domain::mailer::{Mailer, OutgoingEmail};
 use crate::domain::message::MessageKey;
 use crate::domain::repositories::{
@@ -80,7 +80,7 @@ pub struct InvitationService {
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
     /// テナントが上書きできる設定の解決（ADR-0058）。参照のたびに引く。
-    settings: Arc<TenantSettingsService>,
+    settings: Arc<dyn EffectiveTenantSettings>,
     /// 承諾リンクの土台となる公開ベース URL（web 画面。末尾スラッシュ無し）。
     console_base_url: String,
 }
@@ -96,7 +96,7 @@ impl InvitationService {
         mailer: Arc<dyn Mailer>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
-        settings: Arc<TenantSettingsService>,
+        settings: Arc<dyn EffectiveTenantSettings>,
         console_base_url: String,
     ) -> Self {
         Self {
