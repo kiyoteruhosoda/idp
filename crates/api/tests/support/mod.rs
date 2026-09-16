@@ -508,7 +508,7 @@ pub async fn open_client_as_application(
     .await
     .expect("insert application");
     sqlx::query(
-        "INSERT INTO application_bindings (id, application_id, protocol, client_id) \
+        "INSERT INTO application_bindings (id, application_id, kind, client_id) \
          VALUES (?, ?, 'oidc', ?)",
     )
     .bind(uuid::Uuid::now_v7().to_string())
@@ -591,6 +591,66 @@ pub async fn insert_m2m_client_with_auth_method(
     .await
     .expect("insert m2m client");
     (client_id, secret.to_string())
+}
+
+/// サービスアカウント（`client_credentials` **だけ**を使う confidential client。ADR-0038）を
+/// 登録して `(client_id, client_secret)` を返す。
+///
+/// [`insert_m2m_client`] は `authorization_code` も持つので、アプリの名乗りとしては
+/// サービスアカウントにならない（`Client::is_service_account`。ADR-0059）。
+pub async fn insert_service_account(pool: &MySqlPool, tenant_id: &str) -> (String, String) {
+    let client_id = format!("it-svc-{}", unique());
+    let secret = "e2e-super-secret-value";
+    let secret_hash = Argon2PasswordHasher::new()
+        .hash(secret)
+        .expect("hash secret");
+    sqlx::query(
+        "INSERT INTO clients (id, tenant_id, client_id, client_secret_hash, client_type, \
+         client_status, app_name, redirect_uris, grant_types, response_types, scopes, \
+         token_endpoint_auth_method) \
+         VALUES (?, ?, ?, ?, 'confidential', 'ACTIVE', 'Integration Service Account', '[]', \
+         '[\"client_credentials\"]', '[]', '[]', 'client_secret_basic')",
+    )
+    .bind(uuid::Uuid::now_v7().to_string())
+    .bind(tenant_id)
+    .bind(&client_id)
+    .bind(secret_hash)
+    .execute(pool)
+    .await
+    .expect("insert service account");
+    (client_id, secret.to_string())
+}
+
+/// `client_credentials` + `resource={issuer}/{tenant}/admin` で管理トークンを取りに行き、応答を返す
+/// （成否は呼び出し側が見る）。
+pub async fn request_management_token(
+    app: &axum::Router,
+    issuer: &str,
+    tenant_id: &str,
+    client_id: &str,
+    secret: &str,
+) -> axum::response::Response {
+    let resource = format!("{issuer}/{tenant_id}/admin");
+    send(
+        app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/{tenant_id}/token"))
+            .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(
+                AUTHORIZATION,
+                format!("Basic {}", STANDARD.encode(format!("{client_id}:{secret}"))),
+            )
+            .body(Body::from(format!(
+                "grant_type=client_credentials&resource={}",
+                percent_encoding::utf8_percent_encode(
+                    &resource,
+                    percent_encoding::NON_ALPHANUMERIC
+                )
+            )))
+            .unwrap(),
+    )
+    .await
 }
 
 /// `private_key_jwt` の M2M クライアントを作り、`(client_id, 秘密鍵 PEM, kid)` を返す（ADR-0030）。

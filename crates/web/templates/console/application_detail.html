@@ -138,7 +138,8 @@
   </div>
 </div>
 
-{# ── 認証方法 ─────────────────────────────────────────────────────────────── #}
+{# ── このアプリの名乗り ───────────────────────────────────────────────────── #}
+{#- ⚠ 1 つの相手は 1 つのアプリにだけ属する（ADR-0059）。別のアプリの名乗りなら、api がそのアプリ名で断る。 -#}
 <div class="card">
   <div class="card-body">
     <h3 class="h5 mb-1">{{ messages.get("admin-applications-bindings-heading") }}</h3>
@@ -148,9 +149,12 @@
     {% else %}
     <ul class="list-group list-group-flush mb-3">
       {% for binding in application.bindings %}
-      <li class="list-group-item d-flex justify-content-between align-items-center">
-        <span>
-          <span class="badge bg-secondary-subtle text-secondary-emphasis me-2">{{ binding.protocol }}</span>
+      <li class="list-group-item d-flex justify-content-between align-items-center gap-2 flex-wrap">
+        <span class="text-break">
+          <span class="badge bg-secondary-subtle text-secondary-emphasis me-2">
+            {%- if binding.is_service_account() %}<i class="fa-solid fa-server me-1" aria-hidden="true"></i>{% endif -%}
+            {{ messages.get(binding.kind_label_key()) }}
+          </span>
           {%- if let Some(identifier) = binding.identifier -%}<code>{{ identifier }}</code>{%- else -%}<span class="text-muted">{{ messages.get("admin-applications-binding-gone") }}</span>{%- endif -%}
           {%- if let Some(name) = binding.display_name %} <span class="text-muted">{{ name }}</span>{% endif -%}
         </span>
@@ -167,10 +171,12 @@
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <div class="row g-2">
         <div class="col-md-4">
-          <label class="form-label" for="bind-protocol">{{ messages.get("admin-applications-bind-protocol") }}</label>
-          <select class="form-select" id="bind-protocol" name="protocol">
-            <option value="oidc" selected>OIDC</option>
-            <option value="saml">SAML</option>
+          <label class="form-label" for="bind-kind">{{ messages.get("admin-applications-bind-kind") }}</label>
+          <select class="form-select" id="bind-kind" name="kind">
+            <option value="oidc" selected>{{ messages.get("admin-applications-kind-oidc") }}</option>
+            <option value="saml">{{ messages.get("admin-applications-kind-saml") }}</option>
+            <option value="service_account">{{ messages.get("admin-applications-kind-service-account") }}</option>
+            <option value="resource">{{ messages.get("admin-applications-kind-resource") }}</option>
           </select>
         </div>
         <div class="col-md-8">
@@ -179,9 +185,14 @@
             <input type="text" class="form-control font-monospace" id="bind-target" name="target" required>
             <button type="submit" class="btn btn-primary">{{ messages.get("admin-applications-bind-button") }}</button>
           </div>
-          <div class="form-text">{{ messages.get("admin-applications-bind-hint") }}</div>
         </div>
       </div>
+      <ul class="form-text list-unstyled mb-0 mt-2">
+        <li>{{ messages.get("admin-applications-bind-hint-oidc") }}</li>
+        <li>{{ messages.get("admin-applications-bind-hint-saml") }}</li>
+        <li>{{ messages.get("admin-applications-bind-hint-service-account") }}</li>
+        <li>{{ messages.get("admin-applications-bind-hint-resource") }}</li>
+      </ul>
     </form>
   </div>
 </div>

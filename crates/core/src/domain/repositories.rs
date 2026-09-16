@@ -21,6 +21,7 @@
 
 use crate::domain::application::{
     Application, ApplicationAssignment, ApplicationBinding, ApplicationUserFacts, AssignedUser,
+    BindingTarget,
 };
 use crate::domain::application_log::{
     ApplicationLogEntry, ApplicationLogFilter, ApplicationLogRecord,
@@ -973,7 +974,7 @@ pub trait ClientPermissionRepository: Send + Sync {
     async fn revoke(&self, client_row_id: Uuid, code: &str) -> Result<()>;
 }
 
-/// アプリ（`applications`）・その binding・割り当ての永続化（ADR-0054）。
+/// アプリ（`applications`）・その名乗り（binding）・割り当ての永続化（ADR-0054 / ADR-0059）。
 ///
 /// 3 つの表を 1 つのトレイトに収めるのは、**アプリを外して binding だけが残る**ような中途半端な
 /// 状態を作らないためである。binding も割り当ても、アプリを識別できないと意味を持たない。
@@ -998,6 +999,16 @@ pub trait ApplicationRepository: Send + Sync {
         &self,
         tenant_id: TenantId,
         entity_id: &str,
+    ) -> Result<Option<Application>>;
+    /// 名乗り（binding の相手）からアプリを引く（ADR-0059）。1 つの相手は 1 つのアプリにだけ
+    /// 属するので、答えは高々 1 件。
+    ///
+    /// 名簿の self の口（呼んできたサービスアカウントのアプリ）・管理トークンの発行
+    /// （サービスアカウントの名乗りを持つ client か）・「既に別のアプリの名乗り」の案内が引く。
+    async fn find_by_binding_target(
+        &self,
+        tenant_id: TenantId,
+        target: BindingTarget,
     ) -> Result<Option<Application>>;
     /// テナント内のアプリを一覧する（`display_name` 昇順）。
     async fn list(&self, tenant_id: TenantId) -> Result<Vec<Application>>;

@@ -1,6 +1,6 @@
 //! アプリの管理コンソール画面（`/{tenant_id}/admin/applications`。ADR-0054）。
 //!
-//! 一覧・登録・設定変更・認証方法（binding）の付け外し・利用者の割り当てを提供する。操作の実体は
+//! 一覧・登録・設定変更・名乗り（binding）の付け外し・利用者の割り当てを提供する。操作の実体は
 //! api の `/admin/applications/*` に SSO Cookie 転送で委譲する（web は sqlx に触らない。ADR-0007）。
 //!
 //! ⚠ **この画面が締め出しの復旧経路である**（ADR-0054 の決定 4 の手順 4）。割り当てを足す操作が
@@ -203,14 +203,14 @@ pub async fn update(
 
 #[derive(Deserialize)]
 pub struct BindForm {
-    /// `oidc` / `saml`。
-    pub protocol: String,
-    /// OIDC なら `client_id`、SAML なら SP の内部 ID。
+    /// `oidc` / `saml` / `service_account` / `resource`。
+    pub kind: String,
+    /// ログイン用・サービスアカウントなら `client_id`、SAML なら SP の内部 ID、宛名なら URI。
     pub target: String,
     pub csrf_token: String,
 }
 
-/// 認証方法を繋ぐ（`POST /{tenant_id}/admin/applications/{id}/bind`）。
+/// 名乗りを足す（`POST /{tenant_id}/admin/applications/{id}/bind`。ADR-0059）。
 pub async fn bind(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -233,12 +233,7 @@ pub async fn bind(
         )
         .await;
     }
-    let target = form.target.trim();
-    let (client_id, service_provider_id) = if form.protocol.trim() == "saml" {
-        (None, Some(target))
-    } else {
-        (Some(target), None)
-    };
+    // 種類の検証は api がする（ここで書き写すと規則が 2 か所になる）。
     let result = state
         .api
         .for_locale(locale(&headers))
@@ -247,8 +242,8 @@ pub async fn bind(
             &tenant.0,
             &sso,
             &application_id,
-            client_id,
-            service_provider_id,
+            form.kind.trim(),
+            form.target.trim(),
         )
         .await;
     finish(
@@ -269,7 +264,7 @@ pub struct BindingIdForm {
     pub csrf_token: String,
 }
 
-/// 認証方法を外す（`POST /{tenant_id}/admin/applications/{id}/unbind`）。
+/// 名乗りを外す（`POST /{tenant_id}/admin/applications/{id}/unbind`）。
 pub async fn unbind(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,

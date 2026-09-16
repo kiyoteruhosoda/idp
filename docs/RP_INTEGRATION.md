@@ -186,14 +186,18 @@ assay が意味を定義して**要求されたら必ず効く**値は 2 つだ�
 （`federated_identities`）を突き合わせて、使えなくなった相手を無効化する。
 
 ```
-GET {issuer}/{tenant_id}/admin/applications/oidc/{あなたの client_id}/users
+GET {issuer}/{tenant_id}/admin/applications/self/users
 Authorization: Bearer {管理トークン}
 ```
 
-- 宛先は**あなたの `client_id`**。⚠ アプリの内部 ID を設定に持たない（アプリを作り直すと、
-  古い ID のまま静かに別の名簿を読む）
-- 必要な権限は `idp.applications:read`。管理トークンは `client_credentials` ＋
-  `resource={issuer}/{tenant_id}/admin` で取る
+- ⚠ **宛先は書かない。** 呼んできたサービスアカウントが**名乗りとして結び付いたアプリ**の名簿が返る
+  （ADR-0059）。`client_id` もアプリの内部 ID も設定に持たない
+- 使う前に 1 回だけ、管理コンソールのアプリの詳細「このアプリの名乗り」で、照合に使うサービスアカウント
+  （`client_credentials` だけのクライアント）を**「サービスアカウント」として結び付ける**。
+  結び付けるまでは 403 が返る
+- ⚠ **権限コードは要らない**（`idp.applications:read` を付けない。付けると他のアプリの名簿まで読める）。
+  管理トークンは `client_credentials` ＋ `resource={issuer}/{tenant_id}/admin` で取る。名乗りとして
+  結び付いていれば、権限コードが 0 件でもトークンは出る
 - ページングは `limit`（既定 50・上限 200）と `offset`。⚠ **差分（`updated_since`）は無い**
   ——外された人も消えた人も差分には出ないため（ADR-0057）。**毎回全件を読む**
 
@@ -214,7 +218,7 @@ GET .../users?subs=<sub>,<sub>,<sub>
 
 こちらは**聞いた `sub` を必ず 1 行で返す**（`unknown` が返るのはこの形だけ）。
 
-⚠ **引けなかったときは何もしない。** 404・5xx・タイムアウトを「全員辞めた」と読むと、assay が
+⚠ **引けなかったときは何もしない。** 401・403・404・5xx・タイムアウトを「全員辞めた」と読むと、assay が
 不調なだけで**全員を止める**。止めてよいのは、`200` で返ってきた中身に基づくときだけである。
 
 ⚠ **アプリを止める（`DISABLED`）と、全員が `blocked` で返る。** 空にはならないので、

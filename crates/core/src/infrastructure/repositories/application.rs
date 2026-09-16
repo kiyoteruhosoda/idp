@@ -72,22 +72,29 @@ fn map_application(row: &MySqlRow) -> Result<Application> {
 fn map_binding(row: &MySqlRow) -> Result<ApplicationBinding> {
     let id: String = row.try_get("id").map_err(repo_err)?;
     let application_id: String = row.try_get("application_id").map_err(repo_err)?;
-    let protocol: String = row.try_get("protocol").map_err(repo_err)?;
+    let kind: String = row.try_get("kind").map_err(repo_err)?;
     let client_id: Option<String> = row.try_get("client_id").map_err(repo_err)?;
     let service_provider_id: Option<String> =
         row.try_get("service_provider_id").map_err(repo_err)?;
-    // DB 側の CHECK 制約と同じことをここでも言う。片方だけが埋まっている前提が崩れた行は、
+    let resource_id: Option<String> = row.try_get("resource_id").map_err(repo_err)?;
+    // DB 側の CHECK 制約と同じことをここでも言う。種類と埋まっている列が食い違う行は、
     // 黙って片方を使うのではなくリポジトリエラーにする（表せてはいけない状態をドメインへ通さない）。
-    let target = match (protocol.as_str(), client_id, service_provider_id) {
-        ("oidc", Some(client), None) => BindingTarget::Oidc {
+    let target = match (kind.as_str(), client_id, service_provider_id, resource_id) {
+        ("oidc", Some(client), None, None) => BindingTarget::Oidc {
             client_row_id: parse_uuid(&client)?,
         },
-        ("saml", None, Some(provider)) => BindingTarget::Saml {
+        ("saml", None, Some(provider), None) => BindingTarget::Saml {
             service_provider_id: parse_uuid(&provider)?,
         },
-        (other, _, _) => {
+        ("service_account", Some(client), None, None) => BindingTarget::ServiceAccount {
+            client_row_id: parse_uuid(&client)?,
+        },
+        ("resource", None, None, Some(resource)) => BindingTarget::Resource {
+            resource_id: parse_uuid(&resource)?,
+        },
+        (other, _, _, _) => {
             return Err(DomainError::Repository(format!(
-                "application binding `{id}` has an inconsistent target for protocol `{other}`"
+                "application binding `{id}` has an inconsistent target for kind `{other}`"
             )))
         }
     };
@@ -97,6 +104,15 @@ fn map_binding(row: &MySqlRow) -> Result<ApplicationBinding> {
         target,
         created_at: to_utc(row.try_get("created_at").map_err(repo_err)?),
     })
+}
+
+/// 名乗りの種類ごとに、相手を持つ列（`application_bindings` の列名）。
+fn target_column(target: &BindingTarget) -> &'static str {
+    match target {
+        BindingTarget::Oidc { .. } | BindingTarget::ServiceAccount { .. } => "client_id",
+        BindingTarget::Saml { .. } => "service_provider_id",
+        BindingTarget::Resource { .. } => "resource_id",
+    }
 }
 
 fn map_assigned_user(row: &MySqlRow) -> Result<AssignedUser> {
@@ -156,7 +172,7 @@ impl ApplicationRepository for SqlxApplicationRepository {
             "SELECT {} FROM applications a \
              JOIN application_bindings b ON b.application_id = a.id \
              JOIN clients c ON c.id = b.client_id \
-             WHERE a.tenant_id = ? AND c.tenant_id = ? AND c.client_id = ?",
+             WHERE b.kind = 'oidc' AND a.tenant_id = ? AND c.tenant_id = ? AND c.client_id = ?",
             aliased_columns("a")
         ))
         .bind(tenant_id.to_string())
@@ -177,12 +193,36 @@ impl ApplicationRepository for SqlxApplicationRepository {
             "SELECT {} FROM applications a \
              JOIN application_bindings b ON b.application_id = a.id \
              JOIN saml_service_providers s ON s.id = b.service_provider_id \
-             WHERE a.tenant_id = ? AND s.tenant_id = ? AND s.entity_id = ?",
+             WHERE b.kind = 'saml' AND a.tenant_id = ? AND s.tenant_id = ? AND s.entity_id = ?",
             aliased_columns("a")
         ))
         .bind(tenant_id.to_string())
         .bind(tenant_id.to_string())
         .bind(entity_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        row.as_ref().map(map_application).transpose()
+    }
+
+    /// 種類と相手の両方で引く。⚠ **種類を条件から外さない** ——ログイン用とサービスアカウントは
+    /// 同じ `client_id` 列を使うので、種類を見ないとログイン用の名乗りでサービスアカウントの口
+    /// （self の名簿・管理トークン）が通ってしまう。
+    async fn find_by_binding_target(
+        &self,
+        tenant_id: TenantId,
+        target: BindingTarget,
+    ) -> Result<Option<Application>> {
+        let row = sqlx::query(&format!(
+            "SELECT {} FROM applications a \
+             JOIN application_bindings b ON b.application_id = a.id \
+             WHERE a.tenant_id = ? AND b.kind = ? AND b.{} = ?",
+            aliased_columns("a"),
+            target_column(&target)
+        ))
+        .bind(tenant_id.to_string())
+        .bind(target.kind())
+        .bind(target.target_id().to_string())
         .fetch_optional(&self.pool)
         .await
         .map_err(repo_err)?;
@@ -240,7 +280,7 @@ impl ApplicationRepository for SqlxApplicationRepository {
 
     async fn list_bindings(&self, application_id: Uuid) -> Result<Vec<ApplicationBinding>> {
         let rows = sqlx::query(
-            "SELECT id, application_id, protocol, client_id, service_provider_id, created_at \
+            "SELECT id, application_id, kind, client_id, service_provider_id, resource_id, created_at \
              FROM application_bindings WHERE application_id = ? ORDER BY created_at, id",
         )
         .bind(application_id.to_string())
@@ -253,29 +293,37 @@ impl ApplicationRepository for SqlxApplicationRepository {
     /// 一意制約違反は `Conflict`。「その client は既に別のアプリに繋がっている」であって、
     /// 呼び出し側の不具合ではない（管理画面がそのまま出せる失敗）。
     async fn add_binding(&self, binding: &ApplicationBinding) -> Result<()> {
-        let (client_id, service_provider_id) = match binding.target {
-            BindingTarget::Oidc { client_row_id } => (Some(client_row_id.to_string()), None),
+        let mut client_id = None;
+        let mut service_provider_id = None;
+        let mut resource_id = None;
+        match binding.target {
+            BindingTarget::Oidc { client_row_id }
+            | BindingTarget::ServiceAccount { client_row_id } => {
+                client_id = Some(client_row_id.to_string())
+            }
             BindingTarget::Saml {
-                service_provider_id,
-            } => (None, Some(service_provider_id.to_string())),
-        };
+                service_provider_id: provider,
+            } => service_provider_id = Some(provider.to_string()),
+            BindingTarget::Resource { resource_id: id } => resource_id = Some(id.to_string()),
+        }
         sqlx::query(
             "INSERT INTO application_bindings \
-             (id, application_id, protocol, client_id, service_provider_id, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?)",
+             (id, application_id, kind, client_id, service_provider_id, resource_id, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(binding.id.to_string())
         .bind(binding.application_id.to_string())
-        .bind(binding.target.protocol())
+        .bind(binding.target.kind())
         .bind(client_id)
         .bind(service_provider_id)
+        .bind(resource_id)
         .bind(binding.created_at)
         .execute(&self.pool)
         .await
         .map_err(|e| match &e {
-            sqlx::Error::Database(db) if db.is_unique_violation() => DomainError::Conflict(
-                "the protocol configuration is already bound to an application".to_string(),
-            ),
+            sqlx::Error::Database(db) if db.is_unique_violation() => {
+                DomainError::Conflict("the target is already bound to an application".to_string())
+            }
             _ => DomainError::Repository(e.to_string()),
         })?;
         Ok(())

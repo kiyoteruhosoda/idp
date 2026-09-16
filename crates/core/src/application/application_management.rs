@@ -20,11 +20,12 @@ use crate::domain::error::DomainError;
 use crate::domain::id_generator::IdGenerator;
 use crate::domain::message::MessageKey;
 use crate::domain::repositories::{
-    ApplicationRepository, ClientRepository, SamlServiceProviderRepository, TenantMemberQuery,
+    ApplicationRepository, ClientRepository, ProtectedResourceRepository,
+    SamlServiceProviderRepository, TenantMemberQuery,
 };
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::tenant_membership::{TenantMember, TenantMemberFilter};
-use crate::domain::values::{ApplicationStatus, AssignmentMode};
+use crate::domain::values::{ApplicationStatus, AssignmentMode, GrantType};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -40,7 +41,7 @@ pub enum ApplicationManagementError {
     NotFound,
     /// 入力が不正（表示名が空・長すぎる等）。
     Invalid(MessageKey),
-    /// その client / SP は既に別のアプリへ繋がっている。
+    /// その相手は既に別のアプリの名乗りになっている（差し込み値は相手のアプリの表示名）。
     Conflict(MessageKey),
     Internal(String),
 }
@@ -56,13 +57,29 @@ pub struct ApplicationSummary {
     pub assigned_count: i64,
 }
 
-/// binding 1 本を画面に出す形。
+/// 名乗り 1 本を画面に出す形。
 pub struct BindingSummary {
     pub binding: ApplicationBinding,
-    /// OIDC なら `clients.client_id`、SAML なら `entity_id`。相手が消えていれば `None`。
+    /// 人が見分ける値。ログイン用・サービスアカウントなら `clients.client_id`、SAML なら
+    /// `entity_id`、宛名なら `resource_uri`。相手が消えていれば `None`。
     pub identifier: Option<String>,
-    /// 相手の登録名（`clients.app_name` / SP の `display_name`）。
+    /// 相手の登録名（`clients.app_name` / SP・宛名の `display_name`）。
     pub display_name: Option<String>,
+}
+
+/// 足したい名乗り（管理 API の要求を解釈したもの。ADR-0059）。
+///
+/// 相手は**人が知っている値**で指す（`client_id`・宛名の URI）。SAML の SP だけは
+/// `entity_id` が URL 形でパスに載せにくいので内部 ID で指す（ADR-0054 のまま）。
+pub enum NewBinding {
+    /// ログイン用の OIDC client（`authorization_code`）。
+    Oidc { client_id: String },
+    /// SAML の SP。
+    Saml { service_provider_id: Uuid },
+    /// サービスアカウント（`client_credentials` だけのクライアント）。
+    ServiceAccount { client_id: String },
+    /// アプリの API の宛名（`aud`）。
+    Resource { resource_uri: String },
 }
 
 /// アプリの詳細（binding と名簿）。
@@ -95,6 +112,7 @@ pub struct ApplicationManagementService {
     applications: Arc<dyn ApplicationRepository>,
     clients: Arc<dyn ClientRepository>,
     service_providers: Arc<dyn SamlServiceProviderRepository>,
+    resources: Arc<dyn ProtectedResourceRepository>,
     members: Arc<dyn TenantMemberQuery>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
@@ -107,6 +125,7 @@ impl ApplicationManagementService {
         applications: Arc<dyn ApplicationRepository>,
         clients: Arc<dyn ClientRepository>,
         service_providers: Arc<dyn SamlServiceProviderRepository>,
+        resources: Arc<dyn ProtectedResourceRepository>,
         members: Arc<dyn TenantMemberQuery>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
@@ -116,6 +135,7 @@ impl ApplicationManagementService {
             applications,
             clients,
             service_providers,
+            resources,
             members,
             audit,
             clock,
@@ -315,70 +335,88 @@ impl ApplicationManagementService {
         Ok(())
     }
 
-    /// OIDC の client をアプリへ繋ぐ。
-    pub async fn bind_client(
+    /// 名乗りを足す（ADR-0059）。
+    ///
+    /// ⚠ **種類と相手の性質を突き合わせる。** ログイン用に `client_credentials` の client を
+    /// 結び付けると、ログインの判定がそのアプリを見ないまま素通しになる。逆にサービスアカウントとして
+    /// ログイン用の client を結び付けると、利用者のアクセストークンで self の名簿が読める。
+    pub async fn bind(
         &self,
         tenant: TenantContext,
         id: Uuid,
-        client_id: &str,
+        request: NewBinding,
         actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<ApplicationBinding, ApplicationManagementError> {
         let application = self.load(tenant, id).await?;
-        let client = match self
-            .clients
-            .find_by_client_id(tenant.tenant_id(), client_id.trim())
-            .await
-        {
-            // 論理削除済み（ADR-0035）は「無い」として扱う。消したはずの RP を新しいアプリへ
-            // 繋げると、復活したときに知らないアプリの名簿が付いてくる。
-            Ok(Some(client)) if !client.is_deleted() => client,
-            Ok(_) => return Err(ApplicationManagementError::NotFound),
-            Err(e) => return Err(ApplicationManagementError::Internal(e.to_string())),
+        let (target, identifier) = match request {
+            NewBinding::Oidc { client_id } => {
+                let client = self.load_client(tenant, &client_id).await?;
+                if !client.allows_grant_type(GrantType::AuthorizationCode) {
+                    return Err(ApplicationManagementError::Invalid(MessageKey::new(
+                        "api-application-binding-oidc-needs-login-client",
+                    )));
+                }
+                (
+                    BindingTarget::Oidc {
+                        client_row_id: client.id,
+                    },
+                    client.client_id,
+                )
+            }
+            NewBinding::ServiceAccount { client_id } => {
+                let client = self.load_client(tenant, &client_id).await?;
+                if !client.is_service_account() {
+                    return Err(ApplicationManagementError::Invalid(MessageKey::new(
+                        "api-application-binding-needs-service-account",
+                    )));
+                }
+                (
+                    BindingTarget::ServiceAccount {
+                        client_row_id: client.id,
+                    },
+                    client.client_id,
+                )
+            }
+            NewBinding::Saml {
+                service_provider_id,
+            } => {
+                let provider = match self
+                    .service_providers
+                    .find_by_id(tenant.tenant_id(), service_provider_id)
+                    .await
+                {
+                    Ok(Some(provider)) => provider,
+                    Ok(None) => return Err(ApplicationManagementError::NotFound),
+                    Err(e) => return Err(ApplicationManagementError::Internal(e.to_string())),
+                };
+                (
+                    BindingTarget::Saml {
+                        service_provider_id: provider.id,
+                    },
+                    provider.entity_id,
+                )
+            }
+            NewBinding::Resource { resource_uri } => {
+                let resource = match self
+                    .resources
+                    .find_by_uri(tenant.tenant_id(), resource_uri.trim())
+                    .await
+                {
+                    Ok(Some(resource)) => resource,
+                    Ok(None) => return Err(ApplicationManagementError::NotFound),
+                    Err(e) => return Err(ApplicationManagementError::Internal(e.to_string())),
+                };
+                (
+                    BindingTarget::Resource {
+                        resource_id: resource.id,
+                    },
+                    resource.resource_uri,
+                )
+            }
         };
-        self.add_binding(
-            tenant,
-            &application,
-            BindingTarget::Oidc {
-                client_row_id: client.id,
-            },
-            &client.client_id,
-            actor,
-            ctx,
-        )
-        .await
-    }
-
-    /// SAML の SP をアプリへ繋ぐ。
-    pub async fn bind_service_provider(
-        &self,
-        tenant: TenantContext,
-        id: Uuid,
-        service_provider_id: Uuid,
-        actor: &AdminActor,
-        ctx: &RequestContext,
-    ) -> Result<ApplicationBinding, ApplicationManagementError> {
-        let application = self.load(tenant, id).await?;
-        let provider = match self
-            .service_providers
-            .find_by_id(tenant.tenant_id(), service_provider_id)
+        self.add_binding(tenant, &application, target, &identifier, actor, ctx)
             .await
-        {
-            Ok(Some(provider)) => provider,
-            Ok(None) => return Err(ApplicationManagementError::NotFound),
-            Err(e) => return Err(ApplicationManagementError::Internal(e.to_string())),
-        };
-        self.add_binding(
-            tenant,
-            &application,
-            BindingTarget::Saml {
-                service_provider_id: provider.id,
-            },
-            &provider.entity_id,
-            actor,
-            ctx,
-        )
-        .await
     }
 
     /// binding を外す。
@@ -528,24 +566,55 @@ impl ApplicationManagementService {
         actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<ApplicationBinding, ApplicationManagementError> {
+        // ⚠ 既に**別の**アプリの名乗りなら、そのアプリの名前で断る。「繋がっています」だけでは、
+        // 人はどのアプリから外せばよいのか探しに行くことになる。同じアプリなら何もしない（冪等）。
+        if let Some(owner) = self
+            .applications
+            .find_by_binding_target(tenant.tenant_id(), target)
+            .await
+            .map_err(map_repo_error)?
+        {
+            if owner.id == application.id {
+                if let Some(existing) = self
+                    .applications
+                    .list_bindings(application.id)
+                    .await
+                    .map_err(map_repo_error)?
+                    .into_iter()
+                    .find(|b| b.target == target)
+                {
+                    return Ok(existing);
+                }
+            }
+            return Err(already_bound(&owner));
+        }
         let binding = ApplicationBinding {
             id: self.ids.new_id(),
             application_id: application.id,
             target,
             created_at: self.clock.now(),
         };
-        self.applications
-            .add_binding(&binding)
-            .await
-            .map_err(map_repo_error)?;
+        if let Err(e) = self.applications.add_binding(&binding).await {
+            // 読んでから書くまでの間に、別の要求が同じ相手を結び付けた。
+            if matches!(e, DomainError::Conflict(_)) {
+                if let Ok(Some(owner)) = self
+                    .applications
+                    .find_by_binding_target(tenant.tenant_id(), target)
+                    .await
+                {
+                    return Err(already_bound(&owner));
+                }
+            }
+            return Err(map_repo_error(e));
+        }
         self.record(
             AuditEventType::ApplicationBindingAdded,
             tenant,
             application,
             actor,
             Some(&format!(
-                "protocol={} target={identifier}",
-                binding.target.protocol()
+                "kind={} target={identifier}",
+                binding.target.kind()
             )),
             ctx,
         )
@@ -553,7 +622,7 @@ impl ApplicationManagementService {
         Ok(binding)
     }
 
-    /// binding を画面に出す形へ広げる。`clients` は呼び出し側が 1 回だけ読んだ一覧
+    /// 名乗りを画面に出す形へ広げる。`clients` は呼び出し側が 1 回だけ読んだ一覧
     /// （`clients.id` から名前を引くだけなので、binding ごとに読み直さない）。
     async fn summarize_bindings(
         &self,
@@ -569,7 +638,8 @@ impl ApplicationManagementService {
         let mut summaries = Vec::with_capacity(bindings.len());
         for binding in bindings {
             let (identifier, display_name) = match binding.target {
-                BindingTarget::Oidc { client_row_id } => clients
+                BindingTarget::Oidc { client_row_id }
+                | BindingTarget::ServiceAccount { client_row_id } => clients
                     .iter()
                     .find(|c| c.id == client_row_id)
                     .map(|c| (Some(c.client_id.clone()), Some(c.app_name.clone())))
@@ -585,6 +655,15 @@ impl ApplicationManagementService {
                     Some(sp) => (Some(sp.entity_id), Some(sp.display_name)),
                     None => (None, None),
                 },
+                BindingTarget::Resource { resource_id } => match self
+                    .resources
+                    .find_by_id(tenant.tenant_id(), resource_id)
+                    .await
+                    .map_err(map_repo_error)?
+                {
+                    Some(resource) => (Some(resource.resource_uri), Some(resource.display_name)),
+                    None => (None, None),
+                },
             };
             summaries.push(BindingSummary {
                 binding,
@@ -593,6 +672,25 @@ impl ApplicationManagementService {
             });
         }
         Ok(summaries)
+    }
+
+    /// 要求テナント内のクライアントを `client_id` で解決する。
+    async fn load_client(
+        &self,
+        tenant: TenantContext,
+        client_id: &str,
+    ) -> Result<Client, ApplicationManagementError> {
+        match self
+            .clients
+            .find_by_client_id(tenant.tenant_id(), client_id.trim())
+            .await
+        {
+            // 論理削除済み（ADR-0035）は「無い」として扱う。消したはずの client を新しいアプリへ
+            // 繋げると、復活したときに知らないアプリの名乗りが付いてくる。
+            Ok(Some(client)) if !client.is_deleted() => Ok(client),
+            Ok(_) => Err(ApplicationManagementError::NotFound),
+            Err(e) => Err(ApplicationManagementError::Internal(e.to_string())),
+        }
     }
 
     async fn require_member(
@@ -666,11 +764,20 @@ fn audit_reason(application: &Application, actor: &AdminActor) -> String {
     }
 }
 
+/// 「既に ○○ の名乗りです」。
+fn already_bound(owner: &Application) -> ApplicationManagementError {
+    ApplicationManagementError::Conflict(MessageKey::with_value(
+        "api-application-binding-conflict",
+        owner.display_name.clone(),
+    ))
+}
+
 fn map_repo_error(e: DomainError) -> ApplicationManagementError {
     match e {
-        DomainError::Conflict(_) => ApplicationManagementError::Conflict(MessageKey::new(
-            "api-application-binding-conflict",
-        )),
+        // 相手のアプリ名を引けなかった衝突（名前付きの案内は `already_bound` が出す）。
+        DomainError::Conflict(_) => {
+            ApplicationManagementError::Conflict(MessageKey::new("api-application-conflict"))
+        }
         DomainError::InvalidValue(_) => {
             ApplicationManagementError::Invalid(MessageKey::new("api-application-invalid"))
         }

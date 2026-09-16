@@ -456,7 +456,8 @@ pub fn build(state: AppState) -> Router {
             "/admin/users/{user_id}/permissions/{permission_code}",
             axum::routing::delete(admin_permissions::revoke_permission),
         )
-        // アプリ（ADR-0054）。認証方法（OIDC / SAML）と利用者の割り当ては、この段にぶら下がる。
+        // アプリ（ADR-0054 / ADR-0059）。名乗り（ログイン用・SAML・サービスアカウント・宛名）と
+        // 利用者の割り当ては、この段にぶら下がる。
         // idp.applications:* 必須。
         .route(
             "/admin/applications",
@@ -489,12 +490,12 @@ pub fn build(state: AppState) -> Router {
             "/admin/applications/{application_id}/current-users",
             get(admin_applications::current_users),
         )
-        // RP の定期照合が読む名簿（ADR-0057）。⚠ **OIDC の `client_id` で指す**
-        // ——RP が既に持っている唯一の値であり、アプリの内部 ID を持たせると、作り直した日に
-        // 古い ID のまま静かに別の名簿を読むことになる。
+        // RP の定期照合が読む名簿（ADR-0057 / ADR-0059）。⚠ **宛先は RP に言わせない**
+        // ——呼んできたサービスアカウントが名乗りとして結び付いたアプリの名簿を返す。権限コードは
+        // 要求しない（`ManagementPrincipal`。結び付きが無ければ 403）。
         .route(
-            "/admin/applications/oidc/{client_id}/users",
-            get(admin_applications::application_users),
+            "/admin/applications/self/users",
+            get(admin_applications::own_application_users),
         )
         // 保護リソース（`aud` に入る宛名）の登録・停止・削除（ADR-0042）。idp.resources:* 必須。
         .route(

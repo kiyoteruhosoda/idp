@@ -2042,33 +2042,38 @@ impl ApiClient {
         .await
     }
 
-    /// 認証方法を繋ぐ（`POST /admin/applications/{id}/bindings`）。
-    /// `client_id` と `service_provider_id` はどちらか一方だけを渡す。
-    #[allow(clippy::too_many_arguments)]
+    /// 名乗りを足す（`POST /admin/applications/{id}/bindings`。ADR-0059）。
+    ///
+    /// 相手は種類ごとに決まった欄で送る（`oidc` / `service_account` は `client_id`、`saml` は
+    /// `service_provider_id`、`resource` は `resource_uri`）。知らない種類は api が 400 で断る。
     pub async fn add_application_binding(
         &self,
         correlation_id: &str,
         tenant_id: &str,
         sso: &str,
         application_id: &str,
-        client_id: Option<&str>,
-        service_provider_id: Option<&str>,
+        kind: &str,
+        target: &str,
     ) -> Result<crate::admin_dto::ApplicationView, AdminApiError> {
+        let field = match kind {
+            "saml" => "service_provider_id",
+            "resource" => "resource_uri",
+            _ => "client_id",
+        };
+        let mut body = serde_json::json!({ "kind": kind });
+        body[field] = serde_json::Value::String(target.to_string());
         self.admin_send(
             Method::POST,
             tenant_id,
             &format!("/admin/applications/{application_id}/bindings"),
             correlation_id,
             sso,
-            Some(serde_json::json!({
-                "client_id": client_id,
-                "service_provider_id": service_provider_id,
-            })),
+            Some(body),
         )
         .await
     }
 
-    /// 認証方法を外す（`DELETE /admin/applications/{id}/bindings/{binding_id}`）。
+    /// 名乗りを外す（`DELETE /admin/applications/{id}/bindings/{binding_id}`）。
     pub async fn remove_application_binding(
         &self,
         correlation_id: &str,

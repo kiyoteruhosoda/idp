@@ -1,6 +1,6 @@
 # ADR-0057: 名簿は「このアプリを使ってよい人」を答える（利用者一覧の管理 API）
 
-- Status: Accepted
+- Status: Accepted（決定 2・決定 7 は ADR-0059 の決定 2 で置き換え）
 - Date: 2026-09-16
 - 関連: `docs/adr/0054-an-application-is-the-thing-a-relying-party-hangs-from.md`（アプリという段。割り当てと判定）、
   `docs/adr/0049-attribute-ownership-and-the-federation-key.md`（I7「利用者を止めたら RP に届く」の 3 つ目＝定期照合）、
@@ -36,6 +36,10 @@ ADR-0054 でアプリの段ができ、「誰が使ってよいか」はアプ�
   いない人まで RP に見える
 
 ### 2. 宛先は **OIDC の `client_id`** で指す
+
+> ⚠ **ADR-0059 で置き換えた。** 「呼んできたサービスアカウントはどのアプリのものか」を RP に申告させる
+> 向きが逆だった。いまは `GET {issuer}/admin/applications/self/users` で、宛先は呼び出し元の
+> サービスアカウントの名乗りから assay が決める。結び付いていなければ 404 ではなく 403。
 
 `GET /{tenant_id}/admin/applications/oidc/{client_id}/users`
 
@@ -112,6 +116,10 @@ RP 側は、**引けなかったとき（404・5xx・タイムアウト）には
 ⚠ 「一覧が空＝全員辞めた」と読むと、障害のたびに全員を止める。
 
 ### 7. 権限は既存の `idp.applications:read` を使う（新しいコードを作らない）
+
+> ⚠ **ADR-0059 で置き換えた。** 権限コードでは通さず、アプリの名乗り（サービスアカウント）として
+> 結び付いていることで通す。下に書いた「サービスアカウントにはアプリが無い」は、アプリを持つのでは
+> なく**アプリの名乗りになる**ことで解けた。
 
 この口が返すのは「アプリと、そこに割り当てられた利用者」であり、`idp.applications:read` の説明
 そのものである（migration `0045` / `0054`）。

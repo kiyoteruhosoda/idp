@@ -197,7 +197,9 @@ pub mod test_support {
     //! 実装をここに 1 つだけ置き、各テストが自前の空実装を書き写さないようにする。
 
     use super::*;
-    use crate::domain::application::{ApplicationAssignment, ApplicationBinding, AssignedUser};
+    use crate::domain::application::{
+        ApplicationAssignment, ApplicationBinding, AssignedUser, BindingTarget,
+    };
     use crate::domain::error::Result;
     use crate::domain::values::{ApplicationStatus, AssignmentMode};
     use async_trait::async_trait;
@@ -225,6 +227,13 @@ pub mod test_support {
             &self,
             _tenant_id: TenantId,
             _entity_id: &str,
+        ) -> Result<Option<Application>> {
+            Ok(None)
+        }
+        async fn find_by_binding_target(
+            &self,
+            _tenant_id: TenantId,
+            _target: BindingTarget,
         ) -> Result<Option<Application>> {
             Ok(None)
         }
@@ -285,7 +294,9 @@ pub mod test_support {
 mod tests {
     use super::test_support::NoApplications;
     use super::*;
-    use crate::domain::application::{ApplicationAssignment, ApplicationBinding, AssignedUser};
+    use crate::domain::application::{
+        ApplicationAssignment, ApplicationBinding, AssignedUser, BindingTarget,
+    };
     use crate::domain::audit::AuditEvent;
     use crate::domain::clock::Clock;
     use crate::domain::error::Result;
@@ -340,6 +351,13 @@ mod tests {
             &self,
             _tenant_id: TenantId,
             _entity_id: &str,
+        ) -> Result<Option<Application>> {
+            Ok(None)
+        }
+        async fn find_by_binding_target(
+            &self,
+            _tenant_id: TenantId,
+            _target: BindingTarget,
         ) -> Result<Option<Application>> {
             Ok(None)
         }

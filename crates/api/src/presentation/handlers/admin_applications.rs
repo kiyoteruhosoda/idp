@@ -9,14 +9,17 @@
 //! ためである。前者は RP を作る側の作業、後者は組織の判断になる。
 
 use crate::application::application_management::{
-    ApplicationDetail, ApplicationManagementError, ApplicationSummary, CurrentUsers, NewApplication,
+    ApplicationDetail, ApplicationManagementError, ApplicationSummary, CurrentUsers,
+    NewApplication, NewBinding,
 };
 use crate::application::application_user_directory::{
     ApplicationUserDirectoryError, RosterQuery, MAX_SUBJECTS,
 };
 use crate::domain::message::MessageKey;
 use crate::domain::values::{ApplicationStatus, AssignmentMode};
-use crate::presentation::admin::{ApplicationsRead, ApplicationsWrite, RequirePerms};
+use crate::presentation::admin::{
+    ApplicationsRead, ApplicationsWrite, ManagementPrincipal, RequirePerms,
+};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
     ApplicationAssignmentResponse, ApplicationBindingResponse, ApplicationCurrentUserResponse,
@@ -247,7 +250,7 @@ pub async fn delete_application(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// 認証方法を繋ぐ（`POST /{tenant_id}/admin/applications/{application_id}/bindings`）。
+/// 名乗りを足す（`POST /{tenant_id}/admin/applications/{application_id}/bindings`。ADR-0059）。
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/applications/{application_id}/bindings",
@@ -256,11 +259,11 @@ pub async fn delete_application(
     request_body = CreateApplicationBindingRequest,
     responses(
         (status = 200, description = "追加後のアプリ", body = ApplicationResponse),
-        (status = 400, description = "client_id と service_provider_id のどちらも無い・両方ある"),
+        (status = 400, description = "種類が不正・相手の欄が無い・相手の性質が種類と合わない"),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.applications:write 必須）"),
         (status = 404, description = "アプリ・相手が不存在"),
-        (status = 409, description = "その相手は既に別のアプリへ繋がっている"),
+        (status = 409, description = "その相手は既に別のアプリの名乗り（応答にそのアプリ名）"),
     )
 )]
 #[allow(clippy::too_many_arguments)]
@@ -281,44 +284,13 @@ pub async fn add_binding(
         state.config.trust_forwarded_headers(),
     );
     // ⚠ `ApiMessages`（FluentBundle）は `Send` ではない。await をまたいで持てないので、
-    // **繋ぐ相手を先に決め切ってから**非同期の呼び出しへ入る。
-    let target = match (
-        body.client_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty()),
-        body.service_provider_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty()),
-    ) {
-        (Some(client_id), None) => BindingRequest::Oidc(client_id.to_string()),
-        (None, Some(raw)) => BindingRequest::Saml(Uuid::parse_str(raw).map_err(|_| {
-            ApiError::NotFound(ApiMessages::new(locale).get("api-application-not-found"))
-        })?),
-        // ⚠ 両方・どちらも無し、は「どのプロトコルで繋ぐのか」が決まらない。既定を置かない。
-        _ => {
-            return Err(ApiError::BadRequest(
-                ApiMessages::new(locale).get("api-application-binding-target-required"),
-            ))
-        }
-    };
-    match target {
-        BindingRequest::Oidc(client_id) => {
-            state
-                .applications_admin
-                .bind_client(tenant.context(), id, &client_id, &admin.actor, &ctx)
-                .await
-                .map_err(|e| map_error(e, locale))?;
-        }
-        BindingRequest::Saml(provider_id) => {
-            state
-                .applications_admin
-                .bind_service_provider(tenant.context(), id, provider_id, &admin.actor, &ctx)
-                .await
-                .map_err(|e| map_error(e, locale))?;
-        }
-    }
+    // **足す相手を先に決め切ってから**非同期の呼び出しへ入る。
+    let request = parse_binding_request(&body, locale)?;
+    state
+        .applications_admin
+        .bind(tenant.context(), id, request, &admin.actor, &ctx)
+        .await
+        .map_err(|e| map_error(e, locale))?;
     let detail = state
         .applications_admin
         .detail(tenant.context(), id)
@@ -327,7 +299,50 @@ pub async fn add_binding(
     Ok(Json(to_detail(&detail, &state).application))
 }
 
-/// 認証方法を外す
+/// 要求を種類と相手へ読む。⚠ **種類に対応する欄だけを読む** ——別の欄に値があっても黙って
+/// 使わない（`kind=oidc` で `resource_uri` だけを送った要求を、何かに読み替えない）。
+fn parse_binding_request(
+    body: &CreateApplicationBindingRequest,
+    locale: ApiLocale,
+) -> Result<NewBinding, ApiError> {
+    fn present(value: &Option<String>) -> Option<String> {
+        value
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    }
+    let required = || {
+        ApiError::BadRequest(
+            ApiMessages::new(locale).get("api-application-binding-target-required"),
+        )
+    };
+    match body.kind.trim() {
+        "oidc" => Ok(NewBinding::Oidc {
+            client_id: present(&body.client_id).ok_or_else(required)?,
+        }),
+        "service_account" => Ok(NewBinding::ServiceAccount {
+            client_id: present(&body.client_id).ok_or_else(required)?,
+        }),
+        "saml" => {
+            let raw = present(&body.service_provider_id).ok_or_else(required)?;
+            let service_provider_id = Uuid::parse_str(&raw).map_err(|_| {
+                ApiError::NotFound(ApiMessages::new(locale).get("api-application-not-found"))
+            })?;
+            Ok(NewBinding::Saml {
+                service_provider_id,
+            })
+        }
+        "resource" => Ok(NewBinding::Resource {
+            resource_uri: present(&body.resource_uri).ok_or_else(required)?,
+        }),
+        _ => Err(ApiError::BadRequest(
+            ApiMessages::new(locale).get("api-application-binding-kind-invalid"),
+        )),
+    }
+}
+
+/// 名乗りを外す
 /// （`DELETE /{tenant_id}/admin/applications/{application_id}/bindings/{binding_id}`）。
 #[utoipa::path(
     delete,
@@ -488,14 +503,6 @@ pub async fn current_users(
     Ok(Json(to_current_users(users)))
 }
 
-/// 繋ぐ相手（要求の解釈結果）。
-///
-/// 応答の翻訳器を await をまたいで持てないため、要求の検証と非同期の呼び出しの間にこの型を挟む。
-enum BindingRequest {
-    Oidc(String),
-    Saml(Uuid),
-}
-
 fn parse_id(raw: &str, locale: ApiLocale) -> Result<Uuid, ApiError> {
     Uuid::parse_str(raw)
         .map_err(|_| ApiError::NotFound(ApiMessages::new(locale).get("api-application-not-found")))
@@ -531,7 +538,7 @@ fn to_response(summary: &ApplicationSummary) -> ApplicationResponse {
             .iter()
             .map(|b| ApplicationBindingResponse {
                 id: b.binding.id.to_string(),
-                protocol: b.binding.target.protocol().to_string(),
+                kind: b.binding.target.kind().to_string(),
                 identifier: b.identifier.clone(),
                 display_name: b.display_name.clone(),
             })
@@ -596,37 +603,34 @@ fn to_current_users(users: CurrentUsers) -> ApplicationCurrentUsersResponse {
     }
 }
 
-/// アプリの名簿を引く
-/// （`GET /{tenant_id}/admin/applications/oidc/{client_id}/users`。ADR-0057）。
+/// 自分のアプリの名簿を引く
+/// （`GET /{tenant_id}/admin/applications/self/users`。ADR-0057 / ADR-0059）。
 ///
-/// RP の定期照合（ADR-0049 の I7）が読む口である。⚠ **宛先は OIDC の `client_id`**
-/// ——RP が既に持っている唯一の値で、アプリの内部 ID を持たせると、作り直した日に古い ID のまま
-/// 静かに別の名簿を読むことになる。
+/// RP の定期照合（ADR-0049 の I7）が読む口である。⚠ **宛先は RP に言わせない**
+/// ——呼んできたサービスアカウントが名乗りとして結び付いたアプリの名簿を返す。権限コードは
+/// 要求しない（名乗りであることが、そのアプリの名簿を読んでよい理由）。
+///
+/// ⚠ **結び付いていない主体には 403**。空の名簿を返すと、RP は全員を止める。
 ///
 /// ⚠ **`subs` を指定したときだけ `unknown`（消えた）が返る。** 消えた人は、いない以上、候補の
 /// 一覧には現れない。
 #[utoipa::path(
     get,
-    path = "/{tenant_id}/admin/applications/oidc/{client_id}/users",
+    path = "/{tenant_id}/admin/applications/self/users",
     tag = "admin",
-    params(
-        ("client_id" = String, Path, description = "OIDC の client_id"),
-        ApplicationUserQueryParams,
-    ),
+    params(ApplicationUserQueryParams),
     responses(
         (status = 200, description = "名簿", body = ApplicationUserListResponse),
         (status = 400, description = "sub の指定が不正、または多すぎる"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.applications:read 必須）"),
-        (status = 404, description = "その client_id に対応するアプリが無い"),
+        (status = 403, description = "呼び出し元がサービスアカウントでない、またはどのアプリの名乗りでもない"),
     )
 )]
-pub async fn application_users(
-    RequirePerms(_admin, _): RequirePerms<ApplicationsRead>,
+pub async fn own_application_users(
+    ManagementPrincipal(caller): ManagementPrincipal,
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
-    Path((_tenant_id, client_id)): Path<(String, String)>,
     Query(params): Query<ApplicationUserQueryParams>,
 ) -> Result<Json<ApplicationUserListResponse>, ApiError> {
     let query = match params.subs.as_deref() {
@@ -635,9 +639,9 @@ pub async fn application_users(
     };
     let result = state
         .application_users
-        .for_oidc_client(
+        .for_caller(
             tenant.context(),
-            &client_id,
+            &caller.actor,
             query,
             params.limit,
             params.offset,
@@ -682,9 +686,12 @@ fn parse_subs(raw: &str, locale: ApiLocale) -> Result<Vec<Uuid>, ApiError> {
 fn map_directory_error(e: ApplicationUserDirectoryError, locale: ApiLocale) -> ApiError {
     let msgs = ApiMessages::new(locale);
     match e {
-        // ⚠ 空の名簿ではなく 404。空を返すと RP は全員を止める（ADR-0057）。
+        // ⚠ 空の名簿ではなく 403。空を返すと RP は全員を止める（ADR-0059）。
+        ApplicationUserDirectoryError::NotAServiceAccount => {
+            ApiError::Forbidden(msgs.get("api-application-self-requires-service-account"))
+        }
         ApplicationUserDirectoryError::NotBound => {
-            ApiError::NotFound(msgs.get("api-application-not-bound"))
+            ApiError::Forbidden(msgs.get("api-application-self-not-bound"))
         }
         ApplicationUserDirectoryError::TooManySubjects => {
             ApiError::BadRequest(msgs.get_message(&MessageKey::with_value(

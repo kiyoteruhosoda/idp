@@ -71,7 +71,7 @@ use utoipa::{Modify, OpenApi};
         handlers::admin_applications::assign_user,
         handlers::admin_applications::unassign_user,
         handlers::admin_applications::current_users,
-        handlers::admin_applications::application_users,
+        handlers::admin_applications::own_application_users,
         handlers::admin_resources::list_resources,
         handlers::admin_resources::register_resource,
         handlers::admin_resources::update_resource_status,

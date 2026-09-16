@@ -116,39 +116,54 @@ pub fn validate_display_name(raw: &str) -> Result<String, MessageKey> {
     Ok(value.to_string())
 }
 
-/// アプリが繋がる先（binding の相手）。
+/// アプリの名乗り（binding の相手。ADR-0059）。
+///
+/// アプリが「自分」として assay に現れる口は 4 種類ある。どれも **1 つの相手は 1 つのアプリにだけ
+/// 属する**（DB の UNIQUE）——2 つのアプリに属せると、その相手から来た要求がどのアプリのものか
+/// 決まらない。
 ///
 /// 2 つの null 許容列ではなく enum で持つのは、「OIDC なのに SP が入っている」という
 /// 表せてはいけない状態を型で消すためである（DB 側も CHECK 制約で同じことを言っている）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BindingTarget {
-    /// OIDC の RP（`clients.id`。`client_id` ではなく代理キー）。
+    /// ログイン用の OIDC の RP（`clients.id`。`client_id` ではなく代理キー）。
     Oidc { client_row_id: Uuid },
     /// SAML の SP（`saml_service_providers.id`）。
     Saml { service_provider_id: Uuid },
+    /// アプリ自身が assay を呼ぶときのサービスアカウント（`client_credentials` の `clients.id`）。
+    ///
+    /// ⚠ **サービスアカウントはアプリではない。** アプリの名乗りの 1 つである（例: wiki が名簿を
+    /// 引きに来るときの client は、wiki というアプリの名乗り）。名簿の self の口は、呼んできた
+    /// client のこの名乗りからアプリを決める。
+    ServiceAccount { client_row_id: Uuid },
+    /// アプリの API の宛名（`resources.id`。トークンの `aud` に入る値。ADR-0042）。
+    Resource { resource_id: Uuid },
 }
 
 impl BindingTarget {
-    /// DB の `protocol` 列に入る値。許可値の単一の出所は本 enum。
-    pub fn protocol(&self) -> &'static str {
+    /// DB の `kind` 列に入る値。許可値の単一の出所は本 enum。
+    pub fn kind(&self) -> &'static str {
         match self {
             Self::Oidc { .. } => "oidc",
             Self::Saml { .. } => "saml",
+            Self::ServiceAccount { .. } => "service_account",
+            Self::Resource { .. } => "resource",
         }
     }
 
-    /// 相手の代理キー（プロトコルを問わず 1 つ）。
+    /// 相手の代理キー（種類を問わず 1 つ）。
     pub fn target_id(&self) -> Uuid {
         match self {
-            Self::Oidc { client_row_id } => *client_row_id,
+            Self::Oidc { client_row_id } | Self::ServiceAccount { client_row_id } => *client_row_id,
             Self::Saml {
                 service_provider_id,
             } => *service_provider_id,
+            Self::Resource { resource_id } => *resource_id,
         }
     }
 }
 
-/// アプリ ↔ 認証方法（`application_bindings` テーブル）。1 アプリに 0〜N。
+/// アプリ ↔ 名乗り（`application_bindings` テーブル）。1 アプリに 0〜N。
 #[derive(Debug, Clone)]
 pub struct ApplicationBinding {
     pub id: Uuid,

@@ -168,6 +168,27 @@ impl ManagementTokenService {
         bearer_token: Option<&str>,
         required_permission: &str,
     ) -> ManagementAccess {
+        let principal = match self.authenticate(tenant, bearer_token).await {
+            ManagementAccess::Granted(principal) => principal,
+            other => return other,
+        };
+        if permission::satisfies(&principal.permission_codes, required_permission) {
+            ManagementAccess::Granted(principal)
+        } else {
+            ManagementAccess::Forbidden
+        }
+    }
+
+    /// 管理トークンを検証し、主体だけを返す（**権限コードは問わない**）。
+    ///
+    /// 認可を権限コードではなく**主体そのもの**で決める口が使う（名簿の self。ADR-0059）。
+    /// ⚠ ここを通っただけで何かを許してはいけない ——呼び出し側が主体を見て決めること。
+    /// 結果は `Granted` か `Unauthenticated` のどちらかで、`Forbidden` にはならない。
+    pub async fn authenticate(
+        &self,
+        tenant: TenantContext,
+        bearer_token: Option<&str>,
+    ) -> ManagementAccess {
         let Some(token) = bearer_token.filter(|t| !t.is_empty()) else {
             return ManagementAccess::Unauthenticated;
         };
@@ -180,16 +201,9 @@ impl ManagementTokenService {
         };
 
         // 主体がまだ使えるか（無効化された管理者・停止したクライアントを締め出す）。
-        let principal = match self.resolve_principal(tenant, &claims).await {
-            Some(principal) => principal,
-            None => return ManagementAccess::Unauthenticated,
-        };
-
-        let held = &principal.permission_codes;
-        if permission::satisfies(held, required_permission) {
-            ManagementAccess::Granted(principal)
-        } else {
-            ManagementAccess::Forbidden
+        match self.resolve_principal(tenant, &claims).await {
+            Some(principal) => ManagementAccess::Granted(principal),
+            None => ManagementAccess::Unauthenticated,
         }
     }
 

@@ -704,6 +704,7 @@ impl AppState {
             client_permissions.clone(),
             resources.clone(),
             client_resources.clone(),
+            applications.clone(),
             keys.clone(),
             client_auth.clone(),
             audit.clone(),
@@ -858,13 +859,14 @@ impl AppState {
             applications.clone(),
             clients.clone(),
             saml_service_provider_repo.clone(),
+            resources.clone(),
             Arc::new(SqlxTenantMemberQuery::new(pool.clone())),
             audit.clone(),
             clock.clone(),
             ids.clone(),
         ));
-        // アプリの名簿の照会（ADR-0057）。判定（`ApplicationAccessService`）と同じアプリの
-        // 解決経路（`find_by_oidc_client_id`）を通るので、名簿と入口が食い違わない。
+        // アプリの名簿の照会（ADR-0057 / ADR-0059）。宛先のアプリは、呼んできたサービスアカウントの
+        // 名乗り（`find_by_binding_target`）で決まる。
         let application_users = Arc::new(ApplicationUserDirectoryService::new(
             applications.clone(),
             Arc::new(SqlxApplicationUserQuery::new(pool.clone())),

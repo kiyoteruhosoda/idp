@@ -85,6 +85,17 @@ impl Client {
         self.client_type == ClientType::Confidential
             && self.allows_grant_type(GrantType::ClientCredentials)
     }
+
+    /// サービスアカウント（ADR-0038）か ——`client_credentials` だけで動き、利用者のログインに
+    /// 使われないクライアント。
+    ///
+    /// アプリの名乗りを種類ごとに分ける根拠（ADR-0059）。ログイン用（`authorization_code`）と
+    /// サービスアカウントは 1 つのクライアントに同居しない（ADR-0032 Revised）が、古い登録が
+    /// 両方を持っていてもサービスアカウントとは扱わない ——利用者が入ってくる相手を「機械の名乗り」
+    /// として結び付けると、ログインの判定からアプリが外れる。
+    pub fn is_service_account(&self) -> bool {
+        self.allows_client_credentials() && !self.allows_grant_type(GrantType::AuthorizationCode)
+    }
 }
 
 #[cfg(test)]

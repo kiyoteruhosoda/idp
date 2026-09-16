@@ -1,4 +1,11 @@
-//! アプリの名簿を答える（ADR-0057）。RP の定期照合（ADR-0049 の I7）が読む。
+//! アプリの名簿を答える（ADR-0057 / ADR-0059）。RP の定期照合（ADR-0049 の I7）が読む。
+//!
+//! # どのアプリの名簿か
+//!
+//! ⚠ **RP に言わせない。** 呼んできた主体がサービスアカウントで、それが**あるアプリの名乗り**
+//! として結び付いていれば、そのアプリの名簿を返す（ADR-0059）。「このサービスアカウントはどの
+//! アプリのものか」は assay が持つ事実であり、RP が経路に書いた `client_id` を信じると、
+//! 権限さえあれば他のアプリの名簿を読める。
 //!
 //! # 何を答えるか
 //!
@@ -17,7 +24,10 @@
 //! 割り当ては `users.updated_at` を動かさない ——照会がいちばん拾いたい変化が、いちばん伝わらない。
 //! 照合は全件で回し、RP が持っている `sub` の消息は [`RosterQuery::Subjects`] で聞く。
 
-use crate::domain::application::{Application, ApplicationUser, ApplicationUserState};
+use crate::domain::admin_actor::AdminActor;
+use crate::domain::application::{
+    Application, ApplicationUser, ApplicationUserState, BindingTarget,
+};
 use crate::domain::paging::{Page, PageRequest, PagedResult};
 use crate::domain::repositories::{ApplicationRepository, ApplicationUserQuery};
 use crate::domain::tenant_context::TenantContext;
@@ -37,10 +47,13 @@ pub const MAX_SUBJECTS: usize = 100;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ApplicationUserDirectoryError {
-    /// その `client_id` に対応するアプリが無い（未登録・移行漏れ・binding が外れている）。
+    /// 呼んできた主体がサービスアカウントではない（管理コンソールの利用者など）。
     ///
-    /// ⚠ **空の名簿を返さない。** 「誰も使えない」と答えると RP は全員を止める。判定側が同じ
-    /// 場合に素通しにしているのと同じ理由である（ADR-0054）。
+    /// 名簿の self は「呼んできたサービスアカウントのアプリ」なので、利用者には答える相手が無い。
+    NotAServiceAccount,
+    /// 呼んできたサービスアカウントが、どのアプリの名乗りにも結び付いていない。
+    ///
+    /// ⚠ **空の名簿を返さない。** 「誰も使えない」と答えると RP は全員を止める。
     NotBound,
     /// 一度に聞ける `sub` の上限を超えた。
     TooManySubjects,
@@ -73,22 +86,28 @@ impl ApplicationUserDirectoryService {
         }
     }
 
-    /// OIDC の `client_id` から名簿を引く。
+    /// 呼んできたサービスアカウントのアプリの名簿を引く（`self`）。
     ///
-    /// 宛先を `client_id` で指すのは、⚠ **RP が既に持っている唯一の値**だからである（アプリの
-    /// 内部 ID を持たせると、アプリを作り直した日に古い ID のまま静かに別の名簿を読む）。解決は
-    /// 判定と同じ経路（アプリ ↔ binding ↔ client）を通る。
-    pub async fn for_oidc_client(
+    /// 解決は「主体 → サービスアカウントの名乗り → アプリ」の 1 本だけ。⚠ **権限コードでは
+    /// 通さない** ——名乗りとして結び付いていることが、そのアプリの名簿を読んでよい理由である
+    /// （テナント全体の `idp.applications:read` を配ると、他のアプリの名簿まで読める）。
+    pub async fn for_caller(
         &self,
         tenant: TenantContext,
-        client_id: &str,
+        caller: &AdminActor,
         query: RosterQuery,
         limit: Option<i64>,
         offset: Option<i64>,
     ) -> Result<PagedResult<ApplicationUser>, ApplicationUserDirectoryError> {
+        let client_row_id = caller
+            .client_row_id()
+            .ok_or(ApplicationUserDirectoryError::NotAServiceAccount)?;
         let application = self
             .applications
-            .find_by_oidc_client_id(tenant.tenant_id(), client_id)
+            .find_by_binding_target(
+                tenant.tenant_id(),
+                BindingTarget::ServiceAccount { client_row_id },
+            )
             .await
             .map_err(|e| ApplicationUserDirectoryError::Internal(e.to_string()))?
             .ok_or(ApplicationUserDirectoryError::NotBound)?;
@@ -235,7 +254,22 @@ mod tests {
             _t: TenantId,
             _c: &str,
         ) -> DomainResult<Option<Application>> {
-            Ok(self.application.clone())
+            Ok(None)
+        }
+        async fn find_by_binding_target(
+            &self,
+            _t: TenantId,
+            target: BindingTarget,
+        ) -> DomainResult<Option<Application>> {
+            // ⚠ サービスアカウントの名乗りでだけ引ける（ログイン用の名乗りでは答えない）。
+            match target {
+                BindingTarget::ServiceAccount { client_row_id }
+                    if client_row_id == service_account() =>
+                {
+                    Ok(self.application.clone())
+                }
+                _ => Ok(None),
+            }
         }
         async fn find_by_saml_entity_id(
             &self,
@@ -328,18 +362,60 @@ mod tests {
         TenantContext::new(tenant_id())
     }
 
-    /// binding が無い client には**空の名簿を返さない**。返すと RP が全員を止める。
+    /// 名乗りとして結び付いたサービスアカウントの `clients.id`。
+    fn service_account() -> Uuid {
+        Uuid::from_u128(99)
+    }
+
+    fn caller() -> AdminActor {
+        AdminActor::Client {
+            id: service_account(),
+            client_id: "wiki-machine".to_string(),
+        }
+    }
+
+    /// 名乗りに結び付いていないサービスアカウントには**空の名簿を返さない**。返すと RP が全員を止める。
     #[tokio::test]
-    async fn a_client_without_an_application_is_not_an_empty_roster() {
+    async fn a_service_account_without_an_application_is_not_an_empty_roster() {
         let svc = service(Fake {
-            application: None,
+            application: Some(application(
+                AssignmentMode::Individual,
+                ApplicationStatus::Active,
+            )),
             rows: Vec::new(),
         });
+        let stranger = AdminActor::Client {
+            id: Uuid::from_u128(98),
+            client_id: "other-machine".to_string(),
+        };
         let err = svc
-            .for_oidc_client(context(), "client-a", RosterQuery::Page, None, None)
+            .for_caller(context(), &stranger, RosterQuery::Page, None, None)
             .await
             .unwrap_err();
         assert_eq!(err, ApplicationUserDirectoryError::NotBound);
+    }
+
+    /// 利用者（管理コンソールの人）は self を持たない。
+    #[tokio::test]
+    async fn a_user_has_no_own_application() {
+        let svc = service(Fake {
+            application: Some(application(
+                AssignmentMode::Individual,
+                ApplicationStatus::Active,
+            )),
+            rows: Vec::new(),
+        });
+        let err = svc
+            .for_caller(
+                context(),
+                &AdminActor::User(Uuid::from_u128(7)),
+                RosterQuery::Page,
+                None,
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err, ApplicationUserDirectoryError::NotAServiceAccount);
     }
 
     /// 聞かれた `sub` は、assay に居なくても必ず 1 行で返る（＝消えた）。
@@ -358,9 +434,9 @@ mod tests {
             }],
         });
         let result = svc
-            .for_oidc_client(
+            .for_caller(
                 context(),
-                "client-a",
+                &caller(),
                 RosterQuery::Subjects(vec![here, gone]),
                 None,
                 None,
@@ -398,7 +474,7 @@ mod tests {
             }],
         });
         let result = svc
-            .for_oidc_client(context(), "client-a", RosterQuery::Page, None, None)
+            .for_caller(context(), &caller(), RosterQuery::Page, None, None)
             .await
             .unwrap();
         assert_eq!(result.page.items[0].state, ApplicationUserState::Blocked);
@@ -420,7 +496,7 @@ mod tests {
             }],
         });
         let result = svc
-            .for_oidc_client(context(), "client-a", RosterQuery::Page, None, None)
+            .for_caller(context(), &caller(), RosterQuery::Page, None, None)
             .await
             .unwrap();
         assert_eq!(result.page.total, 1);
@@ -442,7 +518,7 @@ mod tests {
             }],
         });
         let result = svc
-            .for_oidc_client(context(), "client-a", RosterQuery::Page, None, None)
+            .for_caller(context(), &caller(), RosterQuery::Page, None, None)
             .await
             .unwrap();
         assert_eq!(result.page.items[0].state, ApplicationUserState::Blocked);
@@ -459,9 +535,9 @@ mod tests {
         });
         let subs: Vec<Uuid> = (0..=MAX_SUBJECTS as u128).map(Uuid::from_u128).collect();
         let err = svc
-            .for_oidc_client(
+            .for_caller(
                 context(),
-                "client-a",
+                &caller(),
                 RosterQuery::Subjects(subs),
                 None,
                 None,
