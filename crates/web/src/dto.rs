@@ -184,6 +184,15 @@ pub struct SettingsQuery {
     /// 遷移元（`admin` = 管理コンソール。左上に戻るリンクを表示する）。
     #[serde(default)]
     pub from: Option<String>,
+    /// 設定の絞り込み: 文字（キー・表示名・説明）。
+    #[serde(default)]
+    pub q: Option<String>,
+    /// 設定の絞り込み: このテナントで決めたものだけ（値があれば有効）。
+    #[serde(default)]
+    pub mine: Option<String>,
+    /// 設定の絞り込み: 全体のランタイム設定の種類（`tenant` / `action` / `pending`）。
+    #[serde(default)]
+    pub runtime: Option<String>,
 }
 
 /// テナント登録フォーム（`POST /{tenant_id}/admin/tenants`。root / `idp.system.admin` 専用）。

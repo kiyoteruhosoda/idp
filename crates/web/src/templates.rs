@@ -465,6 +465,9 @@ mod tests {
                 system: None,
                 pending_api_keys: &[],
                 stale_web_keys: &[],
+                filter: &crate::settings_filter::SettingsFilter::default(),
+                tenant_values_total: 0,
+                runtime_total: 0,
             })
         };
 
@@ -531,7 +534,61 @@ mod tests {
             system,
             pending_api_keys: &[],
             stale_web_keys: &[],
+            filter: &crate::settings_filter::SettingsFilter::default(),
+            tenant_values_total: 0,
+            runtime_total: 0,
         })
+    }
+
+    /// 絞り込みのフォームを出し、条件を書き戻し、絞る前の件数と「該当なし」を出す。
+    /// ランタイム設定の種類は、その一覧を見られるとき（root）にだけ出す。
+    #[test]
+    fn the_settings_filter_keeps_its_condition_and_shows_counts() {
+        let messages = Messages::new(Locale::Ja);
+        let filter = crate::settings_filter::SettingsFilter::new(Some("zzz"), Some("1"), None);
+        let empty = TenantSettingsListView { settings: vec![] };
+        let html = render(&AdminSettings {
+            messages: &messages,
+            tenant: "/t",
+            admin: Some(ConsoleAdmin {
+                label: "admin",
+                tenant_name: Some("Acme"),
+                permissions: &["idp.tenant.admin".to_string()],
+            }),
+            tenant_id: "00000000-0000-7000-8000-000000000000",
+            tenant_name: "Acme",
+            tenant_status: "ACTIVE",
+            tenant_self_registration: false,
+            tenant_email_login: false,
+            csrf: "csrf-token",
+            saved: false,
+            error_key: None,
+            tenant_settings: Some(&empty),
+            tenant_smtp: None,
+            system: None,
+            pending_api_keys: &[],
+            stale_web_keys: &[],
+            filter: &filter,
+            tenant_values_total: 16,
+            runtime_total: 0,
+        });
+        assert!(html.contains("id=\"settings-filter\""), "{html}");
+        assert!(html.contains("value=\"zzz\""), "{html}");
+        assert!(
+            html.contains("id=\"settings-filter-mine\" name=\"mine\" value=\"1\" checked"),
+            "{html}"
+        );
+        // root でなければランタイム設定の種類は出さない。
+        assert!(!html.contains("id=\"settings-filter-runtime\""), "{html}");
+        assert!(html.contains("0 / 16"), "{html}");
+        assert!(
+            html.contains(&messages.get("admin-settings-filter-none")),
+            "{html}"
+        );
+        assert!(
+            html.contains(&messages.get("admin-settings-filter-clear")),
+            "{html}"
+        );
     }
 
     fn render_with_tenant_smtp(
@@ -559,6 +616,9 @@ mod tests {
             system: None,
             pending_api_keys: &[],
             stale_web_keys: &[],
+            filter: &crate::settings_filter::SettingsFilter::default(),
+            tenant_values_total: 0,
+            runtime_total: 0,
         })
     }
 
@@ -2731,9 +2791,27 @@ pub struct AdminSettings<'a> {
     pub pending_api_keys: &'a [String],
     /// api は反映済みだが web が古い共有キー名（MT27）。api だけを再起動した状態で残る。
     pub stale_web_keys: &'a [String],
+    /// 絞り込みの条件（フォームへ書き戻す）。一覧はハンドラで絞ってから渡す。
+    pub filter: &'a crate::settings_filter::SettingsFilter,
+    /// 絞る前のテナントの設定の件数（「N 件中 M 件」）。
+    pub tenant_values_total: usize,
+    /// 絞る前の全体のランタイム設定の件数。
+    pub runtime_total: usize,
 }
 
 impl AdminSettings<'_> {
+    /// テナントの設定の「表示中 / 絞る前」。件数の文言へ 1 つの値として差し込む。
+    pub fn tenant_values_count(&self) -> String {
+        let shown = self.tenant_settings.map_or(0, |l| l.settings.len());
+        format!("{shown} / {}", self.tenant_values_total)
+    }
+
+    /// 全体のランタイム設定の「表示中 / 絞る前」。
+    pub fn runtime_count(&self) -> String {
+        let shown = self.system.map_or(0, |s| s.runtime_settings.len());
+        format!("{shown} / {}", self.runtime_total)
+    }
+
     /// 設定キーの表示名。訳が無いキー（定義に足したばかりのキー）はキーそのものを出す
     /// ——項目は api の定義から並ぶので、訳の書き足し忘れで項目ごと消える形にはしない。
     pub fn setting_label(&self, key: &str) -> String {

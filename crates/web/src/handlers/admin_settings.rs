@@ -22,6 +22,7 @@ use crate::handlers::admin_console::{
 };
 use crate::handlers::found;
 use crate::i18n::Messages;
+use crate::settings_filter::SettingsFilter;
 use crate::state::WebState;
 use crate::templates::{
     render, setting_label, AdminSettings, AdminTenantSettingConfirm, ConsoleNotice,
@@ -128,6 +129,25 @@ pub async fn page(
         })
         .unwrap_or_default();
 
+    // 絞り込み。件数は絞る前に控え、「N 件中 M 件」を出す（未反映の警告は絞る前の一覧から作ってある）。
+    let filter = SettingsFilter::new(
+        query.q.as_deref(),
+        query.mine.as_deref(),
+        query.runtime.as_deref(),
+    );
+    let tenant_values_total = tenant_settings.as_ref().map_or(0, |l| l.settings.len());
+    let mut tenant_settings = tenant_settings;
+    if let Some(list) = tenant_settings.as_mut() {
+        list.settings
+            .retain(|item| filter.keeps_tenant_value(item, &setting_label(&messages, &item.key)));
+    }
+    let runtime_total = system.as_ref().map_or(0, |s| s.runtime_settings.len());
+    let mut system = system;
+    if let Some(sys) = system.as_mut() {
+        sys.runtime_settings
+            .retain(|item| filter.keeps_runtime_setting(item));
+    }
+
     Html(render(&AdminSettings {
         messages: &messages,
         tenant: &tenant.prefix(),
@@ -145,6 +165,9 @@ pub async fn page(
         system: system.as_ref(),
         pending_api_keys: &pending_api_keys,
         stale_web_keys: &stale_web_keys,
+        filter: &filter,
+        tenant_values_total,
+        runtime_total,
     }))
     .into_response()
 }

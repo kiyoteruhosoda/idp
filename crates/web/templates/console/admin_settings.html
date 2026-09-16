@@ -23,6 +23,44 @@
 </div>
 {% endif %}
 
+{#- 設定の絞り込み。GET でサーバ側が一覧を絞る（メンバー・監査ログと同じ作り。スクリプトは足さない）。
+    ランタイム設定の種類は、その一覧を見られる管理者（root）にだけ出す。 -#}
+{% if tenant_settings.is_some() || system.is_some() %}
+<form method="get" action="{{ tenant }}/admin/settings" class="card mb-4 admin-settings-filter" role="search" id="settings-filter">
+  <div class="card-body">
+    <div class="row g-2 align-items-end">
+      <div class="col-12 col-md-5">
+        <label class="form-label" for="settings-filter-q">{{ messages.get("admin-settings-filter-text") }}</label>
+        <input type="search" class="form-control" id="settings-filter-q" name="q" value="{{ filter.text }}" placeholder="{{ messages.get("admin-settings-filter-text-placeholder") }}">
+      </div>
+      {% if system.is_some() %}
+      <div class="col-12 col-md-4">
+        <label class="form-label" for="settings-filter-runtime">{{ messages.get("admin-settings-filter-runtime") }}</label>
+        <select class="form-select" id="settings-filter-runtime" name="runtime">
+          <option value=""{% if filter.runtime.as_query().is_empty() %} selected{% endif %}>{{ messages.get("admin-settings-filter-runtime-all") }}</option>
+          <option value="tenant"{% if filter.runtime.as_query() == "tenant" %} selected{% endif %}>{{ messages.get("admin-settings-filter-runtime-tenant") }}</option>
+          <option value="action"{% if filter.runtime.as_query() == "action" %} selected{% endif %}>{{ messages.get("admin-settings-filter-runtime-action") }}</option>
+          <option value="pending"{% if filter.runtime.as_query() == "pending" %} selected{% endif %}>{{ messages.get("admin-settings-filter-runtime-pending") }}</option>
+        </select>
+      </div>
+      {% endif %}
+      {% if tenant_settings.is_some() %}
+      <div class="col-12 col-md-3">
+        <div class="form-check">
+          <input type="checkbox" class="form-check-input" id="settings-filter-mine" name="mine" value="1" {% if filter.tenant_overrides_only %}checked{% endif %}>
+          <label class="form-check-label" for="settings-filter-mine">{{ messages.get("admin-settings-filter-mine") }}</label>
+        </div>
+      </div>
+      {% endif %}
+    </div>
+    <div class="d-flex flex-wrap gap-2 mt-3">
+      <button type="submit" class="btn btn-primary"><i class="fa-solid fa-magnifying-glass me-2" aria-hidden="true"></i>{{ messages.get("admin-settings-filter-apply") }}</button>
+      {% if filter.is_active() %}<a class="btn btn-outline-secondary" href="{{ tenant }}/admin/settings">{{ messages.get("admin-settings-filter-clear") }}</a>{% endif %}
+    </div>
+  </div>
+</form>
+{% endif %}
+
 <div class="card mb-4 admin-settings-tenant" id="tenant-settings">
   <div class="card-header d-flex align-items-center"><i class="fa-solid fa-building me-2" aria-hidden="true"></i>{{ messages.get("admin-settings-tenant-heading") }}</div>
   <div class="card-body">
@@ -60,6 +98,8 @@
   <div class="card-header d-flex align-items-center"><i class="fa-solid fa-sliders me-2" aria-hidden="true"></i>{{ messages.get("admin-tenant-values-heading") }}</div>
   <div class="card-body">
     <p class="text-muted small">{{ messages.get("admin-tenant-values-lead") }}</p>
+    {% if filter.is_active() %}<p class="small mb-2" role="status">{{ messages.get_arg("admin-settings-filter-count", "count", self.tenant_values_count().as_str()) }}</p>{% endif %}
+    {% if values.settings.is_empty() %}<p class="text-muted mb-0">{{ messages.get("admin-settings-filter-none") }}</p>{% endif %}
     <ul class="list-group list-group-flush">
       {% for item in values.settings %}
       <li class="list-group-item px-0 py-3" id="tenant-value-{{ item.key }}">
@@ -254,6 +294,8 @@
   <div class="card-header d-flex align-items-center"><i class="fa-solid fa-sliders me-2" aria-hidden="true"></i>{{ messages.get("admin-settings-runtime-heading") }}</div>
   <div class="card-body">
     <p class="text-muted small">{{ messages.get("admin-settings-runtime-note") }}</p>
+    {% if filter.is_active() %}<p class="small mb-2" role="status">{{ messages.get_arg("admin-settings-filter-count", "count", self.runtime_count().as_str()) }}</p>{% endif %}
+    {% if sys.runtime_settings.is_empty() %}<p class="text-muted mb-0">{{ messages.get("admin-settings-filter-none") }}</p>{% endif %}
     <div class="table-responsive">
       <table class="table table-cards table-hover align-middle mb-0">
         <thead><tr>
