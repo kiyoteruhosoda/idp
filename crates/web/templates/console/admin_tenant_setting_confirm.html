@@ -1,0 +1,36 @@
+{% extends "console/layout.html" %}
+{% block content %}
+{#- 締め出し得る値へ変える前の確認（ADR-0058）。JavaScript の確認ダイアログに頼らず、1 画面挟んで
+    送り直させる（スマホでも同じに動き、api も `confirmed` が無ければ保存しない）。 -#}
+<div class="mb-4">
+  <p class="text-muted text-uppercase fw-bold small mb-1">{{ messages.get("admin-nav-settings") }}</p>
+  <h2 class="h3 mb-1">{{ messages.get("admin-tenant-value-confirm-title") }}</h2>
+</div>
+
+<div class="alert alert-warning" role="alert">
+  <p class="fw-semibold mb-1"><i class="fa-solid fa-triangle-exclamation me-2" aria-hidden="true"></i>{{ messages.get("admin-tenant-value-confirm-lead") }}</p>
+  <p class="mb-0">{{ messages.get("admin-tenant-value-confirm-check") }}</p>
+</div>
+
+<div class="card mb-4">
+  <div class="card-body">
+    <p class="fw-semibold mb-1">{{ label }}</p>
+    <p class="text-muted small mb-2"><code>{{ key }}</code></p>
+    {% if !description.is_empty() %}<p class="text-muted small">{{ description }}</p>{% endif %}
+    <dl class="row mb-3">
+      <dt class="col-5 col-sm-3">{{ messages.get("admin-tenant-values-current") }}</dt>
+      <dd class="col-7 col-sm-9">{% if let Some(current) = current_value %}<code>{{ current }}</code>{% else %}-{% endif %}</dd>
+      <dt class="col-5 col-sm-3">{{ messages.get("admin-tenant-value-confirm-new") }}</dt>
+      <dd class="col-7 col-sm-9"><code>{{ value }}</code></dd>
+    </dl>
+    <form method="post" action="{{ tenant }}/admin/settings/tenant/keys" class="d-flex flex-wrap gap-2">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <input type="hidden" name="key" value="{{ key }}">
+      <input type="hidden" name="value" value="{{ value }}">
+      <input type="hidden" name="confirmed" value="1">
+      <button type="submit" class="btn btn-danger">{{ messages.get("admin-tenant-value-confirm-submit") }}</button>
+      <a class="btn btn-outline-secondary" href="{{ tenant }}/admin/settings#tenant-values">{{ messages.get("admin-tenant-value-confirm-cancel") }}</a>
+    </form>
+  </div>
+</div>
+{% endblock %}

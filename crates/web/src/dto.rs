@@ -256,6 +256,26 @@ pub struct AdminRuntimeSettingForm {
     pub csrf_token: String,
 }
 
+/// テナントの設定値を決めるフォーム（`POST /{tenant_id}/admin/settings/tenant/keys`。ADR-0058）。
+///
+/// `confirmed` は確認画面から送り直したときだけ付く（締め出し得る値へ変えるとき）。
+#[derive(Debug, Deserialize)]
+pub struct AdminTenantSettingForm {
+    pub key: String,
+    #[serde(default)]
+    pub value: String,
+    #[serde(default)]
+    pub confirmed: Option<String>,
+    pub csrf_token: String,
+}
+
+/// テナントの上書きを消す（全体に戻す）フォーム（`POST /{tenant_id}/admin/settings/tenant/keys/clear`）。
+#[derive(Debug, Deserialize)]
+pub struct AdminTenantSettingClearForm {
+    pub key: String,
+    pub csrf_token: String,
+}
+
 /// api・web の再起動フォーム（`POST /{tenant_id}/admin/restart`。ADR-0017）。
 #[derive(Debug, Deserialize)]
 pub struct AdminRestartForm {

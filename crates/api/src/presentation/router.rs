@@ -6,10 +6,10 @@ use crate::presentation::handlers::{
     admin, admin_application_logs, admin_applications, admin_audit, admin_authentication_policies,
     admin_client_permissions, admin_clients, admin_external_idps, admin_invitations,
     admin_login_identifiers, admin_members, admin_permissions, admin_resources, admin_restart,
-    admin_saml_service_providers, admin_signing_keys, admin_system_settings, admin_tenants,
-    admin_users, authorize, consent, discovery, health, internal_admin_token, internal_auth,
-    internal_runtime_settings, introspect, invitations, logout, mfa, passkey, register, revoke,
-    saml_sso, token, userinfo,
+    admin_saml_service_providers, admin_signing_keys, admin_system_settings, admin_tenant_settings,
+    admin_tenants, admin_users, authorize, consent, discovery, health, internal_admin_token,
+    internal_auth, internal_runtime_settings, introspect, invitations, logout, mfa, passkey,
+    register, revoke, saml_sso, token, userinfo,
 };
 use crate::presentation::openapi::ApiDoc;
 use crate::presentation::security_headers::add_security_headers;
@@ -322,6 +322,16 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/admin/settings/tenant",
             get(admin_tenants::get_current_tenant).patch(admin_tenants::update_current_tenant),
+        )
+        // テナントの設定値（ADR-0058）。項目はキー定義から導き、全体で決めるキーは開かない。
+        .route(
+            "/admin/settings/tenant/keys",
+            get(admin_tenant_settings::list_tenant_settings),
+        )
+        .route(
+            "/admin/settings/tenant/keys/{key}",
+            axum::routing::put(admin_tenant_settings::set_tenant_setting)
+                .delete(admin_tenant_settings::clear_tenant_setting),
         )
         .route(
             "/admin/system-settings",

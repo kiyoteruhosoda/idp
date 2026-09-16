@@ -298,4 +298,17 @@ mod tests {
             assert!(is_grantable_in_tenant(code, true));
         }
     }
+
+    /// テナントの設定の権限は、全体の設定へ届かない（ADR-0058 §11。付与の側の防御）。
+    /// 全体の設定の口は `idp.system.admin` の完全一致でしか通らず、SMTP の口も別の 1 枚である。
+    #[test]
+    fn tenant_settings_codes_do_not_reach_the_whole_idp_settings() {
+        for held in [TENANT_SETTINGS_READ, TENANT_SETTINGS_WRITE] {
+            for whole in [SYSTEM_ADMIN, SMTP_READ, SMTP_WRITE, TENANT_ADMIN] {
+                assert!(!implies(held, whole), "{held} must not imply {whole}");
+            }
+        }
+        assert!(implies(TENANT_SETTINGS_WRITE, TENANT_SETTINGS_READ));
+        assert!(!implies(TENANT_SETTINGS_READ, TENANT_SETTINGS_WRITE));
+    }
 }

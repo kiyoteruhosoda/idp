@@ -36,13 +36,21 @@
 //! | パスワード再設定・メール検証のリンク | 利用者の**所属元** | リンクは所属元を指し、消費も所属元でしか通らない（MT26） |
 //! | 招待のリンク | 招待した**参加先** | 招待は参加先のメンバーシップ行である |
 
+use crate::application::audit::{AuditService, RequestContext};
+use crate::domain::admin_actor::AdminActor;
+use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::authentication_policy::LockoutPolicy;
 use crate::domain::cache::Cache;
 use crate::domain::error::{DomainError, Result};
 use crate::domain::password_policy::{PasswordPolicy, MAX_PASSWORD_LEN};
 use crate::domain::repositories::{SystemSettingsRepository, TenantSettingsRepository};
-use crate::domain::system_setting::{runtime_setting_definition, SettingDefinition, SettingScope};
+use crate::domain::system_setting::{
+    runtime_setting_definition, validate_setting_value, SettingDefinition, SettingScope,
+    RUNTIME_SETTING_DEFINITIONS,
+};
 use crate::domain::tenant::TenantId;
+use crate::domain::tenant_context::TenantContext;
+use crate::domain::tenant_setting::{TenantOverrideEntry, TenantSetting};
 use chrono::Duration;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -67,6 +75,30 @@ pub struct ResolvedTenantSetting {
     pub origin: SettingOrigin,
 }
 
+/// テナントの設定画面に並べる 1 項目（ADR-0058 §6）。
+///
+/// ⚠ **値だけを見せない。** 「このテナントで決めた」か「全体に従っている」か（`origin`）と、
+/// 全体の値（`whole_idp_value`）を必ず一緒に持つ。上書きしている項目でも全体の値を並べるのは、
+/// 「全体に戻すと何になるか」を読めないまま戻させないため。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TenantSettingView {
+    pub definition: &'static SettingDefinition,
+    /// このテナントで効いている値。
+    pub value: String,
+    pub origin: SettingOrigin,
+    /// 全体の値（全体の行 → 環境変数 → 組み込み既定）。上書きを消すとこの値に戻る。
+    pub whole_idp_value: String,
+}
+
+/// あるキーについて、全テナントがどう決めているか（全体の設定画面が読む。ADR-0058 §6）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TenantSettingAdoption {
+    /// 全体の値に従っている（行を持たない）テナントの件数。
+    pub following: u64,
+    /// 既定から外れている（このキーを上書きしている）テナント。
+    pub overriding: Vec<TenantOverrideEntry>,
+}
+
 pub struct TenantSettingsService {
     tenant_settings: Arc<dyn TenantSettingsRepository>,
     system_settings: Arc<dyn SystemSettingsRepository>,
@@ -76,6 +108,7 @@ pub struct TenantSettingsService {
     tenant_cache: Arc<dyn Cache<TenantId, SettingOverrides>>,
     /// 全体の行のキャッシュ。キー空間は 1 つだけなので `()` を鍵にする。
     global_cache: Arc<dyn Cache<(), SettingOverrides>>,
+    audit: Arc<AuditService>,
 }
 
 impl TenantSettingsService {
@@ -85,6 +118,7 @@ impl TenantSettingsService {
         fallback: HashMap<String, String>,
         tenant_cache: Arc<dyn Cache<TenantId, SettingOverrides>>,
         global_cache: Arc<dyn Cache<(), SettingOverrides>>,
+        audit: Arc<AuditService>,
     ) -> Self {
         Self {
             tenant_settings,
@@ -92,6 +126,7 @@ impl TenantSettingsService {
             fallback,
             tenant_cache,
             global_cache,
+            audit,
         }
     }
 
@@ -104,14 +139,147 @@ impl TenantSettingsService {
                 origin: SettingOrigin::TenantOverride,
             });
         }
-        let value = match self.global_overrides().await?.get(def.key) {
-            Some(value) => value.clone(),
-            None => self.fallback.get(def.key).cloned().unwrap_or_default(),
-        };
         Ok(ResolvedTenantSetting {
-            value,
+            value: self.whole_idp_value(def).await?,
             origin: SettingOrigin::Inherited,
         })
+    }
+
+    /// 全体の値（全体の行 → 環境変数 → 組み込み既定）。テナントの行は見ない。
+    async fn whole_idp_value(&self, def: &SettingDefinition) -> Result<String> {
+        Ok(match self.global_overrides().await?.get(def.key) {
+            Some(value) => value.clone(),
+            None => self.fallback.get(def.key).cloned().unwrap_or_default(),
+        })
+    }
+
+    /// テナントが上書きできる全項目を、出どころと全体の値つきで返す（定義の並び順）。
+    ///
+    /// 項目はキー定義（`scope = TenantOverridable`）から導く ——キーを足すたびに画面や API の型を
+    /// 書き足さない。
+    pub async fn list(&self, tenant_id: TenantId) -> Result<Vec<TenantSettingView>> {
+        let tenant = self.tenant_overrides(tenant_id).await?;
+        let mut views = Vec::new();
+        for def in overridable_definitions() {
+            let whole_idp_value = self.whole_idp_value(def).await?;
+            let (value, origin) = match tenant.get(def.key) {
+                Some(value) => (value.clone(), SettingOrigin::TenantOverride),
+                None => (whole_idp_value.clone(), SettingOrigin::Inherited),
+            };
+            views.push(TenantSettingView {
+                definition: def,
+                value,
+                origin,
+                whole_idp_value,
+            });
+        }
+        Ok(views)
+    }
+
+    /// テナントの値を決める（行を書く）。
+    ///
+    /// - 定義に無いキー・全体で決めるキー・秘匿値のキーは断る（`InvalidValue`）
+    /// - 型は全体の保存と同じ `validate_setting_value` を通す
+    /// - ⚠ **締め出し得る値**（定義の `locks_out`）は `confirmed` が無ければ保存せず `Conflict` を返す。
+    ///   画面は確認を挟んでから `confirmed` を付けて送り直す
+    /// - 空の値は受けない。全体に戻すのは [`Self::clear`]（空の行を残すと「決めた」のか「戻した」
+    ///   のかが行から読めなくなる）
+    pub async fn set(
+        &self,
+        tenant: TenantContext,
+        key: &str,
+        value: &str,
+        confirmed: bool,
+        actor: &AdminActor,
+        ctx: &RequestContext,
+    ) -> Result<()> {
+        let def = overridable_definition(key)?;
+        let value = value.trim();
+        if value.is_empty() {
+            return Err(DomainError::InvalidValue(format!(
+                "setting {key} needs a value; clear the override to follow the whole IdP"
+            )));
+        }
+        validate_setting_value(def, value).map_err(DomainError::InvalidValue)?;
+        if def.needs_confirmation(value) && !confirmed {
+            return Err(DomainError::Conflict(format!(
+                "setting {key} = {value} can lock users out and needs confirmation"
+            )));
+        }
+        let tenant_id = tenant.tenant_id();
+        self.tenant_settings
+            .upsert(&TenantSetting {
+                tenant_id,
+                key: def.key.to_string(),
+                value: value.to_string(),
+                is_secret: false,
+            })
+            .await?;
+        self.invalidate(tenant_id);
+        self.record(tenant_id, def.key, "set", actor, ctx).await;
+        Ok(())
+    }
+
+    /// テナントの上書きを消す（＝全体に従う状態へ戻す）。行が無くても成功する。
+    pub async fn clear(
+        &self,
+        tenant: TenantContext,
+        key: &str,
+        actor: &AdminActor,
+        ctx: &RequestContext,
+    ) -> Result<()> {
+        let def = overridable_definition(key)?;
+        let tenant_id = tenant.tenant_id();
+        self.tenant_settings.delete(tenant_id, def.key).await?;
+        self.invalidate(tenant_id);
+        self.record(tenant_id, def.key, "cleared", actor, ctx).await;
+        Ok(())
+    }
+
+    async fn record(
+        &self,
+        tenant_id: TenantId,
+        key: &str,
+        change: &str,
+        actor: &AdminActor,
+        ctx: &RequestContext,
+    ) {
+        self.audit
+            .record(
+                AuditEventType::TenantSettingsUpdated,
+                AuditResult::Success,
+                Some(tenant_id),
+                actor.user_id(),
+                actor.client_id(),
+                // 値そのものは記録しない（キーと設定/解除の別のみ）。
+                Some(&format!("{key} {change}")),
+                ctx,
+            )
+            .await;
+    }
+
+    /// テナントが上書きできる各キーについて、従っているテナントの件数と、外れているテナントを返す。
+    ///
+    /// ⚠ テナントをまたいで読む。呼べるのは全体の設定画面（`idp.system.admin`）だけにすること。
+    pub async fn adoption_across_tenants(
+        &self,
+    ) -> Result<HashMap<&'static str, TenantSettingAdoption>> {
+        let across = self.tenant_settings.list_overrides_across_tenants().await?;
+        let mut adoption: HashMap<&'static str, TenantSettingAdoption> = overridable_definitions()
+            .map(|def| (def.key, TenantSettingAdoption::default()))
+            .collect();
+        for entry in across.overrides {
+            // 定義に無い行・全体のキーの行は数えない（効いていない行を「外れている」と見せない）。
+            if let Some((_, item)) = adoption.iter_mut().find(|(key, _)| **key == entry.key) {
+                item.overriding.push(entry);
+            }
+        }
+        for item in adoption.values_mut() {
+            item.following = across
+                .tenant_count
+                .saturating_sub(item.overriding.len() as u64);
+        }
+        Ok(adoption)
     }
 
     /// テナントについてキーの値を型へ変換して返す。
@@ -259,6 +427,13 @@ impl TenantSettingsService {
     }
 }
 
+/// テナントが上書きできる（秘匿値でない）キーの定義。並びは定義の順。
+fn overridable_definitions() -> impl Iterator<Item = &'static SettingDefinition> {
+    RUNTIME_SETTING_DEFINITIONS
+        .iter()
+        .filter(|def| def.scope == SettingScope::TenantOverridable && !def.secret)
+}
+
 /// テナントが上書きできるキーの定義を返す。そうでなければ断る。
 fn overridable_definition(key: &str) -> Result<&'static SettingDefinition> {
     let def = runtime_setting_definition(key)
@@ -279,13 +454,18 @@ fn overridable_definition(key: &str) -> Result<&'static SettingDefinition> {
 
 /// 消費側の単体試験が使う土台（ADR-0058）。
 ///
-/// ⚠ **試験では行を repository へ直接入れる。** 書き込みの口（#111）はこのサービスに持たせない。
+/// ⚠ **試験では行を repository へ直接入れる。** 書き込みの口（`set` / `clear`）を通すと、
+/// 消費側の試験が監査や入力検査の都合に引きずられる。
 #[cfg(test)]
 pub(crate) mod testing {
     use super::*;
+    use crate::domain::audit::AuditEvent;
+    use crate::domain::clock::Clock;
+    use crate::domain::repositories::AuditLogSink;
     use crate::domain::system_setting::{tenant_overridable_setting_keys, SystemSetting};
-    use crate::domain::tenant_setting::TenantSetting;
+    use crate::domain::tenant_setting::TenantOverridesAcrossTenants;
     use async_trait::async_trait;
+    use chrono::{DateTime, Utc};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
@@ -293,6 +473,20 @@ pub(crate) mod testing {
     pub struct FakeTenantSettings {
         pub rows: Mutex<Vec<TenantSetting>>,
         pub loads: AtomicUsize,
+        /// 行を 1 つも持たないテナントの数（横断集計の試験用）。
+        pub extra_tenants: Mutex<u64>,
+    }
+
+    impl FakeTenantSettings {
+        /// 秘匿値の行を入れる（SMTP のパスワードのような行が集計へ混ざらないことの試験用）。
+        pub fn put_secret(&self, tenant_id: TenantId, key: &str, value: &str) {
+            self.rows.lock().unwrap().push(TenantSetting {
+                tenant_id,
+                key: key.to_string(),
+                value: value.to_string(),
+                is_secret: true,
+            });
+        }
     }
 
     impl FakeTenantSettings {
@@ -332,6 +526,52 @@ pub(crate) mod testing {
                 .retain(|row| !(row.tenant_id == tenant_id && row.key == key));
             Ok(())
         }
+        async fn list_overrides_across_tenants(&self) -> Result<TenantOverridesAcrossTenants> {
+            let rows = self.rows.lock().unwrap();
+            let mut tenants: Vec<TenantId> = rows.iter().map(|row| row.tenant_id).collect();
+            tenants.sort_by_key(|id| id.to_string());
+            tenants.dedup();
+            Ok(TenantOverridesAcrossTenants {
+                // 行を持たないテナントも数に入る（`extra_tenants` 件ぶん）。
+                tenant_count: tenants.len() as u64 + *self.extra_tenants.lock().unwrap(),
+                overrides: rows
+                    .iter()
+                    .filter(|row| !row.is_secret && !row.value.is_empty())
+                    .map(|row| TenantOverrideEntry {
+                        tenant_id: row.tenant_id,
+                        tenant_name: format!("tenant-{}", row.tenant_id),
+                        key: row.key.clone(),
+                        value: row.value.clone(),
+                    })
+                    .collect(),
+            })
+        }
+    }
+
+    /// 監査イベントを溜めるだけの sink。
+    #[derive(Default)]
+    pub struct CapturingSink {
+        pub events: Mutex<Vec<AuditEvent>>,
+    }
+
+    #[async_trait]
+    impl AuditLogSink for CapturingSink {
+        async fn record(&self, event: &AuditEvent) -> Result<()> {
+            self.events.lock().unwrap().push(event.clone());
+            Ok(())
+        }
+    }
+
+    struct EpochClock;
+    impl Clock for EpochClock {
+        fn now(&self) -> DateTime<Utc> {
+            DateTime::<Utc>::UNIX_EPOCH
+        }
+    }
+
+    /// 試験用の監査サービス（記録は捨てずに `CapturingSink` へ溜める）。
+    pub fn audit(sink: Arc<CapturingSink>) -> Arc<AuditService> {
+        Arc::new(AuditService::new(sink, Arc::new(EpochClock)))
     }
 
     #[derive(Default)]
@@ -405,6 +645,7 @@ pub(crate) mod testing {
             fallback,
             Arc::new(NoCache),
             Arc::new(NoCache),
+            audit(Arc::new(CapturingSink::default())),
         ));
         TenantSettingsFixture {
             service,
@@ -425,7 +666,7 @@ pub(crate) mod testing {
 
 #[cfg(test)]
 mod tests {
-    use super::testing::{FakeSystemSettings, FakeTenantSettings};
+    use super::testing::{CapturingSink, FakeSystemSettings, FakeTenantSettings};
     use super::*;
     use crate::domain::clock::Clock;
     use crate::domain::system_setting::SystemSetting;
@@ -445,6 +686,7 @@ mod tests {
         service: TenantSettingsService,
         tenants: Arc<FakeTenantSettings>,
         system: Arc<FakeSystemSettings>,
+        audit: Arc<CapturingSink>,
     }
 
     fn fixture() -> Fixture {
@@ -453,6 +695,7 @@ mod tests {
         ));
         let tenants = Arc::new(FakeTenantSettings::default());
         let system = Arc::new(FakeSystemSettings::default());
+        let audit = Arc::new(CapturingSink::default());
         // 環境変数 → 組み込み既定の層（配線側が `Config::value_without_db` で作るもの）。
         let fallback = HashMap::from([
             ("PASSWORD_MIN_LENGTH".to_string(), "8".to_string()),
@@ -464,11 +707,13 @@ mod tests {
             fallback,
             Arc::new(InMemoryTtlCache::new(Duration::seconds(60), clock.clone())),
             Arc::new(InMemoryTtlCache::new(Duration::seconds(60), clock)),
+            super::testing::audit(audit.clone()),
         );
         Fixture {
             service,
             tenants,
             system,
+            audit,
         }
     }
 
@@ -726,5 +971,295 @@ mod tests {
                 .max_failed_attempts,
             i32::MAX
         );
+    }
+
+    fn actor() -> AdminActor {
+        AdminActor::User(Uuid::now_v7())
+    }
+
+    fn ctx() -> RequestContext {
+        RequestContext {
+            correlation_id: "test".to_string(),
+            ip_address: None,
+            user_agent: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn set_writes_a_row_and_the_next_lookup_sees_it_without_waiting_for_the_cache() {
+        let f = fixture();
+        let t = tenant();
+        // 先に引いてキャッシュへ載せておく（書いたあとに invalidate しないと古い値が返る）。
+        f.service.resolve(t, "PASSWORD_MIN_LENGTH").await.unwrap();
+
+        f.service
+            .set(
+                TenantContext::new(t),
+                "PASSWORD_MIN_LENGTH",
+                " 16 ",
+                false,
+                &actor(),
+                &ctx(),
+            )
+            .await
+            .unwrap();
+
+        let resolved = f.service.resolve(t, "PASSWORD_MIN_LENGTH").await.unwrap();
+        assert_eq!(resolved.value, "16", "trimmed and visible at once");
+        assert_eq!(resolved.origin, SettingOrigin::TenantOverride);
+    }
+
+    /// 「全体に戻す」は行を消す。値を全体と同じにするのとは違い、以後は全体の変更に追随する。
+    #[tokio::test]
+    async fn clear_removes_the_row_so_the_tenant_follows_the_whole_idp_again() {
+        let f = fixture();
+        let t = tenant();
+        f.service
+            .set(
+                TenantContext::new(t),
+                "PASSWORD_MIN_LENGTH",
+                "8",
+                false,
+                &actor(),
+                &ctx(),
+            )
+            .await
+            .unwrap();
+        f.service
+            .clear(
+                TenantContext::new(t),
+                "PASSWORD_MIN_LENGTH",
+                &actor(),
+                &ctx(),
+            )
+            .await
+            .unwrap();
+        assert!(f.tenants.rows.lock().unwrap().is_empty(), "the row is gone");
+
+        f.system
+            .rows
+            .lock()
+            .unwrap()
+            .push(global_row("PASSWORD_MIN_LENGTH", "12"));
+        f.service.invalidate_global();
+        let resolved = f.service.resolve(t, "PASSWORD_MIN_LENGTH").await.unwrap();
+        assert_eq!(resolved.value, "12", "follows the new whole-IdP value");
+        assert_eq!(resolved.origin, SettingOrigin::Inherited);
+    }
+
+    /// ⚠ テナントの権限でシステム区画のキーを開かない（使う側の防御）。定義に無いキーも書かない。
+    #[tokio::test]
+    async fn keys_decided_by_the_whole_idp_cannot_be_written_or_cleared_by_a_tenant() {
+        let f = fixture();
+        let t = tenant();
+        for key in [
+            "ACCESS_TOKEN_TTL_SECS",
+            "ISSUER",
+            "COOKIE_SECURE",
+            "AUTH_SESSION_TTL_SECS",
+            "DATABASE_URL",
+            "KEY_ENCRYPTION_KEY",
+            "PASSWORD_MIN_LENGHT",
+        ] {
+            let err = f
+                .service
+                .set(TenantContext::new(t), key, "1", true, &actor(), &ctx())
+                .await
+                .unwrap_err();
+            assert!(matches!(err, DomainError::InvalidValue(_)), "set {key}");
+            let err = f
+                .service
+                .clear(TenantContext::new(t), key, &actor(), &ctx())
+                .await
+                .unwrap_err();
+            assert!(matches!(err, DomainError::InvalidValue(_)), "clear {key}");
+        }
+        assert!(f.tenants.rows.lock().unwrap().is_empty());
+        assert!(f.audit.events.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn values_are_checked_against_the_kind_and_empty_values_are_refused() {
+        let f = fixture();
+        let t = tenant();
+        for (key, value) in [
+            ("PASSWORD_MIN_LENGTH", "sixteen"),
+            ("PASSWORD_MIN_LENGTH", "-1"),
+            ("PASSWORD_BREACH_CHECK_ENABLED", "yes"),
+            ("PASSWORD_MIN_LENGTH", "  "),
+        ] {
+            let err = f
+                .service
+                .set(TenantContext::new(t), key, value, false, &actor(), &ctx())
+                .await
+                .unwrap_err();
+            assert!(matches!(err, DomainError::InvalidValue(_)), "{key}={value}");
+        }
+        assert!(f.tenants.rows.lock().unwrap().is_empty());
+    }
+
+    /// 監査ログにはキーと設定/解除の別だけを残し、値そのものは残さない。
+    #[tokio::test]
+    async fn the_audit_log_records_the_key_and_the_change_but_not_the_value() {
+        let f = fixture();
+        let t = tenant();
+        f.service
+            .set(
+                TenantContext::new(t),
+                "PASSWORD_MIN_LENGTH",
+                "123",
+                false,
+                &actor(),
+                &ctx(),
+            )
+            .await
+            .unwrap();
+        f.service
+            .clear(
+                TenantContext::new(t),
+                "PASSWORD_MIN_LENGTH",
+                &actor(),
+                &ctx(),
+            )
+            .await
+            .unwrap();
+
+        let events = f.audit.events.lock().unwrap();
+        let reasons: Vec<&str> = events.iter().filter_map(|e| e.reason.as_deref()).collect();
+        assert_eq!(
+            reasons,
+            ["PASSWORD_MIN_LENGTH set", "PASSWORD_MIN_LENGTH cleared"]
+        );
+        assert!(events.iter().all(|e| {
+            e.event_type == AuditEventType::TenantSettingsUpdated && e.tenant_id == Some(t)
+        }));
+        assert!(!reasons.iter().any(|r| r.contains("123")));
+    }
+
+    #[tokio::test]
+    async fn list_shows_every_overridable_key_with_its_origin_and_the_whole_idp_value() {
+        let f = fixture();
+        let t = tenant();
+        f.system
+            .rows
+            .lock()
+            .unwrap()
+            .push(global_row("PASSWORD_MIN_LENGTH", "12"));
+        f.tenants.put(t, "PASSWORD_MIN_LENGTH", "16");
+
+        let views = f.service.list(t).await.unwrap();
+        let keys: Vec<&str> = views.iter().map(|v| v.definition.key).collect();
+        let expected: Vec<&str> =
+            crate::domain::system_setting::tenant_overridable_setting_keys().collect();
+        assert_eq!(keys, expected, "derived from the definitions");
+
+        let min_length = views
+            .iter()
+            .find(|v| v.definition.key == "PASSWORD_MIN_LENGTH")
+            .unwrap();
+        assert_eq!(min_length.value, "16");
+        assert_eq!(min_length.origin, SettingOrigin::TenantOverride);
+        assert_eq!(
+            min_length.whole_idp_value, "12",
+            "shown next to the override"
+        );
+
+        let attempts = views
+            .iter()
+            .find(|v| v.definition.key == "LOGIN_MAX_FAILED_ATTEMPTS")
+            .unwrap();
+        assert_eq!(attempts.value, "10");
+        assert_eq!(attempts.origin, SettingOrigin::Inherited);
+        assert_eq!(attempts.whole_idp_value, "10");
+    }
+
+    #[tokio::test]
+    async fn adoption_counts_the_tenants_that_follow_and_lists_the_ones_that_do_not() {
+        let f = fixture();
+        let (a, b) = (tenant(), tenant());
+        f.tenants.put(a, "PASSWORD_MIN_LENGTH", "16");
+        f.tenants.put(b, "LOGIN_MAX_FAILED_ATTEMPTS", "3");
+        // 定義に無いキーの行（綴り違い）は「外れている」に数えない。
+        f.tenants.put(b, "PASSWORD_MIN_LENGHT", "4");
+        *f.tenants.extra_tenants.lock().unwrap() = 1;
+
+        let adoption = f.service.adoption_across_tenants().await.unwrap();
+        let min_length = &adoption["PASSWORD_MIN_LENGTH"];
+        assert_eq!(min_length.following, 2);
+        assert_eq!(min_length.overriding.len(), 1);
+        assert_eq!(min_length.overriding[0].tenant_id, a);
+        assert_eq!(min_length.overriding[0].value, "16");
+
+        assert_eq!(adoption["LOGIN_MAX_FAILED_ATTEMPTS"].following, 2);
+        assert_eq!(adoption["SSO_IDLE_TTL_SECS"].following, 3);
+        assert!(!adoption.contains_key("PASSWORD_MIN_LENGHT"));
+        assert!(!adoption.contains_key("ACCESS_TOKEN_TTL_SECS"));
+    }
+
+    /// SMTP の行（#113 が同じ表に置く）は、秘匿でも非秘匿でも、テナントが上書きできるキーの
+    /// 集計に混ざらない（キーの絞り込みは呼び出し側で定義から行う）。
+    #[tokio::test]
+    async fn smtp_rows_in_the_same_table_are_not_counted_as_overrides() {
+        let f = fixture();
+        let t = tenant();
+        f.tenants.put(t, "smtp.host", "mail.example.com");
+        f.tenants.put_secret(t, "smtp.password", "ciphertext");
+
+        let adoption = f.service.adoption_across_tenants().await.unwrap();
+        assert!(!adoption.contains_key("smtp.host"));
+        assert!(!adoption.contains_key("smtp.password"));
+        assert!(adoption.values().all(|item| item.overriding.is_empty()));
+        assert!(adoption.values().all(|item| item.following == 1));
+    }
+
+    /// 締め出し得る値（定義の `locks_out`）は、確認が無ければ保存しない。確認があれば保存する。
+    #[tokio::test]
+    async fn a_value_that_can_lock_people_out_needs_confirmation() {
+        let f = fixture();
+        let t = tenant();
+        for (key, value) in [
+            ("AUTH_POLICY_DEFAULT_EFFECT", "deny"),
+            ("APPLICATION_ASSIGNMENT_ENFORCEMENT", "enforce"),
+        ] {
+            let err = f
+                .service
+                .set(TenantContext::new(t), key, value, false, &actor(), &ctx())
+                .await
+                .unwrap_err();
+            assert!(matches!(err, DomainError::Conflict(_)), "{key}");
+            assert!(f.tenants.rows.lock().unwrap().is_empty(), "{key} not saved");
+
+            f.service
+                .set(TenantContext::new(t), key, value, true, &actor(), &ctx())
+                .await
+                .unwrap();
+            f.tenants.rows.lock().unwrap().clear();
+        }
+        // 締め出さない側の値は確認なしで保存できる。
+        f.service
+            .set(
+                TenantContext::new(t),
+                "AUTH_POLICY_DEFAULT_EFFECT",
+                "allow",
+                false,
+                &actor(),
+                &ctx(),
+            )
+            .await
+            .unwrap();
+        // 選択肢に無い値は確認があっても断る。
+        let err = f
+            .service
+            .set(
+                TenantContext::new(t),
+                "AUTH_POLICY_DEFAULT_EFFECT",
+                "denyy",
+                true,
+                &actor(),
+                &ctx(),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DomainError::InvalidValue(_)));
     }
 }

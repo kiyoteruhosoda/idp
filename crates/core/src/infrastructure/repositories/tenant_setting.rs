@@ -3,7 +3,9 @@
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::TenantSettingsRepository;
 use crate::domain::tenant::TenantId;
-use crate::domain::tenant_setting::TenantSetting;
+use crate::domain::tenant_setting::{
+    TenantOverrideEntry, TenantOverridesAcrossTenants, TenantSetting,
+};
 use crate::infrastructure::db::Db;
 use async_trait::async_trait;
 use sqlx::mysql::MySqlRow;
@@ -76,5 +78,38 @@ impl TenantSettingsRepository for SqlxTenantSettingsRepository {
             .await
             .map_err(repo_err)?;
         Ok(())
+    }
+
+    async fn list_overrides_across_tenants(&self) -> Result<TenantOverridesAcrossTenants> {
+        let tenant_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tenants")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        // 秘匿値は SQL の時点で落とす（暗号文を全体の画面へ運ばない）。
+        let rows = sqlx::query(
+            "SELECT s.tenant_id, t.name, s.setting_key, s.setting_value \
+             FROM tenant_settings s JOIN tenants t ON t.id = s.tenant_id \
+             WHERE s.is_secret = 0 AND s.setting_value <> '' \
+             ORDER BY s.setting_key, t.name, s.tenant_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        let overrides = rows
+            .iter()
+            .map(|row| {
+                let tenant_id: String = row.try_get("tenant_id").map_err(repo_err)?;
+                Ok(TenantOverrideEntry {
+                    tenant_id: tenant_id.parse::<uuid::Uuid>().map_err(repo_err)?.into(),
+                    tenant_name: row.try_get("name").map_err(repo_err)?,
+                    key: row.try_get("setting_key").map_err(repo_err)?,
+                    value: row.try_get("setting_value").map_err(repo_err)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(TenantOverridesAcrossTenants {
+            tenant_count: u64::try_from(tenant_count).unwrap_or(0),
+            overrides,
+        })
     }
 }
