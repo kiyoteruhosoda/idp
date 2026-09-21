@@ -1,0 +1,10 @@
+{#- 必須項目の印。**ラベルの文言の直後**に置く（`<label …>{{ messages.get("…") }}{% include "required_mark.html" %}</label>`）。
+
+     印の形・色・意味をこの 1 ファイルに閉じる。画面ごとに `<span class="text-danger">*</span>` と
+     書くと、色や位置が画面ごとに少しずつずれ、あとから「必須の表し方」を変えられなくなる。
+
+     ⚠ **読み上げからは伏せる（`aria-hidden`）。** 入力欄の `required` は支援技術が自分で
+     「必須」と読むため、この印まで読ませると 1 項目で 2 回鳴る。印は**目で拾うためだけ**のもので、
+     意味は `required` 属性が持つ。したがって ⚠ **`required` の無い欄にこの印を付けない**
+     （見た目だけ必須で、実際は空でも送れる欄になる）。 -#}
+<span class="form-required" aria-hidden="true" title="{{ messages.get("form-required") }}">*</span>

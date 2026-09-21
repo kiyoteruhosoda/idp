@@ -13,12 +13,12 @@
   <input type="hidden" name="operation" value="{{ operation }}">
   <input type="hidden" name="next" value="{{ next }}">
   <div class="mb-3">
-    <label class="form-label" for="password">{{ messages.get("step-up-password") }}</label>
+    <label class="form-label" for="password">{{ messages.get("step-up-password") }}{% include "required_mark.html" %}</label>
     <input type="password" class="form-control" id="password" name="password" autocomplete="current-password" required autofocus>
   </div>
   {% if second_factor_required %}
   <div class="mb-3">
-    <label class="form-label" for="totp_code">{{ messages.get("step-up-totp") }}</label>
+    <label class="form-label" for="totp_code">{{ messages.get("step-up-totp") }}{% include "required_mark.html" %}</label>
     <input type="text" class="form-control" id="totp_code" name="totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required>
     <div class="form-text">{{ messages.get("step-up-totp-help") }}</div>
   </div>

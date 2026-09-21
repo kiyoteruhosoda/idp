@@ -7,7 +7,7 @@
     <form method="post" action="{{ tenant }}/admin/users/new">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <div class="mb-3">
-        <label class="form-label" for="user-email">{{ messages.get("admin-user-col-email") }}</label>
+        <label class="form-label" for="user-email">{{ messages.get("admin-user-col-email") }}{% include "required_mark.html" %}</label>
         <input type="email" class="form-control" id="user-email" name="email" value="{{ email }}" required>
       </div>
       <div class="mb-3">

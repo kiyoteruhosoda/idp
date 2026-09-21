@@ -26,7 +26,7 @@
 
     <form method="post" action="">
       <div class="mb-3">
-        <label class="form-label" for="code">{{ messages.get("mfa-setup-code-label") }}</label>
+        <label class="form-label" for="code">{{ messages.get("mfa-setup-code-label") }}{% include "required_mark.html" %}</label>
         <input id="code" type="text" class="form-control form-control-lg text-center" name="code" inputmode="numeric" pattern="[0-9]{6}"
                maxlength="6" autocomplete="one-time-code" required placeholder="000000">
       </div>

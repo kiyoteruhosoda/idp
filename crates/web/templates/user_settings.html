@@ -95,15 +95,15 @@
     <form method="post" action="{{ tenant }}/settings/password">
       {% if from_admin %}<input type="hidden" name="from" value="admin">{% endif %}
       <div class="mb-3">
-        <label class="form-label" for="current_password">{{ messages.get("user-settings-current-password") }}</label>
+        <label class="form-label" for="current_password">{{ messages.get("user-settings-current-password") }}{% include "required_mark.html" %}</label>
         <input type="password" class="form-control" id="current_password" name="current_password" autocomplete="current-password" required>
       </div>
       <div class="mb-3">
-        <label class="form-label" for="new_password">{{ messages.get("user-settings-new-password") }}</label>
+        <label class="form-label" for="new_password">{{ messages.get("user-settings-new-password") }}{% include "required_mark.html" %}</label>
         <input type="password" class="form-control" id="new_password" name="new_password" autocomplete="new-password" required>
       </div>
       <div class="mb-3">
-        <label class="form-label" for="new_password_confirm">{{ messages.get("user-settings-new-password-confirm") }}</label>
+        <label class="form-label" for="new_password_confirm">{{ messages.get("user-settings-new-password-confirm") }}{% include "required_mark.html" %}</label>
         <input type="password" class="form-control" id="new_password_confirm" name="new_password_confirm" autocomplete="new-password" required>
       </div>
       <button type="submit" class="btn btn-primary">{{ messages.get("user-settings-password-submit") }}</button>

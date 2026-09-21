@@ -267,6 +267,11 @@ async fn create_example(
   されるため、手動エスケープ関数を新設しない。生 HTML を差し込む `|safe` は原則使わず、共通レイアウトは
   `{% extends %}` / `{% block %}` の継承で組む。
 - 翻訳文言はテンプレート内で `messages.get("キー")` を直接呼ぶ（i18n は下記）。
+- **必須の入力欄は、ラベルの文言の直後に `{% include "required_mark.html" %}` を置く。**
+  印（`*`）の見た目と意味はその 1 ファイル＋`.form-required`（`assets/app.css`）に閉じ、画面ごとに
+  `<span class="text-danger">*</span>` と書かない。`required` の無い欄に印を付けない（逆も同じ）。
+  ⚠ ラベルを `visually-hidden` にしている行内編集フォームは対象外。
+  食い違いは `crates/web/tests/required_mark.rs` が落とす。
 - 画面固有のパス・ラベル分岐はテンプレート側の `{% if %}` で表現し、ハンドラは値の受け渡しに徹する。
 
 ## 国際化（i18n）

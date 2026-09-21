@@ -10,11 +10,11 @@
     <form method="post" action="">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <div class="mb-3">
-        <label class="form-label" for="admin-login-username">{{ messages.get("login-username") }}</label>
+        <label class="form-label" for="admin-login-username">{{ messages.get("login-username") }}{% include "required_mark.html" %}</label>
         <input type="text" class="form-control" id="admin-login-username" name="username" autocomplete="username" required autofocus>
       </div>
       <div class="mb-3">
-        <label class="form-label" for="admin-login-password">{{ messages.get("login-password") }}</label>
+        <label class="form-label" for="admin-login-password">{{ messages.get("login-password") }}{% include "required_mark.html" %}</label>
         <input type="password" class="form-control" id="admin-login-password" name="password" autocomplete="current-password" required>
       </div>
       <button type="submit" class="btn btn-primary w-100">{{ messages.get("login-submit") }}</button>

@@ -34,16 +34,16 @@
           <input type="hidden" name="csrf_token" value="{{ csrf }}">
           <div class="row g-3">
             <div class="col-md-4">
-              <label class="form-label" for="policy_code">{{ messages.get("admin-auth-policy-code") }}</label>
+              <label class="form-label" for="policy_code">{{ messages.get("admin-auth-policy-code") }}{% include "required_mark.html" %}</label>
               <input type="text" class="form-control" id="policy_code" name="policy_code" required maxlength="100" value="{{ values.policy_code }}">
               <div class="form-text">{{ messages.get("admin-auth-policy-code-hint") }}</div>
             </div>
             <div class="col-md-5">
-              <label class="form-label" for="policy_name">{{ messages.get("admin-auth-policy-name") }}</label>
+              <label class="form-label" for="policy_name">{{ messages.get("admin-auth-policy-name") }}{% include "required_mark.html" %}</label>
               <input type="text" class="form-control" id="policy_name" name="policy_name" required value="{{ values.policy_name }}">
             </div>
             <div class="col-md-3">
-              <label class="form-label" for="priority">{{ messages.get("admin-auth-policy-priority") }}</label>
+              <label class="form-label" for="priority">{{ messages.get("admin-auth-policy-priority") }}{% include "required_mark.html" %}</label>
               <input type="number" class="form-control" id="priority" name="priority" required value="{{ values.priority }}">
               <div class="form-text">{{ messages.get("admin-auth-policy-priority-hint") }}</div>
             </div>
