@@ -1119,8 +1119,13 @@ pub struct MemberListResponse {
 /// 既存利用者で、内部 ID で指定する。
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateInvitationRequest {
-    /// 被招待利用者の内部 ID（UUID）。
-    pub user_id: String,
+    /// 招待する相手。**メールアドレス、または内部 ID（UUID）**（ADR-0061）。
+    ///
+    /// 旧名 `user_id` でも受ける（内部 ID しか受け付けなかった頃の名前）。⚠ **欄は 1 本のまま
+    /// 増やさない** —— 「メールで指す」「ID で指す」は同じ 1 つの決定であって、2 つの入力に
+    /// 分けると「両方書いたらどちらが勝つのか」という表せない状態が生まれる（ADR-0032）。
+    #[serde(alias = "user_id")]
+    pub invitee: String,
 }
 
 /// 招待作成レスポンス。`token` は平文の招待トークンで、**この応答でのみ**返る（メール未達時に管理者が

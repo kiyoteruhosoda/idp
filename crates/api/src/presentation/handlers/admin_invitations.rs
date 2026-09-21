@@ -1,7 +1,8 @@
 //! ゲスト招待作成エンドポイント（`/{tenant_id}/admin/invitations`。ADR-0009 §3・§6）。
 //!
 //! `idp.tenant.admin` 権限が必要（`RequirePerms<IdpAdmin>`）。参加先テナントの管理者が既存利用者
-//! （所属元は他テナント）を招待すると、一度限りの**招待トークン**を返す。トークンはハッシュのみ保存し、
+//! （所属元は他テナント）を招待すると、一度限りの**招待トークン**を返す。相手の指し方は
+//! **メールアドレス、または内部 ID（UUID）**（ADR-0061。読み分けは application 層）。トークンはハッシュのみ保存し、
 //! ログ・監査ログには出さない（`generated_password` と同じパターン。§3）。管理者がトークンを被招待者へ
 //! 別途通知し、被招待者は所属元テナントでログイン済みのセッションで `/invitations/accept` に提示する。
 
@@ -17,7 +18,6 @@ use crate::presentation::tenant::ResolvedTenant;
 use axum::extract::{Extension, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
-use uuid::Uuid;
 
 /// ゲスト招待を作成し、招待トークンを**この応答でのみ**返す。
 #[utoipa::path(
@@ -27,7 +27,7 @@ use uuid::Uuid;
     request_body = CreateInvitationRequest,
     responses(
         (status = 201, description = "招待作成（招待トークンを含む）", body = InvitationCreatedResponse),
-        (status = 400, description = "user_id が UUID でない"),
+        (status = 400, description = "invitee がメールアドレスでも UUID でもない"),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
         (status = 404, description = "被招待利用者が不存在"),
@@ -43,8 +43,6 @@ pub async fn create_invitation(
     headers: HeaderMap,
     Json(body): Json<CreateInvitationRequest>,
 ) -> Result<(StatusCode, Json<InvitationCreatedResponse>), ApiError> {
-    let target = Uuid::parse_str(&body.user_id)
-        .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get("api-invalid-request")))?;
     let ctx = request_context(
         &headers,
         &correlation,
@@ -52,7 +50,7 @@ pub async fn create_invitation(
     );
     let created = state
         .invitations
-        .create_invitation(tenant.context(), target, &admin.actor, &ctx)
+        .create_invitation(tenant.context(), &body.invitee, &admin.actor, &ctx)
         .await
         .map_err(|e| map_error(e, locale))?;
     Ok((
@@ -71,6 +69,7 @@ fn map_error(e: InvitationError, locale: ApiLocale) -> ApiError {
     match e {
         InvitationError::NotFound => ApiError::NotFound(msgs.get("api-invitation-user-not-found")),
         InvitationError::AlreadyMember => ApiError::Conflict(msgs.get("api-member-already")),
+        InvitationError::Validation(m) => ApiError::BadRequest(msgs.get_message(&m)),
         InvitationError::Forbidden(m) => ApiError::Forbidden(msgs.get_message(&m)),
         InvitationError::InvalidOrExpired => ApiError::BadRequest(msgs.get("api-invalid-request")),
         InvitationError::Internal(m) => ApiError::Internal(m),

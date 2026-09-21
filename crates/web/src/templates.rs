@@ -2211,7 +2211,8 @@ pub struct InvitationForm<'a> {
     pub admin: Admin<'a>,
     pub csrf: &'a str,
     pub error: Option<&'a str>,
-    pub user_id: &'a str,
+    /// 入力された相手（メールアドレス、または内部 ID）。失敗時に打ち直させないため差し戻す。
+    pub invitee: &'a str,
 }
 
 /// ゲスト招待作成結果（`POST /{tenant_id}/admin/invitations` 成功時）。招待トークンを一度だけ表示する。
