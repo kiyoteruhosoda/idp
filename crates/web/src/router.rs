@@ -8,8 +8,8 @@ use crate::correlation;
 use crate::display_preferences::resolve_display_preferences;
 use crate::error_pages;
 use crate::handlers::{
-    admin_applications_console, admin_authentication_policies_console, admin_clients_console,
-    admin_console, admin_external_idps_console, admin_invitations_console,
+    account_setup, admin_applications_console, admin_authentication_policies_console,
+    admin_clients_console, admin_console, admin_external_idps_console, admin_invitations_console,
     admin_login_identifiers_console, admin_members_console, admin_resources_console,
     admin_restart_console, admin_saml_clients_console, admin_settings, admin_signing_keys_console,
     admin_status_console, admin_tenants_console, admin_users_console, authenticators, consent,
@@ -57,6 +57,20 @@ pub fn build(state: WebState) -> Router {
         .route(
             "/forgot-password",
             get(password_reset::forgot_page).post(password_reset::forgot_submit),
+        )
+        .route(
+            // アカウント設定リンクの着地点（ADR-0062）。未ログイン経路。
+            "/account-setup",
+            get(account_setup::setup_page).post(account_setup::set_password),
+        )
+        .route("/account-setup/done", get(account_setup::done_page))
+        .route(
+            "/account-setup/passkey/begin",
+            post(account_setup::passkey_begin),
+        )
+        .route(
+            "/account-setup/passkey/complete",
+            post(account_setup::passkey_complete),
         )
         .route(
             "/password-reset",
@@ -570,6 +584,11 @@ pub fn build(state: WebState) -> Router {
             "/assets/passkey-register.js",
             get(page_scripts::passkey_register_js),
         )
+        .route(
+            "/assets/account-setup.js",
+            get(page_scripts::account_setup_js),
+        )
+        .route("/assets/share-link.js", get(page_scripts::share_link_js))
         .route(
             "/assets/password-visibility.js",
             get(page_scripts::password_visibility_js),

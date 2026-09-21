@@ -266,7 +266,8 @@ pub async fn reset_admin_password(
         tenant: &tenant.prefix(),
         admin: Some(admin.chrome()),
         subject: email,
-        generated_password: &reset.generated_password,
+        setup_url: &reset.setup_url,
+        setup_expires_at: &reset.setup_expires_at,
         back_href: &base,
         back_label_key: "admin-tenants-back",
     }))

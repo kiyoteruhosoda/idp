@@ -310,14 +310,15 @@ pub struct SamlServiceProviderView {
     pub enabled: bool,
 }
 
-/// 利用者作成応答（`POST /admin/users`）。`generated_password` は一度限り平文で返る（ADR-0009 §5）。
+/// 利用者作成応答（`POST /admin/users`）。本人へ渡すワンタイムリンクが一度限り返る（ADR-0062）。
 #[derive(Debug, Clone, Deserialize)]
 pub struct UserCreatedView {
     #[allow(dead_code)]
     pub user_id: String,
     #[allow(dead_code)]
     pub sub: String,
-    pub generated_password: String,
+    pub setup_url: String,
+    pub setup_expires_at: String,
 }
 
 /// メンバー一覧の 1 件（`GET /admin/members`。HOME / GUEST を問わない。ADR-0009 §3）。
@@ -357,12 +358,16 @@ pub struct MemberListView {
 }
 
 /// 管理者によるパスワード再発行応答（`POST /admin/users/{id}/password-reset` ほか）。
-/// `generated_password` は一度限り平文で返る（ADR-0009 §5）。
+/// 本人へ渡すワンタイムリンクが一度限り返る（ADR-0062）。
+///
+/// ⚠ api はまだ `generated_password` も返すが、**画面は読まない**（管理者が本人の資格情報を
+/// 手にする形をやめるための変更なので、出さない）。
 #[derive(Debug, Clone, Deserialize)]
 pub struct UserPasswordResetView {
     #[allow(dead_code)]
     pub user_id: String,
-    pub generated_password: String,
+    pub setup_url: String,
+    pub setup_expires_at: String,
 }
 
 /// 管理者による MFA 解除の結果（`POST /admin/users/{id}/mfa-reset`。MT21）。

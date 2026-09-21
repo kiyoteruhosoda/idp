@@ -130,7 +130,8 @@ pub async fn create(
             tenant: &tenant.prefix(),
             admin: Some(admin.chrome()),
             email: &form.email,
-            generated_password: &created.generated_password,
+            setup_url: &created.setup_url,
+            setup_expires_at: &created.setup_expires_at,
         }))
         .into_response(),
         Err(AdminApiError::Validation(m)) | Err(AdminApiError::Conflict(m)) => {

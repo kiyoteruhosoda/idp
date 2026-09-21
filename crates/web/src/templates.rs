@@ -2139,7 +2139,10 @@ pub struct UserCreated<'a> {
     pub tenant: &'a str,
     pub admin: Admin<'a>,
     pub email: &'a str,
-    pub generated_password: &'a str,
+    /// 本人へ渡すワンタイムリンク（ADR-0062）。この画面でしか出ない。
+    pub setup_url: &'a str,
+    /// リンクの失効時刻（RFC3339。画面で閲覧者の時刻へ描き直す）。
+    pub setup_expires_at: &'a str,
 }
 
 /// メンバー一覧（`GET /{tenant_id}/admin/members`。HOME / GUEST を問わない。ADR-0009 §3）。
@@ -2195,8 +2198,9 @@ pub struct PasswordResetResult<'a> {
     pub admin: Admin<'a>,
     /// 対象の表示（メールアドレス等）。
     pub subject: &'a str,
-    /// 生成パスワード（平文。一度限り表示）。
-    pub generated_password: &'a str,
+    /// 本人へ渡すワンタイムリンク（ADR-0062）。
+    pub setup_url: &'a str,
+    pub setup_expires_at: &'a str,
     pub back_href: &'a str,
     /// 戻りリンクの文言キー。
     pub back_label_key: &'a str,
@@ -3191,4 +3195,25 @@ impl AuthenticationPolicyFormValues {
     pub fn has_method(&self, code: &str) -> bool {
         self.methods.iter().any(|m| m == code)
     }
+}
+
+/// アカウント設定リンクの画面（`GET /{tenant_id}/account-setup`。ADR-0062）。
+///
+/// 未ログインで開く。`token` はフォームへ持ち回すためだけに渡す（画面には出さない）。
+#[derive(Template)]
+#[template(path = "account_setup.html")]
+pub struct AccountSetup<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub token: &'a str,
+    /// 誰のリンクか（読めたときだけ）。
+    pub email: Option<&'a str>,
+    /// パスキーを登録してよいリンクか。
+    pub allows_passkey: bool,
+    /// 設定が終わった表示。
+    pub done: bool,
+    /// リンクが死んでいるときの文言キー（理由は言い分けない）。
+    pub fatal_key: Option<&'static str>,
+    /// 入力のやり直しで出す文言キー。
+    pub error_key: Option<&'static str>,
 }

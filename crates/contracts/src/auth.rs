@@ -629,6 +629,87 @@ pub enum InternalPasswordResetCompleteResponse {
     Internal,
 }
 
+/// アカウント設定リンクの中身を読む API（`POST /internal/account-setup/describe`。ADR-0062）の
+/// リクエスト。⚠ **読むだけで消費しない**（プレビューの bot に食われないため）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAccountSetupDescribeRequest {
+    /// リンクのテナント。**必須**（トークン所有者の所属元と一致しないと失敗する）。
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    /// リンクで受け取った平文トークン。
+    pub token: String,
+}
+
+/// アカウント設定リンクの中身。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAccountSetupDescribeResponse {
+    Ok {
+        /// 誰のリンクか（画面に出す。リンクの持ち主にしか見えない）。
+        email: String,
+        /// この画面でパスキーを登録してよいか（`setup` のリンクだけ真。ADR-0062）。
+        allows_passkey: bool,
+        /// リンクの失効時刻（RFC3339）。
+        expires_at: String,
+    },
+    /// 不存在・期限切れ・使用済み・別テナント。**言い分けない**。
+    InvalidOrExpired,
+    Internal,
+}
+
+/// 設定リンクからのパスキー登録開始（`POST /internal/account-setup/passkey/begin`。ADR-0062）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAccountSetupPasskeyBeginRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub token: String,
+}
+
+/// 設定リンクからのパスキー登録開始のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAccountSetupPasskeyBeginResponse {
+    Ok {
+        /// complete で返す一時 ID。
+        challenge_id: String,
+        /// ブラウザの `navigator.credentials.create()` に渡す JSON。
+        options: serde_json::Value,
+    },
+    InvalidOrExpired,
+    /// この用途のリンクでは登録を許していない。
+    NotAllowed,
+    Internal,
+}
+
+/// 設定リンクからのパスキー登録完了（`POST /internal/account-setup/passkey/complete`。ADR-0062）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAccountSetupPasskeyCompleteRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub token: String,
+    pub challenge_id: String,
+    /// 認証器に付ける名前（画面で打てる。空なら既定を入れる）。
+    pub name: String,
+    /// ブラウザが返した公開鍵クレデンシャル。
+    pub credential: serde_json::Value,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// 設定リンクからのパスキー登録完了のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAccountSetupPasskeyCompleteResponse {
+    Ok,
+    InvalidOrExpired,
+    NotAllowed,
+    /// 認証器が返した値を受け付けられなかった。
+    InvalidCredential,
+    Internal,
+}
+
 /// 管理コンソール内部認証 API（`POST /internal/authenticate/admin`、ADR-0007 §3・§4）のリクエスト。
 ///
 /// 管理ログインの CSRF は web 側で検証済み（ADR-0007 §4）のため本 API には含めない。

@@ -500,7 +500,22 @@ async fn require_mfa_policy_is_enforced_after_forced_password_change() {
     assert_eq!(res.status(), StatusCode::CREATED, "admin creates user");
     let created = body_json(res).await;
     let user_id = created["user_id"].as_str().expect("user id").to_string();
-    let generated_password = created["generated_password"]
+    // 作成はもうパスワードを返さない（ADR-0062。本人がリンクで決める）。この試験が要るのは
+    // 「`must_change_password` が立った状態で入れる資格情報」なので、管理者の再発行で作る。
+    let res = send(
+        &env.app,
+        post(
+            &admin_tok,
+            &format!(
+                "/{}/admin/users/{user_id}/password-reset",
+                env.root_tenant_id
+            ),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK, "admin reissues the password");
+    let generated_password = body_json(res).await["generated_password"]
         .as_str()
         .expect("generated password")
         .to_string();

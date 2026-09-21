@@ -1,5 +1,6 @@
 //! 各エンドポイントのハンドラ。
 
+pub mod account_setup;
 pub mod admin;
 pub mod admin_application_logs;
 pub mod admin_applications;

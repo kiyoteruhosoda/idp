@@ -1297,6 +1297,7 @@ mod tests {
             ("STEP_UP_MAX_AGE_SECS", "300"),
             ("INVITATION_TTL_SECS", "604800"),
             ("PASSWORD_RESET_TTL_SECS", "3600"),
+            ("ACCOUNT_SETUP_TTL_SECS", "86400"),
             ("EMAIL_VERIFICATION_TTL_SECS", "86400"),
             ("PASSWORD_RESET_CONSOLE_LINK_ENABLED", "true"),
             ("AUTH_POLICY_DEFAULT_EFFECT", "allow"),

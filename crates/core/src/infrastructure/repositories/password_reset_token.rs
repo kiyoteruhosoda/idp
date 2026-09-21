@@ -4,7 +4,7 @@
 //! 使用済み・期限切れ・不存在として扱う（authorization code と同じ one-time パターン）。
 
 use crate::domain::error::{DomainError, Result};
-use crate::domain::password_reset::PasswordResetToken;
+use crate::domain::password_reset::{PasswordResetToken, ResetPurpose};
 use crate::domain::repositories::PasswordResetTokenRepository;
 use crate::infrastructure::db::Db;
 use async_trait::async_trait;
@@ -28,7 +28,7 @@ impl SqlxPasswordResetTokenRepository {
     }
 }
 
-const SELECT_COLUMNS: &str = "token_hash, user_id, expires_at, used_at, created_at";
+const SELECT_COLUMNS: &str = "token_hash, user_id, purpose, expires_at, used_at, created_at";
 
 fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
@@ -41,10 +41,15 @@ fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
 fn map_row(row: &MySqlRow) -> Result<PasswordResetToken> {
     let user_id: String = row.try_get("user_id").map_err(repo_err)?;
     let used_at: Option<NaiveDateTime> = row.try_get("used_at").map_err(repo_err)?;
+    let purpose: String = row.try_get("purpose").map_err(repo_err)?;
     Ok(PasswordResetToken {
         token_hash: row.try_get("token_hash").map_err(repo_err)?,
         user_id: Uuid::parse_str(&user_id)
             .map_err(|e| DomainError::Repository(format!("invalid UUID `{user_id}`: {e}")))?,
+        // ⚠ 知らない用途を既定へ丸めない（丸めると、その用途でだけ許した操作が黙って通る）。
+        purpose: ResetPurpose::parse(&purpose).ok_or_else(|| {
+            DomainError::Repository(format!("unknown password reset purpose `{purpose}`"))
+        })?,
         expires_at: to_utc(row.try_get("expires_at").map_err(repo_err)?),
         used_at: used_at.map(to_utc),
         created_at: to_utc(row.try_get("created_at").map_err(repo_err)?),
@@ -55,11 +60,12 @@ fn map_row(row: &MySqlRow) -> Result<PasswordResetToken> {
 impl PasswordResetTokenRepository for SqlxPasswordResetTokenRepository {
     async fn create(&self, token: &PasswordResetToken) -> Result<()> {
         sqlx::query(
-            "INSERT INTO password_reset_tokens (token_hash, user_id, expires_at, used_at) \
-             VALUES (?, ?, ?, ?)",
+            "INSERT INTO password_reset_tokens (token_hash, user_id, purpose, expires_at, used_at) \
+             VALUES (?, ?, ?, ?, ?)",
         )
         .bind(&token.token_hash)
         .bind(token.user_id.to_string())
+        .bind(token.purpose.as_str())
         .bind(token.expires_at.naive_utc())
         .bind(token.used_at.map(|t| t.naive_utc()))
         .execute(&self.pool)
@@ -92,6 +98,25 @@ impl PasswordResetTokenRepository for SqlxPasswordResetTokenRepository {
             format!("SELECT {SELECT_COLUMNS} FROM password_reset_tokens WHERE token_hash = ?");
         let row = sqlx::query(&sql)
             .bind(token_hash)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        row.as_ref().map(map_row).transpose()
+    }
+
+    /// 消費せずに引く（未使用・期限内のみ）。リンクを開いた画面が中身を出すために使う。
+    async fn find_active(
+        &self,
+        token_hash: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<PasswordResetToken>> {
+        let sql = format!(
+            "SELECT {SELECT_COLUMNS} FROM password_reset_tokens \
+             WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?"
+        );
+        let row = sqlx::query(&sql)
+            .bind(token_hash)
+            .bind(now.naive_utc())
             .fetch_optional(&self.pool)
             .await
             .map_err(repo_err)?;

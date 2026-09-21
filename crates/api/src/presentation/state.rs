@@ -12,6 +12,7 @@ use crate::application::account_language::AccountLanguageService;
 use crate::application::account_password::AccountPasswordService;
 use crate::application::account_profile::AccountProfileService;
 use crate::application::account_security::AccountSecurityService;
+use crate::application::account_setup::{AccountSetupLinkIssuer, AccountSetupService};
 use crate::application::account_tenants::AccountTenantsService;
 use crate::application::account_theme::AccountThemeService;
 use crate::application::admin_access::AdminAccessService;
@@ -266,6 +267,8 @@ pub struct AppState {
     pub totp_registration: Arc<TotpRegistrationService>,
     pub mfa_login: Arc<MfaLoginService>,
     pub passkey_registration: Arc<PasskeyRegistrationService>,
+    /// 管理者が発行したアカウント設定リンク（ADR-0062）。リンク先の画面が読む・使う。
+    pub account_setup: Arc<AccountSetupService>,
     pub passkey_authentication: Arc<PasskeyAuthenticationService>,
     /// SAML SP（クライアント）登録（テナント管理者向け）。
     pub saml_service_providers: Arc<SamlServiceProviderManagementService>,
@@ -482,9 +485,12 @@ impl AppState {
         ));
         // パスワードリセット（忘失時。MT18）。SMTP はシステム設定（MT14）、配送は MT17 の Mailer を
         // 再利用する。要求は IP 単位でレート制限し、成功時は全セッション・トークンを失効させる。
+        // ⚠ パスワード再設定とアカウント設定リンクは**同じ表**を使う（ADR-0062）。同じ値を
+        // 2 回作らず、1 つのリポジトリを両方へ渡す。
+        let reset_tokens = Arc::new(SqlxPasswordResetTokenRepository::new(pool.clone()));
         let password_reset = Arc::new(PasswordResetService::new(
             users.clone(),
-            Arc::new(SqlxPasswordResetTokenRepository::new(pool.clone())),
+            reset_tokens.clone(),
             sso_sessions.clone(),
             refresh_tokens.clone(),
             codes.clone(),
@@ -642,6 +648,30 @@ impl AppState {
         // WebAuthn はプロトコル上ホスト単位であり、パスを含められないため（ADR-0009 §6）。
         // テナント分離は「クレデンシャル ⇔ ユーザー ⇔ 所属元テナント」のアプリ層の紐付けで実現する。
         let webauthn = Arc::new(WebAuthnService::new(config.public_web_base_url()));
+        // パスキーの登録（本人の設定画面と、管理者が発行した設定リンクの両方が使う。ADR-0062）。
+        let passkey_registration = Arc::new(PasskeyRegistrationService::new(
+            authenticators.clone(),
+            webauthn_credentials.clone(),
+            passkey_challenges.clone(),
+            sso_sessions.clone(),
+            webauthn.clone(),
+            clock.clone(),
+            ids.clone(),
+        ));
+        // 管理者が発行するアカウント設定リンク（ADR-0062）。作成・再発行と、リンク先の画面が使う。
+        let account_setup_links = Arc::new(AccountSetupLinkIssuer::new(
+            reset_tokens.clone(),
+            tenant_settings.clone(),
+            clock.clone(),
+            config.public_web_base_url().to_string(),
+        ));
+        let account_setup = Arc::new(AccountSetupService::new(
+            users.clone(),
+            reset_tokens.clone(),
+            passkey_registration.clone(),
+            audit.clone(),
+            clock.clone(),
+        ));
         // Passkey のセレモニー（チャレンジ発行・アサーション検証）。OIDC 認可フロー・管理コンソール・
         // ポータルの 3 経路が同じものを使う（`application::passkey_assertion`）。
         let passkey_assertion = Arc::new(PasskeyAssertionService::new(
@@ -772,6 +802,7 @@ impl AppState {
             users.clone(),
             tenant_memberships.clone(),
             hasher.clone(),
+            account_setup_links.clone(),
             audit.clone(),
             clock.clone(),
             ids.clone(),
@@ -809,6 +840,7 @@ impl AppState {
             password_policy.clone(),
             audit.clone(),
             stop_announcement.clone(),
+            account_setup_links.clone(),
             clock.clone(),
         ));
         // 管理者によるログイン識別子の割り当て（AP8。仕様 §4）。電話番号・社員番号のような
@@ -1038,15 +1070,6 @@ impl AppState {
             application_access.clone(),
         ));
 
-        let passkey_registration = Arc::new(PasskeyRegistrationService::new(
-            authenticators.clone(),
-            webauthn_credentials.clone(),
-            passkey_challenges.clone(),
-            sso_sessions.clone(),
-            webauthn.clone(),
-            clock.clone(),
-            ids,
-        ));
         let passkey_authentication = Arc::new(PasskeyAuthenticationService::new(
             passkey_assertion,
             auth_sessions.clone(),
@@ -1161,6 +1184,7 @@ impl AppState {
             totp_registration,
             mfa_login,
             passkey_registration,
+            account_setup,
             passkey_authentication,
             saml_service_providers,
             saml_sso,

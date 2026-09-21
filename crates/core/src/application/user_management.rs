@@ -10,6 +10,7 @@
 //! 本サービスを通す（作成ロジックの単一の出所）。判定・検証は本 Application 層で完結し、Presentation
 //! には結果のみ返す（`CLAUDE.md`「権限管理」）。
 
+use crate::application::account_setup::{AccountSetupLinkIssuer, SetupLink};
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::admin_actor::AdminActor;
 use crate::domain::audit::{AuditEventType, AuditResult};
@@ -45,7 +46,12 @@ pub struct CreateUserCommand {
 pub struct CreatedUser {
     pub user_id: Uuid,
     pub sub: Uuid,
-    pub generated_password: String,
+    /// 本人へ渡す**アカウント設定リンク**（ADR-0062）。この一度だけ返す。
+    ///
+    /// ⚠ **生成パスワードは返さない。** 作った利用者のハッシュは誰も知らない値で埋めてあり、
+    /// 本人はこのリンクでパスキーかパスワードを決めて初めて入れる。管理者が本人の資格情報を
+    /// 一度でも手にする形をやめるための変更である。
+    pub setup_link: SetupLink,
 }
 
 /// 構築済み（未永続化）の利用者。検証・自動生成パスワードのハッシュ化まで済んでおり、永続化だけが
@@ -70,16 +76,21 @@ pub struct UserManagementService {
     users: Arc<dyn UserRepository>,
     memberships: Arc<dyn TenantMembershipRepository>,
     hasher: Arc<dyn PasswordHasher>,
+    /// 作った直後に本人へ渡すリンクを出す（ADR-0062）。作成とリンクの発行は 1 つの操作なので、
+    /// 画面やハンドラで 2 回呼ぶ形にしない（片方だけ成功した利用者を作らないため）。
+    account_setup: Arc<AccountSetupLinkIssuer>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
     ids: Arc<dyn IdGenerator>,
 }
 
 impl UserManagementService {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         users: Arc<dyn UserRepository>,
         memberships: Arc<dyn TenantMembershipRepository>,
         hasher: Arc<dyn PasswordHasher>,
+        account_setup: Arc<AccountSetupLinkIssuer>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
         ids: Arc<dyn IdGenerator>,
@@ -87,6 +98,7 @@ impl UserManagementService {
         Self {
             users,
             memberships,
+            account_setup,
             hasher,
             audit,
             clock,
@@ -217,10 +229,18 @@ impl UserManagementService {
             )
             .await;
 
+        // 本人へ渡すリンクを出す。⚠ **ここで失敗したら作成ごと失敗させる** —— リンクの無い
+        // 利用者は、誰も知らないパスワードだけを持つ「入れないアカウント」になる。
+        let setup_link = self
+            .account_setup
+            .issue(tenant_id, user.id)
+            .await
+            .map_err(|e| UserManagementError::Internal(e.to_string()))?;
+
         Ok(CreatedUser {
             user_id: user.id,
             sub: user.sub,
-            generated_password: prepared.generated_password,
+            setup_link,
         })
     }
 }
@@ -451,6 +471,10 @@ mod tests {
             users,
             memberships,
             Arc::new(PlainHasher),
+            crate::application::account_setup::testing::link_issuer(
+                Arc::new(crate::application::account_setup::testing::FakeSetupTokens::default()),
+                Arc::new(FixedClock(now())),
+            ),
             audit,
             Arc::new(FixedClock(now())),
             Arc::new(FixedIds(Mutex::new(0))),
@@ -479,15 +503,20 @@ mod tests {
             .await
             .expect("created");
 
-        // 生成パスワードは 32 文字以上。
-        assert!(created.generated_password.len() >= 32);
-        let stored = users.rows.lock().unwrap()[0].clone();
-        // 保存されるのはハッシュのみ（平文は保持しない）。
-        assert_eq!(
-            stored.password_hash,
-            format!("hash:{}", created.generated_password)
+        // 本人へ渡すリンクが出る（ADR-0062）。⚠ **生成パスワードは返らない。**
+        assert!(created.setup_link.token.len() >= 32);
+        assert!(
+            created
+                .setup_link
+                .url
+                .starts_with("https://idp.example.com/"),
+            "the link points at the web console: {}",
+            created.setup_link.url
         );
-        assert_ne!(stored.password_hash, created.generated_password);
+        assert!(created.setup_link.url.contains(&created.setup_link.token));
+        let stored = users.rows.lock().unwrap()[0].clone();
+        // ⚠ **誰も知らないパスワードで埋まっている**（管理者も本人も入れない。リンクで決める）。
+        assert!(stored.password_hash.starts_with("hash:"));
         assert!(stored.must_change_password);
         assert_eq!(stored.email, "new@example.com");
         assert_eq!(stored.tenant_id, tenant);
@@ -495,11 +524,11 @@ mod tests {
         let m = memberships.rows.lock().unwrap()[0].clone();
         assert!(m.is_home());
         assert_eq!(m.tenant_id, tenant);
-        // 監査に生成パスワードが漏れていない。
+        // 監査にリンクのトークンが漏れていない。
         assert!(sink.events.lock().unwrap().iter().all(|e| e
             .reason
             .as_deref()
-            .map(|r| !r.contains(&created.generated_password))
+            .map(|r| !r.contains(&created.setup_link.token))
             .unwrap_or(true)));
         assert_eq!(
             sink.events.lock().unwrap()[0].event_type,

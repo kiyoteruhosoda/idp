@@ -10,7 +10,8 @@
   <div class="card-header text-center py-3 border-0 bg-transparent">
     <h1 class="h4 mb-0">{{ messages.get("authorization-post-title") }}</h1>
   </div>
-  <div class="card-body p-4 text-center">
+  {#- 本文は中央寄せにしない（`saml_post.html` と同じ理由）。 -#}
+  <div class="card-body p-4">
     <p class="mb-3">{{ messages.get("authorization-post-message") }}</p>
     <form id="authorization-post-form" data-auto-submit method="post" action="{{ action }}">
       {% for field in fields %}

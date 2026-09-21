@@ -673,13 +673,17 @@ pub struct CreateUserRequest {
     pub name: Option<String>,
 }
 
-/// 利用者作成レスポンス。`generated_password` は**この応答でのみ**平文で返る（ログ・監査には出さない）。
+/// 利用者作成レスポンス。`setup_url` は**この応答でのみ**返る（ログ・監査には出さない。ADR-0062）。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct UserCreatedResponse {
     pub user_id: String,
     pub sub: String,
-    /// 自動生成パスワード（平文。一度限り）。
-    pub generated_password: String,
+    /// 本人へ渡すアカウント設定リンク（絶対 URL・一度限り）。開いた先でパスキーを登録するか、
+    /// パスワードを設定する。⚠ **管理者は本人の資格情報を持たない** —— 作成時に入れたハッシュは
+    /// 誰も知らない値で、生成パスワードはもう返さない。
+    pub setup_url: String,
+    /// リンクの失効時刻（RFC3339）。既定は 24 時間後（`ACCOUNT_SETUP_TTL_SECS`）。
+    pub setup_expires_at: String,
 }
 
 /// アプリの登録リクエスト（`POST /{tenant_id}/admin/applications`。ADR-0054）。
@@ -950,12 +954,17 @@ pub struct UpdateUserProfileRequest {
     pub name: Option<String>,
 }
 
-/// 管理者によるパスワード再発行レスポンス。`generated_password` は**この応答でのみ**平文で返る
-/// （`must_change_password` が設定され、本人が次回ログインで変更する。ログ・監査には出さない）。
+/// 管理者によるパスワード再発行レスポンス。いずれも**この応答でのみ**返る（ログ・監査には出さない）。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct UserPasswordResetResponse {
     pub user_id: String,
-    /// 自動生成パスワード（平文。一度限り）。
+    /// 本人へ渡すアカウント設定リンク（絶対 URL・一度限り。ADR-0062）。
+    pub setup_url: String,
+    /// リンクの失効時刻（RFC3339）。
+    pub setup_expires_at: String,
+    /// ⚠ **廃止予定。** 再発行で実際に設定された自動生成パスワード（平文・一度限り）。
+    /// 非常時の道具（deploy-repo の `host/breakglass`）がまだこの値を読むため残している。
+    /// そちらが `setup_url` 経由へ移ったら落とす（`docs/Progress.md`）。
     pub generated_password: String,
 }
 

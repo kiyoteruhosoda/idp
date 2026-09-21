@@ -1,0 +1,62 @@
+{% extends "page.html" %}
+{% block title %}{{ messages.get("account-setup-title") }}{% endblock %}
+{% block content %}
+<div class="card border-0 bg-transparent">
+  <div class="card-header text-center py-3 border-0 bg-transparent">
+    <h1 class="h4 mb-1">{{ messages.get("account-setup-title") }}</h1>
+    {% if let Some(email) = email %}<p class="text-muted small mb-0">{{ email }}</p>{% endif %}
+  </div>
+  <div class="card-body p-4">
+    {% if done %}
+    <div class="alert alert-success" role="status">{{ messages.get("account-setup-done") }}</div>
+    <a class="btn btn-primary w-100" href="{{ tenant }}/login">{{ messages.get("account-setup-go-to-login") }}</a>
+    {% else if let Some(key) = fatal_key %}
+    {#- リンクが死んでいる。⚠ 理由は言い分けない（拾った相手に当たりを与えない）。 -#}
+    <div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>
+    <p class="text-muted small mb-0">{{ messages.get("account-setup-ask-admin") }}</p>
+    {% else %}
+    {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
+
+    {% if allows_passkey %}
+    {#- 主の道。パスワードを決めずに済ませられる（以後はこの端末の顔・指紋・PIN で入る）。 -#}
+    <div class="d-grid gap-2 mb-3" id="passkey-section" data-tenant="{{ tenant }}" data-token="{{ token }}">
+      <button type="button" class="btn btn-primary btn-lg" id="passkey-register">
+        <i class="fa-solid fa-key me-2" aria-hidden="true"></i>{{ messages.get("account-setup-passkey-button") }}
+      </button>
+      <div class="form-text mb-0">{{ messages.get("account-setup-passkey-help") }}</div>
+      <div class="alert alert-danger d-none" id="passkey-error" role="alert"></div>
+    </div>
+
+    <div class="auth-or">{{ messages.get("account-setup-or") }}</div>
+    {% endif %}
+
+    {#- 従の道。パスキーを使えない端末・使いたくない人のために残す。 -#}
+    <details class="mb-0"{% if !allows_passkey %} open{% endif %}>
+      <summary class="mb-3">{{ messages.get("account-setup-password-summary") }}</summary>
+      <form method="post" action="{{ tenant }}/account-setup">
+        <input type="hidden" name="token" value="{{ token }}">
+        <div class="mb-3">
+          <label class="form-label" for="new_password">{{ messages.get("account-setup-new-password") }}{% include "required_mark.html" %}</label>
+          <input type="password" class="form-control" id="new_password" name="new_password" autocomplete="new-password" required minlength="8">
+        </div>
+        <div class="mb-3">
+          <label class="form-label" for="new_password_confirm">{{ messages.get("account-setup-new-password-confirm") }}{% include "required_mark.html" %}</label>
+          <input type="password" class="form-control" id="new_password_confirm" name="new_password_confirm" autocomplete="new-password" required minlength="8">
+        </div>
+        <button type="submit" class="btn btn-outline-secondary w-100">{{ messages.get("account-setup-password-submit") }}</button>
+      </form>
+    </details>
+    {% endif %}
+  </div>
+</div>
+{% include "password_visibility.html" %}
+{% endblock %}
+{% block scripts %}
+{% if allows_passkey %}
+<div id="account-setup-messages" hidden
+     data-failed="{{ messages.get("account-setup-passkey-failed") }}"
+     data-unsupported="{{ messages.get("account-setup-passkey-unsupported") }}"
+     data-authenticator-name="{{ messages.get("account-setup-passkey-default-name") }}"></div>
+<script src="/assets/account-setup.js?v={{ crate::templates::asset_version() }}" defer></script>
+{% endif %}
+{% endblock %}
