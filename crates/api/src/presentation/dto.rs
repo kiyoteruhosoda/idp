@@ -962,10 +962,6 @@ pub struct UserPasswordResetResponse {
     pub setup_url: String,
     /// リンクの失効時刻（RFC3339）。
     pub setup_expires_at: String,
-    /// ⚠ **廃止予定。** 再発行で実際に設定された自動生成パスワード（平文・一度限り）。
-    /// 非常時の道具（deploy-repo の `host/breakglass`）がまだこの値を読むため残している。
-    /// そちらが `setup_url` 経由へ移ったら落とす（`docs/Progress.md`）。
-    pub generated_password: String,
 }
 
 /// ゲストメンバーシップの状態更新リクエスト（`PATCH /{tenant_id}/admin/members/{user_id}`。MT24）。

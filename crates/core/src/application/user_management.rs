@@ -4,7 +4,7 @@
 //! （`POST /{tenant_id}/admin/users`）。セルフ登録（[`crate::application::register`]）と異なり、
 //! **パスワードを自動生成**し（32 文字以上のランダム文字列）、`must_change_password = true` を付与する。
 //! 生成パスワードは**この一度だけ**平文でレスポンスに返し（管理者が本人へ別途通知する）、ログ・監査には
-//! 出さない（`generated_password` / 招待トークンと同じパターン。ADR-0009 §5）。
+//! 出さない（設定リンク・招待トークンと同じパターン。ADR-0009 §5・ADR-0062）。
 //!
 //! テナント作成フロー（[`crate::application::tenant_management`]）が生成する初期管理者ユーザーも
 //! 本サービスを通す（作成ロジックの単一の出所）。判定・検証は本 Application 層で完結し、Presentation

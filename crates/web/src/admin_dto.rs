@@ -360,8 +360,6 @@ pub struct MemberListView {
 /// 管理者によるパスワード再発行応答（`POST /admin/users/{id}/password-reset` ほか）。
 /// 本人へ渡すワンタイムリンクが一度限り返る（ADR-0062）。
 ///
-/// ⚠ api はまだ `generated_password` も返すが、**画面は読まない**（管理者が本人の資格情報を
-/// 手にする形をやめるための変更なので、出さない）。
 #[derive(Debug, Clone, Deserialize)]
 pub struct UserPasswordResetView {
     #[allow(dead_code)]

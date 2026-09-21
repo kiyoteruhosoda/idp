@@ -82,9 +82,13 @@ discoverable credentials（ユーザー名を打たない形）に対応して�
 - **管理者は本人の資格情報を持たなくなった**（作成経路）。画面にも API にも生成パスワードは出ない。
 - **パスキーだけのアカウントが作れるようになった。** パスワードを一度も決めずに運用できる。
 - **リンクは 1 人につき 1 本。** 発行のたびに、その利用者の未使用リンクは失効する（再設定と同じ規則）。
-- ⚠ **`generated_password` は再発行の応答にだけ残っている。** 非常時の道具（deploy-repo の
-  `host/breakglass`）がまだこの値を読むためで、そちらが `setup_url` 経由へ移ったら落とす
-  （`docs/Progress.md` の残タスク）。作成の応答からは既に消えている。
+- **`generated_password` は API から消えた**（2026-09-21。作成・再発行とも）。非常時の道具
+  （deploy-repo の `host/breakglass`）も設定リンク経由へ移した（deploy-repo #73）。
+  ⚠ **これで assay が管理者へ「使えるパスワード」を渡す経路は 1 つも無い。**
+  再発行はいまも値を生成して置き換えるが、⚠ **その値は誰も知らない**（古い値を通らなく
+  するためだけに在る）。
+- ⚠ **「既知のパスワード × `must_change_password`」は管理 API では作れなくなった。** その状態を
+  要る試験は、DB へ直に入れる（`crates/api/tests/support` の `force_password_change`）。
 - ⚠ **単一オリジン構成では nginx の振り分けに `account-setup` が要る**（`docker/nginx.conf`）。
   足さないと api へ流れて 404 になる ——`crates/web/src/router.rs` の試験がこれを落とす。
 - テナント作成時のブートストラップ管理者は**この変更の対象外**（root が自分のために作る経路で、

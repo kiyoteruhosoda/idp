@@ -294,7 +294,6 @@ pub async fn reset_tenant_admin_password(
         user_id: reset.user_id.to_string(),
         setup_url: reset.setup_link.url,
         setup_expires_at: reset.setup_link.expires_at.to_rfc3339(),
-        generated_password: reset.generated_password,
     }))
 }
 

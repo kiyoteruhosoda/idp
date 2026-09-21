@@ -2131,7 +2131,7 @@ pub struct UserForm<'a> {
     pub name: &'a str,
 }
 
-/// 利用者作成結果（`POST /{tenant_id}/admin/users/new` 成功時）。`generated_password` を一度だけ表示する。
+/// 利用者作成結果（`POST /{tenant_id}/admin/users/new` 成功時）。設定リンクを一度だけ表示する。
 #[derive(Template)]
 #[template(path = "console/user_created.html")]
 pub struct UserCreated<'a> {

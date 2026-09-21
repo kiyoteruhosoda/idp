@@ -430,6 +430,23 @@ pub async fn register_user(app: &axum::Router, tenant: &str, username: &str, pas
     );
 }
 
+/// 既知のパスワードを入れ、`must_change_password` を立てる（**強制変更の状態**を作る）。
+///
+/// ⚠ **管理 API では作れない状態である**（ADR-0062）。管理者による再発行は「誰も知らない値」で
+/// 置き換えてリンクを渡すようになったので、**値を知ったうえで強制変更に当たる**には、
+/// この試験用の口から入れるしかない。実装（argon2）と同じハッシュ器を通す。
+pub async fn force_password_change(pool: &MySqlPool, user_id: &str, password: &str) {
+    let hash = Argon2PasswordHasher::new()
+        .hash(password)
+        .expect("hash the password");
+    sqlx::query("UPDATE users SET password_hash = ?, must_change_password = 1 WHERE id = ?")
+        .bind(hash)
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .expect("force a password change");
+}
+
 pub async fn create_plain_user(pool: &MySqlPool, tenant_id: &str) -> String {
     let id = uuid::Uuid::now_v7().to_string();
     sqlx::query(
