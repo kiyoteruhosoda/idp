@@ -71,7 +71,7 @@
     <form method="post" action="{{ tenant }}/admin/settings/tenant">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <div class="mb-3">
-        <label class="form-label" for="tenant_name">{{ messages.get("admin-settings-tenant-name") }}</label>
+        <label class="form-label" for="tenant_name">{{ messages.get("admin-settings-tenant-name") }}{% include "required_mark.html" %}</label>
         <input type="text" class="form-control" id="tenant_name" name="name" value="{{ tenant_name }}" required maxlength="255">
       </div>
       <div class="form-check mb-3">

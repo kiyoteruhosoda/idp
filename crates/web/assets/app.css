@@ -590,3 +590,26 @@ button[aria-busy='true'] .js-pending-label {
 .text-bg-primary {
   color: var(--assay-on-gold) !important;
 }
+
+/* ── 必須項目の印（`templates/required_mark.html`） ───────────────────────── */
+
+/* 色は銅（`--bs-danger-text-emphasis`）。状態の色を新しく足さないための選択で、
+ * 「合わなかったものは銅」の一貫した読みになる ——この印は **空のまま出すと銅になる欄**の
+ * 予告であって、印そのものが状態を表しているのではない。
+ *
+ * ⚠ 認証系画面のラベルは 0.7rem の等幅・字間広めで組んである（`.auth-content .form-label`）。
+ * そのまま継ぐと記号が小さくなりすぎて埋もれるので、ラベルに対する比で持ち上げ、
+ * 字間だけは受け継がない（継ぐと印の右にラベル 1 文字分の空きが残る）。
+ *
+ * ⚠ 上付きにしない。アスタリスクはもともと字面の上寄りに設計されていて、
+ * `vertical-align` で持ち上げると行の高さだけが伸びる。 */
+.form-required {
+  color: var(--bs-danger-text-emphasis);
+  margin-inline-start: 0.25em;
+  font-size: 1.15em;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1;
+  /* ラベルを選んで写したときに印まで付いてこないようにする（印は文言の一部ではない）。 */
+  user-select: none;
+}

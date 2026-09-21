@@ -24,7 +24,7 @@
         <form method="post" action="{{ tenant }}/admin/tenants">
           <input type="hidden" name="csrf_token" value="{{ csrf }}">
           <div class="mb-3">
-            <label class="form-label" for="tenant-create-name">{{ messages.get("admin-tenants-name") }}</label>
+            <label class="form-label" for="tenant-create-name">{{ messages.get("admin-tenants-name") }}{% include "required_mark.html" %}</label>
             <input class="form-control" id="tenant-create-name" name="name" autocomplete="off" required autofocus>
           </div>
           <p class="text-muted small">{{ messages.get("admin-tenants-bootstrap-hint") }}</p>
@@ -106,7 +106,10 @@
                 <div class="collapse mt-2" id="tenant-reset-{{ loop.index }}">
                   <form method="post" action="{{ tenant }}/admin/tenants/{{ t.id }}/reset-admin-password" class="d-flex flex-wrap gap-2 align-items-center">
                     <input type="hidden" name="csrf_token" value="{{ csrf }}">
-                    <input type="email" class="form-control form-control-sm w-auto" name="email" placeholder="{{ messages.get("admin-tenants-admin-email") }}" required>
+                    {# placeholder はラベルの代わりにならない（入力を始めると消える）。隣の編集フォームと
+                       同じく、見出しは visually-hidden のラベルで持つ。 #}
+                    <label class="visually-hidden" for="tenant-reset-email-{{ loop.index }}">{{ messages.get("admin-tenants-admin-email") }}</label>
+                    <input type="email" class="form-control form-control-sm w-auto" id="tenant-reset-email-{{ loop.index }}" name="email" placeholder="{{ messages.get("admin-tenants-admin-email") }}" required>
                     <button type="submit" class="btn btn-sm btn-secondary">{{ messages.get("admin-tenants-reset-admin-password-submit") }}</button>
                   </form>
                   <div class="form-text">{{ messages.get("admin-tenants-reset-admin-password-hint") }}</div>

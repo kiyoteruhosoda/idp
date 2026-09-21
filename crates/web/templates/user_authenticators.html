@@ -92,7 +92,7 @@
     <form method="post" action="{{ tenant }}/settings/authenticators/phone/confirm" class="row g-2 align-items-end">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <div class="col-auto">
-        <label class="form-label" for="phone-code">{{ messages.get("authenticators-phone-code") }}</label>
+        <label class="form-label" for="phone-code">{{ messages.get("authenticators-phone-code") }}{% include "required_mark.html" %}</label>
         <input class="form-control" id="phone-code" name="code" inputmode="numeric" autocomplete="one-time-code" required>
       </div>
       <div class="col-auto">
@@ -104,7 +104,7 @@
     <form method="post" action="{{ tenant }}/settings/authenticators/phone" class="row g-2 align-items-end">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <div class="col-auto">
-        <label class="form-label" for="phone-number">{{ messages.get("authenticators-phone-number") }}</label>
+        <label class="form-label" for="phone-number">{{ messages.get("authenticators-phone-number") }}{% include "required_mark.html" %}</label>
         <input class="form-control" id="phone-number" name="phone_number" inputmode="tel" autocomplete="tel" placeholder="+81 90 1234 5678" required>
       </div>
       <div class="col-auto">

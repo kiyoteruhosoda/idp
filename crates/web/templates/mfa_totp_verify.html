@@ -11,7 +11,7 @@
     <form method="post" action="">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <div class="mb-3">
-        <label class="form-label" for="totp_code">{{ messages.get("mfa-verify-code-label") }}</label>
+        <label class="form-label" for="totp_code">{{ messages.get("mfa-verify-code-label") }}{% include "required_mark.html" %}</label>
         {#- 認証アプリの 6 桁だけでなく、リカバリーコード・メールのコードも同じ欄で受ける（AP9）。
             桁数・数字のみの制約を付けると、認証器を失った利用者がこの欄を通れなくなる。 -#}
         <input id="totp_code" type="text" class="form-control form-control-lg text-center" name="totp_code"

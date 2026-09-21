@@ -47,15 +47,15 @@
         <form method="post" action="{{ tenant }}/admin/saml-clients">
           <input type="hidden" name="csrf_token" value="{{ csrf }}">
           <div class="mb-3">
-            <label class="form-label" for="display_name">{{ messages.get("admin-saml-client-field-display-name") }}</label>
+            <label class="form-label" for="display_name">{{ messages.get("admin-saml-client-field-display-name") }}{% include "required_mark.html" %}</label>
             <input type="text" class="form-control" id="display_name" name="display_name" value="{{ values.display_name }}" required maxlength="255">
           </div>
           <div class="mb-3">
-            <label class="form-label" for="entity_id">{{ messages.get("admin-saml-client-field-entity-id") }}</label>
+            <label class="form-label" for="entity_id">{{ messages.get("admin-saml-client-field-entity-id") }}{% include "required_mark.html" %}</label>
             <input type="text" class="form-control" id="entity_id" name="entity_id" value="{{ values.entity_id }}" required>
           </div>
           <div class="mb-3">
-            <label class="form-label" for="acs_url">{{ messages.get("admin-saml-client-field-acs-url") }}</label>
+            <label class="form-label" for="acs_url">{{ messages.get("admin-saml-client-field-acs-url") }}{% include "required_mark.html" %}</label>
             <input type="url" class="form-control" id="acs_url" name="acs_url" value="{{ values.acs_url }}" required>
           </div>
           <div class="mb-3">
@@ -124,15 +124,15 @@
                 <form method="post" action="{{ tenant }}/admin/saml-clients/{{ p.id }}/update" class="py-2">
                   <input type="hidden" name="csrf_token" value="{{ csrf }}">
                   <div class="mb-3">
-                    <label class="form-label" for="edit-display_name-{{ p.id }}">{{ messages.get("admin-saml-client-field-display-name") }}</label>
+                    <label class="form-label" for="edit-display_name-{{ p.id }}">{{ messages.get("admin-saml-client-field-display-name") }}{% include "required_mark.html" %}</label>
                     <input type="text" class="form-control" id="edit-display_name-{{ p.id }}" name="display_name" value="{{ p.display_name }}" required maxlength="255">
                   </div>
                   <div class="mb-3">
-                    <label class="form-label" for="edit-entity_id-{{ p.id }}">{{ messages.get("admin-saml-client-field-entity-id") }}</label>
+                    <label class="form-label" for="edit-entity_id-{{ p.id }}">{{ messages.get("admin-saml-client-field-entity-id") }}{% include "required_mark.html" %}</label>
                     <input type="text" class="form-control" id="edit-entity_id-{{ p.id }}" name="entity_id" value="{{ p.entity_id }}" required>
                   </div>
                   <div class="mb-3">
-                    <label class="form-label" for="edit-acs_url-{{ p.id }}">{{ messages.get("admin-saml-client-field-acs-url") }}</label>
+                    <label class="form-label" for="edit-acs_url-{{ p.id }}">{{ messages.get("admin-saml-client-field-acs-url") }}{% include "required_mark.html" %}</label>
                     <input type="url" class="form-control" id="edit-acs_url-{{ p.id }}" name="acs_url" value="{{ p.acs_url }}" required>
                   </div>
                   <div class="mb-3">

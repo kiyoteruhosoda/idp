@@ -7,7 +7,7 @@
     <form method="post" action="{{ action }}">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <div class="mb-3">
-        <label class="form-label" for="client-app-name">{{ messages.get("admin-client-field-name") }}</label>
+        <label class="form-label" for="client-app-name">{{ messages.get("admin-client-field-name") }}{% include "required_mark.html" %}</label>
         <input type="text" class="form-control" id="client-app-name" name="app_name" value="{{ values.app_name }}" required>
       </div>
       {# 用途は入口（連携先の登録 / サービスアカウントの登録）で決まる。ここでは選ばせず、

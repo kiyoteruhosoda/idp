@@ -15,11 +15,11 @@
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <div class="row g-3">
         <div class="col-md-4">
-          <label class="form-label" for="profile-email">{{ messages.get("admin-user-col-email") }}</label>
+          <label class="form-label" for="profile-email">{{ messages.get("admin-user-col-email") }}{% include "required_mark.html" %}</label>
           <input type="email" class="form-control" id="profile-email" name="email" value="{{ user.email }}" autocomplete="off" required>
         </div>
         <div class="col-md-4">
-          <label class="form-label" for="profile-username">{{ messages.get("admin-user-col-username") }}</label>
+          <label class="form-label" for="profile-username">{{ messages.get("admin-user-col-username") }}{% include "required_mark.html" %}</label>
           <input type="text" class="form-control" id="profile-username" name="preferred_username" value="{{ user.preferred_username.as_deref().unwrap_or("") }}" autocomplete="off" required>
           <div class="form-text">{{ messages.get("admin-users-profile-username-hint") }}</div>
         </div>
@@ -69,7 +69,7 @@
     <form method="post" action="{{ tenant }}/admin/users/{{ user.id }}/permissions/grant">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <div class="mb-3">
-        <label class="form-label" for="permission-code">{{ messages.get("admin-permissions-grant-label") }}</label>
+        <label class="form-label" for="permission-code">{{ messages.get("admin-permissions-grant-label") }}{% include "required_mark.html" %}</label>
         <select class="form-select" id="permission-code" name="permission_code" required>
           <option value="" selected disabled>{{ messages.get("admin-permissions-grant-placeholder") }}</option>
           {% for code in grantable %}<option value="{{ code }}">{{ code }}</option>{% endfor %}

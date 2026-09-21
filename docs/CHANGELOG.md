@@ -1,3 +1,15 @@
+## 2026-09-21（1）（必須の入力欄に印を出す）
+
+- **`required` の入力欄のラベルに必須の印（`*`）を出した**（全画面・53 か所）。印は
+  `crates/web/templates/required_mark.html` の 1 か所に閉じ、色・位置・意味をそこで決める。
+  読み上げには出さない（`aria-hidden`）——支援技術は入力欄の `required` を自分で読むため、
+  印まで読ませると 1 項目で 2 回鳴る。`*` の意味はホバーの `title`（`form-required`）で読める。
+- 印と `required` が食い違っていないことを試験で持つ（`crates/web/tests/required_mark.rs`）。
+  印の無い必須欄・`required` の無い印のどちらも落ちる。**ラベルを `visually-hidden` で伏せている
+  行内編集（設定値・テナント名・管理者メール）だけは対象外**（見えないラベルに見える印は置けない）。
+- 併せて、テナントの管理者パスワード再設定の入力欄に `visually-hidden` のラベルを付けた
+  （placeholder はラベルの代わりにならない）。
+
 ## 2026-09-16（14）（アプリを止めると、名乗りのサービスアカウントも止まる）
 
 - **アプリを `DISABLED` にすると、その名乗り（`service_account`）のサービスアカウントに `client_credentials` の

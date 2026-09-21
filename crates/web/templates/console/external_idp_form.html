@@ -60,19 +60,20 @@
       <input type="hidden" name="protocol" value="{{ values.protocol }}">
       <div class="row g-3">
         <div class="col-md-6">
-          <label class="form-label" for="provider_code">{{ messages.get("admin-external-idps-field-code") }}</label>
+          {# 編集時は readonly なので印も出さない（下の input の required と表裏を合わせる）。 #}
+          <label class="form-label" for="provider_code">{{ messages.get("admin-external-idps-field-code") }}{% if editing.is_none() %}{% include "required_mark.html" %}{% endif %}</label>
           {# provider_code は識別子であり、外部 IdP を指す既存の連携（external_identities）の対応付けに使う。
              作成後に変えると連携済み利用者の紐づけが切れるため、編集時は変更させない。 #}
           <input class="form-control" id="provider_code" name="provider_code" value="{{ values.provider_code }}" {% if editing.is_some() %}readonly{% else %}required{% endif %}>
           <div class="form-text">{{ messages.get("admin-external-idps-field-code-hint") }}</div>
         </div>
         <div class="col-md-6">
-          <label class="form-label" for="display_name">{{ messages.get("admin-external-idps-field-name") }}</label>
+          <label class="form-label" for="display_name">{{ messages.get("admin-external-idps-field-name") }}{% include "required_mark.html" %}</label>
           <input class="form-control" id="display_name" name="display_name" value="{{ values.display_name }}" required>
           <div class="form-text">{{ messages.get("admin-external-idps-field-name-hint") }}</div>
         </div>
         <div class="col-12">
-          <label class="form-label" for="issuer">{{ messages.get("admin-external-idps-field-issuer") }}</label>
+          <label class="form-label" for="issuer">{{ messages.get("admin-external-idps-field-issuer") }}{% include "required_mark.html" %}</label>
           <input class="form-control" id="issuer" name="issuer" value="{{ values.issuer }}" required>
           <div class="form-text">{% if values.is_saml() %}{{ messages.get("admin-external-idps-field-issuer-hint-saml") }}{% else %}{{ messages.get("admin-external-idps-field-issuer-hint-oidc") }}{% endif %}</div>
         </div>

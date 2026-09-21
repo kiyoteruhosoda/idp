@@ -64,7 +64,7 @@
     <form method="post" action="{{ tenant }}/admin/clients/{{ client.client_id }}/permissions/grant">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <div class="mb-3">
-        <label class="form-label" for="client-permission-code">{{ messages.get("admin-permissions-grant-label") }}</label>
+        <label class="form-label" for="client-permission-code">{{ messages.get("admin-permissions-grant-label") }}{% include "required_mark.html" %}</label>
         <select class="form-select" id="client-permission-code" name="permission_code" required>
           <option value="" selected disabled>{{ messages.get("admin-permissions-grant-placeholder") }}</option>
           {% for code in grantable_permissions %}<option value="{{ code }}">{{ code }}</option>{% endfor %}

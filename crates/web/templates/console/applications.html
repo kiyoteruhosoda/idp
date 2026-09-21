@@ -78,7 +78,7 @@
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <div class="row g-2">
         <div class="col-md-6">
-          <label class="form-label" for="application-display-name">{{ messages.get("admin-applications-name-label") }}</label>
+          <label class="form-label" for="application-display-name">{{ messages.get("admin-applications-name-label") }}{% include "required_mark.html" %}</label>
           <input type="text" class="form-control" id="application-display-name" name="display_name" required>
         </div>
         <div class="col-md-6">

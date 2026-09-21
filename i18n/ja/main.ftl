@@ -788,6 +788,9 @@ user-settings-mfa-help = 認証アプリやパスキーを追加・管理しま�
 password-visibility-show = パスワードを表示
 password-visibility-hide = パスワードを隠す
 
+# フォーム共通: 必須項目の印。ラベルの末尾に出す `*` の意味（ホバーで読める）。
+form-required = 必須
+
 # プロフィール導線。
 admin-profile-settings = プロフィール設定を開く
 

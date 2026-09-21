@@ -22,7 +22,7 @@
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <div class="row g-2">
         <div class="col-md-5">
-          <label class="form-label" for="display-name">{{ messages.get("admin-applications-name-label") }}</label>
+          <label class="form-label" for="display-name">{{ messages.get("admin-applications-name-label") }}{% include "required_mark.html" %}</label>
           <input type="text" class="form-control" id="display-name" name="display_name" value="{{ application.display_name }}" required>
         </div>
         <div class="col-md-3">
@@ -174,7 +174,7 @@
             <label class="form-check-label" for="assign-kind-service-account"><i class="fa-solid fa-server me-1" aria-hidden="true"></i>{{ messages.get("admin-applications-principal-service-account-long") }}</label>
           </div>
         </fieldset>
-        <label class="form-label" for="assign-target">{{ messages.get("admin-applications-assign-label") }}</label>
+        <label class="form-label" for="assign-target">{{ messages.get("admin-applications-assign-label") }}{% include "required_mark.html" %}</label>
         <div class="input-group">
           <input type="text" class="form-control font-monospace" id="assign-target" name="target" required>
           <button type="submit" class="btn btn-primary">{{ messages.get("admin-applications-assign-button") }}</button>
@@ -227,7 +227,7 @@
           </select>
         </div>
         <div class="col-md-8">
-          <label class="form-label" for="bind-target">{{ messages.get("admin-applications-bind-target") }}</label>
+          <label class="form-label" for="bind-target">{{ messages.get("admin-applications-bind-target") }}{% include "required_mark.html" %}</label>
           <div class="input-group">
             <input type="text" class="form-control font-monospace" id="bind-target" name="target" required>
             <button type="submit" class="btn btn-primary">{{ messages.get("admin-applications-bind-button") }}</button>

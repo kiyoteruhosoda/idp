@@ -11,7 +11,7 @@
     <form method="post" action="{{ tenant_prefix }}/login/mfa">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <div class="mb-3">
-        <label class="form-label" for="totp_code">{{ messages.get("mfa-verify-code-label") }}</label>
+        <label class="form-label" for="totp_code">{{ messages.get("mfa-verify-code-label") }}{% include "required_mark.html" %}</label>
         <input id="totp_code" type="text" class="form-control form-control-lg text-center" name="totp_code" inputmode="numeric" pattern="[0-9]{6}"
                maxlength="6" autocomplete="one-time-code" required placeholder="000000" autofocus>
       </div>

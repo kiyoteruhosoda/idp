@@ -788,6 +788,9 @@ user-settings-mfa-help = Add or manage authenticator apps and passkeys.
 password-visibility-show = Show password
 password-visibility-hide = Hide password
 
+# Shared by every form: the meaning of the `*` after a label (shown on hover).
+form-required = Required
+
 # Profile navigation.
 admin-profile-settings = Open profile settings
 

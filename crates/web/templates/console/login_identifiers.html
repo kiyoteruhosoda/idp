@@ -23,7 +23,7 @@
           </select>
         </div>
         <div class="col-md-5">
-          <label class="form-label" for="value">{{ messages.get("admin-login-identifiers-field-value") }}</label>
+          <label class="form-label" for="value">{{ messages.get("admin-login-identifiers-field-value") }}{% include "required_mark.html" %}</label>
           <input class="form-control" id="value" name="value" required>
           <div class="form-text">{{ messages.get("admin-login-identifiers-field-value-hint") }}</div>
         </div>
