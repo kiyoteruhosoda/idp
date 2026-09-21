@@ -146,6 +146,43 @@ async fn the_link_sets_a_password_once() {
     assert_eq!(describe(&env, &token).await["result"], "invalid_or_expired");
 }
 
+/// 管理者の再発行も**リンクだけ**を返す（置き換えたパスワードは誰も知らない）。
+#[tokio::test]
+async fn reissuing_a_password_also_hands_out_only_a_link() {
+    let Some(env) = setup().await else { return };
+    let root_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let admin_tok = tok(&env, &root_sso, &env.root_tenant_id).await;
+    let (user_id, _url, first_token) = create_user(&env, &admin_tok).await;
+
+    let res = send(
+        &env.app,
+        post(
+            &admin_tok,
+            &format!(
+                "/{}/admin/users/{user_id}/password-reset",
+                env.root_tenant_id
+            ),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK, "admin reissues");
+    let body = body_json(res).await;
+    assert!(
+        body.get("generated_password").is_none(),
+        "the admin never receives a usable password: {body}"
+    );
+    assert!(body["setup_url"]
+        .as_str()
+        .is_some_and(|u| u.contains("token=")));
+
+    // ⚠ **出し直すと前のリンクは死ぬ**（生きたリンクが 2 本あると、どれを渡したか分からなくなる）。
+    assert_eq!(
+        describe(&env, &first_token).await["result"],
+        "invalid_or_expired"
+    );
+}
+
 /// ⚠ 忘失時の再設定リンクでパスキーを足せない（用途で分ける）。
 #[tokio::test]
 async fn a_forgotten_password_link_may_not_add_a_passkey() {

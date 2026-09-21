@@ -973,7 +973,7 @@ impl ApiClient {
         .await
     }
 
-    /// 利用者作成（`POST /admin/users`）。パスワードは自動生成され `generated_password` を一度だけ返す。
+    /// 利用者作成（`POST /admin/users`）。本人へ渡す設定リンクを一度だけ返す（ADR-0062）。
     pub async fn create_user(
         &self,
         correlation_id: &str,
@@ -1131,7 +1131,7 @@ impl ApiClient {
     }
 
     /// 利用者のパスワード再発行（`POST /admin/users/{user_id}/password-reset`）。
-    /// `generated_password` を一度だけ返す。
+    /// 本人へ渡す設定リンクを一度だけ返す（ADR-0062）。
     pub async fn reset_user_password(
         &self,
         correlation_id: &str,
@@ -2556,7 +2556,7 @@ impl ApiClient {
 
     /// 子テナント管理者のパスワード再発行
     /// （`POST /admin/tenants/{child_id}/admin-password-reset`。idp.system.admin 必須）。
-    /// `generated_password` を一度だけ返す。
+    /// 本人へ渡す設定リンクを一度だけ返す（ADR-0062）。
     pub async fn reset_tenant_admin_password(
         &self,
         correlation_id: &str,

@@ -26,8 +26,8 @@ use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde_json::{json, Value};
 use sqlx::{MySqlPool, Row};
 use support::{
-    admin_token, authorize_uri_openid_only, begin_login, body_json, create_plain_user, delete, get,
-    post, put, send, SERVICE_TOKEN, SERVICE_TOKEN_HEADER,
+    admin_token, authorize_uri_openid_only, begin_login, body_json, create_plain_user, delete,
+    force_password_change, get, post, put, send, SERVICE_TOKEN, SERVICE_TOKEN_HEADER,
 };
 
 /// `acr_values` 付きの `/authorize` URI（予約語の要求を送る RP を模す）。
@@ -500,25 +500,11 @@ async fn require_mfa_policy_is_enforced_after_forced_password_change() {
     assert_eq!(res.status(), StatusCode::CREATED, "admin creates user");
     let created = body_json(res).await;
     let user_id = created["user_id"].as_str().expect("user id").to_string();
-    // 作成はもうパスワードを返さない（ADR-0062。本人がリンクで決める）。この試験が要るのは
-    // 「`must_change_password` が立った状態で入れる資格情報」なので、管理者の再発行で作る。
-    let res = send(
-        &env.app,
-        post(
-            &admin_tok,
-            &format!(
-                "/{}/admin/users/{user_id}/password-reset",
-                env.root_tenant_id
-            ),
-            json!({}),
-        ),
-    )
-    .await;
-    assert_eq!(res.status(), StatusCode::OK, "admin reissues the password");
-    let generated_password = body_json(res).await["generated_password"]
-        .as_str()
-        .expect("generated password")
-        .to_string();
+    // ⚠ 作成も再発行も、もうパスワードを返さない（ADR-0062。本人が設定リンクで決める）。
+    // この試験が要るのは「`must_change_password` が立った状態で入れる資格情報」なので、
+    // その状態を直に作る。
+    let generated_password = format!("ForcedChange-{}!", support::unique());
+    force_password_change(&env.pool, &user_id, &generated_password).await;
 
     // このユーザー限定の require_mfa ポリシーを作成する。
     let res = send(

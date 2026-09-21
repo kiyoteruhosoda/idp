@@ -42,13 +42,12 @@ const GENERATED_PASSWORD_BYTES: usize = 32;
 /// パスワード再発行の結果。どちらも**この一度だけ**返す。
 pub struct ResetUserPassword {
     pub user_id: Uuid,
-    /// 本人へ渡す**アカウント設定リンク**（ADR-0062）。これが本来の渡し方である。
+    /// 本人へ渡す**アカウント設定リンク**（ADR-0062）。
+    ///
+    /// ⚠ **置き換えたパスワードそのものは返さない。** 再発行は「いまのパスワードを即座に
+    /// 無効にする」操作なので値は生成して入れるが、⚠ **誰も知らないまま**にする ——
+    /// 管理者が本人の資格情報を手にする形をやめるための変更である。
     pub setup_link: SetupLink,
-    /// ⚠ **廃止予定の生成パスワード。** 再発行は「いまのパスワードを即座に無効にする」操作なので、
-    /// 置き換える値そのものはこれまでどおり生成している。外へ返しているのは、非常時の道具
-    /// （deploy-repo の `host/breakglass`）がまだこの値を読むためで、そちらが設定リンク経由へ
-    /// 移ったら**この項目は落とす**（`docs/Progress.md`）。
-    pub generated_password: String,
 }
 
 /// MFA 解除の結果（MT21）。何を外したかを管理者へ返す（監査にも同じ粒度で記録する）。
@@ -573,8 +572,11 @@ impl UserLifecycleService {
         actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<ResetUserPassword, UserLifecycleError> {
-        let generated_password = crypto::random_token(GENERATED_PASSWORD_BYTES);
-        let password_hash = self.hasher.hash(&generated_password).map_err(internal)?;
+        // ⚠ **誰にも渡さない値で埋める**（ADR-0062）。再発行の目的は「いまのパスワードを
+        //    通らなくする」ことなので、置き換える値そのものは知られないほうがよい。
+        //    本人は設定リンクで決め直す。
+        let unknown_password = crypto::random_token(GENERATED_PASSWORD_BYTES);
+        let password_hash = self.hasher.hash(&unknown_password).map_err(internal)?;
         // 現行ハッシュを条件にした置き換え（AP7）。負けた場合に成功を返すと、管理者へ渡した
         // 生成パスワードが実際には設定されていない状態になる（本人へ伝える値が嘘になる）。
         let replaced = self
@@ -617,7 +619,6 @@ impl UserLifecycleService {
         Ok(ResetUserPassword {
             user_id: user.id,
             setup_link,
-            generated_password,
         })
     }
 
@@ -1266,23 +1267,24 @@ mod tests {
             .await
             .expect("reset");
 
-        assert!(reset.generated_password.len() >= 32);
+        // ⚠ **返るのはリンクだけ**（ADR-0062）。置き換えたパスワードは誰も知らない。
+        assert!(reset.setup_link.token.len() >= 32);
+        assert!(reset.setup_link.url.contains(&reset.setup_link.token));
         let stored = f.users.rows.lock().unwrap()[0].clone();
-        assert_eq!(
-            stored.password_hash,
-            format!("hash:{}", reset.generated_password)
-        );
+        // 古い値はもう通らない（別の値で置き換わっている）。
+        assert!(stored.password_hash.starts_with("hash:"));
+        assert_ne!(stored.password_hash, "hash:old-password");
         assert!(stored.must_change_password);
         assert_eq!(*f.sso.revoked_users.lock().unwrap(), vec![target]);
         assert_eq!(*f.refresh.revoked_users.lock().unwrap(), vec![target]);
         assert_eq!(*f.codes.revoked_users.lock().unwrap(), vec![target]);
-        // 監査に生成パスワードが漏れていない。
+        // 監査にリンクのトークンが漏れていない。
         let events = f.sink.events.lock().unwrap();
         assert_eq!(events[0].event_type, AuditEventType::UserPasswordReset);
         assert!(events.iter().all(|e| e
             .reason
             .as_deref()
-            .map(|r| !r.contains(&reset.generated_password))
+            .map(|r| !r.contains(&reset.setup_link.token))
             .unwrap_or(true)));
     }
 
