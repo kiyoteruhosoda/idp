@@ -277,8 +277,12 @@ button[aria-busy='true'] .js-pending-label {
   --bs-body-color-rgb: 20, 24, 26;
   --bs-emphasis-color: #050708;
   --bs-emphasis-color-rgb: 5, 7, 8;
-  --bs-secondary-color: #5f6a70;
-  --bs-secondary-color-rgb: 95, 106, 112;
+  /* 補助文言の字色。⚠ **罫と同じ銀（`--assay-silver`）ではもう組まない。**
+   * ラベルは 0.7rem（11px）の等幅・字間広めで組んであり（`.auth-content .form-label`）、
+   * 銀のままだと地の上で 4.6:1 —— AA の下限は超えるが、この大きさと字間では読むのに力が要る。
+   * 字色だけを濃い側へ寄せて 7:1 台にする（罫・針は銀のまま。役割が違う）。 */
+  --bs-secondary-color: #3f4a51;
+  --bs-secondary-color-rgb: 63, 74, 81;
   --bs-secondary-bg: #dfe2dc;
   --bs-secondary-bg-rgb: 223, 226, 220;
   --bs-tertiary-color: #5f6a70;
@@ -348,8 +352,9 @@ button[aria-busy='true'] .js-pending-label {
   --bs-body-color-rgb: 228, 231, 228;
   --bs-emphasis-color: #f2f3f0;
   --bs-emphasis-color-rgb: 242, 243, 240;
-  --bs-secondary-color: #8c979c;
-  --bs-secondary-color-rgb: 140, 151, 156;
+  /* 暗い地では逆に明るい側へ寄せる（同じ理由。明度差は 7:1 台）。 */
+  --bs-secondary-color: #9aa5aa;
+  --bs-secondary-color-rgb: 154, 165, 170;
   --bs-secondary-bg: #1a2126;
   --bs-secondary-bg-rgb: 26, 33, 38;
   --bs-tertiary-color: #8c979c;

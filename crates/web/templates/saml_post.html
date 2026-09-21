@@ -5,7 +5,9 @@
   <div class="card-header text-center py-3 border-0 bg-transparent">
     <h1 class="h4 mb-0">{{ messages.get("saml-continue-title") }}</h1>
   </div>
-  <div class="card-body p-4 text-center">
+  {#- ⚠ 本文は中央寄せにしない。和文は単語の切れ目で折り返さないので、中央寄せの 2 行目以降は
+     行頭がそろわず読みにくい（ボタンだけを中央へ寄せる）。 -#}
+  <div class="card-body p-4">
     <p class="mb-3">{{ messages.get("saml-continue-message") }}</p>
     <form id="saml-post-form" data-auto-submit method="post" action="{{ acs_url }}">
       <input type="hidden" name="SAMLResponse" value="{{ saml_response }}">
