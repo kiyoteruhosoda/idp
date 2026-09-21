@@ -16,6 +16,8 @@ use axum::response::IntoResponse;
 
 pub(crate) const PASSKEY_LOGIN_JS: &str = include_str!("../../assets/passkey-login.js");
 pub(crate) const PASSKEY_REGISTER_JS: &str = include_str!("../../assets/passkey-register.js");
+pub(crate) const ACCOUNT_SETUP_JS: &str = include_str!("../../assets/account-setup.js");
+pub(crate) const SHARE_LINK_JS: &str = include_str!("../../assets/share-link.js");
 pub(crate) const PASSWORD_VISIBILITY_JS: &str = include_str!("../../assets/password-visibility.js");
 pub(crate) const RP_LOGOUT_JS: &str = include_str!("../../assets/rp-logout.js");
 pub(crate) const AUTO_SUBMIT_JS: &str = include_str!("../../assets/auto-submit.js");
@@ -39,6 +41,14 @@ pub async fn passkey_login_js() -> impl IntoResponse {
 
 pub async fn passkey_register_js() -> impl IntoResponse {
     javascript(PASSKEY_REGISTER_JS)
+}
+
+pub async fn account_setup_js() -> impl IntoResponse {
+    javascript(ACCOUNT_SETUP_JS)
+}
+
+pub async fn share_link_js() -> impl IntoResponse {
+    javascript(SHARE_LINK_JS)
 }
 
 pub async fn password_visibility_js() -> impl IntoResponse {

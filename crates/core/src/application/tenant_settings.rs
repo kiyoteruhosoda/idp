@@ -410,6 +410,14 @@ impl EffectiveTenantSettings for TenantSettingsService {
         self.seconds(tenant_id, "PASSWORD_RESET_TTL_SECS").await
     }
 
+    /// アカウント設定リンクの有効期間。渡すのは利用者の**所属元**テナント。
+    ///
+    /// 再設定より長いのは、渡し方が違うからである ——再設定は本人が「いま」押して自分のメールで
+    /// 受け取るが、設定リンクは管理者が受け取って人づてに渡す（ADR-0062）。
+    async fn account_setup_ttl(&self, tenant_id: TenantId) -> Result<Duration> {
+        self.seconds(tenant_id, "ACCOUNT_SETUP_TTL_SECS").await
+    }
+
     /// SMTP で送れないとき、再設定リンクをサーバのコンソールへ出してよいか。
     async fn password_reset_console_link_enabled(&self, tenant_id: TenantId) -> Result<bool> {
         self.parse(tenant_id, "PASSWORD_RESET_CONSOLE_LINK_ENABLED")
@@ -975,6 +983,7 @@ mod tests {
         service.step_up_max_age_secs(t).await.unwrap();
         service.invitation_ttl(t).await.unwrap();
         service.password_reset_ttl(t).await.unwrap();
+        service.account_setup_ttl(t).await.unwrap();
         service
             .password_reset_console_link_enabled(t)
             .await

@@ -811,6 +811,21 @@ pub trait PasswordResetTokenRepository: Send + Sync {
         token_hash: &str,
         used_at: DateTime<Utc>,
     ) -> Result<Option<PasswordResetToken>>;
+    /// **消費せずに**引く（未使用かつ期限内のものだけ。ADR-0062）。
+    ///
+    /// リンクを開いた画面が「誰のどの用途のリンクか」を知るために使う。⚠ **開いただけで
+    /// 消費してはいけない** —— チャットに貼ったリンクは、相手より先にプレビューの bot が
+    /// 取りに来る。消費を POST（実際に資格情報を決める操作）まで遅らせておけば、先に
+    /// 取りに来られてもリンクは生きたままである。
+    ///
+    /// 既定実装は `Ok(None)`（この引き方を持たないフェイクでは、リンクの中身を出さない）。
+    async fn find_active(
+        &self,
+        _token_hash: &str,
+        _now: DateTime<Utc>,
+    ) -> Result<Option<PasswordResetToken>> {
+        Ok(None)
+    }
     /// 当該ユーザーの未使用トークンをすべて失効させる（`used_at` を設定。再発行時の置き換えに使う）。
     async fn invalidate_all_for_user(&self, user_id: Uuid, now: DateTime<Utc>) -> Result<()>;
 }

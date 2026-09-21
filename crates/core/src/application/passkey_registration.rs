@@ -104,7 +104,19 @@ impl PasskeyRegistrationService {
         user_name: &str,
     ) -> Result<(Uuid, serde_json::Value), PasskeyRegistrationError> {
         let (user_id, _) = self.resolve_user(sso_session_id).await?;
+        self.begin_for_user(user_id, user_name).await
+    }
 
+    /// 登録開始（**本人性を解決済み**の利用者に対して）。
+    ///
+    /// SSO セッションのほかに、管理者が発行したアカウント設定リンク（ADR-0062）からも呼ばれる。
+    /// ⚠ **本人性の根拠はこのメソッドの外にある** ——呼ぶ側が、セッションかワンタイムトークンかの
+    /// どちらかで「この `user_id` を名乗ってよい」ことを確かめてから渡す。
+    pub async fn begin_for_user(
+        &self,
+        user_id: Uuid,
+        user_name: &str,
+    ) -> Result<(Uuid, serde_json::Value), PasskeyRegistrationError> {
         // 既存クレデンシャルを exclude_credentials に渡して二重登録を防ぐ。
         let existing = self.webauthn_credentials.list_by_user_id(user_id).await?;
         let existing_passkeys: Vec<Passkey> = existing
@@ -148,6 +160,19 @@ impl PasskeyRegistrationService {
         credential_value: serde_json::Value,
     ) -> Result<Uuid, PasskeyRegistrationError> {
         let (user_id, _) = self.resolve_user(sso_session_id).await?;
+        self.complete_for_user(user_id, challenge_id, name, credential_value)
+            .await
+    }
+
+    /// 登録完了（**本人性を解決済み**の利用者に対して）。呼ぶ側の責務は
+    /// [`Self::begin_for_user`] と同じ。
+    pub async fn complete_for_user(
+        &self,
+        user_id: Uuid,
+        challenge_id: Uuid,
+        name: &str,
+        credential_value: serde_json::Value,
+    ) -> Result<Uuid, PasskeyRegistrationError> {
         let now = self.clock.now();
 
         // チャレンジを取得して消費する。

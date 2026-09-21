@@ -179,8 +179,15 @@ admin-users-list-next = Next
 admin-users-new-title = Create a user
 admin-users-field-name = Display name
 admin-users-created-title = User created
-admin-users-created-warning = This password is shown only once. Record it and share it with the user through a secure channel.
-admin-users-generated-password-label = Generated password
+admin-users-created-warning = This link is shown only once. Hand it to the user before you close this page. Nobody can sign in as this account until they register a passkey or set a password.
+
+# The one-time link handed to the user (ADR-0062). Shared by the create and reissue result screens.
+admin-setup-link-label = Account setup link
+admin-setup-link-share = Share
+admin-setup-link-share-title = Set up your account
+admin-setup-link-copy = Copy
+admin-setup-link-copied = Copied.
+admin-setup-link-expires = Expires
 
 # Administrator editing of a user's profile (MT25).
 admin-users-profile-title = Profile
@@ -667,7 +674,7 @@ admin-tenants-edit-saved = The tenant has been updated.
 admin-tenants-edit-hint = Change the display name and the status. While disabled, nobody can sign in to that tenant and its endpoints stop responding.
 admin-password-reset-result-title = Password reissued
 admin-password-reset-result-subject = Target
-admin-password-reset-result-warning = The new temporary password is shown only once on this screen. Share it through a secure channel. The user must change it at next sign-in.
+admin-password-reset-result-warning = The current password is now invalid. This link is shown only once — hand it to the user before you close this page.
 admin-home-heading = Administration menu
 admin-current-tenant = Current tenant
 admin-home-groups-label = Administration menu grouped by category
@@ -786,6 +793,26 @@ user-settings-theme-help = Your appearance choice is saved in a cookie and, whil
 user-settings-theme-submit = Save appearance
 user-settings-password-help = Confirm your current password before changing it.
 user-settings-mfa-help = Add or manage authenticator apps and passkeys.
+
+# The account setup link screen (ADR-0062) — where the admin's one-time link lands.
+account-setup-title = Set up your account
+account-setup-done = You are all set. You can sign in now.
+account-setup-go-to-login = Go to sign-in
+account-setup-ask-admin = Ask your administrator for a new link.
+account-setup-passkey-button = Register a passkey
+account-setup-passkey-help = Sign in with this device's face, fingerprint or screen lock. You do not need a password.
+account-setup-or = or
+account-setup-password-summary = Set a password instead
+account-setup-new-password = New password
+account-setup-new-password-confirm = Confirm the password
+account-setup-password-submit = Set the password
+account-setup-error-invalid = This link no longer works. It has expired or has already been used.
+account-setup-error-internal = Something went wrong. Wait a moment and try again.
+account-setup-error-mismatch = The two passwords do not match.
+account-setup-error-weak = That password cannot be used. Choose another one.
+account-setup-passkey-failed = The passkey could not be registered. Try again.
+account-setup-passkey-unsupported = This device cannot use passkeys. Set a password below instead.
+account-setup-passkey-default-name = This device
 
 # Password visibility toggle.
 password-visibility-show = Show password

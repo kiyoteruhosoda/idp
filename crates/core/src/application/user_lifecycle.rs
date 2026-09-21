@@ -12,6 +12,7 @@
 //! **その応答でのみ**平文で返し、ログ・監査には出さない。再発行・無効化・MFA 解除時は当該利用者の
 //! SSO セッション・refresh token・未消費 authorization code を全失効させる。
 
+use crate::application::account_setup::{AccountSetupLinkIssuer, SetupLink};
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::password_policy::PasswordPolicyService;
 use crate::application::stop_announcement::SessionStopAnnouncer;
@@ -38,9 +39,15 @@ use uuid::Uuid;
 /// 自動生成パスワードのバイト長（base64url で 43 文字。ADR-0009 §5 の「32 文字以上」を満たす）。
 const GENERATED_PASSWORD_BYTES: usize = 32;
 
-/// パスワード再発行の結果。`generated_password` は**この一度だけ**平文で返す。
+/// パスワード再発行の結果。どちらも**この一度だけ**返す。
 pub struct ResetUserPassword {
     pub user_id: Uuid,
+    /// 本人へ渡す**アカウント設定リンク**（ADR-0062）。これが本来の渡し方である。
+    pub setup_link: SetupLink,
+    /// ⚠ **廃止予定の生成パスワード。** 再発行は「いまのパスワードを即座に無効にする」操作なので、
+    /// 置き換える値そのものはこれまでどおり生成している。外へ返しているのは、非常時の道具
+    /// （deploy-repo の `host/breakglass`）がまだこの値を読むためで、そちらが設定リンク経由へ
+    /// 移ったら**この項目は落とす**（`docs/Progress.md`）。
     pub generated_password: String,
 }
 
@@ -108,6 +115,8 @@ pub struct UserLifecycleService {
     audit: Arc<AuditService>,
     /// 失効させたことを RP へ伝える（ADR-0049 I7）。assay の中だけで消しても RP は気付けない。
     stop_announcement: Arc<dyn SessionStopAnnouncer>,
+    /// 再発行のたびに本人へ渡すリンクを出す（ADR-0062）。
+    account_setup: Arc<AccountSetupLinkIssuer>,
     clock: Arc<dyn Clock>,
 }
 
@@ -125,6 +134,7 @@ impl UserLifecycleService {
         password_policy: Arc<PasswordPolicyService>,
         audit: Arc<AuditService>,
         stop_announcement: Arc<dyn SessionStopAnnouncer>,
+        account_setup: Arc<AccountSetupLinkIssuer>,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
@@ -139,6 +149,7 @@ impl UserLifecycleService {
             password_policy,
             audit,
             stop_announcement,
+            account_setup,
             clock,
         }
     }
@@ -594,8 +605,18 @@ impl UserLifecycleService {
                 ctx,
             )
             .await;
+        // 本人が自分で決め直すためのリンク。⚠ **出せなかったら失敗として返す** —— 古いパスワードは
+        // もう無効なので、リンクの無い結果を成功として返すと「入れない人が 1 人できたこと」だけが
+        // 伝わらない。再発行はもう一度押せば新しいリンクごとやり直せる。
+        let setup_link = self
+            .account_setup
+            .issue(user.tenant_id, user.id)
+            .await
+            .map_err(|e| UserLifecycleError::Internal(e.to_string()))?;
+
         Ok(ResetUserPassword {
             user_id: user.id,
+            setup_link,
             generated_password,
         })
     }
@@ -1185,6 +1206,8 @@ mod tests {
         let sink = Arc::new(CapturingSink::default());
         let audit = Arc::new(AuditService::new(sink.clone(), Arc::new(FixedClock(now()))));
         let announcer = Arc::new(RecordingAnnouncer::default());
+        let setup_tokens =
+            Arc::new(crate::application::account_setup::testing::FakeSetupTokens::default());
         let svc = UserLifecycleService::new(
             Arc::new(FakeAuthenticators::default()),
             users.clone(),
@@ -1206,6 +1229,10 @@ mod tests {
             ),
             audit,
             announcer.clone(),
+            crate::application::account_setup::testing::link_issuer(
+                setup_tokens.clone(),
+                Arc::new(FixedClock(now())),
+            ),
             Arc::new(FixedClock(now())),
         );
         Fixture {

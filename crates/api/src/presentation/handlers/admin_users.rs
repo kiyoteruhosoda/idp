@@ -32,14 +32,15 @@ pub struct UserSearchQuery {
 }
 
 /// 所属元が当該テナントの利用者を作成する（`POST /{tenant_id}/admin/users`）。パスワードは自動生成し、
-/// `must_change_password` を付与する。`generated_password` を**その応答でのみ**平文で返す。
+/// `must_change_password` を付与する。本人へ渡す**アカウント設定リンク**（`setup_url`）を
+/// その応答でのみ返す（ADR-0062。生成パスワードは返さない）。
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/users",
     tag = "admin",
     request_body = CreateUserRequest,
     responses(
-        (status = 201, description = "作成成功（generated_password を含む）", body = UserCreatedResponse),
+        (status = 201, description = "作成成功（setup_url を含む）", body = UserCreatedResponse),
         (status = 400, description = "バリデーションエラー"),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
@@ -79,7 +80,8 @@ pub async fn create_user(
         Json(UserCreatedResponse {
             user_id: created.user_id.to_string(),
             sub: created.sub.to_string(),
-            generated_password: created.generated_password,
+            setup_url: created.setup_link.url,
+            setup_expires_at: created.setup_link.expires_at.to_rfc3339(),
         }),
     ))
 }
@@ -273,14 +275,14 @@ pub async fn delete_user(
 
 /// 利用者のパスワードを再発行する（`POST /{tenant_id}/admin/users/{user_id}/password-reset`）。
 /// 32 文字以上のランダムパスワードを自動生成して `must_change_password` を設定し、
-/// `generated_password` を**この応答でのみ**平文で返す（作成時と同じパターン。ADR-0009 §5）。
+/// 本人へ渡す**アカウント設定リンク**（`setup_url`）をこの応答でのみ返す（ADR-0062）。
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/users/{user_id}/password-reset",
     tag = "admin",
     params(("user_id" = String, Path, description = "対象利用者の内部 ID（UUID）")),
     responses(
-        (status = 200, description = "再発行成功（generated_password を含む）", body = UserPasswordResetResponse),
+        (status = 200, description = "再発行成功（setup_url を含む）", body = UserPasswordResetResponse),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足・自分自身は再発行不可"),
         (status = 404, description = "不存在（所属元が他テナントの場合を含む）"),
@@ -308,6 +310,8 @@ pub async fn reset_user_password(
         .map_err(|e| map_user_lifecycle_error(e, locale))?;
     Ok(Json(UserPasswordResetResponse {
         user_id: reset.user_id.to_string(),
+        setup_url: reset.setup_link.url,
+        setup_expires_at: reset.setup_link.expires_at.to_rfc3339(),
         generated_password: reset.generated_password,
     }))
 }

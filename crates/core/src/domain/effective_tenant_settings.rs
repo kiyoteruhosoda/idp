@@ -71,6 +71,8 @@ pub trait EffectiveTenantSettings: Send + Sync {
     async fn invitation_ttl(&self, tenant_id: TenantId) -> Result<Duration>;
     /// パスワード再設定リンクの有効期間。
     async fn password_reset_ttl(&self, tenant_id: TenantId) -> Result<Duration>;
+    /// アカウント設定リンク（管理者が発行する。ADR-0062）の有効期間。
+    async fn account_setup_ttl(&self, tenant_id: TenantId) -> Result<Duration>;
     /// SMTP で送れないとき、再設定リンクをサーバのコンソールへ出してよいか。
     async fn password_reset_console_link_enabled(&self, tenant_id: TenantId) -> Result<bool>;
     /// メール検証リンクの有効期間。

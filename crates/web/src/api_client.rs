@@ -24,6 +24,9 @@ use assay_contracts::application_log::{
     ApplicationLogPayload,
 };
 use assay_contracts::auth::{
+    InternalAccountSetupDescribeRequest, InternalAccountSetupDescribeResponse,
+    InternalAccountSetupPasskeyBeginRequest, InternalAccountSetupPasskeyBeginResponse,
+    InternalAccountSetupPasskeyCompleteRequest, InternalAccountSetupPasskeyCompleteResponse,
     InternalAdminAuthenticateRequest, InternalAdminAuthenticateResponse,
     InternalAdminChangePasswordRequest, InternalAdminChangePasswordResponse,
     InternalAdminPasskeyLoginCompleteRequest, InternalAdminPasskeyLoginCompleteResponse,
@@ -442,6 +445,41 @@ impl ApiClient {
     ) -> Result<InternalPasswordResetCompleteResponse, InternalCallError> {
         self.post_internal("/internal/password-reset/complete", correlation_id, req)
             .await
+    }
+
+    /// アカウント設定リンクの中身を読む（`POST /internal/account-setup/describe`。ADR-0062）。
+    /// ⚠ **読むだけで消費しない。**
+    pub async fn account_setup_describe(
+        &self,
+        correlation_id: &str,
+        req: &InternalAccountSetupDescribeRequest,
+    ) -> Result<InternalAccountSetupDescribeResponse, InternalCallError> {
+        self.post_internal("/internal/account-setup/describe", correlation_id, req)
+            .await
+    }
+
+    /// 設定リンクからのパスキー登録開始（`POST /internal/account-setup/passkey/begin`）。
+    pub async fn account_setup_passkey_begin(
+        &self,
+        correlation_id: &str,
+        req: &InternalAccountSetupPasskeyBeginRequest,
+    ) -> Result<InternalAccountSetupPasskeyBeginResponse, InternalCallError> {
+        self.post_internal("/internal/account-setup/passkey/begin", correlation_id, req)
+            .await
+    }
+
+    /// 設定リンクからのパスキー登録完了（`POST /internal/account-setup/passkey/complete`）。
+    pub async fn account_setup_passkey_complete(
+        &self,
+        correlation_id: &str,
+        req: &InternalAccountSetupPasskeyCompleteRequest,
+    ) -> Result<InternalAccountSetupPasskeyCompleteResponse, InternalCallError> {
+        self.post_internal(
+            "/internal/account-setup/passkey/complete",
+            correlation_id,
+            req,
+        )
+        .await
     }
 
     /// メール検証リンクの消費（`POST /{tenant_id}/auth/verify-email`。SEC6b）。公開エンドポイントの

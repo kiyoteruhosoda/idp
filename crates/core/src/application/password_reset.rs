@@ -36,7 +36,7 @@ use crate::domain::error::DomainError;
 use crate::domain::mailer::{Mailer, OutgoingEmail, SmtpServerConfig};
 use crate::domain::password::PasswordHasher;
 use crate::domain::password_policy::PasswordRejection;
-use crate::domain::password_reset::PasswordResetToken;
+use crate::domain::password_reset::{PasswordResetToken, ResetPurpose};
 use crate::domain::rate_limit::LoginRateLimiter;
 use crate::domain::repositories::{
     AuthorizationCodeRepository, PasswordResetTokenRepository, RefreshTokenRepository,
@@ -270,6 +270,8 @@ impl PasswordResetService {
         let record = PasswordResetToken {
             token_hash: crypto::sha256_hex(&token),
             user_id: user.id,
+            // 本人が要求した再設定。⚠ この用途のリンクではパスキーを登録させない（ADR-0062）。
+            purpose: ResetPurpose::Reset,
             expires_at,
             used_at: None,
             created_at: now,

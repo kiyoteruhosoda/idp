@@ -241,7 +241,7 @@ pub async fn delete_tenant(
 /// （`POST /{tenant_id}/admin/tenants/{child_id}/admin-password-reset`）。
 ///
 /// 対象は**直下の子テナント所属**の利用者をメールアドレスで指定する。32 文字以上のランダム
-/// パスワードを自動生成して `must_change_password` を設定し、`generated_password` を
+/// パスワードを自動生成して `must_change_password` を設定し、`setup_url` を
 /// **この応答でのみ**平文で返す（テナント作成時と同じパターン。ADR-0009 §5）。
 #[utoipa::path(
     post,
@@ -250,7 +250,7 @@ pub async fn delete_tenant(
     params(("child_id" = String, Path, description = "子テナントの UUID")),
     request_body = TenantAdminPasswordResetRequest,
     responses(
-        (status = 200, description = "再発行成功（generated_password を含む）", body = UserPasswordResetResponse),
+        (status = 200, description = "再発行成功（setup_url を含む）", body = UserPasswordResetResponse),
         (status = 400, description = "email が未指定"),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.system.admin 必須）"),
@@ -292,6 +292,8 @@ pub async fn reset_tenant_admin_password(
         .map_err(|e| map_lifecycle_error(e, locale))?;
     Ok(Json(UserPasswordResetResponse {
         user_id: reset.user_id.to_string(),
+        setup_url: reset.setup_link.url,
+        setup_expires_at: reset.setup_link.expires_at.to_rfc3339(),
         generated_password: reset.generated_password,
     }))
 }

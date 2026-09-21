@@ -155,6 +155,9 @@ pub enum AuditEventType {
     /// 自己登録アカウントのメール検証の要求・完了（SEC6b）。トークン・メールアドレスは記録しない。
     EmailVerificationRequested,
     EmailVerified,
+    /// 管理者が発行したアカウント設定リンクで資格情報が決まった（ADR-0062）。
+    /// `reason` に決め方（`method=passkey` / `method=password`）を残す。トークンは記録しない。
+    AccountSetupCompleted,
 }
 
 impl AuditEventType {
@@ -244,6 +247,7 @@ impl AuditEventType {
             Self::PasswordResetCompleted => "password_reset.completed",
             Self::EmailVerificationRequested => "email_verification.requested",
             Self::EmailVerified => "email_verification.verified",
+            Self::AccountSetupCompleted => "account_setup.completed",
         }
     }
 }

@@ -1,0 +1,28 @@
+{#- 本人へ渡すワンタイムリンク（ADR-0062）。作成の結果画面とパスワード再発行の結果画面が
+    同じ形で出す。⚠ **リンクは一度しか出ない**ので、閉じる前に渡し切ってもらう必要がある。
+
+    渡し方を 2 つ置く ——端末の共有シート（スマホからチャットへ送る）と、写し取り。
+    共有シートしか無いと PC で詰まり、文字列しか無いとスマホで打ち写すことになる。 -#}
+<div class="card mb-3"
+     data-setup-link="{{ setup_url }}"
+     data-share-title="{{ messages.get("admin-setup-link-share-title") }}"
+     data-copied-text="{{ messages.get("admin-setup-link-copied") }}">
+  <div class="card-body">
+    <p class="form-label mb-1">{{ messages.get("admin-setup-link-label") }}</p>
+    <p class="text-break font-monospace small mb-2" data-setup-link-text>{{ setup_url }}</p>
+    <div class="d-flex flex-wrap gap-2">
+      {#- 共有シートを持たない環境（多くの PC ブラウザ）では JS が出さないままにする。 -#}
+      <button type="button" class="btn btn-primary" data-share-button hidden>
+        <i class="fa-solid fa-share-nodes me-2" aria-hidden="true"></i>{{ messages.get("admin-setup-link-share") }}
+      </button>
+      <button type="button" class="btn btn-outline-secondary" data-copy-button>
+        <i class="fa-regular fa-copy me-2" aria-hidden="true"></i>{{ messages.get("admin-setup-link-copy") }}
+      </button>
+    </div>
+    <div class="form-text" data-share-status role="status" aria-live="polite">
+      {{ messages.get("admin-setup-link-expires") }}:
+      <time class="local-time" datetime="{{ setup_expires_at }}">{{ setup_expires_at }}</time>
+    </div>
+  </div>
+</div>
+<script src="/assets/share-link.js?v={{ crate::templates::asset_version() }}" defer></script>

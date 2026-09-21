@@ -3,13 +3,13 @@
 use crate::presentation::correlation;
 use crate::presentation::cors;
 use crate::presentation::handlers::{
-    admin, admin_application_logs, admin_applications, admin_audit, admin_authentication_policies,
-    admin_client_permissions, admin_clients, admin_external_idps, admin_invitations,
-    admin_login_identifiers, admin_members, admin_permissions, admin_resources, admin_restart,
-    admin_saml_service_providers, admin_signing_keys, admin_system_settings, admin_tenant_settings,
-    admin_tenant_smtp, admin_tenants, admin_users, authorize, consent, discovery, health,
-    internal_admin_token, internal_auth, internal_runtime_settings, introspect, invitations,
-    logout, mfa, passkey, register, revoke, saml_sso, token, userinfo,
+    account_setup, admin, admin_application_logs, admin_applications, admin_audit,
+    admin_authentication_policies, admin_client_permissions, admin_clients, admin_external_idps,
+    admin_invitations, admin_login_identifiers, admin_members, admin_permissions, admin_resources,
+    admin_restart, admin_saml_service_providers, admin_signing_keys, admin_system_settings,
+    admin_tenant_settings, admin_tenant_smtp, admin_tenants, admin_users, authorize, consent,
+    discovery, health, internal_admin_token, internal_auth, internal_runtime_settings, introspect,
+    invitations, logout, mfa, passkey, register, revoke, saml_sso, token, userinfo,
 };
 use crate::presentation::openapi::ApiDoc;
 use crate::presentation::security_headers::add_security_headers;
@@ -190,6 +190,19 @@ pub fn build(state: AppState) -> Router {
         )
         .route("/internal/logout", post(internal_auth::logout))
         // パスワードリセット（忘失時。MT18）。未ログイン経路（web がフォームを仲介する）。
+        .route(
+            // アカウント設定リンク（ADR-0062）。describe は読むだけで消費しない。
+            "/internal/account-setup/describe",
+            post(account_setup::describe),
+        )
+        .route(
+            "/internal/account-setup/passkey/begin",
+            post(account_setup::passkey_begin),
+        )
+        .route(
+            "/internal/account-setup/passkey/complete",
+            post(account_setup::passkey_complete),
+        )
         .route(
             "/internal/password-reset/request",
             post(internal_auth::password_reset_request),

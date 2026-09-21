@@ -179,8 +179,15 @@ admin-users-list-next = 次へ
 admin-users-new-title = 利用者を作成
 admin-users-field-name = 表示名
 admin-users-created-title = 利用者を作成しました
-admin-users-created-warning = このパスワードは一度だけ表示されます。控えたうえで、安全な方法で本人へ伝えてください。
-admin-users-generated-password-label = 生成されたパスワード
+admin-users-created-warning = このリンクは一度だけ表示されます。閉じる前に本人へ渡してください。本人がパスキーを登録するかパスワードを設定するまで、このアカウントでは誰もログインできません。
+
+# 本人へ渡すワンタイムリンク（ADR-0062）。作成とパスワード再発行の結果画面で共有する。
+admin-setup-link-label = アカウント設定リンク
+admin-setup-link-share = 共有する
+admin-setup-link-share-title = アカウントの設定
+admin-setup-link-copy = コピーする
+admin-setup-link-copied = コピーしました。
+admin-setup-link-expires = 有効期限
 
 # 管理者による利用者プロフィールの編集（MT25）。
 admin-users-profile-title = プロフィール
@@ -667,7 +674,7 @@ admin-tenants-edit-saved = テナントを更新しました。
 admin-tenants-edit-hint = 表示名と状態を変更します。無効にしている間は、そのテナントへの誰のログインも受け付けず、エンドポイントも応答しなくなります。
 admin-password-reset-result-title = パスワードを再発行しました
 admin-password-reset-result-subject = 対象
-admin-password-reset-result-warning = 新しい一時パスワードはこの画面で一度だけ表示されます。安全な経路で本人へ共有してください。本人は次回ログイン時に変更が必要です。
+admin-password-reset-result-warning = 現在のパスワードは無効になりました。このリンクは一度だけ表示されます。閉じる前に本人へ渡してください。
 admin-home-heading = 管理メニュー
 admin-current-tenant = 現在のテナント
 admin-home-groups-label = 種別ごとの管理メニュー
@@ -786,6 +793,26 @@ user-settings-theme-help = 画面の配色を選ぶと Cookie とログイン中
 user-settings-theme-submit = 配色を保存
 user-settings-password-help = 現在のパスワードを確認して新しいパスワードへ変更します。
 user-settings-mfa-help = 認証アプリやパスキーを追加・管理します。
+
+# アカウント設定リンクの画面（ADR-0062）。管理者が発行したワンタイムリンクの着地点。
+account-setup-title = アカウントを使えるようにする
+account-setup-done = 設定が終わりました。サインインできます。
+account-setup-go-to-login = サインインへ進む
+account-setup-ask-admin = 新しいリンクの発行を管理者に依頼してください。
+account-setup-passkey-button = パスキーを登録する
+account-setup-passkey-help = この端末の顔・指紋・画面ロックでサインインできるようになります。パスワードは決めなくて構いません。
+account-setup-or = または
+account-setup-password-summary = パスワードを設定する
+account-setup-new-password = 新しいパスワード
+account-setup-new-password-confirm = 確認のためもう一度
+account-setup-password-submit = パスワードを設定する
+account-setup-error-invalid = このリンクは使えません。期限が切れたか、すでに使われています。
+account-setup-error-internal = 設定できませんでした。しばらく待ってからもう一度お試しください。
+account-setup-error-mismatch = 2 つのパスワードが一致しません。
+account-setup-error-weak = このパスワードは使えません。別のものを入力してください。
+account-setup-passkey-failed = パスキーを登録できませんでした。もう一度お試しください。
+account-setup-passkey-unsupported = この端末ではパスキーを使えません。下のパスワード設定をお使いください。
+account-setup-passkey-default-name = このデバイス
 
 # パスワード表示切替。
 password-visibility-show = パスワードを表示

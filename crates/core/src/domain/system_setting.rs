@@ -329,6 +329,20 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         description: "ゲスト招待トークンの有効期限（秒）。招待メールの承諾リンクが使える期間（既定 7 日）。",
     },
     SettingDefinition {
+        key: "ACCOUNT_SETUP_TTL_SECS",
+        scope: SettingScope::TenantOverridable,
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: false,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
+        default_value: Some("86400"),
+        description: "アカウント設定リンクの有効期限（秒）。管理者が利用者を作った・パスワードを\
+                      再発行したときに渡す、パスワードの設定とパスキーの登録ができるリンクが\
+                      使える期間（既定 24 時間）。",
+    },
+    SettingDefinition {
         key: "PASSWORD_RESET_TTL_SECS",
         scope: SettingScope::TenantOverridable,
         shared_with_web: false,
