@@ -31,7 +31,10 @@ use crate::domain::system_setting::DeploymentState;
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::tenant_membership::TenantMembership;
-use crate::domain::values::{MembershipStatus, MembershipType};
+use crate::domain::user::User;
+use crate::domain::values::{
+    validate_email as domain_validate_email, MembershipStatus, MembershipType,
+};
 use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -43,6 +46,9 @@ pub enum InvitationError {
     /// 既に当該テナントのメンバー（HOME/GUEST/INVITED）である。
     #[error("already a member")]
     AlreadyMember,
+    /// 相手の指し方が、メールアドレスでも内部 ID（UUID）でもない（ADR-0061）。
+    #[error("validation error: {0}")]
+    Validation(MessageKey),
     /// 承諾者が被招待ユーザー本人でない／HOME は解除できない等。
     #[error("forbidden: {0}")]
     Forbidden(MessageKey),
@@ -116,22 +122,22 @@ impl InvitationService {
     /// 参加先テナント（`host`）へゲスト招待を作成する。被招待ユーザーは既存ユーザー（所属元は他
     /// テナント）でなければならない。既にメンバー（HOME/GUEST/INVITED）なら `AlreadyMember`。
     /// 平文トークンを**一度だけ**返す（保存はハッシュのみ）。
+    ///
+    /// `invitee` は**メールアドレス、または内部 ID（UUID）**（ADR-0061）。読み分けは
+    /// [`Self::resolve_invitee`] に閉じ、呼び出し側は 1 本の入力を渡すだけでよい。
     pub async fn create_invitation(
         &self,
         host: TenantContext,
-        target_user_id: Uuid,
+        invitee: &str,
         invited_by: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<CreatedInvitation, InvitationError> {
         let host_id = host.tenant_id();
 
-        // 被招待ユーザーが実在すること（グローバル一意 ID で解決）。所属元が host のユーザーは既に
-        // HOME メンバーであり、下の membership 存在チェックで `AlreadyMember` に倒れる。
-        let invitee = match self.users.find_by_id(target_user_id).await {
-            Ok(Some(user)) => user,
-            Ok(None) => return Err(InvitationError::NotFound),
-            Err(e) => return Err(InvitationError::Internal(e.to_string())),
-        };
+        // 被招待ユーザーが実在すること。所属元が host のユーザーは既に HOME メンバーであり、
+        // 下の membership 存在チェックで `AlreadyMember` に倒れる。
+        let invitee = self.resolve_invitee(invitee).await?;
+        let target_user_id = invitee.id;
 
         // 既存メンバーシップ（HOME/GUEST/INVITED）があれば二重招待しない。
         match self.memberships.find(host_id, target_user_id).await {
@@ -193,6 +199,41 @@ impl InvitationService {
             email_sent,
             invitee_email: invitee.email,
         })
+    }
+
+    /// 招待する相手を決める（ADR-0061）。入力はメールアドレス、または内部 ID（UUID）。
+    ///
+    /// **UUID を先に読む。** メールアドレスとして成り立たない文字列だけがこちらへ来るので順序は
+    /// 本来どちらでもよいが、先に試すほうが「ID を貼った」意図を取り違えない。
+    ///
+    /// メールで引くのは**テナントを跨いでちょうど 1 人**のときだけで、0 人も複数人も同じ
+    /// `NotFound` にする（[`UserRepository::find_active_user_by_email_across_tenants`]）。
+    /// ⚠ **複数人を「曖昧です」と言い分けない** —— 参加先の管理者は相手のテナントの名簿を
+    /// 見られないので、言い分けると「このアドレスの利用者が他にも居る」ことだけが分かる。
+    /// 逃げ道（内部 ID で指す）は画面の説明に書いてある。
+    async fn resolve_invitee(&self, input: &str) -> Result<User, InvitationError> {
+        let input = input.trim();
+        if let Ok(id) = Uuid::parse_str(input) {
+            return match self.users.find_by_id(id).await {
+                Ok(Some(user)) => Ok(user),
+                Ok(None) => Err(InvitationError::NotFound),
+                Err(e) => Err(InvitationError::Internal(e.to_string())),
+            };
+        }
+        if domain_validate_email(input).is_err() {
+            return Err(InvitationError::Validation(MessageKey::new(
+                "api-invitation-invitee-invalid",
+            )));
+        }
+        match self
+            .users
+            .find_active_user_by_email_across_tenants(input)
+            .await
+        {
+            Ok(Some(user)) => Ok(user),
+            Ok(None) => Err(InvitationError::NotFound),
+            Err(e) => Err(InvitationError::Internal(e.to_string())),
+        }
     }
 
     /// 招待メール（承諾リンク）を配送する。成功なら `true`。SMTP 未設定は静かに `false`、
@@ -503,7 +544,9 @@ mod tests {
     }
 
     struct FakeUsers {
-        user: Option<User>,
+        /// 複数人持てるようにしてあるのは、**同じメールアドレスの利用者が 2 つのテナントに
+        /// 居る**状況を作るため（ADR-0061）。
+        users: Vec<User>,
     }
     #[async_trait]
     impl UserRepository for FakeUsers {
@@ -520,7 +563,23 @@ mod tests {
             unreachable!()
         }
         async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<User>> {
-            Ok(self.user.clone().filter(|u| u.id == id))
+            Ok(self.users.iter().find(|u| u.id == id).cloned())
+        }
+        /// 本物（sqlx 実装）と同じ規則で答える —— ACTIVE な利用者にちょうど 1 人当たるときだけ返し、
+        /// 0 人でも複数人でも `None`（ADR-0061）。
+        async fn find_active_user_by_email_across_tenants(
+            &self,
+            email: &str,
+        ) -> DomainResult<Option<User>> {
+            let mut matched = self
+                .users
+                .iter()
+                .filter(|u| u.email == email && u.status == UserStatus::Active);
+            let first = matched.next();
+            match (first, matched.next()) {
+                (Some(user), None) => Ok(Some(user.clone())),
+                _ => Ok(None),
+            }
         }
         async fn find_by_sub(&self, _s: Uuid) -> DomainResult<Option<User>> {
             unreachable!()
@@ -891,6 +950,28 @@ mod tests {
         mailer: Arc<FakeMailer>,
         refresh_tokens: Arc<FakeRefreshTokens>,
     ) -> InvitationService {
+        service_with_users(
+            user.into_iter().collect(),
+            memberships,
+            permissions,
+            sink,
+            settings,
+            mailer,
+            refresh_tokens,
+        )
+    }
+
+    /// 利用者を複数持たせる版（メールアドレスの曖昧さを作るテストで使う）。
+    #[allow(clippy::too_many_arguments)]
+    fn service_with_users(
+        users: Vec<User>,
+        memberships: Arc<FakeMemberships>,
+        permissions: Arc<FakePermissions>,
+        sink: Arc<CapturingSink>,
+        settings: Arc<FakeSettingsRepo>,
+        mailer: Arc<FakeMailer>,
+        refresh_tokens: Arc<FakeRefreshTokens>,
+    ) -> InvitationService {
         let audit = Arc::new(AuditService::new(sink, Arc::new(FixedClock(now()))));
         let system_settings = Arc::new(SystemSettingsService::new(
             settings,
@@ -901,7 +982,7 @@ mod tests {
             Arc::new(FixedClock(now())),
         ));
         InvitationService::new(
-            Arc::new(FakeUsers { user }),
+            Arc::new(FakeUsers { users }),
             memberships,
             permissions,
             refresh_tokens,
@@ -952,7 +1033,7 @@ mod tests {
         let created = svc
             .create_invitation(
                 TenantContext::new(host),
-                guest,
+                &guest.to_string(),
                 &AdminActor::User(admin),
                 &ctx(),
             )
@@ -1018,7 +1099,7 @@ mod tests {
         let created = svc
             .create_invitation(
                 TenantContext::new(host),
-                guest,
+                &guest.to_string(),
                 &AdminActor::User(Uuid::new_v4()),
                 &ctx(),
             )
@@ -1071,7 +1152,7 @@ mod tests {
         let created = svc
             .create_invitation(
                 TenantContext::new(host),
-                guest,
+                &guest.to_string(),
                 &AdminActor::User(Uuid::new_v4()),
                 &ctx(),
             )
@@ -1105,7 +1186,7 @@ mod tests {
         let created = svc
             .create_invitation(
                 TenantContext::new(host),
-                guest,
+                &guest.to_string(),
                 &AdminActor::User(Uuid::new_v4()),
                 &ctx(),
             )
@@ -1136,12 +1217,101 @@ mod tests {
         assert!(matches!(
             svc.create_invitation(
                 TenantContext::new(host),
-                guest,
+                &guest.to_string(),
                 &AdminActor::User(Uuid::new_v4()),
                 &ctx()
             )
             .await,
             Err(InvitationError::AlreadyMember)
+        ));
+    }
+
+    /// **相手をメールアドレスで指して招ける**（ADR-0061）。
+    ///
+    /// 参加先テナントの管理者は相手のテナントの名簿を見られないので、内部 ID を知らないまま
+    /// 招けることがこの経路の目的である。
+    #[tokio::test]
+    async fn create_accepts_an_email_address_as_the_invitee() {
+        let host: TenantId = Uuid::now_v7().into();
+        let home: TenantId = Uuid::now_v7().into();
+        let guest = Uuid::new_v4();
+        let memberships = Arc::new(FakeMemberships::default());
+        let svc = service(
+            Some(test_user(guest, home)),
+            memberships.clone(),
+            Arc::new(FakePermissions::default()),
+            Arc::new(CapturingSink::default()),
+        );
+
+        let created = svc
+            .create_invitation(
+                TenantContext::new(host),
+                "guest@other.example.com",
+                &AdminActor::User(Uuid::new_v4()),
+                &ctx(),
+            )
+            .await
+            .expect("invitation is created");
+
+        assert_eq!(created.invitee_email, "guest@other.example.com");
+        // 招いた相手は ID で指したときと同じ人（メンバーシップの行き先で確かめる）。
+        assert!(memberships.find(host, guest).await.unwrap().is_some());
+    }
+
+    /// 同じメールアドレスの利用者が 2 つのテナントに居るときは**招かない**。
+    ///
+    /// `users.email` の一意性はテナントの中にしか無いので、どちらを招くかは決められない。
+    /// ⚠ **「曖昧です」と言い分けない** —— 言い分けると、参加先の管理者に「このアドレスの利用者が
+    /// 他のテナントにも居る」ことだけが分かってしまう。見つからないときと同じ `NotFound` にする。
+    #[tokio::test]
+    async fn create_refuses_an_email_shared_by_two_tenants() {
+        let host: TenantId = Uuid::now_v7().into();
+        let one: TenantId = Uuid::now_v7().into();
+        let other: TenantId = Uuid::now_v7().into();
+        let svc = service_with_users(
+            vec![
+                test_user(Uuid::new_v4(), one),
+                test_user(Uuid::new_v4(), other),
+            ],
+            Arc::new(FakeMemberships::default()),
+            Arc::new(FakePermissions::default()),
+            Arc::new(CapturingSink::default()),
+            Arc::new(FakeSettingsRepo::default()),
+            Arc::new(FakeMailer::default()),
+            Arc::new(FakeRefreshTokens::default()),
+        );
+
+        assert!(matches!(
+            svc.create_invitation(
+                TenantContext::new(host),
+                "guest@other.example.com",
+                &AdminActor::User(Uuid::new_v4()),
+                &ctx()
+            )
+            .await,
+            Err(InvitationError::NotFound)
+        ));
+    }
+
+    /// メールアドレスでも内部 ID でもない入力は、存在の話をする前に断る。
+    #[tokio::test]
+    async fn create_rejects_an_invitee_that_is_neither_an_email_nor_an_id() {
+        let host: TenantId = Uuid::now_v7().into();
+        let svc = service(
+            None,
+            Arc::new(FakeMemberships::default()),
+            Arc::new(FakePermissions::default()),
+            Arc::new(CapturingSink::default()),
+        );
+        assert!(matches!(
+            svc.create_invitation(
+                TenantContext::new(host),
+                "guest",
+                &AdminActor::User(Uuid::new_v4()),
+                &ctx()
+            )
+            .await,
+            Err(InvitationError::Validation(_))
         ));
     }
 
@@ -1157,7 +1327,7 @@ mod tests {
         assert!(matches!(
             svc.create_invitation(
                 TenantContext::new(host),
-                Uuid::new_v4(),
+                &Uuid::new_v4().to_string(),
                 &AdminActor::User(Uuid::new_v4()),
                 &ctx()
             )
@@ -1181,7 +1351,7 @@ mod tests {
         let created = svc
             .create_invitation(
                 TenantContext::new(host),
-                guest,
+                &guest.to_string(),
                 &AdminActor::User(Uuid::new_v4()),
                 &ctx(),
             )
@@ -1229,7 +1399,7 @@ mod tests {
         ));
         let svc = InvitationService::new(
             Arc::new(FakeUsers {
-                user: Some(test_user(guest, home)),
+                users: vec![test_user(guest, home)],
             }),
             memberships.clone(),
             Arc::new(FakePermissions::default()),
@@ -1250,7 +1420,7 @@ mod tests {
         let created = svc
             .create_invitation(
                 TenantContext::new(host),
-                guest,
+                &guest.to_string(),
                 &AdminActor::User(Uuid::new_v4()),
                 &ctx(),
             )

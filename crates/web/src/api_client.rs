@@ -1476,7 +1476,7 @@ impl ApiClient {
         correlation_id: &str,
         tenant_id: &str,
         sso: &str,
-        user_id: &str,
+        invitee: &str,
     ) -> Result<InvitationCreatedView, AdminApiError> {
         self.admin_send(
             Method::POST,
@@ -1484,7 +1484,8 @@ impl ApiClient {
             "/admin/invitations",
             correlation_id,
             sso,
-            Some(serde_json::json!({ "user_id": user_id })),
+            // 相手はメールアドレスでも内部 ID でもよい（読み分けは api。ADR-0061）。
+            Some(serde_json::json!({ "invitee": invitee })),
         )
         .await
     }

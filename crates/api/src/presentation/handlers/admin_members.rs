@@ -238,6 +238,7 @@ fn map_error(e: InvitationError, locale: ApiLocale) -> ApiError {
     match e {
         InvitationError::NotFound => ApiError::NotFound(msgs.get("api-member-not-found")),
         InvitationError::AlreadyMember => ApiError::Conflict(msgs.get("api-member-already")),
+        InvitationError::Validation(m) => ApiError::BadRequest(msgs.get_message(&m)),
         InvitationError::Forbidden(m) => ApiError::Forbidden(msgs.get_message(&m)),
         InvitationError::InvalidOrExpired => ApiError::BadRequest(msgs.get("api-invalid-request")),
         InvitationError::Internal(m) => ApiError::Internal(m),

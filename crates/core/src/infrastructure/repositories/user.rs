@@ -627,6 +627,42 @@ impl UserRepository for SqlxUserRepository {
         }
     }
 
+    /// ゲスト招待の相手を `users.email` でテナント横断に引く（ADR-0061）。
+    ///
+    /// 形は上のパスワード再設定（[`find_active_guest_by_email`]）と同じで、**メンバーシップで
+    /// 絞らない**ところだけが違う —— 招く相手は参加先テナントにまだ居ないからである。
+    ///
+    /// ⚠ **`users` の索引は `(tenant_id, email)` なので、この引き方は索引に乗らない**
+    /// （先頭列がテナント）。招待は人が押す稀な操作で、`users` の行数も運用上小さいため、
+    /// email 単独の索引は足していない。行数が増えて目に見えて遅くなったら索引を足す。
+    ///
+    /// `LIMIT 2` は曖昧さの検出用。2 件見えたら誰も返さない（トレイト側のコメント参照）。
+    async fn find_active_user_by_email_across_tenants(&self, email: &str) -> Result<Option<User>> {
+        let sql = format!(
+            "SELECT {SELECT_COLUMNS} FROM users u \
+             JOIN tenants home ON home.id = u.tenant_id AND home.status = 'ACTIVE' \
+             WHERE u.status = ? AND u.email = ? \
+             LIMIT 2"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(UserStatus::Active.as_str())
+            .bind(email)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        match rows.len() {
+            1 => map_row(&rows[0]).map(Some),
+            0 => Ok(None),
+            _ => {
+                // 値（メールアドレス）は PII なので出さない。
+                tracing::warn!(
+                    "invitation lookup matched users in more than one tenant; refusing to choose one"
+                );
+                Ok(None)
+            }
+        }
+    }
+
     /// 主たるログイン識別子（ユーザー名）で引く。
     ///
     /// 照合は登録簿の正規化値で行う（AP15b）。`users.preferred_username` の照合は照合順序

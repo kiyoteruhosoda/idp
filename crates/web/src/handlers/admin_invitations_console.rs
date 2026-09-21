@@ -1,8 +1,9 @@
 //! ゲスト招待作成画面（web。ADR-0009 §3・§6・MT13）。
 //!
 //! api の JSON 管理 API（`POST /admin/invitations`）を管理者の SSO Cookie 転送で呼ぶ。招待対象は
-//! 所属元が他テナントの既存利用者で、内部 ID（UUID）で指定する（利用者検索は所属元テナント限定の
-//! ため、本画面では ID を管理者が別途確認して入力する）。招待トークンはこの結果画面でのみ表示する。
+//! 所属元が他テナントの既存利用者で、**メールアドレス、または内部 ID（UUID）**で指す（ADR-0061。
+//! 読み分けと解決は api 側の application 層に閉じており、この画面は入力を 1 本渡すだけ）。
+//! 招待トークンはこの結果画面でのみ表示する。
 
 use super::locale;
 use crate::api_client::AdminApiError;
@@ -40,7 +41,8 @@ pub async fn new_form(
 
 #[derive(Debug, Deserialize)]
 pub struct InvitationRequestForm {
-    pub user_id: String,
+    /// 招待する相手（メールアドレス、または内部 ID）。
+    pub invitee: String,
     pub csrf_token: String,
 }
 
@@ -65,7 +67,7 @@ pub async fn create(
             &tenant,
             &admin,
             &csrf,
-            &form.user_id,
+            &form.invitee,
             Some("admin-error-csrf"),
         ));
     }
@@ -74,7 +76,7 @@ pub async fn create(
     let result = state
         .api
         .for_locale(locale(&headers))
-        .create_invitation(&correlation.0, &tenant.0, &sso(&headers), &form.user_id)
+        .create_invitation(&correlation.0, &tenant.0, &sso(&headers), &form.invitee)
         .await;
     let messages = Messages::new(locale(&headers));
     match result {
@@ -97,7 +99,7 @@ pub async fn create(
                 &tenant,
                 &admin,
                 &csrf,
-                &form.user_id,
+                &form.invitee,
                 &m,
             ))
         }
@@ -108,7 +110,7 @@ pub async fn create(
                 &tenant,
                 &admin,
                 &csrf,
-                &form.user_id,
+                &form.invitee,
                 &messages.get("admin-invitations-error-notfound"),
             ))
         }
@@ -119,7 +121,7 @@ pub async fn create(
                 &tenant,
                 &admin,
                 &csrf,
-                &form.user_id,
+                &form.invitee,
                 &messages.get("admin-error-internal"),
             ))
         }
@@ -131,7 +133,7 @@ fn render_form(
     tenant: &WebTenant,
     admin: &AdminContext,
     csrf: &str,
-    user_id: &str,
+    invitee: &str,
     error_key: Option<&str>,
 ) -> String {
     let error = error_key.map(|k| messages.get(k));
@@ -141,7 +143,7 @@ fn render_form(
         admin: Some(admin.chrome()),
         csrf,
         error: error.as_deref(),
-        user_id,
+        invitee,
     })
 }
 
@@ -150,7 +152,7 @@ fn render_form_with_message(
     tenant: &WebTenant,
     admin: &AdminContext,
     csrf: &str,
-    user_id: &str,
+    invitee: &str,
     error: &str,
 ) -> String {
     render(&InvitationForm {
@@ -159,7 +161,7 @@ fn render_form_with_message(
         admin: Some(admin.chrome()),
         csrf,
         error: Some(error),
-        user_id,
+        invitee,
     })
 }
 
