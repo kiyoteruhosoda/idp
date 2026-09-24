@@ -18,9 +18,12 @@ use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::error::DomainError;
 use crate::domain::id_generator::IdGenerator;
+use crate::domain::member_note::normalize_member_note;
 use crate::domain::message::MessageKey;
 use crate::domain::password::PasswordHasher;
-use crate::domain::repositories::{TenantMembershipRepository, UserRepository};
+use crate::domain::repositories::{
+    MemberNoteRepository, TenantMembershipRepository, UserRepository,
+};
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::tenant_membership::TenantMembership;
 use crate::domain::user::User;
@@ -40,6 +43,8 @@ pub struct CreateUserCommand {
     pub email: String,
     pub preferred_username: Option<String>,
     pub name: Option<String>,
+    /// 管理者メモ（任意。ADR-0063）。作った利用者の HOME メンバーシップに付く。
+    pub note: Option<String>,
 }
 
 /// 作成結果。`generated_password` は**この一度だけ**平文で返す（保存はハッシュのみ、ログ・監査には出さない）。
@@ -79,6 +84,8 @@ pub struct UserManagementService {
     /// 作った直後に本人へ渡すリンクを出す（ADR-0062）。作成とリンクの発行は 1 つの操作なので、
     /// 画面やハンドラで 2 回呼ぶ形にしない（片方だけ成功した利用者を作らないため）。
     account_setup: Arc<AccountSetupLinkIssuer>,
+    /// 作成と同時に書く管理者メモ（ADR-0063）。
+    notes: Arc<dyn MemberNoteRepository>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
     ids: Arc<dyn IdGenerator>,
@@ -91,6 +98,7 @@ impl UserManagementService {
         memberships: Arc<dyn TenantMembershipRepository>,
         hasher: Arc<dyn PasswordHasher>,
         account_setup: Arc<AccountSetupLinkIssuer>,
+        notes: Arc<dyn MemberNoteRepository>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
         ids: Arc<dyn IdGenerator>,
@@ -99,6 +107,7 @@ impl UserManagementService {
             users,
             memberships,
             account_setup,
+            notes,
             hasher,
             audit,
             clock,
@@ -194,6 +203,10 @@ impl UserManagementService {
         ctx: &RequestContext,
     ) -> Result<CreatedUser, UserManagementError> {
         let tenant_id = tenant.tenant_id();
+        // ⚠ メモは**何も書く前に**確かめる。利用者を作ったあとで長すぎると分かっても、作成は
+        //   取り消せない（「作れたのにエラー」になる）。
+        let note = normalize_member_note(cmd.note.as_deref().unwrap_or(""))
+            .map_err(UserManagementError::Validation)?;
         let prepared = self.prepare_user(tenant, cmd).await?;
         let user = prepared.user;
 
@@ -228,6 +241,26 @@ impl UserManagementService {
                 ctx,
             )
             .await;
+
+        // 管理者メモ（ADR-0063）。メンバーの画面から書くのと同じ行・同じ監査の形にする
+        // （中身は監査に残さない）。
+        if let Some(text) = note.as_deref() {
+            self.notes
+                .save(tenant_id, user.id, text, actor.user_id(), self.clock.now())
+                .await
+                .map_err(internal)?;
+            self.audit
+                .record(
+                    AuditEventType::TenantMemberNoteUpdated,
+                    AuditResult::Success,
+                    Some(tenant_id),
+                    actor.user_id(),
+                    actor.client_id(),
+                    Some(&format!("member={}", user.id)),
+                    ctx,
+                )
+                .await;
+        }
 
         // 本人へ渡すリンクを出す。⚠ **ここで失敗したら作成ごと失敗させる** —— リンクの無い
         // 利用者は、誰も知らないパスワードだけを持つ「入れないアカウント」になる。
@@ -461,10 +494,45 @@ mod tests {
         }
     }
 
+    /// 書かれたメモを記録するだけのフェイク（ADR-0063）。
+    #[derive(Default)]
+    struct FakeNotes {
+        saved: Mutex<Vec<(TenantId, Uuid, String)>>,
+    }
+    #[async_trait]
+    impl MemberNoteRepository for FakeNotes {
+        async fn save(
+            &self,
+            tenant_id: TenantId,
+            user_id: Uuid,
+            text: &str,
+            _updated_by: Option<Uuid>,
+            _now: DateTime<Utc>,
+        ) -> DomainResult<()> {
+            self.saved
+                .lock()
+                .unwrap()
+                .push((tenant_id, user_id, text.to_string()));
+            Ok(())
+        }
+        async fn clear(&self, _t: TenantId, _u: Uuid) -> DomainResult<()> {
+            unreachable!("作成でメモを消すことはない")
+        }
+    }
+
     fn service(
         users: Arc<FakeUsers>,
         memberships: Arc<FakeMemberships>,
         sink: Arc<CapturingSink>,
+    ) -> UserManagementService {
+        service_with_notes(users, memberships, sink, Arc::new(FakeNotes::default()))
+    }
+
+    fn service_with_notes(
+        users: Arc<FakeUsers>,
+        memberships: Arc<FakeMemberships>,
+        sink: Arc<CapturingSink>,
+        notes: Arc<FakeNotes>,
     ) -> UserManagementService {
         let audit = Arc::new(AuditService::new(sink, Arc::new(FixedClock(now()))));
         UserManagementService::new(
@@ -475,6 +543,7 @@ mod tests {
                 Arc::new(crate::application::account_setup::testing::FakeSetupTokens::default()),
                 Arc::new(FixedClock(now())),
             ),
+            notes,
             audit,
             Arc::new(FixedClock(now())),
             Arc::new(FixedIds(Mutex::new(0))),
@@ -496,6 +565,7 @@ mod tests {
                     email: "  new@example.com ".to_string(),
                     preferred_username: Some("newbie".to_string()),
                     name: None,
+                    note: None,
                 },
                 &AdminActor::User(Uuid::new_v4()),
                 &ctx(),
@@ -549,6 +619,7 @@ mod tests {
             email: "dup@example.com".to_string(),
             preferred_username: None,
             name: None,
+            note: None,
         };
         svc.create_user(
             TenantContext::new(tenant),
@@ -585,6 +656,7 @@ mod tests {
                     email: "not-an-email".to_string(),
                     preferred_username: None,
                     name: None,
+                    note: None,
                 },
                 &AdminActor::User(Uuid::new_v4()),
                 &ctx()
@@ -592,5 +664,108 @@ mod tests {
             .await,
             Err(UserManagementError::Validation(_))
         ));
+    }
+
+    /// ADR-0063: 作成と同時に書いたメモは、作った利用者の HOME メンバーシップに付く。
+    /// 監査は「作った」と「メモを書いた」の 2 件で、⚠ メモの中身は残らない。
+    #[tokio::test]
+    async fn a_note_given_at_creation_goes_on_the_home_membership() {
+        let tenant: TenantId = Uuid::now_v7().into();
+        let sink = Arc::new(CapturingSink::default());
+        let notes = Arc::new(FakeNotes::default());
+        let svc = service_with_notes(
+            Arc::new(FakeUsers::default()),
+            Arc::new(FakeMemberships::default()),
+            sink.clone(),
+            notes.clone(),
+        );
+        let created = svc
+            .create_user(
+                TenantContext::new(tenant),
+                CreateUserCommand {
+                    email: "family@example.com".to_string(),
+                    preferred_username: None,
+                    name: None,
+                    note: Some("\r\n 家族として作成\r\n".to_string()),
+                },
+                &AdminActor::User(Uuid::new_v4()),
+                &ctx(),
+            )
+            .await
+            .expect("created");
+
+        let saved = notes.saved.lock().unwrap().clone();
+        assert_eq!(
+            saved,
+            vec![(tenant, created.user_id, "家族として作成".to_string())]
+        );
+        let events = sink.events.lock().unwrap();
+        let kinds: Vec<_> = events.iter().map(|e| e.event_type).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                AuditEventType::UserCreated,
+                AuditEventType::TenantMemberNoteUpdated
+            ]
+        );
+        assert!(events
+            .iter()
+            .all(|e| !e.reason.as_deref().unwrap_or("").contains("家族")));
+    }
+
+    /// 空のメモは「メモ無し」。行も監査も増えない。
+    #[tokio::test]
+    async fn a_blank_note_at_creation_writes_nothing() {
+        let tenant: TenantId = Uuid::now_v7().into();
+        let sink = Arc::new(CapturingSink::default());
+        let notes = Arc::new(FakeNotes::default());
+        let svc = service_with_notes(
+            Arc::new(FakeUsers::default()),
+            Arc::new(FakeMemberships::default()),
+            sink.clone(),
+            notes.clone(),
+        );
+        svc.create_user(
+            TenantContext::new(tenant),
+            CreateUserCommand {
+                email: "blank@example.com".to_string(),
+                preferred_username: None,
+                name: None,
+                note: Some("  \n ".to_string()),
+            },
+            &AdminActor::User(Uuid::new_v4()),
+            &ctx(),
+        )
+        .await
+        .expect("created");
+        assert!(notes.saved.lock().unwrap().is_empty());
+        assert_eq!(sink.events.lock().unwrap().len(), 1);
+    }
+
+    /// ⚠ 長すぎるメモは**利用者を作る前に**断る（作ったあとで断ると「作れたのにエラー」になる）。
+    #[tokio::test]
+    async fn a_too_long_note_is_rejected_before_anything_is_created() {
+        let tenant: TenantId = Uuid::now_v7().into();
+        let users = Arc::new(FakeUsers::default());
+        let memberships = Arc::new(FakeMemberships::default());
+        let sink = Arc::new(CapturingSink::default());
+        let svc = service(users.clone(), memberships.clone(), sink.clone());
+        let result = svc
+            .create_user(
+                TenantContext::new(tenant),
+                CreateUserCommand {
+                    email: "long@example.com".to_string(),
+                    preferred_username: None,
+                    name: None,
+                    note: Some("あ".repeat(crate::domain::member_note::MEMBER_NOTE_MAX_LEN + 1)),
+                },
+                &AdminActor::User(Uuid::new_v4()),
+                &ctx(),
+            )
+            .await;
+        assert!(matches!(result, Err(UserManagementError::Validation(_))));
+        assert!(users.rows.lock().unwrap().is_empty());
+        assert!(memberships.rows.lock().unwrap().is_empty());
+        assert!(sink.events.lock().unwrap().is_empty());
     }
 }

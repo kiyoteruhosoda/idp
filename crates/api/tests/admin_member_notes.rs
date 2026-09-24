@@ -151,6 +151,67 @@ async fn admin_writes_reads_searches_and_clears_a_member_note() {
     assert_eq!(res.status(), StatusCode::NOT_FOUND, "not a member -> 404");
 }
 
+/// 利用者の作成と同時にメモを書ける（作ったときがいちばん経緯を覚えている）。
+#[tokio::test]
+async fn a_note_can_be_written_when_the_user_is_created() {
+    let Some(env) = support::setup("admin member notes on create").await else {
+        return;
+    };
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+    let users_uri = format!("/{}/admin/users", env.root_tenant_id);
+    let email = format!("created-{}@example.com", support::unique());
+
+    // 長すぎれば利用者ごと作らない。
+    let res = send(
+        &env.app,
+        post(
+            &admin_tok,
+            &users_uri,
+            json!({ "email": email, "note": "あ".repeat(2001) }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST, "too long -> 400");
+    let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE email = ?")
+        .bind(&email)
+        .fetch_one(&env.pool)
+        .await
+        .expect("count users");
+    assert_eq!(exists, 0, "a rejected note must not leave a user behind");
+
+    let res = send(
+        &env.app,
+        post(
+            &admin_tok,
+            &users_uri,
+            json!({ "email": email, "note": "取引先の担当者として作成" }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED, "create with a note");
+    let created = body_json(res).await;
+    let user_id = created["user_id"].as_str().expect("user_id").to_string();
+
+    let detail = body_json(
+        send(
+            &env.app,
+            get(
+                &admin_tok,
+                &format!("/{}/admin/members/{user_id}", env.root_tenant_id),
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        detail["note"]["text"], "取引先の担当者として作成",
+        "{detail}"
+    );
+    let reasons = audit_reasons(&env.pool, &user_id).await;
+    assert_eq!(reasons.len(), 1, "{reasons:?}");
+    assert!(!reasons[0].contains("取引先"), "{reasons:?}");
+}
+
 #[tokio::test]
 async fn revoking_a_guest_drops_the_note_with_the_membership() {
     let Some(env) = support::setup("admin member notes cascade").await else {

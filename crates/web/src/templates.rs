@@ -2132,6 +2132,8 @@ pub struct UserForm<'a> {
     pub email: &'a str,
     pub preferred_username: &'a str,
     pub name: &'a str,
+    /// 管理者メモ（ADR-0063）。
+    pub note: &'a str,
 }
 
 /// 利用者作成結果（`POST /{tenant_id}/admin/users/new` 成功時）。設定リンクを一度だけ表示する。
