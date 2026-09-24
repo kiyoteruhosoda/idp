@@ -181,6 +181,8 @@ impl UserManagementService {
             must_change_password: true,
             password_changed_at: Some(now),
             status: UserStatus::Active,
+            // 仮登録（ADR-0064）。本人が設定リンクで資格情報を決めるまで、どこからも入れない。
+            pending_setup: true,
             failed_login_count: 0,
             locked_until: None,
             created_at: now,
@@ -588,6 +590,9 @@ mod tests {
         // ⚠ **誰も知らないパスワードで埋まっている**（管理者も本人も入れない。リンクで決める）。
         assert!(stored.password_hash.starts_with("hash:"));
         assert!(stored.must_change_password);
+        // ADR-0064: 本人が設定を終えるまで仮登録。
+        assert!(stored.pending_setup);
+        assert!(!stored.is_active());
         assert_eq!(stored.email, "new@example.com");
         assert_eq!(stored.tenant_id, tenant);
         // HOME メンバーシップが作られる。

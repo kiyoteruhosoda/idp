@@ -309,6 +309,8 @@ impl ApplicationUserState {
 pub struct ApplicationUserFacts {
     /// 利用者アカウント自体の状態。
     pub user_status: UserStatus,
+    /// 仮登録か（ADR-0064）。本人がまだ資格情報を決めていないので、ログインできない。
+    pub pending_setup: bool,
     /// 要求テナントでのメンバーシップが**参加中**か。
     pub active_member: bool,
     /// このアプリの割り当て行があるか。
@@ -323,8 +325,9 @@ impl Application {
     /// `EVERYONE` がメンバーシップを見るのは、「全員」がテナントの中だけを指すためである
     /// （ADR-0054）。
     pub fn roster_state(&self, facts: ApplicationUserFacts) -> ApplicationUserState {
-        // 止まっている利用者はそもそもログインできない。割り当ての有無より先に効く。
-        if facts.user_status != UserStatus::Active {
+        // 止まっている利用者・仮登録の利用者はそもそもログインできない。割り当ての有無より先に効く
+        // （判定の側は `User::is_active` がどちらも断る）。
+        if facts.user_status != UserStatus::Active || facts.pending_setup {
             return ApplicationUserState::Blocked;
         }
         if self.assignment_mode == AssignmentMode::Everyone && !facts.active_member {
@@ -385,5 +388,29 @@ mod tests {
         assert!(validate_display_name("   ").is_err());
         let long: String = "あ".repeat(DISPLAY_NAME_MAX_LEN + 1);
         assert!(validate_display_name(&long).is_err());
+    }
+
+    /// ADR-0064: 仮登録の人は、割り当てがあっても名簿では「使えない」（ログインできないので）。
+    #[test]
+    fn a_pending_user_is_blocked_on_the_roster() {
+        let application = app(ApplicationStatus::Active, AssignmentMode::Everyone);
+        let facts = ApplicationUserFacts {
+            user_status: UserStatus::Active,
+            pending_setup: true,
+            active_member: true,
+            assigned: true,
+        };
+        assert_eq!(
+            application.roster_state(facts),
+            ApplicationUserState::Blocked
+        );
+        let facts = ApplicationUserFacts {
+            pending_setup: false,
+            ..facts
+        };
+        assert_eq!(
+            application.roster_state(facts),
+            ApplicationUserState::Allowed
+        );
     }
 }

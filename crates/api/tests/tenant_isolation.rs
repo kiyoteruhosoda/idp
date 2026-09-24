@@ -110,6 +110,7 @@ async fn create_tenant(env: &TestEnv, root_sso: &str, name: &str) -> CreatedTena
     .await;
     assert_eq!(res.status(), StatusCode::OK, "grant idp.tenant.admin");
 
+    support::finish_setup(&env.pool, &admin_id).await;
     let admin_sso = create_sso_session(&env.pool, &admin_id).await;
     CreatedTenant {
         id,
@@ -150,10 +151,10 @@ async fn create_user(env: &TestEnv, admin_sso: &str, tenant_id: &str) -> (String
     .await;
     assert_eq!(res.status(), StatusCode::CREATED, "create user");
     let created = body_json(res).await;
-    (
-        created["user_id"].as_str().expect("user id").to_string(),
-        email,
-    )
+    let user_id = created["user_id"].as_str().expect("user id").to_string();
+    // 作った人をそのまま登場人物にするので、仮登録を外す（本人が設定を終えた、の代わり。ADR-0064）。
+    support::finish_setup(&env.pool, &user_id).await;
+    (user_id, email)
 }
 
 /// `openid` のみの scope の public client を登録する（同意ステップ不要）。

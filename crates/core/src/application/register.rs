@@ -193,6 +193,8 @@ impl RegisterService {
             must_change_password: false,
             password_changed_at: Some(now),
             status: UserStatus::Active,
+            // 本人がその場でパスワードを決めているので仮登録ではない（ADR-0064）。
+            pending_setup: false,
             failed_login_count: 0,
             locked_until: None,
             created_at: now,

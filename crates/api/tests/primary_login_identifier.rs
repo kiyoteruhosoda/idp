@@ -52,6 +52,7 @@ fn new_user(tenant_id: TenantId, username: &str) -> User {
         must_change_password: false,
         password_changed_at: None,
         status: UserStatus::Active,
+        pending_setup: false,
         failed_login_count: 0,
         locked_until: None,
         created_at: now,

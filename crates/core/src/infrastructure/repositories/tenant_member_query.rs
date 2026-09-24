@@ -90,6 +90,7 @@ fn map_row(row: &MySqlRow) -> Result<TenantMember> {
         // 結合は外部キー（`tenant_memberships.user_id` → `users.id`）越しのため利用者は必ず存在する。
         user_status: Some(UserStatus::parse(&user_status)?),
         locked_until: locked_until.map(|naive| chrono::Utc.from_utc_datetime(&naive)),
+        pending_setup: row.try_get("pending_setup").map_err(repo_err)?,
         note: map_note(row)?,
     })
 }
@@ -130,6 +131,7 @@ impl TenantMemberQuery for SqlxTenantMemberQuery {
         let mut page = QueryBuilder::<MySql>::new(
             "SELECT m.user_id, m.membership_type, m.status, \
              u.email, u.name, u.status AS user_status, u.locked_until AS locked_until, \
+             u.pending_setup AS pending_setup, \
              n.note AS note, n.updated_at AS note_updated_at, n.updated_by AS note_updated_by, \
              (SELECT p.display_value FROM user_login_identifiers p \
                 WHERE p.primary_of_user = u.id) AS preferred_username",

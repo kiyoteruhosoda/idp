@@ -212,6 +212,7 @@ mod tests {
             must_change_password: must_change,
             password_changed_at,
             status: UserStatus::Active,
+            pending_setup: false,
             failed_login_count: 0,
             locked_until: None,
             created_at: now - Duration::try_days(400).unwrap(),

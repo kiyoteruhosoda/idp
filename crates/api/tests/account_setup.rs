@@ -17,9 +17,25 @@ mod support;
 use axum::http::StatusCode;
 use serde_json::json;
 use support::{
-    body_json, create_sso_session, exchange_admin_token, post, post_internal, send,
+    body_json, create_sso_session, exchange_admin_token, get, post, post_internal, send,
     setup as support_setup, unique, TestEnv, SERVICE_TOKEN,
 };
+
+/// メンバーの画面が読む「仮登録か」（ADR-0064）。
+async fn pending_setup(env: &TestEnv, admin_tok: &str, user_id: &str) -> bool {
+    let res = send(
+        &env.app,
+        get(
+            admin_tok,
+            &format!("/{}/admin/members/{user_id}", env.root_tenant_id),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    body_json(res).await["pending_setup"]
+        .as_bool()
+        .expect("pending_setup is always present")
+}
 
 async fn setup() -> Option<TestEnv> {
     support_setup("account setup").await
@@ -114,12 +130,18 @@ async fn reading_the_link_does_not_use_it_up() {
 }
 
 /// リンクでパスワードを決められる。決めたらリンクは死ぬ。
+///
+/// ADR-0064: 作った直後は仮登録で、本人が決めた時点で外れる。
 #[tokio::test]
 async fn the_link_sets_a_password_once() {
     let Some(env) = setup().await else { return };
     let root_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
     let admin_tok = tok(&env, &root_sso, &env.root_tenant_id).await;
-    let (_user_id, _url, token) = create_user(&env, &admin_tok).await;
+    let (user_id, _url, token) = create_user(&env, &admin_tok).await;
+    assert!(
+        pending_setup(&env, &admin_tok, &user_id).await,
+        "a user the admin just created is pending until they set it up"
+    );
 
     let complete = json!({
         "tenant_id": env.root_tenant_id,
@@ -144,6 +166,10 @@ async fn the_link_sets_a_password_once() {
 
     // 使い切ったリンクはもう読めない。
     assert_eq!(describe(&env, &token).await["result"], "invalid_or_expired");
+    assert!(
+        !pending_setup(&env, &admin_tok, &user_id).await,
+        "setting a password ends the pending state"
+    );
 }
 
 /// 管理者の再発行も**リンクだけ**を返す（置き換えたパスワードは誰も知らない）。
@@ -189,23 +215,55 @@ async fn a_forgotten_password_link_may_not_add_a_passkey() {
     let Some(env) = setup().await else { return };
     let root_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
     let admin_tok = tok(&env, &root_sso, &env.root_tenant_id).await;
-    let (user_id, _url, _token) = create_user(&env, &admin_tok).await;
-
-    // 本人が「パスワードを忘れた」を押した状態を作る（再設定用途のトークンが 1 本立つ）。
+    let (user_id, _url, setup_token) = create_user(&env, &admin_tok).await;
     let email: String = sqlx::query_scalar("SELECT email FROM users WHERE id = ?")
         .bind(&user_id)
         .fetch_one(&env.pool)
         .await
         .expect("the created user");
-    let res = send(
-        &env.app,
+    let request_reset = || {
         post_internal(
             "/internal/password-reset/request",
             Some(SERVICE_TOKEN),
             json!({ "tenant_id": env.root_tenant_id, "email": email }),
+        )
+    };
+    let reset_tokens = || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM password_reset_tokens WHERE user_id = ? AND purpose = 'reset'",
+        )
+        .bind(&user_id)
+        .fetch_one(&env.pool)
+        .await
+        .expect("count reset tokens")
+    };
+
+    // ⚠ ADR-0064: 仮登録のあいだは「パスワードを忘れた」から再設定リンクを出さない
+    //   （本人は設定リンクを持っている。メールを読める相手に仮登録を終わらせない）。
+    let res = send(&env.app, request_reset()).await;
+    assert_eq!(
+        res.status(),
+        StatusCode::OK,
+        "the answer never reveals the state"
+    );
+    assert_eq!(reset_tokens().await, 0, "no reset link for a pending user");
+
+    // 本人が設定を終えてから「パスワードを忘れた」を押す（再設定用途のトークンが 1 本立つ）。
+    let res = send(
+        &env.app,
+        post_internal(
+            "/internal/password-reset/complete",
+            Some(SERVICE_TOKEN),
+            json!({
+                "tenant_id": env.root_tenant_id,
+                "token": setup_token,
+                "new_password": format!("SetupByTheUser-{}!", unique()),
+            }),
         ),
     )
     .await;
+    assert_eq!(body_json(res).await["result"], "ok", "setup finished");
+    let res = send(&env.app, request_reset()).await;
     assert_eq!(res.status(), StatusCode::OK, "reset requested");
 
     // ⚠ トークンの平文はメール（か起動ログ）にしか出ないので、この試験では DB の行から

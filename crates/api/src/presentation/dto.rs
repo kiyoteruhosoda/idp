@@ -1040,6 +1040,8 @@ pub struct MemberResponse {
     /// ログイン失敗によるロックが**今**掛かっているか（AP6）。`user_status` とは別
     /// （ロックは `locked_until` で表され、期限切れかどうかは読んだ時点で決まる）。
     pub locked: bool,
+    /// 仮登録か（ADR-0064）。本人がまだ設定リンクで資格情報を決めておらず、ログインできない。
+    pub pending_setup: bool,
     /// 管理者メモ（ADR-0063）。書かれていなければ省略される。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<MemberNoteResponse>,
