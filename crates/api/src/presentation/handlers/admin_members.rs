@@ -7,11 +7,14 @@
 
 use crate::application::invitation::InvitationError;
 use crate::application::member_directory::MemberSearchParams;
+use crate::application::member_note::MemberNoteError;
+use crate::domain::member_note::MemberNote;
 use crate::domain::values::MembershipStatus;
 use crate::presentation::admin::{MembersRead, MembersWrite, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
-    MemberListQueryParams, MemberListResponse, MemberResponse, UpdateMemberStatusRequest,
+    MemberListQueryParams, MemberListResponse, MemberNoteResponse, MemberResponse,
+    UpdateMemberNoteRequest, UpdateMemberStatusRequest,
 };
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
@@ -68,6 +71,7 @@ pub async fn get_member(
             user_status: m.user_status.map(|s| s.as_str().to_string()),
             // 期限切れのロックは「掛かっていない」として返す（読んだ時点で判定する）。
             locked: m.locked_until.is_some_and(|until| until > now),
+            note: note_response(m.note),
         })),
         None => Err(ApiError::NotFound(
             ApiMessages::new(locale).get("api-user-not-found"),
@@ -123,6 +127,7 @@ pub async fn list_members(
                 user_status: m.user_status.map(|s| s.as_str().to_string()),
                 // 期限切れのロックは「掛かっていない」として返す（読んだ時点で判定する）。
                 locked: m.locked_until.is_some_and(|until| until > now),
+                note: note_response(m.note),
             })
             .collect(),
         total: result.page.total,
@@ -231,6 +236,64 @@ pub async fn update_member_status(
     };
     result.map_err(|e| map_error(e, locale))?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// 管理者メモを書く・消す（`PUT /{tenant_id}/admin/members/{user_id}/note`。ADR-0063）。
+///
+/// HOME / GUEST を問わず書ける（メモはこのテナントの管理者の覚え書きで、ゲストの利用者そのものは
+/// 変えない）。空（空白だけ）を送るとメモを消す。
+#[utoipa::path(
+    put,
+    path = "/{tenant_id}/admin/members/{user_id}/note",
+    tag = "admin",
+    params(("user_id" = String, Path, description = "対象利用者の内部 ID（UUID）")),
+    request_body = UpdateMemberNoteRequest,
+    responses(
+        (status = 204, description = "保存した（空なら消した）"),
+        (status = 400, description = "user_id が UUID でない・メモが長すぎる"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.members:write 必須）"),
+        (status = 404, description = "このテナントのメンバーではない"),
+    )
+)]
+#[allow(clippy::too_many_arguments)]
+pub async fn update_member_note(
+    RequirePerms(admin, _): RequirePerms<MembersWrite>,
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
+    headers: HeaderMap,
+    Path((_tenant_id, user_id)): Path<(String, String)>,
+    Json(body): Json<UpdateMemberNoteRequest>,
+) -> Result<StatusCode, ApiError> {
+    let target = Uuid::parse_str(&user_id)
+        .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get("api-invalid-request")))?;
+    let ctx = request_context(
+        &headers,
+        &correlation,
+        state.config.trust_forwarded_headers(),
+    );
+    state
+        .member_notes
+        .write(tenant.context(), target, &body.note, &admin.actor, &ctx)
+        .await
+        .map_err(|e| {
+            let msgs = ApiMessages::new(locale);
+            match e {
+                MemberNoteError::NotFound => ApiError::NotFound(msgs.get("api-member-not-found")),
+                MemberNoteError::Invalid(m) => ApiError::BadRequest(msgs.get_message(&m)),
+                MemberNoteError::Internal(m) => ApiError::Internal(m),
+            }
+        })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn note_response(note: Option<MemberNote>) -> Option<MemberNoteResponse> {
+    note.map(|n| MemberNoteResponse {
+        text: n.text,
+        updated_at: n.updated_at.to_rfc3339(),
+    })
 }
 
 fn map_error(e: InvitationError, locale: ApiLocale) -> ApiError {

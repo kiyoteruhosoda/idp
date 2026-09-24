@@ -3,7 +3,7 @@
 
 use crate::domain::application::{
     Application, ApplicationAssignment, ApplicationBinding, AssignedPrincipal,
-    AssignedServiceAccount, AssignedUser, BindingTarget,
+    AssignedServiceAccount, AssignedUser, BindingTarget, UserAssignment,
 };
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::ApplicationRepository;
@@ -397,6 +397,33 @@ impl ApplicationRepository for SqlxApplicationRepository {
         .await
         .map_err(repo_err)?;
         rows.iter().map(map_assigned_user).collect()
+    }
+
+    async fn list_user_assignments(
+        &self,
+        tenant_id: TenantId,
+        user_id: Uuid,
+    ) -> Result<Vec<UserAssignment>> {
+        // アプリの行で要求テナントに絞る（割り当ての表はテナントを持たない）。
+        let rows = sqlx::query(
+            "SELECT a.application_id, a.assigned_at \
+             FROM application_assignments a JOIN applications p ON p.id = a.application_id \
+             WHERE a.kind = 'USER' AND a.user_id = ? AND p.tenant_id = ?",
+        )
+        .bind(user_id.to_string())
+        .bind(tenant_id.as_uuid().to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        rows.iter()
+            .map(|row| {
+                let application_id: String = row.try_get("application_id").map_err(repo_err)?;
+                Ok(UserAssignment {
+                    application_id: parse_uuid(&application_id)?,
+                    assigned_at: to_utc(row.try_get("assigned_at").map_err(repo_err)?),
+                })
+            })
+            .collect()
     }
 
     async fn list_assigned_service_accounts(

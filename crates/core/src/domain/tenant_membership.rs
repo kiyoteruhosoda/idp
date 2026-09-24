@@ -4,6 +4,7 @@
 //! GUEST 行は招待フローで作成し、`INVITED`（未承諾）→ `ACTIVE`（承諾済み）と遷移する。
 #![allow(dead_code)]
 
+use crate::domain::member_note::MemberNote;
 use crate::domain::tenant::TenantId;
 use crate::domain::values::{MembershipStatus, MembershipType, UserStatus};
 use chrono::{DateTime, Utc};
@@ -37,6 +38,8 @@ pub struct TenantMember {
     /// 読んだ時点で判定する**必要がある。状態列に丸めると、期限が切れているのに
     /// 「ロック中」と表示され続ける。
     pub locked_until: Option<DateTime<Utc>>,
+    /// 管理者メモ（ADR-0063）。書かれていなければ `None`。⚠ **管理画面の外へ出さない。**
+    pub note: Option<MemberNote>,
 }
 
 /// メンバー一覧の絞り込み条件（MT22）。SQL の組み立ては infrastructure が行う。

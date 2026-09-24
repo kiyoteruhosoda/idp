@@ -42,6 +42,7 @@ pub mod login_user_resolution;
 pub mod logout;
 pub mod management_token;
 pub mod member_directory;
+pub mod member_note;
 pub mod mfa_login;
 pub mod passkey_assertion;
 pub mod passkey_authentication;

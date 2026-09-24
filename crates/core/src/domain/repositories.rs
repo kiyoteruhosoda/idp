@@ -21,7 +21,7 @@
 
 use crate::domain::application::{
     Application, ApplicationAssignment, ApplicationBinding, ApplicationUserFacts,
-    AssignedPrincipal, AssignedServiceAccount, AssignedUser, BindingTarget,
+    AssignedPrincipal, AssignedServiceAccount, AssignedUser, BindingTarget, UserAssignment,
 };
 use crate::domain::application_log::{
     ApplicationLogEntry, ApplicationLogFilter, ApplicationLogRecord,
@@ -221,6 +221,26 @@ pub trait TenantMemberQuery: Send + Sync {
     /// 条件に一致するメンバーをメールアドレスの昇順（同値は `user_id` 昇順）に 1 ページ分返す。
     /// 並び順は安定でなければならない（ページ間で行が重複・欠落しないため）。
     async fn search(&self, filter: &TenantMemberFilter) -> Result<TenantMemberPage>;
+}
+
+/// メンバーの管理者メモの書き込み（ADR-0063）。読むのは [`TenantMemberQuery`] の結合で済ませる
+/// （一覧に 1 行ずつ引き直させない）。
+///
+/// メモはメンバーシップに付くので、⚠ **メンバーでない利用者には書けない**（外部キーが拒む）。
+/// 呼び出し側は書く前にメンバーであることを確かめ、404 で返すこと。
+#[async_trait]
+pub trait MemberNoteRepository: Send + Sync {
+    /// メモを書く（あれば置き換える）。
+    async fn save(
+        &self,
+        tenant_id: TenantId,
+        user_id: Uuid,
+        text: &str,
+        updated_by: Option<Uuid>,
+        now: DateTime<Utc>,
+    ) -> Result<()>;
+    /// メモを消す（無くてもエラーにしない）。
+    async fn clear(&self, tenant_id: TenantId, user_id: Uuid) -> Result<()>;
 }
 
 #[async_trait]
@@ -1078,6 +1098,16 @@ pub trait ApplicationRepository: Send + Sync {
     /// アプリに割り当てられた**人**を一覧する（メールの昇順）。**利用者の情報ごと 1 回で読む**
     /// ——1 件ずつ引き直すと、名簿の長さだけ往復が増える。
     async fn list_assigned_users(&self, application_id: Uuid) -> Result<Vec<AssignedUser>>;
+    /// この**人**に付いている割り当てを、テナント内のアプリに限って一覧する（ADR-0063）。
+    ///
+    /// アプリ側から名簿を引く [`Self::list_assigned_users`] の裏返し。メンバーの画面が
+    /// 「この人はどのアプリを使えるか」を出すのに、アプリの数だけ [`Self::is_assigned`] を
+    /// 呼ばせない。
+    async fn list_user_assignments(
+        &self,
+        tenant_id: TenantId,
+        user_id: Uuid,
+    ) -> Result<Vec<UserAssignment>>;
     /// アプリに割り当てられた**サービスアカウント**を一覧する（`client_id` の昇順）。
     async fn list_assigned_service_accounts(
         &self,

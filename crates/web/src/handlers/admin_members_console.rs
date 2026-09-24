@@ -13,7 +13,7 @@ use crate::api_client::AdminApiError;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::csrf::console_csrf_token;
-use crate::dto::{MemberActionForm, MemberStatusForm};
+use crate::dto::{MemberActionForm, MemberNoteForm, MemberStatusForm};
 use crate::handlers::admin_console::{
     forbidden_response, redirect_to_login, resolve_admin, AdminContext, AdminResolution,
 };
@@ -114,10 +114,21 @@ pub async fn detail(
         AdminResolution::Reject(resp) => return resp,
     };
     // ⚠ `Messages` は `Send` ではないので、`await` をまたいで持たない（api 呼び出しの後に作る）。
+    let sso = sso(&headers);
     let result = state
         .api
-        .get_member(&correlation.0, &tenant.0, &sso(&headers), &user_id)
+        .get_member(&correlation.0, &tenant.0, &sso, &user_id)
         .await;
+    // 使えるアプリは `idp.applications:read` が要る。持たない管理者にはメンバーの画面ごと
+    // 断らず、アプリの欄だけを出さない（メモや復旧の操作はアプリの権限と関係が無い）。
+    let applications = match &result {
+        Ok(_) => state
+            .api
+            .list_member_applications(&correlation.0, &tenant.0, &sso, &user_id)
+            .await
+            .ok(),
+        Err(_) => None,
+    };
     let messages = Messages::new(locale(&headers));
     match result {
         Ok(member) => Html(render(&MemberDetail {
@@ -125,6 +136,7 @@ pub async fn detail(
             tenant: &tenant.prefix(),
             admin: Some(admin.chrome()),
             member: &member,
+            applications: applications.as_ref(),
             csrf: &csrf_from(&headers, state.config.csrf_secret()),
             error_key: query.error.as_deref().and_then(error_key_for),
             notice_key: query.notice.as_deref().and_then(notice_key_for),
@@ -139,6 +151,158 @@ pub async fn detail(
         )),
         Err(_) => internal_error(&messages, &tenant, &admin),
     }
+}
+
+/// 管理者メモを書く（`POST /{tenant_id}/admin/members/{user_id}/note`。ADR-0063）。
+///
+/// 書いたら同じメンバーの画面へ戻す（一覧へ戻すと、続けて読み返せない）。
+pub async fn update_note(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Path((_, user_id)): Path<(String, String)>,
+    Form(form): Form<MemberNoteForm>,
+) -> Response {
+    match resolve_admin(&state, &correlation, &tenant, &headers).await {
+        AdminResolution::Ok(_) => {}
+        AdminResolution::Reject(resp) => return resp,
+    }
+    let back = member_href(&tenant, &user_id);
+    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
+        return found(&format!("{back}?error=csrf"));
+    }
+    let cleared = form.note.trim().is_empty();
+    match state
+        .api
+        .update_member_note(
+            &correlation.0,
+            &tenant.0,
+            &sso(&headers),
+            &user_id,
+            &form.note,
+        )
+        .await
+    {
+        Ok(()) if cleared => found(&format!("{back}?notice=note-cleared")),
+        Ok(()) => found(&format!("{back}?notice=note-saved")),
+        Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
+        Err(AdminApiError::Forbidden) => found(&format!("{back}?error=forbidden-write")),
+        Err(AdminApiError::NotFound) => found(&format!(
+            "{}{MEMBERS_SEGMENT}?error=notfound",
+            tenant.prefix()
+        )),
+        // 長すぎる（画面の maxlength を外して送られたとき）。
+        Err(AdminApiError::Validation(_)) => found(&format!("{back}?error=note-too-long")),
+        Err(_) => found(&format!("{back}?error=internal")),
+    }
+}
+
+/// このメンバーをアプリへ割り当てる
+/// （`POST /{tenant_id}/admin/members/{user_id}/applications/{application_id}/assign`）。
+///
+/// アプリの詳細画面と同じ API（`POST /admin/applications/{id}/assignments`）を呼ぶ。入口が
+/// 人の側にあるだけで、規則（メンバーであること・冪等）は 1 か所にしか無い。
+pub async fn assign_application(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Path((_, user_id, application_id)): Path<(String, String, String)>,
+    Form(form): Form<MemberActionForm>,
+) -> Response {
+    change_assignment(
+        &state,
+        &correlation,
+        &tenant,
+        &headers,
+        &user_id,
+        &application_id,
+        &form,
+        true,
+    )
+    .await
+}
+
+/// このメンバーの割り当てを外す
+/// （`POST /{tenant_id}/admin/members/{user_id}/applications/{application_id}/unassign`）。
+pub async fn unassign_application(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Path((_, user_id, application_id)): Path<(String, String, String)>,
+    Form(form): Form<MemberActionForm>,
+) -> Response {
+    change_assignment(
+        &state,
+        &correlation,
+        &tenant,
+        &headers,
+        &user_id,
+        &application_id,
+        &form,
+        false,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn change_assignment(
+    state: &WebState,
+    correlation: &CorrelationId,
+    tenant: &WebTenant,
+    headers: &HeaderMap,
+    user_id: &str,
+    application_id: &str,
+    form: &MemberActionForm,
+    assign: bool,
+) -> Response {
+    match resolve_admin(state, correlation, tenant, headers).await {
+        AdminResolution::Ok(_) => {}
+        AdminResolution::Reject(resp) => return resp,
+    }
+    let back = member_href(tenant, user_id);
+    if !csrf_valid(headers, &form.csrf_token, state.config.csrf_secret()) {
+        return found(&format!("{back}?error=csrf"));
+    }
+    let sso = sso(headers);
+    let result = if assign {
+        state
+            .api
+            .assign_application_principal(
+                &correlation.0,
+                &tenant.0,
+                &sso,
+                application_id,
+                "user",
+                user_id,
+            )
+            .await
+            .map(|_| ())
+    } else {
+        state
+            .api
+            .unassign_application_user(&correlation.0, &tenant.0, &sso, application_id, user_id)
+            .await
+    };
+    let notice = if assign {
+        "application-assigned"
+    } else {
+        "application-unassigned"
+    };
+    match result {
+        Ok(()) => found(&format!("{back}?notice={notice}")),
+        Err(AdminApiError::Unauthorized) => redirect_to_login(tenant),
+        Err(AdminApiError::Forbidden) => found(&format!("{back}?error=forbidden-write")),
+        Err(AdminApiError::NotFound) => found(&format!("{back}?error=application-notfound")),
+        Err(_) => found(&format!("{back}?error=internal")),
+    }
+}
+
+/// メンバー 1 人の画面の URL。
+fn member_href(tenant: &WebTenant, user_id: &str) -> String {
+    format!("{}{MEMBERS_SEGMENT}/{user_id}", tenant.prefix())
 }
 
 /// メンバー一覧の描画（ページャのリンク組み立てを含む）。
@@ -528,6 +692,10 @@ fn notice_key_for(notice: &str) -> Option<&'static str> {
         "unlock-none" => Some("admin-members-unlock-none"),
         "member-suspended" => Some("admin-members-suspend-done"),
         "member-resumed" => Some("admin-members-resume-done"),
+        "note-saved" => Some("admin-member-note-saved"),
+        "note-cleared" => Some("admin-member-note-cleared"),
+        "application-assigned" => Some("admin-member-applications-assigned"),
+        "application-unassigned" => Some("admin-member-applications-unassigned"),
         _ => None,
     }
 }
@@ -539,6 +707,9 @@ fn error_key_for(error: &str) -> Option<&'static str> {
         "notfound" => Some("admin-members-error-notfound"),
         "self" => Some("admin-members-error-self"),
         "user-notfound" => Some("admin-members-error-user-notfound"),
+        "forbidden-write" => Some("admin-member-error-forbidden-write"),
+        "note-too-long" => Some("admin-member-note-too-long"),
+        "application-notfound" => Some("admin-member-applications-error-notfound"),
         "internal" => Some("admin-error-internal"),
         _ => None,
     }
@@ -594,6 +765,7 @@ mod tests {
             status: "ACTIVE".into(),
             user_status: Some("ACTIVE".into()),
             locked: false,
+            note: None,
         }
     }
 
@@ -636,10 +808,44 @@ mod tests {
             tenant: &tenant().prefix(),
             admin: Some(AdminContext::for_test("admin-1", Some("Acme")).chrome()),
             member: m,
+            applications: None,
             csrf: "csrf123",
             error_key: None,
             notice_key: None,
         })
+    }
+
+    fn render_detail_with_applications(
+        m: &MemberView,
+        applications: &crate::admin_dto::MemberApplicationListView,
+    ) -> String {
+        let messages = Messages::new(Locale::Ja);
+        render(&crate::templates::MemberDetail {
+            messages: &messages,
+            tenant: &tenant().prefix(),
+            admin: Some(AdminContext::for_test("admin-1", Some("Acme")).chrome()),
+            member: m,
+            applications: Some(applications),
+            csrf: "csrf123",
+            error_key: None,
+            notice_key: None,
+        })
+    }
+
+    fn app(
+        id: &str,
+        mode: &str,
+        access: &str,
+        assigned_at: Option<&str>,
+    ) -> crate::admin_dto::MemberApplicationView {
+        crate::admin_dto::MemberApplicationView {
+            application_id: id.into(),
+            display_name: format!("app-{id}"),
+            status: "ACTIVE".into(),
+            assignment_mode: mode.into(),
+            access: access.into(),
+            assigned_at: assigned_at.map(Into::into),
+        }
     }
 
     /// ⚠ **一覧に操作を戻さない。** 7 つのボタンを 1 セルへ並べていた頃は、操作列 168px に
@@ -805,20 +1011,144 @@ mod tests {
     /// 一覧はユーザー名（主たるログイン識別子）を出す。
     ///
     /// メールアドレスと表示名だけでは、**利用者が「入れない」と言ってきたときに何を打って
-    /// もらえばよいのかが分からない**。付いていない利用者は `-` で、空欄との区別を残す。
+    /// もらえばよいのかが分からない**。見出し（メール）の下に添える。
     #[test]
-    fn the_list_shows_the_login_identifier() {
+    fn the_list_shows_the_login_identifier_under_the_email() {
+        let mut m = member("HOME");
+        m.preferred_username = Some("kyon".into());
+        m.name = Some("Kyon".into());
+        let html = render_page(&[m], None);
+        assert!(html.contains(">u@example.com</a>"), "{html}");
+        assert!(html.contains("kyon · Kyon"), "{html}");
+    }
+
+    /// 見出しと同じ値は添えない（メールをユーザー名にしている人は同じ文字列が 2 段並ぶ）。
+    #[test]
+    fn the_list_does_not_repeat_the_headline() {
+        let mut m = member("HOME");
+        m.preferred_username = Some("u@example.com".into());
+        assert!(m.secondary_names().is_empty());
+        m.email = None;
+        m.name = Some("U".into());
+        assert_eq!(m.headline(), "u@example.com");
+        assert_eq!(m.secondary_names(), vec!["U"]);
+    }
+
+    /// ⚠ **普通の人に札を並べない。** 全員に「HOME」「ACTIVE」が並ぶと、止まっている人が埋もれる。
+    #[test]
+    fn the_list_badges_only_what_is_unusual() {
         let html = render_page(&[member("HOME")], None);
+        assert!(!html.contains(">HOME<"), "{html}");
+        assert!(!html.contains(">ACTIVE<"), "{html}");
+
+        let mut disabled = member("GUEST");
+        disabled.user_status = Some("DISABLED".into());
+        let html = render_page(&[disabled], None);
+        let messages = Messages::new(Locale::Ja);
         assert!(
-            html.contains(&Messages::new(Locale::Ja).get("admin-user-col-username")),
+            html.contains(&messages.get("admin-members-type-guest")),
             "{html}"
         );
-        assert!(html.contains(">u</td>"), "{html}");
+        assert!(
+            html.contains(&messages.get("admin-members-user-status-disabled")),
+            "{html}"
+        );
+    }
 
-        let mut nameless = member("HOME");
-        nameless.preferred_username = None;
-        let nameless_html = render_page(&[nameless], None);
-        assert!(nameless_html.contains(">-</td>"), "{nameless_html}");
+    /// ADR-0063: 一覧にはメモの 1 行目だけを出す（全文は 1 人の画面で読む）。
+    #[test]
+    fn the_list_shows_the_first_line_of_the_note() {
+        let mut m = member("HOME");
+        m.note = Some(crate::admin_dto::MemberNoteView {
+            text: "家族として招待\n2 行目は出さない".into(),
+            updated_at: "2026-09-24T12:00:00Z".into(),
+        });
+        let html = render_page(&[m.clone()], None);
+        assert!(html.contains("家族として招待…"), "{html}");
+        assert!(!html.contains("2 行目は出さない"), "{html}");
+
+        m.note.as_mut().unwrap().text = "あ".repeat(100);
+        let excerpt = m.note_excerpt().unwrap();
+        assert_eq!(excerpt.chars().count(), 61, "60 文字 ＋ 省略記号");
+    }
+
+    /// ADR-0063: メモの欄は HOME にもゲストにも出し、書かれていれば中身と日時を出す。
+    #[test]
+    fn the_detail_has_a_note_form_for_every_member() {
+        for kind in ["HOME", "GUEST"] {
+            let html = render_detail(&member(kind));
+            assert!(
+                html.contains("/admin/members/11111111-1111-1111-1111-111111111111/note"),
+                "{kind}: {html}"
+            );
+            assert!(html.contains("maxlength=\"2000\""), "{html}");
+        }
+        let mut m = member("HOME");
+        m.note = Some(crate::admin_dto::MemberNoteView {
+            text: "<b>経緯</b>".into(),
+            updated_at: "2026-09-24T12:00:00Z".into(),
+        });
+        let html = render_detail(&m);
+        assert!(
+            !html.contains("<b>経緯</b>"),
+            "メモは必ずエスケープする: {html}"
+        );
+        assert!(html.contains("経緯"), "{html}");
+        assert!(html.contains("datetime=\"2026-09-24T12:00:00Z\""), "{html}");
+    }
+
+    /// ADR-0063: アプリの欄は引けたときだけ出す（`idp.applications:read` の無い管理者には無い）。
+    #[test]
+    fn the_applications_card_is_hidden_without_the_permission() {
+        let html = render_detail(&member("HOME"));
+        let title = Messages::new(Locale::Ja).get("admin-member-applications-title");
+        assert!(!html.contains(&title), "{html}");
+    }
+
+    /// ADR-0063: 割り当ての出し入れは「個別」のアプリだけ。「全員」のアプリで外しても入れてしまう。
+    #[test]
+    fn assignment_buttons_appear_only_for_individual_applications() {
+        let apps = crate::admin_dto::MemberApplicationListView {
+            applications: vec![
+                app("everyone", "EVERYONE", "allowed", None),
+                app(
+                    "assigned",
+                    "INDIVIDUAL",
+                    "allowed",
+                    Some("2026-09-01T00:00:00Z"),
+                ),
+                app("missing", "INDIVIDUAL", "not_assigned", None),
+            ],
+            enforcement: "enforce".into(),
+        };
+        let html = render_detail_with_applications(&member("HOME"), &apps);
+        let base = "/admin/members/11111111-1111-1111-1111-111111111111/applications";
+        assert!(!html.contains(&format!("{base}/everyone/")), "{html}");
+        assert!(
+            html.contains(&format!("{base}/assigned/unassign")),
+            "{html}"
+        );
+        assert!(
+            !html.contains(&format!("{base}/assigned/assign\"")),
+            "{html}"
+        );
+        assert!(html.contains(&format!("{base}/missing/assign")), "{html}");
+        let messages = Messages::new(Locale::Ja);
+        assert!(html.contains(&messages.get("admin-member-applications-not-assigned")));
+        assert!(!html.contains(&messages.get("admin-member-applications-record-only")));
+    }
+
+    /// 記録だけの間は、割り当てがまだ効いていないことを添える。
+    #[test]
+    fn record_only_is_mentioned_on_the_applications_card() {
+        let apps = crate::admin_dto::MemberApplicationListView {
+            applications: vec![],
+            enforcement: "record_only".into(),
+        };
+        let html = render_detail_with_applications(&member("HOME"), &apps);
+        let messages = Messages::new(Locale::Ja);
+        assert!(html.contains(&messages.get("admin-member-applications-record-only")));
+        assert!(html.contains(&messages.get("admin-member-applications-none")));
     }
 
     /// 解除後の完了通知は「外した」「元から無かった」を区別して出す。

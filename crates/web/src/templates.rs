@@ -1866,6 +1866,9 @@ impl ConsoleNavGroup {
 ///
 /// ⚠ **画面を足したらここへ足す。** `crates/web/src/router.rs` の `/admin/*` と突き合わせる
 /// テストが `console_menu_covers_every_admin_screen` にある。
+/// メンバーの管理者メモの上限（入力欄の `maxlength`。値は契約 crate が単一の出所。ADR-0063）。
+pub const MEMBER_NOTE_MAX_LEN: usize = assay_contracts::admin::MEMBER_NOTE_MAX_LEN;
+
 pub const CONSOLE_NAV: &[ConsoleNavGroup] = &[
     // ⚠ **並びは「何を管理するか」が先、「何が起きたか」が後。** 運用・監査を先頭に置いていた頃は、
     //    管理しに来た人が毎回それを読み飛ばしていた。
@@ -2183,6 +2186,9 @@ pub struct MemberDetail<'a> {
     pub tenant: &'a str,
     pub admin: Admin<'a>,
     pub member: &'a crate::admin_dto::MemberView,
+    /// このメンバーが使えるアプリ（ADR-0063）。`idp.applications:read` を持たない管理者には
+    /// 引けないので `None`（欄ごと出さない）。
+    pub applications: Option<&'a crate::admin_dto::MemberApplicationListView>,
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
     pub notice_key: Option<&'a str>,

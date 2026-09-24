@@ -4,6 +4,7 @@
 //! 総件数は同じ絞り込み条件で `COUNT(*)` を取り、画面が「全 N 件」と次ページの有無を確定できるようにする。
 
 use crate::domain::error::{DomainError, Result};
+use crate::domain::member_note::MemberNote;
 use crate::domain::repositories::TenantMemberQuery;
 use crate::domain::tenant_membership::{TenantMember, TenantMemberFilter, TenantMemberPage};
 use crate::domain::values::{MembershipStatus, MembershipType, UserStatus};
@@ -43,7 +44,9 @@ fn escape_like(term: &str) -> String {
 /// （関数を挟むと索引が使えなくなる）。
 fn push_conditions<'a>(builder: &mut QueryBuilder<'a, MySql>, filter: &'a TenantMemberFilter) {
     builder
-        .push(" FROM tenant_memberships m JOIN users u ON u.id = m.user_id WHERE m.tenant_id = ");
+        .push(" FROM tenant_memberships m JOIN users u ON u.id = m.user_id \
+               LEFT JOIN tenant_member_notes n ON n.tenant_id = m.tenant_id AND n.user_id = m.user_id \
+               WHERE m.tenant_id = ");
     builder.push_bind(filter.tenant_id.to_string());
     // 名指し（詳細画面）。完全一致なので `search` の部分一致とは併用しない。
     if let Some(user_id) = filter.user_id {
@@ -61,8 +64,11 @@ fn push_conditions<'a>(builder: &mut QueryBuilder<'a, MySql>, filter: &'a Tenant
             " ESCAPE '!' OR EXISTS (SELECT 1 FROM user_login_identifiers p \
                        WHERE p.primary_of_user = u.id AND p.display_value LIKE ",
         );
+        builder.push_bind(pattern.clone());
+        // 管理者メモも探す（「〇〇経由で招いた人」を経緯から引けるように。ADR-0063）。
+        builder.push(" ESCAPE '!') OR n.note LIKE ");
         builder.push_bind(pattern);
-        builder.push(" ESCAPE '!'))");
+        builder.push(" ESCAPE '!')");
     }
 }
 
@@ -84,7 +90,28 @@ fn map_row(row: &MySqlRow) -> Result<TenantMember> {
         // 結合は外部キー（`tenant_memberships.user_id` → `users.id`）越しのため利用者は必ず存在する。
         user_status: Some(UserStatus::parse(&user_status)?),
         locked_until: locked_until.map(|naive| chrono::Utc.from_utc_datetime(&naive)),
+        note: map_note(row)?,
     })
+}
+
+/// 管理者メモ（`LEFT JOIN` なので、書かれていなければ全列 NULL）。
+fn map_note(row: &MySqlRow) -> Result<Option<MemberNote>> {
+    let text: Option<String> = row.try_get("note").map_err(repo_err)?;
+    let Some(text) = text else {
+        return Ok(None);
+    };
+    let updated_at: chrono::NaiveDateTime = row.try_get("note_updated_at").map_err(repo_err)?;
+    let updated_by: Option<String> = row.try_get("note_updated_by").map_err(repo_err)?;
+    Ok(Some(MemberNote {
+        text,
+        updated_at: chrono::Utc.from_utc_datetime(&updated_at),
+        updated_by: updated_by
+            .map(|id| {
+                Uuid::parse_str(&id)
+                    .map_err(|e| DomainError::Repository(format!("invalid UUID `{id}`: {e}")))
+            })
+            .transpose()?,
+    }))
 }
 
 #[async_trait]
@@ -103,6 +130,7 @@ impl TenantMemberQuery for SqlxTenantMemberQuery {
         let mut page = QueryBuilder::<MySql>::new(
             "SELECT m.user_id, m.membership_type, m.status, \
              u.email, u.name, u.status AS user_status, u.locked_until AS locked_until, \
+             n.note AS note, n.updated_at AS note_updated_at, n.updated_by AS note_updated_by, \
              (SELECT p.display_value FROM user_login_identifiers p \
                 WHERE p.primary_of_user = u.id) AS preferred_username",
         );

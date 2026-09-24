@@ -320,6 +320,13 @@ mod tests {
         async fn list_assigned_users(&self, _a: Uuid) -> DomainResult<Vec<AssignedUser>> {
             Ok(Vec::new())
         }
+        async fn list_user_assignments(
+            &self,
+            _tenant_id: TenantId,
+            _user_id: Uuid,
+        ) -> DomainResult<Vec<crate::domain::application::UserAssignment>> {
+            Ok(Vec::new())
+        }
         async fn count_assignments(&self, _a: Uuid) -> DomainResult<i64> {
             Ok(0)
         }

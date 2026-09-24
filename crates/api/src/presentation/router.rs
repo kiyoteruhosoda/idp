@@ -381,6 +381,15 @@ pub fn build(state: AppState) -> Router {
                 .delete(admin_members::revoke_member)
                 .patch(admin_members::update_member_status),
         )
+        // 管理者メモ（ADR-0063）と、その人が使えるアプリ（アプリの詳細の裏返し）。
+        .route(
+            "/admin/members/{user_id}/note",
+            axum::routing::put(admin_members::update_member_note),
+        )
+        .route(
+            "/admin/members/{user_id}/applications",
+            get(admin_applications::list_member_applications),
+        )
         .route(
             "/admin/invitations",
             post(admin_invitations::create_invitation),
