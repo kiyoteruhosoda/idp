@@ -231,6 +231,7 @@ mod tests {
     fn facts(user_status: UserStatus, active_member: bool, assigned: bool) -> ApplicationUserFacts {
         ApplicationUserFacts {
             user_status,
+            pending_setup: false,
             active_member,
             assigned,
         }

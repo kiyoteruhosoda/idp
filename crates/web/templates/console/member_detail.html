@@ -18,7 +18,11 @@
       <dd class="mb-0">{% if member.status == "SUSPENDED" %}<span class="badge text-bg-warning">{{ messages.get("admin-members-status-suspended") }}</span>{% else %}{{ member.status }}{% endif %}</dd></div>
     <div class="col mb-2"><dt class="small text-muted fw-semibold">{{ messages.get("admin-members-col-user-status") }}</dt>
       <dd class="mb-0">
+        {% if member.pending_setup %}<span class="badge text-bg-secondary"><i class="fa-regular fa-hourglass-half me-1" aria-hidden="true"></i>{{ messages.get("admin-members-user-status-pending") }}</span>
+        <div class="small text-muted mt-1">{{ messages.get("admin-members-user-status-pending-help") }}</div>
+        {% endif %}
         {% if member.locked %}<span class="badge text-bg-warning"><i class="fa-solid fa-lock me-1" aria-hidden="true"></i>{{ messages.get("admin-members-user-status-locked") }}</span>
+        {% else if member.pending_setup && member.user_status.as_deref() == Some("ACTIVE") %}
         {% else if member.user_status.as_deref() == Some("ACTIVE") %}<span class="badge text-bg-success">{{ messages.get("admin-members-user-status-active") }}</span>
         {% else if member.user_status.as_deref() == Some("DISABLED") %}<span class="badge text-bg-danger">{{ messages.get("admin-members-user-status-disabled") }}</span>
         {% else if member.user_status.is_some() %}<span class="badge text-bg-warning">{{ messages.get("admin-members-user-status-locked") }}</span>
@@ -57,9 +61,25 @@
   {% if apps.applications.is_empty() %}
   <p class="card-body text-muted mb-0">{{ messages.get("admin-member-applications-none") }}</p>
   {% else %}
+  {#- その場で絞り込む（`assets/list-filter.js`）。名前の部分一致と、使えるかどうかの 2 つで絞る。
+      サーバへは送らない ——1 人が使うアプリは多くても数十で、全件を 1 回で受け取っている。 -#}
+  <div data-list-filter>
+  <div class="card-body border-bottom d-flex flex-wrap align-items-center gap-2">
+    <div class="input-group input-group-sm member-apps-search">
+      <span class="input-group-text"><i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i></span>
+      <input type="search" class="form-control" data-list-filter-input placeholder="{{ messages.get("admin-member-applications-filter-placeholder") }}" aria-label="{{ messages.get("admin-member-applications-filter-label") }}">
+    </div>
+    <div class="btn-group btn-group-sm flex-wrap" role="group" aria-label="{{ messages.get("admin-member-applications-filter-state-label") }}">
+      <button type="button" class="btn btn-outline-secondary active" aria-pressed="true" data-list-filter-state="">{{ messages.get("admin-member-applications-filter-all") }} <span class="text-body-secondary">{{ apps.applications.len() }}</span></button>
+      <button type="button" class="btn btn-outline-secondary" aria-pressed="false" data-list-filter-state="allowed">{{ messages.get("admin-member-applications-allowed") }} <span class="text-body-secondary">{{ apps.count("allowed") }}</span></button>
+      <button type="button" class="btn btn-outline-secondary" aria-pressed="false" data-list-filter-state="not_assigned">{{ messages.get("admin-member-applications-not-assigned") }} <span class="text-body-secondary">{{ apps.count("not_assigned") }}</span></button>
+      {% if apps.count("application_disabled") > 0 %}<button type="button" class="btn btn-outline-secondary" aria-pressed="false" data-list-filter-state="application_disabled">{{ messages.get("admin-member-applications-disabled") }} <span class="text-body-secondary">{{ apps.count("application_disabled") }}</span></button>{% endif %}
+    </div>
+  </div>
+  <p class="card-body text-muted mb-0" data-list-filter-empty hidden>{{ messages.get("admin-member-applications-filter-none") }}</p>
   <ul class="list-group list-group-flush">
     {% for app in apps.applications %}
-    <li class="list-group-item d-flex flex-wrap align-items-center gap-2">
+    <li class="list-group-item d-flex flex-wrap align-items-center gap-2" data-filter-item data-filter-state="{{ app.access }}" data-filter-text="{{ app.display_name }}">
       <div class="me-auto">
         <a href="{{ tenant }}/admin/applications/{{ app.application_id }}">{{ app.display_name }}</a>
         <div class="small text-muted">
@@ -88,6 +108,8 @@
     </li>
     {% endfor %}
   </ul>
+  </div>
+  <script src="/assets/list-filter.js?v={{ crate::templates::asset_version() }}" defer></script>
   {% endif %}
 </div>
 {% endif %}

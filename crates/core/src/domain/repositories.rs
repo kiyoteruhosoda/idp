@@ -409,6 +409,15 @@ pub trait UserRepository: Send + Sync {
     ) -> Result<bool>;
     /// 利用者の状態（ACTIVE / DISABLED / LOCKED）を更新する（管理者による有効化・無効化）。
     async fn update_status(&self, id: Uuid, status: UserStatus) -> Result<()>;
+    /// 仮登録を外す（本人が設定リンクで資格情報を決めた。ADR-0064）。冪等。
+    ///
+    /// 既定実装は未対応エラー（`update_theme` と同じ方針。本番の sqlx 実装と、仮登録を試す
+    /// テスト用フェイクだけが上書きする）。⚠ 呼び出し側は**仮登録の人にだけ**呼ぶ。
+    async fn finish_setup(&self, _id: Uuid) -> Result<()> {
+        Err(crate::domain::error::DomainError::Repository(
+            "finish_setup is not supported by this repository".to_string(),
+        ))
+    }
     /// 利用者を削除する（管理者による削除。関連行は DB の FK CASCADE / SET NULL で後始末される）。
     async fn delete(&self, id: Uuid) -> Result<()>;
     /// メール検証済みフラグを立てる（自己登録アカウントの確認リンク消費時。SEC6b）。

@@ -343,6 +343,9 @@ pub struct MemberView {
     /// （web は時計を持たないため、期限の比較を web 側でやり直さない）。
     #[serde(default)]
     pub locked: bool,
+    /// 仮登録（ADR-0064）。本人がまだ設定リンクで資格情報を決めていない。
+    #[serde(default)]
+    pub pending_setup: bool,
     /// 管理者メモ（ADR-0063）。書かれていなければ `None`。
     #[serde(default)]
     pub note: Option<MemberNoteView>,
@@ -402,6 +405,16 @@ pub struct MemberApplicationListView {
     pub applications: Vec<MemberApplicationView>,
     /// `record_only` / `enforce`。
     pub enforcement: String,
+}
+
+impl MemberApplicationListView {
+    /// 可否ごとの件数（絞り込みの札に添える）。
+    pub fn count(&self, access: &str) -> usize {
+        self.applications
+            .iter()
+            .filter(|a| a.access == access)
+            .count()
+    }
 }
 
 /// メンバーから見たアプリ 1 件。

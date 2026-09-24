@@ -618,3 +618,9 @@ button[aria-busy='true'] .js-pending-label {
   /* ラベルを選んで写したときに印まで付いてこないようにする（印は文言の一部ではない）。 */
   user-select: none;
 }
+
+/* メンバーの「使えるアプリ」の絞り込み欄。狭い画面では 1 行を使い、広い画面では札と並べる。 */
+.member-apps-search {
+  flex: 1 1 14rem;
+  max-width: 22rem;
+}

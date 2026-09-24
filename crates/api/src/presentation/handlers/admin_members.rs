@@ -71,6 +71,7 @@ pub async fn get_member(
             user_status: m.user_status.map(|s| s.as_str().to_string()),
             // 期限切れのロックは「掛かっていない」として返す（読んだ時点で判定する）。
             locked: m.locked_until.is_some_and(|until| until > now),
+            pending_setup: m.pending_setup,
             note: note_response(m.note),
         })),
         None => Err(ApiError::NotFound(
@@ -127,6 +128,7 @@ pub async fn list_members(
                 user_status: m.user_status.map(|s| s.as_str().to_string()),
                 // 期限切れのロックは「掛かっていない」として返す（読んだ時点で判定する）。
                 locked: m.locked_until.is_some_and(|until| until > now),
+                pending_setup: m.pending_setup,
                 note: note_response(m.note),
             })
             .collect(),

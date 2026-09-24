@@ -54,6 +54,7 @@ fn map_facts(row: &MySqlRow, assigned: Option<bool>) -> Result<SubjectFacts> {
             user_status: UserStatus::parse(&user_status).map_err(|_| {
                 DomainError::Repository(format!("invalid user status `{user_status}`"))
             })?,
+            pending_setup: row.try_get("pending_setup").map_err(repo_err)?,
             active_member: membership_status == Some(MembershipStatus::Active),
             assigned,
         },
@@ -77,7 +78,8 @@ impl ApplicationUserQuery for SqlxApplicationUserQuery {
                 .map_err(repo_err)?;
 
         let rows = sqlx::query(
-            "SELECT u.sub, u.status AS user_status, m.status AS membership_status \
+            "SELECT u.sub, u.status AS user_status, u.pending_setup AS pending_setup, \
+             m.status AS membership_status \
              FROM tenant_memberships m JOIN users u ON u.id = m.user_id \
              WHERE m.tenant_id = ? ORDER BY u.sub ASC LIMIT ? OFFSET ?",
         )
@@ -118,7 +120,8 @@ impl ApplicationUserQuery for SqlxApplicationUserQuery {
         // でない利用者に割り当てが残っていることがある（判定はメンバーシップを見ないので、ここで
         // 落とすと名簿と入口が食い違う）。
         let rows = sqlx::query(
-            "SELECT u.sub, u.status AS user_status, m.status AS membership_status \
+            "SELECT u.sub, u.status AS user_status, u.pending_setup AS pending_setup, \
+             m.status AS membership_status \
              FROM application_assignments a JOIN users u ON u.id = a.user_id \
              LEFT JOIN tenant_memberships m ON m.user_id = u.id AND m.tenant_id = ? \
              WHERE a.application_id = ? AND a.kind = 'USER' ORDER BY u.sub ASC LIMIT ? OFFSET ?",
@@ -150,7 +153,8 @@ impl ApplicationUserQuery for SqlxApplicationUserQuery {
         // メンバーシップ側は **INNER JOIN**。要求テナントに居ない `sub` は行を返さず、呼び出し側が
         // `unknown`（＝消えた）として扱う。⚠ 他テナントの利用者の存在を答えないための形でもある。
         let mut builder = QueryBuilder::<MySql>::new(
-            "SELECT u.sub, u.status AS user_status, m.status AS membership_status, \
+            "SELECT u.sub, u.status AS user_status, u.pending_setup AS pending_setup, \
+             m.status AS membership_status, \
              (a.application_id IS NOT NULL) AS assigned \
              FROM users u JOIN tenant_memberships m ON m.user_id = u.id AND m.tenant_id = ",
         );

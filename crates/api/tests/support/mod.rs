@@ -439,12 +439,27 @@ pub async fn force_password_change(pool: &MySqlPool, user_id: &str, password: &s
     let hash = Argon2PasswordHasher::new()
         .hash(password)
         .expect("hash the password");
-    sqlx::query("UPDATE users SET password_hash = ?, must_change_password = 1 WHERE id = ?")
+    // 「既知のパスワードを持つ」＝本人は一度設定を終えている（仮登録ではない。ADR-0064）。
+    sqlx::query(
+        "UPDATE users SET password_hash = ?, must_change_password = 1, pending_setup = 0 WHERE id = ?",
+    )
         .bind(hash)
         .bind(user_id)
         .execute(pool)
         .await
         .expect("force a password change");
+}
+
+/// 管理 API で作った利用者の仮登録を外す（本人が設定リンクで資格情報を決めた、の代わり。ADR-0064）。
+///
+/// 管理 API で作った利用者は仮登録なので、そのまま SSO セッションを直に作っても管理トークンに
+/// 交換できない（`is_active` が断る）。その人を「使える人」として試験の登場人物にするときに呼ぶ。
+pub async fn finish_setup(pool: &MySqlPool, user_id: &str) {
+    sqlx::query("UPDATE users SET pending_setup = 0 WHERE id = ?")
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .expect("finish the setup");
 }
 
 pub async fn create_plain_user(pool: &MySqlPool, tenant_id: &str) -> String {

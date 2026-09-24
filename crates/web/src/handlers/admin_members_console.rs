@@ -765,6 +765,7 @@ mod tests {
             status: "ACTIVE".into(),
             user_status: Some("ACTIVE".into()),
             locked: false,
+            pending_setup: false,
             note: None,
         }
     }
@@ -1055,6 +1056,28 @@ mod tests {
         );
     }
 
+    /// ADR-0064: 仮登録の人は「有効」ではなく「仮登録」と出す。
+    #[test]
+    fn a_pending_member_is_shown_as_pending_not_active() {
+        let messages = Messages::new(Locale::Ja);
+        let mut m = member("HOME");
+        m.pending_setup = true;
+        let html = render_page(&[m.clone()], None);
+        assert!(
+            html.contains(&messages.get("admin-members-user-status-pending")),
+            "{html}"
+        );
+        assert!(
+            !html.contains(&format!(
+                ">{}<",
+                messages.get("admin-members-user-status-active")
+            )),
+            "{html}"
+        );
+        let detail = render_detail(&m);
+        assert!(detail.contains(&messages.get("admin-members-user-status-pending-help")));
+    }
+
     /// ADR-0063: 一覧にはメモの 1 行目だけを出す（全文は 1 人の画面で読む）。
     #[test]
     fn the_list_shows_the_first_line_of_the_note() {
@@ -1136,6 +1159,29 @@ mod tests {
         let messages = Messages::new(Locale::Ja);
         assert!(html.contains(&messages.get("admin-member-applications-not-assigned")));
         assert!(!html.contains(&messages.get("admin-member-applications-record-only")));
+    }
+
+    /// 「使えるアプリ」はその場で絞り込める。行は名前と可否を持ち、札には件数が付く。
+    #[test]
+    fn the_applications_card_can_be_filtered_in_place() {
+        let apps = crate::admin_dto::MemberApplicationListView {
+            applications: vec![
+                app("a1", "EVERYONE", "allowed", None),
+                app("a2", "INDIVIDUAL", "not_assigned", None),
+                app("a3", "INDIVIDUAL", "not_assigned", None),
+            ],
+            enforcement: "enforce".into(),
+        };
+        let html = render_detail_with_applications(&member("HOME"), &apps);
+        assert!(html.contains("data-list-filter-input"), "{html}");
+        assert!(html.contains("/assets/list-filter.js?v="), "{html}");
+        assert!(
+            html.contains("data-filter-state=\"not_assigned\" data-filter-text=\"app-a2\""),
+            "{html}"
+        );
+        assert_eq!(apps.count("not_assigned"), 2);
+        // 停止中のアプリが無ければ、その札は出さない（押しても 0 件になるだけ）。
+        assert!(!html.contains("data-list-filter-state=\"application_disabled\""));
     }
 
     /// 記録だけの間は、割り当てがまだ効いていないことを添える。

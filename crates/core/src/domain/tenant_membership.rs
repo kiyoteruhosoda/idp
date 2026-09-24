@@ -38,6 +38,8 @@ pub struct TenantMember {
     /// 読んだ時点で判定する**必要がある。状態列に丸めると、期限が切れているのに
     /// 「ロック中」と表示され続ける。
     pub locked_until: Option<DateTime<Utc>>,
+    /// 仮登録（ADR-0064）。本人がまだ設定リンクで資格情報を決めていない。
+    pub pending_setup: bool,
     /// 管理者メモ（ADR-0063）。書かれていなければ `None`。⚠ **管理画面の外へ出さない。**
     pub note: Option<MemberNote>,
 }

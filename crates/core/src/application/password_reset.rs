@@ -402,8 +402,14 @@ impl PasswordResetService {
 
         // トークンの所有者を解決し、リンクのテナント（画面の経路）と所属元が一致することを確認する
         // （他テナントの reset 画面へトークンを持ち込ませない）。ACTIVE でないユーザーも拒否。
+        // ⚠ 仮登録（ADR-0064）の利用者を通すのは**設定リンクだけ**。忘失時の再設定リンクで
+        //   仮登録を終わらせられると、メールを一時的に読める相手が本人より先に入れてしまう。
+        let may_use = |user: &User| match record.purpose {
+            ResetPurpose::Setup => user.can_finish_setup(),
+            ResetPurpose::Reset => user.is_active(),
+        };
         let user = match self.users.find_by_id(record.user_id).await {
-            Ok(Some(user)) if user.is_active() && user.tenant_id == tenant.tenant_id() => user,
+            Ok(Some(user)) if may_use(&user) && user.tenant_id == tenant.tenant_id() => user,
             Ok(_) => return ResetPasswordOutcome::InvalidOrExpired,
             Err(e) => return ResetPasswordOutcome::Internal(e.to_string()),
         };
@@ -447,6 +453,14 @@ impl PasswordResetService {
         self.password_policy
             .record_change(user.tenant_id, user.id, &user.password_hash)
             .await;
+
+        // 本人がパスワードを決めたので、仮登録を外す（ADR-0064）。⚠ 外せなければ成功と言わない
+        // ——パスワードはあるのに入れない人になり、リンクはもう使い切っている。
+        if user.pending_setup {
+            if let Err(e) = self.users.finish_setup(user.id).await {
+                return ResetPasswordOutcome::Internal(e.to_string());
+            }
+        }
 
         // 全セッション・トークンの失効（fail-open にしない: 失敗はログのみ。パスワードは既に
         // 更新済みで、旧資格情報でのログインはできない）。
@@ -628,6 +642,12 @@ mod tests {
         }
         async fn update_status(&self, _id: Uuid, _status: UserStatus) -> DomainResult<()> {
             unreachable!()
+        }
+        async fn finish_setup(&self, id: Uuid) -> DomainResult<()> {
+            for user in self.rows.lock().unwrap().iter_mut().filter(|u| u.id == id) {
+                user.pending_setup = false;
+            }
+            Ok(())
         }
         async fn delete(&self, _id: Uuid) -> DomainResult<()> {
             unreachable!()
@@ -865,6 +885,7 @@ mod tests {
             must_change_password: false,
             password_changed_at: None,
             status: UserStatus::Active,
+            pending_setup: false,
             failed_login_count: 0,
             locked_until: None,
             created_at: now(),
@@ -1368,5 +1389,69 @@ mod tests {
                 .await,
             RequestResetOutcome::Unavailable
         ));
+    }
+
+    /// 仮登録の利用者に、指定した用途のトークンを直接置く（ADR-0064 の試験用）。
+    fn pending_user_with_token(
+        h: &Harness,
+        tenant: TenantId,
+        purpose: ResetPurpose,
+    ) -> (Uuid, String) {
+        let user = Uuid::new_v4();
+        let mut row = test_user(user, tenant, "pending@example.com");
+        row.pending_setup = true;
+        h.users.rows.lock().unwrap().push(row);
+        let token = format!("token-{}", purpose.as_str());
+        h.tokens.rows.lock().unwrap().push(PasswordResetToken {
+            token_hash: crypto::sha256_hex(&token),
+            user_id: user,
+            purpose,
+            expires_at: now() + chrono::Duration::hours(1),
+            used_at: None,
+            created_at: now(),
+        });
+        (user, token)
+    }
+
+    /// ADR-0064: 設定リンクでパスワードを決めると、仮登録が外れる。
+    #[tokio::test]
+    async fn a_setup_link_ends_the_pending_state() {
+        let tenant: TenantId = Uuid::now_v7().into();
+        let h = harness(true, 100);
+        let (_, token) = pending_user_with_token(&h, tenant, ResetPurpose::Setup);
+        assert!(matches!(
+            h.svc
+                .reset_password(
+                    TenantContext::new(tenant),
+                    &token,
+                    "new-password-123",
+                    &ctx()
+                )
+                .await,
+            ResetPasswordOutcome::Ok
+        ));
+        let row = h.users.rows.lock().unwrap()[0].clone();
+        assert!(!row.pending_setup);
+        assert!(row.is_active());
+    }
+
+    /// ⚠ 忘失時の再設定リンクでは仮登録を終わらせない（メールを読める相手が本人より先に入れる）。
+    #[tokio::test]
+    async fn a_reset_link_cannot_end_the_pending_state() {
+        let tenant: TenantId = Uuid::now_v7().into();
+        let h = harness(true, 100);
+        let (_, token) = pending_user_with_token(&h, tenant, ResetPurpose::Reset);
+        assert!(matches!(
+            h.svc
+                .reset_password(
+                    TenantContext::new(tenant),
+                    &token,
+                    "new-password-123",
+                    &ctx()
+                )
+                .await,
+            ResetPasswordOutcome::InvalidOrExpired
+        ));
+        assert!(h.users.rows.lock().unwrap()[0].pending_setup);
     }
 }

@@ -23,6 +23,8 @@ pub(crate) const RP_LOGOUT_JS: &str = include_str!("../../assets/rp-logout.js");
 pub(crate) const AUTO_SUBMIT_JS: &str = include_str!("../../assets/auto-submit.js");
 pub(crate) const CLIENT_FORM_JS: &str = include_str!("../../assets/client-form.js");
 pub(crate) const LOCAL_TIME_JS: &str = include_str!("../../assets/local-time.js");
+/// 一覧をその場で絞り込む（メンバーの「使えるアプリ」ほか）。
+pub(crate) const LIST_FILTER_JS: &str = include_str!("../../assets/list-filter.js");
 
 /// 参照 URL に `?v={asset_version}` が付きデプロイごとに変わるため長期キャッシュしてよい。
 fn javascript(body: &'static str) -> impl IntoResponse {
@@ -69,4 +71,8 @@ pub async fn client_form_js() -> impl IntoResponse {
 
 pub async fn local_time_js() -> impl IntoResponse {
     javascript(LOCAL_TIME_JS)
+}
+
+pub async fn list_filter_js() -> impl IntoResponse {
+    javascript(LIST_FILTER_JS)
 }
