@@ -27,6 +27,71 @@
   </dl>
 </div>
 
+{#- 管理者メモ（ADR-0063）。経緯を書き残す欄で、本人・アプリ・トークンのどこにも出ない。
+    HOME / GUEST を問わず書ける（このテナントの管理者の覚え書きであって、ゲストの利用者そのものは
+    変えない）。 -#}
+<div class="card mb-4">
+  <div class="card-header">
+    <div class="fw-semibold"><label for="member-note">{{ messages.get("admin-member-note-title") }}</label></div>
+    <p class="text-muted small mb-0 mt-1" id="member-note-help">{{ messages.get("admin-member-note-desc") }}</p>
+  </div>
+  <form class="card-body" method="post" action="{{ tenant }}/admin/members/{{ member.user_id }}/note">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <textarea class="form-control" id="member-note" name="note" rows="4" maxlength="{{ crate::templates::MEMBER_NOTE_MAX_LEN }}" aria-describedby="member-note-help" placeholder="{{ messages.get("admin-member-note-placeholder") }}">{% if let Some(note) = member.note %}{{ note.text }}{% endif %}</textarea>
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mt-2">
+      <span class="small text-muted">{% if let Some(note) = member.note %}{{ messages.get("admin-member-note-updated") }} <time class="local-time" datetime="{{ note.updated_at }}">{{ crate::templates::utc_short(note.updated_at.as_str()) }}</time>{% endif %}</span>
+      <button type="submit" class="btn btn-primary"><i class="fa-solid fa-floppy-disk me-1" aria-hidden="true"></i>{{ messages.get("admin-member-note-save") }}</button>
+    </div>
+  </form>
+</div>
+
+{#- このメンバーが使えるアプリ（ADR-0063）。アプリの詳細（誰が使えるか）の裏返しで、可否は判定と
+    同じ規則で api が答える。`idp.applications:read` を持たない管理者には欄ごと出さない。 -#}
+{% if let Some(apps) = applications %}
+<div class="card mb-4">
+  <div class="card-header">
+    <div class="fw-semibold">{{ messages.get("admin-member-applications-title") }}</div>
+    <p class="text-muted small mb-0 mt-1">{{ messages.get("admin-member-applications-desc") }}</p>
+    {% if apps.enforcement == "record_only" %}<p class="text-muted small mb-0 mt-1"><i class="fa-solid fa-circle-info me-1" aria-hidden="true"></i>{{ messages.get("admin-member-applications-record-only") }}</p>{% endif %}
+  </div>
+  {% if apps.applications.is_empty() %}
+  <p class="card-body text-muted mb-0">{{ messages.get("admin-member-applications-none") }}</p>
+  {% else %}
+  <ul class="list-group list-group-flush">
+    {% for app in apps.applications %}
+    <li class="list-group-item d-flex flex-wrap align-items-center gap-2">
+      <div class="me-auto">
+        <a href="{{ tenant }}/admin/applications/{{ app.application_id }}">{{ app.display_name }}</a>
+        <div class="small text-muted">
+          {% if app.assignment_mode == "EVERYONE" %}{{ messages.get("admin-member-applications-mode-everyone") }}
+          {% else if let Some(at) = app.assigned_at %}{{ messages.get("admin-member-applications-assigned-since") }} <time class="local-time" datetime="{{ at }}">{{ crate::templates::utc_short(at.as_str()) }}</time>
+          {% else %}{{ messages.get("admin-member-applications-mode-individual") }}{% endif %}
+        </div>
+      </div>
+      {% if app.access == "allowed" %}<span class="badge text-bg-success">{{ messages.get("admin-member-applications-allowed") }}</span>
+      {% else if app.access == "application_disabled" %}<span class="badge text-bg-warning">{{ messages.get("admin-member-applications-disabled") }}</span>
+      {% else %}<span class="badge text-bg-secondary">{{ messages.get("admin-member-applications-not-assigned") }}</span>{% endif %}
+      {#- 割り当ての出し入れは「個別」のアプリだけ。「全員」のアプリで外しても入れてしまう。 -#}
+      {% if app.assignment_mode == "INDIVIDUAL" %}
+      {% if app.assigned_at.is_some() %}
+      <form method="post" action="{{ tenant }}/admin/members/{{ member.user_id }}/applications/{{ app.application_id }}/unassign" data-confirm="{{ messages.get("admin-member-applications-unassign-confirm") }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf }}">
+        <button type="submit" class="btn btn-outline-secondary btn-sm">{{ messages.get("admin-member-applications-unassign") }}</button>
+      </form>
+      {% else %}
+      <form method="post" action="{{ tenant }}/admin/members/{{ member.user_id }}/applications/{{ app.application_id }}/assign">
+        <input type="hidden" name="csrf_token" value="{{ csrf }}">
+        <button type="submit" class="btn btn-outline-primary btn-sm">{{ messages.get("admin-member-applications-assign") }}</button>
+      </form>
+      {% endif %}
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>
+{% endif %}
+
 {% if member.membership_type == "HOME" %}
 <div class="card mb-3">
   <div class="card-header">

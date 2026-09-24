@@ -255,6 +255,14 @@ pub struct MemberActionForm {
     pub csrf_token: String,
 }
 
+/// 管理者メモのフォーム（ADR-0063）。空で送るとメモを消す。
+#[derive(Debug, Deserialize)]
+pub struct MemberNoteForm {
+    #[serde(default)]
+    pub note: String,
+    pub csrf_token: String,
+}
+
 /// 設定画面のランタイム設定（DB 上書き）フォーム
 /// （`POST /{tenant_id}/admin/system-settings/runtime`）。`value` が空 = 上書き解除。
 #[derive(Debug, Deserialize)]

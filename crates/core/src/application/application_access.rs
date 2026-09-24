@@ -297,6 +297,13 @@ pub mod test_support {
         async fn list_assigned_users(&self, _application_id: Uuid) -> Result<Vec<AssignedUser>> {
             Ok(Vec::new())
         }
+        async fn list_user_assignments(
+            &self,
+            _tenant_id: TenantId,
+            _user_id: Uuid,
+        ) -> Result<Vec<crate::domain::application::UserAssignment>> {
+            Ok(Vec::new())
+        }
         async fn count_assignments(&self, _application_id: Uuid) -> Result<i64> {
             Ok(0)
         }
@@ -444,6 +451,13 @@ mod tests {
             Ok(Vec::new())
         }
         async fn list_assigned_users(&self, _application_id: Uuid) -> Result<Vec<AssignedUser>> {
+            Ok(Vec::new())
+        }
+        async fn list_user_assignments(
+            &self,
+            _tenant_id: TenantId,
+            _user_id: Uuid,
+        ) -> Result<Vec<crate::domain::application::UserAssignment>> {
             Ok(Vec::new())
         }
         async fn count_assignments(&self, _application_id: Uuid) -> Result<i64> {

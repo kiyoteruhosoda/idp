@@ -40,6 +40,7 @@ pub mod user_security;
 pub mod user_settings;
 pub mod vendor_assets;
 pub mod verify_email;
+pub mod web_app_manifest;
 
 use crate::api_client::InternalCallError;
 use crate::client_ip::ClientIp;

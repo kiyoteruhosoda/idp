@@ -11,6 +11,7 @@
 <link rel="stylesheet" href="/assets/vendor/fontawesome/css/all.min.css?v={{ crate::templates::asset_version() }}">
 <link rel="stylesheet" href="/assets/app.css?v={{ crate::templates::asset_version() }}">
 <link rel="icon" href="/assets/assay.svg?v={{ crate::templates::asset_version() }}" type="image/svg+xml">
+{% let manifest_prefix = tenant %}{% include "console/web_app_head.html" %}
 <title>{{ messages.get("admin-console-title") }}</title>
 </head>
 <body class="d-flex flex-column min-vh-100">

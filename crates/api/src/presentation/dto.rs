@@ -1036,6 +1036,49 @@ pub struct MemberResponse {
     /// ログイン失敗によるロックが**今**掛かっているか（AP6）。`user_status` とは別
     /// （ロックは `locked_until` で表され、期限切れかどうかは読んだ時点で決まる）。
     pub locked: bool,
+    /// 管理者メモ（ADR-0063）。書かれていなければ省略される。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<MemberNoteResponse>,
+}
+
+/// メンバーの管理者メモ（ADR-0063）。経緯を書き残すための自由記述で、判定には使わない。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MemberNoteResponse {
+    pub text: String,
+    /// 最後に書かれた日時（RFC 3339・UTC）。
+    pub updated_at: String,
+}
+
+/// 管理者メモの書き込み（`PUT /{tenant_id}/admin/members/{user_id}/note`。ADR-0063）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateMemberNoteRequest {
+    /// メモの本文（2000 文字まで）。空（空白だけ）ならメモを消す。
+    pub note: String,
+}
+
+/// メンバー 1 人が使えるアプリの一覧（`GET /{tenant_id}/admin/members/{user_id}/applications`。
+/// ADR-0063）。ログインの名乗り（OIDC / SAML）を持つアプリだけが載る。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MemberApplicationListResponse {
+    pub applications: Vec<MemberApplicationResponse>,
+    /// いま判定が断るところまで来ているか（`record_only` / `enforce`）。
+    pub enforcement: String,
+}
+
+/// メンバーから見たアプリ 1 件。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MemberApplicationResponse {
+    pub application_id: String,
+    pub display_name: String,
+    /// アプリの状態（`ACTIVE` / `DISABLED`）。
+    pub status: String,
+    /// `EVERYONE` / `INDIVIDUAL`。
+    pub assignment_mode: String,
+    /// この人がいま入れるか（`allowed` / `not_assigned` / `application_disabled`）。判定と同じ規則で決まる。
+    pub access: String,
+    /// 個別の割り当ての日時（RFC 3339・UTC）。割り当てが無ければ省略される。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assigned_at: Option<String>,
 }
 
 /// 一覧のページングクエリ（`GET /{tenant_id}/admin/tenants` ほか。G7）。

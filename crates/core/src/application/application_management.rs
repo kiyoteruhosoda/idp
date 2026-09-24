@@ -10,8 +10,8 @@
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::admin_actor::AdminActor;
 use crate::domain::application::{
-    validate_display_name, Application, ApplicationAssignment, ApplicationBinding,
-    AssignedPrincipal, AssignedServiceAccount, AssignedUser, BindingTarget,
+    validate_display_name, Application, ApplicationAccess, ApplicationAssignment,
+    ApplicationBinding, AssignedPrincipal, AssignedServiceAccount, AssignedUser, BindingTarget,
 };
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::client::Client;
@@ -26,6 +26,7 @@ use crate::domain::repositories::{
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::tenant_membership::{TenantMember, TenantMemberFilter};
 use crate::domain::values::{ApplicationStatus, AssignmentMode, GrantType};
+use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -109,6 +110,16 @@ pub struct CurrentUsers {
     pub truncated: bool,
 }
 
+/// メンバー 1 人から見たアプリ 1 件（ADR-0063）。
+pub struct MemberApplication {
+    pub application: Application,
+    /// この人がいま入れるか。判定（code の発行地点）と同じ [`Application::admits`] で決める
+    /// ——⚠ 画面が別の規則で答えると「使えると出ているのに入れない」が起きる。
+    pub access: ApplicationAccess,
+    /// 個別の割り当てがあればその日時。`EVERYONE` のアプリでも行が残っていれば載る。
+    pub assigned_at: Option<DateTime<Utc>>,
+}
+
 /// 新しいアプリの入力。
 pub struct NewApplication {
     pub display_name: String,
@@ -188,6 +199,56 @@ impl ApplicationManagementService {
             });
         }
         Ok(summaries)
+    }
+
+    /// メンバー 1 人が使えるアプリの一覧（表示名の昇順。ADR-0063）。
+    ///
+    /// 載せるのは**ログインの名乗り（OIDC / SAML）を持つアプリだけ**。サービスアカウントや
+    /// 宛名しか持たないアプリは人が入る先ではなく、「使えない」と並べると誤解を招く。
+    pub async fn member_applications(
+        &self,
+        tenant: TenantContext,
+        user_id: Uuid,
+    ) -> Result<Vec<MemberApplication>, ApplicationManagementError> {
+        self.require_member(tenant, user_id).await?;
+        let applications = self
+            .applications
+            .list(tenant.tenant_id())
+            .await
+            .map_err(map_repo_error)?;
+        let assignments = self
+            .applications
+            .list_user_assignments(tenant.tenant_id(), user_id)
+            .await
+            .map_err(map_repo_error)?;
+        let mut rows = Vec::with_capacity(applications.len());
+        for application in applications {
+            let bindings = self
+                .applications
+                .list_bindings(application.id)
+                .await
+                .map_err(map_repo_error)?;
+            let has_login = bindings.iter().any(|b| {
+                matches!(
+                    b.target,
+                    BindingTarget::Oidc { .. } | BindingTarget::Saml { .. }
+                )
+            });
+            if !has_login {
+                continue;
+            }
+            let assigned_at = assignments
+                .iter()
+                .find(|a| a.application_id == application.id)
+                .map(|a| a.assigned_at);
+            let access = application.admits(assigned_at.is_some());
+            rows.push(MemberApplication {
+                application,
+                access,
+                assigned_at,
+            });
+        }
+        Ok(rows)
     }
 
     /// アプリ 1 件の詳細。

@@ -1,0 +1,5 @@
+{#- 管理コンソールをホーム画面へ入れるためのマニフェスト（テナントごと。`handlers::web_app_manifest`）。
+    ログイン画面にも置く ——ログアウトした状態で開いた画面からもインストールできるように。 -#}
+<link rel="manifest" href="{{ manifest_prefix }}/admin/manifest.webmanifest">
+<meta name="theme-color" content="#0F1417">
+<link rel="apple-touch-icon" href="/assets/icons/assay-192.png?v={{ crate::templates::asset_version() }}">

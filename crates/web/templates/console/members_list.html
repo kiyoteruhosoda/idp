@@ -33,28 +33,38 @@
 
     表示名の列も落とした ——ユーザー名と同じ値になる人が多く、無い人は「-」が並ぶだけで、
     一覧で人を見分ける助けになっていない（詳細画面には出る。絞り込みは今までどおり氏名も見る）。 -#}
+{#- 一覧の形（ADR-0063 と同時に作り直した）:
+    ・列を「誰か」「状態」「メモ」の 3 つにした。以前は メール・ユーザー名・種別・メンバーシップ・
+      アカウント・操作 の 6 列で、スマホのカードでは 1 人が見出し付きの 6 段（約 330px）になり、
+      画面に 2 人しか入らなかった。
+    ・状態は**普通でないものだけ**を札にする。全員に「HOME」「ACTIVE」「有効」が並ぶと、
+      止まっている人が埋もれる。
+    ・操作列は落とした。行（カード）のどこを押しても 1 人の画面へ行く（`.table-cards-link`）。 -#}
 <div class="table-responsive">
-  <table class="table table-cards table-hover align-middle">
+  <table class="table table-cards table-hover align-middle members-table">
     <thead>
-      <tr><th>{{ messages.get("admin-user-col-email") }}</th><th>{{ messages.get("admin-user-col-username") }}</th><th>{{ messages.get("admin-members-col-type") }}</th><th>{{ messages.get("admin-members-col-status") }}</th><th>{{ messages.get("admin-members-col-user-status") }}</th><th>{{ messages.get("admin-signing-keys-col-actions") }}</th></tr>
+      <tr><th>{{ messages.get("admin-members-col-member") }}</th><th>{{ messages.get("admin-members-col-state") }}</th><th>{{ messages.get("admin-members-col-note") }}</th></tr>
     </thead>
     <tbody>
       {% for m in members %}
       <tr>
-        <td data-label="{{ messages.get("admin-user-col-email") }}"><a href="{{ tenant }}/admin/members/{{ m.user_id }}">{{ m.email.as_deref().unwrap_or(m.preferred_username.as_deref().unwrap_or("-")) }}</a></td>
-        <td data-label="{{ messages.get("admin-user-col-username") }}">{{ m.preferred_username.as_deref().unwrap_or("-") }}</td>
-        <td data-label="{{ messages.get("admin-members-col-type") }}">{% if m.membership_type == "GUEST" %}<span class="badge text-bg-info">{{ m.membership_type }}</span>{% else %}<span class="badge text-bg-secondary">{{ m.membership_type }}</span>{% endif %}</td>
-        <td data-label="{{ messages.get("admin-members-col-status") }}">{% if m.status == "SUSPENDED" %}<span class="badge text-bg-warning">{{ messages.get("admin-members-status-suspended") }}</span>{% else %}{{ m.status }}{% endif %}</td>
-        <td data-label="{{ messages.get("admin-members-col-user-status") }}">
+        <td>
+          <a class="table-cards-link" href="{{ tenant }}/admin/members/{{ m.user_id }}">{{ m.headline() }}</a>
+          {%- let names = m.secondary_names() -%}
+          {% if !names.is_empty() %}<div class="small text-muted">{% for n in names %}{% if !loop.first %} · {% endif %}{{ n }}{% endfor %}</div>{% endif %}
+        </td>
+        <td>
+          <div class="d-flex flex-wrap gap-1">
+          {% if m.membership_type == "GUEST" %}<span class="badge text-bg-info">{{ messages.get("admin-members-type-guest") }}</span>{% endif %}
+          {% if m.status == "SUSPENDED" %}<span class="badge text-bg-warning">{{ messages.get("admin-members-status-suspended") }}</span>
+          {% else if m.status == "INVITED" %}<span class="badge text-bg-secondary">{{ messages.get("admin-members-status-invited") }}</span>{% endif %}
           {% if m.locked %}<span class="badge text-bg-warning"><i class="fa-solid fa-lock me-1" aria-hidden="true"></i>{{ messages.get("admin-members-user-status-locked") }}</span>
-          {% else if m.user_status.as_deref() == Some("ACTIVE") %}<span class="badge text-bg-success">{{ messages.get("admin-members-user-status-active") }}</span>
           {% else if m.user_status.as_deref() == Some("DISABLED") %}<span class="badge text-bg-danger">{{ messages.get("admin-members-user-status-disabled") }}</span>
-          {% else if m.user_status.is_some() %}<span class="badge text-bg-warning">{{ messages.get("admin-members-user-status-locked") }}</span>
-          {% else %}-{% endif %}
+          {% else if m.user_status.as_deref() == Some("ACTIVE") && m.status == "ACTIVE" %}<span class="small text-muted">{{ messages.get("admin-members-user-status-active") }}</span>
+          {% else if m.user_status.is_some() && m.user_status.as_deref() != Some("ACTIVE") %}<span class="badge text-bg-warning">{{ messages.get("admin-members-user-status-locked") }}</span>{% endif %}
+          </div>
         </td>
-        <td data-label="{{ messages.get("admin-signing-keys-col-actions") }}">
-          <a class="btn btn-outline-secondary btn-sm" href="{{ tenant }}/admin/members/{{ m.user_id }}"><i class="fa-solid fa-sliders me-1" aria-hidden="true"></i>{{ messages.get("admin-member-detail-manage") }}</a>
-        </td>
+        <td class="members-note">{% if let Some(excerpt) = m.note_excerpt() %}<span class="small text-body-secondary"><i class="fa-regular fa-note-sticky me-1" aria-hidden="true"></i><span class="visually-hidden">{{ messages.get("admin-members-col-note") }}: </span>{{ excerpt }}</span>{% endif %}</td>
       </tr>
       {% endfor %}
     </tbody>

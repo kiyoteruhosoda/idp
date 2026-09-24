@@ -28,6 +28,7 @@ pub mod issuer;
 pub mod jwt;
 pub mod login_identifier;
 pub mod mailer;
+pub mod member_note;
 pub mod message;
 pub mod outbound_uri;
 pub mod paging;

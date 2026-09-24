@@ -1489,6 +1489,44 @@ impl ApiClient {
         .await
     }
 
+    /// 管理者メモを書く（`PUT /admin/members/{user_id}/note`。ADR-0063）。空なら消える。
+    pub async fn update_member_note(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        user_id: &str,
+        note: &str,
+    ) -> Result<(), AdminApiError> {
+        self.admin_send_no_content(
+            Method::PUT,
+            tenant_id,
+            &format!("/admin/members/{user_id}/note"),
+            correlation_id,
+            sso,
+            Some(serde_json::json!({ "note": note })),
+        )
+        .await
+    }
+
+    /// メンバー 1 人が使えるアプリ（`GET /admin/members/{user_id}/applications`。ADR-0063）。
+    pub async fn list_member_applications(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        user_id: &str,
+    ) -> Result<crate::admin_dto::MemberApplicationListView, AdminApiError> {
+        self.admin_get_with_query(
+            tenant_id,
+            &format!("/admin/members/{user_id}/applications"),
+            correlation_id,
+            sso,
+            &[],
+        )
+        .await
+    }
+
     /// ゲストメンバーシップの解除（`DELETE /admin/members/{user_id}`。HOME は不可）。
     pub async fn revoke_member(
         &self,

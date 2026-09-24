@@ -49,6 +49,7 @@ use crate::application::login_identifier_management::LoginIdentifierManagementSe
 use crate::application::logout::LogoutService;
 use crate::application::management_token::ManagementTokenService;
 use crate::application::member_directory::MemberDirectoryService;
+use crate::application::member_note::MemberNoteService;
 use crate::application::mfa_login::MfaLoginService;
 use crate::application::passkey_assertion::PasskeyAssertionService;
 use crate::application::passkey_authentication::PasskeyAuthenticationService;
@@ -111,6 +112,7 @@ use crate::infrastructure::repositories::external_idp::{
     SqlxExternalIdentityProviderRepository, SqlxExternalIdentityRepository,
     SqlxExternalLoginRequestRepository,
 };
+use crate::infrastructure::repositories::member_note::SqlxMemberNoteRepository;
 use crate::infrastructure::repositories::passkey_challenge::SqlxPasskeyChallengeRepository;
 use crate::infrastructure::repositories::password_history::SqlxPasswordHistoryRepository;
 use crate::infrastructure::repositories::password_reset_token::SqlxPasswordResetTokenRepository;
@@ -229,6 +231,8 @@ pub struct AppState {
     /// ゲスト招待・メンバーシップ（ADR-0009 §3）。
     pub invitations: Arc<InvitationService>,
     pub member_directory: Arc<MemberDirectoryService>,
+    /// メンバーの管理者メモ（ADR-0063）。
+    pub member_notes: Arc<MemberNoteService>,
     pub audit_query: Arc<AuditQueryService>,
     /// 監査イベントの記録と保持期間による掃除（設計仕様 §7・G8）。各ユースケースへ注入している
     /// ものと同じ実体で、保持期間の掃除タスクがここから参照する。
@@ -886,6 +890,12 @@ impl AppState {
         let member_directory = Arc::new(MemberDirectoryService::new(Arc::new(
             SqlxTenantMemberQuery::new(pool.clone()),
         )));
+        let member_notes = Arc::new(MemberNoteService::new(
+            Arc::new(SqlxTenantMemberQuery::new(pool.clone())),
+            Arc::new(SqlxMemberNoteRepository::new(pool.clone())),
+            audit.clone(),
+            clock.clone(),
+        ));
         let admin_access = Arc::new(AdminAccessService::new(
             sso_sessions.clone(),
             users.clone(),
@@ -1166,6 +1176,7 @@ impl AppState {
             password_reset,
             invitations,
             member_directory,
+            member_notes,
             audit_query,
             audit,
             application_logs,

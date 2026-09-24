@@ -343,6 +343,80 @@ pub struct MemberView {
     /// （web は時計を持たないため、期限の比較を web 側でやり直さない）。
     #[serde(default)]
     pub locked: bool,
+    /// 管理者メモ（ADR-0063）。書かれていなければ `None`。
+    #[serde(default)]
+    pub note: Option<MemberNoteView>,
+}
+
+impl MemberView {
+    /// 一覧に出すメモの 1 行目（長ければ切る）。一覧は探す場所なので、全文は詳細で読む。
+    pub fn note_excerpt(&self) -> Option<String> {
+        const MAX_CHARS: usize = 60;
+        let first = self.note.as_ref()?.text.lines().next()?.trim();
+        if first.is_empty() {
+            return None;
+        }
+        let multi_line = self.note.as_ref().is_some_and(|n| n.text.contains('\n'));
+        let mut excerpt: String = first.chars().take(MAX_CHARS).collect();
+        if first.chars().count() > MAX_CHARS || multi_line {
+            excerpt.push('…');
+        }
+        Some(excerpt)
+    }
+
+    /// 一覧の見出しに出す名前（メール → ユーザー名の順に拾う）。
+    pub fn headline(&self) -> &str {
+        self.email
+            .as_deref()
+            .or(self.preferred_username.as_deref())
+            .unwrap_or("-")
+    }
+
+    /// 見出しの下に添える名前。見出しと同じ値は繰り返さない（同じ文字列が 2 段並ぶと読みにくい）。
+    pub fn secondary_names(&self) -> Vec<&str> {
+        let headline = self.headline();
+        let mut out: Vec<&str> = Vec::new();
+        for value in [self.preferred_username.as_deref(), self.name.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            if value != headline && !out.contains(&value) {
+                out.push(value);
+            }
+        }
+        out
+    }
+}
+
+/// メンバーの管理者メモ（ADR-0063）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct MemberNoteView {
+    pub text: String,
+    /// RFC 3339（UTC）。画面では `local-time.js` が閲覧者の時刻へ直す。
+    pub updated_at: String,
+}
+
+/// メンバー 1 人が使えるアプリ（`GET /admin/members/{user_id}/applications`。ADR-0063）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct MemberApplicationListView {
+    pub applications: Vec<MemberApplicationView>,
+    /// `record_only` / `enforce`。
+    pub enforcement: String,
+}
+
+/// メンバーから見たアプリ 1 件。
+#[derive(Debug, Clone, Deserialize)]
+pub struct MemberApplicationView {
+    pub application_id: String,
+    pub display_name: String,
+    /// `ACTIVE` / `DISABLED`。
+    pub status: String,
+    /// `EVERYONE` / `INDIVIDUAL`。
+    pub assignment_mode: String,
+    /// `allowed` / `not_assigned` / `application_disabled`。
+    pub access: String,
+    #[serde(default)]
+    pub assigned_at: Option<String>,
 }
 
 /// メンバー一覧の 1 ページ分（`GET /admin/members`。MT22）。

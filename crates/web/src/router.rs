@@ -16,7 +16,7 @@ use crate::handlers::{
     console_script, external_login, health, invitation_accept, locale, login, mfa_totp,
     page_scripts, passkey, password_change, password_reset, portal, react_assets, rp_logout,
     saml_sso, step_up, stylesheet, submit_feedback_script, user_security, user_settings,
-    vendor_assets, verify_email,
+    vendor_assets, verify_email, web_app_manifest,
 };
 use crate::i18n::Messages;
 use crate::login_context::load_rp_login_context;
@@ -202,6 +202,12 @@ pub fn build(state: WebState) -> Router {
         )
         .route("/admin/logout", post(admin_console::logout))
         .route("/admin", get(admin_console::home))
+        // ホーム画面へ入れるためのマニフェスト（テナントごと）。⚠ 認証の外に置く
+        // （ブラウザは Cookie 無しで取りに来る。`handlers::web_app_manifest`）。
+        .route(
+            "/admin/manifest.webmanifest",
+            get(web_app_manifest::manifest),
+        )
         // テナント切り替え（所属テナントの管理コンソールへ遷移。ADR-0009 §8）。
         .route("/admin/switch-tenant", get(admin_console::switch_tenant))
         // 設定画面（MT14）。テナント設定（idp.tenant.admin）＋ root のみのシステム設定区画（SMTP）。
@@ -463,6 +469,19 @@ pub fn build(state: WebState) -> Router {
             "/admin/members/{user_id}/delete",
             post(admin_members_console::delete),
         )
+        // 管理者メモ（ADR-0063）と、その人のアプリの割り当て（アプリの詳細と同じ API を呼ぶ）。
+        .route(
+            "/admin/members/{user_id}/note",
+            post(admin_members_console::update_note),
+        )
+        .route(
+            "/admin/members/{user_id}/applications/{application_id}/assign",
+            post(admin_members_console::assign_application),
+        )
+        .route(
+            "/admin/members/{user_id}/applications/{application_id}/unassign",
+            post(admin_members_console::unassign_application),
+        )
         // ゲスト招待の作成（ADR-0009 §3）。
         .route(
             "/admin/invitations",
@@ -565,6 +584,18 @@ pub fn build(state: WebState) -> Router {
         )
         .route("/assets/app.css", get(stylesheet::app_css))
         .route("/assets/assay.svg", get(stylesheet::assay_svg))
+        .route(
+            "/assets/icons/assay-192.png",
+            get(stylesheet::assay_192_png),
+        )
+        .route(
+            "/assets/icons/assay-512.png",
+            get(stylesheet::assay_512_png),
+        )
+        .route(
+            "/assets/icons/assay-maskable-512.png",
+            get(stylesheet::assay_maskable_512_png),
+        )
         .route("/assets/console.js", get(console_script::console_js))
         .route(
             "/assets/button-pending.js",

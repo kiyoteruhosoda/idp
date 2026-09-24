@@ -258,6 +258,13 @@ pub struct AssignedUser {
     pub assigned_at: DateTime<Utc>,
 }
 
+/// ある人に付いている割り当て 1 件（メンバーの画面が「使えるアプリ」を出すため。ADR-0063）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UserAssignment {
+    pub application_id: Uuid,
+    pub assigned_at: DateTime<Utc>,
+}
+
 /// 名簿の 1 行（ADR-0057）。RP の定期照合が読む読み取りモデル。
 ///
 /// ⚠ **載るのは `sub` と状態だけである。** 属性の写しはログインのたびに渡っているので

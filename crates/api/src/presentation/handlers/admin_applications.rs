@@ -27,7 +27,8 @@ use crate::presentation::dto::{
     ApplicationCurrentUsersResponse, ApplicationDetailResponse, ApplicationListResponse,
     ApplicationResponse, ApplicationServiceAccountAssignmentResponse, ApplicationUserListResponse,
     ApplicationUserQueryParams, ApplicationUserResponse, CreateApplicationAssignmentRequest,
-    CreateApplicationBindingRequest, CreateApplicationRequest, UpdateApplicationRequest,
+    CreateApplicationBindingRequest, CreateApplicationRequest, MemberApplicationListResponse,
+    MemberApplicationResponse, UpdateApplicationRequest,
 };
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
@@ -63,6 +64,58 @@ pub async fn list_applications(
         .map_err(|e| map_error(e, locale))?;
     Ok(Json(ApplicationListResponse {
         applications: applications.iter().map(to_response).collect(),
+        enforcement: assignment_enforcement(&state, &tenant).await?,
+    }))
+}
+
+/// メンバー 1 人が使えるアプリ（`GET /{tenant_id}/admin/members/{user_id}/applications`。ADR-0063）。
+///
+/// アプリの詳細（誰が使えるか）の裏返し。ログインの名乗り（OIDC / SAML）を持つアプリだけを載せ、
+/// 可否は判定と同じ規則で答える。
+#[utoipa::path(
+    get,
+    path = "/{tenant_id}/admin/members/{user_id}/applications",
+    tag = "admin",
+    params(("user_id" = String, Path, description = "対象利用者の内部 ID（UUID）")),
+    responses(
+        (status = 200, description = "メンバーが使えるアプリ", body = MemberApplicationListResponse),
+        (status = 400, description = "user_id が UUID でない"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.applications:read 必須）"),
+        (status = 404, description = "このテナントのメンバーではない"),
+    )
+)]
+pub async fn list_member_applications(
+    RequirePerms(_admin, _): RequirePerms<ApplicationsRead>,
+    State(state): State<AppState>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
+    Path((_tenant_id, user_id)): Path<(String, String)>,
+) -> Result<Json<MemberApplicationListResponse>, ApiError> {
+    let user_id = parse_id(&user_id, locale)?;
+    let rows = state
+        .applications_admin
+        .member_applications(tenant.context(), user_id)
+        .await
+        .map_err(|e| match e {
+            // 利用者が見つからないときに「アプリが無い」と言わない。
+            ApplicationManagementError::NotFound => {
+                ApiError::NotFound(ApiMessages::new(locale).get("api-member-not-found"))
+            }
+            e => map_error(e, locale),
+        })?;
+    Ok(Json(MemberApplicationListResponse {
+        applications: rows
+            .into_iter()
+            .map(|row| MemberApplicationResponse {
+                application_id: row.application.id.to_string(),
+                display_name: row.application.display_name,
+                status: row.application.status.as_str().to_string(),
+                assignment_mode: row.application.assignment_mode.as_str().to_string(),
+                access: row.access.reason().to_string(),
+                assigned_at: row.assigned_at.map(|t| t.to_rfc3339()),
+            })
+            .collect(),
         enforcement: assignment_enforcement(&state, &tenant).await?,
     }))
 }
