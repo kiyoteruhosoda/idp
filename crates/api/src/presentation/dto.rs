@@ -671,6 +671,10 @@ pub struct CreateUserRequest {
     pub preferred_username: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
+    /// 管理者メモ（任意・2000 文字まで。ADR-0063）。作った利用者の HOME メンバーシップに付く。
+    /// 空（空白だけ）は「メモ無し」として扱う。
+    #[serde(default)]
+    pub note: Option<String>,
 }
 
 /// 利用者作成レスポンス。`setup_url` は**この応答でのみ**返る（ログ・監査には出さない。ADR-0062）。

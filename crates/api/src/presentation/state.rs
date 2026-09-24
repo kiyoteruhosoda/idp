@@ -807,6 +807,7 @@ impl AppState {
             tenant_memberships.clone(),
             hasher.clone(),
             account_setup_links.clone(),
+            Arc::new(SqlxMemberNoteRepository::new(pool.clone())),
             audit.clone(),
             clock.clone(),
             ids.clone(),
