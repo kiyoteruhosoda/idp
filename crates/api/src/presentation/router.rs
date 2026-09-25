@@ -3,7 +3,7 @@
 use crate::presentation::correlation;
 use crate::presentation::cors;
 use crate::presentation::handlers::{
-    account_setup, admin, admin_application_logs, admin_applications, admin_audit,
+    account_setup, admin, admin_accounts, admin_application_logs, admin_applications, admin_audit,
     admin_authentication_policies, admin_client_permissions, admin_clients, admin_external_idps,
     admin_invitations, admin_login_identifiers, admin_members, admin_permissions, admin_resources,
     admin_restart, admin_saml_service_providers, admin_signing_keys, admin_system_settings,
@@ -389,6 +389,22 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/admin/members/{user_id}/applications",
             get(admin_applications::list_member_applications),
+        )
+        // アカウント（人とサービスアカウント。ADR-0065）。一覧は読める種別だけを並べる
+        // （人は idp.members:read、サービスアカウントは idp.clients:read）。サービスアカウント 1 件と
+        // その管理者メモ・使えるアプリは、人の `/admin/members/{user_id}/*` と同じ形の口。
+        .route("/admin/accounts", get(admin_accounts::list_accounts))
+        .route(
+            "/admin/service-accounts/{client_id}",
+            get(admin_accounts::get_service_account),
+        )
+        .route(
+            "/admin/service-accounts/{client_id}/note",
+            axum::routing::put(admin_accounts::update_service_account_note),
+        )
+        .route(
+            "/admin/service-accounts/{client_id}/applications",
+            get(admin_applications::list_service_account_applications),
         )
         .route(
             "/admin/invitations",

@@ -87,8 +87,9 @@ pub enum AuditEventType {
     /// 当該テナント scope の権限行は残る。
     TenantMembershipSuspended,
     TenantMembershipResumed,
-    /// 管理者メモの書き込み・消去（ADR-0063）。メモの中身は記録しない（経緯の自由記述は PII を含む）。
-    TenantMemberNoteUpdated,
+    /// アカウント（人・サービスアカウント）の管理者メモの書き込み・消去（ADR-0063 / ADR-0065）。
+    /// メモの中身は記録しない（経緯の自由記述は PII を含む）。`reason` に種別と相手を書く。
+    AccountNoteUpdated,
     /// 管理者による利用者の作成（ADR-0009 §5）。自動生成パスワードは記録しない。
     UserCreated,
     /// 管理者による利用者の状態変更（有効化・無効化）・削除・パスワード再発行（ADR-0009 §5）。
@@ -213,7 +214,7 @@ impl AuditEventType {
             Self::TenantMembershipRevoked => "tenant_membership.revoked",
             Self::TenantMembershipSuspended => "tenant_membership.suspended",
             Self::TenantMembershipResumed => "tenant_membership.resumed",
-            Self::TenantMemberNoteUpdated => "tenant_membership.note_updated",
+            Self::AccountNoteUpdated => "account.note_updated",
             Self::UserCreated => "user.created",
             Self::UserStatusChanged => "user.status_changed",
             Self::UserDeleted => "user.deleted",

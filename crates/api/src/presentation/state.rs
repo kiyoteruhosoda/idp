@@ -8,7 +8,9 @@
 //! かつての「起動時に解決した root を既定テナントとして全リクエストへ適用する」過渡運用
 //! （`default_tenant`）は SEC4 で撤去した。
 
+use crate::application::account_directory::AccountDirectoryService;
 use crate::application::account_language::AccountLanguageService;
+use crate::application::account_note::AccountNoteService;
 use crate::application::account_password::AccountPasswordService;
 use crate::application::account_profile::AccountProfileService;
 use crate::application::account_security::AccountSecurityService;
@@ -49,7 +51,6 @@ use crate::application::login_identifier_management::LoginIdentifierManagementSe
 use crate::application::logout::LogoutService;
 use crate::application::management_token::ManagementTokenService;
 use crate::application::member_directory::MemberDirectoryService;
-use crate::application::member_note::MemberNoteService;
 use crate::application::mfa_login::MfaLoginService;
 use crate::application::passkey_assertion::PasskeyAssertionService;
 use crate::application::passkey_authentication::PasskeyAuthenticationService;
@@ -79,7 +80,7 @@ use crate::config::Config;
 use crate::domain::cache::Cache;
 use crate::domain::clock::Clock;
 use crate::domain::id_generator::IdGenerator;
-use crate::domain::repositories::UserPermissionRepository;
+use crate::domain::repositories::{AccountNoteRepository, UserPermissionRepository};
 use crate::domain::tenant::{Tenant, TenantId};
 use crate::infrastructure::backchannel_logout::ReqwestBackchannelLogoutSender;
 use crate::infrastructure::breached_password::RangeApiBreachedPasswordChecker;
@@ -90,6 +91,8 @@ use crate::infrastructure::id_generator::UuidV7Generator;
 use crate::infrastructure::mailer::LettreSmtpMailer;
 use crate::infrastructure::password::Argon2PasswordHasher;
 use crate::infrastructure::rate_limit::InMemoryLoginRateLimiter;
+use crate::infrastructure::repositories::account_note::SqlxAccountNoteRepository;
+use crate::infrastructure::repositories::account_query::SqlxAccountQuery;
 use crate::infrastructure::repositories::application::SqlxApplicationRepository;
 use crate::infrastructure::repositories::application_log::{
     SqlxApplicationLogQuery, SqlxApplicationLogSink,
@@ -112,7 +115,6 @@ use crate::infrastructure::repositories::external_idp::{
     SqlxExternalIdentityProviderRepository, SqlxExternalIdentityRepository,
     SqlxExternalLoginRequestRepository,
 };
-use crate::infrastructure::repositories::member_note::SqlxMemberNoteRepository;
 use crate::infrastructure::repositories::passkey_challenge::SqlxPasskeyChallengeRepository;
 use crate::infrastructure::repositories::password_history::SqlxPasswordHistoryRepository;
 use crate::infrastructure::repositories::password_reset_token::SqlxPasswordResetTokenRepository;
@@ -231,8 +233,10 @@ pub struct AppState {
     /// ゲスト招待・メンバーシップ（ADR-0009 §3）。
     pub invitations: Arc<InvitationService>,
     pub member_directory: Arc<MemberDirectoryService>,
-    /// メンバーの管理者メモ（ADR-0063）。
-    pub member_notes: Arc<MemberNoteService>,
+    /// アカウント（人・サービスアカウント）の管理者メモ（ADR-0063 / ADR-0065）。
+    pub account_notes: Arc<AccountNoteService>,
+    /// アカウント一覧（人とサービスアカウント。ADR-0065）。
+    pub account_directory: Arc<AccountDirectoryService>,
     pub audit_query: Arc<AuditQueryService>,
     /// 監査イベントの記録と保持期間による掃除（設計仕様 §7・G8）。各ユースケースへ注入している
     /// ものと同じ実体で、保持期間の掃除タスクがここから参照する。
@@ -723,9 +727,13 @@ impl AppState {
             *config.csrf_secret(),
             tenant_settings.clone(),
         ));
+        // 管理者メモ（ADR-0063 / ADR-0065）。人とサービスアカウントで 1 つの表・1 つのリポジトリ。
+        let account_note_repository: Arc<dyn AccountNoteRepository> =
+            Arc::new(SqlxAccountNoteRepository::new(pool.clone(), ids.clone()));
         let clients_admin = Arc::new(ClientManagementService::new(
             clients.clone(),
             applications.clone(),
+            account_note_repository.clone(),
             hasher.clone(),
             audit.clone(),
             clock.clone(),
@@ -807,7 +815,7 @@ impl AppState {
             tenant_memberships.clone(),
             hasher.clone(),
             account_setup_links.clone(),
-            Arc::new(SqlxMemberNoteRepository::new(pool.clone())),
+            account_note_repository.clone(),
             audit.clone(),
             clock.clone(),
             ids.clone(),
@@ -891,12 +899,17 @@ impl AppState {
         let member_directory = Arc::new(MemberDirectoryService::new(Arc::new(
             SqlxTenantMemberQuery::new(pool.clone()),
         )));
-        let member_notes = Arc::new(MemberNoteService::new(
+        let account_notes = Arc::new(AccountNoteService::new(
             Arc::new(SqlxTenantMemberQuery::new(pool.clone())),
-            Arc::new(SqlxMemberNoteRepository::new(pool.clone())),
+            clients.clone(),
+            account_note_repository.clone(),
             audit.clone(),
             clock.clone(),
         ));
+        // アカウント一覧（人とサービスアカウント。ADR-0065）。読める種別だけを並べる。
+        let account_directory = Arc::new(AccountDirectoryService::new(Arc::new(
+            SqlxAccountQuery::new(pool.clone()),
+        )));
         let admin_access = Arc::new(AdminAccessService::new(
             sso_sessions.clone(),
             users.clone(),
@@ -1177,7 +1190,8 @@ impl AppState {
             password_reset,
             invitations,
             member_directory,
-            member_notes,
+            account_notes,
+            account_directory,
             audit_query,
             audit,
             application_logs,

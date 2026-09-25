@@ -1,5 +1,7 @@
 //! sqlx（MariaDB）によるドメインリポジトリトレイトの実装。
 
+pub mod account_note;
+pub mod account_query;
 pub mod application;
 pub mod application_log;
 pub mod application_user_query;
@@ -17,7 +19,6 @@ pub mod consent;
 pub mod email_verification_token;
 pub mod expired_records;
 pub mod external_idp;
-pub mod member_note;
 pub mod passkey_challenge;
 pub mod password_history;
 pub mod password_reset_token;

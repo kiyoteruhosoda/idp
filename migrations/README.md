@@ -301,3 +301,9 @@ root テナントの UUID は固定値 `00000000-0000-7000-8000-000000000001`（
 - `0062_users_pending_setup`: `users.pending_setup`（仮登録）を足す（ADR-0064）。`status` とは直交する。
   既に在る「作成と同時に出た設定リンクが未使用・認証器なし・パスワード変更待ち」の利用者を 1 に倒す。
   `down` は列ごと落とす（仮登録だった人は ACTIVE 扱いに戻るが、パスワードは誰も知らないままなので入れない）。
+- `0063_account_notes`: 管理者メモを人とサービスアカウントの両方に付ける表 `account_notes` を足す（ADR-0065）。
+  形は `application_assignments`（0059）と同じで、`kind`（`USER` / `SERVICE_ACCOUNT`）と `user_id` /
+  `client_id` のどちらか 1 つだけが埋まる。人の行は `tenant_memberships` への複合外部キー（CASCADE）、
+  サービスアカウントの行は `clients.id`（CASCADE）。0061 のメモを写す（`id` は 0059 と同じ手組みの UUIDv7 で、
+  流し直しても同じ値）。⚠ **expand のみ**で `tenant_member_notes` は残す（落とすのは次の移行）。`down` は
+  人のメモを 0061 の表へ書き戻して表を落とす（サービスアカウントのメモは失われる）。

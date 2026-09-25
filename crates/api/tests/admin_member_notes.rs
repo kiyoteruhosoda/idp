@@ -20,7 +20,7 @@ use sqlx::{MySqlPool, Row};
 use support::{admin_token, body_json, create_plain_user, delete, get, post, put, send};
 
 async fn note_rows(pool: &MySqlPool, tenant_id: &str, user_id: &str) -> i64 {
-    sqlx::query("SELECT COUNT(*) AS c FROM tenant_member_notes WHERE tenant_id = ? AND user_id = ?")
+    sqlx::query("SELECT COUNT(*) AS c FROM account_notes WHERE tenant_id = ? AND user_id = ?")
         .bind(tenant_id)
         .bind(user_id)
         .fetch_one(pool)
@@ -32,9 +32,9 @@ async fn note_rows(pool: &MySqlPool, tenant_id: &str, user_id: &str) -> i64 {
 async fn audit_reasons(pool: &MySqlPool, target_id: &str) -> Vec<String> {
     sqlx::query(
         "SELECT reason FROM audit_log \
-         WHERE event_type = 'tenant_membership.note_updated' AND reason LIKE ? ORDER BY id",
+         WHERE event_type = 'account.note_updated' AND reason LIKE ? ORDER BY id",
     )
-    .bind(format!("%member={target_id}%"))
+    .bind(format!("%user={target_id}%"))
     .fetch_all(pool)
     .await
     .expect("read audit")

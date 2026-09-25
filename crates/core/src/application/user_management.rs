@@ -12,17 +12,18 @@
 
 use crate::application::account_setup::{AccountSetupLinkIssuer, SetupLink};
 use crate::application::audit::{AuditService, RequestContext};
+use crate::domain::account::AccountRef;
+use crate::domain::account_note::normalize_account_note;
 use crate::domain::admin_actor::AdminActor;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::error::DomainError;
 use crate::domain::id_generator::IdGenerator;
-use crate::domain::member_note::normalize_member_note;
 use crate::domain::message::MessageKey;
 use crate::domain::password::PasswordHasher;
 use crate::domain::repositories::{
-    MemberNoteRepository, TenantMembershipRepository, UserRepository,
+    AccountNoteRepository, TenantMembershipRepository, UserRepository,
 };
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::tenant_membership::TenantMembership;
@@ -85,7 +86,7 @@ pub struct UserManagementService {
     /// 画面やハンドラで 2 回呼ぶ形にしない（片方だけ成功した利用者を作らないため）。
     account_setup: Arc<AccountSetupLinkIssuer>,
     /// 作成と同時に書く管理者メモ（ADR-0063）。
-    notes: Arc<dyn MemberNoteRepository>,
+    notes: Arc<dyn AccountNoteRepository>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
     ids: Arc<dyn IdGenerator>,
@@ -98,7 +99,7 @@ impl UserManagementService {
         memberships: Arc<dyn TenantMembershipRepository>,
         hasher: Arc<dyn PasswordHasher>,
         account_setup: Arc<AccountSetupLinkIssuer>,
-        notes: Arc<dyn MemberNoteRepository>,
+        notes: Arc<dyn AccountNoteRepository>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
         ids: Arc<dyn IdGenerator>,
@@ -207,7 +208,7 @@ impl UserManagementService {
         let tenant_id = tenant.tenant_id();
         // ⚠ メモは**何も書く前に**確かめる。利用者を作ったあとで長すぎると分かっても、作成は
         //   取り消せない（「作れたのにエラー」になる）。
-        let note = normalize_member_note(cmd.note.as_deref().unwrap_or(""))
+        let note = normalize_account_note(cmd.note.as_deref().unwrap_or(""))
             .map_err(UserManagementError::Validation)?;
         let prepared = self.prepare_user(tenant, cmd).await?;
         let user = prepared.user;
@@ -248,17 +249,23 @@ impl UserManagementService {
         // （中身は監査に残さない）。
         if let Some(text) = note.as_deref() {
             self.notes
-                .save(tenant_id, user.id, text, actor.user_id(), self.clock.now())
+                .save(
+                    tenant_id,
+                    AccountRef::User { user_id: user.id },
+                    text,
+                    actor.user_id(),
+                    self.clock.now(),
+                )
                 .await
                 .map_err(internal)?;
             self.audit
                 .record(
-                    AuditEventType::TenantMemberNoteUpdated,
+                    AuditEventType::AccountNoteUpdated,
                     AuditResult::Success,
                     Some(tenant_id),
                     actor.user_id(),
                     actor.client_id(),
-                    Some(&format!("member={}", user.id)),
+                    Some(&format!("user={}", user.id)),
                     ctx,
                 )
                 .await;
@@ -502,22 +509,23 @@ mod tests {
         saved: Mutex<Vec<(TenantId, Uuid, String)>>,
     }
     #[async_trait]
-    impl MemberNoteRepository for FakeNotes {
+    impl AccountNoteRepository for FakeNotes {
         async fn save(
             &self,
             tenant_id: TenantId,
-            user_id: Uuid,
+            account: AccountRef,
             text: &str,
             _updated_by: Option<Uuid>,
             _now: DateTime<Utc>,
         ) -> DomainResult<()> {
+            let user_id = account.user_id().expect("利用者の作成で書くのは人のメモ");
             self.saved
                 .lock()
                 .unwrap()
                 .push((tenant_id, user_id, text.to_string()));
             Ok(())
         }
-        async fn clear(&self, _t: TenantId, _u: Uuid) -> DomainResult<()> {
+        async fn clear(&self, _t: TenantId, _a: AccountRef) -> DomainResult<()> {
             unreachable!("作成でメモを消すことはない")
         }
     }
@@ -710,7 +718,7 @@ mod tests {
             kinds,
             vec![
                 AuditEventType::UserCreated,
-                AuditEventType::TenantMemberNoteUpdated
+                AuditEventType::AccountNoteUpdated
             ]
         );
         assert!(events
@@ -762,7 +770,7 @@ mod tests {
                     email: "long@example.com".to_string(),
                     preferred_username: None,
                     name: None,
-                    note: Some("あ".repeat(crate::domain::member_note::MEMBER_NOTE_MAX_LEN + 1)),
+                    note: Some("あ".repeat(crate::domain::account_note::ACCOUNT_NOTE_MAX_LEN + 1)),
                 },
                 &AdminActor::User(Uuid::new_v4()),
                 &ctx(),

@@ -968,7 +968,7 @@ mod tests {
         assert!(!tenant_admin.contains("/t/admin/logs"), "{tenant_admin}");
         assert!(!tenant_admin.contains("/t/admin/tenants"), "{tenant_admin}");
         // 権限に関わらず開ける画面は残る（隠しすぎていないことの確認）。
-        assert!(tenant_admin.contains("/t/admin/members"), "{tenant_admin}");
+        assert!(tenant_admin.contains("/t/admin/accounts"), "{tenant_admin}");
 
         let system_admin = render_as(&["idp.system.admin".to_string()]);
         assert!(system_admin.contains("/t/admin/logs"), "{system_admin}");
@@ -1578,8 +1578,22 @@ mod tests {
                     continue;
                 }
                 checked += 1;
-                let loads_handler = source.contains(r#"{% extends "console/layout.html" %}"#)
-                    || source.contains("/assets/console.js");
+                let extends_layout =
+                    |src: &str| src.contains(r#"{% extends "console/layout.html" %}"#);
+                // 部品（`{% include %}` で差し込む断片）は、差し込む側がすべてレイアウトを継承していればよい。
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default();
+                let include = format!(r#"{{% include "console/{name}" %}}"#);
+                let includers: Vec<String> = std::fs::read_dir(roots[1])
+                    .expect("read templates dir")
+                    .filter_map(|e| std::fs::read_to_string(e.ok()?.path()).ok())
+                    .filter(|src| src.contains(&include))
+                    .collect();
+                let loads_handler = extends_layout(&source)
+                    || source.contains("/assets/console.js")
+                    || (!includers.is_empty() && includers.iter().all(|src| extends_layout(src)));
                 assert!(
                     loads_handler,
                     "{} uses data-confirm but never loads assets/console.js",
@@ -1862,13 +1876,14 @@ impl ConsoleNavGroup {
     }
 }
 
+/// アカウント（人・サービスアカウント）の管理者メモの上限（入力欄の `maxlength`。値は契約 crate が
+/// 単一の出所。ADR-0063 / ADR-0065）。
+pub const ACCOUNT_NOTE_MAX_LEN: usize = assay_contracts::admin::ACCOUNT_NOTE_MAX_LEN;
+
 /// 管理コンソールのメニュー定義（サイドバーとホームの唯一の出所）。
 ///
 /// ⚠ **画面を足したらここへ足す。** `crates/web/src/router.rs` の `/admin/*` と突き合わせる
 /// テストが `console_menu_covers_every_admin_screen` にある。
-/// メンバーの管理者メモの上限（入力欄の `maxlength`。値は契約 crate が単一の出所。ADR-0063）。
-pub const MEMBER_NOTE_MAX_LEN: usize = assay_contracts::admin::MEMBER_NOTE_MAX_LEN;
-
 pub const CONSOLE_NAV: &[ConsoleNavGroup] = &[
     // ⚠ **並びは「何を管理するか」が先、「何が起きたか」が後。** 運用・監査を先頭に置いていた頃は、
     //    管理しに来た人が毎回それを読み飛ばしていた。
@@ -1877,18 +1892,13 @@ pub const CONSOLE_NAV: &[ConsoleNavGroup] = &[
         description: "admin-home-group-access-desc",
         icon: "fa-users",
         items: &[
+            // ⚠ **人とサービスアカウントは 1 つの入口**（ADR-0065）。別の項目にしていた頃は、
+            //    人の側に足したもの（メモ・使えるアプリ）がサービスアカウントの側に届かなかった。
             ConsoleNavItem {
-                path: "/admin/members",
+                path: "/admin/accounts",
                 icon: "fa-address-book",
-                label: "admin-nav-members",
-                description: "admin-nav-members-desc",
-                requires: None,
-            },
-            ConsoleNavItem {
-                path: "/admin/service-accounts",
-                icon: "fa-robot",
-                label: "admin-nav-service-accounts",
-                description: "admin-nav-service-accounts-desc",
+                label: "admin-nav-accounts",
+                description: "admin-nav-accounts-desc",
                 requires: None,
             },
             // ⚠ **外部 IdP と認証ポリシーは「入ってくる側」。** 連携先（assay が ID を渡す相手）と
@@ -2150,26 +2160,97 @@ pub struct UserCreated<'a> {
     pub setup_expires_at: &'a str,
 }
 
-/// メンバー一覧（`GET /{tenant_id}/admin/members`。HOME / GUEST を問わない。ADR-0009 §3）。
+/// アカウント一覧（`GET /{tenant_id}/admin/accounts`。人とサービスアカウント。ADR-0065）。
 #[derive(Template)]
-#[template(path = "console/members_list.html")]
-pub struct MembersList<'a> {
+#[template(path = "console/accounts_list.html")]
+pub struct AccountsList<'a> {
     pub messages: &'a Messages,
     pub tenant: &'a str,
     pub admin: Admin<'a>,
-    /// 現在のページに含まれるメンバー（MT22 でページングを導入。全件ではない）。
-    pub members: &'a [crate::admin_dto::MemberView],
-    /// 絞り込み後の総件数（ページング前）。「全 N 件」の表示に使う。
+    /// 現在のページに含まれるアカウント（全件ではない）。
+    pub accounts: &'a [crate::admin_dto::AccountView],
+    /// 絞り込み後の総件数（ページング前）。
     pub total: i64,
     /// 現在の絞り込み語（検索ボックスの再表示用。空なら未絞り込み）。
     pub query: &'a str,
-    pub csrf: &'a str,
+    /// 現在の種別（`user` / `service_account`。空なら「すべて」）。検索のフォームが持ち回る。
+    pub kind: &'a str,
+    /// 種別の絞り込み（読める種別が 2 つ以上のときだけ出す）。
+    pub kind_tabs: Vec<AccountKindTab>,
+    /// 検索語を消したときの戻り先（種別は保つ）。
+    pub clear_href: String,
+    /// 人を読めるか（「利用者を作る」「ゲストを招待」を出す）。
+    pub can_read_users: bool,
+    /// サービスアカウントを読めるか（「サービスアカウントを追加」を出す）。
+    pub can_read_service_accounts: bool,
     pub error_key: Option<&'a str>,
-    /// 完了通知の翻訳キー（Post/Redirect/Get で戻ったときの操作結果。MT21 の MFA 解除など）。
     pub notice_key: Option<&'a str>,
     /// ページャの前後リンク（クエリ文字列を組み立て済み）。該当がなければ `None`。
     pub prev_href: Option<String>,
     pub next_href: Option<String>,
+}
+
+/// 種別の絞り込みの 1 つ。
+#[derive(Debug, Clone)]
+pub struct AccountKindTab {
+    /// 翻訳キー。
+    pub label: &'static str,
+    pub href: String,
+    pub active: bool,
+}
+
+/// サービスアカウント 1 件の画面（`GET /{tenant_id}/admin/service-accounts/{client_id}`。ADR-0065）。
+///
+/// 人の画面（[`MemberDetail`]）と同じ骨組み（基本 → メモ → 使えるアプリ → 管理権限 → 直す → 危険）。
+#[derive(Template)]
+#[template(path = "console/service_account_detail.html")]
+pub struct ServiceAccountDetail<'a> {
+    pub messages: &'a Messages,
+    pub tenant: &'a str,
+    pub admin: Admin<'a>,
+    /// アカウントとしての事実（状態・名乗り・メモ）。
+    pub account: &'a crate::admin_dto::ServiceAccountView,
+    /// 接続の設定（認証方式・種別）。
+    pub client: &'a ClientView,
+    /// 使えるアプリ。`idp.applications:read` を持たない管理者には引けないので `None`（欄ごと出さない）。
+    pub applications: Option<&'a crate::admin_dto::AccountApplicationListView>,
+    /// 保有している管理権限コード（ADR-0037）。
+    pub permission_codes: &'a [String],
+    /// いま付与できる権限コード（保有済みを除く）。
+    pub grantable_permissions: &'a [String],
+    /// 付与できるコードを api から取れなかったか（「候補が無い」と取り違えないため）。
+    pub permissions_load_failed: bool,
+    pub csrf: &'a str,
+    pub error_key: Option<&'a str>,
+    pub notice_key: Option<&'a str>,
+}
+
+impl ServiceAccountDetail<'_> {
+    /// メモ欄の例文の翻訳キー（種別に合った例を出す）。
+    pub fn note_placeholder_key(&self) -> &'static str {
+        "admin-service-account-note-placeholder"
+    }
+
+    /// このサービスアカウントの画面の URL。共通のメモ・アプリの欄（`account_*_card.html`）の送り先はここから作る。
+    pub fn account_href(&self) -> String {
+        format!(
+            "{}/admin/service-accounts/{}",
+            self.tenant, self.account.client_id
+        )
+    }
+
+    /// 管理者メモの送り先。
+    pub fn note_action(&self) -> String {
+        format!("{}/note", self.account_href())
+    }
+
+    /// アプリの割り当ての出し入れの送り先（`verb` は `assign` / `unassign`）。
+    pub fn assignment_action(&self, application_id: &str, verb: &str) -> String {
+        format!(
+            "{}/applications/{application_id}/{verb}",
+            self.account_href()
+        )
+    }
 }
 
 /// メンバー 1 人の画面（`GET /{tenant_id}/admin/members/{user_id}`）。
@@ -2190,10 +2271,35 @@ pub struct MemberDetail<'a> {
     pub member: &'a crate::admin_dto::MemberView,
     /// このメンバーが使えるアプリ（ADR-0063）。`idp.applications:read` を持たない管理者には
     /// 引けないので `None`（欄ごと出さない）。
-    pub applications: Option<&'a crate::admin_dto::MemberApplicationListView>,
+    pub applications: Option<&'a crate::admin_dto::AccountApplicationListView>,
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
     pub notice_key: Option<&'a str>,
+}
+
+impl MemberDetail<'_> {
+    /// メモ欄の例文の翻訳キー（種別に合った例を出す）。
+    pub fn note_placeholder_key(&self) -> &'static str {
+        "admin-member-note-placeholder"
+    }
+
+    /// この人の画面の URL。共通のメモ・アプリの欄（`account_*_card.html`）の送り先はここから作る。
+    pub fn account_href(&self) -> String {
+        format!("{}/admin/members/{}", self.tenant, self.member.user_id)
+    }
+
+    /// 管理者メモの送り先。
+    pub fn note_action(&self) -> String {
+        format!("{}/note", self.account_href())
+    }
+
+    /// アプリの割り当ての出し入れの送り先（`verb` は `assign` / `unassign`）。
+    pub fn assignment_action(&self, application_id: &str, verb: &str) -> String {
+        format!(
+            "{}/applications/{application_id}/{verb}",
+            self.account_href()
+        )
+    }
 }
 
 /// 管理者によるパスワード再発行の結果画面（一度限りの生成パスワード表示。ADR-0009 §5）。
@@ -2312,6 +2418,9 @@ pub struct ClientFormValues {
     /// `private_key_jwt` の検証鍵（JWK Set の JSON。ADR-0030）。公開鍵しか含まないため、
     /// 編集フォームへ現在値を出して差し支えない（ローテーション中の確認に要る）。
     pub jwks: String,
+    /// 管理者メモ（ADR-0065）。**サービスアカウントの新規登録でだけ**描く。連携先はアカウントでは
+    /// ないのでメモを持たず、登録後のメモは 1 件の画面で書く。
+    pub note: String,
 }
 
 /// クライアントの用途。コンソールの入力単位であって、api のモデルには無い（ADR-0032）。
@@ -2351,6 +2460,7 @@ impl ClientFormValues {
             usage: client_usage::USER_LOGIN.to_string(),
             token_endpoint_auth_method: "private_key_jwt".to_string(),
             jwks: String::new(),
+            note: String::new(),
         }
     }
 
@@ -2366,6 +2476,7 @@ impl ClientFormValues {
             usage: usage_from_registration(&c.grant_types, &c.redirect_uris),
             token_endpoint_auth_method: c.token_endpoint_auth_method.clone(),
             jwks: c.jwks.clone().unwrap_or_default(),
+            note: String::new(),
         }
     }
 }

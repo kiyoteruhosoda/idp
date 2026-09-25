@@ -65,6 +65,7 @@ pub async fn create_client(
         post_logout_redirect_uris: body.post_logout_redirect_uris.unwrap_or_default(),
         frontchannel_logout_uri: body.frontchannel_logout_uri,
         backchannel_logout_uri: body.backchannel_logout_uri,
+        note: body.note,
     };
 
     let registered = state

@@ -8,8 +8,9 @@
 //! テナント id は web の経路（`crate::tenant::WebTenant`）から呼び出し側が明示的に渡す（MT13）。
 
 use crate::admin_dto::{
-    ApiErrorBody, AuditLogView, ClientCreatedView, ClientListView, ClientSecretView, ClientView,
-    InvitationCreatedView, MemberListView, MemberView, UserCreatedView,
+    AccountListView, ApiErrorBody, AuditLogView, ClientCreatedView, ClientListView,
+    ClientSecretView, ClientView, InvitationCreatedView, MemberView, ServiceAccountView,
+    UserCreatedView,
 };
 use assay_contracts::admin::{
     AuthenticationPoliciesResponse, AuthenticationPolicyResponse,
@@ -1410,31 +1411,74 @@ impl ApiClient {
 
     // ── メンバー・招待（ADR-0009 §3）─────────────────────────────────────────
 
-    /// メンバー一覧（`GET /admin/members`。HOME / GUEST を問わない）。絞り込み・ページングの
-    /// 条件は `(key, value)` の並びで渡す（MT22。絞り込みは api 側＝DB で行う）。
-    pub async fn list_members(
+    /// アカウント一覧（`GET /admin/accounts`。人とサービスアカウント。ADR-0065）。種別・絞り込み・
+    /// ページングの条件は `(key, value)` の並びで渡す（絞り込みは api 側＝DB で行う）。
+    pub async fn list_accounts(
         &self,
         correlation_id: &str,
         tenant_id: &str,
         sso: &str,
         query: &[(&str, String)],
-    ) -> Result<MemberListView, AdminApiError> {
-        let response = self
-            .with_language(
-                self.http
-                    .get(format!("{}/{}/admin/members", self.base_url, tenant_id))
-                    .query(query)
-                    .header(REQUEST_ID_HEADER, correlation_id)
-                    .bearer_auth(
-                        self.management_token(correlation_id, tenant_id, sso)
-                            .await?
-                            .access_token,
-                    ),
-            )
-            .send()
+    ) -> Result<AccountListView, AdminApiError> {
+        self.admin_get_with_query(tenant_id, "/admin/accounts", correlation_id, sso, query)
             .await
-            .map_err(|e| AdminApiError::Transport(e.to_string()))?;
-        Self::handle_admin_response(response, "/admin/members").await
+    }
+
+    /// サービスアカウント 1 件（`GET /admin/service-accounts/{client_id}`。ADR-0065）。
+    pub async fn get_service_account(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        client_id: &str,
+    ) -> Result<ServiceAccountView, AdminApiError> {
+        self.admin_get_with_query(
+            tenant_id,
+            &format!("/admin/service-accounts/{client_id}"),
+            correlation_id,
+            sso,
+            &[],
+        )
+        .await
+    }
+
+    /// サービスアカウントの管理者メモを書く（`PUT /admin/service-accounts/{client_id}/note`）。
+    /// 空なら消える。
+    pub async fn update_service_account_note(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        client_id: &str,
+        note: &str,
+    ) -> Result<(), AdminApiError> {
+        self.admin_send_no_content(
+            Method::PUT,
+            tenant_id,
+            &format!("/admin/service-accounts/{client_id}/note"),
+            correlation_id,
+            sso,
+            Some(serde_json::json!({ "note": note })),
+        )
+        .await
+    }
+
+    /// サービスアカウントが使えるアプリ（`GET /admin/service-accounts/{client_id}/applications`）。
+    pub async fn list_service_account_applications(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        client_id: &str,
+    ) -> Result<crate::admin_dto::AccountApplicationListView, AdminApiError> {
+        self.admin_get_with_query(
+            tenant_id,
+            &format!("/admin/service-accounts/{client_id}/applications"),
+            correlation_id,
+            sso,
+            &[],
+        )
+        .await
     }
 
     /// メンバー 1 人（`GET /admin/members/{user_id}`）。詳細画面のために引く。
@@ -1516,7 +1560,7 @@ impl ApiClient {
         tenant_id: &str,
         sso: &str,
         user_id: &str,
-    ) -> Result<crate::admin_dto::MemberApplicationListView, AdminApiError> {
+    ) -> Result<crate::admin_dto::AccountApplicationListView, AdminApiError> {
         self.admin_get_with_query(
             tenant_id,
             &format!("/admin/members/{user_id}/applications"),

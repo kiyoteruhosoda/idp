@@ -1,3 +1,22 @@
+## 2026-09-25（人とサービスアカウントを「アカウント」に統合）
+
+- **人とサービスアカウントを 1 つの「アカウント」一覧に並べた**（ADR-0065）。管理コンソールの
+  「メンバー」「サービスアカウント」の 2 項目は「アカウント」1 つになり、種別（すべて / 人 /
+  サービスアカウント）で絞る。管理 API は `GET /{tenant_id}/admin/accounts`。⚠ **呼んだ主体が読める
+  種別だけを並べる**（人は `idp.members:read`、サービスアカウントは `idp.clients:read`。読めない種別を
+  指定すると 403）。旧 URL（`/admin/members`・`/admin/service-accounts`）は絞った一覧へ転送する。
+- **サービスアカウントにも管理者メモと「使えるアプリ」が付いた。** メモは `account_notes`（migration 0063。
+  `application_assignments` と同じ「種別＋主体」の形）に移し、人のメモも写した。口は
+  `PUT /{tenant_id}/admin/service-accounts/{client_id}/note`、使えるアプリは
+  `GET /{tenant_id}/admin/service-accounts/{client_id}/applications`（宛名の名乗りを持つアプリだけ。
+  可否はトークン発行と同じ `Application::admits_service_account`）。作成時にもメモを書ける
+  （`POST /admin/clients` の `note`。連携先に送ると 400）。
+- **サービスアカウントの 1 件の画面を人の画面と同じ骨組みにした**（`/admin/service-accounts/{client_id}`。
+  基本・メモ・使えるアプリ・管理権限・直す・危険）。名乗りのアプリも出す。メモと使えるアプリの欄は
+  人の画面と同じ部品を使う。
+- ⚠ 監査の event_type を `tenant_membership.note_updated` から `account.note_updated` に改めた
+  （`reason` は `user=…` / `service_account=…`）。
+
 ## 2026-09-24（3）（作った利用者は仮登録・使えるアプリの絞り込み）
 
 - **管理者が作った利用者は、本人が設定を終えるまで「仮登録」になった**（ADR-0064。migration 0062 の

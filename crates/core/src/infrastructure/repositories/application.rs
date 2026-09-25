@@ -1,9 +1,10 @@
 //! `ApplicationRepository` の sqlx 実装（ADR-0054）。
 //! UUID は CHAR(36) 正準文字列で入出力する。
 
+use crate::domain::account::AccountRef;
 use crate::domain::application::{
-    Application, ApplicationAssignment, ApplicationBinding, AssignedPrincipal,
-    AssignedServiceAccount, AssignedUser, BindingTarget, UserAssignment,
+    AccountAssignment, Application, ApplicationAssignment, ApplicationBinding,
+    AssignedServiceAccount, AssignedUser, BindingTarget,
 };
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::ApplicationRepository;
@@ -399,18 +400,24 @@ impl ApplicationRepository for SqlxApplicationRepository {
         rows.iter().map(map_assigned_user).collect()
     }
 
-    async fn list_user_assignments(
+    async fn list_account_assignments(
         &self,
         tenant_id: TenantId,
-        user_id: Uuid,
-    ) -> Result<Vec<UserAssignment>> {
+        account: AccountRef,
+    ) -> Result<Vec<AccountAssignment>> {
+        // 種類ごとに見る列が違う（`kind` と列の組は CHECK 制約が保証している）。
+        let (column, id) = match account {
+            AccountRef::User { user_id } => ("user_id", user_id),
+            AccountRef::ServiceAccount { client_row_id } => ("client_id", client_row_id),
+        };
         // アプリの行で要求テナントに絞る（割り当ての表はテナントを持たない）。
-        let rows = sqlx::query(
+        let rows = sqlx::query(&format!(
             "SELECT a.application_id, a.assigned_at \
              FROM application_assignments a JOIN applications p ON p.id = a.application_id \
-             WHERE a.kind = 'USER' AND a.user_id = ? AND p.tenant_id = ?",
-        )
-        .bind(user_id.to_string())
+             WHERE a.kind = ? AND a.{column} = ? AND p.tenant_id = ?"
+        ))
+        .bind(account.kind())
+        .bind(id.to_string())
         .bind(tenant_id.as_uuid().to_string())
         .fetch_all(&self.pool)
         .await
@@ -418,7 +425,7 @@ impl ApplicationRepository for SqlxApplicationRepository {
         rows.iter()
             .map(|row| {
                 let application_id: String = row.try_get("application_id").map_err(repo_err)?;
-                Ok(UserAssignment {
+                Ok(AccountAssignment {
                     application_id: parse_uuid(&application_id)?,
                     assigned_at: to_utc(row.try_get("assigned_at").map_err(repo_err)?),
                 })
@@ -481,10 +488,10 @@ impl ApplicationRepository for SqlxApplicationRepository {
         Ok(())
     }
 
-    async fn unassign(&self, application_id: Uuid, principal: AssignedPrincipal) -> Result<()> {
+    async fn unassign(&self, application_id: Uuid, principal: AccountRef) -> Result<()> {
         let (column, id) = match principal {
-            AssignedPrincipal::User { user_id } => ("user_id", user_id),
-            AssignedPrincipal::ServiceAccount { client_row_id } => ("client_id", client_row_id),
+            AccountRef::User { user_id } => ("user_id", user_id),
+            AccountRef::ServiceAccount { client_row_id } => ("client_id", client_row_id),
         };
         sqlx::query(&format!(
             "DELETE FROM application_assignments \

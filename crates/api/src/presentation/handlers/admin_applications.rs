@@ -15,6 +15,7 @@ use crate::application::application_management::{
 use crate::application::application_user_directory::{
     ApplicationUserDirectoryError, RosterQuery, MAX_SUBJECTS,
 };
+use crate::domain::account::AccountLocator;
 use crate::domain::effective_tenant_settings::EffectiveTenantSettings;
 use crate::domain::message::MessageKey;
 use crate::domain::values::{ApplicationStatus, AssignmentMode};
@@ -23,12 +24,12 @@ use crate::presentation::admin::{
 };
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
-    ApplicationAssignmentResponse, ApplicationBindingResponse, ApplicationCurrentUserResponse,
-    ApplicationCurrentUsersResponse, ApplicationDetailResponse, ApplicationListResponse,
-    ApplicationResponse, ApplicationServiceAccountAssignmentResponse, ApplicationUserListResponse,
+    AccountApplicationListResponse, AccountApplicationResponse, ApplicationAssignmentResponse,
+    ApplicationBindingResponse, ApplicationCurrentUserResponse, ApplicationCurrentUsersResponse,
+    ApplicationDetailResponse, ApplicationListResponse, ApplicationResponse,
+    ApplicationServiceAccountAssignmentResponse, ApplicationUserListResponse,
     ApplicationUserQueryParams, ApplicationUserResponse, CreateApplicationAssignmentRequest,
-    CreateApplicationBindingRequest, CreateApplicationRequest, MemberApplicationListResponse,
-    MemberApplicationResponse, UpdateApplicationRequest,
+    CreateApplicationBindingRequest, CreateApplicationRequest, UpdateApplicationRequest,
 };
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
@@ -78,7 +79,7 @@ pub async fn list_applications(
     tag = "admin",
     params(("user_id" = String, Path, description = "対象利用者の内部 ID（UUID）")),
     responses(
-        (status = 200, description = "メンバーが使えるアプリ", body = MemberApplicationListResponse),
+        (status = 200, description = "メンバーが使えるアプリ", body = AccountApplicationListResponse),
         (status = 400, description = "user_id が UUID でない"),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.applications:read 必須）"),
@@ -91,23 +92,77 @@ pub async fn list_member_applications(
     Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
     Path((_tenant_id, user_id)): Path<(String, String)>,
-) -> Result<Json<MemberApplicationListResponse>, ApiError> {
+) -> Result<Json<AccountApplicationListResponse>, ApiError> {
     let user_id = parse_id(&user_id, locale)?;
+    account_applications(
+        &state,
+        &tenant,
+        locale,
+        AccountLocator::User { user_id },
+        "api-member-not-found",
+    )
+    .await
+}
+
+/// サービスアカウント 1 つが使えるアプリ
+/// （`GET /{tenant_id}/admin/service-accounts/{client_id}/applications`。ADR-0065）。
+///
+/// 人の口と同じ形。宛名（`resource`）の名乗りを持つアプリだけを載せ、可否はトークン発行と同じ規則
+/// （アプリが有効で、割り当てがあること）で答える。⚠ 「全員」のアプリでもサービスアカウントは含まれない。
+#[utoipa::path(
+    get,
+    path = "/{tenant_id}/admin/service-accounts/{client_id}/applications",
+    tag = "admin",
+    params(("client_id" = String, Path, description = "サービスアカウントの client_id")),
+    responses(
+        (status = 200, description = "サービスアカウントが使えるアプリ", body = AccountApplicationListResponse),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.applications:read 必須）"),
+        (status = 404, description = "このテナントのサービスアカウントではない"),
+    )
+)]
+pub async fn list_service_account_applications(
+    RequirePerms(_admin, _): RequirePerms<ApplicationsRead>,
+    State(state): State<AppState>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
+    Path((_tenant_id, client_id)): Path<(String, String)>,
+) -> Result<Json<AccountApplicationListResponse>, ApiError> {
+    account_applications(
+        &state,
+        &tenant,
+        locale,
+        AccountLocator::ServiceAccount {
+            client_id: &client_id,
+        },
+        "api-service-account-not-found",
+    )
+    .await
+}
+
+/// 人・サービスアカウントの「使えるアプリ」を同じ形で返す。
+async fn account_applications(
+    state: &AppState,
+    tenant: &ResolvedTenant,
+    locale: ApiLocale,
+    account: AccountLocator<'_>,
+    not_found_key: &str,
+) -> Result<Json<AccountApplicationListResponse>, ApiError> {
     let rows = state
         .applications_admin
-        .member_applications(tenant.context(), user_id)
+        .account_applications(tenant.context(), account)
         .await
         .map_err(|e| match e {
-            // 利用者が見つからないときに「アプリが無い」と言わない。
+            // 相手が見つからないときに「アプリが無い」と言わない。
             ApplicationManagementError::NotFound => {
-                ApiError::NotFound(ApiMessages::new(locale).get("api-member-not-found"))
+                ApiError::NotFound(ApiMessages::new(locale).get(not_found_key))
             }
             e => map_error(e, locale),
         })?;
-    Ok(Json(MemberApplicationListResponse {
+    Ok(Json(AccountApplicationListResponse {
         applications: rows
             .into_iter()
-            .map(|row| MemberApplicationResponse {
+            .map(|row| AccountApplicationResponse {
                 application_id: row.application.id.to_string(),
                 display_name: row.application.display_name,
                 status: row.application.status.as_str().to_string(),
@@ -116,7 +171,7 @@ pub async fn list_member_applications(
                 assigned_at: row.assigned_at.map(|t| t.to_rfc3339()),
             })
             .collect(),
-        enforcement: assignment_enforcement(&state, &tenant).await?,
+        enforcement: assignment_enforcement(state, tenant).await?,
     }))
 }
 

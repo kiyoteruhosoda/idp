@@ -5,16 +5,18 @@
 //! できない。ゲストの `users` レコード（パスワード・状態・MFA・プロフィール）は操作できない
 //! （所属元テナントの管理者と本人のみ。§3）。
 
+use crate::application::account_note::AccountNoteError;
 use crate::application::invitation::InvitationError;
 use crate::application::member_directory::MemberSearchParams;
-use crate::application::member_note::MemberNoteError;
-use crate::domain::member_note::MemberNote;
+use crate::domain::account::AccountLocator;
+use crate::domain::account_note::AccountNote;
+use crate::domain::tenant_membership::TenantMember;
 use crate::domain::values::MembershipStatus;
 use crate::presentation::admin::{MembersRead, MembersWrite, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
-    MemberListQueryParams, MemberListResponse, MemberNoteResponse, MemberResponse,
-    UpdateMemberNoteRequest, UpdateMemberStatusRequest,
+    AccountNoteResponse, MemberListQueryParams, MemberListResponse, MemberResponse,
+    UpdateAccountNoteRequest, UpdateMemberStatusRequest,
 };
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
@@ -24,6 +26,7 @@ use crate::presentation::tenant::ResolvedTenant;
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 /// メンバー 1 人を名指しで引く（`GET /{tenant_id}/admin/members/{user_id}`）。
@@ -61,19 +64,7 @@ pub async fn get_member(
         .map_err(|e| map_error(InvitationError::Internal(e.to_string()), locale))?;
     let now = state.clock.now();
     match found {
-        Some(m) => Ok(Json(MemberResponse {
-            user_id: m.user_id.to_string(),
-            email: m.email,
-            preferred_username: m.preferred_username,
-            name: m.name,
-            membership_type: m.membership_type.as_str().to_string(),
-            status: m.status.as_str().to_string(),
-            user_status: m.user_status.map(|s| s.as_str().to_string()),
-            // 期限切れのロックは「掛かっていない」として返す（読んだ時点で判定する）。
-            locked: m.locked_until.is_some_and(|until| until > now),
-            pending_setup: m.pending_setup,
-            note: note_response(m.note),
-        })),
+        Some(m) => Ok(Json(member_response(m, now))),
         None => Err(ApiError::NotFound(
             ApiMessages::new(locale).get("api-user-not-found"),
         )),
@@ -118,19 +109,7 @@ pub async fn list_members(
             .page
             .members
             .into_iter()
-            .map(|m| MemberResponse {
-                user_id: m.user_id.to_string(),
-                email: m.email,
-                preferred_username: m.preferred_username,
-                name: m.name,
-                membership_type: m.membership_type.as_str().to_string(),
-                status: m.status.as_str().to_string(),
-                user_status: m.user_status.map(|s| s.as_str().to_string()),
-                // 期限切れのロックは「掛かっていない」として返す（読んだ時点で判定する）。
-                locked: m.locked_until.is_some_and(|until| until > now),
-                pending_setup: m.pending_setup,
-                note: note_response(m.note),
-            })
+            .map(|m| member_response(m, now))
             .collect(),
         total: result.page.total,
         limit: result.limit,
@@ -249,7 +228,7 @@ pub async fn update_member_status(
     path = "/{tenant_id}/admin/members/{user_id}/note",
     tag = "admin",
     params(("user_id" = String, Path, description = "対象利用者の内部 ID（UUID）")),
-    request_body = UpdateMemberNoteRequest,
+    request_body = UpdateAccountNoteRequest,
     responses(
         (status = 204, description = "保存した（空なら消した）"),
         (status = 400, description = "user_id が UUID でない・メモが長すぎる"),
@@ -267,7 +246,7 @@ pub async fn update_member_note(
     locale: ApiLocale,
     headers: HeaderMap,
     Path((_tenant_id, user_id)): Path<(String, String)>,
-    Json(body): Json<UpdateMemberNoteRequest>,
+    Json(body): Json<UpdateAccountNoteRequest>,
 ) -> Result<StatusCode, ApiError> {
     let target = Uuid::parse_str(&user_id)
         .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get("api-invalid-request")))?;
@@ -277,22 +256,46 @@ pub async fn update_member_note(
         state.config.trust_forwarded_headers(),
     );
     state
-        .member_notes
-        .write(tenant.context(), target, &body.note, &admin.actor, &ctx)
+        .account_notes
+        .write(
+            tenant.context(),
+            AccountLocator::User { user_id: target },
+            &body.note,
+            &admin.actor,
+            &ctx,
+        )
         .await
         .map_err(|e| {
             let msgs = ApiMessages::new(locale);
             match e {
-                MemberNoteError::NotFound => ApiError::NotFound(msgs.get("api-member-not-found")),
-                MemberNoteError::Invalid(m) => ApiError::BadRequest(msgs.get_message(&m)),
-                MemberNoteError::Internal(m) => ApiError::Internal(m),
+                AccountNoteError::NotFound => ApiError::NotFound(msgs.get("api-member-not-found")),
+                AccountNoteError::Invalid(m) => ApiError::BadRequest(msgs.get_message(&m)),
+                AccountNoteError::Internal(m) => ApiError::Internal(m),
             }
         })?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn note_response(note: Option<MemberNote>) -> Option<MemberNoteResponse> {
-    note.map(|n| MemberNoteResponse {
+/// メンバー 1 人の応答（一覧・名指し・アカウント一覧の人の行が共有する）。
+pub(crate) fn member_response(m: TenantMember, now: DateTime<Utc>) -> MemberResponse {
+    MemberResponse {
+        user_id: m.user_id.to_string(),
+        email: m.email,
+        preferred_username: m.preferred_username,
+        name: m.name,
+        membership_type: m.membership_type.as_str().to_string(),
+        status: m.status.as_str().to_string(),
+        user_status: m.user_status.map(|s| s.as_str().to_string()),
+        // 期限切れのロックは「掛かっていない」として返す（読んだ時点で判定する）。
+        locked: m.locked_until.is_some_and(|until| until > now),
+        pending_setup: m.pending_setup,
+        note: note_response(m.note),
+    }
+}
+
+/// 管理者メモの応答（人・サービスアカウントで同じ形。ADR-0065）。
+pub(crate) fn note_response(note: Option<AccountNote>) -> Option<AccountNoteResponse> {
+    note.map(|n| AccountNoteResponse {
         text: n.text,
         updated_at: n.updated_at.to_rfc3339(),
     })
