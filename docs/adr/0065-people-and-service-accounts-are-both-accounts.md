@@ -67,7 +67,7 @@ ADR-0063 で人の側に足したものが、サービスアカウントの側�
 ### 2. 管理者メモは主体に付く（`account_notes`）
 
 `tenant_member_notes` を `account_notes` に置き換える。移行 `0063` は expand だけで、新しい表を作って
-既存のメモを写す。旧表を落とすのは本番に入った後の移行（contract。Progress T53）。形は `application_assignments`
+既存のメモを写す。旧表を落とすのは本番に入った後の移行 `0064`（contract）。形は `application_assignments`
 （ADR-0059 の決定 5）と同じで、`kind`（`USER` / `SERVICE_ACCOUNT`）と、`user_id` / `client_id` の
 どちらか 1 つだけが埋まる。
 
