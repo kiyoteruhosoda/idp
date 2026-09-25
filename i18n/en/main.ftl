@@ -285,6 +285,7 @@ admin-service-account-identity-help = Which application this service account rep
 admin-service-account-group-fix-desc = Change the connection settings or issue a new secret.
 admin-service-account-group-danger-desc = There is no undo. Tokens stop being issued at once (records are kept for auditing).
 admin-service-account-note-placeholder = e.g. Syncs wiki attachments to blobshare every night. Created in the 2026-09 migration.
+admin-service-account-permissions-grant-none-left = This service account already holds every permission that can be granted to it.
 admin-service-account-edit = Edit connection settings
 admin-service-account-rotate-secret = Issue a new secret
 admin-service-account-permissions-hint = Permissions this service account uses to call assay's own management API. Add the management API resource to the token request and the codes granted here are carried by the management token.

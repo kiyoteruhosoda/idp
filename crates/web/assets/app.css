@@ -624,3 +624,22 @@ button[aria-busy='true'] .js-pending-label {
   flex: 1 1 14rem;
   max-width: 22rem;
 }
+
+/* 折り返す子を持つ flex 行で、子が中身の幅より狭くなれるようにする（既定の min-width:auto だと
+ * 長いコードが縮まず、隣のボタンを押し出す）。 */
+.min-w-0 {
+  min-width: 0;
+}
+
+/* 管理コンソールのホームの、まとまりの見出し（行き先の枠の外に置く小さな大文字の見出し）。
+ * ⚠ 行き先（list-group-item）と地の色で見分けさせない ——暗い配色ではほぼ同じ色になる。 */
+.console-home-group {
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--bs-secondary-color);
+  margin: 0 0 0.25rem;
+  display: flex;
+  align-items: center;
+}
