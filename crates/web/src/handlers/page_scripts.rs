@@ -25,6 +25,8 @@ pub(crate) const CLIENT_FORM_JS: &str = include_str!("../../assets/client-form.j
 pub(crate) const LOCAL_TIME_JS: &str = include_str!("../../assets/local-time.js");
 /// 一覧をその場で絞り込む（メンバーの「使えるアプリ」ほか）。
 pub(crate) const LIST_FILTER_JS: &str = include_str!("../../assets/list-filter.js");
+/// 検索欄を打つだけでサーバ側の一覧を絞り込む（アカウント一覧。ADR-0065 の続き）。
+pub(crate) const LIVE_SEARCH_JS: &str = include_str!("../../assets/live-search.js");
 
 /// 参照 URL に `?v={asset_version}` が付きデプロイごとに変わるため長期キャッシュしてよい。
 fn javascript(body: &'static str) -> impl IntoResponse {
@@ -75,4 +77,8 @@ pub async fn local_time_js() -> impl IntoResponse {
 
 pub async fn list_filter_js() -> impl IntoResponse {
     javascript(LIST_FILTER_JS)
+}
+
+pub async fn live_search_js() -> impl IntoResponse {
+    javascript(LIVE_SEARCH_JS)
 }

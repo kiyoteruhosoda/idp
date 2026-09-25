@@ -651,6 +651,7 @@ pub fn build(state: WebState) -> Router {
         .route("/assets/client-form.js", get(page_scripts::client_form_js))
         .route("/assets/local-time.js", get(page_scripts::local_time_js))
         .route("/assets/list-filter.js", get(page_scripts::list_filter_js))
+        .route("/assets/live-search.js", get(page_scripts::live_search_js))
         .route(
             "/assets/vendor/bootstrap.min.css",
             get(vendor_assets::bootstrap_css),
