@@ -285,6 +285,7 @@ admin-service-account-identity-help = このサービスアカウントが「ど
 admin-service-account-group-fix-desc = 接続の設定を直す・シークレットを出し直す操作です。
 admin-service-account-group-danger-desc = 取り消せません。削除するとトークンがすぐに取れなくなります（監査のため記録は残ります）。
 admin-service-account-note-placeholder = 例: wiki の添付を夜間に blobshare へ同期する。2026-09 の移行で作成。
+admin-service-account-permissions-grant-none-left = このサービスアカウントは、付与できる管理権限をすべて持っています。
 admin-service-account-edit = 接続の設定を編集
 admin-service-account-rotate-secret = シークレットを再発行
 admin-service-account-permissions-hint = このサービスアカウントが assay 自身の管理 API を呼ぶための権限です。トークン要求に管理 API の resource を添えると、ここで付与したコードが管理トークンに載ります。
