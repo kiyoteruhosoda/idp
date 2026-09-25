@@ -381,6 +381,62 @@ async fn member_applications_follow_the_same_rule_as_the_gate() {
     assert_eq!(res.status(), StatusCode::NOT_FOUND, "not a member -> 404");
 }
 
+/// 仮登録の人には設定リンクの期限が出て、切れたら `setup_link_expired` が立つ。
+#[tokio::test]
+async fn a_pending_member_carries_the_setup_link_deadline() {
+    let Some(env) = support::setup("admin member setup link deadline").await else {
+        return;
+    };
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+    let email = format!("pending-{}@example.com", support::unique());
+    let res = send(
+        &env.app,
+        post(
+            &admin_tok,
+            &format!("/{}/admin/users", env.root_tenant_id),
+            json!({ "email": email }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let created = body_json(res).await;
+    let user_id = created["user_id"].as_str().unwrap().to_string();
+    let uri = format!("/{}/admin/members/{user_id}", env.root_tenant_id);
+
+    let member = body_json(send(&env.app, get(&admin_tok, &uri)).await).await;
+    assert_eq!(member["pending_setup"], true, "{member}");
+    assert!(member["setup_link_expires_at"].is_string(), "{member}");
+    assert_eq!(member["setup_link_expired"], false, "{member}");
+
+    // 期限を過去にすると、読んだ時点で期限切れと判定される。
+    sqlx::query("UPDATE password_reset_tokens SET expires_at = ? WHERE user_id = ?")
+        .bind(chrono::Utc::now().naive_utc() - chrono::Duration::hours(1))
+        .bind(&user_id)
+        .execute(&env.pool)
+        .await
+        .expect("expire the link");
+    let member = body_json(send(&env.app, get(&admin_tok, &uri)).await).await;
+    assert_eq!(member["setup_link_expired"], true, "{member}");
+
+    // 出し直すと期限が戻る。
+    let res = send(
+        &env.app,
+        post(
+            &admin_tok,
+            &format!(
+                "/{}/admin/users/{user_id}/password-reset",
+                env.root_tenant_id
+            ),
+            json!({}),
+        ),
+    )
+    .await;
+    assert!(res.status().is_success(), "reissue: {}", res.status());
+    let member = body_json(send(&env.app, get(&admin_tok, &uri)).await).await;
+    assert_eq!(member["setup_link_expired"], false, "{member}");
+    assert_eq!(member["pending_setup"], true, "{member}");
+}
+
 /// クエリ文字列用の最小限のエンコード（非 ASCII と記号を %XX にする）。
 fn urlencoding(value: &str) -> String {
     value

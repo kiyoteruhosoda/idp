@@ -346,6 +346,13 @@ pub struct MemberView {
     /// 仮登録（ADR-0064）。本人がまだ設定リンクで資格情報を決めていない。
     #[serde(default)]
     pub pending_setup: bool,
+    /// 仮登録の人の、いまの設定リンクの期限（RFC 3339・UTC）。
+    #[serde(default)]
+    pub setup_link_expires_at: Option<String>,
+    /// 仮登録で、使える設定リンクが無い（期限切れ）。api が読んだ時点で判定した値
+    /// （web は時計を持たないので、期限の比較をやり直さない。`locked` と同じ）。
+    #[serde(default)]
+    pub setup_link_expired: bool,
     /// 管理者メモ（ADR-0063）。書かれていなければ `None`。
     #[serde(default)]
     pub note: Option<AccountNoteView>,

@@ -42,6 +42,8 @@ pub(crate) fn escape_like(term: &str) -> String {
 const MEMBER_COLUMNS: &str = "m.user_id, m.membership_type, m.status, \
      u.email, u.name, u.status AS user_status, u.locked_until AS locked_until, \
      u.pending_setup AS pending_setup, \
+     (SELECT MAX(t.expires_at) FROM password_reset_tokens t \
+        WHERE t.user_id = u.id AND t.purpose = 'setup' AND t.used_at IS NULL) AS setup_link_expires_at, \
      n.note AS note, n.updated_at AS note_updated_at, n.updated_by AS note_updated_by, \
      (SELECT p.display_value FROM user_login_identifiers p \
         WHERE p.primary_of_user = u.id) AS preferred_username";
@@ -114,6 +116,10 @@ pub(crate) fn map_row(row: &MySqlRow) -> Result<TenantMember> {
         user_status: Some(UserStatus::parse(&user_status)?),
         locked_until: locked_until.map(|naive| chrono::Utc.from_utc_datetime(&naive)),
         pending_setup: row.try_get("pending_setup").map_err(repo_err)?,
+        setup_link_expires_at: row
+            .try_get::<Option<chrono::NaiveDateTime>, _>("setup_link_expires_at")
+            .map_err(repo_err)?
+            .map(|naive| chrono::Utc.from_utc_datetime(&naive)),
         note: map_note(row)?,
     })
 }
