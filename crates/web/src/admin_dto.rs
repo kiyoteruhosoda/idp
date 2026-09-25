@@ -348,25 +348,10 @@ pub struct MemberView {
     pub pending_setup: bool,
     /// 管理者メモ（ADR-0063）。書かれていなければ `None`。
     #[serde(default)]
-    pub note: Option<MemberNoteView>,
+    pub note: Option<AccountNoteView>,
 }
 
 impl MemberView {
-    /// 一覧に出すメモの 1 行目（長ければ切る）。一覧は探す場所なので、全文は詳細で読む。
-    pub fn note_excerpt(&self) -> Option<String> {
-        const MAX_CHARS: usize = 60;
-        let first = self.note.as_ref()?.text.lines().next()?.trim();
-        if first.is_empty() {
-            return None;
-        }
-        let multi_line = self.note.as_ref().is_some_and(|n| n.text.contains('\n'));
-        let mut excerpt: String = first.chars().take(MAX_CHARS).collect();
-        if first.chars().count() > MAX_CHARS || multi_line {
-            excerpt.push('…');
-        }
-        Some(excerpt)
-    }
-
     /// 一覧の見出しに出す名前（メール → ユーザー名の順に拾う）。
     pub fn headline(&self) -> &str {
         self.email
@@ -391,23 +376,129 @@ impl MemberView {
     }
 }
 
-/// メンバーの管理者メモ（ADR-0063）。
+/// アカウント（人・サービスアカウント）の管理者メモ（ADR-0063 / ADR-0065）。
 #[derive(Debug, Clone, Deserialize)]
-pub struct MemberNoteView {
+pub struct AccountNoteView {
     pub text: String,
     /// RFC 3339（UTC）。画面では `local-time.js` が閲覧者の時刻へ直す。
     pub updated_at: String,
 }
 
-/// メンバー 1 人が使えるアプリ（`GET /admin/members/{user_id}/applications`。ADR-0063）。
+impl AccountNoteView {
+    /// 一覧に出す 1 行目（長ければ切る）。一覧は探す場所なので、全文は 1 件の画面で読む。
+    pub fn excerpt(&self) -> Option<String> {
+        const MAX_CHARS: usize = 60;
+        let first = self.text.lines().next()?.trim();
+        if first.is_empty() {
+            return None;
+        }
+        let mut excerpt: String = first.chars().take(MAX_CHARS).collect();
+        if first.chars().count() > MAX_CHARS || self.text.contains('\n') {
+            excerpt.push('…');
+        }
+        Some(excerpt)
+    }
+}
+
+/// サービスアカウント 1 件（`GET /admin/service-accounts/{client_id}`・一覧の 1 行。ADR-0065）。
 #[derive(Debug, Clone, Deserialize)]
-pub struct MemberApplicationListView {
-    pub applications: Vec<MemberApplicationView>,
+pub struct ServiceAccountView {
+    pub client_id: String,
+    pub app_name: String,
+    /// `ACTIVE` / `DISABLED`。
+    pub status: String,
+    /// RFC 3339（UTC）。
+    pub created_at: String,
+    /// このサービスアカウントを名乗り（binding）に持つアプリ。
+    #[serde(default)]
+    pub identity_of: Option<IdentityApplicationView>,
+    #[serde(default)]
+    pub note: Option<AccountNoteView>,
+}
+
+/// サービスアカウントを名乗りに持つアプリ。
+#[derive(Debug, Clone, Deserialize)]
+pub struct IdentityApplicationView {
+    pub application_id: String,
+    pub display_name: String,
+}
+
+/// アカウント一覧の 1 行（`kind` に応じて `user` / `service_account` のどちらかが載る。ADR-0065）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct AccountView {
+    /// `user` / `service_account`。
+    pub kind: String,
+    #[serde(default)]
+    pub user: Option<MemberView>,
+    #[serde(default)]
+    pub service_account: Option<ServiceAccountView>,
+}
+
+impl AccountView {
+    /// 1 件の画面へのパス（テナントの前置きを除く）。種別ごとに経路が違う。
+    pub fn path(&self) -> String {
+        match (&self.user, &self.service_account) {
+            (Some(m), _) => format!("/admin/members/{}", m.user_id),
+            (None, Some(sa)) => format!("/admin/service-accounts/{}", sa.client_id),
+            (None, None) => "/admin/accounts".to_string(),
+        }
+    }
+
+    /// 見出し（人はメール → ユーザー名、サービスアカウントは登録名）。
+    pub fn headline(&self) -> &str {
+        match (&self.user, &self.service_account) {
+            (Some(m), _) => m.headline(),
+            (None, Some(sa)) => &sa.app_name,
+            (None, None) => "-",
+        }
+    }
+
+    /// 見出しの下に添える名前（人はユーザー名・氏名、サービスアカウントは `client_id`）。
+    pub fn secondary_names(&self) -> Vec<&str> {
+        match (&self.user, &self.service_account) {
+            (Some(m), _) => m.secondary_names(),
+            (None, Some(sa)) => vec![sa.client_id.as_str()],
+            (None, None) => Vec::new(),
+        }
+    }
+
+    /// 一覧に出すメモの 1 行目。
+    pub fn note_excerpt(&self) -> Option<String> {
+        match (&self.user, &self.service_account) {
+            (Some(m), _) => m.note.as_ref()?.excerpt(),
+            (None, Some(sa)) => sa.note.as_ref()?.excerpt(),
+            (None, None) => None,
+        }
+    }
+}
+
+/// アカウント一覧の 1 ページ分（`GET /admin/accounts`。ADR-0065）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct AccountListView {
+    pub accounts: Vec<AccountView>,
+    /// 実際に並べた種別。
+    #[allow(dead_code)]
+    pub kinds: Vec<String>,
+    /// 読める種別（絞り込みの選択肢）。
+    pub readable_kinds: Vec<String>,
+    /// 絞り込み後の総件数（ページング前）。
+    pub total: i64,
+    /// api が実際に適用した 1 ページの件数（クランプ後）。
+    pub limit: i64,
+    #[allow(dead_code)]
+    pub offset: i64,
+}
+
+/// アカウント 1 つが使えるアプリ（`GET /admin/members/{user_id}/applications`・
+/// `GET /admin/service-accounts/{client_id}/applications`。ADR-0063 / ADR-0065）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct AccountApplicationListView {
+    pub applications: Vec<AccountApplicationView>,
     /// `record_only` / `enforce`。
     pub enforcement: String,
 }
 
-impl MemberApplicationListView {
+impl AccountApplicationListView {
     /// 可否ごとの件数（絞り込みの札に添える）。
     pub fn count(&self, access: &str) -> usize {
         self.applications
@@ -417,9 +508,9 @@ impl MemberApplicationListView {
     }
 }
 
-/// メンバーから見たアプリ 1 件。
+/// アカウントから見たアプリ 1 件。
 #[derive(Debug, Clone, Deserialize)]
-pub struct MemberApplicationView {
+pub struct AccountApplicationView {
     pub application_id: String,
     pub display_name: String,
     /// `ACTIVE` / `DISABLED`。
@@ -430,18 +521,6 @@ pub struct MemberApplicationView {
     pub access: String,
     #[serde(default)]
     pub assigned_at: Option<String>,
-}
-
-/// メンバー一覧の 1 ページ分（`GET /admin/members`。MT22）。
-#[derive(Debug, Clone, Deserialize)]
-pub struct MemberListView {
-    pub members: Vec<MemberView>,
-    /// 絞り込み後の総件数（ページング前）。「全 N 件」の表示と次ページの有無に使う。
-    pub total: i64,
-    /// api が実際に適用した 1 ページの件数（クランプ後）。ページ送りの刻み幅として使う。
-    pub limit: i64,
-    #[allow(dead_code)]
-    pub offset: i64,
 }
 
 /// 管理者によるパスワード再発行応答（`POST /admin/users/{id}/password-reset` ほか）。

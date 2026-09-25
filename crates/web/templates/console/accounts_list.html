@@ -1,0 +1,93 @@
+{% extends "console/layout.html" %}
+{% block content %}
+{#- アカウント一覧（ADR-0065）。人とサービスアカウントを 1 つに並べる。種別が違うだけで、
+    「これは何者で、どういう状態か」への答え方は同じ ——列も札の規則も種別で分けない。 -#}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <h2 class="h4 mb-0">{{ messages.get("admin-accounts-title") }}</h2>
+  <div class="d-flex flex-wrap gap-2">
+    {% if can_read_users %}
+    <a class="btn btn-primary" href="{{ tenant }}/admin/users/new"><i class="fa-solid fa-user-plus me-2" aria-hidden="true"></i>{{ messages.get("admin-nav-users-new") }}</a>
+    <a class="btn btn-outline-primary" href="{{ tenant }}/admin/invitations"><i class="fa-solid fa-envelope me-2" aria-hidden="true"></i>{{ messages.get("admin-members-invite-guest") }}</a>
+    {% endif %}
+    {% if can_read_service_accounts %}
+    <a class="btn btn-outline-primary" href="{{ tenant }}/admin/service-accounts/new"><i class="fa-solid fa-robot me-2" aria-hidden="true"></i>{{ messages.get("admin-service-accounts-new") }}</a>
+    {% endif %}
+  </div>
+</div>
+<p class="text-muted">{{ messages.get("admin-accounts-intro") }}</p>
+{% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
+{% if let Some(key) = notice_key %}<div class="alert alert-success" role="status"><i class="fa-solid fa-circle-check me-2" aria-hidden="true"></i>{{ messages.get(key) }}</div>{% endif %}
+{#- 種別の絞り込み。読める種別が 1 つしか無い管理者には出さない（選べないものを並べない）。 -#}
+{% if kind_tabs.len() > 1 %}
+<nav class="mb-3" aria-label="{{ messages.get("admin-accounts-kind-label") }}">
+  <ul class="nav nav-pills flex-wrap gap-1">
+    {% for tab in kind_tabs %}
+    <li class="nav-item"><a class="nav-link{% if tab.active %} active{% endif %}" href="{{ tab.href }}"{% if tab.active %} aria-current="page"{% endif %}>{{ messages.get(tab.label) }}</a></li>
+    {% endfor %}
+  </ul>
+</nav>
+{% endif %}
+<form method="get" action="{{ tenant }}/admin/accounts" class="mb-3" role="search">
+  {% if !kind.is_empty() %}<input type="hidden" name="kind" value="{{ kind }}">{% endif %}
+  <div class="input-group" style="max-width: 28rem;">
+    <span class="input-group-text"><i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i></span>
+    <input type="search" class="form-control" name="q" value="{{ query }}" placeholder="{{ messages.get("admin-accounts-search-placeholder") }}" aria-label="{{ messages.get("admin-members-search-label") }}">
+    <button type="submit" class="btn btn-outline-secondary">{{ messages.get("admin-members-search-button") }}</button>
+    {% if !query.is_empty() %}<a class="btn btn-outline-secondary" href="{{ clear_href }}">{{ messages.get("admin-members-search-clear") }}</a>{% endif %}
+  </div>
+</form>
+{% if accounts.is_empty() %}
+{% if query.is_empty() %}
+<p class="text-muted">{{ messages.get("admin-accounts-none") }}</p>
+{% else %}
+<p class="text-muted">{{ messages.get("admin-members-search-none") }}</p>
+{% endif %}
+{% else %}
+<p class="text-muted small">{{ messages.get("admin-pagination-total") }} {{ total }}</p>
+{#- ⚠ **一覧は「探す・状態を見る」だけ。** 操作は 1 件ずつの画面へ集める（ADR-0063）。
+    列は「誰か」「状態」「メモ」の 3 つ。状態は**普通でないものだけ**を札にする
+    ——全員に「HOME」「ACTIVE」「有効」が並ぶと、止まっている人が埋もれる。
+    種別は見出しの前の印で示す（人とサービスアカウントが混ざるので、種別は「普通でないもの」の
+    扱いにはしない）。 -#}
+<div class="table-responsive">
+  <table class="table table-cards table-hover align-middle members-table">
+    <thead>
+      <tr><th>{{ messages.get("admin-accounts-col-account") }}</th><th>{{ messages.get("admin-members-col-state") }}</th><th>{{ messages.get("admin-members-col-note") }}</th></tr>
+    </thead>
+    <tbody>
+      {% for a in accounts %}
+      <tr>
+        <td>
+          {% if a.service_account.is_some() %}<i class="fa-solid fa-robot text-body-secondary me-2" aria-hidden="true" title="{{ messages.get("admin-accounts-kind-service-account") }}"></i><span class="visually-hidden">{{ messages.get("admin-accounts-kind-service-account") }}: </span>{% else %}<i class="fa-solid fa-user text-body-secondary me-2" aria-hidden="true" title="{{ messages.get("admin-accounts-kind-user") }}"></i><span class="visually-hidden">{{ messages.get("admin-accounts-kind-user") }}: </span>{% endif %}
+          <a class="table-cards-link" href="{{ tenant }}{{ a.path() }}">{{ a.headline() }}</a>
+          {%- let names = a.secondary_names() -%}
+          {% if !names.is_empty() %}<div class="small text-muted">{% for n in names %}{% if !loop.first %} · {% endif %}{% if a.service_account.is_some() %}<code>{{ n }}</code>{% else %}{{ n }}{% endif %}{% endfor %}</div>{% endif %}
+        </td>
+        <td>
+          <div class="d-flex flex-wrap gap-1">
+          {% if let Some(m) = a.user %}
+          {% if m.membership_type == "GUEST" %}<span class="badge text-bg-info">{{ messages.get("admin-members-type-guest") }}</span>{% endif %}
+          {% if m.status == "SUSPENDED" %}<span class="badge text-bg-warning">{{ messages.get("admin-members-status-suspended") }}</span>
+          {% else if m.status == "INVITED" %}<span class="badge text-bg-secondary">{{ messages.get("admin-members-status-invited") }}</span>{% endif %}
+          {#- 仮登録（ADR-0064）。有効かどうかより先に出す ——本人がまだ何も決めていないので入れない。 -#}
+          {% if m.pending_setup %}<span class="badge text-bg-secondary"><i class="fa-regular fa-hourglass-half me-1" aria-hidden="true"></i>{{ messages.get("admin-members-user-status-pending") }}</span>{% endif %}
+          {% if m.locked %}<span class="badge text-bg-warning"><i class="fa-solid fa-lock me-1" aria-hidden="true"></i>{{ messages.get("admin-members-user-status-locked") }}</span>
+          {% else if m.user_status.as_deref() == Some("DISABLED") %}<span class="badge text-bg-danger">{{ messages.get("admin-members-user-status-disabled") }}</span>
+          {% else if m.pending_setup %}
+          {% else if m.user_status.as_deref() == Some("ACTIVE") && m.status == "ACTIVE" %}<span class="small text-muted">{{ messages.get("admin-members-user-status-active") }}</span>
+          {% else if m.user_status.is_some() && m.user_status.as_deref() != Some("ACTIVE") %}<span class="badge text-bg-warning">{{ messages.get("admin-members-user-status-locked") }}</span>{% endif %}
+          {% else if let Some(sa) = a.service_account %}
+          {% if sa.status == "ACTIVE" %}<span class="small text-muted">{{ messages.get("admin-members-user-status-active") }}</span>
+          {% else %}<span class="badge text-bg-danger">{{ messages.get("admin-members-user-status-disabled") }}</span>{% endif %}
+          {% endif %}
+          </div>
+        </td>
+        <td class="members-note">{% if let Some(excerpt) = a.note_excerpt() %}<span class="small text-body-secondary"><i class="fa-regular fa-note-sticky me-1" aria-hidden="true"></i><span class="visually-hidden">{{ messages.get("admin-members-col-note") }}: </span>{{ excerpt }}</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% include "console/pagination.html" %}
+{% endblock %}

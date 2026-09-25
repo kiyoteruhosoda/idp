@@ -16,6 +16,7 @@
 //! してよいかは RP が持つ（ADR-0033 / ADR-0049 の I6）。ロールの列を持つか持たないかは**モデルの
 //! 形**なので、アプリごとに選べる類の設定ではない。
 
+use crate::domain::account::AccountRef;
 use crate::domain::message::MessageKey;
 use crate::domain::tenant::TenantId;
 use crate::domain::values::{ApplicationStatus, AssignmentMode, ClientStatus, UserStatus};
@@ -83,6 +84,24 @@ impl Application {
             AssignmentMode::Everyone => ApplicationAccess::Allowed,
             AssignmentMode::Individual if assigned => ApplicationAccess::Allowed,
             AssignmentMode::Individual => ApplicationAccess::NotAssigned,
+        }
+    }
+
+    /// **サービスアカウント**がこのアプリを使ってよいか（ADR-0059 の決定 5・6）。
+    ///
+    /// 「使う」とは、このアプリの宛名（`resource` の名乗り）宛のトークンを取ることである。
+    /// トークン発行（`client_credentials` + `resource`）とアカウントの画面が同じこの規則を読む
+    /// ——⚠ 画面が別の規則で答えると「使えると出ているのにトークンが出ない」が起きる。
+    ///
+    /// ⚠ **割り当てモードを見ない。** 「全員（`EVERYONE`）」に含まれるのは人だけで、
+    /// サービスアカウントは必ず個別に割り当てる。
+    pub fn admits_service_account(&self, assigned: bool) -> ApplicationAccess {
+        if self.status != ApplicationStatus::Active {
+            ApplicationAccess::Disabled
+        } else if assigned {
+            ApplicationAccess::Allowed
+        } else {
+            ApplicationAccess::NotAssigned
         }
     }
 
@@ -172,48 +191,6 @@ pub struct ApplicationBinding {
     pub created_at: DateTime<Utc>,
 }
 
-/// アプリを使ってよい主体（ADR-0059 の決定 5）。
-///
-/// ⚠ 種類で振る舞いが違う:
-///
-/// - 「全員（`EVERYONE`）」に含まれるのは**人だけ**。サービスアカウントは必ず個別に割り当てる
-/// - 人の割り当て = ログインしてよい（code の発行時の判定が見るのは人だけ）
-/// - サービスアカウントの割り当て = そのアプリの宛名（`resource` の名乗り）宛のトークンを取ってよい
-/// - 名簿（self）に載るのは人だけ
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AssignedPrincipal {
-    /// 人（`users.id`）。
-    User { user_id: Uuid },
-    /// サービスアカウント（`client_credentials` だけの `clients.id`）。
-    ServiceAccount { client_row_id: Uuid },
-}
-
-impl AssignedPrincipal {
-    /// DB の `kind` 列に入る値。許可値の単一の出所は本 enum。
-    pub fn kind(&self) -> &'static str {
-        match self {
-            Self::User { .. } => "USER",
-            Self::ServiceAccount { .. } => "SERVICE_ACCOUNT",
-        }
-    }
-
-    /// 人なら `users.id`。
-    pub fn user_id(&self) -> Option<Uuid> {
-        match self {
-            Self::User { user_id } => Some(*user_id),
-            Self::ServiceAccount { .. } => None,
-        }
-    }
-
-    /// サービスアカウントなら `clients.id`。
-    pub fn client_row_id(&self) -> Option<Uuid> {
-        match self {
-            Self::User { .. } => None,
-            Self::ServiceAccount { client_row_id } => Some(*client_row_id),
-        }
-    }
-}
-
 /// アプリ × 主体（`application_assignments` テーブル）。
 ///
 /// ⚠ ロールを持たない。ここに載るのは「使ってよいか」の 1 ビットだけである。
@@ -221,7 +198,7 @@ impl AssignedPrincipal {
 pub struct ApplicationAssignment {
     pub id: Uuid,
     pub application_id: Uuid,
-    pub principal: AssignedPrincipal,
+    pub principal: AccountRef,
     pub assigned_at: DateTime<Utc>,
     /// 割り当てた管理者（監査のための出所）。移行・機械経由は `None`。
     pub assigned_by: Option<Uuid>,
@@ -258,9 +235,10 @@ pub struct AssignedUser {
     pub assigned_at: DateTime<Utc>,
 }
 
-/// ある人に付いている割り当て 1 件（メンバーの画面が「使えるアプリ」を出すため。ADR-0063）。
+/// あるアカウントに付いている割り当て 1 件（アカウントの画面が「使えるアプリ」を出すため。
+/// ADR-0063 / ADR-0065）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UserAssignment {
+pub struct AccountAssignment {
     pub application_id: Uuid,
     pub assigned_at: DateTime<Utc>,
 }

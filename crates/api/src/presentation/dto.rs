@@ -146,6 +146,10 @@ pub struct ClientRegisterRequest {
     /// それ以外の方式では指定できない。鍵ローテーションはこの集合へ新旧を並べて行う。
     #[serde(default)]
     pub jwks: Option<String>,
+    /// 管理者メモ（任意。2000 文字まで。ADR-0065）。⚠ **サービスアカウント**
+    /// （`allow_client_credentials` で redirect_uri を持たない client）にだけ書ける。連携先に送ると 400。
+    #[serde(default)]
+    pub note: Option<String>,
 }
 
 /// クライアント部分更新リクエスト。指定した項目のみ更新する。
@@ -1044,43 +1048,51 @@ pub struct MemberResponse {
     pub pending_setup: bool,
     /// 管理者メモ（ADR-0063）。書かれていなければ省略される。
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub note: Option<MemberNoteResponse>,
+    pub note: Option<AccountNoteResponse>,
 }
 
-/// メンバーの管理者メモ（ADR-0063）。経緯を書き残すための自由記述で、判定には使わない。
+/// アカウント（人・サービスアカウント）の管理者メモ（ADR-0063 / ADR-0065）。経緯を書き残すための
+/// 自由記述で、判定には使わない。
 #[derive(Debug, Serialize, ToSchema)]
-pub struct MemberNoteResponse {
+pub struct AccountNoteResponse {
     pub text: String,
     /// 最後に書かれた日時（RFC 3339・UTC）。
     pub updated_at: String,
 }
 
-/// 管理者メモの書き込み（`PUT /{tenant_id}/admin/members/{user_id}/note`。ADR-0063）。
+/// 管理者メモの書き込み（`PUT /{tenant_id}/admin/members/{user_id}/note`・
+/// `PUT /{tenant_id}/admin/service-accounts/{client_id}/note`。ADR-0063 / ADR-0065）。
 #[derive(Debug, Deserialize, ToSchema)]
-pub struct UpdateMemberNoteRequest {
+pub struct UpdateAccountNoteRequest {
     /// メモの本文（2000 文字まで）。空（空白だけ）ならメモを消す。
     pub note: String,
 }
 
-/// メンバー 1 人が使えるアプリの一覧（`GET /{tenant_id}/admin/members/{user_id}/applications`。
-/// ADR-0063）。ログインの名乗り（OIDC / SAML）を持つアプリだけが載る。
+/// アカウント 1 つが使えるアプリの一覧（ADR-0063 / ADR-0065）。
+///
+/// - 人（`GET /{tenant_id}/admin/members/{user_id}/applications`）: ログインの名乗り（OIDC / SAML）を
+///   持つアプリだけが載る
+/// - サービスアカウント（`GET /{tenant_id}/admin/service-accounts/{client_id}/applications`）: 宛名
+///   （`resource`）の名乗りを持つアプリだけが載る
 #[derive(Debug, Serialize, ToSchema)]
-pub struct MemberApplicationListResponse {
-    pub applications: Vec<MemberApplicationResponse>,
-    /// いま判定が断るところまで来ているか（`record_only` / `enforce`）。
+pub struct AccountApplicationListResponse {
+    pub applications: Vec<AccountApplicationResponse>,
+    /// いま人の判定が断るところまで来ているか（`record_only` / `enforce`）。サービスアカウントの
+    /// トークン発行はこの設定に関係なく断る。
     pub enforcement: String,
 }
 
-/// メンバーから見たアプリ 1 件。
+/// アカウントから見たアプリ 1 件。
 #[derive(Debug, Serialize, ToSchema)]
-pub struct MemberApplicationResponse {
+pub struct AccountApplicationResponse {
     pub application_id: String,
     pub display_name: String,
     /// アプリの状態（`ACTIVE` / `DISABLED`）。
     pub status: String,
     /// `EVERYONE` / `INDIVIDUAL`。
     pub assignment_mode: String,
-    /// この人がいま入れるか（`allowed` / `not_assigned` / `application_disabled`）。判定と同じ規則で決まる。
+    /// このアカウントがいま使えるか（`allowed` / `not_assigned` / `application_disabled`）。
+    /// 判定（人はログイン、サービスアカウントはトークン発行）と同じ規則で決まる。
     pub access: String,
     /// 個別の割り当ての日時（RFC 3339・UTC）。割り当てが無ければ省略される。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1167,6 +1179,81 @@ pub struct MemberListResponse {
     /// 呼び出し側がページ送りの計算にそのまま使えるようにするため。
     pub limit: i64,
     pub offset: i64,
+}
+
+// --- アカウント（人とサービスアカウント。ADR-0065） -------------------------------------------
+
+/// アカウント一覧のクエリ（`GET /{tenant_id}/admin/accounts`）。
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct AccountListQueryParams {
+    /// 並べる種別（`user` / `service_account`）。未指定は「読めるものすべて」。
+    /// ⚠ 読めない種別を指定すると 403（黙って空にしない）。
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// 絞り込み語の**部分一致**（大文字小文字を無視）。人はメール・氏名・ユーザー名・メモ、
+    /// サービスアカウントは登録名・`client_id`・メモを見る。未指定・空は絞り込まない。
+    #[serde(default)]
+    pub q: Option<String>,
+    /// 1 ページの件数。未指定は 50、上限 200（超過分は上限へ丸める）。
+    #[serde(default)]
+    pub limit: Option<i64>,
+    /// 読み飛ばす件数。未指定は 0。
+    #[serde(default)]
+    pub offset: Option<i64>,
+}
+
+/// アカウント一覧のレスポンス（`GET /{tenant_id}/admin/accounts`）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AccountListResponse {
+    /// 見出し（人はメール → ユーザー名、サービスアカウントは登録名）の昇順。種別をまたいで混ざる。
+    pub accounts: Vec<AccountResponse>,
+    /// 実際に並べた種別。
+    pub kinds: Vec<String>,
+    /// 呼んだ主体が読める種別（画面が絞り込みの選択肢を出すため）。
+    pub readable_kinds: Vec<String>,
+    /// `limit` / `offset` を無視した該当総数。
+    pub total: i64,
+    /// 実際に適用された値（クランプ後）。
+    pub limit: i64,
+    pub offset: i64,
+}
+
+/// アカウント一覧の 1 行。`kind` に応じて `user` か `service_account` のどちらか 1 つだけが載る。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AccountResponse {
+    /// `user` / `service_account`。
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<MemberResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_account: Option<ServiceAccountResponse>,
+}
+
+/// サービスアカウント 1 件（`GET /{tenant_id}/admin/service-accounts/{client_id}`・一覧の 1 行。
+/// ADR-0065）。接続の設定（認証方式・scope・鍵）は `GET /admin/clients/{client_id}` にある。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ServiceAccountResponse {
+    pub client_id: String,
+    /// 登録名。
+    pub app_name: String,
+    /// `ACTIVE` / `DISABLED`。
+    pub status: String,
+    /// 登録日時（RFC 3339・UTC）。
+    pub created_at: String,
+    /// このサービスアカウントを名乗り（binding）に持つアプリ。無ければ省略される。
+    /// ⚠ 「使えるアプリ」（割り当て）とは別の関係である。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity_of: Option<IdentityApplicationResponse>,
+    /// 管理者メモ。書かれていなければ省略される。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<AccountNoteResponse>,
+}
+
+/// サービスアカウントを名乗りに持つアプリ。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct IdentityApplicationResponse {
+    pub application_id: String,
+    pub display_name: String,
 }
 
 /// ゲスト招待作成リクエスト（`POST /{tenant_id}/admin/invitations`）。被招待者は所属元が他テナントの

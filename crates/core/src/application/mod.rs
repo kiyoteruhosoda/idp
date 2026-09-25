@@ -2,7 +2,9 @@
 //!
 //! ドメイン層のトレイトを介して Infrastructure に依存する（具象に直接依存しない）。
 
+pub mod account_directory;
 pub mod account_language;
+pub mod account_note;
 pub mod account_password;
 pub mod account_profile;
 pub mod account_security;
@@ -42,7 +44,6 @@ pub mod login_user_resolution;
 pub mod logout;
 pub mod management_token;
 pub mod member_directory;
-pub mod member_note;
 pub mod mfa_login;
 pub mod passkey_assertion;
 pub mod passkey_authentication;

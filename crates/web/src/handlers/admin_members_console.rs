@@ -8,20 +8,19 @@
 //! 引き継ぎ、応答の `total` からページャの前後リンクを組み立てるだけで、全件を受け取らない。
 
 use super::locale;
-use crate::admin_dto::MemberListView;
 use crate::api_client::AdminApiError;
 use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::csrf::console_csrf_token;
 use crate::dto::{MemberActionForm, MemberNoteForm, MemberStatusForm};
+use crate::handlers::admin_accounts_console::{self, AccountTarget};
 use crate::handlers::admin_console::{
     forbidden_response, redirect_to_login, resolve_admin, AdminContext, AdminResolution,
 };
 use crate::handlers::found;
 use crate::i18n::Messages;
-use crate::pagination::pager_links;
 use crate::state::WebState;
-use crate::templates::{render, ConsoleNotice, MemberDetail, MembersList, PasswordResetResult};
+use crate::templates::{render, ConsoleNotice, MemberDetail, PasswordResetResult};
 use crate::tenant::WebTenant;
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -29,7 +28,8 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 use serde::Deserialize;
 
-const MEMBERS_SEGMENT: &str = "/admin/members";
+/// 一覧（アカウントの一覧を人に絞ったもの。ADR-0065）。操作の後の戻り先。
+const MEMBERS_LIST: &str = "/admin/accounts?kind=user";
 
 #[derive(Debug, Default, Deserialize)]
 pub struct ViewQuery {
@@ -45,53 +45,6 @@ pub struct ViewQuery {
     /// ページャの読み飛ばし件数。未指定は 0。
     #[serde(default)]
     pub offset: Option<i64>,
-}
-
-/// メンバー一覧（`GET /{tenant_id}/admin/members`）。
-pub async fn list(
-    State(state): State<WebState>,
-    Extension(correlation): Extension<CorrelationId>,
-    Extension(tenant): Extension<WebTenant>,
-    headers: HeaderMap,
-    Query(query): Query<ViewQuery>,
-) -> Response {
-    let admin = match resolve_admin(&state, &correlation, &tenant, &headers).await {
-        AdminResolution::Ok(uid) => uid,
-        AdminResolution::Reject(resp) => return resp,
-    };
-    let term = query.q.clone().unwrap_or_default();
-    let offset = query.offset.unwrap_or(0).max(0);
-    // 絞り込み・ページングは api（DB）側で行う。web 側で全件を受けてから絞る方式は、
-    // テナントの規模に比例して応答が膨らむため採らない（MT22）。
-    let mut params = crate::pagination::page_query(offset);
-    if !term.trim().is_empty() {
-        params.push(("q", term.trim().to_string()));
-    }
-    let result = state
-        .api
-        .list_members(&correlation.0, &tenant.0, &sso(&headers), &params)
-        .await;
-    let messages = Messages::new(locale(&headers));
-    let csrf = csrf_from(&headers, state.config.csrf_secret());
-    let error_key = query.error.as_deref().and_then(error_key_for);
-    let notice_key = query.notice.as_deref().and_then(notice_key_for);
-    match result {
-        Ok(page) => Html(render_list(
-            &messages,
-            &tenant,
-            &admin,
-            &csrf,
-            &page,
-            term.trim(),
-            offset,
-            error_key,
-            notice_key,
-        ))
-        .into_response(),
-        Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
-        Err(AdminApiError::Forbidden) => forbidden_response(&headers),
-        Err(_) => internal_error(&messages, &tenant, &admin),
-    }
 }
 
 /// メンバー 1 人の画面（`GET /{tenant_id}/admin/members/{user_id}`）。
@@ -145,17 +98,16 @@ pub async fn detail(
         Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
         Err(AdminApiError::Forbidden) => forbidden_response(&headers),
         // 他テナントのメンバーの存在を推測させないため、不存在も 404 のまま一覧へ戻す。
-        Err(AdminApiError::NotFound) => found(&format!(
-            "{}{MEMBERS_SEGMENT}?error=notfound",
-            tenant.prefix()
-        )),
+        Err(AdminApiError::NotFound) => {
+            found(&format!("{}{MEMBERS_LIST}&error=notfound", tenant.prefix()))
+        }
         Err(_) => internal_error(&messages, &tenant, &admin),
     }
 }
 
 /// 管理者メモを書く（`POST /{tenant_id}/admin/members/{user_id}/note`。ADR-0063）。
 ///
-/// 書いたら同じメンバーの画面へ戻す（一覧へ戻すと、続けて読み返せない）。
+/// 書き方はサービスアカウントと同じ（[`admin_accounts_console::write_note`]。ADR-0065）。
 pub async fn update_note(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -164,45 +116,19 @@ pub async fn update_note(
     Path((_, user_id)): Path<(String, String)>,
     Form(form): Form<MemberNoteForm>,
 ) -> Response {
-    match resolve_admin(&state, &correlation, &tenant, &headers).await {
-        AdminResolution::Ok(_) => {}
-        AdminResolution::Reject(resp) => return resp,
-    }
-    let back = member_href(&tenant, &user_id);
-    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
-        return found(&format!("{back}?error=csrf"));
-    }
-    let cleared = form.note.trim().is_empty();
-    match state
-        .api
-        .update_member_note(
-            &correlation.0,
-            &tenant.0,
-            &sso(&headers),
-            &user_id,
-            &form.note,
-        )
-        .await
-    {
-        Ok(()) if cleared => found(&format!("{back}?notice=note-cleared")),
-        Ok(()) => found(&format!("{back}?notice=note-saved")),
-        Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
-        Err(AdminApiError::Forbidden) => found(&format!("{back}?error=forbidden-write")),
-        Err(AdminApiError::NotFound) => found(&format!(
-            "{}{MEMBERS_SEGMENT}?error=notfound",
-            tenant.prefix()
-        )),
-        // 長すぎる（画面の maxlength を外して送られたとき）。
-        Err(AdminApiError::Validation(_)) => found(&format!("{back}?error=note-too-long")),
-        Err(_) => found(&format!("{back}?error=internal")),
-    }
+    admin_accounts_console::write_note(
+        &state,
+        &correlation,
+        &tenant,
+        &headers,
+        AccountTarget::User(&user_id),
+        &form,
+    )
+    .await
 }
 
 /// このメンバーをアプリへ割り当てる
 /// （`POST /{tenant_id}/admin/members/{user_id}/applications/{application_id}/assign`）。
-///
-/// アプリの詳細画面と同じ API（`POST /admin/applications/{id}/assignments`）を呼ぶ。入口が
-/// 人の側にあるだけで、規則（メンバーであること・冪等）は 1 か所にしか無い。
 pub async fn assign_application(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -211,12 +137,12 @@ pub async fn assign_application(
     Path((_, user_id, application_id)): Path<(String, String, String)>,
     Form(form): Form<MemberActionForm>,
 ) -> Response {
-    change_assignment(
+    admin_accounts_console::change_assignment(
         &state,
         &correlation,
         &tenant,
         &headers,
-        &user_id,
+        AccountTarget::User(&user_id),
         &application_id,
         &form,
         true,
@@ -234,110 +160,17 @@ pub async fn unassign_application(
     Path((_, user_id, application_id)): Path<(String, String, String)>,
     Form(form): Form<MemberActionForm>,
 ) -> Response {
-    change_assignment(
+    admin_accounts_console::change_assignment(
         &state,
         &correlation,
         &tenant,
         &headers,
-        &user_id,
+        AccountTarget::User(&user_id),
         &application_id,
         &form,
         false,
     )
     .await
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn change_assignment(
-    state: &WebState,
-    correlation: &CorrelationId,
-    tenant: &WebTenant,
-    headers: &HeaderMap,
-    user_id: &str,
-    application_id: &str,
-    form: &MemberActionForm,
-    assign: bool,
-) -> Response {
-    match resolve_admin(state, correlation, tenant, headers).await {
-        AdminResolution::Ok(_) => {}
-        AdminResolution::Reject(resp) => return resp,
-    }
-    let back = member_href(tenant, user_id);
-    if !csrf_valid(headers, &form.csrf_token, state.config.csrf_secret()) {
-        return found(&format!("{back}?error=csrf"));
-    }
-    let sso = sso(headers);
-    let result = if assign {
-        state
-            .api
-            .assign_application_principal(
-                &correlation.0,
-                &tenant.0,
-                &sso,
-                application_id,
-                "user",
-                user_id,
-            )
-            .await
-            .map(|_| ())
-    } else {
-        state
-            .api
-            .unassign_application_user(&correlation.0, &tenant.0, &sso, application_id, user_id)
-            .await
-    };
-    let notice = if assign {
-        "application-assigned"
-    } else {
-        "application-unassigned"
-    };
-    match result {
-        Ok(()) => found(&format!("{back}?notice={notice}")),
-        Err(AdminApiError::Unauthorized) => redirect_to_login(tenant),
-        Err(AdminApiError::Forbidden) => found(&format!("{back}?error=forbidden-write")),
-        Err(AdminApiError::NotFound) => found(&format!("{back}?error=application-notfound")),
-        Err(_) => found(&format!("{back}?error=internal")),
-    }
-}
-
-/// メンバー 1 人の画面の URL。
-fn member_href(tenant: &WebTenant, user_id: &str) -> String {
-    format!("{}{MEMBERS_SEGMENT}/{user_id}", tenant.prefix())
-}
-
-/// メンバー一覧の描画（ページャのリンク組み立てを含む）。
-#[allow(clippy::too_many_arguments)]
-fn render_list(
-    messages: &Messages,
-    tenant: &WebTenant,
-    admin: &AdminContext,
-    csrf: &str,
-    page: &MemberListView,
-    term: &str,
-    offset: i64,
-    error_key: Option<&str>,
-    notice_key: Option<&str>,
-) -> String {
-    let links = pager_links(
-        &format!("{}{MEMBERS_SEGMENT}", tenant.prefix()),
-        &[("q", term)],
-        offset,
-        page.limit,
-        page.total,
-    );
-    render(&MembersList {
-        messages,
-        tenant: &tenant.prefix(),
-        admin: Some(admin.chrome()),
-        members: &page.members,
-        total: page.total,
-        query: term,
-        csrf,
-        error_key,
-        notice_key,
-        prev_href: links.prev,
-        next_href: links.next,
-    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -358,9 +191,9 @@ pub async fn revoke(
         AdminResolution::Ok(_) => {}
         AdminResolution::Reject(resp) => return resp,
     }
-    let base = format!("{}{MEMBERS_SEGMENT}", tenant.prefix());
+    let base = format!("{}{MEMBERS_LIST}", tenant.prefix());
     if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
-        return found(&format!("{base}?error=csrf"));
+        return found(&format!("{base}&error=csrf"));
     }
     let result = state
         .api
@@ -369,9 +202,9 @@ pub async fn revoke(
     match result {
         Ok(()) => found(&base),
         Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
-        Err(AdminApiError::Forbidden) => found(&format!("{base}?error=forbidden")),
-        Err(AdminApiError::NotFound) => found(&format!("{base}?error=notfound")),
-        Err(_) => found(&format!("{base}?error=internal")),
+        Err(AdminApiError::Forbidden) => found(&format!("{base}&error=forbidden")),
+        Err(AdminApiError::NotFound) => found(&format!("{base}&error=notfound")),
+        Err(_) => found(&format!("{base}&error=internal")),
     }
 }
 
@@ -389,9 +222,9 @@ pub async fn set_status(
         AdminResolution::Ok(_) => {}
         AdminResolution::Reject(resp) => return resp,
     }
-    let base = format!("{}{MEMBERS_SEGMENT}", tenant.prefix());
+    let base = format!("{}{MEMBERS_LIST}", tenant.prefix());
     if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
-        return found(&format!("{base}?error=csrf"));
+        return found(&format!("{base}&error=csrf"));
     }
     let result = state
         .api
@@ -406,10 +239,10 @@ pub async fn set_status(
     match result {
         Ok(_) => found(&base),
         Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
-        Err(AdminApiError::Forbidden) => found(&format!("{base}?error=self")),
-        Err(AdminApiError::NotFound) => found(&format!("{base}?error=user-notfound")),
-        Err(AdminApiError::Validation(_)) => found(&format!("{base}?error=internal")),
-        Err(_) => found(&format!("{base}?error=internal")),
+        Err(AdminApiError::Forbidden) => found(&format!("{base}&error=self")),
+        Err(AdminApiError::NotFound) => found(&format!("{base}&error=user-notfound")),
+        Err(AdminApiError::Validation(_)) => found(&format!("{base}&error=internal")),
+        Err(_) => found(&format!("{base}&error=internal")),
     }
 }
 
@@ -427,9 +260,9 @@ pub async fn reset_password(
         AdminResolution::Ok(uid) => uid,
         AdminResolution::Reject(resp) => return resp,
     };
-    let base = format!("{}{MEMBERS_SEGMENT}", tenant.prefix());
+    let base = format!("{}{MEMBERS_LIST}", tenant.prefix());
     if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
-        return found(&format!("{base}?error=csrf"));
+        return found(&format!("{base}&error=csrf"));
     }
     let reset = match state
         .api
@@ -438,9 +271,9 @@ pub async fn reset_password(
     {
         Ok(v) => v,
         Err(AdminApiError::Unauthorized) => return redirect_to_login(&tenant),
-        Err(AdminApiError::Forbidden) => return found(&format!("{base}?error=self")),
-        Err(AdminApiError::NotFound) => return found(&format!("{base}?error=user-notfound")),
-        Err(_) => return found(&format!("{base}?error=internal")),
+        Err(AdminApiError::Forbidden) => return found(&format!("{base}&error=self")),
+        Err(AdminApiError::NotFound) => return found(&format!("{base}&error=user-notfound")),
+        Err(_) => return found(&format!("{base}&error=internal")),
     };
     let messages = Messages::new(locale(&headers));
     let subject = if form.email.trim().is_empty() {
@@ -518,9 +351,9 @@ async fn set_member_status(
         AdminResolution::Ok(_) => {}
         AdminResolution::Reject(resp) => return resp,
     }
-    let base = format!("{}{MEMBERS_SEGMENT}", tenant.prefix());
+    let base = format!("{}{MEMBERS_LIST}", tenant.prefix());
     if !csrf_valid(headers, &form.csrf_token, state.config.csrf_secret()) {
-        return found(&format!("{base}?error=csrf"));
+        return found(&format!("{base}&error=csrf"));
     }
     let notice = if status == "SUSPENDED" {
         "member-suspended"
@@ -532,12 +365,12 @@ async fn set_member_status(
         .update_member_status(&correlation.0, &tenant.0, &sso(headers), user_id, status)
         .await
     {
-        Ok(()) => found(&format!("{base}?notice={notice}")),
+        Ok(()) => found(&format!("{base}&notice={notice}")),
         Err(AdminApiError::Unauthorized) => redirect_to_login(tenant),
         // HOME・遷移できない状態（既に停止済み等）は api が 403 を返す。
-        Err(AdminApiError::Forbidden) => found(&format!("{base}?error=forbidden")),
-        Err(AdminApiError::NotFound) => found(&format!("{base}?error=notfound")),
-        Err(_) => found(&format!("{base}?error=internal")),
+        Err(AdminApiError::Forbidden) => found(&format!("{base}&error=forbidden")),
+        Err(AdminApiError::NotFound) => found(&format!("{base}&error=notfound")),
+        Err(_) => found(&format!("{base}&error=internal")),
     }
 }
 
@@ -556,9 +389,9 @@ pub async fn reset_mfa(
         AdminResolution::Ok(_) => {}
         AdminResolution::Reject(resp) => return resp,
     }
-    let base = format!("{}{MEMBERS_SEGMENT}", tenant.prefix());
+    let base = format!("{}{MEMBERS_LIST}", tenant.prefix());
     if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
-        return found(&format!("{base}?error=csrf"));
+        return found(&format!("{base}&error=csrf"));
     }
     match state
         .api
@@ -568,13 +401,13 @@ pub async fn reset_mfa(
         // 何も設定されていなかった場合も成功だが、管理者には区別して伝える（「効いていない」と
         // 誤解して操作を繰り返すのを防ぐ）。
         Ok(reset) if !reset.totp_removed && reset.passkeys_removed == 0 => {
-            found(&format!("{base}?notice=mfa-none"))
+            found(&format!("{base}&notice=mfa-none"))
         }
-        Ok(_) => found(&format!("{base}?notice=mfa-reset")),
+        Ok(_) => found(&format!("{base}&notice=mfa-reset")),
         Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
-        Err(AdminApiError::Forbidden) => found(&format!("{base}?error=self")),
-        Err(AdminApiError::NotFound) => found(&format!("{base}?error=user-notfound")),
-        Err(_) => found(&format!("{base}?error=internal")),
+        Err(AdminApiError::Forbidden) => found(&format!("{base}&error=self")),
+        Err(AdminApiError::NotFound) => found(&format!("{base}&error=user-notfound")),
+        Err(_) => found(&format!("{base}&error=internal")),
     }
 }
 
@@ -595,9 +428,9 @@ pub async fn reissue_tokens(
         AdminResolution::Ok(_) => {}
         AdminResolution::Reject(resp) => return resp,
     }
-    let base = format!("{}{MEMBERS_SEGMENT}", tenant.prefix());
+    let base = format!("{}{MEMBERS_LIST}", tenant.prefix());
     if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
-        return found(&format!("{base}?error=csrf"));
+        return found(&format!("{base}&error=csrf"));
     }
     match state
         .api
@@ -606,12 +439,12 @@ pub async fn reissue_tokens(
     {
         // 落とすものが無かった場合も成功だが、管理者には区別して伝える（「効いていない」と
         // 誤解して操作を繰り返すのを防ぐ。MFA 解除・ロック解除と同じ扱い）。
-        Ok(result) if result.revoked == 0 => found(&format!("{base}?notice=tokens-none")),
-        Ok(_) => found(&format!("{base}?notice=tokens-reissued")),
+        Ok(result) if result.revoked == 0 => found(&format!("{base}&notice=tokens-none")),
+        Ok(_) => found(&format!("{base}&notice=tokens-reissued")),
         Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
-        Err(AdminApiError::Forbidden) => found(&format!("{base}?error=forbidden")),
-        Err(AdminApiError::NotFound) => found(&format!("{base}?error=user-notfound")),
-        Err(_) => found(&format!("{base}?error=internal")),
+        Err(AdminApiError::Forbidden) => found(&format!("{base}&error=forbidden")),
+        Err(AdminApiError::NotFound) => found(&format!("{base}&error=user-notfound")),
+        Err(_) => found(&format!("{base}&error=internal")),
     }
 }
 
@@ -630,9 +463,9 @@ pub async fn unlock(
         AdminResolution::Ok(_) => {}
         AdminResolution::Reject(resp) => return resp,
     }
-    let base = format!("{}{MEMBERS_SEGMENT}", tenant.prefix());
+    let base = format!("{}{MEMBERS_LIST}", tenant.prefix());
     if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
-        return found(&format!("{base}?error=csrf"));
+        return found(&format!("{base}&error=csrf"));
     }
     match state
         .api
@@ -641,12 +474,12 @@ pub async fn unlock(
     {
         // 元からロックされていなかった場合も成功だが、管理者には区別して伝える
         //（「効いていない」と誤解して操作を繰り返すのを防ぐ。MFA 解除と同じ扱い）。
-        Ok(result) if !result.was_locked => found(&format!("{base}?notice=unlock-none")),
-        Ok(_) => found(&format!("{base}?notice=unlocked")),
+        Ok(result) if !result.was_locked => found(&format!("{base}&notice=unlock-none")),
+        Ok(_) => found(&format!("{base}&notice=unlocked")),
         Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
-        Err(AdminApiError::Forbidden) => found(&format!("{base}?error=forbidden")),
-        Err(AdminApiError::NotFound) => found(&format!("{base}?error=user-notfound")),
-        Err(_) => found(&format!("{base}?error=internal")),
+        Err(AdminApiError::Forbidden) => found(&format!("{base}&error=forbidden")),
+        Err(AdminApiError::NotFound) => found(&format!("{base}&error=user-notfound")),
+        Err(_) => found(&format!("{base}&error=internal")),
     }
 }
 
@@ -664,9 +497,9 @@ pub async fn delete(
         AdminResolution::Ok(_) => {}
         AdminResolution::Reject(resp) => return resp,
     }
-    let base = format!("{}{MEMBERS_SEGMENT}", tenant.prefix());
+    let base = format!("{}{MEMBERS_LIST}", tenant.prefix());
     if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
-        return found(&format!("{base}?error=csrf"));
+        return found(&format!("{base}&error=csrf"));
     }
     let result = state
         .api
@@ -675,14 +508,14 @@ pub async fn delete(
     match result {
         Ok(()) => found(&base),
         Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
-        Err(AdminApiError::Forbidden) => found(&format!("{base}?error=self")),
-        Err(AdminApiError::NotFound) => found(&format!("{base}?error=user-notfound")),
-        Err(_) => found(&format!("{base}?error=internal")),
+        Err(AdminApiError::Forbidden) => found(&format!("{base}&error=self")),
+        Err(AdminApiError::NotFound) => found(&format!("{base}&error=user-notfound")),
+        Err(_) => found(&format!("{base}&error=internal")),
     }
 }
 
 /// Post/Redirect/Get で戻ったときに出す完了通知の翻訳キー。
-fn notice_key_for(notice: &str) -> Option<&'static str> {
+pub(crate) fn notice_key_for(notice: &str) -> Option<&'static str> {
     match notice {
         "mfa-reset" => Some("admin-members-mfa-reset-done"),
         "mfa-none" => Some("admin-members-mfa-reset-none"),
@@ -700,7 +533,7 @@ fn notice_key_for(notice: &str) -> Option<&'static str> {
     }
 }
 
-fn error_key_for(error: &str) -> Option<&'static str> {
+pub(crate) fn error_key_for(error: &str) -> Option<&'static str> {
     match error {
         "csrf" => Some("admin-error-csrf"),
         "forbidden" => Some("admin-members-error-home"),
@@ -770,28 +603,14 @@ mod tests {
         }
     }
 
-    /// 1 ページ分の応答（総件数はページの件数と同じ = 1 ページで収まる状態）。
-    fn page(members: Vec<MemberView>) -> MemberListView {
-        let total = members.len() as i64;
-        MemberListView {
-            members,
-            total,
-            limit: 50,
-            offset: 0,
-        }
-    }
-
+    /// 人だけのアカウント一覧を描く（一覧はアカウントの画面が持つ。ADR-0065）。
     fn render_page(members: &[MemberView], notice_key: Option<&str>) -> String {
-        let messages = Messages::new(Locale::Ja);
-        super::render_list(
-            &messages,
-            &tenant(),
-            &AdminContext::for_test("admin-1", Some("Acme")),
-            "csrf123",
-            &page(members.to_vec()),
-            "",
-            0,
-            None,
+        crate::handlers::admin_accounts_console::tests::render_accounts(
+            members
+                .iter()
+                .cloned()
+                .map(crate::handlers::admin_accounts_console::tests::user_account)
+                .collect(),
             notice_key,
         )
     }
@@ -818,7 +637,7 @@ mod tests {
 
     fn render_detail_with_applications(
         m: &MemberView,
-        applications: &crate::admin_dto::MemberApplicationListView,
+        applications: &crate::admin_dto::AccountApplicationListView,
     ) -> String {
         let messages = Messages::new(Locale::Ja);
         render(&crate::templates::MemberDetail {
@@ -838,8 +657,8 @@ mod tests {
         mode: &str,
         access: &str,
         assigned_at: Option<&str>,
-    ) -> crate::admin_dto::MemberApplicationView {
-        crate::admin_dto::MemberApplicationView {
+    ) -> crate::admin_dto::AccountApplicationView {
+        crate::admin_dto::AccountApplicationView {
             application_id: id.into(),
             display_name: format!("app-{id}"),
             status: "ACTIVE".into(),
@@ -960,31 +779,6 @@ mod tests {
         assert!(!html.contains("/resume"));
     }
 
-    /// 一覧のページャは共有ヘルパ（`crate::pagination`）が組み立てる。ここで確かめるのは
-    /// **メンバー一覧固有**の部分、すなわち遷移先が `/admin/members` であることと、
-    /// 絞り込み語をページ送りへ引き継ぐこと（次ページで条件が消えると別の集合になる）。
-    /// 総件数による次ページ判定とオーバーフロー対策は `crate::pagination` のテストが担う。
-    #[test]
-    fn pager_links_point_at_the_member_list_and_keep_the_search_term() {
-        let page = MemberListView {
-            members: vec![member("HOME")],
-            total: 100,
-            limit: 50,
-            offset: 0,
-        };
-        let links = pager_links(
-            &format!("{}{MEMBERS_SEGMENT}", tenant().prefix()),
-            &[("q", "a b&c")],
-            0,
-            page.limit,
-            page.total,
-        );
-        assert_eq!(links.prev, None, "先頭ページに「前へ」は出さない");
-        let next = links.next.expect("next");
-        assert!(next.contains("/admin/members?offset=50"), "{next}");
-        assert!(next.contains("q=a%20b%26c"), "{next}");
-    }
-
     /// ロック解除の導線は**ロック中の HOME 利用者にだけ**出す。常時出すと、押しても何も
     /// 変わらない操作が並び、ロックされている利用者を見分けられなくなる（AP6）。
     #[test]
@@ -1082,7 +876,7 @@ mod tests {
     #[test]
     fn the_list_shows_the_first_line_of_the_note() {
         let mut m = member("HOME");
-        m.note = Some(crate::admin_dto::MemberNoteView {
+        m.note = Some(crate::admin_dto::AccountNoteView {
             text: "家族として招待\n2 行目は出さない".into(),
             updated_at: "2026-09-24T12:00:00Z".into(),
         });
@@ -1091,7 +885,7 @@ mod tests {
         assert!(!html.contains("2 行目は出さない"), "{html}");
 
         m.note.as_mut().unwrap().text = "あ".repeat(100);
-        let excerpt = m.note_excerpt().unwrap();
+        let excerpt = m.note.as_ref().unwrap().excerpt().unwrap();
         assert_eq!(excerpt.chars().count(), 61, "60 文字 ＋ 省略記号");
     }
 
@@ -1107,7 +901,7 @@ mod tests {
             assert!(html.contains("maxlength=\"2000\""), "{html}");
         }
         let mut m = member("HOME");
-        m.note = Some(crate::admin_dto::MemberNoteView {
+        m.note = Some(crate::admin_dto::AccountNoteView {
             text: "<b>経緯</b>".into(),
             updated_at: "2026-09-24T12:00:00Z".into(),
         });
@@ -1131,7 +925,7 @@ mod tests {
     /// ADR-0063: 割り当ての出し入れは「個別」のアプリだけ。「全員」のアプリで外しても入れてしまう。
     #[test]
     fn assignment_buttons_appear_only_for_individual_applications() {
-        let apps = crate::admin_dto::MemberApplicationListView {
+        let apps = crate::admin_dto::AccountApplicationListView {
             applications: vec![
                 app("everyone", "EVERYONE", "allowed", None),
                 app(
@@ -1164,7 +958,7 @@ mod tests {
     /// 「使えるアプリ」はその場で絞り込める。行は名前と可否を持ち、札には件数が付く。
     #[test]
     fn the_applications_card_can_be_filtered_in_place() {
-        let apps = crate::admin_dto::MemberApplicationListView {
+        let apps = crate::admin_dto::AccountApplicationListView {
             applications: vec![
                 app("a1", "EVERYONE", "allowed", None),
                 app("a2", "INDIVIDUAL", "not_assigned", None),
@@ -1187,7 +981,7 @@ mod tests {
     /// 記録だけの間は、割り当てがまだ効いていないことを添える。
     #[test]
     fn record_only_is_mentioned_on_the_applications_card() {
-        let apps = crate::admin_dto::MemberApplicationListView {
+        let apps = crate::admin_dto::AccountApplicationListView {
             applications: vec![],
             enforcement: "record_only".into(),
         };

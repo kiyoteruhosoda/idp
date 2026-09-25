@@ -8,15 +8,16 @@ use crate::correlation;
 use crate::display_preferences::resolve_display_preferences;
 use crate::error_pages;
 use crate::handlers::{
-    account_setup, admin_applications_console, admin_authentication_policies_console,
-    admin_clients_console, admin_console, admin_external_idps_console, admin_invitations_console,
-    admin_login_identifiers_console, admin_members_console, admin_resources_console,
-    admin_restart_console, admin_saml_clients_console, admin_settings, admin_signing_keys_console,
-    admin_status_console, admin_tenants_console, admin_users_console, authenticators, consent,
-    console_script, external_login, health, invitation_accept, locale, login, mfa_totp,
-    page_scripts, passkey, password_change, password_reset, portal, react_assets, rp_logout,
-    saml_sso, step_up, stylesheet, submit_feedback_script, user_security, user_settings,
-    vendor_assets, verify_email, web_app_manifest,
+    account_setup, admin_accounts_console, admin_applications_console,
+    admin_authentication_policies_console, admin_clients_console, admin_console,
+    admin_external_idps_console, admin_invitations_console, admin_login_identifiers_console,
+    admin_members_console, admin_resources_console, admin_restart_console,
+    admin_saml_clients_console, admin_settings, admin_signing_keys_console, admin_status_console,
+    admin_tenants_console, admin_users_console, authenticators, consent, console_script,
+    external_login, health, invitation_accept, locale, login, mfa_totp, page_scripts, passkey,
+    password_change, password_reset, portal, react_assets, rp_logout, saml_sso, step_up,
+    stylesheet, submit_feedback_script, user_security, user_settings, vendor_assets, verify_email,
+    web_app_manifest,
 };
 use crate::i18n::Messages;
 use crate::login_context::load_rp_login_context;
@@ -335,12 +336,9 @@ pub fn build(state: WebState) -> Router {
         )
         // クライアント（RP）管理画面。静的セグメント（new）は動的 {client_id} より優先。
         .route("/admin/clients", get(admin_clients_console::list))
-        // サービスアカウント（機械の主体）の一覧と登録（ADR-0038）。詳細・編集・削除は
-        // `/admin/clients/{client_id}` を共有する（分けるのは「何を登録する場所か」だけ）。
-        .route(
-            "/admin/service-accounts",
-            get(admin_clients_console::list_service_accounts),
-        )
+        // サービスアカウント（機械の主体）の登録（ADR-0038）。一覧と 1 件の画面はアカウントの側
+        // （ADR-0065。下の `/admin/accounts`）。編集・シークレット・権限・削除は
+        // `/admin/clients/{client_id}/*` を共有する。
         .route(
             "/admin/service-accounts/new",
             get(admin_clients_console::new_service_account_form)
@@ -425,7 +423,31 @@ pub fn build(state: WebState) -> Router {
         )
         // メンバー（HOME/GUEST）一覧・ゲスト解除（ADR-0009 §3）と、所属元（HOME）利用者の
         // 無効化・有効化・パスワード再発行・削除（ADR-0009 §5）。
-        .route("/admin/members", get(admin_members_console::list))
+        // アカウント（人とサービスアカウント。ADR-0065）。旧来の 2 つの一覧は種別を絞ったこの一覧へ転送する。
+        .route("/admin/accounts", get(admin_accounts_console::list))
+        .route("/admin/members", get(admin_accounts_console::members_list))
+        .route(
+            "/admin/service-accounts",
+            get(admin_accounts_console::service_accounts_list),
+        )
+        // サービスアカウント 1 件の画面（人の `/admin/members/{user_id}` と同じ骨組み）と、その
+        // 管理者メモ・使えるアプリの出し入れ。
+        .route(
+            "/admin/service-accounts/{client_id}",
+            get(admin_accounts_console::service_account_detail),
+        )
+        .route(
+            "/admin/service-accounts/{client_id}/note",
+            post(admin_accounts_console::update_service_account_note),
+        )
+        .route(
+            "/admin/service-accounts/{client_id}/applications/{application_id}/assign",
+            post(admin_accounts_console::assign_service_account_application),
+        )
+        .route(
+            "/admin/service-accounts/{client_id}/applications/{application_id}/unassign",
+            post(admin_accounts_console::unassign_service_account_application),
+        )
         // メンバー 1 人の画面（操作はここに集める。一覧は探す場所）。
         .route(
             "/admin/members/{user_id}",
