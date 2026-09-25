@@ -599,6 +599,8 @@ mod tests {
             user_status: Some("ACTIVE".into()),
             locked: false,
             pending_setup: false,
+            setup_link_expires_at: None,
+            setup_link_expired: false,
             note: None,
         }
     }
@@ -870,6 +872,46 @@ mod tests {
         );
         let detail = render_detail(&m);
         assert!(detail.contains(&messages.get("admin-members-user-status-pending-help")));
+    }
+
+    /// 仮登録の人には設定リンクの期限を出し、切れたら札を変える。ボタンは「設定リンクを出し直す」。
+    #[test]
+    fn a_pending_member_shows_the_setup_link_deadline_and_its_expiry() {
+        let messages = Messages::new(Locale::Ja);
+        let mut m = member("HOME");
+        m.pending_setup = true;
+        m.setup_link_expires_at = Some("2026-09-25T14:39:45Z".into());
+        let list = render_page(&[m.clone()], None);
+        assert!(
+            list.contains(&messages.get("admin-members-setup-link-until")),
+            "{list}"
+        );
+        assert!(list.contains("datetime=\"2026-09-25T14:39:45Z\""), "{list}");
+        let detail = render_detail(&m);
+        assert!(
+            detail.contains(&messages.get("admin-members-reissue-setup-link-button")),
+            "{detail}"
+        );
+        assert!(
+            !detail.contains(&messages.get("admin-members-reset-password-button")),
+            "仮登録の人に「パスワード再発行」を出さない: {detail}"
+        );
+
+        m.setup_link_expired = true;
+        let list = render_page(&[m.clone()], None);
+        assert!(
+            list.contains(&messages.get("admin-members-user-status-setup-expired")),
+            "{list}"
+        );
+        assert!(
+            !list.contains(&format!(
+                ">{}<",
+                messages.get("admin-members-user-status-pending")
+            )),
+            "期限切れを普通の仮登録と同じ札にしない: {list}"
+        );
+        let detail = render_detail(&m);
+        assert!(detail.contains(&messages.get("admin-members-user-status-setup-expired-help")));
     }
 
     /// ADR-0063: 一覧にはメモの 1 行目だけを出す（全文は 1 人の画面で読む）。

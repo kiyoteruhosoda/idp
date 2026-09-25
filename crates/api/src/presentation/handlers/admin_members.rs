@@ -289,6 +289,13 @@ pub(crate) fn member_response(m: TenantMember, now: DateTime<Utc>) -> MemberResp
         // 期限切れのロックは「掛かっていない」として返す（読んだ時点で判定する）。
         locked: m.locked_until.is_some_and(|until| until > now),
         pending_setup: m.pending_setup,
+        // 期限は仮登録の人にだけ意味がある（設定を終えた人のリンクは使い道が無い）。
+        setup_link_expires_at: m
+            .setup_link_expires_at
+            .filter(|_| m.pending_setup)
+            .map(|t| t.to_rfc3339()),
+        setup_link_expired: m.pending_setup
+            && !m.setup_link_expires_at.is_some_and(|until| until > now),
         note: note_response(m.note),
     }
 }

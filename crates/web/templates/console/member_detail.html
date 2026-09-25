@@ -18,7 +18,10 @@
       <dd class="mb-0">{% if member.status == "SUSPENDED" %}<span class="badge text-bg-warning">{{ messages.get("admin-members-status-suspended") }}</span>{% else %}{{ member.status }}{% endif %}</dd></div>
     <div class="col mb-2"><dt class="small text-muted fw-semibold">{{ messages.get("admin-members-col-user-status") }}</dt>
       <dd class="mb-0">
-        {% if member.pending_setup %}<span class="badge text-bg-secondary"><i class="fa-regular fa-hourglass-half me-1" aria-hidden="true"></i>{{ messages.get("admin-members-user-status-pending") }}</span>
+        {% if member.pending_setup && member.setup_link_expired %}<span class="badge text-bg-warning"><i class="fa-solid fa-link-slash me-1" aria-hidden="true"></i>{{ messages.get("admin-members-user-status-setup-expired") }}</span>
+        <div class="small text-muted mt-1">{{ messages.get("admin-members-user-status-setup-expired-help") }}</div>
+        {% else if member.pending_setup %}<span class="badge text-bg-secondary"><i class="fa-regular fa-hourglass-half me-1" aria-hidden="true"></i>{{ messages.get("admin-members-user-status-pending") }}</span>
+        {% if let Some(until) = member.setup_link_expires_at %}<div class="small mt-1">{{ messages.get("admin-members-setup-link-until") }} <time class="local-time" datetime="{{ until }}">{{ crate::templates::utc_short(until.as_str()) }}</time></div>{% endif %}
         <div class="small text-muted mt-1">{{ messages.get("admin-members-user-status-pending-help") }}</div>
         {% endif %}
         {% if member.locked %}<span class="badge text-bg-warning"><i class="fa-solid fa-lock me-1" aria-hidden="true"></i>{{ messages.get("admin-members-user-status-locked") }}</span>
@@ -78,11 +81,20 @@
       <button type="submit" class="btn btn-outline-success"><i class="fa-solid fa-lock-open me-1" aria-hidden="true"></i>{{ messages.get("admin-members-unlock-button") }}</button>
     </form>
     {% endif %}
+    {#- 仮登録の人にとってこの操作は「設定リンクを出し直す」こと（パスワードはまだ無い）。名前を合わせる。 -#}
+    {% if member.pending_setup %}
+    <form method="post" action="{{ tenant }}/admin/members/{{ member.user_id }}/reset-password" data-confirm="{{ messages.get("admin-members-reissue-setup-link-confirm") }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <input type="hidden" name="email" value="{{ member.email.as_deref().unwrap_or("") }}">
+      <button type="submit" class="btn btn-outline-primary"><i class="fa-solid fa-link me-1" aria-hidden="true"></i>{{ messages.get("admin-members-reissue-setup-link-button") }}</button>
+    </form>
+    {% else %}
     <form method="post" action="{{ tenant }}/admin/members/{{ member.user_id }}/reset-password" data-confirm="{{ messages.get("admin-members-reset-password-confirm") }}">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <input type="hidden" name="email" value="{{ member.email.as_deref().unwrap_or("") }}">
       <button type="submit" class="btn btn-outline-secondary"><i class="fa-solid fa-key me-1" aria-hidden="true"></i>{{ messages.get("admin-members-reset-password-button") }}</button>
     </form>
+    {% endif %}
     <form method="post" action="{{ tenant }}/admin/members/{{ member.user_id }}/reset-mfa" data-confirm="{{ messages.get("admin-members-reset-mfa-confirm") }}">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <input type="hidden" name="email" value="{{ member.email.as_deref().unwrap_or("") }}">

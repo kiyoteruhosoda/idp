@@ -76,7 +76,9 @@
           {% if m.status == "SUSPENDED" %}<span class="badge text-bg-warning">{{ messages.get("admin-members-status-suspended") }}</span>
           {% else if m.status == "INVITED" %}<span class="badge text-bg-secondary">{{ messages.get("admin-members-status-invited") }}</span>{% endif %}
           {#- 仮登録（ADR-0064）。有効かどうかより先に出す ——本人がまだ何も決めていないので入れない。 -#}
-          {% if m.pending_setup %}<span class="badge text-bg-secondary"><i class="fa-regular fa-hourglass-half me-1" aria-hidden="true"></i>{{ messages.get("admin-members-user-status-pending") }}</span>{% endif %}
+          {#- 設定リンクが切れた仮登録は、管理者が出し直すまで誰も入れない。ただの「仮登録」と同じ札にしない。 -#}
+          {% if m.pending_setup && m.setup_link_expired %}<span class="badge text-bg-warning"><i class="fa-solid fa-link-slash me-1" aria-hidden="true"></i>{{ messages.get("admin-members-user-status-setup-expired") }}</span>
+          {% else if m.pending_setup %}<span class="badge text-bg-secondary"><i class="fa-regular fa-hourglass-half me-1" aria-hidden="true"></i>{{ messages.get("admin-members-user-status-pending") }}</span>{% if let Some(until) = m.setup_link_expires_at %}<span class="small text-muted">{{ messages.get("admin-members-setup-link-until") }} <time class="local-time" datetime="{{ until }}">{{ crate::templates::utc_short(until.as_str()) }}</time></span>{% endif %}{% endif %}
           {% if m.locked %}<span class="badge text-bg-warning"><i class="fa-solid fa-lock me-1" aria-hidden="true"></i>{{ messages.get("admin-members-user-status-locked") }}</span>
           {% else if m.user_status.as_deref() == Some("DISABLED") %}<span class="badge text-bg-danger">{{ messages.get("admin-members-user-status-disabled") }}</span>
           {% else if m.pending_setup %}

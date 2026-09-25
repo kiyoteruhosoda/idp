@@ -1046,6 +1046,12 @@ pub struct MemberResponse {
     pub locked: bool,
     /// 仮登録か（ADR-0064）。本人がまだ設定リンクで資格情報を決めておらず、ログインできない。
     pub pending_setup: bool,
+    /// 仮登録の人の、いまの設定リンクの期限（RFC 3339・UTC）。仮登録でない・リンクが無ければ省略される。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub setup_link_expires_at: Option<String>,
+    /// 仮登録で、使える設定リンクが無い（期限切れ・出していない）か。読んだ時点で判定する。
+    /// 立っていたら管理者が出し直すまで誰も入れない。
+    pub setup_link_expired: bool,
     /// 管理者メモ（ADR-0063）。書かれていなければ省略される。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<AccountNoteResponse>,

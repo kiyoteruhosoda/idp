@@ -50,6 +50,8 @@ const USER_COLUMNS: &str = "'USER' AS kind, \
      m.user_id AS user_id, m.membership_type AS membership_type, m.status AS status, \
      u.email AS email, u.name AS name, u.status AS user_status, \
      u.locked_until AS locked_until, u.pending_setup AS pending_setup, \
+     (SELECT MAX(t.expires_at) FROM password_reset_tokens t \
+        WHERE t.user_id = u.id AND t.purpose = 'setup' AND t.used_at IS NULL) AS setup_link_expires_at, \
      (SELECT p.display_value FROM user_login_identifiers p \
         WHERE p.primary_of_user = u.id) AS preferred_username, \
      NULL AS client_row_id, NULL AS client_id, NULL AS app_name, NULL AS client_status, \
@@ -62,7 +64,7 @@ const SERVICE_ACCOUNT_COLUMNS: &str = "'SERVICE_ACCOUNT' AS kind, \
      c.id AS account_id, \
      NULL AS user_id, NULL AS membership_type, NULL AS status, \
      NULL AS email, NULL AS name, NULL AS user_status, \
-     NULL AS locked_until, NULL AS pending_setup, \
+     NULL AS locked_until, NULL AS pending_setup, NULL AS setup_link_expires_at, \
      NULL AS preferred_username, \
      c.id AS client_row_id, c.client_id AS client_id, c.app_name AS app_name, \
      c.client_status AS client_status, \
