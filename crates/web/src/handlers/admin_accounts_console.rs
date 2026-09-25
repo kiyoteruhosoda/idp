@@ -709,6 +709,22 @@ pub(crate) mod tests {
         );
     }
 
+    /// 検索欄は打つだけで絞り込む（`assets/live-search.js`）。差し替える領域と、語が空のときに
+    /// 隠す「消去」を描いていること。スクリプトが無くても送れるよう、ボタンは残す。
+    #[test]
+    fn the_search_box_filters_as_you_type() {
+        let html = render_with(Vec::new(), &[KIND_USER, KIND_SERVICE_ACCOUNT], "", None);
+        assert!(html.contains("data-live-search>"), "{html}");
+        assert!(
+            html.contains("data-live-search-region=\"results\""),
+            "{html}"
+        );
+        assert!(html.contains("data-live-search-region=\"kinds\""), "{html}");
+        assert!(html.contains("/assets/live-search.js?v="), "{html}");
+        assert!(html.contains("data-live-search-clear hidden"), "{html}");
+        assert!(html.contains("type=\"submit\""), "{html}");
+    }
+
     #[test]
     fn old_lists_are_forwarded_to_the_filtered_account_list() {
         let q = ListQuery {

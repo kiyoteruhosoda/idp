@@ -17,7 +17,9 @@
 <p class="text-muted">{{ messages.get("admin-accounts-intro") }}</p>
 {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
 {% if let Some(key) = notice_key %}<div class="alert alert-success" role="status"><i class="fa-solid fa-circle-check me-2" aria-hidden="true"></i>{{ messages.get(key) }}</div>{% endif %}
-{#- 種別の絞り込み。読める種別が 1 つしか無い管理者には出さない（選べないものを並べない）。 -#}
+{#- 種別の絞り込み。読める種別が 1 つしか無い管理者には出さない（選べないものを並べない）。
+    タブの行き先は検索語を持ち越すので、検索欄を打つたびに差し替える（`data-live-search-region`）。 -#}
+<div data-live-search-region="kinds">
 {% if kind_tabs.len() > 1 %}
 <nav class="mb-3" aria-label="{{ messages.get("admin-accounts-kind-label") }}">
   <ul class="nav nav-pills flex-wrap gap-1">
@@ -27,15 +29,19 @@
   </ul>
 </nav>
 {% endif %}
-<form method="get" action="{{ tenant }}/admin/accounts" class="mb-3" role="search">
+</div>
+{#- 検索欄は打つだけで絞り込む（`assets/live-search.js`。入力が止まってから取り直し、下の領域だけを
+    差し替える）。スクリプトが動かなければボタンで送れる。 -#}
+<form method="get" action="{{ tenant }}/admin/accounts" class="mb-3" role="search" data-live-search>
   {% if !kind.is_empty() %}<input type="hidden" name="kind" value="{{ kind }}">{% endif %}
   <div class="input-group" style="max-width: 28rem;">
     <span class="input-group-text"><i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i></span>
     <input type="search" class="form-control" name="q" value="{{ query }}" placeholder="{{ messages.get("admin-accounts-search-placeholder") }}" aria-label="{{ messages.get("admin-members-search-label") }}">
     <button type="submit" class="btn btn-outline-secondary">{{ messages.get("admin-members-search-button") }}</button>
-    {% if !query.is_empty() %}<a class="btn btn-outline-secondary" href="{{ clear_href }}">{{ messages.get("admin-members-search-clear") }}</a>{% endif %}
+    <a class="btn btn-outline-secondary" href="{{ clear_href }}" data-live-search-clear{% if query.is_empty() %} hidden{% endif %}>{{ messages.get("admin-members-search-clear") }}</a>
   </div>
 </form>
+<div data-live-search-region="results">
 {% if accounts.is_empty() %}
 {% if query.is_empty() %}
 <p class="text-muted">{{ messages.get("admin-accounts-none") }}</p>
@@ -90,4 +96,6 @@
 </div>
 {% endif %}
 {% include "console/pagination.html" %}
+</div>
+<script src="/assets/live-search.js?v={{ crate::templates::asset_version() }}" defer></script>
 {% endblock %}
