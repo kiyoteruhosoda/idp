@@ -65,9 +65,9 @@ impl TenantDomainRepository for SqlxTenantDomainRepository {
     }
 
     async fn list_for_tenant(&self, tenant_id: TenantId) -> Result<Vec<TenantDomain>> {
-        let rows = sqlx::query(&format!(
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {SELECT_COLUMNS} FROM tenant_domains WHERE tenant_id = ? ORDER BY domain"
-        ))
+        )))
         .bind(tenant_id.to_string())
         .fetch_all(&self.pool)
         .await

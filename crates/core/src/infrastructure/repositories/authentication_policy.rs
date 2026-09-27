@@ -113,10 +113,10 @@ impl AuthenticationPolicyRepository for SqlxAuthenticationPolicyRepository {
     }
 
     async fn list_for_tenant(&self, tenant_id: TenantId) -> Result<Vec<AuthenticationPolicy>> {
-        let rows = sqlx::query(&format!(
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {SELECT_COLUMNS} FROM authentication_policies \
              WHERE tenant_id = ? ORDER BY priority ASC, policy_code ASC"
-        ))
+        )))
         .bind(tenant_id.to_string())
         .fetch_all(&self.pool)
         .await
@@ -128,10 +128,10 @@ impl AuthenticationPolicyRepository for SqlxAuthenticationPolicyRepository {
         &self,
         tenant_id: TenantId,
     ) -> Result<Vec<AuthenticationPolicy>> {
-        let rows = sqlx::query(&format!(
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {SELECT_COLUMNS} FROM authentication_policies \
              WHERE tenant_id = ? AND enabled = TRUE ORDER BY priority ASC, policy_code ASC"
-        ))
+        )))
         .bind(tenant_id.to_string())
         .fetch_all(&self.pool)
         .await
@@ -144,9 +144,9 @@ impl AuthenticationPolicyRepository for SqlxAuthenticationPolicyRepository {
         tenant_id: TenantId,
         id: Uuid,
     ) -> Result<Option<AuthenticationPolicy>> {
-        let row = sqlx::query(&format!(
+        let row = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {SELECT_COLUMNS} FROM authentication_policies WHERE tenant_id = ? AND id = ?"
-        ))
+        )))
         .bind(tenant_id.to_string())
         .bind(id.to_string())
         .fetch_optional(&self.pool)

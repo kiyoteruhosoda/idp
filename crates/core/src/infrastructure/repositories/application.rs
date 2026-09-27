@@ -148,9 +148,9 @@ fn map_assigned_service_account(row: &MySqlRow) -> Result<AssignedServiceAccount
 #[async_trait]
 impl ApplicationRepository for SqlxApplicationRepository {
     async fn create(&self, application: &Application) -> Result<()> {
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "INSERT INTO applications ({SELECT_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)"
-        ))
+        )))
         .bind(application.id.to_string())
         .bind(application.tenant_id.to_string())
         .bind(&application.display_name)
@@ -165,9 +165,9 @@ impl ApplicationRepository for SqlxApplicationRepository {
     }
 
     async fn find_by_id(&self, tenant_id: TenantId, id: Uuid) -> Result<Option<Application>> {
-        let row = sqlx::query(&format!(
+        let row = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {SELECT_COLUMNS} FROM applications WHERE id = ? AND tenant_id = ?"
-        ))
+        )))
         .bind(id.to_string())
         .bind(tenant_id.to_string())
         .fetch_optional(&self.pool)
@@ -183,13 +183,13 @@ impl ApplicationRepository for SqlxApplicationRepository {
         tenant_id: TenantId,
         client_id: &str,
     ) -> Result<Option<Application>> {
-        let row = sqlx::query(&format!(
+        let row = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {} FROM applications a \
              JOIN application_bindings b ON b.application_id = a.id \
              JOIN clients c ON c.id = b.client_id \
              WHERE b.kind = 'oidc' AND a.tenant_id = ? AND c.tenant_id = ? AND c.client_id = ?",
             aliased_columns("a")
-        ))
+        )))
         .bind(tenant_id.to_string())
         .bind(tenant_id.to_string())
         .bind(client_id)
@@ -204,13 +204,13 @@ impl ApplicationRepository for SqlxApplicationRepository {
         tenant_id: TenantId,
         entity_id: &str,
     ) -> Result<Option<Application>> {
-        let row = sqlx::query(&format!(
+        let row = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {} FROM applications a \
              JOIN application_bindings b ON b.application_id = a.id \
              JOIN saml_service_providers s ON s.id = b.service_provider_id \
              WHERE b.kind = 'saml' AND a.tenant_id = ? AND s.tenant_id = ? AND s.entity_id = ?",
             aliased_columns("a")
-        ))
+        )))
         .bind(tenant_id.to_string())
         .bind(tenant_id.to_string())
         .bind(entity_id)
@@ -228,13 +228,13 @@ impl ApplicationRepository for SqlxApplicationRepository {
         tenant_id: TenantId,
         target: BindingTarget,
     ) -> Result<Option<Application>> {
-        let row = sqlx::query(&format!(
+        let row = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {} FROM applications a \
              JOIN application_bindings b ON b.application_id = a.id \
              WHERE a.tenant_id = ? AND b.kind = ? AND b.{} = ?",
             aliased_columns("a"),
             target_column(&target)
-        ))
+        )))
         .bind(tenant_id.to_string())
         .bind(target.kind())
         .bind(target.target_id().to_string())
@@ -245,9 +245,9 @@ impl ApplicationRepository for SqlxApplicationRepository {
     }
 
     async fn list(&self, tenant_id: TenantId) -> Result<Vec<Application>> {
-        let rows = sqlx::query(&format!(
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {SELECT_COLUMNS} FROM applications WHERE tenant_id = ? ORDER BY display_name, id"
-        ))
+        )))
         .bind(tenant_id.to_string())
         .fetch_all(&self.pool)
         .await
@@ -411,11 +411,11 @@ impl ApplicationRepository for SqlxApplicationRepository {
             AccountRef::ServiceAccount { client_row_id } => ("client_id", client_row_id),
         };
         // アプリの行で要求テナントに絞る（割り当ての表はテナントを持たない）。
-        let rows = sqlx::query(&format!(
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT a.application_id, a.assigned_at \
              FROM application_assignments a JOIN applications p ON p.id = a.application_id \
              WHERE a.kind = ? AND a.{column} = ? AND p.tenant_id = ?"
-        ))
+        )))
         .bind(account.kind())
         .bind(id.to_string())
         .bind(tenant_id.as_uuid().to_string())
@@ -493,10 +493,10 @@ impl ApplicationRepository for SqlxApplicationRepository {
             AccountRef::User { user_id } => ("user_id", user_id),
             AccountRef::ServiceAccount { client_row_id } => ("client_id", client_row_id),
         };
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "DELETE FROM application_assignments \
              WHERE application_id = ? AND kind = ? AND {column} = ?"
-        ))
+        )))
         .bind(application_id.to_string())
         .bind(principal.kind())
         .bind(id.to_string())

@@ -62,7 +62,7 @@ FROM rust:slim-bookworm AS migrate-tool-builder
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential perl pkg-config \
     && rm -rf /var/lib/apt/lists/* \
-    && cargo install sqlx-cli --version ^0.8 --no-default-features --features mysql,rustls --locked --root /opt/sqlx
+    && cargo install sqlx-cli --version ^0.9 --no-default-features --features mysql,rustls --locked --root /opt/sqlx
 
 # ---- migrate ----
 # DDL / マスタデータ適用の専用ジョブ（sqlx migrate run）。CLAUDE.md schema-version 方針に従い、

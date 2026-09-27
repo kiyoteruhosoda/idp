@@ -104,7 +104,7 @@ impl UserAuthenticatorRepository for SqlxUserAuthenticatorRepository {
 
     async fn find_by_id(&self, id: Uuid) -> Result<Option<UserAuthenticator>> {
         let sql = format!("SELECT {SELECT_COLUMNS} FROM user_authenticators WHERE id = ?");
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(id.to_string())
             .fetch_optional(&self.pool)
             .await
@@ -117,7 +117,7 @@ impl UserAuthenticatorRepository for SqlxUserAuthenticatorRepository {
             "SELECT {SELECT_COLUMNS} FROM user_authenticators WHERE user_id = ? \
              ORDER BY created_at DESC"
         );
-        let rows = sqlx::query(&sql)
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(user_id.to_string())
             .fetch_all(&self.pool)
             .await
@@ -143,7 +143,7 @@ impl UserAuthenticatorRepository for SqlxUserAuthenticatorRepository {
                AND (expires_at IS NULL OR expires_at > ?){type_clause} \
              ORDER BY created_at DESC"
         );
-        let mut query = sqlx::query(&sql)
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(user_id.to_string())
             .bind(now.naive_utc());
         if let Some(t) = authenticator_type {
@@ -172,7 +172,9 @@ impl UserAuthenticatorRepository for SqlxUserAuthenticatorRepository {
             "UPDATE user_authenticators SET status = ?, revoked_at = ?{confirmed_clause} \
              WHERE id = ? AND user_id = ?"
         );
-        let mut query = sqlx::query(&sql).bind(status.as_str()).bind(revoked_at);
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(status.as_str())
+            .bind(revoked_at);
         if status == AuthenticatorStatus::Active {
             query = query.bind(at.naive_utc());
         }
@@ -240,7 +242,7 @@ impl UserAuthenticatorRepository for SqlxUserAuthenticatorRepository {
              WHERE user_id = ? AND authenticator_type = ? AND secret_encrypted = ? \
              ORDER BY revoked_at DESC LIMIT 1"
         );
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(user_id.to_string())
             .bind(authenticator_type.as_str())
             .bind(secret_hash)
@@ -323,7 +325,7 @@ impl UserAuthenticatorRepository for SqlxUserAuthenticatorRepository {
              WHERE user_id = ? AND authenticator_type = ? AND status = 'active' \
              ORDER BY confirmed_at DESC LIMIT 1"
         );
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(user_id.to_string())
             .bind(authenticator_type.as_str())
             .fetch_optional(&self.pool)

@@ -102,7 +102,7 @@ impl WebAuthnCredentialRepository for SqlxWebAuthnCredentialRepository {
     async fn find_by_id(&self, id: Uuid) -> Result<Option<WebAuthnCredential>> {
         let sql =
             format!("SELECT {COLUMNS} FROM user_authenticators WHERE id = ? AND {USABLE} LIMIT 1");
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(id.to_string())
             .fetch_optional(&self.pool)
             .await
@@ -118,7 +118,7 @@ impl WebAuthnCredentialRepository for SqlxWebAuthnCredentialRepository {
             "SELECT {COLUMNS} FROM user_authenticators \
              WHERE credential_id = ? AND {USABLE} LIMIT 1"
         );
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(credential_id)
             .fetch_optional(&self.pool)
             .await
@@ -131,7 +131,7 @@ impl WebAuthnCredentialRepository for SqlxWebAuthnCredentialRepository {
             "SELECT {COLUMNS} FROM user_authenticators \
              WHERE user_id = ? AND {USABLE} ORDER BY created_at ASC"
         );
-        let rows = sqlx::query(&sql)
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(user_id.to_string())
             .fetch_all(&self.pool)
             .await

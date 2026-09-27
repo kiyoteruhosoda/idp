@@ -40,7 +40,7 @@ use std::sync::Arc;
 async fn delete_by_expires_at(pool: &Db, table: &str, now: DateTime<Utc>) -> Result<u64> {
     // テーブル名は本モジュール内の定数だけが渡る（外部入力を組み立てない）。
     let sql = format!("DELETE FROM {table} WHERE expires_at <= ?");
-    let result = sqlx::query(&sql)
+    let result = sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(now.naive_utc())
         .execute(pool)
         .await

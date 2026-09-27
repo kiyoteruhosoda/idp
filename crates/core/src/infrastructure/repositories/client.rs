@@ -113,7 +113,7 @@ impl ClientRepository for SqlxClientRepository {
     ) -> Result<Option<Client>> {
         let sql =
             format!("SELECT {SELECT_COLUMNS} FROM clients WHERE tenant_id = ? AND client_id = ?");
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(tenant_id.to_string())
             .bind(client_id)
             .fetch_optional(&self.pool)
@@ -172,7 +172,7 @@ impl ClientRepository for SqlxClientRepository {
             "SELECT {SELECT_COLUMNS} FROM clients \
              WHERE tenant_id = ? AND client_status <> 'DELETED' ORDER BY created_at DESC"
         );
-        let rows = sqlx::query(&sql)
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(tenant_id.to_string())
             .fetch_all(&self.pool)
             .await
@@ -200,7 +200,8 @@ impl ClientRepository for SqlxClientRepository {
             "SELECT COUNT(*) AS total FROM clients \
              WHERE tenant_id = ? AND client_status <> 'DELETED'{grant_predicate}"
         );
-        let mut count_query = sqlx::query(&count_sql).bind(tenant_id.to_string());
+        let mut count_query =
+            sqlx::query(sqlx::AssertSqlSafe(count_sql)).bind(tenant_id.to_string());
         if let Some(grant) = grant_type {
             count_query = count_query.bind(grant.as_str());
         }
@@ -218,7 +219,7 @@ impl ClientRepository for SqlxClientRepository {
              WHERE tenant_id = ? AND client_status <> 'DELETED'{grant_predicate} \
              ORDER BY created_at DESC, client_id ASC LIMIT ? OFFSET ?"
         );
-        let mut rows_query = sqlx::query(&sql).bind(tenant_id.to_string());
+        let mut rows_query = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(tenant_id.to_string());
         if let Some(grant) = grant_type {
             rows_query = rows_query.bind(grant.as_str());
         }

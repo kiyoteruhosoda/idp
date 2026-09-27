@@ -70,7 +70,7 @@ const DROPPED_TABLES: &[&str] = &[
 ];
 
 async fn count(pool: &MySqlPool, sql: &str) -> i64 {
-    sqlx::query(sql)
+    sqlx::query(sqlx::AssertSqlSafe(sql))
         .fetch_one(pool)
         .await
         .expect("count query")

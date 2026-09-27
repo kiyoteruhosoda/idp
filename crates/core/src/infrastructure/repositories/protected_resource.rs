@@ -81,9 +81,9 @@ impl ProtectedResourceRepository for SqlxProtectedResourceRepository {
     }
 
     async fn find_by_id(&self, tenant_id: TenantId, id: Uuid) -> Result<Option<ProtectedResource>> {
-        let row = sqlx::query(&format!(
+        let row = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {SELECT_COLUMNS} FROM resources WHERE id = ? AND tenant_id = ?"
-        ))
+        )))
         .bind(id.to_string())
         .bind(tenant_id.to_string())
         .fetch_optional(&self.pool)
@@ -99,9 +99,9 @@ impl ProtectedResourceRepository for SqlxProtectedResourceRepository {
         tenant_id: TenantId,
         uri: &str,
     ) -> Result<Option<ProtectedResource>> {
-        let row = sqlx::query(&format!(
+        let row = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {SELECT_COLUMNS} FROM resources WHERE tenant_id = ? AND resource_uri = ?"
-        ))
+        )))
         .bind(tenant_id.to_string())
         .bind(uri)
         .fetch_optional(&self.pool)
@@ -111,9 +111,9 @@ impl ProtectedResourceRepository for SqlxProtectedResourceRepository {
     }
 
     async fn list(&self, tenant_id: TenantId) -> Result<Vec<ProtectedResource>> {
-        let rows = sqlx::query(&format!(
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {SELECT_COLUMNS} FROM resources WHERE tenant_id = ? ORDER BY resource_uri"
-        ))
+        )))
         .bind(tenant_id.to_string())
         .fetch_all(&self.pool)
         .await

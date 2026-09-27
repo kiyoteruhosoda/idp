@@ -64,9 +64,9 @@ impl AccountNoteRepository for SqlxAccountNoteRepository {
             AccountRef::User { user_id } => ("user_id", user_id),
             AccountRef::ServiceAccount { client_row_id } => ("client_id", client_row_id),
         };
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "DELETE FROM account_notes WHERE tenant_id = ? AND {column} = ?"
-        ))
+        )))
         .bind(tenant_id.as_uuid().to_string())
         .bind(id.to_string())
         .execute(&self.pool)

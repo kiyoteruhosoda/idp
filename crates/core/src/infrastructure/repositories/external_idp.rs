@@ -193,7 +193,7 @@ impl ExternalIdentityProviderRepository for SqlxExternalIdentityProviderReposito
             "SELECT {PROVIDER_COLUMNS} FROM external_identity_providers \
              WHERE tenant_id = ? ORDER BY provider_code ASC"
         );
-        let rows = sqlx::query(&sql)
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(tenant_id.to_string())
             .fetch_all(&self.pool)
             .await
@@ -209,7 +209,7 @@ impl ExternalIdentityProviderRepository for SqlxExternalIdentityProviderReposito
             "SELECT {PROVIDER_COLUMNS} FROM external_identity_providers \
              WHERE tenant_id = ? AND enabled = TRUE ORDER BY provider_code ASC"
         );
-        let rows = sqlx::query(&sql)
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(tenant_id.to_string())
             .fetch_all(&self.pool)
             .await
@@ -226,7 +226,7 @@ impl ExternalIdentityProviderRepository for SqlxExternalIdentityProviderReposito
             "SELECT {PROVIDER_COLUMNS} FROM external_identity_providers \
              WHERE tenant_id = ? AND provider_code = ?"
         );
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(tenant_id.to_string())
             .bind(provider_code)
             .fetch_optional(&self.pool)
@@ -244,7 +244,7 @@ impl ExternalIdentityProviderRepository for SqlxExternalIdentityProviderReposito
             "SELECT {PROVIDER_COLUMNS} FROM external_identity_providers \
              WHERE tenant_id = ? AND id = ?"
         );
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(tenant_id.to_string())
             .bind(id.to_string())
             .fetch_optional(&self.pool)
@@ -369,7 +369,7 @@ impl ExternalIdentityRepository for SqlxExternalIdentityRepository {
             "SELECT {IDENTITY_COLUMNS} FROM user_external_identities \
              WHERE provider_id = ? AND external_issuer = ? AND external_subject = ?"
         );
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(provider_id.to_string())
             .bind(external_issuer)
             .bind(external_subject)
@@ -384,7 +384,7 @@ impl ExternalIdentityRepository for SqlxExternalIdentityRepository {
             "SELECT {IDENTITY_COLUMNS} FROM user_external_identities \
              WHERE user_id = ? ORDER BY created_at DESC"
         );
-        let rows = sqlx::query(&sql)
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(user_id.to_string())
             .fetch_all(&self.pool)
             .await
@@ -478,7 +478,7 @@ impl ExternalLoginRequestRepository for SqlxExternalLoginRequestRepository {
             "SELECT {REQUEST_COLUMNS} FROM external_login_requests \
              WHERE state_hash = ? AND tenant_id = ?"
         );
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(state_hash)
             .bind(tenant_id.to_string())
             .fetch_optional(&self.pool)

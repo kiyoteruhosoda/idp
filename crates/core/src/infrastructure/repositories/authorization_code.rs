@@ -134,7 +134,7 @@ impl AuthorizationCodeRepository for SqlxAuthorizationCodeRepository {
         }
 
         let sql = format!("SELECT {SELECT_COLUMNS} FROM authorization_codes WHERE code_hash = ?");
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(code_hash)
             .fetch_optional(&self.pool)
             .await
@@ -152,7 +152,7 @@ impl AuthorizationCodeRepository for SqlxAuthorizationCodeRepository {
             "SELECT {SELECT_COLUMNS} FROM authorization_codes \
              WHERE code_hash = ? AND tenant_id = ? AND used_at IS NOT NULL"
         );
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(code_hash)
             .bind(tenant_id.to_string())
             .fetch_optional(&self.pool)

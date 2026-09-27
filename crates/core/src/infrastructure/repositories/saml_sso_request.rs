@@ -91,7 +91,7 @@ impl SamlSsoRequestRepository for SqlxSamlSsoRequestRepository {
         let sql = format!(
             "SELECT {SELECT_COLUMNS} FROM saml_sso_requests WHERE id_hash = ? AND tenant_id = ?"
         );
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(id_hash)
             .bind(tenant_id.to_string())
             .fetch_optional(&self.pool)
@@ -108,7 +108,7 @@ impl SamlSsoRequestRepository for SqlxSamlSsoRequestRepository {
         let sql = format!(
             "SELECT {SELECT_COLUMNS} FROM saml_sso_requests WHERE handle_hash = ? AND tenant_id = ?"
         );
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(handle_hash)
             .bind(tenant_id.to_string())
             .fetch_optional(&self.pool)

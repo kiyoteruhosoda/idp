@@ -90,7 +90,7 @@ impl TenantRepository for SqlxTenantRepository {
 
     async fn find_by_id(&self, id: TenantId) -> Result<Option<Tenant>> {
         let sql = format!("SELECT {SELECT_COLUMNS} FROM tenants WHERE id = ?");
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(id.as_uuid().to_string())
             .fetch_optional(&self.pool)
             .await
@@ -100,7 +100,7 @@ impl TenantRepository for SqlxTenantRepository {
 
     async fn find_root(&self) -> Result<Option<Tenant>> {
         let sql = format!("SELECT {SELECT_COLUMNS} FROM tenants WHERE parent_tenant_id IS NULL");
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .fetch_optional(&self.pool)
             .await
             .map_err(repo_err)?;
@@ -111,7 +111,7 @@ impl TenantRepository for SqlxTenantRepository {
         let sql = format!(
             "SELECT {SELECT_COLUMNS} FROM tenants WHERE parent_tenant_id = ? ORDER BY created_at"
         );
-        let rows = sqlx::query(&sql)
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(parent_id.as_uuid().to_string())
             .fetch_all(&self.pool)
             .await
@@ -139,7 +139,7 @@ impl TenantRepository for SqlxTenantRepository {
             "SELECT {SELECT_COLUMNS} FROM tenants WHERE parent_tenant_id = ? \
              ORDER BY created_at ASC, id ASC LIMIT ? OFFSET ?"
         );
-        let rows = sqlx::query(&sql)
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(parent_id.as_uuid().to_string())
             .bind(page.limit())
             .bind(page.offset())

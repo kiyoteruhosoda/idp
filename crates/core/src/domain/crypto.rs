@@ -39,14 +39,14 @@ pub fn base64url(bytes: &[u8]) -> String {
 
 /// 平文を AES-256-GCM で暗号化し、`base64(nonce || ciphertext)` を返す。
 pub fn encrypt(plaintext: &[u8], key: &[u8; 32]) -> anyhow::Result<String> {
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+    let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(*key));
 
     let mut nonce_bytes = [0u8; GCM_NONCE_LEN];
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::from(nonce_bytes);
 
     let ciphertext = cipher
-        .encrypt(nonce, plaintext)
+        .encrypt(&nonce, plaintext)
         .map_err(|_| anyhow::anyhow!("AES-GCM encryption failed"))?;
 
     let mut combined = Vec::with_capacity(GCM_NONCE_LEN + ciphertext.len());
@@ -65,9 +65,13 @@ pub fn decrypt(encoded: &str, key: &[u8; 32]) -> anyhow::Result<Vec<u8>> {
     }
     let (nonce_bytes, ciphertext) = combined.split_at(GCM_NONCE_LEN);
 
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+    // 長さは上で確かめてあるので、ここで失敗するのは GCM_NONCE_LEN と型が食い違ったときだけ。
+    let nonce =
+        Nonce::try_from(nonce_bytes).map_err(|_| anyhow::anyhow!("invalid nonce length"))?;
+
+    let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(*key));
     cipher
-        .decrypt(Nonce::from_slice(nonce_bytes), ciphertext)
+        .decrypt(&nonce, ciphertext)
         .map_err(|_| anyhow::anyhow!("AES-GCM decryption failed"))
 }
 

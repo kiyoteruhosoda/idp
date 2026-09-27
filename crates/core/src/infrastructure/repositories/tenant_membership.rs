@@ -97,7 +97,7 @@ impl TenantMembershipRepository for SqlxTenantMembershipRepository {
         let sql = format!(
             "SELECT {SELECT_COLUMNS} FROM tenant_memberships WHERE tenant_id = ? AND user_id = ?"
         );
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(tenant_id.as_uuid().to_string())
             .bind(user_id.to_string())
             .fetch_optional(&self.pool)
@@ -111,7 +111,7 @@ impl TenantMembershipRepository for SqlxTenantMembershipRepository {
             "SELECT {SELECT_COLUMNS} FROM tenant_memberships \
              WHERE user_id = ? AND status = 'ACTIVE' ORDER BY membership_type, created_at"
         );
-        let rows = sqlx::query(&sql)
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(user_id.to_string())
             .fetch_all(&self.pool)
             .await
@@ -145,7 +145,7 @@ impl TenantMembershipRepository for SqlxTenantMembershipRepository {
             "SELECT {SELECT_COLUMNS} FROM tenant_memberships \
              WHERE invitation_token_hash = ? AND status = 'INVITED'"
         );
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(token_hash)
             .fetch_optional(&self.pool)
             .await
