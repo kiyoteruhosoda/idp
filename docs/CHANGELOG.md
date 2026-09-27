@@ -7,8 +7,8 @@
   migrate イメージの sqlx-cli も 0.9 に揃えた（`_sqlx_migrations` の形は変わらない）。
 - **据え置いたもの**: sha2 / hmac / p256 / x509-cert / rand は rsa 0.9 と組の版に留めた（rsa 0.10 は
   まだ rc で、新しい版とは trait の版が噛み合わない）。quick-xml は 0.37 のまま（0.38 以降は実体参照の
-  扱いが変わり XML 署名の正規化に触れるので、単独の変更として移す）。どちらも `renovate.json5` で
-  一括の組から外してある。
+  扱いが変わり XML 署名の正規化に触れるので、単独の変更として移す）。どちらも Renovate の設定
+  （deploy-repo の `host/renovate/config.js`、`kyon/idp` の規則）で一括の組から外してある。
 
 ## 2026-09-25（6）（仮登録の設定リンクの期限を出す）
 
