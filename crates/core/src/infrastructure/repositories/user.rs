@@ -44,7 +44,7 @@ impl SqlxUserRepository {
             return Ok(LoginIdentifierMatch::not_found());
         }
         let sql = login_identifier_sql(scope, candidates.len());
-        let mut query = sqlx::query(&sql);
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
         for bind in scope.binds(tenant_id) {
             query = query.bind(bind);
         }
@@ -550,7 +550,7 @@ impl UserRepository for SqlxUserRepository {
 
     async fn find_by_id(&self, id: Uuid) -> Result<Option<User>> {
         let sql = format!("SELECT {SELECT_COLUMNS} FROM users u WHERE u.id = ?");
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(id.to_string())
             .fetch_optional(&self.pool)
             .await
@@ -560,7 +560,7 @@ impl UserRepository for SqlxUserRepository {
 
     async fn find_by_sub(&self, sub: Uuid) -> Result<Option<User>> {
         let sql = format!("SELECT {SELECT_COLUMNS} FROM users u WHERE u.sub = ?");
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(sub.to_string())
             .fetch_optional(&self.pool)
             .await
@@ -571,7 +571,7 @@ impl UserRepository for SqlxUserRepository {
     async fn find_by_email(&self, tenant_id: TenantId, email: &str) -> Result<Option<User>> {
         let sql =
             format!("SELECT {SELECT_COLUMNS} FROM users u WHERE u.tenant_id = ? AND u.email = ?");
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(tenant_id.to_string())
             .bind(email)
             .fetch_optional(&self.pool)
@@ -607,7 +607,7 @@ impl UserRepository for SqlxUserRepository {
                AND u.status = ? AND u.email = ? \
              LIMIT 2"
         );
-        let rows = sqlx::query(&sql)
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(tenant_id.to_string())
             .bind(MembershipType::Guest.as_str())
             .bind(MembershipStatus::Active.as_str())
@@ -647,7 +647,7 @@ impl UserRepository for SqlxUserRepository {
              WHERE u.status = ? AND u.email = ? \
              LIMIT 2"
         );
-        let rows = sqlx::query(&sql)
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(UserStatus::Active.as_str())
             .bind(email)
             .fetch_all(&self.pool)
@@ -679,7 +679,7 @@ impl UserRepository for SqlxUserRepository {
              JOIN user_login_identifiers p ON p.primary_of_user = u.id \
              WHERE u.tenant_id = ? AND p.normalized_value = ?"
         );
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(tenant_id.to_string())
             .bind(LoginIdentifierType::Username.normalize(username))
             .fetch_optional(&self.pool)

@@ -49,7 +49,7 @@ const MEMBER_COLUMNS: &str = "m.user_id, m.membership_type, m.status, \
         WHERE p.primary_of_user = u.id) AS preferred_username";
 
 /// 絞り込み条件（`FROM` 以降）を組み立てる。一覧本体と `COUNT(*)` の双方が同じ条件を使う。
-fn push_conditions<'a>(builder: &mut QueryBuilder<'a, MySql>, filter: &'a TenantMemberFilter) {
+fn push_conditions(builder: &mut QueryBuilder<MySql>, filter: &TenantMemberFilter) {
     push_member_source(
         builder,
         filter.tenant_id.to_string(),
@@ -67,10 +67,10 @@ fn push_conditions<'a>(builder: &mut QueryBuilder<'a, MySql>, filter: &'a Tenant
 ///
 /// `users` の照合順序（`utf8mb4_unicode_ci`）が大文字小文字を無視するため、`LOWER()` は使わない
 /// （関数を挟むと索引が使えなくなる）。
-pub(crate) fn push_member_source<'a>(
-    builder: &mut QueryBuilder<'a, MySql>,
+pub(crate) fn push_member_source(
+    builder: &mut QueryBuilder<MySql>,
     tenant_id: String,
-    search: Option<&'a str>,
+    search: Option<&str>,
 ) {
     builder.push(
         " FROM tenant_memberships m JOIN users u ON u.id = m.user_id \

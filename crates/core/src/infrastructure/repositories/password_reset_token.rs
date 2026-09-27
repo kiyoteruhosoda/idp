@@ -96,7 +96,7 @@ impl PasswordResetTokenRepository for SqlxPasswordResetTokenRepository {
 
         let sql =
             format!("SELECT {SELECT_COLUMNS} FROM password_reset_tokens WHERE token_hash = ?");
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(token_hash)
             .fetch_optional(&self.pool)
             .await
@@ -114,7 +114,7 @@ impl PasswordResetTokenRepository for SqlxPasswordResetTokenRepository {
             "SELECT {SELECT_COLUMNS} FROM password_reset_tokens \
              WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?"
         );
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(token_hash)
             .bind(now.naive_utc())
             .fetch_optional(&self.pool)

@@ -10,8 +10,8 @@
 
 use crate::domain::error::DomainError;
 use crate::domain::password::PasswordHasher;
-use argon2::password_hash::rand_core::OsRng;
-use argon2::password_hash::{PasswordHash, PasswordHasher as _, PasswordVerifier, SaltString};
+use argon2::password_hash::phc::PasswordHash;
+use argon2::password_hash::{PasswordHasher as _, PasswordVerifier};
 use argon2::{Algorithm, Argon2, Params, Version};
 
 /// メモリコスト（KiB）。OWASP 推奨の 19 MiB。
@@ -39,9 +39,9 @@ impl Argon2PasswordHasher {
 
 impl PasswordHasher for Argon2PasswordHasher {
     fn hash(&self, password: &str) -> Result<String, DomainError> {
-        let salt = SaltString::generate(&mut OsRng);
+        // ソルトは OS の乱数から自動で作られる（password-hash 0.6 の `hash_password`）。
         Self::hasher()
-            .hash_password(password.as_bytes(), &salt)
+            .hash_password(password.as_bytes())
             .map(|h| h.to_string())
             .map_err(|e| DomainError::Repository(format!("password hashing failed: {e}")))
     }
@@ -85,14 +85,13 @@ mod tests {
     /// 別パラメータで作られた既存ハッシュも検証できる（パラメータ変更が既存利用者を締め出さない）。
     #[test]
     fn verifies_hashes_made_with_other_parameters() {
-        use argon2::password_hash::{PasswordHasher as _, SaltString};
-        let salt = SaltString::from_b64("c29tZXNhbHR2YWx1ZQ").unwrap();
+        use argon2::password_hash::PasswordHasher as _;
         let legacy = Argon2::new(
             Algorithm::Argon2id,
             Version::V0x13,
             Params::new(8 * 1024, 1, 1, None).unwrap(),
         )
-        .hash_password(b"pw", &salt)
+        .hash_password_with_salt(b"pw", b"somesaltvalue")
         .unwrap()
         .to_string();
         assert!(Argon2PasswordHasher::new().verify("pw", &legacy).unwrap());

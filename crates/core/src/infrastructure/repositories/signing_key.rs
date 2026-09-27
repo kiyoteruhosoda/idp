@@ -130,7 +130,7 @@ impl SigningKeyRepository for SqlxSigningKeyRepository {
              WHERE status = 'ACTIVE' AND not_before <= UTC_TIMESTAMP(6) AND not_after > UTC_TIMESTAMP(6) \
              ORDER BY not_before DESC LIMIT 1"
         );
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .fetch_optional(&self.pool)
             .await
             .map_err(repo_err)?;
@@ -144,7 +144,7 @@ impl SigningKeyRepository for SqlxSigningKeyRepository {
              WHERE status IN ('ACTIVE', 'RETIRED') AND not_after > UTC_TIMESTAMP(6) \
              ORDER BY created_at DESC"
         );
-        let rows = sqlx::query(&sql)
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
             .fetch_all(&self.pool)
             .await
             .map_err(repo_err)?;
@@ -153,7 +153,7 @@ impl SigningKeyRepository for SqlxSigningKeyRepository {
 
     async fn find_by_kid(&self, kid: &str) -> Result<Option<SigningKey>> {
         let sql = format!("SELECT {SELECT_COLUMNS} FROM signing_keys WHERE kid = ?");
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(kid)
             .fetch_optional(&self.pool)
             .await
@@ -163,7 +163,7 @@ impl SigningKeyRepository for SqlxSigningKeyRepository {
 
     async fn list_all(&self) -> Result<Vec<SigningKey>> {
         let sql = format!("SELECT {SELECT_COLUMNS} FROM signing_keys ORDER BY created_at DESC");
-        let rows = sqlx::query(&sql)
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
             .fetch_all(&self.pool)
             .await
             .map_err(repo_err)?;

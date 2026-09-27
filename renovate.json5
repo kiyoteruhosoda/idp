@@ -1,0 +1,50 @@
+// idp だけの Renovate の規則（全体の設定は deploy-repo の host/renovate/config.js。ここはそれに足される）。
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  packageRules: [
+    {
+      // ⚠ rsa 0.9 と組になる RustCrypto の版に据え置く（Cargo.toml の注記と同じ理由）。
+      // rsa 0.9 は digest 0.10・spki 0.7・rand_core 0.6 の trait で書かれていて、これより新しい版とは
+      // 型が噛み合わない（SAML の RSA 署名検証・証明書からの公開鍵取り出し・鍵生成が組めない）。
+      // rsa 0.10 の正式版が出たら、この 5 つを rsa と一緒に上げてこの規則を消す。
+      description: 'sha2 は rsa 0.9 と組の 0.10 に据え置く',
+      matchManagers: ['cargo'],
+      matchPackageNames: ['sha2'],
+      allowedVersions: '/^0\\.10\\./',
+    },
+    {
+      description: 'hmac は sha2 0.10（digest 0.10）と組の 0.12 に据え置く',
+      matchManagers: ['cargo'],
+      matchPackageNames: ['hmac'],
+      allowedVersions: '/^0\\.12\\./',
+    },
+    {
+      description: 'p256 は rsa 0.9 と組の 0.13 に据え置く',
+      matchManagers: ['cargo'],
+      matchPackageNames: ['p256'],
+      allowedVersions: '/^0\\.13\\./',
+    },
+    {
+      description: 'x509-cert は rsa 0.9（spki 0.7）と組の 0.2 に据え置く',
+      matchManagers: ['cargo'],
+      matchPackageNames: ['x509-cert'],
+      allowedVersions: '/^0\\.2\\./',
+    },
+    {
+      description: 'rand は rsa 0.9 / p256 0.13（rand_core 0.6）と組の 0.8 に据え置く',
+      matchManagers: ['cargo'],
+      matchPackageNames: ['rand'],
+      allowedVersions: '/^0\\.8\\./',
+    },
+    {
+      // ⚠ quick-xml は一括の組（rust）に混ぜない。0.38 以降は実体参照が別イベントに割れ、属性値の
+      // 正規化と `&str` 化も入った ——XML 署名の正規化（xml_c14n）の意味に触れる移行なので、
+      // 棚（Dependency Dashboard）で印を付けたときに単独の PR として立てる。
+      description: 'quick-xml は単独の PR にし、棚で印を付けたときだけ立てる',
+      matchManagers: ['cargo'],
+      matchPackageNames: ['quick-xml'],
+      groupName: 'quick-xml',
+      dependencyDashboardApproval: true,
+    },
+  ],
+}

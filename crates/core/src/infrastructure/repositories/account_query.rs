@@ -76,10 +76,10 @@ const SERVICE_ACCOUNT_COLUMNS: &str = "'SERVICE_ACCOUNT' AS kind, \
 ///
 /// サービスアカウントの定義は [`crate::domain::client::Client::is_service_account`] と同じ
 /// （confidential・`client_credentials` あり・`authorization_code` なし）。論理削除（ADR-0035）は並べない。
-fn push_service_account_source<'a>(
-    builder: &mut QueryBuilder<'a, MySql>,
+fn push_service_account_source(
+    builder: &mut QueryBuilder<MySql>,
     tenant_id: String,
-    search: Option<&'a str>,
+    search: Option<&str>,
 ) {
     builder.push(
         " FROM clients c \
@@ -108,7 +108,7 @@ fn push_service_account_source<'a>(
 }
 
 /// 種別ごとの枝を `UNION ALL` で繋ぐ。`rows` が偽なら件数用（`SELECT 1`）。
-fn push_union<'a>(builder: &mut QueryBuilder<'a, MySql>, filter: &'a AccountFilter, rows: bool) {
+fn push_union(builder: &mut QueryBuilder<MySql>, filter: &AccountFilter, rows: bool) {
     for (i, kind) in filter.kinds.iter().enumerate() {
         if i > 0 {
             builder.push(" UNION ALL ");

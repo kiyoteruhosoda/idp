@@ -90,7 +90,7 @@ impl EmailVerificationTokenRepository for SqlxEmailVerificationTokenRepository {
 
         let sql =
             format!("SELECT {SELECT_COLUMNS} FROM email_verification_tokens WHERE token_hash = ?");
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(token_hash)
             .fetch_optional(&self.pool)
             .await

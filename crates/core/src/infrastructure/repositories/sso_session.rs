@@ -94,7 +94,7 @@ impl SsoSessionRepository for SqlxSsoSessionRepository {
 
     async fn find_by_hash(&self, session_hash: &str) -> Result<Option<SsoSession>> {
         let sql = format!("SELECT {SELECT_COLUMNS} FROM sso_sessions WHERE session_hash = ?");
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(session_hash)
             .fetch_optional(&self.pool)
             .await
@@ -107,7 +107,7 @@ impl SsoSessionRepository for SqlxSsoSessionRepository {
             "SELECT {SELECT_COLUMNS} FROM sso_sessions WHERE user_id = ? \
              ORDER BY created_at DESC"
         );
-        let rows = sqlx::query(&sql)
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(user_id.to_string())
             .fetch_all(&self.pool)
             .await

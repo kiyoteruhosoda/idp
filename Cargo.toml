@@ -44,31 +44,39 @@ anyhow = "1"
 dotenvy = "0.15"
 async-trait = "0.1"
 jsonwebtoken = "9"
+# ⚠ rsa 0.9 と組になる RustCrypto の版に据え置く（sha2 / hmac / p256 / x509-cert / rand）。
+# rsa 0.9 は digest 0.10・spki 0.7・rand_core 0.6 の trait で書かれていて、sha2 0.11（digest 0.11）・
+# p256 0.14 / x509-cert 0.3（spki 0.8）・rand 0.10（rand_core 0.10）とは型が噛み合わない
+# （SAML の RSA 署名検証・証明書からの公開鍵取り出し・鍵生成が組めない）。rsa 0.10 は 2026-09 時点で
+# まだ rc なので、正式版が出たらこの 5 つを rsa と一緒に上げる（renovate.json の据え置きも外す）。
 rsa = { version = "0.9", features = ["pem"] }
-p256 = { version = "0.14", features = ["pkcs8", "pem"] }
+p256 = { version = "0.13", features = ["pkcs8", "pem"] }
 aes-gcm = "0.11"
 # `oid` は SAML 応答の RSA 署名（PKCS#1 v1.5 の DigestInfo 生成）に使う。
-sha2 = { version = "0.11", features = ["oid"] }
+sha2 = { version = "0.10", features = ["oid"] }
 # 漏えい済みパスワード照合（AP7）のレンジ API は SHA-1 の接頭辞で引く仕様のため使う。
 # 保存・認証には使わない（保存は argon2）。
 sha1 = "0.11"
-hmac = "0.13"
+hmac = "0.12"
 hex = "0.4"
 base64 = "0.23"
-rand = "0.10"
+rand = "0.8"
 argon2 = "0.6"
 url = "2"
 percent-encoding = "2"
 # COOKIE_DOMAIN の起動時検証（public suffix 拒否。ADR-0012 §Consequences）。
 psl = "2"
 # SAML メタデータの XML 解析（外部 IdP メタデータ取り込み）・XML 生成（自身の SP メタデータ出力）。
-quick-xml = "0.42"
+# ⚠ 0.38 以降は据え置く。0.38 で実体参照（`&amp;` など）が別イベント `GeneralRef` に割れ、0.40 で属性値の
+# 正規化・0.42 で `&str` 化が入った。どれも xml_c14n / xml_signature（XML 署名の正規化と検証）の意味に
+# 触れるので、依存の一括更新には混ぜず単独の変更として移す（renovate.json で一括の組から外してある）。
+quick-xml = "0.37"
 # SAML HTTP-Redirect binding の DEFLATE 展開（`SAMLRequest` = base64(raw-deflate(xml))）。
 flate2 = "1"
 # 外部 SAML IdP の署名証明書（`<ds:X509Certificate>`）から公開鍵を取り出す（AP12）。
 # 検証に使うのは SubjectPublicKeyInfo だけで、証明書チェーンの検証はしない（信頼の起点は
 # 「管理者がこの証明書を登録した」ことで、CA ではない。ADR-0027）。
-x509-cert = { version = "0.3", default-features = false, features = ["std"] }
+x509-cert = { version = "0.2", default-features = false, features = ["std"] }
 utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
 utoipa-swagger-ui = { version = "9", features = ["axum", "vendored"] }
 fluent = "0.17"
@@ -76,7 +84,7 @@ unic-langid = { version = "0.9", features = ["macros"] }
 # web crate のサーバレンダリング用テンプレート（コンパイル時型検証・HTML 自動エスケープ）。
 askama = "0.16"
 # web crate の API クライアント（core/sqlx へ依存させないための HTTP 越しアクセス）。TLS は rustls。
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "form", "rustls"] }
 # TOTP（RFC 6238）の生成・検証（MFA 自己登録）。
 totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
 # QR コードを SVG として生成（TOTP セットアップ画面で埋め込む）。

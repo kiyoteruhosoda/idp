@@ -83,7 +83,7 @@ impl BackchannelLogoutDeliveryRepository for SqlxBackchannelLogoutDeliveryReposi
              (id, tenant_id, client_id, target_uri, subject, sid, jti, attempts, next_attempt_at) \
              VALUES {placeholders}"
         );
-        let mut query = sqlx::query(&sql);
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
         for d in deliveries {
             query = query
                 .bind(d.id.to_string())
@@ -113,7 +113,7 @@ impl BackchannelLogoutDeliveryRepository for SqlxBackchannelLogoutDeliveryReposi
              WHERE delivered_at IS NULL AND next_attempt_at <= ? AND attempts < ? \
              ORDER BY next_attempt_at ASC LIMIT ?"
         );
-        let rows = sqlx::query(&sql)
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(now.naive_utc())
             .bind(max_attempts)
             .bind(limit)

@@ -102,7 +102,7 @@ impl UserLoginIdentifierRepository for SqlxUserLoginIdentifierRepository {
             "SELECT {SELECT_COLUMNS} FROM user_login_identifiers \
              WHERE user_id = ? ORDER BY identifier_type, created_at, id"
         );
-        let rows = sqlx::query(&sql)
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(user_id.to_string())
             .fetch_all(&self.pool)
             .await
@@ -112,7 +112,7 @@ impl UserLoginIdentifierRepository for SqlxUserLoginIdentifierRepository {
 
     async fn find_by_id(&self, id: Uuid) -> Result<Option<UserLoginIdentifier>> {
         let sql = format!("SELECT {SELECT_COLUMNS} FROM user_login_identifiers WHERE id = ?");
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(id.to_string())
             .fetch_optional(&self.pool)
             .await

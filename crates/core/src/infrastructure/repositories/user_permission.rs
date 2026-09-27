@@ -109,7 +109,7 @@ impl UserPermissionRepository for SqlxUserPermissionRepository {
             "SELECT 1 FROM user_permissions \
              WHERE user_id = ? AND tenant_id = ? AND permission_code IN ({placeholders})"
         );
-        let mut q = sqlx::query(&sql)
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(user_id.to_string())
             .bind(tenant_id.to_string());
         for code in codes {
