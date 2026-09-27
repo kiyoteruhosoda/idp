@@ -288,6 +288,15 @@ impl AccountSetupService {
             .complete(user.id, challenge_id, name, credential)
             .await?;
 
+        // 本人が資格情報を決めたので、仮登録を外す（ADR-0064）。⚠ **リンクを消費する前に**行う
+        // ——外せないまま消費すると、パスキーはあるのに入れず、リンクも無い人になる。
+        if user.pending_setup {
+            self.users
+                .finish_setup(user.id)
+                .await
+                .map_err(|e| AccountSetupError::Internal(e.to_string()))?;
+        }
+
         // ⚠ **登録が通ってから消費する。** 先に消費すると、認証器の側で断られた相手が
         // リンクも失って手詰まりになる（管理者に出し直してもらうしかなくなる）。
         let now = self.clock.now();
@@ -312,6 +321,8 @@ impl AccountSetupService {
 
     /// トークンから「未使用・期限内・テナントが一致・ACTIVE な利用者」を解決する。
     ///
+    /// 仮登録（ADR-0064）の利用者も通す ——このリンクは仮登録を終わらせるためのものである。
+    ///
     /// ⚠ 断る理由を分けない（[`AccountSetupError::InvalidOrExpired`] のコメント参照）。
     async fn resolve(
         &self,
@@ -331,7 +342,7 @@ impl AccountSetupService {
 
         // リンクの経路（テナント）と所属元が一致すること。他テナントの画面へ持ち込ませない。
         match self.users.find_by_id(record.user_id).await {
-            Ok(Some(user)) if user.is_active() && user.tenant_id == tenant.tenant_id() => {
+            Ok(Some(user)) if user.can_finish_setup() && user.tenant_id == tenant.tenant_id() => {
                 Ok((record, user))
             }
             Ok(_) => Err(AccountSetupError::InvalidOrExpired),
@@ -460,6 +471,12 @@ mod tests {
         async fn update_status(&self, _id: Uuid, _status: UserStatus) -> DomainResult<()> {
             unreachable!()
         }
+        async fn finish_setup(&self, id: Uuid) -> DomainResult<()> {
+            for user in self.0.lock().unwrap().iter_mut().filter(|u| u.id == id) {
+                user.pending_setup = false;
+            }
+            Ok(())
+        }
         async fn delete(&self, _id: Uuid) -> DomainResult<()> {
             unreachable!()
         }
@@ -486,6 +503,8 @@ mod tests {
             must_change_password: true,
             password_changed_at: None,
             status: UserStatus::Active,
+            // 管理者が作った直後の形（ADR-0064）。
+            pending_setup: true,
             failed_login_count: 0,
             locked_until: None,
             created_at: now(),
@@ -495,6 +514,7 @@ mod tests {
 
     struct Fixture {
         service: AccountSetupService,
+        users: Arc<FakeUsers>,
         tokens: Arc<FakeSetupTokens>,
         passkeys: Arc<FakePasskeys>,
         tenant: TenantId,
@@ -512,8 +532,9 @@ mod tests {
             .issue(tenant, user_id)
             .await
             .expect("link issued");
+        let users = Arc::new(FakeUsers(Mutex::new(vec![person])));
         let service = AccountSetupService::new(
-            Arc::new(FakeUsers(Mutex::new(vec![person]))),
+            users.clone(),
             tokens.clone(),
             passkeys.clone(),
             Arc::new(AuditService::new(Arc::new(SilentSink), clock.clone())),
@@ -522,6 +543,7 @@ mod tests {
         (
             Fixture {
                 service,
+                users,
                 tokens,
                 passkeys,
                 tenant,
@@ -579,6 +601,11 @@ mod tests {
             .await
             .expect("registered");
         assert_eq!(f.passkeys.completed.lock().unwrap().as_slice(), [f.user_id]);
+        // ADR-0064: 本人が資格情報を決めたので、仮登録が外れる。
+        assert!(
+            !f.users.0.lock().unwrap()[0].pending_setup,
+            "setup must end the pending state"
+        );
 
         assert!(matches!(
             f.service
@@ -622,6 +649,19 @@ mod tests {
                 .begin_passkey(TenantContext::new(f.tenant), token)
                 .await,
             Err(AccountSetupError::NotAllowed)
+        ));
+    }
+
+    /// ADR-0064: 無効にされた仮登録の利用者は、手元のリンクで入り直せない。
+    #[tokio::test]
+    async fn a_disabled_pending_user_cannot_use_the_link() {
+        let (f, token) = fixture().await;
+        f.users.0.lock().unwrap()[0].status = UserStatus::Disabled;
+        assert!(matches!(
+            f.service
+                .describe(TenantContext::new(f.tenant), &token)
+                .await,
+            Err(AccountSetupError::InvalidOrExpired)
         ));
     }
 }

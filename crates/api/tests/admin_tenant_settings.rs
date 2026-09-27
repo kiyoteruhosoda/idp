@@ -91,6 +91,8 @@ async fn create_user_with_permission(
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK, "grant {code}");
+    // 作った人をそのまま登場人物にするので、仮登録を外す（本人が設定を終えた、の代わり）。
+    support::finish_setup(&env.pool, &user_id).await;
     user_id
 }
 

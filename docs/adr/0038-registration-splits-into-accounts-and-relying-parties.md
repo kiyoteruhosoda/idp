@@ -3,6 +3,8 @@
 - Status: Accepted
 - Date: 2026-08-27
 - **Revised**: 2026-08-27（実装時）— 決定 4 に例外を 1 つ足した。一覧の絞り込みだけは api 側に置く。
+- **Revised**: 2026-09-25 — 決定 3 の「メンバーは動かさない」のうち、一覧の置き場所を ADR-0065 で改めた。
+  人とサービスアカウントは「アカウント」1 つの一覧に並ぶ。「メンバー」の意味（人のテナント参加）は変えない。
 - 関連: `docs/adr/0009-multi-tenant-architecture.md` §3（メンバーシップ）、
   `docs/adr/0027-saml-external-idp.md`（外部 IdP のプロトコル欄）、
   `docs/adr/0030-machine-authentication-private-key-jwt.md`（システムの認証）、

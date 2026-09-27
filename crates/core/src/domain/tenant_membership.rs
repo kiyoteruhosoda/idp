@@ -4,6 +4,7 @@
 //! GUEST 行は招待フローで作成し、`INVITED`（未承諾）→ `ACTIVE`（承諾済み）と遷移する。
 #![allow(dead_code)]
 
+use crate::domain::account_note::AccountNote;
 use crate::domain::tenant::TenantId;
 use crate::domain::values::{MembershipStatus, MembershipType, UserStatus};
 use chrono::{DateTime, Utc};
@@ -37,6 +38,16 @@ pub struct TenantMember {
     /// 読んだ時点で判定する**必要がある。状態列に丸めると、期限が切れているのに
     /// 「ロック中」と表示され続ける。
     pub locked_until: Option<DateTime<Utc>>,
+    /// 仮登録（ADR-0064）。本人がまだ設定リンクで資格情報を決めていない。
+    pub pending_setup: bool,
+    /// いま生きている（未使用の）設定リンクの期限。出し直すと前のリンクは使用済みになるので、
+    /// 未使用のうち最も新しいものがいまのリンクである。無ければ `None`。
+    ///
+    /// ⚠ **期限切れかどうかは読んだ時点で判定する**（`locked_until` と同じ理由）。仮登録のまま
+    /// 期限が切れた人は、管理者が出し直すまで誰も入れない。
+    pub setup_link_expires_at: Option<DateTime<Utc>>,
+    /// 管理者メモ（ADR-0063）。書かれていなければ `None`。⚠ **管理画面の外へ出さない。**
+    pub note: Option<AccountNote>,
 }
 
 /// メンバー一覧の絞り込み条件（MT22）。SQL の組み立ては infrastructure が行う。

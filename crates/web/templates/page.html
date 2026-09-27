@@ -12,6 +12,7 @@
 <link rel="stylesheet" href="/assets/app.css?v={{ crate::templates::asset_version() }}">
 {#- タブとアプリアイコンの印（`assets/assay.svg`）。SVG 1 枚で全サイズを賄う。 -#}
 <link rel="icon" href="/assets/assay.svg?v={{ crate::templates::asset_version() }}" type="image/svg+xml">
+{% block head %}{% endblock %}
 <title>{% block title %}assay{% endblock %}</title>
 </head>
 <body class="d-flex flex-column min-vh-100">

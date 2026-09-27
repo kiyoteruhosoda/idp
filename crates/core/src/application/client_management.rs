@@ -8,9 +8,11 @@
 //! 要求 scope の部分集合判定に用いる `Clients.scopes` は、対応する OIDC scope の集合に限定する。
 
 use crate::application::audit::{AuditService, RequestContext};
+use crate::domain::account::AccountRef;
+use crate::domain::account_note::normalize_account_note;
 use crate::domain::admin_actor::AdminActor;
 use crate::domain::application::{
-    Application, ApplicationAssignment, ApplicationBinding, AssignedPrincipal, BindingTarget,
+    Application, ApplicationAssignment, ApplicationBinding, BindingTarget,
 };
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::client::Client;
@@ -22,7 +24,7 @@ use crate::domain::message::MessageKey;
 use crate::domain::outbound_uri::is_internal_destination;
 use crate::domain::paging::{PageRequest, PagedResult};
 use crate::domain::password::PasswordHasher;
-use crate::domain::repositories::{ApplicationRepository, ClientRepository};
+use crate::domain::repositories::{AccountNoteRepository, ApplicationRepository, ClientRepository};
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::{
     ApplicationStatus, AssignmentMode, ClientStatus, ClientType, GrantType, Scope,
@@ -62,6 +64,9 @@ pub struct RegisterClientCommand {
     pub frontchannel_logout_uri: Option<String>,
     /// back-channel logout URI（任意）。F4。
     pub backchannel_logout_uri: Option<String>,
+    /// 管理者メモ（任意。ADR-0065）。⚠ **サービスアカウントにだけ書ける** ——メモはアカウントの
+    /// 経緯であって、連携先の設定ではない。空（空白だけ）はメモ無し。
+    pub note: Option<String>,
 }
 
 /// 部分更新コマンド。`None` のフィールドは変更しない。
@@ -108,6 +113,8 @@ pub struct ClientManagementService {
     clients: Arc<dyn ClientRepository>,
     /// 登録した RP をアプリへ開くために使う（ADR-0054）。
     applications: Arc<dyn ApplicationRepository>,
+    /// サービスアカウントの作成と同時に管理者メモを書く（ADR-0065）。
+    notes: Arc<dyn AccountNoteRepository>,
     hasher: Arc<dyn PasswordHasher>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
@@ -118,6 +125,7 @@ impl ClientManagementService {
     pub fn new(
         clients: Arc<dyn ClientRepository>,
         applications: Arc<dyn ApplicationRepository>,
+        notes: Arc<dyn AccountNoteRepository>,
         hasher: Arc<dyn PasswordHasher>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
@@ -126,6 +134,7 @@ impl ClientManagementService {
         Self {
             clients,
             applications,
+            notes,
             hasher,
             audit,
             clock,
@@ -154,6 +163,16 @@ impl ClientManagementService {
         let frontchannel_logout_uri =
             validate_frontchannel_logout_uri(cmd.frontchannel_logout_uri)?;
         let backchannel_logout_uri = validate_backchannel_logout_uri(cmd.backchannel_logout_uri)?;
+        // メモの検証は client を作る**前に**行う（長すぎれば何も作らない。利用者の作成と同じ。ADR-0063）。
+        let note = match cmd.note.as_deref() {
+            Some(raw) => normalize_account_note(raw).map_err(ClientManagementError::Validation)?,
+            None => None,
+        };
+        if note.is_some() && !system_client {
+            return Err(ClientManagementError::Validation(MessageKey::new(
+                "api-account-note-needs-service-account",
+            )));
+        }
 
         // client 種別に応じて認証方式・secret を決める。
         // public: 認証なし・secret なし。confidential: secret 発行 + 提示方式の選択（G3）。
@@ -243,6 +262,34 @@ impl ClientManagementService {
             )
             .await;
 
+        // 管理者メモ（ADR-0065）。アカウントの画面から書くのと同じ行・同じ監査の形にする
+        // （中身は監査に残さない）。
+        if let Some(text) = note.as_deref() {
+            self.notes
+                .save(
+                    tenant.tenant_id(),
+                    AccountRef::ServiceAccount {
+                        client_row_id: client.id,
+                    },
+                    text,
+                    actor.user_id(),
+                    now,
+                )
+                .await
+                .map_err(|e| ClientManagementError::Internal(e.to_string()))?;
+            self.audit
+                .record(
+                    AuditEventType::AccountNoteUpdated,
+                    AuditResult::Success,
+                    Some(tenant.tenant_id()),
+                    actor.user_id(),
+                    actor.client_id(),
+                    Some(&format!("service_account={}", client.client_id)),
+                    ctx,
+                )
+                .await;
+        }
+
         self.open_as_application(tenant, &client, actor, ctx).await;
 
         Ok(RegisteredClient {
@@ -313,7 +360,7 @@ impl ClientManagementService {
                 .assign(&ApplicationAssignment {
                     id: self.ids.new_id(),
                     application_id: application.id,
-                    principal: AssignedPrincipal::User { user_id },
+                    principal: AccountRef::User { user_id },
                     assigned_at: now,
                     assigned_by: Some(user_id),
                 })

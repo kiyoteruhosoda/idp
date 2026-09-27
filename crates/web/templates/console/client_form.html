@@ -97,6 +97,15 @@
         <div class="form-text">{{ messages.get("admin-client-field-jwks-hint") }}</div>
       </div>
       {% endif %}
+      {#- 管理者メモ（ADR-0065）。作ったときがいちばん経緯を覚えているので、作成と同時に書ける
+          （利用者の作成と同じ）。連携先はアカウントではないので出さない。 -#}
+      {% if is_new && values.usage == "system" %}
+      <div class="mb-3">
+        <label class="form-label" for="client-note">{{ messages.get("admin-member-note-title") }}</label>
+        <textarea class="form-control" id="client-note" name="note" rows="3" maxlength="{{ crate::templates::ACCOUNT_NOTE_MAX_LEN }}" aria-describedby="client-note-help" placeholder="{{ messages.get("admin-service-account-note-placeholder") }}">{{ values.note }}</textarea>
+        <div class="form-text" id="client-note-help">{{ messages.get("admin-member-note-desc") }}</div>
+      </div>
+      {% endif %}
       <div class="d-flex align-items-center gap-2">
         <button type="submit" class="btn btn-primary">{{ messages.get("admin-form-save") }}</button>
         <a class="btn btn-outline-secondary" href="{{ list_href }}">{{ messages.get("admin-form-cancel") }}</a>

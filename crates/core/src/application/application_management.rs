@@ -8,10 +8,11 @@
 //! 判定は本 Application 層で行い、Presentation には結果のみ渡す（CLAUDE.md「権限管理」）。
 
 use crate::application::audit::{AuditService, RequestContext};
+use crate::domain::account::{AccountLocator, AccountRef};
 use crate::domain::admin_actor::AdminActor;
 use crate::domain::application::{
-    validate_display_name, Application, ApplicationAssignment, ApplicationBinding,
-    AssignedPrincipal, AssignedServiceAccount, AssignedUser, BindingTarget,
+    validate_display_name, Application, ApplicationAccess, ApplicationAssignment,
+    ApplicationBinding, AssignedServiceAccount, AssignedUser, BindingTarget,
 };
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::client::Client;
@@ -26,6 +27,7 @@ use crate::domain::repositories::{
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::tenant_membership::{TenantMember, TenantMemberFilter};
 use crate::domain::values::{ApplicationStatus, AssignmentMode, GrantType};
+use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -109,6 +111,16 @@ pub struct CurrentUsers {
     pub truncated: bool,
 }
 
+/// アカウント 1 つから見たアプリ 1 件（ADR-0063 / ADR-0065）。
+pub struct AccountApplication {
+    pub application: Application,
+    /// このアカウントがいま使えるか。判定（人は code の発行地点、サービスアカウントはトークン
+    /// 発行）と同じ規則で決める ——⚠ 画面が別の規則で答えると「使えると出ているのに入れない」が起きる。
+    pub access: ApplicationAccess,
+    /// 個別の割り当てがあればその日時。`EVERYONE` のアプリでも行が残っていれば載る。
+    pub assigned_at: Option<DateTime<Utc>>,
+}
+
 /// 新しいアプリの入力。
 pub struct NewApplication {
     pub display_name: String,
@@ -188,6 +200,86 @@ impl ApplicationManagementService {
             });
         }
         Ok(summaries)
+    }
+
+    /// アカウント 1 つが使えるアプリの一覧（表示名の昇順。ADR-0063 / ADR-0065）。
+    ///
+    /// 種別で「使う」の意味が違うので、載せるアプリと可否の規則も種別で決まる:
+    ///
+    /// | 種別 | 載せるアプリ | 可否 |
+    /// |---|---|---|
+    /// | 人 | ログインの名乗り（OIDC / SAML）を持つもの | [`Application::admits`]（code の発行と同じ） |
+    /// | サービスアカウント | 宛名（`resource`）の名乗りを持つもの | [`Application::admits_service_account`]（トークン発行と同じ） |
+    ///
+    /// 名乗りの無いアプリは、その種別が入る先ではない ——「使えない」と並べると誤解を招く。
+    pub async fn account_applications(
+        &self,
+        tenant: TenantContext,
+        account: AccountLocator<'_>,
+    ) -> Result<Vec<AccountApplication>, ApplicationManagementError> {
+        let account = match account {
+            AccountLocator::User { user_id } => {
+                self.require_member(tenant, user_id).await?;
+                AccountRef::User { user_id }
+            }
+            AccountLocator::ServiceAccount { client_id } => {
+                // 連携先（ログイン用の client）は「このテナントのサービスアカウント」ではない（削除済みは
+                // `load_client` が落とす）。
+                let client = self.load_client(tenant, client_id).await?;
+                if !client.is_service_account() {
+                    return Err(ApplicationManagementError::NotFound);
+                }
+                AccountRef::ServiceAccount {
+                    client_row_id: client.id,
+                }
+            }
+        };
+        let applications = self
+            .applications
+            .list(tenant.tenant_id())
+            .await
+            .map_err(map_repo_error)?;
+        let assignments = self
+            .applications
+            .list_account_assignments(tenant.tenant_id(), account)
+            .await
+            .map_err(map_repo_error)?;
+        let mut rows = Vec::with_capacity(applications.len());
+        for application in applications {
+            let bindings = self
+                .applications
+                .list_bindings(application.id)
+                .await
+                .map_err(map_repo_error)?;
+            let usable = bindings.iter().any(|b| match account {
+                AccountRef::User { .. } => matches!(
+                    b.target,
+                    BindingTarget::Oidc { .. } | BindingTarget::Saml { .. }
+                ),
+                AccountRef::ServiceAccount { .. } => {
+                    matches!(b.target, BindingTarget::Resource { .. })
+                }
+            });
+            if !usable {
+                continue;
+            }
+            let assigned_at = assignments
+                .iter()
+                .find(|a| a.application_id == application.id)
+                .map(|a| a.assigned_at);
+            let access = match account {
+                AccountRef::User { .. } => application.admits(assigned_at.is_some()),
+                AccountRef::ServiceAccount { .. } => {
+                    application.admits_service_account(assigned_at.is_some())
+                }
+            };
+            rows.push(AccountApplication {
+                application,
+                access,
+                assigned_at,
+            });
+        }
+        Ok(rows)
     }
 
     /// アプリ 1 件の詳細。
@@ -490,7 +582,7 @@ impl ApplicationManagementService {
         let (principal, audit_client_id) = match request {
             NewAssignment::User { user_id } => {
                 self.require_member(tenant, user_id).await?;
-                (AssignedPrincipal::User { user_id }, None)
+                (AccountRef::User { user_id }, None)
             }
             NewAssignment::ServiceAccount { client_id } => {
                 let client = self.load_client(tenant, &client_id).await?;
@@ -500,7 +592,7 @@ impl ApplicationManagementService {
                     )));
                 }
                 (
-                    AssignedPrincipal::ServiceAccount {
+                    AccountRef::ServiceAccount {
                         client_row_id: client.id,
                     },
                     Some(client.client_id),
@@ -545,7 +637,7 @@ impl ApplicationManagementService {
     ) -> Result<(), ApplicationManagementError> {
         let application = self.load(tenant, id).await?;
         self.applications
-            .unassign(id, AssignedPrincipal::User { user_id })
+            .unassign(id, AccountRef::User { user_id })
             .await
             .map_err(map_repo_error)?;
         self.audit
@@ -586,7 +678,7 @@ impl ApplicationManagementService {
         self.applications
             .unassign(
                 id,
-                AssignedPrincipal::ServiceAccount {
+                AccountRef::ServiceAccount {
                     client_row_id: client.id,
                 },
             )

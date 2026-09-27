@@ -1,0 +1,20 @@
+{#- 管理者メモ（ADR-0063 / ADR-0065）。人とサービスアカウントの 1 件の画面が同じものを使う。
+    経緯を書き残す欄で、本人・アプリ・トークンのどこにも出ない。
+
+    呼ぶ側が用意する値:
+      account_note   … Option<&AccountNoteView>
+    送り先は呼ぶ側の構造体の `note_action()`（人・サービスアカウントで経路が違う）。 -#}
+<div class="card mb-4">
+  <div class="card-header">
+    <div class="fw-semibold"><label for="account-note">{{ messages.get("admin-member-note-title") }}</label></div>
+    <p class="text-muted small mb-0 mt-1" id="account-note-help">{{ messages.get("admin-member-note-desc") }}</p>
+  </div>
+  <form class="card-body" method="post" action="{{ self.note_action() }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <textarea class="form-control" id="account-note" name="note" rows="4" maxlength="{{ crate::templates::ACCOUNT_NOTE_MAX_LEN }}" aria-describedby="account-note-help" placeholder="{{ messages.get(self.note_placeholder_key()) }}">{% if let Some(note) = account_note %}{{ note.text }}{% endif %}</textarea>
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mt-2">
+      <span class="small text-muted">{% if let Some(note) = account_note %}{{ messages.get("admin-member-note-updated") }} <time class="local-time" datetime="{{ note.updated_at }}">{{ crate::templates::utc_short(note.updated_at.as_str()) }}</time>{% endif %}</span>
+      <button type="submit" class="btn btn-primary"><i class="fa-solid fa-floppy-disk me-1" aria-hidden="true"></i>{{ messages.get("admin-member-note-save") }}</button>
+    </div>
+  </form>
+</div>

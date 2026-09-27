@@ -197,9 +197,10 @@ impl ApplicationUserDirectoryService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::account::AccountRef;
     use crate::domain::application::{
-        ApplicationAssignment, ApplicationBinding, ApplicationUserFacts, AssignedPrincipal,
-        AssignedServiceAccount, AssignedUser,
+        ApplicationAssignment, ApplicationBinding, ApplicationUserFacts, AssignedServiceAccount,
+        AssignedUser,
     };
     use crate::domain::error::Result as DomainResult;
     use crate::domain::repositories::SubjectFacts;
@@ -231,6 +232,7 @@ mod tests {
     fn facts(user_status: UserStatus, active_member: bool, assigned: bool) -> ApplicationUserFacts {
         ApplicationUserFacts {
             user_status,
+            pending_setup: false,
             active_member,
             assigned,
         }
@@ -320,13 +322,20 @@ mod tests {
         async fn list_assigned_users(&self, _a: Uuid) -> DomainResult<Vec<AssignedUser>> {
             Ok(Vec::new())
         }
+        async fn list_account_assignments(
+            &self,
+            _tenant_id: TenantId,
+            _account: crate::domain::account::AccountRef,
+        ) -> DomainResult<Vec<crate::domain::application::AccountAssignment>> {
+            Ok(Vec::new())
+        }
         async fn count_assignments(&self, _a: Uuid) -> DomainResult<i64> {
             Ok(0)
         }
         async fn assign(&self, _a: &ApplicationAssignment) -> DomainResult<()> {
             Ok(())
         }
-        async fn unassign(&self, _a: Uuid, _p: AssignedPrincipal) -> DomainResult<()> {
+        async fn unassign(&self, _a: Uuid, _p: AccountRef) -> DomainResult<()> {
             Ok(())
         }
     }

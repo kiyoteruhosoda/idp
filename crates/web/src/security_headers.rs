@@ -8,6 +8,12 @@
 //!
 //! さらに `hsts_max_age > 0` のときは `Strict-Transport-Security` を付与する。
 //!
+//! HTML には `Cache-Control` に `no-transform` を足す。⚠ **前段（Cloudflare）に HTML を書き換えさせない**
+//! ためで、Cloudflare の「メールアドレスの難読化」は本文中のメールを `[email protected]` へ置き換え、
+//! 読み込み時に自前のスクリプトで戻す。ページを読み直さずに一覧を差し替える画面
+//! （`assets/live-search.js`）ではその戻しが走らず、置き換えたままの文字が出ていた（2026-09-25）。
+//! 管理画面・ログイン画面は途中で書き換えられて困ることはあっても、書き換えてほしいことは無い。
+//!
 //! `script-src` から `'unsafe-inline'` を外してある（SEC12）。インラインを許したままでは、
 //! 反射型 XSS が 1 か所でもあれば CSP が防御にならない。画面固有スクリプトはすべて自オリジンの
 //! アセット（`handlers::page_scripts`）へ切り出し、テンプレートが渡していた値は `data-*` 属性で
@@ -18,7 +24,7 @@
 //! `javascript:` を持ち込めない）ため、優先度が違う。外すならクラス化とセットで行う。
 
 use axum::extract::Request;
-use axum::http::header::{HeaderName, HeaderValue};
+use axum::http::header::{HeaderName, HeaderValue, CACHE_CONTROL, CONTENT_TYPE};
 use axum::middleware::Next;
 use axum::response::Response;
 
@@ -123,7 +129,43 @@ pub async fn add_security_headers(request: Request, next: Next, hsts_max_age: u6
         }
     }
 
+    if is_html(headers) {
+        forbid_transform(headers);
+    }
+
     response
+}
+
+fn is_html(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.trim_start().to_ascii_lowercase().starts_with("text/html"))
+}
+
+/// `Cache-Control` に `no-transform` を足す（前段に本文を書き換えさせない）。ハンドラが付けた指示
+/// （`no-store` など）はそのまま残し、足すだけにする ——キャッシュの扱いは変えない。
+fn forbid_transform(headers: &mut axum::http::HeaderMap) {
+    let current = headers
+        .get(CACHE_CONTROL)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if current
+        .split(',')
+        .any(|d| d.trim().eq_ignore_ascii_case("no-transform"))
+    {
+        return;
+    }
+    let value = if current.is_empty() {
+        "no-transform".to_string()
+    } else {
+        format!("{current}, no-transform")
+    };
+    if let Ok(value) = HeaderValue::from_str(&value) {
+        headers.insert(CACHE_CONTROL, value);
+    }
 }
 
 #[cfg(test)]
@@ -185,9 +227,34 @@ mod tests {
     fn app(hsts_max_age: u64) -> Router {
         Router::new()
             .route("/", get(|| async { "ok" }))
+            .route(
+                "/page",
+                get(|| async { axum::response::Html("<p>a@example.com</p>") }),
+            )
+            .route(
+                "/no-store",
+                get(|| async {
+                    (
+                        [(CACHE_CONTROL, "no-store")],
+                        axum::response::Html("<p>x</p>"),
+                    )
+                }),
+            )
             .layer(axum::middleware::from_fn(move |req, next| {
                 add_security_headers(req, next, hsts_max_age)
             }))
+    }
+
+    /// HTML は前段に書き換えさせない（Cloudflare のメール難読化で `[email protected]` が出ていた）。
+    /// ハンドラの指示は残して足すだけ。HTML でない応答（アセット・JSON）は触らない。
+    #[tokio::test]
+    async fn html_is_marked_no_transform_without_dropping_the_handler_directives() {
+        let res = respond(app(0), "/page").await;
+        assert_eq!(res.headers()[CACHE_CONTROL], "no-transform");
+        let res = respond(app(0), "/no-store").await;
+        assert_eq!(res.headers()[CACHE_CONTROL], "no-store, no-transform");
+        let res = respond(app(0), "/").await;
+        assert!(res.headers().get(CACHE_CONTROL).is_none());
     }
 
     #[tokio::test]

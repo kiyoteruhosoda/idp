@@ -8,15 +8,16 @@ use crate::correlation;
 use crate::display_preferences::resolve_display_preferences;
 use crate::error_pages;
 use crate::handlers::{
-    account_setup, admin_applications_console, admin_authentication_policies_console,
-    admin_clients_console, admin_console, admin_external_idps_console, admin_invitations_console,
-    admin_login_identifiers_console, admin_members_console, admin_resources_console,
-    admin_restart_console, admin_saml_clients_console, admin_settings, admin_signing_keys_console,
-    admin_status_console, admin_tenants_console, admin_users_console, authenticators, consent,
-    console_script, external_login, health, invitation_accept, locale, login, mfa_totp,
-    page_scripts, passkey, password_change, password_reset, portal, react_assets, rp_logout,
-    saml_sso, step_up, stylesheet, submit_feedback_script, user_security, user_settings,
-    vendor_assets, verify_email,
+    account_setup, admin_accounts_console, admin_applications_console,
+    admin_authentication_policies_console, admin_clients_console, admin_console,
+    admin_external_idps_console, admin_invitations_console, admin_login_identifiers_console,
+    admin_members_console, admin_resources_console, admin_restart_console,
+    admin_saml_clients_console, admin_settings, admin_signing_keys_console, admin_status_console,
+    admin_tenants_console, admin_users_console, authenticators, consent, console_script,
+    external_login, health, invitation_accept, locale, login, mfa_totp, page_scripts, passkey,
+    password_change, password_reset, portal, react_assets, rp_logout, saml_sso, step_up,
+    stylesheet, submit_feedback_script, user_security, user_settings, vendor_assets, verify_email,
+    web_app_manifest,
 };
 use crate::i18n::Messages;
 use crate::login_context::load_rp_login_context;
@@ -202,6 +203,12 @@ pub fn build(state: WebState) -> Router {
         )
         .route("/admin/logout", post(admin_console::logout))
         .route("/admin", get(admin_console::home))
+        // ホーム画面へ入れるためのマニフェスト（テナントごと）。⚠ 認証の外に置く
+        // （ブラウザは Cookie 無しで取りに来る。`handlers::web_app_manifest`）。
+        .route(
+            "/admin/manifest.webmanifest",
+            get(web_app_manifest::manifest),
+        )
         // テナント切り替え（所属テナントの管理コンソールへ遷移。ADR-0009 §8）。
         .route("/admin/switch-tenant", get(admin_console::switch_tenant))
         // 設定画面（MT14）。テナント設定（idp.tenant.admin）＋ root のみのシステム設定区画（SMTP）。
@@ -329,12 +336,9 @@ pub fn build(state: WebState) -> Router {
         )
         // クライアント（RP）管理画面。静的セグメント（new）は動的 {client_id} より優先。
         .route("/admin/clients", get(admin_clients_console::list))
-        // サービスアカウント（機械の主体）の一覧と登録（ADR-0038）。詳細・編集・削除は
-        // `/admin/clients/{client_id}` を共有する（分けるのは「何を登録する場所か」だけ）。
-        .route(
-            "/admin/service-accounts",
-            get(admin_clients_console::list_service_accounts),
-        )
+        // サービスアカウント（機械の主体）の登録（ADR-0038）。一覧と 1 件の画面はアカウントの側
+        // （ADR-0065。下の `/admin/accounts`）。編集・シークレット・権限・削除は
+        // `/admin/clients/{client_id}/*` を共有する。
         .route(
             "/admin/service-accounts/new",
             get(admin_clients_console::new_service_account_form)
@@ -419,7 +423,31 @@ pub fn build(state: WebState) -> Router {
         )
         // メンバー（HOME/GUEST）一覧・ゲスト解除（ADR-0009 §3）と、所属元（HOME）利用者の
         // 無効化・有効化・パスワード再発行・削除（ADR-0009 §5）。
-        .route("/admin/members", get(admin_members_console::list))
+        // アカウント（人とサービスアカウント。ADR-0065）。旧来の 2 つの一覧は種別を絞ったこの一覧へ転送する。
+        .route("/admin/accounts", get(admin_accounts_console::list))
+        .route("/admin/members", get(admin_accounts_console::members_list))
+        .route(
+            "/admin/service-accounts",
+            get(admin_accounts_console::service_accounts_list),
+        )
+        // サービスアカウント 1 件の画面（人の `/admin/members/{user_id}` と同じ骨組み）と、その
+        // 管理者メモ・使えるアプリの出し入れ。
+        .route(
+            "/admin/service-accounts/{client_id}",
+            get(admin_accounts_console::service_account_detail),
+        )
+        .route(
+            "/admin/service-accounts/{client_id}/note",
+            post(admin_accounts_console::update_service_account_note),
+        )
+        .route(
+            "/admin/service-accounts/{client_id}/applications/{application_id}/assign",
+            post(admin_accounts_console::assign_service_account_application),
+        )
+        .route(
+            "/admin/service-accounts/{client_id}/applications/{application_id}/unassign",
+            post(admin_accounts_console::unassign_service_account_application),
+        )
         // メンバー 1 人の画面（操作はここに集める。一覧は探す場所）。
         .route(
             "/admin/members/{user_id}",
@@ -462,6 +490,19 @@ pub fn build(state: WebState) -> Router {
         .route(
             "/admin/members/{user_id}/delete",
             post(admin_members_console::delete),
+        )
+        // 管理者メモ（ADR-0063）と、その人のアプリの割り当て（アプリの詳細と同じ API を呼ぶ）。
+        .route(
+            "/admin/members/{user_id}/note",
+            post(admin_members_console::update_note),
+        )
+        .route(
+            "/admin/members/{user_id}/applications/{application_id}/assign",
+            post(admin_members_console::assign_application),
+        )
+        .route(
+            "/admin/members/{user_id}/applications/{application_id}/unassign",
+            post(admin_members_console::unassign_application),
         )
         // ゲスト招待の作成（ADR-0009 §3）。
         .route(
@@ -565,6 +606,18 @@ pub fn build(state: WebState) -> Router {
         )
         .route("/assets/app.css", get(stylesheet::app_css))
         .route("/assets/assay.svg", get(stylesheet::assay_svg))
+        .route(
+            "/assets/icons/assay-192.png",
+            get(stylesheet::assay_192_png),
+        )
+        .route(
+            "/assets/icons/assay-512.png",
+            get(stylesheet::assay_512_png),
+        )
+        .route(
+            "/assets/icons/assay-maskable-512.png",
+            get(stylesheet::assay_maskable_512_png),
+        )
         .route("/assets/console.js", get(console_script::console_js))
         .route(
             "/assets/button-pending.js",
@@ -597,6 +650,8 @@ pub fn build(state: WebState) -> Router {
         .route("/assets/auto-submit.js", get(page_scripts::auto_submit_js))
         .route("/assets/client-form.js", get(page_scripts::client_form_js))
         .route("/assets/local-time.js", get(page_scripts::local_time_js))
+        .route("/assets/list-filter.js", get(page_scripts::list_filter_js))
+        .route("/assets/live-search.js", get(page_scripts::live_search_js))
         .route(
             "/assets/vendor/bootstrap.min.css",
             get(vendor_assets::bootstrap_css),

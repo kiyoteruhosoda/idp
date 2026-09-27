@@ -211,9 +211,10 @@ pub mod test_support {
     //! 実装をここに 1 つだけ置き、各テストが自前の空実装を書き写さないようにする。
 
     use super::*;
+    use crate::domain::account::AccountRef;
     use crate::domain::application::{
-        ApplicationAssignment, ApplicationBinding, AssignedPrincipal, AssignedServiceAccount,
-        AssignedUser, BindingTarget,
+        ApplicationAssignment, ApplicationBinding, AssignedServiceAccount, AssignedUser,
+        BindingTarget,
     };
     use crate::domain::error::Result;
     use crate::domain::values::{ApplicationStatus, AssignmentMode};
@@ -297,17 +298,20 @@ pub mod test_support {
         async fn list_assigned_users(&self, _application_id: Uuid) -> Result<Vec<AssignedUser>> {
             Ok(Vec::new())
         }
+        async fn list_account_assignments(
+            &self,
+            _tenant_id: TenantId,
+            _account: crate::domain::account::AccountRef,
+        ) -> Result<Vec<crate::domain::application::AccountAssignment>> {
+            Ok(Vec::new())
+        }
         async fn count_assignments(&self, _application_id: Uuid) -> Result<i64> {
             Ok(0)
         }
         async fn assign(&self, _assignment: &ApplicationAssignment) -> Result<()> {
             Ok(())
         }
-        async fn unassign(
-            &self,
-            _application_id: Uuid,
-            _principal: AssignedPrincipal,
-        ) -> Result<()> {
+        async fn unassign(&self, _application_id: Uuid, _principal: AccountRef) -> Result<()> {
             Ok(())
         }
     }
@@ -332,9 +336,10 @@ mod tests {
     use crate::application::tenant_settings::testing::{
         tenant_settings as settings_fixture, tenant_settings_with_global,
     };
+    use crate::domain::account::AccountRef;
     use crate::domain::application::{
-        ApplicationAssignment, ApplicationBinding, AssignedPrincipal, AssignedServiceAccount,
-        AssignedUser, BindingTarget,
+        ApplicationAssignment, ApplicationBinding, AssignedServiceAccount, AssignedUser,
+        BindingTarget,
     };
     use crate::domain::audit::AuditEvent;
     use crate::domain::clock::Clock;
@@ -446,17 +451,20 @@ mod tests {
         async fn list_assigned_users(&self, _application_id: Uuid) -> Result<Vec<AssignedUser>> {
             Ok(Vec::new())
         }
+        async fn list_account_assignments(
+            &self,
+            _tenant_id: TenantId,
+            _account: crate::domain::account::AccountRef,
+        ) -> Result<Vec<crate::domain::application::AccountAssignment>> {
+            Ok(Vec::new())
+        }
         async fn count_assignments(&self, _application_id: Uuid) -> Result<i64> {
             Ok(0)
         }
         async fn assign(&self, _assignment: &ApplicationAssignment) -> Result<()> {
             Ok(())
         }
-        async fn unassign(
-            &self,
-            _application_id: Uuid,
-            _principal: AssignedPrincipal,
-        ) -> Result<()> {
+        async fn unassign(&self, _application_id: Uuid, _principal: AccountRef) -> Result<()> {
             Ok(())
         }
     }

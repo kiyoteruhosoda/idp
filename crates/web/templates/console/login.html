@@ -1,5 +1,6 @@
 {% extends "page.html" %}
 {% block title %}{{ messages.get("admin-login-title") }}{% endblock %}
+{% block head %}{% let manifest_prefix = tenant_prefix %}{% include "console/web_app_head.html" %}{% endblock %}
 {% block content %}
 <div class="card border-0 bg-transparent">
   <div class="card-header px-4 pb-3 border-0 bg-transparent">

@@ -241,6 +241,26 @@ created="$(curl -fsS -b "$AJAR" -X POST "${WEB}/${ROOT}/admin/clients/new" \
 grep -qi "secret" <<<"$created" || fail "クライアント作成で secret が表示されません"
 pass "クライアント作成（web→api POST /admin/clients、secret 一度表示）"
 
+# サービスアカウントを作成と同時にメモ付きで登録し、アカウントの 1 件の画面でメモが読めること（ADR-0065）。
+sa_marker="e2e-sa-note-$$"
+sacsrf="$(curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin/service-accounts/new" | grep -oE 'name="csrf_token" value="[a-f0-9]{64}"' | grep -oE '[a-f0-9]{64}')"
+curl -fsS -b "$AJAR" -o /dev/null -X POST "${WEB}/${ROOT}/admin/service-accounts/new" \
+  -H 'content-type: application/x-www-form-urlencoded' \
+  --data-urlencode "app_name=E2E Service Account" --data-urlencode "usage=system" \
+  --data-urlencode "redirect_uris=" \
+  --data-urlencode "token_endpoint_auth_method=client_secret_basic" \
+  --data-urlencode "note=${sa_marker}" \
+  --data-urlencode "csrf_token=${sacsrf}" \
+  || fail "サービスアカウントを登録できません"
+sa_client_id="$(mariadb_exec "SELECT client_id FROM clients WHERE app_name = 'E2E Service Account' ORDER BY created_at DESC LIMIT 1")"
+[[ -n "$sa_client_id" ]] || fail "サービスアカウントが DB に作られていません"
+curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin/service-accounts/${sa_client_id}" | grep -q "$sa_marker" \
+  || fail "サービスアカウントの画面に作成時のメモが出ません"
+curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin/accounts?kind=service_account&q=${sa_marker}" \
+  | grep -q "/${ROOT}/admin/service-accounts/${sa_client_id}" \
+  || fail "アカウント一覧がメモの言葉でサービスアカウントを引けません"
+pass "サービスアカウント（作成時のメモ → 1 件の画面 → 一覧の絞り込み。web→api /admin/service-accounts）"
+
 curl -fsS -b "$AJAR" -o /dev/null -w '%{http_code}' "${WEB}/${ROOT}/admin/status"     | grep -q 200 || fail "状況画面が 200 を返しません"
 curl -fsS -b "$AJAR" -o /dev/null -w '%{http_code}' "${WEB}/${ROOT}/admin/audit-logs"  | grep -q 200 || fail "監査画面が 200 を返しません"
 pass "状況・監査画面（web→api /admin/clients/status・/admin/audit-logs）"
@@ -254,11 +274,12 @@ curl -fsS -b "$AJAR" "${WEB}${metadata_href}" | grep -q "IDPSSODescriptor" \
   || fail "IdP メタデータを web のダウンロード URL から取得できません"
 pass "IdP メタデータ導線（コンソールと同じ web オリジンからダウンロード）"
 
-# メンバー一覧（絞り込み）→ 1 人の画面 → 権限付与。利用者検索画面は廃止したためメンバー画面が起点。
+# アカウント一覧（人に絞る）→ 1 人の画面 → 権限付与。利用者検索画面は廃止したためアカウント画面が起点
+# （ADR-0065。旧 `/admin/members` は転送するだけなので、-L を付けずに読むと空になる）。
 # ⚠ **一覧には操作を置かない**（操作列 168px に 7 つのボタンを並べて崩れていた）。権限への
 #   リンクは 1 人の画面にあるので、ここも 2 段で辿る。
-members_html="$(curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin/members?q=${U}")"
-grep -q "/${ROOT}/admin/members/[0-9a-f-]\{36\}" <<<"$members_html" || fail "メンバー絞り込みが 1 人の画面への導線を返しません"
+members_html="$(curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin/accounts?kind=user&q=${U}")"
+grep -q "/${ROOT}/admin/members/[0-9a-f-]\{36\}" <<<"$members_html" || fail "アカウントの絞り込みが 1 人の画面への導線を返しません"
 tid="$(mariadb_exec "SELECT u.id FROM users u JOIN user_login_identifiers p ON p.primary_of_user = u.id \
   WHERE u.tenant_id='${ROOT}' AND p.normalized_value='${U}' LIMIT 1;")"
 [[ -n "$tid" ]] || fail "対象利用者が見つかりません"

@@ -50,20 +50,43 @@ pub async fn new_form(
     let messages = Messages::new(locale(&headers));
     let csrf = csrf_from(&headers, state.config.csrf_secret());
     Html(render_new_form(
-        &messages, &tenant, &admin, &csrf, "", "", "", None,
+        &messages,
+        &tenant,
+        &admin,
+        &csrf,
+        &NewUserDraft::default(),
+        None,
     ))
     .into_response()
 }
 
-#[allow(clippy::too_many_arguments)]
+/// 作成フォームへ戻すときの入力（エラーで戻しても、打った内容を消さない）。
+#[derive(Default)]
+struct NewUserDraft<'a> {
+    email: &'a str,
+    preferred_username: &'a str,
+    name: &'a str,
+    /// 管理者メモ（ADR-0063）。作成と同時に HOME メンバーシップへ付く。
+    note: &'a str,
+}
+
+impl<'a> From<&'a NewUserForm> for NewUserDraft<'a> {
+    fn from(form: &'a NewUserForm) -> Self {
+        Self {
+            email: &form.email,
+            preferred_username: &form.preferred_username,
+            name: &form.name,
+            note: &form.note,
+        }
+    }
+}
+
 fn render_new_form_with_message(
     messages: &Messages,
     tenant: &WebTenant,
     admin: &AdminContext,
     csrf: &str,
-    email: &str,
-    preferred_username: &str,
-    name: &str,
+    draft: &NewUserDraft,
     error: &str,
 ) -> String {
     render(&UserForm {
@@ -72,9 +95,10 @@ fn render_new_form_with_message(
         admin: Some(admin.chrome()),
         csrf,
         error: Some(error),
-        email,
-        preferred_username,
-        name,
+        email: draft.email,
+        preferred_username: draft.preferred_username,
+        name: draft.name,
+        note: draft.note,
     })
 }
 
@@ -85,6 +109,9 @@ pub struct NewUserForm {
     pub preferred_username: String,
     #[serde(default)]
     pub name: String,
+    /// 管理者メモ（任意。ADR-0063）。
+    #[serde(default)]
+    pub note: String,
     pub csrf_token: String,
 }
 
@@ -105,9 +132,7 @@ pub async fn create(
             &tenant,
             &admin,
             &csrf,
-            &form.email,
-            &form.preferred_username,
-            &form.name,
+            &NewUserDraft::from(&form),
             Some("admin-error-csrf"),
         ));
     }
@@ -116,6 +141,8 @@ pub async fn create(
         "email": form.email,
         "preferred_username": normalize(&form.preferred_username),
         "name": normalize(&form.name),
+        // 空なら送らない（api 側でも空はメモ無しとして扱う）。
+        "note": normalize(&form.note),
     });
     // api のバリデーション/競合メッセージをこの画面へ出すため、決定言語を引き継ぐ（MT20）。
     let result = state
@@ -141,9 +168,7 @@ pub async fn create(
                 &tenant,
                 &admin,
                 &csrf,
-                &form.email,
-                &form.preferred_username,
-                &form.name,
+                &NewUserDraft::from(&form),
                 &m,
             ))
         }
@@ -466,9 +491,7 @@ fn render_new_form(
     tenant: &WebTenant,
     admin: &AdminContext,
     csrf: &str,
-    email: &str,
-    preferred_username: &str,
-    name: &str,
+    draft: &NewUserDraft,
     error_key: Option<&str>,
 ) -> String {
     let error = error_key.map(|k| messages.get(k));
@@ -478,9 +501,10 @@ fn render_new_form(
         admin: Some(admin.chrome()),
         csrf,
         error: error.as_deref(),
-        email,
-        preferred_username,
-        name,
+        email: draft.email,
+        preferred_username: draft.preferred_username,
+        name: draft.name,
+        note: draft.note,
     })
 }
 
@@ -623,13 +647,40 @@ mod tests {
             &tenant(),
             &AdminContext::for_test("admin-1", Some("Acme")),
             "csrf1",
-            "",
-            "",
-            "",
+            &NewUserDraft::default(),
             None,
         );
         assert!(html.contains("name=\"email\""));
         assert!(html.contains("name=\"preferred_username\""));
         assert!(html.contains("name=\"csrf_token\" value=\"csrf1\""));
+        assert!(
+            html.contains("name=\"note\""),
+            "作成と同時にメモを書ける: {html}"
+        );
+        assert!(html.contains("maxlength=\"2000\""), "{html}");
+    }
+
+    /// ADR-0063: 入力エラーで戻したとき、書いたメモを消さない（経緯を書き直させない）。
+    #[test]
+    fn the_note_survives_a_rejected_submission() {
+        let messages = Messages::new(Locale::Ja);
+        let draft = NewUserDraft {
+            email: "dup@example.com",
+            note: "家族として作成 <b>",
+            ..NewUserDraft::default()
+        };
+        let html = render_new_form_with_message(
+            &messages,
+            &tenant(),
+            &AdminContext::for_test("admin-1", Some("Acme")),
+            "csrf1",
+            &draft,
+            "そのメールアドレスは既に使われています。",
+        );
+        assert!(html.contains("家族として作成"), "{html}");
+        assert!(
+            !html.contains("家族として作成 <b>"),
+            "メモは必ずエスケープする: {html}"
+        );
     }
 }

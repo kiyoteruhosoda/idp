@@ -538,6 +538,7 @@ mod tests {
                 } else {
                     UserStatus::Disabled
                 },
+                pending_setup: false,
                 failed_login_count: 0,
                 locked_until: None,
                 created_at: now(),

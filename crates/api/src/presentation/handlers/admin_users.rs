@@ -69,6 +69,7 @@ pub async fn create_user(
                 email: body.email,
                 preferred_username: body.preferred_username,
                 name: body.name,
+                note: body.note,
             },
             &admin.actor,
             &ctx,

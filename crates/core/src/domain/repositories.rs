@@ -19,9 +19,10 @@
 //! - **テナント列を持たないテーブル**（署名鍵・jti 失効リスト・TOTP・WebAuthn・チャレンジ）。
 #![allow(dead_code)]
 
+use crate::domain::account::{AccountFilter, AccountPage, AccountRef, ServiceAccount};
 use crate::domain::application::{
-    Application, ApplicationAssignment, ApplicationBinding, ApplicationUserFacts,
-    AssignedPrincipal, AssignedServiceAccount, AssignedUser, BindingTarget,
+    AccountAssignment, Application, ApplicationAssignment, ApplicationBinding,
+    ApplicationUserFacts, AssignedServiceAccount, AssignedUser, BindingTarget,
 };
 use crate::domain::application_log::{
     ApplicationLogEntry, ApplicationLogFilter, ApplicationLogRecord,
@@ -223,6 +224,44 @@ pub trait TenantMemberQuery: Send + Sync {
     async fn search(&self, filter: &TenantMemberFilter) -> Result<TenantMemberPage>;
 }
 
+/// アカウントの管理者メモの書き込み（ADR-0063 / ADR-0065）。読むのは一覧・詳細の結合
+/// （[`TenantMemberQuery`]・[`AccountQuery`]）で済ませる（一覧に 1 行ずつ引き直させない）。
+///
+/// 人のメモはメンバーシップに付くので、⚠ **メンバーでない利用者には書けない**（外部キーが拒む）。
+/// 呼び出し側は書く前に相手が要求テナントのアカウントであることを確かめ、404 で返すこと。
+#[async_trait]
+pub trait AccountNoteRepository: Send + Sync {
+    /// メモを書く（あれば置き換える）。
+    async fn save(
+        &self,
+        tenant_id: TenantId,
+        account: AccountRef,
+        text: &str,
+        updated_by: Option<Uuid>,
+        now: DateTime<Utc>,
+    ) -> Result<()>;
+    /// メモを消す（無くてもエラーにしない）。
+    async fn clear(&self, tenant_id: TenantId, account: AccountRef) -> Result<()>;
+}
+
+/// アカウント一覧（人とサービスアカウント。読み取りモデル）の照会（ADR-0065）。
+///
+/// 種別をまたいだページングは DB 側でしかできない（片方ずつ引いて混ぜると、総件数もページの
+/// 境目も合わない）。実装は 2 種類を `UNION ALL` した 1 クエリで解決する。
+#[async_trait]
+pub trait AccountQuery: Send + Sync {
+    /// 条件に一致するアカウントを見出しの昇順（同値は種別・ID の順）に 1 ページ分返す。
+    /// 並び順は安定でなければならない（ページ間で行が重複・欠落しないため）。
+    async fn search(&self, filter: &AccountFilter) -> Result<AccountPage>;
+    /// サービスアカウント 1 件を `client_id` で引く（1 件の画面）。サービスアカウントでない client・
+    /// 削除済み・他テナントは `None`。
+    async fn find_service_account(
+        &self,
+        tenant_id: TenantId,
+        client_id: &str,
+    ) -> Result<Option<ServiceAccount>>;
+}
+
 #[async_trait]
 pub trait UserRepository: Send + Sync {
     /// ユーザーを作成する（`user.tenant_id` = 所属元テナント）。HOME メンバーシップの同時作成は
@@ -389,6 +428,15 @@ pub trait UserRepository: Send + Sync {
     ) -> Result<bool>;
     /// 利用者の状態（ACTIVE / DISABLED / LOCKED）を更新する（管理者による有効化・無効化）。
     async fn update_status(&self, id: Uuid, status: UserStatus) -> Result<()>;
+    /// 仮登録を外す（本人が設定リンクで資格情報を決めた。ADR-0064）。冪等。
+    ///
+    /// 既定実装は未対応エラー（`update_theme` と同じ方針。本番の sqlx 実装と、仮登録を試す
+    /// テスト用フェイクだけが上書きする）。⚠ 呼び出し側は**仮登録の人にだけ**呼ぶ。
+    async fn finish_setup(&self, _id: Uuid) -> Result<()> {
+        Err(crate::domain::error::DomainError::Repository(
+            "finish_setup is not supported by this repository".to_string(),
+        ))
+    }
     /// 利用者を削除する（管理者による削除。関連行は DB の FK CASCADE / SET NULL で後始末される）。
     async fn delete(&self, id: Uuid) -> Result<()>;
     /// メール検証済みフラグを立てる（自己登録アカウントの確認リンク消費時。SEC6b）。
@@ -1078,6 +1126,16 @@ pub trait ApplicationRepository: Send + Sync {
     /// アプリに割り当てられた**人**を一覧する（メールの昇順）。**利用者の情報ごと 1 回で読む**
     /// ——1 件ずつ引き直すと、名簿の長さだけ往復が増える。
     async fn list_assigned_users(&self, application_id: Uuid) -> Result<Vec<AssignedUser>>;
+    /// この**アカウント**（人・サービスアカウント）に付いている割り当てを、テナント内のアプリに
+    /// 限って一覧する（ADR-0063 / ADR-0065）。
+    ///
+    /// アプリ側から名簿を引く [`Self::list_assigned_users`] の裏返し。アカウントの画面が
+    /// 「どのアプリを使えるか」を出すのに、アプリの数だけ [`Self::is_assigned`] を呼ばせない。
+    async fn list_account_assignments(
+        &self,
+        tenant_id: TenantId,
+        account: AccountRef,
+    ) -> Result<Vec<AccountAssignment>>;
     /// アプリに割り当てられた**サービスアカウント**を一覧する（`client_id` の昇順）。
     async fn list_assigned_service_accounts(
         &self,
@@ -1090,7 +1148,7 @@ pub trait ApplicationRepository: Send + Sync {
     /// 割り当てを足す（冪等: 既存の割り当ては `id`・`assigned_at` を保持する）。
     async fn assign(&self, assignment: &ApplicationAssignment) -> Result<()>;
     /// 割り当てを外す（未割り当てでもエラーにしない）。
-    async fn unassign(&self, application_id: Uuid, principal: AssignedPrincipal) -> Result<()>;
+    async fn unassign(&self, application_id: Uuid, principal: AccountRef) -> Result<()>;
 }
 
 /// `sub` と、その人について読んだ事実（ADR-0057）。

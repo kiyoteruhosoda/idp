@@ -17,7 +17,7 @@ use crate::application::client_authentication::{
     PresentedClientCredentials,
 };
 use crate::application::key_service::KeyService;
-use crate::domain::application::BindingTarget;
+use crate::domain::application::{ApplicationAccess, BindingTarget};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::client::Client;
 use crate::domain::clock::Clock;
@@ -921,8 +921,10 @@ impl TokenService {
                         .map_err(|e| internal(&e))?
                     {
                         None => Err("resource_not_bound_to_an_application"),
+                        // 可否の規則はアカウントの画面と同じ `admits_service_account`（ADR-0065）。
+                        // 止まっているアプリでは割り当てを引かない。
                         Some(application) if !application.is_active() => {
-                            Err("application_disabled")
+                            Err(application.admits_service_account(false).reason())
                         }
                         Some(application) => {
                             let assigned = self
@@ -930,10 +932,13 @@ impl TokenService {
                                 .is_service_account_assigned(application.id, client.id)
                                 .await
                                 .map_err(|e| internal(&e))?;
-                            if assigned {
-                                Ok(resource)
-                            } else {
-                                Err("service_account_not_assigned")
+                            match application.admits_service_account(assigned) {
+                                ApplicationAccess::Allowed => Ok(resource),
+                                // 監査の理由は今までの語のまま（`service_account_not_assigned`）。
+                                ApplicationAccess::NotAssigned => {
+                                    Err("service_account_not_assigned")
+                                }
+                                denied => Err(denied.reason()),
                             }
                         }
                     },

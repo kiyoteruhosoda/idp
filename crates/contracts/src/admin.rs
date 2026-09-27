@@ -342,3 +342,9 @@ pub struct ClientPermissionsResponse {
     pub client_id: String,
     pub permission_codes: Vec<String>,
 }
+
+/// アカウント（人・サービスアカウント）の管理者メモの上限（文字数。ADR-0063 / ADR-0065）。
+///
+/// api の検証（`domain::account_note`）と web の入力欄（`maxlength`）が同じ値を読む。片方だけ
+/// 変えると、画面では書けるのに保存で断られる。
+pub const ACCOUNT_NOTE_MAX_LEN: usize = 2000;

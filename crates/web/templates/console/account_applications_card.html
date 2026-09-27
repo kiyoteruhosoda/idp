@@ -1,0 +1,74 @@
+{#- このアカウントが使えるアプリ（ADR-0063 / ADR-0065）。人とサービスアカウントの 1 件の画面が
+    同じものを使う。アプリの詳細（誰が使えるか）の裏返しで、可否は判定と同じ規則で api が答える。
+
+    呼ぶ側が用意する値:
+      apps                … &AccountApplicationListView
+      for_service_account … サービスアカウントか。⚠ 「全員」に含まれるのは人だけなので、
+                            サービスアカウントにはモードを問わず出し入れの口を出す（ADR-0059 の決定 5）
+    出し入れの送り先は呼ぶ側の構造体の `assignment_action()`。 -#}
+<div class="card mb-4">
+  <div class="card-header">
+    <div class="fw-semibold">{{ messages.get("admin-member-applications-title") }}</div>
+    {% if for_service_account %}
+    <p class="text-muted small mb-0 mt-1">{{ messages.get("admin-service-account-applications-desc") }}</p>
+    {% else %}
+    <p class="text-muted small mb-0 mt-1">{{ messages.get("admin-member-applications-desc") }}</p>
+    {% if apps.enforcement == "record_only" %}<p class="text-muted small mb-0 mt-1"><i class="fa-solid fa-circle-info me-1" aria-hidden="true"></i>{{ messages.get("admin-member-applications-record-only") }}</p>{% endif %}
+    {% endif %}
+  </div>
+  {% if apps.applications.is_empty() %}
+  <p class="card-body text-muted mb-0">{% if for_service_account %}{{ messages.get("admin-service-account-applications-none") }}{% else %}{{ messages.get("admin-member-applications-none") }}{% endif %}</p>
+  {% else %}
+  {#- その場で絞り込む（`assets/list-filter.js`）。名前の部分一致と、使えるかどうかの 2 つで絞る。
+      サーバへは送らない ——1 つのアカウントが使うアプリは多くても数十で、全件を 1 回で受け取っている。 -#}
+  <div data-list-filter>
+  <div class="card-body border-bottom d-flex flex-wrap align-items-center gap-2">
+    <div class="input-group input-group-sm member-apps-search">
+      <span class="input-group-text"><i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i></span>
+      <input type="search" class="form-control" data-list-filter-input placeholder="{{ messages.get("admin-member-applications-filter-placeholder") }}" aria-label="{{ messages.get("admin-member-applications-filter-label") }}">
+    </div>
+    <div class="btn-group btn-group-sm flex-wrap" role="group" aria-label="{{ messages.get("admin-member-applications-filter-state-label") }}">
+      <button type="button" class="btn btn-outline-secondary active" aria-pressed="true" data-list-filter-state="">{{ messages.get("admin-member-applications-filter-all") }} <span class="text-body-secondary">{{ apps.applications.len() }}</span></button>
+      <button type="button" class="btn btn-outline-secondary" aria-pressed="false" data-list-filter-state="allowed">{{ messages.get("admin-member-applications-allowed") }} <span class="text-body-secondary">{{ apps.count("allowed") }}</span></button>
+      <button type="button" class="btn btn-outline-secondary" aria-pressed="false" data-list-filter-state="not_assigned">{{ messages.get("admin-member-applications-not-assigned") }} <span class="text-body-secondary">{{ apps.count("not_assigned") }}</span></button>
+      {% if apps.count("application_disabled") > 0 %}<button type="button" class="btn btn-outline-secondary" aria-pressed="false" data-list-filter-state="application_disabled">{{ messages.get("admin-member-applications-disabled") }} <span class="text-body-secondary">{{ apps.count("application_disabled") }}</span></button>{% endif %}
+    </div>
+  </div>
+  <p class="card-body text-muted mb-0" data-list-filter-empty hidden>{{ messages.get("admin-member-applications-filter-none") }}</p>
+  <ul class="list-group list-group-flush">
+    {% for app in apps.applications %}
+    <li class="list-group-item d-flex flex-wrap align-items-center gap-2" data-filter-item data-filter-state="{{ app.access }}" data-filter-text="{{ app.display_name }}">
+      <div class="me-auto">
+        <a href="{{ tenant }}/admin/applications/{{ app.application_id }}">{{ app.display_name }}</a>
+        <div class="small text-muted">
+          {% if app.assignment_mode == "EVERYONE" && !for_service_account %}{{ messages.get("admin-member-applications-mode-everyone") }}
+          {% else if let Some(at) = app.assigned_at %}{{ messages.get("admin-member-applications-assigned-since") }} <time class="local-time" datetime="{{ at }}">{{ crate::templates::utc_short(at.as_str()) }}</time>
+          {% else if app.assignment_mode == "EVERYONE" %}{{ messages.get("admin-service-account-applications-mode-everyone") }}
+          {% else %}{{ messages.get("admin-member-applications-mode-individual") }}{% endif %}
+        </div>
+      </div>
+      {% if app.access == "allowed" %}<span class="badge text-bg-success">{{ messages.get("admin-member-applications-allowed") }}</span>
+      {% else if app.access == "application_disabled" %}<span class="badge text-bg-warning">{{ messages.get("admin-member-applications-disabled") }}</span>
+      {% else %}<span class="badge text-bg-secondary">{{ messages.get("admin-member-applications-not-assigned") }}</span>{% endif %}
+      {#- 人は「個別」のアプリだけ（「全員」のアプリで外しても入れてしまう）。サービスアカウントは
+          「全員」に含まれないので、モードを問わず出し入れする。 -#}
+      {% if app.assignment_mode == "INDIVIDUAL" || for_service_account %}
+      {% if app.assigned_at.is_some() %}
+      <form method="post" action="{{ self.assignment_action(app.application_id.as_str(), "unassign") }}" data-confirm="{{ messages.get("admin-member-applications-unassign-confirm") }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf }}">
+        <button type="submit" class="btn btn-outline-secondary btn-sm">{{ messages.get("admin-member-applications-unassign") }}</button>
+      </form>
+      {% else %}
+      <form method="post" action="{{ self.assignment_action(app.application_id.as_str(), "assign") }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf }}">
+        <button type="submit" class="btn btn-outline-primary btn-sm">{{ messages.get("admin-member-applications-assign") }}</button>
+      </form>
+      {% endif %}
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  </div>
+  <script src="/assets/list-filter.js?v={{ crate::templates::asset_version() }}" defer></script>
+  {% endif %}
+</div>

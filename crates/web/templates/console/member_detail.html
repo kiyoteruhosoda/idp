@@ -2,7 +2,7 @@
 {% block content %}
 {#- 一覧の 1 セルへ 7 つのボタンを並べていた頃の置き換え（操作列 168px にボタンが縦 7 段、
     幅の広いものは右端で切れていた）。⚠ **一覧は探す場所、ここは操作する場所**と分ける。 -#}
-<p class="mb-2"><a href="{{ tenant }}/admin/members"><i class="fa-solid fa-arrow-left me-1" aria-hidden="true"></i>{{ messages.get("admin-member-detail-back") }}</a></p>
+<p class="mb-2"><a href="{{ tenant }}/admin/accounts?kind=user"><i class="fa-solid fa-arrow-left me-1" aria-hidden="true"></i>{{ messages.get("admin-member-detail-back") }}</a></p>
 <h2 class="h4 mb-3">{{ member.email.as_deref().unwrap_or(member.preferred_username.as_deref().unwrap_or("-")) }}</h2>
 {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
 {% if let Some(key) = notice_key %}<div class="alert alert-success" role="status"><i class="fa-solid fa-circle-check me-2" aria-hidden="true"></i>{{ messages.get(key) }}</div>{% endif %}
@@ -18,7 +18,14 @@
       <dd class="mb-0">{% if member.status == "SUSPENDED" %}<span class="badge text-bg-warning">{{ messages.get("admin-members-status-suspended") }}</span>{% else %}{{ member.status }}{% endif %}</dd></div>
     <div class="col mb-2"><dt class="small text-muted fw-semibold">{{ messages.get("admin-members-col-user-status") }}</dt>
       <dd class="mb-0">
+        {% if member.pending_setup && member.setup_link_expired %}<span class="badge text-bg-warning"><i class="fa-solid fa-link-slash me-1" aria-hidden="true"></i>{{ messages.get("admin-members-user-status-setup-expired") }}</span>
+        <div class="small text-muted mt-1">{{ messages.get("admin-members-user-status-setup-expired-help") }}</div>
+        {% else if member.pending_setup %}<span class="badge text-bg-secondary"><i class="fa-regular fa-hourglass-half me-1" aria-hidden="true"></i>{{ messages.get("admin-members-user-status-pending") }}</span>
+        {% if let Some(until) = member.setup_link_expires_at %}<div class="small mt-1">{{ messages.get("admin-members-setup-link-until") }} <time class="local-time" datetime="{{ until }}">{{ crate::templates::utc_short(until.as_str()) }}</time></div>{% endif %}
+        <div class="small text-muted mt-1">{{ messages.get("admin-members-user-status-pending-help") }}</div>
+        {% endif %}
         {% if member.locked %}<span class="badge text-bg-warning"><i class="fa-solid fa-lock me-1" aria-hidden="true"></i>{{ messages.get("admin-members-user-status-locked") }}</span>
+        {% else if member.pending_setup && member.user_status.as_deref() == Some("ACTIVE") %}
         {% else if member.user_status.as_deref() == Some("ACTIVE") %}<span class="badge text-bg-success">{{ messages.get("admin-members-user-status-active") }}</span>
         {% else if member.user_status.as_deref() == Some("DISABLED") %}<span class="badge text-bg-danger">{{ messages.get("admin-members-user-status-disabled") }}</span>
         {% else if member.user_status.is_some() %}<span class="badge text-bg-warning">{{ messages.get("admin-members-user-status-locked") }}</span>
@@ -26,6 +33,16 @@
       </dd></div>
   </dl>
 </div>
+
+{#- 管理者メモと使えるアプリは、サービスアカウントの画面と同じ部品（ADR-0065）。
+    メモは HOME / GUEST を問わず書ける（このテナントの管理者の覚え書きであって、ゲストの利用者
+    そのものは変えない）。使えるアプリは `idp.applications:read` を持たない管理者には欄ごと出さない。 -#}
+{% let account_note = member.note.as_ref() %}
+{% include "console/account_note_card.html" %}
+{% if let Some(apps) = applications %}
+{% let for_service_account = false %}
+{% include "console/account_applications_card.html" %}
+{% endif %}
 
 {% if member.membership_type == "HOME" %}
 <div class="card mb-3">
@@ -64,11 +81,20 @@
       <button type="submit" class="btn btn-outline-success"><i class="fa-solid fa-lock-open me-1" aria-hidden="true"></i>{{ messages.get("admin-members-unlock-button") }}</button>
     </form>
     {% endif %}
+    {#- 仮登録の人にとってこの操作は「設定リンクを出し直す」こと（パスワードはまだ無い）。名前を合わせる。 -#}
+    {% if member.pending_setup %}
+    <form method="post" action="{{ tenant }}/admin/members/{{ member.user_id }}/reset-password" data-confirm="{{ messages.get("admin-members-reissue-setup-link-confirm") }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <input type="hidden" name="email" value="{{ member.email.as_deref().unwrap_or("") }}">
+      <button type="submit" class="btn btn-outline-primary"><i class="fa-solid fa-link me-1" aria-hidden="true"></i>{{ messages.get("admin-members-reissue-setup-link-button") }}</button>
+    </form>
+    {% else %}
     <form method="post" action="{{ tenant }}/admin/members/{{ member.user_id }}/reset-password" data-confirm="{{ messages.get("admin-members-reset-password-confirm") }}">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <input type="hidden" name="email" value="{{ member.email.as_deref().unwrap_or("") }}">
       <button type="submit" class="btn btn-outline-secondary"><i class="fa-solid fa-key me-1" aria-hidden="true"></i>{{ messages.get("admin-members-reset-password-button") }}</button>
     </form>
+    {% endif %}
     <form method="post" action="{{ tenant }}/admin/members/{{ member.user_id }}/reset-mfa" data-confirm="{{ messages.get("admin-members-reset-mfa-confirm") }}">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <input type="hidden" name="email" value="{{ member.email.as_deref().unwrap_or("") }}">

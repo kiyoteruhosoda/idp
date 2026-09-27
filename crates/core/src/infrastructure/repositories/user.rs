@@ -192,6 +192,7 @@ const SELECT_COLUMNS: &str = "u.id AS id, u.tenant_id AS tenant_id, u.sub AS sub
      u.password_hash AS password_hash, \
      u.must_change_password AS must_change_password, \
      u.password_changed_at AS password_changed_at, u.status AS status, \
+     u.pending_setup AS pending_setup, \
      u.failed_login_count AS failed_login_count, u.locked_until AS locked_until, \
      u.created_at AS created_at, u.updated_at AS updated_at";
 
@@ -241,6 +242,7 @@ fn map_row(row: &MySqlRow) -> Result<User> {
         must_change_password: row.try_get("must_change_password").map_err(repo_err)?,
         password_changed_at: password_changed_at.map(to_utc),
         status: UserStatus::parse(&status)?,
+        pending_setup: row.try_get("pending_setup").map_err(repo_err)?,
         failed_login_count: row.try_get("failed_login_count").map_err(repo_err)?,
         locked_until: locked_until.map(to_utc),
         created_at: to_utc(row.try_get("created_at").map_err(repo_err)?),
@@ -500,9 +502,9 @@ async fn insert_user(conn: &mut sqlx::MySqlConnection, user: &User) -> Result<()
     sqlx::query(
         "INSERT INTO users \
          (id, tenant_id, sub, email, email_verified, name, language, theme, \
-          password_hash, must_change_password, password_changed_at, status, failed_login_count, \
-          locked_until) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          password_hash, must_change_password, password_changed_at, status, pending_setup, \
+          failed_login_count, locked_until) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(user.id.to_string())
     .bind(user.tenant_id.to_string())
@@ -516,6 +518,7 @@ async fn insert_user(conn: &mut sqlx::MySqlConnection, user: &User) -> Result<()
     .bind(user.must_change_password)
     .bind(user.password_changed_at.map(|d| d.naive_utc()))
     .bind(user.status.as_str())
+    .bind(user.pending_setup)
     .bind(user.failed_login_count)
     .bind(user.locked_until.map(|d| d.naive_utc()))
     .execute(&mut *conn)
@@ -846,6 +849,15 @@ impl UserRepository for SqlxUserRepository {
     async fn update_status(&self, id: Uuid, status: UserStatus) -> Result<()> {
         sqlx::query("UPDATE users SET status = ? WHERE id = ?")
             .bind(status.as_str())
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        Ok(())
+    }
+
+    async fn finish_setup(&self, id: Uuid) -> Result<()> {
+        sqlx::query("UPDATE users SET pending_setup = 0 WHERE id = ?")
             .bind(id.to_string())
             .execute(&self.pool)
             .await

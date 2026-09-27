@@ -343,18 +343,191 @@ pub struct MemberView {
     /// （web は時計を持たないため、期限の比較を web 側でやり直さない）。
     #[serde(default)]
     pub locked: bool,
+    /// 仮登録（ADR-0064）。本人がまだ設定リンクで資格情報を決めていない。
+    #[serde(default)]
+    pub pending_setup: bool,
+    /// 仮登録の人の、いまの設定リンクの期限（RFC 3339・UTC）。
+    #[serde(default)]
+    pub setup_link_expires_at: Option<String>,
+    /// 仮登録で、使える設定リンクが無い（期限切れ）。api が読んだ時点で判定した値
+    /// （web は時計を持たないので、期限の比較をやり直さない。`locked` と同じ）。
+    #[serde(default)]
+    pub setup_link_expired: bool,
+    /// 管理者メモ（ADR-0063）。書かれていなければ `None`。
+    #[serde(default)]
+    pub note: Option<AccountNoteView>,
 }
 
-/// メンバー一覧の 1 ページ分（`GET /admin/members`。MT22）。
+impl MemberView {
+    /// 一覧の見出しに出す名前（メール → ユーザー名の順に拾う）。
+    pub fn headline(&self) -> &str {
+        self.email
+            .as_deref()
+            .or(self.preferred_username.as_deref())
+            .unwrap_or("-")
+    }
+
+    /// 見出しの下に添える名前。見出しと同じ値は繰り返さない（同じ文字列が 2 段並ぶと読みにくい）。
+    pub fn secondary_names(&self) -> Vec<&str> {
+        let headline = self.headline();
+        let mut out: Vec<&str> = Vec::new();
+        for value in [self.preferred_username.as_deref(), self.name.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            if value != headline && !out.contains(&value) {
+                out.push(value);
+            }
+        }
+        out
+    }
+}
+
+/// アカウント（人・サービスアカウント）の管理者メモ（ADR-0063 / ADR-0065）。
 #[derive(Debug, Clone, Deserialize)]
-pub struct MemberListView {
-    pub members: Vec<MemberView>,
-    /// 絞り込み後の総件数（ページング前）。「全 N 件」の表示と次ページの有無に使う。
+pub struct AccountNoteView {
+    pub text: String,
+    /// RFC 3339（UTC）。画面では `local-time.js` が閲覧者の時刻へ直す。
+    pub updated_at: String,
+}
+
+impl AccountNoteView {
+    /// 一覧に出す 1 行目（長ければ切る）。一覧は探す場所なので、全文は 1 件の画面で読む。
+    pub fn excerpt(&self) -> Option<String> {
+        const MAX_CHARS: usize = 60;
+        let first = self.text.lines().next()?.trim();
+        if first.is_empty() {
+            return None;
+        }
+        let mut excerpt: String = first.chars().take(MAX_CHARS).collect();
+        if first.chars().count() > MAX_CHARS || self.text.contains('\n') {
+            excerpt.push('…');
+        }
+        Some(excerpt)
+    }
+}
+
+/// サービスアカウント 1 件（`GET /admin/service-accounts/{client_id}`・一覧の 1 行。ADR-0065）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ServiceAccountView {
+    pub client_id: String,
+    pub app_name: String,
+    /// `ACTIVE` / `DISABLED`。
+    pub status: String,
+    /// RFC 3339（UTC）。
+    pub created_at: String,
+    /// このサービスアカウントを名乗り（binding）に持つアプリ。
+    #[serde(default)]
+    pub identity_of: Option<IdentityApplicationView>,
+    #[serde(default)]
+    pub note: Option<AccountNoteView>,
+}
+
+/// サービスアカウントを名乗りに持つアプリ。
+#[derive(Debug, Clone, Deserialize)]
+pub struct IdentityApplicationView {
+    pub application_id: String,
+    pub display_name: String,
+}
+
+/// アカウント一覧の 1 行（`kind` に応じて `user` / `service_account` のどちらかが載る。ADR-0065）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct AccountView {
+    /// `user` / `service_account`。
+    pub kind: String,
+    #[serde(default)]
+    pub user: Option<MemberView>,
+    #[serde(default)]
+    pub service_account: Option<ServiceAccountView>,
+}
+
+impl AccountView {
+    /// 1 件の画面へのパス（テナントの前置きを除く）。種別ごとに経路が違う。
+    pub fn path(&self) -> String {
+        match (&self.user, &self.service_account) {
+            (Some(m), _) => format!("/admin/members/{}", m.user_id),
+            (None, Some(sa)) => format!("/admin/service-accounts/{}", sa.client_id),
+            (None, None) => "/admin/accounts".to_string(),
+        }
+    }
+
+    /// 見出し（人はメール → ユーザー名、サービスアカウントは登録名）。
+    pub fn headline(&self) -> &str {
+        match (&self.user, &self.service_account) {
+            (Some(m), _) => m.headline(),
+            (None, Some(sa)) => &sa.app_name,
+            (None, None) => "-",
+        }
+    }
+
+    /// 見出しの下に添える名前（人はユーザー名・氏名、サービスアカウントは `client_id`）。
+    pub fn secondary_names(&self) -> Vec<&str> {
+        match (&self.user, &self.service_account) {
+            (Some(m), _) => m.secondary_names(),
+            (None, Some(sa)) => vec![sa.client_id.as_str()],
+            (None, None) => Vec::new(),
+        }
+    }
+
+    /// 一覧に出すメモの 1 行目。
+    pub fn note_excerpt(&self) -> Option<String> {
+        match (&self.user, &self.service_account) {
+            (Some(m), _) => m.note.as_ref()?.excerpt(),
+            (None, Some(sa)) => sa.note.as_ref()?.excerpt(),
+            (None, None) => None,
+        }
+    }
+}
+
+/// アカウント一覧の 1 ページ分（`GET /admin/accounts`。ADR-0065）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct AccountListView {
+    pub accounts: Vec<AccountView>,
+    /// 実際に並べた種別。
+    #[allow(dead_code)]
+    pub kinds: Vec<String>,
+    /// 読める種別（絞り込みの選択肢）。
+    pub readable_kinds: Vec<String>,
+    /// 絞り込み後の総件数（ページング前）。
     pub total: i64,
-    /// api が実際に適用した 1 ページの件数（クランプ後）。ページ送りの刻み幅として使う。
+    /// api が実際に適用した 1 ページの件数（クランプ後）。
     pub limit: i64,
     #[allow(dead_code)]
     pub offset: i64,
+}
+
+/// アカウント 1 つが使えるアプリ（`GET /admin/members/{user_id}/applications`・
+/// `GET /admin/service-accounts/{client_id}/applications`。ADR-0063 / ADR-0065）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct AccountApplicationListView {
+    pub applications: Vec<AccountApplicationView>,
+    /// `record_only` / `enforce`。
+    pub enforcement: String,
+}
+
+impl AccountApplicationListView {
+    /// 可否ごとの件数（絞り込みの札に添える）。
+    pub fn count(&self, access: &str) -> usize {
+        self.applications
+            .iter()
+            .filter(|a| a.access == access)
+            .count()
+    }
+}
+
+/// アカウントから見たアプリ 1 件。
+#[derive(Debug, Clone, Deserialize)]
+pub struct AccountApplicationView {
+    pub application_id: String,
+    pub display_name: String,
+    /// `ACTIVE` / `DISABLED`。
+    pub status: String,
+    /// `EVERYONE` / `INDIVIDUAL`。
+    pub assignment_mode: String,
+    /// `allowed` / `not_assigned` / `application_disabled`。
+    pub access: String,
+    #[serde(default)]
+    pub assigned_at: Option<String>,
 }
 
 /// 管理者によるパスワード再発行応答（`POST /admin/users/{id}/password-reset` ほか）。

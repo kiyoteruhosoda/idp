@@ -294,4 +294,19 @@ root テナントの UUID は固定値 `00000000-0000-7000-8000-000000000001`（
   ⚠ **どのアプリの名乗りでもない宛名の貸し出し、またはサービスアカウントでない client への貸し出しがあれば、
   冒頭の `SIGNAL` で何も変える前に止まる**（確認の SELECT は OPERATIONS.md 4-5）。`down` は
   サービスアカウントの割り当てを「アプリが名乗る宛名」ごとの貸し出しへ戻し、主キーを元へ戻す。
-
+- `0061_tenant_member_notes`: メンバーの管理者メモの表 `tenant_member_notes` を追加する（ADR-0063）。
+  主キーは `(tenant_id, user_id)` で、`tenant_memberships` への複合外部キー（CASCADE）により
+  メンバーシップが消えればメモも消える。書いた管理者は `updated_by`（消えたら SET NULL）。
+  `down` は表ごと落とす（メモは失われる）。
+- `0062_users_pending_setup`: `users.pending_setup`（仮登録）を足す（ADR-0064）。`status` とは直交する。
+  既に在る「作成と同時に出た設定リンクが未使用・認証器なし・パスワード変更待ち」の利用者を 1 に倒す。
+  `down` は列ごと落とす（仮登録だった人は ACTIVE 扱いに戻るが、パスワードは誰も知らないままなので入れない）。
+- `0063_account_notes`: 管理者メモを人とサービスアカウントの両方に付ける表 `account_notes` を足す（ADR-0065）。
+  形は `application_assignments`（0059）と同じで、`kind`（`USER` / `SERVICE_ACCOUNT`）と `user_id` /
+  `client_id` のどちらか 1 つだけが埋まる。人の行は `tenant_memberships` への複合外部キー（CASCADE）、
+  サービスアカウントの行は `clients.id`（CASCADE）。0061 のメモを写す（`id` は 0059 と同じ手組みの UUIDv7 で、
+  流し直しても同じ値）。⚠ **expand のみ**で `tenant_member_notes` は残す（落とすのは次の移行）。`down` は
+  人のメモを 0061 の表へ書き戻して表を落とす（サービスアカウントのメモは失われる）。
+- `0064_drop_tenant_member_notes`: 0063 の contract。入れ替わりの間に旧バイナリが旧表へ書いたメモ
+  （`account_notes` に無い人の行だけ）を写してから `tenant_member_notes` を落とす（ADR-0065）。`down` は
+  0061 と同じ定義で作り直し、人のメモを写す（0063 の `down` がそれを読む）。
