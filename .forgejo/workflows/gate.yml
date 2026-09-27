@@ -1,0 +1,32 @@
+# 関門。**どの PR にも必ず 1 本の合否を付ける**ためのもの。
+#
+# ⚠ **正は deploy-repo の `resources/gate-workflow.yml`**。`bin/forge-merge-gate.py` が
+#   各リポジトリへ配った写し。直すなら正を直して配り直す。
+#
+# main のブランチ保護は「必須のチェック = `*`（付いた検査すべて）」で、forge は
+# 付いた検査が全部緑になった瞬間にマージする（予約マージ）。⚠ **検査が 1 本も
+# 付かない PR は永久にマージされない**ので、paths で絞らずに必ず 1 本付ける。
+# 詳しくは deploy-repo の `docs/merge-gate.md`。
+#
+# ⚠ **ここで他の検査の終わりを待たない。** ランナーの枠を握ったまま座り、
+#   待たれている側が枠に入れず詰まる。「全部緑か」は forge の保護が数える。
+
+name: gate
+
+on:
+  pull_request:
+
+concurrency:
+  group: gate-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: 関門（どの PR にも付く）
+    runs-on: [self-hosted, nolumialab]
+    timeout-minutes: 5
+    steps:
+      - run: echo "OK"
