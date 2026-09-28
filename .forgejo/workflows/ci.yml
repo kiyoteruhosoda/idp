@@ -11,13 +11,15 @@ on:
     branches: [main]
   pull_request:
 
-# ⚠ **同じ枝で 2 本走らせない。** 古いコミットの結果を待っても意味が無いので取り消す。
+# 同じ枝（PR）へ続けて push したら、古い実行は取り消して最新の commit だけを検査する。
+# ⚠ **main も取り消す**（2026-09-28 の決定）。間の commit には合否が残らない代わりに、
+#   main への push が続いた日に古い検査がランナーの列を塞がない。副作用のある workflow には当てない。
 # ⚠ **別の枝どうしの取り合いはここでは防いでいない**（group が枝ごとのため）。
 #   `target/` を共有する別の PR や main のジョブとは並んで走る ——守っているのは
 #   下の `scripts/with-target-lock.sh`（`target/` そのものに掛けるロック）である。
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   test:
