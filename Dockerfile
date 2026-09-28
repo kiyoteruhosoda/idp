@@ -11,7 +11,7 @@
 # 実行ステージ（debian:bookworm-slim）と glibc ABI を揃えるため、Rust ビルダーも
 # bookworm に固定する。rust:slim はタグ更新で trixie 等へ進み得るため、NAS 等の
 # デプロイ先で `GLIBC_2.39 not found` が発生しないようにする。
-FROM rust:slim-bookworm AS builder
+FROM rust:slim-bookworm@sha256:ff521445a372125ed4f76e1453a1f8098f2d05332d1601d30db1c1f62757e730 AS builder
 WORKDIR /build
 
 RUN apt-get update \
@@ -58,7 +58,7 @@ RUN find crates -name '*.rs' -exec touch {} + \
 # sqlx-cli のビルドには Rust ツールチェインと C ビルド依存が必要だが、それらを migrate 実行イメージへ
 # 持ち込むと assay-migrate.tar が肥大化する。ビルド専用ステージへ閉じ込め、実行ステージには sqlx binary と
 # migrations だけを渡す。
-FROM rust:slim-bookworm AS migrate-tool-builder
+FROM rust:slim-bookworm@sha256:ff521445a372125ed4f76e1453a1f8098f2d05332d1601d30db1c1f62757e730 AS migrate-tool-builder
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential perl pkg-config \
     && rm -rf /var/lib/apt/lists/* \
@@ -67,7 +67,7 @@ RUN apt-get update \
 # ---- migrate ----
 # DDL / マスタデータ適用の専用ジョブ（sqlx migrate run）。CLAUDE.md schema-version 方針に従い、
 # アプリ起動時には適用せず、この単独ジョブで適用する。Compose の migrate サービスから使う。
-FROM debian:bookworm-slim AS migrate
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 AS migrate
 WORKDIR /migrate
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
@@ -80,7 +80,7 @@ USER assay
 ENTRYPOINT ["sqlx", "migrate", "run", "--source", "/migrate/migrations"]
 
 # ---- 実行イメージ共通ベース ----
-FROM debian:bookworm-slim AS runtime-base
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 AS runtime-base
 # TLS 検証用のルート証明書（web→api の https 呼び出し等）と、ヘルスチェック用の curl。非 root 実行。
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
