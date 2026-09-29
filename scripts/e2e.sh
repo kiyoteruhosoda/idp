@@ -244,18 +244,29 @@ pass "クライアント作成（web→api POST /admin/clients、secret 一度�
 # サービスアカウントを作成と同時にメモ付きで登録し、アカウントの 1 件の画面でメモが読めること（ADR-0065）。
 sa_marker="e2e-sa-note-$$"
 sacsrf="$(curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin/service-accounts/new" | grep -oE 'name="csrf_token" value="[a-f0-9]{64}"' | grep -oE '[a-f0-9]{64}')"
-curl -fsS -b "$AJAR" -o /dev/null -X POST "${WEB}/${ROOT}/admin/service-accounts/new" \
+sa_created="$(curl -fsS -b "$AJAR" -o /dev/null -w '%{http_code} %{redirect_url}' -X POST "${WEB}/${ROOT}/admin/service-accounts/new" \
   -H 'content-type: application/x-www-form-urlencoded' \
   --data-urlencode "app_name=E2E Service Account" --data-urlencode "usage=system" \
   --data-urlencode "redirect_uris=" \
   --data-urlencode "token_endpoint_auth_method=client_secret_basic" \
   --data-urlencode "note=${sa_marker}" \
-  --data-urlencode "csrf_token=${sacsrf}" \
+  --data-urlencode "csrf_token=${sacsrf}")" \
   || fail "サービスアカウントを登録できません"
 sa_client_id="$(mariadb_exec "SELECT client_id FROM clients WHERE app_name = 'E2E Service Account' ORDER BY created_at DESC LIMIT 1")"
 [[ -n "$sa_client_id" ]] || fail "サービスアカウントが DB に作られていません"
-curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin/service-accounts/${sa_client_id}" | grep -q "$sa_marker" \
-  || fail "サービスアカウントの画面に作成時のメモが出ません"
+# 画面はいったんファイルへ受けてから調べる。⚠ `curl | grep -q` の形だと、落ちたときに
+#   「画面がリダイレクトした（空の本文）」のか「描かれたがメモが無い」のかが残らない。
+sa_page="$(mktemp)"
+sa_shown="$(curl -fsS -b "$AJAR" -o "$sa_page" -w '%{http_code} %{redirect_url}' \
+  "${WEB}/${ROOT}/admin/service-accounts/${sa_client_id}")" \
+  || fail "サービスアカウントの画面が開けません"
+if ! grep -q "$sa_marker" "$sa_page"; then
+  printf '    登録の応答: %s\n    画面の応答: %s（client_id=%s）\n    DB のメモ: %s 件\n' \
+    "$sa_created" "$sa_shown" "$sa_client_id" \
+    "$(mariadb_exec "SELECT COUNT(*) FROM account_notes n JOIN clients c ON c.id = n.client_id WHERE c.client_id = '${sa_client_id}'")" >&2
+  grep -oE '(alert|error)[^>]*>[^<]{1,200}' "$sa_page" | sed -n '1,5p' >&2 || true
+  fail "サービスアカウントの画面に作成時のメモが出ません"
+fi
 curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin/accounts?kind=service_account&q=${sa_marker}" \
   | grep -q "/${ROOT}/admin/service-accounts/${sa_client_id}" \
   || fail "アカウント一覧がメモの言葉でサービスアカウントを引けません"
