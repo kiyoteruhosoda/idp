@@ -66,6 +66,7 @@ use crate::application::revocation::RevocationService;
 use crate::application::saml_service_provider_management::SamlServiceProviderManagementService;
 use crate::application::saml_sso::SamlSsoService;
 use crate::application::service_restart::ServiceRestartService;
+use crate::application::sign_in_completion::SignInCompletion;
 use crate::application::sso_restore::SsoRestorer;
 use crate::application::step_up::StepUpService;
 use crate::application::stop_announcement::StopAnnouncementService;
@@ -543,6 +544,15 @@ impl AppState {
             clock.clone(),
             config.authorization_code_ttl(),
         ));
+        // 認証が成立した後の共通の後段（5 経路で共有する。`sign_in_completion`）。
+        let sign_in = Arc::new(SignInCompletion::new(
+            sso_sessions.clone(),
+            auth_sessions.clone(),
+            client_consents.clone(),
+            code_issuance.clone(),
+            audit.clone(),
+            tenant_settings.clone(),
+        ));
 
         // 自己登録（SEC6）: テナント設定トグル（既定 OFF）＋ IP 単位レート制限。ログインとは別の
         // 制限器を使う（登録の失敗でログイン試行枠を消費させない）。
@@ -618,11 +628,9 @@ impl AppState {
             users.clone(),
             tenant_domains.clone(),
             auth_sessions.clone(),
-            sso_sessions.clone(),
-            client_consents.clone(),
             totp_secrets.clone(),
             policy_gate.clone(),
-            code_issuance.clone(),
+            sign_in.clone(),
             hasher.clone(),
             rate_limiter.clone(),
             audit.clone(),
@@ -633,16 +641,13 @@ impl AppState {
         let change_password = Arc::new(ChangePasswordService::new(
             auth_sessions.clone(),
             users.clone(),
-            sso_sessions.clone(),
-            client_consents.clone(),
             totp_secrets.clone(),
             policy_gate.clone(),
-            code_issuance.clone(),
+            sign_in.clone(),
             hasher.clone(),
             password_policy.clone(),
             audit.clone(),
             clock.clone(),
-            tenant_settings.clone(),
             *config.csrf_secret(),
         ));
         let consent = Arc::new(ConsentService::new(
@@ -997,10 +1002,8 @@ impl AppState {
             Arc::new(SqlxExternalIdentityRepository::new(pool.clone())),
             external_login_requests.clone(),
             users.clone(),
-            sso_sessions.clone(),
             auth_sessions.clone(),
-            client_consents.clone(),
-            code_issuance.clone(),
+            sign_in.clone(),
             policy_gate.clone(),
             Arc::new(ReqwestExternalOidcClient::new()),
             audit.clone(),
@@ -1008,7 +1011,6 @@ impl AppState {
             ids.clone(),
             *config.key_encryption_key(),
             config.public_web_base_url().to_string(),
-            tenant_settings.clone(),
         ));
         let external_idps = Arc::new(ExternalIdpManagementService::new(
             external_providers.clone(),
@@ -1081,9 +1083,7 @@ impl AppState {
             auth_sessions.clone(),
             totp_secrets,
             users.clone(),
-            sso_sessions.clone(),
-            client_consents.clone(),
-            code_issuance.clone(),
+            sign_in.clone(),
             // パスワード認証と同じ limiter インスタンス・同じロックポリシーを共有する（SEC3）。
             // 別枠にすると「パスワードで上限まで、TOTP でさらに上限まで」と試行できてしまう。
             rate_limiter.clone(),
@@ -1098,15 +1098,12 @@ impl AppState {
         let passkey_authentication = Arc::new(PasskeyAuthenticationService::new(
             passkey_assertion,
             auth_sessions.clone(),
-            sso_sessions.clone(),
-            client_consents,
             policy_gate.clone(),
-            code_issuance,
+            sign_in.clone(),
             // レート制限はログイン・直接ログインのパスキー経路と同じ枠を共有する（T39）。
             rate_limiter.clone(),
             audit.clone(),
             clock.clone(),
-            tenant_settings.clone(),
         ));
         // 設定画面からの再起動（ADR-0017）。signal 自体は `run()` の graceful shutdown へ、
         // ユースケース（監査 → 停止要求）はハンドラへ渡すため、同じ値を 2 経路で保持する。

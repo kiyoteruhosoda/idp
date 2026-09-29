@@ -1,3 +1,14 @@
+## 2026-09-29（6）（認証が成立した後の後段を 1 つにした）
+
+- ログイン・MFA・パスキー・パスワード変更・外部 IdP の 5 経路が各自に書いていた「SSO セッションの確立 →
+  AuthSession への認証の記録 → 同意の確認 → code 発行 → AuthSession の削除」を `SignInCompletion` の
+  2 つの口（`establish_sso` / `continue_authorization`）にした。各サービスは SSO セッション・同意・code 発行の
+  依存を直接持たなくなった。
+- ⚠ **順序を 1 つに揃えた**: SSO セッションを保存してから認証を記録する（ログインと外部 IdP はもとから
+  この順、MFA・パスキー・パスワード変更は逆だった）。逆の順だと、SSO の保存に失敗したときに「存在しない
+  SSO セッションの `sid` を持つ、認証済みの AuthSession」が残り、同意の承諾がそれで code を出せた。
+  `continue_authorization` は `establish_sso` の結果を受け取る形なので、順序は型で守られる。
+  変わるのは保存が失敗したときに残るものだけで、成功時の振る舞いは同じ。
 ## 2026-09-29（5）（残タスクの置き場所を nolumiatask へ移した）
 
 - `docs/Progress.md` を廃止し、残タスク 17 件を nolumiatask の「【idp（assay）】残っている課題」（#62）の下へ

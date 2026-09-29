@@ -23,22 +23,18 @@ use crate::application::authentication_policy_gate::{
 use crate::application::authenticator_management::{
     consume_single_use_code, is_blocked_in_registry,
 };
-use crate::application::authorize::AuthorizationDispatch;
-use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
-use crate::application::consent::consent_is_granted;
+use crate::application::sign_in_completion::{AuthorizationContinuation, SignIn, SignInCompletion};
 use crate::application::totp_registration::verify_totp_code;
 use crate::domain::audit::{AuditEventType, AuditResult};
-use crate::domain::auth_session::{AuthSessionIdHash, Authentication};
+use crate::domain::auth_session::AuthSessionIdHash;
 use crate::domain::authentication_policy::PolicyDecision;
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::effective_tenant_settings::EffectiveTenantSettings;
 use crate::domain::rate_limit::LoginRateLimiter;
 use crate::domain::repositories::{
-    AuthSessionRepository, ClientConsentRepository, SsoSessionRepository, TotpSecretRepository,
-    UserAuthenticatorRepository, UserRepository,
+    AuthSessionRepository, TotpSecretRepository, UserAuthenticatorRepository, UserRepository,
 };
-use crate::domain::sso_session::SsoSession;
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::user::User;
@@ -106,9 +102,8 @@ pub struct MfaLoginService {
     auth_sessions: Arc<dyn AuthSessionRepository>,
     totp_secrets: Arc<dyn TotpSecretRepository>,
     users: Arc<dyn UserRepository>,
-    sso_sessions: Arc<dyn SsoSessionRepository>,
-    client_consents: Arc<dyn ClientConsentRepository>,
-    code_issuance: Arc<CodeIssuanceService>,
+    /// 認証が成立した後の共通の後段（SSO の確立・認可フローの続き）。
+    sign_in: Arc<SignInCompletion>,
     rate_limiter: Arc<dyn LoginRateLimiter>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
@@ -128,9 +123,7 @@ impl MfaLoginService {
         auth_sessions: Arc<dyn AuthSessionRepository>,
         totp_secrets: Arc<dyn TotpSecretRepository>,
         users: Arc<dyn UserRepository>,
-        sso_sessions: Arc<dyn SsoSessionRepository>,
-        client_consents: Arc<dyn ClientConsentRepository>,
-        code_issuance: Arc<CodeIssuanceService>,
+        sign_in: Arc<SignInCompletion>,
         rate_limiter: Arc<dyn LoginRateLimiter>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
@@ -144,9 +137,7 @@ impl MfaLoginService {
             auth_sessions,
             totp_secrets,
             users,
-            sso_sessions,
-            client_consents,
-            code_issuance,
+            sign_in,
             rate_limiter,
             audit,
             clock,
@@ -298,121 +289,56 @@ impl MfaLoginService {
             }
         }
 
-        // 8. SSO セッションを組み立てる（`sid` を auth_session へ預けるため、永続化より先に作る）。
-        //    寿命は利用者の所属元テナントの値（SSO セッションは全テナントで共有されるため。ADR-0058）。
-        let lifetime = match self.settings.sso_session_lifetime(user.tenant_id).await {
-            Ok(lifetime) => lifetime,
-            Err(e) => return MfaLoginOutcome::Internal(e.to_string()),
-        };
-        let sso_session_id = crypto::random_hex(32);
-        let sso = SsoSession::establish(
-            crypto::sha256_hex(&sso_session_id),
-            user_id,
-            now,
-            lifetime.idle,
-            lifetime.absolute,
-            vec![AuthenticationMethod::Password, second_factor],
-            ctx.user_agent.clone(),
-            ctx.ip_address.clone(),
-        );
-
-        // 9. auth_time と `sid` を設定する（MFA 完了時刻を認証時刻とする）。id も再生成する（SEC7）。
-        let authentication = Authentication::new(
-            user_id,
-            now,
-            Some(sso.sid()),
-            Some(sso.authentication_methods.clone()),
-        );
-        let completion = session.complete_authentication(authentication.clone());
-        if let Err(e) = self.auth_sessions.save_authentication(&completion).await {
-            return MfaLoginOutcome::Internal(e.to_string());
-        }
-        let rotated_id = completion.into_issued().into_string();
-
-        if let Err(e) = self.sso_sessions.create(&sso).await {
-            return MfaLoginOutcome::Internal(e.to_string());
-        }
-        self.audit
-            .record(
-                AuditEventType::SsoSessionCreated,
-                AuditResult::Success,
-                Some(tenant_id),
-                Some(user_id),
-                Some(&client_id),
-                None,
-                ctx,
-            )
-            .await;
-        self.audit
-            .record(
-                AuditEventType::LoginSucceeded,
-                AuditResult::Success,
-                Some(tenant_id),
-                Some(user_id),
-                Some(&client_id),
-                None,
-                ctx,
-            )
-            .await;
-
-        // 10. 同意チェック（`openid` は暗黙同意）。
-        let consented = match consent_is_granted(
-            self.client_consents.as_ref(),
-            tenant_id,
-            user_id,
-            session.request(),
-        )
-        .await
-        {
-            Ok(granted) => granted,
-            Err(e) => return MfaLoginOutcome::Internal(e.to_string()),
-        };
-
-        if !consented {
-            return MfaLoginOutcome::ConsentRequired {
-                auth_session_id: rotated_id,
-                sso_session_id,
-                sso_absolute_ttl_secs: sso.absolute_ttl_secs(),
-            };
-        }
-
-        // 11. code 発行。
-        let code = match self
-            .code_issuance
-            .issue(
-                IssueCodeCommand {
-                    tenant,
-                    request: session.request().clone(),
-                    authentication,
+        // 8. SSO セッションを確立し、認可フローを続ける（同意の確認 → code 発行）。
+        let sso = match self
+            .sign_in
+            .establish_sso(
+                SignIn {
+                    tenant_id,
+                    user_id,
+                    home_tenant_id: user.tenant_id,
+                    methods: vec![AuthenticationMethod::Password, second_factor],
+                    client_id: Some(&client_id),
+                    success_event: AuditEventType::LoginSucceeded,
+                    success_detail: None,
                 },
                 ctx,
+                now,
             )
             .await
         {
-            Ok(CodeIssuance::Issued(code)) => code,
-            // 認証は通っているが、このアプリの利用が許可されていない（ADR-0054）。RP へは戻さない。
-            Ok(CodeIssuance::ApplicationDenied { application_name }) => {
-                return MfaLoginOutcome::ApplicationNotPermitted {
-                    application_name,
-                    sso_session_id,
-                    sso_absolute_ttl_secs: sso.absolute_ttl_secs(),
-                }
-            }
+            Ok(sso) => sso,
             Err(e) => return MfaLoginOutcome::Internal(e.to_string()),
         };
-
-        // 12. AuthSession を削除する。
-        if let Err(e) = self.auth_sessions.delete(session.id_hash()).await {
-            tracing::warn!(error = %e, "failed to delete auth session after MFA code issuance");
-        }
-
-        let dispatch = AuthorizationDispatch::from(session.request().success_response(&code));
-        MfaLoginOutcome::Success {
-            location: dispatch.location,
-            form_post: dispatch.form_post,
-            sso_session_id,
-            sso_absolute_ttl_secs: sso.absolute_ttl_secs(),
-            user_language: user.language.clone(),
+        let sso_session_id = sso.session_id().to_string();
+        let sso_absolute_ttl_secs = sso.absolute_ttl_secs();
+        match self
+            .sign_in
+            .continue_authorization(tenant, &mut session, &sso, now, ctx)
+            .await
+        {
+            Ok(AuthorizationContinuation::ConsentRequired { auth_session_id }) => {
+                MfaLoginOutcome::ConsentRequired {
+                    auth_session_id,
+                    sso_session_id,
+                    sso_absolute_ttl_secs,
+                }
+            }
+            Ok(AuthorizationContinuation::ApplicationNotPermitted { application_name }) => {
+                MfaLoginOutcome::ApplicationNotPermitted {
+                    application_name,
+                    sso_session_id,
+                    sso_absolute_ttl_secs,
+                }
+            }
+            Ok(AuthorizationContinuation::Authorized(dispatch)) => MfaLoginOutcome::Success {
+                location: dispatch.location,
+                form_post: dispatch.form_post,
+                sso_session_id,
+                sso_absolute_ttl_secs,
+                user_language: user.language.clone(),
+            },
+            Err(e) => MfaLoginOutcome::Internal(e.to_string()),
         }
     }
 
@@ -628,11 +554,15 @@ mod tests {
     //! テストだけは同じパラメータで現在のコードを生成して渡す。失敗パスは固定の不正コードで足りる。
 
     use super::*;
+    use crate::application::code_issuance::CodeIssuanceService;
     use crate::domain::authorization_code::AuthorizationCode;
     use crate::domain::clock::Clock as ClockTrait;
     use crate::domain::consent::ClientConsent;
     use crate::domain::error::Result as DomainResult;
-    use crate::domain::repositories::AuditLogSink;
+    use crate::domain::repositories::{
+        AuditLogSink, ClientConsentRepository, SsoSessionRepository,
+    };
+    use crate::domain::sso_session::SsoSession;
     use crate::domain::totp_secret::TotpSecret;
     use crate::domain::values::UserStatus;
     use crate::domain::{auth_session, authorization_request};
@@ -1054,12 +984,17 @@ mod tests {
 
             let service = MfaLoginService::new(
                 Arc::new(FakeAuthenticators),
-                auth_sessions,
+                auth_sessions.clone(),
                 totp_secrets.clone(),
                 users.clone(),
-                sso_sessions.clone(),
-                Arc::new(FakeConsents),
-                code_issuance,
+                Arc::new(SignInCompletion::new(
+                    sso_sessions.clone(),
+                    auth_sessions,
+                    Arc::new(FakeConsents),
+                    code_issuance,
+                    audit.clone(),
+                    settings.service.clone(),
+                )),
                 Arc::new(CountingLimiter {
                     allowed: rate_limit_allowed,
                     calls: Mutex::new(0),

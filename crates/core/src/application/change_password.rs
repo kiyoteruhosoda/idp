@@ -18,24 +18,16 @@ use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authentication_policy_gate::{
     AuthenticationPolicyGate, PolicyAudience, PolicyQuery,
 };
-use crate::application::authorize::AuthorizationDispatch;
-use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
-use crate::application::consent::consent_is_granted;
 use crate::application::mfa_login::user_has_confirmed_totp;
 use crate::application::password_policy::PasswordPolicyService;
+use crate::application::sign_in_completion::{AuthorizationContinuation, SignIn, SignInCompletion};
 use crate::domain::audit::{AuditEventType, AuditResult};
-use crate::domain::auth_session::{AuthSessionIdHash, Authentication};
+use crate::domain::auth_session::AuthSessionIdHash;
 use crate::domain::authentication_policy::PolicyDecision;
 use crate::domain::clock::Clock;
-use crate::domain::crypto;
-use crate::domain::effective_tenant_settings::EffectiveTenantSettings;
 use crate::domain::password::PasswordHasher;
 use crate::domain::password_policy::{password_change_required, PasswordRejection};
-use crate::domain::repositories::{
-    AuthSessionRepository, ClientConsentRepository, SsoSessionRepository, TotpSecretRepository,
-    UserRepository,
-};
-use crate::domain::sso_session::SsoSession;
+use crate::domain::repositories::{AuthSessionRepository, TotpSecretRepository, UserRepository};
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::AuthenticationMethod;
 use std::sync::Arc;
@@ -98,19 +90,15 @@ pub enum ChangePasswordOutcome {
 pub struct ChangePasswordService {
     auth_sessions: Arc<dyn AuthSessionRepository>,
     users: Arc<dyn UserRepository>,
-    sso_sessions: Arc<dyn SsoSessionRepository>,
-    client_consents: Arc<dyn ClientConsentRepository>,
     totp_secrets: Arc<dyn TotpSecretRepository>,
     /// 認証ポリシーの評価（材料の引き当てと評価。`authentication_policy_gate`）。
     policy_gate: Arc<AuthenticationPolicyGate>,
-    code_issuance: Arc<CodeIssuanceService>,
+    /// 認証が成立した後の共通の後段（SSO の確立・認可フローの続き）。
+    sign_in: Arc<SignInCompletion>,
     hasher: Arc<dyn PasswordHasher>,
     password_policy: Arc<PasswordPolicyService>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
-    /// テナントが上書きできる設定（ADR-0058）。参照のたびに引く。一致するポリシーが無い場合の
-    /// 既定動作（AP2・§4）もここから引く。
-    settings: Arc<dyn EffectiveTenantSettings>,
     csrf_secret: [u8; 32],
 }
 
@@ -119,31 +107,25 @@ impl ChangePasswordService {
     pub fn new(
         auth_sessions: Arc<dyn AuthSessionRepository>,
         users: Arc<dyn UserRepository>,
-        sso_sessions: Arc<dyn SsoSessionRepository>,
-        client_consents: Arc<dyn ClientConsentRepository>,
         totp_secrets: Arc<dyn TotpSecretRepository>,
         policy_gate: Arc<AuthenticationPolicyGate>,
-        code_issuance: Arc<CodeIssuanceService>,
+        sign_in: Arc<SignInCompletion>,
         hasher: Arc<dyn PasswordHasher>,
         password_policy: Arc<PasswordPolicyService>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
-        settings: Arc<dyn EffectiveTenantSettings>,
         csrf_secret: [u8; 32],
     ) -> Self {
         Self {
             auth_sessions,
             users,
-            sso_sessions,
-            client_consents,
             totp_secrets,
             policy_gate,
-            code_issuance,
+            sign_in,
             hasher,
             password_policy,
             audit,
             clock,
-            settings,
             csrf_secret,
         }
     }
@@ -399,121 +381,55 @@ impl ChangePasswordService {
             PolicyDecision::Allow { .. } => {}
         }
 
-        // 7. SSO セッションを組み立てる（`sid` を auth_session へ預けるため、永続化より先に作る）。
-        //    寿命は利用者の所属元テナントの値（SSO セッションは全テナントで共有されるため。ADR-0058）。
-        let lifetime = match self.settings.sso_session_lifetime(user.tenant_id).await {
-            Ok(lifetime) => lifetime,
-            Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
-        };
-        let sso_session_id = crypto::random_hex(32);
-        let sso = SsoSession::establish(
-            crypto::sha256_hex(&sso_session_id),
-            user.id,
-            now,
-            lifetime.idle,
-            lifetime.absolute,
-            vec![AuthenticationMethod::Password],
-            ctx.user_agent.clone(),
-            ctx.ip_address.clone(),
-        );
-
-        // 8. auth_time と `sid` を設定する（パスワード変更完了時刻を認証時刻とする）。
-        //    id も再生成する（SEC7）。
-        let authentication = Authentication::new(
-            user.id,
-            now,
-            Some(sso.sid()),
-            Some(sso.authentication_methods.clone()),
-        );
-        let completion = session.complete_authentication(authentication.clone());
-        if let Err(e) = self.auth_sessions.save_authentication(&completion).await {
-            return ChangePasswordOutcome::Internal(e.to_string());
-        }
-        let rotated_id = completion.into_issued().into_string();
-
-        if let Err(e) = self.sso_sessions.create(&sso).await {
-            return ChangePasswordOutcome::Internal(e.to_string());
-        }
-        self.audit
-            .record(
-                AuditEventType::SsoSessionCreated,
-                AuditResult::Success,
-                Some(tenant_id),
-                Some(user.id),
-                Some(&client_id),
-                None,
-                ctx,
-            )
-            .await;
-        self.audit
-            .record(
-                AuditEventType::LoginSucceeded,
-                AuditResult::Success,
-                Some(tenant_id),
-                Some(user.id),
-                Some(&client_id),
-                None,
-                ctx,
-            )
-            .await;
-
-        // 9. 同意チェック（`openid` は暗黙同意）。
-        let consented = match consent_is_granted(
-            self.client_consents.as_ref(),
-            tenant_id,
-            user.id,
-            session.request(),
-        )
-        .await
-        {
-            Ok(granted) => granted,
-            Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
-        };
-
-        if !consented {
-            return ChangePasswordOutcome::ConsentRequired {
-                auth_session_id: rotated_id,
-                sso_session_id,
-                sso_absolute_ttl_secs: sso.absolute_ttl_secs(),
-            };
-        }
-
-        // 10. code 発行。
-        let code = match self
-            .code_issuance
-            .issue(
-                IssueCodeCommand {
-                    tenant,
-                    request: session.request().clone(),
-                    authentication,
+        // 7. SSO セッションを確立し、認可フローを続ける（同意の確認 → code 発行）。
+        let sso = match self
+            .sign_in
+            .establish_sso(
+                SignIn {
+                    tenant_id,
+                    user_id: user.id,
+                    home_tenant_id: user.tenant_id,
+                    methods: vec![AuthenticationMethod::Password],
+                    client_id: Some(&client_id),
+                    success_event: AuditEventType::LoginSucceeded,
+                    success_detail: None,
                 },
                 ctx,
+                now,
             )
             .await
         {
-            Ok(CodeIssuance::Issued(code)) => code,
-            // 認証は通っているが、このアプリの利用が許可されていない（ADR-0054）。RP へは戻さない。
-            Ok(CodeIssuance::ApplicationDenied { application_name }) => {
-                return ChangePasswordOutcome::ApplicationNotPermitted {
-                    application_name,
-                    sso_session_id,
-                    sso_absolute_ttl_secs: sso.absolute_ttl_secs(),
-                }
-            }
+            Ok(sso) => sso,
             Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
         };
-
-        // 11. AuthSession を削除する。
-        if let Err(e) = self.auth_sessions.delete(session.id_hash()).await {
-            tracing::warn!(error = %e, "failed to delete auth session after password change");
-        }
-
-        let dispatch = AuthorizationDispatch::from(session.request().success_response(&code));
-        ChangePasswordOutcome::Success {
-            location: dispatch.location,
-            form_post: dispatch.form_post,
-            sso_session_id,
-            sso_absolute_ttl_secs: sso.absolute_ttl_secs(),
+        let sso_session_id = sso.session_id().to_string();
+        let sso_absolute_ttl_secs = sso.absolute_ttl_secs();
+        match self
+            .sign_in
+            .continue_authorization(tenant, &mut session, &sso, now, ctx)
+            .await
+        {
+            Ok(AuthorizationContinuation::ConsentRequired { auth_session_id }) => {
+                ChangePasswordOutcome::ConsentRequired {
+                    auth_session_id,
+                    sso_session_id,
+                    sso_absolute_ttl_secs,
+                }
+            }
+            Ok(AuthorizationContinuation::ApplicationNotPermitted { application_name }) => {
+                ChangePasswordOutcome::ApplicationNotPermitted {
+                    application_name,
+                    sso_session_id,
+                    sso_absolute_ttl_secs,
+                }
+            }
+            Ok(AuthorizationContinuation::Authorized(dispatch)) => ChangePasswordOutcome::Success {
+                location: dispatch.location,
+                form_post: dispatch.form_post,
+                sso_session_id,
+                sso_absolute_ttl_secs,
+            },
+            Err(e) => ChangePasswordOutcome::Internal(e.to_string()),
         }
     }
 }
