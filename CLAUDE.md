@@ -8,7 +8,7 @@
 ## ドキュメント運用
 
 変更・設計判断は `docs/` 配下で管理する。**残タスク（未着手・進行中・要判断）はリポジトリに置かず、
-nolumiatask（https://task.nolumia.com）の課題「【idp（assay）】残っている課題」（#62）の下に書く。**
+nolumiatask の課題「【idp（assay）】残っている課題」（https://task.nolumia.com/issues/62）の下に書く。**
 
 ```
 docs/
