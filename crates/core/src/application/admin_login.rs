@@ -17,15 +17,16 @@
 //! （`sso_session_id` Cookie ＝ 平文、DB は SHA-256）であり、`RequirePerms<IdpAdmin>` がそのまま検証する。
 
 use crate::application::audit::{AuditService, RequestContext};
+use crate::application::authentication_policy_gate::{
+    AuthenticationPolicyGate, PolicyAudience, PolicyQuery,
+};
 use crate::application::login_user_resolution::resolve_login_user;
 use crate::application::passkey_assertion::{
     PasskeyAssertionError, PasskeyAssertionService, PasskeyFlow,
 };
 use crate::application::password_policy::PasswordPolicyService;
 use crate::domain::audit::{AuditEventType, AuditResult};
-use crate::domain::authentication_policy::{
-    evaluate_policies, AuthenticationContext, PolicyDecision,
-};
+use crate::domain::authentication_policy::PolicyDecision;
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::effective_tenant_settings::EffectiveTenantSettings;
@@ -36,8 +37,7 @@ use crate::domain::permission;
 use crate::domain::rate_limit::LoginRateLimiter;
 use crate::domain::repositories::TenantDomainRepository;
 use crate::domain::repositories::{
-    AuthenticationPolicyRepository, SsoSessionRepository, TotpSecretRepository,
-    UserPermissionRepository, UserRepository,
+    SsoSessionRepository, TotpSecretRepository, UserPermissionRepository, UserRepository,
 };
 use crate::domain::sso_session::SsoSession;
 use crate::domain::tenant::TenantId;
@@ -125,7 +125,8 @@ pub struct AdminLoginService {
     sso_sessions: Arc<dyn SsoSessionRepository>,
     permissions: Arc<dyn UserPermissionRepository>,
     totp_secrets: Arc<dyn TotpSecretRepository>,
-    authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
+    /// 認証ポリシーの評価（材料の引き当てと評価。`authentication_policy_gate`）。
+    policy_gate: Arc<AuthenticationPolicyGate>,
     hasher: Arc<dyn PasswordHasher>,
     password_policy: Arc<PasswordPolicyService>,
     rate_limiter: Arc<dyn LoginRateLimiter>,
@@ -145,7 +146,7 @@ impl AdminLoginService {
         sso_sessions: Arc<dyn SsoSessionRepository>,
         permissions: Arc<dyn UserPermissionRepository>,
         totp_secrets: Arc<dyn TotpSecretRepository>,
-        authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
+        policy_gate: Arc<AuthenticationPolicyGate>,
         hasher: Arc<dyn PasswordHasher>,
         password_policy: Arc<PasswordPolicyService>,
         rate_limiter: Arc<dyn LoginRateLimiter>,
@@ -160,7 +161,7 @@ impl AdminLoginService {
             sso_sessions,
             permissions,
             totp_secrets,
-            authentication_policies,
+            policy_gate,
             hasher,
             password_policy,
             rate_limiter,
@@ -187,30 +188,19 @@ impl AdminLoginService {
         user_verified: bool,
         ctx: &RequestContext,
     ) -> Result<(), AdminLoginOutcome> {
-        let default_effect = match self.settings.policy_default_effect(tenant_id).await {
-            Ok(effect) => effect,
-            Err(e) => return Err(AdminLoginOutcome::Internal(e.to_string())),
-        };
-        let policies = match self
-            .authentication_policies
-            .list_enabled_for_tenant(tenant_id)
-            .await
-        {
-            Ok(p) => p,
-            Err(e) => return Err(AdminLoginOutcome::Internal(e.to_string())),
-        };
-        let decision = evaluate_policies(
-            &policies,
-            &AuthenticationContext {
-                application_id: None,
+        let decision = self
+            .policy_gate
+            .decide(PolicyQuery {
+                tenant_id,
+                audience: PolicyAudience::Unaddressed,
                 user_id,
                 ip_address: ctx.ip_address.as_deref(),
-                now: self.clock.now(),
                 // 管理コンソールのログインは OIDC 認可要求ではないため `acr_values` は無い。
                 requested_acr: &[],
-            },
-            default_effect,
-        );
+                now: self.clock.now(),
+            })
+            .await
+            .map_err(|e| AdminLoginOutcome::Internal(e.to_string()))?;
         match decision {
             PolicyDecision::Allow { .. } => Ok(()),
             PolicyDecision::Deny { policy_code } => {

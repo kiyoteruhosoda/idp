@@ -22,16 +22,16 @@
 //! 外部 IdP で本人確認できても、テナントの認証ポリシー（AP2/AP4）は同じように適用する。
 //! 「外部で認証した」ことは `deny` を免れる理由にならない。
 
-use crate::application::application_access::ApplicationAccessService;
 use crate::application::audit::{AuditService, RequestContext};
+use crate::application::authentication_policy_gate::{
+    AuthenticationPolicyGate, PolicyAudience, PolicyQuery,
+};
 use crate::application::authorize::AuthorizationDispatch;
 use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
 use crate::application::consent::consent_is_granted;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session::{AuthSessionIdHash, Authentication};
-use crate::domain::authentication_policy::{
-    evaluate_policies, AuthenticationContext, PolicyDecision,
-};
+use crate::domain::authentication_policy::PolicyDecision;
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::effective_tenant_settings::EffectiveTenantSettings;
@@ -40,9 +40,9 @@ use crate::domain::external_oidc_port::{ExternalOidcClient, ExternalTokenRequest
 use crate::domain::id_generator::IdGenerator;
 use crate::domain::pkce;
 use crate::domain::repositories::{
-    AuthSessionRepository, AuthenticationPolicyRepository, ClientConsentRepository,
-    ExternalIdentityProviderRepository, ExternalIdentityRepository, ExternalLoginRequestRepository,
-    SsoSessionRepository, UserRepository,
+    AuthSessionRepository, ClientConsentRepository, ExternalIdentityProviderRepository,
+    ExternalIdentityRepository, ExternalLoginRequestRepository, SsoSessionRepository,
+    UserRepository,
 };
 use crate::domain::sso_session::SsoSession;
 use crate::domain::tenant_context::TenantContext;
@@ -152,10 +152,8 @@ pub struct ExternalLoginService {
     auth_sessions: Arc<dyn AuthSessionRepository>,
     client_consents: Arc<dyn ClientConsentRepository>,
     code_issuance: Arc<CodeIssuanceService>,
-    authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
-    /// 認証ポリシーの宛先（`conditions.application_ids`）を解決する（ADR-0054）。
-    /// フローが持っているのは `client_id` だけなので、アプリへの読み替えをここで挟む。
-    applications: Arc<ApplicationAccessService>,
+    /// 認証ポリシーの評価（材料の引き当てと評価。`authentication_policy_gate`）。
+    policy_gate: Arc<AuthenticationPolicyGate>,
     oidc: Arc<dyn ExternalOidcClient>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
@@ -179,8 +177,7 @@ impl ExternalLoginService {
         auth_sessions: Arc<dyn AuthSessionRepository>,
         client_consents: Arc<dyn ClientConsentRepository>,
         code_issuance: Arc<CodeIssuanceService>,
-        authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
-        applications: Arc<ApplicationAccessService>,
+        policy_gate: Arc<AuthenticationPolicyGate>,
         oidc: Arc<dyn ExternalOidcClient>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
@@ -198,8 +195,7 @@ impl ExternalLoginService {
             auth_sessions,
             client_consents,
             code_issuance,
-            authentication_policies,
-            applications,
+            policy_gate,
             oidc,
             audit,
             clock,
@@ -575,38 +571,24 @@ impl ExternalLoginService {
             .map(|s| s.request().requested_acr())
             .unwrap_or_default();
         // 認証ポリシーの宛先はアプリ（ADR-0054 の決定 5）。認可フローの外（アカウント設定から
-        // 始めた連携）には client が無いので `None`。
-        let application_id = match originating_session.as_ref() {
-            Some(session) => match self
-                .applications
-                .policy_target_for_oidc_client(tenant_id, session.client_id())
-                .await
-            {
-                Ok(id) => id,
-                Err(e) => return CallbackOutcome::Internal(e.to_string()),
-            },
-            None => None,
-        };
-        let default_effect = match self.settings.policy_default_effect(tenant_id).await {
-            Ok(effect) => effect,
-            Err(e) => return CallbackOutcome::Internal(e.to_string()),
+        // 始めた連携）には client が無い。
+        let audience = match originating_session.as_ref() {
+            Some(session) => PolicyAudience::OidcClient(session.client_id()),
+            None => PolicyAudience::Unaddressed,
         };
         let decision = match self
-            .authentication_policies
-            .list_enabled_for_tenant(tenant_id)
+            .policy_gate
+            .decide(PolicyQuery {
+                tenant_id,
+                audience,
+                user_id: user.id,
+                ip_address: ctx.ip_address.as_deref(),
+                requested_acr: &requested_acr,
+                now,
+            })
             .await
         {
-            Ok(policies) => evaluate_policies(
-                &policies,
-                &AuthenticationContext {
-                    application_id,
-                    user_id: user.id,
-                    ip_address: ctx.ip_address.as_deref(),
-                    now,
-                    requested_acr: &requested_acr,
-                },
-                default_effect,
-            ),
+            Ok(decision) => decision,
             Err(e) => return CallbackOutcome::Internal(e.to_string()),
         };
         match &decision {

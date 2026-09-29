@@ -17,8 +17,10 @@
 //! 拒否する（パスワード経路だけ塞いでも迂回できてしまうため）。`require_mfa` は WebAuthn が
 //! 所有＋生体/知識（User Verification）の複数要素・フィッシング耐性認証であるため満たすものと扱う。
 
-use crate::application::application_access::ApplicationAccessService;
 use crate::application::audit::{AuditService, RequestContext};
+use crate::application::authentication_policy_gate::{
+    AuthenticationPolicyGate, PolicyAudience, PolicyQuery,
+};
 use crate::application::authorize::AuthorizationDispatch;
 use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
 use crate::application::consent::consent_is_granted;
@@ -27,16 +29,13 @@ use crate::application::passkey_assertion::{
 };
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session::{AuthSessionIdHash, Authentication};
-use crate::domain::authentication_policy::{
-    evaluate_policies, AuthenticationContext, PolicyDecision,
-};
+use crate::domain::authentication_policy::PolicyDecision;
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::effective_tenant_settings::EffectiveTenantSettings;
 use crate::domain::rate_limit::LoginRateLimiter;
 use crate::domain::repositories::{
-    AuthSessionRepository, AuthenticationPolicyRepository, ClientConsentRepository,
-    SsoSessionRepository,
+    AuthSessionRepository, ClientConsentRepository, SsoSessionRepository,
 };
 use crate::domain::sso_session::SsoSession;
 use crate::domain::tenant_context::TenantContext;
@@ -92,10 +91,8 @@ pub struct PasskeyAuthenticationService {
     auth_sessions: Arc<dyn AuthSessionRepository>,
     sso_sessions: Arc<dyn SsoSessionRepository>,
     client_consents: Arc<dyn ClientConsentRepository>,
-    authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
-    /// 認証ポリシーの宛先（`conditions.application_ids`）を解決する（ADR-0054）。
-    /// フローが持っているのは `client_id` だけなので、アプリへの読み替えをここで挟む。
-    applications: Arc<ApplicationAccessService>,
+    /// 認証ポリシーの評価（材料の引き当てと評価。`authentication_policy_gate`）。
+    policy_gate: Arc<AuthenticationPolicyGate>,
     code_issuance: Arc<CodeIssuanceService>,
     /// IP 単位のレート制限。**ログイン・直接ログインのパスキー経路と同じ枠を消費する** ——
     /// 入口ごとに枠が違うと、片方で締め出された相手がもう片方で試行を続けられる。
@@ -114,8 +111,7 @@ impl PasskeyAuthenticationService {
         auth_sessions: Arc<dyn AuthSessionRepository>,
         sso_sessions: Arc<dyn SsoSessionRepository>,
         client_consents: Arc<dyn ClientConsentRepository>,
-        authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
-        applications: Arc<ApplicationAccessService>,
+        policy_gate: Arc<AuthenticationPolicyGate>,
         code_issuance: Arc<CodeIssuanceService>,
         rate_limiter: Arc<dyn LoginRateLimiter>,
         audit: Arc<AuditService>,
@@ -127,8 +123,7 @@ impl PasskeyAuthenticationService {
             auth_sessions,
             sso_sessions,
             client_consents,
-            authentication_policies,
-            applications,
+            policy_gate,
             code_issuance,
             rate_limiter,
             audit,
@@ -220,37 +215,19 @@ impl PasskeyAuthenticationService {
 
         // 4. 認証ポリシー評価（仕様 §9）。`deny` はパスキー経路でも拒否する。
         //    `require_mfa` は WebAuthn（所有要素 + User Verification）が満たすため通過する。
-        // 認証ポリシーの宛先はアプリ（ADR-0054 の決定 5）。フローが持っているのは `client_id`
-        // だけなので、ここでアプリへ読み替える。まだアプリへ繋がっていない client は `None` で、
-        // `application_ids` を持つポリシーは一致しない。
-        let application_id = match self
-            .applications
-            .policy_target_for_oidc_client(tenant_id, &client_id)
-            .await
-        {
-            Ok(id) => id,
-            Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
-        };
-        let default_effect = match self.settings.policy_default_effect(tenant_id).await {
-            Ok(effect) => effect,
-            Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
-        };
         let decision = match self
-            .authentication_policies
-            .list_enabled_for_tenant(tenant_id)
+            .policy_gate
+            .decide(PolicyQuery {
+                tenant_id,
+                audience: PolicyAudience::OidcClient(&client_id),
+                user_id,
+                ip_address: ctx.ip_address.as_deref(),
+                requested_acr: &session.request().requested_acr(),
+                now,
+            })
             .await
         {
-            Ok(policies) => evaluate_policies(
-                &policies,
-                &AuthenticationContext {
-                    application_id,
-                    user_id,
-                    ip_address: ctx.ip_address.as_deref(),
-                    now,
-                    requested_acr: &session.request().requested_acr(),
-                },
-                default_effect,
-            ),
+            Ok(decision) => decision,
             Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
         };
         if let PolicyDecision::Deny { policy_code } = &decision {

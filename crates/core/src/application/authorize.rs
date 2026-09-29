@@ -9,25 +9,23 @@
 //! エラー方針: `client_id` / `redirect_uri` が無効な場合はリダイレクトせず、
 //! それ以外のエラーは `redirect_uri` にエラーコードを付与して返す。
 
-use crate::application::application_access::ApplicationAccessService;
 use crate::application::audit::RequestContext;
+use crate::application::authentication_policy_gate::{
+    AuthenticationPolicyGate, PolicyAudience, PolicyQuery,
+};
 use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
 use crate::application::consent::consent_is_granted;
 use crate::application::sso_restore::SsoRestorer;
 use crate::application::tenant_resolution::TenantResolutionService;
 use crate::domain::auth_session::{AuthSession, AuthSessionId, Authentication, HandoffHandle};
-use crate::domain::authentication_policy::{
-    evaluate_policies, AuthenticationContext, PolicyDecision,
-};
+use crate::domain::authentication_policy::PolicyDecision;
 use crate::domain::authorization_request::{
     AuthorizationParameters, AuthorizationRequest, AuthorizationRequestRejection,
 };
 use crate::domain::clock::Clock;
-use crate::domain::effective_tenant_settings::EffectiveTenantSettings;
 use crate::domain::error::OAuthErrorCode;
 use crate::domain::repositories::{
-    AuthSessionRepository, AuthenticationPolicyRepository, ClientConsentRepository,
-    ClientRepository,
+    AuthSessionRepository, ClientConsentRepository, ClientRepository,
 };
 use crate::domain::response_mode::AuthorizationResponse;
 use crate::domain::tenant_context::TenantContext;
@@ -139,15 +137,8 @@ pub struct AuthorizeService {
     code_issuance: Arc<CodeIssuanceService>,
     clock: Arc<dyn Clock>,
     auth_session_ttl: Duration,
-    /// 認証ポリシー（AP2/AP3）。**SSO 復元でも評価する**ために持つ。復元は「以前の認証を
-    /// 使い回す」操作なので、認可要求ごとに変わる条件（`acr_values`・`client_ids`）や、
-    /// 復元後に変わったポリシーが効かなくなる。
-    authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
-    /// 認証ポリシーの宛先（`conditions.application_ids`）を解決する（ADR-0054）。
-    /// フローが持っているのは `client_id` だけなので、アプリへの読み替えをここで挟む。
-    applications: Arc<ApplicationAccessService>,
-    /// 一致するポリシーが無い場合の既定動作（AP2）。テナントの値を参照のたびに引く（ADR-0058 §4）。
-    settings: Arc<dyn EffectiveTenantSettings>,
+    /// 認証ポリシーの評価（材料の引き当てと評価。`authentication_policy_gate`）。
+    policy_gate: Arc<AuthenticationPolicyGate>,
     /// ログイン画面へ出すテナント表示名の引き当て先（`login_context` でのみ使う）。
     /// リポジトリを直に持たず解決サービスを通すのは、同じ行を同じリクエストの入口
     /// （`TenantResolver`）が既に引いており、その TTL キャッシュに相乗りするためである。
@@ -164,9 +155,7 @@ impl AuthorizeService {
         code_issuance: Arc<CodeIssuanceService>,
         clock: Arc<dyn Clock>,
         auth_session_ttl: std::time::Duration,
-        authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
-        applications: Arc<ApplicationAccessService>,
-        settings: Arc<dyn EffectiveTenantSettings>,
+        policy_gate: Arc<AuthenticationPolicyGate>,
         tenants: Arc<TenantResolutionService>,
     ) -> Self {
         Self {
@@ -178,9 +167,7 @@ impl AuthorizeService {
             clock,
             auth_session_ttl: Duration::from_std(auth_session_ttl)
                 .expect("auth session TTL out of range"),
-            authentication_policies,
-            applications,
-            settings,
+            policy_gate,
             tenants,
         }
     }
@@ -537,42 +524,21 @@ impl AuthorizeService {
         ctx: &RequestContext,
         now: DateTime<Utc>,
     ) -> RestoredPolicy {
-        let default_effect = match self
-            .settings
-            .policy_default_effect(tenant.tenant_id())
-            .await
-        {
-            Ok(effect) => effect,
-            Err(e) => return RestoredPolicy::Internal(e.to_string()),
-        };
-        let policies = match self
-            .authentication_policies
-            .list_enabled_for_tenant(tenant.tenant_id())
-            .await
-        {
-            Ok(p) => p,
-            Err(e) => return RestoredPolicy::Internal(e.to_string()),
-        };
-        // 認証ポリシーの宛先はアプリ（ADR-0054 の決定 5）。
-        let application_id = match self
-            .applications
-            .policy_target_for_oidc_client(tenant.tenant_id(), request.client_id())
-            .await
-        {
-            Ok(id) => id,
-            Err(e) => return RestoredPolicy::Internal(e.to_string()),
-        };
-        let decision = evaluate_policies(
-            &policies,
-            &AuthenticationContext {
-                application_id,
+        let decision = match self
+            .policy_gate
+            .decide(PolicyQuery {
+                tenant_id: tenant.tenant_id(),
+                audience: PolicyAudience::OidcClient(request.client_id()),
                 user_id,
                 ip_address: ctx.ip_address.as_deref(),
-                now,
                 requested_acr: &request.requested_acr(),
-            },
-            default_effect,
-        );
+                now,
+            })
+            .await
+        {
+            Ok(decision) => decision,
+            Err(e) => return RestoredPolicy::Internal(e.to_string()),
+        };
         let user_verified = methods.contains(&AuthenticationMethod::WebAuthn);
         match &decision {
             PolicyDecision::Deny { .. } => RestoredPolicy::Denied,
