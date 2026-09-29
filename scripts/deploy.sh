@@ -47,6 +47,12 @@ if [[ -z "${DEPLOY_LOG_ACTIVE:-}" ]]; then
   deploy_log_file="$base/deploy-$(timestamp_millis).log"
   export DEPLOY_LOG_ACTIVE=1
   exec > >(tee -a "$deploy_log_file") 2>&1
+  deploy_log_tee_pid=$!
+  # ⚠ **終わるときに tee を待つ。** プロセス置換は非同期なので、待たずに終わると最後の数行が
+  #   まだ呼び出し元の出力（ファイル・パイプ）へ届いていない。呼び出し直後に出力を読む試験
+  #   （test_deploy.sh）がこれで揺らいでいた。出力を閉じれば tee は読み切って終わる。
+  #   終了コードは変わらない（trap の中で exit しない）。
+  trap 'exec 1>&- 2>&-; wait "$deploy_log_tee_pid" 2>/dev/null || true' EXIT
   log "ログファイル: $deploy_log_file"
 fi
 
