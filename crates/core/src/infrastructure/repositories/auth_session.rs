@@ -222,9 +222,12 @@ impl AuthSessionRepository for SqlxAuthSessionRepository {
         user_id: Uuid,
         verified_at: DateTime<Utc>,
     ) -> Result<()> {
+        // 前に記録されていた認証（auth_time・sid・方式）は同じ文で消す。残すと、第二段を
+        // 済ませていない利用者の行が「認証済み」に読め、同意の承諾が code を発行してしまう。
         sqlx::query(
             "UPDATE auth_sessions \
-             SET id_hash = ?, authenticated_user_id = ?, password_verified_at = ? \
+             SET id_hash = ?, authenticated_user_id = ?, password_verified_at = ?, \
+                 auth_time = NULL, sso_sid = NULL, authentication_methods = NULL \
              WHERE id_hash = ?",
         )
         .bind(new_id_hash)

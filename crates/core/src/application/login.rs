@@ -854,6 +854,9 @@ mod tests {
                 row.id_hash = new_id_hash.to_string();
                 row.authenticated_user_id = Some(user_id);
                 row.password_verified_at = Some(verified_at);
+                row.auth_time = None;
+                row.sso_sid = None;
+                row.authentication_methods = None;
             }
             Ok(())
         }

@@ -1,3 +1,12 @@
+## 2026-09-29（認可セッションで認証をやり直すと、前の認証が残っていた）
+
+- **同意待ちの認可セッションで別の利用者としてパスワードだけを通すと、第二段（MFA・パスワードの強制
+  変更）を済ませないまま同意の承諾で code が出ていた**のを直した。パスワード検証の記録
+  （`set_password_verified`）が `authenticated_user_id` だけを差し替え、前の利用者の `auth_time`・
+  `sso_sid`・`authentication_methods` を残していたため、同意の承諾がそれを「認証済み」と読んでいた。
+  パスワード検証の記録で、前の認証の 3 列を同じ UPDATE で消すようにした。再現は
+  `crates/api/tests/auth_session_reauthentication.rs`。
+
 ## 2026-09-27（依存の一括更新: Renovate PR #6）
 
 - **Rust の依存を一括で上げた**（sqlx 0.9・reqwest 0.13・tower-http 0.7・argon2 0.6・aes-gcm 0.11・
