@@ -23,6 +23,9 @@
 //! （`client_ids` 条件を持つポリシーは一致しない ＝ `user_ids` 条件と全体条件が主対象）。
 
 use crate::application::audit::{AuditService, RequestContext};
+use crate::application::authentication_policy_gate::{
+    AuthenticationPolicyGate, PolicyAudience, PolicyQuery,
+};
 use crate::application::authenticator_management::{
     consume_single_use_code, is_blocked_in_registry,
 };
@@ -34,9 +37,7 @@ use crate::application::passkey_assertion::{
 use crate::application::password_policy::PasswordPolicyService;
 use crate::application::totp_registration::verify_totp_code;
 use crate::domain::audit::{AuditEventType, AuditResult};
-use crate::domain::authentication_policy::{
-    evaluate_policies, AuthenticationContext, PolicyDecision,
-};
+use crate::domain::authentication_policy::PolicyDecision;
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::effective_tenant_settings::EffectiveTenantSettings;
@@ -46,8 +47,7 @@ use crate::domain::password_policy::{password_change_required, PasswordRejection
 use crate::domain::rate_limit::LoginRateLimiter;
 use crate::domain::repositories::TenantDomainRepository;
 use crate::domain::repositories::{
-    AuthenticationPolicyRepository, SsoSessionRepository, TotpSecretRepository,
-    UserAuthenticatorRepository, UserRepository,
+    SsoSessionRepository, TotpSecretRepository, UserAuthenticatorRepository, UserRepository,
 };
 use crate::domain::sso_session::SsoSession;
 use crate::domain::tenant::TenantId;
@@ -197,7 +197,8 @@ pub struct PortalLoginService {
     tenant_domains: Arc<dyn TenantDomainRepository>,
     sso_sessions: Arc<dyn SsoSessionRepository>,
     totp_secrets: Arc<dyn TotpSecretRepository>,
-    authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
+    /// 認証ポリシーの評価（材料の引き当てと評価。`authentication_policy_gate`）。
+    policy_gate: Arc<AuthenticationPolicyGate>,
     hasher: Arc<dyn PasswordHasher>,
     password_policy: Arc<PasswordPolicyService>,
     rate_limiter: Arc<dyn LoginRateLimiter>,
@@ -220,7 +221,7 @@ impl PortalLoginService {
         tenant_domains: Arc<dyn TenantDomainRepository>,
         sso_sessions: Arc<dyn SsoSessionRepository>,
         totp_secrets: Arc<dyn TotpSecretRepository>,
-        authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
+        policy_gate: Arc<AuthenticationPolicyGate>,
         hasher: Arc<dyn PasswordHasher>,
         password_policy: Arc<PasswordPolicyService>,
         rate_limiter: Arc<dyn LoginRateLimiter>,
@@ -237,7 +238,7 @@ impl PortalLoginService {
             tenant_domains,
             sso_sessions,
             totp_secrets,
-            authentication_policies,
+            policy_gate,
             hasher,
             password_policy,
             rate_limiter,
@@ -256,28 +257,18 @@ impl PortalLoginService {
         user_id: Uuid,
         ip_address: Option<&str>,
     ) -> Result<PolicyDecision, String> {
-        let default_effect = self
-            .settings
-            .policy_default_effect(tenant_id)
-            .await
-            .map_err(|e| e.to_string())?;
-        let policies = self
-            .authentication_policies
-            .list_enabled_for_tenant(tenant_id)
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok(evaluate_policies(
-            &policies,
-            &AuthenticationContext {
-                application_id: None,
+        self.policy_gate
+            .decide(PolicyQuery {
+                tenant_id,
+                audience: PolicyAudience::Unaddressed,
                 user_id,
                 ip_address,
-                now: self.clock.now(),
                 // ポータルログインは OIDC 認可要求ではないため `acr_values` は無い。
                 requested_acr: &[],
-            },
-            default_effect,
-        ))
+                now: self.clock.now(),
+            })
+            .await
+            .map_err(|e| e.to_string())
     }
 
     /// ポリシー拒否を監査へ記録する（AP2。OIDC ログインと同じイベント種別・理由形式を使う）。

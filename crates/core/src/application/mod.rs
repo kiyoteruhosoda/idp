@@ -19,6 +19,7 @@ pub mod application_management;
 pub mod application_user_directory;
 pub mod audit;
 pub mod audit_query;
+pub mod authentication_policy_gate;
 pub mod authentication_policy_management;
 pub mod authenticator_management;
 pub mod authorize;

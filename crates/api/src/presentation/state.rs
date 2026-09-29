@@ -25,6 +25,7 @@ use crate::application::application_management::ApplicationManagementService;
 use crate::application::application_user_directory::ApplicationUserDirectoryService;
 use crate::application::audit::AuditService;
 use crate::application::audit_query::AuditQueryService;
+use crate::application::authentication_policy_gate::AuthenticationPolicyGate;
 use crate::application::authentication_policy_management::AuthenticationPolicyManagementService;
 use crate::application::authenticator_management::AuthenticatorManagementService;
 use crate::application::authorize::AuthorizeService;
@@ -529,6 +530,12 @@ impl AppState {
             audit.clone(),
             tenant_settings.clone(),
         ));
+        // 認証ポリシーの評価の入口（8 経路で共有する。`authentication_policy_gate`）。
+        let policy_gate = Arc::new(AuthenticationPolicyGate::new(
+            authentication_policies.clone(),
+            tenant_settings.clone(),
+            application_access.clone(),
+        ));
         let code_issuance = Arc::new(CodeIssuanceService::new(
             codes.clone(),
             application_access.clone(),
@@ -592,9 +599,7 @@ impl AppState {
             code_issuance.clone(),
             clock.clone(),
             config.auth_session_ttl(),
-            authentication_policies.clone(),
-            application_access.clone(),
-            tenant_settings.clone(),
+            policy_gate.clone(),
             tenant_resolution.clone(),
         ));
         // SAML SP-initiated SSO。進行状態の TTL は OIDC の auth_session と同じ値を使う。
@@ -616,8 +621,7 @@ impl AppState {
             sso_sessions.clone(),
             client_consents.clone(),
             totp_secrets.clone(),
-            authentication_policies.clone(),
-            application_access.clone(),
+            policy_gate.clone(),
             code_issuance.clone(),
             hasher.clone(),
             rate_limiter.clone(),
@@ -632,8 +636,7 @@ impl AppState {
             sso_sessions.clone(),
             client_consents.clone(),
             totp_secrets.clone(),
-            authentication_policies.clone(),
-            application_access.clone(),
+            policy_gate.clone(),
             code_issuance.clone(),
             hasher.clone(),
             password_policy.clone(),
@@ -700,7 +703,7 @@ impl AppState {
             sso_sessions.clone(),
             user_permissions.clone(),
             totp_secrets.clone(),
-            authentication_policies.clone(),
+            policy_gate.clone(),
             hasher.clone(),
             password_policy.clone(),
             rate_limiter.clone(),
@@ -717,7 +720,7 @@ impl AppState {
             tenant_domains.clone(),
             sso_sessions.clone(),
             totp_secrets.clone(),
-            authentication_policies.clone(),
+            policy_gate.clone(),
             hasher.clone(),
             password_policy.clone(),
             rate_limiter.clone(),
@@ -998,8 +1001,7 @@ impl AppState {
             auth_sessions.clone(),
             client_consents.clone(),
             code_issuance.clone(),
-            authentication_policies.clone(),
-            application_access.clone(),
+            policy_gate.clone(),
             Arc::new(ReqwestExternalOidcClient::new()),
             audit.clone(),
             clock.clone(),
@@ -1090,8 +1092,7 @@ impl AppState {
             *config.key_encryption_key(),
             tenant_settings.clone(),
             *config.csrf_secret(),
-            authentication_policies.clone(),
-            application_access.clone(),
+            policy_gate.clone(),
         ));
 
         let passkey_authentication = Arc::new(PasskeyAuthenticationService::new(
@@ -1099,8 +1100,7 @@ impl AppState {
             auth_sessions.clone(),
             sso_sessions.clone(),
             client_consents,
-            authentication_policies.clone(),
-            application_access.clone(),
+            policy_gate.clone(),
             code_issuance,
             // レート制限はログイン・直接ログインのパスキー経路と同じ枠を共有する（T39）。
             rate_limiter.clone(),

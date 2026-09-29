@@ -16,8 +16,10 @@
 //! TOTP 未設定なら拒否（`MfaEnrollmentRequired`）・設定済みなら既存の MFA ステップへ倒す。
 //! パスワード検証後に評価することで、資格情報を知らない攻撃者からはポリシーの存在を観測できない。
 
-use crate::application::application_access::ApplicationAccessService;
 use crate::application::audit::{AuditService, RequestContext};
+use crate::application::authentication_policy_gate::{
+    AuthenticationPolicyGate, PolicyAudience, PolicyQuery,
+};
 use crate::application::authorize::AuthorizationDispatch;
 use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
 use crate::application::consent::consent_is_granted;
@@ -25,9 +27,7 @@ use crate::application::login_user_resolution::resolve_login_user;
 use crate::application::mfa_login::user_has_confirmed_totp;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session::{AuthSessionIdHash, Authentication};
-use crate::domain::authentication_policy::{
-    evaluate_policies, AuthenticationContext, PolicyDecision,
-};
+use crate::domain::authentication_policy::PolicyDecision;
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::effective_tenant_settings::EffectiveTenantSettings;
@@ -37,8 +37,8 @@ use crate::domain::password_policy::password_change_required;
 use crate::domain::rate_limit::LoginRateLimiter;
 use crate::domain::repositories::TenantDomainRepository;
 use crate::domain::repositories::{
-    AuthSessionRepository, AuthenticationPolicyRepository, ClientConsentRepository,
-    SsoSessionRepository, TotpSecretRepository, UserRepository,
+    AuthSessionRepository, ClientConsentRepository, SsoSessionRepository, TotpSecretRepository,
+    UserRepository,
 };
 use crate::domain::sso_session::SsoSession;
 use crate::domain::tenant::TenantId;
@@ -138,10 +138,8 @@ pub struct LoginService {
     sso_sessions: Arc<dyn SsoSessionRepository>,
     client_consents: Arc<dyn ClientConsentRepository>,
     totp_secrets: Arc<dyn TotpSecretRepository>,
-    authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
-    /// 認証ポリシーの宛先（`conditions.application_ids`）を解決する（ADR-0054）。
-    /// フローが持っているのは `client_id` だけなので、アプリへの読み替えをここで挟む。
-    applications: Arc<ApplicationAccessService>,
+    /// 認証ポリシーの評価（材料の引き当てと評価。`authentication_policy_gate`）。
+    policy_gate: Arc<AuthenticationPolicyGate>,
     code_issuance: Arc<CodeIssuanceService>,
     hasher: Arc<dyn PasswordHasher>,
     rate_limiter: Arc<dyn LoginRateLimiter>,
@@ -162,8 +160,7 @@ impl LoginService {
         sso_sessions: Arc<dyn SsoSessionRepository>,
         client_consents: Arc<dyn ClientConsentRepository>,
         totp_secrets: Arc<dyn TotpSecretRepository>,
-        authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
-        applications: Arc<ApplicationAccessService>,
+        policy_gate: Arc<AuthenticationPolicyGate>,
         code_issuance: Arc<CodeIssuanceService>,
         hasher: Arc<dyn PasswordHasher>,
         rate_limiter: Arc<dyn LoginRateLimiter>,
@@ -179,8 +176,7 @@ impl LoginService {
             sso_sessions,
             client_consents,
             totp_secrets,
-            authentication_policies,
-            applications,
+            policy_gate,
             code_issuance,
             hasher,
             rate_limiter,
@@ -379,37 +375,19 @@ impl LoginService {
         //      `deny` は即拒否。`require_mfa` は後段の MFA 判定（9.）で強制する。
         // 認可要求の `acr_values`（AP3 の `requested_acr` 条件が参照する）。
         let requested_acr = session.request().requested_acr();
-        // 認証ポリシーの宛先はアプリ（ADR-0054 の決定 5）。フローが持っているのは `client_id`
-        // だけなので、ここでアプリへ読み替える。まだアプリへ繋がっていない client は `None` で、
-        // `application_ids` を持つポリシーは一致しない。
-        let application_id = match self
-            .applications
-            .policy_target_for_oidc_client(tenant_id, &client_id)
-            .await
-        {
-            Ok(id) => id,
-            Err(e) => return LoginOutcome::Internal(e.to_string()),
-        };
-        let default_effect = match self.settings.policy_default_effect(tenant_id).await {
-            Ok(effect) => effect,
-            Err(e) => return LoginOutcome::Internal(e.to_string()),
-        };
         let policy_decision = match self
-            .authentication_policies
-            .list_enabled_for_tenant(tenant_id)
+            .policy_gate
+            .decide(PolicyQuery {
+                tenant_id,
+                audience: PolicyAudience::OidcClient(&client_id),
+                user_id: user.id,
+                ip_address: ctx.ip_address.as_deref(),
+                requested_acr: &requested_acr,
+                now,
+            })
             .await
         {
-            Ok(policies) => evaluate_policies(
-                &policies,
-                &AuthenticationContext {
-                    application_id,
-                    user_id: user.id,
-                    ip_address: ctx.ip_address.as_deref(),
-                    now,
-                    requested_acr: &requested_acr,
-                },
-                default_effect,
-            ),
+            Ok(decision) => decision,
             Err(e) => return LoginOutcome::Internal(e.to_string()),
         };
         if let PolicyDecision::Deny { policy_code } = &policy_decision {
@@ -712,7 +690,9 @@ mod tests {
     use crate::domain::authorization_code::AuthorizationCode;
     use crate::domain::consent::ClientConsent;
     use crate::domain::error::{DomainError, Result as DomainResult};
-    use crate::domain::repositories::{AuditLogSink, AuthorizationCodeRepository};
+    use crate::domain::repositories::{
+        AuditLogSink, AuthenticationPolicyRepository, AuthorizationCodeRepository,
+    };
     use crate::domain::totp_secret::TotpSecret;
     use crate::domain::values::UserStatus;
     use crate::domain::{auth_session, authorization_request};
@@ -1052,6 +1032,7 @@ mod tests {
             std::time::Duration::from_secs(60),
         ));
 
+        let settings = crate::application::tenant_settings::testing::tenant_settings().service;
         let service = LoginService::new(
             users.clone(),
             Arc::new(NoTenantDomains),
@@ -1061,14 +1042,17 @@ mod tests {
             Arc::new(FakeTotpSecrets {
                 confirmed: has_totp,
             }),
-            Arc::new(FakePolicies),
-            crate::application::application_access::test_support::allow_everything(audit.clone()),
+            crate::application::authentication_policy_gate::test_support::gate(
+                Arc::new(FakePolicies),
+                settings.clone(),
+                audit.clone(),
+            ),
             code_issuance,
             Arc::new(PlainHasher),
             Arc::new(AllowAll),
             audit,
             clock,
-            crate::application::tenant_settings::testing::tenant_settings().service,
+            settings,
             CSRF_KEY,
         );
 

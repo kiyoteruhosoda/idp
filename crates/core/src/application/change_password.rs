@@ -14,8 +14,10 @@
 //! 「変更後に MFA 判定は不要」とは限らない。`require_mfa` 一致時は TOTP 設定済みなら MFA ステップへ
 //! 誘導し、未設定なら単一要素での成立を拒否する（LoginService と同じ規則。仕様 §24.4）。
 
-use crate::application::application_access::ApplicationAccessService;
 use crate::application::audit::{AuditService, RequestContext};
+use crate::application::authentication_policy_gate::{
+    AuthenticationPolicyGate, PolicyAudience, PolicyQuery,
+};
 use crate::application::authorize::AuthorizationDispatch;
 use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
 use crate::application::consent::consent_is_granted;
@@ -23,17 +25,15 @@ use crate::application::mfa_login::user_has_confirmed_totp;
 use crate::application::password_policy::PasswordPolicyService;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session::{AuthSessionIdHash, Authentication};
-use crate::domain::authentication_policy::{
-    evaluate_policies, AuthenticationContext, PolicyDecision,
-};
+use crate::domain::authentication_policy::PolicyDecision;
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::effective_tenant_settings::EffectiveTenantSettings;
 use crate::domain::password::PasswordHasher;
 use crate::domain::password_policy::{password_change_required, PasswordRejection};
 use crate::domain::repositories::{
-    AuthSessionRepository, AuthenticationPolicyRepository, ClientConsentRepository,
-    SsoSessionRepository, TotpSecretRepository, UserRepository,
+    AuthSessionRepository, ClientConsentRepository, SsoSessionRepository, TotpSecretRepository,
+    UserRepository,
 };
 use crate::domain::sso_session::SsoSession;
 use crate::domain::tenant_context::TenantContext;
@@ -101,10 +101,8 @@ pub struct ChangePasswordService {
     sso_sessions: Arc<dyn SsoSessionRepository>,
     client_consents: Arc<dyn ClientConsentRepository>,
     totp_secrets: Arc<dyn TotpSecretRepository>,
-    authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
-    /// 認証ポリシーの宛先（`conditions.application_ids`）を解決する（ADR-0054）。
-    /// フローが持っているのは `client_id` だけなので、アプリへの読み替えをここで挟む。
-    applications: Arc<ApplicationAccessService>,
+    /// 認証ポリシーの評価（材料の引き当てと評価。`authentication_policy_gate`）。
+    policy_gate: Arc<AuthenticationPolicyGate>,
     code_issuance: Arc<CodeIssuanceService>,
     hasher: Arc<dyn PasswordHasher>,
     password_policy: Arc<PasswordPolicyService>,
@@ -124,8 +122,7 @@ impl ChangePasswordService {
         sso_sessions: Arc<dyn SsoSessionRepository>,
         client_consents: Arc<dyn ClientConsentRepository>,
         totp_secrets: Arc<dyn TotpSecretRepository>,
-        authentication_policies: Arc<dyn AuthenticationPolicyRepository>,
-        applications: Arc<ApplicationAccessService>,
+        policy_gate: Arc<AuthenticationPolicyGate>,
         code_issuance: Arc<CodeIssuanceService>,
         hasher: Arc<dyn PasswordHasher>,
         password_policy: Arc<PasswordPolicyService>,
@@ -140,8 +137,7 @@ impl ChangePasswordService {
             sso_sessions,
             client_consents,
             totp_secrets,
-            authentication_policies,
-            applications,
+            policy_gate,
             code_issuance,
             hasher,
             password_policy,
@@ -306,37 +302,19 @@ impl ChangePasswordService {
         //      パスワード変更自体は本人のセルフサービスとして完了させ、セッション発行のみをゲートする。
         // 認可要求の `acr_values`（AP3 の `requested_acr` 条件が参照する）。
         let requested_acr = session.request().requested_acr();
-        // 認証ポリシーの宛先はアプリ（ADR-0054 の決定 5）。フローが持っているのは `client_id`
-        // だけなので、ここでアプリへ読み替える。まだアプリへ繋がっていない client は `None` で、
-        // `application_ids` を持つポリシーは一致しない。
-        let application_id = match self
-            .applications
-            .policy_target_for_oidc_client(tenant_id, &client_id)
-            .await
-        {
-            Ok(id) => id,
-            Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
-        };
-        let default_effect = match self.settings.policy_default_effect(tenant_id).await {
-            Ok(effect) => effect,
-            Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
-        };
         let decision = match self
-            .authentication_policies
-            .list_enabled_for_tenant(tenant_id)
+            .policy_gate
+            .decide(PolicyQuery {
+                tenant_id,
+                audience: PolicyAudience::OidcClient(&client_id),
+                user_id: user.id,
+                ip_address: ctx.ip_address.as_deref(),
+                requested_acr: &requested_acr,
+                now,
+            })
             .await
         {
-            Ok(policies) => evaluate_policies(
-                &policies,
-                &AuthenticationContext {
-                    application_id,
-                    user_id: user.id,
-                    ip_address: ctx.ip_address.as_deref(),
-                    now,
-                    requested_acr: &requested_acr,
-                },
-                default_effect,
-            ),
+            Ok(decision) => decision,
             Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
         };
         match &decision {
