@@ -716,6 +716,11 @@ pub trait AuthSessionRepository: Send + Sync {
     /// パスワード検証成功後に MFA pending 状態を記録し（`password_verified_at` を設定）、
     /// **同時に id を `new_id_hash` へ再生成する**（SEC7。理由は
     /// [`set_authenticated_user`](Self::set_authenticated_user) 参照）。
+    ///
+    /// ⚠ **前に記録されていた認証（`auth_time`・`sso_sid`・`authentication_methods`）は消す。**
+    /// 同じ認可セッションで先に誰かの認証が完了していても、ここで認証をやり直した以上、前の認証は
+    /// もうこのフローの根拠ではない。残すと、第二段（MFA・パスワード変更）を済ませていない利用者に
+    /// 同意の承諾（`ConsentService::approve`）が code を発行してしまう。
     async fn set_password_verified(
         &self,
         id_hash: &str,
