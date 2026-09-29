@@ -78,6 +78,33 @@ src/
   そのスレッドに載っている他の全 future（HTTP リクエスト処理・DB I/O・排他区間を保持したタスク）が
   完了まで進まず、並走数がワーカー数を超えるとランタイム全体が停止する。
 
+## 集約の作り方（AuthSession を例に）
+
+状態を持つドメインの型は、**公開フィールドを持たない集約**として作る。`domain/auth_session.rs`
+（認可フローの一時状態）がその見本である。
+
+```
+AuthSession（集約ルート。フィールドは非公開）
+ ├─ AuthorizationRequest   受理済みの認可要求（値オブジェクト。domain/authorization_request.rs）
+ │   └─ PkceChallenge
+ ├─ PendingHandoff         未交換の単回ハンドル（交換すると消える）
+ └─ AuthenticationProgress Anonymous → PasswordVerified → Authenticated(Authentication)
+```
+
+- **生成の口を絞る。** 新しい値は検証を通る口からしか作れない（`AuthorizationRequest::accept`・
+  `AuthSession::start`）。永続化からの復元は `reconstitute(〇〇Parts)` に分け、`Parts` は
+  Infrastructure と試験のためだけに公開する（検証済みの値として扱う）。
+- **状態は意図を表すメソッドで変える。** `exchange_handoff` / `record_password_verification` /
+  `complete_authentication` は集約を書き換え、**変更を表す値**（`HandoffExchange` など）を返す。
+  リポジトリはその値を受け取って**1 文で**永続化する（`save_〇〇`）。変更の中身は集約が決め、
+  書き込みの原子性（条件付き UPDATE・id の付け替えとの同時性）はリポジトリが持つ。
+- **問いも集約に置く。** 「第二段を待っている利用者は誰か」「同意が code を発行する根拠はあるか」は
+  列の組み合わせで判定せず、`password_verified_user()` / `completed_authentication()` に聞く。
+- **秘密は型で分ける。** 平文（`AuthSessionId`・`HandoffHandle`）とハッシュ（`〜Hash`）は別の型で、
+  平文は `Debug` に出ず、リポジトリはハッシュしか受け取らない。
+- **試験の保存先はメモリ上の実装を共有する**（`infrastructure/repositories/in_memory_auth_session.rs`）。
+  書き込みは sqlx 実装の UPDATE と同じ規則（旧い id の行を、記録された列だけ書き換える）で行う。
+
 ## 命名規則
 
 - スキーマ: `〇〇Request`（Deserialize） / `〇〇Response`（Serialize）。

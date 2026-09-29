@@ -13,35 +13,26 @@
 use crate::application::application_access::{ApplicationAccessService, ApplicationGate};
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::audit::{AuditEventType, AuditResult};
+use crate::domain::auth_session::Authentication;
 use crate::domain::authorization_code::AuthorizationCode;
+use crate::domain::authorization_request::AuthorizationRequest;
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::error::DomainError;
 use crate::domain::repositories::AuthorizationCodeRepository;
 use crate::domain::tenant_context::TenantContext;
-use crate::domain::values::{AuthenticationMethod, CodeChallengeMethod};
-use chrono::{DateTime, Duration, Utc};
+use chrono::Duration;
 use std::sync::Arc;
-use uuid::Uuid;
 
-/// code 発行に必要な認可情報（AuthSession または SSO 復元から引き継ぐ）。
+/// code 発行に必要な認可情報: **どの認可要求に**、**どの認証で**応えるか。
+///
+/// どちらも AuthSession（またはSSO 復元）から引き継ぐ。認可要求は `/authorize` で受理された
+/// ときのまま、認証は ID Token の `sub` / `auth_time` / `sid` / `acr` / `amr` の出所になる。
 pub struct IssueCodeCommand {
     /// code を発行するテナント（フローのテナント）。
     pub tenant: TenantContext,
-    pub user_id: Uuid,
-    pub client_id: String,
-    pub redirect_uri: String,
-    pub scope: Vec<String>,
-    pub nonce: String,
-    pub auth_time: DateTime<Utc>,
-    /// 認可を与えた SSO セッションの `sid`（G5）。ID Token・logout_token が同じセッションを指す
-    /// ための識別子で、`/token` は Cookie を読めないため発行時に引き継ぐ。
-    pub sid: Option<String>,
-    /// この認可を与えた認証で検証された方式（ADR-0043）。ID Token の `acr` / `amr` の出所。
-    /// `None` = 記録なし（そのとき `acr` / `amr` は載らない）。
-    pub authentication_methods: Option<Vec<AuthenticationMethod>>,
-    pub code_challenge: String,
-    pub code_challenge_method: CodeChallengeMethod,
+    pub request: AuthorizationRequest,
+    pub authentication: Authentication,
 }
 
 /// code 発行の結果。
@@ -98,7 +89,12 @@ impl CodeIssuanceService {
             application_name, ..
         } = self
             .applications
-            .check(cmd.tenant.tenant_id(), &cmd.client_id, cmd.user_id, ctx)
+            .check(
+                cmd.tenant.tenant_id(),
+                cmd.request.client_id(),
+                cmd.authentication.user_id(),
+                ctx,
+            )
             .await
         {
             return Ok(CodeIssuance::ApplicationDenied { application_name });
@@ -107,19 +103,24 @@ impl CodeIssuanceService {
         let code = crypto::random_token(32);
         let now = self.clock.now();
 
+        let IssueCodeCommand {
+            tenant,
+            request,
+            authentication,
+        } = &cmd;
         let record = AuthorizationCode {
             code_hash: crypto::sha256_hex(&code),
-            tenant_id: cmd.tenant.tenant_id(),
-            user_id: cmd.user_id,
-            client_id: cmd.client_id.clone(),
-            redirect_uri: cmd.redirect_uri,
-            scope: cmd.scope,
-            nonce: cmd.nonce,
-            auth_time: cmd.auth_time,
-            sid: cmd.sid,
-            authentication_methods: cmd.authentication_methods,
-            code_challenge: cmd.code_challenge,
-            code_challenge_method: cmd.code_challenge_method,
+            tenant_id: tenant.tenant_id(),
+            user_id: authentication.user_id(),
+            client_id: request.client_id().to_string(),
+            redirect_uri: request.redirect_uri().to_string(),
+            scope: request.scope().to_vec(),
+            nonce: request.nonce().to_string(),
+            auth_time: authentication.auth_time(),
+            sid: authentication.sso_sid().map(str::to_string),
+            authentication_methods: authentication.methods().map(<[_]>::to_vec),
+            code_challenge: request.pkce().challenge().to_string(),
+            code_challenge_method: request.pkce().method(),
             expires_at: now + self.ttl,
             used_at: None,
             created_at: now,
@@ -132,9 +133,9 @@ impl CodeIssuanceService {
             .record(
                 AuditEventType::AuthorizationCodeIssued,
                 AuditResult::Success,
-                Some(cmd.tenant.tenant_id()),
-                Some(cmd.user_id),
-                Some(&cmd.client_id),
+                Some(tenant.tenant_id()),
+                Some(authentication.user_id()),
+                Some(request.client_id()),
                 None,
                 ctx,
             )

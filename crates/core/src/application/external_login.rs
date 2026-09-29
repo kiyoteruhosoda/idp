@@ -24,10 +24,11 @@
 
 use crate::application::application_access::ApplicationAccessService;
 use crate::application::audit::{AuditService, RequestContext};
-use crate::application::authorize::code_dispatch;
+use crate::application::authorize::AuthorizationDispatch;
 use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
+use crate::application::consent::consent_is_granted;
 use crate::domain::audit::{AuditEventType, AuditResult};
-use crate::domain::auth_session;
+use crate::domain::auth_session::{AuthSessionIdHash, Authentication};
 use crate::domain::authentication_policy::{
     evaluate_policies, AuthenticationContext, PolicyDecision,
 };
@@ -296,7 +297,9 @@ impl ExternalLoginService {
             state_hash: crypto::sha256_hex(&state),
             nonce: echoed_value,
             code_verifier_encrypted,
-            auth_session_id_hash: auth_session_id.as_deref().map(auth_session::id_hash),
+            auth_session_id_hash: auth_session_id
+                .as_deref()
+                .map(|id| AuthSessionIdHash::of_plain(id).into_string()),
             expires_at: now + Duration::seconds(REQUEST_TTL_SECS),
             created_at: now,
         };
@@ -554,7 +557,14 @@ impl ExternalLoginService {
         //    方式指定を回避できてしまう（後段でこの auth_session を使って code を発行するので、
         //    「クライアント文脈を持たない」わけではない）。ポータル起点なら空のままでよい。
         let originating_session = match request.auth_session_id_hash.as_deref() {
-            Some(id_hash) => match self.auth_sessions.find_by_id_hash(tenant_id, id_hash).await {
+            Some(id_hash) => match self
+                .auth_sessions
+                .find(
+                    tenant_id,
+                    &AuthSessionIdHash::from_stored(id_hash.to_string()),
+                )
+                .await
+            {
                 Ok(session) => session,
                 Err(e) => return CallbackOutcome::Internal(e.to_string()),
             },
@@ -562,14 +572,14 @@ impl ExternalLoginService {
         };
         let requested_acr = originating_session
             .as_ref()
-            .map(|s| s.requested_acr())
+            .map(|s| s.request().requested_acr())
             .unwrap_or_default();
         // 認証ポリシーの宛先はアプリ（ADR-0054 の決定 5）。認可フローの外（アカウント設定から
         // 始めた連携）には client が無いので `None`。
         let application_id = match originating_session.as_ref() {
             Some(session) => match self
                 .applications
-                .policy_target_for_oidc_client(tenant_id, &session.client_id)
+                .policy_target_for_oidc_client(tenant_id, session.client_id())
                 .await
             {
                 Ok(id) => id,
@@ -734,9 +744,12 @@ impl ExternalLoginService {
         ctx: &RequestContext,
     ) -> CallbackOutcome {
         let tenant_id = tenant.tenant_id();
-        let session = match self
+        let mut session = match self
             .auth_sessions
-            .find_by_id_hash(tenant_id, auth_session_id_hash)
+            .find(
+                tenant_id,
+                &AuthSessionIdHash::from_stored(auth_session_id_hash.to_string()),
+            )
             .await
         {
             Ok(Some(session)) if !session.is_expired_at(now) => session,
@@ -755,42 +768,29 @@ impl ExternalLoginService {
 
         // 認証時刻と `sid` を auth_session へ記録する（ID Token の `auth_time` / `sid` の出所）。
         // id も再生成する（SEC7）。
-        let rotated_id = crypto::random_hex(32);
-        let rotated_id_hash = auth_session::id_hash(&rotated_id);
-        if let Err(e) = self
-            .auth_sessions
-            .set_authenticated_user(
-                &session.id_hash,
-                &rotated_id_hash,
-                user.id,
-                now,
-                Some(&sso.sid()),
-                &sso.authentication_methods,
-            )
-            .await
-        {
+        let authentication = Authentication::new(
+            user.id,
+            now,
+            Some(sso.sid()),
+            Some(sso.authentication_methods.clone()),
+        );
+        let completion = session.complete_authentication(authentication.clone());
+        if let Err(e) = self.auth_sessions.save_authentication(&completion).await {
             return CallbackOutcome::Internal(e.to_string());
         }
+        let rotated_id = completion.into_issued().into_string();
 
         // 同意チェック（`openid` は暗黙同意）。
-        let scopes_needing_consent: Vec<String> = session
-            .scope
-            .iter()
-            .filter(|s| s.as_str() != "openid")
-            .cloned()
-            .collect();
-        let consented = if scopes_needing_consent.is_empty() {
-            true
-        } else {
-            match self
-                .client_consents
-                .find(tenant_id, user.id, &session.client_id)
-                .await
-            {
-                Ok(Some(consent)) => consent.covers(&scopes_needing_consent),
-                Ok(None) => false,
-                Err(e) => return CallbackOutcome::Internal(e.to_string()),
-            }
+        let consented = match consent_is_granted(
+            self.client_consents.as_ref(),
+            tenant_id,
+            user.id,
+            session.request(),
+        )
+        .await
+        {
+            Ok(granted) => granted,
+            Err(e) => return CallbackOutcome::Internal(e.to_string()),
         };
         if !consented {
             return CallbackOutcome::ConsentRequired {
@@ -806,16 +806,8 @@ impl ExternalLoginService {
             .issue(
                 IssueCodeCommand {
                     tenant,
-                    user_id: user.id,
-                    client_id: session.client_id.clone(),
-                    redirect_uri: session.redirect_uri.clone(),
-                    scope: session.scope.clone(),
-                    nonce: session.nonce.clone(),
-                    auth_time: now,
-                    sid: Some(sso.sid()),
-                    authentication_methods: Some(sso.authentication_methods.clone()),
-                    code_challenge: session.code_challenge.clone(),
-                    code_challenge_method: session.code_challenge_method,
+                    request: session.request().clone(),
+                    authentication,
                 },
                 ctx,
             )
@@ -834,11 +826,11 @@ impl ExternalLoginService {
             Err(e) => return CallbackOutcome::Internal(e.to_string()),
         };
 
-        if let Err(e) = self.auth_sessions.delete(&rotated_id_hash).await {
+        if let Err(e) = self.auth_sessions.delete(session.id_hash()).await {
             tracing::warn!(error = %e, "failed to delete auth session after external login");
         }
 
-        let dispatch = code_dispatch(&session, &code);
+        let dispatch = AuthorizationDispatch::from(session.request().success_response(&code));
         CallbackOutcome::Success {
             location: SuccessLocation::Redirect {
                 location: dispatch.location,

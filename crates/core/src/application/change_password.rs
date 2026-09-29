@@ -16,12 +16,13 @@
 
 use crate::application::application_access::ApplicationAccessService;
 use crate::application::audit::{AuditService, RequestContext};
-use crate::application::authorize::code_dispatch;
+use crate::application::authorize::AuthorizationDispatch;
 use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
+use crate::application::consent::consent_is_granted;
 use crate::application::mfa_login::user_has_confirmed_totp;
 use crate::application::password_policy::PasswordPolicyService;
 use crate::domain::audit::{AuditEventType, AuditResult};
-use crate::domain::auth_session;
+use crate::domain::auth_session::{AuthSessionIdHash, Authentication};
 use crate::domain::authentication_policy::{
     evaluate_policies, AuthenticationContext, PolicyDecision,
 };
@@ -164,9 +165,9 @@ impl ChangePasswordService {
         let Some(session_id) = cmd.auth_session_id.as_deref().filter(|s| !s.is_empty()) else {
             return ChangePasswordOutcome::SessionExpired;
         };
-        let session = match self
+        let mut session = match self
             .auth_sessions
-            .find_by_id_hash(tenant_id, &auth_session::id_hash(session_id))
+            .find(tenant_id, &AuthSessionIdHash::of_plain(session_id))
             .await
         {
             Ok(Some(s)) => s,
@@ -174,17 +175,14 @@ impl ChangePasswordService {
             Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
         };
         if session.is_expired_at(now) {
-            let _ = self.auth_sessions.delete(&session.id_hash).await;
+            let _ = self.auth_sessions.delete(session.id_hash()).await;
             return ChangePasswordOutcome::SessionExpired;
         }
 
         // 2. パスワード変更待ち状態か確認する（password_verified_at が設定されている必要がある）。
-        let Some(user_id) = session.authenticated_user_id else {
+        let Some(user_id) = session.password_verified_user() else {
             return ChangePasswordOutcome::SessionExpired;
         };
-        if session.password_verified_at.is_none() {
-            return ChangePasswordOutcome::SessionExpired;
-        }
 
         // 3. CSRF トークン検証（login_csrf_token と同じ導出を使う）。
         if !assay_contracts::csrf::verify(
@@ -197,7 +195,7 @@ impl ChangePasswordService {
                     AuditResult::Failure,
                     Some(tenant_id),
                     Some(user_id),
-                    Some(&session.client_id),
+                    Some(session.client_id()),
                     Some("password_change_csrf_mismatch"),
                     ctx,
                 )
@@ -205,7 +203,7 @@ impl ChangePasswordService {
             return ChangePasswordOutcome::CsrfMismatch;
         }
 
-        let client_id = session.client_id.clone();
+        let client_id = session.client_id().to_string();
 
         // 4. ユーザーを取得して有効・変更待ちであることを確認する。
         let user = match self.users.find_by_id(user_id).await {
@@ -307,7 +305,7 @@ impl ChangePasswordService {
         //      パスワード再発行でも立つため、TOTP 設定済みユーザーもこの経路を通り得る）。
         //      パスワード変更自体は本人のセルフサービスとして完了させ、セッション発行のみをゲートする。
         // 認可要求の `acr_values`（AP3 の `requested_acr` 条件が参照する）。
-        let requested_acr = session.requested_acr();
+        let requested_acr = session.request().requested_acr();
         // 認証ポリシーの宛先はアプリ（ADR-0054 の決定 5）。フローが持っているのは `client_id`
         // だけなので、ここでアプリへ読み替える。まだアプリへ繋がっていない client は `None` で、
         // `application_ids` を持つポリシーは一致しない。
@@ -443,22 +441,17 @@ impl ChangePasswordService {
 
         // 8. auth_time と `sid` を設定する（パスワード変更完了時刻を認証時刻とする）。
         //    id も再生成する（SEC7）。
-        let rotated_id = crypto::random_hex(32);
-        let rotated_id_hash = auth_session::id_hash(&rotated_id);
-        if let Err(e) = self
-            .auth_sessions
-            .set_authenticated_user(
-                &session.id_hash,
-                &rotated_id_hash,
-                user.id,
-                now,
-                Some(&sso.sid()),
-                &sso.authentication_methods,
-            )
-            .await
-        {
+        let authentication = Authentication::new(
+            user.id,
+            now,
+            Some(sso.sid()),
+            Some(sso.authentication_methods.clone()),
+        );
+        let completion = session.complete_authentication(authentication.clone());
+        if let Err(e) = self.auth_sessions.save_authentication(&completion).await {
             return ChangePasswordOutcome::Internal(e.to_string());
         }
+        let rotated_id = completion.into_issued().into_string();
 
         if let Err(e) = self.sso_sessions.create(&sso).await {
             return ChangePasswordOutcome::Internal(e.to_string());
@@ -487,24 +480,16 @@ impl ChangePasswordService {
             .await;
 
         // 9. 同意チェック（`openid` は暗黙同意）。
-        let scopes_needing_consent: Vec<String> = session
-            .scope
-            .iter()
-            .filter(|s| s.as_str() != "openid")
-            .cloned()
-            .collect();
-        let consented = if scopes_needing_consent.is_empty() {
-            true
-        } else {
-            match self
-                .client_consents
-                .find(tenant_id, user.id, &client_id)
-                .await
-            {
-                Ok(Some(consent)) => consent.covers(&scopes_needing_consent),
-                Ok(None) => false,
-                Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
-            }
+        let consented = match consent_is_granted(
+            self.client_consents.as_ref(),
+            tenant_id,
+            user.id,
+            session.request(),
+        )
+        .await
+        {
+            Ok(granted) => granted,
+            Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
         };
 
         if !consented {
@@ -521,16 +506,8 @@ impl ChangePasswordService {
             .issue(
                 IssueCodeCommand {
                     tenant,
-                    user_id: user.id,
-                    client_id: client_id.clone(),
-                    redirect_uri: session.redirect_uri.clone(),
-                    scope: session.scope.clone(),
-                    nonce: session.nonce.clone(),
-                    auth_time: now,
-                    sid: Some(sso.sid()),
-                    authentication_methods: Some(sso.authentication_methods.clone()),
-                    code_challenge: session.code_challenge.clone(),
-                    code_challenge_method: session.code_challenge_method,
+                    request: session.request().clone(),
+                    authentication,
                 },
                 ctx,
             )
@@ -549,11 +526,11 @@ impl ChangePasswordService {
         };
 
         // 11. AuthSession を削除する。
-        if let Err(e) = self.auth_sessions.delete(&rotated_id_hash).await {
+        if let Err(e) = self.auth_sessions.delete(session.id_hash()).await {
             tracing::warn!(error = %e, "failed to delete auth session after password change");
         }
 
-        let dispatch = code_dispatch(&session, &code);
+        let dispatch = AuthorizationDispatch::from(session.request().success_response(&code));
         ChangePasswordOutcome::Success {
             location: dispatch.location,
             form_post: dispatch.form_post,

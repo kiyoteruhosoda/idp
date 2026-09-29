@@ -1,10 +1,15 @@
 //! `AuthSessionRepository` の sqlx 実装。
 
-use crate::domain::auth_session::AuthSession;
+use crate::domain::auth_session::{
+    AuthSession, AuthSessionIdHash, AuthSessionParts, AuthenticationCompletion, HandoffExchange,
+    HandoffHandleHash, PasswordVerification,
+};
+use crate::domain::authorization_request::{AuthorizationRequest, AuthorizationRequestParts};
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::AuthSessionRepository;
+use crate::domain::response_mode::ResponseMode;
 use crate::domain::tenant::TenantId;
-use crate::domain::values::{AuthenticationMethod, CodeChallengeMethod, PromptSet};
+use crate::domain::values::{CodeChallengeMethod, PromptSet};
 use crate::infrastructure::db::Db;
 use crate::infrastructure::repositories::authentication_methods_json;
 use async_trait::async_trait;
@@ -45,17 +50,14 @@ fn map_row(row: &MySqlRow) -> Result<AuthSession> {
     let prompt: Option<String> = row.try_get("prompt").map_err(repo_err)?;
     let response_mode: Option<String> = row.try_get("response_mode").map_err(repo_err)?;
     let max_age: Option<i64> = row.try_get("max_age").map_err(repo_err)?;
+    let handle_hash: Option<String> = row.try_get("handle_hash").map_err(repo_err)?;
     let handle_expires_at: Option<NaiveDateTime> =
         row.try_get("handle_expires_at").map_err(repo_err)?;
     let user_id: Option<String> = row.try_get("authenticated_user_id").map_err(repo_err)?;
     let auth_time: Option<NaiveDateTime> = row.try_get("auth_time").map_err(repo_err)?;
     let password_verified_at: Option<NaiveDateTime> =
         row.try_get("password_verified_at").map_err(repo_err)?;
-    Ok(AuthSession {
-        id_hash: row.try_get("id_hash").map_err(repo_err)?,
-        tenant_id: Uuid::parse_str(&tenant_id)
-            .map_err(|e| DomainError::Repository(format!("invalid UUID `{tenant_id}`: {e}")))?
-            .into(),
+    let request = AuthorizationRequest::reconstitute(AuthorizationRequestParts {
         client_id: row.try_get("client_id").map_err(repo_err)?,
         redirect_uri: row.try_get("redirect_uri").map_err(repo_err)?,
         scope: serde_json::from_slice(&scope)
@@ -65,14 +67,19 @@ fn map_row(row: &MySqlRow) -> Result<AuthSession> {
         code_challenge: row.try_get("code_challenge").map_err(repo_err)?,
         code_challenge_method: CodeChallengeMethod::parse(&ccm)?,
         prompt: PromptSet::parse(prompt.as_deref().unwrap_or_default()),
-        response_mode: crate::domain::response_mode::ResponseMode::from_stored(
-            response_mode.as_deref(),
-        ),
+        response_mode: ResponseMode::from_stored(response_mode.as_deref()),
         max_age: max_age.map(|v| v.max(0) as u64),
         acr_values: row.try_get("acr_values").map_err(repo_err)?,
         login_hint: row.try_get("login_hint").map_err(repo_err)?,
         ui_locales: row.try_get("ui_locales").map_err(repo_err)?,
-        handle_hash: row.try_get("handle_hash").map_err(repo_err)?,
+    });
+    Ok(AuthSession::reconstitute(AuthSessionParts {
+        id_hash: AuthSessionIdHash::from_stored(row.try_get("id_hash").map_err(repo_err)?),
+        tenant_id: Uuid::parse_str(&tenant_id)
+            .map_err(|e| DomainError::Repository(format!("invalid UUID `{tenant_id}`: {e}")))?
+            .into(),
+        request,
+        handle_hash: handle_hash.map(HandoffHandleHash::from_stored),
         handle_expires_at: handle_expires_at.map(to_utc),
         authenticated_user_id: user_id
             .map(|s| {
@@ -89,12 +96,15 @@ fn map_row(row: &MySqlRow) -> Result<AuthSession> {
         expires_at: to_utc(row.try_get("expires_at").map_err(repo_err)?),
         created_at: to_utc(row.try_get("created_at").map_err(repo_err)?),
         updated_at: to_utc(row.try_get("updated_at").map_err(repo_err)?),
-    })
+    }))
 }
 
 #[async_trait]
 impl AuthSessionRepository for SqlxAuthSessionRepository {
     async fn create(&self, session: &AuthSession) -> Result<()> {
+        let request = session.request();
+        let handoff = session.handoff();
+        let authentication = session.completed_authentication();
         sqlx::query(
             "INSERT INTO auth_sessions \
              (id_hash, tenant_id, client_id, redirect_uri, scope, state, nonce, code_challenge, \
@@ -103,42 +113,42 @@ impl AuthSessionRepository for SqlxAuthSessionRepository {
               authenticated_user_id, auth_time, expires_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(&session.id_hash)
-        .bind(session.tenant_id.to_string())
-        .bind(&session.client_id)
-        .bind(&session.redirect_uri)
-        .bind(serde_json::to_string(&session.scope).map_err(repo_err)?)
-        .bind(&session.state)
-        .bind(&session.nonce)
-        .bind(&session.code_challenge)
-        .bind(session.code_challenge_method.as_str())
-        .bind(session.prompt.to_storage())
-        .bind(session.response_mode.to_stored())
-        .bind(session.max_age.map(|v| v as i64))
-        .bind(&session.acr_values)
-        .bind(&session.login_hint)
-        .bind(&session.ui_locales)
-        .bind(&session.handle_hash)
-        .bind(session.handle_expires_at.map(|d| d.naive_utc()))
-        .bind(session.authenticated_user_id.map(|u| u.to_string()))
-        .bind(session.auth_time.map(|d| d.naive_utc()))
-        .bind(session.expires_at.naive_utc())
+        .bind(session.id_hash().as_str())
+        .bind(session.tenant_id().to_string())
+        .bind(request.client_id())
+        .bind(request.redirect_uri())
+        .bind(serde_json::to_string(request.scope()).map_err(repo_err)?)
+        .bind(request.state())
+        .bind(request.nonce())
+        .bind(request.pkce().challenge())
+        .bind(request.pkce().method().as_str())
+        .bind(request.prompt().to_storage())
+        .bind(request.response_mode().to_stored())
+        .bind(request.max_age().map(|v| v as i64))
+        .bind(request.acr_values())
+        .bind(request.login_hint())
+        .bind(request.ui_locales())
+        .bind(handoff.map(|h| h.handle_hash().as_str()))
+        .bind(handoff.map(|h| h.expires_at().naive_utc()))
+        .bind(session.identified_user().map(|u| u.to_string()))
+        .bind(authentication.map(|a| a.auth_time().naive_utc()))
+        .bind(session.expires_at().naive_utc())
         .execute(&self.pool)
         .await
         .map_err(repo_err)?;
         Ok(())
     }
 
-    async fn find_by_id_hash(
+    async fn find(
         &self,
         tenant_id: TenantId,
-        id_hash: &str,
+        id: &AuthSessionIdHash,
     ) -> Result<Option<AuthSession>> {
         let sql = format!(
             "SELECT {SELECT_COLUMNS} FROM auth_sessions WHERE id_hash = ? AND tenant_id = ?"
         );
         let row = sqlx::query(sqlx::AssertSqlSafe(sql))
-            .bind(id_hash)
+            .bind(id.as_str())
             .bind(tenant_id.to_string())
             .fetch_optional(&self.pool)
             .await
@@ -146,16 +156,16 @@ impl AuthSessionRepository for SqlxAuthSessionRepository {
         row.as_ref().map(map_row).transpose()
     }
 
-    async fn find_by_handle(
+    async fn find_by_handoff(
         &self,
         tenant_id: TenantId,
-        handle_hash: &str,
+        handle: &HandoffHandleHash,
     ) -> Result<Option<AuthSession>> {
         let sql = format!(
             "SELECT {SELECT_COLUMNS} FROM auth_sessions WHERE handle_hash = ? AND tenant_id = ?"
         );
         let row = sqlx::query(sqlx::AssertSqlSafe(sql))
-            .bind(handle_hash)
+            .bind(handle.as_str())
             .bind(tenant_id.to_string())
             .fetch_optional(&self.pool)
             .await
@@ -163,86 +173,75 @@ impl AuthSessionRepository for SqlxAuthSessionRepository {
         row.as_ref().map(map_row).transpose()
     }
 
-    async fn consume_handle(
-        &self,
-        id_hash: &str,
-        handle_hash: &str,
-        new_id_hash: &str,
-    ) -> Result<bool> {
+    async fn save_handoff_exchange(&self, exchange: &HandoffExchange) -> Result<bool> {
         // WHERE に handle_hash を含めることで単回使用を原子的に強制する。並行する交換は
         // 片方だけが 1 行更新に成功し、負けた側（および再利用）は 0 行 = false になる。
         // 同じ文で id_hash も差し替える（勝った側だけが新しい id を得る）。
+        let rotation = exchange.rotation();
         let result = sqlx::query(
             "UPDATE auth_sessions \
              SET handle_hash = NULL, handle_expires_at = NULL, id_hash = ? \
              WHERE id_hash = ? AND handle_hash = ?",
         )
-        .bind(new_id_hash)
-        .bind(id_hash)
-        .bind(handle_hash)
+        .bind(rotation.issued_hash().as_str())
+        .bind(rotation.previous().as_str())
+        .bind(exchange.consumed().as_str())
         .execute(&self.pool)
         .await
         .map_err(repo_err)?;
         Ok(result.rows_affected() == 1)
     }
 
-    async fn set_authenticated_user(
-        &self,
-        id_hash: &str,
-        new_id_hash: &str,
-        user_id: Uuid,
-        auth_time: DateTime<Utc>,
-        sso_sid: Option<&str>,
-        methods: &[AuthenticationMethod],
-    ) -> Result<()> {
-        // id の再生成を同じ UPDATE に含める（SEC7）。別文に分けると、認証済みフラグは立っているのに
-        // 旧 id がまだ引ける瞬間ができる。
-        sqlx::query(
-            "UPDATE auth_sessions \
-             SET id_hash = ?, authenticated_user_id = ?, auth_time = ?, sso_sid = ?, \
-                 authentication_methods = ? \
-             WHERE id_hash = ?",
-        )
-        .bind(new_id_hash)
-        .bind(user_id.to_string())
-        .bind(auth_time.naive_utc())
-        .bind(sso_sid)
-        .bind(authentication_methods_json::to_json(methods))
-        .bind(id_hash)
-        .execute(&self.pool)
-        .await
-        .map_err(repo_err)?;
-        Ok(())
-    }
-
-    async fn set_password_verified(
-        &self,
-        id_hash: &str,
-        new_id_hash: &str,
-        user_id: Uuid,
-        verified_at: DateTime<Utc>,
-    ) -> Result<()> {
-        // 前に記録されていた認証（auth_time・sid・方式）は同じ文で消す。残すと、第二段を
-        // 済ませていない利用者の行が「認証済み」に読め、同意の承諾が code を発行してしまう。
+    async fn save_password_verification(&self, verification: &PasswordVerification) -> Result<()> {
+        // 前の認証（auth_time・sid・方式）は同じ文で消す。残すと、第二段を済ませていない利用者の
+        // 行が「認証済み」に読める。
+        let rotation = verification.rotation();
         sqlx::query(
             "UPDATE auth_sessions \
              SET id_hash = ?, authenticated_user_id = ?, password_verified_at = ?, \
                  auth_time = NULL, sso_sid = NULL, authentication_methods = NULL \
              WHERE id_hash = ?",
         )
-        .bind(new_id_hash)
-        .bind(user_id.to_string())
-        .bind(verified_at.naive_utc())
-        .bind(id_hash)
+        .bind(rotation.issued_hash().as_str())
+        .bind(verification.user_id().to_string())
+        .bind(verification.verified_at().naive_utc())
+        .bind(rotation.previous().as_str())
         .execute(&self.pool)
         .await
         .map_err(repo_err)?;
         Ok(())
     }
 
-    async fn delete(&self, id_hash: &str) -> Result<()> {
+    async fn save_authentication(&self, completion: &AuthenticationCompletion) -> Result<()> {
+        // id の再生成を同じ UPDATE に含める（SEC7）。別文に分けると、認証済みフラグは立っているのに
+        // 旧 id がまだ引ける瞬間ができる。
+        let rotation = completion.rotation();
+        let authentication = completion.authentication();
+        sqlx::query(
+            "UPDATE auth_sessions \
+             SET id_hash = ?, authenticated_user_id = ?, auth_time = ?, sso_sid = ?, \
+                 authentication_methods = ? \
+             WHERE id_hash = ?",
+        )
+        .bind(rotation.issued_hash().as_str())
+        .bind(authentication.user_id().to_string())
+        .bind(authentication.auth_time().naive_utc())
+        .bind(authentication.sso_sid())
+        .bind(
+            authentication
+                .methods()
+                .map(authentication_methods_json::to_json),
+        )
+        .bind(rotation.previous().as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        Ok(())
+    }
+
+    async fn delete(&self, id: &AuthSessionIdHash) -> Result<()> {
         sqlx::query("DELETE FROM auth_sessions WHERE id_hash = ?")
-            .bind(id_hash)
+            .bind(id.as_str())
             .execute(&self.pool)
             .await
             .map_err(repo_err)?;

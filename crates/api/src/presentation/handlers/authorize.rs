@@ -2,8 +2,9 @@
 
 use crate::application::audit::RequestContext;
 use crate::application::authorize::{
-    AuthorizeOutcome, AuthorizeRequest, LoginContextOutcome, ResumeCommand, ResumeOutcome,
+    AuthorizeOutcome, LoginContextOutcome, ResumeCommand, ResumeOutcome,
 };
+use crate::domain::authorization_request::AuthorizationParameters;
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{AuthorizeParams, OAuthErrorResponse};
 use crate::presentation::handlers::found;
@@ -36,7 +37,7 @@ pub async fn authorize(
     Extension(tenant): Extension<ResolvedTenant>,
     Query(params): Query<AuthorizeParams>,
 ) -> Response {
-    let request = AuthorizeRequest {
+    let request = AuthorizationParameters {
         response_type: params.response_type,
         client_id: params.client_id,
         redirect_uri: params.redirect_uri,

@@ -19,6 +19,8 @@ pub mod consent;
 pub mod email_verification_token;
 pub mod expired_records;
 pub mod external_idp;
+#[cfg(test)]
+pub mod in_memory_auth_session;
 pub mod passkey_challenge;
 pub mod password_history;
 pub mod password_reset_token;

@@ -12,59 +12,34 @@
 use crate::application::application_access::ApplicationAccessService;
 use crate::application::audit::RequestContext;
 use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
+use crate::application::consent::consent_is_granted;
 use crate::application::sso_restore::SsoRestorer;
 use crate::application::tenant_resolution::TenantResolutionService;
-use crate::domain::auth_session::{self, AuthSession};
+use crate::domain::auth_session::{AuthSession, AuthSessionId, Authentication, HandoffHandle};
 use crate::domain::authentication_policy::{
     evaluate_policies, AuthenticationContext, PolicyDecision,
 };
-use crate::domain::client::Client;
+use crate::domain::authorization_request::{
+    AuthorizationParameters, AuthorizationRequest, AuthorizationRequestRejection,
+};
 use crate::domain::clock::Clock;
-use crate::domain::crypto;
 use crate::domain::effective_tenant_settings::EffectiveTenantSettings;
 use crate::domain::error::OAuthErrorCode;
 use crate::domain::repositories::{
     AuthSessionRepository, AuthenticationPolicyRepository, ClientConsentRepository,
     ClientRepository,
 };
-use crate::domain::response_mode::{AuthorizationResponse, ResponseMode};
+use crate::domain::response_mode::AuthorizationResponse;
 use crate::domain::tenant_context::TenantContext;
-use crate::domain::values::{CodeChallengeMethod, Prompt, PromptSet, Scope};
-use chrono::Duration;
+use crate::domain::values::AuthenticationMethod;
+use chrono::{DateTime, Duration, Utc};
 use std::sync::Arc;
+use uuid::Uuid;
 
 /// web ハンドオフ用ハンドルの有効期限（秒）。`/authorize` の 302 を web が受けて
 /// `/internal/authorize/resume` へ渡すまでの片道だけを覆えばよいため、auth_session 本体の
 /// TTL より大幅に短くする（単回・短命・固定束縛。ADR-0018 決定 3）。
 const HANDLE_TTL_SECS: i64 = 60;
-
-/// `/authorize` のクエリパラメータ（未指定を検出できるようすべて Option で受ける）。
-#[derive(Debug, Default)]
-pub struct AuthorizeRequest {
-    pub response_type: Option<String>,
-    pub client_id: Option<String>,
-    pub redirect_uri: Option<String>,
-    pub scope: Option<String>,
-    pub state: Option<String>,
-    pub nonce: Option<String>,
-    pub code_challenge: Option<String>,
-    pub code_challenge_method: Option<String>,
-    /// `prompt` パラメータ（`none` / `login` / `consent`）。
-    pub prompt: Option<String>,
-    /// `max_age` パラメータ（秒）。
-    pub max_age: Option<u64>,
-    /// `acr_values` パラメータ（空白区切り。G12）。認証ポリシーの `requested_acr` 条件（AP3）が
-    /// 参照する。IdP は要求された acr を**保証しない**（満たせない要求は単に一致しないだけ）。
-    pub acr_values: Option<String>,
-    /// `login_hint` パラメータ（ログイン画面のユーザー名プリフィル。G12）。
-    pub login_hint: Option<String>,
-    /// `ui_locales` パラメータ（RP が要求する表示言語。空白区切りの BCP47 タグ。G12）。
-    pub ui_locales: Option<String>,
-    /// `response_mode` パラメータ（`query`（既定）/ `form_post`。G12）。
-    /// 未知の値は既定へ丸めず `invalid_request` にする（理由は
-    /// [`crate::domain::response_mode::ResponseMode::parse`]）。
-    pub response_mode: Option<String>,
-}
 
 pub enum AuthorizeOutcome {
     /// 検証成功。AuthSession 作成済み。単回ハンドルを URL に載せて web の `/login` へ 302 する
@@ -213,11 +188,11 @@ impl AuthorizeService {
     pub async fn authorize(
         &self,
         tenant: TenantContext,
-        req: AuthorizeRequest,
+        params: AuthorizationParameters,
     ) -> AuthorizeOutcome {
-        // 1. client_id / redirect_uri の検証（無効ならリダイレクトしない）。client はフローの
-        // テナントに属するものだけを解決する（テナント分離。ADR-0009 §8）。
-        let Some(client_id) = non_empty(req.client_id.as_deref()) else {
+        // 1. client の解決（無効ならリダイレクトしない）。client はフローのテナントに属するもの
+        // だけを解決する（テナント分離。ADR-0009 §8）。
+        let Some(client_id) = non_empty(params.client_id.as_deref()) else {
             return fatal(OAuthErrorCode::InvalidRequest, "client_id is required");
         };
         let client = match self
@@ -232,92 +207,53 @@ impl AuthorizeService {
                 return fatal(OAuthErrorCode::ServerError, "internal error");
             }
         };
-        if !client.is_active() {
-            return fatal(OAuthErrorCode::InvalidClient, "client is not active");
-        }
-        let Some(redirect_uri) = non_empty(req.redirect_uri.as_deref()) else {
-            return fatal(OAuthErrorCode::InvalidRequest, "redirect_uri is required");
+
+        // 2. 認可要求を受理する（検証はドメインが持つ）。
+        let request = match AuthorizationRequest::accept(&params, &client) {
+            Ok(request) => request,
+            Err(AuthorizationRequestRejection::NotRedirectable { error, description }) => {
+                return fatal(error, description);
+            }
+            Err(AuthorizationRequestRejection::Redirectable {
+                redirect_uri,
+                state,
+                error,
+                description,
+            }) => {
+                return AuthorizeOutcome::ErrorRedirect {
+                    location: error_redirect_with_state(
+                        &redirect_uri,
+                        error,
+                        description,
+                        state.as_deref(),
+                    ),
+                };
+            }
         };
-        if !client.allows_redirect_uri(redirect_uri) {
-            return fatal(
-                OAuthErrorCode::InvalidRequest,
-                "redirect_uri is not registered",
-            );
-        }
-
-        let state = non_empty(req.state.as_deref());
-
-        // 2. それ以外の検証（エラーは redirect_uri に付与して返す）。
-        if let Err((error, description)) = validate_request(&req, &client) {
-            return AuthorizeOutcome::ErrorRedirect {
-                location: error_redirect_with_state(redirect_uri, error, description, state),
-            };
-        }
-
-        let scope: Vec<String> = req
-            .scope
-            .as_deref()
-            .unwrap_or_default()
-            .split_whitespace()
-            .map(str::to_string)
-            .collect();
-        let state = state.expect("state validated above").to_string();
-        // ⚠ **`nonce` は任意**（ADR-0049）。無いときは空文字で持ち回り、
-        //   id_token では**クレームごと出さない**（`token.rs` の `skip_serializing_if`）。
-        let nonce = req.nonce.clone().unwrap_or_default();
-        let code_challenge = req.code_challenge.clone().expect("validated above");
 
         // 3. AuthSession を作成し、単回ハンドルを発行して web へハンドオフする（ADR-0018 決定 2）。
         //    SSO Cookie は api からは見えないため、SSO 復元・`prompt`/`max_age` の評価は resume で行う。
-        //    未知の `prompt` 値は従来どおり無視する（`parse(...).ok()`）。
-        let now = self.clock.now();
-        let handle = crypto::random_hex(32);
-        // 平文の auth_session_id はここでは誰にも渡らない（web へ渡すのは単回ハンドルだけ）ので、
-        // 生成した値は保存用のハッシュにしてすぐ捨てる。web が受け取る `auth_session_id` は
-        // ハンドル交換時（`resume`）に作られる。
-        let session = AuthSession {
-            id_hash: auth_session::id_hash(&crypto::random_hex(32)),
-            tenant_id: tenant.tenant_id(),
-            client_id: client.client_id.clone(),
-            redirect_uri: redirect_uri.to_string(),
-            scope,
-            state,
-            nonce,
-            code_challenge,
-            code_challenge_method: CodeChallengeMethod::S256,
-            prompt: PromptSet::parse(req.prompt.as_deref().unwrap_or_default()),
-            // 検証済み（未知の値は上で弾いている）。未指定は既定の `query`。
-            response_mode: non_empty(req.response_mode.as_deref())
-                .and_then(|raw| ResponseMode::parse(raw).ok())
-                .unwrap_or_default(),
-            max_age: req.max_age,
-            acr_values: non_empty(req.acr_values.as_deref()).map(str::to_string),
-            login_hint: non_empty(req.login_hint.as_deref()).map(str::to_string),
-            ui_locales: non_empty(req.ui_locales.as_deref()).map(str::to_string),
-            handle_hash: Some(crypto::sha256_hex(&handle)),
-            handle_expires_at: Some(now + Duration::seconds(HANDLE_TTL_SECS)),
-            authenticated_user_id: None,
-            auth_time: None,
-            password_verified_at: None,
-            sso_sid: None,
-            authentication_methods: None,
-            expires_at: now + self.auth_session_ttl,
-            created_at: now,
-            updated_at: now,
-        };
+        let (session, handle) = AuthSession::start(
+            tenant.tenant_id(),
+            request,
+            self.clock.now(),
+            self.auth_session_ttl,
+            Duration::seconds(HANDLE_TTL_SECS),
+        );
         if let Err(e) = self.auth_sessions.create(&session).await {
             tracing::error!(error = %e, "failed to create auth session");
             return AuthorizeOutcome::ErrorRedirect {
-                location: error_redirect_with_state(
-                    redirect_uri,
+                location: redirect_with_error(
+                    session.request(),
                     OAuthErrorCode::ServerError,
                     "failed to start authorization",
-                    Some(&session.state),
                 ),
             };
         }
 
-        AuthorizeOutcome::HandoffToWeb { handle }
+        AuthorizeOutcome::HandoffToWeb {
+            handle: handle.into_string(),
+        }
     }
 
     /// web ハンドオフの再開（`/internal/authorize/resume`。ADR-0018 決定 2）。
@@ -334,232 +270,256 @@ impl AuthorizeService {
         let now = self.clock.now();
 
         // 1. ハンドルから AuthSession を特定し、単回使用として消費する。
-        if cmd.handle.is_empty() {
-            return ResumeOutcome::ExpiredHandle;
-        }
-        let handle_hash = crypto::sha256_hex(&cmd.handle);
-        // SSO 復元で認証済みにするとき id を再生成する（SEC7）ため mut。
-        let mut session = match self
-            .auth_sessions
-            .find_by_handle(tenant.tenant_id(), &handle_hash)
+        let (mut session, auth_session_id) =
+            match self.exchange_handoff(tenant, &cmd.handle, now).await {
+                Ok(exchanged) => exchanged,
+                Err(outcome) => return outcome,
+            };
+
+        // 2. SSO 復元で完了できるならそこで終える。
+        if let Some(outcome) = self
+            .complete_with_sso(
+                tenant,
+                &mut session,
+                cmd.sso_session_id.as_deref(),
+                ctx,
+                now,
+            )
             .await
         {
-            Ok(Some(s)) => s,
-            Ok(None) => return ResumeOutcome::ExpiredHandle,
-            Err(e) => return ResumeOutcome::Internal(e.to_string()),
-        };
-        if !session.handle_is_valid_at(now) || session.is_expired_at(now) {
-            return ResumeOutcome::ExpiredHandle;
-        }
-        // ハンドル交換で web が受け取る `auth_session_id`。DB にはハッシュしか無い（SEC6）ため、
-        // ここで平文を作って消費と同じ文で差し替える。交換に負けた側はこの値を得られない。
-        let mut auth_session_id = crypto::random_hex(32);
-        let new_id_hash = auth_session::id_hash(&auth_session_id);
-        match self
-            .auth_sessions
-            .consume_handle(&session.id_hash, &handle_hash, &new_id_hash)
-            .await
-        {
-            Ok(true) => session.id_hash = new_id_hash,
-            // 並行する交換に負けた・再利用 → 単回使用として拒否する。
-            Ok(false) => return ResumeOutcome::ExpiredHandle,
-            Err(e) => return ResumeOutcome::Internal(e.to_string()),
-        }
-
-        let prompt_none = session.prompt.contains(Prompt::None);
-        // `select_account` は `login` と同じく SSO 復元を止める（G12）。assay はブラウザごとに
-        // SSO セッションを 1 つしか持たないため「選ばせる別アカウント」の一覧は出せないが、
-        // **黙って現在のアカウントで続けない**ことが要求の本質である。ログイン画面へ戻せば、
-        // 利用者は同じアカウントで入り直すことも別のアカウントへ切り替えることもできる。
-        let force_login = session.prompt.contains(Prompt::Login)
-            || session.prompt.contains(Prompt::SelectAccount);
-        let force_consent = session.prompt.contains(Prompt::Consent);
-
-        // 2. SSO 復元を試みる（`prompt=login` / `prompt=select_account` は常に再認証）。
-        if !force_login {
-            if let Some(session_id) = non_empty(cmd.sso_session_id.as_deref()) {
-                match self.sso_restorer.try_resume(tenant, session_id, ctx).await {
-                    Ok(Some(restored)) => {
-                        let (user_id, auth_time) = (restored.user_id, restored.auth_time);
-                        // ID Token へ載せる `sid`（G5）。復元したセッションから導出する。
-                        let sid = crate::domain::sso_session::sid_of(&restored.session_hash);
-                        // `max_age` チェック: auth_time から max_age 秒超過していれば再認証。
-                        let max_age_exceeded = session.max_age.is_some_and(|max_age| {
-                            (now - auth_time).num_seconds() > max_age as i64
-                        });
-
-                        // 認証ポリシー（AP2/AP3）を**この認可要求の文脈で**評価する。
-                        // 復元対象のセッションが確立されたときとは、クライアントも `acr_values` も
-                        // 違いうる。評価しないと、RP が `acr_values` で WebAuthn 必須ポリシーを
-                        // 起動しても、パスワードだけで確立された既存 SSO が黙って再利用される。
-                        // 満たさない場合は `max_age` 超過と同じ扱い（＝再認証へ落とす）にする。
-                        // 拒否ポリシーだけは再認証しても通らないので、その場でフローを終える。
-                        let policy_outcome = self
-                            .evaluate_for_restored_session(
-                                tenant,
-                                &session,
-                                user_id,
-                                &restored.authentication_methods,
-                                ctx,
-                                now,
-                            )
-                            .await;
-                        let policy_ok = match policy_outcome {
-                            RestoredPolicy::Ok => true,
-                            RestoredPolicy::Reauthenticate => false,
-                            RestoredPolicy::Denied => {
-                                let _ = self.auth_sessions.delete(&session.id_hash).await;
-                                return ResumeOutcome::ErrorRedirect {
-                                    location: error_redirect_with_state(
-                                        &session.redirect_uri,
-                                        OAuthErrorCode::AccessDenied,
-                                        "denied by authentication policy",
-                                        Some(&session.state),
-                                    ),
-                                };
-                            }
-                            RestoredPolicy::Internal(e) => return ResumeOutcome::Internal(e),
-                        };
-
-                        if !max_age_exceeded && policy_ok {
-                            // 同意チェック（force_consent の場合は既存同意を無視）。
-                            if !force_consent
-                                && self
-                                    .check_consent(
-                                        tenant,
-                                        user_id,
-                                        &session.client_id,
-                                        &session.scope,
-                                    )
-                                    .await
-                            {
-                                // 同意済み → code を発行し AuthSession を削除する。
-                                let cmd = IssueCodeCommand {
-                                    tenant,
-                                    user_id,
-                                    client_id: session.client_id.clone(),
-                                    redirect_uri: session.redirect_uri.clone(),
-                                    scope: session.scope.clone(),
-                                    nonce: session.nonce.clone(),
-                                    auth_time,
-                                    sid: Some(sid.clone()),
-                                    authentication_methods: Some(
-                                        restored.authentication_methods.clone(),
-                                    ),
-                                    code_challenge: session.code_challenge.clone(),
-                                    code_challenge_method: session.code_challenge_method,
-                                };
-                                return match self.code_issuance.issue(cmd, ctx).await {
-                                    // 復元した SSO は通っているが、このアプリの利用が許可されて
-                                    // いない（ADR-0054）。RP へは戻さない。
-                                    Ok(CodeIssuance::ApplicationDenied { application_name }) => {
-                                        ResumeOutcome::ApplicationNotPermitted { application_name }
-                                    }
-                                    Ok(CodeIssuance::Issued(code)) => {
-                                        if let Err(e) =
-                                            self.auth_sessions.delete(&session.id_hash).await
-                                        {
-                                            tracing::warn!(
-                                                error = %e,
-                                                "failed to delete auth session after SSO code issuance"
-                                            );
-                                        }
-                                        let dispatch = code_dispatch(&session, &code);
-                                        ResumeOutcome::Redirect {
-                                            location: dispatch.location,
-                                            form_post: dispatch.form_post,
-                                            sso_absolute_ttl_secs: restored.absolute_ttl_secs,
-                                        }
-                                    }
-                                    Err(e) => {
-                                        tracing::error!(
-                                            error = %e,
-                                            "failed to issue authorization code"
-                                        );
-                                        ResumeOutcome::ErrorRedirect {
-                                            location: error_redirect_with_state(
-                                                &session.redirect_uri,
-                                                OAuthErrorCode::ServerError,
-                                                "failed to issue authorization code",
-                                                Some(&session.state),
-                                            ),
-                                        }
-                                    }
-                                };
-                            }
-
-                            // 未同意（または force_consent）。
-                            if prompt_none {
-                                // prompt=none では同意画面を出せないのでエラー（フロー終了）。
-                                let _ = self.auth_sessions.delete(&session.id_hash).await;
-                                return ResumeOutcome::ErrorRedirect {
-                                    location: error_redirect_with_state(
-                                        &session.redirect_uri,
-                                        OAuthErrorCode::ConsentRequired,
-                                        "consent required",
-                                        Some(&session.state),
-                                    ),
-                                };
-                            }
-
-                            // 同意画面へ: AuthSession を認証済み状態にして web に返す。
-                            // SSO からの復元でも id を再生成する（SEC7）。同意画面へ渡す
-                            // `auth_session_id` は再生成後の値。
-                            let rotated_id = crypto::random_hex(32);
-                            if let Err(e) = self
-                                .auth_sessions
-                                .set_authenticated_user(
-                                    &session.id_hash,
-                                    &auth_session::id_hash(&rotated_id),
-                                    user_id,
-                                    auth_time,
-                                    Some(sid.as_str()),
-                                    &restored.authentication_methods,
-                                )
-                                .await
-                            {
-                                tracing::error!(error = %e, "failed to mark session for consent");
-                                return ResumeOutcome::ErrorRedirect {
-                                    location: error_redirect_with_state(
-                                        &session.redirect_uri,
-                                        OAuthErrorCode::ServerError,
-                                        "failed to start consent",
-                                        Some(&session.state),
-                                    ),
-                                };
-                            }
-                            auth_session_id = rotated_id;
-                            return ResumeOutcome::ConsentRequired {
-                                auth_session_id,
-                                sso_absolute_ttl_secs: restored.absolute_ttl_secs,
-                            };
-                        }
-                        // max_age 超過・ポリシー未充足 → ログインへ（SSO は復元しない）。
-                        // prompt=none なら下でエラーになる。
-                    }
-                    Ok(None) => {} // SSO なし・無効 → ログインへ。
-                    Err(e) => {
-                        tracing::error!(error = %e, "failed to check SSO session");
-                        // SSO 確認失敗は致命ではない。ログインへフォールバックする。
-                    }
-                }
-            }
+            return outcome;
         }
 
         // 3. SSO で完了できない: prompt=none はログイン画面を出せないのでエラー（フロー終了）。
-        if prompt_none {
-            let _ = self.auth_sessions.delete(&session.id_hash).await;
+        if session.request().forbids_interaction() {
+            let _ = self.auth_sessions.delete(session.id_hash()).await;
             return ResumeOutcome::ErrorRedirect {
-                location: error_redirect_with_state(
-                    &session.redirect_uri,
+                location: redirect_with_error(
+                    session.request(),
                     OAuthErrorCode::LoginRequired,
                     "login required",
-                    Some(&session.state),
                 ),
             };
         }
 
-        ResumeOutcome::LoginRequired { auth_session_id }
+        ResumeOutcome::LoginRequired {
+            auth_session_id: auth_session_id.into_string(),
+        }
+    }
+
+    /// ハンドルを `auth_session_id` と交換する（単回。並行する交換は片方だけが勝つ）。
+    async fn exchange_handoff(
+        &self,
+        tenant: TenantContext,
+        handle: &str,
+        now: DateTime<Utc>,
+    ) -> Result<(AuthSession, AuthSessionId), ResumeOutcome> {
+        let Some(handle) = HandoffHandle::from_presented(handle) else {
+            return Err(ResumeOutcome::ExpiredHandle);
+        };
+        let mut session = match self
+            .auth_sessions
+            .find_by_handoff(tenant.tenant_id(), &handle.hash())
+            .await
+        {
+            Ok(Some(s)) => s,
+            Ok(None) => return Err(ResumeOutcome::ExpiredHandle),
+            Err(e) => return Err(ResumeOutcome::Internal(e.to_string())),
+        };
+        let Ok(exchange) = session.exchange_handoff(now) else {
+            return Err(ResumeOutcome::ExpiredHandle);
+        };
+        match self.auth_sessions.save_handoff_exchange(&exchange).await {
+            Ok(true) => Ok((session, exchange.into_issued())),
+            // 並行する交換に負けた・再利用 → 単回使用として拒否する。
+            Ok(false) => Err(ResumeOutcome::ExpiredHandle),
+            Err(e) => Err(ResumeOutcome::Internal(e.to_string())),
+        }
+    }
+
+    /// SSO セッションを復元して認可を完了させる。完了できない（＝ログインへ進む）なら `None`。
+    ///
+    /// `prompt=login` / `prompt=select_account` は常に再認証。SSO 確認の失敗は致命ではなく、
+    /// ログインへフォールバックする。
+    async fn complete_with_sso(
+        &self,
+        tenant: TenantContext,
+        session: &mut AuthSession,
+        sso_session_id: Option<&str>,
+        ctx: &RequestContext,
+        now: DateTime<Utc>,
+    ) -> Option<ResumeOutcome> {
+        if session.request().forces_reauthentication() {
+            return None;
+        }
+        let sso_session_id = non_empty(sso_session_id)?;
+        let restored = match self
+            .sso_restorer
+            .try_resume(tenant, sso_session_id, ctx)
+            .await
+        {
+            Ok(restored) => restored?,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to check SSO session");
+                return None;
+            }
+        };
+
+        // 認証ポリシー（AP2/AP3）を**この認可要求の文脈で**評価する。復元対象のセッションが確立
+        // されたときとは、クライアントも `acr_values` も違いうる。評価しないと、RP が `acr_values`
+        // で WebAuthn 必須ポリシーを起動しても、パスワードだけで確立された既存 SSO が黙って再利用
+        // される。満たさない場合は `max_age` 超過と同じ扱い（＝再認証へ落とす）にする。拒否ポリシー
+        // だけは再認証しても通らないので、その場でフローを終える。
+        let policy = self
+            .evaluate_for_restored_session(
+                tenant,
+                session.request(),
+                restored.user_id,
+                &restored.authentication_methods,
+                ctx,
+                now,
+            )
+            .await;
+        match policy {
+            RestoredPolicy::Ok => {}
+            RestoredPolicy::Reauthenticate => return None,
+            RestoredPolicy::Denied => {
+                let _ = self.auth_sessions.delete(session.id_hash()).await;
+                return Some(ResumeOutcome::ErrorRedirect {
+                    location: redirect_with_error(
+                        session.request(),
+                        OAuthErrorCode::AccessDenied,
+                        "denied by authentication policy",
+                    ),
+                });
+            }
+            RestoredPolicy::Internal(e) => return Some(ResumeOutcome::Internal(e)),
+        }
+        // `max_age` 超過 → ログインへ（SSO は復元しない）。
+        if session
+            .request()
+            .authentication_is_too_old(restored.auth_time, now)
+        {
+            return None;
+        }
+
+        // ID Token へ載せる `sid`（G5）は復元したセッションから導出する。
+        let authentication = Authentication::new(
+            restored.user_id,
+            restored.auth_time,
+            Some(crate::domain::sso_session::sid_of(&restored.session_hash)),
+            Some(restored.authentication_methods),
+        );
+        Some(
+            self.authorize_restored(
+                tenant,
+                session,
+                authentication,
+                restored.absolute_ttl_secs,
+                ctx,
+            )
+            .await,
+        )
+    }
+
+    /// 復元した SSO の認証で、同意を確かめて code を発行する（未同意なら同意画面へ）。
+    async fn authorize_restored(
+        &self,
+        tenant: TenantContext,
+        session: &mut AuthSession,
+        authentication: Authentication,
+        sso_absolute_ttl_secs: u64,
+        ctx: &RequestContext,
+    ) -> ResumeOutcome {
+        // 同意チェック（`prompt=consent` の場合は既存同意を無視）。
+        let request = session.request();
+        if !request.forces_consent()
+            && self
+                .check_consent(tenant, authentication.user_id(), request)
+                .await
+        {
+            return self
+                .issue_restored_code(tenant, session, authentication, sso_absolute_ttl_secs, ctx)
+                .await;
+        }
+
+        // 未同意（または `prompt=consent`）。`prompt=none` では同意画面を出せないのでエラー。
+        if request.forbids_interaction() {
+            let _ = self.auth_sessions.delete(session.id_hash()).await;
+            return ResumeOutcome::ErrorRedirect {
+                location: redirect_with_error(
+                    request,
+                    OAuthErrorCode::ConsentRequired,
+                    "consent required",
+                ),
+            };
+        }
+
+        // 同意画面へ: AuthSession を認証済み状態にして web に返す。SSO からの復元でも id を
+        // 再生成する（SEC7）。同意画面へ渡す `auth_session_id` は再生成後の値。
+        let completion = session.complete_authentication(authentication);
+        if let Err(e) = self.auth_sessions.save_authentication(&completion).await {
+            tracing::error!(error = %e, "failed to mark session for consent");
+            return ResumeOutcome::ErrorRedirect {
+                location: redirect_with_error(
+                    session.request(),
+                    OAuthErrorCode::ServerError,
+                    "failed to start consent",
+                ),
+            };
+        }
+        ResumeOutcome::ConsentRequired {
+            auth_session_id: completion.into_issued().into_string(),
+            sso_absolute_ttl_secs,
+        }
+    }
+
+    /// 同意済みの SSO 復元で code を発行し、AuthSession を削除する。
+    async fn issue_restored_code(
+        &self,
+        tenant: TenantContext,
+        session: &AuthSession,
+        authentication: Authentication,
+        sso_absolute_ttl_secs: u64,
+        ctx: &RequestContext,
+    ) -> ResumeOutcome {
+        let cmd = IssueCodeCommand {
+            tenant,
+            request: session.request().clone(),
+            authentication,
+        };
+        match self.code_issuance.issue(cmd, ctx).await {
+            // 復元した SSO は通っているが、このアプリの利用が許可されていない（ADR-0054）。
+            // RP へは戻さない。
+            Ok(CodeIssuance::ApplicationDenied { application_name }) => {
+                ResumeOutcome::ApplicationNotPermitted { application_name }
+            }
+            Ok(CodeIssuance::Issued(code)) => {
+                if let Err(e) = self.auth_sessions.delete(session.id_hash()).await {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to delete auth session after SSO code issuance"
+                    );
+                }
+                let dispatch =
+                    AuthorizationDispatch::from(session.request().success_response(&code));
+                ResumeOutcome::Redirect {
+                    location: dispatch.location,
+                    form_post: dispatch.form_post,
+                    sso_absolute_ttl_secs,
+                }
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to issue authorization code");
+                ResumeOutcome::ErrorRedirect {
+                    location: redirect_with_error(
+                        session.request(),
+                        OAuthErrorCode::ServerError,
+                        "failed to issue authorization code",
+                    ),
+                }
+            }
+        }
     }
 
     /// 復元した SSO セッションを、この認可要求の文脈で認証ポリシーに掛ける（AP2/AP3）。
@@ -571,11 +531,11 @@ impl AuthorizeService {
     async fn evaluate_for_restored_session(
         &self,
         tenant: TenantContext,
-        session: &AuthSession,
-        user_id: uuid::Uuid,
-        methods: &[crate::domain::values::AuthenticationMethod],
+        request: &AuthorizationRequest,
+        user_id: Uuid,
+        methods: &[AuthenticationMethod],
         ctx: &RequestContext,
-        now: chrono::DateTime<chrono::Utc>,
+        now: DateTime<Utc>,
     ) -> RestoredPolicy {
         let default_effect = match self
             .settings
@@ -593,11 +553,10 @@ impl AuthorizeService {
             Ok(p) => p,
             Err(e) => return RestoredPolicy::Internal(e.to_string()),
         };
-        let requested_acr = session.requested_acr();
         // 認証ポリシーの宛先はアプリ（ADR-0054 の決定 5）。
         let application_id = match self
             .applications
-            .policy_target_for_oidc_client(tenant.tenant_id(), &session.client_id)
+            .policy_target_for_oidc_client(tenant.tenant_id(), request.client_id())
             .await
         {
             Ok(id) => id,
@@ -610,59 +569,47 @@ impl AuthorizeService {
                 user_id,
                 ip_address: ctx.ip_address.as_deref(),
                 now,
-                requested_acr: &requested_acr,
+                requested_acr: &request.requested_acr(),
             },
             default_effect,
         );
-        let user_verified =
-            methods.contains(&crate::domain::values::AuthenticationMethod::WebAuthn);
+        let user_verified = methods.contains(&AuthenticationMethod::WebAuthn);
         match &decision {
             PolicyDecision::Deny { .. } => RestoredPolicy::Denied,
-            PolicyDecision::RequireMfa { .. } => {
-                if methods.iter().any(|m| m.is_second_factor()) {
-                    RestoredPolicy::Ok
-                } else {
-                    RestoredPolicy::Reauthenticate
-                }
+            PolicyDecision::RequireMfa { .. } if methods.iter().any(|m| m.is_second_factor()) => {
+                RestoredPolicy::Ok
             }
-            PolicyDecision::RequireMethods { .. } => {
+            PolicyDecision::RequireMfa { .. } => RestoredPolicy::Reauthenticate,
+            PolicyDecision::RequireMethods { .. }
                 if decision
                     .unmet_method_requirement(methods, user_verified)
-                    .is_none()
-                {
-                    RestoredPolicy::Ok
-                } else {
-                    RestoredPolicy::Reauthenticate
-                }
+                    .is_none() =>
+            {
+                RestoredPolicy::Ok
             }
+            PolicyDecision::RequireMethods { .. } => RestoredPolicy::Reauthenticate,
             PolicyDecision::Allow { .. } => RestoredPolicy::Ok,
         }
     }
 
     /// 同意チェック: ユーザーがクライアントに対してすべての scope に同意済みか確認する。
+    ///
+    /// 確認に失敗したら「未同意」として扱う（同意画面へ進むだけで、誤って code を出すことはない）。
     async fn check_consent(
         &self,
         tenant: TenantContext,
-        user_id: uuid::Uuid,
-        client_id: &str,
-        scope: &[String],
+        user_id: Uuid,
+        request: &AuthorizationRequest,
     ) -> bool {
-        let scopes_without_openid: Vec<String> = scope
-            .iter()
-            .filter(|s| s.as_str() != "openid")
-            .cloned()
-            .collect();
-        // openid のみの場合は常に同意済みとみなす。
-        if scopes_without_openid.is_empty() {
-            return true;
-        }
-        match self
-            .client_consents
-            .find(tenant.tenant_id(), user_id, client_id)
-            .await
+        match consent_is_granted(
+            self.client_consents.as_ref(),
+            tenant.tenant_id(),
+            user_id,
+            request,
+        )
+        .await
         {
-            Ok(Some(consent)) => consent.covers(&scopes_without_openid),
-            Ok(None) => false,
+            Ok(granted) => granted,
             Err(e) => {
                 tracing::error!(error = %e, "failed to check consent");
                 false
@@ -686,13 +633,12 @@ impl AuthorizeService {
         tenant: TenantContext,
         auth_session_id: &str,
     ) -> LoginContextOutcome {
-        if auth_session_id.is_empty() {
+        let Some(auth_session_id) = AuthSessionId::from_presented(auth_session_id) else {
             return LoginContextOutcome::SessionExpired;
-        }
-        let id_hash = auth_session::id_hash(auth_session_id);
+        };
         let session = match self
             .auth_sessions
-            .find_by_id_hash(tenant.tenant_id(), &id_hash)
+            .find(tenant.tenant_id(), &auth_session_id.hash())
             .await
         {
             Ok(Some(s)) => s,
@@ -702,11 +648,12 @@ impl AuthorizeService {
         if session.is_expired_at(self.clock.now()) {
             return LoginContextOutcome::SessionExpired;
         }
+        let request = session.request();
         // 表示名は「あれば出す」だけの飾りで、引けなくてもログインは続けられなければならない。
         // 取得に失敗しても文脈全体を落とさず、その欄だけ空にする。
         let client_name = match self
             .clients
-            .find_by_client_id(tenant.tenant_id(), &session.client_id)
+            .find_by_client_id(tenant.tenant_id(), request.client_id())
             .await
         {
             Ok(client) => client.map(|c| c.app_name),
@@ -723,87 +670,13 @@ impl AuthorizeService {
             }
         };
         LoginContextOutcome::Ok {
-            login_hint: session.login_hint,
-            ui_locales: session.ui_locales,
-            redirect_uri: session.redirect_uri,
+            login_hint: request.login_hint().map(str::to_string),
+            ui_locales: request.ui_locales().map(str::to_string),
+            redirect_uri: request.redirect_uri().to_string(),
             client_name,
             tenant_name,
         }
     }
-}
-
-/// client_id / redirect_uri 以外の検証（設計仕様 §4.2「検証項目」）。
-fn validate_request(
-    req: &AuthorizeRequest,
-    client: &Client,
-) -> Result<(), (OAuthErrorCode, &'static str)> {
-    if req.response_type.as_deref() != Some("code") {
-        return Err((
-            OAuthErrorCode::UnsupportedResponseType,
-            "response_type must be `code`",
-        ));
-    }
-    if !client.response_types.iter().any(|t| t == "code")
-        || !client.grant_types.iter().any(|t| t == "authorization_code")
-    {
-        return Err((
-            OAuthErrorCode::UnauthorizedClient,
-            "client is not allowed to use the authorization code flow",
-        ));
-    }
-
-    let scope: Vec<String> = req
-        .scope
-        .as_deref()
-        .unwrap_or_default()
-        .split_whitespace()
-        .map(str::to_string)
-        .collect();
-    if !scope.iter().any(|s| s == Scope::OpenId.as_str()) {
-        return Err((OAuthErrorCode::InvalidScope, "scope must include `openid`"));
-    }
-    if !client.allows_scopes(&scope) {
-        return Err((
-            OAuthErrorCode::InvalidScope,
-            "requested scope exceeds the client's registered scopes",
-        ));
-    }
-
-    if non_empty(req.state.as_deref()).is_none() {
-        return Err((OAuthErrorCode::InvalidRequest, "state is required"));
-    }
-    // `nonce` は**任意**（OIDC Core 3.1.2.1。必須なのは implicit / hybrid で、
-    // このサーバは `response_type=code` しか受けない）。
-    //
-    // ⚠ **2026-09-10 に必須化をやめた**（ADR-0049）。方針として必須にしていたが、
-    // **仕様どおりに送ってくる相手を弾いていた** ——Forgejo は `nonce` を送らない
-    // （未実装。forgejo/forgejo#186）ので、ログイン画面にすら着けなかった。
-    //
-    // ⚠ **`state` と PKCE(S256) は必須のまま**である。コード奪取と CSRF の防御は
-    // そちらが持っており、`nonce` が主に効くのは id_token のリプレイ
-    // （implicit）である。
-    //
-    // ⚠ **送ってきた相手には、これまでどおり id_token へ載せて返す**
-    // （`token.rs`。無いときは**クレームごと出さない** ——空文字を載せない）。
-    // `response_mode` は未指定なら `query`。指定があって解釈できない値は弾く（丸めない）。
-    if let Some(raw) = non_empty(req.response_mode.as_deref()) {
-        if ResponseMode::parse(raw).is_err() {
-            return Err((
-                OAuthErrorCode::InvalidRequest,
-                "response_mode must be `query` or `form_post`",
-            ));
-        }
-    }
-    if req.code_challenge_method.as_deref() != Some(CodeChallengeMethod::S256.as_str()) {
-        return Err((
-            OAuthErrorCode::InvalidRequest,
-            "code_challenge_method must be `S256`",
-        ));
-    }
-    if non_empty(req.code_challenge.as_deref()).is_none() {
-        return Err((OAuthErrorCode::InvalidRequest, "code_challenge is required"));
-    }
-    Ok(())
 }
 
 fn non_empty(v: Option<&str>) -> Option<&str> {
@@ -815,6 +688,24 @@ fn fatal(error: OAuthErrorCode, description: &str) -> AuthorizeOutcome {
         error,
         description: description.to_string(),
     }
+}
+
+/// 認可要求の `redirect_uri` へエラーを付けて戻す URL（`state` を透過返却）。
+///
+/// ⚠ `/authorize` と resume の失敗は `response_mode` を見ずに**クエリで**返す（従来どおり）。
+/// 認可セッションの完了点（ログイン・同意など）のエラーは
+/// [`AuthorizationRequest::error_response`] で `response_mode` に従う。
+fn redirect_with_error(
+    request: &AuthorizationRequest,
+    error: OAuthErrorCode,
+    description: &str,
+) -> String {
+    error_redirect_with_state(
+        request.redirect_uri(),
+        error,
+        description,
+        Some(request.state()),
+    )
 }
 
 /// `redirect_uri` にクエリパラメータを足した URL を組み立てる。
@@ -872,48 +763,10 @@ impl From<AuthorizationResponse> for AuthorizationDispatch {
     }
 }
 
-/// 認可成功の応答を outcome へ載せる形で返す（G12）。各ユースケースの完了点はこれを使う。
-pub fn code_dispatch(session: &AuthSession, code: &str) -> AuthorizationDispatch {
-    code_response(session, code).into()
-}
-
-/// 認可エラーの応答を outcome へ載せる形で返す（G12）。
-///
-/// エラーも**成功と同じ `response_mode`** で返す。RP は同じ受け口で待っており、成功だけ POST・
-/// 失敗だけ 302 では受け取れない（OAuth 2.0 Form Post Response Mode）。
-pub fn error_dispatch(
-    session: &AuthSession,
-    error: OAuthErrorCode,
-    description: &str,
-) -> AuthorizationDispatch {
-    AuthorizationResponse::error(
-        &session.redirect_uri,
-        error.as_str(),
-        description,
-        &session.state,
-        session.response_mode,
-    )
-    .into()
-}
-
-/// 認可成功の応答（送信先＋パラメータ）を組み立てる（G12）。
-///
-/// **URL 文字列ではなくこの形を返す**のが要点である。`response_mode=form_post` では
-/// パラメータをフォームの hidden フィールドへ載せる必要があり、完成した URL からは
-/// 「どこまでが RP のクエリでどこからが認可応答か」を復元できない（`redirect_uri` 自身が
-/// クエリを持ち得る）。呼び出し側は `query` のときだけ `location()` で URL へ畳む。
-pub fn code_response(session: &AuthSession, code: &str) -> AuthorizationResponse {
-    AuthorizationResponse::success(
-        &session.redirect_uri,
-        code,
-        &session.state,
-        session.response_mode,
-    )
-}
-
 /// `redirect_uri?code=...&state=...` を構築する（state は透過返却、設計仕様 §2.2）。
 ///
-/// `response_mode` を見ないため、認可セッションが手元にある経路では [`code_response`] を使う。
+/// `response_mode` を見ないため、認可セッションが手元にある経路では
+/// [`AuthorizationRequest::success_response`] を使う。
 pub fn code_redirect(redirect_uri: &str, code: &str, state: &str) -> String {
     append_query(redirect_uri, &[("code", code), ("state", state)])
 }
@@ -938,112 +791,6 @@ pub fn error_redirect_with_state(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::values::{ClientStatus, ClientType, TokenEndpointAuthMethod};
-    use chrono::Utc;
-
-    fn test_client() -> Client {
-        Client {
-            id: uuid::Uuid::new_v4(),
-            tenant_id: uuid::Uuid::now_v7().into(),
-            client_id: "app".to_string(),
-            client_secret_hash: None,
-            client_type: ClientType::Public,
-            client_status: ClientStatus::Active,
-            app_name: "App".to_string(),
-            redirect_uris: vec!["https://client.example.com/cb".to_string()],
-            grant_types: vec!["authorization_code".to_string()],
-            response_types: vec!["code".to_string()],
-            scopes: vec!["openid".to_string(), "email".to_string()],
-            token_endpoint_auth_method: TokenEndpointAuthMethod::None,
-            jwks: None,
-            post_logout_redirect_uris: vec![],
-            frontchannel_logout_uri: None,
-            backchannel_logout_uri: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        }
-    }
-
-    fn valid_request() -> AuthorizeRequest {
-        AuthorizeRequest {
-            response_type: Some("code".to_string()),
-            client_id: Some("app".to_string()),
-            redirect_uri: Some("https://client.example.com/cb".to_string()),
-            scope: Some("openid email".to_string()),
-            state: Some("xyz".to_string()),
-            nonce: Some("n-0S6_WzA2Mj".to_string()),
-            code_challenge: Some("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_string()),
-            code_challenge_method: Some("S256".to_string()),
-            prompt: None,
-            response_mode: None,
-            max_age: None,
-            acr_values: None,
-            login_hint: None,
-            ui_locales: None,
-        }
-    }
-
-    #[test]
-    fn accepts_a_valid_request() {
-        assert!(validate_request(&valid_request(), &test_client()).is_ok());
-    }
-
-    #[test]
-    fn rejects_missing_or_invalid_parameters() {
-        let client = test_client();
-
-        let mut req = valid_request();
-        req.response_type = Some("token".to_string());
-        assert_eq!(
-            validate_request(&req, &client).unwrap_err().0,
-            OAuthErrorCode::UnsupportedResponseType
-        );
-
-        let mut req = valid_request();
-        req.scope = Some("email".to_string()); // openid 無し
-        assert_eq!(
-            validate_request(&req, &client).unwrap_err().0,
-            OAuthErrorCode::InvalidScope
-        );
-
-        let mut req = valid_request();
-        req.scope = Some("openid profile".to_string()); // 登録外 scope
-        assert_eq!(
-            validate_request(&req, &client).unwrap_err().0,
-            OAuthErrorCode::InvalidScope
-        );
-
-        let mut req = valid_request();
-        req.state = None;
-        assert_eq!(
-            validate_request(&req, &client).unwrap_err().0,
-            OAuthErrorCode::InvalidRequest
-        );
-
-        // ⚠ **`nonce` は任意である**（ADR-0049）。無くても空でも通る
-        //   ——必須なのは implicit / hybrid で、このサーバは code しか受けない。
-        let mut req = valid_request();
-        req.nonce = None;
-        assert!(validate_request(&req, &client).is_ok());
-
-        let mut req = valid_request();
-        req.nonce = Some(String::new());
-        assert!(validate_request(&req, &client).is_ok());
-
-        let mut req = valid_request();
-        req.code_challenge_method = Some("plain".to_string());
-        assert_eq!(
-            validate_request(&req, &client).unwrap_err().0,
-            OAuthErrorCode::InvalidRequest
-        );
-
-        let mut req = valid_request();
-        req.code_challenge = None;
-        assert_eq!(
-            validate_request(&req, &client).unwrap_err().0,
-            OAuthErrorCode::InvalidRequest
-        );
-    }
 
     #[test]
     fn builds_redirect_urls_with_encoded_query() {
@@ -1060,43 +807,5 @@ mod tests {
         );
         assert!(location.contains("error=invalid_scope"));
         assert!(location.contains("state=xyz"));
-    }
-
-    #[test]
-    fn handle_validity_requires_both_hash_and_deadline() {
-        let now = Utc::now();
-        let mut session = AuthSession {
-            id_hash: auth_session::id_hash("s"),
-            acr_values: None,
-            login_hint: None,
-            ui_locales: None,
-            tenant_id: uuid::Uuid::now_v7().into(),
-            client_id: "app".to_string(),
-            redirect_uri: "https://client.example.com/cb".to_string(),
-            scope: vec!["openid".to_string()],
-            state: "xyz".to_string(),
-            nonce: "n".to_string(),
-            code_challenge: "c".to_string(),
-            code_challenge_method: CodeChallengeMethod::S256,
-            prompt: PromptSet::default(),
-            response_mode: crate::domain::response_mode::ResponseMode::Query,
-            max_age: None,
-            handle_hash: Some("h".to_string()),
-            handle_expires_at: Some(now + Duration::seconds(HANDLE_TTL_SECS)),
-            authenticated_user_id: None,
-            auth_time: None,
-            password_verified_at: None,
-            sso_sid: None,
-            authentication_methods: None,
-            expires_at: now + Duration::minutes(10),
-            created_at: now,
-            updated_at: now,
-        };
-        assert!(session.handle_is_valid_at(now));
-        // 期限切れは無効。
-        assert!(!session.handle_is_valid_at(now + Duration::seconds(HANDLE_TTL_SECS + 1)));
-        // 消費済み（NULL）は無効（単回使用）。
-        session.handle_hash = None;
-        assert!(!session.handle_is_valid_at(now));
     }
 }

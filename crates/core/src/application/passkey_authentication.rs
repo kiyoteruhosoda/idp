@@ -19,13 +19,14 @@
 
 use crate::application::application_access::ApplicationAccessService;
 use crate::application::audit::{AuditService, RequestContext};
-use crate::application::authorize::code_dispatch;
+use crate::application::authorize::AuthorizationDispatch;
 use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
+use crate::application::consent::consent_is_granted;
 use crate::application::passkey_assertion::{
     PasskeyAssertionError, PasskeyAssertionService, PasskeyFlow,
 };
 use crate::domain::audit::{AuditEventType, AuditResult};
-use crate::domain::auth_session;
+use crate::domain::auth_session::{AuthSessionIdHash, Authentication};
 use crate::domain::authentication_policy::{
     evaluate_policies, AuthenticationContext, PolicyDecision,
 };
@@ -198,9 +199,12 @@ impl PasskeyAuthenticationService {
             // `PasskeyFlow::Oidc` の検証を通った＝結合は必ずある。
             return PasskeyAuthOutcome::Internal("no auth_session_id in challenge".to_string());
         };
-        let session = match self
+        let mut session = match self
             .auth_sessions
-            .find_by_id_hash(tenant_id, auth_session_id_hash)
+            .find(
+                tenant_id,
+                &AuthSessionIdHash::from_stored(auth_session_id_hash.to_string()),
+            )
             .await
         {
             Ok(Some(s)) => s,
@@ -208,11 +212,11 @@ impl PasskeyAuthenticationService {
             Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
         };
         if session.is_expired_at(now) {
-            let _ = self.auth_sessions.delete(&session.id_hash).await;
+            let _ = self.auth_sessions.delete(session.id_hash()).await;
             return PasskeyAuthOutcome::SessionExpired;
         }
 
-        let client_id = session.client_id.clone();
+        let client_id = session.client_id().to_string();
 
         // 4. 認証ポリシー評価（仕様 §9）。`deny` はパスキー経路でも拒否する。
         //    `require_mfa` は WebAuthn（所有要素 + User Verification）が満たすため通過する。
@@ -243,7 +247,7 @@ impl PasskeyAuthenticationService {
                     user_id,
                     ip_address: ctx.ip_address.as_deref(),
                     now,
-                    requested_acr: &session.requested_acr(),
+                    requested_acr: &session.request().requested_acr(),
                 },
                 default_effect,
             ),
@@ -310,22 +314,17 @@ impl PasskeyAuthenticationService {
         );
 
         // 6. auth_time と `sid` を設定する（id も再生成する。SEC7）。
-        let rotated_id = crypto::random_hex(32);
-        let rotated_id_hash = auth_session::id_hash(&rotated_id);
-        if let Err(e) = self
-            .auth_sessions
-            .set_authenticated_user(
-                &session.id_hash,
-                &rotated_id_hash,
-                user_id,
-                now,
-                Some(&sso.sid()),
-                &sso.authentication_methods,
-            )
-            .await
-        {
+        let authentication = Authentication::new(
+            user_id,
+            now,
+            Some(sso.sid()),
+            Some(sso.authentication_methods.clone()),
+        );
+        let completion = session.complete_authentication(authentication.clone());
+        if let Err(e) = self.auth_sessions.save_authentication(&completion).await {
             return PasskeyAuthOutcome::Internal(e.to_string());
         }
+        let rotated_id = completion.into_issued().into_string();
 
         if let Err(e) = self.sso_sessions.create(&sso).await {
             return PasskeyAuthOutcome::Internal(e.to_string());
@@ -354,24 +353,16 @@ impl PasskeyAuthenticationService {
             .await;
 
         // 7. 同意チェック（`openid` は暗黙同意）。
-        let scopes_needing_consent: Vec<String> = session
-            .scope
-            .iter()
-            .filter(|s| s.as_str() != "openid")
-            .cloned()
-            .collect();
-        let consented = if scopes_needing_consent.is_empty() {
-            true
-        } else {
-            match self
-                .client_consents
-                .find(tenant_id, user_id, &client_id)
-                .await
-            {
-                Ok(Some(consent)) => consent.covers(&scopes_needing_consent),
-                Ok(None) => false,
-                Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
-            }
+        let consented = match consent_is_granted(
+            self.client_consents.as_ref(),
+            tenant_id,
+            user_id,
+            session.request(),
+        )
+        .await
+        {
+            Ok(granted) => granted,
+            Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
         };
 
         if !consented {
@@ -388,16 +379,8 @@ impl PasskeyAuthenticationService {
             .issue(
                 IssueCodeCommand {
                     tenant,
-                    user_id,
-                    client_id: client_id.clone(),
-                    redirect_uri: session.redirect_uri.clone(),
-                    scope: session.scope.clone(),
-                    nonce: session.nonce.clone(),
-                    auth_time: now,
-                    sid: Some(sso.sid()),
-                    authentication_methods: Some(sso.authentication_methods.clone()),
-                    code_challenge: session.code_challenge.clone(),
-                    code_challenge_method: session.code_challenge_method,
+                    request: session.request().clone(),
+                    authentication,
                 },
                 ctx,
             )
@@ -416,11 +399,11 @@ impl PasskeyAuthenticationService {
         };
 
         // 9. AuthSession を削除する。
-        if let Err(e) = self.auth_sessions.delete(&rotated_id_hash).await {
+        if let Err(e) = self.auth_sessions.delete(session.id_hash()).await {
             tracing::warn!(error = %e, "failed to delete auth session after passkey auth");
         }
 
-        let dispatch = code_dispatch(&session, &code);
+        let dispatch = AuthorizationDispatch::from(session.request().success_response(&code));
         PasskeyAuthOutcome::Success {
             location: dispatch.location,
             form_post: dispatch.form_post,

@@ -21,7 +21,7 @@
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authenticator_management::is_blocked_in_registry;
 use crate::domain::audit::{AuditEventType, AuditResult};
-use crate::domain::auth_session;
+use crate::domain::auth_session::AuthSessionIdHash;
 use crate::domain::clock::Clock;
 use crate::domain::passkey_challenge::{PasskeyChallenge, PasskeyChallengeType};
 use crate::domain::repositories::{
@@ -166,7 +166,8 @@ impl PasskeyAssertionService {
             user_id: None,
             challenge_type: flow.challenge_type(),
             state_json,
-            auth_session_id_hash: auth_session_id.map(auth_session::id_hash),
+            auth_session_id_hash: auth_session_id
+                .map(|id| AuthSessionIdHash::of_plain(id).into_string()),
             expires_at: now + Duration::from_std(CHALLENGE_TTL).unwrap(),
             created_at: now,
         };
