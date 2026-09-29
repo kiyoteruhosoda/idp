@@ -230,7 +230,7 @@ sequenceDiagram
 | [`docs/OIDC_INPUT.md`](docs/OIDC_INPUT.md) | 設計仕様（データモデル・API・トークン仕様・監査ログ） |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | レイヤー構成（DDD 4層）・実装パターン・命名規則 |
 | [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | 手順書（起動・マイグレーション・テスト・環境変数・クライアント登録） |
-| [`docs/Progress.md`](docs/Progress.md) | 進行中・未着手タスク |
+| [task #62](https://task.nolumia.com/issues/62) | 進行中・未着手タスク（nolumiatask） |
 | [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | 完了した変更の要約 |
 | [`docs/adr/`](docs/adr/) | 設計判断（ADR） |
 
