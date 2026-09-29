@@ -28,7 +28,10 @@ use crate::domain::application_log::{
     ApplicationLogEntry, ApplicationLogFilter, ApplicationLogRecord,
 };
 use crate::domain::audit::{AuditEvent, AuditLogEntry, AuditLogFilter};
-use crate::domain::auth_session::AuthSession;
+use crate::domain::auth_session::{
+    AuthSession, AuthSessionIdHash, AuthenticationCompletion, HandoffExchange, HandoffHandleHash,
+    PasswordVerification,
+};
 use crate::domain::authentication_policy::{AuthenticationPolicy, LockoutPolicy};
 use crate::domain::authorization_code::AuthorizationCode;
 use crate::domain::backchannel_logout::BackchannelLogoutDelivery;
@@ -654,81 +657,48 @@ pub trait SamlSsoRequestRepository: Send + Sync {
     async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64>;
 }
 
-/// 認可フローの一時状態（`/authorize` 〜 `/login` 完了）の永続化。
+/// AuthSession 集約（`/authorize` 〜 code 発行の一時状態）の永続化。
 ///
-/// **本トレイトは `auth_session_id` の平文を一切受け取らない。** 引数の `id_hash` は
-/// [`crate::domain::auth_session::id_hash`] で導出した SHA-256 で、平文は Application 層より
-/// 上（web の Cookie・ハンドオフ）にしか存在しない（SEC6）。平文を渡す口を作らないことで、
-/// 「うっかり生値を保存する」経路を型の上で塞いでいる。
+/// **本トレイトは `auth_session_id` の平文を一切受け取らない。** 受け取るのは
+/// [`AuthSessionIdHash`] だけで、平文は Application 層より上（web の Cookie・ハンドオフ）にしか
+/// 存在しない（SEC6）。平文を渡す口を作らないことで、「うっかり生値を保存する」経路を型の上で
+/// 塞いでいる。
+///
+/// 状態の変更は集約が返した変更（[`HandoffExchange`] など）を受け取り、**1 文で**書く。どの変更も
+/// id の付け替え（SEC7）を含むので、別文に分けると「状態は進んだのに旧い id がまだ引ける瞬間」が
+/// できる。
 #[async_trait]
 pub trait AuthSessionRepository: Send + Sync {
     async fn create(&self, session: &AuthSession) -> Result<()>;
     /// フローを開始したテナントの auth session のみ返す（他テナントの session id を
     /// 持ち込んでも解決させない）。
-    async fn find_by_id_hash(
+    async fn find(
         &self,
         tenant_id: TenantId,
-        id_hash: &str,
+        id: &AuthSessionIdHash,
     ) -> Result<Option<AuthSession>>;
-    /// web ハンドオフ用ハンドル（SHA-256）で auth session を引く（ADR-0018 決定 2）。
-    /// `find_by_id_hash` と同じくフローのテナントに限定する。期限・消費済み判定は Application 層が行う。
-    async fn find_by_handle(
+    /// web ハンドオフ用ハンドルで auth session を引く（ADR-0018 決定 2）。[`Self::find`] と同じく
+    /// フローのテナントに限定する。期限・交換済みの判定は集約（[`AuthSession::exchange_handoff`]）が行う。
+    async fn find_by_handoff(
         &self,
         tenant_id: TenantId,
-        handle_hash: &str,
+        handle: &HandoffHandleHash,
     ) -> Result<Option<AuthSession>>;
-    /// ハンドルを単回使用として消費し（`handle_hash` を NULL 化）、**同時に id を
-    /// `new_id_hash` へ再生成する**。すでに消費済み（並行交換に負けた・再利用）なら `false` を返す。
+    /// ハンドルを単回使用として消費し、同じ文で id を付け替える。すでに消費済み（並行交換に
+    /// 負けた・再利用）なら `false` を返す（勝った側だけが新しい id を得る）。
+    async fn save_handoff_exchange(&self, exchange: &HandoffExchange) -> Result<bool>;
+    /// パスワード検証（第二段待ち）を記録し、同じ文で id を付け替える。
     ///
-    /// 交換と再生成を 1 文にまとめてあるのは、ハンドル経路では平文 id が手元に無いためである。
-    /// DB にはハッシュしか無く（SEC6）平文へ戻せないので、ハンドルを渡した web へ返す
-    /// `auth_session_id` は交換の時点で新しく作るしかない。ハンドル自体が単回使用なので、
-    /// この再生成はフロー 1 本につき 1 回だけ起きる。
-    async fn consume_handle(
-        &self,
-        id_hash: &str,
-        handle_hash: &str,
-        new_id_hash: &str,
-    ) -> Result<bool>;
-    /// 認証済みユーザーと `auth_time`、確立した SSO セッションの `sid` を設定し、**同時に id を
-    /// `new_id_hash` へ再生成する**（`/login` 成功時。SEC7）。
+    /// ⚠ 前に記録されていた認証（`auth_time`・`sid`・認証方式）は**消す**
+    /// （[`AuthSession::record_password_verification`]）。
+    async fn save_password_verification(&self, verification: &PasswordVerification) -> Result<()>;
+    /// 認証の完了を記録し、同じ文で id を付け替える（`/login` 成功時など。SEC7）。
     ///
-    /// `sso_sid` は同意画面を挟む経路（`ConsentService::approve`）が code 発行時に読む（G5）。
-    /// 認証と code 発行が別リクエストに分かれ、その時点では SSO Cookie が手元に無いため、
-    /// ここで auth_session へ預ける。
-    ///
-    /// id の再生成（セッション固定攻撃対策）を独立したメソッドにせず記録と 1 文にまとめてあるのは、
-    /// 「認証前に発行した Cookie 値が認証後も通る瞬間」を作らないためである。`sso_session_id` は
-    /// ログインのたびに再生成しており（`SsoSession::establish`）、それと非対称にしない。
-    ///
-    /// `methods` は実際に検証された認証方式（ADR-0043）。code 発行まで持ち回すために
-    /// ここで記録する ——同意画面を挟む経路では、code 発行の時点で「何で認証したか」が
-    /// 手元に残らない。
-    async fn set_authenticated_user(
-        &self,
-        id_hash: &str,
-        new_id_hash: &str,
-        user_id: Uuid,
-        auth_time: DateTime<Utc>,
-        sso_sid: Option<&str>,
-        methods: &[AuthenticationMethod],
-    ) -> Result<()>;
-    /// パスワード検証成功後に MFA pending 状態を記録し（`password_verified_at` を設定）、
-    /// **同時に id を `new_id_hash` へ再生成する**（SEC7。理由は
-    /// [`set_authenticated_user`](Self::set_authenticated_user) 参照）。
-    ///
-    /// ⚠ **前に記録されていた認証（`auth_time`・`sso_sid`・`authentication_methods`）は消す。**
-    /// 同じ認可セッションで先に誰かの認証が完了していても、ここで認証をやり直した以上、前の認証は
-    /// もうこのフローの根拠ではない。残すと、第二段（MFA・パスワード変更）を済ませていない利用者に
-    /// 同意の承諾（`ConsentService::approve`）が code を発行してしまう。
-    async fn set_password_verified(
-        &self,
-        id_hash: &str,
-        new_id_hash: &str,
-        user_id: Uuid,
-        verified_at: DateTime<Utc>,
-    ) -> Result<()>;
-    async fn delete(&self, id_hash: &str) -> Result<()>;
+    /// `sid` と認証方式は同意画面を挟む経路（`ConsentService::approve`）が code 発行時に読む
+    /// （G5・ADR-0043）。認証と code 発行が別リクエストに分かれ、その時点では SSO Cookie も
+    /// 「何で認証したか」も手元に無いため、ここで auth_session へ預ける。
+    async fn save_authentication(&self, completion: &AuthenticationCompletion) -> Result<()>;
+    async fn delete(&self, id: &AuthSessionIdHash) -> Result<()>;
     /// 期限切れの行を削除し、削除件数を返す（G2 の一括 GC から呼ぶ）。
     async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64>;
 }

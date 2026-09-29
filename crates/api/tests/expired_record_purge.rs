@@ -91,10 +91,11 @@ async fn only_expired_rows_are_deleted() {
 
 /// `auth_sessions` に 1 行入れて、その `id_hash` を返す（`expires_at` は現在から `offset_secs` 秒後）。
 async fn insert_auth_session(env: &support::TestEnv, client_id: &str, offset_secs: i64) -> String {
-    let id_hash = assay_api::domain::auth_session::id_hash(&format!(
+    let id_hash = assay_api::domain::auth_session::AuthSessionIdHash::of_plain(&format!(
         "purge-test-{}-{offset_secs}",
         uuid::Uuid::now_v7()
-    ));
+    ))
+    .into_string();
     sqlx::query(
         "INSERT INTO auth_sessions \
          (id_hash, tenant_id, client_id, redirect_uri, scope, state, nonce, code_challenge, \

@@ -12,6 +12,7 @@ pub mod audit;
 pub mod auth_session;
 pub mod authentication_policy;
 pub mod authorization_code;
+pub mod authorization_request;
 pub mod backchannel_logout;
 pub mod cache;
 pub mod client;

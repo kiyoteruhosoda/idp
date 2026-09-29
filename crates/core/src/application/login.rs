@@ -18,12 +18,13 @@
 
 use crate::application::application_access::ApplicationAccessService;
 use crate::application::audit::{AuditService, RequestContext};
-use crate::application::authorize::code_dispatch;
+use crate::application::authorize::AuthorizationDispatch;
 use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
+use crate::application::consent::consent_is_granted;
 use crate::application::login_user_resolution::resolve_login_user;
 use crate::application::mfa_login::user_has_confirmed_totp;
 use crate::domain::audit::{AuditEventType, AuditResult};
-use crate::domain::auth_session;
+use crate::domain::auth_session::{AuthSessionIdHash, Authentication};
 use crate::domain::authentication_policy::{
     evaluate_policies, AuthenticationContext, PolicyDecision,
 };
@@ -207,11 +208,11 @@ impl LoginService {
             );
             return LoginOutcome::SessionExpired;
         };
-        // 認証成功時に id を再生成する（SEC7）ため mut。以降 `session.id_hash` は常に「今この
+        // 認証成功時に id を再生成する（SEC7）ため mut。以降 `session.id_hash()` は常に「今この
         // ブラウザが持つべき値」のハッシュを指す。
         let mut session = match self
             .auth_sessions
-            .find_by_id_hash(tenant_id, &auth_session::id_hash(session_id))
+            .find(tenant_id, &AuthSessionIdHash::of_plain(session_id))
             .await
         {
             Ok(Some(s)) => s,
@@ -225,7 +226,7 @@ impl LoginService {
             Err(e) => return LoginOutcome::Internal(e.to_string()),
         };
         if session.is_expired_at(now) {
-            let _ = self.auth_sessions.delete(&session.id_hash).await;
+            let _ = self.auth_sessions.delete(session.id_hash()).await;
             tracing::warn!(
                 correlation_id = %ctx.correlation_id,
                 "login rejected: auth session expired"
@@ -245,7 +246,7 @@ impl LoginService {
                     AuditResult::Failure,
                     Some(tenant_id),
                     None,
-                    Some(&session.client_id),
+                    Some(session.client_id()),
                     Some("csrf_mismatch"),
                     ctx,
                 )
@@ -253,7 +254,7 @@ impl LoginService {
             return LoginOutcome::CsrfMismatch;
         }
 
-        let client_id = session.client_id.clone();
+        let client_id = session.client_id().to_string();
 
         // 3. IP 単位のレート制限。
         if let Some(ip) = &ctx.ip_address {
@@ -377,7 +378,7 @@ impl LoginService {
         //      評価する（資格情報を知らない攻撃者にポリシーの存在・内容を観測させない）。
         //      `deny` は即拒否。`require_mfa` は後段の MFA 判定（9.）で強制する。
         // 認可要求の `acr_values`（AP3 の `requested_acr` 条件が参照する）。
-        let requested_acr = session.requested_acr();
+        let requested_acr = session.request().requested_acr();
         // 認証ポリシーの宛先はアプリ（ADR-0054 の決定 5）。フローが持っているのは `client_id`
         // だけなので、ここでアプリへ読み替える。まだアプリへ繋がっていない client は `None` で、
         // `application_ids` を持つポリシーは一致しない。
@@ -439,21 +440,16 @@ impl LoginService {
             Err(e) => return LoginOutcome::Internal(e.to_string()),
         };
         if password_change_required(&user, &password_policy, now) {
-            let rotated_id = crypto::random_hex(32);
+            let verification = session.record_password_verification(user.id, now);
             if let Err(e) = self
                 .auth_sessions
-                .set_password_verified(
-                    &session.id_hash,
-                    &auth_session::id_hash(&rotated_id),
-                    user.id,
-                    now,
-                )
+                .save_password_verification(&verification)
                 .await
             {
                 return LoginOutcome::Internal(e.to_string());
             }
             return LoginOutcome::PasswordChangeRequired {
-                auth_session_id: rotated_id,
+                auth_session_id: verification.into_issued().into_string(),
             };
         }
 
@@ -467,21 +463,16 @@ impl LoginService {
         };
         if has_totp {
             // パスワード検証成功を AuthSession に記録（MFA pending 状態）。id も再生成する（SEC7）。
-            let rotated_id = crypto::random_hex(32);
+            let verification = session.record_password_verification(user.id, now);
             if let Err(e) = self
                 .auth_sessions
-                .set_password_verified(
-                    &session.id_hash,
-                    &auth_session::id_hash(&rotated_id),
-                    user.id,
-                    now,
-                )
+                .save_password_verification(&verification)
                 .await
             {
                 return LoginOutcome::Internal(e.to_string());
             }
             return LoginOutcome::MfaRequired {
-                auth_session_id: rotated_id,
+                auth_session_id: verification.into_issued().into_string(),
             };
         }
         if let PolicyDecision::RequireMfa { policy_code } = &policy_decision {
@@ -576,42 +567,29 @@ impl LoginService {
             .await;
 
         // 10. AuthSession に認証結果を記録する（id も再生成する。SEC7）。
-        let rotated_id = crypto::random_hex(32);
-        if let Err(e) = self
-            .auth_sessions
-            .set_authenticated_user(
-                &session.id_hash,
-                &auth_session::id_hash(&rotated_id),
-                user.id,
-                now,
-                Some(&sso.sid()),
-                &sso.authentication_methods,
-            )
-            .await
-        {
+        let authentication = Authentication::new(
+            user.id,
+            now,
+            Some(sso.sid()),
+            Some(sso.authentication_methods.clone()),
+        );
+        let completion = session.complete_authentication(authentication.clone());
+        if let Err(e) = self.auth_sessions.save_authentication(&completion).await {
             return LoginOutcome::Internal(e.to_string());
         }
-        session.id_hash = auth_session::id_hash(&rotated_id);
+        let rotated_id = completion.into_issued().into_string();
 
         // 11. 同意チェック（`openid` は暗黙同意）。
-        let scopes_needing_consent: Vec<String> = session
-            .scope
-            .iter()
-            .filter(|s| s.as_str() != "openid")
-            .cloned()
-            .collect();
-        let consented = if scopes_needing_consent.is_empty() {
-            true
-        } else {
-            match self
-                .client_consents
-                .find(tenant_id, user.id, &client_id)
-                .await
-            {
-                Ok(Some(consent)) => consent.covers(&scopes_needing_consent),
-                Ok(None) => false,
-                Err(e) => return LoginOutcome::Internal(e.to_string()),
-            }
+        let consented = match consent_is_granted(
+            self.client_consents.as_ref(),
+            tenant_id,
+            user.id,
+            session.request(),
+        )
+        .await
+        {
+            Ok(granted) => granted,
+            Err(e) => return LoginOutcome::Internal(e.to_string()),
         };
 
         if !consented {
@@ -629,16 +607,8 @@ impl LoginService {
             .issue(
                 IssueCodeCommand {
                     tenant,
-                    user_id: user.id,
-                    client_id: client_id.clone(),
-                    redirect_uri: session.redirect_uri.clone(),
-                    scope: session.scope.clone(),
-                    nonce: session.nonce.clone(),
-                    auth_time: now,
-                    sid: Some(sso.sid()),
-                    authentication_methods: Some(sso.authentication_methods.clone()),
-                    code_challenge: session.code_challenge.clone(),
-                    code_challenge_method: session.code_challenge_method,
+                    request: session.request().clone(),
+                    authentication,
                 },
                 ctx,
             )
@@ -657,11 +627,11 @@ impl LoginService {
         };
 
         // 13. AuthSession を削除する（Cookie 失効はハンドラが行う）。
-        if let Err(e) = self.auth_sessions.delete(&session.id_hash).await {
+        if let Err(e) = self.auth_sessions.delete(session.id_hash()).await {
             tracing::warn!(error = %e, "failed to delete auth session after code issuance");
         }
 
-        let dispatch = code_dispatch(&session, &code);
+        let dispatch = AuthorizationDispatch::from(session.request().success_response(&code));
         LoginOutcome::Success {
             location: dispatch.location,
             form_post: dispatch.form_post,
@@ -724,7 +694,6 @@ impl LoginService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Duration;
 
     #[test]
     fn csrf_token_is_deterministic_and_session_bound() {
@@ -739,14 +708,15 @@ mod tests {
 
     // ── SEC3: MFA 待ちのパスワード成功では失敗カウンタを消さない ──────────────
 
-    use crate::domain::auth_session::AuthSession;
     use crate::domain::authentication_policy::AuthenticationPolicy;
     use crate::domain::authorization_code::AuthorizationCode;
     use crate::domain::consent::ClientConsent;
     use crate::domain::error::{DomainError, Result as DomainResult};
     use crate::domain::repositories::{AuditLogSink, AuthorizationCodeRepository};
     use crate::domain::totp_secret::TotpSecret;
-    use crate::domain::values::{CodeChallengeMethod, UserStatus};
+    use crate::domain::values::UserStatus;
+    use crate::domain::{auth_session, authorization_request};
+    use crate::infrastructure::repositories::in_memory_auth_session::InMemoryAuthSessions;
     use async_trait::async_trait;
     use chrono::{DateTime, TimeZone, Utc};
     use std::sync::Mutex;
@@ -789,83 +759,6 @@ mod tests {
     impl AuditLogSink for DiscardingSink {
         async fn record(&self, _event: &crate::domain::audit::AuditEvent) -> DomainResult<()> {
             Ok(())
-        }
-    }
-
-    struct FakeAuthSessions {
-        rows: Mutex<Vec<AuthSession>>,
-    }
-    #[async_trait]
-    impl AuthSessionRepository for FakeAuthSessions {
-        async fn create(&self, _s: &AuthSession) -> DomainResult<()> {
-            unreachable!()
-        }
-        async fn find_by_id_hash(
-            &self,
-            t: TenantId,
-            id_hash: &str,
-        ) -> DomainResult<Option<AuthSession>> {
-            Ok(self
-                .rows
-                .lock()
-                .unwrap()
-                .iter()
-                .find(|s| s.tenant_id == t && s.id_hash == id_hash)
-                .cloned())
-        }
-        async fn find_by_handle(
-            &self,
-            _t: TenantId,
-            _h: &str,
-        ) -> DomainResult<Option<AuthSession>> {
-            unreachable!()
-        }
-        async fn consume_handle(&self, _id: &str, _h: &str, _n: &str) -> DomainResult<bool> {
-            unreachable!()
-        }
-        async fn set_authenticated_user(
-            &self,
-            id_hash: &str,
-            new_id_hash: &str,
-            user_id: Uuid,
-            auth_time: DateTime<Utc>,
-            sso_sid: Option<&str>,
-            methods: &[AuthenticationMethod],
-        ) -> DomainResult<()> {
-            let mut rows = self.rows.lock().unwrap();
-            if let Some(row) = rows.iter_mut().find(|s| s.id_hash == id_hash) {
-                row.id_hash = new_id_hash.to_string();
-                row.authenticated_user_id = Some(user_id);
-                row.auth_time = Some(auth_time);
-                row.sso_sid = sso_sid.map(str::to_string);
-                row.authentication_methods = Some(methods.to_vec());
-            }
-            Ok(())
-        }
-        async fn set_password_verified(
-            &self,
-            id_hash: &str,
-            new_id_hash: &str,
-            user_id: Uuid,
-            verified_at: DateTime<Utc>,
-        ) -> DomainResult<()> {
-            let mut rows = self.rows.lock().unwrap();
-            if let Some(row) = rows.iter_mut().find(|s| s.id_hash == id_hash) {
-                row.id_hash = new_id_hash.to_string();
-                row.authenticated_user_id = Some(user_id);
-                row.password_verified_at = Some(verified_at);
-                row.auth_time = None;
-                row.sso_sid = None;
-                row.authentication_methods = None;
-            }
-            Ok(())
-        }
-        async fn delete(&self, id_hash: &str) -> DomainResult<()> {
-            self.rows.lock().unwrap().retain(|s| s.id_hash != id_hash);
-            Ok(())
-        }
-        async fn delete_expired(&self, _now: DateTime<Utc>) -> DomainResult<u64> {
-            unreachable!()
         }
     }
 
@@ -1105,7 +998,7 @@ mod tests {
     struct Harness {
         service: LoginService,
         users: Arc<FakeUsers>,
-        auth_sessions: Arc<FakeAuthSessions>,
+        auth_sessions: Arc<InMemoryAuthSessions>,
         tenant: TenantContext,
         user_id: Uuid,
     }
@@ -1137,35 +1030,17 @@ mod tests {
             updated_at: now(),
         });
 
-        let auth_sessions = Arc::new(FakeAuthSessions {
-            rows: Mutex::new(vec![AuthSession {
-                id_hash: auth_session::id_hash(SESSION_ID),
-                acr_values: None,
-                login_hint: None,
-                ui_locales: None,
+        let auth_sessions = Arc::new(InMemoryAuthSessions::with(vec![
+            auth_session::test_support::awaiting_login(
                 tenant_id,
-                client_id: "client-a".to_string(),
-                redirect_uri: "https://rp.example.com/cb".to_string(),
-                scope: vec!["openid".to_string()],
-                state: "state-1".to_string(),
-                nonce: "nonce-1".to_string(),
-                code_challenge: "challenge".to_string(),
-                code_challenge_method: CodeChallengeMethod::S256,
-                prompt: crate::domain::values::PromptSet::default(),
-                response_mode: crate::domain::response_mode::ResponseMode::Query,
-                max_age: None,
-                handle_hash: None,
-                handle_expires_at: None,
-                authenticated_user_id: None,
-                auth_time: None,
-                password_verified_at: None,
-                sso_sid: None,
-                authentication_methods: None,
-                expires_at: now() + Duration::seconds(600),
-                created_at: now(),
-                updated_at: now(),
-            }]),
-        });
+                SESSION_ID,
+                authorization_request::test_support::request(
+                    "client-a",
+                    "https://rp.example.com/cb",
+                ),
+                now(),
+            ),
+        ]));
 
         let clock: Arc<dyn Clock> = Arc::new(FixedClock);
         let audit = Arc::new(AuditService::new(Arc::new(DiscardingSink), clock.clone()));
@@ -1233,7 +1108,7 @@ mod tests {
 
         /// 保存されている auth_session の現在の id_hash。
         fn stored_session_id_hash(&self) -> String {
-            self.auth_sessions.rows.lock().unwrap()[0].id_hash.clone()
+            self.auth_sessions.rows()[0].id_hash().as_str().to_string()
         }
     }
 
@@ -1259,7 +1134,7 @@ mod tests {
         assert_ne!(auth_session_id, SESSION_ID, "認証前の値を使い回さない");
         assert_eq!(
             h.stored_session_id_hash(),
-            auth_session::id_hash(&auth_session_id),
+            AuthSessionIdHash::of_plain(&auth_session_id).into_string(),
             "DB 側も新しい id のハッシュに置き換わり、旧 id では引けない"
         );
         assert_ne!(
@@ -1277,7 +1152,7 @@ mod tests {
         let h = harness(false, 0);
         assert!(matches!(h.login().await, LoginOutcome::Success { .. }));
         assert!(
-            h.auth_sessions.rows.lock().unwrap().is_empty(),
+            h.auth_sessions.rows().is_empty(),
             "code 発行後に auth_session が残っている = 再生成した id で削除できていない"
         );
     }

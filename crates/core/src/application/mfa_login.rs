@@ -21,11 +21,12 @@ use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authenticator_management::{
     consume_single_use_code, is_blocked_in_registry,
 };
-use crate::application::authorize::code_dispatch;
+use crate::application::authorize::AuthorizationDispatch;
 use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
+use crate::application::consent::consent_is_granted;
 use crate::application::totp_registration::verify_totp_code;
 use crate::domain::audit::{AuditEventType, AuditResult};
-use crate::domain::auth_session;
+use crate::domain::auth_session::{AuthSessionIdHash, Authentication};
 use crate::domain::authentication_policy::{
     evaluate_policies, AuthenticationContext, PolicyDecision,
 };
@@ -176,9 +177,9 @@ impl MfaLoginService {
         let Some(session_id) = cmd.auth_session_id.as_deref().filter(|s| !s.is_empty()) else {
             return MfaLoginOutcome::SessionExpired;
         };
-        let session = match self
+        let mut session = match self
             .auth_sessions
-            .find_by_id_hash(tenant_id, &auth_session::id_hash(session_id))
+            .find(tenant_id, &AuthSessionIdHash::of_plain(session_id))
             .await
         {
             Ok(Some(s)) => s,
@@ -186,17 +187,14 @@ impl MfaLoginService {
             Err(e) => return MfaLoginOutcome::Internal(e.to_string()),
         };
         if session.is_expired_at(now) {
-            let _ = self.auth_sessions.delete(&session.id_hash).await;
+            let _ = self.auth_sessions.delete(session.id_hash()).await;
             return MfaLoginOutcome::SessionExpired;
         }
 
         // 2. MFA pending 状態か確認する（password_verified_at が設定されている必要がある）。
-        let Some(user_id) = session.authenticated_user_id else {
+        let Some(user_id) = session.password_verified_user() else {
             return MfaLoginOutcome::SessionExpired;
         };
-        if session.password_verified_at.is_none() {
-            return MfaLoginOutcome::SessionExpired;
-        }
 
         // 3. CSRF トークン検証（login_csrf_token と同じ導出を使う）。
         if !assay_contracts::csrf::verify(
@@ -206,7 +204,7 @@ impl MfaLoginService {
             return MfaLoginOutcome::CsrfMismatch;
         }
 
-        let client_id = session.client_id.clone();
+        let client_id = session.client_id().to_string();
 
         // 4. IP 単位のレート制限（SEC3）。パスワード認証と同じ枠を消費するため、窃取済み資格情報で
         //    ログインしてから TOTP を叩き続ける経路にも同じ上限が掛かる。
@@ -293,7 +291,7 @@ impl MfaLoginService {
                     user_id,
                     ip_address: ctx.ip_address.as_deref(),
                     now,
-                    requested_acr: &session.requested_acr(),
+                    requested_acr: &session.request().requested_acr(),
                 },
                 default_effect,
             ),
@@ -344,22 +342,17 @@ impl MfaLoginService {
         );
 
         // 9. auth_time と `sid` を設定する（MFA 完了時刻を認証時刻とする）。id も再生成する（SEC7）。
-        let rotated_id = crypto::random_hex(32);
-        let rotated_id_hash = auth_session::id_hash(&rotated_id);
-        if let Err(e) = self
-            .auth_sessions
-            .set_authenticated_user(
-                &session.id_hash,
-                &rotated_id_hash,
-                user_id,
-                now,
-                Some(&sso.sid()),
-                &sso.authentication_methods,
-            )
-            .await
-        {
+        let authentication = Authentication::new(
+            user_id,
+            now,
+            Some(sso.sid()),
+            Some(sso.authentication_methods.clone()),
+        );
+        let completion = session.complete_authentication(authentication.clone());
+        if let Err(e) = self.auth_sessions.save_authentication(&completion).await {
             return MfaLoginOutcome::Internal(e.to_string());
         }
+        let rotated_id = completion.into_issued().into_string();
 
         if let Err(e) = self.sso_sessions.create(&sso).await {
             return MfaLoginOutcome::Internal(e.to_string());
@@ -388,24 +381,16 @@ impl MfaLoginService {
             .await;
 
         // 10. 同意チェック（`openid` は暗黙同意）。
-        let scopes_needing_consent: Vec<String> = session
-            .scope
-            .iter()
-            .filter(|s| s.as_str() != "openid")
-            .cloned()
-            .collect();
-        let consented = if scopes_needing_consent.is_empty() {
-            true
-        } else {
-            match self
-                .client_consents
-                .find(tenant_id, user_id, &client_id)
-                .await
-            {
-                Ok(Some(consent)) => consent.covers(&scopes_needing_consent),
-                Ok(None) => false,
-                Err(e) => return MfaLoginOutcome::Internal(e.to_string()),
-            }
+        let consented = match consent_is_granted(
+            self.client_consents.as_ref(),
+            tenant_id,
+            user_id,
+            session.request(),
+        )
+        .await
+        {
+            Ok(granted) => granted,
+            Err(e) => return MfaLoginOutcome::Internal(e.to_string()),
         };
 
         if !consented {
@@ -422,16 +407,8 @@ impl MfaLoginService {
             .issue(
                 IssueCodeCommand {
                     tenant,
-                    user_id,
-                    client_id: client_id.clone(),
-                    redirect_uri: session.redirect_uri.clone(),
-                    scope: session.scope.clone(),
-                    nonce: session.nonce.clone(),
-                    auth_time: now,
-                    sid: Some(sso.sid()),
-                    authentication_methods: Some(sso.authentication_methods.clone()),
-                    code_challenge: session.code_challenge.clone(),
-                    code_challenge_method: session.code_challenge_method,
+                    request: session.request().clone(),
+                    authentication,
                 },
                 ctx,
             )
@@ -450,11 +427,11 @@ impl MfaLoginService {
         };
 
         // 12. AuthSession を削除する。
-        if let Err(e) = self.auth_sessions.delete(&rotated_id_hash).await {
+        if let Err(e) = self.auth_sessions.delete(session.id_hash()).await {
             tracing::warn!(error = %e, "failed to delete auth session after MFA code issuance");
         }
 
-        let dispatch = code_dispatch(&session, &code);
+        let dispatch = AuthorizationDispatch::from(session.request().success_response(&code));
         MfaLoginOutcome::Success {
             location: dispatch.location,
             form_post: dispatch.form_post,
@@ -477,14 +454,17 @@ impl MfaLoginService {
         let now = self.clock.now();
         let session = self
             .auth_sessions
-            .find_by_id_hash(tenant.tenant_id(), &auth_session::id_hash(auth_session_id))
+            .find(
+                tenant.tenant_id(),
+                &AuthSessionIdHash::of_plain(auth_session_id),
+            )
             .await
             .ok()
             .flatten()?;
-        if session.is_expired_at(now) || session.password_verified_at.is_none() {
+        if session.is_expired_at(now) {
             return None;
         }
-        session.authenticated_user_id
+        session.password_verified_user()
     }
 
     /// 第二要素を検証する（AP9）。通ったら、記録すべき認証方式を返す。どれにも一致しなければ
@@ -641,12 +621,15 @@ impl MfaLoginService {
     pub async fn has_mfa_pending(&self, tenant: TenantContext, auth_session_id: &str) -> bool {
         let Ok(Some(session)) = self
             .auth_sessions
-            .find_by_id_hash(tenant.tenant_id(), &auth_session::id_hash(auth_session_id))
+            .find(
+                tenant.tenant_id(),
+                &AuthSessionIdHash::of_plain(auth_session_id),
+            )
             .await
         else {
             return false;
         };
-        session.password_verified_at.is_some() && session.authenticated_user_id.is_some()
+        session.password_verified_user().is_some()
     }
 }
 
@@ -670,14 +653,15 @@ mod tests {
     //! テストだけは同じパラメータで現在のコードを生成して渡す。失敗パスは固定の不正コードで足りる。
 
     use super::*;
-    use crate::domain::auth_session::AuthSession;
     use crate::domain::authorization_code::AuthorizationCode;
     use crate::domain::clock::Clock as ClockTrait;
     use crate::domain::consent::ClientConsent;
     use crate::domain::error::Result as DomainResult;
     use crate::domain::repositories::AuditLogSink;
     use crate::domain::totp_secret::TotpSecret;
-    use crate::domain::values::{CodeChallengeMethod, UserStatus};
+    use crate::domain::values::UserStatus;
+    use crate::domain::{auth_session, authorization_request};
+    use crate::infrastructure::repositories::in_memory_auth_session::InMemoryAuthSessions;
     use async_trait::async_trait;
     use chrono::Duration;
     use chrono::{DateTime, TimeZone, Utc};
@@ -768,74 +752,6 @@ mod tests {
             unreachable!()
         }
         async fn delete(&self, _t: TenantId, _id: Uuid) -> DomainResult<bool> {
-            unreachable!()
-        }
-    }
-
-    struct FakeAuthSessions {
-        rows: Mutex<Vec<AuthSession>>,
-    }
-    #[async_trait]
-    impl AuthSessionRepository for FakeAuthSessions {
-        async fn create(&self, _s: &AuthSession) -> DomainResult<()> {
-            unreachable!()
-        }
-        async fn find_by_id_hash(
-            &self,
-            t: TenantId,
-            id_hash: &str,
-        ) -> DomainResult<Option<AuthSession>> {
-            Ok(self
-                .rows
-                .lock()
-                .unwrap()
-                .iter()
-                .find(|s| s.tenant_id == t && s.id_hash == id_hash)
-                .cloned())
-        }
-        async fn find_by_handle(
-            &self,
-            _t: TenantId,
-            _h: &str,
-        ) -> DomainResult<Option<AuthSession>> {
-            unreachable!()
-        }
-        async fn consume_handle(&self, _id: &str, _h: &str, _n: &str) -> DomainResult<bool> {
-            unreachable!()
-        }
-        async fn set_authenticated_user(
-            &self,
-            id_hash: &str,
-            new_id_hash: &str,
-            user_id: Uuid,
-            auth_time: DateTime<Utc>,
-            sso_sid: Option<&str>,
-            methods: &[AuthenticationMethod],
-        ) -> DomainResult<()> {
-            let mut rows = self.rows.lock().unwrap();
-            if let Some(row) = rows.iter_mut().find(|s| s.id_hash == id_hash) {
-                row.id_hash = new_id_hash.to_string();
-                row.authenticated_user_id = Some(user_id);
-                row.auth_time = Some(auth_time);
-                row.sso_sid = sso_sid.map(str::to_string);
-                row.authentication_methods = Some(methods.to_vec());
-            }
-            Ok(())
-        }
-        async fn set_password_verified(
-            &self,
-            _id: &str,
-            _new_id: &str,
-            _u: Uuid,
-            _v: DateTime<Utc>,
-        ) -> DomainResult<()> {
-            unreachable!()
-        }
-        async fn delete(&self, id_hash: &str) -> DomainResult<()> {
-            self.rows.lock().unwrap().retain(|s| s.id_hash != id_hash);
-            Ok(())
-        }
-        async fn delete_expired(&self, _now: DateTime<Utc>) -> DomainResult<u64> {
             unreachable!()
         }
     }
@@ -1125,35 +1041,18 @@ mod tests {
                 updated_at: now(),
             });
 
-            let auth_sessions = Arc::new(FakeAuthSessions {
-                rows: Mutex::new(vec![AuthSession {
-                    id_hash: auth_session::id_hash(SESSION_ID),
-                    acr_values: None,
-                    login_hint: None,
-                    ui_locales: None,
+            let auth_sessions = Arc::new(InMemoryAuthSessions::with(vec![
+                auth_session::test_support::awaiting_second_step(
                     tenant_id,
-                    client_id: CLIENT_ID.to_string(),
-                    redirect_uri: "https://rp.example.com/cb".to_string(),
-                    scope: vec!["openid".to_string()],
-                    state: "state-1".to_string(),
-                    nonce: "nonce-1".to_string(),
-                    code_challenge: "challenge".to_string(),
-                    code_challenge_method: CodeChallengeMethod::S256,
-                    prompt: crate::domain::values::PromptSet::default(),
-                    response_mode: crate::domain::response_mode::ResponseMode::Query,
-                    max_age: None,
-                    handle_hash: None,
-                    handle_expires_at: None,
-                    authenticated_user_id: Some(user_id),
-                    auth_time: None,
-                    password_verified_at: Some(now()),
-                    sso_sid: None,
-                    authentication_methods: None,
-                    expires_at: now() + Duration::seconds(600),
-                    created_at: now(),
-                    updated_at: now(),
-                }]),
-            });
+                    SESSION_ID,
+                    authorization_request::test_support::request(
+                        CLIENT_ID,
+                        "https://rp.example.com/cb",
+                    ),
+                    user_id,
+                    now(),
+                ),
+            ]));
 
             let totp_secrets = Arc::new(FakeTotpSecrets::default());
             *totp_secrets.row.lock().unwrap() = Some(TotpSecret {
