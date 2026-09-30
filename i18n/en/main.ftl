@@ -455,6 +455,7 @@ mfa-error-not-configured = Two-factor authentication is not configured.
 mfa-error-mfa-not-pending = This page is not available in the current state. Please sign in again.
 mfa-error-rate-limited = Too many attempts. Please wait a moment and try again.
 mfa-error-locked = This account is temporarily locked after repeated failed attempts. Please try again later.
+mfa-error-sign-in-again = Sign in again
 
 # ── Passkey（WebAuthn） ──────────────────────────────────────────────────────
 passkey-list-title = Your Passkeys
