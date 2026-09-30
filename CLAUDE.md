@@ -306,6 +306,10 @@ API は `Accept-Language` のみからレスポンス言語を決め、**Cookie�
 - 言語変更時・初回（ブラウザ言語採用時）に Cookie `lang` を保存する。ログイン済みユーザーが変更したら
   ユーザー設定（`users.language`、`ja`/`en`）にも保存する。**`ui_locales` の採用は Cookie に保存しない**
   （RP の希望を利用者の選択として残さない）。
+- **ユーザー設定へ保存する「変更」は、CSRF トークン付きの `POST /{tenant_id}/settings/display` だけ**
+  （設定画面のセレクタと、管理コンソールのヘッダのドロップダウン。ADR-0066）。GET の `?lang=` / `?theme=` は
+  一時切替（その画面の表示と Cookie）で、ユーザー設定へは書かない —— GET はどの画面の URL にも付けられ、
+  外部のリンクで保存済みの設定を書き換えさせてしまう。配色（`users.theme`）も同じ。
 - web → API 呼び出しでは決定言語を `Accept-Language` に載せる。**Cookie・`lang` クエリは API へ送らない。**
 
 **API の言語判定**:

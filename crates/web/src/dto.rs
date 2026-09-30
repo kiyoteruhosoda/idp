@@ -63,6 +63,19 @@ pub struct RpLogoutQuery {
 pub struct TotpConfirmForm {
     /// 認証アプリから入力した 6 桁コード。
     pub code: String,
+    /// CSRF 同期トークン（`console_csrf_token`。task #118）。欠けていても 422 にせず、空として
+    /// 照合に落とす（不一致と同じく保存しない）。
+    #[serde(default)]
+    pub csrf_token: String,
+}
+
+/// TOTP 削除フォーム（`POST /account/mfa/totp/delete`）。
+#[derive(Debug, Deserialize)]
+pub struct TotpDeleteForm {
+    /// CSRF 同期トークン（`console_csrf_token`。task #118）。欠けていても 422 にせず、空として
+    /// 照合に落とす（不一致と同じく保存しない）。
+    #[serde(default)]
+    pub csrf_token: String,
 }
 
 /// ポータル TOTP 入力フォーム（`POST /{tenant_id}/login/mfa`）。
@@ -155,6 +168,10 @@ pub struct AccountPasswordForm {
     pub new_password_confirm: String,
     #[serde(default)]
     pub from: Option<String>,
+    /// CSRF 同期トークン（`console_csrf_token`。task #118）。欠けていても 422 にせず、空として
+    /// 照合に落とす（不一致と同じく保存せず、設定画面のバナーで伝える）。
+    #[serde(default)]
+    pub csrf_token: String,
 }
 
 /// セルフサービスの表示名変更フォーム（`POST /{tenant_id}/settings/name`）。
@@ -165,6 +182,33 @@ pub struct AccountNameForm {
     pub name: Option<String>,
     #[serde(default)]
     pub from: Option<String>,
+    /// CSRF 同期トークン（`console_csrf_token`。task #118）。欠けていても 422 にせず、空として
+    /// 照合に落とす（不一致と同じく保存せず、設定画面のバナーで伝える）。
+    #[serde(default)]
+    pub csrf_token: String,
+}
+
+/// 表示設定（言語・配色）の保存フォーム（`POST /{tenant_id}/settings/display`。task #79）。
+///
+/// 設定画面の言語・配色の選択と、管理コンソールのヘッダの言語ドロップダウンが送る。GET の
+/// `?lang=` / `?theme=` は一時切替で、ユーザー設定（DB）へ書くのはこの POST だけである。
+/// `lang` / `theme` は片方だけでよい（送られた方だけ保存する）。
+#[derive(Debug, Deserialize)]
+pub struct DisplayPreferencesForm {
+    #[serde(default)]
+    pub lang: Option<String>,
+    #[serde(default)]
+    pub theme: Option<String>,
+    /// 保存したあとに戻る画面（このテナント配下のパスだけを受ける。外れたら設定画面）。
+    #[serde(default)]
+    pub return_to: Option<String>,
+    /// 管理コンソールから開いた設定画面の文脈（CSRF 不一致などで設定画面へ戻すときに維持する）。
+    #[serde(default)]
+    pub from: Option<String>,
+    /// CSRF 同期トークン（`console_csrf_token`。task #118）。欠けていても 422 にせず、空として
+    /// 照合に落とす（不一致と同じく保存せず、設定画面のバナーで伝える）。
+    #[serde(default)]
+    pub csrf_token: String,
 }
 
 /// 設定画面の GET クエリ（言語・配色の一時切替・保存/エラーバナー表示・遷移元の引き継ぎ）。
@@ -172,9 +216,9 @@ pub struct AccountNameForm {
 pub struct SettingsQuery {
     #[serde(default)]
     pub lang: Option<String>,
-    /// 配色の選択（`?theme=`）。保存は middleware が行うが、**この画面はセレクタの選択状態を
-    /// 描くために自分でも読む**（DB への保存は応答の後、Cookie の書き換えは応答の中で起きるため、
-    /// 保存直後のこのリクエストでは古い値しか手元に無い）。
+    /// 配色の一時切替（`?theme=`）。**この画面はセレクタの選択状態を描くために自分でも読む**
+    /// （Cookie の書き換えは応答の中で起きるため、このリクエストでは古い値しか手元に無い。
+    /// 読まないと、画面は暗いのにセレクタは保存済みの値を指す）。保存はしない（task #79）。
     #[serde(default)]
     pub theme: Option<String>,
     #[serde(default)]

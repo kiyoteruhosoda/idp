@@ -20,6 +20,11 @@ fn cookies() -> String {
     format!("{SSO_SESSION_COOKIE}={SSO}")
 }
 
+/// この SSO セッションのフォームに埋まる CSRF トークン（task #118）。
+fn csrf() -> String {
+    assay_web::csrf::console_csrf_token(SSO, support::TEST_CSRF_SECRET)
+}
+
 /// step-up はもう満たされている（別画面で本人確認を済ませた直後）。
 async fn stub_step_up_satisfied(env: &WebEnv) {
     Mock::given(method("POST"))
@@ -183,7 +188,7 @@ async fn a_confirmed_setup_returns_to_the_authenticators_page() {
         post_form(
             &format!("{}/account/mfa/totp/setup", env.prefix()),
             Some(&cookies()),
-            &[("code", "123456")],
+            &[("code", "123456"), ("csrf_token", &csrf())],
         ),
     )
     .await;
@@ -217,7 +222,7 @@ async fn a_deleted_totp_returns_to_the_authenticators_page() {
         post_form(
             &format!("{}/account/mfa/totp/delete", env.prefix()),
             Some(&cookies()),
-            &[],
+            &[("csrf_token", &csrf())],
         ),
     )
     .await;
@@ -234,6 +239,44 @@ async fn a_deleted_totp_returns_to_the_authenticators_page() {
             env.prefix()
         )
     );
+}
+
+/// **削除のあとに戻る認証器の画面にも出口がある**（task #121 の確かめ）。お知らせ
+/// （`?saved=totp-deleted`）を出し、左上の名乗りと本文の先頭の「アカウント設定へ戻る」の両方を
+/// アカウント設定へのリンクにする（TOTP・パスキーの画面と同じ形）。
+#[tokio::test]
+async fn the_authenticators_page_after_deletion_links_back_to_settings() {
+    let env = setup().await;
+    Mock::given(method("POST"))
+        .and(path("/internal/account/authenticators"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "result": "ok",
+            "authenticators": [],
+            "recovery_codes_remaining": 0,
+        })))
+        .mount(&env.api)
+        .await;
+
+    let response = send(
+        &env.app,
+        get_with_cookies(
+            &format!(
+                "{}/settings/authenticators?saved=totp-deleted",
+                env.prefix()
+            ),
+            &cookies(),
+        ),
+    )
+    .await;
+
+    assert_status(&response, axum::http::StatusCode::OK, "authenticators page");
+    let prefix = env.prefix();
+    let html = body_text(response).await;
+    assert!(
+        html.contains(r#"<div class="alert alert-success" role="status">"#),
+        "削除のお知らせが出ていない: {html}"
+    );
+    assert_links_back_to_settings(&prefix, &html);
 }
 
 // ── 失敗の画面の出口（task #119） ────────────────────────────────────────────
@@ -323,7 +366,7 @@ async fn the_already_configured_page_after_confirm_links_back_to_settings() {
         post_form(
             &format!("{}/account/mfa/totp/setup", env.prefix()),
             Some(&cookies()),
-            &[("code", "123456")],
+            &[("code", "123456"), ("csrf_token", &csrf())],
         ),
     )
     .await;
@@ -351,7 +394,7 @@ async fn an_invalid_code_without_a_fresh_qr_links_back_to_settings() {
         post_form(
             &format!("{}/account/mfa/totp/setup", env.prefix()),
             Some(&cookies()),
-            &[("code", "000000")],
+            &[("code", "000000"), ("csrf_token", &csrf())],
         ),
     )
     .await;
@@ -403,7 +446,7 @@ async fn the_session_expired_page_after_confirm_links_to_sign_in() {
         post_form(
             &format!("{}/account/mfa/totp/setup", env.prefix()),
             Some(&cookies()),
-            &[("code", "123456")],
+            &[("code", "123456"), ("csrf_token", &csrf())],
         ),
     )
     .await;
@@ -427,7 +470,7 @@ async fn confirming_without_signing_in_links_to_sign_in() {
         post_form(
             &format!("{}/account/mfa/totp/setup", env.prefix()),
             None,
-            &[("code", "123456")],
+            &[("code", "123456"), ("csrf_token", &csrf())],
         ),
     )
     .await;

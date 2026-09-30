@@ -31,11 +31,21 @@
         <i class="fa-solid fa-building me-1" aria-hidden="true"></i><span class="visually-hidden">{{ messages.get("admin-current-tenant") }}: </span><span class="text-truncate navbar-tenant-label">{{ name }}</span>
       </a>
       {% endif %}{% endif %}
-      {#- 言語切替（MT20）。`action` を持たない GET フォームは現在のパスへ `?lang=` だけを付けて
-          送信するため、レイアウトを継承する全画面で追加の受け渡し無しに機能する（絞り込み・
-          ページ位置のクエリは失われる ＝ 切替後は一覧の先頭に戻る）。決定・保存は
-          `display_preferences::resolve_display_preferences` middleware が行う。 -#}
+      {#- 言語切替（MT20）。**ログイン中は保存する POST、未ログインは一時切替の GET**（task #79）。
+          GET の `?lang=` は一時切替（その画面の表示と Cookie）だけで、ユーザー設定（DB）へ書くのは
+          CSRF トークン付きの `POST /{tenant_id}/settings/display` に限る（外部のリンクで保存済みの
+          設定を書き換えさせない）。トークンは `ConsoleAdmin` 経由で全コンソール画面に届く。
+          戻り先（`return_to`）は `assets/console.js` がいまの画面の URL で埋める —— このドロップダウンは
+          Bootstrap の JS が無いと開かないので、JS 前提で困らない。空・不正なら設定画面へ戻る。
+          未ログインの GET フォームは `action` を持たず、現在のパスへ `?lang=` だけを付けて送信する
+          （絞り込み・ページ位置のクエリは失われる）。 -#}
+      {% if let Some(chrome) = admin %}
+      <form method="post" action="{{ tenant }}/settings/display" class="dropdown">
+        <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}">
+        <input type="hidden" name="return_to" value="" data-return-to-current>
+      {% else %}
       <form method="get" class="dropdown">
+      {% endif %}
         <button type="button" class="btn btn-link nav-link dropdown-toggle d-flex align-items-center" data-bs-toggle="dropdown" aria-expanded="false">
           <i class="fa-solid fa-language me-1" aria-hidden="true"></i><span class="visually-hidden">{{ messages.get("admin-language-switch") }}</span><span aria-hidden="true">{{ messages.get("admin-language-current-label") }}</span>
         </button>

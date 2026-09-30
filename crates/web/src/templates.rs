@@ -345,6 +345,7 @@ mod tests {
                     label: "admin",
                     tenant_name: Some("Acme"),
                     permissions: &["idp.tenant.admin".to_string()],
+                    csrf_token: "test-console-csrf",
                 }),
                 csrf: "csrf-token",
                 user_id: "11111111-1111-1111-1111-111111111111",
@@ -399,6 +400,7 @@ mod tests {
                     label: "admin",
                     tenant_name: Some("Acme"),
                     permissions: &["idp.tenant.admin".to_string()],
+                    csrf_token: "test-console-csrf",
                 }),
                 csrf: "csrf-token",
                 user_id: "11111111-1111-1111-1111-111111111111",
@@ -451,6 +453,7 @@ mod tests {
                     label: "admin",
                     tenant_name: Some("Acme"),
                     permissions: &["idp.tenant.admin".to_string()],
+                    csrf_token: "test-console-csrf",
                 }),
                 tenant_id: "00000000-0000-7000-8000-000000000000",
                 tenant_name: "Acme",
@@ -520,6 +523,7 @@ mod tests {
                 label: "admin",
                 tenant_name: Some("Acme"),
                 permissions: &["idp.tenant.admin".to_string()],
+                csrf_token: "test-console-csrf",
             }),
             tenant_id: "00000000-0000-7000-8000-000000000000",
             tenant_name: "Acme",
@@ -554,6 +558,7 @@ mod tests {
                 label: "admin",
                 tenant_name: Some("Acme"),
                 permissions: &["idp.tenant.admin".to_string()],
+                csrf_token: "test-console-csrf",
             }),
             tenant_id: "00000000-0000-7000-8000-000000000000",
             tenant_name: "Acme",
@@ -602,6 +607,7 @@ mod tests {
                 label: "admin",
                 tenant_name: Some("Acme"),
                 permissions: &["idp.smtp:write".to_string()],
+                csrf_token: "test-console-csrf",
             }),
             tenant_id: "00000000-0000-7000-8000-000000000000",
             tenant_name: "Acme",
@@ -931,6 +937,7 @@ mod tests {
                 label: "admin",
                 tenant_name: Some("Acme"),
                 permissions: &["idp.system.admin".to_string()],
+                csrf_token: "test-console-csrf",
             }),
         });
 
@@ -960,6 +967,7 @@ mod tests {
                     label: "admin",
                     tenant_name: Some("Acme"),
                     permissions,
+                    csrf_token: "test-console-csrf",
                 }),
             })
         };
@@ -1390,6 +1398,7 @@ mod tests {
                 label: "admin-1",
                 tenant_name: None,
                 permissions: &[],
+                csrf_token: "test-console-csrf",
             }),
             None,
         ] {
@@ -1421,6 +1430,7 @@ mod tests {
                 label: "admin-1",
                 tenant_name: Some("Acme Inc."),
                 permissions: &[],
+                csrf_token: "test-console-csrf",
             }),
         });
         assert!(html.contains("Acme Inc."), "{html}");
@@ -1439,6 +1449,7 @@ mod tests {
                 label: "admin-1",
                 tenant_name: None,
                 permissions: &[],
+                csrf_token: "test-console-csrf",
             }),
         });
         assert!(html.contains("admin-1"), "{html}");
@@ -1457,6 +1468,7 @@ mod tests {
                 label: "admin-1",
                 tenant_name: None,
                 permissions: &[],
+                csrf_token: "test-console-csrf",
             }),
             csrf: "csrf",
             saved: false,
@@ -1627,6 +1639,8 @@ pub struct TotpSetupTemplate<'a> {
     /// base32 エンコードされた生シークレット（QR が使えないユーザー向けに直接表示）。
     pub secret_base32: &'a str,
     pub error_key: Option<&'a str>,
+    /// 確認コードの送信フォームの CSRF トークン（`console_csrf_token`。task #118）。
+    pub csrf: &'a str,
 }
 
 /// アカウント設定から来た TOTP の設定が失敗したときの画面（既に設定済み・セッション切れ・
@@ -1844,6 +1858,11 @@ pub struct ConsoleAdmin<'a> {
     pub tenant_name: Option<&'a str>,
     /// この管理者が行使できる権限コード（api が含意を展開済み）。メニューの出し分けに使う。
     pub permissions: &'a [String],
+    /// ログイン後の状態変更フォーム用の CSRF トークン（`console_csrf_token`）。ヘッダの言語
+    /// ドロップダウンが `POST /{tenant_id}/settings/display` へ送る（task #79）。ここに置くのは、
+    /// ログイン中の全コンソール画面が共通レイアウトへこの struct を渡しているからで、画面ごとの
+    /// テンプレート struct に欄を足さずに全画面へ届く。
+    pub csrf_token: &'a str,
 }
 
 impl ConsoleAdmin<'_> {
@@ -3046,6 +3065,9 @@ pub struct UserSettings<'a> {
     pub error_key: Option<&'a str>,
     /// 管理コンソール（`?from=admin`）から開いたか。左上に戻るリンクを出し、フォーム送信でも維持する。
     pub from_admin: bool,
+    /// 状態変更フォーム（表示名・パスワード・言語・配色）の CSRF トークン（`console_csrf_token`。
+    /// task #79・#118）。
+    pub csrf: &'a str,
 }
 
 /// 認証器一覧の 1 行（AP9）。種別・状態は翻訳キーに写した状態で受ける。
