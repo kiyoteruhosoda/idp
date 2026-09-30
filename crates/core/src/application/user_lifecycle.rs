@@ -1036,7 +1036,7 @@ mod tests {
         async fn find_used(
             &self,
             _t: TenantId,
-            _h: &str,
+            _h: &crate::domain::authorization_code::AuthorizationCodeHash,
         ) -> DomainResult<Option<AuthorizationCode>> {
             unreachable!()
         }
@@ -1046,7 +1046,7 @@ mod tests {
         async fn consume(
             &self,
             _tenant: TenantId,
-            _code_hash: &str,
+            _code_hash: &crate::domain::authorization_code::AuthorizationCodeHash,
             _now: DateTime<Utc>,
         ) -> DomainResult<Option<AuthorizationCode>> {
             unreachable!()

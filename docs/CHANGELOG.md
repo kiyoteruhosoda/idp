@@ -1,3 +1,11 @@
+## 2026-09-30（AuthorizationCode を集約にした）
+
+- `AuthorizationCode` を公開フィールド 16 個の構造体から集約にした。発行は `AuthorizationCode::issue`
+  （認可要求と認証から作り、平文の code とハッシュもここで作る）、`/token` での照合は
+  `AuthorizationCode::redeem`（相手 → `redirect_uri` → PKCE の順。従来と同じ順と文言）。中身は認可の
+  中身 `CodeGrant` と `Authentication` に分けた。平文 `AuthorizationCodeValue` とハッシュ
+  `AuthorizationCodeHash` を別の型にし、平文は `Debug` に出ない。外から見た振る舞いは変えていない。
+
 ## 2026-09-29（6）（認証が成立した後の後段を 1 つにした）
 
 - ログイン・MFA・パスキー・パスワード変更・外部 IdP の 5 経路が各自に書いていた「SSO セッションの確立 →

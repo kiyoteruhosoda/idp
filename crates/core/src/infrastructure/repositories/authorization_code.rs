@@ -4,7 +4,11 @@
 //! 原子的に判定する（設計仕様 §3.5。MariaDB 10.11 は UPDATE ... RETURNING 非対応のため、
 //! 消費成功時のみ続けて SELECT する）。
 
-use crate::domain::authorization_code::AuthorizationCode;
+use crate::domain::auth_session::Authentication;
+use crate::domain::authorization_code::{
+    AuthorizationCode, AuthorizationCodeHash, AuthorizationCodeParts,
+};
+use crate::domain::authorization_request::PkceChallenge;
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::AuthorizationCodeRepository;
 use crate::domain::tenant::TenantId;
@@ -52,59 +56,62 @@ fn map_row(row: &MySqlRow) -> Result<AuthorizationCode> {
     let scope: Vec<u8> = row.try_get("scope").map_err(repo_err)?;
     let ccm: String = row.try_get("code_challenge_method").map_err(repo_err)?;
     let used_at: Option<NaiveDateTime> = row.try_get("used_at").map_err(repo_err)?;
-    Ok(AuthorizationCode {
-        code_hash: row.try_get("code_hash").map_err(repo_err)?,
+    let authentication = Authentication::new(
+        Uuid::parse_str(&user_id)
+            .map_err(|e| DomainError::Repository(format!("invalid UUID `{user_id}`: {e}")))?,
+        to_utc(row.try_get("auth_time").map_err(repo_err)?),
+        row.try_get("sid").map_err(repo_err)?,
+        authentication_methods_json::from_json_opt(
+            row.try_get("authentication_methods").map_err(repo_err)?,
+        ),
+    );
+    Ok(AuthorizationCode::reconstitute(AuthorizationCodeParts {
+        hash: AuthorizationCodeHash::from_stored(row.try_get("code_hash").map_err(repo_err)?),
         tenant_id: Uuid::parse_str(&tenant_id)
             .map_err(|e| DomainError::Repository(format!("invalid UUID `{tenant_id}`: {e}")))?
             .into(),
-        user_id: Uuid::parse_str(&user_id)
-            .map_err(|e| DomainError::Repository(format!("invalid UUID `{user_id}`: {e}")))?,
         client_id: row.try_get("client_id").map_err(repo_err)?,
         redirect_uri: row.try_get("redirect_uri").map_err(repo_err)?,
         scope: serde_json::from_slice(&scope)
             .map_err(|e| DomainError::Repository(format!("invalid JSON in `scope`: {e}")))?,
         nonce: row.try_get("nonce").map_err(repo_err)?,
-        auth_time: to_utc(row.try_get("auth_time").map_err(repo_err)?),
-        sid: row.try_get("sid").map_err(repo_err)?,
-        authentication_methods: authentication_methods_json::from_json_opt(
-            row.try_get("authentication_methods").map_err(repo_err)?,
+        pkce: PkceChallenge::reconstitute(
+            row.try_get("code_challenge").map_err(repo_err)?,
+            CodeChallengeMethod::parse(&ccm)?,
         ),
-        code_challenge: row.try_get("code_challenge").map_err(repo_err)?,
-        code_challenge_method: CodeChallengeMethod::parse(&ccm)?,
+        authentication,
         expires_at: to_utc(row.try_get("expires_at").map_err(repo_err)?),
         used_at: used_at.map(to_utc),
         created_at: to_utc(row.try_get("created_at").map_err(repo_err)?),
         updated_at: to_utc(row.try_get("updated_at").map_err(repo_err)?),
-    })
+    }))
 }
 
 #[async_trait]
 impl AuthorizationCodeRepository for SqlxAuthorizationCodeRepository {
     async fn create(&self, code: &AuthorizationCode) -> Result<()> {
+        let grant = code.grant();
+        let authentication = code.authentication();
         sqlx::query(
             "INSERT INTO authorization_codes \
              (code_hash, tenant_id, user_id, client_id, redirect_uri, scope, nonce, auth_time, \
               sid, authentication_methods, code_challenge, code_challenge_method, expires_at, used_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(&code.code_hash)
-        .bind(code.tenant_id.to_string())
-        .bind(code.user_id.to_string())
-        .bind(&code.client_id)
-        .bind(&code.redirect_uri)
-        .bind(serde_json::to_string(&code.scope).map_err(repo_err)?)
-        .bind(&code.nonce)
-        .bind(code.auth_time.naive_utc())
-        .bind(&code.sid)
-        .bind(
-            code.authentication_methods
-                .as_deref()
-                .map(authentication_methods_json::to_json),
-        )
-        .bind(&code.code_challenge)
-        .bind(code.code_challenge_method.as_str())
-        .bind(code.expires_at.naive_utc())
-        .bind(code.used_at.map(|d| d.naive_utc()))
+        .bind(code.hash().as_str())
+        .bind(code.tenant_id().to_string())
+        .bind(authentication.user_id().to_string())
+        .bind(grant.client_id())
+        .bind(grant.redirect_uri())
+        .bind(serde_json::to_string(grant.scope()).map_err(repo_err)?)
+        .bind(grant.nonce())
+        .bind(authentication.auth_time().naive_utc())
+        .bind(authentication.sso_sid())
+        .bind(authentication.methods().map(authentication_methods_json::to_json))
+        .bind(grant.pkce().challenge())
+        .bind(grant.pkce().method().as_str())
+        .bind(code.expires_at().naive_utc())
+        .bind(code.used_at().map(|d| d.naive_utc()))
         .execute(&self.pool)
         .await
         .map_err(repo_err)?;
@@ -114,7 +121,7 @@ impl AuthorizationCodeRepository for SqlxAuthorizationCodeRepository {
     async fn consume(
         &self,
         tenant_id: TenantId,
-        code_hash: &str,
+        hash: &AuthorizationCodeHash,
         used_at: DateTime<Utc>,
     ) -> Result<Option<AuthorizationCode>> {
         let result = sqlx::query(
@@ -122,7 +129,7 @@ impl AuthorizationCodeRepository for SqlxAuthorizationCodeRepository {
              WHERE code_hash = ? AND tenant_id = ? AND used_at IS NULL AND expires_at > ?",
         )
         .bind(used_at.naive_utc())
-        .bind(code_hash)
+        .bind(hash.as_str())
         .bind(tenant_id.to_string())
         .bind(used_at.naive_utc())
         .execute(&self.pool)
@@ -135,7 +142,7 @@ impl AuthorizationCodeRepository for SqlxAuthorizationCodeRepository {
 
         let sql = format!("SELECT {SELECT_COLUMNS} FROM authorization_codes WHERE code_hash = ?");
         let row = sqlx::query(sqlx::AssertSqlSafe(sql))
-            .bind(code_hash)
+            .bind(hash.as_str())
             .fetch_optional(&self.pool)
             .await
             .map_err(repo_err)?;
@@ -145,7 +152,7 @@ impl AuthorizationCodeRepository for SqlxAuthorizationCodeRepository {
     async fn find_used(
         &self,
         tenant_id: TenantId,
-        code_hash: &str,
+        hash: &AuthorizationCodeHash,
     ) -> Result<Option<AuthorizationCode>> {
         // `used_at IS NOT NULL` に限る（未消費・期限切れは「再利用」ではない。SEC8）。
         let sql = format!(
@@ -153,7 +160,7 @@ impl AuthorizationCodeRepository for SqlxAuthorizationCodeRepository {
              WHERE code_hash = ? AND tenant_id = ? AND used_at IS NOT NULL"
         );
         let row = sqlx::query(sqlx::AssertSqlSafe(sql))
-            .bind(code_hash)
+            .bind(hash.as_str())
             .bind(tenant_id.to_string())
             .fetch_optional(&self.pool)
             .await
