@@ -77,6 +77,14 @@ jobs:
       # 中間物と取得物をボリュームへ逃がす（ワークスペースは毎回消えるため）。
       CARGO_HOME: /cache/cargo
       CARGO_TARGET_DIR: /cache/target
+      # ⚠ **書く量を減らす**（2026-09-30）。既定のままだと 1 run で約 63 GB を nolumialab の
+      #   NVMe（DRAM なし）へ書き、同じディスクの k3s・deck まで止めていた。試験の実行ファイルは
+      #   1 本 450 MB 前後で、ほとんどがデバッグ情報だった。
+      #   - デバッグ情報は行番号だけ残す（panic・バックトレースの位置は出る。変数は見えない）
+      #   - incremental は切る。PR ごとに中身が変わる CI では当たらず、`target/` に 19 GB 積もっていた
+      #   ⚠ CI だけの設定。手元のビルドは変えない。
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_INCREMENTAL: "0"
       # 32 文字以上（`assay_contracts::deployment::INTERNAL_SERVICE_TOKEN_MIN_LEN`）。SEC11。
       INTERNAL_SERVICE_TOKEN: ci-internal-service-token-0123456789
       KEY_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
