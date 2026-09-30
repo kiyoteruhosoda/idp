@@ -78,6 +78,20 @@ pub struct TotpDeleteForm {
     pub csrf_token: String,
 }
 
+/// ログアウトのフォーム（アカウント設定の `POST /{tenant_id}/logout` と、管理コンソールの
+/// `POST /{tenant_id}/admin/logout`）。RP からのログアウト（`GET /logout`）はこれを使わない。
+#[derive(Debug, Default, Deserialize)]
+pub struct LogoutForm {
+    /// CSRF 同期トークン（`console_csrf_token`。task #143）。欠けていても 422 にせず、空として
+    /// 照合に落とす（不一致と同じくログアウトしない）。
+    #[serde(default)]
+    pub csrf_token: String,
+    /// アカウント設定を管理コンソールから開いていたか（`admin`）。トークンが合わずに設定画面へ
+    /// 戻すとき、戻るリンクの文脈を保つ（他の設定フォームと同じ）。
+    #[serde(default)]
+    pub from: Option<String>,
+}
+
 /// ポータル TOTP 入力フォーム（`POST /{tenant_id}/login/mfa`）。
 #[derive(Debug, Deserialize)]
 pub struct PortalTotpForm {

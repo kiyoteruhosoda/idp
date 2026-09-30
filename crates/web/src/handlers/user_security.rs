@@ -12,7 +12,7 @@ use super::{api_internal_error, internal_call_status};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
-use crate::csrf::console_csrf_token;
+use crate::csrf::{console_csrf_token, console_csrf_valid};
 use crate::handlers::{forwarded_context, found, locale, see_other, step_up};
 use crate::i18n::Messages;
 use crate::state::WebState;
@@ -145,10 +145,7 @@ pub async fn revoke_session(
     let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         return found(&format!("{}/login", tenant.prefix()));
     };
-    if !assay_contracts::csrf::verify(
-        &console_csrf_token(&sso, state.config.csrf_secret()),
-        &form.csrf_token,
-    ) {
+    if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
         tracing::warn!(
             correlation_id = %correlation.0,
             "security session revocation rejected: csrf token mismatch"
@@ -218,10 +215,7 @@ pub async fn revoke_consent(
     let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         return found(&format!("{}/login", tenant.prefix()));
     };
-    if !assay_contracts::csrf::verify(
-        &console_csrf_token(&sso, state.config.csrf_secret()),
-        &form.csrf_token,
-    ) {
+    if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
         tracing::warn!(
             correlation_id = %correlation.0,
             "security consent revocation rejected: csrf token mismatch"
@@ -276,10 +270,7 @@ pub async fn reissue_tokens(
     let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         return found(&format!("{}/login", tenant.prefix()));
     };
-    if !assay_contracts::csrf::verify(
-        &console_csrf_token(&sso, state.config.csrf_secret()),
-        &form.csrf_token,
-    ) {
+    if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
         tracing::warn!(
             correlation_id = %correlation.0,
             "security token reissue rejected: csrf token mismatch"

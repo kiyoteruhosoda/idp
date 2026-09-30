@@ -11,7 +11,7 @@ use super::locale;
 use crate::api_client::AdminApiError;
 use crate::cookies;
 use crate::correlation::CorrelationId;
-use crate::csrf::console_csrf_token;
+use crate::csrf::{console_csrf_from, console_csrf_valid_in};
 use crate::dto::{MemberActionForm, MemberNoteForm, MemberStatusForm};
 use crate::handlers::admin_accounts_console::{self, AccountTarget};
 use crate::handlers::admin_console::{
@@ -103,7 +103,7 @@ pub async fn detail(
             member: &member,
             applications: applications.as_ref(),
             active_tokens: active_tokens.as_ref(),
-            csrf: &csrf_from(&headers, state.config.csrf_secret()),
+            csrf: &console_csrf_from(&headers, state.config.csrf_secret()),
             error_key: query.error.as_deref().and_then(error_key_for),
             notice_key: query.notice.as_deref().and_then(notice_key_for),
         }))
@@ -205,7 +205,7 @@ pub async fn revoke(
         AdminResolution::Reject(resp) => return resp,
     }
     let base = format!("{}{MEMBERS_LIST}", tenant.prefix());
-    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid_in(&headers, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}&error=csrf"));
     }
     let result = state
@@ -236,7 +236,7 @@ pub async fn set_status(
         AdminResolution::Reject(resp) => return resp,
     }
     let base = format!("{}{MEMBERS_LIST}", tenant.prefix());
-    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid_in(&headers, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}&error=csrf"));
     }
     let result = state
@@ -274,7 +274,7 @@ pub async fn reset_password(
         AdminResolution::Reject(resp) => return resp,
     };
     let base = format!("{}{MEMBERS_LIST}", tenant.prefix());
-    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid_in(&headers, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}&error=csrf"));
     }
     let reset = match state
@@ -365,7 +365,7 @@ async fn set_member_status(
         AdminResolution::Reject(resp) => return resp,
     }
     let base = format!("{}{MEMBERS_LIST}", tenant.prefix());
-    if !csrf_valid(headers, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid_in(headers, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}&error=csrf"));
     }
     let notice = if status == "SUSPENDED" {
@@ -403,7 +403,7 @@ pub async fn reset_mfa(
         AdminResolution::Reject(resp) => return resp,
     }
     let base = format!("{}{MEMBERS_LIST}", tenant.prefix());
-    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid_in(&headers, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}&error=csrf"));
     }
     match state
@@ -442,7 +442,7 @@ pub async fn reissue_tokens(
         AdminResolution::Reject(resp) => return resp,
     }
     let base = format!("{}{MEMBERS_LIST}", tenant.prefix());
-    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid_in(&headers, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}&error=csrf"));
     }
     match state
@@ -477,7 +477,7 @@ pub async fn unlock(
         AdminResolution::Reject(resp) => return resp,
     }
     let base = format!("{}{MEMBERS_LIST}", tenant.prefix());
-    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid_in(&headers, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}&error=csrf"));
     }
     match state
@@ -511,7 +511,7 @@ pub async fn delete(
         AdminResolution::Reject(resp) => return resp,
     }
     let base = format!("{}{MEMBERS_LIST}", tenant.prefix());
-    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid_in(&headers, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}&error=csrf"));
     }
     let result = state
@@ -563,18 +563,6 @@ pub(crate) fn error_key_for(error: &str) -> Option<&'static str> {
 
 fn sso(headers: &HeaderMap) -> String {
     cookies::get(headers, cookies::SSO_SESSION_COOKIE).unwrap_or_default()
-}
-
-fn csrf_from(headers: &HeaderMap, key: &[u8]) -> String {
-    cookies::get(headers, cookies::SSO_SESSION_COOKIE)
-        .map(|s| console_csrf_token(&s, key))
-        .unwrap_or_default()
-}
-
-fn csrf_valid(headers: &HeaderMap, submitted: &str, key: &[u8]) -> bool {
-    cookies::get(headers, cookies::SSO_SESSION_COOKIE)
-        .map(|s| console_csrf_token(&s, key) == submitted)
-        .unwrap_or(false)
 }
 
 fn internal_error(messages: &Messages, tenant: &WebTenant, admin: &AdminContext) -> Response {

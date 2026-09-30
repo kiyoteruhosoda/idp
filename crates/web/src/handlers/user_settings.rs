@@ -18,7 +18,7 @@ use super::internal_call_status;
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
-use crate::csrf::console_csrf_token;
+use crate::csrf::{console_csrf_token, console_csrf_valid};
 use crate::display_preferences::{fetch_account_profile, FetchedAccountProfile};
 use crate::dto::{AccountNameForm, AccountPasswordForm, DisplayPreferencesForm, SettingsQuery};
 use crate::handlers::{forwarded_context, found, locale, see_other, step_up};
@@ -141,7 +141,7 @@ pub async fn change_password(
     let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         return found(&format!("{base}?error=session{suffix}"));
     };
-    if !csrf_matches(&state, &sso, &form.csrf_token) {
+    if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
         tracing::warn!("self-service password change rejected: csrf token mismatch");
         return found(&format!("{base}?error=csrf{suffix}"));
     }
@@ -203,7 +203,7 @@ pub async fn change_name(
     let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         return found(&format!("{base}?error=session{suffix}"));
     };
-    if !csrf_matches(&state, &sso, &form.csrf_token) {
+    if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
         tracing::warn!("self-service name change rejected: csrf token mismatch");
         return found(&format!("{base}?error=csrf{suffix}"));
     }
@@ -258,7 +258,7 @@ pub async fn save_display_preferences(
     let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         return found(&format!("{}/login", tenant.prefix()));
     };
-    if !csrf_matches(&state, &sso, &form.csrf_token) {
+    if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
         tracing::warn!("display preference change rejected: csrf token mismatch");
         return see_other(&format!("{settings}?error=csrf{suffix}"));
     }
@@ -323,14 +323,6 @@ pub async fn save_display_preferences(
         );
     }
     (set_cookies.into_headers(), see_other(&back)).into_response()
-}
-
-/// ログイン中の利用者のフォームに埋めた CSRF トークン（`console_csrf_token`）と一致するか。
-fn csrf_matches(state: &WebState, sso: &str, submitted: &str) -> bool {
-    assay_contracts::csrf::verify(
-        &console_csrf_token(sso, state.config.csrf_secret()),
-        submitted,
-    )
 }
 
 /// 戻り先から一時切替のクエリ（`lang` / `theme`）を落とす。
@@ -454,11 +446,12 @@ mod tests {
     fn back_link_to_admin_console_is_shown_only_when_opened_from_admin() {
         let html = render_settings(true);
         assert!(html.contains("/00000000-0000-7000-8000-000000000000/admin\""));
-        // フォーム送信（表示名・言語・配色・パスワード）でも管理コンソール文脈を hidden で引き継ぐ。
+        // フォーム送信（表示名・言語・配色・パスワード・ログアウト）でも管理コンソール文脈を hidden で
+        // 引き継ぐ（ログアウトはトークンが合わずに戻したとき。task #143）。
         assert_eq!(
             html.matches(r#"<input type="hidden" name="from" value="admin">"#)
                 .count(),
-            4
+            5
         );
 
         let html = render_settings(false);

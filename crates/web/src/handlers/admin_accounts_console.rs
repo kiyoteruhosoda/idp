@@ -14,7 +14,7 @@ use crate::admin_dto::AccountListView;
 use crate::api_client::AdminApiError;
 use crate::cookies;
 use crate::correlation::CorrelationId;
-use crate::csrf::console_csrf_token;
+use crate::csrf::{console_csrf_from, console_csrf_valid_in};
 use crate::dto::{MemberActionForm, MemberNoteForm};
 use crate::handlers::admin_clients_console::permission_error_key;
 use crate::handlers::admin_console::{
@@ -241,7 +241,7 @@ pub async fn service_account_detail(
         permission_codes: &permission_codes,
         grantable_permissions: &grantable,
         permissions_load_failed,
-        csrf: &csrf_from(&headers, state.config.csrf_secret()),
+        csrf: &console_csrf_from(&headers, state.config.csrf_secret()),
         error_key,
         notice_key: query.notice.as_deref().and_then(notice_key_for),
     }))
@@ -361,7 +361,7 @@ pub(crate) async fn write_note(
         AdminResolution::Reject(resp) => return resp,
     }
     let back = target.href(tenant);
-    if !csrf_valid(headers, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid_in(headers, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{back}?error=csrf"));
     }
     let cleared = form.note.trim().is_empty();
@@ -413,7 +413,7 @@ pub(crate) async fn change_assignment(
         AdminResolution::Reject(resp) => return resp,
     }
     let back = target.href(tenant);
-    if !csrf_valid(headers, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid_in(headers, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{back}?error=csrf"));
     }
     let sso = sso(headers);
@@ -551,18 +551,6 @@ fn encode(value: &str) -> String {
 
 fn sso(headers: &HeaderMap) -> String {
     cookies::get(headers, cookies::SSO_SESSION_COOKIE).unwrap_or_default()
-}
-
-fn csrf_from(headers: &HeaderMap, key: &[u8]) -> String {
-    cookies::get(headers, cookies::SSO_SESSION_COOKIE)
-        .map(|s| console_csrf_token(&s, key))
-        .unwrap_or_default()
-}
-
-fn csrf_valid(headers: &HeaderMap, submitted: &str, key: &[u8]) -> bool {
-    cookies::get(headers, cookies::SSO_SESSION_COOKIE)
-        .map(|s| console_csrf_token(&s, key) == submitted)
-        .unwrap_or(false)
 }
 
 fn internal_error(messages: &Messages, tenant: &WebTenant, admin: &AdminContext) -> Response {

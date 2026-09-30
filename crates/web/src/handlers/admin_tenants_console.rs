@@ -7,7 +7,7 @@ use super::locale;
 use crate::api_client::AdminApiError;
 use crate::cookies;
 use crate::correlation::CorrelationId;
-use crate::csrf::console_csrf_token;
+use crate::csrf::{console_csrf_token, console_csrf_valid};
 use crate::dto::{
     AdminPasswordResetForm, AdminTenantActionForm, AdminTenantCreateForm, AdminTenantUpdateForm,
     TenantsQuery,
@@ -100,10 +100,7 @@ pub async fn create(
     };
     let base = format!("{}{TENANTS_SEGMENT}", tenant.prefix());
     let sso = sso(&headers);
-    if !assay_contracts::csrf::verify(
-        &console_csrf_token(&sso, state.config.csrf_secret()),
-        &form.csrf_token,
-    ) {
+    if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}?error=csrf"));
     }
     let created = match state
@@ -149,10 +146,7 @@ pub async fn update(
     }
     let base = format!("{}{TENANTS_SEGMENT}", tenant.prefix());
     let sso = sso(&headers);
-    if !assay_contracts::csrf::verify(
-        &console_csrf_token(&sso, state.config.csrf_secret()),
-        &form.csrf_token,
-    ) {
+    if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}?error=csrf"));
     }
     match state
@@ -195,10 +189,7 @@ pub async fn delete(
     }
     let base = format!("{}{TENANTS_SEGMENT}", tenant.prefix());
     let sso = sso(&headers);
-    if !assay_contracts::csrf::verify(
-        &console_csrf_token(&sso, state.config.csrf_secret()),
-        &form.csrf_token,
-    ) {
+    if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}?error=csrf"));
     }
     match state
@@ -235,10 +226,7 @@ pub async fn reset_admin_password(
     };
     let base = format!("{}{TENANTS_SEGMENT}", tenant.prefix());
     let sso = sso(&headers);
-    if !assay_contracts::csrf::verify(
-        &console_csrf_token(&sso, state.config.csrf_secret()),
-        &form.csrf_token,
-    ) {
+    if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}?error=csrf"));
     }
     let email = form.email.trim();

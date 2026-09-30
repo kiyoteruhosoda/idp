@@ -16,8 +16,8 @@ use crate::api_client::{AdminIdentity, AdminSession};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
-use crate::csrf::{admin_csrf_token, console_csrf_token};
-use crate::dto::{ForcedPasswordChangeForm, FormPageQuery, LoginForm};
+use crate::csrf::{admin_csrf_token, admin_csrf_valid, console_csrf_token, console_csrf_valid};
+use crate::dto::{ForcedPasswordChangeForm, FormPageQuery, LoginForm, LogoutForm};
 use crate::error_pages;
 use crate::handlers::{form_retry_error_key, forwarded_context, found, see_other};
 use crate::i18n::Messages;
@@ -32,6 +32,7 @@ use assay_contracts::auth::{
     InternalAdminAuthenticateRequest, InternalAdminAuthenticateResponse,
     InternalAdminChangePasswordRequest, InternalAdminChangePasswordResponse, InternalLogoutRequest,
 };
+use axum::extract::rejection::FormRejection;
 use axum::extract::{Extension, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
@@ -39,10 +40,14 @@ use axum::Form;
 use uuid::Uuid;
 
 /// 管理コンソールのホーム（`GET /{tenant_id}/admin`）。SSO を api へ転送して認可を確認する。
+///
+/// `?error=csrf` はトークンの合わないログアウト（ヘッダの「ログアウト」）から戻ったときのバナー
+/// （task #143）。
 pub async fn home(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
+    Query(query): Query<FormPageQuery>,
     headers: HeaderMap,
 ) -> Response {
     let admin = match resolve_admin(&state, &correlation, &tenant, &headers).await {
@@ -54,6 +59,10 @@ pub async fn home(
         messages: &messages,
         tenant: &tenant.prefix(),
         admin: Some(admin.chrome()),
+        error_key: match query.error.as_deref() {
+            Some("csrf") => Some("admin-error-csrf"),
+            _ => None,
+        },
     }))
     .into_response()
 }
@@ -161,11 +170,11 @@ pub async fn login(
         &headers,
         &state.origin_bound_cookie(cookies::ADMIN_CSRF_COOKIE),
     );
-    let csrf_ok = csrf_id
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .map(|id| admin_csrf_token(id, state.config.csrf_secret()) == form.csrf_token)
-        .unwrap_or(false);
+    let csrf_ok = admin_csrf_valid(
+        csrf_id.as_deref(),
+        &form.csrf_token,
+        state.config.csrf_secret(),
+    );
     if !csrf_ok {
         // PRG: 303 で GET へ付け替え、新しい種 Cookie とトークンでフォームを自動再表示する
         //（従来は空の CSRF を埋めたフォームを再描画するため、再送信しても復帰できなかった）。
@@ -299,11 +308,11 @@ pub async fn password_change(
         &headers,
         &state.origin_bound_cookie(cookies::ADMIN_CSRF_COOKIE),
     );
-    let csrf_ok = csrf_id
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .map(|id| admin_csrf_token(id, state.config.csrf_secret()) == form.csrf_token)
-        .unwrap_or(false);
+    let csrf_ok = admin_csrf_valid(
+        csrf_id.as_deref(),
+        &form.csrf_token,
+        state.config.csrf_secret(),
+    );
     if !csrf_ok {
         // PRG: 強制変更フォームは `POST /admin/login` からのフォーム遷移でしか開始できない
         //（username を運ぶ）ため、ログイン画面へ 303 で戻して最初からやり直させる。
@@ -437,16 +446,32 @@ pub async fn password_change(
     }
 }
 
-/// ログアウト（`POST /{tenant_id}/admin/logout`）。api で SSO を失効させ、Cookie を失効してログインへ 302。
+/// ログアウト（`POST /{tenant_id}/admin/logout`。共通レイアウトのヘッダのフォームから）。api で SSO を
+/// 失効させ、Cookie を失効してログインへ 302。
+///
+/// ログイン中（SSO Cookie あり）はフォームの CSRF トークン（`console_csrf_token`）を照合し、合わなければ
+/// 何もせず（SSO も Cookie もそのまま）ホームへ `?error=csrf` で戻す —— 外部のページからのログアウトの
+/// 強制を防ぐ（task #143。以前は SameSite=Lax だけで守られていた）。SSO Cookie が無ければ失効させる
+/// ものが無いので、トークンを見ずにログインへ送る。フォームが読めない（Content-Type が無い等）ときも
+/// 422 にせず、空のトークンとして照合に落とす。
 pub async fn logout(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
+    form: Result<Form<LogoutForm>, FormRejection>,
 ) -> Response {
     let ctx = forwarded_context(&headers, &correlation, &client_ip);
     if let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) {
+        let submitted = form.map(|Form(f)| f.csrf_token).unwrap_or_default();
+        if !console_csrf_valid(&sso, &submitted, state.config.csrf_secret()) {
+            tracing::warn!(
+                correlation_id = %correlation.0,
+                "admin logout rejected: csrf token mismatch"
+            );
+            return found(&format!("{}?error=csrf", admin_home_path(&tenant)));
+        }
         let _ = state
             .api
             .logout(
@@ -665,6 +690,7 @@ mod tests {
         let html = render(&ConsoleHome {
             messages: &messages,
             tenant: "/00000000-0000-7000-8000-000000000000",
+            error_key: None,
             admin: Some(crate::templates::ConsoleAdmin {
                 label: "user-123",
                 tenant_name: Some("ROOT"),
@@ -688,6 +714,7 @@ mod tests {
         let signed_in = render(&ConsoleHome {
             messages: &messages,
             tenant,
+            error_key: None,
             admin: Some(crate::templates::ConsoleAdmin {
                 label: "user-123",
                 tenant_name: Some("ROOT"),
@@ -712,6 +739,7 @@ mod tests {
         let signed_out = render(&ConsoleHome {
             messages: &messages,
             tenant,
+            error_key: None,
             admin: None,
         });
         assert!(

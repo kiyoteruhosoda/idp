@@ -64,7 +64,9 @@
           <li><a class="dropdown-item" href="{{ tenant }}/admin/switch-tenant">{{ messages.get("admin-switch-tenant-menu") }}</a></li>
           <li><hr class="dropdown-divider"></li>
           <li>
+            {#- ログアウトも CSRF トークンを要る（task #143。外部のページからのログアウトの強制を防ぐ）。 -#}
             <form method="post" action="{{ tenant }}/admin/logout">
+              <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}">
               <button type="submit" class="dropdown-item">{{ messages.get("admin-logout") }}</button>
             </form>
           </li>

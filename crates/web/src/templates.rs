@@ -933,6 +933,7 @@ mod tests {
         let html = render(&ConsoleHome {
             messages: &messages,
             tenant: "/t",
+            error_key: None,
             admin: Some(ConsoleAdmin {
                 label: "admin",
                 tenant_name: Some("Acme"),
@@ -963,6 +964,7 @@ mod tests {
             render(&ConsoleHome {
                 messages: &messages,
                 tenant: "/t",
+                error_key: None,
                 admin: Some(ConsoleAdmin {
                     label: "admin",
                     tenant_name: Some("Acme"),
@@ -1249,6 +1251,7 @@ mod tests {
         let console = render(&ConsoleHome {
             messages: &messages,
             tenant: "/t",
+            error_key: None,
             admin: None,
         });
         let auth = render(&ConsoleLogin {
@@ -1405,6 +1408,7 @@ mod tests {
             let html = render(&ConsoleHome {
                 messages: &messages,
                 tenant: "/t",
+                error_key: None,
                 admin,
             });
             assert!(
@@ -1418,6 +1422,33 @@ mod tests {
         }
     }
 
+    /// ヘッダのログアウトは CSRF トークン付きで POST する（task #143）。トークンは `ConsoleAdmin`
+    /// 経由で届くので、レイアウトを継承する全画面で同じ欄が付く。
+    #[test]
+    fn console_logout_posts_the_token() {
+        let messages = Messages::new(Locale::Ja);
+        let html = render(&ConsoleHome {
+            messages: &messages,
+            tenant: "/t",
+            error_key: None,
+            admin: Some(ConsoleAdmin {
+                label: "admin-1",
+                tenant_name: None,
+                permissions: &[],
+                csrf_token: "test-console-csrf",
+            }),
+        });
+        let form = html
+            .split(r#"<form method="post" action="/t/admin/logout">"#)
+            .nth(1)
+            .and_then(|rest| rest.split("</form>").next())
+            .unwrap_or_else(|| panic!("no logout form: {html}"));
+        assert!(
+            form.contains(r#"<input type="hidden" name="csrf_token" value="test-console-csrf">"#),
+            "{form}"
+        );
+    }
+
     /// 操作中のテナントは管理コンソールの全画面で見えていること（共通レイアウトのヘッダに出す）。
     /// テナントを取り違えた操作を防ぐための表示なので、ホームだけでなくレイアウト側に置く。
     #[test]
@@ -1426,6 +1457,7 @@ mod tests {
         let html = render(&ConsoleHome {
             messages: &messages,
             tenant: "/t",
+            error_key: None,
             admin: Some(ConsoleAdmin {
                 label: "admin-1",
                 tenant_name: Some("Acme Inc."),
@@ -1445,6 +1477,7 @@ mod tests {
         let html = render(&ConsoleHome {
             messages: &messages,
             tenant: "/t",
+            error_key: None,
             admin: Some(ConsoleAdmin {
                 label: "admin-1",
                 tenant_name: None,
@@ -2076,6 +2109,8 @@ pub struct ConsoleHome<'a> {
     /// `/{tenant_id}` プレフィクス（ADR-0009 §6）。
     pub tenant: &'a str,
     pub admin: Admin<'a>,
+    /// `?error=csrf`（トークンの合わないログアウトから戻った。task #143）のバナー。
+    pub error_key: Option<&'a str>,
 }
 
 /// 管理コンソールのログイン画面（`GET /{tenant_id}/admin/login`）。共通レイアウトには載せない。

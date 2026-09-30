@@ -1,3 +1,19 @@
+## 2026-09-30（12）（ログアウトの POST に CSRF を付け、web の CSRF の照合を 1 か所へ寄せた）
+
+- **アカウント設定と管理コンソールのログアウト（`POST /{tenant_id}/logout`・`POST /{tenant_id}/admin/logout`）に
+  CSRF トークンを付けた**（task #143）。これまではどちらもトークンを持たず、SSO Cookie の `SameSite=Lax` だけで
+  守られていた。ほかのログイン後のフォームと同じ `console_csrf_token` を、設定画面のフォームと共通レイアウトの
+  ヘッダ（`ConsoleAdmin` 経由）へ埋める。ログイン中にトークンが合わなければ**ログアウトしない**（api で SSO を
+  失効させず、Cookie も消さない）で、設定画面・管理コンソールのホームへ `?error=csrf` のバナーで戻す（外部の
+  ページからのログアウトの強制を防ぐ）。未ログインなら従来どおりログイン画面へ送る。RP からのログアウト
+  （end_session_endpoint＝`GET /{tenant_id}/logout`）は変えていない。
+- **web の CSRF の照合を `crate::csrf` の `console_csrf_valid` / `console_csrf_valid_in` / `admin_csrf_valid` /
+  `portal_csrf_valid` へ寄せた**。管理画面のハンドラごとに書かれていた `csrf_valid` / `csrf_from`（8 画面）は、
+  トークンを `==` で比べていた（不一致の位置で早く返る）。管理ログイン・強制パスワード変更・ポータルのログイン・
+  TOTP 入力も `==` だった。いまはどれも定数時間の比較（`assay_contracts::csrf::verify`）を通し、種（Cookie）が
+  無い・空なら拒否する。ハンドラが自前で照合を書き戻すとテスト（`handlers_do_not_compare_tokens_by_themselves`）が
+  落ちる。
+
 ## 2026-09-30（11）（外部 IdP の管理 API を OpenAPI に載せ、運用手順の curl の例を管理トークンに直した）
 
 - **外部 IdP の管理 API をすべて OpenAPI（`/api/openapi.json`・Swagger UI）に載せた**（task #124）。これまで載っていたのは
