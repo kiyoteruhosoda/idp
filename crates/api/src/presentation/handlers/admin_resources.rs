@@ -36,7 +36,8 @@ use uuid::Uuid;
         (status = 200, description = "宛名の一覧", body = ResourceListResponse),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.resources:read 必須）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn list_resources(
     RequirePerms(_admin, _): RequirePerms<ResourcesRead>,
@@ -64,7 +65,8 @@ pub async fn list_resources(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.resources:write 必須）"),
         (status = 409, description = "同じ宛名が登録済み"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn register_resource(
     RequirePerms(admin, _): RequirePerms<ResourcesWrite>,
@@ -110,7 +112,8 @@ pub async fn register_resource(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.resources:write 必須）"),
         (status = 404, description = "不存在（他テナントの宛名を含む）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 #[allow(clippy::too_many_arguments)]
 pub async fn update_resource_status(
@@ -151,7 +154,8 @@ pub async fn update_resource_status(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.resources:write 必須）"),
         (status = 404, description = "不存在（他テナントの宛名を含む）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn delete_resource(
     RequirePerms(admin, _): RequirePerms<ResourcesWrite>,

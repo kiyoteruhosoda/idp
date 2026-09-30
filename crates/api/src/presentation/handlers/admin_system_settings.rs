@@ -39,7 +39,8 @@ use std::collections::HashMap;
         (status = 200, description = "システム設定（SMTP パスワードは設定有無のみ）", body = SystemSettingsResponse),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.system.admin 必須）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn get_system_settings(
     RequirePerms(_admin, _): RequirePerms<IdpSystemAdmin>,
@@ -82,7 +83,8 @@ pub async fn get_system_settings(
         (status = 400, description = "キーが DB 管理対象でない・値が不正"),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.system.admin 必須）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 #[allow(clippy::too_many_arguments)]
 pub async fn update_runtime_setting(
@@ -163,7 +165,8 @@ pub async fn update_runtime_setting(
         (status = 200, description = "更新後のシステム設定", body = SystemSettingsResponse),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.system.admin 必須）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn update_system_settings(
     RequirePerms(admin, _): RequirePerms<IdpSystemAdmin>,
@@ -238,7 +241,8 @@ pub async fn update_system_settings(
         (status = 200, description = "SMTP 設定（パスワードは設定有無のみ）", body = SmtpSettingsResponse),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.smtp:read 必須。root テナントのみ）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn get_smtp_settings(
     RequirePerms(_admin, _): RequirePerms<SmtpRead>,
@@ -268,7 +272,8 @@ pub async fn get_smtp_settings(
         (status = 200, description = "更新後の SMTP 設定", body = SmtpSettingsResponse),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.smtp:write 必須。root テナントのみ）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn update_smtp_settings(
     RequirePerms(admin, _): RequirePerms<SmtpWrite>,

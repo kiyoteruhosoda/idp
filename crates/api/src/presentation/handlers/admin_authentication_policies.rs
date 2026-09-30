@@ -38,8 +38,9 @@ use uuid::Uuid;
     responses(
         (status = 200, description = "認証ポリシー一覧（priority 昇順）", body = AuthenticationPoliciesResponse),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
-    )
+        (status = 403, description = "権限不足（idp.authentication-policies:read 必須）"),
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn list_authentication_policies(
     RequirePerms(_admin, _): RequirePerms<AuthenticationPoliciesRead>,
@@ -75,9 +76,10 @@ pub async fn list_authentication_policies(
         (status = 200, description = "作成したポリシー", body = AuthenticationPolicyResponse),
         (status = 400, description = "バリデーションエラー（コード形式・effect・条件）"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
+        (status = 403, description = "権限不足（idp.authentication-policies:write 必須）"),
         (status = 409, description = "policy_code がテナント内で重複"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn create_authentication_policy(
     RequirePerms(admin, _): RequirePerms<AuthenticationPoliciesWrite>,
@@ -113,10 +115,11 @@ pub async fn create_authentication_policy(
         (status = 200, description = "更新後のポリシー", body = AuthenticationPolicyResponse),
         (status = 400, description = "バリデーションエラー"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
+        (status = 403, description = "権限不足（idp.authentication-policies:write 必須）"),
         (status = 404, description = "対象ポリシーが不存在"),
         (status = 409, description = "policy_code がテナント内で重複"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 #[allow(clippy::too_many_arguments)]
 pub async fn update_authentication_policy(
@@ -153,9 +156,10 @@ pub async fn update_authentication_policy(
     responses(
         (status = 204, description = "削除完了"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
+        (status = 403, description = "権限不足（idp.authentication-policies:write 必須）"),
         (status = 404, description = "対象ポリシーが不存在"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn delete_authentication_policy(
     RequirePerms(admin, _): RequirePerms<AuthenticationPoliciesWrite>,

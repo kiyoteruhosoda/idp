@@ -26,8 +26,9 @@ use chrono::{DateTime, Utc};
         (status = 200, description = "監査ログ一覧（新しい順）", body = [AuditLogEntryResponse]),
         (status = 400, description = "from / to の日時形式が不正"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
-    )
+        (status = 403, description = "権限不足（idp.audit:read 必須）"),
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn list_audit_logs(
     RequirePerms(_admin, _): RequirePerms<AuditRead>,

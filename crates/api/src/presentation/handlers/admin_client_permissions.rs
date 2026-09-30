@@ -36,7 +36,8 @@ use axum::Json;
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.clients:read 必須）"),
         (status = 404, description = "対象クライアントが不存在"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn list_client_permissions(
     RequirePerms(_admin, _): RequirePerms<ClientsRead>,
@@ -70,7 +71,8 @@ pub async fn list_client_permissions(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.clients:write 必須）"),
         (status = 404, description = "対象クライアントが不存在"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 #[allow(clippy::too_many_arguments)]
 pub async fn grant_client_permission(
@@ -121,7 +123,8 @@ pub async fn grant_client_permission(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.clients:write 必須）"),
         (status = 404, description = "対象クライアントが不存在"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn revoke_client_permission(
     RequirePerms(admin, _): RequirePerms<ClientsWrite>,

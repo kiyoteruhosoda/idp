@@ -15,23 +15,24 @@ use crate::presentation::admin::{RequirePerms, UsersRead, UsersWrite};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
     CreateUserRequest, UpdateUserProfileRequest, UpdateUserStatusRequest, UserActiveTokensResponse,
-    UserCreatedResponse, UserMfaResetResponse, UserPasswordResetResponse, UserTokenReissueResponse,
-    UserUnlockResponse,
+    UserCreatedResponse, UserMfaResetResponse, UserPasswordResetResponse, UserSummaryResponse,
+    UserTokenReissueResponse, UserUnlockResponse,
 };
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::{map_permission_management_error, request_context};
 use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
-use assay_contracts::admin::UserSummaryResponse;
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use serde::Deserialize;
 use uuid::Uuid;
 
-#[derive(Debug, Deserialize)]
+/// `GET /admin/users` のクエリ。
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct UserSearchQuery {
+    /// メールアドレス（`@` を含むとき）またはユーザー名。1 人に解決する（部分一致の検索ではない）。空なら 404。
     #[serde(default)]
     pub q: Option<String>,
 }
@@ -48,9 +49,10 @@ pub struct UserSearchQuery {
         (status = 201, description = "作成成功（setup_url を含む）", body = UserCreatedResponse),
         (status = 400, description = "バリデーションエラー"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
+        (status = 403, description = "権限不足（idp.users:write 必須）"),
         (status = 409, description = "email / preferred_username の重複"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn create_user(
     RequirePerms(admin, _): RequirePerms<UsersWrite>,
@@ -93,6 +95,19 @@ pub async fn create_user(
 }
 
 /// メール／ユーザー名で利用者を検索する（`GET /admin/users?q=`）。該当なしは 404。
+#[utoipa::path(
+    get,
+    path = "/{tenant_id}/admin/users",
+    tag = "admin",
+    params(UserSearchQuery),
+    responses(
+        (status = 200, description = "該当した利用者の要約", body = UserSummaryResponse),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.users:read 必須）"),
+        (status = 404, description = "該当なし（q が空の場合を含む）"),
+    ),
+    security(("bearer_token" = []))
+)]
 pub async fn search_user(
     RequirePerms(_admin, _): RequirePerms<UsersRead>,
     State(state): State<AppState>,
@@ -120,6 +135,19 @@ pub async fn search_user(
 }
 
 /// 内部 ID（UUID）で利用者を取得する（`GET /admin/users/{user_id}`）。
+#[utoipa::path(
+    get,
+    path = "/{tenant_id}/admin/users/{user_id}",
+    tag = "admin",
+    params(("user_id" = String, Path, description = "対象利用者の内部 ID（UUID）")),
+    responses(
+        (status = 200, description = "利用者の要約", body = UserSummaryResponse),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.users:read 必須）"),
+        (status = 404, description = "不存在（user_id が UUID でない場合を含む）"),
+    ),
+    security(("bearer_token" = []))
+)]
 pub async fn get_user(
     RequirePerms(_admin, _): RequirePerms<UsersRead>,
     State(state): State<AppState>,
@@ -146,12 +174,13 @@ pub async fn get_user(
     params(("user_id" = String, Path, description = "対象利用者の内部 ID（UUID）")),
     request_body = UpdateUserStatusRequest,
     responses(
-        (status = 200, description = "更新後の利用者"),
+        (status = 200, description = "更新後の利用者", body = UserSummaryResponse),
         (status = 400, description = "status が不正（ACTIVE / DISABLED 以外）"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足・自分自身は変更不可"),
+        (status = 403, description = "権限不足（idp.users:write 必須）・自分自身は変更不可"),
         (status = 404, description = "不存在（所属元が他テナントの場合を含む）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 #[allow(clippy::too_many_arguments)]
 pub async fn update_user_status(
@@ -199,13 +228,14 @@ pub async fn update_user_status(
     params(("user_id" = String, Path, description = "対象利用者の内部 ID（UUID）")),
     request_body = UpdateUserProfileRequest,
     responses(
-        (status = 200, description = "更新後の利用者"),
+        (status = 200, description = "更新後の利用者", body = UserSummaryResponse),
         (status = 400, description = "バリデーションエラー（メール書式・長さ・ログイン識別子の解除）"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
+        (status = 403, description = "権限不足（idp.users:write 必須）"),
         (status = 404, description = "不存在（所属元が他テナントの場合を含む）"),
         (status = 409, description = "email / preferred_username がテナント内で重複"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 #[allow(clippy::too_many_arguments)]
 pub async fn update_user_profile(
@@ -252,9 +282,10 @@ pub async fn update_user_profile(
     responses(
         (status = 204, description = "削除成功"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足・自分自身は削除不可"),
+        (status = 403, description = "権限不足（idp.users:write 必須）・自分自身は削除不可"),
         (status = 404, description = "不存在（所属元が他テナントの場合を含む）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn delete_user(
     RequirePerms(admin, _): RequirePerms<UsersWrite>,
@@ -290,9 +321,10 @@ pub async fn delete_user(
     responses(
         (status = 200, description = "再発行成功（setup_url を含む）", body = UserPasswordResetResponse),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足・自分自身は再発行不可"),
+        (status = 403, description = "権限不足（idp.users:write 必須）・自分自身は再発行不可"),
         (status = 404, description = "不存在（所属元が他テナントの場合を含む）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn reset_user_password(
     RequirePerms(admin, _): RequirePerms<UsersWrite>,
@@ -333,9 +365,10 @@ pub async fn reset_user_password(
     responses(
         (status = 200, description = "解除成功（外した要素の内訳を含む）", body = UserMfaResetResponse),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足・自分自身は解除不可（セルフサービスを使う）"),
+        (status = 403, description = "権限不足（idp.users:write 必須）・自分自身は解除不可（セルフサービスを使う）"),
         (status = 404, description = "不存在（所属元が他テナントの場合を含む）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn reset_user_mfa(
     RequirePerms(admin, _): RequirePerms<UsersWrite>,
@@ -380,7 +413,8 @@ pub async fn reset_user_mfa(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.users:write 必須）"),
         (status = 404, description = "不存在（所属元が他テナントの場合を含む）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn reissue_user_tokens(
     RequirePerms(admin, _): RequirePerms<UsersWrite>,
@@ -425,7 +459,8 @@ pub async fn reissue_user_tokens(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.users:read 必須）"),
         (status = 404, description = "不存在（所属元が他テナントの場合を含む）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn count_user_active_tokens(
     RequirePerms(_admin, _): RequirePerms<UsersRead>,
@@ -458,9 +493,10 @@ pub async fn count_user_active_tokens(
     responses(
         (status = 200, description = "解除成功（元からロックされていない場合を含む）", body = UserUnlockResponse),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
+        (status = 403, description = "権限不足（idp.users:write 必須）"),
         (status = 404, description = "不存在（所属元が他テナントの場合を含む）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn unlock_user(
     RequirePerms(admin, _): RequirePerms<UsersWrite>,

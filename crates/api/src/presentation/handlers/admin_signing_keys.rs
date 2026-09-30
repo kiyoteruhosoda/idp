@@ -24,8 +24,9 @@ use axum::Json;
     responses(
         (status = 200, description = "署名鍵一覧", body = [SigningKeyResponse]),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
-    )
+        (status = 403, description = "権限不足（idp.keys:read 必須）"),
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn list_keys(
     RequirePerms(_admin, _): RequirePerms<KeysRead>,
@@ -58,8 +59,9 @@ pub async fn list_keys(
         (status = 201, description = "生成した署名鍵", body = SigningKeyResponse),
         (status = 400, description = "不正なアルゴリズム"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
-    )
+        (status = 403, description = "権限不足（idp.keys:write 必須）"),
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn generate_key(
     RequirePerms(_admin, _): RequirePerms<KeysWrite>,
@@ -101,9 +103,10 @@ pub async fn generate_key(
         (status = 204, description = "退役完了"),
         (status = 400, description = "既に RETIRED、または最後の署名可能な鍵"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
+        (status = 403, description = "権限不足（idp.keys:write 必須）"),
         (status = 404, description = "不存在"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn retire_key(
     RequirePerms(_admin, _): RequirePerms<KeysWrite>,
@@ -131,9 +134,10 @@ pub async fn retire_key(
         (status = 204, description = "削除完了"),
         (status = 400, description = "ACTIVE 鍵は削除不可（先に退役）"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
+        (status = 403, description = "権限不足（idp.keys:write 必須）"),
         (status = 404, description = "不存在"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn delete_key(
     RequirePerms(_admin, _): RequirePerms<KeysWrite>,

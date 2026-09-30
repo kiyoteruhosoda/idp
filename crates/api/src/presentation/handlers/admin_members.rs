@@ -46,7 +46,8 @@ use uuid::Uuid;
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.members:read 必須）"),
         (status = 404, description = "このテナントのメンバーではない"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn get_member(
     RequirePerms(_admin, _): RequirePerms<MembersRead>,
@@ -84,8 +85,9 @@ pub async fn get_member(
     responses(
         (status = 200, description = "メンバー一覧（1 ページ分と総件数）", body = MemberListResponse),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
-    )
+        (status = 403, description = "権限不足（idp.members:read 必須）"),
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn list_members(
     RequirePerms(_admin, _): RequirePerms<MembersRead>,
@@ -129,9 +131,10 @@ pub async fn list_members(
         (status = 204, description = "解除成功"),
         (status = 400, description = "user_id が UUID でない"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足・HOME は解除不可"),
+        (status = 403, description = "権限不足（idp.members:write 必須）・HOME は解除不可"),
         (status = 404, description = "メンバーシップが不存在"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn revoke_member(
     RequirePerms(admin, _): RequirePerms<MembersWrite>,
@@ -172,9 +175,10 @@ pub async fn revoke_member(
         (status = 204, description = "更新成功"),
         (status = 400, description = "user_id が UUID でない・status が不正"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足・HOME は停止不可・遷移できない状態"),
+        (status = 403, description = "権限不足（idp.members:write 必須）・HOME は停止不可・遷移できない状態"),
         (status = 404, description = "メンバーシップが不存在"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 #[allow(clippy::too_many_arguments)]
 pub async fn update_member_status(
@@ -236,7 +240,8 @@ pub async fn update_member_status(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.members:write 必須）"),
         (status = 404, description = "このテナントのメンバーではない"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 #[allow(clippy::too_many_arguments)]
 pub async fn update_member_note(

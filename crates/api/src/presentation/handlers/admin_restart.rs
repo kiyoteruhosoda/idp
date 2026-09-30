@@ -30,7 +30,8 @@ use axum::Json;
         (status = 202, description = "再起動を受理した（応答後に停止する）", body = RestartServiceResponse),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.system.admin 必須）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn restart_service(
     RequirePerms(admin, _): RequirePerms<IdpSystemAdmin>,

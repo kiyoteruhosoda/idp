@@ -35,7 +35,8 @@ use chrono::{DateTime, Utc};
         (status = 400, description = "from / to の日時形式が不正"),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.system.admin 必須）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn list_application_logs(
     RequirePerms(_admin, _): RequirePerms<IdpSystemAdmin>,

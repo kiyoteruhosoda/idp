@@ -398,7 +398,7 @@ TOKEN=$(curl -sS -X POST "$ISSUER/$TENANT_ID/token" \
 #### 4-3. 管理 API を呼ぶ
 
 ```bash
-curl -sS "$ISSUER/$TENANT_ID/admin/users?query=alice" \
+curl -sS "$ISSUER/$TENANT_ID/admin/users?q=alice" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -778,11 +778,32 @@ WARN / ERROR が correlation ID 付きで残り続ける（運用のためのロ
 
 ## 利用者に管理権限を付与／剥奪したいとき
 
-管理コンソールの権限付与 UI は未実装のため、SQL で `user_permissions` を操作する（権限モデルは
-ADR-0006・ADR-0009 §4。権限コードとエンドポイント別の要求権限の一覧は `docs/PERMISSIONS.md`）。
-付与できる権限コードは `permissions` マスタに存在するもの
-（`idp.system.admin` / `idp.tenant.admin`）に限り、**scope（`tenant_id`）の明示が必須**。
-初期管理者（`admin@example.com`）には seed で `idp.system.admin`（scope = root）が付与済み。
+ふだんは管理コンソールの利用者の画面（`/{tenant_id}/admin/users/{user_id}/permissions`。一覧・検索の
+起点はメンバー画面）から付与・剥奪する（権限モデルは ADR-0006・ADR-0009 §4・ADR-0037。権限コードと
+エンドポイント別の要求権限の一覧は `docs/PERMISSIONS.md`）。API を直接叩くなら、`idp.permissions:write`
+を持つ管理トークン（`$ADMIN_TOKEN`。「クライアントを登録したいとき」を参照）で次のように呼ぶ。
+
+```bash
+# 付与できるコードの一覧（idp.permissions:read。要求テナントで付与し得ないコードは返らない）
+curl -sS "$ISSUER/$TENANT_ID/admin/permissions" -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# 付与（冪等。付与後の保有コード一覧が返る）
+curl -sS -X POST "$ISSUER/$TENANT_ID/admin/users/<user_id>/permissions" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"permission_code": "idp.users:read"}'
+
+# 剥奪
+curl -sS -X DELETE "$ISSUER/$TENANT_ID/admin/users/<user_id>/permissions/idp.users:read" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+⚠ `idp.system.admin` の付与・剥奪は `idp.system.admin` の保有者にしかできず、`idp.system.admin` は
+機械のトークンに載らない（ADR-0037）ので、それは画面から行う。
+
+画面に入れる管理者が 1 人もいない（ブートストラップ・締め出し）ときだけ、SQL で `user_permissions` を
+直接操作する。付与できる権限コードは `permissions` マスタに存在するものに限り、
+**scope（`tenant_id`）の明示が必須**。初期管理者（`admin@example.com`）には seed で
+`idp.system.admin`（scope = root）が付与済み。
 
 - `idp.tenant.admin`: 対象テナントを scope に指定する（当該テナント内の管理のみ。配下へは及ばない）。
 - `idp.system.admin`: scope は root のみ（CHECK 制約 `user_permissions_system_admin_scope_chk` が
@@ -802,8 +823,15 @@ DELETE up FROM user_permissions up
     AND up.permission_code = 'idp.tenant.admin' AND up.tenant_id = '<対象テナントUUID>';
 ```
 
-権限を保有する利用者は、有効な SSO セッション（一度ログイン済み）で `GET /admin/whoami` に
-アクセスでき、自身の `user_id` が返る（保護の疎通確認用）。
+付与が効いたかは、その利用者で管理コンソールにログインし直して確かめる（コンソールは画面を開くたびに
+SSO セッションを管理トークンへ交換して `GET /{tenant_id}/admin/whoami` を呼び、返った `permissions`
+で出す画面を決める）。API で確かめるなら、`idp.permissions:read` を持つ管理トークンで
+`GET /{tenant_id}/admin/users/<user_id>/permissions` を呼び、保有コードを見る。
+
+⚠ `whoami` を外から叩いて確かめることはできない。管理 API は Cookie を読まない（ADR-0037）ので、
+ブラウザの SSO セッションのまま開くと 401 になる。また `whoami` は `idp.tenant.admin`（または
+`idp.system.admin`）を要し（ADR-0037 の決定 8）、それらはクライアントへ付与できないので、機械の
+管理トークンでは 403 になる。
 
 ## ログインを制限したいとき（認証ポリシー・アカウントロック）
 

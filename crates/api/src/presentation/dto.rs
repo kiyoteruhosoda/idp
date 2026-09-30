@@ -424,7 +424,7 @@ pub struct AddTenantDomainRequest {
 }
 
 /// 設定画面の自テナント表示名更新リクエスト（`PATCH /{tenant_id}/admin/settings/tenant`。MT14）。
-/// `idp.tenant.admin` が自テナントの表示名だけを変更する（`status`・`parent_tenant_id` は不変）。
+/// `idp.tenant-settings:write` を持つ管理者が自テナントの表示名だけを変更する（`status`・`parent_tenant_id` は不変）。
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateTenantSettingsRequest {
     pub name: String,
@@ -665,7 +665,66 @@ pub struct RestartServiceResponse {
     pub restarting: bool,
 }
 
-// --- 利用者作成（ADR-0009 §5・§6。`idp.tenant.admin` 必須） -----------------------------------
+// --- 管理コンソールの支援 API（身元・クライアント状況・権限マスタ・利用者の検索。task #146） -------
+//
+// web（管理コンソール）は `assay_contracts::admin` の同名の型で受け取る。`assay_contracts` は
+// `utoipa` を持たない（ADR-0007）ので、OpenAPI に載せるためにここへ**同じ形**の型を置く。
+// 食い違うと web が応答を復号できず画面が開かなくなるため、形の一致は
+// `console_support_contract_tests` が JSON の往復で固定する。
+
+/// `GET /{tenant_id}/admin/whoami` の応答（`assay_contracts::admin::WhoamiResponse` と同じ形）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WhoamiResponse {
+    /// 管理トークンの主体（利用者）の内部 ID（UUID）。
+    pub user_id: String,
+    /// 表示名（未設定なら null）。
+    pub name: Option<String>,
+    /// ログイン識別子（未設定なら null）。
+    pub preferred_username: Option<String>,
+    /// 経路のテナント（`/{tenant_id}/...`）の表示名。
+    pub tenant_name: Option<String>,
+    /// 呼び出し元がこのテナントで**実際に行使できる**権限コード（含意を展開済み）。
+    pub permissions: Vec<String>,
+}
+
+/// `GET /{tenant_id}/admin/clients/status` の要素（`assay_contracts::admin::ClientStatusResponse`
+/// と同じ形）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ClientStatusResponse {
+    pub client_id: String,
+    pub app_name: String,
+    /// `ACTIVE` / `DISABLED`。
+    pub status: String,
+    pub scopes: Vec<String>,
+    /// 最終利用時刻（RFC3339。成功した token / code 発行の最新時刻。未使用なら null）。
+    pub last_used_at: Option<String>,
+}
+
+/// `GET /{tenant_id}/admin/permissions` の応答（`assay_contracts::admin::AvailablePermissionsResponse`
+/// と同じ形）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AvailablePermissionsResponse {
+    /// 要求テナントで付与し得る権限コード（`permissions` マスタ由来）。
+    pub codes: Vec<String>,
+}
+
+/// 利用者の要約（`GET /{tenant_id}/admin/users?q=`・`GET …/users/{user_id}`・状態とプロフィールの
+/// 更新の応答。`assay_contracts::admin::UserSummaryResponse` と同じ形）。パスワードハッシュ等の
+/// 機微情報は含めない。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct UserSummaryResponse {
+    /// 内部 ID（UUID）。
+    pub id: String,
+    pub sub: String,
+    pub email: String,
+    pub email_verified: bool,
+    pub preferred_username: Option<String>,
+    pub name: Option<String>,
+    /// `ACTIVE` / `DISABLED` 等。
+    pub status: String,
+}
+
+// --- 利用者作成（ADR-0009 §5・§6。`idp.users:write` 必須） -------------------------------------
 
 /// 管理者による利用者作成リクエスト（`POST /{tenant_id}/admin/users`）。パスワードは自動生成する。
 #[derive(Debug, Deserialize, ToSchema)]
@@ -1520,5 +1579,95 @@ mod authentication_policy_contract_tests {
                 "unknown login identifier type code in the contract: {code}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod console_support_contract_tests {
+    use super::*;
+
+    /// api が返す JSON と、web が `assay_contracts` の型から作る JSON が**鍵まで同じ**であること。
+    /// 片方にだけ項目が増えると、web の復号が落ちるか、OpenAPI が実際と違う形を載せる。
+    fn assert_same_json(api: &impl Serialize, shared: &impl Serialize) {
+        assert_eq!(
+            serde_json::to_value(api).expect("serialize the api dto"),
+            serde_json::to_value(shared).expect("serialize the shared contract"),
+        );
+    }
+
+    #[test]
+    fn whoami_contract_matches_the_api_dto() {
+        assert_same_json(
+            &WhoamiResponse {
+                user_id: "019f8ea8-f5dd-7fc7-ac15-a7d4337e4610".to_string(),
+                name: Some("Admin".to_string()),
+                preferred_username: None,
+                tenant_name: Some("Corp".to_string()),
+                permissions: vec!["idp.tenant.admin".to_string()],
+            },
+            &assay_contracts::admin::WhoamiResponse {
+                user_id: "019f8ea8-f5dd-7fc7-ac15-a7d4337e4610".to_string(),
+                name: Some("Admin".to_string()),
+                preferred_username: None,
+                tenant_name: Some("Corp".to_string()),
+                permissions: vec!["idp.tenant.admin".to_string()],
+            },
+        );
+    }
+
+    #[test]
+    fn client_status_contract_matches_the_api_dto() {
+        assert_same_json(
+            &ClientStatusResponse {
+                client_id: "cid".to_string(),
+                app_name: "App".to_string(),
+                status: "ACTIVE".to_string(),
+                scopes: vec!["openid".to_string()],
+                last_used_at: None,
+            },
+            &assay_contracts::admin::ClientStatusResponse {
+                client_id: "cid".to_string(),
+                app_name: "App".to_string(),
+                status: "ACTIVE".to_string(),
+                scopes: vec!["openid".to_string()],
+                last_used_at: None,
+            },
+        );
+    }
+
+    #[test]
+    fn available_permissions_contract_matches_the_api_dto() {
+        assert_same_json(
+            &AvailablePermissionsResponse {
+                codes: vec!["idp.users:read".to_string()],
+            },
+            &assay_contracts::admin::AvailablePermissionsResponse {
+                codes: vec!["idp.users:read".to_string()],
+            },
+        );
+    }
+
+    #[test]
+    fn user_summary_contract_matches_the_api_dto() {
+        assert_same_json(
+            &UserSummaryResponse {
+                id: "019f8ea8-f5dd-7fc7-ac15-a7d4337e4610".to_string(),
+                sub: "sub-1".to_string(),
+                email: "a@example.com".to_string(),
+                email_verified: true,
+                preferred_username: Some("alice".to_string()),
+                name: None,
+                status: "ACTIVE".to_string(),
+            },
+            &assay_contracts::admin::UserSummaryResponse {
+                id: "019f8ea8-f5dd-7fc7-ac15-a7d4337e4610".to_string(),
+                sub: "sub-1".to_string(),
+                email: "a@example.com".to_string(),
+                email_verified: true,
+                preferred_username: Some("alice".to_string()),
+                name: None,
+                status: "ACTIVE".to_string(),
+            },
+        );
     }
 }
