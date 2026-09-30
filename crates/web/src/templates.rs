@@ -1620,6 +1620,8 @@ pub fn render<T: Template>(template: &T) -> String {
 #[template(path = "mfa_totp_setup.html")]
 pub struct TotpSetupTemplate<'a> {
     pub messages: &'a Messages,
+    /// テナント接頭辞（`/{tenant_id}`）。戻る導線（アカウント設定）の組み立てに使う。
+    pub tenant_prefix: &'a str,
     /// QR コードの SVG 文字列（インライン埋め込み）。
     pub qr_svg: &'a str,
     /// base32 エンコードされた生シークレット（QR が使えないユーザー向けに直接表示）。

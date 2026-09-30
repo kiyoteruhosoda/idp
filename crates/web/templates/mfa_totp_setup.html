@@ -1,7 +1,14 @@
 {% extends "page.html" %}
 {% block title %}{{ messages.get("mfa-setup-title") }}{% endblock %}
+{#- TOTP の設定はアカウント設定から来る枝葉で、中断したくても画面に出口が無かった（task #82）。
+    パスキーの画面と同じく、左上の名乗りをホームへのリンクにする。ただし戻る導線はこれに
+    頼らない（名乗りがリンクだとは見て分からない）。本文の先頭に同じ形の「戻る」を置く。 -#}
+{% block brand %}<a class="navbar-brand mb-0 h1 text-decoration-none" href="{{ tenant_prefix }}/settings" title="{{ messages.get("nav-home") }}">assay</a>{% endblock %}
 {% block column %}col-md-8 col-lg-5 mx-auto{% endblock %}
 {% block content %}
+<div class="mb-3">
+  <a href="{{ tenant_prefix }}/settings"><i class="fa-solid fa-arrow-left me-2" aria-hidden="true"></i>{{ messages.get("user-security-back-settings") }}</a>
+</div>
 <div class="card border-0 bg-transparent">
   <div class="card-header text-center py-3 border-0 bg-transparent">
     <h1 class="h4 mb-0">{{ messages.get("mfa-setup-title") }}</h1>

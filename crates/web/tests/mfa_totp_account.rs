@@ -8,7 +8,9 @@ mod support;
 
 use assay_contracts::cookies::SSO_SESSION_COOKIE;
 use serde_json::json;
-use support::{assert_status, body_text, get_with_cookies, location, send, setup, WebEnv};
+use support::{
+    assert_status, body_text, get_with_cookies, location, post_form, send, setup, WebEnv,
+};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
@@ -127,5 +129,72 @@ async fn the_error_page_lets_the_user_get_back_to_settings() {
     assert!(
         html.contains(&format!(r#"href="{prefix}/settings""#)),
         "戻り先のリンクが無い: {html}"
+    );
+}
+
+/// **セットアップ画面から戻れる。** 設定を中断したい利用者に、ブラウザの戻る以外の出口を
+/// 置く（task #82）。パスキーの画面と同じく、本文の先頭の「戻る」と左上の名乗りの両方を
+/// アカウント設定へのリンクにする。
+#[tokio::test]
+async fn the_setup_page_links_back_to_settings() {
+    let env = setup().await;
+    stub_step_up_satisfied(&env).await;
+    stub_totp_setup_ok(&env).await;
+
+    let response = send(
+        &env.app,
+        get_with_cookies(
+            &format!("{}/account/mfa/totp/setup", env.prefix()),
+            &cookies(),
+        ),
+    )
+    .await;
+
+    assert_status(&response, axum::http::StatusCode::OK, "setup page");
+    let prefix = env.prefix();
+    let html = body_text(response).await;
+    assert!(
+        html.contains(&format!(
+            r#"<a class="navbar-brand mb-0 h1 text-decoration-none" href="{prefix}/settings""#
+        )),
+        "左上の名乗りがリンクになっていない: {html}"
+    );
+    assert!(
+        html.contains(&format!(r#"<a href="{prefix}/settings">"#)),
+        "本文に戻る導線が無い: {html}"
+    );
+}
+
+/// **設定を終えたら、認証器の画面へ戻して結果をバナーで伝える。** 完了を行き止まりの
+/// 画面で告げると、次にどこへ行けばよいかが画面に無い（task #82）。PRG にするので、
+/// 再読み込みで確認コードを二重に送ることも無い。
+#[tokio::test]
+async fn a_confirmed_setup_returns_to_the_authenticators_page() {
+    let env = setup().await;
+    stub_step_up_satisfied(&env).await;
+    Mock::given(method("POST"))
+        .and(path("/internal/mfa/totp/confirm"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "result": "ok" })))
+        .mount(&env.api)
+        .await;
+
+    let response = send(
+        &env.app,
+        post_form(
+            &format!("{}/account/mfa/totp/setup", env.prefix()),
+            Some(&cookies()),
+            &[("code", "123456")],
+        ),
+    )
+    .await;
+
+    assert_status(
+        &response,
+        axum::http::StatusCode::SEE_OTHER,
+        "confirm redirect",
+    );
+    assert_eq!(
+        location(&response),
+        format!("{}/settings/authenticators?saved=totp", env.prefix())
     );
 }
