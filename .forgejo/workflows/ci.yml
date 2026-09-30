@@ -60,7 +60,12 @@ jobs:
         #   サービスをホストへ出して `127.0.0.1:3306` で触っていたが、ここでは
         #   ジョブもコンテナの中に居るので**同じネットワークの `mariadb:3306`**
         #   で届く。出すと**ホストの 3306 を占有し、2 本同時に走れなくなる**。
+        # ⚠ **データはメモリ（tmpfs）に置く**（2026-09-30）。試験の DB は終われば捨てるのに、
+        #   コミットごとの fsync が nolumialab の NVMe（DRAM なしで 1 回 100〜300 ms 待つ）へ
+        #   届き、同じディスクに載る k3s・deck まで待たせていた。上限は runner-burst が
+        #   `shmem` としてメモリの見込みに数える。
         options: >-
+          --tmpfs /var/lib/mysql:rw,size=2g
           --health-cmd="healthcheck.sh --connect --innodb_initialized"
           --health-interval=5s
           --health-timeout=5s
