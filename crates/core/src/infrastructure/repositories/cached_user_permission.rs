@@ -5,7 +5,13 @@
 //! キャッシュし、`grant` / `revoke` 時に該当エントリを invalidate する。判定・付与・剥奪は同一インスタンス
 //! を共有するため、付与直後の反映漏れ（stale allow/deny）を避けられる。
 //!
-//! 参照系のうち `has_permission` のみをキャッシュする。`list_codes_for_user` は素通しする
+//! 付与可能な権限コードの一覧（`list_available_codes`。`permissions` マスタの全件読み）は、管理コンソールの
+//! 画面描画ごとに `whoami` が含意の展開先として引く。マスタはマイグレーションでしか変わらず、
+//! マスタへ行を足すマイグレーションはそれを使う新しい版の起動と組で入る（ADR-0004。ローリング中に残る
+//! 旧い版は旧い一覧のままだが、その版のコードとは食い違わない）ので、**プロセスの寿命だけ持つ**
+//! （TTL も invalidation も持たない。最初に成功した結果を持ち続け、失敗は持たずに次の呼び出しで引き直す）。
+//!
+//! 利用者ごとの参照系のうち `has_permission` のみをキャッシュする。`list_codes_for_user` は素通しする
 //! （キャッシュしない）。ADR-0037 以降このメソッドは管理トークンの発行原資であり、管理コンソールの
 //! **リクエスト毎**に呼ばれる（`AdminAccessService::resolve_session_grant`）が、そこで得た権限は
 //! トークンの寿命だけ持ち回されるため、**発行時点の値が古いと剥奪の効きがそのぶん遅れる**。
@@ -20,6 +26,7 @@ use crate::domain::tenant::TenantId;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use std::sync::Arc;
+use tokio::sync::OnceCell;
 use uuid::Uuid;
 
 /// `has_permission` の判定結果をキャッシュするキー（scope→権限解決のキー空間）。
@@ -33,6 +40,8 @@ pub struct PermissionKey {
 pub struct CachedUserPermissionRepository {
     inner: Arc<dyn UserPermissionRepository>,
     cache: Arc<dyn Cache<PermissionKey, bool>>,
+    /// `permissions` マスタの全件（プロセス寿命。モジュール注記参照）。
+    available_codes: OnceCell<Vec<String>>,
 }
 
 impl CachedUserPermissionRepository {
@@ -40,7 +49,11 @@ impl CachedUserPermissionRepository {
         inner: Arc<dyn UserPermissionRepository>,
         cache: Arc<dyn Cache<PermissionKey, bool>>,
     ) -> Self {
-        Self { inner, cache }
+        Self {
+            inner,
+            cache,
+            available_codes: OnceCell::new(),
+        }
     }
 
     fn key(tenant_id: TenantId, user_id: Uuid, code: &str) -> PermissionKey {
@@ -55,7 +68,11 @@ impl CachedUserPermissionRepository {
 #[async_trait]
 impl UserPermissionRepository for CachedUserPermissionRepository {
     async fn list_available_codes(&self) -> Result<Vec<String>> {
-        self.inner.list_available_codes().await
+        // 同時の初回呼び出しは 1 本に束ねられ、失敗（Err）はセルに入らない。
+        self.available_codes
+            .get_or_try_init(|| self.inner.list_available_codes())
+            .await
+            .cloned()
     }
 
     async fn list_codes_for_user(&self, tenant_id: TenantId, user_id: Uuid) -> Result<Vec<String>> {
@@ -131,11 +148,27 @@ mod tests {
     struct CountingPermissions {
         granted: Mutex<Vec<(TenantId, Uuid, String)>>,
         has_calls: AtomicUsize,
+        available_calls: AtomicUsize,
+        /// 残りこの回数だけ `list_available_codes` を失敗させる（失敗を持ち続けないことの確認用）。
+        available_failures: AtomicUsize,
     }
     #[async_trait]
     impl UserPermissionRepository for CountingPermissions {
         async fn list_available_codes(&self) -> Result<Vec<String>> {
-            Ok(vec![])
+            self.available_calls.fetch_add(1, Ordering::SeqCst);
+            if self
+                .available_failures
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_ok()
+            {
+                return Err(crate::domain::error::DomainError::Repository(
+                    "db down".to_string(),
+                ));
+            }
+            Ok(vec![
+                "idp.system.admin".to_string(),
+                "idp.tenant.admin".to_string(),
+            ])
         }
         async fn list_codes_for_user(
             &self,
@@ -346,5 +379,33 @@ mod tests {
             .await
             .unwrap());
         assert_eq!(inner.has_calls.load(Ordering::SeqCst), before);
+    }
+
+    #[tokio::test]
+    async fn list_available_codes_reads_the_master_once() {
+        let inner = Arc::new(CountingPermissions::default());
+        let repo = setup(inner.clone());
+
+        let expected = vec![
+            "idp.system.admin".to_string(),
+            "idp.tenant.admin".to_string(),
+        ];
+        assert_eq!(repo.list_available_codes().await.unwrap(), expected);
+        assert_eq!(repo.list_available_codes().await.unwrap(), expected);
+        // マスタはマイグレーションでしか変わらないので、2 回目以降は内側を叩かない。
+        assert_eq!(inner.available_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn list_available_codes_does_not_keep_a_failure() {
+        let inner = Arc::new(CountingPermissions::default());
+        inner.available_failures.store(1, Ordering::SeqCst);
+        let repo = setup(inner.clone());
+
+        // 1 回目の失敗は持ち続けず、次の呼び出しで引き直して成功する。
+        assert!(repo.list_available_codes().await.is_err());
+        assert_eq!(repo.list_available_codes().await.unwrap().len(), 2);
+        assert_eq!(repo.list_available_codes().await.unwrap().len(), 2);
+        assert_eq!(inner.available_calls.load(Ordering::SeqCst), 2);
     }
 }
