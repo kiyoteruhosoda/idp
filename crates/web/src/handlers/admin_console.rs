@@ -549,6 +549,7 @@ pub(crate) fn redirect_to_login(tenant: &WebTenant) -> Response {
 pub(crate) fn forbidden_response(headers: &HeaderMap) -> Response {
     let messages = Messages::new(locale(headers));
     let body = render(&MessagePage {
+        lang: messages.lang(),
         title: messages.get("admin-forbidden-title"),
         message: messages.get("admin-forbidden-message"),
     });

@@ -323,6 +323,7 @@ fn render_outcome(
 
 fn message_page(messages: &Messages, key: &str, status: StatusCode) -> Response {
     let body = render(&MessagePage {
+        lang: messages.lang(),
         title: messages.get("external-login-title"),
         message: messages.get(key),
     });

@@ -20,6 +20,7 @@ use axum::response::{Html, IntoResponse, Response};
 /// 置かない。
 pub fn page(messages: &Messages, tenant_prefix: &str, application_name: &str) -> Response {
     let body = render(&ApplicationNotPermittedPage {
+        lang: messages.lang(),
         title: messages.get("application-not-permitted-title"),
         signed_in: messages.get_arg(
             "application-not-permitted-signed-in",

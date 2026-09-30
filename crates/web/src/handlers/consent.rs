@@ -209,6 +209,7 @@ pub async fn consent(
 
 fn error_page(messages: &Messages, status: StatusCode, error_key: &str) -> Response {
     let body = render(&MessagePage {
+        lang: messages.lang(),
         title: messages.get("consent-title"),
         message: messages.get(error_key),
     });

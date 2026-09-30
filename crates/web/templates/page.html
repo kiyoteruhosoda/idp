@@ -1,5 +1,9 @@
 <!DOCTYPE html>
-<html>
+{#- 表示言語（ADR-0048）。`assets/local-time.js` はこの属性の言語で日時を整形する —— 無いと
+    ブラウザの言語で出て、利用者が選んだ画面の言語と食い違う。言語を決めるのは web
+    （`Messages` と同じ出所）。`Messages` を持たない画面（`MessagePage` / `ErrorPage` /
+    `ApplicationNotPermittedPage`）は、決めた言語を `lang` で受け取ってこの block を上書きする。 -#}
+<html lang="{% block html_lang %}{{ messages.lang() }}{% endblock %}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">

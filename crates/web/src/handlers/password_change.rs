@@ -278,6 +278,7 @@ fn reshow_form(
 
 fn error_page(messages: &Messages, status: StatusCode, error_key: &str) -> Response {
     let body = render(&MessagePage {
+        lang: messages.lang(),
         title: messages.get("password-change-title"),
         message: messages.get(error_key),
     });
