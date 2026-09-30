@@ -27,6 +27,15 @@ impl SqlxRefreshTokenRepository {
     }
 }
 
+/// 指定ユーザーの**いま使える** refresh token を指す条件（未失効かつ期限内）。bind は `user_id`、
+/// 基準時刻の順。
+///
+/// 数える側（[`count_active_for_user`](RefreshTokenRepository::count_active_for_user)。管理コンソールが
+/// 押す前に見せる本数）と落とす側（[`revoke_all_for_user`](RefreshTokenRepository::revoke_all_for_user)。
+/// ADR-0047 の再発行が返す本数）が同じ範囲を指すよう、条件はここ 1 か所にだけ書く。片方だけ
+/// 直すと「画面では 0 本なのに、押すと無効にしましたと出る」ずれが戻る（task #123）。
+const ACTIVE_FOR_USER: &str = "user_id = ? AND revoked_at IS NULL AND expires_at > ?";
+
 fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
@@ -220,12 +229,14 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
     }
 
     async fn revoke_all_for_user(&self, user_id: Uuid, revoked_at: DateTime<Utc>) -> Result<u64> {
-        let result = sqlx::query(
-            "UPDATE refresh_tokens SET revoked_at = ? \
-             WHERE user_id = ? AND revoked_at IS NULL",
-        )
+        // 落とす範囲は `count_active_for_user` が数える範囲と同じ（`ACTIVE_FOR_USER`）。期限切れの
+        // 行はもう更新に使えないので、失効印を付けても何も変わらず、本数だけが画面とずれる。
+        let result = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE refresh_tokens SET revoked_at = ? WHERE {ACTIVE_FOR_USER}"
+        )))
         .bind(revoked_at.naive_utc())
         .bind(user_id.to_string())
+        .bind(revoked_at.naive_utc())
         .execute(&self.pool)
         .await
         .map_err(repo_err)?;
@@ -234,10 +245,9 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
 
     async fn count_active_for_user(&self, user_id: Uuid, now: DateTime<Utc>) -> Result<u64> {
         // `refresh_tokens_user_idx (user_id)` で引ける。1 人ぶんの行数は小さいので索引の追加は不要。
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM refresh_tokens \
-             WHERE user_id = ? AND revoked_at IS NULL AND expires_at > ?",
-        )
+        let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT COUNT(*) FROM refresh_tokens WHERE {ACTIVE_FOR_USER}"
+        )))
         .bind(user_id.to_string())
         .bind(now.naive_utc())
         .fetch_one(&self.pool)
