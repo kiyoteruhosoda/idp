@@ -19,6 +19,7 @@ use crate::application::client_authentication::{
 use crate::application::key_service::KeyService;
 use crate::domain::application::{ApplicationAccess, BindingTarget};
 use crate::domain::audit::{AuditEventType, AuditResult};
+use crate::domain::authorization_code::{AuthorizationCodeValue, CodeRedemptionRejection};
 use crate::domain::client::Client;
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
@@ -347,7 +348,11 @@ impl TokenService {
         }
 
         // 4. code の原子的 one-time 消費。
-        let Some(code) = cmd.code.as_deref().filter(|c| !c.is_empty()) else {
+        let Some(code) = cmd
+            .code
+            .as_deref()
+            .and_then(AuthorizationCodeValue::from_presented)
+        else {
             return Err(TokenError::new(
                 OAuthErrorCode::InvalidRequest,
                 "code is required",
@@ -355,7 +360,7 @@ impl TokenService {
         };
         let now = self.clock.now();
         // code の hash は消費とファミリ鍵（`grant_hash`。SEC8）の両方で使うので 1 度だけ計算する。
-        let code_hash = crypto::sha256_hex(code);
+        let code_hash = code.hash();
         let consumed = match self.codes.consume(tenant_id, &code_hash, now).await {
             Ok(c) => c,
             Err(e) => return Err(internal(&e)),
@@ -376,7 +381,7 @@ impl TokenService {
                     // 再認証させるのが RFC 6819 §5.2.1.1 の求めるところ。
                     let revoked = match self
                         .refresh_tokens
-                        .revoke_family(tenant_id, &code_hash, now)
+                        .revoke_family(tenant_id, code_hash.as_str(), now)
                         .await
                     {
                         Ok(n) => n,
@@ -394,7 +399,7 @@ impl TokenService {
                     AuditEventType::AuthorizationCodeReuseDetected,
                     AuditResult::Failure,
                     Some(tenant_id),
-                    used_code.map(|c| c.user_id),
+                    used_code.map(|c| c.authentication().user_id()),
                     Some(&client_id),
                     Some(&reason),
                     ctx,
@@ -410,60 +415,54 @@ impl TokenService {
                 AuditEventType::AuthorizationCodeUsed,
                 AuditResult::Success,
                 Some(tenant_id),
-                Some(auth_code.user_id),
+                Some(auth_code.authentication().user_id()),
                 Some(&client_id),
                 None,
                 ctx,
             )
             .await;
 
-        // 5. client_id / redirect_uri の一致検証。
-        if auth_code.client_id != client_id {
-            return Err(TokenError::new(
-                OAuthErrorCode::InvalidGrant,
-                "authorization code was issued to another client",
-            ));
+        // 5-6. 出してきた相手・redirect_uri・PKCE S256 の照合（集約が順に確かめる）。
+        if let Err(rejection) =
+            auth_code.redeem(&client_id, cmd.redirect_uri.as_deref(), code_verifier)
+        {
+            let description = match rejection {
+                CodeRedemptionRejection::IssuedToAnotherClient => {
+                    "authorization code was issued to another client"
+                }
+                CodeRedemptionRejection::RedirectUriMismatch => {
+                    "redirect_uri does not match the authorization request"
+                }
+                CodeRedemptionRejection::PkceMismatch => "PKCE verification failed",
+            };
+            return Err(TokenError::new(OAuthErrorCode::InvalidGrant, description));
         }
-        if cmd.redirect_uri.as_deref() != Some(auth_code.redirect_uri.as_str()) {
-            return Err(TokenError::new(
-                OAuthErrorCode::InvalidGrant,
-                "redirect_uri does not match the authorization request",
-            ));
-        }
-
-        // 6. PKCE S256 検証。
-        if !pkce::verify_s256(code_verifier, &auth_code.code_challenge) {
-            return Err(TokenError::new(
-                OAuthErrorCode::InvalidGrant,
-                "PKCE verification failed",
-            ));
-        }
+        let grant = auth_code.grant();
+        let authentication = auth_code.authentication();
 
         // 7. ユーザーの状態確認。
-        let user = self.load_active_user(auth_code.user_id, ctx).await?;
+        let user = self.load_active_user(authentication.user_id(), ctx).await?;
 
         // 8. トークン発行（scope は AuthorizationCodes.scope を引き継ぐ）。
-        let has_offline = auth_code
-            .scope
-            .iter()
-            .any(|v| v == Scope::OfflineAccess.as_str());
-        let has = |s: Scope| auth_code.scope.iter().any(|v| v == s.as_str());
-        let scope_str = auth_code.scope.join(" ");
+        let has_offline = grant.includes(Scope::OfflineAccess);
+        let has = |s: Scope| grant.includes(s);
+        let scope_str = grant.scope_string();
         let iat = now.timestamp();
         // `iss` はテナント毎に合成する（ADR-0009 §6）。発行テナント（= フローのテナント）に束縛する。
         let issuer = tenant_issuer(&self.base_issuer, tenant_id);
 
-        let (code_acr, code_amr) = authentication_claims(auth_code.authentication_methods.as_ref());
+        let (code_acr, code_amr) =
+            authentication_claims(authentication.methods().map(<[_]>::to_vec).as_ref());
         let id_claims = IdTokenClaims {
             iss: issuer.clone(),
             sub: user.sub.to_string(),
             aud: client_id.clone(),
             exp: iat + self.id_token_ttl.as_secs() as i64,
             iat,
-            auth_time: auth_code.auth_time.timestamp(),
-            nonce: auth_code.nonce.clone(),
+            auth_time: authentication.auth_time().timestamp(),
+            nonce: grant.nonce().to_string(),
             jti: Uuid::new_v4().to_string(),
-            sid: auth_code.sid.clone(),
+            sid: authentication.sso_sid().map(str::to_string),
             acr: code_acr,
             amr: code_amr,
             email: has(Scope::Email).then(|| user.email.clone()),
@@ -498,16 +497,16 @@ impl TokenService {
                 // このグラント（authorization code）由来のトークンファミリの起点（SEC8）。
                 // rotation で子孫へ引き継がれ、code / refresh のどちらの再利用検知からも
                 // 同じ鍵で一括失効できる。
-                grant_hash: Some(code_hash.clone()),
+                grant_hash: Some(code_hash.as_str().to_string()),
                 tenant_id,
-                user_id: auth_code.user_id,
+                user_id: authentication.user_id(),
                 client_id: client_id.clone(),
-                scope: auth_code.scope.clone(),
+                scope: grant.scope().to_vec(),
                 // ID Token の `sid`（G5）。rotation でも引き継ぎ、logout_token と同じセッションを指す。
-                sid: auth_code.sid.clone(),
+                sid: authentication.sso_sid().map(str::to_string),
                 // ID Token の `acr` / `amr`（ADR-0043）。refresh では認証をやり直さないので、
                 // 名乗る強度も変わらない。`sid` と同じく rotation で引き継ぐ。
-                authentication_methods: auth_code.authentication_methods.clone(),
+                authentication_methods: authentication.methods().map(<[_]>::to_vec),
                 expires_at: now + chrono::Duration::from_std(self.refresh_token_ttl).unwrap(),
                 revoked_at: None,
                 created_at: now,
@@ -520,7 +519,7 @@ impl TokenService {
                     AuditEventType::RefreshTokenIssued,
                     AuditResult::Success,
                     Some(tenant_id),
-                    Some(auth_code.user_id),
+                    Some(authentication.user_id()),
                     Some(&client_id),
                     None,
                     ctx,
@@ -536,7 +535,7 @@ impl TokenService {
                 AuditEventType::TokenIssued,
                 AuditResult::Success,
                 Some(tenant_id),
-                Some(auth_code.user_id),
+                Some(authentication.user_id()),
                 Some(&client_id),
                 None,
                 ctx,

@@ -102,6 +102,9 @@ AuthSession（集約ルート。フィールドは非公開）
   列の組み合わせで判定せず、`password_verified_user()` / `completed_authentication()` に聞く。
 - **秘密は型で分ける。** 平文（`AuthSessionId`・`HandoffHandle`）とハッシュ（`〜Hash`）は別の型で、
   平文は `Debug` に出ず、リポジトリはハッシュしか受け取らない。
+- **同じ形の集約**: `domain/authorization_code.rs`（AuthorizationCode）も同じ作り。`issue` で発行し、
+  消費（単回・期限・テナント）はリポジトリの条件付き UPDATE、照合（相手・`redirect_uri`・PKCE）は
+  `redeem` が持つ。
 - **試験の保存先はメモリ上の実装を共有する**（`infrastructure/repositories/in_memory_auth_session.rs`）。
   書き込みは sqlx 実装の UPDATE と同じ規則（旧い id の行を、記録された列だけ書き換える）で行う。
 

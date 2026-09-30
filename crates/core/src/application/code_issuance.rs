@@ -17,7 +17,6 @@ use crate::domain::auth_session::Authentication;
 use crate::domain::authorization_code::AuthorizationCode;
 use crate::domain::authorization_request::AuthorizationRequest;
 use crate::domain::clock::Clock;
-use crate::domain::crypto;
 use crate::domain::error::DomainError;
 use crate::domain::repositories::AuthorizationCodeRepository;
 use crate::domain::tenant_context::TenantContext;
@@ -100,32 +99,19 @@ impl CodeIssuanceService {
             return Ok(CodeIssuance::ApplicationDenied { application_name });
         }
 
-        let code = crypto::random_token(32);
-        let now = self.clock.now();
-
         let IssueCodeCommand {
             tenant,
             request,
             authentication,
-        } = &cmd;
-        let record = AuthorizationCode {
-            code_hash: crypto::sha256_hex(&code),
-            tenant_id: tenant.tenant_id(),
-            user_id: authentication.user_id(),
-            client_id: request.client_id().to_string(),
-            redirect_uri: request.redirect_uri().to_string(),
-            scope: request.scope().to_vec(),
-            nonce: request.nonce().to_string(),
-            auth_time: authentication.auth_time(),
-            sid: authentication.sso_sid().map(str::to_string),
-            authentication_methods: authentication.methods().map(<[_]>::to_vec),
-            code_challenge: request.pkce().challenge().to_string(),
-            code_challenge_method: request.pkce().method(),
-            expires_at: now + self.ttl,
-            used_at: None,
-            created_at: now,
-            updated_at: now,
-        };
+        } = cmd;
+        let user_id = authentication.user_id();
+        let (record, code) = AuthorizationCode::issue(
+            tenant.tenant_id(),
+            &request,
+            authentication,
+            self.clock.now(),
+            self.ttl,
+        );
 
         self.codes.create(&record).await?;
 
@@ -134,13 +120,13 @@ impl CodeIssuanceService {
                 AuditEventType::AuthorizationCodeIssued,
                 AuditResult::Success,
                 Some(tenant.tenant_id()),
-                Some(authentication.user_id()),
+                Some(user_id),
                 Some(request.client_id()),
                 None,
                 ctx,
             )
             .await;
 
-        Ok(CodeIssuance::Issued(code))
+        Ok(CodeIssuance::Issued(code.into_string()))
     }
 }

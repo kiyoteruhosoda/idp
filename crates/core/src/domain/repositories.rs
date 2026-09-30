@@ -33,7 +33,7 @@ use crate::domain::auth_session::{
     PasswordVerification,
 };
 use crate::domain::authentication_policy::{AuthenticationPolicy, LockoutPolicy};
-use crate::domain::authorization_code::AuthorizationCode;
+use crate::domain::authorization_code::{AuthorizationCode, AuthorizationCodeHash};
 use crate::domain::backchannel_logout::BackchannelLogoutDelivery;
 use crate::domain::client::Client;
 use crate::domain::consent::ClientConsent;
@@ -806,7 +806,7 @@ pub trait AuthorizationCodeRepository: Send + Sync {
     async fn consume(
         &self,
         tenant_id: TenantId,
-        code_hash: &str,
+        hash: &AuthorizationCodeHash,
         used_at: DateTime<Utc>,
     ) -> Result<Option<AuthorizationCode>>;
     /// **すでに消費済み**の code を hash で引く（SEC8）。`consume` が `None` を返したときに
@@ -815,7 +815,7 @@ pub trait AuthorizationCodeRepository: Send + Sync {
     async fn find_used(
         &self,
         tenant_id: TenantId,
-        code_hash: &str,
+        hash: &AuthorizationCodeHash,
     ) -> Result<Option<AuthorizationCode>>;
     /// ログアウト時にユーザーの未消費・期限内の全 code を即時失効させる（`used_at` を設定）。
     async fn revoke_all_active_for_user(&self, user_id: Uuid, now: DateTime<Utc>) -> Result<()>;
