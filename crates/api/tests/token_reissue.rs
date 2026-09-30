@@ -593,3 +593,85 @@ async fn the_active_token_count_needs_only_the_user_read_permission() {
         assert_eq!(status, StatusCode::NOT_FOUND, "target={missing}");
     }
 }
+
+// --- 再発行が数える本数と、画面の本数を揃える（task #123） --------------------------------------
+
+/// 管理者の再発行を 1 回。応答の `revoked`（落とした本数）を返す。
+async fn admin_reissue(env: &TestEnv, token: &str, target: &str) -> Value {
+    let uri = format!("/{}/admin/users/{target}/token-reissue", env.root_tenant_id);
+    let response = send(&env.app, post(token, &uri, json!({}))).await;
+    assert_eq!(response.status(), StatusCode::OK, "admin can reissue");
+    body_json(response).await["revoked"].clone()
+}
+
+/// **期限切れの行は再発行の本数に入らない。** 押す前に見せた本数（有効な本数）と、押した結果の
+/// 本数が同じ範囲を指す。以前は期限切れで失効印の無い行まで落として数えたので、画面で 0 本でも
+/// 「無効にしました」と出た。
+#[tokio::test]
+async fn reissue_counts_only_the_tokens_the_console_showed_as_alive() {
+    let Some(env) = support::setup("admin token reissue skips expired rows").await else {
+        return;
+    };
+    let (client_id, _) =
+        support::insert_confidential_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
+    let target = support::create_plain_user(&env.pool, &env.root_tenant_id).await;
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+
+    // 期限切れで失効印の無い行だけがある: 画面は 0 本、押しても 0 本。
+    for days in [-1, -30] {
+        insert_refresh_token_row(
+            &env.pool,
+            &env.root_tenant_id,
+            &target,
+            &client_id,
+            days,
+            false,
+        )
+        .await;
+    }
+    let (status, body) = active_refresh_tokens(&env, &admin_tok, &target).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["active_refresh_tokens"], 0, "{body}");
+    assert_eq!(
+        admin_reissue(&env, &admin_tok, &target).await,
+        0,
+        "期限切れの行は落とした本数に入らない（画面の 0 本と揃う）"
+    );
+
+    // 生きている行が加わると、画面の本数と押した結果の本数が一致する。
+    for _ in 0..2 {
+        insert_refresh_token_row(
+            &env.pool,
+            &env.root_tenant_id,
+            &target,
+            &client_id,
+            30,
+            false,
+        )
+        .await;
+    }
+    let (_, body) = active_refresh_tokens(&env, &admin_tok, &target).await;
+    let shown = body["active_refresh_tokens"].clone();
+    assert_eq!(shown, 2, "{body}");
+    assert_eq!(
+        admin_reissue(&env, &admin_tok, &target).await,
+        shown,
+        "押した結果の本数 = 押す前に見せた本数"
+    );
+
+    // 期限切れの行には失効印を付けていない（触っていない）。
+    let untouched: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM refresh_tokens \
+         WHERE user_id = ? AND revoked_at IS NULL AND expires_at <= UTC_TIMESTAMP(6)",
+    )
+    .bind(&target)
+    .fetch_one(&env.pool)
+    .await
+    .expect("expired rows");
+    assert_eq!(untouched, 2);
+    let (_, body) = active_refresh_tokens(&env, &admin_tok, &target).await;
+    assert_eq!(
+        body["active_refresh_tokens"], 0,
+        "再発行の後は 0 本: {body}"
+    );
+}

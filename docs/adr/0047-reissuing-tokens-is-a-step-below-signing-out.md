@@ -127,3 +127,6 @@ refresh token は利用者の資格情報で、`sso_sessions` と同じく 1 人
   → task #83 で、1 人の画面に有効な refresh token の本数を出した
   （`GET /{tenant_id}/admin/users/{user_id}/active-tokens`、`idp.users:read`。数える範囲は再発行と同じ）。
   アクセストークンは DB に行が無いので数えない。
+  → task #123 で、再発行が落として数える範囲も「未失効かつ期限内」に揃えた（以前は期限切れで
+  失効印の無い行まで数え、画面で 0 本でも「無効にしました」と出ることがあった）。条件は
+  refresh token のリポジトリの 1 か所に置き、数える側と落とす側で共有する。

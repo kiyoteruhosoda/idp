@@ -1,6 +1,10 @@
 //! 利用者検索・取得の管理 API（`/admin/users`）。管理コンソール（web）の権限画面が用いる支援 API。
 //!
-//! すべて `idp.tenant.admin` 権限が必要（`RequirePerms<IdpAdmin>`）。パスワードハッシュ等の機微情報は返さない。
+//! 権限は操作ごとに細かく分けてある（ADR-0037）。検索・取得・有効なトークンの本数は利用者の読み取り
+//! （`idp.users:read`。`RequirePerms<UsersRead>`）、作成・状態変更・プロフィール更新・削除・パスワード
+//! 再発行・MFA 解除・トークンの再発行・ロック解除は書き込み（`idp.users:write`。`RequirePerms<UsersWrite>`）
+//! が要る。`idp.tenant.admin` は両方を含意するので、テナント管理者はすべて行える。パスワードハッシュ等の
+//! 機微情報は返さない。
 //! 権限の一覧・付与・剥奪は `admin_permissions` にある。
 
 use crate::application::user_lifecycle::{UpdateUserProfileCommand, UserLifecycleError};
