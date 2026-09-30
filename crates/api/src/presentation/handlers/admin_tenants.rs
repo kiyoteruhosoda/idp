@@ -47,7 +47,8 @@ use uuid::Uuid;
         (status = 200, description = "子テナント一覧（1 ページ分と総件数）", body = TenantListResponse),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.system.admin 必須）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn list_tenants(
     RequirePerms(_admin, _): RequirePerms<IdpSystemAdmin>,
@@ -83,7 +84,8 @@ pub async fn list_tenants(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.system.admin 必須）"),
         (status = 409, description = "テナント作成の一意制約違反等"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn create_tenant(
     RequirePerms(admin, _): RequirePerms<IdpSystemAdmin>,
@@ -123,7 +125,8 @@ pub async fn create_tenant(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.system.admin 必須）"),
         (status = 404, description = "不存在（直下の子でない場合を含む）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn get_tenant(
     RequirePerms(_admin, _): RequirePerms<IdpSystemAdmin>,
@@ -154,7 +157,8 @@ pub async fn get_tenant(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.system.admin 必須）"),
         (status = 404, description = "不存在"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 #[allow(clippy::too_many_arguments)]
 pub async fn update_tenant(
@@ -213,7 +217,8 @@ pub async fn update_tenant(
         (status = 403, description = "権限不足（idp.system.admin 必須）・root は削除不可"),
         (status = 404, description = "不存在"),
         (status = 409, description = "配下に子テナント・ユーザー・クライアントが存在する"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn delete_tenant(
     RequirePerms(admin, _): RequirePerms<IdpSystemAdmin>,
@@ -258,7 +263,8 @@ pub async fn delete_tenant(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.system.admin 必須）"),
         (status = 404, description = "テナントまたは利用者が不存在"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 #[allow(clippy::too_many_arguments)]
 pub async fn reset_tenant_admin_password(
@@ -300,7 +306,7 @@ pub async fn reset_tenant_admin_password(
     }))
 }
 
-/// 設定画面のテナント設定区画: 自テナント（要求テナント自身）を取得する（`idp.tenant.admin` 必須。MT14）。
+/// 設定画面のテナント設定区画: 自テナント（要求テナント自身）を取得する（`idp.tenant-settings:read` 必須。MT14）。
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/settings/tenant",
@@ -308,8 +314,9 @@ pub async fn reset_tenant_admin_password(
     responses(
         (status = 200, description = "自テナント", body = TenantResponse),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
-    )
+        (status = 403, description = "権限不足（idp.tenant-settings:read 必須）"),
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn get_current_tenant(
     RequirePerms(_admin, _): RequirePerms<TenantSettingsRead>,
@@ -325,7 +332,7 @@ pub async fn get_current_tenant(
     Ok(Json(tenant_response(&current)))
 }
 
-/// 設定画面のテナント設定区画: 自テナントの表示名を更新する（`idp.tenant.admin` 必須。MT14）。
+/// 設定画面のテナント設定区画: 自テナントの表示名を更新する（`idp.tenant-settings:write` 必須。MT14）。
 #[utoipa::path(
     patch,
     path = "/{tenant_id}/admin/settings/tenant",
@@ -335,8 +342,9 @@ pub async fn get_current_tenant(
         (status = 200, description = "更新後の自テナント", body = TenantResponse),
         (status = 400, description = "バリデーションエラー"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
-    )
+        (status = 403, description = "権限不足（idp.tenant-settings:write 必須）"),
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn update_current_tenant(
     RequirePerms(admin, _): RequirePerms<TenantSettingsWrite>,
@@ -385,7 +393,8 @@ pub async fn update_current_tenant(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.system.admin 必須）"),
         (status = 404, description = "対象テナントが存在しない"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn list_tenant_domains(
     RequirePerms(_admin, _): RequirePerms<IdpSystemAdmin>,
@@ -416,7 +425,8 @@ pub async fn list_tenant_domains(
         (status = 403, description = "権限不足（idp.system.admin 必須）"),
         (status = 404, description = "対象テナントが存在しない"),
         (status = 409, description = "すでに割り当て済み（他テナントの場合も含む）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 #[allow(clippy::too_many_arguments)]
 pub async fn add_tenant_domain(
@@ -453,7 +463,8 @@ pub async fn add_tenant_domain(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.system.admin 必須）"),
         (status = 404, description = "対象テナント、または割り当てが存在しない"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn remove_tenant_domain(
     RequirePerms(admin, _): RequirePerms<IdpSystemAdmin>,

@@ -9,7 +9,9 @@
 use crate::domain::permission;
 use crate::presentation::admin::{PermissionsRead, PermissionsWrite, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
-use crate::presentation::dto::{GrantPermissionRequest, UserPermissionsResponse};
+use crate::presentation::dto::{
+    AvailablePermissionsResponse, GrantPermissionRequest, UserPermissionsResponse,
+};
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::{map_permission_management_error, request_context};
 use crate::presentation::i18n::ApiLocale;
@@ -31,13 +33,25 @@ use uuid::Uuid;
 /// 絞り込みを api で行うのは、判定（`domain::permission` の各関数）の出所を core に一本化するため
 /// である。web は core に依存しない（crate 境界で強制。ADR-0007）ので、web 側で同じ判定を書くと
 /// **マスタが増えたときに片方だけ古くなる**。
+#[utoipa::path(
+    get,
+    path = "/{tenant_id}/admin/permissions",
+    tag = "admin",
+    params(AvailablePermissionsQuery),
+    responses(
+        (status = 200, description = "要求テナントで付与し得る権限コード", body = AvailablePermissionsResponse),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.permissions:read 必須）"),
+    ),
+    security(("bearer_token" = []))
+)]
 pub async fn list_available_permissions(
     RequirePerms(_admin, _): RequirePerms<PermissionsRead>,
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
     Query(query): Query<AvailablePermissionsQuery>,
-) -> Result<Json<assay_contracts::admin::AvailablePermissionsResponse>, ApiError> {
+) -> Result<Json<AvailablePermissionsResponse>, ApiError> {
     let mut codes = state
         .permissions_admin
         .available_codes()
@@ -48,9 +62,7 @@ pub async fn list_available_permissions(
     if query.grantable_to.as_deref() == Some(GRANTABLE_TO_CLIENT) {
         codes.retain(|code| permission::is_grantable_to_client(code));
     }
-    Ok(Json(assay_contracts::admin::AvailablePermissionsResponse {
-        codes,
-    }))
+    Ok(Json(AvailablePermissionsResponse { codes }))
 }
 
 /// `grantable_to` の唯一の許可値。未知の値は絞り込まない（＝全件）——ここで 400 にしないのは、
@@ -58,7 +70,7 @@ pub async fn list_available_permissions(
 const GRANTABLE_TO_CLIENT: &str = "client";
 
 /// `GET /admin/permissions` のクエリ。
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
 pub struct AvailablePermissionsQuery {
     /// `client` を指定すると、クライアントへ付与できるコードだけを返す。
     #[serde(default)]
@@ -75,9 +87,10 @@ pub struct AvailablePermissionsQuery {
         (status = 200, description = "保有する権限コード一覧", body = UserPermissionsResponse),
         (status = 400, description = "user_id が UUID でない"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
+        (status = 403, description = "権限不足（idp.permissions:read 必須）"),
         (status = 404, description = "対象利用者が不存在"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn list_permissions(
     RequirePerms(_admin, _): RequirePerms<PermissionsRead>,
@@ -110,9 +123,10 @@ pub async fn list_permissions(
         (status = 200, description = "付与後の権限コード一覧", body = UserPermissionsResponse),
         (status = 400, description = "バリデーションエラー（未知の権限コード等）"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
+        (status = 403, description = "権限不足（idp.permissions:write 必須）"),
         (status = 404, description = "対象利用者が不存在"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 #[allow(clippy::too_many_arguments)]
 pub async fn grant_permission(
@@ -161,9 +175,10 @@ pub async fn grant_permission(
         (status = 200, description = "剥奪後の権限コード一覧", body = UserPermissionsResponse),
         (status = 400, description = "user_id が UUID でない・権限コードが空"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
+        (status = 403, description = "権限不足（idp.permissions:write 必須）"),
         (status = 404, description = "対象利用者が不存在"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn revoke_permission(
     RequirePerms(admin, _): RequirePerms<PermissionsWrite>,

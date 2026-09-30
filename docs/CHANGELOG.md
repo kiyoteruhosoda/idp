@@ -1,3 +1,22 @@
+## 2026-09-30（13）（OpenAPI に無かった管理 API を載せ、403 の説明と運用手順の whoami を直した）
+
+- **OpenAPI（`/api/openapi.json`・Swagger UI）に載っていなかった管理 API を載せた**（task #146）。
+  `GET /{tenant_id}/admin/whoami`・`GET …/admin/clients/status`・`GET …/admin/permissions`・
+  `GET …/admin/users`（`?q=`）と `GET …/admin/users/{user_id}`・SAML SP の 5 本
+  （`…/admin/saml-service-providers` の GET・POST、`…/import-metadata`、`…/{id}` の PUT・DELETE）。
+  応答の型は task #124 と同じく api 側に `ToSchema` 付きの DTO を置き、web が使う `assay_contracts` の
+  DTO と JSON の形が一致することをテストで確かめる（JSON の形は変わらない）。
+- 載っている管理 API の 403 の説明に残っていた「`idp.tenant.admin` 必須」を、実際に要る細かい権限コード
+  （`RequirePerms<…>`）に揃え、すべての管理 API に `bearer_token` の security と 401 を書いた。
+  以後は「管理 API はどれも security・401・403 を書き、403 に `idp.tenant.admin` を書くのは whoami だけ」を
+  テストが落とす。関数ごとの注記の古い権限（テナント設定・クライアント状況）も直した。振る舞いは変えていない。
+- **`docs/OPERATIONS.md` の「利用者に管理権限を付与／剥奪したいとき」を直した**。「SSO セッションで
+  `GET /admin/whoami` にアクセスできる」は Cookie 前提で、いまは 401 になる（管理 API は Bearer の
+  管理トークンだけ。ADR-0037）。付与・剥奪はいまは画面と管理 API（管理トークン）で行えるので、その手順を
+  先に書き、SQL はブートストラップ・締め出しのときだけにした。「4-3. 管理 API を呼ぶ」の利用者検索の例の
+  クエリ名も実際の `q` に直した（`query` では検索されず 404 だった）。`docs/PERMISSIONS.md` の
+  「`whoami`・`GET /admin/permissions`・SAML SP 管理は OpenAPI に現れない」も消した。
+
 ## 2026-09-30（12）（ログアウトの POST に CSRF を付け、web の CSRF の照合を 1 か所へ寄せた）
 
 - **アカウント設定と管理コンソールのログアウト（`POST /{tenant_id}/logout`・`POST /{tenant_id}/admin/logout`）に

@@ -42,7 +42,8 @@ use axum::Json;
         (status = 400, description = "kind が未知の値"),
         (status = 401, description = "未認証"),
         (status = 403, description = "求めた種別（または、どの種別も）を読む権限が無い"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn list_accounts(
     ManagementPrincipal(principal): ManagementPrincipal,
@@ -132,7 +133,8 @@ pub async fn list_accounts(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.clients:read 必須）"),
         (status = 404, description = "このテナントのサービスアカウントではない"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn get_service_account(
     RequirePerms(_admin, _): RequirePerms<ClientsRead>,
@@ -176,7 +178,8 @@ pub async fn get_service_account(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.clients:write 必須）"),
         (status = 404, description = "このテナントのサービスアカウントではない"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 #[allow(clippy::too_many_arguments)]
 pub async fn update_service_account_note(

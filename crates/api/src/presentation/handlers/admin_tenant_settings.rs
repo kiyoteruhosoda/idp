@@ -47,7 +47,8 @@ use axum::Json;
         (status = 200, description = "テナントが上書きできる設定の一覧", body = TenantSettingsListResponse),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.tenant-settings:read 必須）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn list_tenant_settings(
     RequirePerms(_admin, _): RequirePerms<TenantSettingsRead>,
@@ -70,7 +71,8 @@ pub async fn list_tenant_settings(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.tenant-settings:write 必須）"),
         (status = 409, description = "利用者を締め出し得る値で、確認（confirmed）が無い"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 #[allow(clippy::too_many_arguments)]
 pub async fn set_tenant_setting(
@@ -114,7 +116,8 @@ pub async fn set_tenant_setting(
         (status = 400, description = "テナントが決められないキー"),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.tenant-settings:write 必須）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn clear_tenant_setting(
     RequirePerms(admin, _): RequirePerms<TenantSettingsWrite>,

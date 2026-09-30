@@ -29,10 +29,11 @@ use axum::Json;
         (status = 201, description = "招待作成（招待トークンを含む）", body = InvitationCreatedResponse),
         (status = 400, description = "invitee がメールアドレスでも UUID でもない"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
+        (status = 403, description = "権限不足（idp.members:write 必須）"),
         (status = 404, description = "被招待利用者が不存在"),
         (status = 409, description = "既に当該テナントのメンバー"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn create_invitation(
     RequirePerms(admin, _): RequirePerms<MembersWrite>,

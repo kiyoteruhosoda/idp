@@ -72,9 +72,9 @@ assay の管理機能アクセス制御に使う**利用者権限コード（per
 
 `RequirePerms<P>` の型パラメータで指定する（`crates/api/src/presentation/admin.rs`）。
 `IdpAdmin` → `idp.tenant.admin`、`IdpSystemAdmin` → `idp.system.admin`。パスは
-`crates/api/src/presentation/router.rs` が出所。多くのエンドポイントは Swagger UI（`/api/docs`）で
-詳細を確認できるが、`whoami`・`GET /admin/permissions`（付与可能コード一覧）・SAML SP 管理は
-現状 `#[utoipa::path]` 未付与のため OpenAPI/Swagger には現れない（パスは本表・router.rs を参照）。
+`crates/api/src/presentation/router.rs` が出所。管理 API はすべて Swagger UI（`/api/docs`）に載っており、
+各操作の 403 の説明に実際に要る権限コードを書いている（task #146。以前は `whoami`・
+`GET /admin/permissions`・SAML SP 管理などが載っていなかった）。
 
 ### `idp.system.admin` が必要（全体管理者のみ）
 

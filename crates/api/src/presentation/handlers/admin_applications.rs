@@ -50,7 +50,8 @@ use uuid::Uuid;
         (status = 200, description = "アプリの一覧", body = ApplicationListResponse),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.applications:read 必須）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn list_applications(
     RequirePerms(_admin, _): RequirePerms<ApplicationsRead>,
@@ -84,7 +85,8 @@ pub async fn list_applications(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.applications:read 必須）"),
         (status = 404, description = "このテナントのメンバーではない"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn list_member_applications(
     RequirePerms(_admin, _): RequirePerms<ApplicationsRead>,
@@ -119,7 +121,8 @@ pub async fn list_member_applications(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.applications:read 必須）"),
         (status = 404, description = "このテナントのサービスアカウントではない"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn list_service_account_applications(
     RequirePerms(_admin, _): RequirePerms<ApplicationsRead>,
@@ -186,7 +189,8 @@ async fn account_applications(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.applications:read 必須）"),
         (status = 404, description = "不存在（他テナントのアプリを含む）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn get_application(
     RequirePerms(_admin, _): RequirePerms<ApplicationsRead>,
@@ -216,7 +220,8 @@ pub async fn get_application(
         (status = 400, description = "表示名が空・長すぎる／割り当てモードが不正"),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.applications:write 必須）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn create_application(
     RequirePerms(admin, _): RequirePerms<ApplicationsWrite>,
@@ -273,7 +278,8 @@ pub async fn create_application(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.applications:write 必須）"),
         (status = 404, description = "不存在"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 #[allow(clippy::too_many_arguments)]
 pub async fn update_application(
@@ -328,7 +334,8 @@ pub async fn update_application(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.applications:write 必須）"),
         (status = 404, description = "不存在"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn delete_application(
     RequirePerms(admin, _): RequirePerms<ApplicationsWrite>,
@@ -367,7 +374,8 @@ pub async fn delete_application(
         (status = 403, description = "権限不足（idp.applications:write 必須）"),
         (status = 404, description = "アプリ・相手が不存在"),
         (status = 409, description = "その相手は既に別のアプリの名乗り（応答にそのアプリ名）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 #[allow(clippy::too_many_arguments)]
 pub async fn add_binding(
@@ -460,7 +468,8 @@ fn parse_binding_request(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.applications:write 必須）"),
         (status = 404, description = "不存在"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn remove_binding(
     RequirePerms(admin, _): RequirePerms<ApplicationsWrite>,
@@ -500,7 +509,8 @@ pub async fn remove_binding(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.applications:write 必須）"),
         (status = 404, description = "アプリ・利用者・client が不存在（他テナントを含む）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 #[allow(clippy::too_many_arguments)]
 pub async fn assign_user(
@@ -582,7 +592,8 @@ fn parse_assignment_request(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.applications:write 必須）"),
         (status = 404, description = "アプリが不存在"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn unassign_user(
     RequirePerms(admin, _): RequirePerms<ApplicationsWrite>,
@@ -623,7 +634,8 @@ pub async fn unassign_user(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.applications:write 必須）"),
         (status = 404, description = "アプリ・client が不存在"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn unassign_service_account(
     RequirePerms(admin, _): RequirePerms<ApplicationsWrite>,
@@ -663,7 +675,8 @@ pub async fn unassign_service_account(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.applications:read 必須）"),
         (status = 404, description = "不存在"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn current_users(
     RequirePerms(_admin, _): RequirePerms<ApplicationsRead>,
@@ -828,7 +841,8 @@ fn to_current_users(users: CurrentUsers) -> ApplicationCurrentUsersResponse {
         (status = 400, description = "sub の指定が不正、または多すぎる"),
         (status = 401, description = "未認証"),
         (status = 403, description = "呼び出し元がサービスアカウントでない、またはどのアプリの名乗りでもない"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn own_application_users(
     ManagementPrincipal(caller): ManagementPrincipal,

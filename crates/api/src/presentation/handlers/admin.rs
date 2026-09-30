@@ -1,24 +1,36 @@
 //! 管理コンソールのハンドラ（A2 の基盤。ADR-0006）。
 //!
-//! 本エンドポイント群は `idp.tenant.admin` 権限（`idp.system.admin` は代替として許可）を保有する
-//! 利用者のみアクセスできる（`RequirePerms<IdpAdmin>`）。
-//! 内部認可であり第三者へ公開しない（OpenAPI/Discovery には載せない。ADR-0006 §7）。
-//! ログイン/監査ログ一覧（A3）や RP 登録画面（A1）は今後この基盤の上に追加する。
+//! `GET /{tenant_id}/admin/whoami` は `idp.tenant.admin` 権限（`idp.system.admin` は代替として許可）を
+//! 保有する主体だけが呼べる（`RequirePerms<IdpAdmin>`。細粒度コードだけでは通らない。ADR-0037 の決定 8）。
+//! 資格情報は他の管理 API と同じく `Authorization: Bearer` の管理トークンだけである（ADR-0037）。
+//! 権限コードそのものは内部認可であり、Discovery の `scopes_supported` には載せない（ADR-0006 §7）。
 
 use crate::domain::permission;
 use crate::presentation::admin::{IdpAdmin, RequirePerms};
+use crate::presentation::dto::WhoamiResponse;
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
-use assay_contracts::admin::WhoamiResponse;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 
 /// 認可済み管理利用者の身元と、操作中のテナントを返す（管理コンソール基盤の疎通確認用）。
-/// アクセスできること自体が「有効な SSO セッション ＋ `idp.tenant.admin` 保有」を意味する。
-/// web の管理コンソールはこれを SSO Cookie 転送で呼び、認証状態・身元・テナント表示名を得る
-/// （ADR-0007 §4）。テナント表示名は全画面のヘッダに出すため、画面ごとの追加呼び出しを避けて
-/// ここに相乗りさせる（`RequirePerms` が通った時点でテナントは解決済み）。
+/// アクセスできること自体が「有効な管理トークン ＋ `idp.tenant.admin` 保有」を意味する。
+/// web の管理コンソールは SSO セッションを交換した管理トークン（`POST /internal/admin/token`）で
+/// これを呼び、認証状態・身元・テナント表示名を得る（ADR-0007 §4 / ADR-0037）。テナント表示名は
+/// 全画面のヘッダに出すため、画面ごとの追加呼び出しを避けてここに相乗りさせる（`RequirePerms` が
+/// 通った時点でテナントは解決済み）。
+#[utoipa::path(
+    get,
+    path = "/{tenant_id}/admin/whoami",
+    tag = "admin",
+    responses(
+        (status = 200, description = "管理トークンの主体の身元・テナント表示名・行使できる権限コード", body = WhoamiResponse),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.tenant.admin 必須。細粒度コードだけでは通らない）"),
+    ),
+    security(("bearer_token" = []))
+)]
 pub async fn whoami(
     RequirePerms(admin, _): RequirePerms<IdpAdmin>,
     State(state): State<AppState>,

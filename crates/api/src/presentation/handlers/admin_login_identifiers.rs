@@ -95,9 +95,11 @@ pub struct LoginIdentifierUpdateRequest {
     tag = "admin",
     responses(
         (status = 200, description = "識別子の一覧", body = [LoginIdentifierResponse]),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.users:read 必須）"),
         (status = 404, description = "利用者が見つからない"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn list_login_identifiers(
     RequirePerms(_admin, _): RequirePerms<UsersRead>,
@@ -125,10 +127,12 @@ pub async fn list_login_identifiers(
     responses(
         (status = 201, description = "追加した識別子", body = LoginIdentifierResponse),
         (status = 400, description = "種別・値が不正"),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.users:write 必須）"),
         (status = 404, description = "利用者が見つからない"),
         (status = 409, description = "同じ値が他の利用者に解決される"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 #[allow(clippy::too_many_arguments)]
 pub async fn add_login_identifier(
@@ -176,9 +180,11 @@ pub async fn add_login_identifier(
     request_body = LoginIdentifierUpdateRequest,
     responses(
         (status = 200, description = "更新後の識別子", body = LoginIdentifierResponse),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.users:write 必須）"),
         (status = 404, description = "利用者・識別子が見つからない"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 #[allow(clippy::too_many_arguments)]
 pub async fn update_login_identifier(
@@ -223,10 +229,12 @@ pub async fn update_login_identifier(
     responses(
         (status = 200, description = "昇格後の識別子", body = LoginIdentifierResponse),
         (status = 400, description = "メール種別の識別子ではない"),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.users:write 必須）"),
         (status = 404, description = "利用者・識別子が見つからない"),
         (status = 409, description = "そのアドレスは既に他の利用者のものになっている"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn promote_primary_email(
     RequirePerms(admin, _): RequirePerms<UsersWrite>,
@@ -257,9 +265,11 @@ pub async fn promote_primary_email(
     tag = "admin",
     responses(
         (status = 204, description = "削除した"),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.users:write 必須）"),
         (status = 404, description = "利用者・識別子が見つからない"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn delete_login_identifier(
     RequirePerms(admin, _): RequirePerms<UsersWrite>,

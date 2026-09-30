@@ -11,15 +11,16 @@ use crate::presentation::dto::{
     ApplicationCurrentUsersResponse, ApplicationDetailResponse, ApplicationListResponse,
     ApplicationResponse, ApplicationServiceAccountAssignmentResponse, ApplicationUserListResponse,
     ApplicationUserResponse, AuditLogEntryResponse, AuthenticationPoliciesResponse,
-    AuthenticationPolicyResponse, AuthenticationPolicyUpsertRequest, ClientCreatedResponse,
-    ClientListResponse, ClientRegisterRequest, ClientResponse, ClientSecretResponse,
-    ClientUpdateRequest, CreateApplicationAssignmentRequest, CreateApplicationBindingRequest,
-    CreateApplicationRequest, CreateInvitationRequest, CreateTenantRequest, CreateUserRequest,
-    GenerateSigningKeyRequest, GrantPermissionRequest, IdentityApplicationResponse,
-    InvitationCreatedResponse, MemberListResponse, MemberResponse, OAuthErrorResponse,
-    RegisterRequest, RegisterResourceRequest, RegisterResponse, ResourceListResponse,
-    ResourceResponse, RestartServiceResponse, RuntimeSettingResponse, ServiceAccountResponse,
-    SettingChoiceResponse, SigningKeyResponse, SmtpSettingsResponse, SystemSettingsResponse,
+    AuthenticationPolicyResponse, AuthenticationPolicyUpsertRequest, AvailablePermissionsResponse,
+    ClientCreatedResponse, ClientListResponse, ClientRegisterRequest, ClientResponse,
+    ClientSecretResponse, ClientStatusResponse, ClientUpdateRequest,
+    CreateApplicationAssignmentRequest, CreateApplicationBindingRequest, CreateApplicationRequest,
+    CreateInvitationRequest, CreateTenantRequest, CreateUserRequest, GenerateSigningKeyRequest,
+    GrantPermissionRequest, IdentityApplicationResponse, InvitationCreatedResponse,
+    MemberListResponse, MemberResponse, OAuthErrorResponse, RegisterRequest,
+    RegisterResourceRequest, RegisterResponse, ResourceListResponse, ResourceResponse,
+    RestartServiceResponse, RuntimeSettingResponse, ServiceAccountResponse, SettingChoiceResponse,
+    SigningKeyResponse, SmtpSettingsResponse, SystemSettingsResponse,
     TenantAdminPasswordResetRequest, TenantDomainResponse, TenantListResponse,
     TenantOverrideResponse, TenantResponse, TenantSettingResponse, TenantSettingsListResponse,
     TenantSmtpSettingsResponse, TokenRequest, TokenResponse, UpdateAccountNoteRequest,
@@ -28,7 +29,8 @@ use crate::presentation::dto::{
     UpdateTenantRequest, UpdateTenantSettingRequest, UpdateTenantSettingsRequest,
     UpdateUserProfileRequest, UpdateUserStatusRequest, UserActiveTokensResponse,
     UserCreatedResponse, UserInfoResponse, UserMfaResetResponse, UserPasswordResetResponse,
-    UserPermissionsResponse, UserTokenReissueResponse, UserUnlockResponse, VerifyEmailRequest,
+    UserPermissionsResponse, UserSummaryResponse, UserTokenReissueResponse, UserUnlockResponse,
+    VerifyEmailRequest, WhoamiResponse,
 };
 use crate::presentation::handlers;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
@@ -53,12 +55,15 @@ use utoipa::{Modify, OpenApi};
         handlers::saml_sso::sso_post,
         handlers::revoke::revoke,
         handlers::introspect::introspect,
+        handlers::admin::whoami,
         handlers::admin_clients::create_client,
         handlers::admin_clients::list_clients,
+        handlers::admin_clients::list_client_status,
         handlers::admin_clients::get_client,
         handlers::admin_clients::update_client,
         handlers::admin_clients::rotate_client_secret,
         handlers::admin_clients::delete_client,
+        handlers::admin_permissions::list_available_permissions,
         handlers::admin_permissions::list_permissions,
         handlers::admin_permissions::grant_permission,
         handlers::admin_permissions::revoke_permission,
@@ -105,6 +110,8 @@ use utoipa::{Modify, OpenApi};
         handlers::admin_system_settings::update_runtime_setting,
         handlers::admin_restart::restart_service,
         handlers::admin_users::create_user,
+        handlers::admin_users::search_user,
+        handlers::admin_users::get_user,
         handlers::admin_users::update_user_status,
         handlers::admin_users::update_user_profile,
         handlers::admin_users::delete_user,
@@ -140,6 +147,11 @@ use utoipa::{Modify, OpenApi};
         handlers::admin_external_idps::delete_external_idp,
         handlers::admin_external_idps::import_external_idp_metadata,
         handlers::admin_external_idps::import_external_idp_discovery,
+        handlers::admin_saml_service_providers::list,
+        handlers::admin_saml_service_providers::register,
+        handlers::admin_saml_service_providers::import_metadata,
+        handlers::admin_saml_service_providers::update,
+        handlers::admin_saml_service_providers::delete,
         handlers::admin_audit::list_audit_logs,
         handlers::admin_application_logs::list_application_logs,
         handlers::admin_signing_keys::list_keys,
@@ -242,18 +254,27 @@ use utoipa::{Modify, OpenApi};
         handlers::admin_external_idps::SamlIdpMetadataImportResponse,
         handlers::admin_external_idps::OidcDiscoveryImportRequest,
         handlers::admin_external_idps::OidcDiscoveryImportResponse,
+        WhoamiResponse,
+        ClientStatusResponse,
+        AvailablePermissionsResponse,
+        UserSummaryResponse,
+        handlers::admin_saml_service_providers::SamlServiceProviderRegisterRequest,
+        handlers::admin_saml_service_providers::SamlServiceProviderUpdateRequest,
+        handlers::admin_saml_service_providers::SamlServiceProviderResponse,
+        handlers::admin_saml_service_providers::SamlSpMetadataImportRequest,
+        handlers::admin_saml_service_providers::SamlSpMetadataImportResponse,
     )),
     modifiers(&BearerToken),
     tags(
         (name = "oidc", description = "OIDC コアエンドポイント"),
         (name = "saml", description = "SAML メタデータ（IdP メタデータ出力）"),
         (name = "auth", description = "ユーザー登録・認証"),
-        (name = "admin", description = "管理 API（idp.tenant.admin 権限が必要。内部用）"),
+        (name = "admin", description = "管理 API（Authorization: Bearer の管理トークンで呼ぶ。ADR-0037。要る権限コードは各操作の 403 の説明を参照。内部用）"),
     )
 )]
 pub struct ApiDoc;
 
-/// `/userinfo` の Bearer 認証スキーム定義。
+/// Bearer 認証スキーム定義（`/userinfo` のアクセストークンと、管理 API の管理トークン。ADR-0037）。
 struct BearerToken;
 
 impl Modify for BearerToken {
@@ -292,6 +313,108 @@ mod tests {
             operation.security.is_some(),
             "{label} {path} に bearer_token の security が無い"
         );
+    }
+
+    /// 管理コンソールの支援 API（身元・クライアント状況・権限マスタ・利用者の検索と取得）と
+    /// SAML SP の管理 API がすべて載っている（task #146。以前はどれも OpenAPI に無かった）。
+    #[test]
+    fn console_support_and_saml_sp_admin_api_is_documented() {
+        let doc = ApiDoc::openapi();
+        let admin = "/{tenant_id}/admin";
+        assert_operation(&doc, &format!("{admin}/whoami"), HttpMethod::Get, "GET");
+        assert_operation(
+            &doc,
+            &format!("{admin}/clients/status"),
+            HttpMethod::Get,
+            "GET",
+        );
+        assert_operation(
+            &doc,
+            &format!("{admin}/permissions"),
+            HttpMethod::Get,
+            "GET",
+        );
+        assert_operation(&doc, &format!("{admin}/users"), HttpMethod::Get, "GET");
+        assert_operation(
+            &doc,
+            &format!("{admin}/users/{{user_id}}"),
+            HttpMethod::Get,
+            "GET",
+        );
+        let sp = format!("{admin}/saml-service-providers");
+        assert_operation(&doc, &sp, HttpMethod::Get, "GET");
+        assert_operation(&doc, &sp, HttpMethod::Post, "POST");
+        assert_operation(
+            &doc,
+            &format!("{sp}/import-metadata"),
+            HttpMethod::Post,
+            "POST",
+        );
+        assert_operation(&doc, &format!("{sp}/{{id}}"), HttpMethod::Put, "PUT");
+        assert_operation(&doc, &format!("{sp}/{{id}}"), HttpMethod::Delete, "DELETE");
+
+        let schemas = &doc.components.as_ref().expect("components が無い").schemas;
+        for name in [
+            "WhoamiResponse",
+            "ClientStatusResponse",
+            "AvailablePermissionsResponse",
+            "UserSummaryResponse",
+            "SamlServiceProviderRegisterRequest",
+            "SamlServiceProviderUpdateRequest",
+            "SamlServiceProviderResponse",
+            "SamlSpMetadataImportRequest",
+            "SamlSpMetadataImportResponse",
+        ] {
+            assert!(
+                schemas.contains_key(name),
+                "schema {name} が OpenAPI に無い"
+            );
+        }
+    }
+
+    /// 載っている管理 API はどれも、Bearer の security と 401 / 403 を書いている。403 の説明に
+    /// `idp.tenant.admin` を書いてよいのは、実際に `RequirePerms<IdpAdmin>` で守る whoami だけ
+    /// （細粒度の権限へ分けた口に古い「`idp.tenant.admin` 必須」が残っていた。task #146）。
+    #[test]
+    fn every_documented_admin_operation_states_bearer_and_its_permission() {
+        let doc = ApiDoc::openapi();
+        let whoami = "/{tenant_id}/admin/whoami";
+        let mut checked = 0;
+        for (path, item) in doc.paths.paths.iter() {
+            if !path.contains("/admin/") {
+                continue;
+            }
+            for (method, operation) in [
+                ("GET", &item.get),
+                ("POST", &item.post),
+                ("PUT", &item.put),
+                ("PATCH", &item.patch),
+                ("DELETE", &item.delete),
+            ] {
+                let Some(operation) = operation else { continue };
+                checked += 1;
+                assert!(
+                    operation.security.is_some(),
+                    "{method} {path} に bearer_token の security が無い"
+                );
+                let responses = &operation.responses.responses;
+                assert!(
+                    responses.contains_key("401"),
+                    "{method} {path} に 401 が無い"
+                );
+                let forbidden = match responses.get("403") {
+                    Some(utoipa::openapi::RefOr::T(response)) => response.description.clone(),
+                    _ => panic!("{method} {path} に 403 が無い"),
+                };
+                if path != whoami {
+                    assert!(
+                        !forbidden.contains("idp.tenant.admin"),
+                        "{method} {path} の 403 の説明に古い「idp.tenant.admin 必須」が残っている: {forbidden}"
+                    );
+                }
+            }
+        }
+        assert!(checked > 0, "管理 API が 1 本も載っていない");
     }
 
     /// 外部 IdP の管理 API（一覧・登録・更新・削除・SAML メタデータと discovery の取り込み）が

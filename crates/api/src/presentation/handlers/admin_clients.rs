@@ -13,7 +13,7 @@ use crate::presentation::admin::{ClientsRead, ClientsWrite, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
     ClientCreatedResponse, ClientListQueryParams, ClientListResponse, ClientRegisterRequest,
-    ClientResponse, ClientSecretResponse, ClientUpdateRequest,
+    ClientResponse, ClientSecretResponse, ClientStatusResponse, ClientUpdateRequest,
 };
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
@@ -34,8 +34,9 @@ use axum::Json;
         (status = 201, description = "登録成功（confidential は client_secret を含む）", body = ClientCreatedResponse),
         (status = 400, description = "バリデーションエラー"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
-    )
+        (status = 403, description = "権限不足（idp.clients:write 必須）"),
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn create_client(
     RequirePerms(admin, _): RequirePerms<ClientsWrite>,
@@ -114,8 +115,9 @@ fn parse_grant_type_filter(
     responses(
         (status = 200, description = "クライアント一覧（1 ページ分と総件数）", body = ClientListResponse),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
-    )
+        (status = 403, description = "権限不足（idp.clients:read 必須）"),
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn list_clients(
     RequirePerms(_admin, _): RequirePerms<ClientsRead>,
@@ -147,9 +149,10 @@ pub async fn list_clients(
     responses(
         (status = 200, description = "クライアント", body = ClientResponse),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
+        (status = 403, description = "権限不足（idp.clients:read 必須）"),
         (status = 404, description = "不存在"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn get_client(
     RequirePerms(_admin, _): RequirePerms<ClientsRead>,
@@ -178,9 +181,10 @@ pub async fn get_client(
         (status = 200, description = "更新後のクライアント", body = ClientResponse),
         (status = 400, description = "バリデーションエラー"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
+        (status = 403, description = "権限不足（idp.clients:write 必須）"),
         (status = 404, description = "不存在"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 #[allow(clippy::too_many_arguments)]
 pub async fn update_client(
@@ -237,9 +241,10 @@ pub async fn update_client(
         (status = 200, description = "新しい client_secret", body = ClientSecretResponse),
         (status = 400, description = "public クライアントには secret が無い"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
+        (status = 403, description = "権限不足（idp.clients:write 必須）"),
         (status = 404, description = "不存在"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn rotate_client_secret(
     RequirePerms(admin, _): RequirePerms<ClientsWrite>,
@@ -279,9 +284,10 @@ pub async fn rotate_client_secret(
     responses(
         (status = 204, description = "論理削除した（実体は監査のため残る）"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
+        (status = 403, description = "権限不足（idp.clients:write 必須）"),
         (status = 404, description = "不存在（削除済みを含む）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn delete_client(
     RequirePerms(admin, _): RequirePerms<ClientsWrite>,
@@ -306,12 +312,23 @@ pub async fn delete_client(
 }
 
 /// クライアント状況一覧（`GET /admin/clients/status`）。状態・scope・最終利用時刻。管理コンソール
-/// （web）の状況画面が用いる支援 API（`idp.tenant.admin` 必須）。
+/// （web）の状況画面が用いる支援 API（`idp.clients:read` 必須）。
+#[utoipa::path(
+    get,
+    path = "/{tenant_id}/admin/clients/status",
+    tag = "admin",
+    responses(
+        (status = 200, description = "クライアントごとの状態・scope・最終利用時刻", body = [ClientStatusResponse]),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.clients:read 必須）"),
+    ),
+    security(("bearer_token" = []))
+)]
 pub async fn list_client_status(
     RequirePerms(_admin, _): RequirePerms<ClientsRead>,
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
-) -> Result<Json<Vec<assay_contracts::admin::ClientStatusResponse>>, ApiError> {
+) -> Result<Json<Vec<ClientStatusResponse>>, ApiError> {
     let views = state
         .clients_status
         .list(tenant.context())
@@ -320,7 +337,7 @@ pub async fn list_client_status(
     Ok(Json(
         views
             .iter()
-            .map(|v| assay_contracts::admin::ClientStatusResponse {
+            .map(|v| ClientStatusResponse {
                 client_id: v.client_id.clone(),
                 app_name: v.app_name.clone(),
                 status: v.status.as_str().to_string(),

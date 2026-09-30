@@ -31,7 +31,8 @@ use axum::Json;
         (status = 200, description = "テナントの SMTP 設定（パスワードは設定有無のみ。経路を持たなければ inherited=true で項目は空）", body = TenantSmtpSettingsResponse),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.smtp:read 必須）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn get_tenant_smtp(
     RequirePerms(_admin, _): RequirePerms<SmtpRead>,
@@ -59,7 +60,8 @@ pub async fn get_tenant_smtp(
         (status = 200, description = "更新後のテナントの SMTP 設定", body = TenantSmtpSettingsResponse),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.smtp:write 必須）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn update_tenant_smtp(
     RequirePerms(admin, _): RequirePerms<SmtpWrite>,
@@ -103,7 +105,8 @@ pub async fn update_tenant_smtp(
         (status = 200, description = "消したあとの状態（inherited=true）", body = TenantSmtpSettingsResponse),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.smtp:write 必須）"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn clear_tenant_smtp(
     RequirePerms(admin, _): RequirePerms<SmtpWrite>,
