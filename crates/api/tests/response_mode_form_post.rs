@@ -142,3 +142,82 @@ async fn form_post_is_carried_to_the_authorization_response() {
     assert!(names.contains(&"code"), "{form_post:?}");
     assert!(names.contains(&"state"), "{form_post:?}");
 }
+
+/// 失敗も成功と同じ返し方で返す（RP は同じ受け口で待っている）。`prompt=none` で SSO が無いときの
+/// `login_required` は、`form_post` を要求されていれば hidden フィールドで返る。
+#[tokio::test]
+async fn a_resume_failure_follows_the_requested_response_mode() {
+    let Some(env) = setup("response_mode form_post error").await else {
+        return;
+    };
+    let client_id = insert_public_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
+
+    let response = send(
+        &env.app,
+        anonymous(
+            axum::http::Method::GET,
+            &format!(
+                "{}&prompt=none",
+                authorize_uri(&env.root_tenant_id, &client_id, "form_post")
+            ),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FOUND);
+    let handle = handoff_handle(&response);
+
+    let body = resume_authorize(&env.app, &env.root_tenant_id, &handle, None).await;
+    assert_eq!(
+        body["result"],
+        serde_json::json!("error_redirect"),
+        "{body}"
+    );
+    assert_eq!(
+        body["redirect_to"], "http://localhost:3000/callback",
+        "{body}"
+    );
+    let fields: Vec<(String, String)> = body["form_post"]
+        .as_array()
+        .expect("form_post fields")
+        .iter()
+        .map(|pair| {
+            (
+                pair[0].as_str().unwrap().to_string(),
+                pair[1].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert!(
+        fields.contains(&("error".to_string(), "login_required".to_string())),
+        "{fields:?}"
+    );
+    assert!(
+        fields.contains(&("state".to_string(), "st".to_string())),
+        "{fields:?}"
+    );
+
+    // `query` のままの要求では従来どおり URL に載る。
+    let response = send(
+        &env.app,
+        anonymous(
+            axum::http::Method::GET,
+            &format!(
+                "{}&prompt=none",
+                authorize_uri(&env.root_tenant_id, &client_id, "")
+            ),
+            None,
+        ),
+    )
+    .await;
+    let handle = handoff_handle(&response);
+    let body = resume_authorize(&env.app, &env.root_tenant_id, &handle, None).await;
+    assert_eq!(body["result"], serde_json::json!("error_redirect"));
+    assert!(body["form_post"].is_null(), "{body}");
+    let redirect_to = body["redirect_to"].as_str().unwrap();
+    assert!(
+        redirect_to.contains("error=login_required"),
+        "{redirect_to}"
+    );
+    assert!(redirect_to.contains("state=st"), "{redirect_to}");
+}

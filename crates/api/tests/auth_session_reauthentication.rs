@@ -101,6 +101,25 @@ async fn password_only_reauthentication_does_not_inherit_the_previous_login() {
     assert_eq!(body["result"], "password_change_required", "{body}");
     let session = body["auth_session_id"].as_str().unwrap().to_string();
 
+    // 同意画面も出さない（承諾できない段に、押しても通らない画面を見せない）。
+    let response = send(
+        &env.app,
+        Request::builder()
+            .uri(format!(
+                "/internal/consent-info?tenant_id={tenant}&auth_session_id={session}"
+            ))
+            .header(SERVICE_TOKEN_HEADER, SERVICE_TOKEN)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(
+        body["result"], "session_expired",
+        "the consent page must not be shown before authentication completes: {body}"
+    );
+
     // ⚠ ここで同意を承諾しても、code は出てはならない。2 人目は認証を終えておらず、
     //   1 人目の認証はもう、この認可セッションの持ち主ではない。
     let body = internal_post(

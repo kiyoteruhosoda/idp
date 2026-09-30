@@ -148,12 +148,15 @@ async fn resume_authorize_handoff(
         )
             .into_response(),
         // フロー終了のエラー（prompt=none 失敗等）。RP へエラーを返す。
-        InternalAuthorizeResumeResponse::ErrorRedirect { redirect_to } => (
+        InternalAuthorizeResumeResponse::ErrorRedirect {
+            redirect_to,
+            form_post,
+        } => (
             state
                 .set_cookies()
                 .expire_session(cookies::AUTH_SESSION_COOKIE)
                 .into_headers(),
-            found(&redirect_to),
+            crate::authorization_response::respond(&messages, &redirect_to, form_post),
         )
             .into_response(),
         InternalAuthorizeResumeResponse::ConsentRequired {

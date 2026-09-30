@@ -1,3 +1,13 @@
+## 2026-09-30（2）（resume の失敗を response_mode で返す・同意画面の入口をそろえた）
+
+- **resume 以降の失敗（`prompt=none` の `login_required` / `consent_required`、ポリシーの拒否、内部エラー）を、
+  成功と同じく要求された `response_mode` で返すようにした**（task #70）。`form_post` を要求した RP には、
+  web が自動送信フォームで返す。内部 API の `error_redirect` に `form_post` の欄を足した（`serde(default)`）。
+  あわせて、クエリで返すときの値のエンコードが成功時と同じ組み立て（空白は `%20`）になった。
+  ⚠ `/authorize` での検証の失敗は、api がブラウザへ直接 302 を返す地点で画面を描けないため、クエリのまま。
+- **同意画面の表示（`/internal/consent-info`）を、承諾と同じく「認証を終えていること」を条件にした**（task #71）。
+  パスワードまで通って第二段を待っている段では `session_expired` を返す。
+
 ## 2026-09-30（AuthorizationCode を集約にした）
 
 - `AuthorizationCode` を公開フィールド 16 個の構造体から集約にした。発行は `AuthorizationCode::issue`
