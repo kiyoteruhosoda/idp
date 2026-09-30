@@ -114,11 +114,13 @@ pub async fn authorize_resume(
             redirect_to: location,
             sso_absolute_ttl_secs,
         },
-        ResumeOutcome::ErrorRedirect { location } => {
-            InternalAuthorizeResumeResponse::ErrorRedirect {
-                redirect_to: location,
-            }
-        }
+        ResumeOutcome::ErrorRedirect {
+            location,
+            form_post,
+        } => InternalAuthorizeResumeResponse::ErrorRedirect {
+            redirect_to: location,
+            form_post,
+        },
         ResumeOutcome::ConsentRequired {
             auth_session_id,
             sso_absolute_ttl_secs,

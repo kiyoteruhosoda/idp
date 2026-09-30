@@ -71,8 +71,13 @@ pub enum ResumeOutcome {
         /// `Max-Age`（ADR-0058）。
         sso_absolute_ttl_secs: u64,
     },
-    /// リクエスト続行不可（`prompt=none` で未ログイン・未同意など）。エラー付き RP URL へ 302。
-    ErrorRedirect { location: String },
+    /// リクエスト続行不可（`prompt=none` で未ログイン・未同意など）。RP へエラーを返す。
+    /// 返し方は成功と同じく要求された `response_mode` に従う（G12）: `form_post` が `Some` なら
+    /// `location` へ hidden フィールドを POST する。
+    ErrorRedirect {
+        location: String,
+        form_post: Option<Vec<(String, String)>>,
+    },
     /// SSO 有効だが同意が必要。web は `auth_session_id` を Cookie 化して `/consent` へ。
     ConsentRequired {
         auth_session_id: String,
@@ -280,13 +285,11 @@ impl AuthorizeService {
         // 3. SSO で完了できない: prompt=none はログイン画面を出せないのでエラー（フロー終了）。
         if session.request().forbids_interaction() {
             let _ = self.auth_sessions.delete(session.id_hash()).await;
-            return ResumeOutcome::ErrorRedirect {
-                location: redirect_with_error(
-                    session.request(),
-                    OAuthErrorCode::LoginRequired,
-                    "login required",
-                ),
-            };
+            return resume_error(
+                session.request(),
+                OAuthErrorCode::LoginRequired,
+                "login required",
+            );
         }
 
         ResumeOutcome::LoginRequired {
@@ -372,13 +375,11 @@ impl AuthorizeService {
             RestoredPolicy::Reauthenticate => return None,
             RestoredPolicy::Denied => {
                 let _ = self.auth_sessions.delete(session.id_hash()).await;
-                return Some(ResumeOutcome::ErrorRedirect {
-                    location: redirect_with_error(
-                        session.request(),
-                        OAuthErrorCode::AccessDenied,
-                        "denied by authentication policy",
-                    ),
-                });
+                return Some(resume_error(
+                    session.request(),
+                    OAuthErrorCode::AccessDenied,
+                    "denied by authentication policy",
+                ));
             }
             RestoredPolicy::Internal(e) => return Some(ResumeOutcome::Internal(e)),
         }
@@ -433,13 +434,7 @@ impl AuthorizeService {
         // 未同意（または `prompt=consent`）。`prompt=none` では同意画面を出せないのでエラー。
         if request.forbids_interaction() {
             let _ = self.auth_sessions.delete(session.id_hash()).await;
-            return ResumeOutcome::ErrorRedirect {
-                location: redirect_with_error(
-                    request,
-                    OAuthErrorCode::ConsentRequired,
-                    "consent required",
-                ),
-            };
+            return resume_error(request, OAuthErrorCode::ConsentRequired, "consent required");
         }
 
         // 同意画面へ: AuthSession を認証済み状態にして web に返す。SSO からの復元でも id を
@@ -447,13 +442,11 @@ impl AuthorizeService {
         let completion = session.complete_authentication(authentication);
         if let Err(e) = self.auth_sessions.save_authentication(&completion).await {
             tracing::error!(error = %e, "failed to mark session for consent");
-            return ResumeOutcome::ErrorRedirect {
-                location: redirect_with_error(
-                    session.request(),
-                    OAuthErrorCode::ServerError,
-                    "failed to start consent",
-                ),
-            };
+            return resume_error(
+                session.request(),
+                OAuthErrorCode::ServerError,
+                "failed to start consent",
+            );
         }
         ResumeOutcome::ConsentRequired {
             auth_session_id: completion.into_issued().into_string(),
@@ -498,13 +491,11 @@ impl AuthorizeService {
             }
             Err(e) => {
                 tracing::error!(error = %e, "failed to issue authorization code");
-                ResumeOutcome::ErrorRedirect {
-                    location: redirect_with_error(
-                        session.request(),
-                        OAuthErrorCode::ServerError,
-                        "failed to issue authorization code",
-                    ),
-                }
+                resume_error(
+                    session.request(),
+                    OAuthErrorCode::ServerError,
+                    "failed to issue authorization code",
+                )
             }
         }
     }
@@ -656,11 +647,12 @@ fn fatal(error: OAuthErrorCode, description: &str) -> AuthorizeOutcome {
     }
 }
 
-/// 認可要求の `redirect_uri` へエラーを付けて戻す URL（`state` を透過返却）。
+/// `/authorize` の失敗を `redirect_uri` へ返す URL（`state` を透過返却）。
 ///
-/// ⚠ `/authorize` と resume の失敗は `response_mode` を見ずに**クエリで**返す（従来どおり）。
-/// 認可セッションの完了点（ログイン・同意など）のエラーは
-/// [`AuthorizationRequest::error_response`] で `response_mode` に従う。
+/// ⚠ **`/authorize` の失敗だけは `response_mode` を見ずにクエリで返す。** ここはブラウザへ api が
+/// 直接 302 を返す地点で、api は画面（自動送信フォーム）を描かない（HTML は web だけが描く）。
+/// 返すのは検証の失敗・保存の失敗で、code は載らない。resume 以降の失敗は [`resume_error`] が
+/// `response_mode` に従って返す。
 fn redirect_with_error(
     request: &AuthorizationRequest,
     error: OAuthErrorCode,
@@ -672,6 +664,20 @@ fn redirect_with_error(
         description,
         Some(request.state()),
     )
+}
+
+/// resume 以降の失敗を RP へ返す。成功と同じく要求された `response_mode` に従う（RP は同じ
+/// 受け口で待っている。OAuth 2.0 Form Post Response Mode）。web が 302 か自動送信フォームで返す。
+fn resume_error(
+    request: &AuthorizationRequest,
+    error: OAuthErrorCode,
+    description: &str,
+) -> ResumeOutcome {
+    let dispatch = AuthorizationDispatch::from(request.error_response(error, description));
+    ResumeOutcome::ErrorRedirect {
+        location: dispatch.location,
+        form_post: dispatch.form_post,
+    }
 }
 
 /// `redirect_uri` にクエリパラメータを足した URL を組み立てる。

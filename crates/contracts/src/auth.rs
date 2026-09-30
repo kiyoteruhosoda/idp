@@ -72,9 +72,14 @@ pub enum InternalAuthorizeResumeResponse {
         form_post: Option<FormPostFields>,
         sso_absolute_ttl_secs: u64,
     },
-    /// リクエスト続行不可（`prompt=none` で未ログイン・未同意など）。エラーコード付きの
-    /// `redirect_to`（RP URL）へ 302 する。
-    ErrorRedirect { redirect_to: String },
+    /// リクエスト続行不可（`prompt=none` で未ログイン・未同意など）。RP へエラーを返す。
+    /// `Redirect` と同じく、`form_post` が `Some` なら `redirect_to` へ hidden フィールドを POST する
+    /// （エラーも要求された `response_mode` で返す。G12）。`None` は `query`（`redirect_to` へ 302）。
+    ErrorRedirect {
+        redirect_to: String,
+        #[serde(default)]
+        form_post: Option<FormPostFields>,
+    },
     /// SSO 有効だが同意が必要。web は `auth_session_id` を host-only Cookie 化して `/consent` へ。
     ConsentRequired {
         auth_session_id: String,

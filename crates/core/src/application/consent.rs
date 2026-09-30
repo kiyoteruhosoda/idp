@@ -95,7 +95,7 @@ impl ConsentService {
 
     /// 同意画面への表示情報を返す。
     ///
-    /// `auth_session_id` の AuthSession が存在し、利用者を特定できていることを確認する。
+    /// `auth_session_id` の AuthSession が存在し、認証を終えていることを確認する。
     pub async fn info(
         &self,
         tenant: TenantContext,
@@ -104,7 +104,9 @@ impl ConsentService {
         let Some(session) = self.live_session(tenant, auth_session_id).await? else {
             return Ok(None);
         };
-        if session.identified_user().is_none() {
+        // 承諾（`approve`）と同じ入口の条件にする: 認証を終えていない段（パスワードまで通って第二段を
+        // 待っている等）には、押しても通らない画面を見せない。
+        if session.completed_authentication().is_none() {
             return Ok(None);
         }
         let request = session.request();
