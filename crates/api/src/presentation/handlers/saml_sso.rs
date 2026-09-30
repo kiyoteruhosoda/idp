@@ -192,6 +192,9 @@ pub async fn saml_resume(
         SamlResumeOutcome::LoginRequired { saml_request_id } => {
             InternalSamlResumeResponse::LoginRequired { saml_request_id }
         }
+        SamlResumeOutcome::ApplicationNotPermitted { application_name } => {
+            InternalSamlResumeResponse::ApplicationNotPermitted { application_name }
+        }
         SamlResumeOutcome::Expired => InternalSamlResumeResponse::Expired,
         SamlResumeOutcome::Internal(e) => {
             tracing::error!(error = %e, "SAML resume failed with internal error");

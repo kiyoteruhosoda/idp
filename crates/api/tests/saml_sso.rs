@@ -379,3 +379,186 @@ async fn resume_requires_the_service_token() {
         "missing service token"
     );
 }
+
+/// root の下にテナントを 1 つ作り、割り当ての判定の段階（`APPLICATION_ASSIGNMENT_ENFORCEMENT`）を
+/// そのテナントの行として入れる。⚠ 全体の行と root テナントには触らない（並走する他のテストの前提）。
+async fn tenant_with_enforcement(pool: &MySqlPool, root_tenant_id: &str, value: &str) -> String {
+    let tenant = uuid::Uuid::now_v7().to_string();
+    sqlx::query(
+        "INSERT INTO tenants (id, parent_tenant_id, name, status, self_registration_enabled) \
+         VALUES (?, ?, ?, 'ACTIVE', 0)",
+    )
+    .bind(&tenant)
+    .bind(root_tenant_id)
+    .bind(format!("saml-assignment-{}", &tenant[..8]))
+    .execute(pool)
+    .await
+    .expect("create tenant");
+    sqlx::query(
+        "INSERT INTO tenant_settings (tenant_id, setting_key, setting_value, is_secret) \
+         VALUES (?, 'APPLICATION_ASSIGNMENT_ENFORCEMENT', ?, 0)",
+    )
+    .bind(&tenant)
+    .bind(value)
+    .execute(pool)
+    .await
+    .expect("insert tenant setting");
+    tenant
+}
+
+/// SP を「個別」のアプリとして開き（SAML の binding）、アプリの id を返す。
+async fn open_service_provider_as_individual_application(
+    pool: &MySqlPool,
+    tenant_id: &str,
+    entity_id: &str,
+    display_name: &str,
+) -> String {
+    let service_provider_id: String = sqlx::query_scalar(
+        "SELECT id FROM saml_service_providers WHERE tenant_id = ? AND entity_id = ?",
+    )
+    .bind(tenant_id)
+    .bind(entity_id)
+    .fetch_one(pool)
+    .await
+    .expect("the service provider must exist");
+    let application_id = uuid::Uuid::now_v7().to_string();
+    sqlx::query(
+        "INSERT INTO applications (id, tenant_id, display_name, status, assignment_mode) \
+         VALUES (?, ?, ?, 'ACTIVE', 'INDIVIDUAL')",
+    )
+    .bind(&application_id)
+    .bind(tenant_id)
+    .bind(display_name)
+    .execute(pool)
+    .await
+    .expect("insert application");
+    sqlx::query(
+        "INSERT INTO application_bindings (id, application_id, kind, service_provider_id) \
+         VALUES (?, ?, 'saml', ?)",
+    )
+    .bind(uuid::Uuid::now_v7().to_string())
+    .bind(&application_id)
+    .bind(&service_provider_id)
+    .execute(pool)
+    .await
+    .expect("insert saml binding");
+    application_id
+}
+
+async fn assign_user(pool: &MySqlPool, application_id: &str, user_id: &str) {
+    sqlx::query(
+        "INSERT INTO application_assignments (id, application_id, kind, user_id) \
+         VALUES (?, ?, 'USER', ?)",
+    )
+    .bind(uuid::Uuid::now_v7().to_string())
+    .bind(application_id)
+    .bind(user_id)
+    .execute(pool)
+    .await
+    .expect("assign user");
+}
+
+/// AuthnRequest を受けて、SSO 確立済みの利用者で resume した応答を返す。
+async fn sign_in_to_sp(
+    env: &support::TestEnv,
+    tenant: &str,
+    entity_id: &str,
+    user_id: &str,
+) -> Value {
+    let xml = authn_request_xml(entity_id, &format!("_it-{}", unique()), None);
+    let uri = format!("/{tenant}/saml/sso?{}", redirect_binding_query(&xml, None));
+    let response = send(
+        &env.app,
+        Request::builder().uri(&uri).body(Body::empty()).unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FOUND, "handoff to web");
+    let handle = query_param(&location(&response), "handle").expect("handle");
+    let sso = create_sso_session(&env.pool, user_id).await;
+    resume_saml(&env.app, tenant, Some(&handle), None, Some(&sso)).await
+}
+
+/// 割り当ての判定の監査行（`application.access_denied`）の `(result, client_id)`。
+async fn access_denied_rows(pool: &MySqlPool, tenant: &str) -> Vec<(String, String)> {
+    sqlx::query_as(
+        "SELECT result, client_id FROM audit_log \
+         WHERE tenant_id = ? AND event_type = 'application.access_denied' ORDER BY occurred_at",
+    )
+    .bind(tenant)
+    .fetch_all(pool)
+    .await
+    .expect("read audit")
+}
+
+/// アサーションの発行地点にも割り当ての判定が効く（ADR-0054。task #66）。
+///
+/// `enforce` のテナントでは、名簿に載っていない人へアサーションを出さず（ACS へ送らない）、
+/// 載っている人には出す。`record_only` のテナントでは、載っていない人にも出して記録だけ残す。
+#[tokio::test]
+async fn the_application_assignment_gate_applies_to_saml_assertions() {
+    let Some(env) = support::setup("saml sso application gate").await else {
+        return;
+    };
+    let persistent = "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent";
+
+    // 1. enforce: 載っていない人は断られ、載っている人は通る。
+    let enforcing = tenant_with_enforcement(&env.pool, &env.root_tenant_id, "enforce").await;
+    let entity_id = insert_service_provider(&env.pool, &enforcing, persistent).await;
+    let application_id = open_service_provider_as_individual_application(
+        &env.pool,
+        &enforcing,
+        &entity_id,
+        "Gated SAML App",
+    )
+    .await;
+    let outsider = support::create_plain_user(&env.pool, &enforcing).await;
+    let member = support::create_plain_user(&env.pool, &enforcing).await;
+    assign_user(&env.pool, &application_id, &member).await;
+
+    let body = sign_in_to_sp(&env, &enforcing, &entity_id, &outsider).await;
+    assert_eq!(body["result"], "application_not_permitted", "{body}");
+    assert_eq!(body["application_name"], "Gated SAML App", "{body}");
+    assert!(
+        body.get("saml_response").is_none(),
+        "a denied sign-in must not carry an assertion: {body}"
+    );
+    let issued: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_log WHERE tenant_id = ? \
+         AND event_type = 'saml_response.issued' AND result = 'success'",
+    )
+    .bind(&enforcing)
+    .fetch_one(&env.pool)
+    .await
+    .expect("count issued responses");
+    assert_eq!(issued, 0, "no assertion may be issued to the outsider");
+
+    let body = sign_in_to_sp(&env, &enforcing, &entity_id, &member).await;
+    assert_eq!(body["result"], "completed", "{body}");
+    assert_eq!(body["acs_url"], ACS_URL);
+
+    assert_eq!(
+        access_denied_rows(&env.pool, &enforcing).await,
+        vec![("failure".to_string(), entity_id.clone())],
+        "only the outsider is audited, with the SP's entity id"
+    );
+
+    // 2. record_only: 載っていない人にも出し、記録だけ残す。
+    let recording = tenant_with_enforcement(&env.pool, &env.root_tenant_id, "record_only").await;
+    let entity_id = insert_service_provider(&env.pool, &recording, persistent).await;
+    open_service_provider_as_individual_application(
+        &env.pool,
+        &recording,
+        &entity_id,
+        "Recorded SAML App",
+    )
+    .await;
+    let outsider = support::create_plain_user(&env.pool, &recording).await;
+
+    let body = sign_in_to_sp(&env, &recording, &entity_id, &outsider).await;
+    assert_eq!(body["result"], "completed", "{body}");
+    assert_eq!(
+        access_denied_rows(&env.pool, &recording).await,
+        vec![("success".to_string(), entity_id)],
+        "record_only lets the outsider through and records it"
+    );
+}

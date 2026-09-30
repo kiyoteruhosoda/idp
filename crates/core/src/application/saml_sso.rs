@@ -9,9 +9,17 @@
 //! `saml_request_id` を Cookie 化してポータルログインへ誘導し、ログイン成功後に同じ resume を
 //! `saml_request_id` で再開する。
 //!
+//! # ここが SAML の「アプリを使ってよいか」の門でもある（ADR-0054）
+//!
+//! アサーションを発行できる経路は [`SamlSsoService::resume`] の 1 本だけで、ポータルでの
+//! ログイン（パスワード・MFA・パスキー・外部 IdP）はどれも SSO を確立してからここへ戻ってくる。
+//! OIDC の code の発行地点（`CodeIssuanceService::issue`）と同じく、判定は発行の直前に置く。
+//! 断ったら ACS へは POST せず、assay の画面で伝える（決定 2）。
+//!
 //! エラー方針: 検証済みの ACS（登録済み SP）が確定する前のエラーは信頼できる返送先が無いため、
 //! RP へリダイレクトせず 400 として呼び出し元へ返す（プロトコルエラーは翻訳しない。CLAUDE.md）。
 
+use crate::application::application_access::{ApplicationAccessService, ApplicationGate};
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::key_service::KeyService;
 use crate::application::sso_restore::SsoRestorer;
@@ -93,10 +101,21 @@ pub enum SamlResumeOutcome {
     },
     /// 認証が必要。web は `saml_request_id` を host-only Cookie 化してポータルログインへ誘導する。
     LoginRequired { saml_request_id: String },
+    /// 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。⚠ **ACS へ POST しない。**
+    /// 進行状態は消費済み（SP からやり直しても、割り当てが変わるまでは同じ答えになる）。
+    ApplicationNotPermitted { application_name: String },
     /// ハンドル・リクエストが無効・期限切れ・使用済み（SP からやり直し）。
     Expired,
     /// 内部エラー。
     Internal(String),
+}
+
+/// アサーション発行の結果（`CodeIssuance` と同じ理由で、拒否を `Err` に混ぜない）。
+enum SamlIssuance {
+    /// 発行できた（base64 済みの `SAMLResponse`）。
+    Issued(String),
+    /// このアプリの利用が許可されていない。⚠ **ACS へ送らない。**
+    ApplicationDenied { application_name: String },
 }
 
 pub struct SamlSsoService {
@@ -104,6 +123,7 @@ pub struct SamlSsoService {
     requests: Arc<dyn SamlSsoRequestRepository>,
     users: Arc<dyn UserRepository>,
     sso_restorer: Arc<SsoRestorer>,
+    applications: Arc<ApplicationAccessService>,
     keys: Arc<KeyService>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
@@ -119,6 +139,7 @@ impl SamlSsoService {
         requests: Arc<dyn SamlSsoRequestRepository>,
         users: Arc<dyn UserRepository>,
         sso_restorer: Arc<SsoRestorer>,
+        applications: Arc<ApplicationAccessService>,
         keys: Arc<KeyService>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
@@ -130,6 +151,7 @@ impl SamlSsoService {
             requests,
             users,
             sso_restorer,
+            applications,
             keys,
             audit,
             clock,
@@ -348,17 +370,23 @@ impl SamlSsoService {
             .issue_response(tenant, &request, &provider, restored.user_id, restored, ctx)
             .await
         {
-            Ok(saml_response) => SamlResumeOutcome::Completed {
+            Ok(SamlIssuance::Issued(saml_response)) => SamlResumeOutcome::Completed {
                 acs_url: request.acs_url,
                 saml_response,
                 relay_state: request.relay_state,
             },
+            Ok(SamlIssuance::ApplicationDenied { application_name }) => {
+                SamlResumeOutcome::ApplicationNotPermitted { application_name }
+            }
             // クレーム後の失敗は進行状態が消費済みのため再開できない（SP からやり直す）。
             Err(e) => SamlResumeOutcome::Internal(e),
         }
     }
 
     /// 署名付き SAML Response（base64）を組み立てる。
+    ///
+    /// 割り当ての判定（ADR-0054）は**組み立てより先**に行う。進行状態の消費（クレーム）の後に
+    /// 置くのは、並行する resume が同じ AuthnRequest について判定を二重に記録しないためである。
     async fn issue_response(
         &self,
         tenant: TenantContext,
@@ -367,7 +395,23 @@ impl SamlSsoService {
         user_id: uuid::Uuid,
         restored: crate::application::sso_restore::RestoredSso,
         ctx: &RequestContext,
-    ) -> Result<String, String> {
+    ) -> Result<SamlIssuance, String> {
+        if let ApplicationGate::Denied {
+            application_name, ..
+        } = self
+            .applications
+            .check_saml(
+                tenant.tenant_id(),
+                provider.id,
+                &request.sp_entity_id,
+                user_id,
+                ctx,
+            )
+            .await
+        {
+            return Ok(SamlIssuance::ApplicationDenied { application_name });
+        }
+
         let user = match self.users.find_by_id(user_id).await {
             Ok(Some(user)) => user,
             Ok(None) => return Err("SSO user not found".to_string()),
@@ -420,7 +464,7 @@ impl SamlSsoService {
             )
             .await;
 
-        Ok(STANDARD.encode(xml))
+        Ok(SamlIssuance::Issued(STANDARD.encode(xml)))
     }
 
     /// AuthnRequest の拒否を監査記録して 400 応答を返す（未登録 SP の探索も痕跡に残す）。

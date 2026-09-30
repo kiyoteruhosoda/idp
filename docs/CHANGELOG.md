@@ -1,3 +1,13 @@
+## 2026-09-30（8）（SAML のアサーションにもアプリの割り当ての判定を効かせる）
+
+- **SAML の SP へのアサーション発行にも、アプリの割り当ての判定（ADR-0054）を置いた**（task #66、旧 T52）。
+  これまで判定は OIDC の code の発行地点（`CodeIssuanceService::issue`）にしか無く、SAML は SP が 0 件のうちの
+  「意図して開けてある穴」だった。いまは `SamlSsoService::resume` が Response を組み立てる直前に、SAML の
+  binding で SP をアプリへ読み替えて同じ判定を通す。`enforce` のテナントでは名簿に無い人へアサーションを出さず、
+  ACS へは POST しないで OIDC と同じ「このアプリの利用は許可されていません」の画面（403）で伝える
+  （内部 API の `/internal/saml/resume` に `application_not_permitted` を足した）。`record_only` は通して記録だけ残す。
+  監査行 `application.access_denied` の相手欄は SP の entityID。binding の無い SP は、OIDC と同じく判定の外。
+
 ## 2026-09-30（7）（管理コンソールで利用者の有効なトークン本数を見せる）
 
 - **管理コンソールの 1 人の画面に「アプリに渡している有効なトークン」の本数を出した**（task #83、旧 T42。

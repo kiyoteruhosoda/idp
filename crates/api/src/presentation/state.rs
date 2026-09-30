@@ -619,6 +619,7 @@ impl AppState {
             Arc::new(SqlxSamlSsoRequestRepository::new(pool.clone())),
             users.clone(),
             sso_restorer.clone(),
+            application_access.clone(),
             keys.clone(),
             audit.clone(),
             clock.clone(),
