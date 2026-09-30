@@ -1,3 +1,13 @@
+## 2026-09-30（3）（`/revoke` がアクセストークンの署名と持ち主を確かめる）
+
+- **`/revoke` のアクセストークン側が、署名も持ち主も確かめずに `jti` を失効リストへ入れていた**のを直した
+  （task #73、旧 T41）。JWT の形をした任意の値で `revoked_access_tokens` を誰でも膨らませられ、`exp` も言い値を
+  信じていたので掃除にも掛からなかった。いまは「このテナントが発行したアクセストークンか」（`typ`・署名・`iss`）を
+  確かめ、別のクライアントに発行されたものは `unauthorized_client` で断る（refresh token 側と同じ。ADR-0046）。
+  期限切れは失効させるものが無いので何もしない。無効なトークンはこれまでどおり 200（RFC 7009 §2.2）。
+- アクセストークンの検証を `AccessTokenVerifier` 1 つにした（`/userinfo`・`/introspect` が同じ手順を写していた）。
+  `verify_issued`（署名・`typ`・`iss`）と `verify_for_userinfo`（加えて `aud`・期限・失効）の 2 段。
+
 ## 2026-09-30（2）（resume の失敗を response_mode で返す・同意画面の入口をそろえた）
 
 - **resume 以降の失敗（`prompt=none` の `login_required` / `consent_required`、ポリシーの拒否、内部エラー）を、

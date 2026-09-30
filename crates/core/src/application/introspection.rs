@@ -6,22 +6,17 @@
 //! - refresh_token: DB で有効性（未失効・期限内）を確認する。
 //! - 不正トークン・不存在は `{ "active": false }` を返す（エラーにしない）。
 
+use crate::application::access_token_verification::{AccessTokenRejection, AccessTokenVerifier};
 use crate::application::client_authentication::{
     ClientAuthError, ClientAuthOutcome, ClientAuthenticator, PresentedClientCredentials,
 };
-use crate::application::token::{userinfo_audience, AccessTokenClaims};
 use crate::domain::client::Client;
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::error::OAuthErrorCode;
 use crate::domain::issuer::tenant_issuer;
-use crate::domain::jwt;
-use crate::domain::repositories::{
-    ClientRepository, RefreshTokenRepository, RevokedAccessTokenRepository, SigningKeyRepository,
-    UserRepository,
-};
+use crate::domain::repositories::{ClientRepository, RefreshTokenRepository, UserRepository};
 use crate::domain::tenant_context::TenantContext;
-use jsonwebtoken::Validation;
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -84,40 +79,35 @@ impl IntrospectionError {
 
 pub struct IntrospectionService {
     clients: Arc<dyn ClientRepository>,
-    signing_keys: Arc<dyn SigningKeyRepository>,
     refresh_tokens: Arc<dyn RefreshTokenRepository>,
-    revoked_access_tokens: Arc<dyn RevokedAccessTokenRepository>,
+    /// アクセストークンの検証（署名・typ・iss・aud・exp・失効。`access_token_verification`）。
+    access_tokens: Arc<AccessTokenVerifier>,
     users: Arc<dyn UserRepository>,
     client_auth: Arc<ClientAuthenticator>,
     clock: Arc<dyn Clock>,
     /// 基底 issuer。検証・応答の `iss` はテナント毎に `<基底>/<tenant_id>` を合成する（ADR-0009 §6）。
     base_issuer: String,
-    clock_skew: chrono::Duration,
 }
 
 impl IntrospectionService {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         clients: Arc<dyn ClientRepository>,
-        signing_keys: Arc<dyn SigningKeyRepository>,
         refresh_tokens: Arc<dyn RefreshTokenRepository>,
-        revoked_access_tokens: Arc<dyn RevokedAccessTokenRepository>,
+        access_tokens: Arc<AccessTokenVerifier>,
         users: Arc<dyn UserRepository>,
         client_auth: Arc<ClientAuthenticator>,
         clock: Arc<dyn Clock>,
         base_issuer: String,
-        clock_skew: std::time::Duration,
     ) -> Self {
         Self {
             clients,
-            signing_keys,
             refresh_tokens,
-            revoked_access_tokens,
+            access_tokens,
             users,
             client_auth,
             clock,
             base_issuer,
-            clock_skew: chrono::Duration::from_std(clock_skew).expect("clock skew out of range"),
         }
     }
 
@@ -151,10 +141,10 @@ impl IntrospectionService {
                 if resp.active {
                     return Ok(resp);
                 }
-                Ok(self.introspect_access_token(tenant, token, &issuer).await)
+                Ok(self.introspect_access_token(tenant, token).await)
             }
             _ => {
-                let resp = self.introspect_access_token(tenant, token, &issuer).await;
+                let resp = self.introspect_access_token(tenant, token).await;
                 if resp.active {
                     return Ok(resp);
                 }
@@ -165,71 +155,20 @@ impl IntrospectionService {
         }
     }
 
-    /// Access Token（JWT）のイントロスペクション。`issuer` は要求テナントの合成 issuer。
+    /// Access Token（JWT）のイントロスペクション。
     async fn introspect_access_token(
         &self,
         tenant: TenantContext,
         token: &str,
-        issuer: &str,
     ) -> IntrospectionResponse {
-        // JWT ヘッダから kid を取得。
-        let header = match jsonwebtoken::decode_header(token) {
-            Ok(h) => h,
-            Err(_) => return IntrospectionResponse::inactive(),
-        };
-        if header.typ.as_deref() != Some("at+jwt") {
-            return IntrospectionResponse::inactive();
-        }
-        let kid = match header.kid {
-            Some(k) => k,
-            None => return IntrospectionResponse::inactive(),
-        };
-
-        let key = match self.signing_keys.find_by_kid(&kid).await {
-            Ok(Some(k)) => k,
-            _ => return IntrospectionResponse::inactive(),
-        };
-        // 検証アルゴリズムは署名鍵の algorithm（RS256 / ES256）で決める。RS256 決め打ちだと
-        // ES256 鍵を ACTIVE にした環境の at+jwt が常に inactive 判定になる（/userinfo と同方針）。
-        let (decoding_key, algorithm) = match jwt::decoding_key_for(&key.algorithm, &key.public_key)
-        {
-            Ok(k) => k,
-            Err(_) => return IntrospectionResponse::inactive(),
-        };
-
-        let mut validation = Validation::new(algorithm);
-        validation.validate_exp = false;
-        validation.validate_aud = false;
-        validation.required_spec_claims.clear();
-
-        let claims =
-            match jsonwebtoken::decode::<AccessTokenClaims>(token, &decoding_key, &validation) {
-                Ok(d) => d.claims,
-                Err(_) => return IntrospectionResponse::inactive(),
-            };
-
-        // iss / aud 検証（要求テナントの合成 issuer と厳密一致）。
-        if claims.iss != issuer || claims.aud != userinfo_audience(issuer) {
-            return IntrospectionResponse::inactive();
-        }
-
-        // exp 検証（clock skew 許容）。
-        let now = self.clock.now().timestamp();
-        if claims.exp + self.clock_skew.num_seconds() <= now {
-            return IntrospectionResponse::inactive();
-        }
-
-        // jti 失効リスト確認。
-        if !claims.jti.is_empty() {
-            match self.revoked_access_tokens.is_revoked(&claims.jti).await {
-                Ok(true) => return IntrospectionResponse::inactive(),
-                Ok(false) => {}
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to check access token revocation list");
-                    return IntrospectionResponse::inactive();
-                }
+        let claims = match self.access_tokens.verify_for_userinfo(tenant, token).await {
+            Ok(claims) => claims,
+            Err(AccessTokenRejection::Unavailable(e)) => {
+                tracing::warn!(error = %e, "failed to verify access token for introspection");
+                return IntrospectionResponse::inactive();
             }
-        }
+            Err(_) => return IntrospectionResponse::inactive(),
+        };
 
         // 主体の現在の状態確認。無効化・削除済みの主体のトークンは exp 前でも inactive にする
         // （管理者による無効化・削除を即時反映する。/userinfo と同じ判定）。

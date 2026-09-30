@@ -2,6 +2,7 @@
 //!
 //! ドメイン層のトレイトを介して Infrastructure に依存する（具象に直接依存しない）。
 
+pub mod access_token_verification;
 pub mod account_directory;
 pub mod account_language;
 pub mod account_note;

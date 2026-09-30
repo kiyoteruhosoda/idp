@@ -6,6 +6,7 @@
 //! - confidential client は認証が必要（方式はクライアントの登録値。`client_secret_basic` /
 //!   `client_secret_post`）。public client は認証なし。
 
+use crate::application::access_token_verification::{AccessTokenRejection, AccessTokenVerifier};
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::client_authentication::{
     ClientAuthError, ClientAuthFailure, ClientAuthOutcome, ClientAuthenticator,
@@ -43,6 +44,8 @@ pub struct RevocationService {
     clients: Arc<dyn ClientRepository>,
     refresh_tokens: Arc<dyn RefreshTokenRepository>,
     revoked_access_tokens: Arc<dyn RevokedAccessTokenRepository>,
+    /// 失効させる前に「このテナントが発行したアクセストークンか」を確かめる（T41）。
+    access_tokens: Arc<AccessTokenVerifier>,
     client_auth: Arc<ClientAuthenticator>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
@@ -53,6 +56,7 @@ impl RevocationService {
         clients: Arc<dyn ClientRepository>,
         refresh_tokens: Arc<dyn RefreshTokenRepository>,
         revoked_access_tokens: Arc<dyn RevokedAccessTokenRepository>,
+        access_tokens: Arc<AccessTokenVerifier>,
         client_auth: Arc<ClientAuthenticator>,
         audit: Arc<AuditService>,
         clock: Arc<dyn Clock>,
@@ -61,6 +65,7 @@ impl RevocationService {
             clients,
             refresh_tokens,
             revoked_access_tokens,
+            access_tokens,
             client_auth,
             audit,
             clock,
@@ -91,7 +96,10 @@ impl RevocationService {
         // token_type_hint に従って試みるが、どちらでも試す（RFC 7009 §2.1）。
         match token_type_hint {
             Some("access_token") => {
-                if !self.try_revoke_access_token(token, now).await {
+                if !self
+                    .try_revoke_access_token(tenant, token, now, &client)
+                    .await?
+                {
                     self.try_revoke_refresh_token(tenant, token, now, &client)
                         .await?;
                 }
@@ -102,7 +110,8 @@ impl RevocationService {
                     .try_revoke_refresh_token(tenant, token, now, &client)
                     .await?
                 {
-                    let _ = self.try_revoke_access_token(token, now).await;
+                    self.try_revoke_access_token(tenant, token, now, &client)
+                        .await?;
                 }
             }
         }
@@ -179,42 +188,54 @@ impl RevocationService {
         }
     }
 
-    /// access_token（JWT）の失効を試みる。jti を抽出して blocklist に追加。成功したら `true`。
+    /// access_token（JWT）の失効を試みる。失効させたら `Ok(true)`。
+    ///
+    /// **署名と発行者を確かめてから**失効リストへ入れる（T41）。確かめずに `jti` を取り出していた
+    /// ころは、JWT の形をしたでたらめな値で失効リストを誰でも膨らませられ、期限（`exp`）も言い値を
+    /// 信じていたので掃除にも掛からなかった。
+    ///
+    /// - このテナントが発行したアクセストークンでない（形・署名・発行者が違う）→ `Ok(false)`
+    ///   （refresh token かもしれない。RFC 7009 §2.2: 無効なトークンはエラーにしない）
+    /// - 期限切れ → `Ok(true)`（もう使えないので失効させるものが無い。リストにも入れない）
+    /// - **持ち主のクライアントでない → `unauthorized_client`**（refresh token 側と同じ。ADR-0046。
+    ///   RFC 7009 §2.1）
     async fn try_revoke_access_token(
         &self,
+        tenant: TenantContext,
         token: &str,
         now: chrono::DateTime<chrono::Utc>,
-    ) -> bool {
-        // JWT ヘッダ・ペイロードをデコードして jti と exp を取得（署名検証は省略）。
-        let parts: Vec<&str> = token.splitn(3, '.').collect();
-        if parts.len() < 2 {
-            return false;
+        client: &Client,
+    ) -> Result<bool, RevocationError> {
+        let claims = match self.access_tokens.verify_issued(tenant, token).await {
+            Ok(claims) => claims,
+            Err(AccessTokenRejection::Unavailable(e)) => {
+                tracing::warn!(error = %e, "failed to verify access token for revocation");
+                return Ok(false);
+            }
+            Err(_) => return Ok(false),
+        };
+        if claims.client_id != client.client_id {
+            return Err(RevocationError::new(
+                OAuthErrorCode::UnauthorizedClient,
+                "the token was not issued to this client",
+            ));
         }
-        let payload = match base64_decode_no_pad(parts[1]) {
-            Some(p) => p,
-            None => return false,
+        if claims.jti.is_empty() || self.access_tokens.is_expired(&claims) {
+            return Ok(true);
+        }
+        let Some(expires_at) = chrono::DateTime::from_timestamp(claims.exp, 0) else {
+            return Ok(false);
         };
-        let claims: serde_json::Value = match serde_json::from_slice(&payload) {
-            Ok(v) => v,
-            Err(_) => return false,
-        };
-        let jti = match claims["jti"].as_str() {
-            Some(j) if !j.is_empty() => j.to_string(),
-            _ => return false,
-        };
-        let exp = claims["exp"].as_i64().unwrap_or(0);
-        let expires_at = chrono::DateTime::from_timestamp(exp, 0).unwrap_or(now);
-
         let revoked = RevokedAccessToken {
-            jti,
+            jti: claims.jti,
             revoked_at: now,
             expires_at,
         };
         match self.revoked_access_tokens.revoke(&revoked).await {
-            Ok(_) => true,
+            Ok(_) => Ok(true),
             Err(e) => {
                 tracing::warn!(error = %e, "failed to revoke access token jti");
-                false
+                Ok(false)
             }
         }
     }
@@ -306,11 +327,4 @@ impl RevocationService {
             )
             .await;
     }
-}
-
-/// base64url（パディングなし）デコード。
-fn base64_decode_no_pad(s: &str) -> Option<Vec<u8>> {
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    use base64::Engine;
-    URL_SAFE_NO_PAD.decode(s).ok()
 }
