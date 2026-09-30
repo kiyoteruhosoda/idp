@@ -836,6 +836,7 @@ pub(crate) mod tests {
             admin: None,
             member: &member,
             applications: None,
+            active_tokens: None,
             csrf: "",
             error_key: None,
             notice_key: None,

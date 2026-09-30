@@ -255,3 +255,76 @@ async fn an_unknown_member_goes_back_to_the_list() {
     .await;
     assert_eq!(response.status(), StatusCode::FOUND, "一覧へ戻しません");
 }
+
+/// task #83: 1 人の画面は api の `active-tokens` を引いて、いま有効な refresh token の本数を出す。
+/// ゲストは所属元テナントの管理者しか数えられない（api は 404）ので、そもそも聞きに行かない。
+#[tokio::test]
+async fn the_member_page_shows_the_active_token_count_for_home_members_only() {
+    let env = setup().await;
+    stub_admin(&env).await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/[^/]+/admin/members/[^/]+$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(member()))
+        .mount(&env.api)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/[^/]+/admin/users/[^/]+/active-tokens$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "user_id": USER_ID,
+            "active_refresh_tokens": 2
+        })))
+        .expect(1)
+        .mount(&env.api)
+        .await;
+
+    let response = send(
+        &env.app,
+        get_with_cookies(
+            &format!("{}/admin/members/{USER_ID}", env.prefix()),
+            &format!("{SSO_SESSION_COOKIE}=s"),
+        ),
+    )
+    .await;
+    let st = response.status();
+    let html = body_text(response).await;
+    assert_eq!(st, StatusCode::OK, "{}", &html[..html.len().min(900)]);
+    assert!(
+        html.contains("data-active-refresh-tokens=\"2\""),
+        "本数が出ていません: {html}"
+    );
+}
+
+#[tokio::test]
+async fn the_guest_member_page_does_not_ask_for_the_token_count() {
+    let env = setup().await;
+    stub_admin(&env).await;
+    let mut guest = member();
+    guest["membership_type"] = json!("GUEST");
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/[^/]+/admin/members/[^/]+$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(guest))
+        .mount(&env.api)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/[^/]+/admin/users/[^/]+/active-tokens$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "user_id": USER_ID,
+            "active_refresh_tokens": 2
+        })))
+        .expect(0)
+        .mount(&env.api)
+        .await;
+
+    let response = send(
+        &env.app,
+        get_with_cookies(
+            &format!("{}/admin/members/{USER_ID}", env.prefix()),
+            &format!("{SSO_SESSION_COOKIE}=s"),
+        ),
+    )
+    .await;
+    let st = response.status();
+    let html = body_text(response).await;
+    assert_eq!(st, StatusCode::OK, "{}", &html[..html.len().min(900)]);
+    assert!(!html.contains("data-active-refresh-tokens"), "{html}");
+}

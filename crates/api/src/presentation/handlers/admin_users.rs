@@ -10,8 +10,9 @@ use crate::domain::values::UserStatus;
 use crate::presentation::admin::{RequirePerms, UsersRead, UsersWrite};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
-    CreateUserRequest, UpdateUserProfileRequest, UpdateUserStatusRequest, UserCreatedResponse,
-    UserMfaResetResponse, UserPasswordResetResponse, UserTokenReissueResponse, UserUnlockResponse,
+    CreateUserRequest, UpdateUserProfileRequest, UpdateUserStatusRequest, UserActiveTokensResponse,
+    UserCreatedResponse, UserMfaResetResponse, UserPasswordResetResponse, UserTokenReissueResponse,
+    UserUnlockResponse,
 };
 use crate::presentation::error::ApiError;
 use crate::presentation::handlers::{map_permission_management_error, request_context};
@@ -400,6 +401,44 @@ pub async fn reissue_user_tokens(
     Ok(Json(UserTokenReissueResponse {
         user_id: reissue.user_id.to_string(),
         revoked: reissue.revoked,
+    }))
+}
+
+/// 利用者のいま有効な refresh token の本数を返す
+/// （`GET /{tenant_id}/admin/users/{user_id}/active-tokens`。task #83）。
+///
+/// 再発行（`token-reissue`）を押す前に「この人にいま何本生きているか」を管理者へ見せる。
+/// 権限は利用者の読み取り（`idp.users:read`）に揃える。対象は再発行と同じく所属元が当該
+/// テナントの利用者だけで、他テナントの利用者は不存在と同じ 404 にする。アクセストークンは
+/// DB に行が無いので数に含まない。
+#[utoipa::path(
+    get,
+    path = "/{tenant_id}/admin/users/{user_id}/active-tokens",
+    tag = "admin",
+    params(("user_id" = String, Path, description = "対象利用者の内部 ID（UUID）")),
+    responses(
+        (status = 200, description = "有効な refresh token の本数（0 を含む。アクセストークンは数えない）", body = UserActiveTokensResponse),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.users:read 必須）"),
+        (status = 404, description = "不存在（所属元が他テナントの場合を含む）"),
+    )
+)]
+pub async fn count_user_active_tokens(
+    RequirePerms(_admin, _): RequirePerms<UsersRead>,
+    State(state): State<AppState>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
+    Path((_tenant_id, user_id)): Path<(String, String)>,
+) -> Result<Json<UserActiveTokensResponse>, ApiError> {
+    let target = parse_user_id(&user_id, locale)?;
+    let count = state
+        .users_lifecycle
+        .count_active_tokens(tenant.context(), target)
+        .await
+        .map_err(|e| map_user_lifecycle_error(e, locale))?;
+    Ok(Json(UserActiveTokensResponse {
+        user_id: count.user_id.to_string(),
+        active_refresh_tokens: count.refresh_tokens,
     }))
 }
 

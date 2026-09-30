@@ -481,6 +481,11 @@ pub fn build(state: AppState) -> Router {
             "/admin/users/{user_id}/token-reissue",
             post(admin_users::reissue_user_tokens),
         )
+        // いま有効な refresh token の本数（再発行の前に見せる。task #83）。idp.users:read 必須。
+        .route(
+            "/admin/users/{user_id}/active-tokens",
+            get(admin_users::count_user_active_tokens),
+        )
         // アカウントロックの即時解除（AP6。仕様 §17.1・§24.6）。idp.users:write 必須。
         .route(
             "/admin/users/{user_id}/unlock",

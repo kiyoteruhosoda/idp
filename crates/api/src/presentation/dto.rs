@@ -1013,6 +1013,18 @@ pub struct UserTokenReissueResponse {
     pub revoked: u64,
 }
 
+/// 利用者のいま有効なトークンの本数（`GET /{tenant_id}/admin/users/{user_id}/active-tokens`。
+/// task #83）。再発行（ADR-0047）を押す前に対象の有無を見せるための読み取り。
+///
+/// ⚠ **数えているのは refresh token だけ。** アクセストークンは自己完結型 JWT で DB に行が
+/// 無く、数えられない（寿命まで有効なまま）。フィールド名に種類を入れて取り違えを防ぐ。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct UserActiveTokensResponse {
+    pub user_id: String,
+    /// 未失効かつ期限内の refresh token の本数。テナントを問わず数える（再発行が落とす範囲と同じ）。
+    pub active_refresh_tokens: u64,
+}
+
 /// 子テナント管理者のパスワード再発行リクエスト
 /// （`POST /{tenant_id}/admin/tenants/{child_id}/admin-password-reset`）。
 #[derive(Debug, Deserialize, ToSchema)]

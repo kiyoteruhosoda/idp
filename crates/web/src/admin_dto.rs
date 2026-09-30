@@ -560,6 +560,15 @@ pub struct UserTokenReissueView {
     pub revoked: u64,
 }
 
+/// 利用者のいま有効なトークンの本数（`GET /admin/users/{id}/active-tokens`。task #83）。
+/// 数えられるのは refresh token だけ（アクセストークンは DB に行が無い）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct UserActiveTokensView {
+    #[allow(dead_code)]
+    pub user_id: String,
+    pub active_refresh_tokens: u64,
+}
+
 /// 管理者によるアカウントロック解除の結果（`POST /admin/users/{id}/unlock`。AP6）。
 /// `was_locked` で「解除した」と「元からロックされていない」を出し分ける。
 #[derive(Debug, Clone, Deserialize)]

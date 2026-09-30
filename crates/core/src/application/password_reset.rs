@@ -770,6 +770,9 @@ mod tests {
             self.revoked_users.lock().unwrap().push(user_id);
             Ok(1)
         }
+        async fn count_active_for_user(&self, _u: Uuid, _now: DateTime<Utc>) -> DomainResult<u64> {
+            unreachable!()
+        }
         async fn revoke_all_for_user_and_client(
             &self,
             _t: TenantId,

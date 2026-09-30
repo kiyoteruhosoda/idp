@@ -2280,6 +2280,8 @@ pub struct MemberDetail<'a> {
     /// このメンバーが使えるアプリ（ADR-0063）。`idp.applications:read` を持たない管理者には
     /// 引けないので `None`（欄ごと出さない）。
     pub applications: Option<&'a crate::admin_dto::AccountApplicationListView>,
+    /// いま有効な refresh token の本数（task #83）。ゲストと、引けなかったときは `None`（出さない）。
+    pub active_tokens: Option<&'a crate::admin_dto::UserActiveTokensView>,
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
     pub notice_key: Option<&'a str>,

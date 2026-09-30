@@ -69,6 +69,19 @@ pub struct TokenReissue {
     pub revoked: u64,
 }
 
+/// 利用者のいま有効なトークンの本数（task #83）。再発行（ADR-0047）を押す前に、対象が
+/// あるかを管理者へ見せるための読み取り結果。
+///
+/// ⚠ **数えられるのは refresh token だけ**である。アクセストークンは自己完結型 JWT で DB に
+/// 行を持たないため、発行済みの本数を数える手段が無い。フィールド名に種類を入れているのは、
+/// 画面が「何を数えたか」を取り違えないため。
+#[derive(Debug)]
+pub struct ActiveTokenCount {
+    pub user_id: Uuid,
+    /// 未失効かつ期限内の refresh token の本数（テナントを問わない。再発行が落とす範囲と同じ）。
+    pub refresh_tokens: u64,
+}
+
 /// プロフィール編集の指示（MT25）。`None` のフィールドは変更しない（部分更新）。
 /// `preferred_username` / `name` に空文字を渡すと「解除（`NULL`）」を意味する。
 #[derive(Debug, Default, Clone)]
@@ -273,6 +286,31 @@ impl UserLifecycleService {
         Ok(TokenReissue {
             user_id: user.id,
             revoked,
+        })
+    }
+
+    /// 利用者のいま有効な refresh token の本数を数える（task #83）。
+    ///
+    /// 対象の判定は再発行と同じ [`Self::find_home_user`]（所属元が要求テナントの利用者だけ）。
+    /// 他テナントの利用者は数えず、不存在と同じ `NotFound` を返す（存在を推測させない）。
+    /// 数える範囲はテナントで絞らない —— 再発行が落とすのは利用者の全トークンなので、
+    /// 見せる本数もそれに揃える（ADR-0047「テナントで絞らない」）。
+    ///
+    /// 読み取りだけなので監査には残さない（利用者の詳細を開くのと同じ扱い）。
+    pub async fn count_active_tokens(
+        &self,
+        tenant: TenantContext,
+        target: Uuid,
+    ) -> Result<ActiveTokenCount, UserLifecycleError> {
+        let user = self.find_home_user(tenant, target).await?;
+        let refresh_tokens = self
+            .refresh_tokens
+            .count_active_for_user(user.id, self.clock.now())
+            .await
+            .map_err(internal)?;
+        Ok(ActiveTokenCount {
+            user_id: user.id,
+            refresh_tokens,
         })
     }
 
@@ -963,6 +1001,8 @@ mod tests {
     #[derive(Default)]
     struct FakeRefreshTokens {
         revoked_users: Mutex<Vec<Uuid>>,
+        /// `count_active_for_user` が数えた相手（数えに行ったかどうかを確かめる）。
+        counted_users: Mutex<Vec<Uuid>>,
     }
     #[async_trait]
     impl RefreshTokenRepository for FakeRefreshTokens {
@@ -1015,6 +1055,14 @@ mod tests {
         ) -> DomainResult<u64> {
             self.revoked_users.lock().unwrap().push(user_id);
             Ok(1)
+        }
+        async fn count_active_for_user(
+            &self,
+            user_id: Uuid,
+            _now: DateTime<Utc>,
+        ) -> DomainResult<u64> {
+            self.counted_users.lock().unwrap().push(user_id);
+            Ok(2)
         }
         async fn revoke_all_for_user_and_client(
             &self,
@@ -1980,5 +2028,47 @@ mod tests {
             Err(UserLifecycleError::NotFound)
         ));
         assert!(f.refresh.revoked_users.lock().unwrap().is_empty());
+    }
+
+    /// 有効なトークンの本数は、所属元の利用者についてだけ数え、何も落とさない（task #83）。
+    #[tokio::test]
+    async fn counting_active_tokens_reads_without_revoking() {
+        let tenant: TenantId = Uuid::now_v7().into();
+        let f = fixture();
+        let target = Uuid::now_v7();
+        f.users.create(&user(target, tenant)).await.unwrap();
+
+        let count = f
+            .svc
+            .count_active_tokens(TenantContext::new(tenant), target)
+            .await
+            .expect("count");
+
+        assert_eq!(count.user_id, target);
+        assert_eq!(count.refresh_tokens, 2);
+        assert_eq!(*f.refresh.counted_users.lock().unwrap(), vec![target]);
+        assert!(f.refresh.revoked_users.lock().unwrap().is_empty());
+        assert!(
+            f.sink.events.lock().unwrap().is_empty(),
+            "読み取りは監査に残さない"
+        );
+    }
+
+    /// 所属元が別テナントの利用者は数えない（再発行と同じ判定。存在も推測させない）。
+    #[tokio::test]
+    async fn counting_active_tokens_for_another_tenants_user_is_not_found() {
+        let tenant: TenantId = Uuid::now_v7().into();
+        let other: TenantId = Uuid::now_v7().into();
+        let f = fixture();
+        let target = Uuid::now_v7();
+        f.users.create(&user(target, other)).await.unwrap();
+
+        assert!(matches!(
+            f.svc
+                .count_active_tokens(TenantContext::new(tenant), target)
+                .await,
+            Err(UserLifecycleError::NotFound)
+        ));
+        assert!(f.refresh.counted_users.lock().unwrap().is_empty());
     }
 }
