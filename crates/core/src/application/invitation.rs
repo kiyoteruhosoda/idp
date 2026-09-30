@@ -675,6 +675,9 @@ mod tests {
             // ゲストの停止はテナント単位で失効させる（ユーザー全体を巻き込まない）。
             unreachable!()
         }
+        async fn count_active_for_user(&self, _u: Uuid, _now: DateTime<Utc>) -> DomainResult<u64> {
+            unreachable!()
+        }
         async fn revoke_all_for_user_in_tenant(
             &self,
             tenant_id: TenantId,

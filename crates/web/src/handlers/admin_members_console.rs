@@ -82,6 +82,18 @@ pub async fn detail(
             .ok(),
         Err(_) => None,
     };
+    // いま有効なトークンの本数（task #83）。再発行を押す前に対象があるかを見せる。数えられるのは
+    // 所属元（HOME）の利用者だけ（api は他テナントの利用者に 404 を返す）なので、ゲストには
+    // 聞かない。引けなかったときは欄ごと出さず、画面そのものは断らない（操作は本数を知らなくても
+    // 成り立つ。ADR-0047）。
+    let active_tokens = match &result {
+        Ok(member) if member.membership_type == "HOME" => state
+            .api
+            .count_user_active_tokens(&correlation.0, &tenant.0, &sso, &user_id)
+            .await
+            .ok(),
+        _ => None,
+    };
     let messages = Messages::new(locale(&headers));
     match result {
         Ok(member) => Html(render(&MemberDetail {
@@ -90,6 +102,7 @@ pub async fn detail(
             admin: Some(admin.chrome()),
             member: &member,
             applications: applications.as_ref(),
+            active_tokens: active_tokens.as_ref(),
             csrf: &csrf_from(&headers, state.config.csrf_secret()),
             error_key: query.error.as_deref().and_then(error_key_for),
             notice_key: query.notice.as_deref().and_then(notice_key_for),
@@ -631,10 +644,57 @@ mod tests {
             admin: Some(AdminContext::for_test("admin-1", Some("Acme")).chrome()),
             member: m,
             applications: None,
+            active_tokens: None,
             csrf: "csrf123",
             error_key: None,
             notice_key: None,
         })
+    }
+
+    fn render_detail_with_tokens(
+        locale: Locale,
+        m: &MemberView,
+        tokens: &crate::admin_dto::UserActiveTokensView,
+    ) -> String {
+        let messages = Messages::new(locale);
+        render(&crate::templates::MemberDetail {
+            messages: &messages,
+            tenant: &tenant().prefix(),
+            admin: Some(AdminContext::for_test("admin-1", Some("Acme")).chrome()),
+            member: m,
+            applications: None,
+            active_tokens: Some(tokens),
+            csrf: "csrf123",
+            error_key: None,
+            notice_key: None,
+        })
+    }
+
+    /// task #83: 1 人の画面に、いま有効な refresh token の本数を**何を数えたか**と一緒に出す。
+    /// 本数だけを出すと「アクセストークンも数えている」「0 なら何も生きていない」と読める
+    /// （アクセストークンは DB に行が無く数えられない）。
+    #[test]
+    fn active_token_count_is_shown_with_what_was_counted() {
+        let tokens = crate::admin_dto::UserActiveTokensView {
+            user_id: member("HOME").user_id,
+            active_refresh_tokens: 3,
+        };
+        let ja = render_detail_with_tokens(Locale::Ja, &member("HOME"), &tokens);
+        assert!(ja.contains("data-active-refresh-tokens=\"3\""), "{ja}");
+        assert!(ja.contains("3 本"), "{ja}");
+        assert!(ja.contains("アプリに渡している有効なトークン"), "{ja}");
+        assert!(ja.contains("アクセストークンは数えられないため"), "{ja}");
+
+        let en = render_detail_with_tokens(Locale::En, &member("HOME"), &tokens);
+        assert!(en.contains("Active app tokens"), "{en}");
+        assert!(en.contains("access tokens cannot be counted"), "{en}");
+    }
+
+    /// 本数が引けなかったとき（`None`）は欄ごと出さない。0 本と取り違えさせない。
+    #[test]
+    fn active_token_count_is_hidden_when_unknown() {
+        let html = render_detail(&member("HOME"));
+        assert!(!html.contains("data-active-refresh-tokens"), "{html}");
     }
 
     fn render_detail_with_applications(
@@ -648,6 +708,7 @@ mod tests {
             admin: Some(AdminContext::for_test("admin-1", Some("Acme")).chrome()),
             member: m,
             applications: Some(applications),
+            active_tokens: None,
             csrf: "csrf123",
             error_key: None,
             notice_key: None,

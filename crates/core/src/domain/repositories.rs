@@ -1237,6 +1237,14 @@ pub trait RefreshTokenRepository: Send + Sync {
     /// 場合は [`revoke_all_for_user_in_tenant`](Self::revoke_all_for_user_in_tenant) を使う。
     async fn revoke_all_for_user(&self, user_id: Uuid, revoked_at: DateTime<Utc>) -> Result<u64>;
 
+    /// 指定ユーザーの**いま使える** Refresh Token の本数を返す（未失効かつ `expires_at > now`）。
+    /// 管理コンソールが再発行（ADR-0047）の前に「対象があるか」を見せるために使う。
+    ///
+    /// **テナントで絞らない。** 数える範囲は [`revoke_all_for_user`](Self::revoke_all_for_user)
+    /// が落とす範囲に揃える（見せた本数と押した結果が、別の範囲を指さないように）。期限切れを
+    /// 数えないのは、それがもう更新に使えず「生きている鍵」ではないため。
+    async fn count_active_for_user(&self, user_id: Uuid, now: DateTime<Utc>) -> Result<u64>;
+
     /// **1 つの SSO セッション**から生まれた Refresh Token を失効させる（ADR-0044）。
     /// 失効させた行数を返す（監査に載せる）。
     ///

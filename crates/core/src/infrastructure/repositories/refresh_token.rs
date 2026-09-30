@@ -231,4 +231,18 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
         .map_err(repo_err)?;
         Ok(result.rows_affected())
     }
+
+    async fn count_active_for_user(&self, user_id: Uuid, now: DateTime<Utc>) -> Result<u64> {
+        // `refresh_tokens_user_idx (user_id)` で引ける。1 人ぶんの行数は小さいので索引の追加は不要。
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM refresh_tokens \
+             WHERE user_id = ? AND revoked_at IS NULL AND expires_at > ?",
+        )
+        .bind(user_id.to_string())
+        .bind(now.naive_utc())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        Ok(u64::try_from(count).unwrap_or(0))
+    }
 }

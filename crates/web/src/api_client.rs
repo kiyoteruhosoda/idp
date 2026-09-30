@@ -1191,6 +1191,26 @@ impl ApiClient {
         .await
     }
 
+    /// 利用者のいま有効な refresh token の本数（`GET /admin/users/{user_id}/active-tokens`。
+    /// task #83）。再発行を押す前に対象の有無を見せるために読む。
+    pub async fn count_user_active_tokens(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        user_id: &str,
+    ) -> Result<crate::admin_dto::UserActiveTokensView, AdminApiError> {
+        self.admin_send(
+            Method::GET,
+            tenant_id,
+            &format!("/admin/users/{user_id}/active-tokens"),
+            correlation_id,
+            sso,
+            None,
+        )
+        .await
+    }
+
     /// アカウントロックの即時解除（`POST /admin/users/{user_id}/unlock`。AP6）。
     /// ロック期限のクリアと失敗回数のリセットを api 側が同時に行う。
     pub async fn unlock_user(

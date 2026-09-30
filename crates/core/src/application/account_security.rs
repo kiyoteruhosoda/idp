@@ -691,6 +691,9 @@ mod tests {
             self.revoked_users.lock().unwrap().push(u);
             Ok(3)
         }
+        async fn count_active_for_user(&self, _u: Uuid, _now: DateTime<Utc>) -> DomainResult<u64> {
+            unreachable!()
+        }
         async fn revoke_all_for_session(
             &self,
             u: Uuid,

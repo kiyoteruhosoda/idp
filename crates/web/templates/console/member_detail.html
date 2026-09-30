@@ -31,6 +31,14 @@
         {% else if member.user_status.is_some() %}<span class="badge text-bg-warning">{{ messages.get("admin-members-user-status-locked") }}</span>
         {% else %}-{% endif %}
       </dd></div>
+    {#- 再発行（ADR-0047）を押す前に対象があるかを見せる（task #83）。数えられるのは refresh token
+        だけで、アクセストークンは DB に行が無い。何を数えたかを説明文で必ず添える。 -#}
+    {% if let Some(tokens) = active_tokens %}
+    <div class="col mb-2"><dt class="small text-muted fw-semibold">{{ messages.get("admin-member-active-tokens") }}</dt>
+      <dd class="mb-0"><span data-active-refresh-tokens="{{ tokens.active_refresh_tokens }}">{{ messages.get_arg("admin-member-active-tokens-count", "count", tokens.active_refresh_tokens.to_string().as_str()) }}</span>
+        <div class="small text-muted mt-1">{{ messages.get("admin-member-active-tokens-help") }}</div>
+      </dd></div>
+    {% endif %}
   </dl>
 </div>
 

@@ -20,7 +20,7 @@ use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
 use axum::http::{Request, StatusCode};
 use base64::Engine as _;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
-use serde_json::json;
+use serde_json::{json, Value};
 use support::{
     admin_token, body_json, handoff_handle, post, post_internal, query_param, resume_authorize,
     send, TestEnv, CODE_CHALLENGE, CODE_VERIFIER, REDIRECT_URI, REDIRECT_URI_ENC, SERVICE_TOKEN,
@@ -371,4 +371,225 @@ async fn token_reissue_checks_authorization_and_allows_yourself() {
     );
     let response = send(&env.app, post(&admin_tok, &self_uri, json!({}))).await;
     assert_eq!(response.status(), StatusCode::OK, "self -> 200");
+}
+
+// --- いま有効なトークンの本数（task #83） ------------------------------------------------------
+
+/// `refresh_tokens` へ 1 行を直に入れる。`(tenant_id, client_id)` の複合外部キーがあるので
+/// 発行元クライアントは実在させる。`expires_in_days` を負にすれば期限切れ、`revoked` で失効済み。
+async fn insert_refresh_token_row(
+    pool: &sqlx::MySqlPool,
+    tenant_id: &str,
+    user_id: &str,
+    client_id: &str,
+    expires_in_days: i64,
+    revoked: bool,
+) {
+    sqlx::query(
+        "INSERT INTO refresh_tokens \
+         (token_hash, tenant_id, user_id, client_id, scope, expires_at, revoked_at) \
+         VALUES (?, ?, ?, ?, '[\"openid\"]', DATE_ADD(UTC_TIMESTAMP(6), INTERVAL ? DAY), \
+                 IF(?, UTC_TIMESTAMP(6), NULL))",
+    )
+    .bind(format!("{:064x}", uuid::Uuid::now_v7().as_u128()))
+    .bind(tenant_id)
+    .bind(user_id)
+    .bind(client_id)
+    .bind(expires_in_days)
+    .bind(revoked)
+    .execute(pool)
+    .await
+    .expect("insert refresh token");
+}
+
+/// 子テナントを 1 つ作って ID を返す。
+async fn create_child_tenant(env: &TestEnv) -> String {
+    let id = uuid::Uuid::now_v7().to_string();
+    sqlx::query("INSERT INTO tenants (id, parent_tenant_id, name) VALUES (?, ?, ?)")
+        .bind(&id)
+        .bind(&env.root_tenant_id)
+        .bind(format!("t83-{}", &id[..8]))
+        .execute(&env.pool)
+        .await
+        .expect("create child tenant");
+    id
+}
+
+async fn active_refresh_tokens(env: &TestEnv, token: &str, target: &str) -> (StatusCode, Value) {
+    let uri = format!("/{}/admin/users/{target}/active-tokens", env.root_tenant_id);
+    let response = send(&env.app, support::get(token, &uri)).await;
+    let status = response.status();
+    (status, body_json(response).await)
+}
+
+/// **押す前に本数が分かる。** 数えるのは未失効かつ期限内の refresh token だけで、失効済み・
+/// 期限切れは数えない。数える範囲は再発行が落とす範囲（テナントを問わない。ADR-0047）に揃え、
+/// 再発行の後は 0 になる。
+#[tokio::test]
+async fn an_administrator_sees_how_many_refresh_tokens_are_alive_before_reissuing() {
+    let Some(env) = support::setup("admin active token count").await else {
+        return;
+    };
+    let (client_id, secret) = support::insert_confidential_client(
+        &env.pool,
+        &env.root_tenant_id,
+        &["openid", "offline_access"],
+    )
+    .await;
+    let username = unique_username();
+    // 実際の往復で 1 本（DB の直挿しだけだと、発行経路が書く行を数えている保証にならない）。
+    log_in_with_offline_access(&env, &client_id, &secret, &username).await;
+    let target = support::find_user_id_by_username(&env.pool, &env.root_tenant_id, &username)
+        .await
+        .expect("target user");
+
+    // 数えないもの: 失効済み・期限切れ。
+    insert_refresh_token_row(
+        &env.pool,
+        &env.root_tenant_id,
+        &target,
+        &client_id,
+        30,
+        true,
+    )
+    .await;
+    insert_refresh_token_row(
+        &env.pool,
+        &env.root_tenant_id,
+        &target,
+        &client_id,
+        -1,
+        false,
+    )
+    .await;
+    // 数えるもの: 同じ人が別のテナントのアプリへ渡している鍵（再発行はこれも落とす）。
+    let child = create_child_tenant(&env).await;
+    let (child_client, _) =
+        support::insert_confidential_client(&env.pool, &child, &["openid"]).await;
+    insert_refresh_token_row(&env.pool, &child, &target, &child_client, 30, false).await;
+    // 別の人の鍵は数えない。
+    let bystander = support::create_plain_user(&env.pool, &env.root_tenant_id).await;
+    insert_refresh_token_row(
+        &env.pool,
+        &env.root_tenant_id,
+        &bystander,
+        &client_id,
+        30,
+        false,
+    )
+    .await;
+
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+    let (status, body) = active_refresh_tokens(&env, &admin_tok, &target).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["user_id"], target);
+    assert_eq!(
+        body["active_refresh_tokens"], 2,
+        "往復の 1 本 + 別テナントの 1 本（失効済み・期限切れ・他人の分は数えない）: {body}"
+    );
+
+    let reissue = format!("/{}/admin/users/{target}/token-reissue", env.root_tenant_id);
+    let response = send(&env.app, post(&admin_tok, &reissue, json!({}))).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let (_, body) = active_refresh_tokens(&env, &admin_tok, &target).await;
+    assert_eq!(
+        body["active_refresh_tokens"], 0,
+        "再発行の後は 0 本: {body}"
+    );
+
+    // 読み取りは監査に残さない（再発行の 1 行だけ）。
+    let rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM audit_log WHERE user_id = ? AND reason LIKE ?")
+            .bind(&env.root_admin_id)
+            .bind(format!("%user={target}%"))
+            .fetch_one(&env.pool)
+            .await
+            .expect("audit rows");
+    assert_eq!(rows, 1);
+}
+
+/// **テナント境界: 他テナントの利用者は数えない。** 所属元が子テナントの利用者を、親（root）の
+/// 管理者が指しても 404（不存在と同じ。存在も推測させない）。再発行と同じ判定。
+#[tokio::test]
+async fn the_active_token_count_does_not_reach_another_tenants_user() {
+    let Some(env) = support::setup("admin active token count tenant boundary").await else {
+        return;
+    };
+    let child = create_child_tenant(&env).await;
+    let (child_client, _) =
+        support::insert_confidential_client(&env.pool, &child, &["openid"]).await;
+    let outsider = support::create_plain_user(&env.pool, &child).await;
+    insert_refresh_token_row(&env.pool, &child, &outsider, &child_client, 30, false).await;
+
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+    let (status, body) = active_refresh_tokens(&env, &admin_tok, &outsider).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "他テナントの利用者の本数は返さない: {body}"
+    );
+    assert!(body.get("active_refresh_tokens").is_none(), "{body}");
+}
+
+/// 認可: 資格情報なしは 401、権限の無い利用者は 403、不存在・UUID 不正は 404。
+/// 権限は利用者の**読み取り**（`idp.users:read`）で足りる（書き込みまでは要らない）。
+#[tokio::test]
+async fn the_active_token_count_needs_only_the_user_read_permission() {
+    let Some(env) = support::setup("admin active token count guards").await else {
+        return;
+    };
+    let target = support::create_plain_user(&env.pool, &env.root_tenant_id).await;
+    let uri = format!("/{}/admin/users/{target}/active-tokens", env.root_tenant_id);
+
+    let response = send(
+        &env.app,
+        support::anonymous(axum::http::Method::GET, &uri, None),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "no token -> 401"
+    );
+
+    let plain = support::create_plain_user(&env.pool, &env.root_tenant_id).await;
+    let plain_token = admin_token(&env.app, &env.pool, &env.root_tenant_id, &plain).await;
+    let (status, _) = active_refresh_tokens(&env, &plain_token, &target).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "no perm -> 403");
+
+    // `idp.users:read` だけを持つシステム用クライアントで数えられる。
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+    let (m2m, m2m_secret) =
+        support::insert_m2m_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
+    let response = send(
+        &env.app,
+        post(
+            &admin_tok,
+            &format!("/{}/admin/clients/{m2m}/permissions", env.root_tenant_id),
+            json!({ "permission_code": "idp.users:read" }),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK, "grant idp.users:read");
+    let response = support::request_management_token(
+        &env.app,
+        &env.issuer,
+        &env.root_tenant_id,
+        &m2m,
+        &m2m_secret,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let read_only = body_json(response).await["access_token"]
+        .as_str()
+        .expect("management token")
+        .to_string();
+    let (status, body) = active_refresh_tokens(&env, &read_only, &target).await;
+    assert_eq!(status, StatusCode::OK, "idp.users:read で足りる: {body}");
+    assert_eq!(body["active_refresh_tokens"], 0);
+
+    for missing in [uuid::Uuid::now_v7().to_string(), "not-a-uuid".to_string()] {
+        let (status, _) = active_refresh_tokens(&env, &admin_tok, &missing).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "target={missing}");
+    }
 }
