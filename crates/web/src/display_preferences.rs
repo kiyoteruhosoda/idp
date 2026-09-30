@@ -28,6 +28,11 @@
 //! **ログイン中の HTML 画面表示ごとに 1 回**発生する。`?lang=` で既に決まっている場合と SSO Cookie が
 //! 無い場合は呼ばない。ローカルホップであり、管理コンソールは 1 画面あたり既に複数回 api を呼ぶため
 //! 相対的な増分は小さい。Cookie を正とするキャッシュは、別端末で言語を変えたときに追随できなくなるため採らない。
+//!
+//! 引いたプロフィール応答は [`FetchedAccountProfile`] としてリクエスト拡張へ載せ、下流へ渡す
+//! （task #80）。設定画面は表示名・ログイン識別子にも同じ応答を使うので、api を引き直さない。
+//! 載せるのは**応答そのもの**で、表示設定の決定に使う [`StoredPreferences`] は middleware 内部の
+//! 派生に留める（決定に要らない表示名などを決定用の型へ入れない）。
 
 use crate::cookies;
 use crate::i18n::Locale;
@@ -71,9 +76,15 @@ pub async fn resolve_display_preferences(
 
     // ユーザー設定は言語・配色をまとめて 1 回だけ引く。両方とも `?...=` で決まっているときと、
     // SSO Cookie が無いときは api を呼ばない。
+    // 引いた応答は下流（設定画面）へ渡す。引かなかったときは拡張を載せない。
     let stored = match &sso {
         Some(sso) if explicit_locale.is_none() || explicit_theme.is_none() => {
-            stored_preferences(&state, sso).await
+            let profile = fetch_account_profile(&state, sso).await;
+            let stored = StoredPreferences::from_profile(profile.as_ref());
+            request
+                .extensions_mut()
+                .insert(FetchedAccountProfile(profile));
+            stored
         }
         _ => StoredPreferences::default(),
     };
@@ -144,6 +155,33 @@ fn requested_locale(request: &Request) -> Option<Locale> {
         .and_then(Locale::from_ui_locales)
 }
 
+/// middleware が引いたログイン中ユーザーのプロフィール応答（task #80）。リクエスト拡張で下流へ渡す。
+///
+/// 拡張が**載っていない**のは middleware が引かなかったとき（SSO Cookie が無い、または
+/// `?lang=` と `?theme=` の両方で表示設定が決まった）で、要るハンドラは自分で
+/// [`fetch_account_profile`] を呼ぶ。中身の `None` は取得に失敗したとき（ログ済み）で、
+/// 引き直さない（同じリクエストの中で結果は変わらない）。
+#[derive(Debug, Clone)]
+pub struct FetchedAccountProfile(pub Option<InternalAccountProfileResponse>);
+
+/// ログイン中ユーザーのプロフィールを api から 1 回引く。取得失敗は `None`（警告ログを残す）。
+/// 呼び出し側は画面を落とさない（表示の都合であり、空欄や Cookie / ブラウザ既定へ落ちれば足りる）。
+pub async fn fetch_account_profile(
+    state: &WebState,
+    sso: &str,
+) -> Option<InternalAccountProfileResponse> {
+    let request = InternalAccountProfileRequest {
+        sso_session_id: sso.to_string(),
+    };
+    match state.api.account_profile(&request).await {
+        Ok(profile) => Some(profile),
+        Err(e) => {
+            tracing::warn!(error = %e, "could not read the user's account profile");
+            None
+        }
+    }
+}
+
 /// ログイン中ユーザーの保存済み表示設定（未設定・非対応値・取得失敗は `None`）。
 #[derive(Debug, Default, Clone, Copy)]
 struct StoredPreferences {
@@ -151,23 +189,18 @@ struct StoredPreferences {
     theme: Option<Theme>,
 }
 
-/// ログイン中ユーザーの保存済み表示設定を 1 回の api 呼び出しで引く。
-/// 取得失敗で画面を落とさない（表示の都合であり、Cookie / ブラウザ既定へ落ちれば足りる）。
-async fn stored_preferences(state: &WebState, sso: &str) -> StoredPreferences {
-    let request = InternalAccountProfileRequest {
-        sso_session_id: sso.to_string(),
-    };
-    match state.api.account_profile(&request).await {
-        Ok(InternalAccountProfileResponse::Ok {
-            language, theme, ..
-        }) => StoredPreferences {
-            language: language.as_deref().and_then(Locale::from_tag),
-            theme: theme.as_deref().and_then(Theme::from_tag),
-        },
-        Ok(_) => StoredPreferences::default(),
-        Err(e) => {
-            tracing::warn!(error = %e, "could not read the user's display settings; falling back to the cookies");
-            StoredPreferences::default()
+impl StoredPreferences {
+    /// プロフィール応答から表示設定の決定に使う値だけを取り出す。取得失敗・セッション切れは
+    /// 未設定として扱う（Cookie / ブラウザ既定へ落ちる）。
+    fn from_profile(profile: Option<&InternalAccountProfileResponse>) -> Self {
+        match profile {
+            Some(InternalAccountProfileResponse::Ok {
+                language, theme, ..
+            }) => Self {
+                language: language.as_deref().and_then(Locale::from_tag),
+                theme: theme.as_deref().and_then(Theme::from_tag),
+            },
+            _ => Self::default(),
         }
     }
 }

@@ -1,3 +1,11 @@
+## 2026-09-30（5）（設定画面のプロフィール取得を 1 回にした）
+
+- **`GET /{tenant_id}/settings` が 1 リクエストで `/internal/account/profile` を 2 回呼んでいた**のを 1 回にした
+  （task #80、旧 T35）。表示設定の middleware が引いた応答を `FetchedAccountProfile` としてリクエスト拡張へ載せ、
+  設定画面は表示名・ログイン識別子・保存済みの配色をそこから読む。`?lang=` と `?theme=` の両方で表示設定が
+  決まって middleware が引かなかったときだけ、画面が自分で引く。表示設定の決定に使う値（言語・配色）は
+  middleware 内部の `StoredPreferences` に留めた。
+
 ## 2026-09-30（4）（利用者向け画面にも `<html lang>` を出す）
 
 - **利用者向けの画面（ログイン・同意・メッセージ・エラーなど `page.html` を継ぐ画面）にも `<html lang>` を出した**
