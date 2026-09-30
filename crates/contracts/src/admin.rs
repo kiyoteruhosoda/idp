@@ -176,6 +176,9 @@ pub struct SamlSpMetadataImportResponse {
 /// 外部 SAML IdP メタデータ取り込みの応答（外部 IdP 登録フォームの初期値。AP12）。
 ///
 /// `entity_id` は登録時の `issuer`（アサーションの `<Issuer>` と完全一致で照合する値）になる。
+///
+/// api 側は同じ形の DTO（`SamlIdpMetadataImportRequest` / `SamlIdpMetadataImportResponse`）を
+/// `utoipa` 付きで持つ（task #124）。食い違いは api のテスト（`saml_metadata_import_contract_matches_the_api_dto`）が落とす。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SamlIdpMetadataImportResponse {
     #[serde(default)]

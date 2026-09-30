@@ -1,6 +1,7 @@
 //! 署名鍵管理エンドポイント（`/admin/signing-keys`、K1）。
 //!
-//! すべて `idp.tenant.admin` 権限が必要（`RequirePerms<IdpAdmin>`）。秘密鍵・暗号化鍵は返さない。
+//! 参照は `idp.keys:read`、生成・retire・削除は `idp.keys:write` が要る（`RequirePerms<KeysRead>` / `<KeysWrite>`。
+//! `idp.tenant.admin` は両方を含意する）。秘密鍵・暗号化鍵は返さない。
 //! 生成アルゴリズムは `RS256`（RSA-2048）または `ES256`（NIST P-256）。
 
 use crate::application::key_service::KeyManagementError;

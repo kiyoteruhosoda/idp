@@ -1,7 +1,8 @@
 //! ログイン識別子の管理 API（`/{tenant_id}/admin/users/{user_id}/login-identifiers`。AP8）。
 //!
 //! テナント管理者が、利用者に**複数のログイン識別子**（電話番号・社員番号・別名のユーザー名・
-//! メールアドレス）を割り当てる。すべて `idp.tenant.admin` 権限が必要。
+//! メールアドレス）を割り当てる。一覧は `idp.users:read`、追加・更新・削除・主たるメールへの昇格は
+//! `idp.users:write` が要る（`RequirePerms<UsersRead>` / `<UsersWrite>`。`idp.tenant.admin` は両方を含意する）。
 //!
 //! 応答には登録どおりの `display_value` と照合キーの `normalized_value` を両方返す。管理者が
 //! 「登録した値」と「実際に一致する値」を突き合わせられないと、電話番号のように書き方が

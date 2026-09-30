@@ -1,3 +1,20 @@
+## 2026-09-30（11）（外部 IdP の管理 API を OpenAPI に載せ、運用手順の curl の例を管理トークンに直した）
+
+- **外部 IdP の管理 API をすべて OpenAPI（`/api/openapi.json`・Swagger UI）に載せた**（task #124）。これまで載っていたのは
+  discovery の取り込み（task #77）だけで、一覧・登録・更新・削除（`/{tenant_id}/admin/external-idps`・`…/{id}`）と
+  SAML IdP メタデータの取り込み（`…/import-metadata`）が漏れていた。どれも `bearer_token` の security と
+  401 / 403（`idp.external-idps:read` / `:write`）を書いた。メタデータ取り込みの入出力は、discovery と同じく api 側に
+  `ToSchema` 付きの DTO（`SamlIdpMetadataImportRequest` / `SamlIdpMetadataImportResponse`）を置き、web が使う
+  `assay_contracts` の DTO と形が一致することをテストで確かめる（JSON の形は変わらない）。
+- **`docs/OPERATIONS.md` の管理 API の curl の例を、`sso_session_id` の Cookie から `Authorization: Bearer` の管理トークンへ
+  直した**（ADR-0037 以降、管理 API は Cookie を読まないので、例のままでは 401 だった）。外部 IdP・クライアント登録・
+  ロック解除・監査ログ・エラーログ・認証ポリシー・ログイン識別子の節。トークンの取り方（「4-2. 管理トークンを取る」）と、
+  `idp.system.admin` だけの口は機械のトークンでは呼べないことを「クライアントを登録したいとき」の冒頭に書き、
+  いまは無い「変更系は `Origin` を検証する」の記述を消した。各節の必要な権限も細かい権限コードに揃えた。
+- 管理 API のハンドラの冒頭の注記のうち、いまの細かい権限（`RequirePerms<ClientsRead>` など）と合っていなかった
+  ものを直した（クライアント・権限・メンバー・招待・監査・署名鍵・認証ポリシー・ログイン識別子・システム設定・テナント・
+  外部 IdP。振る舞いは変えていない）。
+
 ## 2026-09-30（10）（表示設定の保存を POST + CSRF に限り、設定画面・TOTP の設定にも CSRF を付けた）
 
 - **GET の `?lang=` / `?theme=` は一時切替だけにし、ユーザー設定への保存は CSRF トークン付きの POST に限った**

@@ -116,15 +116,20 @@ api・web を別プロセスで起動し、`/authorize`→web `/login`→`/token
 
 ## クライアントを登録したいとき
 
-管理 API（`idp.tenant.admin` 権限が必要。`idp.system.admin` でも可）で登録する。エンドポイント仕様は `/api/docs`（Swagger UI）を参照。
+管理 API（`idp.clients:write` が必要。`idp.tenant.admin`・`idp.system.admin` は含意する）で登録する。エンドポイント仕様は `/api/docs`（Swagger UI）を参照。
 `client_id` は自動採番され、confidential クライアントの `client_secret` は**この応答でのみ**平文で返る
 （DB には argon2 ハッシュのみ保存。以後は再表示できないため保管する。紛失時は再発行する）。
-呼び出しには対象テナントを scope とする `idp.tenant.admin`（または `idp.system.admin`）を保有する利用者の有効な SSO セッション（`sso_session_id` Cookie）が要る。
+**管理 API の資格情報は `Authorization: Bearer` の管理トークンだけ**である（ADR-0037。SSO セッションの
+Cookie は読まない）。この文書の例の `$ADMIN_TOKEN` は、対象テナント向けに取った管理トークンを指す。
+取り方は「システム（人ではない呼び出し元）に認証させたいとき」の「4-2. 管理トークンを取る」
+（必要な権限コードを付けたシステム用クライアントで `client_credentials` に
+`resource={issuer}/{tenant_id}/admin` を添える）。管理コンソールは画面を開くたびに SSO セッションを
+同じ管理トークンへ交換して呼んでいる（`POST /internal/admin/token`。内部用で、外からは呼べない）。
+寿命は既定 300 秒（`MANAGEMENT_TOKEN_TTL_SECS`）なので、切れたら取り直す。
 
-管理 API の変更系（POST / PUT / PATCH / DELETE）は、`Origin`（無ければ `Referer`）を送る場合
-`PUBLIC_WEB_BASE_URL` か `ISSUER` のオリジンと一致していないと 403 になる。ブラウザの JavaScript から
-直接呼ぶときは、この 2 つのいずれかのオリジンのページから呼ぶ。`curl` のように両ヘッダを送らない
-クライアントは影響を受けない。
+⚠ `idp.tenant.admin` / `idp.system.admin` はクライアントへ付与できない（ADR-0037）。`idp.system.admin`
+だけで保護された口（テナントの作成・削除、システム設定、再起動、テナント横断のログ参照）は機械の
+トークンでは呼べないので、管理コンソールの画面から操作する。
 
 confidential クライアントの認証方式は `token_endpoint_auth_method` で選ぶ（管理コンソールの
 登録・編集フォームにも項目がある）。**既定は `private_key_jwt`**（ADR-0036）で、人ではない
@@ -149,10 +154,10 @@ URI を指定する。`id_token_hint` は期限切れでもよいが、他テナ
 `private_key_jwt` になり、`jwks` も無ければ 400 になる。
 
 ```bash
-# 有効な SSO セッションの Cookie を付けて呼ぶ（ブラウザのセッションでも可）。
+# $ADMIN_TOKEN は idp.clients:write を持つ管理トークン（上記）。
 curl -sS -X POST "$ISSUER/$TENANT_ID/admin/clients" \
   -H 'Content-Type: application/json' \
-  -H "Cookie: sso_session_id=<セッションID>" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
   -d '{
     "app_name": "My App",
     "client_type": "confidential",
@@ -261,7 +266,7 @@ confidential クライアントに限る。ADR-0032）。
 ```bash
 curl -sS -X POST "$ISSUER/$TENANT_ID/admin/clients" \
   -H 'Content-Type: application/json' \
-  -H "Cookie: sso_session_id=<セッションID>" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
   -d "$(cat <<JSON
 {
   "app_name": "Nightly Report Job",
@@ -651,11 +656,11 @@ SAML 2.0 のときは、相手 IdP の entityID（`issuer` 欄）・SSO URL・�
 「ロック中」バッジが出る。⚠ **操作は一覧ではなく 1 人の画面にある** ——その人の行の
 **管理**を押し、「直す」の**ロック解除**を押す。即座に解除される（期限を待たなくてよい）。
 
-API を直接叩く場合:
+API を直接叩く場合（`idp.users:write`。`$ADMIN_TOKEN` は「クライアントを登録したいとき」を参照）:
 
 ```bash
 curl -sS -X POST "$ISSUER/$TENANT_ID/admin/users/<user_id>/unlock" \
-  -H "Cookie: sso_session_id=<セッションID>"
+  -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
 - ロック期限のクリアと**失敗回数のリセットを同時に**行う。片方だけでは次の 1 回の失敗で
@@ -668,18 +673,18 @@ curl -sS -X POST "$ISSUER/$TENANT_ID/admin/users/<user_id>/unlock" \
 
 ## 監査ログ／ログインログを確認したいとき
 
-管理 API（`idp.tenant.admin` 必須。`idp.system.admin` でも可）で `audit_log` を絞り込み参照する。`GET /admin/audit-logs`。
+管理 API（`idp.audit:read` が必要。`idp.tenant.admin`・`idp.system.admin` は含意する）で `audit_log` を絞り込み参照する。`GET /{tenant_id}/admin/audit-logs`。
 エラーの絞り込みは `result=failure`、失敗ログインは `event_type=login.failed` 等で行う。
 `correlation_id` を付ければ 1 リクエストの一連イベントを追跡できる。
 
 ```bash
-# 直近の失敗イベント（新しい順、既定 50 件）。有効な SSO セッション Cookie が必要。
-curl -sS "$ISSUER/admin/audit-logs?result=failure" \
-  -H "Cookie: sso_session_id=<セッションID>"
+# 直近の失敗イベント（新しい順、既定 50 件）。$ADMIN_TOKEN は「クライアントを登録したいとき」を参照。
+curl -sS "$ISSUER/$TENANT_ID/admin/audit-logs?result=failure" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
 
 # 期間・種別・クライアントで絞る（from/to は RFC3339）。
-curl -sS "$ISSUER/admin/audit-logs?event_type=token.issued&client_id=<cid>&from=2026-07-01T00:00:00Z&to=2026-07-07T00:00:00Z&limit=100" \
-  -H "Cookie: sso_session_id=<セッションID>"
+curl -sS "$ISSUER/$TENANT_ID/admin/audit-logs?event_type=token.issued&client_id=<cid>&from=2026-07-01T00:00:00Z&to=2026-07-07T00:00:00Z&limit=100" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
 保持期間は `AUDIT_LOG_RETENTION_DAYS`。**既定は `0` ＝ 削除しない**（監査ログの保存期間は法令・
@@ -748,16 +753,18 @@ api・web が出力した WARN / ERROR は `log` テーブルへ保存され、�
 correlation ID・期間で絞り込める。`correlation_id` は監査ログと同じ値なので、同じリクエストの
 「監査イベント」と「内部エラー」を突き合わせられる。
 
-管理 API を直接叩く場合は `GET /{tenant_id}/admin/logs`。
+管理 API は `GET /{tenant_id}/admin/logs`。⚠ `idp.system.admin`（root）の管理トークンが要り、
+`idp.system.admin` はクライアントへ付与できない（ADR-0037）ため、**機械から取ったトークンでは呼べない**。
+ふだんは画面から見る。管理コンソールが SSO セッションから交換した root 管理者のトークンなら、次の形で通る。
 
 ```bash
-# 直近のエラー（新しい順、既定 50 件）。root 管理者の SSO セッション Cookie が必要。
+# 直近のエラー（新しい順、既定 50 件）。$ADMIN_TOKEN は idp.system.admin を持つ root テナント向けの管理トークン。
 curl -sS "$ISSUER/$ROOT_TENANT_ID/admin/logs?level=ERROR" \
-  -H "Cookie: sso_session_id=<セッションID>"
+  -H "Authorization: Bearer $ADMIN_TOKEN"
 
 # サービス・出力元モジュール・期間で絞る（from/to は RFC3339）。
 curl -sS "$ISSUER/$ROOT_TENANT_ID/admin/logs?service=web&target=assay_web::handlers&from=2026-07-01T00:00:00Z" \
-  -H "Cookie: sso_session_id=<セッションID>"
+  -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
 保持期間は `APP_LOG_RETENTION_DAYS`（既定 30 日）。これより古い行は 1 時間ごとに削除される。
@@ -818,18 +825,18 @@ Swagger UI `/api/docs` を参照）。
   必ず併せて見る。
 
 ```bash
-# 一覧
-curl -b "sso_session_id=<管理者セッション>" \
+# 一覧（idp.authentication-policies:read。$ADMIN_TOKEN は「クライアントを登録したいとき」を参照）
+curl -H "Authorization: Bearer $ADMIN_TOKEN" \
   https://<api>/{tenant_id}/admin/authentication-policies
 
-# 例: 特定アプリのログインを拒否する（アプリの id は /admin/applications で引く）
-curl -b "sso_session_id=<管理者セッション>" -H 'Content-Type: application/json' \
+# 例: 特定アプリのログインを拒否する（idp.authentication-policies:write。アプリの id は /admin/applications で引く）
+curl -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
   -d '{"policy_code":"deny-legacy","policy_name":"Deny legacy app","priority":1,
        "effect":"deny","application_ids":["<アプリのUUID>"]}' \
   https://<api>/{tenant_id}/admin/authentication-policies
 
 # 例: 特定ユーザーに MFA を必須にする（TOTP 未設定のユーザーはログイン不可になる）
-curl -b "sso_session_id=<管理者セッション>" -H 'Content-Type: application/json' \
+curl -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
   -d '{"policy_code":"mfa-admins","policy_name":"MFA for admins","priority":10,
        "effect":"require_mfa","user_ids":["<ユーザーUUID>"]}' \
   https://<api>/{tenant_id}/admin/authentication-policies
@@ -1052,24 +1059,25 @@ docker compose logs api | grep password-reset
 改姓でユーザー名を変える前に旧い名前を残しておきたいときに使う。
 
 ```bash
+# $ADMIN_TOKEN は「クライアントを登録したいとき」を参照。
 # 追加（identifier_type は username / email / phone_number / employee_number）
 curl -X POST "https://<api>/{tenant_id}/admin/users/{user_id}/login-identifiers" \
-  -H "Content-Type: application/json" -b "sso_session_id=<admin session>" \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $ADMIN_TOKEN" \
   -d '{"identifier_type":"phone_number","value":"090-1234-5678"}'
 
 # 一覧（無効な行も返る）
-curl "https://<api>/{tenant_id}/admin/users/{user_id}/login-identifiers" -b "sso_session_id=<admin session>"
+curl "https://<api>/{tenant_id}/admin/users/{user_id}/login-identifiers" -H "Authorization: Bearer $ADMIN_TOKEN"
 
 # 1 本だけ止める（行は残す）
 curl -X PATCH "https://<api>/{tenant_id}/admin/users/{user_id}/login-identifiers/{identifier_id}" \
-  -H "Content-Type: application/json" -b "sso_session_id=<admin session>" -d '{"is_active":false}'
+  -H "Content-Type: application/json" -H "Authorization: Bearer $ADMIN_TOKEN" -d '{"is_active":false}'
 
 # 削除
 curl -X DELETE "https://<api>/{tenant_id}/admin/users/{user_id}/login-identifiers/{identifier_id}" \
-  -b "sso_session_id=<admin session>"
+  -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-- `idp.tenant.admin` が必要。対象は**所属元（HOME）が当該テナントの利用者**のみ。
+- 一覧は `idp.users:read`、追加・更新・削除は `idp.users:write` が要る（`idp.tenant.admin` は両方を含意する）。対象は**所属元（HOME）が当該テナントの利用者**のみ。
 - 一覧の先頭には、その利用者の**主たるログイン識別子**（ユーザー名）が `"is_primary": true` の
   行として出る。他の識別子と同じ 1 行だが、識別子単位の有効/無効・削除の対象にはならない
   （変えるならプロフィール編集、止めるならアカウントの無効化を使う）。
@@ -1276,7 +1284,10 @@ Cookie（`vikunja_refresh_token`）にあり、寿命は 3 日ある。**止め�
 ## 外部 IdP を API から登録したいとき
 
 画面での手順は「外部 IdP でログインできるようにしたいとき」を参照。ここは同じ操作を API で
-行う場合の入口だけを示す（`idp.tenant.admin` 必須。`idp.system.admin` でも可）。
+行う場合の入口だけを示す（一覧は `idp.external-idps:read`、登録・更新・削除と取り込みは
+`idp.external-idps:write`。`idp.tenant.admin`・`idp.system.admin` は含意する）。`$ADMIN_TOKEN` はその権限を
+持つ管理トークン（取り方は「クライアントを登録したいとき」の冒頭）。要求・応答の形は OpenAPI
+（`/api/openapi.json`・Swagger UI の `admin` タグ）を見る。
 
 相手 IdP 側には、assay の受け口を登録してもらう。OIDC のコールバック URL は
 `<PUBLIC_WEB_BASE_URL>/{tenant_id}/external/{provider_code}/callback`、SAML の ACS URL は
@@ -1286,9 +1297,9 @@ Cookie（`vikunja_refresh_token`）にあり、寿命は 3 日ある。**止め�
 ```bash
 # OIDC（エンドポイントは相手の discovery ドキュメントから取り込める。登録はされない:
 #   POST /{tenant_id}/admin/external-idps/import-discovery -d '{"issuer": "https://login.corp.example.com"}'）
-curl -sS -X POST "$ISSUER/{tenant_id}/admin/external-idps" \
+curl -sS -X POST "$ISSUER/$TENANT_ID/admin/external-idps" \
   -H 'Content-Type: application/json' \
-  -H "Cookie: sso_session_id=<セッションID>" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
   -d '{
     "provider_code": "corp",
     "display_name": "Corp SSO",
@@ -1303,9 +1314,9 @@ curl -sS -X POST "$ISSUER/{tenant_id}/admin/external-idps" \
 
 # SAML（entityID・SSO URL・署名証明書は相手のメタデータから取り込める:
 #   POST /{tenant_id}/admin/external-idps/import-metadata -d '{"metadata_xml": "<EntityDescriptor …>"}'）
-curl -sS -X POST "$ISSUER/{tenant_id}/admin/external-idps" \
+curl -sS -X POST "$ISSUER/$TENANT_ID/admin/external-idps" \
   -H 'Content-Type: application/json' \
-  -H "Cookie: sso_session_id=<セッションID>" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
   -d '{
     "provider_code": "corp-saml",
     "display_name": "Corp SAML",

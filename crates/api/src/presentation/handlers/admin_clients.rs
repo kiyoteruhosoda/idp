@@ -1,6 +1,7 @@
 //! クライアント（RP）登録・管理エンドポイント（`/admin/clients`、設計仕様 §9.3、Progress A1）。
 //!
-//! すべて `idp.tenant.admin` 権限が必要（`RequirePerms<IdpAdmin>`）。`client_secret` は confidential
+//! 参照は `idp.clients:read`、作成・更新・削除・secret 再発行は `idp.clients:write` が要る
+//! （`RequirePerms<ClientsRead>` / `<ClientsWrite>`。`idp.tenant.admin` は両方を含意する）。`client_secret` は confidential
 //! クライアントの登録・再発行時に**その応答でのみ**平文で返す（DB はハッシュのみ保存）。
 
 use crate::application::client_management::{

@@ -1,7 +1,8 @@
 //! 利用者権限の付与・剥奪・参照エンドポイント（`/admin/users/{user_id}/permissions`、
 //! A2・ADR-0006・設計仕様 §7）。
 //!
-//! すべて `idp.tenant.admin` 権限が必要（`RequirePerms<IdpAdmin>`）。付与・剥奪は `audit_log` に記録する
+//! 参照は `idp.permissions:read`、付与・剥奪は `idp.permissions:write` が要る（`RequirePerms<PermissionsRead>` /
+//! `<PermissionsWrite>`。`idp.tenant.admin` は両方を含意する）。付与・剥奪は `audit_log` に記録する
 //! （`user_permission.granted` / `.revoked`）。判定は Application 層（`PermissionManagementService`）
 //! が行い、本ハンドラは HTTP への写像のみを担う。
 

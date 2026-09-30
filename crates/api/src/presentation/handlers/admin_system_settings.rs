@@ -1,8 +1,10 @@
 //! システム設定エンドポイント（`/{tenant_id}/admin/system-settings`。MT14）。
 //!
-//! すべて `idp.system.admin` 権限が必要（`RequirePerms<IdpSystemAdmin>`）。`idp.system.admin` は root
-//! scope でしか存在できないため、システム設定（SMTP 等）を参照・更新できるのは root テナントの system
-//! 管理者だけになる（ADR-0009 §4）。SMTP パスワードは暗号化して保存し、参照時は平文を返さない
+//! 設定の一覧・更新とランタイム設定は `idp.system.admin` が必要（`RequirePerms<IdpSystemAdmin>`）。
+//! `idp.system.admin` は root scope でしか存在できないため、システム設定を参照・更新できるのは root
+//! テナントの system 管理者だけになる（ADR-0009 §4）。SMTP 設定だけの口（`/system-settings/smtp`）は
+//! `idp.smtp:read` / `idp.smtp:write`（`RequirePerms<SmtpRead>` / `<SmtpWrite>`。ADR-0051）で、
+//! `idp.tenant.admin` は含意しない（`idp.system.admin` は含意する）。SMTP パスワードは暗号化して保存し、参照時は平文を返さない
 //! （設定済みか否かのみ）。
 
 use crate::application::tenant_settings::TenantSettingAdoption;

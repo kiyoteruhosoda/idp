@@ -1,6 +1,9 @@
 //! 外部 IdP 設定の管理 API（`/{tenant_id}/admin/external-idps`。AP10）。
 //!
-//! テナント管理者が、テナントで使える外部 OpenID Provider を登録・更新・削除する。
+//! テナント管理者が、テナントで使える外部 IdP（OpenID Provider・SAML IdP）を登録・更新・削除する。
+//! 一覧は `idp.external-idps:read`、登録・更新・削除とメタデータ・discovery の取り込みは
+//! `idp.external-idps:write` が要る（`RequirePerms<ExternalIdpsRead>` / `<ExternalIdpsWrite>`。
+//! `idp.tenant.admin` は両方を含意する）。
 //! クライアントシークレットは**書き込み専用**で、応答には含めない（保存は暗号化。復号するのは
 //! 外部 IdP へトークン要求を出す瞬間だけ）。
 
@@ -17,7 +20,6 @@ use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
-use assay_contracts::admin::{SamlIdpMetadataImportResponse, SamlMetadataImportRequest};
 use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
@@ -182,8 +184,9 @@ pub struct ExternalIdpUpdateRequest {
     responses(
         (status = 200, description = "外部 IdP 一覧", body = [ExternalIdpResponse]),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.tenant.admin 必須）"),
-    )
+        (status = 403, description = "権限不足（idp.external-idps:read 必須）"),
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn list_external_idps(
     RequirePerms(_admin, _): RequirePerms<ExternalIdpsRead>,
@@ -211,9 +214,12 @@ pub async fn list_external_idps(
     request_body = ExternalIdpRegisterRequest,
     responses(
         (status = 201, description = "登録完了", body = ExternalIdpResponse),
-        (status = 400, description = "入力が不正"),
+        (status = 400, description = "入力が不正（プロトコルに要る項目が無い・エンドポイントが https でない・内部宛先 等）"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.external-idps:write 必須）"),
         (status = 409, description = "provider_code の重複"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn register_external_idp(
     RequirePerms(admin, _): RequirePerms<ExternalIdpsWrite>,
@@ -268,8 +274,12 @@ pub async fn register_external_idp(
     request_body = ExternalIdpUpdateRequest,
     responses(
         (status = 200, description = "更新完了", body = ExternalIdpResponse),
+        (status = 400, description = "入力が不正（プロトコルの変更・プロトコルに要る項目が無い 等）"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.external-idps:write 必須）"),
         (status = 404, description = "対象が無い"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn update_external_idp(
     RequirePerms(admin, _): RequirePerms<ExternalIdpsWrite>,
@@ -334,13 +344,28 @@ pub async fn update_external_idp(
 /// entityID・SSO URL・署名証明書の貼り付けは、管理者が IdP のメタデータから 1 項目ずつ写す作業に
 /// なりやすい。証明書は base64 が数行続くため、写し間違えても**利用者のログイン時**まで表に出ない。
 ///
-/// 入出力は `assay_contracts::admin` の DTO をそのまま使う（SP メタデータ取り込みと同じ）。api 側に
-/// 同じ形をもう一度定義すると、web と食い違ったときに取り込みが静かに壊れる。
+/// 入出力は api 側の `utoipa` 付き DTO（[`SamlIdpMetadataImportRequest`] /
+/// [`SamlIdpMetadataImportResponse`]）で受け渡す（discovery 取り込みと同じ作り。task #124）。web が使う
+/// `assay_contracts::admin` の DTO（`assay_contracts` は `utoipa` を持たない）と形が食い違うと取り込みが
+/// 静かに壊れるため、食い違いはテスト（`saml_metadata_import_contract_matches_the_api_dto`）が落とす。
+#[utoipa::path(
+    post,
+    path = "/{tenant_id}/admin/external-idps/import-metadata",
+    tag = "admin",
+    request_body = SamlIdpMetadataImportRequest,
+    responses(
+        (status = 200, description = "取り込んだ登録候補値（保存はしていない）", body = SamlIdpMetadataImportResponse),
+        (status = 400, description = "メタデータを解析できない・IdP の entityID / SingleSignOnService が無い"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.external-idps:write 必須）"),
+    ),
+    security(("bearer_token" = []))
+)]
 pub async fn import_external_idp_metadata(
     RequirePerms(_admin, _): RequirePerms<ExternalIdpsWrite>,
     State(_state): State<AppState>,
     Extension(_tenant): Extension<ResolvedTenant>,
-    Json(body): Json<SamlMetadataImportRequest>,
+    Json(body): Json<SamlIdpMetadataImportRequest>,
 ) -> Result<Json<SamlIdpMetadataImportResponse>, ApiError> {
     // 解析の失敗理由（entityID が無い・SSO が無い等）はそのまま返す。管理者向けの検証メッセージ
     // なので翻訳しない（CLAUDE.md「翻訳の対象外」）。取り違え——SP のメタデータを貼った——を
@@ -354,6 +379,30 @@ pub async fn import_external_idp_metadata(
         certificates: parsed.certificates,
         name_id_format: parsed.name_id_format.unwrap_or_default(),
     }))
+}
+
+/// SAML IdP メタデータ取り込みの要求（web が使う `assay_contracts::admin::SamlMetadataImportRequest`
+/// と同じ形）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct SamlIdpMetadataImportRequest {
+    /// SAML メタデータ XML（IdP の `EntityDescriptor`）。
+    pub metadata_xml: String,
+}
+
+/// SAML IdP メタデータ取り込みの応答（登録フォームの初期値。**登録はしていない**。web が使う
+/// `assay_contracts::admin::SamlIdpMetadataImportResponse` と同じ形）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SamlIdpMetadataImportResponse {
+    /// メタデータの表示名（無ければ空文字）。
+    pub display_name: String,
+    /// IdP の entityID。登録時の `issuer`（アサーションの `<Issuer>` と完全一致で照合する値）になる。
+    pub entity_id: String,
+    /// IdP の `SingleSignOnService` URL。登録時の `saml_sso_url` になる。
+    pub sso_url: String,
+    /// 署名検証に使う証明書（base64 DER）。**複数返る**（証明書更新期間は新旧 2 枚が同時に有効）。
+    pub certificates: Vec<String>,
+    /// NameID フォーマット（無ければ空文字）。
+    pub name_id_format: String,
 }
 
 /// discovery 取り込みの要求。
@@ -427,8 +476,11 @@ pub async fn import_external_idp_discovery(
     params(("id" = String, Path, description = "対象プロバイダの内部 ID（UUID）")),
     responses(
         (status = 204, description = "削除完了"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.external-idps:write 必須）"),
         (status = 404, description = "対象が無い"),
-    )
+    ),
+    security(("bearer_token" = []))
 )]
 pub async fn delete_external_idp(
     RequirePerms(admin, _): RequirePerms<ExternalIdpsWrite>,
@@ -550,5 +602,31 @@ mod tests {
         assert_eq!(shared.authorization_endpoint, api.authorization_endpoint);
         assert_eq!(shared.token_endpoint, api.token_endpoint);
         assert_eq!(shared.jwks_uri, api.jwks_uri);
+    }
+
+    /// SAML IdP メタデータ取り込みも同じ（task #124 で api 側の DTO に `ToSchema` を付けるため分けた）。
+    #[test]
+    fn saml_metadata_import_contract_matches_the_api_dto() {
+        let shared = assay_contracts::admin::SamlMetadataImportRequest {
+            metadata_xml: "<EntityDescriptor/>".to_string(),
+        };
+        let parsed: SamlIdpMetadataImportRequest =
+            serde_json::from_value(serde_json::to_value(&shared).unwrap()).unwrap();
+        assert_eq!(parsed.metadata_xml, shared.metadata_xml);
+
+        let api = SamlIdpMetadataImportResponse {
+            display_name: "Corp".to_string(),
+            entity_id: "https://idp.example.com/metadata".to_string(),
+            sso_url: "https://idp.example.com/sso".to_string(),
+            certificates: vec!["MIIB-old".to_string(), "MIIB-new".to_string()],
+            name_id_format: "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress".to_string(),
+        };
+        let shared: assay_contracts::admin::SamlIdpMetadataImportResponse =
+            serde_json::from_value(serde_json::to_value(&api).unwrap()).unwrap();
+        assert_eq!(shared.display_name, api.display_name);
+        assert_eq!(shared.entity_id, api.entity_id);
+        assert_eq!(shared.sso_url, api.sso_url);
+        assert_eq!(shared.certificates, api.certificates);
+        assert_eq!(shared.name_id_format, api.name_id_format);
     }
 }
