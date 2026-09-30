@@ -123,6 +123,7 @@ fn acs_form_action_csp(acs_url: &str) -> String {
 
 fn expired_page(messages: &Messages) -> Response {
     let body = render(&MessagePage {
+        lang: messages.lang(),
         title: messages.get("saml-continue-title"),
         message: messages.get("saml-error-expired"),
     });

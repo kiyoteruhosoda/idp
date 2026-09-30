@@ -92,6 +92,7 @@ pub async fn logout(
                 (set_cookies.into_headers(), found(&uri)).into_response()
             } else {
                 let body = render(&MessagePage {
+                    lang: messages.lang(),
                     title: messages.get("logout-title"),
                     message: messages.get("logout-done-message"),
                 });
@@ -103,6 +104,7 @@ pub async fn logout(
         // 守ろうとした別利用者のログイン状態を結局は壊してしまう。
         InternalRpLogoutResponse::SubjectMismatch => {
             let body = render(&MessagePage {
+                lang: messages.lang(),
                 title: messages.get("logout-title"),
                 message: messages.get("logout-subject-mismatch-message"),
             });

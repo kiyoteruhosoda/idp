@@ -96,6 +96,7 @@ fn render_page(status: StatusCode, locale: Locale, back: Option<BackLink>) -> St
         None => (String::new(), String::new()),
     };
     render(&ErrorPage {
+        lang: messages.lang(),
         code: status.as_u16().to_string(),
         title: messages.get(&title_key),
         message: messages.get(&message_key),

@@ -1724,6 +1724,8 @@ pub struct SamlPostPage<'a> {
 #[derive(Template)]
 #[template(path = "message_page.html")]
 pub struct MessagePage {
+    /// 表示言語のタグ（`ja` / `en`。`Messages::lang()`）。`<html lang>` に出す（ADR-0048）。
+    pub lang: &'static str,
     pub title: String,
     pub message: String,
 }
@@ -1736,6 +1738,8 @@ pub struct MessagePage {
 #[derive(Template)]
 #[template(path = "application_not_permitted.html")]
 pub struct ApplicationNotPermittedPage {
+    /// 表示言語のタグ（`ja` / `en`。`Messages::lang()`）。`<html lang>` に出す（ADR-0048）。
+    pub lang: &'static str,
     pub title: String,
     /// 「サインインはできましたが、〇〇 の利用は許可されていません」。
     pub signed_in: String,
@@ -1748,12 +1752,14 @@ pub struct ApplicationNotPermittedPage {
 
 /// HTTP エラーページ（全ステータスコード対応。403 / 404 / 500 等）。ステータスコードを大きく表示し、
 /// タイトルと説明文を添える。テナント文脈を持たない未マッチ経路（fallback）でも描画できるよう、
-/// 翻訳済みの文字列だけを受け取る（`Messages` へは依存しない）。
+/// 翻訳済みの文字列と表示言語だけを受け取る（`Messages` へは依存しない）。
 /// 描画の入口は `crate::error_pages`（ハンドラから直接呼ぶ `page()` と、全エラー応答を揃える
 /// ミドルウェア）に集約する。
 #[derive(Template)]
 #[template(path = "error_page.html")]
 pub struct ErrorPage {
+    /// 表示言語のタグ（`ja` / `en`。`Messages::lang()`）。`<html lang>` に出す（ADR-0048）。
+    pub lang: &'static str,
     /// 表示するステータスコード（例 `"404"`）。
     pub code: String,
     pub title: String,

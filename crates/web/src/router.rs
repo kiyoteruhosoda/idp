@@ -718,6 +718,7 @@ async fn root_entrypoint(headers: HeaderMap) -> impl IntoResponse {
     (
         StatusCode::NOT_FOUND,
         Html(render(&MessagePage {
+            lang: messages.lang(),
             title: messages.get("root-landing-title"),
             message: messages.get("root-landing-message"),
         })),

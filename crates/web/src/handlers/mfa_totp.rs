@@ -256,6 +256,7 @@ pub async fn setup_delete(
     match result {
         InternalTotpDeleteResponse::Ok => {
             let body = render(&MessagePage {
+                lang: messages.lang(),
                 title: messages.get("mfa-deleted-title"),
                 message: messages.get("mfa-deleted-message"),
             });
@@ -670,6 +671,7 @@ fn reshow_verify_form(
 
 fn error_page(messages: &Messages, status: StatusCode, error_key: &str) -> Response {
     let body = render(&MessagePage {
+        lang: messages.lang(),
         title: messages.get("mfa-title"),
         message: messages.get(error_key),
     });

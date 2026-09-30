@@ -740,6 +740,7 @@ fn reshow_mfa(
 
 fn message_page(messages: &Messages, key: &str, status: StatusCode) -> Response {
     let body = render(&MessagePage {
+        lang: messages.lang(),
         title: messages.get("portal-login-title"),
         message: messages.get(key),
     });
