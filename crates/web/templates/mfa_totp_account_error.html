@@ -1,0 +1,25 @@
+{% extends "page.html" %}
+{% block title %}{{ messages.get("mfa-title") }}{% endblock %}
+{#- アカウント設定から来た TOTP の設定が失敗したときの画面（task #119）。失敗を告げるだけの
+    最小のページ（`message_page.html`）では出口が無く、行き止まりになっていた。設定画面
+    （`mfa_totp_setup.html`）と同じ形で、左上の名乗りと本文の先頭の「戻る」を置く。
+    ⚠ セッションが切れているならアカウント設定は開けない（開いてもサインインへ回される）ので、
+    本文の導線はサインインへ向ける。 -#}
+{% block brand %}<a class="navbar-brand mb-0 h1 text-decoration-none" href="{{ tenant_prefix }}/settings" title="{{ messages.get("nav-home") }}">assay</a>{% endblock %}
+{% block content %}
+<div class="mb-3">
+  {%- if sign_in_required %}
+  <a href="{{ tenant_prefix }}/login"><i class="fa-solid fa-arrow-right-to-bracket me-2" aria-hidden="true"></i>{{ messages.get("mfa-error-sign-in-again") }}</a>
+  {%- else %}
+  <a href="{{ tenant_prefix }}/settings"><i class="fa-solid fa-arrow-left me-2" aria-hidden="true"></i>{{ messages.get("user-security-back-settings") }}</a>
+  {%- endif %}
+</div>
+<div class="card border-0 bg-transparent">
+  <div class="card-header text-center py-3 border-0 bg-transparent">
+    <h1 class="h4 mb-0">{{ messages.get("mfa-title") }}</h1>
+  </div>
+  <div class="card-body p-4">
+    <p class="mb-0">{{ messages.get(message_key) }}</p>
+  </div>
+</div>
+{% endblock %}

@@ -15,7 +15,9 @@ use crate::handlers::{form_retry_error_key, forwarded_context, found, see_other}
 use crate::i18n::Messages;
 use crate::login_context::RpLoginContext;
 use crate::state::WebState;
-use crate::templates::{render, MessagePage, TotpSetupTemplate, TotpVerifyTemplate};
+use crate::templates::{
+    render, MessagePage, TotpAccountErrorTemplate, TotpSetupTemplate, TotpVerifyTemplate,
+};
 use crate::tenant::WebTenant;
 use assay_contracts::auth::{
     InternalTotpConfirmRequest, InternalTotpDeleteRequest, InternalTotpSetupRequest,
@@ -56,8 +58,9 @@ pub async fn setup_page(
     let Some(sso_session_id) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         // FluentBundle は !Send なので await の前に作成・消費する。
         let messages = Messages::new(locale(&headers));
-        return error_page(
+        return account_error_page(
             &messages,
+            &tenant.prefix(),
             StatusCode::UNAUTHORIZED,
             "mfa-error-not-signed-in",
         );
@@ -93,13 +96,15 @@ pub async fn setup_page(
             }))
             .into_response()
         }
-        InternalTotpSetupResponse::AlreadyConfigured => error_page(
+        InternalTotpSetupResponse::AlreadyConfigured => account_error_page(
             &messages,
+            &tenant.prefix(),
             StatusCode::CONFLICT,
             "mfa-error-already-configured",
         ),
-        InternalTotpSetupResponse::SessionExpired => error_page(
+        InternalTotpSetupResponse::SessionExpired => account_error_page(
             &messages,
+            &tenant.prefix(),
             StatusCode::UNAUTHORIZED,
             "mfa-error-session-expired",
         ),
@@ -117,8 +122,9 @@ pub async fn setup_confirm(
 ) -> Response {
     let Some(sso_session_id) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         let messages = Messages::new(locale(&headers));
-        return error_page(
+        return account_error_page(
             &messages,
+            &tenant.prefix(),
             StatusCode::UNAUTHORIZED,
             "mfa-error-not-signed-in",
         );
@@ -190,21 +196,24 @@ pub async fn setup_confirm(
                 )
                     .into_response();
             }
-            error_page(
+            account_error_page(
                 &messages,
+                &tenant.prefix(),
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "mfa-error-invalid-code",
             )
         }
         InternalTotpConfirmResponse::NotFound | InternalTotpConfirmResponse::SessionExpired => {
-            error_page(
+            account_error_page(
                 &messages,
+                &tenant.prefix(),
                 StatusCode::UNAUTHORIZED,
                 "mfa-error-session-expired",
             )
         }
-        InternalTotpConfirmResponse::AlreadyConfigured => error_page(
+        InternalTotpConfirmResponse::AlreadyConfigured => account_error_page(
             &messages,
+            &tenant.prefix(),
             StatusCode::CONFLICT,
             "mfa-error-already-configured",
         ),
@@ -234,8 +243,9 @@ pub async fn setup_delete(
     }
     let Some(sso_session_id) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         let messages = Messages::new(locale(&headers));
-        return error_page(
+        return account_error_page(
             &messages,
+            &tenant.prefix(),
             StatusCode::UNAUTHORIZED,
             "mfa-error-not-signed-in",
         );
@@ -262,8 +272,9 @@ pub async fn setup_delete(
             });
             Html(body).into_response()
         }
-        InternalTotpDeleteResponse::SessionExpired => error_page(
+        InternalTotpDeleteResponse::SessionExpired => account_error_page(
             &messages,
+            &tenant.prefix(),
             StatusCode::UNAUTHORIZED,
             "mfa-error-session-expired",
         ),
@@ -667,6 +678,26 @@ fn reshow_verify_form(
             "mfa-error-session-expired",
         ),
     }
+}
+
+/// アカウント設定から来た TOTP の設定（`/account/mfa/totp/*`）の失敗の画面。
+///
+/// ログインフローの [`error_page`] と分けるのは、出口の有無が違うから。こちらはアカウント設定の
+/// 枝葉なので戻る導線を置く（task #119）。ログインフローは RP へ戻る途中で、外へ出す動線を
+/// 置かない。401 はサインインし直すしかない状態なので、導線をサインインへ向ける。
+fn account_error_page(
+    messages: &Messages,
+    tenant_prefix: &str,
+    status: StatusCode,
+    error_key: &str,
+) -> Response {
+    let body = render(&TotpAccountErrorTemplate {
+        messages,
+        tenant_prefix,
+        message_key: error_key,
+        sign_in_required: status == StatusCode::UNAUTHORIZED,
+    });
+    (status, Html(body)).into_response()
 }
 
 fn error_page(messages: &Messages, status: StatusCode, error_key: &str) -> Response {

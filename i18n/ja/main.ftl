@@ -455,6 +455,7 @@ mfa-error-not-configured = 二段階認証が設定されていません。
 mfa-error-mfa-not-pending = 現在の状態ではこのページは利用できません。再度サインインしてください。
 mfa-error-rate-limited = 試行回数が多すぎます。しばらく待ってから再度お試しください。
 mfa-error-locked = 認証の失敗が続いたため、このアカウントは一時的にロックされています。しばらくしてから再度お試しください。
+mfa-error-sign-in-again = サインインし直す
 
 # ── Passkey（WebAuthn） ──────────────────────────────────────────────────────
 passkey-list-title = 登録済みパスキー

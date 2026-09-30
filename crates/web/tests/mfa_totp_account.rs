@@ -198,3 +198,208 @@ async fn a_confirmed_setup_returns_to_the_authenticators_page() {
         format!("{}/settings/authenticators?saved=totp", env.prefix())
     );
 }
+
+// ── 失敗の画面の出口（task #119） ────────────────────────────────────────────
+//
+// 失敗を告げるだけの最小のページには戻る導線が無く、既に設定済み（409）・セッション切れ（401）・
+// コード誤りのあとに QR を取り直せなかったとき（422）が行き止まりになっていた。設定画面と同じく、
+// 左上の名乗りと本文の先頭の「戻る」をアカウント設定へのリンクにする。セッションが切れて
+// いるならアカウント設定は開けないので、本文の導線はサインインへ向ける。
+
+async fn stub_totp_setup(env: &WebEnv, result: &str) {
+    Mock::given(method("POST"))
+        .and(path("/internal/mfa/totp/setup"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "result": result })))
+        .mount(&env.api)
+        .await;
+}
+
+async fn stub_totp_confirm(env: &WebEnv, result: &str) {
+    Mock::given(method("POST"))
+        .and(path("/internal/mfa/totp/confirm"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "result": result })))
+        .mount(&env.api)
+        .await;
+}
+
+/// 失敗の画面に、左上の名乗りと本文の先頭の「アカウント設定へ戻る」の両方が出ていること。
+fn assert_links_back_to_settings(prefix: &str, html: &str) {
+    assert!(
+        html.contains(&format!(
+            r#"<a class="navbar-brand mb-0 h1 text-decoration-none" href="{prefix}/settings""#
+        )),
+        "左上の名乗りがリンクになっていない: {html}"
+    );
+    assert!(
+        html.contains(&format!(r#"<a href="{prefix}/settings">"#)),
+        "本文に戻る導線が無い: {html}"
+    );
+}
+
+/// セッションが切れた画面は、本文の導線をサインインへ向ける（アカウント設定は開けない）。
+fn assert_links_to_sign_in(prefix: &str, html: &str) {
+    assert!(
+        html.contains(&format!(r#"<a href="{prefix}/login">"#)),
+        "サインインへの導線が無い: {html}"
+    );
+    assert!(
+        !html.contains(&format!(r#"<a href="{prefix}/settings">"#)),
+        "開けないアカウント設定へ誘っている: {html}"
+    );
+}
+
+/// **既に設定済みの画面から戻れる。** 再設定するには先に削除が要るので、削除の置き場所で
+/// あるアカウント設定へ戻す。
+#[tokio::test]
+async fn the_already_configured_page_links_back_to_settings() {
+    let env = setup().await;
+    stub_step_up_satisfied(&env).await;
+    stub_totp_setup(&env, "already_configured").await;
+
+    let response = send(
+        &env.app,
+        get_with_cookies(
+            &format!("{}/account/mfa/totp/setup", env.prefix()),
+            &cookies(),
+        ),
+    )
+    .await;
+
+    assert_status(
+        &response,
+        axum::http::StatusCode::CONFLICT,
+        "already configured",
+    );
+    let html = body_text(response).await;
+    assert_links_back_to_settings(&env.prefix(), &html);
+}
+
+/// 確認の送信で既に設定済みと分かったとき（別のタブで先に済ませた）も同じ出口を出す。
+#[tokio::test]
+async fn the_already_configured_page_after_confirm_links_back_to_settings() {
+    let env = setup().await;
+    stub_step_up_satisfied(&env).await;
+    stub_totp_confirm(&env, "already_configured").await;
+
+    let response = send(
+        &env.app,
+        post_form(
+            &format!("{}/account/mfa/totp/setup", env.prefix()),
+            Some(&cookies()),
+            &[("code", "123456")],
+        ),
+    )
+    .await;
+
+    assert_status(
+        &response,
+        axum::http::StatusCode::CONFLICT,
+        "already configured",
+    );
+    let html = body_text(response).await;
+    assert_links_back_to_settings(&env.prefix(), &html);
+}
+
+/// **コードが違い、QR も取り直せなかったとき**（その間に設定が済んだ・api が落ちた）は、
+/// 設定画面を描き直せないので、失敗を告げてアカウント設定へ戻す。
+#[tokio::test]
+async fn an_invalid_code_without_a_fresh_qr_links_back_to_settings() {
+    let env = setup().await;
+    stub_step_up_satisfied(&env).await;
+    stub_totp_confirm(&env, "invalid_code").await;
+    stub_totp_setup(&env, "internal").await;
+
+    let response = send(
+        &env.app,
+        post_form(
+            &format!("{}/account/mfa/totp/setup", env.prefix()),
+            Some(&cookies()),
+            &[("code", "000000")],
+        ),
+    )
+    .await;
+
+    assert_status(
+        &response,
+        axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+        "invalid code",
+    );
+    let html = body_text(response).await;
+    assert_links_back_to_settings(&env.prefix(), &html);
+}
+
+/// **セッションが切れた画面は、サインインへ誘う。** アカウント設定へ戻しても、そこで
+/// またサインインを求められるだけで一手遠回りになる。
+#[tokio::test]
+async fn the_session_expired_page_links_to_sign_in() {
+    let env = setup().await;
+    stub_step_up_satisfied(&env).await;
+    stub_totp_setup(&env, "session_expired").await;
+
+    let response = send(
+        &env.app,
+        get_with_cookies(
+            &format!("{}/account/mfa/totp/setup", env.prefix()),
+            &cookies(),
+        ),
+    )
+    .await;
+
+    assert_status(
+        &response,
+        axum::http::StatusCode::UNAUTHORIZED,
+        "session expired",
+    );
+    let html = body_text(response).await;
+    assert_links_to_sign_in(&env.prefix(), &html);
+}
+
+/// 確認の送信でセッション切れと分かったときも同じ。
+#[tokio::test]
+async fn the_session_expired_page_after_confirm_links_to_sign_in() {
+    let env = setup().await;
+    stub_step_up_satisfied(&env).await;
+    stub_totp_confirm(&env, "session_expired").await;
+
+    let response = send(
+        &env.app,
+        post_form(
+            &format!("{}/account/mfa/totp/setup", env.prefix()),
+            Some(&cookies()),
+            &[("code", "123456")],
+        ),
+    )
+    .await;
+
+    assert_status(
+        &response,
+        axum::http::StatusCode::UNAUTHORIZED,
+        "session expired",
+    );
+    let html = body_text(response).await;
+    assert_links_to_sign_in(&env.prefix(), &html);
+}
+
+/// サインインしていない（SSO Cookie が無い）まま確認を送ったときも、サインインへ誘う。
+#[tokio::test]
+async fn confirming_without_signing_in_links_to_sign_in() {
+    let env = setup().await;
+
+    let response = send(
+        &env.app,
+        post_form(
+            &format!("{}/account/mfa/totp/setup", env.prefix()),
+            None,
+            &[("code", "123456")],
+        ),
+    )
+    .await;
+
+    assert_status(
+        &response,
+        axum::http::StatusCode::UNAUTHORIZED,
+        "not signed in",
+    );
+    let html = body_text(response).await;
+    assert_links_to_sign_in(&env.prefix(), &html);
+}

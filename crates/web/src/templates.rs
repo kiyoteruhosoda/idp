@@ -1629,6 +1629,24 @@ pub struct TotpSetupTemplate<'a> {
     pub error_key: Option<&'a str>,
 }
 
+/// アカウント設定から来た TOTP の設定が失敗したときの画面（既に設定済み・セッション切れ・
+/// コード誤りのあとに QR を取り直せなかった。task #119）。
+///
+/// 失敗を告げるだけの [`MessagePage`] には出口が無く、行き止まりになっていた。設定画面と同じく
+/// アカウント設定へ戻す導線を置く。戻り先の出し分け（サインインか設定か）はテンプレートが持つ。
+#[derive(Template)]
+#[template(path = "mfa_totp_account_error.html")]
+pub struct TotpAccountErrorTemplate<'a> {
+    pub messages: &'a Messages,
+    /// テナント接頭辞（`/{tenant_id}`）。戻る導線の組み立てに使う。
+    pub tenant_prefix: &'a str,
+    /// 本文の翻訳キー（`mfa-error-*`）。
+    pub message_key: &'a str,
+    /// サインインし直す必要がある（セッションが無い・切れた）。このときはアカウント設定を
+    /// 開けないので、本文の導線をサインインへ向ける。
+    pub sign_in_required: bool,
+}
+
 /// ログインフロー TOTP 入力ページ（`GET /mfa/totp`）。
 #[derive(Template)]
 #[template(path = "mfa_totp_verify.html")]
