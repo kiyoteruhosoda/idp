@@ -1,6 +1,9 @@
 //! テナント作成・管理エンドポイント（`/{tenant_id}/admin/tenants`。ADR-0009 §4・§6）。
 //!
-//! すべて `idp.system.admin` 権限が必要（`RequirePerms<IdpSystemAdmin>`）。`idp.system.admin` は root
+//! 自テナントの取得・更新（`/admin/settings/tenant`）は `idp.tenant-settings:read` / `:write`
+//! （`RequirePerms<TenantSettingsRead>` / `<TenantSettingsWrite>`。`idp.tenant.admin` は含意する）、
+//! それ以外（テナントの一覧・作成・更新・削除・ドメイン・子テナント管理者のパスワード再発行）は
+//! `idp.system.admin` が必要（`RequirePerms<IdpSystemAdmin>`）。`idp.system.admin` は root
 //! scope でしか存在できないため、実質的にテナントを作成・削除できるのは root テナントの system 管理者
 //! だけになる（§4）。作成時は**作成者自身**を新テナントのブートストラップ管理者（ACTIVE GUEST +
 //! `idp.tenant.admin`）として登録する（平文パスワードは返さない）。判定は Application 層

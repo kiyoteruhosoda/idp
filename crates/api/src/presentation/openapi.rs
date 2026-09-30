@@ -134,6 +134,11 @@ use utoipa::{Modify, OpenApi};
         handlers::admin_authentication_policies::create_authentication_policy,
         handlers::admin_authentication_policies::update_authentication_policy,
         handlers::admin_authentication_policies::delete_authentication_policy,
+        handlers::admin_external_idps::list_external_idps,
+        handlers::admin_external_idps::register_external_idp,
+        handlers::admin_external_idps::update_external_idp,
+        handlers::admin_external_idps::delete_external_idp,
+        handlers::admin_external_idps::import_external_idp_metadata,
         handlers::admin_external_idps::import_external_idp_discovery,
         handlers::admin_audit::list_audit_logs,
         handlers::admin_application_logs::list_application_logs,
@@ -230,6 +235,11 @@ use utoipa::{Modify, OpenApi};
         AuthenticationPolicyUpsertRequest,
         SigningKeyResponse,
         GenerateSigningKeyRequest,
+        handlers::admin_external_idps::ExternalIdpResponse,
+        handlers::admin_external_idps::ExternalIdpRegisterRequest,
+        handlers::admin_external_idps::ExternalIdpUpdateRequest,
+        handlers::admin_external_idps::SamlIdpMetadataImportRequest,
+        handlers::admin_external_idps::SamlIdpMetadataImportResponse,
         handlers::admin_external_idps::OidcDiscoveryImportRequest,
         handlers::admin_external_idps::OidcDiscoveryImportResponse,
     )),
@@ -258,5 +268,74 @@ impl Modify for BearerToken {
                     .build(),
             ),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use utoipa::openapi::path::HttpMethod;
+
+    /// 指定の経路・メソッドが OpenAPI 文書に載っている（CLAUDE.md「API 仕様は OpenAPI が唯一の出所」）。
+    fn assert_operation(
+        doc: &utoipa::openapi::OpenApi,
+        path: &str,
+        method: HttpMethod,
+        label: &str,
+    ) {
+        let operation = doc
+            .paths
+            .get_path_operation(path, method)
+            .unwrap_or_else(|| panic!("{label} {path} が OpenAPI に無い"));
+        // 管理 API は Bearer の管理トークンで認証する（ADR-0037）ことを仕様にも書く。
+        assert!(
+            operation.security.is_some(),
+            "{label} {path} に bearer_token の security が無い"
+        );
+    }
+
+    /// 外部 IdP の管理 API（一覧・登録・更新・削除・SAML メタデータと discovery の取り込み）が
+    /// すべて載っている（task #124。以前は discovery の取り込みだけが載っていた）。
+    #[test]
+    fn external_idp_admin_api_is_documented() {
+        let doc = ApiDoc::openapi();
+        let base = "/{tenant_id}/admin/external-idps";
+        assert_operation(&doc, base, HttpMethod::Get, "GET");
+        assert_operation(&doc, base, HttpMethod::Post, "POST");
+        assert_operation(&doc, &format!("{base}/{{id}}"), HttpMethod::Patch, "PATCH");
+        assert_operation(
+            &doc,
+            &format!("{base}/{{id}}"),
+            HttpMethod::Delete,
+            "DELETE",
+        );
+        assert_operation(
+            &doc,
+            &format!("{base}/import-metadata"),
+            HttpMethod::Post,
+            "POST",
+        );
+        assert_operation(
+            &doc,
+            &format!("{base}/import-discovery"),
+            HttpMethod::Post,
+            "POST",
+        );
+
+        let schemas = &doc.components.as_ref().expect("components が無い").schemas;
+        for name in [
+            "ExternalIdpResponse",
+            "ExternalIdpRegisterRequest",
+            "ExternalIdpUpdateRequest",
+            "SamlIdpMetadataImportRequest",
+            "SamlIdpMetadataImportResponse",
+            "OidcDiscoveryImportRequest",
+            "OidcDiscoveryImportResponse",
+        ] {
+            assert!(
+                schemas.contains_key(name),
+                "schema {name} が OpenAPI に無い"
+            );
+        }
     }
 }

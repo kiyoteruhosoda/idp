@@ -1,7 +1,8 @@
 //! 認証ポリシーの管理エンドポイント（`/{tenant_id}/admin/authentication-policies`、
 //! ユーザー認証・認証ポリシー仕様書 §7）。
 //!
-//! すべて `idp.tenant.admin` 権限が必要（`RequirePerms<IdpAdmin>`）。作成・更新・削除は `audit_log`
+//! 参照は `idp.authentication-policies:read`、作成・更新・削除は `idp.authentication-policies:write` が要る
+//! （`RequirePerms<AuthenticationPoliciesRead>` / `<AuthenticationPoliciesWrite>`。`idp.tenant.admin` は両方を含意する）。作成・更新・削除は `audit_log`
 //! に記録する（`authentication_policy.created` / `.updated` / `.deleted`）。検証・判定は Application 層
 //! （`AuthenticationPolicyManagementService`）が行い、本ハンドラは HTTP への写像のみを担う。
 

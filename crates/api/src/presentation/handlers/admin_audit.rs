@@ -1,6 +1,6 @@
 //! 監査ログ参照エンドポイント（`GET /admin/audit-logs`、状況確認画面 A3、設計仕様 §7）。
 //!
-//! `idp.tenant.admin` 権限が必要（`RequirePerms<IdpAdmin>`）。`result=failure` などで**エラー絞り込み**でき、
+//! `idp.audit:read` が必要（`RequirePerms<AuditRead>`。`idp.tenant.admin` は含意する）。`result=failure` などで**エラー絞り込み**でき、
 //! `correlation_id` でリクエスト〜監査イベントを追跡できる。
 
 use crate::application::audit_query::AuditQueryParams;

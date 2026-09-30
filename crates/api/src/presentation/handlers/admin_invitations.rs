@@ -1,6 +1,6 @@
 //! ゲスト招待作成エンドポイント（`/{tenant_id}/admin/invitations`。ADR-0009 §3・§6）。
 //!
-//! `idp.tenant.admin` 権限が必要（`RequirePerms<IdpAdmin>`）。参加先テナントの管理者が既存利用者
+//! `idp.members:write` が必要（`RequirePerms<MembersWrite>`。`idp.tenant.admin` は含意する）。参加先テナントの管理者が既存利用者
 //! （所属元は他テナント）を招待すると、一度限りの**招待トークン**を返す。相手の指し方は
 //! **メールアドレス、または内部 ID（UUID）**（ADR-0061。読み分けは application 層）。トークンはハッシュのみ保存し、
 //! ログ・監査ログには出さない（`generated_password` と同じパターン。§3）。管理者がトークンを被招待者へ

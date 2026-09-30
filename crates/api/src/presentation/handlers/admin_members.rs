@@ -1,6 +1,7 @@
 //! テナントメンバー管理エンドポイント（`/{tenant_id}/admin/members`。ADR-0009 §3・§6）。
 //!
-//! すべて `idp.tenant.admin` 権限が必要（`RequirePerms<IdpAdmin>`）。参加先テナントの管理者が行えるのは
+//! 一覧・取得は `idp.members:read`、解除・一時停止/再開・メモの更新は `idp.members:write` が要る
+//! （`RequirePerms<MembersRead>` / `<MembersWrite>`。`idp.tenant.admin` は両方を含意する）。参加先テナントの管理者が行えるのは
 //! メンバー一覧の閲覧と**ゲストメンバーシップの解除・一時停止/再開**（MT24）のみで、HOME は解除も停止も
 //! できない。ゲストの `users` レコード（パスワード・状態・MFA・プロフィール）は操作できない
 //! （所属元テナントの管理者と本人のみ。§3）。
