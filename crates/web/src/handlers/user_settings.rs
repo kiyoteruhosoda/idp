@@ -11,6 +11,7 @@ use super::internal_call_status;
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
+use crate::display_preferences::{fetch_account_profile, FetchedAccountProfile};
 use crate::dto::{AccountNameForm, AccountPasswordForm, SettingsQuery};
 use crate::handlers::{forwarded_context, found, locale};
 use crate::i18n::Messages;
@@ -20,8 +21,8 @@ use crate::tenant::WebTenant;
 use crate::theme::Theme;
 use assay_contracts::auth::{
     InternalAccountChangePasswordRequest, InternalAccountChangePasswordResponse,
-    InternalAccountProfileRequest, InternalAccountProfileResponse,
-    InternalAccountUpdateNameRequest, InternalAccountUpdateNameResponse,
+    InternalAccountProfileResponse, InternalAccountUpdateNameRequest,
+    InternalAccountUpdateNameResponse,
 };
 use axum::extract::{Extension, Query, State};
 use axum::http::HeaderMap;
@@ -39,38 +40,32 @@ pub async fn page(
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Query(query): Query<SettingsQuery>,
+    fetched: Option<Extension<FetchedAccountProfile>>,
 ) -> Response {
     let locale = locale(&headers);
     let from_admin = query.from.as_deref() == Some("admin");
 
-    // 表示名・ログイン識別子のプリフィル値を api から取得する（Messages は !Send のため await より先に）。
-    // 未ログイン・取得失敗時は空文字で描画する（フェイルソフト）。
-    let (current_name, preferred_username, stored_theme) =
-        match cookies::get(&headers, cookies::SSO_SESSION_COOKIE) {
-            Some(sso) => {
-                let req = InternalAccountProfileRequest {
-                    sso_session_id: sso,
-                };
-                match state.api.account_profile(&req).await {
-                    Ok(InternalAccountProfileResponse::Ok {
-                        name,
-                        preferred_username,
-                        theme,
-                        ..
-                    }) => (
-                        name.unwrap_or_default(),
-                        preferred_username.unwrap_or_default(),
-                        theme,
-                    ),
-                    Ok(_) => (String::new(), String::new(), None),
-                    Err(e) => {
-                        tracing::error!(error = %e, "account profile fetch call to api failed");
-                        (String::new(), String::new(), None)
-                    }
-                }
-            }
-            None => (String::new(), String::new(), None),
-        };
+    // 表示名・ログイン識別子のプリフィル値。プロフィールは表示設定の middleware が引いたものを
+    // 使い、api を引き直さない（task #80）。middleware が引かなかったとき（`?lang=` と `?theme=` の
+    // 両方で決まった）だけここで引く。未ログイン・取得失敗時は空文字で描画する（フェイルソフト）。
+    let profile = match (fetched, cookies::get(&headers, cookies::SSO_SESSION_COOKIE)) {
+        (Some(Extension(FetchedAccountProfile(profile))), _) => profile,
+        (None, Some(sso)) => fetch_account_profile(&state, &sso).await,
+        (None, None) => None,
+    };
+    let (current_name, preferred_username, stored_theme) = match profile {
+        Some(InternalAccountProfileResponse::Ok {
+            name,
+            preferred_username,
+            theme,
+            ..
+        }) => (
+            name.unwrap_or_default(),
+            preferred_username.unwrap_or_default(),
+            theme,
+        ),
+        _ => (String::new(), String::new(), None),
+    };
     // 決定順は middleware と同じ（`?theme=` > ユーザー設定 > Cookie）。**`?theme=` を自分でも
     // 読む**のが要点で、保存は応答より後（DB）・応答の中（Cookie）に起きるため、保存直後の
     // このリクエストでは api も Cookie もまだ古い値を返す。読まないと「保存したのに
