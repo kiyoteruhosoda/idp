@@ -10,16 +10,40 @@
 //! 5. `nonce` が発行時に保存した値と一致（リプレイ検出）
 //!
 //! どれか 1 つでも欠けると「外部 IdP が言ったことにできる」ので、すべてこの 1 箇所で行う。
+//!
+//! 同じ HTTP クライアント（タイムアウト・リダイレクトを追わない）で、登録前の discovery ドキュメントの
+//! 取得（`OidcDiscoveryClient`。task #77）も受け持つ。
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::external_idp::ExternalClaims;
-use crate::domain::external_oidc_port::{ExternalOidcClient, ExternalTokenRequest};
+use crate::domain::external_oidc_port::{
+    ExternalOidcClient, ExternalTokenRequest, OidcDiscoveryClient,
+};
+use crate::domain::oidc_discovery::{DiscoveryUrl, OidcDiscoveryDocument};
 use async_trait::async_trait;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 
 /// 外部 IdP への 1 リクエストの上限。応答しない IdP でログインを待たせ続けない。
 const REQUEST_TIMEOUT_SECS: u64 = 10;
+
+/// discovery ドキュメントの大きさの上限。実物は数 KB（Entra ID・Google・Keycloak とも 10 KB 未満）で、
+/// これを超えるものは discovery ドキュメントではない。管理者の入れた先が巨大な応答を返しても、
+/// api のメモリへ丸ごと読み込まない。
+const MAX_DISCOVERY_BYTES: usize = 256 * 1024;
+
+/// discovery ドキュメントのうち、登録に使う項目だけを読む（他の項目は無視する）。
+#[derive(Debug, Deserialize)]
+struct DiscoveryDocumentBody {
+    #[serde(default)]
+    issuer: Option<String>,
+    #[serde(default)]
+    authorization_endpoint: Option<String>,
+    #[serde(default)]
+    token_endpoint: Option<String>,
+    #[serde(default)]
+    jwks_uri: Option<String>,
+}
 
 /// `/token` の応答（必要なのは `id_token` だけ）。
 #[derive(Debug, Deserialize)]
@@ -242,6 +266,63 @@ impl ExternalOidcClient for ReqwestExternalOidcClient {
     }
 }
 
+#[async_trait]
+impl OidcDiscoveryClient for ReqwestExternalOidcClient {
+    async fn fetch_discovery(&self, url: &DiscoveryUrl) -> Result<OidcDiscoveryDocument> {
+        let mut response = self
+            .http
+            .get(url.as_str())
+            .header(reqwest::header::ACCEPT, "application/json")
+            .send()
+            .await
+            .map_err(|e| {
+                // 届かない理由（接続拒否・名前解決の失敗など）は運用ログにだけ残す。管理 API の応答に
+                // 載せると、管理 API が「その先に何があるか」を探る道具になる。
+                tracing::warn!(url = %url.as_str(), error = %e, "failed to fetch an OIDC discovery document");
+                DomainError::Repository("the discovery document could not be fetched".to_string())
+            })?;
+        // リダイレクトは追わない（クライアントの設定）ので、3xx はここで失敗になる。追うと、
+        // 検査を通した issuer とは別のホスト——内部宛先を含む——へ要求が飛びうる。
+        if !response.status().is_success() {
+            return Err(DomainError::Repository(format!(
+                "discovery endpoint returned {}",
+                response.status()
+            )));
+        }
+        let too_large = || {
+            DomainError::Repository(format!(
+                "the discovery document exceeds {MAX_DISCOVERY_BYTES} bytes"
+            ))
+        };
+        // 宣言された長さで先に断る。宣言が無い・偽る相手には、読みながら数えて断る。
+        if response
+            .content_length()
+            .is_some_and(|len| len > MAX_DISCOVERY_BYTES as u64)
+        {
+            return Err(too_large());
+        }
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(|e| {
+            tracing::warn!(url = %url.as_str(), error = %e, "failed to read an OIDC discovery document");
+            DomainError::Repository("the discovery document could not be read".to_string())
+        })? {
+            if body.len() + chunk.len() > MAX_DISCOVERY_BYTES {
+                return Err(too_large());
+            }
+            body.extend_from_slice(&chunk);
+        }
+        let document: DiscoveryDocumentBody = serde_json::from_slice(&body).map_err(|_| {
+            DomainError::Repository("the discovery document is not a JSON object".to_string())
+        })?;
+        Ok(OidcDiscoveryDocument {
+            issuer: document.issuer,
+            authorization_endpoint: document.authorization_endpoint,
+            token_endpoint: document.token_endpoint,
+            jwks_uri: document.jwks_uri,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,5 +361,119 @@ mod tests {
         // 共有鍵（`oct`）を受け入れると、JWKS を差し替えられる立場の相手が任意の ID Token を
         // 作れてしまう。非対称鍵に限る。
         assert!(decoding_key(&jwk).is_err());
+    }
+
+    /// discovery の取得は外部への HTTP を wiremock で模す。宛先の検査（https・内部宛先の拒否）は
+    /// `DiscoveryUrl::for_issuer` の担当で、ここでは検査を通さずに作った URL で取得の作法だけを見る。
+    mod discovery {
+        use super::*;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        fn url_for(server: &MockServer, issuer: &str) -> DiscoveryUrl {
+            DiscoveryUrl::unchecked_for_test(
+                issuer,
+                &format!("{}/.well-known/openid-configuration", server.uri()),
+            )
+        }
+
+        #[tokio::test]
+        async fn the_document_is_read() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/.well-known/openid-configuration"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "issuer": "https://idp.example.com",
+                    "authorization_endpoint": "https://idp.example.com/authorize",
+                    "token_endpoint": "https://idp.example.com/token",
+                    "jwks_uri": "https://idp.example.com/jwks",
+                    "response_types_supported": ["code"],
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let document = ReqwestExternalOidcClient::new()
+                .fetch_discovery(&url_for(&server, "https://idp.example.com"))
+                .await
+                .expect("fetch");
+            assert_eq!(document.issuer.as_deref(), Some("https://idp.example.com"));
+            assert_eq!(
+                document.jwks_uri.as_deref(),
+                Some("https://idp.example.com/jwks")
+            );
+        }
+
+        /// **リダイレクトを追わない。** 追うと、検査を通した issuer とは別の先（内部宛先を含む）へ
+        /// 要求が飛ぶ。転送先には 1 件も届かないことまで確かめる。
+        #[tokio::test]
+        async fn redirects_are_not_followed() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/.well-known/openid-configuration"))
+                .respond_with(
+                    ResponseTemplate::new(302)
+                        .insert_header("Location", format!("{}/elsewhere", server.uri())),
+                )
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/elsewhere"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "issuer": "https://idp.example.com",
+                })))
+                .expect(0)
+                .mount(&server)
+                .await;
+            let err = ReqwestExternalOidcClient::new()
+                .fetch_discovery(&url_for(&server, "https://idp.example.com"))
+                .await
+                .expect_err("a redirect must not be followed");
+            assert!(err.to_string().contains("302"), "{err}");
+            server.verify().await;
+        }
+
+        /// 大きすぎる応答は読み切らずに断る（宣言された長さでも、読んだ長さでも）。
+        #[tokio::test]
+        async fn an_oversized_document_is_rejected() {
+            let server = MockServer::start().await;
+            let padding = "x".repeat(MAX_DISCOVERY_BYTES + 1);
+            Mock::given(method("GET"))
+                .and(path("/.well-known/openid-configuration"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+                    "{{\"issuer\":\"https://idp.example.com\",\"pad\":\"{padding}\"}}"
+                )))
+                .mount(&server)
+                .await;
+            let err = ReqwestExternalOidcClient::new()
+                .fetch_discovery(&url_for(&server, "https://idp.example.com"))
+                .await
+                .expect_err("oversized");
+            assert!(err.to_string().contains("exceeds"), "{err}");
+        }
+
+        #[tokio::test]
+        async fn errors_and_non_json_bodies_are_failures() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/.well-known/openid-configuration"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("<html>login</html>"))
+                .mount(&server)
+                .await;
+            assert!(ReqwestExternalOidcClient::new()
+                .fetch_discovery(&url_for(&server, "https://idp.example.com"))
+                .await
+                .is_err());
+
+            let missing = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(404))
+                .mount(&missing)
+                .await;
+            let err = ReqwestExternalOidcClient::new()
+                .fetch_discovery(&url_for(&missing, "https://idp.example.com"))
+                .await
+                .expect_err("404");
+            assert!(err.to_string().contains("404"), "{err}");
+        }
     }
 }

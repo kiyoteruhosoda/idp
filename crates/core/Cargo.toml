@@ -47,3 +47,7 @@ webauthn-rs = { workspace = true }
 webauthn-rs-proto = { workspace = true }
 metrics = { workspace = true }
 x509-cert = { workspace = true }
+
+[dev-dependencies]
+# 外部 IdP への HTTP（discovery の取得）を模す（task #77）。
+wiremock = { workspace = true }

@@ -32,6 +32,7 @@ pub mod jwt;
 pub mod login_identifier;
 pub mod mailer;
 pub mod message;
+pub mod oidc_discovery;
 pub mod outbound_uri;
 pub mod paging;
 pub mod passkey_challenge;

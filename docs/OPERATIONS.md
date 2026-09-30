@@ -592,6 +592,15 @@ OpenID Connect のとき必要なのは、相手 IdP の `issuer`・認可エン
 JWKS URI と、そこで発行してもらったクライアント ID／シークレット。要求するスコープは
 `profile` / `email` をチェックで選び、相手が独自に定義するスコープ（`groups` 等）は「その他の
 スコープ」へ空白区切りで書く（`openid` は常に要求する）。
+相手が discovery ドキュメントを公開していれば、OIDC の登録画面の上部にある「discovery ドキュメントから
+読み込む」に相手の `issuer` を入れて「読み込む」を押すと、`{issuer}/.well-known/openid-configuration` から
+issuer・認可エンドポイント・トークンエンドポイント・JWKS URI がフォームに転記される（読み込むだけで登録は
+されない。クライアント ID／シークレットは転記されないので手で入れる）。読み込めないときは次を確かめる。
+
+- `issuer` が外から届く `https` の URL か（`http`・ループバック・プライベートアドレスは取りに行かない）
+- その `/.well-known/openid-configuration` が転送なしで JSON を返すか（リダイレクトはたどらない）
+- 文書の `issuer` が入れた値と 1 文字も違わないか（末尾の `/` の有無も区別する。ID Token の `iss` と
+  完全一致で照合する値なので、相手の文書に書かれている綴りのまま入れる）
 
 SAML 2.0 のときは、相手 IdP の entityID（`issuer` 欄）・SSO URL・署名証明書。相手の
 メタデータ XML があれば、SAML の登録画面の上部にある「IdP メタデータから読み込む」にファイルを
@@ -1275,7 +1284,8 @@ Cookie（`vikunja_refresh_token`）にあり、寿命は 3 日ある。**止め�
 `GET /admin/external-idps` の `redirect_uri`・`saml_acs_url`・`saml_sp_entity_id` にも同じ値が出る）。
 
 ```bash
-# OIDC
+# OIDC（エンドポイントは相手の discovery ドキュメントから取り込める。登録はされない:
+#   POST /{tenant_id}/admin/external-idps/import-discovery -d '{"issuer": "https://login.corp.example.com"}'）
 curl -sS -X POST "$ISSUER/{tenant_id}/admin/external-idps" \
   -H 'Content-Type: application/json' \
   -H "Cookie: sso_session_id=<セッションID>" \

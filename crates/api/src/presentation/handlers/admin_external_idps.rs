@@ -4,6 +4,7 @@
 //! クライアントシークレットは**書き込み専用**で、応答には含めない（保存は暗号化。復号するのは
 //! 外部 IdP へトークン要求を出す瞬間だけ）。
 
+use crate::application::external_idp_discovery::DiscoveryImportError;
 use crate::application::external_idp_management::{
     ExternalIdpConfigCommand, ExternalIdpManagementError, RegisterExternalIdpCommand,
     UpdateExternalIdpCommand,
@@ -355,6 +356,69 @@ pub async fn import_external_idp_metadata(
     }))
 }
 
+/// discovery 取り込みの要求。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct OidcDiscoveryImportRequest {
+    /// 外部 IdP の issuer（https。`{issuer}/.well-known/openid-configuration` を読む）。
+    pub issuer: String,
+}
+
+/// discovery 取り込みの応答（登録フォームの初期値。**登録はしていない**）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OidcDiscoveryImportResponse {
+    /// 文書の `issuer`（入力と完全一致したもの）。登録時の `issuer` になる。
+    pub issuer: String,
+    pub authorization_endpoint: String,
+    pub token_endpoint: String,
+    pub jwks_uri: String,
+}
+
+/// 外部 OIDC IdP の discovery ドキュメントを読み、登録フォームの初期値を返す（task #77）。
+/// **データは永続化しない**（SAML の IdP メタデータ取り込みと同じく、管理者が値を確かめてから登録する）。
+///
+/// SAML の取り込みと違い、api が管理者の入れた issuer へ HTTP を出す。そのため取りに行く前に
+/// 登録時と同じ宛先の検査（https のみ・内部宛先を拒否。ADR-0023 決定 5）を通し、取得は
+/// リダイレクトを追わず、タイムアウトと大きさの上限を持つ。文書の `issuer` が入力と一致しなければ
+/// 断る（OIDC Discovery §4.3）。権限は登録と同じ `idp.external-idps:write`（登録の前段の管理操作であり、
+/// 外へ HTTP を出させる操作でもある）。
+#[utoipa::path(
+    post,
+    path = "/{tenant_id}/admin/external-idps/import-discovery",
+    tag = "admin",
+    request_body = OidcDiscoveryImportRequest,
+    responses(
+        (status = 200, description = "取り込んだ登録候補値（保存はしていない）", body = OidcDiscoveryImportResponse),
+        (status = 400, description = "issuer が宛先の検査に通らない・文書を取得できない・文書の issuer が一致しない・必要な項目が無い"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.external-idps:write 必須）"),
+    ),
+    security(("bearer_token" = []))
+)]
+pub async fn import_external_idp_discovery(
+    RequirePerms(_admin, _): RequirePerms<ExternalIdpsWrite>,
+    State(state): State<AppState>,
+    Extension(_tenant): Extension<ResolvedTenant>,
+    Json(body): Json<OidcDiscoveryImportRequest>,
+) -> Result<Json<OidcDiscoveryImportResponse>, ApiError> {
+    // 失敗理由は管理者向けの検証メッセージなので翻訳しない（CLAUDE.md「翻訳の対象外」。SAML の
+    // 取り込みと同じ）。接続段の詳細（届かない理由）は取得の実装が運用ログにだけ残す。
+    let imported = state
+        .external_idp_discovery
+        .import(&body.issuer)
+        .await
+        .map_err(|e| match e {
+            DiscoveryImportError::Validation(m) | DiscoveryImportError::Unavailable(m) => {
+                ApiError::BadRequest(m)
+            }
+        })?;
+    Ok(Json(OidcDiscoveryImportResponse {
+        issuer: imported.issuer,
+        authorization_endpoint: imported.authorization_endpoint,
+        token_endpoint: imported.token_endpoint,
+        jwks_uri: imported.jwks_uri,
+    }))
+}
+
 /// 外部 IdP を削除する（連携済みの利用者の対応行も FK CASCADE で消える）。
 #[utoipa::path(
     delete,
@@ -456,5 +520,35 @@ fn map_error(e: ExternalIdpManagementError) -> ApiError {
         }
         ExternalIdpManagementError::Conflict(m) => ApiError::Conflict(m),
         ExternalIdpManagementError::Internal(m) => ApiError::Internal(m),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// web が使う契約（`assay_contracts::admin`）と api の DTO の形が一致する。食い違うと、
+    /// 管理コンソールの取り込みが黙って壊れる。
+    #[test]
+    fn discovery_import_contract_matches_the_api_dto() {
+        let shared = assay_contracts::admin::OidcDiscoveryImportRequest {
+            issuer: "https://idp.example.com".to_string(),
+        };
+        let parsed: OidcDiscoveryImportRequest =
+            serde_json::from_value(serde_json::to_value(&shared).unwrap()).unwrap();
+        assert_eq!(parsed.issuer, shared.issuer);
+
+        let api = OidcDiscoveryImportResponse {
+            issuer: "https://idp.example.com".to_string(),
+            authorization_endpoint: "https://idp.example.com/authorize".to_string(),
+            token_endpoint: "https://idp.example.com/token".to_string(),
+            jwks_uri: "https://idp.example.com/jwks".to_string(),
+        };
+        let shared: assay_contracts::admin::OidcDiscoveryImportResponse =
+            serde_json::from_value(serde_json::to_value(&api).unwrap()).unwrap();
+        assert_eq!(shared.issuer, api.issuer);
+        assert_eq!(shared.authorization_endpoint, api.authorization_endpoint);
+        assert_eq!(shared.token_endpoint, api.token_endpoint);
+        assert_eq!(shared.jwks_uri, api.jwks_uri);
     }
 }

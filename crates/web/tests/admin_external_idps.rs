@@ -597,7 +597,8 @@ async fn the_entry_point_offers_exactly_the_two_protocols() {
 /// **OIDC のフォームに SAML の欄は出ない**（逆も同じ）。プロトコルは経路が決めており、
 /// 出し分けの JS は要らない —— JS が動かない環境でも、見えている欄がそのまま送る欄になる。
 ///
-/// メタデータの取り込みは SAML にだけ出す。OIDC の discovery は未対応で、取り込む先が無い。
+/// 取り込みはプロトコルごとに別物を出す。SAML は IdP メタデータ XML、OIDC は issuer の discovery
+/// ドキュメント（task #77）。
 #[tokio::test]
 async fn each_protocol_form_shows_only_its_own_fields() {
     let env = setup().await;
@@ -624,6 +625,10 @@ async fn each_protocol_form_shows_only_its_own_fields() {
         !oidc.contains(r#"name="metadata_xml""#),
         "OIDC has no metadata to import: {oidc}"
     );
+    assert!(
+        oidc.contains("/admin/external-idps/import-discovery"),
+        "the OIDC form offers the discovery import: {oidc}"
+    );
 
     let saml = body_text(
         send(
@@ -639,6 +644,10 @@ async fn each_protocol_form_shows_only_its_own_fields() {
     assert!(saml.contains(r#"name="saml_sso_url""#), "{saml}");
     assert!(saml.contains(r#"name="protocol" value="saml""#), "{saml}");
     assert!(saml.contains(r#"name="metadata_xml""#), "{saml}");
+    assert!(
+        !saml.contains("/admin/external-idps/import-discovery"),
+        "SAML has no discovery document: {saml}"
+    );
     assert!(
         !saml.contains(r#"name="jwks_uri""#),
         "OIDC fields must not appear on the SAML form: {saml}"
@@ -845,5 +854,167 @@ async fn a_failed_registration_returns_to_the_form_for_the_same_protocol() {
             )
             .as_str()
         )
+    );
+}
+
+/// api へ届いた discovery 取り込みの本文。
+async fn discovery_request(env: &WebEnv) -> Option<Value> {
+    env.api
+        .received_requests()
+        .await
+        .expect("recorded requests")
+        .iter()
+        .find(|r| {
+            r.url
+                .path()
+                .ends_with("/admin/external-idps/import-discovery")
+        })
+        .map(|r| serde_json::from_slice(&r.body).expect("json body"))
+}
+
+/// issuer から読み込んだ discovery ドキュメントの値が OIDC の登録フォームの初期値になる。
+/// **登録はしない**（管理者が値を確かめ、クライアント ID を入れてから登録する）。
+#[tokio::test]
+async fn a_discovery_import_prefills_the_oidc_form_without_registering_anything() {
+    let env = setup().await;
+    stub_admin(&env).await;
+    Mock::given(method("POST"))
+        .and(path_regex(r"^/[^/]+/admin/external-idps/import-discovery$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "issuer": "https://login.corp.example.com/realms/corp",
+            "authorization_endpoint": "https://login.corp.example.com/realms/corp/auth",
+            "token_endpoint": "https://login.corp.example.com/realms/corp/token",
+            "jwks_uri": "https://login.corp.example.com/realms/corp/certs"
+        })))
+        .mount(&env.api)
+        .await;
+
+    let response = send(
+        &env.app,
+        post_form(
+            &format!("{}/admin/external-idps/import-discovery", env.prefix()),
+            Some(&cookies()),
+            &[
+                ("csrf_token", &csrf()),
+                ("issuer", " https://login.corp.example.com/realms/corp "),
+            ],
+        ),
+    )
+    .await;
+    // 取り込みは登録ではないので PRG を挟まず、その場でフォームを描き直す。
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_text(response).await;
+    assert!(html.contains(r#"name="protocol" value="oidc""#), "{html}");
+    assert!(
+        html.contains(r#"value="https://login.corp.example.com/realms/corp/auth""#),
+        "{html}"
+    );
+    assert!(
+        html.contains(r#"value="https://login.corp.example.com/realms/corp/token""#),
+        "{html}"
+    );
+    assert!(
+        html.contains(r#"value="https://login.corp.example.com/realms/corp/certs""#),
+        "{html}"
+    );
+    // 入れた issuer（前後の空白は除く）をそのまま api へ渡した。宛先の検査は api の担当。
+    assert_eq!(
+        discovery_request(&env).await,
+        Some(json!({ "issuer": "https://login.corp.example.com/realms/corp" }))
+    );
+    assert!(
+        posted_body(&env).await.is_none(),
+        "importing a discovery document must not register a provider"
+    );
+}
+
+/// api が断ったら（宛先の検査・issuer の不一致など）、入れた issuer を残して理由を出す。
+#[tokio::test]
+async fn a_rejected_discovery_import_keeps_the_issuer_and_explains() {
+    let env = setup().await;
+    stub_admin(&env).await;
+    Mock::given(method("POST"))
+        .and(path_regex(r"^/[^/]+/admin/external-idps/import-discovery$"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "error": "invalid_request",
+            "message": "the discovery document's issuer \"https://a\" does not match the requested issuer \"https://b\""
+        })))
+        .mount(&env.api)
+        .await;
+
+    let response = send(
+        &env.app,
+        post_form(
+            &format!("{}/admin/external-idps/import-discovery", env.prefix()),
+            Some(&cookies()),
+            &[
+                ("csrf_token", &csrf()),
+                ("issuer", "https://idp.example.com/"),
+            ],
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_text(response).await;
+    assert!(
+        html.contains("discovery ドキュメントを読み込めませんでした"),
+        "{html}"
+    );
+    assert!(
+        html.contains(r#"value="https://idp.example.com/""#),
+        "{html}"
+    );
+    assert!(posted_body(&env).await.is_none());
+}
+
+/// CSRF トークンが合わなければ api を呼ばない（api に外へ HTTP を出させる操作を、他サイトから
+/// 踏ませない）。
+#[tokio::test]
+async fn a_bad_csrf_token_never_reaches_the_discovery_import() {
+    let env = setup().await;
+    stub_admin(&env).await;
+
+    let response = send(
+        &env.app,
+        post_form(
+            &format!("{}/admin/external-idps/import-discovery", env.prefix()),
+            Some(&cookies()),
+            &[
+                ("csrf_token", "wrong"),
+                ("issuer", "https://idp.example.com"),
+            ],
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FOUND);
+    assert!(
+        discovery_request(&env).await.is_none(),
+        "the import must not be forwarded when CSRF verification fails"
+    );
+}
+
+/// 編集中は discovery の取り込みも出さない（別の IdP の値で上書きすると、何を保存しようと
+/// していたのか分からなくなる。SAML のメタデータ取り込みと同じ）。
+#[tokio::test]
+async fn editing_does_not_offer_the_discovery_import() {
+    let env = setup().await;
+    stub_admin(&env).await;
+    stub_list(&env, json!([sample_provider()])).await;
+
+    let html = body_text(
+        send(
+            &env.app,
+            get_with_cookies(
+                &format!("{}/admin/external-idps/{PROVIDER_ID}/edit", env.prefix()),
+                &cookies(),
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert!(html.contains(r#"name="jwks_uri""#), "{html}");
+    assert!(
+        !html.contains("/admin/external-idps/import-discovery"),
+        "{html}"
     );
 }

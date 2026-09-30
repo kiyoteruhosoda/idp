@@ -259,6 +259,11 @@ pub fn build(state: WebState) -> Router {
             "/admin/external-idps/import",
             post(admin_external_idps_console::import_metadata),
         )
+        // OIDC discovery ドキュメントの取り込み（task #77）。同じく静的パス。
+        .route(
+            "/admin/external-idps/import-discovery",
+            post(admin_external_idps_console::import_discovery),
+        )
         .route(
             "/admin/external-idps/{id}/update",
             post(admin_external_idps_console::update),

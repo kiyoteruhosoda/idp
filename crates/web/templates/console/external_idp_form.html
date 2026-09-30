@@ -15,7 +15,7 @@
   <a class="btn btn-outline-secondary" href="{{ tenant }}/admin/external-idps">{{ messages.get("admin-external-idps-back") }}</a>
 </div>
 {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
-{% if imported %}<div class="alert alert-info" role="status"><i class="fa-solid fa-file-import me-2" aria-hidden="true"></i>{{ messages.get("admin-external-idps-imported") }}</div>{% endif %}
+{% if imported %}<div class="alert alert-info" role="status"><i class="fa-solid fa-file-import me-2" aria-hidden="true"></i>{% if values.is_saml() %}{{ messages.get("admin-external-idps-imported") }}{% else %}{{ messages.get("admin-external-idps-imported-discovery") }}{% endif %}</div>{% endif %}
 
 {# SAML の新規登録だけ、メタデータからの読み込みを先に出す。読み込みは登録ではなく、下のフォームへ
    転記するだけである（管理者が値を確認してから登録する）。編集中に別の IdP のメタデータで
@@ -44,10 +44,32 @@
 </div>
 {% endif %}
 
+{# OIDC の新規登録では、issuer の discovery ドキュメントからの読み込みを先に出す（task #77）。
+   読み込むのは api で（web は外部 IdP へ出ない）、読み込みは登録ではなく下のフォームへの転記である。
+   クライアント ID とシークレットは discovery ドキュメントに無いので、手で入れてもらう。 #}
+{% if editing.is_none() && !values.is_saml() %}
+<div class="card mb-4">
+  <div class="card-header">
+    <h3 class="h6 mb-0">{{ messages.get("admin-external-idps-discovery-title") }}</h3>
+  </div>
+  <div class="card-body">
+    <form method="post" action="{{ tenant }}/admin/external-idps/import-discovery" id="external-idp-discovery-import-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <label class="form-label" for="discovery_issuer">{{ messages.get("admin-external-idps-discovery-field") }}{% include "required_mark.html" %}</label>
+      <input class="form-control" id="discovery_issuer" name="issuer" type="url" inputmode="url" value="{{ values.issuer }}" placeholder="https://login.example.com/realms/corp" required>
+      <div class="form-text">{{ messages.get("admin-external-idps-discovery-hint") }}</div>
+      <button type="submit" class="btn btn-outline-primary mt-2">
+        <i class="fa-solid fa-file-import me-2" aria-hidden="true"></i>{{ messages.get("admin-external-idps-import-button") }}
+      </button>
+    </form>
+  </div>
+</div>
+{% endif %}
+
 <div class="card mb-4">
   <div class="card-header">
     <h3 class="h6 mb-0">
-      {%- if editing.is_none() && values.is_saml() -%}
+      {%- if editing.is_none() -%}
         {{ messages.get("admin-external-idps-manual-title") }}
       {%- else -%}
         {{ messages.get("admin-external-idps-section-common") }}

@@ -16,7 +16,8 @@ use assay_contracts::admin::{
     AuthenticationPoliciesResponse, AuthenticationPolicyResponse,
     AuthenticationPolicyUpsertRequest, AvailablePermissionsResponse, ClientPermissionsResponse,
     ClientStatusResponse, ManagementTokenRequest, ManagementTokenResponse,
-    SamlIdpMetadataImportResponse, SamlServiceProviderRegisterRequest, SamlServiceProviderResponse,
+    OidcDiscoveryImportRequest, OidcDiscoveryImportResponse, SamlIdpMetadataImportResponse,
+    SamlServiceProviderRegisterRequest, SamlServiceProviderResponse,
     SamlServiceProviderUpdateRequest, SamlSpMetadataImportResponse, UserPermissionsResponse,
     UserSummaryResponse, WhoamiResponse,
 };
@@ -1306,6 +1307,29 @@ impl ApiClient {
             correlation_id,
             sso,
             Some(serde_json::json!({ "metadata_xml": metadata_xml })),
+        )
+        .await
+    }
+
+    /// 外部 OIDC IdP の discovery 取り込み（`POST /admin/external-idps/import-discovery`。task #77）。
+    /// api が issuer の discovery ドキュメントを読んで検証し、登録候補値を返す（永続化はしない）。
+    pub async fn import_external_idp_discovery(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        issuer: &str,
+    ) -> Result<OidcDiscoveryImportResponse, AdminApiError> {
+        let body = OidcDiscoveryImportRequest {
+            issuer: issuer.to_string(),
+        };
+        self.admin_send(
+            Method::POST,
+            tenant_id,
+            "/admin/external-idps/import-discovery",
+            correlation_id,
+            sso,
+            Some(serde_json::to_value(body).map_err(|e| AdminApiError::Transport(e.to_string()))?),
         )
         .await
     }

@@ -143,6 +143,12 @@ pub async fn connect_pool_with_max_connections(
 
 /// アプリ全体（AppState + ルータ）を組み立てる。署名鍵はプロセス内で一度だけブートストラップする。
 pub async fn setup(test_name: &str) -> Option<TestEnv> {
+    setup_with(test_name, |_| {}).await
+}
+
+/// `setup` と同じだが、ルータを組む前に `AppState` の部品を差し替えられる（外への HTTP を
+/// 出す部品を偽物にする等）。
+pub async fn setup_with(test_name: &str, customize: impl FnOnce(&mut AppState)) -> Option<TestEnv> {
     let pool = connect_pool(test_name).await?;
 
     let root_tenant_id: String =
@@ -170,7 +176,8 @@ pub async fn setup(test_name: &str) -> Option<TestEnv> {
     let issuer = config.issuer().to_string();
     let public_web_base_url = config.public_web_base_url().to_string();
     let csrf_secret = *config.csrf_secret();
-    let state = AppState::build(pool.clone(), config, Arc::new(SystemClock));
+    let mut state = AppState::build(pool.clone(), config, Arc::new(SystemClock));
+    customize(&mut state);
     KEY_BOOTSTRAP
         .get_or_init(|| async {
             state

@@ -1,3 +1,14 @@
+## 2026-09-30（9）（OIDC の外部 IdP を discovery ドキュメントから取り込めるようにした）
+
+- **OIDC の外部 IdP の登録画面に「discovery ドキュメントから読み込む」を足した**（task #77、旧 T32）。
+  issuer を入れると api が `{issuer}/.well-known/openid-configuration` を読み、issuer・認可・トークン・JWKS URI を
+  登録フォームへ転記する。SAML の IdP メタデータ取り込みと同じく**登録はしない**。管理 API は
+  `POST /{tenant_id}/admin/external-idps/import-discovery`（`idp.external-idps:write`）。SAML と違って api が外へ
+  HTTP を出すので、取りに行く前に登録時と同じ宛先の検査（https のみ・内部宛先を拒否。ADR-0023 決定 5）を通し
+  （検査を通した URL の型 `DiscoveryUrl` しか取得の口に渡せない）、取得はリダイレクトを追わず・10 秒で切り・
+  256 KiB を上限にする。文書の `issuer` が入力と完全一致しなければ断り（OIDC Discovery §4.3）、文書から得た
+  エンドポイントも登録時と同じ検査に通す。届かない理由（接続拒否など）は運用ログにだけ残し、応答には載せない。
+
 ## 2026-09-30（8）（SAML のアサーションにもアプリの割り当ての判定を効かせる）
 
 - **SAML の SP へのアサーション発行にも、アプリの割り当ての判定（ADR-0054）を置いた**（task #66、旧 T52）。

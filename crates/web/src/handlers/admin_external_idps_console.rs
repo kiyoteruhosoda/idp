@@ -23,8 +23,9 @@
 //! | `GET /admin/external-idps/new/oidc` ・ `.../new/saml` | そのプロトコルの登録フォーム |
 //! | `GET /admin/external-idps/{id}/edit` | 編集フォーム（プロトコルは登録済みの値で固定） |
 //!
-//! SAML だけメタデータの取り込みを持つ。IdP メタデータ XML は SAML の相互運用の仕組みで、OIDC に
-//! 相当するものは discovery ドキュメントだが未対応のため、OIDC は手動入力だけになる。
+//! 新規登録の画面は、どちらのプロトコルも相手の公開文書からの取り込みを持つ。SAML は IdP メタデータ
+//! XML（貼り付け・ファイル）、OIDC は issuer の discovery ドキュメント（issuer を入れると api が
+//! `/.well-known/openid-configuration` を読む。task #77）。どちらも**登録ではなく**、フォームへの転記である。
 //!
 //! この形にしたことで、**サーバが描くのは選ばれたプロトコルの欄だけ**になり、出し分けの JS が
 //! 要らなくなった（JS が動かない環境でも両方のプロトコルを登録できる）。
@@ -361,6 +362,93 @@ pub async fn import_metadata(
                 (saml_defaults(), false, Some("admin-error-internal"))
             }
         },
+    };
+
+    let messages = Messages::new(locale(&headers));
+    Html(render(&ExternalIdpFormPage {
+        messages: &messages,
+        tenant: &tenant.prefix(),
+        admin: Some(admin.chrome()),
+        csrf: &console_csrf_token(&sso, state.config.csrf_secret()),
+        editing: None,
+        values: &values,
+        imported,
+        error_key,
+    }))
+    .into_response()
+}
+
+/// discovery 取り込みのフォーム。
+#[derive(Debug, Deserialize)]
+pub struct DiscoveryImportForm {
+    #[serde(default)]
+    pub issuer: String,
+    pub csrf_token: String,
+}
+
+/// 外部 OIDC IdP の discovery ドキュメントを取り込み、OIDC の登録フォームに初期値を反映して再描画する
+/// （task #77）。
+///
+/// SAML のメタデータ取り込みと同じく**登録ではない**ので PRG は挟まない（管理者が値を確認してから
+/// 登録する）。取得・宛先の検査・`issuer` の照合はすべて api が行う（web は外部 IdP へ出ない）。
+/// 失敗したら入れた issuer を残したまま描き直す（直して押し直せるように）。
+pub async fn import_discovery(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Form(form): Form<DiscoveryImportForm>,
+) -> Response {
+    let admin = match resolve_admin(&state, &correlation, &tenant, &headers).await {
+        AdminResolution::Ok(uid) => uid,
+        AdminResolution::Reject(resp) => return resp,
+    };
+    let base = format!("{}{SEGMENT}", tenant.prefix());
+    let sso = sso(&headers);
+    if !csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
+        return found(&format!("{base}/new/oidc?error=csrf"));
+    }
+
+    let issuer = form.issuer.trim();
+    // 失敗時の描き直しでも、入れた issuer は残す。
+    let entered = ExternalIdpFormValues {
+        issuer: issuer.to_string(),
+        ..ExternalIdpFormValues::default()
+    };
+    let (values, imported, error_key) = if issuer.is_empty() {
+        (entered, false, Some("admin-external-idps-error-discovery"))
+    } else {
+        match state
+            .api
+            .import_external_idp_discovery(&correlation.0, &tenant.0, &sso, issuer)
+            .await
+        {
+            Ok(imported) => (
+                ExternalIdpFormValues {
+                    // 文書の `issuer`（入力と完全一致したもの）。ID Token の `iss` と照合する値。
+                    issuer: imported.issuer,
+                    authorization_endpoint: imported.authorization_endpoint,
+                    token_endpoint: imported.token_endpoint,
+                    jwks_uri: imported.jwks_uri,
+                    ..ExternalIdpFormValues::default()
+                },
+                true,
+                None,
+            ),
+            Err(AdminApiError::Unauthorized) => return redirect_to_login(&tenant),
+            Err(AdminApiError::Forbidden) => {
+                (entered, false, Some("admin-settings-error-forbidden"))
+            }
+            // 宛先の検査に通らない・取得できない・issuer が一致しない等。理由（運用言語）はログに残す。
+            Err(AdminApiError::Validation(reason)) => {
+                tracing::info!(reason = %reason, "external idp discovery import was rejected");
+                (entered, false, Some("admin-external-idps-error-discovery"))
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to import external idp discovery document");
+                (entered, false, Some("admin-error-internal"))
+            }
+        }
     };
 
     let messages = Messages::new(locale(&headers));
