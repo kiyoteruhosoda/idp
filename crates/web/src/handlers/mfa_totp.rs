@@ -86,6 +86,7 @@ pub async fn setup_page(
             let qr_svg = generate_qr_svg(&totp_uri);
             Html(render(&TotpSetupTemplate {
                 messages: &messages,
+                tenant_prefix: &tenant.prefix(),
                 qr_svg: &qr_svg,
                 secret_base32: &secret_base32,
                 error_key: None,
@@ -164,13 +165,12 @@ pub async fn setup_confirm(
     let messages = Messages::new(locale(&headers));
 
     match result {
-        InternalTotpConfirmResponse::Ok => {
-            let body = render(&MessagePage {
-                title: messages.get("mfa-setup-confirmed-title"),
-                message: messages.get("mfa-setup-confirmed-message"),
-            });
-            Html(body).into_response()
-        }
+        // 完了は認証器の画面へ戻してバナーで伝える（PRG）。完了だけを告げる画面は行き止まりで、
+        // 次にどこへ行けばよいかが画面に無かった（task #82）。
+        InternalTotpConfirmResponse::Ok => see_other(&format!(
+            "{}/settings/authenticators?saved=totp",
+            tenant.prefix()
+        )),
         InternalTotpConfirmResponse::InvalidCode => {
             if let Some(assay_contracts::auth::InternalTotpSetupResponse::Ok {
                 totp_uri,
@@ -182,6 +182,7 @@ pub async fn setup_confirm(
                     StatusCode::UNPROCESSABLE_ENTITY,
                     Html(render(&TotpSetupTemplate {
                         messages: &messages,
+                        tenant_prefix: &tenant.prefix(),
                         qr_svg: &qr_svg,
                         secret_base32: &secret_base32,
                         error_key: Some("mfa-error-invalid-code"),
