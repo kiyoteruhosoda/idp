@@ -105,6 +105,21 @@ AuthSession（集約ルート。フィールドは非公開）
 - **試験の保存先はメモリ上の実装を共有する**（`infrastructure/repositories/in_memory_auth_session.rs`）。
   書き込みは sqlx 実装の UPDATE と同じ規則（旧い id の行を、記録された列だけ書き換える）で行う。
 
+## 経路をまたぐ手順の置き場所
+
+複数のログイン経路が同じ手順を踏むところは、経路ごとに写さず Application 層の 1 つのサービスに置く。
+結論をどう画面へ返すか（各経路の `〇〇Outcome`）だけを経路に残す。
+
+| 手順 | 置き場所 |
+|---|---|
+| 認証ポリシーの評価の材料集め（宛先の読み替え・既定の効果・有効なポリシー） | `authentication_policy_gate::AuthenticationPolicyGate` |
+| 認証が成立した後（SSO の確立 → 認証の記録 → 同意 → code 発行） | `sign_in_completion::SignInCompletion` |
+| code の発行と、アプリの利用可否の判定（ADR-0054） | `code_issuance::CodeIssuanceService` |
+| 同意済みかの判定 | `consent::consent_is_granted` |
+
+順序に意味がある手順は、前の段の結果を次の段の引数にして型で守る（`continue_authorization` は
+`establish_sso` が返した `EstablishedSso` を受け取る ——SSO を保存する前に認証を記録できない）。
+
 ## 命名規則
 
 - スキーマ: `〇〇Request`（Deserialize） / `〇〇Response`（Serialize）。

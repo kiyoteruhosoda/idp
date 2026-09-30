@@ -26,25 +26,22 @@ use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authentication_policy_gate::{
     AuthenticationPolicyGate, PolicyAudience, PolicyQuery,
 };
-use crate::application::authorize::AuthorizationDispatch;
-use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
-use crate::application::consent::consent_is_granted;
+use crate::application::sign_in_completion::{
+    AuthorizationContinuation, EstablishedSso, SignIn, SignInCompletion,
+};
 use crate::domain::audit::{AuditEventType, AuditResult};
-use crate::domain::auth_session::{AuthSessionIdHash, Authentication};
+use crate::domain::auth_session::AuthSessionIdHash;
 use crate::domain::authentication_policy::PolicyDecision;
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
-use crate::domain::effective_tenant_settings::EffectiveTenantSettings;
 use crate::domain::external_idp::{ExternalIdentity, ExternalIdpConfig, ExternalLoginRequest};
 use crate::domain::external_oidc_port::{ExternalOidcClient, ExternalTokenRequest};
 use crate::domain::id_generator::IdGenerator;
 use crate::domain::pkce;
 use crate::domain::repositories::{
-    AuthSessionRepository, ClientConsentRepository, ExternalIdentityProviderRepository,
-    ExternalIdentityRepository, ExternalLoginRequestRepository, SsoSessionRepository,
-    UserRepository,
+    AuthSessionRepository, ExternalIdentityProviderRepository, ExternalIdentityRepository,
+    ExternalLoginRequestRepository, UserRepository,
 };
-use crate::domain::sso_session::SsoSession;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::AuthenticationMethod;
 use crate::domain::{saml_external_idp, saml_response};
@@ -147,11 +144,10 @@ pub struct ExternalLoginService {
     identities: Arc<dyn ExternalIdentityRepository>,
     requests: Arc<dyn ExternalLoginRequestRepository>,
     users: Arc<dyn UserRepository>,
-    sso_sessions: Arc<dyn SsoSessionRepository>,
     /// OIDC 認可フローの途中から来た場合に続きを進めるための依存（他のログイン経路と共通）。
     auth_sessions: Arc<dyn AuthSessionRepository>,
-    client_consents: Arc<dyn ClientConsentRepository>,
-    code_issuance: Arc<CodeIssuanceService>,
+    /// 認証が成立した後の共通の後段（SSO の確立・認可フローの続き）。
+    sign_in: Arc<SignInCompletion>,
     /// 認証ポリシーの評価（材料の引き当てと評価。`authentication_policy_gate`）。
     policy_gate: Arc<AuthenticationPolicyGate>,
     oidc: Arc<dyn ExternalOidcClient>,
@@ -161,9 +157,6 @@ pub struct ExternalLoginService {
     key_encryption_key: [u8; 32],
     /// コールバックを受ける web の公開ベース URL（`{base}/{tenant}/external/{code}/callback`）。
     public_web_base_url: String,
-    /// テナントが上書きできる設定（ADR-0058）。参照のたびに引く。一致するポリシーが無い場合の
-    /// 既定動作（AP2・§4）もここから引く。
-    settings: Arc<dyn EffectiveTenantSettings>,
 }
 
 impl ExternalLoginService {
@@ -173,10 +166,8 @@ impl ExternalLoginService {
         identities: Arc<dyn ExternalIdentityRepository>,
         requests: Arc<dyn ExternalLoginRequestRepository>,
         users: Arc<dyn UserRepository>,
-        sso_sessions: Arc<dyn SsoSessionRepository>,
         auth_sessions: Arc<dyn AuthSessionRepository>,
-        client_consents: Arc<dyn ClientConsentRepository>,
-        code_issuance: Arc<CodeIssuanceService>,
+        sign_in: Arc<SignInCompletion>,
         policy_gate: Arc<AuthenticationPolicyGate>,
         oidc: Arc<dyn ExternalOidcClient>,
         audit: Arc<AuditService>,
@@ -184,17 +175,14 @@ impl ExternalLoginService {
         ids: Arc<dyn IdGenerator>,
         key_encryption_key: [u8; 32],
         public_web_base_url: String,
-        settings: Arc<dyn EffectiveTenantSettings>,
     ) -> Self {
         Self {
             providers,
             identities,
             requests,
             users,
-            sso_sessions,
             auth_sessions,
-            client_consents,
-            code_issuance,
+            sign_in,
             policy_gate,
             oidc,
             audit,
@@ -202,7 +190,6 @@ impl ExternalLoginService {
             ids,
             key_encryption_key,
             public_web_base_url,
-            settings,
         }
     }
 
@@ -639,49 +626,27 @@ impl ExternalLoginService {
             }
         }
 
-        // 9. SSO セッションを発行する。
-        //    寿命は利用者の所属元テナントの値（SSO セッションは全テナントで共有されるため。ADR-0058）。
-        let lifetime = match self.settings.sso_session_lifetime(user.tenant_id).await {
-            Ok(lifetime) => lifetime,
+        // 9. SSO セッションを発行する（認可フローの外から来た場合もここで終わる）。
+        let sso = match self
+            .sign_in
+            .establish_sso(
+                SignIn {
+                    tenant_id,
+                    user_id: user.id,
+                    home_tenant_id: user.tenant_id,
+                    methods: vec![AuthenticationMethod::ExternalIdp],
+                    client_id: None,
+                    success_event: AuditEventType::ExternalLoginSucceeded,
+                    success_detail: Some(format!("provider={}", provider.provider_code)),
+                },
+                ctx,
+                now,
+            )
+            .await
+        {
+            Ok(sso) => sso,
             Err(e) => return CallbackOutcome::Internal(e.to_string()),
         };
-        let sso_session_id = crypto::random_hex(32);
-        let sso = SsoSession::establish(
-            crypto::sha256_hex(&sso_session_id),
-            user.id,
-            now,
-            lifetime.idle,
-            lifetime.absolute,
-            vec![AuthenticationMethod::ExternalIdp],
-            ctx.user_agent.clone(),
-            ctx.ip_address.clone(),
-        );
-        if let Err(e) = self.sso_sessions.create(&sso).await {
-            return CallbackOutcome::Internal(e.to_string());
-        }
-
-        self.audit
-            .record(
-                AuditEventType::SsoSessionCreated,
-                AuditResult::Success,
-                Some(tenant_id),
-                Some(user.id),
-                None,
-                None,
-                ctx,
-            )
-            .await;
-        self.audit
-            .record(
-                AuditEventType::ExternalLoginSucceeded,
-                AuditResult::Success,
-                Some(tenant_id),
-                Some(user.id),
-                None,
-                Some(&format!("provider={}", provider.provider_code)),
-                ctx,
-            )
-            .await;
 
         // 10. OIDC 認可フローの途中から来ていれば、その続きを進める（同意確認 → code 発行）。
         //     ここで進めないと、認可要求のパラメータ（client_id・redirect_uri・PKCE・nonce）は
@@ -689,47 +654,37 @@ impl ExternalLoginService {
         let Some(auth_session_id_hash) = request.auth_session_id_hash.clone() else {
             return CallbackOutcome::Success {
                 location: SuccessLocation::Account,
-                sso_session_id,
+                sso_session_id: sso.session_id().to_string(),
                 sso_absolute_ttl_secs: sso.absolute_ttl_secs(),
                 user_language: user.language.clone(),
             };
         };
-        self.resume_authorization(
-            tenant,
-            &auth_session_id_hash,
-            &user,
-            &sso,
-            sso_session_id,
-            now,
-            ctx,
-        )
-        .await
+        self.resume_authorization(tenant, &auth_session_id_hash, &user, &sso, now, ctx)
+            .await
     }
 
     /// 外部 IdP で認証した利用者について、中断していた OIDC 認可フローを再開する。
     ///
-    /// 手順は他のログイン経路（`LoginService` / `MfaLoginService`）の後半と同じ: 認証済みとして
-    /// auth_session に紐づけ、同意を確認し、authorization code を発行して RP へ戻す。共通部分は
-    /// `CodeIssuanceService` に寄せてあるため、ここで写しているのは「同意が要るかの判定」だけ。
-    ///
-    /// auth_session が既に期限切れなら、外部 IdP での認証自体は成立しているので SSO は発行した
-    /// まま、アカウント画面へ戻す（RP へは戻れないが、ログインし直しは要らない）。
-    #[allow(clippy::too_many_arguments)]
+    /// 手順は他のログイン経路と同じ（`SignInCompletion::continue_authorization`）。ここが持つのは、
+    /// 外部 IdP の往復のあいだに auth_session が期限切れになった場合の扱いだけ: 外部 IdP での認証
+    /// 自体は成立しているので SSO は発行したまま、アカウント画面へ戻す（RP へは戻れないが、
+    /// ログインし直しは要らない）。
     async fn resume_authorization(
         &self,
         tenant: TenantContext,
         auth_session_id_hash: &str,
         user: &crate::domain::user::User,
-        sso: &SsoSession,
-        sso_session_id: String,
+        sso: &EstablishedSso,
         now: DateTime<Utc>,
         ctx: &RequestContext,
     ) -> CallbackOutcome {
-        let tenant_id = tenant.tenant_id();
+        let sso_session_id = sso.session_id().to_string();
+        let sso_absolute_ttl_secs = sso.absolute_ttl_secs();
+        let user_language = user.language.clone();
         let mut session = match self
             .auth_sessions
             .find(
-                tenant_id,
+                tenant.tenant_id(),
                 &AuthSessionIdHash::from_stored(auth_session_id_hash.to_string()),
             )
             .await
@@ -741,86 +696,44 @@ impl ExternalLoginService {
                 return CallbackOutcome::Success {
                     location: SuccessLocation::Account,
                     sso_session_id,
-                    sso_absolute_ttl_secs: sso.absolute_ttl_secs(),
-                    user_language: user.language.clone(),
+                    sso_absolute_ttl_secs,
+                    user_language,
                 };
             }
             Err(e) => return CallbackOutcome::Internal(e.to_string()),
         };
 
-        // 認証時刻と `sid` を auth_session へ記録する（ID Token の `auth_time` / `sid` の出所）。
-        // id も再生成する（SEC7）。
-        let authentication = Authentication::new(
-            user.id,
-            now,
-            Some(sso.sid()),
-            Some(sso.authentication_methods.clone()),
-        );
-        let completion = session.complete_authentication(authentication.clone());
-        if let Err(e) = self.auth_sessions.save_authentication(&completion).await {
-            return CallbackOutcome::Internal(e.to_string());
-        }
-        let rotated_id = completion.into_issued().into_string();
-
-        // 同意チェック（`openid` は暗黙同意）。
-        let consented = match consent_is_granted(
-            self.client_consents.as_ref(),
-            tenant_id,
-            user.id,
-            session.request(),
-        )
-        .await
-        {
-            Ok(granted) => granted,
-            Err(e) => return CallbackOutcome::Internal(e.to_string()),
-        };
-        if !consented {
-            return CallbackOutcome::ConsentRequired {
-                auth_session_id: rotated_id,
-                sso_session_id,
-                sso_absolute_ttl_secs: sso.absolute_ttl_secs(),
-                user_language: user.language.clone(),
-            };
-        }
-
-        let code = match self
-            .code_issuance
-            .issue(
-                IssueCodeCommand {
-                    tenant,
-                    request: session.request().clone(),
-                    authentication,
-                },
-                ctx,
-            )
+        match self
+            .sign_in
+            .continue_authorization(tenant, &mut session, sso, now, ctx)
             .await
         {
-            Ok(CodeIssuance::Issued(code)) => code,
-            // 認証は通っているが、このアプリの利用が許可されていない（ADR-0054）。RP へは戻さない。
-            Ok(CodeIssuance::ApplicationDenied { application_name }) => {
-                return CallbackOutcome::ApplicationNotPermitted {
-                    application_name,
+            Ok(AuthorizationContinuation::ConsentRequired { auth_session_id }) => {
+                CallbackOutcome::ConsentRequired {
+                    auth_session_id,
                     sso_session_id,
-                    sso_absolute_ttl_secs: sso.absolute_ttl_secs(),
-                    user_language: user.language.clone(),
+                    sso_absolute_ttl_secs,
+                    user_language,
                 }
             }
-            Err(e) => return CallbackOutcome::Internal(e.to_string()),
-        };
-
-        if let Err(e) = self.auth_sessions.delete(session.id_hash()).await {
-            tracing::warn!(error = %e, "failed to delete auth session after external login");
-        }
-
-        let dispatch = AuthorizationDispatch::from(session.request().success_response(&code));
-        CallbackOutcome::Success {
-            location: SuccessLocation::Redirect {
-                location: dispatch.location,
-                form_post: dispatch.form_post,
+            Ok(AuthorizationContinuation::ApplicationNotPermitted { application_name }) => {
+                CallbackOutcome::ApplicationNotPermitted {
+                    application_name,
+                    sso_session_id,
+                    sso_absolute_ttl_secs,
+                    user_language,
+                }
+            }
+            Ok(AuthorizationContinuation::Authorized(dispatch)) => CallbackOutcome::Success {
+                location: SuccessLocation::Redirect {
+                    location: dispatch.location,
+                    form_post: dispatch.form_post,
+                },
+                sso_session_id,
+                sso_absolute_ttl_secs,
+                user_language,
             },
-            sso_session_id,
-            sso_absolute_ttl_secs: sso.absolute_ttl_secs(),
-            user_language: user.language.clone(),
+            Err(e) => CallbackOutcome::Internal(e.to_string()),
         }
     }
 
