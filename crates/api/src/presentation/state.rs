@@ -8,6 +8,7 @@
 //! かつての「起動時に解決した root を既定テナントとして全リクエストへ適用する」過渡運用
 //! （`default_tenant`）は SEC4 で撤去した。
 
+use crate::application::access_token_verification::AccessTokenVerifier;
 use crate::application::account_directory::AccountDirectoryService;
 use crate::application::account_language::AccountLanguageService;
 use crate::application::account_note::AccountNoteService;
@@ -793,14 +794,15 @@ impl AppState {
             config.id_token_ttl(),
             config.refresh_token_ttl(),
         ));
-        let userinfo = Arc::new(UserInfoService::new(
+        // アクセストークンの検証（/userinfo・/introspect・/revoke で共有する。`access_token_verification`）。
+        let access_tokens = Arc::new(AccessTokenVerifier::new(
             signing_keys.clone(),
-            users.clone(),
             revoked_access_tokens.clone(),
             clock.clone(),
             config.issuer().to_string(),
             config.clock_skew(),
         ));
+        let userinfo = Arc::new(UserInfoService::new(users.clone(), access_tokens.clone()));
         let permissions_admin = Arc::new(PermissionManagementService::new(
             users.clone(),
             tenant_memberships.clone(),
@@ -1053,20 +1055,19 @@ impl AppState {
             clients.clone(),
             refresh_tokens.clone(),
             revoked_access_tokens.clone(),
+            access_tokens.clone(),
             client_auth.clone(),
             audit.clone(),
             clock.clone(),
         ));
         let introspection = Arc::new(IntrospectionService::new(
             clients.clone(),
-            signing_keys.clone(),
             refresh_tokens,
-            revoked_access_tokens,
+            access_tokens.clone(),
             users.clone(),
             client_auth,
             clock.clone(),
             config.issuer().to_string(),
-            config.clock_skew(),
         ));
 
         let totp_registration = Arc::new(TotpRegistrationService::new(

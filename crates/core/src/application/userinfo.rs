@@ -3,16 +3,10 @@
 //! Bearer の Access Token（JWT / `typ=at+jwt`）を検証し、scope に応じたクレームのみ返す。
 //! `exp` はクロックスキュー（±60 秒）を許容して `Clock` トレイト経由の時刻で検証する。
 
-use crate::application::token::{userinfo_audience, AccessTokenClaims};
-use crate::domain::clock::Clock;
-use crate::domain::issuer::tenant_issuer;
-use crate::domain::jwt;
-use crate::domain::repositories::{
-    RevokedAccessTokenRepository, SigningKeyRepository, UserRepository,
-};
+use crate::application::access_token_verification::{AccessTokenRejection, AccessTokenVerifier};
+use crate::domain::repositories::UserRepository;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::Scope;
-use jsonwebtoken::Validation;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -40,32 +34,16 @@ pub enum UserInfoError {
 }
 
 pub struct UserInfoService {
-    keys: Arc<dyn SigningKeyRepository>,
     users: Arc<dyn UserRepository>,
-    revoked_access_tokens: Arc<dyn RevokedAccessTokenRepository>,
-    clock: Arc<dyn Clock>,
-    /// 基底 issuer。検証時はテナント毎に `<基底>/<tenant_id>` を合成して `iss`/`aud` を厳密照合する
-    /// （ADR-0009 §6。他テナント発行トークンの流用を防ぐ）。
-    base_issuer: String,
-    clock_skew: chrono::Duration,
+    /// アクセストークンの検証（署名・typ・iss・aud・exp・失効。`access_token_verification`）。
+    access_tokens: Arc<AccessTokenVerifier>,
 }
 
 impl UserInfoService {
-    pub fn new(
-        keys: Arc<dyn SigningKeyRepository>,
-        users: Arc<dyn UserRepository>,
-        revoked_access_tokens: Arc<dyn RevokedAccessTokenRepository>,
-        clock: Arc<dyn Clock>,
-        base_issuer: String,
-        clock_skew: std::time::Duration,
-    ) -> Self {
+    pub fn new(users: Arc<dyn UserRepository>, access_tokens: Arc<AccessTokenVerifier>) -> Self {
         Self {
-            keys,
             users,
-            revoked_access_tokens,
-            clock,
-            base_issuer,
-            clock_skew: chrono::Duration::from_std(clock_skew).expect("clock skew out of range"),
+            access_tokens,
         }
     }
 
@@ -74,7 +52,14 @@ impl UserInfoService {
         tenant: TenantContext,
         bearer_token: &str,
     ) -> Result<UserInfoClaims, UserInfoError> {
-        let claims = self.verify_access_token(tenant, bearer_token).await?;
+        let claims = self
+            .access_tokens
+            .verify_for_userinfo(tenant, bearer_token)
+            .await
+            .map_err(|rejection| match rejection {
+                AccessTokenRejection::Unavailable(e) => UserInfoError::Internal(e),
+                other => UserInfoError::InvalidToken(other.reason()),
+            })?;
 
         // `client_credentials` で発行したトークンは利用者主体ではないため `/userinfo` では使えない
         //（G4）。`sub` はクライアント自身で、返すべき利用者クレームが存在しない。
@@ -117,68 +102,5 @@ impl UserInfoService {
                 None
             },
         })
-    }
-
-    /// Access Token（JWT）を検証してクレームを返す（署名・typ・iss・aud・exp）。
-    /// `iss`/`aud` は要求テナントの合成 issuer と厳密一致すること（他テナント発行トークンを弾く）。
-    async fn verify_access_token(
-        &self,
-        tenant: TenantContext,
-        token: &str,
-    ) -> Result<AccessTokenClaims, UserInfoError> {
-        let header = jsonwebtoken::decode_header(token)
-            .map_err(|_| UserInfoError::InvalidToken("malformed token"))?;
-        if header.typ.as_deref() != Some("at+jwt") {
-            return Err(UserInfoError::InvalidToken("token typ must be `at+jwt`"));
-        }
-        let Some(kid) = header.kid else {
-            return Err(UserInfoError::InvalidToken("token has no kid"));
-        };
-
-        let key = self
-            .keys
-            .find_by_kid(&kid)
-            .await
-            .map_err(|e| UserInfoError::Internal(e.to_string()))?
-            .ok_or(UserInfoError::InvalidToken("unknown signing key"))?;
-        // 検証アルゴリズムは**署名鍵の algorithm**（RS256 / ES256）で決める。ここを RS256 に
-        // 決め打ちにすると、ES256 鍵を ACTIVE にした環境で発行された at+jwt が /userinfo で
-        // すべて弾かれる（管理コンソールは ES256 も選べ、`token::sign_access_token` は鍵の
-        // algorithm で署名するため）。管理トークン検証（`management_token`）と同じ扱いに揃える。
-        let (decoding_key, algorithm) = jwt::decoding_key_for(&key.algorithm, &key.public_key)
-            .map_err(|e| UserInfoError::Internal(e.to_string()))?;
-
-        // exp / aud は Clock トレイト経由の時刻で自前検証する（テストで時刻固定するため）。
-        let mut validation = Validation::new(algorithm);
-        validation.validate_exp = false;
-        validation.validate_aud = false;
-        validation.required_spec_claims.clear();
-
-        let data = jsonwebtoken::decode::<AccessTokenClaims>(token, &decoding_key, &validation)
-            .map_err(|_| UserInfoError::InvalidToken("signature verification failed"))?;
-        let claims = data.claims;
-
-        let expected_issuer = tenant_issuer(&self.base_issuer, tenant.tenant_id());
-        if claims.iss != expected_issuer {
-            return Err(UserInfoError::InvalidToken("issuer mismatch"));
-        }
-        if claims.aud != userinfo_audience(&expected_issuer) {
-            return Err(UserInfoError::InvalidToken("audience mismatch"));
-        }
-        let now = self.clock.now().timestamp();
-        if claims.exp + self.clock_skew.num_seconds() <= now {
-            return Err(UserInfoError::InvalidToken("token expired"));
-        }
-
-        // jti 失効リスト確認（F5: token revocation）。
-        if !claims.jti.is_empty() {
-            match self.revoked_access_tokens.is_revoked(&claims.jti).await {
-                Ok(true) => return Err(UserInfoError::InvalidToken("token has been revoked")),
-                Ok(false) => {}
-                Err(e) => return Err(UserInfoError::Internal(e.to_string())),
-            }
-        }
-
-        Ok(claims)
     }
 }

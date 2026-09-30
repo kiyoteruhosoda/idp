@@ -64,6 +64,16 @@ async fn register_user(app: &axum::Router, tenant: &str, username: &str) {
 
 /// `offline_access` でログインして refresh token を得る。
 async fn refresh_token_for(env: &TestEnv, client_id: &str, secret: &str, username: &str) -> String {
+    tokens_for(env, client_id, secret, username).await.1
+}
+
+/// `offline_access` でログインして `(access_token, refresh_token)` を得る。
+async fn tokens_for(
+    env: &TestEnv,
+    client_id: &str,
+    secret: &str,
+    username: &str,
+) -> (String, String) {
     let response = send(
         &env.app,
         Request::builder()
@@ -142,10 +152,17 @@ async fn refresh_token_for(env: &TestEnv, client_id: &str, secret: &str, usernam
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK, "token endpoint");
-    body_json(response).await["refresh_token"]
-        .as_str()
-        .expect("refresh_token")
-        .to_string()
+    let tokens = body_json(response).await;
+    (
+        tokens["access_token"]
+            .as_str()
+            .expect("access_token")
+            .to_string(),
+        tokens["refresh_token"]
+            .as_str()
+            .expect("refresh_token")
+            .to_string(),
+    )
 }
 
 async fn revoke_as(
@@ -153,6 +170,16 @@ async fn revoke_as(
     client_id: &str,
     secret: &str,
     token: &str,
+) -> (StatusCode, serde_json::Value) {
+    revoke_with_hint(env, client_id, secret, token, "refresh_token").await
+}
+
+async fn revoke_with_hint(
+    env: &TestEnv,
+    client_id: &str,
+    secret: &str,
+    token: &str,
+    hint: &str,
 ) -> (StatusCode, serde_json::Value) {
     let response = send(
         &env.app,
@@ -162,7 +189,7 @@ async fn revoke_as(
             .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
             .header(AUTHORIZATION, basic_auth(client_id, secret))
             .body(Body::from(format!(
-                "token={}&token_type_hint=refresh_token",
+                "token={}&token_type_hint={hint}",
                 utf8_percent_encode(token, NON_ALPHANUMERIC)
             )))
             .unwrap(),
@@ -274,4 +301,133 @@ async fn an_unknown_token_is_still_accepted_silently() {
 
     let (status, _) = revoke_as(&env, &client_id, &secret, "not-a-real-token").await;
     assert_eq!(status, StatusCode::OK, "不存在のトークンはエラーにしない");
+}
+
+async fn userinfo_status(env: &TestEnv, access_token: &str) -> StatusCode {
+    send(
+        &env.app,
+        Request::builder()
+            .uri(format!("/{}/userinfo", env.root_tenant_id))
+            .header(AUTHORIZATION, format!("Bearer {access_token}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .status()
+}
+
+async fn revoked_jti_count(env: &TestEnv, jti: &str) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM revoked_access_tokens WHERE jti = ?")
+        .bind(jti)
+        .fetch_one(&env.pool)
+        .await
+        .expect("count revoked jti")
+}
+
+/// JWT のペイロードの `jti`（署名は見ない。試験の中で自分が発行したトークンを読むだけ）。
+fn jti_of(access_token: &str) -> String {
+    let payload = access_token.split('.').nth(1).expect("payload");
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .expect("base64url");
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).expect("claims json");
+    claims["jti"].as_str().expect("jti").to_string()
+}
+
+/// **署名の無い JWT で失効リストを膨らませられない**（T41）。形だけ整えた値は、不存在と同じく
+/// 200 を返し（RFC 7009 §2.2）、`revoked_access_tokens` に何も入れない。
+#[tokio::test]
+async fn a_forged_access_token_is_not_added_to_the_revocation_list() {
+    let Some(env) = support::setup("revocation of a forged access token").await else {
+        return;
+    };
+    let (client_id, secret) =
+        support::insert_confidential_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
+    let jti = format!("forged-{}", uuid::Uuid::new_v4());
+    let encode = |v: serde_json::Value| {
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v.to_string())
+    };
+    let forged = format!(
+        "{}.{}.{}",
+        encode(json!({ "alg": "RS256", "typ": "at+jwt", "kid": "nope" })),
+        encode(json!({ "jti": jti, "exp": 4_102_444_800_i64, "client_id": client_id })),
+        "c2lnbmF0dXJl"
+    );
+
+    let (status, _) = revoke_with_hint(&env, &client_id, &secret, &forged, "access_token").await;
+    assert_eq!(status, StatusCode::OK, "無効なトークンはエラーにしない");
+    assert_eq!(
+        revoked_jti_count(&env, &jti).await,
+        0,
+        "署名を確かめずに失効リストへ入れている"
+    );
+}
+
+/// 持ち主のクライアントなら、アクセストークンを失効させられる（`/userinfo` で使えなくなる）。
+#[tokio::test]
+async fn the_owning_client_can_revoke_an_access_token() {
+    let Some(env) = support::setup("revocation of an access token by the owner").await else {
+        return;
+    };
+    let (owner_id, owner_secret) = support::insert_confidential_client(
+        &env.pool,
+        &env.root_tenant_id,
+        &["openid", "offline_access"],
+    )
+    .await;
+    let username = unique_username();
+    register_user(&env.app, &env.root_tenant_id, &username).await;
+    support::mark_email_verified(&env.pool, &env.root_tenant_id, &username).await;
+    let (access_token, _) = tokens_for(&env, &owner_id, &owner_secret, &username).await;
+    assert_eq!(userinfo_status(&env, &access_token).await, StatusCode::OK);
+
+    let (status, _) = revoke_with_hint(
+        &env,
+        &owner_id,
+        &owner_secret,
+        &access_token,
+        "access_token",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "持ち主の失効要求");
+    assert_eq!(revoked_jti_count(&env, &jti_of(&access_token)).await, 1);
+    assert_eq!(
+        userinfo_status(&env, &access_token).await,
+        StatusCode::UNAUTHORIZED,
+        "失効させたのにまだ使える"
+    );
+}
+
+/// **他のクライアントのアクセストークンは消せない**（refresh token 側と同じ。ADR-0046）。
+#[tokio::test]
+async fn another_client_cannot_revoke_an_access_token_it_was_not_issued() {
+    let Some(env) = support::setup("revocation of another client's access token").await else {
+        return;
+    };
+    let (owner_id, owner_secret) = support::insert_confidential_client(
+        &env.pool,
+        &env.root_tenant_id,
+        &["openid", "offline_access"],
+    )
+    .await;
+    let (other_id, other_secret) =
+        support::insert_confidential_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
+    let username = unique_username();
+    register_user(&env.app, &env.root_tenant_id, &username).await;
+    support::mark_email_verified(&env.pool, &env.root_tenant_id, &username).await;
+    let (access_token, _) = tokens_for(&env, &owner_id, &owner_secret, &username).await;
+
+    // hint が無くても（refresh token として探して外れても）同じく断る。
+    for hint in ["access_token", ""] {
+        let (status, body) =
+            revoke_with_hint(&env, &other_id, &other_secret, &access_token, hint).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "hint={hint}: {body}");
+        assert_eq!(body["error"], "unauthorized_client", "hint={hint}");
+    }
+    assert_eq!(revoked_jti_count(&env, &jti_of(&access_token)).await, 0);
+    assert_eq!(
+        userinfo_status(&env, &access_token).await,
+        StatusCode::OK,
+        "断ったのにトークンが失効している"
+    );
 }
