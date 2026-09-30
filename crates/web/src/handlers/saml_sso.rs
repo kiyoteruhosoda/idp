@@ -100,6 +100,16 @@ pub async fn continue_sso(
             )
                 .into_response()
         }
+        // SSO は復元できたが、このアプリの利用が許可されていない（ADR-0054）。ACS へは送らない。
+        // SSO Cookie には触らない ——assay には入れているので、他のアプリへはそのまま進める。
+        InternalSamlResumeResponse::ApplicationNotPermitted { application_name } => (
+            state
+                .set_cookies()
+                .expire_local(&state.origin_bound_cookie(cookies::SAML_REQUEST_COOKIE))
+                .into_headers(),
+            crate::application_denied::page(&messages, &tenant.prefix(), &application_name),
+        )
+            .into_response(),
         InternalSamlResumeResponse::Expired => {
             let set_cookies = state
                 .set_cookies()

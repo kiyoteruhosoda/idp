@@ -17,7 +17,7 @@
 //! 読むと、全テナントが全体の値で動く。
 
 use crate::application::audit::{AuditService, RequestContext};
-use crate::domain::application::{Application, ApplicationAccess};
+use crate::domain::application::{Application, ApplicationAccess, BindingTarget};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::effective_tenant_settings::EffectiveTenantSettings;
 use crate::domain::error::DomainError;
@@ -93,13 +93,27 @@ impl ApplicationAccessService {
             .map(|application| application.id))
     }
 
-    /// 判定して、必要なら監査ログへ 1 行残す。
+    /// SAML の SP からアプリを解決する（`application_bindings.kind = 'saml'`）。
     ///
-    /// **アプリが解決できないときは通す。** 移行前・移行漏れの client を「割り当てが無い」と同じに
-    /// 扱うと、取りこぼしが「正しく断った」ように見えてしまう（ADR-0054 の帰結）。
-    ///
-    /// 問い合わせの失敗（DB 障害）も通す。門番が落ちたときに**全員を締め出す**のは、この門が
-    /// 守っているものの重さに見合わない ——警告は構造化ログへ出す。
+    /// entityID ではなく SP の**行 id** で引く。発行の直前に SP を id で引き直しているので
+    /// （`SamlSsoService::resume`）、同じ鍵で引けばフロー中に entityID が書き換わっても取り違えない。
+    /// binding が無い SP は OIDC と同じく `None`（移行前・移行漏れ）。
+    pub async fn resolve_for_saml_service_provider(
+        &self,
+        tenant_id: TenantId,
+        service_provider_id: Uuid,
+    ) -> Result<Option<Application>, DomainError> {
+        self.applications
+            .find_by_binding_target(
+                tenant_id,
+                BindingTarget::Saml {
+                    service_provider_id,
+                },
+            )
+            .await
+    }
+
+    /// OIDC の RP について判定して、必要なら監査ログへ 1 行残す（code の発行地点が呼ぶ）。
     pub async fn check(
         &self,
         tenant_id: TenantId,
@@ -107,19 +121,60 @@ impl ApplicationAccessService {
         user_id: Uuid,
         ctx: &RequestContext,
     ) -> ApplicationGate {
-        let application = match self.resolve_for_oidc_client(tenant_id, client_id).await {
+        let application = self.resolve_for_oidc_client(tenant_id, client_id).await;
+        self.judge(tenant_id, application, client_id, user_id, ctx)
+            .await
+    }
+
+    /// SAML の SP について判定する（アサーションの発行地点が呼ぶ。ADR-0054 の決定 6）。
+    ///
+    /// 規則・監査・段階導入は OIDC と 1 つも変えない。監査行の相手欄には SP の entityID を入れる
+    /// （`saml_response.issued` と同じ値で、同じ問い合わせで突き合わせられる）。
+    pub async fn check_saml(
+        &self,
+        tenant_id: TenantId,
+        service_provider_id: Uuid,
+        sp_entity_id: &str,
+        user_id: Uuid,
+        ctx: &RequestContext,
+    ) -> ApplicationGate {
+        let application = self
+            .resolve_for_saml_service_provider(tenant_id, service_provider_id)
+            .await;
+        self.judge(tenant_id, application, sp_entity_id, user_id, ctx)
+            .await
+    }
+
+    /// 解決したアプリについて判定して、必要なら監査ログへ 1 行残す。
+    ///
+    /// `party` は監査行と構造化ログに出す相手の名前（OIDC は `client_id`、SAML は entityID）。
+    ///
+    /// **アプリが解決できないときは通す。** 移行前・移行漏れの client を「割り当てが無い」と同じに
+    /// 扱うと、取りこぼしが「正しく断った」ように見えてしまう（ADR-0054 の帰結）。
+    ///
+    /// 問い合わせの失敗（DB 障害）も通す。門番が落ちたときに**全員を締め出す**のは、この門が
+    /// 守っているものの重さに見合わない ——警告は構造化ログへ出す。
+    async fn judge(
+        &self,
+        tenant_id: TenantId,
+        application: Result<Option<Application>, DomainError>,
+        party: &str,
+        user_id: Uuid,
+        ctx: &RequestContext,
+    ) -> ApplicationGate {
+        let application = match application {
             Ok(Some(application)) => application,
             Ok(None) => {
                 tracing::debug!(
-                    client_id = %client_id,
-                    "client is not bound to an application; assignment check skipped"
+                    party = %party,
+                    "relying party is not bound to an application; assignment check skipped"
                 );
                 return ApplicationGate::Allowed;
             }
             Err(e) => {
                 tracing::error!(
                     error = %e,
-                    client_id = %client_id,
+                    party = %party,
                     "failed to resolve the application for an assignment check"
                 );
                 return ApplicationGate::Allowed;
@@ -174,7 +229,7 @@ impl ApplicationAccessService {
                 },
                 Some(tenant_id),
                 Some(user_id),
-                Some(client_id),
+                Some(party),
                 Some(&format!(
                     "application={} reason={} enforcement={}",
                     application.id,

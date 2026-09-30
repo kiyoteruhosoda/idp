@@ -191,6 +191,10 @@ pub enum InternalSamlResumeResponse {
     },
     /// 認証が必要。web は `saml_request_id` を host-only Cookie 化してポータルログインへ誘導する。
     LoginRequired { saml_request_id: String },
+    /// 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。⚠ **ACS へ POST しない。**
+    /// web は OIDC の経路と同じ画面で断り、`saml_request_id` Cookie を失効させる（進行状態は
+    /// api 側で消費済み）。
+    ApplicationNotPermitted { application_name: String },
     /// ハンドル・進行状態が無効・期限切れ・使用済み（SP からやり直し）。
     Expired,
     /// api 内部エラー。
