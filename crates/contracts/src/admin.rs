@@ -189,6 +189,25 @@ pub struct SamlIdpMetadataImportResponse {
     pub name_id_format: String,
 }
 
+/// 外部 OIDC IdP の discovery 取り込みの要求（`POST /admin/external-idps/import-discovery`。task #77）。
+///
+/// api 側は同じ形の DTO（`OidcDiscoveryImportRequest` / `OidcDiscoveryImportResponse`）を
+/// `utoipa` 付きで持つ。食い違いは api のテスト（`discovery_import_contract_matches_the_api_dto`）が落とす。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OidcDiscoveryImportRequest {
+    pub issuer: String,
+}
+
+/// 外部 OIDC IdP の discovery 取り込みの応答（外部 IdP 登録フォームの初期値。登録はしていない）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OidcDiscoveryImportResponse {
+    /// 文書の `issuer`（入力と完全一致したもの）。
+    pub issuer: String,
+    pub authorization_endpoint: String,
+    pub token_endpoint: String,
+    pub jwks_uri: String,
+}
+
 // ── 認証ポリシー（AP1。管理コンソールが `/admin/authentication-policies` を呼ぶための契約）──
 //
 // api 側は同じ形の DTO を `presentation::dto` に持つ（そちらは `utoipa` を付けて OpenAPI に載せる

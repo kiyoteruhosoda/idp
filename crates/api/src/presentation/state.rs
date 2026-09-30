@@ -43,6 +43,7 @@ use crate::application::consent::ConsentService;
 use crate::application::cors_policy::ApiCorsPolicy;
 use crate::application::email_verification::EmailVerificationService;
 use crate::application::expired_record_purge::ExpiredRecordPurgeService;
+use crate::application::external_idp_discovery::ExternalIdpDiscoveryService;
 use crate::application::external_idp_management::ExternalIdpManagementService;
 use crate::application::external_login::ExternalLoginService;
 use crate::application::introspection::IntrospectionService;
@@ -260,6 +261,8 @@ pub struct AppState {
     pub external_login: Arc<ExternalLoginService>,
     /// 外部 IdP 設定の管理（AP10）。
     pub external_idps: Arc<ExternalIdpManagementService>,
+    /// 外部 IdP（OIDC）の discovery ドキュメント取り込み（登録はしない。task #77）。
+    pub external_idp_discovery: Arc<ExternalIdpDiscoveryService>,
     /// 外部 IdP 設定の参照（ログイン画面のボタン用）。GC・一覧が直接使う。
     pub external_providers:
         Arc<dyn crate::domain::repositories::ExternalIdentityProviderRepository>,
@@ -1000,6 +1003,9 @@ impl AppState {
         let external_login_requests: Arc<
             dyn crate::domain::repositories::ExternalLoginRequestRepository,
         > = Arc::new(SqlxExternalLoginRequestRepository::new(pool.clone()));
+        // 外部 IdP への HTTP は 1 つのクライアント（タイムアウト・リダイレクトを追わない）で出す。
+        // ログイン時のトークン交換と、登録前の discovery 取り込み（task #77）が同じ作法になる。
+        let external_oidc_client = Arc::new(ReqwestExternalOidcClient::new());
         let external_login = Arc::new(ExternalLoginService::new(
             external_providers.clone(),
             Arc::new(SqlxExternalIdentityRepository::new(pool.clone())),
@@ -1008,7 +1014,7 @@ impl AppState {
             auth_sessions.clone(),
             sign_in.clone(),
             policy_gate.clone(),
-            Arc::new(ReqwestExternalOidcClient::new()),
+            external_oidc_client.clone(),
             audit.clone(),
             clock.clone(),
             ids.clone(),
@@ -1022,6 +1028,8 @@ impl AppState {
             ids.clone(),
             *config.key_encryption_key(),
         ));
+        let external_idp_discovery =
+            Arc::new(ExternalIdpDiscoveryService::new(external_oidc_client));
 
         // AP5: Step-up 認証。IP レート制限はログインと同一の制限器を共有する（別枠にすると、
         // ログインで締め出された攻撃者が step-up 経由で試行を続けられる）。
@@ -1201,6 +1209,7 @@ impl AppState {
             authenticator_repository,
             external_login,
             external_idps,
+            external_idp_discovery,
             external_providers,
             external_login_requests,
             backchannel_logout,

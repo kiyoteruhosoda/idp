@@ -278,6 +278,7 @@ dependencies = [
  "uuid",
  "webauthn-rs",
  "webauthn-rs-proto",
+ "wiremock",
  "x509-cert",
 ]
 

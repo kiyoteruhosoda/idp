@@ -11,6 +11,7 @@
 
 use crate::domain::error::Result;
 use crate::domain::external_idp::ExternalClaims;
+use crate::domain::oidc_discovery::{DiscoveryUrl, OidcDiscoveryDocument};
 use async_trait::async_trait;
 
 /// 認可コードの交換に必要な情報（`ExternalIdentityProvider` から Application 層が組み立てる）。
@@ -37,4 +38,16 @@ pub trait ExternalOidcClient: Send + Sync {
     /// 検証に失敗した場合（署名不正・`iss`/`aud`/`exp`/`nonce` 不一致）はエラーを返し、
     /// クレームは返さない。呼び出し側が検証漏れを起こしようがない形にするための契約。
     async fn exchange_code(&self, request: ExternalTokenRequest<'_>) -> Result<ExternalClaims>;
+}
+
+/// 外部 IdP の discovery ドキュメントを取りに行くポート（task #77）。
+///
+/// 宛先は [`DiscoveryUrl`] でしか渡せない（issuer を ADR-0023 決定 5 の検査に通したときにしか
+/// 作れない型）。実装は `exchange_code` と同じ作法——**リダイレクトを追わない**・タイムアウトを持つ——
+/// に加えて、応答の大きさに上限を置く（管理者の入れた先が巨大な応答を返しても api のメモリを
+/// 食わせない）。返すのは取得したそのままの値で、`issuer` の照合とエンドポイントの検査は
+/// [`OidcDiscoveryDocument::verify_for`] が行う。
+#[async_trait]
+pub trait OidcDiscoveryClient: Send + Sync {
+    async fn fetch_discovery(&self, url: &DiscoveryUrl) -> Result<OidcDiscoveryDocument>;
 }

@@ -35,6 +35,7 @@ pub mod consent;
 pub mod cors_policy;
 pub mod email_verification;
 pub mod expired_record_purge;
+pub mod external_idp_discovery;
 pub mod external_idp_management;
 pub mod external_login;
 pub mod introspection;

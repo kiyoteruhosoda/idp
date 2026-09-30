@@ -594,6 +594,11 @@ pub fn build(state: AppState) -> Router {
             "/admin/external-idps/import-metadata",
             post(admin_external_idps::import_external_idp_metadata),
         )
+        // OIDC discovery ドキュメントの取り込み（取得と検証のみ・非永続。task #77）。同じく `{id}` より先。
+        .route(
+            "/admin/external-idps/import-discovery",
+            post(admin_external_idps::import_external_idp_discovery),
+        )
         .route(
             "/admin/external-idps/{id}",
             patch(admin_external_idps::update_external_idp)

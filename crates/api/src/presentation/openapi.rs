@@ -134,6 +134,7 @@ use utoipa::{Modify, OpenApi};
         handlers::admin_authentication_policies::create_authentication_policy,
         handlers::admin_authentication_policies::update_authentication_policy,
         handlers::admin_authentication_policies::delete_authentication_policy,
+        handlers::admin_external_idps::import_external_idp_discovery,
         handlers::admin_audit::list_audit_logs,
         handlers::admin_application_logs::list_application_logs,
         handlers::admin_signing_keys::list_keys,
@@ -229,6 +230,8 @@ use utoipa::{Modify, OpenApi};
         AuthenticationPolicyUpsertRequest,
         SigningKeyResponse,
         GenerateSigningKeyRequest,
+        handlers::admin_external_idps::OidcDiscoveryImportRequest,
+        handlers::admin_external_idps::OidcDiscoveryImportResponse,
     )),
     modifiers(&BearerToken),
     tags(
