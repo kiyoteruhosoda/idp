@@ -228,7 +228,7 @@ NEW_TENANT_ID="$(mariadb_exec "SELECT id FROM tenants WHERE parent_tenant_id='${
   || fail "作成者の idp.tenant.admin 付与が DB に反映されません"
 pass "テナント登録画面（React surface）→ web→api POST /admin/tenants → 作成者がブートストラップ管理者（DB 反映）"
 
-ccsrf="$(curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin/clients/new" | grep -oE 'name="csrf_token" value="[a-f0-9]{64}"' | grep -oE '[a-f0-9]{64}')"
+ccsrf="$(curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin/clients/new" | grep -oE 'name="csrf_token" value="[a-f0-9]{64}"' | grep -oE '[a-f0-9]{64}' | first_line)"
 # 認証方式の既定は private_key_jwt（ADR-0036）。ここでは secret の一度表示を確かめるので、
 # client_secret_basic を明示して登録する。
 created="$(curl -fsS -b "$AJAR" -X POST "${WEB}/${ROOT}/admin/clients/new" \
@@ -243,7 +243,7 @@ pass "クライアント作成（web→api POST /admin/clients、secret 一度�
 
 # サービスアカウントを作成と同時にメモ付きで登録し、アカウントの 1 件の画面でメモが読めること（ADR-0065）。
 sa_marker="e2e-sa-note-$$"
-sacsrf="$(curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin/service-accounts/new" | grep -oE 'name="csrf_token" value="[a-f0-9]{64}"' | grep -oE '[a-f0-9]{64}')"
+sacsrf="$(curl -fsS -b "$AJAR" "${WEB}/${ROOT}/admin/service-accounts/new" | grep -oE 'name="csrf_token" value="[a-f0-9]{64}"' | grep -oE '[a-f0-9]{64}' | first_line)"
 sa_created="$(curl -fsS -b "$AJAR" -o /dev/null -w '%{http_code} %{redirect_url}' -X POST "${WEB}/${ROOT}/admin/service-accounts/new" \
   -H 'content-type: application/x-www-form-urlencoded' \
   --data-urlencode "app_name=E2E Service Account" --data-urlencode "usage=system" \
