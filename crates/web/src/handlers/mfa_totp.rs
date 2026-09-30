@@ -13,7 +13,7 @@ use super::{api_internal_error, internal_call_status, locale};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
-use crate::csrf::console_csrf_token;
+use crate::csrf::{console_csrf_token, console_csrf_valid};
 use crate::dto::{FormPageQuery, TotpConfirmForm, TotpDeleteForm};
 use crate::handlers::step_up::{self, MANAGE_AUTHENTICATORS};
 use crate::handlers::{form_retry_error_key, forwarded_context, found, see_other};
@@ -139,9 +139,10 @@ pub async fn setup_confirm(
     };
     // CSRF は step-up より先に見る（認証器の画面の状態変更と同じ順）。合わなければ api へは
     // 何も送らず、設定画面を取り直させる。
-    if !assay_contracts::csrf::verify(
-        &console_csrf_token(&sso_session_id, state.config.csrf_secret()),
+    if !console_csrf_valid(
+        &sso_session_id,
         &form.csrf_token,
+        state.config.csrf_secret(),
     ) {
         tracing::warn!("totp setup confirmation rejected: csrf token mismatch");
         return see_other(&format!(
@@ -254,10 +255,7 @@ pub async fn setup_delete(
     Form(form): Form<TotpDeleteForm>,
 ) -> Response {
     if let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) {
-        if !assay_contracts::csrf::verify(
-            &console_csrf_token(&sso, state.config.csrf_secret()),
-            &form.csrf_token,
-        ) {
+        if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
             tracing::warn!("totp deletion rejected: csrf token mismatch");
             return see_other(&format!(
                 "{}/settings/authenticators?error=csrf",

@@ -9,7 +9,7 @@ use super::locale;
 use crate::api_client::AdminApiError;
 use crate::cookies;
 use crate::correlation::CorrelationId;
-use crate::csrf::console_csrf_token;
+use crate::csrf::{console_csrf_from, console_csrf_valid_in};
 use crate::handlers::admin_console::{
     forbidden_response, redirect_to_login, resolve_admin, AdminContext, AdminResolution,
 };
@@ -35,7 +35,7 @@ pub async fn new_form(
         AdminResolution::Reject(resp) => return resp,
     };
     let messages = Messages::new(locale(&headers));
-    let csrf = csrf_from(&headers, state.config.csrf_secret());
+    let csrf = console_csrf_from(&headers, state.config.csrf_secret());
     Html(render_form(&messages, &tenant, &admin, &csrf, "", None)).into_response()
 }
 
@@ -59,9 +59,9 @@ pub async fn create(
         AdminResolution::Reject(resp) => return resp,
     };
 
-    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid_in(&headers, &form.csrf_token, state.config.csrf_secret()) {
         let messages = Messages::new(locale(&headers));
-        let csrf = csrf_from(&headers, state.config.csrf_secret());
+        let csrf = console_csrf_from(&headers, state.config.csrf_secret());
         return bad_request(render_form(
             &messages,
             &tenant,
@@ -93,7 +93,7 @@ pub async fn create(
         Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
         Err(AdminApiError::Forbidden) => forbidden_response(&headers),
         Err(AdminApiError::Validation(m)) | Err(AdminApiError::Conflict(m)) => {
-            let csrf = csrf_from(&headers, state.config.csrf_secret());
+            let csrf = console_csrf_from(&headers, state.config.csrf_secret());
             bad_request(render_form_with_message(
                 &messages,
                 &tenant,
@@ -104,7 +104,7 @@ pub async fn create(
             ))
         }
         Err(AdminApiError::NotFound) => {
-            let csrf = csrf_from(&headers, state.config.csrf_secret());
+            let csrf = console_csrf_from(&headers, state.config.csrf_secret());
             bad_request(render_form_with_message(
                 &messages,
                 &tenant,
@@ -115,7 +115,7 @@ pub async fn create(
             ))
         }
         Err(_) => {
-            let csrf = csrf_from(&headers, state.config.csrf_secret());
+            let csrf = console_csrf_from(&headers, state.config.csrf_secret());
             bad_request(render_form_with_message(
                 &messages,
                 &tenant,
@@ -167,18 +167,6 @@ fn render_form_with_message(
 
 fn sso(headers: &HeaderMap) -> String {
     cookies::get(headers, cookies::SSO_SESSION_COOKIE).unwrap_or_default()
-}
-
-fn csrf_from(headers: &HeaderMap, key: &[u8]) -> String {
-    cookies::get(headers, cookies::SSO_SESSION_COOKIE)
-        .map(|s| console_csrf_token(&s, key))
-        .unwrap_or_default()
-}
-
-fn csrf_valid(headers: &HeaderMap, submitted: &str, key: &[u8]) -> bool {
-    cookies::get(headers, cookies::SSO_SESSION_COOKIE)
-        .map(|s| console_csrf_token(&s, key) == submitted)
-        .unwrap_or(false)
 }
 
 fn bad_request(html: String) -> Response {

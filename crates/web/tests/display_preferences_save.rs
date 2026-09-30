@@ -416,14 +416,15 @@ async fn the_settings_page_posts_the_display_preferences_with_a_token() {
         "language and theme: {html}"
     );
     assert!(!html.contains(r#"<form method="get""#), "{html}");
-    // 表示名・パスワード・言語・配色の 4 つのフォームすべてにトークン（task #118 と共通）。
+    // 表示名・パスワード・言語・配色・ログアウトの 5 つのフォームすべてにトークン（task #118・
+    // #143 と共通）。
     assert_eq!(
         html.matches(&format!(
             r#"<input type="hidden" name="csrf_token" value="{}">"#,
             csrf()
         ))
         .count(),
-        4,
+        5,
         "{html}"
     );
 }

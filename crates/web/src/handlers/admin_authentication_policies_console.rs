@@ -21,7 +21,7 @@ use crate::authentication_policy_form::{
     format_list, format_time_windows, parse_list, parse_time_windows, selected_methods,
 };
 use crate::correlation::CorrelationId;
-use crate::csrf::console_csrf_token;
+use crate::csrf::{console_csrf_from, console_csrf_valid_in};
 use crate::dto::{AdminAuthenticationPolicyDeleteForm, AdminAuthenticationPolicyForm};
 use crate::handlers::admin_console::{redirect_to_login, resolve_admin, AdminResolution};
 use crate::handlers::found;
@@ -103,7 +103,7 @@ pub async fn list(
         messages: &messages,
         tenant: &tenant.prefix(),
         admin: Some(admin.chrome()),
-        csrf: &csrf_from(&headers, state.config.csrf_secret()),
+        csrf: &console_csrf_from(&headers, state.config.csrf_secret()),
         // テナントの値（api の応答）。web の設定からは出さない（ADR-0058 §10）。
         default_effect: default_effect.as_deref(),
         saved: query.saved.is_some(),
@@ -202,10 +202,7 @@ pub async fn delete(
         AdminResolution::Reject(resp) => return resp,
     }
     let base = format!("{}/admin/authentication-policies", tenant.prefix());
-    if !assay_contracts::csrf::verify(
-        &csrf_from(&headers, state.config.csrf_secret()),
-        &form.csrf_token,
-    ) {
+    if !console_csrf_valid_in(&headers, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}?error=csrf"));
     }
     let sso = crate::cookies::get(&headers, crate::cookies::SSO_SESSION_COOKIE).unwrap_or_default();
@@ -239,7 +236,7 @@ fn reshow(
         // 再表示の時点で管理者であることは確認済み（各ハンドラの入口）。表示ラベルのためだけに
         // もう一度 api を呼ばない。
         admin: None,
-        csrf: &csrf_from(headers, state.config.csrf_secret()),
+        csrf: &console_csrf_from(headers, state.config.csrf_secret()),
         // 一覧を出さない画面なので既定動作も出さない（値を得るためだけに api を呼ばない）。
         default_effect: None,
         saved: false,
@@ -283,10 +280,7 @@ fn validate(
     headers: &HeaderMap,
     form: AdminAuthenticationPolicyForm,
 ) -> Result<AuthenticationPolicyUpsertRequest, &'static str> {
-    if !assay_contracts::csrf::verify(
-        &csrf_from(headers, state.config.csrf_secret()),
-        &form.csrf_token,
-    ) {
+    if !console_csrf_valid_in(headers, &form.csrf_token, state.config.csrf_secret()) {
         return Err("csrf");
     }
     if form.policy_code.trim().is_empty() || form.policy_name.trim().is_empty() {
@@ -363,11 +357,6 @@ fn error_key_for(code: &str) -> Option<&'static str> {
         "session" => Some("admin-error-session"),
         _ => Some("admin-error-internal"),
     }
-}
-
-fn csrf_from(headers: &HeaderMap, secret: &[u8; 32]) -> String {
-    let sso = crate::cookies::get(headers, crate::cookies::SSO_SESSION_COOKIE).unwrap_or_default();
-    console_csrf_token(&sso, secret)
 }
 
 #[cfg(test)]

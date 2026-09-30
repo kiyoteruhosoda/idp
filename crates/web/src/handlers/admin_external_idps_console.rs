@@ -47,7 +47,7 @@ use super::locale;
 use crate::admin_dto::ExternalIdpView;
 use crate::api_client::AdminApiError;
 use crate::correlation::CorrelationId;
-use crate::csrf::console_csrf_token;
+use crate::csrf::{console_csrf_token, console_csrf_valid};
 use crate::handlers::admin_console::{redirect_to_login, resolve_admin, AdminResolution};
 use crate::handlers::found;
 use crate::i18n::Messages;
@@ -317,7 +317,7 @@ pub async fn import_metadata(
     let base = format!("{}{SEGMENT}", tenant.prefix());
     let sso = sso(&headers);
     let upload = read_metadata_upload(multipart).await;
-    if !csrf_valid(&sso, &upload.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid(&sso, &upload.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}/new/saml?error=csrf"));
     }
 
@@ -405,7 +405,7 @@ pub async fn import_discovery(
     };
     let base = format!("{}{SEGMENT}", tenant.prefix());
     let sso = sso(&headers);
-    if !csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}/new/oidc?error=csrf"));
     }
 
@@ -558,7 +558,7 @@ pub async fn create(
         _ => base.clone(),
     };
     let sso = sso(&headers);
-    if !csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{form_url}?error=csrf"));
     }
     let mut body = common_fields(&form);
@@ -593,7 +593,7 @@ pub async fn update(
     let base = format!("{}{SEGMENT}", tenant.prefix());
     let form_url = format!("{base}/{id}/edit");
     let sso = sso(&headers);
-    if !csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{form_url}?error=csrf"));
     }
     let mut body = common_fields(&form);
@@ -626,7 +626,7 @@ pub async fn delete(
     }
     let base = format!("{}{SEGMENT}", tenant.prefix());
     let sso = sso(&headers);
-    if !csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}?error=csrf"));
     }
     match state
@@ -776,10 +776,6 @@ fn error_key_for(error: &str) -> Option<&'static str> {
 
 fn sso(headers: &HeaderMap) -> String {
     crate::cookies::get(headers, crate::cookies::SSO_SESSION_COOKIE).unwrap_or_default()
-}
-
-fn csrf_valid(sso: &str, submitted: &str, key: &[u8]) -> bool {
-    assay_contracts::csrf::verify(&console_csrf_token(sso, key), submitted)
 }
 
 #[cfg(test)]

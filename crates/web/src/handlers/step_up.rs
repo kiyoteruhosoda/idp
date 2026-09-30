@@ -21,7 +21,7 @@ use super::{api_internal_error, internal_call_status};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
-use crate::csrf::console_csrf_token;
+use crate::csrf::{console_csrf_token, console_csrf_valid};
 use crate::handlers::{forwarded_context, found, locale, see_other};
 use crate::i18n::Messages;
 use crate::state::WebState;
@@ -240,10 +240,7 @@ pub async fn verify(
     let next = safe_next(&tenant, Some(&form.next));
     let challenge = challenge_path(&tenant, &form.operation, &next);
 
-    if !assay_contracts::csrf::verify(
-        &console_csrf_token(&sso, state.config.csrf_secret()),
-        &form.csrf_token,
-    ) {
+    if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
         tracing::warn!(
             correlation_id = %correlation.0,
             "step-up verification rejected: csrf token mismatch"

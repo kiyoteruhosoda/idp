@@ -8,7 +8,7 @@
 use super::locale;
 use crate::api_client::AdminApiError;
 use crate::correlation::CorrelationId;
-use crate::csrf::console_csrf_token;
+use crate::csrf::{console_csrf_from, console_csrf_valid_in};
 use crate::dto::{AdminSamlServiceProviderDeleteForm, AdminSamlServiceProviderForm};
 use crate::handlers::admin_console::{redirect_to_login, resolve_admin, AdminResolution};
 use crate::handlers::found;
@@ -65,7 +65,7 @@ pub async fn list(
         tenant: &tenant.prefix(),
         idp_metadata_url: &idp_metadata_url(&tenant),
         admin: Some(admin.chrome()),
-        csrf: &csrf_from(&headers, state.config.csrf_secret()),
+        csrf: &console_csrf_from(&headers, state.config.csrf_secret()),
         saved: query.saved.is_some(),
         updated: query.updated.is_some(),
         deleted: query.deleted.is_some(),
@@ -89,10 +89,7 @@ pub async fn create(
         AdminResolution::Reject(resp) => return resp,
     }
     let base = format!("{}/admin/saml-clients", tenant.prefix());
-    if !assay_contracts::csrf::verify(
-        &csrf_from(&headers, state.config.csrf_secret()),
-        &form.csrf_token,
-    ) {
+    if !console_csrf_valid_in(&headers, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}?error=csrf"));
     }
     if form.display_name.trim().is_empty()
@@ -195,7 +192,7 @@ pub async fn import_metadata(
         }
     }
 
-    if csrf_from(&headers, state.config.csrf_secret()) != csrf_token {
+    if !console_csrf_valid_in(&headers, &csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}?error=csrf"));
     }
     let sso = crate::cookies::get(&headers, crate::cookies::SSO_SESSION_COOKIE).unwrap_or_default();
@@ -260,7 +257,7 @@ pub async fn import_metadata(
         tenant: &tenant.prefix(),
         idp_metadata_url: &idp_metadata_url(&tenant),
         admin: Some(admin.chrome()),
-        csrf: &csrf_from(&headers, state.config.csrf_secret()),
+        csrf: &console_csrf_from(&headers, state.config.csrf_secret()),
         saved: false,
         updated: false,
         deleted: false,
@@ -286,10 +283,7 @@ pub async fn update(
         AdminResolution::Reject(resp) => return resp,
     }
     let base = format!("{}/admin/saml-clients", tenant.prefix());
-    if !assay_contracts::csrf::verify(
-        &csrf_from(&headers, state.config.csrf_secret()),
-        &form.csrf_token,
-    ) {
+    if !console_csrf_valid_in(&headers, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}?error=csrf"));
     }
     if form.display_name.trim().is_empty()
@@ -346,10 +340,7 @@ pub async fn delete(
         AdminResolution::Reject(resp) => return resp,
     }
     let base = format!("{}/admin/saml-clients", tenant.prefix());
-    if !assay_contracts::csrf::verify(
-        &csrf_from(&headers, state.config.csrf_secret()),
-        &form.csrf_token,
-    ) {
+    if !console_csrf_valid_in(&headers, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}?error=csrf"));
     }
     let sso = crate::cookies::get(&headers, crate::cookies::SSO_SESSION_COOKIE).unwrap_or_default();
@@ -404,11 +395,6 @@ pub async fn download_idp_metadata(
             StatusCode::BAD_GATEWAY.into_response()
         }
     }
-}
-
-fn csrf_from(headers: &HeaderMap, secret: &[u8]) -> String {
-    let sso = crate::cookies::get(headers, crate::cookies::SSO_SESSION_COOKIE).unwrap_or_default();
-    console_csrf_token(&sso, secret)
 }
 
 fn acs_url_allowed(raw: &str) -> bool {

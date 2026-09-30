@@ -12,7 +12,7 @@ use crate::admin_dto::ApplicationCurrentUserView;
 use crate::api_client::AdminApiError;
 use crate::cookies;
 use crate::correlation::CorrelationId;
-use crate::csrf::console_csrf_token;
+use crate::csrf::{console_csrf_from, console_csrf_valid_in};
 use crate::handlers::admin_console::{
     forbidden_response, redirect_to_login, resolve_admin, AdminContext, AdminResolution,
 };
@@ -51,7 +51,7 @@ pub async fn list(
         .list_applications(&correlation.0, &tenant.0, &sso)
         .await;
     let messages = Messages::new(locale(&headers));
-    let csrf = csrf_from(&headers, state.config.csrf_secret());
+    let csrf = console_csrf_from(&headers, state.config.csrf_secret());
     match result {
         Ok(list) => Html(render(&ApplicationsList {
             messages: &messages,
@@ -108,7 +108,7 @@ pub async fn create(
 ) -> Response {
     let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
     let sso = sso(&headers);
-    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid_in(&headers, &form.csrf_token, state.config.csrf_secret()) {
         return reload_list_with_error(
             &state,
             &correlation,
@@ -165,7 +165,7 @@ pub async fn update(
 ) -> Response {
     let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
     let sso = sso(&headers);
-    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid_in(&headers, &form.csrf_token, state.config.csrf_secret()) {
         return render_detail(
             &state,
             &correlation,
@@ -222,7 +222,7 @@ pub async fn bind(
 ) -> Response {
     let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
     let sso = sso(&headers);
-    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid_in(&headers, &form.csrf_token, state.config.csrf_secret()) {
         return render_detail(
             &state,
             &correlation,
@@ -276,7 +276,7 @@ pub async fn unbind(
 ) -> Response {
     let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
     let sso = sso(&headers);
-    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid_in(&headers, &form.csrf_token, state.config.csrf_secret()) {
         return render_detail(
             &state,
             &correlation,
@@ -338,7 +338,7 @@ pub async fn assign(
 ) -> Response {
     let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
     let sso = sso(&headers);
-    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid_in(&headers, &form.csrf_token, state.config.csrf_secret()) {
         return render_detail(
             &state,
             &correlation,
@@ -394,7 +394,7 @@ pub async fn unassign(
 ) -> Response {
     let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
     let sso = sso(&headers);
-    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid_in(&headers, &form.csrf_token, state.config.csrf_secret()) {
         return render_detail(
             &state,
             &correlation,
@@ -519,7 +519,7 @@ async fn render_detail(
     };
     // Messages は await の後に作る（non-Send のため await をまたがない）。
     let messages = Messages::new(locale(headers));
-    let csrf = csrf_from(headers, state.config.csrf_secret());
+    let csrf = console_csrf_from(headers, state.config.csrf_secret());
     // 「個別」のアプリでは写し元が要らないので、空で描く（画面側が出し分ける）。
     let no_users: Vec<ApplicationCurrentUserView> = Vec::new();
     let body = render(&ApplicationDetail {
@@ -567,7 +567,7 @@ async fn reload_list_with_error(
         Err(_) => (Vec::new(), true),
     };
     let messages = Messages::new(locale(headers));
-    let csrf = csrf_from(headers, state.config.csrf_secret());
+    let csrf = console_csrf_from(headers, state.config.csrf_secret());
     (
         StatusCode::BAD_REQUEST,
         Html(render(&ApplicationsList {
@@ -593,18 +593,6 @@ fn redirect_detail(tenant: &WebTenant, application_id: &str) -> Response {
 
 fn sso(headers: &HeaderMap) -> String {
     cookies::get(headers, cookies::SSO_SESSION_COOKIE).unwrap_or_default()
-}
-
-fn csrf_from(headers: &HeaderMap, key: &[u8]) -> String {
-    cookies::get(headers, cookies::SSO_SESSION_COOKIE)
-        .map(|s| console_csrf_token(&s, key))
-        .unwrap_or_default()
-}
-
-fn csrf_valid(headers: &HeaderMap, submitted: &str, key: &[u8]) -> bool {
-    cookies::get(headers, cookies::SSO_SESSION_COOKIE)
-        .map(|s| console_csrf_token(&s, key) == submitted)
-        .unwrap_or(false)
 }
 
 fn not_found(messages: &Messages, tenant: &WebTenant, admin: &AdminContext) -> Response {

@@ -10,7 +10,7 @@ use crate::admin_dto::{ClientCreatedView, ClientListView, ClientView};
 use crate::api_client::AdminApiError;
 use crate::cookies;
 use crate::correlation::CorrelationId;
-use crate::csrf::console_csrf_token;
+use crate::csrf::{console_csrf_from, console_csrf_valid_in};
 use crate::handlers::admin_console::{
     forbidden_response, redirect_to_login, resolve_admin, AdminContext, AdminResolution,
 };
@@ -191,7 +191,7 @@ async fn new_form_of_kind(
 ) -> Response {
     let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
     let messages = Messages::new(locale(&headers));
-    let csrf = csrf_from(&headers, state.config.csrf_secret());
+    let csrf = console_csrf_from(&headers, state.config.csrf_secret());
     let mut values = ClientFormValues::default_new();
     values.usage = kind.usage().to_string();
     Html(render_new_form(
@@ -260,9 +260,9 @@ pub async fn create(
     };
 
     // Messages（FluentBundle）は Send でないため、api の await をまたいで保持しない（login.rs と同じ理由）。
-    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid_in(&headers, &form.csrf_token, state.config.csrf_secret()) {
         let messages = Messages::new(locale(&headers));
-        let csrf = csrf_from(&headers, state.config.csrf_secret());
+        let csrf = console_csrf_from(&headers, state.config.csrf_secret());
         return bad_request_form(render_new_form(
             &messages,
             &tenant,
@@ -302,7 +302,7 @@ pub async fn create(
         .create_client(&correlation.0, &tenant.0, &sso(&headers), body)
         .await;
     let messages = Messages::new(locale(&headers));
-    let csrf = csrf_from(&headers, state.config.csrf_secret());
+    let csrf = console_csrf_from(&headers, state.config.csrf_secret());
     match result {
         Ok(created) => Html(render_secret_result(
             &messages, &tenant, &admin, &created, true,
@@ -374,7 +374,7 @@ pub async fn detail(
     let permissions_load_failed = false;
 
     let messages = Messages::new(locale(&headers));
-    let csrf = csrf_from(&headers, state.config.csrf_secret());
+    let csrf = console_csrf_from(&headers, state.config.csrf_secret());
     Html(render_detail(
         &messages,
         &tenant,
@@ -469,7 +469,7 @@ async fn apply_permission_change(
         AdminResolution::Reject(resp) => return resp,
     }
     let base = format!("{}{CLIENTS_SEGMENT}/{client_id}", tenant.prefix());
-    if !csrf_valid(headers, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid_in(headers, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}?error=csrf"));
     }
     let sso = sso(headers);
@@ -523,7 +523,7 @@ pub async fn edit_form(
         .get_client(&correlation.0, &tenant.0, &sso(&headers), &client_id)
         .await;
     let messages = Messages::new(locale(&headers));
-    let csrf = csrf_from(&headers, state.config.csrf_secret());
+    let csrf = console_csrf_from(&headers, state.config.csrf_secret());
     match result {
         Ok(client) => {
             let values = ClientFormValues::from_client(&client);
@@ -605,9 +605,9 @@ pub async fn update(
     }
     values.jwks = form.jwks.clone().unwrap_or_default();
 
-    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid_in(&headers, &form.csrf_token, state.config.csrf_secret()) {
         let messages = Messages::new(locale(&headers));
-        let csrf = csrf_from(&headers, state.config.csrf_secret());
+        let csrf = console_csrf_from(&headers, state.config.csrf_secret());
         let err = messages.get("admin-error-csrf");
         return bad_request_form(render_edit_form(
             &messages,
@@ -639,7 +639,7 @@ pub async fn update(
         .update_client(&correlation.0, &tenant.0, &sso(&headers), &client_id, body)
         .await;
     let messages = Messages::new(locale(&headers));
-    let csrf = csrf_from(&headers, state.config.csrf_secret());
+    let csrf = console_csrf_from(&headers, state.config.csrf_secret());
     match result {
         Ok(_) => found(&format!("{}{CLIENTS_SEGMENT}/{client_id}", tenant.prefix())),
         Err(AdminApiError::NotFound) => not_found(&messages, &tenant, &admin),
@@ -668,7 +668,7 @@ pub async fn delete(
 ) -> Response {
     let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
 
-    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid_in(&headers, &form.csrf_token, state.config.csrf_secret()) {
         let messages = Messages::new(locale(&headers));
         return bad_request_page(&messages, &tenant, &admin, "admin-error-csrf");
     }
@@ -704,7 +704,7 @@ pub async fn rotate_secret(
 ) -> Response {
     let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
 
-    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid_in(&headers, &form.csrf_token, state.config.csrf_secret()) {
         let messages = Messages::new(locale(&headers));
         return bad_request_page(&messages, &tenant, &admin, "admin-error-csrf");
     }
@@ -885,18 +885,6 @@ fn selected_scopes(
 
 fn sso(headers: &HeaderMap) -> String {
     cookies::get(headers, cookies::SSO_SESSION_COOKIE).unwrap_or_default()
-}
-
-fn csrf_from(headers: &HeaderMap, key: &[u8]) -> String {
-    cookies::get(headers, cookies::SSO_SESSION_COOKIE)
-        .map(|s| console_csrf_token(&s, key))
-        .unwrap_or_default()
-}
-
-fn csrf_valid(headers: &HeaderMap, submitted: &str, key: &[u8]) -> bool {
-    cookies::get(headers, cookies::SSO_SESSION_COOKIE)
-        .map(|s| console_csrf_token(&s, key) == submitted)
-        .unwrap_or(false)
 }
 
 // ── レンダリング ──────────────────────────────────────────────────────────────

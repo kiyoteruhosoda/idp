@@ -417,7 +417,8 @@ async fn rp_initiated_logout_on_the_web_clears_the_sso_cookie() {
     assert_login_required_again(&client, &stack, &client_id).await;
 }
 
-/// ケース 2b: web のポータル・ログアウト（`POST /{tenant_id}/logout`）でも SSO Cookie が消える。
+/// ケース 2b: web のポータル・ログアウト（`POST /{tenant_id}/logout`。アカウント設定のフォーム）でも
+/// SSO Cookie が消える。フォームの CSRF トークンが要り、無ければログアウトしない（task #143）。
 #[tokio::test(flavor = "multi_thread")]
 async fn portal_logout_clears_the_sso_cookie() {
     let Some(stack) = start_stack("api.idp.example.test", "idp.example.test", None).await else {
@@ -431,12 +432,50 @@ async fn portal_logout_clears_the_sso_cookie() {
 
     let result = run_login_flow(&client, &stack, &client_id, &username, password).await;
     assert_immediate_code(&result.second_authorize);
+    let logout_url = format!("{}/{}/logout", stack.web_base, stack.root_tenant_id);
 
-    let logout = client
-        .post(format!(
-            "{}/{}/logout",
+    // トークンの無い POST（外部のページから送られたもの）ではログアウトしない。
+    let rejected = client
+        .post(&logout_url)
+        .form(&[("csrf_token", "")])
+        .send()
+        .await
+        .expect("POST /logout without a token");
+    assert_eq!(rejected.status(), StatusCode::FOUND);
+    assert_eq!(
+        location(&rejected),
+        format!("/{}/settings?error=csrf", stack.root_tenant_id)
+    );
+    let web_url: reqwest::Url = format!("{}/", stack.web_base).parse().unwrap();
+    let still_sent = jar
+        .cookies(&web_url)
+        .map(|v| v.to_str().unwrap_or_default().to_string())
+        .unwrap_or_default();
+    assert!(
+        still_sent.contains("sso_session_id="),
+        "a rejected logout must keep the session: {still_sent}"
+    );
+
+    // 設定画面のログアウトのフォームに埋まったトークンで送る（利用者が押したときと同じ）。
+    let settings = client
+        .get(format!(
+            "{}/{}/settings",
             stack.web_base, stack.root_tenant_id
         ))
+        .send()
+        .await
+        .expect("GET /settings")
+        .text()
+        .await
+        .expect("settings body");
+    let marker = r#"name="csrf_token" value=""#;
+    let token: String = settings
+        .split_once(marker)
+        .map(|(_, rest)| rest.chars().take(64).collect())
+        .unwrap_or_else(|| panic!("no csrf token on the settings page: {settings}"));
+    let logout = client
+        .post(&logout_url)
+        .form(&[("csrf_token", token.as_str())])
         .send()
         .await
         .expect("POST /logout");

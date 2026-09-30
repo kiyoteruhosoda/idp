@@ -8,7 +8,7 @@ use crate::admin_dto::SigningKeyView;
 use crate::api_client::AdminApiError;
 use crate::cookies;
 use crate::correlation::CorrelationId;
-use crate::csrf::console_csrf_token;
+use crate::csrf::{console_csrf_from, console_csrf_valid_in};
 use crate::handlers::admin_console::{
     forbidden_response, redirect_to_login, resolve_admin, AdminContext, AdminResolution,
 };
@@ -47,7 +47,7 @@ pub async fn list(
         .list_signing_keys(&correlation.0, &tenant.0, &sso)
         .await;
     let messages = Messages::new(locale(&headers));
-    let csrf = csrf_from(&headers, state.config.csrf_secret());
+    let csrf = console_csrf_from(&headers, state.config.csrf_secret());
     match result {
         Ok(keys) => {
             Html(render_list(&messages, &tenant, &admin, &keys, &csrf, None)).into_response()
@@ -78,7 +78,7 @@ pub async fn generate(
     let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
     let sso = sso(&headers);
 
-    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid_in(&headers, &form.csrf_token, state.config.csrf_secret()) {
         // Messages は await の後に作る（non-Send のため await をまたがない）。
         let keys = state
             .api
@@ -86,7 +86,7 @@ pub async fn generate(
             .await
             .unwrap_or_default();
         let messages = Messages::new(locale(&headers));
-        let csrf = csrf_from(&headers, state.config.csrf_secret());
+        let csrf = console_csrf_from(&headers, state.config.csrf_secret());
         return bad_request(render_list(
             &messages,
             &tenant,
@@ -120,7 +120,7 @@ pub async fn generate(
                 .await
                 .unwrap_or_default();
             let messages = Messages::new(locale(&headers));
-            let csrf = csrf_from(&headers, state.config.csrf_secret());
+            let csrf = console_csrf_from(&headers, state.config.csrf_secret());
             bad_request(render_list(
                 &messages,
                 &tenant,
@@ -154,14 +154,14 @@ pub async fn retire(
     let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
     let sso = sso(&headers);
 
-    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid_in(&headers, &form.csrf_token, state.config.csrf_secret()) {
         let keys = state
             .api
             .list_signing_keys(&correlation.0, &tenant.0, &sso)
             .await
             .unwrap_or_default();
         let messages = Messages::new(locale(&headers));
-        let csrf = csrf_from(&headers, state.config.csrf_secret());
+        let csrf = console_csrf_from(&headers, state.config.csrf_secret());
         return bad_request(render_list(
             &messages,
             &tenant,
@@ -193,7 +193,7 @@ pub async fn retire(
                 .await
                 .unwrap_or_default();
             let messages = Messages::new(locale(&headers));
-            let csrf = csrf_from(&headers, state.config.csrf_secret());
+            let csrf = console_csrf_from(&headers, state.config.csrf_secret());
             bad_request(render_list(
                 &messages,
                 &tenant,
@@ -221,14 +221,14 @@ pub async fn delete(
     let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
     let sso = sso(&headers);
 
-    if !csrf_valid(&headers, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid_in(&headers, &form.csrf_token, state.config.csrf_secret()) {
         let keys = state
             .api
             .list_signing_keys(&correlation.0, &tenant.0, &sso)
             .await
             .unwrap_or_default();
         let messages = Messages::new(locale(&headers));
-        let csrf = csrf_from(&headers, state.config.csrf_secret());
+        let csrf = console_csrf_from(&headers, state.config.csrf_secret());
         return bad_request(render_list(
             &messages,
             &tenant,
@@ -260,7 +260,7 @@ pub async fn delete(
                 .await
                 .unwrap_or_default();
             let messages = Messages::new(locale(&headers));
-            let csrf = csrf_from(&headers, state.config.csrf_secret());
+            let csrf = console_csrf_from(&headers, state.config.csrf_secret());
             bad_request(render_list(
                 &messages,
                 &tenant,
@@ -281,18 +281,6 @@ pub async fn delete(
 
 fn sso(headers: &HeaderMap) -> String {
     cookies::get(headers, cookies::SSO_SESSION_COOKIE).unwrap_or_default()
-}
-
-fn csrf_from(headers: &HeaderMap, key: &[u8]) -> String {
-    cookies::get(headers, cookies::SSO_SESSION_COOKIE)
-        .map(|s| console_csrf_token(&s, key))
-        .unwrap_or_default()
-}
-
-fn csrf_valid(headers: &HeaderMap, submitted: &str, key: &[u8]) -> bool {
-    cookies::get(headers, cookies::SSO_SESSION_COOKIE)
-        .map(|s| console_csrf_token(&s, key) == submitted)
-        .unwrap_or(false)
 }
 
 fn render_list(

@@ -12,8 +12,8 @@ use super::{api_internal_error, internal_call_status, locale};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
-use crate::csrf::portal_csrf_token;
-use crate::dto::{ForcedPasswordChangeForm, LoginForm, PortalTotpForm};
+use crate::csrf::{console_csrf_valid, portal_csrf_token, portal_csrf_valid};
+use crate::dto::{ForcedPasswordChangeForm, LoginForm, LogoutForm, PortalTotpForm};
 use crate::handlers::{forwarded_context, found, see_other};
 use crate::i18n::{Locale, Messages};
 use crate::state::WebState;
@@ -24,6 +24,7 @@ use assay_contracts::auth::{
     InternalPortalChangePasswordRequest, InternalPortalChangePasswordResponse,
     InternalPortalMfaRequest, InternalPortalMfaResponse,
 };
+use axum::extract::rejection::FormRejection;
 use axum::extract::{Extension, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
@@ -90,11 +91,11 @@ pub async fn login(
         headers,
         &state.origin_bound_cookie(cookies::PORTAL_CSRF_COOKIE),
     );
-    let csrf_ok = csrf_id
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .map(|id| portal_csrf_token(id, state.config.csrf_secret()) == form.csrf_token)
-        .unwrap_or(false);
+    let csrf_ok = portal_csrf_valid(
+        csrf_id.as_deref(),
+        &form.csrf_token,
+        state.config.csrf_secret(),
+    );
     if !csrf_ok {
         // PRG: 303 で GET へ付け替え、新しい種 Cookie とトークンでフォームを自動再表示する
         //（従来は空の CSRF を埋めたフォームを再描画するため、再送信しても復帰できなかった）。
@@ -231,11 +232,11 @@ pub async fn password_change(
         &headers,
         &state.origin_bound_cookie(cookies::PORTAL_CSRF_COOKIE),
     );
-    let csrf_ok = csrf_id
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .map(|id| portal_csrf_token(id, state.config.csrf_secret()) == form.csrf_token)
-        .unwrap_or(false);
+    let csrf_ok = portal_csrf_valid(
+        csrf_id.as_deref(),
+        &form.csrf_token,
+        state.config.csrf_secret(),
+    );
     if !csrf_ok {
         // PRG: 強制変更フォームは `POST /login` からのフォーム遷移でしか開始できない（username を運ぶ）
         // ため、ログイン画面へ 303 で戻して最初からやり直させる（従来は空の CSRF を埋めたフォームを
@@ -413,11 +414,11 @@ pub async fn mfa_submit(
         &headers,
         &state.origin_bound_cookie(cookies::PORTAL_CSRF_COOKIE),
     );
-    let csrf_ok = csrf_id
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .map(|id| portal_csrf_token(id, state.config.csrf_secret()) == form.csrf_token)
-        .unwrap_or(false);
+    let csrf_ok = portal_csrf_valid(
+        csrf_id.as_deref(),
+        &form.csrf_token,
+        state.config.csrf_secret(),
+    );
     if !csrf_ok {
         tracing::warn!(
             correlation_id = %correlation.0,
@@ -521,17 +522,39 @@ pub async fn mfa_submit(
     }
 }
 
-/// エンドユーザーのログアウト（`POST /{tenant_id}/logout`）。api で SSO を失効させ、Cookie を失効して
-/// ログイン画面へ 302 する。
+/// エンドユーザーのログアウト（`POST /{tenant_id}/logout`。アカウント設定のフォームから）。api で SSO を
+/// 失効させ、Cookie を失効してログイン画面へ 302 する。
+///
+/// ログイン中（SSO Cookie あり）はフォームの CSRF トークン（`console_csrf_token`）を照合し、合わなければ
+/// 何もせず（SSO も Cookie もそのまま）設定画面へ `?error=csrf` で戻す —— 外部のページからのログアウトの
+/// 強制を防ぐ（task #143。以前は SameSite=Lax だけで守られていた）。SSO Cookie が無ければ失効させる
+/// ものが無いので、トークンを見ずにログイン画面へ送る。フォームが読めない（Content-Type が無い等）ときも
+/// 422 にせず、空のトークンとして照合に落とす。
+///
+/// RP からのログアウト（OIDC の end_session_endpoint＝`GET /logout`）は `rp_logout` が受け、ここは通らない。
 pub async fn logout(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
+    form: Result<Form<LogoutForm>, FormRejection>,
 ) -> Response {
     let ctx = forwarded_context(&headers, &correlation, &client_ip);
     if let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) {
+        let form = form.map(|Form(f)| f).unwrap_or_default();
+        if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
+            tracing::warn!(
+                correlation_id = %correlation.0,
+                "logout rejected: csrf token mismatch"
+            );
+            let suffix = if form.from.as_deref() == Some("admin") {
+                "&from=admin"
+            } else {
+                ""
+            };
+            return found(&format!("{}/settings?error=csrf{suffix}", tenant.prefix()));
+        }
         let _ = state
             .api
             .logout(

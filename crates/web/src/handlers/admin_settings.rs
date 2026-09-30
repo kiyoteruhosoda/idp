@@ -11,7 +11,7 @@ use crate::api_client::AdminApiError;
 use crate::config;
 use crate::cookies;
 use crate::correlation::CorrelationId;
-use crate::csrf::console_csrf_token;
+use crate::csrf::{console_csrf_token, console_csrf_valid};
 use crate::dto::{
     AdminRuntimeSettingForm, AdminSystemSettingsForm, AdminTenantSettingClearForm,
     AdminTenantSettingForm, AdminTenantSettingsForm, AdminTenantSmtpClearForm, AdminTenantSmtpForm,
@@ -204,10 +204,7 @@ pub async fn update_tenant(
     }
     let base = format!("{}{SETTINGS_SEGMENT}", tenant.prefix());
     let sso = sso(&headers);
-    if !assay_contracts::csrf::verify(
-        &console_csrf_token(&sso, state.config.csrf_secret()),
-        &form.csrf_token,
-    ) {
+    if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}?error=csrf"));
     }
     match state
@@ -248,7 +245,7 @@ pub async fn update_tenant_setting(
     let base = format!("{}{SETTINGS_SEGMENT}", tenant.prefix());
     let sso = sso(&headers);
     let csrf = console_csrf_token(&sso, state.config.csrf_secret());
-    if !assay_contracts::csrf::verify(&csrf, &form.csrf_token) {
+    if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}?error=csrf"));
     }
     let key = form.key.trim();
@@ -309,10 +306,7 @@ pub async fn clear_tenant_setting(
     }
     let base = format!("{}{SETTINGS_SEGMENT}", tenant.prefix());
     let sso = sso(&headers);
-    if !assay_contracts::csrf::verify(
-        &console_csrf_token(&sso, state.config.csrf_secret()),
-        &form.csrf_token,
-    ) {
+    if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}?error=csrf"));
     }
     match state
@@ -347,10 +341,7 @@ pub async fn update_tenant_smtp(
     }
     let base = format!("{}{SETTINGS_SEGMENT}", tenant.prefix());
     let sso = sso(&headers);
-    if !assay_contracts::csrf::verify(
-        &console_csrf_token(&sso, state.config.csrf_secret()),
-        &form.csrf_token,
-    ) {
+    if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}?error=csrf#tenant-smtp"));
     }
     let port: Option<u16> = {
@@ -413,10 +404,7 @@ pub async fn clear_tenant_smtp(
     }
     let base = format!("{}{SETTINGS_SEGMENT}", tenant.prefix());
     let sso = sso(&headers);
-    if !assay_contracts::csrf::verify(
-        &console_csrf_token(&sso, state.config.csrf_secret()),
-        &form.csrf_token,
-    ) {
+    if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}?error=csrf#tenant-smtp"));
     }
     match state
@@ -445,10 +433,7 @@ pub async fn update_system(
     }
     let base = format!("{}{SETTINGS_SEGMENT}", tenant.prefix());
     let sso = sso(&headers);
-    if !assay_contracts::csrf::verify(
-        &console_csrf_token(&sso, state.config.csrf_secret()),
-        &form.csrf_token,
-    ) {
+    if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}?error=csrf"));
     }
     let port: Option<u16> = {
@@ -509,10 +494,7 @@ pub async fn update_runtime(
     }
     let base = format!("{}{SETTINGS_SEGMENT}", tenant.prefix());
     let sso = sso(&headers);
-    if !assay_contracts::csrf::verify(
-        &console_csrf_token(&sso, state.config.csrf_secret()),
-        &form.csrf_token,
-    ) {
+    if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}?error=csrf"));
     }
     let value = form.value.trim();

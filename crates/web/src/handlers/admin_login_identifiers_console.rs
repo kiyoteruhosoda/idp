@@ -17,7 +17,7 @@
 use super::locale;
 use crate::api_client::AdminApiError;
 use crate::correlation::CorrelationId;
-use crate::csrf::console_csrf_token;
+use crate::csrf::{console_csrf_token, console_csrf_valid};
 use crate::handlers::admin_console::{redirect_to_login, resolve_admin, AdminResolution};
 use crate::handlers::found;
 use crate::i18n::Messages;
@@ -149,7 +149,7 @@ pub async fn add(
     }
     let base = base_path(&tenant, &user_id);
     let sso = sso(&headers);
-    if !csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}?error=csrf"));
     }
     let body = json!({
@@ -181,7 +181,7 @@ pub async fn set_active(
     }
     let base = base_path(&tenant, &user_id);
     let sso = sso(&headers);
-    if !csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}?error=csrf"));
     }
     let is_active = form.is_active == "true";
@@ -221,7 +221,7 @@ pub async fn promote_primary_email(
     }
     let base = base_path(&tenant, &user_id);
     let sso = sso(&headers);
-    if !csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}?error=csrf"));
     }
     match state
@@ -248,7 +248,7 @@ pub async fn delete(
     }
     let base = base_path(&tenant, &user_id);
     let sso = sso(&headers);
-    if !csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
+    if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}?error=csrf"));
     }
     match state
@@ -316,10 +316,6 @@ fn notice_key_for(notice: &str) -> Option<&'static str> {
 
 fn sso(headers: &HeaderMap) -> String {
     crate::cookies::get(headers, crate::cookies::SSO_SESSION_COOKIE).unwrap_or_default()
-}
-
-fn csrf_valid(sso: &str, submitted: &str, key: &[u8]) -> bool {
-    assay_contracts::csrf::verify(&console_csrf_token(sso, key), submitted)
 }
 
 #[cfg(test)]

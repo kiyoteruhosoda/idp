@@ -19,7 +19,7 @@
 use super::locale;
 use crate::api_client::AdminApiError;
 use crate::correlation::CorrelationId;
-use crate::csrf::console_csrf_token;
+use crate::csrf::console_csrf_valid;
 use crate::dto::AdminRestartForm;
 use crate::handlers::admin_console::{
     forbidden_response, redirect_to_login, resolve_admin, AdminResolution,
@@ -62,10 +62,7 @@ pub async fn restart(
     }
     let base = format!("{}{SETTINGS_SEGMENT}", tenant.prefix());
     let sso = cookies::get(&headers, cookies::SSO_SESSION_COOKIE).unwrap_or_default();
-    if !assay_contracts::csrf::verify(
-        &console_csrf_token(&sso, state.config.csrf_secret()),
-        &form.csrf_token,
-    ) {
+    if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
         return found(&format!("{base}?error=csrf"));
     }
 
