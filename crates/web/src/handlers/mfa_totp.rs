@@ -3,13 +3,18 @@
 //!
 //! * セットアップ画面（`/account/mfa/totp/setup`）: SSO 認証済みユーザーが TOTP を自己登録する。
 //!   QR コード（SVG）と生シークレット（base32）を表示する。QR が使えない場合は生コードを入力する。
+//!   確認コードの送信（有効化）と削除の POST は、ログイン後の他のアカウント画面と同じ CSRF 同期
+//!   トークン（`console_csrf_token`。SSO セッション id 由来）で守る（task #118）。ログイン側の
+//!   TOTP 入力（`login_csrf_token`。認可セッション由来）とは種が違うだけで、作法は同じ
+//!   （合わなければ何もせず PRG で戻し、`?error=csrf` のバナーで伝える）。
 //! * ログイン TOTP 画面（`/mfa/totp`）: パスワード認証後に TOTP 入力を求める。
 
 use super::{api_internal_error, internal_call_status, locale};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
-use crate::dto::{FormPageQuery, TotpConfirmForm};
+use crate::csrf::console_csrf_token;
+use crate::dto::{FormPageQuery, TotpConfirmForm, TotpDeleteForm};
 use crate::handlers::step_up::{self, MANAGE_AUTHENTICATORS};
 use crate::handlers::{form_retry_error_key, forwarded_context, found, see_other};
 use crate::i18n::Messages;
@@ -35,11 +40,13 @@ use serde::Deserialize;
 /// TOTP セットアップ画面（`GET /account/mfa/totp/setup`）。
 ///
 /// SSO Cookie が必要。api から QR URI と生シークレットを取得し、QR SVG + 生コードを表示する。
+/// `?error=csrf` は CSRF 不一致の確認 POST から PRG で戻ったときのエラーバナー表示。
 pub async fn setup_page(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
+    Query(query): Query<FormPageQuery>,
 ) -> Response {
     // 認証器の追加は step-up の対象（AP5）。盗まれたセッションで自分の認証器を足されると、
     // 以後は正規の資格情報として振る舞われてしまう。
@@ -92,7 +99,8 @@ pub async fn setup_page(
                 tenant_prefix: &tenant.prefix(),
                 qr_svg: &qr_svg,
                 secret_base32: &secret_base32,
-                error_key: None,
+                error_key: setup_banner_key(query.error.as_deref()),
+                csrf: &console_csrf_token(&sso_session_id, state.config.csrf_secret()),
             }))
             .into_response()
         }
@@ -129,6 +137,18 @@ pub async fn setup_confirm(
             "mfa-error-not-signed-in",
         );
     };
+    // CSRF は step-up より先に見る（認証器の画面の状態変更と同じ順）。合わなければ api へは
+    // 何も送らず、設定画面を取り直させる。
+    if !assay_contracts::csrf::verify(
+        &console_csrf_token(&sso_session_id, state.config.csrf_secret()),
+        &form.csrf_token,
+    ) {
+        tracing::warn!("totp setup confirmation rejected: csrf token mismatch");
+        return see_other(&format!(
+            "{}/account/mfa/totp/setup?error=csrf",
+            tenant.prefix()
+        ));
+    }
     // 認証器を有効化するのはこの POST（画面のゲートだけでは守れない。passkey と同じ理由）。
     if let Err(response) = step_up::require_step_up(
         &state,
@@ -192,6 +212,7 @@ pub async fn setup_confirm(
                         qr_svg: &qr_svg,
                         secret_base32: &secret_base32,
                         error_key: Some("mfa-error-invalid-code"),
+                        csrf: &console_csrf_token(&sso_session_id, state.config.csrf_secret()),
                     })),
                 )
                     .into_response();
@@ -222,12 +243,28 @@ pub async fn setup_confirm(
 }
 
 /// TOTP 削除（`POST /account/mfa/totp/delete`）。MFA を無効化する。
+///
+/// 設定（確認 POST）と同じ CSRF 同期トークンを要る（task #118）。MFA を外す操作を SameSite=Lax
+/// だけで守らない。合わなければ何もせず認証器の画面へ戻し、`?error=csrf` のバナーで伝える。
 pub async fn setup_delete(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
+    Form(form): Form<TotpDeleteForm>,
 ) -> Response {
+    if let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) {
+        if !assay_contracts::csrf::verify(
+            &console_csrf_token(&sso, state.config.csrf_secret()),
+            &form.csrf_token,
+        ) {
+            tracing::warn!("totp deletion rejected: csrf token mismatch");
+            return see_other(&format!(
+                "{}/settings/authenticators?error=csrf",
+                tenant.prefix()
+            ));
+        }
+    }
     // 認証器の削除も step-up の対象（AP5）。MFA を外せれば以後は単一要素で入れてしまう。
     if let Err(response) = step_up::require_step_up(
         &state,
@@ -696,6 +733,15 @@ fn account_error_page(
         sign_in_required: status == StatusCode::UNAUTHORIZED,
     });
     (status, Html(body)).into_response()
+}
+
+/// セットアップ画面の `?error=` → バナーの翻訳キー（知らない値は出さない）。
+fn setup_banner_key(value: Option<&str>) -> Option<&'static str> {
+    match value {
+        // 認証器・セッション一覧の画面と同じ文言（task #118）。
+        Some("csrf") => Some("user-security-error-csrf"),
+        _ => None,
+    }
 }
 
 fn error_page(messages: &Messages, status: StatusCode, error_key: &str) -> Response {

@@ -32,7 +32,8 @@ async fn mount_profile(env: &WebEnv) {
         .await;
 }
 
-/// `?lang=` / `?theme=` の保存（middleware が応答の後で呼ぶ）を受けるスタブ。
+/// 表示設定の保存を受けるスタブ。GET の `?lang=` / `?theme=` は一時切替で保存しない
+/// （task #79）ので、積んでおいて「呼ばれなかった」ことを数える。
 async fn mount_preference_updates(env: &WebEnv) {
     for update in [
         "/internal/account/update-language",
@@ -95,7 +96,7 @@ async fn the_settings_page_reads_the_profile_once() {
 }
 
 /// `?theme=` だけが明示されたときも、言語のために middleware が引いた 1 回を画面が使う。
-/// セレクタは保存直後のこのリクエストでも明示された値を示す（振る舞いは従来どおり）。
+/// セレクタはこのリクエストでも明示された値（一時切替）を示す。
 #[tokio::test]
 async fn choosing_a_theme_still_reads_the_profile_once() {
     let env = setup().await;
@@ -123,8 +124,8 @@ async fn choosing_a_theme_still_reads_the_profile_once() {
     assert_eq!(calls_to(&env, PROFILE_PATH).await, 1);
     assert_eq!(
         calls_to(&env, "/internal/account/update-theme").await,
-        1,
-        "the explicit choice is still persisted"
+        0,
+        "a GET ?theme= is a temporary switch and must not be saved (task #79)"
     );
 }
 
@@ -151,8 +152,9 @@ async fn the_page_reads_the_profile_itself_when_the_middleware_did_not() {
         "display name: {html}"
     );
     assert_eq!(calls_to(&env, PROFILE_PATH).await, 1);
-    assert_eq!(calls_to(&env, "/internal/account/update-language").await, 1);
-    assert_eq!(calls_to(&env, "/internal/account/update-theme").await, 1);
+    // 一時切替は保存しない（task #79）。
+    assert_eq!(calls_to(&env, "/internal/account/update-language").await, 0);
+    assert_eq!(calls_to(&env, "/internal/account/update-theme").await, 0);
 }
 
 /// **未ログインならログイン画面へ送る**（task #121）。以前は中身が空の設定画面を 200 で

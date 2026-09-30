@@ -307,6 +307,7 @@ mod tests {
                 label: "admin-1",
                 tenant_name: Some("Acme"),
                 permissions: &[],
+                csrf_token: "test-console-csrf",
             }),
             tenants,
             total: tenants.len() as i64,

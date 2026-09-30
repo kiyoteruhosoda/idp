@@ -86,6 +86,11 @@ pub fn build(state: WebState) -> Router {
         .route("/settings", get(user_settings::page))
         .route("/settings/password", post(user_settings::change_password))
         .route("/settings/name", post(user_settings::change_name))
+        // 表示設定（言語・配色）をユーザー設定へ保存する唯一の経路（task #79。CSRF 付きの POST）。
+        .route(
+            "/settings/display",
+            post(user_settings::save_display_preferences),
+        )
         // 外部 IdP ログイン（AP10）。開始は 302、コールバックは外部 IdP からの戻り先。
         .route("/external/{provider}/start", get(external_login::start))
         .route(
@@ -1035,10 +1040,11 @@ mod tests {
     /// MT20: 表示言語の決定は middleware が担い、**全画面**で `?lang=` が効く。
     ///
     /// 未ログインのログイン画面（api を呼ばずに描画できる画面）で検証する。`?lang=` を付けた
-    /// リクエストは (1) その応答が指定言語で描画され、(2) `lang` Cookie が保存される。
+    /// リクエストは (1) その応答が指定言語で描画され、(2) `lang` Cookie が保存される（一時切替。
+    /// ユーザー設定へは書かない —— task #79）。
     /// 以前は画面ごとに `?lang=` を解釈する／しないが分かれていた（設定画面のみ対応）。
     #[tokio::test]
-    async fn language_query_applies_to_every_page_and_is_persisted() {
+    async fn language_query_applies_to_every_page_and_is_kept_in_the_cookie() {
         let tenant = "019f6514-08ea-7138-ad71-838a7bdd3575";
         let english = Messages::new(crate::i18n::Locale::En).get("login-title");
         let japanese = Messages::new(crate::i18n::Locale::Ja).get("login-title");

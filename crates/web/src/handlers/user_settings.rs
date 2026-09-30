@@ -4,25 +4,35 @@
 //! Passkey）の管理導線にアクセスする。パスワード変更は api の `POST /internal/account/change-password`
 //! に委ね、MFA は既存の `/{tenant_id}/account/*` 画面へ誘導する。
 //!
-//! 言語設定（MT20）: `?lang=` を受けたら `lang` Cookie に保存し、ログイン中なら DB へも永続化する
-//! （`POST /internal/account/update-language`）。
+//! 表示設定（言語・配色。MT20）の保存は [`save_display_preferences`]
+//! （`POST /{tenant_id}/settings/display`）だけが行う。GET の `?lang=` / `?theme=` は一時切替
+//! （[`crate::display_preferences`] middleware が Cookie とその画面の表示に効かせるだけ）で、
+//! ユーザー設定（DB）へは書かない（task #79）。
+//!
+//! この画面の状態変更（表示名・パスワード・言語・配色）はすべて CSRF 同期トークン
+//! （`console_csrf_token`。SSO セッション id 由来）で守る（task #79・#118）。SameSite=Lax の SSO
+//! Cookie だけに頼らない —— 利用者向けの他の画面（セッション一覧・認証器）と同じ作法である。
+//! トークンが合わなければ何も保存せず、設定画面へ戻してバナーで伝える。
 
 use super::internal_call_status;
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
+use crate::csrf::console_csrf_token;
 use crate::display_preferences::{fetch_account_profile, FetchedAccountProfile};
-use crate::dto::{AccountNameForm, AccountPasswordForm, SettingsQuery};
-use crate::handlers::{forwarded_context, found, locale};
-use crate::i18n::Messages;
+use crate::dto::{AccountNameForm, AccountPasswordForm, DisplayPreferencesForm, SettingsQuery};
+use crate::handlers::{forwarded_context, found, locale, see_other, step_up};
+use crate::i18n::{Locale, Messages};
 use crate::state::WebState;
 use crate::templates::{render, UserSettings};
 use crate::tenant::WebTenant;
 use crate::theme::Theme;
 use assay_contracts::auth::{
     InternalAccountChangePasswordRequest, InternalAccountChangePasswordResponse,
-    InternalAccountProfileResponse, InternalAccountUpdateNameRequest,
-    InternalAccountUpdateNameResponse,
+    InternalAccountProfileResponse, InternalAccountUpdateLanguageRequest,
+    InternalAccountUpdateLanguageResponse, InternalAccountUpdateNameRequest,
+    InternalAccountUpdateNameResponse, InternalAccountUpdateThemeRequest,
+    InternalAccountUpdateThemeResponse,
 };
 use axum::extract::{Extension, Query, State};
 use axum::http::HeaderMap;
@@ -31,10 +41,10 @@ use axum::Form;
 
 /// 設定画面（`GET /{tenant_id}/settings`）。
 ///
-/// `?lang=` / `?theme=` の解釈・Cookie の保存・ユーザー設定（DB）への永続化は
+/// `?lang=` / `?theme=` の解釈（一時切替）と Cookie の保存は
 /// [`crate::display_preferences::resolve_display_preferences`] middleware が全画面共通で行う
-/// （MT20）。ここは決定済みの値で描画するだけで、セレクタは `?lang=` / `?theme=` を付けた
-/// 同一 URL へのリンクとして機能する。
+/// （MT20）。ここは決定済みの値で描画するだけで、セレクタは [`save_display_preferences`] へ
+/// CSRF トークン付きで POST する（task #79）。
 pub async fn page(
     State(state): State<WebState>,
     Extension(tenant): Extension<WebTenant>,
@@ -77,9 +87,9 @@ pub async fn page(
         _ => (String::new(), String::new(), None),
     };
     // 決定順は middleware と同じ（`?theme=` > ユーザー設定 > Cookie）。**`?theme=` を自分でも
-    // 読む**のが要点で、保存は応答より後（DB）・応答の中（Cookie）に起きるため、保存直後の
-    // このリクエストでは api も Cookie もまだ古い値を返す。読まないと「保存したのに
-    // セレクタは元のまま」に見える（画面の配色だけが変わる）。
+    // 読む**のが要点で、一時切替の Cookie は応答の中で書かれるため、このリクエストでは Cookie も
+    // ユーザー設定もまだ切替前の値を返す。読まないと「画面は切り替わったのにセレクタは元のまま」
+    // に見える。
     // 未選択（`?theme=` も DB も Cookie も無い）は「OS に合わせる」を選択済みとして見せる ——
     // セレクタに「未選択」という選択肢は無く、実際の見え方も OS 追従だからである。
     let current_theme = query
@@ -89,6 +99,8 @@ pub async fn page(
         .or_else(|| stored_theme.as_deref().and_then(Theme::from_tag))
         .or_else(|| cookies::get(&headers, cookies::THEME_COOKIE).and_then(|t| Theme::from_tag(&t)))
         .unwrap_or(Theme::System);
+
+    let csrf = console_csrf_token(&sso, state.config.csrf_secret());
 
     // Messages は FluentBundle を含み !Send のため、await をまたがないよう先にレンダリングして解放する。
     let body = {
@@ -103,6 +115,7 @@ pub async fn page(
             saved_key: query.saved.as_deref().and_then(saved_key_for),
             error_key: query.error.as_deref().and_then(error_key_for),
             from_admin,
+            csrf: &csrf,
         })
     };
 
@@ -125,12 +138,16 @@ pub async fn change_password(
     } else {
         ""
     };
-    if form.new_password != form.new_password_confirm {
-        return found(&format!("{base}?error=mismatch{suffix}"));
-    }
     let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         return found(&format!("{base}?error=session{suffix}"));
     };
+    if !csrf_matches(&state, &sso, &form.csrf_token) {
+        tracing::warn!("self-service password change rejected: csrf token mismatch");
+        return found(&format!("{base}?error=csrf{suffix}"));
+    }
+    if form.new_password != form.new_password_confirm {
+        return found(&format!("{base}?error=mismatch{suffix}"));
+    }
     let ctx = forwarded_context(&headers, &correlation, &client_ip);
     let request = InternalAccountChangePasswordRequest {
         sso_session_id: sso,
@@ -186,6 +203,10 @@ pub async fn change_name(
     let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         return found(&format!("{base}?error=session{suffix}"));
     };
+    if !csrf_matches(&state, &sso, &form.csrf_token) {
+        tracing::warn!("self-service name change rejected: csrf token mismatch");
+        return found(&format!("{base}?error=csrf{suffix}"));
+    }
     let request = InternalAccountUpdateNameRequest {
         sso_session_id: sso,
         name: form.name,
@@ -211,6 +232,129 @@ pub async fn change_name(
     }
 }
 
+/// 表示設定（言語・配色）の保存（`POST /{tenant_id}/settings/display`。task #79）。
+///
+/// ユーザー設定（`users.language` / `users.theme`）へ書く**唯一の経路**。設定画面のセレクタと、
+/// 管理コンソールのヘッダの言語ドロップダウン（ログイン中）が送る。GET の `?lang=` / `?theme=` は
+/// 一時切替で保存しない（[`crate::display_preferences`]）。
+///
+/// - CSRF トークン（`console_csrf_token`）が合わなければ何も保存せず、設定画面へ戻してバナーで伝える。
+/// - 保存したら Cookie も揃えて（ログアウト後の前回選択として残る）、`return_to` の画面へ 303 で
+///   戻す。`return_to` はこのテナント配下のパスだけを受け（オープンリダイレクトにしない）、
+///   `lang` / `theme` のクエリは落とす（戻った先で一時切替が保存を上書きして見えないように）。
+/// - 別端末への追随は従来どおり: 保存先は DB で、ログイン中は DB が Cookie より強い。
+pub async fn save_display_preferences(
+    State(state): State<WebState>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Form(form): Form<DisplayPreferencesForm>,
+) -> Response {
+    let settings = format!("{}/settings", tenant.prefix());
+    let suffix = if form.from.as_deref() == Some("admin") {
+        "&from=admin"
+    } else {
+        ""
+    };
+    let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
+        return found(&format!("{}/login", tenant.prefix()));
+    };
+    if !csrf_matches(&state, &sso, &form.csrf_token) {
+        tracing::warn!("display preference change rejected: csrf token mismatch");
+        return see_other(&format!("{settings}?error=csrf{suffix}"));
+    }
+    let locale = form.lang.as_deref().and_then(Locale::from_tag);
+    let theme = form.theme.as_deref().and_then(Theme::from_tag);
+
+    if let Some(locale) = locale {
+        let request = InternalAccountUpdateLanguageRequest {
+            sso_session_id: sso.clone(),
+            language: locale.as_tag().to_string(),
+        };
+        match state.api.account_update_language(&request).await {
+            Ok(InternalAccountUpdateLanguageResponse::Ok) => {}
+            Ok(InternalAccountUpdateLanguageResponse::SessionExpired) => {
+                return found(&format!("{}/login", tenant.prefix()));
+            }
+            Ok(other) => {
+                tracing::warn!(?other, "unexpected outcome from update-language");
+                return see_other(&format!("{settings}?error=internal{suffix}"));
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "account update-language call to api failed");
+                return see_other(&format!("{settings}?error=internal{suffix}"));
+            }
+        }
+    }
+    if let Some(theme) = theme {
+        let request = InternalAccountUpdateThemeRequest {
+            sso_session_id: sso.clone(),
+            theme: theme.as_tag().to_string(),
+        };
+        match state.api.account_update_theme(&request).await {
+            Ok(InternalAccountUpdateThemeResponse::Ok) => {}
+            Ok(InternalAccountUpdateThemeResponse::SessionExpired) => {
+                return found(&format!("{}/login", tenant.prefix()));
+            }
+            Ok(other) => {
+                tracing::warn!(?other, "unexpected outcome from update-theme");
+                return see_other(&format!("{settings}?error=internal{suffix}"));
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "account update-theme call to api failed");
+                return see_other(&format!("{settings}?error=internal{suffix}"));
+            }
+        }
+    }
+
+    let back = without_display_overrides(&step_up::safe_next(&tenant, form.return_to.as_deref()));
+    let mut set_cookies = state.set_cookies();
+    if let Some(locale) = locale {
+        set_cookies = set_cookies.set_local(
+            cookies::LANG_COOKIE,
+            locale.as_tag(),
+            cookies::PREFERENCE_COOKIE_MAX_AGE_SECS,
+        );
+    }
+    if let Some(theme) = theme {
+        set_cookies = set_cookies.set_preference(
+            cookies::THEME_COOKIE,
+            theme.as_tag(),
+            cookies::PREFERENCE_COOKIE_MAX_AGE_SECS,
+        );
+    }
+    (set_cookies.into_headers(), see_other(&back)).into_response()
+}
+
+/// ログイン中の利用者のフォームに埋めた CSRF トークン（`console_csrf_token`）と一致するか。
+fn csrf_matches(state: &WebState, sso: &str, submitted: &str) -> bool {
+    assay_contracts::csrf::verify(
+        &console_csrf_token(sso, state.config.csrf_secret()),
+        submitted,
+    )
+}
+
+/// 戻り先から一時切替のクエリ（`lang` / `theme`）を落とす。
+///
+/// 一時切替を付けたままの画面（`/admin/clients?lang=en`）でヘッダから日本語を保存すると、
+/// そのまま戻した先で `?lang=en` がまた効き、保存が効いていないように見える。
+fn without_display_overrides(path: &str) -> String {
+    let Some((base, query)) = path.split_once('?') else {
+        return path.to_string();
+    };
+    let kept: Vec<&str> = query
+        .split('&')
+        .filter(|pair| {
+            let name = pair.split('=').next().unwrap_or("");
+            !pair.is_empty() && name != "lang" && name != "theme"
+        })
+        .collect();
+    if kept.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}?{}", kept.join("&"))
+    }
+}
+
 fn saved_key_for(saved: &str) -> Option<&'static str> {
     match saved {
         "password" => Some("user-settings-password-saved"),
@@ -229,6 +373,8 @@ fn error_key_for(error: &str) -> Option<&'static str> {
         "session" => Some("user-settings-error-session"),
         "internal" => Some("user-settings-error-internal"),
         "name-invalid" => Some("user-settings-error-name-invalid"),
+        // CSRF トークンの不一致（task #79・#118）。セッション一覧・認証器の画面と同じ文言。
+        "csrf" => Some("user-security-error-csrf"),
         _ => None,
     }
 }
@@ -236,7 +382,6 @@ fn error_key_for(error: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::i18n::Locale;
 
     fn render_settings(from_admin: bool) -> String {
         let messages = Messages::new(Locale::Ja);
@@ -250,6 +395,7 @@ mod tests {
             saved_key: None,
             error_key: None,
             from_admin,
+            csrf: "test-csrf",
         })
     }
 
@@ -268,6 +414,7 @@ mod tests {
                 saved_key: None,
                 error_key: None,
                 from_admin: false,
+                csrf: "test-csrf",
             })
         };
 
@@ -284,6 +431,23 @@ mod tests {
             html.contains(r#"<option value="system" selected>"#),
             "{html}"
         );
+    }
+
+    /// 戻り先から一時切替（`lang` / `theme`）だけを落とし、他のクエリは保つ。
+    #[test]
+    fn the_return_path_drops_only_the_temporary_switches() {
+        assert_eq!(without_display_overrides("/t/admin"), "/t/admin");
+        assert_eq!(without_display_overrides("/t/admin?lang=en"), "/t/admin");
+        assert_eq!(
+            without_display_overrides("/t/admin/clients?page=2&lang=en&theme=dark&q=x"),
+            "/t/admin/clients?page=2&q=x"
+        );
+        // 名前が前方一致するだけの別パラメータは落とさない。
+        assert_eq!(
+            without_display_overrides("/t/admin?language=x&themes=y"),
+            "/t/admin?language=x&themes=y"
+        );
+        assert_eq!(without_display_overrides("/t/settings?"), "/t/settings");
     }
 
     #[test]

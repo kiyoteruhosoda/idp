@@ -1,5 +1,8 @@
 {% extends "page.html" %}
 {% block title %}{{ messages.get("authenticators-title") }}{% endblock %}
+{#- TOTP の設定・削除（task #82・#121）のあとはこの画面へ戻る。TOTP・パスキーの画面と同じく、
+    左上の名乗りをアカウント設定へのリンクにする（本文の先頭の「戻る」と対）。 -#}
+{% block brand %}<a class="navbar-brand mb-0 h1 text-decoration-none" href="{{ tenant }}/settings" title="{{ messages.get("nav-home") }}">assay</a>{% endblock %}
 {% block column %}col-lg-9 mx-auto{% endblock %}
 {% block scripts %}<script src="/assets/console.js?v={{ crate::templates::asset_version() }}"></script>{% endblock %}
 {% block content %}

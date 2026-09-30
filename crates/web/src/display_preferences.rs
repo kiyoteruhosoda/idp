@@ -21,8 +21,15 @@
 //!
 //! 決定結果は**リクエストの `lang` Cookie ヘッダを書き換えて**下流へ渡す。ハンドラは従来どおり
 //! `handlers::locale`（Cookie > `Accept-Language` > 既定）を呼ぶだけで決定順に従える。
-//! 応答では、明示的な選択（有効な `?lang=`）があったときだけ Cookie を保存し、ログイン中なら
-//! ユーザー設定（DB）へも永続化する。
+//! 応答では、明示的な選択（有効な `?lang=` / `?theme=`）があったときだけ Cookie を保存する。
+//!
+//! ⚠ **ここはユーザー設定（DB）へ書かない**（task #79）。`?lang=` / `?theme=` は GET で、
+//! どの画面の URL にも付けられる —— 外部のリンクや RP のログイン導線（SSO Cookie は
+//! `SameSite=Lax` なのでトップレベル遷移に載る）で、利用者の保存済み設定を書き換えられて
+//! しまう。GET の `?lang=` / `?theme=` は**一時切替**（その画面の表示と Cookie）だけで、保存は
+//! 設定画面・管理コンソールのヘッダから送る `POST /{tenant_id}/settings/display`（CSRF トークン
+//! 付き。[`crate::handlers::user_settings::save_display_preferences`]）に限る。ログイン中は
+//! ユーザー設定が Cookie より強いので、一時切替は次の画面で保存済みの値へ戻る（決定順どおり）。
 //!
 //! ユーザー設定の取得には api への 1 リクエスト（`/internal/account/profile`）が必要で、
 //! **ログイン中の HTML 画面表示ごとに 1 回**発生する。`?lang=` で既に決まっている場合と SSO Cookie が
@@ -39,11 +46,7 @@ use crate::i18n::Locale;
 use crate::login_context::RpLoginContext;
 use crate::state::WebState;
 use crate::theme::Theme;
-use assay_contracts::auth::{
-    InternalAccountProfileRequest, InternalAccountProfileResponse,
-    InternalAccountUpdateLanguageRequest, InternalAccountUpdateLanguageResponse,
-    InternalAccountUpdateThemeRequest, InternalAccountUpdateThemeResponse,
-};
+use assay_contracts::auth::{InternalAccountProfileRequest, InternalAccountProfileResponse};
 use axum::extract::{Request, State};
 use axum::http::header::{HeaderValue, COOKIE};
 use axum::middleware::Next;
@@ -102,17 +105,10 @@ pub async fn resolve_display_preferences(
 
     let response = next.run(request).await;
 
-    // 明示的な選択のみユーザー設定へ永続化する（ブラウザ言語やユーザー設定の反映で Cookie を
-    // 書き換えない。書き換えると、別端末で設定を変えたときに古い Cookie が上書き返しされ続ける）。
-    if let Some(sso) = &sso {
-        if let Some(locale) = explicit_locale {
-            persist_user_language(&state, sso, locale).await;
-        }
-        if let Some(theme) = explicit_theme {
-            persist_user_theme(&state, sso, theme).await;
-        }
-    }
-
+    // `lang` Cookie を書くのは明示的な選択（`?lang=`）だけ（ブラウザ言語・ユーザー設定・
+    // `ui_locales` の反映で書き換えない。ユーザー設定で書き換えると、別端末で設定を変えたときに
+    // 古い Cookie が上書き返しされ続ける。`ui_locales` は RP の希望で利用者の選択ではない）。
+    // ユーザー設定（DB）へは書かない（モジュールの doc を参照）。
     if explicit_locale.is_none() && theme_to_store.is_none() {
         return response;
     }
@@ -205,22 +201,6 @@ impl StoredPreferences {
     }
 }
 
-/// 明示的に選択された言語をユーザー設定（DB）へ保存する。失敗は Cookie 側の保存を妨げない。
-async fn persist_user_language(state: &WebState, sso: &str, locale: Locale) {
-    let request = InternalAccountUpdateLanguageRequest {
-        sso_session_id: sso.to_string(),
-        language: locale.as_tag().to_string(),
-    };
-    match state.api.account_update_language(&request).await {
-        Ok(InternalAccountUpdateLanguageResponse::Ok) => {}
-        Ok(InternalAccountUpdateLanguageResponse::SessionExpired) => {
-            tracing::debug!("SSO session expired while persisting the language choice");
-        }
-        Ok(other) => tracing::warn!(?other, "unexpected outcome from update-language"),
-        Err(e) => tracing::warn!(error = %e, "could not persist the language choice"),
-    }
-}
-
 /// `theme` Cookie を書き直すべき値（書き直さないなら `None`）。
 ///
 /// 配色は下流のハンドラが読まないので、middleware が決めるのは「Cookie を何に揃えるか」だけである。
@@ -235,22 +215,6 @@ fn theme_cookie_to_write(
     in_cookie: Option<Theme>,
 ) -> Option<Theme> {
     explicit.or_else(|| stored.filter(|stored| Some(*stored) != in_cookie))
-}
-
-/// 明示的に選択された配色をユーザー設定（DB）へ保存する。失敗は Cookie 側の保存を妨げない。
-async fn persist_user_theme(state: &WebState, sso: &str, theme: Theme) {
-    let request = InternalAccountUpdateThemeRequest {
-        sso_session_id: sso.to_string(),
-        theme: theme.as_tag().to_string(),
-    };
-    match state.api.account_update_theme(&request).await {
-        Ok(InternalAccountUpdateThemeResponse::Ok) => {}
-        Ok(InternalAccountUpdateThemeResponse::SessionExpired) => {
-            tracing::debug!("SSO session expired while persisting the theme choice");
-        }
-        Ok(other) => tracing::warn!(?other, "unexpected outcome from update-theme"),
-        Err(e) => tracing::warn!(error = %e, "could not persist the theme choice"),
-    }
 }
 
 /// リクエストの `Cookie` ヘッダを、`lang` だけ `locale` へ差し替えた 1 本に組み替える。

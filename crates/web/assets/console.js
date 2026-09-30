@@ -62,3 +62,14 @@
 
 // 外部 IdP 登録フォームのプロトコル出し分けは JS から外した。プロトコルは画面に入る前に決まり
 // （URL か登録済みの値）、サーバが選ばれた側の欄だけを描くので、隠すものが無い。
+
+// 管理コンソールのヘッダの言語ドロップダウン（`console/layout.html`）の戻り先。ログイン中は
+// 言語を `POST /{tenant_id}/settings/display` で保存し、いまの画面へ戻る（task #79）。いまの画面の
+// URL はサーバから各画面のテンプレートへ渡していないので、ここで埋める。検証（このテナント配下の
+// パスだけを受ける）はサーバ側が行う。
+(function () {
+  var fields = document.querySelectorAll("input[data-return-to-current]");
+  Array.prototype.forEach.call(fields, function (field) {
+    field.value = window.location.pathname + window.location.search;
+  });
+})();

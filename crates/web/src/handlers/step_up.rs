@@ -422,7 +422,7 @@ fn challenge_path(tenant: &WebTenant, operation: &str, next: &str) -> String {
 /// 受け付けるのは `/{tenant_id}` で始まり、かつ 2 文字目が `/` でないパスだけ。`//host` は
 /// スキーム相対 URL としてブラウザが別オリジンへ解決するため、先頭が `/` であることだけでは
 /// 不十分。条件を満たさない値は設定画面へ倒す。
-fn safe_next(tenant: &WebTenant, next: Option<&str>) -> String {
+pub(crate) fn safe_next(tenant: &WebTenant, next: Option<&str>) -> String {
     let fallback = format!("{}/settings", tenant.prefix());
     let Some(candidate) = next.filter(|v| !v.is_empty()) else {
         return fallback;

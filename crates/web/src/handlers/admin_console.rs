@@ -16,7 +16,7 @@ use crate::api_client::{AdminIdentity, AdminSession};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
-use crate::csrf::admin_csrf_token;
+use crate::csrf::{admin_csrf_token, console_csrf_token};
 use crate::dto::{ForcedPasswordChangeForm, FormPageQuery, LoginForm};
 use crate::error_pages;
 use crate::handlers::{form_retry_error_key, forwarded_context, found, see_other};
@@ -476,6 +476,9 @@ pub(crate) enum AdminResolution {
 /// （`ConsoleAdmin` の所有版。テンプレートへは [`Self::chrome`] で借用として渡す）。
 pub(crate) struct AdminContext {
     identity: AdminIdentity,
+    /// ログイン後の状態変更フォーム用の CSRF トークン（`console_csrf_token`。SSO セッション id
+    /// 由来）。共通レイアウトのヘッダ（言語の保存。task #79）が使う。
+    csrf_token: String,
 }
 
 impl AdminContext {
@@ -484,6 +487,7 @@ impl AdminContext {
     pub(crate) fn for_test(label: &str, tenant_name: Option<&str>) -> Self {
         Self {
             identity: AdminIdentity::for_test(label, tenant_name),
+            csrf_token: "test-console-csrf".to_string(),
         }
     }
 
@@ -493,6 +497,7 @@ impl AdminContext {
             label: &self.identity.label,
             tenant_name: self.identity.tenant_name.as_deref(),
             permissions: self.identity.permissions(),
+            csrf_token: &self.csrf_token,
         }
     }
 }
@@ -510,7 +515,8 @@ pub(crate) async fn resolve_admin(
         .api
         .admin_whoami(&correlation.0, &tenant.0, &sso)
         .await;
-    admin_resolution(session, tenant, headers)
+    let csrf_token = console_csrf_token(&sso, state.config.csrf_secret());
+    admin_resolution(session, csrf_token, tenant, headers)
 }
 
 /// whoami の結果 → 画面応答の写像（api 呼び出しから分離してテスト可能にする）。
@@ -519,11 +525,15 @@ pub(crate) async fn resolve_admin(
 /// 存在しないテナントの URL がゲートウェイ障害に見えてしまう（原因の切り分けを誤らせる）。
 fn admin_resolution(
     session: AdminSession,
+    csrf_token: String,
     tenant: &WebTenant,
     headers: &HeaderMap,
 ) -> AdminResolution {
     match session {
-        AdminSession::Authenticated(identity) => AdminResolution::Ok(AdminContext { identity }),
+        AdminSession::Authenticated(identity) => AdminResolution::Ok(AdminContext {
+            identity,
+            csrf_token,
+        }),
         AdminSession::Unauthenticated => AdminResolution::Reject(redirect_to_login(tenant)),
         AdminSession::Forbidden => AdminResolution::Reject(forbidden_response(headers)),
         AdminSession::NotFound => {
@@ -659,6 +669,7 @@ mod tests {
                 label: "user-123",
                 tenant_name: Some("ROOT"),
                 permissions: &[],
+                csrf_token: "test-console-csrf",
             }),
         });
         assert!(html.contains("user-123"));
@@ -667,9 +678,52 @@ mod tests {
         assert!(html.contains("/00000000-0000-7000-8000-000000000000/admin/clients"));
     }
 
+    /// ヘッダの言語ドロップダウンは、**ログイン中は CSRF トークン付きで保存口へ POST** し、
+    /// 未ログインは一時切替の GET のまま（task #79）。GET のままだと保存されず、ログイン中は
+    /// ユーザー設定が Cookie より強いので次の画面で元の言語へ戻ってしまう。
+    #[test]
+    fn the_header_language_switch_posts_with_a_token_only_when_signed_in() {
+        let messages = Messages::new(Locale::Ja);
+        let tenant = "/00000000-0000-7000-8000-000000000000";
+        let signed_in = render(&ConsoleHome {
+            messages: &messages,
+            tenant,
+            admin: Some(crate::templates::ConsoleAdmin {
+                label: "user-123",
+                tenant_name: Some("ROOT"),
+                permissions: &[],
+                csrf_token: "header-csrf-token",
+            }),
+        });
+        assert!(
+            signed_in.contains(&format!(
+                r#"<form method="post" action="{tenant}/settings/display" class="dropdown">"#
+            )),
+            "{signed_in}"
+        );
+        assert!(
+            signed_in
+                .contains(r#"<input type="hidden" name="csrf_token" value="header-csrf-token">"#),
+            "{signed_in}"
+        );
+        assert!(signed_in.contains("data-return-to-current"), "{signed_in}");
+        assert!(!signed_in.contains(r#"<form method="get""#), "{signed_in}");
+
+        let signed_out = render(&ConsoleHome {
+            messages: &messages,
+            tenant,
+            admin: None,
+        });
+        assert!(
+            signed_out.contains(r#"<form method="get" class="dropdown">"#),
+            "{signed_out}"
+        );
+        assert!(!signed_out.contains("/settings/display"), "{signed_out}");
+    }
+
     fn reject_status(session: AdminSession) -> StatusCode {
         let tenant = WebTenant("019f8ea8-f5dd-7fc7-ac15-a7d4337e4610".to_string());
-        match admin_resolution(session, &tenant, &HeaderMap::new()) {
+        match admin_resolution(session, String::new(), &tenant, &HeaderMap::new()) {
             AdminResolution::Ok(_) => panic!("expected a rejection"),
             AdminResolution::Reject(response) => response.status(),
         }

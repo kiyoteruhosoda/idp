@@ -1,3 +1,18 @@
+## 2026-09-30（10）（表示設定の保存を POST + CSRF に限り、設定画面・TOTP の設定にも CSRF を付けた）
+
+- **GET の `?lang=` / `?theme=` は一時切替だけにし、ユーザー設定への保存は CSRF トークン付きの POST に限った**
+  （task #79・ADR-0066）。これまでは `display_preferences` middleware が、ログイン中ならどの画面の GET でも
+  `users.language` / `users.theme` へ保存しており、外部のリンクや RP のログイン導線（SSO Cookie は `SameSite=Lax`）で
+  保存済みの設定を書き換えられた。いまは GET はその画面の表示と Cookie だけに効き、保存は
+  `POST /{tenant_id}/settings/display`（`console_csrf_token`・戻り先はこのテナント配下のパスだけ）が行う。
+  設定画面の言語・配色のセレクタと、管理コンソールのヘッダの言語ドロップダウン（ログイン中。トークンは
+  `ConsoleAdmin` 経由で共通レイアウトへ届く）をこの POST に替えた。未ログインのヘッダは従来どおり GET。
+  保存後は元の画面へ戻り、別端末への追随（DB が Cookie より強い）も従来どおり。
+- **設定画面の表示名・パスワードの変更と、TOTP の設定（確認コードの送信・削除）に CSRF トークンを付けた**
+  （task #118）。セッション一覧・認証器の画面と同じ `console_csrf_token` で、合わなければ api へ何も送らず
+  `?error=csrf` のバナーで伝える。あわせて、TOTP の削除後に戻る認証器の画面の左上の名乗りをアカウント設定への
+  リンクにした（本文の「アカウント設定へ戻る」と対。task #121 の確かめ）。
+
 ## 2026-09-30（9）（OIDC の外部 IdP を discovery ドキュメントから取り込めるようにした）
 
 - **OIDC の外部 IdP の登録画面に「discovery ドキュメントから読み込む」を足した**（task #77、旧 T32）。
