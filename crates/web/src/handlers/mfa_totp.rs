@@ -264,14 +264,12 @@ pub async fn setup_delete(
 
     use assay_contracts::auth::InternalTotpDeleteResponse;
     match result {
-        InternalTotpDeleteResponse::Ok => {
-            let body = render(&MessagePage {
-                lang: messages.lang(),
-                title: messages.get("mfa-deleted-title"),
-                message: messages.get("mfa-deleted-message"),
-            });
-            Html(body).into_response()
-        }
+        // 削除も認証器の画面へ戻してバナーで伝える（PRG。設定の完了と同じ形・task #82）。
+        // 完了だけを告げる画面にはアカウント設定へ戻る導線が無かった（task #121）。
+        InternalTotpDeleteResponse::Ok => see_other(&format!(
+            "{}/settings/authenticators?saved=totp-deleted",
+            tenant.prefix()
+        )),
         InternalTotpDeleteResponse::SessionExpired => account_error_page(
             &messages,
             &tenant.prefix(),

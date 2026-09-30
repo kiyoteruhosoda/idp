@@ -199,6 +199,43 @@ async fn a_confirmed_setup_returns_to_the_authenticators_page() {
     );
 }
 
+/// **削除を終えたら、認証器の画面へ戻して結果をバナーで伝える。** 以前は完了を告げるだけの
+/// 最小のページで、アカウント設定へ戻る導線が無かった（task #119 の作業で判明・#121 で直す）。
+/// 設定の完了（task #82）と同じく PRG にする。
+#[tokio::test]
+async fn a_deleted_totp_returns_to_the_authenticators_page() {
+    let env = setup().await;
+    stub_step_up_satisfied(&env).await;
+    Mock::given(method("POST"))
+        .and(path("/internal/mfa/totp/delete"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "result": "ok" })))
+        .mount(&env.api)
+        .await;
+
+    let response = send(
+        &env.app,
+        post_form(
+            &format!("{}/account/mfa/totp/delete", env.prefix()),
+            Some(&cookies()),
+            &[],
+        ),
+    )
+    .await;
+
+    assert_status(
+        &response,
+        axum::http::StatusCode::SEE_OTHER,
+        "delete redirect",
+    );
+    assert_eq!(
+        location(&response),
+        format!(
+            "{}/settings/authenticators?saved=totp-deleted",
+            env.prefix()
+        )
+    );
+}
+
 // ── 失敗の画面の出口（task #119） ────────────────────────────────────────────
 //
 // 失敗を告げるだけの最小のページには戻る導線が無く、既に設定済み（409）・セッション切れ（401）・

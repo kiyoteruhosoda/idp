@@ -299,6 +299,8 @@ fn saved_key_for(value: &str) -> Option<&'static str> {
         "phone" => Some("authenticator-saved-phone"),
         // TOTP の設定を終えた戻り（`mfa_totp::setup_confirm`）。
         "totp" => Some("authenticator-saved-totp"),
+        // TOTP を削除した戻り（`mfa_totp::setup_delete`）。
+        "totp-deleted" => Some("authenticator-saved-totp-deleted"),
         _ => None,
     }
 }
@@ -333,6 +335,10 @@ mod tests {
     fn only_known_banner_values_map_to_message_keys() {
         assert_eq!(saved_key_for("status"), Some("authenticator-saved-status"));
         assert_eq!(saved_key_for("totp"), Some("authenticator-saved-totp"));
+        assert_eq!(
+            saved_key_for("totp-deleted"),
+            Some("authenticator-saved-totp-deleted")
+        );
         assert_eq!(saved_key_for("<script>"), None);
         assert_eq!(error_key_for("anything"), None);
     }

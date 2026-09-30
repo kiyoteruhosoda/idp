@@ -45,14 +45,24 @@ pub async fn page(
     let locale = locale(&headers);
     let from_admin = query.from.as_deref() == Some("admin");
 
+    // 未ログイン・セッション切れはログイン画面へ送る（task #121）。認証器・セッション一覧など
+    // 他のアカウント画面と同じ形（戻り先は付けない）。
+    let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
+        return found(&format!("{}/login", tenant.prefix()));
+    };
     // 表示名・ログイン識別子のプリフィル値。プロフィールは表示設定の middleware が引いたものを
     // 使い、api を引き直さない（task #80）。middleware が引かなかったとき（`?lang=` と `?theme=` の
-    // 両方で決まった）だけここで引く。未ログイン・取得失敗時は空文字で描画する（フェイルソフト）。
-    let profile = match (fetched, cookies::get(&headers, cookies::SSO_SESSION_COOKIE)) {
-        (Some(Extension(FetchedAccountProfile(profile))), _) => profile,
-        (None, Some(sso)) => fetch_account_profile(&state, &sso).await,
-        (None, None) => None,
+    // 両方で決まった）だけここで引く。取得失敗時は空文字で描画する（フェイルソフト）。
+    let profile = match fetched {
+        Some(Extension(FetchedAccountProfile(profile))) => profile,
+        None => fetch_account_profile(&state, &sso).await,
     };
+    if matches!(
+        profile,
+        Some(InternalAccountProfileResponse::SessionExpired)
+    ) {
+        return found(&format!("{}/login", tenant.prefix()));
+    }
     let (current_name, preferred_username, stored_theme) = match profile {
         Some(InternalAccountProfileResponse::Ok {
             name,
