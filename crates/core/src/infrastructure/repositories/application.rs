@@ -355,6 +355,44 @@ impl ApplicationRepository for SqlxApplicationRepository {
         Ok(result.rows_affected() > 0)
     }
 
+    /// 1 文の UPDATE で付け替える（外す＋足すの間に「どこにも属さない」瞬間を作らない）。
+    /// `created_at` は「このアプリへ結び付けた日時」なので、移した時刻に改める。
+    /// 一意キーは相手の列にだけ掛かっているので、付け替えでは衝突しない。
+    async fn move_binding(
+        &self,
+        binding_id: Uuid,
+        from_application_id: Uuid,
+        to_application_id: Uuid,
+        moved_at: DateTime<Utc>,
+    ) -> Result<bool> {
+        let result = sqlx::query(
+            "UPDATE application_bindings SET application_id = ?, created_at = ? \
+             WHERE id = ? AND application_id = ?",
+        )
+        .bind(to_application_id.to_string())
+        .bind(moved_at)
+        .bind(binding_id.to_string())
+        .bind(from_application_id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn list_tenant_bindings(&self, tenant_id: TenantId) -> Result<Vec<ApplicationBinding>> {
+        let rows = sqlx::query(
+            "SELECT b.id, b.application_id, b.kind, b.client_id, b.service_provider_id, \
+                    b.resource_id, b.created_at \
+             FROM application_bindings b JOIN applications a ON a.id = b.application_id \
+             WHERE a.tenant_id = ? ORDER BY b.created_at, b.id",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        rows.iter().map(map_binding).collect()
+    }
+
     /// ⚠ 種類で絞らなくても人の行だけに当たる（サービスアカウントの行は `user_id` が NULL）が、
     /// 読み手が「サービスアカウントも数えているのでは」と疑わずに済むよう、種類を明示する。
     async fn is_assigned(&self, application_id: Uuid, user_id: Uuid) -> Result<bool> {

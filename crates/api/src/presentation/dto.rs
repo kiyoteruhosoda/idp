@@ -795,6 +795,8 @@ pub struct UpdateApplicationRequest {
 /// | `resource` | `resource_uri` | 登録済みの宛名（`aud`） |
 ///
 /// ⚠ 1 つの相手は 1 つのアプリにだけ属する。別のアプリの名乗りなら 409（そのアプリ名を返す）。
+/// そのアプリから**移す**ときは、`move_from_application_id` に今の持ち主のアプリ ID を入れる
+/// （外す＋結ぶを 1 回で行う。ADR-0067）。今の持ち主と違えば 409 のまま。
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateApplicationBindingRequest {
     /// `oidc` / `saml` / `service_account` / `resource`。⚠ 省略は 400（既定の種類を置かない）。
@@ -806,6 +808,11 @@ pub struct CreateApplicationBindingRequest {
     pub service_provider_id: Option<String>,
     #[serde(default)]
     pub resource_uri: Option<String>,
+    /// 相手が別のアプリの名乗りなら、そのアプリから移す（ADR-0067）。値は**今の持ち主のアプリ ID**。
+    /// ⚠ 名指しにするのは、確かめた時点と送った時点の間に持ち主が替わったとき、確かめていない
+    /// アプリから黙って奪わないため。相手がどこにも属していなければ、ただ結ぶ。
+    #[serde(default)]
+    pub move_from_application_id: Option<String>,
 }
 
 /// アプリを使う主体を割り当てるリクエスト
@@ -855,6 +862,33 @@ pub struct ApplicationBindingResponse {
     pub identifier: Option<String>,
     /// 相手の登録名。
     pub display_name: Option<String>,
+}
+
+/// 名乗りの候補
+/// （`GET /{tenant_id}/admin/applications/{application_id}/binding-candidates`。ADR-0067）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ApplicationBindingCandidateListResponse {
+    /// 種類（`oidc`・`saml`・`service_account`・`resource`）の順、その中は表示名の昇順。
+    /// このアプリの名乗りになっているものは載らない。
+    pub candidates: Vec<ApplicationBindingCandidateResponse>,
+}
+
+/// 名乗りの候補 1 件。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ApplicationBindingCandidateResponse {
+    /// `oidc` / `saml` / `service_account` / `resource`。
+    pub kind: String,
+    /// 結び付けるときに送る値（`POST …/bindings` の相手の欄にそのまま入れる）。
+    /// `oidc`・`service_account` は `client_id`、`saml` は SP の内部 ID、`resource` は宛名の URI。
+    pub reference: String,
+    /// 人が見分ける値（`client_id`・`entity_id`・宛名の URI）。
+    pub identifier: String,
+    /// 相手の登録名。
+    pub display_name: String,
+    /// いまこの相手を名乗りに持っているアプリ（どこにも属していなければ `null`）。
+    pub application_id: Option<String>,
+    /// そのアプリの表示名。
+    pub application_name: Option<String>,
 }
 
 /// アプリの一覧（`GET /{tenant_id}/admin/applications`）。

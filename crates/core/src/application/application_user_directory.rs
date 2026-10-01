@@ -307,6 +307,21 @@ mod tests {
         async fn remove_binding(&self, _a: Uuid, _b: Uuid) -> DomainResult<bool> {
             Ok(false)
         }
+        async fn move_binding(
+            &self,
+            _b: Uuid,
+            _from: Uuid,
+            _to: Uuid,
+            _at: DateTime<Utc>,
+        ) -> DomainResult<bool> {
+            Ok(false)
+        }
+        async fn list_tenant_bindings(
+            &self,
+            _t: TenantId,
+        ) -> DomainResult<Vec<ApplicationBinding>> {
+            Ok(Vec::new())
+        }
         async fn is_assigned(&self, _a: Uuid, _u: Uuid) -> DomainResult<bool> {
             Ok(false)
         }

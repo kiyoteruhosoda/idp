@@ -51,6 +51,10 @@ pub enum AuditEventType {
     /// 管理者によるアプリ ↔ 認証方法（binding）の追加・削除（ADR-0054）。
     ApplicationBindingAdded,
     ApplicationBindingRemoved,
+    /// 管理者による名乗りの付け替え（別のアプリから移した。ADR-0067）。外す＋足すの 2 行ではなく
+    /// 1 行で残す ——2 行だと「外したまま」と「移した」が監査ログで見分けられない。`reason` は
+    /// `application=<移した先> … kind=<種類> target=<相手> from_application=<移した元>`。
+    ApplicationBindingMoved,
     /// 管理者による主体（人・サービスアカウント）の割り当て・解除（ADR-0054 / ADR-0059）。
     /// `user_id` 列（人）か `client_id` 列（サービスアカウント）が**操作対象**の主体、
     /// 実行主体は `reason` の `actor=` に出る。
@@ -195,6 +199,7 @@ impl AuditEventType {
             Self::ApplicationDeleted => "application.deleted",
             Self::ApplicationBindingAdded => "application_binding.added",
             Self::ApplicationBindingRemoved => "application_binding.removed",
+            Self::ApplicationBindingMoved => "application_binding.moved",
             Self::ApplicationAssigned => "application.assigned",
             Self::ApplicationUnassigned => "application.unassigned",
             Self::ApplicationAccessDenied => "application.access_denied",

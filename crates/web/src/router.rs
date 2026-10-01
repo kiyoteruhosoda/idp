@@ -550,6 +550,10 @@ pub fn build(state: WebState) -> Router {
             post(admin_applications_console::unbind),
         )
         .route(
+            "/admin/applications/{application_id}/delete",
+            post(admin_applications_console::delete),
+        )
+        .route(
             "/admin/applications/{application_id}/assign",
             post(admin_applications_console::assign),
         )

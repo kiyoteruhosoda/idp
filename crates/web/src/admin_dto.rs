@@ -134,10 +134,30 @@ impl ApplicationView {
         self.assignment_mode == "INDIVIDUAL"
     }
 
+    /// ログインの名乗り（OIDC・SAML）を持つか。⚠ 消すと、その連携先は判定の外（誰でも入れる）に
+    /// 出る（ADR-0054 の帰結）ので、消す前に言う。
+    pub fn has_login_binding(&self) -> bool {
+        self.bindings
+            .iter()
+            .any(|b| b.kind == "oidc" || b.kind == "saml")
+    }
+
     /// ⚠ **誰も入れない状態**（「個別」なのに名簿が空）。
     /// 「全員」と取り違えると全断になるので、一覧で目立たせる。
     pub fn admits_nobody(&self) -> bool {
         self.is_active() && self.is_individual() && self.assigned_count == 0
+    }
+}
+
+/// 名乗りの種類の表示名の翻訳キー（テンプレートから種類を文字列比較させないため）。
+/// 知らない種類は綴りのまま出す（新しい api と古い web の組み合わせでも画面を壊さない）。
+pub fn binding_kind_label_key(kind: &str) -> &str {
+    match kind {
+        "oidc" => "admin-applications-kind-oidc",
+        "saml" => "admin-applications-kind-saml",
+        "service_account" => "admin-applications-kind-service-account",
+        "resource" => "admin-applications-kind-resource",
+        other => other,
     }
 }
 
@@ -159,19 +179,96 @@ impl ApplicationBindingView {
     /// 種類の表示名の翻訳キー（テンプレートから種類を文字列比較させないため）。
     /// 知らない種類は綴りのまま出す（新しい api と古い web の組み合わせでも画面を壊さない）。
     pub fn kind_label_key(&self) -> &str {
-        match self.kind.as_str() {
-            "oidc" => "admin-applications-kind-oidc",
-            "saml" => "admin-applications-kind-saml",
-            "service_account" => "admin-applications-kind-service-account",
-            "resource" => "admin-applications-kind-resource",
-            other => other,
-        }
+        binding_kind_label_key(&self.kind)
     }
 
     /// サービスアカウントの名乗りか（サーバーのアイコンを出す）。
     pub fn is_service_account(&self) -> bool {
         self.kind == "service_account"
     }
+}
+
+/// 名乗りの候補の応答（`GET /admin/applications/{id}/binding-candidates`。ADR-0067）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApplicationBindingCandidateListView {
+    #[serde(default)]
+    pub candidates: Vec<ApplicationBindingCandidateView>,
+}
+
+/// 名乗りの候補 1 件。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApplicationBindingCandidateView {
+    /// `oidc` / `saml` / `service_account` / `resource`。
+    pub kind: String,
+    /// 結び付けるときに送る値（`client_id`・SP の内部 ID・宛名の URI）。
+    pub reference: String,
+    /// 人が見分ける値（`client_id`・`entity_id`・宛名の URI）。
+    pub identifier: String,
+    pub display_name: String,
+    /// いまこの相手を名乗りに持っているアプリ。
+    #[serde(default)]
+    pub application_id: Option<String>,
+    #[serde(default)]
+    pub application_name: Option<String>,
+}
+
+impl ApplicationBindingCandidateView {
+    /// 選択肢の値（`<種類>:<相手>`）。種類に `:` は無いので、最初の `:` で切れば戻る
+    /// （宛名の URI・SAML の entityID は `:` を含むが、相手の側にしか現れない）。
+    pub fn choice_value(&self) -> String {
+        format!("{}:{}", self.kind, self.reference)
+    }
+
+    /// 種類の表示名の翻訳キー。
+    pub fn kind_label_key(&self) -> &str {
+        binding_kind_label_key(&self.kind)
+    }
+}
+
+/// 選択肢の値（[`ApplicationBindingCandidateView::choice_value`]）を種類と相手へ戻す。
+/// 形が合わなければ `None`。
+pub fn parse_binding_choice(value: &str) -> Option<(&str, &str)> {
+    let (kind, reference) = value.trim().split_once(':')?;
+    let reference = reference.trim();
+    if kind.is_empty() || reference.is_empty() {
+        return None;
+    }
+    Some((kind, reference))
+}
+
+/// 種類ごとに束ねた候補（画面の `<optgroup>` 1 つ）。
+#[derive(Debug, Clone)]
+pub struct BindingCandidateGroup {
+    /// 種類の表示名の翻訳キー。
+    pub label_key: &'static str,
+    pub candidates: Vec<ApplicationBindingCandidateView>,
+}
+
+/// 候補を種類（ログイン OIDC・SAML・サービスアカウント・宛名）の順に束ねる。空の種類は出さない。
+/// 知らない種類（新しい api と古い web）は捨てる ——選んでも、この web は送り方を知らない。
+pub fn group_binding_candidates(
+    candidates: Vec<ApplicationBindingCandidateView>,
+) -> Vec<BindingCandidateGroup> {
+    const KINDS: [(&str, &str); 4] = [
+        ("oidc", "admin-applications-kind-oidc"),
+        ("saml", "admin-applications-kind-saml"),
+        ("service_account", "admin-applications-kind-service-account"),
+        ("resource", "admin-applications-kind-resource"),
+    ];
+    KINDS
+        .into_iter()
+        .filter_map(|(kind, label_key)| {
+            let members: Vec<_> = candidates
+                .iter()
+                .filter(|c| c.kind == kind)
+                .cloned()
+                .collect();
+            (!members.is_empty()).then_some(BindingCandidateGroup {
+                label_key,
+                candidates: members,
+            })
+        })
+        .collect()
 }
 
 /// アプリの一覧応答。

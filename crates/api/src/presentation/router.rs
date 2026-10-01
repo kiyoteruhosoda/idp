@@ -551,6 +551,11 @@ pub fn build(state: AppState) -> Router {
             "/admin/applications/{application_id}/assignments/service-accounts/{client_id}",
             axum::routing::delete(admin_applications::unassign_service_account),
         )
+        // 名乗りの候補（ADR-0067）。相手を ID の手入力ではなく一覧から選ばせる。
+        .route(
+            "/admin/applications/{application_id}/binding-candidates",
+            get(admin_applications::binding_candidates),
+        )
         // 「全員」を「個別」へ倒す前に、いま入れている人を写すための一覧。
         .route(
             "/admin/applications/{application_id}/current-users",

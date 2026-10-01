@@ -1,14 +1,17 @@
 //! アプリの管理コンソール画面（`/{tenant_id}/admin/applications`。ADR-0054）。
 //!
-//! 一覧・登録・設定変更・名乗り（binding）の付け外し・使う主体（人・サービスアカウント）の
-//! 割り当てを提供する。操作の実体は
+//! 一覧・登録・設定変更・削除・名乗り（binding）の付け外しと移し替え・使う主体（人・サービスアカウント）の
+//! 割り当てを提供する。名乗りの相手は ID の手入力ではなく候補の一覧から選ぶ（ADR-0067）。操作の実体は
 //! api の `/admin/applications/*` に SSO Cookie 転送で委譲する（web は sqlx に触らない。ADR-0007）。
 //!
 //! ⚠ **この画面が締め出しの復旧経路である**（ADR-0054 の決定 4 の手順 4）。割り当てを足す操作が
 //! 数秒で終わること ——一覧から 1 件開いて、利用者 ID を貼って送る——を、切り替えの前に確かめる。
 
 use super::locale;
-use crate::admin_dto::ApplicationCurrentUserView;
+use crate::admin_dto::{
+    group_binding_candidates, parse_binding_choice, ApplicationBindingCandidateView,
+    ApplicationCurrentUserView, ApplicationDetailView,
+};
 use crate::api_client::AdminApiError;
 use crate::cookies;
 use crate::correlation::CorrelationId;
@@ -204,14 +207,19 @@ pub async fn update(
 
 #[derive(Deserialize)]
 pub struct BindForm {
-    /// `oidc` / `saml` / `service_account` / `resource`。
-    pub kind: String,
-    /// ログイン用・サービスアカウントなら `client_id`、SAML なら SP の内部 ID、宛名なら URI。
-    pub target: String,
+    /// 候補の一覧で選んだ相手（`<種類>:<相手>`。[`ApplicationBindingCandidateView::choice_value`]）。
+    #[serde(default)]
+    pub candidate: String,
+    /// 「○○ から移す」を確かめたときだけ付く、今の持ち主のアプリ ID（ADR-0067）。
+    #[serde(default)]
+    pub move_from: Option<String>,
     pub csrf_token: String,
 }
 
-/// 名乗りを足す（`POST /{tenant_id}/admin/applications/{id}/bind`。ADR-0059）。
+/// 名乗りを足す（`POST /{tenant_id}/admin/applications/{id}/bind`。ADR-0059 / ADR-0067）。
+///
+/// 選んだ相手が別のアプリの名乗りなら、すぐには送らず「○○ から移す」確認を出す。確認から
+/// 送り直したとき（`move_from` 付き）だけ、api に移し替えを頼む ——外す＋結ぶは api が 1 回で行う。
 pub async fn bind(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -234,6 +242,53 @@ pub async fn bind(
         )
         .await;
     }
+    let Some((kind, reference)) = parse_binding_choice(&form.candidate) else {
+        return render_detail(
+            &state,
+            &correlation,
+            &tenant,
+            &admin,
+            &headers,
+            &application_id,
+            Some("admin-applications-bind-invalid"),
+        )
+        .await;
+    };
+    let move_from = form
+        .move_from
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if move_from.is_none() {
+        // 選んだ相手の今の持ち主を引き直す（画面を出した時点の値を信じない）。別のアプリの名乗りなら
+        // 確認を出す。⚠ 候補を読めなかったときは確認を飛ばして送る ——持ち主が居れば api が
+        // そのアプリ名で 409 を返すので、黙って奪うことにはならない。
+        let candidates = state
+            .api
+            .application_binding_candidates(&correlation.0, &tenant.0, &sso, &application_id)
+            .await
+            .map(|list| list.candidates)
+            .unwrap_or_default();
+        if let Some(owned) = candidates.into_iter().find(|c| {
+            c.kind == kind
+                && c.reference == reference
+                && c.application_id
+                    .as_deref()
+                    .is_some_and(|a| a != application_id)
+        }) {
+            return render_detail_with(
+                &state,
+                &correlation,
+                &tenant,
+                &admin,
+                &headers,
+                &application_id,
+                None,
+                Some(owned),
+            )
+            .await;
+        }
+    }
     // 種類の検証は api がする（ここで書き写すと規則が 2 か所になる）。
     let result = state
         .api
@@ -243,8 +298,9 @@ pub async fn bind(
             &tenant.0,
             &sso,
             &application_id,
-            form.kind.trim(),
-            form.target.trim(),
+            kind,
+            reference,
+            move_from,
         )
         .await;
     finish(
@@ -257,6 +313,62 @@ pub async fn bind(
         result.map(|_| ()),
     )
     .await
+}
+
+#[derive(Deserialize)]
+pub struct DeleteApplicationForm {
+    pub csrf_token: String,
+}
+
+/// アプリを消す（`POST /{tenant_id}/admin/applications/{id}/delete`）。
+///
+/// api の削除と同じく、名乗りと使う主体を外して消す（相手の登録は消えない）。何が外れるかは
+/// 画面が先に出し、送る前に確認を挟む。消したら一覧へ戻す（消したアプリの画面は 404 になる）。
+pub async fn delete(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Path((_tenant_id, application_id)): Path<(String, String)>,
+    Form(form): Form<DeleteApplicationForm>,
+) -> Response {
+    let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
+    let sso = sso(&headers);
+    if !console_csrf_valid_in(&headers, &form.csrf_token, state.config.csrf_secret()) {
+        return render_detail(
+            &state,
+            &correlation,
+            &tenant,
+            &admin,
+            &headers,
+            &application_id,
+            Some("admin-error-csrf"),
+        )
+        .await;
+    }
+    let result = state
+        .api
+        .for_locale(locale(&headers))
+        .delete_application(&correlation.0, &tenant.0, &sso, &application_id)
+        .await;
+    match result {
+        Ok(()) => {
+            axum::response::Redirect::to(&format!("{}{APPLICATIONS_SEGMENT}", tenant.prefix()))
+                .into_response()
+        }
+        Err(e) => {
+            finish(
+                &state,
+                &correlation,
+                &tenant,
+                &admin,
+                &headers,
+                &application_id,
+                Err(e),
+            )
+            .await
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -490,6 +602,31 @@ async fn render_detail(
     application_id: &str,
     error: Option<&str>,
 ) -> Response {
+    render_detail_with(
+        state,
+        correlation,
+        tenant,
+        admin,
+        headers,
+        application_id,
+        error,
+        None,
+    )
+    .await
+}
+
+/// 詳細を引き直して描く。`pending_move` があれば「○○ から移す」確認を添える（ADR-0067）。
+#[allow(clippy::too_many_arguments)]
+async fn render_detail_with(
+    state: &WebState,
+    correlation: &CorrelationId,
+    tenant: &WebTenant,
+    admin: &AdminContext,
+    headers: &HeaderMap,
+    application_id: &str,
+    error: Option<&str>,
+    pending_move: Option<ApplicationBindingCandidateView>,
+) -> Response {
     let sso = sso(headers);
     let detail = match state
         .api
@@ -517,9 +654,19 @@ async fn render_detail(
             .await
             .ok()
     };
+    // 名乗りの候補（ADR-0067）。⚠ ここで失敗しても画面は出す（候補が読めないことは画面が言う）。
+    let candidates = state
+        .api
+        .application_binding_candidates(&correlation.0, &tenant.0, &sso, application_id)
+        .await
+        .ok();
+    let candidates_unavailable = candidates.is_none();
+    let candidate_groups =
+        group_binding_candidates(candidates.map(|c| c.candidates).unwrap_or_default());
     // Messages は await の後に作る（non-Send のため await をまたがない）。
     let messages = Messages::new(locale(headers));
     let csrf = console_csrf_from(headers, state.config.csrf_secret());
+    let delete_summary = delete_summary(&messages, &detail);
     // 「個別」のアプリでは写し元が要らないので、空で描く（画面側が出し分ける）。
     let no_users: Vec<ApplicationCurrentUserView> = Vec::new();
     let body = render(&ApplicationDetail {
@@ -535,6 +682,10 @@ async fn render_detail(
             .unwrap_or(&no_users),
         current_users_truncated: current.as_ref().map(|c| c.truncated).unwrap_or(false),
         current_users_total: current.as_ref().map(|c| c.total).unwrap_or(0),
+        candidate_groups: &candidate_groups,
+        candidates_unavailable,
+        pending_move: pending_move.as_ref(),
+        delete_summary: &delete_summary,
         record_only: detail.is_record_only(),
         csrf: &csrf,
         error,
@@ -543,6 +694,23 @@ async fn render_detail(
         Some(_) => (StatusCode::BAD_REQUEST, Html(body)).into_response(),
         None => Html(body).into_response(),
     }
+}
+
+/// 「このアプリを消す」で外れるものの要約。⚠ api の削除（`delete_application`）は名乗りと使う主体を
+/// **外して消す**（断らない）ので、件数は「外すもの」として言う。
+fn delete_summary(messages: &Messages, detail: &ApplicationDetailView) -> String {
+    let bindings = detail.application.bindings.len();
+    let principals = detail.assigned.len() + detail.assigned_service_accounts.len();
+    if bindings == 0 && principals == 0 {
+        return messages.get("admin-applications-delete-empty");
+    }
+    messages.get_args(
+        "admin-applications-delete-summary",
+        &[
+            ("bindings", &bindings.to_string()),
+            ("principals", &principals.to_string()),
+        ],
+    )
 }
 
 /// 一覧を引き直してエラー付きで描き直す（PRG に倒さないのは、理由を出すため）。
@@ -645,8 +813,11 @@ fn internal_error(messages: &Messages, tenant: &WebTenant, admin: &AdminContext)
 
 #[cfg(test)]
 mod tests {
+    use super::delete_summary;
     use crate::admin_dto::{
-        ApplicationAssignmentView, ApplicationServiceAccountAssignmentView, ApplicationView,
+        group_binding_candidates, ApplicationAssignmentView, ApplicationBindingCandidateView,
+        ApplicationBindingView, ApplicationDetailView, ApplicationServiceAccountAssignmentView,
+        ApplicationView,
     };
     use crate::handlers::admin_console::AdminContext;
     use crate::i18n::{Locale, Messages};
@@ -696,6 +867,10 @@ mod tests {
             current_users: &[],
             current_users_truncated: false,
             current_users_total: 0,
+            candidate_groups: &[],
+            candidates_unavailable: false,
+            pending_move: None,
+            delete_summary: "",
             record_only: false,
             csrf: "csrf",
             error: None,
@@ -711,5 +886,183 @@ mod tests {
         assert!(html.contains(r#"name="kind" value="service_account""#));
         assert!(html.contains(r#"name="target" value="wiki-machine""#));
         assert!(html.contains("「全員」に含まれるのは人だけです"));
+    }
+
+    fn candidate(
+        kind: &str,
+        reference: &str,
+        owner: Option<(&str, &str)>,
+    ) -> ApplicationBindingCandidateView {
+        ApplicationBindingCandidateView {
+            kind: kind.into(),
+            reference: reference.into(),
+            identifier: reference.into(),
+            display_name: format!("{reference} の登録名"),
+            application_id: owner.map(|(id, _)| id.to_string()),
+            application_name: owner.map(|(_, name)| name.to_string()),
+        }
+    }
+
+    /// 名乗りの相手は ID の手入力ではなく、種類ごとの候補から選ぶ（ADR-0067）。別のアプリの名乗りには
+    /// 持ち主が添えてあり、手入力の欄は無い。
+    #[test]
+    fn binding_targets_are_chosen_from_candidates_that_name_their_owner() {
+        let messages = Messages::new(Locale::Ja);
+        let admin = AdminContext::for_test("admin", Some("Root"));
+        let groups = group_binding_candidates(vec![
+            candidate("resource", "api://wiki", None),
+            candidate("oidc", "wiki-login", Some(("app-auto", "wiki（自動）"))),
+            candidate("service_account", "wiki-machine", None),
+        ]);
+        let html = render(&ApplicationDetail {
+            messages: &messages,
+            tenant: "/t",
+            admin: Some(admin.chrome()),
+            application: &application(),
+            assigned: &[],
+            assigned_service_accounts: &[],
+            current_users: &[],
+            current_users_truncated: false,
+            current_users_total: 0,
+            candidate_groups: &groups,
+            candidates_unavailable: false,
+            pending_move: None,
+            delete_summary: "",
+            record_only: false,
+            csrf: "csrf",
+            error: None,
+        });
+
+        assert!(
+            html.contains(
+                r#"<select class="form-select" id="bind-candidate" name="candidate" required>"#
+            ),
+            "{html}"
+        );
+        assert!(
+            !html.contains(r#"id="bind-target""#),
+            "the free-text target is gone: {html}"
+        );
+        // 種類の順（ログイン → サービスアカウント → 宛名）に束ねる。
+        let login = html
+            .find(r#"<optgroup label="ログイン（OIDC）">"#)
+            .expect("login group");
+        let machine = html
+            .find(r#"<optgroup label="サービスアカウント">"#)
+            .expect("service account group");
+        let resource = html
+            .find(r#"<optgroup label="API の宛名（aud）">"#)
+            .expect("resource group");
+        assert!(login < machine && machine < resource, "{html}");
+        assert!(html.contains(r#"value="oidc:wiki-login""#), "{html}");
+        assert!(html.contains(r#"value="resource:api://wiki""#), "{html}");
+        assert!(
+            html.contains("いま「wiki（自動）」の名乗り"),
+            "the owner is named: {html}"
+        );
+    }
+
+    /// 選んだ相手が別のアプリの名乗りなら、「○○ から移す」確認を出す。送り直しは移す元を名指しする。
+    #[test]
+    fn a_target_owned_elsewhere_asks_to_move_it_from_that_application() {
+        let messages = Messages::new(Locale::Ja);
+        let admin = AdminContext::for_test("admin", Some("Root"));
+        let owned = candidate("oidc", "wiki-login", Some(("app-auto", "wiki（自動）")));
+        let html = render(&ApplicationDetail {
+            messages: &messages,
+            tenant: "/t",
+            admin: Some(admin.chrome()),
+            application: &application(),
+            assigned: &[],
+            assigned_service_accounts: &[],
+            current_users: &[],
+            current_users_truncated: false,
+            current_users_total: 0,
+            candidate_groups: &[],
+            candidates_unavailable: false,
+            pending_move: Some(&owned),
+            delete_summary: "",
+            record_only: false,
+            csrf: "csrf",
+            error: None,
+        });
+
+        assert!(html.contains("「wiki（自動）」から移しますか？"), "{html}");
+        assert!(
+            html.contains(r#"name="candidate" value="oidc:wiki-login""#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"name="move_from" value="app-auto""#),
+            "{html}"
+        );
+        assert!(html.contains("「wiki（自動）」から移す</button>"), "{html}");
+    }
+
+    /// 消す前に、何が外れるかを画面で言う。ログインの名乗りがあれば、判定の外に出ることも言う。
+    #[test]
+    fn deleting_says_what_comes_off_before_asking() {
+        let messages = Messages::new(Locale::Ja);
+        let admin = AdminContext::for_test("admin", Some("Root"));
+        let mut app = application();
+        app.bindings = vec![ApplicationBindingView {
+            id: "b-1".into(),
+            kind: "oidc".into(),
+            identifier: Some("wiki-login".into()),
+            display_name: Some("wiki".into()),
+        }];
+        let detail = ApplicationDetailView {
+            application: app.clone(),
+            assigned: Vec::new(),
+            assigned_service_accounts: Vec::new(),
+            enforcement: "enforce".into(),
+        };
+        let summary = delete_summary(&messages, &detail);
+        assert_eq!(
+            summary,
+            "名乗り 1 件と、使う主体 0 件を外して、このアプリを消します。"
+        );
+        let html = render(&ApplicationDetail {
+            messages: &messages,
+            tenant: "/t",
+            admin: Some(admin.chrome()),
+            application: &app,
+            assigned: &[],
+            assigned_service_accounts: &[],
+            current_users: &[],
+            current_users_truncated: false,
+            current_users_total: 0,
+            candidate_groups: &[],
+            candidates_unavailable: false,
+            pending_move: None,
+            delete_summary: &summary,
+            record_only: false,
+            csrf: "csrf",
+            error: None,
+        });
+        assert!(html.contains(&summary), "{html}");
+        assert!(
+            html.contains(r#"action="/t/admin/applications/app-1/delete""#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"data-confirm="「wiki」を消します。元に戻せません。よろしいですか？""#),
+            "{html}"
+        );
+        assert!(
+            html.contains("このテナントの誰でもログインできるようになります"),
+            "{html}"
+        );
+
+        let empty = ApplicationDetailView {
+            application: application(),
+            assigned: Vec::new(),
+            assigned_service_accounts: Vec::new(),
+            enforcement: "enforce".into(),
+        };
+        assert_eq!(
+            delete_summary(&messages, &empty),
+            "このアプリには名乗りも使う主体もありません。"
+        );
     }
 }
