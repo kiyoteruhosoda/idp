@@ -25,6 +25,7 @@ use crate::presentation::admin::{
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{
     AccountApplicationListResponse, AccountApplicationResponse, ApplicationAssignmentResponse,
+    ApplicationBindingCandidateListResponse, ApplicationBindingCandidateResponse,
     ApplicationBindingResponse, ApplicationCurrentUserResponse, ApplicationCurrentUsersResponse,
     ApplicationDetailResponse, ApplicationListResponse, ApplicationResponse,
     ApplicationServiceAccountAssignmentResponse, ApplicationUserListResponse,
@@ -372,8 +373,8 @@ pub async fn delete_application(
         (status = 400, description = "種類が不正・相手の欄が無い・相手の性質が種類と合わない"),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.applications:write 必須）"),
-        (status = 404, description = "アプリ・相手が不存在"),
-        (status = 409, description = "その相手は既に別のアプリの名乗り（応答にそのアプリ名）"),
+        (status = 404, description = "アプリ・相手・移す元のアプリが不存在"),
+        (status = 409, description = "その相手は既に別のアプリの名乗り（応答にそのアプリ名）。`move_from_application_id` が今の持ち主と違うときも"),
     ),
     security(("bearer_token" = []))
 )]
@@ -397,9 +398,18 @@ pub async fn add_binding(
     // ⚠ `ApiMessages`（FluentBundle）は `Send` ではない。await をまたいで持てないので、
     // **足す相手を先に決め切ってから**非同期の呼び出しへ入る。
     let request = parse_binding_request(&body, locale)?;
+    let move_from = match body
+        .move_from_application_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(raw) => Some(parse_id(raw, locale)?),
+        None => None,
+    };
     state
         .applications_admin
-        .bind(tenant.context(), id, request, &admin.actor, &ctx)
+        .bind(tenant.context(), id, request, move_from, &admin.actor, &ctx)
         .await
         .map_err(|e| map_error(e, locale))?;
     let detail = state
@@ -408,6 +418,52 @@ pub async fn add_binding(
         .await
         .map_err(|e| map_error(e, locale))?;
     Ok(Json(to_application_response(&detail)))
+}
+
+/// 名乗りの候補（`GET /{tenant_id}/admin/applications/{application_id}/binding-candidates`。ADR-0067）。
+///
+/// テナントに登録済みのログイン用 client・SAML の SP・サービスアカウント・宛名を、種類の性質に
+/// 合うものだけ並べ、**いまどのアプリの名乗りか**を添える。画面が相手を ID の手入力ではなく
+/// 一覧から選ばせるための口。権限はアプリの詳細と同じ `idp.applications:read`。
+#[utoipa::path(
+    get,
+    path = "/{tenant_id}/admin/applications/{application_id}/binding-candidates",
+    tag = "admin",
+    params(("application_id" = String, Path, description = "アプリの内部 ID")),
+    responses(
+        (status = 200, description = "名乗りの候補", body = ApplicationBindingCandidateListResponse),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限不足（idp.applications:read 必須）"),
+        (status = 404, description = "不存在（他テナントのアプリを含む）"),
+    ),
+    security(("bearer_token" = []))
+)]
+pub async fn binding_candidates(
+    RequirePerms(_admin, _): RequirePerms<ApplicationsRead>,
+    State(state): State<AppState>,
+    Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
+    Path((_tenant_id, application_id)): Path<(String, String)>,
+) -> Result<Json<ApplicationBindingCandidateListResponse>, ApiError> {
+    let id = parse_id(&application_id, locale)?;
+    let candidates = state
+        .applications_admin
+        .binding_candidates(tenant.context(), id)
+        .await
+        .map_err(|e| map_error(e, locale))?;
+    Ok(Json(ApplicationBindingCandidateListResponse {
+        candidates: candidates
+            .into_iter()
+            .map(|c| ApplicationBindingCandidateResponse {
+                kind: c.target.kind().to_string(),
+                reference: c.reference,
+                identifier: c.identifier,
+                display_name: c.display_name,
+                application_id: c.owner.as_ref().map(|o| o.id.to_string()),
+                application_name: c.owner.map(|o| o.display_name),
+            })
+            .collect(),
+    }))
 }
 
 /// 要求を種類と相手へ読む。⚠ **種類に対応する欄だけを読む** ——別の欄に値があっても黙って

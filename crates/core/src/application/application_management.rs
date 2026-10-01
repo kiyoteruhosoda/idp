@@ -84,6 +84,26 @@ pub enum NewBinding {
     Resource { resource_uri: String },
 }
 
+/// 名乗りの候補 1 件（ADR-0067）。画面が「相手を選ぶ」ための一覧の 1 行。
+///
+/// 候補は**テナントに登録済みのもの全部**から、種類の性質に合うものを拾う（ログイン用 =
+/// `authorization_code` の client、サービスアカウント = `client_credentials` だけの client、SAML の SP、
+/// 宛名）。種類の突き合わせは [`ApplicationManagementService::bind`] と同じ述語を使う
+/// ——候補に出たのに結べない、を作らない。
+pub struct BindingCandidate {
+    pub target: BindingTarget,
+    /// 結び付けるときに送る値（[`NewBinding`] の相手）。ログイン用・サービスアカウントは
+    /// `client_id`、SAML は SP の内部 ID、宛名は URI。
+    pub reference: String,
+    /// 人が見分ける値（`client_id`・`entity_id`・宛名の URI）。
+    pub identifier: String,
+    /// 相手の登録名（`clients.app_name` / SP・宛名の `display_name`）。
+    pub display_name: String,
+    /// いまこの相手を名乗りに持っているアプリ（どこにも属していなければ `None`）。
+    /// ⚠ 選んだら「このアプリから移す」と確かめる材料になる。
+    pub owner: Option<Application>,
+}
+
 /// アプリの詳細（名乗りと、使う主体）。
 pub struct ApplicationDetail {
     pub application: Application,
@@ -455,11 +475,17 @@ impl ApplicationManagementService {
     /// ⚠ **種類と相手の性質を突き合わせる。** ログイン用に `client_credentials` の client を
     /// 結び付けると、ログインの判定がそのアプリを見ないまま素通しになる。逆にサービスアカウントとして
     /// ログイン用の client を結び付けると、利用者のアクセストークンで self の名簿が読める。
+    ///
+    /// `move_from` は「この相手が別のアプリの名乗りなら、そのアプリから移してよい」という許し
+    /// （ADR-0067）。⚠ **移す元のアプリを名指しする** ——「移してよい」だけを受けると、確認した
+    /// 時点と送った時点の間に持ち主が替わったとき、確認していないアプリから黙って奪う。名指しした
+    /// アプリが今の持ち主でなければ、今の持ち主の名前で断る（409）。
     pub async fn bind(
         &self,
         tenant: TenantContext,
         id: Uuid,
         request: NewBinding,
+        move_from: Option<Uuid>,
         actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<ApplicationBinding, ApplicationManagementError> {
@@ -530,8 +556,128 @@ impl ApplicationManagementService {
                 )
             }
         };
-        self.add_binding(tenant, &application, target, &identifier, actor, ctx)
+        self.add_binding(
+            tenant,
+            &application,
+            target,
+            &identifier,
+            move_from,
+            actor,
+            ctx,
+        )
+        .await
+    }
+
+    /// 名乗りの候補（ADR-0067）。このアプリの名乗りになっているものは除く（もう結んである）。
+    ///
+    /// 並びは種類（ログイン OIDC・SAML・サービスアカウント・宛名）ごとに、表示名の昇順。
+    /// 論理削除済みの client は出さない（[`Self::bind`] も「無い」として扱う）。
+    pub async fn binding_candidates(
+        &self,
+        tenant: TenantContext,
+        id: Uuid,
+    ) -> Result<Vec<BindingCandidate>, ApplicationManagementError> {
+        let application = self.load(tenant, id).await?;
+        let tenant_id = tenant.tenant_id();
+        let applications = self
+            .applications
+            .list(tenant_id)
             .await
+            .map_err(map_repo_error)?;
+        // 相手 → いまの持ち主。アプリごとに binding を引き直さず、テナント分を 1 回で読む。
+        let bindings = self
+            .applications
+            .list_tenant_bindings(tenant_id)
+            .await
+            .map_err(map_repo_error)?;
+        let owner_of = |target: BindingTarget| -> Option<Application> {
+            let binding = bindings.iter().find(|b| b.target == target)?;
+            applications
+                .iter()
+                .find(|a| a.id == binding.application_id)
+                .cloned()
+        };
+
+        let mut login = Vec::new();
+        let mut service_accounts = Vec::new();
+        for client in self.clients.list(tenant_id).await.map_err(map_repo_error)? {
+            if client.is_deleted() {
+                continue;
+            }
+            // 種類の突き合わせは `bind` と同じ述語。⚠ 片方を書き換えたらもう片方も。
+            let target = if client.is_service_account() {
+                BindingTarget::ServiceAccount {
+                    client_row_id: client.id,
+                }
+            } else if client.allows_grant_type(GrantType::AuthorizationCode) {
+                BindingTarget::Oidc {
+                    client_row_id: client.id,
+                }
+            } else {
+                continue;
+            };
+            let candidate = BindingCandidate {
+                target,
+                reference: client.client_id.clone(),
+                identifier: client.client_id,
+                display_name: client.app_name,
+                owner: owner_of(target),
+            };
+            match target {
+                BindingTarget::ServiceAccount { .. } => service_accounts.push(candidate),
+                _ => login.push(candidate),
+            }
+        }
+        let saml = self
+            .service_providers
+            .list_for_tenant(tenant_id)
+            .await
+            .map_err(map_repo_error)?
+            .into_iter()
+            .map(|provider| {
+                let target = BindingTarget::Saml {
+                    service_provider_id: provider.id,
+                };
+                BindingCandidate {
+                    target,
+                    reference: provider.id.to_string(),
+                    identifier: provider.entity_id,
+                    display_name: provider.display_name,
+                    owner: owner_of(target),
+                }
+            })
+            .collect::<Vec<_>>();
+        let resources = self
+            .resources
+            .list(tenant_id)
+            .await
+            .map_err(map_repo_error)?
+            .into_iter()
+            .map(|resource| {
+                let target = BindingTarget::Resource {
+                    resource_id: resource.id,
+                };
+                BindingCandidate {
+                    target,
+                    reference: resource.resource_uri.clone(),
+                    identifier: resource.resource_uri,
+                    display_name: resource.display_name,
+                    owner: owner_of(target),
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let mut candidates = Vec::new();
+        for mut group in [login, saml, service_accounts, resources] {
+            group.retain(|c| c.owner.as_ref().map(|o| o.id) != Some(application.id));
+            group.sort_by(|a, b| {
+                a.display_name
+                    .cmp(&b.display_name)
+                    .then_with(|| a.identifier.cmp(&b.identifier))
+            });
+            candidates.extend(group);
+        }
+        Ok(candidates)
     }
 
     /// binding を外す。
@@ -738,12 +884,14 @@ impl ApplicationManagementService {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn add_binding(
         &self,
         tenant: TenantContext,
         application: &Application,
         target: BindingTarget,
         identifier: &str,
+        move_from: Option<Uuid>,
         actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<ApplicationBinding, ApplicationManagementError> {
@@ -766,6 +914,12 @@ impl ApplicationManagementService {
                 {
                     return Ok(existing);
                 }
+            }
+            // 移す元として名指しされたアプリが、今の持ち主のときだけ移す（ADR-0067）。
+            if move_from == Some(owner.id) {
+                return self
+                    .move_binding(tenant, &owner, application, target, identifier, actor, ctx)
+                    .await;
             }
             return Err(already_bound(&owner));
         }
@@ -801,6 +955,74 @@ impl ApplicationManagementService {
         )
         .await;
         Ok(binding)
+    }
+
+    /// 別のアプリ（`from`）の名乗りを、このアプリ（`to`）へ移す（ADR-0067）。
+    ///
+    /// ⚠ **外す＋足すを 2 回に分けない。** 間で落ちると相手がどのアプリにも属さなくなり、ログイン用の
+    /// 相手なら判定の外（素通し）に出る（ADR-0054 の帰結）。リポジトリの 1 文で付け替える。
+    /// 監査も 1 行（`application_binding.moved`）で、移した元と先の両方を残す。
+    #[allow(clippy::too_many_arguments)]
+    async fn move_binding(
+        &self,
+        tenant: TenantContext,
+        from: &Application,
+        to: &Application,
+        target: BindingTarget,
+        identifier: &str,
+        actor: &AdminActor,
+        ctx: &RequestContext,
+    ) -> Result<ApplicationBinding, ApplicationManagementError> {
+        let existing = self
+            .applications
+            .list_bindings(from.id)
+            .await
+            .map_err(map_repo_error)?
+            .into_iter()
+            .find(|b| b.target == target);
+        let now = self.clock.now();
+        let moved = match existing {
+            Some(binding) => self
+                .applications
+                .move_binding(binding.id, from.id, to.id, now)
+                .await
+                .map_err(map_repo_error)?
+                .then_some(binding),
+            None => None,
+        };
+        let Some(binding) = moved else {
+            // 読んでから移すまでの間に、別の要求が外した・移した。今の持ち主で答え直す
+            // （持ち主が居なくなっていれば、移す元を名指しした要求としては古い）。
+            return match self
+                .applications
+                .find_by_binding_target(tenant.tenant_id(), target)
+                .await
+                .map_err(map_repo_error)?
+            {
+                Some(owner) => Err(already_bound(&owner)),
+                None => Err(ApplicationManagementError::Conflict(MessageKey::new(
+                    "api-application-conflict",
+                ))),
+            };
+        };
+        self.record(
+            AuditEventType::ApplicationBindingMoved,
+            tenant,
+            to,
+            actor,
+            Some(&format!(
+                "kind={} target={identifier} from_application={}",
+                target.kind(),
+                from.id
+            )),
+            ctx,
+        )
+        .await;
+        Ok(ApplicationBinding {
+            application_id: to.id,
+            created_at: now,
+            ..binding
+        })
     }
 
     /// 名乗りを画面に出す形へ広げる。`clients` は呼び出し側が 1 回だけ読んだ一覧

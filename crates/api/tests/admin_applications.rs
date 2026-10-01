@@ -506,3 +506,202 @@ async fn binding_kinds_must_match_what_the_target_is() {
         "wrong field for the kind"
     );
 }
+
+/// 名乗りの候補と、別のアプリからの移し替え（ADR-0067）。
+///
+/// - 候補は種類の性質に合うものだけで、**いまどのアプリの名乗りか**が添えてある
+/// - このアプリの名乗りになっているものは候補に出ない
+/// - 移す元のアプリを名指しすれば、外す＋結ぶが 1 回で済む。名指しが今の持ち主と違えば 409 のまま
+/// - 監査は `application_binding.moved` の 1 行に、移した元と先が載る
+#[tokio::test]
+async fn candidates_name_their_current_application_and_a_binding_can_be_moved() {
+    let Some(env) = support::setup("application binding candidates").await else {
+        return;
+    };
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+    let uri = format!("/{}/admin/applications", env.root_tenant_id);
+    let create = |name: String| {
+        let admin_tok = admin_tok.clone();
+        let uri = uri.clone();
+        let app = env.app.clone();
+        async move {
+            body_json(
+                send(
+                    &app,
+                    post(&admin_tok, &uri, json!({ "display_name": name })),
+                )
+                .await,
+            )
+            .await["id"]
+                .as_str()
+                .expect("id")
+                .to_string()
+        }
+    };
+    let source_name = format!("auto-{}", support::unique());
+    let source_id = create(source_name.clone()).await;
+    let target_id = create(format!("wiki-{}", support::unique())).await;
+    let decoy_id = create(format!("decoy-{}", support::unique())).await;
+
+    let login_client =
+        support::insert_public_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
+    let (service_account, _) =
+        support::insert_service_account(&env.pool, &env.root_tenant_id).await;
+    let res = send(
+        &env.app,
+        post(
+            &admin_tok,
+            &format!("{uri}/{source_id}/bindings"),
+            json!({ "kind": "oidc", "client_id": login_client }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK, "bind to the source");
+
+    // 権限の無い利用者には候補を見せない（アプリの詳細と同じ権限）。
+    let candidates_uri = format!("{uri}/{target_id}/binding-candidates");
+    let plain_user_id = create_plain_user(&env.pool, &env.root_tenant_id).await;
+    let plain_token = admin_token(&env.app, &env.pool, &env.root_tenant_id, &plain_user_id).await;
+    let res = send(&env.app, get(&plain_token, &candidates_uri)).await;
+    assert_eq!(res.status(), StatusCode::FORBIDDEN, "no permission -> 403");
+
+    let listed = body_json(send(&env.app, get(&admin_tok, &candidates_uri)).await).await;
+    let candidates = listed["candidates"].as_array().expect("candidates");
+    let login = candidates
+        .iter()
+        .find(|c| c["identifier"] == json!(login_client))
+        .unwrap_or_else(|| panic!("the login client is a candidate: {listed}"));
+    assert_eq!(login["kind"], "oidc");
+    assert_eq!(login["reference"], json!(login_client));
+    assert_eq!(
+        login["application_id"],
+        json!(source_id),
+        "the candidate names the application that owns it: {listed}"
+    );
+    assert_eq!(login["application_name"], json!(source_name));
+    let machine = candidates
+        .iter()
+        .find(|c| c["identifier"] == json!(service_account))
+        .unwrap_or_else(|| panic!("the service account is a candidate: {listed}"));
+    // ⚠ サービスアカウントはログイン用として出さない（種類の突き合わせは結び付けと同じ）。
+    assert_eq!(machine["kind"], "service_account");
+    assert!(machine["application_id"].is_null(), "{listed}");
+
+    // 名指しなしは 409 のまま（黙って奪わない）。
+    let bindings_uri = format!("{uri}/{target_id}/bindings");
+    let res = send(
+        &env.app,
+        post(
+            &admin_tok,
+            &bindings_uri,
+            json!({ "kind": "oidc", "client_id": login_client }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CONFLICT, "no move_from -> 409");
+
+    // ⚠ 名指しが今の持ち主と違えば 409（確かめていないアプリから奪わない）。
+    let res = send(
+        &env.app,
+        post(
+            &admin_tok,
+            &bindings_uri,
+            json!({
+                "kind": "oidc",
+                "client_id": login_client,
+                "move_from_application_id": decoy_id,
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CONFLICT, "wrong owner -> 409");
+    let refusal = body_json(res).await;
+    assert!(
+        refusal["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains(&source_name),
+        "the refusal names the real owner: {refusal}"
+    );
+
+    // 今の持ち主を名指しすれば、1 回で移る。
+    let res = send(
+        &env.app,
+        post(
+            &admin_tok,
+            &bindings_uri,
+            json!({
+                "kind": "oidc",
+                "client_id": login_client,
+                "move_from_application_id": source_id,
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK, "move -> 200");
+    let moved = body_json(res).await;
+    assert!(
+        moved["bindings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b["kind"] == "oidc" && b["identifier"] == json!(login_client)),
+        "the target now has the binding: {moved}"
+    );
+    let source =
+        body_json(send(&env.app, get(&admin_tok, &format!("{uri}/{source_id}"))).await).await;
+    assert!(
+        source["bindings"].as_array().unwrap().is_empty(),
+        "the source lost the binding: {source}"
+    );
+
+    // ログインの判定も移した先のアプリで引く（相手 → アプリの解決が新しい持ち主を返す）。
+    let owner: String = sqlx::query_scalar(
+        "SELECT b.application_id FROM application_bindings b JOIN clients c ON c.id = b.client_id \
+         WHERE c.client_id = ? AND b.kind = 'oidc'",
+    )
+    .bind(&login_client)
+    .fetch_one(&env.pool)
+    .await
+    .expect("binding row");
+    assert_eq!(owner, target_id);
+
+    // このアプリの名乗りになったものは、このアプリの候補から消える。
+    let listed = body_json(send(&env.app, get(&admin_tok, &candidates_uri)).await).await;
+    assert!(
+        !listed["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["identifier"] == json!(login_client)),
+        "already bound here: {listed}"
+    );
+
+    // 監査は 1 行で、移した元と先の両方が分かる。
+    let reasons: Vec<Option<String>> = sqlx::query_scalar(
+        "SELECT reason FROM audit_log WHERE event_type = 'application_binding.moved' \
+         AND reason LIKE ? ORDER BY id",
+    )
+    .bind(format!("%from_application={source_id}%"))
+    .fetch_all(&env.pool)
+    .await
+    .expect("read audit");
+    assert_eq!(reasons.len(), 1, "one audit row for one move: {reasons:?}");
+    let reason = reasons[0].clone().unwrap_or_default();
+    assert!(
+        reason.contains(&format!("application={target_id}")),
+        "{reason}"
+    );
+    assert!(
+        reason.contains(&format!("target={login_client}")),
+        "{reason}"
+    );
+
+    // 空になった元のアプリは消せる（名乗りの相手は消えない）。
+    let res = send(&env.app, delete(&admin_tok, &format!("{uri}/{source_id}"))).await;
+    assert_eq!(
+        res.status(),
+        StatusCode::NO_CONTENT,
+        "delete the emptied application"
+    );
+}

@@ -1089,6 +1089,21 @@ pub trait ApplicationRepository: Send + Sync {
     async fn add_binding(&self, binding: &ApplicationBinding) -> Result<()>;
     /// binding を外す（アプリ境界内。対象が無ければ `false`）。
     async fn remove_binding(&self, application_id: Uuid, binding_id: Uuid) -> Result<bool>;
+    /// binding を別のアプリへ移す（ADR-0067）。`from_application_id` の binding でなければ `false`
+    /// （読んでから移すまでの間に、別の要求が外した・移した）。
+    ///
+    /// ⚠ **外す＋足すを 2 回に分けない。** 間で落ちると相手がどのアプリにも属さない瞬間ができ、
+    /// ログイン用の相手なら、その間は判定の外（素通し）になる（ADR-0054 の帰結）。1 文で書き換える。
+    async fn move_binding(
+        &self,
+        binding_id: Uuid,
+        from_application_id: Uuid,
+        to_application_id: Uuid,
+        moved_at: DateTime<Utc>,
+    ) -> Result<bool>;
+    /// テナント内の全アプリの binding を一覧する（名乗りの候補に「いまどのアプリか」を添えるため。
+    /// アプリの数だけ [`Self::list_bindings`] を呼ばせない）。
+    async fn list_tenant_bindings(&self, tenant_id: TenantId) -> Result<Vec<ApplicationBinding>>;
 
     /// この**人**にこのアプリの割り当てがあるか（判定のホットパス）。
     async fn is_assigned(&self, application_id: Uuid, user_id: Uuid) -> Result<bool>;

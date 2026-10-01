@@ -8,9 +8,10 @@
 //! 型検証される（sqlx のコンパイル時クエリ検証と同じ思想）。
 
 use crate::admin_dto::{
-    ApplicationAssignmentView, ApplicationCurrentUserView, ApplicationServiceAccountAssignmentView,
-    ApplicationView, AuditLogView, ClientView, ResourceView, SamlServiceProviderView,
-    SigningKeyView, TenantCreatedView, TenantView,
+    ApplicationAssignmentView, ApplicationBindingCandidateView, ApplicationCurrentUserView,
+    ApplicationServiceAccountAssignmentView, ApplicationView, AuditLogView, BindingCandidateGroup,
+    ClientView, ResourceView, SamlServiceProviderView, SigningKeyView, TenantCreatedView,
+    TenantView,
 };
 use crate::i18n::Messages;
 use askama::Template;
@@ -2891,6 +2892,15 @@ pub struct ApplicationDetail<'a> {
     /// 「いま入れている人」を上限で打ち切ったか。⚠ 真なら画面がそう言う。
     pub current_users_truncated: bool,
     pub current_users_total: i64,
+    /// 名乗りの候補を種類ごとに束ねたもの（ADR-0067）。相手は ID の手入力ではなくここから選ぶ。
+    pub candidate_groups: &'a [BindingCandidateGroup],
+    /// 候補を読めなかったか（画面は出し、結び付けの欄の代わりにそう言う）。
+    pub candidates_unavailable: bool,
+    /// 選んだ相手が別のアプリの名乗りだったときの確認（「○○ から移す」）。
+    pub pending_move: Option<&'a ApplicationBindingCandidateView>,
+    /// 「このアプリを消す」で外れるものの要約（名乗りと使う主体の件数。api の削除の振る舞いと同じ
+    /// ——両方とも外して消す）。
+    pub delete_summary: &'a str,
     pub record_only: bool,
     pub csrf: &'a str,
     pub error: Option<&'a str>,

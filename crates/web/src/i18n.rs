@@ -188,6 +188,31 @@ impl Messages {
         }
         formatted.into_owned()
     }
+
+    /// 差し込み値を複数持つメッセージを取得する（ハンドラから呼ぶ口。Askama のテンプレート式は
+    /// 配列リテラルを書けないので、テンプレートからは [`Self::get_arg`] を使う）。
+    /// 未定義キーはキー名をそのまま返す（[`Self::get`] と同じフェイルソフト）。
+    pub fn get_args(&self, key: &str, values: &[(&str, &str)]) -> String {
+        let Some(message) = self.bundle.get_message(key) else {
+            tracing::warn!(key, "missing translation key");
+            return key.to_string();
+        };
+        let Some(pattern) = message.value() else {
+            return key.to_string();
+        };
+        let mut args = FluentArgs::new();
+        for (name, value) in values {
+            args.set(name.to_string(), value.to_string());
+        }
+        let mut errors = Vec::new();
+        let formatted = self
+            .bundle
+            .format_pattern(pattern, Some(&args), &mut errors);
+        if !errors.is_empty() {
+            tracing::warn!(key, ?errors, "fluent formatting errors");
+        }
+        formatted.into_owned()
+    }
 }
 
 #[cfg(test)]

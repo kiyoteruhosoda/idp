@@ -334,6 +334,21 @@ pub mod test_support {
         async fn remove_binding(&self, _application_id: Uuid, _binding_id: Uuid) -> Result<bool> {
             Ok(false)
         }
+        async fn move_binding(
+            &self,
+            _binding_id: Uuid,
+            _from_application_id: Uuid,
+            _to_application_id: Uuid,
+            _moved_at: DateTime<Utc>,
+        ) -> Result<bool> {
+            Ok(false)
+        }
+        async fn list_tenant_bindings(
+            &self,
+            _tenant_id: TenantId,
+        ) -> Result<Vec<ApplicationBinding>> {
+            Ok(Vec::new())
+        }
         async fn is_assigned(&self, _application_id: Uuid, _user_id: Uuid) -> Result<bool> {
             Ok(false)
         }
@@ -486,6 +501,21 @@ mod tests {
         }
         async fn remove_binding(&self, _application_id: Uuid, _binding_id: Uuid) -> Result<bool> {
             Ok(true)
+        }
+        async fn move_binding(
+            &self,
+            _binding_id: Uuid,
+            _from_application_id: Uuid,
+            _to_application_id: Uuid,
+            _moved_at: DateTime<Utc>,
+        ) -> Result<bool> {
+            Ok(false)
+        }
+        async fn list_tenant_bindings(
+            &self,
+            _tenant_id: TenantId,
+        ) -> Result<Vec<ApplicationBinding>> {
+            Ok(Vec::new())
         }
         async fn is_assigned(&self, _application_id: Uuid, _user_id: Uuid) -> Result<bool> {
             Ok(self.assigned)

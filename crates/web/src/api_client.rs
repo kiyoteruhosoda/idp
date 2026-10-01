@@ -2211,6 +2211,10 @@ impl ApiClient {
     ///
     /// 相手は種類ごとに決まった欄で送る（`oidc` / `service_account` は `client_id`、`saml` は
     /// `service_provider_id`、`resource` は `resource_uri`）。知らない種類は api が 400 で断る。
+    ///
+    /// `move_from` は「相手が別のアプリの名乗りなら、そのアプリから移す」ときの、今の持ち主の
+    /// アプリ ID（ADR-0067）。今の持ち主と違えば api は 409 で断る。
+    #[allow(clippy::too_many_arguments)]
     pub async fn add_application_binding(
         &self,
         correlation_id: &str,
@@ -2219,6 +2223,7 @@ impl ApiClient {
         application_id: &str,
         kind: &str,
         target: &str,
+        move_from: Option<&str>,
     ) -> Result<crate::admin_dto::ApplicationView, AdminApiError> {
         let field = match kind {
             "saml" => "service_provider_id",
@@ -2227,6 +2232,9 @@ impl ApiClient {
         };
         let mut body = serde_json::json!({ "kind": kind });
         body[field] = serde_json::Value::String(target.to_string());
+        if let Some(from) = move_from {
+            body["move_from_application_id"] = serde_json::Value::String(from.to_string());
+        }
         self.admin_send(
             Method::POST,
             tenant_id,
@@ -2234,6 +2242,25 @@ impl ApiClient {
             correlation_id,
             sso,
             Some(body),
+        )
+        .await
+    }
+
+    /// 名乗りの候補を引く（`GET /admin/applications/{id}/binding-candidates`。ADR-0067）。
+    pub async fn application_binding_candidates(
+        &self,
+        correlation_id: &str,
+        tenant_id: &str,
+        sso: &str,
+        application_id: &str,
+    ) -> Result<crate::admin_dto::ApplicationBindingCandidateListView, AdminApiError> {
+        self.admin_send(
+            Method::GET,
+            tenant_id,
+            &format!("/admin/applications/{application_id}/binding-candidates"),
+            correlation_id,
+            sso,
+            None,
         )
         .await
     }
