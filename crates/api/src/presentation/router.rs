@@ -330,8 +330,7 @@ pub fn build(state: AppState) -> Router {
             "/admin/tenants/{target_id}/domains/{domain_id}",
             delete(admin_tenants::remove_tenant_domain),
         )
-        // 設定画面（MT14）。テナント設定区画（自テナント表示名。idp.tenant-settings:read / :write）と
-        // システム設定区画（SMTP 等。idp.system.admin 必須 = 実質 root のみ。細粒度へは分割しない）。
+        // 設定画面（MT14）のテナント設定区画。自テナントの表示名（idp.tenant-settings:read / :write）。
         .route(
             "/admin/settings/tenant",
             get(admin_tenants::get_current_tenant).patch(admin_tenants::update_current_tenant),
@@ -346,26 +345,28 @@ pub fn build(state: AppState) -> Router {
             axum::routing::put(admin_tenant_settings::set_tenant_setting)
                 .delete(admin_tenant_settings::clear_tenant_setting),
         )
+        // 設定画面のシステム設定区画（idp.system.admin 必須 = 実質 root のみ）。細粒度へは分割しない
+        // ——例外は下の SMTP の口だけ（ADR-0051）。
         .route(
             "/admin/system-settings",
             get(admin_system_settings::get_system_settings)
                 .put(admin_system_settings::update_system_settings),
         )
-        // ランタイム設定の DB 上書き（DB_MANAGED キーのみ。idp.system.admin 必須）。
-        // 全体の SMTP だけの口（ADR-0051）。保護は `idp.smtp:read` / `:write` で、システム設定の
-        // 本体（上の 1 本）とは別の権限。⚠ **root テナントでのみ通る。**
-        // テナント自身の経路は `/admin/settings/smtp`（ADR-0058 §8。同じ権限・どのテナントでも通る）。
+        // テナント自身のメールの経路（ADR-0058 §8）。`idp.smtp:read` / `:write` 必須で、どのテナントでも通る。
         .route(
             "/admin/settings/smtp",
             get(admin_tenant_smtp::get_tenant_smtp)
                 .put(admin_tenant_smtp::update_tenant_smtp)
                 .delete(admin_tenant_smtp::clear_tenant_smtp),
         )
+        // 全体の SMTP だけの口（ADR-0051）。保護は `idp.smtp:read` / `:write` で、システム設定の
+        // 本体（`/admin/system-settings`）とは別の権限。⚠ **root テナントでのみ通る。**
         .route(
             "/admin/system-settings/smtp",
             get(admin_system_settings::get_smtp_settings)
                 .put(admin_system_settings::update_smtp_settings),
         )
+        // ランタイム設定の DB 上書き（DB_MANAGED キーのみ。idp.system.admin 必須）。
         .route(
             "/admin/system-settings/runtime",
             axum::routing::put(admin_system_settings::update_runtime_setting),
