@@ -67,7 +67,8 @@ macro_rules! permission_markers {
 }
 
 permission_markers! {
-    /// 管理コンソール全体（テナント管理者。ADR-0009 §4）。細粒度コードをすべて含意する。
+    /// 管理コンソール全体（テナント管理者。ADR-0009 §4）。テナント管理の細粒度コード
+    /// （`TENANT_MANAGEMENT_CODES`）をすべて含意する。⚠ `idp.smtp:*` は含意しない。
     IdpAdmin => permission::TENANT_ADMIN;
     /// システム管理（scope = root のみ）。テナントの作成・削除、システム設定、再起動、
     /// テナント横断のログ参照。**細粒度コードへは分割しない**（ADR-0037）。
@@ -119,9 +120,10 @@ permission_markers! {
     SamlServiceProvidersRead => permission::SAML_SERVICE_PROVIDERS_READ;
     /// SAML SP の登録・更新・削除。
     SamlServiceProvidersWrite => permission::SAML_SERVICE_PROVIDERS_WRITE;
-    /// メール送信（SMTP）設定の参照（ADR-0051）。⚠ root テナントでしか保有できない。
+    /// メール送信（SMTP）設定の参照（ADR-0051・ADR-0058 §8）。どのテナントでも付与でき、届くのは
+    /// scope のテナントの経路だけ（全体の経路の口は使う側で root を課す）。⚠ `idp.tenant.admin` は含意しない。
     SmtpRead => permission::SMTP_READ;
-    /// メール送信（SMTP）設定の変更（ADR-0051）。⚠ root テナントでしか保有できない。
+    /// メール送信（SMTP）設定の変更（ADR-0051・ADR-0058 §8）。範囲は `SmtpRead` と同じ。
     SmtpWrite => permission::SMTP_WRITE;
 }
 

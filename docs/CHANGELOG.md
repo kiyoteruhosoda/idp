@@ -1,3 +1,14 @@
+## 2026-10-01（2）（管理権限のマーカと web の自テナントの注記に残っていた古い権限を直した）
+
+- `crates/api/src/presentation/admin.rs` の `SmtpRead` / `SmtpWrite` の注記に残っていた「root テナントでしか
+  保有できない」を直した（task #166）。ADR-0058 §8 で ADR-0051 §3 を覆し、`idp.smtp:*` はどのテナントでも
+  付与でき、届くのは scope のテナントのメールの経路だけになっている（全体の経路の口は root を課す）。
+  同じファイルの `IdpAdmin` の「細粒度コードをすべて含意する」も、`TENANT_MANAGEMENT_CODES` だけを含意し
+  `idp.smtp:*` は含意しない、に直した。
+- `crates/web/src/api_client.rs` の自テナント取得・更新（`GET`・`PATCH /admin/settings/tenant`）の注記の
+  「idp.tenant.admin 必須」を、実際に要る `idp.tenant-settings:read` / `:write` に直した。注記だけで、
+  振る舞いは変えていない。
+
 ## 2026-10-01（`docs/PERMISSIONS.md` の権限表を細かい権限コードに揃えた）
 
 - **`docs/PERMISSIONS.md` を、いまの権限の実体に合わせて書き直した**（task #150）。「`idp.tenant.admin` が

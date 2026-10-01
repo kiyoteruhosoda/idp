@@ -2702,7 +2702,7 @@ impl ApiClient {
         .await
     }
 
-    /// 自テナント取得（`GET /admin/settings/tenant`。idp.tenant.admin 必須）。
+    /// 自テナント取得（`GET /admin/settings/tenant`。idp.tenant-settings:read）。
     pub async fn get_current_tenant(
         &self,
         correlation_id: &str,
@@ -2720,7 +2720,7 @@ impl ApiClient {
         .await
     }
 
-    /// 自テナント表示名の更新（`PATCH /admin/settings/tenant`。idp.tenant.admin 必須）。
+    /// 自テナント表示名の更新（`PATCH /admin/settings/tenant`。idp.tenant-settings:write）。
     pub async fn update_current_tenant(
         &self,
         correlation_id: &str,
