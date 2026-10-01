@@ -1,3 +1,19 @@
+## 2026-10-01（`docs/PERMISSIONS.md` の権限表を細かい権限コードに揃えた）
+
+- **`docs/PERMISSIONS.md` を、いまの権限の実体に合わせて書き直した**（task #150）。「`idp.tenant.admin` が
+  必要」の表は、管理 API が細かい権限コード（`idp.users:read` など。ADR-0037）で守られるようになる前のままで、
+  細粒度コードが 1 つも載っていなかった。いまは細粒度コード（`idp.users` / `idp.members` / `idp.clients` /
+  `idp.applications` / `idp.permissions` / `idp.audit` / `idp.keys` / `idp.tenant-settings` /
+  `idp.authentication-policies` / `idp.external-idps` / `idp.saml-service-providers` / `idp.resources` の
+  `:read` / `:write`、`idp.smtp:*`）ごとに、できること・呼べる管理 API・管理コンソールの画面を載せ、含意
+  （`idp.system.admin` ⊃ 全部、`idp.tenant.admin` ⊃ `idp.smtp:*` を除く細粒度、`:write` ⊃ `:read`）と、
+  クライアントに包括コードを付けられないこと（ADR-0037）を書いた。`idp.tenant.admin` を要求するのは
+  `GET /admin/whoami`（管理コンソールに入る口）だけで、細粒度コードだけでは管理コンソールに入れないことも書いた。
+  各操作の仕様は今までどおり OpenAPI が正本で、表には書き写していない。
+- `crates/api/src/presentation/router.rs` の設定まわりの注記を、対応する route の上へ置き直した。システム設定区画
+  （`idp.system.admin` 必須）とランタイム設定の注記が別の route の上に浮いており、全体の SMTP の口の注記が
+  テナントの SMTP の口の上にあった。振る舞いは変えていない。
+
 ## 2026-09-30（13）（OpenAPI に無かった管理 API を載せ、403 の説明と運用手順の whoami を直した）
 
 - **OpenAPI（`/api/openapi.json`・Swagger UI）に載っていなかった管理 API を載せた**（task #146）。
