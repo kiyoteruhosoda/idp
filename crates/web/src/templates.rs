@@ -956,6 +956,163 @@ mod tests {
         }
     }
 
+    /// メニューに載らない画面も、開いた元の項目へ解決されること（サイドバーの印とタブ名の元）。
+    #[test]
+    fn every_admin_screen_resolves_to_the_menu_entry_it_was_opened_from() {
+        fn entry(path: &str) -> Option<&'static str> {
+            console_nav_item_for(path).map(|item| item.path)
+        }
+        // 項目そのものと、その下の画面。
+        assert_eq!(entry("/admin/accounts"), Some("/admin/accounts"));
+        assert_eq!(entry("/admin/clients/new"), Some("/admin/clients"));
+        assert_eq!(
+            entry("/admin/applications/0190/assignments"),
+            Some("/admin/applications")
+        );
+        // 別のパスに在るが「アカウント」「設定」から開く画面。
+        for path in [
+            "/admin/users/new",
+            "/admin/members/0190",
+            "/admin/service-accounts/abc",
+            "/admin/invitations",
+        ] {
+            assert_eq!(entry(path), Some("/admin/accounts"), "{path}");
+        }
+        assert_eq!(
+            entry("/admin/system-settings/runtime"),
+            Some("/admin/settings")
+        );
+        assert_eq!(entry("/admin/restart"), Some("/admin/settings"));
+        // どの項目にも属さない画面。⚠ `/admin/login` を `/admin/logs` が拾わないこと。
+        for path in [
+            "/admin",
+            "/admin/login",
+            "/admin/switch-tenant",
+            "/settings",
+            "",
+        ] {
+            assert_eq!(entry(path), None, "{path}");
+        }
+        // 開いた元として書いた項目が、メニューに実在すること（項目を改名したら一緒に直す）。
+        for (prefix, parent) in CONSOLE_NAV_PARENTS {
+            assert_eq!(entry(parent), Some(*parent), "{prefix} の行き先 {parent}");
+        }
+    }
+
+    /// 共通レイアウトは、開いている画面をサイドバーの 1 項目とタブ名に示す。
+    ///
+    /// ⚠ 印が無かった頃は、どの画面を開いていてもサイドバーが同じ見た目で、タブ名も全画面
+    /// 「管理コンソール」だった（タブを並べると見分けられない）。
+    #[test]
+    fn the_layout_marks_the_open_screen_in_the_menu_and_the_tab_title() {
+        let messages = Messages::new(Locale::Ja);
+        let render_at = |path: &str| {
+            crate::tenant::with_relative_path(path, || {
+                render(&ConsoleHome {
+                    messages: &messages,
+                    tenant: "/t",
+                    error_key: None,
+                    admin: Some(ConsoleAdmin {
+                        label: "admin",
+                        tenant_name: Some("Acme"),
+                        permissions: &["idp.system.admin".to_string()],
+                        csrf_token: "test-console-csrf",
+                    }),
+                })
+            })
+        };
+        let console = messages.get("admin-console-title");
+
+        // メニューに載らない画面（利用者の作成）でも、開いた元の「アカウント」に付く。
+        let html = render_at("/admin/users/new");
+        assert_eq!(html.matches(r#"aria-current="page""#).count(), 1, "{html}");
+        assert!(
+            html.contains(r#"href="/t/admin/accounts" aria-current="page""#),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                "<title>{} · {console}</title>",
+                messages.get("admin-nav-accounts")
+            )),
+            "{html}"
+        );
+
+        // ホームはホームの行に付き、タブ名は「管理コンソール」だけ。
+        let html = render_at("/admin");
+        assert_eq!(html.matches(r#"aria-current="page""#).count(), 1, "{html}");
+        assert!(
+            html.contains(r#"href="/t/admin" aria-current="page""#),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!("<title>{console}</title>")),
+            "{html}"
+        );
+
+        // どの項目にも属さない画面（テナント切替）では、どこにも付けない。
+        let html = render_at("/admin/switch-tenant");
+        assert!(!html.contains("aria-current"), "{html}");
+    }
+
+    /// アカウント設定の 3 画面は同じタブを出し、開いている画面のタブにだけ印を付ける。
+    #[test]
+    fn the_account_screens_share_one_set_of_tabs() {
+        let messages = Messages::new(Locale::Ja);
+        let general = render(&UserSettings {
+            messages: &messages,
+            tenant: "/t",
+            current_lang: "ja",
+            current_theme: "system",
+            current_name: "",
+            preferred_username: "",
+            saved_key: None,
+            error_key: None,
+            from_admin: false,
+            csrf: "csrf",
+        });
+        let authenticators = render(&UserAuthenticators {
+            messages: &messages,
+            tenant: "/t",
+            csrf: "csrf",
+            authenticators: &[],
+            recovery_codes_remaining: 0,
+            sms_available: false,
+            phone_registered: false,
+            awaiting_phone_code: false,
+            saved_key: None,
+            error_key: None,
+        });
+        let security = render(&UserSecurity {
+            messages: &messages,
+            tenant: "/t",
+            csrf: "csrf",
+            sessions: &[],
+            connected_apps: &[],
+            saved_key: None,
+            error_key: None,
+        });
+        for (html, current) in [
+            (&general, "/t/settings"),
+            (&authenticators, "/t/settings/authenticators"),
+            (&security, "/t/settings/security"),
+        ] {
+            for href in [
+                "/t/settings",
+                "/t/settings/authenticators",
+                "/t/settings/security",
+            ] {
+                let marked = html.contains(&format!(r#"href="{href}" aria-current="page""#));
+                assert_eq!(marked, href == current, "{href} on {current}: {html}");
+            }
+            // サインアウトはどのタブからでもできる。
+            assert!(
+                html.contains(r#"<form method="post" action="/t/logout""#),
+                "{current}: {html}"
+            );
+        }
+    }
+
     /// `idp.system.admin` を要する画面（エラー警告ログ・テナント管理）は、その権限を持たない
     /// 管理者のメニューに出さない。出していた頃は押すと api が 403 を返す行き止まりだった。
     #[test]
@@ -1953,6 +2110,60 @@ impl ConsoleNavGroup {
             .copied()
             .collect()
     }
+}
+
+impl ConsoleNavItem {
+    /// いま開いている画面がこの項目のものか（サイドバーの `aria-current`）。
+    pub fn is_current(&self) -> bool {
+        current_console_nav_item().is_some_and(|current| current.path == self.path)
+    }
+}
+
+/// メニューに載らない画面が、どの項目から開く画面か（パスの先頭 → 項目のパス）。
+///
+/// 利用者の作成・メンバーの詳細・サービスアカウント・招待は「アカウント」から開き、再起動と
+/// システム設定の保存は「設定」から送る。⚠ ここに無いパスは自分のパスで項目を探すので、
+/// 項目の下に画面を足すだけなら書き足さなくてよい（`/admin/clients/new` → `/admin/clients`）。
+const CONSOLE_NAV_PARENTS: &[(&str, &str)] = &[
+    ("/admin/users", "/admin/accounts"),
+    ("/admin/members", "/admin/accounts"),
+    ("/admin/service-accounts", "/admin/accounts"),
+    ("/admin/invitations", "/admin/accounts"),
+    ("/admin/system-settings", "/admin/settings"),
+    ("/admin/restart", "/admin/settings"),
+];
+
+/// `path` が `prefix` そのものか、その下（`prefix/…`）か。
+///
+/// 区切りで見る —— 文字列の前方一致だけだと `/admin/logs` が `/admin/login` を拾う。
+fn path_is_under(path: &str, prefix: &str) -> bool {
+    path.strip_prefix(prefix)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
+/// テナント配下のパス（`/admin/users/new` など）から、その画面が属するメニューの項目を引く。
+/// ホーム・ログイン・テナント切替のように、どの項目にも属さない画面は `None`。
+pub fn console_nav_item_for(path: &str) -> Option<&'static ConsoleNavItem> {
+    let mut section = path;
+    for (prefix, parent) in CONSOLE_NAV_PARENTS {
+        if path_is_under(path, prefix) {
+            section = *parent;
+        }
+    }
+    CONSOLE_NAV
+        .iter()
+        .flat_map(|group| group.items)
+        .find(|item| path_is_under(section, item.path))
+}
+
+/// いま開いている画面が属するメニューの項目。共通レイアウトがサイドバーの印とタブ名に使う。
+pub fn current_console_nav_item() -> Option<&'static ConsoleNavItem> {
+    crate::tenant::current_relative_path().and_then(|path| console_nav_item_for(&path))
+}
+
+/// いま開いているのが管理コンソールのホームか。
+pub fn console_home_is_current() -> bool {
+    crate::tenant::current_relative_path().is_some_and(|path| path == "/admin")
 }
 
 /// アカウント（人・サービスアカウント）の管理者メモの上限（入力欄の `maxlength`。値は契約 crate が

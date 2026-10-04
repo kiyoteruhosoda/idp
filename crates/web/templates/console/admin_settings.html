@@ -1,10 +1,19 @@
 {% extends "console/layout.html" %}
 {% block content %}
-<div class="mb-4">
-  <p class="text-muted text-uppercase fw-bold small mb-1">{{ messages.get("admin-nav-settings") }}</p>
-  <h2 class="h3 mb-1">{{ messages.get("admin-settings-title") }}</h2>
-  <p class="text-muted mb-0">{{ messages.get("admin-settings-lead") }}</p>
-</div>
+<h2 class="h4 mb-3">{{ messages.get("admin-settings-title") }}</h2>
+
+{#- 目次。この画面は区画が多く縦に長いので、先頭から目的の区画へ 1 回で行けるようにする。
+    出すのは、この管理者に見えている区画だけ（下の各区画の出し分けと同じ条件）。 -#}
+<nav class="settings-index mb-4" aria-label="{{ messages.get("admin-settings-index-label") }}">
+  <a href="#tenant-settings">{{ messages.get("admin-settings-tenant-heading") }}</a>
+  {% if tenant_settings.is_some() %}<a href="#tenant-values">{{ messages.get("admin-tenant-values-heading") }}</a>{% endif %}
+  {% if tenant_smtp.is_some() %}<a href="#tenant-smtp">{{ messages.get("admin-tenant-smtp-heading") }}</a>{% endif %}
+  {% if system.is_some() %}
+  <a href="#system-settings">{{ messages.get("admin-settings-system-heading") }}</a>
+  <a href="#runtime-settings">{{ messages.get("admin-settings-runtime-heading") }}</a>
+  <a href="#restart">{{ messages.get("admin-restart-heading") }}</a>
+  {% endif %}
+</nav>
 
 {% if saved %}<div class="alert alert-success" role="status">{{ messages.get("admin-settings-saved") }}</div>{% endif %}
 {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
@@ -102,55 +111,62 @@
     {% if values.settings.is_empty() %}<p class="text-muted mb-0">{{ messages.get("admin-settings-filter-none") }}</p>{% endif %}
     <ul class="list-group list-group-flush">
       {% for item in values.settings %}
+      {#- 1 件は 2 列。左に「何の設定か」、右に「値を変える」。
+          ⚠ 「現在の値」と「全体の値」は必ず並べて出す（上の注記）。全体の値に従っているときの
+          説明は区画の先頭の 1 回だけにする —— 20 件すべてに同じ 2 行を繰り返すと、画面の半分が
+          その文になる。 -#}
       <li class="list-group-item px-0 py-3" id="tenant-value-{{ item.key }}">
-        <div class="d-flex flex-wrap align-items-center gap-2 mb-1">
-          <span class="fw-semibold">{{ self.setting_label(item.key) }}</span>
-          {% if item.is_tenant_override() %}
-          <span class="badge text-bg-primary">{{ messages.get("admin-tenant-values-origin-override") }}</span>
-          {% else %}
-          <span class="badge text-bg-secondary">{{ messages.get("admin-tenant-values-origin-inherited") }}</span>
-          {% endif %}
+        <div class="row g-2">
+          <div class="col-lg-7">
+            <div class="d-flex flex-wrap align-items-center gap-2">
+              <span class="fw-semibold">{{ self.setting_label(item.key) }}</span>
+              {% if item.is_tenant_override() %}
+              <span class="badge text-bg-primary">{{ messages.get("admin-tenant-values-origin-override") }}</span>
+              {% else %}
+              <span class="badge text-bg-secondary">{{ messages.get("admin-tenant-values-origin-inherited") }}</span>
+              {% endif %}
+            </div>
+            {% if !item.description.is_empty() %}<div class="small text-muted mt-1">{{ item.description }}</div>{% endif %}
+            <div class="small text-muted mt-1"><code>{{ item.key }}</code></div>
+          </div>
+          <div class="col-lg-5">
+            <form method="post" action="{{ tenant }}/admin/settings/tenant/keys" class="d-flex flex-wrap gap-2 align-items-center">
+              <input type="hidden" name="csrf_token" value="{{ csrf }}">
+              <input type="hidden" name="key" value="{{ item.key }}">
+              <label class="visually-hidden" for="tenant-value-input-{{ item.key }}">{{ self.setting_label(item.key) }}</label>
+              {% if item.kind == "BOOLEAN" %}
+              <select class="form-select form-select-sm w-auto" id="tenant-value-input-{{ item.key }}" name="value">
+                <option value="true" {% if item.value == "true" %}selected{% endif %}>{{ messages.get("admin-tenant-values-true") }}</option>
+                <option value="false" {% if item.value == "false" %}selected{% endif %}>{{ messages.get("admin-tenant-values-false") }}</option>
+              </select>
+              {% else if item.kind == "CHOICE" %}
+              <select class="form-select form-select-sm w-auto" id="tenant-value-input-{{ item.key }}" name="value">
+                {% for choice in item.choices %}
+                <option value="{{ choice.value }}" {% if item.value == choice.value %}selected{% endif %}>{{ choice.value }}{% if choice.locks_out %}（{{ messages.get("admin-tenant-values-choice-locks-out") }}）{% endif %}</option>
+                {% endfor %}
+              </select>
+              {% else if item.kind == "UNSIGNED_INTEGER" %}
+              <input type="number" class="form-control form-control-sm w-auto" id="tenant-value-input-{{ item.key }}" name="value" min="0" inputmode="numeric" value="{{ item.value }}" required>
+              {% else %}
+              <input type="text" class="form-control form-control-sm w-auto" id="tenant-value-input-{{ item.key }}" name="value" value="{{ item.value }}" required>
+              {% endif %}
+              <button type="submit" class="btn btn-sm btn-primary">{{ messages.get("admin-tenant-values-save") }}</button>
+            </form>
+            <div class="small text-muted mt-2">
+              {{ messages.get("admin-tenant-values-current") }} <code>{{ self.value_label(item, item.value) }}</code>
+              <span class="mx-1" aria-hidden="true">/</span>
+              {{ messages.get("admin-tenant-values-whole") }} <code>{{ self.value_label(item, item.whole_idp_value) }}</code>
+            </div>
+            {% if item.is_tenant_override() %}
+            <form method="post" action="{{ tenant }}/admin/settings/tenant/keys/clear" class="mt-2">
+              <input type="hidden" name="csrf_token" value="{{ csrf }}">
+              <input type="hidden" name="key" value="{{ item.key }}">
+              <button type="submit" class="btn btn-sm btn-outline-secondary">{{ messages.get("admin-tenant-values-clear") }}</button>
+              <div class="form-text">{{ messages.get("admin-tenant-values-clear-hint") }}</div>
+            </form>
+            {% endif %}
+          </div>
         </div>
-        <div class="small text-muted"><code>{{ item.key }}</code></div>
-        {% if !item.description.is_empty() %}<div class="small text-muted mt-1">{{ item.description }}</div>{% endif %}
-        <dl class="row small mt-2 mb-2">
-          <dt class="col-5 col-sm-3">{{ messages.get("admin-tenant-values-current") }}</dt>
-          <dd class="col-7 col-sm-9 mb-1"><code>{{ self.value_label(item, item.value) }}</code></dd>
-          <dt class="col-5 col-sm-3">{{ messages.get("admin-tenant-values-whole") }}</dt>
-          <dd class="col-7 col-sm-9 mb-0"><code>{{ self.value_label(item, item.whole_idp_value) }}</code></dd>
-        </dl>
-        <form method="post" action="{{ tenant }}/admin/settings/tenant/keys" class="d-flex flex-wrap gap-2 align-items-center">
-          <input type="hidden" name="csrf_token" value="{{ csrf }}">
-          <input type="hidden" name="key" value="{{ item.key }}">
-          <label class="visually-hidden" for="tenant-value-input-{{ item.key }}">{{ self.setting_label(item.key) }}</label>
-          {% if item.kind == "BOOLEAN" %}
-          <select class="form-select form-select-sm w-auto" id="tenant-value-input-{{ item.key }}" name="value">
-            <option value="true" {% if item.value == "true" %}selected{% endif %}>{{ messages.get("admin-tenant-values-true") }}</option>
-            <option value="false" {% if item.value == "false" %}selected{% endif %}>{{ messages.get("admin-tenant-values-false") }}</option>
-          </select>
-          {% else if item.kind == "CHOICE" %}
-          <select class="form-select form-select-sm w-auto" id="tenant-value-input-{{ item.key }}" name="value">
-            {% for choice in item.choices %}
-            <option value="{{ choice.value }}" {% if item.value == choice.value %}selected{% endif %}>{{ choice.value }}{% if choice.locks_out %}（{{ messages.get("admin-tenant-values-choice-locks-out") }}）{% endif %}</option>
-            {% endfor %}
-          </select>
-          {% else if item.kind == "UNSIGNED_INTEGER" %}
-          <input type="number" class="form-control form-control-sm w-auto" id="tenant-value-input-{{ item.key }}" name="value" min="0" inputmode="numeric" value="{{ item.value }}" required>
-          {% else %}
-          <input type="text" class="form-control form-control-sm w-auto" id="tenant-value-input-{{ item.key }}" name="value" value="{{ item.value }}" required>
-          {% endif %}
-          <button type="submit" class="btn btn-sm btn-primary">{{ messages.get("admin-tenant-values-save") }}</button>
-        </form>
-        {% if item.is_tenant_override() %}
-        <form method="post" action="{{ tenant }}/admin/settings/tenant/keys/clear" class="mt-2">
-          <input type="hidden" name="csrf_token" value="{{ csrf }}">
-          <input type="hidden" name="key" value="{{ item.key }}">
-          <button type="submit" class="btn btn-sm btn-outline-secondary">{{ messages.get("admin-tenant-values-clear") }}</button>
-          <div class="form-text">{{ messages.get("admin-tenant-values-clear-hint") }}</div>
-        </form>
-        {% else %}
-        <div class="form-text">{{ messages.get("admin-tenant-values-inherited-hint") }}</div>
-        {% endif %}
       </li>
       {% endfor %}
     </ul>
@@ -296,7 +312,12 @@
     <p class="text-muted small">{{ messages.get("admin-settings-runtime-note") }}</p>
     {% if filter.is_active() %}<p class="small mb-2" role="status">{{ messages.get_arg("admin-settings-filter-count", "count", self.runtime_count().as_str()) }}</p>{% endif %}
     {% if sys.runtime_settings.is_empty() %}<p class="text-muted mb-0">{{ messages.get("admin-settings-filter-none") }}</p>{% endif %}
-    <div class="table-responsive">
+    {#- 表は 60 件を超え、開いたままだとこの画面の半分以上を占める（再起動の区画がその下に沈む）。
+        ふだんは閉じておき、ここを目当てに来たとき —— 絞り込んだ・保存して戻った・エラーで戻った ——
+        だけ開いて出す。保存とエラーの戻り先は `#runtime-settings`（この区画）である。 -#}
+    <details class="settings-runtime-list"{% if filter.is_active() || saved || error_key.is_some() %} open{% endif %}>
+    <summary>{{ messages.get_arg("admin-settings-runtime-toggle", "count", sys.runtime_settings.len().to_string().as_str()) }}</summary>
+    <div class="table-responsive mt-3">
       <table class="table table-cards table-hover align-middle mb-0">
         <thead><tr>
           <th>{{ messages.get("admin-settings-runtime-col-key") }}</th>
@@ -369,6 +390,7 @@
       </table>
     </div>
     <p class="text-muted small mt-2 mb-0">{{ messages.get("admin-settings-runtime-edit-note") }}</p>
+    </details>
   </div>
 </div>
 
@@ -387,6 +409,4 @@
   </div>
 </div>
 {% endif %}
-
-<a class="btn btn-outline-secondary" href="{{ tenant }}/admin">{{ messages.get("admin-settings-back") }}</a>
 {% endblock %}

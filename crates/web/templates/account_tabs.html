@@ -1,0 +1,37 @@
+{#- アカウント設定の 3 画面（基本・認証アプリとパスキー・端末とアプリ）に共通の見出しとタブ。
+
+    もとは設定画面の末尾のボタンから残りの 2 画面へ行き、「アカウント設定へ戻る」で戻る作りで、
+    どの画面があるのかは設定画面を下まで読まないと分からなかった。3 画面を同じ段のタブにして、
+    どの画面からでも 1 回で行き来できるようにする。サインアウトも 3 画面のどこからでもできる。
+
+    include する側が `account_tab`（`general` / `authenticators` / `security`）と `from_admin` を
+    `let` で渡す。`messages` / `tenant` / `csrf` は各画面のテンプレート構造体が持っている。
+
+    ⚠ `href` の中に `{% if %}` を書かない。リンク先がルートに在るかを見るテスト
+    （`template_link_targets_are_routes_this_service_serves`）が値を読めなくなる。 -#}
+{% if from_admin %}
+<div class="mb-3">
+  <a href="{{ tenant }}/admin"><i class="fa-solid fa-arrow-left me-2" aria-hidden="true"></i>{{ messages.get("user-settings-back-admin") }}</a>
+</div>
+{% endif %}
+<div class="d-flex align-items-center justify-content-between gap-2 mb-3">
+  <h1 class="h3 mb-0">{{ messages.get("user-settings-title") }}</h1>
+  <form method="post" action="{{ tenant }}/logout" class="flex-shrink-0">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    {% if from_admin %}<input type="hidden" name="from" value="admin">{% endif %}
+    <button type="submit" class="btn btn-outline-secondary"><i class="fa-solid fa-right-from-bracket me-2" aria-hidden="true"></i>{{ messages.get("user-settings-logout") }}</button>
+  </form>
+</div>
+<nav class="mb-4" aria-label="{{ messages.get("user-settings-nav-label") }}">
+  <ul class="nav nav-pills">
+    <li class="nav-item">
+      {% if from_admin %}
+      <a class="nav-link{% if account_tab == "general" %} active{% endif %}" href="{{ tenant }}/settings?from=admin"{% if account_tab == "general" %} aria-current="page"{% endif %}>{{ messages.get("user-settings-tab-general") }}</a>
+      {% else %}
+      <a class="nav-link{% if account_tab == "general" %} active{% endif %}" href="{{ tenant }}/settings"{% if account_tab == "general" %} aria-current="page"{% endif %}>{{ messages.get("user-settings-tab-general") }}</a>
+      {% endif %}
+    </li>
+    <li class="nav-item"><a class="nav-link{% if account_tab == "authenticators" %} active{% endif %}" href="{{ tenant }}/settings/authenticators"{% if account_tab == "authenticators" %} aria-current="page"{% endif %}>{{ messages.get("user-settings-tab-authenticators") }}</a></li>
+    <li class="nav-item"><a class="nav-link{% if account_tab == "security" %} active{% endif %}" href="{{ tenant }}/settings/security"{% if account_tab == "security" %} aria-current="page"{% endif %}>{{ messages.get("user-settings-tab-security") }}</a></li>
+  </ul>
+</nav>

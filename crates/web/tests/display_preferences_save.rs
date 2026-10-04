@@ -410,21 +410,24 @@ async fn the_settings_page_posts_the_display_preferences_with_a_token() {
         r#"<form method="post" action="{}/settings/display""#,
         env.prefix()
     );
+    // 言語と配色は 1 つのフォームでまとめて保存する（保存ボタンは 1 つ）。
     assert_eq!(
         html.matches(&action).count(),
-        2,
-        "language and theme: {html}"
+        1,
+        "language and theme share one form: {html}"
     );
+    assert!(html.contains(r#"name="lang""#), "{html}");
+    assert!(html.contains(r#"name="theme""#), "{html}");
     assert!(!html.contains(r#"<form method="get""#), "{html}");
-    // 表示名・パスワード・言語・配色・ログアウトの 5 つのフォームすべてにトークン（task #118・
-    // #143 と共通）。
+    // 表示名・表示（言語と配色）・パスワード・ログアウトの 4 つのフォームすべてにトークン
+    // （task #118・#143 と共通）。
     assert_eq!(
         html.matches(&format!(
             r#"<input type="hidden" name="csrf_token" value="{}">"#,
             csrf()
         ))
         .count(),
-        5,
+        4,
         "{html}"
     );
 }
