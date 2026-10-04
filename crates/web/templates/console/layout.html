@@ -113,6 +113,16 @@
 {% block content %}{% endblock %}
   </main>
 </div>
+{#- 新しいバージョンの知らせ。この画面を描いたビルド（`data-build`）と、いま稼働している
+    ビルド（`data-build-check` の口）を `assets/console.js` が比べ、違えば出す。押すまで消さない。
+    管理コンソールは service worker を持たない（`handlers::web_app_manifest`）ので、開いたままの
+    画面はこれが無いと配られたことに気付けない。ログイン済みの画面にだけ置く（ADR-0034）。 -#}
+{% if admin.is_some() %}
+<div class="update-notice" role="status" hidden data-update-notice data-build="{{ crate::templates::footer_version() }}" data-build-check="{{ tenant }}/admin/version/current">
+  <span>{{ messages.get("update-notice-message") }}</span>
+  <button type="button" class="btn btn-sm btn-primary" data-update-reload>{{ messages.get("update-notice-reload") }}</button>
+</div>
+{% endif %}
 {% include "console/footer.html" %}
 <script src="/assets/vendor/bootstrap.bundle.min.js?v={{ crate::templates::asset_version() }}"></script>
 <script src="/assets/console.js?v={{ crate::templates::asset_version() }}"></script>

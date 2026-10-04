@@ -21,6 +21,7 @@ use assay_contracts::admin::ClientStatusResponse;
 use assay_contracts::application_log::ApplicationLogEntryResponse;
 use assay_contracts::version::{BuildTimeVersionInfoProvider, VersionInfoProvider};
 use axum::extract::{Extension, Query, State};
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use serde::Deserialize;
@@ -386,6 +387,38 @@ pub async fn version(
         schema,
     }))
     .into_response()
+}
+
+/// 稼働中のビルドの表記だけを返す（`GET /{tenant_id}/admin/version/current`）。
+///
+/// 開いたままの画面が、新しいバージョンが配られたことに気付くための口。共通レイアウトは
+/// 描いたときのビルドを `data-build` に持ち、`assets/console.js` がここの値と比べて、違えば
+/// 「新しいバージョンがあります」を出す。
+///
+/// ⚠ **管理コンソールの内側に置く**（ADR-0034。稼働中のコミットを無認証の面に出さない）。
+/// 未ログインならログイン画面への 302 が返り、スクリプトはそれを追わずに何もしない。
+/// ⚠ ここで引く whoami は SSO セッションの有効期限を延ばさない（延ばすのは認可要求のときだけ）。
+/// 開いたままの画面が問い合わせ続けても、「操作が無いときにログアウトする」は効いたままである。
+pub async fn current_build(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+) -> Response {
+    if let AdminResolution::Reject(resp) =
+        resolve_admin(&state, &correlation, &tenant, &headers).await
+    {
+        return resp;
+    }
+    (
+        [
+            (CONTENT_TYPE, "text/plain; charset=utf-8"),
+            // 比べる相手は「いま答えたプロセス」のビルドなので、途中で持たせない。
+            (CACHE_CONTROL, "no-store"),
+        ],
+        crate::templates::footer_version(),
+    )
+        .into_response()
 }
 
 // ── 共通ヘルパー ──────────────────────────────────────────────────────────────

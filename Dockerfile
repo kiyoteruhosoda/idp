@@ -41,8 +41,13 @@ COPY i18n ./i18n
 COPY migrations ./migrations
 # 版数の埋め込みはここまで下げる。ビルドごとに変わる値（IDP_BUILD_NUMBER はコミットが同じでも
 # 上がる）を上に置くと、apt のインストール層と依存クレートのダミービルド層まで毎回作り直しになる。
-ARG IDP_GIT_VERSION=unknown
-ENV IDP_GIT_VERSION=${IDP_GIT_VERSION}
+# ⚠ **`COMMIT_HASH` も受ける。** 本番をビルドする側（deck と deploy-repo の `build-image.yml`）は、
+# どのアプリにも同じ名前で短い SHA を `COMMIT_HASH` として渡す。`IDP_GIT_VERSION` しか受けていなかった
+# 頃は、本番の管理コンソールのフッターが `v0.1.0 (unknown)` のままだった。`IDP_GIT_VERSION` を
+# 明示したとき（`scripts/build.sh`・docker compose）はそちらが勝つ。
+ARG COMMIT_HASH=
+ARG IDP_GIT_VERSION=
+ENV IDP_GIT_VERSION=${IDP_GIT_VERSION:-${COMMIT_HASH:-unknown}}
 # ビルド番号（CI の通し番号）。コミットが同じでもビルドし直せば上がるので、「新しい成果物が
 # 配置されたか」を版数だけで判断できる。手元ビルドでは空のまま（版数に付かない）。
 ARG IDP_BUILD_NUMBER=

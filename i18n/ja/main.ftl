@@ -1377,6 +1377,8 @@ admin-client-field-type-hint = confidential は自分が管理するサーバに
 # バージョン情報画面（ADR-0034。管理コンソール内・ログイン必須）
 admin-version-title = バージョン情報
 admin-version-intro = 稼働中のビルドと、データベースへ適用済みのマイグレーションを表示します。
+update-notice-message = 新しいバージョンがあります。
+update-notice-reload = 再読み込み
 admin-version-package = パッケージ版
 admin-version-git = Git 版
 admin-version-git-missing = ビルド時に埋め込まれていません（IDP_GIT_VERSION の渡し忘れ）
