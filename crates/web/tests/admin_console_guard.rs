@@ -178,6 +178,9 @@ async fn the_running_build_is_answered_only_to_a_signed_in_admin() {
     );
 
     // 未ログインには答えない（ログイン画面へ送る。稼働中のビルドは無認証の面に出さない）。
+    // セッションを確かめるのは api なので、whoami が 401 を返す別の環境で見る。
+    let env = setup().await;
+    stub_whoami(&env, 401, None).await;
     let anonymous = send(
         &env.app,
         get(&format!("{}/admin/version/current", env.prefix())),
