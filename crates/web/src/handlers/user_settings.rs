@@ -446,12 +446,12 @@ mod tests {
     fn back_link_to_admin_console_is_shown_only_when_opened_from_admin() {
         let html = render_settings(true);
         assert!(html.contains("/00000000-0000-7000-8000-000000000000/admin\""));
-        // フォーム送信（表示名・言語・配色・パスワード・ログアウト）でも管理コンソール文脈を hidden で
+        // フォーム送信（表示名・表示・パスワード・ログアウト）でも管理コンソール文脈を hidden で
         // 引き継ぐ（ログアウトはトークンが合わずに戻したとき。task #143）。
         assert_eq!(
             html.matches(r#"<input type="hidden" name="from" value="admin">"#)
                 .count(),
-            5
+            4
         );
 
         let html = render_settings(false);

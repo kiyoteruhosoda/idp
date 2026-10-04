@@ -1,19 +1,14 @@
 {% extends "page.html" %}
-{% block title %}{{ messages.get("authenticators-title") }}{% endblock %}
+{% block title %}{{ messages.get("user-settings-tab-authenticators") }} · {{ messages.get("user-settings-title") }}{% endblock %}
 {#- TOTP の設定・削除（task #82・#121）のあとはこの画面へ戻る。TOTP・パスキーの画面と同じく、
-    左上の名乗りをアカウント設定へのリンクにする（本文の先頭の「戻る」と対）。 -#}
+    左上の名乗りをアカウント設定へのリンクにする。 -#}
 {% block brand %}<a class="navbar-brand mb-0 h1 text-decoration-none" href="{{ tenant }}/settings" title="{{ messages.get("nav-home") }}">assay</a>{% endblock %}
-{% block column %}col-lg-9 mx-auto{% endblock %}
+{% block column %}col-lg-8 mx-auto account-content{% endblock %}
 {% block scripts %}<script src="/assets/console.js?v={{ crate::templates::asset_version() }}"></script>{% endblock %}
 {% block content %}
-<div class="mb-3">
-  <a href="{{ tenant }}/settings"><i class="fa-solid fa-arrow-left me-2" aria-hidden="true"></i>{{ messages.get("user-security-back-settings") }}</a>
-</div>
-<div class="mb-4">
-  <p class="text-muted text-uppercase fw-bold small mb-1">{{ messages.get("user-settings-kicker") }}</p>
-  <h1 class="h3 mb-1">{{ messages.get("authenticators-title") }}</h1>
-  <p class="text-muted mb-0">{{ messages.get("authenticators-lead") }}</p>
-</div>
+{% let account_tab = "authenticators" %}
+{% let from_admin = false %}
+{% include "account_tabs.html" %}
 
 {% if let Some(key) = saved_key %}<div class="alert alert-success" role="status">{{ messages.get(key) }}</div>{% endif %}
 {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}

@@ -242,8 +242,8 @@ async fn a_deleted_totp_returns_to_the_authenticators_page() {
 }
 
 /// **削除のあとに戻る認証器の画面にも出口がある**（task #121 の確かめ）。お知らせ
-/// （`?saved=totp-deleted`）を出し、左上の名乗りと本文の先頭の「アカウント設定へ戻る」の両方を
-/// アカウント設定へのリンクにする（TOTP・パスキーの画面と同じ形）。
+/// （`?saved=totp-deleted`）を出し、左上の名乗りと、アカウント設定のタブ（task #251。3 画面に
+/// 共通）の「基本」の両方からアカウント設定へ行ける。
 #[tokio::test]
 async fn the_authenticators_page_after_deletion_links_back_to_settings() {
     let env = setup().await;
@@ -276,7 +276,23 @@ async fn the_authenticators_page_after_deletion_links_back_to_settings() {
         html.contains(r#"<div class="alert alert-success" role="status">"#),
         "削除のお知らせが出ていない: {html}"
     );
-    assert_links_back_to_settings(&prefix, &html);
+    assert!(
+        html.contains(&format!(
+            r#"<a class="navbar-brand mb-0 h1 text-decoration-none" href="{prefix}/settings""#
+        )),
+        "左上の名乗りがリンクになっていない: {html}"
+    );
+    assert!(
+        html.contains(&format!(r#"<a class="nav-link" href="{prefix}/settings">"#)),
+        "タブにアカウント設定（基本）への導線が無い: {html}"
+    );
+    // いま開いているタブ（認証アプリとパスキー）に印が付く。
+    assert!(
+        html.contains(&format!(
+            r#"href="{prefix}/settings/authenticators" aria-current="page""#
+        )),
+        "{html}"
+    );
 }
 
 // ── 失敗の画面の出口（task #119） ────────────────────────────────────────────

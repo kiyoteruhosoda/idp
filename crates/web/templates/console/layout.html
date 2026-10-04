@@ -12,7 +12,10 @@
 <link rel="stylesheet" href="/assets/app.css?v={{ crate::templates::asset_version() }}">
 <link rel="icon" href="/assets/assay.svg?v={{ crate::templates::asset_version() }}" type="image/svg+xml">
 {% let manifest_prefix = tenant %}{% include "console/web_app_head.html" %}
-<title>{{ messages.get("admin-console-title") }}</title>
+{#- タブ名は「開いている画面 · 管理コンソール」。全画面が同じ「管理コンソール」だと、タブを
+    並べたときも履歴でも見分けられない。画面の名前はメニューの項目から引く
+    （`templates::current_console_nav_item`。ホームやログインのように項目に属さない画面は付けない）。 -#}
+<title>{% if let Some(current) = crate::templates::current_console_nav_item() %}{{ messages.get(current.label) }} · {% endif %}{{ messages.get("admin-console-title") }}</title>
 </head>
 <body class="d-flex flex-column min-vh-100">
 <nav class="navbar bg-body-tertiary border-bottom">
@@ -87,15 +90,18 @@
       {#- ホームのカードと同じ定義（`templates::CONSOLE_NAV`）から描く。⚠ **両方を手で書かない**
           ——書いていた頃は、ここにだけ「外部 IdP」が、ホームにだけ「認証ポリシー」が載っていた。
           ⚠ **ここに説明は出さない。** サイドバーは行き先を選ぶ場所で、1 行ずつ説明を足すと
-          縦に伸びて選びにくくなる（説明が要る人はホームを見る）。 -#}
-      <nav class="nav flex-column">
-        <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin"><i class="fa-solid fa-house me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-home") }}</span></a>
+          縦に伸びて選びにくくなる（説明が要る人はホームを見る）。
+
+          開いている画面の項目に `aria-current="page"` を付ける（見た目は `assets/app.css` の金の条）。
+          メニューに載らない画面（利用者の作成・メンバーの詳細など）は、開いた元の項目に付く。 -#}
+      <nav class="nav flex-column" aria-label="{{ messages.get("admin-nav-label") }}">
+        <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin"{% if crate::templates::console_home_is_current() %} aria-current="page"{% endif %}><i class="fa-solid fa-house fa-fw me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-home-short") }}</span></a>
         {% for group in crate::templates::CONSOLE_NAV %}
         {%- let items = group.visible_items(chrome) -%}
         {% if !items.is_empty() %}
-        <span class="text-muted text-uppercase fw-bold px-2 mt-3 mb-1 small sidebar-category-header">{{ messages.get(group.label) }}</span>
+        <span class="px-2 mt-3 mb-1 sidebar-category-header">{{ messages.get(group.label) }}</span>
         {% for item in items %}
-        <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}{{ item.path }}"><i class="fa-solid {{ item.icon }} me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get(item.label) }}</span></a>
+        <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}{{ item.path }}"{% if item.is_current() %} aria-current="page"{% endif %}><i class="fa-solid {{ item.icon }} fa-fw me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get(item.label) }}</span></a>
         {% endfor %}
         {% endif %}
         {% endfor %}
