@@ -526,6 +526,11 @@ pub fn build(state: WebState) -> Router {
         .route("/admin/status", get(admin_status_console::client_status))
         // 稼働中のビルドと適用済みスキーマ（ADR-0034）。無認証の面には出さない。
         .route("/admin/version", get(admin_status_console::version))
+        // 稼働中のビルドの表記だけ（開いたままの画面が新しいバージョンに気付くための口）。
+        .route(
+            "/admin/version/current",
+            get(admin_status_console::current_build),
+        )
         // アプリ（ADR-0054）。認証方法（OIDC / SAML）と利用者の割り当ては、この段にぶら下がる。
         // ⚠ **ここが締め出しの復旧経路**（決定 4 の手順 4）。一覧 → 1 件 → 割り当て、で終わる。
         .route("/admin/applications", get(admin_applications_console::list))

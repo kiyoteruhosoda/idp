@@ -73,3 +73,62 @@
     field.value = window.location.pathname + window.location.search;
   });
 })();
+
+
+// 新しいバージョンの知らせ（`console/layout.html` の `[data-update-notice]`）。
+//
+// 画面を描いたビルド（`data-build`）と、いま稼働しているビルド（`data-build-check` の口が返す
+// 文字列）を比べ、違えば知らせを出す。管理コンソールは service worker を持たないので、開いたままの
+// 画面はこうして問い合わせないと、配られたことに気付けない。
+//
+// 問い合わせるのは、画面が見えているときだけ —— 別のタブから戻ったときと、5 分おき。直前の
+// 問い合わせから 1 分は空ける。未ログイン（302）・通信の失敗・前段の停止ページ（200 以外）では
+// 何もしない。出した知らせは押すまで消さない（数秒で消えると気付けない）。
+(function () {
+  var notice = document.querySelector("[data-update-notice]");
+  if (!notice || typeof window.fetch !== "function") {
+    return;
+  }
+  var current = notice.getAttribute("data-build");
+  var url = notice.getAttribute("data-build-check");
+  var MIN_GAP_MS = 60 * 1000;
+  var INTERVAL_MS = 5 * 60 * 1000;
+  var lastChecked = Date.now();
+
+  function check() {
+    if (!notice.hidden || document.visibilityState !== "visible") {
+      return;
+    }
+    var now = Date.now();
+    if (now - lastChecked < MIN_GAP_MS) {
+      return;
+    }
+    lastChecked = now;
+    window
+      .fetch(url, { credentials: "same-origin", cache: "no-store", redirect: "manual" })
+      .then(function (response) {
+        return response.ok ? response.text() : null;
+      })
+      .then(function (running) {
+        if (running !== null && running.trim() !== "" && running.trim() !== current) {
+          notice.hidden = false;
+        }
+      })
+      .catch(function () {});
+  }
+
+  var reload = notice.querySelector("[data-update-reload]");
+  if (reload) {
+    reload.addEventListener("click", function () {
+      window.location.reload();
+    });
+  }
+  document.addEventListener("visibilitychange", check);
+  // 戻る・進むで復元された画面（bfcache）は、描いたときのビルドのまま出てくる。
+  window.addEventListener("pageshow", function (event) {
+    if (event.persisted) {
+      check();
+    }
+  });
+  window.setInterval(check, INTERVAL_MS);
+})();

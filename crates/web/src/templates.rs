@@ -160,6 +160,10 @@ mod tests {
                 if line.contains("/admin/logout") || line.contains("/admin/switch-tenant") {
                     continue;
                 }
+                // 新しいバージョンの知らせが問い合わせる口（画面ではない）。
+                if line.contains("/admin/version/current") {
+                    continue;
+                }
                 panic!(
                     "{name}:{} がメニューを直に書いている。CONSOLE_NAV へ足すこと: {}",
                     n + 1,
@@ -1053,6 +1057,50 @@ mod tests {
         // どの項目にも属さない画面（テナント切替）では、どこにも付けない。
         let html = render_at("/admin/switch-tenant");
         assert!(!html.contains("aria-current"), "{html}");
+    }
+
+    /// ログイン済みの管理コンソールは、新しいバージョンの知らせの部品を隠した状態で持つ。
+    ///
+    /// 描いたビルドの表記（フッターと同じ）と、稼働中のビルドを問い合わせる口を属性で持ち、
+    /// `assets/console.js` が比べる。⚠ 口のパスがルートに無いと、知らせは黙って一度も出ない
+    /// （問い合わせが 404 で終わるだけ）ので、ルートに在ることまで見る。
+    #[test]
+    fn the_signed_in_console_carries_the_hidden_update_notice() {
+        let messages = Messages::new(Locale::Ja);
+        let render_with = |admin| {
+            render(&ConsoleHome {
+                messages: &messages,
+                tenant: "/t",
+                error_key: None,
+                admin,
+            })
+        };
+        let signed_in = render_with(Some(ConsoleAdmin {
+            label: "admin",
+            tenant_name: Some("Acme"),
+            permissions: &[],
+            csrf_token: "test-console-csrf",
+        }));
+        assert!(
+            signed_in.contains(&format!(
+                r#"<div class="update-notice" role="status" hidden data-update-notice data-build="{}" data-build-check="/t/admin/version/current">"#,
+                footer_version()
+            )),
+            "{signed_in}"
+        );
+        assert!(
+            signed_in.contains(&messages.get("update-notice-message")),
+            "{signed_in}"
+        );
+        assert!(
+            crate::router::declared_route_paths().contains("/admin/version/current"),
+            "知らせが問い合わせる口がルートに無い"
+        );
+
+        // 未ログインの画面には置かない（稼働中のビルドを無認証の面に出さない。ADR-0034）。
+        let signed_out = render_with(None);
+        assert!(!signed_out.contains("data-update-notice"), "{signed_out}");
+        assert!(!signed_out.contains("data-build="), "{signed_out}");
     }
 
     /// アカウント設定の 3 画面は同じタブを出し、開いている画面のタブにだけ印を付ける。

@@ -11,7 +11,7 @@ mod support;
 use assay_contracts::cookies::SSO_SESSION_COOKIE;
 use axum::http::StatusCode;
 use serde_json::json;
-use support::{get, get_with_cookies, location, send, setup};
+use support::{body_text, get, get_with_cookies, location, send, setup};
 use wiremock::matchers::{method, path_regex};
 use wiremock::{Mock, ResponseTemplate};
 
@@ -124,6 +124,70 @@ async fn an_authenticated_admin_sees_the_console() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+/// 稼働中のビルドを返す口（`/admin/version/current`）は、ログイン済みの管理者にだけ答える。
+///
+/// 開いたままの画面はこの値を、自分が描かれたときのビルド（`data-build`）と比べて
+/// 「新しいバージョンがあります」を出す。⚠ **同じプロセスが描いた画面と値が食い違うと、
+/// 何も配っていないのに知らせが出続ける**ので、2 つが同じ文字列であることを通しで見る。
+#[tokio::test]
+async fn the_running_build_is_answered_only_to_a_signed_in_admin() {
+    let env = setup().await;
+    stub_whoami(
+        &env,
+        200,
+        Some(json!({
+            "user_id": "00000000-0000-7000-8000-000000000001",
+            "name": "Admin User",
+            "preferred_username": "admin",
+            "permissions": ["idp.tenant.admin"]
+        })),
+    )
+    .await;
+    let cookie = format!("{SSO_SESSION_COOKIE}=valid-session");
+
+    let response = send(
+        &env.app,
+        get_with_cookies(&format!("{}/admin/version/current", env.prefix()), &cookie),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("cache-control")
+            .and_then(|v| v.to_str().ok()),
+        Some("no-store"),
+        "比べる相手は「いま答えたプロセス」なので、途中で持たせない"
+    );
+    let running = body_text(response).await;
+    assert!(!running.trim().is_empty());
+
+    let page = body_text(
+        send(
+            &env.app,
+            get_with_cookies(&format!("{}/admin", env.prefix()), &cookie),
+        )
+        .await,
+    )
+    .await;
+    assert!(
+        page.contains(&format!(r#"data-build="{running}""#)),
+        "画面が持つビルドと、口が返すビルドが食い違っている（{running}）: {page}"
+    );
+
+    // 未ログインには答えない（ログイン画面へ送る。稼働中のビルドは無認証の面に出さない）。
+    let anonymous = send(
+        &env.app,
+        get(&format!("{}/admin/version/current", env.prefix())),
+    )
+    .await;
+    assert_eq!(anonymous.status(), StatusCode::FOUND);
+    assert_eq!(
+        location(&anonymous),
+        format!("{}/admin/login", env.prefix())
+    );
 }
 
 #[tokio::test]

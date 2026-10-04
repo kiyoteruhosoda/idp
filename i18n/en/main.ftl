@@ -1377,6 +1377,8 @@ admin-client-field-type-hint = confidential keeps a secret on a server it contro
 # Version page (ADR-0034; inside the admin console, sign-in required)
 admin-version-title = Version
 admin-version-intro = The running build and the migrations applied to the database.
+update-notice-message = A new version is available.
+update-notice-reload = Reload
 admin-version-package = Package version
 admin-version-git = Git version
 admin-version-git-missing = Not embedded at build time (IDP_GIT_VERSION was not passed)

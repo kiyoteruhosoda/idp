@@ -954,3 +954,30 @@ button[aria-busy='true'] .js-pending-label {
     transition: none;
   }
 }
+
+
+/* ── 新しいバージョンの知らせ（`console/layout.html` の `.update-notice`） ───────
+ * 画面の右下に留め、押すまで消さない。フッターに重ねない高さに置く。印は他の「いまのもの」と
+ * 同じ左の金の条。 */
+.update-notice {
+  position: fixed;
+  right: 1rem;
+  bottom: 3.5rem;
+  z-index: 1080;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  max-width: calc(100vw - 2rem);
+  padding: 0.6rem 0.75rem 0.6rem 1rem;
+  background-color: var(--bs-body-bg);
+  border: var(--bs-border-width) solid var(--bs-border-color);
+  border-radius: var(--bs-border-radius);
+  box-shadow:
+    inset 2px 0 0 var(--assay-gold),
+    0 0.25rem 0.75rem rgba(0, 0, 0, 0.18);
+}
+
+/* `display: flex` が `hidden` 属性の既定（`display: none`）に勝ってしまうので、明示して戻す。 */
+.update-notice[hidden] {
+  display: none;
+}
