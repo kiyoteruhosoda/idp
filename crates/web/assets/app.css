@@ -795,6 +795,18 @@ button[aria-busy='true'] .js-pending-label {
   --bs-dropdown-link-active-bg: var(--bs-secondary-bg);
 }
 
+/* 一覧の中の「いまのもの」（テナント切り替えの現在のテナント）。青く塗らず、サイドバーの
+ * 印と同じ形（淡い地と左の金の条）にする。 */
+.list-group {
+  --bs-list-group-active-color: var(--bs-emphasis-color);
+  --bs-list-group-active-bg: var(--bs-secondary-bg);
+  --bs-list-group-active-border-color: var(--bs-border-color);
+}
+
+.list-group-item.active {
+  box-shadow: inset 2px 0 0 var(--assay-gold);
+}
+
 /* ── いまいる場所の印 ─────────────────────────────────────────────────────
  * 「合ったものは金」をそのまま使う。開いている画面のメニューと、選んでいるタブに金の条を
  * 1 本引く（入力欄のフォーカスの下辺・エラーの縦罫と同じ 2px）。塗りつぶさない。 */
