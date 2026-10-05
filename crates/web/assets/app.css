@@ -957,12 +957,13 @@ button[aria-busy='true'] .js-pending-label {
 
 
 /* ── 新しいバージョンの知らせ（`console/layout.html` の `.update-notice`） ───────
- * 画面の右下に留め、押すまで消さない。フッターに重ねない高さに置く。印は他の「いまのもの」と
+ * 画面の上の中央に留め、押すまで消さない（下の端では気付かれにくかった）。印は他の「いまのもの」と
  * 同じ左の金の条。 */
 .update-notice {
   position: fixed;
-  right: 1rem;
-  bottom: 3.5rem;
+  top: 0.5rem;
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 1080;
   display: flex;
   align-items: center;
