@@ -251,7 +251,7 @@
           {% for group in candidate_groups %}
           <optgroup label="{{ messages.get(group.label_key) }}">
             {% for candidate in group.candidates %}
-            <option value="{{ candidate.choice_value() }}">{{ candidate.display_name }} — {{ candidate.identifier }}{% if let Some(owner) = candidate.application_name %}（{{ messages.get_arg("admin-applications-candidate-owned", "application", owner.as_str()) }}）{% endif %}</option>
+            <option value="{{ candidate.choice_value() }}">{{ candidate.display_name }} — {{ candidate.identifier }}{% if let Some(owner) = candidate.application_name %}{{ messages.get_arg("admin-applications-candidate-owned", "application", owner.as_str()) }}{% endif %}</option>
             {% endfor %}
           </optgroup>
           {% endfor %}

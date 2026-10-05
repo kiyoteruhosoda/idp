@@ -962,6 +962,23 @@ mod tests {
         );
     }
 
+    /// 英語の画面では持ち主の注記を半角の括弧で添え、件数は複数形の崩れない形で言う。
+    #[test]
+    fn english_owner_note_and_delete_summary_read_naturally() {
+        let messages = Messages::new(Locale::En);
+        assert_eq!(
+            messages.get_arg("admin-applications-candidate-owned", "application", "wiki"),
+            r#" (currently on "wiki")"#
+        );
+        assert_eq!(
+            messages.get_args(
+                "admin-applications-delete-summary",
+                &[("bindings", "1"), ("principals", "0")],
+            ),
+            "Deleting removes these from this application: identities: 1, assigned principals: 0."
+        );
+    }
+
     /// 選んだ相手が別のアプリの名乗りなら、「○○ から移す」確認を出す。送り直しは移す元を名指しする。
     #[test]
     fn a_target_owned_elsewhere_asks_to_move_it_from_that_application() {
