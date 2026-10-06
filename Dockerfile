@@ -11,7 +11,7 @@
 # 実行ステージ（debian:bookworm-slim）と glibc ABI を揃えるため、Rust ビルダーも
 # bookworm に固定する。rust:slim はタグ更新で trixie 等へ進み得るため、NAS 等の
 # デプロイ先で `GLIBC_2.39 not found` が発生しないようにする。
-FROM rust:slim-bookworm@sha256:ff521445a372125ed4f76e1453a1f8098f2d05332d1601d30db1c1f62757e730 AS builder
+FROM rust:slim-bookworm@sha256:2c3a22f0a5533ea2dd5a16627bc841228151faa2d4de2644ac9987e4a2f1f2fa AS builder
 WORKDIR /build
 
 RUN apt-get update \
@@ -63,7 +63,7 @@ RUN find crates -name '*.rs' -exec touch {} + \
 # sqlx-cli のビルドには Rust ツールチェインと C ビルド依存が必要だが、それらを migrate 実行イメージへ
 # 持ち込むと assay-migrate.tar が肥大化する。ビルド専用ステージへ閉じ込め、実行ステージには sqlx binary と
 # migrations だけを渡す。
-FROM rust:slim-bookworm@sha256:ff521445a372125ed4f76e1453a1f8098f2d05332d1601d30db1c1f62757e730 AS migrate-tool-builder
+FROM rust:slim-bookworm@sha256:2c3a22f0a5533ea2dd5a16627bc841228151faa2d4de2644ac9987e4a2f1f2fa AS migrate-tool-builder
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential perl pkg-config \
     && rm -rf /var/lib/apt/lists/* \
