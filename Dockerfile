@@ -72,7 +72,7 @@ RUN apt-get update \
 # ---- migrate ----
 # DDL / マスタデータ適用の専用ジョブ（sqlx migrate run）。CLAUDE.md schema-version 方針に従い、
 # アプリ起動時には適用せず、この単独ジョブで適用する。Compose の migrate サービスから使う。
-FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 AS migrate
+FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587 AS migrate
 WORKDIR /migrate
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
@@ -85,7 +85,7 @@ USER assay
 ENTRYPOINT ["sqlx", "migrate", "run", "--source", "/migrate/migrations"]
 
 # ---- 実行イメージ共通ベース ----
-FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 AS runtime-base
+FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587 AS runtime-base
 # TLS 検証用のルート証明書（web→api の https 呼び出し等）と、ヘルスチェック用の curl。非 root 実行。
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
