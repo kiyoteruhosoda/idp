@@ -1343,6 +1343,41 @@ mod tests {
         assert!(html_has_link(&register, "/t/account/passkey"), "{register}");
     }
 
+    /// 「最終使用」も登録日時と同じ書き方で出す（利用者のタイムゾーンへ直すのは `local-time`）。
+    /// 一度も使っていないパスキーには出さない。
+    #[test]
+    fn the_passkey_list_shows_last_use_like_the_registration_time() {
+        let messages = Messages::new(Locale::Ja);
+        let credential = |last_used_at: Option<&str>| PasskeyCredentialInfo {
+            id: "c1".into(),
+            name: "ノート PC".into(),
+            created_at: "2026-08-20T10:00:00Z".into(),
+            last_used_at: last_used_at.map(Into::into),
+            suspended: false,
+        };
+        let render_list = |credentials: &[PasskeyCredentialInfo]| {
+            render(&PasskeyListTemplate {
+                messages: &messages,
+                tenant_prefix: "/t",
+                credentials,
+                saved_key: None,
+                error_key: None,
+            })
+        };
+
+        let used = render_list(&[credential(Some("2026-10-16T08:00:00Z"))]);
+        assert!(
+            used.contains(
+                r#"<time class="local-time" datetime="2026-10-16T08:00:00Z">2026-10-16 08:00 UTC</time>"#
+            ),
+            "{used}"
+        );
+        assert!(!used.contains(": 2026-10-16T08:00:00Z"), "{used}");
+
+        let unused = render_list(&[credential(None)]);
+        assert!(!unused.contains(&messages.get("passkey-last-used")), "{unused}");
+    }
+
     /// 登録が失敗しても行き止まりにしない（再試行のほかに一覧へ抜ける道を残す）。
     #[test]
     fn the_passkey_register_screen_can_be_left_after_a_failure() {
