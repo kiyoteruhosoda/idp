@@ -21,6 +21,31 @@ PUBLIC_WEB_BASE_URL=http://localhost:8081 API_BASE_URL=http://localhost:8080 \
 `INTERNAL_SERVICE_TOKEN` を共有する（web→api の `/internal/*` 呼び出しに必要）。
 待ち受けポートの全体像は「リバースプロキシと公開範囲」の「待ち受けポート一覧」を参照。
 
+## 本番（nolumia）へ配りたいとき
+
+nolumia の本番は nolumialab の **k3s** で動く（namespace `idp-prod`。宣言は deploy-repo の
+`k8s/idp-prod/`）。README の Docker Compose と `scripts/deploy.sh` は、手元と別の場所へ配るときの形で、
+本番には使わない。
+
+1. PR を main へマージする。**それだけで deck（https://deck.nolumia.com）が `idp/prod` の
+   build → pin → deploy を自動で走らせる**（api・web・migrate の 3 本を焼き、宣言の digest を書き換えて当てる）。
+   ⚠ 手で release を重ねない（同じコミットでも digest が変わり、もう一度入れ替わる）
+2. 走り終わったかを見る: `deck-machine.py status idp/prod` が `succeeded` になるまで待つ。
+   `failed` なら `deck-machine.py log idp/prod` の末尾を読む（deploy-repo への push の競合なら
+   `deck-machine.py release idp/prod` で積み直す）
+3. 入れ替わったかを見る:
+
+   ```bash
+   sudo k3s kubectl -n idp-prod get deploy api web \
+     -o custom-columns=NAME:.metadata.name,IMAGE:.spec.template.spec.containers[0].image
+   ```
+
+   タグが `sha-<マージコミット>` になっていればよい。⚠ 入れ替わりの直後はしばらく古い pod も応答する
+
+stg（`idp-stg`）はふだん 0 に縮めてある。画面を確かめたいときは `deck-machine.py release idp/stg` で
+main の版を出し、`kubectl -n idp-stg scale` で mariadb → api・web・proxy を 1 に上げる。
+⚠ 使い終わったら 0 に戻す。
+
 ## マイグレーションを適用したいとき
 
 ```sh
@@ -1226,30 +1251,15 @@ curl -X DELETE "https://<api>/{tenant_id}/admin/users/{user_id}/login-identifier
 既製品（上流のアプリ）はどちらも持たないので、⚠ **止めた人は、そのアプリのセッションと
 アクセストークンが切れるまで入れたままになる。**
 
-対象は **task（Vikunja）** と **forge（Forgejo）** の 2 本（2026-09-20 に使い捨ての利用者で実測）。
+対象は **forge（Forgejo）** の 1 本（2026-09-20 に使い捨ての利用者で実測）。
 
-| | task（Vikunja） | forge（Forgejo） |
-|---|---|---|
-| 新しいログイン | 止まる（assay が断る） | 止まる（assay が断る） |
-| アプリ側の口座 | **残る**（`Active` のまま） | **残る**（`active: true` のまま） |
-| 画面のセッション | **効き続ける** | **効き続ける** |
-| API トークン | **効き続ける** | **効き続ける** |
-| SSH 鍵 | — | ⚠ この配備は **SSH の口を出していない**（`3000/tcp` だけ）ので、鍵は初めから使えない |
-
-### task（Vikunja）
-
-⚠ **画面に管理者用の口が無い。** CLI で止める（消す）。
-
-```bash
-# いま誰が居るか（ID を確かめる）
-sudo k3s kubectl -n task-prod exec deploy/app -- /app/vikunja/vikunja user list
-# 消す（⚠ --now を付けないと本人へメールを送るだけで、このアプリは mailer を切ってある）
-sudo k3s kubectl -n task-prod exec deploy/app -- /app/vikunja/vikunja user delete <id> --now --confirm
-```
-
-⚠ **放っておくと最大 3 日入れたまま。** 画面が持つ控え（JWT）は 10 分だが、それを出し直す控えが
-Cookie（`vikunja_refresh_token`）にあり、寿命は 3 日ある。**止めたあとでも `POST
-/api/v1/user/token/refresh` は新しい JWT を返す**ので、開いているタブがあるかぎり居座れる。
+| | forge（Forgejo） |
+|---|---|
+| 新しいログイン | 止まる（assay が断る） |
+| アプリ側の口座 | **残る**（`active: true` のまま） |
+| 画面のセッション | **効き続ける** |
+| API トークン | **効き続ける** |
+| SSH 鍵 | ⚠ この配備は **SSH の口を出していない**（`3000/tcp` だけ）ので、鍵は初めから使えない |
 
 ### forge（Forgejo）
 
@@ -1264,7 +1274,7 @@ Cookie（`vikunja_refresh_token`）にあり、寿命は 3 日ある。**止め�
 
 ### なぜ受け口を足さないのか
 
-どちらも上流のアプリで、受け口（ADR-0053）と定期照合（ADR-0057 の名簿）を足すには
+上流のアプリで、受け口（ADR-0053）と定期照合（ADR-0057 の名簿）を足すには
 フォークに手を入れ続けることになる。⚠ **自前のアプリ（7 本）はこの手順を要らなくしてある** ——
 足りないのは既製品の側だけなので、**手順で埋める**と決めた（task [#122](https://task.nolumia.com/tasks/122)）。
 
