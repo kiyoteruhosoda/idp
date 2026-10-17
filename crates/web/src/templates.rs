@@ -1730,6 +1730,39 @@ mod tests {
         assert!(!html.contains("navbar-tenant-label"), "{html}");
     }
 
+    /// 外部 IdP の一覧で、相手に登録する長い URL は折って全文を見せ（`code-wrap`）、
+    /// 写すボタンを添える。⚠ 折らないと 1280px でも表が右へはみ出す。
+    #[test]
+    fn external_idp_list_wraps_long_urls_and_offers_a_copy_button() {
+        let messages = Messages::new(Locale::Ja);
+        let acs = "https://assay.example.com/019f0000-0000-7000-8000-00000000a001/federation/saml/acs/corp";
+        let providers: Vec<crate::admin_dto::ExternalIdpView> = serde_json::from_value(serde_json::json!([{
+            "id": "p1", "provider_code": "corp", "display_name": "Corp", "issuer": "https://idp.example.org",
+            "protocol": "saml", "has_client_secret": false, "enabled": true, "allow_auto_link": false,
+            "saml_sp_entity_id": "https://assay.example.com/019f0000-0000-7000-8000-00000000a001/saml/sp",
+            "saml_acs_url": acs, "redirect_uri": "https://assay.example.com/unused",
+            "created_at": "2026-10-16T00:00:00Z", "updated_at": "2026-10-16T00:00:00Z"
+        }]))
+        .expect("view");
+        let html = render(&ExternalIdpsConsole {
+            messages: &messages,
+            tenant: "/t",
+            admin: None,
+            csrf: "csrf",
+            providers: &providers,
+            saved: false,
+            deleted: false,
+            error_key: None,
+        });
+        assert!(
+            html.contains(&format!(r#"<code class="code-wrap">{acs}</code>"#)),
+            "{html}"
+        );
+        assert!(html.contains(&format!(r#"data-copy-text="{acs}""#)), "{html}");
+        assert!(html.contains("data-copy-status"), "{html}");
+        assert!(!html.contains(r#"<code class="text-break">"#), "{html}");
+    }
+
     /// IdP メタデータのダウンロード導線は api への直接リンクではなく、web のルートであること。
     #[test]
     fn saml_console_links_idp_metadata_on_the_web_origin() {

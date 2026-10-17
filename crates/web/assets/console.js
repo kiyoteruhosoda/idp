@@ -1,3 +1,44 @@
+// コピーのボタン（管理コンソール共通）。`data-copy-text` の値をクリップボードへ写す。
+//
+// ⚠ 値は属性で受け取る（CSP が `script-src 'self'` なのでインライン JS は使えない）。
+// 写せたら、画面の `[data-copy-status]` に `data-copied-text` の文言を出す（読み上げ用）。
+// クリップボードを断られたら、ボタンの前の `<code>` を選択状態にする（本人が Ctrl+C で写せる）。
+(function () {
+  'use strict';
+  document.addEventListener('click', function (event) {
+    var button = event.target && event.target.closest ? event.target.closest('[data-copy-text]') : null;
+    if (!button) {
+      return;
+    }
+    var text = button.getAttribute('data-copy-text') || '';
+    var status = document.querySelector('[data-copy-status]');
+    var selectSource = function () {
+      var source = button.previousElementSibling;
+      if (!source) {
+        return;
+      }
+      var range = document.createRange();
+      range.selectNodeContents(source);
+      var selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    };
+    if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') {
+      selectSource();
+      return;
+    }
+    navigator.clipboard.writeText(text).then(
+      function () {
+        if (status) {
+          status.textContent = '';
+          status.textContent = status.getAttribute('data-copied-text') || '';
+        }
+      },
+      selectSource
+    );
+  });
+})();
+
 // 破壊的操作の確認ダイアログ（管理コンソール共通）。
 //
 // 文言はテンプレートが form の `data-confirm` 属性へ出力する。`onsubmit="return confirm('...')"`

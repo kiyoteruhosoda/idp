@@ -40,10 +40,13 @@
           {% if p.enabled %}<span class="badge text-bg-success">{{ messages.get("admin-external-idps-state-enabled") }}</span>{% else %}<span class="badge text-bg-secondary">{{ messages.get("admin-external-idps-state-disabled") }}</span>{% endif %}
           {% if p.allow_auto_link %}<span class="badge text-bg-info ms-1">{{ messages.get("admin-external-idps-state-auto-link") }}</span>{% endif %}
         </td>
-        {# 外部 IdP 側へ貼る URL。OIDC はコールバック、SAML は ACS。組み立て規則を管理者に推測させない。 #}
+        {# 外部 IdP 側へ貼る URL。OIDC はコールバック、SAML は ACS。組み立て規則を管理者に推測させない。
+           ⚠ 長いので折って全文を見せ（`code-wrap`）、写し間違えないようにコピーのボタンを添える。 #}
         <td data-label="{{ messages.get("admin-external-idps-col-redirect") }}">
-          <code class="text-break">{{ p.callback_url() }}</code>
-          {% if let Some(entity_id) = p.saml_sp_entity_id %}<div class="form-text">{{ messages.get("admin-external-idps-sp-entity-id") }} <code class="text-break">{{ entity_id }}</code></div>{% endif %}
+          <code class="code-wrap">{{ p.callback_url() }}</code>
+          <button type="button" class="btn btn-link btn-sm p-0 ms-1 align-baseline" data-copy-text="{{ p.callback_url() }}" title="{{ messages.get("admin-external-idps-copy-url") }}" aria-label="{{ messages.get("admin-external-idps-copy-url") }}"><i class="fa-regular fa-copy" aria-hidden="true"></i></button>
+          {% if let Some(entity_id) = p.saml_sp_entity_id %}<div class="form-text">{{ messages.get("admin-external-idps-sp-entity-id") }} <code class="code-wrap">{{ entity_id }}</code>
+            <button type="button" class="btn btn-link btn-sm p-0 ms-1 align-baseline" data-copy-text="{{ entity_id }}" title="{{ messages.get("admin-external-idps-copy-entity-id") }}" aria-label="{{ messages.get("admin-external-idps-copy-entity-id") }}"><i class="fa-regular fa-copy" aria-hidden="true"></i></button></div>{% endif %}
         </td>
         <td data-label="{{ messages.get("admin-signing-keys-col-actions") }}">
           <div class="d-flex flex-wrap gap-2">
@@ -59,5 +62,7 @@
     </tbody>
   </table>
 </div>
+{# コピーのボタンが写し終えたことを読み上げる（`console.js` の `data-copy-text`）。 #}
+<p class="visually-hidden" role="status" data-copy-status data-copied-text="{{ messages.get("admin-external-idps-copied") }}"></p>
 {% endif %}
 {% endblock %}
