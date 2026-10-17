@@ -1343,6 +1343,44 @@ mod tests {
         assert!(html_has_link(&register, "/t/account/passkey"), "{register}");
     }
 
+    /// 「最終使用」も登録日時と同じ書き方で出す（利用者のタイムゾーンへ直すのは `local-time`）。
+    /// 一度も使っていないパスキーには出さない。
+    #[test]
+    fn the_passkey_list_shows_last_use_like_the_registration_time() {
+        let messages = Messages::new(Locale::Ja);
+        let credential = |last_used_at: Option<&str>| PasskeyCredentialInfo {
+            id: "c1".into(),
+            name: "ノート PC".into(),
+            created_at: "2026-08-20T10:00:00Z".into(),
+            last_used_at: last_used_at.map(Into::into),
+            suspended: false,
+        };
+        let render_list = |credentials: &[PasskeyCredentialInfo]| {
+            render(&PasskeyListTemplate {
+                messages: &messages,
+                tenant_prefix: "/t",
+                credentials,
+                saved_key: None,
+                error_key: None,
+            })
+        };
+
+        let used = render_list(&[credential(Some("2026-10-16T08:00:00Z"))]);
+        assert!(
+            used.contains(
+                r#"<time class="local-time" datetime="2026-10-16T08:00:00Z">2026-10-16 08:00 UTC</time>"#
+            ),
+            "{used}"
+        );
+        assert!(!used.contains(": 2026-10-16T08:00:00Z"), "{used}");
+
+        let unused = render_list(&[credential(None)]);
+        assert!(
+            !unused.contains(&messages.get("passkey-last-used")),
+            "{unused}"
+        );
+    }
+
     /// 登録が失敗しても行き止まりにしない（再試行のほかに一覧へ抜ける道を残す）。
     #[test]
     fn the_passkey_register_screen_can_be_left_after_a_failure() {
@@ -1693,6 +1731,42 @@ mod tests {
         });
         assert!(html.contains("admin-1"), "{html}");
         assert!(!html.contains("navbar-tenant-label"), "{html}");
+    }
+
+    /// 外部 IdP の一覧で、相手に登録する長い URL は折って全文を見せ（`code-wrap`）、
+    /// 写すボタンを添える。⚠ 折らないと 1280px でも表が右へはみ出す。
+    #[test]
+    fn external_idp_list_wraps_long_urls_and_offers_a_copy_button() {
+        let messages = Messages::new(Locale::Ja);
+        let acs = "https://assay.example.com/019f0000-0000-7000-8000-00000000a001/federation/saml/acs/corp";
+        let providers: Vec<crate::admin_dto::ExternalIdpView> = serde_json::from_value(serde_json::json!([{
+            "id": "p1", "provider_code": "corp", "display_name": "Corp", "issuer": "https://idp.example.org",
+            "protocol": "saml", "has_client_secret": false, "enabled": true, "allow_auto_link": false,
+            "saml_sp_entity_id": "https://assay.example.com/019f0000-0000-7000-8000-00000000a001/saml/sp",
+            "saml_acs_url": acs, "redirect_uri": "https://assay.example.com/unused",
+            "created_at": "2026-10-16T00:00:00Z", "updated_at": "2026-10-16T00:00:00Z"
+        }]))
+        .expect("view");
+        let html = render(&ExternalIdpsConsole {
+            messages: &messages,
+            tenant: "/t",
+            admin: None,
+            csrf: "csrf",
+            providers: &providers,
+            saved: false,
+            deleted: false,
+            error_key: None,
+        });
+        assert!(
+            html.contains(&format!(r#"<code class="code-wrap">{acs}</code>"#)),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(r#"data-copy-text="{acs}""#)),
+            "{html}"
+        );
+        assert!(html.contains("data-copy-status"), "{html}");
+        assert!(!html.contains(r#"<code class="text-break">"#), "{html}");
     }
 
     /// IdP メタデータのダウンロード導線は api への直接リンクではなく、web のルートであること。

@@ -10,7 +10,7 @@ IdP ドメインの Cookie セッションによる **SSO** を含む。
 > **`IdP` は役割名として使い分ける。** 文中の「外部 IdP」は連携先の他社プロバイダ、
 > 「IdP メタデータ」は SAML の用語で、どちらもこの製品を指さない。この製品自身を指すときは
 > `assay` と書く。リポジトリ名・クレート名・イメージ名・スタック名は `idp` のままである
-> （改名は Komodo のビルドとデプロイ定義に波及するため、別途）。
+> （改名は deploy-repo の宣言とビルドの表に波及するため、別途）。
 
 ## 概要
 
@@ -235,6 +235,12 @@ sequenceDiagram
 | [`docs/adr/`](docs/adr/) | 設計判断（ADR） |
 
 ## クイックスタート
+
+> **ここに書くのは、手元や自前のホストへ配るときの形（Docker Compose）である。**
+> nolumia の本番は k3s で動き、main へのマージで deck が自動で配る。手順は
+> [`docs/OPERATIONS.md`「本番（nolumia）へ配りたいとき」](docs/OPERATIONS.md#本番nolumiaへ配りたいとき)。
+> 下の構成図（同梱 proxy・api・web・mariadb の 4 つ）は k3s でも同じで、前段が DSM ではなく
+> Cloudflare と k3s の入口になるだけである。
 
 ### コンテナ一括（推奨）
 

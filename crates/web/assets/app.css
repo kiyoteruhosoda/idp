@@ -66,6 +66,15 @@ code {
   word-break: normal;
 }
 
+/* ⚠ **ただし長い URL は折る**（外部 IdP の「相手に登録する URL」など）。上の規則のままだと、
+ * テナント ID を含む 100 字近い URL が 1 行で列幅を決め、広い画面（1280px）でも表が右へはみ出し、
+ * ほかの列（Issuer）が数文字ずつに潰れる。どこで折っても URL は URL なので、`anywhere` で
+ * 列の最小幅から外す。全文は折り返して見え、横のコピーのボタンで写せる。 */
+.table-responsive td code.code-wrap {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 /* 折り返さない塊（JWKS の JSON・traceback）を狭い画面でも読めるようにする。
  *
  * `<pre>` は既定が `white-space: pre` で、**行の途中では絶対に折り返さない**。JWKS は 1 行の
