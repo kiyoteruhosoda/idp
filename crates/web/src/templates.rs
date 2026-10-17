@@ -1375,7 +1375,10 @@ mod tests {
         assert!(!used.contains(": 2026-10-16T08:00:00Z"), "{used}");
 
         let unused = render_list(&[credential(None)]);
-        assert!(!unused.contains(&messages.get("passkey-last-used")), "{unused}");
+        assert!(
+            !unused.contains(&messages.get("passkey-last-used")),
+            "{unused}"
+        );
     }
 
     /// 登録が失敗しても行き止まりにしない（再試行のほかに一覧へ抜ける道を残す）。
@@ -1758,7 +1761,10 @@ mod tests {
             html.contains(&format!(r#"<code class="code-wrap">{acs}</code>"#)),
             "{html}"
         );
-        assert!(html.contains(&format!(r#"data-copy-text="{acs}""#)), "{html}");
+        assert!(
+            html.contains(&format!(r#"data-copy-text="{acs}""#)),
+            "{html}"
+        );
         assert!(html.contains("data-copy-status"), "{html}");
         assert!(!html.contains(r#"<code class="text-break">"#), "{html}");
     }
