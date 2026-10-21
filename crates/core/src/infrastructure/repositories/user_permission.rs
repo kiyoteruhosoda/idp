@@ -81,6 +81,26 @@ impl UserPermissionRepository for SqlxUserPermissionRepository {
             .collect()
     }
 
+    async fn list_scoped_codes_for_user(&self, user_id: Uuid) -> Result<Vec<(TenantId, String)>> {
+        let rows = sqlx::query(
+            "SELECT tenant_id, permission_code FROM user_permissions WHERE user_id = ?",
+        )
+        .bind(user_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        rows.iter()
+            .map(|row| {
+                let tenant: String = row.try_get("tenant_id").map_err(repo_err)?;
+                let tenant = Uuid::parse_str(&tenant)
+                    .map(TenantId::from)
+                    .map_err(|e| DomainError::Repository(e.to_string()))?;
+                let code: String = row.try_get("permission_code").map_err(repo_err)?;
+                Ok((tenant, code))
+            })
+            .collect()
+    }
+
     async fn has_permission(&self, tenant_id: TenantId, user_id: Uuid, code: &str) -> Result<bool> {
         let row = sqlx::query(
             "SELECT 1 FROM user_permissions \

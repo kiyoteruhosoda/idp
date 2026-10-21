@@ -789,6 +789,19 @@ mod tests {
     }
     #[async_trait]
     impl UserPermissionRepository for FakePermissions {
+        async fn list_scoped_codes_for_user(
+            &self,
+            user_id: Uuid,
+        ) -> DomainResult<Vec<(TenantId, String)>> {
+            Ok(self
+                .granted
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, u, _)| *u == user_id)
+                .map(|(t, _, c)| (*t, c.clone()))
+                .collect())
+        }
         async fn list_available_codes(&self) -> DomainResult<Vec<String>> {
             Ok(vec![])
         }

@@ -153,6 +153,7 @@ i18n/                 # fluent 翻訳（.ftl）。api から ../../i18n で埋�
 - 権限は「要求テナントを scope に持つか」の**完全一致**で解決する（ADR-0009 §4）。
 - 権限の検証は Application 層で行い、Presentation 層には結果（可否）のみ渡す。
 - 管理トークンの `perms` クレームは `aud` が管理 API のトークンにしか載せない。未指定・空 = 権限なし。
+- **細粒度コードは管理者へ届かない**（ADR-0069）。付与・剥奪は呼び出し元が含意する範囲だけ（`permission::may_assign`）、口座の操作は対象の権限を全部呼び出し元が付与できるときだけ（`permission::may_manage_account`。判定は `AdminAccountGuard`）。管理者の口座を扱う例外の口は `idp.admins:write`（`idp.system.admin` には届かない）。口座や権限を変える口を足したら、本体の前で `AdminAccountGuard` を呼ぶ。
 - **クライアントへ包括的な管理権限（`idp.system.admin` / `idp.tenant.admin`）を付与しない**（DB の CHECK 制約 + アプリ層の二重防御。ADR-0037）。
 - 管理操作の実行主体は `domain::admin_actor::AdminActor`（利用者 or クライアント）で表す。監査ログの `user_id` / `client_id` 列への写像は同型が持つ。
 

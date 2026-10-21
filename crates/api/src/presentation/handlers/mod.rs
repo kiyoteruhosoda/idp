@@ -41,6 +41,7 @@ pub mod saml_sso;
 pub mod token;
 pub mod userinfo;
 
+use crate::application::admin_account_guard::AdminAccountGuardError;
 use crate::application::audit::RequestContext;
 use crate::application::permission_management::PermissionManagementError;
 use crate::presentation::correlation::CorrelationId;
@@ -92,6 +93,19 @@ pub(crate) fn request_context(
         correlation_id: correlation.0.clone(),
         ip_address,
         user_agent,
+    }
+}
+
+/// `AdminAccountGuardError` を `ApiError` に変換する（口座の操作・権限の付与の各口で共有。task #579）。
+pub(crate) fn map_admin_account_guard_error(
+    e: AdminAccountGuardError,
+    locale: ApiLocale,
+) -> ApiError {
+    match e {
+        AdminAccountGuardError::Forbidden => {
+            ApiError::Forbidden(ApiMessages::new(locale).get("api-admin-account-protected"))
+        }
+        AdminAccountGuardError::Internal(m) => ApiError::Internal(m),
     }
 }
 

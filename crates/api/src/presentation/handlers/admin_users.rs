@@ -19,7 +19,9 @@ use crate::presentation::dto::{
     UserTokenReissueResponse, UserUnlockResponse,
 };
 use crate::presentation::error::ApiError;
-use crate::presentation::handlers::{map_permission_management_error, request_context};
+use crate::presentation::handlers::{
+    map_admin_account_guard_error, map_permission_management_error, request_context,
+};
 use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
@@ -194,6 +196,11 @@ pub async fn update_user_status(
     Json(body): Json<UpdateUserStatusRequest>,
 ) -> Result<Json<UserSummaryResponse>, ApiError> {
     let target = parse_user_id(&user_id, locale)?;
+    state
+        .admin_account_guard
+        .ensure_may_manage_account(tenant.context(), &admin.permission_codes, target)
+        .await
+        .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let status = UserStatus::parse(&body.status).map_err(|_| {
         ApiError::BadRequest(ApiMessages::new(locale).get("api-user-status-invalid"))
     })?;
@@ -249,6 +256,11 @@ pub async fn update_user_profile(
     Json(body): Json<UpdateUserProfileRequest>,
 ) -> Result<Json<UserSummaryResponse>, ApiError> {
     let target = parse_user_id(&user_id, locale)?;
+    state
+        .admin_account_guard
+        .ensure_may_manage_account(tenant.context(), &admin.permission_codes, target)
+        .await
+        .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(
         &headers,
         &correlation,
@@ -297,6 +309,11 @@ pub async fn delete_user(
     Path((_tenant_id, user_id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     let target = parse_user_id(&user_id, locale)?;
+    state
+        .admin_account_guard
+        .ensure_may_manage_account(tenant.context(), &admin.permission_codes, target)
+        .await
+        .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(
         &headers,
         &correlation,
@@ -336,6 +353,11 @@ pub async fn reset_user_password(
     Path((_tenant_id, user_id)): Path<(String, String)>,
 ) -> Result<Json<UserPasswordResetResponse>, ApiError> {
     let target = parse_user_id(&user_id, locale)?;
+    state
+        .admin_account_guard
+        .ensure_may_manage_account(tenant.context(), &admin.permission_codes, target)
+        .await
+        .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(
         &headers,
         &correlation,
@@ -380,6 +402,11 @@ pub async fn reset_user_mfa(
     Path((_tenant_id, user_id)): Path<(String, String)>,
 ) -> Result<Json<UserMfaResetResponse>, ApiError> {
     let target = parse_user_id(&user_id, locale)?;
+    state
+        .admin_account_guard
+        .ensure_may_manage_account(tenant.context(), &admin.permission_codes, target)
+        .await
+        .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(
         &headers,
         &correlation,
@@ -426,6 +453,11 @@ pub async fn reissue_user_tokens(
     Path((_tenant_id, user_id)): Path<(String, String)>,
 ) -> Result<Json<UserTokenReissueResponse>, ApiError> {
     let target = parse_user_id(&user_id, locale)?;
+    state
+        .admin_account_guard
+        .ensure_may_manage_account(tenant.context(), &admin.permission_codes, target)
+        .await
+        .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(
         &headers,
         &correlation,
@@ -508,6 +540,11 @@ pub async fn unlock_user(
     Path((_tenant_id, user_id)): Path<(String, String)>,
 ) -> Result<Json<UserUnlockResponse>, ApiError> {
     let target = parse_user_id(&user_id, locale)?;
+    state
+        .admin_account_guard
+        .ensure_may_manage_account(tenant.context(), &admin.permission_codes, target)
+        .await
+        .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(
         &headers,
         &correlation,

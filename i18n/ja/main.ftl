@@ -693,6 +693,7 @@ api-saml-sp-acs-url-scheme = ACS URL は https を使ってください（http �
 api-saml-sp-entity-id-conflict = そのエンティティ ID はこのテナントで既に登録されています。
 api-authentication-required = サインインが必要です。
 api-permission-insufficient = この操作を行う権限がありません。
+api-admin-account-protected = あなたが持っていない権限にかかわるため、この操作はできません（自分より強い権限を持つアカウントの操作や、自分の持っていない権限の付与・剥奪はできません）。
 api-origin-not-allowed = 許可されていないオリジンからのリクエストのため拒否しました。
 api-invalid-request = リクエストが無効です。
 admin-nav-tenants = テナント一覧

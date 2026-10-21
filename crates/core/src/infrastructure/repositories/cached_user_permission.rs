@@ -79,6 +79,11 @@ impl UserPermissionRepository for CachedUserPermissionRepository {
         self.inner.list_codes_for_user(tenant_id, user_id).await
     }
 
+    async fn list_scoped_codes_for_user(&self, user_id: Uuid) -> Result<Vec<(TenantId, String)>> {
+        // 口座の操作の前の確認に使う。古い結果で許さないよう、キャッシュを通さない。
+        self.inner.list_scoped_codes_for_user(user_id).await
+    }
+
     async fn has_permission(&self, tenant_id: TenantId, user_id: Uuid, code: &str) -> Result<bool> {
         let key = Self::key(tenant_id, user_id, code);
         if let Some(hit) = self.cache.get(&key) {
@@ -154,6 +159,19 @@ mod tests {
     }
     #[async_trait]
     impl UserPermissionRepository for CountingPermissions {
+        async fn list_scoped_codes_for_user(
+            &self,
+            user_id: Uuid,
+        ) -> Result<Vec<(TenantId, String)>> {
+            Ok(self
+                .granted
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, u, _)| *u == user_id)
+                .map(|(t, _, c)| (*t, c.clone()))
+                .collect())
+        }
         async fn list_available_codes(&self) -> Result<Vec<String>> {
             self.available_calls.fetch_add(1, Ordering::SeqCst);
             if self

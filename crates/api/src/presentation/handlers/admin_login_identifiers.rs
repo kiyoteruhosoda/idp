@@ -15,7 +15,7 @@ use crate::domain::login_identifier::{LoginIdentifierType, UserLoginIdentifier};
 use crate::presentation::admin::{RequirePerms, UsersRead, UsersWrite};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::error::ApiError;
-use crate::presentation::handlers::request_context;
+use crate::presentation::handlers::{map_admin_account_guard_error, request_context};
 use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
@@ -145,6 +145,11 @@ pub async fn add_login_identifier(
     headers: HeaderMap,
     Json(body): Json<LoginIdentifierCreateRequest>,
 ) -> Result<(StatusCode, Json<LoginIdentifierResponse>), ApiError> {
+    state
+        .admin_account_guard
+        .ensure_may_manage_account(tenant.context(), &admin.permission_codes, user_id)
+        .await
+        .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(
         &headers,
         &correlation,
@@ -197,6 +202,11 @@ pub async fn update_login_identifier(
     headers: HeaderMap,
     Json(body): Json<LoginIdentifierUpdateRequest>,
 ) -> Result<Json<LoginIdentifierResponse>, ApiError> {
+    state
+        .admin_account_guard
+        .ensure_may_manage_account(tenant.context(), &admin.permission_codes, user_id)
+        .await
+        .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(
         &headers,
         &correlation,
@@ -245,6 +255,11 @@ pub async fn promote_primary_email(
     Path((_tenant_id, user_id, identifier_id)): Path<(String, Uuid, Uuid)>,
     headers: HeaderMap,
 ) -> Result<Json<LoginIdentifierResponse>, ApiError> {
+    state
+        .admin_account_guard
+        .ensure_may_manage_account(tenant.context(), &admin.permission_codes, user_id)
+        .await
+        .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(
         &headers,
         &correlation,
@@ -280,6 +295,11 @@ pub async fn delete_login_identifier(
     Path((_tenant_id, user_id, identifier_id)): Path<(String, Uuid, Uuid)>,
     headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
+    state
+        .admin_account_guard
+        .ensure_may_manage_account(tenant.context(), &admin.permission_codes, user_id)
+        .await
+        .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(
         &headers,
         &correlation,

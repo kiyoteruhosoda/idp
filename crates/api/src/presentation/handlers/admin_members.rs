@@ -20,7 +20,7 @@ use crate::presentation::dto::{
     UpdateAccountNoteRequest, UpdateMemberStatusRequest,
 };
 use crate::presentation::error::ApiError;
-use crate::presentation::handlers::request_context;
+use crate::presentation::handlers::{map_admin_account_guard_error, request_context};
 use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
@@ -147,6 +147,11 @@ pub async fn revoke_member(
 ) -> Result<StatusCode, ApiError> {
     let target = Uuid::parse_str(&user_id)
         .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get("api-invalid-request")))?;
+    state
+        .admin_account_guard
+        .ensure_may_manage_membership(tenant.context(), &admin.permission_codes, target)
+        .await
+        .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(
         &headers,
         &correlation,
@@ -195,6 +200,11 @@ pub async fn update_member_status(
     // （保持するとハンドラの future が `Send` でなくなり axum の `Handler` を満たさない）。
     let target = Uuid::parse_str(&user_id)
         .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get("api-invalid-request")))?;
+    state
+        .admin_account_guard
+        .ensure_may_manage_membership(tenant.context(), &admin.permission_codes, target)
+        .await
+        .map_err(|e| map_admin_account_guard_error(e, locale))?;
     // 受け付けるのは停止・再開の 2 遷移のみ。`INVITED` は招待フローが管理する状態のため、
     // ここから直接は設定させない。
     let status = MembershipStatus::parse(body.status.trim())

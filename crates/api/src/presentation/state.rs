@@ -19,6 +19,7 @@ use crate::application::account_setup::{AccountSetupLinkIssuer, AccountSetupServ
 use crate::application::account_tenants::AccountTenantsService;
 use crate::application::account_theme::AccountThemeService;
 use crate::application::admin_access::AdminAccessService;
+use crate::application::admin_account_guard::AdminAccountGuard;
 use crate::application::admin_login::AdminLoginService;
 use crate::application::application_access::ApplicationAccessService;
 use crate::application::application_log::ApplicationLogService;
@@ -210,6 +211,9 @@ pub struct AppState {
     pub clients_admin: Arc<ClientManagementService>,
     pub clients_status: Arc<ClientStatusService>,
     pub permissions_admin: Arc<PermissionManagementService>,
+    /// 細粒度コードの持ち主から、管理者の口座と管理者の権限を守る（task #579）。口座の操作・権限の
+    /// 付与の各口が、本体の処理の前に呼ぶ。
+    pub admin_account_guard: Arc<AdminAccountGuard>,
     /// 認証ポリシーの管理（CRUD。ユーザー認証・認証ポリシー仕様書 §7）。評価はログイン系サービスが行う。
     pub authentication_policies_admin: Arc<AuthenticationPolicyManagementService>,
     /// 管理者による利用者作成（自動生成パスワード・must_change_password。ADR-0009 §5）。
@@ -816,6 +820,10 @@ impl AppState {
             audit.clone(),
             clock.clone(),
         ));
+        let admin_account_guard = Arc::new(AdminAccountGuard::new(
+            users.clone(),
+            user_permissions.clone(),
+        ));
         // 認証ポリシーの管理（CRUD）。評価用のリポジトリ（login / passkey_authentication）と同一実装を共有する。
         let authentication_policies_admin = Arc::new(AuthenticationPolicyManagementService::new(
             authentication_policies.clone(),
@@ -1184,6 +1192,7 @@ impl AppState {
             clients_admin,
             clients_status,
             permissions_admin,
+            admin_account_guard,
             authentication_policies_admin,
             users_admin,
             login_identifiers_admin,

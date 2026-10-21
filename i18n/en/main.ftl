@@ -693,6 +693,7 @@ api-saml-sp-acs-url-scheme = The ACS URL must use https (http is allowed only fo
 api-saml-sp-entity-id-conflict = That entity ID is already registered in this tenant.
 api-authentication-required = Sign-in is required.
 api-permission-insufficient = You do not have permission to perform this action.
+api-admin-account-protected = This operation involves permissions you do not hold (you cannot manage accounts with stronger permissions than yours, or grant or revoke permissions you do not have).
 api-origin-not-allowed = This request was rejected because it did not come from an allowed origin.
 api-invalid-request = Invalid request.
 admin-nav-tenants = Tenants
