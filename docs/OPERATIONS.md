@@ -2123,23 +2123,30 @@ UPDATE users SET status = 'DISABLED'
 
 ## 秘密鍵の暗号化キー（KEY_ENCRYPTION_KEY）をローテーションしたいとき
 
-`KEY_ENCRYPTION_KEY` は `signing_keys.private_key_encrypted` の暗号化に使う。値を変えると既存の
-暗号化秘密鍵を復号できなくなるため、単純な差し替えは不可。MVP では次の手順で入れ替える。
-
-```sql
--- 1. 現行 ACTIVE 鍵を RETIRED にする（JWKS には残り、既存トークンの検証は継続可能）
-UPDATE signing_keys SET status = 'RETIRED' WHERE status = 'ACTIVE';
-```
+`KEY_ENCRYPTION_KEY` で包んでいる値（署名の秘密鍵・TOTP の共有鍵・外部 IdP のクライアントシークレット・
+SMTP のパスワード・SMS のトークン）を、api を止めた間に `assay-rewrap-secrets`（api のイメージに同梱）で
+新しい鍵へ包み直す。古い鍵を読み続ける仕組みは無いので、**api を止めてから流し、新しい鍵で起こす**。
 
 ```sh
-# 2. .env の KEY_ENCRYPTION_KEY を新しい値へ更新して api を再起動する（署名鍵は api が所有）。
-#    ACTIVE 鍵が無いため起動時ブートストラップが新鍵を新キーで暗号化して生成する。
-openssl rand -base64 32     # 新しい KEY_ENCRYPTION_KEY
-docker compose up -d api
+# 1. DB を退避する（下の「バックアップ／リストアしたいとき」）。退避は古い鍵とひと組で取っておく。
+# 2. api を止める（止めている間はログインできない）。
+docker compose stop api
+# 3. 新しい鍵を作り、今の鍵（KEY_ENCRYPTION_KEY）と新しい鍵（NEW_KEY_ENCRYPTION_KEY）を渡して流す。
+#    --check は数えるだけ。--apply は 1 つの取引で包み直し、1 件でも開けなければ何も書かない。
+#    外部 IdP ログインの途中の状態（external_login_requests）は消す。値は出さず件数だけを出す。
+openssl rand -base64 32     # 新しい鍵（.env の外の安全な場所に置き、NEW_KEY_ENCRYPTION_KEY で渡す）
+docker compose run --rm -e NEW_KEY_ENCRYPTION_KEY --entrypoint assay-rewrap-secrets api --check
+docker compose run --rm -e NEW_KEY_ENCRYPTION_KEY --entrypoint assay-rewrap-secrets api --apply
+# 4. .env の KEY_ENCRYPTION_KEY を新しい鍵にして api（と web）を起こす。
+docker compose up -d api web
 ```
 
-RETIRED 鍵は新キーでは復号できないが、公開鍵（`public_key`）は平文のため JWKS 掲載・検証は継続できる。
-`not_after` を過ぎたら DB から削除してよい。
+- もう一度 `--apply` を流しても、全部が新しい鍵で開けるなら何も書かずに `already rewrapped` で終わる。
+- 古い鍵の値と新しい鍵の値が混ざっている（新しい鍵で api を先に起こした等）と、何も書かずに止まる。
+- 起こしたあと、ログイン・JWKS（`/.well-known/jwks.json`）・2 段階認証・メール送信を確かめる。
+  うまくいかなければ、api を止めて 1. の退避を戻し、`KEY_ENCRYPTION_KEY` を古い鍵に戻して起こす。
+- 古い鍵は、確かめ終わるまで捨てない。捨てたあとは、それより前の退避の暗号化された値は開けない
+  （戻すなら退避を戻してからもう一度流す）。
 
 ## バックアップ／リストアしたいとき
 

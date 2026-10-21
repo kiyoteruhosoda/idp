@@ -17,5 +17,6 @@ pub mod outbound_http;
 pub mod password;
 pub mod rate_limit;
 pub mod repositories;
+pub mod secret_rewrap;
 pub mod sms;
 pub mod webauthn;

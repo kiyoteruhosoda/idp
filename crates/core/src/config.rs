@@ -784,6 +784,15 @@ fn load_key_encryption_key() -> anyhow::Result<([u8; 32], bool)> {
     }
 }
 
+/// 包み直し（`assay-rewrap-secrets`）の行き先の鍵 `NEW_KEY_ENCRYPTION_KEY`（base64、32 バイト）を読む。
+///
+/// 包み直すときだけ与える値で、api の起動では読まない。未設定なら `None`（開発用既定へは落とさない）。
+pub fn load_new_key_encryption_key() -> anyhow::Result<Option<[u8; 32]>> {
+    env_lookup("NEW_KEY_ENCRYPTION_KEY")
+        .map(|v| decode_secret_32("NEW_KEY_ENCRYPTION_KEY", &v))
+        .transpose()
+}
+
 /// `CSRF_SECRET`（base64、32 バイト）を読み込む。未設定なら開発用デフォルトを使う。
 fn load_csrf_secret() -> anyhow::Result<([u8; 32], bool)> {
     match env_lookup("CSRF_SECRET") {
