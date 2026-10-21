@@ -118,12 +118,19 @@ pub trait PasskeyEnrollment: Send + Sync {
         user_id: Uuid,
         user_name: &str,
     ) -> Result<(Uuid, serde_json::Value), PasskeyRegistrationError>;
+    /// 登録したパスキーの行の id を返す（[`Self::discard`] で取り消すため）。
     async fn complete(
         &self,
         user_id: Uuid,
         challenge_id: Uuid,
         name: &str,
         credential: serde_json::Value,
+    ) -> Result<Uuid, PasskeyRegistrationError>;
+    /// 登録したパスキーを取り消す（リンクの消費に負けたとき。task #586）。
+    async fn discard(
+        &self,
+        user_id: Uuid,
+        credential_row_id: Uuid,
     ) -> Result<(), PasskeyRegistrationError>;
 }
 
@@ -143,10 +150,17 @@ impl PasskeyEnrollment for PasskeyRegistrationService {
         challenge_id: Uuid,
         name: &str,
         credential: serde_json::Value,
-    ) -> Result<(), PasskeyRegistrationError> {
+    ) -> Result<Uuid, PasskeyRegistrationError> {
         self.complete_for_user(user_id, challenge_id, name, credential)
-            .await?;
-        Ok(())
+            .await
+    }
+
+    async fn discard(
+        &self,
+        user_id: Uuid,
+        credential_row_id: Uuid,
+    ) -> Result<(), PasskeyRegistrationError> {
+        self.discard_for_user(user_id, credential_row_id).await
     }
 }
 
@@ -284,7 +298,8 @@ impl AccountSetupService {
             return Err(AccountSetupError::NotAllowed);
         }
 
-        self.passkeys
+        let registered = self
+            .passkeys
             .complete(user.id, challenge_id, name, credential)
             .await?;
 
@@ -300,9 +315,23 @@ impl AccountSetupService {
         // ⚠ **登録が通ってから消費する。** 先に消費すると、認証器の側で断られた相手が
         // リンクも失って手詰まりになる（管理者に出し直してもらうしかなくなる）。
         let now = self.clock.now();
-        if let Err(e) = self.tokens.consume(&crypto::sha256_hex(token), now).await {
+        match self.tokens.consume(&crypto::sha256_hex(token), now).await {
+            Ok(Some(_)) => {}
+            // ⚠ **同じリンクで同時に登録した別の要求が先に消費した**（task #586）。1 本のリンクで
+            // 登録できるのは 1 つなので、こちらで登録したものは取り消して断る。
+            Ok(None) => {
+                if let Err(e) = self.passkeys.discard(user.id, registered).await {
+                    tracing::error!(
+                        error = %e,
+                        "failed to discard a passkey registered by a setup link that was already used"
+                    );
+                }
+                return Err(AccountSetupError::InvalidOrExpired);
+            }
             // 登録は済んでいる。消費に失敗してもリンクは期限で切れるので、ここでは落とさない。
-            tracing::warn!(error = %e, "failed to consume the setup link after registering a passkey");
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to consume the setup link after registering a passkey");
+            }
         }
 
         self.audit
@@ -387,6 +416,9 @@ mod tests {
     #[derive(Default)]
     struct FakePasskeys {
         completed: Mutex<Vec<Uuid>>,
+        discarded: Mutex<Vec<Uuid>>,
+        /// 登録の最中に、同じリンクを別の要求が使い切った形を作る（task #586）。
+        race_with: Mutex<Option<Arc<FakeSetupTokens>>>,
     }
     #[async_trait::async_trait]
     impl PasskeyEnrollment for FakePasskeys {
@@ -403,8 +435,21 @@ mod tests {
             _challenge_id: Uuid,
             _name: &str,
             _credential: serde_json::Value,
-        ) -> Result<(), PasskeyRegistrationError> {
+        ) -> Result<Uuid, PasskeyRegistrationError> {
             self.completed.lock().unwrap().push(user_id);
+            if let Some(tokens) = self.race_with.lock().unwrap().as_ref() {
+                for row in tokens.rows.lock().unwrap().iter_mut() {
+                    row.used_at = Some(now());
+                }
+            }
+            Ok(Uuid::from_u128(7))
+        }
+        async fn discard(
+            &self,
+            _user_id: Uuid,
+            credential_row_id: Uuid,
+        ) -> Result<(), PasskeyRegistrationError> {
+            self.discarded.lock().unwrap().push(credential_row_id);
             Ok(())
         }
     }
@@ -613,6 +658,34 @@ mod tests {
                 .await,
             Err(AccountSetupError::InvalidOrExpired)
         ));
+    }
+
+    /// 同じリンクで同時に 2 つ登録しようとすると、消費に負けた側の登録は取り消される（task #586）。
+    #[tokio::test]
+    async fn a_registration_that_loses_the_link_is_discarded() {
+        let (f, token) = fixture().await;
+        *f.passkeys.race_with.lock().unwrap() = Some(f.tokens.clone());
+        let ctx = RequestContext {
+            correlation_id: "corr-race".to_string(),
+            ip_address: None,
+            user_agent: None,
+        };
+        let result = f
+            .service
+            .complete_passkey(
+                TenantContext::new(f.tenant),
+                &token,
+                Uuid::new_v4(),
+                "Second device",
+                serde_json::json!({}),
+                &ctx,
+            )
+            .await;
+        assert!(matches!(result, Err(AccountSetupError::InvalidOrExpired)));
+        assert_eq!(
+            f.passkeys.discarded.lock().unwrap().as_slice(),
+            [Uuid::from_u128(7)]
+        );
     }
 
     /// 別テナントの画面へ持ち込んでも通らない。

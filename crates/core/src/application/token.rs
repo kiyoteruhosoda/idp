@@ -673,9 +673,40 @@ impl TokenService {
             ));
         }
 
-        // 8. 旧トークンを失効させる（rotation）。
-        if let Err(e) = self.refresh_tokens.revoke(&rt_hash, now).await {
-            return Err(internal(&e));
+        // 8. 旧トークンを失効させる（rotation）。⚠ **失効させられた側だけが続ける**（task #586）。
+        //    同じトークンで同時に 2 本来ると、どちらも上の再利用検知（子が在るか）を通る。失効の件数が
+        //    0 なら、もう一方が先に使っている ——再利用として家族ごと止める（盗んだトークンで正規の
+        //    RP と競らせても、並行の生きたチェーンを作らせない）。
+        match self.refresh_tokens.revoke(&rt_hash, now).await {
+            Ok(1..) => {}
+            Ok(0) => {
+                let revoked = match self
+                    .refresh_tokens
+                    .revoke_family(tenant_id, &stored.family_hash(), now)
+                    .await
+                {
+                    Ok(n) => n,
+                    Err(e) => return Err(internal(&e)),
+                };
+                self.audit
+                    .record(
+                        AuditEventType::RefreshTokenReuseDetected,
+                        AuditResult::Failure,
+                        Some(tenant_id),
+                        Some(stored.user_id),
+                        Some(&client_id),
+                        Some(&format!(
+                            "refresh token was rotated concurrently; revoked {revoked} token(s) in the grant family"
+                        )),
+                        ctx,
+                    )
+                    .await;
+                return Err(TokenError::new(
+                    OAuthErrorCode::InvalidGrant,
+                    "refresh_token has already been used",
+                ));
+            }
+            Err(e) => return Err(internal(&e)),
         }
 
         // 9. 新トークン発行。
