@@ -13,6 +13,7 @@ pub mod id_generator;
 pub mod jwt;
 pub mod log_capture;
 pub mod mailer;
+pub mod outbound_http;
 pub mod password;
 pub mod rate_limit;
 pub mod repositories;

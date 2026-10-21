@@ -20,6 +20,8 @@ use crate::domain::external_oidc_port::{
     ExternalOidcClient, ExternalTokenRequest, OidcDiscoveryClient,
 };
 use crate::domain::oidc_discovery::{DiscoveryUrl, OidcDiscoveryDocument};
+use crate::domain::outbound_uri::OutboundTrust;
+use crate::infrastructure::outbound_http::guarded_client_builder;
 use async_trait::async_trait;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
@@ -99,8 +101,14 @@ pub struct ReqwestExternalOidcClient {
 
 impl ReqwestExternalOidcClient {
     pub fn new() -> Self {
+        Self::with_trust(OutboundTrust::none())
+    }
+
+    /// 名前を引いた結果が内部の住所でも送ってよい名前を指定して作る（task #585）。
+    pub fn with_trust(trust: OutboundTrust) -> Self {
         Self {
-            http: reqwest::Client::builder()
+            // 繋ぐ直前に引いた住所を確かめる（内部なら繋がない。`outbound_http`）。
+            http: guarded_client_builder(trust)
                 .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
                 // リダイレクトは追わない。追うと、設定した token/jwks エンドポイントとは別の
                 // ホストへ資格情報や検証要求が飛びうる（設定の意味が失われる）。
