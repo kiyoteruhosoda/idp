@@ -45,6 +45,25 @@ impl Default for ReqwestBackchannelLogoutSender {
     }
 }
 
+/// エラーを原因まで繋いで 1 行にする（task #585）。
+///
+/// reqwest の `Display` は一番外側（`error sending request for url (...)`）しか言わないので、
+/// 名前を引いた結果が内部の住所だった（`outbound_http` の resolver が断った）のか、繋がらなかった
+/// のかが `last_error` から見分けられない。原因の連なりを `: ` で繋いで残す。
+fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let text = cause.to_string();
+        if !message.contains(&text) {
+            message.push_str(": ");
+            message.push_str(&text);
+        }
+        source = cause.source();
+    }
+    message
+}
+
 #[async_trait]
 impl BackchannelLogoutSender for ReqwestBackchannelLogoutSender {
     async fn post(&self, uri: &str, logout_token: &str) -> Result<(), String> {
@@ -54,7 +73,7 @@ impl BackchannelLogoutSender for ReqwestBackchannelLogoutSender {
             .form(&[("logout_token", logout_token)])
             .send()
             .await
-            .map_err(|e| format!("request failed: {e}"))?;
+            .map_err(|e| format!("request failed: {}", error_chain(&e)))?;
 
         let status = response.status();
         if status.is_success() {
@@ -71,5 +90,23 @@ impl BackchannelLogoutSender for ReqwestBackchannelLogoutSender {
             })
             .unwrap_or_default();
         Err(format!("endpoint returned {status}: {snippet}"))
+    }
+}
+
+#[cfg(test)]
+mod error_chain_tests {
+    use super::*;
+    use crate::domain::outbound_uri::OutboundTrust;
+
+    /// 名前を引いた結果が内部の住所で断ったとき、その理由まで `last_error` に残る（task #585）。
+    #[tokio::test]
+    async fn a_refused_internal_destination_says_why() {
+        let sender = ReqwestBackchannelLogoutSender::with_trust(OutboundTrust::none());
+        let err = sender
+            .post("http://localhost:9/bc", "t")
+            .await
+            .expect_err("must not be sent");
+        assert!(err.starts_with("request failed:"), "{err}");
+        assert!(err.contains("internal address"), "{err}");
     }
 }
