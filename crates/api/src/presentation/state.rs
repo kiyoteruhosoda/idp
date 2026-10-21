@@ -788,6 +788,7 @@ impl AppState {
             client_permissions.clone(),
             resources.clone(),
             applications.clone(),
+            application_access.clone(),
             keys.clone(),
             client_auth.clone(),
             audit.clone(),

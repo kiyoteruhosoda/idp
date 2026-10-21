@@ -11,6 +11,7 @@
 //!   発行してはならない）。`sub` はクライアント自身（`client_id`）で、利用者主体のトークンと
 //!   取り違えないよう `sub_type` クレームで明示する。
 
+use crate::application::application_access::{ApplicationAccessService, ApplicationGate};
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::client_authentication::{
     ClientAuthError, ClientAuthFailure, ClientAuthOutcome, ClientAuthenticator,
@@ -227,6 +228,10 @@ pub struct TokenService {
     /// サービスアカウントへも出してよいか（＝あるアプリの名乗りか）と、宛名のトークンを出してよいか
     /// （＝宛名のアプリに割り当てられているか）を引く。
     applications: Arc<dyn ApplicationRepository>,
+    /// 利用者がアプリを使ってよいか（ADR-0054）。code を出すときだけでなく、**リフレッシュのたびに**
+    /// 見直す（task #582）。外された人・止めたアプリに、持っているリフレッシュトークンで新しい
+    /// トークンを出し続けないため。
+    application_access: Arc<ApplicationAccessService>,
     keys: Arc<KeyService>,
     /// クライアント認証（secret 照合・assertion 検証）。方式ごとの分岐は
     /// `client_authentication` に集約してある（ADR-0030）。
@@ -255,6 +260,7 @@ impl TokenService {
         client_permissions: Arc<dyn ClientPermissionRepository>,
         resources: Arc<dyn ProtectedResourceRepository>,
         applications: Arc<dyn ApplicationRepository>,
+        application_access: Arc<ApplicationAccessService>,
         keys: Arc<KeyService>,
         client_auth: Arc<ClientAuthenticator>,
         audit: Arc<AuditService>,
@@ -274,6 +280,7 @@ impl TokenService {
             client_permissions,
             resources,
             applications,
+            application_access,
             keys,
             client_auth,
             audit,
@@ -643,6 +650,28 @@ impl TokenService {
 
         // 7. ユーザーの状態確認。
         let user = self.load_active_user(stored.user_id, ctx).await?;
+
+        // 7b. このアプリをまだ使ってよいか（ADR-0054。task #582）。割り当てを外された・アプリを
+        //     止めた後も、持っているリフレッシュトークンで寿命まで新しいトークンが出ていた。
+        //     断るときは、その許可で発行したトークンを家族ごと止める（次に来ても同じ答えなので）。
+        //     段階導入（`record_only`）の間は `check` が通すので、code の発行と同じ答えになる。
+        if let ApplicationGate::Denied { .. } = self
+            .application_access
+            .check(tenant_id, &client_id, stored.user_id, ctx)
+            .await
+        {
+            if let Err(e) = self
+                .refresh_tokens
+                .revoke_family(tenant_id, &stored.family_hash(), now)
+                .await
+            {
+                return Err(internal(&e));
+            }
+            return Err(TokenError::new(
+                OAuthErrorCode::InvalidGrant,
+                "the user may no longer use this application",
+            ));
+        }
 
         // 8. 旧トークンを失効させる（rotation）。
         if let Err(e) = self.refresh_tokens.revoke(&rt_hash, now).await {
