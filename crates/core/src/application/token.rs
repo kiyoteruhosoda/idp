@@ -514,6 +514,8 @@ impl TokenService {
                 // ID Token の `acr` / `amr`（ADR-0043）。refresh では認証をやり直さないので、
                 // 名乗る強度も変わらない。`sid` と同じく rotation で引き継ぐ。
                 authentication_methods: authentication.methods().map(<[_]>::to_vec),
+                // ID Token の `auth_time`。refresh でも「最後にログインした時刻」を名乗り続ける（task #584）。
+                auth_time: Some(authentication.auth_time()),
                 expires_at: now + chrono::Duration::from_std(self.refresh_token_ttl).unwrap(),
                 revoked_at: None,
                 created_at: now,
@@ -692,7 +694,9 @@ impl TokenService {
             aud: client_id.clone(),
             exp: iat + self.id_token_ttl.as_secs() as i64,
             iat,
-            auth_time: iat,       // refresh 時は現在時刻（再認証なし）
+            // 認証はやり直していないので、元のログインの時刻のまま（task #584）。「今」にすると、
+            // RP が `auth_time` で課す「N 分以内に再認証」を、更新を繰り返すだけですり抜けられる。
+            auth_time: stored.auth_time_or_issued().timestamp(),
             nonce: String::new(), // refresh grant では nonce は不要
             jti: Uuid::new_v4().to_string(),
             // 元の認可で確立したセッションを指し続ける（rotation で引き継いだ値。G5）。
@@ -737,6 +741,7 @@ impl TokenService {
             scope: stored.scope.clone(),
             sid: stored.sid.clone(),
             authentication_methods: stored.authentication_methods.clone(),
+            auth_time: Some(stored.auth_time_or_issued()),
             expires_at: stored.expires_at, // TTL は引き継ぐ（スライドさせない）
             revoked_at: None,
             created_at: now,

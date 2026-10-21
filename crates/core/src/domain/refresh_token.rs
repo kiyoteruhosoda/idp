@@ -31,6 +31,10 @@ pub struct RefreshToken {
     /// 引き継ぐ ——refresh では認証をやり直していないので、名乗る強度も変わらないため。
     /// `None` = 記録なし（本列の導入前に発行されたトークン）。
     pub authentication_methods: Option<Vec<AuthenticationMethod>>,
+    /// このグラントを生んだ認証の時刻（ID Token の `auth_time`。task #584）。`sid` と同じく
+    /// rotation で引き継ぐ ——refresh では認証をやり直していないので、「最後にログインした時刻」も
+    /// 変わらない。`None` = 記録なし（本列の導入前に発行されたトークン。[`Self::auth_time_or_issued`]）。
+    pub auth_time: Option<DateTime<Utc>>,
     pub expires_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
@@ -54,6 +58,12 @@ impl RefreshToken {
     /// 自身が `grant_hash` を持たない移行前の行なら、**自身の hash を新しい家族の起点にする**。
     /// 祖先を辿らないのは、辿るための再帰が rotation のホットパスに載るため。こうしておけば、
     /// 移行前から生きているチェーンも次の rotation 以降はファミリ失効の対象になる。
+    /// ID Token の `auth_time` に使う時刻。記録が無い移行前の行は、そのトークンを出した時刻で代える
+    /// （実際の認証はそれより前なので、少なくとも「今ログインした」とは名乗らない）。
+    pub fn auth_time_or_issued(&self) -> DateTime<Utc> {
+        self.auth_time.unwrap_or(self.created_at)
+    }
+
     pub fn family_hash(&self) -> String {
         self.grant_hash
             .clone()
@@ -77,6 +87,7 @@ mod tests {
             scope: vec!["openid".to_string()],
             sid: None,
             authentication_methods: None,
+            auth_time: None,
             expires_at: now,
             revoked_at: None,
             created_at: now,
@@ -93,5 +104,15 @@ mod tests {
         // 0025 より前に rotation 済みだった行は `grant_hash` を持たない。祖先を辿らずに
         // 自分を起点とすることで、次の rotation 以降はファミリ失効の対象になる。
         assert_eq!(token("legacy", None).family_hash(), "legacy");
+    }
+
+    #[test]
+    fn auth_time_falls_back_to_when_the_token_was_issued() {
+        let mut t = token("t", None);
+        let issued = t.created_at;
+        assert_eq!(t.auth_time_or_issued(), issued);
+        let signed_in = issued - chrono::Duration::hours(3);
+        t.auth_time = Some(signed_in);
+        assert_eq!(t.auth_time_or_issued(), signed_in);
     }
 }
