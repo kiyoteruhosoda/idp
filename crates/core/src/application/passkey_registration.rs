@@ -164,6 +164,18 @@ impl PasskeyRegistrationService {
             .await
     }
 
+    /// 登録したパスキーを取り消す（設定リンクの消費に負けたとき。task #586）。
+    pub async fn discard_for_user(
+        &self,
+        user_id: Uuid,
+        credential_row_id: Uuid,
+    ) -> Result<(), PasskeyRegistrationError> {
+        self.webauthn_credentials
+            .delete(credential_row_id, user_id)
+            .await?;
+        Ok(())
+    }
+
     /// 登録完了（**本人性を解決済み**の利用者に対して）。呼ぶ側の責務は
     /// [`Self::begin_for_user`] と同じ。
     pub async fn complete_for_user(
@@ -224,8 +236,11 @@ impl PasskeyRegistrationService {
             last_used_at: None,
         };
 
-        // チャレンジを先に削除してから登録（失敗してもチャレンジは使えなくなる）。
-        let _ = self.passkey_challenges.delete(challenge_id).await;
+        // チャレンジを先に削除してから登録（失敗してもチャレンジは使えなくなる）。⚠ **消せた側だけが
+        // 登録する**（task #586。同じチャレンジで同時に 2 本来ても 1 つしか登録しない）。
+        if !self.passkey_challenges.delete(challenge_id).await? {
+            return Err(PasskeyRegistrationError::ChallengeNotFound);
+        }
 
         // 登録簿へ 1 行として作る（AP11b）。公開鍵も状態も同じ行に載るので、書き込みは 1 回で
         // 済む —— 移行中にあった「元の表へ入れてから登録簿へ積む」の 2 段構えは、片方だけ

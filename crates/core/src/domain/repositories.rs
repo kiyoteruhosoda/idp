@@ -1666,8 +1666,9 @@ pub trait PasskeyChallengeRepository: Send + Sync {
     async fn create(&self, challenge: &PasskeyChallenge) -> Result<()>;
     /// ID でチャレンジを取得する。不存在は `None`。
     async fn find_by_id(&self, id: Uuid) -> Result<Option<PasskeyChallenge>>;
-    /// チャレンジを消費（削除）する（complete ステップで使用後に呼ぶ）。
-    async fn delete(&self, id: Uuid) -> Result<()>;
+    /// チャレンジを消費（削除）する（complete ステップで使用後に呼ぶ）。**消せたら `true`**。
+    /// 同じチャレンジで同時に 2 本来たときは片方だけが `true` になる（task #586。単回使用の要）。
+    async fn delete(&self, id: Uuid) -> Result<bool>;
     /// 期限切れのチャレンジをまとめて削除し、件数を返す（G2 の一括 GC から呼ぶ）。
     async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64>;
 }

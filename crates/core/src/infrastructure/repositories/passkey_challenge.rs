@@ -85,13 +85,13 @@ impl PasskeyChallengeRepository for SqlxPasskeyChallengeRepository {
         row.as_ref().map(map_row).transpose()
     }
 
-    async fn delete(&self, id: Uuid) -> Result<()> {
-        sqlx::query("DELETE FROM passkey_challenges WHERE id = ?")
+    async fn delete(&self, id: Uuid) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM passkey_challenges WHERE id = ?")
             .bind(id.to_string())
             .execute(&self.pool)
             .await
             .map_err(repo_err)?;
-        Ok(())
+        Ok(result.rows_affected() == 1)
     }
 
     async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64> {

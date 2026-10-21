@@ -203,9 +203,14 @@ impl PasskeyAssertionService {
             let _ = self.passkey_challenges.delete(challenge_id).await;
             return Err(PasskeyAssertionError::ChallengeNotFound);
         }
-        // チャレンジを先に削除（リプレイ防止）。
-        if let Err(e) = self.passkey_challenges.delete(challenge_id).await {
-            return Err(PasskeyAssertionError::Internal(e.to_string()));
+        // チャレンジを先に削除（リプレイ防止）。⚠ **消せた側だけが続ける**（task #586）。
+        // 同じチャレンジで同時に 2 本来ると、どちらも上の取得を通る。消せなかった側は、もう一方が
+        // 使ったチャレンジを使い回している（同期パスキーはカウンタが 0 のままで、署名の再送を
+        // カウンタで止められない）。
+        match self.passkey_challenges.delete(challenge_id).await {
+            Ok(true) => {}
+            Ok(false) => return Err(PasskeyAssertionError::ChallengeNotFound),
+            Err(e) => return Err(PasskeyAssertionError::Internal(e.to_string())),
         }
 
         // 1.5. 用途の一致を確認する。ログインと本人確認は `challenge_type` で分かれ、ログインの
