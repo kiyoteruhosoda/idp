@@ -36,6 +36,7 @@
         </div>
         <form method="post" action="{{ tenant_prefix }}/account/passkey/delete" class="d-inline" data-confirm="{{ messages.get("passkey-delete-confirm") }}">
           <input type="hidden" name="credential_id" value="{{ cred.id }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit" class="btn btn-outline-danger btn-sm">{{ messages.get("passkey-delete-button") }}</button>
         </form>
       </li>

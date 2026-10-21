@@ -23,6 +23,7 @@ use super::{api_internal_error, found, internal_call_status, locale, see_other};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
+use crate::csrf::{console_csrf_token, console_csrf_valid};
 use crate::handlers::forwarded_context;
 use crate::handlers::step_up::{self, MANAGE_AUTHENTICATORS};
 use crate::i18n::Messages;
@@ -66,6 +67,8 @@ pub async fn list_page(
     let Some(sso_session_id) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         return found(&format!("{}/login", tenant.prefix()));
     };
+    // 削除フォームへ埋める CSRF トークンの種（task #587）。
+    let sso_for_form = sso_session_id.clone();
     let req = InternalPasskeyListRequest { sso_session_id };
     let result = match state.api.passkey_list(&correlation.0, &req).await {
         Ok(r) => r,
@@ -81,6 +84,7 @@ pub async fn list_page(
             messages: &messages,
             tenant_prefix: &tenant.prefix(),
             credentials: &credentials,
+            csrf_token: &console_csrf_token(&sso_for_form, state.config.csrf_secret()),
             saved_key: query.saved.as_deref().and_then(saved_key_for),
             error_key: query.error.as_deref().and_then(error_key_for),
         }))
@@ -238,10 +242,14 @@ pub async fn register_complete_api(
 }
 
 /// Passkey 削除（`POST /account/passkey/delete`）。HTML フォームから呼ぶ。
-/// CSRF は SameSite=Lax の SSO Cookie に委ねる（TOTP 削除と同パターン）。
+///
+/// TOTP の削除と同じく CSRF 同期トークンを要る（task #587）。SameSite=Lax だけでは、同じサイトの
+/// 別のサブドメイン（`*.nolumia.com`）からの POST を止められない。
 #[derive(Deserialize)]
 pub struct DeleteForm {
     pub credential_id: String,
+    #[serde(default)]
+    pub csrf_token: String,
 }
 
 pub async fn delete(
@@ -251,6 +259,19 @@ pub async fn delete(
     headers: HeaderMap,
     Form(form): Form<DeleteForm>,
 ) -> Response {
+    let list = format!("{}/account/passkey", tenant.prefix());
+    let Some(sso_session_id) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
+        return found(&format!("{}/login", tenant.prefix()));
+    };
+    // 合わなければ何もせず一覧へ戻し、`?error=csrf` のバナーで伝える（step-up の前に見る）。
+    if !console_csrf_valid(
+        &sso_session_id,
+        &form.csrf_token,
+        state.config.csrf_secret(),
+    ) {
+        tracing::warn!("passkey deletion rejected: csrf token mismatch");
+        return see_other(&format!("{list}?error=csrf"));
+    }
     // 認証器の削除は step-up の対象（AP5）。
     if let Err(response) = step_up::require_step_up(
         &state,
@@ -264,10 +285,6 @@ pub async fn delete(
     {
         return response;
     }
-    let list = format!("{}/account/passkey", tenant.prefix());
-    let Some(sso_session_id) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
-        return found(&format!("{}/login", tenant.prefix()));
-    };
     let req = InternalPasskeyDeleteRequest {
         sso_session_id,
         credential_id: form.credential_id,
@@ -695,6 +712,7 @@ fn saved_key_for(value: &str) -> Option<&'static str> {
 fn error_key_for(value: &str) -> Option<&'static str> {
     match value {
         "not-found" => Some("passkey-error-not-found"),
+        "csrf" => Some("passkey-error-csrf"),
         _ => None,
     }
 }

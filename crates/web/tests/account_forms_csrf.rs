@@ -258,3 +258,31 @@ async fn the_totp_is_deleted_only_with_the_right_token() {
     );
     assert_eq!(calls_to(&env, "/internal/mfa/totp/delete").await, 1);
 }
+
+/// パスキーの削除も同じ（task #587）。トークンが合わなければ一覧へ戻してバナーで伝え、api を呼ばない。
+#[tokio::test]
+async fn a_passkey_is_deleted_only_with_the_right_token() {
+    let env = setup().await;
+    stub_step_up_satisfied(&env).await;
+    mount_ok(&env, "/internal/passkey/delete").await;
+    let fields = [("credential_id", "00000000-0000-7000-8000-000000000001")];
+
+    for token in wrong_tokens() {
+        let response =
+            post_with_token(&env, "/account/passkey/delete", &fields, token.as_deref()).await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER, "{token:?}");
+        assert_eq!(
+            location(&response),
+            format!("{}/account/passkey?error=csrf", env.prefix()),
+            "{token:?}"
+        );
+    }
+    assert_eq!(calls_to(&env, "/internal/passkey/delete").await, 0);
+
+    let response = post_with_token(&env, "/account/passkey/delete", &fields, Some(&csrf())).await;
+    assert_eq!(
+        location(&response),
+        format!("{}/account/passkey?saved=deleted", env.prefix())
+    );
+    assert_eq!(calls_to(&env, "/internal/passkey/delete").await, 1);
+}

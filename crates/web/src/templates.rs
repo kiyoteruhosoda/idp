@@ -1322,6 +1322,7 @@ mod tests {
             messages: &messages,
             tenant_prefix: "/t",
             credentials: &[],
+            csrf_token: "test-csrf",
             saved_key: None,
             error_key: None,
         });
@@ -1360,6 +1361,7 @@ mod tests {
                 messages: &messages,
                 tenant_prefix: "/t",
                 credentials,
+                csrf_token: "test-csrf",
                 saved_key: None,
                 error_key: None,
             })
@@ -3560,6 +3562,8 @@ pub struct PasskeyListTemplate<'a> {
     /// `/{tenant_id}` プレフィクス（ADR-0009 §6）。
     pub tenant_prefix: &'a str,
     pub credentials: &'a [PasskeyCredentialInfo],
+    /// 削除フォームの CSRF 同期トークン（`console_csrf_token`。task #587）。
+    pub csrf_token: &'a str,
     /// 削除の PRG から戻ったときのバナー（成功・失敗）。
     pub saved_key: Option<&'a str>,
     pub error_key: Option<&'a str>,
