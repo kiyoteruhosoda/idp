@@ -1390,8 +1390,10 @@ pub struct InvitationCreatedResponse {
     /// 招待メール（承諾リンク）を被招待者へ送信できたか（MT17）。SMTP 未設定・送信失敗は false
     /// （招待は成立しており、管理者が token を手動で伝達する）。
     pub email_sent: bool,
-    /// 被招待者のメールアドレス（送信先の確認表示用）。
-    pub invitee_email: String,
+    /// 被招待者のメールアドレス（送信先の確認表示用）。**メールアドレスで招いたときだけ**載る
+    /// （内部 ID で招いたときは省く。ID から他のテナントの利用者のアドレスを引き出させない。task #591）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invitee_email: Option<String>,
 }
 
 /// 招待承諾リクエスト（`POST /{tenant_id}/invitations/accept`）。ログイン済み利用者がトークンを提示する。

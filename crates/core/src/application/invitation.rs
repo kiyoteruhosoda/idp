@@ -67,8 +67,10 @@ pub struct CreatedInvitation {
     /// 招待メール（承諾リンク）を被招待者へ送信できたか（MT17）。SMTP 未設定・送信失敗は `false`
     /// （招待自体は成立しており、管理者がトークンを手動で伝達する）。
     pub email_sent: bool,
-    /// 被招待者のメールアドレス（画面表示用。送信先の確認）。
-    pub invitee_email: String,
+    /// 被招待者のメールアドレス（画面表示用。送信先の確認）。⚠ **メールアドレスで招いたときだけ**
+    /// 入る（＝呼び出し元が入力した値の写し）。内部 ID で招いたときは `None`（task #591）——ID だけで
+    /// 他のテナントの利用者のアドレスを引き出せてしまうため。
+    pub invitee_email: Option<String>,
 }
 
 /// 招待トークンのバイト長（base64url で 43 文字程度）。
@@ -136,7 +138,7 @@ impl InvitationService {
 
         // 被招待ユーザーが実在すること。所属元が host のユーザーは既に HOME メンバーであり、
         // 下の membership 存在チェックで `AlreadyMember` に倒れる。
-        let invitee = self.resolve_invitee(invitee).await?;
+        let (invitee, named_by_email) = self.resolve_invitee(invitee).await?;
         let target_user_id = invitee.id;
 
         // 既存メンバーシップ（HOME/GUEST/INVITED）があれば二重招待しない。
@@ -197,7 +199,7 @@ impl InvitationService {
             token,
             expires_at,
             email_sent,
-            invitee_email: invitee.email,
+            invitee_email: named_by_email.then_some(invitee.email),
         })
     }
 
@@ -211,11 +213,13 @@ impl InvitationService {
     /// ⚠ **複数人を「曖昧です」と言い分けない** —— 参加先の管理者は相手のテナントの名簿を
     /// 見られないので、言い分けると「このアドレスの利用者が他にも居る」ことだけが分かる。
     /// 逃げ道（内部 ID で指す）は画面の説明に書いてある。
-    async fn resolve_invitee(&self, input: &str) -> Result<User, InvitationError> {
+    ///
+    /// 返す真偽値は「メールアドレスで指したか」（応答にアドレスを載せてよいか。task #591）。
+    async fn resolve_invitee(&self, input: &str) -> Result<(User, bool), InvitationError> {
         let input = input.trim();
         if let Ok(id) = Uuid::parse_str(input) {
             return match self.users.find_by_id(id).await {
-                Ok(Some(user)) => Ok(user),
+                Ok(Some(user)) => Ok((user, false)),
                 Ok(None) => Err(InvitationError::NotFound),
                 Err(e) => Err(InvitationError::Internal(e.to_string())),
             };
@@ -230,7 +234,7 @@ impl InvitationService {
             .find_active_user_by_email_across_tenants(input)
             .await
         {
-            Ok(Some(user)) => Ok(user),
+            Ok(Some(user)) => Ok((user, true)),
             Ok(None) => Err(InvitationError::NotFound),
             Err(e) => Err(InvitationError::Internal(e.to_string())),
         }
@@ -1110,7 +1114,8 @@ mod tests {
             .await
             .expect("created");
         assert!(created.email_sent);
-        assert_eq!(created.invitee_email, "guest@other.example.com");
+        // ⚠ 内部 ID で招いたので、応答にアドレスは載らない（task #591）。メールは届いている。
+        assert_eq!(created.invitee_email, None);
 
         let sent = mailer.sent.lock().unwrap();
         assert_eq!(sent.len(), 1);
@@ -1257,7 +1262,10 @@ mod tests {
             .await
             .expect("invitation is created");
 
-        assert_eq!(created.invitee_email, "guest@other.example.com");
+        assert_eq!(
+            created.invitee_email.as_deref(),
+            Some("guest@other.example.com")
+        );
         // 招いた相手は ID で指したときと同じ人（メンバーシップの行き先で確かめる）。
         assert!(memberships.find(host, guest).await.unwrap().is_some());
     }

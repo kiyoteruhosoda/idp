@@ -2760,7 +2760,8 @@ pub struct InvitationCreated<'a> {
     pub expires_at: &'a str,
     /// 招待メール（承諾リンク）を送信できたか（MT17）。false ならトークンの手動伝達を促す。
     pub email_sent: bool,
-    pub invitee_email: &'a str,
+    /// メールアドレスで招いたときだけ（内部 ID で招いたときは出さない。task #591）。
+    pub invitee_email: Option<&'a str>,
 }
 
 /// パスワードリセット要求画面（`GET/POST /{tenant_id}/forgot-password`。MT18）。未ログイン経路。

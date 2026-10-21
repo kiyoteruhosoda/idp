@@ -141,10 +141,11 @@ async fn the_old_user_id_field_still_names_the_guest() {
     let res = invite(&env, &root_sso, json!({ "user_id": user_id })).await;
 
     assert_eq!(res.status(), StatusCode::CREATED, "invited by internal id");
-    assert_eq!(
-        body_json(res).await["invitee_email"].as_str(),
-        Some(email.as_str())
-    );
+    // ⚠ 内部 ID で招いたときは、相手のアドレスを返さない（task #591。ID だけで他のテナントの
+    //   利用者のアドレスを引き出せてしまう）。
+    let created = body_json(res).await;
+    assert!(created.get("invitee_email").is_none(), "{created}");
+    assert!(!created.to_string().contains(&email), "{created}");
 }
 
 #[tokio::test]
