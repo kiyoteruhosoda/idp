@@ -12,6 +12,11 @@
 //! 画面遷移だけを担う（他のログイン経路と同じ責務分担）。**Cookie に `state` を置かない**のは、
 //! ADR-0018 と同じ理由（api はブラウザ Cookie を読まない）で、`state` は外部 IdP から戻る値だけを
 //! 鍵として使う設計にしているため。
+//!
+//! ⚠ **ただし `state` だけではブラウザを特定できない**（外部 IdP を経て URL に載る値なので、
+//! 攻撃者が自分で途中まで進めた戻り URL を他人に踏ませられる。ログイン CSRF。task #581）。
+//! そこで開始時に api が返す一度きりの値を Cookie（[`cookies::EXTERNAL_LOGIN_BINDING_COOKIE`]）に
+//! 置き、戻り口で api へ渡す。照らすのは api で、web は運ぶだけである。
 
 use super::{api_internal_error, internal_call_status};
 use crate::client_ip::ClientIp;
@@ -59,7 +64,28 @@ pub async fn start(
         auth_session_id,
     };
     match state.api.external_start(&correlation.0, &request).await {
-        Ok(InternalExternalStartResponse::Redirect { location }) => found(&location),
+        Ok(InternalExternalStartResponse::Redirect {
+            location,
+            browser_binding,
+        }) => {
+            let Some(browser_binding) = browser_binding else {
+                // 古い api（値を返さない）。戻り口で必ず断られるので、ここで止める。
+                tracing::error!("external idp start returned no browser binding");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            };
+            (
+                state
+                    .set_cookies()
+                    .set_cross_site_local(
+                        &state.origin_bound_cookie(cookies::EXTERNAL_LOGIN_BINDING_COOKIE),
+                        &browser_binding,
+                        cookies::EXTERNAL_LOGIN_BINDING_MAX_AGE_SECS,
+                    )
+                    .into_headers(),
+                found(&location),
+            )
+                .into_response()
+        }
         Ok(InternalExternalStartResponse::ProviderUnavailable) => {
             let messages = Messages::new(locale(&headers));
             message_page(
@@ -119,6 +145,7 @@ pub async fn callback(
         tenant_id: Some(tenant.0.clone()),
         state: external_state,
         code,
+        browser_binding: browser_binding(&state, &headers),
         ip_address: ctx.ip_address,
         user_agent: ctx.user_agent,
     };
@@ -135,6 +162,14 @@ pub async fn callback(
     };
 
     render_outcome(&state, &tenant, locale, outcome)
+}
+
+/// 開始時に置いた値（[`cookies::EXTERNAL_LOGIN_BINDING_COOKIE`]）を読む。
+fn browser_binding(state: &WebState, headers: &HeaderMap) -> Option<String> {
+    cookies::get(
+        headers,
+        &state.origin_bound_cookie(cookies::EXTERNAL_LOGIN_BINDING_COOKIE),
+    )
 }
 
 /// 外部 SAML IdP がブラウザ経由で POST してくるアサーションを受ける（ACS。AP12）。
@@ -155,6 +190,7 @@ pub async fn saml_acs(
         tenant_id: Some(tenant.0.clone()),
         saml_response: form.saml_response,
         relay_state: form.relay_state.unwrap_or_default(),
+        browser_binding: browser_binding(&state, &headers),
         ip_address: ctx.ip_address,
         user_agent: ctx.user_agent,
     };
@@ -188,6 +224,25 @@ pub struct SamlAcsForm {
 /// （Cookie の発行・同意画面への誘導・失敗時の見せ方）は同じであるべきで、分けると片方だけ
 /// 直った状態が生まれる。
 fn render_outcome(
+    state: &WebState,
+    tenant: &WebTenant,
+    locale: Locale,
+    outcome: InternalExternalCallbackResponse,
+) -> Response {
+    // 開始時の値は一度きり。結果に関わらず消す（api 側の進行状態も消費済み）。
+    (
+        state
+            .set_cookies()
+            .expire_cross_site_local(
+                &state.origin_bound_cookie(cookies::EXTERNAL_LOGIN_BINDING_COOKIE),
+            )
+            .into_headers(),
+        render_callback_result(state, tenant, locale, outcome),
+    )
+        .into_response()
+}
+
+fn render_callback_result(
     state: &WebState,
     tenant: &WebTenant,
     locale: Locale,

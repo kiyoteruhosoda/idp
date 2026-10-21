@@ -113,6 +113,25 @@ impl CookiePolicy {
         self.set_local(name, "", 0)
     }
 
+    /// 他のサイトからの POST でも届く必要があるローカル Cookie（`SameSite=None`）。
+    ///
+    /// **用途は外部 SAML IdP の ACS に限る**（task #581）。相手の IdP はアサーションを
+    /// ブラウザ経由の**サイトをまたぐ POST** で運んでくるので、`SameSite=Lax` の Cookie は
+    /// 送られない。値は「このブラウザで始めた」ことを示す一度きりの乱数で、権限は運ばない。
+    /// ⚠ `SameSite=None` はブラウザが `Secure` 無しでは受け付けないので、平文 HTTP（開発環境）では
+    /// `Lax` へ落とす（その環境で SAML の ACS は通らないが、OIDC の戻りは通る）。
+    pub fn set_cross_site_local(&self, name: &str, value: &str, max_age_secs: u64) -> String {
+        if !self.secure {
+            return self.set_local(name, value, max_age_secs);
+        }
+        format!("{name}={value}; Max-Age={max_age_secs}; Path=/; HttpOnly; SameSite=None; Secure")
+    }
+
+    /// [`Self::set_cross_site_local`] で置いた Cookie を失効させる。
+    pub fn expire_cross_site_local(&self, name: &str) -> String {
+        self.set_cross_site_local(name, "", 0)
+    }
+
     /// オリジン束縛が要るローカル Cookie（CSRF の種・MFA チケット・SAML 進行状態）の実名を返す
     /// （SEC5）。`set_local` / `expire_local` が付ける属性は `__Host-` の要件（`Secure` /
     /// `Domain` 無し / `Path=/`）をすでに満たすため、前置するのは名前だけでよい。
@@ -189,6 +208,19 @@ mod tests {
         assert_eq!(
             CookiePolicy::new(false, None).expire_local("lang"),
             "lang=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax"
+        );
+    }
+
+    #[test]
+    fn cross_site_local_cookie_is_same_site_none_only_over_https() {
+        assert_eq!(
+            CookiePolicy::new(true, None).set_cross_site_local("__Host-b", "v", 600),
+            "__Host-b=v; Max-Age=600; Path=/; HttpOnly; SameSite=None; Secure"
+        );
+        // 平文 HTTP では None を付けられない（ブラウザが捨てる）ので Lax へ落とす。
+        assert_eq!(
+            CookiePolicy::new(false, None).expire_cross_site_local("b"),
+            "b=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax"
         );
     }
 

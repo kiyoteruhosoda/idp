@@ -59,6 +59,9 @@ pub enum StartOutcome {
     /// 外部 IdP の認可エンドポイントへ 302 する。
     Redirect {
         location: String,
+        /// 開始したブラウザにだけ渡す値（web が Cookie に置く。task #581）。戻り口でこれを
+        /// 示さないと進めない。DB にはハッシュだけを残す。
+        browser_binding: String,
     },
     /// プロバイダが無い・無効。
     ProviderUnavailable,
@@ -70,6 +73,8 @@ pub struct CallbackCommand {
     pub state: String,
     /// 認可コード。
     pub code: String,
+    /// 戻ってきたブラウザが持っていた、開始時の値（Cookie。task #581）。
+    pub browser_binding: Option<String>,
 }
 
 /// SAML の ACS（`AssertionConsumerService`）が受け取る値。ブラウザが HTTP-POST で運んでくる。
@@ -78,6 +83,8 @@ pub struct SamlAcsCommand {
     pub saml_response: String,
     /// `RelayState`（開始時に発行した `state`）。進行状態を引く鍵。
     pub relay_state: String,
+    /// 戻ってきたブラウザが持っていた、開始時の値（Cookie。task #581）。
+    pub browser_binding: Option<String>,
 }
 
 /// 外部 IdP ログインの完了結果。
@@ -213,6 +220,8 @@ impl ExternalLoginService {
         let now = self.clock.now();
         // `state`（SAML では `RelayState`）は両プロトコル共通。進行状態を引く鍵になる。
         let state = crypto::random_token(STATE_BYTES);
+        // 開始したブラウザにだけ渡す値。`state` と違って外部 IdP を通らない（task #581）。
+        let browser_binding = crypto::random_token(STATE_BYTES);
 
         // プロトコルごとに「相手へ送る URL」と「相手が返してくる値」を決める。進行状態の作り方
         // （単回消費・TTL・呼び出し元 auth_session）は共通なので、分けるのはここだけにする。
@@ -283,6 +292,7 @@ impl ExternalLoginService {
             auth_session_id_hash: auth_session_id
                 .as_deref()
                 .map(|id| AuthSessionIdHash::of_plain(id).into_string()),
+            browser_binding_hash: Some(crypto::sha256_hex(&browser_binding)),
             expires_at: now + Duration::seconds(REQUEST_TTL_SECS),
             created_at: now,
         };
@@ -290,7 +300,10 @@ impl ExternalLoginService {
             return StartOutcome::Internal(e.to_string());
         }
 
-        StartOutcome::Redirect { location }
+        StartOutcome::Redirect {
+            location,
+            browser_binding,
+        }
     }
 
     /// 外部 IdP からのコールバックを処理する。
@@ -316,6 +329,12 @@ impl ExternalLoginService {
             Err(e) => return CallbackOutcome::Internal(e.to_string()),
         }
         if request.is_expired_at(now) {
+            return CallbackOutcome::StateExpired;
+        }
+        // 開始したブラウザか（task #581）。違えば、他人が途中まで進めた戻り URL を踏まされている。
+        // ⚠ 進行状態は消費済みにしておく（照合に失敗した値を使い回させない）。
+        if !request.is_bound_to(cmd.browser_binding.as_deref()) {
+            self.record_browser_mismatch(tenant, &request, ctx).await;
             return CallbackOutcome::StateExpired;
         }
 
@@ -422,6 +441,12 @@ impl ExternalLoginService {
             Err(e) => return CallbackOutcome::Internal(e.to_string()),
         }
         if request.is_expired_at(now) {
+            return CallbackOutcome::StateExpired;
+        }
+        // 開始したブラウザか（task #581）。違えば、他人が途中まで進めた戻り URL を踏まされている。
+        // ⚠ 進行状態は消費済みにしておく（照合に失敗した値を使い回させない）。
+        if !request.is_bound_to(cmd.browser_binding.as_deref()) {
+            self.record_browser_mismatch(tenant, &request, ctx).await;
             return CallbackOutcome::StateExpired;
         }
 
@@ -819,6 +844,25 @@ impl ExternalLoginService {
             self.public_web_base_url,
             tenant.tenant_id()
         )
+    }
+
+    /// 戻ってきたブラウザが開始したブラウザでなかったことを監査に残す（task #581）。
+    async fn record_browser_mismatch(
+        &self,
+        tenant: TenantContext,
+        request: &ExternalLoginRequest,
+        ctx: &RequestContext,
+    ) {
+        let provider_code = match self
+            .providers
+            .find_by_id(tenant.tenant_id(), request.provider_id)
+            .await
+        {
+            Ok(Some(p)) => p.provider_code,
+            _ => String::from("unknown"),
+        };
+        self.record_failure(tenant, &provider_code, "browser_binding", ctx)
+            .await;
     }
 
     async fn record_failure(

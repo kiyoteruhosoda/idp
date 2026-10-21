@@ -1542,9 +1542,13 @@ pub async fn external_start(
             .start(tenant, &req.provider_code, req.auth_session_id)
             .await
         {
-            StartOutcome::Redirect { location } => {
-                InternalExternalStartResponse::Redirect { location }
-            }
+            StartOutcome::Redirect {
+                location,
+                browser_binding,
+            } => InternalExternalStartResponse::Redirect {
+                location,
+                browser_binding: Some(browser_binding),
+            },
             StartOutcome::ProviderUnavailable => InternalExternalStartResponse::ProviderUnavailable,
             StartOutcome::Internal(e) => {
                 tracing::error!(error = %e, "external idp login start failed");
@@ -1575,6 +1579,7 @@ pub async fn external_callback(
                 CallbackCommand {
                     state: req.state,
                     code: req.code,
+                    browser_binding: req.browser_binding,
                 },
                 &ctx,
             )
@@ -1662,6 +1667,7 @@ pub async fn external_saml_acs(
                 SamlAcsCommand {
                     saml_response: req.saml_response,
                     relay_state: req.relay_state,
+                    browser_binding: req.browser_binding,
                 },
                 &ctx,
             )
