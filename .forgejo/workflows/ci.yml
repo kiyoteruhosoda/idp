@@ -130,7 +130,11 @@ jobs:
     # ⚠ **この関門だけ台が違う。** `docker build` をするので、ジョブのイメージに
     #   docker が入っている台へ回す。⚠ ここへ来たジョブは**ホスト root 相当**
     #   になる（socket を持つため）。
-    runs-on: [self-hosted, nolumialab-docker]
+    runs-on: [nolumialab-docker]
+    # ⚠ **Renovate の PR では走らせない**（task #603）。この台はジョブに docker.sock を
+    #   渡す ——版上げの PR は人が見る前に CI が走るので、依存に悪意の版が混ざると
+    #   その場でホスト root を取られる。飛ばしたジョブは緑に数えられる。
+    if: github.event.pull_request.user.login != 'renovate'
     timeout-minutes: 45
     container:
       image: hub.nolumia.com:5000/builder/ci-docker@sha256:ae7a7f551dcb94a0c803680b2be76289ecaa49b603b5b24f8c283e16cec9c737
