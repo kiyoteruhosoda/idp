@@ -198,7 +198,12 @@ pub async fn update_user_status(
     let target = parse_user_id(&user_id, locale)?;
     state
         .admin_account_guard
-        .ensure_may_manage_account(tenant.context(), &admin.permission_codes, target)
+        .ensure_may_manage_account(
+            tenant.context(),
+            tenant.tenant().is_root(),
+            &admin.permission_codes,
+            target,
+        )
         .await
         .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let status = UserStatus::parse(&body.status).map_err(|_| {
@@ -258,7 +263,12 @@ pub async fn update_user_profile(
     let target = parse_user_id(&user_id, locale)?;
     state
         .admin_account_guard
-        .ensure_may_manage_account(tenant.context(), &admin.permission_codes, target)
+        .ensure_may_manage_account(
+            tenant.context(),
+            tenant.tenant().is_root(),
+            &admin.permission_codes,
+            target,
+        )
         .await
         .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(
@@ -311,7 +321,12 @@ pub async fn delete_user(
     let target = parse_user_id(&user_id, locale)?;
     state
         .admin_account_guard
-        .ensure_may_manage_account(tenant.context(), &admin.permission_codes, target)
+        .ensure_may_manage_account(
+            tenant.context(),
+            tenant.tenant().is_root(),
+            &admin.permission_codes,
+            target,
+        )
         .await
         .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(
@@ -355,7 +370,12 @@ pub async fn reset_user_password(
     let target = parse_user_id(&user_id, locale)?;
     state
         .admin_account_guard
-        .ensure_may_manage_account(tenant.context(), &admin.permission_codes, target)
+        .ensure_may_manage_account(
+            tenant.context(),
+            tenant.tenant().is_root(),
+            &admin.permission_codes,
+            target,
+        )
         .await
         .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(
@@ -404,7 +424,12 @@ pub async fn reset_user_mfa(
     let target = parse_user_id(&user_id, locale)?;
     state
         .admin_account_guard
-        .ensure_may_manage_account(tenant.context(), &admin.permission_codes, target)
+        .ensure_may_manage_account(
+            tenant.context(),
+            tenant.tenant().is_root(),
+            &admin.permission_codes,
+            target,
+        )
         .await
         .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(
@@ -455,7 +480,12 @@ pub async fn reissue_user_tokens(
     let target = parse_user_id(&user_id, locale)?;
     state
         .admin_account_guard
-        .ensure_may_manage_account(tenant.context(), &admin.permission_codes, target)
+        .ensure_may_manage_account(
+            tenant.context(),
+            tenant.tenant().is_root(),
+            &admin.permission_codes,
+            target,
+        )
         .await
         .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(
@@ -542,7 +572,12 @@ pub async fn unlock_user(
     let target = parse_user_id(&user_id, locale)?;
     state
         .admin_account_guard
-        .ensure_may_manage_account(tenant.context(), &admin.permission_codes, target)
+        .ensure_may_manage_account(
+            tenant.context(),
+            tenant.tenant().is_root(),
+            &admin.permission_codes,
+            target,
+        )
         .await
         .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(

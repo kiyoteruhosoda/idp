@@ -64,7 +64,7 @@ pub async fn list_available_permissions(
     let tenant_is_root = tenant.tenant().is_root();
     codes.retain(|code| permission::is_grantable_in_tenant(code, tenant_is_root));
     // 呼び出し元が配れないコード（自分の持たない権限。task #579）も落とす。付与の口が 403 にする。
-    codes.retain(|code| permission::may_assign(&admin.permission_codes, code));
+    codes.retain(|code| permission::may_assign(&admin.permission_codes, code, tenant_is_root));
     if query.grantable_to.as_deref() == Some(GRANTABLE_TO_CLIENT) {
         codes.retain(|code| permission::is_grantable_to_client(code));
     }
@@ -148,7 +148,11 @@ pub async fn grant_permission(
     let target = parse_user_id(&user_id, locale)?;
     state
         .admin_account_guard
-        .ensure_may_assign(&admin.permission_codes, body.permission_code.trim())
+        .ensure_may_assign(
+            &admin.permission_codes,
+            body.permission_code.trim(),
+            tenant.tenant().is_root(),
+        )
         .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(
         &headers,
@@ -202,7 +206,11 @@ pub async fn revoke_permission(
     let target = parse_user_id(&user_id, locale)?;
     state
         .admin_account_guard
-        .ensure_may_assign(&admin.permission_codes, permission_code.trim())
+        .ensure_may_assign(
+            &admin.permission_codes,
+            permission_code.trim(),
+            tenant.tenant().is_root(),
+        )
         .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(
         &headers,

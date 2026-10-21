@@ -149,7 +149,12 @@ pub async fn revoke_member(
         .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get("api-invalid-request")))?;
     state
         .admin_account_guard
-        .ensure_may_manage_membership(tenant.context(), &admin.permission_codes, target)
+        .ensure_may_manage_membership(
+            tenant.context(),
+            tenant.tenant().is_root(),
+            &admin.permission_codes,
+            target,
+        )
         .await
         .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(
@@ -202,7 +207,12 @@ pub async fn update_member_status(
         .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get("api-invalid-request")))?;
     state
         .admin_account_guard
-        .ensure_may_manage_membership(tenant.context(), &admin.permission_codes, target)
+        .ensure_may_manage_membership(
+            tenant.context(),
+            tenant.tenant().is_root(),
+            &admin.permission_codes,
+            target,
+        )
         .await
         .map_err(|e| map_admin_account_guard_error(e, locale))?;
     // 受け付けるのは停止・再開の 2 遷移のみ。`INVITED` は招待フローが管理する状態のため、

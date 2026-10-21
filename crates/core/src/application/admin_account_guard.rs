@@ -49,11 +49,12 @@ impl AdminAccountGuard {
         &self,
         held: &[String],
         code: &str,
+        tenant_is_root: bool,
     ) -> Result<(), AdminAccountGuardError> {
         // `idp.system.admin` は保有者しか扱えない、という判定は付与の本体が持ち、理由も言い分ける
         // （`PermissionManagementService::ensure_system_admin_change_allowed`。クライアントへはそもそも
         // 付けられない）。ここで先に落とすと、その言い分けが届かなくなる。
-        if code == permission::SYSTEM_ADMIN || permission::may_assign(held, code) {
+        if code == permission::SYSTEM_ADMIN || permission::may_assign(held, code, tenant_is_root) {
             Ok(())
         } else {
             Err(AdminAccountGuardError::Forbidden)
@@ -68,6 +69,7 @@ impl AdminAccountGuard {
     pub async fn ensure_may_manage_account(
         &self,
         tenant: TenantContext,
+        tenant_is_root: bool,
         held: &[String],
         target: Uuid,
     ) -> Result<(), AdminAccountGuardError> {
@@ -91,7 +93,7 @@ impl AdminAccountGuard {
                 in_requested_tenant: scope == tenant.tenant_id(),
             })
             .collect();
-        self.decide(held, &held_by_target)
+        self.decide(held, &held_by_target, tenant_is_root)
     }
 
     /// メンバーシップの操作（停止・解除）の前に呼ぶ。見るのは**要求テナントの scope の**権限だけ
@@ -99,6 +101,7 @@ impl AdminAccountGuard {
     pub async fn ensure_may_manage_membership(
         &self,
         tenant: TenantContext,
+        tenant_is_root: bool,
         held: &[String],
         target: Uuid,
     ) -> Result<(), AdminAccountGuardError> {
@@ -113,15 +116,16 @@ impl AdminAccountGuard {
                 in_requested_tenant: true,
             })
             .collect();
-        self.decide(held, &held_by_target)
+        self.decide(held, &held_by_target, tenant_is_root)
     }
 
     fn decide(
         &self,
         held: &[String],
         held_by_target: &[HeldByTarget],
+        tenant_is_root: bool,
     ) -> Result<(), AdminAccountGuardError> {
-        if permission::may_manage_account(held, held_by_target) {
+        if permission::may_manage_account(held, held_by_target, tenant_is_root) {
             Ok(())
         } else {
             Err(AdminAccountGuardError::Forbidden)

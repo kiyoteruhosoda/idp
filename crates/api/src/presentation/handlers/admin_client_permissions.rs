@@ -87,7 +87,11 @@ pub async fn grant_client_permission(
 ) -> Result<Json<ClientPermissionsResponse>, ApiError> {
     state
         .admin_account_guard
-        .ensure_may_assign(&admin.permission_codes, body.permission_code.trim())
+        .ensure_may_assign(
+            &admin.permission_codes,
+            body.permission_code.trim(),
+            tenant.tenant().is_root(),
+        )
         .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(
         &headers,
@@ -141,7 +145,11 @@ pub async fn revoke_client_permission(
 ) -> Result<Json<ClientPermissionsResponse>, ApiError> {
     state
         .admin_account_guard
-        .ensure_may_assign(&admin.permission_codes, permission_code.trim())
+        .ensure_may_assign(
+            &admin.permission_codes,
+            permission_code.trim(),
+            tenant.tenant().is_root(),
+        )
         .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(
         &headers,

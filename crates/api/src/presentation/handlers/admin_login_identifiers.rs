@@ -147,7 +147,12 @@ pub async fn add_login_identifier(
 ) -> Result<(StatusCode, Json<LoginIdentifierResponse>), ApiError> {
     state
         .admin_account_guard
-        .ensure_may_manage_account(tenant.context(), &admin.permission_codes, user_id)
+        .ensure_may_manage_account(
+            tenant.context(),
+            tenant.tenant().is_root(),
+            &admin.permission_codes,
+            user_id,
+        )
         .await
         .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(
@@ -204,7 +209,12 @@ pub async fn update_login_identifier(
 ) -> Result<Json<LoginIdentifierResponse>, ApiError> {
     state
         .admin_account_guard
-        .ensure_may_manage_account(tenant.context(), &admin.permission_codes, user_id)
+        .ensure_may_manage_account(
+            tenant.context(),
+            tenant.tenant().is_root(),
+            &admin.permission_codes,
+            user_id,
+        )
         .await
         .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(
@@ -257,7 +267,12 @@ pub async fn promote_primary_email(
 ) -> Result<Json<LoginIdentifierResponse>, ApiError> {
     state
         .admin_account_guard
-        .ensure_may_manage_account(tenant.context(), &admin.permission_codes, user_id)
+        .ensure_may_manage_account(
+            tenant.context(),
+            tenant.tenant().is_root(),
+            &admin.permission_codes,
+            user_id,
+        )
         .await
         .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(
@@ -297,7 +312,12 @@ pub async fn delete_login_identifier(
 ) -> Result<StatusCode, ApiError> {
     state
         .admin_account_guard
-        .ensure_may_manage_account(tenant.context(), &admin.permission_codes, user_id)
+        .ensure_may_manage_account(
+            tenant.context(),
+            tenant.tenant().is_root(),
+            &admin.permission_codes,
+            user_id,
+        )
         .await
         .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(
