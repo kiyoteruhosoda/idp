@@ -84,6 +84,8 @@ struct StartedLogin {
     request_id: String,
     /// `RelayState`（進行状態を引く鍵）。
     relay_state: String,
+    /// 開始したブラウザにだけ渡す値（web が Cookie に置く。task #581）。
+    browser_binding: String,
 }
 
 /// SAML の外部 IdP を管理 API で登録し、`(id, provider_code, issuer)` を返す。
@@ -166,6 +168,10 @@ async fn start_login(env: &support::TestEnv, provider_code: &str) -> StartedLogi
     StartedLogin {
         request_id: authn_request_id(&location),
         relay_state: query_value(&location, "RelayState"),
+        browser_binding: body["browser_binding"]
+            .as_str()
+            .expect("browser_binding")
+            .to_string(),
     }
 }
 
@@ -230,8 +236,24 @@ fn signed_response(
     STANDARD.encode(xml)
 }
 
-/// ACS へ応答を投げる。
-async fn post_acs(env: &support::TestEnv, saml_response: &str, relay_state: &str) -> Value {
+/// ACS へ応答を投げる（開始したブラウザから。開始時の値を添える）。
+async fn post_acs(env: &support::TestEnv, saml_response: &str, started: &StartedLogin) -> Value {
+    post_acs_from(
+        env,
+        saml_response,
+        &started.relay_state,
+        Some(&started.browser_binding),
+    )
+    .await
+}
+
+/// ACS へ応答を投げる。`browser_binding` はブラウザが持っていた開始時の値（無ければ `None`）。
+async fn post_acs_from(
+    env: &support::TestEnv,
+    saml_response: &str,
+    relay_state: &str,
+    browser_binding: Option<&str>,
+) -> Value {
     let res = send(
         &env.app,
         post_internal(
@@ -240,7 +262,8 @@ async fn post_acs(env: &support::TestEnv, saml_response: &str, relay_state: &str
             json!({
                 "tenant_id": env.root_tenant_id,
                 "saml_response": saml_response,
-                "relay_state": relay_state
+                "relay_state": relay_state,
+                "browser_binding": browser_binding
             }),
         ),
     )
@@ -265,7 +288,7 @@ async fn a_registered_saml_provider_signs_a_user_in_end_to_end() {
 
     let started = start_login(&env, &provider_code).await;
     let response = signed_response(&env, &issuer, &provider_code, &started.request_id, &name_id);
-    let body = post_acs(&env, &response, &started.relay_state).await;
+    let body = post_acs(&env, &response, &started).await;
 
     assert_eq!(body["result"], "success", "{body}");
     let sso_session_id = body["sso_session_id"].as_str().expect("sso_session_id");
@@ -297,11 +320,11 @@ async fn a_replayed_assertion_does_not_sign_anyone_in_twice() {
     let started = start_login(&env, &provider_code).await;
     let response = signed_response(&env, &issuer, &provider_code, &started.request_id, &name_id);
     assert_eq!(
-        post_acs(&env, &response, &started.relay_state).await["result"],
+        post_acs(&env, &response, &started).await["result"],
         "success"
     );
 
-    let replayed = post_acs(&env, &response, &started.relay_state).await;
+    let replayed = post_acs(&env, &response, &started).await;
     assert_eq!(replayed["result"], "state_expired", "{replayed}");
 }
 
@@ -324,7 +347,7 @@ async fn a_tampered_assertion_is_rejected_by_the_registered_certificate() {
     let tampered = xml.replace(&name_id, &format!("other-{name_id}"));
     assert_ne!(tampered, xml, "the rewrite did not apply");
 
-    let body = post_acs(&env, &STANDARD.encode(tampered), &started.relay_state).await;
+    let body = post_acs(&env, &STANDARD.encode(tampered), &started).await;
     assert_eq!(body["result"], "external_failure", "{body}");
 }
 
@@ -346,7 +369,7 @@ async fn an_unlinked_name_id_does_not_sign_anyone_in() {
         &started.request_id,
         &format!("stranger-{}", unique()),
     );
-    let body = post_acs(&env, &response, &started.relay_state).await;
+    let body = post_acs(&env, &response, &started).await;
     assert_eq!(body["result"], "not_linked", "{body}");
 }
 
@@ -430,4 +453,64 @@ async fn importing_idp_metadata_extracts_the_registration_values_without_saving(
     )
     .await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST, "SP metadata -> 400");
+}
+
+/// 開始したブラウザでないところから戻り口を踏ませても、ログインにならない（task #581。ログイン CSRF）。
+///
+/// 攻撃者は自分のアカウントで途中まで進め、正しく署名された応答と `RelayState` を手に入れられる。
+/// それを他人のブラウザに送らせても、そのブラウザは開始時の値（Cookie）を持っていない。
+#[tokio::test]
+async fn a_response_carried_by_another_browser_does_not_sign_anyone_in() {
+    let Some(env) = support::setup("external saml browser binding").await else {
+        return;
+    };
+    let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+    let (provider_id, provider_code, issuer) = register_saml_provider(&env, &admin_tok).await;
+    let user_id = create_plain_user(&env.pool, &env.root_tenant_id).await;
+    let name_id = format!("external-{}", unique());
+    link_identity(&env.pool, &user_id, &provider_id, &issuer, &name_id).await;
+
+    // 開始時の値を持たないブラウザ（攻撃者に踏まされた人）。
+    let started = start_login(&env, &provider_code).await;
+    let response = signed_response(&env, &issuer, &provider_code, &started.request_id, &name_id);
+    let body = post_acs_from(&env, &response, &started.relay_state, None).await;
+    assert_eq!(body["result"], "state_expired", "{body}");
+
+    // 自分で別の外部ログインを始めていたブラウザ（値はあるが、別の進行状態のもの）。
+    let attacker = start_login(&env, &provider_code).await;
+    let victim = start_login(&env, &provider_code).await;
+    let response = signed_response(
+        &env,
+        &issuer,
+        &provider_code,
+        &attacker.request_id,
+        &name_id,
+    );
+    let body = post_acs_from(
+        &env,
+        &response,
+        &attacker.relay_state,
+        Some(&victim.browser_binding),
+    )
+    .await;
+    assert_eq!(body["result"], "state_expired", "{body}");
+
+    // 照合に失敗した進行状態は使い回せない（正しい値を後から添えても通らない）。
+    let body = post_acs(&env, &response, &attacker).await;
+    assert_eq!(body["result"], "state_expired", "{body}");
+
+    // DB には開始時の値そのものを残さない（ハッシュだけ）。
+    let stored: Option<String> = sqlx::query_scalar(
+        "SELECT browser_binding_hash FROM external_login_requests WHERE state_hash = ?",
+    )
+    .bind(assay_api::infrastructure::crypto::sha256_hex(
+        &victim.relay_state,
+    ))
+    .fetch_one(&env.pool)
+    .await
+    .expect("victim's request is still pending");
+    assert_eq!(
+        stored.as_deref(),
+        Some(assay_api::infrastructure::crypto::sha256_hex(&victim.browser_binding).as_str())
+    );
 }

@@ -215,6 +215,10 @@ pub struct ExternalLoginRequest {
     /// 呼び出し元の OIDC auth_session の `id_hash`（ポータル経由なら `None`）。
     /// auth_session_id は bearer credential なので、写しもハッシュで持つ（SEC6）。
     pub auth_session_id_hash: Option<String>,
+    /// 開始したブラウザにだけ渡した値（Cookie）の SHA-256（task #581）。戻り口でこれと照らし、
+    /// **他人のブラウザに戻り URL を踏ませる**ログイン CSRF（攻撃者のアカウントでログインさせる）を断つ。
+    /// `state` は外部 IdP を経て URL に載るので、それだけではブラウザを特定できない。
+    pub browser_binding_hash: Option<String>,
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
 }
@@ -222,6 +226,26 @@ pub struct ExternalLoginRequest {
 impl ExternalLoginRequest {
     pub fn is_expired_at(&self, now: DateTime<Utc>) -> bool {
         self.expires_at <= now
+    }
+
+    /// 戻ってきたブラウザが、開始したブラウザか（task #581）。
+    ///
+    /// 開始時の値が無い進行状態（この確認より前に作られたもの）も通さない ——どのブラウザから
+    /// 始めたかを確かめようがないので、利用者にはやり直してもらう（寿命は 10 分）。
+    pub fn is_bound_to(&self, presented: Option<&str>) -> bool {
+        match (self.browser_binding_hash.as_deref(), presented) {
+            (Some(expected), Some(presented)) if !presented.is_empty() => {
+                let presented = crate::domain::crypto::sha256_hex(presented);
+                // ハッシュ同士の比較だが、長さと内容で早く抜けないようにしておく。
+                expected.len() == presented.len()
+                    && expected
+                        .bytes()
+                        .zip(presented.bytes())
+                        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+                        == 0
+            }
+            _ => false,
+        }
     }
 }
 

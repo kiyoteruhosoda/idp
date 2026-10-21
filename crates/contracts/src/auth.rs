@@ -2009,6 +2009,10 @@ pub enum InternalExternalStartResponse {
     /// 外部 IdP の認可エンドポイントへ 302 する。
     Redirect {
         location: String,
+        /// 開始したブラウザにだけ渡す値（task #581）。web が Cookie に置き、戻り口で
+        /// `browser_binding` として api へ返す。古い api は返さない（`None`）。
+        #[serde(default)]
+        browser_binding: Option<String>,
     },
     /// プロバイダが無い・無効。
     ProviderUnavailable,
@@ -2022,6 +2026,9 @@ pub struct InternalExternalCallbackRequest {
     pub tenant_id: Option<String>,
     pub state: String,
     pub code: String,
+    /// 開始時に Cookie へ置いた値（task #581）。無い・違うと進行状態は使えない。
+    #[serde(default)]
+    pub browser_binding: Option<String>,
     #[serde(default)]
     pub ip_address: Option<String>,
     #[serde(default)]
@@ -2040,6 +2047,9 @@ pub struct InternalExternalSamlAcsRequest {
     pub saml_response: String,
     /// `RelayState`（開始時に発行した値。進行状態を引く鍵）。
     pub relay_state: String,
+    /// 開始時に Cookie へ置いた値（task #581）。無い・違うと進行状態は使えない。
+    #[serde(default)]
+    pub browser_binding: Option<String>,
     #[serde(default)]
     pub ip_address: Option<String>,
     #[serde(default)]

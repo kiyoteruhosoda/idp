@@ -36,6 +36,12 @@ pub const PORTAL_MFA_COOKIE: &str = "portal_mfa_ticket";
 /// ログインへ誘導したあと、ログイン成功時にフローへ復帰するために使う（web ローカル）。
 /// **オリジン束縛**（SEC5）。
 pub const SAML_REQUEST_COOKIE: &str = "saml_request_id";
+/// 外部 IdP ログインを始めたブラウザに置く一度きりの値（task #581）。戻り口（OIDC の callback・
+/// SAML の ACS）で api へ渡し、開始したブラウザかを確かめる。**オリジン束縛**（`__Host-`）、
+/// SAML の ACS（サイトをまたぐ POST）でも届くよう `SameSite=None`。
+pub const EXTERNAL_LOGIN_BINDING_COOKIE: &str = "external_login_binding";
+/// [`EXTERNAL_LOGIN_BINDING_COOKIE`] の寿命。api の進行状態の寿命（600 秒）と揃える。
+pub const EXTERNAL_LOGIN_BINDING_MAX_AGE_SECS: u64 = 600;
 /// 表示言語の選択を保持する Cookie（`ja` / `en`。MT15。決定チェーンの優先度3）。
 pub const LANG_COOKIE: &str = "lang";
 /// 表示設定 Cookie（言語・配色）の保持期間（既定 1 年）。UI 設定のため長命にする。
@@ -109,6 +115,25 @@ impl SetCookies {
             SET_COOKIE,
             self.policy.set_preference(name, value, max_age_secs),
         ));
+        self
+    }
+
+    /// 他のサイトからの POST でも届くローカル Cookie を発行する（外部 SAML IdP の ACS 用。
+    /// `assay_contracts::cookies::CookiePolicy::set_cross_site_local`）。
+    #[must_use]
+    pub fn set_cross_site_local(mut self, name: &str, value: &str, max_age_secs: u64) -> Self {
+        self.headers.push((
+            SET_COOKIE,
+            self.policy.set_cross_site_local(name, value, max_age_secs),
+        ));
+        self
+    }
+
+    /// [`Self::set_cross_site_local`] で置いた Cookie を失効させる。
+    #[must_use]
+    pub fn expire_cross_site_local(mut self, name: &str) -> Self {
+        self.headers
+            .push((SET_COOKIE, self.policy.expire_cross_site_local(name)));
         self
     }
 

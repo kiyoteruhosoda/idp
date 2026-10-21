@@ -427,7 +427,7 @@ impl SqlxExternalLoginRequestRepository {
 }
 
 const REQUEST_COLUMNS: &str = "id, tenant_id, provider_id, state_hash, nonce, \
-     code_verifier_encrypted, auth_session_id_hash, expires_at, created_at";
+     code_verifier_encrypted, auth_session_id_hash, browser_binding_hash, expires_at, created_at";
 
 fn map_request(row: &MySqlRow) -> Result<ExternalLoginRequest> {
     let id: String = row.try_get("id").map_err(repo_err)?;
@@ -441,6 +441,7 @@ fn map_request(row: &MySqlRow) -> Result<ExternalLoginRequest> {
         nonce: row.try_get("nonce").map_err(repo_err)?,
         code_verifier_encrypted: row.try_get("code_verifier_encrypted").map_err(repo_err)?,
         auth_session_id_hash: row.try_get("auth_session_id_hash").map_err(repo_err)?,
+        browser_binding_hash: row.try_get("browser_binding_hash").map_err(repo_err)?,
         expires_at: to_utc(row.try_get("expires_at").map_err(repo_err)?),
         created_at: to_utc(row.try_get("created_at").map_err(repo_err)?),
     })
@@ -452,8 +453,8 @@ impl ExternalLoginRequestRepository for SqlxExternalLoginRequestRepository {
         sqlx::query(
             "INSERT INTO external_login_requests \
              (id, tenant_id, provider_id, state_hash, nonce, code_verifier_encrypted, \
-              auth_session_id_hash, expires_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+              auth_session_id_hash, browser_binding_hash, expires_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(request.id.to_string())
         .bind(request.tenant_id.to_string())
@@ -462,6 +463,7 @@ impl ExternalLoginRequestRepository for SqlxExternalLoginRequestRepository {
         .bind(&request.nonce)
         .bind(&request.code_verifier_encrypted)
         .bind(&request.auth_session_id_hash)
+        .bind(&request.browser_binding_hash)
         .bind(request.expires_at.naive_utc())
         .execute(&self.pool)
         .await
