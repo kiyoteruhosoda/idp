@@ -24,7 +24,7 @@ use crate::presentation::error::ApiError;
 use crate::presentation::handlers::request_context;
 use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
-use crate::presentation::tenant::ResolvedTenant;
+use crate::presentation::tenant::{require_root_tenant, ResolvedTenant};
 use axum::extract::{Extension, State};
 use axum::http::HeaderMap;
 use axum::Json;
@@ -308,21 +308,6 @@ pub async fn update_smtp_settings(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(to_smtp_response(updated)))
-}
-
-/// 要求テナントが root であることを課す（ADR-0051。ADR-0058 §8 でも維持）。
-///
-/// ⚠ **この口の守りはここだけである。** ADR-0058 §8 で `idp.smtp:*` はどのテナントでも配れる
-/// ようになった（テナント自身の経路は `/admin/settings/smtp`）。したがって権限の判定だけでは、
-/// テナントの中で配られた `idp.smtp:write` が**全体の経路**へ届いてしまう。`system_settings` が
-/// テナント横断の表である以上、使う側で root を課す。
-fn require_root_tenant(tenant: &ResolvedTenant, locale: ApiLocale) -> Result<(), ApiError> {
-    if tenant.tenant().is_root() {
-        return Ok(());
-    }
-    Err(ApiError::Forbidden(
-        ApiMessages::new(locale).get("api-permission-insufficient"),
-    ))
 }
 
 fn to_smtp_response(smtp: SmtpSettingsView) -> SmtpSettingsResponse {

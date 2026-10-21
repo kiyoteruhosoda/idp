@@ -22,6 +22,8 @@
 use crate::application::tenant_resolution::TenantResolutionService;
 use crate::domain::tenant::{Tenant, TenantId};
 use crate::domain::tenant_context::TenantContext;
+use crate::presentation::error::ApiError;
+use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
 use assay_contracts::auth::UNKNOWN_TENANT_ERROR_CODE;
 use axum::extract::{Path, State};
@@ -190,6 +192,23 @@ fn not_found() -> Response {
 
 fn error_response(status: StatusCode, code: &str, message: &str) -> Response {
     (status, Json(json!({ "error": code, "message": message }))).into_response()
+}
+
+/// 要求テナントが root であることを課す（ADR-0051。ADR-0058 §8 でも維持）。
+///
+/// 全テナント共通の資源（全体の SMTP 経路・署名鍵）を扱う口が使う。
+///
+/// ⚠ **この口の守りはここだけである。** ADR-0058 §8 で `idp.smtp:*` はどのテナントでも配れる
+/// ようになった（テナント自身の経路は `/admin/settings/smtp`）。したがって権限の判定だけでは、
+/// テナントの中で配られた `idp.smtp:write` が**全体の経路**へ届いてしまう。`system_settings` が
+/// テナント横断の表である以上、使う側で root を課す。
+pub fn require_root_tenant(tenant: &ResolvedTenant, locale: ApiLocale) -> Result<(), ApiError> {
+    if tenant.tenant().is_root() {
+        return Ok(());
+    }
+    Err(ApiError::Forbidden(
+        ApiMessages::new(locale).get("api-permission-insufficient"),
+    ))
 }
 
 #[cfg(test)]
