@@ -700,7 +700,6 @@ pub fn build(state: WebState) -> Router {
             get(vendor_assets::fa_v4compatibility_woff2),
         )
         .route("/assets/react/app.js", get(react_assets::app_js))
-        .route("/assets/react/app.js.map", get(react_assets::app_js_map))
         // この nest 配下で `{user_id}` 等を持つルートは、ネスト元の `{tenant_id}` と合わせて
         // パスパラメータが 2 つになる。ハンドラは `Path<(String, String)>` のタプルで受けること
         // （`Path<String>` だと実行時に 500 "Wrong number of path arguments" になる）。

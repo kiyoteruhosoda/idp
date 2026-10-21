@@ -48,7 +48,6 @@ pub fn csrf_token(auth_session_id: &str, key: &[u8]) -> String {
     assay_contracts::csrf::login_csrf_token(auth_session_id, key)
 }
 
-#[derive(Debug)]
 pub struct LoginCommand {
     /// `auth_session_id` Cookie の値。
     pub auth_session_id: Option<String>,
@@ -56,6 +55,16 @@ pub struct LoginCommand {
     pub username: String,
     pub password: String,
     pub csrf_token: String,
+}
+
+/// ⚠ 秘密（`auth_session_id`, `password`, `csrf_token`）を `Debug` に出さない（task #593）。`{:?}` でログへ
+/// 落としても値が漏れないよう、手書きで載せる項目を選ぶ。
+impl std::fmt::Debug for LoginCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoginCommand")
+            .field("username", &self.username)
+            .finish_non_exhaustive()
+    }
 }
 
 pub enum LoginOutcome {
