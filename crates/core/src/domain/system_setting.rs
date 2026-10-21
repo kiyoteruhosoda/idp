@@ -522,6 +522,21 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
                       GET する。閉じた環境では互換のミラーを立ててここを向ける。",
     },
     SettingDefinition {
+        key: "OUTBOUND_TRUSTED_HOSTS",
+        scope: SettingScope::Global,
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::Text,
+        default_value: Some(""),
+        description: "外へ送る要求（バックチャネルログアウト・外部 IdP）で、名前を引いた結果が内部の住所でも \
+                      送ってよい名前（カンマ区切り。`example.com` は `*.example.com` も含む。task #585）。\
+                      既定は空（内部の住所に引ける宛先へは送らない）。公開名が内側の前段へ引ける配置 \
+                      （split DNS）でだけ、その公開ドメインを書く。",
+    },
+    SettingDefinition {
         key: "PASSWORD_BREACH_CHECK_TIMEOUT_SECS",
         scope: SettingScope::Global,
         shared_with_web: false,

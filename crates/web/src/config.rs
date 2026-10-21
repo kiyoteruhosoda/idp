@@ -31,7 +31,7 @@ pub enum LogFormat {
     Pretty,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Config {
     bind_addr: String,
     api_base_url: String,
@@ -66,6 +66,22 @@ pub struct Config {
     /// 動いている**状態が誰にも見えない（ADR-0013 §Consequences）。secret はこの経路に載らない
     /// （ADR-0013 §3）ので保持して問題ない。
     shared_runtime_settings: HashMap<String, String>,
+}
+
+/// ⚠ 秘密（DB の接続文字列・鍵・サービス間トークン・CSRF の鍵）を `Debug` に出さない（task #593）。
+/// `{:?}` でログへ落としても値が漏れないよう、手書きで載せる項目を選ぶ（足すときは秘密でないものだけ）。
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("bind_addr", &self.bind_addr)
+            .field("api_base_url", &self.api_base_url)
+            .field("issuer", &self.issuer)
+            .field("public_web_base_url", &self.public_web_base_url)
+            .field("cookie_policy", &self.cookie_policy)
+            .field("trust_forwarded_headers", &self.trust_forwarded_headers)
+            .field("hsts_max_age", &self.hsts_max_age)
+            .finish_non_exhaustive()
+    }
 }
 
 /// api へ問い合わせるために必要な最小の設定（MT26 / ADR-0013）。
@@ -807,5 +823,19 @@ mod tests {
         let err = Bootstrap::from_env().unwrap_err().to_string();
         assert!(err.contains("INTERNAL_SERVICE_TOKEN"), "{err}");
         std::env::remove_var("ISSUER");
+    }
+
+    /// 秘密を `Debug` に出さない（task #593）。`{:?}` でログへ落としても値が漏れない。
+    #[test]
+    fn debug_output_does_not_carry_the_secrets() {
+        let _env = env_guard();
+        set_production_secrets();
+        let config = Config::from_env().unwrap();
+        let shown = format!("{config:?}");
+        clear_production_secrets();
+        assert!(!shown.contains(&"t".repeat(32)), "{shown}");
+        assert!(!shown.contains("csrf_secret"), "{shown}");
+        assert!(!shown.contains("internal_service_token"), "{shown}");
+        assert!(shown.contains("bind_addr"), "{shown}");
     }
 }

@@ -122,7 +122,7 @@ pub enum SettingSafetyStatus {
     NeedsAction,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Config {
     issuer: String,
     bind_addr: String,
@@ -141,6 +141,8 @@ pub struct Config {
     application_assignment_enforcement: AssignmentEnforcement,
     /// 漏えい済みパスワード照合の接続先（k-匿名性のレンジ API）。
     password_breach_api_base_url: String,
+    /// 名前を引いた結果が内部の住所でも外へ送ってよい名前（`OUTBOUND_TRUSTED_HOSTS`。task #585）。
+    outbound_trusted_hosts: String,
     /// 漏えい済みパスワード照合の 1 リクエストの上限時間。
     password_breach_check_timeout: Duration,
     /// テナント解決キャッシュの TTL（ADR-0009 §7。id → tenant のホットパス）。
@@ -197,6 +199,21 @@ pub struct Config {
     /// `COOKIE_DOMAIN` 配置でスキーム不一致になり起動しなくなる。
     public_web_base_url_override: Option<String>,
     resolved_settings: Vec<ResolvedSetting>,
+}
+
+/// ⚠ 秘密（DB の接続文字列・鍵・サービス間トークン・CSRF の鍵）を `Debug` に出さない（task #593）。
+/// `{:?}` でログへ落としても値が漏れないよう、手書きで載せる項目を選ぶ（足すときは秘密でないものだけ）。
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("issuer", &self.issuer)
+            .field("bind_addr", &self.bind_addr)
+            .field("db_max_connections", &self.db_max_connections)
+            .field("public_web_base_url", &self.public_web_base_url)
+            .field("trust_forwarded_headers", &self.trust_forwarded_headers)
+            .field("hsts_max_age", &self.hsts_max_age)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Config {
@@ -284,6 +301,7 @@ impl Config {
             clock_skew: secs(resolver.parse("CLOCK_SKEW_SECS", 60)?),
             password_breach_api_base_url: resolver
                 .string("PASSWORD_BREACH_API_BASE_URL", DEFAULT_BREACH_API_BASE_URL),
+            outbound_trusted_hosts: resolver.string("OUTBOUND_TRUSTED_HOSTS", ""),
             password_breach_check_timeout: secs(
                 resolver.parse("PASSWORD_BREACH_CHECK_TIMEOUT_SECS", 3u64)?,
             ),
@@ -379,6 +397,10 @@ impl Config {
     /// 漏えい済みパスワード照合の接続先（k-匿名性のレンジ API）。
     pub fn password_breach_api_base_url(&self) -> &str {
         &self.password_breach_api_base_url
+    }
+    /// 名前を引いた結果が内部の住所でも外へ送ってよい名前（task #585）。
+    pub fn outbound_trust(&self) -> crate::domain::outbound_uri::OutboundTrust {
+        crate::domain::outbound_uri::OutboundTrust::parse(&self.outbound_trusted_hosts)
     }
     /// 漏えい済みパスワード照合の 1 リクエストの上限時間。
     pub fn password_breach_check_timeout(&self) -> Duration {
@@ -1325,5 +1347,24 @@ mod tests {
         std::env::remove_var("SSO_IDLE_TTL_SECS");
         let db = HashMap::from([("SSO_IDLE_TTL_SECS".to_string(), "eight hours".to_string())]);
         assert!(Config::from_env_and_db_settings(&db).is_err());
+    }
+
+    /// 秘密を `Debug` に出さない（task #593）。`{:?}` でログへ落としても値が漏れない。
+    #[test]
+    fn debug_output_does_not_carry_the_secrets() {
+        let _env = env_guard();
+        let config = Config::from_env_and_db_settings(&HashMap::new()).unwrap();
+        let shown = format!("{config:?}");
+        assert!(!shown.contains(DEV_INTERNAL_SERVICE_TOKEN), "{shown}");
+        assert!(!shown.contains(config.database_url()), "{shown}");
+        for name in [
+            "database_url",
+            "key_encryption_key",
+            "internal_service_token",
+            "csrf_secret",
+        ] {
+            assert!(!shown.contains(name), "{name}: {shown}");
+        }
+        assert!(shown.contains("issuer"), "{shown}");
     }
 }

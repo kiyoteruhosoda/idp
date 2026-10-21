@@ -27,12 +27,24 @@ use crate::domain::values::{
 use std::sync::Arc;
 use uuid::Uuid;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RegisterCommand {
     pub email: String,
     pub preferred_username: Option<String>,
     pub password: String,
     pub name: Option<String>,
+}
+
+/// ⚠ 秘密（`password`）を `Debug` に出さない（task #593）。`{:?}` でログへ
+/// 落としても値が漏れないよう、手書きで載せる項目を選ぶ。
+impl std::fmt::Debug for RegisterCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegisterCommand")
+            .field("email", &self.email)
+            .field("preferred_username", &self.preferred_username)
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
 }
 
 pub struct RegisteredUser {

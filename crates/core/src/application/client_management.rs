@@ -1106,8 +1106,8 @@ mod tests {
             validate_backchannel_logout_uri(Some("https://rp.example.com/bc".to_string())).unwrap(),
             Some("https://rp.example.com/bc".to_string())
         );
-        // 名前で指す内部サービスは（解決結果を見ないため）通す。
-        assert!(validate_backchannel_logout_uri(Some("http://rp:3000/bc".to_string())).is_ok());
+        // 点の無い名前（同じネットワークのサービス名）は字面で内部と分かるので断る（task #585）。
+        assert!(validate_backchannel_logout_uri(Some("http://rp:3000/bc".to_string())).is_err());
 
         for bad in [
             // クラウドのインスタンスメタデータ（link-local）。

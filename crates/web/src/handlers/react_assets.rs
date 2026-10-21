@@ -7,19 +7,18 @@ use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::response::IntoResponse;
 
 pub(crate) const APP_JS: &str = include_str!("../../assets/react/app.js");
-const APP_JS_MAP: &str = include_str!("../../assets/react/app.js.map");
+// ⚠ ソースマップ（`app.js.map`）は配らない（task #593）。本番で画面の元のソースを丸ごと渡す理由が無い。
+//   バンドルの末尾の `sourceMappingURL` は残るが、開発者ツールが取りに来ても 404 になるだけ。
 
 #[derive(Clone, Copy)]
 enum ReactAssetKind {
     JavaScript,
-    SourceMap,
 }
 
 impl ReactAssetKind {
     fn content_type(self) -> &'static str {
         match self {
             Self::JavaScript => "text/javascript; charset=utf-8",
-            Self::SourceMap => "application/json; charset=utf-8",
         }
     }
 
@@ -29,16 +28,12 @@ impl ReactAssetKind {
             // query, so the URL changes on every deploy (cache busting) and the body
             // can be cached long-term.
             Self::JavaScript => "public, max-age=31536000, immutable",
-            // The source map is referenced from inside the bundle without a version
-            // query (stable URL), so keep its staleness bounded.
-            Self::SourceMap => "public, max-age=86400",
         }
     }
 
     fn body(self) -> &'static str {
         match self {
             Self::JavaScript => APP_JS,
-            Self::SourceMap => APP_JS_MAP,
         }
     }
 
@@ -55,8 +50,4 @@ impl ReactAssetKind {
 
 pub async fn app_js() -> impl IntoResponse {
     ReactAssetKind::JavaScript.response()
-}
-
-pub async fn app_js_map() -> impl IntoResponse {
-    ReactAssetKind::SourceMap.response()
 }

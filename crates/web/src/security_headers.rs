@@ -130,7 +130,7 @@ pub async fn add_security_headers(request: Request, next: Next, hsts_max_age: u6
     }
 
     if is_html(headers) {
-        forbid_transform(headers);
+        forbid_store_and_transform(headers);
     }
 
     response
@@ -143,29 +143,43 @@ fn is_html(headers: &axum::http::HeaderMap) -> bool {
         .is_some_and(|v| v.trim_start().to_ascii_lowercase().starts_with("text/html"))
 }
 
-/// `Cache-Control` に `no-transform` を足す（前段に本文を書き換えさせない）。ハンドラが付けた指示
-/// （`no-store` など）はそのまま残し、足すだけにする ——キャッシュの扱いは変えない。
-fn forbid_transform(headers: &mut axum::http::HeaderMap) {
+/// HTML の `Cache-Control` に `no-store` と `no-transform` を足す。ハンドラが付けた指示はそのまま
+/// 残し、足すだけにする。
+///
+/// - `no-store`（task #589）: web が返す HTML はどれも利用者ごとに描いた画面で、クライアントシークレット・
+///   回復コード・設定リンク・TOTP の秘密・SAML の応答を載せるものもある。共有の端末で「戻る」や
+///   ディスクのキャッシュから読ませない。静的な資産（CSS・JS・フォント）は HTML ではないので対象外
+/// - `no-transform`: 前段に本文を書き換えさせない
+fn forbid_store_and_transform(headers: &mut axum::http::HeaderMap) {
     let current = headers
         .get(CACHE_CONTROL)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .trim()
         .to_string();
-    if current
-        .split(',')
-        .any(|d| d.trim().eq_ignore_ascii_case("no-transform"))
-    {
-        return;
-    }
-    let value = if current.is_empty() {
-        "no-transform".to_string()
-    } else {
-        format!("{current}, no-transform")
+    let has = |directive: &str| {
+        current
+            .split(',')
+            .any(|d| d.trim().eq_ignore_ascii_case(directive))
     };
-    if let Ok(value) = HeaderValue::from_str(&value) {
+    let mut directives: Vec<&str> = Vec::new();
+    if !current.is_empty() {
+        directives.push(&current);
+    }
+    if !has("no-store") {
+        directives.push("no-store");
+    }
+    if !has("no-transform") {
+        directives.push("no-transform");
+    }
+    if let Ok(value) = HeaderValue::from_str(&directives.join(", ")) {
         headers.insert(CACHE_CONTROL, value);
     }
+    // HTTP/1.0 の中継向け（`Cache-Control` を解さないもの）。
+    headers.insert(
+        HeaderName::from_static("pragma"),
+        HeaderValue::from_static("no-cache"),
+    );
 }
 
 #[cfg(test)]
@@ -249,12 +263,16 @@ mod tests {
     /// ハンドラの指示は残して足すだけ。HTML でない応答（アセット・JSON）は触らない。
     #[tokio::test]
     async fn html_is_marked_no_transform_without_dropping_the_handler_directives() {
+        // HTML は保存させない（秘密を載せる画面がある。task #589）。
         let res = respond(app(0), "/page").await;
-        assert_eq!(res.headers()[CACHE_CONTROL], "no-transform");
+        assert_eq!(res.headers()[CACHE_CONTROL], "no-store, no-transform");
+        assert_eq!(res.headers()["pragma"], "no-cache");
         let res = respond(app(0), "/no-store").await;
         assert_eq!(res.headers()[CACHE_CONTROL], "no-store, no-transform");
+        // HTML でない応答（静的な資産など）には付けない。
         let res = respond(app(0), "/").await;
         assert!(res.headers().get(CACHE_CONTROL).is_none());
+        assert!(res.headers().get("pragma").is_none());
     }
 
     #[tokio::test]
