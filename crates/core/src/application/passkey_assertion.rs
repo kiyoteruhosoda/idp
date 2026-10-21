@@ -590,9 +590,12 @@ mod tests {
                 .clone()
                 .filter(|c| c.id == id))
         }
-        async fn delete(&self, id: Uuid) -> DomainResult<()> {
-            self.deleted.lock().unwrap().push(id);
-            Ok(())
+        async fn delete(&self, id: Uuid) -> DomainResult<bool> {
+            // 消せるのは最初の 1 回だけ（2 回目は同時に来た別の要求が先に消した形。task #586）。
+            let mut deleted = self.deleted.lock().unwrap();
+            let first = !deleted.contains(&id);
+            deleted.push(id);
+            Ok(first)
         }
         async fn delete_expired(&self, _now: chrono::DateTime<Utc>) -> DomainResult<u64> {
             unreachable!()
@@ -791,6 +794,26 @@ mod tests {
             .await
             .expect_err("a direct-login challenge must not continue an authorization flow");
         assert!(matches!(err, PasskeyAssertionError::WrongFlow));
+    }
+
+    /// 同じチャレンジを同時に使った別の要求が先に消していたら、署名の確認へ進まない（task #586）。
+    /// 同期パスキーはカウンタが 0 のままで、署名の再送をカウンタでは止められない。
+    #[tokio::test]
+    async fn a_challenge_consumed_by_another_request_does_not_reach_verification() {
+        let (service, challenge_id, challenges) =
+            service_with_challenge(None, fixed_now() + Duration::minutes(5));
+        challenges.deleted.lock().unwrap().push(challenge_id);
+        let err = service
+            .verify(
+                Uuid::now_v7().into(),
+                challenge_id,
+                serde_json::Value::Null,
+                PasskeyFlow::Direct,
+                &request_context(),
+            )
+            .await
+            .expect_err("a consumed challenge must not be usable");
+        assert!(matches!(err, PasskeyAssertionError::ChallengeNotFound));
     }
 
     #[tokio::test]
