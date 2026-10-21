@@ -41,15 +41,11 @@ impl ThrowawayDb {
             }
             panic!("TEST_DATABASE_URL is required for {test_name}");
         };
-        let Ok(root_password) = std::env::var("MARIADB_ROOT_PASSWORD") else {
-            // CI は必ず持つ。手元で root を渡していないときだけ飛ばす。
-            assert!(
-                std::env::var_os("CI").is_none(),
-                "MARIADB_ROOT_PASSWORD is required in CI for {test_name}"
-            );
-            eprintln!("MARIADB_ROOT_PASSWORD not set; skipping {test_name}");
-            return None;
-        };
+        // DB の接続先があるのに root が無いときは、飛ばさずに落とす（黙って飛ばすと、CI で走っていない
+        // のに緑に見える）。
+        let root_password = std::env::var("MARIADB_ROOT_PASSWORD").unwrap_or_else(|_| {
+            panic!("MARIADB_ROOT_PASSWORD is required for {test_name} (it creates a throwaway database)")
+        });
         let mut admin_url = url::Url::parse(&url).expect("TEST_DATABASE_URL");
         admin_url.set_username("root").expect("set user");
         admin_url
