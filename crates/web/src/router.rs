@@ -48,6 +48,8 @@ pub fn build(state: WebState) -> Router {
         // GET: OIDC RP-initiated Logout（end_session_endpoint。ADR-0018 決定 2 で api から移設）。
         // POST: エンドユーザーのログアウト（アカウント画面から。SSO 失効）。
         .route("/logout", get(rp_logout::logout).post(portal::logout))
+        // `id_token_hint` の無いサインアウト要求の確認画面から押す口（task #588）。
+        .route("/logout/confirm", post(rp_logout::confirm))
         // SAML SSO の継続（api の /saml/sso からのハンドオフ受領と、ログイン後のフロー復帰）。
         .route("/saml/continue", get(saml_sso::continue_sso))
         // 強制パスワード変更（ADR-0009 §5、MT12）。パスワード認証成功後・SSO 発行前の pending 状態で使う。

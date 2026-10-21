@@ -397,7 +397,8 @@ async fn rp_initiated_logout_on_the_web_clears_the_sso_cookie() {
     let result = run_login_flow(&client, &stack, &client_id, &username, password).await;
     assert_immediate_code(&result.second_authorize);
 
-    let logout = client
+    // `id_token_hint` の無い要求なので、まず確認画面が出る（task #588）。これだけでは終えない。
+    let confirmation = client
         .get(format!(
             "{}/{}/logout",
             stack.web_base, stack.root_tenant_id
@@ -405,6 +406,28 @@ async fn rp_initiated_logout_on_the_web_clears_the_sso_cookie() {
         .send()
         .await
         .expect("GET /logout");
+    assert_eq!(confirmation.status(), StatusCode::OK);
+    assert!(
+        set_cookies_for(&confirmation, "sso_session_id").is_empty(),
+        "the confirmation page must not end the session"
+    );
+    let page = confirmation.text().await.expect("confirmation page");
+    let token = page
+        .split(r#"name="csrf_token" value=""#)
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("the confirmation form carries a csrf token")
+        .to_string();
+
+    let logout = client
+        .post(format!(
+            "{}/{}/logout/confirm",
+            stack.web_base, stack.root_tenant_id
+        ))
+        .form(&[("csrf_token", token.as_str())])
+        .send()
+        .await
+        .expect("POST /logout/confirm");
     // front-channel 通知・post_logout_redirect_uri のないクライアントなので完了ページ（200）。
     assert_eq!(logout.status(), StatusCode::OK);
     let deletions = set_cookies_for(&logout, "sso_session_id");

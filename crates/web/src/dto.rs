@@ -43,6 +43,9 @@ pub struct FormPageQuery {
 /// RP-initiated Logout のクエリ（`GET /logout`、OIDC RP-initiated Logout 1.0。ADR-0018 決定 2）。
 #[derive(Debug, Deserialize)]
 pub struct RpLogoutQuery {
+    /// 確認画面（`id_token_hint` の無い要求。task #588）からの POST に載る CSRF 同期トークン。
+    #[serde(default)]
+    pub csrf_token: Option<String>,
     /// ログアウト対象を示す ID Token（任意。G12）。api が署名・issuer を検証し、
     /// `post_logout_redirect_uri` の照合先と「誰のログアウトか」の確認に使う。
     #[serde(default)]

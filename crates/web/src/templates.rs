@@ -2007,6 +2007,20 @@ pub struct RpLogoutPage<'a> {
     pub redirect_to: Option<&'a str>,
 }
 
+/// `id_token_hint` の無いサインアウト要求の確認画面（task #588）。CSRF 付きの POST で実行する。
+#[derive(Template)]
+#[template(path = "rp_logout_confirm.html")]
+pub struct RpLogoutConfirmPage<'a> {
+    pub messages: &'a Messages,
+    /// `/{tenant_id}` プレフィクス。
+    pub tenant_prefix: &'a str,
+    /// `console_csrf_token`（SSO セッション由来）。
+    pub csrf_token: &'a str,
+    pub client_id: Option<&'a str>,
+    pub post_logout_redirect_uri: Option<&'a str>,
+    pub state: Option<&'a str>,
+}
+
 #[derive(Template)]
 #[template(path = "login.html")]
 pub struct LoginTemplate<'a> {
