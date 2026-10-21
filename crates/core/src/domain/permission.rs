@@ -87,6 +87,19 @@ pub const TENANT_MANAGEMENT_CODES: &[&str] = &[
     RESOURCES_WRITE,
 ];
 
+/// root テナントの中でしか意味を持たないコード（全テナント共通の資源を扱う）。
+///
+/// 署名鍵は全テナントで 1 組（`signing_keys` にテナント列が無い。ADR-0009）なので、子テナントの
+/// 管理者が持つと**テナントを越えて全体の鍵を作り替え・消せてしまう**。`idp.tenant.admin` の
+/// 含意には残す（root の管理者は今までどおり扱える）が、root 以外では付与させず、行使もさせない
+/// （口は使う側で root を課す。SMTP の全体の経路と同じ形）。
+pub const ROOT_SCOPED_CODES: &[&str] = &[KEYS_READ, KEYS_WRITE];
+
+/// `code` が [`ROOT_SCOPED_CODES`] に入るか。
+pub fn is_root_scoped(code: &str) -> bool {
+    ROOT_SCOPED_CODES.contains(&code)
+}
+
 /// 保有コード `held` が要求コード `required` を満たすか（含意関係。ADR-0037）。
 ///
 /// 1. 完全一致
@@ -138,8 +151,9 @@ pub fn is_grantable_to_client(code: &str) -> bool {
 /// 選択肢はこの判定で落とす。落とさないと、選べるのに必ず 403 になる選択肢が残る。
 ///
 /// ⚠ `idp.smtp:*` は ADR-0058 §8 でテナントの中でも配れるようにした（そのテナントの経路にしか届かない）。
+/// ⚠ [`ROOT_SCOPED_CODES`]（署名鍵）も root の中でしか配れない（全テナント共通の資源のため）。
 pub fn is_grantable_in_tenant(code: &str, tenant_is_root: bool) -> bool {
-    tenant_is_root || code != SYSTEM_ADMIN
+    tenant_is_root || (code != SYSTEM_ADMIN && !is_root_scoped(code))
 }
 
 /// 名前空間付き権限コード（例: `idp.tenant.admin`, `idp.clients:read`）。
@@ -288,9 +302,25 @@ mod tests {
         assert!(is_grantable_in_tenant(TENANT_ADMIN, false));
         assert!(is_grantable_in_tenant(TENANT_ADMIN, true));
         for code in TENANT_MANAGEMENT_CODES {
+            if is_root_scoped(code) {
+                continue;
+            }
             assert!(is_grantable_in_tenant(code, false));
             assert!(is_grantable_in_tenant(code, true));
         }
+    }
+
+    /// 署名鍵は全テナント共通なので、子テナントでは配れない（root の中だけ）。
+    #[test]
+    fn signing_key_codes_are_grantable_only_in_the_root_tenant() {
+        for code in [KEYS_READ, KEYS_WRITE] {
+            assert!(is_root_scoped(code), "{code}");
+            assert!(!is_grantable_in_tenant(code, false), "{code}");
+            assert!(is_grantable_in_tenant(code, true), "{code}");
+        }
+        // root の管理者は今までどおり含意で持つ。
+        assert!(implies(TENANT_ADMIN, KEYS_WRITE));
+        assert!(!is_root_scoped(USERS_WRITE));
     }
 
     /// テナントの設定の権限は、全体の設定へ届かない（ADR-0058 §11。付与の側の防御）。

@@ -138,6 +138,8 @@ impl PermissionManagementService {
         self.ensure_user_in_tenant(tenant, target).await?;
         self.ensure_system_admin_change_allowed(tenant, &code, actor)
             .await?;
+        self.ensure_root_scoped_code_stays_in_root(tenant, &code)
+            .await?;
 
         self.permissions
             .grant(tenant.tenant_id(), target, code.as_str(), self.clock.now())
@@ -230,6 +232,32 @@ impl PermissionManagementService {
             .find_by_id(id)
             .await
             .map_err(|e| PermissionManagementError::Internal(e.to_string()))
+    }
+
+    /// 全テナント共通の資源を扱うコード（署名鍵。`permission::ROOT_SCOPED_CODES`）は、root の中でしか
+    /// 付与させない。子テナントで持たせると、その管理者がテナントを越えて全体の鍵へ届く。
+    /// ⚠ 剥奪は止めない（root 以外に残った行を片付けられるようにする）。
+    async fn ensure_root_scoped_code_stays_in_root(
+        &self,
+        tenant: TenantContext,
+        code: &PermissionCode,
+    ) -> Result<(), PermissionManagementError> {
+        if !permission::is_root_scoped(code.as_str()) {
+            return Ok(());
+        }
+        let root = self
+            .tenants
+            .find_root()
+            .await
+            .map_err(|e| PermissionManagementError::Internal(e.to_string()))?
+            .ok_or_else(|| PermissionManagementError::Internal("root tenant not found".into()))?;
+        if tenant.tenant_id() == root.id {
+            Ok(())
+        } else {
+            Err(PermissionManagementError::Forbidden(MessageKey::new(
+                "api-permission-insufficient",
+            )))
+        }
     }
 
     /// `idp.system.admin` の付与・剥奪は `idp.system.admin` 保有者のみが実行できる（ADR-0009 §4）。

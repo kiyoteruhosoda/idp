@@ -848,3 +848,106 @@ async fn oidc_flow_enforces_membership_and_per_tenant_issuer() {
     .await;
     assert_eq!(res.status(), StatusCode::OK, "guest userinfo in tenant B");
 }
+
+/// 署名鍵は全テナントで 1 組なので、子テナントの管理者には触らせない（task #580）。
+///
+/// 以前は口が `idp.keys:write` だけを見ていて、どの子テナントの `idp.tenant.admin` でも
+/// 全体の鍵を作る・退役・削除できた（削除すると root を含む全テナントのトークンが検証できなくなる）。
+#[tokio::test]
+async fn child_tenant_admin_cannot_touch_the_global_signing_keys() {
+    let Some(env) = setup().await else { return };
+    let root_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
+    let tenant = create_tenant(&env, &root_sso, "Keys").await;
+    let child = tok(&env, &tenant.admin_sso, &tenant.id).await;
+
+    let keys_before: i64 = sqlx::query("SELECT COUNT(*) AS n FROM signing_keys")
+        .fetch_one(&env.pool)
+        .await
+        .expect("count keys")
+        .get("n");
+    let kid: Option<String> = sqlx::query("SELECT kid FROM signing_keys LIMIT 1")
+        .fetch_optional(&env.pool)
+        .await
+        .expect("pick a key")
+        .map(|row| row.get("kid"));
+    let kid = kid.unwrap_or_else(|| "no-such-kid".to_string());
+
+    let forbidden = vec![
+        get(&child, &format!("/{}/admin/signing-keys", tenant.id)),
+        post(
+            &child,
+            &format!("/{}/admin/signing-keys", tenant.id),
+            json!({ "algorithm": "ES256", "activate_immediately": true }),
+        ),
+        support::post_empty(
+            &child,
+            &format!("/{}/admin/signing-keys/{kid}/retire", tenant.id),
+        ),
+        delete(&child, &format!("/{}/admin/signing-keys/{kid}", tenant.id)),
+    ];
+    for request in forbidden {
+        let uri = request.uri().to_string();
+        let res = send(&env.app, request).await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "{uri}");
+    }
+    let keys_after: i64 = sqlx::query("SELECT COUNT(*) AS n FROM signing_keys")
+        .fetch_one(&env.pool)
+        .await
+        .expect("count keys")
+        .get("n");
+    assert_eq!(keys_before, keys_after, "child admin must not add keys");
+
+    // 子テナントでは鍵の権限を配れない（付けても行使できない権限を残さない）。
+    let (user_id, _) = create_user(&env, &tenant.admin_sso, &tenant.id).await;
+    let res = send(
+        &env.app,
+        post(
+            &child,
+            &format!("/{}/admin/users/{user_id}/permissions", tenant.id),
+            json!({ "permission_code": "idp.keys:write" }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::FORBIDDEN, "grant idp.keys:write");
+
+    // 管理コンソールの出し分け: 子テナントでは鍵の権限が「行使できる一覧」に出ない。
+    let res = send(
+        &env.app,
+        get(&child, &format!("/{}/admin/whoami", tenant.id)),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let perms = body_json(res).await["permissions"].clone();
+    let perms: Vec<String> = serde_json::from_value(perms).expect("permissions");
+    assert!(
+        perms.iter().any(|code| code == "idp.users:write"),
+        "{perms:?}"
+    );
+    assert!(
+        !perms.iter().any(|code| code.starts_with("idp.keys:")),
+        "{perms:?}"
+    );
+
+    // root の管理者は今までどおり扱える。
+    let root = tok(&env, &root_sso, &env.root_tenant_id).await;
+    let res = send(
+        &env.app,
+        get(
+            &root,
+            &format!("/{}/admin/signing-keys", env.root_tenant_id),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK, "root lists keys");
+    let res = send(
+        &env.app,
+        get(&root, &format!("/{}/admin/whoami", env.root_tenant_id)),
+    )
+    .await;
+    let perms: Vec<String> =
+        serde_json::from_value(body_json(res).await["permissions"].clone()).expect("permissions");
+    assert!(
+        perms.iter().any(|code| code == "idp.keys:write"),
+        "{perms:?}"
+    );
+}

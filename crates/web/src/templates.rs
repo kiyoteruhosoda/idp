@@ -942,7 +942,8 @@ mod tests {
             admin: Some(ConsoleAdmin {
                 label: "admin",
                 tenant_name: Some("Acme"),
-                permissions: &["idp.system.admin".to_string()],
+                // api は含意を展開した一覧を返す（root の管理者なら署名鍵の権限も載る）。
+                permissions: &["idp.system.admin".to_string(), "idp.keys:read".to_string()],
                 csrf_token: "test-console-csrf",
             }),
         });
@@ -1185,6 +1186,13 @@ mod tests {
         assert!(!tenant_admin.contains("/t/admin/tenants"), "{tenant_admin}");
         // 権限に関わらず開ける画面は残る（隠しすぎていないことの確認）。
         assert!(tenant_admin.contains("/t/admin/accounts"), "{tenant_admin}");
+        // 署名鍵は root でしか扱えない（task #580）。子テナントでは api が idp.keys:* を一覧から落とす。
+        assert!(
+            !tenant_admin.contains("/t/admin/signing-keys"),
+            "{tenant_admin}"
+        );
+        let root_admin = render_as(&["idp.keys:read".to_string()]);
+        assert!(root_admin.contains("/t/admin/signing-keys"), "{root_admin}");
 
         let system_admin = render_as(&["idp.system.admin".to_string()]);
         assert!(system_admin.contains("/t/admin/logs"), "{system_admin}");
@@ -2373,7 +2381,9 @@ pub const CONSOLE_NAV: &[ConsoleNavGroup] = &[
                 icon: "fa-key",
                 label: "admin-nav-signing-keys",
                 description: "admin-nav-signing-keys-desc",
-                requires: None,
+                // 署名鍵は全テナント共通で、口は root に限る（api の `require_root_tenant`）。
+                // 子テナントでは api がこのコードを行使できる一覧から落とすので、項目も消える。
+                requires: Some("idp.keys:read"),
             },
         ],
     },

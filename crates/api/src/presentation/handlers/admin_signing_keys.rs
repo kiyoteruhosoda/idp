@@ -2,6 +2,10 @@
 //!
 //! 参照は `idp.keys:read`、生成・retire・削除は `idp.keys:write` が要る（`RequirePerms<KeysRead>` / `<KeysWrite>`。
 //! `idp.tenant.admin` は両方を含意する）。秘密鍵・暗号化鍵は返さない。
+//!
+//! ⚠ **署名鍵は全テナントで 1 組**（`signing_keys` にテナント列が無い）なので、口は **root テナントに
+//! 限る**（`require_root_tenant`）。権限の判定だけだと、子テナントの管理者（`idp.tenant.admin` が
+//! `idp.keys:write` を含意する）がテナントを越えて全体の鍵を作り替え・消せてしまう。
 //! 生成アルゴリズムは `RS256`（RSA-2048）または `ES256`（NIST P-256）。
 
 use crate::application::key_service::KeyManagementError;
@@ -12,9 +16,10 @@ use crate::presentation::dto::{GenerateSigningKeyRequest, SigningKeyResponse};
 use crate::presentation::error::ApiError;
 use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
+use crate::presentation::tenant::{require_root_tenant, ResolvedTenant};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::Json;
+use axum::{Extension, Json};
 
 /// 全署名鍵を作成日時の降順で返す。
 #[utoipa::path(
@@ -24,15 +29,17 @@ use axum::Json;
     responses(
         (status = 200, description = "署名鍵一覧", body = [SigningKeyResponse]),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.keys:read 必須）"),
+        (status = 403, description = "権限不足（idp.keys:read 必須。root テナントのみ）"),
     ),
     security(("bearer_token" = []))
 )]
 pub async fn list_keys(
     RequirePerms(_admin, _): RequirePerms<KeysRead>,
     State(state): State<AppState>,
+    Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
 ) -> Result<Json<Vec<SigningKeyResponse>>, ApiError> {
+    require_root_tenant(&tenant, locale)?;
     let keys = state
         .keys
         .list_keys()
@@ -59,16 +66,18 @@ pub async fn list_keys(
         (status = 201, description = "生成した署名鍵", body = SigningKeyResponse),
         (status = 400, description = "不正なアルゴリズム"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.keys:write 必須）"),
+        (status = 403, description = "権限不足（idp.keys:write 必須。root テナントのみ）"),
     ),
     security(("bearer_token" = []))
 )]
 pub async fn generate_key(
     RequirePerms(_admin, _): RequirePerms<KeysWrite>,
     State(state): State<AppState>,
+    Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
     Json(body): Json<GenerateSigningKeyRequest>,
 ) -> Result<(StatusCode, Json<SigningKeyResponse>), ApiError> {
+    require_root_tenant(&tenant, locale)?;
     let algorithm = SigningAlgorithm::parse(&body.algorithm)
         .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get("api-invalid-request")))?;
 
@@ -103,7 +112,7 @@ pub async fn generate_key(
         (status = 204, description = "退役完了"),
         (status = 400, description = "既に RETIRED、または最後の署名可能な鍵"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.keys:write 必須）"),
+        (status = 403, description = "権限不足（idp.keys:write 必須。root テナントのみ）"),
         (status = 404, description = "不存在"),
     ),
     security(("bearer_token" = []))
@@ -111,11 +120,13 @@ pub async fn generate_key(
 pub async fn retire_key(
     RequirePerms(_admin, _): RequirePerms<KeysWrite>,
     State(state): State<AppState>,
+    Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
-    // 先頭のパスセグメントは `{tenant_id}`。署名鍵はテナント横断（グローバル）だが、管理ルートは
-    // 全テナント一律 `/{tenant_id}/admin/...` に配置し RequirePerms でテナント権限を検証する。
+    // 先頭のパスセグメントは `{tenant_id}`。署名鍵はテナント横断（グローバル）なので、
+    // 管理ルートは全テナント一律 `/{tenant_id}/admin/...` に置いたうえで root に限る。
     Path((_tenant_id, kid)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
+    require_root_tenant(&tenant, locale)?;
     state
         .keys
         .retire_key(&kid)
@@ -134,7 +145,7 @@ pub async fn retire_key(
         (status = 204, description = "削除完了"),
         (status = 400, description = "ACTIVE 鍵は削除不可（先に退役）"),
         (status = 401, description = "未認証"),
-        (status = 403, description = "権限不足（idp.keys:write 必須）"),
+        (status = 403, description = "権限不足（idp.keys:write 必須。root テナントのみ）"),
         (status = 404, description = "不存在"),
     ),
     security(("bearer_token" = []))
@@ -142,9 +153,11 @@ pub async fn retire_key(
 pub async fn delete_key(
     RequirePerms(_admin, _): RequirePerms<KeysWrite>,
     State(state): State<AppState>,
+    Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
     Path((_tenant_id, kid)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
+    require_root_tenant(&tenant, locale)?;
     state
         .keys
         .delete_key(&kid)

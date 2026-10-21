@@ -36,7 +36,8 @@ pub async fn whoami(
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
 ) -> Response {
-    let permissions = effective_permissions(&state, &admin.permission_codes).await;
+    let permissions =
+        effective_permissions(&state, &admin.permission_codes, tenant.tenant().is_root()).await;
     Json(WhoamiResponse {
         // 管理コンソールは人がログインして使う画面なので、ここに来る主体は利用者である
         // （システム用クライアントは `idp.tenant.admin` を保有できない。ADR-0037）。
@@ -65,7 +66,14 @@ pub async fn whoami(
 /// 隠しすぎになるのは**マスタが読めない間だけ**で、いま消費側が見る `idp.system.admin` は
 /// 保有コードとして直接載るため影響しない。含意が要る判定を足すときは、この分岐を
 /// 「空を返す＝絞り込まない」へ変えること。
-async fn effective_permissions(state: &AppState, held: &[String]) -> Vec<String> {
+///
+/// ⚠ root でないテナントでは、root の中でしか行使できないコード（署名鍵。`ROOT_SCOPED_CODES`）を
+/// 落とす。含意では持っていても、口が root を課すので押した先が 403 の行き止まりになる。
+async fn effective_permissions(
+    state: &AppState,
+    held: &[String],
+    tenant_is_root: bool,
+) -> Vec<String> {
     let mut codes = match state.permissions_admin.available_codes().await {
         Ok(codes) => codes,
         Err(e) => {
@@ -77,6 +85,8 @@ async fn effective_permissions(state: &AppState, held: &[String]) -> Vec<String>
             return held.to_vec();
         }
     };
-    codes.retain(|code| permission::satisfies(held, code));
+    codes.retain(|code| {
+        permission::satisfies(held, code) && (tenant_is_root || !permission::is_root_scoped(code))
+    });
     codes
 }
