@@ -475,6 +475,7 @@ passkey-last-used = Last used
 login-passkey-or = Or
 login-passkey-button = Sign in with Passkey
 passkey-error-not-found = Passkey not found. It may have already been deleted.
+passkey-error-csrf = The form has expired. Reload the page and try again.
 passkey-error-cancelled = The passkey request was cancelled or timed out. Please try again.
 passkey-error-duplicate = This authenticator is already registered as a passkey.
 passkey-error-invalid = The passkey could not be registered. Please try a different authenticator.

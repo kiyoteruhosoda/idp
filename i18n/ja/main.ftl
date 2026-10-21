@@ -475,6 +475,7 @@ passkey-last-used = 最終使用
 login-passkey-or = または
 login-passkey-button = パスキーでサインイン
 passkey-error-not-found = パスキーが見つかりません。既に削除されている可能性があります。
+passkey-error-csrf = フォームの有効期限が切れました。ページを再読み込みしてやり直してください。
 passkey-error-cancelled = パスキーの操作がキャンセルされたか、時間切れになりました。もう一度お試しください。
 passkey-error-duplicate = この認証器は既にパスキーとして登録されています。
 passkey-error-invalid = パスキーを登録できませんでした。別の認証器でお試しください。

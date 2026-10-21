@@ -9,7 +9,9 @@ mod support;
 use assay_contracts::cookies::SSO_SESSION_COOKIE;
 use axum::http::StatusCode;
 use serde_json::json;
-use support::{body_text, get_with_cookies, location, post_form, send, setup, WebEnv};
+use support::{
+    body_text, get_with_cookies, location, post_form, send, setup, WebEnv, TEST_CSRF_SECRET,
+};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
@@ -17,6 +19,11 @@ const SSO: &str = "user-session";
 
 fn cookies() -> String {
     format!("{SSO_SESSION_COOKIE}={SSO}")
+}
+
+/// 削除フォームに埋まる CSRF トークン（task #587）。
+fn csrf() -> String {
+    assay_web::csrf::console_csrf_token(SSO, TEST_CSRF_SECRET)
 }
 
 /// 重要操作のゲート（AP5）は満たしている状態にしておく。
@@ -60,7 +67,10 @@ async fn deleting_a_passkey_returns_to_the_list_with_a_banner() {
         post_form(
             &format!("{}/account/passkey/delete", env.prefix()),
             Some(&cookies()),
-            &[("credential_id", "00000000-0000-7000-8000-000000000001")],
+            &[
+                ("credential_id", "00000000-0000-7000-8000-000000000001"),
+                ("csrf_token", csrf().as_str()),
+            ],
         ),
     )
     .await;
@@ -95,7 +105,10 @@ async fn a_passkey_that_was_not_there_is_reported_as_a_failure() {
         post_form(
             &format!("{}/account/passkey/delete", env.prefix()),
             Some(&cookies()),
-            &[("credential_id", "00000000-0000-7000-8000-000000000009")],
+            &[
+                ("credential_id", "00000000-0000-7000-8000-000000000009"),
+                ("csrf_token", csrf().as_str()),
+            ],
         ),
     )
     .await;
