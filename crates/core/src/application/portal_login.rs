@@ -66,11 +66,20 @@ type HmacSha256 = Hmac<Sha256>;
 /// MFA チケットの有効期間（秒）。TOTP 入力までの猶予。
 const MFA_TICKET_TTL_SECS: i64 = 300;
 
-#[derive(Debug)]
 pub struct PortalLoginCommand {
     /// ログイン識別子（ユーザー名 = `preferred_username`。ADR-0009 §8）。
     pub username: String,
     pub password: String,
+}
+
+/// ⚠ 秘密（`password`）を `Debug` に出さない（task #593）。`{:?}` でログへ
+/// 落としても値が漏れないよう、手書きで載せる項目を選ぶ。
+impl std::fmt::Debug for PortalLoginCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PortalLoginCommand")
+            .field("username", &self.username)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug)]
@@ -91,12 +100,21 @@ pub struct PortalPasskeyLoginCommand {
 
 /// ポータルの強制パスワード変更（ADR-0009 §5）のコマンド。ポータルログインは `auth_session_id` の
 /// ような一時状態を持たないため、管理コンソールと同じく現行パスワードを含め毎回フルに再検証する。
-#[derive(Debug)]
 pub struct PortalChangePasswordCommand {
     /// ログイン識別子（ユーザー名 = `preferred_username`）。
     pub username: String,
     pub current_password: String,
     pub new_password: String,
+}
+
+/// ⚠ 秘密（`current_password`, `new_password`）を `Debug` に出さない（task #593）。`{:?}` でログへ
+/// 落としても値が漏れないよう、手書きで載せる項目を選ぶ。
+impl std::fmt::Debug for PortalChangePasswordCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PortalChangePasswordCommand")
+            .field("username", &self.username)
+            .finish_non_exhaustive()
+    }
 }
 
 /// ポータルログインの結果。Presentation は画面（HTML）に写す。

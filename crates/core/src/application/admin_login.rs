@@ -49,11 +49,20 @@ use std::sync::Arc;
 // 管理ログインフォームの CSRF 同期トークン導出（`admin_csrf_token`）は、ADR-0007 で管理コンソールを
 // web crate へ移設したのに伴い web 側（`assay-web` の `csrf` モジュール）へ移った。api（core）は保持しない。
 
-#[derive(Debug)]
 pub struct AdminLoginCommand {
     /// ログイン識別子（ユーザー名 = `preferred_username`。ADR-0009 §8）。
     pub username: String,
     pub password: String,
+}
+
+/// ⚠ 秘密（`password`）を `Debug` に出さない（task #593）。`{:?}` でログへ
+/// 落としても値が漏れないよう、手書きで載せる項目を選ぶ。
+impl std::fmt::Debug for AdminLoginCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdminLoginCommand")
+            .field("username", &self.username)
+            .finish_non_exhaustive()
+    }
 }
 
 /// パスキー（WebAuthn）による管理ログインのコマンド。ログイン識別子もパスワードも取らない
@@ -68,12 +77,21 @@ pub struct AdminPasskeyLoginCommand {
 
 /// 強制パスワード変更を伴う管理ログイン（ADR-0009 §5）のコマンド。管理コンソールのログインは
 /// `auth_session_id` のような一時状態を持たないため、現行パスワードを含め毎回フルに再検証する。
-#[derive(Debug)]
 pub struct AdminChangePasswordCommand {
     /// ログイン識別子（ユーザー名 = `preferred_username`。ADR-0009 §8）。
     pub username: String,
     pub current_password: String,
     pub new_password: String,
+}
+
+/// ⚠ 秘密（`current_password`, `new_password`）を `Debug` に出さない（task #593）。`{:?}` でログへ
+/// 落としても値が漏れないよう、手書きで載せる項目を選ぶ。
+impl std::fmt::Debug for AdminChangePasswordCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdminChangePasswordCommand")
+            .field("username", &self.username)
+            .finish_non_exhaustive()
+    }
 }
 
 /// 管理ログインの結果。Presentation は画面（HTML）に写す。
@@ -965,5 +983,29 @@ impl From<PasskeyAssertionError> for AdminLoginOutcome {
             PasskeyAssertionError::InvalidCredential => AdminLoginOutcome::InvalidCredentials,
             PasskeyAssertionError::Internal(msg) => AdminLoginOutcome::Internal(msg),
         }
+    }
+}
+
+#[cfg(test)]
+mod debug_redaction_tests {
+    use super::*;
+
+    /// パスワードを `Debug` に出さない（task #593）。
+    #[test]
+    fn commands_do_not_print_passwords() {
+        let login = AdminLoginCommand {
+            username: "admin".to_string(),
+            password: "pa55-secret".to_string(),
+        };
+        let change = AdminChangePasswordCommand {
+            username: "admin".to_string(),
+            current_password: "old-secret".to_string(),
+            new_password: "new-secret".to_string(),
+        };
+        let shown = format!("{login:?} {change:?}");
+        for secret in ["pa55-secret", "old-secret", "new-secret"] {
+            assert!(!shown.contains(secret), "{shown}");
+        }
+        assert!(shown.contains("admin"), "{shown}");
     }
 }

@@ -221,10 +221,10 @@ impl IntrospectionService {
         }
 
         // 利用者の現在の状態確認（無効化・削除済みは inactive。access_token 経路と同じ）。
-        match self.users.find_by_id(rt.user_id).await {
-            Ok(Some(user)) if user.is_active() => {}
+        let user = match self.users.find_by_id(rt.user_id).await {
+            Ok(Some(user)) if user.is_active() => user,
             _ => return IntrospectionResponse::inactive(),
-        }
+        };
 
         IntrospectionResponse {
             active: true,
@@ -234,7 +234,9 @@ impl IntrospectionService {
             token_type: Some("refresh_token".to_string()),
             exp: Some(rt.expires_at.timestamp()),
             iat: None,
-            sub: Some(rt.user_id.to_string()),
+            // 公開の `sub`（ID Token・アクセストークンと同じ値）。内部の利用者 ID を返していた
+            // （task #593。アクセストークンの経路と食い違い、内部 ID が RP へ漏れていた）。
+            sub: Some(user.sub.to_string()),
             iss: Some(issuer.to_string()),
             // refresh token は不透明トークンで JWT の `jti` を持たない。保存している SHA-256 ハッシュを
             // `jti` として返すと内部保存値が client へ漏れるため付与しない（RFC 7662 で jti は任意）。
