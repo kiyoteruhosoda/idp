@@ -839,7 +839,9 @@ impl AppState {
         let backchannel_logout = Arc::new(BackchannelLogoutDeliveryService::new(
             Arc::new(SqlxBackchannelLogoutDeliveryRepository::new(pool.clone())),
             Arc::new(KeyServiceLogoutTokenSigner::new(keys.clone())),
-            Arc::new(ReqwestBackchannelLogoutSender::new()),
+            Arc::new(ReqwestBackchannelLogoutSender::with_trust(
+                config.outbound_trust(),
+            )),
             ids.clone(),
             clock.clone(),
             config.issuer().to_string(),
@@ -1005,7 +1007,10 @@ impl AppState {
         > = Arc::new(SqlxExternalLoginRequestRepository::new(pool.clone()));
         // 外部 IdP への HTTP は 1 つのクライアント（タイムアウト・リダイレクトを追わない）で出す。
         // ログイン時のトークン交換と、登録前の discovery 取り込み（task #77）が同じ作法になる。
-        let external_oidc_client = Arc::new(ReqwestExternalOidcClient::new());
+        // 名前を引いた結果の住所も確かめる（内部なら繋がない。task #585）。
+        let external_oidc_client = Arc::new(ReqwestExternalOidcClient::with_trust(
+            config.outbound_trust(),
+        ));
         let external_login = Arc::new(ExternalLoginService::new(
             external_providers.clone(),
             Arc::new(SqlxExternalIdentityRepository::new(pool.clone())),

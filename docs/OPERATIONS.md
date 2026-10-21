@@ -1035,6 +1035,21 @@ SELECT result, reason, COUNT(*) AS hits, MAX(occurred_at) AS last_seen
 - `PASSWORD_MIN_LENGTH` を既定より大きくした場合、ブラウザ側の入力チェック（フォームの
   `minlength`）は 8 のままで、超過分は送信後にサーバが拒否する。
 
+## 公開名が内側の前段へ引ける配置で、ログアウトの知らせや外部 IdP へ送りたいとき
+
+外へ送る要求（バックチャネルログアウト・外部 IdP の token / JWKS / discovery）は、名前を引いた結果が
+内部の住所（`10.x`・`192.168.x`・`127.x`・`169.254.x` など）だと送らない（task #585）。宅内の split DNS の
+ように、正規の RP の公開名が内側の前段へ引ける配置では、その公開ドメインを `OUTBOUND_TRUSTED_HOSTS` に書く
+（カンマ区切り。`example.com` は `*.example.com` も含む）。api の再起動が必要。
+
+```
+OUTBOUND_TRUSTED_HOSTS=nolumia.com
+```
+
+- 送れなかった宛先は `backchannel_logout_deliveries.last_error` に `resolves to an internal address` と残る
+- 点の無い名前（`http://rp:3000/`）・`*.svc`・`*.cluster.local`・`*.internal`・`*.local` は、この設定に
+  関わらず登録できない（字面で内部と分かるため）
+
 ## 利用者を作ったあと、本人に使い始めてもらうとき
 
 1. 管理コンソールの `/{tenant_id}/admin/users/new` で利用者を作る。⚠ **パスワードは発行されない。**

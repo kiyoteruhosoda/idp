@@ -6,6 +6,8 @@
 //! 読まれるため。CLAUDE.md「国際化」の対象外）。
 
 use crate::application::backchannel_logout::BackchannelLogoutSender;
+use crate::domain::outbound_uri::OutboundTrust;
+use crate::infrastructure::outbound_http::guarded_client_builder;
 use async_trait::async_trait;
 
 /// RP のエンドポイントが応答しないまま待ち続けないための上限。
@@ -19,8 +21,14 @@ pub struct ReqwestBackchannelLogoutSender {
 
 impl ReqwestBackchannelLogoutSender {
     pub fn new() -> Self {
+        Self::with_trust(OutboundTrust::none())
+    }
+
+    /// 名前を引いた結果が内部の住所でも送ってよい名前を指定して作る（task #585）。
+    pub fn with_trust(trust: OutboundTrust) -> Self {
         Self {
-            client: reqwest::Client::builder()
+            // 繋ぐ直前に引いた住所を確かめる（内部なら送らない。`outbound_http`）。
+            client: guarded_client_builder(trust)
                 .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
                 // リダイレクトは追わない。登録済み URI 以外へ logout_token を渡さないため
                 //（RP がリダイレクトを設定していれば、それは登録内容の誤りとして失敗させる）。
