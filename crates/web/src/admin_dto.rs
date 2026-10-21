@@ -682,8 +682,9 @@ pub struct InvitationCreatedView {
     pub expires_at: String,
     /// 招待メール（承諾リンク）を送信できたか（MT17）。false なら手動でトークンを伝達する。
     pub email_sent: bool,
-    /// 被招待者のメールアドレス（送信先の確認表示用）。
-    pub invitee_email: String,
+    /// 被招待者のメールアドレス（送信先の確認表示用）。メールアドレスで招いたときだけ載る（task #591）。
+    #[serde(default)]
+    pub invitee_email: Option<String>,
 }
 
 /// テナントの公開表現（`GET/PATCH /admin/settings/tenant` の応答。MT14）。
