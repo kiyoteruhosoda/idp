@@ -371,6 +371,8 @@ impl AdminLoginService {
 
         // 3. ロック状態の確認。
         if user.is_locked_at(now) {
+            // 不在のときと同じだけ argon2 の検証を消費する（応答時間で状態を推し量らせない。task #590）。
+            crate::domain::password::verify_against_dummy(self.hasher.as_ref(), &cmd.password);
             self.audit
                 .record(
                     AuditEventType::LoginLocked,
@@ -387,6 +389,8 @@ impl AdminLoginService {
 
         // 4. アカウント状態の確認（存在の露呈を避けるため資格情報エラーと同じ応答にする）。
         if !user.is_active() {
+            // 不在のときと同じだけ argon2 の検証を消費する（応答時間で状態を推し量らせない。task #590）。
+            crate::domain::password::verify_against_dummy(self.hasher.as_ref(), &cmd.password);
             self.audit
                 .record(
                     AuditEventType::LoginFailed,
