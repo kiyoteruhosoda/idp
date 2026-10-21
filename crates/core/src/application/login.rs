@@ -293,6 +293,8 @@ impl LoginService {
 
         // 5. ロック状態の確認。
         if user.is_locked_at(now) {
+            // 不在のときと同じだけ argon2 の検証を消費する（応答時間で状態を推し量らせない。task #590）。
+            crate::domain::password::verify_against_dummy(self.hasher.as_ref(), &cmd.password);
             self.audit
                 .record(
                     AuditEventType::LoginLocked,
@@ -309,6 +311,8 @@ impl LoginService {
 
         // 6. アカウント状態の確認（存在の露呈を避けるため資格情報エラーと同じ応答にする）。
         if !user.is_active() {
+            // 不在のときと同じだけ argon2 の検証を消費する（応答時間で状態を推し量らせない。task #590）。
+            crate::domain::password::verify_against_dummy(self.hasher.as_ref(), &cmd.password);
             self.audit
                 .record(
                     AuditEventType::LoginFailed,
@@ -642,12 +646,19 @@ mod tests {
         }
     }
 
+    thread_local! {
+        /// このテストのスレッドで `verify` が呼ばれた回数（task #590。応答時間を揃えるための
+        /// 検証が走ったかを数える）。`#[tokio::test]` は 1 スレッドで動くので、テスト同士で混ざらない。
+        static VERIFIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
     struct PlainHasher;
     impl PasswordHasher for PlainHasher {
         fn hash(&self, password: &str) -> Result<String, DomainError> {
             Ok(format!("hash:{password}"))
         }
         fn verify(&self, password: &str, hash: &str) -> Result<bool, DomainError> {
+            VERIFIES.with(|n| n.set(n.get() + 1));
             Ok(hash == format!("hash:{password}"))
         }
     }
@@ -1070,6 +1081,23 @@ mod tests {
             h.auth_sessions.rows().is_empty(),
             "code 発行後に auth_session が残っている = 再生成した id で削除できていない"
         );
+    }
+
+    /// 停止中・ロック中のアカウントでも、不在のときと同じだけパスワードの検証を消費する（task #590）。
+    /// 早く返すと、応答時間で「そのアカウントは在る（が止まっている）」と推し量れる。
+    #[tokio::test]
+    async fn disabled_and_locked_accounts_spend_the_same_password_check() {
+        let h = harness(false, 0);
+        h.users.rows.lock().unwrap()[0].status = crate::domain::values::UserStatus::Disabled;
+        VERIFIES.with(|n| n.set(0));
+        assert!(matches!(h.login().await, LoginOutcome::InvalidCredentials));
+        assert_eq!(VERIFIES.with(|n| n.get()), 1, "disabled account");
+
+        let h = harness(false, 0);
+        h.users.rows.lock().unwrap()[0].locked_until = Some(now() + chrono::Duration::hours(1));
+        VERIFIES.with(|n| n.set(0));
+        assert!(matches!(h.login().await, LoginOutcome::Locked));
+        assert_eq!(VERIFIES.with(|n| n.get()), 1, "locked account");
     }
 
     /// 単一要素で認証が成立する経路（TOTP 未設定）は従来どおりリセットする。
