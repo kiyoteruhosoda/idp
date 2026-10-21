@@ -65,6 +65,10 @@ fn map_row(row: &MySqlRow) -> Result<RefreshToken> {
         authentication_methods: authentication_methods_json::from_json_opt(
             row.try_get("authentication_methods").map_err(repo_err)?,
         ),
+        auth_time: row
+            .try_get::<Option<NaiveDateTime>, _>("auth_time")
+            .map_err(repo_err)?
+            .map(to_utc),
         expires_at: to_utc(row.try_get("expires_at").map_err(repo_err)?),
         revoked_at: revoked_at.map(to_utc),
         created_at: to_utc(row.try_get("created_at").map_err(repo_err)?),
@@ -77,8 +81,8 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
         sqlx::query(
             "INSERT INTO refresh_tokens \
              (token_hash, parent_hash, grant_hash, tenant_id, user_id, client_id, scope, sid, \
-              authentication_methods, expires_at, revoked_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              authentication_methods, auth_time, expires_at, revoked_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&token.token_hash)
         .bind(&token.parent_hash)
@@ -94,6 +98,7 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
                 .as_deref()
                 .map(authentication_methods_json::to_json),
         )
+        .bind(token.auth_time.map(|d| d.naive_utc()))
         .bind(token.expires_at.naive_utc())
         .bind(token.revoked_at.map(|d| d.naive_utc()))
         .execute(&self.pool)
@@ -109,7 +114,7 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
     ) -> Result<Option<RefreshToken>> {
         let row = sqlx::query(
             "SELECT token_hash, parent_hash, grant_hash, tenant_id, user_id, client_id, scope, \
-             sid, authentication_methods, expires_at, revoked_at, created_at \
+             sid, authentication_methods, auth_time, expires_at, revoked_at, created_at \
              FROM refresh_tokens WHERE token_hash = ? AND tenant_id = ?",
         )
         .bind(token_hash)
