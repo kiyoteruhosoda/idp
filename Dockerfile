@@ -24,14 +24,15 @@ COPY crates/core/Cargo.toml crates/core/Cargo.toml
 COPY crates/contracts/Cargo.toml crates/contracts/Cargo.toml
 COPY crates/api/Cargo.toml crates/api/Cargo.toml
 COPY crates/web/Cargo.toml crates/web/Cargo.toml
-RUN mkdir -p crates/core/src crates/contracts/src crates/api/src crates/web/src \
+RUN mkdir -p crates/core/src crates/contracts/src crates/api/src/bin crates/web/src \
     && echo "" > crates/core/src/lib.rs \
     && echo "" > crates/contracts/src/lib.rs \
     && echo "" > crates/api/src/lib.rs \
     && echo "" > crates/web/src/lib.rs \
     && echo "fn main() {}" > crates/api/src/main.rs \
+    && echo "fn main() {}" > crates/api/src/bin/rewrap_secrets.rs \
     && echo "fn main() {}" > crates/web/src/main.rs \
-    && cargo build --release --locked --bin assay --bin assay-web \
+    && cargo build --release --locked --bin assay --bin assay-rewrap-secrets --bin assay-web \
     ; rm -rf crates/core/src crates/contracts/src crates/api/src crates/web/src
 
 # 本体をビルド。i18n（include_str! で assay-web に埋め込み）と migrations（sqlx::migrate! で assay に埋め込み）は
@@ -57,7 +58,7 @@ ENV IDP_BUILD_NUMBER=${IDP_BUILD_NUMBER}
 # スキップし、ダミーの `fn main() {}`（即 exit 0・無出力）バイナリがそのまま出荷される。それを防ぐため、
 # ワークスペース各 crate のソース mtime を更新してから再ビルドする（依存クレートのキャッシュには触れない）。
 RUN find crates -name '*.rs' -exec touch {} + \
-    && cargo build --release --locked --bin assay --bin assay-web
+    && cargo build --release --locked --bin assay --bin assay-rewrap-secrets --bin assay-web
 
 # ---- migrate tool builder ----
 # sqlx-cli のビルドには Rust ツールチェインと C ビルド依存が必要だが、それらを migrate 実行イメージへ
@@ -97,6 +98,8 @@ USER assay
 FROM runtime-base AS runtime-api
 WORKDIR /app
 COPY --from=builder /build/target/release/assay /usr/local/bin/assay
+# 鍵を作り直すときに一度だけ流す道具（docs/OPERATIONS.md）。ENTRYPOINT は api のまま。
+COPY --from=builder /build/target/release/assay-rewrap-secrets /usr/local/bin/assay-rewrap-secrets
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=5 \
     CMD curl -fsS http://127.0.0.1:8080/healthz || exit 1

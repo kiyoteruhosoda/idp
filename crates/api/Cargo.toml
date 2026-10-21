@@ -13,6 +13,11 @@ path = "src/lib.rs"
 name = "assay"
 path = "src/main.rs"
 
+# 鍵を作り直すときに一度だけ流す道具（task #618）。api の像に同梱するが、呼ばれるまで何もしない。
+[[bin]]
+name = "assay-rewrap-secrets"
+path = "src/bin/rewrap_secrets.rs"
+
 [lints]
 workspace = true
 
