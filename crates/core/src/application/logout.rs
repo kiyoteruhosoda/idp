@@ -236,8 +236,11 @@ impl LogoutService {
         };
 
         let issuer = tenant_issuer(&self.base_issuer, tenant.tenant_id());
+        // ⚠ **終えたセッションが無ければ、RP の一覧を返さない**（task #588）。返していた頃は、
+        //    Cookie を持たない誰にでもテナントの RP の front-channel URI の一覧が見えた。
         let frontchannel_uris: Vec<String> = clients
             .iter()
+            .filter(|_| user_id.is_some())
             .filter_map(|c| {
                 c.frontchannel_logout_uri.as_ref().map(|uri| {
                     // OpenID Connect Front-Channel Logout spec: iss を query param に付与。
