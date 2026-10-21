@@ -974,6 +974,9 @@ pub trait UserPermissionRepository: Send + Sync {
     async fn list_available_codes(&self) -> Result<Vec<String>>;
     /// 利用者が `tenant_id` を scope として保有する権限コード一覧を返す（順序は不定）。
     async fn list_codes_for_user(&self, tenant_id: TenantId, user_id: Uuid) -> Result<Vec<String>>;
+    /// 利用者が保有する権限コードを、**すべての scope について** `(scope, code)` で返す（順序は不定）。
+    /// 口座の操作の前に「対象がどこで何を持っているか」を見るために使う（ゲストとして持つ権限を含む。task #579）。
+    async fn list_scoped_codes_for_user(&self, user_id: Uuid) -> Result<Vec<(TenantId, String)>>;
     /// 利用者が指定の権限コードを `tenant_id` を scope として保有するか（完全一致判定。ADR-0009 §4）。
     async fn has_permission(&self, tenant_id: TenantId, user_id: Uuid, code: &str) -> Result<bool>;
     /// 指定コードのうち**いずれか 1 つ**を保有するか（OR 判定）。

@@ -13,6 +13,7 @@ pub mod account_setup;
 pub mod account_tenants;
 pub mod account_theme;
 pub mod admin_access;
+pub mod admin_account_guard;
 pub mod admin_login;
 pub mod application_access;
 pub mod application_log;

@@ -13,7 +13,9 @@ use crate::presentation::dto::{
     AvailablePermissionsResponse, GrantPermissionRequest, UserPermissionsResponse,
 };
 use crate::presentation::error::ApiError;
-use crate::presentation::handlers::{map_permission_management_error, request_context};
+use crate::presentation::handlers::{
+    map_admin_account_guard_error, map_permission_management_error, request_context,
+};
 use crate::presentation::i18n::ApiLocale;
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
@@ -28,6 +30,8 @@ use uuid::Uuid;
 /// **要求テナントで付与し得ないコードは常に落とす。** `idp.system.admin` は root scope でしか
 /// 存在できない（ADR-0009 §4）ため、非 root テナントで返すと「選べるのに必ず 403 になる選択肢」に
 /// なる。ADR-0032 の「選べないものを見せない」をここでも適用する。
+///
+/// **呼び出し元が配れないコードも落とす**（`permission::may_assign`。task #579）。
 ///
 /// `?grantable_to=client` を付けると、さらに**クライアントへ付与できるコードだけ**へ絞る（ADR-0037）。
 /// 絞り込みを api で行うのは、判定（`domain::permission` の各関数）の出所を core に一本化するため
@@ -46,7 +50,7 @@ use uuid::Uuid;
     security(("bearer_token" = []))
 )]
 pub async fn list_available_permissions(
-    RequirePerms(_admin, _): RequirePerms<PermissionsRead>,
+    RequirePerms(admin, _): RequirePerms<PermissionsRead>,
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
@@ -59,6 +63,8 @@ pub async fn list_available_permissions(
         .map_err(|e| map_permission_management_error(e, locale))?;
     let tenant_is_root = tenant.tenant().is_root();
     codes.retain(|code| permission::is_grantable_in_tenant(code, tenant_is_root));
+    // 呼び出し元が配れないコード（自分の持たない権限。task #579）も落とす。付与の口が 403 にする。
+    codes.retain(|code| permission::may_assign(&admin.permission_codes, code, tenant_is_root));
     if query.grantable_to.as_deref() == Some(GRANTABLE_TO_CLIENT) {
         codes.retain(|code| permission::is_grantable_to_client(code));
     }
@@ -140,6 +146,14 @@ pub async fn grant_permission(
     Json(body): Json<GrantPermissionRequest>,
 ) -> Result<Json<UserPermissionsResponse>, ApiError> {
     let target = parse_user_id(&user_id, locale)?;
+    state
+        .admin_account_guard
+        .ensure_may_assign(
+            &admin.permission_codes,
+            body.permission_code.trim(),
+            tenant.tenant().is_root(),
+        )
+        .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(
         &headers,
         &correlation,
@@ -190,6 +204,14 @@ pub async fn revoke_permission(
     Path((_tenant_id, user_id, permission_code)): Path<(String, String, String)>,
 ) -> Result<Json<UserPermissionsResponse>, ApiError> {
     let target = parse_user_id(&user_id, locale)?;
+    state
+        .admin_account_guard
+        .ensure_may_assign(
+            &admin.permission_codes,
+            permission_code.trim(),
+            tenant.tenant().is_root(),
+        )
+        .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(
         &headers,
         &correlation,

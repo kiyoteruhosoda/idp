@@ -16,7 +16,7 @@ use crate::presentation::admin::{ClientsRead, ClientsWrite, RequirePerms};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::GrantClientPermissionRequest;
 use crate::presentation::error::ApiError;
-use crate::presentation::handlers::request_context;
+use crate::presentation::handlers::{map_admin_account_guard_error, request_context};
 use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
@@ -85,6 +85,14 @@ pub async fn grant_client_permission(
     Path((_tenant_id, client_id)): Path<(String, String)>,
     Json(body): Json<GrantClientPermissionRequest>,
 ) -> Result<Json<ClientPermissionsResponse>, ApiError> {
+    state
+        .admin_account_guard
+        .ensure_may_assign(
+            &admin.permission_codes,
+            body.permission_code.trim(),
+            tenant.tenant().is_root(),
+        )
+        .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(
         &headers,
         &correlation,
@@ -135,6 +143,14 @@ pub async fn revoke_client_permission(
     headers: HeaderMap,
     Path((_tenant_id, client_id, permission_code)): Path<(String, String, String)>,
 ) -> Result<Json<ClientPermissionsResponse>, ApiError> {
+    state
+        .admin_account_guard
+        .ensure_may_assign(
+            &admin.permission_codes,
+            permission_code.trim(),
+            tenant.tenant().is_root(),
+        )
+        .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let ctx = request_context(
         &headers,
         &correlation,

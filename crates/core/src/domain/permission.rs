@@ -46,6 +46,14 @@ pub const SAML_SERVICE_PROVIDERS_READ: &str = "idp.saml-service-providers:read";
 pub const SAML_SERVICE_PROVIDERS_WRITE: &str = "idp.saml-service-providers:write";
 pub const RESOURCES_READ: &str = "idp.resources:read";
 pub const RESOURCES_WRITE: &str = "idp.resources:write";
+/// 管理者の口座を扱う（task #579）。
+///
+/// 細粒度コードだけでは、**呼び出し元が含意しない権限を持つ口座**（管理者の口座）は扱えず、
+/// 呼び出し元が含意しないコードは付与・剥奪できない（[`may_assign`] / [`may_manage_account`]）。
+/// このコードはその範囲を名指しで渡す: `idp.tenant.admin` までの口座の操作と、`idp.tenant.admin` 以下の
+/// 付与・剥奪ができる。⚠ `idp.system.admin` の持ち主の口座と、その付与には届かない。
+/// クライアントへも付けられる（break-glass の機械が非常用口座を作り直すため）。
+pub const ADMINS_WRITE: &str = "idp.admins:write";
 /// メール送信（SMTP）設定の参照。scope のテナントのメールの経路を読む（root の scope なら全体の経路も）。
 ///
 /// ⚠ ADR-0051 §3 は「root scope でしか持てない」としていたが、ADR-0058 §8 で覆した。根拠だった
@@ -85,6 +93,7 @@ pub const TENANT_MANAGEMENT_CODES: &[&str] = &[
     SAML_SERVICE_PROVIDERS_WRITE,
     RESOURCES_READ,
     RESOURCES_WRITE,
+    ADMINS_WRITE,
 ];
 
 /// root テナントの中でしか意味を持たないコード（全テナント共通の資源を扱う）。
@@ -132,6 +141,61 @@ pub fn implies(held: &str, required: &str) -> bool {
 /// 保有コード集合のいずれかが要求コードを満たすか（[`implies`] の集合版）。
 pub fn satisfies<S: AsRef<str>>(held: &[S], required: &str) -> bool {
     held.iter().any(|code| implies(code.as_ref(), required))
+}
+
+/// 呼び出し元の保有コード `held` で、`code` を付与・剥奪してよいか（task #579・ADR-0037）。
+///
+/// 細粒度コードは集めても管理者に届かない、という約束を付与の側で守る。許すのは次のどちらか:
+///
+/// 1. 呼び出し元が `code` を含意する（自分が持っている範囲を配る）
+/// 2. 呼び出し元が [`ADMINS_WRITE`] を持ち、`code` が `idp.tenant.admin` の範囲に収まる
+///
+/// ⚠ これだけで「付与してよい」にはならない。付与の口そのもの（`idp.permissions:write` /
+/// `idp.clients:write`）・`idp.system.admin` の扱い・テナントの範囲（[`is_grantable_in_tenant`]）は別に見る。
+///
+/// 3. root でないテナントでは、テナント管理者がそのテナントのメール経路の権限（`idp.smtp:*`）も配れる。
+///    `idp.tenant.admin` が SMTP を含意しないのは root で全体の経路へ届かせないためで（ADR-0051）、
+///    子テナントでは届くのがそのテナントの経路だけになる（ADR-0058 §8）。
+pub fn may_assign<S: AsRef<str>>(held: &[S], code: &str, tenant_is_root: bool) -> bool {
+    satisfies(held, code)
+        || (satisfies(held, ADMINS_WRITE) && implies(TENANT_ADMIN, code))
+        || (!tenant_is_root
+            && (code == SMTP_READ || code == SMTP_WRITE)
+            && satisfies(held, TENANT_ADMIN))
+}
+
+/// 口座の操作（パスワード・MFA の再発行、プロフィール・ログイン識別子の変更、停止・削除）の対象が
+/// 持つ権限 1 つ。`in_requested_tenant` は、その権限の scope が要求テナントか。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldByTarget {
+    pub code: String,
+    pub in_requested_tenant: bool,
+}
+
+/// 呼び出し元の保有コード `held`（要求テナントの scope）で、`target` の権限を持つ口座を
+/// 操作してよいか（task #579）。
+///
+/// 口座を操作できれば、その口座の権限を行使できる（パスワードを決め直してなりすませる）。
+/// したがって**対象の権限を全部、呼び出し元が付与できる**ときだけ許す:
+///
+/// - 要求テナントの権限は [`may_assign`] で見る（自分が含意するか、[`ADMINS_WRITE`] の範囲か）
+/// - 他のテナントの権限（ゲストとして持つもの）は、要求テナントの scope では含意しようがないので、
+///   [`ADMINS_WRITE`] の範囲（`idp.tenant.admin` まで）だけ許す
+/// - `idp.system.admin` の持ち主は、`idp.system.admin` の持ち主しか扱えない
+pub fn may_manage_account<S: AsRef<str>>(
+    held: &[S],
+    target: &[HeldByTarget],
+    tenant_is_root: bool,
+) -> bool {
+    target.iter().all(|t| {
+        if t.code == SYSTEM_ADMIN {
+            satisfies(held, SYSTEM_ADMIN)
+        } else if t.in_requested_tenant {
+            may_assign(held, &t.code, tenant_is_root)
+        } else {
+            satisfies(held, ADMINS_WRITE) && implies(TENANT_ADMIN, &t.code)
+        }
+    })
 }
 
 /// クライアント（システム用クライアント）へ付与してよいコードか（ADR-0037）。
@@ -321,6 +385,118 @@ mod tests {
         // root の管理者は今までどおり含意で持つ。
         assert!(implies(TENANT_ADMIN, KEYS_WRITE));
         assert!(!is_root_scoped(USERS_WRITE));
+    }
+
+    fn here(code: &str) -> HeldByTarget {
+        HeldByTarget {
+            code: code.to_string(),
+            in_requested_tenant: true,
+        }
+    }
+
+    fn elsewhere(code: &str) -> HeldByTarget {
+        HeldByTarget {
+            code: code.to_string(),
+            in_requested_tenant: false,
+        }
+    }
+
+    /// 細粒度コードは、自分が含意しないコードを配れない（task #579 の (b)(c)）。
+    #[test]
+    fn fine_grained_holders_cannot_assign_what_they_do_not_hold() {
+        let permissions_writer = [PERMISSIONS_WRITE];
+        assert!(!may_assign(&permissions_writer, TENANT_ADMIN, true));
+        assert!(!may_assign(&permissions_writer, SMTP_WRITE, true));
+        assert!(!may_assign(&permissions_writer, USERS_WRITE, true));
+        assert!(may_assign(&permissions_writer, PERMISSIONS_READ, true));
+        let clients_writer = [CLIENTS_WRITE];
+        assert!(!may_assign(&clients_writer, USERS_WRITE, true));
+        assert!(may_assign(&clients_writer, CLIENTS_READ, true));
+        // テナント管理者は今までどおり、テナントの中の権限を全部配れる。⚠ system.admin と SMTP は別。
+        assert!(may_assign(&[TENANT_ADMIN], TENANT_ADMIN, true));
+        assert!(may_assign(&[TENANT_ADMIN], USERS_WRITE, true));
+        assert!(may_assign(&[TENANT_ADMIN], ADMINS_WRITE, true));
+        assert!(!may_assign(&[TENANT_ADMIN], SYSTEM_ADMIN, true));
+        assert!(!may_assign(&[TENANT_ADMIN], SMTP_WRITE, true));
+    }
+
+    /// 子テナントでは、テナント管理者がそのテナントのメール経路の権限も配れる（ADR-0058 §8）。
+    /// root では配れない（全体の経路へ届くため。ADR-0051）。
+    #[test]
+    fn tenant_admin_assigns_smtp_codes_only_outside_the_root_tenant() {
+        assert!(may_assign(&[TENANT_ADMIN], SMTP_WRITE, false));
+        assert!(may_assign(&[TENANT_ADMIN], SMTP_READ, false));
+        assert!(!may_assign(&[TENANT_ADMIN], SMTP_WRITE, true));
+        assert!(!may_assign(&[PERMISSIONS_WRITE], SMTP_WRITE, false));
+    }
+
+    /// `idp.admins:write` は idp.tenant.admin の範囲までを名指しで渡す（break-glass の機械）。
+    #[test]
+    fn admins_write_reaches_tenant_admin_but_not_system_admin() {
+        let breakglass = [USERS_WRITE, PERMISSIONS_WRITE, ADMINS_WRITE];
+        assert!(may_assign(&breakglass, TENANT_ADMIN, true));
+        assert!(may_assign(&breakglass, KEYS_WRITE, true));
+        assert!(!may_assign(&breakglass, SYSTEM_ADMIN, true));
+        assert!(!may_assign(&breakglass, SMTP_WRITE, true));
+        assert!(is_grantable_to_client(ADMINS_WRITE));
+        assert!(implies(TENANT_ADMIN, ADMINS_WRITE));
+        assert!(!implies(ADMINS_WRITE, USERS_WRITE));
+    }
+
+    /// `idp.users:write` だけでは管理者の口座を扱えない（task #579 の (a)）。
+    #[test]
+    fn users_writer_cannot_manage_an_administrator() {
+        let users_writer = [USERS_WRITE];
+        assert!(may_manage_account(&users_writer, &[], true));
+        assert!(may_manage_account(&users_writer, &[here(USERS_READ)], true));
+        assert!(!may_manage_account(
+            &users_writer,
+            &[here(TENANT_ADMIN)],
+            true
+        ));
+        assert!(!may_manage_account(
+            &users_writer,
+            &[here(SMTP_WRITE)],
+            true
+        ));
+        assert!(!may_manage_account(
+            &users_writer,
+            &[here(PERMISSIONS_WRITE)],
+            true
+        ));
+        // ゲストとして他のテナントで持つ権限も守る。
+        assert!(!may_manage_account(
+            &users_writer,
+            &[elsewhere(USERS_READ)],
+            true
+        ));
+    }
+
+    #[test]
+    fn tenant_admin_and_admins_write_manage_administrators_but_not_system_admins() {
+        for held in [&[TENANT_ADMIN][..], &[USERS_WRITE, ADMINS_WRITE][..]] {
+            assert!(
+                may_manage_account(held, &[here(TENANT_ADMIN)], true),
+                "{held:?}"
+            );
+            assert!(
+                may_manage_account(held, &[elsewhere(TENANT_ADMIN)], true),
+                "{held:?}"
+            );
+            assert!(
+                !may_manage_account(held, &[here(TENANT_ADMIN), here(SYSTEM_ADMIN)], true),
+                "{held:?}"
+            );
+            assert!(
+                !may_manage_account(held, &[elsewhere(SMTP_WRITE)], true),
+                "{held:?}"
+            );
+        }
+        assert!(may_manage_account(
+            &[SYSTEM_ADMIN],
+            &[here(SYSTEM_ADMIN), here(TENANT_ADMIN)],
+            true
+        ));
     }
 
     /// テナントの設定の権限は、全体の設定へ届かない（ADR-0058 §11。付与の側の防御）。
