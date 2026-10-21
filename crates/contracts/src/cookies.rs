@@ -21,6 +21,15 @@ pub const SSO_SESSION_COOKIE: &str = "sso_session_id";
 /// `auth_session_id` Cookie（`/authorize` ハンドオフ〜 `/login` 完了の短命 Cookie）。web だけが読む。
 pub const AUTH_SESSION_COOKIE: &str = "auth_session_id";
 
+/// `Secure` のとき `__Host-` を前置するセッション Cookie（task #583。脆弱性確認 2026-10-20 の中-3）。
+///
+/// 前置しないと、同じ親ドメインの別のサブドメイン（`*.nolumia.com` のどれか）を握った攻撃者が
+/// `Domain=nolumia.com; Path=/<tenant>` の同名 Cookie を差し込め、Path の長い Cookie が先に送られる
+/// 性質で攻撃者のセッションが勝つ（攻撃者のアカウントでログインさせる・セッションを妨げる）。
+/// ⚠ **名前は契約のまま**（api への サーバ間呼び出しは前置なしの名前で渡す）。前置するのは
+/// ブラウザとの間だけで、受け取った側は [`CookiePolicy::bind_session_cookie_names`] で読み替える。
+pub const ORIGIN_BOUND_SESSION_COOKIES: &[&str] = &[SSO_SESSION_COOKIE, AUTH_SESSION_COOKIE];
+
 /// `__Host-` プレフィックス（RFC 6265bis §4.1.3.2）。この名前で送られた Cookie をブラウザは
 /// 「`Secure` かつ `Domain` 無しかつ `Path=/`」でしか受け付けない。結果として **発行元オリジンに
 /// 束縛**され、同一親ドメインの別サブドメイン（`Domain=親` を付けられる位置）から上書き・強制できない。
@@ -76,8 +85,15 @@ impl CookiePolicy {
     /// - 常に host-only の 1 本を発行する（`Domain` は付けない。ADR-0018 決定 2・4）。
     /// - `COOKIE_DOMAIN` 設定時（旧 ADR-0012 構成からの移行期間）: 加えて `Domain` 属性付きの
     ///   同名削除 Cookie（`Max-Age=0`）を併送し、ブラウザに残った旧 Cookie を掃除する。
+    ///
+    /// `Secure` のとき、[`ORIGIN_BOUND_SESSION_COOKIES`] は `__Host-` を前置した名前で発行し、
+    /// 前置しない名前の同名 Cookie（前置する前に発行したもの）を消す削除 Cookie を併送する。
     pub fn set_session(&self, name: &str, value: &str, max_age_secs: u64) -> Vec<String> {
-        let mut cookies = vec![build(name, value, max_age_secs, self.secure, None)];
+        let bound = self.origin_bound_session_name(name);
+        let mut cookies = vec![build(&bound, value, max_age_secs, self.secure, None)];
+        if bound != name {
+            cookies.push(build(name, "", 0, self.secure, None));
+        }
         if let Some(domain) = self.legacy_cleanup_domain.as_deref() {
             cookies.push(build(name, "", 0, self.secure, Some(domain)));
         }
@@ -89,6 +105,52 @@ impl CookiePolicy {
     /// 消えないため）。
     pub fn expire_session(&self, name: &str) -> Vec<String> {
         self.set_session(name, "", 0)
+    }
+
+    /// セッション Cookie のブラウザ上の名前（`Secure` のとき `__Host-` 前置。task #583）。
+    fn origin_bound_session_name(&self, name: &str) -> String {
+        if self.secure && ORIGIN_BOUND_SESSION_COOKIES.contains(&name) {
+            format!("{HOST_PREFIX}{name}")
+        } else {
+            name.to_string()
+        }
+    }
+
+    /// 受け取った `Cookie` ヘッダを、セッション Cookie の名前について読み替えた値を返す（task #583）。
+    ///
+    /// `Secure` のときだけ働き、`__Host-sso_session_id` を `sso_session_id` に読み替え、**前置しない
+    /// `sso_session_id` は捨てる**（前置しない名前は別のサブドメインから差し込める。前置する前に
+    /// 発行した Cookie も同じ扱いで、その人は一度ログインし直す）。読む側は契約の名前のまま読める。
+    /// 変える必要が無いとき（`Secure` でない・該当の Cookie が無い）は `None`。
+    pub fn bind_session_cookie_names<'a>(
+        &self,
+        raw_headers: impl IntoIterator<Item = &'a str>,
+    ) -> Option<String> {
+        if !self.secure {
+            return None;
+        }
+        let mut changed = false;
+        let mut pairs = Vec::new();
+        for pair in raw_headers
+            .into_iter()
+            .flat_map(|raw| raw.split(';'))
+            .map(str::trim)
+            .filter(|pair| !pair.is_empty())
+        {
+            let name = pair.split_once('=').map_or(pair, |(k, _)| k);
+            if ORIGIN_BOUND_SESSION_COOKIES.contains(&name) {
+                changed = true;
+                continue;
+            }
+            match name.strip_prefix(HOST_PREFIX) {
+                Some(base) if ORIGIN_BOUND_SESSION_COOKIES.contains(&base) => {
+                    changed = true;
+                    pairs.push(pair[HOST_PREFIX.len()..].to_string());
+                }
+                _ => pairs.push(pair.to_string()),
+            }
+        }
+        changed.then(|| pairs.join("; "))
     }
 
     /// サービスローカル Cookie（CSRF・言語・MFA チケット等）を発行する `Set-Cookie` 値。
@@ -211,6 +273,32 @@ mod tests {
         );
     }
 
+    /// HTTPS では、前置した名前だけを契約の名前として読む。前置しない同名（別のサブドメインから
+    /// 差し込める）は捨てる（task #583）。
+    #[test]
+    fn session_cookie_names_are_bound_to_the_origin_over_https() {
+        let policy = CookiePolicy::new(true, None);
+        assert_eq!(
+            policy.bind_session_cookie_names([
+                "sso_session_id=planted; lang=ja",
+                "__Host-sso_session_id=mine; __Host-auth_session_id=a",
+            ]),
+            Some("lang=ja; sso_session_id=mine; auth_session_id=a".to_string())
+        );
+        // 差し込まれた Cookie しか無ければ、ログインしていないのと同じ。
+        assert_eq!(
+            policy.bind_session_cookie_names(["sso_session_id=planted"]),
+            Some(String::new())
+        );
+        // セッションの Cookie が無ければ触らない。
+        assert_eq!(policy.bind_session_cookie_names(["lang=ja"]), None);
+        // 平文 HTTP（開発環境）は前置しないので読み替えない。
+        assert_eq!(
+            CookiePolicy::new(false, None).bind_session_cookie_names(["sso_session_id=v"]),
+            None
+        );
+    }
+
     #[test]
     fn cross_site_local_cookie_is_same_site_none_only_over_https() {
         assert_eq!(
@@ -258,11 +346,15 @@ mod tests {
 
     #[test]
     fn session_cookie_is_host_only_by_default() {
-        // COOKIE_DOMAIN 未設定（既定。ADR-0018 決定 4）: host-only の 1 本のみ。
+        // COOKIE_DOMAIN 未設定（既定。ADR-0018 決定 4）: host-only。HTTPS では `__Host-` を前置し、
+        // 前置しない名前の古い Cookie を消す（task #583）。
         let policy = CookiePolicy::new(true, None);
         assert_eq!(
             policy.set_session(SSO_SESSION_COOKIE, "v", 600),
-            vec!["sso_session_id=v; Max-Age=600; Path=/; HttpOnly; SameSite=Lax; Secure"]
+            vec![
+                "__Host-sso_session_id=v; Max-Age=600; Path=/; HttpOnly; SameSite=Lax; Secure",
+                "sso_session_id=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax; Secure",
+            ]
         );
         assert_eq!(
             CookiePolicy::new(false, None).expire_session(SSO_SESSION_COOKIE),
@@ -279,7 +371,8 @@ mod tests {
         assert_eq!(
             issued,
             vec![
-                "sso_session_id=v; Max-Age=600; Path=/; HttpOnly; SameSite=Lax; Secure",
+                "__Host-sso_session_id=v; Max-Age=600; Path=/; HttpOnly; SameSite=Lax; Secure",
+                "sso_session_id=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax; Secure",
                 "sso_session_id=; Max-Age=0; Domain=example.com; Path=/; HttpOnly; SameSite=Lax; Secure",
             ]
         );
