@@ -156,6 +156,42 @@ impl SetCookies {
     }
 }
 
+/// 受け取った要求の `Cookie` ヘッダを、セッション Cookie の名前について読み替える middleware（task #583）。
+///
+/// HTTPS では、セッション Cookie はブラウザとの間だけ `__Host-` を前置した名前で出し入れする
+/// （[`CookiePolicy::bind_session_cookie_names`]）。ここで契約の名前へ読み替えるので、各ハンドラは
+/// 今までどおり [`SSO_SESSION_COOKIE`] / [`AUTH_SESSION_COOKIE`] で読める。⚠ 前置しない同名は捨てる。
+pub async fn bind_session_cookie_names(
+    policy: CookiePolicy,
+    mut request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let rebuilt = policy.bind_session_cookie_names(
+        request
+            .headers()
+            .get_all(COOKIE)
+            .iter()
+            .filter_map(|value| value.to_str().ok()),
+    );
+    if let Some(rebuilt) = rebuilt {
+        let headers = request.headers_mut();
+        headers.remove(COOKIE);
+        if !rebuilt.is_empty() {
+            match axum::http::HeaderValue::from_str(&rebuilt) {
+                Ok(value) => {
+                    headers.insert(COOKIE, value);
+                }
+                Err(_) => {
+                    // 元の Cookie に非 ASCII が混ざっている等。セッションは読めないものとして扱う
+                    // （前置しない名前を素通しにはしない）。
+                    tracing::warn!("could not rebuild the cookie header for the session cookies");
+                }
+            }
+        }
+    }
+    next.run(request).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,7 +233,9 @@ mod tests {
         assert_eq!(
             values(set_cookies),
             vec![
-                "sso_session_id=sess; Max-Age=600; Path=/; HttpOnly; SameSite=Lax; Secure",
+                "__Host-sso_session_id=sess; Max-Age=600; Path=/; HttpOnly; SameSite=Lax; Secure",
+                "sso_session_id=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax; Secure",
+                "__Host-auth_session_id=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax; Secure",
                 "auth_session_id=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax; Secure",
                 "lang=ja; Max-Age=31536000; Path=/; HttpOnly; SameSite=Lax; Secure",
             ]

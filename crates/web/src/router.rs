@@ -34,6 +34,7 @@ use tower_http::trace::TraceLayer;
 pub fn build(state: WebState) -> Router {
     let hsts_max_age = state.config.hsts_max_age();
     let trust_forwarded = state.config.trust_forwarded_headers();
+    let cookie_policy = state.config.cookie_policy().clone();
     let tenant_scoped = Router::new()
         .route("/login", get(login::login_page).post(login::login))
         // エンドユーザー・ポータルの TOTP 入力（`/login` 直接ログイン経路の 2 段階目）。
@@ -708,6 +709,11 @@ pub fn build(state: WebState) -> Router {
         // どのルートにも一致しないリクエストには 404 エラーページを返す（axum 既定の空応答を避ける）。
         .fallback(error_pages::fallback)
         .layer(axum::middleware::from_fn(correlation::propagate))
+        // セッション Cookie の名前の読み替え（HTTPS では `__Host-` 前置のものだけを読む。task #583）。
+        // どのハンドラ・route_layer よりも先に走るよう、ルートの外側に置く。
+        .layer(axum::middleware::from_fn(move |req, next| {
+            crate::cookies::bind_session_cookie_names(cookie_policy.clone(), req, next)
+        }))
         // 接続元 IP の決定（SEC1）。`X-Forwarded-For` を信じるかは api と同じ設定キーでゲートし、
         // 非信頼時は TCP 接続元へ落とす。ハンドラは `Extension<ClientIp>` で結果だけを受け取る。
         .layer(axum::middleware::from_fn(move |req, next| {
