@@ -1,3 +1,10 @@
+## 2026-10-22（2）（ログイン画面の開き直しで先へ進む。task #643）
+
+- **ログイン画面を出したまま別のタブで認証し、元のタブを開き直すと、そのまま先へ進むようにした。** これまでは
+  ログイン画面のままだった（SSO を見るのは `/authorize` から来た最初の 1 回だけだった）。web は手元の
+  `auth_session_id` と SSO の Cookie を api の `POST /internal/authorize/continue` へ渡し、通ればアプリへ戻す
+  （同意が要れば同意画面）。`prompt=login`・第二要素の途中・SSO が無いときは今まで通りフォームを出す。
+
 ## 2026-10-22（`KEY_ENCRYPTION_KEY` を作り直す道具。task #618）
 
 - **`KEY_ENCRYPTION_KEY` を作り直せるようにした。** `assay-rewrap-secrets`（api のイメージに同梱。呼ばれるまで何もしない）が、

@@ -2,7 +2,7 @@
 
 use crate::application::audit::RequestContext;
 use crate::application::authorize::{
-    AuthorizeOutcome, LoginContextOutcome, ResumeCommand, ResumeOutcome,
+    AuthorizeOutcome, ContinueCommand, LoginContextOutcome, ResumeCommand, ResumeOutcome,
 };
 use crate::domain::authorization_request::AuthorizationParameters;
 use crate::presentation::correlation::CorrelationId;
@@ -11,8 +11,9 @@ use crate::presentation::handlers::found;
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::{require_internal_tenant, ResolvedTenant};
 use assay_contracts::auth::{
-    InternalAuthorizeLoginContextRequest, InternalAuthorizeLoginContextResponse,
-    InternalAuthorizeResumeRequest, InternalAuthorizeResumeResponse,
+    InternalAuthorizeContinueRequest, InternalAuthorizeLoginContextRequest,
+    InternalAuthorizeLoginContextResponse, InternalAuthorizeResumeRequest,
+    InternalAuthorizeResumeResponse,
 };
 use axum::extract::{Extension, Query, State};
 use axum::http::StatusCode;
@@ -104,7 +105,42 @@ pub async fn authorize_resume(
             &ctx,
         )
         .await;
-    Ok(Json(match outcome {
+    Ok(Json(resume_response(outcome)))
+}
+
+/// 認可フローの継続（`POST /internal/authorize/continue`）。
+///
+/// ログイン画面の開き直しで、web が手元の `auth_session_id` と `sso_session_id` を転送する。
+/// 別のタブで確立された SSO セッションで復元できれば、resume と同じ応答で code を返す。
+pub async fn authorize_continue(
+    State(state): State<AppState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Json(req): Json<InternalAuthorizeContinueRequest>,
+) -> Result<Json<InternalAuthorizeResumeResponse>, Response> {
+    let ctx = RequestContext {
+        correlation_id: correlation.0,
+        ip_address: req.ip_address,
+        user_agent: req.user_agent,
+    };
+    let tenant =
+        require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
+    let outcome = state
+        .authorize
+        .continue_with_sso(
+            tenant,
+            ContinueCommand {
+                auth_session_id: req.auth_session_id,
+                sso_session_id: req.sso_session_id,
+            },
+            &ctx,
+        )
+        .await;
+    Ok(Json(resume_response(outcome)))
+}
+
+/// resume / continue の結果を内部 API の応答へ写す。
+fn resume_response(outcome: ResumeOutcome) -> InternalAuthorizeResumeResponse {
+    match outcome {
         ResumeOutcome::Redirect {
             location,
             form_post,
@@ -136,10 +172,10 @@ pub async fn authorize_resume(
         }
         ResumeOutcome::ExpiredHandle => InternalAuthorizeResumeResponse::ExpiredHandle,
         ResumeOutcome::Internal(e) => {
-            tracing::error!(error = %e, "authorize resume failed with internal error");
+            tracing::error!(error = %e, "authorize resume/continue failed with internal error");
             InternalAuthorizeResumeResponse::Internal
         }
-    }))
+    }
 }
 
 /// ログイン画面の文脈（`POST /internal/authorize/login-context`。G12）。

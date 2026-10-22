@@ -97,6 +97,28 @@ pub enum InternalAuthorizeResumeResponse {
     Internal,
 }
 
+/// 認可フロー継続 API（`POST /internal/authorize/continue`）のリクエスト。
+///
+/// ログイン画面を出したあと、別のタブで認証を済ませてから元のタブを開き直したときに使う。
+/// ハンドルは最初の受領で消費済みなので、web は host-only `auth_session_id` Cookie と
+/// `sso_session_id` Cookie の値を渡し、api が同じ認可要求で SSO 復元を試す。応答は
+/// [`InternalAuthorizeResumeResponse`]（`expired_handle` は `auth_session_id` が無効・期限切れ）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAuthorizeContinueRequest {
+    /// フローのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する。
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    /// web の host-only `auth_session_id` Cookie の値。
+    pub auth_session_id: String,
+    /// web の host-only `sso_session_id` Cookie の値。
+    #[serde(default)]
+    pub sso_session_id: Option<String>,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
 /// ログイン画面の文脈取得 API（`POST /internal/authorize/login-context`。G12）のリクエスト。
 ///
 /// `/authorize` が受け取った `login_hint` / `ui_locales` は auth_session に保存されるが、web は
