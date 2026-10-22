@@ -220,3 +220,52 @@ async fn each_tenant_decides_whether_to_enforce_application_assignments() {
         assert_eq!(listed["enforcement"], expected, "tenant {tenant}: {listed}");
     }
 }
+
+/// `prompt=none` で許可の無いアプリを求められたら、画面を出さずに `access_denied` で RP へ返す
+/// （task #648）。`prompt` が無ければ今まで通り assay の画面で断る。
+#[tokio::test]
+async fn prompt_none_returns_access_denied_for_an_unassigned_application() {
+    let Some(env) = support::setup("prompt=none unassigned application").await else {
+        return;
+    };
+    let tenant =
+        tenant_with_settings(&env, &[("APPLICATION_ASSIGNMENT_ENFORCEMENT", "enforce")]).await;
+    let client_id = support::insert_public_client(&env.pool, &tenant, &["openid"]).await;
+    let application_id = support::open_client_as_application(&env.pool, &tenant, &client_id).await;
+    sqlx::query("UPDATE applications SET assignment_mode = 'INDIVIDUAL' WHERE id = ?")
+        .bind(&application_id)
+        .execute(&env.pool)
+        .await
+        .expect("make the application individual");
+    let user_id = create_plain_user(&env.pool, &tenant).await;
+    let sso_cookie = support::create_sso_session(&env.pool, &user_id).await;
+
+    for (prompt, expected) in [
+        ("&prompt=none", "error_redirect"),
+        ("", "application_not_permitted"),
+    ] {
+        let response = send(
+            &env.app,
+            Request::builder()
+                .uri(format!(
+                    "{}{prompt}",
+                    authorize_uri_openid_only(&tenant, &client_id)
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FOUND, "handoff ({prompt})");
+        let handle = support::handoff_handle(&response);
+        let body = support::resume_authorize(&env.app, &tenant, &handle, Some(&sso_cookie)).await;
+        assert_eq!(body["result"], expected, "{prompt}: {body}");
+        if expected == "error_redirect" {
+            let callback = body["redirect_to"].as_str().expect("redirect_to");
+            assert_eq!(
+                support::query_param(callback, "error").as_deref(),
+                Some("access_denied"),
+                "{callback}"
+            );
+        }
+    }
+}
