@@ -535,7 +535,18 @@ impl AuthorizeService {
         };
         match self.code_issuance.issue(cmd, ctx).await {
             // 復元した SSO は通っているが、このアプリの利用が許可されていない（ADR-0054）。
-            // RP へは戻さない。
+            // `prompt=none` は画面を出さない約束なので `access_denied` で RP へ返す（RP は自分の
+            // 入口を出す。task #648）。それ以外は RP へ戻さず、assay の画面で断る。
+            Ok(CodeIssuance::ApplicationDenied { .. })
+                if session.request().forbids_interaction() =>
+            {
+                let _ = self.auth_sessions.delete(session.id_hash()).await;
+                resume_error(
+                    session.request(),
+                    OAuthErrorCode::AccessDenied,
+                    "application not permitted",
+                )
+            }
             Ok(CodeIssuance::ApplicationDenied { application_name }) => {
                 ResumeOutcome::ApplicationNotPermitted { application_name }
             }
