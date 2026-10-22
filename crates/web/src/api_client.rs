@@ -32,7 +32,7 @@ use assay_contracts::auth::{
     InternalAdminAuthenticateRequest, InternalAdminAuthenticateResponse,
     InternalAdminChangePasswordRequest, InternalAdminChangePasswordResponse,
     InternalAdminPasskeyLoginCompleteRequest, InternalAdminPasskeyLoginCompleteResponse,
-    InternalAuthenticateRequest, InternalAuthenticateResponse,
+    InternalAuthenticateRequest, InternalAuthenticateResponse, InternalAuthorizeContinueRequest,
     InternalAuthorizeLoginContextRequest, InternalAuthorizeLoginContextResponse,
     InternalAuthorizeResumeRequest, InternalAuthorizeResumeResponse, InternalChangePasswordRequest,
     InternalChangePasswordResponse, InternalConsentApproveRequest, InternalConsentApproveResponse,
@@ -314,6 +314,17 @@ impl ApiClient {
         req: &InternalAuthorizeResumeRequest,
     ) -> Result<InternalAuthorizeResumeResponse, InternalCallError> {
         self.post_internal("/internal/authorize/resume", correlation_id, req)
+            .await
+    }
+
+    /// 認可フローの継続（`POST /internal/authorize/continue`）。ログイン画面の開き直しで、
+    /// 手元の `auth_session_id` と SSO Cookie 値を渡し、別タブで確立された SSO から続ける。
+    pub async fn authorize_continue(
+        &self,
+        correlation_id: &str,
+        req: &InternalAuthorizeContinueRequest,
+    ) -> Result<InternalAuthorizeResumeResponse, InternalCallError> {
+        self.post_internal("/internal/authorize/continue", correlation_id, req)
             .await
     }
 

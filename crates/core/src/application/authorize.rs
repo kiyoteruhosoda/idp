@@ -17,7 +17,9 @@ use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, Issue
 use crate::application::consent::consent_is_granted;
 use crate::application::sso_restore::SsoRestorer;
 use crate::application::tenant_resolution::TenantResolutionService;
-use crate::domain::auth_session::{AuthSession, AuthSessionId, Authentication, HandoffHandle};
+use crate::domain::auth_session::{
+    AuthSession, AuthSessionId, Authentication, AuthenticationProgress, HandoffHandle,
+};
 use crate::domain::authentication_policy::PolicyDecision;
 use crate::domain::authorization_request::{
     AuthorizationParameters, AuthorizationRequest, AuthorizationRequestRejection,
@@ -61,6 +63,18 @@ pub struct ResumeCommand {
     pub sso_session_id: Option<String>,
 }
 
+/// `/internal/authorize/continue` のコマンド（web が `auth_session_id` と SSO Cookie 値を転送する）。
+///
+/// ログイン画面を出したあと、**別のタブで認証を済ませてから**元のタブを開き直した場合に使う。
+/// ハンドルは最初の受領で消費済みなので、手元の `auth_session_id` から同じ認可要求を引き直す。
+#[derive(Debug)]
+pub struct ContinueCommand {
+    /// web の host-only `auth_session_id` Cookie の値。
+    pub auth_session_id: String,
+    /// web の host-only `sso_session_id` Cookie の値（無ければ未ログイン）。
+    pub sso_session_id: Option<String>,
+}
+
 pub enum ResumeOutcome {
     /// SSO 復元・同意済みにより code 発行済み。`query` なら `location` へ 302、`form_post` なら
     /// `location` へ hidden フィールドを POST する自動送信フォームを描く（G12）。
@@ -92,7 +106,8 @@ pub enum ResumeOutcome {
         /// 画面に出すアプリ名。
         application_name: String,
     },
-    /// ハンドルが無効・期限切れ・使用済み（`/authorize` からやり直し）。
+    /// ハンドルが無効・期限切れ・使用済み（`/authorize` からやり直し）。`continue` では
+    /// `auth_session_id` が無効・期限切れのとき。
     ExpiredHandle,
     /// 内部エラー（RP へのリダイレクトも組み立てられない段階での失敗）。
     Internal(String),
@@ -292,6 +307,56 @@ impl AuthorizeService {
             );
         }
 
+        ResumeOutcome::LoginRequired {
+            auth_session_id: auth_session_id.into_string(),
+        }
+    }
+
+    /// ログイン画面の開き直しで、その後に確立された SSO セッションから認可を続ける
+    /// （`/internal/authorize/continue`）。
+    ///
+    /// 復元できなければ同じ `auth_session_id` のまま `LoginRequired` を返し、web はフォームを
+    /// 描き直す。認証が途中まで進んでいる（第二要素・パスワード変更の待ち）セッションには触らない
+    /// ——その続きはその画面が持っている。
+    pub async fn continue_with_sso(
+        &self,
+        tenant: TenantContext,
+        cmd: ContinueCommand,
+        ctx: &RequestContext,
+    ) -> ResumeOutcome {
+        let now = self.clock.now();
+        let Some(auth_session_id) = AuthSessionId::from_presented(&cmd.auth_session_id) else {
+            return ResumeOutcome::ExpiredHandle;
+        };
+        let mut session = match self
+            .auth_sessions
+            .find(tenant.tenant_id(), &auth_session_id.hash())
+            .await
+        {
+            Ok(Some(s)) => s,
+            Ok(None) => return ResumeOutcome::ExpiredHandle,
+            Err(e) => return ResumeOutcome::Internal(e.to_string()),
+        };
+        if session.is_expired_at(now) {
+            return ResumeOutcome::ExpiredHandle;
+        }
+        if *session.progress() != AuthenticationProgress::Anonymous {
+            return ResumeOutcome::LoginRequired {
+                auth_session_id: auth_session_id.into_string(),
+            };
+        }
+        if let Some(outcome) = self
+            .complete_with_sso(
+                tenant,
+                &mut session,
+                cmd.sso_session_id.as_deref(),
+                ctx,
+                now,
+            )
+            .await
+        {
+            return outcome;
+        }
         ResumeOutcome::LoginRequired {
             auth_session_id: auth_session_id.into_string(),
         }

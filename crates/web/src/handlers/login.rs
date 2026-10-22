@@ -20,8 +20,8 @@ use crate::state::WebState;
 use crate::templates::{render, LoginTemplate, MessagePage};
 use crate::tenant::WebTenant;
 use assay_contracts::auth::{
-    InternalAuthenticateRequest, InternalAuthenticateResponse, InternalAuthorizeResumeRequest,
-    InternalAuthorizeResumeResponse,
+    InternalAuthenticateRequest, InternalAuthenticateResponse, InternalAuthorizeContinueRequest,
+    InternalAuthorizeResumeRequest, InternalAuthorizeResumeResponse,
 };
 use assay_contracts::csrf::login_csrf_token;
 use axum::extract::{Extension, Query, State};
@@ -64,6 +64,20 @@ pub async fn login_page(
         // 注: `Messages`（FluentBundle）は !Send のため、await をまたぐ前に生成してはならない。
         return portal::login_page(&state, &correlation, &tenant, &headers, error_key).await;
     };
+    // 別のタブで認証を済ませてから開き直した: その SSO セッションで認可を続ける。
+    // 続けられなければ（未ログイン・`prompt=login` 等）ふつうにフォームを出す。
+    if let Some(response) = continue_with_sso(
+        &state,
+        &correlation,
+        &client_ip,
+        &tenant,
+        &headers,
+        &auth_session_id,
+    )
+    .await
+    {
+        return response;
+    }
     let messages = Messages::new(locale(&headers));
     let body = render_form(
         &messages,
@@ -118,19 +132,96 @@ async fn resume_authorize_handoff(
         }
     };
 
+    match restored_response(state, tenant, headers, sso_session_id.as_deref(), outcome) {
+        Ok(response) => response,
+        Err(InternalAuthorizeResumeResponse::LoginRequired { auth_session_id }) => (
+            state
+                .set_cookies()
+                .set_session(
+                    cookies::AUTH_SESSION_COOKIE,
+                    &auth_session_id,
+                    state.config.auth_session_ttl_secs(),
+                )
+                .into_headers(),
+            // 303 で自 URL へ付け替え、ハンドルをアドレスバー・履歴から除去する。
+            see_other(&format!("{}/login", tenant.prefix())),
+        )
+            .into_response(),
+        Err(InternalAuthorizeResumeResponse::ExpiredHandle) => {
+            // リロード等で消費済みのハンドル。初回受領時の Cookie が残っていれば通常表示へ戻す。
+            if cookies::get(headers, cookies::AUTH_SESSION_COOKIE).is_some() {
+                see_other(&format!("{}/login", tenant.prefix()))
+            } else {
+                error_page(
+                    &Messages::new(locale(headers)),
+                    StatusCode::BAD_REQUEST,
+                    "login-error-session-expired",
+                )
+            }
+        }
+        Err(_) => api_internal_error("authorize_resume"),
+    }
+}
+
+/// ログイン画面の開き直しで、別のタブで確立された SSO セッションから認可を続ける。
+///
+/// 手元に SSO Cookie が無ければ api を呼ばない。続けられない（未ログイン・api の失敗も含む）
+/// ときは `None` を返し、呼び出し側がフォームを描く——ここで画面を壊さない（入れ替えの数秒間に
+/// この口を持たない古い api へ当たっても、今まで通りのフォームに戻るだけにする）。
+async fn continue_with_sso(
+    state: &WebState,
+    correlation: &CorrelationId,
+    client_ip: &ClientIp,
+    tenant: &WebTenant,
+    headers: &HeaderMap,
+    auth_session_id: &str,
+) -> Option<Response> {
+    let sso_session_id =
+        cookies::get(headers, cookies::SSO_SESSION_COOKIE).filter(|s| !s.is_empty())?;
+    let ctx = forwarded_context(headers, correlation, client_ip);
+    let request = InternalAuthorizeContinueRequest {
+        tenant_id: Some(tenant.0.clone()),
+        auth_session_id: auth_session_id.to_string(),
+        sso_session_id: Some(sso_session_id.clone()),
+        ip_address: ctx.ip_address,
+        user_agent: ctx.user_agent,
+    };
+    let outcome = match state
+        .api
+        .authorize_continue(&ctx.correlation_id, &request)
+        .await
+    {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            tracing::warn!(error = %e, "authorize continue call to api failed; showing the login form");
+            return None;
+        }
+    };
+    restored_response(state, tenant, headers, Some(&sso_session_id), outcome).ok()
+}
+
+/// SSO 復元の結果のうち、ログインフォームを出さずに終わるもの（RP へ返す・同意画面へ・断る）を
+/// 応答にする。フォームを出す・やり直しになる結果は `Err` でそのまま返し、呼び出し側が決める。
+fn restored_response(
+    state: &WebState,
+    tenant: &WebTenant,
+    headers: &HeaderMap,
+    sso_session_id: Option<&str>,
+    outcome: InternalAuthorizeResumeResponse,
+) -> Result<Response, InternalAuthorizeResumeResponse> {
     // SSO 復元に成功した応答では、手元の `sso_session_id` を host-only で再発行する。
     // `COOKIE_DOMAIN`（旧 ADR-0012 構成の掃除）設定中は旧 `Domain` 付き Cookie の削除が併送される
     // ため、明示的なログイン・ログアウトを経ない既存セッションもサイレント復元の時点で host-only へ
     // 移行し、旧親ドメイン配下へ bearer credential が送信され続ける露出を閉じる（ADR-0018 決定 4）。
-    let refresh_sso =
-        |set_cookies: crate::cookies::SetCookies, ttl_secs: u64| match sso_session_id.as_deref() {
-            Some(sso) => set_cookies.set_session(cookies::SSO_SESSION_COOKIE, sso, ttl_secs),
-            None => set_cookies,
-        };
+    let refresh_sso = |set_cookies: crate::cookies::SetCookies, ttl_secs: u64| match sso_session_id
+    {
+        Some(sso) => set_cookies.set_session(cookies::SSO_SESSION_COOKIE, sso, ttl_secs),
+        None => set_cookies,
+    };
 
     let messages = Messages::new(locale(headers));
     let auth_session_ttl = state.config.auth_session_ttl_secs();
-    match outcome {
+    Ok(match outcome {
         // SSO 復元で code 発行済み。残っている古い auth_session Cookie を掃除して RP へ返す。
         InternalAuthorizeResumeResponse::Redirect {
             redirect_to,
@@ -184,33 +275,8 @@ async fn resume_authorize_handoff(
             crate::application_denied::page(&messages, &tenant.prefix(), &application_name),
         )
             .into_response(),
-        InternalAuthorizeResumeResponse::LoginRequired { auth_session_id } => (
-            state
-                .set_cookies()
-                .set_session(
-                    cookies::AUTH_SESSION_COOKIE,
-                    &auth_session_id,
-                    auth_session_ttl,
-                )
-                .into_headers(),
-            // 303 で自 URL へ付け替え、ハンドルをアドレスバー・履歴から除去する。
-            see_other(&format!("{}/login", tenant.prefix())),
-        )
-            .into_response(),
-        InternalAuthorizeResumeResponse::ExpiredHandle => {
-            // リロード等で消費済みのハンドル。初回受領時の Cookie が残っていれば通常表示へ戻す。
-            if cookies::get(headers, cookies::AUTH_SESSION_COOKIE).is_some() {
-                see_other(&format!("{}/login", tenant.prefix()))
-            } else {
-                error_page(
-                    &messages,
-                    StatusCode::BAD_REQUEST,
-                    "login-error-session-expired",
-                )
-            }
-        }
-        InternalAuthorizeResumeResponse::Internal => api_internal_error("authorize_resume"),
-    }
+        other => return Err(other),
+    })
 }
 
 /// ログインフォームの HTML をテンプレートから描画する。埋め込む値（翻訳文言・CSRF トークン）は

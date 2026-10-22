@@ -34,6 +34,11 @@ pub fn build(state: AppState) -> Router {
             "/internal/authorize/resume",
             post(authorize::authorize_resume),
         )
+        // 認可フローの継続（ログイン画面の開き直しで、別タブで確立された SSO から続ける）。
+        .route(
+            "/internal/authorize/continue",
+            post(authorize::authorize_continue),
+        )
         // ログイン画面の文脈（`login_hint` / `ui_locales` の引き直し。G12）。
         .route(
             "/internal/authorize/login-context",
