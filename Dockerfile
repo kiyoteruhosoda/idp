@@ -11,7 +11,7 @@
 # 実行ステージ（debian:bookworm-slim）と glibc ABI を揃えるため、Rust ビルダーも
 # bookworm に固定する。rust:slim はタグ更新で trixie 等へ進み得るため、NAS 等の
 # デプロイ先で `GLIBC_2.39 not found` が発生しないようにする。
-FROM rust:slim-bookworm@sha256:a24e292b4af7bdee351a31d3a6379972a5652f0ea22a1b6d6883324ac4f5097c AS builder
+FROM rust:slim-bookworm@sha256:86234e857a413004348b471d11a4ebe1aa92d2eae2b6b143cac68fd1ac3c48be AS builder
 WORKDIR /build
 
 RUN apt-get update \
@@ -64,7 +64,7 @@ RUN find crates -name '*.rs' -exec touch {} + \
 # sqlx-cli のビルドには Rust ツールチェインと C ビルド依存が必要だが、それらを migrate 実行イメージへ
 # 持ち込むと assay-migrate.tar が肥大化する。ビルド専用ステージへ閉じ込め、実行ステージには sqlx binary と
 # migrations だけを渡す。
-FROM rust:slim-bookworm@sha256:a24e292b4af7bdee351a31d3a6379972a5652f0ea22a1b6d6883324ac4f5097c AS migrate-tool-builder
+FROM rust:slim-bookworm@sha256:86234e857a413004348b471d11a4ebe1aa92d2eae2b6b143cac68fd1ac3c48be AS migrate-tool-builder
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential perl pkg-config \
     && rm -rf /var/lib/apt/lists/* \
@@ -73,7 +73,7 @@ RUN apt-get update \
 # ---- migrate ----
 # DDL / マスタデータ適用の専用ジョブ（sqlx migrate run）。CLAUDE.md schema-version 方針に従い、
 # アプリ起動時には適用せず、この単独ジョブで適用する。Compose の migrate サービスから使う。
-FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587 AS migrate
+FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS migrate
 WORKDIR /migrate
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
@@ -86,7 +86,7 @@ USER assay
 ENTRYPOINT ["sqlx", "migrate", "run", "--source", "/migrate/migrations"]
 
 # ---- 実行イメージ共通ベース ----
-FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587 AS runtime-base
+FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS runtime-base
 # TLS 検証用のルート証明書（web→api の https 呼び出し等）と、ヘルスチェック用の curl。非 root 実行。
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
