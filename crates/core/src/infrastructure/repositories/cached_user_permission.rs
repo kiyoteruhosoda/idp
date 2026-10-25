@@ -176,7 +176,7 @@ mod tests {
             self.available_calls.fetch_add(1, Ordering::SeqCst);
             if self
                 .available_failures
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
                 .is_ok()
             {
                 return Err(crate::domain::error::DomainError::Repository(
