@@ -43,7 +43,7 @@ thiserror = "2"
 anyhow = "1"
 dotenvy = "0.15"
 async-trait = "0.1"
-jsonwebtoken = "9"
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 # ⚠ rsa 0.9 と組になる RustCrypto の版に据え置く（sha2 / hmac / p256 / x509-cert / rand）。
 # rsa 0.9 は digest 0.10・spki 0.7・rand_core 0.6 の trait で書かれていて、sha2 0.11（digest 0.11）・
 # p256 0.14 / x509-cert 0.3（spki 0.8）・rand 0.10（rand_core 0.10）とは型が噛み合わない
