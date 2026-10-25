@@ -39,7 +39,7 @@ jobs:
     # ⚠ **digest で固定する。** タグのままだと、焼き直した日に
     #   「昨日は通ったものが通らない」が起きて原因を追えない。
     container:
-      image: hub.nolumia.com:5000/builder/ci-rust@sha256:ddc62f556f4489917fe69255411d313e34ebb81cc85b5f282d33a6c1ec41d1f5
+      image: hub.nolumia.com:5000/builder/ci-rust@sha256:cbdb8ac42a47a544c455a441133e0076b85766dbf267913ef44de0569d935752
       # ⚠ **`target/` は上限なく育つ。** 2026-09-11 の初回で **29GB**（依存が
       #   変わるたびに古い成果物が積み上がり、cargo は自分では掃除しない）。
       #   nolumialab の空きは 348GB あるので当面は保つが、**減らないもの**である
@@ -137,7 +137,7 @@ jobs:
     if: github.event.pull_request.user.login != 'renovate'
     timeout-minutes: 45
     container:
-      image: hub.nolumia.com:5000/builder/ci-docker@sha256:822d3b7f65979ce9b5f0d98cc3d1a784781073feb258eef79d5e4998d56d6471
+      image: hub.nolumia.com:5000/builder/ci-docker@sha256:b611785e67553d881dba8c446ee90edfaf5cdfff1fc632648e139997d3aa0522
     # ⚠ **`docker compose config` は値を解決するので、秘密の「形」が要る。**
     #   GitHub では 1 つのジョブが全部やっていて、`test` 側に置いた env が
     #   そのまま効いていた ——**割った側でここが抜けると
