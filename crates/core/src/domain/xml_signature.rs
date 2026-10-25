@@ -30,6 +30,7 @@
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::xml_c14n::{canonicalize, Target, ALGORITHM_EXC_C14N, NS_XMLDSIG};
+use crate::domain::xml_text;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use quick_xml::events::Event;
@@ -237,8 +238,12 @@ fn parse_signature(xml: &str, element_id: &str) -> Result<SignatureParts> {
             }
             Event::End(_) => state.on_end()?,
             Event::Text(e) if state.capture.is_some() => {
-                let text = e
-                    .unescape()
+                let text = xml_text::text(&e)
+                    .map_err(|err| DomainError::InvalidValue(format!("bad text: {err}")))?;
+                state.captured.push_str(&text);
+            }
+            Event::GeneralRef(e) if state.capture.is_some() => {
+                let text = xml_text::general_ref(&e)
                     .map_err(|err| DomainError::InvalidValue(format!("bad text: {err}")))?;
                 state.captured.push_str(&text);
             }
@@ -425,8 +430,7 @@ fn attribute(e: &quick_xml::events::BytesStart<'_>, name: &str) -> Result<Option
         let attr =
             attr.map_err(|err| DomainError::InvalidValue(format!("bad attribute: {err}")))?;
         if local_name(attr.key.as_ref())? == name {
-            let value = attr
-                .unescape_value()
+            let value = xml_text::attribute_value(&attr)
                 .map_err(|err| DomainError::InvalidValue(format!("bad attribute value: {err}")))?;
             return Ok(Some(value.into_owned()));
         }

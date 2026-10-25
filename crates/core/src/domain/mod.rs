@@ -72,3 +72,4 @@ pub mod webauthn_credential;
 pub mod webauthn_port;
 pub mod xml_c14n;
 pub mod xml_signature;
+pub mod xml_text;

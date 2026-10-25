@@ -21,6 +21,7 @@
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::xml_signature::verify_enveloped_signature;
+use crate::domain::xml_text;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use chrono::{DateTime, Duration, Utc};
@@ -412,8 +413,16 @@ fn read_assertion(xml: &str, assertion_id: &str) -> Result<AssertionContents> {
             }
             Event::Text(e) => {
                 if capture.is_some() {
-                    let text = e
-                        .unescape()
+                    let text = xml_text::text(&e)
+                        .map_err(|err| DomainError::InvalidValue(format!("bad text: {err}")))?;
+                    captured.push_str(&text);
+                }
+                buf.clear();
+                continue;
+            }
+            Event::GeneralRef(e) => {
+                if capture.is_some() {
+                    let text = xml_text::general_ref(&e)
                         .map_err(|err| DomainError::InvalidValue(format!("bad text: {err}")))?;
                     captured.push_str(&text);
                 }
@@ -610,8 +619,7 @@ fn attribute(e: &quick_xml::events::BytesStart<'_>, name: &str) -> Result<Option
         let attr =
             attr.map_err(|err| DomainError::InvalidValue(format!("bad attribute: {err}")))?;
         if local_name(attr.key.as_ref())? == name {
-            let value = attr
-                .unescape_value()
+            let value = xml_text::attribute_value(&attr)
                 .map_err(|err| DomainError::InvalidValue(format!("bad attribute value: {err}")))?;
             return Ok(Some(value.into_owned()));
         }

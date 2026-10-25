@@ -9,6 +9,7 @@
 //! （ assay のメタデータは `WantAuthnRequestsSigned="false"` を宣言している）。
 
 use crate::domain::error::{DomainError, Result};
+use crate::domain::xml_text;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use quick_xml::events::Event;
@@ -102,7 +103,7 @@ pub fn parse_authn_request(xml: &str) -> Result<ParsedAuthnRequest> {
                     }
                     root_seen = true;
                     for attr in e.attributes().flatten() {
-                        let value = match attr.unescape_value() {
+                        let value = match xml_text::attribute_value(&attr) {
                             Ok(v) => v.into_owned(),
                             Err(_) => continue,
                         };
@@ -119,7 +120,15 @@ pub fn parse_authn_request(xml: &str) -> Result<ParsedAuthnRequest> {
             }
             Event::Text(e) => {
                 if capture_issuer {
-                    let decoded = e.unescape().map_err(|err| {
+                    let decoded = xml_text::text(&e).map_err(|err| {
+                        DomainError::InvalidValue(format!("invalid AuthnRequest text: {err}"))
+                    })?;
+                    issuer_buf.push_str(&decoded);
+                }
+            }
+            Event::GeneralRef(e) => {
+                if capture_issuer {
+                    let decoded = xml_text::general_ref(&e).map_err(|err| {
                         DomainError::InvalidValue(format!("invalid AuthnRequest text: {err}"))
                     })?;
                     issuer_buf.push_str(&decoded);
