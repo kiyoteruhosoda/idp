@@ -17,6 +17,7 @@
 //! アンエスケープと、出力時の属性値エスケープは `quick-xml` に委ねる（手書きのエスケープを設けない）。
 
 use crate::domain::error::{DomainError, Result};
+use crate::domain::xml_text;
 use quick_xml::escape::escape;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
@@ -244,7 +245,15 @@ fn parse_entity(xml: &str, role: Role) -> Result<ParsedEntity> {
             },
             Event::Text(e) => {
                 if capture.is_some() {
-                    let decoded = e.unescape().map_err(|err| {
+                    let decoded = xml_text::text(&e).map_err(|err| {
+                        DomainError::InvalidValue(format!("invalid SAML metadata text: {err}"))
+                    })?;
+                    text_buf.push_str(&decoded);
+                }
+            }
+            Event::GeneralRef(e) => {
+                if capture.is_some() {
+                    let decoded = xml_text::general_ref(&e).map_err(|err| {
                         DomainError::InvalidValue(format!("invalid SAML metadata text: {err}"))
                     })?;
                     text_buf.push_str(&decoded);
@@ -480,7 +489,7 @@ fn strip_prefix(name: &[u8]) -> &[u8] {
 fn attribute(e: &BytesStart, name: &[u8]) -> Option<String> {
     for attr in e.attributes().flatten() {
         if attr.key.local_name().as_ref() == name {
-            if let Ok(value) = attr.unescape_value() {
+            if let Ok(value) = xml_text::attribute_value(&attr) {
                 return Some(value.into_owned());
             }
         }

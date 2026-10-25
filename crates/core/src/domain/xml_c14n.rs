@@ -28,6 +28,7 @@
 //! エラーにする。
 
 use crate::domain::error::{DomainError, Result};
+use crate::domain::xml_text;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 
@@ -182,8 +183,15 @@ impl<'a> Walker<'a> {
                 Event::End(_) => self.on_end(),
                 Event::Text(e) => {
                     if self.is_emitting() {
-                        let text = e
-                            .unescape()
+                        let text = xml_text::text(&e)
+                            .map_err(|err| DomainError::InvalidValue(format!("bad text: {err}")))?;
+                        escape_text(&text, &mut self.out);
+                    }
+                }
+                // 実体参照は解決した文字として書き出す（正準形は参照を残さない）。
+                Event::GeneralRef(e) => {
+                    if self.is_emitting() {
+                        let text = xml_text::general_ref(&e)
                             .map_err(|err| DomainError::InvalidValue(format!("bad text: {err}")))?;
                         escape_text(&text, &mut self.out);
                     }
@@ -399,8 +407,7 @@ impl<'a> Walker<'a> {
             };
             let key = String::from_utf8(attr.key.as_ref().to_vec())
                 .map_err(|err| DomainError::InvalidValue(format!("bad attribute name: {err}")))?;
-            let value = attr
-                .unescape_value()
+            let value = xml_text::attribute_value(&attr)
                 .map_err(|err| DomainError::InvalidValue(format!("bad attribute value: {err}")))?
                 .into_owned();
             attributes.push((uri, al, key, value));
@@ -479,8 +486,7 @@ fn collect_namespace_declarations(e: &BytesStart<'_>) -> Result<Vec<(String, Str
         if !is_declaration {
             continue;
         }
-        let value = attr
-            .unescape_value()
+        let value = xml_text::attribute_value(&attr)
             .map_err(|err| DomainError::InvalidValue(format!("bad attribute value: {err}")))?
             .into_owned();
         if prefix.is_empty() {
@@ -502,8 +508,7 @@ fn element_id(e: &BytesStart<'_>) -> Result<Option<String>> {
             continue;
         }
         if local == "ID" || local == "Id" || local == "id" {
-            let value = attr
-                .unescape_value()
+            let value = xml_text::attribute_value(&attr)
                 .map_err(|err| DomainError::InvalidValue(format!("bad attribute value: {err}")))?;
             return Ok(Some(value.into_owned()));
         }
@@ -536,6 +541,18 @@ mod tests {
         assert_eq!(
             c14n(xml, Target::SignedElement("x")),
             r#"<a:e xmlns:a="urn:a" ID="x"><a:c></a:c></a:e>"#
+        );
+    }
+
+    /// 実体参照・文字参照は解決してから正準形の決まりで書き直す。参照の分の文字を落とさない。
+    /// 改行の `\r\n` は構文解析の段で `\n` に揃い、参照で書かれた CR だけが `&#xD;` で残る。
+    #[test]
+    fn references_are_resolved_and_re_escaped() {
+        let xml =
+            "<e ID=\"x\" a=\"1&#9;2&#10;3 &quot;&amp;\">p &amp; q &lt; r &gt; &#x41;&#xD;\r\ns</e>";
+        assert_eq!(
+            c14n(xml, Target::SignedElement("x")),
+            "<e ID=\"x\" a=\"1&#x9;2&#xA;3 &quot;&amp;\">p &amp; q &lt; r &gt; A&#xD;\ns</e>"
         );
     }
 
