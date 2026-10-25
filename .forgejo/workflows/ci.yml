@@ -137,7 +137,7 @@ jobs:
     if: github.event.pull_request.user.login != 'renovate'
     timeout-minutes: 45
     container:
-      image: hub.nolumia.com:5000/builder/ci-docker@sha256:ae7a7f551dcb94a0c803680b2be76289ecaa49b603b5b24f8c283e16cec9c737
+      image: hub.nolumia.com:5000/builder/ci-docker@sha256:822d3b7f65979ce9b5f0d98cc3d1a784781073feb258eef79d5e4998d56d6471
     # ⚠ **`docker compose config` は値を解決するので、秘密の「形」が要る。**
     #   GitHub では 1 つのジョブが全部やっていて、`test` 側に置いた env が
     #   そのまま効いていた ——**割った側でここが抜けると
