@@ -15,15 +15,15 @@ use crate::domain::error::DomainError;
 use crate::domain::repositories::{SsoSessionRepository, TotpSecretRepository, UserRepository};
 use crate::domain::totp_secret::TotpSecret;
 use std::sync::Arc;
-use totp_rs::{Algorithm, Secret, TOTP};
+use totp_rs::{Algorithm, Builder, Secret, Totp};
 use uuid::Uuid;
 
 /// TOTP の桁数（RFC 6238 標準の 6 桁）。
-const TOTP_DIGITS: usize = 6;
+const TOTP_DIGITS: u8 = 6;
 /// TOTP のステップ（秒。RFC 4226 のデフォルト 30 秒）。
 const TOTP_STEP: u64 = 30;
 /// 許容するクロックスキュー（前後 1 ステップ = ±30 秒）。
-const TOTP_SKEW: u8 = 1;
+const TOTP_SKEW: u16 = 1;
 /// 生成するシークレットのバイト数（160 bit = 20 bytes。HMAC-SHA1 の出力長に合わせる）。
 const SECRET_BYTES: usize = 20;
 
@@ -242,17 +242,33 @@ fn totp_issuer_label(issuer: &str) -> Option<String> {
 
 /// 20 バイトの暗号学的乱数シークレットを生成する。
 fn generate_secret() -> Vec<u8> {
-    use rand::RngCore;
+    use rand::Rng;
     let mut buf = vec![0u8; SECRET_BYTES];
-    rand::thread_rng().fill_bytes(&mut buf);
+    rand::rng().fill_bytes(&mut buf);
     buf
 }
 
 /// バイト列を base32 エンコードする（Google Authenticator 互換。アルファベット大文字 + 数字）。
 pub fn to_base32(bytes: &[u8]) -> String {
-    // totp-rs の Secret::Raw から Encoded（base32）へ変換する。
-    let secret = Secret::Raw(bytes.to_vec());
-    secret.to_encoded().to_string()
+    Secret::from(bytes).to_base32()
+}
+
+/// このサービスの TOTP（SHA-1・6 桁・30 秒）を組む。`skew` は前後に許すステップ数。
+fn totp(
+    secret_bytes: &[u8],
+    skew: u16,
+    issuer: Option<&str>,
+    account_name: &str,
+) -> Result<Totp, totp_rs::TotpError> {
+    Builder::new()
+        .with_algorithm(Algorithm::SHA1)
+        .with_digits(TOTP_DIGITS)
+        .with_skew(skew)
+        .with_step_duration(TOTP_STEP)
+        .with_secret(secret_bytes)
+        .with_issuer(issuer)
+        .with_account_name(account_name)
+        .build()
 }
 
 /// `otpauth://totp/` URI を構築する。QR コード生成に使う。
@@ -261,17 +277,9 @@ fn build_totp_uri(
     account_name: &str,
     issuer: Option<&str>,
 ) -> Result<String, TotpRegistrationError> {
-    let totp = TOTP::new(
-        Algorithm::SHA1,
-        TOTP_DIGITS,
-        TOTP_SKEW,
-        TOTP_STEP,
-        secret_bytes.to_vec(),
-        issuer.map(str::to_string),
-        account_name.to_string(),
-    )
-    .map_err(|e| TotpRegistrationError::Internal(format!("failed to build TOTP: {e}")))?;
-    Ok(totp.get_url())
+    totp(secret_bytes, TOTP_SKEW, issuer, account_name)
+        .and_then(|totp| totp.to_url())
+        .map_err(|e| TotpRegistrationError::Internal(format!("failed to build TOTP: {e}")))
 }
 
 /// TOTP コードを検証し、一致した **time-step**（unix 秒 / `TOTP_STEP`）を返す。`None` なら無効。
@@ -288,16 +296,8 @@ pub fn verify_totp_code(
     code: &str,
 ) -> Result<Option<u64>, TotpRegistrationError> {
     // skew はここで自前に扱うため、TOTP 自体は skew=0 で作る（`check` に厳密なステップを問う）。
-    let totp = TOTP::new(
-        Algorithm::SHA1,
-        TOTP_DIGITS,
-        0,
-        TOTP_STEP,
-        secret_bytes.to_vec(),
-        None,
-        String::new(),
-    )
-    .map_err(|e| TotpRegistrationError::Internal(format!("failed to build TOTP: {e}")))?;
+    let totp = totp(secret_bytes, 0, None, "")
+        .map_err(|e| TotpRegistrationError::Internal(format!("failed to build TOTP: {e}")))?;
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| TotpRegistrationError::Internal(format!("system clock before epoch: {e}")))?
@@ -313,7 +313,7 @@ pub fn verify_totp_code(
         }
         let time = (step as u64) * TOTP_STEP;
         // `check` は skew=0 のこの TOTP では `time` のステップだけを（定数時間比較で）照合する。
-        if totp.check(code, time) {
+        if totp.check(code, time).is_some() {
             return Ok(Some(step as u64));
         }
     }
@@ -379,21 +379,12 @@ mod tests {
 
     /// 現在有効なコードを実時刻で生成する（`verify_totp_code` と同じパラメータ）。
     fn current_code(secret: &[u8]) -> (String, u64) {
-        let totp = TOTP::new(
-            Algorithm::SHA1,
-            TOTP_DIGITS,
-            0,
-            TOTP_STEP,
-            secret.to_vec(),
-            None,
-            String::new(),
-        )
-        .unwrap();
+        let totp = totp(secret, 0, None, "").unwrap();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        (totp.generate(now), now / TOTP_STEP)
+        (totp.generate(now).to_string(), now / TOTP_STEP)
     }
 
     #[test]

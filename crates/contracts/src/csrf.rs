@@ -6,7 +6,7 @@
 //! 攻撃者が session_id と導出式を知っていてもトークンを偽造できない（SEC7）。
 //! web（フォーム描画）と api（検証）で導出を一致させるため本 crate に置く。
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;

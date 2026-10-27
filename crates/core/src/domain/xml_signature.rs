@@ -35,9 +35,6 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
-use rsa::pkcs1v15::{Signature as RsaSignature, VerifyingKey as RsaVerifyingKey};
-use rsa::signature::Verifier as _;
-use rsa::RsaPublicKey;
 use sha2::{Digest, Sha256};
 
 const DIGEST_SHA256: &str = "http://www.w3.org/2001/04/xmlenc#sha256";
@@ -64,7 +61,8 @@ struct SignatureParts {
 
 /// 署名検証に使う公開鍵。管理者が登録した証明書（base64 DER の X.509）から取り出す。
 pub enum SigningCertificateKey {
-    Rsa(Box<RsaPublicKey>),
+    /// SubjectPublicKeyInfo の DER（取り出すときに RSA の公開鍵として読めることを確かめてある）。
+    Rsa(Vec<u8>),
     P256(Box<p256::ecdsa::VerifyingKey>),
 }
 
@@ -84,7 +82,7 @@ impl SigningCertificateKey {
             .map_err(|e| DomainError::InvalidValue(format!("certificate is not base64: {e}")))?;
         let cert = x509_cert::Certificate::from_der(&der)
             .map_err(|e| DomainError::InvalidValue(format!("certificate is not X.509 DER: {e}")))?;
-        let spki = cert.tbs_certificate.subject_public_key_info;
+        let spki = cert.tbs_certificate().subject_public_key_info();
 
         // RSA を先に試し、駄目なら P-256。どちらでもなければ拒否する（対応するのは SAML IdP が
         // 実際に使う 2 種類だけ。ADR-0027）。
@@ -93,10 +91,8 @@ impl SigningCertificateKey {
             spki.to_der()
                 .map_err(|e| DomainError::InvalidValue(format!("bad public key: {e}")))?
         };
-        if let Ok(key) =
-            <RsaPublicKey as rsa::pkcs8::DecodePublicKey>::from_public_key_der(&spki_der)
-        {
-            return Ok(Self::Rsa(Box::new(key)));
+        if aws_lc_rs::rsa::PublicKey::from_der(&spki_der).is_ok() {
+            return Ok(Self::Rsa(spki_der));
         }
         if let Ok(key) =
             <p256::ecdsa::VerifyingKey as p256::pkcs8::DecodePublicKey>::from_public_key_der(
@@ -112,20 +108,22 @@ impl SigningCertificateKey {
 
     fn verify(&self, algorithm: &str, signed: &[u8], signature: &[u8]) -> Result<()> {
         match (self, algorithm) {
-            (Self::Rsa(key), SIG_RSA_SHA256) => {
-                let verifying = RsaVerifyingKey::<Sha256>::new((**key).clone());
-                let signature = RsaSignature::try_from(signature).map_err(|e| {
-                    DomainError::InvalidValue(format!("malformed RSA signature: {e}"))
-                })?;
-                verifying
-                    .verify(signed, &signature)
-                    .map_err(|_| DomainError::InvalidValue("signature does not verify".to_string()))
+            (Self::Rsa(spki_der), SIG_RSA_SHA256) => {
+                // 鍵長は 1024 ビットから受ける（登録済みの外部 IdP の証明書を、部品の入れ替えで
+                // 弾き始めないため。RSA の部品を aws-lc-rs へ移す前と同じ範囲）。
+                aws_lc_rs::signature::UnparsedPublicKey::new(
+                    &aws_lc_rs::signature::RSA_PKCS1_1024_8192_SHA256_FOR_LEGACY_USE_ONLY,
+                    spki_der,
+                )
+                .verify(signed, signature)
+                .map_err(|_| DomainError::InvalidValue("signature does not verify".to_string()))
             }
             (Self::P256(key), SIG_ECDSA_SHA256) => {
                 // XMLDSIG の ECDSA 署名は r||s の連結（DER ではない）。
                 let signature = p256::ecdsa::Signature::from_slice(signature).map_err(|e| {
                     DomainError::InvalidValue(format!("malformed ECDSA signature: {e}"))
                 })?;
+                use p256::ecdsa::signature::Verifier as _;
                 key.verify(signed, &signature)
                     .map_err(|_| DomainError::InvalidValue("signature does not verify".to_string()))
             }

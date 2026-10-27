@@ -4,7 +4,7 @@ use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
-use rand::RngCore;
+use rand::Rng;
 use sha2::{Digest, Sha256};
 
 const GCM_NONCE_LEN: usize = 12;
@@ -13,7 +13,7 @@ const GCM_NONCE_LEN: usize = 12;
 /// セッション ID / authorization code / auth_session id などの生成に使う。
 pub fn random_token(n_bytes: usize) -> String {
     let mut buf = vec![0u8; n_bytes];
-    rand::thread_rng().fill_bytes(&mut buf);
+    rand::rng().fill_bytes(&mut buf);
     URL_SAFE_NO_PAD.encode(buf)
 }
 
@@ -22,7 +22,7 @@ pub fn random_token(n_bytes: usize) -> String {
 /// 厳密一致となるよう小文字 16 進で生成する。
 pub fn random_hex(n_bytes: usize) -> String {
     let mut buf = vec![0u8; n_bytes];
-    rand::thread_rng().fill_bytes(&mut buf);
+    rand::rng().fill_bytes(&mut buf);
     hex::encode(buf)
 }
 
@@ -42,7 +42,7 @@ pub fn encrypt(plaintext: &[u8], key: &[u8; 32]) -> anyhow::Result<String> {
     let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(*key));
 
     let mut nonce_bytes = [0u8; GCM_NONCE_LEN];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    rand::rng().fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from(nonce_bytes);
 
     let ciphertext = cipher

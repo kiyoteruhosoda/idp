@@ -44,23 +44,23 @@ anyhow = "1"
 dotenvy = "0.15"
 async-trait = "0.1"
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
-# ⚠ rsa 0.9 と組になる RustCrypto の版に据え置く（sha2 / hmac / p256 / x509-cert / rand）。
-# rsa 0.9 は digest 0.10・spki 0.7・rand_core 0.6 の trait で書かれていて、sha2 0.11（digest 0.11）・
-# p256 0.14 / x509-cert 0.3（spki 0.8）・rand 0.10（rand_core 0.10）とは型が噛み合わない
-# （SAML の RSA 署名検証・証明書からの公開鍵取り出し・鍵生成が組めない）。rsa 0.10 は 2026-09 時点で
-# まだ rc なので、正式版が出たらこの 5 つを rsa と一緒に上げる（renovate.json の据え置きも外す）。
-rsa = { version = "0.9", features = ["pem"] }
-p256 = { version = "0.13", features = ["pkcs8", "pem"] }
+# RSA の署名・検証・鍵生成は aws-lc-rs（定数時間の実装。jsonwebtoken の `aws_lc_rs` と同じもの）。
+# RustCrypto の rsa 0.9 は秘密鍵の演算の時間から鍵が漏れうる（RUSTSEC-2023-0071 / CVE-2023-49092・直る版なし）
+# うえ、digest 0.10 の世代に sha2 / hmac / p256 / x509-cert / rand を縛っていたので外した。
+aws-lc-rs = "1"
+# 鍵の入れ物（PKCS#8 / SPKI）の読み書きだけに使う。演算は aws-lc-rs に任せる。
+pkcs8 = { version = "0.11", features = ["std", "pem"] }
+p256 = { version = "0.14", features = ["pkcs8", "pem"] }
 aes-gcm = "0.11"
 # `oid` は SAML 応答の RSA 署名（PKCS#1 v1.5 の DigestInfo 生成）に使う。
-sha2 = { version = "0.10", features = ["oid"] }
+sha2 = { version = "0.11", features = ["oid"] }
 # 漏えい済みパスワード照合（AP7）のレンジ API は SHA-1 の接頭辞で引く仕様のため使う。
 # 保存・認証には使わない（保存は argon2）。
 sha1 = "0.11"
-hmac = "0.12"
+hmac = "0.13"
 hex = "0.4"
 base64 = "0.23"
-rand = "0.8"
+rand = "0.10"
 argon2 = "0.6"
 url = "2"
 percent-encoding = "2"
@@ -77,7 +77,7 @@ flate2 = "1"
 # 外部 SAML IdP の署名証明書（`<ds:X509Certificate>`）から公開鍵を取り出す（AP12）。
 # 検証に使うのは SubjectPublicKeyInfo だけで、証明書チェーンの検証はしない（信頼の起点は
 # 「管理者がこの証明書を登録した」ことで、CA ではない。ADR-0027）。
-x509-cert = { version = "0.2", default-features = false, features = ["std"] }
+x509-cert = { version = "0.3", default-features = false, features = ["std"] }
 utoipa = { version = "6", features = ["axum_extras", "chrono", "uuid"] }
 utoipa-swagger-ui = { version = "10", features = ["axum", "vendored"] }
 fluent = "0.17"
@@ -87,7 +87,7 @@ askama = "0.16"
 # web crate の API クライアント（core/sqlx へ依存させないための HTTP 越しアクセス）。TLS は rustls。
 reqwest = { version = "0.13", default-features = false, features = ["json", "query", "form", "rustls"] }
 # TOTP（RFC 6238）の生成・検証（MFA 自己登録）。
-totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
+totp-rs = { version = "6", features = ["gen_secret", "otpauth"] }
 # QR コードを SVG として生成（TOTP セットアップ画面で埋め込む）。
 qrcode = "0.14"
 # SMTP メール配送（招待メール MT17・パスワードリセット MT18）。TLS は rustls。

@@ -30,11 +30,10 @@
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::saml_metadata::{IdpSigningKey, NAMED_CURVE_P256};
+use aws_lc_rs::signature::KeyPair as _;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use chrono::{DateTime, Utc};
-use rsa::pkcs1::DecodeRsaPrivateKey;
-use rsa::Pkcs1v15Sign;
 use sha2::{Digest, Sha256};
 
 const NS_ASSERTION: &str = "urn:oasis:names:tc:SAML:2.0:assertion";
@@ -82,7 +81,7 @@ pub struct SamlResponseInput<'a> {
 
 /// SAML 応答の署名鍵。ACTIVE 署名鍵（PEM）から生成する。
 pub enum SamlSigner {
-    Rsa(Box<rsa::RsaPrivateKey>),
+    Rsa(Box<aws_lc_rs::rsa::KeyPair>),
     P256(Box<p256::ecdsa::SigningKey>),
 }
 
@@ -91,9 +90,7 @@ impl SamlSigner {
     /// 鍵生成（[`crate::domain::jwt`]）と対にする: RSA は PKCS#1、EC は PKCS#8。
     pub fn from_pem(algorithm: &str, private_pem: &str) -> Result<Self> {
         match algorithm {
-            "RS256" => rsa::RsaPrivateKey::from_pkcs1_pem(private_pem)
-                .map(|key| Self::Rsa(Box::new(key)))
-                .map_err(|e| DomainError::InvalidValue(format!("invalid RSA private key: {e}"))),
+            "RS256" => Self::rsa_from_pkcs1_pem(private_pem).map(|key| Self::Rsa(Box::new(key))),
             "ES256" => {
                 use p256::pkcs8::DecodePrivateKey;
                 p256::ecdsa::SigningKey::from_pkcs8_pem(private_pem)
@@ -104,6 +101,18 @@ impl SamlSigner {
                 "unsupported SAML signing algorithm: {other}"
             ))),
         }
+    }
+
+    fn rsa_from_pkcs1_pem(private_pem: &str) -> Result<aws_lc_rs::rsa::KeyPair> {
+        let invalid = |e: &dyn std::fmt::Display| {
+            DomainError::InvalidValue(format!("invalid RSA private key: {e}"))
+        };
+        let (label, der) =
+            pkcs8::der::pem::decode_vec(private_pem.as_bytes()).map_err(|e| invalid(&e))?;
+        if label != "RSA PRIVATE KEY" {
+            return Err(invalid(&format!("expected PKCS#1 PEM, got {label}")));
+        }
+        aws_lc_rs::rsa::KeyPair::from_der(&der).map_err(|e| invalid(&e))
     }
 
     fn signature_method_uri(&self) -> &'static str {
@@ -118,15 +127,17 @@ impl SamlSigner {
     fn public_key(&self) -> IdpSigningKey {
         match self {
             Self::Rsa(key) => {
-                use rsa::traits::PublicKeyParts;
+                let public = key.public_key();
                 IdpSigningKey::Rsa {
-                    modulus_b64: STANDARD.encode(key.n().to_bytes_be()),
-                    exponent_b64: STANDARD.encode(key.e().to_bytes_be()),
+                    modulus_b64: STANDARD
+                        .encode(public.modulus().big_endian_without_leading_zero()),
+                    exponent_b64: STANDARD
+                        .encode(public.exponent().big_endian_without_leading_zero()),
                 }
             }
             Self::P256(key) => {
                 // XMLDSIG の ECKeyValue は非圧縮点（0x04 || X || Y）を base64 で持つ。
-                let point = key.verifying_key().to_encoded_point(false);
+                let point = key.verifying_key().to_sec1_point(false);
                 IdpSigningKey::Ec {
                     named_curve_uri: NAMED_CURVE_P256.to_string(),
                     public_key_b64: STANDARD.encode(point.as_bytes()),
@@ -140,9 +151,15 @@ impl SamlSigner {
     fn sign(&self, message: &[u8]) -> Result<Vec<u8>> {
         match self {
             Self::Rsa(key) => {
-                let digest = Sha256::digest(message);
-                key.sign(Pkcs1v15Sign::new::<Sha256>(), &digest)
-                    .map_err(|e| DomainError::InvalidValue(format!("RSA signing failed: {e}")))
+                let mut signature = vec![0; key.public_modulus_len()];
+                key.sign(
+                    &aws_lc_rs::signature::RSA_PKCS1_SHA256,
+                    &aws_lc_rs::rand::SystemRandom::new(),
+                    message,
+                    &mut signature,
+                )
+                .map_err(|e| DomainError::InvalidValue(format!("RSA signing failed: {e}")))?;
+                Ok(signature)
             }
             Self::P256(key) => {
                 use p256::ecdsa::signature::Signer;
@@ -335,7 +352,6 @@ mod tests {
     use chrono::TimeZone;
     use quick_xml::events::Event;
     use quick_xml::reader::Reader;
-    use rsa::traits::PublicKeyParts;
 
     fn test_input<'a>() -> SamlResponseInput<'a> {
         SamlResponseInput {
@@ -355,10 +371,11 @@ mod tests {
         }
     }
 
-    fn rsa_signer() -> (SamlSigner, rsa::RsaPublicKey) {
-        // テストの高速化のため鍵長は 2048 ではなく 1024 を使う（署名方式の検証には十分）。
-        let private = rsa::RsaPrivateKey::new(&mut rand::thread_rng(), 1024).expect("keygen");
-        let public = rsa::RsaPublicKey::from(&private);
+    fn rsa_signer() -> (SamlSigner, aws_lc_rs::rsa::PublicKey) {
+        // aws-lc-rs が作る RSA 鍵は 2048 ビットから（1024 は作れない）。
+        let private =
+            aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).expect("keygen");
+        let public = private.public_key().clone();
         (SamlSigner::Rsa(Box::new(private)), public)
     }
 
@@ -423,8 +440,7 @@ mod tests {
         assert!(key_info.contains("<ds:RSAKeyValue>"), "{xml}");
 
         // 署名に使った鍵そのものが載っていること（別の鍵を名乗らない）。
-        use rsa::traits::PublicKeyParts;
-        let modulus = STANDARD.encode(public.n().to_bytes_be());
+        let modulus = STANDARD.encode(public.modulus().big_endian_without_leading_zero());
         assert!(
             key_info.contains(&format!("<ds:Modulus>{modulus}</ds:Modulus>")),
             "{key_info}"
@@ -433,7 +449,7 @@ mod tests {
         // メタデータ側と同じ描画であること（SP はこの 2 つを突き合わせる）。
         let published = crate::domain::saml_metadata::IdpSigningKey::Rsa {
             modulus_b64: modulus,
-            exponent_b64: STANDARD.encode(public.e().to_bytes_be()),
+            exponent_b64: STANDARD.encode(public.exponent().big_endian_without_leading_zero()),
         };
         assert!(key_info.contains(&published.to_key_value()), "{key_info}");
     }
@@ -467,17 +483,19 @@ mod tests {
             .replace("</ds:SignatureValue>", "");
         let signature = STANDARD.decode(signature_value).expect("base64");
 
-        let digest = Sha256::digest(signed_info.as_bytes());
-        public
-            .verify(Pkcs1v15Sign::new::<Sha256>(), &digest, &signature)
-            .expect("signature must verify");
-        assert_eq!(public.size(), signature.len());
+        aws_lc_rs::signature::UnparsedPublicKey::new(
+            &aws_lc_rs::signature::RSA_PKCS1_2048_8192_SHA256,
+            public.as_ref(),
+        )
+        .verify(signed_info.as_bytes(), &signature)
+        .expect("signature must verify");
+        assert_eq!(public.modulus_len(), signature.len());
     }
 
     #[test]
     fn ecdsa_signature_is_p1363_and_verifies() {
         use p256::ecdsa::signature::Verifier;
-        let private = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+        let private = p256::ecdsa::SigningKey::random(&mut rand::rng());
         let verifying = *private.verifying_key();
         let signer = SamlSigner::P256(Box::new(private));
         let xml = build_signed_response_xml(&test_input(), &signer).expect("build");
