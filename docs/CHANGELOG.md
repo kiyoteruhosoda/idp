@@ -1,3 +1,12 @@
+## 2026-10-27（RSA を aws-lc-rs へ・RustCrypto の世代替え。task #700）
+
+- **RSA の署名・検証・鍵生成を RustCrypto の rsa 0.9 から aws-lc-rs へ移した**（RUSTSEC-2023-0071 / CVE-2023-49092:
+  秘密鍵の演算の時間から鍵が漏れうる。直る版は出ていない）。SAML 応答の署名・外部 IdP の XML 署名の検証・
+  署名鍵の生成の 3 か所。鍵の保存形式は変えない（秘密鍵は PKCS#1・公開鍵は SPKI の PEM）。外部 IdP の証明書は
+  これまで通り 1024 ビットの RSA から受ける。JWT の署名は前から aws-lc-rs（jsonwebtoken の `aws_lc_rs`）。
+- rsa に縛られていた sha2 0.11・hmac 0.13・p256 0.14・x509-cert 0.3・rand 0.10 と、totp-rs 6 へ上げた
+  （crypto-bigint 0.5 の脆弱性 RUSTSEC-2026-0387 が消える）。
+
 ## 2026-10-26（quick-xml 0.41。RUSTSEC-2026-0194）
 
 - **quick-xml を 0.37 から 0.41 へ上げた**（RUSTSEC-2026-0194: 1 つの開始タグに属性を大量に並べると重複の検査が

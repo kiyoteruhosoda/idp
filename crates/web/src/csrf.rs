@@ -11,7 +11,7 @@
 //! ハンドラごとに `csrf_valid` が書かれ、いくつかは `==`（不一致の位置で早く返る）で比べていた。
 
 use axum::http::HeaderMap;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;

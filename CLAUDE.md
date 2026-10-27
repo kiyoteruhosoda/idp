@@ -74,7 +74,7 @@ task の課題の本文には、優先度の材料（影響度・重要度・難
 | sqlx マイグレーション | `migrations/` 配下で管理（`sqlx migrate`） |
 | MariaDB | 10.11.x |
 | Redis | 7.x（パスワード保護必須。セッションストアとして任意採用） |
-| jsonwebtoken / rsa / argon2 | JWT(RS256) 署名・RSA 鍵生成・パスワードハッシュ |
+| jsonwebtoken / aws-lc-rs / argon2 | JWT(RS256) 署名・RSA の署名と鍵生成・パスワードハッシュ |
 | tracing / tracing-subscriber | JSON 構造化ログ |
 | ホスト | Linux / Synology DSM 7.x（Docker 上） |
 

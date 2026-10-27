@@ -7,12 +7,15 @@
 #![allow(dead_code)]
 
 use crate::domain::crypto::base64url;
+use aws_lc_rs::encoding::AsDer;
+use aws_lc_rs::rsa::{KeyPair as RsaKeyPair, KeySize, PublicKey as RsaPublicKey};
+use aws_lc_rs::signature::KeyPair as _;
 use jsonwebtoken::{encode, Algorithm, DecodingKey, EncodingKey, Header};
-use p256::pkcs8::{DecodePublicKey as EcDecodePublicKey, EncodePrivateKey, LineEnding};
-use rsa::pkcs1::EncodeRsaPrivateKey;
-use rsa::pkcs8::EncodePublicKey as RsaEncodePublicKey;
-use rsa::traits::PublicKeyParts;
-use rsa::{RsaPrivateKey, RsaPublicKey};
+use p256::elliptic_curve::Generate as _;
+use p256::pkcs8::{
+    DecodePublicKey as EcDecodePublicKey, EncodePrivateKey, EncodePublicKey as _, LineEnding,
+};
+use pkcs8::der::pem;
 use serde::{Deserialize, Serialize};
 
 /// JWK（RSA または EC 公開鍵）。JWKS エンドポイントの 1 要素。
@@ -46,18 +49,30 @@ pub struct Jwks {
 }
 
 /// RSA-2048 の鍵ペアを生成し、`(秘密鍵 PKCS#1 PEM, 公開鍵 SPKI PEM)` を返す。
+///
+/// aws-lc-rs は秘密鍵を PKCS#8 でしか書き出さないので、その中身（`privateKey` の OCTET STRING が
+/// そのまま PKCS#1 の `RSAPrivateKey`）を取り出して PKCS#1 で包み直す。保存済みの鍵と同じ形に揃える。
 pub fn generate_rsa_keypair() -> anyhow::Result<(String, String)> {
-    let mut rng = rand::thread_rng();
-    let private = RsaPrivateKey::new(&mut rng, 2048)
+    let pair = RsaKeyPair::generate(KeySize::Rsa2048)
         .map_err(|e| anyhow::anyhow!("RSA keygen failed: {e}"))?;
-    let public = RsaPublicKey::from(&private);
 
-    let private_pem = private
-        .to_pkcs1_pem(LineEnding::LF)
-        .map_err(|e| anyhow::anyhow!("encode private PEM: {e}"))?
-        .to_string();
-    let public_pem = public
-        .to_public_key_pem(LineEnding::LF)
+    let pkcs8_der = pair
+        .as_der()
+        .map_err(|e| anyhow::anyhow!("encode private key: {e}"))?;
+    let info = pkcs8::PrivateKeyInfoRef::try_from(pkcs8_der.as_ref())
+        .map_err(|e| anyhow::anyhow!("read PKCS#8 private key: {e}"))?;
+    let private_pem = pem::encode_string(
+        "RSA PRIVATE KEY",
+        LineEnding::LF,
+        info.private_key.as_bytes(),
+    )
+    .map_err(|e| anyhow::anyhow!("encode private PEM: {e}"))?;
+
+    let spki_der = pair
+        .public_key()
+        .as_der()
+        .map_err(|e| anyhow::anyhow!("encode public key: {e}"))?;
+    let public_pem = pem::encode_string("PUBLIC KEY", LineEnding::LF, spki_der.as_ref())
         .map_err(|e| anyhow::anyhow!("encode public PEM: {e}"))?;
 
     Ok((private_pem, public_pem))
@@ -66,7 +81,7 @@ pub fn generate_rsa_keypair() -> anyhow::Result<(String, String)> {
 /// NIST P-256（ES256 用）の鍵ペアを生成し、`(秘密鍵 PKCS#8 PEM, 公開鍵 SPKI PEM)` を返す。
 pub fn generate_ec_keypair() -> anyhow::Result<(String, String)> {
     use p256::ecdsa::SigningKey;
-    let secret = SigningKey::random(&mut rand::thread_rng());
+    let secret = SigningKey::generate_from_rng(&mut rand::rng());
     let private_pem = secret
         .to_pkcs8_pem(LineEnding::LF)
         .map_err(|e| anyhow::anyhow!("encode EC private PEM: {e}"))?
@@ -111,15 +126,21 @@ pub fn sign<T: Serialize>(
 
 /// 公開鍵 PEM から `kid` 付きの RSA JWK を構築する。
 pub fn rsa_public_jwk(kid: &str, public_pem: &str) -> anyhow::Result<Jwk> {
-    let public = RsaPublicKey::from_public_key_pem(public_pem)
+    let (_, spki_der) = pem::decode_vec(public_pem.as_bytes())
         .map_err(|e| anyhow::anyhow!("parse RSA public PEM: {e}"))?;
+    let public = RsaPublicKey::from_der(&spki_der)
+        .map_err(|e| anyhow::anyhow!("parse RSA public key: {e}"))?;
     Ok(Jwk {
         kty: "RSA".to_string(),
         use_: "sig".to_string(),
         kid: kid.to_string(),
         alg: "RS256".to_string(),
-        n: Some(base64url(&public.n().to_bytes_be())),
-        e: Some(base64url(&public.e().to_bytes_be())),
+        n: Some(base64url(
+            public.modulus().big_endian_without_leading_zero(),
+        )),
+        e: Some(base64url(
+            public.exponent().big_endian_without_leading_zero(),
+        )),
         crv: None,
         x: None,
         y: None,
@@ -128,10 +149,10 @@ pub fn rsa_public_jwk(kid: &str, public_pem: &str) -> anyhow::Result<Jwk> {
 
 /// 公開鍵 PEM（SPKI）から `kid` 付きの EC JWK（P-256 / ES256）を構築する。
 pub fn ec_public_jwk(kid: &str, public_pem: &str) -> anyhow::Result<Jwk> {
-    use p256::elliptic_curve::sec1::ToEncodedPoint;
+    use p256::elliptic_curve::sec1::ToSec1Point;
     let public: p256::PublicKey = p256::PublicKey::from_public_key_pem(public_pem)
         .map_err(|e| anyhow::anyhow!("parse EC public PEM: {e}"))?;
-    let point = public.to_encoded_point(false);
+    let point = public.to_sec1_point(false);
     let x = point
         .x()
         .ok_or_else(|| anyhow::anyhow!("EC point has no x coordinate"))?;

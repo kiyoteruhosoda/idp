@@ -592,19 +592,16 @@ mod tests {
 
     /// 実時刻で有効な TOTP コードを生成する（`verify_totp_code` と同じパラメータ）。
     fn current_totp_code() -> String {
-        use totp_rs::{Algorithm, TOTP};
-        TOTP::new(
-            Algorithm::SHA1,
-            6,
-            1,
-            30,
-            TOTP_SECRET.to_vec(),
-            None,
-            String::new(),
-        )
-        .expect("build TOTP")
-        .generate_current()
-        .expect("generate TOTP code")
+        totp_rs::Builder::new()
+            .with_algorithm(totp_rs::Algorithm::SHA1)
+            .with_digits(6)
+            .with_skew(1)
+            .with_step_duration(30)
+            .with_secret(TOTP_SECRET)
+            .build()
+            .expect("build TOTP")
+            .generate_current()
+            .to_string()
     }
 
     #[derive(Default)]
