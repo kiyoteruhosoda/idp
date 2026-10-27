@@ -43,7 +43,7 @@ thiserror = "2"
 anyhow = "1"
 dotenvy = "0.15"
 async-trait = "0.1"
-jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
 # RSA の署名・検証・鍵生成は aws-lc-rs（定数時間の実装。jsonwebtoken の `aws_lc_rs` と同じもの）。
 # RustCrypto の rsa 0.9 は秘密鍵の演算の時間から鍵が漏れうる（RUSTSEC-2023-0071 / CVE-2023-49092・直る版なし）
 # うえ、digest 0.10 の世代に sha2 / hmac / p256 / x509-cert / rand を縛っていたので外した。
@@ -67,11 +67,11 @@ percent-encoding = "2"
 # COOKIE_DOMAIN の起動時検証（public suffix 拒否。ADR-0012 §Consequences）。
 psl = "2"
 # SAML メタデータの XML 解析（外部 IdP メタデータ取り込み）・XML 生成（自身の SP メタデータ出力）。
-# ⚠ 0.42 は据え置く（`&str` 化が入る）。0.38 で実体参照（`&amp;` など）が別イベント `GeneralRef` に割れ、
-# 0.40 で属性値の正規化が入った——この 2 つは domain::xml_text に寄せて受けている。どれも xml_c14n /
-# xml_signature（XML 署名の正規化と検証）の意味に触れるので、依存の一括更新には混ぜず単独の変更として
-# 移す（renovate.json で一括の組から外してある）。0.41 は RUSTSEC-2026-0194（属性の重複検査が二乗）の直し。
-quick-xml = "0.41"
+# 0.38 で実体参照（`&amp;` など）が別イベント `GeneralRef` に割れ、0.40 で属性値の正規化が入った——
+# この 2 つは domain::xml_text に寄せて受けている。0.42 で名前・値が `&[u8]` から `&str` になった。
+# どれも xml_c14n / xml_signature（XML 署名の正準化と検証）の意味に触れるので、版を上げるときは
+# 依存の一括更新に混ぜず単独の変更として移す。
+quick-xml = "0.42"
 # SAML HTTP-Redirect binding の DEFLATE 展開（`SAMLRequest` = base64(raw-deflate(xml))）。
 flate2 = "1"
 # 外部 SAML IdP の署名証明書（`<ds:X509Certificate>`）から公開鍵を取り出す（AP12）。

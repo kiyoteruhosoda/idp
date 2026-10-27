@@ -20,7 +20,7 @@ use std::borrow::Cow;
 
 /// テキストイベントの中身（改行を揃えた後）。
 pub(crate) fn text<'a>(e: &BytesText<'a>) -> Result<Cow<'a, str>, quick_xml::Error> {
-    Ok(e.xml10_content()?)
+    Ok(e.xml10_content())
 }
 
 /// 実体参照イベントが表す文字。定義済みの 5 つ（`lt`・`gt`・`amp`・`apos`・`quot`）と文字参照
@@ -30,10 +30,10 @@ pub(crate) fn general_ref(e: &BytesRef<'_>) -> Result<Cow<'static, str>, quick_x
     if let Some(ch) = e.resolve_char_ref()? {
         return Ok(Cow::Owned(ch.to_string()));
     }
-    let name = e.decode()?;
-    match resolve_predefined_entity(&name) {
+    let name: &str = e;
+    match resolve_predefined_entity(name) {
         Some(resolved) => Ok(Cow::Borrowed(resolved)),
-        None => Err(EscapeError::UnrecognizedEntity(0..name.len(), name.into_owned()).into()),
+        None => Err(EscapeError::UnrecognizedEntity(0..name.len(), name.to_string()).into()),
     }
 }
 

@@ -199,11 +199,7 @@ impl<'a> Walker<'a> {
                 Event::CData(e) => {
                     if self.is_emitting() {
                         // CDATA は正準形では通常のテキストとして書き出す。
-                        let text =
-                            String::from_utf8(e.into_inner().into_owned()).map_err(|err| {
-                                DomainError::InvalidValue(format!("non-UTF-8 CDATA: {err}"))
-                            })?;
-                        escape_text(&text, &mut self.out);
+                        escape_text(&e.into_inner(), &mut self.out);
                     }
                 }
                 // コメントは出力しない（`#WithComments` ではないため）。宣言・DOCTYPE も同様。
@@ -211,7 +207,7 @@ impl<'a> Walker<'a> {
                 Event::PI(e) => {
                     if self.is_emitting() {
                         self.out.extend_from_slice(b"<?");
-                        self.out.extend_from_slice(e.into_inner().as_ref());
+                        self.out.extend_from_slice(e.into_inner().as_bytes());
                         self.out.extend_from_slice(b"?>");
                     }
                 }
@@ -326,8 +322,7 @@ impl<'a> Walker<'a> {
     }
 
     fn emit_start(&mut self, e: &BytesStart<'_>, prefix: &str) -> Result<()> {
-        let qname = String::from_utf8(e.name().as_ref().to_vec())
-            .map_err(|err| DomainError::InvalidValue(format!("bad element name: {err}")))?;
+        let qname = e.name().as_ref().to_string();
         let mut rendered = self.rendered.last().cloned().unwrap_or_default();
 
         // 1. 出力する名前空間宣言（visibly utilized な接頭辞 + PrefixList）。
@@ -405,8 +400,7 @@ impl<'a> Walker<'a> {
                     DomainError::InvalidValue(format!("namespace prefix `{ap}` is not declared"))
                 })?
             };
-            let key = String::from_utf8(attr.key.as_ref().to_vec())
-                .map_err(|err| DomainError::InvalidValue(format!("bad attribute name: {err}")))?;
+            let key = attr.key.as_ref().to_string();
             let value = xml_text::attribute_value(&attr)
                 .map_err(|err| DomainError::InvalidValue(format!("bad attribute value: {err}")))?
                 .into_owned();
@@ -517,9 +511,7 @@ fn element_id(e: &BytesStart<'_>) -> Result<Option<String>> {
 }
 
 /// `prefix:local` を分ける（接頭辞が無ければ空文字）。
-fn split_name(name: &[u8]) -> Result<(String, String)> {
-    let name = std::str::from_utf8(name)
-        .map_err(|e| DomainError::InvalidValue(format!("non-UTF-8 name: {e}")))?;
+fn split_name(name: &str) -> Result<(String, String)> {
     Ok(match name.split_once(':') {
         Some((p, l)) => (p.to_string(), l.to_string()),
         None => (String::new(), name.to_string()),
