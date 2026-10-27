@@ -78,8 +78,8 @@ flate2 = "1"
 # 検証に使うのは SubjectPublicKeyInfo だけで、証明書チェーンの検証はしない（信頼の起点は
 # 「管理者がこの証明書を登録した」ことで、CA ではない。ADR-0027）。
 x509-cert = { version = "0.2", default-features = false, features = ["std"] }
-utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
-utoipa-swagger-ui = { version = "9", features = ["axum", "vendored"] }
+utoipa = { version = "6", features = ["axum_extras", "chrono", "uuid"] }
+utoipa-swagger-ui = { version = "10", features = ["axum", "vendored"] }
 fluent = "0.17"
 unic-langid = { version = "0.9", features = ["macros"] }
 # web crate のサーバレンダリング用テンプレート（コンパイル時型検証・HTML 自動エスケープ）。
