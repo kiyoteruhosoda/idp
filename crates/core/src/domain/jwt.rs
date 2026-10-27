@@ -11,7 +11,10 @@ use aws_lc_rs::encoding::AsDer;
 use aws_lc_rs::rsa::{KeyPair as RsaKeyPair, KeySize, PublicKey as RsaPublicKey};
 use aws_lc_rs::signature::KeyPair as _;
 use jsonwebtoken::{encode, Algorithm, DecodingKey, EncodingKey, Header};
-use p256::pkcs8::{DecodePublicKey as EcDecodePublicKey, EncodePrivateKey, LineEnding};
+use p256::elliptic_curve::Generate as _;
+use p256::pkcs8::{
+    DecodePublicKey as EcDecodePublicKey, EncodePrivateKey, EncodePublicKey as _, LineEnding,
+};
 use pkcs8::der::pem;
 use serde::{Deserialize, Serialize};
 
@@ -78,7 +81,7 @@ pub fn generate_rsa_keypair() -> anyhow::Result<(String, String)> {
 /// NIST P-256（ES256 用）の鍵ペアを生成し、`(秘密鍵 PKCS#8 PEM, 公開鍵 SPKI PEM)` を返す。
 pub fn generate_ec_keypair() -> anyhow::Result<(String, String)> {
     use p256::ecdsa::SigningKey;
-    let secret = SigningKey::random(&mut rand::rng());
+    let secret = SigningKey::generate_from_rng(&mut rand::rng());
     let private_pem = secret
         .to_pkcs8_pem(LineEnding::LF)
         .map_err(|e| anyhow::anyhow!("encode EC private PEM: {e}"))?

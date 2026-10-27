@@ -495,7 +495,8 @@ mod tests {
     #[test]
     fn ecdsa_signature_is_p1363_and_verifies() {
         use p256::ecdsa::signature::Verifier;
-        let private = p256::ecdsa::SigningKey::random(&mut rand::rng());
+        use p256::elliptic_curve::Generate as _;
+        let private = p256::ecdsa::SigningKey::generate_from_rng(&mut rand::rng());
         let verifying = *private.verifying_key();
         let signer = SamlSigner::P256(Box::new(private));
         let xml = build_signed_response_xml(&test_input(), &signer).expect("build");
