@@ -168,7 +168,7 @@ pub fn verify_enveloped_signature(
         &parts.inclusive_prefixes,
     )?;
     let digest = Sha256::digest(&canonical);
-    if digest.as_slice() != parts.digest_value.as_slice() {
+    if digest[..] != parts.digest_value[..] {
         return Err(DomainError::InvalidValue(
             "the signed element does not match its digest".to_string(),
         ));
