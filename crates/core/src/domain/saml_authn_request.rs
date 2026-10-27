@@ -96,7 +96,7 @@ pub fn parse_authn_request(xml: &str) -> Result<ParsedAuthnRequest> {
                 let name = e.name();
                 let local = strip_prefix(name.into_inner());
                 if !root_seen {
-                    if local != b"AuthnRequest" {
+                    if local != "AuthnRequest" {
                         return Err(DomainError::InvalidValue(
                             "SAMLRequest is not an AuthnRequest".to_string(),
                         ));
@@ -108,12 +108,12 @@ pub fn parse_authn_request(xml: &str) -> Result<ParsedAuthnRequest> {
                             Err(_) => continue,
                         };
                         match attr.key.local_name().as_ref() {
-                            b"ID" => request_id = Some(value),
-                            b"AssertionConsumerServiceURL" => acs_url = Some(value),
+                            "ID" => request_id = Some(value),
+                            "AssertionConsumerServiceURL" => acs_url = Some(value),
                             _ => {}
                         }
                     }
-                } else if local == b"Issuer" && issuer.is_none() {
+                } else if local == "Issuer" && issuer.is_none() {
                     capture_issuer = true;
                     issuer_buf.clear();
                 }
@@ -135,7 +135,7 @@ pub fn parse_authn_request(xml: &str) -> Result<ParsedAuthnRequest> {
                 }
             }
             Event::End(e) => {
-                if capture_issuer && strip_prefix(e.name().into_inner()) == b"Issuer" {
+                if capture_issuer && strip_prefix(e.name().into_inner()) == "Issuer" {
                     let trimmed = issuer_buf.trim();
                     if !trimmed.is_empty() {
                         issuer = Some(trimmed.to_string());
@@ -165,11 +165,8 @@ pub fn parse_authn_request(xml: &str) -> Result<ParsedAuthnRequest> {
 }
 
 /// `samlp:AuthnRequest` → `AuthnRequest` のように接頭辞を除く。
-fn strip_prefix(name: &[u8]) -> &[u8] {
-    match name.iter().position(|&b| b == b':') {
-        Some(idx) => &name[idx + 1..],
-        None => name,
-    }
+fn strip_prefix(name: &str) -> &str {
+    name.split_once(':').map_or(name, |(_, local)| local)
 }
 
 #[cfg(test)]

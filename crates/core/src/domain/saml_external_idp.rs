@@ -604,9 +604,7 @@ fn parse_instant(value: Option<String>) -> Result<Option<DateTime<Utc>>> {
     Ok(Some(parsed.with_timezone(&Utc)))
 }
 
-fn local_name(name: &[u8]) -> Result<String> {
-    let name = std::str::from_utf8(name)
-        .map_err(|e| DomainError::InvalidValue(format!("non-UTF-8 name: {e}")))?;
+fn local_name(name: &str) -> Result<String> {
     Ok(name
         .rsplit_once(':')
         .map(|(_, l)| l)

@@ -1,3 +1,9 @@
+## 2026-10-27（2）（jsonwebtoken 11・quick-xml 0.42。task #700）
+
+- **jsonwebtoken を 11 へ、quick-xml を 0.42 へ上げた。** quick-xml 0.42 は要素名・属性・本文を `&[u8]` ではなく
+  `&str` で渡すようになった（入力が UTF-8 であることは読む時点で確かめる）ので、SAML の読み取り・正準化・署名の
+  検証で名前の比較を文字列に書き換えた。正準形の出力（バイト列）は変えていない。
+
 ## 2026-10-27（RSA を aws-lc-rs へ・RustCrypto の世代替え。task #700）
 
 - **RSA の署名・検証・鍵生成を RustCrypto の rsa 0.9 から aws-lc-rs へ移した**（RUSTSEC-2023-0071 / CVE-2023-49092:

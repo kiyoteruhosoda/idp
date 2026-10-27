@@ -72,18 +72,18 @@ enum Role {
 
 impl Role {
     /// 役割記述子のローカル名。
-    fn descriptor(self) -> &'static [u8] {
+    fn descriptor(self) -> &'static str {
         match self {
-            Self::Sp => b"SPSSODescriptor",
-            Self::Idp => b"IDPSSODescriptor",
+            Self::Sp => "SPSSODescriptor",
+            Self::Idp => "IDPSSODescriptor",
         }
     }
 
     /// エンドポイント要素のローカル名。
-    fn endpoint(self) -> &'static [u8] {
+    fn endpoint(self) -> &'static str {
         match self {
-            Self::Sp => b"AssertionConsumerService",
-            Self::Idp => b"SingleSignOnService",
+            Self::Sp => "AssertionConsumerService",
+            Self::Idp => "SingleSignOnService",
         }
     }
 
@@ -206,26 +206,26 @@ fn parse_entity(xml: &str, role: Role) -> Result<ParsedEntity> {
             .map_err(|e| DomainError::InvalidValue(format!("invalid SAML metadata XML: {e}")))?
         {
             Event::Start(e) => match local(&e) {
-                b"EntityDescriptor" if entity_id.is_none() => {
-                    entity_id = attribute(&e, b"entityID");
+                "EntityDescriptor" if entity_id.is_none() => {
+                    entity_id = attribute(&e, "entityID");
                     in_entity = true;
                 }
                 name if in_entity && name == role.descriptor() => in_role = true,
-                b"KeyDescriptor" if in_entity && in_role => key_use = attribute(&e, b"use"),
+                "KeyDescriptor" if in_entity && in_role => key_use = attribute(&e, "use"),
                 name if in_entity && in_role && name == role.endpoint() => {
                     push_endpoint(&e, &mut endpoints)
                 }
-                b"X509Certificate"
+                "X509Certificate"
                     if in_entity && in_role && key_use.as_deref() != Some("encryption") =>
                 {
                     capture = Some(Capture::Certificate);
                     text_buf.clear();
                 }
-                b"NameIDFormat" if in_entity && in_role && name_id_format.is_none() => {
+                "NameIDFormat" if in_entity && in_role && name_id_format.is_none() => {
                     capture = Some(Capture::NameIdFormat);
                     text_buf.clear();
                 }
-                b"OrganizationDisplayName" | b"OrganizationName"
+                "OrganizationDisplayName" | "OrganizationName"
                     if in_entity && display_name.is_none() =>
                 {
                     capture = Some(Capture::DisplayName);
@@ -234,10 +234,10 @@ fn parse_entity(xml: &str, role: Role) -> Result<ParsedEntity> {
                 _ => {}
             },
             Event::Empty(e) => match local(&e) {
-                b"EntityDescriptor" if entity_id.is_none() => {
-                    entity_id = attribute(&e, b"entityID");
+                "EntityDescriptor" if entity_id.is_none() => {
+                    entity_id = attribute(&e, "entityID");
                 }
-                b"KeyDescriptor" if in_entity && in_role => key_use = attribute(&e, b"use"),
+                "KeyDescriptor" if in_entity && in_role => key_use = attribute(&e, "use"),
                 name if in_entity && in_role && name == role.endpoint() => {
                     push_endpoint(&e, &mut endpoints)
                 }
@@ -260,10 +260,10 @@ fn parse_entity(xml: &str, role: Role) -> Result<ParsedEntity> {
                 }
             }
             Event::End(e) => match local_end(&e) {
-                b"EntityDescriptor" if in_entity => break,
+                "EntityDescriptor" if in_entity => break,
                 name if name == role.descriptor() => in_role = false,
-                b"KeyDescriptor" => key_use = None,
-                b"X509Certificate" => {
+                "KeyDescriptor" => key_use = None,
+                "X509Certificate" => {
                     if matches!(capture, Some(Capture::Certificate)) {
                         let normalized = strip_whitespace(&text_buf);
                         if !normalized.is_empty() {
@@ -276,7 +276,7 @@ fn parse_entity(xml: &str, role: Role) -> Result<ParsedEntity> {
                     }
                     capture = None;
                 }
-                b"NameIDFormat" => {
+                "NameIDFormat" => {
                     if matches!(capture, Some(Capture::NameIdFormat)) {
                         let trimmed = text_buf.trim();
                         if !trimmed.is_empty() {
@@ -285,7 +285,7 @@ fn parse_entity(xml: &str, role: Role) -> Result<ParsedEntity> {
                     }
                     capture = None;
                 }
-                b"OrganizationDisplayName" | b"OrganizationName" => {
+                "OrganizationDisplayName" | "OrganizationName" => {
                     if matches!(capture, Some(Capture::DisplayName)) {
                         let trimmed = text_buf.trim();
                         if !trimmed.is_empty() {
@@ -449,7 +449,7 @@ pub fn build_idp_metadata_xml(
 
 /// エンドポイント要素の Binding/Location を候補へ追加する（両方揃う場合のみ）。
 fn push_endpoint(e: &BytesStart, out: &mut Vec<(String, String)>) {
-    if let (Some(binding), Some(location)) = (attribute(e, b"Binding"), attribute(e, b"Location")) {
+    if let (Some(binding), Some(location)) = (attribute(e, "Binding"), attribute(e, "Location")) {
         out.push((binding, location));
     }
 }
@@ -465,28 +465,25 @@ fn pick_by_binding(candidates: &[(String, String)], preferred: &[&str]) -> Optio
 }
 
 /// 開始/空要素のローカル名（名前空間接頭辞を除いた要素名）。
-fn local<'a>(e: &'a BytesStart<'a>) -> &'a [u8] {
+fn local<'a>(e: &'a BytesStart<'a>) -> &'a str {
     // `local_name()` の戻り値は一時値のため、ライフタイムを保つため名前バイト列から末尾を取り出す。
     let name = e.name();
     let full = name.into_inner();
     strip_prefix(full)
 }
 
-fn local_end<'a>(e: &'a quick_xml::events::BytesEnd<'a>) -> &'a [u8] {
+fn local_end<'a>(e: &'a quick_xml::events::BytesEnd<'a>) -> &'a str {
     let name = e.name();
     strip_prefix(name.into_inner())
 }
 
 /// `md:EntityDescriptor` → `EntityDescriptor` のように接頭辞を除く。
-fn strip_prefix(name: &[u8]) -> &[u8] {
-    match name.iter().position(|&b| b == b':') {
-        Some(idx) => &name[idx + 1..],
-        None => name,
-    }
+fn strip_prefix(name: &str) -> &str {
+    name.split_once(':').map_or(name, |(_, local)| local)
 }
 
 /// 属性値（ローカル名一致・アンエスケープ済み）を取り出す。
-fn attribute(e: &BytesStart, name: &[u8]) -> Option<String> {
+fn attribute(e: &BytesStart, name: &str) -> Option<String> {
     for attr in e.attributes().flatten() {
         if attr.key.local_name().as_ref() == name {
             if let Ok(value) = xml_text::attribute_value(&attr) {
