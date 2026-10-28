@@ -5,7 +5,7 @@ on:
   #   全部の枝を拾うので、PR を開いている枝では **push と pull_request で
   #   同じコミットを 2 回**組むことになる。GitHub の台は要るだけ増えるので
   #   誰も困らなかったが、⚠ **セルフホストは 3 台しかなく、しかも 2 本が
-  #   同じ `target/` を取り合って後から来たほうが cargo のロックで止まる**
+  #   同じ置き場で待たされる**
   #   （2026-09-11 に実測。1 本が 200% CPU、もう 1 本が 0.5% で待っていた）。
   push:
     branches: [main]
@@ -15,8 +15,8 @@ on:
 # ⚠ **main も取り消す**（2026-09-28 の決定）。間の commit には合否が残らない代わりに、
 #   main への push が続いた日に古い検査がランナーの列を塞がない。副作用のある workflow には当てない。
 # ⚠ **別の枝どうしの取り合いはここでは防いでいない**（group が枝ごとのため）。
-#   `target/` を共有する別の PR や main のジョブとは並んで走る ——守っているのは
-#   下の `scripts/with-target-lock.sh`（`target/` そのものに掛けるロック）である。
+#   別の PR や main のジョブとは並んで走る ——置き場（`target/`）を分けているのは
+#   下の `scripts/with-target-lock.sh`（3 つの置き場から空いている番を取る）である。
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -40,14 +40,18 @@ jobs:
     #   「昨日は通ったものが通らない」が起きて原因を追えない。
     container:
       image: hub.nolumia.com:5000/builder/ci-rust@sha256:cbdb8ac42a47a544c455a441133e0076b85766dbf267913ef44de0569d935752
-      # ⚠ **`target/` は上限なく育つ。** 2026-09-11 の初回で **29GB**（依存が
-      #   変わるたびに古い成果物が積み上がり、cargo は自分では掃除しない）。
-      #   nolumialab の空きは 348GB あるので当面は保つが、**減らないもの**である
-      #   ことは覚えておくこと ——効かなくなったら
-      #   `docker volume rm rust-target-cache-idp-ci` で捨ててよい（次回が遅くなるだけ）。
+      # `target/` の置き場は 3 つ（番 1〜3）。ランナーの台が 3 台なので 4 つ目は要らない。
+      #   どのジョブにも 3 つとも付け、使うのは最初の段で取った 1 つだけ
+      #   （`scripts/with-target-lock.sh --take`、https://task.nolumia.com/issues/702）。
+      # ⚠ **`target/` は放っておくと上限なく育つ**（cargo は古い成果物を掃除しない。1 つの置き場に
+      #   52 GB 積もっていた）。番を取ったときに 20 GB を超えていれば空にしてから使う。
+      #   中身はいつ捨ててもよい（次回が遅くなるだけ）: `docker volume rm rust-target-cache-idp-ci-<番>`。
+      #   ⚠ **naso には置かない**（1 Gbps・週次の再起動で装置が振り直される・ネットワーク越しの flock は当てにならない）。
       options: >-
         -v rust-cargo-registry:/cache/cargo
-        -v rust-target-cache-idp-ci:/cache/target
+        -v rust-target-cache-idp-ci-1:/cache/target-1
+        -v rust-target-cache-idp-ci-2:/cache/target-2
+        -v rust-target-cache-idp-ci-3:/cache/target-3
     services:
       mariadb:
         image: mariadb:10.11
@@ -75,8 +79,8 @@ jobs:
       DATABASE_URL: mysql://idp:idp@mariadb:3306/idp
       TEST_DATABASE_URL: mysql://idp:idp@mariadb:3306/idp
       # 中間物と取得物をボリュームへ逃がす（ワークスペースは毎回消えるため）。
+      # ⚠ `CARGO_TARGET_DIR` はここに書かない。番を取る段が `$GITHUB_ENV` で後の段へ渡す。
       CARGO_HOME: /cache/cargo
-      CARGO_TARGET_DIR: /cache/target
       # ⚠ **書く量を減らす**（2026-09-30）。既定のままだと 1 run で約 63 GB を nolumialab の
       #   NVMe（DRAM なし）へ書き、同じディスクの k3s・deck まで止めていた。試験の実行ファイルは
       #   1 本 450 MB 前後で、ほとんどがデバッグ情報だった。
@@ -108,12 +112,14 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Target lock tests
         run: ./scripts/test_with_target_lock.sh
-      # ⚠ **`target/` を使う段は必ず `scripts/with-target-lock.sh` を通す。**
-      #   `target/` は PR をまたいで共有しているので、素の cargo だと別のジョブに
-      #   組んだ実行ファイルを消され、試験の中身は ok のまま赤になる
+      # ⚠ **`target/` を使う段は必ず `scripts/with-target-lock.sh` を通し、その前にこの段を置く。**
+      #   置き場は PR と main のジョブで使い回しているので、番を握らずに cargo を回すと
+      #   別のジョブに組んだ実行ファイルを消され、試験の中身は ok のまま赤になる
       #   （2026-09-16 に 5 回。症状と理由はスクリプトの冒頭）。
-      #   ⚠ ロックは段ごとに解ける ——前の段が組んだものを次の段で当てにしない。
-      #   ⚠ 待っている時間も `timeout-minutes` に数えられる。
+      #   番はジョブが終わるまで握り続ける ——後の段は前の段が組んだものを使ってよい。
+      #   ⚠ 3 つとも埋まっていれば空くまで待ち、その時間も `timeout-minutes` に数えられる。
+      - name: Take a target slot
+        run: ./scripts/with-target-lock.sh --take
       - name: Clippy
         run: ./scripts/with-target-lock.sh cargo clippy --workspace --all-targets -- -D warnings
       - name: Unit and DB integration tests

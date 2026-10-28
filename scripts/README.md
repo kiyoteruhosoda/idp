@@ -28,8 +28,8 @@
 | `e2e.sh` | web→api の疎通 E2E（api・web を実プロセス起動して HTTP で検証） |
 | `test_deploy.sh` | `deploy.sh` の CLI/エラー処理をスタブ docker で検証（CI 用）。同時に何本流してもよい（中間出力は実行ごとの作業場所に置き、成功したら消す。失敗したら残して場所を出す） |
 | `test_build_remote.sh` | `build-remote.sh` の取得・自己更新・委譲をスタブで検証（CI 用） |
-| `with-target-lock.sh` | cargo の中間物置き場（`target/`）を独占してからコマンドを実行する（CI 用）。CI は `target/` を PR をまたいで共有しているので、`target/` を使う段は必ずこれを通す |
-| `test_with_target_lock.sh` | `with-target-lock.sh` の排他・終了コード・後に残るプロセスの扱いを検証（CI 用） |
+| `with-target-lock.sh` | cargo の中間物置き場（`target/`）の番を取ってジョブが終わるまで握り（`--take`）、握っている番の中でコマンドを実行する（CI 用）。置き場は 3 つで、`target/` を使う段は必ずこれを通す |
+| `test_with_target_lock.sh` | `with-target-lock.sh` の番の取り方（別々の番・待ち・上限で空にする・握っていない段を止める）を検証（CI 用） |
 
 一時ファイル・中間出力は `mktemp` / `mktemp -d` で**実行ごとに**作る。同じ容れ物で別々の作業が同時に
 スクリプトを流すので、固定の `/tmp/<名前>` は互いの出力を踏む。`scripts/*.sh` に固定の `/tmp/` を書くと
