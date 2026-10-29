@@ -1,3 +1,9 @@
+## 2026-10-29（nginx: server_tokens off）
+
+- **前段 nginx の `Server` ヘッダとエラーページから nginx のバージョンを落とした**（`server_tokens off`）。
+  stg ペンテストの defense-in-depth。単一オリジン(`docker/nginx.conf`)とドメイン分割
+  (`docker/nginx.domain-split.conf`)の両構成へ。本番は Cloudflare が `Server` を隠すため外部露出は無い。
+
 ## 2026-10-28（CI の置き場を 3 つに。task #702）
 
 - **CI の Rust の置き場（`target/`）を 1 つから 3 つにし、PR が 3 本まで同時に走るようにした。** `scripts/with-target-lock.sh --take`
