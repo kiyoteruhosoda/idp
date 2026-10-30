@@ -160,15 +160,27 @@ where
             .authorize(resolved.context(), token.as_deref(), P::CODE)
             .await
         {
-            ManagementAccess::Granted(principal) => Ok(RequirePerms(principal, PhantomData)),
+            ManagementAccess::Granted(principal)
+                if opens_in_tenant(P::CODE, resolved.tenant().is_root()) =>
+            {
+                Ok(RequirePerms(principal, PhantomData))
+            }
             ManagementAccess::Unauthenticated => Err(unauthorized(parts)),
-            ManagementAccess::Forbidden => Err(error_response(
+            ManagementAccess::Granted(_) | ManagementAccess::Forbidden => Err(error_response(
                 StatusCode::FORBIDDEN,
                 "forbidden",
                 &messages(parts).get("api-permission-insufficient"),
             )),
         }
     }
+}
+
+/// `idp.system.admin` の口は root テナントでしか開かない。
+///
+/// 持ち主が root にしか居ないことは DB の制約（`user_permissions_system_admin_scope_chk`）でも
+/// 決まっているが、そこだけに頼らない（task #762）。
+fn opens_in_tenant(code: &str, tenant_is_root: bool) -> bool {
+    code != permission::SYSTEM_ADMIN || tenant_is_root
 }
 
 /// 有効な管理トークンを提示した主体（**権限コードは問わない**）を表す extractor（ADR-0059）。
@@ -340,6 +352,9 @@ mod tests {
     fn markers_map_to_the_permission_codes_they_are_named_after() {
         assert_eq!(IdpAdmin::CODE, "idp.tenant.admin");
         assert_eq!(IdpSystemAdmin::CODE, "idp.system.admin");
+        assert!(opens_in_tenant(IdpSystemAdmin::CODE, true));
+        assert!(!opens_in_tenant(IdpSystemAdmin::CODE, false));
+        assert!(opens_in_tenant(permission::USERS_READ, false));
         assert_eq!(UsersRead::CODE, "idp.users:read");
         assert_eq!(UsersWrite::CODE, "idp.users:write");
         assert_eq!(AuditRead::CODE, "idp.audit:read");
