@@ -107,6 +107,9 @@ impl AuthenticatorStatus {
     }
 }
 
+/// OTP を送った数を数える窓（秒）。発行したコードの行は、期限が切れてもこの間は消さない（task #749）。
+pub const OTP_SEND_WINDOW_SECS: i64 = 3_600;
+
 /// 認証器の登録簿 1 行。
 #[derive(Debug, Clone)]
 pub struct UserAuthenticator {

@@ -25,7 +25,7 @@ use crate::domain::mailer::{Mailer, OutgoingEmail};
 use crate::domain::repositories::{UserAuthenticatorRepository, UserRepository};
 use crate::domain::sms::{OutgoingSms, SmsSender};
 use crate::domain::user_authenticator::{
-    AuthenticatorStatus, AuthenticatorType, UserAuthenticator,
+    AuthenticatorStatus, AuthenticatorType, UserAuthenticator, OTP_SEND_WINDOW_SECS,
 };
 use chrono::{DateTime, Duration, Utc};
 use std::collections::HashSet;
@@ -89,10 +89,10 @@ pub enum AuthenticatorManagementError {
     Internal(String),
 }
 
-/// OTP をいま送ってよいか。発行したコードの行（期限のある行。失効したものも残っている）から数える。
+/// OTP をいま送ってよいか。発行したコードの行（期限のある行）から数える。
 ///
-/// 表を増やさず数えられるのは、コードの行を消さずに失効の印を付ける作りだから。登録済みの電話番号の行には
-/// 期限が無いので数えない。
+/// 表を増やさず数えられるのは、コードの行は失効の印を付けるだけで、片付けも窓の間は消さないから
+/// （`OTP_SEND_WINDOW_SECS`）。登録済みの電話番号の行には期限が無いので数えない。
 fn may_send_otp(
     rows: &[UserAuthenticator],
     authenticator_type: AuthenticatorType,
@@ -102,7 +102,7 @@ fn may_send_otp(
         .iter()
         .filter(|r| r.authenticator_type == authenticator_type && r.expires_at.is_some())
         .map(|r| r.created_at)
-        .filter(|at| now - *at < Duration::hours(1))
+        .filter(|at| now - *at < Duration::seconds(OTP_SEND_WINDOW_SECS))
         .collect();
     sent.len() < OTP_SENDS_PER_HOUR
         && sent
