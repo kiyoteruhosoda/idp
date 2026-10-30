@@ -164,12 +164,23 @@ pub fn may_assign<S: AsRef<str>>(held: &[S], code: &str, tenant_is_root: bool) -
             && satisfies(held, TENANT_ADMIN))
 }
 
+/// [`HeldByTarget`] の権限の scope が、要求テナントから見てどこか。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetScope {
+    /// 要求テナント（root を含む）。
+    RequestedTenant,
+    /// root テナント（要求テナントは root でない）。
+    RootTenant,
+    /// 上のどちらでもない子テナント。
+    OtherTenant,
+}
+
 /// 口座の操作（パスワード・MFA の再発行、プロフィール・ログイン識別子の変更、停止・削除）の対象が
-/// 持つ権限 1 つ。`in_requested_tenant` は、その権限の scope が要求テナントか。
+/// 持つ権限 1 つ。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldByTarget {
     pub code: String,
-    pub in_requested_tenant: bool,
+    pub scope: TargetScope,
 }
 
 /// 呼び出し元の保有コード `held`（要求テナントの scope）で、`target` の権限を持つ口座を
@@ -179,8 +190,10 @@ pub struct HeldByTarget {
 /// したがって**対象の権限を全部、呼び出し元が付与できる**ときだけ許す:
 ///
 /// - 要求テナントの権限は [`may_assign`] で見る（自分が含意するか、[`ADMINS_WRITE`] の範囲か）
-/// - 他のテナントの権限（ゲストとして持つもの）は、要求テナントの scope では含意しようがないので、
+/// - 他の子テナントの権限（ゲストとして持つもの）は、要求テナントの scope では含意しようがないので、
 ///   [`ADMINS_WRITE`] の範囲（`idp.tenant.admin` まで）だけ許す
+/// - root の権限（ゲストとして持つもの）は許さない。子テナントの管理者が root の管理に届いてしまう
+///   （ADR-0070。root を管理する口座は root を所属元にする）
 /// - `idp.system.admin` の持ち主は、`idp.system.admin` の持ち主しか扱えない
 pub fn may_manage_account<S: AsRef<str>>(
     held: &[S],
@@ -190,10 +203,14 @@ pub fn may_manage_account<S: AsRef<str>>(
     target.iter().all(|t| {
         if t.code == SYSTEM_ADMIN {
             satisfies(held, SYSTEM_ADMIN)
-        } else if t.in_requested_tenant {
-            may_assign(held, &t.code, tenant_is_root)
         } else {
-            satisfies(held, ADMINS_WRITE) && implies(TENANT_ADMIN, &t.code)
+            match t.scope {
+                TargetScope::RequestedTenant => may_assign(held, &t.code, tenant_is_root),
+                TargetScope::RootTenant => false,
+                TargetScope::OtherTenant => {
+                    satisfies(held, ADMINS_WRITE) && implies(TENANT_ADMIN, &t.code)
+                }
+            }
         }
     })
 }
@@ -390,14 +407,21 @@ mod tests {
     fn here(code: &str) -> HeldByTarget {
         HeldByTarget {
             code: code.to_string(),
-            in_requested_tenant: true,
+            scope: TargetScope::RequestedTenant,
         }
     }
 
     fn elsewhere(code: &str) -> HeldByTarget {
         HeldByTarget {
             code: code.to_string(),
-            in_requested_tenant: false,
+            scope: TargetScope::OtherTenant,
+        }
+    }
+
+    fn in_root(code: &str) -> HeldByTarget {
+        HeldByTarget {
+            code: code.to_string(),
+            scope: TargetScope::RootTenant,
         }
     }
 
@@ -497,6 +521,24 @@ mod tests {
             &[here(SYSTEM_ADMIN), here(TENANT_ADMIN)],
             true
         ));
+    }
+
+    /// 子テナントの管理者は、root のゲスト管理者の口座を扱えない（task #757・ADR-0070）。
+    /// ⚠ 他の子テナントのゲストは今までどおり（所属元の管理者が口座を治める。ADR-0009 §3）。
+    #[test]
+    fn a_child_tenant_cannot_manage_a_guest_administrator_of_the_root() {
+        for held in [&[TENANT_ADMIN][..], &[USERS_WRITE, ADMINS_WRITE][..]] {
+            for code in [TENANT_ADMIN, KEYS_WRITE, USERS_READ] {
+                assert!(
+                    !may_manage_account(held, &[here(USERS_READ), in_root(code)], false),
+                    "{held:?} {code}"
+                );
+            }
+            assert!(
+                may_manage_account(held, &[here(USERS_READ), elsewhere(TENANT_ADMIN)], false),
+                "{held:?}"
+            );
+        }
     }
 
     /// テナントの設定の権限は、全体の設定へ届かない（ADR-0058 §11。付与の側の防御）。
