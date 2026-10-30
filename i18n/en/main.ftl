@@ -1134,6 +1134,7 @@ mfa-verify-code-help = Enter the code from your authenticator app, a recovery co
 mfa-verify-email-code = Email me a code instead
 mfa-verify-email-sent = We sent a code to your registered email address.
 mfa-verify-email-unavailable = Email codes are not available because email delivery is not configured. Please contact your administrator.
+mfa-verify-otp-rate-limited = A code was sent a moment ago. Please check it, or wait a little before sending another.
 
 # 外部 IdP ログイン（AP10）
 external-login-title = Sign in with your organization

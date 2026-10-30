@@ -47,6 +47,10 @@ const EMAIL_OTP_TTL_SECS: i64 = 600;
 const SMS_OTP_DIGITS: u32 = 6;
 /// SMS OTP の有効期間。email より短いのは、SMS は端末に残り続けるうえ転送もされやすいため。
 const SMS_OTP_TTL_SECS: i64 = 300;
+/// OTP を送り直せる間隔（task #749）。⚠ 送らないときは前のコードを失効させないので、届いているコードは使える。
+const OTP_RESEND_INTERVAL_SECS: i64 = 30;
+/// 1 人に 1 時間で送れる OTP の数（種別ごと）。パスワードを知っている人が SMS の料金やメールで人を押せないように。
+const OTP_SENDS_PER_HOUR: usize = 10;
 /// 電話番号の登録確認コードの有効期間。入力までに手間取る前提で OTP より長くする。
 const PHONE_CONFIRMATION_TTL_SECS: i64 = 900;
 
@@ -78,8 +82,32 @@ pub enum AuthenticatorManagementError {
     /// 電話番号として読めない入力（AP13）。
     #[error("invalid phone number")]
     InvalidPhoneNumber,
+    /// OTP の送り直しが早すぎる・多すぎる（task #749）。前のコードは有効なまま。
+    #[error("otp was sent too recently or too often")]
+    OtpRateLimited,
     #[error("internal error: {0}")]
     Internal(String),
+}
+
+/// OTP をいま送ってよいか。発行したコードの行（期限のある行。失効したものも残っている）から数える。
+///
+/// 表を増やさず数えられるのは、コードの行を消さずに失効の印を付ける作りだから。登録済みの電話番号の行には
+/// 期限が無いので数えない。
+fn may_send_otp(
+    rows: &[UserAuthenticator],
+    authenticator_type: AuthenticatorType,
+    now: DateTime<Utc>,
+) -> bool {
+    let sent: Vec<DateTime<Utc>> = rows
+        .iter()
+        .filter(|r| r.authenticator_type == authenticator_type && r.expires_at.is_some())
+        .map(|r| r.created_at)
+        .filter(|at| now - *at < Duration::hours(1))
+        .collect();
+    sent.len() < OTP_SENDS_PER_HOUR
+        && sent
+            .iter()
+            .all(|at| now - *at >= Duration::seconds(OTP_RESEND_INTERVAL_SECS))
 }
 
 /// リポジトリ由来のエラーを内部エラーへ畳む（呼び出し側へ DB の事情を漏らさない）。
@@ -348,6 +376,8 @@ impl AuthenticatorManagementService {
             .ok_or(AuthenticatorManagementError::MailUnavailable)?;
 
         let now = self.clock.now();
+        self.ensure_may_send_otp(user_id, AuthenticatorType::EmailOtp, now)
+            .await?;
         // 前のコードは必ず失効させる。同時に複数のコードが有効だと、総当たりの成功率が本数倍になる。
         self.authenticators
             .revoke_all_of_type(user_id, AuthenticatorType::EmailOtp, now)
@@ -538,6 +568,8 @@ impl AuthenticatorManagementService {
             .ok_or(AuthenticatorManagementError::PhoneNotRegistered)?;
 
         let now = self.clock.now();
+        self.ensure_may_send_otp(user_id, AuthenticatorType::SmsOtp, now)
+            .await?;
         // 前のコードだけを失効させる。`revoke_all_of_type` を使うと登録済みの電話番号まで
         // 消えて、次回から送れなくなる。
         self.authenticators
@@ -585,6 +617,25 @@ impl AuthenticatorManagementService {
         )
         .await
         .map_err(internal)
+    }
+
+    /// OTP の送り直しの間隔と回数を見る（task #749）。⚠ 前のコードを失効させる前に呼ぶ。
+    async fn ensure_may_send_otp(
+        &self,
+        user_id: Uuid,
+        authenticator_type: AuthenticatorType,
+        now: DateTime<Utc>,
+    ) -> Result<(), AuthenticatorManagementError> {
+        let rows = self
+            .authenticators
+            .list_for_user(user_id)
+            .await
+            .map_err(internal)?;
+        if may_send_otp(&rows, authenticator_type, now) {
+            Ok(())
+        } else {
+            Err(AuthenticatorManagementError::OtpRateLimited)
+        }
     }
 
     /// 送信可能な SMS ゲートウェイ設定。未設定なら `SmsUnavailable`。
@@ -1018,6 +1069,56 @@ mod tests {
             created_at: at,
             updated_at: at,
         }
+    }
+
+    fn issued(
+        authenticator_type: AuthenticatorType,
+        seconds_ago: i64,
+        now: DateTime<Utc>,
+    ) -> UserAuthenticator {
+        let mut r = row(authenticator_type, AuthenticatorStatus::Revoked, None);
+        r.created_at = now - Duration::seconds(seconds_ago);
+        r.expires_at = Some(r.created_at + Duration::seconds(300));
+        r
+    }
+
+    /// 送り直しは 30 秒あける。種別が違えば数えない。
+    #[test]
+    fn otp_cannot_be_sent_again_too_soon() {
+        let now = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+        let email = AuthenticatorType::EmailOtp;
+        assert!(may_send_otp(&[], email, now));
+        assert!(!may_send_otp(&[issued(email, 29, now)], email, now));
+        assert!(may_send_otp(&[issued(email, 30, now)], email, now));
+        assert!(may_send_otp(
+            &[issued(AuthenticatorType::SmsOtp, 1, now)],
+            email,
+            now
+        ));
+    }
+
+    /// 1 時間に 10 通まで。1 時間より前の分は数えない。
+    #[test]
+    fn otp_sends_per_hour_are_limited() {
+        let now = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+        let sms = AuthenticatorType::SmsOtp;
+        let nine: Vec<_> = (1..=9).map(|n| issued(sms, n * 60, now)).collect();
+        assert!(may_send_otp(&nine, sms, now));
+        let mut ten = nine.clone();
+        ten.push(issued(sms, 3000, now));
+        assert!(!may_send_otp(&ten, sms, now));
+        let mut old = nine;
+        old.push(issued(sms, 3600, now));
+        assert!(may_send_otp(&old, sms, now));
+    }
+
+    /// 登録済みの電話番号の行（期限なし）は送った数に入れない。
+    #[test]
+    fn a_registered_phone_is_not_counted_as_a_send() {
+        let now = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+        let mut phone = row(AuthenticatorType::SmsOtp, AuthenticatorStatus::Active, None);
+        phone.created_at = now;
+        assert!(may_send_otp(&[phone], AuthenticatorType::SmsOtp, now));
     }
 
     /// 一時停止・失効させた TOTP は認証に使わせない。秘密を引く経路は「失効していない行」を
