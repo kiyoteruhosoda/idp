@@ -15,7 +15,8 @@
 
 use crate::domain::permission::{self, HeldByTarget, TargetScope};
 use crate::domain::repositories::{
-    ClientPermissionRepository, ClientRepository, TenantRepository, UserPermissionRepository, UserRepository,
+    ClientPermissionRepository, ClientRepository, TenantRepository, UserPermissionRepository,
+    UserRepository,
 };
 use crate::domain::tenant_context::TenantContext;
 use std::sync::Arc;
