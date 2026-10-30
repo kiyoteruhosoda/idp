@@ -430,3 +430,113 @@ async fn admins_write_lets_the_break_glass_machine_keep_working() {
         "root-only code beyond tenant admin"
     );
 }
+
+/// 指定のテナントの ACTIVE なゲストにし、そのテナントの権限を付ける（本番の口座と同じ形を DB で作る）。
+async fn make_guest_with(env: &TestEnv, user_id: &str, tenant_id: &str, code: &str) {
+    sqlx::query(
+        "INSERT INTO tenant_memberships (tenant_id, user_id, membership_type, status) \
+         VALUES (?, ?, 'GUEST', 'ACTIVE')",
+    )
+    .bind(tenant_id)
+    .bind(user_id)
+    .execute(&env.pool)
+    .await
+    .expect("insert guest membership");
+    sqlx::query(
+        "INSERT INTO user_permissions (user_id, permission_code, tenant_id) VALUES (?, ?, ?)",
+    )
+    .bind(user_id)
+    .bind(code)
+    .bind(tenant_id)
+    .execute(&env.pool)
+    .await
+    .expect("insert guest permission");
+}
+
+/// root の管理者がテナントを作り、その ID を返す（作成者はそのテナントの管理者になる）。
+async fn create_child_tenant(env: &TestEnv, root_tok: &str) -> String {
+    let res = send(
+        &env.app,
+        post(
+            root_tok,
+            &format!("/{}/admin/tenants", env.root_tenant_id),
+            json!({ "name": format!("child-{}", support::unique()) }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED, "create child tenant");
+    body_json(res).await["id"]
+        .as_str()
+        .expect("tenant id")
+        .to_string()
+}
+
+/// 子テナントの管理者は、root のゲスト管理者の口座を扱えない（task #757・ADR-0070）。
+///
+/// 口座を作り直せば root の管理に届くので、所属元の管理者でも断る。⚠ 他の子テナントのゲスト管理者は
+/// 今までどおり所属元の管理者が扱える（ADR-0009 §3）。root を所属元にすれば root の機械が扱える
+/// （break-glass の形）。
+#[tokio::test]
+async fn a_child_tenant_cannot_take_over_a_guest_administrator_of_the_root() {
+    let Some(env) = support::setup("admin escalation root guest").await else {
+        return;
+    };
+    let root_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+    let child = create_child_tenant(&env, &root_tok).await;
+    let other_child = create_child_tenant(&env, &root_tok).await;
+    let child_tok = admin_token(&env.app, &env.pool, &child, &env.root_admin_id).await;
+    let child_uri = |user: &str, rest: &str| format!("/{child}/admin/users/{user}{rest}");
+
+    let root_guest = support::create_plain_user(&env.pool, &child).await;
+    make_guest_with(&env, &root_guest, &env.root_tenant_id, "idp.tenant.admin").await;
+    for request in [
+        post_empty(&child_tok, &child_uri(&root_guest, "/password-reset")),
+        post_empty(&child_tok, &child_uri(&root_guest, "/mfa-reset")),
+        patch(
+            &child_tok,
+            &child_uri(&root_guest, "/profile"),
+            json!({ "email": format!("taken-{}@example.com", support::unique()) }),
+        ),
+        patch(
+            &child_tok,
+            &child_uri(&root_guest, ""),
+            json!({ "status": "DISABLED" }),
+        ),
+        delete(&child_tok, &child_uri(&root_guest, "")),
+    ] {
+        let uri = request.uri().to_string();
+        let res = send(&env.app, request).await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "{uri}");
+    }
+
+    // 他の子テナントのゲスト管理者は、今までどおり所属元の管理者が扱える。
+    let child_guest = support::create_plain_user(&env.pool, &child).await;
+    make_guest_with(&env, &child_guest, &other_child, "idp.tenant.admin").await;
+    let res = send(
+        &env.app,
+        post_empty(&child_tok, &child_uri(&child_guest, "/password-reset")),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK, "guest of another child");
+
+    // root を所属元にした非常用口座は、子テナントのゲスト管理者を兼ねても root の機械が扱える。
+    let (_, breakglass) = machine(
+        &env,
+        &root_tok,
+        &[
+            "idp.users:write",
+            "idp.permissions:write",
+            "idp.admins:write",
+        ],
+    )
+    .await;
+    let account = support::create_plain_user(&env.pool, &env.root_tenant_id).await;
+    grant_user(&env, &root_tok, &account, "idp.tenant.admin").await;
+    make_guest_with(&env, &account, &child, "idp.tenant.admin").await;
+    let res = send(
+        &env.app,
+        post_empty(&breakglass, &users_uri(&env, &account, "/password-reset")),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK, "break-glass homed in root");
+}

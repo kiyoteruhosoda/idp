@@ -13,9 +13,9 @@
 //! [`permission::may_assign`] / [`permission::may_manage_account`] が単一の出所である。
 //! 呼び出し元の保有コードは管理トークンの `perms`（`RequirePerms` の判定と同じ材料）を使う。
 
-use crate::domain::permission::{self, HeldByTarget};
+use crate::domain::permission::{self, HeldByTarget, TargetScope};
 use crate::domain::repositories::{
-    ClientPermissionRepository, ClientRepository, UserPermissionRepository, UserRepository,
+    ClientPermissionRepository, ClientRepository, TenantRepository, UserPermissionRepository, UserRepository,
 };
 use crate::domain::tenant_context::TenantContext;
 use std::sync::Arc;
@@ -35,6 +35,7 @@ pub struct AdminAccountGuard {
     permissions: Arc<dyn UserPermissionRepository>,
     clients: Arc<dyn ClientRepository>,
     client_permissions: Arc<dyn ClientPermissionRepository>,
+    tenants: Arc<dyn TenantRepository>,
 }
 
 impl AdminAccountGuard {
@@ -43,12 +44,14 @@ impl AdminAccountGuard {
         permissions: Arc<dyn UserPermissionRepository>,
         clients: Arc<dyn ClientRepository>,
         client_permissions: Arc<dyn ClientPermissionRepository>,
+        tenants: Arc<dyn TenantRepository>,
     ) -> Self {
         Self {
             users,
             permissions,
             clients,
             client_permissions,
+            tenants,
         }
     }
 
@@ -93,15 +96,30 @@ impl AdminAccountGuard {
             Some(user) if user.tenant_id == tenant.tenant_id() => {}
             _ => return Ok(()),
         }
-        let held_by_target: Vec<HeldByTarget> = self
+        let scoped_codes = self
             .permissions
             .list_scoped_codes_for_user(target)
             .await
+            .map_err(|e| AdminAccountGuardError::Internal(e.to_string()))?;
+        // root の権限を持つゲストを見分ける（ADR-0070）。見分けが付かないときは操作させない。
+        let root = self
+            .tenants
+            .find_root()
+            .await
             .map_err(|e| AdminAccountGuardError::Internal(e.to_string()))?
+            .ok_or_else(|| AdminAccountGuardError::Internal("root tenant not found".to_string()))?
+            .id;
+        let held_by_target: Vec<HeldByTarget> = scoped_codes
             .into_iter()
             .map(|(scope, code)| HeldByTarget {
                 code,
-                in_requested_tenant: scope == tenant.tenant_id(),
+                scope: if scope == tenant.tenant_id() {
+                    TargetScope::RequestedTenant
+                } else if scope == root {
+                    TargetScope::RootTenant
+                } else {
+                    TargetScope::OtherTenant
+                },
             })
             .collect();
         self.decide(held, &held_by_target, tenant_is_root)
@@ -137,7 +155,7 @@ impl AdminAccountGuard {
             .into_iter()
             .map(|code| HeldByTarget {
                 code,
-                in_requested_tenant: true,
+                scope: TargetScope::RequestedTenant,
             })
             .collect();
         self.decide(held, &held_by_target, tenant_is_root)
@@ -160,7 +178,7 @@ impl AdminAccountGuard {
             .into_iter()
             .map(|code| HeldByTarget {
                 code,
-                in_requested_tenant: true,
+                scope: TargetScope::RequestedTenant,
             })
             .collect();
         self.decide(held, &held_by_target, tenant_is_root)
