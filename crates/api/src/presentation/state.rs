@@ -828,6 +828,7 @@ impl AppState {
             clients.clone(),
             client_permissions.clone(),
             tenants.clone(),
+            applications.clone(),
         ));
         // 認証ポリシーの管理（CRUD）。評価用のリポジトリ（login / passkey_authentication）と同一実装を共有する。
         let authentication_policies_admin = Arc::new(AuthenticationPolicyManagementService::new(
