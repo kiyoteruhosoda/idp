@@ -1,3 +1,7 @@
+## 2026-10-30（system 管理の口を root テナントに限る・task #762）
+
+- `idp.system.admin` を求める口は、DB の制約だけに頼らず、root テナント以外では 403 で断る。
+
 ## 2026-10-29（nginx: server_tokens off）
 
 - **前段 nginx の `Server` ヘッダとエラーページから nginx のバージョンを落とした**（`server_tokens off`）。
