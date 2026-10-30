@@ -258,6 +258,20 @@ async fn a_child_tenant_machine_sets_only_its_own_mail_route() {
     let updated = body_json(res).await;
     assert_eq!(updated["inherited"], json!(false));
     assert_eq!(updated["smtp_host"], json!(host));
+
+    // 宅内・ループバックを指す宛先は保存で断る（task #740）。
+    for internal in ["mariadb", "10.10.2.11", "127.0.0.1", "169.254.169.254"] {
+        let res = send(
+            &env.app,
+            put(
+                &machine_tok,
+                &own_uri,
+                json!({ "smtp_host": internal, "smtp_from_address": "noreply@tenant.example" }),
+            ),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{internal}");
+    }
     assert_eq!(updated["smtp_password_set"], json!(true));
     assert!(
         updated.get("smtp_password").is_none(),

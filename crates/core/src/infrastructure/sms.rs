@@ -17,8 +17,9 @@
 //! （`sms_otp.sent`）で追う。
 
 use crate::domain::error::{DomainError, Result};
-use crate::domain::outbound_uri::is_internal_destination;
+use crate::domain::outbound_uri::{is_internal_destination, OutboundTrust};
 use crate::domain::sms::{OutgoingSms, SmsGatewayConfig, SmsSender};
+use crate::infrastructure::outbound_http::guarded_client_builder;
 use async_trait::async_trait;
 use std::time::Duration;
 
@@ -31,9 +32,17 @@ pub struct HttpSmsGateway {
 
 impl HttpSmsGateway {
     pub fn new() -> Self {
+        Self::with_trust(OutboundTrust::none())
+    }
+
+    /// 名前を引いた結果が内部の住所でも送ってよい名前を指定して作る（task #740）。
+    pub fn with_trust(trust: OutboundTrust) -> Self {
         Self {
-            client: reqwest::Client::builder()
+            // 繋ぐ直前に引いた住所を確かめる（内部なら送らない。`outbound_http`）。
+            client: guarded_client_builder(trust)
                 .timeout(REQUEST_TIMEOUT)
+                // リダイレクトは追わない。設定した URL 以外へ宛先とワンタイムコードを渡さないため。
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 // 既定の TLS backend（rustls）で失敗する構成はビルド設定の誤りで、
                 // 実行時の入力では起きない。
@@ -89,5 +98,81 @@ impl SmsSender for HttpSmsGateway {
             )));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    fn gateway(url: String) -> SmsGatewayConfig {
+        SmsGatewayConfig {
+            endpoint_url: url,
+            auth_header: String::new(),
+            auth_token: String::new(),
+            sender_id: String::new(),
+        }
+    }
+
+    fn sms() -> OutgoingSms {
+        OutgoingSms {
+            to: "+819012345678".to_string(),
+            body_text: "code".to_string(),
+        }
+    }
+
+    /// 引いた先が内部の名前には繋がない（`localhost` は字面でも断るので、クライアントを直に確かめる）。
+    #[tokio::test]
+    async fn the_client_refuses_a_name_that_resolves_inside() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let sender = HttpSmsGateway::new();
+        let result = sender
+            .client
+            .post(format!("http://localhost:{port}/"))
+            .send()
+            .await;
+        assert!(result.is_err());
+    }
+
+    /// リダイレクトを追わない（追う先へ宛先とコードを渡さない）。
+    #[tokio::test]
+    async fn the_client_does_not_follow_redirects() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut buffer = [0u8; 1024];
+            let _ = socket.read(&mut buffer).await;
+            socket
+                .write_all(
+                    b"HTTP/1.1 302 Found\r\nLocation: http://localhost:1/next\r\n\
+                      Content-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+        let sender = HttpSmsGateway::with_trust(OutboundTrust::parse("localhost"));
+        let response = sender
+            .client
+            .post(format!("http://localhost:{port}/"))
+            .send()
+            .await
+            .expect("the first response comes back");
+        assert_eq!(response.status(), reqwest::StatusCode::FOUND);
+        server.await.expect("server task");
+    }
+
+    /// 字面で内部と分かる URL は、信用する名前の指定があっても送らない。
+    #[tokio::test]
+    async fn an_internal_url_is_refused() {
+        let sender = HttpSmsGateway::with_trust(OutboundTrust::parse("localhost"));
+        let err = sender
+            .send(&gateway("http://localhost:1/".to_string()), &sms())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("internal destination"), "{err}");
     }
 }

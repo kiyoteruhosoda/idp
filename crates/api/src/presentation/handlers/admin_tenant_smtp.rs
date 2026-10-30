@@ -10,11 +10,13 @@
 //! パスワードは暗号化して保存し、**平文を返さない**（設定の有無だけ）。
 
 use crate::application::system_settings::TenantSmtpView;
+use crate::domain::error::DomainError;
 use crate::domain::system_setting::UpdateSmtpCommand;
 use crate::presentation::admin::{RequirePerms, SmtpRead, SmtpWrite};
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::dto::{TenantSmtpSettingsResponse, UpdateSmtpSettingsRequest};
 use crate::presentation::error::ApiError;
+use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::handlers::request_context;
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
@@ -58,6 +60,7 @@ pub async fn get_tenant_smtp(
     request_body = UpdateSmtpSettingsRequest,
     responses(
         (status = 200, description = "更新後のテナントの SMTP 設定", body = TenantSmtpSettingsResponse),
+        (status = 400, description = "宛先が宅内・ループバック・リンクローカルを指している"),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限不足（idp.smtp:write 必須）"),
     ),
@@ -68,6 +71,7 @@ pub async fn update_tenant_smtp(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<ResolvedTenant>,
+    locale: ApiLocale,
     headers: HeaderMap,
     Json(body): Json<UpdateSmtpSettingsRequest>,
 ) -> Result<Json<TenantSmtpSettingsResponse>, ApiError> {
@@ -92,7 +96,12 @@ pub async fn update_tenant_smtp(
             &ctx,
         )
         .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+        .map_err(|e| match e {
+            DomainError::InvalidValue(_) => {
+                ApiError::BadRequest(ApiMessages::new(locale).get("api-smtp-host-internal"))
+            }
+            other => ApiError::Internal(other.to_string()),
+        })?;
     Ok(Json(to_response(view)))
 }
 
