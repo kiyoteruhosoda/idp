@@ -131,7 +131,7 @@ whoami は `idp.tenant.admin`（`RequirePerms<IdpAdmin>`）を要求する唯一
 | `idp.members:read` | `GET /admin/members`、`GET /admin/members/{user_id}` | アカウント（人の一覧・詳細） |
 | `idp.members:write` | `DELETE`・`PATCH /admin/members/{user_id}`、`PUT …/note`、`POST /admin/invitations` | アカウント（人）の一時停止・再開・解除・管理者メモ、招待 |
 | `idp.clients:read` | `GET /admin/clients`・`…/status`・`…/{client_id}`、`GET …/{client_id}/permissions`、`GET /admin/service-accounts/{client_id}` | クライアント、アカウント（サービスアカウント）、状況 |
-| `idp.clients:write` | `POST /admin/clients`、`PATCH`・`DELETE /admin/clients/{client_id}`、`…/secret`、`POST`・`DELETE …/{client_id}/permissions…`、`PUT /admin/service-accounts/{client_id}/note` | クライアントの登録・編集・削除・シークレット再発行・権限の付与と剥奪、サービスアカウントの作成・管理者メモ |
+| `idp.clients:write` | `POST /admin/clients`、`PATCH`・`DELETE /admin/clients/{client_id}`、`…/secret`、`POST`・`DELETE …/{client_id}/permissions…`、`PUT /admin/service-accounts/{client_id}/note` | クライアントの登録・編集・削除・シークレット再発行・権限の付与と剥奪、サービスアカウントの作成・管理者メモ。⚠ 編集・削除・シークレット再発行は、対象のクライアントが持つ権限を自分が付与できるときだけ（task #756） |
 | `idp.applications:read` | `GET /admin/applications`・`…/{application_id}`・`…/current-users`・`…/binding-candidates`、`GET /admin/members/{user_id}/applications`、`GET /admin/service-accounts/{client_id}/applications` | アプリ、アカウントの詳細の「使えるアプリ」 |
 | `idp.applications:write` | `POST /admin/applications`、`PUT`・`DELETE …/{application_id}`、`…/bindings…`、`…/assignments…` | アプリの登録・編集・削除・名乗り、人・サービスアカウントの割り当てと解除 |
 | `idp.permissions:read` | `GET /admin/permissions`、`GET /admin/users/{user_id}/permissions` | 利用者の権限 |
