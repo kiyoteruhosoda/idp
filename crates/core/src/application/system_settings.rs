@@ -13,7 +13,8 @@ use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
 use crate::domain::error::{DomainError, Result};
-use crate::domain::mailer::SmtpServerConfig;
+use crate::domain::mailer::{SmtpRoute, SmtpServerConfig};
+use crate::domain::outbound_uri::is_internal_host;
 use crate::domain::repositories::{SystemSettingsRepository, TenantSettingsRepository};
 use crate::domain::sms::SmsGatewayConfig;
 use crate::domain::system_setting::{
@@ -115,9 +116,9 @@ impl SystemSettingsService {
     pub async fn smtp_server_for(&self, tenant_id: TenantId) -> Result<Option<SmtpServerConfig>> {
         let tenant = self.tenant_smtp_map(tenant_id).await?;
         if defines_own_route(&tenant) {
-            return self.smtp_server_from(&tenant);
+            return self.smtp_server_from(&tenant, SmtpRoute::Tenant);
         }
-        self.smtp_server_from(&self.load_map().await?)
+        self.smtp_server_from(&self.load_map().await?, SmtpRoute::WholeIdp)
     }
 
     /// テナントの SMTP 設定を返す（パスワードは設定の有無だけ）。
@@ -147,6 +148,12 @@ impl SystemSettingsService {
         ctx: &RequestContext,
     ) -> Result<TenantSmtpView> {
         let tenant_id = tenant.tenant_id();
+        // 字面で内部と分かる宛先はここで断る。引いた先は送るときに確かめる（task #740）。
+        if !cmd.host.trim().is_empty() && is_internal_host(&cmd.host) {
+            return Err(DomainError::InvalidValue(
+                "smtp host must not point at an internal destination".to_string(),
+            ));
+        }
         let keeps_password = match &cmd.password {
             None => self
                 .tenant_smtp_map(tenant_id)
@@ -249,7 +256,11 @@ impl SystemSettingsService {
     }
 
     /// 保存形式の塊から SMTP 接続情報を組み立てる。`host` か `from_address` が空なら `None`。
-    fn smtp_server_from(&self, map: &HashMap<String, String>) -> Result<Option<SmtpServerConfig>> {
+    fn smtp_server_from(
+        &self,
+        map: &HashMap<String, String>,
+        route: SmtpRoute,
+    ) -> Result<Option<SmtpServerConfig>> {
         let host = map.get(SMTP_HOST).cloned().unwrap_or_default();
         let from_address = map.get(SMTP_FROM_ADDRESS).cloned().unwrap_or_default();
         if host.is_empty() || from_address.is_empty() {
@@ -271,6 +282,7 @@ impl SystemSettingsService {
             password,
             from_address,
             use_tls: map.get(SMTP_USE_TLS).map(|v| v == "true").unwrap_or(false),
+            route,
         }))
     }
 
@@ -703,6 +715,56 @@ mod tests {
         assert_eq!(server.host, "smtp.tenant.example");
         assert_eq!(server.password, "tenant-secret");
         assert_eq!(server.from_address, "noreply@tenant.example");
+    }
+
+    /// テナントの経路の宛先は、字面で内部と分かれば保存で断る（task #740）。
+    #[tokio::test]
+    async fn a_tenant_route_to_an_internal_host_is_refused_on_save() {
+        let f = fixture().await;
+        let t = tenant();
+        for host in [
+            "mariadb",
+            "10.10.2.11",
+            "127.0.0.1",
+            "169.254.169.254",
+            "a.svc",
+            "localhost",
+        ] {
+            let refused = f
+                .service
+                .update_tenant_smtp(
+                    TenantContext::new(t),
+                    command(host, Some("secret")),
+                    &actor(),
+                    &request(),
+                )
+                .await;
+            assert!(
+                matches!(refused, Err(DomainError::InvalidValue(_))),
+                "{host}"
+            );
+        }
+        assert!(f.service.get_tenant_smtp(t).await.unwrap().inherited);
+    }
+
+    /// 経路の区別が送信へ届く（テナントの経路だけ送る前に宛先を確かめる）。
+    #[tokio::test]
+    async fn the_route_tells_where_the_config_came_from() {
+        let f = fixture().await;
+        let t = tenant();
+        let whole = f.service.smtp_server_for(t).await.unwrap().unwrap();
+        assert_eq!(whole.route, SmtpRoute::WholeIdp);
+        f.service
+            .update_tenant_smtp(
+                TenantContext::new(t),
+                command("smtp.tenant.example", Some("tenant-secret")),
+                &actor(),
+                &request(),
+            )
+            .await
+            .unwrap();
+        let own = f.service.smtp_server_for(t).await.unwrap().unwrap();
+        assert_eq!(own.route, SmtpRoute::Tenant);
     }
 
     /// ⚠ いちばん大事な試験。テナントが `host` だけを持ち、パスワードを未設定にしても、

@@ -7,6 +7,15 @@
 use crate::domain::error::Result;
 use async_trait::async_trait;
 
+/// その接続情報がどの経路のものか（ADR-0058 §8）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmtpRoute {
+    /// 全体の経路。root だけが決める。
+    WholeIdp,
+    /// テナントの経路。テナントの管理者が決めるので、送る前に宛先を確かめる（task #740）。
+    Tenant,
+}
+
 /// SMTP 接続情報（配送時に使う実体。パスワードは復号済みの平文）。
 ///
 /// `Debug` を意図的に実装しない（`{:?}` 経由でパスワードがログへ漏れることを型で防ぐ）。
@@ -21,6 +30,7 @@ pub struct SmtpServerConfig {
     /// 差出人アドレス（`From`）。
     pub from_address: String,
     pub use_tls: bool,
+    pub route: SmtpRoute,
 }
 
 /// 送信するメール 1 通（プレーンテキストのみ。HTML メールは扱わない）。
