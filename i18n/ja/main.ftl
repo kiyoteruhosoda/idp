@@ -1134,6 +1134,7 @@ mfa-verify-code-help = 認証アプリのコード、リカバリーコード、
 mfa-verify-email-code = 代わりにメールでコードを受け取る
 mfa-verify-email-sent = 登録済みのメールアドレスへコードを送信しました。
 mfa-verify-email-unavailable = メール送信が設定されていないため、メールのコードは利用できません。管理者にお問い合わせください。
+mfa-verify-otp-rate-limited = 少し前にコードを送りました。届いたコードを使うか、少し待ってからもう一度送ってください。
 
 # 外部 IdP ログイン（AP10）
 external-login-title = 組織のアカウントでログイン

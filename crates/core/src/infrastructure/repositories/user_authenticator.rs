@@ -3,7 +3,7 @@
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::UserAuthenticatorRepository;
 use crate::domain::user_authenticator::{
-    AuthenticatorStatus, AuthenticatorType, UserAuthenticator,
+    AuthenticatorStatus, AuthenticatorType, UserAuthenticator, OTP_SEND_WINDOW_SECS,
 };
 use crate::infrastructure::db::Db;
 use async_trait::async_trait;
@@ -337,10 +337,13 @@ impl UserAuthenticatorRepository for SqlxUserAuthenticatorRepository {
     async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64> {
         // 期限を持つのは使い捨てのコードだけ。TOTP・WebAuthn の行は `expires_at IS NULL` なので
         // この条件には掛からない（登録簿ごと消えてしまわない）。
+        // ⚠ 期限が切れても窓の間は残す。OTP を送った数はこの行から数える（task #749）。
+        //   期限切れのコードが使えないのは、照合の側が `expires_at` を見ているから。
+        let keep_until = now - chrono::Duration::seconds(OTP_SEND_WINDOW_SECS);
         let result = sqlx::query(
             "DELETE FROM user_authenticators WHERE expires_at IS NOT NULL AND expires_at <= ?",
         )
-        .bind(now.naive_utc())
+        .bind(keep_until.naive_utc())
         .execute(&self.pool)
         .await
         .map_err(repo_err)?;

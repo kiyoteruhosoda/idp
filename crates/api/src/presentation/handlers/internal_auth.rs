@@ -1269,6 +1269,9 @@ pub async fn account_sms_otp(
             Err(AuthenticatorManagementError::PhoneNotRegistered) => {
                 InternalSmsOtpResponse::NotRegistered
             }
+            Err(AuthenticatorManagementError::OtpRateLimited) => {
+                InternalSmsOtpResponse::RateLimited
+            }
             Err(e) => {
                 tracing::error!(error = %e, "sms otp send failed");
                 InternalSmsOtpResponse::Internal
@@ -1489,6 +1492,9 @@ pub async fn account_email_otp(
             Ok(()) => InternalEmailOtpResponse::Sent,
             Err(AuthenticatorManagementError::MailUnavailable) => {
                 InternalEmailOtpResponse::Unavailable
+            }
+            Err(AuthenticatorManagementError::OtpRateLimited) => {
+                InternalEmailOtpResponse::RateLimited
             }
             Err(e) => {
                 tracing::error!(error = %e, "email otp delivery failed");

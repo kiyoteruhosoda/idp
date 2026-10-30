@@ -536,6 +536,7 @@ fn verify_banner_key(value: Option<&str>) -> Option<&'static str> {
         Some("sms-sent") => Some("mfa-verify-sms-sent"),
         Some("sms-unavailable") => Some("mfa-verify-sms-unavailable"),
         Some("sms-not-registered") => Some("mfa-verify-sms-not-registered"),
+        Some("otp-rate-limited") => Some("mfa-verify-otp-rate-limited"),
         Some("session") => Some("mfa-error-session-expired"),
         other => form_retry_error_key(other),
     }
@@ -605,6 +606,7 @@ pub async fn send_email_code(
     {
         Ok(assay_contracts::auth::InternalEmailOtpResponse::Sent) => "email-sent",
         Ok(assay_contracts::auth::InternalEmailOtpResponse::Unavailable) => "email-unavailable",
+        Ok(assay_contracts::auth::InternalEmailOtpResponse::RateLimited) => "otp-rate-limited",
         Ok(assay_contracts::auth::InternalEmailOtpResponse::SessionExpired) => "session",
         Ok(assay_contracts::auth::InternalEmailOtpResponse::Internal) => {
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -662,6 +664,7 @@ pub async fn send_sms_code(
         Ok(assay_contracts::auth::InternalSmsOtpResponse::Sent) => "sms-sent",
         Ok(assay_contracts::auth::InternalSmsOtpResponse::Unavailable) => "sms-unavailable",
         Ok(assay_contracts::auth::InternalSmsOtpResponse::NotRegistered) => "sms-not-registered",
+        Ok(assay_contracts::auth::InternalSmsOtpResponse::RateLimited) => "otp-rate-limited",
         Ok(assay_contracts::auth::InternalSmsOtpResponse::SessionExpired) => "session",
         Ok(assay_contracts::auth::InternalSmsOtpResponse::Internal) => {
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();

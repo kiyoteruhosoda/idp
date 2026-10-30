@@ -1895,6 +1895,8 @@ pub enum InternalEmailOtpResponse {
     Sent,
     /// SMTP が未設定でメールを送れない。
     Unavailable,
+    /// 送り直しが早すぎる・多すぎる（前のコードは有効なまま）。
+    RateLimited,
     /// MFA 待ちの状態ではない（セッション・チケットが無効）。
     SessionExpired,
     Internal,
@@ -1929,6 +1931,8 @@ pub enum InternalSmsOtpResponse {
     Unavailable,
     /// 送信先の電話番号が未登録・未確認。
     NotRegistered,
+    /// 送り直しが早すぎる・多すぎる（前のコードは有効なまま）。
+    RateLimited,
     /// MFA 待ちの状態ではない（セッション・チケットが無効）。
     SessionExpired,
     Internal,
