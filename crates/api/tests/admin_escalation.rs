@@ -307,7 +307,11 @@ async fn clients_writer_cannot_take_over_a_stronger_client() {
     assert_eq!(granted.status(), StatusCode::OK);
     let strong_uri = format!("/{}/admin/clients/{strong}", env.root_tenant_id);
 
-    let rotate = send(&env.app, post_empty(&writer, &format!("{strong_uri}/secret"))).await;
+    let rotate = send(
+        &env.app,
+        post_empty(&writer, &format!("{strong_uri}/secret")),
+    )
+    .await;
     assert_eq!(rotate.status(), StatusCode::FORBIDDEN, "rotate the secret");
     let swap_key = send(
         &env.app,
@@ -328,19 +332,34 @@ async fn clients_writer_cannot_take_over_a_stronger_client() {
     // 権限の無いクライアントは今までどおり
     let (plain, _) = support::insert_m2m_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
     let plain_uri = format!("/{}/admin/clients/{plain}", env.root_tenant_id);
-    let rotate = send(&env.app, post_empty(&writer, &format!("{plain_uri}/secret"))).await;
+    let rotate = send(
+        &env.app,
+        post_empty(&writer, &format!("{plain_uri}/secret")),
+    )
+    .await;
     assert_eq!(rotate.status(), StatusCode::OK, "rotate a plain client");
 
     // 同じ権限を持つ者（ここでは管理者）は扱える
-    let rotate = send(&env.app, post_empty(&root_tok, &format!("{strong_uri}/secret"))).await;
-    assert_eq!(rotate.status(), StatusCode::OK, "the administrator can still rotate");
+    let rotate = send(
+        &env.app,
+        post_empty(&root_tok, &format!("{strong_uri}/secret")),
+    )
+    .await;
+    assert_eq!(
+        rotate.status(),
+        StatusCode::OK,
+        "the administrator can still rotate"
+    );
 
     // 他のテナントや無いクライアントは 404 のまま（居るかどうかを 403 で教えない）
     let missing = send(
         &env.app,
         post_empty(
             &writer,
-            &format!("/{}/admin/clients/no-such-client/secret", env.root_tenant_id),
+            &format!(
+                "/{}/admin/clients/no-such-client/secret",
+                env.root_tenant_id
+            ),
         ),
     )
     .await;
