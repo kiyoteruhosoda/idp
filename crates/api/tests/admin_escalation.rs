@@ -281,6 +281,72 @@ async fn clients_writer_cannot_grant_a_client_what_it_does_not_hold() {
     assert_eq!(res.status(), StatusCode::OK, "grant a code it implies");
 }
 
+/// `idp.clients:write` だけでは、自分の持たない権限を持つクライアントを乗っ取れない（task #756）。
+///
+/// 秘密を作り直す・公開鍵を差し替える・認証方式を変えれば、そのクライアントの権限を行使できる。
+/// 消すのも同じ判定（口座の削除と揃える）。⚠ 権限の無いクライアントは今までどおり扱える。
+#[tokio::test]
+async fn clients_writer_cannot_take_over_a_stronger_client() {
+    let Some(env) = support::setup("admin escalation client takeover").await else {
+        return;
+    };
+    let root_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
+    let (_, writer) = machine(&env, &root_tok, &["idp.clients:write"]).await;
+
+    // 自分の持たない権限を持つクライアント
+    let (strong, _) = support::insert_m2m_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
+    let granted = send(
+        &env.app,
+        post(
+            &root_tok,
+            &format!("/{}/admin/clients/{strong}/permissions", env.root_tenant_id),
+            json!({ "permission_code": "idp.users:write" }),
+        ),
+    )
+    .await;
+    assert_eq!(granted.status(), StatusCode::OK);
+    let strong_uri = format!("/{}/admin/clients/{strong}", env.root_tenant_id);
+
+    let rotate = send(&env.app, post_empty(&writer, &format!("{strong_uri}/secret"))).await;
+    assert_eq!(rotate.status(), StatusCode::FORBIDDEN, "rotate the secret");
+    let swap_key = send(
+        &env.app,
+        patch(
+            &writer,
+            &strong_uri,
+            json!({
+                "token_endpoint_auth_method": "private_key_jwt",
+                "jwks": "{\"keys\":[]}",
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(swap_key.status(), StatusCode::FORBIDDEN, "swap the key");
+    let removed = send(&env.app, delete(&writer, &strong_uri)).await;
+    assert_eq!(removed.status(), StatusCode::FORBIDDEN, "delete");
+
+    // 権限の無いクライアントは今までどおり
+    let (plain, _) = support::insert_m2m_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
+    let plain_uri = format!("/{}/admin/clients/{plain}", env.root_tenant_id);
+    let rotate = send(&env.app, post_empty(&writer, &format!("{plain_uri}/secret"))).await;
+    assert_eq!(rotate.status(), StatusCode::OK, "rotate a plain client");
+
+    // 同じ権限を持つ者（ここでは管理者）は扱える
+    let rotate = send(&env.app, post_empty(&root_tok, &format!("{strong_uri}/secret"))).await;
+    assert_eq!(rotate.status(), StatusCode::OK, "the administrator can still rotate");
+
+    // 他のテナントや無いクライアントは 404 のまま（居るかどうかを 403 で教えない）
+    let missing = send(
+        &env.app,
+        post_empty(
+            &writer,
+            &format!("/{}/admin/clients/no-such-client/secret", env.root_tenant_id),
+        ),
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND, "missing client");
+}
+
 /// break-glass の機械（`idp.users:write` ＋ `idp.permissions:write` ＋ `idp.admins:write`）は、
 /// 非常用口座へ `idp.tenant.admin` を付け、そのパスワードを作り直せる。⚠ system 管理者には届かない。
 #[tokio::test]

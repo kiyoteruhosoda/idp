@@ -16,7 +16,7 @@ use crate::presentation::dto::{
     ClientResponse, ClientSecretResponse, ClientStatusResponse, ClientUpdateRequest,
 };
 use crate::presentation::error::ApiError;
-use crate::presentation::handlers::request_context;
+use crate::presentation::handlers::{map_admin_account_guard_error, request_context};
 use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
@@ -202,6 +202,16 @@ pub async fn update_client(
         &correlation,
         state.config.trust_forwarded_headers(),
     );
+    state
+        .admin_account_guard
+        .ensure_may_manage_client(
+            tenant.context(),
+            tenant.tenant().is_root(),
+            &admin.permission_codes,
+            &client_id,
+        )
+        .await
+        .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let status = body
         .client_status
         .as_deref()
@@ -260,6 +270,16 @@ pub async fn rotate_client_secret(
         &correlation,
         state.config.trust_forwarded_headers(),
     );
+    state
+        .admin_account_guard
+        .ensure_may_manage_client(
+            tenant.context(),
+            tenant.tenant().is_root(),
+            &admin.permission_codes,
+            &client_id,
+        )
+        .await
+        .map_err(|e| map_admin_account_guard_error(e, locale))?;
     let (client, secret) = state
         .clients_admin
         .rotate_secret(tenant.context(), &client_id, &admin.actor, &ctx)
@@ -303,6 +323,16 @@ pub async fn delete_client(
         &correlation,
         state.config.trust_forwarded_headers(),
     );
+    state
+        .admin_account_guard
+        .ensure_may_manage_client(
+            tenant.context(),
+            tenant.tenant().is_root(),
+            &admin.permission_codes,
+            &client_id,
+        )
+        .await
+        .map_err(|e| map_admin_account_guard_error(e, locale))?;
     state
         .clients_admin
         .delete(tenant.context(), &client_id, &admin.actor, &ctx)

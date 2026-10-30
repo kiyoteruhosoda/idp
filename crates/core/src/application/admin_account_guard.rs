@@ -14,7 +14,9 @@
 //! 呼び出し元の保有コードは管理トークンの `perms`（`RequirePerms` の判定と同じ材料）を使う。
 
 use crate::domain::permission::{self, HeldByTarget};
-use crate::domain::repositories::{UserPermissionRepository, UserRepository};
+use crate::domain::repositories::{
+    ClientPermissionRepository, ClientRepository, UserPermissionRepository, UserRepository,
+};
 use crate::domain::tenant_context::TenantContext;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -31,14 +33,23 @@ pub enum AdminAccountGuardError {
 pub struct AdminAccountGuard {
     users: Arc<dyn UserRepository>,
     permissions: Arc<dyn UserPermissionRepository>,
+    clients: Arc<dyn ClientRepository>,
+    client_permissions: Arc<dyn ClientPermissionRepository>,
 }
 
 impl AdminAccountGuard {
     pub fn new(
         users: Arc<dyn UserRepository>,
         permissions: Arc<dyn UserPermissionRepository>,
+        clients: Arc<dyn ClientRepository>,
+        client_permissions: Arc<dyn ClientPermissionRepository>,
     ) -> Self {
-        Self { users, permissions }
+        Self {
+            users,
+            permissions,
+            clients,
+            client_permissions,
+        }
     }
 
     /// 権限コード `code` の付与・剥奪の前に呼ぶ（利用者へもクライアントへも）。
@@ -91,6 +102,42 @@ impl AdminAccountGuard {
             .map(|(scope, code)| HeldByTarget {
                 code,
                 in_requested_tenant: scope == tenant.tenant_id(),
+            })
+            .collect();
+        self.decide(held, &held_by_target, tenant_is_root)
+    }
+
+    /// クライアントの更新（鍵・認証方式を含む）・秘密の作り直し・削除の前に呼ぶ（task #756）。
+    ///
+    /// 秘密を作り直せる・公開鍵を差し替えられれば、そのクライアントの権限を行使できる。口座と同じく
+    /// **対象の権限を全部、呼び出し元が付与できる**ときだけ許す。クライアントの権限の scope は所属
+    /// テナントだけ（`client_permissions` に scope 列は無い）。
+    ///
+    /// ⚠ 対象が要求テナントに無いときは何もしない。それは操作の側が 404 にする。
+    pub async fn ensure_may_manage_client(
+        &self,
+        tenant: TenantContext,
+        tenant_is_root: bool,
+        held: &[String],
+        client_id: &str,
+    ) -> Result<(), AdminAccountGuardError> {
+        let client = self
+            .clients
+            .find_by_client_id(tenant.tenant_id(), client_id)
+            .await
+            .map_err(|e| AdminAccountGuardError::Internal(e.to_string()))?;
+        let Some(client) = client else {
+            return Ok(());
+        };
+        let held_by_target: Vec<HeldByTarget> = self
+            .client_permissions
+            .list_codes_for_client(client.id)
+            .await
+            .map_err(|e| AdminAccountGuardError::Internal(e.to_string()))?
+            .into_iter()
+            .map(|code| HeldByTarget {
+                code,
+                in_requested_tenant: true,
             })
             .collect();
         self.decide(held, &held_by_target, tenant_is_root)
