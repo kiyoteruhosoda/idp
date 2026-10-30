@@ -13,10 +13,11 @@
 //! [`permission::may_assign`] / [`permission::may_manage_account`] が単一の出所である。
 //! 呼び出し元の保有コードは管理トークンの `perms`（`RequirePerms` の判定と同じ材料）を使う。
 
+use crate::domain::account::AccountRef;
 use crate::domain::permission::{self, HeldByTarget, TargetScope};
 use crate::domain::repositories::{
-    ClientPermissionRepository, ClientRepository, TenantRepository, UserPermissionRepository,
-    UserRepository,
+    ApplicationRepository, ClientPermissionRepository, ClientRepository, TenantRepository,
+    UserPermissionRepository, UserRepository,
 };
 use crate::domain::tenant_context::TenantContext;
 use std::sync::Arc;
@@ -37,6 +38,7 @@ pub struct AdminAccountGuard {
     clients: Arc<dyn ClientRepository>,
     client_permissions: Arc<dyn ClientPermissionRepository>,
     tenants: Arc<dyn TenantRepository>,
+    applications: Arc<dyn ApplicationRepository>,
 }
 
 impl AdminAccountGuard {
@@ -46,6 +48,7 @@ impl AdminAccountGuard {
         clients: Arc<dyn ClientRepository>,
         client_permissions: Arc<dyn ClientPermissionRepository>,
         tenants: Arc<dyn TenantRepository>,
+        applications: Arc<dyn ApplicationRepository>,
     ) -> Self {
         Self {
             users,
@@ -53,6 +56,7 @@ impl AdminAccountGuard {
             clients,
             client_permissions,
             tenants,
+            applications,
         }
     }
 
@@ -132,6 +136,9 @@ impl AdminAccountGuard {
     /// **対象の権限を全部、呼び出し元が付与できる**ときだけ許す。クライアントの権限の scope は所属
     /// テナントだけ（`client_permissions` に scope 列は無い）。
     ///
+    /// アプリに割り当てられたサービスアカウントも同じで、鍵を差し替えればそのアプリへ届く。割り当てを
+    /// 決められる `idp.applications:write` を持つときだけ許す（task #787）。
+    ///
     /// ⚠ 対象が要求テナントに無いときは何もしない。それは操作の側が 404 にする。
     pub async fn ensure_may_manage_client(
         &self,
@@ -159,7 +166,25 @@ impl AdminAccountGuard {
                 scope: TargetScope::RequestedTenant,
             })
             .collect();
-        self.decide(held, &held_by_target, tenant_is_root)
+        self.decide(held, &held_by_target, tenant_is_root)?;
+        if permission::satisfies(held, permission::APPLICATIONS_WRITE) {
+            return Ok(());
+        }
+        let assignments = self
+            .applications
+            .list_account_assignments(
+                tenant.tenant_id(),
+                AccountRef::ServiceAccount {
+                    client_row_id: client.id,
+                },
+            )
+            .await
+            .map_err(|e| AdminAccountGuardError::Internal(e.to_string()))?;
+        if assignments.is_empty() {
+            Ok(())
+        } else {
+            Err(AdminAccountGuardError::Forbidden)
+        }
     }
 
     /// メンバーシップの操作（停止・解除）の前に呼ぶ。見るのは**要求テナントの scope の**権限だけ

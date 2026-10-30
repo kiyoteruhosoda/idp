@@ -540,3 +540,80 @@ async fn a_child_tenant_cannot_take_over_a_guest_administrator_of_the_root() {
     .await;
     assert_eq!(res.status(), StatusCode::OK, "break-glass homed in root");
 }
+
+/// アプリに割り当てられたサービスアカウントは、`idp.clients:write` だけでは扱えない（task #787）。
+///
+/// 鍵を差し替えれば、そのアプリへ届く。割り当てを決められる `idp.applications:write` があれば扱える。
+#[tokio::test]
+async fn clients_writer_cannot_take_over_a_machine_assigned_to_an_application() {
+    let Some(env) = support::setup("admin escalation assigned machine").await else {
+        return;
+    };
+    let tenant = env.root_tenant_id.clone();
+    let root_tok = admin_token(&env.app, &env.pool, &tenant, &env.root_admin_id).await;
+    let (_, clients_only) = machine(&env, &root_tok, &["idp.clients:write"]).await;
+    let (_, with_applications) = machine(
+        &env,
+        &root_tok,
+        &["idp.clients:write", "idp.applications:write"],
+    )
+    .await;
+
+    let (assigned, _) = support::insert_service_account(&env.pool, &tenant).await;
+    let created = send(
+        &env.app,
+        post(
+            &root_tok,
+            &format!("/{tenant}/admin/applications"),
+            json!({ "display_name": format!("app-{}", support::unique()) }),
+        ),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let application = body_json(created).await["id"]
+        .as_str()
+        .expect("application id")
+        .to_string();
+    let res = send(
+        &env.app,
+        post(
+            &root_tok,
+            &format!("/{tenant}/admin/applications/{application}/assignments"),
+            json!({ "kind": "service_account", "client_id": assigned }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK, "assign");
+
+    let uri = format!("/{tenant}/admin/clients/{assigned}");
+    for request in [
+        post_empty(&clients_only, &format!("{uri}/secret")),
+        patch(&clients_only, &uri, json!({ "app_name": "renamed" })),
+        delete(&clients_only, &uri),
+    ] {
+        let target = request.uri().to_string();
+        let res = send(&env.app, request).await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "{target}");
+    }
+
+    // 割り当ての無い機械は今までどおり。
+    let (plain, _) = support::insert_service_account(&env.pool, &tenant).await;
+    let res = send(
+        &env.app,
+        patch(
+            &clients_only,
+            &format!("/{tenant}/admin/clients/{plain}"),
+            json!({ "app_name": "renamed" }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK, "a machine with no assignment");
+
+    // 割り当てを決められる者は扱える。
+    let res = send(
+        &env.app,
+        patch(&with_applications, &uri, json!({ "app_name": "renamed" })),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK, "with idp.applications:write");
+}
