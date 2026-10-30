@@ -40,7 +40,11 @@ impl Resolve for GuardedResolver {
 }
 
 /// 引いた住所の判定（純粋部分）。
-fn check_resolved(host: &str, addrs: &[SocketAddr], trusted: bool) -> Result<(), String> {
+pub(crate) fn check_resolved(
+    host: &str,
+    addrs: &[SocketAddr],
+    trusted: bool,
+) -> Result<(), String> {
     if addrs.is_empty() {
         return Err(format!("{host} did not resolve to any address"));
     }

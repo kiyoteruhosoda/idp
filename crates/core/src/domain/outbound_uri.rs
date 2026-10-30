@@ -31,6 +31,15 @@ fn url_is_internal(url: &url::Url) -> bool {
     }
 }
 
+/// ホスト名（URL ではない）が字面だけで内部と分かるか（SMTP の宛先。task #740）。
+pub fn is_internal_host(host: &str) -> bool {
+    let bare = host.trim().trim_start_matches('[').trim_end_matches(']');
+    match bare.parse::<std::net::IpAddr>() {
+        Ok(ip) => is_internal_address(ip),
+        Err(_) => name_is_internal(bare),
+    }
+}
+
 /// 字面だけで内部と分かる名前か（task #585）。
 ///
 /// - `localhost` / `*.localhost`（自ホスト）

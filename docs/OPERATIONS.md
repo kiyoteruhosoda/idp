@@ -1037,7 +1037,7 @@ SELECT result, reason, COUNT(*) AS hits, MAX(occurred_at) AS last_seen
 
 ## 公開名が内側の前段へ引ける配置で、ログアウトの知らせや外部 IdP へ送りたいとき
 
-外へ送る要求（バックチャネルログアウト・外部 IdP の token / JWKS / discovery）は、名前を引いた結果が
+外へ送る要求（バックチャネルログアウト・外部 IdP の token / JWKS / discovery・SMS ゲートウェイ・テナントの SMTP）は、名前を引いた結果が
 内部の住所（`10.x`・`192.168.x`・`127.x`・`169.254.x` など）だと送らない（task #585）。宅内の split DNS の
 ように、正規の RP の公開名が内側の前段へ引ける配置では、その公開ドメインを `OUTBOUND_TRUSTED_HOSTS` に書く
 （カンマ区切り。`example.com` は `*.example.com` も含む）。api の再起動が必要。
