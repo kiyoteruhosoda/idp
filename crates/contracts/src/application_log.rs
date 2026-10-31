@@ -13,9 +13,9 @@
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 use tracing::field::{Field, Visit};
+use tracing::subscriber::Interest;
 use tracing::{Event, Level, Metadata, Subscriber};
-use tracing_subscriber::filter::{filter_fn, FilterFn};
-use tracing_subscriber::layer::{Context, Layer};
+use tracing_subscriber::layer::{Context, Filter, Layer};
 use tracing_subscriber::registry::LookupSpan;
 
 /// 出力元サービス名（`log.service`。DB の CHECK 制約と一致させる）。
@@ -113,16 +113,39 @@ impl<K: CapturedLogSink> ApplicationLogCaptureLayer<K> {
     }
 }
 
-/// 取り込み層に付けるフィルタ。
+/// 取り込み層に付けるフィルタ（task #801）。
 ///
 /// - **スパンは必ず通す**。イベント自身は追跡キーを持たず、囲っているリクエストスパン
 ///   （`correlation_id`）から拾うため、スパンが無効化されると `correlation_id` が NULL になる。
 /// - イベントは WARN 以上だけを通す（INFO 以下は stdout の構造化ログに任せる）。取り込み層は
 ///   内部でもレベルを見るが、ここで落としておくと DEBUG / TRACE の分の呼び出し自体を省ける。
-pub fn capture_filter() -> FilterFn {
-    let predicate: fn(&Metadata<'_>) -> bool =
-        |meta| meta.is_span() || *meta.level() <= Level::WARN;
-    filter_fn(predicate)
+///
+/// ⚠ **通すものの [`Interest`] を `always` にしない。** 層ごとのフィルタの可否はスレッドごとの印に
+/// 残り、`enabled` が次に呼ばれるまで消えない。すべての層が `always` と答えた呼び出しは `enabled` を
+/// 飛ばすので、残っている印で判断され、stdout からも取り込み層からも黙って消える。印を残す相手は
+/// sqlx で、問い合わせが終わるたびに `log::log_enabled!` を呼び（`LogTracer` が `enabled` まで届ける）、
+/// `RUST_LOG` で要らないレベルだと続く event が配られない。つまり**問い合わせの直後の WARN / ERROR**が
+/// 落ちていた。`sometimes` なら `enabled` が毎回呼ばれて印が上書きされる。
+pub struct CaptureFilter;
+
+impl CaptureFilter {
+    fn passes(meta: &Metadata<'_>) -> bool {
+        meta.is_span() || *meta.level() <= Level::WARN
+    }
+}
+
+impl<S> Filter<S> for CaptureFilter {
+    fn enabled(&self, meta: &Metadata<'_>, _: &Context<'_, S>) -> bool {
+        Self::passes(meta)
+    }
+
+    fn callsite_enabled(&self, meta: &'static Metadata<'static>) -> Interest {
+        if Self::passes(meta) {
+            Interest::sometimes()
+        } else {
+            Interest::never()
+        }
+    }
 }
 
 /// スパン生成時に拾っておく追跡キー（イベント時にスコープを遡って参照する）。

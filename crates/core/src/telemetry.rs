@@ -14,7 +14,7 @@
 
 use crate::config::{Config, LogFormat};
 use crate::infrastructure::log_capture::{self, ApplicationLogReceiver};
-use assay_contracts::application_log::{capture_filter, ApplicationLogCaptureLayer, SERVICE_API};
+use assay_contracts::application_log::{ApplicationLogCaptureLayer, CaptureFilter, SERVICE_API};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 /// DB 書き込み経路自身が出すログを取り込まないための除外 target。「書き込み失敗のログが
@@ -39,7 +39,7 @@ pub fn init(config: &Config) -> ApplicationLogReceiver {
         capture = capture.exclude_target(*target);
     }
 
-    let registry = tracing_subscriber::registry().with(capture.with_filter(capture_filter()));
+    let registry = tracing_subscriber::registry().with(capture.with_filter(CaptureFilter));
 
     // `RUST_LOG` は出力層にだけ効かせる（上記モジュールコメント参照）。
     match config.log_format() {
@@ -65,7 +65,7 @@ mod tests {
         let (sink, mut receiver) = log_capture::channel();
         let capture = ApplicationLogCaptureLayer::new(SERVICE_API, sink);
         let subscriber = tracing_subscriber::registry()
-            .with(capture.with_filter(capture_filter()))
+            .with(capture.with_filter(CaptureFilter))
             .with(fmt::layer().with_filter(EnvFilter::new("warn")));
 
         tracing::subscriber::with_default(subscriber, || {
@@ -120,7 +120,7 @@ mod tests {
         let capture = ApplicationLogCaptureLayer::new(SERVICE_API, sink);
         let buffer = SharedBuffer::default();
         let subscriber = tracing_subscriber::registry()
-            .with(capture.with_filter(capture_filter()))
+            .with(capture.with_filter(CaptureFilter))
             .with(
                 fmt::layer()
                     .json()

@@ -15,7 +15,7 @@
 use crate::api_client::ApiClient;
 use crate::config::LogFormat;
 use assay_contracts::application_log::{
-    capture_filter, ApplicationLogCaptureLayer, ApplicationLogPayload, CapturedLogSink, SERVICE_WEB,
+    ApplicationLogCaptureLayer, ApplicationLogPayload, CaptureFilter, CapturedLogSink, SERVICE_WEB,
 };
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -69,7 +69,7 @@ pub fn init(log_format: LogFormat) -> ApplicationLogForwarder {
         capture = capture.exclude_target(*target);
     }
 
-    let registry = tracing_subscriber::registry().with(capture.with_filter(capture_filter()));
+    let registry = tracing_subscriber::registry().with(capture.with_filter(CaptureFilter));
     // `RUST_LOG` は出力層にだけ効かせる（上記モジュールコメント参照）。
     match log_format {
         LogFormat::Json => registry

@@ -9,7 +9,7 @@
 //! 1 回しか入らず、同じプロセスで別の購読者が並ぶと呼び出しごとの `Interest` が混ざって、再現しなくなる。
 
 use assay_contracts::application_log::{
-    capture_filter, ApplicationLogCaptureLayer, ApplicationLogPayload, CapturedLogSink, SERVICE_API,
+    ApplicationLogCaptureLayer, ApplicationLogPayload, CaptureFilter, CapturedLogSink, SERVICE_API,
 };
 use std::sync::{Arc, Mutex};
 use tracing_subscriber::prelude::*;
@@ -50,10 +50,7 @@ fn warn_and_error_after_sqlx_asked_log_enabled_reach_both_layers() {
     let stdout = SharedBuffer::default();
     // 本番（`telemetry::init`）と同じ層の重ね方・同じ `RUST_LOG`。
     tracing_subscriber::registry()
-        .with(
-            ApplicationLogCaptureLayer::new(SERVICE_API, sink.clone())
-                .with_filter(capture_filter()),
-        )
+        .with(ApplicationLogCaptureLayer::new(SERVICE_API, sink.clone()).with_filter(CaptureFilter))
         .with(
             fmt::layer()
                 .json()
