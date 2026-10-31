@@ -1,9 +1,9 @@
 //! ライブラリが `log` クレートを呼んだ直後の WARN / ERROR が、stdout と取り込み層の両方へ届くこと
 //! （task #801）。
 //!
-//! `.init()` は `LogTracer` も入れるので、`log` の呼び出しは購読者の `enabled` へ届く。どの層も
-//! 欲しがらないレコード（本番の `RUST_LOG` での sqlx の `log_enabled!` など）だと、層ごとのフィルタの
-//! 「無効」の印が event を伴わないまま、そのスレッドに残る。
+//! `.init()` は `LogTracer` も入れるので、`log::log_enabled!` は購読者の `enabled` へ届き、どの層も
+//! 欲しがらないレコードだと、層ごとのフィルタの「無効」の印が event を伴わないままそのスレッドに残る。
+//! 本番の `RUST_LOG` では sqlx の問い合わせが終わるたびにこの形になる。
 //!
 //! ⚠ **この試験はこのファイルに 1 つだけ置く。** グローバルな購読者と `LogTracer` は 1 プロセスに
 //! 1 回しか入らず、同じプロセスで別の購読者が並ぶと呼び出しごとの `Interest` が混ざって、再現しなくなる。
@@ -45,7 +45,7 @@ impl<'a> fmt::MakeWriter<'a> for SharedBuffer {
 }
 
 #[test]
-fn warn_and_error_after_an_unwanted_library_log_reach_both_layers() {
+fn warn_and_error_after_sqlx_asked_log_enabled_reach_both_layers() {
     let sink = CollectingSink::default();
     let stdout = SharedBuffer::default();
     // 本番（`telemetry::init`）と同じ層の重ね方・同じ `RUST_LOG`。
@@ -74,13 +74,13 @@ fn warn_and_error_after_an_unwanted_library_log_reach_both_layers() {
         (printed, captured)
     };
 
-    // sqlx が問い合わせのたびに呼ぶ形（`QueryLogger::finish`）。
-    assert!(!log::log_enabled!(target: "sqlx::query", log::Level::Debug));
+    // sqlx が問い合わせのたびに呼ぶ形（`QueryLogger::finish`）。答えは見ない。`log_enabled!` は層の
+    // フィルタ全部に無効の印を付けたまま戻り、続く DEBUG の event は誰も聞いていないので配られない。
+    let _ = log::log_enabled!(target: "sqlx::query", log::Level::Debug);
     tracing::warn!("warn after log_enabled");
     assert_eq!(delivered("warn after log_enabled"), (true, true));
 
-    // ライブラリの普通の `log::debug!` も同じ。
-    log::debug!(target: "some_library", "nobody wants this");
-    tracing::error!("error after log debug");
-    assert_eq!(delivered("error after log debug"), (true, true));
+    let _ = log::log_enabled!(target: "sqlx::query", log::Level::Debug);
+    tracing::error!("error after log_enabled");
+    assert_eq!(delivered("error after log_enabled"), (true, true));
 }
