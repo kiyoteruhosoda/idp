@@ -1115,7 +1115,7 @@ mod tests {
 
         let prefix = format!("https://idp.example.com/{tenant}/password-reset?token=");
         assert!(printed.contains(&prefix), "{printed}");
-        // 出力は INFO。取り込み層（`telemetry::capture_filter`）は WARN 以上だけを `log` テーブルへ
+        // 出力は INFO。取り込み層（`application_log::CaptureFilter`）は WARN 以上だけを `log` テーブルへ
         // 書くため、リンクは DB にも管理コンソールのログ画面にも残らない。
         assert!(printed.contains("INFO"), "{printed}");
         // 宛先メールアドレス（PII）は出さない。

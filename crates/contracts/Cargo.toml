@@ -26,3 +26,7 @@ hmac = { workspace = true }
 hex = { workspace = true }
 url = { workspace = true }
 psl = { workspace = true }
+
+[dev-dependencies]
+# ライブラリの `log` 経由の呼び出しの後でも WARN が落ちないことの試験（task #801）。
+log = "0.4"

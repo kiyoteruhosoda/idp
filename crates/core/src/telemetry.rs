@@ -14,9 +14,7 @@
 
 use crate::config::{Config, LogFormat};
 use crate::infrastructure::log_capture::{self, ApplicationLogReceiver};
-use assay_contracts::application_log::{ApplicationLogCaptureLayer, SERVICE_API};
-use tracing::{Level, Metadata};
-use tracing_subscriber::filter::{filter_fn, FilterFn};
+use assay_contracts::application_log::{ApplicationLogCaptureLayer, CaptureFilter, SERVICE_API};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 /// DB 書き込み経路自身が出すログを取り込まないための除外 target。「書き込み失敗のログが
@@ -26,18 +24,6 @@ const EXCLUDED_TARGETS: &[&str] = &[
     "assay_core::infrastructure::repositories::application_log",
     "assay_core::application::application_log",
 ];
-
-/// 取り込み層に付けるフィルタ。
-///
-/// - **スパンは必ず通す**。イベント自身は追跡キーを持たず、囲っているリクエストスパン
-///   （`correlation_id`）から拾うため、スパンが無効化されると `correlation_id` が NULL になる。
-/// - イベントは WARN 以上だけを通す（INFO 以下は stdout の構造化ログに任せる）。取り込み層は
-///   内部でもレベルを見るが、ここで落としておくと DEBUG / TRACE の分の呼び出し自体を省ける。
-pub(crate) fn capture_filter() -> FilterFn {
-    let predicate: fn(&Metadata<'_>) -> bool =
-        |meta| meta.is_span() || *meta.level() <= Level::WARN;
-    filter_fn(predicate)
-}
 
 /// ログを初期化し、`log` テーブルへ書き込むための受信端を返す。
 ///
@@ -53,7 +39,7 @@ pub fn init(config: &Config) -> ApplicationLogReceiver {
         capture = capture.exclude_target(*target);
     }
 
-    let registry = tracing_subscriber::registry().with(capture.with_filter(capture_filter()));
+    let registry = tracing_subscriber::registry().with(capture.with_filter(CaptureFilter));
 
     // `RUST_LOG` は出力層にだけ効かせる（上記モジュールコメント参照）。
     match config.log_format() {
@@ -79,7 +65,7 @@ mod tests {
         let (sink, mut receiver) = log_capture::channel();
         let capture = ApplicationLogCaptureLayer::new(SERVICE_API, sink);
         let subscriber = tracing_subscriber::registry()
-            .with(capture.with_filter(capture_filter()))
+            .with(capture.with_filter(CaptureFilter))
             .with(fmt::layer().with_filter(EnvFilter::new("warn")));
 
         tracing::subscriber::with_default(subscriber, || {
@@ -134,7 +120,7 @@ mod tests {
         let capture = ApplicationLogCaptureLayer::new(SERVICE_API, sink);
         let buffer = SharedBuffer::default();
         let subscriber = tracing_subscriber::registry()
-            .with(capture.with_filter(capture_filter()))
+            .with(capture.with_filter(CaptureFilter))
             .with(
                 fmt::layer()
                     .json()
