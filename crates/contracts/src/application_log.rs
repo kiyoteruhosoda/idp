@@ -13,7 +13,8 @@
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 use tracing::field::{Field, Visit};
-use tracing::{Event, Level, Subscriber};
+use tracing::{Event, Level, Metadata, Subscriber};
+use tracing_subscriber::filter::{filter_fn, FilterFn};
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::registry::LookupSpan;
 
@@ -110,6 +111,18 @@ impl<K: CapturedLogSink> ApplicationLogCaptureLayer<K> {
             .iter()
             .any(|prefix| target.starts_with(prefix.as_str()))
     }
+}
+
+/// 取り込み層に付けるフィルタ。
+///
+/// - **スパンは必ず通す**。イベント自身は追跡キーを持たず、囲っているリクエストスパン
+///   （`correlation_id`）から拾うため、スパンが無効化されると `correlation_id` が NULL になる。
+/// - イベントは WARN 以上だけを通す（INFO 以下は stdout の構造化ログに任せる）。取り込み層は
+///   内部でもレベルを見るが、ここで落としておくと DEBUG / TRACE の分の呼び出し自体を省ける。
+pub fn capture_filter() -> FilterFn {
+    let predicate: fn(&Metadata<'_>) -> bool =
+        |meta| meta.is_span() || *meta.level() <= Level::WARN;
+    filter_fn(predicate)
 }
 
 /// スパン生成時に拾っておく追跡キー（イベント時にスコープを遡って参照する）。

@@ -223,6 +223,7 @@ dependencies = [
  "hex",
  "hmac",
  "http",
+ "log",
  "psl",
  "serde",
  "serde_json",

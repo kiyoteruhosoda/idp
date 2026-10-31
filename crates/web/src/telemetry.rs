@@ -15,12 +15,10 @@
 use crate::api_client::ApiClient;
 use crate::config::LogFormat;
 use assay_contracts::application_log::{
-    ApplicationLogCaptureLayer, ApplicationLogPayload, CapturedLogSink, SERVICE_WEB,
+    capture_filter, ApplicationLogCaptureLayer, ApplicationLogPayload, CapturedLogSink, SERVICE_WEB,
 };
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::{Level, Metadata};
-use tracing_subscriber::filter::{filter_fn, FilterFn};
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 
@@ -41,14 +39,6 @@ const UPLOAD_TIMEOUT: Duration = Duration::from_secs(10);
 /// ログ送信経路（`push_application_logs` とそれを回す [`spawn_forwarder`]）は**自分ではログを
 /// 出さない**（失敗は `let _ =` で捨てる）ので、除外すべきものはこのモジュールだけで足りる。
 const EXCLUDED_TARGETS: &[&str] = &["assay_web::telemetry"];
-
-/// 取り込み層に付けるフィルタ。スパンは追跡キー（`correlation_id`）を拾うため必ず通し、
-/// イベントは WARN 以上だけを通す（api 側 `assay_core::telemetry::capture_filter` と同じ）。
-fn capture_filter() -> FilterFn {
-    let predicate: fn(&Metadata<'_>) -> bool =
-        |meta| meta.is_span() || *meta.level() <= Level::WARN;
-    filter_fn(predicate)
-}
 
 struct ChannelSink(mpsc::Sender<ApplicationLogPayload>);
 

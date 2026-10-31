@@ -14,9 +14,7 @@
 
 use crate::config::{Config, LogFormat};
 use crate::infrastructure::log_capture::{self, ApplicationLogReceiver};
-use assay_contracts::application_log::{ApplicationLogCaptureLayer, SERVICE_API};
-use tracing::{Level, Metadata};
-use tracing_subscriber::filter::{filter_fn, FilterFn};
+use assay_contracts::application_log::{capture_filter, ApplicationLogCaptureLayer, SERVICE_API};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 /// DB 書き込み経路自身が出すログを取り込まないための除外 target。「書き込み失敗のログが
@@ -26,18 +24,6 @@ const EXCLUDED_TARGETS: &[&str] = &[
     "assay_core::infrastructure::repositories::application_log",
     "assay_core::application::application_log",
 ];
-
-/// 取り込み層に付けるフィルタ。
-///
-/// - **スパンは必ず通す**。イベント自身は追跡キーを持たず、囲っているリクエストスパン
-///   （`correlation_id`）から拾うため、スパンが無効化されると `correlation_id` が NULL になる。
-/// - イベントは WARN 以上だけを通す（INFO 以下は stdout の構造化ログに任せる）。取り込み層は
-///   内部でもレベルを見るが、ここで落としておくと DEBUG / TRACE の分の呼び出し自体を省ける。
-pub(crate) fn capture_filter() -> FilterFn {
-    let predicate: fn(&Metadata<'_>) -> bool =
-        |meta| meta.is_span() || *meta.level() <= Level::WARN;
-    filter_fn(predicate)
-}
 
 /// ログを初期化し、`log` テーブルへ書き込むための受信端を返す。
 ///
