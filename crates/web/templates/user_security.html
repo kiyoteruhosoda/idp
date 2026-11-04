@@ -71,6 +71,80 @@
   </div>
 </div>
 
+<div class="card mb-4" id="sign-ins">
+  <div class="card-header d-flex align-items-center"><i class="fa-solid fa-clock-rotate-left me-2" aria-hidden="true"></i>{{ messages.get("user-security-signins-heading") }}</div>
+  <div class="card-body">
+    <p class="text-muted small">{{ messages.get("user-security-signins-help") }}</p>
+    <p class="text-muted small">{{ messages.get("user-security-signins-refresh-help") }}</p>
+    <p class="text-muted small">{{ messages.get("user-security-signins-apps-outside") }}</p>
+    {% if sign_ins.is_empty() %}
+    <p class="text-muted mb-0">{{ messages.get("user-security-signins-empty") }}</p>
+    {% else %}
+    <ol class="list-unstyled mb-0 sign-in-history">
+      {% for entry in sign_ins %}
+      <li class="border-top py-3" data-outcome="{% if entry.succeeded %}succeeded{% else %}refused{% endif %}">
+        <div class="d-flex flex-wrap align-items-center gap-2 mb-1">
+          <time class="local-time fw-semibold" datetime="{{ entry.occurred_at }}">{{ crate::templates::utc_short(entry.occurred_at.as_str()) }}</time>
+          {% if entry.succeeded %}<span class="badge text-bg-success">{{ messages.get(entry.outcome_key) }}</span>{% else %}<span class="badge text-bg-danger">{{ messages.get(entry.outcome_key) }}</span>{% endif %}
+          {% if entry.current %}<span class="badge text-bg-primary">{{ messages.get("user-security-signins-current") }}</span>{% endif %}
+          {% if entry.device_registered == Some(true) %}<span class="badge text-bg-secondary">{{ messages.get("user-security-signins-device-registered") }}</span>{% else if entry.device_registered == Some(false) %}<span class="badge text-bg-secondary">{{ messages.get("user-security-signins-device-unregistered") }}</span>{% endif %}
+        </div>
+        <dl class="row small mb-0">
+          <dt class="col-sm-3 text-muted fw-normal">{{ messages.get("user-security-signins-from") }}</dt>
+          <dd class="col-sm-9 mb-1 text-break">{% if entry.ip_address.is_empty() %}{{ messages.get("user-security-signins-unknown") }}{% else %}{{ entry.ip_address }}{% endif %} <span class="text-muted">{% if entry.country.is_empty() %}{{ messages.get("user-security-signins-country-unknown") }}{% else %}{{ entry.country }}{% endif %}</span></dd>
+          <dt class="col-sm-3 text-muted fw-normal">{{ messages.get("user-security-signins-browser") }}</dt>
+          <dd class="col-sm-9 mb-1 text-break">{% if !entry.browser_summary.is_empty() %}<span class="d-block">{{ entry.browser_summary }}</span>{% endif %}<span class="d-block text-muted">{% if entry.user_agent.is_empty() %}{{ messages.get("user-security-signins-unknown") }}{% else %}{{ entry.user_agent }}{% endif %}</span></dd>
+          <dt class="col-sm-3 text-muted fw-normal">{{ messages.get("user-security-signins-method") }}</dt>
+          <dd class="col-sm-9 mb-1">{% if let Some(key) = entry.failure_key %}{{ messages.get(key) }}{% else %}{% if entry.method_keys.is_empty() %}{{ messages.get("user-security-signins-unknown") }}{% else %}{% for key in entry.method_keys %}{% if !loop.first %}・{% endif %}{{ messages.get(key) }}{% endfor %}{% endif %}{% endif %}</dd>
+          {% if !entry.attempted_app.is_empty() %}
+          <dt class="col-sm-3 text-muted fw-normal">{{ messages.get("user-security-signins-attempted-app") }}</dt>
+          <dd class="col-sm-9 mb-1 text-break">{{ entry.attempted_app }}</dd>
+          {% endif %}
+          {% if entry.succeeded %}
+          <dt class="col-sm-3 text-muted fw-normal">{{ messages.get("user-security-signins-apps") }}</dt>
+          <dd class="col-sm-9 mb-0">
+            {% if entry.apps.is_empty() %}<span class="text-muted">{{ messages.get("user-security-signins-apps-none") }}</span>{% endif %}
+            {% for app in entry.apps %}
+            <div class="sign-in-app{% if !loop.first %} mt-2{% endif %}">
+              <span class="fw-semibold text-break">{{ app.app_name }}</span>
+              <span class="text-muted">{{ messages.get("user-security-signins-app-last") }} <time class="local-time" datetime="{{ app.last_issued_at }}">{{ crate::templates::utc_short(app.last_issued_at.as_str()) }}</time></span>
+              {% if let Some(refresh) = app.refresh %}
+              <div class="ms-3 mt-1 ps-2 border-start sign-in-refresh">
+                <span class="d-block">{{ messages.get("user-security-signins-refresh") }}:
+                  {% if refresh.active %}<span class="badge text-bg-success">{{ messages.get(refresh.state_key) }}</span>{% else %}<span class="badge text-bg-secondary">{{ messages.get(refresh.state_key) }}</span>{% endif %}
+                  {% if !refresh.revoked_at.is_empty() %}<time class="local-time text-muted" datetime="{{ refresh.revoked_at }}">{{ crate::templates::utc_short(refresh.revoked_at.as_str()) }}</time>{% endif %}
+                  · {{ messages.get("user-security-signins-refresh-count") }} {{ refresh.use_count }}
+                </span>
+                {% if !refresh.reuse_detected_at.is_empty() %}<span class="d-block text-danger fw-semibold"><i class="fa-solid fa-triangle-exclamation me-1" aria-hidden="true"></i>{{ messages.get("user-security-signins-refresh-reuse") }} <time class="local-time" datetime="{{ refresh.reuse_detected_at }}">{{ crate::templates::utc_short(refresh.reuse_detected_at.as_str()) }}</time></span>{% endif %}
+                {% if refresh.last_used_at.is_empty() %}
+                <span class="d-block text-muted">{{ messages.get("user-security-signins-refresh-never") }}</span>
+                {% else %}
+                <span class="d-block">{{ messages.get("user-security-signins-refresh-last") }} <time class="local-time" datetime="{{ refresh.last_used_at }}">{{ crate::templates::utc_short(refresh.last_used_at.as_str()) }}</time></span>
+                <span class="d-block text-break">{{ messages.get("user-security-signins-refresh-sender") }}: {% if refresh.last_ip_address.is_empty() %}{{ messages.get("user-security-signins-unknown") }}{% else %}{{ refresh.last_ip_address }}{% endif %}{% if !refresh.last_browser_summary.is_empty() %}（{{ refresh.last_browser_summary }}）{% endif %}</span>
+                {% if !refresh.last_user_agent.is_empty() %}<span class="d-block text-muted text-break">{{ refresh.last_user_agent }}</span>{% endif %}
+                {% endif %}
+              </div>
+              {% else %}
+              <span class="d-block text-muted">{{ messages.get("user-security-signins-refresh-none") }}</span>
+              {% endif %}
+            </div>
+            {% endfor %}
+          </dd>
+          {% endif %}
+        </dl>
+      </li>
+      {% endfor %}
+    </ol>
+    {% endif %}
+    {% if sign_ins_paged || sign_ins_older.is_some() %}
+    <nav class="d-flex gap-3 mt-3" aria-label="{{ messages.get("user-security-signins-heading") }}">
+      {% if sign_ins_paged %}<a href="{{ tenant }}/settings/security#sign-ins">{{ messages.get("user-security-signins-newest") }}</a>{% endif %}
+      {% if let Some(before) = sign_ins_older %}<a href="{{ tenant }}/settings/security?history_before={{ before }}#sign-ins">{{ messages.get("user-security-signins-older") }}</a>{% endif %}
+    </nav>
+    {% endif %}
+  </div>
+</div>
+
 <div class="card mb-4" id="sessions">
   <div class="card-header d-flex align-items-center"><i class="fa-solid fa-display me-2" aria-hidden="true"></i>{{ messages.get("user-security-sessions-heading") }}</div>
   <div class="card-body">

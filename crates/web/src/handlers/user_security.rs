@@ -18,17 +18,19 @@ use crate::handlers::{forwarded_context, found, locale, see_other, step_up};
 use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{
-    render, ConnectedAppView, SecurityDeviceView, SecuritySessionView, UserSecurity,
+    browser_summary, render, ConnectedAppView, SecurityDeviceView, SecuritySessionView,
+    SignInAppView, SignInRefreshView, SignInView, UserSecurity,
 };
 use crate::tenant::WebTenant;
 use assay_contracts::auth::{
-    InternalAccountDevicesRequest, InternalAccountDevicesResponse,
+    AccountSignInEntry, InternalAccountDevicesRequest, InternalAccountDevicesResponse,
     InternalAccountRegisterDeviceRequest, InternalAccountRegisterDeviceResponse,
     InternalAccountReissueTokensRequest, InternalAccountReissueTokensResponse,
     InternalAccountRevokeConsentRequest, InternalAccountRevokeConsentResponse,
     InternalAccountRevokeDeviceRequest, InternalAccountRevokeDeviceResponse,
     InternalAccountRevokeSessionRequest, InternalAccountRevokeSessionResponse,
     InternalAccountSecurityRequest, InternalAccountSecurityResponse,
+    InternalAccountSignInHistoryRequest, InternalAccountSignInHistoryResponse,
 };
 use axum::extract::{Extension, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -43,6 +45,9 @@ pub struct SecurityQuery {
     pub saved: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
+    /// ログイン履歴のこれより古い行を見る（task #879）。
+    #[serde(default)]
+    pub history_before: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -161,6 +166,37 @@ pub async fn page(
         }
     };
 
+    // 「ログイン履歴」の欄（task #879）。本人の分だけ（api が SSO セッションの持ち主で引く）。
+    let history_request = InternalAccountSignInHistoryRequest {
+        tenant_id: Some(tenant.0.clone()),
+        sso_session_id: request.sso_session_id.clone(),
+        before: query.history_before,
+        limit: Some(SIGN_IN_HISTORY_PAGE_SIZE),
+    };
+    let (sign_ins, sign_ins_older) = match state
+        .api
+        .account_sign_in_history(&correlation.0, &history_request)
+        .await
+    {
+        Ok(InternalAccountSignInHistoryResponse::Ok {
+            entries,
+            next_before,
+        }) => (
+            entries.into_iter().map(sign_in_view).collect::<Vec<_>>(),
+            next_before,
+        ),
+        Ok(InternalAccountSignInHistoryResponse::SessionExpired) => {
+            return found(&format!("{}/login", tenant.prefix()));
+        }
+        Ok(InternalAccountSignInHistoryResponse::Internal) => {
+            return api_internal_error("account_sign_in_history");
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "account sign-in history call to api failed");
+            return internal_call_status(&e).into_response();
+        }
+    };
+
     // Messages（FluentBundle）は !Send のため、api の await より後・描画の直前に生成する。
     let messages = Messages::new(locale);
     let sessions: Vec<SecuritySessionView> = sessions
@@ -196,6 +232,9 @@ pub async fn page(
         current_device_identified: devices.current_identified,
         passkey_fresh: devices.passkey_fresh,
         devices_alerts_enabled: devices.alerts_enabled,
+        sign_ins: &sign_ins,
+        sign_ins_older,
+        sign_ins_paged: query.history_before.is_some(),
         saved_key: query.saved.as_deref().and_then(saved_key_for),
         error_key: query.error.as_deref().and_then(error_key_for),
     }))
@@ -570,6 +609,100 @@ fn error_key_for(value: &str) -> Option<&'static str> {
         "device-unidentified" => Some("user-security-devices-unidentified"),
         "device-not-found" => Some("user-security-error-device-not-found"),
         _ => None,
+    }
+}
+
+/// ログイン履歴の 1 ページの件数（task #879）。
+const SIGN_IN_HISTORY_PAGE_SIZE: u32 = 10;
+
+/// api の 1 行を画面の 1 行へ（文言はキーにして、訳はテンプレートに任せる）。
+fn sign_in_view(e: AccountSignInEntry) -> SignInView {
+    let succeeded = e.outcome == "succeeded";
+    let user_agent = e.user_agent.unwrap_or_default();
+    SignInView {
+        outcome_key: outcome_key(&e.outcome),
+        succeeded,
+        failure_key: e.failure_kind.as_deref().map(failure_key),
+        ip_address: e.ip_address.unwrap_or_default(),
+        country: e.country.unwrap_or_default(),
+        browser_summary: browser_summary(&user_agent),
+        user_agent,
+        method_keys: e.methods.iter().map(|m| method_key(m)).collect(),
+        attempted_app: if succeeded {
+            String::new()
+        } else {
+            e.app_name.or(e.client_id).unwrap_or_default()
+        },
+        current: e.current,
+        device_registered: e.device_registered,
+        occurred_at: e.occurred_at,
+        apps: e
+            .apps
+            .into_iter()
+            .map(|a| SignInAppView {
+                app_name: a.app_name.unwrap_or(a.client_id),
+                last_issued_at: a.last_issued_at,
+                refresh: a.refresh.map(|r| {
+                    let last_user_agent = r.last_user_agent.unwrap_or_default();
+                    SignInRefreshView {
+                        use_count: r.use_count.to_string(),
+                        last_used_at: r.last_used_at.unwrap_or_default(),
+                        last_ip_address: r.last_ip_address.unwrap_or_default(),
+                        last_browser_summary: browser_summary(&last_user_agent),
+                        last_user_agent,
+                        reuse_detected_at: r.reuse_detected_at.unwrap_or_default(),
+                        state_key: refresh_state_key(&r.state),
+                        active: r.state == "active",
+                        revoked_at: r.revoked_at.unwrap_or_default(),
+                    }
+                }),
+            })
+            .collect(),
+    }
+}
+
+fn outcome_key(outcome: &str) -> &'static str {
+    match outcome {
+        "succeeded" => "user-security-signins-outcome-succeeded",
+        "locked" => "user-security-signins-outcome-locked",
+        "denied" => "user-security-signins-outcome-denied",
+        _ => "user-security-signins-outcome-failed",
+    }
+}
+
+fn failure_key(kind: &str) -> &'static str {
+    match kind {
+        "wrong_password" => "user-security-signins-failure-wrong-password",
+        "wrong_passkey" => "user-security-signins-failure-wrong-passkey",
+        "wrong_code" => "user-security-signins-failure-wrong-code",
+        "too_many_failures" => "user-security-signins-failure-too-many",
+        "account_locked" => "user-security-signins-failure-locked",
+        "account_not_active" => "user-security-signins-failure-not-active",
+        "rate_limited" => "user-security-signins-failure-rate-limited",
+        "policy_denied" => "user-security-signins-failure-policy",
+        "external_failed" => "user-security-signins-failure-external",
+        _ => "user-security-signins-failure-other",
+    }
+}
+
+fn method_key(method: &str) -> &'static str {
+    match method {
+        "password" => "user-security-signins-method-password",
+        "totp" => "user-security-signins-method-totp",
+        "webauthn" => "user-security-signins-method-passkey",
+        "recovery_code" => "user-security-signins-method-recovery-code",
+        "email_otp" => "user-security-signins-method-email-otp",
+        "sms_otp" => "user-security-signins-method-sms-otp",
+        "external_idp" => "user-security-signins-method-external",
+        _ => "user-security-signins-method-other",
+    }
+}
+
+fn refresh_state_key(state: &str) -> &'static str {
+    match state {
+        "active" => "user-security-signins-refresh-state-active",
+        "revoked" => "user-security-signins-refresh-state-revoked",
+        _ => "user-security-signins-refresh-state-expired",
     }
 }
 

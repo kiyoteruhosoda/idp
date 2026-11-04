@@ -2262,3 +2262,98 @@ pub enum InternalExternalCallbackResponse {
     ExternalFailure,
     Internal,
 }
+
+/// ログイン履歴の取得 API（`POST /internal/account/sign-in-history`。task #879）のリクエスト。
+///
+/// 利用者は SSO セッションの持ち主で決まる（利用者 id は受け取らない＝他人の履歴は引けない）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAccountSignInHistoryRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+    /// これより古い行だけ（前のページの `next_before`）。
+    #[serde(default)]
+    pub before: Option<i64>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAccountSignInHistoryResponse {
+    Ok {
+        entries: Vec<AccountSignInEntry>,
+        #[serde(default)]
+        next_before: Option<i64>,
+    },
+    SessionExpired,
+    Internal,
+}
+
+/// ログイン履歴の 1 行。接続元・ブラウザはログインした本人のブラウザのもの。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountSignInEntry {
+    pub id: i64,
+    /// RFC 3339（UTC）。
+    pub occurred_at: String,
+    /// `succeeded` / `failed` / `locked` / `denied`。
+    pub outcome: String,
+    /// 断った理由の種類（`wrong_password` など。成功なら `None`）。
+    #[serde(default)]
+    pub failure_kind: Option<String>,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+    /// 国コード（分からない・信じられないときは `None`）。
+    #[serde(default)]
+    pub country: Option<String>,
+    /// 確かめた入り方（`password` / `totp` / `webauthn` / `recovery_code` / `external_idp` など）。
+    #[serde(default)]
+    pub methods: Vec<String>,
+    /// 断ったログインを始めたアプリ（分かれば）。
+    #[serde(default)]
+    pub app_name: Option<String>,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    /// 登録した端末だったか（task #872。端末の印が無ければ `None`）。
+    #[serde(default)]
+    pub device_registered: Option<bool>,
+    /// 今見ているログイン状態そのものか。
+    #[serde(default)]
+    pub current: bool,
+    /// このログインで入ったアプリ（成功したログインだけ）。
+    #[serde(default)]
+    pub apps: Vec<AccountSignInApp>,
+}
+
+/// ログインで入ったアプリと、そのアプリのリフレッシュトークンの使われ方。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountSignInApp {
+    pub client_id: String,
+    #[serde(default)]
+    pub app_name: Option<String>,
+    pub first_issued_at: String,
+    pub last_issued_at: String,
+    /// リフレッシュトークンを出していなければ `None`。
+    #[serde(default)]
+    pub refresh: Option<AccountRefreshUsage>,
+}
+
+/// リフレッシュトークンの使われ方。接続元・名乗りは**更新を送ってきた相手**（アプリのサーバーなど）のもの。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountRefreshUsage {
+    pub use_count: u32,
+    #[serde(default)]
+    pub last_used_at: Option<String>,
+    #[serde(default)]
+    pub last_ip_address: Option<String>,
+    #[serde(default)]
+    pub last_user_agent: Option<String>,
+    #[serde(default)]
+    pub reuse_detected_at: Option<String>,
+    /// `active` / `revoked` / `expired`。
+    pub state: String,
+    #[serde(default)]
+    pub revoked_at: Option<String>,
+}
