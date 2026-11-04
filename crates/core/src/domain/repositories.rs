@@ -63,6 +63,7 @@ use crate::domain::user::{LoginFailureRecord, User};
 use crate::domain::user_authenticator::{
     AuthenticatorStatus, AuthenticatorType, UserAuthenticator,
 };
+use crate::domain::user_device::{CountryCode, DeviceRef, UserDevice};
 use crate::domain::values::{
     ApplicationStatus, AssignmentMode, AuthenticationMethod, GrantType, MembershipStatus,
     ResourceStatus, SigningKeyStatus, UserStatus,
@@ -771,6 +772,13 @@ pub trait SsoSessionRepository: Send + Sync {
             "record_step_up is not supported by this repository".to_string(),
         ))
     }
+    /// このセッションでパスキーの本人確認を最後に通した時刻（task #872。端末の登録の条件）。
+    ///
+    /// パスキーで入ったログイン自体は `auth_time` と `authentication_methods` で分かるので、ここが
+    /// 返すのは**後から**パスキーで確かめた時刻（step-up）。既定実装は `None`（記録を持たない）。
+    async fn passkey_verified_at(&self, _session_hash: &str) -> Result<Option<DateTime<Utc>>> {
+        Ok(None)
+    }
     async fn delete(&self, session_hash: &str) -> Result<()>;
     /// 指定ユーザーの全 SSO セッションを削除する（ユーザー単位の全セッション無効化、F5）。
     async fn delete_all_for_user(&self, user_id: Uuid) -> Result<()>;
@@ -795,6 +803,49 @@ pub trait SsoSessionRepository: Send + Sync {
     async fn delete_expired(&self, _now: DateTime<Utc>) -> Result<u64> {
         Ok(0)
     }
+}
+
+/// 利用者の端末（task #872。ADR-0071）と、SSO セッションがどの端末で作られたか。
+#[async_trait]
+pub trait UserDeviceRepository: Send + Sync {
+    /// 利用者のその端末の登録（無ければ `None`）。
+    async fn find(&self, user_id: Uuid, device: &DeviceRef) -> Result<Option<UserDevice>>;
+    /// 利用者の登録済みの端末を、最後に使った順（新しい順）に返す。
+    async fn list_for_user(&self, user_id: Uuid) -> Result<Vec<UserDevice>>;
+    /// 登録する。同じ利用者・同じ印が既にあれば `Conflict`。
+    async fn insert(&self, device: &UserDevice) -> Result<()>;
+    /// 利用者の端末を 1 つ消し、消した行を返す（他人の端末の id なら `None`）。
+    async fn delete(&self, user_id: Uuid, device_id: Uuid) -> Result<Option<UserDevice>>;
+    /// この端末でログインしたことを記録する（最後に使った時刻・国・接続元）。
+    async fn touch(
+        &self,
+        device_id: Uuid,
+        used_at: DateTime<Utc>,
+        country: Option<&CountryCode>,
+        ip: Option<&str>,
+    ) -> Result<()>;
+    /// `cutoff` より前から使われていない端末を消し、消した行を返す（期限切れ）。
+    async fn delete_unused_before(&self, cutoff: DateTime<Utc>) -> Result<Vec<UserDevice>>;
+
+    /// SSO セッションへ端末を結び付ける。**まだ結び付いていないときだけ**書き、書いたら `true`。
+    async fn link_session(
+        &self,
+        session_hash: &str,
+        device: &DeviceRef,
+        country: Option<&CountryCode>,
+        observed_at: DateTime<Utc>,
+    ) -> Result<bool>;
+    /// SSO セッションに結び付いた端末（無ければ `None`）。
+    async fn session_device(&self, session_hash: &str) -> Result<Option<DeviceRef>>;
+    /// 利用者がこの端末で前にもログインしたことがあるか（今のセッションを除く、残っているセッションで見る）。
+    async fn seen_before(
+        &self,
+        user_id: Uuid,
+        device: &DeviceRef,
+        except_session_hash: &str,
+    ) -> Result<bool>;
+    /// 利用者のこの端末で作られた SSO セッションの `session_hash`（取り消しの巻き添えで切る）。
+    async fn sessions_for_device(&self, user_id: Uuid, device: &DeviceRef) -> Result<Vec<String>>;
 }
 
 #[async_trait]

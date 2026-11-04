@@ -8,8 +8,9 @@ use crate::presentation::handlers::{
     admin_invitations, admin_login_identifiers, admin_members, admin_permissions, admin_resources,
     admin_restart, admin_saml_service_providers, admin_signing_keys, admin_system_settings,
     admin_tenant_settings, admin_tenant_smtp, admin_tenants, admin_users, authorize, consent,
-    discovery, health, internal_admin_token, internal_auth, internal_runtime_settings, introspect,
-    invitations, logout, mfa, passkey, register, revoke, saml_sso, token, userinfo,
+    discovery, health, internal_admin_token, internal_auth, internal_devices,
+    internal_runtime_settings, introspect, invitations, logout, mfa, passkey, register, revoke,
+    saml_sso, token, userinfo,
 };
 use crate::presentation::openapi::ApiDoc;
 use crate::presentation::security_headers::add_security_headers;
@@ -187,6 +188,20 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/internal/account/security/reissue-tokens",
             post(internal_auth::account_reissue_tokens),
+        )
+        // 利用者の端末（task #872）。ログインした端末の結び付けと「端末」の欄。
+        .route("/internal/devices/observe", post(internal_devices::observe))
+        .route(
+            "/internal/account/devices",
+            post(internal_devices::account_devices),
+        )
+        .route(
+            "/internal/account/devices/register",
+            post(internal_devices::account_register_device),
+        )
+        .route(
+            "/internal/account/devices/revoke",
+            post(internal_devices::account_revoke_device),
         )
         // ログイン中ユーザーの所属テナント列挙（テナント切り替え UI）。
         .route(

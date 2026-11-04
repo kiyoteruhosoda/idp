@@ -88,6 +88,22 @@ pub async fn run() -> anyhow::Result<()> {
     // 監査ログの保持期間（G8）。既定は 0（削除しない）で、明示的に日数を設定したときだけ動く。
     spawn_audit_log_purge(state.audit.clone(), config.audit_log_retention_days());
 
+    // 180 日使われていない端末の登録を消す（task #872）。消すたびに監査へ残し、有効な組織には知らせる
+    // ので、表の掃除（`expired_records`）とは別のループにする。1 日 1 回で足りる。
+    {
+        let devices = state.device_registry.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(24 * 60 * 60)).await;
+                match devices.purge_unused().await {
+                    Ok(0) => {}
+                    Ok(count) => tracing::info!(count, "expired unused devices"),
+                    Err(e) => tracing::error!(error = %e, "device expiry run failed"),
+                }
+            }
+        });
+    }
+
     // 期限切れレコードの一括 GC（G2）。認可セッション・authorization code・refresh token・
     // SSO セッション・失効 jti・パスキーチャレンジ・各種一時トークンを 1 本のタスクで掃除する。
     // 表ごとにループを生やすと追加のたびに掃除漏れが生まれるため、対象は

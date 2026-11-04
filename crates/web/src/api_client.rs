@@ -3239,6 +3239,47 @@ impl ApiClient {
         .await
     }
 
+    /// ログインしたばかりの SSO セッションへ端末を結び付ける（task #872）。
+    pub async fn device_observe(
+        &self,
+        correlation_id: &str,
+        req: &assay_contracts::auth::InternalDeviceObserveRequest,
+    ) -> Result<assay_contracts::auth::InternalDeviceObserveResponse, InternalCallError> {
+        self.post_internal("/internal/devices/observe", correlation_id, req)
+            .await
+    }
+
+    /// 「端末」の欄（task #872）。
+    pub async fn account_devices(
+        &self,
+        correlation_id: &str,
+        req: &assay_contracts::auth::InternalAccountDevicesRequest,
+    ) -> Result<assay_contracts::auth::InternalAccountDevicesResponse, InternalCallError> {
+        self.post_internal("/internal/account/devices", correlation_id, req)
+            .await
+    }
+
+    /// 今のブラウザを端末として登録する（task #872）。
+    pub async fn account_register_device(
+        &self,
+        correlation_id: &str,
+        req: &assay_contracts::auth::InternalAccountRegisterDeviceRequest,
+    ) -> Result<assay_contracts::auth::InternalAccountRegisterDeviceResponse, InternalCallError>
+    {
+        self.post_internal("/internal/account/devices/register", correlation_id, req)
+            .await
+    }
+
+    /// 端末の登録を取り消す（task #872）。
+    pub async fn account_revoke_device(
+        &self,
+        correlation_id: &str,
+        req: &assay_contracts::auth::InternalAccountRevokeDeviceRequest,
+    ) -> Result<assay_contracts::auth::InternalAccountRevokeDeviceResponse, InternalCallError> {
+        self.post_internal("/internal/account/devices/revoke", correlation_id, req)
+            .await
+    }
+
     /// ログイン中ユーザーの所属テナント（`ACTIVE`）を列挙する（テナント切り替え UI 用）。
     pub async fn account_tenants(
         &self,

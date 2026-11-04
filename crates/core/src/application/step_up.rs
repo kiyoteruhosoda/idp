@@ -49,6 +49,7 @@ use crate::domain::step_up::{
     evaluate_step_up, SensitiveOperation, StepUpDecision, StepUpRequirement,
 };
 use crate::domain::tenant_context::TenantContext;
+use crate::domain::user_device::passkey_verified_recently;
 use crate::domain::values::{AuthenticationMethod, AuthenticationStrength};
 use std::sync::Arc;
 
@@ -62,6 +63,8 @@ pub enum StepUpCheckOutcome {
         /// パスキーでの確認を出してよいか（**いま使える**パスキーを持っている）。持っていない
         /// 利用者にボタンを見せると、ブラウザのダイアログが出てから失敗する。
         passkey_available: bool,
+        /// パスキーでしか確かめられない操作か（画面はパスワードの欄を出さない。task #872）。
+        passkey_only: bool,
     },
     /// SSO セッションが無い・期限切れ・利用者が無効。
     SessionExpired,
@@ -174,6 +177,27 @@ impl StepUpService {
             Err(e) => return StepUpCheckOutcome::Internal(e.to_string()),
         };
 
+        // パスキーでしか通さない操作（task #872）は、パスキーで確かめた時刻だけで決める。
+        if operation.passkey_only() {
+            let verified_at = match self.sso_sessions.passkey_verified_at(&session_hash).await {
+                Ok(at) => at,
+                Err(e) => return StepUpCheckOutcome::Internal(e.to_string()),
+            };
+            if passkey_verified_recently(&session, verified_at, now) {
+                return StepUpCheckOutcome::Satisfied;
+            }
+            let passkey_available =
+                match has_usable_passkey(self.authenticators.as_ref(), session.user_id).await {
+                    Ok(v) => v,
+                    Err(e) => return StepUpCheckOutcome::Internal(e.to_string()),
+                };
+            return StepUpCheckOutcome::ChallengeRequired {
+                second_factor_required: true,
+                passkey_available,
+                passkey_only: true,
+            };
+        }
+
         let has_second_factor =
             match user_has_confirmed_totp(self.totp_secrets.as_ref(), session.user_id).await {
                 Ok(v) => v,
@@ -200,10 +224,12 @@ impl StepUpService {
                 second_factor_required: requirement.required_strength
                     == AuthenticationStrength::MultiFactor,
                 passkey_available,
+                passkey_only: false,
             },
             StepUpDecision::SecondFactorRequired => StepUpCheckOutcome::ChallengeRequired {
                 second_factor_required: true,
                 passkey_available,
+                passkey_only: false,
             },
         }
     }
@@ -223,6 +249,11 @@ impl StepUpService {
             if !self.rate_limiter.check_and_record(ip, now) {
                 return StepUpVerifyOutcome::RateLimited;
             }
+        }
+
+        // パスキーでしか通さない操作は、パスワードの経路では確かめない（task #872）。
+        if cmd.operation.passkey_only() {
+            return StepUpVerifyOutcome::InvalidCredentials;
         }
 
         // 2. セッションから本人を解決する。
@@ -970,6 +1001,7 @@ mod tests {
         let StepUpCheckOutcome::ChallengeRequired {
             second_factor_required,
             passkey_available,
+            ..
         } = svc
             .check(COOKIE, SensitiveOperation::ManageAuthenticators)
             .await

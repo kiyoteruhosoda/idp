@@ -1138,6 +1138,11 @@ mod tests {
             csrf: "csrf",
             sessions: &[],
             connected_apps: &[],
+            devices: &[],
+            current_device_registered: false,
+            current_device_identified: true,
+            passkey_fresh: false,
+            devices_alerts_enabled: true,
             saved_key: None,
             error_key: None,
         });
@@ -1449,6 +1454,48 @@ mod tests {
         );
     }
 
+    /// 「端末」の欄（task #872）: 登録済みの端末と取り消しの口、まだ登録していないブラウザには登録の欄を出す。
+    #[test]
+    fn the_security_page_lists_devices_and_offers_registration() {
+        let messages = Messages::new(Locale::Ja);
+        let devices = vec![SecurityDeviceView {
+            id: "0197aaaa-0000-7000-8000-000000000001".to_string(),
+            name: "kyon-pc".to_string(),
+            current: false,
+            user_agent: "Mozilla/5.0".to_string(),
+            last_used_at: "2026-11-04T09:00:00Z".to_string(),
+            last_country: "JP".to_string(),
+            expires_at: "2027-05-03T09:00:00Z".to_string(),
+        }];
+        let render_with = |registered: bool, identified: bool| {
+            render(&UserSecurity {
+                messages: &messages,
+                tenant: "/t",
+                csrf: "csrf",
+                sessions: &[],
+                connected_apps: &[],
+                devices: &devices,
+                current_device_registered: registered,
+                current_device_identified: identified,
+                passkey_fresh: false,
+                devices_alerts_enabled: true,
+                saved_key: None,
+                error_key: None,
+            })
+        };
+        let html = render_with(false, true);
+        assert!(html.contains("kyon-pc"), "{html}");
+        assert!(html.contains(r#"action="/t/settings/security/revoke-device""#));
+        assert!(html.contains(r#"action="/t/settings/security/register-device""#));
+        assert!(html.contains(r#"name="device_id" value="0197aaaa-0000-7000-8000-000000000001""#));
+
+        let html = render_with(true, true);
+        assert!(!html.contains(r#"action="/t/settings/security/register-device""#));
+
+        let html = render_with(false, false);
+        assert!(!html.contains(r#"action="/t/settings/security/register-device""#));
+    }
+
     /// 時刻は機械が読む値（`datetime`）と人が読む値（要素の中身）を分けて出す（ADR-0048）。
     /// 中身は JavaScript が閲覧者のタイムゾーンへ差し替えるが、差し替わらなくても読める形で
     /// 出しておく —— RFC 3339 のマイクロ秒付き文字列は、そのままでは日時として読めない。
@@ -1470,6 +1517,11 @@ mod tests {
             csrf: "csrf",
             sessions: &sessions,
             connected_apps: &[],
+            devices: &[],
+            current_device_registered: false,
+            current_device_identified: true,
+            passkey_fresh: false,
+            devices_alerts_enabled: true,
             saved_key: None,
             error_key: None,
         });
@@ -3539,6 +3591,8 @@ pub struct StepUpChallenge<'a> {
     /// パスキーでの確認を出すか（**いま使える**パスキーを持っている。T38）。持っていない利用者に
     /// ボタンを見せると、ブラウザのダイアログが出てから失敗する。
     pub passkey_available: bool,
+    /// パスキーでしか確かめられない操作か（端末の登録。task #872）。パスワードの欄を出さない。
+    pub passkey_only: bool,
     pub error_key: Option<&'a str>,
 }
 
@@ -3575,8 +3629,30 @@ pub struct UserSecurity<'a> {
     pub csrf: &'a str,
     pub sessions: &'a [SecuritySessionView],
     pub connected_apps: &'a [ConnectedAppView],
+    /// 登録済みの端末（task #872）。
+    pub devices: &'a [SecurityDeviceView],
+    /// 今見ているブラウザが登録済みか。
+    pub current_device_registered: bool,
+    /// 今見ているブラウザに端末の印があるか（無ければ登録の欄の代わりに案内を出す）。
+    pub current_device_identified: bool,
+    /// パスキーでの本人確認がまだ有効か（有効なら登録はそのまま通る）。
+    pub passkey_fresh: bool,
+    /// この組織で「登録していない端末」の知らせが有効か。
+    pub devices_alerts_enabled: bool,
     pub saved_key: Option<&'a str>,
     pub error_key: Option<&'a str>,
+}
+
+/// 「端末」の欄の 1 行（task #872）。時刻は api が返した RFC 3339 文字列のまま。
+pub struct SecurityDeviceView {
+    pub id: String,
+    pub name: String,
+    pub current: bool,
+    pub user_agent: String,
+    pub last_used_at: String,
+    /// 国コード（分からなければ空）。
+    pub last_country: String,
+    pub expires_at: String,
 }
 
 /// Passkey 一覧画面（`GET /account/passkey`）。登録済みクレデンシャルの一覧と削除ボタン。

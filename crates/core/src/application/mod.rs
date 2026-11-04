@@ -34,6 +34,7 @@ pub mod client_status;
 pub mod code_issuance;
 pub mod consent;
 pub mod cors_policy;
+pub mod device_registry;
 pub mod email_verification;
 pub mod expired_record_purge;
 pub mod external_idp_discovery;
