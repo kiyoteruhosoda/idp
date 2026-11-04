@@ -102,10 +102,22 @@ pub async fn observe_sign_ins(
         .map(|c| c.0.clone())
         .unwrap_or_default();
 
+    // 端末の鍵への結び付けの口（task #887）は、長い Cookie を置き直すだけでログインではない。
+    let key_binding_path = request.uri().path().starts_with("/dbsc/");
     let mut response = next.run(request).await;
+    if key_binding_path {
+        return response;
+    }
     let Some(sso_session_id) = issued_sso_session(response.headers()) else {
         return response;
     };
+    // 新しいログイン状態を端末の鍵へ結び付けるよう Chrome に求める（DBSC。task #887・ADR-0074）。
+    if let Some(value) = crate::session_key::registration_header(&state, &sso_session_id) {
+        response.headers_mut().insert(
+            axum::http::HeaderName::from_static(assay_contracts::session_key::REGISTRATION_HEADER),
+            value,
+        );
+    }
 
     let token = match existing {
         Some(token) => token,

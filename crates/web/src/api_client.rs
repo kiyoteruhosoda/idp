@@ -3253,6 +3253,36 @@ impl ApiClient {
             .await
     }
 
+    /// SSO セッションを端末の鍵へ結び付ける（DBSC の登録。task #887）。
+    pub async fn session_key_register(
+        &self,
+        correlation_id: &str,
+        req: &assay_contracts::auth::InternalSessionKeyRegisterRequest,
+    ) -> Result<assay_contracts::auth::InternalSessionKeyResponse, InternalCallError> {
+        self.post_internal("/internal/sso/key-binding/register", correlation_id, req)
+            .await
+    }
+
+    /// 結び付けの更新（DBSC。task #887）。
+    pub async fn session_key_refresh(
+        &self,
+        correlation_id: &str,
+        req: &assay_contracts::auth::InternalSessionKeyRefreshRequest,
+    ) -> Result<assay_contracts::auth::InternalSessionKeyResponse, InternalCallError> {
+        self.post_internal("/internal/sso/key-binding/refresh", correlation_id, req)
+            .await
+    }
+
+    /// SSO セッションが端末の鍵へ結び付いているか（task #887）。
+    pub async fn session_key_binding(
+        &self,
+        correlation_id: &str,
+        req: &assay_contracts::auth::InternalSessionKeyBindingRequest,
+    ) -> Result<assay_contracts::auth::InternalSessionKeyBindingResponse, InternalCallError> {
+        self.post_internal("/internal/sso/key-binding", correlation_id, req)
+            .await
+    }
+
     /// 「端末」の欄（task #872）。
     pub async fn account_devices(
         &self,

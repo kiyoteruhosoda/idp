@@ -721,6 +721,10 @@ pub fn build(state: WebState) -> Router {
             get(vendor_assets::fa_v4compatibility_woff2),
         )
         .route("/assets/react/app.js", get(react_assets::app_js))
+        // SSO セッションの端末の鍵への結び付け（Chrome の DBSC。task #887・ADR-0074）。テナントに属さない
+        // （SSO セッションの Cookie はオリジンに 1 つ）。
+        .route("/dbsc/register", post(crate::session_key::register))
+        .route("/dbsc/refresh", post(crate::session_key::refresh))
         // この nest 配下で `{user_id}` 等を持つルートは、ネスト元の `{tenant_id}` と合わせて
         // パスパラメータが 2 つになる。ハンドラは `Path<(String, String)>` のタプルで受けること
         // （`Path<String>` だと実行時に 500 "Wrong number of path arguments" になる）。
@@ -729,6 +733,12 @@ pub fn build(state: WebState) -> Router {
         .fallback(error_pages::fallback)
         // ログインした端末を api へ伝える（task #872）。どのログイン経路でも、応答が SSO セッションの
         // Cookie を置いたことだけを見る。追跡キー（correlation）と接続元 IP より内側に置く。
+        // 端末の鍵に結び付いた SSO セッションは、合う短い Cookie が無ければ長い Cookie を外す（task #887）。
+        // Cookie の名前の読み替えより内側（読み替え後の名前で見る）、追跡キーより内側に置く。
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::session_key::enforce,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::device_observation::observe_sign_ins,

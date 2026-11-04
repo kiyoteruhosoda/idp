@@ -2457,3 +2457,68 @@ pub struct AccountRefreshUsage {
 /// api は `/internal/*`（サービストークンの内側）でだけこの見出しを読む。外から直接 api に来た要求の
 /// 同じ見出しは読まない（誰でも付けられるため）。
 pub const CLIENT_COUNTRY_HEADER: &str = "x-assay-client-country";
+
+/// SSO セッションを端末の鍵へ結び付ける（DBSC の登録。`POST /internal/sso/key-binding/register`。task #887・ADR-0074）。
+///
+/// web は Chrome から届いた署名（JWT）と、その要求に付いていた SSO セッションの Cookie をそのまま渡す。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalSessionKeyRegisterRequest {
+    pub sso_session_id: String,
+    /// `Secure-Session-Response` の値（JWT）。
+    pub proof: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// 結び付けの更新（`POST /internal/sso/key-binding/refresh`）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalSessionKeyRefreshRequest {
+    pub sso_session_id: String,
+    /// `Sec-Secure-Session-Id` の値。
+    pub session_identifier: String,
+    /// `Secure-Session-Response` の値（JWT）。
+    pub proof: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// 登録・更新の結果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalSessionKeyResponse {
+    /// 結び付いた（更新できた）。web は短い Cookie を出し、長い Cookie の `Max-Age` を
+    /// `remaining_secs` に置き直す。
+    Bound {
+        session_identifier: String,
+        remaining_secs: u64,
+    },
+    /// 署名・challenge・形が合わない（結び付けは変えない）。
+    Rejected,
+    /// 登録した鍵と違う鍵で署名された。ログイン状態は終わらせた。
+    KeyMismatch,
+    /// ログイン状態が無い・切れている・結び付けの識別子が違う。
+    SessionGone,
+    Internal,
+}
+
+/// SSO セッションが端末の鍵に結び付いているか（`POST /internal/sso/key-binding`）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalSessionKeyBindingRequest {
+    pub sso_session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalSessionKeyBindingResponse {
+    /// 結び付いている（`session_identifier` は更新の 403 で Chrome へ渡す）。
+    Bound {
+        session_identifier: String,
+    },
+    /// 結び付いていない（無いセッションもここ）。
+    Unbound,
+    Internal,
+}

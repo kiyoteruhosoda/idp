@@ -32,6 +32,7 @@ pub mod internal_admin_token;
 pub mod internal_auth;
 pub mod internal_devices;
 pub mod internal_runtime_settings;
+pub mod internal_session_keys;
 pub mod internal_sign_in_history;
 pub mod internal_ssh_keys;
 pub mod introspect;
