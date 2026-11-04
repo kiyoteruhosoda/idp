@@ -369,7 +369,7 @@ mod tests {
         let idle = created + Duration::hours(30);
         let week = Duration::days(7);
         let month = Duration::days(30);
-        use SessionBinding::{AppApproval, DeviceKey, Unbound};
+        use SessionBinding::{DeviceKey, Unbound};
         assert_eq!(
             lifetime_for(created, idle, DeviceKey, true, week, month),
             (created + month, created + month)

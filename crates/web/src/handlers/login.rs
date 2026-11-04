@@ -282,6 +282,7 @@ fn restored_response(
 
 /// ログインフォームの HTML をテンプレートから描画する。埋め込む値（翻訳文言・CSRF トークン）は
 /// テンプレート側で自動 HTML エスケープされる。
+#[allow(clippy::too_many_arguments)]
 fn render_form(
     messages: &Messages,
     tenant_prefix: &str,
@@ -537,6 +538,7 @@ fn display_name(value: Option<&str>) -> Option<&str> {
 /// **CSP は初回描画と同じものを付ける。** ここを既定のままにすると、打ち間違えて出し直された
 /// フォームからの再送信だけが RP へ戻れない——1 回目で成功した利用者は通り、間違えた利用者だけが
 /// 無言で止まる、という見つけにくい壊れ方をする。
+#[allow(clippy::too_many_arguments)]
 fn reshow_form(
     messages: &Messages,
     tenant_prefix: &str,
