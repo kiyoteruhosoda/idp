@@ -104,6 +104,10 @@ pub async fn observe_sign_ins(
 
     // 端末の鍵への結び付けの口（task #887）は、長い Cookie を置き直すだけでログインではない。
     let key_binding_path = request.uri().path().starts_with("/dbsc/");
+    // 要求に付いてきた SSO セッション。SSO の復元は同じ値の Cookie を置き直す（ADR-0018 決定 4）ので、
+    // 結び付けを求めるのは**値が変わった**とき（新しいログイン状態）だけにする。同じログイン状態で
+    // Chrome に登録をやり直させると、新しい鍵が「別の鍵」になり、ログイン状態を終わらせてしまう。
+    let incoming_sso = cookies::get(request.headers(), cookies::SSO_SESSION_COOKIE);
     let mut response = next.run(request).await;
     if key_binding_path {
         return response;
@@ -112,7 +116,11 @@ pub async fn observe_sign_ins(
         return response;
     };
     // 新しいログイン状態を端末の鍵へ結び付けるよう Chrome に求める（DBSC。task #887・ADR-0074）。
-    if let Some(value) = crate::session_key::registration_header(&state, &sso_session_id) {
+    let new_session = incoming_sso.as_deref() != Some(sso_session_id.as_str());
+    if let Some(value) = new_session
+        .then(|| crate::session_key::registration_header(&state, &sso_session_id))
+        .flatten()
+    {
         response.headers_mut().insert(
             axum::http::HeaderName::from_static(assay_contracts::session_key::REGISTRATION_HEADER),
             value,
