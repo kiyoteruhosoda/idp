@@ -38,6 +38,8 @@ pub async fn authorize(
     Extension(tenant): Extension<ResolvedTenant>,
     Query(params): Query<AuthorizeParams>,
 ) -> Response {
+    // 画面を出さずに試す往復は、各アプリが見えない枠で開く（task #888・ADR-0076）
+    let silent = params.prompt.as_deref() == Some("none");
     let request = AuthorizationParameters {
         response_type: params.response_type,
         client_id: params.client_id,
@@ -55,7 +57,7 @@ pub async fn authorize(
         response_mode: params.response_mode,
     };
 
-    match state.authorize.authorize(tenant.context(), request).await {
+    let mut response = match state.authorize.authorize(tenant.context(), request).await {
         AuthorizeOutcome::ErrorRedirect { location } => found(&location),
         // ログイン・同意画面は web が描画する。ハンドルは web が受領後ただちに自ドメインの
         // host-only Cookie へ移して URL から除去する（単回・短命。ADR-0018 決定 2・3）。
@@ -73,7 +75,15 @@ pub async fn authorize(
             }),
         )
             .into_response(),
+    };
+    // 枠を許すのは 302 だけ（400 の本文は描かれる）
+    if silent && response.status() == StatusCode::FOUND {
+        crate::presentation::security_headers::allow_silent_auth_framing(
+            &mut response,
+            state.config.silent_auth_frame_ancestors(),
+        );
     }
+    response
 }
 
 /// 認可フローの再開（`POST /internal/authorize/resume`、ADR-0018 決定 2）。

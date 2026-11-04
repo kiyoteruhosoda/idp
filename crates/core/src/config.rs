@@ -147,6 +147,8 @@ pub struct Config {
     security_alert_webhook_url: String,
     /// その鍵を読むファイル（`SECURITY_ALERT_WEBHOOK_TOKEN_FILE`）。
     security_alert_webhook_token_file: String,
+    /// 画面を出さずに試す往復を枠に入れてよい親（`SILENT_AUTH_FRAME_ANCESTORS`。task #888。環境変数だけ）。
+    silent_auth_frame_ancestors: assay_contracts::frame_ancestors::FrameAncestors,
     /// 漏えい済みパスワード照合の 1 リクエストの上限時間。
     password_breach_check_timeout: Duration,
     /// テナント解決キャッシュの TTL（ADR-0009 §7。id → tenant のホットパス）。
@@ -216,6 +218,10 @@ impl std::fmt::Debug for Config {
             .field("public_web_base_url", &self.public_web_base_url)
             .field("trust_forwarded_headers", &self.trust_forwarded_headers)
             .field("hsts_max_age", &self.hsts_max_age)
+            .field(
+                "silent_auth_frame_ancestors",
+                &self.silent_auth_frame_ancestors,
+            )
             .finish_non_exhaustive()
     }
 }
@@ -309,6 +315,11 @@ impl Config {
             security_alert_webhook_url: resolver.string("SECURITY_ALERT_WEBHOOK_URL", ""),
             security_alert_webhook_token_file: resolver
                 .string("SECURITY_ALERT_WEBHOOK_TOKEN_FILE", ""),
+            // 書けない値では起動しない（fail-fast。web も同じ検査を通す）
+            silent_auth_frame_ancestors: assay_contracts::frame_ancestors::parse_frame_ancestors(
+                &resolver.string("SILENT_AUTH_FRAME_ANCESTORS", ""),
+            )
+            .map_err(|e| anyhow::anyhow!(e))?,
             password_breach_check_timeout: secs(
                 resolver.parse("PASSWORD_BREACH_CHECK_TIMEOUT_SECS", 3u64)?,
             ),
@@ -408,6 +419,10 @@ impl Config {
     /// セキュリティの知らせの送り先 URL（空なら送らない。task #872）。
     pub fn security_alert_webhook_url(&self) -> Option<&str> {
         Some(self.security_alert_webhook_url.trim()).filter(|v| !v.is_empty())
+    }
+    /// 画面を出さずに試す往復（`prompt=none`）を枠に入れてよい親（空なら許さない。task #888・ADR-0076）。
+    pub fn silent_auth_frame_ancestors(&self) -> &assay_contracts::frame_ancestors::FrameAncestors {
+        &self.silent_auth_frame_ancestors
     }
     /// セキュリティの知らせの鍵を読むファイル（空なら未設定。task #872）。
     pub fn security_alert_webhook_token_file(&self) -> Option<&str> {

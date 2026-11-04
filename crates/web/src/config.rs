@@ -56,6 +56,9 @@ pub struct Config {
     /// リバースプロキシの `X-Forwarded-For` を信頼するか（api 側と同キー `TRUST_FORWARDED_HEADERS`。
     /// SEC1）。既定 `false` = ヘッダを無視して TCP 接続元を使う。
     trust_forwarded_headers: bool,
+    /// 画面を出さずに試す往復を枠に入れてよい親（`SILENT_AUTH_FRAME_ANCESTORS`。api と同キー・環境変数だけ。
+    /// task #888・ADR-0076）。
+    silent_auth_frame_ancestors: assay_contracts::frame_ancestors::FrameAncestors,
     log_format: LogFormat,
     /// api 経由の DB 上書き値を採用した共有キー（起動ログ用。値は含めない）。
     shared_settings_from_api: Vec<String>,
@@ -219,6 +222,11 @@ impl Config {
                 .parse("AUTH_SESSION_TTL_SECS", DEFAULT_AUTH_SESSION_TTL_SECS)?,
             hsts_max_age: resolver.parse("HSTS_MAX_AGE", 0u64)?,
             trust_forwarded_headers: resolver.parse("TRUST_FORWARDED_HEADERS", false)?,
+            // 書けない値では起動しない（fail-fast。api も同じ検査を通す）
+            silent_auth_frame_ancestors: assay_contracts::frame_ancestors::parse_frame_ancestors(
+                &env_or("SILENT_AUTH_FRAME_ANCESTORS", ""),
+            )
+            .map_err(|e| anyhow::anyhow!(e))?,
             log_format: parse_log_format(),
             shared_settings_from_api: resolver.applied_keys(),
             shared_runtime_settings: shared.clone(),
@@ -278,6 +286,10 @@ impl Config {
     /// HSTS `max-age`（秒）。0 = HSTS ヘッダを付与しない。
     pub fn hsts_max_age(&self) -> u64 {
         self.hsts_max_age
+    }
+    /// 画面を出さずに試す往復を枠に入れてよい親（空なら許さない。task #888・ADR-0076）。
+    pub fn silent_auth_frame_ancestors(&self) -> &assay_contracts::frame_ancestors::FrameAncestors {
+        &self.silent_auth_frame_ancestors
     }
     /// `X-Forwarded-For` を信頼してクライアント IP を採るか（SEC1）。`false`（既定）なら
     /// ヘッダを無視し、TCP 接続元アドレス（`ConnectInfo`）を使う。api 側と同じキー・同じ既定で、

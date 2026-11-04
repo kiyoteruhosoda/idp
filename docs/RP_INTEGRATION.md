@@ -79,6 +79,17 @@ assay の `email_verified` は「テナント管理者がそう主張してい�
 
 ⚠ **PKCE を送らない実装は弾かれる。** 素の OAuth2 ライブラリを使うときはここを確認する。
 
+### 見えない枠で `prompt=none`（ログインを続ける）
+
+アプリ自身のリフレッシュトークンを持たず、アクセストークンが切れたら**見えない枠（iframe）**で
+`/authorize?prompt=none` を開いて続けてよい（ADR-0076。雛形 fastapitemplate の ADR-0104 が見本）。
+
+- 枠に入れられるのは、assay の `SILENT_AUTH_FRAME_ANCESTORS`（本番・stg は `https://*.nolumia.com`）に合うオリジンの
+  画面だけ。ほかのオリジンでは枠の中で止まる
+- 枠に入るのは 302 だけ。`response_mode=form_post` は枠の中では止まるので、`query` で受ける
+- アプリの画面の CSP の `frame-src` に、発行者（`identity…`）と画面（`assay…`）の両方の名前を入れる（往復で移るため）
+- 戻りの `login_required` などは失敗ではない。全画面のログインへ移る
+
 ### 戻りの検証
 
 `id_token` は JWKS（`{issuer}/.well-known/jwks.json`）で署名を検証し、`iss` `aud` `exp`

@@ -3,7 +3,8 @@
 //! web は HTML（ログイン画面・管理コンソール）を配信するため、全レスポンスに以下を付与する:
 //! - `X-Content-Type-Options: nosniff`
 //! - `Referrer-Policy: strict-origin-when-cross-origin`
-//! - `X-Frame-Options: DENY`（クリックジャッキング対策）
+//! - `X-Frame-Options: DENY`（クリックジャッキング対策。画面を出さずに試す往復の 302 だけは設定した親の枠を許す。
+//!   `allow_silent_auth_framing`・task #888）
 //! - `Content-Security-Policy`（`frame-ancestors 'none'`・外部オリジン読み込み禁止）
 //!
 //! さらに `hsts_max_age > 0` のときは `Strict-Transport-Security` を付与する。
@@ -99,6 +100,35 @@ pub fn html_with_form_action_csp(redirect_uri: &str, body: String) -> Response {
     }
 }
 
+/// 画面を出さずに試す往復（`prompt=none`）の 302 を、設定した親の枠に入れてよくする（task #888・ADR-0076）。
+///
+/// ⚠ **描く画面には使わない。** 302 は描かれないので枠に入れても押させるものが無いが、画面を許すと
+/// クリックジャッキングの的になる。親が空なら何もしない（既定の `frame-ancestors 'none'` のまま）。
+pub fn allow_silent_auth_framing(
+    response: &mut Response,
+    ancestors: &assay_contracts::frame_ancestors::FrameAncestors,
+) {
+    let Some(policy) = ancestors.content_security_policy() else {
+        return;
+    };
+    if let Ok(value) = HeaderValue::from_str(&policy) {
+        response
+            .headers_mut()
+            .insert(axum::http::header::CONTENT_SECURITY_POLICY, value);
+    }
+}
+
+/// 応答の CSP が枠を許しているか（`frame-ancestors` を持ち、`'none'` でない）。許しているなら
+/// `X-Frame-Options: DENY` を足さない（両方あると、古いブラウザは DENY を採る）。
+fn csp_allows_framing(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::CONTENT_SECURITY_POLICY)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|csp| {
+            csp.contains("frame-ancestors") && !csp.contains("frame-ancestors 'none'")
+        })
+}
+
 /// セキュリティヘッダを付与するミドルウェアファクトリ。`hsts_max_age` が `0` のときは HSTS を付与しない。
 pub async fn add_security_headers(request: Request, next: Next, hsts_max_age: u64) -> Response {
     let mut response = next.run(request).await;
@@ -112,10 +142,13 @@ pub async fn add_security_headers(request: Request, next: Next, hsts_max_age: u6
         HeaderName::from_static("referrer-policy"),
         HeaderValue::from_static("strict-origin-when-cross-origin"),
     );
-    headers.insert(
-        HeaderName::from_static("x-frame-options"),
-        HeaderValue::from_static("DENY"),
-    );
+    // 画面を出さずに試す往復の 302 だけは枠を許す（`allow_silent_auth_framing`。task #888）
+    if !csp_allows_framing(headers) {
+        headers.insert(
+            HeaderName::from_static("x-frame-options"),
+            HeaderValue::from_static("DENY"),
+        );
+    }
     // ハンドラが応答に CSP を設定済みの場合は尊重する（RP-initiated logout の front-channel ページが
     // 通知先オリジンだけ `frame-src` を許可した CSP を使う。`handlers::rp_logout`）。
     let csp = HeaderName::from_static("content-security-policy");
@@ -254,9 +287,54 @@ mod tests {
                     )
                 }),
             )
+            .route(
+                "/silent",
+                get(|| async {
+                    let mut response =
+                        crate::handlers::found("https://app.example.com/api/auth/sso/callback");
+                    let ancestors = assay_contracts::frame_ancestors::parse_frame_ancestors(
+                        "https://*.example.com",
+                    )
+                    .unwrap();
+                    allow_silent_auth_framing(&mut response, &ancestors);
+                    response
+                }),
+            )
+            .route(
+                "/silent-unset",
+                get(|| async {
+                    let mut response =
+                        crate::handlers::found("https://app.example.com/api/auth/sso/callback");
+                    allow_silent_auth_framing(
+                        &mut response,
+                        &assay_contracts::frame_ancestors::FrameAncestors::none(),
+                    );
+                    response
+                }),
+            )
             .layer(axum::middleware::from_fn(move |req, next| {
                 add_security_headers(req, next, hsts_max_age)
             }))
+    }
+
+    /// 画面を出さずに試す往復の 302 だけは、設定した親の枠を許す（task #888・ADR-0076）。
+    #[tokio::test]
+    async fn a_silent_redirect_may_be_framed_by_the_configured_parents_only() {
+        let res = respond(app(0), "/silent").await;
+        assert_eq!(
+            res.headers()["content-security-policy"],
+            "frame-ancestors https://*.example.com"
+        );
+        assert!(res.headers().get("x-frame-options").is_none());
+    }
+
+    /// 親を設定していなければ、今までどおり枠に入れない。
+    #[tokio::test]
+    async fn without_parents_a_silent_redirect_is_not_framed() {
+        let res = respond(app(0), "/silent-unset").await;
+        assert_eq!(res.headers()["x-frame-options"], "DENY");
+        let csp = res.headers()["content-security-policy"].to_str().unwrap();
+        assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
     }
 
     /// HTML は前段に書き換えさせない（Cloudflare のメール難読化で `[email protected]` が出ていた）。

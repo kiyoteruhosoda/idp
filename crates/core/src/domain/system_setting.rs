@@ -898,6 +898,21 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
                       正の値を設定。api・web の両方が使うため、変更の反映には両サービスの再起動が必要。",
     },
     SettingDefinition {
+        key: "SILENT_AUTH_FRAME_ANCESTORS",
+        scope: SettingScope::Global,
+        shared_with_web: false,
+        owner: SettingOwner::EnvLocked,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::Text,
+        default_value: Some(""),
+        description: "画面を出さずに試す往復（`prompt=none`）を枠（iframe）に入れてよい親（空白区切り。\
+                      例 `https://*.nolumia.com`。task #888・ADR-0076）。各アプリが切れたログインを見えない枠で \
+                      問い合わせて続けるための口で、`/authorize` と `/login` の引き継ぎの 302 にだけ効く。\
+                      ほかの画面は枠に入れない。空なら枠を許さない。web も環境変数から同じ値を読む。",
+    },
+    SettingDefinition {
         key: "SECURITY_ALERT_WEBHOOK_URL",
         scope: SettingScope::Global,
         shared_with_web: false,
