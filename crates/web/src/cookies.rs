@@ -42,6 +42,16 @@ pub const SAML_REQUEST_COOKIE: &str = "saml_request_id";
 pub const EXTERNAL_LOGIN_BINDING_COOKIE: &str = "external_login_binding";
 /// [`EXTERNAL_LOGIN_BINDING_COOKIE`] の寿命。api の進行状態の寿命（600 秒）と揃える。
 pub const EXTERNAL_LOGIN_BINDING_MAX_AGE_SECS: u64 = 600;
+/// 「アプリで続ける」を始めたブラウザに置く一度きりの印（task #892。ADR-0075）。認証アプリが開いた
+/// ブラウザでコードと一緒に api へ渡し、依頼を始めたブラウザかを確かめる。**オリジン束縛**（`__Host-`）・
+/// `SameSite=Lax`（アプリが開く移動はトップレベルの GET なので届く）。
+pub const APP_APPROVAL_BINDING_COOKIE: &str = "app_approval_binding";
+/// [`APP_APPROVAL_BINDING_COOKIE`] の寿命。api の依頼の寿命（300 秒）と揃える。
+pub const APP_APPROVAL_BINDING_MAX_AGE_SECS: u64 = 300;
+/// 認証アプリの登録の確認へ、ログインの後に戻すための受付の識別子（task #892）。**オリジン束縛**。
+pub const APP_APPROVER_ENROLLMENT_COOKIE: &str = "app_approver_enrollment";
+/// [`APP_APPROVER_ENROLLMENT_COOKIE`] の寿命。api の受付の寿命（600 秒）と揃える。
+pub const APP_APPROVER_ENROLLMENT_MAX_AGE_SECS: u64 = 600;
 /// 表示言語の選択を保持する Cookie（`ja` / `en`。MT15。決定チェーンの優先度3）。
 pub const LANG_COOKIE: &str = "lang";
 /// 表示設定 Cookie（言語・配色）の保持期間（既定 1 年）。UI 設定のため長命にする。

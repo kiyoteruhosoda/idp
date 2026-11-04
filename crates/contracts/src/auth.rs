@@ -2522,3 +2522,173 @@ pub enum InternalSessionKeyBindingResponse {
     Unbound,
     Internal,
 }
+
+// ─── 認証アプリで承認するログイン（task #892。ADR-0075） ───────────────────
+
+/// 「アプリで続ける」の依頼を始める（`POST /internal/app-approval/start`）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAppApprovalStartRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    /// 認可の途中から来たなら、そのブラウザの `auth_session_id`（Cookie の平文）。
+    #[serde(default)]
+    pub auth_session_id: Option<String>,
+    #[serde(default)]
+    pub country: Option<String>,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAppApprovalStartResponse {
+    Started {
+        request_id: String,
+        /// 始めたブラウザにだけ渡す印。web が Cookie に置く（DB は SHA-256 だけ）。
+        browser_binding: String,
+    },
+    /// 認証アプリの口が閉じている。
+    Disabled,
+    RateLimited,
+    Internal,
+}
+
+/// アプリが開いたブラウザで完了する（`POST /internal/app-approval/complete`）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAppApprovalCompleteRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub request_id: String,
+    pub code: String,
+    /// そのブラウザが持っていた依頼の印（Cookie）。無ければ `None`。
+    #[serde(default)]
+    pub browser_binding: Option<String>,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAppApprovalCompleteResponse {
+    /// ログインした。`redirect_to` が無ければ assay のアカウント画面へ。
+    Success {
+        #[serde(default)]
+        redirect_to: Option<String>,
+        #[serde(default)]
+        form_post: Option<FormPostFields>,
+        sso_session_id: String,
+        sso_absolute_ttl_secs: u64,
+    },
+    ConsentRequired {
+        auth_session_id: String,
+        sso_session_id: String,
+        sso_absolute_ttl_secs: u64,
+    },
+    ApplicationNotPermitted {
+        application_name: String,
+        sso_session_id: String,
+        sso_absolute_ttl_secs: u64,
+    },
+    /// コードが違う・切れた・使用済み。
+    Invalid,
+    /// 依頼を始めたのとは別のブラウザ。ログインはさせていない。
+    AnotherBrowser,
+    PolicyDenied,
+    UserUnavailable,
+    Internal,
+}
+
+/// 認証アプリの登録の確認の画面（`POST /internal/account/app-approver/enrollment`）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAccountApproverEnrollmentRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+    pub enrollment_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAccountApproverEnrollmentResponse {
+    Ready {
+        device_name: String,
+        /// `tee` / `strongbox` / `software`
+        security_level: String,
+        created_at: String,
+    },
+    NotFound,
+    SessionExpired,
+    Internal,
+}
+
+/// 認証アプリの登録を確かめる（`POST /internal/account/app-approver/confirm`）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAccountApproverConfirmResponse {
+    /// アプリへ返すコード（Auth Tab の戻り先に載せる）。
+    Confirmed {
+        code: String,
+    },
+    /// パスキーで確かめてから 5 分を過ぎた（本人確認の画面へ回す）。
+    PasskeyRequired,
+    NotFound,
+    SessionExpired,
+    Internal,
+}
+
+/// 「端末」の欄の「認証アプリ」の 1 行。時刻は RFC 3339。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountApproverKeySummary {
+    pub id: String,
+    pub device_name: String,
+    pub security_level: String,
+    pub registered_at: String,
+    #[serde(default)]
+    pub last_used_at: Option<String>,
+}
+
+/// 「認証アプリ」の一覧（`POST /internal/account/app-approver/keys`）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAccountApproverKeysRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAccountApproverKeysResponse {
+    Listed {
+        /// 認証アプリの口が閉じていれば `false`（画面は欄ごと出さない）。
+        enabled: bool,
+        keys: Vec<AccountApproverKeySummary>,
+    },
+    SessionExpired,
+    Internal,
+}
+
+/// 認証アプリの鍵を取り消す（`POST /internal/account/app-approver/keys/revoke`）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAccountRevokeApproverKeyRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+    pub key_id: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAccountRevokeApproverKeyResponse {
+    Revoked { sessions: usize },
+    NotFound,
+    SessionExpired,
+    Internal,
+}

@@ -53,6 +53,8 @@ metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 
 [dev-dependencies]
+# 認証アプリの鍵の代わりに P-256 で署名する（tests/app_approval.rs。task #892）。
+aws-lc-rs = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 jsonwebtoken = { workspace = true }
 # SAML SSO テストでの AuthnRequest 圧縮（HTTP-Redirect binding の DEFLATE）。

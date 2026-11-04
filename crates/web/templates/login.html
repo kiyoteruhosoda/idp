@@ -54,8 +54,21 @@
         <p class="text-danger small text-center mb-0" role="alert" id="passkey-error-msg"></p>
       </div>
     </div>
+    {#- 「アプリで続ける」（task #892・ADR-0075）。Android のブラウザでだけ見せる（見た目だけ。
+        `assets/app-approval-login.js`）。押すと、このブラウザに依頼の印を置き、認証アプリを開く画面へ進む。 -#}
+    {% if app_approval_offered %}
+    <div id="app-approval-login" hidden>
+      <p class="auth-or">{{ messages.get("login-passkey-or") }}</p>
+      <form method="post" action="{{ tenant_prefix }}/login/app/start" class="d-grid mb-2">
+        <input type="hidden" name="csrf_token" value="{{ csrf }}">
+        <button type="submit" class="btn btn-outline-secondary"><i class="fa-solid fa-mobile-screen-button me-2" aria-hidden="true"></i>{{ messages.get("login-app-approval-button") }}</button>
+      </form>
+      <p class="small text-body-secondary mb-0">{{ messages.get("login-app-approval-hint") }}</p>
+    </div>
+    {% endif %}
   </div>
 </div>
 <script src="/assets/passkey-login.js?v={{ crate::templates::asset_version() }}" defer></script>
+{% if app_approval_offered %}<script src="/assets/app-approval-login.js?v={{ crate::templates::asset_version() }}" defer></script>{% endif %}
 {% include "password_visibility.html" %}
 {% endblock %}

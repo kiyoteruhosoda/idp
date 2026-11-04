@@ -15,6 +15,7 @@ pub mod account_theme;
 pub mod admin_access;
 pub mod admin_account_guard;
 pub mod admin_login;
+pub mod app_approval;
 pub mod application_access;
 pub mod application_log;
 pub mod application_management;

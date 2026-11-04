@@ -21,7 +21,9 @@ use crate::domain::repositories::{
 };
 use crate::infrastructure::db::Db;
 use crate::infrastructure::repositories::{
-    auth_session::SqlxAuthSessionRepository, authorization_code::SqlxAuthorizationCodeRepository,
+    app_approver::{SqlxApprovalRequestRepository, SqlxApproverEnrollmentRepository},
+    auth_session::SqlxAuthSessionRepository,
+    authorization_code::SqlxAuthorizationCodeRepository,
     client_assertion::SqlxClientAssertionReplayRepository,
     email_verification_token::SqlxEmailVerificationTokenRepository,
     external_idp::SqlxExternalLoginRequestRepository,
@@ -29,7 +31,8 @@ use crate::infrastructure::repositories::{
     password_reset_token::SqlxPasswordResetTokenRepository,
     refresh_token::SqlxRefreshTokenRepository,
     revoked_access_token::SqlxRevokedAccessTokenRepository,
-    saml_sso_request::SqlxSamlSsoRequestRepository, sso_session::SqlxSsoSessionRepository,
+    saml_sso_request::SqlxSamlSsoRequestRepository,
+    sso_session::SqlxSsoSessionRepository,
     user_authenticator::SqlxUserAuthenticatorRepository,
 };
 use async_trait::async_trait;
@@ -112,6 +115,8 @@ macro_rules! purge_directly {
 }
 
 purge_directly!(SqlxAuthorizationCodeRepository, "authorization_codes");
+purge_directly!(SqlxApproverEnrollmentRepository, "app_approver_enrollments");
+purge_directly!(SqlxApprovalRequestRepository, "app_approval_requests");
 purge_directly!(SqlxClientAssertionReplayRepository, "client_assertion_jtis");
 purge_directly!(SqlxRefreshTokenRepository, "refresh_tokens");
 purge_directly!(SqlxRevokedAccessTokenRepository, "revoked_access_tokens");
@@ -139,7 +144,9 @@ pub fn all_expiring_record_stores(pool: Db) -> Vec<Arc<dyn ExpiringRecordStore>>
         Arc::new(SqlxRefreshTokenRepository::new(pool.clone())),
         Arc::new(SqlxRevokedAccessTokenRepository::new(pool.clone())),
         Arc::new(SqlxPasswordResetTokenRepository::new(pool.clone())),
-        Arc::new(SqlxEmailVerificationTokenRepository::new(pool)),
+        Arc::new(SqlxEmailVerificationTokenRepository::new(pool.clone())),
+        Arc::new(SqlxApproverEnrollmentRepository::new(pool.clone())),
+        Arc::new(SqlxApprovalRequestRepository::new(pool)),
     ]
 }
 
@@ -158,4 +165,6 @@ pub const PURGED_TABLES: &[&str] = &[
     "revoked_access_tokens",
     "password_reset_tokens",
     "email_verification_tokens",
+    "app_approver_enrollments",
+    "app_approval_requests",
 ];

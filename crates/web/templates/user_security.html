@@ -68,6 +68,43 @@
       </table>
     </div>
     {% endif %}
+    {#- 認証アプリ（task #892・ADR-0075）。アプリの中でパスキーでログインし直して登録した鍵。取り消すと、
+        その鍵で承認したログイン状態も終わる。 -#}
+    {% if !approver_keys.is_empty() %}
+    <h2 class="h6 mt-4">{{ messages.get("user-security-approver-heading") }}</h2>
+    <div class="table-responsive">
+      <table class="table align-middle table-cards">
+        <thead>
+          <tr>
+            <th scope="col">{{ messages.get("user-security-approver-device") }}</th>
+            <th scope="col">{{ messages.get("user-security-approver-registered") }}</th>
+            <th scope="col">{{ messages.get("user-security-approver-last-used") }}</th>
+            <th scope="col"><span class="visually-hidden">{{ messages.get("user-security-devices-revoke") }}</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for key in approver_keys %}
+          <tr>
+            <td data-label="{{ messages.get("user-security-approver-device") }}">
+              <span class="d-block fw-semibold text-break">{{ key.device_name }}</span>
+              <span class="badge text-bg-secondary">{{ messages.get("user-security-approver-badge") }}</span>
+              <span class="d-block small text-muted">{{ messages.get(key.level_key) }}</span>
+            </td>
+            <td data-label="{{ messages.get("user-security-approver-registered") }}"><time class="local-time" datetime="{{ key.registered_at }}">{{ crate::templates::utc_short(key.registered_at.as_str()) }}</time></td>
+            <td data-label="{{ messages.get("user-security-approver-last-used") }}">{% if key.last_used_at.is_empty() %}<span class="text-muted">{{ messages.get("user-security-approver-never-used") }}</span>{% else %}<time class="local-time" datetime="{{ key.last_used_at }}">{{ crate::templates::utc_short(key.last_used_at.as_str()) }}</time>{% endif %}</td>
+            <td class="text-end">
+              <form method="post" action="{{ tenant }}/settings/security/revoke-approver-key" data-confirm="{{ messages.get("user-security-approver-revoke-confirm") }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                <input type="hidden" name="key_id" value="{{ key.id }}">
+                <button type="submit" class="btn btn-outline-danger btn-sm">{{ messages.get("user-security-devices-revoke") }}</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
   </div>
 </div>
 

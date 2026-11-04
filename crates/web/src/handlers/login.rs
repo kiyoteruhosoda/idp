@@ -90,6 +90,7 @@ pub async fn login_page(
         // 引けなければ出さない（空文字も出さない）。
         display_name(rp_context.client_name.as_deref()),
         display_name(rp_context.tenant_name.as_deref()),
+        state.config.app_approver_enabled(),
     );
     // SSO と同意が揃っていれば、ログインフォームの送信はそのまま RP へリダイレクトして終わる。
     // Chrome は `form-action` を送信後のリダイレクト先にも適用するので、その RP のオリジンだけ
@@ -289,6 +290,7 @@ fn render_form(
     login_hint: Option<&str>,
     client_name: Option<&str>,
     tenant_name: Option<&str>,
+    app_approval_offered: bool,
 ) -> String {
     render(&LoginTemplate {
         messages,
@@ -298,6 +300,7 @@ fn render_form(
         login_hint,
         client_name,
         tenant_name,
+        app_approval_offered,
     })
 }
 
@@ -438,6 +441,7 @@ pub async fn login(
             auth_session_id.as_deref(),
             "login-error-invalid-credentials",
             state.config.csrf_secret(),
+            state.config.app_approver_enabled(),
             &rp_context,
         ),
         InternalAuthenticateResponse::Locked => reshow_form(
@@ -447,6 +451,7 @@ pub async fn login(
             auth_session_id.as_deref(),
             "login-error-locked",
             state.config.csrf_secret(),
+            state.config.app_approver_enabled(),
             &rp_context,
         ),
         // 自己登録アカウントのメール未検証（SEC6b）。確認リンクを踏むよう案内する。
@@ -482,6 +487,7 @@ pub async fn login(
             auth_session_id.as_deref(),
             "login-error-policy-denied",
             state.config.csrf_secret(),
+            state.config.app_approver_enabled(),
             &rp_context,
         ),
         // ポリシーが MFA 必須だが認証器（TOTP）が未設定。ポータルで設定するよう案内する。
@@ -538,6 +544,7 @@ fn reshow_form(
     auth_session_id: Option<&str>,
     error_key: &str,
     csrf_secret: &[u8],
+    app_approval_offered: bool,
     rp_context: &RpLoginContext,
 ) -> Response {
     match auth_session_id {
@@ -557,6 +564,7 @@ fn reshow_form(
                     // サインインするのか」が消えると、やり直す利用者ほど手がかりを失う。
                     display_name(rp_context.client_name.as_deref()),
                     display_name(rp_context.tenant_name.as_deref()),
+                    app_approval_offered,
                 ),
             ),
         )

@@ -634,6 +634,11 @@ pub(crate) fn sso_success_parts(
             cookies::PREFERENCE_COOKIE_MAX_AGE_SECS,
         );
     }
+    let enrollment = cookies::get(
+        headers,
+        &state.origin_bound_cookie(cookies::APP_APPROVER_ENROLLMENT_COOKIE),
+    )
+    .filter(|id| crate::handlers::app_approval::is_enrollment_id(id));
     let destination = if cookies::get(
         headers,
         &state.origin_bound_cookie(cookies::SAML_REQUEST_COOKIE),
@@ -641,6 +646,12 @@ pub(crate) fn sso_success_parts(
     .is_some()
     {
         format!("{}/saml/continue", tenant.prefix())
+    } else if let Some(enrollment) = enrollment {
+        // 認証アプリの登録の確認から来た（task #892）。ログインの後にその画面へ戻す。
+        format!(
+            "{}/settings/app-approver/confirm?enrollment={enrollment}",
+            tenant.prefix()
+        )
     } else {
         format!("{}/settings", tenant.prefix())
     };

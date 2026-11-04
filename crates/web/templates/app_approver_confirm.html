@@ -1,0 +1,29 @@
+{% extends "page.html" %}
+{% block title %}{{ messages.get("app-approver-confirm-title") }}{% endblock %}
+{% block content %}
+<div class="card border-0 bg-transparent">
+  <div class="card-header px-4 pb-3 border-0 bg-transparent">
+    <h1 class="h4 mb-0">{{ messages.get("app-approver-confirm-title") }}</h1>
+  </div>
+  <div class="card-body p-4">
+    <p>{{ messages.get("app-approver-confirm-lead") }}</p>
+    <dl class="row small">
+      <dt class="col-5">{{ messages.get("app-approver-confirm-device") }}</dt>
+      <dd class="col-7">{{ device_name }}</dd>
+      <dt class="col-5">{{ messages.get("app-approver-confirm-level") }}</dt>
+      <dd class="col-7">{{ messages.get(level_key) }}</dd>
+      <dt class="col-5">{{ messages.get("app-approver-confirm-started") }}</dt>
+      <dd class="col-7"><time class="local-time" datetime="{{ created_at }}">{{ crate::templates::utc_short(created_at) }}</time></dd>
+    </dl>
+    <p class="small text-body-secondary">{{ messages.get("app-approver-confirm-passkey-note") }}</p>
+    <form method="post" action="{{ tenant_prefix }}/settings/app-approver/confirm" class="d-grid gap-2">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <input type="hidden" name="enrollment" value="{{ enrollment }}">
+      <button type="submit" name="decision" value="register" class="btn btn-primary">{{ messages.get("app-approver-confirm-register") }}</button>
+      <button type="submit" name="decision" value="cancel" class="btn btn-outline-secondary">{{ messages.get("app-approver-confirm-cancel") }}</button>
+    </form>
+    <p class="small text-body-secondary mt-3 mb-0">{{ messages.get("app-approver-confirm-warning") }}</p>
+  </div>
+</div>
+<script src="/assets/local-time.js?v={{ crate::templates::asset_version() }}" defer></script>
+{% endblock %}

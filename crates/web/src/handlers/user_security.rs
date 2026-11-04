@@ -18,8 +18,9 @@ use crate::handlers::{forwarded_context, found, locale, see_other, step_up};
 use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{
-    browser_summary, render, ConnectedAppView, SecurityDeviceView, SecuritySessionView,
-    SecuritySshKeyView, SignInAppView, SignInRefreshView, SignInView, UserSecurity,
+    browser_summary, render, ConnectedAppView, SecurityApproverKeyView, SecurityDeviceView,
+    SecuritySessionView, SecuritySshKeyView, SignInAppView, SignInRefreshView, SignInView,
+    UserSecurity,
 };
 use crate::tenant::WebTenant;
 use assay_contracts::auth::{
@@ -253,6 +254,39 @@ pub async fn page(
         }
     };
 
+    // 「認証アプリ」の行（task #892）。認証アプリの口が閉じていれば出さない。読めなくても画面は出す。
+    let approver_keys: Vec<SecurityApproverKeyView> = match state
+        .api
+        .account_approver_keys(
+            &correlation.0,
+            &assay_contracts::auth::InternalAccountApproverKeysRequest {
+                tenant_id: Some(tenant.0.clone()),
+                sso_session_id: request.sso_session_id.clone(),
+            },
+        )
+        .await
+    {
+        Ok(assay_contracts::auth::InternalAccountApproverKeysResponse::Listed { keys, .. }) => keys
+            .into_iter()
+            .map(|k| SecurityApproverKeyView {
+                id: k.id,
+                device_name: k.device_name,
+                level_key: match k.security_level.as_str() {
+                    "strongbox" => "app-approver-level-strongbox",
+                    "tee" => "app-approver-level-tee",
+                    _ => "app-approver-level-software",
+                },
+                registered_at: k.registered_at,
+                last_used_at: k.last_used_at.unwrap_or_default(),
+            })
+            .collect(),
+        Ok(_) => Vec::new(),
+        Err(e) => {
+            tracing::warn!(error = %e, "approver keys could not be listed");
+            Vec::new()
+        }
+    };
+
     // Messages（FluentBundle）は !Send のため、api の await より後・描画の直前に生成する。
     let messages = Messages::new(locale);
     let sessions: Vec<SecuritySessionView> = sessions
@@ -288,6 +322,7 @@ pub async fn page(
         current_device_identified: devices.current_identified,
         passkey_fresh: devices.passkey_fresh,
         devices_alerts_enabled: devices.alerts_enabled,
+        approver_keys: &approver_keys,
         sign_ins: &sign_ins,
         sign_ins_older,
         sign_ins_paged: query.history_before.is_some(),
@@ -819,6 +854,7 @@ fn saved_key_for(value: &str) -> Option<&'static str> {
         "tokens-none" => Some("user-security-saved-tokens-none"),
         "device-registered" => Some("user-security-saved-device-registered"),
         "device-revoked" => Some("user-security-saved-device-revoked"),
+        "approver-key-revoked" => Some("user-security-saved-approver-key-revoked"),
         "ssh-key-registered" => Some("user-security-saved-ssh-key-registered"),
         "ssh-key-revoked" => Some("user-security-saved-ssh-key-revoked"),
         _ => None,
@@ -835,6 +871,7 @@ fn error_key_for(value: &str) -> Option<&'static str> {
         "device-invalid-name" => Some("user-security-error-device-invalid-name"),
         "device-unidentified" => Some("user-security-devices-unidentified"),
         "device-not-found" => Some("user-security-error-device-not-found"),
+        "approver-key-not-found" => Some("user-security-error-approver-key-not-found"),
         "ssh-key-disabled" => Some("user-security-error-ssh-key-disabled"),
         "ssh-key-passkey-required" => Some("user-security-error-ssh-key-passkey-required"),
         "ssh-key-invalid-name" => Some("user-security-error-ssh-key-invalid-name"),
@@ -930,6 +967,7 @@ fn method_key(method: &str) -> &'static str {
         "email_otp" => "user-security-signins-method-email-otp",
         "sms_otp" => "user-security-signins-method-sms-otp",
         "external_idp" => "user-security-signins-method-external",
+        "app_approval" => "user-security-signins-method-app-approval",
         _ => "user-security-signins-method-other",
     }
 }

@@ -1,0 +1,26 @@
+{% extends "page.html" %}
+{% block title %}{{ messages.get("app-approval-title") }}{% endblock %}
+{% block content %}
+<div class="card border-0 bg-transparent">
+  <div class="card-header px-4 pb-3 border-0 bg-transparent">
+    <h1 class="h4 mb-0">{{ messages.get("app-approval-title") }}</h1>
+  </div>
+  <div class="card-body p-4">
+    <p>{{ messages.get("app-approval-wait-lead") }}</p>
+    {#- 発行者のホスト（assay の画面とは別のホスト）へのリンク。Chrome は別のホストへのリンクを押したときに
+        App Link のアプリへ渡す（同じホストの中のリンクではアプリを開かない）。 -#}
+    <div class="d-grid mb-3">
+      <a class="btn btn-primary" href="{{ approve_url }}"><i class="fa-solid fa-mobile-screen-button me-2" aria-hidden="true"></i>{{ messages.get("app-approval-open-app") }}</a>
+    </div>
+    <ol class="small text-body-secondary ps-3">
+      <li>{{ messages.get("app-approval-wait-step-1") }}</li>
+      <li>{{ messages.get("app-approval-wait-step-2") }}</li>
+      <li>{{ messages.get("app-approval-wait-step-3") }}</li>
+    </ol>
+    <p class="small text-body-secondary">{{ messages.get("app-approval-wait-note") }}</p>
+    <div class="text-center">
+      <a class="text-decoration-none" href="{{ tenant_prefix }}/login">{{ messages.get("app-approval-back") }}</a>
+    </div>
+  </div>
+</div>
+{% endblock %}

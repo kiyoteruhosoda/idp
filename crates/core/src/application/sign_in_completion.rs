@@ -27,6 +27,7 @@ use crate::domain::error::DomainError;
 use crate::domain::repositories::{
     AuthSessionRepository, ClientConsentRepository, SsoSessionRepository,
 };
+use crate::domain::session_key::{lifetime_for, SessionBinding};
 use crate::domain::sso_session::SsoSession;
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
@@ -119,17 +120,40 @@ impl SignInCompletion {
         ctx: &RequestContext,
         now: DateTime<Utc>,
     ) -> Result<EstablishedSso, DomainError> {
+        self.establish_sso_with_binding(sign_in, SessionBinding::Unbound, ctx, now)
+            .await
+    }
+
+    /// 結び付けの種類を決めて SSO セッションを作る（長さは `session_key::lifetime_for`）。
+    ///
+    /// 確立のときに結び付けが決まっているのは「アプリで承認」だけ（task #892。ADR-0075）。DBSC は確立の
+    /// 後に結び付くので、ここでは `Unbound` で作り、結び付けたときに延ばす（ADR-0074）。
+    pub async fn establish_sso_with_binding(
+        &self,
+        sign_in: SignIn<'_>,
+        binding: SessionBinding,
+        ctx: &RequestContext,
+        now: DateTime<Utc>,
+    ) -> Result<EstablishedSso, DomainError> {
         let lifetime = self
             .settings
             .sso_session_lifetime(sign_in.home_tenant_id)
             .await?;
+        let (idle_expires_at, absolute_expires_at) = lifetime_for(
+            now,
+            now + lifetime.idle,
+            binding,
+            false,
+            lifetime.absolute,
+            lifetime.bound,
+        );
         let session_id = crypto::random_hex(32);
         let session = SsoSession::establish(
             crypto::sha256_hex(&session_id),
             sign_in.user_id,
             now,
-            lifetime.idle,
-            lifetime.absolute,
+            idle_expires_at - now,
+            absolute_expires_at - now,
             sign_in.methods,
             ctx.user_agent.clone(),
             ctx.ip_address.clone(),
