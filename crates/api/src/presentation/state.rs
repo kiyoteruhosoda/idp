@@ -361,6 +361,8 @@ impl AppState {
         let audit_sink = Arc::new(SignInFailureRecordingSink::new(
             Arc::new(SqlxAuditLogSink::new(pool.clone())),
             sign_in_history_repository.clone(),
+            // 国は web が内部の呼び出しに添えた値だけ（task #895。`/internal/*` でだけ読む）。
+            Arc::new(crate::presentation::client_country::TaskLocalRequestCountry),
         ));
         let audit_logs = Arc::new(SqlxAuditLogQuery::new(pool.clone()));
         let hasher = Arc::new(Argon2PasswordHasher::new());

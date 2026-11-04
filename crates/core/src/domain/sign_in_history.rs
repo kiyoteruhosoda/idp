@@ -67,7 +67,26 @@ pub struct SignInFailure {
     pub kind: SignInFailureKind,
     pub ip_address: Option<String>,
     pub user_agent: Option<String>,
+    /// 国（web が信じると決めた値だけ。task #895）。監査イベントには無いので、写す所が添える。
+    pub country: Option<CountryCode>,
     pub client_id: Option<String>,
+}
+
+/// 今の要求の国（web が信じると決めて内部の呼び出しに添えた値。task #895）。
+///
+/// 監査ログへ書く所（[`crate::application::sign_in_history::SignInFailureRecordingSink`]）が、断ったログインの
+/// 写しに国を添えるために引く。要求の外（見回りなど）や、外から直接 api に来た要求では `None`。
+pub trait RequestCountry: Send + Sync {
+    fn current(&self) -> Option<CountryCode>;
+}
+
+/// 国を持たない（試験・要求の外）。
+pub struct NoRequestCountry;
+
+impl RequestCountry for NoRequestCountry {
+    fn current(&self) -> Option<CountryCode> {
+        None
+    }
 }
 
 /// 監査イベントが「本人の履歴に出すべき、断ったログイン」なら写しを返す。
@@ -102,6 +121,7 @@ pub fn sign_in_failure_from_audit(event: &AuditEvent) -> Option<SignInFailure> {
         kind,
         ip_address: event.ip_address.clone(),
         user_agent: event.user_agent.clone(),
+        country: None,
         client_id: event.client_id.clone(),
     })
 }

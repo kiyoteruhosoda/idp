@@ -2357,3 +2357,9 @@ pub struct AccountRefreshUsage {
     #[serde(default)]
     pub revoked_at: Option<String>,
 }
+
+/// web が「信じると決めた国」（`CF-IPCountry`）を api への内部の呼び出しに添える見出し（task #895）。
+///
+/// api は `/internal/*`（サービストークンの内側）でだけこの見出しを読む。外から直接 api に来た要求の
+/// 同じ見出しは読まない（誰でも付けられるため）。
+pub const CLIENT_COUNTRY_HEADER: &str = "x-assay-client-country";

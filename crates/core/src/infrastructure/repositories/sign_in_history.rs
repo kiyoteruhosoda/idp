@@ -69,8 +69,8 @@ impl SignInHistoryRepository for SqlxSignInHistoryRepository {
         sqlx::query(
             "INSERT INTO sign_in_history \
              (user_id, tenant_id, occurred_at, outcome, failure_kind, ip_address, user_agent, \
-              client_id) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+              country, client_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(f.user_id.to_string())
         .bind(f.tenant_id.map(|t| t.to_string()))
@@ -79,6 +79,7 @@ impl SignInHistoryRepository for SqlxSignInHistoryRepository {
         .bind(f.kind.as_str())
         .bind(clip(f.ip_address.as_deref(), 45))
         .bind(clip(f.user_agent.as_deref(), 512))
+        .bind(f.country.as_ref().map(CountryCode::as_str))
         .bind(clip(f.client_id.as_deref(), 255))
         .execute(&self.pool)
         .await
